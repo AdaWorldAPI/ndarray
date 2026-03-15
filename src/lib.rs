@@ -229,6 +229,14 @@ mod zip;
 
 mod dimension;
 
+/// Pluggable linear algebra backends (native SIMD, MKL, OpenBLAS).
+#[cfg(feature = "std")]
+pub mod backend;
+
+/// HPC extensions ported from rustynum: BLAS, statistics, HDC, CogRecord, FFT, LAPACK.
+#[cfg(feature = "std")]
+pub mod hpc;
+
 pub use crate::zip::{FoldWhile, IntoNdProducer, NdProducer, Zip};
 
 pub use crate::layout::Layout;
