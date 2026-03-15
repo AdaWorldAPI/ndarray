@@ -107,12 +107,44 @@ unsafe fn hamming_avx2(a: &[u8], b: &[u8]) -> u64 {
 fn dispatch_hamming(a: &[u8], b: &[u8]) -> u64 {
     #[cfg(target_arch = "x86_64")]
     {
+        if is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512vpopcntdq") {
+            // SAFETY: We checked for AVX-512F + VPOPCNTDQ support
+            return unsafe { crate::backend::kernels_avx512::hamming_distance(a, b) };
+        }
         if is_x86_feature_detected!("avx2") {
             // SAFETY: We checked for AVX2 support
             return unsafe { hamming_avx2(a, b) };
         }
     }
     hamming_scalar(a, b)
+}
+
+fn dispatch_popcount(a: &[u8]) -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512vpopcntdq") {
+            // SAFETY: We checked for AVX-512F + VPOPCNTDQ support
+            return unsafe { crate::backend::kernels_avx512::popcount(a) };
+        }
+    }
+    popcount_scalar(a)
+}
+
+fn dispatch_hamming_batch(query: &[u8], database: &[u8], num_rows: usize, row_bytes: usize) -> Vec<u64> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512vpopcntdq") {
+            // SAFETY: We checked for AVX-512F + VPOPCNTDQ support
+            return unsafe { crate::backend::kernels_avx512::hamming_batch(query, database, num_rows, row_bytes) };
+        }
+    }
+    // Fallback: per-row dispatch
+    (0..num_rows)
+        .map(|i| {
+            let start = i * row_bytes;
+            dispatch_hamming(query, &database[start..start + row_bytes])
+        })
+        .collect()
 }
 
 impl<S> BitwiseOps for ArrayBase<S, Ix1>
@@ -133,7 +165,7 @@ where S: Data<Elem = u8>
 
     fn popcount(&self) -> u64 {
         if let Some(s) = self.as_slice() {
-            popcount_scalar(s)
+            dispatch_popcount(s)
         } else {
             self.iter().map(|&b| b.count_ones() as u64).sum()
         }
@@ -156,17 +188,17 @@ where S: Data<Elem = u8>
     fn hamming_top_k(&self, candidates: &[u8], vec_len: usize, k: usize) -> (Vec<usize>, Vec<u64>) {
         let query = self.as_slice().expect("query must be contiguous");
         let n_candidates = candidates.len() / vec_len;
-        let mut distances: Vec<(usize, u64)> = (0..n_candidates)
-            .map(|i| {
-                let start = i * vec_len;
-                let end = (start + vec_len).min(candidates.len());
-                (i, dispatch_hamming(query, &candidates[start..end]))
-            })
-            .collect();
-        distances.sort_by_key(|&(_, d)| d);
-        let k = k.min(distances.len());
-        let indices = distances[..k].iter().map(|&(i, _)| i).collect();
-        let dists = distances[..k].iter().map(|&(_, d)| d).collect();
+
+        // Use batch dispatch for the distance computation
+        let distances = dispatch_hamming_batch(query, candidates, n_candidates, vec_len);
+
+        let k = k.min(n_candidates);
+        let mut indexed: Vec<(usize, u64)> = distances.into_iter().enumerate().collect();
+        indexed.select_nth_unstable_by_key(k.saturating_sub(1), |&(_, d)| d);
+        indexed.truncate(k);
+        indexed.sort_unstable_by_key(|&(_, d)| d);
+        let indices = indexed.iter().map(|&(i, _)| i).collect();
+        let dists = indexed.iter().map(|&(_, d)| d).collect();
         (indices, dists)
     }
 }
