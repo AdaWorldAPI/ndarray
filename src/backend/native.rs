@@ -196,142 +196,56 @@ dispatch!(
 /// AVX-512 (MR=6, NR=16): KC=740, fills 99.4% of L1
 /// AVX2    (MR=6, NR=8):  KC=1163
 /// Scalar  (MR=4, NR=4):  KC=2036
+/// GEMM: C = alpha * A * B + beta * C (f32, row-major).
+///
+/// Delegates to the `matrixmultiply` crate (8×8 AVX2+FMA Goto BLAS kernel).
+/// This is the same engine used by ndarray's `Array::dot()` and nalgebra.
+///
+/// The custom AVX-512 kernels in `kernels_avx512` are retained for
+/// non-GEMM paths (Hamming, bitwise) where matrixmultiply has no equivalent.
 pub fn gemm_f32(
     m: usize, n: usize, k: usize,
     alpha: f32, a: &[f32], lda: usize,
     b: &[f32], ldb: usize,
     beta: f32, c: &mut [f32], ldc: usize,
 ) {
-    // Scale C by beta
-    if beta == 0.0 {
-        for i in 0..m {
-            for j in 0..n { c[i * ldc + j] = 0.0; }
-        }
-    } else if beta != 1.0 {
-        for i in 0..m {
-            scal_f32(beta, &mut c[i * ldc..i * ldc + n]);
-        }
-    }
-
-    if alpha == 0.0 || m == 0 || n == 0 || k == 0 {
+    if m == 0 || n == 0 {
         return;
     }
-
-    // Dispatch to Goto BLAS packed GEMM when AVX-512 is available
-    #[cfg(target_arch = "x86_64")]
-    {
-        if tier() == Tier::Avx512 {
-            // SAFETY: tier() verified AVX-512F support
-            unsafe {
-                super::kernels_avx512::sgemm_blocked(
-                    m, n, k, alpha, a, lda, b, ldb, c, ldc,
-                );
-            }
-            return;
-        }
-    }
-
-    // Fallback: tiled axpy-based GEMM for AVX2/scalar
-    const L1_BYTES: usize = 64 * 1024;
-    let nr = sgemm_nr();
-    let mr = sgemm_mr();
-    let c_bytes = mr * nr * 4;
-    let kc = (L1_BYTES - c_bytes) / ((mr + nr) * 4);
-    let mc = mr * 4;
-    let nc = nr * 8;
-
-    let mut kk = 0;
-    while kk < k {
-        let kb = kc.min(k - kk);
-        let mut ii = 0;
-        while ii < m {
-            let ib = mc.min(m - ii);
-            let mut jj = 0;
-            while jj < n {
-                let jb = nc.min(n - jj);
-                for i in 0..ib {
-                    for p in 0..kb {
-                        let a_val = alpha * a[(ii + i) * lda + (kk + p)];
-                        let b_row = &b[(kk + p) * ldb + jj..(kk + p) * ldb + jj + jb];
-                        let c_row = &mut c[(ii + i) * ldc + jj..(ii + i) * ldc + jj + jb];
-                        axpy_f32(a_val, b_row, c_row);
-                    }
-                }
-                jj += jb;
-            }
-            ii += ib;
-        }
-        kk += kb;
+    // SAFETY: pointers derived from valid slices with correct strides.
+    // Row-major: row stride = lda/ldb/ldc, col stride = 1.
+    unsafe {
+        matrixmultiply::sgemm(
+            m, k, n,
+            alpha,
+            a.as_ptr(), lda as isize, 1,
+            b.as_ptr(), ldb as isize, 1,
+            beta,
+            c.as_mut_ptr(), ldc as isize, 1,
+        );
     }
 }
 
-/// GEMM: C = alpha * A * B + beta * C (f64, tiled with SIMD inner loop).
-///
-/// Tile sizes derived from 64KB L1 cache (8 bytes per f64 element).
+/// GEMM: C = alpha * A * B + beta * C (f64, row-major).
 pub fn gemm_f64(
     m: usize, n: usize, k: usize,
     alpha: f64, a: &[f64], lda: usize,
     b: &[f64], ldb: usize,
     beta: f64, c: &mut [f64], ldc: usize,
 ) {
-    if beta == 0.0 {
-        for i in 0..m {
-            for j in 0..n { c[i * ldc + j] = 0.0; }
-        }
-    } else if beta != 1.0 {
-        for i in 0..m {
-            scal_f64(beta, &mut c[i * ldc..i * ldc + n]);
-        }
-    }
-
-    if alpha == 0.0 || m == 0 || n == 0 || k == 0 {
+    if m == 0 || n == 0 {
         return;
     }
-
-    #[cfg(target_arch = "x86_64")]
-    {
-        if tier() == Tier::Avx512 {
-            // SAFETY: tier() verified AVX-512F support
-            unsafe {
-                super::kernels_avx512::dgemm_blocked(
-                    m, n, k, alpha, a, lda, b, ldb, c, ldc,
-                );
-            }
-            return;
-        }
-    }
-
-    // Fallback: tiled axpy-based GEMM for AVX2/scalar
-    const L1_BYTES: usize = 64 * 1024;
-    let nr = dgemm_nr();
-    let mr = dgemm_mr();
-    let c_bytes = mr * nr * 8;
-    let kc = (L1_BYTES - c_bytes) / ((mr + nr) * 8);
-    let mc = mr * 4;
-    let nc = nr * 8;
-
-    let mut kk = 0;
-    while kk < k {
-        let kb = kc.min(k - kk);
-        let mut ii = 0;
-        while ii < m {
-            let ib = mc.min(m - ii);
-            let mut jj = 0;
-            while jj < n {
-                let jb = nc.min(n - jj);
-                for i in 0..ib {
-                    for p in 0..kb {
-                        let a_val = alpha * a[(ii + i) * lda + (kk + p)];
-                        let b_row = &b[(kk + p) * ldb + jj..(kk + p) * ldb + jj + jb];
-                        let c_row = &mut c[(ii + i) * ldc + jj..(ii + i) * ldc + jj + jb];
-                        axpy_f64(a_val, b_row, c_row);
-                    }
-                }
-                jj += jb;
-            }
-            ii += ib;
-        }
-        kk += kb;
+    // SAFETY: same as sgemm — valid slices, row-major strides.
+    unsafe {
+        matrixmultiply::dgemm(
+            m, k, n,
+            alpha,
+            a.as_ptr(), lda as isize, 1,
+            b.as_ptr(), ldb as isize, 1,
+            beta,
+            c.as_mut_ptr(), ldc as isize, 1,
+        );
     }
 }
 
