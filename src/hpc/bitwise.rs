@@ -27,6 +27,12 @@ pub trait BitwiseOps {
     /// of `vec_len` bytes each, computes Hamming distance for each pair.
     fn hamming_distance_batch(&self, other: &Self, vec_len: usize, count: usize) -> Vec<u64>;
 
+    /// Query-vs-database batch: compute Hamming distance between `self` (query)
+    /// and each row of `database` (flat contiguous slice of `n_candidates * vec_len` bytes).
+    ///
+    /// This is the hot-path for cascade search — zero allocation, SIMD-accelerated.
+    fn hamming_query_batch(&self, database: &[u8], vec_len: usize) -> Vec<u64>;
+
     /// Hamming top-k: find the k nearest vectors by Hamming distance.
     ///
     /// `candidates` is a flat u8 slice of `n_candidates * vec_len` bytes.
@@ -104,6 +110,26 @@ unsafe fn hamming_avx2(a: &[u8], b: &[u8]) -> u64 {
     total
 }
 
+/// Hamming distance on raw slices — dispatches to VPOPCNTDQ → AVX2 → scalar.
+///
+/// Public API for callers that operate on raw `&[u8]` without ndarray arrays.
+pub fn hamming_distance_raw(a: &[u8], b: &[u8]) -> u64 {
+    dispatch_hamming(a, b)
+}
+
+/// Population count on raw slice.
+pub fn popcount_raw(a: &[u8]) -> u64 {
+    dispatch_popcount(a)
+}
+
+/// Query-vs-database batch Hamming on raw slices — zero allocation.
+///
+/// `database` is `num_rows * row_bytes` contiguous bytes.
+/// Returns a Vec of `num_rows` Hamming distances.
+pub fn hamming_batch_raw(query: &[u8], database: &[u8], num_rows: usize, row_bytes: usize) -> Vec<u64> {
+    dispatch_hamming_batch(query, database, num_rows, row_bytes)
+}
+
 fn dispatch_hamming(a: &[u8], b: &[u8]) -> u64 {
     #[cfg(target_arch = "x86_64")]
     {
@@ -174,6 +200,7 @@ where S: Data<Elem = u8>
     fn hamming_distance_batch(&self, other: &Self, vec_len: usize, count: usize) -> Vec<u64> {
         let a_data = self.as_slice().expect("self must be contiguous");
         let b_data = other.as_slice().expect("other must be contiguous");
+        // Pairwise: compute hamming(a[i], b[i]) for i in 0..count
         let mut results = Vec::with_capacity(count);
         for i in 0..count {
             let a_start = i * vec_len;
@@ -183,6 +210,12 @@ where S: Data<Elem = u8>
             results.push(dispatch_hamming(&a_data[a_start..a_end], &b_data[b_start..b_end]));
         }
         results
+    }
+
+    fn hamming_query_batch(&self, database: &[u8], vec_len: usize) -> Vec<u64> {
+        let query = self.as_slice().expect("query must be contiguous");
+        let n_candidates = database.len() / vec_len;
+        dispatch_hamming_batch(query, database, n_candidates, vec_len)
     }
 
     fn hamming_top_k(&self, candidates: &[u8], vec_len: usize, k: usize) -> (Vec<usize>, Vec<u64>) {
@@ -243,5 +276,37 @@ mod tests {
         let (indices, dists) = query.hamming_top_k(&candidates, 2, 2);
         assert_eq!(indices, vec![0, 2]);
         assert_eq!(dists, vec![0, 8]);
+    }
+
+    #[test]
+    fn test_hamming_query_batch() {
+        let query = crate::Array1::from_vec(vec![0xAAu8; 16]);
+        let mut database = vec![0u8; 16 * 4];
+        database[..16].fill(0xAA); // row 0: identical → 0
+        database[16..32].fill(0x55); // row 1: all diff → 128
+        database[32..48].fill(0xAA); // row 2: identical → 0
+        database[48..64].fill(0x00); // row 3: half diff → 64
+        let dists = query.hamming_query_batch(&database, 16);
+        assert_eq!(dists.len(), 4);
+        assert_eq!(dists[0], 0);
+        assert_eq!(dists[1], 128);
+        assert_eq!(dists[2], 0);
+        assert_eq!(dists[3], 64);
+    }
+
+    #[test]
+    fn test_raw_slice_apis() {
+        let a = vec![0xFFu8; 64];
+        let b = vec![0x0Fu8; 64];
+        assert_eq!(super::hamming_distance_raw(&a, &b), 64 * 4); // 4 bits diff per byte
+        assert_eq!(super::popcount_raw(&a), 64 * 8);
+
+        let query = vec![0xAAu8; 32];
+        let mut db = vec![0xAAu8; 32 * 3];
+        db[32] = 0x55; // row 1: 1 byte diff → 8
+        let dists = super::hamming_batch_raw(&query, &db, 3, 32);
+        assert_eq!(dists[0], 0);
+        assert_eq!(dists[1], 8);
+        assert_eq!(dists[2], 0);
     }
 }
