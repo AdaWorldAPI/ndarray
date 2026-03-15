@@ -202,14 +202,6 @@ pub fn gemm_f32(
     b: &[f32], ldb: usize,
     beta: f32, c: &mut [f32], ldc: usize,
 ) {
-    const L1_BYTES: usize = 64 * 1024;
-    let nr = sgemm_nr();  // 16, 8, or 4
-    let mr = sgemm_mr();  // 6, 6, or 4
-    let c_bytes = mr * nr * 4;
-    let kc = (L1_BYTES - c_bytes) / ((mr + nr) * 4);
-    let mc = mr * 4;      // macro-panel height
-    let nc = nr * 8;      // j-tile: 8 register blocks
-
     // Scale C by beta
     if beta == 0.0 {
         for i in 0..m {
@@ -220,6 +212,33 @@ pub fn gemm_f32(
             scal_f32(beta, &mut c[i * ldc..i * ldc + n]);
         }
     }
+
+    if alpha == 0.0 || m == 0 || n == 0 || k == 0 {
+        return;
+    }
+
+    // Dispatch to Goto BLAS packed GEMM when AVX-512 is available
+    #[cfg(target_arch = "x86_64")]
+    {
+        if tier() == Tier::Avx512 {
+            // SAFETY: tier() verified AVX-512F support
+            unsafe {
+                super::kernels_avx512::sgemm_blocked(
+                    m, n, k, alpha, a, lda, b, ldb, c, ldc,
+                );
+            }
+            return;
+        }
+    }
+
+    // Fallback: tiled axpy-based GEMM for AVX2/scalar
+    const L1_BYTES: usize = 64 * 1024;
+    let nr = sgemm_nr();
+    let mr = sgemm_mr();
+    let c_bytes = mr * nr * 4;
+    let kc = (L1_BYTES - c_bytes) / ((mr + nr) * 4);
+    let mc = mr * 4;
+    let nc = nr * 8;
 
     let mut kk = 0;
     while kk < k {
@@ -255,14 +274,6 @@ pub fn gemm_f64(
     b: &[f64], ldb: usize,
     beta: f64, c: &mut [f64], ldc: usize,
 ) {
-    const L1_BYTES: usize = 64 * 1024;
-    let nr = dgemm_nr();
-    let mr = dgemm_mr();
-    let c_bytes = mr * nr * 8;
-    let kc = (L1_BYTES - c_bytes) / ((mr + nr) * 8);
-    let mc = mr * 4;
-    let nc = nr * 8;
-
     if beta == 0.0 {
         for i in 0..m {
             for j in 0..n { c[i * ldc + j] = 0.0; }
@@ -272,6 +283,32 @@ pub fn gemm_f64(
             scal_f64(beta, &mut c[i * ldc..i * ldc + n]);
         }
     }
+
+    if alpha == 0.0 || m == 0 || n == 0 || k == 0 {
+        return;
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if tier() == Tier::Avx512 {
+            // SAFETY: tier() verified AVX-512F support
+            unsafe {
+                super::kernels_avx512::dgemm_blocked(
+                    m, n, k, alpha, a, lda, b, ldb, c, ldc,
+                );
+            }
+            return;
+        }
+    }
+
+    // Fallback: tiled axpy-based GEMM for AVX2/scalar
+    const L1_BYTES: usize = 64 * 1024;
+    let nr = dgemm_nr();
+    let mr = dgemm_mr();
+    let c_bytes = mr * nr * 8;
+    let kc = (L1_BYTES - c_bytes) / ((mr + nr) * 8);
+    let mc = mr * 4;
+    let nc = nr * 8;
 
     let mut kk = 0;
     while kk < k {
