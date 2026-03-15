@@ -186,16 +186,6 @@ dispatch!(
 
 // ─── GEMM dispatch ───────────────────────────────────────────────
 
-/// GEMM: C = alpha * A * B + beta * C (f32, tiled with SIMD inner loop).
-///
-/// Tile sizes derived from 64KB L1 cache. Three panels must fit:
-///   A panel: MR × KC × 4 bytes
-///   B panel: KC × NR × 4 bytes
-///   C tile:  MR × NR × 4 bytes (always resident)
-///
-/// AVX-512 (MR=6, NR=16): KC=740, fills 99.4% of L1
-/// AVX2    (MR=6, NR=8):  KC=1163
-/// Scalar  (MR=4, NR=4):  KC=2036
 /// GEMM: C = alpha * A * B + beta * C (f32, row-major).
 ///
 /// Delegates to the `matrixmultiply` crate (8×8 AVX2+FMA Goto BLAS kernel).
