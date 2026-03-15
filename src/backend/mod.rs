@@ -11,6 +11,8 @@
 #![allow(clippy::too_many_arguments)]
 
 mod native;
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod kernels_avx512;
 
 #[cfg(feature = "intel-mkl")]
 mod mkl;
@@ -34,7 +36,7 @@ pub use native::{
     asum_f32, asum_f64,
     gemm_f32, gemm_f64,
     gemv_f32, gemv_f64,
-    sgemm_nr, dgemm_nr,
+    sgemm_nr, sgemm_mr, dgemm_nr, dgemm_mr,
 };
 
 // ─── BlasFloat: type-level dispatch for generic code ──────────────

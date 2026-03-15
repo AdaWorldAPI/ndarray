@@ -31,7 +31,7 @@ fn tier() -> Tier { *TIER }
 
 // ─── Runtime GEMM tile constants ───────────────────────────────────
 
-/// SGEMM register-block width, selected by tier:
+/// SGEMM register-block width (NR), selected by tier:
 /// AVX-512 = 16, AVX2 = 8, Scalar = 4.
 pub fn sgemm_nr() -> usize {
     match tier() {
@@ -41,7 +41,16 @@ pub fn sgemm_nr() -> usize {
     }
 }
 
-/// DGEMM register-block width, selected by tier.
+/// SGEMM register-block height (MR), selected by tier.
+pub fn sgemm_mr() -> usize {
+    match tier() {
+        Tier::Avx512 => 6,
+        Tier::Avx2   => 6,
+        Tier::Scalar => 4,
+    }
+}
+
+/// DGEMM register-block width (NR), selected by tier.
 pub fn dgemm_nr() -> usize {
     match tier() {
         Tier::Avx512 => 8,
@@ -50,15 +59,24 @@ pub fn dgemm_nr() -> usize {
     }
 }
 
+/// DGEMM register-block height (MR), selected by tier.
+pub fn dgemm_mr() -> usize {
+    match tier() {
+        Tier::Avx512 => 6,
+        Tier::Avx2   => 6,
+        Tier::Scalar => 4,
+    }
+}
+
 // ─── The macro: one line per function ──────────────────────────────
 
 /// Dispatch macro: generates a `pub fn` that matches on tier().
 ///
-/// For functions where AVX-512 isn't implemented yet, we fall back to
-/// AVX2 (or scalar). The `{ avx512_path, avx2_path, scalar_path }` form
-/// lets you specify custom paths per tier.
+/// Three tiers: AVX-512 (unsafe), AVX2 (safe wrappers), Scalar (safe).
+/// The `{ avx512_path, avx2_path, scalar_path }` form lets you specify
+/// custom paths per tier.
 macro_rules! dispatch {
-    // Same name in avx2 and scalar modules (no avx512 yet → falls to avx2)
+    // All three tiers have the function, with return type
     (
         $(#[$meta:meta])*
         $name:ident( $($arg:ident : $ty:ty),* $(,)? ) -> $ret:ty
@@ -67,13 +85,17 @@ macro_rules! dispatch {
         #[inline]
         pub fn $name( $($arg : $ty),* ) -> $ret {
             match tier() {
-                // No AVX-512 kernels yet — fall through to AVX2
-                Tier::Avx512 | Tier::Avx2 => avx2::$name($($arg),*),
+                #[cfg(target_arch = "x86_64")]
+                // SAFETY: tier() verified AVX-512F support
+                Tier::Avx512 => unsafe { super::kernels_avx512::$name($($arg),*) },
+                #[cfg(not(target_arch = "x86_64"))]
+                Tier::Avx512 => unreachable!(),
+                Tier::Avx2 => avx2::$name($($arg),*),
                 Tier::Scalar => scalar::$name($($arg),*),
             }
         }
     };
-    // Same name, no return type (returns ())
+    // All three tiers, no return type
     (
         $(#[$meta:meta])*
         $name:ident( $($arg:ident : $ty:ty),* $(,)? )
@@ -82,12 +104,17 @@ macro_rules! dispatch {
         #[inline]
         pub fn $name( $($arg : $ty),* ) {
             match tier() {
-                Tier::Avx512 | Tier::Avx2 => avx2::$name($($arg),*),
+                #[cfg(target_arch = "x86_64")]
+                // SAFETY: tier() verified AVX-512F support
+                Tier::Avx512 => unsafe { super::kernels_avx512::$name($($arg),*) },
+                #[cfg(not(target_arch = "x86_64"))]
+                Tier::Avx512 => unreachable!(),
+                Tier::Avx2 => avx2::$name($($arg),*),
                 Tier::Scalar => scalar::$name($($arg),*),
             }
         }
     };
-    // Custom: different paths per tier
+    // Custom paths per tier, with return type
     (
         $(#[$meta:meta])*
         $name:ident( $($arg:ident : $ty:ty),* $(,)? ) -> $ret:ty
@@ -97,13 +124,14 @@ macro_rules! dispatch {
         #[inline]
         pub fn $name( $($arg : $ty),* ) -> $ret {
             match tier() {
-                Tier::Avx512 => $a512($($arg),*),
+                // SAFETY: tier() verified AVX-512F support
+                Tier::Avx512 => unsafe { $a512($($arg),*) },
                 Tier::Avx2   => $a2($($arg),*),
                 Tier::Scalar => $sc($($arg),*),
             }
         }
     };
-    // Custom, no return type
+    // Custom paths, no return type
     (
         $(#[$meta:meta])*
         $name:ident( $($arg:ident : $ty:ty),* $(,)? )
@@ -113,7 +141,8 @@ macro_rules! dispatch {
         #[inline]
         pub fn $name( $($arg : $ty),* ) {
             match tier() {
-                Tier::Avx512 => $a512($($arg),*),
+                // SAFETY: tier() verified AVX-512F support
+                Tier::Avx512 => unsafe { $a512($($arg),*) },
                 Tier::Avx2   => $a2($($arg),*),
                 Tier::Scalar => $sc($($arg),*),
             }
@@ -136,52 +165,137 @@ dispatch!(
     /// AXPY: y = alpha * x + y (f64).
     axpy_f64(alpha: f64, x: &[f64], y: &mut [f64]));
 
-// scal/nrm2/asum: no AVX2 impl yet, scalar for all tiers
 dispatch!(
     /// Scale: x = alpha * x (f32).
-    scal_f32(alpha: f32, x: &mut [f32])
-    { scalar::scal_f32, scalar::scal_f32, scalar::scal_f32 });
+    scal_f32(alpha: f32, x: &mut [f32]));
 dispatch!(
     /// Scale: x = alpha * x (f64).
-    scal_f64(alpha: f64, x: &mut [f64])
-    { scalar::scal_f64, scalar::scal_f64, scalar::scal_f64 });
+    scal_f64(alpha: f64, x: &mut [f64]));
 dispatch!(
     /// L2 norm: sqrt(sum(x[i]^2)) (f32).
-    nrm2_f32(x: &[f32]) -> f32
-    { scalar::nrm2_f32, scalar::nrm2_f32, scalar::nrm2_f32 });
+    nrm2_f32(x: &[f32]) -> f32);
 dispatch!(
     /// L2 norm: sqrt(sum(x[i]^2)) (f64).
-    nrm2_f64(x: &[f64]) -> f64
-    { scalar::nrm2_f64, scalar::nrm2_f64, scalar::nrm2_f64 });
+    nrm2_f64(x: &[f64]) -> f64);
 dispatch!(
     /// L1 norm: sum(|x[i]|) (f32).
-    asum_f32(x: &[f32]) -> f32
-    { scalar::asum_f32, scalar::asum_f32, scalar::asum_f32 });
+    asum_f32(x: &[f32]) -> f32);
 dispatch!(
     /// L1 norm: sum(|x[i]|) (f64).
-    asum_f64(x: &[f64]) -> f64
-    { scalar::asum_f64, scalar::asum_f64, scalar::asum_f64 });
+    asum_f64(x: &[f64]) -> f64);
 
 // ─── GEMM dispatch ───────────────────────────────────────────────
 
-/// GEMM: C = alpha * A * B + beta * C (f32, tiled)
+/// GEMM: C = alpha * A * B + beta * C (f32, tiled with SIMD inner loop).
+///
+/// Tile sizes derived from 64KB L1 cache. Three panels must fit:
+///   A panel: MR × KC × 4 bytes
+///   B panel: KC × NR × 4 bytes
+///   C tile:  MR × NR × 4 bytes (always resident)
+///
+/// AVX-512 (MR=6, NR=16): KC=740, fills 99.4% of L1
+/// AVX2    (MR=6, NR=8):  KC=1163
+/// Scalar  (MR=4, NR=4):  KC=2036
 pub fn gemm_f32(
     m: usize, n: usize, k: usize,
     alpha: f32, a: &[f32], lda: usize,
     b: &[f32], ldb: usize,
     beta: f32, c: &mut [f32], ldc: usize,
 ) {
-    scalar::gemm_f32_tiled(m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+    const L1_BYTES: usize = 64 * 1024;
+    let nr = sgemm_nr();  // 16, 8, or 4
+    let mr = sgemm_mr();  // 6, 6, or 4
+    let c_bytes = mr * nr * 4;
+    let kc = (L1_BYTES - c_bytes) / ((mr + nr) * 4);
+    let mc = mr * 4;      // macro-panel height
+    let nc = nr * 8;      // j-tile: 8 register blocks
+
+    // Scale C by beta
+    if beta == 0.0 {
+        for i in 0..m {
+            for j in 0..n { c[i * ldc + j] = 0.0; }
+        }
+    } else if beta != 1.0 {
+        for i in 0..m {
+            scal_f32(beta, &mut c[i * ldc..i * ldc + n]);
+        }
+    }
+
+    let mut kk = 0;
+    while kk < k {
+        let kb = kc.min(k - kk);
+        let mut ii = 0;
+        while ii < m {
+            let ib = mc.min(m - ii);
+            let mut jj = 0;
+            while jj < n {
+                let jb = nc.min(n - jj);
+                for i in 0..ib {
+                    for p in 0..kb {
+                        let a_val = alpha * a[(ii + i) * lda + (kk + p)];
+                        let b_row = &b[(kk + p) * ldb + jj..(kk + p) * ldb + jj + jb];
+                        let c_row = &mut c[(ii + i) * ldc + jj..(ii + i) * ldc + jj + jb];
+                        axpy_f32(a_val, b_row, c_row);
+                    }
+                }
+                jj += jb;
+            }
+            ii += ib;
+        }
+        kk += kb;
+    }
 }
 
-/// GEMM: C = alpha * A * B + beta * C (f64, tiled)
+/// GEMM: C = alpha * A * B + beta * C (f64, tiled with SIMD inner loop).
+///
+/// Tile sizes derived from 64KB L1 cache (8 bytes per f64 element).
 pub fn gemm_f64(
     m: usize, n: usize, k: usize,
     alpha: f64, a: &[f64], lda: usize,
     b: &[f64], ldb: usize,
     beta: f64, c: &mut [f64], ldc: usize,
 ) {
-    scalar::gemm_f64_tiled(m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+    const L1_BYTES: usize = 64 * 1024;
+    let nr = dgemm_nr();
+    let mr = dgemm_mr();
+    let c_bytes = mr * nr * 8;
+    let kc = (L1_BYTES - c_bytes) / ((mr + nr) * 8);
+    let mc = mr * 4;
+    let nc = nr * 8;
+
+    if beta == 0.0 {
+        for i in 0..m {
+            for j in 0..n { c[i * ldc + j] = 0.0; }
+        }
+    } else if beta != 1.0 {
+        for i in 0..m {
+            scal_f64(beta, &mut c[i * ldc..i * ldc + n]);
+        }
+    }
+
+    let mut kk = 0;
+    while kk < k {
+        let kb = kc.min(k - kk);
+        let mut ii = 0;
+        while ii < m {
+            let ib = mc.min(m - ii);
+            let mut jj = 0;
+            while jj < n {
+                let jb = nc.min(n - jj);
+                for i in 0..ib {
+                    for p in 0..kb {
+                        let a_val = alpha * a[(ii + i) * lda + (kk + p)];
+                        let b_row = &b[(kk + p) * ldb + jj..(kk + p) * ldb + jj + jb];
+                        let c_row = &mut c[(ii + i) * ldc + jj..(ii + i) * ldc + jj + jb];
+                        axpy_f64(a_val, b_row, c_row);
+                    }
+                }
+                jj += jb;
+            }
+            ii += ib;
+        }
+        kk += kb;
+    }
 }
 
 // ─── GEMV dispatch ───────────────────────────────────────────────
@@ -301,7 +415,8 @@ mod scalar {
         sum
     }
 
-    /// Tiled GEMM: C = alpha * A * B + beta * C
+    /// Tiled GEMM: C = alpha * A * B + beta * C (scalar reference)
+    #[allow(dead_code)]
     pub fn gemm_f32_tiled(
         m: usize, n: usize, k: usize,
         alpha: f32, a: &[f32], lda: usize,
@@ -349,7 +464,8 @@ mod scalar {
         }
     }
 
-    /// Tiled GEMM (f64)
+    /// Tiled GEMM (f64, scalar reference)
+    #[allow(dead_code)]
     pub fn gemm_f64_tiled(
         m: usize, n: usize, k: usize,
         alpha: f64, a: &[f64], lda: usize,
@@ -478,6 +594,14 @@ mod avx2 {
             super::scalar::axpy_f64(alpha, x, y)
         }
     }
+
+    // No AVX2 specialization — fall through to scalar
+    pub fn scal_f32(alpha: f32, x: &mut [f32]) { super::scalar::scal_f32(alpha, x); }
+    pub fn scal_f64(alpha: f64, x: &mut [f64]) { super::scalar::scal_f64(alpha, x); }
+    pub fn nrm2_f32(x: &[f32]) -> f32 { super::scalar::nrm2_f32(x) }
+    pub fn nrm2_f64(x: &[f64]) -> f64 { super::scalar::nrm2_f64(x) }
+    pub fn asum_f32(x: &[f32]) -> f32 { super::scalar::asum_f32(x) }
+    pub fn asum_f64(x: &[f64]) -> f64 { super::scalar::asum_f64(x) }
 
     // ── AVX2 intrinsic implementations ─────────────────────────────
 
