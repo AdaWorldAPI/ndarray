@@ -2,7 +2,7 @@
 
 > Shared state surface for all agents. Read before starting, update after completing work.
 
-## Epoch: 2
+## Epoch: 3
 ## Global Goal: Port rustynum HPC features into ndarray fork
 
 ### Environment
@@ -41,7 +41,7 @@
 - [ ] **HDC**: bind, permute, bundle, bundle_byte_slices, dot_i8
 - [x] **Bitwise**: hamming_distance, popcount, hamming_distance_batch (VPOPCNTDQ dispatch wired)
 - [ ] **Projection**: simhash_project, simhash_batch_project, simhash_int8_project
-- [ ] **SIMD binary**: hamming_batch, hamming_top_k, hdr_cascade_search
+- [x] **SIMD binary**: hamming_batch, hamming_top_k (VPOPCNTDQ + raw-slice API)
 - [ ] **CogRecord**: 4-channel struct, new/zeros/container, hamming_4ch, sweep, to/from_bytes
 - [ ] **Graph**: VerbCodebook, encode_edge, decode_target, causality_asymmetry, causality_check, find_non_causal_edges, infer_verb
 - [ ] **Binding matrix**: binding_popcount_3d, find_holographic_sweet_spot, find_discriminative_spots
@@ -89,6 +89,7 @@
 - [x] Backend trait: generic (monomorphized) vs enum dispatch → DONE: monomorphized
 - [x] Benchmark harness: custom bench binary with GFLOP/s reporting (see .claude/BENCHMARK_RESULTS.md)
 - [ ] CI matrix: which feature combinations to test
+- [x] Benchmark all areas at parity with rustynum (see .claude/BENCHMARK_RESULTS.md)
 
 ---
 
