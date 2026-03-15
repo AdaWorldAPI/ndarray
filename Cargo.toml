@@ -72,6 +72,11 @@ rayon = ["dep:rayon", "std"]
 
 matrixmultiply-threading = ["matrixmultiply/threading"]
 
+# HPC backend feature gates (mutually exclusive)
+native = []
+intel-mkl = []
+openblas = []
+
 portable-atomic-critical-section = ["portable-atomic/critical-section"]
 
 
