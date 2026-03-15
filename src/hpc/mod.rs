@@ -33,3 +33,4 @@ pub mod quantized;
 pub mod lapack;
 pub mod fft;
 pub mod vml;
+pub mod packed;
