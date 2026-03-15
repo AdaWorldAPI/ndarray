@@ -110,7 +110,107 @@ unsafe fn hamming_avx2(a: &[u8], b: &[u8]) -> u64 {
     total
 }
 
-/// Hamming distance on raw slices — dispatches to VPOPCNTDQ → AVX2 → scalar.
+/// AVX-512 BW hamming using 512-bit vpshufb — 64 bytes per iteration.
+/// Works on any CPU with avx512bw (no VPOPCNTDQ required).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512bw")]
+unsafe fn hamming_avx512bw(a: &[u8], b: &[u8]) -> u64 {
+    use core::arch::x86_64::*;
+    let n = a.len().min(b.len());
+    let mut total = 0u64;
+
+    // vpshufb LUT: popcount of each nibble (replicated across 64B)
+    let lookup = _mm512_set4_epi32(
+        0x04030302_i32, 0x03020201_i32, 0x03020201_i32, 0x02010100_i32,
+    );
+    let low_mask = _mm512_set1_epi8(0x0f);
+    let mut acc = _mm512_setzero_si512();
+    let mut i = 0;
+    let mut inner_count = 0u32;
+
+    while i + 64 <= n {
+        let va = _mm512_loadu_si512(a.as_ptr().add(i) as *const _);
+        let vb = _mm512_loadu_si512(b.as_ptr().add(i) as *const _);
+        let xor = _mm512_xor_si512(va, vb);
+
+        let lo = _mm512_and_si512(xor, low_mask);
+        let hi = _mm512_and_si512(_mm512_srli_epi16(xor, 4), low_mask);
+        let popcnt_lo = _mm512_shuffle_epi8(lookup, lo);
+        let popcnt_hi = _mm512_shuffle_epi8(lookup, hi);
+        acc = _mm512_add_epi8(acc, _mm512_add_epi8(popcnt_lo, popcnt_hi));
+
+        i += 64;
+        inner_count += 1;
+        // Flush u8 accumulators before overflow (max 255/8 ≈ 31 iterations)
+        if inner_count >= 30 {
+            // sad_epu8 sums groups of 8 bytes into u64 lanes
+            let sad = _mm512_sad_epu8(acc, _mm512_setzero_si512());
+            total += _mm512_reduce_add_epi64(sad) as u64;
+            acc = _mm512_setzero_si512();
+            inner_count = 0;
+        }
+    }
+
+    if inner_count > 0 {
+        let sad = _mm512_sad_epu8(acc, _mm512_setzero_si512());
+        total += _mm512_reduce_add_epi64(sad) as u64;
+    }
+
+    // Remainder
+    while i < n {
+        total += (a[i] ^ b[i]).count_ones() as u64;
+        i += 1;
+    }
+    total
+}
+
+/// AVX-512 BW popcount using 512-bit vpshufb — 64 bytes per iteration.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512bw")]
+unsafe fn popcount_avx512bw(a: &[u8]) -> u64 {
+    use core::arch::x86_64::*;
+    let n = a.len();
+    let mut total = 0u64;
+
+    let lookup = _mm512_set4_epi32(
+        0x04030302_i32, 0x03020201_i32, 0x03020201_i32, 0x02010100_i32,
+    );
+    let low_mask = _mm512_set1_epi8(0x0f);
+    let mut acc = _mm512_setzero_si512();
+    let mut i = 0;
+    let mut inner_count = 0u32;
+
+    while i + 64 <= n {
+        let va = _mm512_loadu_si512(a.as_ptr().add(i) as *const _);
+        let lo = _mm512_and_si512(va, low_mask);
+        let hi = _mm512_and_si512(_mm512_srli_epi16(va, 4), low_mask);
+        let popcnt_lo = _mm512_shuffle_epi8(lookup, lo);
+        let popcnt_hi = _mm512_shuffle_epi8(lookup, hi);
+        acc = _mm512_add_epi8(acc, _mm512_add_epi8(popcnt_lo, popcnt_hi));
+
+        i += 64;
+        inner_count += 1;
+        if inner_count >= 30 {
+            let sad = _mm512_sad_epu8(acc, _mm512_setzero_si512());
+            total += _mm512_reduce_add_epi64(sad) as u64;
+            acc = _mm512_setzero_si512();
+            inner_count = 0;
+        }
+    }
+
+    if inner_count > 0 {
+        let sad = _mm512_sad_epu8(acc, _mm512_setzero_si512());
+        total += _mm512_reduce_add_epi64(sad) as u64;
+    }
+
+    while i < n {
+        total += a[i].count_ones() as u64;
+        i += 1;
+    }
+    total
+}
+
+/// Hamming distance on raw slices — dispatches to VPOPCNTDQ → AVX-512BW → AVX2 → scalar.
 ///
 /// Public API for callers that operate on raw `&[u8]` without ndarray arrays.
 pub fn hamming_distance_raw(a: &[u8], b: &[u8]) -> u64 {
@@ -133,12 +233,16 @@ pub fn hamming_batch_raw(query: &[u8], database: &[u8], num_rows: usize, row_byt
 fn dispatch_hamming(a: &[u8], b: &[u8]) -> u64 {
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512vpopcntdq") {
-            // SAFETY: We checked for AVX-512F + VPOPCNTDQ support
+        if is_x86_feature_detected!("avx512vpopcntdq") && is_x86_feature_detected!("avx512bw") {
+            // SAFETY: checked VPOPCNTDQ + BW
             return unsafe { crate::backend::kernels_avx512::hamming_distance(a, b) };
         }
+        if is_x86_feature_detected!("avx512bw") {
+            // SAFETY: checked AVX-512 BW — uses 512-bit vpshufb (64B/iter)
+            return unsafe { hamming_avx512bw(a, b) };
+        }
         if is_x86_feature_detected!("avx2") {
-            // SAFETY: We checked for AVX2 support
+            // SAFETY: checked AVX2 — uses 256-bit vpshufb (32B/iter)
             return unsafe { hamming_avx2(a, b) };
         }
     }
@@ -148,9 +252,13 @@ fn dispatch_hamming(a: &[u8], b: &[u8]) -> u64 {
 fn dispatch_popcount(a: &[u8]) -> u64 {
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512vpopcntdq") {
-            // SAFETY: We checked for AVX-512F + VPOPCNTDQ support
+        if is_x86_feature_detected!("avx512vpopcntdq") {
+            // SAFETY: checked VPOPCNTDQ
             return unsafe { crate::backend::kernels_avx512::popcount(a) };
+        }
+        if is_x86_feature_detected!("avx512bw") {
+            // SAFETY: checked AVX-512 BW — uses 512-bit vpshufb
+            return unsafe { popcount_avx512bw(a) };
         }
     }
     popcount_scalar(a)
@@ -159,12 +267,12 @@ fn dispatch_popcount(a: &[u8]) -> u64 {
 fn dispatch_hamming_batch(query: &[u8], database: &[u8], num_rows: usize, row_bytes: usize) -> Vec<u64> {
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512vpopcntdq") {
-            // SAFETY: We checked for AVX-512F + VPOPCNTDQ support
+        if is_x86_feature_detected!("avx512vpopcntdq") && is_x86_feature_detected!("avx512bw") {
+            // SAFETY: checked VPOPCNTDQ + BW
             return unsafe { crate::backend::kernels_avx512::hamming_batch(query, database, num_rows, row_bytes) };
         }
     }
-    // Fallback: per-row dispatch
+    // Fallback: per-row dispatch (will pick avx512bw or avx2 per row)
     (0..num_rows)
         .map(|i| {
             let start = i * row_bytes;
@@ -221,8 +329,6 @@ where S: Data<Elem = u8>
     fn hamming_top_k(&self, candidates: &[u8], vec_len: usize, k: usize) -> (Vec<usize>, Vec<u64>) {
         let query = self.as_slice().expect("query must be contiguous");
         let n_candidates = candidates.len() / vec_len;
-
-        // Use batch dispatch for the distance computation
         let distances = dispatch_hamming_batch(query, candidates, n_candidates, vec_len);
 
         let k = k.min(n_candidates);

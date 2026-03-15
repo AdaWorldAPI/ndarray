@@ -27,7 +27,34 @@ compile_error!("Features `intel-mkl` and `openblas` are mutually exclusive. Enab
 //
 // These are the public API. No trait, no struct — just functions.
 // `backend::dot_f32(x, y)` dispatches to the best tier automatically.
+//
+// Priority: intel-mkl > openblas > native (pure Rust SIMD).
 
+#[cfg(feature = "intel-mkl")]
+pub use mkl::{
+    dot_f32, dot_f64,
+    axpy_f32, axpy_f64,
+    scal_f32, scal_f64,
+    nrm2_f32, nrm2_f64,
+    asum_f32, asum_f64,
+    gemm_f32, gemm_f64,
+    gemv_f32, gemv_f64,
+    sgemm_nr, sgemm_mr, dgemm_nr, dgemm_mr,
+};
+
+#[cfg(all(feature = "openblas", not(feature = "intel-mkl")))]
+pub use openblas::{
+    dot_f32, dot_f64,
+    axpy_f32, axpy_f64,
+    scal_f32, scal_f64,
+    nrm2_f32, nrm2_f64,
+    asum_f32, asum_f64,
+    gemm_f32, gemm_f64,
+    gemv_f32, gemv_f64,
+    sgemm_nr, sgemm_mr, dgemm_nr, dgemm_mr,
+};
+
+#[cfg(not(any(feature = "intel-mkl", feature = "openblas")))]
 pub use native::{
     dot_f32, dot_f64,
     axpy_f32, axpy_f64,
