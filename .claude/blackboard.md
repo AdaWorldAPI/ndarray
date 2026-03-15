@@ -39,7 +39,7 @@
 - [ ] **Statistics**: median, var, std, percentile (with axis variants)
 - [ ] **Array ops**: argmin, argmax, top_k, cumsum, sigmoid, softmax, log_softmax, cosine_similarity, norm(p,axis,keepdims)
 - [ ] **HDC**: bind, permute, bundle, bundle_byte_slices, dot_i8
-- [ ] **Bitwise**: hamming_distance, popcount, hamming_distance_batch
+- [x] **Bitwise**: hamming_distance, popcount, hamming_distance_batch (VPOPCNTDQ dispatch wired)
 - [ ] **Projection**: simhash_project, simhash_batch_project, simhash_int8_project
 - [ ] **SIMD binary**: hamming_batch, hamming_top_k, hdr_cascade_search
 - [ ] **CogRecord**: 4-channel struct, new/zeros/container, hamming_4ch, sweep, to/from_bytes
@@ -78,13 +78,16 @@
 
 ## QA Audit Log
 <!-- sentinel-qa writes here -->
+- [2026-03-15] VPOPCNTDQ hamming: kernel existed in kernels_avx512.rs but dispatch_hamming() in bitwise.rs only checked AVX2. FIXED: tiered dispatch AVX-512 → AVX2 → scalar. Benchmark: 64Kbit 1.84x → 1.14x.
+- [2026-03-15] GEMM: native.rs used naive axpy-based tiling (16-20 GFLOPS). FIXED: ported Goto BLAS with 6×16 f32 / 6×8 f64 microkernels from rustyblas. Benchmark: 31-50 GFLOPS, matches reference.
+- [2026-03-15] Correctness: all kernels bit-exact or 1-ULP (FMA rounding). sgemm 64×64 max_abs_err = 0.
 
 ---
 
 ## Loose Ends
 - [x] Define feature-gate hierarchy (native/mkl/openblas) → DONE: mutually exclusive
 - [x] Backend trait: generic (monomorphized) vs enum dispatch → DONE: monomorphized
-- [ ] Benchmark harness: criterion setup with GFLOP/s reporting
+- [x] Benchmark harness: custom bench binary with GFLOP/s reporting (see .claude/BENCHMARK_RESULTS.md)
 - [ ] CI matrix: which feature combinations to test
 
 ---
