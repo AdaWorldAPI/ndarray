@@ -1,13 +1,13 @@
-//! CogRecord: 4 × 4096-byte (32768-bit) containers = 16KB cognitive unit.
+//! CogRecord: 4 × 16384-byte (131072-bit) containers = 64KB cognitive unit.
 //!
-//! Each container is an `Array<u8, Ix1>` of 4096 bytes, queryable via
+//! Each container is an `Array<u8, Ix1>` of 16384 bytes, queryable via
 //! Hamming distance (VPOPCNTDQ) or int8 dot product.
 
 use crate::imp_prelude::*;
 use super::bitwise::BitwiseOps;
 
-/// Size of each container in bytes (4096 = 32768 bits).
-pub const CONTAINER_BYTES: usize = 4096;
+/// Size of each container in bytes (16384 = 131072 bits).
+pub const CONTAINER_BYTES: usize = 16384;
 /// Size of each container in bits.
 pub const CONTAINER_BITS: usize = CONTAINER_BYTES * 8;
 /// Total CogRecord size in bytes (4 containers).
@@ -41,7 +41,7 @@ pub struct SweepResult {
     pub distances: [u64; 4],
 }
 
-/// A CogRecord: 4 × 4096-byte containers = 16KB cognitive unit.
+/// A CogRecord: 4 × 16384-byte containers = 64KB cognitive unit.
 ///
 /// # Example
 ///
@@ -49,8 +49,8 @@ pub struct SweepResult {
 /// use ndarray::hpc::cogrecord::CogRecord;
 ///
 /// let cr = CogRecord::zeros();
-/// assert_eq!(cr.meta.len(), 4096);
-/// assert_eq!(cr.to_bytes().len(), 16384);
+/// assert_eq!(cr.meta.len(), 16384);
+/// assert_eq!(cr.to_bytes().len(), 65536);
 /// ```
 #[derive(Clone)]
 pub struct CogRecord {

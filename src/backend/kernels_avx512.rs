@@ -1,0 +1,584 @@
+//! AVX-512 SIMD kernels — raw intrinsics, Rust 1.94.
+//!
+//! All functions have `#[target_feature(enable = "avx512f")]`.
+//! In Rust 1.94, arithmetic intrinsics (setzero, add, fmadd, reduce, etc.)
+//! are safe inside `#[target_feature]` functions. Only load/store intrinsics
+//! that take raw pointers still require `unsafe`.
+//!
+//! The dispatch! macro's LazyLock tier check ensures these are only called
+//! on AVX-512 CPUs.
+
+#![allow(clippy::too_many_arguments)]
+#![allow(dead_code)]
+
+#[cfg(target_arch = "x86_64")]
+use core::arch::x86_64::*;
+
+// ═══════════════════════════════════════════════════════════════════
+// BLAS Level 1 — 12 functions
+// ═══════════════════════════════════════════════════════════════════
+
+/// Dot product: sum(x[i] * y[i]) using 4x-unrolled FMA on zmm registers.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+pub fn dot_f32(x: &[f32], y: &[f32]) -> f32 {
+    let n = x.len().min(y.len());
+    let mut acc0 = _mm512_setzero_ps();
+    let mut acc1 = _mm512_setzero_ps();
+    let mut acc2 = _mm512_setzero_ps();
+    let mut acc3 = _mm512_setzero_ps();
+    let mut i = 0;
+
+    while i + 64 <= n {
+        // SAFETY: bounds checked by while condition, slicing ensures valid pointers
+        unsafe {
+            acc0 = _mm512_fmadd_ps(_mm512_loadu_ps(x[i..].as_ptr()), _mm512_loadu_ps(y[i..].as_ptr()), acc0);
+            acc1 = _mm512_fmadd_ps(_mm512_loadu_ps(x[i + 16..].as_ptr()), _mm512_loadu_ps(y[i + 16..].as_ptr()), acc1);
+            acc2 = _mm512_fmadd_ps(_mm512_loadu_ps(x[i + 32..].as_ptr()), _mm512_loadu_ps(y[i + 32..].as_ptr()), acc2);
+            acc3 = _mm512_fmadd_ps(_mm512_loadu_ps(x[i + 48..].as_ptr()), _mm512_loadu_ps(y[i + 48..].as_ptr()), acc3);
+        }
+        i += 64;
+    }
+    while i + 16 <= n {
+        // SAFETY: bounds checked by while condition
+        unsafe {
+            acc0 = _mm512_fmadd_ps(_mm512_loadu_ps(x[i..].as_ptr()), _mm512_loadu_ps(y[i..].as_ptr()), acc0);
+        }
+        i += 16;
+    }
+
+    let sum_vec = _mm512_add_ps(_mm512_add_ps(acc0, acc1), _mm512_add_ps(acc2, acc3));
+    let mut total = _mm512_reduce_add_ps(sum_vec);
+    while i < n {
+        total += x[i] * y[i];
+        i += 1;
+    }
+    total
+}
+
+/// Dot product f64: 4x-unrolled FMA on zmm registers (8 doubles each).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+pub fn dot_f64(x: &[f64], y: &[f64]) -> f64 {
+    let n = x.len().min(y.len());
+    let mut acc0 = _mm512_setzero_pd();
+    let mut acc1 = _mm512_setzero_pd();
+    let mut acc2 = _mm512_setzero_pd();
+    let mut acc3 = _mm512_setzero_pd();
+    let mut i = 0;
+
+    while i + 32 <= n {
+        // SAFETY: bounds checked by while condition
+        unsafe {
+            acc0 = _mm512_fmadd_pd(_mm512_loadu_pd(x[i..].as_ptr()), _mm512_loadu_pd(y[i..].as_ptr()), acc0);
+            acc1 = _mm512_fmadd_pd(_mm512_loadu_pd(x[i + 8..].as_ptr()), _mm512_loadu_pd(y[i + 8..].as_ptr()), acc1);
+            acc2 = _mm512_fmadd_pd(_mm512_loadu_pd(x[i + 16..].as_ptr()), _mm512_loadu_pd(y[i + 16..].as_ptr()), acc2);
+            acc3 = _mm512_fmadd_pd(_mm512_loadu_pd(x[i + 24..].as_ptr()), _mm512_loadu_pd(y[i + 24..].as_ptr()), acc3);
+        }
+        i += 32;
+    }
+    while i + 8 <= n {
+        // SAFETY: bounds checked by while condition
+        unsafe {
+            acc0 = _mm512_fmadd_pd(_mm512_loadu_pd(x[i..].as_ptr()), _mm512_loadu_pd(y[i..].as_ptr()), acc0);
+        }
+        i += 8;
+    }
+
+    let sum_vec = _mm512_add_pd(_mm512_add_pd(acc0, acc1), _mm512_add_pd(acc2, acc3));
+    let mut total = _mm512_reduce_add_pd(sum_vec);
+    while i < n {
+        total += x[i] * y[i];
+        i += 1;
+    }
+    total
+}
+
+/// AXPY: y = alpha * x + y (f32, 16-wide FMA).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+pub fn axpy_f32(alpha: f32, x: &[f32], y: &mut [f32]) {
+    let n = x.len().min(y.len());
+    let alpha_v = _mm512_set1_ps(alpha);
+    let mut i = 0;
+    while i + 16 <= n {
+        // SAFETY: bounds checked by while condition
+        unsafe {
+            let xv = _mm512_loadu_ps(x[i..].as_ptr());
+            let yv = _mm512_loadu_ps(y[i..].as_ptr());
+            _mm512_storeu_ps(y[i..].as_mut_ptr(), _mm512_fmadd_ps(alpha_v, xv, yv));
+        }
+        i += 16;
+    }
+    while i < n {
+        y[i] += alpha * x[i];
+        i += 1;
+    }
+}
+
+/// AXPY: y = alpha * x + y (f64, 8-wide FMA).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+pub fn axpy_f64(alpha: f64, x: &[f64], y: &mut [f64]) {
+    let n = x.len().min(y.len());
+    let alpha_v = _mm512_set1_pd(alpha);
+    let mut i = 0;
+    while i + 8 <= n {
+        // SAFETY: bounds checked by while condition
+        unsafe {
+            let xv = _mm512_loadu_pd(x[i..].as_ptr());
+            let yv = _mm512_loadu_pd(y[i..].as_ptr());
+            _mm512_storeu_pd(y[i..].as_mut_ptr(), _mm512_fmadd_pd(alpha_v, xv, yv));
+        }
+        i += 8;
+    }
+    while i < n {
+        y[i] += alpha * x[i];
+        i += 1;
+    }
+}
+
+/// Scale: x = alpha * x (f32, 16-wide).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+pub fn scal_f32(alpha: f32, x: &mut [f32]) {
+    let n = x.len();
+    let alpha_v = _mm512_set1_ps(alpha);
+    let mut i = 0;
+    while i + 16 <= n {
+        // SAFETY: bounds checked by while condition
+        unsafe {
+            let xv = _mm512_loadu_ps(x[i..].as_ptr());
+            _mm512_storeu_ps(x[i..].as_mut_ptr(), _mm512_mul_ps(alpha_v, xv));
+        }
+        i += 16;
+    }
+    while i < n {
+        x[i] *= alpha;
+        i += 1;
+    }
+}
+
+/// Scale: x = alpha * x (f64, 8-wide).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+pub fn scal_f64(alpha: f64, x: &mut [f64]) {
+    let n = x.len();
+    let alpha_v = _mm512_set1_pd(alpha);
+    let mut i = 0;
+    while i + 8 <= n {
+        // SAFETY: bounds checked by while condition
+        unsafe {
+            let xv = _mm512_loadu_pd(x[i..].as_ptr());
+            _mm512_storeu_pd(x[i..].as_mut_ptr(), _mm512_mul_pd(alpha_v, xv));
+        }
+        i += 8;
+    }
+    while i < n {
+        x[i] *= alpha;
+        i += 1;
+    }
+}
+
+/// L1 norm: sum(|x[i]|) (f32, 16-wide).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+pub fn asum_f32(x: &[f32]) -> f32 {
+    let n = x.len();
+    let mut i = 0;
+    let mut acc = _mm512_setzero_ps();
+    let abs_mask = _mm512_set1_epi32(0x7FFF_FFFFi32);
+    while i + 16 <= n {
+        // SAFETY: bounds checked by while condition
+        unsafe {
+            let xv = _mm512_loadu_ps(x[i..].as_ptr());
+            let absv = _mm512_castsi512_ps(_mm512_and_si512(_mm512_castps_si512(xv), abs_mask));
+            acc = _mm512_add_ps(acc, absv);
+        }
+        i += 16;
+    }
+    let mut sum = _mm512_reduce_add_ps(acc);
+    while i < n {
+        sum += x[i].abs();
+        i += 1;
+    }
+    sum
+}
+
+/// L1 norm: sum(|x[i]|) (f64, 8-wide).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+pub fn asum_f64(x: &[f64]) -> f64 {
+    let n = x.len();
+    let mut i = 0;
+    let mut acc = _mm512_setzero_pd();
+    let abs_mask = _mm512_set1_epi64(0x7FFF_FFFF_FFFF_FFFFi64);
+    while i + 8 <= n {
+        // SAFETY: bounds checked by while condition
+        unsafe {
+            let xv = _mm512_loadu_pd(x[i..].as_ptr());
+            let absv = _mm512_castsi512_pd(_mm512_and_si512(_mm512_castpd_si512(xv), abs_mask));
+            acc = _mm512_add_pd(acc, absv);
+        }
+        i += 8;
+    }
+    let mut sum = _mm512_reduce_add_pd(acc);
+    while i < n {
+        sum += x[i].abs();
+        i += 1;
+    }
+    sum
+}
+
+/// L2 norm: sqrt(sum(x[i]^2)) (f32, 16-wide FMA).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+pub fn nrm2_f32(x: &[f32]) -> f32 {
+    let n = x.len();
+    let mut i = 0;
+    let mut acc = _mm512_setzero_ps();
+    while i + 16 <= n {
+        // SAFETY: bounds checked by while condition
+        unsafe {
+            let xv = _mm512_loadu_ps(x[i..].as_ptr());
+            acc = _mm512_fmadd_ps(xv, xv, acc);
+        }
+        i += 16;
+    }
+    let mut sum = _mm512_reduce_add_ps(acc);
+    while i < n {
+        sum += x[i] * x[i];
+        i += 1;
+    }
+    sum.sqrt()
+}
+
+/// L2 norm: sqrt(sum(x[i]^2)) (f64, 8-wide FMA).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+pub fn nrm2_f64(x: &[f64]) -> f64 {
+    let n = x.len();
+    let mut i = 0;
+    let mut acc = _mm512_setzero_pd();
+    while i + 8 <= n {
+        // SAFETY: bounds checked by while condition
+        unsafe {
+            let xv = _mm512_loadu_pd(x[i..].as_ptr());
+            acc = _mm512_fmadd_pd(xv, xv, acc);
+        }
+        i += 8;
+    }
+    let mut sum = _mm512_reduce_add_pd(acc);
+    while i < n {
+        sum += x[i] * x[i];
+        i += 1;
+    }
+    sum.sqrt()
+}
+
+/// Index of max absolute value (f32). Scalar — no AVX-512 specialization.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+pub fn iamax_f32(x: &[f32]) -> (usize, f32) {
+    if x.is_empty() { return (0, 0.0); }
+    let mut max_idx = 0;
+    let mut max_val = x[0].abs();
+    for (i, &v) in x.iter().enumerate().skip(1) {
+        let a = v.abs();
+        if a > max_val { max_val = a; max_idx = i; }
+    }
+    (max_idx, x[max_idx])
+}
+
+/// Index of max absolute value (f64). Scalar — no AVX-512 specialization.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+pub fn iamax_f64(x: &[f64]) -> (usize, f64) {
+    if x.is_empty() { return (0, 0.0); }
+    let mut max_idx = 0;
+    let mut max_val = x[0].abs();
+    for (i, &v) in x.iter().enumerate().skip(1) {
+        let a = v.abs();
+        if a > max_val { max_val = a; max_idx = i; }
+    }
+    (max_idx, x[max_idx])
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Element-wise f32 — 8 functions (16-wide)
+// ═══════════════════════════════════════════════════════════════════
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+pub fn add_f32_scalar(a: &[f32], scalar: f32) -> Vec<f32> { ew_f32_s(a, scalar, Op::Add) }
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+pub fn sub_f32_scalar(a: &[f32], scalar: f32) -> Vec<f32> { ew_f32_s(a, scalar, Op::Sub) }
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+pub fn mul_f32_scalar(a: &[f32], scalar: f32) -> Vec<f32> { ew_f32_s(a, scalar, Op::Mul) }
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+pub fn div_f32_scalar(a: &[f32], scalar: f32) -> Vec<f32> { ew_f32_s(a, scalar, Op::Div) }
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+pub fn add_f32_vec(a: &[f32], b: &[f32]) -> Vec<f32> { ew_f32_v(a, b, Op::Add) }
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+pub fn sub_f32_vec(a: &[f32], b: &[f32]) -> Vec<f32> { ew_f32_v(a, b, Op::Sub) }
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+pub fn mul_f32_vec(a: &[f32], b: &[f32]) -> Vec<f32> { ew_f32_v(a, b, Op::Mul) }
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+pub fn div_f32_vec(a: &[f32], b: &[f32]) -> Vec<f32> { ew_f32_v(a, b, Op::Div) }
+
+// ═══════════════════════════════════════════════════════════════════
+// Element-wise f64 — 8 functions (8-wide)
+// ═══════════════════════════════════════════════════════════════════
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+pub fn add_f64_scalar(a: &[f64], scalar: f64) -> Vec<f64> { ew_f64_s(a, scalar, Op::Add) }
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+pub fn sub_f64_scalar(a: &[f64], scalar: f64) -> Vec<f64> { ew_f64_s(a, scalar, Op::Sub) }
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+pub fn mul_f64_scalar(a: &[f64], scalar: f64) -> Vec<f64> { ew_f64_s(a, scalar, Op::Mul) }
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+pub fn div_f64_scalar(a: &[f64], scalar: f64) -> Vec<f64> { ew_f64_s(a, scalar, Op::Div) }
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+pub fn add_f64_vec(a: &[f64], b: &[f64]) -> Vec<f64> { ew_f64_v(a, b, Op::Add) }
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+pub fn sub_f64_vec(a: &[f64], b: &[f64]) -> Vec<f64> { ew_f64_v(a, b, Op::Sub) }
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+pub fn mul_f64_vec(a: &[f64], b: &[f64]) -> Vec<f64> { ew_f64_v(a, b, Op::Mul) }
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+pub fn div_f64_vec(a: &[f64], b: &[f64]) -> Vec<f64> { ew_f64_v(a, b, Op::Div) }
+
+// ─── Element-wise helpers ────────────────────────────────────────
+
+#[cfg(target_arch = "x86_64")]
+enum Op { Add, Sub, Mul, Div }
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+fn ew_f32_s(a: &[f32], scalar: f32, op: Op) -> Vec<f32> {
+    let n = a.len();
+    let mut result = vec![0.0f32; n];
+    let sv = _mm512_set1_ps(scalar);
+    let mut i = 0;
+    while i + 16 <= n {
+        // SAFETY: bounds checked by while condition
+        unsafe {
+            let av = _mm512_loadu_ps(a[i..].as_ptr());
+            let rv = match op {
+                Op::Add => _mm512_add_ps(av, sv),
+                Op::Sub => _mm512_sub_ps(av, sv),
+                Op::Mul => _mm512_mul_ps(av, sv),
+                Op::Div => _mm512_div_ps(av, sv),
+            };
+            _mm512_storeu_ps(result[i..].as_mut_ptr(), rv);
+        }
+        i += 16;
+    }
+    while i < n {
+        result[i] = match op {
+            Op::Add => a[i] + scalar,
+            Op::Sub => a[i] - scalar,
+            Op::Mul => a[i] * scalar,
+            Op::Div => a[i] / scalar,
+        };
+        i += 1;
+    }
+    result
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+fn ew_f32_v(a: &[f32], b: &[f32], op: Op) -> Vec<f32> {
+    let n = a.len().min(b.len());
+    let mut result = vec![0.0f32; n];
+    let mut i = 0;
+    while i + 16 <= n {
+        // SAFETY: bounds checked by while condition
+        unsafe {
+            let av = _mm512_loadu_ps(a[i..].as_ptr());
+            let bv = _mm512_loadu_ps(b[i..].as_ptr());
+            let rv = match op {
+                Op::Add => _mm512_add_ps(av, bv),
+                Op::Sub => _mm512_sub_ps(av, bv),
+                Op::Mul => _mm512_mul_ps(av, bv),
+                Op::Div => _mm512_div_ps(av, bv),
+            };
+            _mm512_storeu_ps(result[i..].as_mut_ptr(), rv);
+        }
+        i += 16;
+    }
+    while i < n {
+        result[i] = match op {
+            Op::Add => a[i] + b[i],
+            Op::Sub => a[i] - b[i],
+            Op::Mul => a[i] * b[i],
+            Op::Div => a[i] / b[i],
+        };
+        i += 1;
+    }
+    result
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+fn ew_f64_s(a: &[f64], scalar: f64, op: Op) -> Vec<f64> {
+    let n = a.len();
+    let mut result = vec![0.0f64; n];
+    let sv = _mm512_set1_pd(scalar);
+    let mut i = 0;
+    while i + 8 <= n {
+        // SAFETY: bounds checked by while condition
+        unsafe {
+            let av = _mm512_loadu_pd(a[i..].as_ptr());
+            let rv = match op {
+                Op::Add => _mm512_add_pd(av, sv),
+                Op::Sub => _mm512_sub_pd(av, sv),
+                Op::Mul => _mm512_mul_pd(av, sv),
+                Op::Div => _mm512_div_pd(av, sv),
+            };
+            _mm512_storeu_pd(result[i..].as_mut_ptr(), rv);
+        }
+        i += 8;
+    }
+    while i < n {
+        result[i] = match op {
+            Op::Add => a[i] + scalar,
+            Op::Sub => a[i] - scalar,
+            Op::Mul => a[i] * scalar,
+            Op::Div => a[i] / scalar,
+        };
+        i += 1;
+    }
+    result
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+fn ew_f64_v(a: &[f64], b: &[f64], op: Op) -> Vec<f64> {
+    let n = a.len().min(b.len());
+    let mut result = vec![0.0f64; n];
+    let mut i = 0;
+    while i + 8 <= n {
+        // SAFETY: bounds checked by while condition
+        unsafe {
+            let av = _mm512_loadu_pd(a[i..].as_ptr());
+            let bv = _mm512_loadu_pd(b[i..].as_ptr());
+            let rv = match op {
+                Op::Add => _mm512_add_pd(av, bv),
+                Op::Sub => _mm512_sub_pd(av, bv),
+                Op::Mul => _mm512_mul_pd(av, bv),
+                Op::Div => _mm512_div_pd(av, bv),
+            };
+            _mm512_storeu_pd(result[i..].as_mut_ptr(), rv);
+        }
+        i += 8;
+    }
+    while i < n {
+        result[i] = match op {
+            Op::Add => a[i] + b[i],
+            Op::Sub => a[i] - b[i],
+            Op::Mul => a[i] * b[i],
+            Op::Div => a[i] / b[i],
+        };
+        i += 1;
+    }
+    result
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Binary / HDC — 4 functions
+// ═══════════════════════════════════════════════════════════════════
+
+/// Hamming distance using VPOPCNTDQ — 64 bytes per iteration.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw,avx512vpopcntdq")]
+pub fn hamming_distance(a: &[u8], b: &[u8]) -> u64 {
+    let n = a.len().min(b.len());
+    let mut i = 0;
+    let mut total_acc = _mm512_setzero_si512();
+
+    while i + 64 <= n {
+        // SAFETY: bounds checked by while condition
+        unsafe {
+            let av = _mm512_loadu_si512(a[i..].as_ptr() as *const _);
+            let bv = _mm512_loadu_si512(b[i..].as_ptr() as *const _);
+            let xor = _mm512_xor_si512(av, bv);
+            let popcnt = _mm512_popcnt_epi64(xor);
+            total_acc = _mm512_add_epi64(total_acc, popcnt);
+        }
+        i += 64;
+    }
+
+    let mut total = _mm512_reduce_add_epi64(total_acc) as u64;
+    while i < n {
+        total += (a[i] ^ b[i]).count_ones() as u64;
+        i += 1;
+    }
+    total
+}
+
+/// Population count using VPOPCNTDQ.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512vpopcntdq")]
+pub fn popcount(a: &[u8]) -> u64 {
+    let n = a.len();
+    let mut i = 0;
+    let mut total_acc = _mm512_setzero_si512();
+
+    while i + 64 <= n {
+        // SAFETY: bounds checked by while condition
+        unsafe {
+            let av = _mm512_loadu_si512(a[i..].as_ptr() as *const _);
+            let popcnt = _mm512_popcnt_epi64(av);
+            total_acc = _mm512_add_epi64(total_acc, popcnt);
+        }
+        i += 64;
+    }
+
+    let mut total = _mm512_reduce_add_epi64(total_acc) as u64;
+    while i < n {
+        total += a[i].count_ones() as u64;
+        i += 1;
+    }
+    total
+}
+
+/// Int8 dot product (scalar — no AVX-512 VNNI specialization yet).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+pub fn dot_i8(a: &[u8], b: &[u8]) -> i64 {
+    let n = a.len().min(b.len());
+    let mut sum = 0i64;
+    for i in 0..n {
+        sum += (a[i] as i8 as i64) * (b[i] as i8 as i64);
+    }
+    sum
+}
+
+/// Batch Hamming distance using VPOPCNTDQ.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw,avx512vpopcntdq")]
+pub fn hamming_batch(query: &[u8], database: &[u8], num_rows: usize, row_bytes: usize) -> Vec<u64> {
+    (0..num_rows)
+        .map(|i| {
+            let start = i * row_bytes;
+            hamming_distance(query, &database[start..start + row_bytes])
+        })
+        .collect()
+}
