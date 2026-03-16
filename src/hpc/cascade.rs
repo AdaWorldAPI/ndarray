@@ -1,8 +1,12 @@
 //! HDR (High Dynamic Range) Cascade Search.
 //!
-//! 3-stroke adaptive cascade for Hamming-based nearest-neighbour search.
+//! 3-stroke adaptive cascade for Hamming-based nearest-neighbour search
+//! with optional precision tiers (VNNI cosine, F32/BF16 dequant, DeltaXor, BF16Hamming).
+//!
+//! Extracted from rustynum-core/hdr.rs — the cascade algorithm and types.
 
 use super::bitwise;
+use super::bf16_truth::BF16Weights;
 
 /// A ranked hit from the HDR cascade search.
 #[derive(Debug, Clone)]
@@ -32,6 +36,56 @@ pub struct ShiftAlert {
     pub new_sigma: f64,
     pub observations: usize,
 }
+
+/// Precision mode for Stroke 3 of the HDR cascade.
+///
+/// Six data paths through the same cascade engine:
+///
+/// | Case | Source | Tier 1-2 | Tier 3 | Example |
+/// |------|--------|----------|--------|---------|
+/// | Off  | —      | hamming  | none   | reject-only |
+/// | Vnni | native binary 64Kbit | partial popcount | dot_i8 cosine | SimHash/LSH/HDC |
+/// | F32  | f32 embedding → u8 | hamming on u8 | dequant → f32 dot | Jina embed |
+/// | BF16 | f32 embedding → u8 | hamming on u8 | dequant → bf16 dot | large embed db |
+/// | DeltaXor | 3D + INT8 delta | XOR delta popcount | INT8 residual dot | DeltaLayer |
+/// | BF16Hamming | native BF16 bytes (2B/dim) | weighted XOR popcount | weighted BF16 distance | 6× faster than F32 |
+#[derive(Clone, Copy, Debug)]
+pub enum PreciseMode {
+    /// No precision tier — return Hamming distances only.
+    Off,
+    /// Native u8 vectors (HDC/SimHash/LSH). Uses dot_i8 → cosine.
+    Vnni,
+    /// Quantized f32 embeddings → dequantize to f32, SIMD dot → cosine.
+    F32 { scale: f32, zero_point: i32 },
+    /// Same dequantization but signals BF16 intent (falls through to f32 path).
+    BF16 { scale: f32, zero_point: i32 },
+    /// XOR Delta Layer + INT8 residual blend.
+    DeltaXor { delta_weight: f32 },
+    /// BF16-structured Hamming: XOR + per-field weighted popcount.
+    BF16Hamming { weights: BF16Weights },
+}
+
+impl PartialEq for PreciseMode {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Off, Self::Off) => true,
+            (Self::Vnni, Self::Vnni) => true,
+            (Self::F32 { scale: s1, zero_point: z1 }, Self::F32 { scale: s2, zero_point: z2 }) => {
+                s1.to_bits() == s2.to_bits() && z1 == z2
+            }
+            (Self::BF16 { scale: s1, zero_point: z1 }, Self::BF16 { scale: s2, zero_point: z2 }) => {
+                s1.to_bits() == s2.to_bits() && z1 == z2
+            }
+            (Self::DeltaXor { delta_weight: w1 }, Self::DeltaXor { delta_weight: w2 }) => {
+                w1.to_bits() == w2.to_bits()
+            }
+            (Self::BF16Hamming { weights: w1 }, Self::BF16Hamming { weights: w2 }) => w1 == w2,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for PreciseMode {}
 
 /// HDR Cascade: stateful search engine with calibrated rejection thresholds.
 pub struct Cascade {
@@ -202,6 +256,189 @@ impl Cascade {
 
         finalists
     }
+
+    /// Run the full 3-stroke cascade query with precision scoring (Stroke 3).
+    pub fn query_precise(
+        &self,
+        query: &[u8],
+        database: &[u8],
+        vec_bytes: usize,
+        num_vectors: usize,
+        precise_mode: PreciseMode,
+    ) -> Vec<RankedHit> {
+        let mut results = self.query(query, database, vec_bytes, num_vectors);
+
+        if precise_mode != PreciseMode::Off && !results.is_empty() {
+            apply_precision_tier(query, database, vec_bytes, &mut results, precise_mode);
+        }
+
+        results
+    }
+}
+
+// ============================================================================
+// Scalar dot products for precision tier (no SIMD dependency)
+// ============================================================================
+
+/// Scalar dot product on i8 vectors (treats u8 as unsigned for dot).
+fn dot_i8_scalar(a: &[u8], b: &[u8]) -> i64 {
+    let n = a.len().min(b.len());
+    let mut sum: i64 = 0;
+    for i in 0..n {
+        sum += (a[i] as i64) * (b[i] as i64);
+    }
+    sum
+}
+
+/// Scalar f32 dot product.
+fn dot_f32_scalar(a: &[f32], b: &[f32]) -> f64 {
+    let n = a.len().min(b.len());
+    let mut sum: f64 = 0.0;
+    for i in 0..n {
+        sum += a[i] as f64 * b[i] as f64;
+    }
+    sum
+}
+
+/// BF16-structured Hamming distance: XOR + per-field weighted popcount.
+fn bf16_hamming_scalar(a: &[u8], b: &[u8], weights: &BF16Weights) -> u64 {
+    let n_dims = a.len().min(b.len()) / 2;
+    let mut total = 0u64;
+    for d in 0..n_dims {
+        let ai = u16::from_le_bytes([a[d * 2], a[d * 2 + 1]]);
+        let bi = u16::from_le_bytes([b[d * 2], b[d * 2 + 1]]);
+        let xor = ai ^ bi;
+        // sign bit 15
+        let sign_diff = ((xor >> 15) & 1) as u64 * weights.sign as u64;
+        // exponent bits 14..7
+        let exp_diff = ((xor >> 7) & 0xFF).count_ones() as u64 * weights.exponent as u64;
+        // mantissa bits 6..0
+        let man_diff = (xor & 0x7F).count_ones() as u64 * weights.mantissa as u64;
+        total += sign_diff + exp_diff + man_diff;
+    }
+    total
+}
+
+/// Stroke 3: compute high-precision distance for finalists.
+///
+/// Sorts by precise distance descending (most similar first).
+fn apply_precision_tier(
+    query: &[u8],
+    database: &[u8],
+    vec_bytes: usize,
+    finalists: &mut [RankedHit],
+    precise_mode: PreciseMode,
+) {
+    match precise_mode {
+        PreciseMode::Off => return,
+
+        PreciseMode::Vnni => {
+            let query_norm_sq = dot_i8_scalar(query, query);
+            let query_norm = (query_norm_sq as f64).sqrt();
+
+            if query_norm == 0.0 {
+                for r in finalists.iter_mut() {
+                    r.precise = 0.0;
+                }
+                return;
+            }
+
+            for r in finalists.iter_mut() {
+                let base = r.index * vec_bytes;
+                let candidate = &database[base..base + vec_bytes];
+                let dot = dot_i8_scalar(query, candidate);
+                let cand_norm = (dot_i8_scalar(candidate, candidate) as f64).sqrt();
+                r.precise = if cand_norm > 0.0 {
+                    dot as f64 / (query_norm * cand_norm)
+                } else {
+                    0.0
+                };
+            }
+        }
+
+        PreciseMode::F32 { scale, zero_point } | PreciseMode::BF16 { scale, zero_point } => {
+            let mut query_f32 = vec![0.0f32; vec_bytes];
+            for i in 0..vec_bytes {
+                query_f32[i] = scale * (query[i] as i32 - zero_point) as f32;
+            }
+            let query_norm = dot_f32_scalar(&query_f32, &query_f32).sqrt();
+
+            if query_norm == 0.0 {
+                for r in finalists.iter_mut() {
+                    r.precise = 0.0;
+                }
+                return;
+            }
+
+            let mut cand_f32 = vec![0.0f32; vec_bytes];
+
+            for r in finalists.iter_mut() {
+                let base = r.index * vec_bytes;
+                let candidate = &database[base..base + vec_bytes];
+                for i in 0..vec_bytes {
+                    cand_f32[i] = scale * (candidate[i] as i32 - zero_point) as f32;
+                }
+                let dot = dot_f32_scalar(&query_f32, &cand_f32);
+                let cand_norm = dot_f32_scalar(&cand_f32, &cand_f32).sqrt();
+                r.precise = if cand_norm > 0.0 {
+                    dot / (query_norm * cand_norm)
+                } else {
+                    0.0
+                };
+            }
+        }
+
+        PreciseMode::DeltaXor { delta_weight } => {
+            let total_bits = (vec_bytes * 8) as f64;
+            let query_norm_sq = dot_i8_scalar(query, query);
+            let query_norm = (query_norm_sq as f64).sqrt();
+            let w = delta_weight as f64;
+
+            for r in finalists.iter_mut() {
+                let base = r.index * vec_bytes;
+                let candidate = &database[base..base + vec_bytes];
+                let hamming_norm = r.hamming as f64 / total_bits;
+                let cosine = if query_norm > 0.0 {
+                    let dot = dot_i8_scalar(query, candidate);
+                    let cand_norm = (dot_i8_scalar(candidate, candidate) as f64).sqrt();
+                    if cand_norm > 0.0 {
+                        dot as f64 / (query_norm * cand_norm)
+                    } else {
+                        0.0
+                    }
+                } else {
+                    0.0
+                };
+                r.precise = 1.0 - (hamming_norm * (1.0 - w) + (1.0 - cosine) * w);
+            }
+        }
+
+        PreciseMode::BF16Hamming { weights } => {
+            let max_per_dim =
+                weights.sign as u64 + 8 * weights.exponent as u64 + 7 * weights.mantissa as u64;
+            let n_dims = vec_bytes / 2;
+            let max_total = max_per_dim * n_dims as u64;
+
+            for r in finalists.iter_mut() {
+                let base = r.index * vec_bytes;
+                let candidate = &database[base..base + vec_bytes];
+                let dist = bf16_hamming_scalar(query, candidate, &weights);
+                let norm = if max_total > 0 {
+                    dist as f64 / max_total as f64
+                } else {
+                    1.0
+                };
+                r.precise = 1.0 - norm;
+            }
+        }
+    }
+
+    // Sort by precise distance descending (most similar first)
+    finalists.sort_unstable_by(|a, b| {
+        b.precise
+            .partial_cmp(&a.precise)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 }
 
 /// Packed database for stroke-aligned cascade search.
@@ -372,5 +609,50 @@ mod tests {
         let cascade = Cascade::from_threshold(vec_bytes as u64 * 4, vec_bytes);
         let results = packed.cascade_query(&query, &cascade, 10);
         assert!(results.iter().any(|r| r.index == 5 && r.hamming == 0));
+    }
+
+    #[test]
+    fn cascade_query_precise_vnni() {
+        let vec_bytes = 256;
+        let query = vec![0xAAu8; vec_bytes];
+        let mut database = vec![0x55u8; vec_bytes * 10];
+        database[3 * vec_bytes..4 * vec_bytes].copy_from_slice(&query);
+        let cascade = Cascade::from_threshold(vec_bytes as u64 * 4, vec_bytes);
+        let results = cascade.query_precise(&query, &database, vec_bytes, 10, PreciseMode::Vnni);
+        assert!(results.iter().any(|r| r.index == 3 && r.hamming == 0));
+        // Precise score for exact match should be 1.0
+        let exact = results.iter().find(|r| r.index == 3).unwrap();
+        assert!((exact.precise - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cascade_query_precise_f32() {
+        let vec_bytes = 256;
+        let query = vec![128u8; vec_bytes];
+        let mut database = vec![64u8; vec_bytes * 5];
+        database[2 * vec_bytes..3 * vec_bytes].copy_from_slice(&query);
+        let cascade = Cascade::from_threshold(vec_bytes as u64 * 4, vec_bytes);
+        let results = cascade.query_precise(
+            &query, &database, vec_bytes, 5,
+            PreciseMode::F32 { scale: 1.0 / 128.0, zero_point: 128 },
+        );
+        let exact = results.iter().find(|r| r.index == 2).unwrap();
+        assert!(!exact.precise.is_nan());
+    }
+
+    #[test]
+    fn cascade_query_precise_bf16hamming() {
+        let vec_bytes = 256;
+        let query = vec![0xAAu8; vec_bytes];
+        let mut database = vec![0x55u8; vec_bytes * 5];
+        database[1 * vec_bytes..2 * vec_bytes].copy_from_slice(&query);
+        let cascade = Cascade::from_threshold(vec_bytes as u64 * 4, vec_bytes);
+        let weights = BF16Weights::new(256, 16, 1);
+        let results = cascade.query_precise(
+            &query, &database, vec_bytes, 5,
+            PreciseMode::BF16Hamming { weights },
+        );
+        let exact = results.iter().find(|r| r.index == 1).unwrap();
+        assert!((exact.precise - 1.0).abs() < 1e-6, "exact match should have precise=1.0");
     }
 }

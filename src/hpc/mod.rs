@@ -59,6 +59,26 @@ pub mod clam;
 #[allow(missing_docs)]
 pub mod arrow_bridge;
 
+// Sprint 1: Quick Wins (hot-path gap fill)
+#[allow(missing_docs)]
+pub mod cam_index;
+#[allow(missing_docs)]
+pub mod prefilter;
+#[allow(missing_docs)]
+pub mod binding_matrix;
+#[allow(missing_docs)]
+pub mod qualia_gate;
+#[allow(missing_docs)]
+pub mod dn_tree;
+
+// Sprint 2: Core Cognitive Layer
+#[allow(missing_docs)]
+pub mod kernels;
+#[allow(missing_docs)]
+pub mod organic;
+#[allow(missing_docs)]
+pub mod substrate;
+
 #[cfg(test)]
 mod e2e_tests {
     //! End-to-end pipeline test: Fingerprint → Node → Seal → Cascade → CLAM → Causality → BNN
