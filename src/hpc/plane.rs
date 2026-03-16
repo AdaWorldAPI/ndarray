@@ -127,6 +127,75 @@ impl Plane {
         self.dirty = true;
     }
 
+    /// Encounter TOWARD another Plane's bits.
+    ///
+    /// Copies the other plane's cached bit pattern and uses it as evidence.
+    /// This reinforces the pattern: `acc[k] += other.bits[k] ? +1 : -1`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ndarray::hpc::plane::Plane;
+    ///
+    /// let mut learner = Plane::new();
+    /// let mut teacher = Plane::new();
+    /// teacher.encounter("pattern");
+    /// teacher.encounter("pattern");
+    /// learner.encounter_toward(&mut teacher);
+    /// ```
+    pub fn encounter_toward(&mut self, other: &mut Plane) {
+        other.ensure_cache();
+        let fp = other.bits.clone();
+        self.encounter_bits(&fp);
+    }
+
+    /// Encounter AWAY from another Plane's bits.
+    ///
+    /// Inverts the other plane's cached bit pattern before encountering.
+    /// Anti-learning: `acc[k] += other.bits[k] ? -1 : +1`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ndarray::hpc::plane::Plane;
+    ///
+    /// let mut learner = Plane::new();
+    /// let mut target = Plane::new();
+    /// target.encounter("bad pattern");
+    /// target.encounter("bad pattern");
+    /// learner.encounter_away(&mut target);
+    /// ```
+    pub fn encounter_away(&mut self, other: &mut Plane) {
+        other.ensure_cache();
+        let inverted = !&other.bits;
+        self.encounter_bits(&inverted);
+    }
+
+    /// RL reward encounter: positive reward reinforces, negative reward punishes.
+    ///
+    /// `reward_sign >= 0` calls [`encounter_toward`](Self::encounter_toward),
+    /// `reward_sign < 0` calls [`encounter_away`](Self::encounter_away).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ndarray::hpc::plane::Plane;
+    ///
+    /// let mut learner = Plane::new();
+    /// let mut evidence = Plane::new();
+    /// evidence.encounter("signal");
+    /// evidence.encounter("signal");
+    /// learner.reward_encounter(&mut evidence, 1);   // reinforce
+    /// learner.reward_encounter(&mut evidence, -1);  // punish
+    /// ```
+    pub fn reward_encounter(&mut self, evidence: &mut Plane, reward_sign: i8) {
+        if reward_sign >= 0 {
+            self.encounter_toward(evidence);
+        } else {
+            self.encounter_away(evidence);
+        }
+    }
+
     pub fn encounter(&mut self, text: &str) {
         let fp = Self::text_to_fingerprint(text);
         self.encounter_bits(&fp);
@@ -573,6 +642,108 @@ mod tests {
             evidence: 100,
         };
         assert!(t.expectation() >= 65534);
+    }
+
+    #[test]
+    fn encounter_toward_reinforces() {
+        let mut learner = Plane::new();
+        let mut teacher = Plane::new();
+        teacher.encounter("pattern A");
+        teacher.encounter("pattern A");
+        teacher.encounter("pattern A");
+
+        learner.encounter_toward(&mut teacher);
+        learner.encounter_toward(&mut teacher);
+        learner.encounter_toward(&mut teacher);
+
+        let d = learner.distance(&mut teacher);
+        match d {
+            Distance::Measured { disagreement, overlap, .. } => {
+                assert!(overlap > 0);
+                assert_eq!(disagreement, 0, "encounter_toward should match teacher bits");
+            }
+            Distance::Incomparable => panic!("expected Measured after encounter_toward"),
+        }
+    }
+
+    #[test]
+    fn encounter_away_punishes() {
+        let mut learner = Plane::new();
+        let mut target = Plane::new();
+        target.encounter("pattern B");
+        target.encounter("pattern B");
+        target.encounter("pattern B");
+
+        learner.encounter_away(&mut target);
+        learner.encounter_away(&mut target);
+        learner.encounter_away(&mut target);
+
+        let d = learner.distance(&mut target);
+        match d {
+            Distance::Measured { disagreement, overlap, .. } => {
+                assert!(overlap > 0);
+                assert_eq!(disagreement, overlap, "encounter_away should maximally disagree");
+            }
+            Distance::Incomparable => panic!("expected Measured after encounter_away"),
+        }
+    }
+
+    #[test]
+    fn reward_encounter_positive_reinforces() {
+        let mut learner = Plane::new();
+        let mut evidence = Plane::new();
+        evidence.encounter("reward signal");
+        evidence.encounter("reward signal");
+        evidence.encounter("reward signal");
+
+        learner.reward_encounter(&mut evidence, 1);
+        learner.reward_encounter(&mut evidence, 1);
+        learner.reward_encounter(&mut evidence, 1);
+
+        let d = learner.distance(&mut evidence);
+        match d {
+            Distance::Measured { disagreement, .. } => {
+                assert_eq!(disagreement, 0, "positive reward should reinforce");
+            }
+            _ => panic!("expected Measured"),
+        }
+    }
+
+    #[test]
+    fn reward_encounter_negative_punishes() {
+        let mut learner = Plane::new();
+        let mut evidence = Plane::new();
+        evidence.encounter("bad pattern");
+        evidence.encounter("bad pattern");
+        evidence.encounter("bad pattern");
+
+        learner.reward_encounter(&mut evidence, -1);
+        learner.reward_encounter(&mut evidence, -1);
+        learner.reward_encounter(&mut evidence, -1);
+
+        let d = learner.distance(&mut evidence);
+        match d {
+            Distance::Measured { disagreement, overlap, .. } => {
+                assert_eq!(disagreement, overlap, "negative reward should punish");
+            }
+            _ => panic!("expected Measured"),
+        }
+    }
+
+    #[test]
+    fn encounter_toward_away_cancel() {
+        let mut learner = Plane::new();
+        let mut target = Plane::new();
+        target.encounter("cancel test");
+        target.encounter("cancel test");
+        target.encounter("cancel test");
+
+        learner.encounter_toward(&mut target);
+        learner.encounter_away(&mut target);
+
+        let acc = learner.acc();
+        let sum: i64 = acc.iter().map(|&v| v as i64).sum();
+        assert_eq!(sum, 0, "toward + away should cancel to zero accumulator");
     }
 
     #[test]

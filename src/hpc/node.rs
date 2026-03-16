@@ -123,6 +123,32 @@ impl Node {
         }
     }
 
+    /// Project all 7 non-empty mask combinations and return distances.
+    ///
+    /// Returns distances in order: `[S, P, O, SP, SO, PO, SPO]`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ndarray::hpc::node::Node;
+    ///
+    /// let mut a = Node::random(42);
+    /// let mut b = Node::random(43);
+    /// let projections = a.project_all(&mut b);
+    /// assert_eq!(projections.len(), 7);
+    /// ```
+    pub fn project_all(&mut self, other: &mut Node) -> [Distance; 7] {
+        [
+            self.distance(other, S__),
+            self.distance(other, _P_),
+            self.distance(other, __O),
+            self.distance(other, SP_),
+            self.distance(other, S_O),
+            self.distance(other, _PO),
+            self.distance(other, SPO),
+        ]
+    }
+
     pub fn truth(&mut self, mask: Mask) -> Truth {
         let mut total_freq = 0u64;
         let mut total_conf = 0u64;
@@ -219,6 +245,60 @@ mod tests {
         assert_eq!(t.frequency, 32768);
         assert_eq!(t.confidence, 0);
         assert_eq!(t.evidence, 0);
+    }
+
+    #[test]
+    fn project_all_returns_seven_distances() {
+        let mut a = Node::random(42);
+        let mut b = Node::random(43);
+        let projections = a.project_all(&mut b);
+        assert_eq!(projections.len(), 7);
+        // All should be Measured for random nodes with encounters
+        for (i, d) in projections.iter().enumerate() {
+            match d {
+                Distance::Measured { overlap, .. } => {
+                    assert!(*overlap > 0, "projection {} should have overlap", i);
+                }
+                Distance::Incomparable => panic!("projection {} should be Measured", i),
+            }
+        }
+    }
+
+    #[test]
+    fn project_all_spo_matches_direct() {
+        let mut a = Node::random(42);
+        let mut b = Node::random(43);
+        let projections = a.project_all(&mut b);
+        let direct_spo = a.distance(&mut b, SPO);
+        // SPO is the last element (index 6)
+        match (projections[6], direct_spo) {
+            (
+                Distance::Measured { disagreement: d1, overlap: o1, penalty: p1 },
+                Distance::Measured { disagreement: d2, overlap: o2, penalty: p2 },
+            ) => {
+                assert_eq!(d1, d2);
+                assert_eq!(o1, o2);
+                assert_eq!(p1, p2);
+            }
+            _ => panic!("expected both Measured"),
+        }
+    }
+
+    #[test]
+    fn project_all_single_planes_match_direct() {
+        let mut a = Node::random(100);
+        let mut b = Node::random(200);
+        let projections = a.project_all(&mut b);
+
+        // S__ is index 0
+        let d_s = a.distance(&mut b, S__);
+        match (projections[0], d_s) {
+            (
+                Distance::Measured { disagreement: d1, .. },
+                Distance::Measured { disagreement: d2, .. },
+            ) => assert_eq!(d1, d2),
+            _ => panic!("expected Measured"),
+        }
     }
 
     #[test]
