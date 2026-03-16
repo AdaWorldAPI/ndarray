@@ -60,6 +60,8 @@ pub struct Cluster {
     pub lfd: Lfd,
     pub left: Option<usize>,
     pub right: Option<usize>,
+    /// Original dataset indices belonging to this cluster.
+    pub point_indices: Vec<usize>,
 }
 
 impl Cluster {
@@ -150,6 +152,7 @@ impl ClamTree {
             lfd,
             left: None,
             right: None,
+            point_indices: indices.to_vec(),
         });
 
         if n <= self.min_cluster_size || radius == 0 {
@@ -213,13 +216,13 @@ impl ClamTree {
 
     pub fn cluster_points<'a>(
         &self,
-        _cluster: &Cluster,
+        cluster: &Cluster,
         data: &'a [u8],
         vec_len: usize,
     ) -> Vec<(usize, &'a [u8])> {
-        // Simplified: return all points (in full impl, use offset+cardinality)
-        let n = data.len() / vec_len;
-        (0..n).map(|i| (i, &data[i * vec_len..(i + 1) * vec_len])).collect()
+        cluster.point_indices.iter().map(|&i| {
+            (i, &data[i * vec_len..(i + 1) * vec_len])
+        }).collect()
     }
 }
 
@@ -424,6 +427,7 @@ mod tests {
             center_idx: 0, radius: 100, cardinality: 10,
             offset: 0, depth: 0, lfd: Lfd::compute(10, 5),
             left: None, right: None,
+            point_indices: (0..10).collect(),
         };
         assert_eq!(c.delta_minus(150), 50);
         assert_eq!(c.delta_minus(50), 0);

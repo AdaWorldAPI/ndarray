@@ -57,6 +57,10 @@ pub mod bnn;
 #[allow(missing_docs)]
 pub mod clam;
 #[allow(missing_docs)]
+pub mod clam_search;
+#[allow(missing_docs)]
+pub mod clam_compress;
+#[allow(missing_docs)]
 pub mod arrow_bridge;
 
 // Sprint 1: Quick Wins (hot-path gap fill)
@@ -70,6 +74,12 @@ pub mod binding_matrix;
 pub mod qualia_gate;
 #[allow(missing_docs)]
 pub mod dn_tree;
+
+// Sprint 3: CLAM + BNN Ports
+#[allow(missing_docs)]
+pub mod bnn_cross_plane;
+#[allow(missing_docs)]
+pub mod bnn_causal_trajectory;
 
 // Sprint 2: Core Cognitive Layer
 #[allow(missing_docs)]
