@@ -6,6 +6,7 @@ on:
   push:
     branches:
       - master
+      - main
 
 name: Continuous integration
 
@@ -44,20 +45,16 @@ jobs:
           toolchain: ${{ matrix.rust }}
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --features approx,serde,rayon
+      - run: cargo clippy --features approx,serde,rayon -- -D warnings
+      - run: cargo clippy --features native -- -D warnings
 
   format:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        rust:
-          - nightly
-    name: format/${{ matrix.rust }}
+    name: format/stable
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ matrix.rust }}
           components: rustfmt
       - run: cargo fmt --all --check
 
@@ -90,7 +87,6 @@ jobs:
         rust:
           - stable
           - beta
-          - nightly
           - ${{ needs.pass-msrv.outputs.MSRV }}
 
     name: tests/${{ matrix.rust }}
@@ -106,6 +102,21 @@ jobs:
         run: sudo apt-get install libopenblas-dev gfortran
       - run: ./scripts/all-tests.sh "$FEATURES" ${{ matrix.rust }}
     
+  native-backend:
+    runs-on: ubuntu-latest
+    name: native-backend/stable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - name: Build native backend
+        run: cargo build --features native
+      - name: Test native backend
+        run: cargo nextest run -p ndarray --features native
+      - name: Test native + approx
+        run: cargo nextest run -p ndarray --features native,approx
+
   blas-msrv:
     runs-on: ubuntu-latest
     name: blas-msrv
@@ -123,6 +134,9 @@ jobs:
       - run: ./scripts/blas-integ-tests.sh $BLAS_MSRV
 
   miri:
+    # Nightly-only. Cannot run SIMD intrinsics or FFI.
+    # Only runs on merge queue / push to main — never blocks PR checks.
+    if: github.event_name == 'merge_group' || github.event_name == 'push'
     runs-on: ubuntu-latest
     name: miri
     steps:
@@ -159,14 +173,13 @@ jobs:
       - run: ./scripts/cross-tests.sh "approx,serde,rayon" ${{ matrix.rust }} ${{ matrix.target }}
 
   cargo-careful:
-    #if: ${{ github.event_name == 'merge_group' }}
+    # Nightly-only. Only runs on merge queue / push — never blocks PR checks.
+    if: github.event_name == 'merge_group' || github.event_name == 'push'
     runs-on: ubuntu-latest
     name: cargo-careful
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly
+      - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
       - name: Install cargo-careful
@@ -174,28 +187,24 @@ jobs:
       - run: cargo careful nextest run -Zcareful-sanitizer --features="$FEATURES"
 
   docs:
-    #if: ${{ github.event_name == 'merge_group' }}
+    # Nightly needed for --cfg docsrs. Only on merge queue / push.
+    if: github.event_name == 'merge_group' || github.event_name == 'push'
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        rust:
-          - nightly # This is what docs.rs runs on, and is needed for the feature flags
-    name: docs/${{ matrix.rust }}
+    name: docs/nightly
     env:
       RUSTDOCFLAGS: "-Dwarnings --cfg docsrs"
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ matrix.rust }}
+      - uses: dtolnay/rust-toolchain@nightly
       - run: cargo doc --no-deps --all-features
 
   conclusion:
     needs:
       - clippy
-      - format  # should format be required?
+      - format
       - nostd
       - tests
+      - native-backend
       - miri
       - cross_test
       - cargo-careful
