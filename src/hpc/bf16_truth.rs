@@ -346,6 +346,100 @@ pub fn awareness_classify(
     }
 }
 
+/// Pack 7 projection bands + finest distance + causality direction into a BF16 truth value.
+///
+/// Layout (16 bits):
+/// - sign (bit 15) = causality direction (0=Forward, 1=Backward)
+/// - exponent (bits 14-8) = 7 bits from 7 projection bands (Foveal/Near -> 1, else -> 0)
+/// - mantissa (bits 7-1) = 7 bits of finest Hamming distance (normalized to 0..127)
+/// - bit 0 = reserved (0)
+///
+/// The exponent encodes which projections are "close" (Foveal or Near),
+/// giving a 7-bit fingerprint of the relationship shape across S/P/O masks.
+/// The mantissa captures the finest-grained distance for ranking within a band.
+///
+/// `CausalityDirection::None` is treated as Forward (sign = 0).
+///
+/// # Example
+///
+/// ```
+/// use ndarray::hpc::bf16_truth::bf16_from_projections;
+/// use ndarray::hpc::cascade::Band;
+/// use ndarray::hpc::causality::CausalityDirection;
+///
+/// let bands = [Band::Foveal; 7];
+/// let packed = bf16_from_projections(&bands, 0, 1000, CausalityDirection::Forward);
+/// assert_ne!(packed, 0);
+/// ```
+pub fn bf16_from_projections(
+    bands: &[super::cascade::Band; 7],
+    finest_distance: u32,
+    finest_max: u32,
+    direction: super::causality::CausalityDirection,
+) -> u16 {
+    use super::cascade::Band;
+    use super::causality::CausalityDirection;
+
+    let sign: u16 = match direction {
+        CausalityDirection::Forward | CausalityDirection::None => 0,
+        CausalityDirection::Backward => 1,
+    };
+
+    let mut exponent: u16 = 0;
+    for (i, band) in bands.iter().enumerate() {
+        match band {
+            Band::Foveal | Band::Near => {
+                exponent |= 1 << i;
+            }
+            _ => {}
+        }
+    }
+
+    // Normalize finest distance to 7 bits (0..127)
+    let mantissa: u16 = if finest_max > 0 {
+        ((finest_distance as u64 * 127) / finest_max as u64).min(127) as u16
+    } else {
+        0
+    };
+
+    (sign << 15) | ((exponent & 0x7F) << 8) | ((mantissa & 0x7F) << 1)
+}
+
+/// Unpack a BF16 truth value assembled by [`bf16_from_projections`].
+///
+/// Returns `(direction, exponent_bits, mantissa_7bit)`.
+///
+/// Sign bit 0 maps to `Forward`, sign bit 1 maps to `Backward`.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::hpc::bf16_truth::{bf16_from_projections, bf16_unpack_projections};
+/// use ndarray::hpc::cascade::Band;
+/// use ndarray::hpc::causality::CausalityDirection;
+///
+/// let bands = [Band::Foveal; 7];
+/// let packed = bf16_from_projections(&bands, 0, 1000, CausalityDirection::Forward);
+/// let (dir, exp, man) = bf16_unpack_projections(packed);
+/// assert_eq!(dir, CausalityDirection::Forward);
+/// assert_eq!(exp, 0x7F);
+/// assert_eq!(man, 0);
+/// ```
+pub fn bf16_unpack_projections(
+    packed: u16,
+) -> (super::causality::CausalityDirection, u8, u8) {
+    use super::causality::CausalityDirection;
+
+    let direction = if packed & 0x8000 != 0 {
+        CausalityDirection::Backward
+    } else {
+        CausalityDirection::Forward
+    };
+    let exponent = ((packed >> 8) & 0x7F) as u8;
+    let mantissa = ((packed >> 1) & 0x7F) as u8;
+    (direction, exponent, mantissa)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -474,6 +568,103 @@ mod tests {
         let t = AwarenessThresholds::default();
         let s = awareness_classify(&a, &b, 1, &t);
         assert_eq!(s.states[0], AwarenessState::Tensioned);
+    }
+
+    #[test]
+    fn test_bf16_from_projections_all_foveal_forward() {
+        use super::super::cascade::Band;
+        use super::super::causality::CausalityDirection;
+
+        let bands = [Band::Foveal; 7];
+        let packed = bf16_from_projections(&bands, 0, 1000, CausalityDirection::Forward);
+        let (dir, exp, man) = bf16_unpack_projections(packed);
+        assert_eq!(dir, CausalityDirection::Forward);
+        assert_eq!(exp, 0x7F); // all 7 bits set
+        assert_eq!(man, 0); // distance = 0
+    }
+
+    #[test]
+    fn test_bf16_from_projections_all_reject_backward() {
+        use super::super::cascade::Band;
+        use super::super::causality::CausalityDirection;
+
+        let bands = [Band::Reject; 7];
+        let packed = bf16_from_projections(&bands, 500, 1000, CausalityDirection::Backward);
+        let (dir, exp, man) = bf16_unpack_projections(packed);
+        assert_eq!(dir, CausalityDirection::Backward);
+        assert_eq!(exp, 0); // no close projections
+        // mantissa: 500/1000 * 127 = 63
+        assert_eq!(man, 63);
+    }
+
+    #[test]
+    fn test_bf16_from_projections_mixed_bands() {
+        use super::super::cascade::Band;
+        use super::super::causality::CausalityDirection;
+
+        let bands = [
+            Band::Foveal, // bit 0
+            Band::Near,   // bit 1
+            Band::Good,   // bit 2 = 0
+            Band::Weak,   // bit 3 = 0
+            Band::Foveal, // bit 4
+            Band::Reject, // bit 5 = 0
+            Band::Near,   // bit 6
+        ];
+        let packed = bf16_from_projections(&bands, 100, 1000, CausalityDirection::Forward);
+        let (dir, exp, man) = bf16_unpack_projections(packed);
+        assert_eq!(dir, CausalityDirection::Forward);
+        // bits 0,1,4,6 set = 0b1010011 = 0x53
+        assert_eq!(exp, 0b1010011);
+        // mantissa: 100/1000 * 127 = 12
+        assert_eq!(man, 12);
+    }
+
+    #[test]
+    fn test_bf16_from_projections_roundtrip_sign() {
+        use super::super::cascade::Band;
+        use super::super::causality::CausalityDirection;
+
+        let bands = [Band::Good; 7];
+        for dir in [CausalityDirection::Forward, CausalityDirection::Backward] {
+            let packed = bf16_from_projections(&bands, 50, 100, dir);
+            let (unpacked_dir, _, _) = bf16_unpack_projections(packed);
+            assert_eq!(unpacked_dir, dir);
+        }
+    }
+
+    #[test]
+    fn test_bf16_from_projections_max_distance() {
+        use super::super::cascade::Band;
+        use super::super::causality::CausalityDirection;
+
+        let bands = [Band::Foveal; 7];
+        let packed = bf16_from_projections(&bands, 1000, 1000, CausalityDirection::Forward);
+        let (_, _, man) = bf16_unpack_projections(packed);
+        assert_eq!(man, 127); // saturates at 127
+    }
+
+    #[test]
+    fn test_bf16_from_projections_zero_max() {
+        use super::super::cascade::Band;
+        use super::super::causality::CausalityDirection;
+
+        let bands = [Band::Foveal; 7];
+        let packed = bf16_from_projections(&bands, 500, 0, CausalityDirection::Forward);
+        let (_, _, man) = bf16_unpack_projections(packed);
+        assert_eq!(man, 0); // zero max -> mantissa 0
+    }
+
+    #[test]
+    fn test_bf16_from_projections_none_direction() {
+        use super::super::cascade::Band;
+        use super::super::causality::CausalityDirection;
+
+        let bands = [Band::Good; 7];
+        let packed = bf16_from_projections(&bands, 50, 100, CausalityDirection::None);
+        let (dir, _, _) = bf16_unpack_projections(packed);
+        // None maps to Forward (sign=0)
+        assert_eq!(dir, CausalityDirection::Forward);
     }
 
     #[test]
