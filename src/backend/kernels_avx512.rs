@@ -607,7 +607,7 @@ unsafe fn sgemm_ukernel_6x16(
         let bv = _mm512_loadu_ps(b_packed[b_off..].as_ptr());
 
         let a_off = p * SGEMM_MR;
-        c0 = _mm512_fmadd_ps(_mm512_set1_ps(a_packed[a_off + 0]), bv, c0);
+        c0 = _mm512_fmadd_ps(_mm512_set1_ps(a_packed[a_off]), bv, c0);
         c1 = _mm512_fmadd_ps(_mm512_set1_ps(a_packed[a_off + 1]), bv, c1);
         c2 = _mm512_fmadd_ps(_mm512_set1_ps(a_packed[a_off + 2]), bv, c2);
         c3 = _mm512_fmadd_ps(_mm512_set1_ps(a_packed[a_off + 3]), bv, c3);
@@ -634,8 +634,8 @@ unsafe fn sgemm_ukernel_6x16(
         } else {
             // Masked store for edge tiles
             let mask: u16 = (1u32 << nr_eff) as u16 - 1;
-            let cv = _mm512_maskz_loadu_ps(mask.into(), row_ptr);
-            _mm512_mask_storeu_ps(row_ptr, mask.into(), _mm512_add_ps(cv, rows[ir]));
+            let cv = _mm512_maskz_loadu_ps(mask, row_ptr);
+            _mm512_mask_storeu_ps(row_ptr, mask, _mm512_add_ps(cv, rows[ir]));
         }
     }
 }
@@ -791,7 +791,7 @@ unsafe fn dgemm_ukernel_6x8(
         let bv = _mm512_loadu_pd(b_packed[b_off..].as_ptr());
 
         let a_off = p * DGEMM_MR;
-        c0 = _mm512_fmadd_pd(_mm512_set1_pd(a_packed[a_off + 0]), bv, c0);
+        c0 = _mm512_fmadd_pd(_mm512_set1_pd(a_packed[a_off]), bv, c0);
         c1 = _mm512_fmadd_pd(_mm512_set1_pd(a_packed[a_off + 1]), bv, c1);
         c2 = _mm512_fmadd_pd(_mm512_set1_pd(a_packed[a_off + 2]), bv, c2);
         c3 = _mm512_fmadd_pd(_mm512_set1_pd(a_packed[a_off + 3]), bv, c3);
@@ -815,8 +815,8 @@ unsafe fn dgemm_ukernel_6x8(
             _mm512_storeu_pd(row_ptr, _mm512_add_pd(cv, rows[ir]));
         } else {
             let mask: u8 = (1u16 << nr_eff) as u8 - 1;
-            let cv = _mm512_maskz_loadu_pd(mask.into(), row_ptr);
-            _mm512_mask_storeu_pd(row_ptr, mask.into(), _mm512_add_pd(cv, rows[ir]));
+            let cv = _mm512_maskz_loadu_pd(mask, row_ptr);
+            _mm512_mask_storeu_pd(row_ptr, mask, _mm512_add_pd(cv, rows[ir]));
         }
     }
 }
