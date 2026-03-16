@@ -50,16 +50,11 @@ jobs:
 
   format:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        rust:
-          - nightly
-    name: format/${{ matrix.rust }}
+    name: format/stable
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ matrix.rust }}
           components: rustfmt
       - run: cargo fmt --all --check
 
@@ -92,7 +87,6 @@ jobs:
         rust:
           - stable
           - beta
-          - nightly
           - ${{ needs.pass-msrv.outputs.MSRV }}
 
     name: tests/${{ matrix.rust }}
@@ -140,11 +134,11 @@ jobs:
       - run: ./scripts/blas-integ-tests.sh $BLAS_MSRV
 
   miri:
-    # Miri requires nightly toolchain but runs in its own isolated job.
-    # Cannot run SIMD intrinsics or FFI — only tests safe Rust paths.
+    # Nightly-only. Cannot run SIMD intrinsics or FFI.
+    # Only runs on merge queue / push to main — never blocks PR checks.
+    if: github.event_name == 'merge_group' || github.event_name == 'push'
     runs-on: ubuntu-latest
     name: miri
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
@@ -179,14 +173,13 @@ jobs:
       - run: ./scripts/cross-tests.sh "approx,serde,rayon" ${{ matrix.rust }} ${{ matrix.target }}
 
   cargo-careful:
-    #if: ${{ github.event_name == 'merge_group' }}
+    # Nightly-only. Only runs on merge queue / push — never blocks PR checks.
+    if: github.event_name == 'merge_group' || github.event_name == 'push'
     runs-on: ubuntu-latest
     name: cargo-careful
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly
+      - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
       - name: Install cargo-careful
@@ -194,20 +187,15 @@ jobs:
       - run: cargo careful nextest run -Zcareful-sanitizer --features="$FEATURES"
 
   docs:
-    #if: ${{ github.event_name == 'merge_group' }}
+    # Nightly needed for --cfg docsrs. Only on merge queue / push.
+    if: github.event_name == 'merge_group' || github.event_name == 'push'
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        rust:
-          - nightly # This is what docs.rs runs on, and is needed for the feature flags
-    name: docs/${{ matrix.rust }}
+    name: docs/nightly
     env:
       RUSTDOCFLAGS: "-Dwarnings --cfg docsrs"
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ matrix.rust }}
+      - uses: dtolnay/rust-toolchain@nightly
       - run: cargo doc --no-deps --all-features
 
   conclusion:
