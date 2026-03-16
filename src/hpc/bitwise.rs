@@ -415,4 +415,225 @@ mod tests {
         assert_eq!(dists[1], 8);
         assert_eq!(dists[2], 0);
     }
+
+    // ── Per-tier hamming correctness tests ──────────────────────────
+    //
+    // These call each kernel directly, bypassing dispatch, to verify
+    // all 4 tiers produce identical results.
+
+    /// Generate deterministic pseudo-random test data.
+    fn test_data(n: usize, seed: u8) -> Vec<u8> {
+        (0..n).map(|i| ((i as u8).wrapping_mul(7).wrapping_add(seed).wrapping_mul(13)) ^ (i as u8)).collect()
+    }
+
+    /// Scalar reference — always correct, used to verify SIMD tiers.
+    fn reference_hamming(a: &[u8], b: &[u8]) -> u64 {
+        a.iter().zip(b.iter()).map(|(&x, &y)| (x ^ y).count_ones() as u64).sum()
+    }
+
+    fn reference_popcount(a: &[u8]) -> u64 {
+        a.iter().map(|&x| x.count_ones() as u64).sum()
+    }
+
+    #[test]
+    fn test_tier_scalar_hamming() {
+        for &n in &[0, 1, 7, 15, 31, 32, 33, 63, 64, 65, 127, 128, 255, 1024, 8192] {
+            let a = test_data(n, 0xAA);
+            let b = test_data(n, 0x55);
+            let expected = reference_hamming(&a, &b);
+            let got = hamming_scalar(&a, &b);
+            assert_eq!(got, expected, "scalar hamming failed at n={}", n);
+        }
+    }
+
+    #[test]
+    fn test_tier_scalar_popcount() {
+        for &n in &[0, 1, 7, 64, 128, 1024, 8192] {
+            let a = test_data(n, 0xBB);
+            let expected = reference_popcount(&a);
+            let got = popcount_scalar(&a);
+            assert_eq!(got, expected, "scalar popcount failed at n={}", n);
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn test_tier_avx2_hamming() {
+        if !is_x86_feature_detected!("avx2") {
+            eprintln!("SKIP: AVX2 not available");
+            return;
+        }
+        for &n in &[0, 1, 7, 15, 31, 32, 33, 63, 64, 65, 127, 128, 255, 256, 1024, 4096, 8192] {
+            let a = test_data(n, 0xAA);
+            let b = test_data(n, 0x55);
+            let expected = reference_hamming(&a, &b);
+            let got = unsafe { hamming_avx2(&a, &b) };
+            assert_eq!(got, expected, "AVX2 hamming failed at n={}", n);
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn test_tier_avx512bw_hamming() {
+        if !is_x86_feature_detected!("avx512bw") {
+            eprintln!("SKIP: AVX-512 BW not available");
+            return;
+        }
+        for &n in &[0, 1, 7, 15, 31, 32, 33, 63, 64, 65, 127, 128, 255, 256, 1024, 4096, 8192, 65536] {
+            let a = test_data(n, 0xAA);
+            let b = test_data(n, 0x55);
+            let expected = reference_hamming(&a, &b);
+            let got = unsafe { hamming_avx512bw(&a, &b) };
+            assert_eq!(got, expected, "AVX-512 BW hamming failed at n={}", n);
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn test_tier_avx512bw_popcount() {
+        if !is_x86_feature_detected!("avx512bw") {
+            eprintln!("SKIP: AVX-512 BW not available");
+            return;
+        }
+        for &n in &[0, 1, 7, 63, 64, 65, 128, 1024, 8192, 65536] {
+            let a = test_data(n, 0xCC);
+            let expected = reference_popcount(&a);
+            let got = unsafe { popcount_avx512bw(&a) };
+            assert_eq!(got, expected, "AVX-512 BW popcount failed at n={}", n);
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn test_tier_vpopcntdq_hamming() {
+        if !(is_x86_feature_detected!("avx512vpopcntdq") && is_x86_feature_detected!("avx512bw")) {
+            eprintln!("SKIP: VPOPCNTDQ not available");
+            return;
+        }
+        for &n in &[0, 1, 7, 15, 31, 32, 33, 63, 64, 65, 127, 128, 255, 256, 1024, 4096, 8192, 65536] {
+            let a = test_data(n, 0xAA);
+            let b = test_data(n, 0x55);
+            let expected = reference_hamming(&a, &b);
+            let got = unsafe { crate::backend::kernels_avx512::hamming_distance(&a, &b) };
+            assert_eq!(got, expected, "VPOPCNTDQ hamming failed at n={}", n);
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn test_tier_vpopcntdq_popcount() {
+        if !is_x86_feature_detected!("avx512vpopcntdq") {
+            eprintln!("SKIP: VPOPCNTDQ not available");
+            return;
+        }
+        for &n in &[0, 1, 7, 63, 64, 65, 128, 1024, 8192, 65536] {
+            let a = test_data(n, 0xDD);
+            let expected = reference_popcount(&a);
+            let got = unsafe { crate::backend::kernels_avx512::popcount(&a) };
+            assert_eq!(got, expected, "VPOPCNTDQ popcount failed at n={}", n);
+        }
+    }
+
+    /// Cross-tier consistency: all available tiers must produce identical results.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn test_all_tiers_agree() {
+        let sizes = [0, 1, 3, 7, 15, 16, 31, 32, 33, 63, 64, 65,
+                     127, 128, 129, 255, 256, 512, 1024, 2048, 4096, 8192];
+
+        for &n in &sizes {
+            let a = test_data(n, 0x42);
+            let b = test_data(n, 0x99);
+            let scalar = hamming_scalar(&a, &b);
+
+            if is_x86_feature_detected!("avx2") {
+                let avx2 = unsafe { hamming_avx2(&a, &b) };
+                assert_eq!(scalar, avx2,
+                    "scalar≠avx2 at n={}: {} vs {}", n, scalar, avx2);
+            }
+            if is_x86_feature_detected!("avx512bw") {
+                let bw = unsafe { hamming_avx512bw(&a, &b) };
+                assert_eq!(scalar, bw,
+                    "scalar≠avx512bw at n={}: {} vs {}", n, scalar, bw);
+            }
+            if is_x86_feature_detected!("avx512vpopcntdq") && is_x86_feature_detected!("avx512bw") {
+                let vpc = unsafe { crate::backend::kernels_avx512::hamming_distance(&a, &b) };
+                assert_eq!(scalar, vpc,
+                    "scalar≠vpopcntdq at n={}: {} vs {}", n, scalar, vpc);
+            }
+        }
+    }
+
+    /// Cross-tier consistency for popcount.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn test_all_tiers_agree_popcount() {
+        let sizes = [0, 1, 7, 15, 32, 63, 64, 65, 128, 256, 1024, 8192];
+
+        for &n in &sizes {
+            let a = test_data(n, 0x77);
+            let scalar = popcount_scalar(&a);
+
+            if is_x86_feature_detected!("avx512bw") {
+                let bw = unsafe { popcount_avx512bw(&a) };
+                assert_eq!(scalar, bw,
+                    "popcount scalar≠avx512bw at n={}: {} vs {}", n, scalar, bw);
+            }
+            if is_x86_feature_detected!("avx512vpopcntdq") {
+                let vpc = unsafe { crate::backend::kernels_avx512::popcount(&a) };
+                assert_eq!(scalar, vpc,
+                    "popcount scalar≠vpopcntdq at n={}: {} vs {}", n, scalar, vpc);
+            }
+        }
+    }
+
+    /// Stress test: large data at all boundaries (catches accumulator overflow bugs).
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn test_large_hamming_all_tiers() {
+        // 64KB = fingerprint size. All bits different → max hamming.
+        let n = 65536;
+        let a = vec![0xAAu8; n];
+        let b = vec![0x55u8; n]; // XOR = 0xFF → 8 bits per byte
+        let expected = n as u64 * 8;
+
+        assert_eq!(hamming_scalar(&a, &b), expected, "scalar large");
+
+        if is_x86_feature_detected!("avx2") {
+            assert_eq!(unsafe { hamming_avx2(&a, &b) }, expected, "avx2 large");
+        }
+        if is_x86_feature_detected!("avx512bw") {
+            assert_eq!(unsafe { hamming_avx512bw(&a, &b) }, expected, "avx512bw large");
+        }
+        if is_x86_feature_detected!("avx512vpopcntdq") && is_x86_feature_detected!("avx512bw") {
+            assert_eq!(
+                unsafe { crate::backend::kernels_avx512::hamming_distance(&a, &b) },
+                expected, "vpopcntdq large"
+            );
+        }
+    }
+
+    /// Edge: identical vectors → distance 0 at all tiers.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn test_identical_all_tiers() {
+        for &n in &[0, 1, 64, 128, 8192] {
+            let a = test_data(n, 0xEE);
+            let b = a.clone();
+
+            assert_eq!(hamming_scalar(&a, &b), 0, "scalar identical n={}", n);
+            if is_x86_feature_detected!("avx2") {
+                assert_eq!(unsafe { hamming_avx2(&a, &b) }, 0, "avx2 identical n={}", n);
+            }
+            if is_x86_feature_detected!("avx512bw") {
+                assert_eq!(unsafe { hamming_avx512bw(&a, &b) }, 0, "bw identical n={}", n);
+            }
+            if is_x86_feature_detected!("avx512vpopcntdq") && is_x86_feature_detected!("avx512bw") {
+                assert_eq!(
+                    unsafe { crate::backend::kernels_avx512::hamming_distance(&a, &b) },
+                    0, "vpc identical n={}", n
+                );
+            }
+        }
+    }
 }
