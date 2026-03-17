@@ -31,10 +31,10 @@ use super::fingerprint::Fingerprint;
 pub struct SplitMix64(u64);
 
 impl SplitMix64 {
-    fn new(seed: u64) -> Self {
+    pub fn new(seed: u64) -> Self {
         Self(seed)
     }
-    fn next_u64(&mut self) -> u64 {
+    pub fn next_u64(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
         let mut z = self.0;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
