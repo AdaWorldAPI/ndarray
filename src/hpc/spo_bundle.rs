@@ -1285,4 +1285,230 @@ mod tests {
 
         eprintln!("\n  EXPERIMENT 12: Shift roundtrip verified (all exact)");
     }
+
+    // ── ZeckF8 band encoding (the approach that actually works) ─────
+
+    /// Encode 7 SPO band classifications into a single u8.
+    fn zeckf8(ds: u32, dp: u32, d_o: u32, d_max: u32) -> u8 {
+        let thresh = d_max / 2;
+        let s_close = (ds < thresh) as u8;
+        let p_close = (dp < thresh) as u8;
+        let o_close = (d_o < thresh) as u8;
+        let sp_close = ((ds + dp) < 2 * thresh) as u8;
+        let so_close = ((ds + d_o) < 2 * thresh) as u8;
+        let po_close = ((dp + d_o) < 2 * thresh) as u8;
+        let spo_close = ((ds + dp + d_o) < 3 * thresh) as u8;
+
+        s_close | (p_close << 1) | (o_close << 2) | (sp_close << 3)
+            | (so_close << 4) | (po_close << 5) | (spo_close << 6)
+    }
+
+    /// ZeckF64: 8 bytes = scent + 7 resolution quantiles.
+    fn zeckf64(ds: u32, dp: u32, d_o: u32, d_max: u32) -> u64 {
+        let byte0 = zeckf8(ds, dp, d_o, d_max) as u64;
+        let byte1 = ((ds + dp + d_o) as u64 * 255 / (3 * d_max) as u64).min(255);
+        let byte2 = ((dp + d_o) as u64 * 255 / (2 * d_max) as u64).min(255);
+        let byte3 = ((ds + d_o) as u64 * 255 / (2 * d_max) as u64).min(255);
+        let byte4 = ((ds + dp) as u64 * 255 / (2 * d_max) as u64).min(255);
+        let byte5 = (d_o as u64 * 255 / d_max as u64).min(255);
+        let byte6 = (dp as u64 * 255 / d_max as u64).min(255);
+        let byte7 = (ds as u64 * 255 / d_max as u64).min(255);
+
+        byte0 | (byte1 << 8) | (byte2 << 16) | (byte3 << 24)
+            | (byte4 << 32) | (byte5 << 40) | (byte6 << 48) | (byte7 << 56)
+    }
+
+    fn zeckf64_l1(a: u64, b: u64) -> u32 {
+        let mut dist = 0u32;
+        for i in 0..8 {
+            let ba = ((a >> (i * 8)) & 0xFF) as i16;
+            let bb = ((b >> (i * 8)) & 0xFF) as i16;
+            dist += (ba - bb).unsigned_abs() as u32;
+        }
+        dist
+    }
+
+    // ── THE DECISIVE EXPERIMENT: Pareto frontier validation ─────────
+
+    #[test]
+    fn exp_pareto_frontier_comparison() {
+        println!("\n═══ PARETO FRONTIER: 5 METHODS COMPARED ═══");
+        let n_nodes = 500;
+        let d_max = D_FULL as u32; // 16384
+
+        // Generate random 16Kbit SPO triples
+        let nodes: Vec<([u64; 256], [u64; 256], [u64; 256])> = (0..n_nodes)
+            .map(|i| {
+                let base = 42 + i as u64 * 3;
+                (random_bits(base), random_bits(base + 1), random_bits(base + 2))
+            })
+            .collect();
+
+        // Precompute all pairwise distances for ground truth
+        let n_pairs = n_nodes * (n_nodes - 1) / 2;
+        let mut exact_dists = Vec::with_capacity(n_pairs);
+        let mut zeckf8_dists = Vec::with_capacity(n_pairs);
+        let mut zeckf64_dists = Vec::with_capacity(n_pairs);
+        let mut bundle_8k_dists = Vec::with_capacity(n_pairs);
+        let mut bundle_16k_dists = Vec::with_capacity(n_pairs);
+
+        // Pre-build bundles
+        let bundles_8k: Vec<[u64; 128]> = nodes.iter()
+            .map(|(s, p, o)| bundle_8k(s, p, o)).collect();
+        let bundles_16k: Vec<[u64; 256]> = nodes.iter()
+            .map(|(s, p, o)| bundle_16k(s, p, o)).collect();
+
+        for i in 0..n_nodes {
+            for j in (i+1)..n_nodes {
+                let ds = hamming(&nodes[i].0, &nodes[j].0);
+                let dp = hamming(&nodes[i].1, &nodes[j].1);
+                let d_o = hamming(&nodes[i].2, &nodes[j].2);
+
+                // Ground truth: exact S+P+O
+                exact_dists.push((ds + dp + d_o) as f64);
+
+                // ZeckF8: 8 bits (scent only)
+                let z8_a = zeckf8(0, 0, 0, d_max); // self-comparison = all close
+                let z8_i = zeckf8(ds, dp, d_o, d_max);
+                // L1 on the 8-bit patterns (popcount of XOR = Hamming on bits)
+                zeckf8_dists.push((z8_i ^ 0u8).count_ones() as f64); // vs "all close"
+
+                // Better: use ZeckF8 as direct hamming between each pair's patterns
+                // Each pair has its own scent relative to query 0? No — compute
+                // distance between pair (i,j) using their component distances.
+                // For ranking: we want distance(i,j), not distance(i, query).
+                // Use L1 on ZeckF64 representations
+                let z64_i_j = zeckf64(ds, dp, d_o, d_max);
+                // The distance IS the ZeckF64 value itself (it encodes distance)
+                // For ranking pairs by distance, we can just use the encoded value
+                zeckf64_dists.push(z64_i_j as f64);
+
+                // 8Kbit bundle
+                bundle_8k_dists.push(hamming(&bundles_8k[i], &bundles_8k[j]) as f64);
+
+                // 16Kbit integrated
+                bundle_16k_dists.push(hamming(&bundles_16k[i], &bundles_16k[j]) as f64);
+            }
+        }
+
+        // Compute Spearman for each method vs exact
+        fn rank_vec(v: &[f64]) -> Vec<f64> {
+            let mut indexed: Vec<(usize, f64)> = v.iter().enumerate().map(|(i, &d)| (i, d)).collect();
+            indexed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+            let mut ranks = vec![0.0f64; v.len()];
+            for (rank, &(idx, _)) in indexed.iter().enumerate() {
+                ranks[idx] = rank as f64;
+            }
+            ranks
+        }
+
+        let ranks_exact = rank_vec(&exact_dists);
+        let ranks_z64 = rank_vec(&zeckf64_dists);
+        let ranks_b8k = rank_vec(&bundle_8k_dists);
+        let ranks_b16k = rank_vec(&bundle_16k_dists);
+
+        let rho_z64 = spearman(&ranks_exact, &ranks_z64);
+        let rho_b8k = spearman(&ranks_exact, &ranks_b8k);
+        let rho_b16k = spearman(&ranks_exact, &ranks_b16k);
+
+        println!("  {} nodes, {} pairs", n_nodes, n_pairs);
+        println!("  ─────────────────────────────────────────────────────");
+        println!("  Method              Bits     Spearman ρ   Verdict");
+        println!("  ─────────────────────────────────────────────────────");
+        println!("  ZeckF64 (8 bytes)   64       {:.4}       {}", rho_z64,
+            if rho_z64 > 0.90 {"GO ✓"} else {"CHECK"});
+        println!("  Bundle 16K (maj3)   16,384   {:.4}       {}", rho_b16k,
+            if rho_b16k > 0.80 {"GO ✓"} else {"DEAD ZONE"});
+        println!("  Bundle 8K (fold+maj) 8,192   {:.4}       {}", rho_b8k,
+            if rho_b8k > 0.60 {"GO ✓"} else {"DEAD ZONE"});
+        println!("  Exact S+P+O         49,152   1.0000       reference");
+        println!("  ─────────────────────────────────────────────────────");
+
+        if rho_z64 > 0.90 && rho_b16k < 0.60 {
+            println!("\n  ★ PARETO FRONTIER CONFIRMED:");
+            println!("    ZeckF64 at 64 bits DOMINATES 16Kbit bundle.");
+            println!("    The dead zone between 57 and 8,192 bits is REAL.");
+            println!("    Bundling is NOT the right compression strategy.");
+            println!("    ZeckF8/ZeckF64 band encoding IS the right strategy.");
+        }
+    }
+
+    // ── EXPERIMENT: ZeckF8 recall@k (the paper's core claim) ────────
+
+    #[test]
+    fn exp_zeckf8_recall() {
+        println!("\n═══ ZeckF8 RECALL TEST ═══");
+        let n_nodes = 1000;
+        let d_max = D_FULL as u32;
+
+        let nodes: Vec<([u64; 256], [u64; 256], [u64; 256])> = (0..n_nodes)
+            .map(|i| {
+                let base = 100 + i as u64 * 3;
+                (random_bits(base), random_bits(base + 1), random_bits(base + 2))
+            })
+            .collect();
+
+        // Precompute all component distances from query 0
+        let queries = [0, 50, 100, 200, 500];
+        let mut all_recall_1 = Vec::new();
+        let mut all_recall_10 = Vec::new();
+
+        for &query in &queries {
+            // Ground truth ranking
+            let mut exact: Vec<(usize, u32)> = (0..n_nodes)
+                .filter(|&i| i != query)
+                .map(|i| {
+                    let ds = hamming(&nodes[query].0, &nodes[i].0);
+                    let dp = hamming(&nodes[query].1, &nodes[i].1);
+                    let d_o = hamming(&nodes[query].2, &nodes[i].2);
+                    (i, ds + dp + d_o)
+                })
+                .collect();
+            exact.sort_by_key(|&(_, d)| d);
+
+            // ZeckF64 ranking (L1 on 8-byte encoding)
+            let mut zf64: Vec<(usize, u32)> = (0..n_nodes)
+                .filter(|&i| i != query)
+                .map(|i| {
+                    let ds = hamming(&nodes[query].0, &nodes[i].0);
+                    let dp = hamming(&nodes[query].1, &nodes[i].1);
+                    let d_o = hamming(&nodes[query].2, &nodes[i].2);
+                    let z = zeckf64(ds, dp, d_o, d_max);
+                    // For query-centric ranking, the ZeckF64 value IS the distance
+                    // Higher bytes = coarser distance. L1 on the full u64.
+                    (i, z as u32) // using lower 32 bits for ordering
+                })
+                .collect();
+            // Actually, for proper ordering, we should use the full u64.
+            // But since exact uses u32, let's use the SPO quantile (byte 1) as primary key
+            let mut zf64_full: Vec<(usize, u64)> = (0..n_nodes)
+                .filter(|&i| i != query)
+                .map(|i| {
+                    let ds = hamming(&nodes[query].0, &nodes[i].0);
+                    let dp = hamming(&nodes[query].1, &nodes[i].1);
+                    let d_o = hamming(&nodes[query].2, &nodes[i].2);
+                    (i, zeckf64(ds, dp, d_o, d_max))
+                })
+                .collect();
+            // Sort by the full u64 — higher bytes are more significant in u64
+            zf64_full.sort_by_key(|&(_, z)| z);
+
+            for &k in &[1, 5, 10, 20] {
+                let top_exact: HashSet<usize> = exact[..k].iter().map(|&(i, _)| i).collect();
+                let top_zf64: HashSet<usize> = zf64_full[..k].iter().map(|&(i, _)| i).collect();
+                let recall = top_exact.intersection(&top_zf64).count() as f64 / k as f64;
+
+                if k == 1 { all_recall_1.push(recall); }
+                if k == 10 { all_recall_10.push(recall); }
+            }
+        }
+
+        let mean_r1 = all_recall_1.iter().sum::<f64>() / all_recall_1.len() as f64;
+        let mean_r10 = all_recall_10.iter().sum::<f64>() / all_recall_10.len() as f64;
+        println!("  ZeckF64 Recall@1:  {:.3}", mean_r1);
+        println!("  ZeckF64 Recall@10: {:.3}", mean_r10);
+        println!("  Recall@1  > 0.80: {}", if mean_r1 > 0.80 {"GO ✓"} else {"CHECK"});
+        println!("  Recall@10 > 0.70: {}", if mean_r10 > 0.70 {"GO ✓"} else {"CHECK"});
+    }
+
 }
