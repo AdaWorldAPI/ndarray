@@ -382,7 +382,7 @@ pub fn vsa_sequence(items: &[VsaVector]) -> VsaVector {
 /// # Example
 ///
 /// ```
-/// use ndarray::hpc::vsa::{VsaVector, vsa_clean, vsa_bind};
+/// use ndarray::hpc::vsa::{VsaVector, vsa_clean};
 /// let codebook = vec![VsaVector::random(1), VsaVector::random(2)];
 /// let noisy = VsaVector::random(1); // same seed → identical
 /// let found = vsa_clean(&noisy, &codebook);
