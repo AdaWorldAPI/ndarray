@@ -51,6 +51,8 @@ pub mod bf16_truth;
 #[allow(missing_docs)]
 pub mod causality;
 #[allow(missing_docs)]
+pub mod nars;
+#[allow(missing_docs)]
 pub mod blackboard;
 #[allow(missing_docs)]
 pub mod bnn;
@@ -62,6 +64,8 @@ pub mod clam_search;
 pub mod clam_compress;
 #[allow(missing_docs)]
 pub mod arrow_bridge;
+#[allow(missing_docs)]
+pub mod merkle_tree;
 
 // Sprint 1: Quick Wins (hot-path gap fill)
 #[allow(missing_docs)]
@@ -81,6 +85,10 @@ pub mod bnn_cross_plane;
 #[allow(missing_docs)]
 pub mod bnn_causal_trajectory;
 
+// Qualia system: 16-channel phenomenal coloring
+#[allow(missing_docs)]
+pub mod qualia;
+
 // Sprint 2: Core Cognitive Layer
 #[allow(missing_docs)]
 pub mod kernels;
@@ -88,6 +96,12 @@ pub mod kernels;
 pub mod organic;
 #[allow(missing_docs)]
 pub mod substrate;
+#[allow(missing_docs)]
+pub mod tekamolo;
+#[allow(missing_docs)]
+pub mod vsa;
+#[allow(missing_docs)]
+pub mod deepnsm;
 
 #[cfg(test)]
 mod e2e_tests {
