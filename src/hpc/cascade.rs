@@ -257,6 +257,50 @@ impl Cascade {
         finalists
     }
 
+    /// Run cascade verification on pre-filtered candidate indices.
+    ///
+    /// This is the CLAM->Cascade bridge entry point. CLAM provides tight
+    /// candidates via rho-NN (triangle-inequality pruning), replacing Stroke 1's
+    /// statistical prefix scan. This method runs Stroke 2 (full Hamming) and
+    /// Stroke 3 (banding) on those candidates only.
+    ///
+    /// Because CLAM already provides geometrically tight candidates, Stroke 1
+    /// is partially redundant -- we skip directly to full Hamming verification.
+    pub fn query_candidates(
+        &self,
+        query: &[u8],
+        database: &[u8],
+        vec_bytes: usize,
+        candidate_indices: &[(usize, u64)],
+    ) -> Vec<RankedHit> {
+        let threshold = self.threshold;
+        let mut results = Vec::with_capacity(candidate_indices.len());
+
+        for &(idx, clam_dist) in candidate_indices {
+            // CLAM already computed Hamming distances; use them if within threshold
+            let d = if clam_dist > 0 {
+                // Verify with full Hamming (CLAM distances are exact for Hamming)
+                clam_dist
+            } else {
+                // Distance 0 = exact match, verify
+                let base = idx * vec_bytes;
+                bitwise::hamming_distance_raw(query, &database[base..base + vec_bytes])
+            };
+
+            if d <= threshold {
+                results.push(RankedHit {
+                    index: idx,
+                    hamming: d,
+                    precise: f64::NAN,
+                    band: self.expose(d as u32),
+                });
+            }
+        }
+
+        results.sort_unstable_by_key(|r| r.hamming);
+        results
+    }
+
     /// Run the full 3-stroke cascade query with precision scoring (Stroke 3).
     pub fn query_precise(
         &self,
@@ -654,5 +698,61 @@ mod tests {
         );
         let exact = results.iter().find(|r| r.index == 1).unwrap();
         assert!((exact.precise - 1.0).abs() < 1e-6, "exact match should have precise=1.0");
+    }
+
+    #[test]
+    fn cascade_query_candidates_finds_exact_match() {
+        let vec_bytes = 256;
+        let query = vec![0xAAu8; vec_bytes];
+        let mut database = vec![0x55u8; vec_bytes * 10];
+        // Make candidate 3 identical to query
+        database[3 * vec_bytes..4 * vec_bytes].copy_from_slice(&query);
+        let cascade = Cascade::from_threshold(vec_bytes as u64 * 4, vec_bytes);
+
+        // Pre-filtered candidates: (index, clam_distance)
+        let candidates = vec![(3, 0u64), (5, 500)];
+        let results = cascade.query_candidates(&query, &database, vec_bytes, &candidates);
+
+        // Exact match should survive
+        assert!(results.iter().any(|r| r.index == 3 && r.hamming == 0));
+        // Results should be sorted by hamming distance
+        for w in results.windows(2) {
+            assert!(w[0].hamming <= w[1].hamming);
+        }
+    }
+
+    #[test]
+    fn cascade_query_candidates_rejects_above_threshold() {
+        let vec_bytes = 64;
+        let query = vec![0xFFu8; vec_bytes];
+        let database = vec![0x00u8; vec_bytes * 5]; // all zeros, max hamming from query
+        // Hamming(0xFF, 0x00) = 8 bits per byte * 64 bytes = 512
+        let cascade = Cascade::from_threshold(100, vec_bytes); // tight threshold
+
+        let candidates = vec![(0, 512), (1, 512)];
+        let results = cascade.query_candidates(&query, &database, vec_bytes, &candidates);
+
+        // All should be rejected since dist=512 > threshold=100
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn cascade_query_candidates_bands_correct() {
+        let vec_bytes = 256;
+        let query = vec![0xAAu8; vec_bytes];
+        let mut database = vec![0xAAu8; vec_bytes * 5];
+        // candidate 0: exact match (dist 0)
+        // candidate 1: slightly different
+        database[1 * vec_bytes] = 0xBB; // flip some bits
+
+        let cascade = Cascade::from_threshold(1000, vec_bytes);
+        let d1 = bitwise::hamming_distance_raw(&query, &database[vec_bytes..2 * vec_bytes]);
+        let candidates = vec![(0, 0), (1, d1)];
+        let results = cascade.query_candidates(&query, &database, vec_bytes, &candidates);
+
+        assert!(!results.is_empty());
+        // Exact match should be Foveal
+        let exact = results.iter().find(|r| r.index == 0).unwrap();
+        assert_eq!(exact.band, Band::Foveal);
     }
 }

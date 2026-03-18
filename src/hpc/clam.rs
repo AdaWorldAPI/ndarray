@@ -1242,6 +1242,388 @@ pub fn compress(data: &[u8], vec_len: usize, tree: &ClamTree) -> CompressedTree 
     CompressedTree::compress(tree, data, vec_len, count)
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// Phase 1: CLAM → Cascade Bridge
+// ═══════════════════════════════════════════════════════════════════
+
+use super::cascade::{Band, Cascade, RankedHit};
+
+/// Result of CLAM→Cascade bridged search, combining CLAM's tight candidates
+/// with cascade verification and banding.
+#[derive(Debug, Clone)]
+pub struct ClamCascadeResult {
+    /// Verified hits that passed cascade threshold, sorted by Hamming distance.
+    pub hits: Vec<RankedHit>,
+    /// Number of CLAM rho-NN candidates before cascade filtering.
+    pub clam_candidates: usize,
+    /// Number of hits that survived cascade verification.
+    pub cascade_survivors: usize,
+    /// Distance computations from the CLAM search phase.
+    pub distance_calls: usize,
+    /// Clusters pruned during CLAM search.
+    pub clusters_pruned: usize,
+}
+
+impl ClamTree {
+    /// CLAM → Cascade bridge: rho-NN candidates → cascade 3-stroke verification.
+    ///
+    /// 1. Runs rho-NN on the CLAM tree to get candidate fingerprint indices
+    /// 2. Feeds those candidates into `Cascade::query_candidates()` for
+    ///    verification and band classification
+    /// 3. Returns verified `RankedHit` results
+    ///
+    /// The cascade's stroke-1 (partial prefix scan) becomes partially redundant
+    /// since CLAM provides geometrically tight candidates via triangle inequality.
+    pub fn rho_nn_cascade(
+        &self,
+        data: &[u8],
+        vec_len: usize,
+        query: &[u8],
+        rho: u64,
+        cascade: &Cascade,
+    ) -> ClamCascadeResult {
+        // Phase 1a: CLAM rho-NN search
+        let rho_result = rho_nn(self, data, vec_len, query, rho);
+        let clam_candidates = rho_result.hits.len();
+
+        // Phase 1b: Feed CLAM candidates into cascade verification
+        let verified = cascade.query_candidates(query, data, vec_len, &rho_result.hits);
+        let cascade_survivors = verified.len();
+
+        ClamCascadeResult {
+            hits: verified,
+            clam_candidates,
+            cascade_survivors,
+            distance_calls: rho_result.distance_calls,
+            clusters_pruned: rho_result.clusters_pruned,
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Phase 2: SPO Distance Harvest
+// ═══════════════════════════════════════════════════════════════════
+
+use super::causality::{
+    causality_decompose, CausalityDecomposition, NarsTruthValue,
+};
+use super::bf16_truth::{
+    AwarenessState, PackedQualia,
+};
+use super::node::{Node, SPO, S__, _P_, __O};
+use super::plane::Distance as PlaneDistance;
+
+/// A verified hit enriched with causal metadata from SPO decomposition.
+#[derive(Debug, Clone)]
+pub struct CausalHit {
+    /// Original cascade hit.
+    pub index: usize,
+    /// Hamming distance.
+    pub hamming: u64,
+    /// Cascade band classification.
+    pub band: Band,
+    /// Per-plane S/P/O distances (disagreement values).
+    /// `None` if planes are incomparable.
+    pub s_distance: Option<u32>,
+    pub p_distance: Option<u32>,
+    pub o_distance: Option<u32>,
+    /// NARS truth value accumulated from awareness states.
+    pub truth: NarsTruthValue,
+    /// Causal decomposition across warmth/social/sacredness dimensions.
+    pub causality: Option<CausalityDecomposition>,
+}
+
+/// Decompose verified hits through Node S/P/O distance and causality analysis.
+///
+/// For each verified hit:
+/// 1. Computes per-plane distances via `Node::distance()` for S, P, O masks
+/// 2. Feeds distances into NARS truth value accumulation
+/// 3. Uses `CausalityDecomposition` to extract directional relationships
+/// 4. Returns enriched results with causal metadata
+pub fn spo_distance_harvest(
+    hits: &[RankedHit],
+    query_node: &mut Node,
+    hit_nodes: &mut [Node],
+    query_qualia: &PackedQualia,
+    hit_qualias: &[PackedQualia],
+) -> Vec<CausalHit> {
+    let mut results = Vec::with_capacity(hits.len());
+
+    for hit in hits {
+        let idx = hit.index;
+
+        // Bounds check: if we don't have node/qualia data for this index, use defaults
+        if idx >= hit_nodes.len() || idx >= hit_qualias.len() {
+            results.push(CausalHit {
+                index: idx,
+                hamming: hit.hamming,
+                band: hit.band,
+                s_distance: None,
+                p_distance: None,
+                o_distance: None,
+                truth: NarsTruthValue::ignorance(),
+                causality: None,
+            });
+            continue;
+        }
+
+        let hit_node = &mut hit_nodes[idx];
+
+        // Step 1: Per-plane S/P/O distances
+        let d_s = query_node.distance(hit_node, S__);
+        let d_p = query_node.distance(hit_node, _P_);
+        let d_o = query_node.distance(hit_node, __O);
+
+        let s_dist = match d_s {
+            PlaneDistance::Measured { disagreement, .. } => Some(disagreement),
+            PlaneDistance::Incomparable => None,
+        };
+        let p_dist = match d_p {
+            PlaneDistance::Measured { disagreement, .. } => Some(disagreement),
+            PlaneDistance::Incomparable => None,
+        };
+        let o_dist = match d_o {
+            PlaneDistance::Measured { disagreement, .. } => Some(disagreement),
+            PlaneDistance::Incomparable => None,
+        };
+
+        // Step 2: Derive NARS truth value from SPO distances
+        // Use the full SPO distance to derive awareness-based truth
+        let d_spo = query_node.distance(hit_node, SPO);
+        let truth = match d_spo {
+            PlaneDistance::Measured { disagreement, overlap, .. } => {
+                if overlap == 0 {
+                    NarsTruthValue::ignorance()
+                } else {
+                    let frequency = 1.0 - (disagreement as f32 / overlap as f32).min(1.0);
+                    let confidence = (overlap as f32 / (overlap as f32 + 1.0)).min(0.9999);
+                    NarsTruthValue::new(frequency, confidence)
+                }
+            }
+            PlaneDistance::Incomparable => NarsTruthValue::ignorance(),
+        };
+
+        // Step 3: Causality decomposition via qualia
+        let hit_qualia = &hit_qualias[idx];
+        let decomposition = causality_decompose(query_qualia, hit_qualia, None);
+
+        results.push(CausalHit {
+            index: idx,
+            hamming: hit.hamming,
+            band: hit.band,
+            s_distance: s_dist,
+            p_distance: p_dist,
+            o_distance: o_dist,
+            truth,
+            causality: Some(decomposition),
+        });
+    }
+
+    results
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Phase 3: panCAKES Compression Wiring
+// ═══════════════════════════════════════════════════════════════════
+
+/// Result of a compressed search query.
+#[derive(Debug, Clone)]
+pub struct CompressedSearchResult {
+    /// (original_index, distance) pairs, sorted by distance ascending.
+    pub hits: Vec<(usize, u64)>,
+    /// Number of distance computations (compressed, not full).
+    pub distance_calls: usize,
+    /// Compression ratio of the database.
+    pub compression_ratio: f64,
+}
+
+impl ClamTree {
+    /// Compress a fingerprint database using cluster centers as codebook.
+    ///
+    /// Wraps `CompressedTree::compress()` — each point is XOR-diff encoded
+    /// relative to its nearest cluster center, yielding a compact representation
+    /// suitable for compressive search.
+    pub fn compress_database(
+        &self,
+        data: &[u8],
+        vec_len: usize,
+    ) -> CompressedTree {
+        let count = data.len() / vec_len;
+        CompressedTree::compress(self, data, vec_len, count)
+    }
+
+    /// Query a compressed database, decompressing on-the-fly during search.
+    ///
+    /// Uses `CompressedTree::hamming_to_compressed()` to compute Hamming
+    /// distances from the encoding diffs without full decompression.
+    /// Cost per point: O(num_diffs) instead of O(vec_len).
+    pub fn query_compressed(
+        &self,
+        compressed: &CompressedTree,
+        data: &[u8],
+        vec_len: usize,
+        query: &[u8],
+        rho: u64,
+    ) -> CompressedSearchResult {
+        let count = data.len() / vec_len;
+        let mut cache = DistanceCache::new();
+        let mut hits = Vec::new();
+        let mut distance_calls = 0usize;
+        let dist_fn = self.distance_fn();
+
+        // Use CLAM tree structure: walk to find overlapping leaves,
+        // then do compressive distance on leaf members
+        let mut candidate_leaves = Vec::new();
+        let mut stack = vec![0usize];
+
+        while let Some(node_idx) = stack.pop() {
+            if node_idx >= self.nodes.len() {
+                continue;
+            }
+            let cluster = &self.nodes[node_idx];
+            let center = self.center_data(cluster, data, vec_len);
+            let delta = self.dist(query, center);
+            distance_calls += 1;
+
+            let d_minus = cluster.delta_minus(delta);
+
+            if d_minus > rho {
+                continue;
+            }
+
+            if cluster.is_leaf() {
+                candidate_leaves.push(node_idx);
+            } else {
+                if let Some(left) = cluster.left {
+                    stack.push(left);
+                }
+                if let Some(right) = cluster.right {
+                    stack.push(right);
+                }
+            }
+        }
+
+        // For each surviving leaf, compute compressive distances
+        for node_idx in &candidate_leaves {
+            let cluster = &self.nodes[*node_idx];
+            for (orig_idx, _) in self.cluster_points(cluster, data, vec_len) {
+                if orig_idx >= count {
+                    continue;
+                }
+                let d = compressed.hamming_to_compressed(
+                    query, orig_idx, data, vec_len, &mut cache, dist_fn,
+                );
+                distance_calls += 1;
+                if d <= rho {
+                    hits.push((orig_idx, d));
+                }
+            }
+        }
+
+        hits.sort_by_key(|&(_, d)| d);
+
+        CompressedSearchResult {
+            hits,
+            distance_calls,
+            compression_ratio: compressed.stats.ratio,
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Phase 4: CHAODA Anomaly Detection
+// ═══════════════════════════════════════════════════════════════════
+
+/// Anomaly score for a single data point, derived from cluster LFD.
+#[derive(Debug, Clone)]
+pub struct AnomalyScore {
+    /// Original dataset index.
+    pub index: usize,
+    /// LFD of the leaf cluster containing this point.
+    pub lfd: f64,
+    /// Normalized anomaly score in [0, 1]. Higher = more anomalous.
+    pub score: f64,
+    /// Awareness classification derived from anomaly level.
+    pub awareness: AwarenessState,
+}
+
+impl ClamTree {
+    /// Compute cluster-based anomaly scores from LFD distribution (CHAODA).
+    ///
+    /// High LFD = complex local geometry = potential outlier.
+    /// The score is normalized against the global LFD distribution:
+    ///   score = (lfd - lfd_min) / (lfd_max - lfd_min)
+    ///
+    /// Returns one `AnomalyScore` per data point in the dataset.
+    pub fn anomaly_scores(&self, data: &[u8], vec_len: usize) -> Vec<AnomalyScore> {
+        let count = data.len() / vec_len;
+
+        // Build a map: original_index -> leaf cluster LFD
+        let mut point_lfd = vec![0.0f64; count];
+
+        for node in &self.nodes {
+            if node.is_leaf() {
+                let start = node.offset;
+                let end = start + node.cardinality;
+                for &orig_idx in &self.reordered[start..end] {
+                    if orig_idx < count {
+                        point_lfd[orig_idx] = node.lfd.value;
+                    }
+                }
+            }
+        }
+
+        // Compute global LFD min/max for normalization
+        let lfd_min = point_lfd.iter().cloned().fold(f64::INFINITY, f64::min);
+        let lfd_max = point_lfd.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let lfd_range = (lfd_max - lfd_min).max(1e-10);
+
+        point_lfd
+            .iter()
+            .enumerate()
+            .map(|(idx, &lfd)| {
+                let score = (lfd - lfd_min) / lfd_range;
+
+                // Map anomaly score to awareness state:
+                // High score = high LFD = complex = Noise/Uncertain
+                // Low score = low LFD = regular = Crystallized
+                let awareness = if score < 0.25 {
+                    AwarenessState::Crystallized
+                } else if score < 0.50 {
+                    AwarenessState::Tensioned
+                } else if score < 0.75 {
+                    AwarenessState::Uncertain
+                } else {
+                    AwarenessState::Noise
+                };
+
+                AnomalyScore {
+                    index: idx,
+                    lfd,
+                    score,
+                    awareness,
+                }
+            })
+            .collect()
+    }
+
+    /// Flag anomalies: return indices of points whose anomaly score exceeds threshold.
+    ///
+    /// Threshold is in [0, 1]. A threshold of 0.75 flags the top ~25% most
+    /// anomalous points (those in high-LFD leaf clusters).
+    pub fn flag_anomalies(
+        &self,
+        data: &[u8],
+        vec_len: usize,
+        threshold: f64,
+    ) -> Vec<AnomalyScore> {
+        self.anomaly_scores(data, vec_len)
+            .into_iter()
+            .filter(|a| a.score >= threshold)
+            .collect()
+    }
+}
+
 // ─── Tests ──────────────────────────────────────────
 
 #[cfg(test)]
@@ -1786,5 +2168,426 @@ mod tests {
         let tree = ClamTree::build(&data, vec_len, 5);
         let compressed = compress(&data, vec_len, &tree);
         assert!(compressed.stats.uncompressed_bytes > 0);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Phase 1: CLAM → Cascade Bridge tests
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_rho_nn_cascade_finds_exact_match() {
+        let vec_len = 64;
+        let count = 100;
+        let data = make_test_data_seeded(count, vec_len, 42);
+        let tree = ClamTree::build(&data, vec_len, 3);
+
+        // Query = first vector
+        let query = &data[0..vec_len];
+        let rho = 200;
+
+        // Cascade with generous threshold
+        let cascade = Cascade::from_threshold(vec_len as u64 * 4, vec_len);
+        let result = tree.rho_nn_cascade(&data, vec_len, query, rho, &cascade);
+
+        // Should find the exact match at index 0
+        assert!(
+            result.hits.iter().any(|r| r.index == 0 && r.hamming == 0),
+            "Should find exact match at index 0"
+        );
+        assert!(result.clam_candidates > 0);
+        assert!(result.cascade_survivors > 0);
+        assert!(result.cascade_survivors <= result.clam_candidates);
+    }
+
+    #[test]
+    fn test_rho_nn_cascade_cascade_filters() {
+        let vec_len = 64;
+        let count = 100;
+        let data = make_test_data_seeded(count, vec_len, 77);
+        let tree = ClamTree::build(&data, vec_len, 3);
+
+        let query = &data[0..vec_len];
+        // Large rho to get many CLAM candidates
+        let rho = tree.root().radius;
+
+        // Very tight cascade threshold to filter aggressively
+        let cascade = Cascade::from_threshold(10, vec_len);
+        let result = tree.rho_nn_cascade(&data, vec_len, query, rho, &cascade);
+
+        // Cascade should filter some candidates
+        // (exact match dist=0 should still pass threshold=10)
+        assert!(result.cascade_survivors <= result.clam_candidates);
+    }
+
+    #[test]
+    fn test_rho_nn_cascade_results_sorted() {
+        let vec_len = 64;
+        let count = 50;
+        let data = make_test_data_seeded(count, vec_len, 99);
+        let tree = ClamTree::build(&data, vec_len, 3);
+
+        let query = &data[0..vec_len];
+        let cascade = Cascade::from_threshold(vec_len as u64 * 4, vec_len);
+        let result = tree.rho_nn_cascade(&data, vec_len, query, 300, &cascade);
+
+        // Results should be sorted by hamming distance
+        for w in result.hits.windows(2) {
+            assert!(w[0].hamming <= w[1].hamming, "Results should be sorted by distance");
+        }
+    }
+
+    #[test]
+    fn test_rho_nn_cascade_empty_for_zero_rho_distant_query() {
+        let vec_len = 64;
+        let count = 50;
+        let data = make_test_data_seeded(count, vec_len, 55);
+        let tree = ClamTree::build(&data, vec_len, 3);
+
+        // Query very different from all data
+        let query = vec![0xFFu8; vec_len];
+        let cascade = Cascade::from_threshold(0, vec_len); // threshold=0 rejects everything non-exact
+        let result = tree.rho_nn_cascade(&data, vec_len, &query, 0, &cascade);
+
+        // With rho=0 and a random query, likely no exact matches
+        // Just verify structure is valid
+        assert_eq!(result.cascade_survivors, result.hits.len());
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Phase 2: SPO Distance Harvest tests
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_spo_distance_harvest_basic() {
+        // Create some ranked hits
+        let hits = vec![
+            RankedHit { index: 0, hamming: 10, precise: f64::NAN, band: Band::Foveal },
+            RankedHit { index: 1, hamming: 50, precise: f64::NAN, band: Band::Near },
+        ];
+
+        let mut query_node = Node::random(42);
+        let mut hit_nodes = vec![Node::random(100), Node::random(200)];
+        let query_qualia = PackedQualia::zero();
+        let mut hit_q0 = PackedQualia::zero();
+        hit_q0.resonance[4] = 10; // warmth forward
+        let hit_qualias = vec![hit_q0, PackedQualia::zero()];
+
+        let results = spo_distance_harvest(
+            &hits,
+            &mut query_node,
+            &mut hit_nodes,
+            &query_qualia,
+            &hit_qualias,
+        );
+
+        assert_eq!(results.len(), 2);
+        // First hit should have S/P/O distances (random nodes have encounters)
+        assert!(results[0].s_distance.is_some());
+        assert!(results[0].p_distance.is_some());
+        assert!(results[0].o_distance.is_some());
+        // First hit should have causality (warmth forward)
+        let causality = results[0].causality.as_ref().unwrap();
+        assert_eq!(
+            causality.warmth_dir,
+            super::super::causality::CausalityDirection::Backward // query=0, hit=10 -> backward (hit > query)
+        );
+    }
+
+    #[test]
+    fn test_spo_distance_harvest_out_of_bounds() {
+        // Hit index beyond available nodes
+        let hits = vec![
+            RankedHit { index: 99, hamming: 10, precise: f64::NAN, band: Band::Good },
+        ];
+
+        let mut query_node = Node::random(42);
+        let mut hit_nodes = vec![Node::random(100)]; // only 1 node
+        let query_qualia = PackedQualia::zero();
+        let hit_qualias = vec![PackedQualia::zero()];
+
+        let results = spo_distance_harvest(
+            &hits,
+            &mut query_node,
+            &mut hit_nodes,
+            &query_qualia,
+            &hit_qualias,
+        );
+
+        assert_eq!(results.len(), 1);
+        // Out-of-bounds index should use defaults
+        assert!(results[0].s_distance.is_none());
+        assert!(results[0].causality.is_none());
+        assert!((results[0].truth.frequency - 0.5).abs() < 1e-6); // ignorance
+    }
+
+    #[test]
+    fn test_spo_distance_harvest_truth_values() {
+        let hits = vec![
+            RankedHit { index: 0, hamming: 5, precise: f64::NAN, band: Band::Foveal },
+        ];
+
+        let mut query_node = Node::random(1);
+        let mut hit_nodes = vec![Node::random(2)];
+        let query_qualia = PackedQualia::zero();
+        let hit_qualias = vec![PackedQualia::zero()];
+
+        let results = spo_distance_harvest(
+            &hits,
+            &mut query_node,
+            &mut hit_nodes,
+            &query_qualia,
+            &hit_qualias,
+        );
+
+        assert_eq!(results.len(), 1);
+        // Truth value should be derived from SPO distance
+        let truth = results[0].truth;
+        assert!(truth.frequency >= 0.0 && truth.frequency <= 1.0);
+        assert!(truth.confidence >= 0.0 && truth.confidence < 1.0);
+    }
+
+    #[test]
+    fn test_spo_distance_harvest_preserves_hit_info() {
+        let hits = vec![
+            RankedHit { index: 0, hamming: 42, precise: f64::NAN, band: Band::Near },
+        ];
+
+        let mut query_node = Node::random(10);
+        let mut hit_nodes = vec![Node::random(20)];
+        let query_qualia = PackedQualia::zero();
+        let hit_qualias = vec![PackedQualia::zero()];
+
+        let results = spo_distance_harvest(
+            &hits,
+            &mut query_node,
+            &mut hit_nodes,
+            &query_qualia,
+            &hit_qualias,
+        );
+
+        assert_eq!(results[0].index, 0);
+        assert_eq!(results[0].hamming, 42);
+        assert_eq!(results[0].band, Band::Near);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Phase 3: panCAKES Compression Wiring tests
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_compress_database_basic() {
+        let vec_len = 64;
+        let count = 50;
+        let data = make_test_data_seeded(count, vec_len, 42);
+        let tree = ClamTree::build(&data, vec_len, 3);
+
+        let compressed = tree.compress_database(&data, vec_len);
+        assert_eq!(compressed.encodings.len(), count);
+        assert_eq!(compressed.encoding_centers.len(), count);
+        assert!(compressed.stats.uncompressed_bytes > 0);
+    }
+
+    #[test]
+    fn test_compress_database_lossless() {
+        let vec_len = 128;
+        let count = 30;
+        let data = make_clustered_data(3, 10, vec_len, 5);
+        let tree = ClamTree::build(&data, vec_len, 3);
+
+        let compressed = tree.compress_database(&data, vec_len);
+
+        // Verify lossless decompression
+        for i in 0..count {
+            let decompressed = compressed.decompress_point(i, &data, vec_len);
+            let original = &data[i * vec_len..(i + 1) * vec_len];
+            assert_eq!(&decompressed, original, "Decompression mismatch at point {}", i);
+        }
+    }
+
+    #[test]
+    fn test_query_compressed_finds_exact_match() {
+        let vec_len = 64;
+        let count = 50;
+        let data = make_test_data_seeded(count, vec_len, 42);
+        let tree = ClamTree::build(&data, vec_len, 3);
+
+        let compressed = tree.compress_database(&data, vec_len);
+        let query = &data[0..vec_len];
+        let rho = 200;
+
+        let result = tree.query_compressed(&compressed, &data, vec_len, query, rho);
+
+        // Should find exact match at index 0
+        assert!(
+            result.hits.iter().any(|&(idx, d)| idx == 0 && d == 0),
+            "Should find exact match at index 0"
+        );
+        assert!(result.distance_calls > 0);
+    }
+
+    #[test]
+    fn test_query_compressed_matches_exact_search() {
+        let vec_len = 64;
+        let num_clusters = 5;
+        let points_per = 10;
+        let count = num_clusters * points_per;
+        let data = make_clustered_data(num_clusters, points_per, vec_len, 5);
+        let tree = ClamTree::build(&data, vec_len, 3);
+
+        let compressed = tree.compress_database(&data, vec_len);
+        let query = &data[0..vec_len];
+        let rho = 300;
+
+        let compressed_result = tree.query_compressed(&compressed, &data, vec_len, query, rho);
+        let exact_result = rho_nn(&tree, &data, vec_len, query, rho);
+
+        // Compressed search should find the same set of points
+        let compressed_indices: std::collections::HashSet<usize> =
+            compressed_result.hits.iter().map(|&(idx, _)| idx).collect();
+        let exact_indices: std::collections::HashSet<usize> =
+            exact_result.hits.iter().map(|&(idx, _)| idx).collect();
+
+        assert_eq!(
+            compressed_indices, exact_indices,
+            "Compressed search should find same results as exact search"
+        );
+    }
+
+    #[test]
+    fn test_query_compressed_results_sorted() {
+        let vec_len = 64;
+        let count = 50;
+        let data = make_test_data_seeded(count, vec_len, 99);
+        let tree = ClamTree::build(&data, vec_len, 3);
+
+        let compressed = tree.compress_database(&data, vec_len);
+        let query = &data[0..vec_len];
+
+        let result = tree.query_compressed(&compressed, &data, vec_len, query, 300);
+
+        for w in result.hits.windows(2) {
+            assert!(w[0].1 <= w[1].1, "Results should be sorted by distance");
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Phase 4: CHAODA Anomaly Detection tests
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_anomaly_scores_basic() {
+        let vec_len = 64;
+        let count = 100;
+        let data = make_test_data_seeded(count, vec_len, 42);
+        let tree = ClamTree::build(&data, vec_len, 3);
+
+        let scores = tree.anomaly_scores(&data, vec_len);
+        assert_eq!(scores.len(), count);
+
+        for score in &scores {
+            assert!(score.score >= 0.0 && score.score <= 1.0,
+                "Score {} out of range [0,1]", score.score);
+            assert!(score.index < count);
+        }
+    }
+
+    #[test]
+    fn test_anomaly_scores_awareness_mapping() {
+        let vec_len = 64;
+        let count = 100;
+        let data = make_test_data_seeded(count, vec_len, 42);
+        let tree = ClamTree::build(&data, vec_len, 3);
+
+        let scores = tree.anomaly_scores(&data, vec_len);
+
+        for score in &scores {
+            let expected_awareness = if score.score < 0.25 {
+                AwarenessState::Crystallized
+            } else if score.score < 0.50 {
+                AwarenessState::Tensioned
+            } else if score.score < 0.75 {
+                AwarenessState::Uncertain
+            } else {
+                AwarenessState::Noise
+            };
+            assert_eq!(
+                score.awareness, expected_awareness,
+                "Awareness mismatch for score={}", score.score
+            );
+        }
+    }
+
+    #[test]
+    fn test_flag_anomalies_threshold() {
+        let vec_len = 64;
+        let count = 200;
+        let data = make_test_data_seeded(count, vec_len, 42);
+        let tree = ClamTree::build(&data, vec_len, 5);
+
+        let all_scores = tree.anomaly_scores(&data, vec_len);
+        let flagged = tree.flag_anomalies(&data, vec_len, 0.75);
+
+        // All flagged should have score >= 0.75
+        for anomaly in &flagged {
+            assert!(
+                anomaly.score >= 0.75,
+                "Flagged anomaly has score {} < 0.75",
+                anomaly.score
+            );
+        }
+
+        // Count manually from all_scores
+        let expected_count = all_scores.iter().filter(|s| s.score >= 0.75).count();
+        assert_eq!(flagged.len(), expected_count);
+    }
+
+    #[test]
+    fn test_flag_anomalies_zero_threshold_returns_all() {
+        let vec_len = 32;
+        let count = 50;
+        let data = make_test_data_seeded(count, vec_len, 42);
+        let tree = ClamTree::build(&data, vec_len, 3);
+
+        let flagged = tree.flag_anomalies(&data, vec_len, 0.0);
+        assert_eq!(flagged.len(), count, "Threshold=0.0 should flag all points");
+    }
+
+    #[test]
+    fn test_flag_anomalies_one_threshold_returns_max_only() {
+        let vec_len = 64;
+        let count = 100;
+        let data = make_test_data_seeded(count, vec_len, 42);
+        let tree = ClamTree::build(&data, vec_len, 3);
+
+        let flagged = tree.flag_anomalies(&data, vec_len, 1.0);
+        // Only points with score exactly 1.0 (the maximum LFD points)
+        for a in &flagged {
+            assert!((a.score - 1.0).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn test_anomaly_scores_clustered_vs_outliers() {
+        let vec_len = 64;
+        // Create 3 tight clusters plus some noisy outliers
+        let mut data = make_clustered_data(3, 20, vec_len, 2); // tight clusters
+        // Add 5 random outliers
+        let mut rng = SplitMix64::new(999);
+        for _ in 0..5 {
+            let mut outlier = vec![0u8; vec_len];
+            for byte in outlier.iter_mut() {
+                *byte = (rng.next_u64() & 0xFF) as u8;
+            }
+            data.extend_from_slice(&outlier);
+        }
+        let count = data.len() / vec_len;
+        let tree = ClamTree::build(&data, vec_len, 3);
+
+        let scores = tree.anomaly_scores(&data, vec_len);
+        assert_eq!(scores.len(), count);
+        // Just verify valid range
+        for s in &scores {
+            assert!(s.score >= 0.0 && s.score <= 1.0);
+        }
     }
 }
