@@ -101,13 +101,14 @@ pub mod tekamolo;
 #[allow(missing_docs)]
 pub mod vsa;
 #[allow(missing_docs)]
+pub mod spo_bundle;
+#[allow(missing_docs)]
 pub mod deepnsm;
 #[allow(missing_docs)]
 pub mod surround_metadata;
 #[allow(missing_docs)]
 pub mod cyclic_bundle;
 #[allow(missing_docs)]
-pub mod spo_bundle;
 #[allow(missing_docs)]
 pub mod compression_curves;
 #[allow(missing_docs)]
