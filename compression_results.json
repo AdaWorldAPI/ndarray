@@ -1,0 +1,324 @@
+[
+  {
+    "method": "Exact S+P+O",
+    "category": "ground_truth",
+    "bits": 49152,
+    "rho_random": 1.0,
+    "rho_structured": 1.0
+  },
+  {
+    "method": "Cyclic bundle",
+    "category": "cyclic_bundle",
+    "bits": 32768,
+    "rho_random": 0.4029,
+    "rho_structured": 0.5601
+  },
+  {
+    "method": "Cyclic bundle",
+    "category": "cyclic_bundle",
+    "bits": 16384,
+    "rho_random": 0.4186,
+    "rho_structured": 0.5662
+  },
+  {
+    "method": "Cyclic bundle",
+    "category": "cyclic_bundle",
+    "bits": 8192,
+    "rho_random": 0.0042,
+    "rho_structured": 0.2664
+  },
+  {
+    "method": "Cyclic bundle",
+    "category": "cyclic_bundle",
+    "bits": 4096,
+    "rho_random": -0.0172,
+    "rho_structured": 0.2333
+  },
+  {
+    "method": "Cyclic bundle",
+    "category": "cyclic_bundle",
+    "bits": 2048,
+    "rho_random": 0.0234,
+    "rho_structured": 0.0828
+  },
+  {
+    "method": "Cyclic bundle",
+    "category": "cyclic_bundle",
+    "bits": 1024,
+    "rho_random": 0.0026,
+    "rho_structured": 0.008
+  },
+  {
+    "method": "Cyclic bundle",
+    "category": "cyclic_bundle",
+    "bits": 512,
+    "rho_random": -0.0099,
+    "rho_structured": 0.011
+  },
+  {
+    "method": "Cyclic bundle",
+    "category": "cyclic_bundle",
+    "bits": 256,
+    "rho_random": 0.0038,
+    "rho_structured": -0.0105
+  },
+  {
+    "method": "Cyclic bundle",
+    "category": "cyclic_bundle",
+    "bits": 128,
+    "rho_random": -0.0042,
+    "rho_structured": -0.0001
+  },
+  {
+    "method": "Cyclic bundle",
+    "category": "cyclic_bundle",
+    "bits": 64,
+    "rho_random": 0.0115,
+    "rho_structured": 0.0083
+  },
+  {
+    "method": "Truncation",
+    "category": "truncation",
+    "bits": 16384,
+    "rho_random": 0.554,
+    "rho_structured": 0.6681
+  },
+  {
+    "method": "Truncation",
+    "category": "truncation",
+    "bits": 8192,
+    "rho_random": 0.3897,
+    "rho_structured": 0.5435
+  },
+  {
+    "method": "Truncation",
+    "category": "truncation",
+    "bits": 4096,
+    "rho_random": 0.2695,
+    "rho_structured": 0.4582
+  },
+  {
+    "method": "Truncation",
+    "category": "truncation",
+    "bits": 2048,
+    "rho_random": 0.1939,
+    "rho_structured": 0.4087
+  },
+  {
+    "method": "Truncation",
+    "category": "truncation",
+    "bits": 1024,
+    "rho_random": 0.1392,
+    "rho_structured": 0.3644
+  },
+  {
+    "method": "Truncation",
+    "category": "truncation",
+    "bits": 512,
+    "rho_random": 0.1054,
+    "rho_structured": 0.3228
+  },
+  {
+    "method": "Truncation",
+    "category": "truncation",
+    "bits": 256,
+    "rho_random": 0.065,
+    "rho_structured": 0.2817
+  },
+  {
+    "method": "Truncation",
+    "category": "truncation",
+    "bits": 128,
+    "rho_random": 0.0451,
+    "rho_structured": 0.261
+  },
+  {
+    "method": "Truncation",
+    "category": "truncation",
+    "bits": 64,
+    "rho_random": 0.0338,
+    "rho_structured": 0.2164
+  },
+  {
+    "method": "SimHash",
+    "category": "simhash",
+    "bits": 16384,
+    "rho_random": 0.5533,
+    "rho_structured": 0.6704
+  },
+  {
+    "method": "SimHash",
+    "category": "simhash",
+    "bits": 8192,
+    "rho_random": 0.3875,
+    "rho_structured": 0.5501
+  },
+  {
+    "method": "SimHash",
+    "category": "simhash",
+    "bits": 4096,
+    "rho_random": 0.2629,
+    "rho_structured": 0.4729
+  },
+  {
+    "method": "SimHash",
+    "category": "simhash",
+    "bits": 2048,
+    "rho_random": 0.2009,
+    "rho_structured": 0.4125
+  },
+  {
+    "method": "SimHash",
+    "category": "simhash",
+    "bits": 1024,
+    "rho_random": 0.1334,
+    "rho_structured": 0.3632
+  },
+  {
+    "method": "SimHash",
+    "category": "simhash",
+    "bits": 512,
+    "rho_random": 0.1011,
+    "rho_structured": 0.3528
+  },
+  {
+    "method": "SimHash",
+    "category": "simhash",
+    "bits": 256,
+    "rho_random": 0.0518,
+    "rho_structured": 0.3013
+  },
+  {
+    "method": "SimHash",
+    "category": "simhash",
+    "bits": 128,
+    "rho_random": 0.032,
+    "rho_structured": 0.2665
+  },
+  {
+    "method": "SimHash",
+    "category": "simhash",
+    "bits": 64,
+    "rho_random": 0.0271,
+    "rho_structured": 0.2234
+  },
+  {
+    "method": "S-only",
+    "category": "component",
+    "bits": 16384,
+    "rho_random": 0.5663,
+    "rho_structured": 0.0043
+  },
+  {
+    "method": "S+P",
+    "category": "component",
+    "bits": 32768,
+    "rho_random": 0.8016,
+    "rho_structured": 0.2834
+  },
+  {
+    "method": "Popcount 256x3",
+    "category": "popcount",
+    "bits": 9984,
+    "rho_random": 0.0925,
+    "rho_structured": 0.3214
+  },
+  {
+    "method": "Popcount 128x3",
+    "category": "popcount",
+    "bits": 5376,
+    "rho_random": 0.0649,
+    "rho_structured": 0.2914
+  },
+  {
+    "method": "Popcount 64x3",
+    "category": "popcount",
+    "bits": 2880,
+    "rho_random": 0.0479,
+    "rho_structured": 0.2671
+  },
+  {
+    "method": "Popcount 32x3",
+    "category": "popcount",
+    "bits": 1536,
+    "rho_random": 0.0379,
+    "rho_structured": 0.2239
+  },
+  {
+    "method": "Popcount 16x3",
+    "category": "popcount",
+    "bits": 816,
+    "rho_random": 0.0147,
+    "rho_structured": 0.1855
+  },
+  {
+    "method": "Popcount 8x3",
+    "category": "popcount",
+    "bits": 432,
+    "rho_random": 0.0029,
+    "rho_structured": 0.1383
+  },
+  {
+    "method": "Popcount 4x3",
+    "category": "popcount",
+    "bits": 228,
+    "rho_random": 0.0089,
+    "rho_structured": 0.1306
+  },
+  {
+    "method": "Popcount 2x3",
+    "category": "popcount",
+    "bits": 120,
+    "rho_random": 0.0084,
+    "rho_structured": 0.0444
+  },
+  {
+    "method": "Popcount 1x3",
+    "category": "popcount",
+    "bits": 63,
+    "rho_random": 0.005,
+    "rho_structured": 0.0108
+  },
+  {
+    "method": "Bands 7x256lvl",
+    "category": "bands",
+    "bits": 57,
+    "rho_random": 0.9817,
+    "rho_structured": 0.986
+  },
+  {
+    "method": "Bands 7x64lvl",
+    "category": "bands",
+    "bits": 43,
+    "rho_random": 0.9367,
+    "rho_structured": 0.954
+  },
+  {
+    "method": "Bands 7x16lvl",
+    "category": "bands",
+    "bits": 29,
+    "rho_random": 0.9367,
+    "rho_structured": 0.9539
+  },
+  {
+    "method": "Bands 7x8lvl",
+    "category": "bands",
+    "bits": 22,
+    "rho_random": 0.9367,
+    "rho_structured": 0.9503
+  },
+  {
+    "method": "Bands 7x4lvl",
+    "category": "bands",
+    "bits": 15,
+    "rho_random": 0.9367,
+    "rho_structured": 0.9238
+  },
+  {
+    "method": "Bands 7x2lvl",
+    "category": "bands",
+    "bits": 8,
+    "rho_random": 0.9367,
+    "rho_structured": 0.8988
+  }
+]

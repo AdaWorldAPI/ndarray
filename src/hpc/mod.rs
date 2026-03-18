@@ -108,6 +108,8 @@ pub mod surround_metadata;
 pub mod cyclic_bundle;
 #[allow(missing_docs)]
 pub mod spo_bundle;
+#[allow(missing_docs)]
+pub mod compression_curves;
 
 #[cfg(test)]
 mod e2e_tests {
