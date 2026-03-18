@@ -110,6 +110,10 @@ pub mod cyclic_bundle;
 pub mod spo_bundle;
 #[allow(missing_docs)]
 pub mod compression_curves;
+#[allow(missing_docs)]
+pub mod crystal_encoder;
+#[allow(missing_docs)]
+pub mod udf_kernels;
 
 #[cfg(test)]
 mod e2e_tests {
