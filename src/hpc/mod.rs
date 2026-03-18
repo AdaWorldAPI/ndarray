@@ -102,6 +102,8 @@ pub mod tekamolo;
 pub mod vsa;
 #[allow(missing_docs)]
 pub mod deepnsm;
+#[allow(missing_docs)]
+pub mod surround_metadata;
 
 #[cfg(test)]
 mod e2e_tests {
