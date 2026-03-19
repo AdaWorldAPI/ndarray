@@ -1,415 +1,744 @@
-//! ZeckF64: 8-byte progressive edge encoding for SPO triples.
+//! Zeckendorf-coded vector space with Fibonacci spiral navigation.
 //!
-//! Each edge between two nodes is encoded as a single `u64`:
+//! Core encoding types from `fibonacci-vsa`, inlined to avoid circular
+//! dependency (fibonacci-vsa depends on ndarray 0.16 from crates.io).
 //!
-//! - **Byte 0 (scent):** 7 boolean SPO band classifications + sign bit.
-//!   The bits form a boolean lattice: `SP_=close` implies `S__=close AND _P_=close`.
-//!   19 of 128 patterns are legal, giving ~85% built-in error detection.
-//!
-//! - **Bytes 1–7 (resolution):** Distance quantiles within each band mask.
-//!   Each byte encodes 256 levels of refinement (0 = identical, 255 = max different).
-//!
-//! Progressive reading: byte 0 alone gives ρ ≈ 0.94 rank correlation.
-//!
-//! Ported from `lance-graph/crates/lance-graph/src/graph/neighborhood/zeckf64.rs`.
-//! Batch and top-k operations added for symmetry with `hpc::bitwise`.
+//! Re-exports the fundamental Zeckendorf representation, constants, and
+//! harmonic function for use as `ndarray::hpc::zeck::*`.
 
-use super::bitwise::{hamming_distance_raw, popcount_raw};
+use std::f64::consts::PI;
 
-// ============================================================================
-// Constants
-// ============================================================================
+// ─── COMPILE-TIME CONSTANTS ───────────────────────────────────────────
 
-/// Maximum bits per plane (16384-bit fingerprint).
-const D_MAX: u32 = 16384;
+/// Golden ratio phi = (1 + sqrt(5)) / 2
+pub const PHI: f64 = 1.618_033_988_749_895;
 
-/// "Close" threshold: less than half the bits differ.
-const THRESHOLD: u32 = D_MAX / 2;
+/// Euler-Mascheroni constant gamma — the bridge between discrete and continuous
+pub const GAMMA: f64 = 0.577_215_664_901_532_9;
 
-// ============================================================================
-// ZeckF64 encoding
-// ============================================================================
+/// ln(phi) — natural log of golden ratio, used for scale mapping
+pub const LN_PHI: f64 = 0.481_211_825_059_603_4;
 
-/// Quantize a single distance into [0, 255].
-#[inline]
-fn quantile_1(d: u32) -> u8 {
-    ((d as u64 * 255) / D_MAX as u64).min(255) as u8
-}
+/// Golden angle in radians = 2*pi / phi^2
+pub const GOLDEN_ANGLE: f64 = 2.0 * PI / (PHI * PHI);
 
-/// Quantize max of 2 distances into [0, 255].
-#[inline]
-fn quantile_2(d1: u32, d2: u32) -> u8 {
-    quantile_1(d1.max(d2))
-}
+/// Number of Fibonacci entries that fit in u64
+pub const FIB_LEN: usize = 87;
 
-/// Quantize max of 3 distances into [0, 255].
-#[inline]
-fn quantile_3(d1: u32, d2: u32, d3: u32) -> u8 {
-    quantile_1(d1.max(d2).max(d3))
-}
-
-/// Compute ZeckF64 encoding from pre-computed Hamming distances.
-///
-/// `ds`, `dp`, `d_o` are per-plane Hamming distances (Subject, Predicate, Object).
-/// Returns an 8-byte u64 with progressive precision.
-pub fn zeckf64_from_distances(ds: u32, dp: u32, d_o: u32) -> u64 {
-    let s_close = (ds < THRESHOLD) as u8;
-    let p_close = (dp < THRESHOLD) as u8;
-    let o_close = (d_o < THRESHOLD) as u8;
-    let sp_close = s_close & p_close;
-    let so_close = s_close & o_close;
-    let po_close = p_close & o_close;
-    let spo_close = sp_close & so_close & po_close;
-
-    let byte0 = s_close
-        | (p_close << 1)
-        | (o_close << 2)
-        | (sp_close << 3)
-        | (so_close << 4)
-        | (po_close << 5)
-        | (spo_close << 6);
-
-    let byte1 = quantile_3(ds, dp, d_o);
-    let byte2 = quantile_2(dp, d_o);
-    let byte3 = quantile_2(ds, d_o);
-    let byte4 = quantile_2(ds, dp);
-    let byte5 = quantile_1(d_o);
-    let byte6 = quantile_1(dp);
-    let byte7 = quantile_1(ds);
-
-    (byte0 as u64)
-        | ((byte1 as u64) << 8)
-        | ((byte2 as u64) << 16)
-        | ((byte3 as u64) << 24)
-        | ((byte4 as u64) << 32)
-        | ((byte5 as u64) << 40)
-        | ((byte6 as u64) << 48)
-        | ((byte7 as u64) << 56)
-}
-
-/// Compute ZeckF64 encoding from raw fingerprint byte slices.
-///
-/// Each triple is `(subject, predicate, object)` as `&[u8]` (16384-bit / 2048 bytes).
-pub fn zeckf64(
-    a: (&[u8], &[u8], &[u8]),
-    b: (&[u8], &[u8], &[u8]),
-) -> u64 {
-    let ds = hamming_distance_raw(a.0, b.0) as u32;
-    let dp = hamming_distance_raw(a.1, b.1) as u32;
-    let d_o = hamming_distance_raw(a.2, b.2) as u32;
-    zeckf64_from_distances(ds, dp, d_o)
-}
-
-// ============================================================================
-// Accessors
-// ============================================================================
-
-/// Extract the scent byte (byte 0) from a ZeckF64.
-#[inline]
-pub fn scent(edge: u64) -> u8 {
-    edge as u8
-}
-
-/// Extract a resolution byte (1–7) from a ZeckF64.
-#[inline]
-pub fn resolution(edge: u64, byte_n: u8) -> u8 {
-    debug_assert!((1..=7).contains(&byte_n), "byte_n must be 1..=7");
-    (edge >> (byte_n * 8)) as u8
-}
-
-/// Set the sign (causality direction) bit.
-#[inline]
-pub fn set_sign(edge: u64, sign: bool) -> u64 {
-    if sign { edge | (1u64 << 7) } else { edge & !(1u64 << 7) }
-}
-
-/// Read the sign bit.
-#[inline]
-pub fn get_sign(edge: u64) -> bool {
-    (edge & (1u64 << 7)) != 0
-}
-
-// ============================================================================
-// Distance functions
-// ============================================================================
-
-/// L1 (Manhattan) distance on two ZeckF64 values (all 8 bytes).
-/// Maximum possible distance: 8 × 255 = 2040.
-pub fn zeckf64_distance(a: u64, b: u64) -> u32 {
-    let mut dist = 0u32;
-    for i in 0..8 {
-        let ba = ((a >> (i * 8)) & 0xFF) as i16;
-        let bb = ((b >> (i * 8)) & 0xFF) as i16;
-        dist += (ba - bb).unsigned_abs() as u32;
+/// Fibonacci lookup table — all 87 values that fit in u64.
+/// Compile-time constant.
+pub const FIB: [u64; FIB_LEN] = {
+    let mut table = [0u64; FIB_LEN];
+    table[0] = 1;
+    table[1] = 2;
+    let mut i = 2;
+    while i < FIB_LEN {
+        table[i] = table[i - 1] + table[i - 2];
+        i += 1;
     }
-    dist
-}
+    table
+};
 
-/// Scent-only L1 distance: byte 0 only. Range: 0–255.
+/// Harmonic number approximation using gamma: H_n ~ ln(n) + gamma + 1/(2n) - 1/(12n^2)
+///
+/// This is where gamma bends the space — it maps discrete Fibonacci positions
+/// to continuous spiral coordinates with gravitational curvature.
 #[inline]
-pub fn zeckf64_scent_distance(a: u64, b: u64) -> u32 {
-    let ba = (a & 0xFF) as i16;
-    let bb = (b & 0xFF) as i16;
-    (ba - bb).unsigned_abs() as u32
-}
-
-/// Scent-only Hamming distance: popcount(byte0_a ^ byte0_b). Range: 0–8.
-#[inline]
-pub fn zeckf64_scent_hamming(a: u64, b: u64) -> u32 {
-    ((a as u8) ^ (b as u8)).count_ones()
-}
-
-/// Progressive L1 distance on bytes 0..=n (inclusive).
-/// `n = 0`: scent only (1 byte). `n = 7`: full ZeckF64 (8 bytes).
-pub fn zeckf64_progressive_distance(a: u64, b: u64, n: u8) -> u32 {
-    let n = n.min(7) as usize;
-    let mut dist = 0u32;
-    for i in 0..=n {
-        let ba = ((a >> (i * 8)) & 0xFF) as i16;
-        let bb = ((b >> (i * 8)) & 0xFF) as i16;
-        dist += (ba - bb).unsigned_abs() as u32;
+pub fn harmonic(n: f64) -> f64 {
+    if n <= 0.0 {
+        return 0.0;
     }
-    dist
+    n.ln() + GAMMA + 1.0 / (2.0 * n) - 1.0 / (12.0 * n * n)
 }
 
-/// Validate the boolean lattice constraints of a scent byte.
+// ─── ZECKENDORF ENCODING ──────────────────────────────────────────────
+
+/// A Zeckendorf-encoded value: a bitfield where bit k means "Fibonacci(k) is present".
 ///
-/// Returns `true` if the pattern is legal (19 of 128 are legal).
-pub fn is_legal_scent(byte0: u8) -> bool {
-    let s = byte0 & 1;
-    let p = (byte0 >> 1) & 1;
-    let o = (byte0 >> 2) & 1;
-    let sp = (byte0 >> 3) & 1;
-    let so = (byte0 >> 4) & 1;
-    let po = (byte0 >> 5) & 1;
-    let spo = (byte0 >> 6) & 1;
-
-    // Lattice: pair bit implies both individual bits
-    if sp == 1 && (s == 0 || p == 0) { return false; }
-    if so == 1 && (s == 0 || o == 0) { return false; }
-    if po == 1 && (p == 0 || o == 0) { return false; }
-    // Triple implies all three pairs
-    if spo == 1 && (sp == 0 || so == 0 || po == 0) { return false; }
-    true
+/// Every positive integer has exactly one Zeckendorf representation
+/// (greedy decomposition into non-consecutive Fibonacci numbers).
+#[derive(Clone, Debug)]
+pub struct ZeckendorfBits {
+    /// Bits packed into u128 — supports up to 87 Fibonacci positions.
+    /// Bit i set means FIB[i] is part of the decomposition.
+    pub bits: u128,
+    /// Highest set bit position — the "scale" of this value.
+    pub max_scale: u8,
 }
 
-// ============================================================================
-// Batch operations (parallel to bitwise::hamming_batch_raw / hamming_top_k_raw)
-// ============================================================================
+impl ZeckendorfBits {
+    /// Encode a u64 value into Zeckendorf representation.
+    ///
+    /// Greedy algorithm against compile-time Fibonacci table.
+    pub fn encode(mut value: u64) -> Self {
+        if value == 0 {
+            return Self { bits: 0, max_scale: 0 };
+        }
 
-/// Batch ZeckF64 distance: compute distance from `query` to each edge in `edges`.
-///
-/// Returns a Vec of `edges.len()` u32 distances.
-pub fn zeckf64_batch(query: u64, edges: &[u64]) -> Vec<u32> {
-    edges.iter().map(|&e| zeckf64_distance(query, e)).collect()
-}
+        let mut bits: u128 = 0;
+        let mut max_scale: u8 = 0;
+        let mut first = true;
 
-/// Batch scent-only distance: compute scent distance from `query` to each edge.
-pub fn zeckf64_scent_batch(query: u64, edges: &[u64]) -> Vec<u32> {
-    edges.iter().map(|&e| zeckf64_scent_distance(query, e)).collect()
-}
-
-/// Top-k nearest edges by ZeckF64 distance.
-///
-/// Returns (indices, distances) of the k closest edges.
-/// Uses `select_nth_unstable` for O(n) partial sort.
-pub fn zeckf64_top_k(query: u64, edges: &[u64], k: usize) -> (Vec<usize>, Vec<u32>) {
-    let distances = zeckf64_batch(query, edges);
-    let k = k.min(edges.len());
-    if k == 0 {
-        return (Vec::new(), Vec::new());
+        for i in (0..FIB_LEN).rev() {
+            if FIB[i] <= value {
+                bits |= 1u128 << i;
+                value -= FIB[i];
+                if first {
+                    max_scale = i as u8;
+                    first = false;
+                }
+                if value == 0 {
+                    break;
+                }
+            }
+        }
+        Self { bits, max_scale }
     }
-    let mut indexed: Vec<(usize, u32)> = distances.into_iter().enumerate().collect();
-    indexed.select_nth_unstable_by_key(k.saturating_sub(1), |&(_, d)| d);
-    indexed.truncate(k);
-    indexed.sort_unstable_by_key(|&(_, d)| d);
-    let indices = indexed.iter().map(|&(i, _)| i).collect();
-    let dists = indexed.iter().map(|&(_, d)| d).collect();
-    (indices, dists)
-}
 
-/// Top-k nearest edges by scent-only distance (byte 0 only).
-///
-/// Faster than full ZeckF64 top-k — only compares 1 byte per edge.
-/// Good for the HEEL stage of HHTL cascade search.
-pub fn zeckf64_scent_top_k(query: u64, edges: &[u64], k: usize) -> (Vec<usize>, Vec<u32>) {
-    let distances = zeckf64_scent_batch(query, edges);
-    let k = k.min(edges.len());
-    if k == 0 {
-        return (Vec::new(), Vec::new());
+    /// Decode back to u64 — lossless round-trip.
+    pub fn decode(&self) -> u64 {
+        let mut value = 0u64;
+        for i in 0..FIB_LEN {
+            if self.bits & (1u128 << i) != 0 {
+                value += FIB[i];
+            }
+        }
+        value
     }
-    let mut indexed: Vec<(usize, u32)> = distances.into_iter().enumerate().collect();
-    indexed.select_nth_unstable_by_key(k.saturating_sub(1), |&(_, d)| d);
-    indexed.truncate(k);
-    indexed.sort_unstable_by_key(|&(_, d)| d);
-    let indices = indexed.iter().map(|&(i, _)| i).collect();
-    let dists = indexed.iter().map(|&(_, d)| d).collect();
-    (indices, dists)
+
+    /// Count of set bits — the "density" of this representation.
+    pub fn popcount(&self) -> u32 {
+        self.bits.count_ones()
+    }
 }
 
-/// Batch ZeckF64 encoding: compute ZeckF64 for a query triple against each
-/// row triple in a flat database.
+// ─── SIGNED TERNARY ZECKENDORF ────────────────────────────────────────
+
+/// Compile-time Fibonacci table for signed encoding (8-bit quantization range).
+const SIGNED_FIB_LEN: usize = 24;
+const SIGNED_FIB: [u64; SIGNED_FIB_LEN] = {
+    let mut t = [0u64; SIGNED_FIB_LEN];
+    t[0] = 1;
+    t[1] = 2;
+    let mut i = 2;
+    while i < SIGNED_FIB_LEN {
+        t[i] = t[i - 1] + t[i - 2];
+        i += 1;
+    }
+    t
+};
+
+/// A single dimension encoded as signed ternary Zeckendorf.
 ///
-/// `query` = (subject, predicate, object) as &[u8] slices (2048 bytes each).
-/// `database` = flat buffer of concatenated S+P+O planes (6144 bytes per row).
-/// Returns a Vec of `num_rows` u64 ZeckF64 values.
-pub fn zeckf64_encode_batch(
-    query: (&[u8], &[u8], &[u8]),
-    database: &[u8],
-    num_rows: usize,
-    plane_bytes: usize,
-) -> Vec<u64> {
-    let row_bytes = plane_bytes * 3;
-    (0..num_rows)
-        .map(|i| {
-            let offset = i * row_bytes;
-            let s = &database[offset..offset + plane_bytes];
-            let p = &database[offset + plane_bytes..offset + 2 * plane_bytes];
-            let o = &database[offset + 2 * plane_bytes..offset + 3 * plane_bytes];
-            zeckf64(query, (s, p, o))
-        })
-        .collect()
+/// Each Fibonacci position k holds a trit: -1, 0, or +1.
+/// Value = sum of trit[k] * Fib(k).
+/// Naturally represents negative numbers without a separate sign bit.
+#[derive(Clone, Copy, Debug)]
+pub struct SignedZeckendorf {
+    /// Positive bits: bit k set = +Fib(k) contributes.
+    pub pos: u32,
+    /// Negative bits: bit k set = -Fib(k) contributes.
+    pub neg: u32,
+    /// Highest active position (max of pos and neg).
+    pub max_scale: u8,
 }
 
-// ============================================================================
-// Tests
-// ============================================================================
+impl SignedZeckendorf {
+    /// Encode a signed f64 value in [-1, 1] range.
+    ///
+    /// Quantizes to signed integer, then decomposes into +/- Fibonacci.
+    pub fn encode(value: f64, precision_bits: u8) -> Self {
+        let scale = (1u64 << precision_bits.min(20)) as f64;
+        let quantized = (value * scale).round() as i64;
+
+        if quantized == 0 {
+            return Self { pos: 0, neg: 0, max_scale: 0 };
+        }
+
+        let sign = quantized.signum();
+        let mut magnitude = quantized.unsigned_abs();
+
+        let mut pos: u32 = 0;
+        let mut neg: u32 = 0;
+        let mut max_scale: u8 = 0;
+        let mut first = true;
+
+        for i in (0..SIGNED_FIB_LEN).rev() {
+            if SIGNED_FIB[i] <= magnitude {
+                if sign > 0 {
+                    pos |= 1u32 << i;
+                } else {
+                    neg |= 1u32 << i;
+                }
+                magnitude -= SIGNED_FIB[i];
+                if first {
+                    max_scale = i as u8;
+                    first = false;
+                }
+                if magnitude == 0 {
+                    break;
+                }
+            }
+        }
+
+        Self { pos, neg, max_scale }
+    }
+
+    /// Decode back to i64.
+    pub fn decode(&self) -> i64 {
+        let mut val: i64 = 0;
+        for i in 0..SIGNED_FIB_LEN {
+            if self.pos & (1u32 << i) != 0 {
+                val += SIGNED_FIB[i] as i64;
+            }
+            if self.neg & (1u32 << i) != 0 {
+                val -= SIGNED_FIB[i] as i64;
+            }
+        }
+        val
+    }
+
+    /// Trit at position k: -1, 0, or +1.
+    pub fn trit(&self, k: usize) -> i8 {
+        let p = (self.pos >> k) & 1;
+        let n = (self.neg >> k) & 1;
+        p as i8 - n as i8
+    }
+
+    /// Total active trits (non-zero positions).
+    pub fn active_count(&self) -> u32 {
+        (self.pos | self.neg).count_ones()
+    }
+}
+
+// ─── PENTAGONAL 5-DIM GROUPS ─────────────────────────────────────────
+
+/// A 5-dimensional pentagonal group for signed ternary Zeckendorf encoding.
+///
+/// 10000D vectors decompose into 2000 groups of 5 dimensions.
+/// State space per group: 3^5 = 243 (ternary) per Fibonacci position.
+#[derive(Clone, Debug)]
+pub struct PentaGroup {
+    /// The five signed Zeckendorf dimensions.
+    pub dims: [SignedZeckendorf; 5],
+}
+
+impl PentaGroup {
+    /// Encode 5 f64 values into a pentagonal group.
+    pub fn encode(values: &[f64; 5], precision_bits: u8) -> Self {
+        Self {
+            dims: [
+                SignedZeckendorf::encode(values[0], precision_bits),
+                SignedZeckendorf::encode(values[1], precision_bits),
+                SignedZeckendorf::encode(values[2], precision_bits),
+                SignedZeckendorf::encode(values[3], precision_bits),
+                SignedZeckendorf::encode(values[4], precision_bits),
+            ],
+        }
+    }
+
+    /// Fingerprint: collapse 5 dims x FIB_LEN positions into a single u64.
+    pub fn fingerprint(&self) -> u64 {
+        let mut hash: u64 = 0;
+        for d in 0..5 {
+            for k in 0..SIGNED_FIB_LEN.min(12) {
+                let trit = self.dims[d].trit(k);
+                let val = (trit + 1) as u64;
+                let bit_pos = d * 12 + k;
+                hash |= val << (bit_pos * 1);
+            }
+        }
+        hash
+    }
+
+    /// Bits needed to represent this group (information content).
+    pub fn bit_cost(&self) -> u32 {
+        self.dims.iter().map(|d| d.active_count() * 2).sum::<u32>()
+    }
+}
+
+// ─── ZECKENGOLD BUNDLING PIPELINE ─────────────────────────────────────
+// Surround bundling for hyperdimensional consciousness, inlined from
+// fibonacci-vsa::zeckengold to avoid circular dependency.
+
+pub mod zeckengold {
+    //! Zeckengold — Surround Bundling for Hyperdimensional Consciousness.
+    //!
+    //! Named after Zeckendorf (Fibonacci decomposition) + Gold (golden angle rotation).
+    //!
+    //! Standard HDC bundling is mono: all signals summed into one channel.
+    //! Zeckengold is surround in 10,000 dimensions: each track gets its own
+    //! angular niche via Fibonacci golden-angle phase rotation.
+
+    use crate::Array1;
+    use super::{PHI, GAMMA, GOLDEN_ANGLE, harmonic};
+
+    /// Generate base vectors placed on a Fibonacci lattice on S^(d-1).
+    ///
+    /// Uses the golden angle in successive 2D rotation planes to distribute
+    /// points quasi-uniformly on the hypersphere.
+    pub fn fibonacci_lattice_bases(n: usize, d: usize, seed: u64) -> Vec<Array1<f64>> {
+        let mut bases = Vec::with_capacity(n);
+
+        for i in 0..n {
+            let mut v = Array1::zeros(d);
+
+            let mut rng_state = seed.wrapping_mul(6364136223846793005).wrapping_add(i as u64 + 1);
+
+            for dim in 0..d {
+                rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(dim as u64 + 1);
+                let raw = ((rng_state >> 33) as f64 / (u32::MAX as f64)) * 2.0 - 1.0;
+                v[dim] = raw;
+            }
+
+            let norm = v.dot(&v).sqrt();
+            if norm > 1e-10 {
+                v /= norm;
+            }
+
+            if i > 0 {
+                for plane in 0..(d / 2) {
+                    let angle = GOLDEN_ANGLE * (i as f64) * harmonic((plane + 1) as f64);
+                    let cos_a = angle.cos();
+                    let sin_a = angle.sin();
+                    let d0 = 2 * plane;
+                    let d1 = 2 * plane + 1;
+                    if d1 < d {
+                        let a = v[d0];
+                        let b = v[d1];
+                        v[d0] = cos_a * a - sin_a * b;
+                        v[d1] = sin_a * a + cos_a * b;
+                    }
+                }
+                let norm = v.dot(&v).sqrt();
+                if norm > 1e-10 {
+                    v /= norm;
+                }
+            }
+
+            bases.push(v);
+        }
+
+        bases
+    }
+
+    /// Measure worst-case pairwise similarity between a set of bases.
+    /// Returns (mean_abs_similarity, max_abs_similarity).
+    pub fn measure_base_quality(bases: &[Array1<f64>]) -> (f64, f64) {
+        let n = bases.len();
+        if n < 2 {
+            return (0.0, 0.0);
+        }
+        let mut sum = 0.0;
+        let mut max = 0.0f64;
+        let mut count = 0;
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let sim = bases[i].dot(&bases[j]).abs();
+                sum += sim;
+                max = max.max(sim);
+                count += 1;
+            }
+        }
+        (sum / count as f64, max)
+    }
+
+    /// Compute the Euler-gamma noise floor for a d-dimensional space.
+    pub fn euler_gamma_noise_floor(d: usize) -> f64 {
+        let d_f = d as f64;
+        let expected_signal = 1.0 / d_f.sqrt();
+        let gamma_fraction = GAMMA / (GAMMA + 1.0);
+        expected_signal * gamma_fraction
+    }
+
+    /// Apply noise gate: zero out dimensions below the Euler-gamma floor.
+    pub fn noise_gate(v: &Array1<f64>, floor: f64) -> Array1<f64> {
+        let mut cleaned = v.clone();
+        let mut zeroed = 0usize;
+        for i in 0..cleaned.len() {
+            if cleaned[i].abs() < floor {
+                cleaned[i] = 0.0;
+                zeroed += 1;
+            }
+        }
+        if zeroed >= cleaned.len() {
+            return v.clone();
+        }
+        let norm = cleaned.dot(&cleaned).sqrt();
+        if norm > 1e-10 {
+            cleaned /= norm;
+        }
+        cleaned
+    }
+
+    /// Remove bleed from other tracks via orthogonal projection.
+    pub fn remove_bleed(atom_output: &Array1<f64>, other_bases: &[Array1<f64>]) -> Array1<f64> {
+        let mut cleaned = atom_output.clone();
+        for other in other_bases {
+            let bleed = cleaned.dot(other);
+            cleaned = cleaned - bleed * other;
+        }
+        let norm = cleaned.dot(&cleaned).sqrt();
+        if norm > 1e-10 {
+            cleaned /= norm;
+        }
+        cleaned
+    }
+
+    /// Gently pull a vector toward its nearest Fibonacci lattice point.
+    pub fn reference_snap(v: &Array1<f64>, ideal: &Array1<f64>, strength: f64) -> Array1<f64> {
+        let strength = strength.clamp(0.0, 1.0);
+        let v_norm = {
+            let n = v.dot(v).sqrt();
+            if n > 1e-10 { v / n } else { v.clone() }
+        };
+
+        let deviation = &v_norm - ideal;
+        let corrected = &v_norm - &(strength * &deviation);
+
+        let norm = corrected.dot(&corrected).sqrt();
+        if norm > 1e-10 {
+            corrected / norm
+        } else {
+            v_norm
+        }
+    }
+
+    /// Compute phase rotation angles for atom `i` in a `d`-dimensional space.
+    pub fn phase_angles(atom_index: usize, _n_atoms: usize, d: usize) -> Vec<f64> {
+        let n_planes = d / 2;
+        let mut angles = Vec::with_capacity(n_planes);
+
+        for p in 0..n_planes {
+            let base = GOLDEN_ANGLE * atom_index as f64;
+            let plane_factor = harmonic((p + 1) as f64);
+            let angle = base * plane_factor;
+            angles.push(angle);
+        }
+
+        angles
+    }
+
+    /// Apply Givens rotations to place a vector at its phase position.
+    pub fn rotate_to_phase(v: &Array1<f64>, angles: &[f64]) -> Array1<f64> {
+        let d = v.len();
+        let mut rotated = v.clone();
+
+        for (p, &angle) in angles.iter().enumerate() {
+            let d0 = 2 * p;
+            let d1 = 2 * p + 1;
+            if d1 >= d {
+                break;
+            }
+            let cos_a = angle.cos();
+            let sin_a = angle.sin();
+            let a = rotated[d0];
+            let b = rotated[d1];
+            rotated[d0] = cos_a * a - sin_a * b;
+            rotated[d1] = sin_a * a + cos_a * b;
+        }
+
+        rotated
+    }
+
+    /// Inverse rotation: bring a vector back from its phase position.
+    pub fn rotate_from_phase(v: &Array1<f64>, angles: &[f64]) -> Array1<f64> {
+        let neg_angles: Vec<f64> = angles.iter().map(|a| -a).collect();
+        rotate_to_phase(v, &neg_angles)
+    }
+
+    /// Pre-bundle cleaning pipeline configuration.
+    pub struct CleanerConfig {
+        /// Noise gate enabled.
+        pub noise_gate_enabled: bool,
+        /// Bleed removal enabled.
+        pub bleed_removal_enabled: bool,
+        /// Reference snap strength: 0.0 = off, 0.3 = gentle (recommended).
+        pub snap_strength: f64,
+    }
+
+    impl Default for CleanerConfig {
+        fn default() -> Self {
+            Self {
+                noise_gate_enabled: true,
+                bleed_removal_enabled: true,
+                snap_strength: 0.2,
+            }
+        }
+    }
+
+    /// The Zeckengold Surround Bundler.
+    ///
+    /// Holds the Fibonacci-lattice base vectors, pre-computed phase angles,
+    /// and noise floor. Cleans and phase-positions each track before bundling.
+    pub struct SurroundBundler {
+        /// Number of tracks (atoms).
+        pub n_atoms: usize,
+        /// Dimensionality.
+        pub d: usize,
+        /// Fibonacci-lattice base vectors (one per atom).
+        pub bases: Vec<Array1<f64>>,
+        /// Pre-computed phase angles for each atom.
+        pub phases: Vec<Vec<f64>>,
+        /// Euler-gamma noise floor.
+        pub noise_floor: f64,
+        /// Cleaning configuration.
+        pub config: CleanerConfig,
+    }
+
+    impl SurroundBundler {
+        /// Create a new surround bundler.
+        pub fn new(n_atoms: usize, d: usize, seed: u64) -> Self {
+            let bases = fibonacci_lattice_bases(n_atoms, d, seed);
+            let phases: Vec<Vec<f64>> = (0..n_atoms)
+                .map(|i| phase_angles(i, n_atoms, d))
+                .collect();
+            let noise_floor = euler_gamma_noise_floor(d);
+
+            Self {
+                n_atoms,
+                d,
+                bases,
+                phases,
+                noise_floor,
+                config: CleanerConfig::default(),
+            }
+        }
+
+        /// Clean a single track through the full pre-bundle pipeline.
+        pub fn clean(&self, atom_output: &Array1<f64>, atom_index: usize) -> Array1<f64> {
+            let mut v = atom_output.clone();
+
+            if self.config.noise_gate_enabled {
+                v = noise_gate(&v, self.noise_floor);
+            }
+
+            if self.config.bleed_removal_enabled {
+                let others: Vec<Array1<f64>> = self.bases.iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != atom_index)
+                    .map(|(_, b)| b.clone())
+                    .collect();
+                v = remove_bleed(&v, &others);
+            }
+
+            if self.config.snap_strength > 0.0 {
+                v = reference_snap(&v, &self.bases[atom_index], self.config.snap_strength);
+            }
+
+            v
+        }
+
+        /// Phase-rotate a cleaned track to its surround position.
+        pub fn position(&self, cleaned_track: &Array1<f64>, atom_index: usize) -> Array1<f64> {
+            rotate_to_phase(cleaned_track, &self.phases[atom_index])
+        }
+
+        /// Full pipeline: clean then position.
+        pub fn prepare(&self, atom_output: &Array1<f64>, atom_index: usize) -> Array1<f64> {
+            let cleaned = self.clean(atom_output, atom_index);
+            self.position(&cleaned, atom_index)
+        }
+
+        /// Surround-bundle multiple prepared tracks.
+        pub fn bundle(&self, prepared_tracks: &[Array1<f64>]) -> Array1<f64> {
+            assert!(!prepared_tracks.is_empty());
+            let d = prepared_tracks[0].len();
+            let mut sum: Array1<f64> = Array1::zeros(d);
+            for track in prepared_tracks {
+                sum = sum + track;
+            }
+            let norm = sum.dot(&sum).sqrt();
+            if norm > 1e-10 {
+                sum /= norm;
+            }
+            sum
+        }
+
+        /// Full surround bundle from raw atom outputs.
+        pub fn bundle_raw(&self, atom_outputs: &[Array1<f64>]) -> Array1<f64> {
+            let prepared: Vec<Array1<f64>> = atom_outputs.iter()
+                .enumerate()
+                .map(|(i, v)| self.prepare(v, i))
+                .collect();
+            self.bundle(&prepared)
+        }
+
+        /// Recover a specific atom from the bundle via inverse phase rotation.
+        pub fn recover(&self, bundle: &Array1<f64>, atom_index: usize) -> Array1<f64> {
+            rotate_from_phase(bundle, &self.phases[atom_index])
+        }
+
+        /// Measure how well a specific atom can be recovered from a bundle.
+        pub fn recovery_fidelity(
+            &self,
+            bundle: &Array1<f64>,
+            original: &Array1<f64>,
+            atom_index: usize,
+        ) -> f64 {
+            let recovered = self.recover(bundle, atom_index);
+            let norm_r = recovered.dot(&recovered).sqrt();
+            let norm_o = original.dot(original).sqrt();
+            if norm_r < 1e-10 || norm_o < 1e-10 {
+                return 0.0;
+            }
+            recovered.dot(original) / (norm_r * norm_o)
+        }
+
+        /// Diagnostic: measure base quality (mean and max pairwise similarity).
+        pub fn base_quality(&self) -> (f64, f64) {
+            measure_base_quality(&self.bases)
+        }
+    }
+
+    /// Naive mono bundler for benchmarking comparison.
+    pub struct MonoBundler {
+        /// Dimensionality.
+        pub d: usize,
+    }
+
+    impl MonoBundler {
+        /// Create a new mono bundler.
+        pub fn new(d: usize) -> Self {
+            Self { d }
+        }
+
+        /// Bundle by simple addition + normalize.
+        pub fn bundle(&self, tracks: &[Array1<f64>]) -> Array1<f64> {
+            let mut sum: Array1<f64> = Array1::zeros(self.d);
+            for t in tracks {
+                sum = sum + t;
+            }
+            let norm = sum.dot(&sum).sqrt();
+            if norm > 1e-10 { sum / norm } else { sum }
+        }
+
+        /// Recover via cosine similarity (probabilistic, noisy).
+        pub fn recover_similarity(&self, bundle: &Array1<f64>, original: &Array1<f64>) -> f64 {
+            let norm_b = bundle.dot(bundle).sqrt();
+            let norm_o = original.dot(original).sqrt();
+            if norm_b < 1e-10 || norm_o < 1e-10 {
+                return 0.0;
+            }
+            bundle.dot(original) / (norm_b * norm_o)
+        }
+    }
+}
+
+// ─── TESTS ────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_zeckf64_identical_triples() {
-        let s = vec![0xAAu8; 2048];
-        let p = vec![0xBBu8; 2048];
-        let o = vec![0xCCu8; 2048];
-        let edge = zeckf64((&s, &p, &o), (&s, &p, &o));
-        // Identical → all close bits set, all quantiles = 0
-        assert_eq!(scent(edge) & 0x7F, 0x7F);
-        for b in 1..=7 {
-            assert_eq!(resolution(edge, b), 0);
+    fn zeckendorf_roundtrip() {
+        for v in [0, 1, 2, 3, 5, 8, 13, 42, 100, 1000, 65535, 1_000_000] {
+            let z = ZeckendorfBits::encode(v);
+            assert_eq!(z.decode(), v, "Roundtrip failed for {}", v);
         }
     }
 
     #[test]
-    fn test_zeckf64_distance_self_zero() {
-        let edge = zeckf64_from_distances(100, 200, 300);
-        assert_eq!(zeckf64_distance(edge, edge), 0);
-    }
-
-    #[test]
-    fn test_zeckf64_distance_symmetry() {
-        let a = zeckf64_from_distances(1000, 5000, 8000);
-        let b = zeckf64_from_distances(3000, 7000, 2000);
-        assert_eq!(zeckf64_distance(a, b), zeckf64_distance(b, a));
-    }
-
-    #[test]
-    fn test_scent_distance() {
-        let a = zeckf64_from_distances(0, 0, 0); // all close
-        let b = zeckf64_from_distances(D_MAX, D_MAX, D_MAX); // none close
-        assert!(zeckf64_scent_distance(a, b) > 0);
-    }
-
-    #[test]
-    fn test_progressive_distance_monotonic() {
-        let a = zeckf64_from_distances(1000, 5000, 8000);
-        let b = zeckf64_from_distances(3000, 7000, 2000);
-        let mut prev = 0;
-        for n in 0..=7 {
-            let d = zeckf64_progressive_distance(a, b, n);
-            assert!(d >= prev, "progressive distance should be monotonic");
-            prev = d;
+    fn non_consecutive_bits() {
+        for v in 1..=1000u64 {
+            let z = ZeckendorfBits::encode(v);
+            assert_eq!(
+                z.bits & (z.bits >> 1),
+                0,
+                "Consecutive bits found for {}",
+                v
+            );
         }
     }
 
     #[test]
-    fn test_is_legal_scent() {
-        // All close: 0111_1111 = 0x7F
-        assert!(is_legal_scent(0x7F));
-        // None close: 0000_0000
-        assert!(is_legal_scent(0x00));
-        // S only: 0000_0001
-        assert!(is_legal_scent(0x01));
-        // SP without S: illegal — bit 3 set but bit 0 unset
-        assert!(!is_legal_scent(0x08));
-        // SP with S and P: 0000_1011 = S + P + SP
-        assert!(is_legal_scent(0x0B));
+    fn constants_match_expected() {
+        assert!((PHI - 1.618_033_988_749_895).abs() < 1e-15);
+        assert!((GAMMA - 0.577_215_664_901_532_9).abs() < 1e-15);
+        assert!((LN_PHI - PHI.ln()).abs() < 1e-12);
+        assert!(FIB[0] == 1);
+        assert!(FIB[1] == 2);
+        assert!(FIB[2] == 3);
+        assert!(FIB[3] == 5);
+        assert!(FIB[4] == 8);
     }
 
     #[test]
-    fn test_sign_bit() {
-        let edge = zeckf64_from_distances(100, 200, 300);
-        assert!(!get_sign(edge));
-        let signed = set_sign(edge, true);
-        assert!(get_sign(signed));
-        let unsigned = set_sign(signed, false);
-        assert!(!get_sign(unsigned));
+    fn harmonic_values() {
+        assert_eq!(harmonic(0.0), 0.0);
+        assert_eq!(harmonic(-1.0), 0.0);
+        let h10 = harmonic(10.0);
+        // H(10) ~ ln(10) + gamma + 1/20 - 1/1200
+        let expected = 10.0_f64.ln() + GAMMA + 0.05 - 1.0 / 1200.0;
+        assert!((h10 - expected).abs() < 1e-10);
     }
 
     #[test]
-    fn test_zeckf64_batch() {
-        let query = zeckf64_from_distances(1000, 2000, 3000);
-        let edges = vec![
-            zeckf64_from_distances(1000, 2000, 3000), // identical
-            zeckf64_from_distances(5000, 8000, 10000), // far
-            zeckf64_from_distances(1100, 2100, 3100), // close
-        ];
-        let dists = zeckf64_batch(query, &edges);
-        assert_eq!(dists[0], 0); // identical → 0
-        assert!(dists[1] > dists[2]); // far > close
+    fn signed_zeckendorf_roundtrip() {
+        for val in [-1.0, -0.5, -0.1, 0.0, 0.1, 0.5, 1.0] {
+            let sz = SignedZeckendorf::encode(val, 8);
+            let decoded = sz.decode();
+            let expected = (val * 256.0).round() as i64;
+            assert_eq!(decoded, expected, "Roundtrip failed for {}", val);
+        }
     }
 
     #[test]
-    fn test_zeckf64_top_k() {
-        let query = zeckf64_from_distances(1000, 2000, 3000);
-        let edges = vec![
-            zeckf64_from_distances(5000, 8000, 10000), // far
-            zeckf64_from_distances(1000, 2000, 3000), // identical
-            zeckf64_from_distances(1100, 2100, 3100), // close
-            zeckf64_from_distances(8000, 8000, 8000), // very far
-        ];
-        let (indices, dists) = zeckf64_top_k(query, &edges, 2);
-        assert_eq!(indices.len(), 2);
-        assert_eq!(indices[0], 1); // identical is closest
-        assert_eq!(dists[0], 0);
+    fn pentagroup_encoding() {
+        let vals = [0.5, -0.3, 0.8, -0.1, 0.0];
+        let pg = PentaGroup::encode(&vals, 8);
+        assert!(pg.bit_cost() > 0);
+        assert!(pg.fingerprint() > 0);
     }
 
     #[test]
-    fn test_zeckf64_scent_top_k() {
-        let query = zeckf64_from_distances(0, 0, 0); // all close
-        let edges = vec![
-            zeckf64_from_distances(D_MAX, D_MAX, D_MAX), // none close
-            zeckf64_from_distances(0, 0, 0), // all close (match)
-            zeckf64_from_distances(100, 100, 100), // all close (close)
-        ];
-        let (indices, _) = zeckf64_scent_top_k(query, &edges, 2);
-        // Both edges 1 and 2 have all-close scent bytes
-        assert!(indices.contains(&1));
-        assert!(indices.contains(&2));
+    fn zeckengold_phase_rotation_invertible() {
+        use super::zeckengold::*;
+        let d = 100;
+        // Build a simple unit vector
+        let mut v = crate::Array1::<f64>::zeros(d);
+        v[0] = 1.0;
+        v[1] = 0.5;
+        let norm: f64 = v.dot(&v).sqrt();
+        v /= norm;
+
+        let angles = phase_angles(3, 8, d);
+        let rotated = rotate_to_phase(&v, &angles);
+        let recovered = rotate_from_phase(&rotated, &angles);
+
+        let error: f64 = (&v - &recovered).mapv(|x| x * x).sum();
+        assert!(error < 1e-20, "Phase rotation roundtrip error: {:.2e}", error);
     }
 
     #[test]
-    fn test_zeckf64_encode_batch() {
-        let qs = vec![0xAAu8; 2048];
-        let qp = vec![0xBBu8; 2048];
-        let qo = vec![0xCCu8; 2048];
+    fn zeckengold_surround_bundler_basic() {
+        use super::zeckengold::SurroundBundler;
 
-        // Database: 2 rows, each row = S(2048) + P(2048) + O(2048)
-        let mut db = Vec::new();
-        db.extend_from_slice(&qs); // row 0 S = query S (identical)
-        db.extend_from_slice(&qp);
-        db.extend_from_slice(&qo);
-        db.extend_from_slice(&vec![0x00u8; 2048]); // row 1 S = zeros (different)
-        db.extend_from_slice(&vec![0x00u8; 2048]);
-        db.extend_from_slice(&vec![0x00u8; 2048]);
+        let d = 100;
+        let n = 4;
+        let bundler = SurroundBundler::new(n, d, 42);
 
-        let edges = zeckf64_encode_batch((&qs, &qp, &qo), &db, 2, 2048);
-        assert_eq!(edges.len(), 2);
-        // Row 0 identical → scent should be all close
-        assert_eq!(scent(edges[0]) & 0x7F, 0x7F);
-        // Row 1 different → scent should show some open bits
-        assert_ne!(scent(edges[1]) & 0x7F, 0x7F);
+        // Create simple test vectors
+        let atoms: Vec<crate::Array1<f64>> = (0..n).map(|i| {
+            let mut v = crate::Array1::<f64>::zeros(d);
+            v[i * 10] = 1.0f64;
+            let norm: f64 = v.dot(&v).sqrt();
+            v / norm
+        }).collect();
+
+        let bundle = bundler.bundle_raw(&atoms);
+        assert_eq!(bundle.len(), d);
+
+        let (bq_mean, _bq_max) = bundler.base_quality();
+        assert!(bq_mean < 1.0, "Base quality mean should be < 1.0");
+    }
+
+    #[test]
+    fn zeckengold_noise_floor_scales() {
+        use super::zeckengold::euler_gamma_noise_floor;
+        let floor_100 = euler_gamma_noise_floor(100);
+        let floor_1000 = euler_gamma_noise_floor(1000);
+        assert!(floor_1000 < floor_100, "Noise floor should decrease with dimensionality");
     }
 }

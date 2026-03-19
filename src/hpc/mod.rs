@@ -35,6 +35,10 @@ pub mod fft;
 pub mod vml;
 pub mod packed;
 
+// Zeckendorf-coded vector space (inlined from fibonacci-vsa)
+#[allow(missing_docs)]
+pub mod zeck;
+
 // Cognitive layer types (migrated from rustynum-core)
 #[allow(missing_docs)]
 pub mod fingerprint;
