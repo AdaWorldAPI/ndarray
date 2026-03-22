@@ -18,13 +18,184 @@ find src/hpc -name "*.rs" | wc -l            # Should be 51
 find src/hpc -name "*.rs" -exec wc -l {} +   # Should be ~35K total
 cat src/hpc/mod.rs                           # What's actually wired
 
+# The SIMD architecture (NOT debt — properly decomposed)
+cat src/backend/mod.rs                       # BlasFloat trait + dispatch
+cat src/backend/native.rs                    # Goto GEMM tiling + dispatch! macro
+cat src/backend/kernels_avx512.rs            # 962 lines: ALL AVX-512 intrinsics
+cat src/hpc/bitwise.rs                       # Hamming dispatch: VPOPCNTDQ→AVX-512BW→AVX2→scalar
+
 # rustynum current state
 cd <rustynum-repo>
 find rustynum-core/src -name "*.rs" | wc -l  # Should be 42
 find rustynum-rs/src -name "*.rs" | wc -l    # Should be 20
 find rustyblas/src -name "*.rs" | wc -l      # Should be 6
 cat .claude/SESSION_M_NDARRAY_MIGRATION.md   # Original migration plan
+
+# All existing migration prompts in rustynum (most may be done)
+ls <rustynum-repo>/.claude/prompts/
 ```
+
+## PRE-EXISTING KNOWLEDGE: What Is NOT Debt
+
+The BLAS files shrank because ndarray DECOMPOSED them, not because it dropped them.
+Verify this but do NOT flag these as debt without checking the backend:
+
+```
+rustynum (monolithic):        ndarray (decomposed):
+  rustyblas/level1.rs  578      hpc/blas_level1.rs (trait)       278
+  rustyblas/level2.rs 1521      hpc/blas_level2.rs (trait)       321
+  rustyblas/level3.rs 1942      hpc/blas_level3.rs (trait)       345
+                                backend/mod.rs (dispatch)        165
+                                backend/native.rs (Goto tiling)  747
+                                backend/kernels_avx512.rs        962
+  ─────────────────────         ──────────────────────────────
+  4,041 lines                   2,818 lines
+
+The traits are thin: blas_level3.rs calls A::backend_gemm() via BlasFloat.
+backend/native.rs does Goto-style 6×16 f32 / 6×8 f64 microkernels with
+dispatch! macro routing to AVX-512 → AVX2 → scalar.
+kernels_avx512.rs has: dot, axpy, scal, nrm2, asum, iamax,
+  16 element-wise ops (add/sub/mul/div × scalar/vec × f32/f64),
+  sgemm_blocked, dgemm_blocked, hamming_distance, popcount, dot_i8, hamming_batch.
+
+SIMD for Hamming lives in bitwise.rs:
+  dispatch_hamming: VPOPCNTDQ → AVX-512BW → AVX2 → scalar
+  dispatch_popcount: same tier chain
+  hamming_batch_raw: query-vs-database batch
+  hamming_top_k: top-k by Hamming
+
+This is the CORRECT architecture. The monolithic rustynum SIMD files
+(simd.rs 1092, simd_avx2.rs 600, simd_avx512.rs 2643 = 4,335 lines)
+are properly replaced by the decomposed backend/ + bitwise.rs.
+```
+
+## KNOWN REAL DEBT (files that actually lost functionality)
+
+```
+FILE                RUSTYNUM  NDARRAY  LOSS   WHY IT'S DEBT
+──────────          ────────  ───────  ────   ─────────────
+hdc.rs              1553      178      89%    bind/permute/bundle/simhash MISSING
+                                              These are VSA core ops.
+                                              bgz17 Base17::xor_bind needs these.
+                                              NOT handled by ndarray natively.
+
+cogrecord.rs        511       238      53%    CogRecord is domain-specific.
+                                              4-channel struct, hamming_4ch, sweep.
+                                              No ndarray equivalent.
+
+statistics.rs       865       325      62%    median, var, std, percentile with
+                                              axis variants MISSING.
+                                              ndarray has sum/mean only.
+
+graph_hv.rs         840       282      66%    VerbCodebook, encode_edge, decode_target,
+(→ graph.rs)                                  causality_asymmetry, find_non_causal_edges.
+                                              Verify what was kept vs dropped.
+
+bf16_hamming.rs     1510      680*     55%    *Renamed to bf16_truth.rs.
+(→ bf16_truth.rs)                             Verify: are BF16 Hamming kernels present
+                                              or only truth encoding?
+
+bf16_gemm.rs        536       416*     22%    *Possibly in quantized.rs.
+(→ quantized.rs?)                             VERIFY: does quantized.rs contain
+                                              actual bf16_gemm_f32, mixed_precision_gemm?
+
+int8_gemm.rs        940       416*     56%    *Possibly in quantized.rs.
+                                              VERIFY: quantize_f32_to_u8/i8/i4,
+                                              int8_gemm_i32/f32, per_channel variants?
+```
+
+## KNOWN REAL GAPS (files not ported at all)
+
+```
+FILE                    LINES   PRIORITY  RATIONALE
+──────────────          ─────   ────────  ─────────
+hybrid.rs               2032    P1        Biggest gap. Check if any downstream uses it.
+spatial_resonance.rs     758    P2        Research/experimental.
+tail_backend.rs          884    P1        Check: is this the fallback GEMM? If so,
+                                          it's replaced by backend/native.rs.
+soaking.rs               407    P1        Arrow soaking buffer — may be in arrow_bridge.rs.
+                                          VERIFY by comparing pub fn signatures.
+layer_stack.rs           328    P2        10-layer cognitive stack. Experimental.
+jitson.rs               1620    DROP      Separate crate. Not needed in ndarray.
+jit_scan.rs              316    DROP      JIT-related. Not needed.
+mkl_ffi.rs               472    DROP      Replaced by backend/mkl.rs (237 lines).
+delta.rs                 237    P2        Structural diff. Low priority.
+compute.rs               265    P2        Generic compute dispatch. May be superseded.
+rng.rs                   117    DROP      Inline SplitMix64 already in node.rs.
+scalar_fns.rs            302    P2        Scalar fallback functions. May be in native.rs.
+parallel.rs              109    DROP      Rayon parallelism. ndarray has its own.
+layout.rs                 75    DROP      Memory layout helpers. ndarray handles this.
+```
+
+## bgz17 INTEGRATION REQUIREMENTS
+
+### NaN Guard for Empty Palette Clusters
+
+When bgz17 runs k-means with k=256 on a scope with <256 unique patterns,
+some clusters end up empty. Empty centroid = mean of nothing = NaN.
+NaN propagates through the 256×256 distance matrix. Any tree (CLAM,
+archetype tree) built on NaN distances produces garbage at the root.
+
+**The fix belongs in bgz17's palette.rs, not in ndarray.** But ndarray's
+CLAM implementation must also guard against NaN inputs:
+
+```rust
+// bgz17/palette.rs: after k-means convergence
+// Remove empty clusters, compact codebook, adjust k
+let non_empty: Vec<_> = centroids.iter()
+    .enumerate()
+    .filter(|(_, c)| c.member_count > 0)
+    .collect();
+let effective_k = non_empty.len();
+// Renumber assignments, rebuild distance matrix at effective_k × effective_k
+// NO NaN possible: every centroid has at least one member
+
+// ndarray/hpc/clam.rs: guard at tree build
+assert!(!distances.iter().any(|d| d.is_nan()),
+    "CLAM tree build received NaN distance — palette has empty clusters");
+```
+
+### SIMD Palette Distance for ndarray
+
+bgz17's `batch_palette_distance` (AVX-512 VGATHERDPS for 16 palette
+lookups per instruction) should integrate with ndarray's tier dispatch:
+
+```rust
+// ndarray/src/backend/kernels_avx512.rs — add:
+pub fn batch_palette_distance_avx512(
+    distance_matrix: &[u16],  // 256×256 flat
+    query_idx: u8,
+    candidate_indices: &[u8],
+    distances_out: &mut [u16],
+) { ... }
+
+// ndarray/src/hpc/bitwise.rs — add dispatch:
+pub fn batch_palette_distance(dm: &[u16], query: u8, candidates: &[u8], out: &mut [u16]) {
+    // Same tier dispatch as hamming: VGATHERDPS → scalar
+}
+```
+
+This is Session C's DELIVERABLE 8 (SIMD dispatch). The ndarray inventory
+should identify WHERE in the backend this should be wired.
+
+### HDC / VSA Operations (the hdc.rs debt)
+
+bgz17's Base17::xor_bind, bundle, permute map directly to rustynum's
+hdc.rs: bind, bundle, permute. ndarray's hdc.rs (178 lines) is 89% smaller.
+The missing functions are:
+
+```
+NEEDED BY bgz17          RUSTYNUM hdc.rs              ndarray hdc.rs
+──────────────            ───────────────              ──────────────
+Base17::xor_bind          bind(a, b) → XOR             ???
+Base17::bundle            bundle(vecs) → majority      ???
+Base17::permute           permute(v, shift) → rotate   ???
+compose_table build       bind + nearest               ???
+PaletteSemiring           bind + distance              ???
+```
+
+The audit must verify: which of these 3 operations exist in ndarray's
+178-line hdc.rs, and which are missing?
 
 ## CURRENT STATE (as of March 2026)
 
@@ -46,113 +217,122 @@ rustynum (AdaWorldAPI/rustynum):
 
 ndarray (AdaWorldAPI/ndarray, branch: master):
   src/hpc/             51 files   ~35K lines   Ported cognitive + BLAS + extensions
-  src/kernels/          native GEMM microkernels (Goto-style)
+  src/backend/          5 files   ~2.3K lines  SIMD dispatch + Goto GEMM + AVX-512 kernels
 ```
 
-### Cross-Reference: rustynum-core → ndarray hpc
+### Cross-Reference: rustynum-core → ndarray
 
 ```
-STATUS  rustynum-core FILE           LINES   ndarray hpc FILE          LINES
-──────  ─────────────────────        ─────   ──────────────────        ─────
-✅ PORT blackboard.rs                  757   blackboard.rs               781
-✅ PORT cam_index.rs                   420   cam_index.rs                478
-✅ PORT causality.rs                   619   causality.rs                468
-✅ PORT dn_tree.rs                     598   dn_tree.rs                  739
-✅ PORT fingerprint.rs                 407   fingerprint.rs              394
-✅ PORT kernels.rs                    1589   kernels.rs                 1589
-✅ PORT node.rs                        358   node.rs                     312
-✅ PORT organic.rs                     905   organic.rs                  783
-✅ PORT packed.rs                      466   packed.rs                   355
-✅ PORT plane.rs                       840   plane.rs                    758
-✅ PORT prefilter.rs                   403   prefilter.rs                448
-✅ PORT qualia_gate.rs                 303   qualia_gate.rs              328
-✅ PORT seal.rs                        122   seal.rs                      99
-✅ PORT substrate.rs                   933   substrate.rs                933
+STATUS  rustynum-core FILE           LINES   ndarray FILE              LINES   NOTES
+──────  ─────────────────────        ─────   ──────────────────        ─────   ─────
+✅      blackboard.rs                  757   hpc/blackboard.rs           781
+✅      cam_index.rs                   420   hpc/cam_index.rs            478
+✅      causality.rs                   619   hpc/causality.rs            468
+✅      dn_tree.rs                     598   hpc/dn_tree.rs              739
+✅      fingerprint.rs                 407   hpc/fingerprint.rs          394
+✅      kernels.rs                    1589   hpc/kernels.rs             1589
+✅      node.rs                        358   hpc/node.rs                 312
+✅      organic.rs                     905   hpc/organic.rs              783
+✅      packed.rs                      466   hpc/packed.rs               355
+✅      plane.rs                       840   hpc/plane.rs                758
+✅      prefilter.rs                   403   hpc/prefilter.rs            448
+✅      qualia_gate.rs                 303   hpc/qualia_gate.rs          328
+✅      seal.rs                        122   hpc/seal.rs                  99
+✅      substrate.rs                   933   hpc/substrate.rs            933
 
-❌ MISS bf16_hamming.rs               1510   → bf16_truth.rs?            680   DIVERGED: ndarray has bf16_truth, not bf16_hamming
-❌ MISS compute.rs                     265   → (none)
-❌ MISS delta.rs                       237   → (none)
-❌ MISS graph_hv.rs                    840   → graph.rs?                 282   SMALLER: ndarray version may be subset
-❌ MISS hdr.rs                         556   → cascade.rs?               758   DIVERGED: ndarray version is larger
-❌ MISS hybrid.rs                     2032   → (none)                          2K lines, biggest gap
-❌ MISS jit_scan.rs                    316   → (none)
-❌ MISS jitson.rs                     1620   → (none)                          Separate crate in rustynum
-❌ MISS layer_stack.rs                 328   → (none)
-❌ MISS layout.rs                       75   → (none)
-❌ MISS mkl_ffi.rs                     472   → (none)                          MKL-specific, may not need
-❌ MISS parallel.rs                    109   → (none)
-❌ MISS qualia_cam.rs                  501   → qualia.rs?                613   DIVERGED: different names
-❌ MISS rng.rs                         117   → (none)                          Inline SplitMix64 in node.rs?
-❌ MISS scalar_fns.rs                  302   → (none)
-❌ MISS simd.rs                       1092   → bitwise.rs?               639   DIVERGED: ndarray dispatches differently
-❌ MISS simd_avx2.rs                   600   → (none)                          Inlined into bitwise.rs?
-❌ MISS simd_avx512.rs                2643   → (none)                          Inlined into bitwise.rs?
-❌ MISS simd_isa.rs                    215   → (none)
-❌ MISS soaking.rs                     407   → (none)                          Arrow soaking? In arrow_bridge.rs?
-❌ MISS spatial_resonance.rs           758   → (none)
-❌ MISS tail_backend.rs                884   → (none)
+⚠️      bf16_hamming.rs               1510   hpc/bf16_truth.rs           680   RENAMED + SHRUNK
+⚠️      hdr.rs                         556   hpc/cascade.rs              758   RENAMED + GREW
+⚠️      qualia_cam.rs                  501   hpc/qualia.rs               613   RENAMED + GREW
+⚠️      graph_hv.rs                    840   hpc/graph.rs                282   SHRUNK 66%
+
+❌      hybrid.rs                     2032   (none)
+❌      spatial_resonance.rs           758   (none)
+❌      tail_backend.rs                884   (none)                              Check vs native.rs
+❌      soaking.rs                     407   (none)                              Check vs arrow_bridge.rs
+❌      layer_stack.rs                 328   (none)
+❌      jitson.rs                     1620   (none)                              DROP: separate crate
+❌      jit_scan.rs                    316   (none)                              DROP
+❌      mkl_ffi.rs                     472   (none)                              DROP: backend/mkl.rs
+❌      delta.rs                       237   (none)
+❌      compute.rs                     265   (none)
+❌      rng.rs                         117   (none)                              DROP: inline in node.rs
+❌      scalar_fns.rs                  302   (none)                              Check vs native.rs
+❌      parallel.rs                    109   (none)                              DROP
+❌      layout.rs                       75   (none)                              DROP
+
+SIMD: NOT MISSING — decomposed into:
+        simd.rs (1092)         → backend/native.rs dispatch! macro    747
+        simd_avx2.rs (600)     → (AVX2 paths in native.rs fallback)
+        simd_avx512.rs (2643)  → backend/kernels_avx512.rs           962
+        simd_isa.rs (215)      → backend/mod.rs Tier enum             165
+        simd_compat.rs (4)     → (not needed)
 ```
 
-### Cross-Reference: rustynum-rs → ndarray hpc
+### Cross-Reference: rustynum-rs → ndarray
 
 ```
-STATUS  rustynum-rs FILE             LINES   ndarray hpc FILE          LINES
-──────  ─────────────────────        ─────   ──────────────────        ─────
-✅ PORT binding_matrix.rs              373   binding_matrix.rs           416
-✅ PORT bitwise.rs                     471   bitwise.rs                  639
-✅ PORT cogrecord.rs                   511   cogrecord.rs                238   SMALLER: ndarray stripped?
-✅ PORT graph.rs                       407   graph.rs                    282   SMALLER
-✅ PORT hdc.rs                        1553   hdc.rs                      178   MUCH SMALLER: 1553→178
-✅ PORT projection.rs                  296   projection.rs               143   SMALLER
-✅ PORT statistics.rs                  865   statistics.rs               325   SMALLER
+STATUS  rustynum-rs FILE             LINES   ndarray FILE              LINES   NOTES
+──────  ─────────────────────        ─────   ──────────────────        ─────   ─────
+✅      binding_matrix.rs              373   hpc/binding_matrix.rs       416
+✅      bitwise.rs                     471   hpc/bitwise.rs              639   GREW (+ dispatch)
+⚠️      cogrecord.rs                   511   hpc/cogrecord.rs            238   DEBT: 53% smaller
+⚠️      graph.rs                       407   hpc/graph.rs                282   DEBT: 31% smaller
+⚠️      hdc.rs                        1553   hpc/hdc.rs                  178   DEBT: 89% smaller
+⚠️      projection.rs                  296   hpc/projection.rs           143   DEBT: 52% smaller
+⚠️      statistics.rs                  865   hpc/statistics.rs           325   DEBT: 62% smaller
 
-❌ MISS array_struct.rs               2203   → ndarray IS the array          Not needed
-❌ MISS constructors.rs                223   → ndarray has these              Not needed
-❌ MISS impl_clone_from.rs             101   → ndarray handles                Not needed
-❌ MISS linalg.rs                      263   → ndarray-linalg crate          External dep
-❌ MISS manipulation.rs                562   → ndarray has reshape/etc        Partially not needed
-❌ MISS operations.rs                  833   → ndarray ops                    Partially not needed
-❌ MISS view.rs                        747   → ndarray ArrayView              Not needed
+DROP    array_struct.rs               2203   ndarray IS the container
+DROP    constructors.rs                223   ndarray has these
+DROP    impl_clone_from.rs             101   ndarray handles
+DROP    linalg.rs                      263   ndarray-linalg crate
+DROP    manipulation.rs                562   ndarray native (partial)
+DROP    operations.rs                  833   ndarray ops (partial)
+DROP    view.rs                        747   ndarray ArrayView
 ```
 
-### Cross-Reference: rustyblas → ndarray hpc
+### Cross-Reference: rustyblas → ndarray
 
 ```
-STATUS  rustyblas FILE               LINES   ndarray hpc FILE          LINES
-──────  ─────────────────────        ─────   ──────────────────        ─────
-⚠️ PART level1.rs                     578   blas_level1.rs              278   SMALLER: only basics?
-⚠️ PART level2.rs                    1521   blas_level2.rs              321   MUCH SMALLER: 1521→321
-⚠️ PART level3.rs                    1942   blas_level3.rs              345   MUCH SMALLER: 1942→345
-❌ MISS bf16_gemm.rs                   536   → quantized.rs?             416   DIVERGED
-❌ MISS int8_gemm.rs                   940   → quantized.rs?             416   DIVERGED
+STATUS  rustyblas FILE               LINES   ndarray FILE              LINES   NOTES
+──────  ─────────────────────        ─────   ──────────────────        ─────   ─────
+✅      level1.rs                      578   hpc/blas_level1.rs          278   TRAIT only
+                                             backend/kernels_avx512.rs         + 12 AVX-512 fns
+✅      level2.rs                     1521   hpc/blas_level2.rs          321   TRAIT + fallback
+                                             backend/native.rs                 + gemv dispatch
+✅      level3.rs                     1942   hpc/blas_level3.rs          345   TRAIT + fallback
+                                             backend/native.rs                 + Goto GEMM
+                                             backend/kernels_avx512.rs         + sgemm_blocked
+⚠️      bf16_gemm.rs                   536   hpc/quantized.rs?           416   VERIFY contents
+⚠️      int8_gemm.rs                   940   hpc/quantized.rs?           416   VERIFY contents
 ```
 
 ### Only in ndarray (NEW — not from rustynum)
 
 ```
-FILE                       LINES   PURPOSE
-──────────────────         ─────   ───────
-activations.rs                86   sigmoid, relu, softmax
-arrow_bridge.rs              931   ThreePlaneFingerprintBuffer (from rustynum-arrow)
-bnn_causal_trajectory.rs    2116   BNN + causality combined (NEW composition)
-bnn_cross_plane.rs          1631   Cross-plane BNN ops (NEW)
-clam_compress.rs             707   CLAM tree compression (from rustynum-clam)
-clam_search.rs               612   CLAM search ops (from rustynum-clam)
-compression_curves.rs       1733   Compression analysis (NEW)
-crystal_encoder.rs           883   Crystal encoding pipeline (NEW)
-cyclic_bundle.rs             741   Cyclic VSA bundling (NEW)
-deepnsm.rs                   845   DeepNSM integration (NEW)
-fft.rs                       209   FFT (partial, from rustymkl?)
-lapack.rs                    310   LU/Cholesky/QR (partial)
-merkle_tree.rs               521   Merkle tree (from rustynum-core seal?)
-nars.rs                      747   NARS reasoning (from rustynum-oracle)
-qualia.rs                    613   Qualia layer (from qualia_xor?)
-spo_bundle.rs               1514   SPO bundling (NEW composition)
-surround_metadata.rs        1283   Surround metadata encoding (NEW)
-tekamolo.rs                  502   TEKAMOLO grammar (NEW)
-udf_kernels.rs               789   User-defined kernels (NEW)
-vml.rs                       154   Vector math library (partial)
-vsa.rs                       727   VSA operations (NEW)
+FILE                       LINES   SOURCE
+──────────────────         ─────   ──────
+activations.rs                86   New
+arrow_bridge.rs              931   From rustynum-arrow (partial)
+bnn_causal_trajectory.rs    2116   New composition
+bnn_cross_plane.rs          1631   New composition
+clam_compress.rs             707   From rustynum-clam
+clam_search.rs               612   From rustynum-clam
+compression_curves.rs       1733   New
+crystal_encoder.rs           883   New
+cyclic_bundle.rs             741   New
+deepnsm.rs                   845   New
+fft.rs                       209   Partial (from rustymkl?)
+lapack.rs                    310   Partial
+merkle_tree.rs               521   Extended from seal.rs
+nars.rs                      747   From rustynum-oracle
+qualia.rs                    613   From qualia_xor
+quantized.rs                 416   From rustyblas bf16/int8 (VERIFY)
+spo_bundle.rs               1514   New composition
+surround_metadata.rs        1283   New
+tekamolo.rs                  502   New
+udf_kernels.rs               789   New
+vml.rs                       154   Partial
+vsa.rs                       727   New
 ```
 
 ## DELIVERABLE: Migration Inventory Document
@@ -161,116 +341,139 @@ Produce `MIGRATION_INVENTORY.md` with these sections:
 
 ### 1. Reconciliation Table
 
-For EVERY ✅ PORT file: compare pub fn signatures between rustynum and ndarray.
-Flag any functions that exist in rustynum but are missing from the ndarray port.
-Flag any functions where the signature diverged (different types, different args).
+For EVERY ✅ and ⚠️ file: compare pub fn signatures between rustynum and ndarray.
 
 ```bash
-# For each ported file, extract pub fn signatures from both repos
 diff <(grep "pub fn" <rustynum-file> | sort) <(grep "pub fn" <ndarray-file> | sort)
 ```
 
-### 2. Gap Priority Matrix
+Flag functions that exist in rustynum but are missing from ndarray port.
+Flag functions where signatures diverged (different types, different args).
 
-For each ❌ MISS file, classify:
+### 2. DEBT Quantification
 
-```
-PRIORITY  CATEGORY          RATIONALE
-──────    ────────          ─────────
-P0        Must port         Used by lance-graph or bgz17, blocking integration
-P1        Should port       Useful for production, has tests in rustynum
-P2        Nice to have      Research/experimental, can defer
-DROP      Not needed        Replaced by ndarray native functionality
-```
-
-Specific questions to answer per file:
-- Is it imported by any other rustynum crate? (`grep -r "use rustynum_core::$module"`)
-- Is it referenced by lance-graph? (`grep -r "$module" lance-graph/`)
-- Does ndarray have native equivalent? (ndarray docs)
-- Does it have tests? How many pass?
-
-### 3. Size Gap Analysis
-
-Several ported files are MUCH SMALLER in ndarray:
+For each ⚠️ SHRUNK file, produce an exact missing-function list:
 
 ```
-hdc.rs:        1553 → 178 lines (89% smaller)
-cogrecord.rs:   511 → 238 lines (53% smaller)
-statistics.rs:  865 → 325 lines (62% smaller)
-blas_level2.rs: 1521 → 321 lines (79% smaller)
-blas_level3.rs: 1942 → 345 lines (82% smaller)
+FILE            RUSTYNUM pub fns    NDARRAY pub fns     MISSING
+──────          ────────────────    ───────────────     ───────
+hdc.rs          bind                ???                 ???
+                permute             ???                 ???
+                bundle              ???                 ???
+                ...
 ```
 
-For each: are the missing lines (a) dropped intentionally because ndarray
-handles them, (b) deferred for later porting, or (c) accidentally lost?
-Check by comparing `pub fn` signatures.
+Repeat for cogrecord.rs, statistics.rs, graph.rs (→graph_hv.rs),
+projection.rs, bf16_truth.rs (→bf16_hamming.rs).
 
-### 4. Divergence Map
+### 3. Backend SIMD Verification
 
-Files where names or structure changed:
-
-```
-rustynum                    ndarray                  QUESTION
-──────                      ──────                   ────────
-bf16_hamming.rs (1510)  →   bf16_truth.rs (680)      Same content? What's missing?
-hdr.rs (556)            →   cascade.rs (758)         ndarray version is LARGER — what was added?
-qualia_cam.rs (501)     →   qualia.rs (613)          Renamed + extended?
-simd.rs (1092)          →   bitwise.rs (639)         Different dispatch architecture?
-simd_avx2.rs (600)      →   (inlined?)               Where did the AVX2 kernels go?
-simd_avx512.rs (2643)   →   (inlined?)               Where did the AVX-512 kernels go?
-graph_hv.rs (840)       →   graph.rs (282)           What was dropped?
-```
-
-### 5. Tier 2-3 Crate Status
-
-```
-CRATE              LINES   ndarray COVERAGE                    PRIORITY
-─────              ─────   ───────────────                    ────────
-rustynum-bnn       5917    bnn.rs (942) + bnn_causal (2116)   Partial
-                           + bnn_cross_plane (1631)
-rustynum-clam      5869    clam.rs (2593) + compress (707)    Partial
-                           + search (612)
-rustynum-arrow     5010    arrow_bridge.rs (931)              Partial
-qualia_xor         5201    qualia.rs (613)                    Partial
-rustynum-holo      8821    (none)                             Not started
-rustynum-oracle   11337    nars.rs (747) + organic.rs (783)   Partial
-rustymkl           3547    (none — MKL-specific)              Maybe DROP
-jitson              748    (none)                             Low priority
-```
-
-### 6. bgz17 / lance-graph Integration Gaps
-
-What does lance-graph need from ndarray that isn't ported yet?
+Confirm that the BLAS decomposition is complete:
 
 ```bash
-# Check what lance-graph imports from ndarray (if any)
-grep -r "ndarray\|hpc::" <lance-graph-repo>/crates/ | grep -v test | grep -v target
-# Check what bgz17 would need
-grep -r "Fingerprint\|Plane\|Node\|Cascade\|CLAM" <lance-graph-repo>/crates/bgz17/
+# Every pub fn in rustyblas/level1.rs should map to either:
+# (a) a BlasFloat method in backend/mod.rs, OR
+# (b) a function in kernels_avx512.rs, OR
+# (c) a trait method in blas_level1.rs
+# Any fn in (a) that is NOT in (b) means AVX-512 acceleration is missing.
+
+grep "pub fn" <rustynum>/rustyblas/src/level1.rs | sort
+grep "pub fn" <ndarray>/src/backend/kernels_avx512.rs | grep -v "gemm\|hamming" | sort
 ```
 
-Specific needs for Session C (ndarray ← bgz17 dual-path):
-- `NdarrayFingerprint ↔ Base17` conversion (ndarray_bridge.rs)
-- CLAM tree build with palette distance
-- Cascade benefit from container W112 (stride-16)
-- TruthGate integration (reads container W4-7)
+Repeat for L2 and L3.
 
-### 7. Blackboard Update Draft
+### 4. Quantized GEMM Verification
 
-Produce an updated blackboard section reflecting actual state:
+The most likely debt. Check whether `quantized.rs` (416 lines) actually contains:
+
+```
+FROM rustyblas/bf16_gemm.rs (536 lines):
+  bf16_gemm_f32()           — BF16 input, F32 accumulation
+  mixed_precision_gemm()    — mixed BF16/F32
+  BF16 type + conversions
+
+FROM rustyblas/int8_gemm.rs (940 lines):
+  quantize_f32_to_u8()
+  quantize_f32_to_i8()
+  quantize_f32_to_i4()
+  int8_gemm_i32()
+  int8_gemm_f32()
+  per_channel_quantize()
+  per_channel_dequantize()
+  int8_gemm_per_channel()
+```
+
+If `quantized.rs` doesn't have these, that's ~1,476 lines of real debt
+in the most performance-critical path (quantized inference).
+
+### 5. NaN Guard Audit
+
+Check ALL division and mean operations across ndarray hpc/ for NaN risk:
+
+```bash
+grep -n "/ \|\.div\|/ n\|/ len\|/ count\|mean()\|\.avg" src/hpc/*.rs | grep -v test | grep -v "//"
+```
+
+For each: is there a guard for n=0 / empty input?
+
+Specific files to check:
+- `clam.rs` — LFD computation (parent_radius / child_radius)
+- `statistics.rs` — mean, var, std (divide by n)
+- `bf16_truth.rs` — truth normalization
+- `cascade.rs` — sigma computation (divide by count)
+
+bgz17-specific: palette k-means with k > unique_patterns produces
+empty clusters → NaN centroids → NaN distances → NaN at tree root.
+Check if ndarray CLAM guards against NaN distance inputs.
+
+### 6. Existing Prompt Status
+
+Rustynum has 21 prompts in `.claude/prompts/`. Many may already be done.
+For each prompt, check:
+
+```bash
+for f in <rustynum>/.claude/prompts/*.md; do
+    echo "=== $(basename $f) ==="
+    grep -i "file\|crate\|module\|output\|branch" "$f" | head -5
+done
+```
+
+Classify each as: DONE, PARTIAL, NOT STARTED, SUPERSEDED, N/A.
+
+### 7. bgz17 Integration Gaps
+
+What does lance-graph Session C need from ndarray that isn't there?
+
+```
+NEEDED FOR SESSION C         WHERE IN NDARRAY          STATUS
+────────────────────         ────────────────          ──────
+NdarrayFingerprint↔Base17    hpc/fingerprint.rs        Fingerprint exists, Base17 bridge NOT
+CLAM with palette distance   hpc/clam.rs               CLAM exists, palette distance fn NOT
+batch_palette_distance SIMD  backend/kernels_avx512.rs AVX-512 kernels exist, palette NOT
+TruthGate on containers      hpc/bf16_truth.rs         Truth exists, container read NOT
+Cascade stride-16 benefit    hpc/cascade.rs            Cascade exists, container NOT
+HDC bind/bundle/permute      hpc/hdc.rs                178 lines — VERIFY contents
+```
+
+### 8. Blackboard Update Draft
+
+Produce updated blackboard reflecting actual state:
 - Which files are TRULY done (pub fn parity with rustynum)
 - Which are partial (ported but missing functions)
 - Which are new (not from rustynum, created fresh in ndarray)
-- Updated test count
-- Updated line count
+- Updated test count and line count
+- SIMD backend correctly documented (not listed as missing)
 
-### 8. Action Plan
+### 9. Action Plan
 
-Ordered list of what to port next, based on:
-1. lance-graph/bgz17 integration blockers (P0)
-2. Function parity gaps in already-ported files (P1)
-3. Missing files needed by downstream crates (P1)
-4. Everything else by line count / complexity (P2)
+Ordered list based on:
+1. **P0 — bgz17 blockers:** hdc.rs debt (bind/permute/bundle), NaN guards,
+   palette distance in kernels_avx512.rs
+2. **P1 — function parity:** missing pub fns in ⚠️ files
+3. **P1 — quantized GEMM:** verify quantized.rs covers bf16_gemm + int8_gemm
+4. **P2 — missing files:** hybrid.rs, spatial_resonance.rs, delta.rs
+5. **DROP — confirmed unnecessary:** jitson, jit_scan, mkl_ffi, rng, parallel, layout
 
 ## OUTPUT
 
