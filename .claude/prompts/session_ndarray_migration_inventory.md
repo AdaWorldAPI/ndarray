@@ -147,14 +147,29 @@ tail_backend.rs          884    P1        Check: is this the fallback GEMM? If s
 soaking.rs               407    P1        Arrow soaking buffer — may be in arrow_bridge.rs.
                                           VERIFY by comparing pub fn signatures.
 layer_stack.rs           328    P2        10-layer cognitive stack. Experimental.
-jitson.rs               1620    P2        Cranelift JIT: bakes scan params as immediates.
-                                          threshold→CMP imm, prefetch→constant offset.
-                                          Not wired yet but eliminates interpretive overhead
-                                          in Cascade hot loop. Depends on AdaWorldAPI/wasmtime
-                                          fork with AVX-512 VPOPCNTDQ support.
-                                          Defer until Cascade scan is the measured bottleneck.
+jitson.rs               1620    P2        Cranelift JIT: JSON/YAML config → native function pointers.
+                                          DUAL PURPOSE:
+                                          (a) Scan optimization: bakes threshold/record_size as
+                                              immediates. Partially obsoleted by Rust 1.94
+                                              array_windows (const-generic window eliminates
+                                              bounds checks, enables autovectorization).
+                                              Cascade PackedDatabase should use array_windows
+                                              for the record-size win; jitson adds marginal
+                                              threshold/prefetch baking on top.
+                                          (b) Graph-to-native compilation: the REAL future use.
+                                              When rs-graph-llm ports LangGraph-style orchestration,
+                                              the graph topology (nodes=ops, edges=control flow,
+                                              conditions=branch predicates) compiles via Cranelift
+                                              into a native function pointer. No interpreter,
+                                              no match-on-node-type dispatch. The DAG becomes
+                                              a flat instruction stream. "Code as graph recall
+                                              compiled into a function just in time."
+                                          Depends on AdaWorldAPI/wasmtime fork (AVX-512 support).
+                                          Keep for rs-graph-llm integration.
 jit_scan.rs              316    P2        Hybrid JIT: Cranelift outer loop + SIMD inner kernel.
-                                          Companion to jitson.rs. Same deferral.
+                                          Companion to jitson.rs. For scan path, consider
+                                          array_windows::<RECORD_BYTES>() first (Rust 1.94).
+                                          JIT adds value when graph orchestration needs it.
 mkl_ffi.rs               472    DROP      Replaced by backend/mkl.rs (237 lines).
 delta.rs                 237    P2        Structural diff. Low priority.
 compute.rs               265    P2        Generic compute dispatch. May be superseded.
