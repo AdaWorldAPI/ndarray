@@ -71,6 +71,18 @@ pub trait BlasLevel3<A> {
         c_init: Option<&Self>,
     ) -> Array<A, Ix2>;
 
+    /// Triangular matrix-matrix multiply: B = alpha * op(A) * B (Left)
+    /// or B = alpha * B * op(A) (Right).
+    ///
+    /// `a` is the triangular matrix. Only the triangle specified by `uplo` is read.
+    fn blas_trmm(
+        &self,
+        side: Side,
+        uplo: Uplo,
+        alpha: A,
+        a_tri: &Self,
+    ) -> Array<A, Ix2>;
+
     /// Triangular solve (matrix): solve A * X = alpha * B for X
     fn blas_trsm(
         &self,
@@ -234,6 +246,74 @@ where
         c
     }
 
+    fn blas_trmm(
+        &self,
+        side: Side,
+        uplo: Uplo,
+        alpha: A,
+        a_tri: &Self,
+    ) -> Array<A, Ix2> {
+        let (m, n) = (self.nrows(), self.ncols());
+        let mut result = Array::zeros((m, n));
+        let b = self;
+
+        match side {
+            Side::Left => {
+                // result = alpha * A * B
+                let k = a_tri.nrows();
+                assert_eq!(a_tri.ncols(), k, "Triangular matrix must be square");
+                assert_eq!(k, m, "A rows must equal B rows for Left side");
+                for i in 0..m {
+                    for j in 0..n {
+                        let mut sum = A::zero();
+                        match uplo {
+                            Uplo::Upper => {
+                                // A[i, p] is nonzero for p >= i
+                                for p in i..m {
+                                    sum = sum + a_tri[[i, p]] * b[[p, j]];
+                                }
+                            }
+                            Uplo::Lower => {
+                                // A[i, p] is nonzero for p <= i
+                                for p in 0..=i {
+                                    sum = sum + a_tri[[i, p]] * b[[p, j]];
+                                }
+                            }
+                        }
+                        result[[i, j]] = alpha * sum;
+                    }
+                }
+            }
+            Side::Right => {
+                // result = alpha * B * A
+                let k = a_tri.nrows();
+                assert_eq!(a_tri.ncols(), k, "Triangular matrix must be square");
+                assert_eq!(k, n, "A rows must equal B columns for Right side");
+                for i in 0..m {
+                    for j in 0..n {
+                        let mut sum = A::zero();
+                        match uplo {
+                            Uplo::Upper => {
+                                // A[p, j] is nonzero for p <= j
+                                for p in 0..=j {
+                                    sum = sum + b[[i, p]] * a_tri[[p, j]];
+                                }
+                            }
+                            Uplo::Lower => {
+                                // A[p, j] is nonzero for p >= j
+                                for p in j..n {
+                                    sum = sum + b[[i, p]] * a_tri[[p, j]];
+                                }
+                            }
+                        }
+                        result[[i, j]] = alpha * sum;
+                    }
+                }
+            }
+        }
+        result
+    }
+
     fn blas_trsm(
         &self,
         side: Side,
@@ -330,6 +410,36 @@ mod tests {
         assert!((c[[0, 0]] - 5.0).abs() < 1e-10);
         assert!((c[[0, 1]] - 11.0).abs() < 1e-10);
         assert!((c[[1, 1]] - 25.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_trmm_left_upper() {
+        // U = [[2, 3], [0, 4]], B = [[1, 2], [3, 4]]
+        // result = 1.0 * U * B
+        // row 0: [2*1+3*3, 2*2+3*4] = [11, 16]
+        // row 1: [0*1+4*3, 0*2+4*4] = [12, 16]
+        let b = array![[1.0f64, 2.0], [3.0, 4.0]];
+        let u = array![[2.0f64, 3.0], [0.0, 4.0]];
+        let result = b.blas_trmm(Side::Left, Uplo::Upper, 1.0, &u);
+        assert!((result[[0, 0]] - 11.0).abs() < 1e-10);
+        assert!((result[[0, 1]] - 16.0).abs() < 1e-10);
+        assert!((result[[1, 0]] - 12.0).abs() < 1e-10);
+        assert!((result[[1, 1]] - 16.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_trmm_right_lower() {
+        // L = [[2, 0], [1, 3]], B = [[1, 2], [3, 4]]
+        // result = 1.0 * B * L
+        // row 0: [1*2+2*1, 1*0+2*3] = [4, 6]
+        // row 1: [3*2+4*1, 3*0+4*3] = [10, 12]
+        let b = array![[1.0f64, 2.0], [3.0, 4.0]];
+        let l = array![[2.0f64, 0.0], [1.0, 3.0]];
+        let result = b.blas_trmm(Side::Right, Uplo::Lower, 1.0, &l);
+        assert!((result[[0, 0]] - 4.0).abs() < 1e-10);
+        assert!((result[[0, 1]] - 6.0).abs() < 1e-10);
+        assert!((result[[1, 0]] - 10.0).abs() < 1e-10);
+        assert!((result[[1, 1]] - 12.0).abs() < 1e-10);
     }
 
     #[test]
