@@ -433,7 +433,7 @@ STATUS  rustynum-rs FILE             LINES   ndarray FILE              LINES   N
 ⚠️      projection.rs                  296   hpc/projection.rs           143   DEBT: 52% smaller
 ⚠️      statistics.rs                  865   hpc/statistics.rs           325   DEBT: 62% smaller
 
-DROP    array_struct.rs               2203   ndarray IS the container
+🔀 EXTRACT array_struct.rs            2203   ndarray IS the container
                                             BUT: 35 Ops:: SIMD dispatch calls
                                             (dot, exp, log, sigmoid, softmax,
                                             cosine_similarity, norm, min, max,
