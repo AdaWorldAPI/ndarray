@@ -116,6 +116,16 @@ pub mod crystal_encoder;
 #[allow(missing_docs)]
 pub mod udf_kernels;
 
+// Session C: bgz17 dual-path integration
+#[allow(missing_docs)]
+pub mod bgz17_bridge;
+#[allow(missing_docs)]
+pub mod palette_distance;
+#[allow(missing_docs)]
+pub mod layered_distance;
+#[allow(missing_docs)]
+pub mod parallel_search;
+
 #[cfg(test)]
 mod e2e_tests {
     //! End-to-end pipeline test: Fingerprint → Node → Seal → Cascade → CLAM → Causality → BNN
