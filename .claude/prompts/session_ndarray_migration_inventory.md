@@ -67,6 +67,37 @@ SIMD for Hamming lives in bitwise.rs:
 This is the CORRECT architecture. The monolithic rustynum SIMD files
 (simd.rs 1092, simd_avx2.rs 600, simd_avx512.rs 2643 = 4,335 lines)
 are properly replaced by the decomposed backend/ + bitwise.rs.
+
+HOWEVER: rustynum's simd_avx512.rs (2643 lines) is NOT just raw intrinsics.
+It's a std::simd COMPATIBILITY LAYER — portable SIMD types backed by
+stable core::arch intrinsics:
+
+    pub struct F32x16(pub __m512);    // mimics std::simd::f32x16
+    pub struct F64x8(pub __m512d);
+    pub struct U8x64(pub __m512i);
+    pub struct I32x16(pub __m512i);
+    ... (11 types total)
+
+    impl Add, Sub, Mul for F32x16    // operator overloading
+    impl SimdFloat for F32x16        // reduce_sum, reduce_max, etc.
+
+ndarray skipped this layer and calls _mm512_* directly in every kernel.
+This works today but has consequences:
+
+  - Every kernel is x86_64-only. Aarch64/NEON needs SEPARATE kernel files.
+  - When std::simd stabilizes, every kernel must be rewritten.
+  - Adding new operations requires raw intrinsics knowledge, not SIMD math.
+
+The compat layer costs zero runtime (everything inlines to the same
+instructions). It costs 2643 lines of compile-time boilerplate.
+It saves: write-once kernels for all architectures, clean std::simd
+migration path, simpler kernel authoring.
+
+RECOMMENDATION: Port the compat layer as P1. Put it in
+    src/backend/simd_compat.rs
+Wire kernels_avx512.rs to use F32x16 etc. instead of raw __m512.
+Add #[cfg(target_arch = "aarch64")] backing using NEON intrinsics later.
+Kernels become architecture-portable without rewriting.
 ```
 
 ## KNOWN REAL DEBT (files that actually lost functionality)
@@ -260,10 +291,13 @@ STATUS  rustynum-core FILE           LINES   ndarray FILE              LINES   N
 ❌      parallel.rs                    109   (none)                              DROP
 ❌      layout.rs                       75   (none)                              DROP
 
-SIMD: NOT MISSING — decomposed into:
+SIMD: DECOMPOSED (not missing), but COMPAT LAYER not ported:
         simd.rs (1092)         → backend/native.rs dispatch! macro    747
         simd_avx2.rs (600)     → (AVX2 paths in native.rs fallback)
         simd_avx512.rs (2643)  → backend/kernels_avx512.rs           962
+                                  ↑ MISSING: compat layer types (F32x16 etc.)
+                                    kernels use raw __m512 instead
+                                    Port as src/backend/simd_compat.rs (P1)
         simd_isa.rs (215)      → backend/mod.rs Tier enum             165
         simd_compat.rs (4)     → (not needed)
 ```
@@ -383,6 +417,25 @@ grep "pub fn" <ndarray>/src/backend/kernels_avx512.rs | grep -v "gemm\|hamming" 
 
 Repeat for L2 and L3.
 
+Also audit the compat layer gap:
+
+```bash
+# What types does rustynum's compat layer define?
+grep "pub struct" <rustynum>/rustynum-core/src/simd_avx512.rs
+
+# What traits does it implement?
+grep "impl.*for F32x16\|impl.*for F64x8\|impl.*for U8x64\|trait Simd" \
+     <rustynum>/rustynum-core/src/simd_avx512.rs | head -20
+
+# How many operator impls?
+grep "impl.*Add\|impl.*Sub\|impl.*Mul\|impl.*Div\|impl.*BitXor\|impl.*BitAnd\|impl.*BitOr" \
+     <rustynum>/rustynum-core/src/simd_avx512.rs | wc -l
+
+# Verify kernels_avx512.rs could be rewritten with compat types:
+# Count raw __m512/__m512d/__m512i usage
+grep -c "__m512\|__m256\|__mmask" <ndarray>/src/backend/kernels_avx512.rs
+```
+
 ### 4. Quantized GEMM Verification
 
 The most likely debt. Check whether `quantized.rs` (416 lines) actually contains:
@@ -463,17 +516,24 @@ Produce updated blackboard reflecting actual state:
 - Which are partial (ported but missing functions)
 - Which are new (not from rustynum, created fresh in ndarray)
 - Updated test count and line count
-- SIMD backend correctly documented (not listed as missing)
+- SIMD backend correctly documented: decomposed (not missing),
+  but compat layer (F32x16 etc.) flagged as P1 port target
 
 ### 9. Action Plan
 
 Ordered list based on:
 1. **P0 — bgz17 blockers:** hdc.rs debt (bind/permute/bundle), NaN guards,
    palette distance in kernels_avx512.rs
-2. **P1 — function parity:** missing pub fns in ⚠️ files
-3. **P1 — quantized GEMM:** verify quantized.rs covers bf16_gemm + int8_gemm
-4. **P2 — missing files:** hybrid.rs, spatial_resonance.rs, delta.rs
-5. **DROP — confirmed unnecessary:** jitson, jit_scan, mkl_ffi, rng, parallel, layout
+2. **P1 — SIMD compat layer:** port rustynum simd_avx512.rs type system
+   (F32x16, F64x8, U8x64, I32x16, SimdFloat trait) into
+   `src/backend/simd_compat.rs`. Refactor kernels_avx512.rs to use
+   compat types instead of raw `__m512`. Zero runtime cost. Unlocks:
+   aarch64/NEON support later (add `#[cfg(target_arch)]` backing),
+   clean std::simd migration when stabilized, simpler kernel authoring.
+3. **P1 — function parity:** missing pub fns in ⚠️ files
+4. **P1 — quantized GEMM:** verify quantized.rs covers bf16_gemm + int8_gemm
+5. **P2 — missing files:** hybrid.rs, spatial_resonance.rs, delta.rs
+6. **DROP — confirmed unnecessary:** jitson, jit_scan, mkl_ffi, rng, parallel, layout
 
 ## OUTPUT
 
