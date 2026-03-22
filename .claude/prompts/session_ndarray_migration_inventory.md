@@ -138,45 +138,58 @@ int8_gemm.rs        940       416*     56%    *Possibly in quantized.rs.
 ## KNOWN REAL GAPS (files not ported at all)
 
 ```
-FILE                    LINES   PRIORITY  RATIONALE
-──────────────          ─────   ────────  ─────────
-hybrid.rs               2032    P1        Biggest gap. Check if any downstream uses it.
-spatial_resonance.rs     758    P2        Research/experimental.
-tail_backend.rs          884    P1        Check: is this the fallback GEMM? If so,
-                                          it's replaced by backend/native.rs.
-soaking.rs               407    P1        Arrow soaking buffer — may be in arrow_bridge.rs.
-                                          VERIFY by comparing pub fn signatures.
-layer_stack.rs           328    P2        10-layer cognitive stack. Experimental.
-jitson.rs               1620    P2        Cranelift JIT: JSON/YAML config → native function pointers.
-                                          DUAL PURPOSE:
-                                          (a) Scan optimization: bakes threshold/record_size as
-                                              immediates. Partially obsoleted by Rust 1.94
-                                              array_windows (const-generic window eliminates
-                                              bounds checks, enables autovectorization).
-                                              Cascade PackedDatabase should use array_windows
-                                              for the record-size win; jitson adds marginal
-                                              threshold/prefetch baking on top.
-                                          (b) Graph-to-native compilation: the REAL future use.
-                                              When rs-graph-llm ports LangGraph-style orchestration,
-                                              the graph topology (nodes=ops, edges=control flow,
-                                              conditions=branch predicates) compiles via Cranelift
-                                              into a native function pointer. No interpreter,
-                                              no match-on-node-type dispatch. The DAG becomes
-                                              a flat instruction stream. "Code as graph recall
-                                              compiled into a function just in time."
-                                          Depends on AdaWorldAPI/wasmtime fork (AVX-512 support).
-                                          Keep for rs-graph-llm integration.
-jit_scan.rs              316    P2        Hybrid JIT: Cranelift outer loop + SIMD inner kernel.
-                                          Companion to jitson.rs. For scan path, consider
-                                          array_windows::<RECORD_BYTES>() first (Rust 1.94).
-                                          JIT adds value when graph orchestration needs it.
-mkl_ffi.rs               472    DROP      Replaced by backend/mkl.rs (237 lines).
-delta.rs                 237    P2        Structural diff. Low priority.
-compute.rs               265    P2        Generic compute dispatch. May be superseded.
-rng.rs                   117    DROP      Inline SplitMix64 already in node.rs.
-scalar_fns.rs            302    P2        Scalar fallback functions. May be in native.rs.
-parallel.rs              109    DROP      Rayon parallelism. ndarray has its own.
-layout.rs                 75    DROP      Memory layout helpers. ndarray handles this.
+FILE                    LINES   PRI   WHAT IT ACTUALLY IS
+──────────────          ─────   ───   ──────────────────
+hybrid.rs               2032    P1    3-stage scoring pipeline: K0 probe (64-bit, reject 55%)
+                                      → K1 stats (512-bit, reject 90%) → K2 exact → BF16 tail.
+                                      Bridges kernels.rs + bf16_hamming.rs + awareness substrate.
+                                      THE hot-path orchestrator for the Cascade.
+
+tail_backend.rs          884    P1    TailBackend trait (libCEED pattern): trait boundary between
+                                      safe orchestration (hybrid.rs) and unsafe SIMD/FFI backends.
+                                      PopcntBackend, XsmmBackend, FallbackBackend.
+                                      Check overlap with backend/native.rs dispatch.
+
+soaking.rs               407    P1    Int8 10000D transient accumulation layer.
+                                      dot_i8_10k, binary_to_int8, int8_to_binary (crystallize),
+                                      AttentionMask (σ-2/3 focus lens with project/classify).
+                                      Check overlap with arrow_bridge.rs SoakingBuffer.
+
+layer_stack.rs           328    P1    Collapse gate (Luftschleuse): Flow/Hold/Block airlock
+                                      between superposition (delta layers) and ground truth.
+                                      Multi-writer concurrent state without mutation.
+
+delta.rs                 237    P1    XOR delta layer: borrow-free holographic overlay.
+                                      effective = ground_truth XOR delta. No RefCell, no UnsafeCell.
+                                      XOR's self-inverse property handles isolation algebraically.
+                                      layer_stack.rs depends on this.
+
+spatial_resonance.rs     758    P2    BF16 3D spatial resonance (Crystal4K axis model).
+                                      Three orthogonal BF16 projections (X/Y/Z) with
+                                      sign/exp/man decomposition per axis. SPO grammar.
+
+compute.rs               265    P2    Tiered compute dispatch: INT8 VNNI → BF16 → FP32 → scalar.
+                                      Check overlap with backend/mod.rs Tier enum + dispatch! macro.
+
+scalar_fns.rs            302    P2    Scalar fallback for every SIMD op (dot, axpy, scal, etc.).
+                                      Check if backend/native.rs scalar paths cover these.
+                                      If fully covered, DROP.
+
+jitson.rs               1620    P2    Cranelift JIT — DUAL PURPOSE:
+                                      (a) Scan: param baking as immediates. Partially obsoleted by
+                                          Rust 1.94 array_windows (const-generic → autovectorize).
+                                      (b) Graph-to-native: compile graph topology → flat instruction
+                                          stream for rs-graph-llm LangGraph port. THE real future.
+                                      Depends on AdaWorldAPI/wasmtime fork (AVX-512).
+
+jit_scan.rs              316    P2    Hybrid JIT scan (Cranelift outer loop + SIMD inner kernel).
+                                      Companion to jitson.rs. For scan path, use array_windows
+                                      first. JIT adds value for graph orchestration.
+
+mkl_ffi.rs               472    DROP  Replaced by backend/mkl.rs (237 lines).
+rng.rs                   117    DROP  Inline SplitMix64 already in node.rs.
+parallel.rs              109    DROP  ndarray has par_azip, rayon integration.
+layout.rs                 75    DROP  ndarray handles memory layout natively.
 ```
 
 ## bgz17 INTEGRATION REQUIREMENTS
@@ -297,20 +310,23 @@ STATUS  rustynum-core FILE           LINES   ndarray FILE              LINES   N
 ⚠️      qualia_cam.rs                  501   hpc/qualia.rs               613   RENAMED + GREW
 ⚠️      graph_hv.rs                    840   hpc/graph.rs                282   SHRUNK 66%
 
-❌      hybrid.rs                     2032   (none)
-❌      spatial_resonance.rs           758   (none)
-❌      tail_backend.rs                884   (none)                              Check vs native.rs
-❌      soaking.rs                     407   (none)                              Check vs arrow_bridge.rs
-❌      layer_stack.rs                 328   (none)
-❌      jitson.rs                     1620   (none)                              DROP: separate crate
-❌      jit_scan.rs                    316   (none)                              DROP
-❌      mkl_ffi.rs                     472   (none)                              DROP: backend/mkl.rs
-❌      delta.rs                       237   (none)
-❌      compute.rs                     265   (none)
-❌      rng.rs                         117   (none)                              DROP: inline in node.rs
-❌      scalar_fns.rs                  302   (none)                              Check vs native.rs
-❌      parallel.rs                    109   (none)                              DROP
-❌      layout.rs                       75   (none)                              DROP
+❌      hybrid.rs                     2032   (none)                              P1: 3-stage pipeline (K0/K1/K2 → BF16 tail)
+❌      spatial_resonance.rs           758   (none)                              P2: BF16 3D axis model (Crystal4K)
+❌      tail_backend.rs                884   (none)                              P1: TailBackend trait (libCEED pattern)
+                                                                                Check overlap with backend/native.rs
+❌      soaking.rs                     407   (none)                              P1: int8 10KD accumulation + crystallization
+                                                                                Check overlap with arrow_bridge.rs
+❌      layer_stack.rs                 328   (none)                              P1: collapse gate (Flow/Hold/Block)
+❌      delta.rs                       237   (none)                              P1: XOR delta layer (borrow-free overlay)
+❌      compute.rs                     265   (none)                              P2: tiered compute dispatch (INT8→BF16→FP32)
+                                                                                Check overlap with backend/mod.rs Tier
+❌      jitson.rs                     1620   (none)                              P2: Cranelift JIT (graph-to-native for rs-graph-llm)
+❌      jit_scan.rs                    316   (none)                              P2: hybrid JIT scan (companion to jitson)
+❌      scalar_fns.rs                  302   (none)                              Check vs backend/native.rs scalar paths
+❌      mkl_ffi.rs                     472   (none)                              DROP: replaced by backend/mkl.rs (237 lines)
+❌      rng.rs                         117   (none)                              DROP: inline SplitMix64 already in node.rs
+❌      parallel.rs                    109   (none)                              DROP: ndarray has par_azip, rayon integration
+❌      layout.rs                       75   (none)                              DROP: ndarray handles memory layout
 
 SIMD: DECOMPOSED (not missing), but COMPAT LAYER not ported:
         simd.rs (1092)         → backend/native.rs dispatch! macro    747
@@ -551,10 +567,20 @@ Ordered list based on:
    compat types instead of raw `__m512`. Zero runtime cost. Unlocks:
    aarch64/NEON support later (add `#[cfg(target_arch)]` backing),
    clean std::simd migration when stabilized, simpler kernel authoring.
-3. **P1 — function parity:** missing pub fns in ⚠️ files
-4. **P1 — quantized GEMM:** verify quantized.rs covers bf16_gemm + int8_gemm
-5. **P2 — missing files:** hybrid.rs, spatial_resonance.rs, delta.rs
-6. **DROP — confirmed unnecessary:** mkl_ffi, rng, parallel, layout
+3. **P1 — hot-path pipeline:** hybrid.rs (2032 lines, K0/K1/K2 → BF16 tail),
+   tail_backend.rs (884 lines, TailBackend trait)
+4. **P1 — superposition algebra:** delta.rs (237 lines, XOR overlay) +
+   layer_stack.rs (328 lines, collapse gate Flow/Hold/Block).
+   delta.rs first — layer_stack depends on it.
+5. **P1 — soaking layer:** soaking.rs (407 lines, int8 10KD accumulation).
+   Check arrow_bridge.rs overlap first.
+6. **P1 — function parity:** missing pub fns in ⚠️ files
+   (hdc.rs, statistics.rs, cogrecord.rs, graph.rs, projection.rs)
+7. **P1 — quantized GEMM:** verify quantized.rs covers bf16_gemm + int8_gemm
+8. **P2 — spatial/compute:** spatial_resonance.rs, compute.rs, scalar_fns.rs
+9. **P2 — JIT infrastructure:** jitson.rs + jit_scan.rs (defer until
+   rs-graph-llm LangGraph port needs graph-to-native compilation)
+10. **DROP — confirmed unnecessary:** mkl_ffi, rng, parallel, layout
 
 ## OUTPUT
 
