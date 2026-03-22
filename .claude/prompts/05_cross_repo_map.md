@@ -74,3 +74,30 @@ Downstream crates that use ndarray's HPC modules:
 | Rung 1 (proven) | XOR group properties | Algebraic property tests |
 | Rung 2 (statistical) | Cascade bands separate signal | Distributional tests |
 | Rung 3 (needs theorem) | SPO recovers causal structure | Formal proof required |
+
+---
+
+## Status Update (2026-03-22)
+
+### Consumer Crate Status (verified audit)
+
+| Consumer | Status | Notes |
+|----------|--------|-------|
+| lance-graph | Phase 2 DONE, Phase 3-4 OPEN | bgz17 complete (121 tests), ndarray_bridge.rs exists |
+| ladybug-rs | NOT STARTED | Still uses rustynum. Migration planned as Plateau 2 in INTEGRATION_PLAN.md |
+| rs-graph-llm | NOT STARTED | graph-flow-memory crate planned (AriGraph schema port) |
+| crewai-rust | NOT STARTED | Currently uses rustynum indirectly via BindSpace |
+
+### Integration Order (from INTEGRATION_PLAN.md)
+
+1. **Plateau 0:** ndarray itself must compile clean (fix exit-101 build, 2 doctest failures)
+2. **Plateau 1:** rs-graph-llm creates graph-flow-memory, references ndarray for embeddings
+3. **Plateau 2:** ladybug-rs migrates from rustynum to ndarray (highest risk phase)
+4. **Plateau 3:** Full pipeline — ndarray compute → lance-graph query → rs-graph-llm orchestrate
+
+### rustynum Supersession
+
+rustynum's 57K LOC has been transcoded into ndarray's src/hpc/ (55 modules, 880 tests).
+The migration in consumer crates (ladybug-rs, crewai-rust via BindSpace) is tracked
+under Plateau 2 of the master plan. rustynum will remain as a path dep during the
+transition period — both deps coexist until all tests pass with ndarray alone.

@@ -100,7 +100,9 @@
 ### Build Status
 - Build currently fails (exit 101) — needs investigation
 - 880 lib tests pass when build succeeds
-- 2 doctest failures out of 302
+- 2 doctest failures out of 302:
+  - `src/hpc/crystal_encoder.rs` line 251 — `distill` doctest (compile error)
+  - `src/hpc/udf_kernels.rs` line 200 — `udf_sigma_classify` doctest (assertion: `"noise" != "exact"`)
 
 ### Architecture Notes
 - `LinalgBackend` trait from CLAUDE.md spec → actual impl is `BlasFloat` trait (different name, same purpose)
