@@ -270,6 +270,131 @@ pub fn search(
 }
 ```
 
+## DELIVERABLE 6: PCDVQ Direction-Weighted Distance (arxiv 2506.05432)
+
+PCDVQ proved direction is 20× more sensitive to quantization than magnitude.
+Our BF16 sign/exp/mantissa decomposition maps to polar coordinates:
+  dim 0 = sign (direction), dims 1-6 = exponent (magnitude scale), dims 7-16 = mantissa.
+
+Add direction-weighted L1 to Base17:
+
+```rust
+impl Base17 {
+    /// PCDVQ-informed distance: weight sign dimensions 20× over mantissa.
+    /// Matches measured direction/magnitude sensitivity ratio.
+    pub fn l1_weighted(&self, other: &Base17) -> u32 {
+        self.dims.iter().zip(other.dims.iter())
+            .enumerate()
+            .map(|(i, (a, b))| {
+                let diff = (a - b).unsigned_abs() as u32;
+                let weight = if i == 0 { 20 } else if i < 7 { 3 } else { 1 };
+                diff * weight
+            })
+            .sum()
+    }
+}
+
+impl DistanceMatrix {
+    /// Build distance matrix with PCDVQ direction weighting.
+    /// Compose table + SimilarityTable auto-recalibrate from new distances.
+    pub fn new_pcdvq_weighted(centroids: &[Base17]) -> Self { ... }
+}
+```
+
+This also explains WHY the HHTL+CLAM dual-path works:
+  HHTL (popcount) treats all bits equally → blind to direction asymmetry.
+  CLAM (LFD/tree) groups by manifold geometry → direction-aware.
+  The dual-path covers complementary failure modes.
+
+## DELIVERABLE 7: Sigma-Band Palette (replace k-means, eliminate NaN)
+
+Inspired by GQ (arxiv 2512.06609): Gaussian VAE with Target Divergence
+Constraint → codebook without training, guaranteed uniform utilization.
+
+Our equivalent: sigma-band quantization from Cascade reservoir.
+Equal-percentile bands = distribution-free generalization of GQ's TDC.
+No empty clusters possible (each band covers fixed percentile by construction).
+
+```rust
+impl Palette {
+    /// Sigma-band palette: codebook from empirical distribution.
+    /// Each band boundary = reservoir percentile.
+    /// 256 bands = 8-bit palette. Guaranteed no empty clusters.
+    /// Distribution-free: works for Gaussian, bimodal, skewed, heavy-tailed.
+    pub fn from_sigma_bands(cascade: &Cascade, k: usize) -> Self {
+        let mut boundaries = Vec::with_capacity(k);
+        for i in 0..k {
+            let percentile = (i as f32 + 0.5) / k as f32;
+            boundaries.push(cascade.reservoir().quantile(percentile));
+        }
+        // Assign each vector to nearest band boundary
+        // NO empty clusters: each band covers 100/k percent of data
+        Self::from_boundaries(boundaries)
+    }
+}
+```
+
+## DELIVERABLE 8: Rust 1.94 Optimizations
+
+Two zero-cost improvements from Rust 1.94:
+
+```rust
+// (a) array_windows for Cascade scan — eliminates bounds checks
+// BEFORE:
+for chunk in packed_db.windows(record_size) { ... }
+// AFTER:
+for chunk in packed_db.array_windows::<RECORD_BYTES>() { ... }
+
+// (b) f16 primitive for SimilarityTable — hardware VCVTPH2PS
+// BEFORE: custom BF16 type with software conversion
+// AFTER: core::num::f16 with AVX-512 FP16 intrinsics (stable in 1.94)
+```
+
+## DELIVERABLE 9: Redirect lance-graph Raw Intrinsics
+
+After simd_compat lands and bgz17 joins workspace:
+
+```
+ndarray_bridge.rs (6 Hamming functions, ~200 lines)
+  → call ndarray::hpc::bitwise::hamming_distance_raw()
+types.rs (2 Hamming functions, ~60 lines)
+  → same
+~260 lines of duplicated intrinsics → function calls
+bgz17/prefetch.rs (4 calls) → stays (hint, not computation)
+```
+
+Blocked on: Session C first gate (bgz17 → workspace members).
+
+## DELIVERABLE 10: GPU-Optimal Memory Access (future)
+
+Context: IVF-RaBitQ GPU (2602.23999), Fantasy (2512.02278),
+PathWeaver (2507.17094), Jasper (2601.07048) — all solve
+"GPU hates random access" differently.
+
+Our Cascade's panel-packed layout = GPU-coalesced reads:
+  stride-16 sampling = 32 threads × 128 bytes = 4KB = one warp read
+  Cascade stages → GPU kernel launches
+  Future: HHTL on GPU-A, CLAM on GPU-B (PathWeaver-style)
+
+Not blocking current sessions. Note as future work.
+
+## SOURCE PAPERS
+
+```
+PAPER              ARXIV           VENUE          RELEVANCE
+─────              ─────           ─────          ─────────
+RaBitQ             2405.12497      SIGMOD 24      Binary quant foundation
+Extended-RaBitQ    2409.09913      SIGMOD 25      Multi-bit extension
+SymphonyQG         2411.12229      SIGMOD 25      RaBitQ + graph + FastScan
+IVF-RaBitQ GPU     2602.23999      arXiv 26       GPU-native IVF + RaBitQ
+Jasper             2601.07048      arXiv 26       GPU graph + streaming
+Fantasy            2512.02278      arXiv 25       Multi-GPU pipelining
+PathWeaver         2507.17094      arXiv 25       Cross-GPU path extension
+PCDVQ              2506.05432      arXiv 25       Direction > magnitude (20×)
+GQ                 2512.06609      arXiv 26       Gaussian VAE → codebook
+GenDecomp          2602.03505      arXiv 26       Bayesian decoder correction
+```
+
 ## TESTS
 
 1. RaBitQ encode → decode: correction factors produce unbiased estimate
@@ -280,6 +405,10 @@ pub fn search(
 6. SimilarityTable output matches cosine within ρ > 0.95
 7. Full pipeline: top-10 recall ≥ 95% vs brute-force f32 cosine
 8. Lance column pruning: Stage 1 reads only 3 bytes/row
+9. PCDVQ-weighted L1 vs uniform L1: higher cosine rank correlation
+10. Sigma-band palette vs k-means: zero NaN, comparable recall
+11. array_windows scan: no regression, fewer bounds checks in asm
+12. Dual-path ablation: HHTL-only misses direction-sensitive pairs CLAM catches
 
 ## OUTPUT
 

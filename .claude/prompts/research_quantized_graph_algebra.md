@@ -88,6 +88,14 @@ sound (error O(1/√D)). We show the spatial axis gives multiplicative savings
 on top — the errors are independent because spatial subsampling preserves the
 distance RANKING while bit-depth refinement improves the distance ESTIMATE.
 
+**Connection to PCDVQ (arXiv:2506.05432):** PCDVQ proved direction is 20×
+more sensitive to quantization than magnitude. Popcount (HHTL) treats all
+bits equally — it's blind to this asymmetry. CLAM groups by manifold geometry
+(LFD = directional curvature). The dual-path HHTL+CLAM is the STRUCTURAL
+SOLUTION to PCDVQ's measured problem: HHTL handles magnitude-dominant cases,
+CLAM handles direction-dominant cases. Neither alone covers both. This gives
+the dual-path a theoretical motivation beyond engineering redundancy.
+
 ### Contribution 2: Palette Compose Tables (Quantized Graph Algebra)
 
 **Prior art:**
@@ -169,22 +177,45 @@ to graph-structured quantized data. The side information taxonomy (geometric,
 distributional, topological, epistemological) is new. The combination of CLAM
 + Cascade + graph topology as decoder inputs has no precedent.
 
-### Contribution 4: Self-Calibrating Similarity (minor contribution)
+**PCDVQ connection (arXiv:2506.05432):** The Bayesian correction weights should
+reflect PCDVQ's direction/magnitude asymmetry:
+  LFD factor IS a direction correction (curvature = directional change) → weight 20×
+  CDF factor IS a magnitude correction (distance from median) → weight 1×
+  d_corrected = d_palette × lfd_factor^(α_dir) × cdf_factor^(α_mag)
+  where α_dir/α_mag ≈ 20 (from PCDVQ's measured sensitivity ratio).
+This makes the generative decoder DIRECTION-AWARE without any training.
+
+### Contribution 4: Self-Calibrating Similarity as Distribution-Free Codebook
 
 **Prior art:**
-- Cosine similarity: standard but requires f32 vectors.
+- GQ (arXiv:2512.06609, Feb 2026): Gaussian VAE with Target Divergence Constraint
+  → codebook without training. Equal KL per dimension = uniform utilization.
+  No empty clusters. ONLY works for Gaussian distributions.
+- Cosine similarity: requires f32 vectors.
 - RaBitQ distance: approximate, needs correction factors, no f32 output.
-- Learned similarity functions: require training, not self-calibrating.
 
 **Our invention:**
 256-entry f16 table mapping distance → similarity via inverted empirical CDF.
-Distribution-free (works for normal, bimodal, skewed, heavy-tailed).
-Auto-recalibrates when Cascade reservoir updates.
+This IS the distribution-free generalization of GQ's TDC:
 
-**Why it's a minor contribution:** The math is simple (CDF inversion).
-The value is in the engineering: ANY consumer expecting cosine gets a
-meaningful f32 without knowing the quantization internals. The f16 storage
-(512 bytes) fits in 8 cache lines. SIMD batch via VCVTPH2PS.
+```
+GQ:   codebook = grid of Gaussian quantiles → optimal for N(μ,σ²)
+Ours: codebook = grid of empirical percentiles → optimal for ANY distribution
+GQ = our special case when data happens to be Gaussian.
+```
+
+Equal-percentile bands guarantee: no empty clusters (each band covers exactly
+100/k percent of the data by construction). k-means CAN produce empty clusters
+(the NaN guard problem). Sigma-band quantization CANNOT.
+
+For non-Gaussian distributions (bimodal, skewed, heavy-tailed), GQ's assumption
+breaks. Ours works because we read from the actual reservoir, not from an
+assumed distribution.
+
+**Why this is now a full contribution:** It's not just a lookup table — it's
+a universal, distribution-free, training-free codebook construction principle.
+The connection to GQ provides theoretical grounding. The practical benefit
+(eliminates NaN, auto-recalibrates on shift) is immediate.
 
 ## Experimental Plan
 
@@ -211,48 +242,78 @@ meaningful f32 without knowing the quantization internals. The f16 storage
 - Spatial sampling: stride-16 vs stride-8 vs stride-4 (rejection rate vs recall)
 - Bit-depth: 1-bit only vs 1+2 vs 1+4 (accuracy vs speed)
 - Compose table: exact vs approximate (majority-vote rounding)
-- Side information: which combination closes most gap
+- Side information: which combination closes most gap (LFD, CDF, topology, truth — individual and combined)
+- **Dual-path complementarity (PCDVQ-motivated):** HHTL-only vs CLAM-only vs merged.
+  Show HHTL misses direction-sensitive pairs CLAM catches, and CLAM misses
+  sparse outliers HHTL catches. Correlation with LFD (high LFD = HHTL fails).
+- **PCDVQ-weighted L1 vs uniform L1:** cosine rank correlation improvement.
+  Weight sign dims 20×, exponent 3×, mantissa 1× vs all equal.
+- **k-means palette vs sigma-band palette:** recall parity + zero NaN.
+  Show sigma-band eliminates empty cluster problem while matching k-means recall.
+- **SymphonyQG composition:** SymphonyQG alone vs Cascade→SymphonyQG.
+  Show cascade pre-filtering + graph refinement beats either alone.
+- **GPU microbenchmark:** stride-16 coalesced reads vs random graph traversal.
+  Measure bandwidth utilization on A100/L40S (future work if GPU access available).
 
 ## Related Work (positioning)
 
 ```
-AREA                      THEIR APPROACH              OUR ADVANCE
-─────────────────         ────────────────            ───────────
-Vector quantization       PQ, RaBitQ, SQ             + spatial progressive scan
-                                                     + graph compose algebra
-Graph embeddings          TransE, RotatE, CompGCN    + operate in quantized space
-                                                     + truth-gated (NARS)
-ANN search               IVF, HNSW, FAISS           + 2D cascade early exit
-                                                     + decoder-side correction
-Lossy compression         2602.03505 (GenDecomp)     + first graph application
-                                                     + multi-source side info
-Semantic search           ColBERT, DPR, SPLADE       + sub-byte representations
-                                                     + graph traversal (not just sim)
+PAPER              VENUE         THEIR CONTRIBUTION                    OUR ADVANCE
+─────              ─────         ──────────────────                    ───────────
+RaBitQ             SIGMOD 24     1-bit quant, O(1/√D) error           + spatial cascade (2D progressive)
+Extended-RaBitQ    SIGMOD 25     2-8 bit per dim progressive          + spatial + bit-depth simultaneously
+SymphonyQG         SIGMOD 25     RaBitQ + graph + FastScan            + cascade pre-filter, + compose table
+                                 Neighbor codes stored sequentially    Our W16-31 inline edges = same pattern
+                                 Closest competitor for graph search   Complementary: they refine, we filter
+IVF-RaBitQ GPU     arXiv 26      GPU-native IVF + RaBitQ in cuVS      Panel-packed stride-16 = coalesced reads
+Jasper             arXiv 26      GPU graph + streaming updates         Cascade reservoir auto-recalibrates
+Fantasy            arXiv 25      Multi-GPU GPUDirect pipelining        Dual-path HHTL/CLAM across GPUs
+PathWeaver         arXiv 25      Cross-GPU path extension              Complementary paths, not split data
+PCDVQ              arXiv 25      Direction 20× > magnitude (LLM VQ)   Our BF16 decomposition IS this for binary
+                                 Polar coordinate decoupling           Explains why HHTL+CLAM dual-path works
+GQ                 arXiv 26      Gaussian VAE → codebook (no train)   Our sigma-bands = distribution-free GQ
+                                 TDC = equal KL per dim                Equal-percentile = universal codebook
+GenDecomp          arXiv 26      Bayesian decoder-side correction      5 side-info sources for graph data
+                                 Fixed encoder, adaptive decoder       First graph application, PCDVQ-weighted
+TransE/RotatE      various       KG embeddings in continuous f32       Operate in 3-byte palette space
+CompGCN            ICLR 20       Composition operators on KG emb.      Compose table = precomputed composition
+FAISS              Meta          IVF-PQ, HNSW, FastScan library        Cascade + compose + truth-gate + similarity
+LanceDB            LanceDB       Columnar vector store + RaBitQ        Column pruning + Cascade + palette columns
 ```
 
 ## Paper Structure
 
 ```
 Section 1: Introduction + motivation (graph search ≠ vector search)
-Section 2: Background (RaBitQ, PQ, Cascade, Generative Decompression)
+Section 2: Background (RaBitQ, PQ, Cascade, Generative Decompression, PCDVQ)
 Section 3: 2D Progressive Cascade (Contribution 1)
   3.1: Spatial subsampling with sigma-band early termination
   3.2: Bit-depth refinement via extended-RaBitQ codes
   3.3: Combined work analysis (the 0.23× derivation)
+  3.4: GPU-optimal memory access patterns (panel-packed, warp-coalesced reads)
+       Cite: IVF-RaBitQ GPU, Fantasy, PathWeaver, Jasper
+  3.5: PCDVQ-motivated dual-path: HHTL (magnitude) + CLAM (direction)
 Section 4: Palette Compose Tables (Contribution 2)
   4.1: Semiring construction from distance matrix + centroids
   4.2: Multi-hop traversal in palette space
   4.3: SPO directional queries (2³ projection verbs)
 Section 5: Generative Graph Decoding (Contribution 3)
   5.1: Side information taxonomy (geometric, distributional, topological, epistemological)
-  5.2: Correction formula derivation
+  5.2: PCDVQ-weighted correction formula (direction 20× > magnitude)
   5.3: Optimality proof (via 2602.03505 Theorem 1)
-Section 6: Self-Calibrating Similarity (Contribution 4)
+Section 6: Distribution-Free Codebook Construction (Contribution 4)
+  6.1: Sigma-band quantization as generalization of GQ's TDC
+  6.2: No empty clusters guarantee (vs k-means NaN problem)
+  6.3: Auto-recalibration on distribution shift
+  6.4: f16 SimilarityTable (512 bytes, SIMD-batchable via VCVTPH2PS)
 Section 7: Experiments
   7.1: MotoGP knowledge graph (multi-hop, truth-gated)
-  7.2: ANN benchmark (Pareto front vs RaBitQ/PQ)
+  7.2: ANN benchmark (Pareto front vs RaBitQ/PQ/SymphonyQG)
   7.3: Distribution shift (generative correction ablation)
-Section 8: Conclusion + future work (NEON portability, streaming updates)
+  7.4: Dual-path complementarity (HHTL vs CLAM vs merged)
+  7.5: PCDVQ-weighted distance vs uniform (cosine correlation)
+  7.6: Sigma-band vs k-means palette (NaN elimination + recall)
+Section 8: Conclusion + future work (GPU port, NEON portability, streaming)
 ```
 
 ## Target Venues
@@ -295,3 +356,23 @@ All code is in `AdaWorldAPI/lance-graph` and `AdaWorldAPI/ndarray`:
 4. **Similarity table precision:**
    |sim_table(d) - cos_exact(v_a, v_b)| ≤ 2/256 + O(1/√D)
    The 2/256 is bucket quantization, the O(1/√D) is from RaBitQ's error bound
+
+5. **PCDVQ-weighted distance (from 2506.05432):**
+   d_weighted = Σ_i w_i × |a_i - b_i|
+   where w_0 = α_dir ≈ 20 (sign dims), w_{1..6} = α_exp ≈ 3 (exponent),
+   w_{7..16} = 1 (mantissa). α_dir/α_mag measured from reservoir sensitivity.
+   Show: ρ(d_weighted, cos_exact) > ρ(d_uniform, cos_exact)
+
+6. **Sigma-band codebook optimality:**
+   For k bands from empirical CDF F_n:
+   boundary_i = F_n^{-1}(i/k)  (i-th percentile)
+   Show: max_over_all_distributions regret ≤ O(1/k) for equal-percentile
+   vs GQ's TDC which achieves O(1/k) only for Gaussian.
+   Our guarantee is minimax optimal (worst-case over distributions).
+
+7. **Dual-path error decomposition (PCDVQ-motivated):**
+   err_HHTL = α × err_direction + β × err_magnitude  (α ≈ 1, β ≈ 1, uniform)
+   err_CLAM = α' × err_direction + β' × err_magnitude (α' < 1, β' ≈ 1, LFD-aware)
+   err_merged = min(err_HHTL, err_CLAM) per candidate
+   Show: err_merged < min(err_HHTL, err_CLAM) globally because each path
+   dominates in different regions (PCDVQ's 20× ratio predicts where).
