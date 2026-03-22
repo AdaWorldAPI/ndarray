@@ -45,7 +45,9 @@ src/
 │   ├── native.rs       # Pure Rust + SIMD microkernels
 │   ├── mkl.rs          # Intel MKL FFI (feature = "intel-mkl")
 │   ├── openblas.rs     # OpenBLAS FFI (feature = "openblas")
-│   ├── simd_compat.rs  # Runtime AVX-512/AVX2/Scalar dispatch (LazyLock<Tier>)
+├── simd.rs             # Consumer-facing SIMD module, re-exports all types
+├── simd_avx512.rs      # AVX-512 type definitions (11 types from rustynum)
+├── simd_avx2.rs        # AVX2 functions
 │   └── kernels_avx512.rs  # AVX-512 kernel implementations
 ├── hpc/                # 55 modules — ALL DONE (880 lib tests)
 │   ├── blas_level1.rs  # BLAS L1 (dot, axpy, scal, nrm2, asum, etc.)

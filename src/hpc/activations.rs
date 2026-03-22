@@ -2,7 +2,7 @@
 //!
 //! Generic trait impl via `mapv` + standalone SIMD-accelerated f32 slice functions.
 
-use crate::backend::simd_compat::{simd_exp_f32, F32x16};
+use crate::simd::{simd_exp_f32, F32x16};
 use crate::imp_prelude::*;
 use num_traits::Float;
 

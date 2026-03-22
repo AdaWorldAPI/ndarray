@@ -249,7 +249,7 @@ These modules exist in the upstream rustynum workspace but have **no counterpart
 | `simd_avx2.rs` | 600 | AVX2-specific kernels |
 | `simd_avx512.rs` | 2 643 | AVX-512 kernels |
 | `simd_isa.rs` | 215 | ISA detection |
-| `simd_compat.rs` | 4 | Compat shim |
+| `simd.rs` / `simd_avx512.rs` / `simd_avx2.rs` | — | SIMD compat layer (re-exports, AVX-512 types, AVX2 functions) |
 | `hybrid.rs` | 2 355 | Hybrid compute pipeline |
 | `jitson.rs` | 1 688 | JIT JSON/binary codec |
 | `jit_scan.rs` | 385 | JIT scan operations |

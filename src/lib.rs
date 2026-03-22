@@ -229,6 +229,17 @@ mod zip;
 
 mod dimension;
 
+/// Portable SIMD types — `crate::simd::f32x16` today, `std::simd::f32x16` tomorrow.
+#[cfg(feature = "std")]
+#[allow(missing_docs)]
+pub(crate) mod simd;
+#[cfg(all(feature = "std", target_arch = "x86_64"))]
+#[allow(missing_docs)]
+pub(crate) mod simd_avx512;
+#[cfg(all(feature = "std", target_arch = "x86_64"))]
+#[allow(missing_docs)]
+pub(crate) mod simd_avx2;
+
 /// Pluggable linear algebra backends (native SIMD, MKL, OpenBLAS).
 #[cfg(feature = "std")]
 pub mod backend;

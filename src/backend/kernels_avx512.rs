@@ -4,7 +4,7 @@
 //! The dispatch! macro's LazyLock tier check ensures these are only called
 //! on AVX-512 CPUs.
 //!
-//! BLAS-1 and element-wise functions use `F32x16`/`F64x8` from `simd_compat`.
+//! BLAS-1 and element-wise functions use `F32x16`/`F64x8` from `crate::simd`.
 //! GEMM microkernels retain raw intrinsics for masked stores and broadcast patterns.
 
 #![allow(clippy::too_many_arguments)]
@@ -14,7 +14,7 @@
 use core::arch::x86_64::*;
 
 #[cfg(target_arch = "x86_64")]
-use super::simd_compat::{F32x16, F64x8};
+use crate::simd::{F32x16, F64x8};
 
 // ═══════════════════════════════════════════════════════════════════
 // BLAS Level 1 — 12 functions (compat types)

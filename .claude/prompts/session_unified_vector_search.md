@@ -352,7 +352,7 @@ for chunk in packed_db.array_windows::<RECORD_BYTES>() { ... }
 
 ## DELIVERABLE 9: Redirect lance-graph Raw Intrinsics
 
-After simd_compat lands and bgz17 joins workspace:
+After the SIMD compat layer (src/simd.rs, src/simd_avx512.rs, src/simd_avx2.rs) lands and bgz17 joins workspace:
 
 ```
 ndarray_bridge.rs (6 Hamming functions, ~200 lines)

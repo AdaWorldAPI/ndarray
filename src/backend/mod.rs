@@ -13,7 +13,7 @@
 mod native;
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod kernels_avx512;
-pub(crate) mod simd_compat;
+
 
 #[cfg(feature = "intel-mkl")]
 mod mkl;

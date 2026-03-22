@@ -94,7 +94,7 @@
 - BlasFloat trait dispatch: DONE (mod.rs, native.rs)
 - MKL FFI: DONE (mkl.rs)
 - OpenBLAS FFI: DONE (openblas.rs)
-- SIMD compat layer: DONE (simd_compat.rs — LazyLock<Tier> AVX-512/AVX2/Scalar)
+- SIMD compat layer: DONE (simd.rs, simd_avx512.rs, simd_avx2.rs — LazyLock<Tier> AVX-512/AVX2/Scalar)
 - AVX-512 kernels: DONE (kernels_avx512.rs)
 
 ### Build Status
@@ -104,7 +104,7 @@
 
 ### Architecture Notes
 - `LinalgBackend` trait from CLAUDE.md spec → actual impl is `BlasFloat` trait (different name, same purpose)
-- `src/simd/` directory from spec → actual is `src/backend/simd_compat.rs` (single file)
+- `src/simd/` directory from spec → actual is `src/simd.rs`, `src/simd_avx512.rs`, `src/simd_avx2.rs` (three top-level files)
 - `src/vector/` directory from spec → not created (functionality in hpc/)
 - Blackboard uses `HashMap<String, Box<dyn Any>>`, not a true 64-byte aligned arena
 

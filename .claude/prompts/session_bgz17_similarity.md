@@ -133,7 +133,7 @@ impl SimilarityTable {
         for (i, &d) in distances.iter().enumerate() {
             out[i] = self.similarity(d);
         }
-        // TODO: SIMD path with VGATHERDPS + VCVTPH2PS when simd_compat lands
+        // TODO: SIMD path with VGATHERDPS + VCVTPH2PS when the SIMD compat layer lands
     }
 
     /// Raw table access (for inspection/debugging).
@@ -225,7 +225,7 @@ impl PaletteEdge {
 }
 ```
 
-## DELIVERABLE 4: Batch Similarity with SIMD (future, after simd_compat)
+## DELIVERABLE 4: Batch Similarity with SIMD (future, after SIMD compat layer)
 
 When the SIMD compat layer lands:
 
@@ -245,7 +245,7 @@ impl SimilarityTable {
         distances: &[u32],
         out: &mut [f32],
     ) {
-        // With simd_compat types:
+        // With crate::simd types:
         // let bucket_width = U32x16::splat(self.bucket_width);
         // for chunk in distances.chunks_exact(16).zip(out.chunks_exact_mut(16)) {
         //     let d = U32x16::from_slice(chunk.0);

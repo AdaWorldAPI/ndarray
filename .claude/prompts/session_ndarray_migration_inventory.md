@@ -94,7 +94,7 @@ It saves: write-once kernels for all architectures, clean std::simd
 migration path, simpler kernel authoring.
 
 RECOMMENDATION: Port the compat layer as P1. Put it in
-    src/backend/simd_compat.rs
+    src/simd.rs, src/simd_avx512.rs, src/simd_avx2.rs
 Wire kernels_avx512.rs to use F32x16 etc. instead of raw __m512.
 Add #[cfg(target_arch = "aarch64")] backing using NEON intrinsics later.
 Kernels become architecture-portable without rewriting.
@@ -316,10 +316,10 @@ server tick from 1.5 CPU to 0.2 CPU. Cross-referenced against existing code:
 
 ### What This Reveals About Priorities
 
-The compat layer (rustynum simd_avx512.rs → `src/backend/simd_compat.rs`)
+The compat layer (rustynum simd_avx512.rs → `src/simd.rs, src/simd_avx512.rs, src/simd_avx2.rs`)
 is the FOUNDATION for items 1, 3, 4, 6, 8. Without portable F32x16/U8x64
 types, none of the user-facing SIMD APIs can be implemented portably.
-This reinforces simd_compat as P1 — it unblocks both bgz17 integration
+This reinforces the SIMD compat layer (src/simd.rs, src/simd_avx512.rs, src/simd_avx2.rs) as P1 — it unblocks both bgz17 integration
 AND the Pumpkin feature set.
 
 Items that already have internal implementations but lack user-facing API:
@@ -415,9 +415,9 @@ SIMD: DECOMPOSED (not missing), but COMPAT LAYER not ported:
         simd_avx512.rs (2643)  → backend/kernels_avx512.rs           962
                                   ↑ MISSING: compat layer types (F32x16 etc.)
                                     kernels use raw __m512 instead
-                                    Port as src/backend/simd_compat.rs (P1)
+                                    Port as src/simd.rs, src/simd_avx512.rs, src/simd_avx2.rs (P1)
         simd_isa.rs (215)      → backend/mod.rs Tier enum             165
-        simd_compat.rs (4)     → (not needed)
+        simd_compat.rs (4)     → replaced by src/simd.rs, src/simd_avx512.rs, src/simd_avx2.rs
 ```
 
 ### Cross-Reference: rustynum-rs → ndarray
@@ -679,7 +679,7 @@ Ordered list based on:
    palette distance in kernels_avx512.rs
 2. **P1 — SIMD compat layer:** port rustynum simd_avx512.rs type system
    (F32x16, F64x8, U8x64, I32x16, SimdFloat trait) into
-   `src/backend/simd_compat.rs`. Refactor kernels_avx512.rs to use
+   `src/simd.rs, src/simd_avx512.rs, src/simd_avx2.rs`. Refactor kernels_avx512.rs to use
    compat types instead of raw `__m512`. Zero runtime cost. Unlocks:
    aarch64/NEON support, std::simd migration, simpler kernel authoring.
    ALSO UNBLOCKS Pumpkin items 1,3,4,6,8 (simd_map, xor_diff, gather,
