@@ -238,7 +238,7 @@ pub(crate) mod simd;
 pub(crate) mod simd_avx512;
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
 #[allow(missing_docs)]
-pub(crate) mod simd_avx2;
+pub mod simd_avx2;
 
 /// Pluggable linear algebra backends (native SIMD, MKL, OpenBLAS).
 #[cfg(feature = "std")]
