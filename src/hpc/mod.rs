@@ -126,6 +126,10 @@ pub mod layered_distance;
 #[allow(missing_docs)]
 pub mod parallel_search;
 
+// ZeckF64 progressive edge encoding + batch/top-k
+#[allow(missing_docs)]
+pub mod zeck;
+
 #[cfg(test)]
 mod e2e_tests {
     //! End-to-end pipeline test: Fingerprint → Node → Seal → Cascade → CLAM → Causality → BNN
