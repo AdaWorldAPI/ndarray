@@ -26,12 +26,34 @@
 pub struct BF16(pub u16);
 
 impl BF16 {
-    /// Convert f32 to BF16 (truncation).
+    /// Zero in BF16 representation.
+    pub const ZERO: BF16 = BF16(0x0000);
+    /// One in BF16 representation (same exponent/mantissa layout as f32).
+    pub const ONE: BF16 = BF16(0x3F80);
+
+    /// Convert f32 to BF16 by truncation (drops the lower 16 bits).
+    ///
+    /// Note: despite the plain name, this method **truncates** rather than
+    /// rounding. In rustyblas the truncating variant is called
+    /// `from_f32_truncate`; use that alias if you prefer explicit naming.
     pub fn from_f32(v: f32) -> Self {
         BF16((v.to_bits() >> 16) as u16)
     }
 
+    /// Alias for [`from_f32`](Self::from_f32) — truncating conversion.
+    ///
+    /// Provided so that code following the rustyblas naming convention
+    /// (`from_f32_truncate` truncates, `from_f32` rounds) works without
+    /// changes.
+    #[inline]
+    pub fn from_f32_truncate(v: f32) -> Self {
+        Self::from_f32(v)
+    }
+
     /// Convert f32 to BF16 with round-to-nearest-even.
+    ///
+    /// This is the higher-quality conversion; prefer it when precision
+    /// matters. In rustyblas the rounding variant is simply called `from_f32`.
     pub fn from_f32_rounded(v: f32) -> Self {
         let bits = v.to_bits();
         let round_bit = (bits >> 15) & 1;
@@ -402,6 +424,14 @@ mod tests {
         // Row 0: 128*1+128*0=128, 128*0+128*1=128
         assert_eq!(c[0], 128);
         assert_eq!(c[1], 128);
+    }
+
+    #[test]
+    fn test_bf16_zero_one_constants() {
+        assert_eq!(BF16::ZERO.to_f32(), 0.0);
+        assert_eq!(BF16::ONE.to_f32(), 1.0);
+        // Also verify from_f32_truncate alias works
+        assert_eq!(BF16::from_f32_truncate(1.0), BF16::ONE);
     }
 
     #[test]
