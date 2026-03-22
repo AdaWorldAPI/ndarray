@@ -45,3 +45,28 @@ Use formal causal identifiability tests:
 - Arrow buffers flow through `hpc/arrow_bridge.rs` zero-copy
 - UDF registration is external to ndarray (in lance-graph or consumer crate)
 - ndarray provides the compute kernels; integration crate provides the glue
+
+---
+
+## Status Update (2026-03-22)
+
+### lance-graph Actual State (verified)
+
+The lance-graph repo has progressed beyond what this prompt originally described:
+
+- **Phase 1 (blasgraph CSC/Planner):** DONE — CscStorage, TypedGraph, blasgraph_planner, TruthGate
+- **Phase 2 (bgz17 container/semiring):** DONE — 121 tests passing, PaletteSemiring, PaletteMatrix, PaletteCsr, TypedPaletteGraph all complete
+- **Phase 3 (dual-path):** NOT STARTED — bgz17-codec feature flag, NdarrayFingerprint::plane_to_base17(), parallel_search()
+- **Phase 4 (FalkorDB retrofit):** NOT STARTED
+
+### What ndarray needs to provide for Phase 3
+
+1. `Fingerprint<256>` → Base17 encoding bridge (plane_to_base17)
+2. Cascade search results compatible with TruthGate filtering
+3. CLAM tree compatible with PaletteDistance (W125 palette indices from containers)
+
+### UDF Registration Note
+
+The UDFs listed above are defined in ndarray but registered externally in lance-graph.
+This separation is correct and should be maintained. ndarray provides kernels; lance-graph
+provides the DataFusion UDF wrappers.

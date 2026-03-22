@@ -337,7 +337,7 @@ All code is in `AdaWorldAPI/lance-graph` and `AdaWorldAPI/ndarray`:
 - `crates/lance-graph/src/graph/blasgraph/hdr.rs` — Cascade with 2D progressive
 - `crates/bgz17/src/generative.rs` — LFD correction (generative decoding)
 - `crates/bgz17/src/similarity.rs` — SimilarityTable (CDF inversion)
-- `src/backend/simd_compat.rs` — portable SIMD for reproducible benchmarks
+- `src/simd.rs`, `src/simd_avx512.rs`, `src/simd_avx2.rs` — portable SIMD for reproducible benchmarks
 
 ## Key Equations to Derive
 

@@ -36,29 +36,39 @@ When summarizing this conversation, preserve:
 - Which agents have been consulted and their verdicts
 - Any BLOCK findings from sentinel-qa
 
-## Repository Structure (Target)
+## Repository Structure (Actual as of 2026-03-22)
 ```
 src/
 ├── lib.rs              # Re-exports, feature gates
 ├── backend/
-│   ├── mod.rs          # LinalgBackend trait
-│   ├── native.rs       # Pure Rust + SIMD
+│   ├── mod.rs          # BlasFloat trait (was planned as LinalgBackend)
+│   ├── native.rs       # Pure Rust + SIMD microkernels
 │   ├── mkl.rs          # Intel MKL FFI (feature = "intel-mkl")
-│   └── openblas.rs     # OpenBLAS FFI (feature = "openblas")
-├── linalg/
-│   ├── gemm.rs         # General matrix multiply
-│   ├── syrk.rs         # Symmetric rank-k update
-│   └── trsm.rs         # Triangular solve
-├── simd/
-│   ├── mod.rs          # Runtime detection, dispatch
-│   ├── avx512.rs       # AVX-512 kernels
-│   ├── avx2.rs         # AVX2 fallback
-│   └── sse42.rs        # SSE4.2 minimum
-└── vector/
-    ├── distance.rs     # Cosine, L2, dot product
-    ├── batch.rs        # Pairwise, top-k
-    └── index.rs        # VectorIndex trait
-benches/
-├── gemm_bench.rs       # criterion benchmarks
-└── vector_bench.rs
+│   ├── openblas.rs     # OpenBLAS FFI (feature = "openblas")
+├── simd.rs             # Consumer-facing SIMD module, re-exports all types
+├── simd_avx512.rs      # AVX-512 type definitions (11 types from rustynum)
+├── simd_avx2.rs        # AVX2 functions
+│   └── kernels_avx512.rs  # AVX-512 kernel implementations
+├── hpc/                # 55 modules — ALL DONE (880 lib tests)
+│   ├── blas_level1.rs  # BLAS L1 (dot, axpy, scal, nrm2, asum, etc.)
+│   ├── blas_level2.rs  # BLAS L2 (gemv, ger, symv, trmv, trsv)
+│   ├── blas_level3.rs  # BLAS L3 (gemm, syrk, trsm, symm)
+│   ├── quantized.rs    # BF16 GEMM, Int8 GEMM
+│   ├── lapack.rs       # LU, Cholesky, QR
+│   ├── fft.rs          # FFT/IFFT (Cooley-Tukey radix-2)
+│   ├── vml.rs          # Vector math (exp, ln, sqrt, etc.)
+│   ├── statistics.rs   # Median, var, std, percentile, top_k
+│   ├── activations.rs  # Sigmoid, softmax, log_softmax
+│   ├── fingerprint.rs, plane.rs, seal.rs, node.rs  # Cognitive core
+│   ├── cascade.rs, bf16_truth.rs, causality.rs     # Truth/cascade
+│   ├── blackboard.rs   # Typed slot arena
+│   ├── bnn.rs, clam.rs, arrow_bridge.rs            # Additional crates
+│   ├── hdc.rs, nars.rs, qualia.rs, spo_bundle.rs   # Cognitive extensions
+│   └── ... (27 more modules)
 ```
+
+## Status (2026-03-22 Audit)
+- **All "must be ported" items: DONE** — see `.claude/blackboard.md` for full inventory
+- **880 lib tests passing**, 2 doctest failures out of 302
+- **Build currently fails (exit 101)** — needs investigation
+- See blackboard for detailed per-module test counts

@@ -4,7 +4,7 @@
 //! SIMD-accelerated via `F32x16` compat types where possible.
 //! Pure Rust implementations; MKL-accelerated versions behind `intel-mkl` feature gate.
 
-use crate::backend::simd_compat::{simd_exp_f32, F32x16};
+use crate::simd::{simd_exp_f32, F32x16};
 
 /// Element-wise exp: out[i] = exp(x[i])
 ///
