@@ -100,6 +100,23 @@ where
         let shape = self.raw_dim();
         let ax = axis.index();
         let ax_len = shape[ax];
+
+        // Guard: zero-length axis would cause division by zero
+        if ax_len == 0 {
+            let mut out_shape: Vec<usize> = Vec::new();
+            for (i, &s) in shape.slice().iter().enumerate() {
+                if i != ax {
+                    out_shape.push(s);
+                }
+            }
+            if out_shape.is_empty() {
+                out_shape.push(1);
+            }
+            let out_dim = IxDyn(&out_shape);
+            let n_out: usize = out_shape.iter().product();
+            return Array::from_shape_vec(out_dim, vec![A::zero(); n_out]).unwrap();
+        }
+
         let n_a = A::from_usize(ax_len).unwrap();
 
         // Compute mean along axis
@@ -321,5 +338,19 @@ mod tests {
         let x = array![3.0f64, 4.0];
         assert!((x.norm(2) - 5.0).abs() < 1e-10);
         assert!((x.norm(1) - 7.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn var_axis_zero_length_axis_no_nan() {
+        use crate::Array2;
+        // 0 rows, 3 columns — axis 0 has length 0
+        let a = Array2::<f64>::zeros((0, 3));
+        let dyn_a = a.into_dyn();
+        let result = dyn_a.var_axis(Axis(0));
+        assert_eq!(result.len(), 3);
+        for &v in result.iter() {
+            assert!(!v.is_nan(), "var_axis produced NaN on zero-length axis");
+            assert_eq!(v, 0.0);
+        }
     }
 }
