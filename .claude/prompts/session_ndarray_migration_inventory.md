@@ -362,6 +362,13 @@ ndarray (AdaWorldAPI/ndarray, branch: master):
 ### Cross-Reference: rustynum-core → ndarray
 
 ```
+STATUS KEY:
+  ✅       = ported to ndarray (verify pub fn parity)
+  ⚠️       = ported but renamed/resized (audit for missing functions)
+  📦 PORT  = NOT in ndarray, MUST port (P1)
+  🔜 DEFER = NOT in ndarray, port later (P2)
+  🗑️  DROP = NOT needed in ndarray (replaced or handled natively)
+
 STATUS  rustynum-core FILE           LINES   ndarray FILE              LINES   NOTES
 ──────  ─────────────────────        ─────   ──────────────────        ─────   ─────
 ✅      blackboard.rs                  757   hpc/blackboard.rs           781
@@ -384,23 +391,23 @@ STATUS  rustynum-core FILE           LINES   ndarray FILE              LINES   N
 ⚠️      qualia_cam.rs                  501   hpc/qualia.rs               613   RENAMED + GREW
 ⚠️      graph_hv.rs                    840   hpc/graph.rs                282   SHRUNK 66%
 
-❌      hybrid.rs                     2032   (none)                              P1: 3-stage pipeline (K0/K1/K2 → BF16 tail)
-❌      spatial_resonance.rs           758   (none)                              P2: BF16 3D axis model (Crystal4K)
-❌      tail_backend.rs                884   (none)                              P1: TailBackend trait (libCEED pattern)
+📦 PORT  hybrid.rs                     2032   (none)                              P1: 3-stage pipeline (K0/K1/K2 → BF16 tail)
+🔜 DEFER spatial_resonance.rs           758   (none)                              P2: BF16 3D axis model (Crystal4K)
+📦 PORT  tail_backend.rs                884   (none)                              P1: TailBackend trait (libCEED pattern)
                                                                                 Check overlap with backend/native.rs
-❌      soaking.rs                     407   (none)                              P1: int8 10KD accumulation + crystallization
+📦 PORT  soaking.rs                     407   (none)                              P1: int8 10KD accumulation + crystallization
                                                                                 Check overlap with arrow_bridge.rs
-❌      layer_stack.rs                 328   (none)                              P1: collapse gate (Flow/Hold/Block)
-❌      delta.rs                       237   (none)                              P1: XOR delta layer (borrow-free overlay)
-❌      compute.rs                     265   (none)                              P2: tiered compute dispatch (INT8→BF16→FP32)
+📦 PORT  layer_stack.rs                 328   (none)                              P1: collapse gate (Flow/Hold/Block)
+📦 PORT  delta.rs                       237   (none)                              P1: XOR delta layer (borrow-free overlay)
+🔜 DEFER compute.rs                     265   (none)                              P2: tiered compute dispatch (INT8→BF16→FP32)
                                                                                 Check overlap with backend/mod.rs Tier
-❌      jitson.rs                     1620   (none)                              P2: Cranelift JIT (graph-to-native for rs-graph-llm)
-❌      jit_scan.rs                    316   (none)                              P2: hybrid JIT scan (companion to jitson)
-❌      scalar_fns.rs                  302   (none)                              Check vs backend/native.rs scalar paths
-❌      mkl_ffi.rs                     472   (none)                              DROP: replaced by backend/mkl.rs (237 lines)
-❌      rng.rs                         117   (none)                              DROP: inline SplitMix64 already in node.rs
-❌      parallel.rs                    109   (none)                              DROP: ndarray has par_azip, rayon integration
-❌      layout.rs                       75   (none)                              DROP: ndarray handles memory layout
+🔜 DEFER jitson.rs                     1620   (none)                              P2: Cranelift JIT (graph-to-native for rs-graph-llm)
+🔜 DEFER jit_scan.rs                    316   (none)                              P2: hybrid JIT scan (companion to jitson)
+🔜 DEFER scalar_fns.rs                  302   (none)                              Check vs backend/native.rs scalar paths
+🗑️  DROP  mkl_ffi.rs                     472   (none)                              DROP: replaced by backend/mkl.rs (237 lines)
+🗑️  DROP  rng.rs                         117   (none)                              DROP: inline SplitMix64 already in node.rs
+🗑️  DROP  parallel.rs                    109   (none)                              DROP: ndarray has par_azip, rayon integration
+🗑️  DROP  layout.rs                       75   (none)                              DROP: ndarray handles memory layout
 
 SIMD: DECOMPOSED (not missing), but COMPAT LAYER not ported:
         simd.rs (1092)         → backend/native.rs dispatch! macro    747
