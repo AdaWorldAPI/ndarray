@@ -434,12 +434,47 @@ STATUS  rustynum-rs FILE             LINES   ndarray FILE              LINES   N
 ⚠️      statistics.rs                  865   hpc/statistics.rs           325   DEBT: 62% smaller
 
 DROP    array_struct.rs               2203   ndarray IS the container
-DROP    constructors.rs                223   ndarray has these
-DROP    impl_clone_from.rs             101   ndarray handles
-DROP    linalg.rs                      263   ndarray-linalg crate
-DROP    manipulation.rs                562   ndarray native (partial)
-DROP    operations.rs                  833   ndarray ops (partial)
-DROP    view.rs                        747   ndarray ArrayView
+                                            BUT: 35 Ops:: SIMD dispatch calls
+                                            (dot, exp, log, sigmoid, softmax,
+                                            cosine_similarity, norm, min, max,
+                                            sum, l1/l2_norm, add/sub/mul/div_scalar)
+                                            ndarray activations.rs + vml.rs are
+                                            SCALAR (mapv/loop). These dispatch calls
+                                            must become extension traits routing
+                                            through backend/. CONTAINER=drop,
+                                            DISPATCH PATTERN=P1 EXTRACT.
+
+✅ CHECK linalg.rs                      263   hpc/blas_level2+3.rs             matrix_vector → blas_gemv
+                                                                              matrix_matrix → blas_gemm (Goto)
+                                                                              VERIFY: blas_gemv dispatches to
+                                                                              kernels_avx512? If yes → covered.
+
+🔜 DEFER operations.rs                  833   ndarray ops (native)             Add/Sub/Mul/Div: ndarray native.
+                                                                              try_broadcast fallible variants:
+                                                                              P2 extension traits.
+
+🔜 DEFER manipulation.rs                562   ndarray native                   transpose/reshape/flip/squeeze/slice
+                                                                              ndarray native. try_* variants: P2.
+
+🗑️  DROP constructors.rs                 223   ndarray native                   zeros/ones/arange/linspace. No SIMD.
+🗑️  DROP impl_clone_from.rs              101   ndarray native                   Clone + From impls.
+🗑️  DROP view.rs                         747   ndarray ArrayView               ArrayView + ArrayViewMut covers all.
+```
+
+**KEY FINDING: ndarray activations.rs + vml.rs are SCALAR**
+
+```
+ndarray activations.rs:  sigmoid → self.mapv(|v| 1/(1+exp(-v)))      ← SCALAR
+ndarray vml.rs:          vsexp   → for (o, &v) { *o = v.exp(); }    ← SCALAR
+
+rustynum array_struct.rs:  sigmoid → Ops::mul_scalar + Ops::exp_batch
+                                   + Ops::add_scalar + Ops::div_array ← SIMD DISPATCH
+
+The 35 Ops:: calls are the BLUEPRINT for wiring activations.rs and vml.rs
+through backend SIMD dispatch. The NumArray container is not needed.
+The dispatch pattern IS needed. This is P1 work — the backend kernels
+exist (exp, log, mul_scalar etc. in kernels_avx512.rs), they're just
+not called from the hpc trait implementations yet.
 ```
 
 ### Cross-Reference: rustyblas → ndarray
@@ -649,29 +684,35 @@ Ordered list based on:
    aarch64/NEON support, std::simd migration, simpler kernel authoring.
    ALSO UNBLOCKS Pumpkin items 1,3,4,6,8 (simd_map, xor_diff, gather,
    Zip::simd_apply, stencil) — all need portable SIMD types.
-3. **P1 — hot-path pipeline:** hybrid.rs (2032 lines, K0/K1/K2 → BF16 tail),
+3. **P1 — activations/vml SIMD wiring:** ndarray's activations.rs (sigmoid,
+   softmax, log_softmax) and vml.rs (exp, log, sqrt, sin, cos, pow) are ALL
+   SCALAR (mapv loops). The backend already has kernels (exp_batch, mul_scalar,
+   add_scalar, div_array in kernels_avx512.rs). Wire them: make activations.rs
+   and vml.rs call through BlasFloat backend dispatch instead of mapv.
+   Blueprint: rustynum array_struct.rs Ops:: call pattern (35 dispatch points).
+4. **P1 — hot-path pipeline:** hybrid.rs (2032 lines, K0/K1/K2 → BF16 tail),
    tail_backend.rs (884 lines, TailBackend trait)
-4. **P1 — superposition algebra:** delta.rs (237 lines, XOR overlay) +
+5. **P1 — superposition algebra:** delta.rs (237 lines, XOR overlay) +
    layer_stack.rs (328 lines, collapse gate Flow/Hold/Block).
    delta.rs first — layer_stack depends on it.
-5. **P1 — soaking layer:** soaking.rs (407 lines, int8 10KD accumulation).
+6. **P1 — soaking layer:** soaking.rs (407 lines, int8 10KD accumulation).
    Check arrow_bridge.rs overlap first.
-6. **P1 — function parity:** missing pub fns in ⚠️ files
+7. **P1 — function parity:** missing pub fns in ⚠️ files
    (hdc.rs, statistics.rs, cogrecord.rs, graph.rs, projection.rs)
-7. **P1 — quantized GEMM:** verify quantized.rs covers bf16_gemm + int8_gemm
-8. **P2 — spatial/compute:** spatial_resonance.rs, compute.rs, scalar_fns.rs
-9. **P2 — JIT infrastructure:** jitson.rs + jit_scan.rs (defer until
+8. **P1 — quantized GEMM:** verify quantized.rs covers bf16_gemm + int8_gemm
+9. **P2 — spatial/compute:** spatial_resonance.rs, compute.rs, scalar_fns.rs
+10. **P2 — JIT infrastructure:** jitson.rs + jit_scan.rs (defer until
    rs-graph-llm LangGraph port needs graph-to-native compilation)
-10. **P2 — Pumpkin user-facing APIs** (after compat layer lands):
+11. **P2 — Pumpkin user-facing APIs** (after compat layer lands):
     - `Array::simd_gather()` — expose VPGATHERDD already in kernels_avx512.rs
     - `Array::runtime_dispatch()` — expose Tier enum already in backend/native.rs
     - `Array::prefetch_region()` — expose _mm_prefetch already in packed.rs/bgz17
     These are thin wrappers on existing internals, not new kernels.
-11. **P3 — Pumpkin new types** (significant design work):
+12. **P3 — Pumpkin new types** (significant design work):
     - `SpatialArray3<T>` — coordinate-indexed 3D array (not CAM hash)
     - `Array3::stencil()` — Von Neumann/Moore neighbor iterator + SIMD
     - `PaletteArray<T, BITS>` — variable-width bit-packed SIMD unpack/repack
-12. **DROP — confirmed unnecessary:** mkl_ffi, rng, parallel, layout
+13. **DROP — confirmed unnecessary:** mkl_ffi, rng, parallel, layout
 
 ## OUTPUT
 
