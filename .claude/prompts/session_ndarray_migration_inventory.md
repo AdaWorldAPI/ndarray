@@ -262,6 +262,80 @@ PaletteSemiring           bind + distance              ???
 The audit must verify: which of these 3 operations exist in ndarray's
 178-line hdc.rs, and which are missing?
 
+## DEMAND SIDE: Pumpkin (Minecraft Rust) SIMD Wishlist
+
+A separate session identified 10 ndarray features that would drop Pumpkin's
+server tick from 1.5 CPU to 0.2 CPU. Cross-referenced against existing code:
+
+```
+#   FEATURE                  WHAT EXISTS                        GAP
+──  ───────────────────────  ─────────────────────────────────  ──────────────
+1   simd_map (lane-native)   (nothing)                          NEW API
+    arr.simd_map::<f32x16>   NEEDS: compat layer (F32x16 type)  BLOCKED ON
+    contractual vectorize    from rustynum simd_avx512.rs       compat layer
+
+2   SpatialArray3 (CAM)      cam_index.rs (478 lines) is LSH    DIFFERENT THING
+    O(1) spatial insert      CAM, not spatial array. cam_index   NEW TYPE needed
+    region() → SIMD slice    is hash-based, not coordinate.     for 3D chunks
+
+3   xor_diff (change detect) merkle_tree.rs has xor_diff()      PARTIAL
+    simd_xor_diff::<u64x8>   delta.rs in rustynum (NOT ported)  delta.rs = P1
+    nonzero_iter via mask    is the XOR overlay algebra.         port delta.rs
+                             NEEDS: _mm512_test_epi64_mask      + SIMD sparse iter
+
+4   gather_scatter           kernels_avx512.rs HAS VPGATHERDD   NOT EXPOSED
+    VPGATHERDD / VGATHERDPS  in sgemm_blocked (internal use).   needs user-facing
+    for permutation tables   bgz17 needs this too for palette.  API on Array
+
+5   Arrow columnar_view      arrow_bridge.rs (931 lines) has    PARTIAL
+    zero-copy RecordBatch    ThreePlaneFingerprintBuffer,        missing: generic
+    → ArrayView              SoakingBuffer, PlaneBuffer.         columnar_view()
+                             Not zero-copy into ArrayView yet.   for arbitrary cols
+
+6   Zip::simd_apply          (nothing)                          NEW API
+    multi-array fused SIMD   NEEDS: compat layer for portable   BLOCKED ON
+    kernel over N arrays     SIMD types in the Zip combinator   compat layer
+
+7   runtime_dispatch         backend/native.rs HAS Tier enum    EXISTS internally
+    Array-level dispatch     + LazyLock<Tier> detection.         NOT exposed as
+    .with_dispatch(Auto)     dispatch! macro routes to tiers.    user-facing API
+
+8   stencil (neighbor SIMD)  (nothing)                          NEW API
+    VonNeumann3D / Moore3D   Common in HPC (structured grids).  needs Array3
+    64 blocks per AVX-512    Would use prefetch + u8x64.        stencil iterator
+
+9   compact_palette          bgz17 palette.rs IS this           EXISTS in bgz17
+    bit-packed SIMD          for 8-bit palette indices.          NOT in ndarray
+    VPMOVZX + VPSHUFB        PaletteEdge, distance_matrix.      needs Array wrapper
+    unpack/repack            Minecraft uses 4-15 bit palette.    for variable bits
+
+10  prefetch + stream_store  packed.rs has stroke-aligned        PARTIAL
+    _mm_prefetch, VMOVNTPS   layout for prefetch-friendly scan.  not user-facing
+    memory hierarchy ctrl    bgz17 prefetch.rs has _mm_prefetch. needs Array API
+```
+
+### What This Reveals About Priorities
+
+The compat layer (rustynum simd_avx512.rs → `src/backend/simd_compat.rs`)
+is the FOUNDATION for items 1, 3, 4, 6, 8. Without portable F32x16/U8x64
+types, none of the user-facing SIMD APIs can be implemented portably.
+This reinforces simd_compat as P1 — it unblocks both bgz17 integration
+AND the Pumpkin feature set.
+
+Items that already have internal implementations but lack user-facing API:
+  4 (gather — in kernels_avx512.rs), 7 (dispatch — in backend/native.rs),
+  10 (prefetch — in packed.rs + bgz17 prefetch.rs).
+These need thin wrapper traits on ArrayBase, not new kernels.
+
+Items that connect to existing bgz17 work:
+  9 (compact_palette — bgz17 palette.rs IS the palette codec)
+  4 (gather — bgz17 batch_palette_distance needs VGATHERDPS)
+  3 (xor_diff — delta.rs XOR overlay, same algebra)
+
+Items that are genuinely new:
+  2 (SpatialArray3 — new type for coordinate-indexed 3D arrays)
+  8 (stencil — new iteration pattern for structured grids)
+
 ## CURRENT STATE (as of March 2026)
 
 ### Repos
@@ -565,8 +639,9 @@ Ordered list based on:
    (F32x16, F64x8, U8x64, I32x16, SimdFloat trait) into
    `src/backend/simd_compat.rs`. Refactor kernels_avx512.rs to use
    compat types instead of raw `__m512`. Zero runtime cost. Unlocks:
-   aarch64/NEON support later (add `#[cfg(target_arch)]` backing),
-   clean std::simd migration when stabilized, simpler kernel authoring.
+   aarch64/NEON support, std::simd migration, simpler kernel authoring.
+   ALSO UNBLOCKS Pumpkin items 1,3,4,6,8 (simd_map, xor_diff, gather,
+   Zip::simd_apply, stencil) — all need portable SIMD types.
 3. **P1 — hot-path pipeline:** hybrid.rs (2032 lines, K0/K1/K2 → BF16 tail),
    tail_backend.rs (884 lines, TailBackend trait)
 4. **P1 — superposition algebra:** delta.rs (237 lines, XOR overlay) +
@@ -580,7 +655,16 @@ Ordered list based on:
 8. **P2 — spatial/compute:** spatial_resonance.rs, compute.rs, scalar_fns.rs
 9. **P2 — JIT infrastructure:** jitson.rs + jit_scan.rs (defer until
    rs-graph-llm LangGraph port needs graph-to-native compilation)
-10. **DROP — confirmed unnecessary:** mkl_ffi, rng, parallel, layout
+10. **P2 — Pumpkin user-facing APIs** (after compat layer lands):
+    - `Array::simd_gather()` — expose VPGATHERDD already in kernels_avx512.rs
+    - `Array::runtime_dispatch()` — expose Tier enum already in backend/native.rs
+    - `Array::prefetch_region()` — expose _mm_prefetch already in packed.rs/bgz17
+    These are thin wrappers on existing internals, not new kernels.
+11. **P3 — Pumpkin new types** (significant design work):
+    - `SpatialArray3<T>` — coordinate-indexed 3D array (not CAM hash)
+    - `Array3::stencil()` — Von Neumann/Moore neighbor iterator + SIMD
+    - `PaletteArray<T, BITS>` — variable-width bit-packed SIMD unpack/repack
+12. **DROP — confirmed unnecessary:** mkl_ffi, rng, parallel, layout
 
 ## OUTPUT
 
