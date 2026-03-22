@@ -1,26 +1,13 @@
 //! VML: Vectorized Math Library.
 //!
 //! Element-wise transcendental and arithmetic operations on slices.
-//! SIMD-accelerated via `F32x16` compat types where possible.
 //! Pure Rust implementations; MKL-accelerated versions behind `intel-mkl` feature gate.
 
-use crate::backend::simd_compat::{simd_exp_f32, F32x16};
 
 /// Element-wise exp: out[i] = exp(x[i])
-///
-/// Processes 16 elements at a time via SIMD polynomial approximation.
 pub fn vsexp(x: &[f32], out: &mut [f32]) {
-    let n = x.len().min(out.len());
-    let mut i = 0;
-    while i + 16 <= n {
-        let v = F32x16::from_slice(&x[i..]);
-        simd_exp_f32(v).copy_to_slice(&mut out[i..]);
-        i += 16;
-    }
-    // Scalar tail
-    while i < n {
-        out[i] = x[i].exp();
-        i += 1;
+    for (o, &v) in out.iter_mut().zip(x.iter()) {
+        *o = v.exp();
     }
 }
 
@@ -46,18 +33,9 @@ pub fn vdln(x: &[f64], out: &mut [f64]) {
 }
 
 /// Element-wise sqrt: out[i] = sqrt(x[i])
-///
-/// SIMD-accelerated via F32x16::sqrt().
 pub fn vssqrt(x: &[f32], out: &mut [f32]) {
-    let n = x.len().min(out.len());
-    let mut i = 0;
-    while i + 16 <= n {
-        F32x16::from_slice(&x[i..]).sqrt().copy_to_slice(&mut out[i..]);
-        i += 16;
-    }
-    while i < n {
-        out[i] = x[i].sqrt();
-        i += 1;
+    for (o, &v) in out.iter_mut().zip(x.iter()) {
+        *o = v.sqrt();
     }
 }
 
@@ -69,18 +47,9 @@ pub fn vdsqrt(x: &[f64], out: &mut [f64]) {
 }
 
 /// Element-wise abs: out[i] = |x[i]|
-///
-/// SIMD-accelerated via F32x16::abs().
 pub fn vsabs(x: &[f32], out: &mut [f32]) {
-    let n = x.len().min(out.len());
-    let mut i = 0;
-    while i + 16 <= n {
-        F32x16::from_slice(&x[i..]).abs().copy_to_slice(&mut out[i..]);
-        i += 16;
-    }
-    while i < n {
-        out[i] = x[i].abs();
-        i += 1;
+    for (o, &v) in out.iter_mut().zip(x.iter()) {
+        *o = v.abs();
     }
 }
 
@@ -92,50 +61,23 @@ pub fn vdabs(x: &[f64], out: &mut [f64]) {
 }
 
 /// Element-wise add: out[i] = a[i] + b[i]
-///
-/// SIMD-accelerated via F32x16 operator overload.
 pub fn vsadd(a: &[f32], b: &[f32], out: &mut [f32]) {
-    let n = a.len().min(b.len()).min(out.len());
-    let mut i = 0;
-    while i + 16 <= n {
-        (F32x16::from_slice(&a[i..]) + F32x16::from_slice(&b[i..])).copy_to_slice(&mut out[i..]);
-        i += 16;
-    }
-    while i < n {
-        out[i] = a[i] + b[i];
-        i += 1;
+    for ((o, &av), &bv) in out.iter_mut().zip(a.iter()).zip(b.iter()) {
+        *o = av + bv;
     }
 }
 
 /// Element-wise mul: out[i] = a[i] * b[i]
-///
-/// SIMD-accelerated via F32x16 operator overload.
 pub fn vsmul(a: &[f32], b: &[f32], out: &mut [f32]) {
-    let n = a.len().min(b.len()).min(out.len());
-    let mut i = 0;
-    while i + 16 <= n {
-        (F32x16::from_slice(&a[i..]) * F32x16::from_slice(&b[i..])).copy_to_slice(&mut out[i..]);
-        i += 16;
-    }
-    while i < n {
-        out[i] = a[i] * b[i];
-        i += 1;
+    for ((o, &av), &bv) in out.iter_mut().zip(a.iter()).zip(b.iter()) {
+        *o = av * bv;
     }
 }
 
 /// Element-wise div: out[i] = a[i] / b[i]
-///
-/// SIMD-accelerated via F32x16 operator overload.
 pub fn vsdiv(a: &[f32], b: &[f32], out: &mut [f32]) {
-    let n = a.len().min(b.len()).min(out.len());
-    let mut i = 0;
-    while i + 16 <= n {
-        (F32x16::from_slice(&a[i..]) / F32x16::from_slice(&b[i..])).copy_to_slice(&mut out[i..]);
-        i += 16;
-    }
-    while i < n {
-        out[i] = a[i] / b[i];
-        i += 1;
+    for ((o, &av), &bv) in out.iter_mut().zip(a.iter()).zip(b.iter()) {
+        *o = av / bv;
     }
 }
 

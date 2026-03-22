@@ -1,11 +1,12 @@
-//! AVX-512 SIMD kernels using portable compat types.
+//! AVX-512 SIMD kernels — raw intrinsics, Rust 1.94.
 //!
 //! All functions have `#[target_feature(enable = "avx512f")]`.
+//! In Rust 1.94, arithmetic intrinsics (setzero, add, fmadd, reduce, etc.)
+//! are safe inside `#[target_feature]` functions. Only load/store intrinsics
+//! that take raw pointers still require `unsafe`.
+//!
 //! The dispatch! macro's LazyLock tier check ensures these are only called
 //! on AVX-512 CPUs.
-//!
-//! BLAS-1 and element-wise functions use `F32x16`/`F64x8` from `simd_compat`.
-//! GEMM microkernels retain raw intrinsics for masked stores and broadcast patterns.
 
 #![allow(clippy::too_many_arguments)]
 #![allow(dead_code)]
@@ -13,37 +14,41 @@
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
 
-#[cfg(target_arch = "x86_64")]
-use super::simd_compat::{F32x16, F64x8};
-
 // ═══════════════════════════════════════════════════════════════════
-// BLAS Level 1 — 12 functions (compat types)
+// BLAS Level 1 — 12 functions
 // ═══════════════════════════════════════════════════════════════════
 
-/// Dot product: sum(x[i] * y[i]) using 4x-unrolled FMA.
+/// Dot product: sum(x[i] * y[i]) using 4x-unrolled FMA on zmm registers.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 pub fn dot_f32(x: &[f32], y: &[f32]) -> f32 {
     let n = x.len().min(y.len());
-    let mut acc0 = F32x16::splat(0.0);
-    let mut acc1 = F32x16::splat(0.0);
-    let mut acc2 = F32x16::splat(0.0);
-    let mut acc3 = F32x16::splat(0.0);
+    let mut acc0 = _mm512_setzero_ps();
+    let mut acc1 = _mm512_setzero_ps();
+    let mut acc2 = _mm512_setzero_ps();
+    let mut acc3 = _mm512_setzero_ps();
     let mut i = 0;
 
     while i + 64 <= n {
-        acc0 = F32x16::from_slice(&x[i..]).mul_add(F32x16::from_slice(&y[i..]), acc0);
-        acc1 = F32x16::from_slice(&x[i + 16..]).mul_add(F32x16::from_slice(&y[i + 16..]), acc1);
-        acc2 = F32x16::from_slice(&x[i + 32..]).mul_add(F32x16::from_slice(&y[i + 32..]), acc2);
-        acc3 = F32x16::from_slice(&x[i + 48..]).mul_add(F32x16::from_slice(&y[i + 48..]), acc3);
+        // SAFETY: bounds checked by while condition, slicing ensures valid pointers
+        unsafe {
+            acc0 = _mm512_fmadd_ps(_mm512_loadu_ps(x[i..].as_ptr()), _mm512_loadu_ps(y[i..].as_ptr()), acc0);
+            acc1 = _mm512_fmadd_ps(_mm512_loadu_ps(x[i + 16..].as_ptr()), _mm512_loadu_ps(y[i + 16..].as_ptr()), acc1);
+            acc2 = _mm512_fmadd_ps(_mm512_loadu_ps(x[i + 32..].as_ptr()), _mm512_loadu_ps(y[i + 32..].as_ptr()), acc2);
+            acc3 = _mm512_fmadd_ps(_mm512_loadu_ps(x[i + 48..].as_ptr()), _mm512_loadu_ps(y[i + 48..].as_ptr()), acc3);
+        }
         i += 64;
     }
     while i + 16 <= n {
-        acc0 = F32x16::from_slice(&x[i..]).mul_add(F32x16::from_slice(&y[i..]), acc0);
+        // SAFETY: bounds checked by while condition
+        unsafe {
+            acc0 = _mm512_fmadd_ps(_mm512_loadu_ps(x[i..].as_ptr()), _mm512_loadu_ps(y[i..].as_ptr()), acc0);
+        }
         i += 16;
     }
 
-    let mut total = ((acc0 + acc1) + (acc2 + acc3)).reduce_sum();
+    let sum_vec = _mm512_add_ps(_mm512_add_ps(acc0, acc1), _mm512_add_ps(acc2, acc3));
+    let mut total = _mm512_reduce_add_ps(sum_vec);
     while i < n {
         total += x[i] * y[i];
         i += 1;
@@ -51,30 +56,37 @@ pub fn dot_f32(x: &[f32], y: &[f32]) -> f32 {
     total
 }
 
-/// Dot product f64: 4x-unrolled FMA (8 doubles each).
+/// Dot product f64: 4x-unrolled FMA on zmm registers (8 doubles each).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 pub fn dot_f64(x: &[f64], y: &[f64]) -> f64 {
     let n = x.len().min(y.len());
-    let mut acc0 = F64x8::splat(0.0);
-    let mut acc1 = F64x8::splat(0.0);
-    let mut acc2 = F64x8::splat(0.0);
-    let mut acc3 = F64x8::splat(0.0);
+    let mut acc0 = _mm512_setzero_pd();
+    let mut acc1 = _mm512_setzero_pd();
+    let mut acc2 = _mm512_setzero_pd();
+    let mut acc3 = _mm512_setzero_pd();
     let mut i = 0;
 
     while i + 32 <= n {
-        acc0 = F64x8::from_slice(&x[i..]).mul_add(F64x8::from_slice(&y[i..]), acc0);
-        acc1 = F64x8::from_slice(&x[i + 8..]).mul_add(F64x8::from_slice(&y[i + 8..]), acc1);
-        acc2 = F64x8::from_slice(&x[i + 16..]).mul_add(F64x8::from_slice(&y[i + 16..]), acc2);
-        acc3 = F64x8::from_slice(&x[i + 24..]).mul_add(F64x8::from_slice(&y[i + 24..]), acc3);
+        // SAFETY: bounds checked by while condition
+        unsafe {
+            acc0 = _mm512_fmadd_pd(_mm512_loadu_pd(x[i..].as_ptr()), _mm512_loadu_pd(y[i..].as_ptr()), acc0);
+            acc1 = _mm512_fmadd_pd(_mm512_loadu_pd(x[i + 8..].as_ptr()), _mm512_loadu_pd(y[i + 8..].as_ptr()), acc1);
+            acc2 = _mm512_fmadd_pd(_mm512_loadu_pd(x[i + 16..].as_ptr()), _mm512_loadu_pd(y[i + 16..].as_ptr()), acc2);
+            acc3 = _mm512_fmadd_pd(_mm512_loadu_pd(x[i + 24..].as_ptr()), _mm512_loadu_pd(y[i + 24..].as_ptr()), acc3);
+        }
         i += 32;
     }
     while i + 8 <= n {
-        acc0 = F64x8::from_slice(&x[i..]).mul_add(F64x8::from_slice(&y[i..]), acc0);
+        // SAFETY: bounds checked by while condition
+        unsafe {
+            acc0 = _mm512_fmadd_pd(_mm512_loadu_pd(x[i..].as_ptr()), _mm512_loadu_pd(y[i..].as_ptr()), acc0);
+        }
         i += 8;
     }
 
-    let mut total = ((acc0 + acc1) + (acc2 + acc3)).reduce_sum();
+    let sum_vec = _mm512_add_pd(_mm512_add_pd(acc0, acc1), _mm512_add_pd(acc2, acc3));
+    let mut total = _mm512_reduce_add_pd(sum_vec);
     while i < n {
         total += x[i] * y[i];
         i += 1;
@@ -87,12 +99,15 @@ pub fn dot_f64(x: &[f64], y: &[f64]) -> f64 {
 #[target_feature(enable = "avx512f")]
 pub fn axpy_f32(alpha: f32, x: &[f32], y: &mut [f32]) {
     let n = x.len().min(y.len());
-    let alpha_v = F32x16::splat(alpha);
+    let alpha_v = _mm512_set1_ps(alpha);
     let mut i = 0;
     while i + 16 <= n {
-        let xv = F32x16::from_slice(&x[i..]);
-        let yv = F32x16::from_slice(&y[i..]);
-        alpha_v.mul_add(xv, yv).copy_to_slice(&mut y[i..]);
+        // SAFETY: bounds checked by while condition
+        unsafe {
+            let xv = _mm512_loadu_ps(x[i..].as_ptr());
+            let yv = _mm512_loadu_ps(y[i..].as_ptr());
+            _mm512_storeu_ps(y[i..].as_mut_ptr(), _mm512_fmadd_ps(alpha_v, xv, yv));
+        }
         i += 16;
     }
     while i < n {
@@ -106,12 +121,15 @@ pub fn axpy_f32(alpha: f32, x: &[f32], y: &mut [f32]) {
 #[target_feature(enable = "avx512f")]
 pub fn axpy_f64(alpha: f64, x: &[f64], y: &mut [f64]) {
     let n = x.len().min(y.len());
-    let alpha_v = F64x8::splat(alpha);
+    let alpha_v = _mm512_set1_pd(alpha);
     let mut i = 0;
     while i + 8 <= n {
-        let xv = F64x8::from_slice(&x[i..]);
-        let yv = F64x8::from_slice(&y[i..]);
-        alpha_v.mul_add(xv, yv).copy_to_slice(&mut y[i..]);
+        // SAFETY: bounds checked by while condition
+        unsafe {
+            let xv = _mm512_loadu_pd(x[i..].as_ptr());
+            let yv = _mm512_loadu_pd(y[i..].as_ptr());
+            _mm512_storeu_pd(y[i..].as_mut_ptr(), _mm512_fmadd_pd(alpha_v, xv, yv));
+        }
         i += 8;
     }
     while i < n {
@@ -125,10 +143,14 @@ pub fn axpy_f64(alpha: f64, x: &[f64], y: &mut [f64]) {
 #[target_feature(enable = "avx512f")]
 pub fn scal_f32(alpha: f32, x: &mut [f32]) {
     let n = x.len();
-    let alpha_v = F32x16::splat(alpha);
+    let alpha_v = _mm512_set1_ps(alpha);
     let mut i = 0;
     while i + 16 <= n {
-        (F32x16::from_slice(&x[i..]) * alpha_v).copy_to_slice(&mut x[i..]);
+        // SAFETY: bounds checked by while condition
+        unsafe {
+            let xv = _mm512_loadu_ps(x[i..].as_ptr());
+            _mm512_storeu_ps(x[i..].as_mut_ptr(), _mm512_mul_ps(alpha_v, xv));
+        }
         i += 16;
     }
     while i < n {
@@ -142,10 +164,14 @@ pub fn scal_f32(alpha: f32, x: &mut [f32]) {
 #[target_feature(enable = "avx512f")]
 pub fn scal_f64(alpha: f64, x: &mut [f64]) {
     let n = x.len();
-    let alpha_v = F64x8::splat(alpha);
+    let alpha_v = _mm512_set1_pd(alpha);
     let mut i = 0;
     while i + 8 <= n {
-        (F64x8::from_slice(&x[i..]) * alpha_v).copy_to_slice(&mut x[i..]);
+        // SAFETY: bounds checked by while condition
+        unsafe {
+            let xv = _mm512_loadu_pd(x[i..].as_ptr());
+            _mm512_storeu_pd(x[i..].as_mut_ptr(), _mm512_mul_pd(alpha_v, xv));
+        }
         i += 8;
     }
     while i < n {
@@ -160,12 +186,18 @@ pub fn scal_f64(alpha: f64, x: &mut [f64]) {
 pub fn asum_f32(x: &[f32]) -> f32 {
     let n = x.len();
     let mut i = 0;
-    let mut acc = F32x16::splat(0.0);
+    let mut acc = _mm512_setzero_ps();
+    let abs_mask = _mm512_set1_epi32(0x7FFF_FFFFi32);
     while i + 16 <= n {
-        acc = acc + F32x16::from_slice(&x[i..]).abs();
+        // SAFETY: bounds checked by while condition
+        unsafe {
+            let xv = _mm512_loadu_ps(x[i..].as_ptr());
+            let absv = _mm512_castsi512_ps(_mm512_and_si512(_mm512_castps_si512(xv), abs_mask));
+            acc = _mm512_add_ps(acc, absv);
+        }
         i += 16;
     }
-    let mut sum = acc.reduce_sum();
+    let mut sum = _mm512_reduce_add_ps(acc);
     while i < n {
         sum += x[i].abs();
         i += 1;
@@ -179,12 +211,18 @@ pub fn asum_f32(x: &[f32]) -> f32 {
 pub fn asum_f64(x: &[f64]) -> f64 {
     let n = x.len();
     let mut i = 0;
-    let mut acc = F64x8::splat(0.0);
+    let mut acc = _mm512_setzero_pd();
+    let abs_mask = _mm512_set1_epi64(0x7FFF_FFFF_FFFF_FFFFi64);
     while i + 8 <= n {
-        acc = acc + F64x8::from_slice(&x[i..]).abs();
+        // SAFETY: bounds checked by while condition
+        unsafe {
+            let xv = _mm512_loadu_pd(x[i..].as_ptr());
+            let absv = _mm512_castsi512_pd(_mm512_and_si512(_mm512_castpd_si512(xv), abs_mask));
+            acc = _mm512_add_pd(acc, absv);
+        }
         i += 8;
     }
-    let mut sum = acc.reduce_sum();
+    let mut sum = _mm512_reduce_add_pd(acc);
     while i < n {
         sum += x[i].abs();
         i += 1;
@@ -198,13 +236,16 @@ pub fn asum_f64(x: &[f64]) -> f64 {
 pub fn nrm2_f32(x: &[f32]) -> f32 {
     let n = x.len();
     let mut i = 0;
-    let mut acc = F32x16::splat(0.0);
+    let mut acc = _mm512_setzero_ps();
     while i + 16 <= n {
-        let xv = F32x16::from_slice(&x[i..]);
-        acc = xv.mul_add(xv, acc);
+        // SAFETY: bounds checked by while condition
+        unsafe {
+            let xv = _mm512_loadu_ps(x[i..].as_ptr());
+            acc = _mm512_fmadd_ps(xv, xv, acc);
+        }
         i += 16;
     }
-    let mut sum = acc.reduce_sum();
+    let mut sum = _mm512_reduce_add_ps(acc);
     while i < n {
         sum += x[i] * x[i];
         i += 1;
@@ -218,13 +259,16 @@ pub fn nrm2_f32(x: &[f32]) -> f32 {
 pub fn nrm2_f64(x: &[f64]) -> f64 {
     let n = x.len();
     let mut i = 0;
-    let mut acc = F64x8::splat(0.0);
+    let mut acc = _mm512_setzero_pd();
     while i + 8 <= n {
-        let xv = F64x8::from_slice(&x[i..]);
-        acc = xv.mul_add(xv, acc);
+        // SAFETY: bounds checked by while condition
+        unsafe {
+            let xv = _mm512_loadu_pd(x[i..].as_ptr());
+            acc = _mm512_fmadd_pd(xv, xv, acc);
+        }
         i += 8;
     }
-    let mut sum = acc.reduce_sum();
+    let mut sum = _mm512_reduce_add_pd(acc);
     while i < n {
         sum += x[i] * x[i];
         i += 1;
@@ -261,109 +305,97 @@ pub fn iamax_f64(x: &[f64]) -> (usize, f64) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Element-wise f32 — 8 functions (16-wide, compat types)
+// Element-wise f32 — 8 functions (16-wide)
 // ═══════════════════════════════════════════════════════════════════
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub fn add_f32_scalar(a: &[f32], scalar: f32) -> Vec<f32> { ew_f32_s(a, scalar, EwOp::Add) }
+pub fn add_f32_scalar(a: &[f32], scalar: f32) -> Vec<f32> { ew_f32_s(a, scalar, Op::Add) }
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub fn sub_f32_scalar(a: &[f32], scalar: f32) -> Vec<f32> { ew_f32_s(a, scalar, EwOp::Sub) }
+pub fn sub_f32_scalar(a: &[f32], scalar: f32) -> Vec<f32> { ew_f32_s(a, scalar, Op::Sub) }
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub fn mul_f32_scalar(a: &[f32], scalar: f32) -> Vec<f32> { ew_f32_s(a, scalar, EwOp::Mul) }
+pub fn mul_f32_scalar(a: &[f32], scalar: f32) -> Vec<f32> { ew_f32_s(a, scalar, Op::Mul) }
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub fn div_f32_scalar(a: &[f32], scalar: f32) -> Vec<f32> { ew_f32_s(a, scalar, EwOp::Div) }
+pub fn div_f32_scalar(a: &[f32], scalar: f32) -> Vec<f32> { ew_f32_s(a, scalar, Op::Div) }
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub fn add_f32_vec(a: &[f32], b: &[f32]) -> Vec<f32> { ew_f32_v(a, b, EwOp::Add) }
+pub fn add_f32_vec(a: &[f32], b: &[f32]) -> Vec<f32> { ew_f32_v(a, b, Op::Add) }
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub fn sub_f32_vec(a: &[f32], b: &[f32]) -> Vec<f32> { ew_f32_v(a, b, EwOp::Sub) }
+pub fn sub_f32_vec(a: &[f32], b: &[f32]) -> Vec<f32> { ew_f32_v(a, b, Op::Sub) }
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub fn mul_f32_vec(a: &[f32], b: &[f32]) -> Vec<f32> { ew_f32_v(a, b, EwOp::Mul) }
+pub fn mul_f32_vec(a: &[f32], b: &[f32]) -> Vec<f32> { ew_f32_v(a, b, Op::Mul) }
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub fn div_f32_vec(a: &[f32], b: &[f32]) -> Vec<f32> { ew_f32_v(a, b, EwOp::Div) }
+pub fn div_f32_vec(a: &[f32], b: &[f32]) -> Vec<f32> { ew_f32_v(a, b, Op::Div) }
 
 // ═══════════════════════════════════════════════════════════════════
-// Element-wise f64 — 8 functions (8-wide, compat types)
+// Element-wise f64 — 8 functions (8-wide)
 // ═══════════════════════════════════════════════════════════════════
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub fn add_f64_scalar(a: &[f64], scalar: f64) -> Vec<f64> { ew_f64_s(a, scalar, EwOp::Add) }
+pub fn add_f64_scalar(a: &[f64], scalar: f64) -> Vec<f64> { ew_f64_s(a, scalar, Op::Add) }
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub fn sub_f64_scalar(a: &[f64], scalar: f64) -> Vec<f64> { ew_f64_s(a, scalar, EwOp::Sub) }
+pub fn sub_f64_scalar(a: &[f64], scalar: f64) -> Vec<f64> { ew_f64_s(a, scalar, Op::Sub) }
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub fn mul_f64_scalar(a: &[f64], scalar: f64) -> Vec<f64> { ew_f64_s(a, scalar, EwOp::Mul) }
+pub fn mul_f64_scalar(a: &[f64], scalar: f64) -> Vec<f64> { ew_f64_s(a, scalar, Op::Mul) }
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub fn div_f64_scalar(a: &[f64], scalar: f64) -> Vec<f64> { ew_f64_s(a, scalar, EwOp::Div) }
+pub fn div_f64_scalar(a: &[f64], scalar: f64) -> Vec<f64> { ew_f64_s(a, scalar, Op::Div) }
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub fn add_f64_vec(a: &[f64], b: &[f64]) -> Vec<f64> { ew_f64_v(a, b, EwOp::Add) }
+pub fn add_f64_vec(a: &[f64], b: &[f64]) -> Vec<f64> { ew_f64_v(a, b, Op::Add) }
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub fn sub_f64_vec(a: &[f64], b: &[f64]) -> Vec<f64> { ew_f64_v(a, b, EwOp::Sub) }
+pub fn sub_f64_vec(a: &[f64], b: &[f64]) -> Vec<f64> { ew_f64_v(a, b, Op::Sub) }
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub fn mul_f64_vec(a: &[f64], b: &[f64]) -> Vec<f64> { ew_f64_v(a, b, EwOp::Mul) }
+pub fn mul_f64_vec(a: &[f64], b: &[f64]) -> Vec<f64> { ew_f64_v(a, b, Op::Mul) }
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub fn div_f64_vec(a: &[f64], b: &[f64]) -> Vec<f64> { ew_f64_v(a, b, EwOp::Div) }
+pub fn div_f64_vec(a: &[f64], b: &[f64]) -> Vec<f64> { ew_f64_v(a, b, Op::Div) }
 
-// ─── Element-wise helpers (compat types) ─────────────────────────
-
-#[cfg(target_arch = "x86_64")]
-enum EwOp { Add, Sub, Mul, Div }
+// ─── Element-wise helpers ────────────────────────────────────────
 
 #[cfg(target_arch = "x86_64")]
-#[inline(always)]
-fn apply_f32(a: F32x16, b: F32x16, op: &EwOp) -> F32x16 {
-    match op {
-        EwOp::Add => a + b,
-        EwOp::Sub => a - b,
-        EwOp::Mul => a * b,
-        EwOp::Div => a / b,
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[inline(always)]
-fn apply_f64(a: F64x8, b: F64x8, op: &EwOp) -> F64x8 {
-    match op {
-        EwOp::Add => a + b,
-        EwOp::Sub => a - b,
-        EwOp::Mul => a * b,
-        EwOp::Div => a / b,
-    }
-}
+enum Op { Add, Sub, Mul, Div }
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-fn ew_f32_s(a: &[f32], scalar: f32, op: EwOp) -> Vec<f32> {
+fn ew_f32_s(a: &[f32], scalar: f32, op: Op) -> Vec<f32> {
     let n = a.len();
     let mut result = vec![0.0f32; n];
-    let sv = F32x16::splat(scalar);
+    let sv = _mm512_set1_ps(scalar);
     let mut i = 0;
     while i + 16 <= n {
-        apply_f32(F32x16::from_slice(&a[i..]), sv, &op).copy_to_slice(&mut result[i..]);
+        // SAFETY: bounds checked by while condition
+        unsafe {
+            let av = _mm512_loadu_ps(a[i..].as_ptr());
+            let rv = match op {
+                Op::Add => _mm512_add_ps(av, sv),
+                Op::Sub => _mm512_sub_ps(av, sv),
+                Op::Mul => _mm512_mul_ps(av, sv),
+                Op::Div => _mm512_div_ps(av, sv),
+            };
+            _mm512_storeu_ps(result[i..].as_mut_ptr(), rv);
+        }
         i += 16;
     }
     while i < n {
         result[i] = match op {
-            EwOp::Add => a[i] + scalar,
-            EwOp::Sub => a[i] - scalar,
-            EwOp::Mul => a[i] * scalar,
-            EwOp::Div => a[i] / scalar,
+            Op::Add => a[i] + scalar,
+            Op::Sub => a[i] - scalar,
+            Op::Mul => a[i] * scalar,
+            Op::Div => a[i] / scalar,
         };
         i += 1;
     }
@@ -372,21 +404,31 @@ fn ew_f32_s(a: &[f32], scalar: f32, op: EwOp) -> Vec<f32> {
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-fn ew_f32_v(a: &[f32], b: &[f32], op: EwOp) -> Vec<f32> {
+fn ew_f32_v(a: &[f32], b: &[f32], op: Op) -> Vec<f32> {
     let n = a.len().min(b.len());
     let mut result = vec![0.0f32; n];
     let mut i = 0;
     while i + 16 <= n {
-        apply_f32(F32x16::from_slice(&a[i..]), F32x16::from_slice(&b[i..]), &op)
-            .copy_to_slice(&mut result[i..]);
+        // SAFETY: bounds checked by while condition
+        unsafe {
+            let av = _mm512_loadu_ps(a[i..].as_ptr());
+            let bv = _mm512_loadu_ps(b[i..].as_ptr());
+            let rv = match op {
+                Op::Add => _mm512_add_ps(av, bv),
+                Op::Sub => _mm512_sub_ps(av, bv),
+                Op::Mul => _mm512_mul_ps(av, bv),
+                Op::Div => _mm512_div_ps(av, bv),
+            };
+            _mm512_storeu_ps(result[i..].as_mut_ptr(), rv);
+        }
         i += 16;
     }
     while i < n {
         result[i] = match op {
-            EwOp::Add => a[i] + b[i],
-            EwOp::Sub => a[i] - b[i],
-            EwOp::Mul => a[i] * b[i],
-            EwOp::Div => a[i] / b[i],
+            Op::Add => a[i] + b[i],
+            Op::Sub => a[i] - b[i],
+            Op::Mul => a[i] * b[i],
+            Op::Div => a[i] / b[i],
         };
         i += 1;
     }
@@ -395,21 +437,31 @@ fn ew_f32_v(a: &[f32], b: &[f32], op: EwOp) -> Vec<f32> {
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-fn ew_f64_s(a: &[f64], scalar: f64, op: EwOp) -> Vec<f64> {
+fn ew_f64_s(a: &[f64], scalar: f64, op: Op) -> Vec<f64> {
     let n = a.len();
     let mut result = vec![0.0f64; n];
-    let sv = F64x8::splat(scalar);
+    let sv = _mm512_set1_pd(scalar);
     let mut i = 0;
     while i + 8 <= n {
-        apply_f64(F64x8::from_slice(&a[i..]), sv, &op).copy_to_slice(&mut result[i..]);
+        // SAFETY: bounds checked by while condition
+        unsafe {
+            let av = _mm512_loadu_pd(a[i..].as_ptr());
+            let rv = match op {
+                Op::Add => _mm512_add_pd(av, sv),
+                Op::Sub => _mm512_sub_pd(av, sv),
+                Op::Mul => _mm512_mul_pd(av, sv),
+                Op::Div => _mm512_div_pd(av, sv),
+            };
+            _mm512_storeu_pd(result[i..].as_mut_ptr(), rv);
+        }
         i += 8;
     }
     while i < n {
         result[i] = match op {
-            EwOp::Add => a[i] + scalar,
-            EwOp::Sub => a[i] - scalar,
-            EwOp::Mul => a[i] * scalar,
-            EwOp::Div => a[i] / scalar,
+            Op::Add => a[i] + scalar,
+            Op::Sub => a[i] - scalar,
+            Op::Mul => a[i] * scalar,
+            Op::Div => a[i] / scalar,
         };
         i += 1;
     }
@@ -418,21 +470,31 @@ fn ew_f64_s(a: &[f64], scalar: f64, op: EwOp) -> Vec<f64> {
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-fn ew_f64_v(a: &[f64], b: &[f64], op: EwOp) -> Vec<f64> {
+fn ew_f64_v(a: &[f64], b: &[f64], op: Op) -> Vec<f64> {
     let n = a.len().min(b.len());
     let mut result = vec![0.0f64; n];
     let mut i = 0;
     while i + 8 <= n {
-        apply_f64(F64x8::from_slice(&a[i..]), F64x8::from_slice(&b[i..]), &op)
-            .copy_to_slice(&mut result[i..]);
+        // SAFETY: bounds checked by while condition
+        unsafe {
+            let av = _mm512_loadu_pd(a[i..].as_ptr());
+            let bv = _mm512_loadu_pd(b[i..].as_ptr());
+            let rv = match op {
+                Op::Add => _mm512_add_pd(av, bv),
+                Op::Sub => _mm512_sub_pd(av, bv),
+                Op::Mul => _mm512_mul_pd(av, bv),
+                Op::Div => _mm512_div_pd(av, bv),
+            };
+            _mm512_storeu_pd(result[i..].as_mut_ptr(), rv);
+        }
         i += 8;
     }
     while i < n {
         result[i] = match op {
-            EwOp::Add => a[i] + b[i],
-            EwOp::Sub => a[i] - b[i],
-            EwOp::Mul => a[i] * b[i],
-            EwOp::Div => a[i] / b[i],
+            Op::Add => a[i] + b[i],
+            Op::Sub => a[i] - b[i],
+            Op::Mul => a[i] * b[i],
+            Op::Div => a[i] / b[i],
         };
         i += 1;
     }
@@ -440,18 +502,17 @@ fn ew_f64_v(a: &[f64], b: &[f64], op: EwOp) -> Vec<f64> {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// GEMM — Goto BLAS packed microkernel (raw intrinsics retained)
-//
-// The GEMM microkernels use masked stores, broadcast-FMA patterns,
-// and packed memory layouts that are inherently architecture-specific.
-// They stay as raw intrinsics; the compat layer covers BLAS-1 + element-wise.
+// GEMM — Goto BLAS packed microkernel
 // ═══════════════════════════════════════════════════════════════════
 
+// Tile parameters for AVX-512:
+// MR=6 rows × NR=16 cols → 6 zmm registers for C tile
+// KC chosen to fit A_panel + B_panel + C_tile in L1 (32KB)
 const SGEMM_MR: usize = 6;
 const SGEMM_NR: usize = 16;
-const SGEMM_KC: usize = 256;
-const SGEMM_MC: usize = 72;
-const SGEMM_NC: usize = 256;
+const SGEMM_KC: usize = 256; // 6*256*4 + 256*16*4 + 6*16*4 = 6K+16K+384 ≈ 22KB < 32KB L1
+const SGEMM_MC: usize = 72;  // 12 micro-panels of MR=6
+const SGEMM_NC: usize = 256; // 16 micro-panels of NR=16
 
 const DGEMM_MR: usize = 6;
 const DGEMM_NR: usize = 8;
@@ -459,6 +520,8 @@ const DGEMM_KC: usize = 192;
 const DGEMM_MC: usize = 72;
 const DGEMM_NC: usize = 128;
 
+/// Pack a panel of A (mc×kc) into column-major MR-wide strips.
+/// Layout: for each k, for each MR-block of rows, store MR contiguous values.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 fn pack_a_f32(a: &[f32], lda: usize, mc: usize, kc: usize, i_start: usize, k_start: usize, buf: &mut [f32]) {
@@ -473,6 +536,7 @@ fn pack_a_f32(a: &[f32], lda: usize, mc: usize, kc: usize, i_start: usize, k_sta
         }
         ii += SGEMM_MR;
     }
+    // Remainder rows (< MR): zero-pad
     if ii < mc {
         let rem = mc - ii;
         for p in 0..kc {
@@ -484,6 +548,8 @@ fn pack_a_f32(a: &[f32], lda: usize, mc: usize, kc: usize, i_start: usize, k_sta
     }
 }
 
+/// Pack a panel of B (kc×nc) into row-major NR-wide strips.
+/// Layout: for each k, for each NR-block of cols, store NR contiguous values.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 fn pack_b_f32(b: &[f32], ldb: usize, kc: usize, nc: usize, k_start: usize, j_start: usize, buf: &mut [f32]) {
@@ -498,6 +564,7 @@ fn pack_b_f32(b: &[f32], ldb: usize, kc: usize, nc: usize, k_start: usize, j_sta
         }
         jj += SGEMM_NR;
     }
+    // Remainder cols (< NR): zero-pad
     if jj < nc {
         let rem = nc - jj;
         for p in 0..kc {
@@ -511,19 +578,22 @@ fn pack_b_f32(b: &[f32], ldb: usize, kc: usize, nc: usize, k_start: usize, j_sta
 
 /// AVX-512 microkernel: C[MR×NR] += A_packed[MR×kc] * B_packed[kc×NR]
 ///
-/// Uses raw intrinsics for broadcast-FMA and masked store patterns.
+/// Uses 6 zmm accumulators (one per MR row), each holding NR=16 floats.
+/// Inner loop: broadcast a[ir] from A_packed, FMA with NR-wide B_packed row.
+/// This is the Goto BLAS GEBP inner kernel.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 unsafe fn sgemm_ukernel_6x16(
     kc: usize,
     alpha: f32,
-    a_packed: &[f32],
-    b_packed: &[f32],
-    c: &mut [f32],
+    a_packed: &[f32], // MR * kc elements, MR-strided
+    b_packed: &[f32], // kc * NR elements, NR-strided
+    c: &mut [f32],    // MR rows of C (scattered by ldc)
     ldc: usize,
-    mr_eff: usize,
-    nr_eff: usize,
+    mr_eff: usize,    // effective rows (may be < MR at edge)
+    nr_eff: usize,    // effective cols (may be < NR at edge)
 ) {
+    // 6 accumulators for C tile rows
     let mut c0 = _mm512_setzero_ps();
     let mut c1 = _mm512_setzero_ps();
     let mut c2 = _mm512_setzero_ps();
@@ -531,6 +601,7 @@ unsafe fn sgemm_ukernel_6x16(
     let mut c4 = _mm512_setzero_ps();
     let mut c5 = _mm512_setzero_ps();
 
+    // Main GEBP loop: for each k, load NR-wide B row, broadcast each A element
     for p in 0..kc {
         let b_off = p * SGEMM_NR;
         let bv = _mm512_loadu_ps(b_packed[b_off..].as_ptr());
@@ -544,6 +615,7 @@ unsafe fn sgemm_ukernel_6x16(
         c5 = _mm512_fmadd_ps(_mm512_set1_ps(a_packed[a_off + 5]), bv, c5);
     }
 
+    // Scale by alpha
     let alpha_v = _mm512_set1_ps(alpha);
     c0 = _mm512_mul_ps(c0, alpha_v);
     c1 = _mm512_mul_ps(c1, alpha_v);
@@ -552,6 +624,7 @@ unsafe fn sgemm_ukernel_6x16(
     c4 = _mm512_mul_ps(c4, alpha_v);
     c5 = _mm512_mul_ps(c5, alpha_v);
 
+    // Store: add to C (beta already applied)
     let rows = [c0, c1, c2, c3, c4, c5];
     for ir in 0..mr_eff {
         let row_ptr = c[ir * ldc..].as_mut_ptr();
@@ -559,6 +632,7 @@ unsafe fn sgemm_ukernel_6x16(
             let cv = _mm512_loadu_ps(row_ptr);
             _mm512_storeu_ps(row_ptr, _mm512_add_ps(cv, rows[ir]));
         } else {
+            // Masked store for edge tiles
             let mask: u16 = (1u32 << nr_eff) as u16 - 1;
             let cv = _mm512_maskz_loadu_ps(mask, row_ptr);
             _mm512_mask_storeu_ps(row_ptr, mask, _mm512_add_ps(cv, rows[ir]));
@@ -567,6 +641,10 @@ unsafe fn sgemm_ukernel_6x16(
 }
 
 /// Goto BLAS style blocked SGEMM with packing and AVX-512 microkernel.
+///
+/// C = alpha * A * B + beta * C  (beta already applied by caller)
+///
+/// 5-loop structure: KC → MC → NC → MR × NR microkernel
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 pub fn sgemm_blocked(
@@ -575,28 +653,40 @@ pub fn sgemm_blocked(
     b: &[f32], ldb: usize,
     c: &mut [f32], ldc: usize,
 ) {
+    // Pack buffers — allocated once, reused across tiles
     let mut a_packed = vec![0.0f32; SGEMM_MC * SGEMM_KC];
     let mut b_packed = vec![0.0f32; SGEMM_KC * SGEMM_NC];
 
+    // Loop 1: KC blocks
     let mut kk = 0;
     while kk < k {
         let kc = SGEMM_KC.min(k - kk);
+
+        // Loop 2: NC blocks
         let mut jj = 0;
         while jj < n {
             let nc = SGEMM_NC.min(n - jj);
+
+            // Pack B panel (kc × nc)
             pack_b_f32(b, ldb, kc, nc, kk, jj, &mut b_packed);
 
+            // Loop 3: MC blocks
             let mut ii = 0;
             while ii < m {
                 let mc = SGEMM_MC.min(m - ii);
+
+                // Pack A panel (mc × kc)
                 pack_a_f32(a, lda, mc, kc, ii, kk, &mut a_packed);
 
+                // Loop 4+5: micro-tiles MR × NR
                 let mut ir = 0;
                 while ir < mc {
                     let mr_eff = SGEMM_MR.min(mc - ir);
+
                     let mut jr = 0;
                     while jr < nc {
                         let nr_eff = SGEMM_NR.min(nc - jr);
+
                         let a_off = (ir / SGEMM_MR) * (SGEMM_MR * kc);
                         let b_off = (jr / SGEMM_NR) * (SGEMM_NR * kc);
 
@@ -610,10 +700,12 @@ pub fn sgemm_blocked(
                                 ldc, mr_eff, nr_eff,
                             );
                         }
+
                         jr += SGEMM_NR;
                     }
                     ir += SGEMM_MR;
                 }
+
                 ii += mc;
             }
             jj += nc;
@@ -744,6 +836,7 @@ pub fn dgemm_blocked(
     let mut kk = 0;
     while kk < k {
         let kc = DGEMM_KC.min(k - kk);
+
         let mut jj = 0;
         while jj < n {
             let nc = DGEMM_NC.min(n - jj);
@@ -772,6 +865,7 @@ pub fn dgemm_blocked(
                                 ldc, mr_eff, nr_eff,
                             );
                         }
+
                         jr += DGEMM_NR;
                     }
                     ir += DGEMM_MR;
@@ -785,7 +879,7 @@ pub fn dgemm_blocked(
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Binary / HDC — 4 functions (raw intrinsics — VPOPCNTDQ specific)
+// Binary / HDC — 4 functions
 // ═══════════════════════════════════════════════════════════════════
 
 /// Hamming distance using VPOPCNTDQ — 64 bytes per iteration.
@@ -865,3 +959,4 @@ pub fn hamming_batch(query: &[u8], database: &[u8], num_rows: usize, row_bytes: 
         })
         .collect()
 }
+
