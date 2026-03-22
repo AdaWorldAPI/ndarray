@@ -218,11 +218,15 @@ impl Cascade {
             warmup_dists.push(estimate);
         }
 
-        let var: f64 = {
-            let mu: f64 = warmup_dists.iter().map(|&d| d as f64).sum::<f64>() / warmup_n as f64;
-            warmup_dists.iter().map(|&d| { let diff = d as f64 - mu; diff * diff }).sum::<f64>() / warmup_n as f64
+        let sigma_pop = if warmup_n == 0 {
+            0.0
+        } else {
+            let var: f64 = {
+                let mu: f64 = warmup_dists.iter().map(|&d| d as f64).sum::<f64>() / warmup_n as f64;
+                warmup_dists.iter().map(|&d| { let diff = d as f64 - mu; diff * diff }).sum::<f64>() / warmup_n as f64
+            };
+            var.sqrt()
         };
-        let sigma_pop = var.sqrt();
         let sigma = sigma_est.max(sigma_pop).max(1.0);
         let s1_reject = threshold as f64 + 3.0 * sigma;
 
@@ -754,5 +758,15 @@ mod tests {
         // Exact match should be Foveal
         let exact = results.iter().find(|r| r.index == 0).unwrap();
         assert_eq!(exact.band, Band::Foveal);
+    }
+
+    #[test]
+    fn cascade_query_zero_vectors_no_nan() {
+        let vec_bytes = 256;
+        let query = vec![0xAAu8; vec_bytes];
+        let database: &[u8] = &[];
+        let cascade = Cascade::from_threshold(500, vec_bytes);
+        let results = cascade.query(&query, database, vec_bytes, 0);
+        assert!(results.is_empty(), "zero-vector query should return empty results");
     }
 }

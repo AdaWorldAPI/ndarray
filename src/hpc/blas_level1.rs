@@ -116,6 +116,60 @@ where
     }
 }
 
+/// Givens rotation parameters.
+///
+/// Returned by [`blas_rotg`](GivensRotation::blas_rotg). Contains the cosine
+/// and sine of the rotation that zeroes out the second component.
+#[derive(Clone, Copy, Debug)]
+pub struct GivensRotation<A> {
+    /// The modified first element (r).
+    pub r: A,
+    /// Cosine of the rotation angle.
+    pub c: A,
+    /// Sine of the rotation angle.
+    pub s: A,
+}
+
+/// Generate a Givens rotation.
+///
+/// Given scalars `a` and `b`, compute `r`, `c`, `s` such that:
+///
+/// ```text
+/// [ c  s ] [ a ] = [ r ]
+/// [-s  c ] [ b ]   [ 0 ]
+/// ```
+///
+/// # Example
+///
+/// ```
+/// use ndarray::hpc::blas_level1::blas_rotg;
+///
+/// let rot = blas_rotg(3.0f64, 4.0f64);
+/// assert!((rot.r - 5.0).abs() < 1e-10);
+/// assert!((rot.c - 0.6).abs() < 1e-10);
+/// assert!((rot.s - 0.8).abs() < 1e-10);
+/// ```
+pub fn blas_rotg<A: num_traits::Float>(a: A, b: A) -> GivensRotation<A> {
+    if a == A::zero() && b == A::zero() {
+        return GivensRotation {
+            r: A::zero(),
+            c: A::one(),
+            s: A::zero(),
+        };
+    }
+    let scale = a.abs() + b.abs();
+    let r = scale * ((a / scale).powi(2) + (b / scale).powi(2)).sqrt();
+    // Sign of r follows the larger-magnitude input
+    let r = if a.abs() > b.abs() {
+        r.copysign(a)
+    } else {
+        r.copysign(b)
+    };
+    let c = a / r;
+    let s = b / r;
+    GivensRotation { r, c, s }
+}
+
 /// Element-wise scalar arithmetic operations.
 ///
 /// # Example
@@ -266,6 +320,22 @@ mod tests {
         let x = array![1.0f32, 2.0, 3.0];
         assert_eq!(x.add_scalar_elem(10.0), array![11.0, 12.0, 13.0]);
         assert_eq!(x.mul_scalar_elem(2.0), array![2.0, 4.0, 6.0]);
+    }
+
+    #[test]
+    fn test_blas_rotg() {
+        let rot = super::blas_rotg(3.0f64, 4.0f64);
+        assert!((rot.r - 5.0).abs() < 1e-10);
+        assert!((rot.c - 0.6).abs() < 1e-10);
+        assert!((rot.s - 0.8).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_blas_rotg_zero() {
+        let rot = super::blas_rotg(0.0f32, 0.0f32);
+        assert_eq!(rot.r, 0.0);
+        assert_eq!(rot.c, 1.0);
+        assert_eq!(rot.s, 0.0);
     }
 
     #[test]

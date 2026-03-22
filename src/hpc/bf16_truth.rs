@@ -278,6 +278,22 @@ pub fn awareness_classify(
     assert_eq!(a.len(), b.len(), "awareness_classify: length mismatch");
     assert!(a.len() >= n_dims * 2, "awareness_classify: not enough bytes for n_dims");
 
+    // Guard: zero dims would cause division by zero when computing percentages
+    if n_dims == 0 {
+        return SuperpositionState {
+            n_dims: 0,
+            sign_consensus: Vec::new(),
+            exp_spread: Vec::new(),
+            mantissa_noise: Vec::new(),
+            states: Vec::new(),
+            packed_states: Vec::new(),
+            crystallized_pct: 0.0,
+            tensioned_pct: 0.0,
+            uncertain_pct: 0.0,
+            noise_pct: 0.0,
+        };
+    }
+
     let mut sign_consensus = Vec::with_capacity(n_dims);
     let mut exp_spread = Vec::with_capacity(n_dims);
     let mut mantissa_noise = Vec::with_capacity(n_dims);
@@ -676,5 +692,19 @@ mod tests {
         // 4 crystallized states packed: [0b00_00_00_00] = [0]
         assert_eq!(s.packed_states.len(), 1);
         assert_eq!(s.packed_states[0], 0);
+    }
+
+    #[test]
+    fn awareness_classify_zero_dims_no_nan() {
+        let a = vec![0u8; 4];
+        let b = vec![0u8; 4];
+        let t = AwarenessThresholds::default();
+        let s = awareness_classify(&a, &b, 0, &t);
+        assert_eq!(s.n_dims, 0);
+        assert!(!s.crystallized_pct.is_nan());
+        assert!(!s.tensioned_pct.is_nan());
+        assert!(!s.uncertain_pct.is_nan());
+        assert!(!s.noise_pct.is_nan());
+        assert_eq!(s.crystallized_pct, 0.0);
     }
 }
