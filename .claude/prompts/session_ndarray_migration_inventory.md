@@ -147,8 +147,14 @@ tail_backend.rs          884    P1        Check: is this the fallback GEMM? If s
 soaking.rs               407    P1        Arrow soaking buffer — may be in arrow_bridge.rs.
                                           VERIFY by comparing pub fn signatures.
 layer_stack.rs           328    P2        10-layer cognitive stack. Experimental.
-jitson.rs               1620    DROP      Separate crate. Not needed in ndarray.
-jit_scan.rs              316    DROP      JIT-related. Not needed.
+jitson.rs               1620    P2        Cranelift JIT: bakes scan params as immediates.
+                                          threshold→CMP imm, prefetch→constant offset.
+                                          Not wired yet but eliminates interpretive overhead
+                                          in Cascade hot loop. Depends on AdaWorldAPI/wasmtime
+                                          fork with AVX-512 VPOPCNTDQ support.
+                                          Defer until Cascade scan is the measured bottleneck.
+jit_scan.rs              316    P2        Hybrid JIT: Cranelift outer loop + SIMD inner kernel.
+                                          Companion to jitson.rs. Same deferral.
 mkl_ffi.rs               472    DROP      Replaced by backend/mkl.rs (237 lines).
 delta.rs                 237    P2        Structural diff. Low priority.
 compute.rs               265    P2        Generic compute dispatch. May be superseded.
@@ -533,7 +539,7 @@ Ordered list based on:
 3. **P1 — function parity:** missing pub fns in ⚠️ files
 4. **P1 — quantized GEMM:** verify quantized.rs covers bf16_gemm + int8_gemm
 5. **P2 — missing files:** hybrid.rs, spatial_resonance.rs, delta.rs
-6. **DROP — confirmed unnecessary:** jitson, jit_scan, mkl_ffi, rng, parallel, layout
+6. **DROP — confirmed unnecessary:** mkl_ffi, rng, parallel, layout
 
 ## OUTPUT
 
