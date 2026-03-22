@@ -1,144 +1,96 @@
-# SESSION: Open Heart Surgery — simd_compat → Real std::simd Polyfill
+# SESSION: std::simd Polyfill — Move from rustynum to ndarray
 
-## Context
+## Phase 1: Additive Only (no modifications, no deletions)
 
-ndarray has `src/backend/simd_compat.rs` (1072 lines) that was created
-by a session working from a prompt that didn't read the source architecture.
-The code works (820 tests pass) but may not match the intended design.
-
-The REAL `std::simd` polyfill lives in rustynum and has been running in
-production. It has a different architecture (router, AVX2 tier, 11 types).
-
-Your job: read all three codebases, save snapshots, and produce a CORRECT
-third version that combines the working new code with the real architecture.
-
-## STEP 1: Save Snapshots (before ANY changes)
+Copy three files from rustynum to ndarray `src/` root. Same filenames.
+Same position in the crate — peers of `lib.rs`, not inside `backend/`.
 
 ```bash
-# Save "AFTER" — current ndarray state (the working code under review)
-mkdir -p /tmp/simd_surgery/after
-cp src/backend/simd_compat.rs     /tmp/simd_surgery/after/
-cp src/backend/kernels_avx512.rs  /tmp/simd_surgery/after/
-cp src/backend/mod.rs             /tmp/simd_surgery/after/
-cp src/hpc/activations.rs         /tmp/simd_surgery/after/
-cp src/hpc/vml.rs                 /tmp/simd_surgery/after/
+# Source (rustynum, working, tested)
+<rustynum>/rustynum-core/src/simd.rs
+<rustynum>/rustynum-core/src/simd_avx512.rs
+<rustynum>/rustynum-core/src/simd_avx2.rs
 
-# Save "BEFORE" — pre-simd_compat state from git
-PRE_COMMIT="22bfb7a"  # commit before simd_compat was introduced
-mkdir -p /tmp/simd_surgery/before
-git show ${PRE_COMMIT}:src/backend/kernels_avx512.rs  > /tmp/simd_surgery/before/kernels_avx512.rs
-git show ${PRE_COMMIT}:src/backend/mod.rs             > /tmp/simd_surgery/before/mod.rs
-git show ${PRE_COMMIT}:src/hpc/activations.rs         > /tmp/simd_surgery/before/activations.rs
-git show ${PRE_COMMIT}:src/hpc/vml.rs                 > /tmp/simd_surgery/before/vml.rs
-
-# Save "REAL" — rustynum's actual polyfill (the source of truth for architecture)
-mkdir -p /tmp/simd_surgery/real
-cp <rustynum>/rustynum-core/src/simd.rs          /tmp/simd_surgery/real/
-cp <rustynum>/rustynum-core/src/simd_avx512.rs   /tmp/simd_surgery/real/
-cp <rustynum>/rustynum-core/src/simd_avx2.rs     /tmp/simd_surgery/real/
+# Target (ndarray src/ root)
+ndarray/src/simd.rs
+ndarray/src/simd_avx512.rs
+ndarray/src/simd_avx2.rs
 ```
 
-## STEP 2: Read All Three (before writing ANYTHING)
+Add to `ndarray/src/lib.rs`:
+```rust
+pub mod simd_avx512;
+pub mod simd_avx2;
+pub mod simd;
+```
 
-Read these files IN FULL. Do not skim. Do not summarize from memory.
+Same declarations as rustynum's `lib.rs` (lines 16, 50, 53).
+
+After this: `crate::simd::` works in ndarray. When `std::simd` stabilizes:
+`crate::simd` → `std::simd`, delete the three files. One word change.
+
+**Do NOT modify any existing files beyond lib.rs.**
+**Do NOT delete simd_compat.rs or change its imports.**
+**Do NOT touch kernels_avx512.rs, activations.rs, or vml.rs.**
+
+Just add the three files and the three `pub mod` lines. Verify it compiles.
+
+## Phase 2: Surgery (separate step, after Phase 1 is verified)
+
+ndarray currently has `src/backend/simd_compat.rs` (1072 lines) created
+by a session that didn't read rustynum's architecture. It works (820 tests
+pass) but has problems. Three other files import from it.
+
+Before touching anything in Phase 2, read ALL of these:
 
 ```bash
-# The REAL polyfill (rustynum) — this is the architectural source of truth
-cat /tmp/simd_surgery/real/simd.rs
-cat /tmp/simd_surgery/real/simd_avx512.rs
-cat /tmp/simd_surgery/real/simd_avx2.rs
+# What exists now (save snapshots first)
+cat src/backend/simd_compat.rs
+cat src/backend/kernels_avx512.rs
+cat src/hpc/activations.rs
+cat src/hpc/vml.rs
 
-# The BEFORE state (ndarray before simd_compat)
-cat /tmp/simd_surgery/before/kernels_avx512.rs
-cat /tmp/simd_surgery/before/activations.rs
-cat /tmp/simd_surgery/before/vml.rs
+# What existed BEFORE simd_compat was introduced
+git show 22bfb7a:src/backend/kernels_avx512.rs
+git show 22bfb7a:src/hpc/activations.rs
+git show 22bfb7a:src/hpc/vml.rs
 
-# The AFTER state (ndarray with simd_compat, currently working, 820 tests)
-cat /tmp/simd_surgery/after/simd_compat.rs
-cat /tmp/simd_surgery/after/kernels_avx512.rs
-cat /tmp/simd_surgery/after/activations.rs
-cat /tmp/simd_surgery/after/vml.rs
+# The real polyfill you just added in Phase 1
+cat src/simd.rs
+cat src/simd_avx512.rs
+cat src/simd_avx2.rs
 ```
 
-## STEP 3: Answer These Questions (in writing, before any code changes)
+Then answer these questions IN WRITING to `.claude/SIMD_SURGERY_REPORT.md`:
 
-### About the REAL polyfill (rustynum):
-1. How many types does simd_avx512.rs define? List them all.
-2. How does simd.rs (the router) work? What does it do at init?
-3. What does simd_avx2.rs provide? Same types? Different backing?
-4. What happens on an AVX2-only machine?
-5. What is the module structure? How does `crate::simd::F32x16` resolve?
+1. What types does simd_compat.rs define vs simd_avx512.rs? What's missing?
+2. Does simd_compat.rs have a router? Does it have an AVX2 tier?
+3. What did kernels_avx512.rs look like BEFORE vs AFTER the simd_compat session?
+4. What did activations.rs gain? Is the new code correct?
+5. What did vml.rs gain? Is the new code correct?
+6. Do kernels_avx512.rs, activations.rs, vml.rs even need to exist as
+   separate files, or should their contents live inside the type definitions
+   like rustynum does it?
+7. If separate kernel files DO need to exist — should it be `kernels.rs`
+   (architecture-neutral, using `crate::simd::`) or `kernels_avx512.rs`
+   (architecture-specific name)?
+8. What should happen to simd_compat.rs? Keep? Delete? Merge into the
+   real polyfill? Something else?
 
-### About simd_compat.rs (the working but possibly wrong code):
-6. How many types does it define? Which are missing vs rustynum?
-7. Does it have a router? How does it pick AVX-512 vs fallback?
-8. Does it have an AVX2 tier?
-9. What functions does it add that rustynum doesn't have? (simd_exp_f32? others?)
-10. Are there API differences for the types it DOES have vs rustynum's versions?
+Based on your answers, rewire the imports from `crate::backend::simd_compat::`
+to `crate::simd::`, resolve any API differences, and verify all tests pass.
 
-### About the BEFORE kernels_avx512.rs:
-11. What SIMD approach did it use? Raw intrinsics? Wrapper types?
-12. What functions does it contain? (BLAS-1, element-wise, GEMM, Hamming?)
+## Contamination Warning
 
-### About the AFTER kernels_avx512.rs:
-13. Which functions were changed to use simd_compat types?
-14. Which functions were left with raw intrinsics? Why?
-15. Do the changed functions produce the same results?
+A previous session wrote 5 prompt files that reference `simd_compat.rs` by
+name as the intended target (24 total references). This is why other sessions
+keep creating or wiring to that filename. After Phase 2 is complete, update
+these prompt files to reference whatever the correct result actually is:
 
-### About activations.rs BEFORE vs AFTER:
-16. What existed before? What was added?
-17. Is the added code (sigmoid_f32, softmax_f32, etc.) correct?
-18. Does rustynum have equivalent SIMD activation functions?
-
-### About vml.rs BEFORE vs AFTER:
-19. What was scalar before? What got SIMD paths?
-20. Are the SIMD paths correct?
-
-### The synthesis question:
-21. If the original prompt had correctly described rustynum's architecture,
-    what would the result look like? Specifically:
-    - Where would the polyfill live? (src/backend/? src/simd/? other?)
-    - Would it be one file or multiple?
-    - Would it have a router?
-    - Would the kernels use the polyfill types or raw intrinsics?
-    - Would activations.rs and vml.rs be wired through it?
-    - What would the import path be?
-
-## STEP 4: Produce the Correct Third Version
-
-Based on your answers to Step 3, write the code that SHOULD exist.
-
-Rules:
-- The polyfill must use the SAME type names and method names as rustynum's.
-  When `std::simd` stabilizes, `crate::simd::` → `std::simd::` must work
-  with zero code changes in any file that uses the types.
-- The router must do ONE-TIME CPU detection, not per-call dispatch.
-- AVX2 tier must exist (not just AVX-512 + scalar).
-- All 11 types from rustynum must be present (not just F32x16/F64x8).
-- The SIMD activation functions (sigmoid_f32, softmax_f32, log_softmax_f32)
-  that were added in the AFTER state should be KEPT if they're correct,
-  but rewired to use the correct polyfill types.
-- The SIMD vml.rs paths should be KEPT if correct, rewired same way.
-- GEMM and Hamming in kernels should be left as raw intrinsics FOR NOW
-  (converting them is a separate future session).
-- Everything must compile and pass the existing tests.
-
-## STEP 5: Verify
-
-```bash
-# Must pass
-cargo test 2>&1 | tail -20
-
-# Must have zero references to simd_compat
-grep -rn "simd_compat" src/ --include="*.rs"
-
-# Must have the polyfill at the correct location
-ls -la src/simd/ 2>/dev/null || echo "Check: where did you put the polyfill?"
 ```
-
-## Output
-
-Write your Step 3 answers to `.claude/SIMD_SURGERY_REPORT.md`.
-The code changes go directly into the repo.
-Commit message must reference which files came from rustynum,
-which were kept from simd_compat, and what was rewritten.
+session_ndarray_migration_inventory.md    6 references to simd_compat
+session_bgz17_similarity.md              3 references
+research_quantized_graph_algebra.md       1 reference
+session_unified_vector_search.md          1 reference
+this file (session_simd_surgery.md)      references are to document the problem
+```
