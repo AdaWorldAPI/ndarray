@@ -115,6 +115,22 @@ impl SoakingBuffer {
         &mut self.data[start..start + self.n_dims]
     }
 
+    /// Zero-copy columnar view of the entire soaking buffer as a flat `&[i8]` slice.
+    ///
+    /// Layout: `n_entries × n_dims` row-major. Use with
+    /// `ArrayView2::from_shape((n_entries, n_dims), buf.as_columnar_slice())`
+    /// for zero-copy ndarray interop.
+    #[inline]
+    pub fn as_columnar_slice(&self) -> &[i8] {
+        &self.data
+    }
+
+    /// Mutable zero-copy view of the entire soaking buffer.
+    #[inline]
+    pub fn as_columnar_slice_mut(&mut self) -> &mut [i8] {
+        &mut self.data
+    }
+
     /// Crystallize: convert soaking (int8) to binary fingerprint via sign().
     pub fn crystallize(&self, idx: usize) -> Vec<u8> {
         let entry = self.entry(idx);
@@ -161,6 +177,16 @@ impl PlaneBuffer {
     pub fn binary_entry_mut(&mut self, idx: usize) -> &mut [u8] {
         let start = idx * self.binary_bytes;
         &mut self.binary[start..start + self.binary_bytes]
+    }
+
+    /// Zero-copy columnar view of all binary fingerprints as a flat `&[u8]` slice.
+    ///
+    /// Layout: `n_entries × binary_bytes` row-major. Use with
+    /// `ArrayView2::from_shape((n_entries, binary_bytes), buf.as_binary_slice())`
+    /// for zero-copy ndarray interop.
+    #[inline]
+    pub fn as_binary_slice(&self) -> &[u8] {
+        &self.binary
     }
 }
 
@@ -927,5 +953,33 @@ mod tests {
         let dist_fp = fp_s.hamming_distance(&fp_p);
         let dist_raw = hamming_distance_raw(&node.subject_binary, &node.predicate_binary);
         assert_eq!(dist_fp as u64, dist_raw);
+    }
+
+    // --- columnar_view tests ---
+
+    #[test]
+    fn soaking_columnar_view_zero_copy() {
+        let mut buf = SoakingBuffer::new(4, 100);
+        buf.entry_mut(2)[50] = 42;
+        let slice = buf.as_columnar_slice();
+        // Row 2, col 50 → offset 2*100 + 50 = 250
+        assert_eq!(slice[250], 42);
+        assert_eq!(slice.len(), 4 * 100);
+    }
+
+    #[test]
+    fn soaking_columnar_view_mut() {
+        let mut buf = SoakingBuffer::new(2, 10);
+        buf.as_columnar_slice_mut()[15] = -7; // Row 1, col 5
+        assert_eq!(buf.entry(1)[5], -7);
+    }
+
+    #[test]
+    fn plane_buffer_binary_slice() {
+        let mut pb = PlaneBuffer::new(3, BINARY_BYTES);
+        pb.binary_entry_mut(1)[0] = 0xAB;
+        let slice = pb.as_binary_slice();
+        assert_eq!(slice.len(), 3 * BINARY_BYTES);
+        assert_eq!(slice[BINARY_BYTES], 0xAB);
     }
 }

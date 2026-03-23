@@ -1001,6 +1001,104 @@ impl BenchmarkTranscript {
 }
 
 // ============================================================================
+// simd_apply — Generic fused SIMD kernel over aligned f32 slices
+// ============================================================================
+
+use crate::simd::F32x16;
+
+/// Apply a generic SIMD operation element-wise over two aligned f32 slices.
+///
+/// Processes 16 elements per iteration using `F32x16`, with a scalar tail.
+/// This is the generic fusion primitive: callers pass any `Fn(F32x16, F32x16) -> F32x16`.
+///
+/// # Examples
+///
+/// ```ignore
+/// use ndarray::hpc::kernels::simd_apply;
+/// let a = vec![1.0f32; 64];
+/// let b = vec![2.0f32; 64];
+/// let mut out = vec![0.0f32; 64];
+/// // Fused multiply-add: a * b + a
+/// simd_apply(&a, &b, &mut out, |va, vb| va.mul_add(vb, va));
+/// ```
+#[inline]
+pub fn simd_apply<F>(a: &[f32], b: &[f32], out: &mut [f32], f: F)
+where
+    F: Fn(F32x16, F32x16) -> F32x16,
+{
+    let n = a.len().min(b.len()).min(out.len());
+    let mut i = 0;
+    while i + 16 <= n {
+        let va = F32x16::from_slice(&a[i..]);
+        let vb = F32x16::from_slice(&b[i..]);
+        f(va, vb).copy_to_slice(&mut out[i..]);
+        i += 16;
+    }
+    // Scalar tail: extract one lane at a time
+    if i < n {
+        let tail_len = n - i;
+        let mut a_pad = [0.0f32; 16];
+        let mut b_pad = [0.0f32; 16];
+        a_pad[..tail_len].copy_from_slice(&a[i..n]);
+        b_pad[..tail_len].copy_from_slice(&b[i..n]);
+        let result = f(F32x16::from_array(a_pad), F32x16::from_array(b_pad));
+        let arr = result.to_array();
+        out[i..n].copy_from_slice(&arr[..tail_len]);
+    }
+}
+
+/// Apply a generic unary SIMD operation element-wise over an f32 slice.
+///
+/// Single-input variant of [`simd_apply`].
+#[inline]
+pub fn simd_apply_unary<F>(x: &[f32], out: &mut [f32], f: F)
+where
+    F: Fn(F32x16) -> F32x16,
+{
+    let n = x.len().min(out.len());
+    let mut i = 0;
+    while i + 16 <= n {
+        let v = F32x16::from_slice(&x[i..]);
+        f(v).copy_to_slice(&mut out[i..]);
+        i += 16;
+    }
+    if i < n {
+        let tail_len = n - i;
+        let mut pad = [0.0f32; 16];
+        pad[..tail_len].copy_from_slice(&x[i..n]);
+        let result = f(F32x16::from_array(pad));
+        let arr = result.to_array();
+        out[i..n].copy_from_slice(&arr[..tail_len]);
+    }
+}
+
+/// Apply a generic SIMD operation in-place: `a[i] = f(a[i], b[i])`.
+#[inline]
+pub fn simd_apply_inplace<F>(a: &mut [f32], b: &[f32], f: F)
+where
+    F: Fn(F32x16, F32x16) -> F32x16,
+{
+    let n = a.len().min(b.len());
+    let mut i = 0;
+    while i + 16 <= n {
+        let va = F32x16::from_slice(&a[i..]);
+        let vb = F32x16::from_slice(&b[i..]);
+        f(va, vb).copy_to_slice(&mut a[i..]);
+        i += 16;
+    }
+    if i < n {
+        let tail_len = n - i;
+        let mut a_pad = [0.0f32; 16];
+        let mut b_pad = [0.0f32; 16];
+        a_pad[..tail_len].copy_from_slice(&a[i..n]);
+        b_pad[..tail_len].copy_from_slice(&b[i..n]);
+        let result = f(F32x16::from_array(a_pad), F32x16::from_array(b_pad));
+        let arr = result.to_array();
+        a[i..n].copy_from_slice(&arr[..tail_len]);
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -1585,5 +1683,69 @@ mod tests {
             .expect("Exact match missing");
         assert_eq!(exact.sigma.level, SignificanceLevel::Discovery);
         assert!(exact.sigma.sigma > 100.0);
+    }
+
+    // --- simd_apply tests ---
+
+    #[test]
+    fn test_simd_apply_add() {
+        let a: Vec<f32> = (0..100).map(|i| i as f32).collect();
+        let b: Vec<f32> = (0..100).map(|i| (i * 2) as f32).collect();
+        let mut out = vec![0.0f32; 100];
+        simd_apply(&a, &b, &mut out, |va, vb| va + vb);
+        for i in 0..100 {
+            assert_eq!(out[i], (i + i * 2) as f32, "mismatch at {i}");
+        }
+    }
+
+    #[test]
+    fn test_simd_apply_fma() {
+        let a = vec![2.0f32; 35]; // Not divisible by 16 — tests tail
+        let b = vec![3.0f32; 35];
+        let mut out = vec![0.0f32; 35];
+        // a * b + a = 2*3 + 2 = 8
+        simd_apply(&a, &b, &mut out, |va, vb| va.mul_add(vb, va));
+        for i in 0..35 {
+            assert!((out[i] - 8.0).abs() < 1e-5, "mismatch at {i}: {}", out[i]);
+        }
+    }
+
+    #[test]
+    fn test_simd_apply_unary_sqrt() {
+        let x: Vec<f32> = (1..=50).map(|i| (i * i) as f32).collect();
+        let mut out = vec![0.0f32; 50];
+        simd_apply_unary(&x, &mut out, |v| v.sqrt());
+        for i in 0..50 {
+            assert!((out[i] - (i + 1) as f32).abs() < 1e-4, "mismatch at {i}");
+        }
+    }
+
+    #[test]
+    fn test_simd_apply_inplace() {
+        let mut a: Vec<f32> = (0..48).map(|i| i as f32).collect();
+        let b = vec![1.0f32; 48];
+        simd_apply_inplace(&mut a, &b, |va, vb| va + vb);
+        for i in 0..48 {
+            assert_eq!(a[i], (i + 1) as f32);
+        }
+    }
+
+    #[test]
+    fn test_simd_apply_empty() {
+        let a: Vec<f32> = vec![];
+        let b: Vec<f32> = vec![];
+        let mut out: Vec<f32> = vec![];
+        simd_apply(&a, &b, &mut out, |va, vb| va + vb);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn test_simd_apply_small_tail_only() {
+        // Only 3 elements — entirely tail path
+        let a = vec![1.0f32, 2.0, 3.0];
+        let b = vec![4.0f32, 5.0, 6.0];
+        let mut out = vec![0.0f32; 3];
+        simd_apply(&a, &b, &mut out, |va, vb| va * vb);
+        assert_eq!(out, [4.0, 10.0, 18.0]);
     }
 }
