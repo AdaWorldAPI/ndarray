@@ -19,6 +19,44 @@
 
 use super::bitwise;
 
+/// Software prefetch: bring a cache line into L1 for the given byte slice.
+///
+/// No-op on non-x86 targets. On x86_64, uses `_mm_prefetch(_MM_HINT_T0)`.
+/// The prefetch distance (how many candidates ahead) should be tuned per
+/// cache hierarchy — 4 candidates × 128B = 512B ≈ 8 cache lines is a
+/// reasonable default for Stroke 1 sequential scan.
+#[inline(always)]
+#[allow(unused_variables)]
+fn prefetch_t0(ptr: *const u8) {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        #[cfg(target_feature = "sse")]
+        {
+            core::arch::x86_64::_mm_prefetch::<{ core::arch::x86_64::_MM_HINT_T0 }>(
+                ptr as *const i8,
+            );
+        }
+    }
+}
+
+/// Prefetch into L2 (non-temporal hint for data accessed once).
+#[inline(always)]
+#[allow(unused_variables)]
+fn prefetch_t1(ptr: *const u8) {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        #[cfg(target_feature = "sse")]
+        {
+            core::arch::x86_64::_mm_prefetch::<{ core::arch::x86_64::_MM_HINT_T1 }>(
+                ptr as *const i8,
+            );
+        }
+    }
+}
+
+/// Number of candidates to prefetch ahead in the Stroke 1 scan.
+const PREFETCH_DISTANCE: usize = 4;
+
 /// Stroke 1: first 128 bytes (1024 bits) — coarse rejection (~90% eliminated).
 pub const STROKE1_BYTES: usize = 128;
 /// Stroke 2: bytes 128..512 (3072 bits) — medium filter (~90% of survivors).
@@ -161,8 +199,13 @@ impl PackedDatabase {
         let query_s3 = &query[STROKE1_BYTES + STROKE2_BYTES..FINGERPRINT_BYTES];
 
         // STROKE 1: coarse rejection — sequential scan through packed stroke1
+        // Prefetch PREFETCH_DISTANCE candidates ahead to hide memory latency.
         let mut survivors: Vec<(usize, u64)> = Vec::with_capacity(self.num_candidates / 10);
         for i in 0..self.num_candidates {
+            // Prefetch stroke1 data for upcoming candidate
+            if i + PREFETCH_DISTANCE < self.num_candidates {
+                prefetch_t0(self.stroke1[(i + PREFETCH_DISTANCE) * STROKE1_BYTES..].as_ptr());
+            }
             let d1 = bitwise::hamming_distance_raw(query_s1, self.get_stroke1(i));
             if d1 <= reject_threshold_s1 {
                 survivors.push((i, d1));
@@ -170,8 +213,14 @@ impl PackedDatabase {
         }
 
         // STROKE 2: medium filter — scan survivors through packed stroke2
+        // Prefetch stroke2 data for next survivor (sparse access pattern).
         let mut survivors2: Vec<(usize, u64)> = Vec::with_capacity(survivors.len() / 10);
-        for &(idx, d1) in &survivors {
+        for (si, &(idx, d1)) in survivors.iter().enumerate() {
+            // Prefetch next survivor's stroke2 data into L2
+            if si + 1 < survivors.len() {
+                let next_idx = survivors[si + 1].0;
+                prefetch_t1(self.stroke2[next_idx * STROKE2_BYTES..].as_ptr());
+            }
             let d2 = bitwise::hamming_distance_raw(query_s2, self.get_stroke2(idx));
             let d_cumul = d1 + d2;
             if d_cumul <= reject_threshold_s12 {
@@ -180,8 +229,13 @@ impl PackedDatabase {
         }
 
         // STROKE 3: precise distance — final ranking
+        // Prefetch next survivor's stroke3 data.
         let mut results: Vec<RankedHit> = Vec::with_capacity(survivors2.len());
-        for &(idx, d12) in &survivors2 {
+        for (si, &(idx, d12)) in survivors2.iter().enumerate() {
+            if si + 1 < survivors2.len() {
+                let next_idx = survivors2[si + 1].0;
+                prefetch_t0(self.stroke3[next_idx * STROKE3_BYTES..].as_ptr());
+            }
             let d3 = bitwise::hamming_distance_raw(query_s3, self.get_stroke3(idx));
             results.push(RankedHit {
                 index: self.original_id(idx) as usize,
