@@ -29,6 +29,9 @@ use super::bitwise;
 #[allow(unused_variables)]
 fn prefetch_t0(ptr: *const u8) {
     #[cfg(target_arch = "x86_64")]
+    // SAFETY: `_mm_prefetch` is a CPU hint that cannot cause UB for any pointer
+    // value — the CPU silently ignores invalid or unmapped addresses. The `ptr`
+    // comes from a bounds-checked slice index in the caller.
     unsafe {
         #[cfg(target_feature = "sse")]
         {
@@ -39,11 +42,14 @@ fn prefetch_t0(ptr: *const u8) {
     }
 }
 
-/// Prefetch into L2 (non-temporal hint for data accessed once).
+/// Prefetch into L2 cache (temporal hint for data accessed in a later stage).
 #[inline(always)]
 #[allow(unused_variables)]
 fn prefetch_t1(ptr: *const u8) {
     #[cfg(target_arch = "x86_64")]
+    // SAFETY: `_mm_prefetch` is a CPU hint that cannot cause UB for any pointer
+    // value — the CPU silently ignores invalid or unmapped addresses. The `ptr`
+    // comes from a bounds-checked slice index in the caller.
     unsafe {
         #[cfg(target_feature = "sse")]
         {

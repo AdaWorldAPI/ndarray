@@ -220,6 +220,10 @@ pub fn vscos(x: &[f32], out: &mut [f32]) {
 ///
 /// Uses SIMD exp+ln: `a^b = exp(b * ln(a))`. The `simd_ln_f32` and
 /// `simd_exp_f32` kernels provide 16-wide vectorization.
+///
+/// **Domain restriction**: the SIMD path requires `a[i] > 0`. Negative bases
+/// produce NaN (since `ln(negative)` is undefined), unlike scalar `powf` which
+/// handles some negative-base cases. The scalar tail (len < 16) uses `powf`.
 pub fn vspow(a: &[f32], b: &[f32], out: &mut [f32]) {
     let n = a.len().min(b.len()).min(out.len());
     let mut i = 0;
