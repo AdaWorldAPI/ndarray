@@ -106,10 +106,9 @@ pub mod spo_bundle;
 pub mod deepnsm;
 #[allow(missing_docs)]
 pub mod surround_metadata;
-#[allow(missing_docs)]
+#[allow(missing_docs, dead_code)]
 pub mod cyclic_bundle;
-#[allow(missing_docs)]
-#[allow(missing_docs)]
+#[allow(missing_docs, dead_code)]
 pub mod compression_curves;
 #[allow(missing_docs)]
 pub mod crystal_encoder;

@@ -414,7 +414,7 @@ fn benchmark_at_dim(
 
     let mut gt_ranked: Vec<(usize, f64)> = gt_dists.iter().copied().enumerate().collect();
     gt_ranked.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-    let gt_top10: std::collections::HashSet<usize> =
+    let _gt_top10: std::collections::HashSet<usize> =
         gt_ranked[..10.min(gt_ranked.len())].iter().map(|&(i, _)| i).collect();
 
     let mut results = Vec::new();

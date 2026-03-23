@@ -14,7 +14,7 @@
 //! Ported from `lance-graph/crates/lance-graph/src/graph/neighborhood/zeckf64.rs`.
 //! Batch and top-k operations added for symmetry with `hpc::bitwise`.
 
-use super::bitwise::{hamming_distance_raw, popcount_raw};
+use super::bitwise::hamming_distance_raw;
 
 // ============================================================================
 // Constants

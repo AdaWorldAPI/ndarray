@@ -11,6 +11,7 @@
 // ============================================================================
 
 #[cfg(target_arch = "x86_64")]
+#[allow(unused_imports)]
 pub use crate::simd_avx512::{
     // 512-bit types
     F32x16, F64x8, U8x64, I32x16, I64x8, U32x16, U64x8,

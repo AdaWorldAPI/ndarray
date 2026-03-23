@@ -366,7 +366,7 @@ where
         let mut y = Array::zeros(m);
         for i in 0..m {
             let mut sum = A::zero();
-            let j_start = if i > kl { i - kl } else { 0 };
+            let j_start = i.saturating_sub(kl);
             let j_end = core::cmp::min(i + ku + 1, n);
             for j in j_start..j_end {
                 // In row-major band storage, element A(i,j) is stored at
@@ -397,7 +397,7 @@ where
         for i in 0..n {
             let mut sum = A::zero();
             for j in 0..n {
-                let diff = if i > j { i - j } else { j - i };
+                let diff = i.abs_diff(j);
                 if diff > k {
                     continue;
                 }

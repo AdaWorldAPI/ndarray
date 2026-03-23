@@ -234,7 +234,7 @@ mod dimension;
 #[allow(missing_docs)]
 pub(crate) mod simd;
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
-#[allow(missing_docs)]
+#[allow(missing_docs, dead_code)]
 pub(crate) mod simd_avx512;
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
 #[allow(missing_docs)]

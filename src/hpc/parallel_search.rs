@@ -51,7 +51,7 @@ impl PaletteScope {
     ) -> Self {
         let palette_indices: Vec<PaletteEdge> = containers
             .iter()
-            .map(|c| read_palette_edge(c))
+            .map(read_palette_edge)
             .collect();
         PaletteScope {
             palette_indices,

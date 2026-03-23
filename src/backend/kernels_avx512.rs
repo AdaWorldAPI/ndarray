@@ -162,7 +162,7 @@ pub fn asum_f32(x: &[f32]) -> f32 {
     let mut i = 0;
     let mut acc = F32x16::splat(0.0);
     while i + 16 <= n {
-        acc = acc + F32x16::from_slice(&x[i..]).abs();
+        acc += F32x16::from_slice(&x[i..]).abs();
         i += 16;
     }
     let mut sum = acc.reduce_sum();
@@ -181,7 +181,7 @@ pub fn asum_f64(x: &[f64]) -> f64 {
     let mut i = 0;
     let mut acc = F64x8::splat(0.0);
     while i + 8 <= n {
-        acc = acc + F64x8::from_slice(&x[i..]).abs();
+        acc += F64x8::from_slice(&x[i..]).abs();
         i += 8;
     }
     let mut sum = acc.reduce_sum();
