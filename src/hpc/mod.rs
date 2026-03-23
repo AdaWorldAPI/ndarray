@@ -130,6 +130,10 @@ pub mod parallel_search;
 #[allow(missing_docs)]
 pub mod zeck;
 
+// Variable-width palette index codec (Minecraft-style bit packing)
+#[allow(missing_docs)]
+pub mod palette_codec;
+
 // Holographic phase-space operations (ported from rustynum-holo)
 #[allow(missing_docs)]
 #[allow(clippy::needless_range_loop)]
