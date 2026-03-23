@@ -126,6 +126,16 @@ pub mod layered_distance;
 #[allow(missing_docs)]
 pub mod parallel_search;
 
+// ZeckF64 progressive edge encoding + batch/top-k
+#[allow(missing_docs)]
+pub mod zeck;
+
+// Holographic phase-space operations (ported from rustynum-holo)
+#[allow(missing_docs)]
+#[allow(clippy::needless_range_loop)]
+#[allow(clippy::too_many_arguments)]
+pub mod holo;
+
 #[cfg(test)]
 mod e2e_tests {
     //! End-to-end pipeline test: Fingerprint → Node → Seal → Cascade → CLAM → Causality → BNN

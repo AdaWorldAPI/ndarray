@@ -230,6 +230,31 @@ pub fn hamming_batch_raw(query: &[u8], database: &[u8], num_rows: usize, row_byt
     dispatch_hamming_batch(query, database, num_rows, row_bytes)
 }
 
+/// Top-k nearest neighbors by Hamming distance on raw slices.
+///
+/// Returns (indices, distances) of the k closest rows in the database.
+/// Uses `select_nth_unstable` for O(n) partial sort instead of O(n log n).
+pub fn hamming_top_k_raw(
+    query: &[u8],
+    database: &[u8],
+    num_rows: usize,
+    row_bytes: usize,
+    k: usize,
+) -> (Vec<usize>, Vec<u64>) {
+    let distances = dispatch_hamming_batch(query, database, num_rows, row_bytes);
+    let k = k.min(num_rows);
+    if k == 0 {
+        return (Vec::new(), Vec::new());
+    }
+    let mut indexed: Vec<(usize, u64)> = distances.into_iter().enumerate().collect();
+    indexed.select_nth_unstable_by_key(k.saturating_sub(1), |&(_, d)| d);
+    indexed.truncate(k);
+    indexed.sort_unstable_by_key(|&(_, d)| d);
+    let indices = indexed.iter().map(|&(i, _)| i).collect();
+    let dists = indexed.iter().map(|&(_, d)| d).collect();
+    (indices, dists)
+}
+
 fn dispatch_hamming(a: &[u8], b: &[u8]) -> u64 {
     #[cfg(target_arch = "x86_64")]
     {
