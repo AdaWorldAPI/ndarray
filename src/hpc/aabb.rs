@@ -79,6 +79,49 @@ impl Aabb {
     }
 }
 
+/// Ray definition for projectile collision testing.
+///
+/// `inv_dir` must be precomputed as `1.0 / direction` for each axis.
+/// If a direction component is zero, the corresponding `inv_dir` should be
+/// `f32::INFINITY` or `f32::NEG_INFINITY`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::hpc::aabb::Ray;
+///
+/// let ray = Ray::new([0.0, 0.0, 0.0], [1.0, 0.0, 0.0]); // +X direction
+/// assert_eq!(ray.inv_dir[0], 1.0);
+/// assert!(ray.inv_dir[1].is_infinite());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(C)]
+pub struct Ray {
+    pub origin: [f32; 3],
+    pub inv_dir: [f32; 3],
+}
+
+impl Ray {
+    /// Create a ray from origin and direction (auto-computes `inv_dir`).
+    #[inline]
+    pub fn new(origin: [f32; 3], direction: [f32; 3]) -> Self {
+        Self {
+            origin,
+            inv_dir: [
+                1.0 / direction[0],
+                1.0 / direction[1],
+                1.0 / direction[2],
+            ],
+        }
+    }
+
+    /// Create a ray from origin and precomputed inverse direction.
+    #[inline]
+    pub fn from_inv_dir(origin: [f32; 3], inv_dir: [f32; 3]) -> Self {
+        Self { origin, inv_dir }
+    }
+}
+
 /// Squared distance from a point to the nearest point on an AABB.
 #[inline]
 fn sq_dist_point_aabb(point: [f32; 3], aabb: &Aabb) -> f32 {
@@ -101,6 +144,12 @@ fn sq_dist_point_aabb(point: [f32; 3], aabb: &Aabb) -> f32 {
 pub fn aabb_intersect_batch(query: &Aabb, candidates: &[Aabb]) -> Vec<bool> {
     #[cfg(target_arch = "x86_64")]
     {
+        if is_x86_feature_detected!("avx512f") && candidates.len() >= 16 {
+            // SAFETY: avx512f detected, enough candidates for batch processing.
+            unsafe {
+                return aabb_intersect_batch_avx512(query, candidates);
+            }
+        }
         if is_x86_feature_detected!("sse4.1") {
             // SAFETY: sse4.1 detected, slice access within bounds.
             unsafe {
@@ -114,6 +163,83 @@ pub fn aabb_intersect_batch(query: &Aabb, candidates: &[Aabb]) -> Vec<bool> {
 
 fn aabb_intersect_batch_scalar(query: &Aabb, candidates: &[Aabb]) -> Vec<bool> {
     candidates.iter().map(|c| query.intersects(c)).collect()
+}
+
+/// AVX-512 batch AABB intersection: tests 16 candidates per axis comparison.
+///
+/// Broadcasts query min/max per axis, gathers candidate coords into __m512,
+/// compares all 16 at once using `_mm512_cmp_ps_mask`, ANDs the 6 comparison
+/// masks.
+///
+/// # Safety
+/// Caller must ensure AVX-512F is available.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+unsafe fn aabb_intersect_batch_avx512(query: &Aabb, candidates: &[Aabb]) -> Vec<bool> {
+    use core::arch::x86_64::*;
+
+    let mut result = Vec::with_capacity(candidates.len());
+
+    // Process 16 candidates at a time
+    let chunks = candidates.len() / 16;
+    for c in 0..chunks {
+        let base = c * 16;
+        // Gather min/max coords for 16 candidates into SoA arrays
+        let mut c_min_x = [0.0f32; 16];
+        let mut c_max_x = [0.0f32; 16];
+        let mut c_min_y = [0.0f32; 16];
+        let mut c_max_y = [0.0f32; 16];
+        let mut c_min_z = [0.0f32; 16];
+        let mut c_max_z = [0.0f32; 16];
+
+        for i in 0..16 {
+            let cand = &candidates[base + i];
+            c_min_x[i] = cand.min[0];
+            c_max_x[i] = cand.max[0];
+            c_min_y[i] = cand.min[1];
+            c_max_y[i] = cand.max[1];
+            c_min_z[i] = cand.min[2];
+            c_max_z[i] = cand.max[2];
+        }
+
+        // SAFETY: arrays are 16-element, avx512f checked by caller.
+        let v_c_min_x = _mm512_loadu_ps(c_min_x.as_ptr());
+        let v_c_max_x = _mm512_loadu_ps(c_max_x.as_ptr());
+        let v_c_min_y = _mm512_loadu_ps(c_min_y.as_ptr());
+        let v_c_max_y = _mm512_loadu_ps(c_max_y.as_ptr());
+        let v_c_min_z = _mm512_loadu_ps(c_min_z.as_ptr());
+        let v_c_max_z = _mm512_loadu_ps(c_max_z.as_ptr());
+
+        // Broadcast query bounds
+        let q_min_x = _mm512_set1_ps(query.min[0]);
+        let q_max_x = _mm512_set1_ps(query.max[0]);
+        let q_min_y = _mm512_set1_ps(query.min[1]);
+        let q_max_y = _mm512_set1_ps(query.max[1]);
+        let q_min_z = _mm512_set1_ps(query.min[2]);
+        let q_max_z = _mm512_set1_ps(query.max[2]);
+
+        // 6 intersection conditions: q.min[i] <= c.max[i] && q.max[i] >= c.min[i]
+        // _CMP_LE_OQ = 18, _CMP_GE_OQ = 29 (ordered, quiet)
+        let m1 = _mm512_cmp_ps_mask::<{ _CMP_LE_OQ }>(q_min_x, v_c_max_x);
+        let m2 = _mm512_cmp_ps_mask::<{ _CMP_GE_OQ }>(q_max_x, v_c_min_x);
+        let m3 = _mm512_cmp_ps_mask::<{ _CMP_LE_OQ }>(q_min_y, v_c_max_y);
+        let m4 = _mm512_cmp_ps_mask::<{ _CMP_GE_OQ }>(q_max_y, v_c_min_y);
+        let m5 = _mm512_cmp_ps_mask::<{ _CMP_LE_OQ }>(q_min_z, v_c_max_z);
+        let m6 = _mm512_cmp_ps_mask::<{ _CMP_GE_OQ }>(q_max_z, v_c_min_z);
+
+        let all = m1 & m2 & m3 & m4 & m5 & m6;
+
+        for i in 0..16 {
+            result.push((all >> i) & 1 != 0);
+        }
+    }
+
+    // Scalar tail
+    for i in (chunks * 16)..candidates.len() {
+        result.push(query.intersects(&candidates[i]));
+    }
+
+    result
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -139,6 +265,59 @@ unsafe fn aabb_intersect_batch_sse41(query: &Aabb, candidates: &[Aabb]) -> Vec<b
         result.push(mask == 0xF);
     }
     result
+}
+
+/// Batch ray-AABB slab test for projectile collision.
+///
+/// Returns `(hit_mask, t_values)` where `hit_mask[i]` is `true` if the ray
+/// intersects `aabbs[i]`, and `t_values[i]` is the entry `t` parameter
+/// (or `f32::MAX` if no hit).
+///
+/// Uses the slab method: `t_enter = max(t_x_enter, t_y_enter, t_z_enter)`,
+/// `t_exit = min(t_x_exit, t_y_exit, t_z_exit)`. Intersection when
+/// `t_enter <= t_exit && t_exit >= 0`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::hpc::aabb::{Aabb, Ray, ray_aabb_slab_test_batch};
+///
+/// let ray = Ray::new([0.0, 0.5, 0.5], [1.0, 0.0, 0.0]);
+/// let aabbs = vec![
+///     Aabb::new([2.0, 0.0, 0.0], [3.0, 1.0, 1.0]),  // hit at t=2
+///     Aabb::new([0.0, 5.0, 0.0], [1.0, 6.0, 1.0]),  // miss
+/// ];
+/// let (hits, ts) = ray_aabb_slab_test_batch(&ray, &aabbs);
+/// assert!(hits[0]);
+/// assert!(!hits[1]);
+/// ```
+pub fn ray_aabb_slab_test_batch(ray: &Ray, aabbs: &[Aabb]) -> (Vec<bool>, Vec<f32>) {
+    ray_aabb_slab_test_scalar(ray, aabbs)
+}
+
+fn ray_aabb_slab_test_scalar(ray: &Ray, aabbs: &[Aabb]) -> (Vec<bool>, Vec<f32>) {
+    let mut hits = Vec::with_capacity(aabbs.len());
+    let mut t_values = Vec::with_capacity(aabbs.len());
+
+    for aabb in aabbs {
+        let mut t_enter = f32::NEG_INFINITY;
+        let mut t_exit = f32::INFINITY;
+
+        for axis in 0..3 {
+            let t1 = (aabb.min[axis] - ray.origin[axis]) * ray.inv_dir[axis];
+            let t2 = (aabb.max[axis] - ray.origin[axis]) * ray.inv_dir[axis];
+            let t_near = t1.min(t2);
+            let t_far = t1.max(t2);
+            t_enter = t_enter.max(t_near);
+            t_exit = t_exit.min(t_far);
+        }
+
+        let hit = t_enter <= t_exit && t_exit >= 0.0;
+        hits.push(hit);
+        t_values.push(if hit { t_enter.max(0.0) } else { f32::MAX });
+    }
+
+    (hits, t_values)
 }
 
 /// Expand all AABBs in-place by `(dx, dy, dz)` in both directions per axis.
@@ -457,5 +636,90 @@ mod tests {
         let b = Aabb::new([0.0, 0.0, 0.0], [2.0, 2.0, 2.0]);
         assert!(a.intersects(&b));
         assert!(b.intersects(&a));
+    }
+
+    // ---------- AVX-512 batch intersect parity ----------
+
+    #[test]
+    fn test_intersect_batch_avx512_parity() {
+        let query = Aabb::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        // Generate enough candidates to exercise AVX-512 (>= 16) + tail
+        let candidates: Vec<Aabb> = (0..100)
+            .map(|i| {
+                let f = i as f32 * 0.1;
+                Aabb::new([f - 0.5, f - 0.5, f - 0.5], [f + 0.5, f + 0.5, f + 0.5])
+            })
+            .collect();
+
+        let batch = aabb_intersect_batch(&query, &candidates);
+        let scalar: Vec<bool> = candidates.iter().map(|c| query.intersects(c)).collect();
+        assert_eq!(batch, scalar, "AVX-512 batch intersect must match scalar");
+    }
+
+    // ---------- Ray-AABB slab test ----------
+
+    #[test]
+    fn test_ray_aabb_hit_along_x() {
+        let ray = Ray::new([0.0, 0.5, 0.5], [1.0, 0.0, 0.0]);
+        let aabbs = vec![Aabb::new([2.0, 0.0, 0.0], [3.0, 1.0, 1.0])];
+        let (hits, ts) = ray_aabb_slab_test_batch(&ray, &aabbs);
+        assert!(hits[0]);
+        assert!(approx_eq(ts[0], 2.0));
+    }
+
+    #[test]
+    fn test_ray_aabb_miss() {
+        let ray = Ray::new([0.0, 0.0, 0.0], [1.0, 0.0, 0.0]);
+        let aabbs = vec![Aabb::new([0.0, 5.0, 0.0], [1.0, 6.0, 1.0])];
+        let (hits, _) = ray_aabb_slab_test_batch(&ray, &aabbs);
+        assert!(!hits[0]);
+    }
+
+    #[test]
+    fn test_ray_aabb_origin_inside() {
+        let ray = Ray::new([0.5, 0.5, 0.5], [1.0, 0.0, 0.0]);
+        let aabbs = vec![Aabb::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0])];
+        let (hits, ts) = ray_aabb_slab_test_batch(&ray, &aabbs);
+        assert!(hits[0]);
+        assert!(approx_eq(ts[0], 0.0)); // origin inside → t=0
+    }
+
+    #[test]
+    fn test_ray_aabb_behind_ray() {
+        let ray = Ray::new([5.0, 0.5, 0.5], [1.0, 0.0, 0.0]); // +X from x=5
+        let aabbs = vec![Aabb::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0])]; // behind
+        let (hits, _) = ray_aabb_slab_test_batch(&ray, &aabbs);
+        assert!(!hits[0]);
+    }
+
+    #[test]
+    fn test_ray_aabb_diagonal() {
+        let ray = Ray::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        let aabbs = vec![Aabb::new([2.0, 2.0, 2.0], [3.0, 3.0, 3.0])];
+        let (hits, ts) = ray_aabb_slab_test_batch(&ray, &aabbs);
+        assert!(hits[0]);
+        assert!(approx_eq(ts[0], 2.0));
+    }
+
+    #[test]
+    fn test_ray_aabb_batch_mixed() {
+        let ray = Ray::new([0.0, 0.5, 0.5], [1.0, 0.0, 0.0]);
+        let aabbs = vec![
+            Aabb::new([1.0, 0.0, 0.0], [2.0, 1.0, 1.0]),   // hit at t=1
+            Aabb::new([0.0, 5.0, 0.0], [1.0, 6.0, 1.0]),   // miss
+            Aabb::new([5.0, 0.0, 0.0], [6.0, 1.0, 1.0]),   // hit at t=5
+            Aabb::new([-3.0, 0.0, 0.0], [-2.0, 1.0, 1.0]), // behind → miss
+        ];
+        let (hits, ts) = ray_aabb_slab_test_batch(&ray, &aabbs);
+        assert_eq!(hits, vec![true, false, true, false]);
+        assert!(approx_eq(ts[0], 1.0));
+        assert!(approx_eq(ts[2], 5.0));
+    }
+
+    #[test]
+    fn test_ray_new() {
+        let ray = Ray::new([0.0, 0.0, 0.0], [2.0, 0.0, 0.0]);
+        assert!(approx_eq(ray.inv_dir[0], 0.5));
+        assert!(ray.inv_dir[1].is_infinite());
     }
 }
