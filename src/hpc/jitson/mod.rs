@@ -50,5 +50,5 @@ pub use scan_config::{
     scan_hamming, jit_symbol_table,
 };
 
-// Re-exports: noise parameters
-pub use noise::{NoiseParams, GRAD3, simple_noise_3d};
+// Re-exports: noise parameters + terrain templates
+pub use noise::{NoiseParams, GRAD3, simple_noise_3d, CompiledNoiseConfig, TerrainFillParams};

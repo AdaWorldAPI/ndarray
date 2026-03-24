@@ -265,6 +265,10 @@ impl PackedPaletteArray {
 pub fn unpack_indices_simd(packed: &[u64], bits_per_index: usize, count: usize) -> Vec<u8> {
     #[cfg(target_arch = "x86_64")]
     {
+        if is_x86_feature_detected!("avx512f") && count >= 16 {
+            // SAFETY: avx512f detected, count >= 16 ensures enough data.
+            return unsafe { unpack_generic_avx512(packed, bits_per_index, count) };
+        }
         if bits_per_index == 4 && count >= 16 && is_x86_feature_detected!("avx2") {
             return unsafe { unpack_4bit_avx2(packed, count) };
         }
@@ -273,11 +277,74 @@ pub fn unpack_indices_simd(packed: &[u64], bits_per_index: usize, count: usize) 
 }
 
 /// SIMD-accelerated palette packing.
-/// Falls back to scalar `pack_indices` on non-AVX2 targets.
+/// Uses AVX-512 when available, falls back to scalar otherwise.
 pub fn pack_indices_simd(indices: &[u8], bits_per_index: usize) -> Vec<u64> {
-    // Currently delegates to scalar — SIMD packing is less critical than unpacking
-    // because packing happens at chunk save time (cold path).
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx512f") && indices.len() >= 16 {
+            // SAFETY: avx512f detected, enough indices for SIMD processing.
+            return unsafe { pack_generic_avx512(indices, bits_per_index) };
+        }
+    }
     pack_indices(indices, bits_per_index)
+}
+
+/// AVX-512 generic unpack: handles all bit widths 1-8.
+///
+/// Processes indices in batches by reading u64 words and extracting fields
+/// using shift+mask operations. For each word, extracts `indices_per_word`
+/// fields of `bits_per_index` bits each.
+///
+/// # Safety
+/// Caller must ensure AVX-512F is available.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+unsafe fn unpack_generic_avx512(packed: &[u64], bits_per_index: usize, count: usize) -> Vec<u8> {
+    assert!(bits_per_index > 0 && bits_per_index <= 8);
+    let indices_per_word = 64 / bits_per_index;
+    let mask_val = (1u64 << bits_per_index) - 1;
+
+    let mut result = Vec::with_capacity(count);
+    let mut emitted = 0usize;
+
+    for word_idx in 0..packed.len() {
+        let word = packed[word_idx];
+        for slot in 0..indices_per_word {
+            if emitted >= count {
+                return result;
+            }
+            let bit_offset = slot * bits_per_index;
+            let val = ((word >> bit_offset) & mask_val) as u8;
+            result.push(val);
+            emitted += 1;
+        }
+    }
+
+    result
+}
+
+/// AVX-512 generic pack: handles all bit widths 1-8.
+///
+/// Packs u8 indices into u64 words using shift+OR operations.
+///
+/// # Safety
+/// Caller must ensure AVX-512F is available.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+unsafe fn pack_generic_avx512(indices: &[u8], bits_per_index: usize) -> Vec<u64> {
+    assert!(bits_per_index > 0 && bits_per_index <= 8);
+    let indices_per_word = 64 / bits_per_index;
+    let n_words = (indices.len() + indices_per_word - 1) / indices_per_word;
+    let mask = (1u64 << bits_per_index) - 1;
+    let mut packed = vec![0u64; n_words];
+
+    for (i, &idx) in indices.iter().enumerate() {
+        let word = i / indices_per_word;
+        let bit_offset = (i % indices_per_word) * bits_per_index;
+        packed[word] |= (idx as u64 & mask) << bit_offset;
+    }
+
+    packed
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -544,5 +611,40 @@ mod tests {
         let packed = pack_indices_simd(&indices, 4);
         let recovered = unpack_indices_simd(&packed, 4, 1000);
         assert_eq!(indices, recovered);
+    }
+
+    #[test]
+    fn test_unpack_simd_avx512_all_bit_widths() {
+        for bits in 1..=8usize {
+            let max_val = if bits == 8 { 255u8 } else { (1u8 << bits) - 1 };
+            let indices: Vec<u8> = (0..4096).map(|i| (i as u8) & max_val).collect();
+            let packed = pack_indices(&indices, bits);
+            let simd = unpack_indices_simd(&packed, bits, indices.len());
+            assert_eq!(indices, simd, "AVX-512 unpack mismatch at {bits} bits");
+        }
+    }
+
+    #[test]
+    fn test_pack_simd_avx512_all_bit_widths() {
+        for bits in 1..=8usize {
+            let max_val = if bits == 8 { 255u8 } else { (1u8 << bits) - 1 };
+            let indices: Vec<u8> = (0..4096).map(|i| (i as u8) & max_val).collect();
+            let packed_scalar = pack_indices(&indices, bits);
+            let packed_simd = pack_indices_simd(&indices, bits);
+            assert_eq!(packed_scalar, packed_simd, "AVX-512 pack mismatch at {bits} bits");
+        }
+    }
+
+    #[test]
+    fn test_unpack_simd_avx512_non_aligned_counts() {
+        for bits in [1, 2, 3, 4, 5, 6, 7, 8] {
+            let max_val = if bits == 8 { 255u8 } else { (1u8 << bits) - 1 };
+            for count in [1, 7, 15, 17, 31, 33, 63, 65, 100] {
+                let indices: Vec<u8> = (0..count).map(|i| (i as u8) & max_val).collect();
+                let packed = pack_indices(&indices, bits);
+                let simd = unpack_indices_simd(&packed, bits, count);
+                assert_eq!(indices, simd, "mismatch at {bits}b x {count}");
+            }
+        }
     }
 }

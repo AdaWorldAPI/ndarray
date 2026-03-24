@@ -215,6 +215,60 @@ impl SpatialHash {
         candidates
     }
 
+    /// SIMD-accelerated radius query. Functionally identical to `query_radius`
+    /// but batches distance computations for entities within each cell.
+    ///
+    /// Collects candidate positions from relevant cells, then uses SIMD to
+    /// compute squared distances and filter in bulk.
+    pub fn query_radius_simd(
+        &self,
+        x: f32,
+        y: f32,
+        z: f32,
+        radius: f32,
+        positions: &HashMap<u32, [f32; 3]>,
+    ) -> Vec<(u32, f32)> {
+        let radius_sq = radius * radius;
+        let query = [x, y, z];
+
+        let min_cx = ((x - radius) * self.inv_cell_size).floor() as i32;
+        let max_cx = ((x + radius) * self.inv_cell_size).floor() as i32;
+        let min_cy = ((y - radius) * self.inv_cell_size).floor() as i32;
+        let max_cy = ((y + radius) * self.inv_cell_size).floor() as i32;
+        let min_cz = ((z - radius) * self.inv_cell_size).floor() as i32;
+        let max_cz = ((z + radius) * self.inv_cell_size).floor() as i32;
+
+        // Collect all candidate (id, position) pairs from relevant cells
+        let mut candidate_ids = Vec::new();
+        let mut candidate_pos = Vec::new();
+
+        for cx in min_cx..=max_cx {
+            for cy in min_cy..=max_cy {
+                for cz in min_cz..=max_cz {
+                    if let Some(cell) = self.grid.get(&(cx, cy, cz)) {
+                        for &eid in cell {
+                            if let Some(&pos) = positions.get(&eid) {
+                                candidate_ids.push(eid);
+                                candidate_pos.push(pos);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Batch distance computation + filtering
+        let filtered = batch_sq_dist_filter(query, &candidate_pos, radius_sq);
+
+        let mut results: Vec<(u32, f32)> = filtered
+            .iter()
+            .map(|&(idx, d2)| (candidate_ids[idx], d2))
+            .collect();
+
+        results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(core::cmp::Ordering::Equal));
+        results
+    }
+
     /// Compute the cell key for a world-space coordinate.
     fn cell_key(&self, x: f32, y: f32, z: f32) -> (i32, i32, i32) {
         (
@@ -223,6 +277,120 @@ impl SpatialHash {
             (z * self.inv_cell_size).floor() as i32,
         )
     }
+}
+
+// ---------------------------------------------------------------------------
+// SIMD batch distance computation
+// ---------------------------------------------------------------------------
+
+/// Batch squared-distance filter: compute squared distances from `query` to
+/// each position in `candidates`, returning `(index, sq_dist)` for entries
+/// within `radius_sq`.
+fn batch_sq_dist_filter(
+    query: [f32; 3],
+    candidates: &[[f32; 3]],
+    radius_sq: f32,
+) -> Vec<(usize, f32)> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if candidates.len() >= 8 && is_x86_feature_detected!("avx2") {
+            // SAFETY: avx2 detected, enough candidates for SIMD.
+            return unsafe { batch_sq_dist_avx2(query, candidates, radius_sq) };
+        }
+    }
+    batch_sq_dist_scalar(query, candidates, radius_sq)
+}
+
+fn batch_sq_dist_scalar(
+    query: [f32; 3],
+    candidates: &[[f32; 3]],
+    radius_sq: f32,
+) -> Vec<(usize, f32)> {
+    let mut result = Vec::new();
+    for (i, pos) in candidates.iter().enumerate() {
+        let d2 = sq_dist_f32(query, *pos);
+        if d2 <= radius_sq {
+            result.push((i, d2));
+        }
+    }
+    result
+}
+
+/// AVX2 batch squared-distance filter: processes 8 candidates at a time.
+///
+/// # Safety
+/// Caller must ensure AVX2 is available.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn batch_sq_dist_avx2(
+    query: [f32; 3],
+    candidates: &[[f32; 3]],
+    radius_sq: f32,
+) -> Vec<(usize, f32)> {
+    use core::arch::x86_64::*;
+
+    let mut result = Vec::new();
+    let qx = _mm256_set1_ps(query[0]);
+    let qy = _mm256_set1_ps(query[1]);
+    let qz = _mm256_set1_ps(query[2]);
+    let radius_sq_v = _mm256_set1_ps(radius_sq);
+
+    let chunks = candidates.len() / 8;
+    for c in 0..chunks {
+        let base = c * 8;
+
+        // Gather x, y, z coords for 8 candidates into SoA
+        let mut cx = [0.0f32; 8];
+        let mut cy = [0.0f32; 8];
+        let mut cz = [0.0f32; 8];
+        for i in 0..8 {
+            cx[i] = candidates[base + i][0];
+            cy[i] = candidates[base + i][1];
+            cz[i] = candidates[base + i][2];
+        }
+
+        // SAFETY: arrays are 8-element aligned, avx2 checked by caller.
+        let vx = _mm256_loadu_ps(cx.as_ptr());
+        let vy = _mm256_loadu_ps(cy.as_ptr());
+        let vz = _mm256_loadu_ps(cz.as_ptr());
+
+        // Compute squared distances
+        let dx = _mm256_sub_ps(vx, qx);
+        let dy = _mm256_sub_ps(vy, qy);
+        let dz = _mm256_sub_ps(vz, qz);
+
+        let d2 = _mm256_add_ps(
+            _mm256_add_ps(_mm256_mul_ps(dx, dx), _mm256_mul_ps(dy, dy)),
+            _mm256_mul_ps(dz, dz),
+        );
+
+        // Compare: d2 <= radius_sq
+        let cmp = _mm256_cmp_ps(d2, radius_sq_v, _CMP_LE_OQ);
+        let mask = _mm256_movemask_ps(cmp) as u32;
+
+        if mask != 0 {
+            // Extract individual distances for matching lanes
+            let mut d2_arr = [0.0f32; 8];
+            _mm256_storeu_ps(d2_arr.as_mut_ptr(), d2);
+
+            let mut m = mask;
+            while m != 0 {
+                let bit = m.trailing_zeros() as usize;
+                result.push((base + bit, d2_arr[bit]));
+                m &= m - 1;
+            }
+        }
+    }
+
+    // Scalar tail
+    for i in (chunks * 8)..candidates.len() {
+        let d2 = sq_dist_f32(query, candidates[i]);
+        if d2 <= radius_sq {
+            result.push((i, d2));
+        }
+    }
+
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -444,5 +612,66 @@ mod tests {
     #[should_panic]
     fn test_invalid_cell_size() {
         SpatialHash::new(0.0);
+    }
+
+    // ---------- SIMD radius query ----------
+
+    #[test]
+    fn test_query_radius_simd_basic() {
+        let mut sh = SpatialHash::new(10.0);
+        let pts = vec![
+            (0u32, [0.0f32, 0.0, 0.0]),
+            (1, [5.0, 0.0, 0.0]),
+            (2, [20.0, 0.0, 0.0]),
+            (3, [100.0, 0.0, 0.0]),
+        ];
+        for &(id, pos) in &pts {
+            sh.insert(id, pos[0], pos[1], pos[2]);
+        }
+        let positions = make_positions(&pts);
+        let result = sh.query_radius_simd(0.0, 0.0, 0.0, 10.0, &positions);
+        let ids: Vec<u32> = result.iter().map(|&(id, _)| id).collect();
+        assert!(ids.contains(&0));
+        assert!(ids.contains(&1));
+        assert!(!ids.contains(&2));
+        assert!(!ids.contains(&3));
+    }
+
+    #[test]
+    fn test_query_radius_simd_matches_scalar() {
+        let mut sh = SpatialHash::new(5.0);
+        let pts: Vec<(u32, [f32; 3])> = (0..100)
+            .map(|i| {
+                let v = i as f32 * 1.5;
+                (i as u32, [v, v * 0.3, v * 0.7])
+            })
+            .collect();
+        for &(id, pos) in &pts {
+            sh.insert(id, pos[0], pos[1], pos[2]);
+        }
+        let positions = make_positions(&pts);
+
+        let scalar = sh.query_radius(10.0, 3.0, 7.0, 25.0, &positions);
+        let simd = sh.query_radius_simd(10.0, 3.0, 7.0, 25.0, &positions);
+
+        // Both should return the same set of (id, dist) pairs
+        assert_eq!(scalar.len(), simd.len(), "result count mismatch");
+        for (s, r) in scalar.iter().zip(simd.iter()) {
+            assert_eq!(s.0, r.0, "id mismatch");
+            assert!(
+                (s.1 - r.1).abs() < 1e-3,
+                "distance mismatch: scalar={:.4} simd={:.4}",
+                s.1,
+                r.1
+            );
+        }
+    }
+
+    #[test]
+    fn test_query_radius_simd_empty() {
+        let sh = SpatialHash::new(10.0);
+        let positions: HashMap<u32, [f32; 3]> = HashMap::new();
+        let result = sh.query_radius_simd(0.0, 0.0, 0.0, 100.0, &positions);
+        assert!(result.is_empty());
     }
 }

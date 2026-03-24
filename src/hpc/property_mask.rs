@@ -96,6 +96,13 @@ impl PropertyMask {
 
         #[cfg(target_arch = "x86_64")]
         {
+            if is_x86_feature_detected!("avx512f") {
+                // SAFETY: avx512f detected, pointers are within slice bounds.
+                unsafe {
+                    self.test_section_avx512(states, &mut result);
+                    return result;
+                }
+            }
             if is_x86_feature_detected!("avx2") {
                 // SAFETY: we checked avx2 at runtime, pointers are within slice bounds.
                 unsafe {
@@ -111,6 +118,13 @@ impl PropertyMask {
 
     /// Count the number of matching block states in the slice.
     pub fn count_section(&self, states: &[u64]) -> u32 {
+        #[cfg(target_arch = "x86_64")]
+        {
+            if is_x86_feature_detected!("avx512vpopcntdq") && is_x86_feature_detected!("avx512f") {
+                // SAFETY: feature detected above.
+                return unsafe { self.count_section_avx512(states) };
+            }
+        }
         let bits = self.test_section(states);
         let full_words = states.len() / 64;
         let remainder = states.len() % 64;
@@ -134,6 +148,93 @@ impl PropertyMask {
                 result[i / 64] |= 1u64 << (i % 64);
             }
         }
+    }
+
+    // ---------- AVX-512 path ----------
+
+    /// Test block states using AVX-512F, processing 8 u64s at a time.
+    ///
+    /// Uses 512-bit registers with `_mm512_cmpeq_epi64_mask` returning a
+    /// `__mmask8` directly, avoiding the movemask+lane-extract dance of AVX2.
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx512f")]
+    unsafe fn test_section_avx512(&self, states: &[u64], result: &mut [u64]) {
+        use core::arch::x86_64::*;
+
+        let and_mask_v = _mm512_set1_epi64(self.and_mask as i64);
+        let and_expect_v = _mm512_set1_epi64(self.and_expect as i64);
+        let andn_mask_v = _mm512_set1_epi64(self.andn_mask as i64);
+        let zero = _mm512_setzero_si512();
+
+        let chunks = states.len() / 8;
+        for c in 0..chunks {
+            let base = c * 8;
+            // SAFETY: base + 8 <= states.len(), avx512f checked by caller.
+            let vals = _mm512_loadu_si512(states.as_ptr().add(base) as *const __m512i);
+
+            // (vals & and_mask) == and_expect
+            let anded = _mm512_and_si512(vals, and_mask_v);
+            let eq_and = _mm512_cmpeq_epi64_mask(anded, and_expect_v);
+
+            // (vals & andn_mask) == 0
+            let andned = _mm512_and_si512(vals, andn_mask_v);
+            let eq_andn = _mm512_cmpeq_epi64_mask(andned, zero);
+
+            // Both conditions: AND the two kmasks
+            let both = eq_and & eq_andn;
+
+            // Set bits in the result bitmap
+            for lane in 0..8usize {
+                if (both >> lane) & 1 != 0 {
+                    let idx = base + lane;
+                    result[idx / 64] |= 1u64 << (idx % 64);
+                }
+            }
+        }
+
+        // Scalar tail
+        for i in (chunks * 8)..states.len() {
+            if self.test(states[i]) {
+                result[i / 64] |= 1u64 << (i % 64);
+            }
+        }
+    }
+
+    /// Count matching states using AVX-512 VPOPCNTDQ for direct in-register popcount.
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx512f", enable = "avx512vpopcntdq")]
+    unsafe fn count_section_avx512(&self, states: &[u64]) -> u32 {
+        use core::arch::x86_64::*;
+
+        let and_mask_v = _mm512_set1_epi64(self.and_mask as i64);
+        let and_expect_v = _mm512_set1_epi64(self.and_expect as i64);
+        let andn_mask_v = _mm512_set1_epi64(self.andn_mask as i64);
+        let zero = _mm512_setzero_si512();
+        let mut total = 0u32;
+
+        let chunks = states.len() / 8;
+        for c in 0..chunks {
+            let base = c * 8;
+            // SAFETY: base + 8 <= states.len(), features checked by caller.
+            let vals = _mm512_loadu_si512(states.as_ptr().add(base) as *const __m512i);
+
+            let anded = _mm512_and_si512(vals, and_mask_v);
+            let eq_and = _mm512_cmpeq_epi64_mask(anded, and_expect_v);
+
+            let andned = _mm512_and_si512(vals, andn_mask_v);
+            let eq_andn = _mm512_cmpeq_epi64_mask(andned, zero);
+
+            let both = eq_and & eq_andn;
+            total += (both as u32).count_ones();
+        }
+
+        // Scalar tail
+        for i in (chunks * 8)..states.len() {
+            if self.test(states[i]) {
+                total += 1;
+            }
+        }
+        total
     }
 
     // ---------- AVX2 path ----------
@@ -333,5 +434,30 @@ mod tests {
     #[test]
     fn test_default_is_new() {
         assert_eq!(PropertyMask::default(), PropertyMask::new());
+    }
+
+    #[test]
+    fn test_batch_section_avx512_parity() {
+        // Test with enough states to exercise the 8-wide AVX-512 path + tail.
+        let m = PropertyMask::new()
+            .require_bit(3)
+            .forbid_bit(7)
+            .require_value(16, 4, 0xB);
+
+        let states: Vec<u64> = (0..1024u64).map(|i| i.wrapping_mul(0xABCDEF01)).collect();
+        let batch = m.test_section(&states);
+        for (i, &s) in states.iter().enumerate() {
+            let from_batch = (batch[i / 64] >> (i % 64)) & 1 == 1;
+            assert_eq!(from_batch, m.test(s), "avx512 parity mismatch at index {}", i);
+        }
+    }
+
+    #[test]
+    fn test_count_section_avx512_parity() {
+        let m = PropertyMask::new().require_bit(2).forbid_bit(5);
+        let states: Vec<u64> = (0..500u64).map(|i| i.wrapping_mul(0x12345)).collect();
+        let count = m.count_section(&states);
+        let expected = states.iter().filter(|&&s| m.test(s)).count() as u32;
+        assert_eq!(count, expected);
     }
 }
