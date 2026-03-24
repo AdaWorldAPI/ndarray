@@ -139,6 +139,11 @@ pub mod palette_codec;
 #[allow(clippy::too_many_arguments)]
 pub mod holo;
 
+// JIT compilation: config values → native code via Cranelift
+// IR types and CPU detection always available; engine/scan gated behind `jit` feature.
+#[allow(missing_docs)]
+pub mod jitson;
+
 #[cfg(test)]
 mod e2e_tests {
     //! End-to-end pipeline test: Fingerprint → Node → Seal → Cascade → CLAM → Causality → BNN
