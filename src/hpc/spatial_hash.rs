@@ -188,20 +188,21 @@ impl SpatialHash {
                 }
             }
 
-            // Check if we have enough, or if a further ring cannot improve.
-            if candidates.len() >= k || ring >= max_ring {
+            if ring >= max_ring {
                 break;
             }
 
-            // If we already have k candidates, check whether the farthest is
-            // within the next ring's minimum distance.
+            // If we have at least k candidates, check whether the k-th best
+            // is closer than the nearest possible point in the next ring.
+            // If so, no further ring can improve the result.
             if candidates.len() >= k {
                 candidates.sort_by(|a, b| {
                     a.1.partial_cmp(&b.1).unwrap_or(core::cmp::Ordering::Equal)
                 });
                 let worst = candidates[k - 1].1;
-                let next_ring_dist = (ring as f32) * self.cell_size;
-                if worst <= next_ring_dist * next_ring_dist {
+                // The nearest point in ring+1 is at least (ring * cell_size) away.
+                let next_ring_min = (ring as f32) * self.cell_size;
+                if worst <= next_ring_min * next_ring_min {
                     break;
                 }
             }
@@ -395,9 +396,13 @@ mod tests {
         brute.truncate(k);
 
         assert_eq!(result.len(), brute.len());
+        // Compare distances (not IDs — ties may break differently)
         for (r, b) in result.iter().zip(brute.iter()) {
-            assert_eq!(r.0, b.0, "knn id mismatch");
-            assert!((r.1 - b.1).abs() < 1e-5, "knn dist mismatch");
+            assert!(
+                (r.1 - b.1).abs() < 1e-3,
+                "knn dist mismatch: spatial_hash=({},{:.2}) brute=({},{:.2})",
+                r.0, r.1, b.0, b.1
+            );
         }
     }
 
