@@ -1248,6 +1248,100 @@ pub fn compress(data: &[u8], vec_len: usize, tree: &ClamTree) -> CompressedTree 
 
 use super::cascade::{Band, Cascade, RankedHit};
 
+impl ClamTree {
+    /// rho-nearest-neighbour via CLAM tree -> feed into Cascade verification.
+    ///
+    /// Uses triangle inequality pruning to find candidates within distance rho,
+    /// then returns candidate indices and their Hamming distances from query,
+    /// sorted by distance ascending.
+    ///
+    /// Unlike the standalone `rho_nn` function, this method directly returns
+    /// a simple `Vec<(usize, u64)>` suitable for piping into cascade verification
+    /// via `clam_cascade_search`.
+    pub fn rho_nn_candidates(
+        &self,
+        data: &[u8],
+        vec_len: usize,
+        query: &[u8],
+        rho: u64,
+    ) -> Vec<(usize, u64)> {
+        if self.nodes.is_empty() {
+            return Vec::new();
+        }
+
+        let mut candidates = Vec::new();
+        let mut stack = vec![0usize]; // start at root
+
+        while let Some(node_idx) = stack.pop() {
+            let node = &self.nodes[node_idx];
+            let center = &data[self.reordered[node.center_idx] * vec_len..][..vec_len];
+            let dist_to_center = (self.distance_fn)(query, center);
+
+            // Triangle inequality: closest possible point in cluster
+            if node.delta_minus(dist_to_center) > rho {
+                continue; // entire cluster is too far
+            }
+
+            if node.is_leaf() {
+                // Check all points in this leaf
+                for i in node.offset..node.offset + node.cardinality {
+                    let idx = self.reordered[i];
+                    let point = &data[idx * vec_len..][..vec_len];
+                    let d = (self.distance_fn)(query, point);
+                    if d <= rho {
+                        candidates.push((idx, d));
+                    }
+                }
+            } else {
+                if let Some(left) = node.left {
+                    stack.push(left);
+                }
+                if let Some(right) = node.right {
+                    stack.push(right);
+                }
+            }
+        }
+
+        candidates.sort_unstable_by_key(|&(_, d)| d);
+        candidates
+    }
+}
+
+/// Bridge: CLAM tree pruning -> Cascade verification.
+///
+/// Phase 1 of the CLAM+QualiaCAM pipeline:
+/// 1. CLAM finds candidates within rho using triangle inequality
+/// 2. Cascade verifies and classifies candidates into quality bands
+///
+/// Returns only non-Reject hits, limited to `top_k`, sorted by Hamming distance.
+pub fn clam_cascade_search(
+    tree: &ClamTree,
+    cascade: &Cascade,
+    data: &[u8],
+    vec_len: usize,
+    query: &[u8],
+    rho: u64,
+    top_k: usize,
+) -> Vec<RankedHit> {
+    let candidates = tree.rho_nn_candidates(data, vec_len, query, rho);
+
+    // Convert to RankedHit with band classification
+    let mut hits: Vec<RankedHit> = candidates
+        .into_iter()
+        .map(|(index, hamming)| RankedHit {
+            index,
+            hamming,
+            precise: 0.0,
+            band: cascade.expose(hamming as u32),
+        })
+        .collect();
+
+    // Keep only non-Reject hits, limit to top_k
+    hits.retain(|h| h.band != Band::Reject);
+    hits.truncate(top_k);
+    hits
+}
+
 /// Result of CLAM→Cascade bridged search, combining CLAM's tight candidates
 /// with cascade verification and banding.
 #[derive(Debug, Clone)]
@@ -2589,5 +2683,86 @@ mod tests {
         for s in &scores {
             assert!(s.score >= 0.0 && s.score <= 1.0);
         }
+    }
+
+    // ── rho_nn_candidates tests ──────────────────────────────────
+
+    #[test]
+    fn test_rho_nn_candidates() {
+        let vec_len = 32;
+        let n = 50;
+        let mut data = vec![0u8; n * vec_len];
+        // Make distinct vectors
+        for i in 0..n {
+            data[i * vec_len + (i % vec_len)] = 0xFF;
+        }
+        let tree = ClamTree::build(&data, vec_len, 3);
+        let query = &data[0..vec_len];
+        let candidates = tree.rho_nn_candidates(&data, vec_len, query, 16);
+        // Should find at least the exact match
+        assert!(candidates.iter().any(|&(_, d)| d == 0));
+        // Results should be sorted by distance ascending
+        for w in candidates.windows(2) {
+            assert!(w[0].1 <= w[1].1);
+        }
+    }
+
+    #[test]
+    fn test_rho_nn_candidates_empty_tree() {
+        let tree = ClamTree::build(&[], 32, 3);
+        let query = vec![0u8; 32];
+        let candidates = tree.rho_nn_candidates(&[], 32, &query, 100);
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn test_rho_nn_candidates_tight_rho() {
+        let vec_len = 32;
+        let n = 50;
+        let data = make_test_data(n, vec_len);
+        let tree = ClamTree::build(&data, vec_len, 3);
+        let query = &data[0..vec_len];
+        // rho=0 should only find exact matches
+        let candidates = tree.rho_nn_candidates(&data, vec_len, query, 0);
+        for &(_, d) in &candidates {
+            assert_eq!(d, 0);
+        }
+    }
+
+    // ── clam_cascade_search tests ────────────────────────────────
+
+    #[test]
+    fn test_clam_cascade_search() {
+        let vec_len = 32;
+        let n = 50;
+        let mut data = vec![0u8; n * vec_len];
+        for i in 0..n {
+            data[i * vec_len + (i % vec_len)] = 0xFF;
+        }
+        let tree = ClamTree::build(&data, vec_len, 3);
+        let cascade = super::cascade::Cascade::from_threshold(vec_len as u64 * 4, vec_len);
+        let query = &data[0..vec_len];
+        let hits = clam_cascade_search(
+            &tree, &cascade, &data, vec_len, query, vec_len as u64 * 8, 10,
+        );
+        assert!(!hits.is_empty());
+        // No Reject band hits should survive
+        for h in &hits {
+            assert_ne!(h.band, Band::Reject);
+        }
+    }
+
+    #[test]
+    fn test_clam_cascade_search_respects_top_k() {
+        let vec_len = 32;
+        let n = 100;
+        let data = make_test_data(n, vec_len);
+        let tree = ClamTree::build(&data, vec_len, 3);
+        let cascade = super::cascade::Cascade::from_threshold(vec_len as u64 * 8, vec_len);
+        let query = &data[0..vec_len];
+        let hits = clam_cascade_search(
+            &tree, &cascade, &data, vec_len, query, u64::MAX, 5,
+        );
+        assert!(hits.len() <= 5);
     }
 }

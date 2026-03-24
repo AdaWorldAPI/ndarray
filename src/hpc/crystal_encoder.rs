@@ -193,6 +193,128 @@ impl CrystalEncoder {
     fn flip_weight(&mut self, index: usize) {
         self.projection[index] = -self.projection[index];
     }
+
+    /// Encode an embedding, absorb it into a node under the given role, and
+    /// return both the fingerprint and the mutated node.
+    ///
+    /// Convenience wrapper that chains `encode_embedding` and `absorb_into_node`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ndarray::hpc::crystal_encoder::{CrystalEncoder, Role};
+    /// use ndarray::hpc::node::Node;
+    ///
+    /// let enc = CrystalEncoder::new(4, 42);
+    /// let mut node = Node::new();
+    /// let fp = enc.encode_and_absorb(&[1.0, -0.5, 0.3, 0.8], &mut node, Role::Subject);
+    /// assert!(node.s.encounters() > 0);
+    /// assert!(!fp.is_zero());
+    /// ```
+    pub fn encode_and_absorb(
+        &self,
+        embedding: &[f32],
+        node: &mut Node,
+        role: Role,
+    ) -> Fingerprint<FP_WORDS> {
+        let fp = self.encode_embedding(embedding);
+        Self::absorb_into_node(&fp, node, role);
+        fp
+    }
+
+    /// Search a database of nodes for the most similar to a query node.
+    ///
+    /// Computes SPO Hamming distance between the query node and each database
+    /// node, returning `(index, distance)` pairs sorted by distance ascending,
+    /// limited to `top_k` results.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ndarray::hpc::crystal_encoder::{CrystalEncoder, Role};
+    /// use ndarray::hpc::node::Node;
+    ///
+    /// let enc = CrystalEncoder::new(4, 42);
+    /// let mut query = Node::new();
+    /// enc.encode_and_absorb(&[1.0, 0.0, 0.0, 0.0], &mut query, Role::Subject);
+    /// enc.encode_and_absorb(&[0.0, 1.0, 0.0, 0.0], &mut query, Role::Predicate);
+    /// enc.encode_and_absorb(&[0.0, 0.0, 1.0, 0.0], &mut query, Role::Object);
+    ///
+    /// let mut db = vec![Node::random(1), Node::random(2), query.clone()];
+    /// let results = CrystalEncoder::search_similar(&mut query, &mut db, 2);
+    /// assert!(!results.is_empty());
+    /// assert_eq!(results[0].1, 0); // exact match should have distance 0
+    /// ```
+    pub fn search_similar(
+        query: &mut Node,
+        database: &mut [Node],
+        top_k: usize,
+    ) -> Vec<(usize, u32)> {
+        let mut results: Vec<(usize, u32)> = database
+            .iter_mut()
+            .enumerate()
+            .map(|(i, db_node)| {
+                let d = spo_hamming(query, db_node);
+                (i, d)
+            })
+            .collect();
+
+        results.sort_unstable_by_key(|&(_, d)| d);
+        results.truncate(top_k);
+        results
+    }
+}
+
+/// Full pipeline: encode three embeddings (S/P/O) into a node, then search
+/// a database for the closest matches.
+///
+/// This wires the complete flow: projection -> node absorption -> search.
+///
+/// # Arguments
+/// * `encoder` — the CrystalEncoder with a loaded projection matrix.
+/// * `subject_emb` — dense float embedding for the Subject plane.
+/// * `predicate_emb` — dense float embedding for the Predicate plane.
+/// * `object_emb` — dense float embedding for the Object plane.
+/// * `database` — mutable slice of database nodes to search against.
+/// * `top_k` — maximum number of results to return.
+///
+/// # Returns
+/// A tuple of `(query_node, results)` where results are `(index, distance)` pairs.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::hpc::crystal_encoder::{CrystalEncoder, pipeline_encode_search};
+/// use ndarray::hpc::node::Node;
+///
+/// let enc = CrystalEncoder::new(4, 42);
+/// let mut db = vec![Node::random(1), Node::random(2)];
+/// let (query, results) = pipeline_encode_search(
+///     &enc,
+///     &[1.0, 0.0, 0.0, 0.0],
+///     &[0.0, 1.0, 0.0, 0.0],
+///     &[0.0, 0.0, 1.0, 0.0],
+///     &mut db,
+///     5,
+/// );
+/// assert!(query.s.encounters() > 0);
+/// assert!(!results.is_empty());
+/// ```
+pub fn pipeline_encode_search(
+    encoder: &CrystalEncoder,
+    subject_emb: &[f32],
+    predicate_emb: &[f32],
+    object_emb: &[f32],
+    database: &mut [Node],
+    top_k: usize,
+) -> (Node, Vec<(usize, u32)>) {
+    let mut query_node = Node::new();
+    encoder.encode_and_absorb(subject_emb, &mut query_node, Role::Subject);
+    encoder.encode_and_absorb(predicate_emb, &mut query_node, Role::Predicate);
+    encoder.encode_and_absorb(object_emb, &mut query_node, Role::Object);
+
+    let results = CrystalEncoder::search_similar(&mut query_node, database, top_k);
+    (query_node, results)
 }
 
 // ============================================================================
@@ -844,6 +966,85 @@ mod tests {
     }
 
     // -- Integration test: full pipeline ------------------------------------
+
+    // -- Pipeline wiring tests -----------------------------------------------
+
+    #[test]
+    fn encode_and_absorb_returns_fingerprint() {
+        let enc = CrystalEncoder::new(4, 42);
+        let mut node = Node::new();
+        let fp = enc.encode_and_absorb(&[1.0, -0.5, 0.3, 0.8], &mut node, Role::Subject);
+        assert!(!fp.is_zero());
+        assert_eq!(node.s.encounters(), 1);
+        assert_eq!(node.p.encounters(), 0);
+    }
+
+    #[test]
+    fn search_similar_finds_exact_match() {
+        let enc = CrystalEncoder::new(4, 42);
+        let emb = [1.0f32, -0.5, 0.3, 0.8];
+
+        let mut query = Node::new();
+        enc.encode_and_absorb(&emb, &mut query, Role::Subject);
+        enc.encode_and_absorb(&emb, &mut query, Role::Predicate);
+        enc.encode_and_absorb(&emb, &mut query, Role::Object);
+
+        // Clone query into database
+        let mut db = vec![Node::random(1), query.clone(), Node::random(2)];
+        let results = CrystalEncoder::search_similar(&mut query, &mut db, 5);
+        assert!(!results.is_empty());
+        // Best match should be the clone at index 1 with distance 0
+        assert_eq!(results[0].0, 1);
+        assert_eq!(results[0].1, 0);
+    }
+
+    #[test]
+    fn search_similar_respects_top_k() {
+        let mut query = Node::random(42);
+        let mut db: Vec<Node> = (0..10).map(|i| Node::random(i + 100)).collect();
+        let results = CrystalEncoder::search_similar(&mut query, &mut db, 3);
+        assert!(results.len() <= 3);
+    }
+
+    #[test]
+    fn pipeline_encode_search_basic() {
+        let enc = CrystalEncoder::new(4, 42);
+        let mut db = vec![Node::random(1), Node::random(2), Node::random(3)];
+        let (query, results) = pipeline_encode_search(
+            &enc,
+            &[1.0, 0.0, 0.0, 0.0],
+            &[0.0, 1.0, 0.0, 0.0],
+            &[0.0, 0.0, 1.0, 0.0],
+            &mut db,
+            5,
+        );
+        assert_eq!(query.s.encounters(), 1);
+        assert_eq!(query.p.encounters(), 1);
+        assert_eq!(query.o.encounters(), 1);
+        assert!(!results.is_empty());
+        // Results should be sorted by distance
+        for w in results.windows(2) {
+            assert!(w[0].1 <= w[1].1);
+        }
+    }
+
+    #[test]
+    fn pipeline_encode_search_empty_db() {
+        let enc = CrystalEncoder::new(4, 42);
+        let mut db: Vec<Node> = vec![];
+        let (query, results) = pipeline_encode_search(
+            &enc,
+            &[1.0, 0.0, 0.0, 0.0],
+            &[0.0, 1.0, 0.0, 0.0],
+            &[0.0, 0.0, 1.0, 0.0],
+            &mut db,
+            5,
+        );
+        assert_eq!(query.s.encounters(), 1);
+        assert!(results.is_empty());
+    }
+
+    // -- Phase 1 full integration test (original) --------------------------
 
     #[test]
     fn full_pipeline_encode_absorb_measure() {
