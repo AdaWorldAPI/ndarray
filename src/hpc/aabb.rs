@@ -419,7 +419,7 @@ mod tests {
     fn test_filter_by_distance() {
         let aabbs = vec![
             Aabb::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]),     // 0: dist=0
-            Aabb::new([3.0, 0.0, 0.0], [4.0, 1.0, 1.0]),     // 1: dist=2, sq=4
+            Aabb::new([2.0, 0.0, 0.0], [3.0, 1.0, 1.0]),     // 1: nearest pt (2,0.5,0.5), dist=1.5, sq=2.25
             Aabb::new([10.0, 10.0, 10.0], [11.0, 11.0, 11.0]),// 2: far
         ];
         let indices = aabb_filter_by_distance([0.5, 0.5, 0.5], &aabbs, 5.0);

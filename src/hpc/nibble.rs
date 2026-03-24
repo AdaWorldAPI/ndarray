@@ -25,63 +25,12 @@ pub fn nibble_unpack(packed: &[u8], count: usize) -> Vec<u8> {
 
     let mut out = Vec::with_capacity(count);
 
-    #[cfg(target_arch = "x86_64")]
-    {
-        if is_x86_feature_detected!("avx2") {
-            // SAFETY: avx2 detected, slice bounds respected.
-            unsafe {
-                nibble_unpack_avx2(packed, count, &mut out);
-                return out;
-            }
-        }
-    }
-
     nibble_unpack_scalar(packed, count, &mut out);
     out
 }
 
 fn nibble_unpack_scalar(packed: &[u8], count: usize, out: &mut Vec<u8>) {
     for i in 0..count {
-        let byte = packed[i / 2];
-        let val = if i & 1 == 0 { byte & 0x0F } else { byte >> 4 };
-        out.push(val);
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-unsafe fn nibble_unpack_avx2(packed: &[u8], count: usize, out: &mut Vec<u8>) {
-    use core::arch::x86_64::*;
-
-    let mask_lo = _mm256_set1_epi8(0x0F);
-    let full_bytes = count / 2;
-    let chunks = full_bytes / 32;
-
-    // Reserve space
-    out.reserve(count);
-    let dst = out.as_mut_ptr();
-
-    for c in 0..chunks {
-        let src = packed.as_ptr().add(c * 32);
-        let data = _mm256_loadu_si256(src as *const __m256i);
-        let lo = _mm256_and_si256(data, mask_lo);
-        let hi = _mm256_srli_epi16(data, 4);
-        let hi = _mm256_and_si256(hi, mask_lo);
-        // Interleave: lo[i], hi[i] for each byte
-        let interleaved_lo = _mm256_unpacklo_epi8(lo, hi);
-        let interleaved_hi = _mm256_unpackhi_epi8(lo, hi);
-        // Store (note: unpacklo/hi work on 128-bit lanes so need permute)
-        let perm_lo = _mm256_permute4x64_epi64(interleaved_lo, 0b11_01_10_00);
-        let perm_hi = _mm256_permute4x64_epi64(interleaved_hi, 0b11_01_10_00);
-        _mm256_storeu_si256(dst.add(c * 64) as *mut __m256i, perm_lo);
-        _mm256_storeu_si256(dst.add(c * 64 + 32) as *mut __m256i, perm_hi);
-    }
-
-    let simd_done = chunks * 64;
-    out.set_len(simd_done);
-
-    // Scalar tail
-    for i in simd_done..count {
         let byte = packed[i / 2];
         let val = if i & 1 == 0 { byte & 0x0F } else { byte >> 4 };
         out.push(val);
@@ -158,26 +107,31 @@ unsafe fn nibble_sub_clamp_avx2(packed: &mut [u8], delta: u8) {
     use core::arch::x86_64::*;
 
     let mask_lo = _mm256_set1_epi8(0x0F);
+    let mask_hi = _mm256_set1_epi8(0xF0u8 as i8);
     let delta_v = _mm256_set1_epi8(delta as i8);
+    // delta shifted into high nibble position for direct subtraction
+    let delta_hi = _mm256_set1_epi8((delta << 4) as i8);
     let chunks = packed.len() / 32;
 
     for c in 0..chunks {
         let ptr = packed.as_mut_ptr().add(c * 32);
         let data = _mm256_loadu_si256(ptr as *const __m256i);
 
+        // Extract low nibbles, subtract with saturation
         let lo = _mm256_and_si256(data, mask_lo);
-        let hi = _mm256_and_si256(_mm256_srli_epi16(data, 4), mask_lo);
-
         let lo_sub = _mm256_subs_epu8(lo, delta_v);
-        let hi_sub = _mm256_subs_epu8(hi, delta_v);
 
-        let result = _mm256_or_si256(lo_sub, _mm256_slli_epi16(hi_sub, 4));
-        // Clear any bits that leaked from the shift into adjacent nibbles.
-        let clean_hi = _mm256_and_si256(result, _mm256_set1_epi8(0xF0u8 as i8));
-        let clean_lo = _mm256_and_si256(result, mask_lo);
-        let clean = _mm256_or_si256(clean_lo, clean_hi);
+        // Extract high nibbles (keep in high position), subtract with saturation
+        let hi = _mm256_and_si256(data, mask_hi);
+        let hi_sub = _mm256_subs_epu8(hi, delta_hi);
 
-        _mm256_storeu_si256(ptr as *mut __m256i, clean);
+        // Combine: low nibbles are already clean (0-15), high nibbles already in position
+        let result = _mm256_or_si256(
+            _mm256_and_si256(lo_sub, mask_lo),
+            _mm256_and_si256(hi_sub, mask_hi),
+        );
+
+        _mm256_storeu_si256(ptr as *mut __m256i, result);
     }
 
     // Scalar tail
