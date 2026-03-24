@@ -139,10 +139,16 @@ pub mod palette_codec;
 #[allow(clippy::too_many_arguments)]
 pub mod holo;
 
-// JIT compilation: config values → native code via Cranelift
-// IR types and CPU detection always available; engine/scan gated behind `jit` feature.
+// jitson: JSON config → scan pipeline (parser, validator, template, precompile, packed)
+// Always available — no Cranelift dependency.
 #[allow(missing_docs)]
 pub mod jitson;
+
+// jitson_cranelift: Cranelift JIT compilation backend (ScanParams, JitEngine, ScanKernel)
+// Only compiled with the "jit-native" feature flag.
+#[cfg(feature = "jit-native")]
+#[allow(missing_docs)]
+pub mod jitson_cranelift;
 
 #[cfg(test)]
 mod e2e_tests {

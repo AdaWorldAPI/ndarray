@@ -14,7 +14,7 @@
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::types;
 use cranelift_codegen::ir::{Function, InstBuilder, MemFlags};
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 
 use super::ir::{JitError, ScanParams};
 
@@ -97,10 +97,13 @@ pub fn build_scan_ir(
     let mut fbc = FunctionBuilderContext::new();
     let mut builder = FunctionBuilder::new(func, &mut fbc);
 
-    // Variables (Cranelift 0.130: declare_var returns the Variable)
-    let v_i = builder.declare_var(types::I64); // loop counter
-    let v_count = builder.declare_var(types::I64); // candidate count
-    let v_dist = builder.declare_var(types::I64); // distance result
+    // Variables
+    let v_i = Variable::from_u32(0); // loop counter
+    let v_count = Variable::from_u32(1); // candidate count
+    let v_dist = Variable::from_u32(2); // distance result
+    builder.declare_var(v_i, types::I64);
+    builder.declare_var(v_count, types::I64);
+    builder.declare_var(v_dist, types::I64);
 
     // Entry block
     let entry = builder.create_block();

@@ -20,7 +20,7 @@ use cranelift_module::{FuncId, Linkage, Module};
 
 use super::detect::CpuCaps;
 use super::ir::{JitError, ScanParams};
-use super::scan::ScanKernel;
+use super::scan_jit::ScanKernel;
 
 /// Builder for creating a JIT engine with registered external functions.
 ///
@@ -221,7 +221,7 @@ impl JitEngine {
         };
 
         // Generate the scan loop IR
-        super::scan::build_scan_ir(&mut ctx.func, &params, dist_func_ref)?;
+        super::scan_jit::build_scan_ir(&mut ctx.func, &params, dist_func_ref)?;
 
         // Compile
         module
