@@ -2740,7 +2740,7 @@ mod tests {
             data[i * vec_len + (i % vec_len)] = 0xFF;
         }
         let tree = ClamTree::build(&data, vec_len, 3);
-        let cascade = super::cascade::Cascade::from_threshold(vec_len as u64 * 4, vec_len);
+        let cascade = Cascade::from_threshold(vec_len as u64 * 4, vec_len);
         let query = &data[0..vec_len];
         let hits = clam_cascade_search(
             &tree, &cascade, &data, vec_len, query, vec_len as u64 * 8, 10,
@@ -2758,7 +2758,7 @@ mod tests {
         let n = 100;
         let data = make_test_data(n, vec_len);
         let tree = ClamTree::build(&data, vec_len, 3);
-        let cascade = super::cascade::Cascade::from_threshold(vec_len as u64 * 8, vec_len);
+        let cascade = Cascade::from_threshold(vec_len as u64 * 8, vec_len);
         let query = &data[0..vec_len];
         let hits = clam_cascade_search(
             &tree, &cascade, &data, vec_len, query, u64::MAX, 5,
