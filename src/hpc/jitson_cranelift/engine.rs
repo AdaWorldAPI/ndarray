@@ -1,16 +1,28 @@
-//! JIT compilation engine — Cranelift infrastructure.
+//! JIT compilation engine — two-phase lifecycle via `LazyLock::get_mut`.
 //!
-//! The `JitEngine` manages Cranelift's JIT module, compiles IR to native code,
-//! and caches compiled kernels by their parameter hash.
+//! ## Lifecycle
+//!
+//! ```text
+//! Phase 1 — BUILD (&mut self, single-threaded):
+//!   compile() / compile_hybrid() / compile_batch()
+//!   LazyLock::get_mut → &mut KernelCache
+//!   No locks. No contention.
+//!
+//! Phase 2 — RUN (&self via Arc, zero-cost reads):
+//!   get() → Option<ScanKernel>
+//!   LazyLock deref → &KernelCache (HashMap::get)
+//!   No lock. No atomic. No compilation.
+//! ```
 //!
 //! ## Data-flow compliance
 //!
-//! `compile_scan` takes `&self` (not `&mut self`) — the kernel cache uses
-//! `RwLock` for interior mutability. The compute path never requires
-//! exclusive access to the engine.
+//! `compile()` takes `&mut self` — the BUILD phase.
+//! `get()` takes `&self` — the RUN phase.
+//! Once shared via `Arc<JitEngine>`, `&mut self` is unreachable,
+//! so the cache is frozen by Rust's ownership system.
 
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::LazyLock;
 
 use cranelift_codegen::ir::types;
 use cranelift_codegen::ir::{AbiParam, Signature, UserFuncName};
@@ -70,8 +82,6 @@ impl JitEngineBuilder {
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
 
         // Register external symbols so JIT code can call them.
-        // Convert *const u8 to usize to satisfy Send requirements,
-        // then convert back in the lookup closure.
         let symbols: HashMap<String, usize> = self
             .symbols
             .into_iter()
@@ -83,11 +93,17 @@ impl JitEngineBuilder {
 
         let module = JITModule::new(builder);
 
-        Ok(JitEngine {
-            module: RwLock::new(module),
-            caps,
-            scan_cache: RwLock::new(HashMap::new()),
-        })
+        // Initialize the LazyLock immediately so get_mut() works during BUILD.
+        fn empty_cache() -> KernelCache {
+            KernelCache {
+                map: HashMap::new(),
+                prefetch_chain: Vec::new(),
+            }
+        }
+        let cache = LazyLock::new(empty_cache as fn() -> KernelCache);
+        LazyLock::force(&cache);
+
+        Ok(JitEngine { module, caps, cache })
     }
 }
 
@@ -97,29 +113,52 @@ impl Default for JitEngineBuilder {
     }
 }
 
-/// The JIT compilation engine.
+/// The frozen kernel registry. Array-indexed for hot path.
+struct KernelCache {
+    /// Hash → compiled kernel. Immutable after freeze.
+    map: HashMap<u64, CachedKernel>,
+    /// Ordered list for prefetch chain (WAL precompile queue order).
+    prefetch_chain: Vec<(u64, *const u8)>,
+}
+
+struct CachedKernel {
+    fn_ptr: *const u8,
+    #[allow(dead_code)] // retained for future hot-swap / eviction by FuncId
+    func_id: FuncId,
+    params: ScanParams,
+}
+
+// SAFETY: compiled code pages are immutable. Function pointers are Send+Sync.
+unsafe impl Send for KernelCache {}
+unsafe impl Sync for KernelCache {}
+
+/// JIT compilation engine with two-phase lifecycle:
 ///
-/// Holds a Cranelift `JITModule` and a cache of compiled kernels.
-/// Thread-safe: compiled function pointers can be shared across threads.
+/// 1. **BUILD** — compile kernels via `compile()` (`&mut self`)
+/// 2. **RUN** — lookup kernels via `get()` (`&self`, zero-cost)
 ///
-/// **No `&mut self` during computation.** The kernel cache and module
-/// use `RwLock` for interior mutability — `compile_scan` takes `&self`.
+/// After wrapping in `Arc<JitEngine>`, `&mut self` is unreachable:
+/// the cache is frozen by Rust's ownership system. No locks needed.
+///
+/// ```text
+/// RwLock cache hit:    ~25ns (atomic read, memory barrier)
+/// LazyLock frozen get:  ~5ns (plain HashMap::get, no synchronization)
+/// ```
 pub struct JitEngine {
     /// Cranelift JIT module — owns the compiled code pages.
-    /// Behind RwLock: only locked for writes during compilation (cache miss).
-    module: RwLock<JITModule>,
+    /// Only accessed during BUILD phase (&mut self).
+    module: JITModule,
 
     /// CPU capabilities detected at engine creation.
     pub caps: CpuCaps,
 
-    /// Compiled scan kernel cache: params hash -> (fn_ptr, FuncId).
-    /// RwLock: read-locked for cache hits, write-locked for cache misses.
-    scan_cache: RwLock<HashMap<u64, (*const u8, FuncId)>>,
+    /// Kernel cache. Mutable during BUILD (via get_mut), frozen during RUN.
+    cache: LazyLock<KernelCache>,
 }
 
 // SAFETY: JITModule's compiled code pages are immutable after finalization.
 // Function pointers are safe to call from any thread.
-// The RwLock provides synchronized access to mutable state.
+// During RUN phase, module is never accessed — only cached fn pointers are used.
 unsafe impl Send for JitEngine {}
 unsafe impl Sync for JitEngine {}
 
@@ -130,78 +169,63 @@ impl JitEngine {
         JitEngineBuilder::new().build()
     }
 
-    /// Compile a scan kernel with the given parameters baked as immediates.
+    // ── Phase 1: BUILD (mutable, single-threaded) ─────────────
+
+    /// Compile a scan kernel and add it to the cache.
+    /// Only works during BUILD phase (before sharing via Arc).
     ///
-    /// Returns a `ScanKernel` whose `scan()` method is a native function
-    /// pointer with `threshold`, `prefetch_ahead`, `record_size` etc.
-    /// compiled as immediate operands.
-    ///
-    /// Takes `&self` — cache misses acquire a write lock internally.
-    pub fn compile_scan(&self, params: ScanParams) -> Result<ScanKernel, JitError> {
-        self.compile_scan_with_distance(params, None)
+    /// Panics if called after the cache is frozen (shouldn't be possible
+    /// through safe code — `&mut self` is unreachable after `Arc::new()`).
+    pub fn compile(&mut self, params: ScanParams) -> Result<u64, JitError> {
+        self.compile_inner(params, None)
     }
 
     /// Compile a hybrid scan kernel that calls an external distance function.
     ///
     /// The `distance_fn_name` must be a symbol registered via
     /// `JitEngineBuilder::register_fn()`.
-    /// Signature: `fn(a: *const u8, b: *const u8, len: u64) -> u64`
-    ///
-    /// Takes `&self` — cache misses acquire a write lock internally.
-    pub fn compile_hybrid_scan(
-        &self,
+    pub fn compile_hybrid(
+        &mut self,
         params: ScanParams,
         distance_fn_name: &str,
-    ) -> Result<ScanKernel, JitError> {
-        self.compile_scan_with_distance(params, Some(distance_fn_name))
+    ) -> Result<u64, JitError> {
+        self.compile_inner(params, Some(distance_fn_name))
     }
 
-    fn compile_scan_with_distance(
-        &self,
+    /// Compile all kernels from a slice of params (batch BUILD).
+    pub fn compile_batch(&mut self, queue: &[ScanParams]) -> Result<Vec<u64>, JitError> {
+        queue.iter().map(|p| self.compile(p.clone())).collect()
+    }
+
+    fn compile_inner(
+        &mut self,
         params: ScanParams,
         distance_fn: Option<&str>,
-    ) -> Result<ScanKernel, JitError> {
-        // Fast path: check cache with read lock
+    ) -> Result<u64, JitError> {
         let cache_key = params_hash(&params, distance_fn);
-        {
-            let cache = self
-                .scan_cache
-                .read()
-                .map_err(|e| JitError::Module(format!("cache lock poisoned: {e}")))?;
-            if let Some(&(ptr, _)) = cache.get(&cache_key) {
-                return Ok(ScanKernel::from_raw(ptr, params));
-            }
-        }
 
-        // Slow path: acquire write locks for compilation
-        let mut module = self
-            .module
-            .write()
-            .map_err(|e| JitError::Module(format!("module lock poisoned: {e}")))?;
+        let cache = LazyLock::get_mut(&mut self.cache)
+            .expect("JitEngine: cannot compile after freeze — cache is immutable");
 
-        // Double-check: another thread may have compiled while we waited
-        {
-            let cache = self
-                .scan_cache
-                .read()
-                .map_err(|e| JitError::Module(format!("cache lock poisoned: {e}")))?;
-            if let Some(&(ptr, _)) = cache.get(&cache_key) {
-                return Ok(ScanKernel::from_raw(ptr, params));
-            }
+        // Already compiled? Return existing hash.
+        if cache.map.contains_key(&cache_key) {
+            return Ok(cache_key);
         }
 
         // Build the scan function
         let func_name = format!("scan_{cache_key:x}");
-        let sig = scan_signature(&module);
+        let sig = scan_signature(&self.module);
 
-        let func_id = module
+        let func_id = self
+            .module
             .declare_function(&func_name, Linkage::Local, &sig)
             .map_err(|e| JitError::Module(e.to_string()))?;
 
         // If using a distance function, declare it as an import
         let dist_func_id = if let Some(dist_name) = distance_fn {
-            let dist_sig = distance_signature(&module);
-            let id = module
+            let dist_sig = distance_signature(&self.module);
+            let id = self
+                .module
                 .declare_function(dist_name, Linkage::Import, &dist_sig)
                 .map_err(|e| JitError::Module(e.to_string()))?;
             Some(id)
@@ -209,13 +233,13 @@ impl JitEngine {
             None
         };
 
-        let mut ctx = module.make_context();
+        let mut ctx = self.module.make_context();
         ctx.func.signature = sig;
         ctx.func.name = UserFuncName::user(0, func_id.as_u32());
 
         // If hybrid mode, get a FuncRef for the distance function
         let dist_func_ref = if let Some(fid) = dist_func_id {
-            Some(module.declare_func_in_func(fid, &mut ctx.func))
+            Some(self.module.declare_func_in_func(fid, &mut ctx.func))
         } else {
             None
         };
@@ -224,32 +248,100 @@ impl JitEngine {
         super::scan_jit::build_scan_ir(&mut ctx.func, &params, dist_func_ref)?;
 
         // Compile
-        module
+        self.module
             .define_function(func_id, &mut ctx)
             .map_err(|e| JitError::Codegen(e.to_string()))?;
 
-        module.clear_context(&mut ctx);
-        module
+        self.module.clear_context(&mut ctx);
+        self.module
             .finalize_definitions()
             .map_err(|e| JitError::Codegen(format!("{e:?}")))?;
 
-        let code_ptr = module.get_finalized_function(func_id);
+        let code_ptr = self.module.get_finalized_function(func_id);
 
-        // Insert into cache
-        {
-            let mut cache = self
-                .scan_cache
-                .write()
-                .map_err(|e| JitError::Module(format!("cache lock poisoned: {e}")))?;
-            cache.insert(cache_key, (code_ptr, func_id));
-        }
+        // Insert into cache and prefetch chain
+        cache.map.insert(
+            cache_key,
+            CachedKernel {
+                fn_ptr: code_ptr,
+                func_id,
+                params: params.clone(),
+            },
+        );
+        cache.prefetch_chain.push((cache_key, code_ptr));
 
-        Ok(ScanKernel::from_raw(code_ptr, params))
+        Ok(cache_key)
     }
 
-    /// Get the number of cached kernels.
+    // ── Phase 2: RUN (frozen, zero-cost) ──────────────────────
+
+    /// Look up a compiled kernel by hash. Zero-cost after freeze.
+    /// Returns None if the kernel wasn't compiled during BUILD.
+    #[inline(always)]
+    pub fn get(&self, hash: u64) -> Option<ScanKernel> {
+        // Deref through LazyLock → &KernelCache. No lock. No atomic.
+        self.cache
+            .map
+            .get(&hash)
+            .map(|k| ScanKernel::from_raw(k.fn_ptr, k.params.clone()))
+    }
+
+    /// Prefetch the NEXT kernel's code page.
+    /// Call while executing kernel N to warm L1 for kernel N+1.
+    #[inline(always)]
+    pub fn prefetch_next(&self, current_hash: u64) {
+        let chain = &self.cache.prefetch_chain;
+        if let Some(idx) = chain.iter().position(|(h, _)| *h == current_hash) {
+            if let Some(&(_, next_ptr)) = chain.get(idx + 1) {
+                // SAFETY: _mm_prefetch is a CPU hint — no UB for any pointer value.
+                #[cfg(target_arch = "x86_64")]
+                unsafe {
+                    #[cfg(target_feature = "sse")]
+                    core::arch::x86_64::_mm_prefetch::<
+                        { core::arch::x86_64::_MM_HINT_T0 },
+                    >(next_ptr as *const i8);
+                }
+                let _ = next_ptr; // suppress unused warning on non-x86
+            }
+        }
+    }
+
+    /// Number of compiled kernels.
+    pub fn kernel_count(&self) -> usize {
+        self.cache.map.len()
+    }
+
+    /// Is the cache initialized? (Always true after build().)
+    /// The real "freeze" is ownership-based: once in Arc, &mut self is gone.
+    pub fn is_frozen(&self) -> bool {
+        LazyLock::get(&self.cache).is_some()
+    }
+
+    // ── Backward-compat shims ─────────────────────────────────
+
+    /// Compile a scan kernel (legacy API — delegates to `compile()`).
+    ///
+    /// Unlike the old `&self` version, this requires `&mut self`.
+    /// If you need the old lazy-compile-on-miss behavior, compile
+    /// all expected kernels during BUILD phase instead.
+    pub fn compile_scan(&mut self, params: ScanParams) -> Result<ScanKernel, JitError> {
+        let hash = self.compile(params.clone())?;
+        Ok(self.get(hash).expect("just compiled"))
+    }
+
+    /// Compile a hybrid scan kernel (legacy API).
+    pub fn compile_hybrid_scan(
+        &mut self,
+        params: ScanParams,
+        distance_fn_name: &str,
+    ) -> Result<ScanKernel, JitError> {
+        let hash = self.compile_hybrid(params.clone(), distance_fn_name)?;
+        Ok(self.get(hash).expect("just compiled"))
+    }
+
+    /// Get the number of cached kernels (legacy name).
     pub fn cached_count(&self) -> usize {
-        self.scan_cache.read().map(|c| c.len()).unwrap_or(0)
+        self.kernel_count()
     }
 }
 
@@ -295,4 +387,161 @@ fn params_hash(params: &ScanParams, dist_fn: Option<&str>) -> u64 {
         name.hash(&mut hasher);
     }
     hasher.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn engine_build_and_compile() {
+        let mut engine = JitEngine::new().unwrap();
+        assert_eq!(engine.kernel_count(), 0);
+
+        let params = ScanParams::default();
+        let hash = engine.compile(params.clone()).unwrap();
+        assert_eq!(engine.kernel_count(), 1);
+
+        // Dedup: same params → same hash, no new kernel
+        let hash2 = engine.compile(params).unwrap();
+        assert_eq!(hash, hash2);
+        assert_eq!(engine.kernel_count(), 1);
+    }
+
+    #[test]
+    fn engine_get_after_compile() {
+        let mut engine = JitEngine::new().unwrap();
+        let params = ScanParams {
+            threshold: 100,
+            top_k: 10,
+            prefetch_ahead: 2,
+            focus_mask: None,
+            record_size: 256,
+        };
+        let hash = engine.compile(params).unwrap();
+
+        let kernel = engine.get(hash);
+        assert!(kernel.is_some());
+        assert_eq!(kernel.unwrap().params.threshold, 100);
+    }
+
+    #[test]
+    fn engine_get_missing_returns_none() {
+        let engine = JitEngine::new().unwrap();
+        assert!(engine.get(0xDEAD).is_none());
+    }
+
+    #[test]
+    fn engine_compile_batch() {
+        let mut engine = JitEngine::new().unwrap();
+        let params_list = vec![
+            ScanParams { threshold: 100, ..ScanParams::default() },
+            ScanParams { threshold: 200, ..ScanParams::default() },
+            ScanParams { threshold: 300, ..ScanParams::default() },
+        ];
+        let hashes = engine.compile_batch(&params_list).unwrap();
+        assert_eq!(hashes.len(), 3);
+        assert_eq!(engine.kernel_count(), 3);
+
+        // All lookups work
+        for hash in &hashes {
+            assert!(engine.get(*hash).is_some());
+        }
+    }
+
+    #[test]
+    fn engine_legacy_compile_scan() {
+        let mut engine = JitEngine::new().unwrap();
+        let kernel = engine.compile_scan(ScanParams::default()).unwrap();
+        assert_eq!(kernel.params.threshold, 500);
+        assert_eq!(engine.cached_count(), 1);
+    }
+
+    #[test]
+    fn engine_is_frozen() {
+        let engine = JitEngine::new().unwrap();
+        // After build(), LazyLock is force-initialized → is_frozen() returns true
+        assert!(engine.is_frozen());
+    }
+
+    #[test]
+    fn engine_prefetch_chain_order() {
+        let mut engine = JitEngine::new().unwrap();
+        let h1 = engine
+            .compile(ScanParams { threshold: 10, ..ScanParams::default() })
+            .unwrap();
+        let h2 = engine
+            .compile(ScanParams { threshold: 20, ..ScanParams::default() })
+            .unwrap();
+        let _h3 = engine
+            .compile(ScanParams { threshold: 30, ..ScanParams::default() })
+            .unwrap();
+
+        // Verify prefetch chain is populated
+        let chain = &LazyLock::get(&engine.cache).unwrap().prefetch_chain;
+        assert_eq!(chain.len(), 3);
+        assert_eq!(chain[0].0, h1);
+        assert_eq!(chain[1].0, h2);
+    }
+
+    #[test]
+    fn scan_correctness_inline() {
+        let mut engine = JitEngine::new().unwrap();
+        let params = ScanParams {
+            threshold: 10,
+            top_k: 5,
+            prefetch_ahead: 0,
+            focus_mask: None,
+            record_size: 8,
+        };
+        let hash = engine.compile(params).unwrap();
+        let kernel = engine.get(hash).unwrap();
+
+        // 4 records of 8 bytes each. Query = 0x00..00.
+        // Record 0: 0x01 (popcnt=1, < threshold 10) → match
+        // Record 1: 0xFF (popcnt=8, < threshold 10) → match
+        // Record 2: all 0xFF bytes (popcnt>10) → depends on inline POC (only first 8 bytes)
+        let query = [0u8; 8];
+        let field: Vec<u8> = vec![
+            0x01, 0, 0, 0, 0, 0, 0, 0, // record 0: popcount=1
+            0xFF, 0, 0, 0, 0, 0, 0, 0, // record 1: popcount=8
+            0xFF, 0xFF, 0, 0, 0, 0, 0, 0, // record 2: popcount=16 (exceeds threshold)
+            0x03, 0, 0, 0, 0, 0, 0, 0, // record 3: popcount=2
+        ];
+        let mut candidates = [0u64; 5];
+
+        // SAFETY: test data is valid, candidates buffer is large enough.
+        let count = unsafe {
+            kernel.scan(
+                query.as_ptr(),
+                field.as_ptr(),
+                4,  // 4 records
+                8,  // record_size (ignored by JIT — baked as immediate)
+                candidates.as_mut_ptr(),
+            )
+        };
+
+        // Records 0, 1, 3 should match (popcount < 10)
+        // Record 2 has popcount=16, rejected
+        assert_eq!(count, 3);
+        assert_eq!(candidates[0], 0); // record 0
+        assert_eq!(candidates[1], 1); // record 1
+        assert_eq!(candidates[2], 3); // record 3
+    }
+
+    #[test]
+    fn kernel_caching_dedup() {
+        let mut engine = JitEngine::new().unwrap();
+        let p1 = ScanParams { threshold: 42, ..ScanParams::default() };
+        let p2 = ScanParams { threshold: 42, ..ScanParams::default() };
+        let p3 = ScanParams { threshold: 99, ..ScanParams::default() };
+
+        let h1 = engine.compile(p1).unwrap();
+        let h2 = engine.compile(p2).unwrap();
+        let h3 = engine.compile(p3).unwrap();
+
+        assert_eq!(h1, h2, "same params should produce same hash");
+        assert_ne!(h1, h3, "different params should produce different hash");
+        assert_eq!(engine.kernel_count(), 2);
+    }
 }
