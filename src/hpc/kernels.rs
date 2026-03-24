@@ -1027,23 +1027,23 @@ where
     F: Fn(F32x16, F32x16) -> F32x16,
 {
     let n = a.len().min(b.len()).min(out.len());
-    let mut i = 0;
-    while i + 16 <= n {
-        let va = F32x16::from_slice(&a[i..]);
-        let vb = F32x16::from_slice(&b[i..]);
-        f(va, vb).copy_to_slice(&mut out[i..]);
-        i += 16;
+    let (a, b, out) = (&a[..n], &b[..n], &mut out[..n]);
+    for ((a_chunk, b_chunk), out_chunk) in a.chunks_exact(16).zip(b.chunks_exact(16)).zip(out.chunks_exact_mut(16)) {
+        let va = F32x16::from_slice(a_chunk);
+        let vb = F32x16::from_slice(b_chunk);
+        f(va, vb).copy_to_slice(out_chunk);
     }
-    // Scalar tail: extract one lane at a time
-    if i < n {
-        let tail_len = n - i;
+    // Zero-padded SIMD tail for remaining elements
+    let tail_start = n - n % 16;
+    let tail_len = n % 16;
+    if tail_len > 0 {
         let mut a_pad = [0.0f32; 16];
         let mut b_pad = [0.0f32; 16];
-        a_pad[..tail_len].copy_from_slice(&a[i..n]);
-        b_pad[..tail_len].copy_from_slice(&b[i..n]);
+        a_pad[..tail_len].copy_from_slice(&a[tail_start..]);
+        b_pad[..tail_len].copy_from_slice(&b[tail_start..]);
         let result = f(F32x16::from_array(a_pad), F32x16::from_array(b_pad));
         let arr = result.to_array();
-        out[i..n].copy_from_slice(&arr[..tail_len]);
+        out[tail_start..].copy_from_slice(&arr[..tail_len]);
     }
 }
 
@@ -1056,19 +1056,19 @@ where
     F: Fn(F32x16) -> F32x16,
 {
     let n = x.len().min(out.len());
-    let mut i = 0;
-    while i + 16 <= n {
-        let v = F32x16::from_slice(&x[i..]);
-        f(v).copy_to_slice(&mut out[i..]);
-        i += 16;
+    let (x, out) = (&x[..n], &mut out[..n]);
+    for (x_chunk, out_chunk) in x.chunks_exact(16).zip(out.chunks_exact_mut(16)) {
+        f(F32x16::from_slice(x_chunk)).copy_to_slice(out_chunk);
     }
-    if i < n {
-        let tail_len = n - i;
+    // Zero-padded SIMD tail for remaining elements
+    let tail_start = n - n % 16;
+    let tail_len = n % 16;
+    if tail_len > 0 {
         let mut pad = [0.0f32; 16];
-        pad[..tail_len].copy_from_slice(&x[i..n]);
+        pad[..tail_len].copy_from_slice(&x[tail_start..]);
         let result = f(F32x16::from_array(pad));
         let arr = result.to_array();
-        out[i..n].copy_from_slice(&arr[..tail_len]);
+        out[tail_start..].copy_from_slice(&arr[..tail_len]);
     }
 }
 
@@ -1079,22 +1079,26 @@ where
     F: Fn(F32x16, F32x16) -> F32x16,
 {
     let n = a.len().min(b.len());
-    let mut i = 0;
-    while i + 16 <= n {
-        let va = F32x16::from_slice(&a[i..]);
-        let vb = F32x16::from_slice(&b[i..]);
-        f(va, vb).copy_to_slice(&mut a[i..]);
-        i += 16;
+    let b = &b[..n];
+    // Process full SIMD-width chunks
+    let full_chunks = n / 16;
+    for i in 0..full_chunks {
+        let off = i * 16;
+        let va = F32x16::from_slice(&a[off..]);
+        let vb = F32x16::from_slice(&b[off..]);
+        f(va, vb).copy_to_slice(&mut a[off..]);
     }
-    if i < n {
-        let tail_len = n - i;
+    // Zero-padded SIMD tail for remaining elements
+    let tail_start = full_chunks * 16;
+    let tail_len = n % 16;
+    if tail_len > 0 {
         let mut a_pad = [0.0f32; 16];
         let mut b_pad = [0.0f32; 16];
-        a_pad[..tail_len].copy_from_slice(&a[i..n]);
-        b_pad[..tail_len].copy_from_slice(&b[i..n]);
+        a_pad[..tail_len].copy_from_slice(&a[tail_start..n]);
+        b_pad[..tail_len].copy_from_slice(&b[tail_start..]);
         let result = f(F32x16::from_array(a_pad), F32x16::from_array(b_pad));
         let arr = result.to_array();
-        a[i..n].copy_from_slice(&arr[..tail_len]);
+        a[tail_start..n].copy_from_slice(&arr[..tail_len]);
     }
 }
 

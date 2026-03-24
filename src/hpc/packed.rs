@@ -125,15 +125,10 @@ impl PackedDatabase {
         let mut stroke3 = Vec::with_capacity(n * STROKE3_BYTES);
         let mut index = Vec::with_capacity(n);
 
-        for i in 0..n {
-            let base = i * row_bytes;
-            stroke1.extend_from_slice(&database[base..base + STROKE1_BYTES]);
-            stroke2.extend_from_slice(
-                &database[base + STROKE1_BYTES..base + STROKE1_BYTES + STROKE2_BYTES],
-            );
-            stroke3.extend_from_slice(
-                &database[base + STROKE1_BYTES + STROKE2_BYTES..base + row_bytes],
-            );
+        for (i, row) in database.chunks_exact(row_bytes).enumerate() {
+            stroke1.extend_from_slice(&row[..STROKE1_BYTES]);
+            stroke2.extend_from_slice(&row[STROKE1_BYTES..STROKE1_BYTES + STROKE2_BYTES]);
+            stroke3.extend_from_slice(&row[STROKE1_BYTES + STROKE2_BYTES..]);
             index.push(i as u32);
         }
 

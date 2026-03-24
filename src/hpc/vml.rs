@@ -11,16 +11,13 @@ use crate::simd::{simd_exp_f32, simd_ln_f32, F32x16, F64x8};
 /// Processes 16 elements at a time via SIMD polynomial approximation.
 pub fn vsexp(x: &[f32], out: &mut [f32]) {
     let n = x.len().min(out.len());
-    let mut i = 0;
-    while i + 16 <= n {
-        let v = F32x16::from_slice(&x[i..]);
-        simd_exp_f32(v).copy_to_slice(&mut out[i..]);
-        i += 16;
+    let (x, out) = (&x[..n], &mut out[..n]);
+    for (x_chunk, out_chunk) in x.chunks_exact(16).zip(out.chunks_exact_mut(16)) {
+        simd_exp_f32(F32x16::from_slice(x_chunk)).copy_to_slice(out_chunk);
     }
-    // Scalar tail
-    while i < n {
-        out[i] = x[i].exp();
-        i += 1;
+    let tail_start = n - n % 16;
+    for (o, &v) in out[tail_start..].iter_mut().zip(x[tail_start..].iter()) {
+        *o = v.exp();
     }
 }
 
@@ -39,15 +36,13 @@ pub fn vdexp(x: &[f64], out: &mut [f64]) {
 /// SIMD-accelerated via `simd_ln_f32` (16 lanes per iteration).
 pub fn vsln(x: &[f32], out: &mut [f32]) {
     let n = x.len().min(out.len());
-    let mut i = 0;
-    while i + 16 <= n {
-        let v = F32x16::from_slice(&x[i..]);
-        simd_ln_f32(v).copy_to_slice(&mut out[i..]);
-        i += 16;
+    let (x, out) = (&x[..n], &mut out[..n]);
+    for (x_chunk, out_chunk) in x.chunks_exact(16).zip(out.chunks_exact_mut(16)) {
+        simd_ln_f32(F32x16::from_slice(x_chunk)).copy_to_slice(out_chunk);
     }
-    while i < n {
-        out[i] = x[i].ln();
-        i += 1;
+    let tail_start = n - n % 16;
+    for (o, &v) in out[tail_start..].iter_mut().zip(x[tail_start..].iter()) {
+        *o = v.ln();
     }
 }
 
@@ -63,14 +58,13 @@ pub fn vdln(x: &[f64], out: &mut [f64]) {
 /// SIMD-accelerated via F32x16::sqrt().
 pub fn vssqrt(x: &[f32], out: &mut [f32]) {
     let n = x.len().min(out.len());
-    let mut i = 0;
-    while i + 16 <= n {
-        F32x16::from_slice(&x[i..]).sqrt().copy_to_slice(&mut out[i..]);
-        i += 16;
+    let (x, out) = (&x[..n], &mut out[..n]);
+    for (x_chunk, out_chunk) in x.chunks_exact(16).zip(out.chunks_exact_mut(16)) {
+        F32x16::from_slice(x_chunk).sqrt().copy_to_slice(out_chunk);
     }
-    while i < n {
-        out[i] = x[i].sqrt();
-        i += 1;
+    let tail_start = n - n % 16;
+    for (o, &v) in out[tail_start..].iter_mut().zip(x[tail_start..].iter()) {
+        *o = v.sqrt();
     }
 }
 
@@ -79,14 +73,13 @@ pub fn vssqrt(x: &[f32], out: &mut [f32]) {
 /// SIMD-accelerated via `F64x8::sqrt()` (8 lanes per iteration).
 pub fn vdsqrt(x: &[f64], out: &mut [f64]) {
     let n = x.len().min(out.len());
-    let mut i = 0;
-    while i + 8 <= n {
-        F64x8::from_slice(&x[i..]).sqrt().copy_to_slice(&mut out[i..]);
-        i += 8;
+    let (x, out) = (&x[..n], &mut out[..n]);
+    for (x_chunk, out_chunk) in x.chunks_exact(8).zip(out.chunks_exact_mut(8)) {
+        F64x8::from_slice(x_chunk).sqrt().copy_to_slice(out_chunk);
     }
-    while i < n {
-        out[i] = x[i].sqrt();
-        i += 1;
+    let tail_start = n - n % 8;
+    for (o, &v) in out[tail_start..].iter_mut().zip(x[tail_start..].iter()) {
+        *o = v.sqrt();
     }
 }
 
@@ -95,14 +88,13 @@ pub fn vdsqrt(x: &[f64], out: &mut [f64]) {
 /// SIMD-accelerated via F32x16::abs().
 pub fn vsabs(x: &[f32], out: &mut [f32]) {
     let n = x.len().min(out.len());
-    let mut i = 0;
-    while i + 16 <= n {
-        F32x16::from_slice(&x[i..]).abs().copy_to_slice(&mut out[i..]);
-        i += 16;
+    let (x, out) = (&x[..n], &mut out[..n]);
+    for (x_chunk, out_chunk) in x.chunks_exact(16).zip(out.chunks_exact_mut(16)) {
+        F32x16::from_slice(x_chunk).abs().copy_to_slice(out_chunk);
     }
-    while i < n {
-        out[i] = x[i].abs();
-        i += 1;
+    let tail_start = n - n % 16;
+    for (o, &v) in out[tail_start..].iter_mut().zip(x[tail_start..].iter()) {
+        *o = v.abs();
     }
 }
 
@@ -111,14 +103,13 @@ pub fn vsabs(x: &[f32], out: &mut [f32]) {
 /// SIMD-accelerated via `F64x8::abs()` (8 lanes per iteration).
 pub fn vdabs(x: &[f64], out: &mut [f64]) {
     let n = x.len().min(out.len());
-    let mut i = 0;
-    while i + 8 <= n {
-        F64x8::from_slice(&x[i..]).abs().copy_to_slice(&mut out[i..]);
-        i += 8;
+    let (x, out) = (&x[..n], &mut out[..n]);
+    for (x_chunk, out_chunk) in x.chunks_exact(8).zip(out.chunks_exact_mut(8)) {
+        F64x8::from_slice(x_chunk).abs().copy_to_slice(out_chunk);
     }
-    while i < n {
-        out[i] = x[i].abs();
-        i += 1;
+    let tail_start = n - n % 8;
+    for (o, &v) in out[tail_start..].iter_mut().zip(x[tail_start..].iter()) {
+        *o = v.abs();
     }
 }
 
@@ -127,14 +118,13 @@ pub fn vdabs(x: &[f64], out: &mut [f64]) {
 /// SIMD-accelerated via F32x16 operator overload.
 pub fn vsadd(a: &[f32], b: &[f32], out: &mut [f32]) {
     let n = a.len().min(b.len()).min(out.len());
-    let mut i = 0;
-    while i + 16 <= n {
-        (F32x16::from_slice(&a[i..]) + F32x16::from_slice(&b[i..])).copy_to_slice(&mut out[i..]);
-        i += 16;
+    let (a, b, out) = (&a[..n], &b[..n], &mut out[..n]);
+    for ((a_chunk, b_chunk), out_chunk) in a.chunks_exact(16).zip(b.chunks_exact(16)).zip(out.chunks_exact_mut(16)) {
+        (F32x16::from_slice(a_chunk) + F32x16::from_slice(b_chunk)).copy_to_slice(out_chunk);
     }
-    while i < n {
-        out[i] = a[i] + b[i];
-        i += 1;
+    let tail_start = n - n % 16;
+    for ((&av, &bv), o) in a[tail_start..].iter().zip(b[tail_start..].iter()).zip(out[tail_start..].iter_mut()) {
+        *o = av + bv;
     }
 }
 
@@ -143,14 +133,13 @@ pub fn vsadd(a: &[f32], b: &[f32], out: &mut [f32]) {
 /// SIMD-accelerated via F32x16 operator overload.
 pub fn vsmul(a: &[f32], b: &[f32], out: &mut [f32]) {
     let n = a.len().min(b.len()).min(out.len());
-    let mut i = 0;
-    while i + 16 <= n {
-        (F32x16::from_slice(&a[i..]) * F32x16::from_slice(&b[i..])).copy_to_slice(&mut out[i..]);
-        i += 16;
+    let (a, b, out) = (&a[..n], &b[..n], &mut out[..n]);
+    for ((a_chunk, b_chunk), out_chunk) in a.chunks_exact(16).zip(b.chunks_exact(16)).zip(out.chunks_exact_mut(16)) {
+        (F32x16::from_slice(a_chunk) * F32x16::from_slice(b_chunk)).copy_to_slice(out_chunk);
     }
-    while i < n {
-        out[i] = a[i] * b[i];
-        i += 1;
+    let tail_start = n - n % 16;
+    for ((&av, &bv), o) in a[tail_start..].iter().zip(b[tail_start..].iter()).zip(out[tail_start..].iter_mut()) {
+        *o = av * bv;
     }
 }
 
@@ -159,14 +148,13 @@ pub fn vsmul(a: &[f32], b: &[f32], out: &mut [f32]) {
 /// SIMD-accelerated via F32x16 operator overload.
 pub fn vsdiv(a: &[f32], b: &[f32], out: &mut [f32]) {
     let n = a.len().min(b.len()).min(out.len());
-    let mut i = 0;
-    while i + 16 <= n {
-        (F32x16::from_slice(&a[i..]) / F32x16::from_slice(&b[i..])).copy_to_slice(&mut out[i..]);
-        i += 16;
+    let (a, b, out) = (&a[..n], &b[..n], &mut out[..n]);
+    for ((a_chunk, b_chunk), out_chunk) in a.chunks_exact(16).zip(b.chunks_exact(16)).zip(out.chunks_exact_mut(16)) {
+        (F32x16::from_slice(a_chunk) / F32x16::from_slice(b_chunk)).copy_to_slice(out_chunk);
     }
-    while i < n {
-        out[i] = a[i] / b[i];
-        i += 1;
+    let tail_start = n - n % 16;
+    for ((&av, &bv), o) in a[tail_start..].iter().zip(b[tail_start..].iter()).zip(out[tail_start..].iter_mut()) {
+        *o = av / bv;
     }
 }
 
@@ -177,20 +165,19 @@ pub fn vsdiv(a: &[f32], b: &[f32], out: &mut [f32]) {
 /// can replace the inner loop later.
 pub fn vssin(x: &[f32], out: &mut [f32]) {
     let n = x.len().min(out.len());
-    let mut i = 0;
-    while i + 16 <= n {
-        let v = F32x16::from_slice(&x[i..]);
+    let (x, out) = (&x[..n], &mut out[..n]);
+    for (x_chunk, out_chunk) in x.chunks_exact(16).zip(out.chunks_exact_mut(16)) {
+        let v = F32x16::from_slice(x_chunk);
         let arr = v.to_array();
         let mut res = [0.0f32; 16];
         for j in 0..16 {
             res[j] = arr[j].sin();
         }
-        F32x16::from_array(res).copy_to_slice(&mut out[i..]);
-        i += 16;
+        F32x16::from_array(res).copy_to_slice(out_chunk);
     }
-    while i < n {
-        out[i] = x[i].sin();
-        i += 1;
+    let tail_start = n - n % 16;
+    for (o, &v) in out[tail_start..].iter_mut().zip(x[tail_start..].iter()) {
+        *o = v.sin();
     }
 }
 
@@ -199,20 +186,19 @@ pub fn vssin(x: &[f32], out: &mut [f32]) {
 /// SIMD-batched: loads 16 floats via F32x16, applies scalar cos per lane.
 pub fn vscos(x: &[f32], out: &mut [f32]) {
     let n = x.len().min(out.len());
-    let mut i = 0;
-    while i + 16 <= n {
-        let v = F32x16::from_slice(&x[i..]);
+    let (x, out) = (&x[..n], &mut out[..n]);
+    for (x_chunk, out_chunk) in x.chunks_exact(16).zip(out.chunks_exact_mut(16)) {
+        let v = F32x16::from_slice(x_chunk);
         let arr = v.to_array();
         let mut res = [0.0f32; 16];
         for j in 0..16 {
             res[j] = arr[j].cos();
         }
-        F32x16::from_array(res).copy_to_slice(&mut out[i..]);
-        i += 16;
+        F32x16::from_array(res).copy_to_slice(out_chunk);
     }
-    while i < n {
-        out[i] = x[i].cos();
-        i += 1;
+    let tail_start = n - n % 16;
+    for (o, &v) in out[tail_start..].iter_mut().zip(x[tail_start..].iter()) {
+        *o = v.cos();
     }
 }
 
@@ -226,18 +212,16 @@ pub fn vscos(x: &[f32], out: &mut [f32]) {
 /// handles some negative-base cases. The scalar tail (len < 16) uses `powf`.
 pub fn vspow(a: &[f32], b: &[f32], out: &mut [f32]) {
     let n = a.len().min(b.len()).min(out.len());
-    let mut i = 0;
-    while i + 16 <= n {
-        let va = F32x16::from_slice(&a[i..]);
-        let vb = F32x16::from_slice(&b[i..]);
+    let (a, b, out) = (&a[..n], &b[..n], &mut out[..n]);
+    for ((a_chunk, b_chunk), out_chunk) in a.chunks_exact(16).zip(b.chunks_exact(16)).zip(out.chunks_exact_mut(16)) {
+        let va = F32x16::from_slice(a_chunk);
+        let vb = F32x16::from_slice(b_chunk);
         // a^b = exp(b * ln(a))
-        let result = simd_exp_f32(vb * simd_ln_f32(va));
-        result.copy_to_slice(&mut out[i..]);
-        i += 16;
+        simd_exp_f32(vb * simd_ln_f32(va)).copy_to_slice(out_chunk);
     }
-    while i < n {
-        out[i] = a[i].powf(b[i]);
-        i += 1;
+    let tail_start = n - n % 16;
+    for ((&av, &bv), o) in a[tail_start..].iter().zip(b[tail_start..].iter()).zip(out[tail_start..].iter_mut()) {
+        *o = av.powf(bv);
     }
 }
 
