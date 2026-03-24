@@ -152,6 +152,11 @@ pub mod aabb;
 #[allow(clippy::too_many_arguments)]
 pub mod holo;
 
+// CAM-PQ: Content-Addressable Memory as Product Quantization
+// Unifies FAISS PQ6x8 and CLAM 48-bit archetypes. 170× compression, 500M cands/sec.
+#[allow(missing_docs)]
+pub mod cam_pq;
+
 // jitson: JSON config → scan pipeline (parser, validator, template, precompile, packed)
 // Always available — no Cranelift dependency.
 #[allow(missing_docs)]
