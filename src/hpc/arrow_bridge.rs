@@ -598,6 +598,209 @@ impl BindNodeV2 {
     }
 }
 
+// ============================================================================
+// Per-Row Types: ThreePlaneRowBuffer, SoakingRowBuffer, BindNodeV2Row
+// ============================================================================
+
+/// Three-plane fingerprint row buffer: holds S/P/O binary fingerprints for
+/// a single row, suitable for zero-copy Arrow interop.
+///
+/// Total: 3 x 2048 = 6144 bytes per row.
+#[derive(Debug, Clone)]
+pub struct ThreePlaneRowBuffer {
+    /// Subject binary fingerprint (2048 bytes).
+    pub s_binary: Vec<u8>,
+    /// Predicate binary fingerprint (2048 bytes).
+    pub p_binary: Vec<u8>,
+    /// Object binary fingerprint (2048 bytes).
+    pub o_binary: Vec<u8>,
+}
+
+impl ThreePlaneRowBuffer {
+    /// Create a zeroed three-plane row buffer.
+    pub fn new() -> Self {
+        Self {
+            s_binary: vec![0u8; PLANE_BINARY_BYTES],
+            p_binary: vec![0u8; PLANE_BINARY_BYTES],
+            o_binary: vec![0u8; PLANE_BINARY_BYTES],
+        }
+    }
+
+    /// Create from three Plane references (copies their cached bit patterns).
+    pub fn from_planes(s: &mut Plane, p: &mut Plane, o: &mut Plane) -> Self {
+        s.ensure_cache();
+        p.ensure_cache();
+        o.ensure_cache();
+        Self {
+            s_binary: s.bits_bytes_ref().to_vec(),
+            p_binary: p.bits_bytes_ref().to_vec(),
+            o_binary: o.bits_bytes_ref().to_vec(),
+        }
+    }
+
+    /// Compute S XOR P XOR O composite fingerprint.
+    pub fn xor_spo(&self) -> Vec<u8> {
+        let mut result = vec![0u8; PLANE_BINARY_BYTES];
+        for i in 0..PLANE_BINARY_BYTES {
+            result[i] = self.s_binary[i] ^ self.p_binary[i] ^ self.o_binary[i];
+        }
+        result
+    }
+
+    /// Per-plane Hamming distance to another row buffer.
+    ///
+    /// Returns `(subject_dist, predicate_dist, object_dist)`.
+    pub fn hamming_distance(&self, other: &ThreePlaneRowBuffer) -> (u64, u64, u64) {
+        let ds = hamming_distance_raw(&self.s_binary, &other.s_binary);
+        let dp = hamming_distance_raw(&self.p_binary, &other.p_binary);
+        let do_ = hamming_distance_raw(&self.o_binary, &other.o_binary);
+        (ds, dp, do_)
+    }
+
+    /// Total byte size of this row buffer (always 3 * PLANE_BINARY_BYTES).
+    pub fn total_bytes(&self) -> usize {
+        3 * PLANE_BINARY_BYTES
+    }
+}
+
+impl Default for ThreePlaneRowBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Soaking row buffer: nullable i8 accumulator for a single plane of a single row.
+///
+/// When `data` is `Some`, the buffer is active (Form state).
+/// When `data` is `None`, the buffer has been crystallized or nulled.
+#[derive(Debug, Clone)]
+pub struct SoakingRowBuffer {
+    /// Soaking data (None = nulled/crystallized).
+    pub data: Option<Vec<i8>>,
+    /// Dimension count.
+    pub dims: usize,
+}
+
+impl SoakingRowBuffer {
+    /// Create a new active soaking row buffer, zeroed.
+    pub fn new(dims: usize) -> Self {
+        Self {
+            data: Some(vec![0i8; dims]),
+            dims,
+        }
+    }
+
+    /// Crystallize: convert soaking (int8) to binary fingerprint via sign().
+    ///
+    /// Consumes the soaking data and returns a binary vector.
+    /// After crystallization, the buffer is nulled.
+    pub fn crystallize(&mut self) -> Vec<u8> {
+        let soaking = match self.data.take() {
+            Some(d) => d,
+            None => return vec![0u8; (self.dims + 7) / 8],
+        };
+        let n_bytes = (soaking.len() + 7) / 8;
+        let mut bits = vec![0u8; n_bytes];
+        for (i, &val) in soaking.iter().enumerate() {
+            if val > 0 {
+                bits[i / 8] |= 1 << (i % 8);
+            }
+        }
+        bits
+    }
+
+    /// Returns `true` when soaking is still active (not nulled/crystallized).
+    pub fn is_active(&self) -> bool {
+        self.data.is_some()
+    }
+
+    /// Null out the soaking data (transition to inactive).
+    pub fn null_out(&mut self) {
+        self.data = None;
+    }
+}
+
+/// Complete bind_nodes_v2 row type combining fingerprints, soaking, gate,
+/// and NARS truth values.
+///
+/// This is a streamlined per-row type that pairs `ThreePlaneRowBuffer` with
+/// per-plane `SoakingRowBuffer`s for the full Lance schema.
+#[derive(Debug, Clone)]
+pub struct BindNodeV2Row {
+    /// Three-plane binary fingerprints.
+    pub fingerprints: ThreePlaneRowBuffer,
+    /// Subject soaking accumulator.
+    pub s_soaking: SoakingRowBuffer,
+    /// Predicate soaking accumulator.
+    pub p_soaking: SoakingRowBuffer,
+    /// Object soaking accumulator.
+    pub o_soaking: SoakingRowBuffer,
+    /// Gate lifecycle state.
+    pub gate: GateState,
+    /// NARS frequency (u16 fixed-point).
+    pub nars_frequency: u16,
+    /// NARS confidence (u16 fixed-point).
+    pub nars_confidence: u16,
+}
+
+impl BindNodeV2Row {
+    /// Create a new row in Form state with active soaking.
+    pub fn new(dims: usize) -> Self {
+        Self {
+            fingerprints: ThreePlaneRowBuffer::new(),
+            s_soaking: SoakingRowBuffer::new(dims),
+            p_soaking: SoakingRowBuffer::new(dims),
+            o_soaking: SoakingRowBuffer::new(dims),
+            gate: GateState::Form,
+            nars_frequency: 32768,
+            nars_confidence: 0,
+        }
+    }
+
+    /// Crystallize all three soaking buffers, folding sign bits into fingerprints.
+    /// Transitions from Form to Flow.
+    pub fn crystallize(&mut self) {
+        if self.gate != GateState::Form {
+            return;
+        }
+        // Fold each soaking into its binary plane
+        if let Some(ref soaking) = self.s_soaking.data {
+            fold_sign_into_binary(&mut self.fingerprints.s_binary, soaking);
+        }
+        if let Some(ref soaking) = self.p_soaking.data {
+            fold_sign_into_binary(&mut self.fingerprints.p_binary, soaking);
+        }
+        if let Some(ref soaking) = self.o_soaking.data {
+            fold_sign_into_binary(&mut self.fingerprints.o_binary, soaking);
+        }
+        self.s_soaking.null_out();
+        self.p_soaking.null_out();
+        self.o_soaking.null_out();
+        self.gate = GateState::Flow;
+    }
+
+    /// Freeze: transition from Flow to Freeze.
+    pub fn freeze(&mut self) {
+        if self.gate == GateState::Flow {
+            self.gate = GateState::Freeze;
+        }
+    }
+}
+
+/// Fold soaking sign bits into a binary fingerprint (shared helper).
+fn fold_sign_into_binary(binary: &mut [u8], soaking: &[i8]) {
+    let bit_count = (binary.len() * 8).min(soaking.len());
+    for i in 0..bit_count {
+        let byte_idx = i / 8;
+        let bit_idx = i % 8;
+        if soaking[i] > 0 {
+            binary[byte_idx] |= 1 << bit_idx;
+        } else {
+            binary[byte_idx] &= !(1 << bit_idx);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -981,5 +1184,165 @@ mod tests {
         let slice = pb.as_binary_slice();
         assert_eq!(slice.len(), 3 * BINARY_BYTES);
         assert_eq!(slice[BINARY_BYTES], 0xAB);
+    }
+
+    // ================================================================
+    // ThreePlaneRowBuffer tests
+    // ================================================================
+
+    #[test]
+    fn three_plane_row_buffer_new() {
+        let buf = ThreePlaneRowBuffer::new();
+        assert_eq!(buf.s_binary.len(), PLANE_BINARY_BYTES);
+        assert_eq!(buf.p_binary.len(), PLANE_BINARY_BYTES);
+        assert_eq!(buf.o_binary.len(), PLANE_BINARY_BYTES);
+        assert_eq!(buf.total_bytes(), 3 * PLANE_BINARY_BYTES);
+    }
+
+    #[test]
+    fn three_plane_row_buffer_default() {
+        let buf = ThreePlaneRowBuffer::default();
+        assert_eq!(buf.total_bytes(), 6144);
+    }
+
+    #[test]
+    fn three_plane_row_buffer_from_planes() {
+        let (mut s, mut p, mut o) = make_test_planes();
+        let buf = ThreePlaneRowBuffer::from_planes(&mut s, &mut p, &mut o);
+        assert_eq!(buf.s_binary.len(), PLANE_BINARY_BYTES);
+        // Non-trivial planes should produce non-zero binaries
+        assert!(buf.s_binary.iter().any(|&b| b != 0));
+    }
+
+    #[test]
+    fn three_plane_row_buffer_xor_spo() {
+        let mut buf = ThreePlaneRowBuffer::new();
+        buf.s_binary[0] = 0xFF;
+        buf.p_binary[0] = 0x0F;
+        buf.o_binary[0] = 0xAA;
+        let xor = buf.xor_spo();
+        assert_eq!(xor[0], 0xFF ^ 0x0F ^ 0xAA);
+        assert_eq!(xor[1], 0); // rest is zero
+    }
+
+    #[test]
+    fn three_plane_row_buffer_hamming_self_zero() {
+        let (mut s, mut p, mut o) = make_test_planes();
+        let buf = ThreePlaneRowBuffer::from_planes(&mut s, &mut p, &mut o);
+        let (ds, dp, do_) = buf.hamming_distance(&buf);
+        assert_eq!(ds, 0);
+        assert_eq!(dp, 0);
+        assert_eq!(do_, 0);
+    }
+
+    #[test]
+    fn three_plane_row_buffer_hamming_different() {
+        let mut buf1 = ThreePlaneRowBuffer::new();
+        let mut buf2 = ThreePlaneRowBuffer::new();
+        buf1.s_binary.fill(0xFF);
+        buf2.s_binary.fill(0x00);
+        let (ds, dp, _) = buf1.hamming_distance(&buf2);
+        assert_eq!(ds, PLANE_BINARY_BYTES as u64 * 8);
+        assert_eq!(dp, 0); // both zero
+    }
+
+    // ================================================================
+    // SoakingRowBuffer tests
+    // ================================================================
+
+    #[test]
+    fn soaking_row_buffer_new() {
+        let buf = SoakingRowBuffer::new(100);
+        assert!(buf.is_active());
+        assert_eq!(buf.dims, 100);
+        assert_eq!(buf.data.as_ref().unwrap().len(), 100);
+    }
+
+    #[test]
+    fn soaking_row_buffer_crystallize() {
+        let mut buf = SoakingRowBuffer::new(8);
+        buf.data.as_mut().unwrap().copy_from_slice(&[1, -1, 1, -1, 1, -1, 1, -1]);
+        let bits = buf.crystallize();
+        assert_eq!(bits[0], 0b01010101);
+        assert!(!buf.is_active()); // should be nulled after crystallize
+    }
+
+    #[test]
+    fn soaking_row_buffer_crystallize_inactive() {
+        let mut buf = SoakingRowBuffer::new(16);
+        buf.null_out();
+        assert!(!buf.is_active());
+        let bits = buf.crystallize();
+        // Should return zeroed bits when inactive
+        assert!(bits.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn soaking_row_buffer_null_out() {
+        let mut buf = SoakingRowBuffer::new(10);
+        assert!(buf.is_active());
+        buf.null_out();
+        assert!(!buf.is_active());
+    }
+
+    // ================================================================
+    // BindNodeV2Row tests
+    // ================================================================
+
+    #[test]
+    fn bind_node_v2_row_new() {
+        let row = BindNodeV2Row::new(100);
+        assert_eq!(row.gate, GateState::Form);
+        assert!(row.s_soaking.is_active());
+        assert!(row.p_soaking.is_active());
+        assert!(row.o_soaking.is_active());
+        assert_eq!(row.nars_frequency, 32768);
+        assert_eq!(row.nars_confidence, 0);
+        assert_eq!(row.fingerprints.total_bytes(), 6144);
+    }
+
+    #[test]
+    fn bind_node_v2_row_crystallize() {
+        let mut row = BindNodeV2Row::new(16);
+        // Put some data in soaking
+        row.s_soaking.data.as_mut().unwrap().fill(1);
+        row.crystallize();
+        assert_eq!(row.gate, GateState::Flow);
+        assert!(!row.s_soaking.is_active());
+        assert!(!row.p_soaking.is_active());
+        assert!(!row.o_soaking.is_active());
+    }
+
+    #[test]
+    fn bind_node_v2_row_lifecycle() {
+        let mut row = BindNodeV2Row::new(16);
+        assert_eq!(row.gate, GateState::Form);
+
+        // Cannot freeze from Form
+        row.freeze();
+        assert_eq!(row.gate, GateState::Form);
+
+        // Crystallize: Form -> Flow
+        row.crystallize();
+        assert_eq!(row.gate, GateState::Flow);
+
+        // Double crystallize is no-op
+        row.crystallize();
+        assert_eq!(row.gate, GateState::Flow);
+
+        // Freeze: Flow -> Freeze
+        row.freeze();
+        assert_eq!(row.gate, GateState::Freeze);
+    }
+
+    #[test]
+    fn bind_node_v2_row_crystallize_folds_sign() {
+        let mut row = BindNodeV2Row::new(16);
+        // Set subject soaking to all positive
+        row.s_soaking.data.as_mut().unwrap().fill(5);
+        row.crystallize();
+        // First 2 bytes of s_binary should have bits set (16 bits = 2 bytes)
+        assert_eq!(row.fingerprints.s_binary[0], 0xFF);
+        assert_eq!(row.fingerprints.s_binary[1], 0xFF);
     }
 }

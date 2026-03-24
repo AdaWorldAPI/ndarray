@@ -129,9 +129,22 @@ pub mod parallel_search;
 #[allow(missing_docs)]
 pub mod zeck;
 
+// SIMD-accelerated spatial / byte-scan / hash utilities
+pub mod distance;
+pub mod byte_scan;
+pub mod spatial_hash;
+
 // Variable-width palette index codec (Minecraft-style bit packing)
 #[allow(missing_docs)]
 pub mod palette_codec;
+
+// SIMD-accelerated HPC modules (block properties, nibble light data, AABB collision)
+#[allow(missing_docs)]
+pub mod property_mask;
+#[allow(missing_docs)]
+pub mod nibble;
+#[allow(missing_docs)]
+pub mod aabb;
 
 // Holographic phase-space operations (ported from rustynum-holo)
 #[allow(missing_docs)]

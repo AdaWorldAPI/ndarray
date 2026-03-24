@@ -306,6 +306,29 @@ fn dispatch_hamming_batch(query: &[u8], database: &[u8], num_rows: usize, row_by
         .collect()
 }
 
+/// Count set bits across an array of u64 words.
+/// More efficient than reinterpreting as bytes — works on native u64s directly.
+pub fn popcount_batch_u64(words: &[u64]) -> u64 {
+    // Use POPCNT instruction if available, else scalar
+    words.iter().map(|w| w.count_ones() as u64).sum()
+}
+
+/// Per-word popcount: returns count of set bits in each u64.
+pub fn popcount_per_word(words: &[u64]) -> Vec<u32> {
+    words.iter().map(|w| w.count_ones()).collect()
+}
+
+/// Batch AND + popcount: for each word, compute (word & mask).count_ones().
+/// Used for "count blocks matching a property mask in each palette group."
+pub fn masked_popcount_batch(words: &[u64], mask: u64) -> Vec<u32> {
+    words.iter().map(|w| (w & mask).count_ones()).collect()
+}
+
+/// Total masked popcount across all words.
+pub fn masked_popcount_total(words: &[u64], mask: u64) -> u64 {
+    words.iter().map(|w| (w & mask).count_ones() as u64).sum()
+}
+
 impl<S> BitwiseOps for ArrayBase<S, Ix1>
 where S: Data<Elem = u8>
 {
@@ -636,6 +659,27 @@ mod tests {
                 expected, "vpopcntdq large"
             );
         }
+    }
+
+    #[test]
+    fn test_popcount_batch_u64() {
+        let words = [0xFFFFFFFFFFFFFFFFu64, 0, 0x0F0F0F0F0F0F0F0F];
+        assert_eq!(super::popcount_batch_u64(&words), 64 + 0 + 32);
+    }
+
+    #[test]
+    fn test_popcount_per_word() {
+        let words = [0xFFu64, 0xFFFF, 0];
+        let counts = super::popcount_per_word(&words);
+        assert_eq!(counts, vec![8, 16, 0]);
+    }
+
+    #[test]
+    fn test_masked_popcount() {
+        let words = [0xFFu64, 0xFF00, 0xFFFF];
+        let mask = 0xFF;
+        assert_eq!(super::masked_popcount_batch(&words, mask), vec![8, 0, 8]);
+        assert_eq!(super::masked_popcount_total(&words, mask), 16);
     }
 
     /// Edge: identical vectors → distance 0 at all tiers.

@@ -249,6 +249,92 @@ impl PackedPaletteArray {
     }
 }
 
+/// SIMD-accelerated palette unpacking.
+/// Falls back to scalar `unpack_indices` on non-AVX2 targets.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::hpc::palette_codec::{pack_indices, unpack_indices_simd};
+///
+/// let indices: Vec<u8> = (0..64).map(|i| i % 16).collect();
+/// let packed = pack_indices(&indices, 4);
+/// let recovered = unpack_indices_simd(&packed, 4, 64);
+/// assert_eq!(indices, recovered);
+/// ```
+pub fn unpack_indices_simd(packed: &[u64], bits_per_index: usize, count: usize) -> Vec<u8> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if bits_per_index == 4 && count >= 16 && is_x86_feature_detected!("avx2") {
+            return unsafe { unpack_4bit_avx2(packed, count) };
+        }
+    }
+    unpack_indices(packed, bits_per_index, count)
+}
+
+/// SIMD-accelerated palette packing.
+/// Falls back to scalar `pack_indices` on non-AVX2 targets.
+pub fn pack_indices_simd(indices: &[u8], bits_per_index: usize) -> Vec<u64> {
+    // Currently delegates to scalar — SIMD packing is less critical than unpacking
+    // because packing happens at chunk save time (cold path).
+    pack_indices(indices, bits_per_index)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn unpack_4bit_avx2(packed: &[u64], count: usize) -> Vec<u8> {
+    use core::arch::x86_64::*;
+
+    let mut result = Vec::with_capacity(count);
+    let bytes = bytemuck_cast_u64_to_u8(packed);
+    let low_mask = _mm256_set1_epi8(0x0F);
+    let mut i = 0;
+
+    // Process 32 bytes at a time → 64 nibbles
+    while i + 32 <= bytes.len() && result.len() + 64 <= count {
+        let data = _mm256_loadu_si256(bytes.as_ptr().add(i) as *const __m256i);
+
+        // Extract low nibbles
+        let lo = _mm256_and_si256(data, low_mask);
+        // Extract high nibbles
+        let hi = _mm256_and_si256(_mm256_srli_epi16(data, 4), low_mask);
+
+        // Interleave: we need to output low nibble, then high nibble for each byte
+        let interleaved_lo = _mm256_unpacklo_epi8(lo, hi);
+        let interleaved_hi = _mm256_unpackhi_epi8(lo, hi);
+
+        // Store
+        let mut buf = [0u8; 64];
+        _mm256_storeu_si256(buf.as_mut_ptr() as *mut __m256i, interleaved_lo);
+        _mm256_storeu_si256(buf.as_mut_ptr().add(32) as *mut __m256i, interleaved_hi);
+
+        let remaining = count - result.len();
+        let take = remaining.min(64);
+        result.extend_from_slice(&buf[..take]);
+        i += 32;
+    }
+
+    // Handle remainder with scalar
+    let scalar_start = result.len();
+    if scalar_start < count {
+        let remainder = unpack_indices(packed, 4, count);
+        result.extend_from_slice(&remainder[scalar_start..]);
+    }
+
+    result
+}
+
+/// Reinterpret &[u64] as &[u8] (little-endian safe).
+fn bytemuck_cast_u64_to_u8(words: &[u64]) -> &[u8] {
+    // SAFETY: u64 and u8 have compatible layouts on little-endian
+    unsafe {
+        core::slice::from_raw_parts(
+            words.as_ptr() as *const u8,
+            words.len() * 8,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,5 +518,31 @@ mod tests {
                 assert_eq!(recovered, indices, "failed at {bits} bits");
             }
         }
+    }
+
+    #[test]
+    fn test_unpack_simd_4bit_matches_scalar() {
+        let indices: Vec<u8> = (0..4096).map(|i| (i % 16) as u8).collect();
+        let packed = pack_indices(&indices, 4);
+        let scalar = unpack_indices(&packed, 4, 4096);
+        let simd = unpack_indices_simd(&packed, 4, 4096);
+        assert_eq!(scalar, simd, "SIMD 4-bit unpack must match scalar");
+    }
+
+    #[test]
+    fn test_unpack_simd_non_4bit_fallback() {
+        let indices: Vec<u8> = (0..100).map(|i| (i % 8) as u8).collect();
+        let packed = pack_indices(&indices, 3);
+        let scalar = unpack_indices(&packed, 3, 100);
+        let simd = unpack_indices_simd(&packed, 3, 100);
+        assert_eq!(scalar, simd, "non-4bit should fall back to scalar");
+    }
+
+    #[test]
+    fn test_pack_simd_roundtrip() {
+        let indices: Vec<u8> = (0..1000).map(|i| (i % 16) as u8).collect();
+        let packed = pack_indices_simd(&indices, 4);
+        let recovered = unpack_indices_simd(&packed, 4, 1000);
+        assert_eq!(indices, recovered);
     }
 }

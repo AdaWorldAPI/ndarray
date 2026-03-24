@@ -29,6 +29,7 @@ pub mod template;
 pub mod precompile;
 pub mod scan_config;
 pub mod packed;
+pub mod noise;
 
 // Re-exports: parser layer
 pub use parser::{parse_json, JsonValue, ParseError};
@@ -48,3 +49,6 @@ pub use scan_config::{
     ScanConfig, ScanResult, SimdKernelRegistry, DefaultKernelRegistry,
     scan_hamming, jit_symbol_table,
 };
+
+// Re-exports: noise parameters
+pub use noise::{NoiseParams, GRAD3, simple_noise_3d};
