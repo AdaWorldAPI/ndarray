@@ -304,7 +304,7 @@ mod tests {
             .forbid_bit(10)
             .require_value(16, 3, 5);
 
-        let states: Vec<u64> = (0..512).map(|i| i.wrapping_mul(0x123456789)).collect();
+        let states: Vec<u64> = (0..512u64).map(|i| i.wrapping_mul(0x123456789)).collect();
         let batch = m.test_section(&states);
         for (i, &s) in states.iter().enumerate() {
             let from_batch = (batch[i / 64] >> (i % 64)) & 1 == 1;
