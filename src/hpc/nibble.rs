@@ -27,7 +27,7 @@ pub fn nibble_unpack(packed: &[u8], count: usize) -> Vec<u8> {
 
     #[cfg(target_arch = "x86_64")]
     {
-        if count >= 32 && is_x86_feature_detected!("avx2") {
+        if count >= 32 && super::simd_caps::simd_caps().avx2 {
             // SAFETY: avx2 detected, packed buffer large enough.
             unsafe {
                 nibble_unpack_avx2(packed, count, &mut out);
@@ -136,14 +136,15 @@ pub fn nibble_sub_clamp(packed: &mut [u8], delta: u8) {
 
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx512bw") {
+        let caps = super::simd_caps::simd_caps();
+        if caps.avx512bw {
             // SAFETY: avx512bw detected, slice is mutable and valid.
             unsafe {
                 nibble_sub_clamp_avx512(packed, delta);
                 return;
             }
         }
-        if is_x86_feature_detected!("avx2") {
+        if caps.avx2 {
             // SAFETY: avx2 detected, slice is mutable and valid.
             unsafe {
                 nibble_sub_clamp_avx2(packed, delta);
@@ -242,7 +243,7 @@ unsafe fn nibble_sub_clamp_avx512(packed: &mut [u8], delta: u8) {
 pub fn nibble_above_threshold(packed: &[u8], threshold: u8) -> Vec<usize> {
     #[cfg(target_arch = "x86_64")]
     {
-        if packed.len() >= 16 && is_x86_feature_detected!("avx2") {
+        if packed.len() >= 16 && super::simd_caps::simd_caps().avx2 {
             // SAFETY: avx2 detected, packed buffer large enough.
             return unsafe { nibble_above_threshold_avx2(packed, threshold) };
         }

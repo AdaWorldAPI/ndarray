@@ -258,15 +258,16 @@ pub fn hamming_top_k_raw(
 fn dispatch_hamming(a: &[u8], b: &[u8]) -> u64 {
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx512vpopcntdq") && is_x86_feature_detected!("avx512bw") {
+        let caps = super::simd_caps::simd_caps();
+        if caps.has_avx512_bw_popcnt() {
             // SAFETY: checked VPOPCNTDQ + BW
             return unsafe { crate::backend::kernels_avx512::hamming_distance(a, b) };
         }
-        if is_x86_feature_detected!("avx512bw") {
+        if caps.avx512bw {
             // SAFETY: checked AVX-512 BW — uses 512-bit vpshufb (64B/iter)
             return unsafe { hamming_avx512bw(a, b) };
         }
-        if is_x86_feature_detected!("avx2") {
+        if caps.avx2 {
             // SAFETY: checked AVX2 — uses 256-bit vpshufb (32B/iter)
             return unsafe { hamming_avx2(a, b) };
         }
@@ -277,11 +278,12 @@ fn dispatch_hamming(a: &[u8], b: &[u8]) -> u64 {
 fn dispatch_popcount(a: &[u8]) -> u64 {
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx512vpopcntdq") {
+        let caps = super::simd_caps::simd_caps();
+        if caps.avx512vpopcntdq {
             // SAFETY: checked VPOPCNTDQ
             return unsafe { crate::backend::kernels_avx512::popcount(a) };
         }
-        if is_x86_feature_detected!("avx512bw") {
+        if caps.avx512bw {
             // SAFETY: checked AVX-512 BW — uses 512-bit vpshufb
             return unsafe { popcount_avx512bw(a) };
         }
@@ -292,7 +294,8 @@ fn dispatch_popcount(a: &[u8]) -> u64 {
 fn dispatch_hamming_batch(query: &[u8], database: &[u8], num_rows: usize, row_bytes: usize) -> Vec<u64> {
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx512vpopcntdq") && is_x86_feature_detected!("avx512bw") {
+        let caps = super::simd_caps::simd_caps();
+        if caps.has_avx512_bw_popcnt() {
             // SAFETY: checked VPOPCNTDQ + BW
             return unsafe { crate::backend::kernels_avx512::hamming_batch(query, database, num_rows, row_bytes) };
         }

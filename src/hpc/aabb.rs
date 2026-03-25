@@ -144,14 +144,15 @@ fn sq_dist_point_aabb(point: [f32; 3], aabb: &Aabb) -> f32 {
 pub fn aabb_intersect_batch(query: &Aabb, candidates: &[Aabb]) -> Vec<bool> {
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx512f") && candidates.len() >= 16 {
-            // SAFETY: avx512f detected, enough candidates for batch processing.
+        let caps = super::simd_caps::simd_caps();
+        if caps.avx512f && candidates.len() >= 16 {
+            // SAFETY: avx512f detected via simd_caps singleton.
             unsafe {
                 return aabb_intersect_batch_avx512(query, candidates);
             }
         }
-        if is_x86_feature_detected!("sse4.1") {
-            // SAFETY: sse4.1 detected, slice access within bounds.
+        if caps.sse41 {
+            // SAFETY: sse4.1 detected via simd_caps singleton.
             unsafe {
                 return aabb_intersect_batch_sse41(query, candidates);
             }
@@ -294,8 +295,8 @@ unsafe fn aabb_intersect_batch_sse41(query: &Aabb, candidates: &[Aabb]) -> Vec<b
 pub fn ray_aabb_slab_test_batch(ray: &Ray, aabbs: &[Aabb]) -> (Vec<bool>, Vec<f32>) {
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx512f") && aabbs.len() >= 16 {
-            // SAFETY: avx512f detected, enough AABBs for batch processing.
+        if super::simd_caps::simd_caps().avx512f && aabbs.len() >= 16 {
+            // SAFETY: avx512f detected via simd_caps singleton.
             unsafe {
                 return ray_aabb_slab_test_avx512(ray, aabbs);
             }
@@ -455,8 +456,8 @@ unsafe fn ray_aabb_slab_test_avx512(ray: &Ray, aabbs: &[Aabb]) -> (Vec<bool>, Ve
 pub fn aabb_expand_batch(aabbs: &mut [Aabb], dx: f32, dy: f32, dz: f32) {
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("sse2") {
-            // SAFETY: sse2 detected, operating on mutable slice in-bounds.
+        if super::simd_caps::simd_caps().sse2 {
+            // SAFETY: sse2 detected via simd_caps singleton.
             unsafe {
                 aabb_expand_batch_sse2(aabbs, dx, dy, dz);
                 return;

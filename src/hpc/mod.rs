@@ -19,6 +19,9 @@
 //! - FFT (forward, inverse, real-to-complex)
 //! - VML (vectorized math library)
 
+// SIMD capability singleton — detect once, all modules share
+pub mod simd_caps;
+
 pub mod blas_level1;
 pub mod blas_level2;
 pub mod blas_level3;
