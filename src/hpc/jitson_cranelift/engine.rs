@@ -32,6 +32,7 @@ use cranelift_module::{FuncId, Linkage, Module};
 
 use super::detect::CpuCaps;
 use super::ir::{JitError, ScanParams};
+use super::noise_jit::CachedNoiseKernel;
 use super::scan_jit::ScanKernel;
 
 /// Builder for creating a JIT engine with registered external functions.
@@ -103,7 +104,12 @@ impl JitEngineBuilder {
         let cache = LazyLock::new(empty_cache as fn() -> KernelCache);
         LazyLock::force(&cache);
 
-        Ok(JitEngine { module, caps, cache })
+        Ok(JitEngine {
+            module,
+            caps,
+            cache,
+            noise_cache: HashMap::new(),
+        })
     }
 }
 
@@ -147,13 +153,16 @@ unsafe impl Sync for KernelCache {}
 pub struct JitEngine {
     /// Cranelift JIT module — owns the compiled code pages.
     /// Only accessed during BUILD phase (&mut self).
-    module: JITModule,
+    pub(crate) module: JITModule,
 
     /// CPU capabilities detected at engine creation.
     pub caps: CpuCaps,
 
     /// Kernel cache. Mutable during BUILD (via get_mut), frozen during RUN.
     cache: LazyLock<KernelCache>,
+
+    /// Noise kernel cache. Mutable during BUILD, read-only during RUN.
+    pub(crate) noise_cache: HashMap<u64, CachedNoiseKernel>,
 }
 
 // SAFETY: JITModule's compiled code pages are immutable after finalization.
