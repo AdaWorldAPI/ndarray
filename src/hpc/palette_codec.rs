@@ -265,11 +265,12 @@ impl PackedPaletteArray {
 pub fn unpack_indices_simd(packed: &[u64], bits_per_index: usize, count: usize) -> Vec<u8> {
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx512f") && count >= 16 {
+        let caps = super::simd_caps::simd_caps();
+        if caps.avx512f && count >= 16 {
             // SAFETY: avx512f detected, count >= 16 ensures enough data.
             return unsafe { unpack_generic_avx512(packed, bits_per_index, count) };
         }
-        if bits_per_index == 4 && count >= 16 && is_x86_feature_detected!("avx2") {
+        if bits_per_index == 4 && count >= 16 && caps.avx2 {
             return unsafe { unpack_4bit_avx2(packed, count) };
         }
     }
@@ -281,7 +282,8 @@ pub fn unpack_indices_simd(packed: &[u64], bits_per_index: usize, count: usize) 
 pub fn pack_indices_simd(indices: &[u8], bits_per_index: usize) -> Vec<u64> {
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx512f") && indices.len() >= 16 {
+        let caps = super::simd_caps::simd_caps();
+        if caps.avx512f && indices.len() >= 16 {
             // SAFETY: avx512f detected, enough indices for SIMD processing.
             return unsafe { pack_generic_avx512(indices, bits_per_index) };
         }
@@ -415,7 +417,8 @@ pub fn bedrock_reorder_xzy(states: &[u16]) -> Vec<u16> {
 
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx512f") {
+        let caps = super::simd_caps::simd_caps();
+        if caps.avx512f {
             // SAFETY: avx512f detected, states.len() == 4096 guaranteed by assert.
             return unsafe { bedrock_reorder_xzy_avx512(states) };
         }

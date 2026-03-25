@@ -96,14 +96,15 @@ impl PropertyMask {
 
         #[cfg(target_arch = "x86_64")]
         {
-            if is_x86_feature_detected!("avx512f") {
+            let caps = super::simd_caps::simd_caps();
+            if caps.avx512f {
                 // SAFETY: avx512f detected, pointers are within slice bounds.
                 unsafe {
                     self.test_section_avx512(states, &mut result);
                     return result;
                 }
             }
-            if is_x86_feature_detected!("avx2") {
+            if caps.avx2 {
                 // SAFETY: we checked avx2 at runtime, pointers are within slice bounds.
                 unsafe {
                     self.test_section_avx2(states, &mut result);
@@ -120,7 +121,8 @@ impl PropertyMask {
     pub fn count_section(&self, states: &[u64]) -> u32 {
         #[cfg(target_arch = "x86_64")]
         {
-            if is_x86_feature_detected!("avx512vpopcntdq") && is_x86_feature_detected!("avx512f") {
+            let caps = super::simd_caps::simd_caps();
+            if caps.avx512vpopcntdq && caps.avx512f {
                 // SAFETY: feature detected above.
                 return unsafe { self.count_section_avx512(states) };
             }
@@ -329,7 +331,8 @@ pub fn count_section_multi(masks: &[PropertyMask], states: &[u64]) -> MultiMaskR
 
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx512f") && states.len() >= 8 {
+        let caps = super::simd_caps::simd_caps();
+        if caps.avx512f && states.len() >= 8 {
             // SAFETY: avx512f detected above, states.len() >= 8 guaranteed.
             unsafe {
                 return count_section_multi_avx512(masks, states);

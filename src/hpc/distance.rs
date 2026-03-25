@@ -109,7 +109,7 @@ mod simd_impl {
 pub fn squared_distances_f32(query: [f32; 3], points: &[[f32; 3]]) -> Vec<f32> {
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx2") {
+        if super::simd_caps::simd_caps().avx2 {
             let mut out = Vec::new();
             // SAFETY: feature detected above.
             unsafe { simd_impl::squared_distances_avx2(query, points, &mut out) };

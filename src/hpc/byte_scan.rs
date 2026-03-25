@@ -142,11 +142,12 @@ mod simd_impl {
 pub fn byte_find_all(haystack: &[u8], needle: u8) -> Vec<usize> {
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx512bw") {
+        let caps = super::simd_caps::simd_caps();
+        if caps.avx512bw {
             // SAFETY: feature detected above.
             return unsafe { simd_impl::byte_find_all_avx512(haystack, needle) };
         }
-        if is_x86_feature_detected!("avx2") {
+        if caps.avx2 {
             // SAFETY: feature detected above.
             return unsafe { simd_impl::byte_find_all_avx2(haystack, needle) };
         }
@@ -180,11 +181,12 @@ pub fn u16_find_all(haystack: &[u8], pattern: u16) -> Vec<usize> {
 pub fn byte_count(haystack: &[u8], needle: u8) -> usize {
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx512bw") {
+        let caps = super::simd_caps::simd_caps();
+        if caps.avx512bw {
             // SAFETY: feature detected above.
             return unsafe { simd_impl::byte_count_avx512(haystack, needle) };
         }
-        if is_x86_feature_detected!("avx2") {
+        if caps.avx2 {
             // SAFETY: feature detected above.
             return unsafe { simd_impl::byte_count_avx2(haystack, needle) };
         }

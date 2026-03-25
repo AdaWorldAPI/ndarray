@@ -199,7 +199,7 @@ impl DistanceTables {
     pub fn distance_batch(&self, cams: &[CamFingerprint]) -> Vec<f32> {
         #[cfg(target_arch = "x86_64")]
         {
-            if is_x86_feature_detected!("avx512f") {
+            if super::simd_caps::simd_caps().avx512f {
                 return unsafe { self.distance_batch_avx512(cams) };
             }
         }

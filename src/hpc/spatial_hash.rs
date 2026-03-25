@@ -293,7 +293,7 @@ fn batch_sq_dist_filter(
 ) -> Vec<(usize, f32)> {
     #[cfg(target_arch = "x86_64")]
     {
-        if candidates.len() >= 8 && is_x86_feature_detected!("avx2") {
+        if candidates.len() >= 8 && super::simd_caps::simd_caps().avx2 {
             // SAFETY: avx2 detected, enough candidates for SIMD.
             return unsafe { batch_sq_dist_avx2(query, candidates, radius_sq) };
         }
