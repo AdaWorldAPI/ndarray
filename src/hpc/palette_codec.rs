@@ -402,6 +402,117 @@ fn bytemuck_cast_u64_to_u8(words: &[u64]) -> &[u8] {
     }
 }
 
+/// Reorder 4096 block states from Java Y-major ordering (y*256+z*16+x)
+/// to Bedrock XZY ordering (x*256+z*16+y).
+///
+/// Bedrock uses a different coordinate convention than Java edition.
+/// This function handles the permutation without intermediate allocation.
+///
+/// # Panics
+/// Panics if `states.len() != 4096`.
+pub fn bedrock_reorder_xzy(states: &[u16]) -> Vec<u16> {
+    assert!(states.len() == 4096, "expected 4096 block states, got {}", states.len());
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx512f") {
+            // SAFETY: avx512f detected, states.len() == 4096 guaranteed by assert.
+            return unsafe { bedrock_reorder_xzy_avx512(states) };
+        }
+    }
+
+    let mut out = vec![0u16; 4096];
+    for y in 0..16 {
+        for z in 0..16 {
+            for x in 0..16 {
+                out[x * 256 + z * 16 + y] = states[y * 256 + z * 16 + x];
+            }
+        }
+    }
+    out
+}
+
+/// Reorder 4096 block states from Bedrock XZY ordering (x*256+z*16+y)
+/// back to Java Y-major ordering (y*256+z*16+x).
+///
+/// # Panics
+/// Panics if `states.len() != 4096`.
+pub fn bedrock_reorder_xzy_inverse(states: &[u16]) -> Vec<u16> {
+    assert!(states.len() == 4096, "expected 4096 block states, got {}", states.len());
+
+    let mut out = vec![0u16; 4096];
+    for x in 0..16 {
+        for z in 0..16 {
+            for y in 0..16 {
+                out[y * 256 + z * 16 + x] = states[x * 256 + z * 16 + y];
+            }
+        }
+    }
+    out
+}
+
+/// Reorder Java Y-major block states to Bedrock XZY and pack into bit-packed format.
+///
+/// Combines `bedrock_reorder_xzy` with `pack_indices` for efficient serialization.
+/// The palette maps u16 block state IDs to u8 palette indices.
+///
+/// Returns `None` if any block state ID is not in the palette.
+///
+/// # Panics
+/// Panics if `states.len() != 4096` or `bits_per_index` is 0 or > 8.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::hpc::palette_codec::bedrock_pack_section;
+/// use std::collections::HashMap;
+///
+/// let states = vec![0u16; 4096];
+/// let mut palette = HashMap::new();
+/// palette.insert(0u16, 0u8);
+/// let packed = bedrock_pack_section(&states, &palette, 1);
+/// assert!(packed.is_some());
+/// ```
+pub fn bedrock_pack_section(
+    states: &[u16],
+    palette: &std::collections::HashMap<u16, u8>,
+    bits_per_index: usize,
+) -> Option<Vec<u64>> {
+    let reordered = bedrock_reorder_xzy(states);
+    let mut indices = Vec::with_capacity(4096);
+    for &state in &reordered {
+        let idx = palette.get(&state)?;
+        indices.push(*idx);
+    }
+    Some(pack_indices(&indices, bits_per_index))
+}
+
+/// AVX-512 accelerated reorder from Java Y-major to Bedrock XZY ordering.
+///
+/// Uses the same permutation logic as the scalar path but is marked with
+/// `target_feature(enable = "avx512f")` for future SIMD gather/scatter
+/// optimization.
+///
+/// # Safety
+/// Caller must ensure AVX-512F is available and `states.len() == 4096`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+unsafe fn bedrock_reorder_xzy_avx512(states: &[u16]) -> Vec<u16> {
+    // Scalar implementation with correct permutation logic.
+    // AVX-512 gather/scatter for u16 requires widening to u32 which adds
+    // complexity; the scalar loop over 4096 elements is already fast due to
+    // the target_feature enabling wider instruction scheduling.
+    let mut out = vec![0u16; 4096];
+    for y in 0..16 {
+        for z in 0..16 {
+            for x in 0..16 {
+                out[x * 256 + z * 16 + y] = *states.get_unchecked(y * 256 + z * 16 + x);
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -646,5 +757,86 @@ mod tests {
                 assert_eq!(indices, simd, "mismatch at {bits}b x {count}");
             }
         }
+    }
+
+    #[test]
+    fn test_bedrock_reorder_roundtrip() {
+        // Create a pattern where every position has a unique value
+        let states: Vec<u16> = (0..4096).map(|i| i as u16).collect();
+        let reordered = bedrock_reorder_xzy(&states);
+        let recovered = bedrock_reorder_xzy_inverse(&reordered);
+        assert_eq!(states, recovered, "reorder then inverse must be identity");
+    }
+
+    #[test]
+    fn test_bedrock_reorder_specific() {
+        let mut states = vec![0u16; 4096];
+
+        // Place known values at specific Java-order positions:
+        // Java index = y*256 + z*16 + x
+        // Bedrock index = x*256 + z*16 + y
+
+        // (x=0, y=0, z=0) → Java idx 0, Bedrock idx 0
+        states[0] = 100;
+        // (x=1, y=0, z=0) → Java idx 1, Bedrock idx 256
+        states[1] = 200;
+        // (x=0, y=1, z=0) → Java idx 256, Bedrock idx 1
+        states[256] = 300;
+        // (x=3, y=5, z=7) → Java idx 5*256+7*16+3 = 1395, Bedrock idx 3*256+7*16+5 = 885
+        states[1395] = 400;
+        // (x=15, y=15, z=15) → Java idx 15*256+15*16+15 = 4095, Bedrock idx 4095
+        states[4095] = 500;
+
+        let reordered = bedrock_reorder_xzy(&states);
+
+        assert_eq!(reordered[0], 100, "(0,0,0) should map to 0");
+        assert_eq!(reordered[256], 200, "(1,0,0) should map to 256");
+        assert_eq!(reordered[1], 300, "(0,1,0) should map to 1");
+        assert_eq!(reordered[885], 400, "(3,5,7) should map to 885");
+        assert_eq!(reordered[4095], 500, "(15,15,15) should map to 4095");
+    }
+
+    #[test]
+    fn test_bedrock_pack_section() {
+        use std::collections::HashMap;
+
+        // Create states with a small palette
+        let mut states = vec![0u16; 4096];
+        for i in 0..4096 {
+            states[i] = (i % 4) as u16;
+        }
+
+        let mut palette = HashMap::new();
+        palette.insert(0u16, 0u8);
+        palette.insert(1u16, 1u8);
+        palette.insert(2u16, 2u8);
+        palette.insert(3u16, 3u8);
+
+        let bits = bits_for_palette_size(4); // 2 bits
+        let packed = bedrock_pack_section(&states, &palette, bits)
+            .expect("all states should be in palette");
+
+        // Verify by unpacking and inverse-reordering
+        let unpacked = unpack_indices(&packed, bits, 4096);
+        let bedrock_states: Vec<u16> = unpacked.iter().map(|&idx| {
+            // Reverse palette lookup: idx → state
+            *palette.iter().find(|(_, &v)| v == idx).unwrap().0
+        }).collect();
+        let java_states = bedrock_reorder_xzy_inverse(&bedrock_states);
+        assert_eq!(states, java_states, "pack then unpack+inverse must recover original");
+    }
+
+    #[test]
+    fn test_bedrock_pack_section_missing_palette_entry() {
+        use std::collections::HashMap;
+
+        let mut states = vec![0u16; 4096];
+        states[0] = 99; // Not in palette
+
+        let mut palette = HashMap::new();
+        palette.insert(0u16, 0u8);
+
+        let result = bedrock_pack_section(&states, &palette, 1);
+        assert!(result.is_none(), "should return None for missing palette entry");
     }
 }
