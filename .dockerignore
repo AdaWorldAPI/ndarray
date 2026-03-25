@@ -1,0 +1,9 @@
+target/
+.git/
+.claude/
+*.md
+!README*.md
+.github/
+benches/
+examples/
+scripts/
