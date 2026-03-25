@@ -201,6 +201,163 @@ pub fn byte_find_first(haystack: &[u8], needle: u8) -> Option<usize> {
 }
 
 // ---------------------------------------------------------------------------
+// NBT schema-aware scanning
+// ---------------------------------------------------------------------------
+
+/// NBT tag type identifiers (matching Minecraft NBT format).
+///
+/// Used by the schema scanner to identify tag boundaries in raw NBT data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum NbtTagId {
+    /// TAG_End (0) — marks the end of a compound tag.
+    End = 0,
+    /// TAG_Byte (1) — a single signed byte.
+    Byte = 1,
+    /// TAG_Short (2) — a signed 16-bit integer.
+    Short = 2,
+    /// TAG_Int (3) — a signed 32-bit integer.
+    Int = 3,
+    /// TAG_Long (4) — a signed 64-bit integer.
+    Long = 4,
+    /// TAG_Float (5) — an IEEE 754 single-precision float.
+    Float = 5,
+    /// TAG_Double (6) — an IEEE 754 double-precision float.
+    Double = 6,
+    /// TAG_Byte_Array (7) — a length-prefixed array of bytes.
+    ByteArray = 7,
+    /// TAG_String (8) — a length-prefixed UTF-8 string.
+    String = 8,
+    /// TAG_List (9) — a typed list of tags.
+    List = 9,
+    /// TAG_Compound (10) — a set of named tags.
+    Compound = 10,
+    /// TAG_Int_Array (11) — a length-prefixed array of 32-bit integers.
+    IntArray = 11,
+    /// TAG_Long_Array (12) — a length-prefixed array of 64-bit integers.
+    LongArray = 12,
+}
+
+/// A schema entry describing a named NBT tag to locate.
+///
+/// The scanner searches for the tag name bytes preceded by the tag type byte
+/// and a 2-byte big-endian name length.
+#[derive(Debug, Clone)]
+pub struct NbtSchemaEntry {
+    /// Expected tag type.
+    pub tag_id: NbtTagId,
+    /// Tag name bytes (UTF-8).
+    pub name: Vec<u8>,
+}
+
+impl NbtSchemaEntry {
+    /// Create a schema entry for a named compound tag.
+    pub fn compound(name: &str) -> Self {
+        Self { tag_id: NbtTagId::Compound, name: name.as_bytes().to_vec() }
+    }
+
+    /// Create a schema entry for a named list tag.
+    pub fn list(name: &str) -> Self {
+        Self { tag_id: NbtTagId::List, name: name.as_bytes().to_vec() }
+    }
+
+    /// Create a schema entry for any tag type with given name.
+    pub fn new(tag_id: NbtTagId, name: &str) -> Self {
+        Self { tag_id, name: name.as_bytes().to_vec() }
+    }
+}
+
+/// A match from schema scanning: the byte offset where this tag's payload begins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NbtSchemaMatch {
+    /// Index of the schema entry that matched.
+    pub schema_index: usize,
+    /// Byte offset of the tag type byte in the buffer.
+    pub tag_offset: usize,
+    /// Byte offset where the tag's payload begins (after type + name_len + name).
+    pub payload_offset: usize,
+}
+
+/// Scan a raw NBT byte buffer for multiple named tags simultaneously.
+///
+/// For each schema entry, searches for the pattern:
+/// `[tag_id_byte] [name_len_hi] [name_len_lo] [name_bytes...]`
+///
+/// Returns all matches found, sorted by offset.
+///
+/// # Strategy
+///
+/// 1. Use SIMD `byte_find_all` to locate all occurrences of each unique tag_id byte
+/// 2. At each candidate position, verify the name length and name bytes match
+/// 3. Record payload offset (position + 1 + 2 + name_len)
+///
+/// This avoids linear scanning of the entire buffer for each tag.
+pub fn nbt_schema_scan(data: &[u8], schema: &[NbtSchemaEntry]) -> Vec<NbtSchemaMatch> {
+    let mut matches = Vec::new();
+
+    // Group schema entries by tag_id to avoid redundant SIMD scans.
+    // Collect unique tag_id bytes and the schema indices that use each.
+    let mut tag_groups: Vec<(u8, Vec<usize>)> = Vec::new();
+    for (si, entry) in schema.iter().enumerate() {
+        let tid = entry.tag_id as u8;
+        if let Some(group) = tag_groups.iter_mut().find(|(t, _)| *t == tid) {
+            group.1.push(si);
+        } else {
+            tag_groups.push((tid, vec![si]));
+        }
+    }
+
+    for (tid_byte, schema_indices) in &tag_groups {
+        // SIMD-accelerated scan for this tag type byte.
+        let candidates = byte_find_all(data, *tid_byte);
+
+        for &pos in &candidates {
+            // Need at least 3 bytes (tag_id + 2-byte name_len) after pos.
+            if pos + 3 > data.len() {
+                continue;
+            }
+
+            // Read big-endian u16 name length.
+            let name_len = u16::from_be_bytes([data[pos + 1], data[pos + 2]]) as usize;
+
+            // Check bounds for the full name.
+            if pos + 3 + name_len > data.len() {
+                continue;
+            }
+
+            let name_slice = &data[pos + 3..pos + 3 + name_len];
+
+            // Check against every schema entry for this tag_id.
+            for &si in schema_indices {
+                let entry = &schema[si];
+                if entry.name.len() == name_len && name_slice == entry.name.as_slice() {
+                    matches.push(NbtSchemaMatch {
+                        schema_index: si,
+                        tag_offset: pos,
+                        payload_offset: pos + 3 + name_len,
+                    });
+                }
+            }
+        }
+    }
+
+    // Sort by tag_offset for deterministic output order.
+    matches.sort_by_key(|m| m.tag_offset);
+    matches
+}
+
+/// Scan multiple NBT buffers against the same schema.
+///
+/// Returns per-buffer match vectors. Useful for batch region loading
+/// where 1024 chunk NBT blobs are processed together.
+pub fn nbt_schema_scan_batch(
+    buffers: &[&[u8]],
+    schema: &[NbtSchemaEntry],
+) -> Vec<Vec<NbtSchemaMatch>> {
+    buffers.iter().map(|buf| nbt_schema_scan(buf, schema)).collect()
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -324,5 +481,82 @@ mod tests {
     fn test_byte_count_exact_64_boundary() {
         let buf = vec![0xABu8; 64];
         assert_eq!(byte_count(&buf, 0xAB), 64);
+    }
+
+    #[test]
+    fn test_nbt_schema_scan_basic() {
+        // Manually craft an NBT-like buffer with a Compound tag named "Entities"
+        // Format: tag_id(1) + name_len(2 BE) + name(N) + payload...
+        let mut data = Vec::new();
+        // Tag: Compound "Entities"
+        data.push(10); // Compound tag id
+        data.extend_from_slice(&(8u16).to_be_bytes()); // name length
+        data.extend_from_slice(b"Entities"); // name
+        data.extend_from_slice(&[0; 10]); // some payload
+
+        let schema = vec![NbtSchemaEntry::compound("Entities")];
+        let matches = nbt_schema_scan(&data, &schema);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].schema_index, 0);
+        assert_eq!(matches[0].tag_offset, 0);
+        assert_eq!(matches[0].payload_offset, 11); // 1 + 2 + 8
+    }
+
+    #[test]
+    fn test_nbt_schema_scan_multiple_tags() {
+        let mut data = Vec::new();
+        // Compound "Entities"
+        data.push(10);
+        data.extend_from_slice(&(8u16).to_be_bytes());
+        data.extend_from_slice(b"Entities");
+        data.extend_from_slice(&[0; 5]);
+        // List "BlockEntities"
+        let offset2 = data.len();
+        data.push(9); // List
+        data.extend_from_slice(&(13u16).to_be_bytes());
+        data.extend_from_slice(b"BlockEntities");
+        data.extend_from_slice(&[0; 5]);
+
+        let schema = vec![
+            NbtSchemaEntry::compound("Entities"),
+            NbtSchemaEntry::list("BlockEntities"),
+        ];
+        let matches = nbt_schema_scan(&data, &schema);
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].tag_offset, 0);
+        assert_eq!(matches[1].tag_offset, offset2);
+    }
+
+    #[test]
+    fn test_nbt_schema_scan_no_match() {
+        let data = vec![0u8; 100];
+        let schema = vec![NbtSchemaEntry::compound("Entities")];
+        let matches = nbt_schema_scan(&data, &schema);
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn test_nbt_schema_scan_batch() {
+        let buf1 = {
+            let mut d = Vec::new();
+            d.push(10);
+            d.extend_from_slice(&(4u16).to_be_bytes());
+            d.extend_from_slice(b"Test");
+            d
+        };
+        let buf2 = vec![0u8; 20]; // no match
+
+        let schema = vec![NbtSchemaEntry::compound("Test")];
+        let results = nbt_schema_scan_batch(&[&buf1, &buf2], &schema);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].len(), 1);
+        assert!(results[1].is_empty());
+    }
+
+    #[test]
+    fn test_nbt_tag_id_values() {
+        assert_eq!(NbtTagId::End as u8, 0);
+        assert_eq!(NbtTagId::Compound as u8, 10);
+        assert_eq!(NbtTagId::LongArray as u8, 12);
     }
 }

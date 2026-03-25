@@ -294,6 +294,113 @@ impl Default for PropertyMask {
     }
 }
 
+/// Result of multi-mask counting: per-mask match counts from a single pass.
+///
+/// Enables "count crops AND count liquids AND count redstone" in one scan,
+/// avoiding redundant iteration over 4096 block states.
+#[derive(Debug, Clone)]
+pub struct MultiMaskResult {
+    /// Per-mask match counts, in the same order as the input masks.
+    pub counts: Vec<u32>,
+}
+
+/// Count matches for multiple masks in a single pass over the data.
+///
+/// More efficient than calling `count_section()` N times because:
+/// - Single pass over the state array (one cache line read per state)
+/// - Each state is loaded once and tested against all masks
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::hpc::property_mask::{PropertyMask, count_section_multi};
+///
+/// let crops = PropertyMask::new().require_bit(0);
+/// let liquids = PropertyMask::new().require_bit(1);
+/// let redstone = PropertyMask::new().require_bit(2);
+/// let states: Vec<u64> = (0..100).collect();
+/// let result = count_section_multi(&[crops, liquids, redstone], &states);
+/// assert_eq!(result.counts.len(), 3);
+/// ```
+pub fn count_section_multi(masks: &[PropertyMask], states: &[u64]) -> MultiMaskResult {
+    if masks.is_empty() {
+        return MultiMaskResult { counts: vec![] };
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx512f") && states.len() >= 8 {
+            // SAFETY: avx512f detected above, states.len() >= 8 guaranteed.
+            unsafe {
+                return count_section_multi_avx512(masks, states);
+            }
+        }
+    }
+
+    // scalar fallback
+    count_section_multi_scalar(masks, states)
+}
+
+/// Scalar fallback for multi-mask counting.
+fn count_section_multi_scalar(masks: &[PropertyMask], states: &[u64]) -> MultiMaskResult {
+    let mut counts = vec![0u32; masks.len()];
+    for &state in states {
+        for (m_idx, mask) in masks.iter().enumerate() {
+            if mask.test(state) {
+                counts[m_idx] += 1;
+            }
+        }
+    }
+    MultiMaskResult { counts }
+}
+
+/// AVX-512 multi-mask counting: process 8 states at a time per mask.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+unsafe fn count_section_multi_avx512(masks: &[PropertyMask], states: &[u64]) -> MultiMaskResult {
+    use core::arch::x86_64::*;
+
+    let mut counts = vec![0u32; masks.len()];
+    let zero = _mm512_setzero_si512();
+    let chunks = states.len() / 8;
+
+    for c in 0..chunks {
+        let base = c * 8;
+        // SAFETY: base + 8 <= states.len(), avx512f checked by caller.
+        let vals = _mm512_loadu_si512(states.as_ptr().add(base) as *const __m512i);
+
+        for (m_idx, mask) in masks.iter().enumerate() {
+            let and_mask_v = _mm512_set1_epi64(mask.and_mask as i64);
+            let and_expect_v = _mm512_set1_epi64(mask.and_expect as i64);
+            let andn_mask_v = _mm512_set1_epi64(mask.andn_mask as i64);
+
+            // (vals & and_mask) == and_expect
+            let anded = _mm512_and_si512(vals, and_mask_v);
+            let eq_and = _mm512_cmpeq_epi64_mask(anded, and_expect_v);
+
+            // (vals & andn_mask) == 0
+            let andned = _mm512_and_si512(vals, andn_mask_v);
+            let eq_andn = _mm512_cmpeq_epi64_mask(andned, zero);
+
+            // Both conditions: AND the two kmasks
+            let both = eq_and & eq_andn;
+            counts[m_idx] += (both as u32).count_ones();
+        }
+    }
+
+    // Scalar tail
+    for i in (chunks * 8)..states.len() {
+        let state = states[i];
+        for (m_idx, mask) in masks.iter().enumerate() {
+            if mask.test(state) {
+                counts[m_idx] += 1;
+            }
+        }
+    }
+
+    MultiMaskResult { counts }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -459,5 +566,60 @@ mod tests {
         let count = m.count_section(&states);
         let expected = states.iter().filter(|&&s| m.test(s)).count() as u32;
         assert_eq!(count, expected);
+    }
+
+    #[test]
+    fn test_count_multi_basic() {
+        let crops = PropertyMask::new().require_bit(0);
+        let liquids = PropertyMask::new().require_bit(1);
+        let redstone = PropertyMask::new().require_bit(2).forbid_bit(5);
+
+        let states: Vec<u64> = (0..256).collect();
+        let result = count_section_multi(&[crops, liquids, redstone], &states);
+
+        assert_eq!(result.counts.len(), 3);
+        assert_eq!(result.counts[0], crops.count_section(&states));
+        assert_eq!(result.counts[1], liquids.count_section(&states));
+        assert_eq!(result.counts[2], redstone.count_section(&states));
+    }
+
+    #[test]
+    fn test_count_multi_empty_masks() {
+        let states: Vec<u64> = (0..100).collect();
+        let result = count_section_multi(&[], &states);
+        assert!(result.counts.is_empty());
+    }
+
+    #[test]
+    fn test_count_multi_single() {
+        let m = PropertyMask::new().require_bit(3).forbid_bit(7);
+        let states: Vec<u64> = (0..200).collect();
+        let result = count_section_multi(&[m], &states);
+        assert_eq!(result.counts.len(), 1);
+        assert_eq!(result.counts[0], m.count_section(&states));
+    }
+
+    #[test]
+    fn test_count_multi_avx512_parity() {
+        let masks = [
+            PropertyMask::new().require_bit(0),
+            PropertyMask::new().require_bit(1).forbid_bit(4),
+            PropertyMask::new().require_value(8, 4, 0xA),
+            PropertyMask::new().forbid_bit(3).forbid_bit(6),
+            PropertyMask::new().require_bit(2).require_bit(5),
+        ];
+
+        let states: Vec<u64> = (0..1024u64).map(|i| i.wrapping_mul(0xABCDEF01)).collect();
+        let result = count_section_multi(&masks, &states);
+
+        assert_eq!(result.counts.len(), masks.len());
+        for (m_idx, mask) in masks.iter().enumerate() {
+            let expected = mask.count_section(&states);
+            assert_eq!(
+                result.counts[m_idx], expected,
+                "multi-mask parity mismatch for mask index {}",
+                m_idx
+            );
+        }
     }
 }

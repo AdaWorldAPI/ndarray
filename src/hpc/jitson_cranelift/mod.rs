@@ -17,8 +17,10 @@ pub mod ir;
 pub mod detect;
 pub mod engine;
 pub mod scan_jit;
+pub mod noise_jit;
 
 pub use ir::*;
 pub use detect::CpuCaps;
 pub use engine::{JitEngine, JitEngineBuilder};
 pub use scan_jit::ScanKernel;
+pub use noise_jit::{NoiseKernel, NoiseKernelParams};
