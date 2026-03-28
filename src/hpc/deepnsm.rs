@@ -1,10 +1,14 @@
-//! DeepNSM: 65 semantic primes → 40K derived concept decomposition.
+//! DeepNSM: 74 semantic primes → 40K derived concept decomposition.
 //!
-//! Natural Semantic Metalanguage: 65 primes → derived concepts.
+//! Natural Semantic Metalanguage: 74 primes → derived concepts.
 //! NSM provides the WHAT (structural semantics).
 //! Three separate systems, one pipeline: NSM is the parser.
+//!
+//! Transcoded from Python DeepNSM (<https://github.com/AdaWorldAPI/DeepNSM>).
+//! Rust 1.94.0 · SIMD via `crate::simd::F32x16` · Arrow 57 / DataFusion 51 ready.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::LazyLock;
 
 /// The 65 universal semantic primes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
