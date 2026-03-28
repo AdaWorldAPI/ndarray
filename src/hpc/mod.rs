@@ -21,6 +21,8 @@
 
 // SIMD capability singleton — detect once, all modules share
 pub mod simd_caps;
+// LazyLock frozen SIMD dispatch — function pointers selected once at startup
+pub mod simd_dispatch;
 
 pub mod blas_level1;
 pub mod blas_level2;

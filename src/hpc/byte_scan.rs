@@ -9,7 +9,7 @@
 // ---------------------------------------------------------------------------
 
 #[cfg(target_arch = "x86_64")]
-mod simd_impl {
+pub(crate) mod simd_impl {
     use core::arch::x86_64::*;
 
     /// Find all positions of `needle` in `haystack` using AVX2 (32 bytes/iter).
@@ -17,7 +17,7 @@ mod simd_impl {
     /// # Safety
     /// Caller must ensure AVX2 is available.
     #[target_feature(enable = "avx2")]
-    pub(super) unsafe fn byte_find_all_avx2(haystack: &[u8], needle: u8) -> Vec<usize> {
+    pub(crate) unsafe fn byte_find_all_avx2(haystack: &[u8], needle: u8) -> Vec<usize> {
         let mut result = Vec::new();
         let n = haystack.len();
         let ptr = haystack.as_ptr();
@@ -52,7 +52,7 @@ mod simd_impl {
     /// # Safety
     /// Caller must ensure AVX-512 BW is available.
     #[target_feature(enable = "avx512bw")]
-    pub(super) unsafe fn byte_find_all_avx512(haystack: &[u8], needle: u8) -> Vec<usize> {
+    pub(crate) unsafe fn byte_find_all_avx512(haystack: &[u8], needle: u8) -> Vec<usize> {
         let mut result = Vec::new();
         let n = haystack.len();
         let ptr = haystack.as_ptr();
@@ -84,7 +84,7 @@ mod simd_impl {
     /// # Safety
     /// Caller must ensure AVX2 is available.
     #[target_feature(enable = "avx2")]
-    pub(super) unsafe fn byte_count_avx2(haystack: &[u8], needle: u8) -> usize {
+    pub(crate) unsafe fn byte_count_avx2(haystack: &[u8], needle: u8) -> usize {
         let n = haystack.len();
         let ptr = haystack.as_ptr();
         let needle_v = _mm256_set1_epi8(needle as i8);
@@ -111,7 +111,7 @@ mod simd_impl {
     /// # Safety
     /// Caller must ensure AVX-512 BW is available.
     #[target_feature(enable = "avx512bw")]
-    pub(super) unsafe fn byte_count_avx512(haystack: &[u8], needle: u8) -> usize {
+    pub(crate) unsafe fn byte_count_avx512(haystack: &[u8], needle: u8) -> usize {
         let n = haystack.len();
         let ptr = haystack.as_ptr();
         let needle_v = _mm512_set1_epi8(needle as i8);

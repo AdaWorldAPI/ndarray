@@ -40,7 +40,7 @@ pub fn nibble_unpack(packed: &[u8], count: usize) -> Vec<u8> {
     out
 }
 
-fn nibble_unpack_scalar(packed: &[u8], count: usize, out: &mut Vec<u8>) {
+pub(crate) fn nibble_unpack_scalar(packed: &[u8], count: usize, out: &mut Vec<u8>) {
     for i in 0..count {
         let byte = packed[i / 2];
         let val = if i & 1 == 0 { byte & 0x0F } else { byte >> 4 };
@@ -54,7 +54,7 @@ fn nibble_unpack_scalar(packed: &[u8], count: usize, out: &mut Vec<u8>) {
 /// Caller must ensure AVX2 is available and `count >= 32`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn nibble_unpack_avx2(packed: &[u8], count: usize, out: &mut Vec<u8>) {
+pub(crate) unsafe fn nibble_unpack_avx2(packed: &[u8], count: usize, out: &mut Vec<u8>) {
     use core::arch::x86_64::*;
 
     let low_mask = _mm_set1_epi8(0x0F);
@@ -252,7 +252,7 @@ pub fn nibble_above_threshold(packed: &[u8], threshold: u8) -> Vec<usize> {
     nibble_above_threshold_scalar(packed, threshold)
 }
 
-fn nibble_above_threshold_scalar(packed: &[u8], threshold: u8) -> Vec<usize> {
+pub(crate) fn nibble_above_threshold_scalar(packed: &[u8], threshold: u8) -> Vec<usize> {
     let mut result = Vec::new();
     let count = packed.len() * 2;
     for i in 0..count {
@@ -272,7 +272,7 @@ fn nibble_above_threshold_scalar(packed: &[u8], threshold: u8) -> Vec<usize> {
 /// Caller must ensure AVX2 is available and `packed.len() >= 16`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn nibble_above_threshold_avx2(packed: &[u8], threshold: u8) -> Vec<usize> {
+pub(crate) unsafe fn nibble_above_threshold_avx2(packed: &[u8], threshold: u8) -> Vec<usize> {
     use core::arch::x86_64::*;
 
     let mut result = Vec::new();
