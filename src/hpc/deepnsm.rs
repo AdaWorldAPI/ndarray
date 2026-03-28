@@ -1282,3 +1282,37 @@ mod eval_tests {
         assert!(msgs[1].content.contains("happy"));
     }
 }
+
+// ============================================================================
+// FUTURE CONCEPT: SoA adjacency layout for SIMD-native category decomposition
+// ============================================================================
+//
+// Current: weights[74] in prime order → 4×F32x16 + 10 scalar remainder
+// Future:  weights[256] in category-padded SoA → 16×F32x16, zero remainder
+//
+// Layout: 16 NsmCategory groups, each padded to 16 slots:
+//   Substantive[16]:  [I, You, Someone, Something, Thing, Body, 0, 0, ..., 0]
+//   Relational[16]:   [Kind, Part, 0, 0, ..., 0]
+//   Mental[16]:       [Think, Know, Want, DontWant, Feel, See, Hear, 0, ..., 0]
+//   ...
+//
+// Benefits:
+//   - One F32x16 per category → entire category comparison in one instruction
+//   - Cross-category similarity = 16 parallel dot products
+//   - Category masking = one F32Mask16 per category (is this word Mental? Spatial?)
+//   - No scalar remainder: 16×16 = 256 elements, all lanes used
+//   - SIMD-friendly alignment: each category starts at 64-byte boundary
+//
+// Does NOT duplicate:
+//   - blasgraph CSR/CSC: graph adjacency matrix, not semantic vectors
+//   - SPO semiring: cost algebra, not vector layout
+//   - neighborhood CLAM: search scope, not decomposition format
+//   - aabb/spatial_hash SoA: spatial coords (x,y,z), not semantic categories
+//
+// Integration points:
+//   - DeepNSM encoder.rs: bind() + bundle() operate on category-aligned vectors
+//   - CausalEdge64: S/P/O palette indices map to category-level features
+//   - Thinking styles: MODULATE verb maps content categories → style weights
+//
+// TODO: implement NsmDecompositionSoA with category-padded [f32; 256] storage
+// ============================================================================
