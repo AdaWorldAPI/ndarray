@@ -847,3 +847,385 @@ mod tests {
         }
     }
 }
+
+// ============================================================================
+// DeepNSM Evaluation Pipeline — transcoded from Python DeepNSM
+// ============================================================================
+
+/// The full NSM primes set including multi-word primes (from Python utils.py).
+static NSM_PRIMES_SET: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    [
+        "i", "you", "someone", "people", "something", "thing", "body", "kind", "part",
+        "this", "the same", "other", "else", "another", "one", "two", "some", "all",
+        "much", "many", "little", "few", "good", "bad", "big", "small", "think", "know",
+        "want", "don't want", "feel", "see", "hear", "say", "words", "true", "do",
+        "happen", "move", "there", "is", "be", "mine", "live", "die", "when", "time",
+        "now", "before", "after", "a long time", "a short time", "for some time",
+        "moment", "where", "place", "here", "above", "below", "far", "near", "side",
+        "inside", "touch", "not", "maybe", "can", "because", "if", "very", "more",
+        "like", "as", "way", "said",
+    ].into_iter().collect()
+});
+
+/// Check if a word is an NSM semantic prime.
+pub fn is_nsm_prime(word: &str) -> bool {
+    NSM_PRIMES_SET.contains(word.to_lowercase().as_str())
+}
+
+/// English stopwords excluding NSM primes. `LazyLock` one-time init.
+static STOP_WORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    let sw: HashSet<&str> = [
+        "a", "an", "and", "are", "at", "been", "but", "by", "did", "does",
+        "doing", "down", "during", "each", "for", "from", "further", "had",
+        "has", "having", "he", "her", "herself", "him", "himself", "his",
+        "how", "in", "into", "it", "its", "itself", "just", "me", "my",
+        "myself", "no", "nor", "of", "off", "on", "once", "only", "or",
+        "our", "ours", "ourselves", "out", "over", "own", "re", "s", "she",
+        "should", "so", "such", "t", "than", "that", "the", "their",
+        "theirs", "them", "themselves", "then", "these", "they", "those",
+        "through", "to", "too", "under", "until", "up", "ve", "was", "we",
+        "were", "what", "which", "while", "who", "whom", "why", "will",
+        "with", "won", "would", "your", "yours", "yourself", "yourselves",
+    ].into_iter().collect();
+    sw.into_iter().filter(|w| !NSM_PRIMES_SET.contains(*w)).collect()
+});
+
+/// Check if a word is a stopword (but not an NSM prime).
+pub fn is_stop_word(word: &str) -> bool {
+    STOP_WORDS.contains(word.to_lowercase().as_str())
+}
+
+/// Legal punctuation in NSM explications.
+pub const LEGAL_PUNCTUATION: &[char] = &['\'', '.', ',', ':', '!', '?', '"', '\n', '\t', '(', ')', '/'];
+
+// ── Evaluation types ────────────────────────────────────────────────────────
+
+/// A single prediction from a grader model.
+#[derive(Clone, Debug)]
+pub struct Prediction {
+    pub prediction: String,
+    pub answer_logprob: f32,
+    pub answer_ranks: Vec<usize>,
+    pub is_match: bool,
+    pub lines_removed: usize,
+}
+
+impl Prediction {
+    pub fn new(prediction: &str) -> Self {
+        Self { prediction: prediction.to_string(), answer_logprob: 0.0, answer_ranks: Vec::new(), is_match: false, lines_removed: 0 }
+    }
+}
+
+/// Substitutability score from one grader model.
+#[derive(Clone, Debug)]
+pub struct SubstitutabilityScore {
+    pub model: String,
+    pub baselines: Vec<Prediction>,
+    pub exp_baselines: Vec<Prediction>,
+    pub minimality: Vec<Vec<Prediction>>,
+    pub entailments: Vec<Vec<Prediction>>,
+    pub adj_score: f32,
+    pub avg_delta_log: f32,
+    pub avg_min_delta_log: f32,
+    pub avg_ent_delta_log: f32,
+    pub total_match: usize,
+}
+
+impl SubstitutabilityScore {
+    pub fn new(model: &str) -> Self {
+        Self { model: model.to_string(), baselines: Vec::new(), exp_baselines: Vec::new(), minimality: Vec::new(), entailments: Vec::new(), adj_score: 0.0, avg_delta_log: 0.0, avg_min_delta_log: 0.0, avg_ent_delta_log: 0.0, total_match: 0 }
+    }
+}
+
+/// An NSM explication with legality scoring.
+#[derive(Clone, Debug)]
+pub struct Explication {
+    pub text: String,
+    pub target_word: String,
+    pub length: usize,
+    pub primes: usize,
+    pub stop_words_count: usize,
+    pub molecules: usize,
+    pub unique_molecules: usize,
+    pub uses_original_word: bool,
+    pub primes_ratio: f32,
+    pub molecules_ratio: f32,
+    pub sub_scores: Vec<SubstitutabilityScore>,
+    pub avg_delta: f32,
+    pub avg_delta_min: f32,
+    pub avg_delta_ent: f32,
+    pub score_exp: f32,
+    pub total_score: f32,
+}
+
+impl Explication {
+    pub fn new(text: &str) -> Self {
+        Self {
+            text: text.to_string(), target_word: String::new(),
+            length: 0, primes: 0, stop_words_count: 0, molecules: 0,
+            unique_molecules: 0, uses_original_word: false, primes_ratio: 0.0,
+            molecules_ratio: 0.0, sub_scores: Vec::new(), avg_delta: 0.0,
+            avg_delta_min: 0.0, avg_delta_ent: 0.0, score_exp: 0.0, total_score: 0.0,
+        }
+    }
+
+    /// Score legality against a target word (circularity via stem matching).
+    pub fn legality_score(&mut self, word: &str) {
+        let clean: String = self.text.to_lowercase().chars()
+            .filter(|c| c.is_alphanumeric() || c.is_whitespace()).collect();
+        let tokens: Vec<&str> = clean.split_whitespace().collect();
+        self.target_word = word.to_string();
+        self.length = tokens.len();
+        self.primes = tokens.iter().filter(|t| is_nsm_prime(t)).count();
+        self.stop_words_count = tokens.iter().filter(|t| is_stop_word(t)).count();
+        let mols: Vec<&&str> = tokens.iter().filter(|t| !is_nsm_prime(t) && !is_stop_word(t)).collect();
+        self.molecules = mols.len();
+        self.unique_molecules = mols.iter().collect::<HashSet<_>>().len();
+        let wl = word.to_lowercase();
+        let stem = if wl.len() >= 4 { &wl[..4] } else { &wl };
+        self.uses_original_word = tokens.iter().any(|t| *t == wl || (t.len() >= 4 && t.starts_with(stem)));
+        self.primes_ratio = if self.length > 0 { self.primes as f32 / self.length as f32 } else { 0.0 };
+        self.molecules_ratio = if self.length > 0 { self.molecules as f32 / self.length as f32 } else { 0.0 };
+    }
+
+    /// Compute averages from substitutability sub-scores.
+    pub fn calculate_averages(&mut self) {
+        if self.sub_scores.is_empty() { return; }
+        let n = self.sub_scores.len() as f32;
+        self.avg_delta = self.sub_scores.iter().map(|s| s.avg_delta_log).sum::<f32>() / n;
+        self.avg_delta_min = self.sub_scores.iter().map(|s| s.avg_min_delta_log).sum::<f32>() / n;
+        self.avg_delta_ent = self.sub_scores.iter().map(|s| s.avg_ent_delta_log).sum::<f32>() / n;
+        self.score_exp = self.sub_scores.iter().map(|s| s.adj_score).sum::<f32>() / n;
+        self.total_score = if !self.uses_original_word {
+            2.0 * (self.score_exp + 10.0 * self.primes_ratio - 10.0 * self.molecules_ratio)
+        } else { 0.0 };
+    }
+
+    /// Truncated versions with lines removed from the end.
+    pub fn get_truncated(&self, max_lines_remove: usize) -> Vec<Explication> {
+        let lines: Vec<&str> = self.text.trim().lines().collect();
+        (0..max_lines_remove.min(lines.len()))
+            .map(|i| Explication::new(&lines[..lines.len() - (i + 1)].join("\n")))
+            .collect()
+    }
+}
+
+/// Ambiguous example passage with masked word.
+#[derive(Clone, Debug)]
+pub struct AmbiguousExample {
+    pub text: String,
+    pub source: Option<String>,
+}
+
+impl AmbiguousExample {
+    pub fn new(text: &str) -> Self { Self { text: text.to_string(), source: None } }
+
+    /// Truncated versions removing non-UNK sentences.
+    pub fn get_truncated(&self, max_remove: usize) -> Vec<AmbiguousExample> {
+        let sents: Vec<&str> = self.text.split('.').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+        let non_unk: Vec<usize> = sents.iter().enumerate().filter(|(_, s)| !s.contains("<UNK>")).map(|(i, _)| i).collect();
+        (0..max_remove.min(non_unk.len())).map(|i| {
+            let exclude: HashSet<usize> = non_unk[..=i].iter().copied().collect();
+            let kept: Vec<&str> = sents.iter().enumerate().filter(|(j, _)| !exclude.contains(j)).map(|(_, s)| *s).collect();
+            AmbiguousExample::new(&kept.join(". "))
+        }).collect()
+    }
+}
+
+/// Aggregated model evaluation result.
+#[derive(Clone, Debug)]
+pub struct ModelResult {
+    pub model_name: String,
+    pub num_examples: usize,
+    pub explications: Vec<Explication>,
+    pub avg_primes_ratio: f32,
+    pub avg_molecules_ratio: f32,
+    pub avg_total_score: f32,
+}
+
+impl ModelResult {
+    pub fn new(model_name: &str) -> Self {
+        Self { model_name: model_name.to_string(), num_examples: 0, explications: Vec::new(), avg_primes_ratio: 0.0, avg_molecules_ratio: 0.0, avg_total_score: 0.0 }
+    }
+    pub fn calculate_averages(&mut self) {
+        let n = self.explications.len() as f32;
+        if n == 0.0 { return; }
+        self.avg_primes_ratio = self.explications.iter().map(|e| e.primes_ratio).sum::<f32>() / n;
+        self.avg_molecules_ratio = self.explications.iter().map(|e| e.molecules_ratio).sum::<f32>() / n;
+        self.avg_total_score = self.explications.iter().map(|e| e.total_score).sum::<f32>() / n;
+    }
+}
+
+// ── CAM-PQ bridge ───────────────────────────────────────────────────────────
+
+/// Load DeepNSM codebook (`codebook_pq.bin`) into ndarray's CamCodebook.
+pub fn load_nsm_codebook(codebook_bytes: &[u8]) -> super::cam_pq::CamCodebook {
+    use super::cam_pq::{CamCodebook, SubspaceCodebook, NUM_CENTROIDS, NUM_SUBSPACES};
+    let expected = NUM_SUBSPACES * NUM_CENTROIDS * 16 * 4;
+    assert_eq!(codebook_bytes.len(), expected, "codebook_pq.bin: expected {expected} bytes, got {}", codebook_bytes.len());
+    let mut codebooks: Vec<SubspaceCodebook> = Vec::with_capacity(NUM_SUBSPACES);
+    for s in 0..NUM_SUBSPACES {
+        let mut centroids = Vec::with_capacity(NUM_CENTROIDS);
+        for c in 0..NUM_CENTROIDS {
+            let mut centroid = Vec::with_capacity(16);
+            for d in 0..16 {
+                let off = (s * NUM_CENTROIDS * 16 + c * 16 + d) * 4;
+                centroid.push(f32::from_le_bytes([codebook_bytes[off], codebook_bytes[off+1], codebook_bytes[off+2], codebook_bytes[off+3]]));
+            }
+            centroids.push(centroid);
+        }
+        codebooks.push(SubspaceCodebook { centroids, subspace_dim: 16 });
+    }
+    CamCodebook { codebooks: codebooks.try_into().unwrap(), total_dim: 96, subspace_dim: 16 }
+}
+
+/// Load CAM codes (`cam_codes.bin`): N words × 6 bytes.
+pub fn load_cam_codes(bytes: &[u8]) -> Vec<super::cam_pq::CamFingerprint> {
+    assert_eq!(bytes.len() % 6, 0);
+    bytes.chunks_exact(6).map(|c| { let mut fp = [0u8; 6]; fp.copy_from_slice(c); fp }).collect()
+}
+
+// ── 36-bit SPO triple ───────────────────────────────────────────────────────
+
+/// 36-bit SPO triple packed in u64. 12-bit subject + predicate + object.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct SpoTriple { packed: u64 }
+
+impl SpoTriple {
+    pub fn new(subject: u16, predicate: u16, object: u16) -> Self {
+        debug_assert!(subject < 4096 && predicate < 4096 && object < 4096);
+        Self { packed: ((subject as u64) << 24) | ((predicate as u64) << 12) | object as u64 }
+    }
+    pub fn subject(&self) -> u16 { ((self.packed >> 24) & 0xFFF) as u16 }
+    pub fn predicate(&self) -> u16 { ((self.packed >> 12) & 0xFFF) as u16 }
+    pub fn object(&self) -> u16 { (self.packed & 0xFFF) as u16 }
+}
+
+// ── Prompt templates ────────────────────────────────────────────────────────
+
+/// NSM explication system instruction.
+pub const NSM_EXPLICATION_SYS_INST: &str = "You are a linguist specializing in semantic analysis using the Natural Semantic Metalanguage (NSM) approach. NSM reduces lexicons to universal semantic primes. Paraphrase the word's meaning using NSM primes.";
+
+/// Recovery prompt: predict masked word.
+pub const RECOVERY_PROMPT_SYS_INST: &str = "Read the passage with a missing word indicated by <UNK>. Predict the missing word. Output only your prediction.";
+
+/// Chat message for prompt construction.
+#[derive(Clone, Debug)]
+pub struct ChatMessage { pub role: String, pub content: String }
+
+/// Build explication prompt with optional few-shot.
+pub fn build_explication_prompt(word: &str, examples: &[&str], few_shot: &[(String, String)], max: Option<usize>) -> Vec<ChatMessage> {
+    let mut msgs = vec![ChatMessage { role: "system".into(), content: NSM_EXPLICATION_SYS_INST.into() }];
+    for (u, a) in &few_shot[..max.unwrap_or(few_shot.len()).min(few_shot.len())] {
+        msgs.push(ChatMessage { role: "user".into(), content: u.clone() });
+        msgs.push(ChatMessage { role: "assistant".into(), content: a.clone() });
+    }
+    msgs.push(ChatMessage { role: "user".into(), content: format!("Word: {word}\nExamples:\n{}\nParaphrase:", examples.join("\n\n")) });
+    msgs
+}
+
+/// Build recovery prompt for substitutability testing.
+pub fn build_recover_prompt(ambig: &AmbiguousExample, exp: Option<&Explication>) -> Vec<ChatMessage> {
+    let user = match exp {
+        Some(e) => format!("Passage: {}\nParaphrase:\n{}\nMissing word:", ambig.text, e.text),
+        None => format!("Passage: {}\nMissing Word:", ambig.text),
+    };
+    vec![
+        ChatMessage { role: "system".into(), content: RECOVERY_PROMPT_SYS_INST.into() },
+        ChatMessage { role: "user".into(), content: user },
+    ]
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod eval_tests {
+    use super::*;
+
+    #[test]
+    fn test_is_nsm_prime() {
+        assert!(is_nsm_prime("think"));
+        assert!(is_nsm_prime("THINK"));
+        assert!(!is_nsm_prime("journalism"));
+    }
+
+    #[test]
+    fn test_is_stop_word() {
+        assert!(is_stop_word("the"));
+        assert!(!is_stop_word("think")); // NSM prime, not stopword
+    }
+
+    #[test]
+    fn test_explication_legality() {
+        let mut exp = Explication::new("someone can feel something good because of this");
+        exp.legality_score("happy");
+        assert!(exp.primes_ratio > 0.5);
+        assert!(!exp.uses_original_word);
+    }
+
+    #[test]
+    fn test_explication_circularity() {
+        let mut exp = Explication::new("feeling happy about something");
+        exp.legality_score("happy");
+        assert!(exp.uses_original_word);
+    }
+
+    #[test]
+    fn test_explication_averages() {
+        let mut exp = Explication::new("test");
+        exp.primes_ratio = 0.6;
+        exp.molecules_ratio = 0.1;
+        let mut s = SubstitutabilityScore::new("g");
+        s.adj_score = 5.0;
+        exp.sub_scores.push(s);
+        exp.calculate_averages();
+        assert!(exp.total_score > 0.0);
+    }
+
+    #[test]
+    fn test_truncated() {
+        let exp = Explication::new("line one\nline two\nline three");
+        assert_eq!(exp.get_truncated(2).len(), 2);
+    }
+
+    #[test]
+    fn test_ambiguous_truncated() {
+        let a = AmbiguousExample::new("The cat sat. The <UNK> was red. It was sunny.");
+        let t = a.get_truncated(2);
+        assert!(!t.is_empty());
+    }
+
+    #[test]
+    fn test_model_result() {
+        let mut r = ModelResult::new("m");
+        let mut e = Explication::new("t");
+        e.primes_ratio = 0.5;
+        e.total_score = 8.0;
+        r.explications.push(e);
+        r.calculate_averages();
+        assert!((r.avg_total_score - 8.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_spo_triple() {
+        let t = SpoTriple::new(671, 2943, 95);
+        assert_eq!(t.subject(), 671);
+        assert_eq!(t.predicate(), 2943);
+        assert_eq!(t.object(), 95);
+    }
+
+    #[test]
+    fn test_cam_codes_load() {
+        let bytes = vec![1,2,3,4,5,6, 7,8,9,10,11,12];
+        let codes = load_cam_codes(&bytes);
+        assert_eq!(codes.len(), 2);
+        assert_eq!(codes[0], [1,2,3,4,5,6]);
+    }
+
+    #[test]
+    fn test_prompt_building() {
+        let msgs = build_explication_prompt("happy", &["I am happy"], &[], None);
+        assert_eq!(msgs.len(), 2);
+        assert!(msgs[1].content.contains("happy"));
+    }
+}
