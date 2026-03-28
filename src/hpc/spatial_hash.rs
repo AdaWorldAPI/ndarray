@@ -301,7 +301,7 @@ fn batch_sq_dist_filter(
     batch_sq_dist_scalar(query, candidates, radius_sq)
 }
 
-fn batch_sq_dist_scalar(
+pub(crate) fn batch_sq_dist_scalar(
     query: [f32; 3],
     candidates: &[[f32; 3]],
     radius_sq: f32,
@@ -322,7 +322,7 @@ fn batch_sq_dist_scalar(
 /// Caller must ensure AVX2 is available.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn batch_sq_dist_avx2(
+pub(crate) unsafe fn batch_sq_dist_avx2(
     query: [f32; 3],
     candidates: &[[f32; 3]],
     radius_sq: f32,

@@ -29,7 +29,7 @@ fn sq_dist_f64(a: [f64; 3], b: [f64; 3]) -> f64 {
 // ---------------------------------------------------------------------------
 
 #[cfg(target_arch = "x86_64")]
-mod simd_impl {
+pub(crate) mod simd_impl {
     #[cfg(target_arch = "x86_64")]
     use core::arch::x86_64::*;
 
@@ -39,7 +39,7 @@ mod simd_impl {
     /// # Safety
     /// Caller must ensure AVX2 is available.
     #[target_feature(enable = "avx2")]
-    pub(super) unsafe fn squared_distances_avx2(
+    pub(crate) unsafe fn squared_distances_avx2(
         query: [f32; 3],
         points: &[[f32; 3]],
         out: &mut Vec<f32>,
