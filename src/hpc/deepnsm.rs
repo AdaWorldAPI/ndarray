@@ -1316,3 +1316,62 @@ mod eval_tests {
 //
 // TODO: implement NsmDecompositionSoA with category-padded [f32; 256] storage
 // ============================================================================
+
+// ============================================================================
+// FUTURE CONCEPT: Psychometric validation framework for DeepNSM
+// ============================================================================
+//
+// The vocabulary IS a measurement instrument. Each word is a test item.
+// Each prime weight is a factor loading. Psychometric theory validates
+// whether the decomposition measures what it claims to measure.
+//
+// RELIABILITY:
+//   - Test-retest: bundle → unbundle → re-bundle → compare (bit-reproducible)
+//   - Cronbach's α: correlation across 2³ SPO × 2⁴ HHTL = 128 projections
+//     High α (>0.7) = projections agree = construct is coherent
+//     Low α (<0.5) = bundling destroys information at that level
+//   - Split-half: Strategy A distance vs Strategy B distance for same pair
+//     Pearson r between them = reliability of the dual encoding
+//
+// VALIDITY:
+//   - Construct: do primes factor into 16 NsmCategory groups? (PCA/FA)
+//   - Convergent: SpoBase17 ≈ CausalEdge64 ≈ VsaVec ≈ DeepNSM cosine
+//     for same pair. All should rank similarly.
+//   - Discriminant: "dog bites man" ≠ "man bites dog" across all encodings
+//   - Criterion: OSINT extraction quality against known-true datasets
+//
+// ITEM RESPONSE THEORY (IRT):
+//   - Per-word difficulty: how many primes cleanly decompose this word?
+//     "think" = easy (2 primes), "justice" = hard (6+ primes)
+//   - Per-word discrimination: does this word reliably separate concepts?
+//     "good" = high (separates Evaluator), "the" = zero
+//   - Per-prime reliability: does this prime contribute consistently?
+//
+// HHTL CASCADE AS PSYCHOMETRIC FILTER:
+//   HEEL: drop items with discrimination < 0.3 (bad test items)
+//   HIP:  factor analyze → extract latent structure → compare with theory
+//   BRANCH: composite reliability per factor (α per NsmCategory)
+//   TWIG: structural equation model → path coefficients = causal relations
+//   LEAF: residual variance → noise OR undiscovered factor → NARS abduction
+//
+// VERTICAL BUNDLING (studio mixing analogy):
+//   Leaves → bundle → Twigs → bundle → Branches → bundle → Hip
+//   Each level = majority vote denoising
+//   Unbind bottom-up to verify reconstruction
+//   Hamming(unbind(Hip, branch_role), actual_branch) = information loss
+//   Combined with SPO: 2³ × 2⁴ = 128 projections, each an "item"
+//   Cronbach's α across 128 items = total measurement reliability
+//
+// P-VALUES:
+//   128 independent measurements per pair → statistical power for p < 0.001
+//   Every similarity judgment comes with a confidence interval
+//   NARS confidence IS measurement reliability (formalized)
+//
+// POLYSEMY DETECTION:
+//   Word with high α in context = disambiguated (reliable measurement)
+//   Word with low α across projections = polysemous (unreliable item)
+//   α drop localizes WHERE the ambiguity lives in the HHTL tree
+//
+// TODO: implement CronbachAlpha, SplitHalfReliability, FactorAnalysis,
+//       ItemDifficulty, ItemDiscrimination, MeasurementInvariance
+// ============================================================================
