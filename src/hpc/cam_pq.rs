@@ -456,9 +456,46 @@ pub fn train_hybrid(
 
 // === Internal utilities ===
 
-/// Squared L2 distance between two slices.
+/// Squared L2 distance between two slices via `crate::simd`.
+///
+/// For 16D subvectors (CAM-PQ subspace dimension), this is one F32x16
+/// load-subtract-multiply-reduce. Consumer never sees hardware details.
 #[inline(always)]
 fn squared_l2(a: &[f32], b: &[f32]) -> f32 {
+    debug_assert_eq!(a.len(), b.len());
+    let n = a.len();
+
+    // Fast path: exactly 16 elements = one F32x16 lane (most common in CAM-PQ).
+    if n == 16 {
+        use crate::simd::F32x16;
+        let va = F32x16::from_slice(a);
+        let vb = F32x16::from_slice(b);
+        let diff = va - vb;
+        return (diff * diff).reduce_sum();
+    }
+
+    // Medium path: process 16 elements at a time, accumulate remainder scalar.
+    if n >= 16 {
+        use crate::simd::F32x16;
+        let mut acc = F32x16::splat(0.0);
+        let chunks = n / 16;
+        for i in 0..chunks {
+            let off = i * 16;
+            let va = F32x16::from_slice(&a[off..off + 16]);
+            let vb = F32x16::from_slice(&b[off..off + 16]);
+            let diff = va - vb;
+            acc = diff.mul_add(diff, acc);
+        }
+        let mut sum = acc.reduce_sum();
+        // Scalar remainder
+        for i in (chunks * 16)..n {
+            let d = a[i] - b[i];
+            sum += d * d;
+        }
+        return sum;
+    }
+
+    // Scalar fallback for tiny slices.
     a.iter().zip(b.iter()).map(|(x, y)| (x - y) * (x - y)).sum()
 }
 
