@@ -609,16 +609,34 @@ pub fn nsm_decompose(text: &str) -> NsmDecomposition {
         }
     }
 
-    // Normalize weights to sum to 1.0
-    let sum: f32 = weights.iter().sum();
-    if sum > 0.0 {
-        for w in weights.iter_mut() {
-            *w /= sum;
+    // Normalize weights to sum to 1.0 via crate::simd.
+    // 74 elements = 4×F32x16 (64) + 10 scalar remainder.
+    let weight_sum = {
+        use crate::simd::F32x16;
+        let mut simd_sum = F32x16::splat(0.0);
+        for chunk in weights[..64].chunks_exact(16) {
+            simd_sum = simd_sum + F32x16::from_slice(chunk);
         }
-    }
+        let mut s: f32 = simd_sum.reduce_sum();
+        for &w in &weights[64..74] {
+            s += w;
+        }
+        if s > 0.0 {
+            let inv = F32x16::splat(1.0 / s);
+            for chunk in weights[..64].chunks_exact_mut(16) {
+                let v = F32x16::from_slice(chunk) * inv;
+                v.copy_to_slice(chunk);
+            }
+            let inv_s = 1.0 / s;
+            for w in weights[64..74].iter_mut() {
+                *w *= inv_s;
+            }
+        }
+        s
+    };
 
     // Determine dominant primes (weight > threshold)
-    let threshold = if sum > 0.0 { 1.0 / 74.0 } else { 0.0 };
+    let threshold = if weight_sum > 0.0 { 1.0 / 74.0 } else { 0.0 };
     let dominant: Vec<NsmPrime> = ALL_PRIMES
         .iter()
         .filter(|p| weights[**p as u8 as usize] > threshold)
@@ -656,24 +674,59 @@ pub fn nsm_to_fingerprint(decomp: &NsmDecomposition) -> [u8; 1250] {
         let mut reader = hasher.finalize_xof();
         reader.fill(&mut pattern);
 
-        for j in 0..1250 {
-            result[j] ^= pattern[j];
+        // XOR 1250 bytes via crate::simd::U8x64.
+        // 1250 = 19×64 (1216) + 34 scalar remainder.
+        {
+            use crate::simd::U8x64;
+            let chunks = 1250 / 64; // 19
+            for c in 0..chunks {
+                let off = c * 64;
+                let vr = U8x64::from_slice(&result[off..off + 64]);
+                let vp = U8x64::from_slice(&pattern[off..off + 64]);
+                let xored = vr ^ vp;
+                xored.copy_to_slice(&mut result[off..off + 64]);
+            }
+            // Scalar remainder (34 bytes).
+            for j in (chunks * 64)..1250 {
+                result[j] ^= pattern[j];
+            }
         }
     }
 
     result
 }
 
-/// Cosine similarity between two NSM decompositions.
+/// Cosine similarity between two NSM decompositions via `crate::simd`.
+///
+/// 74 elements = 4×F32x16 (64) + 10 scalar remainder.
+/// Three accumulations in one pass: dot product, magnitude_a², magnitude_b².
 pub fn nsm_similarity(a: &NsmDecomposition, b: &NsmDecomposition) -> f32 {
-    let mut dot = 0.0f32;
-    let mut mag_a = 0.0f32;
-    let mut mag_b = 0.0f32;
-    for i in 0..74 {
+    use crate::simd::F32x16;
+
+    let mut sdot = F32x16::splat(0.0);
+    let mut smag_a = F32x16::splat(0.0);
+    let mut smag_b = F32x16::splat(0.0);
+
+    // SIMD: first 64 elements (4 × 16 lanes).
+    for i in (0..64).step_by(16) {
+        let va = F32x16::from_slice(&a.weights[i..i + 16]);
+        let vb = F32x16::from_slice(&b.weights[i..i + 16]);
+        sdot = va.mul_add(vb, sdot);
+        smag_a = va.mul_add(va, smag_a);
+        smag_b = vb.mul_add(vb, smag_b);
+    }
+
+    let mut dot = sdot.reduce_sum();
+    let mut mag_a = smag_a.reduce_sum();
+    let mut mag_b = smag_b.reduce_sum();
+
+    // Scalar: remaining 10 elements (indices 64..74).
+    for i in 64..74 {
         dot += a.weights[i] * b.weights[i];
         mag_a += a.weights[i] * a.weights[i];
         mag_b += b.weights[i] * b.weights[i];
     }
+
     let denom = (mag_a * mag_b).sqrt();
     if denom < 1e-10 {
         0.0
