@@ -1185,4 +1185,163 @@ mod tests {
         assert!(accuracy > 1.0 / n_classes as f64, "should beat random");
         assert!(accuracy_compressed > 1.0 / n_classes as f64, "compressed should beat random too");
     }
+    #[test]
+    #[ignore]
+    fn test_hip_multi_object_detection() {
+        // HIP bundles for multi-object detection:
+        // Given an image, detect if it contains features of MULTIPLE classes
+        // by unbinding one class archetype and checking residual against others.
+        //
+        // Bird/fence scenario: if unbind(image, bird) correlates with fence → both present.
+        
+        let bytes = match std::fs::read("/tmp/tiny_imagenet_labeled.bin") {
+            Ok(b) => b,
+            Err(_) => { eprintln!("SKIP: /tmp/tiny_imagenet_labeled.bin not found"); return; }
+        };
+
+        let n = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+        let d = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
+        let n_classes = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
+
+        let mut labels = Vec::with_capacity(n);
+        for i in 0..n {
+            let off = 12 + i * 4;
+            labels.push(u32::from_le_bytes([bytes[off], bytes[off+1], bytes[off+2], bytes[off+3]]) as usize);
+        }
+
+        let pixel_start = 12 + n * 4;
+        let img_w = 64usize;
+        let img_h = 64usize;
+        let ch = 3usize;
+
+        // Extract grid-line features (768D)
+        let features: Vec<Vec<f64>> = (0..n).map(|i| {
+            let v_start = pixel_start + i * d * 4;
+            let pixel = |r: usize, c: usize, channel: usize| -> f64 {
+                let off = v_start + (r * img_w * ch + c * ch + channel) * 4;
+                f32::from_le_bytes([bytes[off], bytes[off+1], bytes[off+2], bytes[off+3]]) as f64
+            };
+            let mut f = Vec::with_capacity(768);
+            for &r in &[img_h / 3, 2 * img_h / 3] {
+                for c in 0..img_w { for channel in 0..ch { f.push(pixel(r, c, channel)); } }
+            }
+            for &c in &[img_w / 3, 2 * img_w / 3] {
+                for r in 0..img_h { for channel in 0..ch { f.push(pixel(r, c, channel)); } }
+            }
+            f
+        }).collect();
+
+        let feat_d = features[0].len();
+
+        // ── Build HEEL archetypes per class ──
+        let mut archetypes: Vec<Vec<f64>> = vec![vec![0.0; feat_d]; n_classes];
+        let mut counts = vec![0usize; n_classes];
+        for (i, &label) in labels.iter().enumerate() {
+            for j in 0..feat_d { archetypes[label][j] += features[i][j]; }
+            counts[label] += 1;
+        }
+        for c in 0..n_classes {
+            if counts[c] > 0 {
+                for j in 0..feat_d { archetypes[c][j] /= counts[c] as f64; }
+            }
+        }
+
+        // ── Cosine similarity helper ──
+        let cosine = |a: &[f64], b: &[f64]| -> f64 {
+            let dot: f64 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+            let mag_a: f64 = a.iter().map(|x| x * x).sum::<f64>().sqrt();
+            let mag_b: f64 = b.iter().map(|x| x * x).sum::<f64>().sqrt();
+            if mag_a < 1e-10 || mag_b < 1e-10 { 0.0 } else { dot / (mag_a * mag_b) }
+        };
+
+        // ── HIP: within-class variance (how spread is each class?) ──
+        let mut hip_variance = vec![0.0f64; n_classes];
+        for (i, &label) in labels.iter().enumerate() {
+            let dist: f64 = features[i].iter().zip(&archetypes[label])
+                .map(|(a, b)| (a - b) * (a - b))
+                .sum::<f64>()
+                .sqrt();
+            hip_variance[label] += dist;
+        }
+        for c in 0..n_classes {
+            if counts[c] > 0 { hip_variance[c] /= counts[c] as f64; }
+        }
+
+        // ── Multi-object simulation: "subtract" one class, check residual ──
+        // For each image, compute: residual = image_features - nearest_archetype
+        // Then check: does the residual correlate with ANY other archetype?
+        // High correlation → multi-object (or class confusion at the boundary)
+
+        let mut multi_object_candidates = Vec::new();
+        for (i, &true_label) in labels.iter().enumerate() {
+            // Subtract the true class archetype (simulates "removing" the primary object)
+            let residual: Vec<f64> = features[i].iter().zip(&archetypes[true_label])
+                .map(|(a, b)| a - b)
+                .collect();
+
+            // Check residual against all OTHER class archetypes
+            let mut best_other_class = 0;
+            let mut best_other_sim = f64::NEG_INFINITY;
+            for c in 0..n_classes {
+                if c == true_label || counts[c] == 0 { continue; }
+                let sim = cosine(&residual, &archetypes[c]);
+                if sim > best_other_sim {
+                    best_other_sim = sim;
+                    best_other_class = c;
+                }
+            }
+
+            if best_other_sim > 0.3 {
+                multi_object_candidates.push((i, true_label, best_other_class, best_other_sim));
+            }
+        }
+
+        // ── BRANCH: intersection features between class pairs ──
+        // For the top multi-object candidates, the residual IS the intersection
+        // features — what's left after removing the primary class IS the secondary class.
+        let mut pair_counts: std::collections::HashMap<(usize, usize), usize> = std::collections::HashMap::new();
+        for &(_, primary, secondary, _) in &multi_object_candidates {
+            let key = if primary < secondary { (primary, secondary) } else { (secondary, primary) };
+            *pair_counts.entry(key).or_insert(0) += 1;
+        }
+
+        // ── CHAODA: outliers are images that don't fit ANY archetype well ──
+        // (far from primary AND residual doesn't match secondary)
+        let mut outliers = Vec::new();
+        for (i, &true_label) in labels.iter().enumerate() {
+            let primary_dist: f64 = features[i].iter().zip(&archetypes[true_label])
+                .map(|(a, b)| (a - b) * (a - b))
+                .sum::<f64>()
+                .sqrt();
+            
+            // If far from own class AND not detected as multi-object
+            let is_multi = multi_object_candidates.iter().any(|&(idx, _, _, _)| idx == i);
+            if primary_dist > hip_variance[true_label] * 2.0 && !is_multi {
+                outliers.push((i, true_label, primary_dist));
+            }
+        }
+
+        eprintln!("=== HIP Multi-Object Detection ===");
+        eprintln!("  Images: {}, Classes: {}", n, n_classes);
+        eprintln!("  Multi-object candidates (residual sim > 0.3): {}", multi_object_candidates.len());
+        eprintln!("  Top class-pair intersections (BRANCH traversals):");
+        let mut pairs: Vec<_> = pair_counts.iter().collect();
+        pairs.sort_by(|a, b| b.1.cmp(a.1));
+        for ((c1, c2), count) in pairs.iter().take(5) {
+            eprintln!("    class {} × class {}: {} images share features", c1, c2, count);
+        }
+        eprintln!("  CHAODA outliers (far from all archetypes): {}", outliers.len());
+        for (idx, label, dist) in outliers.iter().take(3) {
+            eprintln!("    image {} (class {}): dist={:.3} (>{:.3} threshold)",
+                idx, label, dist, hip_variance[*label] * 2.0);
+        }
+        eprintln!("  Per-class HIP spread (intra-class variance):");
+        for c in 0..n_classes {
+            if counts[c] > 0 {
+                eprintln!("    class {}: variance={:.3}, count={}", c, hip_variance[c], counts[c]);
+            }
+        }
+
+        assert!(multi_object_candidates.len() > 0, "should find some multi-object candidates");
+    }
 }
