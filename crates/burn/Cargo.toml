@@ -16,7 +16,6 @@ default = ["std", "simd", "multi-threads"]
 multi-threads = ["rayon", "ndarray/rayon", "matrixmultiply/threading"]
 simd = ["macerator", "bytemuck", "seq-macro", "itertools"]
 std = [
-    "burn-autodiff",
     "burn-std/std",
     "burn-backend/std",
     "burn-ir/std",
@@ -34,10 +33,10 @@ export_tests = []
 
 [dependencies]
 # Upstream burn crates (from git main — matches source code we copied)
-burn-autodiff = { git = "https://github.com/tracel-ai/burn.git", default-features = false, optional = true }
-burn-std = { git = "https://github.com/tracel-ai/burn.git", default-features = false }
-burn-ir = { git = "https://github.com/tracel-ai/burn.git", default-features = false }
-burn-backend = { git = "https://github.com/tracel-ai/burn.git", default-features = false }
+# Local burn crates (copied from upstream, fully self-contained)
+burn-backend = { path = "../burn-backend", default-features = false }
+burn-std = { path = "../burn-std", default-features = false }
+burn-ir = { path = "../burn-ir", default-features = false }
 
 # ndarray — uses our workspace root (adaworldapi/ndarray with SIMD + HPC)
 ndarray = { path = "../..", default-features = false }
