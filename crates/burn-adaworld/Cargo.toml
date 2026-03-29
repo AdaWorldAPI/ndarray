@@ -1,42 +1,75 @@
 [package]
 name = "burn-adaworld"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 license = "MIT OR Apache-2.0"
 publish = false
 description = """
-Burn backend powered by adaworldapi/ndarray with:
-- crate::simd F32x16 via LazyLock dispatch (AVX-512 → AVX2 → scalar)
-- bgz-tensor AttentionTable for O(1) compiled attention (optional)
-- CAM-PQ product quantization for 170× compression (optional)
-- SimilarityTable as BF16-precision cosine replacement (256 levels, O(1))
-
-The consumer sees burn's Tensor<B, D> API. Behind it:
-matmul() → checks for compiled AttentionTable → falls through to BLAS.
-All SIMD via crate::simd only. Consumer never sees hardware.
+Burn ndarray backend forked into adaworldapi/ndarray for SIMD augmentation.
+Source: upstream burn-ndarray (tracel-ai/burn, v0.21.0-pre.2).
+Goal: replace macerator SIMD with crate::simd F32x16 + LazyLock dispatch,
+add bgz-tensor AttentionTable compiled attention path.
 """
 
+[features]
+default = ["std", "simd", "multi-threads"]
+multi-threads = ["rayon", "ndarray/rayon", "matrixmultiply/threading"]
+simd = ["macerator", "bytemuck", "seq-macro", "itertools"]
+std = [
+    "burn-autodiff",
+    "burn-std/std",
+    "burn-backend/std",
+    "burn-ir/std",
+    "ndarray/std",
+    "matrixmultiply/std",
+    "rand/std",
+    "rand/std_rng",
+    "num-traits/std",
+    "macerator/std",
+]
+blas-openblas = ["blas-src/openblas", "ndarray/blas", "openblas-src"]
+blas-openblas-system = ["blas-src/openblas", "ndarray/blas", "openblas-src/system"]
+blas-netlib = ["blas-src/netlib", "ndarray/blas"]
+export_tests = []
+
 [dependencies]
-# Upstream burn — Backend trait + tensor API
-burn-backend = "0.21.0-pre.2"
-burn-tensor = "0.21.0-pre.2"
+# Upstream burn crates (from git main — matches source code we copied)
+burn-autodiff = { git = "https://github.com/tracel-ai/burn.git", default-features = false, optional = true }
+burn-std = { git = "https://github.com/tracel-ai/burn.git", default-features = false }
+burn-ir = { git = "https://github.com/tracel-ai/burn.git", default-features = false }
+burn-backend = { git = "https://github.com/tracel-ai/burn.git", default-features = false }
 
-# Our ndarray with SIMD + HPC extensions
-ndarray = { path = "../..", features = ["std"] }
+# ndarray — uses our workspace root (adaworldapi/ndarray with SIMD + HPC)
+ndarray = { path = "../..", default-features = false }
 
-# Standard deps
+# Matrix multiply
+matrixmultiply = { version = "0.3", default-features = false }
+
+# Element traits
+num-traits = { version = "0.2", default-features = false }
+libm = "0.2"
+atomic_float = "1"
+const-random = "0.1"
+paste = "1"
+
+# Random
+rand = { version = "0.10", default-features = false, features = ["std_rng"] }
+
+# Serialization
 serde = { version = "1", features = ["derive"] }
-half = { version = "2", features = ["num-traits"] }
-num-traits = "0.2"
-rand = "0.8"
+
+# SIMD (macerator — upstream burn's choice, will augment with crate::simd)
+macerator = { version = "0.3", default-features = false, optional = true }
+bytemuck = { version = "1", optional = true }
+seq-macro = { version = "0.3", optional = true }
+itertools = { version = "0.14", optional = true }
+
+# Parallel
+rayon = { version = "1", optional = true }
+
+# BLAS (optional)
+blas-src = { version = "0.10", default-features = false, optional = true }
+openblas-src = { version = "0.10", optional = true }
 
 [dev-dependencies]
-burn-tensor-testgen = "0.21.0-pre.2"
-
-[features]
-default = ["std"]
-std = []
-# Enable bgz-tensor AttentionTable path for compiled attention
-attention-table = []
-# Enable multi-threaded execution via rayon
-multi-threads = ["ndarray/rayon"]
+bytes = "1"

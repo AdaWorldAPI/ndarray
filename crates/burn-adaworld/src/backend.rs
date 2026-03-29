@@ -1,60 +1,222 @@
-//! AdaWorld backend: implements burn's Backend trait.
-//!
-//! Delegates all tensor operations to ndarray + crate::simd.
-//! This is the entry point — every burn model compiled with `Backend = AdaWorld`
-//! runs on our SIMD dispatch with optional AttentionTable compiled attention.
-//!
-//! # Implementation Status
-//!
-//! The Backend trait requires ~200+ methods across 7 op traits.
-//! Implementation strategy: core ops first (what Whisper/Llama need),
-//! then expand coverage guided by burn-backend-tests.
-//!
-//! Required traits:
-//!   FloatTensorOps  — 84 required methods (+ ~36 with defaults)
-//!   IntTensorOps    — ~50 required methods
-//!   BoolTensorOps   — ~30 required methods
-//!   ModuleOps       — conv, pool, embedding, etc.
-//!   ActivationOps   — relu, sigmoid, gelu (most have defaults)
-//!   QTensorOps      — quantized tensor ops
-//!   TransactionOps  — batch execution
-//!
-//! # Architecture
-//!
-//! ```text
-//! burn::Tensor<AdaWorld, D>
-//!   ↓ (burn dispatches via Backend trait)
-//! AdaWorld::float_matmul(lhs, rhs)
-//!   ↓ (check for compiled attention table)
-//!   ├── AttentionTable[q_idx][k_idx]  → O(1)  (if compiled)
-//!   └── ndarray general_mat_mul()     → O(d)  (fallback to BLAS)
-//!         ↓ (ndarray delegates to BLAS or matrixmultiply)
-//!         crate::simd::F32x16         → AVX-512 / AVX2 via LazyLock dispatch
-//! ```
+use crate::rand::NdArrayRng;
+use crate::{NdArrayQTensor, NdArrayTensor};
+use crate::{
+    SharedArray,
+    element::{FloatNdArrayElement, IntNdArrayElement, QuantElement},
+};
+use alloc::string::String;
+use burn_backend::quantization::{QuantLevel, QuantMode, QuantScheme, QuantStore, QuantValue};
+use burn_backend::tensor::{BoolTensor, FloatTensor, IntTensor, QuantizedTensor};
+use burn_backend::{Backend, DType, DeviceId, DeviceOps};
+use burn_ir::{BackendIr, HandleKind, TensorHandle};
+use burn_std::BoolStore;
+use burn_std::stub::Mutex;
+use core::marker::PhantomData;
+use rand::SeedableRng;
 
-use crate::tensor::AdaTensor;
+pub(crate) static SEED: Mutex<Option<NdArrayRng>> = Mutex::new(None);
 
-/// The AdaWorld backend.
+/// The device type for the ndarray backend.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum NdArrayDevice {
+    /// The CPU device.
+    #[default]
+    Cpu,
+}
+
+impl DeviceOps for NdArrayDevice {}
+
+impl burn_backend::Device for NdArrayDevice {
+    fn from_id(_device_id: DeviceId) -> Self {
+        Self::Cpu
+    }
+
+    fn to_id(&self) -> DeviceId {
+        DeviceId {
+            type_id: 0,
+            index_id: 0,
+        }
+    }
+}
+
+/// Tensor backend that uses the [ndarray](ndarray) crate for executing tensor operations.
 ///
-/// CPU-only. Uses adaworldapi/ndarray with crate::simd SIMD dispatch.
-/// Feature `attention-table` enables bgz-tensor compiled attention path.
-#[derive(Clone, Default, Debug)]
-pub struct AdaWorld;
+/// This backend is compatible with CPUs and can be compiled for almost any platform, including
+/// `wasm`, `arm`, and `x86`.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct NdArray<E = f32, I = i64, Q = i8>
+where
+    NdArrayTensor: From<SharedArray<E>>,
+    NdArrayTensor: From<SharedArray<I>>,
+{
+    _e: PhantomData<E>,
+    _i: PhantomData<I>,
+    _q: PhantomData<Q>,
+}
 
-/// CPU device (unit type — there's only one CPU).
-#[derive(Clone, Default, Debug, PartialEq, Eq, Hash)]
-pub struct CpuDevice;
+impl<E: FloatNdArrayElement, I: IntNdArrayElement, Q: QuantElement> Backend for NdArray<E, I, Q>
+where
+    NdArrayTensor: From<SharedArray<E>>,
+    NdArrayTensor: From<SharedArray<I>>,
+{
+    type Device = NdArrayDevice;
 
-// NOTE: Full Backend trait implementation requires ~200+ methods across 7 traits.
-// This is tracked as a multi-session effort:
-//
-// Session 1 (current): Crate skeleton + architecture + tensor primitive
-// Session 2: FloatTensorOps core (from_data, matmul, add, mul, exp, reshape, transpose)
-// Session 3: IntTensorOps + BoolTensorOps
-// Session 4: ModuleOps (conv, embedding) + ActivationOps
-// Session 5: QTensorOps + TransactionOps + burn-backend-tests
-//
-// The implementation follows burn-ndarray's pattern but uses:
-//   - crate::simd::F32x16 for element-wise ops (not macerator)
-//   - LazyLock<SimdDispatch> for runtime tier selection (not compile-time features)
-//   - Optional AttentionTable for compiled attention (unique to this backend)
+    type FloatTensorPrimitive = NdArrayTensor;
+    type FloatElem = E;
+
+    type IntTensorPrimitive = NdArrayTensor;
+    type IntElem = I;
+
+    type BoolTensorPrimitive = NdArrayTensor;
+    type BoolElem = bool;
+
+    type QuantizedTensorPrimitive = NdArrayQTensor;
+
+    fn ad_enabled(_device: &Self::Device) -> bool {
+        false
+    }
+
+    fn name(_device: &Self::Device) -> String {
+        String::from("ndarray")
+    }
+
+    fn seed(_device: &Self::Device, seed: u64) {
+        let rng = NdArrayRng::seed_from_u64(seed);
+        let mut seed = SEED.lock().unwrap();
+        *seed = Some(rng);
+    }
+
+    fn dtype_usage(_device: &Self::Device, dtype: DType) -> burn_backend::DTypeUsageSet {
+        match dtype {
+            DType::F64
+            | DType::F32
+            | DType::Flex32
+            | DType::I64
+            | DType::I32
+            | DType::I16
+            | DType::I8
+            | DType::U64
+            | DType::U32
+            | DType::U16
+            | DType::U8
+            | DType::Bool(BoolStore::Native) => burn_backend::DTypeUsage::general(),
+            DType::F16 | DType::BF16 | DType::Bool(_) => burn_backend::DTypeUsageSet::empty(),
+            DType::QFloat(scheme) => {
+                match scheme {
+                    QuantScheme {
+                        level: QuantLevel::Tensor | QuantLevel::Block(_),
+                        mode: QuantMode::Symmetric,
+                        #[cfg(not(feature = "export_tests"))]
+                            value: QuantValue::Q8F | QuantValue::Q8S,
+                        // For tests, "native" sub-byte quant serves as a reference for value equality.
+                        // Values are stored as i8 regardless.
+                        #[cfg(feature = "export_tests")]
+                            value:
+                            QuantValue::Q8F
+                            | QuantValue::Q8S
+                            | QuantValue::Q4F
+                            | QuantValue::Q4S
+                            | QuantValue::Q2F
+                            | QuantValue::Q2S,
+                        store: QuantStore::Native,
+                        ..
+                    } => burn_backend::DTypeUsage::general(),
+                    _scheme => burn_backend::DTypeUsageSet::empty(),
+                }
+            }
+        }
+    }
+
+    fn device_count(_: u16) -> usize {
+        1
+    }
+}
+
+impl<E: FloatNdArrayElement, I: IntNdArrayElement, Q: QuantElement> BackendIr for NdArray<E, I, Q>
+where
+    NdArrayTensor: From<SharedArray<E>>,
+    NdArrayTensor: From<SharedArray<I>>,
+{
+    type Handle = HandleKind<Self>;
+
+    fn float_tensor(handle: TensorHandle<Self::Handle>) -> FloatTensor<Self> {
+        match handle.handle {
+            HandleKind::Float(handle) => handle,
+            _ => panic!("Expected float handle, got {}", handle.handle.name()),
+        }
+    }
+
+    fn int_tensor(handle: TensorHandle<Self::Handle>) -> IntTensor<Self> {
+        match handle.handle {
+            HandleKind::Int(handle) => handle,
+            _ => panic!("Expected int handle, got {}", handle.handle.name()),
+        }
+    }
+
+    fn bool_tensor(handle: TensorHandle<Self::Handle>) -> BoolTensor<Self> {
+        match handle.handle {
+            HandleKind::Bool(handle) => handle,
+            _ => panic!("Expected bool handle, got {}", handle.handle.name()),
+        }
+    }
+
+    fn quantized_tensor(handle: TensorHandle<Self::Handle>) -> QuantizedTensor<Self> {
+        match handle.handle {
+            HandleKind::Quantized(handle) => handle,
+            _ => panic!("Expected quantized handle, got {}", handle.handle.name()),
+        }
+    }
+
+    fn float_tensor_handle(tensor: FloatTensor<Self>) -> Self::Handle {
+        HandleKind::Float(tensor)
+    }
+
+    fn int_tensor_handle(tensor: IntTensor<Self>) -> Self::Handle {
+        HandleKind::Int(tensor)
+    }
+
+    fn bool_tensor_handle(tensor: BoolTensor<Self>) -> Self::Handle {
+        HandleKind::Bool(tensor)
+    }
+
+    fn quantized_tensor_handle(tensor: QuantizedTensor<Self>) -> Self::Handle {
+        HandleKind::Quantized(tensor)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use burn_backend::QTensorPrimitive;
+
+    #[test]
+    fn should_support_dtypes() {
+        type B = NdArray<f32>;
+        let device = Default::default();
+
+        assert!(B::supports_dtype(&device, DType::F64));
+        assert!(B::supports_dtype(&device, DType::F32));
+        assert!(B::supports_dtype(&device, DType::Flex32));
+        assert!(B::supports_dtype(&device, DType::I64));
+        assert!(B::supports_dtype(&device, DType::I32));
+        assert!(B::supports_dtype(&device, DType::I16));
+        assert!(B::supports_dtype(&device, DType::I8));
+        assert!(B::supports_dtype(&device, DType::U64));
+        assert!(B::supports_dtype(&device, DType::U32));
+        assert!(B::supports_dtype(&device, DType::U16));
+        assert!(B::supports_dtype(&device, DType::U8));
+        assert!(B::supports_dtype(&device, DType::Bool(BoolStore::Native)));
+        assert!(B::supports_dtype(
+            &device,
+            DType::QFloat(NdArrayQTensor::default_scheme())
+        ));
+
+        assert!(!B::supports_dtype(&device, DType::F16));
+        assert!(!B::supports_dtype(&device, DType::BF16));
+        // QuantStore::U32 not supported
+        assert!(!B::supports_dtype(
+            &device,
+            DType::QFloat(QuantScheme::default())
+        ));
+    }
+}
