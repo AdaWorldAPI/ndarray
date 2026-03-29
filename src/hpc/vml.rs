@@ -550,4 +550,152 @@ mod tests {
         assert!(encode_time.as_micros() < 100, "encoding should be < 100μs");
         assert!(hydrate_time.as_micros() < 100, "hydration should be < 100μs");
     }
+    #[test]
+    fn test_golden_step_vs_random_projection_rho() {
+        // Compare: golden-step 17D projection vs random 17D projection
+        // on synthetic weight-like data (approximate Gaussian).
+        // Measures Spearman ρ of pairwise distances.
+        
+        let d = 256; // weight vector dimension (small for test speed)
+        let n = 50;  // number of vectors to compare
+        let base_dim = 17;
+        let golden_step = 11;
+        
+        // Generate weight-like vectors (deterministic, Gaussian-ish)
+        let vectors: Vec<Vec<f64>> = (0..n)
+            .map(|i| {
+                (0..d)
+                    .map(|j| ((i * 97 + j * 31) as f64 * 0.001).sin() * 2.0)
+                    .collect()
+            })
+            .collect();
+        
+        // Ground truth: pairwise L2 distances in full d-D space
+        let mut gt_distances = Vec::new();
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let dist: f64 = vectors[i].iter().zip(&vectors[j])
+                    .map(|(a, b)| (a - b) * (a - b))
+                    .sum::<f64>()
+                    .sqrt();
+                gt_distances.push(dist);
+            }
+        }
+        
+        // Golden-step projection: project each vector to 17D
+        let golden_projected: Vec<Vec<f64>> = vectors.iter()
+            .map(|v| {
+                let n_octaves = (d + base_dim - 1) / base_dim;
+                let mut sum = vec![0.0f64; base_dim];
+                let mut count = vec![0u32; base_dim];
+                for octave in 0..n_octaves {
+                    for bi in 0..base_dim {
+                        let dim = octave * base_dim + ((bi * golden_step) % base_dim);
+                        if dim < d {
+                            sum[bi] += v[dim];
+                            count[bi] += 1;
+                        }
+                    }
+                }
+                sum.iter().zip(&count)
+                    .map(|(&s, &c)| if c > 0 { s / c as f64 } else { 0.0 })
+                    .collect()
+            })
+            .collect();
+        
+        // Random projection: use a deterministic "random" 17×d matrix
+        let random_matrix: Vec<Vec<f64>> = (0..base_dim)
+            .map(|i| {
+                (0..d)
+                    .map(|j| ((i * 7919 + j * 104729) as f64 * 0.00001).sin())
+                    .collect()
+            })
+            .collect();
+        
+        let random_projected: Vec<Vec<f64>> = vectors.iter()
+            .map(|v| {
+                random_matrix.iter()
+                    .map(|row| {
+                        row.iter().zip(v).map(|(r, x)| r * x).sum::<f64>()
+                    })
+                    .collect()
+            })
+            .collect();
+        
+        // Compute pairwise distances in both projected spaces
+        let golden_distances: Vec<f64> = {
+            let mut dists = Vec::new();
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    let dist: f64 = golden_projected[i].iter().zip(&golden_projected[j])
+                        .map(|(a, b)| (a - b) * (a - b))
+                        .sum::<f64>()
+                        .sqrt();
+                    dists.push(dist);
+                }
+            }
+            dists
+        };
+        
+        let random_distances: Vec<f64> = {
+            let mut dists = Vec::new();
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    let dist: f64 = random_projected[i].iter().zip(&random_projected[j])
+                        .map(|(a, b)| (a - b) * (a - b))
+                        .sum::<f64>()
+                        .sqrt();
+                    dists.push(dist);
+                }
+            }
+            dists
+        };
+        
+        // Compute Spearman ρ: rank correlation between GT and projected distances
+        fn spearman_rho(a: &[f64], b: &[f64]) -> f64 {
+            let n = a.len();
+            let rank_a = ranks(a);
+            let rank_b = ranks(b);
+            let mean_a: f64 = rank_a.iter().sum::<f64>() / n as f64;
+            let mean_b: f64 = rank_b.iter().sum::<f64>() / n as f64;
+            let mut cov = 0.0f64;
+            let mut var_a = 0.0f64;
+            let mut var_b = 0.0f64;
+            for i in 0..n {
+                let da = rank_a[i] - mean_a;
+                let db = rank_b[i] - mean_b;
+                cov += da * db;
+                var_a += da * da;
+                var_b += db * db;
+            }
+            if var_a < 1e-10 || var_b < 1e-10 { return 0.0; }
+            cov / (var_a * var_b).sqrt()
+        }
+        
+        fn ranks(values: &[f64]) -> Vec<f64> {
+            let mut indexed: Vec<(usize, f64)> = values.iter().copied().enumerate().collect();
+            indexed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+            let mut result = vec![0.0; values.len()];
+            for (rank, (idx, _)) in indexed.into_iter().enumerate() {
+                result[idx] = rank as f64;
+            }
+            result
+        }
+        
+        let rho_golden = spearman_rho(&gt_distances, &golden_distances);
+        let rho_random = spearman_rho(&gt_distances, &random_distances);
+        
+        eprintln!("=== Projection Quality (Spearman ρ) ===");
+        eprintln!("  Golden-step 17D: ρ = {:.4}", rho_golden);
+        eprintln!("  Random 17D:      ρ = {:.4}", rho_random);
+        eprintln!("  Δ (golden - random): {:.4}", rho_golden - rho_random);
+        
+        // Both should preserve SOME ranking (ρ > 0)
+        assert!(rho_golden > 0.0, "golden-step ρ should be positive");
+        assert!(rho_random > 0.0, "random ρ should be positive");
+        // The interesting question: is golden better than random?
+        // We don't assert this — we just measure it.
+        // If Δ ≈ 0 → golden step is the 52°N problem.
+        // If Δ > 0.05 → golden step captures real structure.
+    }
 }
