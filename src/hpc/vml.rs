@@ -698,4 +698,151 @@ mod tests {
         // If Δ ≈ 0 → golden step is the 52°N problem.
         // If Δ > 0.05 → golden step captures real structure.
     }
+    #[test]
+    #[ignore] // Requires /tmp/tiny_imagenet_200.json (run with --include-ignored)
+    fn test_bgz17_on_tiny_imagenet() {
+        // Load real image feature vectors from tiny-imagenet (binary format).
+        // Generate with: python3 script that saves [d:u32][n:u32][f32 × d × n]
+        let bytes = match std::fs::read("/tmp/tiny_imagenet_200.bin") {
+            Ok(b) => b,
+            Err(_) => {
+                eprintln!("SKIP: /tmp/tiny_imagenet_200.bin not found");
+                return;
+            }
+        };
+
+        let d = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+        let n = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
+
+        let mut vectors: Vec<Vec<f64>> = Vec::with_capacity(n);
+        let float_data = &bytes[8..];
+        for i in 0..n {
+            let v: Vec<f64> = (0..d)
+                .map(|j| {
+                    let off = (i * d + j) * 4;
+                    f32::from_le_bytes([float_data[off], float_data[off+1], float_data[off+2], float_data[off+3]]) as f64
+                })
+                .collect();
+            vectors.push(v);
+        }
+        
+        let n = vectors.len();
+        eprintln!("Loaded {} vectors of dim {} from tiny-imagenet", n, d);
+        assert!(n >= 50, "Need at least 50 vectors");
+        
+        // Use first 100 for speed
+        let n = n.min(100);
+        let vectors = &vectors[..n];
+        
+        let base_dim = 17;
+        let golden_step = 11;
+
+        // Ground truth: pairwise L2 distances
+        let mut gt_distances = Vec::new();
+        for i in 0..n {
+            for j in (i+1)..n {
+                let dist: f64 = vectors[i].iter().zip(&vectors[j])
+                    .map(|(a, b)| (a - b) * (a - b))
+                    .sum::<f64>()
+                    .sqrt();
+                gt_distances.push(dist);
+            }
+        }
+
+        // Golden-step projection
+        let golden_projected: Vec<Vec<f64>> = vectors.iter()
+            .map(|v| {
+                let n_octaves = (d + base_dim - 1) / base_dim;
+                let mut sum = vec![0.0f64; base_dim];
+                let mut count = vec![0u32; base_dim];
+                for octave in 0..n_octaves {
+                    for bi in 0..base_dim {
+                        let dim = octave * base_dim + ((bi * golden_step) % base_dim);
+                        if dim < d { sum[bi] += v[dim]; count[bi] += 1; }
+                    }
+                }
+                sum.iter().zip(&count).map(|(&s, &c)| if c > 0 { s / c as f64 } else { 0.0 }).collect()
+            })
+            .collect();
+
+        // Random projection
+        let random_matrix: Vec<Vec<f64>> = (0..base_dim)
+            .map(|i| (0..d).map(|j| ((i * 7919 + j * 104729) as f64 * 0.00001).sin()).collect())
+            .collect();
+        let random_projected: Vec<Vec<f64>> = vectors.iter()
+            .map(|v| random_matrix.iter().map(|row| row.iter().zip(v).map(|(r, x)| r * x).sum::<f64>()).collect())
+            .collect();
+
+        // Simple mean projection (average every 17 consecutive dims)
+        let mean_projected: Vec<Vec<f64>> = vectors.iter()
+            .map(|v| {
+                (0..base_dim).map(|bi| {
+                    let chunk: Vec<f64> = (bi..d).step_by(base_dim).map(|i| v[i]).collect();
+                    if chunk.is_empty() { 0.0 } else { chunk.iter().sum::<f64>() / chunk.len() as f64 }
+                }).collect()
+            })
+            .collect();
+
+        // Compute projected distances
+        fn pairwise_l2(proj: &[Vec<f64>]) -> Vec<f64> {
+            let n = proj.len();
+            let mut dists = Vec::new();
+            for i in 0..n { for j in (i+1)..n {
+                let d: f64 = proj[i].iter().zip(&proj[j]).map(|(a,b)| (a-b)*(a-b)).sum::<f64>().sqrt();
+                dists.push(d);
+            }}
+            dists
+        }
+
+        let golden_dists = pairwise_l2(&golden_projected);
+        let random_dists = pairwise_l2(&random_projected);
+        let mean_dists = pairwise_l2(&mean_projected);
+
+        // Spearman ρ
+        fn spearman(a: &[f64], b: &[f64]) -> f64 {
+            fn ranks(v: &[f64]) -> Vec<f64> {
+                let mut idx: Vec<(usize, f64)> = v.iter().copied().enumerate().collect();
+                idx.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+                let mut r = vec![0.0; v.len()];
+                for (rank, (i, _)) in idx.into_iter().enumerate() { r[i] = rank as f64; }
+                r
+            }
+            let ra = ranks(a); let rb = ranks(b);
+            let n = a.len() as f64;
+            let ma: f64 = ra.iter().sum::<f64>() / n;
+            let mb: f64 = rb.iter().sum::<f64>() / n;
+            let (mut cov, mut va, mut vb) = (0.0, 0.0, 0.0);
+            for i in 0..a.len() {
+                let (da, db) = (ra[i] - ma, rb[i] - mb);
+                cov += da * db; va += da * da; vb += db * db;
+            }
+            if va < 1e-10 || vb < 1e-10 { 0.0 } else { cov / (va * vb).sqrt() }
+        }
+
+        let rho_golden = spearman(&gt_distances, &golden_dists);
+        let rho_random = spearman(&gt_distances, &random_dists);
+        let rho_mean = spearman(&gt_distances, &mean_dists);
+
+        eprintln!("=== bgz17 on Tiny ImageNet (real pixel data) ===");
+        eprintln!("  Golden-step 17D: ρ = {:.4}", rho_golden);
+        eprintln!("  Random 17D:      ρ = {:.4}", rho_random);
+        eprintln!("  Mean-stride 17D: ρ = {:.4}", rho_mean);
+        eprintln!("  Δ golden-random: {:.4}", rho_golden - rho_random);
+        eprintln!("  Δ golden-mean:   {:.4}", rho_golden - rho_mean);
+        eprintln!();
+        if (rho_golden - rho_random).abs() < 0.02 {
+            eprintln!("  VERDICT: Golden-step ≈ random on pixel data (52°N problem)");
+            eprintln!("  bgz17's value is NOT in the projection axes");
+            eprintln!("  bgz17's value IS in the distance table + cascade infrastructure");
+        } else if rho_golden > rho_random + 0.02 {
+            eprintln!("  VERDICT: Golden-step > random! The Fibonacci structure captures something.");
+        } else {
+            eprintln!("  VERDICT: Random > golden-step. Golden-step is WORSE for this data.");
+        }
+
+        // Basic sanity: golden-step should preserve reasonable ranking
+        assert!(rho_golden > 0.3, "golden ρ too low: {}", rho_golden);
+        // Random projection CAN be very low on structured data — that's expected
+        assert!(rho_random > -0.5, "random ρ impossibly low: {}", rho_random);
+    }
 }
