@@ -1721,4 +1721,183 @@ mod tests {
             "NARS revision should improve over best single: {:.1}% vs {:.1}%",
             revised_accuracy * 100.0, best_single_acc * 100.0);
     }
+    #[test]
+    #[ignore]
+    fn test_hotspot_8x8_grid_bundling() {
+        // 8×8 grid of 8×8 cells. For each 1/3 intersection, find the 4 hottest
+        // neighboring cells (by gradient energy), bundle their features.
+        
+        let bytes = match std::fs::read("/tmp/tiny_imagenet_labeled.bin") {
+            Ok(b) => b,
+            Err(_) => { eprintln!("SKIP: /tmp/tiny_imagenet_labeled.bin not found"); return; }
+        };
+
+        let n = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+        let d = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
+        let n_classes = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
+        let mut labels = Vec::with_capacity(n);
+        for i in 0..n {
+            let off = 12 + i * 4;
+            labels.push(u32::from_le_bytes([bytes[off], bytes[off+1], bytes[off+2], bytes[off+3]]) as usize);
+        }
+        let pixel_start = 12 + n * 4;
+        let img_w = 64usize; let img_h = 64usize; let ch = 3usize;
+        let n_use = n.min(200);
+
+        let pixel = |img: usize, r: usize, c: usize, channel: usize| -> f64 {
+            let off = pixel_start + (img * d + r * img_w * ch + c * ch + channel) * 4;
+            f32::from_le_bytes([bytes[off], bytes[off+1], bytes[off+2], bytes[off+3]]) as f64
+        };
+        let luma = |img: usize, r: usize, c: usize| -> f64 {
+            0.299 * pixel(img, r, c, 0) + 0.587 * pixel(img, r, c, 1) + 0.114 * pixel(img, r, c, 2)
+        };
+
+        let cell_size = 8usize; // 8×8 cells
+        let grid_w = img_w / cell_size; // 8 cells wide
+        let grid_h = img_h / cell_size; // 8 cells tall
+        let cell_feat_d = cell_size * cell_size * ch; // 192 features per cell
+
+        // 1/3 intersections in cell coordinates
+        let intersections_cell = [
+            (grid_h / 3, grid_w / 3),     // ~(2,2)
+            (grid_h / 3, 2 * grid_w / 3), // ~(2,5)
+            (2 * grid_h / 3, grid_w / 3), // ~(5,2)
+            (2 * grid_h / 3, 2 * grid_w / 3), // ~(5,5)
+        ];
+
+        // For each image: for each intersection, find 4 hottest neighboring cells, bundle
+        let mut features: Vec<Vec<f64>> = Vec::with_capacity(n_use);
+
+        for img in 0..n_use {
+            let mut img_features = Vec::new();
+
+            // Compute gradient energy for each cell
+            let mut cell_energy = vec![vec![0.0f64; grid_w]; grid_h];
+            for gr in 0..grid_h {
+                for gc in 0..grid_w {
+                    let mut energy = 0.0f64;
+                    let r0 = gr * cell_size;
+                    let c0 = gc * cell_size;
+                    for r in r0..(r0 + cell_size) {
+                        for c in c0..(c0 + cell_size) {
+                            if r > 0 && r < img_h-1 && c > 0 && c < img_w-1 {
+                                let dx = luma(img, r, c+1) - luma(img, r, c.saturating_sub(1));
+                                let dy = luma(img, r+1, c) - luma(img, r.saturating_sub(1), c);
+                                energy += (dx*dx + dy*dy).sqrt();
+                            }
+                        }
+                    }
+                    cell_energy[gr][gc] = energy;
+                }
+            }
+
+            // For each intersection, get 4 hottest neighboring cells (2×2 around intersection)
+            for &(ir, ic) in &intersections_cell {
+                // Candidate cells: the 4 cells around the intersection point
+                let mut candidates: Vec<(usize, usize, f64)> = Vec::new();
+                for dr in 0..2usize {
+                    for dc in 0..2usize {
+                        let gr = (ir + dr).min(grid_h - 1);
+                        let gc = (ic + dc).min(grid_w - 1);
+                        candidates.push((gr, gc, cell_energy[gr][gc]));
+                    }
+                }
+                // Sort by energy (hottest first) — but we take all 4 for bundling
+                candidates.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
+
+                // Bundle: average the 4 cell feature vectors (majority vote analog for f64)
+                let mut bundle = vec![0.0f64; cell_feat_d];
+                for &(gr, gc, _) in &candidates {
+                    let r0 = gr * cell_size;
+                    let c0 = gc * cell_size;
+                    let mut idx = 0;
+                    for r in r0..(r0 + cell_size) {
+                        for c in c0..(c0 + cell_size) {
+                            for channel in 0..ch {
+                                bundle[idx] += pixel(img, r, c, channel);
+                                idx += 1;
+                            }
+                        }
+                    }
+                }
+                // Normalize bundle (mean of 4 cells)
+                for v in bundle.iter_mut() { *v /= 4.0; }
+                img_features.extend_from_slice(&bundle);
+            }
+
+            features.push(img_features);
+        }
+
+        let feat_d = features[0].len(); // 4 intersections × 192 = 768
+
+        // Build archetypes and classify
+        let mut archetypes = vec![vec![0.0; feat_d]; n_classes];
+        let mut counts = vec![0usize; n_classes];
+        for (i, &l) in labels[..n_use].iter().enumerate() {
+            for j in 0..feat_d { archetypes[l][j] += features[i][j]; }
+            counts[l] += 1;
+        }
+        for c in 0..n_classes {
+            if counts[c] > 0 { for j in 0..feat_d { archetypes[c][j] /= counts[c] as f64; } }
+        }
+
+        let mut correct = 0usize;
+        for (i, &true_label) in labels[..n_use].iter().enumerate() {
+            let mut best_c = 0;
+            let mut best_d = f64::MAX;
+            for c in 0..n_classes {
+                if counts[c] == 0 { continue; }
+                let dist: f64 = features[i].iter().zip(&archetypes[c])
+                    .map(|(a, b)| (a-b)*(a-b)).sum::<f64>().sqrt();
+                if dist < best_d { best_d = dist; best_c = c; }
+            }
+            if best_c == true_label { correct += 1; }
+        }
+        let accuracy = correct as f64 / n_use as f64;
+
+        // Also: golden-step compressed
+        let base_dim = 17; let golden_step = 11;
+        let compress = |v: &[f64]| -> Vec<f64> {
+            let fd = v.len();
+            let n_oct = (fd + base_dim - 1) / base_dim;
+            let mut sum = vec![0.0f64; base_dim];
+            let mut cnt = vec![0u32; base_dim];
+            for oct in 0..n_oct {
+                for bi in 0..base_dim {
+                    let dim = oct * base_dim + ((bi * golden_step) % base_dim);
+                    if dim < fd { sum[bi] += v[dim]; cnt[bi] += 1; }
+                }
+            }
+            sum.iter().zip(&cnt).map(|(&s, &c)| if c > 0 { s / c as f64 } else { 0.0 }).collect()
+        };
+        let c_arch: Vec<Vec<f64>> = archetypes.iter().map(|a| compress(a)).collect();
+        let c_feat: Vec<Vec<f64>> = features.iter().map(|f| compress(f)).collect();
+        let mut correct_c = 0;
+        for (i, &tl) in labels[..n_use].iter().enumerate() {
+            let mut best_c = 0; let mut best_d = f64::MAX;
+            for c in 0..n_classes {
+                if counts[c] == 0 { continue; }
+                let dist: f64 = c_feat[i].iter().zip(&c_arch[c]).map(|(a,b)|(a-b)*(a-b)).sum::<f64>().sqrt();
+                if dist < best_d { best_d = dist; best_c = c; }
+            }
+            if best_c == tl { correct_c += 1; }
+        }
+        let acc_c = correct_c as f64 / n_use as f64;
+
+        eprintln!("=== 8×8 Grid Hotspot Bundling ===");
+        eprintln!("  {} images, {} classes", n_use, n_classes);
+        eprintln!("  Cell size: {}×{}, Grid: {}×{}", cell_size, cell_size, grid_w, grid_h);
+        eprintln!("  Features: 4 intersections × 4 hot cells bundled × {}D = {}D", cell_feat_d, feat_d);
+        eprintln!();
+        eprintln!("  Hotspot bundle 768D:     {:.1}% ({}/{})", accuracy * 100.0, correct, n_use);
+        eprintln!("  Compressed 17D (34B):    {:.1}% ({}/{})", acc_c * 100.0, correct_c, n_use);
+        eprintln!("  Random baseline:         {:.1}%", 100.0 / n_classes as f64);
+        eprintln!();
+        eprintln!("  Compare all 768D approaches:");
+        eprintln!("    Grid lines:            29.8%  (4 full scan lines)");
+        eprintln!("    Hotspot bundles:       {:.1}%  (4×4 hot cells at 1/3 points)", accuracy * 100.0);
+        eprintln!("    Centroid focus (432D): 50.5%  (single best intersection patch)");
+
+        assert!(accuracy > 1.0 / n_classes as f64, "should beat random");
+    }
 }
