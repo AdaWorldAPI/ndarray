@@ -32,6 +32,34 @@ use num_traits::Float;
 
 use libm::erf;
 
+/// Try to accelerate a unary f32 operation via ndarray's hpc::vml (F32x16 SIMD).
+///
+/// VML signature: `fn(input: &[f32], output: &mut [f32])`.
+/// Uses crate::simd::F32x16 internally. Consumer never sees hardware details.
+#[cfg(feature = "simd")]
+fn try_vml_unary(
+    tensor: NdArrayTensor,
+    vml_fn: fn(&[f32], &mut [f32]),
+) -> Result<NdArrayTensor, NdArrayTensor> {
+    if let NdArrayTensor::F32(storage) = tensor {
+        let shared = storage.into_shared();
+        if shared.is_standard_layout() {
+            if let Some(input) = shared.as_slice() {
+                let mut output = vec![0.0f32; input.len()];
+                vml_fn(input, &mut output);
+                let shape = shared.shape().to_vec();
+                let array = ndarray::Array::from_shape_vec(ndarray::IxDyn(&shape), output)
+                    .expect("vml output shape mismatch");
+                return Ok(NdArrayTensor::F32(
+                    crate::NdArrayStorage::Owned(array.into_shared()),
+                ));
+            }
+        }
+        return Err(NdArrayTensor::F32(crate::NdArrayStorage::Owned(shared)));
+    }
+    Err(tensor)
+}
+
 #[cfg(feature = "std")]
 #[allow(dead_code)]
 fn round_ties_even_wrapper(x: f64) -> f64 {
@@ -446,12 +474,24 @@ where
     }
 
     fn float_exp(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
+        // Fast path: contiguous f32 → ndarray::hpc::vml::vsexp (F32x16 SIMD).
+        // Falls through to scalar mapv_into for non-f32 or non-contiguous.
+        #[cfg(feature = "simd")]
+        let tensor = match try_vml_unary(tensor, ndarray::hpc::vml::vsexp) {
+            Ok(result) => return result,
+            Err(t) => t,
+        };
         execute_with_float_dtype!(tensor, FloatElem, |array: SharedArray<FloatElem>| {
             array.mapv_into(|a: FloatElem| a.exp_elem()).into_shared()
         })
     }
 
     fn float_log(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
+        #[cfg(feature = "simd")]
+        let tensor = match try_vml_unary(tensor, ndarray::hpc::vml::vsln) {
+            Ok(result) => return result,
+            Err(t) => t,
+        };
         execute_with_float_dtype!(tensor, FloatElem, |array: SharedArray<FloatElem>| {
             array.mapv_into(|a: FloatElem| a.log_elem()).into_shared()
         })
@@ -499,12 +539,22 @@ where
     }
 
     fn float_sqrt(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
+        #[cfg(feature = "simd")]
+        let tensor = match try_vml_unary(tensor, ndarray::hpc::vml::vssqrt) {
+            Ok(result) => return result,
+            Err(t) => t,
+        };
         execute_with_float_dtype!(tensor, FloatElem, |array: SharedArray<FloatElem>| {
             array.mapv_into(|a: FloatElem| a.sqrt_elem()).into_shared()
         })
     }
 
     fn float_abs(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
+        #[cfg(feature = "simd")]
+        let tensor = match try_vml_unary(tensor, ndarray::hpc::vml::vsabs) {
+            Ok(result) => return result,
+            Err(t) => t,
+        };
         execute_with_float_dtype!(tensor, FloatElem, |array: SharedArray<FloatElem>| {
             NdArrayMathOps::abs(array)
         })
