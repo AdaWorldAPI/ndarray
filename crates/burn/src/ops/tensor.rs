@@ -611,6 +611,11 @@ where
     }
 
     fn float_tanh(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
+        #[cfg(feature = "simd")]
+        let tensor = match try_vml_unary(tensor, ndarray::hpc::vml::vstanh) {
+            Ok(result) => return result,
+            Err(t) => t,
+        };
         execute_with_float_dtype!(tensor, FloatElem, |array: SharedArray<FloatElem>| {
             array
                 .mapv_into(|a: FloatElem| (a.to_f64()).tanh().elem())

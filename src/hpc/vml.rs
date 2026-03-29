@@ -225,6 +225,32 @@ pub fn vspow(a: &[f32], b: &[f32], out: &mut [f32]) {
     }
 }
 
+/// Element-wise tanh: out[i] = tanh(x[i])
+///
+/// Uses the identity: tanh(x) = 2·sigmoid(2x) - 1
+/// which reuses our SIMD sigmoid (F32x16 polynomial).
+pub fn vstanh(x: &[f32], out: &mut [f32]) {
+    let n = x.len().min(out.len());
+    let chunks = n / 16;
+    let two = F32x16::splat(2.0);
+    let one = F32x16::splat(1.0);
+    for i in 0..chunks {
+        let off = i * 16;
+        let v = F32x16::from_slice(&x[off..off + 16]);
+        // tanh(x) = 2·sigmoid(2x) - 1
+        let two_x = v * two;
+        // sigmoid(z) = 1/(1+exp(-z))
+        let neg_two_x = F32x16::splat(0.0) - two_x;
+        let exp_neg = simd_exp_f32(neg_two_x);
+        let sigmoid = one / (exp_neg + one);
+        let tanh_v = sigmoid.mul_add(two, F32x16::splat(-1.0));
+        tanh_v.copy_to_slice(&mut out[off..off + 16]);
+    }
+    for i in (chunks * 16)..n {
+        out[i] = x[i].tanh();
+    }
+}
+
 /// Element-wise floor: out[i] = floor(x[i])
 ///
 /// Uses F32x16 hardware VRNDSCALEPS (AVX-512) or equivalent.
