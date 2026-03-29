@@ -561,6 +561,11 @@ where
     }
 
     fn float_cos(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
+        #[cfg(feature = "simd")]
+        let tensor = match try_vml_unary(tensor, ndarray::hpc::vml::vscos) {
+            Ok(result) => return result,
+            Err(t) => t,
+        };
         execute_with_float_dtype!(tensor, FloatElem, |array: SharedArray<FloatElem>| {
             array
                 .mapv_into(|a: FloatElem| (a.to_f64()).cos().elem())
@@ -577,6 +582,11 @@ where
     }
 
     fn float_sin(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
+        #[cfg(feature = "simd")]
+        let tensor = match try_vml_unary(tensor, ndarray::hpc::vml::vssin) {
+            Ok(result) => return result,
+            Err(t) => t,
+        };
         execute_with_float_dtype!(tensor, FloatElem, |array: SharedArray<FloatElem>| {
             array
                 .mapv_into(|a: FloatElem| (a.to_f64()).sin().elem())
