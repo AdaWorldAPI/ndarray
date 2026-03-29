@@ -166,6 +166,10 @@ pub mod cam_pq;
 #[allow(missing_docs)]
 pub mod gguf;
 
+/// Jina embedding codec — GGUF → Base17 → Palette → CausalEdge64.
+#[allow(missing_docs)]
+pub mod jina;
+
 // jitson: JSON config → scan pipeline (parser, validator, template, precompile, packed)
 // Always available — no Cranelift dependency.
 #[allow(missing_docs)]
