@@ -225,6 +225,96 @@ pub fn vspow(a: &[f32], b: &[f32], out: &mut [f32]) {
     }
 }
 
+/// Element-wise floor: out[i] = floor(x[i])
+///
+/// Uses F32x16 hardware VRNDSCALEPS (AVX-512) or equivalent.
+pub fn vsfloor(x: &[f32], out: &mut [f32]) {
+    let n = x.len().min(out.len());
+    let chunks = n / 16;
+    for i in 0..chunks {
+        let off = i * 16;
+        let v = F32x16::from_slice(&x[off..off + 16]);
+        v.floor().copy_to_slice(&mut out[off..off + 16]);
+    }
+    for i in (chunks * 16)..n {
+        out[i] = x[i].floor();
+    }
+}
+
+/// Element-wise ceil: out[i] = ceil(x[i])
+pub fn vsceil(x: &[f32], out: &mut [f32]) {
+    let n = x.len().min(out.len());
+    let chunks = n / 16;
+    for i in 0..chunks {
+        let off = i * 16;
+        let v = F32x16::from_slice(&x[off..off + 16]);
+        // ceil = -floor(-x)
+        let neg = F32x16::splat(0.0) - v;
+        let floored = neg.floor();
+        let ceiled = F32x16::splat(0.0) - floored;
+        ceiled.copy_to_slice(&mut out[off..off + 16]);
+    }
+    for i in (chunks * 16)..n {
+        out[i] = x[i].ceil();
+    }
+}
+
+/// Element-wise round (ties to even): out[i] = round(x[i])
+pub fn vsround(x: &[f32], out: &mut [f32]) {
+    let n = x.len().min(out.len());
+    let chunks = n / 16;
+    for i in 0..chunks {
+        let off = i * 16;
+        let v = F32x16::from_slice(&x[off..off + 16]);
+        v.round().copy_to_slice(&mut out[off..off + 16]);
+    }
+    for i in (chunks * 16)..n {
+        out[i] = x[i].round_ties_even();
+    }
+}
+
+/// Element-wise negate: out[i] = -x[i]
+pub fn vsneg(x: &[f32], out: &mut [f32]) {
+    let n = x.len().min(out.len());
+    let chunks = n / 16;
+    let zero = F32x16::splat(0.0);
+    for i in 0..chunks {
+        let off = i * 16;
+        let v = F32x16::from_slice(&x[off..off + 16]);
+        (zero - v).copy_to_slice(&mut out[off..off + 16]);
+    }
+    for i in (chunks * 16)..n {
+        out[i] = -x[i];
+    }
+}
+
+/// Element-wise trunc: out[i] = trunc(x[i]) (round toward zero)
+pub fn vstrunc(x: &[f32], out: &mut [f32]) {
+    let n = x.len().min(out.len());
+    // trunc = sign(x) * floor(abs(x))
+    let chunks = n / 16;
+    for i in 0..chunks {
+        let off = i * 16;
+        let v = F32x16::from_slice(&x[off..off + 16]);
+        let abs_v = v.abs();
+        let floored = abs_v.floor();
+        // Restore sign: if original was negative, negate the result
+        // Use: trunc(x) = floor(x) if x >= 0, ceil(x) if x < 0
+        // Simpler: just floor(abs(x)) * sign(x)
+        // We can do sign via: x / abs(x), but that's NaN for 0.
+        // Instead: if x >= 0, result = floor(abs(x)), else -floor(abs(x))
+        let zero = F32x16::splat(0.0);
+        let mask = v.simd_lt(zero); // true where x < 0
+        let pos_result = floored;
+        let neg_result = zero - floored;
+        let result = mask.select(neg_result, pos_result);
+        result.copy_to_slice(&mut out[off..off + 16]);
+    }
+    for i in (chunks * 16)..n {
+        out[i] = x[i].trunc();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
