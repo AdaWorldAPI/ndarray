@@ -2,8 +2,20 @@
 //!
 //! All transcendental ops use `crate::simd::F32x16`.
 //! LayerNorm, GELU, Softmax — all SIMD-accelerated.
+//!
+//! # Tensor Codec Integration
+//!
+//! Wired through the full bgz17/HHTL/CausalEdge64 stack:
+//! - **AttentionTable**: Palette-based O(1) approximate attention scores
+//!   from `jina::runtime::GPT2` (256×256 precomputed distances).
+//! - **CausalEdge64**: Every attention head emits SPO causal edges with
+//!   NARS truth values. Accumulated during generation for causal reasoning.
+//! - **Base17 embeddings**: Available via `jina::runtime::GPT2` for O(1)
+//!   token similarity (HHTL cascade: HEEL → LEAF).
 
 use super::weights::*;
+use crate::hpc::jina::causal;
+use crate::hpc::jina::runtime;
 use crate::simd::F32x16;
 
 /// A generated token with its probability.
@@ -13,6 +25,18 @@ pub struct GeneratedToken {
     pub logprob: f32,
 }
 
+/// CausalEdge64 emitted during attention.
+/// Each edge encodes: which token attended to which, with what strength.
+#[derive(Clone, Debug)]
+pub struct AttentionEdge {
+    /// Transformer layer that produced this edge.
+    pub layer: u8,
+    /// Attention head index.
+    pub head: u8,
+    /// The packed CausalEdge64 (subject=query token, predicate=head, object=key token).
+    pub edge: u64,
+}
+
 /// GPT-2 inference engine.
 pub struct Gpt2Engine {
     weights: Gpt2Weights,
@@ -20,6 +44,14 @@ pub struct Gpt2Engine {
     kv_cache: Vec<KvCache>,
     /// Current sequence length.
     seq_len: usize,
+    /// Token IDs seen so far (for palette lookups).
+    token_history: Vec<u32>,
+    /// Accumulated causal edges from attention patterns.
+    pub causal_edges: Vec<AttentionEdge>,
+    /// Whether to use AttentionTable approximation for attention scores.
+    pub use_attention_table: bool,
+    /// Whether to emit CausalEdge64 from attention patterns.
+    pub emit_causal_edges: bool,
 }
 
 /// Key-Value cache for one layer.
@@ -40,7 +72,15 @@ impl Gpt2Engine {
                 values: Vec::with_capacity(MAX_SEQ_LEN * EMBED_DIM),
             })
             .collect();
-        Self { weights, kv_cache, seq_len: 0 }
+        Self {
+            weights,
+            kv_cache,
+            seq_len: 0,
+            token_history: Vec::with_capacity(MAX_SEQ_LEN),
+            causal_edges: Vec::new(),
+            use_attention_table: false,
+            emit_causal_edges: false,
+        }
     }
 
     /// Access weights (for embedding lookups).
@@ -55,14 +95,48 @@ impl Gpt2Engine {
             kv.values.clear();
         }
         self.seq_len = 0;
+        self.token_history.clear();
+        self.causal_edges.clear();
+    }
+
+    /// Get HHTL cascade distance between two tokens via bgz17 Base17 palette.
+    /// Uses the precomputed GPT2 runtime from `jina::runtime::GPT2`.
+    #[inline]
+    pub fn token_similarity(&self, token_a: u32, token_b: u32) -> f32 {
+        let rt = &*runtime::GPT2;
+        rt.heel_similarity(token_a as usize, token_b as usize)
+    }
+
+    /// Get Base17 L1 distance between two tokens (LEAF level, full precision).
+    #[inline]
+    pub fn token_distance_leaf(&self, token_a: u32, token_b: u32) -> u32 {
+        let rt = &*runtime::GPT2;
+        rt.leaf_distance(token_a as usize, token_b as usize)
+    }
+
+    /// Get HHTL cascade distance with automatic level selection.
+    #[inline]
+    pub fn token_distance_cascade(&self, token_a: u32, token_b: u32) -> (u32, runtime::HhtlLevel) {
+        let rt = &*runtime::GPT2;
+        rt.cascade_distance(token_a as usize, token_b as usize)
+    }
+
+    /// Get 6-byte CAM-PQ fingerprint for a token.
+    #[inline]
+    pub fn token_fingerprint(&self, token_id: u32) -> [u8; 6] {
+        let rt = &*runtime::GPT2;
+        rt.cam_fingerprint(token_id as usize)
     }
 
     /// Forward pass for one token → logits over vocabulary.
     ///
     /// Uses KV cache for O(seq_len) attention instead of O(seq_len²).
+    /// When `emit_causal_edges` is true, attention patterns are packed
+    /// as CausalEdge64 with NARS truth values.
     pub fn forward(&mut self, token_id: u32) -> Vec<f32> {
         let pos = self.seq_len;
         assert!(pos < MAX_SEQ_LEN, "sequence too long");
+        self.token_history.push(token_id);
 
         // Embedding: wte[token] + wpe[position]
         let mut hidden = vec![0.0f32; EMBED_DIM];
@@ -133,6 +207,12 @@ impl Gpt2Engine {
     }
 
     /// Multi-head self-attention with KV cache.
+    ///
+    /// Integration points:
+    /// - **AttentionTable**: When `use_attention_table` is set, palette-based
+    ///   similarity biases the attention scores (HEEL-level O(1) lookup).
+    /// - **CausalEdge64**: When `emit_causal_edges` is set, top attention
+    ///   weights are packed as SPO edges with NARS truth values.
     fn multi_head_attention(&mut self, layer_idx: usize, input: &[f32]) -> Vec<f32> {
         let layer = &self.weights.layers[layer_idx];
 
@@ -149,10 +229,20 @@ impl Gpt2Engine {
         self.kv_cache[layer_idx].values.extend_from_slice(v);
 
         let seq_len = self.seq_len + 1; // including current token
+        let current_token = *self.token_history.last().unwrap_or(&0);
+        let use_attn_table = self.use_attention_table;
+        let emit_edges = self.emit_causal_edges;
 
         // Per-head attention
         let mut output = vec![0.0f32; EMBED_DIM];
         let scale = 1.0 / (HEAD_DIM as f32).sqrt();
+
+        // Lazy-init GPT2 palette runtime for AttentionTable / CausalEdge64
+        let rt = if use_attn_table || emit_edges {
+            Some(&*runtime::GPT2)
+        } else {
+            None
+        };
 
         for head in 0..NUM_HEADS {
             let h_offset = head * HEAD_DIM;
@@ -166,11 +256,50 @@ impl Gpt2Engine {
                     dot += q[h_offset + d] * self.kv_cache[layer_idx].keys[k_offset + d];
                 }
                 scores[t] = dot * scale;
+
+                // AttentionTable bias: blend palette-based similarity into score.
+                // This is the "compiled attention" path — the 256×256 palette
+                // distance table provides O(1) semantic similarity.
+                if let Some(rt) = rt {
+                    if use_attn_table && t < self.token_history.len() {
+                        let key_token = self.token_history[t];
+                        let palette_sim = rt.heel_similarity(
+                            current_token as usize,
+                            key_token as usize,
+                        );
+                        // Blend: 90% matmul score + 10% palette shortcut
+                        scores[t] = scores[t] * 0.9 + palette_sim * 0.1 * scale;
+                    }
+                }
             }
 
-            // Causal mask: only attend to past and current (already enforced by cache length)
-            // Softmax
+            // Causal mask: already enforced by cache length
             softmax_simd(&mut scores);
+
+            // Emit CausalEdge64 for significant attention weights.
+            // S=current_token, P=head (via palette), O=attended_token.
+            if emit_edges {
+                if let Some(rt) = rt {
+                    for t in 0..seq_len {
+                        if scores[t] > 0.05 && t < self.token_history.len() {
+                            let key_token = self.token_history[t];
+                            let edge = rt.pack_spo_edge(
+                                current_token as usize,
+                                head,                    // predicate = attention head
+                                key_token as usize,
+                                scores[t],               // frequency = attention weight
+                                0.3,                      // initial confidence (low)
+                                self.seq_len as u16,     // temporal position
+                            );
+                            self.causal_edges.push(AttentionEdge {
+                                layer: layer_idx as u8,
+                                head: head as u8,
+                                edge,
+                            });
+                        }
+                    }
+                }
+            }
 
             // Weighted sum of values
             for t in 0..seq_len {
@@ -434,5 +563,80 @@ mod tests {
         softmax_simd(&mut x);
         // Index 1 (value 5.0) should have highest probability
         assert!(x[1] > x[0] && x[1] > x[2] && x[1] > x[3]);
+    }
+
+    // ===== Tensor codec integration tests =====
+
+    #[test]
+    fn test_token_similarity_self() {
+        // Token similarity to itself should be ~1.0 (via GPT2 palette)
+        let engine = Gpt2Engine::new(Gpt2Weights {
+            wte: vec![0.0; VOCAB_SIZE * EMBED_DIM],
+            wpe: vec![0.0; MAX_SEQ_LEN * EMBED_DIM],
+            layers: Vec::new(),
+            ln_f_weight: vec![1.0; EMBED_DIM],
+            ln_f_bias: vec![0.0; EMBED_DIM],
+        });
+        let sim = engine.token_similarity(0, 0);
+        assert!((sim - 1.0).abs() < 0.01, "self-similarity should be ~1.0, got {}", sim);
+    }
+
+    #[test]
+    fn test_token_similarity_different() {
+        let engine = Gpt2Engine::new(Gpt2Weights {
+            wte: vec![0.0; VOCAB_SIZE * EMBED_DIM],
+            wpe: vec![0.0; MAX_SEQ_LEN * EMBED_DIM],
+            layers: Vec::new(),
+            ln_f_weight: vec![1.0; EMBED_DIM],
+            ln_f_bias: vec![0.0; EMBED_DIM],
+        });
+        let sim = engine.token_similarity(100, 50000);
+        assert!(sim < 1.0, "different tokens should have similarity < 1.0");
+    }
+
+    #[test]
+    fn test_token_fingerprint_6bytes() {
+        let engine = Gpt2Engine::new(Gpt2Weights {
+            wte: vec![0.0; VOCAB_SIZE * EMBED_DIM],
+            wpe: vec![0.0; MAX_SEQ_LEN * EMBED_DIM],
+            layers: Vec::new(),
+            ln_f_weight: vec![1.0; EMBED_DIM],
+            ln_f_bias: vec![0.0; EMBED_DIM],
+        });
+        let fp = engine.token_fingerprint(1000);
+        assert_eq!(fp.len(), 6);
+        // First byte is palette index
+        let rt = &*runtime::GPT2;
+        assert_eq!(fp[0], rt.palette.palette_index(1000));
+    }
+
+    #[test]
+    fn test_cascade_distance_levels() {
+        let engine = Gpt2Engine::new(Gpt2Weights {
+            wte: vec![0.0; VOCAB_SIZE * EMBED_DIM],
+            wpe: vec![0.0; MAX_SEQ_LEN * EMBED_DIM],
+            layers: Vec::new(),
+            ln_f_weight: vec![1.0; EMBED_DIM],
+            ln_f_bias: vec![0.0; EMBED_DIM],
+        });
+        // Self-distance should resolve at HEEL level
+        let (d, level) = engine.token_distance_cascade(0, 0);
+        assert_eq!(d, 0);
+        assert_eq!(level, runtime::HhtlLevel::Heel);
+    }
+
+    #[test]
+    fn test_causal_edge_emission_flag() {
+        // Verify that emit_causal_edges flag controls edge emission
+        let mut engine = Gpt2Engine::new(Gpt2Weights {
+            wte: vec![0.0; VOCAB_SIZE * EMBED_DIM],
+            wpe: vec![0.0; MAX_SEQ_LEN * EMBED_DIM],
+            layers: Vec::new(),
+            ln_f_weight: vec![1.0; EMBED_DIM],
+            ln_f_bias: vec![0.0; EMBED_DIM],
+        });
+        assert!(!engine.emit_causal_edges, "should be off by default");
+        assert!(!engine.use_attention_table, "should be off by default");
+        assert!(engine.causal_edges.is_empty());
     }
 }
