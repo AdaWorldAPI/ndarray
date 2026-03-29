@@ -106,12 +106,9 @@ members = [
     "crates/*",
 ]
 exclude = [
-    # burn crates require edition 2024 (Rust 1.85+).
+    # burn crate requires edition 2024 (Rust 1.85+) and pinned git deps.
     # Built separately: cargo check --manifest-path crates/burn/Cargo.toml
     "crates/burn",
-    "crates/burn-backend",
-    "crates/burn-std",
-    "crates/burn-ir",
 ]
 default-members = [
     ".",
