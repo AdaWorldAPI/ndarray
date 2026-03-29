@@ -1015,4 +1015,174 @@ mod tests {
         assert!(rho_golden > 0.3);
         assert!(rho_grid4 > rho_golden, "grid lines should beat golden-step on raw pixels");
     }
+    #[test]
+    #[ignore]
+    fn test_heel_hip_archetype_bundling() {
+        // Build HEEL (class) and HIP (within-class) archetypes from tiny-imagenet.
+        // Test: can we identify which class an image belongs to via bundle similarity?
+        let bytes = match std::fs::read("/tmp/tiny_imagenet_labeled.bin") {
+            Ok(b) => b,
+            Err(_) => { eprintln!("SKIP: /tmp/tiny_imagenet_labeled.bin not found"); return; }
+        };
+
+        let n = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+        let d = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
+        let n_classes = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
+
+        // Read labels
+        let mut labels = Vec::with_capacity(n);
+        for i in 0..n {
+            let off = 12 + i * 4;
+            labels.push(u32::from_le_bytes([bytes[off], bytes[off+1], bytes[off+2], bytes[off+3]]) as usize);
+        }
+
+        // Read pixel vectors
+        let pixel_start = 12 + n * 4;
+        let mut vectors: Vec<Vec<f64>> = Vec::with_capacity(n);
+        for i in 0..n {
+            let v: Vec<f64> = (0..d)
+                .map(|j| {
+                    let off = pixel_start + (i * d + j) * 4;
+                    f32::from_le_bytes([bytes[off], bytes[off+1], bytes[off+2], bytes[off+3]]) as f64
+                })
+                .collect();
+            vectors.push(v);
+        }
+
+        eprintln!("Loaded {} images, {} classes, {}D", n, n_classes, d);
+
+        // ── Extract grid-line features (1/3 + 2/3, 768D per image) ──
+        let img_w = 64usize;
+        let img_h = 64usize;
+        let ch = 3usize;
+        let pixel = |v: &[f64], r: usize, c: usize, channel: usize| -> f64 {
+            v[r * img_w * ch + c * ch + channel]
+        };
+
+        let features: Vec<Vec<f64>> = vectors.iter()
+            .map(|v| {
+                let mut f = Vec::with_capacity(768);
+                for &r in &[img_h / 3, 2 * img_h / 3] {
+                    for c in 0..img_w { for channel in 0..ch { f.push(pixel(v, r, c, channel)); } }
+                }
+                for &c in &[img_w / 3, 2 * img_w / 3] {
+                    for r in 0..img_h { for channel in 0..ch { f.push(pixel(v, r, c, channel)); } }
+                }
+                f
+            })
+            .collect();
+
+        let feat_d = features[0].len();
+
+        // ── Build HEEL archetypes: mean feature vector per class ──
+        let mut heel_archetypes: Vec<Vec<f64>> = vec![vec![0.0; feat_d]; n_classes];
+        let mut class_counts = vec![0usize; n_classes];
+        for (i, &label) in labels.iter().enumerate() {
+            for j in 0..feat_d {
+                heel_archetypes[label][j] += features[i][j];
+            }
+            class_counts[label] += 1;
+        }
+        for c in 0..n_classes {
+            if class_counts[c] > 0 {
+                for j in 0..feat_d {
+                    heel_archetypes[c][j] /= class_counts[c] as f64;
+                }
+            }
+        }
+
+        // ── Test: classify each image by nearest HEEL archetype ──
+        let mut correct = 0usize;
+        let mut total = 0usize;
+        for (i, &true_label) in labels.iter().enumerate() {
+            let mut best_class = 0;
+            let mut best_dist = f64::MAX;
+            for c in 0..n_classes {
+                if class_counts[c] == 0 { continue; }
+                let dist: f64 = features[i].iter().zip(&heel_archetypes[c])
+                    .map(|(a, b)| (a - b) * (a - b))
+                    .sum::<f64>()
+                    .sqrt();
+                if dist < best_dist {
+                    best_dist = dist;
+                    best_class = c;
+                }
+            }
+            if best_class == true_label {
+                correct += 1;
+            }
+            total += 1;
+        }
+        let accuracy = correct as f64 / total as f64;
+
+        // ── Test: classify via golden-step compressed archetypes (34 bytes each) ──
+        let base_dim = 17;
+        let golden_step = 11;
+
+        let compress = |v: &[f64]| -> Vec<f64> {
+            let fd = v.len();
+            let n_oct = (fd + base_dim - 1) / base_dim;
+            let mut sum = vec![0.0f64; base_dim];
+            let mut cnt = vec![0u32; base_dim];
+            for oct in 0..n_oct {
+                for bi in 0..base_dim {
+                    let dim = oct * base_dim + ((bi * golden_step) % base_dim);
+                    if dim < fd { sum[bi] += v[dim]; cnt[bi] += 1; }
+                }
+            }
+            sum.iter().zip(&cnt).map(|(&s, &c)| if c > 0 { s / c as f64 } else { 0.0 }).collect()
+        };
+
+        let compressed_archetypes: Vec<Vec<f64>> = heel_archetypes.iter().map(|a| compress(a)).collect();
+        let compressed_features: Vec<Vec<f64>> = features.iter().map(|f| compress(f)).collect();
+
+        let mut correct_compressed = 0usize;
+        for (i, &true_label) in labels.iter().enumerate() {
+            let mut best_class = 0;
+            let mut best_dist = f64::MAX;
+            for c in 0..n_classes {
+                if class_counts[c] == 0 { continue; }
+                let dist: f64 = compressed_features[i].iter().zip(&compressed_archetypes[c])
+                    .map(|(a, b)| (a - b) * (a - b))
+                    .sum::<f64>()
+                    .sqrt();
+                if dist < best_dist { best_dist = dist; best_class = c; }
+            }
+            if best_class == true_label { correct_compressed += 1; }
+        }
+        let accuracy_compressed = correct_compressed as f64 / total as f64;
+
+        // ── CHAODA: find outliers (images far from ALL archetypes) ──
+        let mut max_distances: Vec<(usize, f64)> = Vec::new();
+        for (i, _) in labels.iter().enumerate() {
+            let mut min_dist = f64::MAX;
+            for c in 0..n_classes {
+                if class_counts[c] == 0 { continue; }
+                let dist: f64 = features[i].iter().zip(&heel_archetypes[c])
+                    .map(|(a, b)| (a - b) * (a - b))
+                    .sum::<f64>()
+                    .sqrt();
+                if dist < min_dist { min_dist = dist; }
+            }
+            max_distances.push((i, min_dist));
+        }
+        max_distances.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        let outlier_count = max_distances.iter().take(10).count();
+
+        eprintln!("=== HEEL Archetype Classification (Tiny ImageNet) ===");
+        eprintln!("  Classes: {}, Images: {}", n_classes, total);
+        eprintln!("  Grid-line features (768D):");
+        eprintln!("    HEEL accuracy:           {:.1}% ({}/{})", accuracy * 100.0, correct, total);
+        eprintln!("  Golden-step compressed (17D = 34 bytes):");
+        eprintln!("    Compressed accuracy:     {:.1}% ({}/{})", accuracy_compressed * 100.0, correct_compressed, total);
+        eprintln!("  Accuracy loss from compression: {:.1}%", (accuracy - accuracy_compressed) * 100.0);
+        eprintln!("  Top-10 outliers (CHAODA candidates):");
+        for (idx, dist) in max_distances.iter().take(5) {
+            eprintln!("    image {} (class {}): dist={:.4}", idx, labels[*idx], dist);
+        }
+        eprintln!("  Random baseline (1/{}): {:.1}%", n_classes, 100.0 / n_classes as f64);
+
+        assert!(accuracy > 1.0 / n_classes as f64, "should beat random");
+        assert!(accuracy_compressed > 1.0 / n_classes as f64, "compressed should beat random too");
+    }
 }
