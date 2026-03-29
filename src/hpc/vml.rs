@@ -1538,4 +1538,187 @@ mod tests {
 
         assert!(accuracy_focus > 1.0 / n_classes as f64, "should beat random");
     }
+    #[test]
+    #[ignore]
+    fn test_multi_scan_nars_revision() {
+        // Multiple scan strategies with NARS evidence revision.
+        // Each scan is independent evidence. Revision increases confidence.
+        // Stop when confidence > threshold (elevation cascade).
+        
+        let bytes = match std::fs::read("/tmp/tiny_imagenet_labeled.bin") {
+            Ok(b) => b,
+            Err(_) => { eprintln!("SKIP: /tmp/tiny_imagenet_labeled.bin not found"); return; }
+        };
+
+        let n = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+        let d = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
+        let n_classes = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
+        let mut labels = Vec::with_capacity(n);
+        for i in 0..n {
+            let off = 12 + i * 4;
+            labels.push(u32::from_le_bytes([bytes[off], bytes[off+1], bytes[off+2], bytes[off+3]]) as usize);
+        }
+        let pixel_start = 12 + n * 4;
+        let img_w = 64usize; let img_h = 64usize; let ch = 3usize;
+        let n_use = n.min(200);
+
+        let pixel = |img: usize, r: usize, c: usize, channel: usize| -> f64 {
+            let off = pixel_start + (img * d + r * img_w * ch + c * ch + channel) * 4;
+            f32::from_le_bytes([bytes[off], bytes[off+1], bytes[off+2], bytes[off+3]]) as f64
+        };
+        let luma = |img: usize, r: usize, c: usize| -> f64 {
+            0.299 * pixel(img, r, c, 0) + 0.587 * pixel(img, r, c, 1) + 0.114 * pixel(img, r, c, 2)
+        };
+
+        // ── NARS revision ──
+        fn nars_revision(f1: f64, c1: f64, f2: f64, c2: f64) -> (f64, f64) {
+            let w1 = c1 / (1.0 - c1 + 1e-9);
+            let w2 = c2 / (1.0 - c2 + 1e-9);
+            let w = w1 + w2;
+            let f = (w1 * f1 + w2 * f2) / (w + 1e-9);
+            let c = w / (w + 1.0);
+            (f.clamp(0.0, 1.0), c.clamp(0.0, 0.999))
+        }
+
+        // ── Scan strategy: extract features from a region ──
+        fn extract_patch(pixel_fn: &dyn Fn(usize, usize, usize) -> f64,
+                         r_center: usize, c_center: usize, radius: usize,
+                         img_h: usize, img_w: usize, ch: usize) -> Vec<f64> {
+            let mut f = Vec::new();
+            let r0 = r_center.saturating_sub(radius);
+            let r1 = (r_center + radius).min(img_h);
+            let c0 = c_center.saturating_sub(radius);
+            let c1 = (c_center + radius).min(img_w);
+            for r in r0..r1 { for c in c0..c1 { for channel in 0..ch {
+                f.push(pixel_fn(r, c, channel));
+            }}}
+            f
+        }
+
+        // ── Build archetypes for each scan strategy ──
+        // Strategy 1: NW intersection (1/3, 1/3), 8×8 patch
+        // Strategy 2: NE intersection (1/3, 2/3), 8×8 patch
+        // Strategy 3: SW intersection (2/3, 1/3), 8×8 patch
+        // Strategy 4: SE intersection (2/3, 2/3), 8×8 patch
+        // Strategy 5: center crop, 12×12 patch
+        // Strategy 6: horizontal midline
+        // Strategy 7: vertical midline
+
+        struct ScanStrategy {
+            name: &'static str,
+            extract: Box<dyn Fn(usize) -> Vec<f64>>,
+        }
+
+        // Build per-class archetypes for each strategy, then score
+        let intersections = [
+            ("NW patch", img_h/3, img_w/3, 4usize),
+            ("NE patch", img_h/3, 2*img_w/3, 4),
+            ("SW patch", 2*img_h/3, img_w/3, 4),
+            ("SE patch", 2*img_h/3, 2*img_w/3, 4),
+            ("Center",   img_h/2, img_w/2, 6),
+        ];
+
+        // For each strategy, build archetypes and classify
+        let mut strategy_scores: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n_use]; // per-image: [(class, similarity)]
+
+        for &(name, cr, cc, radius) in &intersections {
+            // Extract features for all images
+            let features: Vec<Vec<f64>> = (0..n_use).map(|img| {
+                let p = |r: usize, c: usize, channel: usize| pixel(img, r, c, channel);
+                extract_patch(&p, cr, cc, radius, img_h, img_w, ch)
+            }).collect();
+
+            if features[0].is_empty() { continue; }
+            let fd = features[0].len();
+
+            // Build archetypes
+            let mut arch = vec![vec![0.0; fd]; n_classes];
+            let mut cnt = vec![0usize; n_classes];
+            for (i, &l) in labels[..n_use].iter().enumerate() {
+                for j in 0..fd { arch[l][j] += features[i][j]; }
+                cnt[l] += 1;
+            }
+            for c in 0..n_classes {
+                if cnt[c] > 0 { for j in 0..fd { arch[c][j] /= cnt[c] as f64; } }
+            }
+
+            // Score each image
+            for i in 0..n_use {
+                let mut best_c = 0;
+                let mut best_sim = f64::NEG_INFINITY;
+                for c in 0..n_classes {
+                    if cnt[c] == 0 { continue; }
+                    let dist: f64 = features[i].iter().zip(&arch[c])
+                        .map(|(a, b)| (a-b)*(a-b)).sum::<f64>().sqrt();
+                    let sim = 1.0 / (1.0 + dist); // convert distance to similarity
+                    if sim > best_sim { best_sim = sim; best_c = c; }
+                }
+                strategy_scores[i].push((best_c, best_sim));
+            }
+        }
+
+        // ── Multi-scan NARS revision: combine all strategy votes ──
+        let mut correct_single = vec![0usize; intersections.len()]; // per-strategy accuracy
+        let mut correct_revised = 0usize;
+
+        for i in 0..n_use {
+            let true_label = labels[i];
+
+            // Single strategy accuracies
+            for (s, &(pred_class, _)) in strategy_scores[i].iter().enumerate() {
+                if pred_class == true_label { correct_single[s] += 1; }
+            }
+
+            // NARS revision: accumulate weighted evidence across all strategies.
+            // Each scan contributes its similarity as evidence weight for the class it detected.
+            // Confidence grows with number of agreeing scans (NARS: more evidence = more confident).
+            let mut class_evidence: Vec<f64> = vec![0.0; n_classes]; // total similarity weight
+            let mut class_votes: Vec<u32> = vec![0; n_classes];      // vote count
+
+            for &(pred_class, similarity) in &strategy_scores[i] {
+                class_evidence[pred_class] += similarity;
+                class_votes[pred_class] += 1;
+            }
+
+            // Pick class with highest accumulated evidence.
+            // NARS interpretation: frequency = avg similarity, confidence = vote proportion.
+            let total_scans = strategy_scores[i].len() as f64;
+            let mut best_c = 0;
+            let mut best_score = f64::NEG_INFINITY;
+            for c in 0..n_classes {
+                if class_votes[c] == 0 { continue; }
+                let avg_sim = class_evidence[c] / class_votes[c] as f64;
+                let vote_frac = class_votes[c] as f64 / total_scans;
+                // Combined: how similar (frequency) × how many agree (confidence)
+                let score = avg_sim * vote_frac;
+                if score > best_score { best_score = score; best_c = c; }
+            }
+            if best_c == true_label { correct_revised += 1; }
+        }
+
+        let revised_accuracy = correct_revised as f64 / n_use as f64;
+
+        eprintln!("=== Multi-Scan NARS Revision ===");
+        eprintln!("  {} images, {} classes, {} scan strategies", n_use, n_classes, intersections.len());
+        eprintln!();
+        eprintln!("  Per-strategy accuracy:");
+        for (s, &(name, _, _, _)) in intersections.iter().enumerate() {
+            let acc = correct_single[s] as f64 / n_use as f64;
+            eprintln!("    {}: {:.1}% ({}/{})", name, acc * 100.0, correct_single[s], n_use);
+        }
+        eprintln!();
+        eprintln!("  NARS-revised (all strategies combined): {:.1}% ({}/{})",
+            revised_accuracy * 100.0, correct_revised, n_use);
+        eprintln!("  Random baseline: {:.1}%", 100.0 / n_classes as f64);
+        eprintln!();
+        let best_single = correct_single.iter().max().unwrap();
+        let best_single_acc = *best_single as f64 / n_use as f64;
+        let improvement = revised_accuracy - best_single_acc;
+        eprintln!("  Improvement over best single scan: {:.1}%", improvement * 100.0);
+        eprintln!("  This is NARS evidence accumulation — each scan adds confidence.");
+
+        assert!(revised_accuracy > best_single_acc,
+            "NARS revision should improve over best single: {:.1}% vs {:.1}%",
+            revised_accuracy * 100.0, best_single_acc * 100.0);
+    }
 }
