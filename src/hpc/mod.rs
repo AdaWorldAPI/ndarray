@@ -182,6 +182,10 @@ pub mod gpt2;
 #[allow(missing_docs)]
 pub mod stable_diffusion;
 
+/// OpenChat 3.5 inference — Mistral-7B architecture (GQA + RoPE + RMSNorm + SiLU).
+#[allow(missing_docs)]
+pub mod openchat;
+
 // jitson: JSON config → scan pipeline (parser, validator, template, precompile, packed)
 // Always available — no Cranelift dependency.
 #[allow(missing_docs)]

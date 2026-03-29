@@ -213,6 +213,72 @@ pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
     sum
 }
 
+/// RMS normalization (Mistral/Llama style): `x = x * weight / sqrt(mean(x²) + eps)`
+///
+/// No mean subtraction, no bias. Simpler and faster than LayerNorm.
+/// Used by OpenChat 3.5, Mistral, Llama 2/3.
+pub fn rms_norm(x: &mut [f32], weight: &[f32], eps: f32) {
+    let n = x.len();
+    let chunks = n / 16;
+
+    // Mean of squares (SIMD)
+    let mut sq_acc = F32x16::splat(0.0);
+    for c in 0..chunks {
+        let off = c * 16;
+        let v = F32x16::from_slice(&x[off..off + 16]);
+        sq_acc = v.mul_add(v, sq_acc);
+    }
+    let mut mean_sq = sq_acc.reduce_sum();
+    for i in (chunks * 16)..n {
+        mean_sq += x[i] * x[i];
+    }
+    mean_sq /= n as f32;
+
+    let inv_rms = 1.0 / (mean_sq + eps).sqrt();
+    let inv_rms_vec = F32x16::splat(inv_rms);
+
+    // Normalize × weight (SIMD)
+    for c in 0..chunks {
+        let off = c * 16;
+        let v = F32x16::from_slice(&x[off..off + 16]);
+        let w = F32x16::from_slice(&weight[off..off + 16]);
+        let result = v * inv_rms_vec * w;
+        result.copy_to_slice(&mut x[off..off + 16]);
+    }
+    for i in (chunks * 16)..n {
+        x[i] = x[i] * inv_rms * weight[i];
+    }
+}
+
+/// Apply Rotary Positional Embedding (RoPE) to Q and K vectors.
+///
+/// Rotates pairs of dimensions by position-dependent angles:
+/// `(q[2i], q[2i+1]) = R(θ_i × pos) × (q[2i], q[2i+1])`
+/// where θ_i = 10000^(-2i/d).
+///
+/// Used by Mistral, Llama, OpenChat (replaces learned positional embeddings).
+pub fn rope_apply(q: &mut [f32], k: &mut [f32], head_dim: usize, position: usize, rope_theta: f32) {
+    let half = head_dim / 2;
+    for i in 0..half {
+        let theta = rope_theta.powf(-(2.0 * i as f32) / head_dim as f32);
+        let angle = position as f32 * theta;
+        let cos_a = angle.cos();
+        let sin_a = angle.sin();
+
+        // Apply to Q
+        let q0 = q[2 * i];
+        let q1 = q[2 * i + 1];
+        q[2 * i] = q0 * cos_a - q1 * sin_a;
+        q[2 * i + 1] = q0 * sin_a + q1 * cos_a;
+
+        // Apply to K
+        let k0 = k[2 * i];
+        let k1 = k[2 * i + 1];
+        k[2 * i] = k0 * cos_a - k1 * sin_a;
+        k[2 * i + 1] = k0 * sin_a + k1 * cos_a;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -304,5 +370,63 @@ mod tests {
         matmul_vec(&input, &weight, &bias, &mut output, 2, 2);
         assert!((output[0] - 3.0).abs() < 1e-5);
         assert!((output[1] - 7.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_rms_norm_unit_weight() {
+        let mut x = vec![3.0, 4.0]; // rms = sqrt((9+16)/2) = sqrt(12.5) ≈ 3.536
+        let w = vec![1.0; 2];
+        rms_norm(&mut x, &w, 1e-5);
+        let rms = (12.5f32).sqrt();
+        assert!((x[0] - 3.0 / rms).abs() < 0.01);
+        assert!((x[1] - 4.0 / rms).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_rms_norm_scaling() {
+        let mut x = vec![1.0, 1.0, 1.0, 1.0];
+        let w = vec![2.0; 4];
+        rms_norm(&mut x, &w, 1e-5);
+        // rms = 1.0, so result = 1.0 * 2.0 = 2.0
+        assert!((x[0] - 2.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_rope_position_zero_identity() {
+        let mut q = vec![1.0, 2.0, 3.0, 4.0];
+        let mut k = vec![5.0, 6.0, 7.0, 8.0];
+        let orig_q = q.clone();
+        let orig_k = k.clone();
+        rope_apply(&mut q, &mut k, 4, 0, 10000.0);
+        // At position 0, angle = 0, cos=1, sin=0 → identity
+        for i in 0..4 {
+            assert!((q[i] - orig_q[i]).abs() < 1e-5);
+            assert!((k[i] - orig_k[i]).abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn test_rope_changes_with_position() {
+        let mut q1 = vec![1.0, 0.0, 1.0, 0.0];
+        let mut k1 = vec![1.0, 0.0, 1.0, 0.0];
+        let mut q2 = q1.clone();
+        let mut k2 = k1.clone();
+        rope_apply(&mut q1, &mut k1, 4, 1, 10000.0);
+        rope_apply(&mut q2, &mut k2, 4, 100, 10000.0);
+        // Different positions should give different results
+        let diff: f32 = q1.iter().zip(&q2).map(|(a, b)| (a - b).abs()).sum();
+        assert!(diff > 0.01, "different positions should produce different embeddings");
+    }
+
+    #[test]
+    fn test_rope_preserves_norm() {
+        let mut q = vec![3.0, 4.0, 1.0, 2.0];
+        let mut k = vec![0.0; 4];
+        let norm_before: f32 = q.iter().map(|x| x * x).sum::<f32>().sqrt();
+        rope_apply(&mut q, &mut k, 4, 42, 10000.0);
+        let norm_after: f32 = q.iter().map(|x| x * x).sum::<f32>().sqrt();
+        // RoPE is a rotation — should preserve L2 norm
+        assert!((norm_before - norm_after).abs() < 0.01,
+            "RoPE should preserve norm: {} vs {}", norm_before, norm_after);
     }
 }
