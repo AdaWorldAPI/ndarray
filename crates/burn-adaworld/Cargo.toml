@@ -1,0 +1,42 @@
+[package]
+name = "burn-adaworld"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+description = """
+Burn backend powered by adaworldapi/ndarray with:
+- crate::simd F32x16 via LazyLock dispatch (AVX-512 → AVX2 → scalar)
+- bgz-tensor AttentionTable for O(1) compiled attention (optional)
+- CAM-PQ product quantization for 170× compression (optional)
+- SimilarityTable as BF16-precision cosine replacement (256 levels, O(1))
+
+The consumer sees burn's Tensor<B, D> API. Behind it:
+matmul() → checks for compiled AttentionTable → falls through to BLAS.
+All SIMD via crate::simd only. Consumer never sees hardware.
+"""
+
+[dependencies]
+# Upstream burn — Backend trait + tensor API
+burn-backend = "0.21.0-pre.2"
+burn-tensor = "0.21.0-pre.2"
+
+# Our ndarray with SIMD + HPC extensions
+ndarray = { path = "../..", features = ["std"] }
+
+# Standard deps
+serde = { version = "1", features = ["derive"] }
+half = { version = "2", features = ["num-traits"] }
+num-traits = "0.2"
+rand = "0.8"
+
+[dev-dependencies]
+burn-tensor-testgen = "0.21.0-pre.2"
+
+[features]
+default = ["std"]
+std = []
+# Enable bgz-tensor AttentionTable path for compiled attention
+attention-table = []
+# Enable multi-threaded execution via rayon
+multi-threads = ["ndarray/rayon"]
