@@ -845,4 +845,174 @@ mod tests {
         // Random projection CAN be very low on structured data — that's expected
         assert!(rho_random > -0.5, "random ρ impossibly low: {}", rho_random);
     }
+    #[test]
+    #[ignore]
+    fn test_photography_grid_vs_golden_step() {
+        // Compare: 1/3 grid line sampling vs golden-step on tiny-imagenet
+        let bytes = match std::fs::read("/tmp/tiny_imagenet_200.bin") {
+            Ok(b) => b,
+            Err(_) => { eprintln!("SKIP: /tmp/tiny_imagenet_200.bin not found"); return; }
+        };
+
+        let d = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize; // 12288
+        let n_total = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
+        let float_data = &bytes[8..];
+
+        // Load vectors as 64×64×3 images
+        let img_w = 64usize;
+        let img_h = 64usize;
+        let channels = 3usize;
+        let n = n_total.min(100);
+
+        let mut vectors: Vec<Vec<f64>> = Vec::with_capacity(n);
+        for i in 0..n {
+            let v: Vec<f64> = (0..d)
+                .map(|j| {
+                    let off = (i * d + j) * 4;
+                    f32::from_le_bytes([float_data[off], float_data[off+1], float_data[off+2], float_data[off+3]]) as f64
+                })
+                .collect();
+            vectors.push(v);
+        }
+
+        // Helper: extract pixel at (row, col, channel) from flat vector
+        let pixel = |v: &[f64], r: usize, c: usize, ch: usize| -> f64 {
+            v[r * img_w * channels + c * channels + ch]
+        };
+
+        // ── Projection 1: Golden-step 17D (baseline) ──
+        let base_dim = 17;
+        let golden_step = 11;
+        let golden_proj: Vec<Vec<f64>> = vectors.iter()
+            .map(|v| {
+                let n_octaves = (d + base_dim - 1) / base_dim;
+                let mut sum = vec![0.0f64; base_dim];
+                let mut count = vec![0u32; base_dim];
+                for octave in 0..n_octaves {
+                    for bi in 0..base_dim {
+                        let dim = octave * base_dim + ((bi * golden_step) % base_dim);
+                        if dim < d { sum[bi] += v[dim]; count[bi] += 1; }
+                    }
+                }
+                sum.iter().zip(&count).map(|(&s, &c)| if c > 0 { s / c as f64 } else { 0.0 }).collect()
+            })
+            .collect();
+
+        // ── Projection 2: 1/3 + 2/3 grid lines (4 lines × 64 × 3 = 768D) ──
+        let grid_lines_proj: Vec<Vec<f64>> = vectors.iter()
+            .map(|v| {
+                let mut features = Vec::with_capacity(768);
+                // Horizontal lines at row 1/3 and 2/3
+                let r1 = img_h / 3;      // row 21
+                let r2 = 2 * img_h / 3;  // row 43
+                for &r in &[r1, r2] {
+                    for c in 0..img_w {
+                        for ch in 0..channels {
+                            features.push(pixel(v, r, c, ch));
+                        }
+                    }
+                }
+                // Vertical lines at col 1/3 and 2/3
+                let c1 = img_w / 3;
+                let c2 = 2 * img_w / 3;
+                for &c in &[c1, c2] {
+                    for r in 0..img_h {
+                        for ch in 0..channels {
+                            features.push(pixel(v, r, c, ch));
+                        }
+                    }
+                }
+                features
+            })
+            .collect();
+
+        // ── Projection 3: 1/2 + 1/3 + 2/3 grid (6 lines × 64 × 3 = 1152D) ──
+        let full_grid_proj: Vec<Vec<f64>> = vectors.iter()
+            .map(|v| {
+                let mut features = Vec::with_capacity(1152);
+                // Horizontal: 1/3, 1/2, 2/3
+                for &r in &[img_h / 3, img_h / 2, 2 * img_h / 3] {
+                    for c in 0..img_w {
+                        for ch in 0..channels { features.push(pixel(v, r, c, ch)); }
+                    }
+                }
+                // Vertical: 1/3, 1/2, 2/3
+                for &c in &[img_w / 3, img_w / 2, 2 * img_w / 3] {
+                    for r in 0..img_h {
+                        for ch in 0..channels { features.push(pixel(v, r, c, ch)); }
+                    }
+                }
+                features
+            })
+            .collect();
+
+        // ── Projection 4: 4 intersection points only (4 × 3 = 12D) ──
+        let intersections_proj: Vec<Vec<f64>> = vectors.iter()
+            .map(|v| {
+                let mut features = Vec::with_capacity(12);
+                for &r in &[img_h / 3, 2 * img_h / 3] {
+                    for &c in &[img_w / 3, 2 * img_w / 3] {
+                        for ch in 0..channels { features.push(pixel(v, r, c, ch)); }
+                    }
+                }
+                features
+            })
+            .collect();
+
+        // ── Ground truth pairwise distances ──
+        let mut gt_dists = Vec::new();
+        for i in 0..n { for j in (i+1)..n {
+            let d: f64 = vectors[i].iter().zip(&vectors[j]).map(|(a,b)| (a-b)*(a-b)).sum::<f64>().sqrt();
+            gt_dists.push(d);
+        }}
+
+        fn pairwise_l2(proj: &[Vec<f64>]) -> Vec<f64> {
+            let n = proj.len();
+            let mut d = Vec::new();
+            for i in 0..n { for j in (i+1)..n {
+                let dist: f64 = proj[i].iter().zip(&proj[j]).map(|(a,b)| (a-b)*(a-b)).sum::<f64>().sqrt();
+                d.push(dist);
+            }}
+            d
+        }
+
+        fn spearman(a: &[f64], b: &[f64]) -> f64 {
+            fn ranks(v: &[f64]) -> Vec<f64> {
+                let mut idx: Vec<(usize, f64)> = v.iter().copied().enumerate().collect();
+                idx.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+                let mut r = vec![0.0; v.len()];
+                for (rank, (i, _)) in idx.into_iter().enumerate() { r[i] = rank as f64; }
+                r
+            }
+            let (ra, rb) = (ranks(a), ranks(b));
+            let n = a.len() as f64;
+            let (ma, mb) = (ra.iter().sum::<f64>() / n, rb.iter().sum::<f64>() / n);
+            let (mut cov, mut va, mut vb) = (0.0, 0.0, 0.0);
+            for i in 0..a.len() {
+                let (da, db) = (ra[i] - ma, rb[i] - mb);
+                cov += da * db; va += da * da; vb += db * db;
+            }
+            if va < 1e-10 || vb < 1e-10 { 0.0 } else { cov / (va * vb).sqrt() }
+        }
+
+        let rho_golden = spearman(&gt_dists, &pairwise_l2(&golden_proj));
+        let rho_grid4 = spearman(&gt_dists, &pairwise_l2(&grid_lines_proj));
+        let rho_grid6 = spearman(&gt_dists, &pairwise_l2(&full_grid_proj));
+        let rho_intersect = spearman(&gt_dists, &pairwise_l2(&intersections_proj));
+
+        eprintln!("=== Photography Grid vs Golden-Step on Tiny ImageNet ===");
+        eprintln!("  Golden-step 17D:        ρ = {:.4}  (34 bytes)", rho_golden);
+        eprintln!("  4 intersections 12D:    ρ = {:.4}  (24 bytes)", rho_intersect);
+        eprintln!("  4 grid lines 768D:      ρ = {:.4}  (1,536 bytes)", rho_grid4);
+        eprintln!("  6 grid lines 1152D:     ρ = {:.4}  (2,304 bytes)", rho_grid6);
+        eprintln!();
+        eprintln!("  Bytes vs ρ efficiency:");
+        eprintln!("  Golden:  {:.4} ρ / 34 bytes  = {:.4} ρ/byte", rho_golden, rho_golden / 34.0);
+        eprintln!("  4-grid:  {:.4} ρ / 1536 bytes = {:.6} ρ/byte", rho_grid4, rho_grid4 / 1536.0);
+        eprintln!("  6-grid:  {:.4} ρ / 2304 bytes = {:.6} ρ/byte", rho_grid6, rho_grid6 / 2304.0);
+        eprintln!("  Points:  {:.4} ρ / 24 bytes  = {:.4} ρ/byte", rho_intersect, rho_intersect / 24.0);
+
+        assert!(rho_golden > 0.3);
+        assert!(rho_grid4 > rho_golden, "grid lines should beat golden-step on raw pixels");
+    }
 }
