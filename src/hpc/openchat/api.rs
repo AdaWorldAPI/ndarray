@@ -1,71 +1,12 @@
-//! OpenAI-compatible chat completions API for OpenChat 3.5.
+//! OpenChat 3.5 API — wraps the inference engine with OpenAI-compatible types.
 //!
-//! Implements `/v1/chat/completions` with the OpenChat template:
-//! ```text
-//! GPT4 Correct User: {message}<|end_of_turn|>
-//! GPT4 Correct Assistant:
-//! ```
+//! Endpoint: `/v1/chat/completions`
+//!
+//! Uses the OpenChat template: `GPT4 Correct User: {msg}<|end_of_turn|>`
 
-use crate::hpc::models::api_types::{Usage, FinishReason};
+use crate::hpc::models::api_types::*;
 use super::inference::{GeneratedToken, OpenChatEngine};
 use super::weights::*;
-
-/// A chat message (role + content).
-#[derive(Clone, Debug)]
-pub struct ChatMessage {
-    pub role: ChatRole,
-    pub content: String,
-}
-
-/// Chat role.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ChatRole {
-    System,
-    User,
-    Assistant,
-}
-
-/// Request body for /v1/chat/completions.
-#[derive(Clone, Debug)]
-pub struct ChatCompletionRequest {
-    pub model: String,
-    pub messages: Vec<ChatMessage>,
-    /// Pre-tokenized prompt (built from messages via chat template).
-    pub prompt_tokens: Vec<u32>,
-    pub max_tokens: usize,
-    pub temperature: f32,
-    pub stream: bool,
-}
-
-impl Default for ChatCompletionRequest {
-    fn default() -> Self {
-        Self {
-            model: "openchat_3.5".into(),
-            messages: Vec::new(),
-            prompt_tokens: Vec::new(),
-            max_tokens: 512,
-            temperature: 0.7,
-            stream: false,
-        }
-    }
-}
-
-/// A chat completion choice.
-#[derive(Clone, Debug)]
-pub struct ChatChoice {
-    pub index: usize,
-    pub message: ChatMessage,
-    pub finish_reason: FinishReason,
-}
-
-/// Response body for /v1/chat/completions.
-#[derive(Clone, Debug)]
-pub struct ChatCompletionResponse {
-    pub id: String,
-    pub model: String,
-    pub choices: Vec<ChatChoice>,
-    pub usage: Usage,
-}
 
 /// OpenChat API wrapper.
 pub struct OpenChatApi {
@@ -75,96 +16,95 @@ pub struct OpenChatApi {
 
 impl OpenChatApi {
     pub fn new(weights: OpenChatWeights) -> Self {
-        Self {
-            engine: OpenChatEngine::new(weights),
-            request_counter: 0,
-        }
+        Self { engine: OpenChatEngine::new(weights), request_counter: 0 }
     }
 
-    /// /v1/chat/completions handler.
+    /// `/v1/chat/completions`
     pub fn chat_complete(&mut self, req: &ChatCompletionRequest) -> ChatCompletionResponse {
         self.request_counter += 1;
+        let tokens = req.prompt_tokens.as_deref().unwrap_or(&[]);
+        let max = req.max_tokens.unwrap_or(512);
+        let temp = req.temperature.unwrap_or(0.7);
 
-        let generated = self.engine.generate(
-            &req.prompt_tokens,
-            req.max_tokens,
-            req.temperature,
-        );
+        let generated = self.engine.generate(tokens, max, temp);
 
-        let finish_reason = if generated.len() < req.max_tokens {
+        let finish_reason = if generated.len() < max {
             FinishReason::Stop
         } else {
             FinishReason::Length
         };
 
-        let completion_tokens = generated.len();
-        let prompt_tokens = req.prompt_tokens.len();
+        let content: String = generated.iter().map(|t| format!("[{}]", t.token_id)).collect();
 
-        ChatCompletionResponse {
-            id: format!("chatcmpl-{}", self.request_counter),
-            model: "openchat_3.5".into(),
-            choices: vec![ChatChoice {
+        ChatCompletionResponse::new(
+            format!("chatcmpl-{}", self.request_counter),
+            "openchat_3.5".into(),
+            vec![ChatChoice {
                 index: 0,
-                message: ChatMessage {
-                    role: ChatRole::Assistant,
-                    content: format!("[{} tokens generated]", completion_tokens),
-                },
-                finish_reason,
+                message: ChatMessage::assistant(content),
+                finish_reason: Some(finish_reason),
+                logprobs: None,
             }],
-            usage: Usage {
-                prompt_tokens,
-                completion_tokens,
-                total_tokens: prompt_tokens + completion_tokens,
+            Usage {
+                prompt_tokens: tokens.len(),
+                completion_tokens: generated.len(),
+                total_tokens: tokens.len() + generated.len(),
             },
-        }
+            0,
+        )
     }
 
-    /// Build prompt token sequence from chat messages using OpenChat template.
+    /// Build prompt string from chat messages using OpenChat template.
     ///
-    /// Format:
     /// ```text
-    /// <bos>GPT4 Correct User: {user_msg}<|end_of_turn|>GPT4 Correct Assistant:
+    /// GPT4 Correct User: {msg}<|end_of_turn|>GPT4 Correct Assistant:
     /// ```
-    ///
-    /// Returns a description of the template (actual tokenization requires SentencePiece).
     pub fn format_chat_template(messages: &[ChatMessage]) -> String {
         let mut prompt = String::new();
         for msg in messages {
             match msg.role {
                 ChatRole::System => {
-                    prompt.push_str(&msg.content);
-                    prompt.push('\n');
+                    if let Some(c) = &msg.content {
+                        prompt.push_str(c);
+                        prompt.push('\n');
+                    }
                 }
                 ChatRole::User => {
                     prompt.push_str(chat_template::USER_PREFIX);
-                    prompt.push_str(&msg.content);
+                    if let Some(c) = &msg.content {
+                        prompt.push_str(c);
+                    }
                     prompt.push_str(chat_template::EOT_TOKEN);
                 }
                 ChatRole::Assistant => {
                     prompt.push_str(chat_template::ASSISTANT_PREFIX);
                     prompt.push(' ');
-                    prompt.push_str(&msg.content);
+                    if let Some(c) = &msg.content {
+                        prompt.push_str(c);
+                    }
+                    prompt.push_str(chat_template::EOT_TOKEN);
+                }
+                ChatRole::Tool => {
+                    // Tool responses treated as user messages
+                    prompt.push_str(chat_template::USER_PREFIX);
+                    if let Some(c) = &msg.content {
+                        prompt.push_str(c);
+                    }
                     prompt.push_str(chat_template::EOT_TOKEN);
                 }
             }
         }
-        // Always end with assistant prefix to prompt generation
         prompt.push_str(chat_template::ASSISTANT_PREFIX);
         prompt
     }
 
-    /// Access engine for direct manipulation.
-    pub fn engine_mut(&mut self) -> &mut OpenChatEngine {
-        &mut self.engine
+    /// `/v1/models/{id}`
+    pub fn model_info() -> Model {
+        Model::new("openchat_3.5", "openchat", 0)
     }
 
-    /// Model info.
-    pub fn model_info() -> crate::hpc::models::api_types::ModelCard {
-        crate::hpc::models::api_types::ModelCard {
-            id: "openchat_3.5".into(),
-            owned_by: "openchat".into(),
-            created: 0,
-        }
+    pub fn engine_mut(&mut self) -> &mut OpenChatEngine {
+        &mut self.engine
     }
 }
 
@@ -174,9 +114,7 @@ mod tests {
 
     #[test]
     fn test_chat_template_format() {
-        let messages = vec![
-            ChatMessage { role: ChatRole::User, content: "Hello!".into() },
-        ];
+        let messages = vec![ChatMessage::user("Hello!")];
         let prompt = OpenChatApi::format_chat_template(&messages);
         assert!(prompt.contains("GPT4 Correct User: Hello!"));
         assert!(prompt.contains("<|end_of_turn|>"));
@@ -186,12 +124,11 @@ mod tests {
     #[test]
     fn test_chat_template_multi_turn() {
         let messages = vec![
-            ChatMessage { role: ChatRole::User, content: "Hi".into() },
-            ChatMessage { role: ChatRole::Assistant, content: "Hello!".into() },
-            ChatMessage { role: ChatRole::User, content: "How are you?".into() },
+            ChatMessage::user("Hi"),
+            ChatMessage::assistant("Hello!"),
+            ChatMessage::user("How are you?"),
         ];
         let prompt = OpenChatApi::format_chat_template(&messages);
-        // Should have two user turns and one assistant turn
         assert_eq!(prompt.matches("GPT4 Correct User:").count(), 2);
         assert!(prompt.contains("Hello!"));
     }
@@ -199,8 +136,8 @@ mod tests {
     #[test]
     fn test_chat_template_with_system() {
         let messages = vec![
-            ChatMessage { role: ChatRole::System, content: "You are helpful.".into() },
-            ChatMessage { role: ChatRole::User, content: "Hi".into() },
+            ChatMessage::system("You are helpful."),
+            ChatMessage::user("Hi"),
         ];
         let prompt = OpenChatApi::format_chat_template(&messages);
         assert!(prompt.starts_with("You are helpful."));
@@ -209,20 +146,20 @@ mod tests {
     #[test]
     fn test_default_request() {
         let req = ChatCompletionRequest::default();
-        assert_eq!(req.model, "openchat_3.5");
-        assert_eq!(req.max_tokens, 512);
-        assert!(!req.stream);
+        assert_eq!(req.max_tokens, Some(512));
+        assert_eq!(req.stream, Some(false));
     }
 
     #[test]
     fn test_model_info() {
-        let info = OpenChatApi::model_info();
-        assert_eq!(info.id, "openchat_3.5");
+        let m = OpenChatApi::model_info();
+        assert_eq!(m.id, "openchat_3.5");
+        assert_eq!(m.object, "model");
     }
 
     #[test]
-    fn test_chat_role_eq() {
-        assert_eq!(ChatRole::User, ChatRole::User);
-        assert_ne!(ChatRole::User, ChatRole::Assistant);
+    fn test_chat_response_object() {
+        let resp = ChatCompletionResponse::new("x".into(), "m".into(), vec![], Usage::default(), 0);
+        assert_eq!(resp.object, "chat.completion");
     }
 }
