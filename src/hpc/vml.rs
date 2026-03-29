@@ -1900,4 +1900,197 @@ mod tests {
 
         assert!(accuracy > 1.0 / n_classes as f64, "should beat random");
     }
+    #[test]
+    #[ignore]
+    fn test_resonate_focus_through_stack() {
+        // Take centroid focus patch → resonate through HEEL→HIP→BRANCH→LEAF.
+        // At each level, measure: accuracy, bytes, ρ preservation.
+        // This IS the full tensor codec cascade on real image data.
+
+        let bytes = match std::fs::read("/tmp/tiny_imagenet_labeled.bin") {
+            Ok(b) => b,
+            Err(_) => { eprintln!("SKIP: /tmp/tiny_imagenet_labeled.bin not found"); return; }
+        };
+
+        let n = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+        let d = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
+        let n_classes = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
+        let mut labels = Vec::with_capacity(n);
+        for i in 0..n {
+            let off = 12 + i * 4;
+            labels.push(u32::from_le_bytes([bytes[off], bytes[off+1], bytes[off+2], bytes[off+3]]) as usize);
+        }
+        let pixel_start = 12 + n * 4;
+        let img_w = 64usize; let img_h = 64usize; let ch = 3usize;
+        let n_use = n.min(200);
+
+        let pixel = |img: usize, r: usize, c: usize, channel: usize| -> f64 {
+            let off = pixel_start + (img * d + r * img_w * ch + c * ch + channel) * 4;
+            f32::from_le_bytes([bytes[off], bytes[off+1], bytes[off+2], bytes[off+3]]) as f64
+        };
+        let luma = |img: usize, r: usize, c: usize| -> f64 {
+            0.299 * pixel(img, r, c, 0) + 0.587 * pixel(img, r, c, 1) + 0.114 * pixel(img, r, c, 2)
+        };
+
+        // ── LEAF: full centroid focus patch (432D, highest resolution) ──
+        let focus_radius = 6usize;
+        let intersections = [(img_h/3, img_w/3), (img_h/3, 2*img_w/3),
+                             (2*img_h/3, img_w/3), (2*img_h/3, 2*img_w/3)];
+
+        let leaf_features: Vec<Vec<f64>> = (0..n_use).map(|img| {
+            // Find highest-energy intersection
+            let mut best_r = img_h / 2;
+            let mut best_c = img_w / 2;
+            let mut best_energy = 0.0f64;
+            for &(ir, ic) in &intersections {
+                let mut energy = 0.0;
+                let r0 = ir.saturating_sub(8); let r1 = (ir+8).min(img_h);
+                let c0 = ic.saturating_sub(8); let c1 = (ic+8).min(img_w);
+                for r in r0..r1 { for c in c0..c1 {
+                    if r > 0 && r < img_h-1 && c > 0 && c < img_w-1 {
+                        let dx = luma(img, r, c+1) - luma(img, r, c.saturating_sub(1));
+                        let dy = luma(img, r+1, c) - luma(img, r.saturating_sub(1), c);
+                        energy += (dx*dx + dy*dy).sqrt();
+                    }
+                }}
+                if energy > best_energy { best_energy = energy; best_r = ir; best_c = ic; }
+            }
+            // Extract patch
+            let mut f = Vec::with_capacity(432);
+            let r0 = best_r.saturating_sub(focus_radius);
+            let r1 = (best_r + focus_radius).min(img_h);
+            let c0 = best_c.saturating_sub(focus_radius);
+            let c1 = (best_c + focus_radius).min(img_w);
+            for r in r0..r1 { for c in c0..c1 { for channel in 0..ch {
+                f.push(pixel(img, r, c, channel));
+            }}}
+            f.resize(432, 0.0);
+            f
+        }).collect();
+
+        // ── BRANCH: golden-step compress (432D → 17D = 34 bytes) ──
+        let base_dim = 17; let golden_step = 11;
+        let compress17 = |v: &[f64]| -> Vec<f64> {
+            let fd = v.len();
+            let n_oct = (fd + base_dim - 1) / base_dim;
+            let mut sum = vec![0.0f64; base_dim];
+            let mut cnt = vec![0u32; base_dim];
+            for oct in 0..n_oct {
+                for bi in 0..base_dim {
+                    let dim = oct * base_dim + ((bi * golden_step) % base_dim);
+                    if dim < fd { sum[bi] += v[dim]; cnt[bi] += 1; }
+                }
+            }
+            sum.iter().zip(&cnt).map(|(&s, &c)| if c > 0 { s / c as f64 } else { 0.0 }).collect()
+        };
+        let branch_features: Vec<Vec<f64>> = leaf_features.iter().map(|f| compress17(f)).collect();
+
+        // ── HIP: quantize to i16 (17D × 2 bytes = 34 bytes, same size but integer) ──
+        let hip_features: Vec<Vec<f64>> = branch_features.iter().map(|f| {
+            f.iter().map(|&v| ((v * 1000.0).round().clamp(-32768.0, 32767.0) as i16) as f64 / 1000.0).collect()
+        }).collect();
+
+        // ── HEEL: scent byte — reduce to single energy + top category vote ──
+        // Scent = which of the 17 dimensions has highest absolute value
+        let heel_features: Vec<Vec<f64>> = branch_features.iter().map(|f| {
+            let max_dim = f.iter().enumerate()
+                .max_by(|a, b| a.1.abs().partial_cmp(&b.1.abs()).unwrap())
+                .map(|(i, _)| i).unwrap_or(0);
+            let energy: f64 = f.iter().map(|v| v * v).sum::<f64>().sqrt();
+            // 2D scent: dominant dimension + energy level
+            vec![max_dim as f64, energy]
+        }).collect();
+
+        // ── Classify at each level ──
+        fn classify(features: &[Vec<f64>], labels: &[usize], n_classes: usize) -> (f64, usize) {
+            let n = features.len();
+            let fd = features[0].len();
+            let mut arch = vec![vec![0.0; fd]; n_classes];
+            let mut cnt = vec![0usize; n_classes];
+            for (i, &l) in labels.iter().enumerate() {
+                for j in 0..fd { arch[l][j] += features[i][j]; }
+                cnt[l] += 1;
+            }
+            for c in 0..n_classes {
+                if cnt[c] > 0 { for j in 0..fd { arch[c][j] /= cnt[c] as f64; } }
+            }
+            let mut correct = 0;
+            for (i, &tl) in labels.iter().enumerate() {
+                let mut best_c = 0; let mut best_d = f64::MAX;
+                for c in 0..n_classes {
+                    if cnt[c] == 0 { continue; }
+                    let dist: f64 = features[i].iter().zip(&arch[c])
+                        .map(|(a, b)| (a-b)*(a-b)).sum::<f64>().sqrt();
+                    if dist < best_d { best_d = dist; best_c = c; }
+                }
+                if best_c == tl { correct += 1; }
+            }
+            (correct as f64 / n as f64, correct)
+        }
+
+        // ── Compute ρ: how well does each level preserve pairwise distances? ──
+        fn pairwise_dists(feats: &[Vec<f64>]) -> Vec<f64> {
+            let n = feats.len().min(50); // limit for speed
+            let mut d = Vec::new();
+            for i in 0..n { for j in (i+1)..n {
+                let dist: f64 = feats[i].iter().zip(&feats[j])
+                    .map(|(a,b)| (a-b)*(a-b)).sum::<f64>().sqrt();
+                d.push(dist);
+            }}
+            d
+        }
+        fn spearman(a: &[f64], b: &[f64]) -> f64 {
+            fn ranks(v: &[f64]) -> Vec<f64> {
+                let mut idx: Vec<(usize, f64)> = v.iter().copied().enumerate().collect();
+                idx.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+                let mut r = vec![0.0; v.len()];
+                for (rank, (i, _)) in idx.into_iter().enumerate() { r[i] = rank as f64; }
+                r
+            }
+            let (ra, rb) = (ranks(a), ranks(b));
+            let n = a.len() as f64;
+            let (ma, mb) = (ra.iter().sum::<f64>() / n, rb.iter().sum::<f64>() / n);
+            let (mut cov, mut va, mut vb) = (0.0, 0.0, 0.0);
+            for i in 0..a.len() {
+                let (da, db) = (ra[i] - ma, rb[i] - mb);
+                cov += da * db; va += da * da; vb += db * db;
+            }
+            if va < 1e-10 || vb < 1e-10 { 0.0 } else { cov / (va * vb).sqrt() }
+        }
+
+        let leaf_dists = pairwise_dists(&leaf_features);
+        let rho_branch = spearman(&leaf_dists, &pairwise_dists(&branch_features));
+        let rho_hip = spearman(&leaf_dists, &pairwise_dists(&hip_features));
+        let rho_heel = spearman(&leaf_dists, &pairwise_dists(&heel_features));
+
+        let (acc_leaf, cor_leaf) = classify(&leaf_features, &labels[..n_use], n_classes);
+        let (acc_branch, cor_branch) = classify(&branch_features, &labels[..n_use], n_classes);
+        let (acc_hip, cor_hip) = classify(&hip_features, &labels[..n_use], n_classes);
+        let (acc_heel, cor_heel) = classify(&heel_features, &labels[..n_use], n_classes);
+
+        eprintln!("=== Resonate Focus Object Through Full Stack ===");
+        eprintln!("  {} images, {} classes", n_use, n_classes);
+        eprintln!();
+        eprintln!("  Level      Dims    Bytes   Accuracy    ρ vs LEAF    ρ/byte");
+        eprintln!("  ─────────  ─────   ─────   ─────────   ─────────    ──────");
+        eprintln!("  LEAF       432D    864B    {:.1}% ({}/{})  1.0000       {:.6}",
+            acc_leaf*100.0, cor_leaf, n_use, 1.0/864.0);
+        eprintln!("  BRANCH     17D     34B     {:.1}% ({}/{})  {:.4}       {:.6}",
+            acc_branch*100.0, cor_branch, n_use, rho_branch, rho_branch/34.0);
+        eprintln!("  HIP        17D     34B     {:.1}% ({}/{})  {:.4}       {:.6}",
+            acc_hip*100.0, cor_hip, n_use, rho_hip, rho_hip/34.0);
+        eprintln!("  HEEL       2D      2B      {:.1}% ({}/{})  {:.4}       {:.6}",
+            acc_heel*100.0, cor_heel, n_use, rho_heel, rho_heel/2.0);
+        eprintln!("  Random     —       0B      {:.1}%", 100.0/n_classes as f64);
+        eprintln!();
+        eprintln!("  Cascade rejection simulation:");
+        eprintln!("  HEEL rejects:   {:.0}% of wrong classes (scent screening)",
+            (1.0 - 1.0/n_classes as f64) * (1.0 - acc_heel) * 100.0);
+        eprintln!("  After HEEL→HIP: {:.0}% remaining need full BRANCH check",
+            (1.0 - acc_hip) * 100.0);
+
+        assert!(acc_leaf > acc_branch, "LEAF should beat BRANCH");
+        assert!(acc_branch >= acc_heel, "BRANCH should beat or match HEEL");
+        assert!(rho_branch > rho_heel, "BRANCH ρ should exceed HEEL ρ");
+    }
 }
