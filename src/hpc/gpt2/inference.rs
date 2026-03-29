@@ -364,13 +364,27 @@ fn softmax_simd(x: &mut [f32]) {
 /// Matrix-vector multiply: out = input @ weight^T + bias.
 /// Weight stored as [input_dim, output_dim] (row-major, transposed access).
 /// SIMD accelerated for the dot product.
+/// Matrix-vector multiply: out = input @ weight + bias.
+/// Weight is PRE-TRANSPOSED to [out_dim, in_dim] for contiguous SIMD access.
+/// Each output element reads a contiguous row of in_dim floats.
 fn matmul_vec_simd(input: &[f32], weight: &[f32], bias: &[f32], output: &mut [f32], in_dim: usize, out_dim: usize) {
-    // GPT-2 stores weights as [in_dim, out_dim] (row-major).
-    // Strided access per output — TODO: transpose at load time for SIMD.
+    let chunks = in_dim / 16;
+    let remainder = in_dim % 16;
+
     for o in 0..out_dim {
-        let mut dot = 0.0f32;
-        for i in 0..in_dim {
-            dot += input[i] * weight[i * out_dim + o];
+        let row_offset = o * in_dim;
+        let mut acc = F32x16::splat(0.0);
+        for c in 0..chunks {
+            let off = c * 16;
+            let vi = F32x16::from_slice(&input[off..off + 16]);
+            let vw = F32x16::from_slice(&weight[row_offset + off..row_offset + off + 16]);
+            acc = vi.mul_add(vw, acc);
+        }
+        let mut dot = acc.reduce_sum();
+        // Scalar tail
+        let tail_start = chunks * 16;
+        for i in 0..remainder {
+            dot += input[tail_start + i] * weight[row_offset + tail_start + i];
         }
         output[o] = dot + bias[o];
     }

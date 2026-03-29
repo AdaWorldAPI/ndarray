@@ -111,10 +111,35 @@ impl Gpt2Weights {
             });
         }
 
-        Ok(Gpt2Weights {
+        let mut weights = Gpt2Weights {
             wte, wpe, layers, ln_f_weight, ln_f_bias,
-        })
+        };
+        weights.transpose_weights_for_simd();
+        Ok(weights)
     }
+
+    /// Transpose all weight matrices from [in_dim, out_dim] to [out_dim, in_dim].
+    /// After this, matmul can read weight rows contiguously for F32x16 SIMD.
+    fn transpose_weights_for_simd(&mut self) {
+        for layer in &mut self.layers {
+            transpose_matrix(&mut layer.attn_qkv_weight, EMBED_DIM, 3 * EMBED_DIM);
+            transpose_matrix(&mut layer.attn_out_weight, EMBED_DIM, EMBED_DIM);
+            transpose_matrix(&mut layer.mlp_fc_weight, EMBED_DIM, MLP_DIM);
+            transpose_matrix(&mut layer.mlp_proj_weight, MLP_DIM, EMBED_DIM);
+        }
+    }
+}
+
+/// Transpose a [rows, cols] matrix in-place to [cols, rows].
+fn transpose_matrix(data: &mut Vec<f32>, rows: usize, cols: usize) {
+    assert_eq!(data.len(), rows * cols);
+    let mut transposed = vec![0.0f32; rows * cols];
+    for r in 0..rows {
+        for c in 0..cols {
+            transposed[c * rows + r] = data[r * cols + c];
+        }
+    }
+    *data = transposed;
 }
 
 /// Tensor metadata from safetensors header.
