@@ -170,6 +170,10 @@ pub mod gguf;
 #[allow(missing_docs)]
 pub mod jina;
 
+/// GPT-2 inference engine — full forward pass + OpenAI-compatible API types.
+#[allow(missing_docs)]
+pub mod gpt2;
+
 // jitson: JSON config → scan pipeline (parser, validator, template, precompile, packed)
 // Always available — no Cranelift dependency.
 #[allow(missing_docs)]
