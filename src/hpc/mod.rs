@@ -166,6 +166,10 @@ pub mod cam_pq;
 #[allow(missing_docs)]
 pub mod gguf;
 
+/// Streaming GGUF → bgz17 indexer. One tensor at a time, bounded RAM.
+#[allow(missing_docs)]
+pub mod gguf_indexer;
+
 /// Jina embedding codec — GGUF → Base17 → Palette → CausalEdge64.
 #[allow(missing_docs)]
 pub mod jina;
