@@ -1344,4 +1344,198 @@ mod tests {
 
         assert!(multi_object_candidates.len() > 0, "should find some multi-object candidates");
     }
+    #[test]
+    #[ignore]
+    fn test_centroid_focus_classification() {
+        // Centroid-focused classification:
+        // 1. Find energy centroid around each 1/3 intersection
+        // 2. Extract detailed patch at centroid
+        // 3. Classify patch → more precise than whole-image archetype
+        
+        let bytes = match std::fs::read("/tmp/tiny_imagenet_labeled.bin") {
+            Ok(b) => b,
+            Err(_) => { eprintln!("SKIP: /tmp/tiny_imagenet_labeled.bin not found"); return; }
+        };
+
+        let n = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+        let d = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
+        let n_classes = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
+
+        let mut labels = Vec::with_capacity(n);
+        for i in 0..n {
+            let off = 12 + i * 4;
+            labels.push(u32::from_le_bytes([bytes[off], bytes[off+1], bytes[off+2], bytes[off+3]]) as usize);
+        }
+
+        let pixel_start = 12 + n * 4;
+        let img_w = 64usize;
+        let img_h = 64usize;
+        let ch = 3usize;
+
+        // ── Helper: read pixel from binary ──
+        let pixel = |img_idx: usize, r: usize, c: usize, channel: usize| -> f64 {
+            let off = pixel_start + (img_idx * d + r * img_w * ch + c * ch + channel) * 4;
+            f32::from_le_bytes([bytes[off], bytes[off+1], bytes[off+2], bytes[off+3]]) as f64
+        };
+
+        // ── Helper: luminance at (r,c) ──
+        let luma = |img_idx: usize, r: usize, c: usize| -> f64 {
+            0.299 * pixel(img_idx, r, c, 0) + 0.587 * pixel(img_idx, r, c, 1) + 0.114 * pixel(img_idx, r, c, 2)
+        };
+
+        // ── Step 1: For each image, find energy centroid around each 1/3 intersection ──
+        let patch_radius = 8usize; // 16×16 patch around each intersection
+        let intersections = [(img_h/3, img_w/3), (img_h/3, 2*img_w/3),
+                             (2*img_h/3, img_w/3), (2*img_h/3, 2*img_w/3)];
+
+        struct FocusPoint {
+            centroid_r: f64,
+            centroid_c: f64,
+            energy: f64,
+        }
+
+        let n_use = n.min(200);
+
+        // For each image, find the highest-energy intersection and its centroid
+        let mut focus_features: Vec<Vec<f64>> = Vec::with_capacity(n_use);
+
+        for img_idx in 0..n_use {
+            let mut best_focus = FocusPoint { centroid_r: 32.0, centroid_c: 32.0, energy: 0.0 };
+
+            for &(ir, ic) in &intersections {
+                // Compute energy centroid within patch
+                let mut total_energy = 0.0f64;
+                let mut weighted_r = 0.0f64;
+                let mut weighted_c = 0.0f64;
+
+                let r_min = ir.saturating_sub(patch_radius);
+                let r_max = (ir + patch_radius).min(img_h);
+                let c_min = ic.saturating_sub(patch_radius);
+                let c_max = (ic + patch_radius).min(img_w);
+
+                for r in r_min..r_max {
+                    for c in c_min..c_max {
+                        let e = luma(img_idx, r, c);
+                        // Use gradient magnitude as energy (edges = objects)
+                        let grad = if r > 0 && r < img_h-1 && c > 0 && c < img_w-1 {
+                            let dx = luma(img_idx, r, c+1) - luma(img_idx, r, c-1);
+                            let dy = luma(img_idx, r+1, c) - luma(img_idx, r-1, c);
+                            (dx * dx + dy * dy).sqrt()
+                        } else {
+                            0.0
+                        };
+                        total_energy += grad;
+                        weighted_r += r as f64 * grad;
+                        weighted_c += c as f64 * grad;
+                    }
+                }
+
+                if total_energy > best_focus.energy {
+                    best_focus = FocusPoint {
+                        centroid_r: if total_energy > 0.0 { weighted_r / total_energy } else { ir as f64 },
+                        centroid_c: if total_energy > 0.0 { weighted_c / total_energy } else { ic as f64 },
+                        energy: total_energy,
+                    };
+                }
+            }
+
+            // ── Step 2: Extract detailed patch at centroid (12×12 = 144 pixels × 3ch = 432D) ──
+            let focus_radius = 6usize;
+            let cr = best_focus.centroid_r.round() as usize;
+            let cc = best_focus.centroid_c.round() as usize;
+            let r_min = cr.saturating_sub(focus_radius);
+            let r_max = (cr + focus_radius).min(img_h);
+            let c_min = cc.saturating_sub(focus_radius);
+            let c_max = (cc + focus_radius).min(img_w);
+
+            let mut patch_features = Vec::with_capacity(432);
+            for r in r_min..r_max {
+                for c in c_min..c_max {
+                    for channel in 0..ch {
+                        patch_features.push(pixel(img_idx, r, c, channel));
+                    }
+                }
+            }
+            // Pad to fixed size if patch was clipped by image boundary
+            patch_features.resize(432, 0.0);
+            focus_features.push(patch_features);
+        }
+
+        let feat_d = 432;
+
+        // ── Step 3: Build archetypes from centroid patches ──
+        let mut focus_archetypes: Vec<Vec<f64>> = vec![vec![0.0; feat_d]; n_classes];
+        let mut counts = vec![0usize; n_classes];
+        for (i, &label) in labels[..n_use].iter().enumerate() {
+            for j in 0..feat_d { focus_archetypes[label][j] += focus_features[i][j]; }
+            counts[label] += 1;
+        }
+        for c in 0..n_classes {
+            if counts[c] > 0 { for j in 0..feat_d { focus_archetypes[c][j] /= counts[c] as f64; } }
+        }
+
+        // ── Step 4: Classify by nearest centroid-patch archetype ──
+        let mut correct_focus = 0usize;
+        for (i, &true_label) in labels[..n_use].iter().enumerate() {
+            let mut best_class = 0;
+            let mut best_dist = f64::MAX;
+            for c in 0..n_classes {
+                if counts[c] == 0 { continue; }
+                let dist: f64 = focus_features[i].iter().zip(&focus_archetypes[c])
+                    .map(|(a, b)| (a - b) * (a - b)).sum::<f64>().sqrt();
+                if dist < best_dist { best_dist = dist; best_class = c; }
+            }
+            if best_class == true_label { correct_focus += 1; }
+        }
+        let accuracy_focus = correct_focus as f64 / n_use as f64;
+
+        // ── Step 5: Compress centroid patches via golden-step ──
+        let base_dim = 17;
+        let golden_step = 11;
+        let compress = |v: &[f64]| -> Vec<f64> {
+            let fd = v.len();
+            let n_oct = (fd + base_dim - 1) / base_dim;
+            let mut sum = vec![0.0f64; base_dim];
+            let mut cnt = vec![0u32; base_dim];
+            for oct in 0..n_oct {
+                for bi in 0..base_dim {
+                    let dim = oct * base_dim + ((bi * golden_step) % base_dim);
+                    if dim < fd { sum[bi] += v[dim]; cnt[bi] += 1; }
+                }
+            }
+            sum.iter().zip(&cnt).map(|(&s, &c)| if c > 0 { s / c as f64 } else { 0.0 }).collect()
+        };
+
+        let compressed_arch: Vec<Vec<f64>> = focus_archetypes.iter().map(|a| compress(a)).collect();
+        let compressed_feat: Vec<Vec<f64>> = focus_features.iter().map(|f| compress(f)).collect();
+
+        let mut correct_compressed = 0usize;
+        for (i, &true_label) in labels[..n_use].iter().enumerate() {
+            let mut best_class = 0;
+            let mut best_dist = f64::MAX;
+            for c in 0..n_classes {
+                if counts[c] == 0 { continue; }
+                let dist: f64 = compressed_feat[i].iter().zip(&compressed_arch[c])
+                    .map(|(a, b)| (a - b) * (a - b)).sum::<f64>().sqrt();
+                if dist < best_dist { best_dist = dist; best_class = c; }
+            }
+            if best_class == true_label { correct_compressed += 1; }
+        }
+        let accuracy_compressed = correct_compressed as f64 / n_use as f64;
+
+        eprintln!("=== Centroid-Focus Classification ===");
+        eprintln!("  Images: {}, Classes: {}", n_use, n_classes);
+        eprintln!();
+        eprintln!("  Centroid patch 432D:     {:.1}% ({}/{})", accuracy_focus * 100.0, correct_focus, n_use);
+        eprintln!("  Compressed 17D (34B):    {:.1}% ({}/{})", accuracy_compressed * 100.0, correct_compressed, n_use);
+        eprintln!("  Random baseline:         {:.1}%", 100.0 / n_classes as f64);
+        eprintln!();
+        eprintln!("  Compare to grid-line approaches:");
+        eprintln!("    Grid 768D:     29.8%  (1536 bytes)");
+        eprintln!("    Grid→17D:      14.2%  (34 bytes)");
+        eprintln!("    Focus 432D:    {:.1}%  (864 bytes) ← centroid sweet spot", accuracy_focus * 100.0);
+        eprintln!("    Focus→17D:     {:.1}%  (34 bytes) ← compressed focus", accuracy_compressed * 100.0);
+
+        assert!(accuracy_focus > 1.0 / n_classes as f64, "should beat random");
+    }
 }
