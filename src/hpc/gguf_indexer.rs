@@ -518,4 +518,60 @@ mod tests {
         // Verify output magic
         assert_eq!(&output[0..4], b"BGZ7");
     }
+
+    #[test]
+    #[ignore] // Requires /tmp/openchat/openchat-3.5-0106.Q8_0.gguf
+    fn test_stream_index_openchat_q8() {
+        use std::io::{BufReader, BufWriter};
+
+        let path = "/tmp/openchat/openchat-3.5-0106.Q8_0.gguf";
+        let file = match std::fs::File::open(path) {
+            Ok(f) => f,
+            Err(_) => { eprintln!("SKIP: {} not found", path); return; }
+        };
+        let input_size = file.metadata().map(|m| m.len()).unwrap_or(0);
+        let mut reader = BufReader::new(file);
+
+        let out_path = "/tmp/openchat/openchat-3.5-0106.bgz7";
+        let out = std::fs::File::create(out_path).expect("create output");
+        let mut writer = BufWriter::new(out);
+
+        let stats = stream_index_gguf(
+            &mut reader,
+            &mut writer,
+            Some(&|name, layer_type, orig, comp| {
+                let ratio = if comp > 0 { orig as f64 / comp as f64 } else { 0.0 };
+                eprintln!("  {:50} {:12?} {:>10} → {:>8} ({:.0}×)",
+                    name, layer_type, orig, comp, ratio);
+            }),
+        ).expect("stream_index_gguf");
+
+        drop(writer);
+        let out_size = std::fs::metadata(out_path).map(|m| m.len()).unwrap_or(0);
+
+        eprintln!();
+        eprintln!("=== OpenChat 3.5 Q8_0 → bgz17 Results ===");
+        eprintln!("  Input:  {:.2} GB ({})", input_size as f64 / 1e9, path);
+        eprintln!("  Output: {:.2} MB ({})", out_size as f64 / 1e6, out_path);
+        eprintln!("  Tensors: {} total, {} indexed, {} skipped",
+            stats.tensors_total, stats.tensors_indexed, stats.tensors_skipped);
+        eprintln!("  Original (f32): {:.2} MB", stats.original_bytes as f64 / 1e6);
+        eprintln!("  Compressed:     {:.2} MB", stats.compressed_bytes as f64 / 1e6);
+        eprintln!("  Overall ratio:  {:.1}×", stats.overall_ratio());
+        eprintln!("  Peak tensor:    {:.2} MB", stats.peak_tensor_bytes as f64 / 1e6);
+        eprintln!();
+
+        let type_names = ["Attention", "FeedForward", "Conv2D", "Norm", "Embedding", "Skip"];
+        for (i, name) in type_names.iter().enumerate() {
+            let (count, orig, comp) = stats.by_type[i];
+            if count > 0 {
+                let ratio = if comp > 0 { orig as f64 / comp as f64 } else { 0.0 };
+                eprintln!("  {:<12} {:>3} tensors: {:>10.2} MB → {:>8.2} MB ({:.1}×)",
+                    name, count, orig as f64 / 1e6, comp as f64 / 1e6, ratio);
+            }
+        }
+
+        assert!(stats.tensors_indexed > 0, "should index at least some tensors");
+        assert!(stats.overall_ratio() > 10.0, "ratio should be significant: {:.1}", stats.overall_ratio());
+    }
 }
