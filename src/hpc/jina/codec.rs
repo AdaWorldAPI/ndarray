@@ -48,13 +48,28 @@ impl Base17Token {
     }
 
     /// L1 distance between two Base17 tokens.
+    ///
+    /// 17 dimensions: 16 via `crate::simd::F32x16` + 1 scalar remainder.
+    /// Consumer never sees hardware — `F32x16` dispatches to AVX-512/AVX2/scalar.
     #[inline(always)]
     pub fn l1(&self, other: &Base17Token) -> u32 {
-        let mut d = 0u32;
-        for i in 0..BASE_DIM {
-            d += (self.dims[i] as i32 - other.dims[i] as i32).unsigned_abs();
+        // SIMD path: load 16 dims as f32, compute abs diff, reduce.
+        // The 17th dim is scalar.
+        let mut a_f32 = [0.0f32; 16];
+        let mut b_f32 = [0.0f32; 16];
+        for i in 0..16 {
+            a_f32[i] = self.dims[i] as f32;
+            b_f32[i] = other.dims[i] as f32;
         }
-        d
+        let va = F32x16::from_slice(&a_f32);
+        let vb = F32x16::from_slice(&b_f32);
+        let diff = va - vb;
+        let abs_diff = diff.abs();
+        let simd_sum = abs_diff.reduce_sum() as u32;
+
+        // 17th dimension: scalar
+        let d16 = (self.dims[16] as i32 - other.dims[16] as i32).unsigned_abs();
+        simd_sum + d16
     }
 }
 
