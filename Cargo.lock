@@ -258,7 +258,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "burn-adaworld"
+name = "burn"
 version = "0.1.0"
 dependencies = [
  "atomic_float",
