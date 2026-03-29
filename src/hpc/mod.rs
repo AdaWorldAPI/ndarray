@@ -170,9 +170,17 @@ pub mod gguf;
 #[allow(missing_docs)]
 pub mod jina;
 
+/// Shared model primitives — safetensors, SIMD layers, API types.
+#[allow(missing_docs)]
+pub mod models;
+
 /// GPT-2 inference engine — full forward pass + OpenAI-compatible API types.
 #[allow(missing_docs)]
 pub mod gpt2;
+
+/// Stable Diffusion inference — CLIP + UNet + VAE + DDIM scheduler.
+#[allow(missing_docs)]
+pub mod stable_diffusion;
 
 // jitson: JSON config → scan pipeline (parser, validator, template, precompile, packed)
 // Always available — no Cranelift dependency.
