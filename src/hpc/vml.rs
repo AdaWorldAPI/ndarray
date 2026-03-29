@@ -462,4 +462,92 @@ mod tests {
             assert!((out[i] - x[i].sin()).abs() < 1e-5, "mismatch at {i}");
         }
     }
+    #[test]
+    fn test_f64_golden_step_hydration_cost() {
+        use std::f64::consts;
+        // Rust 1.94: std::f64::consts::PHI and GAMMA are stable.
+        // On 1.93: define manually.
+        #[allow(dead_code)]
+        const PHI: f64 = 1.618033988749894848204586834365638118;
+
+        // Simulate: 4096D f64 vector → Base17-style projection → hydration back
+        let d = 4096usize;
+        let base_dim = 17usize;
+        let golden_step = 11usize;
+
+        // Generate "weight" data (deterministic, mimics Gaussian distribution)
+        let weights: Vec<f64> = (0..d)
+            .map(|i| ((i as f64 * 0.7 + 13.0).sin() * 2.5))
+            .collect();
+
+        // ── ENCODING: f64[4096] → f64[17] (golden-step projection) ──
+        let encode_start = std::time::Instant::now();
+        let n_octaves = (d + base_dim - 1) / base_dim;
+        let mut sum = [0.0f64; 17];
+        let mut count = [0u32; 17];
+        for octave in 0..n_octaves {
+            for bi in 0..base_dim {
+                let dim = octave * base_dim + ((bi * golden_step) % base_dim);
+                if dim < d {
+                    sum[bi] += weights[dim];
+                    count[bi] += 1;
+                }
+            }
+        }
+        let mut coefficients_f64 = [0.0f64; 17];
+        for i in 0..base_dim {
+            if count[i] > 0 {
+                coefficients_f64[i] = sum[i] / count[i] as f64;
+            }
+        }
+        let encode_time = encode_start.elapsed();
+
+        // ── QUANTIZE: f64[17] → i16[17] (what Base17 stores) ──
+        let fp_scale = 1000.0;
+        let coefficients_i16: Vec<i16> = coefficients_f64.iter()
+            .map(|&v| (v * fp_scale).round().clamp(-32768.0, 32767.0) as i16)
+            .collect();
+
+        // ── HYDRATION: i16[17] → f64[4096] (reconstruct from golden-step basis) ──
+        let hydrate_start = std::time::Instant::now();
+        let mut reconstructed = vec![0.0f64; d];
+        for octave in 0..n_octaves {
+            for bi in 0..base_dim {
+                let dim = octave * base_dim + ((bi * golden_step) % base_dim);
+                if dim < d {
+                    reconstructed[dim] = coefficients_i16[bi] as f64 / fp_scale;
+                }
+            }
+        }
+        let hydrate_time = hydrate_start.elapsed();
+
+        // ── MEASURE: reconstruction quality ──
+        let mut sum_sq_err = 0.0f64;
+        let mut sum_sq_orig = 0.0f64;
+        for i in 0..d {
+            let err = weights[i] - reconstructed[i];
+            sum_sq_err += err * err;
+            sum_sq_orig += weights[i] * weights[i];
+        }
+        let relative_error = (sum_sq_err / sum_sq_orig).sqrt();
+
+        // ── REPORT ──
+        eprintln!("=== F64 Golden-Step Hydration Cost ===");
+        eprintln!("  Input:       f64[{}] = {} bytes", d, d * 8);
+        eprintln!("  Encoded:     i16[17] = 34 bytes");
+        eprintln!("  Compression: {}×", (d * 8) / 34);
+        eprintln!("  Encode time: {:?}", encode_time);
+        eprintln!("  Hydrate time: {:?}", hydrate_time);
+        eprintln!("  Relative error: {:.6}", relative_error);
+        eprintln!("  Reconstruction quality: {:.4}%", (1.0 - relative_error) * 100.0);
+
+        // The surface area cost IS just the encode + hydrate.
+        // The middle (i16 distance, SimilarityTable lookup) is O(1) regardless.
+        // For f64 tensors: the ONLY extra cost vs f32 tensors is the
+        // f64→f64 accumulation in the projection (instead of f32→f64).
+        // That's ~0 extra cost because the projection already uses f64 sums.
+
+        assert!(encode_time.as_micros() < 100, "encoding should be < 100μs");
+        assert!(hydrate_time.as_micros() < 100, "hydration should be < 100μs");
+    }
 }
