@@ -105,6 +105,11 @@ members = [
     "ndarray-rand",
     "crates/*",
 ]
+exclude = [
+    # burn crate requires edition 2024 (Rust 1.85+) and pinned git deps.
+    # Built separately: cargo check --manifest-path crates/burn/Cargo.toml
+    "crates/burn",
+]
 default-members = [
     ".",
     "ndarray-rand",

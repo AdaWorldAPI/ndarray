@@ -1,0 +1,76 @@
+[package]
+name = "burn"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = """
+Burn ndarray backend forked into adaworldapi/ndarray for SIMD augmentation.
+Source: upstream burn-ndarray (tracel-ai/burn, v0.21.0-pre.2).
+Goal: replace macerator SIMD with crate::simd F32x16 + LazyLock dispatch,
+add bgz-tensor AttentionTable compiled attention path.
+"""
+
+[features]
+default = ["std", "simd", "multi-threads"]
+multi-threads = ["rayon", "ndarray/rayon", "matrixmultiply/threading"]
+simd = ["macerator", "bytemuck", "seq-macro", "itertools"]
+std = [
+    "burn-std/std",
+    "burn-backend/std",
+    "burn-ir/std",
+    "ndarray/std",
+    "matrixmultiply/std",
+    "rand/std",
+    "rand/std_rng",
+    "num-traits/std",
+    "macerator/std",
+]
+blas-openblas = ["blas-src/openblas", "ndarray/blas", "openblas-src"]
+blas-openblas-system = ["blas-src/openblas", "ndarray/blas", "openblas-src/system"]
+blas-netlib = ["blas-src/netlib", "ndarray/blas"]
+export_tests = []
+
+[dependencies]
+# Upstream burn crates (from git main — matches source code we copied)
+# Upstream burn crates — vendored at pinned commit, we only override our additions.
+# Our changes: crates/burn/src/ops/tensor.rs (try_vml_unary + 4 SIMD wires)
+#              crates/burn/src/ops/activation.rs (fused sigmoid)
+burn-backend = { git = "https://github.com/tracel-ai/burn.git", rev = "ed72d2b", default-features = false }
+burn-std = { git = "https://github.com/tracel-ai/burn.git", rev = "ed72d2b", default-features = false }
+burn-ir = { git = "https://github.com/tracel-ai/burn.git", rev = "ed72d2b", default-features = false }
+
+# ndarray — uses our workspace root (adaworldapi/ndarray with SIMD + HPC)
+ndarray = { path = "../..", default-features = false }
+
+# Matrix multiply
+matrixmultiply = { version = "0.3", default-features = false }
+
+# Element traits
+num-traits = { version = "0.2", default-features = false }
+libm = "0.2"
+atomic_float = "1"
+const-random = "0.1"
+paste = "1"
+
+# Random
+rand = { version = "0.10", default-features = false, features = ["std_rng"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+
+# SIMD (macerator — upstream burn's choice, will augment with crate::simd)
+macerator = { version = "0.3", default-features = false, optional = true }
+bytemuck = { version = "1", optional = true }
+seq-macro = { version = "0.3", optional = true }
+itertools = { version = "0.14", optional = true }
+
+# Parallel
+rayon = { version = "1", optional = true }
+
+# BLAS (optional)
+blas-src = { version = "0.10", default-features = false, optional = true }
+openblas-src = { version = "0.10", optional = true }
+
+[dev-dependencies]
+bytes = "1"
