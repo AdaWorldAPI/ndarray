@@ -611,6 +611,11 @@ where
     }
 
     fn float_tanh(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
+        #[cfg(feature = "simd")]
+        let tensor = match try_vml_unary(tensor, ndarray::hpc::vml::vstanh) {
+            Ok(result) => return result,
+            Err(t) => t,
+        };
         execute_with_float_dtype!(tensor, FloatElem, |array: SharedArray<FloatElem>| {
             array
                 .mapv_into(|a: FloatElem| (a.to_f64()).tanh().elem())
@@ -673,6 +678,11 @@ where
     }
 
     fn float_round(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
+        #[cfg(feature = "simd")]
+        let tensor = match try_vml_unary(tensor, ndarray::hpc::vml::vsround) {
+            Ok(result) => return result,
+            Err(t) => t,
+        };
         execute_with_float_dtype!(tensor, FloatElem, |array: SharedArray<FloatElem>| {
             array
                 .mapv_into(|a: FloatElem| round_ties_even_wrapper(a.to_f64()).elem())
@@ -681,6 +691,11 @@ where
     }
 
     fn float_floor(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
+        #[cfg(feature = "simd")]
+        let tensor = match try_vml_unary(tensor, ndarray::hpc::vml::vsfloor) {
+            Ok(result) => return result,
+            Err(t) => t,
+        };
         execute_with_float_dtype!(tensor, FloatElem, |array: SharedArray<FloatElem>| {
             array
                 .mapv_into(|a: FloatElem| (a.to_f64()).floor().elem())
@@ -689,6 +704,11 @@ where
     }
 
     fn float_ceil(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
+        #[cfg(feature = "simd")]
+        let tensor = match try_vml_unary(tensor, ndarray::hpc::vml::vsceil) {
+            Ok(result) => return result,
+            Err(t) => t,
+        };
         execute_with_float_dtype!(tensor, FloatElem, |array: SharedArray<FloatElem>| {
             array
                 .mapv_into(|a: FloatElem| (a.to_f64()).ceil().elem())
@@ -697,6 +717,11 @@ where
     }
 
     fn float_trunc(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
+        #[cfg(feature = "simd")]
+        let tensor = match try_vml_unary(tensor, ndarray::hpc::vml::vstrunc) {
+            Ok(result) => return result,
+            Err(t) => t,
+        };
         execute_with_float_dtype!(tensor, FloatElem, |array: SharedArray<FloatElem>| {
             array
                 .mapv_into(|a: FloatElem| (a.to_f64()).trunc().elem())

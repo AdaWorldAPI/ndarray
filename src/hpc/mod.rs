@@ -162,6 +162,10 @@ pub mod holo;
 #[allow(missing_docs)]
 pub mod cam_pq;
 
+/// GGUF model file reader — extract f32 weights from quantized models.
+#[allow(missing_docs)]
+pub mod gguf;
+
 // jitson: JSON config → scan pipeline (parser, validator, template, precompile, packed)
 // Always available — no Cranelift dependency.
 #[allow(missing_docs)]
