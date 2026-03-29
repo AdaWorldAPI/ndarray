@@ -225,6 +225,12 @@ pub fn read_tensor_f32<R: Read + Seek>(
         GgmlType::Q8_0 => {
             dequantize_q8_0(reader, n_elements)
         }
+        GgmlType::Q4_0 => {
+            dequantize_q4_0(reader, n_elements)
+        }
+        GgmlType::Q4_K => {
+            dequantize_q4_k(reader, n_elements)
+        }
         other => Err(format!("Unsupported dtype for dequantization: {:?}", other)),
     }
 }
@@ -310,6 +316,90 @@ fn dequantize_q8_0<R: Read>(r: &mut R, n_elements: usize) -> Result<Vec<f32>, St
 
         for &q in &quants {
             result.push((q as i8) as f32 * scale);
+        }
+    }
+
+    result.truncate(n_elements);
+    Ok(result)
+}
+
+/// Dequantize Q4_0: each block = 2 bytes scale (f16) + 16 bytes (32 nibbles).
+fn dequantize_q4_0<R: Read>(r: &mut R, n_elements: usize) -> Result<Vec<f32>, String> {
+    let block_size = 32;
+    let n_blocks = (n_elements + block_size - 1) / block_size;
+    let mut result = Vec::with_capacity(n_elements);
+
+    for _ in 0..n_blocks {
+        let mut scale_buf = [0u8; 2];
+        r.read_exact(&mut scale_buf).map_err(|e| e.to_string())?;
+        let scale = f16_to_f32(u16::from_le_bytes(scale_buf));
+
+        let mut nibbles = [0u8; 16];
+        r.read_exact(&mut nibbles).map_err(|e| e.to_string())?;
+
+        for &byte in &nibbles {
+            let lo = (byte & 0x0F) as i8 - 8;
+            let hi = ((byte >> 4) & 0x0F) as i8 - 8;
+            result.push(lo as f32 * scale);
+            result.push(hi as f32 * scale);
+        }
+    }
+
+    result.truncate(n_elements);
+    Ok(result)
+}
+
+/// Dequantize Q4_K: super-blocks of 256 elements.
+///
+/// Q4_K block layout (144 bytes for 256 elements):
+/// - 2 bytes: d (f16 scale)
+/// - 2 bytes: dmin (f16 min)
+/// - 12 bytes: scales (6-bit per sub-block, packed)
+/// - 128 bytes: 256 4-bit quantized values (nibbles)
+fn dequantize_q4_k<R: Read>(r: &mut R, n_elements: usize) -> Result<Vec<f32>, String> {
+    let block_size = 256;
+    let n_blocks = (n_elements + block_size - 1) / block_size;
+    let mut result = Vec::with_capacity(n_elements);
+
+    for _ in 0..n_blocks {
+        // Read d and dmin (f16)
+        let mut d_buf = [0u8; 2];
+        let mut dmin_buf = [0u8; 2];
+        r.read_exact(&mut d_buf).map_err(|e| e.to_string())?;
+        r.read_exact(&mut dmin_buf).map_err(|e| e.to_string())?;
+        let d = f16_to_f32(u16::from_le_bytes(d_buf));
+        let dmin = f16_to_f32(u16::from_le_bytes(dmin_buf));
+
+        // Read scales (12 bytes = 8 sub-block scales + 8 sub-block mins, 6-bit packed)
+        let mut scales_raw = [0u8; 12];
+        r.read_exact(&mut scales_raw).map_err(|e| e.to_string())?;
+
+        // Decode 8 scale/min pairs from 12 bytes (6 bits each)
+        let mut sc = [0u8; 8];
+        let mut mn = [0u8; 8];
+        for i in 0..4 {
+            sc[i] = scales_raw[i] & 0x3F;
+            mn[i] = scales_raw[i + 4] & 0x3F;
+            sc[i + 4] = ((scales_raw[i + 8] & 0x0F) << 2) | (scales_raw[i] >> 6);
+            mn[i + 4] = ((scales_raw[i + 8] >> 4) << 2) | (scales_raw[i + 4] >> 6);
+        }
+
+        // Read 128 bytes of nibbles (256 4-bit values)
+        let mut nibbles = [0u8; 128];
+        r.read_exact(&mut nibbles).map_err(|e| e.to_string())?;
+
+        // Dequantize: each sub-block of 32 elements
+        for j in 0..8 {
+            let sub_d = d * sc[j] as f32;
+            let sub_m = dmin * mn[j] as f32;
+            let nib_offset = j * 16;
+            for k in 0..16 {
+                let byte = nibbles[nib_offset + k];
+                let lo = (byte & 0x0F) as f32;
+                let hi = ((byte >> 4) & 0x0F) as f32;
+                result.push(lo * sub_d - sub_m);
+                result.push(hi * sub_d - sub_m);
+            }
         }
     }
 
