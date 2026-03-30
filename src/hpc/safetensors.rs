@@ -348,7 +348,7 @@ mod tests {
         file_bytes.extend_from_slice(&header_size.to_le_bytes());
         file_bytes.extend_from_slice(json_bytes);
         // 64 bytes of BF16 data (4 rows × 8 cols × 2 bytes)
-        file_bytes.extend_from_slice(&vec![0x3F, 0x80; 32]); // 32 × BF16(1.0) = 0x3F80
+        file_bytes.extend_from_slice(&[0x3F, 0x80].repeat(32)); // 32 × BF16(1.0) = 0x3F80
 
         let mut cursor = Cursor::new(file_bytes);
         let header = read_safetensors_header(&mut cursor).unwrap();
