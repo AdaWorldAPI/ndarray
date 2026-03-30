@@ -738,11 +738,77 @@ impl CompressedTensor {
         }
         Ok(())
     }
+
+    /// Deserialize from bytes: [name_len:u32][name][layer_type:u8][n_rows:u32][n_cols:u32][base17 × n_rows]
+    pub fn read_from<R: Read>(r: &mut R) -> Result<Self, String> {
+        let mut u32_buf = [0u8; 4];
+
+        r.read_exact(&mut u32_buf).map_err(|e| e.to_string())?;
+        let name_len = u32::from_le_bytes(u32_buf) as usize;
+
+        let mut name_bytes = vec![0u8; name_len];
+        r.read_exact(&mut name_bytes).map_err(|e| e.to_string())?;
+        let name = String::from_utf8(name_bytes).map_err(|e| e.to_string())?;
+
+        let mut lt_buf = [0u8; 1];
+        r.read_exact(&mut lt_buf).map_err(|e| e.to_string())?;
+        let layer_type = match lt_buf[0] {
+            0 => LayerType::Attention,
+            1 => LayerType::FeedForward,
+            2 => LayerType::Conv2D,
+            3 => LayerType::Norm,
+            4 => LayerType::Embedding,
+            _ => LayerType::Skip,
+        };
+
+        r.read_exact(&mut u32_buf).map_err(|e| e.to_string())?;
+        let n_rows = u32::from_le_bytes(u32_buf) as usize;
+
+        r.read_exact(&mut u32_buf).map_err(|e| e.to_string())?;
+        let n_cols = u32::from_le_bytes(u32_buf) as usize;
+
+        let mut rows = Vec::with_capacity(n_rows);
+        let mut b17_buf = [0u8; Base17::BYTE_SIZE];
+        for _ in 0..n_rows {
+            r.read_exact(&mut b17_buf).map_err(|e| e.to_string())?;
+            rows.push(Base17::from_bytes(&b17_buf));
+        }
+
+        Ok(CompressedTensor {
+            name,
+            layer_type,
+            original_shape: vec![], // not stored in bgz7
+            n_rows,
+            n_cols,
+            rows,
+        })
+    }
 }
 
-// ============================================================================
-// Reshape helpers
-// ============================================================================
+/// Read all tensors from a bgz7 file.
+///
+/// Returns Vec of (name, layer_type, rows) tuples.
+pub fn read_bgz7_file(path: &str) -> Result<Vec<CompressedTensor>, String> {
+    let file = std::fs::File::open(path).map_err(|e| format!("{}: {}", path, e))?;
+    let mut reader = std::io::BufReader::new(file);
+
+    let mut magic = [0u8; 4];
+    reader.read_exact(&mut magic).map_err(|e| e.to_string())?;
+    if &magic != b"BGZ7" {
+        return Err(format!("bad magic: {:?}", magic));
+    }
+
+    let mut u32_buf = [0u8; 4];
+    reader.read_exact(&mut u32_buf).map_err(|e| e.to_string())?;
+    let n_tensors = u32::from_le_bytes(u32_buf) as usize;
+
+    let mut tensors = Vec::with_capacity(n_tensors);
+    for _ in 0..n_tensors {
+        tensors.push(CompressedTensor::read_from(&mut reader)?);
+    }
+
+    Ok(tensors)
+}
 
 /// Reshape a flat f32 tensor into rows × cols based on layer type.
 ///

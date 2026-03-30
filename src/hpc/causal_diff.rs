@@ -1,0 +1,519 @@
+//! Causal edge diffing between two bgz7 model indexes.
+//!
+//! Compares per-row Base17 fingerprints across two indexed models
+//! (e.g., base vs distilled), emitting causal edges with NARS truth
+//! values for every row that structurally shifted.
+//!
+//! ```text
+//! base.bgz7    ─┐
+//!               ├─→ causal_diff() ─→ Vec<WeightEdge>
+//! distilled.bgz7┘
+//!
+//! Each edge: tensor_name + row_idx + verb + L1_distance + NarsTruth
+//! ```
+
+use super::bgz17_bridge::Base17;
+use super::gguf_indexer::{CompressedTensor, LayerType, read_bgz7_file};
+use super::nars::NarsTruth;
+use std::collections::HashMap;
+
+// ============================================================================
+// Attention projection classification
+// ============================================================================
+
+/// Which projection within an attention head.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Projection {
+    Q, K, V, O,
+    Gate,        // MoE router gate
+    FfnGate,     // dense FFN gate
+    FfnUp,       // dense FFN up
+    FfnDown,     // dense FFN down
+    Embedding,
+    Other,
+}
+
+/// Classify a tensor name into its projection type.
+pub fn classify_projection(name: &str) -> Projection {
+    if name.contains("q_proj") || name.contains("attn_q") { return Projection::Q; }
+    if name.contains("k_proj") || name.contains("attn_k") { return Projection::K; }
+    if name.contains("v_proj") || name.contains("attn_v") { return Projection::V; }
+    if name.contains("o_proj") || name.contains("attn_output") { return Projection::O; }
+    if name.contains("gate_inp") || name.contains("ffn_gate_inp") { return Projection::Gate; }
+    if name.contains("gate") && name.contains("exp") { return Projection::FfnGate; }
+    if name.contains("up") && (name.contains("exp") || name.contains("ffn")) { return Projection::FfnUp; }
+    if name.contains("down") && (name.contains("exp") || name.contains("ffn")) { return Projection::FfnDown; }
+    if name.contains("gate") { return Projection::FfnGate; }
+    if name.contains("up_proj") { return Projection::FfnUp; }
+    if name.contains("down_proj") { return Projection::FfnDown; }
+    if name.contains("embed") { return Projection::Embedding; }
+    Projection::Other
+}
+
+/// Extract block/layer number from tensor name (e.g., "blk.17.attn_q" → 17).
+pub fn extract_block(name: &str) -> Option<u32> {
+    // Try "blk.N." pattern
+    if let Some(pos) = name.find("blk.") {
+        let rest = &name[pos + 4..];
+        if let Some(dot) = rest.find('.') {
+            return rest[..dot].parse().ok();
+        }
+    }
+    // Try "layers.N." pattern
+    if let Some(pos) = name.find("layers.") {
+        let rest = &name[pos + 7..];
+        if let Some(dot) = rest.find('.') {
+            return rest[..dot].parse().ok();
+        }
+    }
+    None
+}
+
+// ============================================================================
+// Weight edge — one row's causal transformation
+// ============================================================================
+
+/// Causal relationship verb.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Verb {
+    /// Row shifted significantly: structural transformation.
+    Becomes,
+    /// Row stayed similar: distillation preserved this structure.
+    Supports,
+    /// Row shifted in opposite direction across models: contradictory change.
+    Contradicts,
+}
+
+/// One causal edge from a weight row diff.
+///
+/// 64 bytes packed: tensor_id(u16) + row_idx(u32) + projection(u8) +
+/// block(u16) + verb(u8) + l1_distance(u32) + truth(f32×2) + pad
+#[derive(Clone, Debug)]
+pub struct WeightEdge {
+    pub tensor_name: String,
+    pub row_idx: u32,
+    pub block: Option<u32>,
+    pub projection: Projection,
+    pub layer_type: LayerType,
+    pub verb: Verb,
+    pub l1_distance: u32,
+    pub truth: NarsTruth,
+}
+
+// ============================================================================
+// Diff engine
+// ============================================================================
+
+/// Statistics from a causal diff run.
+#[derive(Clone, Debug, Default)]
+pub struct DiffStats {
+    pub tensors_matched: usize,
+    pub tensors_unmatched: usize,
+    pub rows_compared: usize,
+    pub rows_shifted: usize,
+    pub rows_stable: usize,
+    pub by_projection: HashMap<String, (usize, usize, f64)>, // (shifted, total, mean_l1)
+}
+
+/// Diff two bgz7 files, emitting causal edges for rows that shifted.
+///
+/// `l1_threshold`: minimum L1 distance to emit a BECOMES edge.
+///   Lower = more sensitive (more edges). Higher = only strong shifts.
+///   Suggested: 50-200 (Base17 dims are i16 at ×256 scale).
+///
+/// Returns: (edges, stats)
+pub fn causal_diff(
+    base_path: &str,
+    distilled_path: &str,
+    l1_threshold: u32,
+) -> Result<(Vec<WeightEdge>, DiffStats), String> {
+    let base_tensors = read_bgz7_file(base_path)?;
+    let dist_tensors = read_bgz7_file(distilled_path)?;
+
+    // Index distilled tensors by name
+    let dist_map: HashMap<&str, &CompressedTensor> = dist_tensors
+        .iter()
+        .map(|t| (t.name.as_str(), t))
+        .collect();
+
+    let mut edges = Vec::new();
+    let mut stats = DiffStats::default();
+
+    // Max possible L1 for normalization (17 dims × 65535 max diff)
+    let max_l1: f64 = (17 * 65535) as f64;
+
+    for base_t in &base_tensors {
+        let Some(dist_t) = dist_map.get(base_t.name.as_str()) else {
+            stats.tensors_unmatched += 1;
+            continue;
+        };
+        stats.tensors_matched += 1;
+
+        // Rows must match
+        if base_t.rows.len() != dist_t.rows.len() {
+            eprintln!("  WARN: row count mismatch for {}: {} vs {}",
+                base_t.name, base_t.rows.len(), dist_t.rows.len());
+            continue;
+        }
+
+        let projection = classify_projection(&base_t.name);
+        let block = extract_block(&base_t.name);
+        let proj_key = format!("{:?}", projection);
+
+        let n_rows = base_t.rows.len();
+        let mut shifted = 0usize;
+        let mut total_l1 = 0u64;
+
+        for (row_idx, (b, d)) in base_t.rows.iter().zip(dist_t.rows.iter()).enumerate() {
+            let l1 = b.l1(d);
+            total_l1 += l1 as u64;
+            stats.rows_compared += 1;
+
+            if l1 > l1_threshold {
+                shifted += 1;
+                stats.rows_shifted += 1;
+
+                let frequency = (l1 as f64 / max_l1).min(1.0) as f32;
+                let confidence = (1.0 - 1.0 / (1.0 + n_rows as f32)).min(0.99);
+
+                edges.push(WeightEdge {
+                    tensor_name: base_t.name.clone(),
+                    row_idx: row_idx as u32,
+                    block,
+                    projection: projection.clone(),
+                    layer_type: base_t.layer_type.clone(),
+                    verb: Verb::Becomes,
+                    l1_distance: l1,
+                    truth: NarsTruth::new(frequency, confidence),
+                });
+            } else {
+                stats.rows_stable += 1;
+            }
+        }
+
+        let mean_l1 = if n_rows > 0 { total_l1 as f64 / n_rows as f64 } else { 0.0 };
+        let entry = stats.by_projection.entry(proj_key).or_insert((0, 0, 0.0));
+        entry.0 += shifted;
+        entry.1 += n_rows;
+        entry.2 = (entry.2 * (entry.1 - n_rows) as f64 + mean_l1 * n_rows as f64) / entry.1 as f64;
+    }
+
+    Ok((edges, stats))
+}
+
+/// Print a summary of diff stats.
+pub fn print_diff_summary(label: &str, stats: &DiffStats, edge_count: usize) {
+    eprintln!();
+    eprintln!("━━━ {} ━━━", label);
+    eprintln!("  Tensors matched: {}, unmatched: {}", stats.tensors_matched, stats.tensors_unmatched);
+    eprintln!("  Rows: {} compared, {} shifted ({:.1}%), {} stable",
+        stats.rows_compared, stats.rows_shifted,
+        if stats.rows_compared > 0 { stats.rows_shifted as f64 / stats.rows_compared as f64 * 100.0 } else { 0.0 },
+        stats.rows_stable);
+    eprintln!("  Edges emitted: {}", edge_count);
+    eprintln!();
+
+    // Sort projections by shift percentage
+    let mut projs: Vec<_> = stats.by_projection.iter().collect();
+    projs.sort_by(|a, b| {
+        let pct_a = if a.1.1 > 0 { a.1.0 as f64 / a.1.1 as f64 } else { 0.0 };
+        let pct_b = if b.1.1 > 0 { b.1.0 as f64 / b.1.1 as f64 } else { 0.0 };
+        pct_b.partial_cmp(&pct_a).unwrap()
+    });
+
+    eprintln!("  Per projection:");
+    for (proj, (shifted, total, mean_l1)) in &projs {
+        let pct = if *total > 0 { *shifted as f64 / *total as f64 * 100.0 } else { 0.0 };
+        eprintln!("    {:<12} {:>6}/{:<6} shifted ({:>5.1}%)  mean_L1={:.1}",
+            proj, shifted, total, pct, mean_l1);
+    }
+}
+
+/// Cluster edges by head to find reasoning scaffold circuits.
+///
+/// Returns: map of (block, projection) → (shift_count, total_rows, mean_l1)
+pub fn cluster_by_head(edges: &[WeightEdge]) -> HashMap<(u32, String), (usize, u32, f64)> {
+    let mut clusters: HashMap<(u32, String), (usize, u32, u64)> = HashMap::new();
+
+    for e in edges {
+        if let Some(block) = e.block {
+            let key = (block, format!("{:?}", e.projection));
+            let entry = clusters.entry(key).or_insert((0, 0, 0));
+            entry.0 += 1;
+            entry.1 = entry.1.max(e.row_idx + 1);
+            entry.2 += e.l1_distance as u64;
+        }
+    }
+
+    clusters.into_iter()
+        .map(|(k, (count, max_row, total_l1))| {
+            let mean_l1 = if count > 0 { total_l1 as f64 / count as f64 } else { 0.0 };
+            (k, (count, max_row, mean_l1))
+        })
+        .collect()
+}
+
+/// Identify reasoning scaffold: blocks where Q+O shifted but K didn't.
+pub fn find_reasoning_scaffold(
+    edges: &[WeightEdge],
+    shift_threshold: f64, // fraction of rows that shifted (0.0-1.0)
+) -> Vec<u32> {
+    let clusters = cluster_by_head(edges);
+    let mut scaffold_blocks = Vec::new();
+
+    // Find all blocks
+    let blocks: std::collections::BTreeSet<u32> = edges.iter()
+        .filter_map(|e| e.block)
+        .collect();
+
+    for block in blocks {
+        let q_shift = clusters.get(&(block, "Q".to_string()));
+        let k_shift = clusters.get(&(block, "K".to_string()));
+        let o_shift = clusters.get(&(block, "O".to_string()));
+
+        let q_pct = q_shift.map(|(c, t, _)| *c as f64 / *t as f64).unwrap_or(0.0);
+        let k_pct = k_shift.map(|(c, t, _)| *c as f64 / *t as f64).unwrap_or(0.0);
+        let o_pct = o_shift.map(|(c, t, _)| *c as f64 / *t as f64).unwrap_or(0.0);
+
+        // Reasoning scaffold: Q+O shifted, K stable
+        if q_pct > shift_threshold && o_pct > shift_threshold && k_pct < shift_threshold {
+            scaffold_blocks.push(block);
+            eprintln!("  Block {:>2}: SCAFFOLD  Q={:.0}% O={:.0}% K={:.0}%",
+                block, q_pct * 100.0, o_pct * 100.0, k_pct * 100.0);
+        }
+    }
+
+    scaffold_blocks
+}
+
+// ============================================================================
+// NARS revision across multiple diffs
+// ============================================================================
+
+/// Revise truth values across multiple diff runs.
+///
+/// For each projection type, integrates evidence from multiple model pairs:
+/// e.g., 27B_v1, 27B_v2, 9B → revised belief about reasoning scaffold.
+pub fn revise_across_diffs(
+    diff_results: &[(&str, &DiffStats)],
+) -> HashMap<String, NarsTruth> {
+    let mut revised: HashMap<String, NarsTruth> = HashMap::new();
+
+    for (label, stats) in diff_results {
+        for (proj, (shifted, total, _mean_l1)) in &stats.by_projection {
+            let f = if *total > 0 { *shifted as f32 / *total as f32 } else { 0.0 };
+            let c = (1.0 - 1.0 / (1.0 + *total as f32)).min(0.99);
+            let evidence = NarsTruth::new(f, c);
+
+            let entry = revised.entry(proj.clone()).or_insert(NarsTruth::new(0.5, 0.0));
+            // NARS revision: integrate new evidence
+            *entry = nars_revision(*entry, evidence);
+
+            eprintln!("  [{}] {}: f={:.3} c={:.3} → revised f={:.3} c={:.3}",
+                label, proj, f, c, entry.frequency, entry.confidence);
+        }
+    }
+
+    revised
+}
+
+/// Simple NARS revision (two-premise).
+fn nars_revision(a: NarsTruth, b: NarsTruth) -> NarsTruth {
+    let w_a = a.confidence / (1.0 - a.confidence + f32::EPSILON);
+    let w_b = b.confidence / (1.0 - b.confidence + f32::EPSILON);
+    let w_total = w_a + w_b;
+
+    if w_total < f32::EPSILON {
+        return NarsTruth::new(0.5, 0.0);
+    }
+
+    let f = (w_a * a.frequency + w_b * b.frequency) / w_total;
+    let c = w_total / (w_total + 1.0); // k=1 horizon
+
+    NarsTruth::new(f.clamp(0.0, 1.0), c.clamp(0.0, 0.99))
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_classify_projection() {
+        assert_eq!(classify_projection("blk.17.attn_q.weight"), Projection::Q);
+        assert_eq!(classify_projection("blk.17.attn_k.weight"), Projection::K);
+        assert_eq!(classify_projection("blk.17.attn_v.weight"), Projection::V);
+        assert_eq!(classify_projection("blk.17.attn_output.weight"), Projection::O);
+        assert_eq!(classify_projection("blk.3.ffn_gate_inp.weight"), Projection::Gate);
+        assert_eq!(classify_projection("token_embd.weight"), Projection::Embedding);
+    }
+
+    #[test]
+    fn test_extract_block() {
+        assert_eq!(extract_block("blk.17.attn_q.weight"), Some(17));
+        assert_eq!(extract_block("blk.0.ffn_gate.weight"), Some(0));
+        assert_eq!(extract_block("token_embd.weight"), None);
+    }
+
+    #[test]
+    fn test_nars_revision_basics() {
+        let a = NarsTruth::new(0.7, 0.9);
+        let b = NarsTruth::new(0.8, 0.9);
+        let r = nars_revision(a, b);
+        // Revised frequency should be between 0.7 and 0.8
+        assert!(r.frequency > 0.7 && r.frequency < 0.8);
+        // Revised confidence should be higher than either input
+        assert!(r.confidence > 0.9);
+    }
+
+    // ── Integration tests: require bgz7 files from indexing runs ──
+
+    #[test]
+    #[ignore] // Requires: Qwen3.5-27B base + distilled v1 indexed
+    fn test_qwen35_27b_v1_diff() {
+        let base = "/tmp/qwen35_27b_base.bgz7";
+        let dist = "/tmp/qwen35_27b_distilled_v1.bgz7";
+
+        let (edges, stats) = causal_diff(base, dist, 100).expect("diff failed");
+        print_diff_summary("Qwen3.5-27B: base → distilled v1", &stats, edges.len());
+
+        let scaffold = find_reasoning_scaffold(&edges, 0.3);
+        eprintln!("  Reasoning scaffold blocks: {:?}", scaffold);
+
+        assert!(stats.tensors_matched > 0, "should match tensors");
+    }
+
+    #[test]
+    #[ignore] // Requires: Qwen3.5-27B distilled v1 + v2 indexed
+    fn test_qwen35_27b_v1_v2_diff() {
+        let v1 = "/tmp/qwen35_27b_distilled_v1.bgz7";
+        let v2 = "/tmp/qwen35_27b_distilled_v2.bgz7";
+
+        let (edges, stats) = causal_diff(v1, v2, 100).expect("diff failed");
+        print_diff_summary("Qwen3.5-27B: v1 → v2 (iteration delta)", &stats, edges.len());
+    }
+
+    #[test]
+    #[ignore] // Requires: Qwen3.5-9B base + distilled indexed
+    fn test_qwen35_9b_diff() {
+        let base = "/tmp/qwen35_9b_base.bgz7";
+        let dist = "/tmp/qwen35_9b_distilled.bgz7";
+
+        let (edges, stats) = causal_diff(base, dist, 100).expect("diff failed");
+        print_diff_summary("Qwen3.5-9B: base → distilled", &stats, edges.len());
+    }
+
+    #[test]
+    #[ignore] // Requires: all 5 models indexed
+    fn test_full_reasoning_reverse_eng() {
+        use super::super::http_reader::HttpRangeReader;
+        use std::io::BufWriter;
+
+        // ── Phase 1: Index all 5 models ──
+
+        let models: Vec<(&str, &str, &str)> = vec![
+            ("unsloth/Qwen3.5-27B-GGUF",
+             "Qwen3.5-27B-Q8_0.gguf",
+             "/tmp/qwen35_27b_base.bgz7"),
+            ("Jackrong/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-GGUF",
+             "Qwen3.5-27B.Q8_0.gguf",
+             "/tmp/qwen35_27b_distilled_v1.bgz7"),
+            ("Jackrong/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-v2-GGUF",
+             "Qwen3.5-27B.Q8_0.gguf",
+             "/tmp/qwen35_27b_distilled_v2.bgz7"),
+            ("unsloth/Qwen3.5-9B-GGUF",
+             "Qwen3.5-9B-Q8_0.gguf",
+             "/tmp/qwen35_9b_base.bgz7"),
+            ("Jackrong/Qwen3.5-9B-Claude-4.6-Opus-Reasoning-Distilled-GGUF",
+             "Qwen3.5-9B.Q8_0.gguf",
+             "/tmp/qwen35_9b_distilled.bgz7"),
+        ];
+
+        for (repo, filename, out_path) in &models {
+            if std::fs::metadata(out_path).is_ok() {
+                eprintln!("SKIP {} (already indexed)", out_path);
+                continue;
+            }
+
+            let url = format!("https://huggingface.co/{}/resolve/main/{}", repo, filename);
+            eprintln!("Indexing {} ...", filename);
+
+            // HEAD to get size
+            let size_str = std::process::Command::new("curl")
+                .args(&["-sI", "-L", &url])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                .unwrap_or_default();
+            let size: u64 = size_str.lines()
+                .find(|l| l.to_lowercase().starts_with("content-length:"))
+                .and_then(|l| l.split(':').nth(1))
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or(30_000_000_000); // fallback 30 GB
+
+            let mut reader = HttpRangeReader::with_chunk_size(url, size, 256 * 1024 * 1024);
+            let out = std::fs::File::create(out_path).expect("create output");
+            let mut writer = BufWriter::new(out);
+
+            // Q8_0 uses f32 path (needs dequantization)
+            let stats = super::super::gguf_indexer::stream_index_gguf(
+                &mut reader, &mut writer,
+                Some(&|name, lt, orig, comp| {
+                    let ratio = if comp > 0 { orig as f64 / comp as f64 } else { 0.0 };
+                    eprintln!("  {:50} {:>8} → {:>6} ({:.0}×)", name, orig, comp, ratio);
+                }),
+            ).expect("indexing failed");
+
+            drop(writer);
+            eprintln!("  {} → {:.2} MB ({} tensors)",
+                out_path,
+                std::fs::metadata(out_path).map(|m| m.len()).unwrap_or(0) as f64 / 1e6,
+                stats.tensors_indexed);
+        }
+
+        // ── Phase 2: Diff pairs ──
+
+        let pairs: Vec<(&str, &str, &str)> = vec![
+            ("/tmp/qwen35_27b_base.bgz7", "/tmp/qwen35_27b_distilled_v1.bgz7",
+             "27B base→v1"),
+            ("/tmp/qwen35_27b_base.bgz7", "/tmp/qwen35_27b_distilled_v2.bgz7",
+             "27B base→v2"),
+            ("/tmp/qwen35_27b_distilled_v1.bgz7", "/tmp/qwen35_27b_distilled_v2.bgz7",
+             "27B v1→v2"),
+            ("/tmp/qwen35_9b_base.bgz7", "/tmp/qwen35_9b_distilled.bgz7",
+             "9B base→distilled"),
+        ];
+
+        let mut all_stats: Vec<(&str, DiffStats)> = Vec::new();
+
+        for (base, dist, label) in &pairs {
+            let (edges, stats) = causal_diff(base, dist, 100).expect("diff failed");
+            print_diff_summary(label, &stats, edges.len());
+
+            if label.contains("base→") {
+                let scaffold = find_reasoning_scaffold(&edges, 0.3);
+                eprintln!("  Reasoning scaffold blocks: {:?}", scaffold);
+            }
+
+            all_stats.push((label, stats));
+        }
+
+        // ── Phase 3: NARS revision across all diffs ──
+
+        eprintln!();
+        eprintln!("━━━ NARS Revision: integrated evidence ━━━");
+        let refs: Vec<(&str, &DiffStats)> = all_stats.iter()
+            .map(|(l, s)| (*l, s))
+            .collect();
+        let revised = revise_across_diffs(&refs);
+
+        eprintln!();
+        for (proj, truth) in &revised {
+            eprintln!("  {:<12} → f={:.3} c={:.3} ({})",
+                proj, truth.frequency, truth.confidence,
+                if truth.frequency > 0.5 { "shifted" } else { "stable" });
+        }
+    }
+}
