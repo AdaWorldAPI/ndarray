@@ -536,13 +536,46 @@ pub fn apply_palette_overlay(
     }
 }
 
-/// Serialize 8 palette layers to a compact binary format.
+/// ThinkingStyle ordinal for PAL8 serialization.
 ///
-/// Format: "PAL8" magic + 8 × 64 × u64 LE = 4100 bytes.
-pub fn serialize_palette3d_layers(layers: &[[u64; 64]; 8], path: &str) -> Result<(), String> {
+/// Maps to p64::ThinkingStyle constants and lance-graph-contract ThinkingStyles.
+/// The ordinal travels with the palette over the Cognitive Highway so the
+/// consumer (Blumenstrauss) knows which combine/contra mode to use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum PaletteStyle {
+    Analytical  = 0, // tight intersection, contradiction kills
+    Creative    = 1, // wide union, contradiction ignored
+    Focused     = 2, // single causal chain
+    Integrative = 3, // majority vote, contradiction as tension
+    Divergent   = 4, // contradiction inverts (fuel)
+    Meta        = 5, // observes the observation
+}
+
+impl PaletteStyle {
+    fn from_u8(v: u8) -> Self {
+        match v {
+            0 => Self::Analytical, 1 => Self::Creative, 2 => Self::Focused,
+            3 => Self::Integrative, 4 => Self::Divergent, 5 => Self::Meta,
+            _ => Self::Analytical,
+        }
+    }
+}
+
+/// Serialize 8 palette layers + style to compact binary.
+///
+/// Format: "PAL8" magic + style(u8) + 8 × 64 × u64 LE = 4101 bytes.
+/// This is the Cognitive Highway payload: ndarray extracts → PAL8 → lance-graph
+/// deserializes into `Blumenstrauss::new(planes, semiring)`.
+pub fn serialize_palette3d_layers(
+    layers: &[[u64; 64]; 8],
+    style: PaletteStyle,
+    path: &str,
+) -> Result<(), String> {
     use std::io::Write;
     let mut file = std::fs::File::create(path).map_err(|e| e.to_string())?;
     file.write_all(b"PAL8").map_err(|e| e.to_string())?;
+    file.write_all(&[style as u8]).map_err(|e| e.to_string())?;
     for layer in layers {
         for &row in layer {
             file.write_all(&row.to_le_bytes()).map_err(|e| e.to_string())?;
@@ -551,8 +584,8 @@ pub fn serialize_palette3d_layers(layers: &[[u64; 64]; 8], path: &str) -> Result
     Ok(())
 }
 
-/// Deserialize 8 palette layers from compact binary.
-pub fn deserialize_palette3d_layers(path: &str) -> Result<[[u64; 64]; 8], String> {
+/// Deserialize 8 palette layers + style from compact binary.
+pub fn deserialize_palette3d_layers(path: &str) -> Result<([[u64; 64]; 8], PaletteStyle), String> {
     use std::io::Read;
     let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut magic = [0u8; 4];
@@ -560,6 +593,9 @@ pub fn deserialize_palette3d_layers(path: &str) -> Result<[[u64; 64]; 8], String
     if &magic != b"PAL8" {
         return Err(format!("bad magic: {:?}", magic));
     }
+    let mut style_byte = [0u8; 1];
+    file.read_exact(&mut style_byte).map_err(|e| e.to_string())?;
+    let style = PaletteStyle::from_u8(style_byte[0]);
     let mut layers = [[0u64; 64]; 8];
     for layer in &mut layers {
         for row in layer.iter_mut() {
@@ -568,7 +604,7 @@ pub fn deserialize_palette3d_layers(path: &str) -> Result<[[u64; 64]; 8], String
             *row = u64::from_le_bytes(buf);
         }
     }
-    Ok(layers)
+    Ok((layers, style))
 }
 
 // ============================================================================
@@ -1216,14 +1252,20 @@ mod tests {
         layers[7][63] = u64::MAX;
 
         let path = "/tmp/test_palette3d_roundtrip.bin";
-        serialize_palette3d_layers(&layers, path).expect("serialize");
+        serialize_palette3d_layers(&layers, PaletteStyle::Analytical, path).expect("serialize");
 
-        let loaded = deserialize_palette3d_layers(path).expect("deserialize");
+        let (loaded, style) = deserialize_palette3d_layers(path).expect("deserialize");
         assert_eq!(layers, loaded);
+        assert_eq!(style, PaletteStyle::Analytical);
 
-        // Size: 4 magic + 8 × 64 × 8 = 4100 bytes
+        // Size: 4 magic + 1 style + 8 × 64 × 8 = 4101 bytes
         let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-        assert_eq!(size, 4100);
+        assert_eq!(size, 4101);
+
+        // Roundtrip with different style
+        serialize_palette3d_layers(&layers, PaletteStyle::Integrative, path).expect("serialize");
+        let (_, style2) = deserialize_palette3d_layers(path).expect("deserialize");
+        assert_eq!(style2, PaletteStyle::Integrative);
 
         std::fs::remove_file(path).ok();
     }
