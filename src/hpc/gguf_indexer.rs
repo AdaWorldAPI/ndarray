@@ -251,7 +251,167 @@ pub fn project_row_bf16_strided(row: &[u16], octave_stride: usize) -> Base17 {
     Base17 { dims }
 }
 
-// ── SIMD 8-row-parallel tensor projection ──
+// ── F64x8 SIMD: 8 rows → 8 Base17 in parallel ──
+
+/// Gather 8 BF16 values from 8 rows at the same column, convert to F64x8.
+///
+/// The gather is scalar (8 indexed loads) but the result is SIMD.
+/// At -O2 with AVX-512, rustc may emit vpgatherqd + shift + vcvtps2pd.
+#[inline(always)]
+fn gather_bf16_x8(buf: &[u16], offsets: &[usize; 8]) -> crate::simd::F64x8 {
+    crate::simd::F64x8::from_array([
+        bf16_to_f64(buf[offsets[0]]),
+        bf16_to_f64(buf[offsets[1]]),
+        bf16_to_f64(buf[offsets[2]]),
+        bf16_to_f64(buf[offsets[3]]),
+        bf16_to_f64(buf[offsets[4]]),
+        bf16_to_f64(buf[offsets[5]]),
+        bf16_to_f64(buf[offsets[6]]),
+        bf16_to_f64(buf[offsets[7]]),
+    ])
+}
+
+/// Project 8 BF16 rows simultaneously to 8 Base17 patterns.
+///
+/// Memory: 17 × F64x8 accumulators on stack = 17 × 64 = 1088 bytes.
+pub fn project_8rows_bf16_simd(
+    buf: &[u16],
+    row_starts: &[usize; 8],
+    n_cols: usize,
+    octave_stride: usize,
+) -> [Base17; 8] {
+    use crate::simd::F64x8;
+
+    let n_octaves = (n_cols + BASE_DIM - 1) / BASE_DIM;
+    let use_halftone = octave_stride > 1;
+
+    let mut sums: [F64x8; BASE_DIM] = [F64x8::splat(0.0); BASE_DIM];
+    let mut counts: [u32; BASE_DIM] = [0; BASE_DIM];
+
+    if use_halftone {
+        let mut octave = 0;
+        while octave < n_octaves {
+            for hi in 0..9 {
+                let col = octave * BASE_DIM + HALFTONE_POS[hi] as usize;
+                if col < n_cols {
+                    let bin = HALFTONE_TO_BIN[hi] as usize;
+                    let offsets: [usize; 8] = [
+                        row_starts[0] + col, row_starts[1] + col,
+                        row_starts[2] + col, row_starts[3] + col,
+                        row_starts[4] + col, row_starts[5] + col,
+                        row_starts[6] + col, row_starts[7] + col,
+                    ];
+                    sums[bin] += gather_bf16_x8(buf, &offsets);
+                    counts[bin] += 1;
+                }
+            }
+            octave += octave_stride;
+        }
+
+        // Interpolate odd bins from even neighbors (per-lane, still SIMD)
+        for odd in (1..BASE_DIM).step_by(2) {
+            let left = sums[odd - 1];
+            let right = sums[(odd + 1) % BASE_DIM];
+            let left_c = counts[odd - 1].max(1);
+            let right_c = counts[(odd + 1) % BASE_DIM].max(1);
+            let left_mean = left * F64x8::splat(1.0 / left_c as f64);
+            let right_mean = right * F64x8::splat(1.0 / right_c as f64);
+            sums[odd] = (left_mean + right_mean) * F64x8::splat(0.5);
+            counts[odd] = 1;
+        }
+    } else {
+        for octave in 0..n_octaves {
+            for bi in 0..BASE_DIM {
+                let col = octave * BASE_DIM + GOLDEN_POS[bi] as usize;
+                if col < n_cols {
+                    let offsets: [usize; 8] = [
+                        row_starts[0] + col, row_starts[1] + col,
+                        row_starts[2] + col, row_starts[3] + col,
+                        row_starts[4] + col, row_starts[5] + col,
+                        row_starts[6] + col, row_starts[7] + col,
+                    ];
+                    sums[bi] += gather_bf16_x8(buf, &offsets);
+                    counts[bi] += 1;
+                }
+            }
+        }
+    }
+
+    // Finalize: mean → scale → clamp → i16, all 8 lanes parallel
+    let lo = F64x8::splat(-32768.0);
+    let hi = F64x8::splat(32767.0);
+
+    let mut dims_x8: [[i16; BASE_DIM]; 8] = [[0i16; BASE_DIM]; 8];
+
+    for bin in 0..BASE_DIM {
+        let c = counts[bin].max(1) as f64;
+        let scaled = sums[bin].mul_add(
+            F64x8::splat(FP_SCALE / c),
+            F64x8::splat(0.0),
+        );
+        let clamped = scaled.round().simd_clamp(lo, hi);
+        let vals = clamped.to_array();
+        for lane in 0..8 {
+            dims_x8[lane][bin] = vals[lane] as i16;
+        }
+    }
+
+    [
+        Base17 { dims: dims_x8[0] }, Base17 { dims: dims_x8[1] },
+        Base17 { dims: dims_x8[2] }, Base17 { dims: dims_x8[3] },
+        Base17 { dims: dims_x8[4] }, Base17 { dims: dims_x8[5] },
+        Base17 { dims: dims_x8[6] }, Base17 { dims: dims_x8[7] },
+    ]
+}
+
+/// Scalar fallback for remainder rows (< 8).
+pub fn project_1row_bf16_strided(row: &[u16], octave_stride: usize) -> Base17 {
+    let d = row.len();
+    let n_octaves = (d + BASE_DIM - 1) / BASE_DIM;
+    let use_halftone = octave_stride > 1;
+
+    let mut sum = [0.0f64; BASE_DIM];
+    let mut count = [0u32; BASE_DIM];
+
+    if use_halftone {
+        let mut octave = 0;
+        while octave < n_octaves {
+            for hi in 0..9 {
+                let col = octave * BASE_DIM + HALFTONE_POS[hi] as usize;
+                if col < d {
+                    sum[HALFTONE_TO_BIN[hi] as usize] += bf16_to_f64(row[col]);
+                    count[HALFTONE_TO_BIN[hi] as usize] += 1;
+                }
+            }
+            octave += octave_stride;
+        }
+        for odd in (1..BASE_DIM).step_by(2) {
+            let lc = count[odd - 1].max(1) as f64;
+            let rc = count[(odd + 1) % BASE_DIM].max(1) as f64;
+            sum[odd] = (sum[odd - 1] / lc + sum[(odd + 1) % BASE_DIM] / rc) * 0.5;
+            count[odd] = 1;
+        }
+    } else {
+        for octave in 0..n_octaves {
+            for bi in 0..BASE_DIM {
+                let col = octave * BASE_DIM + GOLDEN_POS[bi] as usize;
+                if col < d {
+                    sum[bi] += bf16_to_f64(row[col]);
+                    count[bi] += 1;
+                }
+            }
+        }
+    }
+
+    let mut dims = [0i16; BASE_DIM];
+    for i in 0..BASE_DIM {
+        if count[i] > 0 {
+            let mean = sum[i] / count[i] as f64;
+            dims[i] = (mean * FP_SCALE).round().clamp(-32768.0, 32767.0) as i16;
+        }
+    }
+    Base17 { dims }
+}
 
 /// Project an entire BF16 tensor to Base17 using F64x8 SIMD.
 ///
@@ -266,83 +426,27 @@ pub fn project_tensor_bf16_simd(
     n_cols: usize,
     octave_stride: usize,
 ) -> Vec<Base17> {
-    use crate::simd::F64x8;
-
-    let n_octaves = (n_cols + BASE_DIM - 1) / BASE_DIM;
     let mut result = Vec::with_capacity(n_rows);
 
-    // Process 8 rows at a time
     let full_batches = n_rows / 8;
-    let remainder = n_rows % 8;
 
     for batch in 0..full_batches {
         let base_row = batch * 8;
-
-        // 9 halftone bins × F64x8 accumulators (8 rows per lane)
-        let mut half_sum = [F64x8::splat(0.0); 9];
-        let mut half_count = [0u32; 9]; // same count for all 8 rows (same n_cols)
-
-        let mut octave = 0;
-        while octave < n_octaves {
-            for hi in 0..9 {
-                let dim = octave * BASE_DIM + HALFTONE_POS[hi] as usize;
-                if dim < n_cols {
-                    // Gather 8 BF16 values (one per row) at column `dim`
-                    let vals = F64x8::from_array([
-                        bf16_to_f64(buf[(base_row + 0) * n_cols + dim]),
-                        bf16_to_f64(buf[(base_row + 1) * n_cols + dim]),
-                        bf16_to_f64(buf[(base_row + 2) * n_cols + dim]),
-                        bf16_to_f64(buf[(base_row + 3) * n_cols + dim]),
-                        bf16_to_f64(buf[(base_row + 4) * n_cols + dim]),
-                        bf16_to_f64(buf[(base_row + 5) * n_cols + dim]),
-                        bf16_to_f64(buf[(base_row + 6) * n_cols + dim]),
-                        bf16_to_f64(buf[(base_row + 7) * n_cols + dim]),
-                    ]);
-                    half_sum[hi] = half_sum[hi] + vals;
-                    if batch == 0 || octave == 0 {
-                        // Count is same for all batches with same n_cols
-                    }
-                    half_count[hi] += 1;
-                }
-            }
-            octave += octave_stride;
-        }
-
-        // Finalize: convert 9 SIMD accumulators → 8 Base17 results
-        // Even bins: mean × FP_SCALE, clamped to i16
-        let mut even_dims = [[0i16; BASE_DIM]; 8];
-
-        for hi in 0..9 {
-            if half_count[hi] > 0 {
-                let count_v = F64x8::splat(half_count[hi] as f64);
-                let scale_v = F64x8::splat(FP_SCALE);
-                let mean_v = half_sum[hi] / count_v;
-                let scaled = mean_v * scale_v;
-                let arr = scaled.to_array();
-                let bin = HALFTONE_TO_BIN[hi] as usize;
-                for lane in 0..8 {
-                    even_dims[lane][bin] =
-                        arr[lane].round().clamp(-32768.0, 32767.0) as i16;
-                }
-            }
-        }
-
-        // Odd bins: interpolate from neighbors
-        for lane in 0..8 {
-            for odd in (1..BASE_DIM).step_by(2) {
-                let left = even_dims[lane][odd - 1] as i32;
-                let right = even_dims[lane][(odd + 1) % BASE_DIM] as i32;
-                even_dims[lane][odd] = ((left + right) / 2) as i16;
-            }
-            result.push(Base17 { dims: even_dims[lane] });
-        }
+        let row_starts: [usize; 8] = [
+            (base_row + 0) * n_cols, (base_row + 1) * n_cols,
+            (base_row + 2) * n_cols, (base_row + 3) * n_cols,
+            (base_row + 4) * n_cols, (base_row + 5) * n_cols,
+            (base_row + 6) * n_cols, (base_row + 7) * n_cols,
+        ];
+        let b17s = project_8rows_bf16_simd(buf, &row_starts, n_cols, octave_stride);
+        result.extend_from_slice(&b17s);
     }
 
-    // Scalar tail for remaining rows (< 8)
+    // Scalar tail
     for r in (full_batches * 8)..n_rows {
         let start = r * n_cols;
         let end = (start + n_cols).min(buf.len());
-        result.push(project_row_bf16_strided(&buf[start..end], octave_stride));
+        result.push(project_1row_bf16_strided(&buf[start..end], octave_stride));
     }
 
     result
@@ -1144,6 +1248,57 @@ mod tests {
         for i in 0..17 {
             let diff = (from_f32.dims[i] as i32 - from_bf16.dims[i] as i32).abs();
             assert!(diff <= 2, "bin {} differs by {}", i, diff);
+        }
+    }
+
+    #[test]
+    fn test_simd_matches_scalar_constant() {
+        let n_cols = 5120;
+        let n_rows = 16; // 2 full SIMD batches
+        let buf: Vec<u16> = vec![0x3F80; n_rows * n_cols]; // all 1.0 in BF16
+
+        let simd_results = project_tensor_bf16_simd(&buf, n_rows, n_cols, 1);
+        assert_eq!(simd_results.len(), n_rows);
+
+        for r in 1..n_rows {
+            for bin in 0..BASE_DIM {
+                let diff = (simd_results[0].dims[bin] as i32 - simd_results[r].dims[bin] as i32).abs();
+                assert!(diff == 0, "row {} bin {} differs: {} vs {}",
+                    r, bin, simd_results[0].dims[bin], simd_results[r].dims[bin]);
+            }
+        }
+    }
+
+    #[test]
+    fn test_simd_matches_scalar_strided() {
+        let n_cols = 13824;
+        let n_rows = 11; // 1 full batch + 3 remainder
+        let mut buf = vec![0x3F80u16; n_rows * n_cols];
+        for i in (0..buf.len()).step_by(2) {
+            buf[i] = 0xBF80; // -1.0
+        }
+
+        let simd_results = project_tensor_bf16_simd(&buf, n_rows, n_cols, 16);
+        assert_eq!(simd_results.len(), n_rows);
+
+        for r in 0..n_rows {
+            let start = r * n_cols;
+            let scalar = project_1row_bf16_strided(&buf[start..start + n_cols], 16);
+            for bin in 0..BASE_DIM {
+                let diff = (simd_results[r].dims[bin] as i32 - scalar.dims[bin] as i32).abs();
+                assert!(diff <= 1, "row {} bin {} simd={} scalar={} diff={}",
+                    r, bin, simd_results[r].dims[bin], scalar.dims[bin], diff);
+            }
+        }
+    }
+
+    #[test]
+    fn test_simd_tail_handling() {
+        let n_cols = 256;
+        for n_rows in 1..8 {
+            let buf: Vec<u16> = vec![0x4000; n_rows * n_cols]; // 2.0 in BF16
+            let results = project_tensor_bf16_simd(&buf, n_rows, n_cols, 16);
+            assert_eq!(results.len(), n_rows, "wrong count for n_rows={}", n_rows);
         }
     }
 
