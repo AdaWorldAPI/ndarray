@@ -381,6 +381,151 @@ pub fn scaffold_to_palette3d_layers(
 }
 
 // ============================================================================
+// Palette3D attention overlay — structural restoration at inference time
+// ============================================================================
+
+/// Volatility score per (block, projection) from cross-validated diffs.
+///
+/// A weight is volatile if it shifted in multiple independent diffs.
+/// The score is the NARS-revised frequency across all diffs for that
+/// (block, projection) combination.
+#[derive(Clone, Debug)]
+pub struct VolatilityMap {
+    /// (block, projection) → NARS truth from cross-validated diffs.
+    pub scores: HashMap<(u32, String), NarsTruth>,
+    /// Blocks classified as scaffold (Q+O shifted, K stable).
+    pub scaffold_blocks: Vec<u32>,
+    /// Blocks classified as scale-invariant (present in both 27B and 9B).
+    pub scale_invariant: Vec<u32>,
+}
+
+/// Build a volatility map from 4 diff runs.
+///
+/// Cross-validates: a head is volatile only if it shifted in multiple diffs.
+/// Single-diff noise is suppressed by NARS revision across all 4 evidence sources.
+pub fn build_volatility_map(
+    edges_v1: &[WeightEdge],
+    edges_v2: &[WeightEdge],
+    edges_v1v2: &[WeightEdge],
+    edges_9b: &[WeightEdge],
+    stats: &[(&str, &DiffStats)],
+) -> VolatilityMap {
+    // NARS revision across all diffs per projection
+    let revised = revise_across_diffs(stats);
+
+    // Per-head volatility: count how many diffs this (block, proj) appears in
+    let mut head_evidence: HashMap<(u32, String), Vec<NarsTruth>> = HashMap::new();
+
+    for (label, diff_edges) in [
+        ("v1", edges_v1), ("v2", edges_v2), ("v1v2", edges_v1v2), ("9b", edges_9b),
+    ] {
+        let clusters = cluster_by_head(diff_edges);
+        for ((block, proj), (count, total, mean_l1)) in &clusters {
+            let f = if *total > 0 { *count as f32 / *total as f32 } else { 0.0 };
+            let c = (1.0 - 1.0 / (1.0 + *total as f32)).min(0.99);
+            head_evidence
+                .entry((*block, proj.clone()))
+                .or_default()
+                .push(NarsTruth::new(f, c));
+        }
+    }
+
+    // Revise per-head evidence across all diffs
+    let mut scores = HashMap::new();
+    for (key, truths) in &head_evidence {
+        let mut revised = NarsTruth::new(0.5, 0.0);
+        for &t in truths {
+            revised = nars_revision(revised, t);
+        }
+        scores.insert(key.clone(), revised);
+    }
+
+    // Scaffold detection
+    let scaffold_v1 = find_reasoning_scaffold(edges_v1, 0.3);
+    let scaffold_v2 = find_reasoning_scaffold(edges_v2, 0.3);
+    let scaffold_9b = find_reasoning_scaffold(edges_9b, 0.3);
+
+    let scale_invariant: Vec<u32> = scaffold_v1.iter()
+        .filter(|b| scaffold_9b.contains(b))
+        .cloned()
+        .collect();
+
+    VolatilityMap {
+        scores,
+        scaffold_blocks: scaffold_v1,
+        scale_invariant,
+    }
+}
+
+/// Apply Palette3D as attention overlay.
+///
+/// Given a block's attention scores (Q×K^T), modulate them based on
+/// the palette's structural prior. Volatile heads keep full strength.
+/// Ballast heads are dampened.
+///
+/// ```text
+/// scores[i] *= if palette_bit(block, i) { 1.0 } else { decay }
+/// ```
+///
+/// `decay`: 0.0 = hard mask (zero ballast), 0.8 = soft dampen.
+/// For structural restoration, 0.85-0.95 works well — the Q8_0 weights
+/// still carry approximate information, the palette just sharpens contrast.
+#[inline]
+pub fn apply_palette_overlay(
+    scores: &mut [f32],
+    palette_row: u64,
+    decay: f32,
+) {
+    // Map score positions to 64 palette bins
+    let n = scores.len();
+    let bin_size = (n + 63) / 64;
+
+    for (i, score) in scores.iter_mut().enumerate() {
+        let bin = (i / bin_size).min(63);
+        if palette_row & (1u64 << bin) == 0 {
+            // Ballast: dampen
+            *score *= decay;
+        }
+        // Volatile: keep full strength (×1.0, no-op)
+    }
+}
+
+/// Serialize 8 palette layers to a compact binary format.
+///
+/// Format: "PAL8" magic + 8 × 64 × u64 LE = 4100 bytes.
+pub fn serialize_palette3d_layers(layers: &[[u64; 64]; 8], path: &str) -> Result<(), String> {
+    use std::io::Write;
+    let mut file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+    file.write_all(b"PAL8").map_err(|e| e.to_string())?;
+    for layer in layers {
+        for &row in layer {
+            file.write_all(&row.to_le_bytes()).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// Deserialize 8 palette layers from compact binary.
+pub fn deserialize_palette3d_layers(path: &str) -> Result<[[u64; 64]; 8], String> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut magic = [0u8; 4];
+    file.read_exact(&mut magic).map_err(|e| e.to_string())?;
+    if &magic != b"PAL8" {
+        return Err(format!("bad magic: {:?}", magic));
+    }
+    let mut layers = [[0u64; 64]; 8];
+    for layer in &mut layers {
+        for row in layer.iter_mut() {
+            let mut buf = [0u8; 8];
+            file.read_exact(&mut buf).map_err(|e| e.to_string())?;
+            *row = u64::from_le_bytes(buf);
+        }
+    }
+    Ok(layers)
+}
+
+// ============================================================================
 // Diff engine
 // ============================================================================
 
@@ -967,6 +1112,46 @@ mod tests {
         // 8 layers × 64 rows = 512 entries
         assert_eq!(layers.len(), 8);
         assert_eq!(layers[0].len(), 64);
+    }
+
+    #[test]
+    fn test_apply_palette_overlay() {
+        let mut scores = vec![1.0f32; 128];
+
+        // Palette row: only bits 0-3 active (first 4 bins)
+        let palette_row: u64 = 0x0F; // bits 0,1,2,3
+
+        apply_palette_overlay(&mut scores, palette_row, 0.5);
+
+        // First ~8 scores (bins 0-3 at bin_size=2): full strength
+        assert_eq!(scores[0], 1.0);
+        assert_eq!(scores[3], 1.0);
+        assert_eq!(scores[7], 1.0);
+
+        // Scores in bins 4+ should be dampened to 0.5
+        assert_eq!(scores[8], 0.5);
+        assert_eq!(scores[64], 0.5);
+        assert_eq!(scores[127], 0.5);
+    }
+
+    #[test]
+    fn test_palette3d_serialization_roundtrip() {
+        let mut layers = [[0u64; 64]; 8];
+        layers[0][0] = 0xDEADBEEF;
+        layers[3][17] = 0xCAFEBABE;
+        layers[7][63] = u64::MAX;
+
+        let path = "/tmp/test_palette3d_roundtrip.bin";
+        serialize_palette3d_layers(&layers, path).expect("serialize");
+
+        let loaded = deserialize_palette3d_layers(path).expect("deserialize");
+        assert_eq!(layers, loaded);
+
+        // Size: 4 magic + 8 × 64 × 8 = 4100 bytes
+        let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        assert_eq!(size, 4100);
+
+        std::fs::remove_file(path).ok();
     }
 
     #[test]
