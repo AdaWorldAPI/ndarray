@@ -1438,7 +1438,7 @@ mod tests {
     /// Generate safetensors shard filenames for a model.
     fn shard_filenames(total: u32) -> Vec<String> {
         (1..=total)
-            .map(|i| format!("model-{:05}-of-{:05}.safetensors", i, total))
+            .map(|i| format!("model.safetensors-{:05}-of-{:05}.safetensors", i, total))
             .collect()
     }
 
