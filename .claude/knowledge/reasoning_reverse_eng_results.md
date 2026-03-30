@@ -43,8 +43,8 @@ L1 threshold: 1
 | Block | Projection | Shifted/Total | Mean L1 |
 |---|---|---|---|
 | 32 | FfnDown | 3/2841 | 2 |
-| 31 | Q | 24/11756 | 2 |
 | 9 | Other | 4/5024 | 2 |
+| 31 | Q | 24/11756 | 2 |
 | 35 | Q | 32/11065 | 2 |
 | 42 | FfnDown | 5/4793 | 2 |
 | 3 | O | 12/4979 | 2 |
