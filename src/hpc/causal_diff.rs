@@ -235,6 +235,152 @@ pub fn scaffold_to_palette64(edges: &[WeightEdge]) -> ([u64; 64], Vec<(u32, Proj
 }
 
 // ============================================================================
+// p64 Palette3D bridge: scaffold → 8-layer reasoning circuit
+// ============================================================================
+
+/// Map projection shifts to p64 predicate layers.
+///
+/// ```text
+///   Projection  →  p64 predicate    Rationale
+///   ──────────     ──────────────    ─────────
+///   Q shift     →  CAUSES (0)       queries changed → causation
+///   K stable    →  SUPPORTS (2)     keys preserved → supporting evidence
+///   V shift     →  REFINES (4)      retrieval shifted → refinement
+///   O shift     →  ENABLES (1)      synthesis changed → enabling
+///   FfnGate     →  GROUNDS (6)      FFN rewiring → grounding
+///   FfnUp/Down  →  ABSTRACTS (5)    FFN capacity → abstraction
+///   Gate        →  CONTRADICTS (3)  router change → structural tension
+///   Embedding   →  BECOMES (7)      vocabulary → identity transform
+/// ```
+///
+/// The 8 predicate layers of `Palette3D` become 8 HEEL planes
+/// where each plane holds the scaffold blocks for that projection type.
+/// `Palette3D::infer()` with `ThinkingStyle::ANALYTICAL` then mimics
+/// the Claude-4.6-Opus reasoning circuit: tight intersection of
+/// CAUSES × ENABLES × SUPPORTS.
+pub fn projection_to_predicate(proj: &Projection) -> usize {
+    match proj {
+        Projection::Q       => 0, // CAUSES
+        Projection::O       => 1, // ENABLES
+        Projection::K       => 2, // SUPPORTS
+        Projection::V       => 4, // REFINES
+        Projection::Gate    => 3, // CONTRADICTS
+        Projection::FfnGate => 6, // GROUNDS
+        Projection::FfnUp   => 5, // ABSTRACTS
+        Projection::FfnDown => 5, // ABSTRACTS (same layer)
+        Projection::Embedding => 7, // BECOMES
+        Projection::Other   => 7, // BECOMES
+    }
+}
+
+/// Build 8 HEEL planes from scaffold edges — one plane per predicate/projection.
+///
+/// Each HEEL plane is a 64-bit pattern where bit `b` = 1 means block `b`
+/// had significant shift in that projection type. The 8 HEELs expand
+/// via golden rotation to a full 64×64 Palette64, which then stacks
+/// into a Palette3D for multi-predicate reasoning.
+///
+/// ```text
+/// WeightEdge[]
+///   → group by projection → 8 × u64 bitmasks (block shifted?)
+///   → HeelPlanes::new(planes)
+///   → .expand() → Palette64 (64×64)
+///   → Palette3D::new([8 layers], ThinkingStyle::ANALYTICAL)
+///   → .infer(block) → which scaffold blocks fire
+///   → HHTL cascade → 256×256 fine-grain distances
+/// ```
+pub fn scaffold_to_heel_planes(
+    edges: &[WeightEdge],
+    shift_threshold: f64,
+) -> [u64; 8] {
+    // Count shifts per (block, projection)
+    let mut block_proj_shifts: HashMap<(u32, u8), (usize, usize)> = HashMap::new();
+
+    for edge in edges {
+        let block = edge.block.unwrap_or(0);
+        if block >= 64 { continue; } // p64 only has 64 rows
+        let proj = projection_to_u4(&edge.projection);
+        let entry = block_proj_shifts.entry((block, proj)).or_insert((0, 0));
+        entry.0 += 1; // shifted
+        entry.1 += 1; // total (all edges here are shifted by definition)
+    }
+
+    // Also count stable rows (rows NOT in edges) — we need total per (block, proj)
+    // Since edges only contain shifted rows, we approximate: if a block has ANY
+    // edges for a projection, mark that bit in the corresponding HEEL plane.
+
+    let mut planes = [0u64; 8];
+
+    for (&(block, proj), &(shifted, _total)) in &block_proj_shifts {
+        if block >= 64 { continue; }
+        // Map projection to predicate layer
+        let predicate = projection_to_predicate(&u4_to_projection(proj));
+        if predicate < 8 {
+            // Set this block's bit in the corresponding HEEL plane
+            planes[predicate] |= 1u64 << block;
+        }
+    }
+
+    planes
+}
+
+/// Build a full Palette3D reasoning circuit from four diff runs.
+///
+/// Each diff populates the 8 HEEL planes differently:
+/// - base→v1: primary scaffold (Q=CAUSES, O=ENABLES, K=SUPPORTS)
+/// - base→v2: refinement signal (adds to REFINES layer)
+/// - v1→v2: convergence/contradiction (CONTRADICTS for divergent, GROUNDS for converged)
+/// - 9B: scale-invariant core (BECOMES for blocks present in both scales)
+///
+/// Returns 8 `[u64; 64]` palettes (one per predicate layer) ready for Palette3D.
+pub fn scaffold_to_palette3d_layers(
+    edges_v1: &[WeightEdge],
+    edges_v2: &[WeightEdge],
+    edges_v1v2: &[WeightEdge],
+    edges_9b: &[WeightEdge],
+) -> [[u64; 64]; 8] {
+    // Layer 0 (CAUSES): Q shifts from base→v1
+    // Layer 1 (ENABLES): O shifts from base→v1
+    // Layer 2 (SUPPORTS): K stable from base→v1 (inverted — blocks WITHOUT K shifts)
+    // Layer 3 (CONTRADICTS): blocks that diverged v1→v2 (overcorrections)
+    // Layer 4 (REFINES): V shifts from base→v2
+    // Layer 5 (ABSTRACTS): FFN up/down shifts from base→v1
+    // Layer 6 (GROUNDS): blocks converged v1∩v2 (stable across iterations)
+    // Layer 7 (BECOMES): scale-invariant blocks (present in both 27B and 9B)
+
+    let heels_v1 = scaffold_to_heel_planes(edges_v1, 0.3);
+    let heels_v2 = scaffold_to_heel_planes(edges_v2, 0.3);
+    let heels_v1v2 = scaffold_to_heel_planes(edges_v1v2, 0.3);
+    let heels_9b = scaffold_to_heel_planes(edges_9b, 0.3);
+
+    let mut layers = [[0u64; 64]; 8];
+
+    // Populate each layer from the appropriate HEEL + golden rotation
+    for layer_idx in 0..8 {
+        let heel_bits = match layer_idx {
+            0 => heels_v1[0],                        // CAUSES: Q from v1
+            1 => heels_v1[1],                        // ENABLES: O from v1
+            2 => !heels_v1[2] & heels_v1[0],         // SUPPORTS: K stable WHERE Q shifted
+            3 => heels_v1v2[0] | heels_v1v2[1],      // CONTRADICTS: Q+O that moved v1→v2
+            4 => heels_v2[4],                        // REFINES: V from v2
+            5 => heels_v1[5],                        // ABSTRACTS: FFN from v1
+            6 => heels_v1[0] & heels_v2[0],          // GROUNDS: Q stable across v1∩v2
+            7 => heels_v1[0] & heels_9b[0],          // BECOMES: Q in both 27B and 9B
+            _ => 0,
+        };
+
+        // Expand to 64 rows via golden rotation (same as HeelPlanes::expand)
+        for row in 0..64 {
+            let octave = row / 8;
+            let rotation = (octave as u32) * 39; // GOLDEN_SHIFT_64
+            layers[layer_idx][row] = heel_bits.rotate_left(rotation);
+        }
+    }
+
+    layers
+}
+
+// ============================================================================
 // Diff engine
 // ============================================================================
 
@@ -735,6 +881,92 @@ mod tests {
             assert_eq!(*proj, Projection::Q);
             assert!(*block < 10);
         }
+    }
+
+    #[test]
+    fn test_projection_to_predicate_mapping() {
+        // Q → CAUSES(0), O → ENABLES(1), K → SUPPORTS(2)
+        assert_eq!(projection_to_predicate(&Projection::Q), 0);
+        assert_eq!(projection_to_predicate(&Projection::O), 1);
+        assert_eq!(projection_to_predicate(&Projection::K), 2);
+        assert_eq!(projection_to_predicate(&Projection::Gate), 3);
+        assert_eq!(projection_to_predicate(&Projection::V), 4);
+        assert_eq!(projection_to_predicate(&Projection::FfnUp), 5);
+        assert_eq!(projection_to_predicate(&Projection::FfnGate), 6);
+        assert_eq!(projection_to_predicate(&Projection::Embedding), 7);
+    }
+
+    #[test]
+    fn test_scaffold_to_heel_planes() {
+        // Edges: blocks 0-7 with Q shifts, blocks 2-5 with O shifts
+        let mut edges = Vec::new();
+        for b in 0..8u32 {
+            edges.push(WeightEdge {
+                tensor_name: format!("layers.{}.self_attn.q_proj.weight", b),
+                row_idx: 0, block: Some(b),
+                projection: Projection::Q,
+                layer_type: LayerType::Attention,
+                verb: Verb::Becomes, l1_distance: 500,
+                truth: NarsTruth::new(0.8, 0.9),
+            });
+        }
+        for b in 2..6u32 {
+            edges.push(WeightEdge {
+                tensor_name: format!("layers.{}.self_attn.o_proj.weight", b),
+                row_idx: 0, block: Some(b),
+                projection: Projection::O,
+                layer_type: LayerType::Attention,
+                verb: Verb::Becomes, l1_distance: 400,
+                truth: NarsTruth::new(0.7, 0.85),
+            });
+        }
+
+        let planes = scaffold_to_heel_planes(&edges, 0.3);
+
+        // CAUSES (plane 0): blocks 0-7 from Q
+        assert_eq!(planes[0], 0xFF); // bits 0-7
+
+        // ENABLES (plane 1): blocks 2-5 from O
+        assert_eq!(planes[1], 0b0011_1100); // bits 2-5
+
+        // Other planes should be 0 (no V, K, Gate, FFN edges)
+        assert_eq!(planes[2], 0); // SUPPORTS (K)
+        assert_eq!(planes[3], 0); // CONTRADICTS (Gate)
+    }
+
+    #[test]
+    fn test_scaffold_to_palette3d_layers() {
+        // Minimal: v1 has Q+O edges, v2 has Q edges, v1v2 has Q edges, 9b has Q edges
+        let make_edges = |blocks: &[u32], proj: Projection| -> Vec<WeightEdge> {
+            blocks.iter().map(|&b| WeightEdge {
+                tensor_name: format!("layers.{}.self_attn.q_proj.weight", b),
+                row_idx: 0, block: Some(b), projection: proj.clone(),
+                layer_type: LayerType::Attention, verb: Verb::Becomes,
+                l1_distance: 500, truth: NarsTruth::new(0.8, 0.9),
+            }).collect()
+        };
+
+        let mut edges_v1 = make_edges(&[0, 1, 2, 3], Projection::Q);
+        edges_v1.extend(make_edges(&[1, 2], Projection::O));
+
+        let edges_v2 = make_edges(&[0, 1, 2], Projection::Q);
+        let edges_v1v2 = make_edges(&[3], Projection::Q); // block 3 diverged
+        let edges_9b = make_edges(&[0, 1], Projection::Q); // scale-invariant
+
+        let layers = scaffold_to_palette3d_layers(&edges_v1, &edges_v2, &edges_v1v2, &edges_9b);
+
+        // Layer 0 (CAUSES): Q from v1 → blocks 0,1,2,3
+        assert_ne!(layers[0][0], 0, "CAUSES layer should be populated");
+
+        // Layer 7 (BECOMES): scale-invariant → blocks 0,1 (v1 ∩ 9b Q)
+        // The HEEL bits for BECOMES = heels_v1[CAUSES] & heels_9b[CAUSES] = blocks 0,1
+        // Row 0 = HEEL rotated by 0
+        let becomes_heel = layers[7][0];
+        assert_ne!(becomes_heel, 0, "BECOMES layer should have scale-invariant blocks");
+
+        // 8 layers × 64 rows = 512 entries
+        assert_eq!(layers.len(), 8);
+        assert_eq!(layers[0].len(), 64);
     }
 
     #[test]
