@@ -17,8 +17,8 @@ use super::fingerprint::Fingerprint;
 /// Golden angle in radians: 2π / φ² ≈ 2.39996...
 const GOLDEN_ANGLE: f64 = 2.399_963_229_728_653;
 
-/// Euler-Mascheroni constant γ ≈ 0.5772...
-const EULER_GAMMA: f64 = 0.577_215_664_901_532_9;
+/// Euler-Mascheroni constant γ — Rust 1.94 stdlib constant.
+const EULER_GAMMA: f64 = std::f64::consts::EULER_GAMMA;
 
 /// Bundle dimensionality: 8192 f64 values (must be even for Givens pairs)
 const D: usize = 8192;

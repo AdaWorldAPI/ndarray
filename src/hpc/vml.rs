@@ -466,9 +466,7 @@ mod tests {
     fn test_f64_golden_step_hydration_cost() {
         use std::f64::consts;
         // Rust 1.94: std::f64::consts::PHI and GAMMA are stable.
-        // On 1.93: define manually.
-        #[allow(dead_code)]
-        const PHI: f64 = 1.618033988749894848204586834365638118;
+        const PHI: f64 = std::f64::consts::GOLDEN_RATIO;
 
         // Simulate: 4096D f64 vector → Base17-style projection → hydration back
         let d = 4096usize;

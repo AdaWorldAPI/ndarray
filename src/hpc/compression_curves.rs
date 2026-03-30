@@ -257,7 +257,7 @@ impl ProductQuantizer {
 // Method 5: SPO Bundle (our method)
 // ============================================================================
 
-const PHI: f64 = 1.618_033_988_749_895;
+const PHI: f64 = std::f64::consts::GOLDEN_RATIO;
 
 const fn golden_shift(d: usize) -> usize {
     let raw = (d as f64 / (PHI * PHI)) as usize;
