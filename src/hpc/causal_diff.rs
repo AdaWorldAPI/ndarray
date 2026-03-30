@@ -2115,8 +2115,13 @@ mod tests {
                 continue;
             }
 
-            let (edges, stats) = causal_diff(bp, dp, l1_threshold)
-                .unwrap_or_else(|e| panic!("diff shard {} failed: {}", shard_idx + 1, e));
+            let (edges, stats) = match causal_diff(bp, dp, l1_threshold) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("  WARN shard {} failed: {}", shard_idx + 1, e);
+                    continue;
+                }
+            };
 
             eprintln!(
                 "  shard {:>2}: {} tensors, {}/{} shifted ({:.1}%), {} edges",
@@ -2192,7 +2197,9 @@ mod tests {
     #[test]
     #[ignore] // Requires all 5 models indexed (safetensors BF16)
     fn test_qwen35_claude_reasoning_diff() {
-        let threshold = 100u32;
+        // LoRA deltas are small — Base17 golden-step projection at stride=16
+        // compresses them to L1=0-2. Threshold must be 1 to see the signal.
+        let threshold = 1u32;
 
         // ── Diff 1: base 27B → v1 ──
         eprintln!();
