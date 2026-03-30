@@ -1048,4 +1048,252 @@ mod tests {
             assert!(diff <= 2, "bin {} differs by {}", i, diff);
         }
     }
+
+    #[test]
+    #[ignore] // Streams ~801 GB from HuggingFace — takes ~8-10 hours
+    fn test_stream_index_llama4_maverick_bf16_all_shards() {
+        use super::super::http_reader::HttpRangeReader;
+        use std::io::BufWriter;
+
+        let repo = "unsloth/Llama-4-Maverick-17B-128E-Instruct-GGUF";
+
+        let shards: [(u8, &str, u64); 18] = [
+            ( 1, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00001-of-00018.gguf", 46_166_870_240),
+            ( 2, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00002-of-00018.gguf", 42_949_673_376),
+            ( 3, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00003-of-00018.gguf", 42_949_673_376),
+            ( 4, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00004-of-00018.gguf", 42_949_673_376),
+            ( 5, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00005-of-00018.gguf", 47_943_931_840),
+            ( 6, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00006-of-00018.gguf", 42_949_673_376),
+            ( 7, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00007-of-00018.gguf", 42_949_673_376),
+            ( 8, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00008-of-00018.gguf", 42_949_673_376),
+            ( 9, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00009-of-00018.gguf", 47_922_960_288),
+            (10, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00010-of-00018.gguf", 42_949_673_376),
+            (11, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00011-of-00018.gguf", 42_949_673_376),
+            (12, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00012-of-00018.gguf", 47_912_433_568),
+            (13, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00013-of-00018.gguf", 42_949_673_376),
+            (14, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00014-of-00018.gguf", 42_949_673_376),
+            (15, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00015-of-00018.gguf", 42_949_673_376),
+            (16, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00016-of-00018.gguf", 47_912_474_624),
+            (17, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00017-of-00018.gguf", 42_949_673_376),
+            (18, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00018-of-00018.gguf", 48_214_491_296),
+        ];
+
+        let mut grand_total_source: u64 = 0;
+        let mut grand_total_compressed: u64 = 0;
+        let mut grand_total_original: u64 = 0;
+        let mut grand_total_tensors: usize = 0;
+        let mut grand_by_type: [(usize, u64, u64); 6] = [(0, 0, 0); 6];
+
+        // Track output files for tail deletion (keep last 3, delete older)
+        let mut output_files: Vec<String> = Vec::new();
+        let keep_recent: usize = 3;
+
+        for (shard_num, filename, size) in shards.iter() {
+            let url = format!(
+                "https://huggingface.co/{}/resolve/main/{}",
+                repo, filename
+            );
+            let out_path = format!("/tmp/llama4_maverick_shard{:02}.bgz7", shard_num);
+
+            eprintln!();
+            eprintln!(
+                "━━━ Shard {}/18 ({:.2} GB) ━━━",
+                shard_num,
+                *size as f64 / 1e9
+            );
+            eprintln!("  URL: {}", url);
+            eprintln!(
+                "  Free disk target: keep {} most recent output files",
+                keep_recent
+            );
+
+            // 256 MB chunks — proven chunk size from Scout
+            let mut reader =
+                HttpRangeReader::with_chunk_size(url.clone(), *size, 256 * 1024 * 1024);
+
+            let out = std::fs::File::create(&out_path).expect("create output");
+            let mut writer = BufWriter::new(out);
+
+            let stats = stream_index_gguf(
+                &mut reader,
+                &mut writer,
+                Some(&|name, layer_type, orig, comp| {
+                    let ratio = if comp > 0 {
+                        orig as f64 / comp as f64
+                    } else {
+                        0.0
+                    };
+                    eprintln!(
+                        "  {:60} {:12?} {:>12} → {:>8} ({:.0}×)",
+                        name, layer_type, orig, comp, ratio
+                    );
+                }),
+            )
+            .unwrap_or_else(|e| panic!("stream_index_gguf shard {} failed: {}", shard_num, e));
+
+            // UNLOCK: drop writer BEFORE any file operations
+            drop(writer);
+            let out_size = std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
+
+            // Per-shard summary
+            eprintln!();
+            eprintln!(
+                "  Shard {:02} result: {:.2} GB → {:.2} MB ({:.0}×)",
+                shard_num,
+                *size as f64 / 1e9,
+                out_size as f64 / 1e6,
+                stats.overall_ratio()
+            );
+            eprintln!(
+                "  Tensors: {} indexed, {} skipped",
+                stats.tensors_indexed, stats.tensors_skipped
+            );
+            eprintln!(
+                "  Downloaded: {:.2} GB",
+                reader.bytes_downloaded() as f64 / 1e9
+            );
+
+            let type_names = [
+                "Attention",
+                "FeedForward",
+                "Conv2D",
+                "Norm",
+                "Embedding",
+                "Skip",
+            ];
+            for (j, name) in type_names.iter().enumerate() {
+                let (count, orig, comp) = stats.by_type[j];
+                if count > 0 {
+                    let ratio = if comp > 0 {
+                        orig as f64 / comp as f64
+                    } else {
+                        0.0
+                    };
+                    eprintln!(
+                        "  {:<12} {:>3} tensors: {:>10.2} GB → {:>8.2} MB ({:.0}×)",
+                        name,
+                        count,
+                        orig as f64 / 1e9,
+                        comp as f64 / 1e6,
+                        ratio
+                    );
+                    grand_by_type[j].0 += count;
+                    grand_by_type[j].1 += orig;
+                    grand_by_type[j].2 += comp;
+                }
+            }
+
+            // Accumulate
+            grand_total_source += *size;
+            grand_total_compressed += out_size;
+            grand_total_original += stats.original_bytes;
+            grand_total_tensors += stats.tensors_indexed;
+
+            // TAIL DELETION: track this file, delete old ones
+            output_files.push(out_path.clone());
+
+            while output_files.len() > keep_recent {
+                let old_path = output_files.remove(0);
+                match std::fs::remove_file(&old_path) {
+                    Ok(()) => eprintln!(
+                        "  Tail cleanup: deleted {} (keeping last {})",
+                        old_path, keep_recent
+                    ),
+                    Err(e) => eprintln!("  Tail cleanup warning: {} — {}", old_path, e),
+                }
+            }
+
+            // Drop reader to release any HTTP/temp state
+            drop(reader);
+
+            assert!(
+                stats.tensors_indexed > 0,
+                "shard {} should have indexed tensors",
+                shard_num
+            );
+
+            eprintln!(
+                "  Progress: {}/{} shards complete ({:.1}%)",
+                shard_num,
+                18,
+                *shard_num as f64 / 18.0 * 100.0
+            );
+        }
+
+        // Final cleanup: remove remaining output files
+        for path in &output_files {
+            if let Err(e) = std::fs::remove_file(path) {
+                eprintln!("  Final cleanup warning: {} — {}", path, e);
+            }
+        }
+
+        // Grand total (all 18 shards)
+        eprintln!();
+        eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        eprintln!("LLAMA 4 MAVERICK 17B-128E — FULL MODEL (ALL 18 SHARDS)");
+        eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        eprintln!(
+            "  Source (BF16):   {:>10.2} GB",
+            grand_total_source as f64 / 1e9
+        );
+        eprintln!(
+            "  Original (f32):  {:>10.2} GB",
+            grand_total_original as f64 / 1e9
+        );
+        eprintln!(
+            "  Compressed:      {:>10.2} MB",
+            grand_total_compressed as f64 / 1e6
+        );
+        eprintln!(
+            "  Overall ratio:   {:>10.0}×",
+            grand_total_original as f64 / grand_total_compressed as f64
+        );
+        eprintln!("  Tensors indexed: {}", grand_total_tensors);
+        eprintln!();
+
+        let type_names = [
+            "Attention",
+            "FeedForward",
+            "Conv2D",
+            "Norm",
+            "Embedding",
+            "Skip",
+        ];
+        for (j, name) in type_names.iter().enumerate() {
+            let (count, orig, comp) = grand_by_type[j];
+            if count > 0 {
+                let ratio = if comp > 0 {
+                    orig as f64 / comp as f64
+                } else {
+                    0.0
+                };
+                eprintln!(
+                    "  {:<12} {:>4} tensors: {:>10.2} GB → {:>8.2} MB ({:.0}×)",
+                    name,
+                    count,
+                    orig as f64 / 1e9,
+                    comp as f64 / 1e6,
+                    ratio
+                );
+            }
+        }
+        eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+        // Sanity checks — Maverick at 128 experts should have many more tensors
+        assert!(
+            grand_total_tensors > 500,
+            "should have many tensors across all 18 shards: got {}",
+            grand_total_tensors
+        );
+        assert!(
+            grand_total_compressed < 500_000_000,
+            "full model should be under 500 MB: was {} MB",
+            grand_total_compressed / 1_000_000
+        );
+        assert!(
+            grand_total_compressed > 50_000_000,
+            "full model should be over 50 MB (sanity): was {} MB",
+            grand_total_compressed / 1_000_000
+        );
+    }
 }
