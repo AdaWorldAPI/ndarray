@@ -426,6 +426,65 @@ pub fn scaffold_to_palette3d_layers(
     layers
 }
 
+/// Build Palette3D from 2 diffs only: base→v2 (27B) + base→dist (9B).
+///
+/// v2 supercedes v1 (14K samples vs 3K). Two diffs suffice:
+///
+/// ```text
+/// MEASURED:
+///   CAUSES    = base→v2 Q|O shifts  (what did distillation change?)
+///   ABSTRACTS = 9B Q|O shifts       (which of those survive at 9B?)
+///
+/// DEDUCED:
+///   ENABLES     = CAUSES             (single distillation: causes=enables)
+///   SUPPORTS    = CAUSES ∩ ABSTRACTS (both scales agree)
+///   CONTRADICTS = CAUSES \ ABSTRACTS (27B-only = capacity-dependent)
+///   REFINES     = 0                  (no v1→v2 available)
+///   GROUNDS     = SUPPORTS           (= SUPPORTS with 2 diffs)
+///   BECOMES     = ABSTRACTS \ CAUSES (9B-only, not in 27B)
+/// ```
+pub fn scaffold_to_palette3d_from_2_diffs(
+    edges_27b: &[WeightEdge],
+    edges_9b: &[WeightEdge],
+) -> [[u64; 64]; 8] {
+    let heels_27b = scaffold_to_heel_planes(edges_27b, 0.3);
+    let heels_9b = scaffold_to_heel_planes(edges_9b, 0.3);
+
+    // MEASURED
+    let causes = heels_27b[0] | heels_27b[1];     // Q|O from base→v2
+    let abstracts = heels_9b[0] | heels_9b[1];    // Q|O from 9B
+
+    // DEDUCED
+    let enables = causes;                           // single distillation
+    let supports = causes & abstracts;              // both scales agree
+    let contradicts = causes & !abstracts;          // 27B-only (capacity-dependent)
+    let refines = 0u64;                             // no v1→v2
+    let grounds = supports;                         // = supports with 2 diffs
+    let becomes = abstracts & !causes;              // 9B-only novel heads
+
+    let heel_bits = [
+        causes,      // 0 CAUSES
+        enables,     // 1 ENABLES
+        supports,    // 2 SUPPORTS
+        contradicts, // 3 CONTRADICTS
+        refines,     // 4 REFINES
+        abstracts,   // 5 ABSTRACTS
+        grounds,     // 6 GROUNDS
+        becomes,     // 7 BECOMES
+    ];
+
+    let mut layers = [[0u64; 64]; 8];
+    for (layer_idx, &bits) in heel_bits.iter().enumerate() {
+        for row in 0..64 {
+            let octave = row / 8;
+            let rotation = (octave as u32) * 39;
+            layers[layer_idx][row] = bits.rotate_left(rotation);
+        }
+    }
+
+    layers
+}
+
 // ============================================================================
 // Palette3D attention overlay — structural restoration at inference time
 // ============================================================================
