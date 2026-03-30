@@ -176,6 +176,22 @@ impl Base17 {
         Base17 { dims }
     }
 
+    /// #6 Thought Randomization — calibrated noise injection on Base17.
+    /// Flip dims with magnitude proportional to coefficient of variation.
+    /// Science: Kirkpatrick et al. (1983), Rahimi & Recht (2007).
+    pub fn inject_noise(&self, cv: f32, seed: u64) -> Base17 {
+        let mut noisy = self.clone();
+        // Simple deterministic PRNG from seed
+        let mut state = seed;
+        let scale = (cv * 32767.0).min(32767.0) as i16;
+        for d in 0..17 {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let noise = ((state >> 33) as i16).wrapping_mul(scale) >> 15;
+            noisy.dims[d] = noisy.dims[d].saturating_add(noise);
+        }
+        noisy
+    }
+
     /// Serialize to 34 bytes (little-endian).
     pub fn to_bytes(&self) -> [u8; Self::BYTE_SIZE] {
         let mut buf = [0u8; Self::BYTE_SIZE];
@@ -382,6 +398,16 @@ mod tests {
         assert_eq!(d_sign, 100 * 20);
         assert_eq!(d_mant, 100 * 1);
         assert!(d_sign > d_mant * 10);
+    }
+
+    #[test]
+    fn test_inject_noise() {
+        let b = Base17 { dims: [100; 17] };
+        let noisy = b.inject_noise(0.1, 42);
+        assert_ne!(b.dims, noisy.dims); // should be different
+        let dist = b.l1(&noisy);
+        assert!(dist > 0); // noise injected
+        assert!(dist < 17 * 32767); // not totally destroyed
     }
 
     #[test]

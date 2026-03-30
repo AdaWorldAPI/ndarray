@@ -1393,6 +1393,43 @@ pub fn cross_reference_gate_scaffold(
 }
 
 // ============================================================================
+// #4 Reverse Causality Reasoning
+// ============================================================================
+
+/// #4 Reverse Causality Reasoning — trace backward from effect to cause.
+/// Uses XOR-analog on Base17: effect.l1(candidate) finds the nearest causal antecedent.
+/// Science: Pearl (2009), Plate (2003), Squires & Uhler (2023).
+pub fn reverse_trace(
+    effect: &super::bgz17_bridge::Base17,
+    candidates: &[super::bgz17_bridge::Base17],
+    max_depth: usize,
+    threshold: u32,
+) -> Vec<(usize, u32, NarsTruth)> {
+    let mut chain = Vec::new();
+    let mut current = effect.clone();
+    let max_l1 = (17u32 * 65535) as f32;
+
+    for _ in 0..max_depth {
+        let mut best_idx = 0;
+        let mut best_dist = u32::MAX;
+        for (i, c) in candidates.iter().enumerate() {
+            let d = current.l1(c);
+            if d < best_dist && d > 0 {
+                best_dist = d;
+                best_idx = i;
+            }
+        }
+        if best_dist > threshold || best_dist == u32::MAX { break; }
+
+        let frequency = 1.0 - (best_dist as f32 / max_l1);
+        let confidence = (1.0 - 1.0 / (1.0 + chain.len() as f32 + 1.0)).min(0.99);
+        chain.push((best_idx, best_dist, NarsTruth::new(frequency, confidence)));
+        current = candidates[best_idx].clone();
+    }
+    chain
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -2409,5 +2446,22 @@ mod tests {
         // Assertions
         assert!(stats_1.tensors_matched > 0, "should match tensors in diff 1");
         assert!(stats_4.tensors_matched > 0, "should match tensors in diff 4");
+    }
+
+    #[test]
+    fn test_reverse_trace() {
+        use super::super::bgz17_bridge::Base17;
+
+        let effect = Base17 { dims: [500; 17] };
+        let candidates = vec![
+            Base17 { dims: [400; 17] },  // closest
+            Base17 { dims: [200; 17] },
+            Base17 { dims: [100; 17] },  // farthest
+        ];
+
+        let chain = reverse_trace(&effect, &candidates, 5, 100000);
+        assert!(!chain.is_empty());
+        // First step should find candidate 0 (closest to effect)
+        assert_eq!(chain[0].0, 0);
     }
 }
