@@ -56,6 +56,8 @@ pub mod bf16_truth;
 #[allow(missing_docs)]
 pub mod causality;
 #[allow(missing_docs)]
+pub mod causal_diff;
+#[allow(missing_docs)]
 pub mod nars;
 #[allow(missing_docs)]
 pub mod blackboard;
