@@ -425,7 +425,8 @@ fn f16_to_f32(bits: u16) -> f32 {
             e -= 1;
         }
         m &= 0x3FF;
-        let f32_bits = (sign << 31) | (((127 - 15 + 1 + e as u32) & 0xFF) << 23) | (m << 13);
+        let f32_exp = (127i32 - 15 + 1 + e).max(0) as u32;
+        let f32_bits = (sign << 31) | ((f32_exp & 0xFF) << 23) | (m << 13);
         return f32::from_bits(f32_bits);
     }
     if exp == 31 {
