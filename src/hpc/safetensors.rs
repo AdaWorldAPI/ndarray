@@ -411,4 +411,177 @@ mod tests {
                 stats.tensors_indexed);
         }
     }
+
+    // ── HiDream-I1: DiT+MoE diffusion model ──
+
+    /// Helper: index safetensors shards from a HuggingFace repo.
+    fn index_safetensors_shards(
+        repo: &str,
+        filenames: &[&str],
+        out_prefix: &str,
+        octave_stride: usize,
+    ) -> Vec<super::super::gguf_indexer::IndexStats> {
+        use super::super::http_reader::HttpRangeReader;
+        use std::io::BufWriter;
+
+        let mut all_stats = Vec::new();
+
+        for (i, filename) in filenames.iter().enumerate() {
+            let shard = i + 1;
+            let out_path = if filenames.len() == 1 {
+                format!("{}.bgz7", out_prefix)
+            } else {
+                format!("{}_shard{:02}.bgz7", out_prefix, shard)
+            };
+
+            if std::fs::metadata(&out_path).is_ok() {
+                eprintln!("SKIP {} (exists)", out_path);
+                continue;
+            }
+
+            let url = format!("https://huggingface.co/{}/resolve/main/{}", repo, filename);
+            eprintln!("Indexing {}/{}: {}", shard, filenames.len(), filename);
+
+            // HEAD for size
+            let size_str = std::process::Command::new("curl")
+                .args(&["-sI", "-L", &url])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                .unwrap_or_default();
+            let size: u64 = size_str.lines()
+                .find(|l| l.to_lowercase().starts_with("content-length:"))
+                .and_then(|l| l.split(':').nth(1))
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or(5_500_000_000);
+
+            let mut reader = HttpRangeReader::with_chunk_size(url, size, 256 * 1024 * 1024);
+            let out = std::fs::File::create(&out_path).expect("create output");
+            let mut writer = BufWriter::new(out);
+
+            let stats = super::stream_index_safetensors_bf16(
+                &mut reader, &mut writer, octave_stride,
+                Some(&|name, lt, orig, comp| {
+                    let ratio = if comp > 0 { orig as f64 / comp as f64 } else { 0.0 };
+                    eprintln!("  {:50} {:>12} → {:>8} ({:.0}×)", name, orig, comp, ratio);
+                }),
+            ).expect("safetensors indexing failed");
+
+            drop(writer);
+            let out_size = std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
+            eprintln!("  → {:.2} MB, {} tensors, {:.0}×",
+                out_size as f64 / 1e6, stats.tensors_indexed, stats.overall_ratio());
+
+            all_stats.push(stats);
+        }
+
+        all_stats
+    }
+
+    #[test]
+    #[ignore] // Streams ~35 GB from HuggingFace
+    fn test_stream_index_hidream_transformer() {
+        let repo = "HiDream-ai/HiDream-I1-Full";
+        let shards: Vec<&str> = (1..=7).map(|i| {
+            // Leak the string so it lives long enough — test only
+            Box::leak(format!(
+                "transformer/diffusion_pytorch_model-{:05}-of-00007.safetensors", i
+            ).into_boxed_str()) as &str
+        }).collect();
+
+        let stats = index_safetensors_shards(repo, &shards, "/tmp/hidream_transformer", 16);
+
+        let total_tensors: usize = stats.iter().map(|s| s.tensors_indexed).sum();
+        let total_orig: u64 = stats.iter().map(|s| s.original_bytes).sum();
+        let total_comp: u64 = stats.iter().map(|s| s.compressed_bytes).sum();
+
+        eprintln!();
+        eprintln!("━━━ HiDream-I1 Transformer (DiT+MoE) ━━━");
+        eprintln!("  Source:     {:.2} GB", total_orig as f64 / 1e9);
+        eprintln!("  Compressed: {:.2} MB", total_comp as f64 / 1e6);
+        eprintln!("  Ratio:      {:.0}×", total_orig as f64 / total_comp.max(1) as f64);
+        eprintln!("  Tensors:    {}", total_tensors);
+
+        assert!(total_tensors > 50);
+    }
+
+    #[test]
+    #[ignore] // Streams ~13 GB
+    fn test_stream_index_hidream_text_encoders() {
+        let repo = "HiDream-ai/HiDream-I1-Full";
+
+        // CLIP-L
+        eprintln!("━━━ CLIP-L ━━━");
+        index_safetensors_shards(repo,
+            &["text_encoder/model.safetensors"],
+            "/tmp/hidream_clip_l", 16);
+
+        // CLIP-G
+        eprintln!("━━━ CLIP-G ━━━");
+        index_safetensors_shards(repo,
+            &["text_encoder_2/model.safetensors"],
+            "/tmp/hidream_clip_g", 16);
+
+        // Llama-3.1-8B text encoder (2 shards)
+        eprintln!("━━━ Llama-3.1-8B (HiDream text encoder) ━━━");
+        index_safetensors_shards(repo,
+            &["text_encoder_3/model-00001-of-00002.safetensors",
+              "text_encoder_3/model-00002-of-00002.safetensors"],
+            "/tmp/hidream_llama_enc", 16);
+    }
+
+    #[test]
+    #[ignore] // Streams ~16 GB (base Llama-3.1-8B)
+    fn test_stream_index_llama31_8b_base() {
+        let repo = "unsloth/Llama-3.1-8B";
+        let shards: Vec<&str> = (1..=4).map(|i| {
+            Box::leak(format!(
+                "model-{:05}-of-00004.safetensors", i
+            ).into_boxed_str()) as &str
+        }).collect();
+
+        index_safetensors_shards(repo, &shards, "/tmp/llama31_8b_base", 16);
+    }
+
+    #[test]
+    #[ignore] // Requires: HiDream Llama enc + base Llama indexed
+    fn test_hidream_llama_diff() {
+        use super::super::causal_diff::{causal_diff, print_diff_summary, find_reasoning_scaffold};
+
+        // Compare HiDream's Llama-3.1-8B (image-conditioned) vs base
+        // Shards need to be concatenated or diffed per-shard
+        let pairs = [
+            ("/tmp/llama31_8b_base_shard01.bgz7", "/tmp/hidream_llama_enc_shard01.bgz7", "shard 1"),
+            ("/tmp/llama31_8b_base_shard02.bgz7", "/tmp/hidream_llama_enc_shard02.bgz7", "shard 2"),
+        ];
+
+        let mut total_shifted = 0usize;
+        let mut total_compared = 0usize;
+
+        for (base, dist, label) in &pairs {
+            if !std::fs::metadata(base).is_ok() || !std::fs::metadata(dist).is_ok() {
+                eprintln!("SKIP {} (files not found)", label);
+                continue;
+            }
+
+            let (edges, stats) = causal_diff(base, dist, 100).expect("diff failed");
+            print_diff_summary(
+                &format!("Llama-3.1-8B: base vs HiDream image encoder ({})", label),
+                &stats, edges.len());
+
+            let scaffold = find_reasoning_scaffold(&edges, 0.3);
+            eprintln!("  Visual grounding scaffold blocks: {:?}", scaffold);
+
+            total_shifted += stats.rows_shifted;
+            total_compared += stats.rows_compared;
+        }
+
+        if total_compared > 0 {
+            eprintln!();
+            eprintln!("━━━ Cross-Domain Insight ━━━");
+            eprintln!("  Total rows shifted: {}/{} ({:.1}%)",
+                total_shifted, total_compared,
+                total_shifted as f64 / total_compared as f64 * 100.0);
+            eprintln!("  → These shifts = what 'visual grounding' looks like in LLM weight space");
+        }
+    }
 }
