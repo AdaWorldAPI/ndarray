@@ -574,4 +574,65 @@ mod tests {
         assert!(stats.tensors_indexed > 0, "should index at least some tensors");
         assert!(stats.overall_ratio() > 10.0, "ratio should be significant: {:.1}", stats.overall_ratio());
     }
+
+    #[test]
+    #[ignore] // Streams from HuggingFace — requires network + time
+    fn test_stream_index_llama4_scout_from_hf() {
+        use super::super::http_reader::{HttpRangeReader, resolve_hf_url};
+        use std::io::BufWriter;
+
+        let repo = "unsloth/Llama-4-Scout-17B-16E-Instruct-GGUF";
+        let filename = "Llama-4-Scout-17B-16E-Instruct-UD-IQ1_S.gguf";
+
+        eprintln!("Resolving {} / {} ...", repo, filename);
+        let (url, size) = match resolve_hf_url(repo, filename) {
+            Ok(r) => r,
+            Err(e) => { eprintln!("SKIP: {}", e); return; }
+        };
+        eprintln!("  URL resolved, size: {:.2} GB", size as f64 / 1e9);
+
+        let mut reader = HttpRangeReader::with_chunk_size(url, size, 16 * 1024 * 1024); // 16 MB chunks
+
+        let out_path = "/tmp/llama4_scout.bgz7";
+        let out = std::fs::File::create(out_path).expect("create output");
+        let mut writer = BufWriter::new(out);
+
+        eprintln!("Streaming index...");
+        let stats = stream_index_gguf(
+            &mut reader,
+            &mut writer,
+            Some(&|name, layer_type, orig, comp| {
+                let ratio = if comp > 0 { orig as f64 / comp as f64 } else { 0.0 };
+                eprintln!("  {:60} {:12?} {:>12} → {:>8} ({:.0}×)",
+                    name, layer_type, orig, comp, ratio);
+            }),
+        ).expect("stream_index_gguf");
+
+        drop(writer);
+        let out_size = std::fs::metadata(out_path).map(|m| m.len()).unwrap_or(0);
+
+        eprintln!();
+        eprintln!("=== Llama 4 Scout → bgz17 (streamed from HF) ===");
+        eprintln!("  Source:     {:.2} GB ({})", size as f64 / 1e9, filename);
+        eprintln!("  Output:     {:.2} MB ({})", out_size as f64 / 1e6, out_path);
+        eprintln!("  Downloaded: {:.2} GB", reader.bytes_downloaded() as f64 / 1e9);
+        eprintln!("  Tensors:    {} indexed, {} skipped",
+            stats.tensors_indexed, stats.tensors_skipped);
+        eprintln!("  Original (f32): {:.2} GB", stats.original_bytes as f64 / 1e9);
+        eprintln!("  Compressed:     {:.2} MB", stats.compressed_bytes as f64 / 1e6);
+        eprintln!("  Ratio:          {:.1}×", stats.overall_ratio());
+        eprintln!("  Peak tensor:    {:.2} MB", stats.peak_tensor_bytes as f64 / 1e6);
+
+        let type_names = ["Attention", "FeedForward", "Conv2D", "Norm", "Embedding", "Skip"];
+        for (i, name) in type_names.iter().enumerate() {
+            let (count, orig, comp) = stats.by_type[i];
+            if count > 0 {
+                let ratio = if comp > 0 { orig as f64 / comp as f64 } else { 0.0 };
+                eprintln!("  {:<12} {:>3} tensors: {:>10.2} GB → {:>8.2} MB ({:.1}×)",
+                    name, count, orig as f64 / 1e9, comp as f64 / 1e6, ratio);
+            }
+        }
+
+        assert!(stats.tensors_indexed > 0);
+    }
 }
