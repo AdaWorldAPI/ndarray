@@ -635,4 +635,65 @@ mod tests {
 
         assert!(stats.tensors_indexed > 0);
     }
+
+    #[test]
+    #[ignore] // Streams BF16 shard 5 (18.2 GB) from HuggingFace
+    fn test_stream_index_llama4_bf16_shard5() {
+        use super::super::http_reader::HttpRangeReader;
+        use std::io::BufWriter;
+
+        let repo = "unsloth/Llama-4-Scout-17B-16E-Instruct-GGUF";
+        let filename = "BF16/Llama-4-Scout-17B-16E-Instruct-BF16-00005-of-00005.gguf";
+        let size: u64 = 18_220_000_000; // ~18.2 GB from metadata
+
+        let url = format!("https://huggingface.co/{}/resolve/main/{}", repo, filename);
+        eprintln!("Streaming shard 5: {:.2} GB", size as f64 / 1e9);
+        eprintln!("  URL: {}", url);
+
+        // 16 MB chunks for fewer HTTP round-trips
+        let mut reader = HttpRangeReader::with_chunk_size(url, size, 16 * 1024 * 1024);
+
+        let out_path = "/tmp/llama4_scout_shard5.bgz7";
+        let out = std::fs::File::create(out_path).expect("create output");
+        let mut writer = BufWriter::new(out);
+
+        let stats = stream_index_gguf(
+            &mut reader,
+            &mut writer,
+            Some(&|name, layer_type, orig, comp| {
+                let ratio = if comp > 0 { orig as f64 / comp as f64 } else { 0.0 };
+                eprintln!("  {:60} {:12?} {:>12} → {:>8} ({:.0}×)",
+                    name, layer_type, orig, comp, ratio);
+            }),
+        ).expect("stream_index_gguf");
+
+        drop(writer);
+        let out_size = std::fs::metadata(out_path).map(|m| m.len()).unwrap_or(0);
+
+        eprintln!();
+        eprintln!("=== Llama 4 Scout BF16 Shard 5 → bgz17 ===");
+        eprintln!("  Source:     {:.2} GB (BF16, streamed from HF)", size as f64 / 1e9);
+        eprintln!("  Output:     {:.2} MB", out_size as f64 / 1e6);
+        eprintln!("  Downloaded: {:.2} GB", reader.bytes_downloaded() as f64 / 1e9);
+        eprintln!("  Tensors:    {} indexed, {} skipped",
+            stats.tensors_indexed, stats.tensors_skipped);
+        eprintln!("  Original (f32): {:.2} GB", stats.original_bytes as f64 / 1e9);
+        eprintln!("  Compressed:     {:.2} MB", stats.compressed_bytes as f64 / 1e6);
+        eprintln!("  Ratio:          {:.1}×", stats.overall_ratio());
+        eprintln!("  Peak tensor:    {:.2} MB", stats.peak_tensor_bytes as f64 / 1e6);
+
+        let type_names = ["Attention", "FeedForward", "Conv2D", "Norm", "Embedding", "Skip"];
+        for (i, name) in type_names.iter().enumerate() {
+            let (count, orig, comp) = stats.by_type[i];
+            if count > 0 {
+                let ratio = if comp > 0 { orig as f64 / comp as f64 } else { 0.0 };
+                eprintln!("  {:<12} {:>3} tensors: {:>10.2} GB → {:>8.2} MB ({:.1}×)",
+                    name, count, orig as f64 / 1e9, comp as f64 / 1e6, ratio);
+            }
+        }
+
+        assert!(stats.tensors_indexed > 0);
+        // BF16 dequant to f32 doubles the size, so original_bytes > source size
+        assert!(stats.original_bytes > 0);
+    }
 }
