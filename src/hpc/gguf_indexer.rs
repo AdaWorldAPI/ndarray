@@ -519,19 +519,34 @@ pub fn stream_index_gguf_bf16<R: Read + Seek, W: Write>(
     octave_stride: usize,
     callback: Option<&dyn Fn(&str, &LayerType, usize, usize)>,
 ) -> Result<IndexStats, String> {
-    let gguf_header = gguf::read_gguf_header(reader)?;
+    let header = gguf::read_gguf_header(reader)?;
+    stream_index_gguf_bf16_with_header(reader, writer, &header, octave_stride, callback)
+}
+
+/// Core BF16-direct indexer — works with any pre-parsed header (GGUF or safetensors).
+///
+/// The header must have:
+/// - `tensor_data_offset`: absolute byte offset where tensor data starts
+/// - `tensors`: Vec<TensorInfo> with name, dimensions, dtype, offset (relative to data start)
+pub fn stream_index_gguf_bf16_with_header<R: Read + Seek, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    header: &gguf::GgufFile,
+    octave_stride: usize,
+    callback: Option<&dyn Fn(&str, &LayerType, usize, usize)>,
+) -> Result<IndexStats, String> {
     let mut stats = IndexStats::default();
-    stats.tensors_total = gguf_header.tensors.len();
+    stats.tensors_total = header.tensors.len();
 
     writer.write_all(b"BGZ7").map_err(|e| e.to_string())?;
-    writer.write_all(&(gguf_header.tensors.len() as u32).to_le_bytes()).map_err(|e| e.to_string())?;
+    writer.write_all(&(header.tensors.len() as u32).to_le_bytes()).map_err(|e| e.to_string())?;
 
     // Reusable buffer — capped at 128 MB (64M u16 elements).
     // Tensors larger than this are read in row batches.
     const MAX_BUF_ELEMS: usize = 64 * 1024 * 1024; // 128 MB of u16
     let mut bf16_buf: Vec<u16> = Vec::new();
 
-    for tensor in &gguf_header.tensors {
+    for tensor in &header.tensors {
         let layer_type = classify_tensor(&tensor.name, &tensor.dimensions);
 
         if matches!(layer_type, LayerType::Skip | LayerType::Norm) {
@@ -559,7 +574,7 @@ pub fn stream_index_gguf_bf16<R: Read + Seek, W: Write>(
             }
 
             // Seek to tensor start
-            let abs_offset = gguf_header.tensor_data_offset + tensor.offset;
+            let abs_offset = header.tensor_data_offset + tensor.offset;
             reader.seek(std::io::SeekFrom::Start(abs_offset)).map_err(|e| e.to_string())?;
 
             let mut rows: Vec<Base17> = Vec::with_capacity(n_rows);
@@ -636,7 +651,7 @@ pub fn stream_index_gguf_bf16<R: Read + Seek, W: Write>(
             }
         } else {
             // FALLBACK: non-BF16 — use original f32 path
-            let data = gguf::read_tensor_f32(reader, &gguf_header, tensor)?;
+            let data = gguf::read_tensor_f32(reader, &header, tensor)?;
             let tensor_bytes = data.len() as u64 * 4;
             if tensor_bytes > stats.peak_tensor_bytes {
                 stats.peak_tensor_bytes = tensor_bytes;
