@@ -1,0 +1,17 @@
+[package]
+name = "p64"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.94"
+description = "Palette64: 64×64 BNN attention matrix from 8 phyllotactic HEEL planes"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+phyllotactic-manifold = { path = "../phyllotactic-manifold" }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "p64_bench"
+harness = false
