@@ -486,6 +486,325 @@ pub fn scaffold_to_palette3d_from_2_diffs(
 }
 
 // ============================================================================
+// Quality scoring: GOOD / BAD / UNCERTAIN per attention head
+// ============================================================================
+
+/// Quality classification of a shifted attention head.
+///
+/// Determined by cross-validating 4 diffs: v1 is the control experiment.
+/// v1 vs v2 separates intentional refinement from overfitting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeadQuality {
+    /// v1 ∩ v2 ∩ 9B: all three agree. Scale-invariant, consistent across
+    /// both distillation rounds. This IS the reasoning scaffold.
+    Good,
+    /// v2 \ v1: only in the aggressive second round, not in the conservative first.
+    /// v2 lost 7.2% MMLU-Pro → these are the knowledge-destruction heads.
+    Bad,
+    /// v1 ∩ v2 \ 9B: consistent across rounds but not scale-invariant.
+    /// Could be 27B-specific reasoning OR capacity-dependent overfitting.
+    Uncertain,
+    /// v1 \ v2: present in first round but reverted in second.
+    /// v2 corrected an overcorrection. Good sign for v2.
+    Reverted,
+}
+
+/// Per-head quality scores from 4-diff cross-validation.
+#[derive(Clone, Debug)]
+pub struct QualityMap {
+    /// (block, projection_name) → quality classification + NARS truth.
+    pub heads: HashMap<(u32, String), (HeadQuality, NarsTruth)>,
+    /// Summary counts.
+    pub good: usize,
+    pub bad: usize,
+    pub uncertain: usize,
+    pub reverted: usize,
+}
+
+/// Score every shifted head as GOOD/BAD/UNCERTAIN using 4-diff cross-validation.
+///
+/// ```text
+/// v1 = conservative (3K samples), v2 = aggressive (14K samples), 9B = scale test
+///
+/// GOOD:       v1 ∩ v2 ∩ 9B   (all agree → reasoning scaffold)
+/// BAD:        v2 \ v1         (only aggressive round → overfit/knowledge-loss)
+/// UNCERTAIN:  v1 ∩ v2 \ 9B   (consistent but not scale-invariant)
+/// REVERTED:   v1 \ v2         (first round overcorrected, second fixed it)
+/// ```
+///
+/// The NARS truth per head is the cross-validated frequency from all diffs
+/// where the head appeared, giving confidence in the classification.
+pub fn score_head_quality(
+    edges_v1: &[WeightEdge],
+    edges_v2: &[WeightEdge],
+    edges_9b: &[WeightEdge],
+) -> QualityMap {
+    // Collect which (block, proj) pairs appear in each diff
+    let heads_v1 = head_set(edges_v1);
+    let heads_v2 = head_set(edges_v2);
+    let heads_9b = head_set(edges_9b);
+
+    let mut heads = HashMap::new();
+    let mut good = 0;
+    let mut bad = 0;
+    let mut uncertain = 0;
+    let mut reverted = 0;
+
+    // All heads from any diff
+    let all_heads: std::collections::BTreeSet<(u32, String)> = heads_v1
+        .keys()
+        .chain(heads_v2.keys())
+        .chain(heads_9b.keys())
+        .cloned()
+        .collect();
+
+    for key in &all_heads {
+        let in_v1 = heads_v1.contains_key(key);
+        let in_v2 = heads_v2.contains_key(key);
+        let in_9b = heads_9b.contains_key(key);
+
+        let quality = if in_v1 && in_v2 && in_9b {
+            good += 1;
+            HeadQuality::Good
+        } else if in_v2 && !in_v1 {
+            bad += 1;
+            HeadQuality::Bad
+        } else if in_v1 && !in_v2 {
+            reverted += 1;
+            HeadQuality::Reverted
+        } else {
+            // v1 ∩ v2 but not 9B, or 9B-only, or other combinations
+            uncertain += 1;
+            HeadQuality::Uncertain
+        };
+
+        // NARS truth: aggregate evidence from all diffs where this head appeared
+        let mut truth = NarsTruth::new(0.5, 0.0);
+        for (src, map) in [("v1", &heads_v1), ("v2", &heads_v2), ("9b", &heads_9b)] {
+            if let Some(&(f, c)) = map.get(key) {
+                truth = nars_revision(truth, NarsTruth::new(f, c));
+            }
+        }
+
+        heads.insert(key.clone(), (quality, truth));
+    }
+
+    QualityMap { heads, good, bad, uncertain, reverted }
+}
+
+/// Extract (block, proj) → (frequency, confidence) from edges via cluster_by_head.
+fn head_set(edges: &[WeightEdge]) -> HashMap<(u32, String), (f32, f32)> {
+    let clusters = cluster_by_head(edges);
+    clusters
+        .into_iter()
+        .map(|((block, proj), (count, total, _mean_l1))| {
+            let f = if total > 0 { count as f32 / total as f32 } else { 0.0 };
+            let c = (1.0 - 1.0 / (1.0 + total as f32)).min(0.99);
+            ((block, proj), (f, c))
+        })
+        .collect()
+}
+
+/// Build Palette3D with quality-aware bit setting.
+///
+/// Only GOOD heads get full palette bits. BAD heads get zero.
+/// UNCERTAIN heads get bits only in non-critical layers (REFINES, ABSTRACTS).
+/// This filters the Palette3D to be a QUALITY prior, not just a topology map.
+///
+/// The result can drive NARS self-reinforcement LoRA:
+/// 1. Static: Palette3D as prior (which heads to reinforce)
+/// 2. Dynamic: run inference → NARS score outputs → update truth per head
+/// 3. LoRA: train δW guided by Palette3D mask × NARS confidence
+///    - GOOD heads with high NARS conf → reinforce (increase LoRA rank)
+///    - BAD heads with high conf → suppress (LoRA rank → 0)
+///    - UNCERTAIN heads → let NARS feedback decide over iterations
+pub fn scaffold_to_palette3d_quality_filtered(
+    edges_v1: &[WeightEdge],
+    edges_v2: &[WeightEdge],
+    edges_v1v2: &[WeightEdge],
+    edges_9b: &[WeightEdge],
+) -> ([[u64; 64]; 8], QualityMap) {
+    let quality = score_head_quality(edges_v1, edges_v2, edges_9b);
+
+    let heels_v1 = scaffold_to_heel_planes(edges_v1, 0.3);
+    let heels_v2 = scaffold_to_heel_planes(edges_v2, 0.3);
+    let heels_v1v2 = scaffold_to_heel_planes(edges_v1v2, 0.3);
+    let heels_9b = scaffold_to_heel_planes(edges_9b, 0.3);
+
+    // Build quality masks: which blocks are GOOD vs BAD
+    let mut good_mask = 0u64;
+    let mut bad_mask = 0u64;
+    for ((block, _proj), (q, _truth)) in &quality.heads {
+        if *block >= 64 { continue; }
+        match q {
+            HeadQuality::Good => good_mask |= 1u64 << block,
+            HeadQuality::Bad => bad_mask |= 1u64 << block,
+            _ => {}
+        }
+    }
+    // Uncertain blocks: not explicitly good or bad
+    let uncertain_mask = !(good_mask | bad_mask);
+
+    // MEASURED (same as 4-diff version)
+    let causes = heels_v1[0] | heels_v1[1];
+    let enables = heels_v2[0] | heels_v2[1];
+    let still_moving = heels_v1v2[0] | heels_v1v2[1];
+    let abstracts_9b = heels_9b[0] | heels_9b[1];
+
+    // DEDUCED (same algebra)
+    let refines = causes & !still_moving;
+    let supports = causes & enables;
+    let contradicts = causes & !enables & still_moving;
+    let grounds = supports & abstracts_9b;
+    let becomes = enables & !causes;
+
+    // QUALITY FILTER: mask layers by head quality
+    // Critical layers (CAUSES, ENABLES, SUPPORTS, GROUNDS): only GOOD bits
+    // Informational layers (REFINES, ABSTRACTS): GOOD + UNCERTAIN
+    // Tension layers (CONTRADICTS, BECOMES): unfiltered (they ARE the signal)
+    let heel_bits = [
+        causes & good_mask,                           // 0 CAUSES: only good
+        enables & good_mask,                          // 1 ENABLES: only good
+        supports & good_mask,                         // 2 SUPPORTS: only good
+        contradicts,                                  // 3 CONTRADICTS: unfiltered
+        refines & (good_mask | uncertain_mask),       // 4 REFINES: good + uncertain
+        abstracts_9b & (good_mask | uncertain_mask),  // 5 ABSTRACTS: good + uncertain
+        grounds & good_mask,                          // 6 GROUNDS: only good
+        becomes,                                      // 7 BECOMES: unfiltered
+    ];
+
+    let mut layers = [[0u64; 64]; 8];
+    for (layer_idx, &bits) in heel_bits.iter().enumerate() {
+        for row in 0..64 {
+            let octave = row / 8;
+            let rotation = (octave as u32) * 39;
+            layers[layer_idx][row] = bits.rotate_left(rotation);
+        }
+    }
+
+    (layers, quality)
+}
+
+// ============================================================================
+// NARS self-reinforcement LoRA — feedback loop framework
+// ============================================================================
+
+/// Per-head NARS belief updated by inference feedback.
+///
+/// Static analysis gives the prior (from weight diffs).
+/// Each inference run updates the belief: did this head's contribution
+/// improve or degrade output quality?
+///
+/// After N inference rounds, heads with high frequency + high confidence
+/// → reinforce via LoRA. Heads with low frequency + high confidence
+/// → suppress. Uncertain heads → keep exploring.
+#[derive(Clone, Debug)]
+pub struct NarsHeadBelief {
+    /// (block, projection) → quality prior + dynamic truth.
+    pub beliefs: HashMap<(u32, String), HeadBelief>,
+}
+
+/// One head's belief state in the NARS learning loop.
+#[derive(Clone, Debug)]
+pub struct HeadBelief {
+    /// Static prior from weight-diff quality scoring.
+    pub prior: HeadQuality,
+    /// Dynamic truth from inference feedback. Starts at prior, updated each round.
+    pub truth: NarsTruth,
+    /// Number of inference rounds that updated this belief.
+    pub rounds: u32,
+    /// Recommended LoRA action based on current truth.
+    pub action: LoraAction,
+}
+
+/// What the NARS loop recommends for a head's LoRA rank.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoraAction {
+    /// High freq + high conf → increase LoRA rank for this head.
+    Reinforce,
+    /// Low freq + high conf → set LoRA rank to 0 (suppress).
+    Suppress,
+    /// Low conf → keep exploring, don't commit yet.
+    Explore,
+}
+
+impl NarsHeadBelief {
+    /// Initialize from static quality map (the prior).
+    pub fn from_quality_map(qm: &QualityMap) -> Self {
+        let mut beliefs = HashMap::new();
+        for (key, (quality, truth)) in &qm.heads {
+            let action = match quality {
+                HeadQuality::Good => LoraAction::Reinforce,
+                HeadQuality::Bad => LoraAction::Suppress,
+                _ => LoraAction::Explore,
+            };
+            beliefs.insert(key.clone(), HeadBelief {
+                prior: *quality,
+                truth: *truth,
+                rounds: 0,
+                action,
+            });
+        }
+        Self { beliefs }
+    }
+
+    /// Update beliefs after one inference round.
+    ///
+    /// `feedback`: (block, projection) → did this head help? (frequency 0..1)
+    /// High frequency = head contributed to correct output.
+    /// Low frequency = head degraded output.
+    ///
+    /// This is where static analysis meets dynamic validation:
+    /// a GOOD-prior head that consistently helps → Reinforce with high conf.
+    /// a GOOD-prior head that hurts → truth drops → eventually Explore/Suppress.
+    /// a BAD-prior head that actually helps → truth rises → eventually Reinforce.
+    pub fn update(&mut self, feedback: &HashMap<(u32, String), f32>) {
+        for (key, belief) in &mut self.beliefs {
+            if let Some(&quality_score) = feedback.get(key) {
+                let evidence = NarsTruth::new(quality_score, 0.8);
+                belief.truth = nars_revision(belief.truth, evidence);
+                belief.rounds += 1;
+
+                // Update action based on revised truth
+                belief.action = if belief.truth.confidence > 0.7 {
+                    if belief.truth.frequency > 0.6 {
+                        LoraAction::Reinforce
+                    } else if belief.truth.frequency < 0.3 {
+                        LoraAction::Suppress
+                    } else {
+                        LoraAction::Explore
+                    }
+                } else {
+                    LoraAction::Explore // not enough confidence yet
+                };
+            }
+        }
+    }
+
+    /// Generate LoRA rank recommendations per head.
+    ///
+    /// Returns (block, projection, rank) where rank is 0 (suppress),
+    /// 4/8/16 (explore), or 32/64 (reinforce).
+    pub fn lora_ranks(&self, max_rank: u32) -> Vec<(u32, String, u32)> {
+        let mut ranks = Vec::new();
+        for ((block, proj), belief) in &self.beliefs {
+            let rank = match belief.action {
+                LoraAction::Suppress => 0,
+                LoraAction::Explore => max_rank / 4,
+                LoraAction::Reinforce => {
+                    // Scale rank by NARS confidence: higher conf → higher rank
+                    let scale = belief.truth.confidence.min(0.99);
+                    ((max_rank as f32) * scale) as u32
+                }
+            };
+            ranks.push((*block, proj.clone(), rank));
+        }
+        ranks.sort_by(|a, b| b.2.cmp(&a.2)); // highest rank first
+        ranks
+    }
+}
+
+// ============================================================================
 // Palette3D attention overlay — structural restoration at inference time
 // ============================================================================
 
@@ -1327,6 +1646,89 @@ mod tests {
         assert_eq!(style2, PaletteStyle::Integrative);
 
         std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn test_score_head_quality() {
+        let make = |blocks: &[u32], proj: Projection| -> Vec<WeightEdge> {
+            blocks.iter().map(|&b| WeightEdge {
+                tensor_name: format!("layers.{}.self_attn.q_proj.weight", b),
+                row_idx: 0, block: Some(b), projection: proj.clone(),
+                layer_type: LayerType::Attention, verb: Verb::Becomes,
+                l1_distance: 500, truth: NarsTruth::new(0.8, 0.9),
+            }).collect()
+        };
+
+        // v1: blocks 0-5 Q shifted
+        let edges_v1 = make(&[0, 1, 2, 3, 4, 5], Projection::Q);
+        // v2: blocks 0-3 Q + block 10 Q (block 10 = new, aggressive)
+        let edges_v2 = make(&[0, 1, 2, 3, 10], Projection::Q);
+        // 9B: blocks 0-2 Q (scale-invariant subset)
+        let edges_9b = make(&[0, 1, 2], Projection::Q);
+
+        let qm = score_head_quality(&edges_v1, &edges_v2, &edges_9b);
+
+        // Blocks 0,1,2: in v1 ∩ v2 ∩ 9B → GOOD
+        assert_eq!(qm.heads.get(&(0, "Q".into())).unwrap().0, HeadQuality::Good);
+        assert_eq!(qm.heads.get(&(1, "Q".into())).unwrap().0, HeadQuality::Good);
+        assert_eq!(qm.heads.get(&(2, "Q".into())).unwrap().0, HeadQuality::Good);
+
+        // Block 10: only in v2 → BAD (aggressive overfit)
+        assert_eq!(qm.heads.get(&(10, "Q".into())).unwrap().0, HeadQuality::Bad);
+
+        // Blocks 4,5: in v1 but NOT in v2 → REVERTED (v2 corrected)
+        assert_eq!(qm.heads.get(&(4, "Q".into())).unwrap().0, HeadQuality::Reverted);
+        assert_eq!(qm.heads.get(&(5, "Q".into())).unwrap().0, HeadQuality::Reverted);
+
+        // Block 3: in v1 ∩ v2 but NOT 9B → UNCERTAIN
+        assert_eq!(qm.heads.get(&(3, "Q".into())).unwrap().0, HeadQuality::Uncertain);
+
+        assert_eq!(qm.good, 3);
+        assert_eq!(qm.bad, 1);
+        assert_eq!(qm.reverted, 2);
+        assert_eq!(qm.uncertain, 1);
+    }
+
+    #[test]
+    fn test_nars_head_belief_update() {
+        let make = |blocks: &[u32], proj: Projection| -> Vec<WeightEdge> {
+            blocks.iter().map(|&b| WeightEdge {
+                tensor_name: String::new(), row_idx: 0, block: Some(b),
+                projection: proj.clone(), layer_type: LayerType::Attention,
+                verb: Verb::Becomes, l1_distance: 500, truth: NarsTruth::new(0.8, 0.9),
+            }).collect()
+        };
+
+        let edges_v1 = make(&[0, 1], Projection::Q);
+        let edges_v2 = make(&[0, 1], Projection::Q);
+        let edges_9b = make(&[0], Projection::Q);
+
+        let qm = score_head_quality(&edges_v1, &edges_v2, &edges_9b);
+        let mut beliefs = NarsHeadBelief::from_quality_map(&qm);
+
+        // Block 0: GOOD prior → Reinforce
+        assert_eq!(beliefs.beliefs[&(0, "Q".into())].action, LoraAction::Reinforce);
+
+        // Simulate 3 rounds of positive feedback for block 0
+        for _ in 0..3 {
+            let mut feedback = HashMap::new();
+            feedback.insert((0, "Q".into()), 0.9f32); // high quality
+            feedback.insert((1, "Q".into()), 0.2f32); // low quality
+            beliefs.update(&feedback);
+        }
+
+        // Block 0: still Reinforce (positive feedback confirmed prior)
+        assert_eq!(beliefs.beliefs[&(0, "Q".into())].action, LoraAction::Reinforce);
+        // Block 1: UNCERTAIN prior + negative feedback → should trend to Suppress
+        let b1 = &beliefs.beliefs[&(1, "Q".into())];
+        assert!(b1.truth.frequency < 0.5, "negative feedback should lower frequency");
+
+        // LoRA ranks
+        let ranks = beliefs.lora_ranks(64);
+        assert!(!ranks.is_empty());
+        // Highest rank should be block 0 (reinforced)
+        assert_eq!(ranks[0].0, 0);
+        assert!(ranks[0].2 > 32, "reinforced head should have high LoRA rank");
     }
 
     #[test]
