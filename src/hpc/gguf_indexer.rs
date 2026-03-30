@@ -591,7 +591,7 @@ mod tests {
         };
         eprintln!("  URL resolved, size: {:.2} GB", size as f64 / 1e9);
 
-        let mut reader = HttpRangeReader::with_chunk_size(url, size, 16 * 1024 * 1024); // 16 MB chunks
+        let mut reader = HttpRangeReader::with_chunk_size(url, size, 256 * 1024 * 1024); // 16 MB chunks
 
         let out_path = "/tmp/llama4_scout.bgz7";
         let out = std::fs::File::create(out_path).expect("create output");
@@ -651,7 +651,7 @@ mod tests {
         eprintln!("  URL: {}", url);
 
         // 16 MB chunks for fewer HTTP round-trips
-        let mut reader = HttpRangeReader::with_chunk_size(url, size, 16 * 1024 * 1024);
+        let mut reader = HttpRangeReader::with_chunk_size(url, size, 256 * 1024 * 1024);
 
         let out_path = "/tmp/llama4_scout_shard5.bgz7";
         let out = std::fs::File::create(out_path).expect("create output");

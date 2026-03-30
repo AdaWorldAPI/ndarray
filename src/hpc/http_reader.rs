@@ -31,8 +31,8 @@ pub struct HttpRangeReader {
 }
 
 impl HttpRangeReader {
-    /// Default chunk: 8 MB (good balance for GGUF tensor reads).
-    const DEFAULT_CHUNK: usize = 8 * 1024 * 1024;
+    /// Default chunk: 256 MB (fewer HTTP round-trips, fits in RAM easily).
+    const DEFAULT_CHUNK: usize = 256 * 1024 * 1024;
 
     /// Create a new HTTP range reader.
     ///
