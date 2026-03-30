@@ -46,7 +46,7 @@ pub fn classify_projection(name: &str) -> Projection {
     if name.contains("gate") { return Projection::FfnGate; }
     if name.contains("up_proj") { return Projection::FfnUp; }
     if name.contains("down_proj") { return Projection::FfnDown; }
-    if name.contains("embed") { return Projection::Embedding; }
+    if name.contains("embed") || name.contains("embd") { return Projection::Embedding; }
     Projection::Other
 }
 
@@ -792,5 +792,413 @@ mod tests {
             if !results.is_empty() { routing_dominated as f64 / results.len() as f64 * 100.0 } else { 0.0 });
         eprintln!("  → {} = reasoning changes work THROUGH the router",
             if routing_dominated > results.len() / 2 { "YES" } else { "PARTIAL" });
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Safetensors BF16 pipeline — 5 models, 4 diffs, NARS revision
+    // ════════════════════════════════════════════════════════════════════
+
+    /// Model descriptor for the safetensors indexing pipeline.
+    struct ModelSpec {
+        repo: &'static str,
+        shards: u32,
+        prefix: &'static str,
+    }
+
+    const MODELS: [ModelSpec; 5] = [
+        ModelSpec { repo: "Qwen/Qwen3.5-27B",                                                   shards: 11, prefix: "qwen35_27b_base" },
+        ModelSpec { repo: "Jackrong/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled",            shards: 11, prefix: "qwen35_27b_v1" },
+        ModelSpec { repo: "Jackrong/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-v2",         shards: 11, prefix: "qwen35_27b_v2" },
+        ModelSpec { repo: "Qwen/Qwen3.5-9B",                                                    shards: 4,  prefix: "qwen35_9b_base" },
+        ModelSpec { repo: "Jackrong/Qwen3.5-9B-Claude-4.6-Opus-Reasoning-Distilled",             shards: 4,  prefix: "qwen35_9b_dist" },
+    ];
+
+    /// Generate safetensors shard filenames for a model.
+    fn shard_filenames(total: u32) -> Vec<String> {
+        (1..=total)
+            .map(|i| format!("model-{:05}-of-{:05}.safetensors", i, total))
+            .collect()
+    }
+
+    /// Generate bgz7 output paths for a model's shards.
+    fn shard_bgz7_paths(prefix: &str, total: u32) -> Vec<String> {
+        (1..=total)
+            .map(|i| format!("/tmp/{}_shard{:02}.bgz7", prefix, i))
+            .collect()
+    }
+
+    /// Index a single model (all shards) via safetensors BF16.
+    fn index_model_safetensors(model: &ModelSpec) {
+        use super::super::safetensors::stream_index_safetensors_bf16;
+        use super::super::http_reader::HttpRangeReader;
+        use std::io::BufWriter;
+
+        let filenames = shard_filenames(model.shards);
+        let out_paths = shard_bgz7_paths(model.prefix, model.shards);
+
+        for (shard_idx, (filename, out_path)) in filenames.iter().zip(out_paths.iter()).enumerate() {
+            if std::fs::metadata(out_path).is_ok() {
+                eprintln!("SKIP {} (exists)", out_path);
+                continue;
+            }
+
+            let url = format!(
+                "https://huggingface.co/{}/resolve/main/{}",
+                model.repo, filename
+            );
+            eprintln!(
+                "[{}] shard {}/{}: {}",
+                model.prefix,
+                shard_idx + 1,
+                model.shards,
+                filename
+            );
+
+            // HEAD for content-length
+            let size: u64 = std::process::Command::new("curl")
+                .args(&["-sI", "-L", &url])
+                .output()
+                .ok()
+                .and_then(|o| {
+                    String::from_utf8_lossy(&o.stdout)
+                        .lines()
+                        .find(|l| l.to_lowercase().starts_with("content-length:"))
+                        .and_then(|l| l.split(':').nth(1))
+                        .and_then(|s| s.trim().parse().ok())
+                })
+                .unwrap_or(6_000_000_000);
+
+            let mut reader = HttpRangeReader::with_chunk_size(url, size, 256 * 1024 * 1024);
+            let out = std::fs::File::create(out_path).expect("create output");
+            let mut writer = BufWriter::new(out);
+
+            let stats = stream_index_safetensors_bf16(
+                &mut reader,
+                &mut writer,
+                16, // octave_stride: strided+halftone
+                Some(&|name, _lt, orig, comp| {
+                    let ratio = if comp > 0 { orig as f64 / comp as f64 } else { 0.0 };
+                    eprintln!("  {:50} {:>12} → {:>8} ({:.0}×)", name, orig, comp, ratio);
+                }),
+            )
+            .expect("safetensors indexing failed");
+
+            drop(writer);
+            let out_size = std::fs::metadata(out_path).map(|m| m.len()).unwrap_or(0);
+            eprintln!(
+                "  → {:.2} MB, {} tensors, {:.0}×",
+                out_size as f64 / 1e6,
+                stats.tensors_indexed,
+                stats.overall_ratio()
+            );
+        }
+    }
+
+    /// Causal diff across matched shards of two models, aggregating edges + stats.
+    fn causal_diff_sharded(
+        base_prefix: &str,
+        dist_prefix: &str,
+        n_shards: u32,
+        l1_threshold: u32,
+    ) -> (Vec<WeightEdge>, DiffStats) {
+        let base_paths = shard_bgz7_paths(base_prefix, n_shards);
+        let dist_paths = shard_bgz7_paths(dist_prefix, n_shards);
+
+        let mut all_edges = Vec::new();
+        let mut agg = DiffStats::default();
+
+        for (shard_idx, (bp, dp)) in base_paths.iter().zip(dist_paths.iter()).enumerate() {
+            if !std::fs::metadata(bp).is_ok() || !std::fs::metadata(dp).is_ok() {
+                eprintln!("  SKIP shard {} (not found)", shard_idx + 1);
+                continue;
+            }
+
+            let (edges, stats) = causal_diff(bp, dp, l1_threshold)
+                .unwrap_or_else(|e| panic!("diff shard {} failed: {}", shard_idx + 1, e));
+
+            eprintln!(
+                "  shard {:>2}: {} tensors, {}/{} shifted ({:.1}%), {} edges",
+                shard_idx + 1,
+                stats.tensors_matched,
+                stats.rows_shifted,
+                stats.rows_compared,
+                if stats.rows_compared > 0 {
+                    stats.rows_shifted as f64 / stats.rows_compared as f64 * 100.0
+                } else {
+                    0.0
+                },
+                edges.len()
+            );
+
+            // Aggregate stats
+            agg.tensors_matched += stats.tensors_matched;
+            agg.tensors_unmatched += stats.tensors_unmatched;
+            agg.rows_compared += stats.rows_compared;
+            agg.rows_shifted += stats.rows_shifted;
+            agg.rows_stable += stats.rows_stable;
+            for (proj, (shifted, total, mean_l1)) in &stats.by_projection {
+                let entry = agg.by_projection.entry(proj.clone()).or_insert((0, 0, 0.0));
+                let prev_total = entry.1;
+                entry.0 += shifted;
+                entry.1 += total;
+                if entry.1 > 0 {
+                    entry.2 = (entry.2 * prev_total as f64 + mean_l1 * *total as f64)
+                        / entry.1 as f64;
+                }
+            }
+
+            all_edges.extend(edges);
+        }
+
+        (all_edges, agg)
+    }
+
+    // ── Per-model indexing tests ──
+
+    #[test]
+    #[ignore] // Streams ~55 GB
+    fn test_index_qwen35_27b_base() {
+        index_model_safetensors(&MODELS[0]);
+    }
+
+    #[test]
+    #[ignore] // Streams ~55 GB
+    fn test_index_qwen35_27b_v1() {
+        index_model_safetensors(&MODELS[1]);
+    }
+
+    #[test]
+    #[ignore] // Streams ~55 GB
+    fn test_index_qwen35_27b_v2() {
+        index_model_safetensors(&MODELS[2]);
+    }
+
+    #[test]
+    #[ignore] // Streams ~18 GB
+    fn test_index_qwen35_9b_base() {
+        index_model_safetensors(&MODELS[3]);
+    }
+
+    #[test]
+    #[ignore] // Streams ~18 GB
+    fn test_index_qwen35_9b_dist() {
+        index_model_safetensors(&MODELS[4]);
+    }
+
+    // ── Full pipeline: 4 diffs + scaffold + NARS ──
+
+    #[test]
+    #[ignore] // Requires all 5 models indexed (safetensors BF16)
+    fn test_qwen35_claude_reasoning_diff() {
+        let threshold = 100u32;
+
+        // ── Diff 1: base 27B → v1 ──
+        eprintln!();
+        eprintln!("════ Diff 1: 27B base → distilled v1 ════");
+        eprintln!("  What does Claude reasoning look like in weight space?");
+        let (edges_1, stats_1) = causal_diff_sharded(
+            "qwen35_27b_base", "qwen35_27b_v1", 11, threshold,
+        );
+        print_diff_summary("27B: base → v1", &stats_1, edges_1.len());
+
+        // ── Diff 2: base 27B → v2 ──
+        eprintln!();
+        eprintln!("════ Diff 2: 27B base → distilled v2 ════");
+        eprintln!("  Did v2 refine the same heads or find new ones?");
+        let (edges_2, stats_2) = causal_diff_sharded(
+            "qwen35_27b_base", "qwen35_27b_v2", 11, threshold,
+        );
+        print_diff_summary("27B: base → v2", &stats_2, edges_2.len());
+
+        // ── Diff 3: v1 → v2 ──
+        eprintln!();
+        eprintln!("════ Diff 3: 27B v1 → v2 (iteration delta) ════");
+        eprintln!("  Which heads converged vs overcorrected?");
+        let (edges_3, stats_3) = causal_diff_sharded(
+            "qwen35_27b_v1", "qwen35_27b_v2", 11, threshold,
+        );
+        print_diff_summary("27B: v1 → v2", &stats_3, edges_3.len());
+
+        // ── Diff 4: 9B base → distilled ──
+        eprintln!();
+        eprintln!("════ Diff 4: 9B base → distilled ════");
+        eprintln!("  Is the reasoning scaffold scale-invariant?");
+        let (edges_4, stats_4) = causal_diff_sharded(
+            "qwen35_9b_base", "qwen35_9b_dist", 4, threshold,
+        );
+        print_diff_summary("9B: base → distilled", &stats_4, edges_4.len());
+
+        // ── Phase 3: Reasoning scaffold detection ──
+        eprintln!();
+        eprintln!("════ Reasoning Scaffold Detection ════");
+
+        let scaffold_27b_v1 = find_reasoning_scaffold(&edges_1, 0.3);
+        eprintln!("  27B v1 scaffold blocks: {:?}", scaffold_27b_v1);
+
+        let scaffold_27b_v2 = find_reasoning_scaffold(&edges_2, 0.3);
+        eprintln!("  27B v2 scaffold blocks: {:?}", scaffold_27b_v2);
+
+        let scaffold_9b = find_reasoning_scaffold(&edges_4, 0.3);
+        eprintln!("  9B scaffold blocks:     {:?}", scaffold_9b);
+
+        // Scale-invariant: present in both 27B and 9B
+        let scale_invariant: Vec<u32> = scaffold_27b_v1
+            .iter()
+            .filter(|b| scaffold_9b.contains(b))
+            .cloned()
+            .collect();
+
+        // 27B-only: capacity-dependent reasoning
+        let capacity_dependent: Vec<u32> = scaffold_27b_v1
+            .iter()
+            .filter(|b| !scaffold_9b.contains(b))
+            .cloned()
+            .collect();
+
+        // v1∩v2 convergence
+        let converged: Vec<u32> = scaffold_27b_v1
+            .iter()
+            .filter(|b| scaffold_27b_v2.contains(b))
+            .cloned()
+            .collect();
+
+        eprintln!();
+        eprintln!("  Scale-invariant blocks (27B∩9B):  {:?}", scale_invariant);
+        eprintln!("  Capacity-dependent (27B only):    {:?}", capacity_dependent);
+        eprintln!("  Converged (v1∩v2):                {:?}", converged);
+
+        // ── Phase 4: NARS revision across all diffs ──
+        eprintln!();
+        eprintln!("════ NARS Revision: Integrated Evidence ════");
+
+        let all_stats: Vec<(&str, &DiffStats)> = vec![
+            ("27B base→v1", &stats_1),
+            ("27B base→v2", &stats_2),
+            ("27B v1→v2", &stats_3),
+            ("9B base→dist", &stats_4),
+        ];
+        let revised = revise_across_diffs(&all_stats);
+
+        eprintln!();
+        eprintln!("  Integrated truth per projection:");
+        let mut sorted_projs: Vec<_> = revised.iter().collect();
+        sorted_projs.sort_by(|a, b| b.1.frequency.partial_cmp(&a.1.frequency).unwrap());
+        for (proj, truth) in &sorted_projs {
+            let label = if truth.frequency > 0.5 {
+                "SHIFTED"
+            } else if truth.frequency > 0.3 {
+                "variable"
+            } else {
+                "STABLE"
+            };
+            eprintln!(
+                "    {:<12} → f={:.3} c={:.3} ({})",
+                proj, truth.frequency, truth.confidence, label
+            );
+        }
+
+        // ── Phase 5: Top shifted heads ──
+        eprintln!();
+        eprintln!("════ Top Shifted Attention Heads (v1) ════");
+
+        let clusters = cluster_by_head(&edges_1);
+        let mut sorted: Vec<_> = clusters.into_iter().collect();
+        sorted.sort_by(|a, b| b.1 .2.partial_cmp(&a.1 .2).unwrap());
+
+        for ((block, proj), (count, max_row, mean_l1)) in sorted.iter().take(20) {
+            eprintln!(
+                "    Block {:>2} {:>10}: {}/{} shifted, mean_L1={:.0}",
+                block, proj, count, max_row, mean_l1
+            );
+        }
+
+        // ── Phase 6: Write results ──
+        eprintln!();
+        eprintln!("════ Writing Results ════");
+
+        let mut report = String::new();
+        report.push_str("# Qwen3.5 → Claude-4.6-Opus Reasoning Scaffold Analysis\n\n");
+        report.push_str(&format!("Generated: {}\n", "2026-03-30"));
+        report.push_str(&format!("L1 threshold: {}\n\n", threshold));
+
+        report.push_str("## Model Matrix\n\n");
+        report.push_str("| ID | Repo | Shards | Path |\n");
+        report.push_str("|---|---|---|---|\n");
+        for m in &MODELS {
+            report.push_str(&format!(
+                "| {} | {} | {} | safetensors BF16 |\n",
+                m.prefix, m.repo, m.shards
+            ));
+        }
+
+        report.push_str("\n## Diff Summary\n\n");
+        for (label, stats) in &[
+            ("27B base→v1", &stats_1),
+            ("27B base→v2", &stats_2),
+            ("27B v1→v2", &stats_3),
+            ("9B base→dist", &stats_4),
+        ] {
+            let pct = if stats.rows_compared > 0 {
+                stats.rows_shifted as f64 / stats.rows_compared as f64 * 100.0
+            } else {
+                0.0
+            };
+            report.push_str(&format!(
+                "- **{}**: {}/{} rows shifted ({:.1}%), {} tensors\n",
+                label, stats.rows_shifted, stats.rows_compared, pct, stats.tensors_matched
+            ));
+        }
+
+        report.push_str("\n## Reasoning Scaffold\n\n");
+        report.push_str(&format!(
+            "- **Scale-invariant blocks (27B∩9B)**: {:?}\n",
+            scale_invariant
+        ));
+        report.push_str(&format!(
+            "- **Capacity-dependent (27B only)**: {:?}\n",
+            capacity_dependent
+        ));
+        report.push_str(&format!(
+            "- **Converged (v1∩v2)**: {:?}\n",
+            converged
+        ));
+
+        report.push_str("\n## NARS Revised Truth Per Projection\n\n");
+        report.push_str("| Projection | Frequency | Confidence | Interpretation |\n");
+        report.push_str("|---|---|---|---|\n");
+        for (proj, truth) in &sorted_projs {
+            let label = if truth.frequency > 0.5 {
+                "SHIFTED"
+            } else if truth.frequency > 0.3 {
+                "variable"
+            } else {
+                "STABLE"
+            };
+            report.push_str(&format!(
+                "| {} | {:.3} | {:.3} | {} |\n",
+                proj, truth.frequency, truth.confidence, label
+            ));
+        }
+
+        report.push_str("\n## Top 20 Shifted Heads (base→v1)\n\n");
+        report.push_str("| Block | Projection | Shifted/Total | Mean L1 |\n");
+        report.push_str("|---|---|---|---|\n");
+        for ((block, proj), (count, max_row, mean_l1)) in sorted.iter().take(20) {
+            report.push_str(&format!(
+                "| {} | {} | {}/{} | {:.0} |\n",
+                block, proj, count, max_row, mean_l1
+            ));
+        }
+
+        // Write to knowledge base
+        let kb_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/.claude/knowledge");
+        let _ = std::fs::create_dir_all(kb_dir);
+        let out_path = format!("{}/reasoning_reverse_eng_results.md", kb_dir);
+        std::fs::write(&out_path, &report).expect("write results");
+        eprintln!("  → {}", out_path);
+
+        // Assertions
+        assert!(stats_1.tensors_matched > 0, "should match tensors in diff 1");
+        assert!(stats_4.tensors_matched > 0, "should match tensors in diff 4");
     }
 }
