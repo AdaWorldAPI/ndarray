@@ -100,8 +100,8 @@ pub fn classify_tensor(name: &str, dims: &[u64]) -> LayerType {
 // ============================================================================
 
 const BASE_DIM: usize = 17;
-/// Golden-step = round(17 / φ) = round(17 / 1.618) = 11. gcd(11,17)=1 → visits all residues.
-const GOLDEN_STEP: usize = 11;
+/// round(17 / φ) = 11 — maximally irrational stride across BASE_DIM positions.
+const GOLDEN_STEP: usize = (BASE_DIM as f64 / std::f64::consts::GOLDEN_RATIO + 0.5) as usize;
 const FP_SCALE: f64 = 256.0;
 
 /// Golden-step position table (compile-time).
