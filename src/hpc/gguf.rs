@@ -215,12 +215,17 @@ pub fn read_tensor_f32<R: Read + Seek>(
         GgmlType::BF16 => {
             let mut buf = vec![0u8; n_elements * 2];
             reader.read_exact(&mut buf).map_err(|e| e.to_string())?;
-            Ok(buf.chunks_exact(2)
-                .map(|c| {
-                    let bits = u16::from_le_bytes([c[0], c[1]]);
-                    bf16_to_f32(bits)
-                })
-                .collect())
+            // Reinterpret u8 pairs as BF16 (same repr) and batch-convert via quantized.rs
+            // SAFETY: BF16 is #[repr(transparent)] over u16, same layout as [u8; 2] LE pairs.
+            let bf16_slice: &[super::quantized::BF16] = unsafe {
+                std::slice::from_raw_parts(
+                    buf.as_ptr() as *const super::quantized::BF16,
+                    n_elements,
+                )
+            };
+            let mut result = vec![0.0f32; n_elements];
+            super::quantized::bf16_to_f32_slice(bf16_slice, &mut result);
+            Ok(result)
         }
         GgmlType::Q8_0 => {
             dequantize_q8_0(reader, n_elements)

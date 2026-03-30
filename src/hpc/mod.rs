@@ -170,6 +170,10 @@ pub mod gguf;
 #[allow(missing_docs)]
 pub mod gguf_indexer;
 
+/// HTTP range reader — Read + Seek over HTTP for streaming GGUF from HuggingFace.
+#[allow(missing_docs)]
+pub mod http_reader;
+
 /// Jina embedding codec — GGUF → Base17 → Palette → CausalEdge64.
 #[allow(missing_docs)]
 pub mod jina;
