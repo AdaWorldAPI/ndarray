@@ -26,21 +26,23 @@ fn tier() -> Tier { *TIER }
 // x86_64: re-export based on tier
 // ============================================================================
 
-// 256-bit AVX2 base types — always available, used by both tiers
-#[cfg(target_arch = "x86_64")]
-pub use crate::simd_avx512::{F32x8, F64x4, f32x8, f64x4};
-
-// 512-bit types: compile-time dispatch via target_feature.
-// With target-cpu=x86-64-v4 (or native on AVX-512 hardware),
-// avx512f is enabled at compile time → native __m512 types.
-// Otherwise falls back to AVX2 composed types (2× __m256).
+// Compile-time AVX-512 dispatch via target_feature.
+// With target-cpu=x86-64-v4 (.cargo/config.toml), avx512f is enabled
+// at compile time → all types use native __m512/__m512d/__m512i.
+// The 256-bit types (F32x8, F64x4) also live in simd_avx512 (__m256).
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 pub use crate::simd_avx512::{
+    // 256-bit (AVX2 baseline, __m256/__m256d)
+    F32x8, F64x4, f32x8, f64x4,
+    // 512-bit (native AVX-512, __m512/__m512d/__m512i)
     F32x16, F64x8, U8x64, I32x16, I64x8, U32x16, U64x8,
     F32Mask16, F64Mask8,
     f32x16, f64x8, u8x64, i32x16, i64x8, u32x16, u64x8,
 };
+
+#[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+pub use crate::simd_avx512::{F32x8, F64x4, f32x8, f64x4};
 
 #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
 pub use crate::simd_avx2::{

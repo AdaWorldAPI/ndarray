@@ -101,6 +101,140 @@ pub struct WeightEdge {
 }
 
 // ============================================================================
+// CausalEdge64 — compact u64 packed edge for L1/p64 operations
+// ============================================================================
+
+/// Compact causal edge packed into a single `u64`.
+///
+/// Layout (64 bits):
+/// ```text
+///   [63:58]  block       6 bits → 0–63 layers
+///   [57:54]  projection  4 bits → Projection enum (0–9)
+///   [53:52]  verb        2 bits → Verb enum (0–2)
+///   [51:36]  row_idx    16 bits → 0–65535 rows
+///   [35:20]  l1_dist    16 bits → L1 distance (capped at 65535)
+///   [19:10]  freq       10 bits → NARS frequency × 1023
+///   [ 9: 0]  conf       10 bits → NARS confidence × 1023
+/// ```
+///
+/// Total: 6 + 4 + 2 + 16 + 16 + 10 + 10 = 64 bits.
+///
+/// Fits in a register. Can be used as a p64 `Palette64` row key:
+/// `edge.0 & palette.rows[i]` → POPCNT → attention score.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct CausalEdge64(pub u64);
+
+impl CausalEdge64 {
+    /// Pack a WeightEdge into a compact u64.
+    #[inline]
+    pub fn pack(edge: &WeightEdge) -> Self {
+        let block = (edge.block.unwrap_or(0) & 0x3F) as u64;
+        let proj = projection_to_u4(&edge.projection) as u64;
+        let verb = match edge.verb {
+            Verb::Becomes => 0u64,
+            Verb::Supports => 1,
+            Verb::Contradicts => 2,
+        };
+        let row = (edge.row_idx as u64) & 0xFFFF;
+        let l1 = (edge.l1_distance.min(65535) as u64) & 0xFFFF;
+        let freq = ((edge.truth.frequency * 1023.0).round() as u64) & 0x3FF;
+        let conf = ((edge.truth.confidence * 1023.0).round() as u64) & 0x3FF;
+
+        Self(
+            (block << 58)
+                | (proj << 54)
+                | (verb << 52)
+                | (row << 36)
+                | (l1 << 20)
+                | (freq << 10)
+                | conf,
+        )
+    }
+
+    /// Unpack block number.
+    #[inline] pub fn block(self) -> u32 { ((self.0 >> 58) & 0x3F) as u32 }
+    /// Unpack projection type.
+    #[inline] pub fn projection(self) -> Projection { u4_to_projection(((self.0 >> 54) & 0xF) as u8) }
+    /// Unpack verb.
+    #[inline] pub fn verb(self) -> Verb {
+        match (self.0 >> 52) & 0x3 { 0 => Verb::Becomes, 1 => Verb::Supports, _ => Verb::Contradicts }
+    }
+    /// Unpack row index.
+    #[inline] pub fn row_idx(self) -> u32 { ((self.0 >> 36) & 0xFFFF) as u32 }
+    /// Unpack L1 distance.
+    #[inline] pub fn l1_distance(self) -> u32 { ((self.0 >> 20) & 0xFFFF) as u32 }
+    /// Unpack NARS frequency.
+    #[inline] pub fn frequency(self) -> f32 { ((self.0 >> 10) & 0x3FF) as f32 / 1023.0 }
+    /// Unpack NARS confidence.
+    #[inline] pub fn confidence(self) -> f32 { (self.0 & 0x3FF) as f32 / 1023.0 }
+    /// Reconstruct NarsTruth.
+    #[inline] pub fn truth(self) -> NarsTruth { NarsTruth::new(self.frequency(), self.confidence()) }
+}
+
+fn projection_to_u4(p: &Projection) -> u8 {
+    match p {
+        Projection::Q => 0, Projection::K => 1, Projection::V => 2, Projection::O => 3,
+        Projection::Gate => 4, Projection::FfnGate => 5, Projection::FfnUp => 6,
+        Projection::FfnDown => 7, Projection::Embedding => 8, Projection::Other => 9,
+    }
+}
+
+fn u4_to_projection(v: u8) -> Projection {
+    match v {
+        0 => Projection::Q, 1 => Projection::K, 2 => Projection::V, 3 => Projection::O,
+        4 => Projection::Gate, 5 => Projection::FfnGate, 6 => Projection::FfnUp,
+        7 => Projection::FfnDown, 8 => Projection::Embedding, _ => Projection::Other,
+    }
+}
+
+// ============================================================================
+// p64 bridge: scaffold edges → Palette64 attention matrix
+// ============================================================================
+
+/// Build a p64 `Palette64` from scaffold edges.
+///
+/// Each unique (block, projection) pair becomes a row in the palette.
+/// The row value is the OR-combination of all CausalEdge64 values for that pair.
+/// Result: a 64×64 binary attention matrix where `attend(query, gamma)`
+/// finds which scaffold blocks match a structural query.
+///
+/// Synergy with p64:
+/// - `palette.attend(query, gamma)` → which reasoning scaffold blocks fire
+/// - `palette.nearest_k(query, 8)` → top-8 similar scaffold heads
+/// - `HeelPlanes::from_clam_seed` → Base17 fingerprint → p64 → scaffold query
+pub fn scaffold_to_palette64(edges: &[WeightEdge]) -> ([u64; 64], Vec<(u32, Projection)>) {
+    let mut row_map: HashMap<(u32, u8), u64> = HashMap::new();
+    let mut keys: Vec<(u32, u8)> = Vec::new();
+
+    for edge in edges {
+        let block = edge.block.unwrap_or(0);
+        let proj = projection_to_u4(&edge.projection);
+        let key = (block, proj);
+
+        let packed = CausalEdge64::pack(edge).0;
+        let entry = row_map.entry(key).or_insert_with(|| {
+            keys.push(key);
+            0u64
+        });
+        *entry |= packed;
+    }
+
+    // Sort by block then projection for deterministic layout
+    keys.sort();
+    keys.truncate(64);
+
+    let mut rows = [0u64; 64];
+    let mut labels = Vec::with_capacity(keys.len());
+    for (i, &(block, proj)) in keys.iter().enumerate() {
+        rows[i] = row_map[&(block, proj)];
+        labels.push((block, u4_to_projection(proj)));
+    }
+
+    (rows, labels)
+}
+
+// ============================================================================
 // Diff engine
 // ============================================================================
 
@@ -530,6 +664,77 @@ mod tests {
         assert_eq!(extract_block("blk.17.attn_q.weight"), Some(17));
         assert_eq!(extract_block("blk.0.ffn_gate.weight"), Some(0));
         assert_eq!(extract_block("token_embd.weight"), None);
+    }
+
+    #[test]
+    fn test_causal_edge64_roundtrip() {
+        let edge = WeightEdge {
+            tensor_name: "blk.17.attn_q.weight".into(),
+            row_idx: 42,
+            block: Some(17),
+            projection: Projection::Q,
+            layer_type: LayerType::Attention,
+            verb: Verb::Becomes,
+            l1_distance: 1234,
+            truth: NarsTruth::new(0.72, 0.95),
+        };
+
+        let packed = CausalEdge64::pack(&edge);
+        assert_eq!(packed.block(), 17);
+        assert_eq!(packed.projection(), Projection::Q);
+        assert_eq!(packed.verb(), Verb::Becomes);
+        assert_eq!(packed.row_idx(), 42);
+        assert_eq!(packed.l1_distance(), 1234);
+        assert!((packed.frequency() - 0.72).abs() < 0.002);
+        assert!((packed.confidence() - 0.95).abs() < 0.002);
+
+        // Fits in one u64
+        assert_eq!(std::mem::size_of::<CausalEdge64>(), 8);
+    }
+
+    #[test]
+    fn test_causal_edge64_all_projections() {
+        for (proj, val) in [
+            (Projection::Q, 0), (Projection::K, 1), (Projection::V, 2), (Projection::O, 3),
+            (Projection::Gate, 4), (Projection::FfnGate, 5), (Projection::FfnUp, 6),
+            (Projection::FfnDown, 7), (Projection::Embedding, 8), (Projection::Other, 9),
+        ] {
+            let edge = WeightEdge {
+                tensor_name: String::new(),
+                row_idx: 0, block: Some(0),
+                projection: proj.clone(),
+                layer_type: LayerType::Attention,
+                verb: Verb::Becomes, l1_distance: 0,
+                truth: NarsTruth::new(0.5, 0.5),
+            };
+            let packed = CausalEdge64::pack(&edge);
+            assert_eq!(packed.projection(), proj, "projection {} failed", val);
+        }
+    }
+
+    #[test]
+    fn test_scaffold_to_palette64() {
+        let edges: Vec<WeightEdge> = (0..10).map(|i| WeightEdge {
+            tensor_name: format!("blk.{}.attn_q.weight", i),
+            row_idx: i as u32,
+            block: Some(i as u32),
+            projection: Projection::Q,
+            layer_type: LayerType::Attention,
+            verb: Verb::Becomes,
+            l1_distance: 500 + i as u32 * 100,
+            truth: NarsTruth::new(0.8, 0.9),
+        }).collect();
+
+        let (rows, labels) = scaffold_to_palette64(&edges);
+        assert_eq!(labels.len(), 10);
+        assert!(rows[0] != 0, "row 0 should be populated");
+        assert_eq!(rows[63], 0, "row 63 should be empty (only 10 edges)");
+
+        // Each label should be (block, Q)
+        for (block, proj) in &labels {
+            assert_eq!(*proj, Projection::Q);
+            assert!(*block < 10);
+        }
     }
 
     #[test]
