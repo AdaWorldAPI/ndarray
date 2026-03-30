@@ -1244,7 +1244,8 @@ mod tests {
                 .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
                 .unwrap_or_default();
             let size: u64 = size_str.lines()
-                .find(|l| l.to_lowercase().starts_with("content-length:"))
+                .filter(|l| l.to_lowercase().starts_with("content-length:"))
+                .last()
                 .and_then(|l| l.split(':').nth(1))
                 .and_then(|s| s.trim().parse().ok())
                 .unwrap_or(30_000_000_000); // fallback 30 GB
@@ -1477,6 +1478,7 @@ mod tests {
             );
 
             // HEAD for content-length
+            // Take the LAST content-length (after redirects)
             let size: u64 = std::process::Command::new("curl")
                 .args(&["-sI", "-L", &url])
                 .output()
@@ -1484,7 +1486,8 @@ mod tests {
                 .and_then(|o| {
                     String::from_utf8_lossy(&o.stdout)
                         .lines()
-                        .find(|l| l.to_lowercase().starts_with("content-length:"))
+                        .filter(|l| l.to_lowercase().starts_with("content-length:"))
+                        .last()
                         .and_then(|l| l.split(':').nth(1))
                         .and_then(|s| s.trim().parse().ok())
                 })
