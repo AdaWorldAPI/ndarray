@@ -1,0 +1,16 @@
+[package]
+name = "phyllotactic-manifold"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.94"
+description = "7+1 phyllotactic SIMD manifold with Euler-gamma singularity correction"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "manifold_bench"
+harness = false
