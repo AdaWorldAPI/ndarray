@@ -100,6 +100,7 @@ pub fn classify_tensor(name: &str, dims: &[u64]) -> LayerType {
 // ============================================================================
 
 const BASE_DIM: usize = 17;
+/// Golden-step = round(17 / φ) = round(17 / 1.618) = 11. gcd(11,17)=1 → visits all residues.
 const GOLDEN_STEP: usize = 11;
 const FP_SCALE: f64 = 256.0;
 
