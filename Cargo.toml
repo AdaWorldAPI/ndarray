@@ -48,6 +48,8 @@ libc = { version = "0.2.82", optional = true }
 
 matrixmultiply = { version = "0.3.2", default-features = false, features=["cgemm"] }
 blake3 = "1"
+p64 = { path = "crates/p64" }
+phyllotactic-manifold = { path = "crates/phyllotactic-manifold" }
 
 serde = { version = "1.0", optional = true, default-features = false, features = ["alloc"] }
 rawpointer = { version = "0.2" }
