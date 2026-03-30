@@ -238,36 +238,37 @@ pub fn scaffold_to_palette64(edges: &[WeightEdge]) -> ([u64; 64], Vec<(u32, Proj
 // p64 Palette3D bridge: scaffold → 8-layer reasoning circuit
 // ============================================================================
 
-/// Map projection shifts to p64 predicate layers.
+/// Map projection shifts to p64 predicate layers via SPO = QKV.
 ///
 /// ```text
-///   Projection  →  p64 predicate    Rationale
-///   ──────────     ──────────────    ─────────
-///   Q shift     →  CAUSES (0)       queries changed → causation
-///   K stable    →  SUPPORTS (2)     keys preserved → supporting evidence
-///   V shift     →  REFINES (4)      retrieval shifted → refinement
-///   O shift     →  ENABLES (1)      synthesis changed → enabling
-///   FfnGate     →  GROUNDS (6)      FFN rewiring → grounding
-///   FfnUp/Down  →  ABSTRACTS (5)    FFN capacity → abstraction
-///   Gate        →  CONTRADICTS (3)  router change → structural tension
-///   Embedding   →  BECOMES (7)      vocabulary → identity transform
+///   CausalEdge64 SPO mapping:  S = Q,  P = K,  O = O
+///   Pearl CausalMask:  Q+O active, K inactive = CausalMask::SO (0b101)
+///
+///   Projection  →  HEEL plane     SPO role    Rationale
+///   ──────────     ──────────     ────────    ─────────
+///   Q shift     →  CAUSES (0)    Subject     queries changed → causation
+///   O shift     →  ENABLES (1)   Object      synthesis changed → enabling
+///   K stable    →  SUPPORTS (2)  Predicate   keys preserved → supporting
+///   V shift     →  REFINES (4)   —           retrieval shifted → refinement
+///   Gate        →  CONTRADICTS(3)—           router change → tension
+///   FfnUp/Down  →  ABSTRACTS (5) —           FFN capacity → abstraction
+///   FfnGate     →  GROUNDS (6)   —           FFN rewiring → grounding
+///   Embedding   →  BECOMES (7)   —           vocabulary → identity
 /// ```
 ///
-/// The 8 predicate layers of `Palette3D` become 8 HEEL planes
-/// where each plane holds the scaffold blocks for that projection type.
-/// `Palette3D::infer()` with `ThinkingStyle::ANALYTICAL` then mimics
-/// the Claude-4.6-Opus reasoning circuit: tight intersection of
-/// CAUSES × ENABLES × SUPPORTS.
+/// The 4 measured layers (CAUSES, ENABLES, REFINES, ABSTRACTS) come from
+/// the 4 diffs. The 4 deduced layers (SUPPORTS, CONTRADICTS, GROUNDS,
+/// BECOMES) emerge from intersection/negation in `scaffold_to_palette3d_layers`.
 pub fn projection_to_predicate(proj: &Projection) -> usize {
     match proj {
-        Projection::Q       => 0, // CAUSES
-        Projection::O       => 1, // ENABLES
-        Projection::K       => 2, // SUPPORTS
+        Projection::Q       => 0, // CAUSES (Subject in SPO)
+        Projection::O       => 1, // ENABLES (Object in SPO)
+        Projection::K       => 2, // SUPPORTS (Predicate in SPO — stable = supporting)
         Projection::V       => 4, // REFINES
         Projection::Gate    => 3, // CONTRADICTS
-        Projection::FfnGate => 6, // GROUNDS
         Projection::FfnUp   => 5, // ABSTRACTS
         Projection::FfnDown => 5, // ABSTRACTS (same layer)
+        Projection::FfnGate => 6, // GROUNDS
         Projection::Embedding => 7, // BECOMES
         Projection::Other   => 7, // BECOMES
     }
@@ -326,11 +327,24 @@ pub fn scaffold_to_heel_planes(
 
 /// Build a full Palette3D reasoning circuit from four diff runs.
 ///
-/// Each diff populates the 8 HEEL planes differently:
-/// - base→v1: primary scaffold (Q=CAUSES, O=ENABLES, K=SUPPORTS)
-/// - base→v2: refinement signal (adds to REFINES layer)
-/// - v1→v2: convergence/contradiction (CONTRADICTS for divergent, GROUNDS for converged)
-/// - 9B: scale-invariant core (BECOMES for blocks present in both scales)
+/// The 4 diffs ARE the 4 deduction rules — each measures one predicate:
+///
+/// ```text
+/// MEASURED (from data):
+///   base→v1:  CAUSES    "What does Claude distillation cause?"
+///   base→v2:  ENABLES   "What does the second iteration enable?"
+///   v1→v2:    REFINES   "Which heads converged (refined)?"
+///   9B diff:  ABSTRACTS "Is the pattern scale-invariant (abstract)?"
+///
+/// DEDUCED (from intersection/negation of measured):
+///   SUPPORTS    = CAUSES ∩ ENABLES       (both distillations agree)
+///   CONTRADICTS = v1→v2 sign flips       (head was overcorrected)
+///   GROUNDS     = SUPPORTS ∩ ABSTRACTS   (consistent AND scale-invariant)
+///   BECOMES     = ENABLES \ CAUSES       (novel heads, not in first distillation)
+/// ```
+///
+/// SPO mapping in CausalEdge64: S=Q, P=K, O=O.
+/// Q+O shifted, K stable = CausalMask::SO (0b101) = the reasoning scaffold.
 ///
 /// Returns 8 `[u64; 64]` palettes (one per predicate layer) ready for Palette3D.
 pub fn scaffold_to_palette3d_layers(
@@ -339,14 +353,15 @@ pub fn scaffold_to_palette3d_layers(
     edges_v1v2: &[WeightEdge],
     edges_9b: &[WeightEdge],
 ) -> [[u64; 64]; 8] {
-    // Layer 0 (CAUSES): Q shifts from base→v1
-    // Layer 1 (ENABLES): O shifts from base→v1
-    // Layer 2 (SUPPORTS): K stable from base→v1 (inverted — blocks WITHOUT K shifts)
-    // Layer 3 (CONTRADICTS): blocks that diverged v1→v2 (overcorrections)
-    // Layer 4 (REFINES): V shifts from base→v2
-    // Layer 5 (ABSTRACTS): FFN up/down shifts from base→v1
-    // Layer 6 (GROUNDS): blocks converged v1∩v2 (stable across iterations)
-    // Layer 7 (BECOMES): scale-invariant blocks (present in both 27B and 9B)
+    // scaffold_to_heel_planes maps projections → predicate layers:
+    //   plane[0] = CAUSES  (from Q projections)
+    //   plane[1] = ENABLES (from O projections)
+    //   plane[2] = SUPPORTS (from K projections — will be inverted)
+    //   plane[3] = CONTRADICTS (from Gate projections)
+    //   plane[4] = REFINES (from V projections)
+    //   plane[5] = ABSTRACTS (from FFN projections)
+    //   plane[6] = GROUNDS (from FfnGate)
+    //   plane[7] = BECOMES (from Embedding/Other)
 
     let heels_v1 = scaffold_to_heel_planes(edges_v1, 0.3);
     let heels_v2 = scaffold_to_heel_planes(edges_v2, 0.3);
@@ -355,25 +370,56 @@ pub fn scaffold_to_palette3d_layers(
 
     let mut layers = [[0u64; 64]; 8];
 
-    // Populate each layer from the appropriate HEEL + golden rotation
-    for layer_idx in 0..8 {
-        let heel_bits = match layer_idx {
-            0 => heels_v1[0],                        // CAUSES: Q from v1
-            1 => heels_v1[1],                        // ENABLES: O from v1
-            2 => !heels_v1[2] & heels_v1[0],         // SUPPORTS: K stable WHERE Q shifted
-            3 => heels_v1v2[0] | heels_v1v2[1],      // CONTRADICTS: Q+O that moved v1→v2
-            4 => heels_v2[4],                        // REFINES: V from v2
-            5 => heels_v1[5],                        // ABSTRACTS: FFN from v1
-            6 => heels_v1[0] & heels_v2[0],          // GROUNDS: Q stable across v1∩v2
-            7 => heels_v1[0] & heels_9b[0],          // BECOMES: Q in both 27B and 9B
-            _ => 0,
-        };
+    // ── 4 MEASURED layers (directly from diffs) ──
+    //
+    // Layer 0 CAUSES:    base→v1 Q+O topology (what distillation changed)
+    let causes = heels_v1[0] | heels_v1[1]; // Q shifted OR O shifted
+    //
+    // Layer 1 ENABLES:   base→v2 Q+O topology (what second iteration changed)
+    let enables = heels_v2[0] | heels_v2[1];
+    //
+    // Layer 4 REFINES:   v1→v2 convergence (which heads stabilized)
+    //   Heads in v1→v2 with LOW shift = converged = refined
+    //   Heads in v1→v2 with HIGH shift = still moving = not refined
+    //   Invert: bits NOT set in v1v2 means the head converged
+    let still_moving = heels_v1v2[0] | heels_v1v2[1];
+    let refines = causes & !still_moving; // caused in v1, converged by v2
+    //
+    // Layer 5 ABSTRACTS: 9B diff topology (scale-invariant = abstract)
+    let abstracts_9b = heels_9b[0] | heels_9b[1]; // Q+O from 9B
 
-        // Expand to 64 rows via golden rotation (same as HeelPlanes::expand)
+    // ── 4 DEDUCED layers (from intersection/negation) ──
+    //
+    // Layer 2 SUPPORTS:  CAUSES ∩ ENABLES (both distillations agree)
+    let supports = causes & enables;
+    //
+    // Layer 3 CONTRADICTS: v1→v2 heads that CAUSES but v2 reversed
+    //   = blocks in CAUSES that are NOT in ENABLES but ARE still moving
+    let contradicts = causes & !enables & still_moving;
+    //
+    // Layer 6 GROUNDS:   SUPPORTS ∩ ABSTRACTS (consistent AND scale-invariant)
+    let grounds = supports & abstracts_9b;
+    //
+    // Layer 7 BECOMES:   ENABLES \ CAUSES (novel heads, emerged in second iteration)
+    let becomes = enables & !causes;
+
+    let heel_bits = [
+        causes,      // 0 CAUSES
+        enables,     // 1 ENABLES
+        supports,    // 2 SUPPORTS
+        contradicts, // 3 CONTRADICTS
+        refines,     // 4 REFINES
+        abstracts_9b,// 5 ABSTRACTS
+        grounds,     // 6 GROUNDS
+        becomes,     // 7 BECOMES
+    ];
+
+    // Expand each HEEL to 64 rows via golden rotation
+    for (layer_idx, &bits) in heel_bits.iter().enumerate() {
         for row in 0..64 {
             let octave = row / 8;
             let rotation = (octave as u32) * 39; // GOLDEN_SHIFT_64
-            layers[layer_idx][row] = heel_bits.rotate_left(rotation);
+            layers[layer_idx][row] = bits.rotate_left(rotation);
         }
     }
 
@@ -1081,7 +1127,6 @@ mod tests {
 
     #[test]
     fn test_scaffold_to_palette3d_layers() {
-        // Minimal: v1 has Q+O edges, v2 has Q edges, v1v2 has Q edges, 9b has Q edges
         let make_edges = |blocks: &[u32], proj: Projection| -> Vec<WeightEdge> {
             blocks.iter().map(|&b| WeightEdge {
                 tensor_name: format!("layers.{}.self_attn.q_proj.weight", b),
@@ -1091,25 +1136,54 @@ mod tests {
             }).collect()
         };
 
+        // v1: Q blocks 0-3, O blocks 1-2
         let mut edges_v1 = make_edges(&[0, 1, 2, 3], Projection::Q);
         edges_v1.extend(make_edges(&[1, 2], Projection::O));
 
-        let edges_v2 = make_edges(&[0, 1, 2], Projection::Q);
-        let edges_v1v2 = make_edges(&[3], Projection::Q); // block 3 diverged
-        let edges_9b = make_edges(&[0, 1], Projection::Q); // scale-invariant
+        // v2: Q blocks 0-2, O block 5 (novel head not in v1)
+        let mut edges_v2 = make_edges(&[0, 1, 2], Projection::Q);
+        edges_v2.extend(make_edges(&[5], Projection::O));
+
+        // v1→v2: block 3 still moving (was in v1, didn't converge)
+        let edges_v1v2 = make_edges(&[3], Projection::Q);
+
+        // 9B: blocks 0,1 (scale-invariant)
+        let edges_9b = make_edges(&[0, 1], Projection::Q);
 
         let layers = scaffold_to_palette3d_layers(&edges_v1, &edges_v2, &edges_v1v2, &edges_9b);
 
-        // Layer 0 (CAUSES): Q from v1 → blocks 0,1,2,3
-        assert_ne!(layers[0][0], 0, "CAUSES layer should be populated");
+        // causes  = v1 Q|O = {0,1,2,3} | {1,2} = 0b00001111
+        // enables = v2 Q|O = {0,1,2}   | {5}   = 0b00100111
 
-        // Layer 7 (BECOMES): scale-invariant → blocks 0,1 (v1 ∩ 9b Q)
-        // The HEEL bits for BECOMES = heels_v1[CAUSES] & heels_9b[CAUSES] = blocks 0,1
-        // Row 0 = HEEL rotated by 0
+        // Layer 0 (CAUSES): blocks 0,1,2,3 from v1
+        assert_ne!(layers[0][0], 0, "CAUSES should be populated");
+
+        // Layer 2 (SUPPORTS): CAUSES ∩ ENABLES = {0,1,2} = 0b0111
+        let supports_heel = layers[2][0]; // row 0 = HEEL unrotated
+        assert_ne!(supports_heel, 0, "SUPPORTS = both distillations agree");
+
+        // Layer 3 (CONTRADICTS): causes & !enables & still_moving
+        //   causes = 0x0F, enables = 0x27, still_moving = {3} = 0x08
+        //   0x0F & !0x27 & 0x08 = 0x08 & 0x08 = 0x08 (block 3)
+        let contradicts_heel = layers[3][0];
+        assert_ne!(contradicts_heel, 0, "CONTRADICTS = block 3 overcorrected");
+
+        // Layer 5 (ABSTRACTS): 9B Q|O = {0,1}
+        let abstracts_heel = layers[5][0];
+        assert_ne!(abstracts_heel, 0, "ABSTRACTS = scale-invariant blocks");
+
+        // Layer 6 (GROUNDS): SUPPORTS ∩ ABSTRACTS = {0,1} ∩ {0,1} = {0,1}
+        let grounds_heel = layers[6][0];
+        assert_ne!(grounds_heel, 0, "GROUNDS = consistent AND scale-invariant");
+
+        // Layer 7 (BECOMES): ENABLES \ CAUSES = {5} (novel in v2)
         let becomes_heel = layers[7][0];
-        assert_ne!(becomes_heel, 0, "BECOMES layer should have scale-invariant blocks");
+        assert_ne!(becomes_heel, 0, "BECOMES = novel head in second distillation");
 
-        // 8 layers × 64 rows = 512 entries
+        // Layer 4 (REFINES): causes & !still_moving = {0,1,2} (converged)
+        let refines_heel = layers[4][0];
+        assert_ne!(refines_heel, 0, "REFINES = heads that converged v1→v2");
+
         assert_eq!(layers.len(), 8);
         assert_eq!(layers[0].len(), 64);
     }
