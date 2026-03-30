@@ -448,6 +448,10 @@ impl_assign_op!(F64x8, AddAssign, add_assign, _mm512_add_pd);
 impl_assign_op!(F64x8, SubAssign, sub_assign, _mm512_sub_pd);
 impl_assign_op!(F64x8, MulAssign, mul_assign, _mm512_mul_pd);
 impl_assign_op!(F64x8, DivAssign, div_assign, _mm512_div_pd);
+impl_assign_op!(F64x8, AddAssign, add_assign, _mm512_add_pd);
+impl_assign_op!(F64x8, SubAssign, sub_assign, _mm512_sub_pd);
+impl_assign_op!(F64x8, MulAssign, mul_assign, _mm512_mul_pd);
+impl_assign_op!(F64x8, DivAssign, div_assign, _mm512_div_pd);
 
 impl Neg for F64x8 {
     type Output = Self;
