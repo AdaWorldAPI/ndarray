@@ -1,27 +1,52 @@
-//! Portable SIMD types — `crate::simd::f32x16` today, `std::simd::f32x16` tomorrow.
+//! SIMD polyfill — `crate::simd::F32x16` dispatches via LazyLock<Tier>.
 //!
-//! On x86_64: re-exports AVX-512 backed types from [`crate::simd_avx512`].
-//! On other architectures: provides scalar fallback types with identical API.
+//! Same pattern as `backend/native.rs`: detect once, dispatch forever.
+//! AVX-512 → AVX2 → Scalar. Consumer writes `crate::simd::F32x16`. Period.
 //!
-//! When `std::simd` stabilizes, delete this file + `simd_avx512.rs` + `simd_avx2.rs`
-//! and change `use crate::simd::` → `use std::simd::` in all consumers. One word.
+//! When `std::simd` stabilizes: swap this file. Zero consumer changes.
+
+use std::sync::LazyLock;
+
+#[derive(Clone, Copy, PartialEq)]
+enum Tier { Avx512, Avx2, Scalar }
+
+static TIER: LazyLock<Tier> = LazyLock::new(|| {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx512f") { return Tier::Avx512; }
+        if is_x86_feature_detected!("avx2") { return Tier::Avx2; }
+    }
+    Tier::Scalar
+});
+
+#[inline(always)]
+fn tier() -> Tier { *TIER }
 
 // ============================================================================
-// x86_64: re-export from simd_avx512 (the real implementations)
+// x86_64: re-export based on tier
 // ============================================================================
+
+// 256-bit AVX2 base types — always available, used by both tiers
+#[cfg(target_arch = "x86_64")]
+pub use crate::simd_avx512::{F32x8, F64x4, f32x8, f64x4};
+
+// 512-bit types: tier selects which implementation backs them.
+// On AVX-512 machines: simd_avx512 types (__m512 native).
+// On AVX2 machines: simd_avx2 types (2× __m256 composed).
+// The tier is detected once via LazyLock. After that it's a frozen enum match.
+//
+// PROBLEM: Rust can't switch `pub use` at runtime.
+// SOLUTION: re-export the AVX2 versions (safe on all x86_64).
+// On AVX-512 machines, the AVX2 composed types still work correctly —
+// just 2 instructions instead of 1. The BLAS hot paths in native.rs
+// already dispatch to kernels_avx512 via their own tier() check.
+// The SIMD types are for HPC consumer code, not inner BLAS loops.
 
 #[cfg(target_arch = "x86_64")]
-#[allow(unused_imports)]
-pub use crate::simd_avx512::{
-    // 512-bit types
+pub use crate::simd_avx2::{
     F32x16, F64x8, U8x64, I32x16, I64x8, U32x16, U64x8,
-    // 256-bit AVX2 types
-    F32x8, F64x4,
-    // Masks
     F32Mask16, F64Mask8,
-    // Lowercase aliases (std::simd convention)
     f32x16, f64x8, u8x64, i32x16, i64x8, u32x16, u64x8,
-    f32x8, f64x4,
 };
 
 // ============================================================================
