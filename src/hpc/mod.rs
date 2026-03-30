@@ -122,6 +122,10 @@ pub mod crystal_encoder;
 #[allow(missing_docs)]
 pub mod udf_kernels;
 
+// p64 bridge: Palette64/3D attention, NARS, CausalEdge64 compat
+#[allow(missing_docs)]
+pub mod p64_bridge;
+
 // Session C: bgz17 dual-path integration
 #[allow(missing_docs)]
 pub mod bgz17_bridge;

@@ -11,6 +11,10 @@ Goal: replace macerator SIMD with crate::simd F32x16 + LazyLock dispatch,
 add bgz-tensor AttentionTable compiled attention path.
 """
 
+[lib]
+name = "burn_ndarray"
+path = "src/lib.rs"
+
 [features]
 default = ["std", "simd", "multi-threads"]
 multi-threads = ["rayon", "ndarray/rayon", "matrixmultiply/threading"]

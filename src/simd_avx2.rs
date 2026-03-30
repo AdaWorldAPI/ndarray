@@ -517,6 +517,283 @@ pub fn dgemm_blocked(
     }
 }
 
+// ============================================================================
+// AVX2 512-bit types: composed from 2× 256-bit halves
+//
+// Same API as simd_avx512::F32x16 etc. but backed by [F32x8; 2].
+// Consumer sees crate::simd::F32x16 — simd.rs picks avx512 or avx2 via LazyLock.
+// ============================================================================
+
+use core::fmt;
+use core::ops::{Add, AddAssign, Sub, SubAssign, Mul, MulAssign, Div, DivAssign, Neg,
+                BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not};
+
+/// 16×f32 via 2× AVX2 F32x8 (__m256). Same API as simd_avx512::F32x16.
+#[derive(Copy, Clone)]
+#[repr(align(64))]
+pub struct F32x16(pub f32x8, pub f32x8);
+
+impl F32x16 {
+    pub const LANES: usize = 16;
+    #[inline(always)] pub fn splat(v: f32) -> Self { Self(f32x8::splat(v), f32x8::splat(v)) }
+    #[inline(always)] pub fn from_slice(s: &[f32]) -> Self {
+        assert!(s.len() >= 16);
+        Self(f32x8::from_slice(&s[..8]), f32x8::from_slice(&s[8..16]))
+    }
+    #[inline(always)] pub fn from_array(a: [f32; 16]) -> Self {
+        Self(f32x8::from_array(a[..8].try_into().unwrap()), f32x8::from_array(a[8..].try_into().unwrap()))
+    }
+    #[inline(always)] pub fn to_array(self) -> [f32; 16] {
+        let mut out = [0.0f32; 16];
+        out[..8].copy_from_slice(&self.0.to_array());
+        out[8..].copy_from_slice(&self.1.to_array());
+        out
+    }
+    #[inline(always)] pub fn copy_to_slice(self, s: &mut [f32]) {
+        assert!(s.len() >= 16);
+        self.0.copy_to_slice(&mut s[..8]);
+        self.1.copy_to_slice(&mut s[8..16]);
+    }
+    #[inline(always)] pub fn reduce_sum(self) -> f32 { self.0.reduce_sum() + self.1.reduce_sum() }
+    #[inline(always)] pub fn reduce_min(self) -> f32 {
+        let a = self.to_array();
+        a.iter().copied().fold(f32::INFINITY, f32::min)
+    }
+    #[inline(always)] pub fn reduce_max(self) -> f32 {
+        let a = self.to_array();
+        a.iter().copied().fold(f32::NEG_INFINITY, f32::max)
+    }
+    #[inline(always)] pub fn abs(self) -> Self { Self(self.0.abs(), self.1.abs()) }
+    #[inline(always)] pub fn sqrt(self) -> Self {
+        let a = self.to_array();
+        let mut o = [0.0f32; 16]; for i in 0..16 { o[i] = a[i].sqrt(); } Self::from_array(o)
+    }
+    #[inline(always)] pub fn round(self) -> Self {
+        let a = self.to_array();
+        let mut o = [0.0f32; 16]; for i in 0..16 { o[i] = a[i].round(); } Self::from_array(o)
+    }
+    #[inline(always)] pub fn floor(self) -> Self {
+        let a = self.to_array();
+        let mut o = [0.0f32; 16]; for i in 0..16 { o[i] = a[i].floor(); } Self::from_array(o)
+    }
+    #[inline(always)] pub fn mul_add(self, b: Self, c: Self) -> Self {
+        let a = self.to_array(); let ba = b.to_array(); let ca = c.to_array();
+        let mut o = [0.0f32; 16]; for i in 0..16 { o[i] = a[i].mul_add(ba[i], ca[i]); } Self::from_array(o)
+    }
+    #[inline(always)] pub fn simd_min(self, other: Self) -> Self {
+        let a = self.to_array(); let b = other.to_array();
+        let mut o = [0.0f32; 16]; for i in 0..16 { o[i] = a[i].min(b[i]); } Self::from_array(o)
+    }
+    #[inline(always)] pub fn simd_max(self, other: Self) -> Self {
+        let a = self.to_array(); let b = other.to_array();
+        let mut o = [0.0f32; 16]; for i in 0..16 { o[i] = a[i].max(b[i]); } Self::from_array(o)
+    }
+    #[inline(always)] pub fn simd_clamp(self, lo: Self, hi: Self) -> Self { self.simd_max(lo).simd_min(hi) }
+    #[inline(always)] pub fn simd_lt(self, other: Self) -> F32Mask16 {
+        let a = self.to_array(); let b = other.to_array();
+        let mut bits: u16 = 0; for i in 0..16 { if a[i] < b[i] { bits |= 1 << i; } } F32Mask16(bits)
+    }
+    #[inline(always)] pub fn simd_le(self, other: Self) -> F32Mask16 {
+        let a = self.to_array(); let b = other.to_array();
+        let mut bits: u16 = 0; for i in 0..16 { if a[i] <= b[i] { bits |= 1 << i; } } F32Mask16(bits)
+    }
+    #[inline(always)] pub fn simd_gt(self, other: Self) -> F32Mask16 { other.simd_lt(self) }
+    #[inline(always)] pub fn simd_ge(self, other: Self) -> F32Mask16 { other.simd_le(self) }
+    #[inline(always)] pub fn simd_eq(self, other: Self) -> F32Mask16 {
+        let a = self.to_array(); let b = other.to_array();
+        let mut bits: u16 = 0; for i in 0..16 { if a[i] == b[i] { bits |= 1 << i; } } F32Mask16(bits)
+    }
+    #[inline(always)] pub fn simd_ne(self, other: Self) -> F32Mask16 {
+        let a = self.to_array(); let b = other.to_array();
+        let mut bits: u16 = 0; for i in 0..16 { if a[i] != b[i] { bits |= 1 << i; } } F32Mask16(bits)
+    }
+    #[inline(always)] pub fn to_bits(self) -> U32x16 {
+        let a = self.to_array();
+        let mut o = [0u32; 16]; for i in 0..16 { o[i] = a[i].to_bits(); } U32x16(o)
+    }
+    #[inline(always)] pub fn from_bits(bits: U32x16) -> Self {
+        let mut o = [0.0f32; 16]; for i in 0..16 { o[i] = f32::from_bits(bits.0[i]); } Self::from_array(o)
+    }
+    #[inline(always)] pub fn cast_i32(self) -> I32x16 {
+        let a = self.to_array();
+        let mut o = [0i32; 16]; for i in 0..16 { o[i] = a[i] as i32; } I32x16(o)
+    }
+}
+
+impl Add for F32x16 { type Output = Self; #[inline(always)] fn add(self, rhs: Self) -> Self { Self(self.0 + rhs.0, self.1 + rhs.1) } }
+impl Sub for F32x16 { type Output = Self; #[inline(always)] fn sub(self, rhs: Self) -> Self { Self(self.0 - rhs.0, self.1 - rhs.1) } }
+impl Mul for F32x16 { type Output = Self; #[inline(always)] fn mul(self, rhs: Self) -> Self { Self(self.0 * rhs.0, self.1 * rhs.1) } }
+impl Div for F32x16 { type Output = Self; #[inline(always)] fn div(self, rhs: Self) -> Self { Self(self.0 / rhs.0, self.1 / rhs.1) } }
+impl AddAssign for F32x16 { #[inline(always)] fn add_assign(&mut self, rhs: Self) { *self = *self + rhs; } }
+impl SubAssign for F32x16 { #[inline(always)] fn sub_assign(&mut self, rhs: Self) { *self = *self - rhs; } }
+impl MulAssign for F32x16 { #[inline(always)] fn mul_assign(&mut self, rhs: Self) { *self = *self * rhs; } }
+impl DivAssign for F32x16 { #[inline(always)] fn div_assign(&mut self, rhs: Self) { *self = *self / rhs; } }
+impl Neg for F32x16 { type Output = Self; #[inline(always)] fn neg(self) -> Self { let a = self.to_array(); let mut o = [0.0f32; 16]; for i in 0..16 { o[i] = -a[i]; } Self::from_array(o) } }
+impl fmt::Debug for F32x16 { fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "F32x16({:?})", self.to_array()) } }
+impl PartialEq for F32x16 { fn eq(&self, other: &Self) -> bool { self.to_array() == other.to_array() } }
+impl Default for F32x16 { fn default() -> Self { Self::splat(0.0) } }
+
+#[derive(Copy, Clone, Debug)]
+pub struct F32Mask16(pub u16);
+impl F32Mask16 {
+    #[inline(always)]
+    pub fn select(self, true_val: F32x16, false_val: F32x16) -> F32x16 {
+        let t = true_val.to_array(); let f = false_val.to_array();
+        let mut o = [0.0f32; 16];
+        for i in 0..16 { o[i] = if (self.0 >> i) & 1 == 1 { t[i] } else { f[i] }; }
+        F32x16::from_array(o)
+    }
+}
+
+/// 8×f64 via 2× AVX2 F64x4 (__m256d). Same API as simd_avx512::F64x8.
+#[derive(Copy, Clone)]
+#[repr(align(64))]
+pub struct F64x8(pub f64x4, pub f64x4);
+
+impl F64x8 {
+    pub const LANES: usize = 8;
+    #[inline(always)] pub fn splat(v: f64) -> Self { Self(f64x4::splat(v), f64x4::splat(v)) }
+    #[inline(always)] pub fn from_slice(s: &[f64]) -> Self {
+        assert!(s.len() >= 8);
+        Self(f64x4::from_slice(&s[..4]), f64x4::from_slice(&s[4..8]))
+    }
+    #[inline(always)] pub fn from_array(a: [f64; 8]) -> Self {
+        Self(f64x4::from_array(a[..4].try_into().unwrap()), f64x4::from_array(a[4..].try_into().unwrap()))
+    }
+    #[inline(always)] pub fn to_array(self) -> [f64; 8] {
+        let mut out = [0.0f64; 8];
+        out[..4].copy_from_slice(&self.0.to_array());
+        out[4..].copy_from_slice(&self.1.to_array());
+        out
+    }
+    #[inline(always)] pub fn copy_to_slice(self, s: &mut [f64]) {
+        assert!(s.len() >= 8);
+        self.0.copy_to_slice(&mut s[..4]);
+        self.1.copy_to_slice(&mut s[4..8]);
+    }
+    #[inline(always)] pub fn reduce_sum(self) -> f64 { self.0.reduce_sum() + self.1.reduce_sum() }
+    #[inline(always)] pub fn reduce_min(self) -> f64 { let a = self.to_array(); a.iter().copied().fold(f64::INFINITY, f64::min) }
+    #[inline(always)] pub fn reduce_max(self) -> f64 { let a = self.to_array(); a.iter().copied().fold(f64::NEG_INFINITY, f64::max) }
+    #[inline(always)] pub fn abs(self) -> Self { let a = self.to_array(); let mut o = [0.0f64; 8]; for i in 0..8 { o[i] = a[i].abs(); } Self::from_array(o) }
+    #[inline(always)] pub fn sqrt(self) -> Self { let a = self.to_array(); let mut o = [0.0f64; 8]; for i in 0..8 { o[i] = a[i].sqrt(); } Self::from_array(o) }
+    #[inline(always)] pub fn round(self) -> Self { let a = self.to_array(); let mut o = [0.0f64; 8]; for i in 0..8 { o[i] = a[i].round(); } Self::from_array(o) }
+    #[inline(always)] pub fn floor(self) -> Self { let a = self.to_array(); let mut o = [0.0f64; 8]; for i in 0..8 { o[i] = a[i].floor(); } Self::from_array(o) }
+    #[inline(always)] pub fn mul_add(self, b: Self, c: Self) -> Self {
+        let a = self.to_array(); let ba = b.to_array(); let ca = c.to_array();
+        let mut o = [0.0f64; 8]; for i in 0..8 { o[i] = a[i].mul_add(ba[i], ca[i]); } Self::from_array(o)
+    }
+    #[inline(always)] pub fn simd_min(self, other: Self) -> Self { let a = self.to_array(); let b = other.to_array(); let mut o = [0.0f64; 8]; for i in 0..8 { o[i] = a[i].min(b[i]); } Self::from_array(o) }
+    #[inline(always)] pub fn simd_max(self, other: Self) -> Self { let a = self.to_array(); let b = other.to_array(); let mut o = [0.0f64; 8]; for i in 0..8 { o[i] = a[i].max(b[i]); } Self::from_array(o) }
+    #[inline(always)] pub fn simd_clamp(self, lo: Self, hi: Self) -> Self { self.simd_max(lo).simd_min(hi) }
+    #[inline(always)] pub fn simd_ge(self, other: Self) -> F64Mask8 {
+        let a = self.to_array(); let b = other.to_array();
+        let mut bits: u8 = 0; for i in 0..8 { if a[i] >= b[i] { bits |= 1 << i; } } F64Mask8(bits)
+    }
+    #[inline(always)] pub fn simd_le(self, other: Self) -> F64Mask8 {
+        let a = self.to_array(); let b = other.to_array();
+        let mut bits: u8 = 0; for i in 0..8 { if a[i] <= b[i] { bits |= 1 << i; } } F64Mask8(bits)
+    }
+    #[inline(always)] pub fn to_bits(self) -> U64x8 {
+        let a = self.to_array(); let mut o = [0u64; 8]; for i in 0..8 { o[i] = a[i].to_bits(); } U64x8(o)
+    }
+    #[inline(always)] pub fn from_bits(bits: U64x8) -> Self {
+        let mut o = [0.0f64; 8]; for i in 0..8 { o[i] = f64::from_bits(bits.0[i]); } Self::from_array(o)
+    }
+}
+
+impl Add for F64x8 { type Output = Self; #[inline(always)] fn add(self, rhs: Self) -> Self { Self(self.0 + rhs.0, self.1 + rhs.1) } }
+impl Sub for F64x8 { type Output = Self; #[inline(always)] fn sub(self, rhs: Self) -> Self { Self(self.0 - rhs.0, self.1 - rhs.1) } }
+impl Mul for F64x8 { type Output = Self; #[inline(always)] fn mul(self, rhs: Self) -> Self { Self(self.0 * rhs.0, self.1 * rhs.1) } }
+impl Div for F64x8 { type Output = Self; #[inline(always)] fn div(self, rhs: Self) -> Self { Self(self.0 / rhs.0, self.1 / rhs.1) } }
+impl AddAssign for F64x8 { #[inline(always)] fn add_assign(&mut self, rhs: Self) { *self = *self + rhs; } }
+impl SubAssign for F64x8 { #[inline(always)] fn sub_assign(&mut self, rhs: Self) { *self = *self - rhs; } }
+impl MulAssign for F64x8 { #[inline(always)] fn mul_assign(&mut self, rhs: Self) { *self = *self * rhs; } }
+impl DivAssign for F64x8 { #[inline(always)] fn div_assign(&mut self, rhs: Self) { *self = *self / rhs; } }
+impl Neg for F64x8 { type Output = Self; #[inline(always)] fn neg(self) -> Self { let a = self.to_array(); let mut o = [0.0f64; 8]; for i in 0..8 { o[i] = -a[i]; } Self::from_array(o) } }
+impl fmt::Debug for F64x8 { fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "F64x8({:?})", self.to_array()) } }
+impl PartialEq for F64x8 { fn eq(&self, other: &Self) -> bool { self.to_array() == other.to_array() } }
+impl Default for F64x8 { fn default() -> Self { Self::splat(0.0) } }
+
+#[derive(Copy, Clone, Debug)]
+pub struct F64Mask8(pub u8);
+impl F64Mask8 {
+    #[inline(always)]
+    pub fn select(self, true_val: F64x8, false_val: F64x8) -> F64x8 {
+        let t = true_val.to_array(); let f = false_val.to_array();
+        let mut o = [0.0f64; 8];
+        for i in 0..8 { o[i] = if (self.0 >> i) & 1 == 1 { t[i] } else { f[i] }; }
+        F64x8::from_array(o)
+    }
+}
+
+// ── Integer types: array-backed, use scalar ops (no AVX2 integer 512-bit) ──
+
+macro_rules! avx2_int_type {
+    ($name:ident, $elem:ty, $lanes:expr, $zero:expr) => {
+        #[derive(Copy, Clone)]
+        #[repr(align(64))]
+        pub struct $name(pub [$elem; $lanes]);
+
+        impl Default for $name { #[inline(always)] fn default() -> Self { Self([$zero; $lanes]) } }
+        impl $name {
+            pub const LANES: usize = $lanes;
+            #[inline(always)] pub fn splat(v: $elem) -> Self { Self([v; $lanes]) }
+            #[inline(always)] pub fn from_slice(s: &[$elem]) -> Self { assert!(s.len() >= $lanes); let mut a = [$zero; $lanes]; a.copy_from_slice(&s[..$lanes]); Self(a) }
+            #[inline(always)] pub fn from_array(a: [$elem; $lanes]) -> Self { Self(a) }
+            #[inline(always)] pub fn to_array(self) -> [$elem; $lanes] { self.0 }
+            #[inline(always)] pub fn copy_to_slice(self, s: &mut [$elem]) { assert!(s.len() >= $lanes); s[..$lanes].copy_from_slice(&self.0); }
+            #[inline(always)] pub fn reduce_sum(self) -> $elem { let mut s: $elem = $zero; for i in 0..$lanes { s = s.wrapping_add(self.0[i]); } s }
+        }
+        impl Add for $name { type Output = Self; #[inline(always)] fn add(self, r: Self) -> Self { let mut o = [$zero; $lanes]; for i in 0..$lanes { o[i] = self.0[i].wrapping_add(r.0[i]); } Self(o) } }
+        impl Sub for $name { type Output = Self; #[inline(always)] fn sub(self, r: Self) -> Self { let mut o = [$zero; $lanes]; for i in 0..$lanes { o[i] = self.0[i].wrapping_sub(r.0[i]); } Self(o) } }
+        impl BitAnd for $name { type Output = Self; #[inline(always)] fn bitand(self, r: Self) -> Self { let mut o = [$zero; $lanes]; for i in 0..$lanes { o[i] = self.0[i] & r.0[i]; } Self(o) } }
+        impl BitOr for $name { type Output = Self; #[inline(always)] fn bitor(self, r: Self) -> Self { let mut o = [$zero; $lanes]; for i in 0..$lanes { o[i] = self.0[i] | r.0[i]; } Self(o) } }
+        impl BitXor for $name { type Output = Self; #[inline(always)] fn bitxor(self, r: Self) -> Self { let mut o = [$zero; $lanes]; for i in 0..$lanes { o[i] = self.0[i] ^ r.0[i]; } Self(o) } }
+        impl BitAndAssign for $name { #[inline(always)] fn bitand_assign(&mut self, r: Self) { for i in 0..$lanes { self.0[i] &= r.0[i]; } } }
+        impl BitOrAssign for $name { #[inline(always)] fn bitor_assign(&mut self, r: Self) { for i in 0..$lanes { self.0[i] |= r.0[i]; } } }
+        impl BitXorAssign for $name { #[inline(always)] fn bitxor_assign(&mut self, r: Self) { for i in 0..$lanes { self.0[i] ^= r.0[i]; } } }
+        impl Not for $name { type Output = Self; #[inline(always)] fn not(self) -> Self { let mut o = [$zero; $lanes]; for i in 0..$lanes { o[i] = !self.0[i]; } Self(o) } }
+        impl AddAssign for $name { #[inline(always)] fn add_assign(&mut self, r: Self) { for i in 0..$lanes { self.0[i] = self.0[i].wrapping_add(r.0[i]); } } }
+        impl SubAssign for $name { #[inline(always)] fn sub_assign(&mut self, r: Self) { for i in 0..$lanes { self.0[i] = self.0[i].wrapping_sub(r.0[i]); } } }
+        impl fmt::Debug for $name { fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, concat!(stringify!($name), "({:?})"), &self.0[..]) } }
+        impl PartialEq for $name { fn eq(&self, other: &Self) -> bool { self.0 == other.0 } }
+    };
+}
+
+avx2_int_type!(U8x64, u8, 64, 0u8);
+avx2_int_type!(I32x16, i32, 16, 0i32);
+avx2_int_type!(I64x8, i64, 8, 0i64);
+avx2_int_type!(U32x16, u32, 16, 0u32);
+avx2_int_type!(U64x8, u64, 8, 0u64);
+
+impl I32x16 {
+    #[inline(always)] pub fn reduce_min(self) -> i32 { *self.0.iter().min().unwrap() }
+    #[inline(always)] pub fn reduce_max(self) -> i32 { *self.0.iter().max().unwrap() }
+    #[inline(always)] pub fn simd_min(self, other: Self) -> Self { let mut o = [0i32; 16]; for i in 0..16 { o[i] = self.0[i].min(other.0[i]); } Self(o) }
+    #[inline(always)] pub fn simd_max(self, other: Self) -> Self { let mut o = [0i32; 16]; for i in 0..16 { o[i] = self.0[i].max(other.0[i]); } Self(o) }
+    #[inline(always)] pub fn cast_f32(self) -> F32x16 { let mut o = [0.0f32; 16]; for i in 0..16 { o[i] = self.0[i] as f32; } F32x16::from_array(o) }
+    #[inline(always)] pub fn abs(self) -> Self { let mut o = [0i32; 16]; for i in 0..16 { o[i] = self.0[i].abs(); } Self(o) }
+}
+impl Mul for I32x16 { type Output = Self; #[inline(always)] fn mul(self, r: Self) -> Self { let mut o = [0i32; 16]; for i in 0..16 { o[i] = self.0[i].wrapping_mul(r.0[i]); } Self(o) } }
+impl MulAssign for I32x16 { #[inline(always)] fn mul_assign(&mut self, r: Self) { *self = *self * r; } }
+impl Neg for I32x16 { type Output = Self; #[inline(always)] fn neg(self) -> Self { let mut o = [0i32; 16]; for i in 0..16 { o[i] = -self.0[i]; } Self(o) } }
+
+impl I64x8 {
+    #[inline(always)] pub fn reduce_min(self) -> i64 { *self.0.iter().min().unwrap() }
+    #[inline(always)] pub fn reduce_max(self) -> i64 { *self.0.iter().max().unwrap() }
+    #[inline(always)] pub fn simd_min(self, other: Self) -> Self { let mut o = [0i64; 8]; for i in 0..8 { o[i] = self.0[i].min(other.0[i]); } Self(o) }
+    #[inline(always)] pub fn simd_max(self, other: Self) -> Self { let mut o = [0i64; 8]; for i in 0..8 { o[i] = self.0[i].max(other.0[i]); } Self(o) }
+}
+
+/// Lowercase aliases (std::simd convention)
+pub type f32x16 = F32x16;
+pub type f64x8 = F64x8;
+pub type u8x64 = U8x64;
+pub type i32x16 = I32x16;
+pub type i64x8 = I64x8;
+pub type u32x16 = U32x16;
+pub type u64x8 = U64x8;
+
 #[cfg(test)]
 mod tests {
     use super::*;

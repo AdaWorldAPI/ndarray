@@ -48,6 +48,8 @@ libc = { version = "0.2.82", optional = true }
 
 matrixmultiply = { version = "0.3.2", default-features = false, features=["cgemm"] }
 blake3 = "1"
+p64 = { path = "crates/p64" }
+phyllotactic-manifold = { path = "crates/phyllotactic-manifold" }
 
 serde = { version = "1.0", optional = true, default-features = false, features = ["alloc"] }
 rawpointer = { version = "0.2" }
@@ -105,11 +107,7 @@ members = [
     "ndarray-rand",
     "crates/*",
 ]
-exclude = [
-    # burn crate requires edition 2024 (Rust 1.85+) and pinned git deps.
-    # Built separately: cargo check --manifest-path crates/burn/Cargo.toml
-    "crates/burn",
-]
+exclude = []
 default-members = [
     ".",
     "ndarray-rand",

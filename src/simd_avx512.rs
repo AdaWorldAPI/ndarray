@@ -1259,6 +1259,36 @@ impl MulAssign for F32x8 {
     }
 }
 
+impl Sub for F32x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn sub(self, rhs: Self) -> Self {
+        Self(unsafe { _mm256_sub_ps(self.0, rhs.0) })
+    }
+}
+
+impl SubAssign for F32x8 {
+    #[inline(always)]
+    fn sub_assign(&mut self, rhs: Self) {
+        self.0 = unsafe { _mm256_sub_ps(self.0, rhs.0) };
+    }
+}
+
+impl Div for F32x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn div(self, rhs: Self) -> Self {
+        Self(unsafe { _mm256_div_ps(self.0, rhs.0) })
+    }
+}
+
+impl DivAssign for F32x8 {
+    #[inline(always)]
+    fn div_assign(&mut self, rhs: Self) {
+        self.0 = unsafe { _mm256_div_ps(self.0, rhs.0) };
+    }
+}
+
 impl fmt::Debug for F32x8 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "F32x8({:?})", self.to_array())
@@ -1357,6 +1387,36 @@ impl MulAssign for F64x4 {
     #[inline(always)]
     fn mul_assign(&mut self, rhs: Self) {
         self.0 = unsafe { _mm256_mul_pd(self.0, rhs.0) };
+    }
+}
+
+impl Sub for F64x4 {
+    type Output = Self;
+    #[inline(always)]
+    fn sub(self, rhs: Self) -> Self {
+        Self(unsafe { _mm256_sub_pd(self.0, rhs.0) })
+    }
+}
+
+impl SubAssign for F64x4 {
+    #[inline(always)]
+    fn sub_assign(&mut self, rhs: Self) {
+        self.0 = unsafe { _mm256_sub_pd(self.0, rhs.0) };
+    }
+}
+
+impl Div for F64x4 {
+    type Output = Self;
+    #[inline(always)]
+    fn div(self, rhs: Self) -> Self {
+        Self(unsafe { _mm256_div_pd(self.0, rhs.0) })
+    }
+}
+
+impl DivAssign for F64x4 {
+    #[inline(always)]
+    fn div_assign(&mut self, rhs: Self) {
+        self.0 = unsafe { _mm256_div_pd(self.0, rhs.0) };
     }
 }
 
