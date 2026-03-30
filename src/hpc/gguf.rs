@@ -425,8 +425,11 @@ fn f16_to_f32(bits: u16) -> f32 {
             e -= 1;
         }
         m &= 0x3FF;
-        let f32_exp = (127i32 - 15 + 1 + e).max(0) as u32;
-        let f32_bits = (sign << 31) | ((f32_exp & 0xFF) << 23) | (m << 13);
+        // f16 bias=15, f32 bias=127. Subnormal f16 has implicit exponent 1-15=-14.
+        // After normalizing mantissa (e shifts), f32 exponent = 127 + (1-15) + e = 113 + e.
+        // Minimum e = -10 (mantissa 0x001), giving f32_exp = 103. Always valid.
+        let f32_exp = (113 + e) as u32;
+        let f32_bits = (sign << 31) | (f32_exp << 23) | (m << 13);
         return f32::from_bits(f32_bits);
     }
     if exp == 31 {
