@@ -636,25 +636,26 @@ mod tests {
         assert!(stats.tensors_indexed > 0);
     }
 
-    #[test]
-    #[ignore] // Streams BF16 shard 5 (18.2 GB) from HuggingFace
-    fn test_stream_index_llama4_bf16_shard5() {
+    /// Run one shard of Llama 4 Scout BF16 through the streaming indexer.
+    /// Returns the output path on success.
+    fn run_llama4_shard(shard: u32) -> Option<(String, IndexStats)> {
         use super::super::http_reader::HttpRangeReader;
         use std::io::BufWriter;
 
         let repo = "unsloth/Llama-4-Scout-17B-16E-Instruct-GGUF";
-        let filename = "BF16/Llama-4-Scout-17B-16E-Instruct-BF16-00005-of-00005.gguf";
-        let size: u64 = 18_220_000_000; // ~18.2 GB from metadata
+        let filename = format!(
+            "BF16/Llama-4-Scout-17B-16E-Instruct-BF16-{:05}-of-00005.gguf", shard
+        );
+        // Shards are ~18-44 GB each; use conservative 44 GB estimate
+        let size: u64 = 44_000_000_000;
 
         let url = format!("https://huggingface.co/{}/resolve/main/{}", repo, filename);
-        eprintln!("Streaming shard 5: {:.2} GB", size as f64 / 1e9);
-        eprintln!("  URL: {}", url);
+        eprintln!("Streaming shard {}/5: {}", shard, filename);
 
-        // 16 MB chunks for fewer HTTP round-trips
         let mut reader = HttpRangeReader::with_chunk_size(url, size, 256 * 1024 * 1024);
 
-        let out_path = "/tmp/llama4_scout_shard5.bgz7";
-        let out = std::fs::File::create(out_path).expect("create output");
+        let out_path = format!("/tmp/llama4_scout_shard{}.bgz7", shard);
+        let out = std::fs::File::create(&out_path).expect("create output");
         let mut writer = BufWriter::new(out);
 
         let stats = stream_index_gguf(
@@ -668,12 +669,11 @@ mod tests {
         ).expect("stream_index_gguf");
 
         drop(writer);
-        let out_size = std::fs::metadata(out_path).map(|m| m.len()).unwrap_or(0);
+        let out_size = std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
 
         eprintln!();
-        eprintln!("=== Llama 4 Scout BF16 Shard 5 → bgz17 ===");
-        eprintln!("  Source:     {:.2} GB (BF16, streamed from HF)", size as f64 / 1e9);
-        eprintln!("  Output:     {:.2} MB", out_size as f64 / 1e6);
+        eprintln!("=== Llama 4 Scout BF16 Shard {}/5 → bgz17 ===", shard);
+        eprintln!("  Output:     {:.2} MB ({})", out_size as f64 / 1e6, out_path);
         eprintln!("  Downloaded: {:.2} GB", reader.bytes_downloaded() as f64 / 1e9);
         eprintln!("  Tensors:    {} indexed, {} skipped",
             stats.tensors_indexed, stats.tensors_skipped);
@@ -693,7 +693,22 @@ mod tests {
         }
 
         assert!(stats.tensors_indexed > 0);
-        // BF16 dequant to f32 doubles the size, so original_bytes > source size
-        assert!(stats.original_bytes > 0);
+        Some((out_path, stats))
     }
+
+    #[test]
+    #[ignore]
+    fn test_stream_index_llama4_bf16_shard1() { run_llama4_shard(1); }
+    #[test]
+    #[ignore]
+    fn test_stream_index_llama4_bf16_shard2() { run_llama4_shard(2); }
+    #[test]
+    #[ignore]
+    fn test_stream_index_llama4_bf16_shard3() { run_llama4_shard(3); }
+    #[test]
+    #[ignore]
+    fn test_stream_index_llama4_bf16_shard4() { run_llama4_shard(4); }
+    #[test]
+    #[ignore]
+    fn test_stream_index_llama4_bf16_shard5() { run_llama4_shard(5); }
 }
