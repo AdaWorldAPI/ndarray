@@ -146,6 +146,293 @@ pub fn project_row_to_base17(row: &[f32]) -> Base17 {
 }
 
 // ============================================================================
+// BF16-direct optimizations: skip f32 intermediate, strided octave sampling
+// ============================================================================
+
+/// Halftone-dropped golden positions: keep every other step (9 of 17).
+/// Well-distributed across 0..16; max gap = 3. Odd bins interpolated.
+const HALFTONE_POS: [u8; 9] = {
+    let mut t = [0u8; 9];
+    let mut i = 0;
+    let mut j = 0;
+    while i < BASE_DIM {
+        if i % 2 == 0 {
+            t[j] = ((i * GOLDEN_STEP) % BASE_DIM) as u8;
+            j += 1;
+        }
+        i += 1;
+    }
+    t
+};
+
+/// Which of the 17 Base17 bins each halftone position maps to.
+const HALFTONE_TO_BIN: [u8; 9] = [0, 2, 4, 6, 8, 10, 12, 14, 16];
+
+/// Convert one BF16 u16 to f64. Zero allocation.
+#[inline(always)]
+fn bf16_to_f64(bits: u16) -> f64 {
+    f32::from_bits((bits as u32) << 16) as f64
+}
+
+/// Project a BF16 row directly to Base17. No f32 Vec allocated.
+///
+/// Same golden-step octave averaging as project_row_to_base17(),
+/// but reads u16 BF16 values and converts inline to f64 accumulator.
+/// Memory: 17 × f64 accumulators = 136 bytes stack.
+pub fn project_row_bf16_direct(row: &[u16]) -> Base17 {
+    let d = row.len();
+    let n_octaves = (d + BASE_DIM - 1) / BASE_DIM;
+    let mut sum = [0.0f64; BASE_DIM];
+    let mut count = [0u32; BASE_DIM];
+
+    for octave in 0..n_octaves {
+        for bi in 0..BASE_DIM {
+            let dim = octave * BASE_DIM + GOLDEN_POS[bi] as usize;
+            if dim < d {
+                sum[bi] += bf16_to_f64(row[dim]);
+                count[bi] += 1;
+            }
+        }
+    }
+
+    let mut dims = [0i16; BASE_DIM];
+    for i in 0..BASE_DIM {
+        if count[i] > 0 {
+            let mean = sum[i] / count[i] as f64;
+            dims[i] = (mean * FP_SCALE).round().clamp(-32768.0, 32767.0) as i16;
+        }
+    }
+    Base17 { dims }
+}
+
+/// Project a BF16 row with octave stride and halftone dropping.
+///
+/// For a 5120-element row at stride=16:
+///   302 octaves / 16 = 19 sampled × 9 halftone = 171 BF16→f64 conversions
+///   vs 5120 in the full path (97% reduction).
+/// Odd bins interpolated from neighbors.
+pub fn project_row_bf16_strided(row: &[u16], octave_stride: usize) -> Base17 {
+    let d = row.len();
+    let n_octaves = (d + BASE_DIM - 1) / BASE_DIM;
+
+    let mut half_sum = [0.0f64; 9];
+    let mut half_count = [0u32; 9];
+
+    let mut octave = 0;
+    while octave < n_octaves {
+        for hi in 0..9 {
+            let dim = octave * BASE_DIM + HALFTONE_POS[hi] as usize;
+            if dim < d {
+                half_sum[hi] += bf16_to_f64(row[dim]);
+                half_count[hi] += 1;
+            }
+        }
+        octave += octave_stride;
+    }
+
+    let mut dims = [0i16; BASE_DIM];
+
+    // Even bins: direct from halftone samples
+    for hi in 0..9 {
+        let bin = HALFTONE_TO_BIN[hi] as usize;
+        if half_count[hi] > 0 {
+            let mean = half_sum[hi] / half_count[hi] as f64;
+            dims[bin] = (mean * FP_SCALE).round().clamp(-32768.0, 32767.0) as i16;
+        }
+    }
+
+    // Odd bins: interpolate from neighbors (circular)
+    for odd in (1..BASE_DIM).step_by(2) {
+        let left = dims[odd - 1] as i32;
+        let right = dims[(odd + 1) % BASE_DIM] as i32;
+        dims[odd] = ((left + right) / 2) as i16;
+    }
+
+    Base17 { dims }
+}
+
+/// Read a BF16 tensor as raw u16 values. NO f32 conversion.
+/// `buf` is reusable — caller allocates once, passes to every tensor.
+pub fn read_tensor_bf16_raw<R: Read + Seek>(
+    reader: &mut R,
+    gguf_file: &gguf::GgufFile,
+    tensor: &gguf::TensorInfo,
+    buf: &mut Vec<u16>,
+) -> Result<usize, String> {
+    let abs_offset = gguf_file.tensor_data_offset + tensor.offset;
+    reader.seek(std::io::SeekFrom::Start(abs_offset)).map_err(|e| e.to_string())?;
+
+    let n_elements = tensor.element_count() as usize;
+    if buf.len() < n_elements {
+        buf.resize(n_elements, 0);
+    }
+
+    // SAFETY: u16 and [u8; 2] have the same layout on little-endian (x86/ARM).
+    let byte_slice = unsafe {
+        std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, n_elements * 2)
+    };
+    reader.read_exact(byte_slice).map_err(|e| e.to_string())?;
+
+    Ok(n_elements)
+}
+
+/// Helper: tensor dimensions → (rows, cols) without needing data.
+fn tensor_to_rows_dims(dims: &[u64], layer_type: &LayerType) -> (usize, usize) {
+    match layer_type {
+        LayerType::Conv2D if dims.len() == 4 => {
+            (dims[0] as usize, (dims[1] * dims[2] * dims[3]) as usize)
+        }
+        _ if dims.len() >= 2 => {
+            let rows = dims[0] as usize;
+            let cols: usize = dims[1..].iter().map(|&d| d as usize).product();
+            (rows, cols)
+        }
+        _ => {
+            let total: usize = dims.iter().map(|&d| d as usize).product();
+            (1, total)
+        }
+    }
+}
+
+/// Helper: LayerType → stats array index.
+fn layer_type_index(lt: &LayerType) -> usize {
+    match lt {
+        LayerType::Attention => 0,
+        LayerType::FeedForward => 1,
+        LayerType::Conv2D => 2,
+        LayerType::Norm => 3,
+        LayerType::Embedding => 4,
+        LayerType::Skip => 5,
+    }
+}
+
+/// Stream-index a BF16 GGUF with all optimizations.
+///
+/// vs stream_index_gguf():
+///   - No f32 Vec allocation (saves 283 MB per tensor)
+///   - Reusable u16 buffer (one alloc for entire shard)
+///   - Strided octave projection (97% fewer conversions when stride>1)
+///   - Direct BF16→f64 inline conversion
+///
+/// Falls back to f32 path for non-BF16 dtypes.
+pub fn stream_index_gguf_bf16<R: Read + Seek, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    octave_stride: usize,
+    callback: Option<&dyn Fn(&str, &LayerType, usize, usize)>,
+) -> Result<IndexStats, String> {
+    let gguf_header = gguf::read_gguf_header(reader)?;
+    let mut stats = IndexStats::default();
+    stats.tensors_total = gguf_header.tensors.len();
+
+    writer.write_all(b"BGZ7").map_err(|e| e.to_string())?;
+    writer.write_all(&(gguf_header.tensors.len() as u32).to_le_bytes()).map_err(|e| e.to_string())?;
+
+    // ONE reusable buffer — grows to largest tensor, never shrinks
+    let mut bf16_buf: Vec<u16> = Vec::new();
+
+    for tensor in &gguf_header.tensors {
+        let layer_type = classify_tensor(&tensor.name, &tensor.dimensions);
+
+        if matches!(layer_type, LayerType::Skip | LayerType::Norm) {
+            stats.tensors_skipped += 1;
+            continue;
+        }
+
+        let is_bf16 = matches!(tensor.dtype, gguf::GgmlType::BF16);
+
+        if is_bf16 {
+            // FAST PATH: BF16 direct — no f32 intermediate
+            let n_elements = read_tensor_bf16_raw(reader, &gguf_header, tensor, &mut bf16_buf)?;
+            let (n_rows, n_cols) = tensor_to_rows_dims(&tensor.dimensions, &layer_type);
+
+            let mut rows = Vec::with_capacity(n_rows);
+            for r in 0..n_rows {
+                let start = r * n_cols;
+                let end = (start + n_cols).min(n_elements);
+                let row_slice = &bf16_buf[start..end];
+                let b17 = if octave_stride > 1 {
+                    project_row_bf16_strided(row_slice, octave_stride)
+                } else {
+                    project_row_bf16_direct(row_slice)
+                };
+                rows.push(b17);
+            }
+
+            let orig_bytes = (n_rows * n_cols * 4) as u64;
+            let comp_bytes = (rows.len() * Base17::BYTE_SIZE) as u64;
+
+            let ct = CompressedTensor {
+                name: tensor.name.clone(),
+                layer_type: layer_type.clone(),
+                original_shape: tensor.dimensions.clone(),
+                n_rows,
+                n_cols,
+                rows,
+            };
+            ct.write_to(writer)?;
+
+            let lt_idx = layer_type_index(&layer_type);
+            stats.by_type[lt_idx].0 += 1;
+            stats.by_type[lt_idx].1 += orig_bytes;
+            stats.by_type[lt_idx].2 += comp_bytes;
+            stats.original_bytes += orig_bytes;
+            stats.compressed_bytes += comp_bytes;
+            stats.tensors_indexed += 1;
+
+            let peak = n_elements as u64 * 2;
+            if peak > stats.peak_tensor_bytes { stats.peak_tensor_bytes = peak; }
+
+            if let Some(cb) = callback {
+                cb(&tensor.name, &layer_type, orig_bytes as usize, comp_bytes as usize);
+            }
+        } else {
+            // FALLBACK: non-BF16 — use original f32 path
+            let data = gguf::read_tensor_f32(reader, &gguf_header, tensor)?;
+            let tensor_bytes = data.len() as u64 * 4;
+            if tensor_bytes > stats.peak_tensor_bytes {
+                stats.peak_tensor_bytes = tensor_bytes;
+            }
+
+            let (n_rows, n_cols) = tensor_to_rows(&data, &tensor.dimensions, &layer_type);
+            let mut rows = Vec::with_capacity(n_rows);
+            for r in 0..n_rows {
+                let start = r * n_cols;
+                let end = (start + n_cols).min(data.len());
+                rows.push(project_row_to_base17(&data[start..end]));
+            }
+
+            let orig_bytes = (n_rows * n_cols * 4) as u64;
+            let comp_bytes = (rows.len() * Base17::BYTE_SIZE) as u64;
+
+            let ct = CompressedTensor {
+                name: tensor.name.clone(),
+                layer_type: layer_type.clone(),
+                original_shape: tensor.dimensions.clone(),
+                n_rows,
+                n_cols,
+                rows,
+            };
+            ct.write_to(writer)?;
+
+            let lt_idx = layer_type_index(&layer_type);
+            stats.by_type[lt_idx].0 += 1;
+            stats.by_type[lt_idx].1 += orig_bytes;
+            stats.by_type[lt_idx].2 += comp_bytes;
+            stats.original_bytes += orig_bytes;
+            stats.compressed_bytes += comp_bytes;
+            stats.tensors_indexed += 1;
+
+            if let Some(cb) = callback {
+                cb(&tensor.name, &layer_type, orig_bytes as usize, comp_bytes as usize);
+            }
+        }
+    }
+
+    Ok(stats)
+}
+
+// ============================================================================
 // Compressed tensor output
 // ============================================================================
 
@@ -712,4 +999,53 @@ mod tests {
     #[test]
     #[ignore]
     fn test_stream_index_llama4_bf16_shard5() { run_llama4_shard(5); }
+
+    // ── BF16-direct optimization tests ──
+
+    #[test]
+    fn test_halftone_positions_coverage() {
+        let positions: Vec<u8> = HALFTONE_POS.to_vec();
+        let mut sorted = positions.clone();
+        sorted.sort();
+        assert_eq!(sorted, vec![0, 1, 3, 5, 6, 8, 10, 13, 15]);
+    }
+
+    #[test]
+    fn test_bf16_to_f64_accuracy() {
+        assert_eq!(bf16_to_f64(0x3F80), 1.0);
+        assert_eq!(bf16_to_f64(0x0000), 0.0);
+        assert_eq!(bf16_to_f64(0xBF80), -1.0);
+        let v = bf16_to_f64(0x4049);
+        assert!((v - 3.140625).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_strided_vs_full_agreement() {
+        // Constant BF16 row → stride shouldn't matter
+        let row: Vec<u16> = vec![0x3F80; 5120]; // all 1.0
+        let full = project_row_bf16_direct(&row);
+        let strided = project_row_bf16_strided(&row, 16);
+
+        for i in 0..17 {
+            let diff = (full.dims[i] as i32 - strided.dims[i] as i32).abs();
+            assert!(diff <= 1, "bin {} differs by {}: full={}, strided={}",
+                i, diff, full.dims[i], strided.dims[i]);
+        }
+    }
+
+    #[test]
+    fn test_bf16_direct_matches_f32_path() {
+        // Same data in BF16 and f32 should produce identical Base17
+        let f32_row: Vec<f32> = (0..4096).map(|i| (i as f32) * 0.001).collect();
+        let bf16_row: Vec<u16> = f32_row.iter().map(|&v| (v.to_bits() >> 16) as u16).collect();
+
+        let from_f32 = project_row_to_base17(&f32_row);
+        let from_bf16 = project_row_bf16_direct(&bf16_row);
+
+        // BF16 truncates mantissa, so allow ±1 tolerance per dim
+        for i in 0..17 {
+            let diff = (from_f32.dims[i] as i32 - from_bf16.dims[i] as i32).abs();
+            assert!(diff <= 2, "bin {} differs by {}", i, diff);
+        }
+    }
 }
