@@ -20,7 +20,7 @@
 
 use super::bgz17_bridge::Base17;
 use super::gguf::{self, GgufFile, TensorInfo, GgmlType};
-use std::io::{Read, Seek, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 
 // ============================================================================
 // Layer classification
@@ -100,8 +100,8 @@ pub fn classify_tensor(name: &str, dims: &[u64]) -> LayerType {
 // ============================================================================
 
 const BASE_DIM: usize = 17;
-/// Golden-step = round(17 / φ) = round(17 / 1.618) = 11. gcd(11,17)=1 → visits all residues.
-const GOLDEN_STEP: usize = 11;
+/// round(17 / φ) = 11 — maximally irrational stride across BASE_DIM positions.
+const GOLDEN_STEP: usize = (BASE_DIM as f64 / std::f64::consts::GOLDEN_RATIO + 0.5) as usize;
 const FP_SCALE: f64 = 256.0;
 
 /// Golden-step position table (compile-time).
@@ -251,6 +251,207 @@ pub fn project_row_bf16_strided(row: &[u16], octave_stride: usize) -> Base17 {
     Base17 { dims }
 }
 
+// ── F64x8 SIMD: 8 rows → 8 Base17 in parallel ──
+
+/// Gather 8 BF16 values from 8 rows at the same column, convert to F64x8.
+///
+/// The gather is scalar (8 indexed loads) but the result is SIMD.
+/// At -O2 with AVX-512, rustc may emit vpgatherqd + shift + vcvtps2pd.
+#[inline(always)]
+fn gather_bf16_x8(buf: &[u16], offsets: &[usize; 8]) -> crate::simd::F64x8 {
+    crate::simd::F64x8::from_array([
+        bf16_to_f64(buf[offsets[0]]),
+        bf16_to_f64(buf[offsets[1]]),
+        bf16_to_f64(buf[offsets[2]]),
+        bf16_to_f64(buf[offsets[3]]),
+        bf16_to_f64(buf[offsets[4]]),
+        bf16_to_f64(buf[offsets[5]]),
+        bf16_to_f64(buf[offsets[6]]),
+        bf16_to_f64(buf[offsets[7]]),
+    ])
+}
+
+/// Project 8 BF16 rows simultaneously to 8 Base17 patterns.
+///
+/// Memory: 17 × F64x8 accumulators on stack = 17 × 64 = 1088 bytes.
+pub fn project_8rows_bf16_simd(
+    buf: &[u16],
+    row_starts: &[usize; 8],
+    n_cols: usize,
+    octave_stride: usize,
+) -> [Base17; 8] {
+    use crate::simd::F64x8;
+
+    let n_octaves = (n_cols + BASE_DIM - 1) / BASE_DIM;
+    let use_halftone = octave_stride > 1;
+
+    let mut sums: [F64x8; BASE_DIM] = [F64x8::splat(0.0); BASE_DIM];
+    let mut counts: [u32; BASE_DIM] = [0; BASE_DIM];
+
+    if use_halftone {
+        let mut octave = 0;
+        while octave < n_octaves {
+            for hi in 0..9 {
+                let col = octave * BASE_DIM + HALFTONE_POS[hi] as usize;
+                if col < n_cols {
+                    let bin = HALFTONE_TO_BIN[hi] as usize;
+                    let offsets: [usize; 8] = [
+                        row_starts[0] + col, row_starts[1] + col,
+                        row_starts[2] + col, row_starts[3] + col,
+                        row_starts[4] + col, row_starts[5] + col,
+                        row_starts[6] + col, row_starts[7] + col,
+                    ];
+                    sums[bin] += gather_bf16_x8(buf, &offsets);
+                    counts[bin] += 1;
+                }
+            }
+            octave += octave_stride;
+        }
+
+        // Interpolate odd bins from even neighbors (per-lane, still SIMD)
+        for odd in (1..BASE_DIM).step_by(2) {
+            let left = sums[odd - 1];
+            let right = sums[(odd + 1) % BASE_DIM];
+            let left_c = counts[odd - 1].max(1);
+            let right_c = counts[(odd + 1) % BASE_DIM].max(1);
+            let left_mean = left * F64x8::splat(1.0 / left_c as f64);
+            let right_mean = right * F64x8::splat(1.0 / right_c as f64);
+            sums[odd] = (left_mean + right_mean) * F64x8::splat(0.5);
+            counts[odd] = 1;
+        }
+    } else {
+        for octave in 0..n_octaves {
+            for bi in 0..BASE_DIM {
+                let col = octave * BASE_DIM + GOLDEN_POS[bi] as usize;
+                if col < n_cols {
+                    let offsets: [usize; 8] = [
+                        row_starts[0] + col, row_starts[1] + col,
+                        row_starts[2] + col, row_starts[3] + col,
+                        row_starts[4] + col, row_starts[5] + col,
+                        row_starts[6] + col, row_starts[7] + col,
+                    ];
+                    sums[bi] += gather_bf16_x8(buf, &offsets);
+                    counts[bi] += 1;
+                }
+            }
+        }
+    }
+
+    // Finalize: mean → scale → clamp → i16, all 8 lanes parallel
+    let lo = F64x8::splat(-32768.0);
+    let hi = F64x8::splat(32767.0);
+
+    let mut dims_x8: [[i16; BASE_DIM]; 8] = [[0i16; BASE_DIM]; 8];
+
+    for bin in 0..BASE_DIM {
+        let c = counts[bin].max(1) as f64;
+        let scaled = sums[bin].mul_add(
+            F64x8::splat(FP_SCALE / c),
+            F64x8::splat(0.0),
+        );
+        let clamped = scaled.round().simd_clamp(lo, hi);
+        let vals = clamped.to_array();
+        for lane in 0..8 {
+            dims_x8[lane][bin] = vals[lane] as i16;
+        }
+    }
+
+    [
+        Base17 { dims: dims_x8[0] }, Base17 { dims: dims_x8[1] },
+        Base17 { dims: dims_x8[2] }, Base17 { dims: dims_x8[3] },
+        Base17 { dims: dims_x8[4] }, Base17 { dims: dims_x8[5] },
+        Base17 { dims: dims_x8[6] }, Base17 { dims: dims_x8[7] },
+    ]
+}
+
+/// Scalar fallback for remainder rows (< 8).
+pub fn project_1row_bf16_strided(row: &[u16], octave_stride: usize) -> Base17 {
+    let d = row.len();
+    let n_octaves = (d + BASE_DIM - 1) / BASE_DIM;
+    let use_halftone = octave_stride > 1;
+
+    let mut sum = [0.0f64; BASE_DIM];
+    let mut count = [0u32; BASE_DIM];
+
+    if use_halftone {
+        let mut octave = 0;
+        while octave < n_octaves {
+            for hi in 0..9 {
+                let col = octave * BASE_DIM + HALFTONE_POS[hi] as usize;
+                if col < d {
+                    sum[HALFTONE_TO_BIN[hi] as usize] += bf16_to_f64(row[col]);
+                    count[HALFTONE_TO_BIN[hi] as usize] += 1;
+                }
+            }
+            octave += octave_stride;
+        }
+        for odd in (1..BASE_DIM).step_by(2) {
+            let lc = count[odd - 1].max(1) as f64;
+            let rc = count[(odd + 1) % BASE_DIM].max(1) as f64;
+            sum[odd] = (sum[odd - 1] / lc + sum[(odd + 1) % BASE_DIM] / rc) * 0.5;
+            count[odd] = 1;
+        }
+    } else {
+        for octave in 0..n_octaves {
+            for bi in 0..BASE_DIM {
+                let col = octave * BASE_DIM + GOLDEN_POS[bi] as usize;
+                if col < d {
+                    sum[bi] += bf16_to_f64(row[col]);
+                    count[bi] += 1;
+                }
+            }
+        }
+    }
+
+    let mut dims = [0i16; BASE_DIM];
+    for i in 0..BASE_DIM {
+        if count[i] > 0 {
+            let mean = sum[i] / count[i] as f64;
+            dims[i] = (mean * FP_SCALE).round().clamp(-32768.0, 32767.0) as i16;
+        }
+    }
+    Base17 { dims }
+}
+
+/// Project an entire BF16 tensor to Base17 using F64x8 SIMD.
+///
+/// Processes 8 rows in parallel per SIMD batch. Each of the 9 halftone bins
+/// holds an F64x8 accumulator (8 rows × 9 bins = 72 f64 lanes = 9 zmm registers).
+///
+/// Per sampled octave: 9 halftone positions × 8 bf16_to_f64 gathers → 9 vaddpd.
+/// For 5120-col rows at stride=16: 19 octaves × 9 = 171 vaddpd per 8-row batch.
+pub fn project_tensor_bf16_simd(
+    buf: &[u16],
+    n_rows: usize,
+    n_cols: usize,
+    octave_stride: usize,
+) -> Vec<Base17> {
+    let mut result = Vec::with_capacity(n_rows);
+
+    let full_batches = n_rows / 8;
+
+    for batch in 0..full_batches {
+        let base_row = batch * 8;
+        let row_starts: [usize; 8] = [
+            (base_row + 0) * n_cols, (base_row + 1) * n_cols,
+            (base_row + 2) * n_cols, (base_row + 3) * n_cols,
+            (base_row + 4) * n_cols, (base_row + 5) * n_cols,
+            (base_row + 6) * n_cols, (base_row + 7) * n_cols,
+        ];
+        let b17s = project_8rows_bf16_simd(buf, &row_starts, n_cols, octave_stride);
+        result.extend_from_slice(&b17s);
+    }
+
+    // Scalar tail
+    for r in (full_batches * 8)..n_rows {
+        let start = r * n_cols;
+        let end = (start + n_cols).min(buf.len());
+        result.push(project_1row_bf16_strided(&buf[start..end], octave_stride));
+    }
+
+    result
+}
+
 /// Read a BF16 tensor as raw u16 values. NO f32 conversion.
 /// `buf` is reusable — caller allocates once, passes to every tensor.
 pub fn read_tensor_bf16_raw<R: Read + Seek>(
@@ -346,18 +547,19 @@ pub fn stream_index_gguf_bf16<R: Read + Seek, W: Write>(
             let n_elements = read_tensor_bf16_raw(reader, &gguf_header, tensor, &mut bf16_buf)?;
             let (n_rows, n_cols) = tensor_to_rows_dims(&tensor.dimensions, &layer_type);
 
-            let mut rows = Vec::with_capacity(n_rows);
-            for r in 0..n_rows {
-                let start = r * n_cols;
-                let end = (start + n_cols).min(n_elements);
-                let row_slice = &bf16_buf[start..end];
-                let b17 = if octave_stride > 1 {
-                    project_row_bf16_strided(row_slice, octave_stride)
-                } else {
-                    project_row_bf16_direct(row_slice)
-                };
-                rows.push(b17);
-            }
+            // F64x8: 8 rows parallel, SIMD accumulation per halftone bin
+            let rows = if octave_stride > 1 {
+                project_tensor_bf16_simd(&bf16_buf[..n_elements], n_rows, n_cols, octave_stride)
+            } else {
+                // Full precision: scalar per-row (stride=1 doesn't benefit from SIMD halftone)
+                let mut rows = Vec::with_capacity(n_rows);
+                for r in 0..n_rows {
+                    let start = r * n_cols;
+                    let end = (start + n_cols).min(n_elements);
+                    rows.push(project_row_bf16_direct(&bf16_buf[start..end]));
+                }
+                rows
+            };
 
             let orig_bytes = (n_rows * n_cols * 4) as u64;
             let comp_bytes = (rows.len() * Base17::BYTE_SIZE) as u64;
@@ -1047,5 +1249,200 @@ mod tests {
             let diff = (from_f32.dims[i] as i32 - from_bf16.dims[i] as i32).abs();
             assert!(diff <= 2, "bin {} differs by {}", i, diff);
         }
+    }
+
+    #[test]
+    fn test_simd_matches_scalar_constant() {
+        let n_cols = 5120;
+        let n_rows = 16; // 2 full SIMD batches
+        let buf: Vec<u16> = vec![0x3F80; n_rows * n_cols]; // all 1.0 in BF16
+
+        let simd_results = project_tensor_bf16_simd(&buf, n_rows, n_cols, 1);
+        assert_eq!(simd_results.len(), n_rows);
+
+        for r in 1..n_rows {
+            for bin in 0..BASE_DIM {
+                let diff = (simd_results[0].dims[bin] as i32 - simd_results[r].dims[bin] as i32).abs();
+                assert!(diff == 0, "row {} bin {} differs: {} vs {}",
+                    r, bin, simd_results[0].dims[bin], simd_results[r].dims[bin]);
+            }
+        }
+    }
+
+    #[test]
+    fn test_simd_matches_scalar_strided() {
+        let n_cols = 13824;
+        let n_rows = 11; // 1 full batch + 3 remainder
+        let mut buf = vec![0x3F80u16; n_rows * n_cols];
+        for i in (0..buf.len()).step_by(2) {
+            buf[i] = 0xBF80; // -1.0
+        }
+
+        let simd_results = project_tensor_bf16_simd(&buf, n_rows, n_cols, 16);
+        assert_eq!(simd_results.len(), n_rows);
+
+        for r in 0..n_rows {
+            let start = r * n_cols;
+            let scalar = project_1row_bf16_strided(&buf[start..start + n_cols], 16);
+            for bin in 0..BASE_DIM {
+                let diff = (simd_results[r].dims[bin] as i32 - scalar.dims[bin] as i32).abs();
+                assert!(diff <= 1, "row {} bin {} simd={} scalar={} diff={}",
+                    r, bin, simd_results[r].dims[bin], scalar.dims[bin], diff);
+            }
+        }
+    }
+
+    #[test]
+    fn test_simd_tail_handling() {
+        let n_cols = 256;
+        for n_rows in 1..8 {
+            let buf: Vec<u16> = vec![0x4000; n_rows * n_cols]; // 2.0 in BF16
+            let results = project_tensor_bf16_simd(&buf, n_rows, n_cols, 16);
+            assert_eq!(results.len(), n_rows, "wrong count for n_rows={}", n_rows);
+        }
+    }
+
+    #[test]
+    #[ignore] // Streams ~801 GB from HuggingFace
+    fn test_stream_index_llama4_maverick_bf16_all_shards() {
+        use super::super::http_reader::HttpRangeReader;
+        use std::io::BufWriter;
+
+        let repo = "unsloth/Llama-4-Maverick-17B-128E-Instruct-GGUF";
+
+        let shards: [(u8, &str, u64); 18] = [
+            ( 1, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00001-of-00018.gguf", 46_166_870_240),
+            ( 2, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00002-of-00018.gguf", 42_949_673_376),
+            ( 3, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00003-of-00018.gguf", 42_949_673_376),
+            ( 4, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00004-of-00018.gguf", 42_949_673_376),
+            ( 5, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00005-of-00018.gguf", 47_943_931_840),
+            ( 6, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00006-of-00018.gguf", 42_949_673_376),
+            ( 7, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00007-of-00018.gguf", 42_949_673_376),
+            ( 8, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00008-of-00018.gguf", 42_949_673_376),
+            ( 9, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00009-of-00018.gguf", 47_922_960_288),
+            (10, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00010-of-00018.gguf", 42_949_673_376),
+            (11, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00011-of-00018.gguf", 42_949_673_376),
+            (12, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00012-of-00018.gguf", 47_912_433_568),
+            (13, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00013-of-00018.gguf", 42_949_673_376),
+            (14, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00014-of-00018.gguf", 42_949_673_376),
+            (15, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00015-of-00018.gguf", 42_949_673_376),
+            (16, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00016-of-00018.gguf", 47_912_474_624),
+            (17, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00017-of-00018.gguf", 42_949_673_376),
+            (18, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00018-of-00018.gguf", 48_214_491_296),
+        ];
+
+        // Octave stride: 16 = "4 octaves higher" with halftone skip
+        // Change to 1 for full-precision comparison run
+        let octave_stride: usize = 16;
+
+        let mut grand_total_source: u64 = 0;
+        let mut grand_total_compressed: u64 = 0;
+        let mut grand_total_original: u64 = 0;
+        let mut grand_total_tensors: usize = 0;
+        let mut grand_by_type: [(usize, u64, u64); 6] = [(0, 0, 0); 6];
+
+        let mut output_files: Vec<String> = Vec::new();
+        let keep_recent: usize = 3;
+
+        eprintln!("━━━ Llama 4 Maverick BF16-Direct Indexer ━━━");
+        eprintln!("  Octave stride: {} (halftone skip: {})", octave_stride, octave_stride > 1);
+        eprintln!("  BF16 direct: yes (no f32 intermediate)");
+        eprintln!("  Reusable buffer: yes");
+        eprintln!();
+
+        for (shard_num, filename, size) in shards.iter() {
+            let url = format!("https://huggingface.co/{}/resolve/main/{}", repo, filename);
+            let out_path = format!("/tmp/llama4_maverick_shard{:02}.bgz7", shard_num);
+
+            eprintln!("━━━ Shard {:02}/18 ({:.2} GB) ━━━", shard_num, *size as f64 / 1e9);
+
+            let mut reader = HttpRangeReader::with_chunk_size(
+                url.clone(), *size, 256 * 1024 * 1024
+            );
+
+            let out = std::fs::File::create(&out_path).expect("create output");
+            let mut writer = BufWriter::new(out);
+
+            let stats = stream_index_gguf_bf16(
+                &mut reader,
+                &mut writer,
+                octave_stride,
+                Some(&|name, layer_type, orig, comp| {
+                    let ratio = if comp > 0 { orig as f64 / comp as f64 } else { 0.0 };
+                    eprintln!("  {:60} {:12?} {:>12} → {:>8} ({:.0}×)",
+                        name, layer_type, orig, comp, ratio);
+                }),
+            ).unwrap_or_else(|e| panic!("stream_index_gguf_bf16 shard {} failed: {}", shard_num, e));
+
+            drop(writer);
+            let out_size = std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
+
+            eprintln!("  Shard {:02}: {:.2} GB → {:.2} MB ({:.0}×)  peak_buf={:.1} MB",
+                shard_num, *size as f64 / 1e9, out_size as f64 / 1e6,
+                stats.overall_ratio(),
+                stats.peak_tensor_bytes as f64 / 1e6);
+
+            let type_names = ["Attention", "FeedForward", "Conv2D", "Norm", "Embedding", "Skip"];
+            for (j, name) in type_names.iter().enumerate() {
+                let (count, orig, comp) = stats.by_type[j];
+                if count > 0 {
+                    let ratio = if comp > 0 { orig as f64 / comp as f64 } else { 0.0 };
+                    eprintln!("    {:<12} {:>3} tensors: {:>10.2} GB → {:>8.2} MB ({:.0}×)",
+                        name, count, orig as f64 / 1e9, comp as f64 / 1e6, ratio);
+                    grand_by_type[j].0 += count;
+                    grand_by_type[j].1 += orig;
+                    grand_by_type[j].2 += comp;
+                }
+            }
+
+            grand_total_source += *size;
+            grand_total_compressed += out_size;
+            grand_total_original += stats.original_bytes;
+            grand_total_tensors += stats.tensors_indexed;
+
+            // Tail deletion
+            output_files.push(out_path.clone());
+            while output_files.len() > keep_recent {
+                let old = output_files.remove(0);
+                match std::fs::remove_file(&old) {
+                    Ok(()) => eprintln!("  Tail cleanup: {}", old),
+                    Err(e) => eprintln!("  Tail cleanup warning: {} — {}", old, e),
+                }
+            }
+
+            drop(reader);
+            assert!(stats.tensors_indexed > 0, "shard {} empty", shard_num);
+            eprintln!("  {}/18 done ({:.0}%)", shard_num, *shard_num as f64 / 18.0 * 100.0);
+            eprintln!();
+        }
+
+        // Final cleanup
+        for p in &output_files {
+            let _ = std::fs::remove_file(p);
+        }
+
+        eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        eprintln!("LLAMA 4 MAVERICK 17B-128E — FULL MODEL (ALL 18 SHARDS)");
+        eprintln!("  Mode: BF16-direct, octave_stride={}", octave_stride);
+        eprintln!("  Source (BF16):   {:>10.2} GB", grand_total_source as f64 / 1e9);
+        eprintln!("  Original (f32):  {:>10.2} GB", grand_total_original as f64 / 1e9);
+        eprintln!("  Compressed:      {:>10.2} MB", grand_total_compressed as f64 / 1e6);
+        eprintln!("  Overall ratio:   {:>10.0}×",
+            grand_total_original as f64 / grand_total_compressed.max(1) as f64);
+        eprintln!("  Tensors indexed: {}", grand_total_tensors);
+
+        let type_names = ["Attention", "FeedForward", "Conv2D", "Norm", "Embedding", "Skip"];
+        for (j, name) in type_names.iter().enumerate() {
+            let (count, orig, comp) = grand_by_type[j];
+            if count > 0 {
+                let ratio = if comp > 0 { orig as f64 / comp as f64 } else { 0.0 };
+                eprintln!("    {:<12} {:>4} tensors: {:>10.2} GB → {:>8.2} MB ({:.0}×)",
+                    name, count, orig as f64 / 1e9, comp as f64 / 1e6, ratio);
+            }
+        }
+        eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+        assert!(grand_total_tensors > 500);
+        assert!(grand_total_compressed < 500_000_000);
     }
 }
