@@ -172,6 +172,10 @@ pub mod gguf;
 #[allow(missing_docs)]
 pub mod gguf_indexer;
 
+/// Safetensors header parser + streaming indexer for BF16 model weights.
+#[allow(missing_docs)]
+pub mod safetensors;
+
 /// HTTP range reader — Read + Seek over HTTP for streaming GGUF from HuggingFace.
 #[allow(missing_docs)]
 pub mod http_reader;
