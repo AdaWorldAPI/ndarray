@@ -30,19 +30,19 @@ fn tier() -> Tier { *TIER }
 #[cfg(target_arch = "x86_64")]
 pub use crate::simd_avx512::{F32x8, F64x4, f32x8, f64x4};
 
-// 512-bit types: tier selects which implementation backs them.
-// On AVX-512 machines: simd_avx512 types (__m512 native).
-// On AVX2 machines: simd_avx2 types (2× __m256 composed).
-// The tier is detected once via LazyLock. After that it's a frozen enum match.
-//
-// PROBLEM: Rust can't switch `pub use` at runtime.
-// SOLUTION: re-export the AVX2 versions (safe on all x86_64).
-// On AVX-512 machines, the AVX2 composed types still work correctly —
-// just 2 instructions instead of 1. The BLAS hot paths in native.rs
-// already dispatch to kernels_avx512 via their own tier() check.
-// The SIMD types are for HPC consumer code, not inner BLAS loops.
+// 512-bit types: compile-time dispatch via target_feature.
+// With target-cpu=x86-64-v4 (or native on AVX-512 hardware),
+// avx512f is enabled at compile time → native __m512 types.
+// Otherwise falls back to AVX2 composed types (2× __m256).
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+pub use crate::simd_avx512::{
+    F32x16, F64x8, U8x64, I32x16, I64x8, U32x16, U64x8,
+    F32Mask16, F64Mask8,
+    f32x16, f64x8, u8x64, i32x16, i64x8, u32x16, u64x8,
+};
+
+#[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
 pub use crate::simd_avx2::{
     F32x16, F64x8, U8x64, I32x16, I64x8, U32x16, U64x8,
     F32Mask16, F64Mask8,
