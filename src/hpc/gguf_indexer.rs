@@ -20,7 +20,7 @@
 
 use super::bgz17_bridge::Base17;
 use super::gguf::{self, GgufFile, TensorInfo, GgmlType};
-use std::io::{Read, Seek, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 
 // ============================================================================
 // Layer classification
@@ -630,6 +630,248 @@ pub fn stream_index_gguf<R: Read + Seek, W: Write>(
     Ok(stats)
 }
 
+/// Maximum f32 elements before switching to row-wise streaming (512 M elements = 2 GB f32).
+const LARGE_TENSOR_THRESHOLD: usize = 512 * 1024 * 1024;
+
+/// Read one row of a BF16 tensor directly, dequantizing in-place.
+/// `abs_offset` is the file offset of this row's BF16 data.
+fn read_bf16_row_f32<R: Read + Seek>(
+    reader: &mut R,
+    abs_offset: u64,
+    n_cols: usize,
+    buf: &mut Vec<u8>,
+    row_f32: &mut Vec<f32>,
+) -> Result<(), String> {
+    let row_bytes = n_cols * 2;
+    buf.resize(row_bytes, 0);
+    row_f32.resize(n_cols, 0.0);
+
+    reader.seek(SeekFrom::Start(abs_offset)).map_err(|e| e.to_string())?;
+    reader.read_exact(&mut buf[..row_bytes]).map_err(|e| e.to_string())?;
+
+    // SAFETY: BF16 is #[repr(transparent)] over u16, same layout as [u8; 2] LE pairs.
+    let bf16_slice: &[super::quantized::BF16] = unsafe {
+        std::slice::from_raw_parts(buf.as_ptr() as *const super::quantized::BF16, n_cols)
+    };
+    super::quantized::bf16_to_f32_slice(bf16_slice, &mut row_f32[..n_cols]);
+    Ok(())
+}
+
+/// Read one row of an F16 tensor directly, dequantizing in-place.
+fn read_f16_row_f32<R: Read + Seek>(
+    reader: &mut R,
+    abs_offset: u64,
+    n_cols: usize,
+    buf: &mut Vec<u8>,
+    row_f32: &mut Vec<f32>,
+) -> Result<(), String> {
+    let row_bytes = n_cols * 2;
+    buf.resize(row_bytes, 0);
+    row_f32.resize(n_cols, 0.0);
+
+    reader.seek(SeekFrom::Start(abs_offset)).map_err(|e| e.to_string())?;
+    reader.read_exact(&mut buf[..row_bytes]).map_err(|e| e.to_string())?;
+
+    for (i, c) in buf[..row_bytes].chunks_exact(2).enumerate() {
+        let bits = u16::from_le_bytes([c[0], c[1]]);
+        row_f32[i] = gguf::f16_to_f32(bits);
+    }
+    Ok(())
+}
+
+/// Read one row of an F32 tensor directly.
+fn read_f32_row<R: Read + Seek>(
+    reader: &mut R,
+    abs_offset: u64,
+    n_cols: usize,
+    buf: &mut Vec<u8>,
+    row_f32: &mut Vec<f32>,
+) -> Result<(), String> {
+    let row_bytes = n_cols * 4;
+    buf.resize(row_bytes, 0);
+    row_f32.resize(n_cols, 0.0);
+
+    reader.seek(SeekFrom::Start(abs_offset)).map_err(|e| e.to_string())?;
+    reader.read_exact(&mut buf[..row_bytes]).map_err(|e| e.to_string())?;
+
+    for (i, c) in buf[..row_bytes].chunks_exact(4).enumerate() {
+        row_f32[i] = f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+    }
+    Ok(())
+}
+
+/// Stream-index a GGUF file with row-wise streaming for large tensors.
+///
+/// Identical to `stream_index_gguf` for tensors under `LARGE_TENSOR_THRESHOLD`,
+/// but processes oversized tensors (e.g. Maverick's 20 GB embeddings) one row
+/// at a time — peak RAM per large tensor = one row (~20 KB–55 KB) instead of
+/// the full tensor.
+///
+/// Supports row-wise streaming for F32, F16, and BF16 dtypes.
+/// Quantized large tensors are skipped (rare — quantized blocks don't align to rows).
+pub fn stream_index_gguf_large<R: Read + Seek, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    callback: Option<&dyn Fn(&str, &LayerType, usize, usize)>,
+) -> Result<IndexStats, String> {
+    let gguf = gguf::read_gguf_header(reader)?;
+    let mut stats = IndexStats::default();
+    stats.tensors_total = gguf.tensors.len();
+
+    // Write file header: magic + tensor count
+    writer.write_all(b"BGZ7").map_err(|e| e.to_string())?;
+    writer.write_all(&(gguf.tensors.len() as u32).to_le_bytes()).map_err(|e| e.to_string())?;
+
+    // Reusable row buffers for large-tensor streaming
+    let mut row_buf: Vec<u8> = Vec::new();
+    let mut row_f32: Vec<f32> = Vec::new();
+
+    for tensor in &gguf.tensors {
+        let layer_type = classify_tensor(&tensor.name, &tensor.dimensions);
+
+        // Skip norms and tiny tensors
+        if matches!(layer_type, LayerType::Skip | LayerType::Norm) {
+            stats.tensors_skipped += 1;
+            continue;
+        }
+
+        let n_elements = tensor.element_count() as usize;
+        let is_large = n_elements > LARGE_TENSOR_THRESHOLD;
+
+        if is_large {
+            // ── Row-wise streaming path for large tensors ──
+            // Only supported for unquantized types where rows align to file offsets.
+            let elem_size = match tensor.dtype {
+                GgmlType::BF16 => 2usize,
+                GgmlType::F16 => 2,
+                GgmlType::F32 => 4,
+                _ => {
+                    // Quantized large tensors: skip (block structure doesn't align to rows)
+                    eprintln!("  SKIP large quantized tensor: {} ({:?}, {} elements)",
+                        tensor.name, tensor.dtype, n_elements);
+                    stats.tensors_skipped += 1;
+                    continue;
+                }
+            };
+
+            // Determine rows × cols
+            let (n_rows, n_cols) = if tensor.dimensions.len() >= 2 {
+                let rows = tensor.dimensions[0] as usize;
+                let cols: usize = tensor.dimensions[1..].iter().map(|&d| d as usize).product();
+                (rows, cols)
+            } else {
+                (1, n_elements)
+            };
+
+            let tensor_f32_bytes = (n_rows as u64) * (n_cols as u64) * 4;
+            if tensor_f32_bytes > stats.peak_tensor_bytes {
+                // Record the logical size, even though we never allocate it all
+                stats.peak_tensor_bytes = tensor_f32_bytes;
+            }
+
+            let abs_base = gguf.tensor_data_offset + tensor.offset;
+
+            // Project each row one at a time
+            let mut rows = Vec::with_capacity(n_rows);
+            for r in 0..n_rows {
+                let row_offset = abs_base + (r as u64) * (n_cols as u64) * (elem_size as u64);
+                match tensor.dtype {
+                    GgmlType::BF16 => read_bf16_row_f32(reader, row_offset, n_cols, &mut row_buf, &mut row_f32)?,
+                    GgmlType::F16 => read_f16_row_f32(reader, row_offset, n_cols, &mut row_buf, &mut row_f32)?,
+                    GgmlType::F32 => read_f32_row(reader, row_offset, n_cols, &mut row_buf, &mut row_f32)?,
+                    _ => unreachable!(), // guarded above
+                };
+                rows.push(project_row_to_base17(&row_f32[..n_cols]));
+            }
+
+            let ct = CompressedTensor {
+                name: tensor.name.clone(),
+                layer_type: layer_type.clone(),
+                original_shape: tensor.dimensions.clone(),
+                n_rows,
+                n_cols,
+                rows,
+            };
+
+            let orig = ct.original_bytes() as u64;
+            let comp = ct.compressed_bytes() as u64;
+            stats.tensors_indexed += 1;
+            stats.original_bytes += orig;
+            stats.compressed_bytes += comp;
+
+            let lt_idx = match &ct.layer_type {
+                LayerType::Attention => 0,
+                LayerType::FeedForward => 1,
+                LayerType::Conv2D => 2,
+                LayerType::Norm => 3,
+                LayerType::Embedding => 4,
+                LayerType::Skip => 5,
+            };
+            stats.by_type[lt_idx].0 += 1;
+            stats.by_type[lt_idx].1 += orig;
+            stats.by_type[lt_idx].2 += comp;
+
+            if let Some(cb) = callback {
+                cb(&ct.name, &ct.layer_type, ct.original_bytes(), ct.compressed_bytes());
+            }
+
+            ct.write_to(writer)?;
+        } else {
+            // ── Standard path: load full tensor (same as stream_index_gguf) ──
+            let data = gguf::read_tensor_f32(reader, &gguf, tensor)?;
+
+            let tensor_bytes = data.len() as u64 * 4;
+            if tensor_bytes > stats.peak_tensor_bytes {
+                stats.peak_tensor_bytes = tensor_bytes;
+            }
+
+            let (n_rows, n_cols) = tensor_to_rows(&data, &tensor.dimensions, &layer_type);
+
+            let mut rows = Vec::with_capacity(n_rows);
+            for r in 0..n_rows {
+                let start = r * n_cols;
+                let end = (start + n_cols).min(data.len());
+                rows.push(project_row_to_base17(&data[start..end]));
+            }
+
+            let ct = CompressedTensor {
+                name: tensor.name.clone(),
+                layer_type: layer_type.clone(),
+                original_shape: tensor.dimensions.clone(),
+                n_rows,
+                n_cols,
+                rows,
+            };
+
+            let orig = ct.original_bytes() as u64;
+            let comp = ct.compressed_bytes() as u64;
+            stats.tensors_indexed += 1;
+            stats.original_bytes += orig;
+            stats.compressed_bytes += comp;
+
+            let lt_idx = match &ct.layer_type {
+                LayerType::Attention => 0,
+                LayerType::FeedForward => 1,
+                LayerType::Conv2D => 2,
+                LayerType::Norm => 3,
+                LayerType::Embedding => 4,
+                LayerType::Skip => 5,
+            };
+            stats.by_type[lt_idx].0 += 1;
+            stats.by_type[lt_idx].1 += orig;
+            stats.by_type[lt_idx].2 += comp;
+
+            if let Some(cb) = callback {
+                cb(&ct.name, &ct.layer_type, ct.original_bytes(), ct.compressed_bytes());
+            }
+
+            ct.write_to(writer)?;
+        }
+    }
+
+    Ok(stats)
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -1114,7 +1356,7 @@ mod tests {
             let out = std::fs::File::create(&out_path).expect("create output");
             let mut writer = BufWriter::new(out);
 
-            let stats = stream_index_gguf(
+            let stats = stream_index_gguf_large(
                 &mut reader,
                 &mut writer,
                 Some(&|name, layer_type, orig, comp| {
