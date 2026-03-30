@@ -334,6 +334,180 @@ fn nars_revision(a: NarsTruth, b: NarsTruth) -> NarsTruth {
 }
 
 // ============================================================================
+// MoE gate topology — expert clustering from router weights
+// ============================================================================
+
+/// One expert's structural identity from the gate projection.
+#[derive(Clone, Debug)]
+pub struct ExpertFingerprint {
+    pub block: u32,
+    pub expert_idx: usize,
+    pub base17: Base17,
+}
+
+/// Pairwise expert similarity within a block.
+#[derive(Clone, Debug)]
+pub struct ExpertCluster {
+    pub block: u32,
+    pub n_experts: usize,
+    /// Mean pairwise L1 distance between experts (lower = more redundant).
+    pub mean_pairwise_l1: f64,
+    /// Number of expert pairs with L1 < threshold (structurally interchangeable).
+    pub redundant_pairs: usize,
+    /// Total pairs compared.
+    pub total_pairs: usize,
+    /// Groups of structurally similar experts (L1 < threshold).
+    pub groups: Vec<Vec<usize>>,
+}
+
+/// Extract MoE gate topology from a bgz7 file.
+///
+/// Finds all `ffn_gate_inp` tensors (the router gate projections).
+/// Each row in the gate tensor = one expert's activation fingerprint.
+/// Returns per-block expert fingerprints.
+pub fn extract_gate_topology(bgz7_path: &str) -> Result<Vec<ExpertFingerprint>, String> {
+    let tensors = read_bgz7_file(bgz7_path)?;
+    let mut fingerprints = Vec::new();
+
+    for t in &tensors {
+        // Match router gate tensors
+        if !t.name.contains("gate_inp") && !t.name.contains("gate.weight") {
+            continue;
+        }
+        // Skip expert FFN gates (gate_exps) — we want the ROUTER gate
+        if t.name.contains("_exps") {
+            continue;
+        }
+
+        let block = extract_block(&t.name).unwrap_or(0);
+
+        for (expert_idx, row) in t.rows.iter().enumerate() {
+            fingerprints.push(ExpertFingerprint {
+                block,
+                expert_idx,
+                base17: row.clone(),
+            });
+        }
+
+        eprintln!("  Gate: {} → {} experts in block {}",
+            t.name, t.rows.len(), block);
+    }
+
+    Ok(fingerprints)
+}
+
+/// Cluster experts within each block by Base17 L1 distance.
+///
+/// `redundancy_threshold`: L1 below which two experts are "structurally interchangeable".
+/// Suggested: 500 (conservative), 1000 (aggressive).
+pub fn cluster_experts(
+    fingerprints: &[ExpertFingerprint],
+    redundancy_threshold: u32,
+) -> Vec<ExpertCluster> {
+    // Group by block
+    let mut by_block: HashMap<u32, Vec<&ExpertFingerprint>> = HashMap::new();
+    for fp in fingerprints {
+        by_block.entry(fp.block).or_default().push(fp);
+    }
+
+    let mut clusters = Vec::new();
+
+    for (block, experts) in &by_block {
+        let n = experts.len();
+        let mut total_l1 = 0u64;
+        let mut redundant = 0usize;
+        let total_pairs = n * (n - 1) / 2;
+
+        // Pairwise L1
+        let mut adjacency: Vec<Vec<bool>> = vec![vec![false; n]; n];
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let l1 = experts[i].base17.l1(&experts[j].base17);
+                total_l1 += l1 as u64;
+                if l1 < redundancy_threshold {
+                    redundant += 1;
+                    adjacency[i][j] = true;
+                    adjacency[j][i] = true;
+                }
+            }
+        }
+
+        let mean_l1 = if total_pairs > 0 { total_l1 as f64 / total_pairs as f64 } else { 0.0 };
+
+        // Simple connected-component grouping
+        let mut visited = vec![false; n];
+        let mut groups = Vec::new();
+        for start in 0..n {
+            if visited[start] { continue; }
+            let mut group = vec![start];
+            visited[start] = true;
+            let mut stack = vec![start];
+            while let Some(node) = stack.pop() {
+                for neighbor in 0..n {
+                    if !visited[neighbor] && adjacency[node][neighbor] {
+                        visited[neighbor] = true;
+                        group.push(neighbor);
+                        stack.push(neighbor);
+                    }
+                }
+            }
+            if group.len() > 1 {
+                groups.push(group);
+            }
+        }
+
+        eprintln!("  Block {:>2}: {} experts, mean_L1={:.0}, redundant_pairs={}/{} ({:.0}%), groups={}",
+            block, n, mean_l1, redundant, total_pairs,
+            if total_pairs > 0 { redundant as f64 / total_pairs as f64 * 100.0 } else { 0.0 },
+            groups.len());
+
+        clusters.push(ExpertCluster {
+            block: *block,
+            n_experts: n,
+            mean_pairwise_l1: mean_l1,
+            redundant_pairs: redundant,
+            total_pairs,
+            groups,
+        });
+    }
+
+    clusters.sort_by_key(|c| c.block);
+    clusters
+}
+
+/// Cross-reference gate topology with attention scaffold.
+///
+/// For each scaffold block (where Q+O shifted), check if the gate
+/// in that block has high expert redundancy. High redundancy + scaffold
+/// = the reasoning change works THROUGH the router, not the experts.
+pub fn cross_reference_gate_scaffold(
+    clusters: &[ExpertCluster],
+    scaffold_blocks: &[u32],
+) -> Vec<(u32, bool, f64)> {
+    let mut results = Vec::new();
+
+    for block in scaffold_blocks {
+        if let Some(cluster) = clusters.iter().find(|c| c.block == *block) {
+            let redundancy_pct = if cluster.total_pairs > 0 {
+                cluster.redundant_pairs as f64 / cluster.total_pairs as f64
+            } else { 0.0 };
+
+            let is_routing_dominated = redundancy_pct > 0.5;
+            results.push((*block, is_routing_dominated, redundancy_pct));
+
+            eprintln!("  Block {:>2}: scaffold={} routing_dominated={} redundancy={:.0}%",
+                block, true, is_routing_dominated, redundancy_pct * 100.0);
+        } else {
+            // No gate in this block (dense layer, not MoE)
+            results.push((*block, false, 0.0));
+            eprintln!("  Block {:>2}: scaffold={} (dense, no MoE gate)", block, true);
+        }
+    }
+
+    results
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -515,5 +689,108 @@ mod tests {
                 proj, truth.frequency, truth.confidence,
                 if truth.frequency > 0.5 { "shifted" } else { "stable" });
         }
+    }
+
+    #[test]
+    #[ignore] // Requires: Maverick bgz7 outputs from shard indexing
+    fn test_maverick_gate_topology() {
+        // Load all Maverick shard bgz7 files and extract gate tensors
+        let mut all_fingerprints = Vec::new();
+
+        for shard in 1..=18u32 {
+            let path = format!("/tmp/llama4_maverick_shard{:02}.bgz7", shard);
+            if !std::fs::metadata(&path).is_ok() {
+                // Try openchat/weights path
+                let alt = format!("src/hpc/openchat/weights/llama4_maverick_shard{:02}.bgz7", shard);
+                if !std::fs::metadata(&alt).is_ok() {
+                    eprintln!("SKIP shard {} (not found)", shard);
+                    continue;
+                }
+                match extract_gate_topology(&alt) {
+                    Ok(fps) => all_fingerprints.extend(fps),
+                    Err(e) => eprintln!("WARN shard {}: {}", shard, e),
+                }
+                continue;
+            }
+            match extract_gate_topology(&path) {
+                Ok(fps) => all_fingerprints.extend(fps),
+                Err(e) => eprintln!("WARN shard {}: {}", shard, e),
+            }
+        }
+
+        eprintln!();
+        eprintln!("Total expert fingerprints: {}", all_fingerprints.len());
+
+        if all_fingerprints.is_empty() {
+            eprintln!("No gate tensors found — Maverick may not have been indexed yet");
+            return;
+        }
+
+        // Cluster experts
+        let clusters = cluster_experts(&all_fingerprints, 500);
+
+        eprintln!();
+        eprintln!("━━━ Maverick Gate Topology ━━━");
+        let total_redundant: usize = clusters.iter().map(|c| c.redundant_pairs).sum();
+        let total_pairs: usize = clusters.iter().map(|c| c.total_pairs).sum();
+        eprintln!("  Overall redundancy: {}/{} pairs ({:.0}%)",
+            total_redundant, total_pairs,
+            if total_pairs > 0 { total_redundant as f64 / total_pairs as f64 * 100.0 } else { 0.0 });
+
+        // NARS truth for expert redundancy
+        let f = if total_pairs > 0 { total_redundant as f32 / total_pairs as f32 } else { 0.0 };
+        let c = (1.0 - 1.0 / (1.0 + total_pairs as f32)).min(0.99);
+        eprintln!("  NARS truth: f={:.3} c={:.3}", f, c);
+        eprintln!("  Interpretation: {:.0}% of expert pairs are structurally interchangeable", f * 100.0);
+    }
+
+    #[test]
+    #[ignore] // Requires: both Maverick bgz7 + Qwen3.5 diff results
+    fn test_cross_reference_gate_scaffold() {
+        // This test connects the two analyses:
+        // 1. Attention scaffold from Qwen3.5 diff (which blocks have Q+O shift)
+        // 2. Gate topology from Maverick (which blocks have redundant experts)
+
+        // Step 1: Run the Qwen3.5 diff to find scaffold blocks
+        let base = "/tmp/qwen35_27b_base.bgz7";
+        let dist = "/tmp/qwen35_27b_distilled_v1.bgz7";
+
+        if !std::fs::metadata(base).is_ok() || !std::fs::metadata(dist).is_ok() {
+            eprintln!("SKIP: Qwen3.5 bgz7 files not found");
+            return;
+        }
+
+        let (edges, _stats) = causal_diff(base, dist, 100).expect("diff failed");
+        let scaffold_blocks = find_reasoning_scaffold(&edges, 0.3);
+
+        // Step 2: Extract Maverick gate topology
+        let mut all_fps = Vec::new();
+        for shard in 1..=18u32 {
+            let path = format!("/tmp/llama4_maverick_shard{:02}.bgz7", shard);
+            if let Ok(fps) = extract_gate_topology(&path) {
+                all_fps.extend(fps);
+            }
+        }
+
+        if all_fps.is_empty() {
+            eprintln!("SKIP: No Maverick gate fingerprints");
+            return;
+        }
+
+        let clusters = cluster_experts(&all_fps, 500);
+
+        // Step 3: Cross-reference
+        eprintln!();
+        eprintln!("━━━ Cross-Reference: Attention Scaffold × Gate Topology ━━━");
+        let results = cross_reference_gate_scaffold(&clusters, &scaffold_blocks);
+
+        let routing_dominated: usize = results.iter().filter(|(_, rd, _)| *rd).count();
+        eprintln!();
+        eprintln!("  Scaffold blocks: {}", scaffold_blocks.len());
+        eprintln!("  Routing-dominated: {}/{} ({:.0}%)",
+            routing_dominated, results.len(),
+            if !results.is_empty() { routing_dominated as f64 / results.len() as f64 * 100.0 } else { 0.0 });
+        eprintln!("  → {} = reasoning changes work THROUGH the router",
+            if routing_dominated > results.len() / 2 { "YES" } else { "PARTIAL" });
     }
 }
