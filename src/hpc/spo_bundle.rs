@@ -11,8 +11,8 @@
 // Constants
 // ============================================================================
 
-/// Golden ratio φ ≈ 1.618033988749895
-const PHI: f64 = 1.618_033_988_749_895;
+/// Golden ratio φ — Rust 1.94 stdlib constant.
+const PHI: f64 = std::f64::consts::GOLDEN_RATIO;
 
 /// Compute golden shift for dimension d, ensuring odd (gcd=1 with power-of-2 d).
 /// floor(d / φ²), rounded to nearest odd.
