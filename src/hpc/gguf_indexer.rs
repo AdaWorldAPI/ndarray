@@ -251,6 +251,103 @@ pub fn project_row_bf16_strided(row: &[u16], octave_stride: usize) -> Base17 {
     Base17 { dims }
 }
 
+// ── SIMD 8-row-parallel tensor projection ──
+
+/// Project an entire BF16 tensor to Base17 using F64x8 SIMD.
+///
+/// Processes 8 rows in parallel per SIMD batch. Each of the 9 halftone bins
+/// holds an F64x8 accumulator (8 rows × 9 bins = 72 f64 lanes = 9 zmm registers).
+///
+/// Per sampled octave: 9 halftone positions × 8 bf16_to_f64 gathers → 9 vaddpd.
+/// For 5120-col rows at stride=16: 19 octaves × 9 = 171 vaddpd per 8-row batch.
+pub fn project_tensor_bf16_simd(
+    buf: &[u16],
+    n_rows: usize,
+    n_cols: usize,
+    octave_stride: usize,
+) -> Vec<Base17> {
+    use crate::simd::F64x8;
+
+    let n_octaves = (n_cols + BASE_DIM - 1) / BASE_DIM;
+    let mut result = Vec::with_capacity(n_rows);
+
+    // Process 8 rows at a time
+    let full_batches = n_rows / 8;
+    let remainder = n_rows % 8;
+
+    for batch in 0..full_batches {
+        let base_row = batch * 8;
+
+        // 9 halftone bins × F64x8 accumulators (8 rows per lane)
+        let mut half_sum = [F64x8::splat(0.0); 9];
+        let mut half_count = [0u32; 9]; // same count for all 8 rows (same n_cols)
+
+        let mut octave = 0;
+        while octave < n_octaves {
+            for hi in 0..9 {
+                let dim = octave * BASE_DIM + HALFTONE_POS[hi] as usize;
+                if dim < n_cols {
+                    // Gather 8 BF16 values (one per row) at column `dim`
+                    let vals = F64x8::from_array([
+                        bf16_to_f64(buf[(base_row + 0) * n_cols + dim]),
+                        bf16_to_f64(buf[(base_row + 1) * n_cols + dim]),
+                        bf16_to_f64(buf[(base_row + 2) * n_cols + dim]),
+                        bf16_to_f64(buf[(base_row + 3) * n_cols + dim]),
+                        bf16_to_f64(buf[(base_row + 4) * n_cols + dim]),
+                        bf16_to_f64(buf[(base_row + 5) * n_cols + dim]),
+                        bf16_to_f64(buf[(base_row + 6) * n_cols + dim]),
+                        bf16_to_f64(buf[(base_row + 7) * n_cols + dim]),
+                    ]);
+                    half_sum[hi] = half_sum[hi] + vals;
+                    if batch == 0 || octave == 0 {
+                        // Count is same for all batches with same n_cols
+                    }
+                    half_count[hi] += 1;
+                }
+            }
+            octave += octave_stride;
+        }
+
+        // Finalize: convert 9 SIMD accumulators → 8 Base17 results
+        // Even bins: mean × FP_SCALE, clamped to i16
+        let mut even_dims = [[0i16; BASE_DIM]; 8];
+
+        for hi in 0..9 {
+            if half_count[hi] > 0 {
+                let count_v = F64x8::splat(half_count[hi] as f64);
+                let scale_v = F64x8::splat(FP_SCALE);
+                let mean_v = half_sum[hi] / count_v;
+                let scaled = mean_v * scale_v;
+                let arr = scaled.to_array();
+                let bin = HALFTONE_TO_BIN[hi] as usize;
+                for lane in 0..8 {
+                    even_dims[lane][bin] =
+                        arr[lane].round().clamp(-32768.0, 32767.0) as i16;
+                }
+            }
+        }
+
+        // Odd bins: interpolate from neighbors
+        for lane in 0..8 {
+            for odd in (1..BASE_DIM).step_by(2) {
+                let left = even_dims[lane][odd - 1] as i32;
+                let right = even_dims[lane][(odd + 1) % BASE_DIM] as i32;
+                even_dims[lane][odd] = ((left + right) / 2) as i16;
+            }
+            result.push(Base17 { dims: even_dims[lane] });
+        }
+    }
+
+    // Scalar tail for remaining rows (< 8)
+    for r in (full_batches * 8)..n_rows {
+        let start = r * n_cols;
+        let end = (start + n_cols).min(buf.len());
+        result.push(project_row_bf16_strided(&buf[start..end], octave_stride));
+    }
+
+    result
+}
+
 /// Read a BF16 tensor as raw u16 values. NO f32 conversion.
 /// `buf` is reusable — caller allocates once, passes to every tensor.
 pub fn read_tensor_bf16_raw<R: Read + Seek>(
@@ -346,18 +443,19 @@ pub fn stream_index_gguf_bf16<R: Read + Seek, W: Write>(
             let n_elements = read_tensor_bf16_raw(reader, &gguf_header, tensor, &mut bf16_buf)?;
             let (n_rows, n_cols) = tensor_to_rows_dims(&tensor.dimensions, &layer_type);
 
-            let mut rows = Vec::with_capacity(n_rows);
-            for r in 0..n_rows {
-                let start = r * n_cols;
-                let end = (start + n_cols).min(n_elements);
-                let row_slice = &bf16_buf[start..end];
-                let b17 = if octave_stride > 1 {
-                    project_row_bf16_strided(row_slice, octave_stride)
-                } else {
-                    project_row_bf16_direct(row_slice)
-                };
-                rows.push(b17);
-            }
+            // F64x8: 8 rows parallel, SIMD accumulation per halftone bin
+            let rows = if octave_stride > 1 {
+                project_tensor_bf16_simd(&bf16_buf[..n_elements], n_rows, n_cols, octave_stride)
+            } else {
+                // Full precision: scalar per-row (stride=1 doesn't benefit from SIMD halftone)
+                let mut rows = Vec::with_capacity(n_rows);
+                for r in 0..n_rows {
+                    let start = r * n_cols;
+                    let end = (start + n_cols).min(n_elements);
+                    rows.push(project_row_bf16_direct(&bf16_buf[start..end]));
+                }
+                rows
+            };
 
             let orig_bytes = (n_rows * n_cols * 4) as u64;
             let comp_bytes = (rows.len() * Base17::BYTE_SIZE) as u64;
