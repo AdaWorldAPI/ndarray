@@ -1126,8 +1126,19 @@ mod tests {
         assert!(stats.tensors_indexed > 0);
     }
 
-    /// Run one shard of Llama 4 Scout BF16 through the streaming indexer.
-    /// Returns the output path on success.
+    /// Exact Scout BF16 shard sizes (verified via HuggingFace HEAD).
+    const SCOUT_SHARD_SIZES: [u64; 5] = [
+        48_940_000_000, // shard 1: layers 0-10 + embeddings
+        49_960_000_000, // shard 2: layers 11-21
+        48_660_000_000, // shard 3: layers 22-32
+        49_790_000_000, // shard 4: layers 33-43
+        18_220_000_000, // shard 5: layers 44-47 + output
+    ];
+
+    /// Run one shard of Llama 4 Scout BF16 through the BF16-direct indexer.
+    ///
+    /// Uses stream_index_gguf_bf16 with F64x8 SIMD and strided octave sampling.
+    /// No f32 intermediate allocation. Reusable u16 buffer inside the indexer.
     fn run_llama4_shard(shard: u32) -> Option<(String, IndexStats)> {
         use super::super::http_reader::HttpRangeReader;
         use std::io::BufWriter;
@@ -1136,11 +1147,12 @@ mod tests {
         let filename = format!(
             "BF16/Llama-4-Scout-17B-16E-Instruct-BF16-{:05}-of-00005.gguf", shard
         );
-        // Shards are ~18-44 GB each; use conservative 44 GB estimate
-        let size: u64 = 44_000_000_000;
+        let size = SCOUT_SHARD_SIZES[(shard - 1) as usize];
+        let octave_stride: usize = 16; // 4 octaves higher + halftone drop
 
         let url = format!("https://huggingface.co/{}/resolve/main/{}", repo, filename);
-        eprintln!("Streaming shard {}/5: {}", shard, filename);
+        eprintln!("Streaming shard {}/5: {} ({:.2} GB)", shard, filename, size as f64 / 1e9);
+        eprintln!("  BF16-direct, octave_stride={}, F64x8 SIMD", octave_stride);
 
         let mut reader = HttpRangeReader::with_chunk_size(url, size, 256 * 1024 * 1024);
 
@@ -1148,21 +1160,22 @@ mod tests {
         let out = std::fs::File::create(&out_path).expect("create output");
         let mut writer = BufWriter::new(out);
 
-        let stats = stream_index_gguf(
+        let stats = stream_index_gguf_bf16(
             &mut reader,
             &mut writer,
+            octave_stride,
             Some(&|name, layer_type, orig, comp| {
                 let ratio = if comp > 0 { orig as f64 / comp as f64 } else { 0.0 };
                 eprintln!("  {:60} {:12?} {:>12} → {:>8} ({:.0}×)",
                     name, layer_type, orig, comp, ratio);
             }),
-        ).expect("stream_index_gguf");
+        ).expect("stream_index_gguf_bf16");
 
         drop(writer);
         let out_size = std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
 
         eprintln!();
-        eprintln!("=== Llama 4 Scout BF16 Shard {}/5 → bgz17 ===", shard);
+        eprintln!("=== Llama 4 Scout BF16 Shard {}/5 → bgz17 (BF16-direct) ===", shard);
         eprintln!("  Output:     {:.2} MB ({})", out_size as f64 / 1e6, out_path);
         eprintln!("  Downloaded: {:.2} GB", reader.bytes_downloaded() as f64 / 1e9);
         eprintln!("  Tensors:    {} indexed, {} skipped",
@@ -1170,7 +1183,7 @@ mod tests {
         eprintln!("  Original (f32): {:.2} GB", stats.original_bytes as f64 / 1e9);
         eprintln!("  Compressed:     {:.2} MB", stats.compressed_bytes as f64 / 1e6);
         eprintln!("  Ratio:          {:.1}×", stats.overall_ratio());
-        eprintln!("  Peak tensor:    {:.2} MB", stats.peak_tensor_bytes as f64 / 1e6);
+        eprintln!("  Peak buf (BF16): {:.2} MB", stats.peak_tensor_bytes as f64 / 1e6);
 
         let type_names = ["Attention", "FeedForward", "Conv2D", "Norm", "Embedding", "Skip"];
         for (i, name) in type_names.iter().enumerate() {
