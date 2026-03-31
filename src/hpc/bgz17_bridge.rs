@@ -90,13 +90,44 @@ impl Base17 {
     }
 
     /// L1 (Manhattan) distance.
+    ///
+    /// AVX-512: load 16 of 17 i16 dims as i32, subtract, abs, horizontal sum.
+    /// Last dim scalar. Total: ~3 instructions vs 17 scalar iterations.
     #[inline]
     pub fn l1(&self, other: &Base17) -> u32 {
-        let mut d = 0u32;
-        for i in 0..BASE_DIM {
-            d += (self.dims[i] as i32 - other.dims[i] as i32).unsigned_abs();
+        #[cfg(target_arch = "x86_64")]
+        {
+            use crate::simd::I32x16;
+            // Load 16 dims as i32 (sign-extend i16 → i32)
+            let a: [i32; 16] = [
+                self.dims[0] as i32, self.dims[1] as i32, self.dims[2] as i32, self.dims[3] as i32,
+                self.dims[4] as i32, self.dims[5] as i32, self.dims[6] as i32, self.dims[7] as i32,
+                self.dims[8] as i32, self.dims[9] as i32, self.dims[10] as i32, self.dims[11] as i32,
+                self.dims[12] as i32, self.dims[13] as i32, self.dims[14] as i32, self.dims[15] as i32,
+            ];
+            let b: [i32; 16] = [
+                other.dims[0] as i32, other.dims[1] as i32, other.dims[2] as i32, other.dims[3] as i32,
+                other.dims[4] as i32, other.dims[5] as i32, other.dims[6] as i32, other.dims[7] as i32,
+                other.dims[8] as i32, other.dims[9] as i32, other.dims[10] as i32, other.dims[11] as i32,
+                other.dims[12] as i32, other.dims[13] as i32, other.dims[14] as i32, other.dims[15] as i32,
+            ];
+            let va = I32x16::from_array(a);
+            let vb = I32x16::from_array(b);
+            let diff = va - vb;
+            let abs_diff = diff.abs();
+            let sum16 = abs_diff.reduce_sum();
+            // 17th dim scalar
+            let d16 = (self.dims[16] as i32 - other.dims[16] as i32).unsigned_abs();
+            sum16 as u32 + d16
         }
-        d
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let mut d = 0u32;
+            for i in 0..BASE_DIM {
+                d += (self.dims[i] as i32 - other.dims[i] as i32).unsigned_abs();
+            }
+            d
+        }
     }
 
     /// PCDVQ-informed L1: weight sign dimension 20x over mantissa.
@@ -105,15 +136,34 @@ impl Base17 {
     /// quantization than magnitude. BF16 decomposition maps to polar:
     ///   dim 0 = sign (direction), dims 1-6 = exponent (magnitude scale),
     ///   dims 7-16 = mantissa (fine detail).
+    /// PCDVQ-weighted L1 via SIMD: sign=20×, magnitude=3×, detail=1×.
     #[inline]
     pub fn l1_weighted(&self, other: &Base17) -> u32 {
-        let mut d = 0u32;
-        for i in 0..BASE_DIM {
-            let diff = (self.dims[i] as i32 - other.dims[i] as i32).unsigned_abs();
-            let weight = if i == 0 { 20 } else if i < 7 { 3 } else { 1 };
-            d += diff * weight;
+        #[cfg(target_arch = "x86_64")]
+        {
+            use crate::simd::I32x16;
+            let a: [i32; 16] = core::array::from_fn(|i| self.dims[i] as i32);
+            let b: [i32; 16] = core::array::from_fn(|i| other.dims[i] as i32);
+            let weights: [i32; 16] = [20, 3, 3, 3, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
+            let va = I32x16::from_array(a);
+            let vb = I32x16::from_array(b);
+            let vw = I32x16::from_array(weights);
+            let diff = (va - vb).abs();
+            let weighted = diff * vw;
+            let sum16 = weighted.reduce_sum() as u32;
+            let d16 = (self.dims[16] as i32 - other.dims[16] as i32).unsigned_abs();
+            sum16 + d16
         }
-        d
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let mut d = 0u32;
+            for i in 0..BASE_DIM {
+                let diff = (self.dims[i] as i32 - other.dims[i] as i32).unsigned_abs();
+                let weight = if i == 0 { 20 } else if i < 7 { 3 } else { 1 };
+                d += diff * weight;
+            }
+            d
+        }
     }
 
     /// Sign-bit agreement (out of 17).
