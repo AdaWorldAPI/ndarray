@@ -34,6 +34,11 @@ name = "ndarray"
 bench = false
 test = true
 
+[[bin]]
+name = "serve"
+path = "src/bin/serve.rs"
+required-features = ["serve"]
+
 [dependencies]
 num-integer = { workspace = true }
 num-traits = { workspace = true }
@@ -52,7 +57,12 @@ p64 = { path = "crates/p64" }
 phyllotactic-manifold = { path = "crates/phyllotactic-manifold" }
 
 serde = { version = "1.0", optional = true, default-features = false, features = ["alloc"] }
+serde_json = { version = "1", optional = true }
 rawpointer = { version = "0.2" }
+
+# Axum HTTP server (optional, behind "serve" feature)
+axum = { version = "0.8", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = true }
 
 # Cranelift JIT (optional, behind "jit-native" feature)
 # For AVX-512 VPOPCNTDQ/VNNI/VPTERNLOG/BITALG support, use the patched fork:
@@ -89,6 +99,9 @@ jitson = []
 
 # JIT native compilation via Cranelift (jitson_cranelift module)
 jit-native = ["jitson", "dep:cranelift-codegen", "dep:cranelift-jit", "dep:cranelift-module", "dep:cranelift-frontend", "dep:target-lexicon"]
+
+# Axum HTTP server for OpenAI-compatible API
+serve = ["dep:axum", "dep:tokio", "dep:serde", "dep:serde_json"]
 
 # HPC backend feature gates (mutually exclusive)
 native = []
