@@ -34,6 +34,76 @@ pub struct Base17 {
     pub dims: [i16; BASE_DIM],
 }
 
+// ============================================================================
+// Multi-versioned L1 kernel: AVX-512 → AVX2 → scalar. One binary, all ISAs.
+// ============================================================================
+
+type L1Fn = unsafe fn(&[i16; 17], &[i16; 17]) -> u32;
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+unsafe fn l1_avx512(a: &[i16; 17], b: &[i16; 17]) -> u32 {
+    use std::arch::x86_64::*;
+    // Load 16 i16 → 16 i32 via sign-extension
+    let va = _mm512_cvtepi16_epi32(_mm256_loadu_si256(a.as_ptr() as *const __m256i));
+    let vb = _mm512_cvtepi16_epi32(_mm256_loadu_si256(b.as_ptr() as *const __m256i));
+    let diff = _mm512_sub_epi32(va, vb);
+    let abs_diff = _mm512_abs_epi32(diff);
+    let sum16 = _mm512_reduce_add_epi32(abs_diff) as u32;
+    // 17th dim scalar
+    let d16 = (a[16] as i32 - b[16] as i32).unsigned_abs();
+    sum16 + d16
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn l1_avx2(a: &[i16; 17], b: &[i16; 17]) -> u32 {
+    use std::arch::x86_64::*;
+    // Process 8 dims at a time (2 passes of 8 = 16, + 1 scalar)
+    let va0 = _mm256_cvtepi16_epi32(_mm_loadu_si128(a.as_ptr() as *const __m128i));
+    let vb0 = _mm256_cvtepi16_epi32(_mm_loadu_si128(b.as_ptr() as *const __m128i));
+    let diff0 = _mm256_sub_epi32(va0, vb0);
+    let abs0 = _mm256_abs_epi32(diff0);
+
+    let va1 = _mm256_cvtepi16_epi32(_mm_loadu_si128(a[8..].as_ptr() as *const __m128i));
+    let vb1 = _mm256_cvtepi16_epi32(_mm_loadu_si128(b[8..].as_ptr() as *const __m128i));
+    let diff1 = _mm256_sub_epi32(va1, vb1);
+    let abs1 = _mm256_abs_epi32(diff1);
+
+    let sum = _mm256_add_epi32(abs0, abs1);
+    // Horizontal sum of 8 i32
+    let hi128 = _mm256_extracti128_si256(sum, 1);
+    let lo128 = _mm256_castsi256_si128(sum);
+    let sum128 = _mm_add_epi32(lo128, hi128);
+    let sum64 = _mm_add_epi32(sum128, _mm_srli_si128(sum128, 8));
+    let sum32 = _mm_add_epi32(sum64, _mm_srli_si128(sum64, 4));
+    let sum16 = _mm_extract_epi32(sum32, 0) as u32;
+    // 17th dim scalar
+    let d16 = (a[16] as i32 - b[16] as i32).unsigned_abs();
+    sum16 + d16
+}
+
+fn l1_scalar(a: &[i16; 17], b: &[i16; 17]) -> u32 {
+    let mut d = 0u32;
+    for i in 0..17 {
+        d += (a[i] as i32 - b[i] as i32).unsigned_abs();
+    }
+    d
+}
+
+static L1_KERNEL: std::sync::LazyLock<L1Fn> = std::sync::LazyLock::new(|| {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx512f") {
+            return l1_avx512 as L1Fn;
+        }
+        if is_x86_feature_detected!("avx2") {
+            return l1_avx2 as L1Fn;
+        }
+    }
+    l1_scalar as L1Fn
+});
+
 /// SPO triple of Base17 patterns. 102 bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpoBase17 {
@@ -89,45 +159,14 @@ impl Base17 {
         Base17 { dims: [0i16; BASE_DIM] }
     }
 
-    /// L1 (Manhattan) distance.
+    /// L1 (Manhattan) distance — multi-versioned kernel.
     ///
-    /// AVX-512: load 16 of 17 i16 dims as i32, subtract, abs, horizontal sum.
-    /// Last dim scalar. Total: ~3 instructions vs 17 scalar iterations.
+    /// Runtime dispatch via LazyLock: AVX-512 → AVX2 → scalar.
+    /// One binary serves all ISAs.
     #[inline]
     pub fn l1(&self, other: &Base17) -> u32 {
-        #[cfg(target_arch = "x86_64")]
-        {
-            use crate::simd::I32x16;
-            // Load 16 dims as i32 (sign-extend i16 → i32)
-            let a: [i32; 16] = [
-                self.dims[0] as i32, self.dims[1] as i32, self.dims[2] as i32, self.dims[3] as i32,
-                self.dims[4] as i32, self.dims[5] as i32, self.dims[6] as i32, self.dims[7] as i32,
-                self.dims[8] as i32, self.dims[9] as i32, self.dims[10] as i32, self.dims[11] as i32,
-                self.dims[12] as i32, self.dims[13] as i32, self.dims[14] as i32, self.dims[15] as i32,
-            ];
-            let b: [i32; 16] = [
-                other.dims[0] as i32, other.dims[1] as i32, other.dims[2] as i32, other.dims[3] as i32,
-                other.dims[4] as i32, other.dims[5] as i32, other.dims[6] as i32, other.dims[7] as i32,
-                other.dims[8] as i32, other.dims[9] as i32, other.dims[10] as i32, other.dims[11] as i32,
-                other.dims[12] as i32, other.dims[13] as i32, other.dims[14] as i32, other.dims[15] as i32,
-            ];
-            let va = I32x16::from_array(a);
-            let vb = I32x16::from_array(b);
-            let diff = va - vb;
-            let abs_diff = diff.abs();
-            let sum16 = abs_diff.reduce_sum();
-            // 17th dim scalar
-            let d16 = (self.dims[16] as i32 - other.dims[16] as i32).unsigned_abs();
-            sum16 as u32 + d16
-        }
-        #[cfg(not(target_arch = "x86_64"))]
-        {
-            let mut d = 0u32;
-            for i in 0..BASE_DIM {
-                d += (self.dims[i] as i32 - other.dims[i] as i32).unsigned_abs();
-            }
-            d
-        }
+        // SAFETY: LazyLock guarantees the selected kernel matches CPU features.
+        unsafe { L1_KERNEL(&self.dims, &other.dims) }
     }
 
     /// PCDVQ-informed L1: weight sign dimension 20x over mantissa.
