@@ -489,6 +489,17 @@ fn apply_precision_tier(
     });
 }
 
+/// #8 Conditional Abstraction Scaling — select cascade band by query entropy.
+/// Science: Renyi (1961), CLAM tree LFD, Berry-Esseen Fisher efficiency.
+pub fn adaptive_resolution(query_entropy: f32, corpus_cv: f32) -> Band {
+    match (query_entropy, corpus_cv) {
+        (e, _) if e < 0.2 => Band::Foveal,
+        (e, cv) if e < 0.5 && cv < 0.3 => Band::Near,
+        (_, cv) if cv < 0.5 => Band::Good,
+        _ => Band::Weak,
+    }
+}
+
 /// Packed database for stroke-aligned cascade search.
 pub struct PackedDatabase {
     pub stroke1: Vec<u8>,
@@ -758,6 +769,14 @@ mod tests {
         // Exact match should be Foveal
         let exact = results.iter().find(|r| r.index == 0).unwrap();
         assert_eq!(exact.band, Band::Foveal);
+    }
+
+    #[test]
+    fn test_adaptive_resolution() {
+        assert_eq!(adaptive_resolution(0.1, 0.5), Band::Foveal);
+        assert_eq!(adaptive_resolution(0.4, 0.2), Band::Near);
+        assert_eq!(adaptive_resolution(0.6, 0.4), Band::Good);
+        assert_eq!(adaptive_resolution(0.8, 0.8), Band::Weak);
     }
 
     #[test]

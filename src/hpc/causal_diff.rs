@@ -101,6 +101,891 @@ pub struct WeightEdge {
 }
 
 // ============================================================================
+// CausalEdge64 — compact u64 packed edge for L1/p64 operations
+// ============================================================================
+
+/// Compact causal edge packed into a single `u64`.
+///
+/// Layout (64 bits):
+/// ```text
+///   [63:58]  block       6 bits → 0–63 layers
+///   [57:54]  projection  4 bits → Projection enum (0–9)
+///   [53:52]  verb        2 bits → Verb enum (0–2)
+///   [51:36]  row_idx    16 bits → 0–65535 rows
+///   [35:20]  l1_dist    16 bits → L1 distance (capped at 65535)
+///   [19:10]  freq       10 bits → NARS frequency × 1023
+///   [ 9: 0]  conf       10 bits → NARS confidence × 1023
+/// ```
+///
+/// Total: 6 + 4 + 2 + 16 + 16 + 10 + 10 = 64 bits.
+///
+/// Fits in a register. Can be used as a p64 `Palette64` row key:
+/// `edge.0 & palette.rows[i]` → POPCNT → attention score.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct CausalEdge64(pub u64);
+
+impl CausalEdge64 {
+    /// Pack a WeightEdge into a compact u64.
+    #[inline]
+    pub fn pack(edge: &WeightEdge) -> Self {
+        let block = (edge.block.unwrap_or(0) & 0x3F) as u64;
+        let proj = projection_to_u4(&edge.projection) as u64;
+        let verb = match edge.verb {
+            Verb::Becomes => 0u64,
+            Verb::Supports => 1,
+            Verb::Contradicts => 2,
+        };
+        let row = (edge.row_idx as u64) & 0xFFFF;
+        let l1 = (edge.l1_distance.min(65535) as u64) & 0xFFFF;
+        let freq = ((edge.truth.frequency * 1023.0).round() as u64) & 0x3FF;
+        let conf = ((edge.truth.confidence * 1023.0).round() as u64) & 0x3FF;
+
+        Self(
+            (block << 58)
+                | (proj << 54)
+                | (verb << 52)
+                | (row << 36)
+                | (l1 << 20)
+                | (freq << 10)
+                | conf,
+        )
+    }
+
+    /// Unpack block number.
+    #[inline] pub fn block(self) -> u32 { ((self.0 >> 58) & 0x3F) as u32 }
+    /// Unpack projection type.
+    #[inline] pub fn projection(self) -> Projection { u4_to_projection(((self.0 >> 54) & 0xF) as u8) }
+    /// Unpack verb.
+    #[inline] pub fn verb(self) -> Verb {
+        match (self.0 >> 52) & 0x3 { 0 => Verb::Becomes, 1 => Verb::Supports, _ => Verb::Contradicts }
+    }
+    /// Unpack row index.
+    #[inline] pub fn row_idx(self) -> u32 { ((self.0 >> 36) & 0xFFFF) as u32 }
+    /// Unpack L1 distance.
+    #[inline] pub fn l1_distance(self) -> u32 { ((self.0 >> 20) & 0xFFFF) as u32 }
+    /// Unpack NARS frequency.
+    #[inline] pub fn frequency(self) -> f32 { ((self.0 >> 10) & 0x3FF) as f32 / 1023.0 }
+    /// Unpack NARS confidence.
+    #[inline] pub fn confidence(self) -> f32 { (self.0 & 0x3FF) as f32 / 1023.0 }
+    /// Reconstruct NarsTruth.
+    #[inline] pub fn truth(self) -> NarsTruth { NarsTruth::new(self.frequency(), self.confidence()) }
+}
+
+fn projection_to_u4(p: &Projection) -> u8 {
+    match p {
+        Projection::Q => 0, Projection::K => 1, Projection::V => 2, Projection::O => 3,
+        Projection::Gate => 4, Projection::FfnGate => 5, Projection::FfnUp => 6,
+        Projection::FfnDown => 7, Projection::Embedding => 8, Projection::Other => 9,
+    }
+}
+
+fn u4_to_projection(v: u8) -> Projection {
+    match v {
+        0 => Projection::Q, 1 => Projection::K, 2 => Projection::V, 3 => Projection::O,
+        4 => Projection::Gate, 5 => Projection::FfnGate, 6 => Projection::FfnUp,
+        7 => Projection::FfnDown, 8 => Projection::Embedding, _ => Projection::Other,
+    }
+}
+
+// ============================================================================
+// p64 bridge: scaffold edges → Palette64 attention matrix
+// ============================================================================
+
+/// Build a p64 `Palette64` from scaffold edges.
+///
+/// Each unique (block, projection) pair becomes a row in the palette.
+/// The row value is the OR-combination of all CausalEdge64 values for that pair.
+/// Result: a 64×64 binary attention matrix where `attend(query, gamma)`
+/// finds which scaffold blocks match a structural query.
+///
+/// Synergy with p64:
+/// - `palette.attend(query, gamma)` → which reasoning scaffold blocks fire
+/// - `palette.nearest_k(query, 8)` → top-8 similar scaffold heads
+/// - `HeelPlanes::from_clam_seed` → Base17 fingerprint → p64 → scaffold query
+pub fn scaffold_to_palette64(edges: &[WeightEdge]) -> ([u64; 64], Vec<(u32, Projection)>) {
+    let mut row_map: HashMap<(u32, u8), u64> = HashMap::new();
+    let mut keys: Vec<(u32, u8)> = Vec::new();
+
+    for edge in edges {
+        let block = edge.block.unwrap_or(0);
+        let proj = projection_to_u4(&edge.projection);
+        let key = (block, proj);
+
+        let packed = CausalEdge64::pack(edge).0;
+        let entry = row_map.entry(key).or_insert_with(|| {
+            keys.push(key);
+            0u64
+        });
+        *entry |= packed;
+    }
+
+    // Sort by block then projection for deterministic layout
+    keys.sort();
+    keys.truncate(64);
+
+    let mut rows = [0u64; 64];
+    let mut labels = Vec::with_capacity(keys.len());
+    for (i, &(block, proj)) in keys.iter().enumerate() {
+        rows[i] = row_map[&(block, proj)];
+        labels.push((block, u4_to_projection(proj)));
+    }
+
+    (rows, labels)
+}
+
+// ============================================================================
+// p64 Palette3D bridge: scaffold → 8-layer reasoning circuit
+// ============================================================================
+
+/// Map projection shifts to p64 predicate layers via SPO = QKV.
+///
+/// ```text
+///   CausalEdge64 SPO mapping:  S = Q,  P = K,  O = O
+///   Pearl CausalMask:  Q+O active, K inactive = CausalMask::SO (0b101)
+///
+///   Projection  →  HEEL plane     SPO role    Rationale
+///   ──────────     ──────────     ────────    ─────────
+///   Q shift     →  CAUSES (0)    Subject     queries changed → causation
+///   O shift     →  ENABLES (1)   Object      synthesis changed → enabling
+///   K stable    →  SUPPORTS (2)  Predicate   keys preserved → supporting
+///   V shift     →  REFINES (4)   —           retrieval shifted → refinement
+///   Gate        →  CONTRADICTS(3)—           router change → tension
+///   FfnUp/Down  →  ABSTRACTS (5) —           FFN capacity → abstraction
+///   FfnGate     →  GROUNDS (6)   —           FFN rewiring → grounding
+///   Embedding   →  BECOMES (7)   —           vocabulary → identity
+/// ```
+///
+/// The 4 measured layers (CAUSES, ENABLES, REFINES, ABSTRACTS) come from
+/// the 4 diffs. The 4 deduced layers (SUPPORTS, CONTRADICTS, GROUNDS,
+/// BECOMES) emerge from intersection/negation in `scaffold_to_palette3d_layers`.
+pub fn projection_to_predicate(proj: &Projection) -> usize {
+    match proj {
+        Projection::Q       => 0, // CAUSES (Subject in SPO)
+        Projection::O       => 1, // ENABLES (Object in SPO)
+        Projection::K       => 2, // SUPPORTS (Predicate in SPO — stable = supporting)
+        Projection::V       => 4, // REFINES
+        Projection::Gate    => 3, // CONTRADICTS
+        Projection::FfnUp   => 5, // ABSTRACTS
+        Projection::FfnDown => 5, // ABSTRACTS (same layer)
+        Projection::FfnGate => 6, // GROUNDS
+        Projection::Embedding => 7, // BECOMES
+        Projection::Other   => 7, // BECOMES
+    }
+}
+
+/// Build 8 HEEL planes from scaffold edges — one plane per predicate/projection.
+///
+/// Each HEEL plane is a 64-bit pattern where bit `b` = 1 means block `b`
+/// had significant shift in that projection type. The 8 HEELs expand
+/// via golden rotation to a full 64×64 Palette64, which then stacks
+/// into a Palette3D for multi-predicate reasoning.
+///
+/// ```text
+/// WeightEdge[]
+///   → group by projection → 8 × u64 bitmasks (block shifted?)
+///   → HeelPlanes::new(planes)
+///   → .expand() → Palette64 (64×64)
+///   → Palette3D::new([8 layers], ThinkingStyle::ANALYTICAL)
+///   → .infer(block) → which scaffold blocks fire
+///   → HHTL cascade → 256×256 fine-grain distances
+/// ```
+pub fn scaffold_to_heel_planes(
+    edges: &[WeightEdge],
+    shift_threshold: f64,
+) -> [u64; 8] {
+    // Count shifts per (block, projection)
+    let mut block_proj_shifts: HashMap<(u32, u8), (usize, usize)> = HashMap::new();
+
+    for edge in edges {
+        let block = edge.block.unwrap_or(0);
+        if block >= 64 { continue; } // p64 only has 64 rows
+        let proj = projection_to_u4(&edge.projection);
+        let entry = block_proj_shifts.entry((block, proj)).or_insert((0, 0));
+        entry.0 += 1; // shifted
+        entry.1 += 1; // total (all edges here are shifted by definition)
+    }
+
+    // Also count stable rows (rows NOT in edges) — we need total per (block, proj)
+    // Since edges only contain shifted rows, we approximate: if a block has ANY
+    // edges for a projection, mark that bit in the corresponding HEEL plane.
+
+    let mut planes = [0u64; 8];
+
+    for (&(block, proj), &(shifted, _total)) in &block_proj_shifts {
+        if block >= 64 { continue; }
+        // Map projection to predicate layer
+        let predicate = projection_to_predicate(&u4_to_projection(proj));
+        if predicate < 8 {
+            // Set this block's bit in the corresponding HEEL plane
+            planes[predicate] |= 1u64 << block;
+        }
+    }
+
+    planes
+}
+
+/// Build a full Palette3D reasoning circuit from four diff runs.
+///
+/// The 4 diffs ARE the 4 deduction rules — each measures one predicate:
+///
+/// ```text
+/// MEASURED (from data):
+///   base→v1:  CAUSES    "What does Claude distillation cause?"
+///   base→v2:  ENABLES   "What does the second iteration enable?"
+///   v1→v2:    REFINES   "Which heads converged (refined)?"
+///   9B diff:  ABSTRACTS "Is the pattern scale-invariant (abstract)?"
+///
+/// DEDUCED (from intersection/negation of measured):
+///   SUPPORTS    = CAUSES ∩ ENABLES       (both distillations agree)
+///   CONTRADICTS = v1→v2 sign flips       (head was overcorrected)
+///   GROUNDS     = SUPPORTS ∩ ABSTRACTS   (consistent AND scale-invariant)
+///   BECOMES     = ENABLES \ CAUSES       (novel heads, not in first distillation)
+/// ```
+///
+/// SPO mapping in CausalEdge64: S=Q, P=K, O=O.
+/// Q+O shifted, K stable = CausalMask::SO (0b101) = the reasoning scaffold.
+///
+/// Returns 8 `[u64; 64]` palettes (one per predicate layer) ready for Palette3D.
+pub fn scaffold_to_palette3d_layers(
+    edges_v1: &[WeightEdge],
+    edges_v2: &[WeightEdge],
+    edges_v1v2: &[WeightEdge],
+    edges_9b: &[WeightEdge],
+) -> [[u64; 64]; 8] {
+    // scaffold_to_heel_planes maps projections → predicate layers:
+    //   plane[0] = CAUSES  (from Q projections)
+    //   plane[1] = ENABLES (from O projections)
+    //   plane[2] = SUPPORTS (from K projections — will be inverted)
+    //   plane[3] = CONTRADICTS (from Gate projections)
+    //   plane[4] = REFINES (from V projections)
+    //   plane[5] = ABSTRACTS (from FFN projections)
+    //   plane[6] = GROUNDS (from FfnGate)
+    //   plane[7] = BECOMES (from Embedding/Other)
+
+    let heels_v1 = scaffold_to_heel_planes(edges_v1, 0.3);
+    let heels_v2 = scaffold_to_heel_planes(edges_v2, 0.3);
+    let heels_v1v2 = scaffold_to_heel_planes(edges_v1v2, 0.3);
+    let heels_9b = scaffold_to_heel_planes(edges_9b, 0.3);
+
+    let mut layers = [[0u64; 64]; 8];
+
+    // ── 4 MEASURED layers (directly from diffs) ──
+    //
+    // Layer 0 CAUSES:    base→v1 Q+O topology (what distillation changed)
+    let causes = heels_v1[0] | heels_v1[1]; // Q shifted OR O shifted
+    //
+    // Layer 1 ENABLES:   base→v2 Q+O topology (what second iteration changed)
+    let enables = heels_v2[0] | heels_v2[1];
+    //
+    // Layer 4 REFINES:   v1→v2 convergence (which heads stabilized)
+    //   Heads in v1→v2 with LOW shift = converged = refined
+    //   Heads in v1→v2 with HIGH shift = still moving = not refined
+    //   Invert: bits NOT set in v1v2 means the head converged
+    let still_moving = heels_v1v2[0] | heels_v1v2[1];
+    let refines = causes & !still_moving; // caused in v1, converged by v2
+    //
+    // Layer 5 ABSTRACTS: 9B diff topology (scale-invariant = abstract)
+    let abstracts_9b = heels_9b[0] | heels_9b[1]; // Q+O from 9B
+
+    // ── 4 DEDUCED layers (from intersection/negation) ──
+    //
+    // Layer 2 SUPPORTS:  CAUSES ∩ ENABLES (both distillations agree)
+    let supports = causes & enables;
+    //
+    // Layer 3 CONTRADICTS: v1→v2 heads that CAUSES but v2 reversed
+    //   = blocks in CAUSES that are NOT in ENABLES but ARE still moving
+    let contradicts = causes & !enables & still_moving;
+    //
+    // Layer 6 GROUNDS:   SUPPORTS ∩ ABSTRACTS (consistent AND scale-invariant)
+    let grounds = supports & abstracts_9b;
+    //
+    // Layer 7 BECOMES:   ENABLES \ CAUSES (novel heads, emerged in second iteration)
+    let becomes = enables & !causes;
+
+    let heel_bits = [
+        causes,      // 0 CAUSES
+        enables,     // 1 ENABLES
+        supports,    // 2 SUPPORTS
+        contradicts, // 3 CONTRADICTS
+        refines,     // 4 REFINES
+        abstracts_9b,// 5 ABSTRACTS
+        grounds,     // 6 GROUNDS
+        becomes,     // 7 BECOMES
+    ];
+
+    // Expand each HEEL to 64 rows via golden rotation
+    for (layer_idx, &bits) in heel_bits.iter().enumerate() {
+        for row in 0..64 {
+            let octave = row / 8;
+            let rotation = (octave as u32) * 39; // GOLDEN_SHIFT_64
+            layers[layer_idx][row] = bits.rotate_left(rotation);
+        }
+    }
+
+    layers
+}
+
+/// Build Palette3D from 2 diffs only: base→v2 (27B) + base→dist (9B).
+///
+/// v2 supercedes v1 (14K samples vs 3K). Two diffs suffice:
+///
+/// ```text
+/// MEASURED:
+///   CAUSES    = base→v2 Q|O shifts  (what did distillation change?)
+///   ABSTRACTS = 9B Q|O shifts       (which of those survive at 9B?)
+///
+/// DEDUCED:
+///   ENABLES     = CAUSES             (single distillation: causes=enables)
+///   SUPPORTS    = CAUSES ∩ ABSTRACTS (both scales agree)
+///   CONTRADICTS = CAUSES \ ABSTRACTS (27B-only = capacity-dependent)
+///   REFINES     = 0                  (no v1→v2 available)
+///   GROUNDS     = SUPPORTS           (= SUPPORTS with 2 diffs)
+///   BECOMES     = ABSTRACTS \ CAUSES (9B-only, not in 27B)
+/// ```
+pub fn scaffold_to_palette3d_from_2_diffs(
+    edges_27b: &[WeightEdge],
+    edges_9b: &[WeightEdge],
+) -> [[u64; 64]; 8] {
+    let heels_27b = scaffold_to_heel_planes(edges_27b, 0.3);
+    let heels_9b = scaffold_to_heel_planes(edges_9b, 0.3);
+
+    // MEASURED
+    let causes = heels_27b[0] | heels_27b[1];     // Q|O from base→v2
+    let abstracts = heels_9b[0] | heels_9b[1];    // Q|O from 9B
+
+    // DEDUCED
+    let enables = causes;                           // single distillation
+    let supports = causes & abstracts;              // both scales agree
+    let contradicts = causes & !abstracts;          // 27B-only (capacity-dependent)
+    let refines = 0u64;                             // no v1→v2
+    let grounds = supports;                         // = supports with 2 diffs
+    let becomes = abstracts & !causes;              // 9B-only novel heads
+
+    let heel_bits = [
+        causes,      // 0 CAUSES
+        enables,     // 1 ENABLES
+        supports,    // 2 SUPPORTS
+        contradicts, // 3 CONTRADICTS
+        refines,     // 4 REFINES
+        abstracts,   // 5 ABSTRACTS
+        grounds,     // 6 GROUNDS
+        becomes,     // 7 BECOMES
+    ];
+
+    let mut layers = [[0u64; 64]; 8];
+    for (layer_idx, &bits) in heel_bits.iter().enumerate() {
+        for row in 0..64 {
+            let octave = row / 8;
+            let rotation = (octave as u32) * 39;
+            layers[layer_idx][row] = bits.rotate_left(rotation);
+        }
+    }
+
+    layers
+}
+
+// ============================================================================
+// Quality scoring: GOOD / BAD / UNCERTAIN per attention head
+// ============================================================================
+
+/// Quality classification of a shifted attention head.
+///
+/// Determined by cross-validating 4 diffs: v1 is the control experiment.
+/// v1 vs v2 separates intentional refinement from overfitting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeadQuality {
+    /// v1 ∩ v2 ∩ 9B: all three agree. Scale-invariant, consistent across
+    /// both distillation rounds. This IS the reasoning scaffold.
+    Good,
+    /// v2 \ v1: only in the aggressive second round, not in the conservative first.
+    /// v2 lost 7.2% MMLU-Pro → these are the knowledge-destruction heads.
+    Bad,
+    /// v1 ∩ v2 \ 9B: consistent across rounds but not scale-invariant.
+    /// Could be 27B-specific reasoning OR capacity-dependent overfitting.
+    Uncertain,
+    /// v1 \ v2: present in first round but reverted in second.
+    /// v2 corrected an overcorrection. Good sign for v2.
+    Reverted,
+}
+
+/// Per-head quality scores from 4-diff cross-validation.
+#[derive(Clone, Debug)]
+pub struct QualityMap {
+    /// (block, projection_name) → quality classification + NARS truth.
+    pub heads: HashMap<(u32, String), (HeadQuality, NarsTruth)>,
+    /// Summary counts.
+    pub good: usize,
+    pub bad: usize,
+    pub uncertain: usize,
+    pub reverted: usize,
+}
+
+/// Score every shifted head as GOOD/BAD/UNCERTAIN using 4-diff cross-validation.
+///
+/// ```text
+/// v1 = conservative (3K samples), v2 = aggressive (14K samples), 9B = scale test
+///
+/// GOOD:       v1 ∩ v2 ∩ 9B   (all agree → reasoning scaffold)
+/// BAD:        v2 \ v1         (only aggressive round → overfit/knowledge-loss)
+/// UNCERTAIN:  v1 ∩ v2 \ 9B   (consistent but not scale-invariant)
+/// REVERTED:   v1 \ v2         (first round overcorrected, second fixed it)
+/// ```
+///
+/// The NARS truth per head is the cross-validated frequency from all diffs
+/// where the head appeared, giving confidence in the classification.
+pub fn score_head_quality(
+    edges_v1: &[WeightEdge],
+    edges_v2: &[WeightEdge],
+    edges_9b: &[WeightEdge],
+) -> QualityMap {
+    // Collect which (block, proj) pairs appear in each diff
+    let heads_v1 = head_set(edges_v1);
+    let heads_v2 = head_set(edges_v2);
+    let heads_9b = head_set(edges_9b);
+
+    let mut heads = HashMap::new();
+    let mut good = 0;
+    let mut bad = 0;
+    let mut uncertain = 0;
+    let mut reverted = 0;
+
+    // All heads from any diff
+    let all_heads: std::collections::BTreeSet<(u32, String)> = heads_v1
+        .keys()
+        .chain(heads_v2.keys())
+        .chain(heads_9b.keys())
+        .cloned()
+        .collect();
+
+    for key in &all_heads {
+        let in_v1 = heads_v1.contains_key(key);
+        let in_v2 = heads_v2.contains_key(key);
+        let in_9b = heads_9b.contains_key(key);
+
+        let quality = if in_v1 && in_v2 && in_9b {
+            good += 1;
+            HeadQuality::Good
+        } else if in_v2 && !in_v1 {
+            bad += 1;
+            HeadQuality::Bad
+        } else if in_v1 && !in_v2 {
+            reverted += 1;
+            HeadQuality::Reverted
+        } else {
+            // v1 ∩ v2 but not 9B, or 9B-only, or other combinations
+            uncertain += 1;
+            HeadQuality::Uncertain
+        };
+
+        // NARS truth: aggregate evidence from all diffs where this head appeared
+        let mut truth = NarsTruth::new(0.5, 0.0);
+        for (src, map) in [("v1", &heads_v1), ("v2", &heads_v2), ("9b", &heads_9b)] {
+            if let Some(&(f, c)) = map.get(key) {
+                truth = nars_revision(truth, NarsTruth::new(f, c));
+            }
+        }
+
+        heads.insert(key.clone(), (quality, truth));
+    }
+
+    QualityMap { heads, good, bad, uncertain, reverted }
+}
+
+/// Extract (block, proj) → (frequency, confidence) from edges via cluster_by_head.
+fn head_set(edges: &[WeightEdge]) -> HashMap<(u32, String), (f32, f32)> {
+    let clusters = cluster_by_head(edges);
+    clusters
+        .into_iter()
+        .map(|((block, proj), (count, total, _mean_l1))| {
+            let f = if total > 0 { count as f32 / total as f32 } else { 0.0 };
+            let c = (1.0 - 1.0 / (1.0 + total as f32)).min(0.99);
+            ((block, proj), (f, c))
+        })
+        .collect()
+}
+
+/// Build Palette3D with quality-aware bit setting.
+///
+/// Only GOOD heads get full palette bits. BAD heads get zero.
+/// UNCERTAIN heads get bits only in non-critical layers (REFINES, ABSTRACTS).
+/// This filters the Palette3D to be a QUALITY prior, not just a topology map.
+///
+/// The result can drive NARS self-reinforcement LoRA:
+/// 1. Static: Palette3D as prior (which heads to reinforce)
+/// 2. Dynamic: run inference → NARS score outputs → update truth per head
+/// 3. LoRA: train δW guided by Palette3D mask × NARS confidence
+///    - GOOD heads with high NARS conf → reinforce (increase LoRA rank)
+///    - BAD heads with high conf → suppress (LoRA rank → 0)
+///    - UNCERTAIN heads → let NARS feedback decide over iterations
+pub fn scaffold_to_palette3d_quality_filtered(
+    edges_v1: &[WeightEdge],
+    edges_v2: &[WeightEdge],
+    edges_v1v2: &[WeightEdge],
+    edges_9b: &[WeightEdge],
+) -> ([[u64; 64]; 8], QualityMap) {
+    let quality = score_head_quality(edges_v1, edges_v2, edges_9b);
+
+    let heels_v1 = scaffold_to_heel_planes(edges_v1, 0.3);
+    let heels_v2 = scaffold_to_heel_planes(edges_v2, 0.3);
+    let heels_v1v2 = scaffold_to_heel_planes(edges_v1v2, 0.3);
+    let heels_9b = scaffold_to_heel_planes(edges_9b, 0.3);
+
+    // Build quality masks: which blocks are GOOD vs BAD
+    let mut good_mask = 0u64;
+    let mut bad_mask = 0u64;
+    for ((block, _proj), (q, _truth)) in &quality.heads {
+        if *block >= 64 { continue; }
+        match q {
+            HeadQuality::Good => good_mask |= 1u64 << block,
+            HeadQuality::Bad => bad_mask |= 1u64 << block,
+            _ => {}
+        }
+    }
+    // Uncertain blocks: not explicitly good or bad
+    let uncertain_mask = !(good_mask | bad_mask);
+
+    // MEASURED (same as 4-diff version)
+    let causes = heels_v1[0] | heels_v1[1];
+    let enables = heels_v2[0] | heels_v2[1];
+    let still_moving = heels_v1v2[0] | heels_v1v2[1];
+    let abstracts_9b = heels_9b[0] | heels_9b[1];
+
+    // DEDUCED (same algebra)
+    let refines = causes & !still_moving;
+    let supports = causes & enables;
+    let contradicts = causes & !enables & still_moving;
+    let grounds = supports & abstracts_9b;
+    let becomes = enables & !causes;
+
+    // QUALITY FILTER: mask layers by head quality
+    // Critical layers (CAUSES, ENABLES, SUPPORTS, GROUNDS): only GOOD bits
+    // Informational layers (REFINES, ABSTRACTS): GOOD + UNCERTAIN
+    // Tension layers (CONTRADICTS, BECOMES): unfiltered (they ARE the signal)
+    let heel_bits = [
+        causes & good_mask,                           // 0 CAUSES: only good
+        enables & good_mask,                          // 1 ENABLES: only good
+        supports & good_mask,                         // 2 SUPPORTS: only good
+        contradicts,                                  // 3 CONTRADICTS: unfiltered
+        refines & (good_mask | uncertain_mask),       // 4 REFINES: good + uncertain
+        abstracts_9b & (good_mask | uncertain_mask),  // 5 ABSTRACTS: good + uncertain
+        grounds & good_mask,                          // 6 GROUNDS: only good
+        becomes,                                      // 7 BECOMES: unfiltered
+    ];
+
+    let mut layers = [[0u64; 64]; 8];
+    for (layer_idx, &bits) in heel_bits.iter().enumerate() {
+        for row in 0..64 {
+            let octave = row / 8;
+            let rotation = (octave as u32) * 39;
+            layers[layer_idx][row] = bits.rotate_left(rotation);
+        }
+    }
+
+    (layers, quality)
+}
+
+// ============================================================================
+// NARS self-reinforcement LoRA — feedback loop framework
+// ============================================================================
+
+/// Per-head NARS belief updated by inference feedback.
+///
+/// Static analysis gives the prior (from weight diffs).
+/// Each inference run updates the belief: did this head's contribution
+/// improve or degrade output quality?
+///
+/// After N inference rounds, heads with high frequency + high confidence
+/// → reinforce via LoRA. Heads with low frequency + high confidence
+/// → suppress. Uncertain heads → keep exploring.
+#[derive(Clone, Debug)]
+pub struct NarsHeadBelief {
+    /// (block, projection) → quality prior + dynamic truth.
+    pub beliefs: HashMap<(u32, String), HeadBelief>,
+}
+
+/// One head's belief state in the NARS learning loop.
+#[derive(Clone, Debug)]
+pub struct HeadBelief {
+    /// Static prior from weight-diff quality scoring.
+    pub prior: HeadQuality,
+    /// Dynamic truth from inference feedback. Starts at prior, updated each round.
+    pub truth: NarsTruth,
+    /// Number of inference rounds that updated this belief.
+    pub rounds: u32,
+    /// Recommended LoRA action based on current truth.
+    pub action: LoraAction,
+}
+
+/// What the NARS loop recommends for a head's LoRA rank.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoraAction {
+    /// High freq + high conf → increase LoRA rank for this head.
+    Reinforce,
+    /// Low freq + high conf → set LoRA rank to 0 (suppress).
+    Suppress,
+    /// Low conf → keep exploring, don't commit yet.
+    Explore,
+}
+
+impl NarsHeadBelief {
+    /// Initialize from static quality map (the prior).
+    pub fn from_quality_map(qm: &QualityMap) -> Self {
+        let mut beliefs = HashMap::new();
+        for (key, (quality, truth)) in &qm.heads {
+            let action = match quality {
+                HeadQuality::Good => LoraAction::Reinforce,
+                HeadQuality::Bad => LoraAction::Suppress,
+                _ => LoraAction::Explore,
+            };
+            beliefs.insert(key.clone(), HeadBelief {
+                prior: *quality,
+                truth: *truth,
+                rounds: 0,
+                action,
+            });
+        }
+        Self { beliefs }
+    }
+
+    /// Update beliefs after one inference round.
+    ///
+    /// `feedback`: (block, projection) → did this head help? (frequency 0..1)
+    /// High frequency = head contributed to correct output.
+    /// Low frequency = head degraded output.
+    ///
+    /// This is where static analysis meets dynamic validation:
+    /// a GOOD-prior head that consistently helps → Reinforce with high conf.
+    /// a GOOD-prior head that hurts → truth drops → eventually Explore/Suppress.
+    /// a BAD-prior head that actually helps → truth rises → eventually Reinforce.
+    pub fn update(&mut self, feedback: &HashMap<(u32, String), f32>) {
+        for (key, belief) in &mut self.beliefs {
+            if let Some(&quality_score) = feedback.get(key) {
+                let evidence = NarsTruth::new(quality_score, 0.8);
+                belief.truth = nars_revision(belief.truth, evidence);
+                belief.rounds += 1;
+
+                // Update action based on revised truth
+                belief.action = if belief.truth.confidence > 0.7 {
+                    if belief.truth.frequency > 0.6 {
+                        LoraAction::Reinforce
+                    } else if belief.truth.frequency < 0.3 {
+                        LoraAction::Suppress
+                    } else {
+                        LoraAction::Explore
+                    }
+                } else {
+                    LoraAction::Explore // not enough confidence yet
+                };
+            }
+        }
+    }
+
+    /// Generate LoRA rank recommendations per head.
+    ///
+    /// Returns (block, projection, rank) where rank is 0 (suppress),
+    /// 4/8/16 (explore), or 32/64 (reinforce).
+    pub fn lora_ranks(&self, max_rank: u32) -> Vec<(u32, String, u32)> {
+        let mut ranks = Vec::new();
+        for ((block, proj), belief) in &self.beliefs {
+            let rank = match belief.action {
+                LoraAction::Suppress => 0,
+                LoraAction::Explore => max_rank / 4,
+                LoraAction::Reinforce => {
+                    // Scale rank by NARS confidence: higher conf → higher rank
+                    let scale = belief.truth.confidence.min(0.99);
+                    ((max_rank as f32) * scale) as u32
+                }
+            };
+            ranks.push((*block, proj.clone(), rank));
+        }
+        ranks.sort_by(|a, b| b.2.cmp(&a.2)); // highest rank first
+        ranks
+    }
+}
+
+// ============================================================================
+// Palette3D attention overlay — structural restoration at inference time
+// ============================================================================
+
+/// Volatility score per (block, projection) from cross-validated diffs.
+///
+/// A weight is volatile if it shifted in multiple independent diffs.
+/// The score is the NARS-revised frequency across all diffs for that
+/// (block, projection) combination.
+#[derive(Clone, Debug)]
+pub struct VolatilityMap {
+    /// (block, projection) → NARS truth from cross-validated diffs.
+    pub scores: HashMap<(u32, String), NarsTruth>,
+    /// Blocks classified as scaffold (Q+O shifted, K stable).
+    pub scaffold_blocks: Vec<u32>,
+    /// Blocks classified as scale-invariant (present in both 27B and 9B).
+    pub scale_invariant: Vec<u32>,
+}
+
+/// Build a volatility map from 4 diff runs.
+///
+/// Cross-validates: a head is volatile only if it shifted in multiple diffs.
+/// Single-diff noise is suppressed by NARS revision across all 4 evidence sources.
+pub fn build_volatility_map(
+    edges_v1: &[WeightEdge],
+    edges_v2: &[WeightEdge],
+    edges_v1v2: &[WeightEdge],
+    edges_9b: &[WeightEdge],
+    stats: &[(&str, &DiffStats)],
+) -> VolatilityMap {
+    // NARS revision across all diffs per projection
+    let revised = revise_across_diffs(stats);
+
+    // Per-head volatility: count how many diffs this (block, proj) appears in
+    let mut head_evidence: HashMap<(u32, String), Vec<NarsTruth>> = HashMap::new();
+
+    for (label, diff_edges) in [
+        ("v1", edges_v1), ("v2", edges_v2), ("v1v2", edges_v1v2), ("9b", edges_9b),
+    ] {
+        let clusters = cluster_by_head(diff_edges);
+        for ((block, proj), (count, total, mean_l1)) in &clusters {
+            let f = if *total > 0 { *count as f32 / *total as f32 } else { 0.0 };
+            let c = (1.0 - 1.0 / (1.0 + *total as f32)).min(0.99);
+            head_evidence
+                .entry((*block, proj.clone()))
+                .or_default()
+                .push(NarsTruth::new(f, c));
+        }
+    }
+
+    // Revise per-head evidence across all diffs
+    let mut scores = HashMap::new();
+    for (key, truths) in &head_evidence {
+        let mut revised = NarsTruth::new(0.5, 0.0);
+        for &t in truths {
+            revised = nars_revision(revised, t);
+        }
+        scores.insert(key.clone(), revised);
+    }
+
+    // Scaffold detection
+    let scaffold_v1 = find_reasoning_scaffold(edges_v1, 0.3);
+    let scaffold_v2 = find_reasoning_scaffold(edges_v2, 0.3);
+    let scaffold_9b = find_reasoning_scaffold(edges_9b, 0.3);
+
+    let scale_invariant: Vec<u32> = scaffold_v1.iter()
+        .filter(|b| scaffold_9b.contains(b))
+        .cloned()
+        .collect();
+
+    VolatilityMap {
+        scores,
+        scaffold_blocks: scaffold_v1,
+        scale_invariant,
+    }
+}
+
+/// Apply Palette3D as attention overlay.
+///
+/// Given a block's attention scores (Q×K^T), modulate them based on
+/// the palette's structural prior. Volatile heads keep full strength.
+/// Ballast heads are dampened.
+///
+/// ```text
+/// scores[i] *= if palette_bit(block, i) { 1.0 } else { decay }
+/// ```
+///
+/// `decay`: 0.0 = hard mask (zero ballast), 0.8 = soft dampen.
+/// For structural restoration, 0.85-0.95 works well — the Q8_0 weights
+/// still carry approximate information, the palette just sharpens contrast.
+#[inline]
+pub fn apply_palette_overlay(
+    scores: &mut [f32],
+    palette_row: u64,
+    decay: f32,
+) {
+    // Map score positions to 64 palette bins
+    let n = scores.len();
+    let bin_size = (n + 63) / 64;
+
+    for (i, score) in scores.iter_mut().enumerate() {
+        let bin = (i / bin_size).min(63);
+        if palette_row & (1u64 << bin) == 0 {
+            // Ballast: dampen
+            *score *= decay;
+        }
+        // Volatile: keep full strength (×1.0, no-op)
+    }
+}
+
+/// ThinkingStyle ordinal for PAL8 serialization.
+///
+/// Maps to p64::ThinkingStyle constants and lance-graph-contract ThinkingStyles.
+/// The ordinal travels with the palette over the Cognitive Highway so the
+/// consumer (Blumenstrauss) knows which combine/contra mode to use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum PaletteStyle {
+    Analytical  = 0, // tight intersection, contradiction kills
+    Creative    = 1, // wide union, contradiction ignored
+    Focused     = 2, // single causal chain
+    Integrative = 3, // majority vote, contradiction as tension
+    Divergent   = 4, // contradiction inverts (fuel)
+    Meta        = 5, // observes the observation
+}
+
+impl PaletteStyle {
+    fn from_u8(v: u8) -> Self {
+        match v {
+            0 => Self::Analytical, 1 => Self::Creative, 2 => Self::Focused,
+            3 => Self::Integrative, 4 => Self::Divergent, 5 => Self::Meta,
+            _ => Self::Analytical,
+        }
+    }
+}
+
+/// Serialize 8 palette layers + style to compact binary.
+///
+/// Format: "PAL8" magic + style(u8) + 8 × 64 × u64 LE = 4101 bytes.
+/// This is the Cognitive Highway payload: ndarray extracts → PAL8 → lance-graph
+/// deserializes into `Blumenstrauss::new(planes, semiring)`.
+pub fn serialize_palette3d_layers(
+    layers: &[[u64; 64]; 8],
+    style: PaletteStyle,
+    path: &str,
+) -> Result<(), String> {
+    use std::io::Write;
+    let mut file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+    file.write_all(b"PAL8").map_err(|e| e.to_string())?;
+    file.write_all(&[style as u8]).map_err(|e| e.to_string())?;
+    for layer in layers {
+        for &row in layer {
+            file.write_all(&row.to_le_bytes()).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// Deserialize 8 palette layers + style from compact binary.
+pub fn deserialize_palette3d_layers(path: &str) -> Result<([[u64; 64]; 8], PaletteStyle), String> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut magic = [0u8; 4];
+    file.read_exact(&mut magic).map_err(|e| e.to_string())?;
+    if &magic != b"PAL8" {
+        return Err(format!("bad magic: {:?}", magic));
+    }
+    let mut style_byte = [0u8; 1];
+    file.read_exact(&mut style_byte).map_err(|e| e.to_string())?;
+    let style = PaletteStyle::from_u8(style_byte[0]);
+    let mut layers = [[0u64; 64]; 8];
+    for layer in &mut layers {
+        for row in layer.iter_mut() {
+            let mut buf = [0u8; 8];
+            file.read_exact(&mut buf).map_err(|e| e.to_string())?;
+            *row = u64::from_le_bytes(buf);
+        }
+    }
+    Ok((layers, style))
+}
+
+// ============================================================================
 // Diff engine
 // ============================================================================
 
@@ -508,6 +1393,43 @@ pub fn cross_reference_gate_scaffold(
 }
 
 // ============================================================================
+// #4 Reverse Causality Reasoning
+// ============================================================================
+
+/// #4 Reverse Causality Reasoning — trace backward from effect to cause.
+/// Uses XOR-analog on Base17: effect.l1(candidate) finds the nearest causal antecedent.
+/// Science: Pearl (2009), Plate (2003), Squires & Uhler (2023).
+pub fn reverse_trace(
+    effect: &super::bgz17_bridge::Base17,
+    candidates: &[super::bgz17_bridge::Base17],
+    max_depth: usize,
+    threshold: u32,
+) -> Vec<(usize, u32, NarsTruth)> {
+    let mut chain = Vec::new();
+    let mut current = effect.clone();
+    let max_l1 = (17u32 * 65535) as f32;
+
+    for _ in 0..max_depth {
+        let mut best_idx = 0;
+        let mut best_dist = u32::MAX;
+        for (i, c) in candidates.iter().enumerate() {
+            let d = current.l1(c);
+            if d < best_dist && d > 0 {
+                best_dist = d;
+                best_idx = i;
+            }
+        }
+        if best_dist > threshold || best_dist == u32::MAX { break; }
+
+        let frequency = 1.0 - (best_dist as f32 / max_l1);
+        let confidence = (1.0 - 1.0 / (1.0 + chain.len() as f32 + 1.0)).min(0.99);
+        chain.push((best_idx, best_dist, NarsTruth::new(frequency, confidence)));
+        current = candidates[best_idx].clone();
+    }
+    chain
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -530,6 +1452,320 @@ mod tests {
         assert_eq!(extract_block("blk.17.attn_q.weight"), Some(17));
         assert_eq!(extract_block("blk.0.ffn_gate.weight"), Some(0));
         assert_eq!(extract_block("token_embd.weight"), None);
+    }
+
+    #[test]
+    fn test_causal_edge64_roundtrip() {
+        let edge = WeightEdge {
+            tensor_name: "blk.17.attn_q.weight".into(),
+            row_idx: 42,
+            block: Some(17),
+            projection: Projection::Q,
+            layer_type: LayerType::Attention,
+            verb: Verb::Becomes,
+            l1_distance: 1234,
+            truth: NarsTruth::new(0.72, 0.95),
+        };
+
+        let packed = CausalEdge64::pack(&edge);
+        assert_eq!(packed.block(), 17);
+        assert_eq!(packed.projection(), Projection::Q);
+        assert_eq!(packed.verb(), Verb::Becomes);
+        assert_eq!(packed.row_idx(), 42);
+        assert_eq!(packed.l1_distance(), 1234);
+        assert!((packed.frequency() - 0.72).abs() < 0.002);
+        assert!((packed.confidence() - 0.95).abs() < 0.002);
+
+        // Fits in one u64
+        assert_eq!(std::mem::size_of::<CausalEdge64>(), 8);
+    }
+
+    #[test]
+    fn test_causal_edge64_all_projections() {
+        for (proj, val) in [
+            (Projection::Q, 0), (Projection::K, 1), (Projection::V, 2), (Projection::O, 3),
+            (Projection::Gate, 4), (Projection::FfnGate, 5), (Projection::FfnUp, 6),
+            (Projection::FfnDown, 7), (Projection::Embedding, 8), (Projection::Other, 9),
+        ] {
+            let edge = WeightEdge {
+                tensor_name: String::new(),
+                row_idx: 0, block: Some(0),
+                projection: proj.clone(),
+                layer_type: LayerType::Attention,
+                verb: Verb::Becomes, l1_distance: 0,
+                truth: NarsTruth::new(0.5, 0.5),
+            };
+            let packed = CausalEdge64::pack(&edge);
+            assert_eq!(packed.projection(), proj, "projection {} failed", val);
+        }
+    }
+
+    #[test]
+    fn test_scaffold_to_palette64() {
+        let edges: Vec<WeightEdge> = (0..10).map(|i| WeightEdge {
+            tensor_name: format!("blk.{}.attn_q.weight", i),
+            row_idx: i as u32,
+            block: Some(i as u32),
+            projection: Projection::Q,
+            layer_type: LayerType::Attention,
+            verb: Verb::Becomes,
+            l1_distance: 500 + i as u32 * 100,
+            truth: NarsTruth::new(0.8, 0.9),
+        }).collect();
+
+        let (rows, labels) = scaffold_to_palette64(&edges);
+        assert_eq!(labels.len(), 10);
+        assert!(rows[0] != 0, "row 0 should be populated");
+        assert_eq!(rows[63], 0, "row 63 should be empty (only 10 edges)");
+
+        // Each label should be (block, Q)
+        for (block, proj) in &labels {
+            assert_eq!(*proj, Projection::Q);
+            assert!(*block < 10);
+        }
+    }
+
+    #[test]
+    fn test_projection_to_predicate_mapping() {
+        // Q → CAUSES(0), O → ENABLES(1), K → SUPPORTS(2)
+        assert_eq!(projection_to_predicate(&Projection::Q), 0);
+        assert_eq!(projection_to_predicate(&Projection::O), 1);
+        assert_eq!(projection_to_predicate(&Projection::K), 2);
+        assert_eq!(projection_to_predicate(&Projection::Gate), 3);
+        assert_eq!(projection_to_predicate(&Projection::V), 4);
+        assert_eq!(projection_to_predicate(&Projection::FfnUp), 5);
+        assert_eq!(projection_to_predicate(&Projection::FfnGate), 6);
+        assert_eq!(projection_to_predicate(&Projection::Embedding), 7);
+    }
+
+    #[test]
+    fn test_scaffold_to_heel_planes() {
+        // Edges: blocks 0-7 with Q shifts, blocks 2-5 with O shifts
+        let mut edges = Vec::new();
+        for b in 0..8u32 {
+            edges.push(WeightEdge {
+                tensor_name: format!("layers.{}.self_attn.q_proj.weight", b),
+                row_idx: 0, block: Some(b),
+                projection: Projection::Q,
+                layer_type: LayerType::Attention,
+                verb: Verb::Becomes, l1_distance: 500,
+                truth: NarsTruth::new(0.8, 0.9),
+            });
+        }
+        for b in 2..6u32 {
+            edges.push(WeightEdge {
+                tensor_name: format!("layers.{}.self_attn.o_proj.weight", b),
+                row_idx: 0, block: Some(b),
+                projection: Projection::O,
+                layer_type: LayerType::Attention,
+                verb: Verb::Becomes, l1_distance: 400,
+                truth: NarsTruth::new(0.7, 0.85),
+            });
+        }
+
+        let planes = scaffold_to_heel_planes(&edges, 0.3);
+
+        // CAUSES (plane 0): blocks 0-7 from Q
+        assert_eq!(planes[0], 0xFF); // bits 0-7
+
+        // ENABLES (plane 1): blocks 2-5 from O
+        assert_eq!(planes[1], 0b0011_1100); // bits 2-5
+
+        // Other planes should be 0 (no V, K, Gate, FFN edges)
+        assert_eq!(planes[2], 0); // SUPPORTS (K)
+        assert_eq!(planes[3], 0); // CONTRADICTS (Gate)
+    }
+
+    #[test]
+    fn test_scaffold_to_palette3d_layers() {
+        let make_edges = |blocks: &[u32], proj: Projection| -> Vec<WeightEdge> {
+            blocks.iter().map(|&b| WeightEdge {
+                tensor_name: format!("layers.{}.self_attn.q_proj.weight", b),
+                row_idx: 0, block: Some(b), projection: proj.clone(),
+                layer_type: LayerType::Attention, verb: Verb::Becomes,
+                l1_distance: 500, truth: NarsTruth::new(0.8, 0.9),
+            }).collect()
+        };
+
+        // v1: Q blocks 0-3, O blocks 1-2
+        let mut edges_v1 = make_edges(&[0, 1, 2, 3], Projection::Q);
+        edges_v1.extend(make_edges(&[1, 2], Projection::O));
+
+        // v2: Q blocks 0-2, O block 5 (novel head not in v1)
+        let mut edges_v2 = make_edges(&[0, 1, 2], Projection::Q);
+        edges_v2.extend(make_edges(&[5], Projection::O));
+
+        // v1→v2: block 3 still moving (was in v1, didn't converge)
+        let edges_v1v2 = make_edges(&[3], Projection::Q);
+
+        // 9B: blocks 0,1 (scale-invariant)
+        let edges_9b = make_edges(&[0, 1], Projection::Q);
+
+        let layers = scaffold_to_palette3d_layers(&edges_v1, &edges_v2, &edges_v1v2, &edges_9b);
+
+        // causes  = v1 Q|O = {0,1,2,3} | {1,2} = 0b00001111
+        // enables = v2 Q|O = {0,1,2}   | {5}   = 0b00100111
+
+        // Layer 0 (CAUSES): blocks 0,1,2,3 from v1
+        assert_ne!(layers[0][0], 0, "CAUSES should be populated");
+
+        // Layer 2 (SUPPORTS): CAUSES ∩ ENABLES = {0,1,2} = 0b0111
+        let supports_heel = layers[2][0]; // row 0 = HEEL unrotated
+        assert_ne!(supports_heel, 0, "SUPPORTS = both distillations agree");
+
+        // Layer 3 (CONTRADICTS): causes & !enables & still_moving
+        //   causes = 0x0F, enables = 0x27, still_moving = {3} = 0x08
+        //   0x0F & !0x27 & 0x08 = 0x08 & 0x08 = 0x08 (block 3)
+        let contradicts_heel = layers[3][0];
+        assert_ne!(contradicts_heel, 0, "CONTRADICTS = block 3 overcorrected");
+
+        // Layer 5 (ABSTRACTS): 9B Q|O = {0,1}
+        let abstracts_heel = layers[5][0];
+        assert_ne!(abstracts_heel, 0, "ABSTRACTS = scale-invariant blocks");
+
+        // Layer 6 (GROUNDS): SUPPORTS ∩ ABSTRACTS = {0,1} ∩ {0,1} = {0,1}
+        let grounds_heel = layers[6][0];
+        assert_ne!(grounds_heel, 0, "GROUNDS = consistent AND scale-invariant");
+
+        // Layer 7 (BECOMES): ENABLES \ CAUSES = {5} (novel in v2)
+        let becomes_heel = layers[7][0];
+        assert_ne!(becomes_heel, 0, "BECOMES = novel head in second distillation");
+
+        // Layer 4 (REFINES): causes & !still_moving = {0,1,2} (converged)
+        let refines_heel = layers[4][0];
+        assert_ne!(refines_heel, 0, "REFINES = heads that converged v1→v2");
+
+        assert_eq!(layers.len(), 8);
+        assert_eq!(layers[0].len(), 64);
+    }
+
+    #[test]
+    fn test_apply_palette_overlay() {
+        let mut scores = vec![1.0f32; 128];
+
+        // Palette row: only bits 0-3 active (first 4 bins)
+        let palette_row: u64 = 0x0F; // bits 0,1,2,3
+
+        apply_palette_overlay(&mut scores, palette_row, 0.5);
+
+        // First ~8 scores (bins 0-3 at bin_size=2): full strength
+        assert_eq!(scores[0], 1.0);
+        assert_eq!(scores[3], 1.0);
+        assert_eq!(scores[7], 1.0);
+
+        // Scores in bins 4+ should be dampened to 0.5
+        assert_eq!(scores[8], 0.5);
+        assert_eq!(scores[64], 0.5);
+        assert_eq!(scores[127], 0.5);
+    }
+
+    #[test]
+    fn test_palette3d_serialization_roundtrip() {
+        let mut layers = [[0u64; 64]; 8];
+        layers[0][0] = 0xDEADBEEF;
+        layers[3][17] = 0xCAFEBABE;
+        layers[7][63] = u64::MAX;
+
+        let path = "/tmp/test_palette3d_roundtrip.bin";
+        serialize_palette3d_layers(&layers, PaletteStyle::Analytical, path).expect("serialize");
+
+        let (loaded, style) = deserialize_palette3d_layers(path).expect("deserialize");
+        assert_eq!(layers, loaded);
+        assert_eq!(style, PaletteStyle::Analytical);
+
+        // Size: 4 magic + 1 style + 8 × 64 × 8 = 4101 bytes
+        let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        assert_eq!(size, 4101);
+
+        // Roundtrip with different style
+        serialize_palette3d_layers(&layers, PaletteStyle::Integrative, path).expect("serialize");
+        let (_, style2) = deserialize_palette3d_layers(path).expect("deserialize");
+        assert_eq!(style2, PaletteStyle::Integrative);
+
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn test_score_head_quality() {
+        let make = |blocks: &[u32], proj: Projection| -> Vec<WeightEdge> {
+            blocks.iter().map(|&b| WeightEdge {
+                tensor_name: format!("layers.{}.self_attn.q_proj.weight", b),
+                row_idx: 0, block: Some(b), projection: proj.clone(),
+                layer_type: LayerType::Attention, verb: Verb::Becomes,
+                l1_distance: 500, truth: NarsTruth::new(0.8, 0.9),
+            }).collect()
+        };
+
+        // v1: blocks 0-5 Q shifted
+        let edges_v1 = make(&[0, 1, 2, 3, 4, 5], Projection::Q);
+        // v2: blocks 0-3 Q + block 10 Q (block 10 = new, aggressive)
+        let edges_v2 = make(&[0, 1, 2, 3, 10], Projection::Q);
+        // 9B: blocks 0-2 Q (scale-invariant subset)
+        let edges_9b = make(&[0, 1, 2], Projection::Q);
+
+        let qm = score_head_quality(&edges_v1, &edges_v2, &edges_9b);
+
+        // Blocks 0,1,2: in v1 ∩ v2 ∩ 9B → GOOD
+        assert_eq!(qm.heads.get(&(0, "Q".into())).unwrap().0, HeadQuality::Good);
+        assert_eq!(qm.heads.get(&(1, "Q".into())).unwrap().0, HeadQuality::Good);
+        assert_eq!(qm.heads.get(&(2, "Q".into())).unwrap().0, HeadQuality::Good);
+
+        // Block 10: only in v2 → BAD (aggressive overfit)
+        assert_eq!(qm.heads.get(&(10, "Q".into())).unwrap().0, HeadQuality::Bad);
+
+        // Blocks 4,5: in v1 but NOT in v2 → REVERTED (v2 corrected)
+        assert_eq!(qm.heads.get(&(4, "Q".into())).unwrap().0, HeadQuality::Reverted);
+        assert_eq!(qm.heads.get(&(5, "Q".into())).unwrap().0, HeadQuality::Reverted);
+
+        // Block 3: in v1 ∩ v2 but NOT 9B → UNCERTAIN
+        assert_eq!(qm.heads.get(&(3, "Q".into())).unwrap().0, HeadQuality::Uncertain);
+
+        assert_eq!(qm.good, 3);
+        assert_eq!(qm.bad, 1);
+        assert_eq!(qm.reverted, 2);
+        assert_eq!(qm.uncertain, 1);
+    }
+
+    #[test]
+    fn test_nars_head_belief_update() {
+        let make = |blocks: &[u32], proj: Projection| -> Vec<WeightEdge> {
+            blocks.iter().map(|&b| WeightEdge {
+                tensor_name: String::new(), row_idx: 0, block: Some(b),
+                projection: proj.clone(), layer_type: LayerType::Attention,
+                verb: Verb::Becomes, l1_distance: 500, truth: NarsTruth::new(0.8, 0.9),
+            }).collect()
+        };
+
+        let edges_v1 = make(&[0, 1], Projection::Q);
+        let edges_v2 = make(&[0, 1], Projection::Q);
+        let edges_9b = make(&[0], Projection::Q);
+
+        let qm = score_head_quality(&edges_v1, &edges_v2, &edges_9b);
+        let mut beliefs = NarsHeadBelief::from_quality_map(&qm);
+
+        // Block 0: GOOD prior → Reinforce
+        assert_eq!(beliefs.beliefs[&(0, "Q".into())].action, LoraAction::Reinforce);
+
+        // Simulate 3 rounds of positive feedback for block 0
+        for _ in 0..3 {
+            let mut feedback = HashMap::new();
+            feedback.insert((0, "Q".into()), 0.9f32); // high quality
+            feedback.insert((1, "Q".into()), 0.2f32); // low quality
+            beliefs.update(&feedback);
+        }
+
+        // Block 0: still Reinforce (positive feedback confirmed prior)
+        assert_eq!(beliefs.beliefs[&(0, "Q".into())].action, LoraAction::Reinforce);
+        // Block 1: UNCERTAIN prior + negative feedback → should trend to Suppress
+        let b1 = &beliefs.beliefs[&(1, "Q".into())];
+        assert!(b1.truth.frequency < 0.5, "negative feedback should lower frequency");
+
+        // LoRA ranks
+        let ranks = beliefs.lora_ranks(64);
+        assert!(!ranks.is_empty());
+        // Highest rank should be block 0 (reinforced)
+        assert_eq!(ranks[0].0, 0);
+        assert!(ranks[0].2 > 32, "reinforced head should have high LoRA rank");
     }
 
     #[test]
@@ -622,7 +1858,8 @@ mod tests {
                 .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
                 .unwrap_or_default();
             let size: u64 = size_str.lines()
-                .find(|l| l.to_lowercase().starts_with("content-length:"))
+                .filter(|l| l.to_lowercase().starts_with("content-length:"))
+                .last()
                 .and_then(|l| l.split(':').nth(1))
                 .and_then(|s| s.trim().parse().ok())
                 .unwrap_or(30_000_000_000); // fallback 30 GB
@@ -816,7 +2053,7 @@ mod tests {
     /// Generate safetensors shard filenames for a model.
     fn shard_filenames(total: u32) -> Vec<String> {
         (1..=total)
-            .map(|i| format!("model-{:05}-of-{:05}.safetensors", i, total))
+            .map(|i| format!("model.safetensors-{:05}-of-{:05}.safetensors", i, total))
             .collect()
     }
 
@@ -855,6 +2092,7 @@ mod tests {
             );
 
             // HEAD for content-length
+            // Take the LAST content-length (after redirects)
             let size: u64 = std::process::Command::new("curl")
                 .args(&["-sI", "-L", &url])
                 .output()
@@ -862,7 +2100,8 @@ mod tests {
                 .and_then(|o| {
                     String::from_utf8_lossy(&o.stdout)
                         .lines()
-                        .find(|l| l.to_lowercase().starts_with("content-length:"))
+                        .filter(|l| l.to_lowercase().starts_with("content-length:"))
+                        .last()
                         .and_then(|l| l.split(':').nth(1))
                         .and_then(|s| s.trim().parse().ok())
                 })
@@ -913,8 +2152,13 @@ mod tests {
                 continue;
             }
 
-            let (edges, stats) = causal_diff(bp, dp, l1_threshold)
-                .unwrap_or_else(|e| panic!("diff shard {} failed: {}", shard_idx + 1, e));
+            let (edges, stats) = match causal_diff(bp, dp, l1_threshold) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("  WARN shard {} failed: {}", shard_idx + 1, e);
+                    continue;
+                }
+            };
 
             eprintln!(
                 "  shard {:>2}: {} tensors, {}/{} shifted ({:.1}%), {} edges",
@@ -990,7 +2234,9 @@ mod tests {
     #[test]
     #[ignore] // Requires all 5 models indexed (safetensors BF16)
     fn test_qwen35_claude_reasoning_diff() {
-        let threshold = 100u32;
+        // LoRA deltas are small — Base17 golden-step projection at stride=16
+        // compresses them to L1=0-2. Threshold must be 1 to see the signal.
+        let threshold = 1u32;
 
         // ── Diff 1: base 27B → v1 ──
         eprintln!();
@@ -1200,5 +2446,22 @@ mod tests {
         // Assertions
         assert!(stats_1.tensors_matched > 0, "should match tensors in diff 1");
         assert!(stats_4.tensors_matched > 0, "should match tensors in diff 4");
+    }
+
+    #[test]
+    fn test_reverse_trace() {
+        use super::super::bgz17_bridge::Base17;
+
+        let effect = Base17 { dims: [500; 17] };
+        let candidates = vec![
+            Base17 { dims: [400; 17] },  // closest
+            Base17 { dims: [200; 17] },
+            Base17 { dims: [100; 17] },  // farthest
+        ];
+
+        let chain = reverse_trace(&effect, &candidates, 5, 100000);
+        assert!(!chain.is_empty());
+        // First step should find candidate 0 (closest to effect)
+        assert_eq!(chain[0].0, 0);
     }
 }

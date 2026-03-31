@@ -451,6 +451,69 @@ pub fn nars_resemblance(a: NarsTruth, b: NarsTruth) -> NarsTruth {
     NarsTruth::new(f, c)
 }
 
+/// #11 Contradiction between two beliefs: similar structure, opposing truth.
+#[derive(Clone, Debug)]
+pub struct Contradiction {
+    pub structural_similarity: f32,
+    pub truth_conflict: f32,
+    pub resolution: NarsTruth,
+}
+
+/// #11 Detect contradictions: high structural similarity + opposing truth values.
+/// Science: Wang (2006) revision, Priest (2002) paraconsistent logic, CHAODA.
+pub fn detect_contradiction(
+    truth_a: &NarsTruth,
+    truth_b: &NarsTruth,
+    structural_similarity: f32,
+    threshold: f32,
+) -> Option<Contradiction> {
+    let truth_conflict = (truth_a.frequency - truth_b.frequency).abs();
+    if structural_similarity > 0.7 && truth_conflict > threshold {
+        Some(Contradiction {
+            structural_similarity,
+            truth_conflict,
+            resolution: nars_revision(*truth_a, *truth_b),
+        })
+    } else {
+        None
+    }
+}
+
+/// #7 Adversarial Self-Critique result.
+#[derive(Clone, Debug)]
+pub struct Challenge {
+    pub kind: ChallengeKind,
+    pub alternative_truth: NarsTruth,
+    pub survives: bool,
+}
+
+#[derive(Clone, Debug)]
+pub enum ChallengeKind {
+    /// What if the opposite is true?
+    Negation,
+    /// What breaks if this is false?
+    Dependency,
+}
+
+/// #7 Adversarial Self-Critique — challenge a claim's truth value.
+/// Science: Wang (2006) NARS negation, Mercier & Sperber (2011), Kahneman premortem.
+pub fn adversarial_critique(truth: &NarsTruth) -> Vec<Challenge> {
+    vec![
+        // Negation: not<f,c> = <1-f, c*0.9>
+        Challenge {
+            kind: ChallengeKind::Negation,
+            alternative_truth: NarsTruth::new(1.0 - truth.frequency, truth.confidence * 0.9),
+            survives: truth.expectation() > NarsTruth::new(1.0 - truth.frequency, truth.confidence * 0.9).expectation(),
+        },
+        // Dependency: what if confidence drops?
+        Challenge {
+            kind: ChallengeKind::Dependency,
+            alternative_truth: NarsTruth::new(truth.frequency, truth.confidence * 0.5),
+            survives: truth.confidence > 0.5,
+        },
+    ]
+}
+
 // ---------------------------------------------------------------------------
 // Budget operations
 // ---------------------------------------------------------------------------
@@ -714,6 +777,34 @@ mod tests {
         let tv = ctx.beliefs[0].1;
         // After revision, confidence should increase
         assert!(tv.confidence > 0.5, "c={}", tv.confidence);
+    }
+
+    #[test]
+    fn test_adversarial_critique() {
+        let strong = NarsTruth::new(0.9, 0.95);
+        let challenges = adversarial_critique(&strong);
+        assert_eq!(challenges.len(), 2);
+        assert!(challenges[0].survives); // strong claim survives negation
+        assert!(challenges[1].survives); // strong claim survives dependency
+
+        let weak = NarsTruth::new(0.5, 0.3);
+        let challenges = adversarial_critique(&weak);
+        assert!(!challenges[1].survives); // weak confidence fails dependency
+    }
+
+    #[test]
+    fn test_detect_contradiction() {
+        let a = NarsTruth::new(0.9, 0.8);
+        let b = NarsTruth::new(0.1, 0.8);
+        // High similarity (0.9) + big truth gap (0.8) -> contradiction
+        let c = detect_contradiction(&a, &b, 0.9, 0.5);
+        assert!(c.is_some());
+        let c = c.unwrap();
+        assert!(c.truth_conflict > 0.5);
+
+        // Low similarity -> no contradiction
+        let c = detect_contradiction(&a, &b, 0.3, 0.5);
+        assert!(c.is_none());
     }
 
     #[test]

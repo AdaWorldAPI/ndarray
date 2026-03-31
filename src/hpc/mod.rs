@@ -58,6 +58,8 @@ pub mod causality;
 #[allow(missing_docs)]
 pub mod causal_diff;
 #[allow(missing_docs)]
+pub mod styles;
+#[allow(missing_docs)]
 pub mod nars;
 #[allow(missing_docs)]
 pub mod blackboard;
@@ -135,6 +137,10 @@ pub mod palette_distance;
 pub mod layered_distance;
 #[allow(missing_docs)]
 pub mod parallel_search;
+
+#[allow(missing_docs)]
+#[allow(missing_docs)]
+#[allow(missing_docs)]
 
 // ZeckF64 progressive edge encoding + batch/top-k
 #[allow(missing_docs)]
