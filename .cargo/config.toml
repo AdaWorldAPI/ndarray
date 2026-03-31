@@ -1,6 +1,4 @@
 [build]
-# target-cpu=native: uses whatever the build machine supports.
-# Local dev machines with AVX-512: get __m512d native instructions.
-# GitHub CI (no AVX-512): falls back to AVX2/SSE4.2 automatically.
-# The code uses cfg(target_feature = "avx512f") for compile-time dispatch.
-rustflags = ["-C", "target-cpu=native"]
+# x86-64-v4 = AVX-512 mandatory. Railway + Claude backend = always AVX-512.
+# GitHub CI: set CARGO_BUILD_RUSTFLAGS="-C target-cpu=x86-64-v3" for AVX2 fallback.
+rustflags = ["-C", "target-cpu=x86-64-v4"]
