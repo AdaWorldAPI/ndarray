@@ -12,6 +12,105 @@ use super::bgz17_bridge::{Base17, PaletteEdge, SpoBase17};
 const MAX_PALETTE_SIZE: usize = 256;
 const BASE_DIM: usize = 17;
 
+// ============================================================================
+// Multi-versioned nearest kernel: AVX-512 → AVX2 → scalar.
+// The inner l1() is already SIMD-dispatched; this unrolls the outer loop.
+// ============================================================================
+
+type NearestFn = unsafe fn(&[Base17], &Base17) -> u8;
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+unsafe fn nearest_avx512(entries: &[Base17], query: &Base17) -> u8 {
+    let mut best_idx = 0u8;
+    let mut best_dist = u32::MAX;
+    // 4-way unroll for better branch prediction and ILP
+    let chunks = entries.len() / 4;
+    for c in 0..chunks {
+        let base = c * 4;
+        let d0 = query.l1(&entries[base]);
+        let d1 = query.l1(&entries[base + 1]);
+        let d2 = query.l1(&entries[base + 2]);
+        let d3 = query.l1(&entries[base + 3]);
+        // Find min of 4
+        let (mut min_d, mut min_i) = (d0, 0usize);
+        if d1 < min_d { min_d = d1; min_i = 1; }
+        if d2 < min_d { min_d = d2; min_i = 2; }
+        if d3 < min_d { min_d = d3; min_i = 3; }
+        if min_d < best_dist {
+            best_dist = min_d;
+            best_idx = (base + min_i) as u8;
+        }
+    }
+    // Remainder
+    for i in (chunks * 4)..entries.len() {
+        let d = query.l1(&entries[i]);
+        if d < best_dist {
+            best_dist = d;
+            best_idx = i as u8;
+        }
+    }
+    best_idx
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn nearest_avx2(entries: &[Base17], query: &Base17) -> u8 {
+    let mut best_idx = 0u8;
+    let mut best_dist = u32::MAX;
+    // 4-way unroll (l1 already dispatches to AVX2 internally)
+    let chunks = entries.len() / 4;
+    for c in 0..chunks {
+        let base = c * 4;
+        let d0 = query.l1(&entries[base]);
+        let d1 = query.l1(&entries[base + 1]);
+        let d2 = query.l1(&entries[base + 2]);
+        let d3 = query.l1(&entries[base + 3]);
+        let (mut min_d, mut min_i) = (d0, 0usize);
+        if d1 < min_d { min_d = d1; min_i = 1; }
+        if d2 < min_d { min_d = d2; min_i = 2; }
+        if d3 < min_d { min_d = d3; min_i = 3; }
+        if min_d < best_dist {
+            best_dist = min_d;
+            best_idx = (base + min_i) as u8;
+        }
+    }
+    for i in (chunks * 4)..entries.len() {
+        let d = query.l1(&entries[i]);
+        if d < best_dist {
+            best_dist = d;
+            best_idx = i as u8;
+        }
+    }
+    best_idx
+}
+
+fn nearest_scalar(entries: &[Base17], query: &Base17) -> u8 {
+    let mut best_idx = 0u8;
+    let mut best_dist = u32::MAX;
+    for (i, entry) in entries.iter().enumerate() {
+        let d = query.l1(entry);
+        if d < best_dist {
+            best_dist = d;
+            best_idx = i as u8;
+        }
+    }
+    best_idx
+}
+
+static NEAREST_KERNEL: std::sync::LazyLock<NearestFn> = std::sync::LazyLock::new(|| {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx512f") {
+            return nearest_avx512 as NearestFn;
+        }
+        if is_x86_feature_detected!("avx2") {
+            return nearest_avx2 as NearestFn;
+        }
+    }
+    nearest_scalar as NearestFn
+});
+
 /// A palette codebook: up to 256 archetypal Base17 patterns.
 #[derive(Clone, Debug)]
 pub struct Palette {
@@ -57,17 +156,12 @@ impl Palette {
     }
 
     /// Find the nearest palette entry to a given base pattern. Returns index.
+    ///
+    /// Runtime dispatch via LazyLock: AVX-512 → AVX2 → scalar.
+    /// Inner l1() is already SIMD; outer loop is 4-way unrolled.
     pub fn nearest(&self, query: &Base17) -> u8 {
-        let mut best_idx = 0u8;
-        let mut best_dist = u32::MAX;
-        for (i, entry) in self.entries.iter().enumerate() {
-            let d = query.l1(entry);
-            if d < best_dist {
-                best_dist = d;
-                best_idx = i as u8;
-            }
-        }
-        best_idx
+        // SAFETY: LazyLock guarantees the selected kernel matches CPU features.
+        unsafe { NEAREST_KERNEL(&self.entries, query) }
     }
 
     /// Encode an SpoBase17 edge to palette indices.

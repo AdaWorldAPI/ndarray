@@ -169,6 +169,267 @@ fn spread_32_to_64(val: u32) -> u64 {
 }
 
 // ============================================================================
+// Multi-versioned attend kernel: AVX-512 → AVX2 → scalar.
+// ============================================================================
+
+/// Return type for attend kernel: (best_idx, distance, scores, fires).
+type AttendFn = unsafe fn(&[u64; 64], u64, u8) -> (u8, u8, [u8; 64], u64);
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+unsafe fn attend_avx512(rows: &[u64; 64], query: u64, gamma: u8) -> (u8, u8, [u8; 64], u64) {
+    use std::arch::x86_64::*;
+    let mut best_idx = 0u8;
+    let mut best_score = 0u8;
+    let mut scores = [0u8; 64];
+    let mut fires = 0u64;
+
+    let q = _mm512_set1_epi64(query as i64);
+    // Process 8 rows per chunk, 8 chunks = 64 rows
+    for chunk in 0..8 {
+        let base = chunk * 8;
+        // SAFETY: rows is [u64; 64], base..base+8 is in bounds, Palette64 is 64-byte aligned.
+        let r = _mm512_loadu_si512(rows[base..].as_ptr() as *const __m512i);
+        let anded = _mm512_and_si512(r, q);
+        // Extract 8 u64s and scalar popcount (no VPOPCNTDQ dependency)
+        let vals: [u64; 8] = std::mem::transmute(anded);
+        for j in 0..8 {
+            let score = vals[j].count_ones() as u8;
+            let idx = base + j;
+            scores[idx] = score;
+            if score > best_score {
+                best_score = score;
+                best_idx = idx as u8;
+            }
+            if score >= gamma {
+                fires |= 1u64 << idx;
+            }
+        }
+    }
+    (best_idx, 64 - best_score, scores, fires)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn attend_avx2(rows: &[u64; 64], query: u64, gamma: u8) -> (u8, u8, [u8; 64], u64) {
+    use std::arch::x86_64::*;
+    let mut best_idx = 0u8;
+    let mut best_score = 0u8;
+    let mut scores = [0u8; 64];
+    let mut fires = 0u64;
+
+    let q = _mm256_set1_epi64x(query as i64);
+    // Process 4 rows per chunk, 16 chunks = 64 rows
+    for chunk in 0..16 {
+        let base = chunk * 4;
+        // SAFETY: rows is [u64; 64], base..base+4 is in bounds.
+        let r = _mm256_loadu_si256(rows[base..].as_ptr() as *const __m256i);
+        let anded = _mm256_and_si256(r, q);
+        let vals: [u64; 4] = std::mem::transmute(anded);
+        for j in 0..4 {
+            let score = vals[j].count_ones() as u8;
+            let idx = base + j;
+            scores[idx] = score;
+            if score > best_score {
+                best_score = score;
+                best_idx = idx as u8;
+            }
+            if score >= gamma {
+                fires |= 1u64 << idx;
+            }
+        }
+    }
+    (best_idx, 64 - best_score, scores, fires)
+}
+
+fn attend_scalar(rows: &[u64; 64], query: u64, gamma: u8) -> (u8, u8, [u8; 64], u64) {
+    let mut best_idx = 0u8;
+    let mut best_score = 0u8;
+    let mut scores = [0u8; 64];
+    let mut fires = 0u64;
+    for i in 0..64 {
+        let score = (query & rows[i]).count_ones() as u8;
+        scores[i] = score;
+        if score > best_score {
+            best_score = score;
+            best_idx = i as u8;
+        }
+        if score >= gamma {
+            fires |= 1u64 << i;
+        }
+    }
+    (best_idx, 64 - best_score, scores, fires)
+}
+
+static ATTEND_KERNEL: std::sync::LazyLock<AttendFn> = std::sync::LazyLock::new(|| {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx512f") {
+            return attend_avx512 as AttendFn;
+        }
+        if is_x86_feature_detected!("avx2") {
+            return attend_avx2 as AttendFn;
+        }
+    }
+    attend_scalar as AttendFn
+});
+
+// ============================================================================
+// Multi-versioned nearest_k kernel: AVX-512 → AVX2 → scalar.
+// ============================================================================
+
+/// Compute all 64 Hamming distances in one pass.
+type NearestKFn = unsafe fn(&[u64; 64], u64) -> [u8; 64];
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+unsafe fn nearest_k_avx512(rows: &[u64; 64], query: u64) -> [u8; 64] {
+    use std::arch::x86_64::*;
+    let mut dists = [0u8; 64];
+    let q = _mm512_set1_epi64(query as i64);
+    for chunk in 0..8 {
+        let base = chunk * 8;
+        // SAFETY: rows is [u64; 64], base..base+8 is in bounds.
+        let r = _mm512_loadu_si512(rows[base..].as_ptr() as *const __m512i);
+        let xored = _mm512_xor_si512(r, q);
+        let vals: [u64; 8] = std::mem::transmute(xored);
+        for j in 0..8 {
+            dists[base + j] = vals[j].count_ones() as u8;
+        }
+    }
+    dists
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn nearest_k_avx2(rows: &[u64; 64], query: u64) -> [u8; 64] {
+    use std::arch::x86_64::*;
+    let mut dists = [0u8; 64];
+    let q = _mm256_set1_epi64x(query as i64);
+    for chunk in 0..16 {
+        let base = chunk * 4;
+        // SAFETY: rows is [u64; 64], base..base+4 is in bounds.
+        let r = _mm256_loadu_si256(rows[base..].as_ptr() as *const __m256i);
+        let xored = _mm256_xor_si256(r, q);
+        let vals: [u64; 4] = std::mem::transmute(xored);
+        for j in 0..4 {
+            dists[base + j] = vals[j].count_ones() as u8;
+        }
+    }
+    dists
+}
+
+fn nearest_k_scalar(rows: &[u64; 64], query: u64) -> [u8; 64] {
+    let mut dists = [0u8; 64];
+    for i in 0..64 {
+        dists[i] = (query ^ rows[i]).count_ones() as u8;
+    }
+    dists
+}
+
+static NEAREST_K_KERNEL: std::sync::LazyLock<NearestKFn> = std::sync::LazyLock::new(|| {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx512f") {
+            return nearest_k_avx512 as NearestKFn;
+        }
+        if is_x86_feature_detected!("avx2") {
+            return nearest_k_avx2 as NearestKFn;
+        }
+    }
+    nearest_k_scalar as NearestKFn
+});
+
+// ============================================================================
+// Multi-versioned moe_gate kernel: AVX-512 → AVX2 → scalar.
+// ============================================================================
+
+/// Return type: (active_mask, strength[8], combined).
+type MoeGateFn = unsafe fn(&[u64; 8], u64, u8) -> (u8, [u8; 8], u64);
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+unsafe fn moe_gate_avx512(planes: &[u64; 8], query: u64, threshold: u8) -> (u8, [u8; 8], u64) {
+    use std::arch::x86_64::*;
+    // Load all 8 planes into one zmm register, AND with broadcast query
+    // SAFETY: planes is [u64; 8] = 64 bytes, fits in one zmm.
+    let p = _mm512_loadu_si512(planes.as_ptr() as *const __m512i);
+    let q = _mm512_set1_epi64(query as i64);
+    let anded = _mm512_and_si512(p, q);
+    let vals: [u64; 8] = std::mem::transmute(anded);
+
+    let mut active = 0u8;
+    let mut strength = [0u8; 8];
+    let mut combined = 0u64;
+    for i in 0..8 {
+        let score = vals[i].count_ones() as u8;
+        strength[i] = score;
+        if score >= threshold {
+            active |= 1 << i;
+            combined |= planes[i];
+        }
+    }
+    (active, strength, combined)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn moe_gate_avx2(planes: &[u64; 8], query: u64, threshold: u8) -> (u8, [u8; 8], u64) {
+    use std::arch::x86_64::*;
+    let q = _mm256_set1_epi64x(query as i64);
+    let mut active = 0u8;
+    let mut strength = [0u8; 8];
+    let mut combined = 0u64;
+
+    // Process 4 planes at a time, 2 chunks = 8 planes
+    for chunk in 0..2 {
+        let base = chunk * 4;
+        // SAFETY: planes is [u64; 8], base..base+4 is in bounds.
+        let p = _mm256_loadu_si256(planes[base..].as_ptr() as *const __m256i);
+        let anded = _mm256_and_si256(p, q);
+        let vals: [u64; 4] = std::mem::transmute(anded);
+        for j in 0..4 {
+            let score = vals[j].count_ones() as u8;
+            let idx = base + j;
+            strength[idx] = score;
+            if score >= threshold {
+                active |= 1 << idx;
+                combined |= planes[idx];
+            }
+        }
+    }
+    (active, strength, combined)
+}
+
+fn moe_gate_scalar(planes: &[u64; 8], query: u64, threshold: u8) -> (u8, [u8; 8], u64) {
+    let mut active = 0u8;
+    let mut strength = [0u8; 8];
+    let mut combined = 0u64;
+    for i in 0..8 {
+        let score = (query & planes[i]).count_ones() as u8;
+        strength[i] = score;
+        if score >= threshold {
+            active |= 1 << i;
+            combined |= planes[i];
+        }
+    }
+    (active, strength, combined)
+}
+
+static MOE_GATE_KERNEL: std::sync::LazyLock<MoeGateFn> = std::sync::LazyLock::new(|| {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx512f") {
+            return moe_gate_avx512 as MoeGateFn;
+        }
+        if is_x86_feature_detected!("avx2") {
+            return moe_gate_avx2 as MoeGateFn;
+        }
+    }
+    moe_gate_scalar as MoeGateFn
+});
+
+// ============================================================================
 // BNN Attention
 // ============================================================================
 
@@ -183,30 +444,16 @@ impl Palette64 {
     /// Score = popcount(query AND row[i]).
     /// Higher score = more bits in common = better match.
     /// Gamma threshold: rows below this score don't "fire."
+    ///
+    /// Runtime dispatch via LazyLock: AVX-512 → AVX2 → scalar.
     #[inline]
     pub fn attend(&self, query: u64, gamma: u8) -> AttentionResult {
-        let mut scores = [0u8; 64];
-        let mut best_idx = 0u8;
-        let mut best_score = 0u8;
-        let mut fires = 0u64;
-
-        for i in 0..64 {
-            let score = (query & self.rows[i]).count_ones() as u8;
-            scores[i] = score;
-
-            if score > best_score {
-                best_score = score;
-                best_idx = i as u8;
-            }
-
-            if score >= gamma {
-                fires |= 1u64 << i;
-            }
-        }
-
+        // SAFETY: LazyLock guarantees the selected kernel matches CPU features.
+        let (best_idx, distance, scores, fires) =
+            unsafe { ATTEND_KERNEL(&self.rows, query, gamma) };
         AttentionResult {
             best_idx,
-            distance: 64 - best_score,
+            distance,
             scores,
             fires,
         }
@@ -228,16 +475,15 @@ impl Palette64 {
     /// Palette lookup: find the K nearest rows by Hamming distance.
     ///
     /// Returns (row_index, hamming_distance) sorted ascending.
+    ///
+    /// Runtime dispatch via LazyLock: AVX-512 → AVX2 → scalar.
     pub fn nearest_k(&self, query: u64, k: usize) -> Vec<(u8, u8)> {
-        let mut dists: Vec<(u8, u8)> = (0..64)
-            .map(|i| {
-                let dist = (query ^ self.rows[i]).count_ones() as u8;
-                (i as u8, dist)
-            })
-            .collect();
-        dists.sort_by_key(|&(_, d)| d);
-        dists.truncate(k);
-        dists
+        // SAFETY: LazyLock guarantees the selected kernel matches CPU features.
+        let dists = unsafe { NEAREST_K_KERNEL(&self.rows, query) };
+        let mut pairs: Vec<(u8, u8)> = (0..64u8).map(|i| (i, dists[i as usize])).collect();
+        pairs.sort_by_key(|&(_, d)| d);
+        pairs.truncate(k);
+        pairs
     }
 
     /// Row density: popcount of each row. Sparse rows = abstract; dense = concrete.
@@ -281,22 +527,13 @@ impl HeelPlanes {
     ///
     /// Each HEEL plane is an expert. The query's match against each expert
     /// determines which experts activate and with what strength.
+    ///
+    /// Runtime dispatch via LazyLock: AVX-512 → AVX2 → scalar.
     #[inline]
     pub fn moe_gate(&self, query: u64, threshold: u8) -> MoeGate {
-        let mut active = 0u8;
-        let mut strength = [0u8; 8];
-        let mut combined = 0u64;
-
-        for i in 0..8 {
-            let score = (query & self.planes[i]).count_ones() as u8;
-            strength[i] = score;
-
-            if score >= threshold {
-                active |= 1 << i;
-                combined |= self.planes[i];
-            }
-        }
-
+        // SAFETY: LazyLock guarantees the selected kernel matches CPU features.
+        let (active, strength, combined) =
+            unsafe { MOE_GATE_KERNEL(&self.planes, query, threshold) };
         MoeGate {
             active,
             strength,
