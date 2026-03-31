@@ -420,4 +420,67 @@ mod tests {
         let spo = SpoDistanceMatrices::build(&pal, &pal, &pal);
         assert_eq!(spo.byte_size(), 3 * 32 * 32 * 2);
     }
+
+    #[test]
+    fn test_4096_head_spo_throughput() {
+        // Build 256-entry palette
+        let pal = make_palette(256);
+        let spo = SpoDistanceMatrices::build(&pal, &pal, &pal);
+
+        // 4096 heads = 64×64, each with S/P/O palette index
+        let mut heads_s = [0u8; 4096];
+        let mut heads_p = [0u8; 4096];
+        let mut heads_o = [0u8; 4096];
+        for i in 0..4096 {
+            heads_s[i] = (i % 256) as u8;
+            heads_p[i] = ((i * 7) % 256) as u8;
+            heads_o[i] = ((i * 13) % 256) as u8;
+        }
+
+        // Benchmark: 4096 × 64 SPO lookups (one row attending to 64 targets)
+        let start = std::time::Instant::now();
+        let mut total_dist = 0u64;
+        let iterations = 100;
+        for _ in 0..iterations {
+            for row in 0..64 {
+                for col in 0..64 {
+                    let i = row * 64 + col;
+                    for target in 0..64 {
+                        let j = row * 64 + target;
+                        total_dist += spo.spo_distance(
+                            heads_s[i], heads_p[i], heads_o[i],
+                            heads_s[j], heads_p[j], heads_o[j],
+                        ) as u64;
+                    }
+                }
+            }
+        }
+        let elapsed = start.elapsed();
+        let total_lookups = 64u64 * 64 * 64 * iterations as u64;
+        let lookups_per_sec = total_lookups as f64 / elapsed.as_secs_f64();
+        let ns_per_lookup = elapsed.as_nanos() as f64 / total_lookups as f64;
+
+        // Pearl 2³: multiply by 8 projections
+        let pearl_ns = ns_per_lookup * 8.0 / 3.0; // each projection uses 1-3 planes
+        let tokens_per_sec_spo = 1e9 / (ns_per_lookup * 64.0 * 64.0); // one token = full 64×64 pass
+        let tokens_per_sec_pearl = 1e9 / (pearl_ns * 64.0 * 64.0);
+
+        eprintln!();
+        eprintln!("═══ Qwen3.5 + Opus 4.6: 4096-Head SPO Benchmark ═══");
+        eprintln!("  Palette: 256 entries, SPO matrices: {} KB", spo.byte_size() / 1024);
+        eprintln!("  Lookups: {} total ({} iterations × 64×64×64)", total_lookups, iterations);
+        eprintln!("  Time:    {:.3}ms", elapsed.as_secs_f64() * 1000.0);
+        eprintln!("  Rate:    {:.0} M lookups/sec", lookups_per_sec / 1e6);
+        eprintln!("  Latency: {:.1} ns/lookup (SPO, 3 planes)", ns_per_lookup);
+        eprintln!("  Pearl:   {:.1} ns/lookup (8 projections avg)", pearl_ns);
+        eprintln!();
+        eprintln!("  Token throughput:");
+        eprintln!("    SPO only:       {:.0} tokens/sec (64×64 attention per token)", tokens_per_sec_spo);
+        eprintln!("    Pearl 2³:       {:.0} tokens/sec (8 projections per head)", tokens_per_sec_pearl);
+        eprintln!("    Triple model:   {:.0} tokens/sec (self+user+impact)", tokens_per_sec_pearl / 3.0);
+        eprintln!();
+        eprintln!("  Memory: {} KB SPO tables + 4 KB head indices = {} KB total",
+            spo.byte_size() / 1024, spo.byte_size() / 1024 + 4);
+        eprintln!("  (blackhole: {})", total_dist); // prevent optimizer from eliding
+    }
 }
