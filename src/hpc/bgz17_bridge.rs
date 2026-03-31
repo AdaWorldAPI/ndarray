@@ -166,30 +166,60 @@ impl Base17 {
         }
     }
 
-    /// Sign-bit agreement (out of 17).
+    /// Sign-bit agreement (out of 17) via SIMD.
     #[inline]
     pub fn sign_agreement(&self, other: &Base17) -> u32 {
-        let mut a = 0u32;
-        for i in 0..BASE_DIM {
-            if (self.dims[i] >= 0) == (other.dims[i] >= 0) {
-                a += 1;
-            }
+        #[cfg(target_arch = "x86_64")]
+        {
+            use crate::simd::I32x16;
+            let a: [i32; 16] = core::array::from_fn(|i| self.dims[i] as i32);
+            let b: [i32; 16] = core::array::from_fn(|i| other.dims[i] as i32);
+            let va = I32x16::from_array(a);
+            let vb = I32x16::from_array(b);
+            // XOR signs: same sign → positive, different → negative
+            let xor = va ^ vb;
+            // Count non-negative (same sign): use simd_max with 0, then compare
+            let zero = I32x16::splat(0);
+            let signs = xor.simd_min(zero); // negative where signs differ
+            let arr = signs.to_array();
+            let count16: u32 = arr.iter().filter(|&&v| v == 0).count() as u32;
+            // 17th dim
+            let same17 = if (self.dims[16] >= 0) == (other.dims[16] >= 0) { 1 } else { 0 };
+            count16 + same17
         }
-        a
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let mut a = 0u32;
+            for i in 0..BASE_DIM {
+                if (self.dims[i] >= 0) == (other.dims[i] >= 0) { a += 1; }
+            }
+            a
+        }
     }
 
-    /// XOR bind: path composition in hyperdimensional space.
-    ///
-    /// Bitwise XOR on each i16 dimension (reinterpreted as u16).
+    /// XOR bind via SIMD: path composition in hyperdimensional space.
     /// Self-inverse: `a.xor_bind(&b).xor_bind(&b) == a`.
-    /// Identity: `a.xor_bind(&Base17::zero()) == a`.
     #[inline]
     pub fn xor_bind(&self, other: &Base17) -> Base17 {
-        let mut dims = [0i16; BASE_DIM];
-        for i in 0..BASE_DIM {
-            dims[i] = (self.dims[i] as u16 ^ other.dims[i] as u16) as i16;
+        #[cfg(target_arch = "x86_64")]
+        {
+            use crate::simd::I32x16;
+            let a: [i32; 16] = core::array::from_fn(|i| self.dims[i] as i32);
+            let b: [i32; 16] = core::array::from_fn(|i| other.dims[i] as i32);
+            let xored = (I32x16::from_array(a) ^ I32x16::from_array(b)).to_array();
+            let mut dims = [0i16; BASE_DIM];
+            for i in 0..16 { dims[i] = xored[i] as i16; }
+            dims[16] = (self.dims[16] as u16 ^ other.dims[16] as u16) as i16;
+            Base17 { dims }
         }
-        Base17 { dims }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let mut dims = [0i16; BASE_DIM];
+            for i in 0..BASE_DIM {
+                dims[i] = (self.dims[i] as u16 ^ other.dims[i] as u16) as i16;
+            }
+            Base17 { dims }
+        }
     }
 
     /// Bundle: element-wise majority vote (set union in VSA).

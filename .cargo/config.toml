@@ -1,4 +1,6 @@
 [build]
-# x86-64-v4 = AVX-512 baseline. All BF16 SIMD paths use native __m512d.
-# Rust 1.94 stable. No nightly.
-rustflags = ["-C", "target-cpu=x86-64-v4"]
+# target-cpu=native: uses whatever the build machine supports.
+# Local dev machines with AVX-512: get __m512d native instructions.
+# GitHub CI (no AVX-512): falls back to AVX2/SSE4.2 automatically.
+# The code uses cfg(target_feature = "avx512f") for compile-time dispatch.
+rustflags = ["-C", "target-cpu=native"]
