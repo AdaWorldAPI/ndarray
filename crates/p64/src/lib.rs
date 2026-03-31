@@ -1454,10 +1454,15 @@ pub mod sparse256 {
     /// - Skip entire 32-element HEEL blocks if the 8×8 super-block is empty
     /// - Skip 4-element TWIG blocks if the palette bit is 0
     /// - Only compute exact distance for active palette entries
-    pub fn hhtl_cascade_search(
+    ///
+    /// `score_fn`: callback that computes the actual score for a (row, col) pair.
+    /// This is where the LEAF level lives — LanceDB vector search, DistanceMatrix
+    /// lookup, or BF16 dot product. The cascade doesn't know or care which.
+    pub fn hhtl_cascade_search<F: Fn(u8, u8) -> f32>(
         palette: &Palette64,
         query_row: u8,
         scores: &mut [f32; 256],
+        score_fn: F,
     ) -> usize {
         let heel_row = query_row / 32;
         let hip_row = (query_row / 4) % 8;
@@ -1478,14 +1483,11 @@ pub mod sparse256 {
             let block_col = bits.trailing_zeros() as usize;
             bits &= bits - 1;
 
-            // This block is active — compute 4 scores
             let base_col = block_col * 4;
             for k in 0..4 {
                 let col = base_col + k;
                 if col < 256 {
-                    // Placeholder: actual score computation goes here
-                    // In production: ZeckF8 distance or BF16 dot product
-                    scores[col] = 1.0;
+                    scores[col] = score_fn(query_row, col as u8);
                     computed += 1;
                 }
             }
@@ -1864,7 +1866,8 @@ mod tests {
         }
 
         let mut scores = [0.0f32; 256];
-        let computed = hhtl_cascade_search(&palette, 0, &mut scores);
+        let score_fn = |row: u8, col: u8| -> f32 { 1.0 - (row as f32 - col as f32).abs() / 256.0 };
+        let computed = hhtl_cascade_search(&palette, 0, &mut scores, &score_fn);
 
         eprintln!("HHTL cascade: computed {} of 256 scores", computed);
 
@@ -1872,7 +1875,7 @@ mod tests {
         assert_eq!(computed, 4, "Should only compute active block entries");
 
         // Row 128 → block_row = 128/32*8 + (128/4)%8 = 4*8 + 0 = 32
-        let computed2 = hhtl_cascade_search(&palette, 128, &mut scores);
+        let computed2 = hhtl_cascade_search(&palette, 128, &mut scores, &score_fn);
         assert_eq!(computed2, 4);
     }
 
