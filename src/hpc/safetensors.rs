@@ -586,4 +586,69 @@ mod tests {
             eprintln!("  → These shifts = what 'visual grounding' looks like in LLM weight space");
         }
     }
+
+    // ── Reader LM 1.5B: HTML→Markdown local model ──
+
+    #[test]
+    #[ignore] // Streams ~3.1 GB from HuggingFace
+    fn test_stream_index_reader_lm() {
+        // jinaai/reader-lm-1.5b: 1 shard, 1.54B params, 3.1 GB BF16
+        // Produces ~30 MB bgz7 for local HTML→Markdown palette routing
+        index_safetensors_shards(
+            "jinaai/reader-lm-1.5b",
+            &["model.safetensors"],
+            "/tmp/reader_lm_1_5b",
+            16,
+        );
+    }
+
+    // ── BGE-M3: multilingual embedding model (GGUF path) ──
+
+    #[test]
+    #[ignore] // Streams ~1.2 GB GGUF from HuggingFace
+    fn test_stream_index_bge_m3() {
+        use super::super::http_reader::HttpRangeReader;
+        use std::io::BufWriter;
+
+        let url = "https://huggingface.co/CompendiumLabs/bge-m3-gguf/resolve/main/bge-m3-f16.gguf";
+        let out_path = "/tmp/bge_m3_f16.bgz7";
+
+        if std::fs::metadata(out_path).is_ok() {
+            eprintln!("SKIP {} (exists)", out_path);
+            return;
+        }
+
+        // HEAD for size
+        let size: u64 = std::process::Command::new("curl")
+            .args(&["-sI", "-L", url])
+            .output()
+            .ok()
+            .and_then(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .filter(|l| l.to_lowercase().starts_with("content-length:"))
+                    .last()
+                    .and_then(|l| l.split(':').nth(1))
+                    .and_then(|s| s.trim().parse().ok())
+            })
+            .unwrap_or(1_500_000_000);
+
+        eprintln!("Indexing BGE-M3 F16 GGUF ({:.1} GB)...", size as f64 / 1e9);
+        let mut reader = HttpRangeReader::with_chunk_size(url.to_string(), size, 256 * 1024 * 1024);
+        let out = std::fs::File::create(out_path).expect("create output");
+        let mut writer = BufWriter::new(out);
+
+        let stats = super::super::gguf_indexer::stream_index_gguf_bf16(
+            &mut reader, &mut writer, 16,
+            Some(&|name, _lt, orig, comp| {
+                let ratio = if comp > 0 { orig as f64 / comp as f64 } else { 0.0 };
+                eprintln!("  {:50} {:>12} → {:>8} ({:.0}×)", name, orig, comp, ratio);
+            }),
+        ).expect("GGUF indexing failed");
+
+        drop(writer);
+        let out_size = std::fs::metadata(out_path).map(|m| m.len()).unwrap_or(0);
+        eprintln!("  → {:.2} MB, {} tensors, {:.0}×",
+            out_size as f64 / 1e6, stats.tensors_indexed, stats.overall_ratio());
+    }
 }
