@@ -283,58 +283,28 @@ pub fn project_8rows_bf16_simd(
     use crate::simd::F64x8;
 
     let n_octaves = (n_cols + BASE_DIM - 1) / BASE_DIM;
-    let use_halftone = octave_stride > 1;
 
     let mut sums: [F64x8; BASE_DIM] = [F64x8::splat(0.0); BASE_DIM];
     let mut counts: [u32; BASE_DIM] = [0; BASE_DIM];
 
-    if use_halftone {
-        let mut octave = 0;
-        while octave < n_octaves {
-            for hi in 0..9 {
-                let col = octave * BASE_DIM + HALFTONE_POS[hi] as usize;
-                if col < n_cols {
-                    let bin = HALFTONE_TO_BIN[hi] as usize;
-                    let offsets: [usize; 8] = [
-                        row_starts[0] + col, row_starts[1] + col,
-                        row_starts[2] + col, row_starts[3] + col,
-                        row_starts[4] + col, row_starts[5] + col,
-                        row_starts[6] + col, row_starts[7] + col,
-                    ];
-                    sums[bin] += gather_bf16_x8(buf, &offsets);
-                    counts[bin] += 1;
-                }
-            }
-            octave += octave_stride;
-        }
-
-        // Interpolate odd bins from even neighbors (per-lane, still SIMD)
-        for odd in (1..BASE_DIM).step_by(2) {
-            let left = sums[odd - 1];
-            let right = sums[(odd + 1) % BASE_DIM];
-            let left_c = counts[odd - 1].max(1);
-            let right_c = counts[(odd + 1) % BASE_DIM].max(1);
-            let left_mean = left * F64x8::splat(1.0 / left_c as f64);
-            let right_mean = right * F64x8::splat(1.0 / right_c as f64);
-            sums[odd] = (left_mean + right_mean) * F64x8::splat(0.5);
-            counts[odd] = 1;
-        }
-    } else {
-        for octave in 0..n_octaves {
-            for bi in 0..BASE_DIM {
-                let col = octave * BASE_DIM + GOLDEN_POS[bi] as usize;
-                if col < n_cols {
-                    let offsets: [usize; 8] = [
-                        row_starts[0] + col, row_starts[1] + col,
-                        row_starts[2] + col, row_starts[3] + col,
-                        row_starts[4] + col, row_starts[5] + col,
-                        row_starts[6] + col, row_starts[7] + col,
-                    ];
-                    sums[bi] += gather_bf16_x8(buf, &offsets);
-                    counts[bi] += 1;
-                }
+    // All 17 golden-step positions per sampled octave. Stride skips octaves,
+    // NOT positions — every bin gets real data from actual weight values.
+    let mut octave = 0;
+    while octave < n_octaves {
+        for bi in 0..BASE_DIM {
+            let col = octave * BASE_DIM + GOLDEN_POS[bi] as usize;
+            if col < n_cols {
+                let offsets: [usize; 8] = [
+                    row_starts[0] + col, row_starts[1] + col,
+                    row_starts[2] + col, row_starts[3] + col,
+                    row_starts[4] + col, row_starts[5] + col,
+                    row_starts[6] + col, row_starts[7] + col,
+                ];
+                sums[bi] += gather_bf16_x8(buf, &offsets);
+                counts[bi] += 1;
             }
         }
+        octave += octave_stride;
     }
 
     // Finalize: mean → scale → clamp → i16, all 8 lanes parallel
@@ -365,39 +335,21 @@ pub fn project_8rows_bf16_simd(
 pub fn project_1row_bf16_strided(row: &[u16], octave_stride: usize) -> Base17 {
     let d = row.len();
     let n_octaves = (d + BASE_DIM - 1) / BASE_DIM;
-    let use_halftone = octave_stride > 1;
 
     let mut sum = [0.0f64; BASE_DIM];
     let mut count = [0u32; BASE_DIM];
 
-    if use_halftone {
-        let mut octave = 0;
-        while octave < n_octaves {
-            for hi in 0..9 {
-                let col = octave * BASE_DIM + HALFTONE_POS[hi] as usize;
-                if col < d {
-                    sum[HALFTONE_TO_BIN[hi] as usize] += bf16_to_f64(row[col]);
-                    count[HALFTONE_TO_BIN[hi] as usize] += 1;
-                }
-            }
-            octave += octave_stride;
-        }
-        for odd in (1..BASE_DIM).step_by(2) {
-            let lc = count[odd - 1].max(1) as f64;
-            let rc = count[(odd + 1) % BASE_DIM].max(1) as f64;
-            sum[odd] = (sum[odd - 1] / lc + sum[(odd + 1) % BASE_DIM] / rc) * 0.5;
-            count[odd] = 1;
-        }
-    } else {
-        for octave in 0..n_octaves {
-            for bi in 0..BASE_DIM {
-                let col = octave * BASE_DIM + GOLDEN_POS[bi] as usize;
-                if col < d {
-                    sum[bi] += bf16_to_f64(row[col]);
-                    count[bi] += 1;
-                }
+    // All 17 positions per sampled octave — no halftone, all bins real
+    let mut octave = 0;
+    while octave < n_octaves {
+        for bi in 0..BASE_DIM {
+            let col = octave * BASE_DIM + GOLDEN_POS[bi] as usize;
+            if col < d {
+                sum[bi] += bf16_to_f64(row[col]);
+                count[bi] += 1;
             }
         }
+        octave += octave_stride;
     }
 
     let mut dims = [0i16; BASE_DIM];
