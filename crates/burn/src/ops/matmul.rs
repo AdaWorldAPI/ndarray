@@ -146,19 +146,40 @@ pub fn build_distance_table_vnni(centroids_u8: &[u8], k: usize, dim: usize) -> V
 
     let mut table = vec![0i32; k * k];
 
+    // Runtime dispatch: VNNI (64 MACs/instr) if available, scalar otherwise.
+    #[cfg(target_arch = "x86_64")]
+    let use_vnni = is_x86_feature_detected!("avx512vnni");
+    #[cfg(not(target_arch = "x86_64"))]
+    let use_vnni = false;
+
     for i in 0..k {
         let row_u8 = &centroids_u8[i * dim..(i + 1) * dim];
 
-        // Diagonal: self dot product
-        table[i * k + i] = ndarray::simd_amx::vnni_dot_u8_i8_scalar(
-            row_u8, &centroids_i8[i * dim..(i + 1) * dim]);
+        // Diagonal
+        let self_i8 = &centroids_i8[i * dim..(i + 1) * dim];
+        table[i * k + i] = if use_vnni {
+            // SAFETY: VNNI availability checked above via is_x86_feature_detected
+            #[cfg(target_arch = "x86_64")]
+            unsafe { ndarray::simd_amx::vnni_dot_u8_i8(row_u8, self_i8) }
+            #[cfg(not(target_arch = "x86_64"))]
+            ndarray::simd_amx::vnni_dot_u8_i8_scalar(row_u8, self_i8)
+        } else {
+            ndarray::simd_amx::vnni_dot_u8_i8_scalar(row_u8, self_i8)
+        };
 
-        // Upper triangle: dot product with all j > i
+        // Upper triangle
         for j in (i + 1)..k {
             let col_i8 = &centroids_i8[j * dim..(j + 1) * dim];
-            let dot = ndarray::simd_amx::vnni_dot_u8_i8_scalar(row_u8, col_i8);
+            let dot = if use_vnni {
+                #[cfg(target_arch = "x86_64")]
+                unsafe { ndarray::simd_amx::vnni_dot_u8_i8(row_u8, col_i8) }
+                #[cfg(not(target_arch = "x86_64"))]
+                ndarray::simd_amx::vnni_dot_u8_i8_scalar(row_u8, col_i8)
+            } else {
+                ndarray::simd_amx::vnni_dot_u8_i8_scalar(row_u8, col_i8)
+            };
             table[i * k + j] = dot;
-            table[j * k + i] = dot; // symmetric
+            table[j * k + i] = dot;
         }
     }
 
