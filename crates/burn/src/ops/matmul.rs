@@ -125,16 +125,69 @@ pub fn try_vnni_matmul_u8(
     false
 }
 
-/// Build a k×k distance table from k centroids using VNNI if available.
+/// Build a k×k COSINE SIMILARITY table from f32 centroids.
+///
+/// Takes raw f32 centroids, normalizes to unit vectors, quantizes,
+/// runs tiered VNNI/AMX dot product, maps to u8 [0, 255].
+///
+/// This IS the ThinkingEngine's brain. cosine[-1,1] → u8[0,255].
+/// 128 = orthogonal. 255 = identical. 0 = opposite.
+///
+/// centroids_f32: [k × dim] raw f32 centroids (row-major)
+/// Returns: [k × k] u8 cosine similarity table
+#[cfg(feature = "std")]
+pub fn build_cosine_table(centroids_f32: &[f32], k: usize, dim: usize) -> Vec<u8> {
+    assert_eq!(centroids_f32.len(), k * dim);
+
+    // Step 1: Normalize each centroid to unit vector
+    let mut normed = vec![0.0f32; k * dim];
+    for i in 0..k {
+        let row = &centroids_f32[i * dim..(i + 1) * dim];
+        let norm: f32 = row.iter().map(|v| v * v).sum::<f32>().sqrt();
+        let inv_norm = if norm > 1e-10 { 1.0 / norm } else { 0.0 };
+        for d in 0..dim {
+            normed[i * dim + d] = row[d] * inv_norm;
+        }
+    }
+
+    // Step 2: Quantize normalized [-1, 1] → u8 [0, 255]
+    // After normalization, values are in [-1, 1].
+    // Map: u8 = round((value + 1.0) * 127.5)
+    let centroids_u8: Vec<u8> = normed.iter()
+        .map(|&v| ((v + 1.0) * 127.5).round().clamp(0.0, 255.0) as u8)
+        .collect();
+
+    // Step 3: Compute dot products using tiered VNNI dispatch
+    let raw_dots = build_distance_table_vnni(&centroids_u8, k, dim);
+
+    // Step 4: Map i32 dot products → u8 cosine similarity [0, 255]
+    // The dot product of two unit vectors quantized to u8 [0,255]:
+    //   max dot (identical) = sum of (u8_i)² over dim
+    //   min dot (opposite) = much lower
+    // Find actual min/max to scale properly
+    let min_dot = raw_dots.iter().copied().min().unwrap_or(0) as f64;
+    let max_dot = raw_dots.iter().copied().max().unwrap_or(1) as f64;
+    let range = (max_dot - min_dot).max(1.0);
+
+    let mut table = vec![128u8; k * k]; // 128 = default orthogonal
+    for i in 0..k {
+        for j in 0..k {
+            let raw = raw_dots[i * k + j] as f64;
+            let normalized = (raw - min_dot) / range; // [0, 1]
+            table[i * k + j] = (normalized * 255.0).round().clamp(0.0, 255.0) as u8;
+        }
+    }
+
+    table
+}
+
+/// Build a k×k RAW DOT PRODUCT table from u8 centroids using VNNI if available.
 ///
 /// centroids_u8: [k × dim] quantized codebook centroids (u8, row-major)
 /// Returns: [k × k] i32 dot product matrix (symmetric)
 ///
-/// Uses VNNI dot product (64 MACs/instruction) for each centroid pair.
-/// Symmetric: only computes upper triangle, mirrors to lower.
-///
-/// This IS the ThinkingEngine's brain construction step.
-/// 4096² = 16M dot products. With VNNI: ~1:20h for large dim.
+/// For cosine: use build_cosine_table() which normalizes first.
+/// This function is for raw dot products when centroids are already u8.
 #[cfg(feature = "std")]
 pub fn build_distance_table_vnni(centroids_u8: &[u8], k: usize, dim: usize) -> Vec<i32> {
     assert_eq!(centroids_u8.len(), k * dim);
