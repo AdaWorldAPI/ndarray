@@ -178,21 +178,19 @@ type AttendFn = unsafe fn(&[u64; 64], u64, u8) -> (u8, u8, [u8; 64], u64);
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 unsafe fn attend_avx512(rows: &[u64; 64], query: u64, gamma: u8) -> (u8, u8, [u8; 64], u64) {
-    use std::arch::x86_64::*;
     let mut best_idx = 0u8;
     let mut best_score = 0u8;
     let mut scores = [0u8; 64];
     let mut fires = 0u64;
 
-    let q = _mm512_set1_epi64(query as i64);
     // Process 8 rows per chunk, 8 chunks = 64 rows
+    // (scalar array ops — LLVM auto-vectorizes with target-cpu=x86-64-v4)
     for chunk in 0..8 {
         let base = chunk * 8;
-        // SAFETY: rows is [u64; 64], base..base+8 is in bounds, Palette64 is 64-byte aligned.
-        let r = _mm512_loadu_si512(rows[base..].as_ptr() as *const __m512i);
-        let anded = _mm512_and_si512(r, q);
-        // Extract 8 u64s and scalar popcount (no VPOPCNTDQ dependency)
-        let vals: [u64; 8] = std::mem::transmute(anded);
+        let mut vals = [0u64; 8];
+        for j in 0..8 {
+            vals[j] = rows[base + j] & query;
+        }
         for j in 0..8 {
             let score = vals[j].count_ones() as u8;
             let idx = base + j;
@@ -212,20 +210,19 @@ unsafe fn attend_avx512(rows: &[u64; 64], query: u64, gamma: u8) -> (u8, u8, [u8
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn attend_avx2(rows: &[u64; 64], query: u64, gamma: u8) -> (u8, u8, [u8; 64], u64) {
-    use std::arch::x86_64::*;
     let mut best_idx = 0u8;
     let mut best_score = 0u8;
     let mut scores = [0u8; 64];
     let mut fires = 0u64;
 
-    let q = _mm256_set1_epi64x(query as i64);
     // Process 4 rows per chunk, 16 chunks = 64 rows
+    // (scalar array ops — LLVM auto-vectorizes with target-cpu=x86-64-v4)
     for chunk in 0..16 {
         let base = chunk * 4;
-        // SAFETY: rows is [u64; 64], base..base+4 is in bounds.
-        let r = _mm256_loadu_si256(rows[base..].as_ptr() as *const __m256i);
-        let anded = _mm256_and_si256(r, q);
-        let vals: [u64; 4] = std::mem::transmute(anded);
+        let mut vals = [0u64; 4];
+        for j in 0..4 {
+            vals[j] = rows[base + j] & query;
+        }
         for j in 0..4 {
             let score = vals[j].count_ones() as u8;
             let idx = base + j;
@@ -284,15 +281,14 @@ type NearestKFn = unsafe fn(&[u64; 64], u64) -> [u8; 64];
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 unsafe fn nearest_k_avx512(rows: &[u64; 64], query: u64) -> [u8; 64] {
-    use std::arch::x86_64::*;
     let mut dists = [0u8; 64];
-    let q = _mm512_set1_epi64(query as i64);
+    // Scalar array ops — LLVM auto-vectorizes with target-cpu=x86-64-v4
     for chunk in 0..8 {
         let base = chunk * 8;
-        // SAFETY: rows is [u64; 64], base..base+8 is in bounds.
-        let r = _mm512_loadu_si512(rows[base..].as_ptr() as *const __m512i);
-        let xored = _mm512_xor_si512(r, q);
-        let vals: [u64; 8] = std::mem::transmute(xored);
+        let mut vals = [0u64; 8];
+        for j in 0..8 {
+            vals[j] = rows[base + j] ^ query;
+        }
         for j in 0..8 {
             dists[base + j] = vals[j].count_ones() as u8;
         }
@@ -303,15 +299,14 @@ unsafe fn nearest_k_avx512(rows: &[u64; 64], query: u64) -> [u8; 64] {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn nearest_k_avx2(rows: &[u64; 64], query: u64) -> [u8; 64] {
-    use std::arch::x86_64::*;
     let mut dists = [0u8; 64];
-    let q = _mm256_set1_epi64x(query as i64);
+    // Scalar array ops — LLVM auto-vectorizes with target-cpu=x86-64-v4
     for chunk in 0..16 {
         let base = chunk * 4;
-        // SAFETY: rows is [u64; 64], base..base+4 is in bounds.
-        let r = _mm256_loadu_si256(rows[base..].as_ptr() as *const __m256i);
-        let xored = _mm256_xor_si256(r, q);
-        let vals: [u64; 4] = std::mem::transmute(xored);
+        let mut vals = [0u64; 4];
+        for j in 0..4 {
+            vals[j] = rows[base + j] ^ query;
+        }
         for j in 0..4 {
             dists[base + j] = vals[j].count_ones() as u8;
         }
@@ -350,13 +345,11 @@ type MoeGateFn = unsafe fn(&[u64; 8], u64, u8) -> (u8, [u8; 8], u64);
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 unsafe fn moe_gate_avx512(planes: &[u64; 8], query: u64, threshold: u8) -> (u8, [u8; 8], u64) {
-    use std::arch::x86_64::*;
-    // Load all 8 planes into one zmm register, AND with broadcast query
-    // SAFETY: planes is [u64; 8] = 64 bytes, fits in one zmm.
-    let p = _mm512_loadu_si512(planes.as_ptr() as *const __m512i);
-    let q = _mm512_set1_epi64(query as i64);
-    let anded = _mm512_and_si512(p, q);
-    let vals: [u64; 8] = std::mem::transmute(anded);
+    // Scalar array ops — LLVM auto-vectorizes with target-cpu=x86-64-v4
+    let mut vals = [0u64; 8];
+    for i in 0..8 {
+        vals[i] = planes[i] & query;
+    }
 
     let mut active = 0u8;
     let mut strength = [0u8; 8];
@@ -375,8 +368,7 @@ unsafe fn moe_gate_avx512(planes: &[u64; 8], query: u64, threshold: u8) -> (u8, 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn moe_gate_avx2(planes: &[u64; 8], query: u64, threshold: u8) -> (u8, [u8; 8], u64) {
-    use std::arch::x86_64::*;
-    let q = _mm256_set1_epi64x(query as i64);
+    // Scalar array ops — LLVM auto-vectorizes with target-cpu=x86-64-v4
     let mut active = 0u8;
     let mut strength = [0u8; 8];
     let mut combined = 0u64;
@@ -384,10 +376,10 @@ unsafe fn moe_gate_avx2(planes: &[u64; 8], query: u64, threshold: u8) -> (u8, [u
     // Process 4 planes at a time, 2 chunks = 8 planes
     for chunk in 0..2 {
         let base = chunk * 4;
-        // SAFETY: planes is [u64; 8], base..base+4 is in bounds.
-        let p = _mm256_loadu_si256(planes[base..].as_ptr() as *const __m256i);
-        let anded = _mm256_and_si256(p, q);
-        let vals: [u64; 4] = std::mem::transmute(anded);
+        let mut vals = [0u64; 4];
+        for j in 0..4 {
+            vals[j] = planes[base + j] & query;
+        }
         for j in 0..4 {
             let score = vals[j].count_ones() as u8;
             let idx = base + j;

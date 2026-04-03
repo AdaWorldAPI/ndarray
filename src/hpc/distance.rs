@@ -30,10 +30,9 @@ fn sq_dist_f64(a: [f64; 3], b: [f64; 3]) -> f64 {
 
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod simd_impl {
-    #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::*;
+    use crate::simd::F32x8;
 
-    /// Compute squared distances for 8 points at a time using AVX2.
+    /// Compute squared distances for 8 points at a time using F32x8 polyfill.
     /// `query` components are broadcast; `points` is read in SOA-style chunks.
     ///
     /// # Safety
@@ -48,11 +47,10 @@ pub(crate) mod simd_impl {
         out.clear();
         out.reserve(n);
 
-        let qx = _mm256_set1_ps(query[0]);
-        let qy = _mm256_set1_ps(query[1]);
-        let qz = _mm256_set1_ps(query[2]);
+        let qx = F32x8::splat(query[0]);
+        let qy = F32x8::splat(query[1]);
+        let qz = F32x8::splat(query[2]);
 
-        let ptr = points.as_ptr() as *const f32;
         // Each point is 3 floats => stride 3
         let mut i = 0usize;
         // Process 8 points at a time
@@ -63,28 +61,23 @@ pub(crate) mod simd_impl {
             let mut ys = [0f32; 8];
             let mut zs = [0f32; 8];
             for j in 0..8 {
-                let base = (i + j) * 3;
-                xs[j] = *ptr.add(base);
-                ys[j] = *ptr.add(base + 1);
-                zs[j] = *ptr.add(base + 2);
+                xs[j] = points[i + j][0];
+                ys[j] = points[i + j][1];
+                zs[j] = points[i + j][2];
             }
 
-            let vx = _mm256_loadu_ps(xs.as_ptr());
-            let vy = _mm256_loadu_ps(ys.as_ptr());
-            let vz = _mm256_loadu_ps(zs.as_ptr());
+            let vx = F32x8::from_array(xs);
+            let vy = F32x8::from_array(ys);
+            let vz = F32x8::from_array(zs);
 
-            let dx = _mm256_sub_ps(qx, vx);
-            let dy = _mm256_sub_ps(qy, vy);
-            let dz = _mm256_sub_ps(qz, vz);
+            let dx = qx - vx;
+            let dy = qy - vy;
+            let dz = qz - vz;
 
-            // dx*dx + dy*dy + dz*dz  (FMA where available)
-            let mut acc = _mm256_mul_ps(dx, dx);
-            acc = _mm256_add_ps(acc, _mm256_mul_ps(dy, dy));
-            acc = _mm256_add_ps(acc, _mm256_mul_ps(dz, dz));
+            // dx*dx + dy*dy + dz*dz
+            let acc = dx * dx + dy * dy + dz * dz;
 
-            let mut tmp = [0f32; 8];
-            _mm256_storeu_ps(tmp.as_mut_ptr(), acc);
-            out.extend_from_slice(&tmp);
+            out.extend_from_slice(&acc.to_array());
 
             i += 8;
         }

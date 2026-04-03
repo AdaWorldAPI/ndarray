@@ -235,6 +235,18 @@ impl F32x16 {
         // GE(a, b) = LE(b, a)
         other.simd_le(self)
     }
+
+    /// Gather 16 f32 values from `base_ptr` using 16 i32 indices.
+    ///
+    /// Equivalent to `_mm512_i32gather_ps::<4>(indices, base_ptr)`:
+    /// each lane loads `base_ptr[indices[lane]]`.
+    ///
+    /// # Safety
+    /// Caller must ensure all indices are valid offsets into the memory at `base_ptr`.
+    #[inline(always)]
+    pub unsafe fn gather(indices: I32x16, base_ptr: *const f32) -> Self {
+        Self(_mm512_i32gather_ps::<4>(indices.0, base_ptr))
+    }
 }
 
 impl_bin_op!(F32x16, Add, add, _mm512_add_ps);
@@ -622,6 +634,40 @@ impl U8x64 {
     #[inline(always)]
     pub fn unpack_hi_epi8(self, other: Self) -> Self {
         Self(unsafe { _mm512_unpackhi_epi8(self.0, other.0) })
+    }
+
+    /// Byte-wise shuffle: use `self` as a LUT, `idx` selects bytes within each 128-bit lane.
+    /// Equivalent to `_mm512_shuffle_epi8(self.0, idx.0)`.
+    #[inline(always)]
+    pub fn shuffle_bytes(self, idx: Self) -> Self {
+        Self(unsafe { _mm512_shuffle_epi8(self.0, idx.0) })
+    }
+
+    /// Sum all 64 bytes into a single `u64` without wrapping.
+    ///
+    /// Uses `_mm512_sad_epu8` (groups of 8 bytes → u64 lanes) then horizontal add.
+    /// Range: 0..=64*255 = 16_320, always fits in u64.
+    #[inline(always)]
+    pub fn sum_bytes_u64(self) -> u64 {
+        unsafe {
+            let sad = _mm512_sad_epu8(self.0, _mm512_setzero_si512());
+            _mm512_reduce_add_epi64(sad) as u64
+        }
+    }
+
+    /// Build a nibble-popcount lookup table (replicated across all 4 × 128-bit lanes).
+    ///
+    /// Entry `i` = popcount of `i` for i in 0..16. Used with `shuffle_bytes` for
+    /// SIMD popcount via the Mula nibble-LUT algorithm.
+    #[inline(always)]
+    pub fn nibble_popcount_lut() -> Self {
+        // 0x04030302_03020201_03020201_02010100 replicated ×4
+        Self(unsafe { _mm512_set4_epi32(
+            0x04030302_u32 as i32,
+            0x03020201_u32 as i32,
+            0x03020201_u32 as i32,
+            0x02010100_u32 as i32,
+        )})
     }
 }
 

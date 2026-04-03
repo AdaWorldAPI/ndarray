@@ -50,34 +50,35 @@ pub(crate) fn nibble_unpack_scalar(packed: &[u8], count: usize, out: &mut Vec<u8
 
 /// AVX2 nibble unpack: processes 16 packed bytes → 32 nibbles per iteration.
 ///
+/// Uses scalar array operations on 16-byte chunks for portability.
+///
 /// # Safety
 /// Caller must ensure AVX2 is available and `count >= 32`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 pub(crate) unsafe fn nibble_unpack_avx2(packed: &[u8], count: usize, out: &mut Vec<u8>) {
-    use core::arch::x86_64::*;
-
-    let low_mask = _mm_set1_epi8(0x0F);
     let mut i = 0usize; // byte index into packed
     let mut emitted = 0usize;
 
     // Each iteration: load 16 packed bytes → 32 nibbles
     while emitted + 32 <= count && i + 16 <= packed.len() {
-        // SAFETY: i + 16 <= packed.len(), avx2 checked by caller.
-        let data = _mm_loadu_si128(packed.as_ptr().add(i) as *const __m128i);
+        let mut data = [0u8; 16];
+        data.copy_from_slice(&packed[i..i + 16]);
 
-        // Low nibbles (even indices)
-        let lo = _mm_and_si128(data, low_mask);
-        // High nibbles (odd indices)
-        let hi = _mm_and_si128(_mm_srli_epi16(data, 4), low_mask);
+        // Extract low and high nibbles
+        let mut lo = [0u8; 16];
+        let mut hi = [0u8; 16];
+        for j in 0..16 {
+            lo[j] = data[j] & 0x0F;
+            hi[j] = (data[j] >> 4) & 0x0F;
+        }
 
         // Interleave: lo[0],hi[0], lo[1],hi[1], ...
-        let interleaved_lo = _mm_unpacklo_epi8(lo, hi); // bytes 0-7 → 16 nibbles
-        let interleaved_hi = _mm_unpackhi_epi8(lo, hi); // bytes 8-15 → 16 nibbles
-
         let mut buf = [0u8; 32];
-        _mm_storeu_si128(buf.as_mut_ptr() as *mut __m128i, interleaved_lo);
-        _mm_storeu_si128(buf.as_mut_ptr().add(16) as *mut __m128i, interleaved_hi);
+        for j in 0..16 {
+            buf[j * 2] = lo[j];
+            buf[j * 2 + 1] = hi[j];
+        }
 
         out.extend_from_slice(&buf);
         i += 16;
@@ -167,34 +168,20 @@ fn nibble_sub_clamp_scalar(packed: &mut [u8], delta: u8) {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn nibble_sub_clamp_avx2(packed: &mut [u8], delta: u8) {
-    use core::arch::x86_64::*;
-
-    let mask_lo = _mm256_set1_epi8(0x0F);
-    let mask_hi = _mm256_set1_epi8(0xF0u8 as i8);
-    let delta_v = _mm256_set1_epi8(delta as i8);
-    // delta shifted into high nibble position for direct subtraction
-    let delta_hi = _mm256_set1_epi8((delta << 4) as i8);
     let chunks = packed.len() / 32;
 
     for c in 0..chunks {
-        let ptr = packed.as_mut_ptr().add(c * 32);
-        let data = _mm256_loadu_si256(ptr as *const __m256i);
+        let offset = c * 32;
+        let mut data = [0u8; 32];
+        data.copy_from_slice(&packed[offset..offset + 32]);
 
-        // Extract low nibbles, subtract with saturation
-        let lo = _mm256_and_si256(data, mask_lo);
-        let lo_sub = _mm256_subs_epu8(lo, delta_v);
+        for j in 0..32 {
+            let lo = (data[j] & 0x0F).saturating_sub(delta);
+            let hi = ((data[j] >> 4) & 0x0F).saturating_sub(delta);
+            data[j] = lo | (hi << 4);
+        }
 
-        // Extract high nibbles (keep in high position), subtract with saturation
-        let hi = _mm256_and_si256(data, mask_hi);
-        let hi_sub = _mm256_subs_epu8(hi, delta_hi);
-
-        // Combine: low nibbles are already clean (0-15), high nibbles already in position
-        let result = _mm256_or_si256(
-            _mm256_and_si256(lo_sub, mask_lo),
-            _mm256_and_si256(hi_sub, mask_hi),
-        );
-
-        _mm256_storeu_si256(ptr as *mut __m256i, result);
+        packed[offset..offset + 32].copy_from_slice(&data);
     }
 
     // Scalar tail
@@ -208,31 +195,28 @@ unsafe fn nibble_sub_clamp_avx2(packed: &mut [u8], delta: u8) {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512bw")]
 unsafe fn nibble_sub_clamp_avx512(packed: &mut [u8], delta: u8) {
-    use core::arch::x86_64::*;
+    use crate::simd::U8x64;
 
-    let mask_lo = _mm512_set1_epi8(0x0F);
-    let mask_hi = _mm512_set1_epi8(0xF0u8 as i8);
-    let delta_v = _mm512_set1_epi8(delta as i8);
-    let delta_hi = _mm512_set1_epi8((delta << 4) as i8);
+    let mask_lo = U8x64::splat(0x0F);
+    let mask_hi = U8x64::splat(0xF0);
+    let delta_v = U8x64::splat(delta);
+    let delta_hi = U8x64::splat(delta << 4);
     let chunks = packed.len() / 64;
 
     for c in 0..chunks {
-        let ptr = packed.as_mut_ptr().add(c * 64);
-        // SAFETY: ptr is within bounds (c * 64 + 64 <= packed.len()), avx512bw checked.
-        let data = _mm512_loadu_si512(ptr as *const __m512i);
+        let offset = c * 64;
+        // SAFETY: offset + 64 <= packed.len(), avx512bw checked.
+        let data = U8x64::from_slice(&packed[offset..]);
 
-        let lo = _mm512_and_si512(data, mask_lo);
-        let lo_sub = _mm512_subs_epu8(lo, delta_v);
+        let lo = data & mask_lo;
+        let lo_sub = lo.saturating_sub(delta_v);
 
-        let hi = _mm512_and_si512(data, mask_hi);
-        let hi_sub = _mm512_subs_epu8(hi, delta_hi);
+        let hi = data & mask_hi;
+        let hi_sub = hi.saturating_sub(delta_hi);
 
-        let result = _mm512_or_si512(
-            _mm512_and_si512(lo_sub, mask_lo),
-            _mm512_and_si512(hi_sub, mask_hi),
-        );
+        let result = (lo_sub & mask_lo) | (hi_sub & mask_hi);
 
-        _mm512_storeu_si512(ptr as *mut __m512i, result);
+        result.copy_to_slice(&mut packed[offset..offset + 64]);
     }
 
     // Scalar tail
@@ -265,55 +249,29 @@ pub(crate) fn nibble_above_threshold_scalar(packed: &[u8], threshold: u8) -> Vec
 
 /// AVX2 nibble threshold scan: processes 32 packed bytes (64 nibbles) per iteration.
 ///
-/// Splits each byte into lo/hi nibbles, compares against threshold using
-/// signed comparison (with bias trick), and extracts matching indices from bitmask.
+/// Uses scalar array operations on 32-byte chunks for portability.
 ///
 /// # Safety
 /// Caller must ensure AVX2 is available and `packed.len() >= 16`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 pub(crate) unsafe fn nibble_above_threshold_avx2(packed: &[u8], threshold: u8) -> Vec<usize> {
-    use core::arch::x86_64::*;
-
     let mut result = Vec::new();
-    let low_mask = _mm256_set1_epi8(0x0F);
-    // For unsigned comparison via signed: bias both operands by -128
-    let bias = _mm256_set1_epi8(-128i8);
-    // We want > threshold, which is: (val - 128) > (threshold - 128) via signed cmpgt
-    let thresh_lo = _mm256_set1_epi8((threshold as i8).wrapping_add(-128));
 
     let chunks = packed.len() / 32;
     for c in 0..chunks {
         let base_byte = c * 32;
-        // SAFETY: base_byte + 32 <= packed.len(), avx2 checked.
-        let data = _mm256_loadu_si256(packed.as_ptr().add(base_byte) as *const __m256i);
+        let chunk = &packed[base_byte..base_byte + 32];
 
-        // Extract low nibbles
-        let lo = _mm256_and_si256(data, low_mask);
-        // Extract high nibbles
-        let hi = _mm256_and_si256(_mm256_srli_epi16(data, 4), low_mask);
-
-        // Bias for unsigned compare: add -128 then use signed cmpgt
-        let lo_biased = _mm256_add_epi8(lo, bias);
-        let hi_biased = _mm256_add_epi8(hi, bias);
-
-        let lo_gt = _mm256_cmpgt_epi8(lo_biased, thresh_lo);
-        let hi_gt = _mm256_cmpgt_epi8(hi_biased, thresh_lo);
-
-        let mut lo_mask = _mm256_movemask_epi8(lo_gt) as u32;
-        let mut hi_mask = _mm256_movemask_epi8(hi_gt) as u32;
-
-        // Low nibbles are at even indices: byte_index * 2
-        while lo_mask != 0 {
-            let bit = lo_mask.trailing_zeros() as usize;
-            result.push((base_byte + bit) * 2);
-            lo_mask &= lo_mask - 1;
-        }
-        // High nibbles are at odd indices: byte_index * 2 + 1
-        while hi_mask != 0 {
-            let bit = hi_mask.trailing_zeros() as usize;
-            result.push((base_byte + bit) * 2 + 1);
-            hi_mask &= hi_mask - 1;
+        for j in 0..32 {
+            let lo = chunk[j] & 0x0F;
+            let hi = (chunk[j] >> 4) & 0x0F;
+            if lo > threshold {
+                result.push((base_byte + j) * 2);
+            }
+            if hi > threshold {
+                result.push((base_byte + j) * 2 + 1);
+            }
         }
     }
 

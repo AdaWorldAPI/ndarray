@@ -316,7 +316,8 @@ pub(crate) fn batch_sq_dist_scalar(
     result
 }
 
-/// AVX2 batch squared-distance filter: processes 8 candidates at a time.
+/// AVX2 batch squared-distance filter: processes 8 candidates at a time
+/// using F32x8 polyfill for arithmetic, scalar array comparison for filtering.
 ///
 /// # Safety
 /// Caller must ensure AVX2 is available.
@@ -327,13 +328,12 @@ pub(crate) unsafe fn batch_sq_dist_avx2(
     candidates: &[[f32; 3]],
     radius_sq: f32,
 ) -> Vec<(usize, f32)> {
-    use core::arch::x86_64::*;
+    use crate::simd::F32x8;
 
     let mut result = Vec::new();
-    let qx = _mm256_set1_ps(query[0]);
-    let qy = _mm256_set1_ps(query[1]);
-    let qz = _mm256_set1_ps(query[2]);
-    let radius_sq_v = _mm256_set1_ps(radius_sq);
+    let qx = F32x8::splat(query[0]);
+    let qy = F32x8::splat(query[1]);
+    let qz = F32x8::splat(query[2]);
 
     let chunks = candidates.len() / 8;
     for c in 0..chunks {
@@ -349,35 +349,22 @@ pub(crate) unsafe fn batch_sq_dist_avx2(
             cz[i] = candidates[base + i][2];
         }
 
-        // SAFETY: arrays are 8-element aligned, avx2 checked by caller.
-        let vx = _mm256_loadu_ps(cx.as_ptr());
-        let vy = _mm256_loadu_ps(cy.as_ptr());
-        let vz = _mm256_loadu_ps(cz.as_ptr());
+        let vx = F32x8::from_array(cx);
+        let vy = F32x8::from_array(cy);
+        let vz = F32x8::from_array(cz);
 
         // Compute squared distances
-        let dx = _mm256_sub_ps(vx, qx);
-        let dy = _mm256_sub_ps(vy, qy);
-        let dz = _mm256_sub_ps(vz, qz);
+        let dx = vx - qx;
+        let dy = vy - qy;
+        let dz = vz - qz;
 
-        let d2 = _mm256_add_ps(
-            _mm256_add_ps(_mm256_mul_ps(dx, dx), _mm256_mul_ps(dy, dy)),
-            _mm256_mul_ps(dz, dz),
-        );
+        let d2 = dx * dx + dy * dy + dz * dz;
 
-        // Compare: d2 <= radius_sq
-        let cmp = _mm256_cmp_ps(d2, radius_sq_v, _CMP_LE_OQ);
-        let mask = _mm256_movemask_ps(cmp) as u32;
-
-        if mask != 0 {
-            // Extract individual distances for matching lanes
-            let mut d2_arr = [0.0f32; 8];
-            _mm256_storeu_ps(d2_arr.as_mut_ptr(), d2);
-
-            let mut m = mask;
-            while m != 0 {
-                let bit = m.trailing_zeros() as usize;
-                result.push((base + bit, d2_arr[bit]));
-                m &= m - 1;
+        // Compare: d2 <= radius_sq (scalar array comparison — no F32x8 cmp polyfill)
+        let d2_arr = d2.to_array();
+        for lane in 0..8 {
+            if d2_arr[lane] <= radius_sq {
+                result.push((base + lane, d2_arr[lane]));
             }
         }
     }

@@ -779,6 +779,31 @@ mod scalar {
             for lane in 0..4 { let b = lane * 16; for i in 0..8 { out[b+i*2] = self.0[b+8+i]; out[b+i*2+1] = other.0[b+8+i]; } }
             Self(out)
         }
+        /// Byte-wise shuffle: use `self` as a LUT, `idx` selects bytes within each 128-bit (16-byte) lane.
+        #[inline(always)]
+        pub fn shuffle_bytes(self, idx: Self) -> Self {
+            let mut out = [0u8; 64];
+            for lane in 0..4 {
+                let b = lane * 16;
+                for i in 0..16 {
+                    out[b + i] = self.0[b + (idx.0[b + i] & 0x0F) as usize];
+                }
+            }
+            Self(out)
+        }
+        /// Sum all 64 bytes into a single `u64` without wrapping.
+        #[inline(always)]
+        pub fn sum_bytes_u64(self) -> u64 {
+            self.0.iter().map(|&b| b as u64).sum()
+        }
+        /// Build a nibble-popcount lookup table (replicated across 4 x 16-byte lanes).
+        #[inline(always)]
+        pub fn nibble_popcount_lut() -> Self {
+            let lane: [u8; 16] = [0,1,1,2,1,2,2,3,1,2,2,3,2,3,3,4];
+            let mut arr = [0u8; 64];
+            for l in 0..4 { arr[l*16..(l+1)*16].copy_from_slice(&lane); }
+            Self(arr)
+        }
     }
 
     // Mul for U32x16
