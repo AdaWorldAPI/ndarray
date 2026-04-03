@@ -545,8 +545,10 @@ mod tests {
         // f64→f64 accumulation in the projection (instead of f32→f64).
         // That's ~0 extra cost because the projection already uses f64 sums.
 
-        assert!(encode_time.as_micros() < 100, "encoding should be < 100μs");
-        assert!(hydrate_time.as_micros() < 100, "hydration should be < 100μs");
+        // Generous timing bounds: 10ms allows for debug builds, loaded CI, cold caches.
+        // The operation is ~10μs on fast hardware but can spike under contention.
+        assert!(encode_time.as_millis() < 10, "encoding took {:?}, expected < 10ms", encode_time);
+        assert!(hydrate_time.as_millis() < 10, "hydration took {:?}, expected < 10ms", hydrate_time);
     }
     #[test]
     fn test_golden_step_vs_random_projection_rho() {
