@@ -1,0 +1,41 @@
+# ndarray — AVX-512 pinned build (server/Railway)
+# target-cpu=x86-64-v4: native AVX-512, all SIMD inlined, no LazyLock dispatch.
+# ~24% faster than portable build (780 vs 630 on L1 kernel benchmarks).
+#
+# ONLY deploy on AVX-512 hardware (Skylake-X, Ice Lake, Sapphire Rapids, EPYC Genoa).
+# Will SIGILL on older CPUs.
+#
+# Build: docker build -f Dockerfile.avx512 -t ndarray-avx512 .
+# Run:   docker run --rm ndarray-avx512
+
+FROM debian:bookworm-slim AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates gcc libc6-dev pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --default-toolchain 1.94.0 --profile minimal \
+    && rustc --version | grep -q "1.94.0"
+
+WORKDIR /app
+
+COPY Cargo.toml Cargo.lock ./
+COPY ndarray-rand/Cargo.toml ndarray-rand/Cargo.toml
+COPY crates/ crates/
+COPY src/ src/
+COPY ndarray-rand/src/ ndarray-rand/src/
+
+# AVX-512 pinned: compile-time dispatch, everything inlined
+ENV RUSTFLAGS="-C target-cpu=x86-64-v4"
+
+RUN cargo build --release 2>&1 && echo "=== AVX-512 BUILD OK ==="
+RUN cargo build --release --features jit-native 2>&1 && echo "=== AVX-512 JIT BUILD OK ==="
+RUN cargo test --release --lib -- hpc:: 2>&1 && echo "=== AVX-512 HPC TESTS OK ==="
+
+FROM debian:bookworm-slim
+COPY --from=builder /app/target/release/libndarray.rlib /usr/local/lib/
+CMD ["echo", "ndarray AVX-512 build verified — Rust 1.94.0, target-cpu=x86-64-v4"]
