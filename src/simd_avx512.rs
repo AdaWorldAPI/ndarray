@@ -758,6 +758,40 @@ impl I32x16 {
         unsafe { _mm512_reduce_max_epi32(self.0) }
     }
 
+    // ── Base17 i16[17] operations: load-widen, abs, narrow ──────────────
+    // Used by bgz17_bridge.rs for L1 distance, weighted L1, sign agreement, xor_bind.
+
+    /// Load 16 × i16 from slice, sign-extend to 16 × i32.
+    /// This is the first step of every Base17 kernel: i16 → i32 to avoid overflow.
+    #[inline(always)]
+    pub fn from_i16_slice(s: &[i16]) -> Self {
+        assert!(s.len() >= 16);
+        Self(unsafe { _mm512_cvtepi16_epi32(_mm256_loadu_si256(s.as_ptr() as *const __m256i)) })
+    }
+
+    /// Absolute value per lane.
+    #[inline(always)]
+    pub fn abs(self) -> Self {
+        Self(unsafe { _mm512_abs_epi32(self.0) })
+    }
+
+    /// Narrow 16 × i32 back to 16 × i16 (truncation, no saturation).
+    #[inline(always)]
+    pub fn to_i16_array(self) -> [i16; 16] {
+        unsafe {
+            let packed = _mm512_cvtepi32_epi16(self.0);
+            let mut arr = [0i16; 16];
+            _mm256_storeu_si256(arr.as_mut_ptr() as *mut __m256i, packed);
+            arr
+        }
+    }
+
+    /// Compare >= 0: returns 16-bit mask. Bit i set where lane i >= 0.
+    #[inline(always)]
+    pub fn cmpge_zero_mask(self) -> u16 {
+        unsafe { _mm512_cmpge_epi32_mask(self.0, _mm512_setzero_si512()) }
+    }
+
     #[inline(always)]
     pub fn simd_min(self, other: Self) -> Self {
         Self(unsafe { _mm512_min_epi32(self.0, other.0) })
@@ -772,11 +806,6 @@ impl I32x16 {
     #[inline(always)]
     pub fn cast_f32(self) -> F32x16 {
         F32x16(unsafe { _mm512_cvtepi32_ps(self.0) })
-    }
-
-    #[inline(always)]
-    pub fn abs(self) -> Self {
-        Self(unsafe { _mm512_abs_epi32(self.0) })
     }
 }
 

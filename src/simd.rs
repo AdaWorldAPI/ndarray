@@ -546,6 +546,25 @@ mod scalar {
             for i in 0..16 { out[i] = self.0[i].abs(); }
             Self(out)
         }
+        #[inline(always)]
+        pub fn from_i16_slice(s: &[i16]) -> Self {
+            assert!(s.len() >= 16);
+            let mut o = [0i32; 16];
+            for i in 0..16 { o[i] = s[i] as i32; }
+            Self(o)
+        }
+        #[inline(always)]
+        pub fn to_i16_array(self) -> [i16; 16] {
+            let mut o = [0i16; 16];
+            for i in 0..16 { o[i] = self.0[i] as i16; }
+            o
+        }
+        #[inline(always)]
+        pub fn cmpge_zero_mask(self) -> u16 {
+            let mut mask = 0u16;
+            for i in 0..16 { if self.0[i] >= 0 { mask |= 1 << i; } }
+            mask
+        }
     }
 
     impl Mul for I32x16 {

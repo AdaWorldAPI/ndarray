@@ -843,6 +843,31 @@ impl I32x16 {
     #[inline(always)] pub fn simd_max(self, other: Self) -> Self { let mut o = [0i32; 16]; for i in 0..16 { o[i] = self.0[i].max(other.0[i]); } Self(o) }
     #[inline(always)] pub fn cast_f32(self) -> F32x16 { let mut o = [0.0f32; 16]; for i in 0..16 { o[i] = self.0[i] as f32; } F32x16::from_array(o) }
     #[inline(always)] pub fn abs(self) -> Self { let mut o = [0i32; 16]; for i in 0..16 { o[i] = self.0[i].abs(); } Self(o) }
+
+    /// Load 16 × i16, sign-extend to 16 × i32.
+    #[inline(always)]
+    pub fn from_i16_slice(s: &[i16]) -> Self {
+        assert!(s.len() >= 16);
+        let mut o = [0i32; 16];
+        for i in 0..16 { o[i] = s[i] as i32; }
+        Self(o)
+    }
+
+    /// Narrow 16 × i32 to 16 × i16 (truncation).
+    #[inline(always)]
+    pub fn to_i16_array(self) -> [i16; 16] {
+        let mut o = [0i16; 16];
+        for i in 0..16 { o[i] = self.0[i] as i16; }
+        o
+    }
+
+    /// Mask: bit i set where lane i >= 0.
+    #[inline(always)]
+    pub fn cmpge_zero_mask(self) -> u16 {
+        let mut mask = 0u16;
+        for i in 0..16 { if self.0[i] >= 0 { mask |= 1 << i; } }
+        mask
+    }
 }
 impl Mul for I32x16 { type Output = Self; #[inline(always)] fn mul(self, r: Self) -> Self { let mut o = [0i32; 16]; for i in 0..16 { o[i] = self.0[i].wrapping_mul(r.0[i]); } Self(o) } }
 impl MulAssign for I32x16 { #[inline(always)] fn mul_assign(&mut self, r: Self) { *self = *self * r; } }
