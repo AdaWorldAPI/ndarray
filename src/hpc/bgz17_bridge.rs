@@ -43,13 +43,10 @@ type L1Fn = unsafe fn(&[i16; 17], &[i16; 17]) -> u32;
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 unsafe fn l1_avx512(a: &[i16; 17], b: &[i16; 17]) -> u32 {
-    use std::arch::x86_64::*;
-    // Load 16 i16 → 16 i32 via sign-extension
-    let va = _mm512_cvtepi16_epi32(_mm256_loadu_si256(a.as_ptr() as *const __m256i));
-    let vb = _mm512_cvtepi16_epi32(_mm256_loadu_si256(b.as_ptr() as *const __m256i));
-    let diff = _mm512_sub_epi32(va, vb);
-    let abs_diff = _mm512_abs_epi32(diff);
-    let sum16 = _mm512_reduce_add_epi32(abs_diff) as u32;
+    let va = crate::simd::I32x16::from_i16_slice(a);
+    let vb = crate::simd::I32x16::from_i16_slice(b);
+    let abs_diff = (va - vb).abs();
+    let sum16 = abs_diff.reduce_sum() as u32;
     // 17th dim scalar
     let d16 = (a[16] as i32 - b[16] as i32).unsigned_abs();
     sum16 + d16
@@ -58,26 +55,10 @@ unsafe fn l1_avx512(a: &[i16; 17], b: &[i16; 17]) -> u32 {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn l1_avx2(a: &[i16; 17], b: &[i16; 17]) -> u32 {
-    use std::arch::x86_64::*;
-    // Process 8 dims at a time (2 passes of 8 = 16, + 1 scalar)
-    let va0 = _mm256_cvtepi16_epi32(_mm_loadu_si128(a.as_ptr() as *const __m128i));
-    let vb0 = _mm256_cvtepi16_epi32(_mm_loadu_si128(b.as_ptr() as *const __m128i));
-    let diff0 = _mm256_sub_epi32(va0, vb0);
-    let abs0 = _mm256_abs_epi32(diff0);
-
-    let va1 = _mm256_cvtepi16_epi32(_mm_loadu_si128(a[8..].as_ptr() as *const __m128i));
-    let vb1 = _mm256_cvtepi16_epi32(_mm_loadu_si128(b[8..].as_ptr() as *const __m128i));
-    let diff1 = _mm256_sub_epi32(va1, vb1);
-    let abs1 = _mm256_abs_epi32(diff1);
-
-    let sum = _mm256_add_epi32(abs0, abs1);
-    // Horizontal sum of 8 i32
-    let hi128 = _mm256_extracti128_si256(sum, 1);
-    let lo128 = _mm256_castsi256_si128(sum);
-    let sum128 = _mm_add_epi32(lo128, hi128);
-    let sum64 = _mm_add_epi32(sum128, _mm_srli_si128(sum128, 8));
-    let sum32 = _mm_add_epi32(sum64, _mm_srli_si128(sum64, 4));
-    let sum16 = _mm_extract_epi32(sum32, 0) as u32;
+    let va = crate::simd::I32x16::from_i16_slice(a);
+    let vb = crate::simd::I32x16::from_i16_slice(b);
+    let abs_diff = (va - vb).abs();
+    let sum16 = abs_diff.reduce_sum() as u32;
     // 17th dim scalar
     let d16 = (a[16] as i32 - b[16] as i32).unsigned_abs();
     sum16 + d16
@@ -115,14 +96,12 @@ const WEIGHT_VEC: [i32; 16] = [20, 3, 3, 3, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 unsafe fn l1_weighted_avx512(a: &[i16; 17], b: &[i16; 17]) -> u32 {
-    use std::arch::x86_64::*;
-    let va = _mm512_cvtepi16_epi32(_mm256_loadu_si256(a.as_ptr() as *const __m256i));
-    let vb = _mm512_cvtepi16_epi32(_mm256_loadu_si256(b.as_ptr() as *const __m256i));
-    let diff = _mm512_sub_epi32(va, vb);
-    let abs_diff = _mm512_abs_epi32(diff);
-    let vw = _mm512_loadu_si512(WEIGHT_VEC.as_ptr() as *const __m512i);
-    let weighted = _mm512_mullo_epi32(abs_diff, vw);
-    let sum16 = _mm512_reduce_add_epi32(weighted) as u32;
+    let va = crate::simd::I32x16::from_i16_slice(a);
+    let vb = crate::simd::I32x16::from_i16_slice(b);
+    let abs_diff = (va - vb).abs();
+    let vw = crate::simd::I32x16::from_array(WEIGHT_VEC);
+    let weighted = abs_diff * vw;
+    let sum16 = weighted.reduce_sum() as u32;
     // 17th dim: weight = 1
     let d16 = (a[16] as i32 - b[16] as i32).unsigned_abs();
     sum16 + d16
@@ -131,34 +110,14 @@ unsafe fn l1_weighted_avx512(a: &[i16; 17], b: &[i16; 17]) -> u32 {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn l1_weighted_avx2(a: &[i16; 17], b: &[i16; 17]) -> u32 {
-    use std::arch::x86_64::*;
-    // First 8 dims
-    let va0 = _mm256_cvtepi16_epi32(_mm_loadu_si128(a.as_ptr() as *const __m128i));
-    let vb0 = _mm256_cvtepi16_epi32(_mm_loadu_si128(b.as_ptr() as *const __m128i));
-    let diff0 = _mm256_sub_epi32(va0, vb0);
-    let abs0 = _mm256_abs_epi32(diff0);
-    let vw0 = _mm256_loadu_si256(WEIGHT_VEC.as_ptr() as *const __m256i);
-    let w0 = _mm256_mullo_epi32(abs0, vw0);
-
-    // Dims 8..16
-    let va1 = _mm256_cvtepi16_epi32(_mm_loadu_si128(a[8..].as_ptr() as *const __m128i));
-    let vb1 = _mm256_cvtepi16_epi32(_mm_loadu_si128(b[8..].as_ptr() as *const __m128i));
-    let diff1 = _mm256_sub_epi32(va1, vb1);
-    let abs1 = _mm256_abs_epi32(diff1);
-    let vw1 = _mm256_loadu_si256(WEIGHT_VEC[8..].as_ptr() as *const __m256i);
-    let w1 = _mm256_mullo_epi32(abs1, vw1);
-
-    let sum = _mm256_add_epi32(w0, w1);
-    // Horizontal sum
-    let hi128 = _mm256_extracti128_si256(sum, 1);
-    let lo128 = _mm256_castsi256_si128(sum);
-    let sum128 = _mm_add_epi32(lo128, hi128);
-    let sum64 = _mm_add_epi32(sum128, _mm_srli_si128(sum128, 8));
-    let sum32 = _mm_add_epi32(sum64, _mm_srli_si128(sum64, 4));
-    let s = _mm_extract_epi32(sum32, 0) as u32;
-    // 17th dim: weight = 1
+    let va = crate::simd::I32x16::from_i16_slice(a);
+    let vb = crate::simd::I32x16::from_i16_slice(b);
+    let abs_diff = (va - vb).abs();
+    let vw = crate::simd::I32x16::from_array(WEIGHT_VEC);
+    let weighted = abs_diff * vw;
+    let sum16 = weighted.reduce_sum() as u32;
     let d16 = (a[16] as i32 - b[16] as i32).unsigned_abs();
-    s + d16
+    sum16 + d16
 }
 
 fn l1_weighted_scalar(a: &[i16; 17], b: &[i16; 17]) -> u32 {
@@ -193,14 +152,10 @@ type SignAgreementFn = unsafe fn(&[i16; 17], &[i16; 17]) -> u32;
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 unsafe fn sign_agreement_avx512(a: &[i16; 17], b: &[i16; 17]) -> u32 {
-    use std::arch::x86_64::*;
-    let va = _mm512_cvtepi16_epi32(_mm256_loadu_si256(a.as_ptr() as *const __m256i));
-    let vb = _mm512_cvtepi16_epi32(_mm256_loadu_si256(b.as_ptr() as *const __m256i));
-    // XOR: same sign → non-negative, different sign → negative
-    let xor = _mm512_xor_si512(va, vb);
-    // Compare >= 0: mask bit set where same sign
-    let zero = _mm512_setzero_si512();
-    let mask = _mm512_cmpge_epi32_mask(xor, zero);
+    let va = crate::simd::I32x16::from_i16_slice(a);
+    let vb = crate::simd::I32x16::from_i16_slice(b);
+    let xor = va ^ vb;
+    let mask = xor.cmpge_zero_mask();
     let count16 = mask.count_ones();
     // 17th dim
     let same17 = if (a[16] >= 0) == (b[16] >= 0) { 1u32 } else { 0u32 };
@@ -210,28 +165,14 @@ unsafe fn sign_agreement_avx512(a: &[i16; 17], b: &[i16; 17]) -> u32 {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn sign_agreement_avx2(a: &[i16; 17], b: &[i16; 17]) -> u32 {
-    use std::arch::x86_64::*;
-    // First 8 dims
-    let va0 = _mm256_cvtepi16_epi32(_mm_loadu_si128(a.as_ptr() as *const __m128i));
-    let vb0 = _mm256_cvtepi16_epi32(_mm_loadu_si128(b.as_ptr() as *const __m128i));
-    let xor0 = _mm256_xor_si256(va0, vb0);
-    let zero = _mm256_setzero_si256();
-    let neg0 = _mm256_cmpgt_epi32(zero, xor0); // -1 where xor < 0
-    // movemask_ps on the reinterpreted float gives 8 bits, one per 32-bit lane
-    let mask0 = _mm256_movemask_ps(_mm256_castsi256_ps(neg0)) as u32;
-    let same0 = 8 - mask0.count_ones();
-
-    // Dims 8..16
-    let va1 = _mm256_cvtepi16_epi32(_mm_loadu_si128(a[8..].as_ptr() as *const __m128i));
-    let vb1 = _mm256_cvtepi16_epi32(_mm_loadu_si128(b[8..].as_ptr() as *const __m128i));
-    let xor1 = _mm256_xor_si256(va1, vb1);
-    let neg1 = _mm256_cmpgt_epi32(zero, xor1);
-    let mask1 = _mm256_movemask_ps(_mm256_castsi256_ps(neg1)) as u32;
-    let same1 = 8 - mask1.count_ones();
-
+    let va = crate::simd::I32x16::from_i16_slice(a);
+    let vb = crate::simd::I32x16::from_i16_slice(b);
+    let xor = va ^ vb;
+    let mask = xor.cmpge_zero_mask();
+    let count16 = mask.count_ones();
     // 17th dim
     let same17 = if (a[16] >= 0) == (b[16] >= 0) { 1u32 } else { 0u32 };
-    same0 + same1 + same17
+    count16 + same17
 }
 
 fn sign_agreement_scalar(a: &[i16; 17], b: &[i16; 17]) -> u32 {
@@ -267,15 +208,12 @@ type XorBindFn = unsafe fn(&[i16; 17], &[i16; 17]) -> [i16; 17];
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 unsafe fn xor_bind_avx512(a: &[i16; 17], b: &[i16; 17]) -> [i16; 17] {
-    use std::arch::x86_64::*;
-    // Load 16 i16 as i32, XOR, store back as i16
-    let va = _mm512_cvtepi16_epi32(_mm256_loadu_si256(a.as_ptr() as *const __m256i));
-    let vb = _mm512_cvtepi16_epi32(_mm256_loadu_si256(b.as_ptr() as *const __m256i));
-    let xored = _mm512_xor_si512(va, vb);
-    // Convert back to i16: truncate i32 -> i16 via pmovdw
-    let packed = _mm512_cvtepi32_epi16(xored);
+    let va = crate::simd::I32x16::from_i16_slice(a);
+    let vb = crate::simd::I32x16::from_i16_slice(b);
+    let xored = va ^ vb; // BitXor trait
+    let narrow = xored.to_i16_array(); // narrow i32→i16
     let mut dims = [0i16; 17];
-    _mm256_storeu_si256(dims.as_mut_ptr() as *mut __m256i, packed);
+    dims[..16].copy_from_slice(&narrow);
     dims[16] = (a[16] as u16 ^ b[16] as u16) as i16;
     dims
 }
@@ -283,31 +221,12 @@ unsafe fn xor_bind_avx512(a: &[i16; 17], b: &[i16; 17]) -> [i16; 17] {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn xor_bind_avx2(a: &[i16; 17], b: &[i16; 17]) -> [i16; 17] {
-    use std::arch::x86_64::*;
-    // First 8 dims: load as i32, XOR, narrow back
-    let va0 = _mm256_cvtepi16_epi32(_mm_loadu_si128(a.as_ptr() as *const __m128i));
-    let vb0 = _mm256_cvtepi16_epi32(_mm_loadu_si128(b.as_ptr() as *const __m128i));
-    let xor0 = _mm256_xor_si256(va0, vb0);
-
-    // Dims 8..16
-    let va1 = _mm256_cvtepi16_epi32(_mm_loadu_si128(a[8..].as_ptr() as *const __m128i));
-    let vb1 = _mm256_cvtepi16_epi32(_mm_loadu_si128(b[8..].as_ptr() as *const __m128i));
-    let xor1 = _mm256_xor_si256(va1, vb1);
-
-    // Extract results back to i16
+    let va = crate::simd::I32x16::from_i16_slice(a);
+    let vb = crate::simd::I32x16::from_i16_slice(b);
+    let xored = va ^ vb; // BitXor trait
+    let narrow = xored.to_i16_array(); // narrow i32→i16
     let mut dims = [0i16; 17];
-    // Pack i32 -> i16 via shuffle + truncation
-    // We need the low 16 bits of each i32 lane.
-    // Use _mm256_packs_epi32 which saturates — but XOR of two i16 fits in i16,
-    // so we use manual extraction instead to avoid saturation issues.
-    let arr0: [i32; 8] = core::mem::transmute(xor0);
-    let arr1: [i32; 8] = core::mem::transmute(xor1);
-    for i in 0..8 {
-        dims[i] = arr0[i] as i16;
-    }
-    for i in 0..8 {
-        dims[8 + i] = arr1[i] as i16;
-    }
+    dims[..16].copy_from_slice(&narrow);
     dims[16] = (a[16] as u16 ^ b[16] as u16) as i16;
     dims
 }
@@ -356,7 +275,6 @@ fn noise_from_state(state: u64, scale: i16) -> i16 {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 unsafe fn inject_noise_avx512(dims: &[i16; 17], scale: i16, seed: u64) -> [i16; 17] {
-    use std::arch::x86_64::*;
     // Generate 16 noise values via PRNG
     let mut state = seed;
     let mut noise_vals = [0i32; 16];
@@ -364,17 +282,16 @@ unsafe fn inject_noise_avx512(dims: &[i16; 17], scale: i16, seed: u64) -> [i16; 
         prng_step(&mut state);
         noise_vals[i] = noise_from_state(state, scale) as i32;
     }
-    // Load dims as i32
-    let vd = _mm512_cvtepi16_epi32(_mm256_loadu_si256(dims.as_ptr() as *const __m256i));
-    let vn = _mm512_loadu_si512(noise_vals.as_ptr() as *const __m512i);
-    // Saturating add: add then clamp to i16 range
-    let sum = _mm512_add_epi32(vd, vn);
-    let lo = _mm512_set1_epi32(-32768);
-    let hi = _mm512_set1_epi32(32767);
-    let clamped = _mm512_max_epi32(_mm512_min_epi32(sum, hi), lo);
-    let packed = _mm512_cvtepi32_epi16(clamped);
+    // Load dims as i32, add noise, clamp to i16 range
+    let vd = crate::simd::I32x16::from_i16_slice(dims);
+    let vn = crate::simd::I32x16::from_array(noise_vals);
+    let sum = vd + vn;
+    let lo = crate::simd::I32x16::splat(-32768);
+    let hi = crate::simd::I32x16::splat(32767);
+    let clamped = sum.simd_min(hi).simd_max(lo);
+    let narrow = clamped.to_i16_array();
     let mut result = [0i16; 17];
-    _mm256_storeu_si256(result.as_mut_ptr() as *mut __m256i, packed);
+    result[..16].copy_from_slice(&narrow);
     // 17th dim
     prng_step(&mut state);
     let n16 = noise_from_state(state, scale);
@@ -385,43 +302,23 @@ unsafe fn inject_noise_avx512(dims: &[i16; 17], scale: i16, seed: u64) -> [i16; 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn inject_noise_avx2(dims: &[i16; 17], scale: i16, seed: u64) -> [i16; 17] {
-    use std::arch::x86_64::*;
+    // Generate 16 noise values via PRNG
     let mut state = seed;
-    // First 8 dims
-    let mut noise0 = [0i32; 8];
-    for i in 0..8 {
+    let mut noise_vals = [0i32; 16];
+    for i in 0..16 {
         prng_step(&mut state);
-        noise0[i] = noise_from_state(state, scale) as i32;
+        noise_vals[i] = noise_from_state(state, scale) as i32;
     }
-    let vd0 = _mm256_cvtepi16_epi32(_mm_loadu_si128(dims.as_ptr() as *const __m128i));
-    let vn0 = _mm256_loadu_si256(noise0.as_ptr() as *const __m256i);
-    let sum0 = _mm256_add_epi32(vd0, vn0);
-
-    // Dims 8..16
-    let mut noise1 = [0i32; 8];
-    for i in 0..8 {
-        prng_step(&mut state);
-        noise1[i] = noise_from_state(state, scale) as i32;
-    }
-    let vd1 = _mm256_cvtepi16_epi32(_mm_loadu_si128(dims[8..].as_ptr() as *const __m128i));
-    let vn1 = _mm256_loadu_si256(noise1.as_ptr() as *const __m256i);
-    let sum1 = _mm256_add_epi32(vd1, vn1);
-
-    // Clamp and extract
-    let lo = _mm256_set1_epi32(-32768);
-    let hi = _mm256_set1_epi32(32767);
-    let c0 = _mm256_max_epi32(_mm256_min_epi32(sum0, hi), lo);
-    let c1 = _mm256_max_epi32(_mm256_min_epi32(sum1, hi), lo);
-
-    let arr0: [i32; 8] = core::mem::transmute(c0);
-    let arr1: [i32; 8] = core::mem::transmute(c1);
+    // Load dims as i32, add noise, clamp to i16 range
+    let vd = crate::simd::I32x16::from_i16_slice(dims);
+    let vn = crate::simd::I32x16::from_array(noise_vals);
+    let sum = vd + vn;
+    let lo = crate::simd::I32x16::splat(-32768);
+    let hi = crate::simd::I32x16::splat(32767);
+    let clamped = sum.simd_min(hi).simd_max(lo);
+    let narrow = clamped.to_i16_array();
     let mut result = [0i16; 17];
-    for i in 0..8 {
-        result[i] = arr0[i] as i16;
-    }
-    for i in 0..8 {
-        result[8 + i] = arr1[i] as i16;
-    }
+    result[..16].copy_from_slice(&narrow);
     // 17th dim
     prng_step(&mut state);
     let n16 = noise_from_state(state, scale);
