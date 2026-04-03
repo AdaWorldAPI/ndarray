@@ -146,29 +146,53 @@ pub fn build_distance_table_vnni(centroids_u8: &[u8], k: usize, dim: usize) -> V
 
     let mut table = vec![0i32; k * k];
 
-    // Tiered dispatch: AMX (256 MACs) → avx512vnni (64 MACs) → scalar
+    // Tiered dispatch for u8×i8 dot product:
     //
-    // avx512vnni = VPDPBUSD on zmm (512-bit), Cascade Lake+ (2019), Zen 4+ (2022)
-    // avx_vnni   = VPDPBUSD on ymm (256-bit), Alder Lake+ — NOT detectable on stable Rust 1.94
-    // AMX        = TDPBUSD 16×16 tile (256 MACs) — detected via CPUID, intrinsics nightly-only
+    // Tier 3: AMX        TDPBUSD 16×16 tile   256 MACs/instr  Sapphire Rapids+
+    //         Detected via CPUID. Intrinsics nightly-only (issue #126622).
+    //         Bridge: uses avx512vnni until intrinsics stabilize.
     //
-    // When AMX intrinsics stabilize (issue #126622): tier 2 uses real TDPBUSD tiles.
-    // When avx_vnni detection stabilizes: add tier between avx512vnni and scalar.
+    // Tier 2: avx512vnni VPDPBUSD zmm (512-bit) 64 MACs/instr Cascade Lake+, Zen 4+
+    //         Stable detection: is_x86_feature_detected!("avx512vnni")
+    //
+    // Tier 1: avxvnniint8 VPDPBSSD ymm (256-bit) ~32 MACs/instr Sierra Forest+, Arrow Lake+
+    //         VNNI2: signed×signed dot product. Stable detection on Rust 1.94.
+    //         TODO: implement ymm-width kernel when hardware available.
+    //
+    // Tier 0: Scalar     loop                    1 MAC/iter     any CPU
+    //
+    // avxvnniint16 (VPDPWSSD, i16×i16) also detectable but needs separate kernel.
     #[cfg(target_arch = "x86_64")]
-    let use_vnni = is_x86_feature_detected!("avx512vnni");
+    let tier = {
+        // Check highest to lowest
+        if ndarray::simd_amx::amx_available() && is_x86_feature_detected!("avx512vnni") {
+            3 // AMX present — use avx512vnni as bridge
+        } else if is_x86_feature_detected!("avx512vnni") {
+            2 // AVX-512 VNNI: 64 MACs/instr
+        } else if is_x86_feature_detected!("avxvnniint8") {
+            1 // VNNI2: signed i8×i8 (ymm, ~32 MACs) — TODO: needs ymm kernel
+        } else {
+            0
+        }
+    };
     #[cfg(not(target_arch = "x86_64"))]
-    let use_vnni = false;
+    let tier = 0;
 
-    let dot_fn: fn(&[u8], &[i8]) -> i32 = if use_vnni {
-        |a, b| {
+    let dot_fn: fn(&[u8], &[i8]) -> i32 = match tier {
+        // Tier 3 + 2: both use avx512vnni VPDPBUSD zmm
+        // (AMX tiles need block-level API, not row dot products — future)
+        2 | 3 => |a, b| {
             // SAFETY: avx512vnni confirmed via is_x86_feature_detected above
             #[cfg(target_arch = "x86_64")]
             unsafe { ndarray::simd_amx::vnni_dot_u8_i8(a, b) }
             #[cfg(not(target_arch = "x86_64"))]
             ndarray::simd_amx::vnni_dot_u8_i8_scalar(a, b)
-        }
-    } else {
-        ndarray::simd_amx::vnni_dot_u8_i8_scalar
+        },
+        // Tier 1: avxvnniint8 — TODO: implement ymm-width VPDPBSSD kernel
+        // For now: scalar fallback (still correct, just slower)
+        1 => ndarray::simd_amx::vnni_dot_u8_i8_scalar,
+        // Tier 0: scalar
+        _ => ndarray::simd_amx::vnni_dot_u8_i8_scalar,
     };
 
     for i in 0..k {
