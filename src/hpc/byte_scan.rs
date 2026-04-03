@@ -10,34 +10,33 @@
 
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod simd_impl {
-    use core::arch::x86_64::*;
+    use crate::simd::U8x64;
 
-    /// Find all positions of `needle` in `haystack` using AVX2 (32 bytes/iter).
+    /// Find all positions of `needle` in `haystack` using scalar 32-byte chunks.
+    ///
+    /// No U8x32 polyfill exists, so we use scalar array comparison in 32-byte
+    /// blocks (same throughput pattern as the former AVX2 intrinsics path).
     ///
     /// # Safety
-    /// Caller must ensure AVX2 is available.
+    /// Caller must ensure AVX2 is available (kept for dispatch compatibility).
     #[target_feature(enable = "avx2")]
     pub(crate) unsafe fn byte_find_all_avx2(haystack: &[u8], needle: u8) -> Vec<usize> {
         let mut result = Vec::new();
         let n = haystack.len();
-        let ptr = haystack.as_ptr();
-        let needle_v = _mm256_set1_epi8(needle as i8);
 
         let mut i = 0usize;
         while i + 32 <= n {
-            let data = _mm256_loadu_si256(ptr.add(i) as *const __m256i);
-            let cmp = _mm256_cmpeq_epi8(data, needle_v);
-            let mut mask = _mm256_movemask_epi8(cmp) as u32;
-            while mask != 0 {
-                let bit = mask.trailing_zeros() as usize;
-                result.push(i + bit);
-                mask &= mask - 1; // clear lowest set bit
+            // Scalar array comparison over 32 bytes
+            for j in 0..32 {
+                if haystack[i + j] == needle {
+                    result.push(i + j);
+                }
             }
             i += 32;
         }
         // Scalar tail
         for j in i..n {
-            if *ptr.add(j) == needle {
+            if haystack[j] == needle {
                 result.push(j);
             }
         }
@@ -46,8 +45,7 @@ pub(crate) mod simd_impl {
 
     /// Find all positions of `needle` in `haystack` using AVX-512 BW (64 bytes/iter).
     ///
-    /// Uses `_mm512_cmpeq_epi8_mask` which returns a `u64` kmask directly,
-    /// avoiding the movemask step needed in AVX2.
+    /// Uses `U8x64::cmpeq_mask()` which returns a `u64` bitmask directly.
     ///
     /// # Safety
     /// Caller must ensure AVX-512 BW is available.
@@ -55,14 +53,13 @@ pub(crate) mod simd_impl {
     pub(crate) unsafe fn byte_find_all_avx512(haystack: &[u8], needle: u8) -> Vec<usize> {
         let mut result = Vec::new();
         let n = haystack.len();
-        let ptr = haystack.as_ptr();
-        let needle_v = _mm512_set1_epi8(needle as i8);
+        let needle_v = U8x64::splat(needle);
 
         let mut i = 0usize;
         while i + 64 <= n {
-            // SAFETY: ptr.add(i) is within bounds, avx512bw checked by caller.
-            let data = _mm512_loadu_si512(ptr.add(i) as *const __m512i);
-            let mut mask = _mm512_cmpeq_epi8_mask(data, needle_v);
+            // SAFETY: i + 64 <= n, so slice is valid; avx512bw checked by caller.
+            let data = U8x64::from_slice(&haystack[i..]);
+            let mut mask = data.cmpeq_mask(needle_v);
             while mask != 0 {
                 let bit = mask.trailing_zeros() as usize;
                 result.push(i + bit);
@@ -72,34 +69,37 @@ pub(crate) mod simd_impl {
         }
         // Scalar tail
         for j in i..n {
-            if *ptr.add(j) == needle {
+            if haystack[j] == needle {
                 result.push(j);
             }
         }
         result
     }
 
-    /// Count occurrences of `needle` using AVX2.
+    /// Count occurrences of `needle` using scalar 32-byte chunks.
+    ///
+    /// No U8x32 polyfill exists, so we use scalar array comparison in 32-byte
+    /// blocks (same throughput pattern as the former AVX2 intrinsics path).
     ///
     /// # Safety
-    /// Caller must ensure AVX2 is available.
+    /// Caller must ensure AVX2 is available (kept for dispatch compatibility).
     #[target_feature(enable = "avx2")]
     pub(crate) unsafe fn byte_count_avx2(haystack: &[u8], needle: u8) -> usize {
         let n = haystack.len();
-        let ptr = haystack.as_ptr();
-        let needle_v = _mm256_set1_epi8(needle as i8);
         let mut total = 0usize;
 
         let mut i = 0usize;
         while i + 32 <= n {
-            let data = _mm256_loadu_si256(ptr.add(i) as *const __m256i);
-            let cmp = _mm256_cmpeq_epi8(data, needle_v);
-            let mask = _mm256_movemask_epi8(cmp) as u32;
-            total += mask.count_ones() as usize;
+            // Scalar array comparison over 32 bytes
+            for j in 0..32 {
+                if haystack[i + j] == needle {
+                    total += 1;
+                }
+            }
             i += 32;
         }
         for j in i..n {
-            if *ptr.add(j) == needle {
+            if haystack[j] == needle {
                 total += 1;
             }
         }
@@ -108,25 +108,26 @@ pub(crate) mod simd_impl {
 
     /// Count occurrences of `needle` using AVX-512 BW (64 bytes/iter).
     ///
+    /// Uses `U8x64::cmpeq_mask()` which returns a `u64` bitmask directly.
+    ///
     /// # Safety
     /// Caller must ensure AVX-512 BW is available.
     #[target_feature(enable = "avx512bw")]
     pub(crate) unsafe fn byte_count_avx512(haystack: &[u8], needle: u8) -> usize {
         let n = haystack.len();
-        let ptr = haystack.as_ptr();
-        let needle_v = _mm512_set1_epi8(needle as i8);
+        let needle_v = U8x64::splat(needle);
         let mut total = 0usize;
 
         let mut i = 0usize;
         while i + 64 <= n {
-            // SAFETY: ptr.add(i) is within bounds, avx512bw checked by caller.
-            let data = _mm512_loadu_si512(ptr.add(i) as *const __m512i);
-            let mask = _mm512_cmpeq_epi8_mask(data, needle_v);
+            // SAFETY: i + 64 <= n, so slice is valid; avx512bw checked by caller.
+            let data = U8x64::from_slice(&haystack[i..]);
+            let mask = data.cmpeq_mask(needle_v);
             total += mask.count_ones() as usize;
             i += 64;
         }
         for j in i..n {
-            if *ptr.add(j) == needle {
+            if haystack[j] == needle {
                 total += 1;
             }
         }
