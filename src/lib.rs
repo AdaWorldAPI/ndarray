@@ -232,7 +232,7 @@ mod dimension;
 /// Portable SIMD types — `crate::simd::f32x16` today, `std::simd::f32x16` tomorrow.
 #[cfg(feature = "std")]
 #[allow(missing_docs)]
-pub(crate) mod simd;
+pub mod simd;
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
 #[allow(missing_docs, dead_code)]
 pub(crate) mod simd_avx512;
