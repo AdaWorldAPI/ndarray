@@ -22,6 +22,11 @@ static TIER: LazyLock<Tier> = LazyLock::new(|| {
 #[inline(always)]
 fn tier() -> Tier { *TIER }
 
+// BF16 tier detection happens inline in bf16_to_f32_batch() via
+// is_x86_feature_detected!("avx512bf16") — no LazyLock needed.
+// The check is cheap (reads a cached cpuid result) and the batch
+// function uses as_chunks::<16>() + as_chunks::<8>() for SIMD widths.
+
 // ============================================================================
 // x86_64: re-export based on tier
 // ============================================================================
@@ -40,6 +45,16 @@ pub use crate::simd_avx512::{
     F32Mask16, F64Mask8,
     f32x16, f64x8, u8x64, i32x16, i64x8, u32x16, u64x8,
 };
+
+// BF16 types + batch conversion (always available — scalar fallback built in)
+#[cfg(target_arch = "x86_64")]
+pub use crate::simd_avx512::{
+    bf16_to_f32_scalar, f32_to_bf16_scalar,
+    bf16_to_f32_batch, f32_to_bf16_batch,
+};
+// BF16 SIMD types only available when avx512bf16 is enabled at compile time
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512bf16"))]
+pub use crate::simd_avx512::{BF16x16, BF16x8};
 
 #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
 pub use crate::simd_avx512::{F32x8, F64x4, f32x8, f64x4};
@@ -696,6 +711,20 @@ pub use scalar::{
     f32x16, f64x8, u8x64, i32x16, i64x8, u32x16, u64x8,
     f32x8, f64x4,
 };
+
+// Scalar BF16 conversion — always available on all platforms
+#[cfg(not(target_arch = "x86_64"))]
+pub fn bf16_to_f32_scalar(bits: u16) -> f32 { f32::from_bits((bits as u32) << 16) }
+#[cfg(not(target_arch = "x86_64"))]
+pub fn f32_to_bf16_scalar(v: f32) -> u16 { (v.to_bits() >> 16) as u16 }
+#[cfg(not(target_arch = "x86_64"))]
+pub fn bf16_to_f32_batch(input: &[u16], output: &mut [f32]) {
+    for (i, &b) in input.iter().enumerate() { if i < output.len() { output[i] = bf16_to_f32_scalar(b); } }
+}
+#[cfg(not(target_arch = "x86_64"))]
+pub fn f32_to_bf16_batch(input: &[f32], output: &mut [u16]) {
+    for (i, &v) in input.iter().enumerate() { if i < output.len() { output[i] = f32_to_bf16_scalar(v); } }
+}
 
 // ============================================================================
 // SIMD math functions — ndarray additions (not in std::simd)

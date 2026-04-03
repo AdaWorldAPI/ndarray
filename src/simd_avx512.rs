@@ -1457,3 +1457,263 @@ pub type f32x8 = F32x8;
 #[allow(non_camel_case_types)]
 pub type f64x4 = F64x4;
 
+// ============================================================================
+// BF16 conversion wrappers — AVX-512 BF16 hardware instructions
+// ============================================================================
+//
+// Reference: https://doc.rust-lang.org/beta/src/core/stdarch/crates/core_arch/src/x86/avx512bf16.rs.html
+//
+// Hardware instructions (requires avx512bf16 + avx512vl):
+//   _mm512_cvtpbh_ps:  16 BF16 → 16 f32   (__m256bh → __m512)
+//   _mm256_cvtpbh_ps:   8 BF16 →  8 f32   (__m128bh → __m256)
+//   _mm_cvtpbh_ps:      4 BF16 →  4 f32   (__m128bh → __m128)
+//   _mm_cvtsbh_ss:      1 BF16 →  1 f32   (scalar)
+//
+//   _mm512_cvtneps_pbh: 16 f32 → 16 BF16  (__m512 → __m256bh)
+//   _mm256_cvtneps_pbh:  8 f32 →  8 BF16  (__m256 → __m128bh)
+//   _mm_cvtness_sbh:     1 f32 →  1 BF16  (scalar)
+//
+// These are NOT available on all AVX-512 CPUs — requires the BF16 extension.
+// The scalar fallback (shift left 16) works everywhere.
+
+/// BF16x16: 16 BF16 values packed in __m256bh. Converts to/from F32x16.
+///
+/// Primary use: bulk BF16→f32 hydration from GGUF source files.
+/// One `vcvtneebf162ps` instruction converts 16 BF16 → 16 f32.
+#[cfg(target_arch = "x86_64")]
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct BF16x16(pub __m256bh);
+
+#[cfg(target_arch = "x86_64")]
+impl BF16x16 {
+    pub const LANES: usize = 16;
+
+    /// Load 16 BF16 values from a u16 slice.
+    ///
+    /// SAFETY: Requires avx512bf16 at call site.
+    /// Caller must ensure slice has >= 16 elements.
+    #[inline]
+    #[target_feature(enable = "avx512bf16")]
+    pub unsafe fn from_u16_slice(s: &[u16]) -> Self {
+        assert!(s.len() >= 16);
+        // __m256bh is 256 bits = 16 × u16. Load as __m256i then transmute.
+        let raw = _mm256_loadu_si256(s.as_ptr() as *const __m256i);
+        Self(core::mem::transmute(raw))
+    }
+
+    /// Convert 16 BF16 → 16 f32 via hardware instruction.
+    ///
+    /// SAFETY: Requires avx512bf16 + avx512f at call site.
+    /// Uses `vcvtneebf162ps` — one instruction, one cycle.
+    #[inline]
+    #[target_feature(enable = "avx512bf16,avx512f")]
+    pub unsafe fn to_f32x16(self) -> F32x16 {
+        F32x16(_mm512_cvtpbh_ps(self.0))
+    }
+}
+
+/// BF16x8: 8 BF16 values packed in __m128bh. Converts to/from F32x8.
+#[cfg(target_arch = "x86_64")]
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct BF16x8(pub __m128bh);
+
+#[cfg(target_arch = "x86_64")]
+impl BF16x8 {
+    pub const LANES: usize = 8;
+
+    /// Load 8 BF16 values from a u16 slice.
+    #[inline]
+    #[target_feature(enable = "avx512bf16")]
+    pub unsafe fn from_u16_slice(s: &[u16]) -> Self {
+        assert!(s.len() >= 8);
+        let raw = _mm_loadu_si128(s.as_ptr() as *const __m128i);
+        Self(core::mem::transmute(raw))
+    }
+
+    /// Convert 8 BF16 → 8 f32 via hardware instruction.
+    #[inline]
+    #[target_feature(enable = "avx512bf16,avx512vl")]
+    pub unsafe fn to_f32x8(self) -> F32x8 {
+        F32x8(_mm256_cvtpbh_ps(self.0))
+    }
+}
+
+/// F32x16 → BF16x16 conversion (16 f32 → 16 BF16).
+#[cfg(target_arch = "x86_64")]
+impl F32x16 {
+    /// Convert 16 f32 → 16 BF16 via hardware instruction.
+    #[inline]
+    #[target_feature(enable = "avx512bf16,avx512f")]
+    pub unsafe fn to_bf16x16(self) -> BF16x16 {
+        BF16x16(_mm512_cvtneps_pbh(self.0))
+    }
+}
+
+/// F32x8 → BF16x8 conversion (8 f32 → 8 BF16).
+#[cfg(target_arch = "x86_64")]
+impl F32x8 {
+    /// Convert 8 f32 → 8 BF16 via hardware instruction.
+    #[inline]
+    #[target_feature(enable = "avx512bf16,avx512vl")]
+    pub unsafe fn to_bf16x8(self) -> BF16x8 {
+        BF16x8(_mm256_cvtneps_pbh(self.0))
+    }
+}
+
+// ── Scalar BF16 conversion (always available, no target_feature needed) ──
+
+/// Scalar BF16 → f32: bit shift, one instruction, lossless.
+/// Works on ALL platforms — this is the fallback when avx512bf16 is not available.
+#[inline]
+pub fn bf16_to_f32_scalar(bits: u16) -> f32 {
+    f32::from_bits((bits as u32) << 16)
+}
+
+/// Scalar f32 → BF16: truncate mantissa (lossy, 1 ULP).
+#[inline]
+pub fn f32_to_bf16_scalar(v: f32) -> u16 {
+    (v.to_bits() >> 16) as u16
+}
+
+/// Batch BF16 → f32 conversion: runtime feature detection + `as_chunks::<N>()`.
+///
+/// Uses stable Rust 1.94 `slice::as_chunks` for SIMD batch widths:
+///   1. Runtime detect avx512bf16 + avx512vl
+///   2. Process 16-wide chunks via `_mm512_cvtpbh_ps`
+///   3. Process 8-wide remainder via `_mm256_cvtpbh_ps`
+///   4. Finish scalar tail via bit shift
+///
+/// No LazyLock, no nightly. Just `as_chunks::<16>()` + `as_chunks::<8>()`.
+pub fn bf16_to_f32_batch(input: &[u16], output: &mut [f32]) {
+    assert!(output.len() >= input.len(), "output must be >= input length");
+
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        if is_x86_feature_detected!("avx512bf16")
+            && is_x86_feature_detected!("avx512vl")
+        {
+            // SAFETY: feature detection confirmed avx512bf16 + avx512vl
+            unsafe { convert_bf16_to_f32_avx512bf16(input, output); }
+            return;
+        }
+    }
+
+    // Scalar fallback (all platforms, all CPUs)
+    for (src, dst) in input.iter().copied().zip(output.iter_mut()) {
+        *dst = bf16_to_f32_scalar(src);
+    }
+}
+
+/// Batch f32 → BF16 conversion: same pattern.
+pub fn f32_to_bf16_batch(input: &[f32], output: &mut [u16]) {
+    assert!(output.len() >= input.len(), "output must be >= input length");
+
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        if is_x86_feature_detected!("avx512bf16")
+            && is_x86_feature_detected!("avx512vl")
+        {
+            unsafe { convert_f32_to_bf16_avx512bf16(input, output); }
+            return;
+        }
+    }
+
+    for (src, dst) in input.iter().copied().zip(output.iter_mut()) {
+        *dst = f32_to_bf16_scalar(src);
+    }
+}
+
+/// AVX-512 BF16 path: as_chunks::<16>() → as_chunks::<8>() → scalar tail.
+///
+/// Reference: https://doc.rust-lang.org/beta/src/core/stdarch/crates/core_arch/src/x86/avx512bf16.rs.html
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512bf16,avx512vl")]
+unsafe fn convert_bf16_to_f32_avx512bf16(input: &[u16], output: &mut [f32]) {
+    // 16-wide chunks
+    let (chunks16, rem16) = input.as_chunks::<16>();
+    let (out16, out_rem16) = output[..input.len()].as_chunks_mut::<16>();
+
+    for (src, dst) in chunks16.iter().zip(out16.iter_mut()) {
+        // SAFETY: [u16; 16] = 256 bits = __m256bh
+        let v_bf16: __m256bh = core::mem::transmute(*src);
+        let v_f32: __m512 = _mm512_cvtpbh_ps(v_bf16);
+        *dst = core::mem::transmute(v_f32);
+    }
+
+    // 8-wide remainder chunks
+    let (chunks8, rem8) = rem16.as_chunks::<8>();
+    let (out8, out_rem8) = out_rem16.as_chunks_mut::<8>();
+
+    for (src, dst) in chunks8.iter().zip(out8.iter_mut()) {
+        let v_bf16: __m128bh = core::mem::transmute(*src);
+        let v_f32: __m256 = _mm256_cvtpbh_ps(v_bf16);
+        *dst = core::mem::transmute(v_f32);
+    }
+
+    // Scalar tail (0-7 remaining values)
+    for (src, dst) in rem8.iter().copied().zip(out_rem8.iter_mut()) {
+        *dst = f32::from_bits((src as u32) << 16);
+    }
+}
+
+/// AVX-512 BF16 path for f32 → BF16.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512bf16,avx512vl")]
+unsafe fn convert_f32_to_bf16_avx512bf16(input: &[f32], output: &mut [u16]) {
+    let (chunks16, rem16) = input.as_chunks::<16>();
+    let (out16, out_rem16) = output[..input.len()].as_chunks_mut::<16>();
+
+    for (src, dst) in chunks16.iter().zip(out16.iter_mut()) {
+        let v_f32: __m512 = core::mem::transmute(*src);
+        let v_bf16: __m256bh = _mm512_cvtneps_pbh(v_f32);
+        *dst = core::mem::transmute(v_bf16);
+    }
+
+    // Scalar remainder (f32→BF16 has no 8-wide instruction worth using)
+    for (src, dst) in rem16.iter().copied().zip(out_rem16.iter_mut()) {
+        *dst = (src.to_bits() >> 16) as u16;
+    }
+}
+
+#[cfg(test)]
+mod bf16_tests {
+    use super::*;
+
+    #[test]
+    fn scalar_roundtrip() {
+        for &v in &[0.0f32, 1.0, -1.0, 0.5, -0.5, 100.0, 0.001, -0.001] {
+            let bf16 = f32_to_bf16_scalar(v);
+            let back = bf16_to_f32_scalar(bf16);
+            let err = (v - back).abs() / v.abs().max(1e-6);
+            assert!(err < 0.02, "roundtrip error for {}: {} → {} → {}, err={:.4}", v, v, bf16, back, err);
+        }
+    }
+
+    #[test]
+    fn batch_conversion_matches_scalar() {
+        let input: Vec<u16> = (0..100).map(|i| f32_to_bf16_scalar(i as f32 * 0.1 - 5.0)).collect();
+        let mut batch_output = vec![0.0f32; 100];
+        bf16_to_f32_batch(&input, &mut batch_output);
+
+        for (i, &bf16) in input.iter().enumerate() {
+            let scalar = bf16_to_f32_scalar(bf16);
+            assert_eq!(batch_output[i], scalar, "mismatch at index {}", i);
+        }
+    }
+
+    #[test]
+    fn batch_f32_to_bf16() {
+        let input: Vec<f32> = (0..50).map(|i| i as f32 * 0.3 - 7.5).collect();
+        let mut output = vec![0u16; 50];
+        f32_to_bf16_batch(&input, &mut output);
+
+        for (i, &v) in input.iter().enumerate() {
+            let expected = f32_to_bf16_scalar(v);
+            // Allow ±1 ULP: hardware uses round-to-nearest-even, scalar uses truncation
+            let diff = (output[i] as i32 - expected as i32).unsigned_abs();
+            assert!(diff <= 1, "mismatch at index {}: {} → {} vs {}, diff={}", i, v, output[i], expected, diff);
+        }
+    }
+}
