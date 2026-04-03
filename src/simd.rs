@@ -28,6 +28,59 @@ fn tier() -> Tier { *TIER }
 // function uses as_chunks::<16>() + as_chunks::<8>() for SIMD widths.
 
 // ============================================================================
+// Preferred SIMD lane widths — compile-time constants for array_windows
+// ============================================================================
+//
+// Consumer code uses these to select array_windows size at compile time:
+//
+//   for window in data.array_windows::<{crate::simd::PREFERRED_F64_LANES}>() {
+//       let v = F64x8::from_array(*window);   // AVX-512: native 8-wide
+//       // or
+//       let v = F64x4::from_array(*window);   // AVX2: native 4-wide
+//   }
+//
+// generic_const_exprs is nightly, so consumers must #[cfg] branch on window size.
+// These constants document the preferred width per tier.
+
+/// Preferred f64 SIMD width (elements per register).
+/// AVX-512: 8 lanes (__m512d). AVX2/scalar: 4 lanes (__m256d).
+#[cfg(target_feature = "avx512f")]
+pub const PREFERRED_F64_LANES: usize = 8;
+#[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+pub const PREFERRED_F64_LANES: usize = 4;
+#[cfg(not(target_arch = "x86_64"))]
+pub const PREFERRED_F64_LANES: usize = 4; // scalar fallback: same as AVX2 shape
+
+/// Preferred f32 SIMD width.
+/// AVX-512: 16 lanes (__m512). AVX2/scalar: 8 lanes (__m256).
+#[cfg(target_feature = "avx512f")]
+pub const PREFERRED_F32_LANES: usize = 16;
+#[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+pub const PREFERRED_F32_LANES: usize = 8;
+#[cfg(not(target_arch = "x86_64"))]
+pub const PREFERRED_F32_LANES: usize = 8;
+
+/// Preferred u64 SIMD width.
+/// AVX-512: 8 lanes. AVX2/scalar: 4 lanes.
+#[cfg(target_feature = "avx512f")]
+pub const PREFERRED_U64_LANES: usize = 8;
+#[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+pub const PREFERRED_U64_LANES: usize = 4;
+#[cfg(not(target_arch = "x86_64"))]
+pub const PREFERRED_U64_LANES: usize = 4;
+
+/// Preferred i16 SIMD width (for Base17 L1 on i16[17]).
+/// AVX-512: 32 lanes (__m512i via epi16). AVX2: 16 lanes (__m256i).
+/// Base17 has 17 dims — AVX-512 covers 32 (load 17 + 15 padding),
+/// AVX2 covers 16 + 1 scalar.
+#[cfg(target_feature = "avx512f")]
+pub const PREFERRED_I16_LANES: usize = 32;
+#[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+pub const PREFERRED_I16_LANES: usize = 16;
+#[cfg(not(target_arch = "x86_64"))]
+pub const PREFERRED_I16_LANES: usize = 16;
+
+// ============================================================================
 // x86_64: re-export based on tier
 // ============================================================================
 
