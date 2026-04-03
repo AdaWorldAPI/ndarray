@@ -829,6 +829,34 @@ impl U8x64 {
     #[inline(always)] pub fn reduce_max(self) -> u8 { *self.0.iter().max().unwrap() }
     #[inline(always)] pub fn simd_min(self, other: Self) -> Self { let mut o = [0u8; 64]; for i in 0..64 { o[i] = self.0[i].min(other.0[i]); } Self(o) }
     #[inline(always)] pub fn simd_max(self, other: Self) -> Self { let mut o = [0u8; 64]; for i in 0..64 { o[i] = self.0[i].max(other.0[i]); } Self(o) }
+
+    /// Byte-wise shuffle: use `self` as a LUT, `idx` selects bytes within each 16-byte lane.
+    #[inline(always)]
+    pub fn shuffle_bytes(self, idx: Self) -> Self {
+        let mut out = [0u8; 64];
+        for lane in 0..4 {
+            let b = lane * 16;
+            for i in 0..16 {
+                out[b + i] = self.0[b + (idx.0[b + i] & 0x0F) as usize];
+            }
+        }
+        Self(out)
+    }
+
+    /// Sum all 64 bytes into a single `u64` without wrapping.
+    #[inline(always)]
+    pub fn sum_bytes_u64(self) -> u64 {
+        self.0.iter().map(|&b| b as u64).sum()
+    }
+
+    /// Build a nibble-popcount lookup table (replicated across 4 x 16-byte lanes).
+    #[inline(always)]
+    pub fn nibble_popcount_lut() -> Self {
+        let lane: [u8; 16] = [0,1,1,2,1,2,2,3,1,2,2,3,2,3,3,4];
+        let mut arr = [0u8; 64];
+        for l in 0..4 { arr[l*16..(l+1)*16].copy_from_slice(&lane); }
+        Self(arr)
+    }
 }
 
 avx2_int_type!(I32x16, i32, 16, 0i32);

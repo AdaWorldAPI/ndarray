@@ -60,49 +60,20 @@ fn hamming_scalar(a: &[u8], b: &[u8]) -> u64 {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn hamming_avx2(a: &[u8], b: &[u8]) -> u64 {
-    use core::arch::x86_64::*;
+    // No U8x32 polyfill available — use u64 XOR + count_ones (hardware POPCNT).
     let n = a.len().min(b.len());
     let mut total = 0u64;
-
-    // Lookup table for popcount nibbles
-    let lookup = _mm256_setr_epi8(
-        0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
-        0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
-    );
-    let low_mask = _mm256_set1_epi8(0x0f);
-    let mut acc = _mm256_setzero_si256();
     let mut i = 0;
-    let mut inner_count = 0u32;
 
-    while i + 32 <= n {
-        let va = _mm256_loadu_si256(a.as_ptr().add(i) as *const __m256i);
-        let vb = _mm256_loadu_si256(b.as_ptr().add(i) as *const __m256i);
-        let xor = _mm256_xor_si256(va, vb);
-        let lo = _mm256_and_si256(xor, low_mask);
-        let hi = _mm256_and_si256(_mm256_srli_epi16(xor, 4), low_mask);
-        let popcnt_lo = _mm256_shuffle_epi8(lookup, lo);
-        let popcnt_hi = _mm256_shuffle_epi8(lookup, hi);
-        acc = _mm256_add_epi8(acc, _mm256_add_epi8(popcnt_lo, popcnt_hi));
-        i += 32;
-        inner_count += 1;
-        // Prevent overflow of u8 accumulators (max 255/8 ≈ 31 iterations)
-        if inner_count >= 30 {
-            let sad = _mm256_sad_epu8(acc, _mm256_setzero_si256());
-            let arr: [u64; 4] = core::mem::transmute(sad);
-            total += arr[0] + arr[1] + arr[2] + arr[3];
-            acc = _mm256_setzero_si256();
-            inner_count = 0;
-        }
+    // Process 8 bytes (one u64) per iteration
+    while i + 8 <= n {
+        let wa = u64::from_ne_bytes(a[i..i + 8].try_into().unwrap());
+        let wb = u64::from_ne_bytes(b[i..i + 8].try_into().unwrap());
+        total += (wa ^ wb).count_ones() as u64;
+        i += 8;
     }
 
-    // Flush accumulator
-    if inner_count > 0 {
-        let sad = _mm256_sad_epu8(acc, _mm256_setzero_si256());
-        let arr: [u64; 4] = core::mem::transmute(sad);
-        total += arr[0] + arr[1] + arr[2] + arr[3];
-    }
-
-    // Handle remainder
+    // Scalar remainder
     while i < n {
         total += (a[i] ^ b[i]).count_ones() as u64;
         i += 1;
@@ -115,45 +86,41 @@ unsafe fn hamming_avx2(a: &[u8], b: &[u8]) -> u64 {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512bw")]
 unsafe fn hamming_avx512bw(a: &[u8], b: &[u8]) -> u64 {
-    use core::arch::x86_64::*;
+    use crate::simd::U8x64;
+
     let n = a.len().min(b.len());
     let mut total = 0u64;
 
     // vpshufb LUT: popcount of each nibble (replicated across 64B)
-    let lookup = _mm512_set4_epi32(
-        0x04030302_i32, 0x03020201_i32, 0x03020201_i32, 0x02010100_i32,
-    );
-    let low_mask = _mm512_set1_epi8(0x0f);
-    let mut acc = _mm512_setzero_si512();
+    let lookup = U8x64::nibble_popcount_lut();
+    let low_mask = U8x64::splat(0x0f);
+    let mut acc = U8x64::splat(0);
     let mut i = 0;
     let mut inner_count = 0u32;
 
     while i + 64 <= n {
-        let va = _mm512_loadu_si512(a.as_ptr().add(i) as *const _);
-        let vb = _mm512_loadu_si512(b.as_ptr().add(i) as *const _);
-        let xor = _mm512_xor_si512(va, vb);
+        let va = U8x64::from_slice(&a[i..]);
+        let vb = U8x64::from_slice(&b[i..]);
+        let xor = va ^ vb;
 
-        let lo = _mm512_and_si512(xor, low_mask);
-        let hi = _mm512_and_si512(_mm512_srli_epi16(xor, 4), low_mask);
-        let popcnt_lo = _mm512_shuffle_epi8(lookup, lo);
-        let popcnt_hi = _mm512_shuffle_epi8(lookup, hi);
-        acc = _mm512_add_epi8(acc, _mm512_add_epi8(popcnt_lo, popcnt_hi));
+        let lo = xor & low_mask;
+        let hi = xor.shr_epi16(4) & low_mask;
+        let popcnt_lo = lookup.shuffle_bytes(lo);
+        let popcnt_hi = lookup.shuffle_bytes(hi);
+        acc = acc + (popcnt_lo + popcnt_hi);
 
         i += 64;
         inner_count += 1;
         // Flush u8 accumulators before overflow (max 255/8 ≈ 31 iterations)
         if inner_count >= 30 {
-            // sad_epu8 sums groups of 8 bytes into u64 lanes
-            let sad = _mm512_sad_epu8(acc, _mm512_setzero_si512());
-            total += _mm512_reduce_add_epi64(sad) as u64;
-            acc = _mm512_setzero_si512();
+            total += acc.sum_bytes_u64();
+            acc = U8x64::splat(0);
             inner_count = 0;
         }
     }
 
     if inner_count > 0 {
-        let sad = _mm512_sad_epu8(acc, _mm512_setzero_si512());
-        total += _mm512_reduce_add_epi64(sad) as u64;
+        total += acc.sum_bytes_u64();
     }
 
     // Remainder
@@ -168,39 +135,36 @@ unsafe fn hamming_avx512bw(a: &[u8], b: &[u8]) -> u64 {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512bw")]
 unsafe fn popcount_avx512bw(a: &[u8]) -> u64 {
-    use core::arch::x86_64::*;
+    use crate::simd::U8x64;
+
     let n = a.len();
     let mut total = 0u64;
 
-    let lookup = _mm512_set4_epi32(
-        0x04030302_i32, 0x03020201_i32, 0x03020201_i32, 0x02010100_i32,
-    );
-    let low_mask = _mm512_set1_epi8(0x0f);
-    let mut acc = _mm512_setzero_si512();
+    let lookup = U8x64::nibble_popcount_lut();
+    let low_mask = U8x64::splat(0x0f);
+    let mut acc = U8x64::splat(0);
     let mut i = 0;
     let mut inner_count = 0u32;
 
     while i + 64 <= n {
-        let va = _mm512_loadu_si512(a.as_ptr().add(i) as *const _);
-        let lo = _mm512_and_si512(va, low_mask);
-        let hi = _mm512_and_si512(_mm512_srli_epi16(va, 4), low_mask);
-        let popcnt_lo = _mm512_shuffle_epi8(lookup, lo);
-        let popcnt_hi = _mm512_shuffle_epi8(lookup, hi);
-        acc = _mm512_add_epi8(acc, _mm512_add_epi8(popcnt_lo, popcnt_hi));
+        let va = U8x64::from_slice(&a[i..]);
+        let lo = va & low_mask;
+        let hi = va.shr_epi16(4) & low_mask;
+        let popcnt_lo = lookup.shuffle_bytes(lo);
+        let popcnt_hi = lookup.shuffle_bytes(hi);
+        acc = acc + (popcnt_lo + popcnt_hi);
 
         i += 64;
         inner_count += 1;
         if inner_count >= 30 {
-            let sad = _mm512_sad_epu8(acc, _mm512_setzero_si512());
-            total += _mm512_reduce_add_epi64(sad) as u64;
-            acc = _mm512_setzero_si512();
+            total += acc.sum_bytes_u64();
+            acc = U8x64::splat(0);
             inner_count = 0;
         }
     }
 
     if inner_count > 0 {
-        let sad = _mm512_sad_epu8(acc, _mm512_setzero_si512());
-        total += _mm512_reduce_add_epi64(sad) as u64;
+        total += acc.sum_bytes_u64();
     }
 
     while i < n {
