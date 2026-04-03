@@ -156,38 +156,36 @@ impl PropertyMask {
 
     /// Test block states using AVX-512F, processing 8 u64s at a time.
     ///
-    /// Uses 512-bit registers with `_mm512_cmpeq_epi64_mask` returning a
-    /// `__mmask8` directly, avoiding the movemask+lane-extract dance of AVX2.
+    /// Uses U64x8 polyfill with element-wise comparison.
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx512f")]
     unsafe fn test_section_avx512(&self, states: &[u64], result: &mut [u64]) {
-        use core::arch::x86_64::*;
+        use crate::simd::U64x8;
 
-        let and_mask_v = _mm512_set1_epi64(self.and_mask as i64);
-        let and_expect_v = _mm512_set1_epi64(self.and_expect as i64);
-        let andn_mask_v = _mm512_set1_epi64(self.andn_mask as i64);
-        let zero = _mm512_setzero_si512();
+        let and_mask_v = U64x8::splat(self.and_mask);
+        let and_expect_v = U64x8::splat(self.and_expect);
+        let andn_mask_v = U64x8::splat(self.andn_mask);
+        let zero = U64x8::splat(0);
 
         let chunks = states.len() / 8;
         for c in 0..chunks {
             let base = c * 8;
             // SAFETY: base + 8 <= states.len(), avx512f checked by caller.
-            let vals = _mm512_loadu_si512(states.as_ptr().add(base) as *const __m512i);
+            let vals = U64x8::from_slice(&states[base..]);
 
             // (vals & and_mask) == and_expect
-            let anded = _mm512_and_si512(vals, and_mask_v);
-            let eq_and = _mm512_cmpeq_epi64_mask(anded, and_expect_v);
+            let anded = vals & and_mask_v;
+            let anded_arr = anded.to_array();
+            let expect_arr = and_expect_v.to_array();
 
             // (vals & andn_mask) == 0
-            let andned = _mm512_and_si512(vals, andn_mask_v);
-            let eq_andn = _mm512_cmpeq_epi64_mask(andned, zero);
-
-            // Both conditions: AND the two kmasks
-            let both = eq_and & eq_andn;
+            let andned = vals & andn_mask_v;
+            let andned_arr = andned.to_array();
+            let zero_arr = zero.to_array();
 
             // Set bits in the result bitmap
             for lane in 0..8usize {
-                if (both >> lane) & 1 != 0 {
+                if anded_arr[lane] == expect_arr[lane] && andned_arr[lane] == zero_arr[lane] {
                     let idx = base + lane;
                     result[idx / 64] |= 1u64 << (idx % 64);
                 }
@@ -206,27 +204,32 @@ impl PropertyMask {
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx512f", enable = "avx512vpopcntdq")]
     unsafe fn count_section_avx512(&self, states: &[u64]) -> u32 {
-        use core::arch::x86_64::*;
+        use crate::simd::U64x8;
 
-        let and_mask_v = _mm512_set1_epi64(self.and_mask as i64);
-        let and_expect_v = _mm512_set1_epi64(self.and_expect as i64);
-        let andn_mask_v = _mm512_set1_epi64(self.andn_mask as i64);
-        let zero = _mm512_setzero_si512();
+        let and_mask_v = U64x8::splat(self.and_mask);
+        let and_expect_v = U64x8::splat(self.and_expect);
+        let andn_mask_v = U64x8::splat(self.andn_mask);
         let mut total = 0u32;
 
         let chunks = states.len() / 8;
         for c in 0..chunks {
             let base = c * 8;
             // SAFETY: base + 8 <= states.len(), features checked by caller.
-            let vals = _mm512_loadu_si512(states.as_ptr().add(base) as *const __m512i);
+            let vals = U64x8::from_slice(&states[base..]);
 
-            let anded = _mm512_and_si512(vals, and_mask_v);
-            let eq_and = _mm512_cmpeq_epi64_mask(anded, and_expect_v);
+            let anded = vals & and_mask_v;
+            let anded_arr = anded.to_array();
+            let expect_arr = and_expect_v.to_array();
 
-            let andned = _mm512_and_si512(vals, andn_mask_v);
-            let eq_andn = _mm512_cmpeq_epi64_mask(andned, zero);
+            let andned = vals & andn_mask_v;
+            let andned_arr = andned.to_array();
 
-            let both = eq_and & eq_andn;
+            let mut both: u8 = 0;
+            for lane in 0..8usize {
+                if anded_arr[lane] == expect_arr[lane] && andned_arr[lane] == 0 {
+                    both |= 1 << lane;
+                }
+            }
             total += (both as u32).count_ones();
         }
 
@@ -244,37 +247,16 @@ impl PropertyMask {
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2")]
     unsafe fn test_section_avx2(&self, states: &[u64], result: &mut [u64]) {
-        // AVX2 processes 4 u64s at a time via 256-bit registers.
-        use core::arch::x86_64::*;
-
-        let and_mask_v = _mm256_set1_epi64x(self.and_mask as i64);
-        let and_expect_v = _mm256_set1_epi64x(self.and_expect as i64);
-        let andn_mask_v = _mm256_set1_epi64x(self.andn_mask as i64);
-        let zero = _mm256_setzero_si256();
-
+        // AVX2 processes 4 u64s at a time via scalar array operations.
         let chunks = states.len() / 4;
         for c in 0..chunks {
             let base = c * 4;
-            let vals = _mm256_loadu_si256(states.as_ptr().add(base) as *const __m256i);
 
-            // (vals & and_mask) == and_expect
-            let anded = _mm256_and_si256(vals, and_mask_v);
-            let eq_and = _mm256_cmpeq_epi64(anded, and_expect_v);
-
-            // (vals & andn_mask) == 0
-            let andned = _mm256_and_si256(vals, andn_mask_v);
-            let eq_andn = _mm256_cmpeq_epi64(andned, zero);
-
-            // both conditions
-            let both = _mm256_and_si256(eq_and, eq_andn);
-
-            // Extract per-lane results (each lane is all-1s or all-0s).
-            // _mm256_movemask_epi8 gives 32 bits; lanes are 8 bytes each.
-            let mask32 = _mm256_movemask_epi8(both) as u32;
-            // Lane k matched if bytes [k*8..(k+1)*8] are all 0xFF → bits set.
             for lane in 0..4usize {
-                let byte_mask = (mask32 >> (lane * 8)) & 0xFF;
-                if byte_mask == 0xFF {
+                let val = states[base + lane];
+                if (val & self.and_mask) == self.and_expect
+                    && (val & self.andn_mask) == 0
+                {
                     let idx = base + lane;
                     result[idx / 64] |= 1u64 << (idx % 64);
                 }
@@ -361,32 +343,37 @@ fn count_section_multi_scalar(masks: &[PropertyMask], states: &[u64]) -> MultiMa
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 unsafe fn count_section_multi_avx512(masks: &[PropertyMask], states: &[u64]) -> MultiMaskResult {
-    use core::arch::x86_64::*;
+    use crate::simd::U64x8;
 
     let mut counts = vec![0u32; masks.len()];
-    let zero = _mm512_setzero_si512();
     let chunks = states.len() / 8;
 
     for c in 0..chunks {
         let base = c * 8;
         // SAFETY: base + 8 <= states.len(), avx512f checked by caller.
-        let vals = _mm512_loadu_si512(states.as_ptr().add(base) as *const __m512i);
+        let vals = U64x8::from_slice(&states[base..]);
 
         for (m_idx, mask) in masks.iter().enumerate() {
-            let and_mask_v = _mm512_set1_epi64(mask.and_mask as i64);
-            let and_expect_v = _mm512_set1_epi64(mask.and_expect as i64);
-            let andn_mask_v = _mm512_set1_epi64(mask.andn_mask as i64);
+            let and_mask_v = U64x8::splat(mask.and_mask);
+            let and_expect_v = U64x8::splat(mask.and_expect);
+            let andn_mask_v = U64x8::splat(mask.andn_mask);
 
             // (vals & and_mask) == and_expect
-            let anded = _mm512_and_si512(vals, and_mask_v);
-            let eq_and = _mm512_cmpeq_epi64_mask(anded, and_expect_v);
+            let anded = vals & and_mask_v;
+            let anded_arr = anded.to_array();
+            let expect_arr = and_expect_v.to_array();
 
             // (vals & andn_mask) == 0
-            let andned = _mm512_and_si512(vals, andn_mask_v);
-            let eq_andn = _mm512_cmpeq_epi64_mask(andned, zero);
+            let andned = vals & andn_mask_v;
+            let andned_arr = andned.to_array();
 
-            // Both conditions: AND the two kmasks
-            let both = eq_and & eq_andn;
+            // Both conditions: count matching lanes
+            let mut both: u8 = 0;
+            for lane in 0..8usize {
+                if anded_arr[lane] == expect_arr[lane] && andned_arr[lane] == 0 {
+                    both |= 1 << lane;
+                }
+            }
             counts[m_idx] += (both as u32).count_ones();
         }
     }
