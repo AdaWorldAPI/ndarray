@@ -713,7 +713,7 @@ mod scalar {
         fn mul_assign(&mut self, rhs: Self) { *self = *self * rhs; }
     }
 
-    // U8x64 extra methods
+    // U8x64 extra methods — byte-level operations for palette codec, nibble, byte scan
     impl U8x64 {
         #[inline(always)]
         pub fn reduce_min(self) -> u8 { *self.0.iter().min().unwrap_or(&0) }
@@ -721,14 +721,43 @@ mod scalar {
         pub fn reduce_max(self) -> u8 { *self.0.iter().max().unwrap_or(&0) }
         #[inline(always)]
         pub fn simd_min(self, other: Self) -> Self {
-            let mut out = [0u8; 64];
-            for i in 0..64 { out[i] = self.0[i].min(other.0[i]); }
-            Self(out)
+            let mut out = [0u8; 64]; for i in 0..64 { out[i] = self.0[i].min(other.0[i]); } Self(out)
         }
         #[inline(always)]
         pub fn simd_max(self, other: Self) -> Self {
+            let mut out = [0u8; 64]; for i in 0..64 { out[i] = self.0[i].max(other.0[i]); } Self(out)
+        }
+        #[inline(always)]
+        pub fn cmpeq_mask(self, other: Self) -> u64 {
+            let mut mask = 0u64;
+            for i in 0..64 { if self.0[i] == other.0[i] { mask |= 1u64 << i; } }
+            mask
+        }
+        #[inline(always)]
+        pub fn shr_epi16(self, imm: u32) -> Self {
             let mut out = [0u8; 64];
-            for i in 0..64 { out[i] = self.0[i].max(other.0[i]); }
+            for i in (0..64).step_by(2) {
+                let val = u16::from_le_bytes([self.0[i], self.0[i + 1]]);
+                let shifted = val >> imm;
+                let bytes = shifted.to_le_bytes();
+                out[i] = bytes[0]; out[i + 1] = bytes[1];
+            }
+            Self(out)
+        }
+        #[inline(always)]
+        pub fn saturating_sub(self, other: Self) -> Self {
+            let mut out = [0u8; 64]; for i in 0..64 { out[i] = self.0[i].saturating_sub(other.0[i]); } Self(out)
+        }
+        #[inline(always)]
+        pub fn unpack_lo_epi8(self, other: Self) -> Self {
+            let mut out = [0u8; 64];
+            for lane in 0..4 { let b = lane * 16; for i in 0..8 { out[b+i*2] = self.0[b+i]; out[b+i*2+1] = other.0[b+i]; } }
+            Self(out)
+        }
+        #[inline(always)]
+        pub fn unpack_hi_epi8(self, other: Self) -> Self {
+            let mut out = [0u8; 64];
+            for lane in 0..4 { let b = lane * 16; for i in 0..8 { out[b+i*2] = self.0[b+8+i]; out[b+i*2+1] = other.0[b+8+i]; } }
             Self(out)
         }
     }

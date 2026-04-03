@@ -576,6 +576,53 @@ impl U8x64 {
     pub fn simd_max(self, other: Self) -> Self {
         Self(unsafe { _mm512_max_epu8(self.0, other.0) })
     }
+
+    // ── Byte-level operations for palette codec, nibble, byte scan ──────
+    // Reference: Pumpkin/Minecraft-derived modules (palette_codec.rs,
+    // nibble.rs, byte_scan.rs) use these for 4-bit packing and scanning.
+
+    /// Byte-wise equality comparison. Returns 64-bit mask: bit i set if a[i] == b[i].
+    #[inline(always)]
+    pub fn cmpeq_mask(self, other: Self) -> u64 {
+        unsafe { _mm512_cmpeq_epi8_mask(self.0, other.0) }
+    }
+
+    /// Shift right each 16-bit lane by immediate bits (for nibble extraction).
+    /// Note: operates on 16-bit lanes, not 8-bit — matches _mm512_srli_epi16.
+    #[inline(always)]
+    pub fn shr_epi16(self, imm: u32) -> Self {
+        // _mm512_srli_epi16 shifts each 16-bit lane right
+        // Use match for const immediate (intrinsic requires const)
+        Self(unsafe { match imm {
+            1 => _mm512_srli_epi16(self.0, 1),
+            2 => _mm512_srli_epi16(self.0, 2),
+            3 => _mm512_srli_epi16(self.0, 3),
+            4 => _mm512_srli_epi16(self.0, 4),
+            5 => _mm512_srli_epi16(self.0, 5),
+            6 => _mm512_srli_epi16(self.0, 6),
+            7 => _mm512_srli_epi16(self.0, 7),
+            8 => _mm512_srli_epi16(self.0, 8),
+            _ => _mm512_setzero_si512(),
+        }})
+    }
+
+    /// Saturating unsigned subtraction: max(a - b, 0) per byte.
+    #[inline(always)]
+    pub fn saturating_sub(self, other: Self) -> Self {
+        Self(unsafe { _mm512_subs_epu8(self.0, other.0) })
+    }
+
+    /// Interleave low bytes: [a0,b0,a1,b1,...] from lower halves.
+    #[inline(always)]
+    pub fn unpack_lo_epi8(self, other: Self) -> Self {
+        Self(unsafe { _mm512_unpacklo_epi8(self.0, other.0) })
+    }
+
+    /// Interleave high bytes: [a8,b8,a9,b9,...] from upper halves.
+    #[inline(always)]
+    pub fn unpack_hi_epi8(self, other: Self) -> Self {
+        Self(unsafe { _mm512_unpackhi_epi8(self.0, other.0) })
+    }
 }
 
 // u8 add/sub use AVX-512BW instructions
