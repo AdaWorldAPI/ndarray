@@ -761,6 +761,76 @@ macro_rules! avx2_int_type {
 }
 
 avx2_int_type!(U8x64, u8, 64, 0u8);
+
+// ── U8x64 byte-level operations (scalar fallback for AVX2 tier) ──────────
+// These match the AVX-512 U8x64 methods in simd_avx512.rs.
+impl U8x64 {
+    /// Byte-wise equality mask: bit i set if self[i] == other[i].
+    #[inline(always)]
+    pub fn cmpeq_mask(self, other: Self) -> u64 {
+        let mut mask = 0u64;
+        for i in 0..64 { if self.0[i] == other.0[i] { mask |= 1u64 << i; } }
+        mask
+    }
+
+    /// Shift right each 16-bit lane by imm bits (operates on pairs of u8 as u16).
+    #[inline(always)]
+    pub fn shr_epi16(self, imm: u32) -> Self {
+        let mut out = [0u8; 64];
+        for i in (0..64).step_by(2) {
+            let val = u16::from_le_bytes([self.0[i], self.0[i + 1]]);
+            let shifted = val >> imm;
+            let bytes = shifted.to_le_bytes();
+            out[i] = bytes[0];
+            out[i + 1] = bytes[1];
+        }
+        Self(out)
+    }
+
+    /// Saturating unsigned subtraction: max(a - b, 0) per byte.
+    #[inline(always)]
+    pub fn saturating_sub(self, other: Self) -> Self {
+        let mut out = [0u8; 64];
+        for i in 0..64 { out[i] = self.0[i].saturating_sub(other.0[i]); }
+        Self(out)
+    }
+
+    /// Interleave low bytes within each 128-bit lane.
+    #[inline(always)]
+    pub fn unpack_lo_epi8(self, other: Self) -> Self {
+        let mut out = [0u8; 64];
+        // Operates per 16-byte lane (4 lanes in 512-bit)
+        for lane in 0..4 {
+            let base = lane * 16;
+            for i in 0..8 {
+                out[base + i * 2] = self.0[base + i];
+                out[base + i * 2 + 1] = other.0[base + i];
+            }
+        }
+        Self(out)
+    }
+
+    /// Interleave high bytes within each 128-bit lane.
+    #[inline(always)]
+    pub fn unpack_hi_epi8(self, other: Self) -> Self {
+        let mut out = [0u8; 64];
+        for lane in 0..4 {
+            let base = lane * 16;
+            for i in 0..8 {
+                out[base + i * 2] = self.0[base + 8 + i];
+                out[base + i * 2 + 1] = other.0[base + 8 + i];
+            }
+        }
+        Self(out)
+    }
+
+    /// Reduce min/max (not in macro).
+    #[inline(always)] pub fn reduce_min(self) -> u8 { *self.0.iter().min().unwrap() }
+    #[inline(always)] pub fn reduce_max(self) -> u8 { *self.0.iter().max().unwrap() }
+    #[inline(always)] pub fn simd_min(self, other: Self) -> Self { let mut o = [0u8; 64]; for i in 0..64 { o[i] = self.0[i].min(other.0[i]); } Self(o) }
+    #[inline(always)] pub fn simd_max(self, other: Self) -> Self { let mut o = [0u8; 64]; for i in 0..64 { o[i] = self.0[i].max(other.0[i]); } Self(o) }
+}
+
 avx2_int_type!(I32x16, i32, 16, 0i32);
 avx2_int_type!(I64x8, i64, 8, 0i64);
 avx2_int_type!(U32x16, u32, 16, 0u32);

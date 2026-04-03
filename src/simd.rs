@@ -22,6 +22,64 @@ static TIER: LazyLock<Tier> = LazyLock::new(|| {
 #[inline(always)]
 fn tier() -> Tier { *TIER }
 
+// BF16 tier detection happens inline in bf16_to_f32_batch() via
+// is_x86_feature_detected!("avx512bf16") — no LazyLock needed.
+// The check is cheap (reads a cached cpuid result) and the batch
+// function uses as_chunks::<16>() + as_chunks::<8>() for SIMD widths.
+
+// ============================================================================
+// Preferred SIMD lane widths — compile-time constants for array_windows
+// ============================================================================
+//
+// Consumer code uses these to select array_windows size at compile time:
+//
+//   for window in data.array_windows::<{crate::simd::PREFERRED_F64_LANES}>() {
+//       let v = F64x8::from_array(*window);   // AVX-512: native 8-wide
+//       // or
+//       let v = F64x4::from_array(*window);   // AVX2: native 4-wide
+//   }
+//
+// generic_const_exprs is nightly, so consumers must #[cfg] branch on window size.
+// These constants document the preferred width per tier.
+
+/// Preferred f64 SIMD width (elements per register).
+/// AVX-512: 8 lanes (__m512d). AVX2/scalar: 4 lanes (__m256d).
+#[cfg(target_feature = "avx512f")]
+pub const PREFERRED_F64_LANES: usize = 8;
+#[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+pub const PREFERRED_F64_LANES: usize = 4;
+#[cfg(not(target_arch = "x86_64"))]
+pub const PREFERRED_F64_LANES: usize = 4; // scalar fallback: same as AVX2 shape
+
+/// Preferred f32 SIMD width.
+/// AVX-512: 16 lanes (__m512). AVX2/scalar: 8 lanes (__m256).
+#[cfg(target_feature = "avx512f")]
+pub const PREFERRED_F32_LANES: usize = 16;
+#[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+pub const PREFERRED_F32_LANES: usize = 8;
+#[cfg(not(target_arch = "x86_64"))]
+pub const PREFERRED_F32_LANES: usize = 8;
+
+/// Preferred u64 SIMD width.
+/// AVX-512: 8 lanes. AVX2/scalar: 4 lanes.
+#[cfg(target_feature = "avx512f")]
+pub const PREFERRED_U64_LANES: usize = 8;
+#[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+pub const PREFERRED_U64_LANES: usize = 4;
+#[cfg(not(target_arch = "x86_64"))]
+pub const PREFERRED_U64_LANES: usize = 4;
+
+/// Preferred i16 SIMD width (for Base17 L1 on i16[17]).
+/// AVX-512: 32 lanes (__m512i via epi16). AVX2: 16 lanes (__m256i).
+/// Base17 has 17 dims — AVX-512 covers 32 (load 17 + 15 padding),
+/// AVX2 covers 16 + 1 scalar.
+#[cfg(target_feature = "avx512f")]
+pub const PREFERRED_I16_LANES: usize = 32;
+#[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+pub const PREFERRED_I16_LANES: usize = 16;
+#[cfg(not(target_arch = "x86_64"))]
+pub const PREFERRED_I16_LANES: usize = 16;
+
 // ============================================================================
 // x86_64: re-export based on tier
 // ============================================================================
@@ -40,6 +98,16 @@ pub use crate::simd_avx512::{
     F32Mask16, F64Mask8,
     f32x16, f64x8, u8x64, i32x16, i64x8, u32x16, u64x8,
 };
+
+// BF16 types + batch conversion (always available — scalar fallback built in)
+#[cfg(target_arch = "x86_64")]
+pub use crate::simd_avx512::{
+    bf16_to_f32_scalar, f32_to_bf16_scalar,
+    bf16_to_f32_batch, f32_to_bf16_batch,
+};
+// BF16 SIMD types only available when avx512bf16 is enabled at compile time
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512bf16"))]
+pub use crate::simd_avx512::{BF16x16, BF16x8};
 
 #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
 pub use crate::simd_avx512::{F32x8, F64x4, f32x8, f64x4};
@@ -645,7 +713,7 @@ mod scalar {
         fn mul_assign(&mut self, rhs: Self) { *self = *self * rhs; }
     }
 
-    // U8x64 extra methods
+    // U8x64 extra methods — byte-level operations for palette codec, nibble, byte scan
     impl U8x64 {
         #[inline(always)]
         pub fn reduce_min(self) -> u8 { *self.0.iter().min().unwrap_or(&0) }
@@ -653,14 +721,43 @@ mod scalar {
         pub fn reduce_max(self) -> u8 { *self.0.iter().max().unwrap_or(&0) }
         #[inline(always)]
         pub fn simd_min(self, other: Self) -> Self {
-            let mut out = [0u8; 64];
-            for i in 0..64 { out[i] = self.0[i].min(other.0[i]); }
-            Self(out)
+            let mut out = [0u8; 64]; for i in 0..64 { out[i] = self.0[i].min(other.0[i]); } Self(out)
         }
         #[inline(always)]
         pub fn simd_max(self, other: Self) -> Self {
+            let mut out = [0u8; 64]; for i in 0..64 { out[i] = self.0[i].max(other.0[i]); } Self(out)
+        }
+        #[inline(always)]
+        pub fn cmpeq_mask(self, other: Self) -> u64 {
+            let mut mask = 0u64;
+            for i in 0..64 { if self.0[i] == other.0[i] { mask |= 1u64 << i; } }
+            mask
+        }
+        #[inline(always)]
+        pub fn shr_epi16(self, imm: u32) -> Self {
             let mut out = [0u8; 64];
-            for i in 0..64 { out[i] = self.0[i].max(other.0[i]); }
+            for i in (0..64).step_by(2) {
+                let val = u16::from_le_bytes([self.0[i], self.0[i + 1]]);
+                let shifted = val >> imm;
+                let bytes = shifted.to_le_bytes();
+                out[i] = bytes[0]; out[i + 1] = bytes[1];
+            }
+            Self(out)
+        }
+        #[inline(always)]
+        pub fn saturating_sub(self, other: Self) -> Self {
+            let mut out = [0u8; 64]; for i in 0..64 { out[i] = self.0[i].saturating_sub(other.0[i]); } Self(out)
+        }
+        #[inline(always)]
+        pub fn unpack_lo_epi8(self, other: Self) -> Self {
+            let mut out = [0u8; 64];
+            for lane in 0..4 { let b = lane * 16; for i in 0..8 { out[b+i*2] = self.0[b+i]; out[b+i*2+1] = other.0[b+i]; } }
+            Self(out)
+        }
+        #[inline(always)]
+        pub fn unpack_hi_epi8(self, other: Self) -> Self {
+            let mut out = [0u8; 64];
+            for lane in 0..4 { let b = lane * 16; for i in 0..8 { out[b+i*2] = self.0[b+8+i]; out[b+i*2+1] = other.0[b+8+i]; } }
             Self(out)
         }
     }
@@ -696,6 +793,20 @@ pub use scalar::{
     f32x16, f64x8, u8x64, i32x16, i64x8, u32x16, u64x8,
     f32x8, f64x4,
 };
+
+// Scalar BF16 conversion — always available on all platforms
+#[cfg(not(target_arch = "x86_64"))]
+pub fn bf16_to_f32_scalar(bits: u16) -> f32 { f32::from_bits((bits as u32) << 16) }
+#[cfg(not(target_arch = "x86_64"))]
+pub fn f32_to_bf16_scalar(v: f32) -> u16 { (v.to_bits() >> 16) as u16 }
+#[cfg(not(target_arch = "x86_64"))]
+pub fn bf16_to_f32_batch(input: &[u16], output: &mut [f32]) {
+    for (i, &b) in input.iter().enumerate() { if i < output.len() { output[i] = bf16_to_f32_scalar(b); } }
+}
+#[cfg(not(target_arch = "x86_64"))]
+pub fn f32_to_bf16_batch(input: &[f32], output: &mut [u16]) {
+    for (i, &v) in input.iter().enumerate() { if i < output.len() { output[i] = f32_to_bf16_scalar(v); } }
+}
 
 // ============================================================================
 // SIMD math functions — ndarray additions (not in std::simd)
