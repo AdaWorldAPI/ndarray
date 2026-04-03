@@ -188,9 +188,15 @@ pub fn build_distance_table_vnni(centroids_u8: &[u8], k: usize, dim: usize) -> V
             #[cfg(not(target_arch = "x86_64"))]
             ndarray::simd_amx::vnni_dot_u8_i8_scalar(a, b)
         },
-        // Tier 1: avxvnniint8 — TODO: implement ymm-width VPDPBSSD kernel
-        // For now: scalar fallback (still correct, just slower)
-        1 => ndarray::simd_amx::vnni_dot_u8_i8_scalar,
+        // Tier 1: avxvnniint8 — ymm-width VPDPBUSD (32 MACs/instr)
+        // For NUC 14 i9-185H (Arrow Lake) and similar non-AVX-512 CPUs
+        1 => |a, b| {
+            // SAFETY: avxvnniint8 confirmed via is_x86_feature_detected above
+            #[cfg(target_arch = "x86_64")]
+            unsafe { ndarray::simd_amx::vnni2_dot_u8_i8(a, b) }
+            #[cfg(not(target_arch = "x86_64"))]
+            ndarray::simd_amx::vnni_dot_u8_i8_scalar(a, b)
+        },
         // Tier 0: scalar
         _ => ndarray::simd_amx::vnni_dot_u8_i8_scalar,
     };

@@ -129,6 +129,55 @@ pub unsafe fn vnni_matvec(
     }
 }
 
+/// AVX-VNNI (ymm, 256-bit) dot product: 32 MACs per VPDPBUSD instruction.
+/// For CPUs with avxvnniint8 but NOT avx512vnni (Arrow Lake, NUC 14 i9-185H, etc.)
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avxvnniint8")]
+pub unsafe fn vnni2_dot_u8_i8(row: &[u8], energy: &[i8]) -> i32 {
+    use core::arch::x86_64::*;
+    let n = row.len().min(energy.len());
+    let chunks = n / 32;
+    let mut acc = _mm256_setzero_si256();
+
+    for c in 0..chunks {
+        let off = c * 32;
+        let a = _mm256_loadu_si256(row[off..].as_ptr() as *const __m256i);
+        let b = _mm256_loadu_si256(energy[off..].as_ptr() as *const __m256i);
+        // VPDPBUSD ymm: 8 lanes × 4 u8×i8 products = 32 MACs
+        acc = _mm256_dpbusd_epi32(acc, a, b);
+    }
+
+    // Horizontal sum of 8 i32 lanes
+    let hi128 = _mm256_extracti128_si256(acc, 1);
+    let lo128 = _mm256_castsi256_si128(acc);
+    let sum128 = _mm_add_epi32(lo128, hi128);
+    let sum64 = _mm_add_epi32(sum128, _mm_srli_si128(sum128, 8));
+    let sum32 = _mm_add_epi32(sum64, _mm_srli_si128(sum64, 4));
+    let mut total = _mm_extract_epi32(sum32, 0);
+
+    // Scalar remainder
+    let offset = chunks * 32;
+    for i in offset..n {
+        total += row[i] as i32 * energy[i] as i32;
+    }
+    total
+}
+
+/// VNNI2 MatVec for the entire distance table × energy vector (ymm path).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avxvnniint8")]
+pub unsafe fn vnni2_matvec(
+    table: &[u8],
+    energy_i8: &[i8],
+    result: &mut [i32],
+    n: usize,
+) {
+    for i in 0..n {
+        let row = &table[i * n..(i + 1) * n];
+        result[i] = vnni2_dot_u8_i8(row, energy_i8);
+    }
+}
+
 /// Scalar fallback for VNNI dot product (non-x86 or no VNNI).
 pub fn vnni_dot_u8_i8_scalar(row: &[u8], energy: &[i8]) -> i32 {
     let n = row.len().min(energy.len());
@@ -152,7 +201,11 @@ pub fn vnni_matvec_scalar(
     }
 }
 
-/// Runtime-dispatched MatVec: VNNI if available, scalar otherwise.
+/// Runtime-dispatched MatVec: avx512vnni → avxvnniint8 (VNNI2) → scalar.
+///
+/// Tier 2: avx512vnni — 64 MACs/instr (zmm, Cascade Lake+, Zen 4+)
+/// Tier 1: avxvnniint8 — 32 MACs/instr (ymm, Arrow Lake, NUC 14 i9-185H)
+/// Tier 0: scalar
 pub fn matvec_dispatch(
     table: &[u8],
     energy_i8: &[i8],
@@ -163,6 +216,10 @@ pub fn matvec_dispatch(
     {
         if is_x86_feature_detected!("avx512vnni") {
             unsafe { vnni_matvec(table, energy_i8, result, n); }
+            return;
+        }
+        if is_x86_feature_detected!("avxvnniint8") {
+            unsafe { vnni2_matvec(table, energy_i8, result, n); }
             return;
         }
     }
