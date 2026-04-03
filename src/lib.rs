@@ -240,6 +240,18 @@ pub(crate) mod simd_avx512;
 #[allow(missing_docs)]
 pub mod simd_avx2;
 
+#[cfg(feature = "std")]
+#[allow(missing_docs)]
+pub mod simd_amx;
+
+#[cfg(feature = "std")]
+#[allow(missing_docs)]
+pub mod simd_neon;
+
+#[cfg(feature = "std")]
+#[allow(missing_docs)]
+pub mod simd_wasm;
+
 /// Pluggable linear algebra backends (native SIMD, MKL, OpenBLAS).
 #[cfg(feature = "std")]
 pub mod backend;
