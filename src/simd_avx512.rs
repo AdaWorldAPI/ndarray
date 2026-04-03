@@ -235,6 +235,18 @@ impl F32x16 {
         // GE(a, b) = LE(b, a)
         other.simd_le(self)
     }
+
+    /// Gather 16 f32 values from `base_ptr` using 16 i32 indices.
+    ///
+    /// Equivalent to `_mm512_i32gather_ps::<4>(indices, base_ptr)`:
+    /// each lane loads `base_ptr[indices[lane]]`.
+    ///
+    /// # Safety
+    /// Caller must ensure all indices are valid offsets into the memory at `base_ptr`.
+    #[inline(always)]
+    pub unsafe fn gather(indices: I32x16, base_ptr: *const f32) -> Self {
+        Self(_mm512_i32gather_ps::<4>(indices.0, base_ptr))
+    }
 }
 
 impl_bin_op!(F32x16, Add, add, _mm512_add_ps);

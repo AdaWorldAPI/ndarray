@@ -607,6 +607,17 @@ impl F32x16 {
         let a = self.to_array(); let b = other.to_array();
         let mut bits: u16 = 0; for i in 0..16 { if a[i] != b[i] { bits |= 1 << i; } } F32Mask16(bits)
     }
+    /// Gather 16 f32 values from `base_ptr` using 16 i32 indices.
+    ///
+    /// # Safety
+    /// Caller must ensure all indices are valid offsets into the memory at `base_ptr`.
+    #[inline(always)]
+    pub unsafe fn gather(indices: I32x16, base_ptr: *const f32) -> Self {
+        let idx = indices.0;
+        let mut o = [0.0f32; 16];
+        for i in 0..16 { o[i] = *base_ptr.add(idx[i] as usize); }
+        Self::from_array(o)
+    }
     #[inline(always)] pub fn to_bits(self) -> U32x16 {
         let a = self.to_array();
         let mut o = [0u32; 16]; for i in 0..16 { o[i] = a[i].to_bits(); } U32x16(o)

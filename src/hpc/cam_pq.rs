@@ -214,7 +214,7 @@ impl DistanceTables {
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx512f")]
     unsafe fn distance_batch_avx512(&self, cams: &[CamFingerprint]) -> Vec<f32> {
-        use core::arch::x86_64::*;
+        use crate::simd::{F32x16, I32x16};
 
         let n = cams.len();
         let mut result = vec![0.0f32; n];
@@ -222,31 +222,30 @@ impl DistanceTables {
 
         for chunk in 0..chunks {
             let base = chunk * 16;
-            let mut acc = _mm512_setzero_ps();
+            let mut acc = F32x16::splat(0.0);
 
             for s in 0..NUM_SUBSPACES {
                 // Gather 16 centroid indices for subspace s
-                let indices = _mm512_set_epi32(
-                    cams[base + 15][s] as i32, cams[base + 14][s] as i32,
-                    cams[base + 13][s] as i32, cams[base + 12][s] as i32,
-                    cams[base + 11][s] as i32, cams[base + 10][s] as i32,
-                    cams[base + 9][s] as i32,  cams[base + 8][s] as i32,
-                    cams[base + 7][s] as i32,  cams[base + 6][s] as i32,
-                    cams[base + 5][s] as i32,  cams[base + 4][s] as i32,
-                    cams[base + 3][s] as i32,  cams[base + 2][s] as i32,
-                    cams[base + 1][s] as i32,  cams[base][s] as i32,
-                );
+                let idx_arr = [
+                    cams[base][s] as i32,      cams[base + 1][s] as i32,
+                    cams[base + 2][s] as i32,  cams[base + 3][s] as i32,
+                    cams[base + 4][s] as i32,  cams[base + 5][s] as i32,
+                    cams[base + 6][s] as i32,  cams[base + 7][s] as i32,
+                    cams[base + 8][s] as i32,  cams[base + 9][s] as i32,
+                    cams[base + 10][s] as i32, cams[base + 11][s] as i32,
+                    cams[base + 12][s] as i32, cams[base + 13][s] as i32,
+                    cams[base + 14][s] as i32, cams[base + 15][s] as i32,
+                ];
+                let indices = I32x16::from_array(idx_arr);
 
                 // Gather distances from precomputed table
-                // _mm512_i32gather_ps gathers f32 values at byte offsets = index * scale
-                // Scale=4 means each index is multiplied by 4 (sizeof f32)
                 let base_ptr = self.tables[s].as_ptr();
-                let distances = _mm512_i32gather_ps::<4>(indices, base_ptr);
+                let distances = F32x16::gather(indices, base_ptr);
 
-                acc = _mm512_add_ps(acc, distances);
+                acc = acc + distances;
             }
 
-            _mm512_storeu_ps(result[base..].as_mut_ptr(), acc);
+            acc.copy_to_slice(&mut result[base..base + 16]);
         }
 
         // Scalar tail

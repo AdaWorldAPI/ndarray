@@ -21,7 +21,7 @@ use super::bitwise;
 
 /// Software prefetch: bring a cache line into L1 for the given byte slice.
 ///
-/// No-op on non-x86 targets. On x86_64, uses `_mm_prefetch(_MM_HINT_T0)`.
+/// No-op on non-x86 targets. On x86_64, emits `prefetcht0`.
 /// The prefetch distance (how many candidates ahead) should be tuned per
 /// cache hierarchy — 4 candidates × 128B = 512B ≈ 8 cache lines is a
 /// reasonable default for Stroke 1 sequential scan.
@@ -29,16 +29,11 @@ use super::bitwise;
 #[allow(unused_variables)]
 fn prefetch_t0(ptr: *const u8) {
     #[cfg(target_arch = "x86_64")]
-    // SAFETY: `_mm_prefetch` is a CPU hint that cannot cause UB for any pointer
+    // SAFETY: prefetcht0 is a CPU hint that cannot cause UB for any pointer
     // value — the CPU silently ignores invalid or unmapped addresses. The `ptr`
     // comes from a bounds-checked slice index in the caller.
     unsafe {
-        #[cfg(target_feature = "sse")]
-        {
-            core::arch::x86_64::_mm_prefetch::<{ core::arch::x86_64::_MM_HINT_T0 }>(
-                ptr as *const i8,
-            );
-        }
+        core::arch::asm!("prefetcht0 [{}]", in(reg) ptr, options(nostack, preserves_flags));
     }
 }
 
@@ -47,16 +42,11 @@ fn prefetch_t0(ptr: *const u8) {
 #[allow(unused_variables)]
 fn prefetch_t1(ptr: *const u8) {
     #[cfg(target_arch = "x86_64")]
-    // SAFETY: `_mm_prefetch` is a CPU hint that cannot cause UB for any pointer
+    // SAFETY: prefetcht1 is a CPU hint that cannot cause UB for any pointer
     // value — the CPU silently ignores invalid or unmapped addresses. The `ptr`
     // comes from a bounds-checked slice index in the caller.
     unsafe {
-        #[cfg(target_feature = "sse")]
-        {
-            core::arch::x86_64::_mm_prefetch::<{ core::arch::x86_64::_MM_HINT_T1 }>(
-                ptr as *const i8,
-            );
-        }
+        core::arch::asm!("prefetcht1 [{}]", in(reg) ptr, options(nostack, preserves_flags));
     }
 }
 

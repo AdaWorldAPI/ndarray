@@ -352,30 +352,36 @@ unsafe fn pack_generic_avx512(indices: &[u8], bits_per_index: usize) -> Vec<u64>
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn unpack_4bit_avx2(packed: &[u64], count: usize) -> Vec<u8> {
-    use core::arch::x86_64::*;
-
     let mut result = Vec::with_capacity(count);
     let bytes = bytemuck_cast_u64_to_u8(packed);
-    let low_mask = _mm256_set1_epi8(0x0F);
     let mut i = 0;
 
-    // Process 32 bytes at a time → 64 nibbles
+    // Process 32 bytes at a time → 64 nibbles via raw array ops.
+    // Each input byte yields two 4-bit indices: low nibble first, high nibble second.
+    // Interleaving follows the unpacklo/unpackhi pattern: within each 16-byte lane,
+    // bytes are interleaved as (lo[0],hi[0], lo[1],hi[1], ..., lo[7],hi[7]).
     while i + 32 <= bytes.len() && result.len() + 64 <= count {
-        let data = _mm256_loadu_si256(bytes.as_ptr().add(i) as *const __m256i);
-
-        // Extract low nibbles
-        let lo = _mm256_and_si256(data, low_mask);
-        // Extract high nibbles
-        let hi = _mm256_and_si256(_mm256_srli_epi16(data, 4), low_mask);
-
-        // Interleave: we need to output low nibble, then high nibble for each byte
-        let interleaved_lo = _mm256_unpacklo_epi8(lo, hi);
-        let interleaved_hi = _mm256_unpackhi_epi8(lo, hi);
-
-        // Store
+        let src = &bytes[i..i + 32];
         let mut buf = [0u8; 64];
-        _mm256_storeu_si256(buf.as_mut_ptr() as *mut __m256i, interleaved_lo);
-        _mm256_storeu_si256(buf.as_mut_ptr().add(32) as *mut __m256i, interleaved_hi);
+
+        // Two 16-byte lanes (mirroring 256-bit AVX2 lane structure)
+        for lane in 0..2 {
+            let lane_off = lane * 16;
+            // unpacklo: interleave bytes 0..8 of each lane
+            for j in 0..8 {
+                let lo_val = src[lane_off + j] & 0x0F;
+                let hi_val = (src[lane_off + j] >> 4) & 0x0F;
+                buf[lane * 16 + j * 2] = lo_val;
+                buf[lane * 16 + j * 2 + 1] = hi_val;
+            }
+            // unpackhi: interleave bytes 8..16 of each lane
+            for j in 0..8 {
+                let lo_val = src[lane_off + 8 + j] & 0x0F;
+                let hi_val = (src[lane_off + 8 + j] >> 4) & 0x0F;
+                buf[32 + lane * 16 + j * 2] = lo_val;
+                buf[32 + lane * 16 + j * 2 + 1] = hi_val;
+            }
+        }
 
         let remaining = count - result.len();
         let take = remaining.min(64);
