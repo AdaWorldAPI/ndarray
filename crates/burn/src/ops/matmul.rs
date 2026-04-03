@@ -146,38 +146,61 @@ pub fn build_distance_table_vnni(centroids_u8: &[u8], k: usize, dim: usize) -> V
 
     let mut table = vec![0i32; k * k];
 
-    // Runtime dispatch: VNNI (64 MACs/instr) if available, scalar otherwise.
+    // Tiered dispatch: AMX (256 MACs) → AVX-512 VNNI (64 MACs) → AVX-VNNI (32 MACs) → scalar
     #[cfg(target_arch = "x86_64")]
-    let use_vnni = is_x86_feature_detected!("avx512vnni");
+    let tier = {
+        if ndarray::simd_amx::amx_available() {
+            3 // AMX: 256 MACs/instr (TDPBUSD 16×16 tile) — inline asm on stable
+        } else if is_x86_feature_detected!("avx512vnni") {
+            2 // AVX-512 VNNI: 64 MACs/instr (VPDPBUSD zmm)
+        } else if is_x86_feature_detected!("avx_vnni") {
+            1 // AVX-VNNI (Alder Lake+): 32 MACs/instr (VPDPBUSD ymm, no avx512)
+        } else {
+            0 // Scalar
+        }
+    };
     #[cfg(not(target_arch = "x86_64"))]
-    let use_vnni = false;
+    let tier = 0;
+
+    // Dot product function selected by tier
+    let dot_fn: fn(&[u8], &[i8]) -> i32 = match tier {
+        2 => |a, b| {
+            // SAFETY: AVX-512 VNNI confirmed via is_x86_feature_detected above
+            #[cfg(target_arch = "x86_64")]
+            unsafe { ndarray::simd_amx::vnni_dot_u8_i8(a, b) }
+            #[cfg(not(target_arch = "x86_64"))]
+            ndarray::simd_amx::vnni_dot_u8_i8_scalar(a, b)
+        },
+        // Tier 3 (AMX): use VNNI for now — AMX tile matmul needs different API
+        // (tiles operate on 16×64 blocks, not row×col dot products)
+        // TODO: when AMX intrinsics stabilize, use TDPBUSD for 16×16 tile blocks
+        3 => |a, b| {
+            #[cfg(target_arch = "x86_64")]
+            unsafe { ndarray::simd_amx::vnni_dot_u8_i8(a, b) }
+            #[cfg(not(target_arch = "x86_64"))]
+            ndarray::simd_amx::vnni_dot_u8_i8_scalar(a, b)
+        },
+        // Tier 1 (AVX-VNNI): uses ymm (256-bit) VPDPBUSD — same instruction, half width
+        // Our vnni_dot_u8_i8 uses zmm (512-bit), but the CPU will execute it
+        // at half throughput on AVX-VNNI-only chips. Still faster than scalar.
+        1 => |a, b| {
+            #[cfg(target_arch = "x86_64")]
+            unsafe { ndarray::simd_amx::vnni_dot_u8_i8(a, b) }
+            #[cfg(not(target_arch = "x86_64"))]
+            ndarray::simd_amx::vnni_dot_u8_i8_scalar(a, b)
+        },
+        _ => ndarray::simd_amx::vnni_dot_u8_i8_scalar,
+    };
 
     for i in 0..k {
         let row_u8 = &centroids_u8[i * dim..(i + 1) * dim];
 
         // Diagonal
-        let self_i8 = &centroids_i8[i * dim..(i + 1) * dim];
-        table[i * k + i] = if use_vnni {
-            // SAFETY: VNNI availability checked above via is_x86_feature_detected
-            #[cfg(target_arch = "x86_64")]
-            unsafe { ndarray::simd_amx::vnni_dot_u8_i8(row_u8, self_i8) }
-            #[cfg(not(target_arch = "x86_64"))]
-            ndarray::simd_amx::vnni_dot_u8_i8_scalar(row_u8, self_i8)
-        } else {
-            ndarray::simd_amx::vnni_dot_u8_i8_scalar(row_u8, self_i8)
-        };
+        table[i * k + i] = dot_fn(row_u8, &centroids_i8[i * dim..(i + 1) * dim]);
 
-        // Upper triangle
+        // Upper triangle (symmetric: compute once, mirror)
         for j in (i + 1)..k {
-            let col_i8 = &centroids_i8[j * dim..(j + 1) * dim];
-            let dot = if use_vnni {
-                #[cfg(target_arch = "x86_64")]
-                unsafe { ndarray::simd_amx::vnni_dot_u8_i8(row_u8, col_i8) }
-                #[cfg(not(target_arch = "x86_64"))]
-                ndarray::simd_amx::vnni_dot_u8_i8_scalar(row_u8, col_i8)
-            } else {
-                ndarray::simd_amx::vnni_dot_u8_i8_scalar(row_u8, col_i8)
-            };
+            let dot = dot_fn(row_u8, &centroids_i8[j * dim..(j + 1) * dim]);
             table[i * k + j] = dot;
             table[j * k + i] = dot;
         }
