@@ -146,50 +146,29 @@ pub fn build_distance_table_vnni(centroids_u8: &[u8], k: usize, dim: usize) -> V
 
     let mut table = vec![0i32; k * k];
 
-    // Tiered dispatch: AMX (256 MACs) → AVX-512 VNNI (64 MACs) → AVX-VNNI (32 MACs) → scalar
+    // Tiered dispatch: AMX (256 MACs) → avx512vnni (64 MACs) → scalar
+    //
+    // avx512vnni = VPDPBUSD on zmm (512-bit), Cascade Lake+ (2019), Zen 4+ (2022)
+    // avx_vnni   = VPDPBUSD on ymm (256-bit), Alder Lake+ — NOT detectable on stable Rust 1.94
+    // AMX        = TDPBUSD 16×16 tile (256 MACs) — detected via CPUID, intrinsics nightly-only
+    //
+    // When AMX intrinsics stabilize (issue #126622): tier 2 uses real TDPBUSD tiles.
+    // When avx_vnni detection stabilizes: add tier between avx512vnni and scalar.
     #[cfg(target_arch = "x86_64")]
-    let tier = {
-        if ndarray::simd_amx::amx_available() {
-            3 // AMX: 256 MACs/instr (TDPBUSD 16×16 tile) — inline asm on stable
-        } else if is_x86_feature_detected!("avx512vnni") {
-            2 // AVX-512 VNNI: 64 MACs/instr (VPDPBUSD zmm)
-        } else if is_x86_feature_detected!("avx_vnni") {
-            1 // AVX-VNNI (Alder Lake+): 32 MACs/instr (VPDPBUSD ymm, no avx512)
-        } else {
-            0 // Scalar
-        }
-    };
+    let use_vnni = is_x86_feature_detected!("avx512vnni");
     #[cfg(not(target_arch = "x86_64"))]
-    let tier = 0;
+    let use_vnni = false;
 
-    // Dot product function selected by tier
-    let dot_fn: fn(&[u8], &[i8]) -> i32 = match tier {
-        2 => |a, b| {
-            // SAFETY: AVX-512 VNNI confirmed via is_x86_feature_detected above
+    let dot_fn: fn(&[u8], &[i8]) -> i32 = if use_vnni {
+        |a, b| {
+            // SAFETY: avx512vnni confirmed via is_x86_feature_detected above
             #[cfg(target_arch = "x86_64")]
             unsafe { ndarray::simd_amx::vnni_dot_u8_i8(a, b) }
             #[cfg(not(target_arch = "x86_64"))]
             ndarray::simd_amx::vnni_dot_u8_i8_scalar(a, b)
-        },
-        // Tier 3 (AMX): use VNNI for now — AMX tile matmul needs different API
-        // (tiles operate on 16×64 blocks, not row×col dot products)
-        // TODO: when AMX intrinsics stabilize, use TDPBUSD for 16×16 tile blocks
-        3 => |a, b| {
-            #[cfg(target_arch = "x86_64")]
-            unsafe { ndarray::simd_amx::vnni_dot_u8_i8(a, b) }
-            #[cfg(not(target_arch = "x86_64"))]
-            ndarray::simd_amx::vnni_dot_u8_i8_scalar(a, b)
-        },
-        // Tier 1 (AVX-VNNI): uses ymm (256-bit) VPDPBUSD — same instruction, half width
-        // Our vnni_dot_u8_i8 uses zmm (512-bit), but the CPU will execute it
-        // at half throughput on AVX-VNNI-only chips. Still faster than scalar.
-        1 => |a, b| {
-            #[cfg(target_arch = "x86_64")]
-            unsafe { ndarray::simd_amx::vnni_dot_u8_i8(a, b) }
-            #[cfg(not(target_arch = "x86_64"))]
-            ndarray::simd_amx::vnni_dot_u8_i8_scalar(a, b)
-        },
-        _ => ndarray::simd_amx::vnni_dot_u8_i8_scalar,
+        }
+    } else {
+        ndarray::simd_amx::vnni_dot_u8_i8_scalar
     };
 
     for i in 0..k {
