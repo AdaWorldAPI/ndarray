@@ -52,6 +52,8 @@ pub mod node;
 #[allow(missing_docs)]
 pub mod cascade;
 #[allow(missing_docs)]
+pub mod heel_f64x8;
+#[allow(missing_docs)]
 pub mod bf16_truth;
 #[allow(missing_docs)]
 pub mod causality;

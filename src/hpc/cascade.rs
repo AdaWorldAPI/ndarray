@@ -97,6 +97,15 @@ pub struct Cascade {
 }
 
 impl Cascade {
+    /// Current distribution mean (Welford online estimate).
+    pub fn mu(&self) -> f64 { self.mu }
+
+    /// Current distribution standard deviation (Welford online estimate).
+    pub fn sigma(&self) -> f64 { self.sigma }
+
+    /// Number of observations processed.
+    pub fn observations(&self) -> usize { self.observations }
+
     pub fn from_threshold(threshold: u64, vec_bytes: usize) -> Self {
         Self { threshold, vec_bytes, mu: 0.0, sigma: 0.0, observations: 0 }
     }
