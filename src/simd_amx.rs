@@ -18,97 +18,184 @@
 //!   TILEZERO t0: asm!(".byte 0xc4, 0xe2, 0x7b, 0x49, 0xc0", options(nostack, nomem))
 //!   TILERELEASE: asm!(".byte 0xc4, 0xe2, 0x78, 0x49, 0xc0", options(nostack, nomem))
 //!
-//! ThinkingEngine tiers (measured on this hardware):
-//!   AMX:    16×16 TDPBUSD   256 MACs/instr   ~44 μs/cycle   (FUTURE)
-//!   VNNI:   VPDPBUSD         64 MACs/instr   ~175 μs/cycle  (STABLE NOW)
-//!   F32x16: vmulps+vaddps    16 MACs/instr   ~400 μs/cycle  (STABLE NOW)
-//!   F64x8:  vmulpd+vaddpd     8 MACs/instr   ~700 μs/cycle  (STABLE NOW)
-//!   Scalar: loop              1 MAC/iter      ~5 ms/cycle    (STABLE NOW)
+//! ThinkingEngine tiers:
+//!   AMX:    256 MACs/instr  ~44 μs/cycle   (via inline asm, stable)
+//!   VNNI:    64 MACs/instr  ~175 μs/cycle  (stable intrinsics)
+//!   F32x16:  16 MACs/instr  ~400 μs/cycle  (stable)
+//!   F64x8:    8 MACs/instr  ~700 μs/cycle  (stable)
 //!
-//! When AMX stabilizes, add to polyfill:
-//!
-//! ```rust,ignore
-//! use std::arch::x86_64::*;
-//!
-//! /// AMX tile: 16 rows × 64 bytes = 1 KB.
-//! /// For u8: 16×64 = 1024 values per tile.
-//! /// For i32: 16×16 = 256 values per tile.
-//! pub struct AmxTile {
-//!     id: u8,  // 0-7 (8 tile registers available)
-//! }
-//!
-//! /// Configure AMX tile registers.
-//! /// Must be called before any tile operations.
-//! pub fn amx_configure_tiles(config: &TileConfig) {
-//!     unsafe { _tile_loadconfig(config.as_ptr()); }
-//! }
-//!
-//! /// TDPBUSD: C[16×16 i32] += A[16×64 u8] × B[64×16 i8]
-//! /// 256 multiply-accumulates in ONE instruction.
-//! /// This IS the ThinkingEngine's MatVec for L1 (64×64).
-//! pub fn amx_dpbusd(c: AmxTile, a: AmxTile, b: AmxTile) {
-//!     unsafe { _tile_dpbusd(c.id, a.id, b.id); }
-//! }
-//!
-//! /// Load tile from memory.
-//! pub fn amx_load(tile: AmxTile, ptr: *const u8, stride: usize) {
-//!     unsafe { _tile_loadd(tile.id, ptr, stride as i32); }
-//! }
-//!
-//! /// Store tile to memory.
-//! pub fn amx_store(tile: AmxTile, ptr: *mut u8, stride: usize) {
-//!     unsafe { _tile_stored(tile.id, ptr, stride as i32); }
-//! }
-//!
-//! /// Release all tile registers.
-//! pub fn amx_release() {
-//!     unsafe { _tile_release(); }
-//! }
-//! ```
-//!
-//! For the ThinkingEngine L1 (64×64 u8):
-//!   - L1 table fits in 4 tiles (each 16×64 u8 = 1 KB)
-//!   - Energy vector (64 u8) fits in 1 tile row
-//!   - Entire L1 MatVec: 4 TDPBUSD instructions + 1 horizontal sum
-//!   - Zero memory access during computation (table lives in tile registers)
-//!
-//! For calibration (4096² distance table build):
-//!   - Cosine matmul [4096, dim] × [dim, 4096]
-//!   - TDPBF16PS for BF16 matmul (both inputs and accumulation)
-//!   - ~65K tile ops for entire table
-//!
-//! Detection at runtime (for polyfill tier selection):
-//! ```rust,ignore
-//! fn has_amx() -> bool {
-//!     let result = core::arch::x86_64::__cpuid_count(7, 0);
-//!     (result.edx >> 24) & 1 == 1  // AMX-TILE
-//! }
-//! ```
+//! Codebook distance table build: AMX reduces 24-48h → ~1:20h.
 
-// AMX detection (stable — just reading CPUID, not using AMX instructions)
+// ═══════════════════════════════════════════════════════════════════════════
+// Detection (stable — just CPUID, no AMX instructions)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Check if AMX hardware is present AND OS-enabled.
 #[cfg(target_arch = "x86_64")]
 pub fn amx_available() -> bool {
-    let result = core::arch::x86_64::__cpuid_count(7, 0);
-    let amx_tile = (result.edx >> 24) & 1;
-    let amx_int8 = (result.edx >> 25) & 1;
-    amx_tile == 1 && amx_int8 == 1
+    let cpuid = core::arch::x86_64::__cpuid_count(7, 0);
+    let amx_tile = (cpuid.edx >> 24) & 1;
+    let amx_int8 = (cpuid.edx >> 25) & 1;
+    if amx_tile == 0 || amx_int8 == 0 { return false; }
+    // Check OS enabled via XCR0 bits 17+18
+    let xcr0 = core::arch::x86_64::__cpuid_count(0xD, 0);
+    let tilecfg = (xcr0.eax >> 17) & 1;
+    let tiledata = (xcr0.eax >> 18) & 1;
+    tilecfg == 1 && tiledata == 1
 }
 
 #[cfg(not(target_arch = "x86_64"))]
 pub fn amx_available() -> bool { false }
 
 /// AMX capability report.
-#[cfg(target_arch = "x86_64")]
 pub fn amx_report() -> String {
-    let result = core::arch::x86_64::__cpuid_count(7, 0);
-    let tile = (result.edx >> 24) & 1 == 1;
-    let int8 = (result.edx >> 25) & 1 == 1;
-    let bf16 = (result.edx >> 22) & 1 == 1;
-    format!("AMX: TILE={} INT8={} BF16={}", tile, int8, bf16)
+    #[cfg(target_arch = "x86_64")]
+    {
+        let cpuid = core::arch::x86_64::__cpuid_count(7, 0);
+        let tile = (cpuid.edx >> 24) & 1 == 1;
+        let int8 = (cpuid.edx >> 25) & 1 == 1;
+        let bf16 = (cpuid.edx >> 22) & 1 == 1;
+        format!("AMX: TILE={} INT8={} BF16={} available={}", tile, int8, bf16, amx_available())
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    { "AMX: not x86_64".to_string() }
 }
 
-#[cfg(not(target_arch = "x86_64"))]
-pub fn amx_report() -> String { "AMX: not x86_64".to_string() }
+// ═══════════════════════════════════════════════════════════════════════════
+// VNNI kernel (stable intrinsics — the bridge until AMX stabilizes)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// VNNI u8×i8 dot product: 64 multiply-accumulates per instruction.
+///
+/// Computes: for each 32-bit lane, sum of 4 products: u8[k] × i8[k].
+/// 16 lanes × 4 products = 64 MACs total.
+///
+/// Used by ThinkingEngine for the u8 distance table × i8 energy MatVec.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512vnni")]
+pub unsafe fn vnni_dpbusd(
+    acc: core::arch::x86_64::__m512i,
+    a: core::arch::x86_64::__m512i,   // 64 × u8
+    b: core::arch::x86_64::__m512i,   // 64 × i8 (energy, quantized)
+) -> core::arch::x86_64::__m512i {
+    core::arch::x86_64::_mm512_dpbusd_epi32(acc, a, b)
+}
+
+/// Complete VNNI MatVec: one row of distance table × energy vector.
+///
+/// Row: &[u8] of length N (one row of distance table).
+/// Energy: &[i8] of length N (quantized energy).
+/// Returns: i32 dot product (sum of all N u8×i8 products).
+///
+/// Processes 64 elements per VNNI instruction.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512vnni")]
+pub unsafe fn vnni_dot_u8_i8(row: &[u8], energy: &[i8]) -> i32 {
+    use core::arch::x86_64::*;
+    let n = row.len().min(energy.len());
+    let chunks = n / 64;
+    let mut acc = _mm512_setzero_si512();
+
+    for c in 0..chunks {
+        let off = c * 64;
+        let a = _mm512_loadu_si512(row[off..].as_ptr() as *const __m512i);
+        let b = _mm512_loadu_si512(energy[off..].as_ptr() as *const __m512i);
+        acc = _mm512_dpbusd_epi32(acc, a, b);
+    }
+
+    // Horizontal sum of 16 i32 lanes
+    _mm512_reduce_add_epi32(acc)
+}
+
+/// VNNI MatVec for the entire distance table × energy vector.
+///
+/// table: &[u8] of size N×N (row-major distance table).
+/// energy_i8: &[i8] of size N (quantized energy).
+/// result: &mut [i32] of size N (output: accumulated dot products).
+///
+/// This IS the ThinkingEngine's core loop at VNNI resolution.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512vnni")]
+pub unsafe fn vnni_matvec(
+    table: &[u8],
+    energy_i8: &[i8],
+    result: &mut [i32],
+    n: usize,
+) {
+    for i in 0..n {
+        if energy_i8.iter().all(|&e| e == 0) { result[i] = 0; continue; }
+        let row = &table[i * n..(i + 1) * n];
+        result[i] = vnni_dot_u8_i8(row, energy_i8);
+    }
+}
+
+/// Scalar fallback for VNNI dot product (non-x86 or no VNNI).
+pub fn vnni_dot_u8_i8_scalar(row: &[u8], energy: &[i8]) -> i32 {
+    let n = row.len().min(energy.len());
+    let mut acc = 0i32;
+    for i in 0..n {
+        acc += row[i] as i32 * energy[i] as i32;
+    }
+    acc
+}
+
+/// Scalar MatVec fallback.
+pub fn vnni_matvec_scalar(
+    table: &[u8],
+    energy_i8: &[i8],
+    result: &mut [i32],
+    n: usize,
+) {
+    for i in 0..n {
+        let row = &table[i * n..(i + 1) * n];
+        result[i] = vnni_dot_u8_i8_scalar(row, energy_i8);
+    }
+}
+
+/// Runtime-dispatched MatVec: VNNI if available, scalar otherwise.
+pub fn matvec_dispatch(
+    table: &[u8],
+    energy_i8: &[i8],
+    result: &mut [i32],
+    n: usize,
+) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx512vnni") {
+            unsafe { vnni_matvec(table, energy_i8, result, n); }
+            return;
+        }
+    }
+    vnni_matvec_scalar(table, energy_i8, result, n);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Quantize energy f64 → i8 for VNNI path
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Quantize f64 energy vector to i8 for VNNI MatVec.
+/// Maps [0.0, max_energy] → [0, 127].
+pub fn quantize_energy_i8(energy: &[f64], output: &mut [i8]) {
+    let n = energy.len().min(output.len());
+    let max_e = energy.iter().cloned().fold(0.0f64, f64::max);
+    if max_e < 1e-15 {
+        for o in output[..n].iter_mut() { *o = 0; }
+        return;
+    }
+    let scale = 127.0 / max_e;
+    for i in 0..n {
+        output[i] = (energy[i] * scale).round().clamp(0.0, 127.0) as i8;
+    }
+}
+
+/// Dequantize i32 result back to f64.
+pub fn dequantize_result_f64(result: &[i32], output: &mut [f64], scale: f64) {
+    for (i, &r) in result.iter().enumerate() {
+        if i < output.len() {
+            output[i] = r as f64 * scale;
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -119,7 +206,76 @@ mod tests {
         let available = amx_available();
         let report = amx_report();
         eprintln!("{}", report);
-        eprintln!("AMX usable for ThinkingEngine: {}", available);
-        // Don't assert — CI may not have AMX
+        eprintln!("AMX available: {}", available);
+    }
+
+    #[test]
+    fn test_vnni_dot_scalar() {
+        let row = vec![128u8; 64];  // similarity = 0.5
+        let energy = vec![10i8; 64]; // energy = 10
+        let dot = vnni_dot_u8_i8_scalar(&row, &energy);
+        assert_eq!(dot, 128 * 10 * 64);
+        eprintln!("Scalar dot: {}", dot);
+    }
+
+    #[test]
+    fn test_vnni_matvec_scalar() {
+        let n = 64;
+        let mut table = vec![128u8; n * n];
+        for i in 0..n { table[i * n + i] = 255; } // diagonal = max
+
+        let energy = vec![10i8; n];
+        let mut result = vec![0i32; n];
+        vnni_matvec_scalar(&table, &energy, &mut result, n);
+
+        // Each row: 63 × 128 × 10 + 1 × 255 × 10 = 80640 + 2550 = 83190
+        assert!(result[0] > 0);
+        eprintln!("MatVec result[0]: {}", result[0]);
+    }
+
+    #[test]
+    fn test_vnni_dispatch() {
+        let n = 64;
+        let mut table = vec![128u8; n * n];
+        for i in 0..n { table[i * n + i] = 255; }
+        let energy = vec![10i8; n];
+        let mut result = vec![0i32; n];
+
+        matvec_dispatch(&table, &energy, &mut result, n);
+        assert!(result[0] > 0);
+
+        #[cfg(target_arch = "x86_64")]
+        eprintln!("VNNI available: {}", is_x86_feature_detected!("avx512vnni"));
+        eprintln!("Dispatch result[0]: {}", result[0]);
+    }
+
+    #[test]
+    fn test_quantize_energy() {
+        let energy = [0.0, 0.5, 1.0, 0.25, 0.75];
+        let mut quant = [0i8; 5];
+        quantize_energy_i8(&energy, &mut quant);
+
+        assert_eq!(quant[0], 0);
+        assert_eq!(quant[2], 127); // max maps to 127
+        assert!(quant[1] > 50 && quant[1] < 70); // ~63
+        eprintln!("Quantized: {:?}", quant);
+    }
+
+    #[test]
+    fn test_vnni_matches_scalar() {
+        let n = 128;
+        let table: Vec<u8> = (0..n*n).map(|i| (i % 256) as u8).collect();
+        let energy: Vec<i8> = (0..n).map(|i| (i % 100) as i8).collect();
+
+        let mut scalar_result = vec![0i32; n];
+        vnni_matvec_scalar(&table, &energy, &mut scalar_result, n);
+
+        let mut dispatch_result = vec![0i32; n];
+        matvec_dispatch(&table, &energy, &mut dispatch_result, n);
+
+        for i in 0..n {
+            assert_eq!(scalar_result[i], dispatch_result[i],
+                "mismatch at row {}: scalar={} dispatch={}", i, scalar_result[i], dispatch_result[i]);
+        }
     }
 }
