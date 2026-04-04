@@ -919,13 +919,20 @@ impl I64x8 {
     #[inline(always)] pub fn simd_max(self, other: Self) -> Self { let mut o = [0i64; 8]; for i in 0..8 { o[i] = self.0[i].max(other.0[i]); } Self(o) }
 }
 
-/// Lowercase aliases (std::simd convention)
+/// Lowercase aliases (std::simd convention).
+#[allow(non_camel_case_types)]
 pub type f32x16 = F32x16;
+#[allow(non_camel_case_types)]
 pub type f64x8 = F64x8;
+#[allow(non_camel_case_types)]
 pub type u8x64 = U8x64;
+#[allow(non_camel_case_types)]
 pub type i32x16 = I32x16;
+#[allow(non_camel_case_types)]
 pub type i64x8 = I64x8;
+#[allow(non_camel_case_types)]
 pub type u32x16 = U32x16;
+#[allow(non_camel_case_types)]
 pub type u64x8 = U64x8;
 
 #[cfg(test)]

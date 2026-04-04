@@ -19,9 +19,10 @@ use std::io::{Read, Seek, SeekFrom};
 /// GGUF magic number: "GGUF" in little-endian.
 pub const GGUF_MAGIC: u32 = 0x46554747; // "GGUF" as LE u32
 
-/// Tensor data type in GGUF.
+/// Tensor data type in GGUF (variant names follow GGML convention).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
+#[allow(non_camel_case_types)]
 pub enum GgmlType {
     F32 = 0,
     F16 = 1,
