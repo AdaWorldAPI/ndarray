@@ -201,11 +201,19 @@ pub fn vnni_matvec_scalar(
     }
 }
 
-/// Runtime-dispatched MatVec: avx512vnni → avxvnniint8 (VNNI2) → scalar.
+/// Runtime-dispatched VNNI MatVec: avx512vnni → avxvnniint8 → scalar i32.
 ///
-/// Tier 2: avx512vnni — 64 MACs/instr (zmm, Cascade Lake+, Zen 4+)
-/// Tier 1: avxvnniint8 — 32 MACs/instr (ymm, Arrow Lake, NUC 14 i9-185H)
-/// Tier 0: scalar
+/// Three tiers, mutually exclusive by hardware generation:
+///   avx512vnni  — 64 MACs/instr (zmm, Cascade Lake+, Zen 4+)
+///   avxvnniint8 — 32 MACs/instr (ymm, Arrow Lake, NUC 14 i9-185H)
+///   scalar i32  — only for non-x86 or testing (caller should prefer F32x16 FMA)
+///
+/// NOTE: The scalar path here does i32 multiply-accumulate, NOT f32.
+/// For the thinking engine, F32x16 FMA (16 MACs/instr) is the true floor.
+/// This scalar path exists only for correctness on non-x86 targets.
+/// The thinking engine's cycle_auto() dispatches:
+///   VNNI detected → cycle_vnni() → this function
+///   No VNNI       → cycle() → F32x16 (never reaches here)
 pub fn matvec_dispatch(
     table: &[u8],
     energy_i8: &[i8],
@@ -223,6 +231,8 @@ pub fn matvec_dispatch(
             return;
         }
     }
+    // Non-x86 or no VNNI: i32 scalar accumulate.
+    // On x86, the thinking engine uses F32x16 FMA instead of reaching here.
     vnni_matvec_scalar(table, energy_i8, result, n);
 }
 
