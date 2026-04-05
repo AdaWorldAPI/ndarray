@@ -224,6 +224,7 @@ pub mod jitson;
 #[cfg(feature = "jit-native")]
 #[allow(missing_docs)]
 pub mod jitson_cranelift;
+pub mod ocr_simd;
 
 #[cfg(test)]
 mod e2e_tests {
