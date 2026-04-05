@@ -225,6 +225,7 @@ pub mod jitson;
 #[allow(missing_docs)]
 pub mod jitson_cranelift;
 pub mod ocr_simd;
+pub mod ocr_felt;
 
 #[cfg(test)]
 mod e2e_tests {
