@@ -1799,6 +1799,204 @@ unsafe fn convert_f32_to_bf16_avx512bf16(input: &[f32], output: &mut [u16]) {
     }
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// Pure AVX-512-F round-to-nearest-even F32 → BF16
+//
+// Matches `_mm512_cvtneps_pbh` bit-exact on every input (incl. NaN/Inf/denorm)
+// while requiring only the AVX-512-F baseline (Skylake-X+). This is the
+// certification-harness path: deterministic across CPU vendors/generations.
+//
+// Algorithm (per Intel SDM VCVTNEPS2BF16 pseudocode):
+//   if f32 is NaN:
+//       bf16 = (f32_bits >> 16) | 0x0040   // force QNaN bit
+//   else:
+//       lsb   = (f32_bits >> 16) & 1
+//       biased = f32_bits + 0x7FFF + lsb    // RNE via bias
+//       bf16   = (biased >> 16) as u16
+//
+// Adding 0x7FFF when the preserved-LSB is 0, or 0x8000 when the preserved-LSB
+// is 1, correctly resolves ties-to-even without an explicit sticky/round
+// classification.  The NaN path is separate because the bias can carry out of
+// the exponent and turn a NaN into ±Inf or a normal.
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Scalar reference for RNE F32 → BF16 (matches `_mm512_cvtneps_pbh` bit-exact).
+///
+/// Kept distinct from `f32_to_bf16_scalar` (which is truncation-only and is a
+/// *legacy* primitive left in place for its existing call sites).
+///
+/// Follows the Intel SDM `VCVTNEPS2BF16` pseudocode:
+///   - NaN inputs produce a QNaN with forced quiet bit,
+///   - subnormal inputs flush to ±0 (DAZ-style),
+///   - Inf / zero / normal inputs round-to-nearest-even via the classic
+///     `+0x7FFF + LSB` bias trick.
+#[inline]
+pub fn f32_to_bf16_scalar_rne(v: f32) -> u16 {
+    let bits = v.to_bits();
+    let exp = bits & 0x7F80_0000;
+    let mant = bits & 0x007F_FFFF;
+    if exp == 0x7F80_0000 && mant != 0 {
+        // NaN: preserve sign + forced-quiet payload
+        return ((bits >> 16) as u16) | 0x0040;
+    }
+    if exp == 0 && mant != 0 {
+        // Subnormal → flush to ±0 preserving the sign bit.
+        return ((bits >> 16) as u16) & 0x8000;
+    }
+    let lsb = (bits >> 16) & 1;
+    let biased = bits.wrapping_add(0x7FFF).wrapping_add(lsb);
+    (biased >> 16) as u16
+}
+
+/// Pure AVX-512-F RNE conversion of 16 F32 lanes → 16 BF16 lanes (packed u16).
+///
+/// Output is byte-identical to `_mm512_cvtneps_pbh` for every possible F32
+/// input, without requiring AVX-512-BF16 hardware.  Requires only the
+/// skylake-x AVX-512-F baseline.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+#[target_feature(enable = "avx512f")]
+pub unsafe fn f32_to_bf16_x16_rne(lane: __m512) -> __m256i {
+    // SAFETY: caller guarantees AVX-512-F is enabled; every intrinsic below is
+    // part of the AVX-512-F baseline and operates purely on register state.
+    let bits = _mm512_castps_si512(lane);
+
+    // lsb = (bits >> 16) & 1  — top-of-BF16 mantissa bit, used for ties-to-even
+    let shifted = _mm512_srli_epi32::<16>(bits);
+    let one = _mm512_set1_epi32(1);
+    let lsb = _mm512_and_si512(shifted, one);
+
+    // bias = 0x7FFF + lsb ; biased = bits + bias
+    let bias = _mm512_add_epi32(lsb, _mm512_set1_epi32(0x7FFF));
+    let biased = _mm512_add_epi32(bits, bias);
+    let normal_out = _mm512_srli_epi32::<16>(biased);
+
+    // Subnormal flush: for (exp==0 && mant!=0) lanes output = sign bit only.
+    // sign_only = (bits >> 16) & 0x8000  — but we already have `shifted`.
+    let sign_only = _mm512_and_si512(shifted, _mm512_set1_epi32(0x0000_8000));
+
+    // NaN lanes: produce (bits >> 16) | 0x40 (forced quiet bit, SDM spec).
+    let nan_out = _mm512_or_si512(shifted, _mm512_set1_epi32(0x0040));
+
+    // Classify lanes via the absolute value of the integer encoding.
+    // abs_bits < 0x0080_0000                      → subnormal *or* +0
+    // abs_bits == 0                               → ±0 (handled by normal path)
+    // abs_bits > 0x7F80_0000                      → NaN (Inf is ==, handled by normal path)
+    let abs_bits = _mm512_and_si512(bits, _mm512_set1_epi32(0x7FFF_FFFFu32 as i32));
+    let exp_bound = _mm512_set1_epi32(0x0080_0000);
+    let is_sub_or_zero: __mmask16 = _mm512_cmplt_epu32_mask(abs_bits, exp_bound);
+    let is_nonzero: __mmask16 =
+        _mm512_cmpgt_epu32_mask(abs_bits, _mm512_setzero_si512());
+    let is_subnormal: __mmask16 = is_sub_or_zero & is_nonzero;
+
+    let is_nan: __mmask16 = _mm512_cmpgt_epu32_mask(
+        abs_bits,
+        _mm512_set1_epi32(0x7F80_0000u32 as i32),
+    );
+
+    // Blend order:
+    //   1. start from the normal RNE result,
+    //   2. overwrite subnormal lanes with the sign-only zero,
+    //   3. overwrite NaN lanes with the quieted payload.
+    let with_subnormal =
+        _mm512_mask_blend_epi32(is_subnormal, normal_out, sign_only);
+    let merged = _mm512_mask_blend_epi32(is_nan, with_subnormal, nan_out);
+
+    // Pack 16 × i32 low-halves into 16 × i16.  `_mm512_cvtepi32_epi16` is
+    // plain truncation to the low 16 bits of each lane — exactly what we want
+    // since the high 16 bits of every lane in `merged` are already zero.
+    _mm512_cvtepi32_epi16(merged)
+}
+
+/// Deterministic batch F32 → BF16 using only AVX-512-F.  Output is
+/// byte-identical to `_mm512_cvtneps_pbh` on any machine with AVX-512-F.
+pub fn f32_to_bf16_batch_rne(input: &[f32], output: &mut [u16]) {
+    assert!(output.len() >= input.len(), "output must be >= input length");
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        // AVX-512-F is guaranteed at compile time by `target-cpu=x86-64-v4`
+        // (see `.cargo/config.toml`).  Still do a runtime check so this
+        // function remains safe if the crate is ever rebuilt for a lower
+        // target.
+        if is_x86_feature_detected!("avx512f") {
+            // SAFETY: runtime feature detection confirmed avx512f.
+            unsafe {
+                convert_f32_to_bf16_avx512f_rne(input, output);
+            }
+            return;
+        }
+    }
+
+    for (src, dst) in input.iter().copied().zip(output.iter_mut()) {
+        *dst = f32_to_bf16_scalar_rne(src);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+unsafe fn convert_f32_to_bf16_avx512f_rne(input: &[f32], output: &mut [u16]) {
+    // SAFETY: caller guarantees AVX-512-F is enabled.  The 16-wide loop uses
+    // `_mm512_loadu_ps`/`_mm256_storeu_si256` on slice pointers of sufficient
+    // length; the tail uses `_mm512_maskz_loadu_ps` + `_mm512_mask_cvtepi32_storeu_epi16`
+    // with a mask that is zero for lanes beyond the slice end.
+    let n = input.len();
+    let mut i = 0usize;
+
+    // Main 16-wide loop.
+    while i + 16 <= n {
+        let v = _mm512_loadu_ps(input.as_ptr().add(i));
+        let packed = f32_to_bf16_x16_rne(v);
+        _mm256_storeu_si256(output.as_mut_ptr().add(i) as *mut __m256i, packed);
+        i += 16;
+    }
+
+    // Masked tail (0..15 lanes).
+    let rem = n - i;
+    if rem > 0 {
+        let mask: __mmask16 = ((1u32 << rem) - 1) as __mmask16;
+        // SAFETY: `maskz_loadu` only touches lanes where the mask bit is set.
+        let v = _mm512_maskz_loadu_ps(mask, input.as_ptr().add(i));
+
+        // Run the full RNE pipeline (same as `f32_to_bf16_x16_rne`) so the
+        // tail has identical semantics to the main loop, then use
+        // `_mm512_mask_cvtepi32_storeu_epi16` for a direct 16-bit masked store.
+        let bits = _mm512_castps_si512(v);
+        let shifted = _mm512_srli_epi32::<16>(bits);
+        let lsb = _mm512_and_si512(shifted, _mm512_set1_epi32(1));
+        let bias = _mm512_add_epi32(lsb, _mm512_set1_epi32(0x7FFF));
+        let biased = _mm512_add_epi32(bits, bias);
+        let normal_out = _mm512_srli_epi32::<16>(biased);
+        let sign_only = _mm512_and_si512(shifted, _mm512_set1_epi32(0x0000_8000));
+        let nan_out = _mm512_or_si512(shifted, _mm512_set1_epi32(0x0040));
+
+        let abs_bits =
+            _mm512_and_si512(bits, _mm512_set1_epi32(0x7FFF_FFFFu32 as i32));
+        let exp_bound = _mm512_set1_epi32(0x0080_0000);
+        let is_sub_or_zero: __mmask16 =
+            _mm512_cmplt_epu32_mask(abs_bits, exp_bound);
+        let is_nonzero: __mmask16 =
+            _mm512_cmpgt_epu32_mask(abs_bits, _mm512_setzero_si512());
+        let is_subnormal: __mmask16 = is_sub_or_zero & is_nonzero;
+        let is_nan: __mmask16 = _mm512_cmpgt_epu32_mask(
+            abs_bits,
+            _mm512_set1_epi32(0x7F80_0000u32 as i32),
+        );
+
+        let with_subnormal =
+            _mm512_mask_blend_epi32(is_subnormal, normal_out, sign_only);
+        let merged =
+            _mm512_mask_blend_epi32(is_nan, with_subnormal, nan_out);
+
+        // SAFETY: masked store — only lanes [0, rem) are touched.
+        _mm512_mask_cvtepi32_storeu_epi16(
+            output.as_mut_ptr().add(i) as *mut _,
+            mask,
+            merged,
+        );
+    }
+}
+
 #[cfg(test)]
 mod bf16_tests {
     use super::*;
@@ -1836,6 +2034,325 @@ mod bf16_tests {
             // Allow ±1 ULP: hardware uses round-to-nearest-even, scalar uses truncation
             let diff = (output[i] as i32 - expected as i32).unsigned_abs();
             assert!(diff <= 1, "mismatch at index {}: {} → {} vs {}, diff={}", i, v, output[i], expected, diff);
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // RNE certification tests — byte-equality with `_mm512_cvtneps_pbh`.
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Build the systematic corpus of F32 inputs whose correctness is
+    /// critical for BF16 round-trip.  The caller concatenates this with a
+    /// pseudo-random stream.
+    fn rne_systematic_corpus() -> Vec<f32> {
+        let mut out: Vec<f32> = Vec::new();
+
+        // ±0
+        out.push(0.0);
+        out.push(-0.0);
+
+        // ±Inf
+        out.push(f32::INFINITY);
+        out.push(f32::NEG_INFINITY);
+
+        // Every kind of canonical/non-canonical NaN we can think of.
+        for bits in [
+            0x7FC0_0000u32, // canonical qNaN
+            0xFFC0_0000,    // -qNaN
+            0x7FC0_0001,    // qNaN with payload
+            0x7FBF_FFFF,    // sNaN with max payload below quiet bit
+            0x7F80_0001,    // smallest sNaN
+            0xFF80_0001,    // -sNaN smallest
+            0x7FFF_FFFF,    // qNaN, all-ones payload
+            0x7FDE_AD00,    // arbitrary qNaN payload
+        ] {
+            out.push(f32::from_bits(bits));
+        }
+
+        // Subnormals: all f32 subnormals collapse to ±0 in BF16 because their
+        // magnitude is far below the BF16 smallest normal (2^-126 vs 2^-126
+        // w/ 7-bit mantissa).  Hit a bunch anyway.
+        for bits in [
+            0x0000_0001u32, // smallest positive subnormal
+            0x007F_FFFF,    // largest positive subnormal
+            0x0040_0000,    // mid-range subnormal
+            0x8000_0001,    // negative subnormal
+            0x807F_FFFF,
+        ] {
+            out.push(f32::from_bits(bits));
+        }
+
+        // Normals across the exponent range.
+        for exp_byte in [1u32, 50, 126, 127, 128, 200, 254] {
+            for mant in [
+                0x0000_00u32,
+                0x400000, // halfway-below-LSB for even mantissa
+                0x7FFFFF, // top of mantissa (rounding into next exponent)
+                0x0080_00, // round bit alone
+                0x00_FFFF, // sticky bits only
+                0x01_8000, // round + tie, LSB=1 → round up
+                0x00_8001, // round + sticky → round up
+            ] {
+                let bits = (exp_byte << 23) | mant;
+                out.push(f32::from_bits(bits));
+                out.push(f32::from_bits(bits | 0x8000_0000)); // negative
+            }
+        }
+
+        // Deterministic halfway cases around a variety of BF16 boundaries.
+        // bit 15 set, bits 14..0 clear → exact halfway. LSB of preserved
+        // mantissa must dictate the direction.
+        for exp_byte in [100u32, 127, 150] {
+            for lsb_bit in 0..7u32 {
+                let mant_hi = 1u32 << (16 + lsb_bit); // varies kept-LSB
+                let bits = (exp_byte << 23) | mant_hi | 0x0000_8000;
+                out.push(f32::from_bits(bits));
+            }
+        }
+
+        // Near-max finite (rounds up to Inf under RNE).
+        out.push(f32::from_bits(0x7F7F_FFFF));
+        out.push(f32::from_bits(0xFF7F_FFFF));
+
+        out
+    }
+
+    /// Tiny xorshift PRNG — fixed seed for reproducibility.
+    fn rne_random_corpus(n: usize, seed: u64) -> Vec<f32> {
+        let mut state = seed | 1;
+        let mut out = Vec::with_capacity(n);
+        for _ in 0..n {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            // Lower 32 bits reinterpreted as f32 — covers every code point.
+            out.push(f32::from_bits(state as u32));
+        }
+        out
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn f32_to_bf16_rne_byte_equality() {
+        if !is_x86_feature_detected!("avx512f") {
+            eprintln!("skipping: avx512f not available");
+            return;
+        }
+
+        let mut corpus = rne_systematic_corpus();
+        corpus.extend(rne_random_corpus(1_000_000, 0xD1CE_F00D_0BADu64));
+
+        // Pad to multiple of 16 with zeros so we can run the 16-wide routine
+        // end-to-end without worrying about masked tails in this test.
+        while corpus.len() % 16 != 0 {
+            corpus.push(0.0);
+        }
+
+        // Run the AVX-512-F RNE routine.
+        let mut rne_out: Vec<u16> = vec![0; corpus.len()];
+        unsafe {
+            // SAFETY: avx512f confirmed by feature detection.
+            let n = corpus.len();
+            let mut i = 0;
+            while i < n {
+                let v = _mm512_loadu_ps(corpus.as_ptr().add(i));
+                let packed = f32_to_bf16_x16_rne(v);
+                _mm256_storeu_si256(
+                    rne_out.as_mut_ptr().add(i) as *mut __m256i,
+                    packed,
+                );
+                i += 16;
+            }
+        }
+
+        // Reference: hardware `_mm512_cvtneps_pbh` if available.
+        if is_x86_feature_detected!("avx512bf16")
+            && is_x86_feature_detected!("avx512vl")
+        {
+            let mut hw_out: Vec<u16> = vec![0; corpus.len()];
+            unsafe {
+                // SAFETY: feature detection confirmed avx512bf16 + avx512vl.
+                convert_f32_to_bf16_avx512bf16(&corpus, &mut hw_out);
+            }
+            let mut mismatches = 0usize;
+            for (idx, (&r, &h)) in rne_out.iter().zip(hw_out.iter()).enumerate() {
+                if r != h {
+                    if mismatches < 8 {
+                        eprintln!(
+                            "mismatch idx={idx} input=0x{:08X} rne=0x{:04X} hw=0x{:04X}",
+                            corpus[idx].to_bits(),
+                            r,
+                            h
+                        );
+                    }
+                    mismatches += 1;
+                }
+            }
+            assert_eq!(
+                mismatches, 0,
+                "byte-equality with _mm512_cvtneps_pbh failed on {} / {} inputs",
+                mismatches,
+                corpus.len()
+            );
+        } else {
+            // Fallback: hand-picked reference table so the test still runs.
+            //
+            // Each (input_bits, expected_bf16_bits) entry was produced by
+            // walking the Intel SDM VCVTNEPS2BF16 pseudocode by hand.  Do not
+            // regenerate these — they are the published oracle.
+            let reference: &[(u32, u16)] = &[
+                (0x0000_0000, 0x0000),                  // +0
+                (0x8000_0000, 0x8000),                  // -0
+                (0x3F80_0000, 0x3F80),                  // 1.0
+                (0xBF80_0000, 0xBF80),                  // -1.0
+                (0x7F80_0000, 0x7F80),                  // +Inf
+                (0xFF80_0000, 0xFF80),                  // -Inf
+                (0x7FC0_0000, 0x7FC0),                  // canonical qNaN
+                (0x7F80_0001, 0x7FC0),                  // sNaN → qNaN
+                (0x7FBF_FFFF, 0x7FFF),                  // sNaN payload → QNaN'd
+                // Halfway, LSB=0 → round down (stay even).
+                // f32 bits = 0x3F80_8000  (1 + 2^-8).  Kept LSB = 0, ties.
+                (0x3F80_8000, 0x3F80),
+                // Halfway, LSB=1 → round up (to even).
+                // f32 bits = 0x3F81_8000  (1.0078125 exactly). Kept LSB = 1.
+                (0x3F81_8000, 0x3F82),
+                // Round bit + sticky → unambiguous round up.
+                (0x3F80_8001, 0x3F81),
+                // Max finite rounds up to +Inf.
+                (0x7F7F_FFFF, 0x7F80),
+                (0xFF7F_FFFF, 0xFF80),
+                // Positive subnormal rounds toward 0 (stays 0 in BF16).
+                (0x0000_0001, 0x0000),
+            ];
+
+            for &(in_bits, expected) in reference {
+                let v = f32::from_bits(in_bits);
+                let got = f32_to_bf16_scalar_rne(v);
+                assert_eq!(
+                    got, expected,
+                    "scalar RNE mismatch for 0x{in_bits:08X}: got=0x{got:04X} want=0x{expected:04X}"
+                );
+            }
+
+            // And run the SIMD path on a padded batch of those same inputs
+            // so the routine's SIMD code path is actually exercised.
+            let mut batch: Vec<f32> =
+                reference.iter().map(|&(b, _)| f32::from_bits(b)).collect();
+            while batch.len() % 16 != 0 {
+                batch.push(0.0);
+            }
+            let mut simd_out = vec![0u16; batch.len()];
+            unsafe {
+                // SAFETY: avx512f confirmed above.
+                let v = _mm512_loadu_ps(batch.as_ptr());
+                let packed = f32_to_bf16_x16_rne(v);
+                _mm256_storeu_si256(
+                    simd_out.as_mut_ptr() as *mut __m256i,
+                    packed,
+                );
+            }
+            for (i, &(in_bits, expected)) in reference.iter().enumerate() {
+                assert_eq!(
+                    simd_out[i], expected,
+                    "SIMD RNE mismatch for 0x{in_bits:08X}: got=0x{:04X} want=0x{expected:04X}",
+                    simd_out[i],
+                );
+            }
+        }
+    }
+
+    /// Ties-to-even certification: for every exponent, construct a pair
+    /// (LSB=0 halfway, LSB=1 halfway) and verify both the scalar and SIMD
+    /// paths produce an even-LSB result.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn f32_to_bf16_rne_ties_to_even() {
+        if !is_x86_feature_detected!("avx512f") {
+            eprintln!("skipping: avx512f not available");
+            return;
+        }
+
+        let mut cases: Vec<f32> = Vec::new();
+        // exp_byte in [1, 254] skipping 0 (subnormal) and 255 (NaN/Inf).
+        for exp_byte in 1u32..=254 {
+            // LSB=0 halfway: mant = 0b...0_1000_0000_0000_0000
+            // → f32 bits low 16 = 0x8000, kept-LSB bit (bit 16) = 0.
+            let lsb0 = (exp_byte << 23) | 0x0000_8000;
+            cases.push(f32::from_bits(lsb0));
+            // LSB=1 halfway: mant = 0b...1_1000_0000_0000_0000
+            let lsb1 = (exp_byte << 23) | 0x0001_8000;
+            cases.push(f32::from_bits(lsb1));
+        }
+        while cases.len() % 16 != 0 {
+            cases.push(0.0);
+        }
+
+        let mut out = vec![0u16; cases.len()];
+        unsafe {
+            // SAFETY: avx512f confirmed above.
+            let n = cases.len();
+            let mut i = 0;
+            while i < n {
+                let v = _mm512_loadu_ps(cases.as_ptr().add(i));
+                let packed = f32_to_bf16_x16_rne(v);
+                _mm256_storeu_si256(
+                    out.as_mut_ptr().add(i) as *mut __m256i,
+                    packed,
+                );
+                i += 16;
+            }
+        }
+
+        for (idx, (&v, &got)) in cases.iter().zip(out.iter()).enumerate() {
+            // Skip the padding zeros.
+            if v == 0.0 && idx >= 2 * (254 - 1 + 1) {
+                continue;
+            }
+            let bf16_mant_lsb = got & 0x0001;
+            assert_eq!(
+                bf16_mant_lsb, 0,
+                "round-to-even failed for input idx={idx} bits=0x{:08X}: bf16=0x{got:04X}",
+                v.to_bits()
+            );
+
+            // Also cross-check with the scalar reference.
+            let scalar = f32_to_bf16_scalar_rne(v);
+            assert_eq!(
+                got, scalar,
+                "SIMD vs scalar RNE disagree for 0x{:08X}", v.to_bits()
+            );
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn f32_to_bf16_batch_rne_end_to_end() {
+        if !is_x86_feature_detected!("avx512f") {
+            eprintln!("skipping: avx512f not available");
+            return;
+        }
+
+        // Sizes chosen to exercise 0, partial, full, and partial-tail paths.
+        for &len in &[0usize, 1, 7, 15, 16, 17, 31, 32, 33, 128, 129, 1024, 1025] {
+            let mut rng_state = 0xABAD_1DEAu64 ^ (len as u64).wrapping_mul(0x9E37_79B9);
+            let mut input = Vec::with_capacity(len);
+            for _ in 0..len {
+                rng_state ^= rng_state << 13;
+                rng_state ^= rng_state >> 7;
+                rng_state ^= rng_state << 17;
+                input.push(f32::from_bits(rng_state as u32));
+            }
+            let mut batch_out = vec![0u16; len];
+            f32_to_bf16_batch_rne(&input, &mut batch_out);
+
+            for (i, &v) in input.iter().enumerate() {
+                let expected = f32_to_bf16_scalar_rne(v);
+                assert_eq!(
+                    batch_out[i], expected,
+                    "batch RNE mismatch len={len} idx={i} bits=0x{:08X}",
+                    v.to_bits()
+                );
+            }
         }
     }
 }
