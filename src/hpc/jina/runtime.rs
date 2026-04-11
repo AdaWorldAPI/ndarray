@@ -13,8 +13,20 @@ use std::sync::LazyLock;
 
 /// Embedded weight files (compiled into the binary via include_bytes!).
 /// Zero file I/O at runtime — the weights ARE the binary.
-static JINA_BASE17: &[u8] = include_bytes!("weights/jina_base17_20k.bin");
-static JINA_PALETTE: &[u8] = include_bytes!("weights/jina_palette_20k.bin");
+///
+/// Naming convention: {model}_{aspect}_{vocab_size}k.bin
+///   - aspect = base17 (token embeddings) or palette (256-entry lookup)
+///   - vocab_size = approximate token count in thousands
+static JINA_V4_BASE17: &[u8] = include_bytes!("weights/jina_base17_20k.bin");
+static JINA_V4_PALETTE: &[u8] = include_bytes!("weights/jina_palette_20k.bin");
+
+// TODO(jina-v5-bake): When the bake pipeline produces Jina v5 weights
+// (151K Qwen3 BPE tokens, 1024D hidden → 34-byte Base17), add:
+//   static JINA_V5_BASE17: &[u8] = include_bytes!("weights/jina_v5_base17_151k.bin");
+//   static JINA_V5_PALETTE: &[u8] = include_bytes!("weights/jina_v5_palette_151k.bin");
+// Then swap the `JINA` LazyLock load line below to use JinaV5. See
+// `JINA` / `JINA_V4` / `JINA_V5` statics near end of file for the wiring.
+
 static GPT2_BASE17: &[u8] = include_bytes!("weights/gpt2_base17_50k.bin");
 static GPT2_PALETTE: &[u8] = include_bytes!("weights/gpt2_palette_50k.bin");
 static BERT_BASE17: &[u8] = include_bytes!("weights/bert_base17_30k.bin");
@@ -23,9 +35,23 @@ static BERT_PALETTE: &[u8] = include_bytes!("weights/bert_palette_30k.bin");
 /// Which model's weights to use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModelSource {
-    /// Jina v4 text-retrieval (20K tokens, 2048D original).
+    /// Jina v4 text-retrieval (20K tokens, 2048D original, XLM-R base).
+    /// LEGACY route. Kept for backward compatibility and direct-access callers
+    /// that specifically need v4 behavior. Weights pre-baked at
+    /// `weights/jina_base17_20k.bin` + `weights/jina_palette_20k.bin`.
     JinaV4,
-    /// GPT-2 small (50K tokens, 768D original). Same BPE as Jina.
+    /// Jina v5 small (151K tokens, 1024D hidden, Qwen3 base, SiLU activation).
+    /// **MAIN ROUTE** per AdaWorldAPI model registry (CLAUDE.md): Jina v5 is
+    /// the canonical ground-truth anchor. Same BPE as Reranker v3.
+    ///
+    /// Weights NOT yet baked at compile time — the v5 bake pipeline must
+    /// produce `weights/jina_v5_base17_151k.bin` + `weights/jina_v5_palette_151k.bin`
+    /// before this variant is actually loadable via the `JINA_V5` static.
+    /// Until then, the main-route alias `JINA` falls back to v4 bytes.
+    ///
+    /// See the TODO block above `JINA_V4_BASE17` for the exact swap sequence.
+    JinaV5,
+    /// GPT-2 small (50K tokens, 768D original). Same BPE as Jina v4.
     Gpt2,
     /// BERT base uncased (30K tokens, 768D original). WordPiece tokenizer.
     Bert,
@@ -190,9 +216,33 @@ fn build_similarity_table(palette: &JinaPalette) -> [f32; 256] {
 // Global LazyLock runtimes — loaded once, used forever
 // ============================================================================
 
-/// Jina v4 runtime (20K tokens). LazyLock: zero cost after first access.
+/// Jina **main route**. LazyLock: zero cost after first access.
+///
+/// Today this loads Jina v4 bytes (20K tokens) because v5 weights are not yet
+/// baked into `weights/`. When the v5 bake pipeline produces
+/// `weights/jina_v5_base17_151k.bin` + `weights/jina_v5_palette_151k.bin`,
+/// swap the load line below to:
+///
+/// ```ignore
+/// ModelRuntime::load(ModelSource::JinaV5, JINA_V5_BASE17, JINA_V5_PALETTE)
+/// ```
+///
+/// Callers should use `JINA` for default behavior. Only use `JINA_V4`
+/// explicitly when v4-specific behavior is required (e.g., backward-compat
+/// tests).
 pub static JINA: LazyLock<ModelRuntime> = LazyLock::new(|| {
-    ModelRuntime::load(ModelSource::JinaV4, JINA_BASE17, JINA_PALETTE)
+    // TODO(jina-v5-bake): swap to JinaV5 when v5 weights exist.
+    ModelRuntime::load(ModelSource::JinaV4, JINA_V4_BASE17, JINA_V4_PALETTE)
+});
+
+/// Jina **v4 explicit route** (20K tokens, XLM-R base). LEGACY.
+///
+/// Use this when a caller specifically needs v4 behavior and should NOT be
+/// silently upgraded to v5 when the main route is swapped. Today this is
+/// functionally identical to `JINA` (both load v4 bytes), but after the v5
+/// bake `JINA` will load v5 while `JINA_V4` keeps loading v4.
+pub static JINA_V4: LazyLock<ModelRuntime> = LazyLock::new(|| {
+    ModelRuntime::load(ModelSource::JinaV4, JINA_V4_BASE17, JINA_V4_PALETTE)
 });
 
 /// GPT-2 runtime (50K tokens). Same BPE as Jina → interoperable palettes.
@@ -211,7 +261,19 @@ mod tests {
 
     #[test]
     fn test_jina_runtime_loads() {
+        // Main route. Today this is v4; when v5 is baked, update this test to
+        // assert source == JinaV5 and vocab_size == ~151000.
         let rt = &*JINA;
+        assert_eq!(rt.source, ModelSource::JinaV4);
+        assert_eq!(rt.vocab_size(), 20000);
+        assert!((rt.similarity[0] - 1.0).abs() < 0.01, "self-similarity should be ~1.0");
+    }
+
+    #[test]
+    fn test_jina_v4_explicit_route() {
+        // Legacy v4-specific accessor. After v5 bake, this test MUST still
+        // pass (v4 is the backward-compat guarantee — never deleted).
+        let rt = &*JINA_V4;
         assert_eq!(rt.source, ModelSource::JinaV4);
         assert_eq!(rt.vocab_size(), 20000);
         assert!((rt.similarity[0] - 1.0).abs() < 0.01, "self-similarity should be ~1.0");
