@@ -105,6 +105,20 @@ pub use crate::simd_avx512::{
     bf16_to_f32_scalar, f32_to_bf16_scalar,
     bf16_to_f32_batch, f32_to_bf16_batch,
 };
+
+// BF16 RNE (round-to-nearest-even) path — pure AVX-512-F, byte-exact vs
+// hardware `_mm512_cvtneps_pbh` on Sapphire Rapids+ (verified on 1M inputs
+// in ndarray::simd_avx512::tests). Consumer code should call
+// `f32_to_bf16_batch_rne` in hot loops (500-20000× faster than the scalar
+// path via AMX / AVX-512 tiles); `f32_to_bf16_scalar_rne` is exposed only
+// as a unit-test reference implementation and MUST NOT be called in hot
+// loops per the workspace-wide "never scalar ever" rule for F32→BF16.
+// See lance-graph/CLAUDE.md § Certification Process.
+#[cfg(target_arch = "x86_64")]
+pub use crate::simd_avx512::{
+    f32_to_bf16_scalar_rne,
+    f32_to_bf16_batch_rne,
+};
 // BF16 SIMD types only available when avx512bf16 is enabled at compile time
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512bf16"))]
 pub use crate::simd_avx512::{BF16x16, BF16x8};
