@@ -439,8 +439,26 @@ pub fn f16_to_f32(bits: u16) -> f32 {
         return f32::from_bits(f32_bits);
     }
     if exp == 31 {
-        // Inf or NaN
-        let f32_bits = (sign << 31) | (0xFF << 23) | (mantissa << 13);
+        // Inf or NaN. IEEE 754 recommends producing a quiet NaN (QNaN) from
+        // F16 NaN inputs, which means setting the top mantissa bit (bit 22
+        // of F32 = 0x00400000) in addition to the shifted payload. The
+        // original implementation here left the quiet bit clear, producing
+        // a signaling NaN (SNaN), which is a bit-level mismatch against
+        // IEEE-correct references like the `half` crate. Finite-value
+        // upcasts were unaffected.
+        //
+        // This fix was landed alongside `examples/probe_jina_v5_safetensors.rs`
+        // in `lance-graph/crates/thinking-engine`, which round-trips all
+        // 65,536 F16 bit patterns through this method and is the regression
+        // test proving IEEE correctness over the full domain (±0, subnormals,
+        // normals, ±∞, every NaN payload).
+        let f32_bits = if mantissa == 0 {
+            // Infinity: just sign + exponent, no mantissa, no quiet bit.
+            (sign << 31) | 0x7f800000
+        } else {
+            // NaN: sign + exponent + quiet bit + shifted payload.
+            (sign << 31) | 0x7fc00000 | (mantissa << 13)
+        };
         return f32::from_bits(f32_bits);
     }
     // Normal

@@ -48,51 +48,76 @@ pub enum ModelSource {
     /// → Model Registry → Production models): Jina v5 is the canonical
     /// ground-truth anchor. Same Qwen 3.x BPE as Reranker v3, Qwopus.
     ///
-    /// # Precision path (use existing primitives, do not duplicate)
+    /// # Storage format on disk (verified by probe)
     ///
-    /// Jina v5 is published in F16 only. The canonical ingestion chain uses
-    /// existing primitives in this crate — do NOT write new conversion code:
+    /// The downloaded safetensors at
+    /// `lance-graph/crates/thinking-engine/data/jina-v5-onnx/model.safetensors`
+    /// is **BF16**, not F16. Every tensor in that 1.19 GB file is stored as
+    /// BF16 per the safetensors JSON header, verified by
+    /// `crates/thinking-engine/examples/probe_jina_v5_safetensors.rs`. The
+    /// embedding matrix is `embed_tokens.weight` shape `[151936, 1024]`
+    /// (311 MB BF16). Earlier canonical notes that said "Jina v5 is published
+    /// in F16 only" were incorrect for this specific export; other Jina v5
+    /// exports (ONNX, GGUF) may use different dtypes.
     ///
-    /// 1. **Load** F16/F32/BF16/Q8_0 tensors via
-    ///    [`crate::hpc::gguf::read_tensor_f32`] (`src/hpc/gguf.rs:188`)
-    ///    which returns `Vec<f32>`. The scalar
-    ///    [`crate::hpc::gguf::f16_to_f32`] (`src/hpc/gguf.rs:417`) does the
-    ///    per-element F16 → F32 conversion.
+    /// The tokenizer lives at `data/jina-v5-tokenizer.json` (flat under the
+    /// `data/` directory — NOT under `data/jina-v5-onnx/`). The tokenizer
+    /// reports vocab size = 151669, while the safetensors embedding matrix
+    /// has 151936 rows. Rows `[151669, 151936)` are ghost/unreachable
+    /// (fine-tune-trimmed vocabulary kept aligned for hardware efficiency).
+    /// Pair samplers MUST use `min(tokenizer_vocab, embed_rows) = 151669`.
     ///
-    /// 2. **F32 is transient**: the `Vec<f32>` from step 1 is never persisted.
-    ///    It is a momentary upcast pipe between F16 source bytes and BF16
-    ///    working format. No F32 in hot loops.
+    /// # Precision hierarchy (workspace-wide rule, Jina v5 specifics)
     ///
-    /// 3. **Convert to BF16** via
-    ///    [`crate::hpc::quantized::f32_to_bf16_rounded`] (`src/hpc/quantized.rs:80`)
-    ///    or [`crate::hpc::quantized::f32_vec_to_bf16`] for the whole slice.
+    /// 1. **Ground truth is the source file, losslessly upcast on demand.**
+    ///    For this file, BF16 source → F32 via the trivial shift
+    ///    [`crate::hpc::quantized::BF16`] scalar method. No F32 Vec is
+    ///    materialized. No F32 "buffer" persists. F32 is a *method*, not a
+    ///    storage format — it lives in registers or a small stack window
+    ///    during computation and is discarded with the consumer.
     ///
-    /// 4. **Compute in BF16** via
+    /// 2. **Atomic-clock F16 → F32 method** at
+    ///    [`crate::hpc::gguf::f16_to_f32`] (`src/hpc/gguf.rs:417`) is proven
+    ///    lossless bit-exact over all 65,536 F16 patterns (including
+    ///    subnormals, ±0, ±∞, and NaN payloads with correct IEEE 754 quiet
+    ///    bit). Used by any F16 source (other Jina exports, GGUF files,
+    ///    reranker weights). Not on the Jina v5 safetensors path since that
+    ///    file is BF16.
+    ///
+    /// 3. **Compute precision is BF16 with fused `mul_add`** via
     ///    [`crate::hpc::quantized::bf16_gemm_f32`] (`src/hpc/quantized.rs:108`).
-    ///    F32-precision accumulation via fused hardware FMA.
-    ///    The primitive add_mul is exposed on SIMD lane types:
-    ///    [`crate::simd::F32x16::mul_add`] / `F32x8::mul_add` / `F64x8::mul_add`
-    ///    (`src/simd.rs:206`) compiles to VFMADD213PS (AVX-FMA) or
-    ///    VDPBF16PS (AVX-512-BF16) depending on the lane type.
+    ///    F32-precision accumulation is a property of the hardware FMA
+    ///    (`VDPBF16PS` on AVX-512-BF16, `BFMMLA` on ARM SVE, AMX on Apple),
+    ///    invisible to the caller. The `F32x16::mul_add` / `F32x8::mul_add`
+    ///    lane types in [`crate::simd`] compile to the appropriate
+    ///    instruction for the target CPU.
     ///
-    /// 5. **Store** at runtime as Base17 i16 fixed-point (34-byte plane) or
-    ///    palette u8 index, after GammaProfile-calibrated quantization (see
-    ///    `lance-graph/crates/bgz-tensor/src/gamma_phi.rs::calibrate_gamma`
-    ///    for the per-role HDR-TV-style normalizer).
+    /// 4. **F16 → BF16 has no exponent-range issue.** BF16 has MORE exponent
+    ///    bits than F16 (8 vs 5), so every F16 value fits inside BF16 range
+    ///    with ~33 orders of magnitude of headroom. The lossy step of
+    ///    F16 → BF16 is a 3-bit mantissa truncation (10 → 7 bits), not an
+    ///    exponent-range violation. Earlier notes that said "F16 max ~65504
+    ///    overflows before reaching BF16 range" were backwards.
     ///
-    /// Never F16 → BF16 direct (would lose 3 exponent bits; F16 max ~65504
-    /// overflows before reaching BF16 range). Never 8-bit quantization as
-    /// a compute precision — only as a final calibrated storage format.
+    /// 5. **F64 constants** (π, e, φ, Euler-γ from `std::f64::consts`) are
+    ///    used for calibration math (GammaProfile log/exp), preserved at full
+    ///    52-bit mantissa precision, and converted to BF16 exactly once per
+    ///    profile as a splatted value. The calibration result is 28 bytes.
+    ///
+    /// 6. **Storage after calibration**: Base17 i16 fixed-point (34-byte
+    ///    plane) or palette u8 index. Certification against the BF16 source
+    ///    goes through a streaming harness that reads the source once per
+    ///    pass, upcasts in registers, and reports Pearson / Spearman /
+    ///    Cronbach α to 4 decimal places.
     ///
     /// # Weight baking status
     ///
-    /// Weights NOT yet baked at compile time — the v5 bake pipeline must
-    /// produce `weights/jina_v5_base17_151k.bin` + `weights/jina_v5_palette_151k.bin`
-    /// before this variant is actually loadable via the `JINA_V5` static
-    /// (to be added when the bake runs). Until then, the main-route alias
-    /// `JINA` falls back to v4 bytes via `JINA_V4_BASE17` / `JINA_V4_PALETTE`.
-    ///
-    /// See the TODO block above `JINA_V4_BASE17` for the exact swap sequence.
+    /// Compile-time embedded weights at `weights/jina_v5_*.bin` are not yet
+    /// produced. Until they are, the `JINA` main-route LazyLock falls back
+    /// to v4 bytes. When the certification harness proves lab BF16 at
+    /// ≥ 0.9999 and bgz-hhtl-d at ≥ 0.9980 on the three metrics, the
+    /// Jina v5 runtime artifacts can be produced from the certified
+    /// derivation pipeline. See the TODO block above `JINA_V4_BASE17`.
     JinaV5,
     /// GPT-2 small (50K tokens, 768D original). Same BPE as Jina v4.
     Gpt2,
