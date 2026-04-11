@@ -40,14 +40,57 @@ pub enum ModelSource {
     /// that specifically need v4 behavior. Weights pre-baked at
     /// `weights/jina_base17_20k.bin` + `weights/jina_palette_20k.bin`.
     JinaV4,
-    /// Jina v5 small (151K tokens, 1024D hidden, Qwen3 base, SiLU activation).
-    /// **MAIN ROUTE** per AdaWorldAPI model registry (CLAUDE.md): Jina v5 is
-    /// the canonical ground-truth anchor. Same BPE as Reranker v3.
+    /// Jina v5 small (151K tokens, 1024D hidden, Qwen 3.5 base, SiLU activation).
+    /// Also known as **Reader-LM v3** (same model, alternate name — BERT 3.x
+    /// architecture lineage; NOT the older Qwen2-based Reader-LM 1.5B/v1/v2).
+    ///
+    /// **MAIN ROUTE** per AdaWorldAPI model registry (`lance-graph/CLAUDE.md`
+    /// → Model Registry → Production models): Jina v5 is the canonical
+    /// ground-truth anchor. Same Qwen 3.x BPE as Reranker v3, Qwopus.
+    ///
+    /// # Precision path (use existing primitives, do not duplicate)
+    ///
+    /// Jina v5 is published in F16 only. The canonical ingestion chain uses
+    /// existing primitives in this crate — do NOT write new conversion code:
+    ///
+    /// 1. **Load** F16/F32/BF16/Q8_0 tensors via
+    ///    [`crate::hpc::gguf::read_tensor_f32`] (`src/hpc/gguf.rs:188`)
+    ///    which returns `Vec<f32>`. The scalar
+    ///    [`crate::hpc::gguf::f16_to_f32`] (`src/hpc/gguf.rs:417`) does the
+    ///    per-element F16 → F32 conversion.
+    ///
+    /// 2. **F32 is transient**: the `Vec<f32>` from step 1 is never persisted.
+    ///    It is a momentary upcast pipe between F16 source bytes and BF16
+    ///    working format. No F32 in hot loops.
+    ///
+    /// 3. **Convert to BF16** via
+    ///    [`crate::hpc::quantized::f32_to_bf16_rounded`] (`src/hpc/quantized.rs:80`)
+    ///    or [`crate::hpc::quantized::f32_vec_to_bf16`] for the whole slice.
+    ///
+    /// 4. **Compute in BF16** via
+    ///    [`crate::hpc::quantized::bf16_gemm_f32`] (`src/hpc/quantized.rs:108`).
+    ///    F32-precision accumulation via fused hardware FMA.
+    ///    The primitive add_mul is exposed on SIMD lane types:
+    ///    [`crate::simd::F32x16::mul_add`] / `F32x8::mul_add` / `F64x8::mul_add`
+    ///    (`src/simd.rs:206`) compiles to VFMADD213PS (AVX-FMA) or
+    ///    VDPBF16PS (AVX-512-BF16) depending on the lane type.
+    ///
+    /// 5. **Store** at runtime as Base17 i16 fixed-point (34-byte plane) or
+    ///    palette u8 index, after GammaProfile-calibrated quantization (see
+    ///    `lance-graph/crates/bgz-tensor/src/gamma_phi.rs::calibrate_gamma`
+    ///    for the per-role HDR-TV-style normalizer).
+    ///
+    /// Never F16 → BF16 direct (would lose 3 exponent bits; F16 max ~65504
+    /// overflows before reaching BF16 range). Never 8-bit quantization as
+    /// a compute precision — only as a final calibrated storage format.
+    ///
+    /// # Weight baking status
     ///
     /// Weights NOT yet baked at compile time — the v5 bake pipeline must
     /// produce `weights/jina_v5_base17_151k.bin` + `weights/jina_v5_palette_151k.bin`
-    /// before this variant is actually loadable via the `JINA_V5` static.
-    /// Until then, the main-route alias `JINA` falls back to v4 bytes.
+    /// before this variant is actually loadable via the `JINA_V5` static
+    /// (to be added when the bake runs). Until then, the main-route alias
+    /// `JINA` falls back to v4 bytes via `JINA_V4_BASE17` / `JINA_V4_PALETTE`.
     ///
     /// See the TODO block above `JINA_V4_BASE17` for the exact swap sequence.
     JinaV5,
