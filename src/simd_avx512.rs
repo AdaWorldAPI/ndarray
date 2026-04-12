@@ -2356,3 +2356,359 @@ mod bf16_tests {
         }
     }
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// F16 (IEEE 754 Half-Precision) — via F16C instructions (stable since Rust 1.68)
+//
+// IEEE 754 binary16: 1 sign + 5 exponent + 10 mantissa
+// Range: ±65504, precision: ~3.3 decimal digits
+// Subnormals: ±5.96×10⁻⁸ minimum positive
+//
+// Hardware instructions (F16C, stable target_feature):
+//   _mm256_cvtph_ps:  8× f16(u16) → 8× f32  (VCVTPH2PS ymm, xmm)
+//   _mm512_cvtph_ps: 16× f16(u16) → 16× f32 (VCVTPH2PS zmm, ymm) [AVX-512F]
+//   _mm256_cvtps_ph:  8× f32 → 8× f16(u16)  (VCVTPS2PH xmm, ymm, imm8)
+//   _mm512_cvtps_ph: 16× f32 → 16× f16(u16) (VCVTPS2PH ymm, zmm, imm8) [AVX-512F]
+//
+// imm8 for rounding:
+//   0x00 = Round to nearest even (IEEE default)
+//   0x01 = Round toward negative infinity
+//   0x02 = Round toward positive infinity
+//   0x03 = Round toward zero (truncate)
+//   0x04 = Use MXCSR rounding mode
+//
+// NOTE: F16C is available on Haswell+ (2013), essentially all modern x86_64.
+// AVX-512 F16C (zmm-width) requires AVX-512F.
+// ════════════════════════════════════════════════════════════════════════════
+
+/// IEEE 754 f16 → f32 scalar conversion (exact, lossless).
+///
+/// binary16: 1 sign | 5 exponent (bias 15) | 10 mantissa
+/// binary32: 1 sign | 8 exponent (bias 127) | 23 mantissa
+///
+/// Conversion is exact: every f16 value has an exact f32 representation.
+/// Zero additional error — this is a widening cast.
+pub fn f16_to_f32_ieee754(bits: u16) -> f32 {
+    let sign = ((bits >> 15) & 1) as u32;
+    let exp = ((bits >> 10) & 0x1F) as u32;
+    let mant = (bits & 0x3FF) as u32;
+
+    if exp == 0 {
+        if mant == 0 {
+            // ±0.0
+            f32::from_bits(sign << 31)
+        } else {
+            // Subnormal: (−1)^sign × 2^(−14) × 0.mantissa
+            // Normalize: find leading 1 in mantissa, adjust exponent
+            let mut m = mant;
+            let mut e: i32 = 1 - 15; // subnormal effective exponent = 1 - bias
+            // Shift mantissa left until the implicit 1 is in bit 10
+            while m & 0x400 == 0 {
+                m <<= 1;
+                e -= 1;
+            }
+            m &= 0x3FF; // remove the implicit 1
+            let f32_exp = ((e + 127) as i32) as u32; // rebias to f32
+            f32::from_bits((sign << 31) | (f32_exp << 23) | (m << 13))
+        }
+    } else if exp == 31 {
+        // Inf or NaN — preserve NaN payload
+        let f32_mant = mant << 13; // widen 10-bit → 23-bit mantissa
+        f32::from_bits((sign << 31) | (0xFF << 23) | f32_mant)
+    } else {
+        // Normal: rebias exponent (bias 15 → bias 127) = exp + 112
+        let f32_exp = exp + 112; // avoids u32 underflow vs (exp - 15 + 127)
+        f32::from_bits((sign << 31) | (f32_exp << 23) | (mant << 13))
+    }
+}
+
+/// IEEE 754 f32 → f16 scalar with Round-to-Nearest-Even (RNE).
+///
+/// Matches hardware VCVTPS2PH with imm8=0x00 bit-exact.
+/// Handles: normals, subnormals, overflow→Inf, NaN preservation.
+///
+/// Precision: 10 mantissa bits → 3.31 decimal digits.
+/// Any f32 value outside [−65504, +65504] overflows to ±Inf.
+pub fn f32_to_f16_ieee754_rne(v: f32) -> u16 {
+    let bits = v.to_bits();
+    let sign = (bits >> 31) & 1;
+    let exp = ((bits >> 23) & 0xFF) as i32;
+    let mant = bits & 0x7FFFFF;
+
+    if exp == 255 {
+        // Inf or NaN
+        if mant == 0 {
+            // Inf
+            ((sign << 15) | (0x1F << 10)) as u16
+        } else {
+            // NaN: preserve as much payload as possible
+            // Quiet NaN bit (bit 22 in f32 → bit 9 in f16)
+            let h_mant = (mant >> 13) & 0x3FF;
+            // Ensure at least one mantissa bit set (to stay NaN)
+            let h_mant = if h_mant == 0 { 0x200 } else { h_mant }; // set quiet bit
+            ((sign << 15) | (0x1F << 10) | h_mant) as u16
+        }
+    } else if exp == 0 && mant == 0 {
+        // ±0.0
+        (sign << 15) as u16
+    } else {
+        // Normal or subnormal f32 → f16
+        let unbiased = exp - 127; // true exponent
+
+        if unbiased > 15 {
+            // Overflow → ±Inf
+            ((sign << 15) | (0x1F << 10)) as u16
+        } else if unbiased < -24 {
+            // Too small even for f16 subnormal → ±0
+            (sign << 15) as u16
+        } else if unbiased < -14 {
+            // f16 subnormal range: exponent would be 0, mantissa encodes value
+            // f16_value = (−1)^s × 2^(−14) × 0.mant
+            // shift = how many extra bits to shift right (−14 − unbiased)
+            let shift = (-14 - unbiased) as u32;
+            // Add implicit 1 to f32 mantissa, then shift right
+            let full_mant = mant | 0x800000; // 24 bits with implicit 1
+            // We need to map 24-bit mantissa to 10-bit with proper shift
+            let total_shift = 13 + shift; // 13 to go from 23→10, plus extra for subnormal
+
+            // Round-to-nearest-even
+            let truncated = full_mant >> total_shift;
+            let remainder = full_mant & ((1 << total_shift) - 1);
+            let halfway = 1 << (total_shift - 1);
+
+            let rounded = if remainder > halfway {
+                truncated + 1
+            } else if remainder == halfway {
+                // Ties to even: round up if truncated is odd
+                if truncated & 1 != 0 { truncated + 1 } else { truncated }
+            } else {
+                truncated
+            };
+
+            let h_mant = rounded & 0x3FF;
+            // If rounding overflowed into exponent range, it becomes a normal
+            let h_exp = if rounded > 0x3FF { 1u32 } else { 0u32 };
+            ((sign << 15) | (h_exp << 10) | h_mant) as u16
+        } else {
+            // Normal f16 range
+            let h_exp = (unbiased + 15) as u32; // rebias: +15
+            // Round mantissa from 23 bits to 10 bits using RNE
+            let truncated = mant >> 13;
+            let remainder = mant & 0x1FFF; // lower 13 bits
+            let halfway = 0x1000; // 2^12
+
+            let rounded = if remainder > halfway {
+                truncated + 1
+            } else if remainder == halfway {
+                if truncated & 1 != 0 { truncated + 1 } else { truncated }
+            } else {
+                truncated
+            };
+
+            // Check if rounding overflowed mantissa (10 bits → 11 bits)
+            if rounded > 0x3FF {
+                // Carry into exponent
+                let h_exp = h_exp + 1;
+                if h_exp >= 31 {
+                    // Overflow to Inf
+                    ((sign << 15) | (0x1F << 10)) as u16
+                } else {
+                    ((sign << 15) | (h_exp << 10)) as u16 // mantissa = 0 after carry
+                }
+            } else {
+                ((sign << 15) | (h_exp << 10) | rounded) as u16
+            }
+        }
+    }
+}
+
+/// Batch f16 → f32 via AVX-512 VCVTPH2PS (16 lanes) with F16C fallback (8 lanes).
+///
+/// Detection: avx512f → 16-wide | f16c → 8-wide | scalar fallback
+/// Conversion is exact (lossless widening).
+pub fn f16_to_f32_batch_ieee754(input: &[u16], output: &mut [f32]) {
+    let n = input.len().min(output.len());
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        // Tier 1: AVX-512F (16 lanes per instruction)
+        if is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("f16c") {
+            let chunks16 = n / 16;
+            for c in 0..chunks16 {
+                unsafe {
+                    // SAFETY: avx512f + f16c verified above.
+                    let src = _mm256_loadu_si256(input[c*16..].as_ptr() as *const __m256i);
+                    let dst = _mm512_cvtph_ps(src);
+                    _mm512_storeu_ps(output[c*16..].as_mut_ptr(), dst);
+                }
+            }
+            // Scalar tail
+            for i in (chunks16*16)..n {
+                output[i] = f16_to_f32_ieee754(input[i]);
+            }
+            return;
+        }
+        // Tier 2: F16C (8 lanes per instruction, Haswell+)
+        if is_x86_feature_detected!("f16c") {
+            let chunks8 = n / 8;
+            for c in 0..chunks8 {
+                unsafe {
+                    // SAFETY: f16c verified above.
+                    let src = _mm_loadu_si128(input[c*8..].as_ptr() as *const __m128i);
+                    let dst = _mm256_cvtph_ps(src);
+                    _mm256_storeu_ps(output[c*8..].as_mut_ptr(), dst);
+                }
+            }
+            for i in (chunks8*8)..n {
+                output[i] = f16_to_f32_ieee754(input[i]);
+            }
+            return;
+        }
+    }
+
+    // Scalar fallback (exact)
+    for i in 0..n {
+        output[i] = f16_to_f32_ieee754(input[i]);
+    }
+}
+
+/// Batch f32 → f16 via AVX-512 VCVTPS2PH (16 lanes) with RNE rounding.
+///
+/// imm8 = 0x00: Round-to-Nearest-Even (IEEE 754 default).
+/// Matches hardware behavior bit-exact.
+pub fn f32_to_f16_batch_ieee754_rne(input: &[f32], output: &mut [u16]) {
+    let n = input.len().min(output.len());
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        // Tier 1: AVX-512F (16 lanes, RNE via imm8=0)
+        if is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("f16c") {
+            let chunks16 = n / 16;
+            for c in 0..chunks16 {
+                unsafe {
+                    // SAFETY: avx512f + f16c verified above.
+                    let src = _mm512_loadu_ps(input[c*16..].as_ptr());
+                    // imm8=0x00: _MM_FROUND_TO_NEAREST_INT (RNE)
+                    let dst: __m256i = _mm512_cvtps_ph::<0x00>(src);
+                    _mm256_storeu_si256(output[c*16..].as_mut_ptr() as *mut __m256i, dst);
+                }
+            }
+            for i in (chunks16*16)..n {
+                output[i] = f32_to_f16_ieee754_rne(input[i]);
+            }
+            return;
+        }
+        // Tier 2: F16C (8 lanes, RNE)
+        if is_x86_feature_detected!("f16c") {
+            let chunks8 = n / 8;
+            for c in 0..chunks8 {
+                unsafe {
+                    // SAFETY: f16c verified above.
+                    let src = _mm256_loadu_ps(input[c*8..].as_ptr());
+                    let dst: __m128i = _mm256_cvtps_ph::<0x00>(src);
+                    _mm_storeu_si128(output[c*8..].as_mut_ptr() as *mut __m128i, dst);
+                }
+            }
+            for i in (chunks8*8)..n {
+                output[i] = f32_to_f16_ieee754_rne(input[i]);
+            }
+            return;
+        }
+    }
+
+    // Scalar RNE fallback
+    for i in 0..n {
+        output[i] = f32_to_f16_ieee754_rne(input[i]);
+    }
+}
+
+#[cfg(test)]
+mod f16_tests {
+    use super::*;
+
+    #[test]
+    fn f16_ieee754_exact_values() {
+        // IEEE 754 binary16 exact test vectors
+        assert_eq!(f16_to_f32_ieee754(0x0000), 0.0);            // +0
+        assert_eq!(f16_to_f32_ieee754(0x8000), -0.0);           // −0
+        assert_eq!(f16_to_f32_ieee754(0x3C00), 1.0);            // 1.0
+        assert_eq!(f16_to_f32_ieee754(0xBC00), -1.0);           // −1.0
+        assert_eq!(f16_to_f32_ieee754(0x4000), 2.0);            // 2.0
+        assert_eq!(f16_to_f32_ieee754(0x3800), 0.5);            // 0.5
+        assert_eq!(f16_to_f32_ieee754(0x7BFF), 65504.0);        // max normal
+        assert!(f16_to_f32_ieee754(0x7C00).is_infinite());       // +Inf
+        assert!(f16_to_f32_ieee754(0xFC00).is_infinite());       // −Inf
+        assert!(f16_to_f32_ieee754(0x7C01).is_nan());            // NaN
+        // Smallest positive subnormal: 2^(−24) ≈ 5.96e-8
+        let smallest_sub = f16_to_f32_ieee754(0x0001);
+        assert!((smallest_sub - 5.960464e-8).abs() < 1e-14);
+    }
+
+    #[test]
+    fn f16_rne_roundtrip_normals() {
+        // Every f16 normal → f32 → f16 must be identity
+        for exp in 1u16..31 {
+            for mant in (0u16..1024).step_by(17) {
+                let h = (exp << 10) | mant;
+                let f = f16_to_f32_ieee754(h);
+                let back = f32_to_f16_ieee754_rne(f);
+                assert_eq!(h, back,
+                    "roundtrip failed: 0x{:04X} → {} → 0x{:04X}", h, f, back);
+            }
+        }
+    }
+
+    #[test]
+    fn f16_exact_representable_values() {
+        // Values that are exactly representable in f16 must roundtrip perfectly
+        let exact_values: &[f32] = &[
+            0.0, 1.0, -1.0, 2.0, -2.0, 0.5, -0.5, 0.25, 0.125,
+            65504.0, -65504.0, // max f16
+            0.000061035156, // smallest normal f16 (2^-14)
+        ];
+        for &v in exact_values {
+            let h = f32_to_f16_ieee754_rne(v);
+            let back = f16_to_f32_ieee754(h);
+            assert_eq!(v, back,
+                "exact value roundtrip failed: {} → 0x{:04X} → {}", v, h, back);
+        }
+    }
+
+    #[test]
+    fn f16_overflow_to_inf() {
+        let big = 100000.0f32;
+        assert_eq!(f32_to_f16_ieee754_rne(big), 0x7C00); // +Inf
+        assert_eq!(f32_to_f16_ieee754_rne(-big), 0xFC00); // −Inf
+    }
+
+    #[test]
+    fn f16_batch_matches_scalar() {
+        let input: Vec<u16> = (0..200).map(|i| {
+            let v = (i as f32 - 100.0) * 0.5;
+            f32_to_f16_ieee754_rne(v)
+        }).collect();
+        let mut batch_out = vec![0.0f32; 200];
+        f16_to_f32_batch_ieee754(&input, &mut batch_out);
+
+        for (i, &h) in input.iter().enumerate() {
+            let scalar = f16_to_f32_ieee754(h);
+            assert_eq!(batch_out[i].to_bits(), scalar.to_bits(),
+                "batch/scalar mismatch at {}: batch=0x{:08X} scalar=0x{:08X}",
+                i, batch_out[i].to_bits(), scalar.to_bits());
+        }
+    }
+
+    #[test]
+    fn f32_to_f16_batch_rne_matches_scalar() {
+        let input: Vec<f32> = (0..200).map(|i| (i as f32 - 100.0) * 0.37).collect();
+        let mut batch_out = vec![0u16; 200];
+        f32_to_f16_batch_ieee754_rne(&input, &mut batch_out);
+
+        for (i, &v) in input.iter().enumerate() {
+            let scalar = f32_to_f16_ieee754_rne(v);
+            assert_eq!(batch_out[i], scalar,
+                "f32→f16 batch/scalar mismatch at {}: input={} batch=0x{:04X} scalar=0x{:04X}",
+                i, v, batch_out[i], scalar);
+        }
+    }
+}
