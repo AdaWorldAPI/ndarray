@@ -2360,6 +2360,22 @@ mod bf16_tests {
 // ════════════════════════════════════════════════════════════════════════════
 // F16 (IEEE 754 Half-Precision) — via F16C instructions (stable since Rust 1.68)
 //
+// ⚠️  THIS IS NOT FOR GGUF/MODEL WEIGHT CALIBRATION ⚠️
+//
+// This f16 is for: sensor data, audio, ARM interchange, memory-efficient storage.
+// For GGUF model weights → use the BF16 pipeline above (bf16_to_f32_batch etc.)
+//
+// ┌─────────┬──────┬──────────┬──────────┬────────────┬─────────────────┐
+// │ Format  │ Bits │ Exponent │ Mantissa │ Range      │ Use case        │
+// ├─────────┼──────┼──────────┼──────────┼────────────┼─────────────────┤
+// │ BF16    │  16  │ 8 (b127) │ 7 bits   │ ±3.4e38   │ GGUF weights    │
+// │ F16     │  16  │ 5 (b15)  │ 10 bits  │ ±65504    │ Sensors, audio  │
+// │ F32     │  32  │ 8 (b127) │ 23 bits  │ ±3.4e38   │ Compute         │
+// └─────────┴──────┴──────────┴──────────┴────────────┴─────────────────┘
+//
+// f32→f16 narrowing: 23-bit mantissa → 10-bit = 13 bits lost.
+// Max RNE error: ±0.5 ULP of f16 result (≈ 0.05% relative).
+//
 // IEEE 754 binary16: 1 sign + 5 exponent + 10 mantissa
 // Range: ±65504, precision: ~3.3 decimal digits
 // Subnormals: ±5.96×10⁻⁸ minimum positive
