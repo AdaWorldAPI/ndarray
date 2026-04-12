@@ -35,6 +35,12 @@ pub enum SimdTier {
     Avx2,
     /// SSE2 (128-bit, 4 × f32). Baseline on x86_64.
     Sse2,
+    /// NEON with dotprod (128-bit, 4 × f32 + int8 dot product).
+    /// ARMv8.2+: Pi 5 (A76), Orange Pi 5.
+    NeonDotProd,
+    /// NEON baseline (128-bit, 4 × f32).
+    /// ARMv8.0: Pi Zero 2 W (A53), Pi 3 (A53), Pi 4 (A72).
+    Neon,
     /// Scalar fallback (1 lane).
     Scalar,
     /// WebAssembly SIMD (128-bit, 4 × f32). Future tier.
@@ -48,7 +54,7 @@ impl SimdTier {
         match self {
             Self::Avx512 => 16,
             Self::Avx2 => 8,
-            Self::Sse2 | Self::WasmSimd128 => 4,
+            Self::Sse2 | Self::WasmSimd128 | Self::NeonDotProd | Self::Neon => 4,
             Self::Scalar => 1,
         }
     }
@@ -59,6 +65,8 @@ impl SimdTier {
             Self::Avx512 => "AVX-512",
             Self::Avx2 => "AVX2",
             Self::Sse2 => "SSE2",
+            Self::NeonDotProd => "NEON+dotprod (Pi 5 / A76)",
+            Self::Neon => "NEON (Pi 3/4 / A53/A72)",
             Self::Scalar => "Scalar",
             Self::WasmSimd128 => "WASM SIMD128",
         }
@@ -139,7 +147,25 @@ impl SimdDispatch {
         }
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(target_arch = "aarch64")]
+    fn detect() -> Self {
+        let caps = simd_caps();
+        let tier = if caps.asimd_dotprod {
+            SimdTier::NeonDotProd
+        } else {
+            SimdTier::Neon
+        };
+        // NEON uses the same scalar wrapper signatures — NEON intrinsics
+        // will be wired when simd_neon.rs types are activated. For now,
+        // dispatch to scalar which auto-vectorizes well on aarch64 with
+        // `-C target-feature=+neon` (mandatory on aarch64).
+        Self {
+            tier,
+            ..Self::scalar()
+        }
+    }
+
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     fn detect() -> Self {
         Self::scalar()
     }

@@ -7,8 +7,16 @@
 
 use std::sync::LazyLock;
 
-#[derive(Clone, Copy, PartialEq)]
-enum Tier { Avx512, Avx2, Scalar }
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Tier {
+    Avx512,
+    Avx2,
+    /// ARM NEON 128-bit + dotprod (Pi 5 / A76+). 4× int8 throughput.
+    NeonDotProd,
+    /// ARM NEON 128-bit baseline (Pi 3/4 / A53/A72). Pure float SIMD.
+    Neon,
+    Scalar,
+}
 
 static TIER: LazyLock<Tier> = LazyLock::new(|| {
     #[cfg(target_arch = "x86_64")]
@@ -16,6 +24,14 @@ static TIER: LazyLock<Tier> = LazyLock::new(|| {
         if is_x86_feature_detected!("avx512f") { return Tier::Avx512; }
         if is_x86_feature_detected!("avx2") { return Tier::Avx2; }
     }
+    #[cfg(target_arch = "aarch64")]
+    {
+        // NEON is mandatory on aarch64 — always available.
+        // dotprod (ARMv8.2+) distinguishes Pi 5 from Pi 3/4.
+        if std::arch::is_aarch64_feature_detected!("dotprod") { return Tier::NeonDotProd; }
+        return Tier::Neon;
+    }
+    #[allow(unreachable_code)]
     Tier::Scalar
 });
 
@@ -43,41 +59,49 @@ fn tier() -> Tier { *TIER }
 // These constants document the preferred width per tier.
 
 /// Preferred f64 SIMD width (elements per register).
-/// AVX-512: 8 lanes (__m512d). AVX2/scalar: 4 lanes (__m256d).
+/// AVX-512: 8 lanes (__m512d). AVX2: 4 lanes (__m256d). NEON: 2 lanes (float64x2_t).
 #[cfg(target_feature = "avx512f")]
 pub const PREFERRED_F64_LANES: usize = 8;
 #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
 pub const PREFERRED_F64_LANES: usize = 4;
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(target_arch = "aarch64")]
+pub const PREFERRED_F64_LANES: usize = 2; // NEON: float64x2_t = 2 × f64
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 pub const PREFERRED_F64_LANES: usize = 4; // scalar fallback: same as AVX2 shape
 
 /// Preferred f32 SIMD width.
-/// AVX-512: 16 lanes (__m512). AVX2/scalar: 8 lanes (__m256).
+/// AVX-512: 16 lanes (__m512). AVX2: 8 lanes (__m256). NEON: 4 lanes (float32x4_t).
 #[cfg(target_feature = "avx512f")]
 pub const PREFERRED_F32_LANES: usize = 16;
 #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
 pub const PREFERRED_F32_LANES: usize = 8;
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(target_arch = "aarch64")]
+pub const PREFERRED_F32_LANES: usize = 4; // NEON: float32x4_t = 4 × f32
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 pub const PREFERRED_F32_LANES: usize = 8;
 
 /// Preferred u64 SIMD width.
-/// AVX-512: 8 lanes. AVX2/scalar: 4 lanes.
+/// AVX-512: 8 lanes. AVX2: 4 lanes. NEON: 2 lanes (uint64x2_t).
 #[cfg(target_feature = "avx512f")]
 pub const PREFERRED_U64_LANES: usize = 8;
 #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
 pub const PREFERRED_U64_LANES: usize = 4;
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(target_arch = "aarch64")]
+pub const PREFERRED_U64_LANES: usize = 2; // NEON: uint64x2_t
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 pub const PREFERRED_U64_LANES: usize = 4;
 
 /// Preferred i16 SIMD width (for Base17 L1 on i16[17]).
 /// AVX-512: 32 lanes (__m512i via epi16). AVX2: 16 lanes (__m256i).
-/// Base17 has 17 dims — AVX-512 covers 32 (load 17 + 15 padding),
-/// AVX2 covers 16 + 1 scalar.
+/// NEON: 8 lanes (int16x8_t). Base17 has 17 dims — NEON needs 3 loads
+/// (8+8+1), A72 dual pipeline hides latency on the third.
 #[cfg(target_feature = "avx512f")]
 pub const PREFERRED_I16_LANES: usize = 32;
 #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
 pub const PREFERRED_I16_LANES: usize = 16;
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(target_arch = "aarch64")]
+pub const PREFERRED_I16_LANES: usize = 8; // NEON: int16x8_t
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 pub const PREFERRED_I16_LANES: usize = 16;
 
 // ============================================================================
