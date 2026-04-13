@@ -19,3 +19,4 @@ pub mod pvq;
 pub mod codec;
 pub mod mel;
 pub mod voice;
+pub mod modes;
