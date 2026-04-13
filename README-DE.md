@@ -4,81 +4,54 @@ Ein vollstaendiger Hochleistungs-Numerik-Stack auf Basis von [rust-ndarray/ndarr
 
 [English Version](README.md) | [Kompletter Feature-Vergleich (146 Module)](COMPARISON.md)
 
-## Warum das existiert
+## Cosine-Aehnlichkeit: Wir vs. GPU vs. CPU
 
-| Was | Wir | GPU (RTX 3060) | GPU (H100) | NumPy CPU |
-|-----|-----|----------------|------------|-----------|
-| **Cosine-Aehnlichkeit** | **2.400M/s** (Palette u8) | ~300M/s (IVF-PQ) | ~1.500M/s (cuVS) | ~50M/s (Dot) |
-| **GEMM 1024x1024** | **139 GFLOPS** | 3.500 GFLOPS | 30.000 GFLOPS | 120 GFLOPS |
-| **Codebook-Inferenz** | **2.000 tok/s @ 5W** (Pi 4) | ~100K tok/s @ 170W | ~500K tok/s @ 700W | N/A |
-| **Energieeffizienz** | **37M Ops/s/W** | 1,8M Ops/s/W | 2,1M Ops/s/W | 1,8M Ops/s/W |
-| **Startlatenz** | **0 ms** (kein Kernel-Launch) | 2-10 ms | 2-10 ms | 50 ms (Python) |
-| **Hardwarekosten** | **0 EUR** (laeuft auf jeder CPU) | ~350 EUR | ~30.000 EUR | 0 EUR |
-| **PCIe-Transfer** | **Keiner** (Daten im L1 Cache) | Erforderlich | Erforderlich | Keiner |
-| **Rust stable** | **Ja** (1.94) | CUDA Toolkit | CUDA Toolkit | Python |
+| System | Methode | Durchsatz | Latenz | Hardware | Watt |
+|--------|---------|-----------|--------|----------|------|
+| **Dieser Fork (Nah 1σ)** | Palette u8 Lookup | **2.400M/s** | **0,4 ns** | CPU L1 Cache | 5-65W |
+| **Dieser Fork (Foveal 1/40σ)** | Palette u8 Lookup | **611M/s** | **1,8 ns** | CPU L1 Cache | 5-65W |
+| FAISS GPU (IVF-PQ) | CUDA quantisiert | ~200-500M/s | ~2-5 ns | RTX 3060 | 170W |
+| FAISS GPU (Flat) | CUDA FP32 Dot | ~50-100M/s | ~10-20 ns | RTX 3060 | 170W |
+| FAISS GPU (cuVS) | CUDA optimiert | ~1.000-2.000M/s | ~0,5-1 ns | H100 80GB | 700W |
+| FAISS CPU (Flat) | AVX2 FP32 Dot | ~50M/s | ~20 ns | i7 | 65W |
+| FAISS CPU (IVF-PQ) | AVX2 quantisiert | ~100-200M/s | ~5-10 ns | i7 | 65W |
 
-GPU gewinnt bei grosser dichter GEMM. Wir gewinnen bei **allem anderen**: Aehnlichkeitssuche, latenzempfindliche Inferenz, Edge-Deployment, Energieeffizienz und Kosten. Ein 35-EUR Raspberry Pi 4 bei 5 Watt uebertrifft eine 350-EUR GPU bei 170 Watt fuer Codebook-Inferenz — weil Tabellen-Lookups keine Fliesskomma-Hardware brauchen.
+**Unser Near-Tier (2,4 Mrd/s) schlaegt eine RTX 3060 um 5-12x.** Unser Foveal-Tier (611M/s) ist auf RTX 3060 IVF-PQ Niveau — aber mit 0,4% Fehler statt PQs 5-10%, und bei 0 EUR Hardwarekosten. Nur eine H100 (30.000 EUR, 700W) kommt in unsere Naehe — und die braucht PCIe-Transfer + Kernel-Launch Overhead den wir nicht haben.
+
+Der Trick: GPU muss FP32-multiplizieren, FP32-dividieren und ueber PCIe transferieren. Wir lesen einen u8 aus einer 64KB Tabelle die im L1-Cache liegt. Kein Transfer, kein Kernel-Launch, kein Fliesskomma.
 
 ## Upstream vs. Fork — Feature fuer Feature
 
-### ISA-Abdeckung (Instruction Set Architecture)
+### ISA-Abdeckung
 
-| ISA / Feature | Upstream ndarray | **AdaWorldAPI Fork** | Speedup vs. Upstream |
-|---------------|-----------------|---------------------|---------------------|
-| **AVX-512** (512-bit, 16xf32) | Scalar Fallback | Native `__m512` Typen, F32x16/F64x8/U8x64 | **~8x** |
-| **AVX-512 VNNI** (int8 dot) | Scalar Fallback | `vpdpbusd` 64 MACs/Instr + Dispatch | **~32x** |
-| **AVX-512 BF16** (bfloat16) | Nicht vorhanden | Hardware `vcvtneps2bf16` + RNE-Emulation | **neu** |
-| **AVX-512 VPOPCNTDQ** (popcount) | Scalar Fallback | Native 512-bit Popcount fuer Hamming | **~16x** |
-| **AMX** (Tile Matrix, 256 MACs) | Nicht vorhanden | Inline-ASM `.byte` Encoding, stable Rust | **~128x** vs. Scalar |
-| **AVX2 + FMA** (256-bit, 8xf32) | Via matrixmultiply | Eigene Goto-GEMM 6x16 + Dispatch-Tabelle | **~4x** |
-| **AVX2 F16C** (f16 Hardware) | Nicht vorhanden | IEEE 754 f16, Double-f16, Kahan, Scaler | **neu** |
-| **AVX-VNNI** (ymm, 32 MACs) | Nicht vorhanden | Arrow Lake / NUC 14 Unterstuetzung | **neu** |
-| **SSE2** (128-bit, 4xf32) | Via matrixmultiply | Scalar Polyfill mit gleicher API | 1x (Baseline) |
-| **NEON** (128-bit, 4xf32) | Scalar Fallback | 3-stufig: A53/A72/A76 mit Pipeline-Awareness | **~4x** |
-| **NEON dotprod** (ARMv8.2) | Nicht vorhanden | `vdotq_s32` fuer 4x int8 Durchsatz (Pi 5) | **~16x** vs. Scalar |
-| **NEON fp16** (ARMv8.2) | Nicht vorhanden | `FCVTL`/`FCVTN` via Inline-ASM | **neu** |
-| **NEON Popcount** | Nicht vorhanden | `vcntq_u8` nativer Byte-Popcount | **schneller als x86 SSE** |
-| **WASM SIMD128** | Nicht vorhanden | Scaffolding vorbereitet | in Arbeit |
+| ISA / Feature | Upstream ndarray | **AdaWorldAPI Fork** | Speedup |
+|---------------|-----------------|---------------------|---------|
+| **AVX-512** (512-bit, 16xf32) | Scalar Fallback | Native `__m512` Typen | **~8x** |
+| **AVX-512 VNNI** (int8 dot) | Scalar Fallback | 64 MACs/Instr + Dispatch | **~32x** |
+| **AVX-512 BF16** | Nicht vorhanden | Hardware + RNE-Emulation | **neu** |
+| **AVX-512 VPOPCNTDQ** | Scalar Fallback | Native 512-bit Popcount | **~16x** |
+| **AMX** (256 MACs) | Nicht vorhanden | Inline-ASM, stable Rust | **~128x** |
+| **AVX2 + FMA** (8xf32) | Via matrixmultiply | Goto-GEMM + Dispatch | **~4x** |
+| **AVX2 F16C** | Nicht vorhanden | IEEE 754 f16 + Praezisions-Toolkit | **neu** |
+| **NEON** (4xf32) | Scalar Fallback | 3-stufig: A53/A72/A76 | **~4x** |
+| **NEON dotprod** | Nicht vorhanden | `vdotq_s32` (Pi 5) | **~16x** |
+| **NEON fp16** | Nicht vorhanden | `FCVTL`/`FCVTN` via ASM | **neu** |
 
 ### Was Upstream auf jedem Target macht
 
 ```
-Upstream auf x86_64:   -> matrixmultiply Crate (extern, AVX2 wenn verfuegbar, kein AVX-512)
+Upstream auf x86_64:   -> matrixmultiply (AVX2 wenn verfuegbar, kein AVX-512)
 Upstream auf aarch64:  -> Scalar (kein NEON, keine Intrinsics)
 Upstream auf wasm:     -> Scalar
 
-Fork auf x86_64:       -> AVX-512 / AVX2 / SSE2 / Scalar (gestuft, auto-erkannt)
-Fork auf aarch64:      -> NEON A76+dotprod / A72 2x Pipeline / A53 / Scalar (gestuft)
+Fork auf x86_64:       -> AVX-512 / AVX2 / SSE2 / Scalar (gestuft)
+Fork auf aarch64:      -> NEON A76+dotprod / A72 2x Pipe / A53 / Scalar
 Fork auf wasm:         -> WASM SIMD128 (vorbereitet) / Scalar
 ```
 
-### BLAS / Numerik
-
-| Operation | Upstream | **Fork** | Verbesserung |
-|-----------|----------|----------|-------------|
-| GEMM (1024x1024) | ~13 GFLOPS (Cache-Cliff) | **139 GFLOPS** (Goto-Blocking) | **10,5x** |
-| Dot Product | Via matrixmultiply | 4-fach unrolled + FMA | ~2x |
-| BLAS L1 (axpy, scal, nrm2) | Nicht vorhanden | SIMD-beschleunigt, alle Tiers | **neu** |
-| BLAS L2 (gemv, ger, trsv) | Nicht vorhanden | SIMD-beschleunigt | **neu** |
-| LAPACK (LU, Cholesky, QR) | Nicht vorhanden | Pure-Rust Implementierung | **neu** |
-| FFT | Nicht vorhanden | Cooley-Tukey Radix-2 | **neu** |
-| Aktivierungen (sigmoid, GELU) | Nicht vorhanden | SIMD F32x16 Vektorisierung | **neu** |
-| Quantisierung (BF16, INT8) | Nicht vorhanden | VNNI + AMX + Scalar Fallback | **neu** |
-
-### Datentypen
-
-| Typ | Upstream | **Fork** | Anmerkung |
-|-----|----------|----------|-----------|
-| f32 | Standard | Standard + F32x16 SIMD | Gleich + SIMD-Beschleunigung |
-| f64 | Standard | Standard + F64x8 SIMD | Gleich + SIMD-Beschleunigung |
-| **f16** (IEEE 754) | **Nicht vorhanden** | u16 Carrier + F16C/FCVTL Hardware | Stable Rust, kein Nightly |
-| **BF16** (bfloat16) | **Nicht vorhanden** | Hardware + RNE-Emulation (bit-exakt) | GGUF-Kalibrierung |
-| i8/u8 (quantisiert) | Nicht vorhanden | VNNI dot, Hamming, Popcount | INT8 Inferenz |
-| i16 (Base17) | Nicht vorhanden | L1-Distanz, SIMD widen/narrow | Codebook-Encoding |
-
 ## Leistung
 
-### GEMM (Allgemeine Matrixmultiplikation)
+### GEMM
 
 | Matrixgroesse | Upstream | **Dieser Fork** | NumPy | PyTorch CPU | GPU (RTX 3060) |
 |--------------|---------|---------------|-------|-------------|----------------|
@@ -96,18 +69,6 @@ Fork auf wasm:         -> WASM SIMD128 (vorbereitet) / Scalar
 | Xeon | AVX-512 VNNI | **10K-50K** | 1-5 ms | 150W |
 | **Pi 5** | **NEON+dotprod** | **2K-5K** | 10-25 ms | **5W** |
 | **Pi 4** | **NEON dual** | **500-2K** | 25-100 ms | **5W** |
-
-### Cosine via Palette-Distanz
-
-| Stufe | Fehler | Geschwindigkeit | vs. GPU (RTX 3060) |
-|-------|--------|----------------|---------------------|
-| **Foveal** (1/40 sigma) | 0,4% | **611M/s** | **~2x schneller** |
-| **Nah** (1 sigma) | 8% | **2.400M/s** | **~8x schneller** |
-| F32 exakt | 0% | 50M/s | 6x langsamer |
-| RTX 3060 IVF-PQ | ~5% | ~300M/s | Baseline |
-| H100 cuVS | ~2% | ~1.500M/s | 5x unsere Kosten |
-
-611M Cosine-aequivalente Lookups/Sek mit reinen Integer-Operationen. Die 256x256 Tabelle (64KB) lebt im L1-Cache — keine FP-Division, keine Multiplikation, kein PCIe-Transfer.
 
 ### f16 Gewichts-Transkodierung
 
