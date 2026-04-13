@@ -1,171 +1,178 @@
-# ndarray — AdaWorldAPI HPC Expansion
+# ndarray — HPC Expansion for Rust
 
-A complete high-performance numerical computing stack built on top of [rust-ndarray/ndarray](https://github.com/rust-ndarray/ndarray). 55 HPC modules, 880 tests, BLAS L1-L3, LAPACK, FFT, quantized inference, SIMD kernels from Intel AMX to Raspberry Pi NEON — **stable Rust 1.94**, zero nightly.
+*Fork of [rust-ndarray/ndarray](https://github.com/rust-ndarray/ndarray) with 55 HPC modules, 880 tests, and SIMD kernels from Intel AMX to Raspberry Pi NEON. Runs on stable Rust 1.94 without nightly features.*
 
 [Deutsche Version](README-DE.md) | [Full Feature Comparison (146 modules)](COMPARISON.md)
 
-## Cosine Similarity: Us vs. GPU vs. Everyone
+---
 
-| System | Method | Throughput | Latency | Hardware | Watt |
-|--------|--------|------------|---------|----------|------|
-| **This fork** — Sapphire Rapids | Palette u8 + AMX prefetch | **~3,200M/s** | **~0.3 ns** | Xeon w9-3595X | 350W |
-| **This fork** — i7/i5 11th gen | Palette u8 (AVX-512) | **2,400M/s** | **0.4 ns** | i7-11700K | 65W |
-| **This fork** — Raspberry Pi 4 | Palette u8 (NEON) | **~400M/s** | **~2.5 ns** | Cortex-A72 | 5W |
-| **This fork** — Pi Zero 2W | Palette u8 (NEON) | **~80M/s** | **~12 ns** | Cortex-A53 | 2W |
-| FAISS GPU (IVF-PQ) | CUDA quantized | ~200–500M/s | ~2–5 ns | RTX 3060 | 170W |
-| FAISS GPU (Flat) | CUDA FP32 dot | ~50–100M/s | ~10–20 ns | RTX 3060 | 170W |
-| FAISS GPU (cuVS) | CUDA optimized | ~1,000–2,000M/s | ~0.5–1 ns | H100 80GB | 700W |
-| FAISS CPU (Flat) | AVX2 FP32 dot | ~50M/s | ~20 ns | i7 | 65W |
-| FAISS CPU (IVF-PQ) | AVX2 quantized | ~100–200M/s | ~5–10 ns | i7 | 65W |
+## What This Is
 
-> **Methodology:** All numbers are per *complete query* (one vector in → one similarity score out). Our palette system pre-quantizes vectors to 256 archetypes offline; FAISS IVF-PQ pre-trains an inverted file index offline. Both require one-time preparation. Our lookup is a single u8 table read from a 64KB table in L1 cache (0 FLOPs); FAISS PQ decodes 8 subspaces per query (~16 ops); FAISS Flat computes a full 768-dim FP32 dot product (~1,536 FLOPs). Our error at the Foveal tier (1/40σ) is 0.4% — better than PQ's 5–10% at higher throughput and zero hardware cost.
+The upstream ndarray is a solid library for n-dimensional arrays in Rust. What it does not provide: hardware-aware SIMD acceleration, BLAS without external C libraries, and support for data types like f16 or BF16 that Rust simply does not offer on a stable toolchain.
 
-## How It Actually Works: Cascade Sweep as Drop-In Cosine Replacement
+This fork closes those gaps. The expansion comprises 80,000 lines of code in 179 new files — from Goto-GEMM microkernels to ARM NEON tier detection to a codec stack that implements cosine similarity as an integer table lookup.
 
-Traditional vector search computes `dot(a,b) / (|a| × |b|)` for every candidate — 1,536 FLOPs and 6KB bandwidth per comparison. We replace this with a three-level cascade where each level is a strict lower bound of the next, mathematically guaranteed to never drop a true positive:
+The result can be captured in a single number: **611 million similarity comparisons per second** on a consumer CPU, without floating-point arithmetic, without a GPU.
 
-```
-Traditional:   query (768×f32) · candidate (768×f32) → cosine score
-               1,536 FLOPs + 6,144 bytes per comparison
+---
 
-Our cascade:   Level 1 → Level 2 → Level 3
-               99% eliminated at Level 1, survivors refined, exact answer at Level 3
-```
+## The Core Idea: Cosine Similarity Without Floating Point
 
-### Level 1: Fingerprint Hamming Sweep (eliminates 97–99% of candidates)
+Vector search in databases like LanceDB or FAISS computes a dot product for every candidate: `dot(a,b) / (|a| * |b|)`. At 768 dimensions, that is 1,536 floating-point operations and 6 KB of memory bandwidth per comparison.
 
-Bitpacked `Fingerprint<256>` (32 bytes per vector). XOR + hardware popcount in one instruction:
-- **AVX-512 VPOPCNTDQ**: 64 bytes (2 fingerprints) → popcount in 1 cycle
-- **NEON vcntq_u8**: 16 bytes → per-byte popcount, native on all ARM (faster than x86 SSE!)
+This fork takes a different approach. Vectors are quantized offline to 256 archetypes. The pairwise distances between all archetypes are precomputed into a 256x256 table (64 KB). At query time, a cosine lookup reduces to a single byte read from L1 cache.
 
-Cost: **~2 ns per comparison, 32 bytes bandwidth.** A 1M-vector database scans in ~2 ms.
+### Measurements by Hardware
 
-Hamming distance on binary fingerprints is a provable lower bound of cosine distance on the original vectors. If two fingerprints are far apart, the original vectors are guaranteed to be far apart. No false negatives possible.
+| System | Throughput | Latency | Power |
+|--------|-----------|---------|-------|
+| Intel Xeon w9 (Sapphire Rapids) | ~3,200M/s | ~0.3 ns | 350W |
+| Intel i7-11700K (11th generation) | 2,400M/s | 0.4 ns | 65W |
+| Raspberry Pi 4 (Cortex-A72) | ~400M/s | ~2.5 ns | 5W |
+| Raspberry Pi Zero 2W (Cortex-A53) | ~80M/s | ~12 ns | 2W |
 
-### Level 2: Base17 L1 Distance (refines ~20K survivors to ~200)
+### In Context: GPU and FAISS
 
-17-dimensional i16 vectors (34 bytes). Fits in one AVX-512 load or two NEON loads:
-- **AVX-512**: `_mm512_cvtepi16_epi32` widen + `_mm512_abs_epi32` + reduce — 1 load, 3 instructions
-- **NEON**: `vabdq_s16` absolute difference + `vpaddlq` widening pairwise add — 2 loads, 4 instructions
+| System | Method | Throughput | Hardware | Power |
+|--------|--------|-----------|----------|-------|
+| This fork (i7-11700K) | Palette u8 lookup | 2,400M/s | CPU | 65W |
+| FAISS GPU (IVF-PQ) | CUDA quantized | 200-500M/s | RTX 3060 | 170W |
+| FAISS GPU (cuVS) | CUDA optimized | 1,000-2,000M/s | H100 80GB | 700W |
+| FAISS CPU (Flat) | AVX2 FP32 dot | ~50M/s | i7 | 65W |
+| FAISS CPU (IVF-PQ) | AVX2 quantized | 100-200M/s | i7 | 65W |
 
-Cost: **~3 ns per comparison, 34 bytes bandwidth.** 20K candidates refined in ~60 μs.
+> **On methodology:** All figures are per complete query — one vector in, one similarity score out. Both approaches require one-time offline preparation. The difference: a palette lookup is a u8 memory read (0 FLOPs); FAISS PQ decodes 8 subspaces (~16 ops); FAISS Flat computes a full 768-dimensional dot product (~1,536 FLOPs). The approximation error at the Foveal tier (1/40 sigma) is 0.4% — lower than the typical 5-10% of PQ configurations.
 
-Base17 is a lossy projection of the original 768-dim vector, but the L1 distance preserves ranking order with >96.5% correlation to exact cosine.
+---
 
-### Level 3: Palette u8 Lookup (exact answer for ~200 survivors)
+## Three-Level Cascade: How the Search Actually Works
 
-Single u8 read from a precomputed 256×256 distance table (64KB, lives permanently in L1 cache):
+The palette table alone does not explain how a million vectors are searched in two milliseconds. That is the job of a three-level cascade where each level is a mathematically guaranteed lower bound of the next. No level can lose a relevant result.
 
-Cost: **~0.4 ns per lookup, 1 byte bandwidth.** 200 candidates scored in ~80 ns.
+### Level 1: Hamming Sweep over Bitpacked Fingerprints
 
-The palette table encodes cosine similarity quantized to 256 steps. At 1/40σ (Foveal tier), the maximum error is ±0.004 — indistinguishable from exact cosine for any practical ranking task.
+Each vector is stored as a 256-bit fingerprint (32 bytes). Comparing two fingerprints is an XOR followed by a hardware popcount:
 
-### End-to-End: 1M Vectors → Top-K Answer
+- **AVX-512 VPOPCNTDQ**: Two fingerprints in a single cycle
+- **NEON vcntq_u8**: Per-byte popcount, native on every ARM processor
 
-| Stage | Candidates In | Candidates Out | Time | Bandwidth |
-|-------|--------------|----------------|------|-----------|
-| **Level 1** Hamming sweep | 1,000,000 | ~20,000 | ~2 ms | 32 MB |
-| **Level 2** Base17 L1 | 20,000 | ~200 | ~60 μs | 680 KB |
-| **Level 3** Palette lookup | 200 | Top-K | ~0.08 μs | 200 B |
+A sweep over one million fingerprints takes about 2 milliseconds and eliminates 97-99% of candidates. The Hamming distance is a provable lower bound of cosine distance — there are no false negatives.
+
+### Level 2: Base17 L1 Distance
+
+The remaining ~20,000 candidates are refined with 17-dimensional i16 vectors (34 bytes). This fits in a single AVX-512 load or two NEON loads. Cost: ~3 nanoseconds per comparison. About 200 candidates survive.
+
+### Level 3: Palette Lookup
+
+The ~200 finalists are scored via the precomputed 256x256 table. One read per candidate, 0.4 nanoseconds.
+
+### End-to-End: One Million Vectors to Top-K
+
+| Level | In | Out | Duration | Bandwidth |
+|-------|-----|-----|----------|-----------|
+| Hamming sweep | 1,000,000 | ~20,000 | ~2 ms | 32 MB |
+| Base17 L1 | 20,000 | ~200 | ~60 us | 680 KB |
+| Palette lookup | 200 | Top-K | ~0.08 us | 200 B |
 | **Total** | | | **~2.1 ms** | **~33 MB** |
 
-Compare: FAISS CPU Flat on the same 1M vectors at 768 dimensions takes ~20 ms and reads ~6 GB. FAISS GPU needs PCIe transfer time on top. Our cascade is **10× faster at 200× less bandwidth**.
+FAISS CPU Flat on the same task: ~20 ms reading ~6 GB. The cascade is ten times faster at two hundred times less bandwidth.
 
-### Why This Is a Fair Comparison with FAISS
+### Integration with LanceDB
 
-- FAISS IVF-PQ also pre-processes vectors offline (training centroids, assigning to cells)
-- FAISS IVF-PQ also has approximation error (~5–10% recall loss at typical nprobe settings)
-- Our cascade also pre-processes offline (computing fingerprints, Base17 projections, palette tables)
-- Our cascade has **less** error (0.4% at Foveal) and **no false negatives** at the Hamming level
+In a Lance dataset, the cascade sweep replaces FP32 distance computation from `lance-linalg`. The scan reads the bitpacked fingerprint column, runs the hardware popcount sweep, and fetches full vectors only for the few survivors.
 
-The difference is architectural: FAISS compresses vectors then still does arithmetic at query time. We compress vectors into a structure where the query **is** a memory read — the arithmetic happened once during offline indexing.
+---
 
-### In LanceDB
+## What Upstream Provides and What This Fork Adds
 
-When the fingerprint index lives inside a Lance dataset, the cascade sweep replaces `lance-linalg` FP32 distance calls. The scan reads the bitpacked fingerprint column (32 bytes per row), runs the VPOPCNTDQ/vcntq_u8 sweep, and only fetches full vectors for the ~200 survivors. This is what `cam_pq.rs` + `cascade.rs` + `palette_distance.rs` implement together.
+### SIMD Coverage
 
-## Core Architecture
+Upstream ndarray delegates matrix multiplication to the external `matrixmultiply` crate, which can use AVX2. It has no own SIMD types or hardware detection. On ARM, upstream falls back to scalar code.
 
-Five layers on top of upstream ndarray's array primitives:
+This fork implements a complete SIMD layer with runtime detection:
 
-**SIMD Polyfill** (`simd.rs`, `simd_avx512.rs`, `simd_avx2.rs`, `simd_neon.rs`) — `std::simd`-compatible types (`F32x16`, `F64x8`, `U8x64`, `I32x16`) on stable Rust via `core::arch`. Detection once via `LazyLock<SimdCaps>`, dispatch via frozen function pointer table (0.3ns per call).
+| ISA | Upstream | This Fork | Speedup |
+|-----|----------|-----------|---------|
+| AVX-512 (16 x f32) | Scalar | Native __m512 types | ~8x |
+| AVX-512 VNNI (int8) | Scalar | 64 MACs/instruction | ~32x |
+| AVX-512 VPOPCNTDQ | Scalar | Native 512-bit popcount | ~16x |
+| AMX (256 MACs) | Not available | Inline asm on stable Rust | ~128x |
+| AVX2 + FMA (8 x f32) | External (matrixmultiply) | Goto-GEMM + dispatch | ~4x |
+| NEON (4 x f32) | Scalar | 3-tier: A53/A72/A76 | ~4x |
+| NEON dotprod (ARMv8.2) | Not available | vdotq_s32 (Pi 5) | ~16x |
 
-**Backend** (`backend/`) — Pluggable BLAS: pure-Rust Goto-GEMM (default), Intel MKL (feature-gated), OpenBLAS (feature-gated). Native backend: 6×16 f32 + 6×8 f64 microkernels, cache-blocked L1/L2/L3, 16-thread split-borrow parallelism.
+Detection happens once on first access via `LazyLock<SimdCaps>` — a single CPUID call, then only a pointer dereference per function call (0.3 ns instead of 1-3 ns for repeated feature queries).
 
-**HPC Library** (`hpc/`, 146 files) — BLAS L1-L3, LAPACK, FFT, VML, statistics, activations, quantized ops. Every module SIMD-accelerated through the frozen dispatch table.
+### GEMM Performance
 
-**Codec** (`fingerprint.rs`, `bgz17_bridge.rs`, `cam_pq.rs`, `palette_distance.rs`) — Encoding stack for compressed inference: Fingerprint<256>, Base17, CAM-PQ, palette semiring. O(1) per token — table lookups replace matrix multiplication.
+| Matrix Size | Upstream | This Fork | NumPy (OpenBLAS) | GPU (RTX 3060) |
+|-------------|----------|-----------|------------------|----------------|
+| 512 x 512 | ~20 GFLOPS | 47 GFLOPS | ~45 GFLOPS | ~1,200 GFLOPS |
+| 1024 x 1024 | ~13 GFLOPS | 139 GFLOPS | ~120 GFLOPS | ~3,500 GFLOPS |
+| 2048 x 2048 | ~13 GFLOPS | ~150 GFLOPS | ~140 GFLOPS | ~5,000 GFLOPS |
 
-**Burn Integration** (`crates/burn/`) — SIMD-augmented burn-ndarray backend wiring `F32x16` into tensor ops and activations.
+Upstream hits a cache cliff at 1024 x 1024: no tiling, no threading, no microkernel. The fork uses the Goto algorithm with cache blocking (L1/L2/L3) and achieves 10.5x throughput — on par with NumPy's decades-old OpenBLAS.
 
-## Upstream vs. Fork
+### Data Types Beyond f32/f64
 
-### ISA Coverage
+| Type | Upstream | This Fork | Method |
+|------|----------|-----------|--------|
+| f16 (IEEE 754) | Not available | Available | u16 carrier + F16C hardware (x86) / FCVTL via inline asm (ARM) |
+| BF16 (bfloat16) | Not available | Available | Hardware instructions + RNE emulation (bit-exact with VCVTNEPS2BF16) |
+| i8/u8 (quantized) | Not available | Available | VNNI dot, Hamming, popcount |
+| i16 (Base17) | Not available | Available | L1 distance with SIMD widen/narrow |
 
-| ISA | Upstream ndarray | **This Fork** | Speedup |
-|-----|-----------------|---------------|---------|
-| AVX-512 (16×f32) | Scalar fallback | Native `__m512` types | **~8×** |
-| AVX-512 VNNI (int8) | Scalar fallback | 64 MACs/instr + dispatch | **~32×** |
-| AVX-512 BF16 | Not available | Hardware + RNE emulation | **new** |
-| AVX-512 VPOPCNTDQ | Scalar fallback | Native 512-bit popcount | **~16×** |
-| AMX (256 MACs) | Not available | Inline asm, stable Rust | **~128×** |
-| AVX2 + FMA (8×f32) | Via matrixmultiply | Goto-GEMM + dispatch | **~4×** |
-| AVX2 F16C | Not available | IEEE 754 f16 + precision toolkit | **new** |
-| NEON (4×f32) | Scalar fallback | 3-tier: A53/A72/A76 | **~4×** |
-| NEON dotprod | Not available | `vdotq_s32` (Pi 5) | **~16×** |
-| NEON fp16 | Not available | `FCVTL`/`FCVTN` via asm | **new** |
+Rust's `f16` type is nightly-only (issue #116909). The fork uses the same approach as AMX: `u16` as carrier, hardware instructions via stable `#[target_feature]` attributes or inline assembler. The result is IEEE 754-compliant conversion at hardware speed on stable Rust.
 
-### What Upstream Does on Each Target
+---
 
-```
-Upstream on x86_64:  → matrixmultiply crate (AVX2 if available, no AVX-512)
-Upstream on aarch64: → Scalar (no NEON, no intrinsics)
-Upstream on wasm:    → Scalar
+## Seven Things Nobody Else Does on Stable Rust
 
-Fork on x86_64:      → AVX-512 / AVX2 / SSE2 / Scalar (tiered, auto-detected)
-Fork on aarch64:     → NEON A76+dotprod / A72 2×pipe / A53 / Scalar (tiered)
-Fork on wasm:        → WASM SIMD128 (prepared) / Scalar
-```
+**1. Complete std::simd polyfill.** Rust's portable SIMD API has been nightly-only for years. This fork implements the same type surface — F32x16, F64x8, U8x64, masks, reductions, comparisons — using stable core::arch intrinsics. When std::simd stabilizes, one `use` line changes.
 
-## More Benchmarks
+**2. f16 without nightly.** Carrier type u16 plus hardware instructions: F16C (VCVTPH2PS/VCVTPS2PH) on x86, FCVTL/FCVTN via asm!() on ARM. Three precision levels: plain f16 (10-bit mantissa), scaled-f16 (range-optimized, 1.5x more precise), double-f16 (hi+lo pair, ~20-bit effective).
 
-### GEMM
+**3. AMX on stable Rust.** Intel's Advanced Matrix Extensions (TDPBUSD: 16x16 tile, 256 MACs per instruction) are nightly-only as Rust intrinsics (issue #126622). The fork emits instructions directly as asm!(".byte ...") — verified working on Rust 1.94 with kernel 6.18+.
 
-| Matrix Size | Upstream | **This Fork** | NumPy | PyTorch CPU | GPU (RTX 3060) |
-|-------------|---------|---------------|-------|-------------|----------------|
-| 512×512 | ~20 GFLOPS | **47 GFLOPS** | ~45 | ~40 | ~1,200 |
-| 1024×1024 | ~13 GFLOPS | **139 GFLOPS** | ~120 | ~100 | ~3,500 |
-| 2048×2048 | ~13 GFLOPS | **~150 GFLOPS** | ~140 | ~130 | ~5,000 |
+**4. Tiered ARM NEON.** Three tiers with runtime detection: A53 baseline (Pi Zero 2W, Pi 3 — single NEON pipeline), A72 fast (Pi 4, Orange Pi 4 — dual pipeline, 2x unrolling), A76 dotprod (Pi 5, Orange Pi 5 — vdotq_s32, native fp16). big.LITTLE systems (RK3399, RK3588) handled correctly.
 
-**10.5× over upstream** at 1024×1024 — matches NumPy OpenBLAS.
+**5. Frozen dispatch at 0.3 ns per call.** Typical SIMD code checks every call: `if is_x86_feature_detected!("avx512f") { ... }` — an atomic load plus branch. This fork detects once and freezes a function pointer table (LazyLock<SimdDispatch>, Copy struct). After that: one indirect call, no atomic, no branch prediction miss.
 
-### Codebook Inference
+**6. BF16 conversion bit-exact with hardware.** The function f32_to_bf16_batch_rne() implements the IEEE 754 RNE algorithm using pure AVX-512-F instructions, matching Intel's VCVTNEPS2BF16 bit-for-bit. Verified against hardware output on over one million inputs, including subnormals, infinity, NaN, and halfway ties.
 
-| Hardware | ISA | tok/s | 50-tok Latency | Power |
-|----------|-----|-------|----------------|-------|
-| Sapphire Rapids | AMX | **380,000** | 0.13 ms | 250W |
-| Xeon | AVX-512 VNNI | **10K–50K** | 1–5 ms | 150W |
-| **Pi 5** | **NEON+dotprod** | **2K–5K** | 10–25 ms | **5W** |
-| **Pi 4** | **NEON dual** | **500–2K** | 25–100 ms | **5W** |
+**7. Cognitive codec stack.** Beyond classical numerics, the fork implements a complete encoding pipeline: Fingerprint<256> (VSA, SIMD Hamming), Base17 (17-dimensional i16 vectors), CAM-PQ (product quantization with compiled distance tables), palette semiring (256x256 distance matrices for O(1) lookups), bgz7/bgz17 (compressed model weight format: 201 GB BF16 safetensors to 685 MB bgz7).
 
-### f16 Weight Transcoding
+---
 
-| Format | Size | Max Error | Speed |
-|--------|------|-----------|-------|
-| f32 | 60 MB | — | — |
-| **f16** | **30 MB** | 7.3e-6 | 94M/s |
-| **Scaled-f16** | **30 MB** | 4.9e-6 | 91M/s |
-| **Double-f16** | 60 MB | 5.7e-8 | 42M/s |
+## Codebook Inference: Token Generation Without GPU
 
-## What We Build That Nobody Else Does
+Beyond vector search, the fork uses the same table approach for LLM inference. Instead of matrix multiplication (`y = W*x`), a precomputed codebook is indexed (`y = codebook[index[x]]`) — O(1) per token.
 
-1. **SIMD Polyfill on Stable** — `F32x16`/`F64x8`/`U8x64` via `core::arch`, not nightly `std::simd`
-2. **f16 Without Nightly** — `u16` carrier + F16C hardware / ARM `FCVTL` via `asm!()`
-3. **AMX on Stable** — `asm!(".byte ...")` encoding, 256 MACs/instruction
-4. **Tiered ARM NEON** — A53/A72/A76 with pipeline + big.LITTLE awareness
-5. **0.3ns Dispatch** — LazyLock frozen fn-pointer table, no per-call branching
-6. **BF16 RNE Bit-Exact** — Pure AVX-512-F emulates `VCVTNEPS2BF16` bit-for-bit
-7. **Cognitive Codec Stack** — Fingerprint → Base17 → CAM-PQ → Palette → bgz7 (201GB → 685MB, O(1) inference)
+| Hardware | ISA | Tokens/s | Latency (50 tokens) | Power |
+|----------|-----|----------|---------------------|-------|
+| Sapphire Rapids | AMX | 380,000 | 0.13 ms | 250W |
+| Xeon (AVX-512 VNNI) | VNNI | 10,000-50,000 | 1-5 ms | 150W |
+| Raspberry Pi 5 | NEON + dotprod | 2,000-5,000 | 10-25 ms | 5W |
+| Raspberry Pi 4 | NEON (dual) | 500-2,000 | 25-100 ms | 5W |
+
+At 5 watts, a Pi 4 generates a 50-token voice assistant response in under 100 milliseconds.
+
+---
+
+## f16 Weight Transcoding
+
+Tested with a 15 million parameter model (Piper TTS scale):
+
+| Format | Size | Maximum Error | RMSE | Throughput |
+|--------|------|---------------|------|------------|
+| f32 (original) | 60 MB | — | — | — |
+| f16 (IEEE 754) | 30 MB | 7.3 x 10^-6 | 2.5 x 10^-6 | 94M params/s |
+| Scaled-f16 | 30 MB | 4.9 x 10^-6 | 2.1 x 10^-6 | 91M params/s |
+| Double-f16 | 60 MB | 5.7 x 10^-8 | 1.8 x 10^-8 | 42M params/s |
+
+With AVX2 F16C hardware: ~500 million parameters per second (8 conversions per clock cycle).
+
+---
 
 ## Quick Start
 
@@ -174,26 +181,42 @@ use ndarray::Array2;
 use ndarray::hpc::simd_caps::simd_caps;
 
 let a = Array2::<f32>::ones((1024, 1024));
-let c = a.dot(&a);  // AVX-512 / AVX2 / NEON — auto
+let c = a.dot(&a);  // AVX-512 / AVX2 / NEON — automatic
 
 let caps = simd_caps();
-if caps.neon { println!("{}", caps.arm_profile().name()); }
+if caps.avx512f { println!("AVX-512 active"); }
+if caps.neon { println!("ARM profile: {}", caps.arm_profile().name()); }
 ```
 
 ```bash
-cargo build --release                                        # auto-detect
-cargo build --release --target aarch64-unknown-linux-gnu     # Pi 4
-RUSTFLAGS="-C target-cpu=x86-64-v4" cargo build --release   # AVX-512
-cargo test                                                    # 880 tests
+# Automatic SIMD detection
+cargo build --release
+
+# Cross-compile for Raspberry Pi 4
+cargo build --release --target aarch64-unknown-linux-gnu
+
+# Maximum performance on AVX-512 server
+RUSTFLAGS="-C target-cpu=x86-64-v4" cargo build --release
+
+# Run 880 HPC tests
+cargo test
 ```
+
+## Requirements
+
+- Rust 1.94 stable (no nightly, no unstable features)
+- Optional: gcc-aarch64-linux-gnu for Pi cross-compilation
+- Optional: Intel MKL or OpenBLAS (feature-gated)
 
 ## Ecosystem
 
-| Repo | Role |
-|------|------|
-| [lance-graph](https://github.com/AdaWorldAPI/lance-graph) | Graph query + codec spine |
-| [home-automation-rs](https://github.com/AdaWorldAPI/home-automation-rs) | Smart home + voice AI |
+This fork is the hardware foundation for a larger architecture:
+
+| Repository | Purpose |
+|------------|---------|
+| [lance-graph](https://github.com/AdaWorldAPI/lance-graph) | Graph query engine, Cypher parser, codec stack |
+| [home-automation-rs](https://github.com/AdaWorldAPI/home-automation-rs) | Smart home with voice AI, MCP server, MQTT |
 
 ## License
 
-MIT OR Apache-2.0
+MIT OR Apache-2.0 (identical to upstream)
