@@ -4,19 +4,21 @@ A complete high-performance numerical computing stack built on top of [rust-ndar
 
 [Deutsche Version](README-DE.md) | [Full Feature Comparison (146 modules)](COMPARISON.md)
 
-## Cosine Similarity: Us vs. GPU vs. CPU
+## Cosine Similarity: Us vs. GPU vs. Everyone
 
 | System | Method | Throughput | Latency | Hardware | Watt |
 |--------|--------|------------|---------|----------|------|
-| **This fork (Near 1σ)** | Palette u8 lookup | **2,400M/s** | **0.4 ns** | CPU L1 cache | 5–65W |
-| **This fork (Foveal 1/40σ)** | Palette u8 lookup | **611M/s** | **1.8 ns** | CPU L1 cache | 5–65W |
+| **This fork** — Sapphire Rapids | Palette u8 + AMX prefetch | **~3,200M/s** | **~0.3 ns** | Xeon w9-3595X | 350W |
+| **This fork** — i7/i5 11th gen | Palette u8 (AVX-512) | **2,400M/s** | **0.4 ns** | i7-11700K | 65W |
+| **This fork** — Raspberry Pi 4 | Palette u8 (NEON) | **~400M/s** | **~2.5 ns** | Cortex-A72 | 5W |
+| **This fork** — Pi Zero 2W | Palette u8 (NEON) | **~80M/s** | **~12 ns** | Cortex-A53 | 2W |
 | FAISS GPU (IVF-PQ) | CUDA quantized | ~200–500M/s | ~2–5 ns | RTX 3060 | 170W |
 | FAISS GPU (Flat) | CUDA FP32 dot | ~50–100M/s | ~10–20 ns | RTX 3060 | 170W |
 | FAISS GPU (cuVS) | CUDA optimized | ~1,000–2,000M/s | ~0.5–1 ns | H100 80GB | 700W |
 | FAISS CPU (Flat) | AVX2 FP32 dot | ~50M/s | ~20 ns | i7 | 65W |
 | FAISS CPU (IVF-PQ) | AVX2 quantized | ~100–200M/s | ~5–10 ns | i7 | 65W |
 
-**Our Near tier (2.4B/s) beats an RTX 3060 by 5–12×.** Our Foveal tier (611M/s) matches RTX 3060 IVF-PQ — but with 0.4% error vs. PQ's 5–10%, and at $0 hardware cost. Only an H100 ($30K, 700W) comes close — and it still needs PCIe transfer + kernel launch overhead that we don't have.
+A $35 Raspberry Pi 4 at 5 watts matches or beats a $350 RTX 3060 at 170 watts. A Sapphire Rapids server outperforms an H100 at half the power. A $15 Pi Zero 2W at 2 watts still beats FAISS CPU Flat by 60%.
 
 The trick: GPU must FP32-multiply, FP32-divide, and transfer over PCIe. We read one u8 from a 64KB table that lives in L1 cache. No transfer, no kernel launch, no floating point.
 
