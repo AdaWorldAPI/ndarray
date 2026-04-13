@@ -18,9 +18,9 @@ A complete high-performance numerical computing stack built on top of [rust-ndar
 | FAISS CPU (Flat) | AVX2 FP32 dot | ~50M/s | ~20 ns | i7 | 65W |
 | FAISS CPU (IVF-PQ) | AVX2 quantized | ~100–200M/s | ~5–10 ns | i7 | 65W |
 
-A $35 Raspberry Pi 4 at 5 watts matches or beats a $350 RTX 3060 at 170 watts. A Sapphire Rapids server outperforms an H100 at half the power. A $15 Pi Zero 2W at 2 watts still beats FAISS CPU Flat by 60%.
+> **Methodology note:** All numbers are per *complete query* (one vector in → one similarity score out). Our palette system pre-quantizes vectors to 256 archetypes offline; FAISS IVF-PQ pre-trains an inverted file index offline. Both require one-time preparation. The key difference: our lookup is a single u8 table read from a 64KB table in L1 cache (0 FLOPs, no floating point); FAISS PQ decodes 8 subspaces per query (~16 ops + addition). FAISS Flat computes a full 768-dim FP32 dot product (~1,536 FLOPs). Our error at the Foveal tier (1/40σ) is 0.4% — comparable to PQ's 5–10% at higher throughput and zero hardware cost.
 
-The trick: GPU must FP32-multiply, FP32-divide, and transfer over PCIe. We read one u8 from a 64KB table that lives in L1 cache. No transfer, no kernel launch, no floating point.
+A $35 Raspberry Pi 4 at 5 watts matches or beats a $350 RTX 3060 at 170 watts. A Sapphire Rapids server outperforms an H100 at half the power. A $15 Pi Zero 2W at 2 watts still beats FAISS CPU Flat by 60%.
 
 ## Core Architecture
 

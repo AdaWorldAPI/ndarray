@@ -18,9 +18,9 @@ Ein vollstaendiger Hochleistungs-Numerik-Stack auf Basis von [rust-ndarray/ndarr
 | FAISS CPU (Flat) | AVX2 FP32 Dot | ~50M/s | ~20 ns | i7 | 65W |
 | FAISS CPU (IVF-PQ) | AVX2 quantisiert | ~100-200M/s | ~5-10 ns | i7 | 65W |
 
-Ein 35-EUR Raspberry Pi 4 bei 5 Watt erreicht oder schlaegt eine 350-EUR RTX 3060 bei 170 Watt. Ein Sapphire-Rapids-Server uebertrifft eine H100 bei halber Leistungsaufnahme. Ein 15-EUR Pi Zero 2W bei 2 Watt schlaegt FAISS CPU Flat noch um 60%.
+> **Zur Methodik:** Alle Zahlen sind pro *vollstaendiger Query* (ein Vektor rein -> ein Aehnlichkeitswert raus). Unser Palette-System quantisiert Vektoren offline auf 256 Archetypes; FAISS IVF-PQ trainiert offline einen Inverted-File-Index. Beides erfordert einmalige Vorbereitung. Der Kernunterschied: Unser Lookup ist ein einziger u8-Tabellenlesevorgang aus einer 64KB-Tabelle im L1-Cache (0 FLOPs, kein Fliesskomma); FAISS PQ dekodiert 8 Subspaces pro Query (~16 Ops + Addition). FAISS Flat berechnet ein volles 768-dim FP32-Skalarprodukt (~1.536 FLOPs). Unser Fehler beim Foveal-Tier (1/40 sigma) betraegt 0,4% — vergleichbar mit PQs 5-10% bei hoeherem Durchsatz und null Hardwarekosten.
 
-Der Trick: GPU muss FP32-multiplizieren, FP32-dividieren und ueber PCIe transferieren. Wir lesen einen u8 aus einer 64KB Tabelle die im L1-Cache liegt. Kein Transfer, kein Kernel-Launch, kein Fliesskomma.
+Ein 35-EUR Raspberry Pi 4 bei 5 Watt erreicht oder schlaegt eine 350-EUR RTX 3060 bei 170 Watt. Ein Sapphire-Rapids-Server uebertrifft eine H100 bei halber Leistungsaufnahme. Ein 15-EUR Pi Zero 2W bei 2 Watt schlaegt FAISS CPU Flat noch um 60%.
 
 ## Upstream vs. Fork — Feature fuer Feature
 
