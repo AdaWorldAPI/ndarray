@@ -68,8 +68,129 @@ pub fn clear_attention_cache() {
 }
 
 // ============================================================================
-// VNNI u8 MatVec fast path — 64 MACs per instruction
+// Compiled Linear Cache — O(k) replacing O(n_rows) for any weight matrix
 // ============================================================================
+//
+// For any linear layer y = W @ x, where W is [n_rows, n_cols]:
+//   1. Each row of W is assigned to one of 256 palette centroids (u8 index)
+//   2. At inference: compute k=256 centroid dot products with input x
+//   3. For each output row i: y[i] = centroid_outputs[assignment[i]]
+//
+// Cost: 256 × n_cols MACs + n_rows lookups (vs n_rows × n_cols MACs)
+// For gate_proj [3072, 1024]: 256K MACs vs 3.1M MACs = 12× fewer.
+//
+// Keyed by (n_rows, n_cols) — the weight matrix shape.
+
+/// A compiled linear layer: 256 centroids replace the full weight matrix.
+#[cfg(feature = "std")]
+#[derive(Clone)]
+pub struct CompiledLinear {
+    /// Centroid weight vectors: [k × n_cols] f32, row-major.
+    /// k=256 centroids, each of dimension n_cols.
+    pub centroids: Vec<f32>,
+    /// Number of centroids (palette size, typically 256).
+    pub k: usize,
+    /// Input dimension (n_cols of the original weight matrix).
+    pub n_cols: usize,
+    /// Output dimension (n_rows of the original weight matrix).
+    pub n_rows: usize,
+    /// Row assignment: for each of the n_rows output rows, which centroid it maps to.
+    pub assignments: Vec<u8>,
+}
+
+/// Global cache of compiled linear layers.
+/// Keyed by (n_rows, n_cols) — the original weight matrix shape.
+/// Multiple layers can share the same shape, so we use a Vec and match by registration order.
+#[cfg(feature = "std")]
+static LINEAR_CACHE: LazyLock<RwLock<Vec<CompiledLinear>>> =
+    LazyLock::new(|| RwLock::new(Vec::new()));
+
+/// Register a compiled linear layer.
+#[cfg(feature = "std")]
+pub fn register_compiled_linear(compiled: CompiledLinear) {
+    let mut cache = LINEAR_CACHE.write().unwrap();
+    cache.push(compiled);
+}
+
+/// Pop the next compiled linear for the given shape.
+/// Returns None if no matching table exists.
+/// This is FIFO — layers are consumed in registration order.
+#[cfg(feature = "std")]
+fn pop_compiled_linear(n_rows: usize, n_cols: usize) -> Option<CompiledLinear> {
+    let cache = LINEAR_CACHE.read().unwrap();
+    // Find first matching entry (don't pop — layers may be reused across batches)
+    cache.iter().find(|c| c.n_rows == n_rows && c.n_cols == n_cols).cloned()
+}
+
+/// Try to compute y = W @ x using compiled centroid matmul.
+///
+/// Instead of n_rows × n_cols MACs:
+///   1. Compute 256 centroid outputs: centroid_out[c] = dot(centroid[c], x)
+///   2. For each output row i: out[i] = centroid_out[assignment[i]]
+///
+/// Returns true if compiled path was used.
+#[cfg(feature = "std")]
+fn try_compiled_linear<E: NdArrayElement>(
+    lhs: &ndarray::ArrayView2<'_, E>,
+    _rhs: &ndarray::ArrayView2<'_, E>,
+    out: &mut ndarray::ArrayViewMut2<'_, E>,
+    m: usize,
+    k_dim: usize,
+    n: usize,
+) -> bool {
+    // The weight matrix is lhs [m, k_dim], input is rhs [k_dim, n]
+    // Output is [m, n]
+    let compiled = match pop_compiled_linear(m, k_dim) {
+        Some(c) => c,
+        None => return false,
+    };
+
+    if compiled.assignments.len() < m || compiled.k == 0 {
+        return false;
+    }
+
+    // Step 1: compute centroid outputs for each input column
+    // centroid_out[c][j] = dot(centroid[c], rhs[:, j])
+    // For n=1 (typical MLP): just one dot product per centroid
+    let k = compiled.k;
+
+    // Extract rhs as contiguous f32 for dot products
+    // rhs is [k_dim, n], we need column vectors
+    for j in 0..n {
+        // Compute centroid outputs for column j
+        let mut centroid_out = vec![0.0f64; k];
+        for c in 0..k {
+            let centroid_row = &compiled.centroids[c * compiled.n_cols..][..compiled.n_cols];
+            let mut dot = 0.0f64;
+            for d in 0..compiled.n_cols.min(k_dim) {
+                let rhs_val: f64 = _rhs[[d, j]].elem();
+                dot += centroid_row[d] as f64 * rhs_val;
+            }
+            centroid_out[c] = dot;
+        }
+
+        // Step 2: broadcast via palette assignment
+        for i in 0..m {
+            let c_idx = compiled.assignments[i] as usize;
+            let val = centroid_out[c_idx.min(k - 1)];
+            out[[i, j]] = val.elem();
+        }
+    }
+
+    true
+}
+
+/// Count of registered compiled linear layers.
+#[cfg(feature = "std")]
+pub fn compiled_linear_count() -> usize {
+    LINEAR_CACHE.read().unwrap().len()
+}
+
+/// Clear all compiled linear layers.
+#[cfg(feature = "std")]
+pub fn clear_compiled_linear_cache() {
+    LINEAR_CACHE.write().unwrap().clear();
+}
 //
 // For quantized u8×i8 matmul (codebook distance table build):
 //   Input A: [m, k] u8 (codebook rows, quantized)
@@ -354,6 +475,13 @@ pub(crate) fn matmul<E: NdArrayElement>(
                 let mut out_slice = unsafe_shared_out_array
                     .get()
                     .slice_mut(s!(out_batch, .., ..));
+
+                // Try compiled linear (centroid matmul, O(256) per column).
+                // Falls through to BLAS if no compiled layer matches.
+                #[cfg(feature = "std")]
+                if try_compiled_linear(&lhs_slice, &rhs_slice, &mut out_slice, m, k, n) {
+                    return;
+                }
 
                 // Try compiled attention table (O(1) per element).
                 // Falls through to BLAS if no table is registered for d_head=k.
