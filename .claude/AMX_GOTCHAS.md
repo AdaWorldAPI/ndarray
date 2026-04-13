@@ -66,18 +66,41 @@ For CPUID leaf 7 (AMX detection): use `__cpuid_count()`, not inline asm.
 
 ---
 
-## Gotcha 4: OS must enable AMX via XSETBV
+## Gotcha 4: OS must enable AMX via XSETBV + process must request permission
 
-AMX tiles are large (8 KB of state). The OS must opt in via XCR0 bits 17+18.
-Linux 5.19+ enables AMX by default. Older kernels: SIGILL on tile instructions.
+AMX tiles are large (8 KB of state). Two levels of OS enablement required:
+
+1. **Kernel enables tile state in XCR0** (bits 17+18). Linux 5.19+ does this.
+2. **Process requests XCOMP_PERM** via `prctl(ARCH_REQ_XCOMP_PERM, 18)`.
+   Without this, LDTILECFG will SIGILL even if XCR0 bits are set.
 
 **Detection (stable)**:
 ```rust
-let xcr0 = core::arch::x86_64::__cpuid_count(0xD, 0);
-let tilecfg  = (xcr0.eax >> 17) & 1;  // bit 17 = XTILECFG
-let tiledata = (xcr0.eax >> 18) & 1;  // bit 18 = XTILEDATA
-// Both must be 1
+// Step 1: CPUID — does CPU support AMX?
+let cpuid = core::arch::x86_64::__cpuid_count(7, 0);
+let amx_tile = (cpuid.edx >> 24) & 1;
+let amx_int8 = (cpuid.edx >> 25) & 1;
+
+// Step 2: OSXSAVE — does OS support XSAVE?
+let cpuid_01 = core::arch::x86_64::__cpuid(1);
+let osxsave = (cpuid_01.ecx >> 27) & 1;
+
+// Step 3: _xgetbv(0) — did OS ACTUALLY enable tile state?
+// ⚠ Do NOT use __cpuid_count(0xD, 0) — that reports what CPU SUPPORTS,
+//   not what the OS ENABLED. _xgetbv(0) reads the actual XCR0 register.
+let xcr0: u64 = unsafe { core::arch::x86_64::_xgetbv(0) };
+let tilecfg  = (xcr0 >> 17) & 1;  // bit 17 = XTILECFG
+let tiledata = (xcr0 >> 18) & 1;  // bit 18 = XTILEDATA
+
+// Step 4: prctl — request tile permission for this process
+// SYS_prctl = 157, ARCH_REQ_XCOMP_PERM = 0x1023, XFEATURE_XTILEDATA = 18
+// Returns 0 on success, -errno on failure. Idempotent.
 ```
+
+**Previous bug**: `__cpuid_count(0xD, 0)` reports XSAVE state component bitmap
+(what the CPU *supports*), NOT the actual XCR0 value (what the OS *enabled*).
+On hypervisors that advertise AMX in CPUID but don't enable tile state,
+the old check returned `true` → SIGILL on LDTILECFG.
 
 ---
 
