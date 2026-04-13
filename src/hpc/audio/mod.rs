@@ -20,3 +20,4 @@ pub mod codec;
 pub mod mel;
 pub mod voice;
 pub mod modes;
+pub mod phase;
