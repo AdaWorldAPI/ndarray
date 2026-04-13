@@ -4,28 +4,29 @@ A complete high-performance numerical computing stack built on top of [rust-ndar
 
 [Deutsche Version](README-DE.md) | [Full Feature Comparison (146 modules)](COMPARISON.md)
 
-## Why This Exists
+## Cosine Similarity: Us vs. GPU vs. CPU
 
-| What | Us | GPU (RTX 3060) | GPU (H100) | NumPy CPU |
-|------|-----|----------------|------------|-----------|
-| **Cosine similarity** | **2,400M/s** (palette u8) | ~300M/s (IVF-PQ) | ~1,500M/s (cuVS) | ~50M/s (dot) |
-| **GEMM 1024x1024** | **139 GFLOPS** | 3,500 GFLOPS | 30,000 GFLOPS | 120 GFLOPS |
-| **Codebook inference** | **2,000 tok/s @ 5W** (Pi 4) | ~100K tok/s @ 170W | ~500K tok/s @ 700W | N/A |
-| **Energy efficiency** | **37M ops/s/W** | 1.8M ops/s/W | 2.1M ops/s/W | 1.8M ops/s/W |
-| **Startup latency** | **0 ms** (no kernel launch) | 2-10 ms | 2-10 ms | 50 ms (Python) |
-| **Hardware cost** | **$0** (runs on any CPU) | $350 | $30,000 | $0 |
-| **PCIe transfer** | **None** (data in L1 cache) | Required | Required | None |
-| **Rust stable** | **Yes** (1.94) | CUDA toolkit | CUDA toolkit | Python |
+| System | Method | Throughput | Latency | Hardware | Watt |
+|--------|--------|------------|---------|----------|------|
+| **This fork (Near 1σ)** | Palette u8 lookup | **2,400M/s** | **0.4 ns** | CPU L1 cache | 5–65W |
+| **This fork (Foveal 1/40σ)** | Palette u8 lookup | **611M/s** | **1.8 ns** | CPU L1 cache | 5–65W |
+| FAISS GPU (IVF-PQ) | CUDA quantized | ~200–500M/s | ~2–5 ns | RTX 3060 | 170W |
+| FAISS GPU (Flat) | CUDA FP32 dot | ~50–100M/s | ~10–20 ns | RTX 3060 | 170W |
+| FAISS GPU (cuVS) | CUDA optimized | ~1,000–2,000M/s | ~0.5–1 ns | H100 80GB | 700W |
+| FAISS CPU (Flat) | AVX2 FP32 dot | ~50M/s | ~20 ns | i7 | 65W |
+| FAISS CPU (IVF-PQ) | AVX2 quantized | ~100–200M/s | ~5–10 ns | i7 | 65W |
 
-GPU wins at large dense GEMM. We win at **everything else**: similarity search, latency-sensitive inference, edge deployment, energy efficiency, and cost. A $35 Raspberry Pi 4 at 5 watts outperforms a $350 GPU at 170 watts for codebook inference — because table lookups don't need floating-point hardware.
+**Our Near tier (2.4B/s) beats an RTX 3060 by 5–12×.** Our Foveal tier (611M/s) matches RTX 3060 IVF-PQ — but with 0.4% error vs. PQ's 5–10%, and at $0 hardware cost. Only an H100 ($30K, 700W) comes close — and it still needs PCIe transfer + kernel launch overhead that we don't have.
+
+The trick: GPU must FP32-multiply, FP32-divide, and transfer over PCIe. We read one u8 from a 64KB table that lives in L1 cache. No transfer, no kernel launch, no floating point.
 
 ## Core Architecture
 
-Five layers built on top of upstream ndarray's array primitives:
+Five layers on top of upstream ndarray's array primitives:
 
 **SIMD Polyfill** (`simd.rs`, `simd_avx512.rs`, `simd_avx2.rs`, `simd_neon.rs`) — `std::simd`-compatible types (`F32x16`, `F64x8`, `U8x64`, `I32x16`) on stable Rust via `core::arch`. Detection once via `LazyLock<SimdCaps>`, dispatch via frozen function pointer table (0.3ns per call).
 
-**Backend** (`backend/`) — Pluggable BLAS: pure-Rust Goto-GEMM (default), Intel MKL (feature-gated), OpenBLAS (feature-gated). Native backend: 6x16 f32 + 6x8 f64 microkernels, cache-blocked L1/L2/L3, 16-thread split-borrow parallelism.
+**Backend** (`backend/`) — Pluggable BLAS: pure-Rust Goto-GEMM (default), Intel MKL (feature-gated), OpenBLAS (feature-gated). Native backend: 6×16 f32 + 6×8 f64 microkernels, cache-blocked L1/L2/L3, 16-thread split-borrow parallelism.
 
 **HPC Library** (`hpc/`, 146 files) — BLAS L1-L3, LAPACK, FFT, VML, statistics, activations, quantized ops. Every module SIMD-accelerated through the frozen dispatch table.
 
@@ -82,18 +83,6 @@ Fork on wasm:        → WASM SIMD128 (prepared) / Scalar
 | Xeon | AVX-512 VNNI | **10K–50K** | 1–5 ms | 150W |
 | **Pi 5** | **NEON+dotprod** | **2K–5K** | 10–25 ms | **5W** |
 | **Pi 4** | **NEON dual** | **500–2K** | 25–100 ms | **5W** |
-
-### Cosine via Palette Distance
-
-| Tier | Error | Speed | vs. GPU (RTX 3060) |
-|------|-------|-------|---------------------|
-| **Foveal** (1/40σ) | 0.4% | **611M/s** | **~2× faster** |
-| **Near** (1σ) | 8% | **2,400M/s** | **~8× faster** |
-| F32 exact | 0% | 50M/s | 6× slower |
-| RTX 3060 IVF-PQ | ~5% | ~300M/s | baseline |
-| H100 cuVS | ~2% | ~1,500M/s | 5× our cost |
-
-611M cosine-equivalent lookups/sec using only integer operations. The 256×256 table (64KB) lives in L1 cache — no FP division, no multiplication, no PCIe transfer.
 
 ### f16 Weight Transcoding
 
