@@ -11,8 +11,8 @@
 
 use super::ocr_simd::{BinaryImage, GrayImage, foreground_count};
 
-/// Euler-Mascheroni constant.
-const EULER_GAMMA: f64 = 0.5772156649;
+/// Euler-Mascheroni constant (Rust 1.94+).
+const EULER_GAMMA: f64 = std::f64::consts::EULER_GAMMA;
 /// Signal floor for skew detection: γ/(γ+1).
 const SKEW_FLOOR: f64 = EULER_GAMMA / (EULER_GAMMA + 1.0);
 
