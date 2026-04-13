@@ -718,4 +718,114 @@ mod tests {
         // Other layers untouched
         assert_eq!(p3d.layers[1].rows[1], 0);
     }
+
+    // ================================================================
+    // GPT-2 → P64 rehydration: prove attention reconstruction works
+    // ================================================================
+
+    #[test]
+    fn test_gpt2_palette_to_p64_rehydration() {
+        use crate::hpc::jina::runtime::GPT2;
+
+        let gpt2 = &*GPT2;
+        eprintln!("GPT-2 vocab: {} tokens", gpt2.vocab_size());
+
+        // Flatten the 256×256 distance table
+        let dt = &gpt2.palette.distance_table;
+        let mut flat = vec![0u16; 256 * 256];
+        for i in 0..256 {
+            for j in 0..256 {
+                flat[i * 256 + j] = dt[i][j];
+            }
+        }
+
+        // Find a reasonable interaction radius from the distance distribution
+        // Use median distance as threshold — roughly 50% density
+        let mut all_dists: Vec<u16> = Vec::with_capacity(256 * 255 / 2);
+        for i in 0..256 {
+            for j in (i + 1)..256 {
+                all_dists.push(dt[i][j]);
+            }
+        }
+        all_dists.sort();
+        let median = all_dists[all_dists.len() / 2];
+        // Use 25th percentile for sparse palette (~12.5% density)
+        let p25 = all_dists[all_dists.len() / 4];
+        eprintln!("Distance stats: median={}, p25={}, min={}, max={}",
+            median, p25, all_dists[0], all_dists.last().unwrap());
+
+        // Build Palette64 from GPT-2's learned distance table
+        let palette = palette_from_deepnsm_distances(&flat, 256, p25);
+
+        // Check it's not empty or full
+        let density: u32 = palette.rows.iter().map(|r| r.count_ones()).sum();
+        let total_bits = 64 * 64;
+        let pct = density as f64 / total_bits as f64 * 100.0;
+        eprintln!("Palette density: {}/{} bits ({:.1}%)", density, total_bits, pct);
+        assert!(density > 100, "palette too sparse: {density}");
+        assert!(density < 3500, "palette too dense: {density}");
+
+        // Build Palette3D — same topology for all layers (GPT-2 is one model)
+        let mut p3d_analytical = Palette3D::new([palette; 8], ThinkingStyle::ANALYTICAL);
+        let mut p3d_creative = Palette3D::new([palette; 8], ThinkingStyle::CREATIVE);
+
+        // Infer from archetype 42 through both styles
+        let r_analytical = p3d_analytical.infer(42);
+        let r_creative = p3d_creative.infer(42);
+
+        eprintln!("Analytical: attention={:064b}, tension={}, active_layers={}, new={}",
+            r_analytical.attention, r_analytical.tension,
+            r_analytical.active_layers, r_analytical.new_connections);
+        eprintln!("Creative:   attention={:064b}, tension={}, active_layers={}, new={}",
+            r_creative.attention, r_creative.tension,
+            r_creative.active_layers, r_creative.new_connections);
+
+        // KEY ASSERTION: different styles produce different fan-out
+        // Creative (Union, all layers, density 0.40) should activate MORE targets
+        // than Analytical (Intersection, 6 layers, density 0.05)
+        let analytical_popcount = r_analytical.attention.count_ones();
+        let creative_popcount = r_creative.attention.count_ones();
+        eprintln!("Fan-out: analytical={}, creative={}", analytical_popcount, creative_popcount);
+
+        assert!(creative_popcount >= analytical_popcount,
+            "Creative should have wider fan-out than Analytical: {} vs {}",
+            creative_popcount, analytical_popcount);
+
+        // Verify attention is non-trivial
+        assert!(analytical_popcount > 0, "Analytical should fire something");
+        assert!(creative_popcount > 0, "Creative should fire something");
+
+        // Check that the palette-based similarity correlates with GPT-2's actual distances
+        // Pick two tokens that the palette says interact (bit set) and two that don't
+        let mut interacting = None;
+        let mut non_interacting = None;
+        for i in 0..64 {
+            for j in 0..64 {
+                if i == j { continue; }
+                if palette.rows[i] & (1 << j) != 0 && interacting.is_none() {
+                    interacting = Some((i, j));
+                }
+                if palette.rows[i] & (1 << j) == 0 && non_interacting.is_none() {
+                    non_interacting = Some((i, j));
+                }
+                if interacting.is_some() && non_interacting.is_some() { break; }
+            }
+            if interacting.is_some() && non_interacting.is_some() { break; }
+        }
+
+        if let (Some((ia, ib)), Some((na, nb))) = (interacting, non_interacting) {
+            // Interacting pair should have LOWER distance than non-interacting
+            let d_interact = flat[ia * 256 + ib];
+            let d_non = flat[na * 256 + nb];
+            eprintln!("Interacting ({},{}) distance={}, Non-interacting ({},{}) distance={}",
+                ia, ib, d_interact, na, nb, d_non);
+            assert!(d_interact <= d_non,
+                "Interacting pair should be closer: {} vs {}", d_interact, d_non);
+        }
+
+        eprintln!("GPT-2 → P64 rehydration: PASS");
+        eprintln!("  50K tokens → 256 archetypes → 64×64 palette → 8-layer Palette3D");
+        eprintln!("  Thinking style modulates fan-out: Analytical={}, Creative={}",
+            analytical_popcount, creative_popcount);
+    }
 }
