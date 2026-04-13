@@ -134,6 +134,38 @@ impl VoiceArchetype {
     pub fn prosody_energy(&self) -> u32 {
         (12..16).map(|i| self.channels[i].unsigned_abs() as u32).sum()
     }
+
+    /// Modulate archetype with phase dynamics.
+    ///
+    /// Phase coherence sharpens articulation channels (8-11).
+    /// Phase gradient boosts prosody channels (12-15).
+    /// This is the bridge: amplitude identity (archetype) + temporal
+    /// dynamics (phase) = complete voice characterization.
+    ///
+    /// The phase descriptor IS relative pressure within — it modulates
+    /// the archetype's channels proportionally, not by overwriting.
+    pub fn modulate_with_phase(&self, phase: &super::phase::PhaseDescriptor) -> Self {
+        let mut out = *self;
+
+        // Phase coherence → sharpen articulation (high coherence = crisp)
+        let coherence = phase.bytes[0] as i16; // 0-255
+        for i in 8..12 {
+            // Scale articulation channels toward their sign direction
+            let sign = if out.channels[i] >= 0 { 1i16 } else { -1 };
+            let boost = sign * (coherence - 128) / 8; // ±16 max
+            out.channels[i] = (out.channels[i] as i16 + boost).clamp(-127, 127) as i8;
+        }
+
+        // Phase gradient → boost prosody dynamics (high gradient = dynamic)
+        let gradient = phase.bytes[1] as i16;
+        for i in 12..16 {
+            let sign = if out.channels[i] >= 0 { 1i16 } else { -1 };
+            let boost = sign * (gradient - 128) / 8;
+            out.channels[i] = (out.channels[i] as i16 + boost).clamp(-127, 127) as i8;
+        }
+
+        out
+    }
 }
 
 /// VoiceCodebook: collection of voice archetypes for HHTL routing.
@@ -249,6 +281,53 @@ impl RvqFrame {
     }
 }
 
+/// Complete voice frame: RVQ codes + phase dynamics.
+///
+/// The full 21-byte nonverbal unit:
+///   RvqFrame (17B): WHAT the voice is doing (identity + spectral + detail)
+///   PhaseDescriptor (4B): HOW the harmonics relate in time
+///
+/// This is the minimum viable unit for lossless nonverbal transmission.
+/// AudioFrame (48B) + PhaseDescriptor (4B) = 52B is the analysis frame.
+/// VoiceFrame (21B) is the compressed synthesis frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VoiceFrame {
+    pub rvq: RvqFrame,
+    pub phase: super::phase::PhaseDescriptor,
+}
+
+impl VoiceFrame {
+    pub const BYTE_SIZE: usize = RvqFrame::BYTE_SIZE + 4; // 21 bytes
+
+    pub fn to_bytes(&self) -> [u8; Self::BYTE_SIZE] {
+        let mut bytes = [0u8; Self::BYTE_SIZE];
+        bytes[..17].copy_from_slice(&self.rvq.to_bytes());
+        bytes[17..21].copy_from_slice(&self.phase.bytes);
+        bytes
+    }
+
+    pub fn from_bytes(bytes: &[u8; Self::BYTE_SIZE]) -> Self {
+        let mut rvq_bytes = [0u8; 17];
+        rvq_bytes.copy_from_slice(&bytes[..17]);
+        let mut phase_bytes = [0u8; 4];
+        phase_bytes.copy_from_slice(&bytes[17..21]);
+        VoiceFrame {
+            rvq: RvqFrame::from_bytes(&rvq_bytes),
+            phase: super::phase::PhaseDescriptor { bytes: phase_bytes },
+        }
+    }
+
+    /// Is this a voiced frame? (delegates to phase)
+    pub fn is_voiced(&self) -> bool {
+        self.phase.is_voiced()
+    }
+
+    /// Is this an attack/plosive? (delegates to phase)
+    pub fn is_attack(&self) -> bool {
+        self.phase.is_attack()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,6 +389,37 @@ mod tests {
         let bytes = frame.to_bytes();
         let recovered = RvqFrame::from_bytes(&bytes);
         assert_eq!(frame, recovered);
+    }
+
+    #[test]
+    fn phase_modulation_changes_articulation() {
+        let base = VoiceArchetype { channels: [0, 0, 0, 0, 0, 0, 0, 0,
+                                                50, 50, 50, 50, 0, 0, 0, 0] };
+        // High coherence → should boost articulation channels
+        let high_coh = super::super::phase::PhaseDescriptor { bytes: [255, 128, 128, 128] };
+        let modulated = base.modulate_with_phase(&high_coh);
+
+        // Articulation channels (8-11) should be boosted
+        let base_art: i32 = (8..12).map(|i| base.channels[i].unsigned_abs() as i32).sum();
+        let mod_art: i32 = (8..12).map(|i| modulated.channels[i].unsigned_abs() as i32).sum();
+        assert!(mod_art >= base_art, "High coherence should boost articulation: {} vs {}", mod_art, base_art);
+    }
+
+    #[test]
+    fn voice_frame_roundtrip() {
+        let frame = VoiceFrame {
+            rvq: RvqFrame { archetype: 7, coarse: [1; 8], fine: [2; 8] },
+            phase: super::super::phase::PhaseDescriptor { bytes: [200, 50, 100, 30] },
+        };
+        let bytes = frame.to_bytes();
+        assert_eq!(bytes.len(), VoiceFrame::BYTE_SIZE);
+        let recovered = VoiceFrame::from_bytes(&bytes);
+        assert_eq!(frame, recovered);
+    }
+
+    #[test]
+    fn voice_frame_size() {
+        assert_eq!(VoiceFrame::BYTE_SIZE, 21, "VoiceFrame should be 21 bytes (17 RVQ + 4 phase)");
     }
 
     #[test]
