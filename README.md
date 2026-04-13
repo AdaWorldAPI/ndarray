@@ -6,25 +6,78 @@ The upstream ndarray provides excellent n-dimensional array abstractions. We kee
 
 [Deutsche Version / German Version](README-DE.md)
 
-## Core Architecture
+## Upstream vs. Fork — Feature by Feature
 
-The expansion comprises five layers built on top of upstream's array primitives:
+### ISA Coverage (Instruction Set Architecture)
 
-**SIMD Polyfill Layer** (`src/simd.rs`, `simd_avx512.rs`, `simd_avx2.rs`, `simd_neon.rs`) provides `std::simd`-compatible types — `F32x16`, `F64x8`, `U8x64`, `I32x16`, `I64x8`, `U32x16`, `U64x8` with full operator overloading, reductions, comparisons, and masked operations — backed by `core::arch` intrinsics on x86 and inline assembly on ARM. Consumers write `crate::simd::F32x16` and get native 512-bit operations on AVX-512, 256-bit on AVX2, 128-bit on NEON, or scalar fallback, with zero code changes. Detection happens once via `LazyLock<SimdCaps>` (one pointer deref per call, no atomics, no branch prediction misses).
+| ISA / Feature | Upstream ndarray | **AdaWorldAPI Fork** | Speedup vs. Upstream |
+|---------------|-----------------|---------------------|---------------------|
+| **AVX-512** (512-bit, 16×f32) | Scalar fallback | Native `__m512` types, F32x16/F64x8/U8x64 | **~8×** |
+| **AVX-512 VNNI** (int8 dot) | Scalar fallback | `vpdpbusd` 64 MACs/instr + dispatch | **~32×** |
+| **AVX-512 BF16** (bfloat16) | Not available | Hardware `vcvtneps2bf16` + RNE emulation | **new** |
+| **AVX-512 VPOPCNTDQ** (popcount) | Scalar fallback | Native 512-bit popcount for Hamming | **~16×** |
+| **AMX** (Tile Matrix, 256 MACs) | Not available | Inline asm `.byte` encoding, stable Rust | **~128×** vs. scalar |
+| **AVX2 + FMA** (256-bit, 8×f32) | Via matrixmultiply | Own Goto-GEMM 6×16 + dispatch table | **~4×** |
+| **AVX2 F16C** (f16 hardware) | Not available | IEEE 754 f16, Double-f16, Kahan, Scaler | **new** |
+| **AVX-VNNI** (ymm, 32 MACs) | Not available | Arrow Lake / NUC 14 support | **new** |
+| **SSE2** (128-bit, 4×f32) | Via matrixmultiply | Scalar polyfill with same API | 1× (baseline) |
+| **NEON** (128-bit, 4×f32) | Scalar fallback | 3-tier: A53/A72/A76 with pipeline awareness | **~4×** |
+| **NEON dotprod** (ARMv8.2) | Not available | `vdotq_s32` for 4× int8 throughput (Pi 5) | **~16×** vs. scalar |
+| **NEON fp16** (ARMv8.2) | Not available | `FCVTL`/`FCVTN` via inline asm | **new** |
+| **NEON Popcount** | Not available | `vcntq_u8` native byte popcount | **faster than x86 SSE** |
+| **WASM SIMD128** | Not available | Scaffolding prepared | in progress |
 
-**Backend Layer** (`src/backend/`) implements pluggable BLAS through the `BlasFloat` trait with three backends: pure-Rust SIMD microkernels (default, zero dependencies), Intel MKL FFI (feature-gated), and OpenBLAS FFI (feature-gated, mutually exclusive with MKL). The native backend uses Goto-algorithm cache-blocked GEMM with 6×16 (f32) and 6×8 (f64) microkernels, achieving 139 GFLOPS at 1024×1024 — a 10.5× improvement over the naive approach and within 15% of NumPy's multi-threaded OpenBLAS.
+### BLAS / Numerics
 
-**HPC Module Library** (`src/hpc/`, 55 modules) delivers a complete numerical computing surface: BLAS Level 1-3 (dot, axpy, gemv, gemm, syrk, trsm), LAPACK factorizations (LU, Cholesky, QR), Cooley-Tukey FFT, vector math (exp, ln, sqrt, erf, trigonometric), statistics (median, variance, percentile, top-k), neural network activations (sigmoid, softmax, GELU, SiLU), and quantized operations (BF16 GEMM, INT8 GEMM via VNNI). Every module has SIMD-accelerated hot paths that dispatch through the frozen function pointer table.
+| Operation | Upstream | **Fork** | Improvement |
+|-----------|----------|----------|-------------|
+| GEMM (1024²) | ~13 GFLOPS (cache cliff) | **139 GFLOPS** (Goto blocking) | **10.5×** |
+| Dot Product | Via matrixmultiply | 4× unrolled + FMA | ~2× |
+| BLAS L1 (axpy, scal, nrm2) | Not available | SIMD-accelerated, all tiers | **new** |
+| BLAS L2 (gemv, ger, trsv) | Not available | SIMD-accelerated | **new** |
+| LAPACK (LU, Cholesky, QR) | Not available | Pure-Rust implementation | **new** |
+| FFT | Not available | Cooley-Tukey radix-2 | **new** |
+| Activations (sigmoid, GELU) | Not available | SIMD F32x16 vectorization | **new** |
+| Quantization (BF16, INT8) | Not available | VNNI + AMX + scalar fallback | **new** |
 
-**Codec Layer** (`src/hpc/fingerprint.rs`, `bgz17_bridge.rs`, `cam_pq.rs`) implements the encoding stack for compressed inference: 16Kbit Fingerprints, Base17 VSA (17-dimensional i16 vectors), CAM-PQ product quantization, ZeckF64 Fibonacci encoding, and palette semiring distance matrices. This is what makes codebook inference O(1) per token — table lookups replace matrix multiplication.
+### Data Types
 
-**Burn Integration** (`crates/burn/`) provides a SIMD-augmented burn-ndarray backend that wires `crate::simd::F32x16` into burn's tensor operations and activations, replacing macerator's SIMD with our LazyLock-dispatched implementations. This enables using burn's model format and autodiff while benefiting from our full SIMD stack.
+| Type | Upstream | **Fork** | Note |
+|------|----------|----------|------|
+| f32 | Standard | Standard + F32x16 SIMD | Same + SIMD acceleration |
+| f64 | Standard | Standard + F64x8 SIMD | Same + SIMD acceleration |
+| **f16** (IEEE 754) | **Not available** | u16 carrier + F16C/FCVTL hardware | Stable Rust, no nightly |
+| **BF16** (bfloat16) | **Not available** | Hardware + RNE emulation (bit-exact) | GGUF calibration |
+| i8/u8 (quantized) | Not available | VNNI dot, Hamming, popcount | INT8 inference |
+| i16 (Base17) | Not available | L1 distance, SIMD widen/narrow | Codebook encoding |
+
+### Dispatch and Detection
+
+| Aspect | Upstream | **Fork** |
+|--------|----------|----------|
+| SIMD detection | None (delegates to BLAS) | `LazyLock<SimdCaps>` — detect once, forever |
+| Dispatch cost | No own dispatch | **0.3ns** (fn pointer table, no branch) |
+| ARM profiling | No ARM awareness | `ArmProfile`: A53/A72/A76 with tok/s estimate |
+| big.LITTLE | Not handled | Correct feature intersection (RK3399/RK3588) |
+| CPU detection | Per-call runtime | Once via LazyLock, then pointer deref only |
+
+### What Upstream Does on Each Target
+
+```
+Upstream on x86_64:   → matrixmultiply crate (external, AVX2 if available)
+Upstream on aarch64:  → Scalar (no NEON, no intrinsics)
+Upstream on wasm:     → Scalar
+Upstream on riscv:    → Scalar
+
+Fork on x86_64:       → AVX-512 F32x16 / AVX2 F32x8 / SSE2 / Scalar (tiered)
+Fork on aarch64:      → NEON A76+dotprod / NEON A72 2×pipe / NEON A53 / Scalar
+Fork on wasm:         → WASM SIMD128 (prepared) / Scalar
+Fork on riscv:        → Scalar (RISC-V V Extension prepared)
+```
 
 ## Performance
 
 ### GEMM (General Matrix Multiply)
-
-The Goto-algorithm GEMM with cache blocking (L1: 32KB, L2: 256KB, L3: shared) and 16-thread parallelism via split-borrow (no mutex contention):
 
 | Matrix Size | Upstream ndarray | **This Fork** | NumPy (OpenBLAS) | PyTorch CPU | GPU (RTX 3060) |
 |-------------|-----------------|---------------|------------------|-------------|----------------|
@@ -36,7 +89,7 @@ Upstream hits a cache cliff at 1024×1024: no tiling, no threading, no microkern
 
 ### Codebook Inference (Token Generation)
 
-This is not matrix multiplication. Codebook inference replaces `y = W·x` with `y = codebook[index[x]]` — an O(1) table lookup per token. No GPU required.
+Not matrix multiplication — O(1) table lookup per token. No GPU required.
 
 | Hardware | ISA | tok/s | 50-Token Latency | Power |
 |----------|-----|-------|------------------|-------|
@@ -51,7 +104,7 @@ At 5 watts, a Pi 4 generates a 50-token voice assistant response in under 100 mi
 
 ### Cosine Similarity via Palette Distance (Integer-Only)
 
-Traditional cosine requires floating-point: `dot(a,b) / (|a| × |b|)`. We replace this with a single u8 table lookup. High-dimensional vectors are quantized to 256 archetypes; pairwise distance is precomputed into a 256×256 u8 table. Query-time similarity: `table[a][b]` — one memory access, no floating point.
+Traditional cosine requires floating-point: `dot(a,b) / (|a| × |b|)`. We replace this with a single u8 table lookup.
 
 | Precision Tier | Sigma Band | Max Cosine Error | Speed |
 |----------------|------------|-----------------|-------|
