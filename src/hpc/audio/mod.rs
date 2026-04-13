@@ -22,3 +22,4 @@ pub mod voice;
 pub mod modes;
 pub mod phase;
 pub mod codec_map;
+pub mod synth;
