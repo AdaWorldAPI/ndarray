@@ -55,6 +55,7 @@ pub mod cascade;
 pub mod heel_f64x8;
 #[allow(missing_docs)]
 pub mod amx_matmul;
+pub mod bf16_tile_gemm;
 #[allow(missing_docs)]
 pub mod bf16_truth;
 #[allow(missing_docs)]
