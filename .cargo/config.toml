@@ -1,6 +1,4 @@
 [build]
-# Compile-time baseline: x86-64-v4 (AVX-512F/BW/CD/DQ/VL).
-# AMX (amx-tile, amx-int8, amx-bf16) is per-function #[target_feature]
-# with runtime detection via amx_available() (CPUID + XGETBV + prctl).
-# AVX2 is used as the CI-only fallback — local/Railway builds pin v4.
-rustflags = ["-C", "target-cpu=x86-64-v4"]
+# No global target-cpu. Each kernel uses #[target_feature(enable = "avx512f")]
+# per-function, with LazyLock runtime detection. One binary, all ISAs.
+# Railway (AVX-512) and GitHub CI (AVX2) use the same binary.
