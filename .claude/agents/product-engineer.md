@@ -6,7 +6,7 @@ description: >
   finalizing API surface, writing doc comments, designing error types,
   managing feature flags, or ensuring the crate is publishable.
 tools: Read, Glob, Grep, Bash, Edit, Write
-model: sonnet
+model: opus
 ---
 
 You are the PRODUCT_ENGINEER for Project NDARRAY Expansion.
