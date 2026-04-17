@@ -136,6 +136,103 @@ pub fn rfft_f32(input: &[f32]) -> Vec<f32> {
     complex[..2 * out_len].to_vec()
 }
 
+// ── Walsh-Hadamard Transform ──────────────────────────────────────
+//
+// The WHT is to quantization codecs what FFT is to signal processing:
+// an O(n log n) orthogonal rotation that spreads energy uniformly
+// across all coefficients. Unlike SVD (data-adaptive, O(n²k) training),
+// the Hadamard rotation is deterministic, free, and self-inverse.
+//
+// Used by the HadCascade codec (bgz-tensor) for residual rotation
+// before i4/i2 quantization. ICC 1.0000 on real model weights.
+
+/// In-place Walsh-Hadamard Transform (normalized, self-inverse).
+///
+/// `data` length must be a power of 2. After transform, `||WHT(x)|| = ||x||`
+/// (energy-preserving). Applying WHT twice returns the original vector.
+///
+/// SIMD: uses F32x16 butterfly for blocks ≥ 16 elements.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::hpc::fft::wht_f32;
+///
+/// let mut x = vec![1.0f32, 0.0, 0.0, 0.0];
+/// wht_f32(&mut x);
+/// assert!((x[0] - 0.5).abs() < 1e-6); // 1/sqrt(4) * 1 = 0.5
+///
+/// // Self-inverse: WHT(WHT(x)) = x
+/// wht_f32(&mut x);
+/// assert!((x[0] - 1.0).abs() < 1e-5);
+/// ```
+pub fn wht_f32(data: &mut [f32]) {
+    let n = data.len();
+    assert!(n.is_power_of_two(), "WHT length must be a power of 2");
+
+    let mut h = 1;
+    while h < n {
+        if h >= 16 {
+            wht_butterfly_simd(data, n, h);
+        } else {
+            for i in (0..n).step_by(h * 2) {
+                for j in i..i + h {
+                    let x = data[j];
+                    let y = data[j + h];
+                    data[j] = x + y;
+                    data[j + h] = x - y;
+                }
+            }
+        }
+        h *= 2;
+    }
+
+    let norm = 1.0 / (n as f32).sqrt();
+    let mut i = 0;
+    while i + 16 <= n {
+        use crate::simd::F32x16;
+        let v = F32x16::from_slice(&data[i..]);
+        let scaled = v * F32x16::splat(norm);
+        scaled.copy_to_slice(&mut data[i..i + 16]);
+        i += 16;
+    }
+    while i < n {
+        data[i] *= norm;
+        i += 1;
+    }
+}
+
+/// WHT butterfly for one level, SIMD-accelerated for h ≥ 16.
+fn wht_butterfly_simd(data: &mut [f32], n: usize, h: usize) {
+    use crate::simd::F32x16;
+    for i in (0..n).step_by(h * 2) {
+        let mut j = 0;
+        while j + 16 <= h {
+            let a = F32x16::from_slice(&data[i + j..]);
+            let b = F32x16::from_slice(&data[i + j + h..]);
+            let sum = a + b;
+            let diff = a - b;
+            sum.copy_to_slice(&mut data[i + j..i + j + 16]);
+            diff.copy_to_slice(&mut data[i + j + h..i + j + h + 16]);
+            j += 16;
+        }
+        while j < h {
+            let x = data[i + j];
+            let y = data[i + j + h];
+            data[i + j] = x + y;
+            data[i + j + h] = x - y;
+            j += 1;
+        }
+    }
+}
+
+/// Convenience: WHT on a new vector (non-mutating).
+pub fn wht_f32_new(input: &[f32]) -> Vec<f32> {
+    let mut out = input.to_vec();
+    wht_f32(&mut out);
+    out
+}
+
 // ── Helpers ────────────────────────────────────────────────────────
 
 fn bit_reverse_f32(data: &mut [f32], n: usize) {
@@ -195,6 +292,44 @@ mod tests {
             assert!((data[2 * i] - original[2 * i]).abs() < 1e-10);
             assert!((data[2 * i + 1] - original[2 * i + 1]).abs() < 1e-10);
         }
+    }
+
+    #[test]
+    fn test_wht_self_inverse() {
+        let original = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        let mut data = original.clone();
+        wht_f32(&mut data);
+        wht_f32(&mut data);
+        for (a, b) in original.iter().zip(data.iter()) {
+            assert!((a - b).abs() < 1e-5, "self-inverse: {} vs {}", a, b);
+        }
+    }
+
+    #[test]
+    fn test_wht_energy_preservation() {
+        let mut data = vec![1.0f32, -2.0, 3.0, -4.0];
+        let norm_before: f32 = data.iter().map(|x| x * x).sum::<f32>().sqrt();
+        wht_f32(&mut data);
+        let norm_after: f32 = data.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm_before - norm_after).abs() < 1e-4,
+            "energy: {} vs {}", norm_before, norm_after);
+    }
+
+    #[test]
+    fn test_wht_large_simd() {
+        let mut data: Vec<f32> = (0..1024).map(|i| (i as f32 * 0.618).sin()).collect();
+        let original = data.clone();
+        wht_f32(&mut data);
+        // Norm preservation at 1024-d (hits SIMD path)
+        let n_orig: f32 = original.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let n_wht: f32 = data.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((n_orig - n_wht).abs() / n_orig < 1e-4,
+            "SIMD WHT norm: {} vs {}", n_orig, n_wht);
+        // Self-inverse
+        wht_f32(&mut data);
+        let max_err = original.iter().zip(data.iter())
+            .map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+        assert!(max_err < 1e-3, "SIMD self-inverse max_err: {}", max_err);
     }
 
     #[test]

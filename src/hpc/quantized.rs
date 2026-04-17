@@ -374,6 +374,49 @@ pub fn dequantize_i4_to_f32(packed: &[u8], params: &QuantParams, len: usize) -> 
     result
 }
 
+/// Quantize f32 to i2 (packed: four i2 values per byte, signed ±1).
+///
+/// Each value is clamped to {-1, 0, +1} after scaling by abs_max.
+/// Packing: 4 crumbs per byte, low bits first.
+/// Symmetric quantization with zero_point = 0.
+pub fn quantize_f32_to_i2(data: &[f32]) -> (Vec<u8>, QuantParams) {
+    let abs_max = data.iter().fold(0.0f32, |a, &b| a.max(b.abs()));
+    let scale = if abs_max > 0.0 { abs_max } else { 1.0 };
+
+    let packed_len = (data.len() + 3) / 4;
+    let mut packed = vec![0u8; packed_len];
+
+    for (i, &v) in data.iter().enumerate() {
+        let q = (v / scale).round().clamp(-1.0, 1.0) as i8;
+        let u = (q + 1) as u8; // map {-1,0,1} to {0,1,2}
+        let shift = (i % 4) * 2;
+        packed[i / 4] |= (u & 0x03) << shift;
+    }
+
+    (
+        packed,
+        QuantParams {
+            scale,
+            zero_point: 0,
+            min_val: -abs_max,
+            max_val: abs_max,
+        },
+    )
+}
+
+/// Dequantize i2 (packed) to f32.
+pub fn dequantize_i2_to_f32(packed: &[u8], params: &QuantParams, len: usize) -> Vec<f32> {
+    let mut result = Vec::with_capacity(len);
+    for i in 0..len {
+        let byte = packed[i / 4];
+        let shift = (i % 4) * 2;
+        let u = (byte >> shift) & 0x03;
+        let q = u as i8 - 1; // map {0,1,2} back to {-1,0,1}
+        result.push(q as f32 * params.scale);
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
