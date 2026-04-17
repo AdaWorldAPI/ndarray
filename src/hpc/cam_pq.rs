@@ -460,7 +460,7 @@ pub fn train_hybrid(
 /// For 16D subvectors (CAM-PQ subspace dimension), this is one F32x16
 /// load-subtract-multiply-reduce. Consumer never sees hardware details.
 #[inline(always)]
-fn squared_l2(a: &[f32], b: &[f32]) -> f32 {
+pub fn squared_l2(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len());
     let n = a.len();
 
@@ -518,7 +518,7 @@ fn jaccard_similarity(a: &[String], b: &[String]) -> f32 {
 /// Simple k-means clustering.
 ///
 /// Returns `k` centroid vectors of length `dim`.
-fn kmeans(data: &[Vec<f32>], k: usize, dim: usize, iterations: usize) -> Vec<Vec<f32>> {
+pub fn kmeans(data: &[Vec<f32>], k: usize, dim: usize, iterations: usize) -> Vec<Vec<f32>> {
     let n = data.len();
     if n == 0 || k == 0 {
         return vec![vec![0.0; dim]; k];
