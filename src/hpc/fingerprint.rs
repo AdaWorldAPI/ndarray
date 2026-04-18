@@ -265,6 +265,72 @@ pub type Fingerprint1K = Fingerprint<128>;
 /// 64K-bit fingerprint (recognition projections).
 pub type Fingerprint64K = Fingerprint<1024>;
 
+// ─── Vector width config (LazyLock, switchable) ─────────────────
+
+use std::sync::LazyLock;
+
+/// Supported vector widths for the BindSpace substrate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u16)]
+pub enum VectorWidth {
+    /// 4,096 bits = 64 words = 512 bytes. CAM command address space.
+    /// One item per address — verb/command vocabulary, not holographic memory.
+    W4K = 64,
+    /// 8,192 bits = 128 words = 1 KB. Deprecated legacy.
+    W8K = 128,
+    /// 16,384 bits = 256 words = 2 KB. Production default.
+    W16K = 256,
+}
+
+/// Runtime vector configuration. Frozen on first access.
+///
+/// Like `simd_caps()` — detect once, read everywhere.
+/// Controls serialization format, network protocol, and storage layout.
+/// Does NOT change the Rust type (use the matching Fingerprint\<N\> alias).
+#[derive(Clone, Copy, Debug)]
+pub struct VectorConfig {
+    pub width: VectorWidth,
+    pub words: usize,
+    pub bits: usize,
+    pub bytes: usize,
+}
+
+impl VectorConfig {
+    const fn from_width(w: VectorWidth) -> Self {
+        let words = w as usize;
+        VectorConfig { width: w, words, bits: words * 64, bytes: words * 8 }
+    }
+}
+
+static VECTOR_WIDTH: LazyLock<VectorConfig> = LazyLock::new(|| {
+    let w = std::env::var("NDARRAY_VECTOR_WIDTH")
+        .ok()
+        .and_then(|s| match s.as_str() {
+            "4096" | "4k" | "4K" => Some(VectorWidth::W4K),
+            "8192" | "8k" | "8K" => Some(VectorWidth::W8K),
+            "16384" | "16k" | "16K" => Some(VectorWidth::W16K),
+            _ => None,
+        })
+        .unwrap_or(VectorWidth::W16K);
+    VectorConfig::from_width(w)
+});
+
+/// Get the frozen vector width configuration.
+///
+/// Defaults to 16K (production). Override with `NDARRAY_VECTOR_WIDTH=8192`
+/// env var before first access. After first call, width is frozen.
+///
+/// ```
+/// use ndarray::hpc::fingerprint::vector_config;
+/// let cfg = vector_config();
+/// assert_eq!(cfg.bits, 16_384);  // default
+/// assert_eq!(cfg.words, 256);
+/// assert_eq!(cfg.bytes, 2_048);
+/// ```
+pub fn vector_config() -> &'static VectorConfig {
+    &VECTOR_WIDTH
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
