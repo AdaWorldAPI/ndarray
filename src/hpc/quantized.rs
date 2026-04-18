@@ -229,6 +229,11 @@ pub fn quantize_f32_to_i8(data: &[f32]) -> (Vec<i8>, QuantParams) {
     (quantized, QuantParams { scale, zero_point: 0, min_val, max_val })
 }
 
+/// Dequantize i8 to f32.
+pub fn dequantize_i8_to_f32(data: &[i8], params: &QuantParams, len: usize) -> Vec<f32> {
+    data.iter().take(len).map(|&q| q as f32 * params.scale).collect()
+}
+
 /// Per-channel i8 quantization (per row).
 pub fn quantize_per_channel_i8(
     data: &[f32],
