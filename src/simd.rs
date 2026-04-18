@@ -950,6 +950,42 @@ pub fn simd_ln_f32(x: F32x16) -> F32x16 {
 }
 
 // ============================================================================
+// Cognitive shader foundation re-exports
+// ============================================================================
+
+// Fingerprint<N>: const-generic binary vector, the BindSpace atom
+pub use crate::hpc::fingerprint::{
+    Fingerprint,
+    Fingerprint2K, Fingerprint1K, Fingerprint64K,
+    VectorWidth, VectorConfig, vector_config,
+};
+
+// CollapseGate: Flow/Block/Hold write gate (Layer 3 in the 7-layer stack)
+pub use crate::hpc::bnn_cross_plane::CollapseGate;
+
+// Bitwise: SIMD-dispatched Hamming distance + popcount
+pub use crate::hpc::bitwise::{
+    hamming_distance_raw, popcount_raw,
+};
+
+// WHT: Walsh-Hadamard Transform (SIMD butterfly)
+pub use crate::hpc::fft::{wht_f32, wht_f32_new};
+
+// Quantization: i4/i2/i8 pack/unpack + BF16
+pub use crate::hpc::quantized::{
+    quantize_f32_to_i4, dequantize_i4_to_f32,
+    quantize_f32_to_i2, dequantize_i2_to_f32,
+    quantize_f32_to_i8, dequantize_i8_to_f32,
+    QuantParams,
+};
+
+// K-means + L2 distance
+pub use crate::hpc::cam_pq::{kmeans, squared_l2};
+
+// SIMD cosine
+pub use crate::hpc::heel_f64x8::cosine_f32_to_f64_simd;
+
+// ============================================================================
 // Tests
 // ============================================================================
 
