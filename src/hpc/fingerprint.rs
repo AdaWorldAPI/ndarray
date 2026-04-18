@@ -182,6 +182,61 @@ impl<const N: usize> Fingerprint<N> {
         &self.words
     }
 
+    /// Multi-lane SIMD view: iterate fingerprint as batches of 8 u64 words.
+    ///
+    /// At N=256 (16K fingerprint), this yields 32 chunks of 8 words each.
+    /// Each chunk is one AVX-512 VPOPCNTDQ iteration (512 bits at a time).
+    /// Consumer uses `U64x8::from_slice(chunk)` for SIMD popcount.
+    #[inline]
+    pub fn chunks_u64x8(&self) -> impl Iterator<Item = &[u64]> {
+        self.words.chunks(8)
+    }
+
+    /// Multi-lane SIMD view: iterate as batches of 64 bytes.
+    ///
+    /// At N=256 (16K fingerprint), yields 32 chunks of 64 bytes.
+    /// Each chunk = one U8x64 load for byte-level SIMD ops.
+    #[inline]
+    pub fn chunks_u8x64(&self) -> impl Iterator<Item = &[u8]> {
+        self.as_bytes().chunks(64)
+    }
+
+    /// Bundle (majority vote) across multiple fingerprints.
+    ///
+    /// Returns a new fingerprint where each bit is set if more than
+    /// half of the input fingerprints have it set.
+    pub fn bundle(items: &[&Self]) -> Self {
+        let n = items.len();
+        if n == 0 { return Self::zero(); }
+        let threshold = n / 2;
+        let mut result = [0u64; N];
+        for w in 0..N {
+            for bit in 0..64 {
+                let count: usize = items.iter()
+                    .filter(|fp| (fp.words[w] >> bit) & 1 == 1)
+                    .count();
+                if count > threshold {
+                    result[w] |= 1u64 << bit;
+                }
+            }
+        }
+        Self { words: result }
+    }
+
+    /// Create a quasi-orthogonal fingerprint from a seed.
+    /// Uses golden-ratio-multiplied seeds to ensure near-orthogonality.
+    pub fn orthogonal(seed: u64) -> Self {
+        Self::random(seed.wrapping_mul(0x9E3779B97F4A7C15))
+    }
+
+    /// Bitwise OR.
+    #[inline]
+    pub fn or(&self, other: &Self) -> Self {
+        let mut words = [0u64; N];
+        for i in 0..N { words[i] = self.words[i] | other.words[i]; }
+        Self { words }
+    }
+
     /// Create from content string (SHA-256-like hash expansion).
     pub fn from_content(data: &str) -> Self {
         let mut h = 0x736f6d6570736575u64;
