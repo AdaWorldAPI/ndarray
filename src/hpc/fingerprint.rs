@@ -270,13 +270,13 @@ pub type Fingerprint64K = Fingerprint<1024>;
 use std::sync::LazyLock;
 
 /// Supported vector widths for the BindSpace substrate.
+///
+/// NOTE: 4096 is NOT a vector width — it's the 0xFFF schema/command address
+/// space (4096 CAM operations, verb vocabulary). Vectors are 8K or 16K.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u16)]
 pub enum VectorWidth {
-    /// 4,096 bits = 64 words = 512 bytes. CAM command address space.
-    /// One item per address — verb/command vocabulary, not holographic memory.
-    W4K = 64,
-    /// 8,192 bits = 128 words = 1 KB. Deprecated legacy.
+    /// 8,192 bits = 128 words = 1 KB. Deprecated, still referenced in some code.
     W8K = 128,
     /// 16,384 bits = 256 words = 2 KB. Production default.
     W16K = 256,
@@ -306,7 +306,6 @@ static VECTOR_WIDTH: LazyLock<VectorConfig> = LazyLock::new(|| {
     let w = std::env::var("NDARRAY_VECTOR_WIDTH")
         .ok()
         .and_then(|s| match s.as_str() {
-            "4096" | "4k" | "4K" => Some(VectorWidth::W4K),
             "8192" | "8k" | "8K" => Some(VectorWidth::W8K),
             "16384" | "16k" | "16K" => Some(VectorWidth::W16K),
             _ => None,
