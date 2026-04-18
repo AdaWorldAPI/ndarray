@@ -84,11 +84,127 @@ impl<const N: usize> Fingerprint<N> {
         out
     }
 
+    /// Get a specific bit (0-indexed).
+    #[inline]
+    pub fn get_bit(&self, index: usize) -> bool {
+        debug_assert!(index < Self::BITS);
+        let word_idx = index / 64;
+        let bit_idx = index % 64;
+        (self.words[word_idx] >> bit_idx) & 1 == 1
+    }
+
+    /// Set a specific bit.
+    #[inline]
+    pub fn set_bit(&mut self, index: usize, value: bool) {
+        debug_assert!(index < Self::BITS);
+        let word_idx = index / 64;
+        let bit_idx = index % 64;
+        if value {
+            self.words[word_idx] |= 1u64 << bit_idx;
+        } else {
+            self.words[word_idx] &= !(1u64 << bit_idx);
+        }
+    }
+
+    /// Toggle a specific bit.
+    #[inline]
+    pub fn toggle_bit(&mut self, index: usize) {
+        debug_assert!(index < Self::BITS);
+        let word_idx = index / 64;
+        let bit_idx = index % 64;
+        self.words[word_idx] ^= 1u64 << bit_idx;
+    }
+
+    /// Create a random fingerprint from a seed (xorshift128+).
+    pub fn random(seed: u64) -> Self {
+        let mut s0 = seed;
+        let mut s1 = seed.wrapping_mul(0x9E3779B97F4A7C15);
+        let mut words = [0u64; N];
+        for word in &mut words {
+            let mut s = s0;
+            s0 = s1;
+            s ^= s << 23;
+            s ^= s >> 18;
+            s ^= s1;
+            s ^= s1 >> 5;
+            s1 = s;
+            *word = s0.wrapping_add(s1);
+        }
+        Self { words }
+    }
+
     /// Hamming distance (number of differing bits).
     /// Delegates to ndarray's SIMD dispatch (AVX-512 → AVX2 → scalar).
     #[inline]
     pub fn hamming_distance(&self, other: &Self) -> u32 {
         super::bitwise::hamming_distance_raw(self.as_bytes(), other.as_bytes()) as u32
+    }
+
+    /// Alias for `hamming_distance` (ladybug-rs compat).
+    #[inline]
+    pub fn hamming(&self, other: &Self) -> u32 {
+        self.hamming_distance(other)
+    }
+
+    /// XOR bind (ladybug-rs compat). Returns a new fingerprint.
+    #[inline]
+    pub fn bind(&self, other: &Self) -> Self {
+        let mut words = [0u64; N];
+        for i in 0..N { words[i] = self.words[i] ^ other.words[i]; }
+        Self { words }
+    }
+
+    /// AND (bitwise intersection).
+    #[inline]
+    pub fn and(&self, other: &Self) -> Self {
+        let mut words = [0u64; N];
+        for i in 0..N { words[i] = self.words[i] & other.words[i]; }
+        Self { words }
+    }
+
+    /// Bitwise NOT.
+    #[inline]
+    pub fn not(&self) -> Self {
+        let mut words = [0u64; N];
+        for i in 0..N { words[i] = !self.words[i]; }
+        Self { words }
+    }
+
+    /// Density: fraction of set bits (popcount / total bits).
+    #[inline]
+    pub fn density(&self) -> f32 {
+        self.popcount() as f32 / Self::BITS as f32
+    }
+
+    /// Access raw words as slice.
+    #[inline]
+    pub fn as_raw(&self) -> &[u64; N] {
+        &self.words
+    }
+
+    /// Create from content string (SHA-256-like hash expansion).
+    pub fn from_content(data: &str) -> Self {
+        let mut h = 0x736f6d6570736575u64;
+        for (i, b) in data.bytes().enumerate() {
+            h ^= (b as u64) << ((i % 8) * 8);
+            h = h.rotate_left(13).wrapping_mul(5).wrapping_add(0xe6546b64);
+        }
+        Self::random(h)
+    }
+
+    /// Permute: circular bit shift by `positions` (positive = left).
+    pub fn permute(&self, positions: i32) -> Self {
+        let total = Self::BITS as i32;
+        let shift = ((positions % total) + total) % total;
+        if shift == 0 { return self.clone(); }
+        let mut result = Self::zero();
+        for i in 0..Self::BITS {
+            if self.get_bit(i) {
+                let new_pos = ((i as i32 + shift) % total) as usize;
+                result.set_bit(new_pos, true);
+            }
+        }
+        result
     }
 
     /// Hamming weight (number of set bits).
