@@ -223,6 +223,20 @@ impl<const N: usize> Fingerprint<N> {
         Self { words: result }
     }
 
+    /// Create a quasi-orthogonal fingerprint from a seed.
+    /// Uses golden-ratio-multiplied seeds to ensure near-orthogonality.
+    pub fn orthogonal(seed: u64) -> Self {
+        Self::random(seed.wrapping_mul(0x9E3779B97F4A7C15))
+    }
+
+    /// Bitwise OR.
+    #[inline]
+    pub fn or(&self, other: &Self) -> Self {
+        let mut words = [0u64; N];
+        for i in 0..N { words[i] = self.words[i] | other.words[i]; }
+        Self { words }
+    }
+
     /// Create from content string (SHA-256-like hash expansion).
     pub fn from_content(data: &str) -> Self {
         let mut h = 0x736f6d6570736575u64;
