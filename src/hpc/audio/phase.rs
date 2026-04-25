@@ -128,6 +128,7 @@ pub fn phase_gradient(
 /// Together: complete nonverbal vocal characterization in 52 bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PhaseDescriptor {
+    /// 4-byte packed descriptor (coherence, gradient, entropy, stability).
     pub bytes: [u8; 4],
 }
 

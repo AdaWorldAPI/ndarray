@@ -35,11 +35,17 @@
 /// what aspect of that codec it captures, and what it replaces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CodecSource {
+    /// Opus / CELT.
     Opus,
+    /// OpenAI Whisper.
     Whisper,
+    /// MP3.
     Mp3,
+    /// Ogg Vorbis.
     OggVorbis,
+    /// Suno Bark.
     Bark,
+    /// ElevenLabs.
     ElevenLabs,
 }
 
@@ -66,11 +72,17 @@ pub enum AudioAspect {
 
 /// Complete provenance record for one primitive.
 pub struct Provenance {
+    /// Name of the primitive in this codebase.
     pub our_type: &'static str,
+    /// Byte size of the primitive (0 = transform/decision, not stored).
     pub byte_size: usize,
+    /// Production codec the primitive was transcoded from.
     pub source: CodecSource,
+    /// Aspect of audio the primitive captures.
     pub aspect: AudioAspect,
+    /// Concept in the source codec that this corresponds to.
     pub source_concept: &'static str,
+    /// What this primitive replaces (in the source codec or a peer).
     pub what_it_replaces: &'static str,
 }
 
@@ -212,6 +224,7 @@ pub const PROVENANCE: &[Provenance] = &[
 ///   Bark tokens: ~128 bytes per frame
 ///   Ours: 52-69 bytes per frame (complete, including phase + identity)
 pub const FRAME_BUDGET: usize = 52;
+/// Per-frame byte budget when the TTS RvqFrame (17 bytes) is also carried.
 pub const FRAME_BUDGET_WITH_TTS: usize = 69;
 
 /// Codec comparison: bits per second at comparable quality.
