@@ -17,13 +17,13 @@ pub const PLANE_BINARY_BYTES: usize = 2048;
 pub const BINARY_BYTES: usize = PLANE_BYTES; // 2048
 
 /// Soaking accumulator length (i8 entries per plane).
-pub const SOAKING_DIMS: usize = 10000;
+pub const SOAKING_DIMS: usize = 16_384;
 
-/// Sigma attention mask width in bytes (10000-bit mask).
-pub const SIGMA_MASK_BYTES: usize = 1250;
+/// Sigma attention mask width in bytes (16384-bit mask = 2048 bytes).
+pub const SIGMA_MASK_BYTES: usize = 2048;
 
 /// Default soaking dimension count.
-pub const DEFAULT_SOAKING_DIM: usize = 10000;
+pub const DEFAULT_SOAKING_DIM: usize = 16_384;
 
 /// Schema field names for the bind_nodes_v2 three-plane layout.
 pub mod schema {
@@ -266,7 +266,7 @@ pub struct BindNodeV2 {
     pub object_soaking: Option<Vec<i8>>,
     /// Composite XOR fingerprint: S XOR P XOR O.
     pub spo_binary: [u8; PLANE_BINARY_BYTES],
-    /// 10000-bit attention mask (sigma).
+    /// 16384-bit attention mask (sigma).
     pub sigma_mask: [u8; SIGMA_MASK_BYTES],
     /// NARS frequency (u16 fixed-point, 0..65535).
     pub nars_frequency: u16,
@@ -572,7 +572,7 @@ impl BindNodeV2 {
 
     /// Convert a Plane accumulator (16384 i8) to a soaking vector (SOAKING_DIMS i8).
     ///
-    /// Truncates if the accumulator is longer than SOAKING_DIMS, pads with 0 if shorter.
+    /// With SOAKING_DIMS = 16384, the copy is one-to-one (no truncation, no padding).
     fn acc_to_soaking(acc: &[i8; 16384]) -> Vec<i8> {
         let mut soaking = vec![0i8; SOAKING_DIMS];
         let copy_len = SOAKING_DIMS.min(acc.len());
@@ -878,8 +878,8 @@ mod tests {
     #[test]
     fn schema_constants() {
         assert_eq!(PLANE_BINARY_BYTES, 2048);
-        assert_eq!(SOAKING_DIMS, 10000);
-        assert_eq!(SIGMA_MASK_BYTES, 1250);
+        assert_eq!(SOAKING_DIMS, 16_384);
+        assert_eq!(SIGMA_MASK_BYTES, 2048);
     }
 
     #[test]
@@ -1140,9 +1140,9 @@ mod tests {
         let (mut s, mut p, mut o) = make_test_planes();
         let node = BindNodeV2::new(&mut s, &mut p, &mut o, "test");
         assert_eq!(node.sigma_mask.len(), SIGMA_MASK_BYTES);
-        assert_eq!(node.sigma_mask.len(), 1250);
-        // sigma_mask * 8 = 10000 bits
-        assert_eq!(node.sigma_mask.len() * 8, 10000);
+        assert_eq!(node.sigma_mask.len(), 2048);
+        // sigma_mask * 8 = 16384 bits
+        assert_eq!(node.sigma_mask.len() * 8, 16_384);
     }
 
     #[test]
