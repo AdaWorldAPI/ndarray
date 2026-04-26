@@ -227,6 +227,7 @@ pub mod jitson;
 pub mod jitson_cranelift;
 pub mod ocr_simd;
 pub mod ocr_felt;
+pub mod renderer;
 /// Audio primitives: MDCT, band energies, PVQ, AudioFrame codec.
 /// Transcoded from Opus CELT for the HHTL cascade → waveform pipeline.
 pub mod audio;
