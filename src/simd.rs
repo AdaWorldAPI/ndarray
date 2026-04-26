@@ -118,7 +118,7 @@ pub use crate::simd_avx512::{
     // 256-bit (AVX2 baseline, __m256/__m256d)
     F32x8, F64x4, f32x8, f64x4,
     // 512-bit (native AVX-512, __m512/__m512d/__m512i)
-    F32x16, F64x8, U8x64, I32x16, I64x8, U32x16, U64x8,
+    F32x16, F64x8, U8x64, I32x16, I64x8, U16x32, U32x16, U64x8,
     F32Mask16, F64Mask8,
     f32x16, f64x8, u8x64, i32x16, i64x8, u32x16, u64x8,
 };
@@ -152,7 +152,7 @@ pub use crate::simd_avx512::{F32x8, F64x4, f32x8, f64x4};
 
 #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
 pub use crate::simd_avx2::{
-    F32x16, F64x8, U8x64, I32x16, I64x8, U32x16, U64x8,
+    F32x16, F64x8, U8x64, I32x16, I64x8, U16x32, U32x16, U64x8,
     F32Mask16, F64Mask8,
     f32x16, f64x8, u8x64, i32x16, i64x8, u32x16, u64x8,
 };
@@ -551,8 +551,40 @@ mod scalar {
     impl_int_type!(U8x64, u8, 64, 0u8);
     impl_int_type!(I32x16, i32, 16, 0i32);
     impl_int_type!(I64x8, i64, 8, 0i64);
+    impl_int_type!(U16x32, u16, 32, 0u16);
     impl_int_type!(U32x16, u32, 16, 0u32);
     impl_int_type!(U64x8, u64, 8, 0u64);
+
+    // Extra methods for U16x32 (widen/narrow, shift, multiply)
+    impl U16x32 {
+        #[inline(always)]
+        pub fn from_u8x64_lo(v: U8x64) -> Self {
+            let mut out = [0u16; 32]; for i in 0..32 { out[i] = v.0[i] as u16; } Self(out)
+        }
+        #[inline(always)]
+        pub fn from_u8x64_hi(v: U8x64) -> Self {
+            let mut out = [0u16; 32]; for i in 0..32 { out[i] = v.0[32 + i] as u16; } Self(out)
+        }
+        #[inline(always)]
+        pub fn pack_saturate_u8(self, other: Self) -> U8x64 {
+            let mut out = [0u8; 64];
+            for i in 0..32 { out[i] = self.0[i].min(255) as u8; }
+            for i in 0..32 { out[32 + i] = other.0[i].min(255) as u8; }
+            U8x64(out)
+        }
+        #[inline(always)]
+        pub fn shr(self, imm: u32) -> Self {
+            let mut out = [0u16; 32]; for i in 0..32 { out[i] = if imm < 16 { self.0[i] >> imm } else { 0 }; } Self(out)
+        }
+        #[inline(always)]
+        pub fn shl(self, imm: u32) -> Self {
+            let mut out = [0u16; 32]; for i in 0..32 { out[i] = if imm < 16 { self.0[i] << imm } else { 0 }; } Self(out)
+        }
+        #[inline(always)]
+        pub fn mullo(self, other: Self) -> Self {
+            let mut out = [0u16; 32]; for i in 0..32 { out[i] = self.0[i].wrapping_mul(other.0[i]); } Self(out)
+        }
+    }
 
     // Extra methods for I32x16 that float types have via the macro
     impl I32x16 {
@@ -842,6 +874,10 @@ mod scalar {
             let mut out = [0u8; 64]; for i in 0..64 { out[i] = self.0[(idx.0[i] & 63) as usize]; } Self(out)
         }
         #[inline(always)]
+        pub fn movemask(self) -> u64 {
+            let mut m: u64 = 0; for i in 0..64 { if self.0[i] & 0x80 != 0 { m |= 1 << i; } } m
+        }
+        #[inline(always)]
         pub fn unpack_lo_epi8(self, other: Self) -> Self {
             let mut out = [0u8; 64];
             for lane in 0..4 { let b = lane * 16; for i in 0..8 { out[b+i*2] = self.0[b+i]; out[b+i*2+1] = other.0[b+i]; } }
@@ -905,7 +941,7 @@ mod scalar {
 
 #[cfg(not(target_arch = "x86_64"))]
 pub use scalar::{
-    F32x16, F64x8, U8x64, I32x16, I64x8, U32x16, U64x8,
+    F32x16, F64x8, U8x64, I32x16, I64x8, U16x32, U32x16, U64x8,
     F32x8, F64x4,
     F32Mask16, F64Mask8,
     f32x16, f64x8, u8x64, i32x16, i64x8, u32x16, u64x8,

@@ -842,6 +842,10 @@ impl U8x64 {
     pub fn permute_bytes(self, idx: Self) -> Self {
         let mut out = [0u8; 64]; for i in 0..64 { out[i] = self.0[(idx.0[i] & 63) as usize]; } Self(out)
     }
+    #[inline(always)]
+    pub fn movemask(self) -> u64 {
+        let mut m: u64 = 0; for i in 0..64 { if self.0[i] & 0x80 != 0 { m |= 1 << i; } } m
+    }
 
     /// Interleave low bytes within each 128-bit lane.
     #[inline(always)]
@@ -909,8 +913,40 @@ impl U8x64 {
 
 avx2_int_type!(I32x16, i32, 16, 0i32);
 avx2_int_type!(I64x8, i64, 8, 0i64);
+avx2_int_type!(U16x32, u16, 32, 0u16);
 avx2_int_type!(U32x16, u32, 16, 0u32);
 avx2_int_type!(U64x8, u64, 8, 0u64);
+
+// Extra methods for U16x32 (widen/narrow, shift, multiply) — AVX2 scalar fallback.
+impl U16x32 {
+    #[inline(always)]
+    pub fn from_u8x64_lo(v: U8x64) -> Self {
+        let mut out = [0u16; 32]; for i in 0..32 { out[i] = v.0[i] as u16; } Self(out)
+    }
+    #[inline(always)]
+    pub fn from_u8x64_hi(v: U8x64) -> Self {
+        let mut out = [0u16; 32]; for i in 0..32 { out[i] = v.0[32 + i] as u16; } Self(out)
+    }
+    #[inline(always)]
+    pub fn pack_saturate_u8(self, other: Self) -> U8x64 {
+        let mut out = [0u8; 64];
+        for i in 0..32 { out[i] = self.0[i].min(255) as u8; }
+        for i in 0..32 { out[32 + i] = other.0[i].min(255) as u8; }
+        U8x64(out)
+    }
+    #[inline(always)]
+    pub fn shr(self, imm: u32) -> Self {
+        let mut out = [0u16; 32]; for i in 0..32 { out[i] = if imm < 16 { self.0[i] >> imm } else { 0 }; } Self(out)
+    }
+    #[inline(always)]
+    pub fn shl(self, imm: u32) -> Self {
+        let mut out = [0u16; 32]; for i in 0..32 { out[i] = if imm < 16 { self.0[i] << imm } else { 0 }; } Self(out)
+    }
+    #[inline(always)]
+    pub fn mullo(self, other: Self) -> Self {
+        let mut out = [0u16; 32]; for i in 0..32 { out[i] = self.0[i].wrapping_mul(other.0[i]); } Self(out)
+    }
+}
 
 impl I32x16 {
     #[inline(always)] pub fn reduce_min(self) -> i32 { *self.0.iter().min().unwrap() }
