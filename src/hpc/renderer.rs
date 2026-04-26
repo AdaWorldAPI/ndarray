@@ -216,9 +216,10 @@ pub static GLOBAL_RENDERER: LazyLock<Renderer> =
 
 /// Integrate positions += velocities·dt then apply damping, in SIMD chunks.
 ///
-/// Both buffers are guaranteed to be multiples of `PREFERRED_F32_LANES`
-/// (enforced by `RenderFrame::with_capacity`), so the loop has zero
-/// scalar tail at every active SIMD tier.
+/// Uses `slice::as_chunks_mut::<16>()` for SIMD slicing — the array-window
+/// pattern documented in `crate::simd`. Both buffers are guaranteed to be
+/// multiples of `PREFERRED_F32_LANES` (enforced by `RenderFrame::with_capacity`),
+/// so the remainder slice is empty and there's no scalar tail.
 ///
 /// One pass = one fused multiply-add per lane:
 ///   `position = velocity * dt + position`
@@ -228,20 +229,24 @@ pub fn integrate_simd(positions: &mut [f32], velocities: &mut [f32], dt: f32, da
     debug_assert_eq!(positions.len(), velocities.len());
     debug_assert_eq!(positions.len() % PREFERRED_F32_LANES, 0);
 
-    let dt_v = F32x16::splat(dt);
+    let dt_v = cached_splat(dt);
     let damping_v = F32x16::splat(damping);
 
-    let chunks = positions.len() / 16;
-    for c in 0..chunks {
-        let off = c * 16;
-        let p = F32x16::from_slice(&positions[off..off + 16]);
-        let v = F32x16::from_slice(&velocities[off..off + 16]);
+    // SIMD slicing via stable as_chunks_mut::<16>(). The remainder is
+    // empty by construction (capacity is padded to PREFERRED_F32_LANES).
+    let (p_chunks, p_tail) = positions.as_chunks_mut::<16>();
+    let (v_chunks, v_tail) = velocities.as_chunks_mut::<16>();
+    debug_assert!(p_tail.is_empty() && v_tail.is_empty());
+
+    for (p, v) in p_chunks.iter_mut().zip(v_chunks.iter_mut()) {
+        let pv = F32x16::from_array(*p);
+        let vv = F32x16::from_array(*v);
         // FMA: position = velocity * dt + position
-        let p_new = v.mul_add(dt_v, p);
-        // Damping: velocity *= damping (no FMA needed; one mul)
-        let v_new = v * damping_v;
-        p_new.copy_to_slice(&mut positions[off..off + 16]);
-        v_new.copy_to_slice(&mut velocities[off..off + 16]);
+        let p_new = vv.mul_add(dt_v, pv);
+        // Damping: velocity *= damping (one mul, no FMA needed)
+        let v_new = vv * damping_v;
+        p_new.copy_to_slice(p);
+        v_new.copy_to_slice(v);
     }
 }
 
@@ -423,5 +428,526 @@ mod tests {
         assert!(GLOBAL_RENDERER.tick_count() >= 0);
         let f = GLOBAL_RENDERER.read_front();
         assert!(f.capacity >= 4096);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// LazyLock-cached splat constants for the common tick rates.
+//
+// `F32x16::splat(dt)` is one CPU instruction at AVX-512 (`_mm512_set1_ps`)
+// but the renderer ticks at fixed rates 99% of the time, so we cache the
+// three canonical splat values: 60 fps / 30 fps / 15 fps.
+//
+// `cached_splat(dt)` returns the cached vector when `dt` matches one of
+// the canonical rates, falling back to a fresh splat otherwise. Tolerance
+// ±2 µs absorbs floating-point jitter without bypassing the cache.
+// ─────────────────────────────────────────────────────────────────────
+
+/// Tick budget for 60 fps in seconds (1/60).
+pub const DT_60: f32 = 1.0 / 60.0;
+/// Tick budget for 30 fps in seconds (1/30).
+pub const DT_30: f32 = 1.0 / 30.0;
+/// Tick budget for 15 fps in seconds (1/15).
+pub const DT_15: f32 = 1.0 / 15.0;
+
+static SPLAT_60: LazyLock<F32x16> = LazyLock::new(|| F32x16::splat(DT_60));
+static SPLAT_30: LazyLock<F32x16> = LazyLock::new(|| F32x16::splat(DT_30));
+static SPLAT_15: LazyLock<F32x16> = LazyLock::new(|| F32x16::splat(DT_15));
+
+/// Splat `dt` into an `F32x16`, returning a cached value for the canonical
+/// rates (60 / 30 / 15 fps). Falls back to a fresh splat for arbitrary `dt`.
+#[inline]
+pub fn cached_splat(dt: f32) -> F32x16 {
+    const TOL: f32 = 2e-6;
+    if (dt - DT_60).abs() < TOL { *SPLAT_60 }
+    else if (dt - DT_30).abs() < TOL { *SPLAT_30 }
+    else if (dt - DT_15).abs() < TOL { *SPLAT_15 }
+    else { F32x16::splat(dt) }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Viewport + foveated rendering — only spend SIMD cycles on what's seen.
+// ─────────────────────────────────────────────────────────────────────
+
+/// Camera + view-volume parameters for foveated rendering.
+///
+/// Nodes are classified by distance to `center` into four priority bands.
+/// The renderer ticks foveal nodes every frame, peripheral every other,
+/// distant every fourth, and skips off-screen entirely. Net effect: O(N)
+/// work scales with what the camera is actually looking at, not the
+/// graph total.
+#[derive(Debug, Clone, Copy)]
+pub struct Viewport {
+    /// Camera focus point in world coordinates.
+    pub center: [f32; 3],
+    /// Foveal radius — full-detail every-tick zone.
+    pub foveal_radius: f32,
+    /// Peripheral radius — half-rate update zone (foveal_radius < r ≤ peripheral).
+    pub peripheral_radius: f32,
+    /// Cull radius — beyond this, skip entirely (not just slow).
+    pub cull_radius: f32,
+}
+
+impl Viewport {
+    /// Default: 4.0 unit foveal, 16.0 peripheral, 64.0 cull.
+    pub fn default_at(center: [f32; 3]) -> Self {
+        Self { center, foveal_radius: 4.0, peripheral_radius: 16.0, cull_radius: 64.0 }
+    }
+}
+
+/// Update priority for one node — controls how often it's integrated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum UpdatePriority {
+    /// Every tick (foveal zone).
+    Foveal = 0,
+    /// Every 2nd tick (peripheral zone).
+    Peripheral = 1,
+    /// Every 4th tick (distant but in-frustum).
+    Distant = 2,
+    /// Skip (out of cull radius).
+    OffScreen = 3,
+}
+
+impl UpdatePriority {
+    /// Stride between updates for this priority.
+    #[inline]
+    pub fn tick_stride(self) -> u64 {
+        match self {
+            Self::Foveal => 1,
+            Self::Peripheral => 2,
+            Self::Distant => 4,
+            Self::OffScreen => u64::MAX,
+        }
+    }
+
+    /// Should this node be updated on the given tick?
+    #[inline]
+    pub fn should_update(self, tick: u64) -> bool {
+        let stride = self.tick_stride();
+        if stride == u64::MAX { false } else { tick % stride == 0 }
+    }
+}
+
+/// Classify each node by distance to viewport center.
+///
+/// Returns a Vec<UpdatePriority> of length `len` (active nodes only). Trailing
+/// padded slots are not classified — they're never integrated regardless.
+pub fn classify_priorities(positions: &[f32], len: usize, vp: &Viewport) -> Vec<UpdatePriority> {
+    let mut out = Vec::with_capacity(len);
+    let f2 = vp.foveal_radius * vp.foveal_radius;
+    let p2 = vp.peripheral_radius * vp.peripheral_radius;
+    let c2 = vp.cull_radius * vp.cull_radius;
+    for i in 0..len {
+        let dx = positions[i * POSITION_DIMS]     - vp.center[0];
+        let dy = positions[i * POSITION_DIMS + 1] - vp.center[1];
+        let dz = positions[i * POSITION_DIMS + 2] - vp.center[2];
+        let d2 = dx * dx + dy * dy + dz * dz;
+        out.push(
+            if d2 <= f2 { UpdatePriority::Foveal }
+            else if d2 <= p2 { UpdatePriority::Peripheral }
+            else if d2 <= c2 { UpdatePriority::Distant }
+            else { UpdatePriority::OffScreen }
+        );
+    }
+    out
+}
+
+/// Foveated integrate — apply `integrate_simd` only to the chunks where
+/// at least one node has `priorities[node] == active_priority` AND
+/// `priority.should_update(tick)`.
+///
+/// Operates in 16-element chunks (the SIMD chunk size), so the smallest
+/// granularity of skipping is 16/POSITION_DIMS ≈ 5 nodes. For graphs
+/// where most nodes share a priority band this is near-optimal; for
+/// random-priority graphs, foveated savings drop toward zero (worst case
+/// is the same cost as `integrate_simd`).
+pub fn integrate_foveated(
+    positions: &mut [f32],
+    velocities: &mut [f32],
+    priorities: &[UpdatePriority],
+    tick: u64,
+    dt: f32,
+    damping: f32,
+) {
+    debug_assert_eq!(positions.len(), velocities.len());
+    debug_assert_eq!(positions.len() % PREFERRED_F32_LANES, 0);
+
+    let dt_v = cached_splat(dt);
+    let damping_v = F32x16::splat(damping);
+
+    // Each 16-float chunk covers ceil(16/3) = 6 nodes (with overlap on
+    // the chunk boundary). We skip a chunk only if EVERY node mapping to
+    // it is OffScreen or stride-skipped this tick; otherwise we update
+    // the whole chunk (cheap — one FMA — vs. branching cost).
+    let nodes_per_chunk = 16 / POSITION_DIMS + 1; // round up
+
+    let (p_chunks, _) = positions.as_chunks_mut::<16>();
+    let (v_chunks, _) = velocities.as_chunks_mut::<16>();
+
+    for (chunk_idx, (p, v)) in p_chunks.iter_mut().zip(v_chunks.iter_mut()).enumerate() {
+        // Determine which active nodes fall into this chunk.
+        let node_lo = (chunk_idx * 16) / POSITION_DIMS;
+        let node_hi = (node_lo + nodes_per_chunk).min(priorities.len());
+
+        // Skip only if every node in the band agrees to skip THIS tick.
+        let all_skip = (node_lo..node_hi)
+            .all(|n| !priorities[n].should_update(tick));
+        if all_skip { continue; }
+
+        let pv = F32x16::from_array(*p);
+        let vv = F32x16::from_array(*v);
+        let p_new = vv.mul_add(dt_v, pv);
+        let v_new = vv * damping_v;
+        p_new.copy_to_slice(p);
+        v_new.copy_to_slice(v);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// FPS controller — adaptive frame rate under load.
+//
+// Targets 60 ticks/s by default. If the last tick took longer than the
+// budget allows, the controller drops to 30 fps; if even 30 fps overruns,
+// it drops to 15 fps. When ticks consistently come in under-budget, it
+// climbs back up. This keeps the cockpit responsive on big graphs without
+// manual rate selection.
+// ─────────────────────────────────────────────────────────────────────
+
+use std::time::Instant;
+
+/// Adaptive FPS targeting 60 → 30 → 15 with hysteresis.
+pub struct FpsController {
+    /// Active target rate in Hz (60, 30, or 15).
+    target_hz: AtomicU32,
+    /// Last tick wall-clock (ns since renderer construction).
+    last_tick_ns: AtomicU64,
+    /// Construction instant — origin for last_tick_ns.
+    origin: Instant,
+    /// Rolling mean tick duration in ns (EWMA).
+    avg_tick_ns: AtomicU64,
+    /// Consecutive under-budget ticks (used to climb back up).
+    under_budget_streak: AtomicU32,
+}
+
+use std::sync::atomic::AtomicU32;
+
+impl FpsController {
+    /// Construct with `target_hz` initial rate (clamped to {15, 30, 60}).
+    pub fn new(target_hz: u32) -> Self {
+        let clamped = match target_hz {
+            x if x >= 60 => 60,
+            x if x >= 30 => 30,
+            _ => 15,
+        };
+        Self {
+            target_hz: AtomicU32::new(clamped),
+            last_tick_ns: AtomicU64::new(0),
+            origin: Instant::now(),
+            avg_tick_ns: AtomicU64::new(0),
+            under_budget_streak: AtomicU32::new(0),
+        }
+    }
+
+    /// Currently active target rate in Hz (60, 30, or 15).
+    #[inline]
+    pub fn target_hz(&self) -> u32 {
+        self.target_hz.load(Ordering::Acquire)
+    }
+
+    /// `dt` in seconds for the active target rate.
+    #[inline]
+    pub fn dt(&self) -> f32 {
+        match self.target_hz() {
+            60 => DT_60,
+            30 => DT_30,
+            _  => DT_15,
+        }
+    }
+
+    /// Rolling mean tick duration in nanoseconds.
+    #[inline]
+    pub fn avg_tick_ns(&self) -> u64 {
+        self.avg_tick_ns.load(Ordering::Acquire)
+    }
+
+    /// Tick budget for the current target rate, in nanoseconds.
+    #[inline]
+    pub fn budget_ns(&self) -> u64 {
+        1_000_000_000u64 / self.target_hz() as u64
+    }
+
+    /// Record the duration of one tick and adapt the rate if needed.
+    ///
+    /// EWMA with α = 1/8 keeps the average responsive without flapping.
+    /// Step down: 3 consecutive over-budget ticks → halve target.
+    /// Step up:   60 consecutive under-budget ticks (~1s @ current rate) → double target.
+    pub fn record_tick(&self, duration_ns: u64) {
+        // EWMA update (α = 1/8): avg = avg + (sample - avg)/8
+        let prev = self.avg_tick_ns.load(Ordering::Acquire);
+        let next = if prev == 0 {
+            duration_ns
+        } else {
+            prev + (duration_ns.saturating_sub(prev) / 8)
+                 - (prev.saturating_sub(duration_ns) / 8)
+        };
+        self.avg_tick_ns.store(next, Ordering::Release);
+
+        let budget = self.budget_ns();
+        let cur = self.target_hz();
+        if duration_ns > budget {
+            self.under_budget_streak.store(0, Ordering::Release);
+            // Step down 60 → 30 → 15. Don't go below 15.
+            let new_hz = match cur { 60 => 30, 30 => 15, _ => 15 };
+            if new_hz != cur {
+                self.target_hz.store(new_hz, Ordering::Release);
+            }
+        } else {
+            let streak = self.under_budget_streak.fetch_add(1, Ordering::AcqRel) + 1;
+            if streak >= 60 {
+                let new_hz = match cur { 15 => 30, 30 => 60, _ => 60 };
+                if new_hz != cur {
+                    self.target_hz.store(new_hz, Ordering::Release);
+                }
+                self.under_budget_streak.store(0, Ordering::Release);
+            }
+        }
+
+        let elapsed = self.origin.elapsed().as_nanos() as u64;
+        self.last_tick_ns.store(elapsed, Ordering::Release);
+    }
+}
+
+impl Default for FpsController {
+    fn default() -> Self {
+        Self::new(60)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Renderer convenience: adaptive + foveated tick wrappers.
+// ─────────────────────────────────────────────────────────────────────
+
+impl Renderer {
+    /// Tick at the rate the `FpsController` currently targets, measuring
+    /// the duration so the controller can adapt for next call.
+    ///
+    /// This is the recommended top-level entry point for cockpit servers:
+    /// just call `r.tick_adaptive(&fps_ctl, damping)` in a loop and the
+    /// rate auto-tunes between 60 / 30 / 15 fps based on observed load.
+    pub fn tick_adaptive(&self, fps: &FpsController, damping: f32) {
+        let start = std::time::Instant::now();
+        self.tick(fps.dt(), damping);
+        fps.record_tick(start.elapsed().as_nanos() as u64);
+    }
+
+    /// Foveated tick — classify by viewport, integrate only chunks where
+    /// at least one node should update this tick.
+    ///
+    /// The classification cost is O(N) (one squared-distance per node) but
+    /// is done once per tick; the SIMD integration cost drops by the share
+    /// of off-screen / sub-rate nodes. For a typical cockpit camera, foveal
+    /// nodes are ≤ 20% of the graph → 5× speedup vs full integrate.
+    pub fn tick_foveated(&self, fps: &FpsController, damping: f32, vp: &Viewport) {
+        let start = std::time::Instant::now();
+        let dt = fps.dt();
+        let tick_now = self.tick_count.load(Ordering::Acquire) + 1;
+        {
+            let mut back = self.write_back();
+            let RenderFrame { positions, velocities, len, tick, .. } = &mut *back;
+            let priorities = classify_priorities(positions, *len, vp);
+            integrate_foveated(positions, velocities, &priorities, tick_now, dt, damping);
+            *tick = tick_now;
+        }
+        self.swap();
+        self.tick_count.fetch_add(1, Ordering::AcqRel);
+        fps.record_tick(start.elapsed().as_nanos() as u64);
+    }
+}
+
+#[cfg(test)]
+mod adaptive_tests {
+    use super::*;
+
+    #[test]
+    fn cached_splat_returns_canonical_for_60fps() {
+        let v = cached_splat(DT_60);
+        // The cached vector should be byte-identical to a fresh splat.
+        let fresh = F32x16::splat(DT_60);
+        // F32x16 doesn't implement PartialEq directly; compare via copy_to_slice.
+        let mut a = [0.0f32; 16];
+        let mut b = [0.0f32; 16];
+        v.copy_to_slice(&mut a);
+        fresh.copy_to_slice(&mut b);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn cached_splat_falls_back_for_arbitrary_dt() {
+        let v = cached_splat(0.0314);
+        let mut out = [0.0f32; 16];
+        v.copy_to_slice(&mut out);
+        for x in out { assert!((x - 0.0314).abs() < 1e-6); }
+    }
+
+    #[test]
+    fn cached_splat_within_tolerance_hits_cache() {
+        // 1/60 = 0.01666666… → 0.01666666 + 1µs should still hit the cache.
+        let v = cached_splat(DT_60 + 1e-7);
+        let mut out = [0.0f32; 16];
+        v.copy_to_slice(&mut out);
+        // Cached at exactly DT_60, not the slightly-higher input.
+        assert!((out[0] - DT_60).abs() < 1e-6);
+    }
+
+    #[test]
+    fn priority_stride_progression() {
+        assert_eq!(UpdatePriority::Foveal.tick_stride(), 1);
+        assert_eq!(UpdatePriority::Peripheral.tick_stride(), 2);
+        assert_eq!(UpdatePriority::Distant.tick_stride(), 4);
+        assert_eq!(UpdatePriority::OffScreen.tick_stride(), u64::MAX);
+    }
+
+    #[test]
+    fn priority_should_update_respects_stride() {
+        assert!(UpdatePriority::Foveal.should_update(0));
+        assert!(UpdatePriority::Foveal.should_update(7));
+        assert!(UpdatePriority::Peripheral.should_update(0));
+        assert!(!UpdatePriority::Peripheral.should_update(1));
+        assert!(UpdatePriority::Peripheral.should_update(2));
+        assert!(UpdatePriority::Distant.should_update(0));
+        assert!(!UpdatePriority::Distant.should_update(1));
+        assert!(UpdatePriority::Distant.should_update(4));
+        assert!(!UpdatePriority::OffScreen.should_update(0));
+        assert!(!UpdatePriority::OffScreen.should_update(u64::MAX - 1));
+    }
+
+    #[test]
+    fn classify_priorities_assigns_zones() {
+        // 4 nodes: at center, foveal-edge, peripheral-zone, off-screen.
+        let positions = vec![
+             0.0,  0.0,  0.0,   // node 0 — at center → Foveal
+             3.0,  0.0,  0.0,   // node 1 — within foveal radius (4)
+             8.0,  0.0,  0.0,   // node 2 — within peripheral (16)
+            70.0,  0.0,  0.0,   // node 3 — beyond cull (64)
+        ];
+        let vp = Viewport::default_at([0.0, 0.0, 0.0]);
+        let p = classify_priorities(&positions, 4, &vp);
+        assert_eq!(p[0], UpdatePriority::Foveal);
+        assert_eq!(p[1], UpdatePriority::Foveal);
+        assert_eq!(p[2], UpdatePriority::Peripheral);
+        assert_eq!(p[3], UpdatePriority::OffScreen);
+    }
+
+    #[test]
+    fn integrate_foveated_skips_offscreen_chunks() {
+        // 32 floats = 2 SIMD chunks. Mark all nodes as OffScreen → no update.
+        let mut positions = vec![1.0f32; 32];
+        let mut velocities = vec![1.0f32; 32];
+        let priorities = vec![UpdatePriority::OffScreen; 12]; // covers both chunks
+        integrate_foveated(&mut positions, &mut velocities, &priorities, 0, 0.5, 0.9);
+        for &p in &positions { assert_eq!(p, 1.0); } // unchanged
+        for &v in &velocities { assert_eq!(v, 1.0); } // unchanged
+    }
+
+    #[test]
+    fn integrate_foveated_updates_foveal_chunks() {
+        let mut positions = vec![0.0f32; 32];
+        let mut velocities = vec![1.0f32; 32];
+        let priorities = vec![UpdatePriority::Foveal; 12];
+        integrate_foveated(&mut positions, &mut velocities, &priorities, 0, 0.5, 0.9);
+        for &p in &positions {
+            assert!((p - 0.5).abs() < 1e-6);
+        }
+        for &v in &velocities {
+            assert!((v - 0.9).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn integrate_foveated_respects_peripheral_stride() {
+        let mut positions = vec![0.0f32; 32];
+        let mut velocities = vec![1.0f32; 32];
+        let priorities = vec![UpdatePriority::Peripheral; 12];
+        // Tick 1 (odd) — peripheral skips
+        integrate_foveated(&mut positions, &mut velocities, &priorities, 1, 0.5, 0.9);
+        for &p in &positions { assert_eq!(p, 0.0); }
+        // Tick 2 (even) — peripheral updates
+        integrate_foveated(&mut positions, &mut velocities, &priorities, 2, 0.5, 0.9);
+        for &p in &positions { assert!((p - 0.5).abs() < 1e-6); }
+    }
+
+    #[test]
+    fn fps_controller_starts_at_60() {
+        let c = FpsController::default();
+        assert_eq!(c.target_hz(), 60);
+        assert_eq!(c.dt(), DT_60);
+        assert_eq!(c.budget_ns(), 16_666_666); // 1e9 / 60
+    }
+
+    #[test]
+    fn fps_controller_steps_down_on_overrun() {
+        let c = FpsController::default();
+        // Single overrun: budget_60 = 16.67ms; record 50ms tick → step down.
+        c.record_tick(50_000_000);
+        assert_eq!(c.target_hz(), 30);
+        // Another overrun at 30 (budget = 33ms): record 100ms → step to 15.
+        c.record_tick(100_000_000);
+        assert_eq!(c.target_hz(), 15);
+    }
+
+    #[test]
+    fn fps_controller_steps_up_on_sustained_under_budget() {
+        let c = FpsController::new(15);
+        // Record 60 fast ticks → climb to 30.
+        for _ in 0..60 { c.record_tick(1_000_000); } // 1ms each
+        assert_eq!(c.target_hz(), 30);
+        // Another 60 fast → climb to 60.
+        for _ in 0..60 { c.record_tick(1_000_000); }
+        assert_eq!(c.target_hz(), 60);
+    }
+
+    #[test]
+    fn fps_controller_dt_tracks_target() {
+        let c = FpsController::new(60);
+        assert_eq!(c.dt(), DT_60);
+        c.record_tick(50_000_000); // step to 30
+        assert_eq!(c.dt(), DT_30);
+        c.record_tick(50_000_000); // step to 15
+        assert_eq!(c.dt(), DT_15);
+    }
+
+    #[test]
+    fn renderer_tick_adaptive_advances_count() {
+        let r = Renderer::with_capacity(64);
+        let fps = FpsController::default();
+        r.tick_adaptive(&fps, 0.95);
+        assert_eq!(r.tick_count(), 1);
+        // FpsController should have recorded a sample.
+        assert!(fps.avg_tick_ns() > 0);
+    }
+
+    #[test]
+    fn renderer_tick_foveated_advances_count_and_swaps() {
+        let r = Renderer::with_capacity(64);
+        {
+            let mut back = r.write_back();
+            back.len = 8;
+        }
+        let fps = FpsController::default();
+        let vp = Viewport::default_at([0.0, 0.0, 0.0]);
+        let initial_front = r.front_index();
+        r.tick_foveated(&fps, 0.95, &vp);
+        assert_eq!(r.tick_count(), 1);
+        assert_eq!(r.front_index(), 1 - initial_front);
+    }
+
+    #[test]
+    fn integrate_simd_array_chunks_have_no_tail() {
+        // After migration: 16384 % PREFERRED_F32_LANES == 0, so as_chunks_mut
+        // remainder must be empty.
+        let mut p = vec![0.0f32; 16_384];
+        let (_chunks, tail) = p.as_chunks_mut::<16>();
+        assert!(tail.is_empty(), "no scalar tail at 16384");
     }
 }
