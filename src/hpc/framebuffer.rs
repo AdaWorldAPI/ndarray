@@ -526,3 +526,507 @@ mod tests {
         assert!(mid > low, "8-color > 4-color wire");
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Wobble spring — organic node displacement that masks layout jitter.
+//
+// When a node moves (velocity exceeds threshold), wobble energy is
+// injected. It decays exponentially each tick. At render time, wobble
+// is added to the projected position — the node oscillates around its
+// physics-true location. The effect: the graph feels alive, and small
+// layout inaccuracies are hidden behind spring motion.
+// ─────────────────────────────────────────────────────────────────────
+
+/// Per-node wobble state: displacement + decay.
+#[derive(Debug, Clone)]
+pub struct WobbleState {
+    /// Per-node wobble displacement (x, y interleaved; length = 2·capacity).
+    pub displace: Vec<f32>,
+    /// Decay factor per tick [0, 1). 0.92 = ~12 frames to half-life.
+    pub decay: f32,
+    /// Velocity threshold: inject wobble when speed exceeds this.
+    pub inject_threshold: f32,
+    /// Injection amplitude: max wobble pixels on injection.
+    pub amplitude: f32,
+}
+
+impl WobbleState {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            displace: vec![0.0; capacity * 2],
+            decay: 0.92,
+            inject_threshold: 0.5,
+            amplitude: 3.0,
+        }
+    }
+
+    /// Inject wobble for nodes whose velocity exceeds the threshold,
+    /// then decay all displacements. Call once per tick.
+    pub fn tick(&mut self, velocities: &[f32], len: usize) {
+        // Inject: if |v| > threshold, add random-ish displacement
+        // (use velocity direction × amplitude for deterministic wobble).
+        for i in 0..len {
+            let vx = velocities[i * 3];
+            let vy = velocities[i * 3 + 1];
+            let speed = (vx * vx + vy * vy).sqrt();
+            if speed > self.inject_threshold {
+                // Perpendicular to velocity direction → organic wobble
+                let norm = speed.recip();
+                self.displace[i * 2]     += -vy * norm * self.amplitude;
+                self.displace[i * 2 + 1] +=  vx * norm * self.amplitude;
+            }
+        }
+        // Decay all
+        for d in self.displace.iter_mut() {
+            *d *= self.decay;
+        }
+    }
+
+    /// Get wobble-adjusted screen position for node `i`.
+    #[inline]
+    pub fn adjust(&self, sx: usize, sy: usize, node_idx: usize) -> (usize, usize) {
+        let dx = self.displace.get(node_idx * 2).copied().unwrap_or(0.0);
+        let dy = self.displace.get(node_idx * 2 + 1).copied().unwrap_or(0.0);
+        (
+            (sx as f32 + dx).max(0.0) as usize,
+            (sy as f32 + dy).max(0.0) as usize,
+        )
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Neuron firing — nodes pulse when the cognitive shader resolves them.
+//
+// fire_intensity[i] ∈ [0, 255]. The shader sets it to 255 on Commit,
+// 200 on Epiphany, 128 on FailureTicket. Each tick it decays by
+// `decay_rate`. The framebuffer maps fire_intensity to a brighter
+// palette index (additive blend).
+// ─────────────────────────────────────────────────────────────────────
+
+/// Per-node fire intensity for visual neuron-pulse feedback.
+#[derive(Debug, Clone)]
+pub struct FireState {
+    /// Intensity per node [0, 255]. 0 = dark, 255 = just fired.
+    pub intensity: Vec<u8>,
+    /// Subtracted per tick. Higher = faster fade.
+    pub decay_rate: u8,
+}
+
+impl FireState {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            intensity: vec![0u8; capacity],
+            decay_rate: 16,
+        }
+    }
+
+    /// Fire a node at the given intensity (255 = max).
+    #[inline]
+    pub fn fire(&mut self, node_idx: usize, intensity: u8) {
+        if let Some(v) = self.intensity.get_mut(node_idx) {
+            *v = (*v).max(intensity);
+        }
+    }
+
+    /// Decay all intensities by `decay_rate`. Call once per tick.
+    pub fn tick(&mut self) {
+        for v in self.intensity.iter_mut() {
+            *v = v.saturating_sub(self.decay_rate);
+        }
+    }
+
+    /// Map fire intensity to a palette color boost.
+    /// Returns 0 (no boost) or 1–3 extra palette indices to add.
+    #[inline]
+    pub fn color_boost(&self, node_idx: usize, palette_max: u8) -> u8 {
+        let raw = self.intensity.get(node_idx).copied().unwrap_or(0);
+        // Scale [0,255] → [0, palette_max/2] extra indices
+        let boost = (raw as u16 * (palette_max as u16 / 2)) / 255;
+        boost as u8
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Glyph atlas — 5×7 bitmap font for node labels.
+//
+// 95 printable ASCII characters (0x20–0x7E) stored as 5-byte columns
+// (7 rows each). Total atlas: 95 × 5 = 475 bytes — fits in L1.
+// ─────────────────────────────────────────────────────────────────────
+
+/// 5×7 bitmap glyph for one character. Column-major: glyph[col] has 7 bits (rows).
+pub type Glyph = [u8; 5];
+
+/// Minimal 5×7 ASCII glyph set. Covers A-Z, 0-9, space, common punctuation.
+/// Missing chars render as a filled block.
+pub static GLYPH_ATLAS: [Glyph; 128] = {
+    let mut atlas = [[0x7Fu8; 5]; 128]; // default = filled block
+    // Space
+    atlas[b' ' as usize] = [0, 0, 0, 0, 0];
+    // Digits 0-9
+    atlas[b'0' as usize] = [0x3E, 0x51, 0x49, 0x45, 0x3E];
+    atlas[b'1' as usize] = [0x00, 0x42, 0x7F, 0x40, 0x00];
+    atlas[b'2' as usize] = [0x62, 0x51, 0x49, 0x49, 0x46];
+    atlas[b'3' as usize] = [0x22, 0x41, 0x49, 0x49, 0x36];
+    atlas[b'4' as usize] = [0x18, 0x14, 0x12, 0x7F, 0x10];
+    atlas[b'5' as usize] = [0x27, 0x45, 0x45, 0x45, 0x39];
+    atlas[b'6' as usize] = [0x3C, 0x4A, 0x49, 0x49, 0x30];
+    atlas[b'7' as usize] = [0x01, 0x71, 0x09, 0x05, 0x03];
+    atlas[b'8' as usize] = [0x36, 0x49, 0x49, 0x49, 0x36];
+    atlas[b'9' as usize] = [0x06, 0x49, 0x49, 0x29, 0x1E];
+    // Letters A-Z
+    atlas[b'A' as usize] = [0x7E, 0x09, 0x09, 0x09, 0x7E];
+    atlas[b'B' as usize] = [0x7F, 0x49, 0x49, 0x49, 0x36];
+    atlas[b'C' as usize] = [0x3E, 0x41, 0x41, 0x41, 0x22];
+    atlas[b'D' as usize] = [0x7F, 0x41, 0x41, 0x41, 0x3E];
+    atlas[b'E' as usize] = [0x7F, 0x49, 0x49, 0x49, 0x41];
+    atlas[b'F' as usize] = [0x7F, 0x09, 0x09, 0x09, 0x01];
+    atlas[b'G' as usize] = [0x3E, 0x41, 0x49, 0x49, 0x7A];
+    atlas[b'H' as usize] = [0x7F, 0x08, 0x08, 0x08, 0x7F];
+    atlas[b'I' as usize] = [0x00, 0x41, 0x7F, 0x41, 0x00];
+    atlas[b'J' as usize] = [0x20, 0x40, 0x41, 0x3F, 0x01];
+    atlas[b'K' as usize] = [0x7F, 0x08, 0x14, 0x22, 0x41];
+    atlas[b'L' as usize] = [0x7F, 0x40, 0x40, 0x40, 0x40];
+    atlas[b'M' as usize] = [0x7F, 0x02, 0x0C, 0x02, 0x7F];
+    atlas[b'N' as usize] = [0x7F, 0x04, 0x08, 0x10, 0x7F];
+    atlas[b'O' as usize] = [0x3E, 0x41, 0x41, 0x41, 0x3E];
+    atlas[b'P' as usize] = [0x7F, 0x09, 0x09, 0x09, 0x06];
+    atlas[b'Q' as usize] = [0x3E, 0x41, 0x51, 0x21, 0x5E];
+    atlas[b'R' as usize] = [0x7F, 0x09, 0x19, 0x29, 0x46];
+    atlas[b'S' as usize] = [0x26, 0x49, 0x49, 0x49, 0x32];
+    atlas[b'T' as usize] = [0x01, 0x01, 0x7F, 0x01, 0x01];
+    atlas[b'U' as usize] = [0x3F, 0x40, 0x40, 0x40, 0x3F];
+    atlas[b'V' as usize] = [0x1F, 0x20, 0x40, 0x20, 0x1F];
+    atlas[b'W' as usize] = [0x3F, 0x40, 0x38, 0x40, 0x3F];
+    atlas[b'X' as usize] = [0x63, 0x14, 0x08, 0x14, 0x63];
+    atlas[b'Y' as usize] = [0x03, 0x04, 0x78, 0x04, 0x03];
+    atlas[b'Z' as usize] = [0x61, 0x51, 0x49, 0x45, 0x43];
+    // Punctuation
+    atlas[b'.' as usize] = [0x00, 0x60, 0x60, 0x00, 0x00];
+    atlas[b'-' as usize] = [0x08, 0x08, 0x08, 0x08, 0x08];
+    atlas[b'_' as usize] = [0x40, 0x40, 0x40, 0x40, 0x40];
+    atlas[b':' as usize] = [0x00, 0x36, 0x36, 0x00, 0x00];
+    atlas
+};
+
+impl Framebuffer {
+    /// Blit a text label at (x, y) using the 5×7 glyph atlas.
+    pub fn draw_label(&mut self, x: usize, y: usize, text: &str, color: u8) {
+        let mut cx = x;
+        for ch in text.bytes() {
+            let idx = (ch as usize).min(127);
+            let glyph = &GLYPH_ATLAS[idx];
+            for col in 0..5 {
+                let bits = glyph[col];
+                for row in 0..7 {
+                    if bits & (1 << row) != 0 {
+                        let px = cx + col;
+                        let py = y + row;
+                        if px < self.width && py < self.height {
+                            self.pixels[py * self.width + px] = color;
+                        }
+                    }
+                }
+            }
+            cx += 6; // 5 pixels + 1 gap
+        }
+        let text_w = text.len() * 6;
+        self.expand_dirty(x, y, (x + text_w).min(self.width), (y + 7).min(self.height));
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Flyby ring buffer — Amiga demo scene trick.
+//
+// Pre-render N frames of a mathematically computed satellite orbit
+// around the graph. Store as a ring of palette_codec-packed framebuffers.
+// During zoom/pan transitions or when the compute budget is spent,
+// play from the ring. The loop is seamless (Lissajous orbit completes
+// one full cycle over N frames). Higher N = smoother apparent frame rate
+// at the cost of memory.
+//
+// 300 frames × 512 KB each (16-color 1024²) = 150 MB.
+// 300 frames × 128 KB each (16-color 512²)  =  38 MB — fits L3.
+// ─────────────────────────────────────────────────────────────────────
+
+/// Pre-rendered flyby frame (palette_codec-packed + camera state).
+#[derive(Clone)]
+pub struct FlybyFrame {
+    /// Packed pixel indices (via palette_codec).
+    pub packed: Vec<u64>,
+    /// Bits per pixel used for packing.
+    pub bpp: usize,
+    /// Camera position at this keyframe.
+    pub cam_x: f32,
+    pub cam_y: f32,
+    pub cam_zoom: f32,
+}
+
+/// Ring buffer of pre-rendered flyby keyframes.
+pub struct FlybyCache {
+    pub frames: Vec<FlybyFrame>,
+    /// Current playback position in [0, frames.len()).
+    pub cursor: usize,
+    /// Width/height of pre-rendered frames.
+    pub width: usize,
+    pub height: usize,
+}
+
+impl FlybyCache {
+    /// Pre-render `n_frames` of a Lissajous satellite orbit.
+    ///
+    /// The orbit traces a figure-8 around the graph center, completing
+    /// one full loop over `n_frames`. Scale determines the orbital radius
+    /// in world units; zoom_range controls the min/max camera zoom.
+    pub fn prerender(
+        fb_template: &Framebuffer,
+        frame: &RenderFrame,
+        edges: &[(usize, usize)],
+        n_frames: usize,
+        orbit_radius: f32,
+        zoom_range: (f32, f32),
+        node_color: u8,
+        edge_color: u8,
+    ) -> Self {
+        let mut frames = Vec::with_capacity(n_frames);
+        let w = fb_template.width;
+        let h = fb_template.height;
+        let tier = fb_template.tier;
+
+        for i in 0..n_frames {
+            let t = (i as f32 / n_frames as f32) * std::f32::consts::TAU;
+            // Lissajous: x = A·sin(t), y = A·sin(2t) → figure-8 orbit
+            let cam_x = orbit_radius * t.sin() + (w as f32 / 2.0);
+            let cam_y = orbit_radius * (2.0 * t).sin() + (h as f32 / 2.0);
+            // Zoom oscillates between min and max over the orbit
+            let zoom_t = (t.cos() + 1.0) * 0.5; // [0, 1]
+            let cam_zoom = zoom_range.0 + (zoom_range.1 - zoom_range.0) * zoom_t;
+
+            let mut fb = Framebuffer::with_tier(w, h, tier);
+            compose_neo4j(
+                &mut fb, frame, edges,
+                cam_zoom, (-cam_x * cam_zoom + w as f32 / 2.0,
+                           -cam_y * cam_zoom + h as f32 / 2.0),
+                node_color, edge_color,
+            );
+            let (packed, bpp) = fb.pack();
+            frames.push(FlybyFrame { packed, bpp, cam_x, cam_y, cam_zoom });
+        }
+        Self { frames, cursor: 0, width: w, height: h }
+    }
+
+    /// Advance the cursor and return the next keyframe (looping).
+    pub fn next_frame(&mut self) -> &FlybyFrame {
+        let frame = &self.frames[self.cursor];
+        self.cursor = (self.cursor + 1) % self.frames.len();
+        frame
+    }
+
+    /// Seek to the keyframe closest to the given camera position.
+    /// Used when transitioning from interactive mode back to flyby.
+    pub fn seek_nearest(&mut self, cam_x: f32, cam_y: f32) {
+        let mut best_dist = f32::MAX;
+        let mut best_idx = 0;
+        for (i, f) in self.frames.iter().enumerate() {
+            let dx = f.cam_x - cam_x;
+            let dy = f.cam_y - cam_y;
+            let d = dx * dx + dy * dy;
+            if d < best_dist {
+                best_dist = d;
+                best_idx = i;
+            }
+        }
+        self.cursor = best_idx;
+    }
+
+    /// Total memory used by the cache.
+    pub fn memory_bytes(&self) -> usize {
+        self.frames.iter().map(|f| f.packed.len() * 8).sum()
+    }
+
+    /// Frame count.
+    pub fn len(&self) -> usize { self.frames.len() }
+
+    pub fn is_empty(&self) -> bool { self.frames.is_empty() }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Full composition: wobble + fire + labels + Neo4j view
+// ─────────────────────────────────────────────────────────────────────
+
+/// Full Neo4j-style compose with wobble, neuron fire, and labels.
+pub fn compose_neo4j_full(
+    fb: &mut Framebuffer,
+    frame: &RenderFrame,
+    edges: &[(usize, usize)],
+    scale: f32,
+    offset: (f32, f32),
+    wobble: &WobbleState,
+    fire: &FireState,
+    labels: &[&str],
+    node_base_color: u8,
+    edge_color: u8,
+    label_color: u8,
+) {
+    fb.clear();
+    let w = fb.width;
+    let h = fb.height;
+    let pal_max = (fb.tier.palette_size() - 1) as u8;
+
+    // 1. Edges (drawn first so nodes overdraw).
+    for &(src, tgt) in edges {
+        if src >= frame.len || tgt >= frame.len { continue; }
+        let (sx0, sy0) = project_ortho(
+            frame.positions[src * 3], frame.positions[src * 3 + 1],
+            scale, offset.0, offset.1, w, h,
+        );
+        let (sx1, sy1) = project_ortho(
+            frame.positions[tgt * 3], frame.positions[tgt * 3 + 1],
+            scale, offset.0, offset.1, w, h,
+        );
+        let (wx0, wy0) = wobble.adjust(sx0, sy0, src);
+        let (wx1, wy1) = wobble.adjust(sx1, sy1, tgt);
+        fb.draw_line(wx0 as i32, wy0 as i32, wx1 as i32, wy1 as i32, edge_color);
+    }
+
+    // 2. Nodes as dot sprites with fire boost.
+    for i in 0..frame.len {
+        let (sx, sy) = project_ortho(
+            frame.positions[i * 3], frame.positions[i * 3 + 1],
+            scale, offset.0, offset.1, w, h,
+        );
+        let (wx, wy) = wobble.adjust(sx, sy, i);
+        let boost = fire.color_boost(i, pal_max);
+        let color = (node_base_color + boost).min(pal_max);
+        fb.plot_dot(wx, wy, color);
+    }
+
+    // 3. Labels (drawn last so text is on top).
+    for (i, &label) in labels.iter().enumerate().take(frame.len) {
+        if label.is_empty() { continue; }
+        let (sx, sy) = project_ortho(
+            frame.positions[i * 3], frame.positions[i * 3 + 1],
+            scale, offset.0, offset.1, w, h,
+        );
+        let (wx, wy) = wobble.adjust(sx, sy, i);
+        let label_y = wy + fb.tier.sprite_size() / 2 + 1;
+        fb.draw_label(wx.saturating_sub(label.len() * 3), label_y, label, label_color);
+    }
+}
+
+#[cfg(test)]
+mod visual_tests {
+    use super::*;
+    use crate::hpc::renderer::RenderFrame;
+
+    #[test]
+    fn wobble_decays_toward_zero() {
+        let mut w = WobbleState::new(4);
+        w.displace[0] = 10.0;
+        w.displace[1] = -5.0;
+        let vels = vec![0.0f32; 12]; // no new injection
+        for _ in 0..200 {
+            w.tick(&vels, 4);
+        }
+        assert!(w.displace[0].abs() < 0.01, "got {}", w.displace[0]);
+        assert!(w.displace[1].abs() < 0.01, "got {}", w.displace[1]);
+    }
+
+    #[test]
+    fn wobble_injects_on_high_velocity() {
+        let mut w = WobbleState::new(2);
+        let vels = vec![10.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        w.tick(&vels, 1);
+        // Perpendicular to (10, 0) → displacement in Y
+        assert!(w.displace[1].abs() > 0.1);
+    }
+
+    #[test]
+    fn fire_decays_to_zero() {
+        let mut f = FireState::new(4);
+        f.fire(0, 255);
+        assert_eq!(f.intensity[0], 255);
+        for _ in 0..20 {
+            f.tick();
+        }
+        assert_eq!(f.intensity[0], 0);
+    }
+
+    #[test]
+    fn fire_color_boost_scales_with_intensity() {
+        let mut f = FireState::new(4);
+        f.fire(0, 255);
+        let boost_full = f.color_boost(0, 15);
+        assert!(boost_full > 0);
+        f.intensity[0] = 0;
+        let boost_zero = f.color_boost(0, 15);
+        assert_eq!(boost_zero, 0);
+    }
+
+    #[test]
+    fn draw_label_renders_pixels() {
+        let mut fb = Framebuffer::with_tier(64, 64, PaletteTier::Full16);
+        fb.draw_label(4, 4, "AB", 5);
+        let lit: usize = fb.pixels.iter().filter(|&&p| p == 5).count();
+        assert!(lit > 10, "A+B glyphs should light at least 10 pixels");
+    }
+
+    #[test]
+    fn flyby_cache_loops_seamlessly() {
+        let mut frame = RenderFrame::with_capacity(16);
+        frame.len = 2;
+        frame.positions[0] = 10.0; frame.positions[1] = 10.0;
+        frame.positions[3] = 20.0; frame.positions[4] = 20.0;
+        let edges = vec![(0, 1)];
+        let fb_template = Framebuffer::with_tier(64, 64, PaletteTier::Full16);
+        let mut cache = FlybyCache::prerender(
+            &fb_template, &frame, &edges, 8, 10.0, (0.5, 2.0), 5, 2,
+        );
+        assert_eq!(cache.len(), 8);
+        // Play through more than one loop — should not panic.
+        for _ in 0..20 {
+            let _ = cache.next_frame();
+        }
+        // Cursor wraps around.
+        assert_eq!(cache.cursor, 20 % 8);
+    }
+
+    #[test]
+    fn flyby_seek_nearest_finds_closest_frame() {
+        let mut frame = RenderFrame::with_capacity(16);
+        frame.len = 1;
+        frame.positions[0] = 32.0; frame.positions[1] = 32.0;
+        let fb_template = Framebuffer::with_tier(64, 64, PaletteTier::Full16);
+        let mut cache = FlybyCache::prerender(
+            &fb_template, &frame, &[], 16, 10.0, (1.0, 1.0), 5, 2,
+        );
+        cache.seek_nearest(32.0, 32.0);
+        let f = &cache.frames[cache.cursor];
+        let dx = f.cam_x - 32.0;
+        let dy = f.cam_y - 32.0;
+        assert!((dx * dx + dy * dy).sqrt() < 20.0);
+    }
+
+    #[test]
+    fn compose_neo4j_full_with_wobble_fire_labels() {
+        let mut fb = Framebuffer::with_tier(128, 128, PaletteTier::Full16);
+        let mut frame = RenderFrame::with_capacity(16);
+        frame.len = 2;
+        frame.positions[0] = 30.0; frame.positions[1] = 30.0;
+        frame.positions[3] = 90.0; frame.positions[4] = 90.0;
+        let edges = vec![(0, 1)];
+        let wobble = WobbleState::new(16);
+        let mut fire = FireState::new(16);
+        fire.fire(0, 255);
+        let labels = vec!["NODE0", "NODE1"];
+        compose_neo4j_full(
+            &mut fb, &frame, &edges, 1.0, (0.0, 0.0),
+            &wobble, &fire, &labels, 3, 1, 7,
+        );
+        // Node 0 should be brighter (fire boost) than base color 3.
+        let node0_pixel = fb.pixels[30 * 128 + 30];
+        assert!(node0_pixel >= 3, "node0 should have at least base color");
+        // Label pixels should exist at color 7.
+        let label_count = fb.pixels.iter().filter(|&&p| p == 7).count();
+        assert!(label_count > 0, "labels should render");
+    }
+}
