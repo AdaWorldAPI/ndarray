@@ -1,6 +1,9 @@
-# ndarray — Railway compile-test image
+# ndarray — Railway compile-test image (AVX2 default)
 # Verifies the HPC module builds cleanly (default + jit-native features)
 # Requires Rust 1.94.0 (LazyLock, simd_caps, modern std APIs)
+#
+# CPU detection & SIMD dispatch documentation: see Dockerfile.md
+# AVX-512 pinned variant: see Dockerfile.avx512
 #
 # Build: docker build -t ndarray-test .
 # Run:   docker run --rm ndarray-test
@@ -30,6 +33,13 @@ COPY crates/ crates/
 # Copy source
 COPY src/ src/
 COPY ndarray-rand/src/ ndarray-rand/src/
+
+# Default target: x86-64-v3 (AVX2) — runs on GitHub CI and most servers.
+# Use Dockerfile.avx512 for x86-64-v4 (AVX-512). ndarray's simd.rs polyfill
+# detects AVX-512 at runtime via LazyLock<Tier> even when compiled for v3;
+# compile-time v3 just means the scalar/AVX2 fallback paths are used when the
+# runtime check fails. Both paths produce identical results.
+ENV RUSTFLAGS="-C target-cpu=x86-64-v3"
 
 # Build default features
 RUN cargo build --release 2>&1 && echo "=== DEFAULT BUILD OK ==="
