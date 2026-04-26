@@ -44,6 +44,9 @@ jobs:
         with:
           toolchain: ${{ matrix.rust }}
           components: clippy
+      # rust-toolchain.toml pins 1.94.0 — install clippy for that toolchain too,
+      # since dtolnay/rust-toolchain only installs for the requested matrix value.
+      - run: rustup component add clippy --toolchain 1.94.0 || true
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --features approx,serde,rayon -- -D warnings
       - run: cargo clippy --features native -- -D warnings
@@ -56,6 +59,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
+      # rust-toolchain.toml pins 1.94.0 — install rustfmt for that toolchain too.
+      - run: rustup component add rustfmt --toolchain 1.94.0 || true
       - run: cargo fmt --all --check
 
   nostd:

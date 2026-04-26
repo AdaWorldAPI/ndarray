@@ -108,8 +108,11 @@ pub enum ViewMode {
 /// Palette-indexed framebuffer. Each pixel is a u8 index into a palette
 /// whose size is determined by the SIMD tier.
 pub struct Framebuffer {
+    /// Framebuffer width in pixels.
     pub width: usize,
+    /// Framebuffer height in pixels.
     pub height: usize,
+    /// Active palette tier (determines color count and sprite size).
     pub tier: PaletteTier,
     /// Row-major palette indices, length = width × height.
     pub pixels: Vec<u8>,
@@ -551,6 +554,7 @@ pub struct WobbleState {
 }
 
 impl WobbleState {
+    /// Allocate wobble state for `capacity` nodes (decay 0.92, amplitude 3.0).
     pub fn new(capacity: usize) -> Self {
         Self {
             displace: vec![0.0; capacity * 2],
@@ -613,6 +617,7 @@ pub struct FireState {
 }
 
 impl FireState {
+    /// Allocate fire state for `capacity` nodes (decay rate 16/tick).
     pub fn new(capacity: usize) -> Self {
         Self {
             intensity: vec![0u8; capacity],
@@ -755,19 +760,23 @@ pub struct FlybyFrame {
     pub packed: Vec<u64>,
     /// Bits per pixel used for packing.
     pub bpp: usize,
-    /// Camera position at this keyframe.
+    /// Camera X position at this keyframe.
     pub cam_x: f32,
+    /// Camera Y position at this keyframe.
     pub cam_y: f32,
+    /// Camera zoom factor at this keyframe.
     pub cam_zoom: f32,
 }
 
 /// Ring buffer of pre-rendered flyby keyframes.
 pub struct FlybyCache {
+    /// Pre-rendered keyframes in the orbit sequence.
     pub frames: Vec<FlybyFrame>,
     /// Current playback position in [0, frames.len()).
     pub cursor: usize,
-    /// Width/height of pre-rendered frames.
+    /// Width of pre-rendered frames.
     pub width: usize,
+    /// Height of pre-rendered frames.
     pub height: usize,
 }
 
@@ -844,8 +853,10 @@ impl FlybyCache {
     }
 
     /// Frame count.
+    /// Frame count.
     pub fn len(&self) -> usize { self.frames.len() }
 
+    /// True when no keyframes have been pre-rendered.
     pub fn is_empty(&self) -> bool { self.frames.is_empty() }
 }
 
@@ -1114,6 +1125,7 @@ pub struct PyramidShader {
 }
 
 impl PyramidShader {
+    /// Allocate the four-level pyramid (~9 MB total: L1=4K + L2=64K + L3=1M + L4=4M + scratch).
     pub fn new(palette_max: u8) -> Self {
         Self {
             l1: vec![0u8; 64 * 64],
