@@ -1030,3 +1030,274 @@ mod visual_tests {
         assert!(label_count > 0, "labels should render");
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Pyramid shader — heat diffusion through the cache-aligned pyramid.
+//
+// The inverse Stufenpyramide IS a GPU shader pipeline:
+//   L1 (64²)   → 4 KB   → registers / L0 cache
+//   L2 (256²)  → 64 KB  → L1 data cache
+//   L3 (4K²)   → 2 MB   → L2 cache  (bit) / 16 MB (byte)
+//   L4 (16K²)  → 32 MB  → L3 cache
+//
+// A perturbation enters at L1, diffuses at each level, then upscales
+// 4× to the next. Each level physically runs in its matching CPU cache.
+// The viewer sees cognition ripple through the hardware.
+// ─────────────────────────────────────────────────────────────────────
+
+/// 3×3 box-blur diffusion: each pixel = average of itself + 8 neighbors.
+/// In-place via double buffer (src → dst, then swap pointers).
+/// Palette-safe: result is clamped to [0, max_palette].
+pub fn diffuse_step(
+    src: &[u8], dst: &mut [u8],
+    width: usize, height: usize,
+    max_palette: u8,
+) {
+    for y in 0..height {
+        for x in 0..width {
+            let mut sum: u16 = 0;
+            let mut count: u16 = 0;
+            for dy in -1i32..=1 {
+                for dx in -1i32..=1 {
+                    let nx = x as i32 + dx;
+                    let ny = y as i32 + dy;
+                    if nx >= 0 && ny >= 0 && (nx as usize) < width && (ny as usize) < height {
+                        sum += src[ny as usize * width + nx as usize] as u16;
+                        count += 1;
+                    }
+                }
+            }
+            dst[y * width + x] = ((sum / count) as u8).min(max_palette);
+        }
+    }
+}
+
+/// Upscale 2× via nearest-neighbor (L_n → L_{n+1}).
+pub fn upscale_2x(src: &[u8], src_w: usize, src_h: usize) -> (Vec<u8>, usize, usize) {
+    let dst_w = src_w * 2;
+    let dst_h = src_h * 2;
+    let mut dst = vec![0u8; dst_w * dst_h];
+    for sy in 0..src_h {
+        for sx in 0..src_w {
+            let v = src[sy * src_w + sx];
+            let dy = sy * 2;
+            let dx = sx * 2;
+            dst[dy * dst_w + dx] = v;
+            dst[dy * dst_w + dx + 1] = v;
+            dst[(dy + 1) * dst_w + dx] = v;
+            dst[(dy + 1) * dst_w + dx + 1] = v;
+        }
+    }
+    (dst, dst_w, dst_h)
+}
+
+/// Four-level pyramid shader state.
+///
+/// Each level is a framebuffer at its native resolution. `tick()` runs
+/// one diffusion step at each level, then upscales L1→L2→L3→L4.
+/// Inject heat at L1 via `inject(x, y, intensity)`.
+pub struct PyramidShader {
+    /// L1: 64×64 (4 KB).
+    pub l1: Vec<u8>,
+    /// L2: 256×256 (64 KB).
+    pub l2: Vec<u8>,
+    /// L3: 1024×1024 (1 MB) — scaled down from 4K for practical display.
+    pub l3: Vec<u8>,
+    /// L4: 2048×2048 (4 MB) — the output surface.
+    pub l4: Vec<u8>,
+    /// Scratch buffer for double-buffer diffusion (same size as L4).
+    scratch: Vec<u8>,
+    /// Palette max (from tier).
+    pub palette_max: u8,
+    /// Tick counter.
+    pub tick: u64,
+}
+
+impl PyramidShader {
+    pub fn new(palette_max: u8) -> Self {
+        Self {
+            l1: vec![0u8; 64 * 64],
+            l2: vec![0u8; 256 * 256],
+            l3: vec![0u8; 1024 * 1024],
+            l4: vec![0u8; 2048 * 2048],
+            scratch: vec![0u8; 2048 * 2048],
+            palette_max,
+            tick: 0,
+        }
+    }
+
+    /// Inject heat at L1 coordinates (0..64, 0..64).
+    pub fn inject(&mut self, x: usize, y: usize, intensity: u8) {
+        if x < 64 && y < 64 {
+            self.l1[y * 64 + x] = self.l1[y * 64 + x].saturating_add(intensity).min(self.palette_max);
+        }
+    }
+
+    /// One shader tick: diffuse each level, then cascade upward.
+    ///
+    /// This IS the cognitive shader made visible. Each level physically
+    /// fits its CPU cache tier. The 4× widening at each step IS the
+    /// cache hierarchy doubling pattern.
+    pub fn tick(&mut self) {
+        // 1. Diffuse at each level independently.
+        //    L1: 64² = 4 KB → runs in registers / L0.
+        let mut scratch_l1 = vec![0u8; 64 * 64];
+        diffuse_step(&self.l1, &mut scratch_l1, 64, 64, self.palette_max);
+        self.l1.copy_from_slice(&scratch_l1);
+
+        //    L2: 256² = 64 KB → runs in L1 data cache.
+        let mut scratch_l2 = vec![0u8; 256 * 256];
+        diffuse_step(&self.l2, &mut scratch_l2, 256, 256, self.palette_max);
+        self.l2.copy_from_slice(&scratch_l2);
+
+        //    L3: 1024² = 1 MB → runs in L2 cache.
+        let mut scratch_l3 = vec![0u8; 1024 * 1024];
+        diffuse_step(&self.l3, &mut scratch_l3, 1024, 1024, self.palette_max);
+        self.l3.copy_from_slice(&scratch_l3);
+
+        // 2. Cascade: L1 upscales into L2, L2 into L3, L3 into L4.
+        //    Additive blend (saturating) so existing diffusion + upscaled signal combine.
+        let (up1, _, _) = upscale_2x(&self.l1, 64, 64);       // 128²
+        let (up1b, _, _) = upscale_2x(&up1, 128, 128);         // 256²
+        for (dst, src) in self.l2.iter_mut().zip(up1b.iter()) {
+            *dst = dst.saturating_add(*src).min(self.palette_max);
+        }
+
+        let (up2, _, _) = upscale_2x(&self.l2, 256, 256);      // 512²
+        let (up2b, _, _) = upscale_2x(&up2, 512, 512);          // 1024²
+        for (dst, src) in self.l3.iter_mut().zip(up2b.iter()) {
+            *dst = dst.saturating_add(*src).min(self.palette_max);
+        }
+
+        let (up3, _, _) = upscale_2x(&self.l3, 1024, 1024);    // 2048²
+        for (dst, src) in self.l4.iter_mut().zip(up3.iter()) {
+            *dst = dst.saturating_add(*src).min(self.palette_max);
+        }
+
+        // 3. Global decay on L4 (prevents saturation).
+        for v in self.l4.iter_mut() {
+            *v = v.saturating_sub(1);
+        }
+
+        self.tick += 1;
+    }
+
+    /// Compose a 2×2 panel view of all four levels into a framebuffer.
+    ///
+    /// Top-left = L1 (upscaled to panel size), top-right = L2,
+    /// bottom-left = L3, bottom-right = L4. Each panel is `pw × ph`.
+    pub fn compose_quad_view(&self, fb: &mut Framebuffer) {
+        let pw = fb.width / 2;
+        let ph = fb.height / 2;
+
+        // L1 → top-left (upscale from 64² to pw×ph)
+        blit_scaled(&self.l1, 64, 64, fb, 0, 0, pw, ph);
+        // L2 → top-right (upscale from 256² to pw×ph)
+        blit_scaled(&self.l2, 256, 256, fb, pw, 0, pw, ph);
+        // L3 → bottom-left (downscale from 1024² to pw×ph)
+        blit_scaled(&self.l3, 1024, 1024, fb, 0, ph, pw, ph);
+        // L4 → bottom-right (downscale from 2048² to pw×ph)
+        blit_scaled(&self.l4, 2048, 2048, fb, pw, ph, pw, ph);
+
+        fb.dirty = (0, 0, fb.width, fb.height);
+    }
+
+    /// Memory footprint across all levels.
+    pub fn memory_bytes(&self) -> usize {
+        self.l1.len() + self.l2.len() + self.l3.len() + self.l4.len() + self.scratch.len()
+    }
+}
+
+/// Nearest-neighbor scale-blit from src (src_w × src_h) into a region
+/// of the framebuffer at (dst_x, dst_y) with size (dst_w × dst_h).
+fn blit_scaled(
+    src: &[u8], src_w: usize, src_h: usize,
+    fb: &mut Framebuffer,
+    dst_x: usize, dst_y: usize,
+    dst_w: usize, dst_h: usize,
+) {
+    for dy in 0..dst_h {
+        let sy = (dy * src_h) / dst_h;
+        for dx in 0..dst_w {
+            let sx = (dx * src_w) / dst_w;
+            let px = dst_x + dx;
+            let py = dst_y + dy;
+            if px < fb.width && py < fb.height && sy < src_h && sx < src_w {
+                fb.pixels[py * fb.width + px] = src[sy * src_w + sx];
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod pyramid_tests {
+    use super::*;
+
+    #[test]
+    fn pyramid_shader_inject_and_tick() {
+        let mut ps = PyramidShader::new(15);
+        ps.inject(32, 32, 15);
+        assert_eq!(ps.l1[32 * 64 + 32], 15);
+        ps.tick();
+        // After one tick, heat should have diffused to neighbors at L1
+        // and cascaded to L2/L3/L4.
+        assert!(ps.l1[32 * 64 + 33] > 0, "L1 should diffuse right");
+        assert!(ps.l2[128 * 256 + 128] > 0, "L2 should receive cascade");
+    }
+
+    #[test]
+    fn pyramid_shader_decays_to_zero() {
+        let mut ps = PyramidShader::new(15);
+        ps.inject(32, 32, 15);
+        for _ in 0..200 {
+            ps.tick();
+        }
+        let l4_max = ps.l4.iter().copied().max().unwrap_or(0);
+        assert_eq!(l4_max, 0, "L4 should decay to zero after enough ticks");
+    }
+
+    #[test]
+    fn pyramid_shader_compose_quad_view() {
+        let mut ps = PyramidShader::new(15);
+        ps.inject(32, 32, 15);
+        ps.tick();
+        let mut fb = Framebuffer::with_tier(128, 128, PaletteTier::Full16);
+        ps.compose_quad_view(&mut fb);
+        // Top-left panel (L1 upscaled) should have nonzero pixels.
+        let tl_sum: u32 = fb.pixels[..64 * 128].iter().map(|&v| v as u32).sum();
+        assert!(tl_sum > 0, "L1 panel should show the injection");
+    }
+
+    #[test]
+    fn pyramid_shader_memory_footprint() {
+        let ps = PyramidShader::new(15);
+        // L1=4K + L2=64K + L3=1M + L4=4M + scratch=4M ≈ 9.07 MB
+        assert!(ps.memory_bytes() > 5_000_000);
+        assert!(ps.memory_bytes() < 20_000_000);
+    }
+
+    #[test]
+    fn upscale_2x_doubles_dimensions() {
+        let src = vec![5u8; 8 * 8];
+        let (dst, w, h) = upscale_2x(&src, 8, 8);
+        assert_eq!(w, 16);
+        assert_eq!(h, 16);
+        assert!(dst.iter().all(|&v| v == 5));
+    }
+
+    #[test]
+    fn diffuse_step_smooths_spike() {
+        let mut src = vec![0u8; 16 * 16];
+        src[8 * 16 + 8] = 15; // single hot pixel
+        let mut dst = vec![0u8; 16 * 16];
+        diffuse_step(&src, &mut dst, 16, 16, 15);
+        // Center should have decreased (averaged with zero neighbors).
+        assert!(dst[8 * 16 + 8] < 15);
+        // At least one neighbor should be nonzero.
+        let neighbor_sum: u16 = [
+            dst[7 * 16 + 8], dst[9 * 16 + 8],
+            dst[8 * 16 + 7], dst[8 * 16 + 9],
+        ].iter().map(|&v| v as u16).sum();
+        assert!(neighbor_sum > 0, "diffusion should spread to neighbors");
+    }
+}
