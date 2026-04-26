@@ -1,4 +1,4 @@
-//! Vector Symbolic Architecture: 10,000-dimensional binary operations.
+//! Vector Symbolic Architecture: 16,384-dimensional binary operations.
 //!
 //! VSA is working memory. It fills (bundle), crystallizes (unbundle),
 //! empties (clean), repeats. Like breathing.
@@ -7,29 +7,34 @@
 //! - bundle: majority vote via i16 accumulator
 //! - clean: iterative similarity search against codebook
 //! - permute: cyclic shift for sequence encoding
+//!
+//! 16384 = 256 u64 words exactly — power of 2 SIMD-clean at every precision
+//! tier (FP16x32 / FP32x16 / F64x8). Matches the Binary16K / Vsa16k carrier
+//! shared with lance-graph-contract (`crystal::fingerprint`).
 
-/// VSA dimensionality: 10,000 bits.
-pub const VSA_DIMS: usize = 10_000;
+/// VSA dimensionality: 16,384 bits (Binary16K).
+pub const VSA_DIMS: usize = 16_384;
 
-/// VSA bytes: ceil(10000/8) = 1250.
-pub const VSA_BYTES: usize = 1250;
+/// VSA bytes: 16384/8 = 2048.
+pub const VSA_BYTES: usize = 2048;
 
-/// VSA u64 words: ceil(10000/64) = 157 (with 8 padding bits in last word).
-pub const VSA_WORDS: usize = 157;
+/// VSA u64 words: 16384/64 = 256 (exact, no padding).
+pub const VSA_WORDS: usize = 256;
 
-/// Number of meaningful bits in the last word: 10000 - 156*64 = 16.
+/// Number of meaningful bits in the last word: 16384 - 255*64 = 64 (full word).
 const TAIL_BITS: usize = VSA_DIMS - (VSA_WORDS - 1) * 64;
 
-/// Mask for the meaningful bits in the last word.
-const TAIL_MASK: u64 = (1u64 << TAIL_BITS) - 1;
+/// Mask for the meaningful bits in the last word: !0u64 since the format
+/// is power-of-2 aligned (every word is fully meaningful).
+const TAIL_MASK: u64 = u64::MAX;
 
-/// A 10,000-dimensional binary VSA vector.
+/// A 16,384-dimensional binary VSA vector (Binary16K).
 ///
-/// Stored as 157 u64 words (10048 bits total), with only the first 10,000
-/// bits meaningful. The upper 48 bits of the last word are always zero.
+/// Stored as 256 u64 words (16384 bits total), all bits meaningful — the
+/// format is SIMD-clean at every precision tier (FP16x32 / FP32x16 / F64x8).
 #[derive(Clone, PartialEq, Eq)]
 pub struct VsaVector {
-    /// 157 u64 words = 10048 bits, only first 10000 are meaningful.
+    /// 256 u64 words = 16384 bits, all meaningful.
     pub words: [u64; VSA_WORDS],
 }
 
@@ -93,8 +98,8 @@ impl VsaVector {
 
     /// Create a VSA vector from a byte slice.
     ///
-    /// If `data` is shorter than [`VSA_BYTES`] (1250), uses blake3 in XOF
-    /// mode to expand it. If longer, only the first 1250 bytes are used.
+    /// If `data` is shorter than [`VSA_BYTES`] (2048), uses blake3 in XOF
+    /// mode to expand it. If longer, only the first 2048 bytes are used.
     ///
     /// # Example
     ///
@@ -144,7 +149,7 @@ impl VsaVector {
     /// Create a VSA vector from text using blake3 hash expansion.
     ///
     /// The text is hashed with blake3, then expanded via XOF mode to fill
-    /// all 1250 bytes. Deterministic: same text always produces same vector.
+    /// all 2048 bytes. Deterministic: same text always produces same vector.
     ///
     /// # Example
     ///
@@ -165,8 +170,8 @@ impl VsaVector {
 
     /// Zero-copy view of the vector as a byte slice.
     ///
-    /// Returns all `VSA_WORDS * 8` bytes (1256 bytes). The last 6 bytes
-    /// contain only padding zeros.
+    /// Returns all `VSA_WORDS * 8` bytes (2048 bytes). All bytes are
+    /// meaningful — 16384 / 8 = 2048 exactly, no padding.
     ///
     /// # Safety
     ///
@@ -180,7 +185,7 @@ impl VsaVector {
         }
     }
 
-    /// Population count: number of set bits (within the meaningful 10,000).
+    /// Population count: number of set bits (out of 16,384).
     #[inline]
     pub fn popcount(&self) -> u32 {
         super::bitwise::popcount_raw(self.as_bytes()) as u32
@@ -292,7 +297,7 @@ pub fn vsa_similarity(a: &VsaVector, b: &VsaVector) -> f32 {
 
 /// Raw Hamming distance between two VSA vectors.
 ///
-/// Counts the number of bit positions (out of 10,000) that differ.
+/// Counts the number of bit positions (out of 16,384) that differ.
 /// Delegates to SIMD-accelerated bitwise operations.
 ///
 /// # Example
@@ -306,7 +311,7 @@ pub fn vsa_hamming(a: &VsaVector, b: &VsaVector) -> u32 {
     super::bitwise::hamming_distance_raw(a.as_bytes(), b.as_bytes()) as u32
 }
 
-/// Cyclic bit permutation (left shift by `shift` positions within 10,000 bits).
+/// Cyclic bit permutation (left shift by `shift` positions within 16,384 bits).
 ///
 /// Bit at position `i` moves to position `(i + shift) % VSA_DIMS`.
 /// Used for sequence encoding: `permute(item, position)`.
@@ -409,7 +414,7 @@ pub fn vsa_clean<'a>(dirty: &VsaVector, codebook: &'a [VsaVector]) -> Option<&'a
 impl VsaAccumulator {
     /// Create a new zero accumulator.
     ///
-    /// All 10,000 dimension tallies start at 0.
+    /// All 16,384 dimension tallies start at 0.
     ///
     /// # Example
     ///
@@ -693,9 +698,12 @@ mod tests {
 
     #[test]
     fn test_constants() {
-        assert_eq!(TAIL_BITS, 16);
-        assert_eq!(TAIL_MASK, 0xFFFF);
-        assert_eq!((VSA_WORDS - 1) * 64 + TAIL_BITS, VSA_DIMS);
+        assert_eq!(VSA_DIMS, 16_384);
+        assert_eq!(VSA_WORDS, 256);
+        assert_eq!(VSA_BYTES, 2048);
+        assert_eq!(TAIL_BITS, 64);
+        assert_eq!(TAIL_MASK, u64::MAX);
+        assert_eq!(VSA_WORDS * 64, VSA_DIMS);
     }
 
     #[test]

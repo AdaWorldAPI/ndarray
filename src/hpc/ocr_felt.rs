@@ -23,10 +23,12 @@ const SKEW_FLOOR: f64 = EULER_GAMMA / (EULER_GAMMA + 1.0);
 /// A glyph's felt identity: 17 dimensions capturing shape qualia.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GlyphBase17 {
+    /// 17 i16 dimensions encoding the glyph's shape.
     pub dims: [i16; 17],
 }
 
 impl GlyphBase17 {
+    /// All-zero glyph (used as a sentinel / default).
     pub const ZERO: Self = Self { dims: [0i16; 17] };
 
     /// Project a binary glyph patch to 17D via golden-step folding.
@@ -67,6 +69,7 @@ impl GlyphBase17 {
 
 /// Character codebook: 256 entries mapping u8 → (char, GlyphBase17).
 pub struct CharCodebook {
+    /// 256 codebook slots; each holds a character and its Base17 fingerprint.
     pub entries: [(char, GlyphBase17); 256],
 }
 
@@ -268,8 +271,11 @@ pub fn fast_skew_check(bin: &BinaryImage) -> SkewResult {
 /// Skew detection result.
 #[derive(Debug, Clone, Copy)]
 pub struct SkewResult {
+    /// Detected skew angle in radians.
     pub angle: f32,
+    /// Confidence in the result (0.0 - 1.0).
     pub confidence: f32,
+    /// Whether a full search was performed (vs. fast path skipped).
     pub searched: bool,
 }
 

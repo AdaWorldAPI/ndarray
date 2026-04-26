@@ -624,6 +624,82 @@ impl U8x64 {
         Self(unsafe { _mm512_subs_epu8(self.0, other.0) })
     }
 
+    // ── Tier 1: seismon rasterizer primitives ─────────────────────────
+
+    /// Pairwise unsigned byte average: (a[i] + b[i] + 1) >> 1 per byte.
+    /// Core op for 4×4 mipmap downsample (vpavgb + horizontal pair = 2 ops).
+    #[inline(always)]
+    pub fn pairwise_avg(self, other: Self) -> Self {
+        // SAFETY: AVX-512BW instruction, operates on all 64 bytes.
+        Self(unsafe { _mm512_avg_epu8(self.0, other.0) })
+    }
+
+    /// Byte-wise unsigned greater-than comparison. Returns 64-bit mask:
+    /// bit i set if self[i] > other[i]. Symmetric to `cmpeq_mask`.
+    /// Used for threshold density fields, depth/Z-test, hit-tests.
+    #[inline(always)]
+    pub fn cmpgt_mask(self, other: Self) -> u64 {
+        // SAFETY: AVX-512BW instruction. Unsigned compare via _epu8.
+        unsafe { _mm512_cmpgt_epu8_mask(self.0, other.0) }
+    }
+
+    /// Masked blend: for each bit in `mask`, select from `b` if set, else `a`.
+    /// Sprite alpha blit: write atlas pixel where mask bit set, keep framebuffer otherwise.
+    #[inline(always)]
+    pub fn mask_blend(mask: u64, a: Self, b: Self) -> Self {
+        // SAFETY: AVX-512BW instruction. mask selects between a and b per byte.
+        Self(unsafe { _mm512_mask_blend_epi8(mask, a.0, b.0) })
+    }
+
+    /// Shift left each 16-bit lane by immediate bits (nibble write: place high nibble).
+    /// Completes the nibble shift pair with `shr_epi16`.
+    #[inline(always)]
+    pub fn shl_epi16(self, imm: u32) -> Self {
+        Self(unsafe { match imm {
+            1 => _mm512_slli_epi16(self.0, 1),
+            2 => _mm512_slli_epi16(self.0, 2),
+            3 => _mm512_slli_epi16(self.0, 3),
+            4 => _mm512_slli_epi16(self.0, 4),
+            5 => _mm512_slli_epi16(self.0, 5),
+            6 => _mm512_slli_epi16(self.0, 6),
+            7 => _mm512_slli_epi16(self.0, 7),
+            8 => _mm512_slli_epi16(self.0, 8),
+            _ => _mm512_setzero_si512(),
+        }})
+    }
+
+    // ── Tier 2: sprite blit + palette LUT + cross-lane shuffle ────────
+
+    /// Masked store: write only bytes where mask bit is set.
+    /// Partial-tile writes at framebuffer edges without scalar fallback.
+    ///
+    /// # Safety
+    /// `ptr` must point to at least 64 writable bytes (may be unaligned).
+    #[inline(always)]
+    pub unsafe fn mask_store(self, ptr: *mut u8, mask: u64) {
+        // SAFETY: AVX-512BW masked store. Caller guarantees ptr validity.
+        _mm512_mask_storeu_epi8(ptr as *mut i8, mask, self.0);
+    }
+
+    /// Saturating unsigned addition: min(a + b, 255) per byte.
+    /// Additive blend without overflow wrap. Symmetric to `saturating_sub`.
+    #[inline(always)]
+    pub fn saturating_add(self, other: Self) -> Self {
+        // SAFETY: AVX-512BW instruction.
+        Self(unsafe { _mm512_adds_epu8(self.0, other.0) })
+    }
+
+    /// Cross-lane byte permute: rearrange all 64 bytes by index vector.
+    /// `idx[i]` selects which byte of `self` appears at position `i`.
+    /// Unlike `shuffle_bytes` (within-lane), this crosses 128-bit lane boundaries.
+    /// Needed for sprite atlas reorder and palette remap > 16 entries.
+    #[inline(always)]
+    pub fn permute_bytes(self, idx: Self) -> Self {
+        // SAFETY: AVX-512VBMI instruction (_mm512_permutexvar_epi8).
+        // Falls back to multi-shuffle on CPUs without VBMI.
+        Self(unsafe { _mm512_permutexvar_epi8(idx.0, self.0) })
+    }
+
     /// Interleave low bytes: [a0,b0,a1,b1,...] from lower halves.
     #[inline(always)]
     pub fn unpack_lo_epi8(self, other: Self) -> Self {
@@ -2726,5 +2802,121 @@ mod f16_tests {
                 "f32→f16 batch/scalar mismatch at {}: input={} batch=0x{:04X} scalar=0x{:04X}",
                 i, v, batch_out[i], scalar);
         }
+    }
+}
+
+#[cfg(test)]
+mod u8x64_rasterizer_tests {
+    use super::U8x64;
+
+    #[test]
+    fn pairwise_avg_basic() {
+        let a = U8x64::splat(10);
+        let b = U8x64::splat(20);
+        let avg = a.pairwise_avg(b);
+        let mut out = [0u8; 64];
+        avg.copy_to_slice(&mut out);
+        // (10 + 20 + 1) >> 1 = 15
+        assert!(out.iter().all(|&v| v == 15));
+    }
+
+    #[test]
+    fn pairwise_avg_rounding() {
+        let a = U8x64::splat(1);
+        let b = U8x64::splat(2);
+        let avg = a.pairwise_avg(b);
+        let mut out = [0u8; 64];
+        avg.copy_to_slice(&mut out);
+        // (1 + 2 + 1) >> 1 = 2  (rounds up)
+        assert!(out.iter().all(|&v| v == 2));
+    }
+
+    #[test]
+    fn cmpgt_mask_basic() {
+        let a = U8x64::splat(10);
+        let b = U8x64::splat(5);
+        assert_eq!(a.cmpgt_mask(b), u64::MAX); // all greater
+        assert_eq!(b.cmpgt_mask(a), 0);         // none greater
+        assert_eq!(a.cmpgt_mask(a), 0);         // equal = not greater
+    }
+
+    #[test]
+    fn mask_blend_selects_correctly() {
+        let a = U8x64::splat(10);
+        let b = U8x64::splat(20);
+        // mask = 0: all from a
+        let r0 = U8x64::mask_blend(0, a, b);
+        let mut out = [0u8; 64];
+        r0.copy_to_slice(&mut out);
+        assert!(out.iter().all(|&v| v == 10));
+        // mask = all 1s: all from b
+        let r1 = U8x64::mask_blend(u64::MAX, a, b);
+        r1.copy_to_slice(&mut out);
+        assert!(out.iter().all(|&v| v == 20));
+        // mask = bit 0 only: first byte from b, rest from a
+        let r2 = U8x64::mask_blend(1, a, b);
+        r2.copy_to_slice(&mut out);
+        assert_eq!(out[0], 20);
+        assert_eq!(out[1], 10);
+    }
+
+    #[test]
+    fn shl_epi16_shift_4() {
+        let mut data = [0u8; 64];
+        data[0] = 0x0F; data[1] = 0x00; // u16 = 0x000F
+        let v = U8x64::from_slice(&data);
+        let shifted = v.shl_epi16(4);
+        let mut out = [0u8; 64];
+        shifted.copy_to_slice(&mut out);
+        let result = u16::from_le_bytes([out[0], out[1]]);
+        assert_eq!(result, 0x00F0);
+    }
+
+    #[test]
+    fn saturating_add_clamps_at_255() {
+        let a = U8x64::splat(200);
+        let b = U8x64::splat(100);
+        let sum = a.saturating_add(b);
+        let mut out = [0u8; 64];
+        sum.copy_to_slice(&mut out);
+        assert!(out.iter().all(|&v| v == 255));
+    }
+
+    #[test]
+    fn saturating_add_no_overflow() {
+        let a = U8x64::splat(10);
+        let b = U8x64::splat(20);
+        let sum = a.saturating_add(b);
+        let mut out = [0u8; 64];
+        sum.copy_to_slice(&mut out);
+        assert!(out.iter().all(|&v| v == 30));
+    }
+
+    #[test]
+    fn permute_bytes_identity() {
+        let mut data = [0u8; 64];
+        for i in 0..64 { data[i] = i as u8; }
+        let v = U8x64::from_slice(&data);
+        // Identity permutation
+        let mut idx = [0u8; 64];
+        for i in 0..64 { idx[i] = i as u8; }
+        let perm = v.permute_bytes(U8x64::from_slice(&idx));
+        let mut out = [0u8; 64];
+        perm.copy_to_slice(&mut out);
+        assert_eq!(out, data);
+    }
+
+    #[test]
+    fn permute_bytes_reverse() {
+        let mut data = [0u8; 64];
+        for i in 0..64 { data[i] = i as u8; }
+        let v = U8x64::from_slice(&data);
+        // Reverse permutation
+        let mut idx = [0u8; 64];
+        for i in 0..64 { idx[i] = (63 - i) as u8; }
+        let perm = v.permute_bytes(U8x64::from_slice(&idx));
+        let mut out = [0u8; 64];
+        perm.copy_to_slice(&mut out);
+        for i in 0..64 { assert_eq!(out[i], (63 - i) as u8); }
     }
 }

@@ -806,6 +806,43 @@ impl U8x64 {
         Self(out)
     }
 
+    // ── Tier 1+2: seismon rasterizer primitives (AVX2 scalar fallbacks) ──
+
+    #[inline(always)]
+    pub fn pairwise_avg(self, other: Self) -> Self {
+        let mut out = [0u8; 64]; for i in 0..64 { out[i] = ((self.0[i] as u16 + other.0[i] as u16 + 1) >> 1) as u8; } Self(out)
+    }
+    #[inline(always)]
+    pub fn cmpgt_mask(self, other: Self) -> u64 {
+        let mut m: u64 = 0; for i in 0..64 { if self.0[i] > other.0[i] { m |= 1 << i; } } m
+    }
+    #[inline(always)]
+    pub fn mask_blend(mask: u64, a: Self, b: Self) -> Self {
+        let mut out = [0u8; 64]; for i in 0..64 { out[i] = if mask & (1 << i) != 0 { b.0[i] } else { a.0[i] }; } Self(out)
+    }
+    #[inline(always)]
+    pub fn shl_epi16(self, imm: u32) -> Self {
+        let mut out = [0u8; 64];
+        for i in (0..64).step_by(2) {
+            let v = u16::from_le_bytes([self.0[i], self.0[i+1]]);
+            let s = if imm < 16 { v << imm } else { 0 };
+            let b = s.to_le_bytes(); out[i] = b[0]; out[i+1] = b[1];
+        }
+        Self(out)
+    }
+    #[inline(always)]
+    pub unsafe fn mask_store(self, ptr: *mut u8, mask: u64) {
+        for i in 0..64 { if mask & (1 << i) != 0 { *ptr.add(i) = self.0[i]; } }
+    }
+    #[inline(always)]
+    pub fn saturating_add(self, other: Self) -> Self {
+        let mut out = [0u8; 64]; for i in 0..64 { out[i] = self.0[i].saturating_add(other.0[i]); } Self(out)
+    }
+    #[inline(always)]
+    pub fn permute_bytes(self, idx: Self) -> Self {
+        let mut out = [0u8; 64]; for i in 0..64 { out[i] = self.0[(idx.0[i] & 63) as usize]; } Self(out)
+    }
+
     /// Interleave low bytes within each 128-bit lane.
     #[inline(always)]
     pub fn unpack_lo_epi8(self, other: Self) -> Self {
