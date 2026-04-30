@@ -1236,6 +1236,15 @@ pub use crate::hpc::cam_pq::{kmeans, squared_l2};
 
 pub use crate::hpc::heel_f64x8::cosine_f32_to_f64_simd;
 
+// Elementwise slice ops — polyfill-dispatched (F32x16/F64x8 chunks + scalar tail).
+#[cfg(feature = "std")]
+pub use crate::simd_ops::{
+    add_f32, sub_f32, mul_f32, div_f32,
+    add_f32_inplace, sub_f32_inplace, mul_f32_inplace, div_f32_inplace,
+    scale_f32, add_scalar_f32, scale_f32_inplace,
+    add_f64, mul_f64, add_f64_inplace,
+};
+
 // ============================================================================
 // Tests
 // ============================================================================

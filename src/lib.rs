@@ -257,6 +257,12 @@ pub mod simd_wasm;
 #[allow(missing_docs)]
 pub mod simd_int_ops;
 
+/// Slice-level elementwise ops (f32/f64) built on the polyfill SIMD types.
+/// `add_f32`, `mul_f32`, `add_f32_inplace`, `scale_f32`, etc.
+/// Re-exported flat through `ndarray::simd::add_f32`.
+#[cfg(feature = "std")]
+pub mod simd_ops;
+
 /// Half-precision SIMD vectors (`BF16x16`, `F16x16`) + slice-level ops.
 /// Depends on `hpc::quantized::{BF16, F16}` — needs `std` (hpc core).
 #[cfg(feature = "std")]
