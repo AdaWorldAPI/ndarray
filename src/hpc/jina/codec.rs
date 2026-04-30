@@ -4,7 +4,6 @@
 //! builds k-means palette. All via `crate::simd` for SIMD acceleration.
 
 use crate::simd::F32x16;
-use std::sync::LazyLock;
 
 /// Base17 projection parameters.
 pub const BASE_DIM: usize = 17;

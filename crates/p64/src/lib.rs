@@ -1,6 +1,8 @@
 //! # p64 — Palette64
 //!
 //! A 64×64 BNN attention matrix built from 8 phyllotactic HEEL planes.
+
+#![allow(clippy::needless_range_loop, clippy::manual_div_ceil)]
 //!
 //! ## Architecture
 //!

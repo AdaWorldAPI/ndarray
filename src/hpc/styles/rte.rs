@@ -1,6 +1,5 @@
 //! #1 Recursive Thought Expansion — Hofstadter strange loops on Base17 fingerprints.
 
-use super::super::nars::NarsTruth;
 use super::super::bgz17_bridge::Base17;
 
 pub struct RecursiveExpansion {
