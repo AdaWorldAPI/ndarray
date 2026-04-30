@@ -411,3 +411,4 @@ mod e2e_tests {
         assert!(bnn_result.score > -1.0 && bnn_result.score < 1.0);
     }
 }
+pub mod vnni_gemm;
