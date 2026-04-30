@@ -1210,6 +1210,15 @@ pub use crate::hpc::quantized::{
     QuantParams,
 };
 
+// Half-precision SIMD vectors (BF16x16, F16x16) — runtime-dispatched, always
+// available. Note: when `target_feature = "avx512bf16"` is active a separate
+// hardware-only `BF16x16` is also exported above from `simd_avx512`. The
+// hardware-native one ships unsafe `from_u16_slice` / `to_f32x16` and is
+// distinct from the portable runtime-dispatched `simd_half::BF16x16`.
+// TODO: BF16x16/F16x16 SIMD vector types + slice ops (A2 WIP — simd_half module)
+// F16 type itself is available in hpc::quantized::F16.
+// SIMD vectors land in Wave 3 after the A2 module is completed.
+
 // K-means + L2 distance
 pub use crate::hpc::cam_pq::{kmeans, squared_l2};
 

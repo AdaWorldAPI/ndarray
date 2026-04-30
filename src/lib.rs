@@ -257,6 +257,11 @@ pub mod simd_wasm;
 #[allow(missing_docs)]
 pub mod simd_int_ops;
 
+/// Half-precision SIMD vectors (`BF16x16`, `F16x16`) + slice-level ops.
+#[cfg(feature = "std")]
+#[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
+// pub mod simd_half; // TODO: BF16x16/F16x16 SIMD vectors (A2 WIP)
+
 /// Pluggable linear algebra backends (native SIMD, MKL, OpenBLAS).
 #[cfg(feature = "std")]
 pub mod backend;
