@@ -105,9 +105,9 @@ jit-native = ["jitson", "dep:cranelift-codegen", "dep:cranelift-jit", "dep:crane
 
 
 # HPC backend feature gates (mutually exclusive)
-native = []
-intel-mkl = []
-openblas = []
+native = ["std"]
+intel-mkl = ["std"]
+openblas = ["std"]
 
 # no_std polyfill for `static LazyLock` in `src/simd.rs` (sprint A12).
 # Pulls in `portable-atomic` with the `critical-section` impl plus the
