@@ -58,14 +58,20 @@ jobs:
 
   format:
     runs-on: ubuntu-latest
-    name: format/1.94.1
+    name: format/nightly
     steps:
       - uses: actions/checkout@v4
-      # Pinned to 1.94.1 to match `rust-toolchain.toml`. `@stable` would
-      # set 1.95 as the default and `cargo fmt` would invoke 1.95's
-      # rustfmt — different formatting decisions than 1.94. Drift then
-      # fails `cargo fmt --all --check` even on freshly-fmt'd code.
-      - uses: dtolnay/rust-toolchain@1.94.1
+      # `rustfmt.toml` declares 13 nightly-only options
+      # (`brace_style = AlwaysNextLine`, `imports_granularity = Preserve`,
+      # `unstable_features = true`, etc.). Stable rustfmt warns and
+      # ignores them, then produces drift on every nightly-formatted
+      # file because its defaults differ from the unstable settings.
+      # The format job MUST use nightly rustfmt for the project's chosen
+      # style to be enforceable.
+      #
+      # The compile + clippy jobs stay on 1.94.1 (pinned in
+      # `rust-toolchain.toml`) — only this fmt job needs nightly.
+      - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt
       - run: cargo fmt --all --check
