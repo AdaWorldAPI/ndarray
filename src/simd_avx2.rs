@@ -806,6 +806,47 @@ impl U8x64 {
         Self(out)
     }
 
+    // ── Tier 1+2: seismon rasterizer primitives (AVX2 scalar fallbacks) ──
+
+    #[inline(always)]
+    pub fn pairwise_avg(self, other: Self) -> Self {
+        let mut out = [0u8; 64]; for i in 0..64 { out[i] = ((self.0[i] as u16 + other.0[i] as u16 + 1) >> 1) as u8; } Self(out)
+    }
+    #[inline(always)]
+    pub fn cmpgt_mask(self, other: Self) -> u64 {
+        let mut m: u64 = 0; for i in 0..64 { if self.0[i] > other.0[i] { m |= 1 << i; } } m
+    }
+    #[inline(always)]
+    pub fn mask_blend(mask: u64, a: Self, b: Self) -> Self {
+        let mut out = [0u8; 64]; for i in 0..64 { out[i] = if mask & (1 << i) != 0 { b.0[i] } else { a.0[i] }; } Self(out)
+    }
+    #[inline(always)]
+    pub fn shl_epi16(self, imm: u32) -> Self {
+        let mut out = [0u8; 64];
+        for i in (0..64).step_by(2) {
+            let v = u16::from_le_bytes([self.0[i], self.0[i+1]]);
+            let s = if imm < 16 { v << imm } else { 0 };
+            let b = s.to_le_bytes(); out[i] = b[0]; out[i+1] = b[1];
+        }
+        Self(out)
+    }
+    #[inline(always)]
+    pub unsafe fn mask_store(self, ptr: *mut u8, mask: u64) {
+        for i in 0..64 { if mask & (1 << i) != 0 { *ptr.add(i) = self.0[i]; } }
+    }
+    #[inline(always)]
+    pub fn saturating_add(self, other: Self) -> Self {
+        let mut out = [0u8; 64]; for i in 0..64 { out[i] = self.0[i].saturating_add(other.0[i]); } Self(out)
+    }
+    #[inline(always)]
+    pub fn permute_bytes(self, idx: Self) -> Self {
+        let mut out = [0u8; 64]; for i in 0..64 { out[i] = self.0[(idx.0[i] & 63) as usize]; } Self(out)
+    }
+    #[inline(always)]
+    pub fn movemask(self) -> u64 {
+        let mut m: u64 = 0; for i in 0..64 { if self.0[i] & 0x80 != 0 { m |= 1 << i; } } m
+    }
+
     /// Interleave low bytes within each 128-bit lane.
     #[inline(always)]
     pub fn unpack_lo_epi8(self, other: Self) -> Self {
@@ -872,8 +913,40 @@ impl U8x64 {
 
 avx2_int_type!(I32x16, i32, 16, 0i32);
 avx2_int_type!(I64x8, i64, 8, 0i64);
+avx2_int_type!(U16x32, u16, 32, 0u16);
 avx2_int_type!(U32x16, u32, 16, 0u32);
 avx2_int_type!(U64x8, u64, 8, 0u64);
+
+// Extra methods for U16x32 (widen/narrow, shift, multiply) — AVX2 scalar fallback.
+impl U16x32 {
+    #[inline(always)]
+    pub fn from_u8x64_lo(v: U8x64) -> Self {
+        let mut out = [0u16; 32]; for i in 0..32 { out[i] = v.0[i] as u16; } Self(out)
+    }
+    #[inline(always)]
+    pub fn from_u8x64_hi(v: U8x64) -> Self {
+        let mut out = [0u16; 32]; for i in 0..32 { out[i] = v.0[32 + i] as u16; } Self(out)
+    }
+    #[inline(always)]
+    pub fn pack_saturate_u8(self, other: Self) -> U8x64 {
+        let mut out = [0u8; 64];
+        for i in 0..32 { out[i] = self.0[i].min(255) as u8; }
+        for i in 0..32 { out[32 + i] = other.0[i].min(255) as u8; }
+        U8x64(out)
+    }
+    #[inline(always)]
+    pub fn shr(self, imm: u32) -> Self {
+        let mut out = [0u16; 32]; for i in 0..32 { out[i] = if imm < 16 { self.0[i] >> imm } else { 0 }; } Self(out)
+    }
+    #[inline(always)]
+    pub fn shl(self, imm: u32) -> Self {
+        let mut out = [0u16; 32]; for i in 0..32 { out[i] = if imm < 16 { self.0[i] << imm } else { 0 }; } Self(out)
+    }
+    #[inline(always)]
+    pub fn mullo(self, other: Self) -> Self {
+        let mut out = [0u16; 32]; for i in 0..32 { out[i] = self.0[i].wrapping_mul(other.0[i]); } Self(out)
+    }
+}
 
 impl I32x16 {
     #[inline(always)] pub fn reduce_min(self) -> i32 { *self.0.iter().min().unwrap() }

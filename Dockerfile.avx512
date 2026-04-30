@@ -5,6 +5,9 @@
 # ONLY deploy on AVX-512 hardware (Skylake-X, Ice Lake, Sapphire Rapids, EPYC Genoa).
 # Will SIGILL on older CPUs.
 #
+# CPU detection & SIMD dispatch documentation: see Dockerfile.md
+# Portable (AVX2) variant: see Dockerfile
+#
 # Build: docker build -f Dockerfile.avx512 -t ndarray-avx512 .
 # Run:   docker run --rm ndarray-avx512
 

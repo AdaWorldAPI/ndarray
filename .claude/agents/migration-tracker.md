@@ -5,7 +5,7 @@ description: >
   Updates blackboard. Identifies gaps. Prevents duplication.
   READ ONLY — never writes code.
 tools: Read, Glob, Grep, Bash
-model: sonnet
+model: opus
 ---
 
 # Migration Tracker

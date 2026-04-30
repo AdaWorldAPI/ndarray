@@ -118,7 +118,7 @@ pub use crate::simd_avx512::{
     // 256-bit (AVX2 baseline, __m256/__m256d)
     F32x8, F64x4, f32x8, f64x4,
     // 512-bit (native AVX-512, __m512/__m512d/__m512i)
-    F32x16, F64x8, U8x64, I32x16, I64x8, U32x16, U64x8,
+    F32x16, F64x8, U8x64, I32x16, I64x8, U16x32, U32x16, U64x8,
     F32Mask16, F64Mask8,
     f32x16, f64x8, u8x64, i32x16, i64x8, u32x16, u64x8,
 };
@@ -152,7 +152,7 @@ pub use crate::simd_avx512::{F32x8, F64x4, f32x8, f64x4};
 
 #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
 pub use crate::simd_avx2::{
-    F32x16, F64x8, U8x64, I32x16, I64x8, U32x16, U64x8,
+    F32x16, F64x8, U8x64, I32x16, I64x8, U16x32, U32x16, U64x8,
     F32Mask16, F64Mask8,
     f32x16, f64x8, u8x64, i32x16, i64x8, u32x16, u64x8,
 };
@@ -551,8 +551,40 @@ mod scalar {
     impl_int_type!(U8x64, u8, 64, 0u8);
     impl_int_type!(I32x16, i32, 16, 0i32);
     impl_int_type!(I64x8, i64, 8, 0i64);
+    impl_int_type!(U16x32, u16, 32, 0u16);
     impl_int_type!(U32x16, u32, 16, 0u32);
     impl_int_type!(U64x8, u64, 8, 0u64);
+
+    // Extra methods for U16x32 (widen/narrow, shift, multiply)
+    impl U16x32 {
+        #[inline(always)]
+        pub fn from_u8x64_lo(v: U8x64) -> Self {
+            let mut out = [0u16; 32]; for i in 0..32 { out[i] = v.0[i] as u16; } Self(out)
+        }
+        #[inline(always)]
+        pub fn from_u8x64_hi(v: U8x64) -> Self {
+            let mut out = [0u16; 32]; for i in 0..32 { out[i] = v.0[32 + i] as u16; } Self(out)
+        }
+        #[inline(always)]
+        pub fn pack_saturate_u8(self, other: Self) -> U8x64 {
+            let mut out = [0u8; 64];
+            for i in 0..32 { out[i] = self.0[i].min(255) as u8; }
+            for i in 0..32 { out[32 + i] = other.0[i].min(255) as u8; }
+            U8x64(out)
+        }
+        #[inline(always)]
+        pub fn shr(self, imm: u32) -> Self {
+            let mut out = [0u16; 32]; for i in 0..32 { out[i] = if imm < 16 { self.0[i] >> imm } else { 0 }; } Self(out)
+        }
+        #[inline(always)]
+        pub fn shl(self, imm: u32) -> Self {
+            let mut out = [0u16; 32]; for i in 0..32 { out[i] = if imm < 16 { self.0[i] << imm } else { 0 }; } Self(out)
+        }
+        #[inline(always)]
+        pub fn mullo(self, other: Self) -> Self {
+            let mut out = [0u16; 32]; for i in 0..32 { out[i] = self.0[i].wrapping_mul(other.0[i]); } Self(out)
+        }
+    }
 
     // Extra methods for I32x16 that float types have via the macro
     impl I32x16 {
@@ -805,6 +837,46 @@ mod scalar {
         pub fn saturating_sub(self, other: Self) -> Self {
             let mut out = [0u8; 64]; for i in 0..64 { out[i] = self.0[i].saturating_sub(other.0[i]); } Self(out)
         }
+        // ── Tier 1: seismon rasterizer primitives (scalar fallbacks) ──
+        #[inline(always)]
+        pub fn pairwise_avg(self, other: Self) -> Self {
+            let mut out = [0u8; 64]; for i in 0..64 { out[i] = ((self.0[i] as u16 + other.0[i] as u16 + 1) >> 1) as u8; } Self(out)
+        }
+        #[inline(always)]
+        pub fn cmpgt_mask(self, other: Self) -> u64 {
+            let mut m: u64 = 0; for i in 0..64 { if self.0[i] > other.0[i] { m |= 1 << i; } } m
+        }
+        #[inline(always)]
+        pub fn mask_blend(mask: u64, a: Self, b: Self) -> Self {
+            let mut out = [0u8; 64]; for i in 0..64 { out[i] = if mask & (1 << i) != 0 { b.0[i] } else { a.0[i] }; } Self(out)
+        }
+        #[inline(always)]
+        pub fn shl_epi16(self, imm: u32) -> Self {
+            let mut out = [0u8; 64];
+            for i in (0..64).step_by(2) {
+                let v = u16::from_le_bytes([self.0[i], self.0[i+1]]);
+                let s = if imm < 16 { v << imm } else { 0 };
+                let b = s.to_le_bytes(); out[i] = b[0]; out[i+1] = b[1];
+            }
+            Self(out)
+        }
+        // ── Tier 2: sprite blit + palette remap (scalar fallbacks) ──
+        #[inline(always)]
+        pub unsafe fn mask_store(self, ptr: *mut u8, mask: u64) {
+            for i in 0..64 { if mask & (1 << i) != 0 { *ptr.add(i) = self.0[i]; } }
+        }
+        #[inline(always)]
+        pub fn saturating_add(self, other: Self) -> Self {
+            let mut out = [0u8; 64]; for i in 0..64 { out[i] = self.0[i].saturating_add(other.0[i]); } Self(out)
+        }
+        #[inline(always)]
+        pub fn permute_bytes(self, idx: Self) -> Self {
+            let mut out = [0u8; 64]; for i in 0..64 { out[i] = self.0[(idx.0[i] & 63) as usize]; } Self(out)
+        }
+        #[inline(always)]
+        pub fn movemask(self) -> u64 {
+            let mut m: u64 = 0; for i in 0..64 { if self.0[i] & 0x80 != 0 { m |= 1 << i; } } m
+        }
         #[inline(always)]
         pub fn unpack_lo_epi8(self, other: Self) -> Self {
             let mut out = [0u8; 64];
@@ -869,7 +941,7 @@ mod scalar {
 
 #[cfg(not(target_arch = "x86_64"))]
 pub use scalar::{
-    F32x16, F64x8, U8x64, I32x16, I64x8, U32x16, U64x8,
+    F32x16, F64x8, U8x64, I32x16, I64x8, U16x32, U32x16, U64x8,
     F32x8, F64x4,
     F32Mask16, F64Mask8,
     f32x16, f64x8, u8x64, i32x16, i64x8, u32x16, u64x8,
@@ -948,6 +1020,42 @@ pub fn simd_ln_f32(x: F32x16) -> F32x16 {
     }
     F32x16::from_array(out)
 }
+
+// ============================================================================
+// Cognitive shader foundation re-exports
+// ============================================================================
+
+// Fingerprint<N>: const-generic binary vector, the BindSpace atom
+pub use crate::hpc::fingerprint::{
+    Fingerprint,
+    Fingerprint2K, Fingerprint1K, Fingerprint64K,
+    VectorWidth, VectorConfig, vector_config,
+};
+
+// CollapseGate: Flow/Block/Hold write gate (Layer 3 in the 7-layer stack)
+pub use crate::hpc::bnn_cross_plane::CollapseGate;
+
+// Bitwise: SIMD-dispatched Hamming distance + popcount
+pub use crate::hpc::bitwise::{
+    hamming_distance_raw, popcount_raw,
+};
+
+// WHT: Walsh-Hadamard Transform (SIMD butterfly)
+pub use crate::hpc::fft::{wht_f32, wht_f32_new};
+
+// Quantization: i4/i2/i8 pack/unpack + BF16
+pub use crate::hpc::quantized::{
+    quantize_f32_to_i4, dequantize_i4_to_f32,
+    quantize_f32_to_i2, dequantize_i2_to_f32,
+    quantize_f32_to_i8, dequantize_i8_to_f32,
+    QuantParams,
+};
+
+// K-means + L2 distance
+pub use crate::hpc::cam_pq::{kmeans, squared_l2};
+
+// SIMD cosine
+pub use crate::hpc::heel_f64x8::cosine_f32_to_f64_simd;
 
 // ============================================================================
 // Tests

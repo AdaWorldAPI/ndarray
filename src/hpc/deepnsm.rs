@@ -646,14 +646,14 @@ pub fn nsm_decompose(text: &str) -> NsmDecomposition {
     NsmDecomposition { weights, dominant }
 }
 
-/// Encode an NSM decomposition as a 10000-bit binary vector (1250 bytes).
+/// Encode an NSM decomposition as a 16384-bit binary vector (2048 bytes).
 ///
 /// For each prime with weight > 0, hash prime_index with blake3 to produce
 /// a deterministic bit pattern, then XOR into result for primes whose
 /// normalised weight exceeds 0.5 of the max weight (or any nonzero weight
 /// when only one prime is present).
-pub fn nsm_to_fingerprint(decomp: &NsmDecomposition) -> [u8; 1250] {
-    let mut result = [0u8; 1250];
+pub fn nsm_to_fingerprint(decomp: &NsmDecomposition) -> [u8; 2048] {
+    let mut result = [0u8; 2048];
 
     let max_w = decomp.weights.iter().cloned().fold(0.0f32, f32::max);
     if max_w == 0.0 {
@@ -665,30 +665,26 @@ pub fn nsm_to_fingerprint(decomp: &NsmDecomposition) -> [u8; 1250] {
         if w < threshold {
             continue;
         }
-        // Hash the prime index to get a deterministic 1250-byte pattern
+        // Hash the prime index to get a deterministic 2048-byte pattern
         let hash_input = (i as u32).to_le_bytes();
-        let mut pattern = [0u8; 1250];
-        // Use blake3 in extended-output mode to fill 1250 bytes
+        let mut pattern = [0u8; 2048];
+        // Use blake3 in extended-output mode to fill 2048 bytes
         let mut hasher = blake3::Hasher::new();
         hasher.update(&hash_input);
         let mut reader = hasher.finalize_xof();
         reader.fill(&mut pattern);
 
-        // XOR 1250 bytes via crate::simd::U8x64.
-        // 1250 = 19×64 (1216) + 34 scalar remainder.
+        // XOR 2048 bytes via crate::simd::U8x64.
+        // 2048 = 32×64 exactly (no scalar remainder, SIMD-clean).
         {
             use crate::simd::U8x64;
-            let chunks = 1250 / 64; // 19
+            let chunks = 2048 / 64; // 32
             for c in 0..chunks {
                 let off = c * 64;
                 let vr = U8x64::from_slice(&result[off..off + 64]);
                 let vp = U8x64::from_slice(&pattern[off..off + 64]);
                 let xored = vr ^ vp;
                 xored.copy_to_slice(&mut result[off..off + 64]);
-            }
-            // Scalar remainder (34 bytes).
-            for j in (chunks * 64)..1250 {
-                result[j] ^= pattern[j];
             }
         }
     }

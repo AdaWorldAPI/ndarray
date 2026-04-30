@@ -27,12 +27,19 @@ use super::bands;
 /// and maps to a Base17 stride for spectral character.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Mode {
+    /// Ionian (major): W-W-H-W-W-W-H — bright, resolved.
     Ionian,     // Major: W-W-H-W-W-W-H → bright, resolved
+    /// Dorian: minor with natural 6th — warm, jazz.
     Dorian,     // Minor with ♮6: warm, jazz
+    /// Phrygian: minor with flat 2nd — dark, flamenco.
     Phrygian,   // Minor with ♭2: dark, flamenco
+    /// Lydian: major with sharp 4th — dreamy, floating.
     Lydian,     // Major with ♯4: dreamy, floating
+    /// Mixolydian: major with flat 7th — dominant, bluesy.
     Mixolydian, // Major with ♭7: dominant, bluesy
+    /// Aeolian (natural minor) — sad, reflective.
     Aeolian,    // Natural minor: sad, reflective
+    /// Locrian (diminished) — unstable, tense.
     Locrian,    // Diminished: unstable, tense
 }
 

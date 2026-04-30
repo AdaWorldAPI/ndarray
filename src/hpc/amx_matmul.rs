@@ -149,6 +149,50 @@ pub unsafe fn tile_dpbusd() {
     asm!(".byte 0xc4, 0xe2, 0x73, 0x5e, 0xc1", options(nostack, nomem));
 }
 
+/// TDPBF16PS: C += A(bf16) × B(bf16_vnni) → f32.
+/// tmm0 += tmm1 × tmm2.
+///
+/// 16×16 output accumulator (f32), 32 bf16 values per A row × 32 bf16 values
+/// per B row in VNNI layout = 512 mul-adds in one instruction.
+///
+/// Encoding (analogous to TDPBUSD, pp field flips F2→F3, opcode 5E→5C):
+///   TDPBUSD  tmm0, tmm1, tmm2 → C4 E2 73 5E C1
+///   TDPBF16PS tmm0, tmm1, tmm2 → C4 E2 72 5C C1
+///
+/// Tile shapes at K=32, M=N=16 (identical to TDPBUSD max at K_bytes=64):
+///   tmm0 (C): 16×16 f32   (16 rows × 64 bytes)
+///   tmm1 (A): 16×32 bf16  (16 rows × 64 bytes, plain row-major)
+///   tmm2 (B): 16×16 bf16 pairs (K/2=16 rows × 64 bytes, VNNI pairs)
+///
+/// # Safety
+/// Tiles 0/1/2 must be configured via `tile_loadconfig(&TileConfig::for_dpbusd(64))`
+/// and loaded with valid data; AMX must be OS-enabled (check `amx_available()`).
+#[inline]
+pub unsafe fn tile_dpbf16ps() {
+    asm!(".byte 0xc4, 0xe2, 0x72, 0x5c, 0xc1", options(nostack, nomem));
+}
+
+/// Pack B[K, N] bf16 row-major into K/2 × (N*2) VNNI pairs (in-place target).
+/// Output layout required by TDPBF16PS tile 2:
+///   dst[i, 2j]   = src[2i,   j]
+///   dst[i, 2j+1] = src[2i+1, j]
+///
+/// For N=16 (AMX tile width), each output "row" holds 16 bf16 pairs = 64 bytes.
+/// K must be even.
+#[inline]
+pub fn vnni_pack_bf16(src: &[u16], dst: &mut [u16], k: usize, n: usize) {
+    debug_assert_eq!(src.len(), k * n);
+    debug_assert_eq!(dst.len(), k * n);
+    debug_assert_eq!(k % 2, 0, "K must be even for VNNI BF16 pairs");
+    for i in 0..(k / 2) {
+        let dst_row = i * n * 2;
+        for j in 0..n {
+            dst[dst_row + 2 * j]     = src[(2 * i)     * n + j];
+            dst[dst_row + 2 * j + 1] = src[(2 * i + 1) * n + j];
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

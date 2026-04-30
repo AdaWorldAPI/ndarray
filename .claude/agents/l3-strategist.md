@@ -6,7 +6,7 @@ description: >
   mapping rustynum capabilities to ndarray's trait system, identifying
   architectural gaps, or planning multi-phase implementation roadmaps.
 tools: Read, Glob, Grep, Bash
-model: sonnet
+model: opus
 ---
 
 You are the L3_STRATEGIST for Project NDARRAY Expansion.

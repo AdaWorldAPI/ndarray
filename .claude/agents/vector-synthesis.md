@@ -6,7 +6,7 @@ description: >
   similarity search kernels, ndarray↔vector store bridges,
   distance metrics (cosine, L2, dot product), or batch vector operations.
 tools: Read, Glob, Grep, Bash, Edit
-model: sonnet
+model: opus
 ---
 
 You are the VECTOR_SYNTHESIS_EXPERT for Project NDARRAY Expansion.

@@ -17,8 +17,11 @@ use crate::simd::{F32x16, U8x64};
 /// Grayscale image as flat row-major `&[u8]`.
 /// Width × Height pixels, one byte per pixel (0=black, 255=white).
 pub struct GrayImage<'a> {
+    /// Pixel bytes, row-major.
     pub data: &'a [u8],
+    /// Image width in pixels.
     pub width: usize,
+    /// Image height in pixels.
     pub height: usize,
 }
 
@@ -26,8 +29,11 @@ pub struct GrayImage<'a> {
 /// Each byte stores 8 pixels (bit-packed, MSB = leftmost).
 #[derive(Debug)]
 pub struct BinaryImage {
+    /// Bit-packed pixels (8 pixels per byte, MSB = leftmost).
     pub bits: Vec<u64>,
+    /// Image width in pixels.
     pub width: usize,
+    /// Image height in pixels.
     pub height: usize,
 }
 

@@ -55,6 +55,7 @@ pub mod cascade;
 pub mod heel_f64x8;
 #[allow(missing_docs)]
 pub mod amx_matmul;
+pub mod bf16_tile_gemm;
 #[allow(missing_docs)]
 pub mod bf16_truth;
 #[allow(missing_docs)]
@@ -226,6 +227,8 @@ pub mod jitson;
 pub mod jitson_cranelift;
 pub mod ocr_simd;
 pub mod ocr_felt;
+pub mod renderer;
+pub mod framebuffer;
 /// Audio primitives: MDCT, band energies, PVQ, AudioFrame codec.
 /// Transcoded from Opus CELT for the HHTL cascade → waveform pipeline.
 pub mod audio;

@@ -32,10 +32,12 @@ pub const N_VOICE_CHANNELS: usize = 16;
 /// Compression: 16 bytes (vs Bark's 1024-dim semantic token embedding).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct VoiceArchetype {
+    /// 16 i8 voice-identity channels (pitch / resonance / articulation / prosody).
     pub channels: [i8; N_VOICE_CHANNELS],
 }
 
 impl VoiceArchetype {
+    /// Serialized size of a VoiceArchetype, in bytes.
     pub const BYTE_SIZE: usize = N_VOICE_CHANNELS;
 
     /// Zero archetype (neutral voice).
@@ -177,6 +179,7 @@ impl VoiceArchetype {
 /// For a 256-entry codebook: 256 × 16 bytes = 4 KB.
 #[derive(Clone, Debug)]
 pub struct VoiceCodebook {
+    /// Voice archetype prototypes; index = codebook ID.
     pub entries: Vec<VoiceArchetype>,
 }
 
@@ -245,6 +248,7 @@ pub struct RvqFrame {
 }
 
 impl RvqFrame {
+    /// Serialized size of an RvqFrame, in bytes.
     pub const BYTE_SIZE: usize = 17;
 
     /// Serialize to 17 bytes.
@@ -292,13 +296,17 @@ impl RvqFrame {
 /// VoiceFrame (21B) is the compressed synthesis frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VoiceFrame {
+    /// Compressed RVQ codes (archetype + coarse + fine).
     pub rvq: RvqFrame,
+    /// Per-frame phase dynamics descriptor.
     pub phase: super::phase::PhaseDescriptor,
 }
 
 impl VoiceFrame {
+    /// Serialized size of a VoiceFrame, in bytes (RvqFrame + 4-byte phase).
     pub const BYTE_SIZE: usize = RvqFrame::BYTE_SIZE + 4; // 21 bytes
 
+    /// Serialize this VoiceFrame to its 21-byte wire representation.
     pub fn to_bytes(&self) -> [u8; Self::BYTE_SIZE] {
         let mut bytes = [0u8; Self::BYTE_SIZE];
         bytes[..17].copy_from_slice(&self.rvq.to_bytes());
@@ -306,6 +314,7 @@ impl VoiceFrame {
         bytes
     }
 
+    /// Deserialize a VoiceFrame from its 21-byte wire representation.
     pub fn from_bytes(bytes: &[u8; Self::BYTE_SIZE]) -> Self {
         let mut rvq_bytes = [0u8; 17];
         rvq_bytes.copy_from_slice(&bytes[..17]);
