@@ -437,7 +437,18 @@ pub fn quantize_f32_to_i2(data: &[f32]) -> (Vec<u8>, QuantParams) {
 ///
 /// Inverse of [`quantize_f32_to_i2`]. `n` is the original element count
 /// (the packed buffer is implicitly padded to a byte boundary).
+///
+/// # Panics
+/// Panics if `packed.len() * 4 < n` — the buffer is too short to decode `n`
+/// elements. This guards against truncated payloads or inconsistent metadata
+/// from untrusted sources.
 pub fn dequantize_i2_to_f32(packed: &[u8], params: &QuantParams, n: usize) -> Vec<f32> {
+    assert!(
+        packed.len() * 4 >= n,
+        "dequantize_i2_to_f32: packed buffer holds {} elements, requested {}",
+        packed.len() * 4,
+        n,
+    );
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
         let byte = packed[i / 4];

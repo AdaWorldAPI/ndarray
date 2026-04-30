@@ -462,9 +462,20 @@ pub fn train_hybrid(
 ///
 /// Exposed for downstream HPC consumers (e.g. tensor codecs) that need
 /// the same SIMD-accelerated metric used by the CAM-PQ codec internally.
+///
+/// # Panics
+/// Panics if `a.len() != b.len()`. This is enforced unconditionally
+/// (not `debug_assert`) so callers in release builds can't silently
+/// drop trailing elements via the scalar `zip` fallback.
 #[inline(always)]
 pub fn squared_l2(a: &[f32], b: &[f32]) -> f32 {
-    debug_assert_eq!(a.len(), b.len());
+    assert_eq!(
+        a.len(),
+        b.len(),
+        "squared_l2: input length mismatch ({} vs {})",
+        a.len(),
+        b.len(),
+    );
     let n = a.len();
 
     // Fast path: exactly 16 elements = one F32x16 lane (most common in CAM-PQ).
