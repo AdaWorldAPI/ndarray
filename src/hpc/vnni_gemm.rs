@@ -315,7 +315,7 @@ mod tests {
         let n = 5;
         let k = 8;
         let a: Vec<u8> = (0..m * k).map(|i| (i % 200) as u8).collect();
-        let b: Vec<i8> = (0..k * n).map(|i| ((i % 100) as i8 - 50)).collect();
+        let b: Vec<i8> = (0..k * n).map(|i| (i % 100) as i8 - 50).collect();
         let expected = scalar_gemm(&a, &b, m, n, k);
         let mut c = vec![0i32; m * n];
         int8_gemm_vnni(&a, &b, &mut c, m, n, k);

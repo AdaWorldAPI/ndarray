@@ -475,7 +475,7 @@ mod tests {
 
         // Generate "weight" data (deterministic, mimics Gaussian distribution)
         let weights: Vec<f64> = (0..d)
-            .map(|i| ((i as f64 * 0.7 + 13.0).sin() * 2.5))
+            .map(|i| (i as f64 * 0.7 + 13.0).sin() * 2.5)
             .collect();
 
         // ── ENCODING: f64[4096] → f64[17] (golden-step projection) ──
