@@ -2,7 +2,6 @@
 //!
 //! Mirrors the float helpers in `simd_avx2.rs` (dot_f32, axpy_f32, …).
 
-#![allow(clippy::needless_return)]
 //! Each function dispatches at compile-time to the widest available SIMD type:
 //!
 //! | Lane width | x86_64 + AVX-512BW | x86_64 (AVX2 baseline) | aarch64 NEON | scalar |
@@ -14,8 +13,6 @@
 //! deliberately wider than the lane element type — `127 × 127 × 64 ≈ 1 M`
 //! fits in i32 but not in i8/i16 reductions.
 
-#![allow(clippy::needless_range_loop)]
-
 // ────────────────────────────────────────────────────────────────────────
 // add_i8 / sub_i8 — element-wise mutate-in-place
 // ────────────────────────────────────────────────────────────────────────
@@ -26,47 +23,8 @@
 #[inline]
 pub fn add_i8(dst: &mut [i8], src: &[i8]) {
     assert_eq!(dst.len(), src.len(), "add_i8: length mismatch");
-    let n = dst.len();
-
-    #[cfg(target_arch = "x86_64")]
-    {
-        use crate::simd::I8x64;
-        const L: usize = 64;
-        let chunks = n / L;
-        for c in 0..chunks {
-            let base = c * L;
-            let a = I8x64::from_slice(&dst[base..base + L]);
-            let b = I8x64::from_slice(&src[base..base + L]);
-            a.add(b).copy_to_slice(&mut dst[base..base + L]);
-        }
-        for i in (chunks * L)..n {
-            dst[i] = dst[i].wrapping_add(src[i]);
-        }
-        return;
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    {
-        use crate::simd_neon::I8x16;
-        const L: usize = 16;
-        let chunks = n / L;
-        for c in 0..chunks {
-            let base = c * L;
-            let a = I8x16::from_slice(&dst[base..base + L]);
-            let b = I8x16::from_slice(&src[base..base + L]);
-            a.add(b).copy_to_slice(&mut dst[base..base + L]);
-        }
-        for i in (chunks * L)..n {
-            dst[i] = dst[i].wrapping_add(src[i]);
-        }
-        return;
-    }
-
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    {
-        for i in 0..n {
-            dst[i] = dst[i].wrapping_add(src[i]);
-        }
+    for i in 0..dst.len() {
+        dst[i] = dst[i].wrapping_add(src[i]);
     }
 }
 
@@ -74,47 +32,8 @@ pub fn add_i8(dst: &mut [i8], src: &[i8]) {
 #[inline]
 pub fn sub_i8(dst: &mut [i8], src: &[i8]) {
     assert_eq!(dst.len(), src.len(), "sub_i8: length mismatch");
-    let n = dst.len();
-
-    #[cfg(target_arch = "x86_64")]
-    {
-        use crate::simd::I8x64;
-        const L: usize = 64;
-        let chunks = n / L;
-        for c in 0..chunks {
-            let base = c * L;
-            let a = I8x64::from_slice(&dst[base..base + L]);
-            let b = I8x64::from_slice(&src[base..base + L]);
-            a.sub(b).copy_to_slice(&mut dst[base..base + L]);
-        }
-        for i in (chunks * L)..n {
-            dst[i] = dst[i].wrapping_sub(src[i]);
-        }
-        return;
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    {
-        use crate::simd_neon::I8x16;
-        const L: usize = 16;
-        let chunks = n / L;
-        for c in 0..chunks {
-            let base = c * L;
-            let a = I8x16::from_slice(&dst[base..base + L]);
-            let b = I8x16::from_slice(&src[base..base + L]);
-            a.sub(b).copy_to_slice(&mut dst[base..base + L]);
-        }
-        for i in (chunks * L)..n {
-            dst[i] = dst[i].wrapping_sub(src[i]);
-        }
-        return;
-    }
-
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    {
-        for i in 0..n {
-            dst[i] = dst[i].wrapping_sub(src[i]);
-        }
+    for i in 0..dst.len() {
+        dst[i] = dst[i].wrapping_sub(src[i]);
     }
 }
 
@@ -122,47 +41,8 @@ pub fn sub_i8(dst: &mut [i8], src: &[i8]) {
 #[inline]
 pub fn add_i16(dst: &mut [i16], src: &[i16]) {
     assert_eq!(dst.len(), src.len(), "add_i16: length mismatch");
-    let n = dst.len();
-
-    #[cfg(target_arch = "x86_64")]
-    {
-        use crate::simd::I16x32;
-        const L: usize = 32;
-        let chunks = n / L;
-        for c in 0..chunks {
-            let base = c * L;
-            let a = I16x32::from_slice(&dst[base..base + L]);
-            let b = I16x32::from_slice(&src[base..base + L]);
-            a.add(b).copy_to_slice(&mut dst[base..base + L]);
-        }
-        for i in (chunks * L)..n {
-            dst[i] = dst[i].wrapping_add(src[i]);
-        }
-        return;
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    {
-        use crate::simd_neon::I16x8;
-        const L: usize = 8;
-        let chunks = n / L;
-        for c in 0..chunks {
-            let base = c * L;
-            let a = I16x8::from_slice(&dst[base..base + L]);
-            let b = I16x8::from_slice(&src[base..base + L]);
-            a.add(b).copy_to_slice(&mut dst[base..base + L]);
-        }
-        for i in (chunks * L)..n {
-            dst[i] = dst[i].wrapping_add(src[i]);
-        }
-        return;
-    }
-
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    {
-        for i in 0..n {
-            dst[i] = dst[i].wrapping_add(src[i]);
-        }
+    for i in 0..dst.len() {
+        dst[i] = dst[i].wrapping_add(src[i]);
     }
 }
 
@@ -207,12 +87,12 @@ pub fn min_i8(s: &[i8]) -> i8 {
     if s.is_empty() {
         return i8::MAX;
     }
-    let n = s.len();
 
     #[cfg(target_arch = "x86_64")]
     {
         use crate::simd::I8x64;
         const L: usize = 64;
+        let n = s.len();
         if n >= L {
             let chunks = n / L;
             let mut acc = I8x64::from_slice(&s[..L]);
@@ -222,14 +102,14 @@ pub fn min_i8(s: &[i8]) -> i8 {
             }
             let acc_arr = acc.to_array();
             let mut m = acc_arr[0];
-            for i in 1..L {
-                if acc_arr[i] < m {
-                    m = acc_arr[i];
+            for &v in acc_arr[1..].iter() {
+                if v < m {
+                    m = v;
                 }
             }
-            for i in (chunks * L)..n {
-                if s[i] < m {
-                    m = s[i];
+            for &v in s[chunks * L..n].iter() {
+                if v < m {
+                    m = v;
                 }
             }
             return m;
@@ -240,6 +120,7 @@ pub fn min_i8(s: &[i8]) -> i8 {
     {
         use crate::simd_neon::I8x16;
         const L: usize = 16;
+        let n = s.len();
         if n >= L {
             let chunks = n / L;
             let mut acc = I8x16::from_slice(&s[..L]);
@@ -249,14 +130,14 @@ pub fn min_i8(s: &[i8]) -> i8 {
             }
             let acc_arr = acc.to_array();
             let mut m = acc_arr[0];
-            for i in 1..L {
-                if acc_arr[i] < m {
-                    m = acc_arr[i];
+            for &v in acc_arr[1..].iter() {
+                if v < m {
+                    m = v;
                 }
             }
-            for i in (chunks * L)..n {
-                if s[i] < m {
-                    m = s[i];
+            for &v in s[chunks * L..n].iter() {
+                if v < m {
+                    m = v;
                 }
             }
             return m;
@@ -278,12 +159,12 @@ pub fn max_i8(s: &[i8]) -> i8 {
     if s.is_empty() {
         return i8::MIN;
     }
-    let n = s.len();
 
     #[cfg(target_arch = "x86_64")]
     {
         use crate::simd::I8x64;
         const L: usize = 64;
+        let n = s.len();
         if n >= L {
             let chunks = n / L;
             let mut acc = I8x64::from_slice(&s[..L]);
@@ -293,14 +174,14 @@ pub fn max_i8(s: &[i8]) -> i8 {
             }
             let acc_arr = acc.to_array();
             let mut m = acc_arr[0];
-            for i in 1..L {
-                if acc_arr[i] > m {
-                    m = acc_arr[i];
+            for &v in acc_arr[1..].iter() {
+                if v > m {
+                    m = v;
                 }
             }
-            for i in (chunks * L)..n {
-                if s[i] > m {
-                    m = s[i];
+            for &v in s[chunks * L..n].iter() {
+                if v > m {
+                    m = v;
                 }
             }
             return m;
@@ -311,6 +192,7 @@ pub fn max_i8(s: &[i8]) -> i8 {
     {
         use crate::simd_neon::I8x16;
         const L: usize = 16;
+        let n = s.len();
         if n >= L {
             let chunks = n / L;
             let mut acc = I8x16::from_slice(&s[..L]);
@@ -320,14 +202,14 @@ pub fn max_i8(s: &[i8]) -> i8 {
             }
             let acc_arr = acc.to_array();
             let mut m = acc_arr[0];
-            for i in 1..L {
-                if acc_arr[i] > m {
-                    m = acc_arr[i];
+            for &v in acc_arr[1..].iter() {
+                if v > m {
+                    m = v;
                 }
             }
-            for i in (chunks * L)..n {
-                if s[i] > m {
-                    m = s[i];
+            for &v in s[chunks * L..n].iter() {
+                if v > m {
+                    m = v;
                 }
             }
             return m;
