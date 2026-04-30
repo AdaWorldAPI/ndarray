@@ -10,9 +10,10 @@
 
 #![allow(clippy::too_many_arguments)]
 
-mod native;
+pub mod native;
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod kernels_avx512;
+
 
 
 #[cfg(feature = "intel-mkl")]
@@ -30,6 +31,12 @@ compile_error!("Features `intel-mkl` and `openblas` are mutually exclusive. Enab
 // `backend::dot_f32(x, y)` dispatches to the best tier automatically.
 //
 // Priority: intel-mkl > openblas > native (pure Rust SIMD).
+// Default (no feature): native — SIMD-dispatched, zero C deps.
+//
+// CBLAS-compat aliases (`cblas_sgemm`, `cblas_dgemm`) are always
+// available below, routing through the native backend regardless of
+// feature flags. Code written against MKL/OpenBLAS CBLAS can switch
+// to these with zero logic changes.
 
 #[cfg(feature = "intel-mkl")]
 pub use mkl::{
@@ -163,4 +170,36 @@ impl BlasFloat for f64 {
     ) {
         gemv_f64(m, n, alpha, a, lda, x, beta, y);
     }
+}
+
+// ─── CBLAS-compatible aliases ─────────────────────────────────────
+//
+// Drop-in replacements for MKL/OpenBLAS CBLAS calls. All route through
+// the native SIMD-dispatched kernels (AVX-512/AVX2/NEON/AMX/VNNI).
+// No external C library needed.
+//
+// Usage:
+//   use ndarray::backend::{cblas_sgemm, cblas_dgemm};
+//   cblas_sgemm(m, n, k, alpha, &a, lda, &b, ldb, beta, &mut c, ldc);
+
+/// `cblas_sgemm` equivalent — pure Rust SIMD-dispatched f32 GEMM.
+#[inline]
+pub fn cblas_sgemm(
+    m: usize, n: usize, k: usize,
+    alpha: f32, a: &[f32], lda: usize,
+    b: &[f32], ldb: usize,
+    beta: f32, c: &mut [f32], ldc: usize,
+) {
+    gemm_f32(m, n, k, alpha, a, lda, b, ldb, beta, c, ldc)
+}
+
+/// `cblas_dgemm` equivalent — pure Rust SIMD-dispatched f64 GEMM.
+#[inline]
+pub fn cblas_dgemm(
+    m: usize, n: usize, k: usize,
+    alpha: f64, a: &[f64], lda: usize,
+    b: &[f64], ldb: usize,
+    beta: f64, c: &mut [f64], ldc: usize,
+) {
+    gemm_f64(m, n, k, alpha, a, lda, b, ldb, beta, c, ldc)
 }
