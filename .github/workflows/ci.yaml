@@ -14,7 +14,13 @@ env:
   CARGO_TERM_COLOR: always
   HOST: x86_64-unknown-linux-gnu
   FEATURES: "approx,serde,rayon"
-  RUSTFLAGS: "-D warnings -C target-cpu=x86-64-v3"
+  # `-C target-cpu=x86-64-v3` was removed from the global env. It conflicts
+  # with the cross_test matrix (`i686-unknown-linux-gnu` is 32-bit, `s390x`
+  # isn't even x86) and contradicts the design intent recorded in
+  # `.cargo/config.toml`: per-function `#[target_feature]` + runtime
+  # `LazyLock<Tier>` detection means one binary, all ISAs. Jobs that
+  # specifically need a higher target-cpu can opt in via per-job env.
+  RUSTFLAGS: "-D warnings"
   MSRV: 1.94.0
   BLAS_MSRV: 1.94.0
 
@@ -35,32 +41,33 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
+        # Pinned to 1.94.1 to match `rust-toolchain.toml`. Auto-tracking
+        # `stable` would silently bump to 1.95 and start rejecting code
+        # on lints like `clippy::unnecessary_sort_by` that 1.94 accepted.
         rust:
-          - stable
+          - "1.94.1"
     name: clippy/${{ matrix.rust }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@1.94.1
         with:
-          toolchain: ${{ matrix.rust }}
           components: clippy
-      # rust-toolchain.toml pins 1.94.0 — install clippy for that toolchain too,
-      # since dtolnay/rust-toolchain only installs for the requested matrix value.
-      - run: rustup component add clippy --toolchain 1.94.0 || true
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --features approx,serde,rayon -- -D warnings
       - run: cargo clippy --features native -- -D warnings
 
   format:
     runs-on: ubuntu-latest
-    name: format/stable
+    name: format/1.94.1
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned to 1.94.1 to match `rust-toolchain.toml`. `@stable` would
+      # set 1.95 as the default and `cargo fmt` would invoke 1.95's
+      # rustfmt — different formatting decisions than 1.94. Drift then
+      # fails `cargo fmt --all --check` even on freshly-fmt'd code.
+      - uses: dtolnay/rust-toolchain@1.94.1
         with:
           components: rustfmt
-      # rust-toolchain.toml pins 1.94.0 — install rustfmt for that toolchain too.
-      - run: rustup component add rustfmt --toolchain 1.94.0 || true
       - run: cargo fmt --all --check
 
   nostd:
