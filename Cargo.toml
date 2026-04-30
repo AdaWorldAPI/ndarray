@@ -108,8 +108,28 @@ native = []
 intel-mkl = []
 openblas = []
 
-portable-atomic-critical-section = ["portable-atomic/critical-section"]
+# no_std polyfill for `static LazyLock` in `src/simd.rs` (sprint A12).
+# Pulls in `portable-atomic` with the `critical-section` impl plus the
+# `critical-section` runtime so we can build a once-cell-style cache for
+# the SIMD tier without `std::sync::LazyLock`. The unconditional
+# `portable-atomic` dependency below is itself optional, gated on this
+# feature; the target-specific block keeps the un-optional copy alive on
+# platforms that need it for atomic-pointer fallback.
+portable-atomic-critical-section = [
+    "dep:portable-atomic",
+    "dep:critical-section",
+    "portable-atomic/critical-section",
+]
 
+
+[dependencies.portable-atomic]
+version = "1"
+optional = true
+default-features = false
+
+[dependencies.critical-section]
+version = "1"
+optional = true
 
 [target.'cfg(not(target_has_atomic = "ptr"))'.dependencies]
 portable-atomic = { version = "1.6.0" }
