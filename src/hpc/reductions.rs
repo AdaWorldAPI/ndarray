@@ -15,10 +15,9 @@
 //!
 //! # Empty-slice convention
 //!
-//! Unbounded reductions (`max`, `min`, `argmax`, `argmin`) return
-//! [`Option`]. Sums and norms have a well-defined zero element and
-//! return `0.0` (or `0.0` for `nrm2`). [`mean_f32`] panics on an empty
-//! slice — there is no meaningful answer.
+//! Unbounded reductions (`max`, `min`, `argmax`, `argmin`, `mean`) return
+//! [`Option`] — they have no defined value on an empty slice. Sums and
+//! norms have a well-defined zero element and return `0.0`.
 //!
 //! # Numerical notes
 //!
@@ -100,24 +99,24 @@ pub fn sum_f64(s: &[f64]) -> f64 {
     sum
 }
 
-/// Arithmetic mean of all elements.
-///
-/// # Panics
-/// Panics if `s` is empty.
+/// Arithmetic mean of all elements. Returns `None` for an empty slice.
 #[inline]
-pub fn mean_f32(s: &[f32]) -> f32 {
-    assert!(!s.is_empty(), "mean_f32: empty slice has no mean");
-    sum_f32(s) / s.len() as f32
+pub fn mean_f32(s: &[f32]) -> Option<f32> {
+    if s.is_empty() {
+        None
+    } else {
+        Some(sum_f32(s) / s.len() as f32)
+    }
 }
 
-/// Arithmetic mean of all elements as `f64`.
-///
-/// # Panics
-/// Panics if `s` is empty.
+/// Arithmetic mean of all elements as `f64`. Returns `None` for an empty slice.
 #[inline]
-pub fn mean_f64(s: &[f64]) -> f64 {
-    assert!(!s.is_empty(), "mean_f64: empty slice has no mean");
-    sum_f64(s) / s.len() as f64
+pub fn mean_f64(s: &[f64]) -> Option<f64> {
+    if s.is_empty() {
+        None
+    } else {
+        Some(sum_f64(s) / s.len() as f64)
+    }
 }
 
 // ===========================================================================
@@ -229,10 +228,7 @@ pub fn argmax_f32(s: &[f32]) -> Option<usize> {
         best_vals = mask.select(v, best_vals);
         // Update indices via f32 bit-blend (U32x16 has no native blend
         // helper but f32-mask blend is bit-exact for any 32-bit pattern).
-        let new_idx_f = mask.select(
-            F32x16::from_bits(current_indices),
-            F32x16::from_bits(best_idx_bits),
-        );
+        let new_idx_f = mask.select(F32x16::from_bits(current_indices), F32x16::from_bits(best_idx_bits));
         best_idx_bits = new_idx_f.to_bits();
 
         // Advance lane indices by 16 for the next chunk.
@@ -297,10 +293,7 @@ pub fn argmin_f32(s: &[f32]) -> Option<usize> {
 
         let mask = v.simd_lt(best_vals);
         best_vals = mask.select(v, best_vals);
-        let new_idx_f = mask.select(
-            F32x16::from_bits(current_indices),
-            F32x16::from_bits(best_idx_bits),
-        );
+        let new_idx_f = mask.select(F32x16::from_bits(current_indices), F32x16::from_bits(best_idx_bits));
         best_idx_bits = new_idx_f.to_bits();
         current_indices = current_indices + lane_step;
     }
@@ -435,13 +428,18 @@ mod tests {
     #[test]
     fn mean_f32_basic() {
         let v = [1.0_f32, 2.0, 3.0, 4.0];
-        assert!((mean_f32(&v) - 2.5).abs() < 1e-6);
+        let m = mean_f32(&v).expect("non-empty");
+        assert!((m - 2.5).abs() < 1e-6);
     }
 
     #[test]
-    #[should_panic(expected = "empty slice has no mean")]
-    fn mean_f32_empty_panics() {
-        let _ = mean_f32(&[]);
+    fn mean_f32_empty_is_none() {
+        assert_eq!(mean_f32(&[]), None);
+    }
+
+    #[test]
+    fn mean_f64_empty_is_none() {
+        assert_eq!(mean_f64(&[]), None);
     }
 
     // ---- max_f32 / min_f32 ------------------------------------------------
@@ -478,7 +476,9 @@ mod tests {
     #[test]
     fn max_min_misaligned() {
         for &n in &[1_usize, 7, 16, 17, 31, 33, 64, 65, 127, 256, 1023] {
-            let v: Vec<f32> = (0..n).map(|i| ((i as i32) - (n as i32) / 2) as f32).collect();
+            let v: Vec<f32> = (0..n)
+                .map(|i| ((i as i32) - (n as i32) / 2) as f32)
+                .collect();
             let expected_max = v.iter().copied().fold(f32::NEG_INFINITY, f32::max);
             let expected_min = v.iter().copied().fold(f32::INFINITY, f32::min);
             assert_eq!(max_f32(&v), Some(expected_max), "max_f32 n={}", n);
@@ -513,17 +513,9 @@ mod tests {
     #[test]
     fn argmax_f32_misaligned_tail() {
         // Place the maximum at a position straddling the SIMD/tail boundary.
-        for &(n, peak) in &[
-            (17_usize, 16),
-            (17, 0),
-            (17, 8),
-            (33, 32),
-            (33, 17),
-            (65, 64),
-            (65, 32),
-            (127, 100),
-            (1000, 999),
-        ] {
+        for &(n, peak) in
+            &[(17_usize, 16), (17, 0), (17, 8), (33, 32), (33, 17), (65, 64), (65, 32), (127, 100), (1000, 999)]
+        {
             let mut v: Vec<f32> = vec![0.0; n];
             v[peak] = 1.0;
             assert_eq!(argmax_f32(&v), Some(peak), "n={}, peak={}", n, peak);
