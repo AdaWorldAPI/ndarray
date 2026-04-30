@@ -214,6 +214,7 @@ pub fn cblas_dgemm(
 /// Dispatch: AMX TDPBUSD → VNNI VPDPBUSD → scalar.
 /// Same signature across all paths.
 #[inline]
+#[allow(clippy::needless_return)]
 pub fn gemm_i8(
     a: &[u8], b: &[i8], c: &mut [i32],
     m: usize, n: usize, k: usize,
@@ -237,6 +238,7 @@ pub fn gemm_i8(
 /// Input: raw u16 slices representing BF16 values (same layout as
 /// `ndarray::hpc::quantized::BF16`).
 #[inline]
+#[allow(clippy::needless_return)]
 pub fn gemm_bf16(
     a: &[u16], b: &[u16], c: &mut [f32],
     m: usize, n: usize, k: usize,

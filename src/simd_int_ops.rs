@@ -1,6 +1,8 @@
 //! Slice-level integer SIMD ops for `i8` / `i16` data.
 //!
 //! Mirrors the float helpers in `simd_avx2.rs` (dot_f32, axpy_f32, …).
+
+#![allow(clippy::needless_return)]
 //! Each function dispatches at compile-time to the widest available SIMD type:
 //!
 //! | Lane width | x86_64 + AVX-512BW | x86_64 (AVX2 baseline) | aarch64 NEON | scalar |

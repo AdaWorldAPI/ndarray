@@ -70,7 +70,10 @@ pub fn scale_f32(a: &[f32], scalar: f32) -> Vec<f32> {
         (F32x16::from_slice(&a[i..]) * s).copy_to_slice(&mut out[i..]);
         i += 16;
     }
-    while i < n { out[i] = a[i] * scalar; i += 1; }
+    while i < n {
+        out[i] = a[i] * scalar;
+        i += 1;
+    }
     out
 }
 
@@ -84,7 +87,10 @@ pub fn add_scalar_f32(a: &[f32], scalar: f32) -> Vec<f32> {
         (F32x16::from_slice(&a[i..]) + s).copy_to_slice(&mut out[i..]);
         i += 16;
     }
-    while i < n { out[i] = a[i] + scalar; i += 1; }
+    while i < n {
+        out[i] = a[i] + scalar;
+        i += 1;
+    }
     out
 }
 
@@ -97,7 +103,10 @@ pub fn scale_f32_inplace(a: &mut [f32], scalar: f32) {
         (F32x16::from_slice(&a[i..]) * s).copy_to_slice(&mut a[i..]);
         i += 16;
     }
-    while i < n { a[i] *= scalar; i += 1; }
+    while i < n {
+        a[i] *= scalar;
+        i += 1;
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -125,70 +134,70 @@ pub fn add_f64_inplace(dst: &mut [f64], src: &[f64]) {
 
 #[inline]
 fn binary_f32(
-    a: &[f32], b: &[f32],
-    simd_op: impl Fn(F32x16, F32x16) -> F32x16,
-    scalar_op: impl Fn(f32, f32) -> f32,
+    a: &[f32], b: &[f32], simd_op: impl Fn(F32x16, F32x16) -> F32x16, scalar_op: impl Fn(f32, f32) -> f32,
 ) -> Vec<f32> {
     let n = a.len().min(b.len());
     let mut out = vec![0.0f32; n];
     let mut i = 0;
     while i + 16 <= n {
-        simd_op(F32x16::from_slice(&a[i..]), F32x16::from_slice(&b[i..]))
-            .copy_to_slice(&mut out[i..]);
+        simd_op(F32x16::from_slice(&a[i..]), F32x16::from_slice(&b[i..])).copy_to_slice(&mut out[i..]);
         i += 16;
     }
-    while i < n { out[i] = scalar_op(a[i], b[i]); i += 1; }
+    while i < n {
+        out[i] = scalar_op(a[i], b[i]);
+        i += 1;
+    }
     out
 }
 
 #[inline]
 fn inplace_f32(
-    dst: &mut [f32], src: &[f32],
-    simd_op: impl Fn(F32x16, F32x16) -> F32x16,
-    scalar_op: impl Fn(&mut f32, f32),
+    dst: &mut [f32], src: &[f32], simd_op: impl Fn(F32x16, F32x16) -> F32x16, scalar_op: impl Fn(&mut f32, f32),
 ) {
     let n = dst.len().min(src.len());
     let mut i = 0;
     while i + 16 <= n {
-        simd_op(F32x16::from_slice(&dst[i..]), F32x16::from_slice(&src[i..]))
-            .copy_to_slice(&mut dst[i..]);
+        simd_op(F32x16::from_slice(&dst[i..]), F32x16::from_slice(&src[i..])).copy_to_slice(&mut dst[i..]);
         i += 16;
     }
-    while i < n { scalar_op(&mut dst[i], src[i]); i += 1; }
+    while i < n {
+        scalar_op(&mut dst[i], src[i]);
+        i += 1;
+    }
 }
 
 #[inline]
 fn binary_f64(
-    a: &[f64], b: &[f64],
-    simd_op: impl Fn(F64x8, F64x8) -> F64x8,
-    scalar_op: impl Fn(f64, f64) -> f64,
+    a: &[f64], b: &[f64], simd_op: impl Fn(F64x8, F64x8) -> F64x8, scalar_op: impl Fn(f64, f64) -> f64,
 ) -> Vec<f64> {
     let n = a.len().min(b.len());
     let mut out = vec![0.0f64; n];
     let mut i = 0;
     while i + 8 <= n {
-        simd_op(F64x8::from_slice(&a[i..]), F64x8::from_slice(&b[i..]))
-            .copy_to_slice(&mut out[i..]);
+        simd_op(F64x8::from_slice(&a[i..]), F64x8::from_slice(&b[i..])).copy_to_slice(&mut out[i..]);
         i += 8;
     }
-    while i < n { out[i] = scalar_op(a[i], b[i]); i += 1; }
+    while i < n {
+        out[i] = scalar_op(a[i], b[i]);
+        i += 1;
+    }
     out
 }
 
 #[inline]
 fn inplace_f64(
-    dst: &mut [f64], src: &[f64],
-    simd_op: impl Fn(F64x8, F64x8) -> F64x8,
-    scalar_op: impl Fn(&mut f64, f64),
+    dst: &mut [f64], src: &[f64], simd_op: impl Fn(F64x8, F64x8) -> F64x8, scalar_op: impl Fn(&mut f64, f64),
 ) {
     let n = dst.len().min(src.len());
     let mut i = 0;
     while i + 8 <= n {
-        simd_op(F64x8::from_slice(&dst[i..]), F64x8::from_slice(&src[i..]))
-            .copy_to_slice(&mut dst[i..]);
+        simd_op(F64x8::from_slice(&dst[i..]), F64x8::from_slice(&src[i..])).copy_to_slice(&mut dst[i..]);
         i += 8;
     }
-    while i < n { scalar_op(&mut dst[i], src[i]); i += 1; }
+    while i < n {
+        scalar_op(&mut dst[i], src[i]);
+        i += 1;
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════

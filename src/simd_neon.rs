@@ -1414,6 +1414,7 @@ impl I64x2 {
 
 // ── Polyfills for wider lanes (scalar arrays) ─────────────────────────────
 
+#[allow(unused_macros)]
 macro_rules! neon_int_polyfill {
     ($name:ident, $elem:ty, $lanes:expr, $zero:expr, $mask:ty) => {
         #[derive(Copy, Clone)]

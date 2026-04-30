@@ -3,6 +3,8 @@
 //! All functions have `#[target_feature(enable = "avx512f")]`.
 //! The dispatch! macro's LazyLock tier check ensures these are only called
 //! on AVX-512 CPUs.
+
+#![allow(missing_docs, clippy::missing_safety_doc)]
 //!
 //! BLAS-1 and element-wise functions use `F32x16`/`F64x8` from `crate::simd`.
 //! GEMM microkernels retain raw intrinsics for masked stores and broadcast patterns.
@@ -257,28 +259,36 @@ pub fn iamax_f64(x: &[f64]) -> (usize, f64) {
 // ═══════════════════════════════════════════════════════════════════
 
 #[cfg(target_arch = "x86_64")]
+#[allow(missing_docs, clippy::missing_safety_doc)]
 #[target_feature(enable = "avx512f")]
 pub fn add_f32_scalar(a: &[f32], scalar: f32) -> Vec<f32> { ew_f32_s(a, scalar, EwOp::Add) }
 #[cfg(target_arch = "x86_64")]
+#[allow(missing_docs, clippy::missing_safety_doc)]
 #[target_feature(enable = "avx512f")]
 pub fn sub_f32_scalar(a: &[f32], scalar: f32) -> Vec<f32> { ew_f32_s(a, scalar, EwOp::Sub) }
 #[cfg(target_arch = "x86_64")]
+#[allow(missing_docs, clippy::missing_safety_doc)]
 #[target_feature(enable = "avx512f")]
 pub fn mul_f32_scalar(a: &[f32], scalar: f32) -> Vec<f32> { ew_f32_s(a, scalar, EwOp::Mul) }
 #[cfg(target_arch = "x86_64")]
+#[allow(missing_docs, clippy::missing_safety_doc)]
 #[target_feature(enable = "avx512f")]
 pub fn div_f32_scalar(a: &[f32], scalar: f32) -> Vec<f32> { ew_f32_s(a, scalar, EwOp::Div) }
 
 #[cfg(target_arch = "x86_64")]
+#[allow(missing_docs, clippy::missing_safety_doc)]
 #[target_feature(enable = "avx512f")]
 pub fn add_f32_vec(a: &[f32], b: &[f32]) -> Vec<f32> { ew_f32_v(a, b, EwOp::Add) }
 #[cfg(target_arch = "x86_64")]
+#[allow(missing_docs, clippy::missing_safety_doc)]
 #[target_feature(enable = "avx512f")]
 pub fn sub_f32_vec(a: &[f32], b: &[f32]) -> Vec<f32> { ew_f32_v(a, b, EwOp::Sub) }
 #[cfg(target_arch = "x86_64")]
+#[allow(missing_docs, clippy::missing_safety_doc)]
 #[target_feature(enable = "avx512f")]
 pub fn mul_f32_vec(a: &[f32], b: &[f32]) -> Vec<f32> { ew_f32_v(a, b, EwOp::Mul) }
 #[cfg(target_arch = "x86_64")]
+#[allow(missing_docs, clippy::missing_safety_doc)]
 #[target_feature(enable = "avx512f")]
 pub fn div_f32_vec(a: &[f32], b: &[f32]) -> Vec<f32> { ew_f32_v(a, b, EwOp::Div) }
 
