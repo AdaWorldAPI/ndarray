@@ -278,3 +278,47 @@ pub fn cblas_gemm_bf16bf16f32(
 ) {
     gemm_bf16(a, b, c, m, n, k)
 }
+
+// ─── Elementwise ops (SIMD-dispatched) ───────────────────────────
+//
+// Slice-level add/sub/mul/div for f32, dispatched through the AVX-512
+// kernel with AVX2/scalar fallback. Both vec×vec and vec×scalar forms.
+//
+// Usage:
+//   use ndarray::backend::{add_f32_vec, mul_f32_scalar};
+//   let c = add_f32_vec(&a, &b);        // c[i] = a[i] + b[i]
+//   let d = mul_f32_scalar(&a, 2.0);    // d[i] = a[i] * 2.0
+
+#[cfg(target_arch = "x86_64")]
+pub use kernels_avx512::{
+    add_f32_vec, sub_f32_vec, mul_f32_vec, div_f32_vec,
+    add_f32_scalar, sub_f32_scalar, mul_f32_scalar, div_f32_scalar,
+    iamax_f32, iamax_f64,
+};
+
+// ─── Slice-level ops by dtype (unified re-exports) ──────────────
+//
+// All the SIMD-dispatched slice ops in one place.
+// Integer: simd_int_ops. Half: simd_half. Float: kernels_avx512 + reductions.
+
+#[cfg(feature = "std")]
+pub use crate::simd_int_ops::{
+    add_i8, sub_i8, add_i16,
+    dot_i8, dot_i16,
+    min_i8, max_i8,
+};
+
+#[cfg(feature = "std")]
+pub use crate::simd_half::{
+    add_bf16_inplace, mul_bf16_inplace,
+    add_f16_inplace, mul_f16_inplace,
+    cast_bf16_to_f32_batch, cast_f16_to_f32_batch,
+    cast_f32_to_bf16_batch, cast_f32_to_f16_batch,
+};
+
+#[cfg(feature = "std")]
+pub use crate::hpc::reductions::{
+    sum_f32, sum_f64, mean_f32, mean_f64,
+    max_f32, min_f32, argmax_f32, argmin_f32,
+    nrm2_f32 as nrm2_f32_simd,
+};
