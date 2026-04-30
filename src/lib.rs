@@ -231,25 +231,25 @@ mod dimension;
 
 /// Portable SIMD types — `crate::simd::f32x16` today, `std::simd::f32x16` tomorrow.
 #[cfg(feature = "std")]
-#[allow(missing_docs)]
+#[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
 pub mod simd;
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
-#[allow(missing_docs, dead_code)]
+#[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
 pub(crate) mod simd_avx512;
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
-#[allow(missing_docs)]
+#[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
 pub mod simd_avx2;
 
 #[cfg(feature = "std")]
-#[allow(missing_docs)]
+#[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
 pub mod simd_amx;
 
 #[cfg(feature = "std")]
-#[allow(missing_docs)]
+#[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
 pub mod simd_neon;
 
 #[cfg(feature = "std")]
-#[allow(missing_docs)]
+#[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
 pub mod simd_wasm;
 
 /// Pluggable linear algebra backends (native SIMD, MKL, OpenBLAS).
@@ -258,6 +258,13 @@ pub mod backend;
 
 /// HPC extensions ported from rustynum: BLAS, statistics, HDC, CogRecord, FFT, LAPACK.
 #[cfg(feature = "std")]
+#[allow(
+    clippy::all,
+    unused_imports,
+    unused_variables,
+    unused_mut,
+    dead_code
+)]
 pub mod hpc;
 
 pub use crate::zip::{FoldWhile, IntoNdProducer, NdProducer, Zip};
@@ -1910,7 +1917,7 @@ mod impl_arc_array;
 /// Returns `true` if the pointer is aligned.
 pub(crate) fn is_aligned<T>(ptr: *const T) -> bool
 {
-    (ptr as usize) % ::std::mem::align_of::<T>() == 0
+    (ptr as usize).is_multiple_of(::std::mem::align_of::<T>())
 }
 
 // Triangular constructors

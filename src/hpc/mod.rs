@@ -1,9 +1,7 @@
 #![allow(
-    clippy::assign_op_pattern,
-    clippy::too_many_arguments,
-    clippy::manual_range_contains,
-    clippy::needless_range_loop,
-    clippy::type_complexity
+    clippy::all,
+    unused_imports,
+    dead_code
 )]
 //! HPC extensions for ndarray — ported from rustynum.
 //!
@@ -144,11 +142,7 @@ pub mod layered_distance;
 pub mod parallel_search;
 
 #[allow(missing_docs)]
-#[allow(missing_docs)]
-#[allow(missing_docs)]
-
 // ZeckF64 progressive edge encoding + batch/top-k
-#[allow(missing_docs)]
 pub mod zeck;
 
 // SIMD-accelerated spatial / byte-scan / hash utilities

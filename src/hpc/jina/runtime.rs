@@ -8,7 +8,7 @@
 
 use super::cache::{load_base17_cache, load_palette_cache};
 use super::causal;
-use super::codec::{Base17Token, JinaPalette, BASE_DIM, PALETTE_K};
+use super::codec::{Base17Token, JinaPalette, PALETTE_K};
 use std::sync::LazyLock;
 
 /// Embedded weight files (compiled into the binary via include_bytes!).

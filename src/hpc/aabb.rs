@@ -177,7 +177,7 @@ fn aabb_intersect_batch_scalar(query: &Aabb, candidates: &[Aabb]) -> Vec<bool> {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 unsafe fn aabb_intersect_batch_avx512(query: &Aabb, candidates: &[Aabb]) -> Vec<bool> {
-    use crate::simd::{F32x16, F32Mask16};
+    use crate::simd::{F32x16};
 
     let mut result = Vec::with_capacity(candidates.len());
 
