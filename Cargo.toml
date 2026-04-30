@@ -49,10 +49,11 @@ libc = { version = "0.2.82", optional = true }
 
 matrixmultiply = { version = "0.3.2", default-features = false, features=["cgemm"] }
 
-# HPC extras — gated behind the `hpc-extras` feature so downstream consumers
-# (e.g. burn-ndarray) can opt out of the heavy compile tree when only the core
-# array layer is needed. Enabled by default to preserve existing behavior.
-blake3 = { version = "1", optional = true }
+# blake3 — always available (integrity hashing in plane/seal/merkle_tree).
+blake3 = { version = "1" }
+
+# p64 + fractal — specialized convergence / manifold math. Gated behind
+# `hpc-extras` since they pull in a dep tree burn-ndarray doesn't need.
 p64 = { path = "crates/p64", optional = true }
 fractal = { path = "crates/fractal", default-features = false, optional = true }
 
@@ -92,7 +93,7 @@ rayon = ["dep:rayon", "std"]
 # These pull in a non-trivial dependency tree; downstream crates such as
 # burn-ndarray that only need the core array layer can disable this with
 # `default-features = false` (and re-enable `std` explicitly if needed).
-hpc-extras = ["std", "dep:blake3", "dep:p64", "dep:fractal", "fractal/std"]
+hpc-extras = ["std", "dep:p64", "dep:fractal", "fractal/std"]
 
 matrixmultiply-threading = ["matrixmultiply/threading"]
 

@@ -258,6 +258,7 @@ pub mod simd_wasm;
 pub mod simd_int_ops;
 
 /// Half-precision SIMD vectors (`BF16x16`, `F16x16`) + slice-level ops.
+/// Depends on `hpc::quantized::{BF16, F16}` — needs `std` (hpc core).
 #[cfg(feature = "std")]
 #[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
 pub mod simd_half;
@@ -268,10 +269,11 @@ pub mod backend;
 
 /// HPC extensions ported from rustynum: BLAS, statistics, HDC, CogRecord, FFT, LAPACK.
 ///
-/// Gated behind the `hpc-extras` feature (enabled by default) because the
-/// module pulls in `blake3`, `p64`, and `fractal`. Disable default features to
-/// drop those dependencies (e.g. burn-ndarray's polyfill-only build).
-#[cfg(feature = "hpc-extras")]
+/// Always available with `std`. Core modules (quantized, fingerprint, fft,
+/// cam_pq, reductions, blas_level*, amx_matmul, vnni_gemm) compile without
+/// extra deps. Cognitive/research modules (p64_bridge, crystal_encoder,
+/// deepnsm, etc.) are gated behind `hpc-extras` inside `hpc/mod.rs`.
+#[cfg(feature = "std")]
 #[allow(
     clippy::all,
     unused_imports,

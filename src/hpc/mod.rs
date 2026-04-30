@@ -114,22 +114,27 @@ pub mod tekamolo;
 #[allow(missing_docs)]
 pub mod vsa;
 #[allow(missing_docs)]
+#[cfg(feature = "hpc-extras")]
 pub mod spo_bundle;
 #[allow(missing_docs)]
+#[cfg(feature = "hpc-extras")]
 pub mod deepnsm;
 #[allow(missing_docs)]
 pub mod surround_metadata;
 #[allow(missing_docs, dead_code)]
 pub mod cyclic_bundle;
 #[allow(missing_docs, dead_code)]
+#[cfg(feature = "hpc-extras")]
 pub mod compression_curves;
 #[allow(missing_docs)]
+#[cfg(feature = "hpc-extras")]
 pub mod crystal_encoder;
 #[allow(missing_docs)]
 pub mod udf_kernels;
 
 // p64 bridge: Palette64/3D attention, NARS, CausalEdge64 compat
 #[allow(missing_docs)]
+#[cfg(feature = "hpc-extras")]
 pub mod p64_bridge;
 
 // Session C: bgz17 dual-path integration
@@ -228,7 +233,7 @@ pub mod framebuffer;
 /// Transcoded from Opus CELT for the HHTL cascade → waveform pipeline.
 pub mod audio;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "hpc-extras"))]
 mod e2e_tests {
     //! End-to-end pipeline test: Fingerprint → Node → Seal → Cascade → CLAM → Causality → BNN
 
