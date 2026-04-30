@@ -1210,14 +1210,28 @@ pub use crate::hpc::quantized::{
     QuantParams,
 };
 
-// Half-precision SIMD vectors (BF16x16, F16x16) — runtime-dispatched, always
+// Half-precision SIMD vectors (BF16x16, F16x16) — portable scalar impl, always
 // available. Note: when `target_feature = "avx512bf16"` is active a separate
-// hardware-only `BF16x16` is also exported above from `simd_avx512`. The
-// hardware-native one ships unsafe `from_u16_slice` / `to_f32x16` and is
-// distinct from the portable runtime-dispatched `simd_half::BF16x16`.
-// TODO: BF16x16/F16x16 SIMD vector types + slice ops (A2 WIP — simd_half module)
-// F16 type itself is available in hpc::quantized::F16.
-// SIMD vectors land in Wave 3 after the A2 module is completed.
+// hardware-native `BF16x16` is also exported above from `simd_avx512`; in that
+// case we only re-export F16x16 + slice ops to avoid name collisions.
+//
+// On all other targets (including avx512f-without-bf16, NEON, scalar) the
+// portable `simd_half::BF16x16` is the canonical 16-lane BF16 vector.
+
+// Always re-export F16x16 + all slice-level ops (no naming conflict).
+#[cfg(feature = "std")]
+pub use crate::simd_half::{
+    F16x16,
+    add_bf16_inplace, mul_bf16_inplace,
+    add_f16_inplace, mul_f16_inplace,
+    cast_bf16_to_f32_batch, cast_f16_to_f32_batch,
+    cast_f32_to_bf16_batch, cast_f32_to_f16_batch,
+};
+
+// Re-export portable BF16x16 only when the hardware-native avx512bf16 variant
+// is NOT active (otherwise `simd_avx512::BF16x16` already occupies the name).
+#[cfg(all(feature = "std", not(all(target_arch = "x86_64", target_feature = "avx512bf16"))))]
+pub use crate::simd_half::BF16x16 as BF16x16;
 
 // K-means + L2 distance
 pub use crate::hpc::cam_pq::{kmeans, squared_l2};
