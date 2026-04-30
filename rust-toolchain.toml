@@ -1,3 +1,8 @@
 [toolchain]
-channel = "1.94.0"
+channel = "1.94.1"
+# Pinned to 1.94.1 (latest 1.94 patch, 2026-03-25). 1.95 turned several
+# previously-safe patterns into denied lints (e.g. unnecessary_sort_by)
+# without sufficient value to justify the churn — bump explicitly when
+# a future version is reviewed, never auto-track stable. Mirrors the
+# pin in lance-graph, smb-office-rs, and MedCare-rs.
 components = ["clippy", "rustfmt"]
