@@ -257,7 +257,11 @@ pub mod simd_wasm;
 pub mod backend;
 
 /// HPC extensions ported from rustynum: BLAS, statistics, HDC, CogRecord, FFT, LAPACK.
-#[cfg(feature = "std")]
+///
+/// Gated behind the `hpc-extras` feature (enabled by default) because the
+/// module pulls in `blake3`, `p64`, and `fractal`. Disable default features to
+/// drop those dependencies (e.g. burn-ndarray's polyfill-only build).
+#[cfg(feature = "hpc-extras")]
 #[allow(
     clippy::all,
     unused_imports,
