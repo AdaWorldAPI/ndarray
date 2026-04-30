@@ -284,8 +284,8 @@ mod tests {
     #[test]
     fn add_i16_matches_scalar_for_tail_lengths() {
         for &len in &[0usize, 1, 31, 32, 33, 64, 65, 100] {
-            let a_init: Vec<i16> = (0..len).map(|i| (i as i16 * 7 - 1000)).collect();
-            let b: Vec<i16> = (0..len).map(|i| (i as i16 * -3 + 500)).collect();
+            let a_init: Vec<i16> = (0..len).map(|i| i as i16 * 7 - 1000).collect();
+            let b: Vec<i16> = (0..len).map(|i| i as i16 * -3 + 500).collect();
 
             let mut a_simd = a_init.clone();
             add_i16(&mut a_simd, &b);

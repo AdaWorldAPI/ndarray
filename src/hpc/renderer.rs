@@ -425,7 +425,7 @@ mod tests {
         let _ = &*GLOBAL_RENDERER;
         // First-touch: tick count is 0; capacity is at least 4096
         // (could be greater if PREFERRED_F32_LANES > 16 at some future tier).
-        assert!(GLOBAL_RENDERER.tick_count() >= 0);
+        assert_eq!(GLOBAL_RENDERER.tick_count(), 0);
         let f = GLOBAL_RENDERER.read_front();
         assert!(f.capacity >= 4096);
     }
