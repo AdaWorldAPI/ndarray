@@ -25,6 +25,7 @@ pub mod simd_dispatch;
 pub mod blas_level1;
 pub mod blas_level2;
 pub mod blas_level3;
+pub mod reductions;
 pub mod statistics;
 pub mod activations;
 pub mod hdc;
