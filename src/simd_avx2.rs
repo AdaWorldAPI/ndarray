@@ -8,6 +8,10 @@
 
 use crate::simd_avx512::{f32x8, f64x4};
 
+// AVX2-native I8x32 / I16x16 live in simd_avx512.rs (256-bit __m256i types).
+// Re-export so consumers see a unified `crate::simd_avx2::I8x32` symbol.
+pub use crate::simd_avx512::{I8x32, I16x16, i8x32, i16x16};
+
 // ============================================================================
 // AVX2 lane counts (half of AVX-512)
 // ============================================================================
@@ -772,6 +776,47 @@ macro_rules! avx2_int_type {
 }
 
 avx2_int_type!(U8x64, u8, 64, 0u8);
+avx2_int_type!(I8x64, i8, 64, 0i8);
+avx2_int_type!(I16x32, i16, 32, 0i16);
+
+// I8x64 / I16x32: AVX2 scalar polyfill — methods matching the AVX-512BW API
+impl I8x64 {
+    #[inline(always)]
+    pub fn zero() -> Self { Self([0i8; 64]) }
+    #[inline(always)]
+    pub fn add(self, other: Self) -> Self { let mut o = [0i8; 64]; for i in 0..64 { o[i] = self.0[i].wrapping_add(other.0[i]); } Self(o) }
+    #[inline(always)]
+    pub fn sub(self, other: Self) -> Self { let mut o = [0i8; 64]; for i in 0..64 { o[i] = self.0[i].wrapping_sub(other.0[i]); } Self(o) }
+    #[inline(always)]
+    pub fn min(self, other: Self) -> Self { let mut o = [0i8; 64]; for i in 0..64 { o[i] = self.0[i].min(other.0[i]); } Self(o) }
+    #[inline(always)]
+    pub fn max(self, other: Self) -> Self { let mut o = [0i8; 64]; for i in 0..64 { o[i] = self.0[i].max(other.0[i]); } Self(o) }
+    #[inline(always)]
+    pub fn cmp_gt(self, other: Self) -> u64 {
+        let mut m: u64 = 0;
+        for i in 0..64 { if self.0[i] > other.0[i] { m |= 1u64 << i; } }
+        m
+    }
+}
+
+impl I16x32 {
+    #[inline(always)]
+    pub fn zero() -> Self { Self([0i16; 32]) }
+    #[inline(always)]
+    pub fn add(self, other: Self) -> Self { let mut o = [0i16; 32]; for i in 0..32 { o[i] = self.0[i].wrapping_add(other.0[i]); } Self(o) }
+    #[inline(always)]
+    pub fn sub(self, other: Self) -> Self { let mut o = [0i16; 32]; for i in 0..32 { o[i] = self.0[i].wrapping_sub(other.0[i]); } Self(o) }
+    #[inline(always)]
+    pub fn min(self, other: Self) -> Self { let mut o = [0i16; 32]; for i in 0..32 { o[i] = self.0[i].min(other.0[i]); } Self(o) }
+    #[inline(always)]
+    pub fn max(self, other: Self) -> Self { let mut o = [0i16; 32]; for i in 0..32 { o[i] = self.0[i].max(other.0[i]); } Self(o) }
+    #[inline(always)]
+    pub fn cmp_gt(self, other: Self) -> u32 {
+        let mut m: u32 = 0;
+        for i in 0..32 { if self.0[i] > other.0[i] { m |= 1u32 << i; } }
+        m
+    }
+}
 
 // ── U8x64 byte-level operations (scalar fallback for AVX2 tier) ──────────
 // These match the AVX-512 U8x64 methods in simd_avx512.rs.
@@ -1007,6 +1052,10 @@ pub type i64x8 = I64x8;
 pub type u32x16 = U32x16;
 #[allow(non_camel_case_types)]
 pub type u64x8 = U64x8;
+#[allow(non_camel_case_types)]
+pub type i8x64 = I8x64;
+#[allow(non_camel_case_types)]
+pub type i16x32 = I16x32;
 
 #[cfg(test)]
 mod tests {
