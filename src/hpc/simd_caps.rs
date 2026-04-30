@@ -41,6 +41,9 @@ pub struct SimdCaps {
     pub sse2: bool,
     /// FMA (fused multiply-add).
     pub fma: bool,
+    /// AVX-512 VNNI (VPDPBUSD — u8×i8→i32 dot product of 4-element groups).
+    /// Present on Ice Lake, Sapphire Rapids, Zen 4 (with AVX-512), Tiger Lake.
+    pub avx512vnni: bool,
 
     // ── aarch64 (ARM) ──
     /// NEON 128-bit SIMD (mandatory on aarch64, always true).
@@ -82,6 +85,7 @@ impl SimdCaps {
             sse41: is_x86_feature_detected!("sse4.1"),
             sse2: is_x86_feature_detected!("sse2"),
             fma: is_x86_feature_detected!("fma"),
+            avx512vnni: is_x86_feature_detected!("avx512vnni"),
             // ARM fields: all false on x86
             neon: false,
             asimd_dotprod: false,
@@ -107,6 +111,7 @@ impl SimdCaps {
             sse41: false,
             sse2: false,
             fma: false,
+            avx512vnni: false,
             // ARM fields: runtime detection
             neon: true, // mandatory on aarch64
             asimd_dotprod: std::arch::is_aarch64_feature_detected!("dotprod"),
@@ -129,6 +134,7 @@ impl SimdCaps {
             sse41: false,
             sse2: false,
             fma: false,
+            avx512vnni: false,
             neon: false,
             asimd_dotprod: false,
             fp16: false,
@@ -148,6 +154,13 @@ impl SimdCaps {
     #[inline(always)]
     pub fn has_avx512_bw_popcnt(self) -> bool {
         self.avx512bw && self.avx512vpopcntdq
+    }
+
+    /// True if AVX-512 VNNI is available (VPDPBUSD on zmm registers).
+    /// Present on Ice Lake, Tiger Lake, Sapphire Rapids, Zen 4.
+    #[inline(always)]
+    pub fn has_avx512_vnni(self) -> bool {
+        self.avx512f && self.avx512vnni
     }
 
     // ── ARM convenience methods ──
