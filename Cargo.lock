@@ -1462,6 +1462,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b"
 
 [[package]]
+name = "fractal"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "libm",
+]
+
+[[package]]
 name = "futures-core"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2056,6 +2064,7 @@ dependencies = [
  "cranelift-jit",
  "cranelift-module",
  "defmac",
+ "fractal",
  "itertools 0.13.0",
  "libc",
  "matrixmultiply",
@@ -2064,7 +2073,6 @@ dependencies = [
  "num-integer",
  "num-traits",
  "p64",
- "phyllotactic-manifold",
  "portable-atomic",
  "portable-atomic-util",
  "quickcheck",
@@ -2398,7 +2406,7 @@ name = "p64"
 version = "0.1.0"
 dependencies = [
  "criterion",
- "phyllotactic-manifold",
+ "fractal",
 ]
 
 [[package]]
@@ -2461,13 +2469,6 @@ dependencies = [
  "hashbrown 0.15.5",
  "indexmap",
  "serde",
-]
-
-[[package]]
-name = "phyllotactic-manifold"
-version = "0.1.0"
-dependencies = [
- "criterion",
 ]
 
 [[package]]

@@ -341,4 +341,5 @@ mod tests {
         // DC component: sum = 10
         assert!((output[0] - 10.0).abs() < 1e-4);
     }
+
 }

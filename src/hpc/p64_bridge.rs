@@ -21,7 +21,7 @@ pub use p64::{
     AttentionResult, CombineMode, ContraMode, HeelPlanes, Palette3D, Palette64, ThinkingStyle,
     predicate,
 };
-pub use phyllotactic_manifold::consts as manifold_consts;
+pub use fractal::consts as manifold_consts;
 
 // ============================================================================
 // Section 1: SIMD manifold expansion
@@ -204,7 +204,7 @@ pub fn attend_simd(palette: &Palette64, query: u64, gamma: u8) -> AttentionResul
 /// ```
 pub fn resonance_to_nars(resonance_7bit: u8, contradiction: f64, max_contra: f64) -> NarsTruth {
     let (f, c) =
-        phyllotactic_manifold::seven_plus_one::nars_truth(resonance_7bit, contradiction, max_contra);
+        fractal::seven_plus_one::nars_truth(resonance_7bit, contradiction, max_contra);
     NarsTruth::new(f as f32, c as f32)
 }
 
