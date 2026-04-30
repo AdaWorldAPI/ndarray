@@ -34,6 +34,9 @@ name = "ndarray"
 bench = false
 test = true
 
+[[example]]
+name = "ocr_benchmark"
+required-features = ["std"]
 
 [dependencies]
 num-integer = { workspace = true }
