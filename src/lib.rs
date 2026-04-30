@@ -252,6 +252,11 @@ pub mod simd_neon;
 #[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
 pub mod simd_wasm;
 
+/// Slice-level integer SIMD ops (i8/i16) — `add_i8`, `dot_i8`, `min_i8`, …
+#[cfg(feature = "std")]
+#[allow(missing_docs)]
+pub mod simd_int_ops;
+
 /// Pluggable linear algebra backends (native SIMD, MKL, OpenBLAS).
 #[cfg(feature = "std")]
 pub mod backend;

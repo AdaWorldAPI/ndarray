@@ -1087,6 +1087,225 @@ mod neon_pair_tests {
     }
 }
 
+// I8/I16 SIMD vector types — NEON 128-bit native + scalar polyfills.
+//
+// Native 128-bit shapes:
+//   • I8x16  ← int8x16_t   (vaddq_s8 / vminq_s8 / vcgtq_s8 …)
+//   • I16x8  ← int16x8_t   (vaddq_s16 / vcgtq_s16 …)
+//
+// Polyfills (scalar arrays) for cross-tier API parity:
+//   • I8x32  = [i8; 32]
+//   • I8x64  = [i8; 64]
+//   • I16x16 = [i16; 16]
+//   • I16x32 = [i16; 32]
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[cfg(target_arch = "aarch64")]
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct I8x16(pub int8x16_t);
+
+#[cfg(target_arch = "aarch64")]
+impl I8x16 {
+    pub const LANES: usize = 16;
+
+    #[inline(always)]
+    pub fn splat(v: i8) -> Self { Self(unsafe { vdupq_n_s8(v) }) }
+
+    #[inline(always)]
+    pub fn zero() -> Self { Self(unsafe { vdupq_n_s8(0) }) }
+
+    #[inline(always)]
+    pub fn from_slice(s: &[i8]) -> Self {
+        assert!(s.len() >= 16);
+        Self(unsafe { vld1q_s8(s.as_ptr()) })
+    }
+
+    #[inline(always)]
+    pub fn from_array(arr: [i8; 16]) -> Self {
+        Self(unsafe { vld1q_s8(arr.as_ptr()) })
+    }
+
+    #[inline(always)]
+    pub fn to_array(self) -> [i8; 16] {
+        let mut arr = [0i8; 16];
+        unsafe { vst1q_s8(arr.as_mut_ptr(), self.0) };
+        arr
+    }
+
+    #[inline(always)]
+    pub fn copy_to_slice(self, s: &mut [i8]) {
+        assert!(s.len() >= 16);
+        unsafe { vst1q_s8(s.as_mut_ptr(), self.0) };
+    }
+
+    #[inline(always)] pub fn add(self, other: Self) -> Self { Self(unsafe { vaddq_s8(self.0, other.0) }) }
+    #[inline(always)] pub fn sub(self, other: Self) -> Self { Self(unsafe { vsubq_s8(self.0, other.0) }) }
+    #[inline(always)] pub fn min(self, other: Self) -> Self { Self(unsafe { vminq_s8(self.0, other.0) }) }
+    #[inline(always)] pub fn max(self, other: Self) -> Self { Self(unsafe { vmaxq_s8(self.0, other.0) }) }
+
+    /// Compare-greater-than: returns 16-bit mask. Bit i set where self[i] > other[i].
+    #[inline(always)]
+    pub fn cmp_gt(self, other: Self) -> u16 {
+        unsafe {
+            let cmp = vcgtq_s8(self.0, other.0); // uint8x16_t, 0xFF where true
+            let arr: [u8; 16] = core::mem::transmute(cmp);
+            let mut m: u16 = 0;
+            for i in 0..16 { if arr[i] != 0 { m |= 1u16 << i; } }
+            m
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl core::fmt::Debug for I8x16 {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "I8x16({:?})", self.to_array())
+    }
+}
+#[cfg(target_arch = "aarch64")]
+impl PartialEq for I8x16 {
+    fn eq(&self, other: &Self) -> bool { self.to_array() == other.to_array() }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct I16x8(pub int16x8_t);
+
+#[cfg(target_arch = "aarch64")]
+impl I16x8 {
+    pub const LANES: usize = 8;
+
+    #[inline(always)]
+    pub fn splat(v: i16) -> Self { Self(unsafe { vdupq_n_s16(v) }) }
+
+    #[inline(always)]
+    pub fn zero() -> Self { Self(unsafe { vdupq_n_s16(0) }) }
+
+    #[inline(always)]
+    pub fn from_slice(s: &[i16]) -> Self {
+        assert!(s.len() >= 8);
+        Self(unsafe { vld1q_s16(s.as_ptr()) })
+    }
+
+    #[inline(always)]
+    pub fn from_array(arr: [i16; 8]) -> Self {
+        Self(unsafe { vld1q_s16(arr.as_ptr()) })
+    }
+
+    #[inline(always)]
+    pub fn to_array(self) -> [i16; 8] {
+        let mut arr = [0i16; 8];
+        unsafe { vst1q_s16(arr.as_mut_ptr(), self.0) };
+        arr
+    }
+
+    #[inline(always)]
+    pub fn copy_to_slice(self, s: &mut [i16]) {
+        assert!(s.len() >= 8);
+        unsafe { vst1q_s16(s.as_mut_ptr(), self.0) };
+    }
+
+    #[inline(always)] pub fn add(self, other: Self) -> Self { Self(unsafe { vaddq_s16(self.0, other.0) }) }
+    #[inline(always)] pub fn sub(self, other: Self) -> Self { Self(unsafe { vsubq_s16(self.0, other.0) }) }
+    #[inline(always)] pub fn min(self, other: Self) -> Self { Self(unsafe { vminq_s16(self.0, other.0) }) }
+    #[inline(always)] pub fn max(self, other: Self) -> Self { Self(unsafe { vmaxq_s16(self.0, other.0) }) }
+
+    /// Compare-greater-than: returns 8-bit mask. Bit i set where self[i] > other[i].
+    #[inline(always)]
+    pub fn cmp_gt(self, other: Self) -> u8 {
+        unsafe {
+            let cmp = vcgtq_s16(self.0, other.0); // uint16x8_t, 0xFFFF where true
+            let arr: [u16; 8] = core::mem::transmute(cmp);
+            let mut m: u8 = 0;
+            for i in 0..8 { if arr[i] != 0 { m |= 1u8 << i; } }
+            m
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl core::fmt::Debug for I16x8 {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "I16x8({:?})", self.to_array())
+    }
+}
+#[cfg(target_arch = "aarch64")]
+impl PartialEq for I16x8 {
+    fn eq(&self, other: &Self) -> bool { self.to_array() == other.to_array() }
+}
+
+// ── Polyfills for wider lanes (scalar arrays) ─────────────────────────────
+
+macro_rules! neon_int_polyfill {
+    ($name:ident, $elem:ty, $lanes:expr, $zero:expr, $mask:ty) => {
+        #[derive(Copy, Clone)]
+        #[repr(align(64))]
+        pub struct $name(pub [$elem; $lanes]);
+
+        impl $name {
+            pub const LANES: usize = $lanes;
+            #[inline(always)] pub fn splat(v: $elem) -> Self { Self([v; $lanes]) }
+            #[inline(always)] pub fn zero() -> Self { Self([$zero; $lanes]) }
+            #[inline(always)] pub fn from_slice(s: &[$elem]) -> Self {
+                assert!(s.len() >= $lanes);
+                let mut a = [$zero; $lanes]; a.copy_from_slice(&s[..$lanes]); Self(a)
+            }
+            #[inline(always)] pub fn from_array(a: [$elem; $lanes]) -> Self { Self(a) }
+            #[inline(always)] pub fn to_array(self) -> [$elem; $lanes] { self.0 }
+            #[inline(always)] pub fn copy_to_slice(self, s: &mut [$elem]) {
+                assert!(s.len() >= $lanes); s[..$lanes].copy_from_slice(&self.0);
+            }
+            #[inline(always)] pub fn add(self, other: Self) -> Self {
+                let mut o = [$zero; $lanes];
+                for i in 0..$lanes { o[i] = self.0[i].wrapping_add(other.0[i]); }
+                Self(o)
+            }
+            #[inline(always)] pub fn sub(self, other: Self) -> Self {
+                let mut o = [$zero; $lanes];
+                for i in 0..$lanes { o[i] = self.0[i].wrapping_sub(other.0[i]); }
+                Self(o)
+            }
+            #[inline(always)] pub fn min(self, other: Self) -> Self {
+                let mut o = [$zero; $lanes];
+                for i in 0..$lanes { o[i] = self.0[i].min(other.0[i]); }
+                Self(o)
+            }
+            #[inline(always)] pub fn max(self, other: Self) -> Self {
+                let mut o = [$zero; $lanes];
+                for i in 0..$lanes { o[i] = self.0[i].max(other.0[i]); }
+                Self(o)
+            }
+            #[inline(always)] pub fn cmp_gt(self, other: Self) -> $mask {
+                let mut m: $mask = 0;
+                for i in 0..$lanes { if self.0[i] > other.0[i] { m |= (1 as $mask) << i; } }
+                m
+            }
+        }
+        impl core::fmt::Debug for $name {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                write!(f, concat!(stringify!($name), "({:?})"), &self.0[..])
+            }
+        }
+        impl PartialEq for $name {
+            fn eq(&self, other: &Self) -> bool { self.0 == other.0 }
+        }
+    };
+}
+
+#[cfg(target_arch = "aarch64")] neon_int_polyfill!(I8x32, i8, 32, 0i8, u32);
+#[cfg(target_arch = "aarch64")] neon_int_polyfill!(I8x64, i8, 64, 0i8, u64);
+#[cfg(target_arch = "aarch64")] neon_int_polyfill!(I16x16, i16, 16, 0i16, u16);
+#[cfg(target_arch = "aarch64")] neon_int_polyfill!(I16x32, i16, 32, 0i16, u32);
+
+#[cfg(target_arch = "aarch64")] #[allow(non_camel_case_types)] pub type i8x16 = I8x16;
+#[cfg(target_arch = "aarch64")] #[allow(non_camel_case_types)] pub type i16x8 = I16x8;
+#[cfg(target_arch = "aarch64")] #[allow(non_camel_case_types)] pub type i8x32 = I8x32;
+#[cfg(target_arch = "aarch64")] #[allow(non_camel_case_types)] pub type i8x64 = I8x64;
+#[cfg(target_arch = "aarch64")] #[allow(non_camel_case_types)] pub type i16x16 = I16x16;
+#[cfg(target_arch = "aarch64")] #[allow(non_camel_case_types)] pub type i16x32 = I16x32;
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Tests (run on x86 as compile-check, actual NEON tests need aarch64)
 // ═══════════════════════════════════════════════════════════════════════════

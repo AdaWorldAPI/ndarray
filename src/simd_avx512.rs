@@ -1510,6 +1510,391 @@ impl PartialEq for U64x8 {
 }
 
 // ============================================================================
+// I8x64 — 64 × i8 in one AVX-512 register (__m512i)
+// AVX-512BW: byte-level add/sub/min/max, 64-bit cmpgt mask.
+// ============================================================================
+
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct I8x64(pub __m512i);
+
+impl I8x64 {
+    pub const LANES: usize = 64;
+
+    #[inline(always)]
+    pub fn splat(v: i8) -> Self {
+        Self(unsafe { _mm512_set1_epi8(v) })
+    }
+
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self(unsafe { _mm512_setzero_si512() })
+    }
+
+    #[inline(always)]
+    pub fn from_slice(s: &[i8]) -> Self {
+        assert!(s.len() >= 64);
+        Self(unsafe { _mm512_loadu_si512(s.as_ptr() as *const _) })
+    }
+
+    #[inline(always)]
+    pub fn from_array(arr: [i8; 64]) -> Self {
+        Self(unsafe { _mm512_loadu_si512(arr.as_ptr() as *const _) })
+    }
+
+    #[inline(always)]
+    pub fn to_array(self) -> [i8; 64] {
+        let mut arr = [0i8; 64];
+        unsafe { _mm512_storeu_si512(arr.as_mut_ptr() as *mut _, self.0) };
+        arr
+    }
+
+    #[inline(always)]
+    pub fn copy_to_slice(self, s: &mut [i8]) {
+        assert!(s.len() >= 64);
+        unsafe { _mm512_storeu_si512(s.as_mut_ptr() as *mut _, self.0) };
+    }
+
+    #[inline(always)]
+    pub fn add(self, other: Self) -> Self {
+        Self(unsafe { _mm512_add_epi8(self.0, other.0) })
+    }
+
+    #[inline(always)]
+    pub fn sub(self, other: Self) -> Self {
+        Self(unsafe { _mm512_sub_epi8(self.0, other.0) })
+    }
+
+    #[inline(always)]
+    pub fn min(self, other: Self) -> Self {
+        Self(unsafe { _mm512_min_epi8(self.0, other.0) })
+    }
+
+    #[inline(always)]
+    pub fn max(self, other: Self) -> Self {
+        Self(unsafe { _mm512_max_epi8(self.0, other.0) })
+    }
+
+    /// Compare-greater-than: returns 64-bit mask. Bit i set where self[i] > other[i].
+    #[inline(always)]
+    pub fn cmp_gt(self, other: Self) -> u64 {
+        unsafe { _mm512_cmpgt_epi8_mask(self.0, other.0) }
+    }
+}
+
+impl_bin_op!(I8x64, Add, add, _mm512_add_epi8);
+impl_bin_op!(I8x64, Sub, sub, _mm512_sub_epi8);
+impl_assign_op!(I8x64, AddAssign, add_assign, _mm512_add_epi8);
+impl_assign_op!(I8x64, SubAssign, sub_assign, _mm512_sub_epi8);
+
+impl fmt::Debug for I8x64 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "I8x64({:?})", &self.to_array()[..])
+    }
+}
+impl PartialEq for I8x64 {
+    fn eq(&self, other: &Self) -> bool { self.to_array() == other.to_array() }
+}
+
+// ============================================================================
+// I8x32 — 32 × i8 in one AVX2 register (__m256i)
+// Lives here so consumers get unified import paths across tiers.
+// ============================================================================
+
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct I8x32(pub __m256i);
+
+impl I8x32 {
+    pub const LANES: usize = 32;
+
+    #[inline(always)]
+    pub fn splat(v: i8) -> Self {
+        Self(unsafe { _mm256_set1_epi8(v) })
+    }
+
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self(unsafe { _mm256_setzero_si256() })
+    }
+
+    #[inline(always)]
+    pub fn from_slice(s: &[i8]) -> Self {
+        assert!(s.len() >= 32);
+        Self(unsafe { _mm256_loadu_si256(s.as_ptr() as *const __m256i) })
+    }
+
+    #[inline(always)]
+    pub fn from_array(arr: [i8; 32]) -> Self {
+        Self(unsafe { _mm256_loadu_si256(arr.as_ptr() as *const __m256i) })
+    }
+
+    #[inline(always)]
+    pub fn to_array(self) -> [i8; 32] {
+        let mut arr = [0i8; 32];
+        unsafe { _mm256_storeu_si256(arr.as_mut_ptr() as *mut __m256i, self.0) };
+        arr
+    }
+
+    #[inline(always)]
+    pub fn copy_to_slice(self, s: &mut [i8]) {
+        assert!(s.len() >= 32);
+        unsafe { _mm256_storeu_si256(s.as_mut_ptr() as *mut __m256i, self.0) };
+    }
+
+    #[inline(always)]
+    pub fn add(self, other: Self) -> Self {
+        Self(unsafe { _mm256_add_epi8(self.0, other.0) })
+    }
+
+    #[inline(always)]
+    pub fn sub(self, other: Self) -> Self {
+        Self(unsafe { _mm256_sub_epi8(self.0, other.0) })
+    }
+
+    #[inline(always)]
+    pub fn min(self, other: Self) -> Self {
+        Self(unsafe { _mm256_min_epi8(self.0, other.0) })
+    }
+
+    #[inline(always)]
+    pub fn max(self, other: Self) -> Self {
+        Self(unsafe { _mm256_max_epi8(self.0, other.0) })
+    }
+
+    /// Compare-greater-than: returns 32-bit mask via packed-byte movemask.
+    /// Bit i set where self[i] > other[i].
+    #[inline(always)]
+    pub fn cmp_gt(self, other: Self) -> u32 {
+        unsafe { _mm256_movemask_epi8(_mm256_cmpgt_epi8(self.0, other.0)) as u32 }
+    }
+}
+
+impl Add for I8x32 {
+    type Output = Self;
+    #[inline(always)]
+    fn add(self, rhs: Self) -> Self { Self(unsafe { _mm256_add_epi8(self.0, rhs.0) }) }
+}
+impl Sub for I8x32 {
+    type Output = Self;
+    #[inline(always)]
+    fn sub(self, rhs: Self) -> Self { Self(unsafe { _mm256_sub_epi8(self.0, rhs.0) }) }
+}
+impl AddAssign for I8x32 {
+    #[inline(always)]
+    fn add_assign(&mut self, rhs: Self) { self.0 = unsafe { _mm256_add_epi8(self.0, rhs.0) }; }
+}
+impl SubAssign for I8x32 {
+    #[inline(always)]
+    fn sub_assign(&mut self, rhs: Self) { self.0 = unsafe { _mm256_sub_epi8(self.0, rhs.0) }; }
+}
+impl fmt::Debug for I8x32 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "I8x32({:?})", &self.to_array()[..])
+    }
+}
+impl PartialEq for I8x32 {
+    fn eq(&self, other: &Self) -> bool { self.to_array() == other.to_array() }
+}
+
+// ============================================================================
+// I16x32 — 32 × i16 in one AVX-512 register (__m512i)
+// AVX-512BW: 16-bit add/sub/min/max, 32-bit cmpgt mask.
+// ============================================================================
+
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct I16x32(pub __m512i);
+
+impl I16x32 {
+    pub const LANES: usize = 32;
+
+    #[inline(always)]
+    pub fn splat(v: i16) -> Self {
+        Self(unsafe { _mm512_set1_epi16(v) })
+    }
+
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self(unsafe { _mm512_setzero_si512() })
+    }
+
+    #[inline(always)]
+    pub fn from_slice(s: &[i16]) -> Self {
+        assert!(s.len() >= 32);
+        Self(unsafe { _mm512_loadu_si512(s.as_ptr() as *const _) })
+    }
+
+    #[inline(always)]
+    pub fn from_array(arr: [i16; 32]) -> Self {
+        Self(unsafe { _mm512_loadu_si512(arr.as_ptr() as *const _) })
+    }
+
+    #[inline(always)]
+    pub fn to_array(self) -> [i16; 32] {
+        let mut arr = [0i16; 32];
+        unsafe { _mm512_storeu_si512(arr.as_mut_ptr() as *mut _, self.0) };
+        arr
+    }
+
+    #[inline(always)]
+    pub fn copy_to_slice(self, s: &mut [i16]) {
+        assert!(s.len() >= 32);
+        unsafe { _mm512_storeu_si512(s.as_mut_ptr() as *mut _, self.0) };
+    }
+
+    #[inline(always)]
+    pub fn add(self, other: Self) -> Self {
+        Self(unsafe { _mm512_add_epi16(self.0, other.0) })
+    }
+
+    #[inline(always)]
+    pub fn sub(self, other: Self) -> Self {
+        Self(unsafe { _mm512_sub_epi16(self.0, other.0) })
+    }
+
+    #[inline(always)]
+    pub fn min(self, other: Self) -> Self {
+        Self(unsafe { _mm512_min_epi16(self.0, other.0) })
+    }
+
+    #[inline(always)]
+    pub fn max(self, other: Self) -> Self {
+        Self(unsafe { _mm512_max_epi16(self.0, other.0) })
+    }
+
+    /// Compare-greater-than: returns 32-bit mask. Bit i set where self[i] > other[i].
+    #[inline(always)]
+    pub fn cmp_gt(self, other: Self) -> u32 {
+        unsafe { _mm512_cmpgt_epi16_mask(self.0, other.0) }
+    }
+}
+
+impl_bin_op!(I16x32, Add, add, _mm512_add_epi16);
+impl_bin_op!(I16x32, Sub, sub, _mm512_sub_epi16);
+impl_assign_op!(I16x32, AddAssign, add_assign, _mm512_add_epi16);
+impl_assign_op!(I16x32, SubAssign, sub_assign, _mm512_sub_epi16);
+
+impl fmt::Debug for I16x32 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "I16x32({:?})", &self.to_array()[..])
+    }
+}
+impl PartialEq for I16x32 {
+    fn eq(&self, other: &Self) -> bool { self.to_array() == other.to_array() }
+}
+
+// ============================================================================
+// I16x16 — 16 × i16 in one AVX2 register (__m256i)
+// Lives here so consumers get unified import paths.
+// ============================================================================
+
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct I16x16(pub __m256i);
+
+impl I16x16 {
+    pub const LANES: usize = 16;
+
+    #[inline(always)]
+    pub fn splat(v: i16) -> Self {
+        Self(unsafe { _mm256_set1_epi16(v) })
+    }
+
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self(unsafe { _mm256_setzero_si256() })
+    }
+
+    #[inline(always)]
+    pub fn from_slice(s: &[i16]) -> Self {
+        assert!(s.len() >= 16);
+        Self(unsafe { _mm256_loadu_si256(s.as_ptr() as *const __m256i) })
+    }
+
+    #[inline(always)]
+    pub fn from_array(arr: [i16; 16]) -> Self {
+        Self(unsafe { _mm256_loadu_si256(arr.as_ptr() as *const __m256i) })
+    }
+
+    #[inline(always)]
+    pub fn to_array(self) -> [i16; 16] {
+        let mut arr = [0i16; 16];
+        unsafe { _mm256_storeu_si256(arr.as_mut_ptr() as *mut __m256i, self.0) };
+        arr
+    }
+
+    #[inline(always)]
+    pub fn copy_to_slice(self, s: &mut [i16]) {
+        assert!(s.len() >= 16);
+        unsafe { _mm256_storeu_si256(s.as_mut_ptr() as *mut __m256i, self.0) };
+    }
+
+    #[inline(always)]
+    pub fn add(self, other: Self) -> Self {
+        Self(unsafe { _mm256_add_epi16(self.0, other.0) })
+    }
+
+    #[inline(always)]
+    pub fn sub(self, other: Self) -> Self {
+        Self(unsafe { _mm256_sub_epi16(self.0, other.0) })
+    }
+
+    #[inline(always)]
+    pub fn min(self, other: Self) -> Self {
+        Self(unsafe { _mm256_min_epi16(self.0, other.0) })
+    }
+
+    #[inline(always)]
+    pub fn max(self, other: Self) -> Self {
+        Self(unsafe { _mm256_max_epi16(self.0, other.0) })
+    }
+
+    /// Compare-greater-than: returns 16-bit mask via packed-word movemask.
+    /// Bit i set where self[i] > other[i].
+    #[inline(always)]
+    pub fn cmp_gt(self, other: Self) -> u16 {
+        unsafe {
+            // _mm256_cmpgt_epi16 produces 16-bit lanes of all-ones / all-zeros.
+            // Pack to bytes (signed sat), then use movemask_epi8 — needs a
+            // permute to undo the per-128-bit packing that packs_epi16 does.
+            let cmp = _mm256_cmpgt_epi16(self.0, other.0);
+            let packed = _mm256_packs_epi16(cmp, _mm256_setzero_si256());
+            let perm = _mm256_permute4x64_epi64(packed, 0b0000_1000);
+            let mask32 = _mm256_movemask_epi8(perm) as u32;
+            (mask32 & 0xFFFF) as u16
+        }
+    }
+}
+
+impl Add for I16x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn add(self, rhs: Self) -> Self { Self(unsafe { _mm256_add_epi16(self.0, rhs.0) }) }
+}
+impl Sub for I16x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn sub(self, rhs: Self) -> Self { Self(unsafe { _mm256_sub_epi16(self.0, rhs.0) }) }
+}
+impl AddAssign for I16x16 {
+    #[inline(always)]
+    fn add_assign(&mut self, rhs: Self) { self.0 = unsafe { _mm256_add_epi16(self.0, rhs.0) }; }
+}
+impl SubAssign for I16x16 {
+    #[inline(always)]
+    fn sub_assign(&mut self, rhs: Self) { self.0 = unsafe { _mm256_sub_epi16(self.0, rhs.0) }; }
+}
+impl fmt::Debug for I16x16 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "I16x16({:?})", &self.to_array()[..])
+    }
+}
+impl PartialEq for I16x16 {
+    fn eq(&self, other: &Self) -> bool { self.to_array() == other.to_array() }
+}
+
+// ============================================================================
 // AVX2 wrapper types — 256-bit (F32x8, F64x4)
 // ============================================================================
 // Same pattern as AVX-512 wrappers above. Used by simd_avx2.rs when
@@ -1805,6 +2190,16 @@ pub type u64x8 = U64x8;
 pub type f32x8 = F32x8;
 #[allow(non_camel_case_types)]
 pub type f64x4 = F64x4;
+
+// I8/I16 SIMD aliases
+#[allow(non_camel_case_types)]
+pub type i8x64 = I8x64;
+#[allow(non_camel_case_types)]
+pub type i8x32 = I8x32;
+#[allow(non_camel_case_types)]
+pub type i16x32 = I16x32;
+#[allow(non_camel_case_types)]
+pub type i16x16 = I16x16;
 
 // ============================================================================
 // BF16 conversion wrappers — AVX-512 BF16 hardware instructions
@@ -3183,5 +3578,181 @@ mod tier3_tests {
     fn u16x32_reduce_sum() {
         let v = U16x32::splat(10);
         assert_eq!(v.reduce_sum(), 320); // 32 × 10
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// I8/I16 SIMD tests — verify add/sub/min/max/cmp_gt against scalar
+//
+// On hosts without target_feature avx512f at compile time, the types in
+// crate::simd come from `simd_avx2.rs` (scalar arrays for I8x64/I16x32) and
+// `simd_avx512.rs` (AVX2 intrinsics for I8x32/I16x16). These tests exercise
+// whichever path the linker selected.
+// ────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod int_simd_tests {
+    use crate::simd::{I8x32, I8x64, I16x16, I16x32};
+
+    #[test]
+    fn i8x64_add_pair_to_constant() {
+        // [1..=64] + [64..=1] = [65; 64]
+        let mut a = [0i8; 64];
+        let mut b = [0i8; 64];
+        for i in 0..64 {
+            a[i] = (i + 1) as i8;
+            b[i] = (64 - i) as i8;
+        }
+        let va = I8x64::from_slice(&a);
+        let vb = I8x64::from_slice(&b);
+        let vc = va.add(vb);
+        let mut out = [0i8; 64];
+        vc.copy_to_slice(&mut out);
+        for i in 0..64 {
+            assert_eq!(out[i], 65, "i8x64 add lane {} = {}", i, out[i]);
+        }
+    }
+
+    #[test]
+    fn i8x64_sub_min_max_boundary() {
+        // Boundary values: -128 (i8::MIN) and 127 (i8::MAX).
+        let a = I8x64::splat(127);
+        let b = I8x64::splat(-128);
+        let mx = a.max(b);
+        assert!(mx.to_array().iter().all(|&v| v == 127));
+        let mn = a.min(b);
+        assert!(mn.to_array().iter().all(|&v| v == -128));
+        let zero = a.sub(I8x64::splat(127));
+        assert!(zero.to_array().iter().all(|&v| v == 0));
+    }
+
+    #[test]
+    fn i8x64_cmp_gt_bitmask() {
+        let mut a = [0i8; 64];
+        for i in 0..64 {
+            a[i] = (i as i32 - 32) as i8;
+        }
+        let va = I8x64::from_slice(&a);
+        let vb = I8x64::splat(0);
+        let mask = va.cmp_gt(vb);
+        let mut expected: u64 = 0;
+        for i in 0..64 {
+            if a[i] > 0 {
+                expected |= 1u64 << i;
+            }
+        }
+        assert_eq!(mask, expected, "i8x64 cmp_gt mask");
+    }
+
+    #[test]
+    fn i8x32_add_round_trip() {
+        let mut a = [0i8; 32];
+        let mut b = [0i8; 32];
+        for i in 0..32 {
+            a[i] = (i + 1) as i8;
+            b[i] = (32 - i) as i8;
+        }
+        let va = I8x32::from_slice(&a);
+        let vb = I8x32::from_slice(&b);
+        let vc = va.add(vb);
+        let out = vc.to_array();
+        for i in 0..32 {
+            assert_eq!(out[i], 33, "i8x32 add lane {} = {}", i, out[i]);
+        }
+    }
+
+    #[test]
+    fn i8x32_cmp_gt_bitmask() {
+        let mut a = [0i8; 32];
+        for i in 0..32 {
+            a[i] = (i as i32 - 16) as i8;
+        }
+        let va = I8x32::from_slice(&a);
+        let vb = I8x32::splat(0);
+        let mask = va.cmp_gt(vb);
+        let mut expected: u32 = 0;
+        for i in 0..32 {
+            if a[i] > 0 {
+                expected |= 1u32 << i;
+            }
+        }
+        assert_eq!(mask, expected, "i8x32 cmp_gt mask");
+    }
+
+    #[test]
+    fn i16x32_add_and_boundary() {
+        let a = I16x32::splat(i16::MAX);
+        let b = I16x32::splat(1);
+        let c = a.add(b);
+        // i16::MAX + 1 wraps to i16::MIN under wrapping add.
+        assert!(c.to_array().iter().all(|&v| v == i16::MIN));
+
+        let zero = I16x32::splat(0);
+        let bigneg = I16x32::splat(i16::MIN);
+        let mx = a.max(bigneg);
+        assert!(mx.to_array().iter().all(|&v| v == i16::MAX));
+        let mn = a.min(zero);
+        assert!(mn.to_array().iter().all(|&v| v == 0));
+    }
+
+    #[test]
+    fn i16x32_cmp_gt_bitmask() {
+        let mut a = [0i16; 32];
+        for i in 0..32 {
+            a[i] = (i as i16) - 16;
+        }
+        let va = I16x32::from_slice(&a);
+        let vb = I16x32::splat(0);
+        let mask = va.cmp_gt(vb);
+        let mut expected: u32 = 0;
+        for i in 0..32 {
+            if a[i] > 0 {
+                expected |= 1u32 << i;
+            }
+        }
+        assert_eq!(mask, expected);
+    }
+
+    #[test]
+    fn i16x16_add_round_trip_and_min() {
+        let a = I16x16::from_array([
+            -100, -50, 0, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200,
+        ]);
+        let b = I16x16::splat(10);
+        let c = a.add(b);
+        let exp: [i16; 16] = [
+            -90, -40, 10, 60, 110, 210, 310, 410, 510, 610, 710, 810, 910, 1010, 1110, 1210,
+        ];
+        assert_eq!(c.to_array(), exp);
+
+        let mn = a.min(I16x16::splat(0));
+        let exp_min: [i16; 16] = [-100, -50, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert_eq!(mn.to_array(), exp_min);
+    }
+
+    #[test]
+    fn i16x16_cmp_gt_bitmask() {
+        let mut a = [0i16; 16];
+        for i in 0..16 {
+            a[i] = (i as i16) - 8;
+        }
+        let va = I16x16::from_slice(&a);
+        let vb = I16x16::splat(0);
+        let mask = va.cmp_gt(vb);
+        let mut expected: u16 = 0;
+        for i in 0..16 {
+            if a[i] > 0 {
+                expected |= 1u16 << i;
+            }
+        }
+        assert_eq!(mask, expected, "i16x16 cmp_gt mask");
+    }
+
+    #[test]
+    fn lane_constants_match_widths() {
+        assert_eq!(I8x64::LANES, 64);
+        assert_eq!(I8x32::LANES, 32);
+        assert_eq!(I16x32::LANES, 32);
+        assert_eq!(I16x16::LANES, 16);
     }
 }
