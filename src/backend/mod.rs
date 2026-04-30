@@ -16,7 +16,7 @@ pub(crate) mod kernels_avx512;
 
 
 #[cfg(feature = "intel-mkl")]
-mod mkl;
+pub mod mkl;
 #[cfg(feature = "openblas")]
 mod openblas;
 
