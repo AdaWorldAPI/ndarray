@@ -229,6 +229,33 @@ pub fn quantize_f32_to_i8(data: &[f32]) -> (Vec<i8>, QuantParams) {
     (quantized, QuantParams { scale, zero_point: 0, min_val, max_val })
 }
 
+/// Dequantize i8 codes back to f32 using the [`QuantParams`] from
+/// [`quantize_f32_to_i8`].
+///
+/// ndarray's symmetric i8 quantization stores `code = round(val / scale)`,
+/// so dequantization is `val ≈ code * scale`. Returns up to `n` values
+/// (extra trailing codes are ignored).
+///
+/// # Example
+///
+/// ```
+/// use ndarray::hpc::quantized::{quantize_f32_to_i8, dequantize_i8_to_f32};
+///
+/// let data = vec![1.0f32, -1.0, 0.5, -0.5];
+/// let (codes, params) = quantize_f32_to_i8(&data);
+/// let recovered = dequantize_i8_to_f32(&codes, &params, data.len());
+/// for (a, b) in data.iter().zip(recovered.iter()) {
+///     assert!((a - b).abs() < 0.05);
+/// }
+/// ```
+pub fn dequantize_i8_to_f32(codes: &[i8], params: &QuantParams, n: usize) -> Vec<f32> {
+    codes
+        .iter()
+        .take(n)
+        .map(|&c| c as f32 * params.scale)
+        .collect()
+}
+
 /// Per-channel i8 quantization (per row).
 pub fn quantize_per_channel_i8(
     data: &[f32],
@@ -374,6 +401,57 @@ pub fn dequantize_i4_to_f32(packed: &[u8], params: &QuantParams, len: usize) -> 
     result
 }
 
+/// 2-bit symmetric quantization: maps values to `{-1, 0, +1}` packed 4 per byte.
+///
+/// Encoding: 2-bit signed value per element, stored in LSB-first order within
+/// each byte. Bit pattern: `0b11 = -1`, `0b00 = 0`, `0b01 = +1`. Output
+/// length is `ceil(data.len() / 4)` bytes. Use [`dequantize_i2_to_f32`] for
+/// the inverse, supplying the original element count.
+///
+/// `params.scale` is the original `abs_max` (not `abs_max / Q_RANGE`),
+/// because the quantized magnitudes are already `{-1, 0, +1}`.
+pub fn quantize_f32_to_i2(data: &[f32]) -> (Vec<u8>, QuantParams) {
+    let min_val = data.iter().fold(f32::INFINITY, |a, &b| a.min(b));
+    let max_val = data.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+    let abs_max = min_val.abs().max(max_val.abs());
+    let scale = if abs_max > 0.0 { 1.0 / abs_max } else { 1.0 };
+
+    let mut packed = vec![0u8; (data.len() + 3) / 4];
+    for (i, &v) in data.iter().enumerate() {
+        let q = (v * scale).round().clamp(-1.0, 1.0) as i8;
+        let bits = (q & 0x03) as u8;
+        packed[i / 4] |= bits << ((i % 4) * 2);
+    }
+    (
+        packed,
+        QuantParams {
+            scale: abs_max,
+            zero_point: 0,
+            min_val,
+            max_val,
+        },
+    )
+}
+
+/// Dequantize 2-bit packed codes back to f32.
+///
+/// Inverse of [`quantize_f32_to_i2`]. `n` is the original element count
+/// (the packed buffer is implicitly padded to a byte boundary).
+pub fn dequantize_i2_to_f32(packed: &[u8], params: &QuantParams, n: usize) -> Vec<f32> {
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let byte = packed[i / 4];
+        let bits = (byte >> ((i % 4) * 2)) & 0x03;
+        let val = match bits {
+            0b11 => -1.0f32,
+            0b01 => 1.0,
+            _ => 0.0,
+        };
+        out.push(val * params.scale);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,5 +520,40 @@ mod tests {
         for (orig, rec) in data.iter().zip(recovered.iter()) {
             assert!((orig - rec).abs() < 0.5, "i4 roundtrip: {} vs {}", orig, rec);
         }
+    }
+
+    #[test]
+    fn test_i8_roundtrip() {
+        let data = vec![1.0f32, -1.0, 0.5, -0.5, 0.25, -0.25];
+        let (codes, params) = quantize_f32_to_i8(&data);
+        let recovered = dequantize_i8_to_f32(&codes, &params, data.len());
+        assert_eq!(recovered.len(), data.len());
+        for (orig, rec) in data.iter().zip(recovered.iter()) {
+            assert!((orig - rec).abs() < 0.02, "i8 roundtrip: {} vs {}", orig, rec);
+        }
+    }
+
+    #[test]
+    fn test_i2_roundtrip() {
+        // Values cluster near {-1, 0, +1} after scaling.
+        let data = vec![1.0f32, -1.0, 0.0, 1.0, -1.0, 0.0, 1.0, -1.0];
+        let (packed, params) = quantize_f32_to_i2(&data);
+        assert_eq!(packed.len(), 2); // ceil(8/4) = 2 bytes
+        let recovered = dequantize_i2_to_f32(&packed, &params, data.len());
+        assert_eq!(recovered.len(), data.len());
+        for (orig, rec) in data.iter().zip(recovered.iter()) {
+            assert!((orig - rec).abs() < 1e-5, "i2 roundtrip: {} vs {}", orig, rec);
+        }
+    }
+
+    #[test]
+    fn test_i2_packing_layout() {
+        // 4 values per byte, LSB first.
+        let data = vec![1.0f32, -1.0, 0.0, 1.0]; // bits: 01, 11, 00, 01
+        let (packed, _) = quantize_f32_to_i2(&data);
+        assert_eq!(packed.len(), 1);
+        // byte = (01) | (11 << 2) | (00 << 4) | (01 << 6)
+        //      = 0b01_00_11_01 = 0x4D
+        assert_eq!(packed[0], 0b01_00_11_01);
     }
 }

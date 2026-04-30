@@ -459,8 +459,11 @@ pub fn train_hybrid(
 ///
 /// For 16D subvectors (CAM-PQ subspace dimension), this is one F32x16
 /// load-subtract-multiply-reduce. Consumer never sees hardware details.
+///
+/// Exposed for downstream HPC consumers (e.g. tensor codecs) that need
+/// the same SIMD-accelerated metric used by the CAM-PQ codec internally.
 #[inline(always)]
-fn squared_l2(a: &[f32], b: &[f32]) -> f32 {
+pub fn squared_l2(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len());
     let n = a.len();
 
@@ -515,10 +518,15 @@ fn jaccard_similarity(a: &[String], b: &[String]) -> f32 {
     if union == 0 { 1.0 } else { intersection as f32 / union as f32 }
 }
 
-/// Simple k-means clustering.
+/// Simple k-means clustering (Lloyd's algorithm with farthest-first seeding).
 ///
-/// Returns `k` centroid vectors of length `dim`.
-fn kmeans(data: &[Vec<f32>], k: usize, dim: usize, iterations: usize) -> Vec<Vec<f32>> {
+/// Returns `k` centroid vectors of length `dim`. Empty `data` or `k == 0`
+/// returns `k` zero centroids; if `data.len() < k`, the effective number of
+/// centroids is clamped to `data.len()`.
+///
+/// Exposed for downstream HPC consumers (e.g. tensor codebooks). Uses the
+/// same SIMD-accelerated [`squared_l2`] as the CAM-PQ codec.
+pub fn kmeans(data: &[Vec<f32>], k: usize, dim: usize, iterations: usize) -> Vec<Vec<f32>> {
     let n = data.len();
     if n == 0 || k == 0 {
         return vec![vec![0.0; dim]; k];

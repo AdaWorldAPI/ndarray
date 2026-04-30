@@ -116,6 +116,45 @@ pub fn ifft_f64(data: &mut [f64], n: usize) {
     }
 }
 
+/// Walsh-Hadamard Transform (in-place, unnormalized).
+///
+/// Standard butterfly algorithm; companion to [`fft_f32`]. The transform is
+/// its own inverse up to scaling — running `wht_f32` twice on the same data
+/// multiplies every element by `n`. Divide by `n` after a round-trip if a
+/// normalized inverse is desired.
+///
+/// `data.len()` must be a power of two.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::hpc::fft::wht_f32;
+///
+/// let mut data = vec![1.0f32, 0.0, 0.0, 0.0];
+/// wht_f32(&mut data);
+/// // DC impulse → all bins equal 1.0
+/// for &v in &data { assert!((v - 1.0).abs() < 1e-6); }
+/// ```
+pub fn wht_f32(data: &mut [f32]) {
+    let n = data.len();
+    assert!(
+        n.is_power_of_two(),
+        "WHT requires power-of-two length, got {n}"
+    );
+    let mut h = 1;
+    while h < n {
+        for i in (0..n).step_by(h * 2) {
+            for j in i..i + h {
+                let x = data[j];
+                let y = data[j + h];
+                data[j] = x + y;
+                data[j + h] = x - y;
+            }
+        }
+        h *= 2;
+    }
+}
+
 /// Real-to-complex FFT (f32): input is n real values, output is n/2+1 complex pairs.
 ///
 /// Returns interleaved complex output: [re0, im0, re1, im1, ..., re_{n/2}, im_{n/2}]
@@ -205,5 +244,52 @@ mod tests {
         assert_eq!(output.len(), 6);
         // DC component: sum = 10
         assert!((output[0] - 10.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_wht_zeros() {
+        let mut data = vec![0.0f32; 8];
+        wht_f32(&mut data);
+        for &v in &data {
+            assert_eq!(v, 0.0);
+        }
+    }
+
+    #[test]
+    fn test_wht_dc_impulse() {
+        // [1, 0, 0, 0, ...] → all-ones
+        let mut data = vec![0.0f32; 8];
+        data[0] = 1.0;
+        wht_f32(&mut data);
+        for &v in &data {
+            assert!((v - 1.0).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn test_wht_round_trip() {
+        // Running WHT twice scales by n; dividing by n recovers the input.
+        let original = vec![1.0f32, -2.0, 3.0, -4.0, 5.0, -6.0, 7.0, -8.0];
+        let mut data = original.clone();
+        wht_f32(&mut data);
+        wht_f32(&mut data);
+        let n = original.len() as f32;
+        for (a, b) in data.iter().zip(original.iter()) {
+            assert!((a / n - b).abs() < 1e-5, "round-trip mismatch: {a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn test_wht_known_pair() {
+        // WHT of [1, 1] = [2, 0]; WHT of [1, -1] = [0, 2]
+        let mut a = vec![1.0f32, 1.0];
+        wht_f32(&mut a);
+        assert!((a[0] - 2.0).abs() < 1e-6);
+        assert!(a[1].abs() < 1e-6);
+
+        let mut b = vec![1.0f32, -1.0];
+        wht_f32(&mut b);
+        assert!(b[0].abs() < 1e-6);
+        assert!((b[1] - 2.0).abs() < 1e-6);
     }
 }
