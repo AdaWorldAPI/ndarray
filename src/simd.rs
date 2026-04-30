@@ -237,7 +237,7 @@ pub use crate::simd_avx2::{
 // ============================================================================
 
 #[cfg(not(target_arch = "x86_64"))]
-mod scalar {
+pub(crate) mod scalar {
     use core::fmt;
     use core::ops::{
         Add, AddAssign, BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign,
@@ -1014,7 +1014,25 @@ mod scalar {
     #[allow(non_camel_case_types)] pub type f64x4 = F64x4;
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+// aarch64: F32x16/F64x8 come from the real NEON paired-load implementation
+// in simd_neon::aarch64_simd (verified 2026-04-30, agent A7 — burn parity item 9).
+// Integer + 256-bit float types still come from the scalar fallback; they're
+// not on the critical path for f32 BLAS-1 / VML kernels.
+#[cfg(target_arch = "aarch64")]
+pub use crate::simd_neon::aarch64_simd::{
+    F32x16, F64x8, F32Mask16, F64Mask8,
+    f32x16, f64x8,
+};
+#[cfg(target_arch = "aarch64")]
+pub use scalar::{
+    U8x64, I32x16, I64x8, U16x32, U32x16, U64x8,
+    F32x8, F64x4,
+    u8x64, i32x16, i64x8, u32x16, u64x8,
+    f32x8, f64x4,
+};
+
+// Other non-x86 targets (wasm, riscv, etc.): full scalar fallback.
+#[cfg(all(not(target_arch = "x86_64"), not(target_arch = "aarch64")))]
 pub use scalar::{
     F32x16, F64x8, U8x64, I32x16, I64x8, U16x32, U32x16, U64x8,
     F32x8, F64x4,
