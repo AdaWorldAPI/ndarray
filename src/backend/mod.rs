@@ -203,3 +203,78 @@ pub fn cblas_dgemm(
 ) {
     gemm_f64(m, n, k, alpha, a, lda, b, ldb, beta, c, ldc)
 }
+
+// ─── Unified INT8 / BF16 GEMM dispatch ───────────────────────────
+//
+// Auto-dispatched: AMX > VNNI > scalar. Consumer writes one call,
+// gets the best available hardware path.
+
+/// INT8 GEMM: C = A × B where A is u8, B is i8, C is i32.
+///
+/// Dispatch: AMX TDPBUSD → VNNI VPDPBUSD → scalar.
+/// Same signature across all paths.
+#[inline]
+pub fn gemm_i8(
+    a: &[u8], b: &[i8], c: &mut [i32],
+    m: usize, n: usize, k: usize,
+) {
+    // VNNI path (Ice Lake, Sapphire Rapids, Zen 4) — includes AMX fallback
+    #[cfg(feature = "std")]
+    {
+        crate::hpc::vnni_gemm::int8_gemm_vnni(a, b, c, m, n, k);
+        return;
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        let _ = (a, b, c, m, n, k);
+        panic!("INT8 GEMM requires std feature");
+    }
+}
+
+/// BF16 GEMM: C (f32) = A (BF16) × B (BF16), with f32 accumulation.
+///
+/// Dispatch: AMX TDPBF16PS → scalar tiled bf16_gemm_f32.
+/// Input: raw u16 slices representing BF16 values (same layout as
+/// `ndarray::hpc::quantized::BF16`).
+#[inline]
+pub fn gemm_bf16(
+    a: &[u16], b: &[u16], c: &mut [f32],
+    m: usize, n: usize, k: usize,
+) {
+    // Reinterpret u16 slices as BF16 slices (repr(transparent))
+    #[cfg(feature = "std")]
+    {
+        let a_bf16: &[crate::hpc::quantized::BF16] = unsafe {
+            // SAFETY: BF16 is #[repr(transparent)] over u16
+            core::slice::from_raw_parts(a.as_ptr() as *const crate::hpc::quantized::BF16, a.len())
+        };
+        let b_bf16: &[crate::hpc::quantized::BF16] = unsafe {
+            core::slice::from_raw_parts(b.as_ptr() as *const crate::hpc::quantized::BF16, b.len())
+        };
+        crate::hpc::quantized::bf16_gemm_f32(a_bf16, b_bf16, c, m, n, k, 1.0, 0.0);
+        return;
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        let _ = (a, b, c, m, n, k);
+        panic!("BF16 GEMM requires std feature");
+    }
+}
+
+/// CBLAS-compat alias for INT8 GEMM.
+#[inline]
+pub fn cblas_gemm_s8s8s32(
+    a: &[u8], b: &[i8], c: &mut [i32],
+    m: usize, n: usize, k: usize,
+) {
+    gemm_i8(a, b, c, m, n, k)
+}
+
+/// CBLAS-compat alias for BF16 GEMM.
+#[inline]
+pub fn cblas_gemm_bf16bf16f32(
+    a: &[u16], b: &[u16], c: &mut [f32],
+    m: usize, n: usize, k: usize,
+) {
+    gemm_bf16(a, b, c, m, n, k)
+}
