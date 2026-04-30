@@ -5,38 +5,113 @@
 //!
 //! When `std::simd` stabilizes: swap this file. Zero consumer changes.
 
+#[cfg(feature = "std")]
 use std::sync::LazyLock;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
+#[repr(u8)]
 enum Tier {
-    Avx512,
-    Avx2,
+    Avx512 = 1,
+    Avx2 = 2,
     /// ARM NEON 128-bit + dotprod (Pi 5 / A76+). 4× int8 throughput.
-    NeonDotProd,
+    NeonDotProd = 3,
     /// ARM NEON 128-bit baseline (Pi 3/4 / A53/A72). Pure float SIMD.
-    Neon,
-    Scalar,
+    Neon = 4,
+    Scalar = 5,
 }
 
-static TIER: LazyLock<Tier> = LazyLock::new(|| {
-    #[cfg(target_arch = "x86_64")]
+impl Tier {
+    /// Inverse of `as u8` — used by the no_std `critical_section`
+    /// polyfill below so we can stash a `Tier` into an `AtomicU8`.
+    #[allow(dead_code)]
+    #[inline(always)]
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Tier::Avx512,
+            2 => Tier::Avx2,
+            3 => Tier::NeonDotProd,
+            4 => Tier::Neon,
+            _ => Tier::Scalar,
+        }
+    }
+}
+
+/// Detect the best SIMD tier the current CPU supports.
+///
+/// Pulled out of the original `LazyLock::new` closure so it can be
+/// reused by both the `std` and `no_std` cache implementations below.
+#[allow(dead_code)]
+fn detect_tier() -> Tier {
+    #[cfg(all(feature = "std", target_arch = "x86_64"))]
     {
         if is_x86_feature_detected!("avx512f") { return Tier::Avx512; }
         if is_x86_feature_detected!("avx2") { return Tier::Avx2; }
     }
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(feature = "std", target_arch = "aarch64"))]
     {
         // NEON is mandatory on aarch64 — always available.
         // dotprod (ARMv8.2+) distinguishes Pi 5 from Pi 3/4.
         if std::arch::is_aarch64_feature_detected!("dotprod") { return Tier::NeonDotProd; }
         return Tier::Neon;
     }
+    #[cfg(all(not(feature = "std"), target_arch = "aarch64"))]
+    {
+        // No runtime feature detection available without std — fall back
+        // to whatever the compile-time target features advertise.
+        #[cfg(target_feature = "dotprod")]
+        return Tier::NeonDotProd;
+        #[cfg(not(target_feature = "dotprod"))]
+        return Tier::Neon;
+    }
+    #[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
+    {
+        // No `is_x86_feature_detected!` without std — pick the highest
+        // tier whose features were enabled at compile time.
+        #[cfg(target_feature = "avx512f")]
+        return Tier::Avx512;
+        #[cfg(all(not(target_feature = "avx512f"), target_feature = "avx2"))]
+        return Tier::Avx2;
+    }
     #[allow(unreachable_code)]
     Tier::Scalar
-});
+}
 
+// ── std path: original `LazyLock`-backed cache ───────────────────────
+#[cfg(feature = "std")]
+static TIER: LazyLock<Tier> = LazyLock::new(detect_tier);
+
+#[cfg(feature = "std")]
 #[inline(always)]
+#[allow(dead_code)]
 fn tier() -> Tier { *TIER }
+
+// ── no_std path: portable-atomic + critical-section polyfill ────────
+#[cfg(all(not(feature = "std"), feature = "portable-atomic-critical-section"))]
+use portable_atomic::{AtomicU8, Ordering};
+
+#[cfg(all(not(feature = "std"), feature = "portable-atomic-critical-section"))]
+static TIER_INIT: AtomicU8 = AtomicU8::new(0);
+
+#[cfg(all(not(feature = "std"), feature = "portable-atomic-critical-section"))]
+#[inline]
+#[allow(dead_code)]
+fn tier() -> Tier {
+    let cached = TIER_INIT.load(Ordering::Relaxed);
+    if cached != 0 {
+        return Tier::from_u8(cached);
+    }
+    critical_section::with(|_| {
+        let detected = detect_tier();
+        TIER_INIT.store(detected as u8, Ordering::Relaxed);
+        detected
+    })
+}
+
+// ── no_std path with no polyfill: compile-time fallback ──────────────
+#[cfg(all(not(feature = "std"), not(feature = "portable-atomic-critical-section")))]
+#[inline(always)]
+#[allow(dead_code)]
+fn tier() -> Tier { detect_tier() }
 
 // BF16 tier detection happens inline in bf16_to_f32_batch() via
 // is_x86_feature_detected!("avx512bf16") — no LazyLock needed.
