@@ -39,7 +39,8 @@ pub trait HdcOps {
 }
 
 impl<S> HdcOps for ArrayBase<S, Ix1>
-where S: Data<Elem = u8>
+where
+    S: Data<Elem = u8>,
 {
     fn hdc_bind(&self, other: &Self) -> Array<u8, Ix1> {
         let n = self.len().min(other.len());

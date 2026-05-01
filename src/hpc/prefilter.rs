@@ -187,12 +187,7 @@ pub fn top_k_rows_by_norm(data: &[f32], rows: usize, cols: usize, k: usize) -> V
 /// * `k` - Shared dimension
 /// * `prune_fraction` - 0.0-1.0, e.g. 0.9 = prune 90%, keep top 10%
 pub fn pruned_gemm_rows(
-    a: &[f32],
-    b: &[f32],
-    m: usize,
-    n: usize,
-    k: usize,
-    prune_fraction: f32,
+    a: &[f32], b: &[f32], m: usize, n: usize, k: usize, prune_fraction: f32,
 ) -> (Vec<usize>, Vec<f32>) {
     let norms = approx_row_norms_f32(a, m, k);
 
@@ -255,11 +250,7 @@ pub fn pruned_gemm_rows(
 /// assert_eq!(results[0].1, 0); // distance 0
 /// ```
 pub fn approx_hamming_candidates(
-    query: &[u8],
-    database: &[u8],
-    bytes_per_vec: usize,
-    n_vectors: usize,
-    top_k: usize,
+    query: &[u8], database: &[u8], bytes_per_vec: usize, n_vectors: usize, top_k: usize,
 ) -> Vec<(usize, u32)> {
     assert!(database.len() >= n_vectors * bytes_per_vec);
     assert!(query.len() >= bytes_per_vec);
@@ -268,10 +259,7 @@ pub fn approx_hamming_candidates(
 
     for v in 0..n_vectors {
         let vec_data = &database[v * bytes_per_vec..v * bytes_per_vec + bytes_per_vec];
-        let dist = super::bitwise::hamming_distance_raw(
-            &query[..bytes_per_vec],
-            vec_data,
-        ) as u32;
+        let dist = super::bitwise::hamming_distance_raw(&query[..bytes_per_vec], vec_data) as u32;
         distances.push((v, dist));
     }
 
@@ -348,22 +336,11 @@ mod tests {
         let (mean, std) = approx_mean_std_f32(&data);
 
         let exact_mean: f32 = data.iter().sum::<f32>() / data.len() as f32;
-        let exact_var: f32 =
-            data.iter().map(|&x| (x - exact_mean).powi(2)).sum::<f32>() / data.len() as f32;
+        let exact_var: f32 = data.iter().map(|&x| (x - exact_mean).powi(2)).sum::<f32>() / data.len() as f32;
         let exact_std = exact_var.sqrt();
 
-        assert!(
-            (mean - exact_mean).abs() < exact_mean.abs() * 0.02,
-            "mean: {} vs exact {}",
-            mean,
-            exact_mean
-        );
-        assert!(
-            (std - exact_std).abs() < exact_std * 0.05,
-            "std: {} vs exact {}",
-            std,
-            exact_std
-        );
+        assert!((mean - exact_mean).abs() < exact_mean.abs() * 0.02, "mean: {} vs exact {}", mean, exact_mean);
+        assert!((std - exact_std).abs() < exact_std * 0.05, "std: {} vs exact {}", std, exact_std);
     }
 
     #[test]
@@ -415,9 +392,7 @@ mod tests {
 
     #[test]
     fn test_approx_column_std() {
-        let data = vec![
-            1.0, 10.0, 0.0, 2.0, 20.0, 0.0, 3.0, 30.0, 0.0, 4.0, 40.0, 0.0,
-        ];
+        let data = vec![1.0, 10.0, 0.0, 2.0, 20.0, 0.0, 3.0, 30.0, 0.0, 4.0, 40.0, 0.0];
         let stds = approx_column_std(&data, 4, 3);
         assert!(stds[0] > 0.5 && stds[0] < 2.0, "col0 std={}", stds[0]);
         assert!(stds[1] > 8.0 && stds[1] < 15.0, "col1 std={}", stds[1]);

@@ -98,12 +98,7 @@ impl SpatialHash {
     /// in `positions` are considered. Returns `(entity_id, squared_distance)`
     /// sorted ascending by distance.
     pub fn query_radius(
-        &self,
-        x: f32,
-        y: f32,
-        z: f32,
-        radius: f32,
-        positions: &HashMap<u32, [f32; 3]>,
+        &self, x: f32, y: f32, z: f32, radius: f32, positions: &HashMap<u32, [f32; 3]>,
     ) -> Vec<(u32, f32)> {
         let radius_sq = radius * radius;
         let query = [x, y, z];
@@ -144,14 +139,7 @@ impl SpatialHash {
     /// Uses expanding-ring search: starts at the cell containing the query
     /// point and expands outward until at least K candidates are found, then
     /// refines. Returns `(entity_id, squared_distance)` sorted ascending.
-    pub fn query_knn(
-        &self,
-        x: f32,
-        y: f32,
-        z: f32,
-        k: usize,
-        positions: &HashMap<u32, [f32; 3]>,
-    ) -> Vec<(u32, f32)> {
+    pub fn query_knn(&self, x: f32, y: f32, z: f32, k: usize, positions: &HashMap<u32, [f32; 3]>) -> Vec<(u32, f32)> {
         if k == 0 {
             return Vec::new();
         }
@@ -196,9 +184,7 @@ impl SpatialHash {
             // is closer than the nearest possible point in the next ring.
             // If so, no further ring can improve the result.
             if candidates.len() >= k {
-                candidates.sort_by(|a, b| {
-                    a.1.partial_cmp(&b.1).unwrap_or(core::cmp::Ordering::Equal)
-                });
+                candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(core::cmp::Ordering::Equal));
                 let worst = candidates[k - 1].1;
                 // The nearest point in ring+1 is at least (ring * cell_size) away.
                 let next_ring_min = (ring as f32) * self.cell_size;
@@ -221,12 +207,7 @@ impl SpatialHash {
     /// Collects candidate positions from relevant cells, then uses SIMD to
     /// compute squared distances and filter in bulk.
     pub fn query_radius_simd(
-        &self,
-        x: f32,
-        y: f32,
-        z: f32,
-        radius: f32,
-        positions: &HashMap<u32, [f32; 3]>,
+        &self, x: f32, y: f32, z: f32, radius: f32, positions: &HashMap<u32, [f32; 3]>,
     ) -> Vec<(u32, f32)> {
         let radius_sq = radius * radius;
         let query = [x, y, z];
@@ -286,11 +267,7 @@ impl SpatialHash {
 /// Batch squared-distance filter: compute squared distances from `query` to
 /// each position in `candidates`, returning `(index, sq_dist)` for entries
 /// within `radius_sq`.
-fn batch_sq_dist_filter(
-    query: [f32; 3],
-    candidates: &[[f32; 3]],
-    radius_sq: f32,
-) -> Vec<(usize, f32)> {
+fn batch_sq_dist_filter(query: [f32; 3], candidates: &[[f32; 3]], radius_sq: f32) -> Vec<(usize, f32)> {
     #[cfg(target_arch = "x86_64")]
     {
         if candidates.len() >= 8 && super::simd_caps::simd_caps().avx2 {
@@ -301,11 +278,7 @@ fn batch_sq_dist_filter(
     batch_sq_dist_scalar(query, candidates, radius_sq)
 }
 
-pub(crate) fn batch_sq_dist_scalar(
-    query: [f32; 3],
-    candidates: &[[f32; 3]],
-    radius_sq: f32,
-) -> Vec<(usize, f32)> {
+pub(crate) fn batch_sq_dist_scalar(query: [f32; 3], candidates: &[[f32; 3]], radius_sq: f32) -> Vec<(usize, f32)> {
     let mut result = Vec::new();
     for (i, pos) in candidates.iter().enumerate() {
         let d2 = sq_dist_f32(query, *pos);
@@ -323,11 +296,7 @@ pub(crate) fn batch_sq_dist_scalar(
 /// Caller must ensure AVX2 is available.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-pub(crate) unsafe fn batch_sq_dist_avx2(
-    query: [f32; 3],
-    candidates: &[[f32; 3]],
-    radius_sq: f32,
-) -> Vec<(usize, f32)> {
+pub(crate) unsafe fn batch_sq_dist_avx2(query: [f32; 3], candidates: &[[f32; 3]], radius_sq: f32) -> Vec<(usize, f32)> {
     use crate::simd::F32x8;
 
     let mut result = Vec::new();
@@ -460,12 +429,7 @@ mod tests {
     #[test]
     fn test_query_radius_basic() {
         let mut sh = SpatialHash::new(10.0);
-        let pts = vec![
-            (0u32, [0.0f32, 0.0, 0.0]),
-            (1, [5.0, 0.0, 0.0]),
-            (2, [20.0, 0.0, 0.0]),
-            (3, [100.0, 0.0, 0.0]),
-        ];
+        let pts = vec![(0u32, [0.0f32, 0.0, 0.0]), (1, [5.0, 0.0, 0.0]), (2, [20.0, 0.0, 0.0]), (3, [100.0, 0.0, 0.0])];
         for &(id, pos) in &pts {
             sh.insert(id, pos[0], pos[1], pos[2]);
         }
@@ -481,11 +445,7 @@ mod tests {
     #[test]
     fn test_query_radius_sorted_by_distance() {
         let mut sh = SpatialHash::new(5.0);
-        let pts = vec![
-            (0u32, [10.0f32, 0.0, 0.0]),
-            (1, [3.0, 0.0, 0.0]),
-            (2, [1.0, 0.0, 0.0]),
-        ];
+        let pts = vec![(0u32, [10.0f32, 0.0, 0.0]), (1, [3.0, 0.0, 0.0]), (2, [1.0, 0.0, 0.0])];
         for &(id, pos) in &pts {
             sh.insert(id, pos[0], pos[1], pos[2]);
         }
@@ -510,12 +470,7 @@ mod tests {
     #[test]
     fn test_knn_basic() {
         let mut sh = SpatialHash::new(10.0);
-        let pts = vec![
-            (0u32, [30.0f32, 0.0, 0.0]),
-            (1, [10.0, 0.0, 0.0]),
-            (2, [20.0, 0.0, 0.0]),
-            (3, [5.0, 0.0, 0.0]),
-        ];
+        let pts = vec![(0u32, [30.0f32, 0.0, 0.0]), (1, [10.0, 0.0, 0.0]), (2, [20.0, 0.0, 0.0]), (3, [5.0, 0.0, 0.0])];
         for &(id, pos) in &pts {
             sh.insert(id, pos[0], pos[1], pos[2]);
         }
@@ -556,7 +511,10 @@ mod tests {
             assert!(
                 (r.1 - b.1).abs() < 1e-3,
                 "knn dist mismatch: spatial_hash=({},{:.2}) brute=({},{:.2})",
-                r.0, r.1, b.0, b.1
+                r.0,
+                r.1,
+                b.0,
+                b.1
             );
         }
     }
@@ -583,10 +541,7 @@ mod tests {
     #[test]
     fn test_negative_coordinates() {
         let mut sh = SpatialHash::new(10.0);
-        let pts = vec![
-            (0u32, [-5.0f32, -5.0, -5.0]),
-            (1, [5.0, 5.0, 5.0]),
-        ];
+        let pts = vec![(0u32, [-5.0f32, -5.0, -5.0]), (1, [5.0, 5.0, 5.0])];
         for &(id, pos) in &pts {
             sh.insert(id, pos[0], pos[1], pos[2]);
         }
@@ -606,12 +561,7 @@ mod tests {
     #[test]
     fn test_query_radius_simd_basic() {
         let mut sh = SpatialHash::new(10.0);
-        let pts = vec![
-            (0u32, [0.0f32, 0.0, 0.0]),
-            (1, [5.0, 0.0, 0.0]),
-            (2, [20.0, 0.0, 0.0]),
-            (3, [100.0, 0.0, 0.0]),
-        ];
+        let pts = vec![(0u32, [0.0f32, 0.0, 0.0]), (1, [5.0, 0.0, 0.0]), (2, [20.0, 0.0, 0.0]), (3, [100.0, 0.0, 0.0])];
         for &(id, pos) in &pts {
             sh.insert(id, pos[0], pos[1], pos[2]);
         }
@@ -645,12 +595,7 @@ mod tests {
         assert_eq!(scalar.len(), simd.len(), "result count mismatch");
         for (s, r) in scalar.iter().zip(simd.iter()) {
             assert_eq!(s.0, r.0, "id mismatch");
-            assert!(
-                (s.1 - r.1).abs() < 1e-3,
-                "distance mismatch: scalar={:.4} simd={:.4}",
-                s.1,
-                r.1
-            );
+            assert!((s.1 - r.1).abs() < 1e-3, "distance mismatch: scalar={:.4} simd={:.4}", s.1, r.1);
         }
     }
 

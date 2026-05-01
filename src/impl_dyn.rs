@@ -10,8 +10,7 @@
 use crate::imp_prelude::*;
 
 /// # Methods for Dynamic-Dimensional Arrays
-impl<A> LayoutRef<A, IxDyn>
-{
+impl<A> LayoutRef<A, IxDyn> {
     /// Insert new array axis of length 1 at `axis`, modifying the shape and
     /// strides in-place.
     ///
@@ -28,8 +27,7 @@ impl<A> LayoutRef<A, IxDyn>
     /// assert_eq!(a.shape(), &[2, 1, 3]);
     /// ```
     #[track_caller]
-    pub fn insert_axis_inplace(&mut self, axis: Axis)
-    {
+    pub fn insert_axis_inplace(&mut self, axis: Axis) {
         assert!(axis.index() <= self.ndim());
         self.0.dim = self._dim().insert_axis(axis);
         self.0.strides = self._strides().insert_axis(axis);
@@ -51,16 +49,14 @@ impl<A> LayoutRef<A, IxDyn>
     /// assert_eq!(a.shape(), &[2]);
     /// ```
     #[track_caller]
-    pub fn index_axis_inplace(&mut self, axis: Axis, index: usize)
-    {
+    pub fn index_axis_inplace(&mut self, axis: Axis, index: usize) {
         self.collapse_axis(axis, index);
         self.0.dim = self._dim().remove_axis(axis);
         self.0.strides = self._strides().remove_axis(axis);
     }
 }
 
-impl<S: RawData> ArrayBase<S, IxDyn>
-{
+impl<S: RawData> ArrayBase<S, IxDyn> {
     /// Insert new array axis of length 1 at `axis`, modifying the shape and
     /// strides in-place.
     ///
@@ -77,8 +73,7 @@ impl<S: RawData> ArrayBase<S, IxDyn>
     /// assert_eq!(a.shape(), &[2, 1, 3]);
     /// ```
     #[track_caller]
-    pub fn insert_axis_inplace(&mut self, axis: Axis)
-    {
+    pub fn insert_axis_inplace(&mut self, axis: Axis) {
         self.as_mut().insert_axis_inplace(axis)
     }
 
@@ -98,14 +93,14 @@ impl<S: RawData> ArrayBase<S, IxDyn>
     /// assert_eq!(a.shape(), &[2]);
     /// ```
     #[track_caller]
-    pub fn index_axis_inplace(&mut self, axis: Axis, index: usize)
-    {
+    pub fn index_axis_inplace(&mut self, axis: Axis, index: usize) {
         self.as_mut().index_axis_inplace(axis, index)
     }
 }
 
 impl<A, S> ArrayBase<S, IxDyn>
-where S: Data<Elem = A>
+where
+    S: Data<Elem = A>,
 {
     /// Remove axes of length 1 and return the modified array.
     ///
@@ -128,8 +123,7 @@ where S: Data<Elem = A>
     /// assert_eq!(d.shape(), &[1]);
     /// ```
     #[track_caller]
-    pub fn squeeze(self) -> Self
-    {
+    pub fn squeeze(self) -> Self {
         let mut out = self;
         for axis in (0..out.shape().len()).rev() {
             if out.shape()[axis] == 1 && out.shape().len() > 1 {
@@ -141,13 +135,11 @@ where S: Data<Elem = A>
 }
 
 #[cfg(test)]
-mod tests
-{
+mod tests {
     use crate::{arr1, arr2, arr3};
 
     #[test]
-    fn test_squeeze()
-    {
+    fn test_squeeze() {
         let a = arr3(&[[[1, 2, 3]], [[4, 5, 6]]]).into_dyn();
         assert_eq!(a.shape(), &[2, 1, 3]);
 

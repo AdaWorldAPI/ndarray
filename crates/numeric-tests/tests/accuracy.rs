@@ -23,7 +23,8 @@ use rand_distr::{Distribution, Normal, StandardNormal};
 use approx::{assert_abs_diff_eq, assert_relative_eq};
 
 fn kahan_sum<A>(iter: impl Iterator<Item = A>) -> A
-where A: LinalgScalar
+where
+    A: LinalgScalar,
 {
     let mut sum = A::zero();
     let mut compensation = A::zero();
@@ -84,8 +85,7 @@ where
 }
 
 #[test]
-fn accurate_eye_f32()
-{
+fn accurate_eye_f32() {
     let rng = &mut SmallRng::from_os_rng();
     for i in 0..20 {
         let eye = Array::eye(i);
@@ -112,8 +112,7 @@ fn accurate_eye_f32()
 }
 
 #[test]
-fn accurate_eye_f64()
-{
+fn accurate_eye_f64() {
     let rng = &mut SmallRng::from_os_rng();
     let abs_tol = 1e-15;
     for i in 0..20 {
@@ -141,26 +140,22 @@ fn accurate_eye_f64()
 }
 
 #[test]
-fn accurate_mul_f32_dot()
-{
+fn accurate_mul_f32_dot() {
     accurate_mul_float_general::<f32>(1e-5, false);
 }
 
 #[test]
-fn accurate_mul_f32_general()
-{
+fn accurate_mul_f32_general() {
     accurate_mul_float_general::<f32>(1e-5, true);
 }
 
 #[test]
-fn accurate_mul_f64_dot()
-{
+fn accurate_mul_f64_dot() {
     accurate_mul_float_general::<f64>(1e-14, false);
 }
 
 #[test]
-fn accurate_mul_f64_general()
-{
+fn accurate_mul_f64_general() {
     accurate_mul_float_general::<f64>(1e-14, true);
 }
 
@@ -170,7 +165,8 @@ fn accurate_mul_f64_general()
 fn random_matrix_mul<A>(
     rng: &mut SmallRng, use_stride: bool, use_general: bool, generator: fn(Ix2, &mut SmallRng) -> Array2<A>,
 ) -> (Array2<A>, Array2<A>)
-where A: LinalgScalar
+where
+    A: LinalgScalar,
 {
     let m = rng.random_range(15..128);
     let k = rng.random_range(15..128);
@@ -216,21 +212,24 @@ where
         let diff = &c - &reference;
         let max_diff = diff.iter().copied().fold(A::zero(), A::max);
         let max_elt = reference.iter().copied().fold(A::zero(), A::max);
-        println!("Max elt diff={:?}, max={:?}, ratio={:.4e}", max_diff, max_elt, (max_diff/max_elt).as_());
-        assert!((max_diff / max_elt).as_() < limit,
-                "Expected relative norm diff < {:e}, found {:?} / {:?}", limit, max_diff, max_elt);
+        println!("Max elt diff={:?}, max={:?}, ratio={:.4e}", max_diff, max_elt, (max_diff / max_elt).as_());
+        assert!(
+            (max_diff / max_elt).as_() < limit,
+            "Expected relative norm diff < {:e}, found {:?} / {:?}",
+            limit,
+            max_diff,
+            max_elt
+        );
     }
 }
 
 #[test]
-fn accurate_mul_complex32()
-{
+fn accurate_mul_complex32() {
     accurate_mul_complex_general::<f32>(1e-5);
 }
 
 #[test]
-fn accurate_mul_complex64()
-{
+fn accurate_mul_complex64() {
     accurate_mul_complex_general::<f64>(1e-14);
 }
 
@@ -249,15 +248,19 @@ where
         let max_elt = |elt: &Complex<_>| A::max(A::abs(elt.re), A::abs(elt.im));
         let max_diff = diff.iter().map(max_elt).fold(A::zero(), A::max);
         let max_elt = reference.iter().map(max_elt).fold(A::zero(), A::max);
-        println!("Max elt diff={:?}, max={:?}, ratio={:.4e}", max_diff, max_elt, (max_diff/max_elt).as_());
-        assert!((max_diff / max_elt).as_() < limit,
-                "Expected relative norm diff < {:e}, found {:?} / {:?}", limit, max_diff, max_elt);
+        println!("Max elt diff={:?}, max={:?}, ratio={:.4e}", max_diff, max_elt, (max_diff / max_elt).as_());
+        assert!(
+            (max_diff / max_elt).as_() < limit,
+            "Expected relative norm diff < {:e}, found {:?} / {:?}",
+            limit,
+            max_diff,
+            max_elt
+        );
     }
 }
 
 #[test]
-fn accurate_mul_with_column_f64()
-{
+fn accurate_mul_with_column_f64() {
     // pick a few random sizes
     let rng = &mut SmallRng::from_os_rng();
     for i in 0..10 {

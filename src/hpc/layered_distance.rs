@@ -35,9 +35,7 @@ pub fn read_palette_edge(container: &[u64; 256]) -> PaletteEdge {
 
 /// Write palette edge into container W125.
 pub fn write_palette_edge(container: &mut [u64; 256], pe: PaletteEdge) {
-    let packed = pe.s_idx as u64
-        | ((pe.p_idx as u64) << 8)
-        | ((pe.o_idx as u64) << 16);
+    let packed = pe.s_idx as u64 | ((pe.p_idx as u64) << 8) | ((pe.o_idx as u64) << 16);
     // Preserve upper bits
     container[W_PALETTE_WORD] = (container[W_PALETTE_WORD] & !0xFF_FFFF) | packed;
 }
@@ -53,27 +51,18 @@ pub fn read_truth(container: &[u64; 256]) -> (f32, f32) {
 
 /// Write truth value (frequency, confidence) into container W4-W5.
 pub fn write_truth(container: &mut [u64; 256], frequency: f32, confidence: f32) {
-    container[W_FREQUENCY] = (container[W_FREQUENCY] & !0xFFFF_FFFF)
-        | frequency.to_bits() as u64;
-    container[W_CONFIDENCE] = (container[W_CONFIDENCE] & !0xFFFF_FFFF)
-        | confidence.to_bits() as u64;
+    container[W_FREQUENCY] = (container[W_FREQUENCY] & !0xFFFF_FFFF) | frequency.to_bits() as u64;
+    container[W_CONFIDENCE] = (container[W_CONFIDENCE] & !0xFFFF_FFFF) | confidence.to_bits() as u64;
 }
 
 /// Layered distance: O(1) palette lookup between two containers.
 ///
 /// Reads palette edges from W125 of each container, then looks up the
 /// precomputed SPO distance in the distance matrices.
-pub fn palette_distance(
-    dm: &SpoDistanceMatrices,
-    a: &[u64; 256],
-    b: &[u64; 256],
-) -> u32 {
+pub fn palette_distance(dm: &SpoDistanceMatrices, a: &[u64; 256], b: &[u64; 256]) -> u32 {
     let pe_a = read_palette_edge(a);
     let pe_b = read_palette_edge(b);
-    dm.spo_distance(
-        pe_a.s_idx, pe_a.p_idx, pe_a.o_idx,
-        pe_b.s_idx, pe_b.p_idx, pe_b.o_idx,
-    )
+    dm.spo_distance(pe_a.s_idx, pe_a.p_idx, pe_a.o_idx, pe_b.s_idx, pe_b.p_idx, pe_b.o_idx)
 }
 
 /// TruthGate: filter by minimum expectation.
@@ -128,7 +117,11 @@ mod tests {
     #[test]
     fn test_read_write_palette_edge_roundtrip() {
         let mut container = [0u64; 256];
-        let pe = PaletteEdge { s_idx: 42, p_idx: 128, o_idx: 255 };
+        let pe = PaletteEdge {
+            s_idx: 42,
+            p_idx: 128,
+            o_idx: 255,
+        };
         write_palette_edge(&mut container, pe);
         let read = read_palette_edge(&container);
         assert_eq!(pe, read);
@@ -137,7 +130,11 @@ mod tests {
     #[test]
     fn test_read_write_palette_edge_zero() {
         let mut container = [0u64; 256];
-        let pe = PaletteEdge { s_idx: 0, p_idx: 0, o_idx: 0 };
+        let pe = PaletteEdge {
+            s_idx: 0,
+            p_idx: 0,
+            o_idx: 0,
+        };
         write_palette_edge(&mut container, pe);
         let read = read_palette_edge(&container);
         assert_eq!(pe, read);
@@ -163,8 +160,8 @@ mod tests {
 
     #[test]
     fn test_palette_distance_self_zero() {
-        use super::super::palette_distance::{Palette, SpoDistanceMatrices};
         use super::super::bgz17_bridge::Base17;
+        use super::super::palette_distance::{Palette, SpoDistanceMatrices};
 
         let entries: Vec<Base17> = (0..16)
             .map(|i| {
@@ -184,8 +181,8 @@ mod tests {
 
     #[test]
     fn test_palette_distance_symmetric() {
-        use super::super::palette_distance::{Palette, SpoDistanceMatrices};
         use super::super::bgz17_bridge::Base17;
+        use super::super::palette_distance::{Palette, SpoDistanceMatrices};
 
         let entries: Vec<Base17> = (0..16)
             .map(|i| {
@@ -254,7 +251,11 @@ mod tests {
     fn test_write_palette_edge_preserves_upper_bits() {
         let mut container = [0u64; 256];
         container[W_PALETTE_WORD] = 0xFFFF_FFFF_FF00_0000;
-        let pe = PaletteEdge { s_idx: 1, p_idx: 2, o_idx: 3 };
+        let pe = PaletteEdge {
+            s_idx: 1,
+            p_idx: 2,
+            o_idx: 3,
+        };
         write_palette_edge(&mut container, pe);
         // Upper bits should be preserved
         assert_eq!(container[W_PALETTE_WORD] & 0xFFFF_FFFF_FF00_0000, 0xFFFF_FFFF_FF00_0000);

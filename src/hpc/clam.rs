@@ -179,23 +179,12 @@ impl ClamTree {
     }
 
     /// Build with explicit config and count.
-    pub fn build_with_config(
-        data: &[u8],
-        vec_len: usize,
-        count: usize,
-        config: &BuildConfig,
-    ) -> Self {
+    pub fn build_with_config(data: &[u8], vec_len: usize, count: usize, config: &BuildConfig) -> Self {
         Self::build_with_fn(data, vec_len, count, config, hamming_inline)
     }
 
     /// Build a CLAM tree with a custom distance function.
-    pub fn build_with_fn(
-        data: &[u8],
-        vec_len: usize,
-        count: usize,
-        config: &BuildConfig,
-        dist_fn: DistanceFn,
-    ) -> Self {
+    pub fn build_with_fn(data: &[u8], vec_len: usize, count: usize, config: &BuildConfig, dist_fn: DistanceFn) -> Self {
         assert_eq!(data.len(), vec_len * count);
 
         if count == 0 {
@@ -212,9 +201,7 @@ impl ClamTree {
         let mut nodes = Vec::with_capacity(2 * count);
         let mut rng = SplitMix64::new(0xDEAD_BEEF_CAFE_BABE);
 
-        Self::partition(
-            data, vec_len, &mut indices, 0, count, 0, config, &mut nodes, &mut rng, dist_fn,
-        );
+        Self::partition(data, vec_len, &mut indices, 0, count, 0, config, &mut nodes, &mut rng, dist_fn);
 
         let mut num_leaves = 0usize;
         let mut leaf_radius_sum = 0u64;
@@ -242,16 +229,8 @@ impl ClamTree {
     /// Recursive partition (Algorithm 1 from CAKES).
     #[allow(clippy::too_many_arguments)]
     fn partition(
-        data: &[u8],
-        vec_len: usize,
-        indices: &mut [usize],
-        start: usize,
-        end: usize,
-        depth: usize,
-        config: &BuildConfig,
-        nodes: &mut Vec<Cluster>,
-        rng: &mut SplitMix64,
-        dist_fn: DistanceFn,
+        data: &[u8], vec_len: usize, indices: &mut [usize], start: usize, end: usize, depth: usize,
+        config: &BuildConfig, nodes: &mut Vec<Cluster>, rng: &mut SplitMix64, dist_fn: DistanceFn,
     ) -> usize {
         let n = end - start;
         let node_idx = nodes.len();
@@ -377,15 +356,12 @@ impl ClamTree {
             && split < n;
 
         if should_split {
-            let left_idx = Self::partition(
-                data, vec_len, indices, start, start + split, depth + 1, config, nodes, rng,
-                dist_fn,
-            );
+            let left_idx =
+                Self::partition(data, vec_len, indices, start, start + split, depth + 1, config, nodes, rng, dist_fn);
             nodes[node_idx].left = Some(left_idx);
 
-            let right_idx = Self::partition(
-                data, vec_len, indices, start + split, end, depth + 1, config, nodes, rng, dist_fn,
-            );
+            let right_idx =
+                Self::partition(data, vec_len, indices, start + split, end, depth + 1, config, nodes, rng, dist_fn);
             nodes[node_idx].right = Some(right_idx);
         }
 
@@ -411,19 +387,13 @@ impl ClamTree {
     }
 
     pub fn cluster_points<'a>(
-        &'a self,
-        cluster: &Cluster,
-        data: &'a [u8],
-        vec_len: usize,
+        &'a self, cluster: &Cluster, data: &'a [u8], vec_len: usize,
     ) -> impl Iterator<Item = (usize, &'a [u8])> + 'a {
         let start = cluster.offset;
         let end = start + cluster.cardinality;
-        self.reordered[start..end].iter().map(move |&orig_idx| {
-            (
-                orig_idx,
-                &data[orig_idx * vec_len..(orig_idx + 1) * vec_len],
-            )
-        })
+        self.reordered[start..end]
+            .iter()
+            .map(move |&orig_idx| (orig_idx, &data[orig_idx * vec_len..(orig_idx + 1) * vec_len]))
     }
 
     pub fn cluster_member_indices(&self, cluster: &Cluster) -> Vec<usize> {
@@ -503,11 +473,7 @@ impl ClamTree {
 
             let went_right = (path_bits >> (15 - bit_pos as u32)) & 1 == 1;
 
-            let next = if went_right {
-                cluster.right
-            } else {
-                cluster.left
-            };
+            let next = if went_right { cluster.right } else { cluster.left };
 
             match next {
                 Some(child_idx) => {
@@ -522,12 +488,7 @@ impl ClamTree {
     }
 
     /// Compute the CRP distribution for a cluster.
-    pub fn cluster_crp(
-        &self,
-        cluster: &Cluster,
-        data: &[u8],
-        vec_len: usize,
-    ) -> ClusterDistribution {
+    pub fn cluster_crp(&self, cluster: &Cluster, data: &[u8], vec_len: usize) -> ClusterDistribution {
         let center = self.center_data(cluster, data, vec_len);
         let mut distances: Vec<u64> = self
             .cluster_points(cluster, data, vec_len)
@@ -630,13 +591,7 @@ pub struct KnnResult {
 }
 
 /// ρ-nearest neighbor search using triangle inequality.
-pub fn rho_nn(
-    tree: &ClamTree,
-    data: &[u8],
-    vec_len: usize,
-    query: &[u8],
-    rho: u64,
-) -> RhoNnResult {
+pub fn rho_nn(tree: &ClamTree, data: &[u8], vec_len: usize, query: &[u8], rho: u64) -> RhoNnResult {
     let mut hits = Vec::new();
     let mut distance_calls = 0usize;
     let mut clusters_pruned = 0usize;
@@ -703,13 +658,7 @@ pub fn rho_nn(
 }
 
 /// k-NN via Repeated ρ-NN search (CAKES Algorithm 4).
-pub fn knn_repeated_rho(
-    tree: &ClamTree,
-    data: &[u8],
-    vec_len: usize,
-    query: &[u8],
-    k: usize,
-) -> KnnResult {
+pub fn knn_repeated_rho(tree: &ClamTree, data: &[u8], vec_len: usize, query: &[u8], k: usize) -> KnnResult {
     let root = tree.root();
     if root.cardinality == 0 {
         return KnnResult {
@@ -766,13 +715,7 @@ pub fn knn_repeated_rho(
     }
 }
 
-fn estimate_local_lfd(
-    tree: &ClamTree,
-    data: &[u8],
-    vec_len: usize,
-    query: &[u8],
-    rho: u64,
-) -> f64 {
+fn estimate_local_lfd(tree: &ClamTree, data: &[u8], vec_len: usize, query: &[u8], rho: u64) -> f64 {
     let mut sum_inv_lfd = 0.0;
     let mut count = 0usize;
 
@@ -808,13 +751,7 @@ fn estimate_local_lfd(
 }
 
 /// Depth-First Sieve k-NN search (CAKES Algorithm 6).
-pub fn knn_dfs_sieve(
-    tree: &ClamTree,
-    data: &[u8],
-    vec_len: usize,
-    query: &[u8],
-    k: usize,
-) -> KnnResult {
+pub fn knn_dfs_sieve(tree: &ClamTree, data: &[u8], vec_len: usize, query: &[u8], k: usize) -> KnnResult {
     use std::cmp::Reverse;
     use std::collections::BinaryHeap;
 
@@ -894,15 +831,7 @@ pub fn knn_dfs_sieve(
 pub fn knn_brute(data: &[u8], vec_len: usize, query: &[u8], k: usize) -> KnnResult {
     let n = data.len() / vec_len;
     let mut dists: Vec<(usize, u64)> = (0..n)
-        .map(|i| {
-            (
-                i,
-                bitwise::hamming_distance_raw(
-                    query,
-                    &data[i * vec_len..(i + 1) * vec_len],
-                ),
-            )
-        })
+        .map(|i| (i, bitwise::hamming_distance_raw(query, &data[i * vec_len..(i + 1) * vec_len])))
         .collect();
     dists.sort_unstable_by_key(|&(_, d)| d);
     dists.truncate(k);
@@ -1055,11 +984,7 @@ impl CompressedTree {
             comp[node_idx] = Some(ClusterCompression {
                 mode,
                 unitary_cost,
-                recursive_cost: if cluster.is_leaf() {
-                    unitary_cost
-                } else {
-                    min_cost
-                },
+                recursive_cost: if cluster.is_leaf() { unitary_cost } else { min_cost },
                 min_cost,
             });
         }
@@ -1073,19 +998,10 @@ impl CompressedTree {
         ];
         let mut encoding_centers = vec![0usize; count];
 
-        Self::assign_encodings(
-            tree,
-            data,
-            vec_len,
-            0,
-            &cluster_modes,
-            &mut encodings,
-            &mut encoding_centers,
-        );
+        Self::assign_encodings(tree, data, vec_len, 0, &cluster_modes, &mut encodings, &mut encoding_centers);
 
         let uncompressed_bytes = count * vec_len;
-        let compressed_bytes: usize =
-            encodings.iter().map(|e| e.storage_cost()).sum::<usize>() + count * 2;
+        let compressed_bytes: usize = encodings.iter().map(|e| e.storage_cost()).sum::<usize>() + count * 2;
         let ratio = if compressed_bytes > 0 {
             uncompressed_bytes as f64 / compressed_bytes as f64
         } else {
@@ -1122,13 +1038,8 @@ impl CompressedTree {
     }
 
     fn assign_encodings(
-        tree: &ClamTree,
-        data: &[u8],
-        vec_len: usize,
-        node_idx: usize,
-        modes: &[CompressionMode],
-        encodings: &mut [XorDiffEncoding],
-        encoding_centers: &mut [usize],
+        tree: &ClamTree, data: &[u8], vec_len: usize, node_idx: usize, modes: &[CompressionMode],
+        encodings: &mut [XorDiffEncoding], encoding_centers: &mut [usize],
     ) {
         let cluster = &tree.nodes[node_idx];
         let center = tree.center_data(cluster, data, vec_len);
@@ -1143,15 +1054,7 @@ impl CompressedTree {
                 Self::assign_encodings(tree, data, vec_len, left, modes, encodings, encoding_centers);
             }
             if let Some(right) = cluster.right {
-                Self::assign_encodings(
-                    tree,
-                    data,
-                    vec_len,
-                    right,
-                    modes,
-                    encodings,
-                    encoding_centers,
-                );
+                Self::assign_encodings(tree, data, vec_len, right, modes, encodings, encoding_centers);
             }
         }
     }
@@ -1164,12 +1067,7 @@ impl CompressedTree {
 
     /// Compute Hamming distance from query to compressed point WITHOUT decompression.
     pub fn hamming_to_compressed(
-        &self,
-        query: &[u8],
-        point_idx: usize,
-        data: &[u8],
-        vec_len: usize,
-        dist_cache: &mut DistanceCache,
+        &self, query: &[u8], point_idx: usize, data: &[u8], vec_len: usize, dist_cache: &mut DistanceCache,
         dist_fn: DistanceFn,
     ) -> u64 {
         let center_idx = self.encoding_centers[point_idx];
@@ -1258,13 +1156,7 @@ impl ClamTree {
     /// Unlike the standalone `rho_nn` function, this method directly returns
     /// a simple `Vec<(usize, u64)>` suitable for piping into cascade verification
     /// via `clam_cascade_search`.
-    pub fn rho_nn_candidates(
-        &self,
-        data: &[u8],
-        vec_len: usize,
-        query: &[u8],
-        rho: u64,
-    ) -> Vec<(usize, u64)> {
+    pub fn rho_nn_candidates(&self, data: &[u8], vec_len: usize, query: &[u8], rho: u64) -> Vec<(usize, u64)> {
         if self.nodes.is_empty() {
             return Vec::new();
         }
@@ -1315,13 +1207,7 @@ impl ClamTree {
 ///
 /// Returns only non-Reject hits, limited to `top_k`, sorted by Hamming distance.
 pub fn clam_cascade_search(
-    tree: &ClamTree,
-    cascade: &Cascade,
-    data: &[u8],
-    vec_len: usize,
-    query: &[u8],
-    rho: u64,
-    top_k: usize,
+    tree: &ClamTree, cascade: &Cascade, data: &[u8], vec_len: usize, query: &[u8], rho: u64, top_k: usize,
 ) -> Vec<RankedHit> {
     let candidates = tree.rho_nn_candidates(data, vec_len, query, rho);
 
@@ -1369,12 +1255,7 @@ impl ClamTree {
     /// The cascade's stroke-1 (partial prefix scan) becomes partially redundant
     /// since CLAM provides geometrically tight candidates via triangle inequality.
     pub fn rho_nn_cascade(
-        &self,
-        data: &[u8],
-        vec_len: usize,
-        query: &[u8],
-        rho: u64,
-        cascade: &Cascade,
+        &self, data: &[u8], vec_len: usize, query: &[u8], rho: u64, cascade: &Cascade,
     ) -> ClamCascadeResult {
         // Phase 1a: CLAM rho-NN search
         let rho_result = rho_nn(self, data, vec_len, query, rho);
@@ -1398,12 +1279,8 @@ impl ClamTree {
 // Phase 2: SPO Distance Harvest
 // ═══════════════════════════════════════════════════════════════════
 
-use super::causality::{
-    causality_decompose, CausalityDecomposition, NarsTruthValue,
-};
-use super::bf16_truth::{
-    AwarenessState, PackedQualia,
-};
+use super::bf16_truth::{AwarenessState, PackedQualia};
+use super::causality::{causality_decompose, CausalityDecomposition, NarsTruthValue};
 use super::node::{Node, SPO, S__, _P_, __O};
 use super::plane::Distance as PlaneDistance;
 
@@ -1435,10 +1312,7 @@ pub struct CausalHit {
 /// 3. Uses `CausalityDecomposition` to extract directional relationships
 /// 4. Returns enriched results with causal metadata
 pub fn spo_distance_harvest(
-    hits: &[RankedHit],
-    query_node: &mut Node,
-    hit_nodes: &mut [Node],
-    query_qualia: &PackedQualia,
+    hits: &[RankedHit], query_node: &mut Node, hit_nodes: &mut [Node], query_qualia: &PackedQualia,
     hit_qualias: &[PackedQualia],
 ) -> Vec<CausalHit> {
     let mut results = Vec::with_capacity(hits.len());
@@ -1485,7 +1359,9 @@ pub fn spo_distance_harvest(
         // Use the full SPO distance to derive awareness-based truth
         let d_spo = query_node.distance(hit_node, SPO);
         let truth = match d_spo {
-            PlaneDistance::Measured { disagreement, overlap, .. } => {
+            PlaneDistance::Measured {
+                disagreement, overlap, ..
+            } => {
                 if overlap == 0 {
                     NarsTruthValue::ignorance()
                 } else {
@@ -1537,11 +1413,7 @@ impl ClamTree {
     /// Wraps `CompressedTree::compress()` — each point is XOR-diff encoded
     /// relative to its nearest cluster center, yielding a compact representation
     /// suitable for compressive search.
-    pub fn compress_database(
-        &self,
-        data: &[u8],
-        vec_len: usize,
-    ) -> CompressedTree {
+    pub fn compress_database(&self, data: &[u8], vec_len: usize) -> CompressedTree {
         let count = data.len() / vec_len;
         CompressedTree::compress(self, data, vec_len, count)
     }
@@ -1552,12 +1424,7 @@ impl ClamTree {
     /// distances from the encoding diffs without full decompression.
     /// Cost per point: O(num_diffs) instead of O(vec_len).
     pub fn query_compressed(
-        &self,
-        compressed: &CompressedTree,
-        data: &[u8],
-        vec_len: usize,
-        query: &[u8],
-        rho: u64,
+        &self, compressed: &CompressedTree, data: &[u8], vec_len: usize, query: &[u8], rho: u64,
     ) -> CompressedSearchResult {
         let count = data.len() / vec_len;
         let mut cache = DistanceCache::new();
@@ -1604,9 +1471,7 @@ impl ClamTree {
                 if orig_idx >= count {
                     continue;
                 }
-                let d = compressed.hamming_to_compressed(
-                    query, orig_idx, data, vec_len, &mut cache, dist_fn,
-                );
+                let d = compressed.hamming_to_compressed(query, orig_idx, data, vec_len, &mut cache, dist_fn);
                 distance_calls += 1;
                 if d <= rho {
                     hits.push((orig_idx, d));
@@ -1705,12 +1570,7 @@ impl ClamTree {
     ///
     /// Threshold is in [0, 1]. A threshold of 0.75 flags the top ~25% most
     /// anomalous points (those in high-LFD leaf clusters).
-    pub fn flag_anomalies(
-        &self,
-        data: &[u8],
-        vec_len: usize,
-        threshold: f64,
-    ) -> Vec<AnomalyScore> {
+    pub fn flag_anomalies(&self, data: &[u8], vec_len: usize, threshold: f64) -> Vec<AnomalyScore> {
         self.anomaly_scores(data, vec_len)
             .into_iter()
             .filter(|a| a.score >= threshold)
@@ -1743,10 +1603,7 @@ mod tests {
     }
 
     fn make_clustered_data(
-        num_clusters: usize,
-        points_per_cluster: usize,
-        vec_len: usize,
-        noise_bytes: usize,
+        num_clusters: usize, points_per_cluster: usize, vec_len: usize, noise_bytes: usize,
     ) -> Vec<u8> {
         let count = num_clusters * points_per_cluster;
         let mut data = vec![0u8; count * vec_len];
@@ -1771,13 +1628,7 @@ mod tests {
         data
     }
 
-    fn linear_knn(
-        data: &[u8],
-        vec_len: usize,
-        count: usize,
-        query: &[u8],
-        k: usize,
-    ) -> Vec<(usize, u64)> {
+    fn linear_knn(data: &[u8], vec_len: usize, count: usize, query: &[u8], k: usize) -> Vec<(usize, u64)> {
         let mut dists: Vec<(usize, u64)> = (0..count)
             .map(|i| {
                 let point = &data[i * vec_len..(i + 1) * vec_len];
@@ -1967,11 +1818,7 @@ mod tests {
             .filter(|&(_, d)| d <= rho)
             .collect();
 
-        assert_eq!(
-            result.hits.len(),
-            ground_truth.len(),
-            "ρ-NN should have perfect recall"
-        );
+        assert_eq!(result.hits.len(), ground_truth.len(), "ρ-NN should have perfect recall");
     }
 
     #[test]
@@ -2163,10 +2010,7 @@ mod tests {
         let dist_q_point_exact = hamming_inline(&query, &point);
         let dist_q_point_compressed = enc.hamming_from_query(&query, &center, dist_q_center);
 
-        assert_eq!(
-            dist_q_point_compressed, dist_q_point_exact,
-            "Compressive Hamming should match exact"
-        );
+        assert_eq!(dist_q_point_compressed, dist_q_point_exact, "Compressive Hamming should match exact");
     }
 
     #[test]
@@ -2243,14 +2087,7 @@ mod tests {
 
         for i in 0..count {
             let exact = hamming_inline(query, &data[i * vec_len..(i + 1) * vec_len]);
-            let comp = compressed.hamming_to_compressed(
-                query,
-                i,
-                &data,
-                vec_len,
-                &mut cache,
-                hamming_inline,
-            );
+            let comp = compressed.hamming_to_compressed(query, i, &data, vec_len, &mut cache, hamming_inline);
             assert_eq!(comp, exact, "Compressive distance mismatch at point {}", i);
         }
     }
@@ -2284,10 +2121,7 @@ mod tests {
         let result = tree.rho_nn_cascade(&data, vec_len, query, rho, &cascade);
 
         // Should find the exact match at index 0
-        assert!(
-            result.hits.iter().any(|r| r.index == 0 && r.hamming == 0),
-            "Should find exact match at index 0"
-        );
+        assert!(result.hits.iter().any(|r| r.index == 0 && r.hamming == 0), "Should find exact match at index 0");
         assert!(result.clam_candidates > 0);
         assert!(result.cascade_survivors > 0);
         assert!(result.cascade_survivors <= result.clam_candidates);
@@ -2355,8 +2189,18 @@ mod tests {
     fn test_spo_distance_harvest_basic() {
         // Create some ranked hits
         let hits = vec![
-            RankedHit { index: 0, hamming: 10, precise: f64::NAN, band: Band::Foveal },
-            RankedHit { index: 1, hamming: 50, precise: f64::NAN, band: Band::Near },
+            RankedHit {
+                index: 0,
+                hamming: 10,
+                precise: f64::NAN,
+                band: Band::Foveal,
+            },
+            RankedHit {
+                index: 1,
+                hamming: 50,
+                precise: f64::NAN,
+                band: Band::Near,
+            },
         ];
 
         let mut query_node = Node::random(42);
@@ -2366,13 +2210,7 @@ mod tests {
         hit_q0.resonance[4] = 10; // warmth forward
         let hit_qualias = vec![hit_q0, PackedQualia::zero()];
 
-        let results = spo_distance_harvest(
-            &hits,
-            &mut query_node,
-            &mut hit_nodes,
-            &query_qualia,
-            &hit_qualias,
-        );
+        let results = spo_distance_harvest(&hits, &mut query_node, &mut hit_nodes, &query_qualia, &hit_qualias);
 
         assert_eq!(results.len(), 2);
         // First hit should have S/P/O distances (random nodes have encounters)
@@ -2390,22 +2228,19 @@ mod tests {
     #[test]
     fn test_spo_distance_harvest_out_of_bounds() {
         // Hit index beyond available nodes
-        let hits = vec![
-            RankedHit { index: 99, hamming: 10, precise: f64::NAN, band: Band::Good },
-        ];
+        let hits = vec![RankedHit {
+            index: 99,
+            hamming: 10,
+            precise: f64::NAN,
+            band: Band::Good,
+        }];
 
         let mut query_node = Node::random(42);
         let mut hit_nodes = vec![Node::random(100)]; // only 1 node
         let query_qualia = PackedQualia::zero();
         let hit_qualias = vec![PackedQualia::zero()];
 
-        let results = spo_distance_harvest(
-            &hits,
-            &mut query_node,
-            &mut hit_nodes,
-            &query_qualia,
-            &hit_qualias,
-        );
+        let results = spo_distance_harvest(&hits, &mut query_node, &mut hit_nodes, &query_qualia, &hit_qualias);
 
         assert_eq!(results.len(), 1);
         // Out-of-bounds index should use defaults
@@ -2416,22 +2251,19 @@ mod tests {
 
     #[test]
     fn test_spo_distance_harvest_truth_values() {
-        let hits = vec![
-            RankedHit { index: 0, hamming: 5, precise: f64::NAN, band: Band::Foveal },
-        ];
+        let hits = vec![RankedHit {
+            index: 0,
+            hamming: 5,
+            precise: f64::NAN,
+            band: Band::Foveal,
+        }];
 
         let mut query_node = Node::random(1);
         let mut hit_nodes = vec![Node::random(2)];
         let query_qualia = PackedQualia::zero();
         let hit_qualias = vec![PackedQualia::zero()];
 
-        let results = spo_distance_harvest(
-            &hits,
-            &mut query_node,
-            &mut hit_nodes,
-            &query_qualia,
-            &hit_qualias,
-        );
+        let results = spo_distance_harvest(&hits, &mut query_node, &mut hit_nodes, &query_qualia, &hit_qualias);
 
         assert_eq!(results.len(), 1);
         // Truth value should be derived from SPO distance
@@ -2442,22 +2274,19 @@ mod tests {
 
     #[test]
     fn test_spo_distance_harvest_preserves_hit_info() {
-        let hits = vec![
-            RankedHit { index: 0, hamming: 42, precise: f64::NAN, band: Band::Near },
-        ];
+        let hits = vec![RankedHit {
+            index: 0,
+            hamming: 42,
+            precise: f64::NAN,
+            band: Band::Near,
+        }];
 
         let mut query_node = Node::random(10);
         let mut hit_nodes = vec![Node::random(20)];
         let query_qualia = PackedQualia::zero();
         let hit_qualias = vec![PackedQualia::zero()];
 
-        let results = spo_distance_harvest(
-            &hits,
-            &mut query_node,
-            &mut hit_nodes,
-            &query_qualia,
-            &hit_qualias,
-        );
+        let results = spo_distance_harvest(&hits, &mut query_node, &mut hit_nodes, &query_qualia, &hit_qualias);
 
         assert_eq!(results[0].index, 0);
         assert_eq!(results[0].hamming, 42);
@@ -2512,10 +2341,7 @@ mod tests {
         let result = tree.query_compressed(&compressed, &data, vec_len, query, rho);
 
         // Should find exact match at index 0
-        assert!(
-            result.hits.iter().any(|&(idx, d)| idx == 0 && d == 0),
-            "Should find exact match at index 0"
-        );
+        assert!(result.hits.iter().any(|&(idx, d)| idx == 0 && d == 0), "Should find exact match at index 0");
         assert!(result.distance_calls > 0);
     }
 
@@ -2538,13 +2364,9 @@ mod tests {
         // Compressed search should find the same set of points
         let compressed_indices: std::collections::HashSet<usize> =
             compressed_result.hits.iter().map(|&(idx, _)| idx).collect();
-        let exact_indices: std::collections::HashSet<usize> =
-            exact_result.hits.iter().map(|&(idx, _)| idx).collect();
+        let exact_indices: std::collections::HashSet<usize> = exact_result.hits.iter().map(|&(idx, _)| idx).collect();
 
-        assert_eq!(
-            compressed_indices, exact_indices,
-            "Compressed search should find same results as exact search"
-        );
+        assert_eq!(compressed_indices, exact_indices, "Compressed search should find same results as exact search");
     }
 
     #[test]
@@ -2579,8 +2401,7 @@ mod tests {
         assert_eq!(scores.len(), count);
 
         for score in &scores {
-            assert!(score.score >= 0.0 && score.score <= 1.0,
-                "Score {} out of range [0,1]", score.score);
+            assert!(score.score >= 0.0 && score.score <= 1.0, "Score {} out of range [0,1]", score.score);
             assert!(score.index < count);
         }
     }
@@ -2604,10 +2425,7 @@ mod tests {
             } else {
                 AwarenessState::Noise
             };
-            assert_eq!(
-                score.awareness, expected_awareness,
-                "Awareness mismatch for score={}", score.score
-            );
+            assert_eq!(score.awareness, expected_awareness, "Awareness mismatch for score={}", score.score);
         }
     }
 
@@ -2623,11 +2441,7 @@ mod tests {
 
         // All flagged should have score >= 0.75
         for anomaly in &flagged {
-            assert!(
-                anomaly.score >= 0.75,
-                "Flagged anomaly has score {} < 0.75",
-                anomaly.score
-            );
+            assert!(anomaly.score >= 0.75, "Flagged anomaly has score {} < 0.75", anomaly.score);
         }
 
         // Count manually from all_scores
@@ -2665,7 +2479,7 @@ mod tests {
         let vec_len = 64;
         // Create 3 tight clusters plus some noisy outliers
         let mut data = make_clustered_data(3, 20, vec_len, 2); // tight clusters
-        // Add 5 random outliers
+                                                               // Add 5 random outliers
         let mut rng = SplitMix64::new(999);
         for _ in 0..5 {
             let mut outlier = vec![0u8; vec_len];
@@ -2742,9 +2556,7 @@ mod tests {
         let tree = ClamTree::build(&data, vec_len, 3);
         let cascade = Cascade::from_threshold(vec_len as u64 * 4, vec_len);
         let query = &data[0..vec_len];
-        let hits = clam_cascade_search(
-            &tree, &cascade, &data, vec_len, query, vec_len as u64 * 8, 10,
-        );
+        let hits = clam_cascade_search(&tree, &cascade, &data, vec_len, query, vec_len as u64 * 8, 10);
         assert!(!hits.is_empty());
         // No Reject band hits should survive
         for h in &hits {
@@ -2760,9 +2572,7 @@ mod tests {
         let tree = ClamTree::build(&data, vec_len, 3);
         let cascade = Cascade::from_threshold(vec_len as u64 * 8, vec_len);
         let query = &data[0..vec_len];
-        let hits = clam_cascade_search(
-            &tree, &cascade, &data, vec_len, query, u64::MAX, 5,
-        );
+        let hits = clam_cascade_search(&tree, &cascade, &data, vec_len, query, u64::MAX, 5);
         assert!(hits.len() <= 5);
     }
 }

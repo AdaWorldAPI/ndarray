@@ -24,8 +24,8 @@ use std::process::{Command, Stdio};
 /// within the cache window are free (no re-fetch).
 pub struct HttpRangeReader {
     url: String,
-    repo: Option<String>,       // for re-resolve on 403
-    filename: Option<String>,   // for re-resolve on 403
+    repo: Option<String>,     // for re-resolve on 403
+    filename: Option<String>, // for re-resolve on 403
     position: u64,
     total_size: u64,
     chunk_size: usize,
@@ -150,10 +150,7 @@ impl HttpRangeReader {
                 Err(e) => Err(io::Error::new(io::ErrorKind::Other, e)),
             }
         } else {
-            Err(io::Error::new(
-                io::ErrorKind::Other,
-                "cannot re-resolve: no repo/filename stored (use from_hf())",
-            ))
+            Err(io::Error::new(io::ErrorKind::Other, "cannot re-resolve: no repo/filename stored (use from_hf())"))
         }
     }
 
@@ -174,8 +171,7 @@ impl HttpRangeReader {
         for attempt in 0..MAX_RETRIES {
             if attempt > 0 {
                 let delay = INITIAL_BACKOFF_MS * (1u64 << (attempt - 1).min(4));
-                eprintln!("    retry {}/{} after {}ms (segment {}-{})",
-                    attempt + 1, MAX_RETRIES, delay, start, end);
+                eprintln!("    retry {}/{} after {}ms (segment {}-{})", attempt + 1, MAX_RETRIES, delay, start, end);
                 std::thread::sleep(std::time::Duration::from_millis(delay));
             }
 
@@ -184,15 +180,11 @@ impl HttpRangeReader {
 
             let result = Command::new("curl")
                 .args(&[
-                    "-sL",
-                    "--retry", "2",
-                    "--retry-delay", "2",
-                    "--connect-timeout", "30",
-                    "--max-time", "600",          // 10 min max per 64 MB segment
+                    "-sL", "--retry", "2", "--retry-delay", "2", "--connect-timeout", "30", "--max-time",
+                    "600", // 10 min max per 64 MB segment
                     "--speed-limit", &speed_limit_str, // abort if < 100 KB/s
-                    "--speed-time", &speed_time_str,   // for > 30 seconds
-                    "-r", &range,
-                    &self.url,
+                    "--speed-time", &speed_time_str, // for > 30 seconds
+                    "-r", &range, &self.url,
                 ])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -213,13 +205,15 @@ impl HttpRangeReader {
                 Ok(output) => {
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     let code = output.status.code().unwrap_or(-1);
-                    eprintln!("    fetch failed: exit={} got={} bytes stderr={}",
-                        code, output.stdout.len(), stderr.trim());
+                    eprintln!(
+                        "    fetch failed: exit={} got={} bytes stderr={}",
+                        code,
+                        output.stdout.len(),
+                        stderr.trim()
+                    );
 
                     // 403 or curl exit 22 (HTTP error) → re-resolve CDN URL
-                    if (code == 22 || stderr.contains("403") || stderr.contains("expired"))
-                        && !resolved_this_call
-                    {
+                    if (code == 22 || stderr.contains("403") || stderr.contains("expired")) && !resolved_this_call {
                         if self.re_resolve_url().is_ok() {
                             resolved_this_call = true;
                             eprintln!("    URL re-resolved, retrying immediately");
@@ -325,10 +319,7 @@ impl Seek for HttpRangeReader {
         };
 
         if new_pos < 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "seek before start of file",
-            ));
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "seek before start of file"));
         }
 
         self.position = new_pos as u64;
@@ -351,13 +342,16 @@ impl Seek for HttpRangeReader {
 pub fn resolve_hf_url(repo: &str, filename: &str) -> Result<(String, u64), String> {
     // Method 1: Python huggingface_hub (handles auth tokens, gated models)
     if let Ok(py_out) = Command::new("python3")
-        .args(&["-c", &format!(
-            "from huggingface_hub import hf_hub_url, get_hf_file_metadata; \
+        .args(&[
+            "-c",
+            &format!(
+                "from huggingface_hub import hf_hub_url, get_hf_file_metadata; \
              url = hf_hub_url('{}', '{}'); \
              meta = get_hf_file_metadata(url); \
              print(meta.size); print(meta.location if hasattr(meta, 'location') else url)",
-            repo, filename
-        )])
+                repo, filename
+            ),
+        ])
         .output()
     {
         if py_out.status.success() {
@@ -376,10 +370,7 @@ pub fn resolve_hf_url(repo: &str, filename: &str) -> Result<(String, u64), Strin
     }
 
     // Method 2: curl HEAD with redirect follow
-    let url = format!(
-        "https://huggingface.co/{}/resolve/main/{}",
-        repo, filename
-    );
+    let url = format!("https://huggingface.co/{}/resolve/main/{}", repo, filename);
 
     if let Ok(output) = Command::new("curl")
         .args(&["-sIL", "--connect-timeout", "15", "--max-time", "30", &url])
@@ -416,7 +407,8 @@ pub fn resolve_hf_url(repo: &str, filename: &str) -> Result<(String, u64), Strin
     // Method 3: HuggingFace Hub REST API (no Python needed)
     let api_url = format!(
         "https://huggingface.co/api/models/{}/tree/main/{}",
-        repo, filename.rsplit('/').next().unwrap_or(filename)
+        repo,
+        filename.rsplit('/').next().unwrap_or(filename)
     );
     if let Ok(output) = Command::new("curl")
         .args(&["-sL", "--connect-timeout", "15", "--max-time", "30", &api_url])
@@ -489,7 +481,8 @@ mod tests {
         let (url, size) = resolve_hf_url(
             "unsloth/Llama-4-Scout-17B-16E-Instruct-GGUF",
             "BF16/Llama-4-Scout-17B-16E-Instruct-BF16-00005-of-00005.gguf",
-        ).expect("resolve_hf_url");
+        )
+        .expect("resolve_hf_url");
         assert!(size > 0, "size should be > 0");
         assert!(url.contains("http"), "url should be HTTP: {}", url);
         eprintln!("resolved: {} ({} bytes)", url, size);

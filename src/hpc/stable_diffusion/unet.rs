@@ -42,13 +42,7 @@ pub fn timestep_embedding(timestep: f32, dim: usize) -> Vec<f32> {
 /// Operates on [channels, height, width] layout.
 /// Minimal implementation — no dilation, no groups beyond depthwise.
 pub fn conv2d_3x3(
-    input: &[f32],
-    weight: &[f32],
-    bias: &[f32],
-    in_channels: usize,
-    out_channels: usize,
-    h: usize,
-    w: usize,
+    input: &[f32], weight: &[f32], bias: &[f32], in_channels: usize, out_channels: usize, h: usize, w: usize,
 ) -> Vec<f32> {
     let mut output = vec![0.0f32; out_channels * h * w];
 
@@ -127,11 +121,7 @@ impl ResBlockWeights {
 ///
 /// This is the scaffold — full implementation would chain:
 /// down_blocks → mid_block → up_blocks with skip connections.
-pub fn predict_noise(
-    noisy_latent: &[f32],
-    text_embeddings: &[f32],
-    timestep: f32,
-) -> Vec<f32> {
+pub fn predict_noise(noisy_latent: &[f32], text_embeddings: &[f32], timestep: f32) -> Vec<f32> {
     let _t_emb = timestep_embedding(timestep, MODEL_CHANNELS);
     // Scaffold: return zero noise prediction (actual UNet weights needed)
     vec![0.0f32; noisy_latent.len()]

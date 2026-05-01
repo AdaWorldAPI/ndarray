@@ -11,31 +11,36 @@ pub struct CounterfactualWorld {
     pub truth: NarsTruth,
 }
 
-pub fn iterate_counterfactuals(
-    base: &Base17,
-    interventions: &[Base17],
-    corpus: &[Base17],
-) -> Vec<CounterfactualWorld> {
+pub fn iterate_counterfactuals(base: &Base17, interventions: &[Base17], corpus: &[Base17]) -> Vec<CounterfactualWorld> {
     let max_l1 = (17u32 * 65535) as f32;
-    interventions.iter().enumerate().map(|(idx, intervention)| {
-        let mut modified_dims = [0i16; 17];
-        for d in 0..17 { modified_dims[d] = base.dims[d].wrapping_add(intervention.dims[d]); }
-        let modified = Base17 { dims: modified_dims };
-        let mut best_dist = u32::MAX;
-        let mut best = modified.clone();
-        for c in corpus {
-            let d = modified.l1(c);
-            if d < best_dist { best_dist = d; best = c.clone(); }
-        }
-        let divergence = base.l1(&best) as f32 / max_l1;
-        let confidence = if best_dist < (max_l1 as u32) / 2 { 0.8 } else { 0.3 };
-        CounterfactualWorld {
-            intervention_idx: idx,
-            resulting: best,
-            divergence,
-            truth: NarsTruth::new(1.0 - divergence, confidence),
-        }
-    }).collect()
+    interventions
+        .iter()
+        .enumerate()
+        .map(|(idx, intervention)| {
+            let mut modified_dims = [0i16; 17];
+            for d in 0..17 {
+                modified_dims[d] = base.dims[d].wrapping_add(intervention.dims[d]);
+            }
+            let modified = Base17 { dims: modified_dims };
+            let mut best_dist = u32::MAX;
+            let mut best = modified.clone();
+            for c in corpus {
+                let d = modified.l1(c);
+                if d < best_dist {
+                    best_dist = d;
+                    best = c.clone();
+                }
+            }
+            let divergence = base.l1(&best) as f32 / max_l1;
+            let confidence = if best_dist < (max_l1 as u32) / 2 { 0.8 } else { 0.3 };
+            CounterfactualWorld {
+                intervention_idx: idx,
+                resulting: best,
+                divergence,
+                truth: NarsTruth::new(1.0 - divergence, confidence),
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

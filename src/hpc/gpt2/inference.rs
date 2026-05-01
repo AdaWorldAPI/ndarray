@@ -263,10 +263,7 @@ impl Gpt2Engine {
                 if let Some(rt) = rt {
                     if use_attn_table && t < self.token_history.len() {
                         let key_token = self.token_history[t];
-                        let palette_sim = rt.heel_similarity(
-                            current_token as usize,
-                            key_token as usize,
-                        );
+                        let palette_sim = rt.heel_similarity(current_token as usize, key_token as usize);
                         // Blend: 90% matmul score + 10% palette shortcut
                         scores[t] = scores[t] * 0.9 + palette_sim * 0.1 * scale;
                     }
@@ -284,12 +281,10 @@ impl Gpt2Engine {
                         if scores[t] > 0.05 && t < self.token_history.len() {
                             let key_token = self.token_history[t];
                             let edge = rt.pack_spo_edge(
-                                current_token as usize,
-                                head,                    // predicate = attention head
-                                key_token as usize,
-                                scores[t],               // frequency = attention weight
-                                0.3,                      // initial confidence (low)
-                                self.seq_len as u16,     // temporal position
+                                current_token as usize, head, // predicate = attention head
+                                key_token as usize, scores[t],           // frequency = attention weight
+                                0.3,                 // initial confidence (low)
+                                self.seq_len as u16, // temporal position
                             );
                             self.causal_edges.push(AttentionEdge {
                                 layer: layer_idx as u8,

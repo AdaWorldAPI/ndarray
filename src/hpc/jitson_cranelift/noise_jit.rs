@@ -65,10 +65,7 @@ unsafe impl Sync for NoiseKernel {}
 impl NoiseKernel {
     /// Wrap a raw function pointer as a `NoiseKernel`.
     pub(crate) fn from_raw(ptr: *const u8, params: NoiseKernelParams) -> Self {
-        Self {
-            fn_ptr: ptr,
-            params,
-        }
+        Self { fn_ptr: ptr, params }
     }
 
     /// Evaluate the compiled noise function at the given coordinates.
@@ -82,8 +79,7 @@ impl NoiseKernel {
     pub unsafe fn evaluate(&self, x: f64, y: f64, z: f64) -> f64 {
         // SAFETY: caller guarantees fn_ptr validity; fn_ptr was compiled
         // by Cranelift with the matching signature (f64, f64, f64) -> f64.
-        let func: unsafe extern "C" fn(f64, f64, f64) -> f64 =
-            std::mem::transmute(self.fn_ptr);
+        let func: unsafe extern "C" fn(f64, f64, f64) -> f64 = std::mem::transmute(self.fn_ptr);
         func(x, y, z)
     }
 
@@ -109,9 +105,7 @@ impl NoiseKernel {
 /// let kernel_params = from_compiled_config(&config);
 /// assert_eq!(kernel_params.num_octaves, 4);
 /// ```
-pub fn from_compiled_config(
-    config: &super::super::jitson::noise::CompiledNoiseConfig,
-) -> NoiseKernelParams {
+pub fn from_compiled_config(config: &super::super::jitson::noise::CompiledNoiseConfig) -> NoiseKernelParams {
     NoiseKernelParams {
         num_octaves: config.frequencies.len() as u32,
         frequencies: config.frequencies.clone(),
@@ -141,9 +135,7 @@ pub fn from_compiled_config(
 ///     return value
 /// ```
 pub fn build_noise_ir(
-    func: &mut Function,
-    params: &NoiseKernelParams,
-    base_noise_ref: cranelift_codegen::ir::FuncRef,
+    func: &mut Function, params: &NoiseKernelParams, base_noise_ref: cranelift_codegen::ir::FuncRef,
 ) -> Result<(), JitError> {
     // Validate params
     let n = params.num_octaves as usize;
@@ -270,11 +262,7 @@ impl super::engine::JitEngine {
     /// Only works during BUILD phase (before sharing via `Arc`).
     ///
     /// Returns a cache hash that can be used with `get_noise()`.
-    pub fn compile_noise(
-        &mut self,
-        params: NoiseKernelParams,
-        base_noise_name: &str,
-    ) -> Result<u64, JitError> {
+    pub fn compile_noise(&mut self, params: NoiseKernelParams, base_noise_name: &str) -> Result<u64, JitError> {
         let cache_key = noise_params_hash(&params, base_noise_name);
 
         // Already compiled? Return existing hash.
@@ -375,10 +363,7 @@ mod tests {
         }
 
         // Verify normalization roundtrip
-        assert!(
-            (kernel_params.normalization - config.normalization).abs() < 1e-10,
-            "normalization mismatch"
-        );
+        assert!((kernel_params.normalization - config.normalization).abs() < 1e-10, "normalization mismatch");
     }
 
     #[test]
@@ -485,10 +470,7 @@ mod tests {
         });
 
         let result = build_noise_ir(&mut func, &params, base_noise_ref);
-        assert!(
-            result.is_err(),
-            "should reject mismatched num_octaves vs frequencies"
-        );
+        assert!(result.is_err(), "should reject mismatched num_octaves vs frequencies");
     }
 
     #[test]
@@ -525,9 +507,6 @@ mod tests {
         });
 
         let result = build_noise_ir(&mut func, &params, base_noise_ref);
-        assert!(
-            result.is_err(),
-            "should reject mismatched num_octaves vs amplitudes"
-        );
+        assert!(result.is_err(), "should reject mismatched num_octaves vs amplitudes");
     }
 }

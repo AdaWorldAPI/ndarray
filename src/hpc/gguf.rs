@@ -90,10 +90,10 @@ impl GgmlType {
             Self::F32 => 4,
             Self::F16 | Self::BF16 => 2,
             Self::F64 => 8,
-            Self::Q4_0 => 18,    // 2 (scale) + 32/2 (nibbles) = 18
-            Self::Q4_1 => 20,    // 2 (scale) + 2 (min) + 32/2 = 20
-            Self::Q8_0 => 34,    // 2 (scale) + 32 (int8s) = 34
-            Self::Q4_K => 144,   // Complex block structure
+            Self::Q4_0 => 18,  // 2 (scale) + 32/2 (nibbles) = 18
+            Self::Q4_1 => 20,  // 2 (scale) + 2 (min) + 32/2 = 20
+            Self::Q8_0 => 34,  // 2 (scale) + 32 (int8s) = 34
+            Self::Q4_K => 144, // Complex block structure
             _ => 0,
         }
     }
@@ -168,7 +168,12 @@ pub fn read_gguf_header<R: Read + Seek>(reader: &mut R) -> Result<GgufFile, Stri
         }
         let dtype = GgmlType::from(read_u32(reader)?);
         let offset = read_u64(reader)?;
-        tensors.push(TensorInfo { name, dimensions, dtype, offset });
+        tensors.push(TensorInfo {
+            name,
+            dimensions,
+            dtype,
+            offset,
+        });
     }
 
     // Compute tensor data start: current position, aligned up
@@ -186,12 +191,12 @@ pub fn read_gguf_header<R: Read + Seek>(reader: &mut R) -> Result<GgufFile, Stri
 
 /// Read one tensor's data as f32 (dequantizing if needed).
 pub fn read_tensor_f32<R: Read + Seek>(
-    reader: &mut R,
-    gguf: &GgufFile,
-    tensor: &TensorInfo,
+    reader: &mut R, gguf: &GgufFile, tensor: &TensorInfo,
 ) -> Result<Vec<f32>, String> {
     let abs_offset = gguf.tensor_data_offset + tensor.offset;
-    reader.seek(SeekFrom::Start(abs_offset)).map_err(|e| e.to_string())?;
+    reader
+        .seek(SeekFrom::Start(abs_offset))
+        .map_err(|e| e.to_string())?;
 
     let n_elements = tensor.element_count() as usize;
 
@@ -199,14 +204,16 @@ pub fn read_tensor_f32<R: Read + Seek>(
         GgmlType::F32 => {
             let mut buf = vec![0u8; n_elements * 4];
             reader.read_exact(&mut buf).map_err(|e| e.to_string())?;
-            Ok(buf.chunks_exact(4)
+            Ok(buf
+                .chunks_exact(4)
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect())
         }
         GgmlType::F16 => {
             let mut buf = vec![0u8; n_elements * 2];
             reader.read_exact(&mut buf).map_err(|e| e.to_string())?;
-            Ok(buf.chunks_exact(2)
+            Ok(buf
+                .chunks_exact(2)
                 .map(|c| {
                     let bits = u16::from_le_bytes([c[0], c[1]]);
                     f16_to_f32(bits)
@@ -218,25 +225,15 @@ pub fn read_tensor_f32<R: Read + Seek>(
             reader.read_exact(&mut buf).map_err(|e| e.to_string())?;
             // Reinterpret u8 pairs as BF16 (same repr) and batch-convert via quantized.rs
             // SAFETY: BF16 is #[repr(transparent)] over u16, same layout as [u8; 2] LE pairs.
-            let bf16_slice: &[super::quantized::BF16] = unsafe {
-                std::slice::from_raw_parts(
-                    buf.as_ptr() as *const super::quantized::BF16,
-                    n_elements,
-                )
-            };
+            let bf16_slice: &[super::quantized::BF16] =
+                unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const super::quantized::BF16, n_elements) };
             let mut result = vec![0.0f32; n_elements];
             super::quantized::bf16_to_f32_slice(bf16_slice, &mut result);
             Ok(result)
         }
-        GgmlType::Q8_0 => {
-            dequantize_q8_0(reader, n_elements)
-        }
-        GgmlType::Q4_0 => {
-            dequantize_q4_0(reader, n_elements)
-        }
-        GgmlType::Q4_K => {
-            dequantize_q4_k(reader, n_elements)
-        }
+        GgmlType::Q8_0 => dequantize_q8_0(reader, n_elements),
+        GgmlType::Q4_0 => dequantize_q4_0(reader, n_elements),
+        GgmlType::Q4_K => dequantize_q4_k(reader, n_elements),
         other => Err(format!("Unsupported dtype for dequantization: {:?}", other)),
     }
 }
@@ -248,7 +245,8 @@ pub fn find_tensor<'a>(gguf: &'a GgufFile, pattern: &str) -> Option<&'a TensorIn
 
 /// List all tensor names and shapes.
 pub fn list_tensors(gguf: &GgufFile) -> Vec<(String, Vec<u64>, GgmlType)> {
-    gguf.tensors.iter()
+    gguf.tensors
+        .iter()
         .map(|t| (t.name.clone(), t.dimensions.clone(), t.dtype))
         .collect()
 }
@@ -279,16 +277,44 @@ fn read_string<R: Read>(r: &mut R) -> Result<String, String> {
 
 fn read_metadata_value<R: Read + Seek>(r: &mut R, value_type: u32) -> Result<String, String> {
     match value_type {
-        0 => { let mut b = [0u8; 1]; r.read_exact(&mut b).map_err(|e| e.to_string())?; Ok(b[0].to_string()) } // u8
-        1 => { let mut b = [0u8; 1]; r.read_exact(&mut b).map_err(|e| e.to_string())?; Ok((b[0] as i8).to_string()) } // i8
-        2 => { let mut b = [0u8; 2]; r.read_exact(&mut b).map_err(|e| e.to_string())?; Ok(u16::from_le_bytes(b).to_string()) } // u16
-        3 => { let mut b = [0u8; 2]; r.read_exact(&mut b).map_err(|e| e.to_string())?; Ok(i16::from_le_bytes(b).to_string()) } // i16
+        0 => {
+            let mut b = [0u8; 1];
+            r.read_exact(&mut b).map_err(|e| e.to_string())?;
+            Ok(b[0].to_string())
+        } // u8
+        1 => {
+            let mut b = [0u8; 1];
+            r.read_exact(&mut b).map_err(|e| e.to_string())?;
+            Ok((b[0] as i8).to_string())
+        } // i8
+        2 => {
+            let mut b = [0u8; 2];
+            r.read_exact(&mut b).map_err(|e| e.to_string())?;
+            Ok(u16::from_le_bytes(b).to_string())
+        } // u16
+        3 => {
+            let mut b = [0u8; 2];
+            r.read_exact(&mut b).map_err(|e| e.to_string())?;
+            Ok(i16::from_le_bytes(b).to_string())
+        } // i16
         4 => Ok(read_u32(r)?.to_string()), // u32
-        5 => { let v = read_u32(r)?; Ok((v as i32).to_string()) } // i32
-        6 => { let mut b = [0u8; 4]; r.read_exact(&mut b).map_err(|e| e.to_string())?; Ok(f32::from_le_bytes(b).to_string()) } // f32
-        7 => { let mut b = [0u8; 1]; r.read_exact(&mut b).map_err(|e| e.to_string())?; Ok((b[0] != 0).to_string()) } // bool
-        8 => read_string(r), // string
-        9 => { // array
+        5 => {
+            let v = read_u32(r)?;
+            Ok((v as i32).to_string())
+        } // i32
+        6 => {
+            let mut b = [0u8; 4];
+            r.read_exact(&mut b).map_err(|e| e.to_string())?;
+            Ok(f32::from_le_bytes(b).to_string())
+        } // f32
+        7 => {
+            let mut b = [0u8; 1];
+            r.read_exact(&mut b).map_err(|e| e.to_string())?;
+            Ok((b[0] != 0).to_string())
+        } // bool
+        8 => read_string(r),               // string
+        9 => {
+            // array
             let elem_type = read_u32(r)?;
             let count = read_u64(r)?;
             // Skip array elements (we don't need them for tensor loading)
@@ -298,8 +324,15 @@ fn read_metadata_value<R: Read + Seek>(r: &mut R, value_type: u32) -> Result<Str
             Ok(format!("[array of {} × type {}]", count, elem_type))
         }
         10 => Ok(read_u64(r)?.to_string()), // u64
-        11 => { let v = read_u64(r)?; Ok((v as i64).to_string()) } // i64
-        12 => { let mut b = [0u8; 8]; r.read_exact(&mut b).map_err(|e| e.to_string())?; Ok(f64::from_le_bytes(b).to_string()) } // f64
+        11 => {
+            let v = read_u64(r)?;
+            Ok((v as i64).to_string())
+        } // i64
+        12 => {
+            let mut b = [0u8; 8];
+            r.read_exact(&mut b).map_err(|e| e.to_string())?;
+            Ok(f64::from_le_bytes(b).to_string())
+        } // f64
         _ => Err(format!("Unknown metadata value type: {}", value_type)),
     }
 }
@@ -571,7 +604,9 @@ mod tests {
         append_tensor_info(&mut buf, "blk.0.attn_q.weight", &[4096, 4096], 8, 0);
         append_tensor_info(&mut buf, "blk.0.attn_k.weight", &[4096, 1024], 8, 4096 * 4096 * 34 / 32);
 
-        while buf.len() % 32 != 0 { buf.push(0); }
+        while buf.len() % 32 != 0 {
+            buf.push(0);
+        }
 
         let mut cursor = Cursor::new(&buf);
         let gguf = read_gguf_header(&mut cursor).unwrap();

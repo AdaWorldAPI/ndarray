@@ -7,8 +7,8 @@
 //! Results are merged and filtered through TruthGate for evidence quality.
 
 use super::bgz17_bridge::PaletteEdge;
+use super::layered_distance::{read_palette_edge, read_truth, TruthGate};
 use super::palette_distance::SpoDistanceMatrices;
-use super::layered_distance::{TruthGate, read_palette_edge, read_truth};
 
 /// Search result with distance and truth metadata.
 #[derive(Debug, Clone)]
@@ -45,14 +45,8 @@ pub struct PaletteScope {
 
 impl PaletteScope {
     /// Build from containers: extract palette edges from W125 of each.
-    pub fn from_containers(
-        containers: Vec<[u64; 256]>,
-        distances: SpoDistanceMatrices,
-    ) -> Self {
-        let palette_indices: Vec<PaletteEdge> = containers
-            .iter()
-            .map(read_palette_edge)
-            .collect();
+    pub fn from_containers(containers: Vec<[u64; 256]>, distances: SpoDistanceMatrices) -> Self {
+        let palette_indices: Vec<PaletteEdge> = containers.iter().map(read_palette_edge).collect();
         PaletteScope {
             palette_indices,
             distances,
@@ -74,10 +68,8 @@ impl PaletteScope {
     #[inline]
     fn distance_to(&self, query: &PaletteEdge, idx: usize) -> u32 {
         let c = &self.palette_indices[idx];
-        self.distances.spo_distance(
-            query.s_idx, query.p_idx, query.o_idx,
-            c.s_idx, c.p_idx, c.o_idx,
-        )
+        self.distances
+            .spo_distance(query.s_idx, query.p_idx, query.o_idx, c.s_idx, c.p_idx, c.o_idx)
     }
 
     /// HHTL search: progressive refinement using palette distances.
@@ -143,10 +135,8 @@ impl PaletteScope {
             // Update min distances
             for i in 0..n {
                 let d = self.distances.spo_distance(
-                    last_pe.s_idx, last_pe.p_idx, last_pe.o_idx,
-                    self.palette_indices[i].s_idx,
-                    self.palette_indices[i].p_idx,
-                    self.palette_indices[i].o_idx,
+                    last_pe.s_idx, last_pe.p_idx, last_pe.o_idx, self.palette_indices[i].s_idx,
+                    self.palette_indices[i].p_idx, self.palette_indices[i].o_idx,
                 );
                 if d < min_dists[i] {
                     min_dists[i] = d;
@@ -174,10 +164,9 @@ impl PaletteScope {
             let mut best_d = u32::MAX;
             for (a, &arch_idx) in archetype_indices.iter().enumerate() {
                 let arch_pe = &self.palette_indices[arch_idx];
-                let d = self.distances.spo_distance(
-                    pe_i.s_idx, pe_i.p_idx, pe_i.o_idx,
-                    arch_pe.s_idx, arch_pe.p_idx, arch_pe.o_idx,
-                );
+                let d = self
+                    .distances
+                    .spo_distance(pe_i.s_idx, pe_i.p_idx, pe_i.o_idx, arch_pe.s_idx, arch_pe.p_idx, arch_pe.o_idx);
                 if d < best_d {
                     best_d = d;
                     best_arch = a;
@@ -237,12 +226,7 @@ impl PaletteScope {
 ///
 /// Both search paths run independently and their results are merged
 /// to produce the best top-k, filtered by truth-value evidence quality.
-pub fn parallel_search(
-    scope: &PaletteScope,
-    query: &PaletteEdge,
-    k: usize,
-    gate: &TruthGate,
-) -> Vec<SearchResult> {
+pub fn parallel_search(scope: &PaletteScope, query: &PaletteEdge, k: usize, gate: &TruthGate) -> Vec<SearchResult> {
     if scope.is_empty() || k == 0 {
         return Vec::new();
     }
@@ -279,11 +263,7 @@ pub fn parallel_search(
 /// Merge and re-rank two result sets, taking union of top-k.
 ///
 /// Deduplicates by node index, keeping the minimum distance for each node.
-fn merge_and_rerank(
-    hhtl: Vec<(usize, u32)>,
-    clam: Vec<(usize, u32)>,
-    k: usize,
-) -> Vec<(usize, u32)> {
+fn merge_and_rerank(hhtl: Vec<(usize, u32)>, clam: Vec<(usize, u32)>, k: usize) -> Vec<(usize, u32)> {
     // Collect all results into a map (node_idx -> min_distance)
     let mut map = std::collections::HashMap::new();
     for (idx, d) in hhtl.into_iter().chain(clam.into_iter()) {
@@ -304,11 +284,7 @@ fn merge_and_rerank(
 ///
 /// LFD = log2(|B(center, radius)| / |B(center, radius/2)|)
 /// where B(c, r) is the set of nodes within distance r of center.
-pub fn lfd_from_palette(
-    scope: &PaletteScope,
-    center_idx: usize,
-    radius: u32,
-) -> f64 {
+pub fn lfd_from_palette(scope: &PaletteScope, center_idx: usize, radius: u32) -> f64 {
     if radius == 0 || scope.is_empty() {
         return 0.0;
     }
@@ -325,10 +301,9 @@ pub fn lfd_from_palette(
             count_half_r += 1;
             continue;
         }
-        let d = scope.distances.spo_distance(
-            center.s_idx, center.p_idx, center.o_idx,
-            pe.s_idx, pe.p_idx, pe.o_idx,
-        );
+        let d = scope
+            .distances
+            .spo_distance(center.s_idx, center.p_idx, center.o_idx, pe.s_idx, pe.p_idx, pe.o_idx);
         if d <= radius {
             count_r += 1;
         }
@@ -346,10 +321,10 @@ pub fn lfd_from_palette(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::bgz17_bridge::{Base17, PaletteEdge};
-    use super::super::palette_distance::{Palette, SpoDistanceMatrices};
     use super::super::layered_distance::write_palette_edge;
+    use super::super::palette_distance::{Palette, SpoDistanceMatrices};
+    use super::*;
 
     fn make_test_scope(n: usize) -> PaletteScope {
         let entries: Vec<Base17> = (0..32)
@@ -384,7 +359,11 @@ mod tests {
     #[test]
     fn test_hhtl_search_basic() {
         let scope = make_test_scope(100);
-        let query = PaletteEdge { s_idx: 0, p_idx: 0, o_idx: 0 };
+        let query = PaletteEdge {
+            s_idx: 0,
+            p_idx: 0,
+            o_idx: 0,
+        };
         let results = scope.hhtl_search(&query, 5);
         assert_eq!(results.len(), 5);
         // Results should be sorted by distance
@@ -396,7 +375,11 @@ mod tests {
     #[test]
     fn test_hhtl_search_empty() {
         let scope = make_test_scope(0);
-        let query = PaletteEdge { s_idx: 0, p_idx: 0, o_idx: 0 };
+        let query = PaletteEdge {
+            s_idx: 0,
+            p_idx: 0,
+            o_idx: 0,
+        };
         let results = scope.hhtl_search(&query, 5);
         assert!(results.is_empty());
     }
@@ -404,7 +387,11 @@ mod tests {
     #[test]
     fn test_hhtl_search_k_larger_than_n() {
         let scope = make_test_scope(3);
-        let query = PaletteEdge { s_idx: 0, p_idx: 0, o_idx: 0 };
+        let query = PaletteEdge {
+            s_idx: 0,
+            p_idx: 0,
+            o_idx: 0,
+        };
         let results = scope.hhtl_search(&query, 10);
         assert_eq!(results.len(), 3);
     }
@@ -412,7 +399,11 @@ mod tests {
     #[test]
     fn test_clam_search_basic() {
         let scope = make_test_scope(100);
-        let query = PaletteEdge { s_idx: 0, p_idx: 0, o_idx: 0 };
+        let query = PaletteEdge {
+            s_idx: 0,
+            p_idx: 0,
+            o_idx: 0,
+        };
         let results = scope.clam_search(&query, 5);
         assert_eq!(results.len(), 5);
         for w in results.windows(2) {
@@ -424,7 +415,11 @@ mod tests {
     fn test_clam_search_small_fallback() {
         // Small scope should fallback to HHTL
         let scope = make_test_scope(10);
-        let query = PaletteEdge { s_idx: 0, p_idx: 0, o_idx: 0 };
+        let query = PaletteEdge {
+            s_idx: 0,
+            p_idx: 0,
+            o_idx: 0,
+        };
         let hhtl = scope.hhtl_search(&query, 5);
         let clam = scope.clam_search(&query, 5);
         // Should return the same results for small scope
@@ -438,7 +433,11 @@ mod tests {
     #[test]
     fn test_parallel_search_basic() {
         let scope = make_test_scope(100);
-        let query = PaletteEdge { s_idx: 0, p_idx: 0, o_idx: 0 };
+        let query = PaletteEdge {
+            s_idx: 0,
+            p_idx: 0,
+            o_idx: 0,
+        };
         let results = parallel_search(&scope, &query, 5, &TruthGate::OPEN);
         assert!(results.len() <= 5);
         assert!(!results.is_empty());
@@ -483,7 +482,11 @@ mod tests {
         let scope = PaletteScope::from_containers(containers, dm);
 
         // CERTAIN gate should filter out low-truth nodes
-        let query = PaletteEdge { s_idx: 0, p_idx: 0, o_idx: 0 };
+        let query = PaletteEdge {
+            s_idx: 0,
+            p_idx: 0,
+            o_idx: 0,
+        };
         let all = parallel_search(&scope, &query, 20, &TruthGate::OPEN);
         let certain = parallel_search(&scope, &query, 20, &TruthGate::CERTAIN);
 
@@ -493,18 +496,18 @@ mod tests {
         // All results in certain should have high expectation
         for r in &certain {
             let exp = TruthGate::expectation(r.frequency, r.confidence);
-            assert!(
-                exp >= 0.9,
-                "result expectation {} should be >= 0.9",
-                exp
-            );
+            assert!(exp >= 0.9, "result expectation {} should be >= 0.9", exp);
         }
     }
 
     #[test]
     fn test_parallel_search_empty() {
         let scope = make_test_scope(0);
-        let query = PaletteEdge { s_idx: 0, p_idx: 0, o_idx: 0 };
+        let query = PaletteEdge {
+            s_idx: 0,
+            p_idx: 0,
+            o_idx: 0,
+        };
         let results = parallel_search(&scope, &query, 5, &TruthGate::OPEN);
         assert!(results.is_empty());
     }
@@ -582,7 +585,11 @@ mod tests {
     fn test_hhtl_finds_exact_match() {
         // Node 0 has palette edge (0, 0, 0), query is (0, 0, 0) => distance 0
         let scope = make_test_scope(100);
-        let query = PaletteEdge { s_idx: 0, p_idx: 0, o_idx: 0 };
+        let query = PaletteEdge {
+            s_idx: 0,
+            p_idx: 0,
+            o_idx: 0,
+        };
         let results = scope.hhtl_search(&query, 1);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].1, 0, "exact match should have distance 0");

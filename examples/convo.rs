@@ -15,7 +15,8 @@ type Kernel3x3<A> = [[A; 3]; 3];
 #[inline(never)]
 #[cfg(feature = "std")]
 fn conv_3x3<F>(a: &ArrayRef2<F>, out: &mut ArrayRef2<F>, kernel: &Kernel3x3<F>)
-where F: Float
+where
+    F: Float,
 {
     let (n, m) = a.dim();
     let (np, mp) = out.dim();
@@ -42,8 +43,7 @@ where F: Float
 }
 
 #[cfg(feature = "std")]
-fn main()
-{
+fn main() {
     let n = 16;
     let mut a = Array::zeros((n, n));
     // make a circle

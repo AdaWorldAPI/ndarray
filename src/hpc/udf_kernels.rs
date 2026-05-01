@@ -88,24 +88,12 @@ pub struct SpoDistanceResult {
 /// assert_eq!(result.combined_dist, Some(0));
 /// ```
 pub fn udf_spo_distance(
-    s1: &[u8],
-    p1: &[u8],
-    o1: &[u8],
-    s2: &[u8],
-    p2: &[u8],
-    o2: &[u8],
+    s1: &[u8], p1: &[u8], o1: &[u8], s2: &[u8], p2: &[u8], o2: &[u8],
 ) -> Result<SpoDistanceResult, &'static str> {
     use super::fingerprint::Fingerprint;
 
     const PLANE_BYTES: usize = 2048;
-    for (name, slice) in [
-        ("s1", s1),
-        ("p1", p1),
-        ("o1", o1),
-        ("s2", s2),
-        ("p2", p2),
-        ("o2", o2),
-    ] {
+    for (name, slice) in [("s1", s1), ("p1", p1), ("o1", o1), ("s2", s2), ("p2", p2), ("o2", o2)] {
         if slice.len() != PLANE_BYTES {
             return Err(if name.starts_with('s') {
                 "udf_spo_distance: subject plane must be 2048 bytes"
@@ -304,13 +292,13 @@ pub fn factorize_spo(node: &mut Node) -> [u64; 8] {
     let o_pop = popcount_raw(o_bits);
 
     [
-        0,                           // empty
-        s_pop,                       // S
-        p_pop,                       // P
-        o_pop,                       // O
-        s_pop.saturating_add(p_pop), // SP
-        p_pop.saturating_add(o_pop), // PO
-        s_pop.saturating_add(o_pop), // SO
+        0,                                                 // empty
+        s_pop,                                             // S
+        p_pop,                                             // P
+        o_pop,                                             // O
+        s_pop.saturating_add(p_pop),                       // SP
+        p_pop.saturating_add(o_pop),                       // PO
+        s_pop.saturating_add(o_pop),                       // SO
         s_pop.saturating_add(p_pop).saturating_add(o_pop), // SPO
     ]
 }
@@ -451,11 +439,7 @@ pub fn causal_edge(node_a: &mut Node, node_b: &mut Node) -> CausalityDirection {
     // Vote: majority of the three dimensions decides direction
     let mut forward_count = 0i32;
     let mut backward_count = 0i32;
-    for dir in [
-        decomposition.warmth_dir,
-        decomposition.social_dir,
-        decomposition.sacredness_dir,
-    ] {
+    for dir in [decomposition.warmth_dir, decomposition.social_dir, decomposition.sacredness_dir] {
         match dir {
             CausalityDirection::Forward => forward_count += 1,
             CausalityDirection::Backward => backward_count += 1,
@@ -664,7 +648,7 @@ mod tests {
         assert!(terms[1] > 0); // S should have bits
         assert!(terms[2] > 0); // P should have bits
         assert!(terms[3] > 0); // O should have bits
-        // Combination norms are sums
+                               // Combination norms are sums
         assert_eq!(terms[4], terms[1] + terms[2]); // SP = S + P
         assert_eq!(terms[5], terms[2] + terms[3]); // PO = P + O
         assert_eq!(terms[6], terms[1] + terms[3]); // SO = S + O
@@ -757,12 +741,7 @@ mod tests {
         let mut b = Node::random(99);
         let dir = causal_edge(&mut a, &mut b);
         // Should produce a definite direction for different nodes
-        assert!(matches!(
-            dir,
-            CausalityDirection::Forward
-                | CausalityDirection::Backward
-                | CausalityDirection::None
-        ));
+        assert!(matches!(dir, CausalityDirection::Forward | CausalityDirection::Backward | CausalityDirection::None));
     }
 
     #[test]

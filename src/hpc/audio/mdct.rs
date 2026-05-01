@@ -20,7 +20,9 @@ pub const MDCT_SIZE: usize = FRAME_SIZE / 2;
 /// Sine window for MDCT (Opus uses a sine window for CELT mode).
 /// w[n] = sin(π/N × (n + 0.5))
 pub fn sine_window(n: usize) -> Vec<f32> {
-    (0..n).map(|i| (PI / n as f32 * (i as f32 + 0.5)).sin()).collect()
+    (0..n)
+        .map(|i| (PI / n as f32 * (i as f32 + 0.5)).sin())
+        .collect()
 }
 
 /// Forward MDCT: time-domain → frequency-domain.
@@ -135,13 +137,19 @@ pub fn mdct_backward(coeffs: &[f32]) -> Vec<f32> {
         // Unfold to symmetric positions
         let idx_a = 2 * k;
         let idx_b = n - 1 - 2 * k;
-        if idx_a < n { output[idx_a] = y_re * window[idx_a]; }
-        if idx_b < n { output[idx_b] = y_im * window[idx_b]; }
+        if idx_a < n {
+            output[idx_a] = y_re * window[idx_a];
+        }
+        if idx_b < n {
+            output[idx_b] = y_im * window[idx_b];
+        }
     }
 
     // Scale (MDCT normalization: 2/N)
     let scale = 2.0 / n as f32;
-    for s in &mut output { *s *= scale; }
+    for s in &mut output {
+        *s *= scale;
+    }
 
     output
 }

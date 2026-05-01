@@ -115,12 +115,7 @@ impl HeelPlanes {
         // 7 payload planes: 4 bytes each → expand to 64 bits via golden stepping
         for i in 0..7 {
             let start = 1 + (i * 4);
-            let bytes = [
-                data[start] as u8,
-                data[start + 1] as u8,
-                data[start + 2] as u8,
-                data[start + 3] as u8,
-            ];
+            let bytes = [data[start] as u8, data[start + 1] as u8, data[start + 2] as u8, data[start + 3] as u8];
             let val = u32::from_le_bytes(bytes);
             // Spread 32 bits across 64 bits: each input bit controls 2 output bits
             // via golden-step interleave
@@ -128,12 +123,7 @@ impl HeelPlanes {
         }
 
         // Plane 7: contradiction (4 bytes from data[29..33])
-        let contra_bytes = [
-            data[29] as u8,
-            data[30] as u8,
-            data[31] as u8,
-            data[32] as u8,
-        ];
+        let contra_bytes = [data[29] as u8, data[30] as u8, data[31] as u8, data[32] as u8];
         let contra_val = u32::from_le_bytes(contra_bytes);
         planes[7] = spread_32_to_64(contra_val);
 
@@ -443,8 +433,7 @@ impl Palette64 {
     #[inline]
     pub fn attend(&self, query: u64, gamma: u8) -> AttentionResult {
         // SAFETY: LazyLock guarantees the selected kernel matches CPU features.
-        let (best_idx, distance, scores, fires) =
-            unsafe { ATTEND_KERNEL(&self.rows, query, gamma) };
+        let (best_idx, distance, scores, fires) = unsafe { ATTEND_KERNEL(&self.rows, query, gamma) };
         AttentionResult {
             best_idx,
             distance,
@@ -526,8 +515,7 @@ impl HeelPlanes {
     #[inline]
     pub fn moe_gate(&self, query: u64, threshold: u8) -> MoeGate {
         // SAFETY: LazyLock guarantees the selected kernel matches CPU features.
-        let (active, strength, combined) =
-            unsafe { MOE_GATE_KERNEL(&self.planes, query, threshold) };
+        let (active, strength, combined) = unsafe { MOE_GATE_KERNEL(&self.planes, query, threshold) };
         MoeGate {
             active,
             strength,
@@ -805,11 +793,7 @@ pub struct InferenceResult {
 impl Palette3D {
     /// Create from 8 individual palette layers.
     pub fn new(layers: [Palette64; 8], style: ThinkingStyle) -> Self {
-        Self {
-            layers,
-            style,
-            step: 0,
-        }
+        Self { layers, style, step: 0 }
     }
 
     /// Create from HeelPlanes: same expansion for all layers (then differentiate).
@@ -911,7 +895,11 @@ impl Palette3D {
                         }
                     }
                 }
-                if first { 0 } else { result }
+                if first {
+                    0
+                } else {
+                    result
+                }
             }
             CombineMode::Majority => {
                 // Per-bit vote: set if >50% of active layers agree
@@ -920,9 +908,7 @@ impl Palette3D {
                 for bit in 0..64 {
                     let mut votes = 0u8;
                     for z in 0..8 {
-                        if self.style.layer_mask & (1 << z) != 0
-                            && per_layer[z] & (1u64 << bit) != 0
-                        {
+                        if self.style.layer_mask & (1 << z) != 0 && per_layer[z] & (1u64 << bit) != 0 {
                             votes += 1;
                         }
                     }
@@ -1019,8 +1005,7 @@ impl Palette3D {
                 bits &= bits - 1;
                 if j < 64 {
                     // If j also supports things the query supports → grounded
-                    mutual_support |=
-                        self.layers[predicate::SUPPORTS].rows[j] & supported;
+                    mutual_support |= self.layers[predicate::SUPPORTS].rows[j] & supported;
                 }
             }
             let fresh = mutual_support & !self.layers[predicate::GROUNDS].rows[block_row];
@@ -1076,11 +1061,7 @@ impl Palette3D {
     /// Useful for: analytical → creative (when stuck),
     /// creative → focused (when solution emerges).
     pub fn transition(
-        &mut self,
-        from: ThinkingStyle,
-        to: ThinkingStyle,
-        query_row: usize,
-        steps: usize,
+        &mut self, from: ThinkingStyle, to: ThinkingStyle, query_row: usize, steps: usize,
     ) -> Vec<InferenceResult> {
         let mut results = Vec::with_capacity(steps);
 
@@ -1097,8 +1078,7 @@ impl Palette3D {
             // Combine mode snaps at midpoint
             let combine = if t < 0.5 { from.combine } else { to.combine };
             let contra = if t < 0.5 { from.contra } else { to.contra };
-            let density_target =
-                from.density_target * (1.0 - t) + to.density_target * t;
+            let density_target = from.density_target * (1.0 - t) + to.density_target * t;
 
             self.style = ThinkingStyle {
                 layer_mask: mask,
@@ -1237,10 +1217,7 @@ pub mod sparse256 {
     /// The 256 leaves are grouped into 64 blocks of 4.
     /// Block (I, J) is set to 1 if ANY leaf-pair across blocks can interact.
     /// This is conservative: zero false negatives, possible false positives.
-    pub fn from_clam_leaves(
-        leaves: &[LeafCluster],
-        distances: &PairwiseDistances,
-    ) -> (Palette64, SparsityStats) {
+    pub fn from_clam_leaves(leaves: &[LeafCluster], distances: &PairwiseDistances) -> (Palette64, SparsityStats) {
         let n = leaves.len().min(256);
         let n_blocks = (n + 3) / 4; // ceil(n/4), max 64
 
@@ -1289,7 +1266,11 @@ pub mod sparse256 {
             active_blocks: interactions,
             pruned_blocks: pruned,
             density: if total > 0 {
-                palette.rows.iter().map(|r| r.count_ones() as u64).sum::<u64>() as f64
+                palette
+                    .rows
+                    .iter()
+                    .map(|r| r.count_ones() as u64)
+                    .sum::<u64>() as f64
                     / (n_blocks * n_blocks) as f64
             } else {
                 0.0
@@ -1348,12 +1329,7 @@ pub mod sparse256 {
         /// `block_weights[block_row][block_col]` scales the 4×4 contribution.
         /// Weights typically come from inverse LFD (local fractal dimension):
         /// high LFD clusters get lower weight (they're spread out).
-        pub fn spmv_256_weighted(
-            &self,
-            x: &[f32; 256],
-            y: &mut [f32; 256],
-            block_weights: &[[f32; 64]; 64],
-        ) {
+        pub fn spmv_256_weighted(&self, x: &[f32; 256], y: &mut [f32; 256], block_weights: &[[f32; 64]; 64]) {
             y.fill(0.0);
             for block_row in 0..64 {
                 let mask = self.rows[block_row];
@@ -1453,10 +1429,7 @@ pub mod sparse256 {
     /// This is where the LEAF level lives — LanceDB vector search, DistanceMatrix
     /// lookup, or BF16 dot product. The cascade doesn't know or care which.
     pub fn hhtl_cascade_search<F: Fn(u8, u8) -> f32>(
-        palette: &Palette64,
-        query_row: u8,
-        scores: &mut [f32; 256],
-        score_fn: F,
+        palette: &Palette64, query_row: u8, scores: &mut [f32; 256], score_fn: F,
     ) -> usize {
         let heel_row = query_row / 32;
         let hip_row = (query_row / 4) % 8;
@@ -1523,10 +1496,7 @@ mod tests {
         // Row 0 = HEEL[0] rotated by 0
         assert_eq!(palette.rows[0], heels.planes[0]);
         // Row 8 = HEEL[0] rotated by GOLDEN_SHIFT_64
-        assert_eq!(
-            palette.rows[8],
-            heels.planes[0].rotate_left(GOLDEN_SHIFT_64)
-        );
+        assert_eq!(palette.rows[8], heels.planes[0].rotate_left(GOLDEN_SHIFT_64));
 
         eprintln!("Palette constructed: 64 rows × 64 bits = {} bytes", 64 * 8);
     }
@@ -1581,14 +1551,13 @@ mod tests {
         let query = 0xAAAA_AAAA_AAAA_AAAA ^ 0xFF;
         let result = palette.attend(query, 16);
 
-        eprintln!("Noisy query (8 bits flipped): score={}, distance={}",
-            result.scores[result.best_idx as usize], result.distance);
+        eprintln!(
+            "Noisy query (8 bits flipped): score={}, distance={}",
+            result.scores[result.best_idx as usize], result.distance
+        );
         // Original: 32 matching bits. Flip 8 bits: ~4 matches lost, ~4 false matches gained.
         // Row 0 should still be best or near-best.
-        assert!(
-            result.scores[0] >= 24,
-            "Row 0 should still score high despite noise (score={})", result.scores[0]
-        );
+        assert!(result.scores[0] >= 24, "Row 0 should still score high despite noise (score={})", result.scores[0]);
     }
 
     // ── MoE Fanout ─────────────────────────────────────────────────────
@@ -1627,17 +1596,10 @@ mod tests {
 
         eprintln!("Hard MoE (OR): {:016X}", hard);
         eprintln!("Soft MoE (vote): {:016X}", soft);
-        eprintln!(
-            "Hard density: {}, Soft density: {}",
-            hard.count_ones(),
-            soft.count_ones()
-        );
+        eprintln!("Hard density: {}, Soft density: {}", hard.count_ones(), soft.count_ones());
 
         // Soft should be sparser than hard (majority vs OR)
-        assert!(
-            soft.count_ones() <= hard.count_ones(),
-            "Soft MoE should be sparser than hard MoE"
-        );
+        assert!(soft.count_ones() <= hard.count_ones(), "Soft MoE should be sparser than hard MoE");
     }
 
     // ── Expert diversity ───────────────────────────────────────────────
@@ -1653,10 +1615,7 @@ mod tests {
         eprintln!("  Max: {}", dists.iter().max().unwrap());
 
         // With our orthogonal test patterns, diversity should be high
-        assert!(
-            mean > 20.0,
-            "Expert diversity should be high for orthogonal patterns"
-        );
+        assert!(mean > 20.0, "Expert diversity should be high for orthogonal patterns");
     }
 
     // ── Palette statistics ─────────────────────────────────────────────
@@ -1672,10 +1631,7 @@ mod tests {
         eprintln!("  Max Hamming distance:  {max_dist}");
 
         // Ideal: mean ≈ 32 (half of 64 = maximally dispersed)
-        assert!(
-            mean_dist > 20.0,
-            "Palette rows should be well-dispersed (mean={mean_dist})"
-        );
+        assert!(mean_dist > 20.0, "Palette rows should be well-dispersed (mean={mean_dist})");
     }
 
     #[test]
@@ -1717,10 +1673,7 @@ mod tests {
 
         // Final state should be exactly a palette row
         let is_palette_row = palette.rows.contains(&final_state);
-        assert!(
-            is_palette_row,
-            "Final state should be a palette entry"
-        );
+        assert!(is_palette_row, "Final state should be a palette entry");
     }
 
     #[test]
@@ -1805,10 +1758,7 @@ mod tests {
         // Intra-group: distance=5, r+r=20 → 5<=20 → interact (1)
         // Inter-group: distance=100, r+r=20 → 100>20 → pruned (0)
         // So only 8 diagonal blocks of 8×8 should be active = 512 bits of 4096
-        assert!(
-            stats.density < 0.20,
-            "Density should be low due to triangle inequality pruning"
-        );
+        assert!(stats.density < 0.20, "Density should be low due to triangle inequality pruning");
     }
 
     #[test]
@@ -1840,11 +1790,7 @@ mod tests {
             for col in [0u8, 15, 63, 128, 200, 255] {
                 let addr = HhtlAddress::from_256(row, col);
                 let (r, c) = addr.to_256();
-                assert_eq!(
-                    (r, c),
-                    (row, col),
-                    "HHTL roundtrip failed for ({row}, {col})"
-                );
+                assert_eq!((r, c), (row, col), "HHTL roundtrip failed for ({row}, {col})");
             }
         }
     }
@@ -1971,22 +1917,14 @@ mod tests {
         eprintln!("Steps to convergence: {}", p3d.step);
 
         // Deduction should either grow or stay same (never shrink)
-        assert!(
-            after_density >= before_density,
-            "Deduction should grow or maintain density"
-        );
+        assert!(after_density >= before_density, "Deduction should grow or maintain density");
     }
 
     #[test]
     fn style_transition() {
         let mut p3d = make_test_palette3d();
 
-        let results = p3d.transition(
-            ThinkingStyle::ANALYTICAL,
-            ThinkingStyle::CREATIVE,
-            0,
-            8,
-        );
+        let results = p3d.transition(ThinkingStyle::ANALYTICAL, ThinkingStyle::CREATIVE, 0, 8);
 
         eprintln!("\n=== Style Transition: Analytical → Creative ===");
         for (i, r) in results.iter().enumerate() {
@@ -2012,10 +1950,7 @@ mod tests {
         let densities = p3d.layer_densities();
 
         eprintln!("\n=== Layer Densities ===");
-        let names = [
-            "CAUSES", "ENABLES", "SUPPORTS", "CONTRADICTS",
-            "REFINES", "ABSTRACTS", "GROUNDS", "BECOMES",
-        ];
+        let names = ["CAUSES", "ENABLES", "SUPPORTS", "CONTRADICTS", "REFINES", "ABSTRACTS", "GROUNDS", "BECOMES"];
         for (i, name) in names.iter().enumerate() {
             eprintln!("  {:<12} {:.4}", name, densities[i]);
         }

@@ -11,17 +11,27 @@ pub enum TransformationType {
 }
 
 pub fn identify_transformation(inputs: &[Base17], outputs: &[Base17]) -> TransformationType {
-    if inputs.is_empty() || inputs.len() != outputs.len() { return TransformationType::Unknown; }
+    if inputs.is_empty() || inputs.len() != outputs.len() {
+        return TransformationType::Unknown;
+    }
     // Check if outputs = inputs + constant offset
     let mut offset = [0i16; 17];
-    for d in 0..17 { offset[d] = outputs[0].dims[d].wrapping_sub(inputs[0].dims[d]); }
-    let is_offset = inputs.iter().zip(outputs.iter()).all(|(i, o)| {
-        (0..17).all(|d| o.dims[d].wrapping_sub(i.dims[d]) == offset[d])
-    });
+    for d in 0..17 {
+        offset[d] = outputs[0].dims[d].wrapping_sub(inputs[0].dims[d]);
+    }
+    let is_offset = inputs
+        .iter()
+        .zip(outputs.iter())
+        .all(|(i, o)| (0..17).all(|d| o.dims[d].wrapping_sub(i.dims[d]) == offset[d]));
     if is_offset {
-        if offset == [0i16; 17] { TransformationType::Identity }
-        else { TransformationType::Offset(offset) }
-    } else { TransformationType::Unknown }
+        if offset == [0i16; 17] {
+            TransformationType::Identity
+        } else {
+            TransformationType::Offset(offset)
+        }
+    } else {
+        TransformationType::Unknown
+    }
 }
 
 #[cfg(test)]

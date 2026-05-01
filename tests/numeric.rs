@@ -7,39 +7,33 @@ use ndarray::{arr0, arr1, arr2, array, aview1, Array, Array1, Array2, Array3, Ax
 use std::f64;
 
 #[test]
-fn test_mean_with_nan_values()
-{
+fn test_mean_with_nan_values() {
     let a = array![f64::NAN, 1.];
     assert!(a.mean().unwrap().is_nan());
 }
 
 #[test]
-fn test_mean_with_empty_array_of_floats()
-{
+fn test_mean_with_empty_array_of_floats() {
     let a: Array1<f64> = array![];
     assert!(a.mean().is_none());
 }
 
 #[test]
-fn test_mean_with_array_of_floats()
-{
+fn test_mean_with_array_of_floats() {
     let a: Array1<f64> = array![
-        0.99889651, 0.0150731, 0.28492482, 0.83819218, 0.48413156, 0.80710412, 0.41762936,
-        0.22879429, 0.43997224, 0.23831807, 0.02416466, 0.6269962, 0.47420614, 0.56275487,
-        0.78995021, 0.16060581, 0.64635041, 0.34876609, 0.78543249, 0.19938356, 0.34429457,
-        0.88072369, 0.17638164, 0.60819363, 0.250392, 0.69912532, 0.78855523, 0.79140914,
-        0.85084218, 0.31839879, 0.63381769, 0.22421048, 0.70760302, 0.99216018, 0.80199153,
-        0.19239188, 0.61356023, 0.31505352, 0.06120481, 0.66417377, 0.63608897, 0.84959691,
-        0.43599069, 0.77867775, 0.88267754, 0.83003623, 0.67016118, 0.67547638, 0.65220036,
-        0.68043427
+        0.99889651, 0.0150731, 0.28492482, 0.83819218, 0.48413156, 0.80710412, 0.41762936, 0.22879429, 0.43997224,
+        0.23831807, 0.02416466, 0.6269962, 0.47420614, 0.56275487, 0.78995021, 0.16060581, 0.64635041, 0.34876609,
+        0.78543249, 0.19938356, 0.34429457, 0.88072369, 0.17638164, 0.60819363, 0.250392, 0.69912532, 0.78855523,
+        0.79140914, 0.85084218, 0.31839879, 0.63381769, 0.22421048, 0.70760302, 0.99216018, 0.80199153, 0.19239188,
+        0.61356023, 0.31505352, 0.06120481, 0.66417377, 0.63608897, 0.84959691, 0.43599069, 0.77867775, 0.88267754,
+        0.83003623, 0.67016118, 0.67547638, 0.65220036, 0.68043427
     ];
     let exact_mean = 0.5475494054;
     assert_abs_diff_eq!(a.mean().unwrap(), exact_mean);
 }
 
 #[test]
-fn sum_mean_prod()
-{
+fn sum_mean_prod() {
     let a: Array2<f64> = arr2(&[[1., 2.], [3., 4.]]);
     assert_eq!(a.sum_axis(Axis(0)), arr1(&[4., 6.]));
     assert_eq!(a.sum_axis(Axis(1)), arr1(&[3., 7.]));
@@ -54,20 +48,13 @@ fn sum_mean_prod()
 }
 
 #[test]
-fn sum_mean_prod_empty()
-{
+fn sum_mean_prod_empty() {
     assert_eq!(Array3::<f32>::ones((2, 0, 3)).sum(), 0.);
     assert_eq!(Array3::<f32>::ones((2, 0, 3)).product(), 1.);
     assert_eq!(Array1::<f32>::ones(0).sum_axis(Axis(0)), arr0(0.));
     assert_eq!(Array1::<f32>::ones(0).product_axis(Axis(0)), arr0(1.));
-    assert_eq!(
-        Array3::<f32>::ones((2, 0, 3)).sum_axis(Axis(1)),
-        Array::zeros((2, 3)),
-    );
-    assert_eq!(
-        Array3::<f32>::ones((2, 0, 3)).product_axis(Axis(1)),
-        Array::ones((2, 3)),
-    );
+    assert_eq!(Array3::<f32>::ones((2, 0, 3)).sum_axis(Axis(1)), Array::zeros((2, 3)),);
+    assert_eq!(Array3::<f32>::ones((2, 0, 3)).product_axis(Axis(1)), Array::ones((2, 3)),);
     let a = Array1::<f32>::ones(0).mean_axis(Axis(0));
     assert_eq!(a, None);
     let a = Array3::<f32>::ones((2, 0, 3)).mean_axis(Axis(1));
@@ -75,16 +62,14 @@ fn sum_mean_prod_empty()
 }
 
 #[test]
-fn test_cumprod_1d()
-{
+fn test_cumprod_1d() {
     let a = array![1, 2, 3, 4];
     let result = a.cumprod(Axis(0));
     assert_eq!(result, array![1, 2, 6, 24]);
 }
 
 #[test]
-fn test_cumprod_2d()
-{
+fn test_cumprod_2d() {
     let a = array![[1, 2], [3, 4]];
 
     let result_axis0 = a.cumprod(Axis(0));
@@ -95,8 +80,7 @@ fn test_cumprod_2d()
 }
 
 #[test]
-fn test_cumprod_3d()
-{
+fn test_cumprod_3d() {
     let a = array![[[1, 2], [3, 4]], [[5, 6], [7, 8]]];
 
     let result_axis0 = a.cumprod(Axis(0));
@@ -110,8 +94,7 @@ fn test_cumprod_3d()
 }
 
 #[test]
-fn test_cumprod_empty()
-{
+fn test_cumprod_empty() {
     // For 2D empty array
     let b: Array2<i32> = Array2::zeros((0, 0));
     let result_axis0 = b.cumprod(Axis(0));
@@ -121,8 +104,7 @@ fn test_cumprod_empty()
 }
 
 #[test]
-fn test_cumprod_1_element()
-{
+fn test_cumprod_1_element() {
     // For 1D array with one element
     let a = array![5];
     let result = a.cumprod(Axis(0));
@@ -138,16 +120,14 @@ fn test_cumprod_1_element()
 
 #[test]
 #[should_panic(expected = "axis is out of bounds for array of dimension")]
-fn test_cumprod_axis_out_of_bounds()
-{
+fn test_cumprod_axis_out_of_bounds() {
     let a = array![[1, 2], [3, 4]];
     let _result = a.cumprod(Axis(2));
 }
 
 #[test]
 #[cfg(feature = "std")]
-fn var()
-{
+fn var() {
     let a = array![1., -4.32, 1.14, 0.32];
     assert_abs_diff_eq!(a.var(0.), 5.049875, epsilon = 1e-8);
 }
@@ -155,8 +135,7 @@ fn var()
 #[test]
 #[cfg(feature = "std")]
 #[should_panic]
-fn var_negative_ddof()
-{
+fn var_negative_ddof() {
     let a = array![1., 2., 3.];
     a.var(-1.);
 }
@@ -164,16 +143,14 @@ fn var_negative_ddof()
 #[test]
 #[cfg(feature = "std")]
 #[should_panic]
-fn var_too_large_ddof()
-{
+fn var_too_large_ddof() {
     let a = array![1., 2., 3.];
     a.var(4.);
 }
 
 #[test]
 #[cfg(feature = "std")]
-fn var_nan_ddof()
-{
+fn var_nan_ddof() {
     let a = Array2::<f64>::zeros((2, 3));
     let v = a.var(f64::NAN);
     assert!(v.is_nan());
@@ -181,16 +158,14 @@ fn var_nan_ddof()
 
 #[test]
 #[cfg(feature = "std")]
-fn var_empty_arr()
-{
+fn var_empty_arr() {
     let a: Array1<f64> = array![];
     assert!(a.var(0.0).is_nan());
 }
 
 #[test]
 #[cfg(feature = "std")]
-fn std()
-{
+fn std() {
     let a = array![1., -4.32, 1.14, 0.32];
     assert_abs_diff_eq!(a.std(0.), 2.24719, epsilon = 1e-5);
 }
@@ -198,8 +173,7 @@ fn std()
 #[test]
 #[cfg(feature = "std")]
 #[should_panic]
-fn std_negative_ddof()
-{
+fn std_negative_ddof() {
     let a = array![1., 2., 3.];
     a.std(-1.);
 }
@@ -207,16 +181,14 @@ fn std_negative_ddof()
 #[test]
 #[cfg(feature = "std")]
 #[should_panic]
-fn std_too_large_ddof()
-{
+fn std_too_large_ddof() {
     let a = array![1., 2., 3.];
     a.std(4.);
 }
 
 #[test]
 #[cfg(feature = "std")]
-fn std_nan_ddof()
-{
+fn std_nan_ddof() {
     let a = Array2::<f64>::zeros((2, 3));
     let v = a.std(f64::NAN);
     assert!(v.is_nan());
@@ -224,8 +196,7 @@ fn std_nan_ddof()
 
 #[test]
 #[cfg(feature = "std")]
-fn std_empty_arr()
-{
+fn std_empty_arr() {
     let a: Array1<f64> = array![];
     assert!(a.std(0.0).is_nan());
 }
@@ -233,21 +204,12 @@ fn std_empty_arr()
 #[test]
 #[cfg(feature = "approx")]
 #[cfg(feature = "std")]
-fn var_axis()
-{
+fn var_axis() {
     use ndarray::{aview0, aview2};
 
     let a = array![
-        [
-            [-9.76, -0.38, 1.59, 6.23],
-            [-8.57, -9.27, 5.76, 6.01],
-            [-9.54, 5.09, 3.21, 6.56],
-        ],
-        [
-            [8.23, -9.63, 3.76, -3.48],
-            [-5.46, 5.86, -2.81, 1.35],
-            [-1.08, 4.66, 8.34, -0.73],
-        ],
+        [[-9.76, -0.38, 1.59, 6.23], [-8.57, -9.27, 5.76, 6.01], [-9.54, 5.09, 3.21, 6.56],],
+        [[8.23, -9.63, 3.76, -3.48], [-5.46, 5.86, -2.81, 1.35], [-1.08, 4.66, 8.34, -0.73],],
     ];
     assert_abs_diff_eq!(
         a.var_axis(Axis(0), 1.5),
@@ -268,19 +230,12 @@ fn var_axis()
     );
     assert_abs_diff_eq!(
         a.var_axis(Axis(2), 2.3),
-        aview2(&[
-            [79.64552941, 129.09663235, 95.98929412],
-            [109.64952941, 43.28758824, 36.27439706],
-        ]),
+        aview2(&[[79.64552941, 129.09663235, 95.98929412], [109.64952941, 43.28758824, 36.27439706],]),
         epsilon = 1e-8,
     );
 
     let b = array![[1.1, 2.3, 4.7]];
-    assert_abs_diff_eq!(
-        b.var_axis(Axis(0), 0.),
-        aview1(&[0., 0., 0.]),
-        epsilon = 1e-12
-    );
+    assert_abs_diff_eq!(b.var_axis(Axis(0), 0.), aview1(&[0., 0., 0.]), epsilon = 1e-12);
     assert_abs_diff_eq!(b.var_axis(Axis(1), 0.), aview1(&[2.24]), epsilon = 1e-12);
 
     let c = array![[], []];
@@ -293,8 +248,7 @@ fn var_axis()
 #[test]
 #[cfg(feature = "approx")]
 #[cfg(feature = "std")]
-fn std_axis()
-{
+fn std_axis() {
     use ndarray::aview2;
 
     let a = array![
@@ -320,32 +274,18 @@ fn std_axis()
     );
     assert_abs_diff_eq!(
         a.std_axis(Axis(1), 1.7),
-        aview2(&[
-            [0.42698655, 0.48139215, 0.36874991, 0.41458724],
-            [0.26769097, 0.18941435, 0.30555015, 0.35118674],
-        ]),
+        aview2(&[[0.42698655, 0.48139215, 0.36874991, 0.41458724], [0.26769097, 0.18941435, 0.30555015, 0.35118674],]),
         epsilon = 1e-8,
     );
     assert_abs_diff_eq!(
         a.std_axis(Axis(2), 2.3),
-        aview2(&[
-            [0.41117907, 0.37130425, 0.35332388],
-            [0.16905862, 0.25304841, 0.39978276],
-        ]),
+        aview2(&[[0.41117907, 0.37130425, 0.35332388], [0.16905862, 0.25304841, 0.39978276],]),
         epsilon = 1e-8,
     );
 
     let b = array![[100000., 1., 0.01]];
-    assert_abs_diff_eq!(
-        b.std_axis(Axis(0), 0.),
-        aview1(&[0., 0., 0.]),
-        epsilon = 1e-12,
-    );
-    assert_abs_diff_eq!(
-        b.std_axis(Axis(1), 0.),
-        aview1(&[47_140.214_021_552_77]),
-        epsilon = 1e-6,
-    );
+    assert_abs_diff_eq!(b.std_axis(Axis(0), 0.), aview1(&[0., 0., 0.]), epsilon = 1e-12,);
+    assert_abs_diff_eq!(b.std_axis(Axis(1), 0.), aview1(&[47_140.214_021_552_77]), epsilon = 1e-6,);
 
     let c = array![[], []];
     assert_eq!(c.std_axis(Axis(0), 0.), aview1(&[]));
@@ -354,8 +294,7 @@ fn std_axis()
 #[test]
 #[should_panic]
 #[cfg(feature = "std")]
-fn var_axis_negative_ddof()
-{
+fn var_axis_negative_ddof() {
     let a = array![1., 2., 3.];
     a.var_axis(Axis(0), -1.);
 }
@@ -363,16 +302,14 @@ fn var_axis_negative_ddof()
 #[test]
 #[should_panic]
 #[cfg(feature = "std")]
-fn var_axis_too_large_ddof()
-{
+fn var_axis_too_large_ddof() {
     let a = array![1., 2., 3.];
     a.var_axis(Axis(0), 4.);
 }
 
 #[test]
 #[cfg(feature = "std")]
-fn var_axis_nan_ddof()
-{
+fn var_axis_nan_ddof() {
     let a = Array2::<f64>::zeros((2, 3));
     let v = a.var_axis(Axis(1), f64::NAN);
     assert_eq!(v.shape(), &[2]);
@@ -381,8 +318,7 @@ fn var_axis_nan_ddof()
 
 #[test]
 #[cfg(feature = "std")]
-fn var_axis_empty_axis()
-{
+fn var_axis_empty_axis() {
     let a = Array2::<f64>::zeros((2, 0));
     let v = a.var_axis(Axis(1), 0.);
     assert_eq!(v.shape(), &[2]);
@@ -392,16 +328,14 @@ fn var_axis_empty_axis()
 #[test]
 #[should_panic]
 #[cfg(feature = "std")]
-fn std_axis_bad_dof()
-{
+fn std_axis_bad_dof() {
     let a = array![1., 2., 3.];
     a.std_axis(Axis(0), 4.);
 }
 
 #[test]
 #[cfg(feature = "std")]
-fn std_axis_empty_axis()
-{
+fn std_axis_empty_axis() {
     let a = Array2::<f64>::zeros((2, 0));
     let v = a.std_axis(Axis(1), 0.);
     assert_eq!(v.shape(), &[2]);
@@ -409,69 +343,48 @@ fn std_axis_empty_axis()
 }
 
 #[test]
-fn diff_1d_order1()
-{
+fn diff_1d_order1() {
     let data = array![1.0, 2.0, 4.0, 7.0];
     let expected = array![1.0, 2.0, 3.0];
     assert_eq!(data.diff(1, Axis(0)), expected);
 }
 
 #[test]
-fn diff_1d_order2()
-{
+fn diff_1d_order2() {
     let data = array![1.0, 2.0, 4.0, 7.0];
-    assert_eq!(
-        data.diff(2, Axis(0)),
-        data.diff(1, Axis(0)).diff(1, Axis(0))
-    );
+    assert_eq!(data.diff(2, Axis(0)), data.diff(1, Axis(0)).diff(1, Axis(0)));
 }
 
 #[test]
-fn diff_1d_order3()
-{
+fn diff_1d_order3() {
     let data = array![1.0, 2.0, 4.0, 7.0];
-    assert_eq!(
-        data.diff(3, Axis(0)),
-        data.diff(1, Axis(0)).diff(1, Axis(0)).diff(1, Axis(0))
-    );
+    assert_eq!(data.diff(3, Axis(0)), data.diff(1, Axis(0)).diff(1, Axis(0)).diff(1, Axis(0)));
 }
 
 #[test]
-fn diff_2d_order1_ax0()
-{
-    let data = array![
-        [1.0, 2.0, 4.0, 7.0],
-        [1.0, 3.0, 6.0, 6.0],
-        [1.5, 3.5, 5.5, 5.5]
-    ];
+fn diff_2d_order1_ax0() {
+    let data = array![[1.0, 2.0, 4.0, 7.0], [1.0, 3.0, 6.0, 6.0], [1.5, 3.5, 5.5, 5.5]];
     let expected = array![[0.0, 1.0, 2.0, -1.0], [0.5, 0.5, -0.5, -0.5]];
     assert_eq!(data.diff(1, Axis(0)), expected);
 }
 
 #[test]
-fn diff_2d_order1_ax1()
-{
-    let data = array![
-        [1.0, 2.0, 4.0, 7.0],
-        [1.0, 3.0, 6.0, 6.0],
-        [1.5, 3.5, 5.5, 5.5]
-    ];
+fn diff_2d_order1_ax1() {
+    let data = array![[1.0, 2.0, 4.0, 7.0], [1.0, 3.0, 6.0, 6.0], [1.5, 3.5, 5.5, 5.5]];
     let expected = array![[1.0, 2.0, 3.0], [2.0, 3.0, 0.0], [2.0, 2.0, 0.0]];
     assert_eq!(data.diff(1, Axis(1)), expected);
 }
 
 #[test]
 #[should_panic]
-fn diff_panic_n_too_big()
-{
+fn diff_panic_n_too_big() {
     let data = array![1.0, 2.0, 4.0, 7.0];
     data.diff(10, Axis(0));
 }
 
 #[test]
 #[should_panic]
-fn diff_panic_axis_out_of_bounds()
-{
+fn diff_panic_axis_out_of_bounds() {
     let data = array![1, 2, 4, 7];
     data.diff(1, Axis(2));
 }

@@ -18,7 +18,11 @@ const PHI: f64 = std::f64::consts::GOLDEN_RATIO;
 /// floor(d / φ²), rounded to nearest odd.
 pub const fn golden_shift(d: usize) -> usize {
     let raw = (d as f64 / (PHI * PHI)) as usize;
-    if raw % 2 == 0 { raw + 1 } else { raw }
+    if raw % 2 == 0 {
+        raw + 1
+    } else {
+        raw
+    }
 }
 
 /// Level A constants (8Kbit = 128 × u64)
@@ -60,11 +64,7 @@ pub fn cyclic_shift<const N: usize>(bits: &[u64; N], shift: usize) -> [u64; N] {
 
 /// Majority vote of 3 binary vectors: output bit = 1 if ≥2 of 3 inputs are 1.
 /// Bit-parallel: (a&b) | (a&c) | (b&c)
-pub fn majority_vote_3<const N: usize>(
-    a: &[u64; N],
-    b: &[u64; N],
-    c: &[u64; N],
-) -> [u64; N] {
+pub fn majority_vote_3<const N: usize>(a: &[u64; N], b: &[u64; N], c: &[u64; N]) -> [u64; N] {
     let mut result = [0u64; N];
     for i in 0..N {
         result[i] = (a[i] & b[i]) | (a[i] & c[i]) | (b[i] & c[i]);
@@ -162,7 +162,9 @@ pub fn recover_o_16k(bundle: &[u64; 256]) -> [u64; 256] {
 
 /// Simple deterministic PRNG for reproducible tests.
 fn prng_next(state: &mut u64) -> u64 {
-    *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    *state = state
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     *state
 }
 
@@ -271,19 +273,11 @@ mod tests {
 
         // FIX: golden_shift(8192) = 3129, which is odd → gcd(3129, 8192) = 1
         assert_eq!(gcd(SHIFT_META, D_META), 1, "meta shift must be coprime");
-        assert!(
-            SHIFT_META % 2 == 1,
-            "shift must be odd, got {}",
-            SHIFT_META
-        );
+        assert!(SHIFT_META % 2 == 1, "shift must be odd, got {}", SHIFT_META);
 
         // FIX: golden_shift(16384) is odd → gcd with 16384 = 1
         assert_eq!(gcd(SHIFT_FULL, D_FULL), 1, "full shift must be coprime");
-        assert!(
-            SHIFT_FULL % 2 == 1,
-            "full shift must be odd, got {}",
-            SHIFT_FULL
-        );
+        assert!(SHIFT_FULL % 2 == 1, "full shift must be odd, got {}", SHIFT_FULL);
 
         // Verify full orbit at d=8192: shift visits all positions
         let mut visited = vec![false; D_META];
@@ -320,30 +314,16 @@ mod tests {
         let dist_odd = hamming(&alternating, &shifted_odd);
 
         eprintln!("\n  EXPERIMENT 1: GCD Verification");
-        eprintln!(
-            "  shift=3130 (even): hamming(alternating, shift) = {} (VULNERABLE: same pattern)",
-            dist_even
-        );
+        eprintln!("  shift=3130 (even): hamming(alternating, shift) = {} (VULNERABLE: same pattern)", dist_even);
         eprintln!(
             "  shift={} (odd): hamming(alternating, shift) = {} (SAFE: fully decorrelated)",
             SHIFT_META, dist_odd
         );
         eprintln!("  gcd(3130, 8192) = {} → orbit len = {}", gcd(3130, 8192), orbit_3130);
-        eprintln!(
-            "  gcd({}, 8192) = {} → orbit len = {}",
-            SHIFT_META,
-            gcd(SHIFT_META, D_META),
-            orbit_good
-        );
+        eprintln!("  gcd({}, 8192) = {} → orbit len = {}", SHIFT_META, gcd(SHIFT_META, D_META), orbit_good);
 
-        assert_eq!(
-            dist_even, 0,
-            "even shift on alternating should give hamming=0"
-        );
-        assert_eq!(
-            dist_odd, D_META as u32,
-            "odd shift on alternating should give hamming=d"
-        );
+        assert_eq!(dist_even, 0, "even shift on alternating should give hamming=0");
+        assert_eq!(dist_odd, D_META as u32, "odd shift on alternating should give hamming=d");
     }
 
     // ========================================================================
@@ -386,21 +366,9 @@ mod tests {
         eprintln!("  P error rate: {:.4} (expected 0.25)", p_err);
         eprintln!("  O error rate: {:.4} (expected 0.25)", o_err);
 
-        assert!(
-            (s_err - 0.25).abs() < 0.02,
-            "S error rate {:.4} too far from 0.25",
-            s_err
-        );
-        assert!(
-            (p_err - 0.25).abs() < 0.02,
-            "P error rate {:.4} too far from 0.25",
-            p_err
-        );
-        assert!(
-            (o_err - 0.25).abs() < 0.02,
-            "O error rate {:.4} too far from 0.25",
-            o_err
-        );
+        assert!((s_err - 0.25).abs() < 0.02, "S error rate {:.4} too far from 0.25", s_err);
+        assert!((p_err - 0.25).abs() < 0.02, "P error rate {:.4} too far from 0.25", p_err);
+        assert!((o_err - 0.25).abs() < 0.02, "O error rate {:.4} too far from 0.25", o_err);
     }
 
     #[test]
@@ -424,11 +392,7 @@ mod tests {
         eprintln!("\n  EXPERIMENT 2b: Recovery Rate (16Kbit, {} trials)", n_trials);
         eprintln!("  S error rate: {:.4} (expected 0.25)", err);
 
-        assert!(
-            (err - 0.25).abs() < 0.02,
-            "16K error rate {:.4} too far from 0.25",
-            err
-        );
+        assert!((err - 0.25).abs() < 0.02, "16K error rate {:.4} too far from 0.25", err);
     }
 
     // ========================================================================
@@ -483,10 +447,8 @@ mod tests {
 
             // Recall@k
             for &k in &[1, 5, 10, 20] {
-                let top_sep: HashSet<usize> =
-                    dists_sep[..k].iter().map(|&(i, _)| i).collect();
-                let top_bun: HashSet<usize> =
-                    dists_bun[..k].iter().map(|&(i, _)| i).collect();
+                let top_sep: HashSet<usize> = dists_sep[..k].iter().map(|&(i, _)| i).collect();
+                let top_bun: HashSet<usize> = dists_bun[..k].iter().map(|&(i, _)| i).collect();
                 let recall = top_sep.intersection(&top_bun).count() as f64 / k as f64;
                 eprintln!("  Query {}: Recall@{} = {:.2}", qi, k, recall);
             }
@@ -546,13 +508,8 @@ mod tests {
         }
         let slope = if var_t > 0.0 { cov / var_t } else { 0.0 };
         let intercept = mean_b - slope * mean_t;
-        eprintln!(
-            "  Linear fit: bundle_dist = {:.4} × true_dist + {:.1}",
-            slope, intercept
-        );
-        eprintln!(
-            "  Expected:   bundle_dist = ~0.167 × true_dist + ~3072"
-        );
+        eprintln!("  Linear fit: bundle_dist = {:.4} × true_dist + {:.1}", slope, intercept);
+        eprintln!("  Expected:   bundle_dist = ~0.167 × true_dist + ~3072");
         // For 3-component sum: the contraction is on the combined distance
         // which has range [0, 3d]. The slope should be ~1/6 and intercept ~3d×0.375/3
 
@@ -562,11 +519,7 @@ mod tests {
         // Majority vote creates cross-component interference that compresses
         // the distance range. Still useful as cascade stroke — monotonic ranking.
         // THRESHOLD: Spearman > 0.70 (adjusted for 3-component mixing)
-        assert!(
-            mean_rho > 0.70,
-            "Mean Spearman ρ = {:.4} < 0.70 threshold",
-            mean_rho
-        );
+        assert!(mean_rho > 0.70, "Mean Spearman ρ = {:.4} < 0.70 threshold", mean_rho);
     }
 
     // ========================================================================
@@ -635,16 +588,10 @@ mod tests {
             max_auto = max_auto.max(auto);
             min_auto = min_auto.min(auto);
             if i < 5 {
-                eprintln!(
-                    "  Text {} autocorrelation at lag {}: {:.4} (expect ~0.50)",
-                    i, SHIFT_FULL, auto
-                );
+                eprintln!("  Text {} autocorrelation at lag {}: {:.4} (expect ~0.50)", i, SHIFT_FULL, auto);
             }
         }
-        eprintln!(
-            "  Autocorrelation range: [{:.4}, {:.4}]",
-            min_auto, max_auto
-        );
+        eprintln!("  Autocorrelation range: [{:.4}, {:.4}]", min_auto, max_auto);
 
         // Bundle and recover — measure error rate on structured data
         let n = planes.len();
@@ -663,22 +610,11 @@ mod tests {
             total_bits += D_FULL as u64;
         }
         let error_rate = total_errors as f64 / total_bits as f64;
-        eprintln!(
-            "  Structured recovery error: {:.4} (expected ~0.25)",
-            error_rate
-        );
+        eprintln!("  Structured recovery error: {:.4} (expected ~0.25)", error_rate);
 
         // Flag if autocorrelation is outside safe range
-        assert!(
-            min_auto > 0.40,
-            "Autocorrelation too low: {:.4} (periodic structure detected)",
-            min_auto
-        );
-        assert!(
-            max_auto < 0.60,
-            "Autocorrelation too high: {:.4}",
-            max_auto
-        );
+        assert!(min_auto > 0.40, "Autocorrelation too low: {:.4} (periodic structure detected)", min_auto);
+        assert!(max_auto < 0.60, "Autocorrelation too high: {:.4}", max_auto);
         assert!(
             (error_rate - 0.25).abs() < 0.05,
             "Structured error rate {:.4} deviates from expected 0.25",
@@ -743,22 +679,12 @@ mod tests {
         }
 
         let total = nodes.len();
-        let integrated: Vec<[u64; 256]> = nodes
-            .iter()
-            .map(|(s, p, o)| bundle_16k(s, p, o))
-            .collect();
+        let integrated: Vec<[u64; 256]> = nodes.iter().map(|(s, p, o)| bundle_16k(s, p, o)).collect();
 
-        eprintln!(
-            "\n  EXPERIMENT 5: Holographic Resonance (n={}, 4 clusters + {} random)",
-            total, n_random
-        );
+        eprintln!("\n  EXPERIMENT 5: Holographic Resonance (n={}, 4 clusters + {} random)", total, n_random);
 
         // Query from cluster 3 (similar S+P)
-        for &qi in &[
-            n_per_cluster * 2,
-            n_per_cluster * 2 + 10,
-            n_per_cluster * 2 + 20,
-        ] {
+        for &qi in &[n_per_cluster * 2, n_per_cluster * 2 + 10, n_per_cluster * 2 + 20] {
             let mut dists_sep: Vec<(usize, u32)> = (0..total)
                 .filter(|&i| i != qi)
                 .map(|i| {
@@ -786,10 +712,7 @@ mod tests {
                 .filter(|&&(i, _)| labels[i] == 3)
                 .count();
 
-            eprintln!(
-                "  Query {} (cluster 3): sep purity={}/{} int purity={}/{}",
-                qi, purity_sep, k, purity_int, k
-            );
+            eprintln!("  Query {} (cluster 3): sep purity={}/{} int purity={}/{}", qi, purity_sep, k, purity_int, k);
         }
 
         // Also test: do integrated and separate produce same top-20?
@@ -832,14 +755,8 @@ mod tests {
             })
             .collect();
 
-        let bundles_8k: Vec<[u64; 128]> = nodes
-            .iter()
-            .map(|(s, p, o)| bundle_8k(s, p, o))
-            .collect();
-        let integrated_16k: Vec<[u64; 256]> = nodes
-            .iter()
-            .map(|(s, p, o)| bundle_16k(s, p, o))
-            .collect();
+        let bundles_8k: Vec<[u64; 128]> = nodes.iter().map(|(s, p, o)| bundle_8k(s, p, o)).collect();
+        let integrated_16k: Vec<[u64; 256]> = nodes.iter().map(|(s, p, o)| bundle_16k(s, p, o)).collect();
 
         eprintln!("\n  EXPERIMENT 6: Cascade Coherence (n={})", n_nodes);
 
@@ -871,8 +788,12 @@ mod tests {
         eprintln!("  ρ(8K bundle → exact):           {:.4}", rho_13);
 
         // Cascade simulation: 500 → top 50 by 8K → top 10 by 16K → verify exact
-        let mut l1_ranked: Vec<(usize, f64)> =
-            l1.iter().copied().enumerate().map(|(i, d)| (i + 1, d)).collect();
+        let mut l1_ranked: Vec<(usize, f64)> = l1
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(i, d)| (i + 1, d))
+            .collect();
         l1_ranked.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
         let l1_top50: Vec<usize> = l1_ranked[..50].iter().map(|&(i, _)| i).collect();
 
@@ -884,22 +805,19 @@ mod tests {
         let l2_top10: HashSet<usize> = l2_filtered[..10].iter().map(|&(i, _)| i).collect();
 
         // Ground truth top-10
-        let mut l3_ranked: Vec<(usize, f64)> =
-            l3.iter().copied().enumerate().map(|(i, d)| (i + 1, d)).collect();
+        let mut l3_ranked: Vec<(usize, f64)> = l3
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(i, d)| (i + 1, d))
+            .collect();
         l3_ranked.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
         let gt_top10: HashSet<usize> = l3_ranked[..10].iter().map(|&(i, _)| i).collect();
 
         let cascade_recall = gt_top10.intersection(&l2_top10).count() as f64 / 10.0;
-        eprintln!(
-            "\n  Cascade recall@10 (500→50→10): {:.2}",
-            cascade_recall
-        );
+        eprintln!("\n  Cascade recall@10 (500→50→10): {:.2}", cascade_recall);
 
-        assert!(
-            rho_23 > 0.30,
-            "16K→exact ρ = {:.4} < 0.30 threshold",
-            rho_23
-        );
+        assert!(rho_23 > 0.30, "16K→exact ρ = {:.4} < 0.30 threshold", rho_23);
     }
 
     // ========================================================================
@@ -947,10 +865,7 @@ mod tests {
         let int_tree = ClamTree::build(&integrated_bytes, 2048, 5);
         let content_tree = ClamTree::build(&content_bytes, 2048, 5);
 
-        eprintln!(
-            "\n  EXPERIMENT 7: CLAM Clustering ({} clusters × {} nodes)",
-            n_clusters, n_per_cluster
-        );
+        eprintln!("\n  EXPERIMENT 7: CLAM Clustering ({} clusters × {} nodes)", n_clusters, n_per_cluster);
         eprintln!("  Integrated tree: {} nodes", int_tree.nodes.len());
         eprintln!("  Content tree:    {} nodes", content_tree.nodes.len());
 
@@ -1004,10 +919,7 @@ mod tests {
         let n_trials = 100;
 
         eprintln!("\n  EXPERIMENT 8: Bias Resilience");
-        eprintln!(
-            "  {:>6} {:>12} {:>12} {:>12}",
-            "Bias", "Actual Err", "Predicted", "P(correct)"
-        );
+        eprintln!("  {:>6} {:>12} {:>12} {:>12}", "Bias", "Actual Err", "Predicted", "P(correct)");
 
         for bias_pct in [30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80] {
             let bias = bias_pct as f64 / 100.0;
@@ -1028,10 +940,7 @@ mod tests {
             let predicted = bias * (1.0 - bias); // P(error) = p(1-p)
             let p_correct = 1.0 - predicted;
 
-            eprintln!(
-                "  {:.2}   {:.4}       {:.4}       {:.4}",
-                bias, actual_err, predicted, p_correct
-            );
+            eprintln!("  {:.2}   {:.4}       {:.4}       {:.4}", bias, actual_err, predicted, p_correct);
         }
     }
 
@@ -1050,10 +959,7 @@ mod tests {
             })
             .collect();
 
-        let bundles: Vec<[u64; 256]> = nodes
-            .iter()
-            .map(|(s, p, o)| bundle_16k(s, p, o))
-            .collect();
+        let bundles: Vec<[u64; 256]> = nodes.iter().map(|(s, p, o)| bundle_16k(s, p, o)).collect();
 
         eprintln!("\n  EXPERIMENT 9: Multi-Hop Query (n={})", n_nodes);
 
@@ -1088,11 +994,7 @@ mod tests {
         let rho = spearman(&hop_f64, &exact_f64);
         eprintln!("  Multi-hop Spearman ρ: {:.4}", rho);
 
-        assert!(
-            rho > 0.50,
-            "Multi-hop ρ = {:.4} too low (error propagation)",
-            rho
-        );
+        assert!(rho > 0.50, "Multi-hop ρ = {:.4} too low (error propagation)", rho);
     }
 
     // ========================================================================
@@ -1101,11 +1003,7 @@ mod tests {
 
     #[test]
     fn exp10_accumulator_capacity() {
-        let target: [u64; 256] = bundle_16k(
-            &random_bits(42),
-            &random_bits(43),
-            &random_bits(44),
-        );
+        let target: [u64; 256] = bundle_16k(&random_bits(42), &random_bits(43), &random_bits(44));
 
         let mut acc = vec![0i32; D_FULL];
 
@@ -1144,13 +1042,7 @@ mod tests {
             let snr = (D_FULL as f64 / (std::f64::consts::PI * (n + 1) as f64)).sqrt();
 
             if n <= 10 || n % 50 == 0 || error_rate > 0.40 {
-                eprintln!(
-                    "  {:>6} {:>8} {:>7.1}% {:>8.1}",
-                    n,
-                    dist,
-                    error_rate * 100.0,
-                    snr
-                );
+                eprintln!("  {:>6} {:>8} {:>7.1}% {:>8.1}", n, dist, error_rate * 100.0, snr);
             }
 
             if error_rate > 0.45 && capacity_limit == 0 {
@@ -1299,8 +1191,13 @@ mod tests {
         let po_close = ((dp + d_o) < 2 * thresh) as u8;
         let spo_close = ((ds + dp + d_o) < 3 * thresh) as u8;
 
-        s_close | (p_close << 1) | (o_close << 2) | (sp_close << 3)
-            | (so_close << 4) | (po_close << 5) | (spo_close << 6)
+        s_close
+            | (p_close << 1)
+            | (o_close << 2)
+            | (sp_close << 3)
+            | (so_close << 4)
+            | (po_close << 5)
+            | (spo_close << 6)
     }
 
     /// ZeckF64: 8 bytes = scent + 7 resolution quantiles.
@@ -1314,8 +1211,14 @@ mod tests {
         let byte6 = (dp as u64 * 255 / d_max as u64).min(255);
         let byte7 = (ds as u64 * 255 / d_max as u64).min(255);
 
-        byte0 | (byte1 << 8) | (byte2 << 16) | (byte3 << 24)
-            | (byte4 << 32) | (byte5 << 40) | (byte6 << 48) | (byte7 << 56)
+        byte0
+            | (byte1 << 8)
+            | (byte2 << 16)
+            | (byte3 << 24)
+            | (byte4 << 32)
+            | (byte5 << 40)
+            | (byte6 << 48)
+            | (byte7 << 56)
     }
 
     fn zeckf64_l1(a: u64, b: u64) -> u32 {
@@ -1353,13 +1256,11 @@ mod tests {
         let mut bundle_16k_dists = Vec::with_capacity(n_pairs);
 
         // Pre-build bundles
-        let bundles_8k: Vec<[u64; 128]> = nodes.iter()
-            .map(|(s, p, o)| bundle_8k(s, p, o)).collect();
-        let bundles_16k: Vec<[u64; 256]> = nodes.iter()
-            .map(|(s, p, o)| bundle_16k(s, p, o)).collect();
+        let bundles_8k: Vec<[u64; 128]> = nodes.iter().map(|(s, p, o)| bundle_8k(s, p, o)).collect();
+        let bundles_16k: Vec<[u64; 256]> = nodes.iter().map(|(s, p, o)| bundle_16k(s, p, o)).collect();
 
         for i in 0..n_nodes {
-            for j in (i+1)..n_nodes {
+            for j in (i + 1)..n_nodes {
                 let ds = hamming(&nodes[i].0, &nodes[j].0);
                 let dp = hamming(&nodes[i].1, &nodes[j].1);
                 let d_o = hamming(&nodes[i].2, &nodes[j].2);
@@ -1415,12 +1316,21 @@ mod tests {
         println!("  ─────────────────────────────────────────────────────");
         println!("  Method              Bits     Spearman ρ   Verdict");
         println!("  ─────────────────────────────────────────────────────");
-        println!("  ZeckF64 (8 bytes)   64       {:.4}       {}", rho_z64,
-            if rho_z64 > 0.90 {"GO ✓"} else {"CHECK"});
-        println!("  Bundle 16K (maj3)   16,384   {:.4}       {}", rho_b16k,
-            if rho_b16k > 0.80 {"GO ✓"} else {"DEAD ZONE"});
-        println!("  Bundle 8K (fold+maj) 8,192   {:.4}       {}", rho_b8k,
-            if rho_b8k > 0.60 {"GO ✓"} else {"DEAD ZONE"});
+        println!(
+            "  ZeckF64 (8 bytes)   64       {:.4}       {}",
+            rho_z64,
+            if rho_z64 > 0.90 { "GO ✓" } else { "CHECK" }
+        );
+        println!(
+            "  Bundle 16K (maj3)   16,384   {:.4}       {}",
+            rho_b16k,
+            if rho_b16k > 0.80 { "GO ✓" } else { "DEAD ZONE" }
+        );
+        println!(
+            "  Bundle 8K (fold+maj) 8,192   {:.4}       {}",
+            rho_b8k,
+            if rho_b8k > 0.60 { "GO ✓" } else { "DEAD ZONE" }
+        );
         println!("  Exact S+P+O         49,152   1.0000       reference");
         println!("  ─────────────────────────────────────────────────────");
 
@@ -1498,8 +1408,12 @@ mod tests {
                 let top_zf64: HashSet<usize> = zf64_full[..k].iter().map(|&(i, _)| i).collect();
                 let recall = top_exact.intersection(&top_zf64).count() as f64 / k as f64;
 
-                if k == 1 { all_recall_1.push(recall); }
-                if k == 10 { all_recall_10.push(recall); }
+                if k == 1 {
+                    all_recall_1.push(recall);
+                }
+                if k == 10 {
+                    all_recall_10.push(recall);
+                }
             }
         }
 
@@ -1507,8 +1421,7 @@ mod tests {
         let mean_r10 = all_recall_10.iter().sum::<f64>() / all_recall_10.len() as f64;
         println!("  ZeckF64 Recall@1:  {:.3}", mean_r1);
         println!("  ZeckF64 Recall@10: {:.3}", mean_r10);
-        println!("  Recall@1  > 0.80: {}", if mean_r1 > 0.80 {"GO ✓"} else {"CHECK"});
-        println!("  Recall@10 > 0.70: {}", if mean_r10 > 0.70 {"GO ✓"} else {"CHECK"});
+        println!("  Recall@1  > 0.80: {}", if mean_r1 > 0.80 { "GO ✓" } else { "CHECK" });
+        println!("  Recall@10 > 0.70: {}", if mean_r10 > 0.70 { "GO ✓" } else { "CHECK" });
     }
-
 }

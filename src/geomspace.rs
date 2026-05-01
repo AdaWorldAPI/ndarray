@@ -11,8 +11,7 @@ use num_traits::Float;
 /// An iterator of a sequence of geometrically spaced floats.
 ///
 /// Iterator element type is `F`.
-pub struct Geomspace<F>
-{
+pub struct Geomspace<F> {
     sign: F,
     start: F,
     step: F,
@@ -21,13 +20,13 @@ pub struct Geomspace<F>
 }
 
 impl<F> Iterator for Geomspace<F>
-where F: Float
+where
+    F: Float,
 {
     type Item = F;
 
     #[inline]
-    fn next(&mut self) -> Option<F>
-    {
+    fn next(&mut self) -> Option<F> {
         if self.index >= self.len {
             None
         } else {
@@ -40,19 +39,18 @@ where F: Float
     }
 
     #[inline]
-    fn size_hint(&self) -> (usize, Option<usize>)
-    {
+    fn size_hint(&self) -> (usize, Option<usize>) {
         let n = self.len - self.index;
         (n, Some(n))
     }
 }
 
 impl<F> DoubleEndedIterator for Geomspace<F>
-where F: Float
+where
+    F: Float,
 {
     #[inline]
-    fn next_back(&mut self) -> Option<F>
-    {
+    fn next_back(&mut self) -> Option<F> {
         if self.index >= self.len {
             None
         } else {
@@ -82,7 +80,8 @@ impl<F> ExactSizeIterator for Geomspace<F> where Geomspace<F>: Iterator {}
 /// **Panics** if converting `n - 1` to type `F` fails.
 #[inline]
 pub fn geomspace<F>(a: F, b: F, n: usize) -> Option<Geomspace<F>>
-where F: Float
+where
+    F: Float,
 {
     if a == F::zero() || b == F::zero() || a.is_sign_negative() != b.is_sign_negative() {
         return None;
@@ -105,14 +104,12 @@ where F: Float
 }
 
 #[cfg(test)]
-mod tests
-{
+mod tests {
     use super::geomspace;
 
     #[test]
     #[cfg(feature = "approx")]
-    fn valid()
-    {
+    fn valid() {
         use crate::{arr1, Array1};
         use approx::assert_abs_diff_eq;
 
@@ -130,8 +127,7 @@ mod tests
     }
 
     #[test]
-    fn iter_forward()
-    {
+    fn iter_forward() {
         let mut iter = geomspace(1.0f64, 1e3, 4).unwrap();
 
         assert!(iter.size_hint() == (4, Some(4)));
@@ -146,8 +142,7 @@ mod tests
     }
 
     #[test]
-    fn iter_backward()
-    {
+    fn iter_backward() {
         let mut iter = geomspace(1.0f64, 1e3, 4).unwrap();
 
         assert!(iter.size_hint() == (4, Some(4)));
@@ -162,20 +157,17 @@ mod tests
     }
 
     #[test]
-    fn zero_lower()
-    {
+    fn zero_lower() {
         assert!(geomspace(0.0, 1.0, 4).is_none());
     }
 
     #[test]
-    fn zero_upper()
-    {
+    fn zero_upper() {
         assert!(geomspace(1.0, 0.0, 4).is_none());
     }
 
     #[test]
-    fn zero_included()
-    {
+    fn zero_included() {
         assert!(geomspace(-1.0, 1.0, 4).is_none());
     }
 }

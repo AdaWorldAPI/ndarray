@@ -63,7 +63,12 @@ pub struct ApiError {
 
 impl ApiError {
     pub fn invalid_request(msg: impl Into<String>) -> Self {
-        Self { message: msg.into(), r#type: "invalid_request_error".into(), param: None, code: None }
+        Self {
+            message: msg.into(),
+            r#type: "invalid_request_error".into(),
+            param: None,
+            code: None,
+        }
     }
     pub fn model_not_found(model: &str) -> Self {
         Self {
@@ -100,7 +105,12 @@ pub struct Model {
 
 impl Model {
     pub fn new(id: impl Into<String>, owned_by: impl Into<String>, created: u64) -> Self {
-        Self { id: id.into(), object: "model", created, owned_by: owned_by.into() }
+        Self {
+            id: id.into(),
+            object: "model",
+            created,
+            owned_by: owned_by.into(),
+        }
     }
 }
 
@@ -113,7 +123,10 @@ pub struct ModelList {
 
 impl ModelList {
     pub fn new(models: Vec<Model>) -> Self {
-        Self { object: "list", data: models }
+        Self {
+            object: "list",
+            data: models,
+        }
     }
 }
 
@@ -213,7 +226,15 @@ pub struct CompletionResponse {
 
 impl CompletionResponse {
     pub fn new(id: String, model: String, choices: Vec<CompletionChoice>, usage: Usage, created: u64) -> Self {
-        Self { id, object: "text_completion", created, model, choices, usage, system_fingerprint: None }
+        Self {
+            id,
+            object: "text_completion",
+            created,
+            model,
+            choices,
+            usage,
+            system_fingerprint: None,
+        }
     }
 }
 
@@ -265,13 +286,31 @@ pub struct ChatMessage {
 
 impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
-        Self { role: ChatRole::System, content: Some(content.into()), name: None, tool_calls: None, tool_call_id: None }
+        Self {
+            role: ChatRole::System,
+            content: Some(content.into()),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+        }
     }
     pub fn user(content: impl Into<String>) -> Self {
-        Self { role: ChatRole::User, content: Some(content.into()), name: None, tool_calls: None, tool_call_id: None }
+        Self {
+            role: ChatRole::User,
+            content: Some(content.into()),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+        }
     }
     pub fn assistant(content: impl Into<String>) -> Self {
-        Self { role: ChatRole::Assistant, content: Some(content.into()), name: None, tool_calls: None, tool_call_id: None }
+        Self {
+            role: ChatRole::Assistant,
+            content: Some(content.into()),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+        }
     }
 }
 
@@ -385,7 +424,15 @@ pub struct ChatCompletionResponse {
 
 impl ChatCompletionResponse {
     pub fn new(id: String, model: String, choices: Vec<ChatChoice>, usage: Usage, created: u64) -> Self {
-        Self { id, object: "chat.completion", created, model, choices, usage, system_fingerprint: None }
+        Self {
+            id,
+            object: "chat.completion",
+            created,
+            model,
+            choices,
+            usage,
+            system_fingerprint: None,
+        }
     }
 }
 
@@ -467,7 +514,11 @@ pub struct EmbeddingData {
 
 impl EmbeddingData {
     pub fn new(index: usize, embedding: Vec<f32>) -> Self {
-        Self { object: "embedding", index, embedding }
+        Self {
+            object: "embedding",
+            index,
+            embedding,
+        }
     }
 }
 
@@ -482,7 +533,12 @@ pub struct EmbeddingResponse {
 
 impl EmbeddingResponse {
     pub fn new(model: String, data: Vec<EmbeddingData>, usage: Usage) -> Self {
-        Self { object: "list", model, data, usage }
+        Self {
+            object: "list",
+            model,
+            data,
+            usage,
+        }
     }
 }
 
@@ -677,15 +733,21 @@ mod tests {
     #[test]
     fn test_streaming_chunk_object() {
         let chunk = ChatCompletionChunk {
-            id: "x".into(), object: "chat.completion.chunk", created: 0,
-            model: "m".into(), choices: vec![], system_fingerprint: None,
+            id: "x".into(),
+            object: "chat.completion.chunk",
+            created: 0,
+            model: "m".into(),
+            choices: vec![],
+            system_fingerprint: None,
         };
         assert_eq!(chunk.object, "chat.completion.chunk");
     }
 
     #[test]
     fn test_error_response() {
-        let err = ErrorResponse { error: ApiError::invalid_request("test") };
+        let err = ErrorResponse {
+            error: ApiError::invalid_request("test"),
+        };
         assert_eq!(err.error.r#type, "invalid_request_error");
     }
 }

@@ -3,8 +3,8 @@
 //! Provides gemv, ger (rank-1 update), symv (symmetric matrix-vector),
 //! trmv/trsv (triangular multiply/solve).
 
-use crate::imp_prelude::*;
 use crate::backend::BlasFloat;
+use crate::imp_prelude::*;
 
 /// Upper or lower triangle specification.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,68 +41,38 @@ pub enum Diag {
 pub trait BlasLevel2<A> {
     /// General matrix-vector multiply: y = alpha * A * x + beta * y_init
     fn blas_gemv(
-        &self,
-        alpha: A,
-        x: &ArrayBase<impl Data<Elem = A>, Ix1>,
-        beta: A,
-        y_init: &ArrayBase<impl Data<Elem = A>, Ix1>,
+        &self, alpha: A, x: &ArrayBase<impl Data<Elem = A>, Ix1>, beta: A, y_init: &ArrayBase<impl Data<Elem = A>, Ix1>,
     ) -> Array<A, Ix1>;
 
     /// Rank-1 update: A = alpha * x * y^T + A (returns new array)
     fn blas_ger(
-        &self,
-        alpha: A,
-        x: &ArrayBase<impl Data<Elem = A>, Ix1>,
-        y: &ArrayBase<impl Data<Elem = A>, Ix1>,
+        &self, alpha: A, x: &ArrayBase<impl Data<Elem = A>, Ix1>, y: &ArrayBase<impl Data<Elem = A>, Ix1>,
     ) -> Array<A, Ix2>;
 
     /// Symmetric matrix-vector multiply: y = alpha * A * x + beta * y_init
     ///
     /// Only reads the triangle specified by `uplo`.
     fn blas_symv(
-        &self,
-        uplo: Uplo,
-        alpha: A,
-        x: &ArrayBase<impl Data<Elem = A>, Ix1>,
-        beta: A,
+        &self, uplo: Uplo, alpha: A, x: &ArrayBase<impl Data<Elem = A>, Ix1>, beta: A,
         y_init: &ArrayBase<impl Data<Elem = A>, Ix1>,
     ) -> Array<A, Ix1>;
 
     /// Triangular matrix-vector multiply: x = A * x
-    fn blas_trmv(
-        &self,
-        uplo: Uplo,
-        diag: Diag,
-        x: &ArrayBase<impl Data<Elem = A>, Ix1>,
-    ) -> Array<A, Ix1>;
+    fn blas_trmv(&self, uplo: Uplo, diag: Diag, x: &ArrayBase<impl Data<Elem = A>, Ix1>) -> Array<A, Ix1>;
 
     /// Triangular solve: solve A * result = x for result
-    fn blas_trsv(
-        &self,
-        uplo: Uplo,
-        diag: Diag,
-        x: &ArrayBase<impl Data<Elem = A>, Ix1>,
-    ) -> Array<A, Ix1>;
+    fn blas_trsv(&self, uplo: Uplo, diag: Diag, x: &ArrayBase<impl Data<Elem = A>, Ix1>) -> Array<A, Ix1>;
 
     /// Symmetric rank-1 update: A = alpha * x * x^T + A
     ///
     /// Only updates the triangle specified by `uplo`.
-    fn blas_syr(
-        &self,
-        uplo: Uplo,
-        alpha: A,
-        x: &ArrayBase<impl Data<Elem = A>, Ix1>,
-    ) -> Array<A, Ix2>;
+    fn blas_syr(&self, uplo: Uplo, alpha: A, x: &ArrayBase<impl Data<Elem = A>, Ix1>) -> Array<A, Ix2>;
 
     /// Symmetric rank-2 update: A = alpha * x * y^T + alpha * y * x^T + A
     ///
     /// Only updates the triangle specified by `uplo`.
     fn blas_syr2(
-        &self,
-        uplo: Uplo,
-        alpha: A,
-        x: &ArrayBase<impl Data<Elem = A>, Ix1>,
-        y: &ArrayBase<impl Data<Elem = A>, Ix1>,
+        &self, uplo: Uplo, alpha: A, x: &ArrayBase<impl Data<Elem = A>, Ix1>, y: &ArrayBase<impl Data<Elem = A>, Ix1>,
     ) -> Array<A, Ix2>;
 
     /// General banded matrix-vector multiply: y = alpha * A * x + beta * y_init
@@ -110,13 +80,7 @@ pub trait BlasLevel2<A> {
     /// `kl` is the number of sub-diagonals, `ku` is the number of super-diagonals.
     /// The matrix `A` is stored in band storage with `kl + ku + 1` rows and `n` columns.
     fn blas_gbmv(
-        &self,
-        m: usize,
-        kl: usize,
-        ku: usize,
-        alpha: A,
-        x: &ArrayBase<impl Data<Elem = A>, Ix1>,
-        beta: A,
+        &self, m: usize, kl: usize, ku: usize, alpha: A, x: &ArrayBase<impl Data<Elem = A>, Ix1>, beta: A,
         y_init: &ArrayBase<impl Data<Elem = A>, Ix1>,
     ) -> Array<A, Ix1>;
 
@@ -125,12 +89,7 @@ pub trait BlasLevel2<A> {
     /// `k` is the number of super-diagonals. The matrix is stored in band storage
     /// with `k + 1` rows and `n` columns. Only the triangle specified by `uplo` is read.
     fn blas_sbmv(
-        &self,
-        uplo: Uplo,
-        k: usize,
-        alpha: A,
-        x: &ArrayBase<impl Data<Elem = A>, Ix1>,
-        beta: A,
+        &self, uplo: Uplo, k: usize, alpha: A, x: &ArrayBase<impl Data<Elem = A>, Ix1>, beta: A,
         y_init: &ArrayBase<impl Data<Elem = A>, Ix1>,
     ) -> Array<A, Ix1>;
 }
@@ -141,11 +100,7 @@ where
     S: Data<Elem = A>,
 {
     fn blas_gemv(
-        &self,
-        alpha: A,
-        x: &ArrayBase<impl Data<Elem = A>, Ix1>,
-        beta: A,
-        y_init: &ArrayBase<impl Data<Elem = A>, Ix1>,
+        &self, alpha: A, x: &ArrayBase<impl Data<Elem = A>, Ix1>, beta: A, y_init: &ArrayBase<impl Data<Elem = A>, Ix1>,
     ) -> Array<A, Ix1> {
         let (m, n) = (self.nrows(), self.ncols());
         assert_eq!(x.len(), n, "x length must equal number of columns");
@@ -173,10 +128,7 @@ where
     }
 
     fn blas_ger(
-        &self,
-        alpha: A,
-        x: &ArrayBase<impl Data<Elem = A>, Ix1>,
-        y: &ArrayBase<impl Data<Elem = A>, Ix1>,
+        &self, alpha: A, x: &ArrayBase<impl Data<Elem = A>, Ix1>, y: &ArrayBase<impl Data<Elem = A>, Ix1>,
     ) -> Array<A, Ix2> {
         let (m, n) = (self.nrows(), self.ncols());
         assert_eq!(x.len(), m, "x length must equal number of rows");
@@ -192,11 +144,7 @@ where
     }
 
     fn blas_symv(
-        &self,
-        uplo: Uplo,
-        alpha: A,
-        x: &ArrayBase<impl Data<Elem = A>, Ix1>,
-        beta: A,
+        &self, uplo: Uplo, alpha: A, x: &ArrayBase<impl Data<Elem = A>, Ix1>, beta: A,
         y_init: &ArrayBase<impl Data<Elem = A>, Ix1>,
     ) -> Array<A, Ix1> {
         let n = self.nrows();
@@ -210,10 +158,18 @@ where
             for j in 0..n {
                 let a_ij = match uplo {
                     Uplo::Upper => {
-                        if j >= i { self[[i, j]] } else { self[[j, i]] }
+                        if j >= i {
+                            self[[i, j]]
+                        } else {
+                            self[[j, i]]
+                        }
                     }
                     Uplo::Lower => {
-                        if j <= i { self[[i, j]] } else { self[[j, i]] }
+                        if j <= i {
+                            self[[i, j]]
+                        } else {
+                            self[[j, i]]
+                        }
                     }
                 };
                 sum = sum + a_ij * x[j];
@@ -223,12 +179,7 @@ where
         y
     }
 
-    fn blas_trmv(
-        &self,
-        uplo: Uplo,
-        diag: Diag,
-        x: &ArrayBase<impl Data<Elem = A>, Ix1>,
-    ) -> Array<A, Ix1> {
+    fn blas_trmv(&self, uplo: Uplo, diag: Diag, x: &ArrayBase<impl Data<Elem = A>, Ix1>) -> Array<A, Ix1> {
         let n = self.nrows();
         assert_eq!(self.ncols(), n, "Matrix must be square for trmv");
         assert_eq!(x.len(), n);
@@ -263,12 +214,7 @@ where
         result
     }
 
-    fn blas_trsv(
-        &self,
-        uplo: Uplo,
-        diag: Diag,
-        x: &ArrayBase<impl Data<Elem = A>, Ix1>,
-    ) -> Array<A, Ix1> {
+    fn blas_trsv(&self, uplo: Uplo, diag: Diag, x: &ArrayBase<impl Data<Elem = A>, Ix1>) -> Array<A, Ix1> {
         let n = self.nrows();
         assert_eq!(self.ncols(), n, "Matrix must be square for trsv");
         assert_eq!(x.len(), n);
@@ -299,12 +245,7 @@ where
         result
     }
 
-    fn blas_syr(
-        &self,
-        uplo: Uplo,
-        alpha: A,
-        x: &ArrayBase<impl Data<Elem = A>, Ix1>,
-    ) -> Array<A, Ix2> {
+    fn blas_syr(&self, uplo: Uplo, alpha: A, x: &ArrayBase<impl Data<Elem = A>, Ix1>) -> Array<A, Ix2> {
         let n = self.nrows();
         assert_eq!(self.ncols(), n, "Matrix must be square for syr");
         assert_eq!(x.len(), n);
@@ -323,11 +264,7 @@ where
     }
 
     fn blas_syr2(
-        &self,
-        uplo: Uplo,
-        alpha: A,
-        x: &ArrayBase<impl Data<Elem = A>, Ix1>,
-        y: &ArrayBase<impl Data<Elem = A>, Ix1>,
+        &self, uplo: Uplo, alpha: A, x: &ArrayBase<impl Data<Elem = A>, Ix1>, y: &ArrayBase<impl Data<Elem = A>, Ix1>,
     ) -> Array<A, Ix2> {
         let n = self.nrows();
         assert_eq!(self.ncols(), n, "Matrix must be square for syr2");
@@ -348,13 +285,7 @@ where
     }
 
     fn blas_gbmv(
-        &self,
-        m: usize,
-        kl: usize,
-        ku: usize,
-        alpha: A,
-        x: &ArrayBase<impl Data<Elem = A>, Ix1>,
-        beta: A,
+        &self, m: usize, kl: usize, ku: usize, alpha: A, x: &ArrayBase<impl Data<Elem = A>, Ix1>, beta: A,
         y_init: &ArrayBase<impl Data<Elem = A>, Ix1>,
     ) -> Array<A, Ix1> {
         let n = x.len();
@@ -380,12 +311,7 @@ where
     }
 
     fn blas_sbmv(
-        &self,
-        uplo: Uplo,
-        k: usize,
-        alpha: A,
-        x: &ArrayBase<impl Data<Elem = A>, Ix1>,
-        beta: A,
+        &self, uplo: Uplo, k: usize, alpha: A, x: &ArrayBase<impl Data<Elem = A>, Ix1>, beta: A,
         y_init: &ArrayBase<impl Data<Elem = A>, Ix1>,
     ) -> Array<A, Ix1> {
         let n = x.len();
@@ -529,11 +455,7 @@ mod tests {
         //   row 0 (super-diag): [*, 2, 5]
         //   row 1 (diagonal):   [1, 4, 7]
         //   row 2 (sub-diag):   [3, 6, *]
-        let band = array![
-            [0.0f64, 2.0, 5.0],
-            [1.0, 4.0, 7.0],
-            [3.0, 6.0, 0.0]
-        ];
+        let band = array![[0.0f64, 2.0, 5.0], [1.0, 4.0, 7.0], [3.0, 6.0, 0.0]];
         let x = array![1.0f64, 2.0, 3.0];
         let y0 = array![0.0f64, 0.0, 0.0];
         let y = band.blas_gbmv(3, 1, 1, 1.0, &x, 0.0, &y0);
@@ -551,10 +473,7 @@ mod tests {
         // k=1, upper band storage (2 rows x 3 cols):
         //   row 0 (super-diag): [*, 1, 1]
         //   row 1 (diagonal):   [2, 3, 4]
-        let band = array![
-            [0.0f64, 1.0, 1.0],
-            [2.0, 3.0, 4.0]
-        ];
+        let band = array![[0.0f64, 1.0, 1.0], [2.0, 3.0, 4.0]];
         let x = array![1.0f64, 2.0, 3.0];
         let y0 = array![0.0f64, 0.0, 0.0];
         let y = band.blas_sbmv(Uplo::Upper, 1, 1.0, &x, 0.0, &y0);

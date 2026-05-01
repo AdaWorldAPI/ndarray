@@ -124,7 +124,13 @@ fn l1_weighted_scalar(a: &[i16; 17], b: &[i16; 17]) -> u32 {
     let mut d = 0u32;
     for i in 0..17 {
         let diff = (a[i] as i32 - b[i] as i32).unsigned_abs();
-        let weight = if i == 0 { 20 } else if i < 7 { 3 } else { 1 };
+        let weight = if i == 0 {
+            20
+        } else if i < 7 {
+            3
+        } else {
+            1
+        };
         d += diff * weight;
     }
     d
@@ -185,19 +191,18 @@ fn sign_agreement_scalar(a: &[i16; 17], b: &[i16; 17]) -> u32 {
     count
 }
 
-static SIGN_AGREEMENT_KERNEL: std::sync::LazyLock<SignAgreementFn> =
-    std::sync::LazyLock::new(|| {
-        #[cfg(target_arch = "x86_64")]
-        {
-            if is_x86_feature_detected!("avx512f") {
-                return sign_agreement_avx512 as SignAgreementFn;
-            }
-            if is_x86_feature_detected!("avx2") {
-                return sign_agreement_avx2 as SignAgreementFn;
-            }
+static SIGN_AGREEMENT_KERNEL: std::sync::LazyLock<SignAgreementFn> = std::sync::LazyLock::new(|| {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx512f") {
+            return sign_agreement_avx512 as SignAgreementFn;
         }
-        sign_agreement_scalar as SignAgreementFn
-    });
+        if is_x86_feature_detected!("avx2") {
+            return sign_agreement_avx2 as SignAgreementFn;
+        }
+    }
+    sign_agreement_scalar as SignAgreementFn
+});
 
 // ============================================================================
 // Multi-versioned xor_bind kernel: AVX-512 → AVX2 → scalar.
@@ -338,19 +343,18 @@ fn inject_noise_scalar(dims: &[i16; 17], scale: i16, seed: u64) -> [i16; 17] {
     result
 }
 
-static INJECT_NOISE_KERNEL: std::sync::LazyLock<InjectNoiseFn> =
-    std::sync::LazyLock::new(|| {
-        #[cfg(target_arch = "x86_64")]
-        {
-            if is_x86_feature_detected!("avx512f") {
-                return inject_noise_avx512 as InjectNoiseFn;
-            }
-            if is_x86_feature_detected!("avx2") {
-                return inject_noise_avx2 as InjectNoiseFn;
-            }
+static INJECT_NOISE_KERNEL: std::sync::LazyLock<InjectNoiseFn> = std::sync::LazyLock::new(|| {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx512f") {
+            return inject_noise_avx512 as InjectNoiseFn;
         }
-        inject_noise_scalar as InjectNoiseFn
-    });
+        if is_x86_feature_detected!("avx2") {
+            return inject_noise_avx2 as InjectNoiseFn;
+        }
+    }
+    inject_noise_scalar as InjectNoiseFn
+});
 
 /// SPO triple of Base17 patterns. 102 bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -535,19 +539,13 @@ impl SpoBase17 {
     /// Combined L1 distance (sum of three planes).
     #[inline]
     pub fn l1(&self, other: &SpoBase17) -> u32 {
-        self.subject.l1(&other.subject)
-            + self.predicate.l1(&other.predicate)
-            + self.object.l1(&other.object)
+        self.subject.l1(&other.subject) + self.predicate.l1(&other.predicate) + self.object.l1(&other.object)
     }
 
     /// Per-plane L1 distances.
     #[inline]
     pub fn l1_per_plane(&self, other: &SpoBase17) -> (u32, u32, u32) {
-        (
-            self.subject.l1(&other.subject),
-            self.predicate.l1(&other.predicate),
-            self.object.l1(&other.object),
-        )
+        (self.subject.l1(&other.subject), self.predicate.l1(&other.predicate), self.object.l1(&other.object))
     }
 }
 
@@ -559,7 +557,11 @@ impl PaletteEdge {
 
     /// Deserialize from 3 bytes.
     pub fn from_bytes(b: &[u8; 3]) -> Self {
-        PaletteEdge { s_idx: b[0], p_idx: b[1], o_idx: b[2] }
+        PaletteEdge {
+            s_idx: b[0],
+            p_idx: b[1],
+            o_idx: b[2],
+        }
     }
 }
 
@@ -570,13 +572,17 @@ mod tests {
     #[test]
     fn test_golden_coverage() {
         let mut seen = [false; BASE_DIM];
-        for &p in &GOLDEN_POS { seen[p as usize] = true; }
+        for &p in &GOLDEN_POS {
+            seen[p as usize] = true;
+        }
         assert!(seen.iter().all(|&s| s));
     }
 
     #[test]
     fn test_l1_self_zero() {
-        let a = Base17 { dims: [100, -50, 0, 127, -128, 1, -1, 50, 25, -25, 0, 0, 0, 0, 0, 0, 0] };
+        let a = Base17 {
+            dims: [100, -50, 0, 127, -128, 1, -1, 50, 25, -25, 0, 0, 0, 0, 0, 0, 0],
+        };
         assert_eq!(a.l1(&a), 0);
     }
 
@@ -589,8 +595,12 @@ mod tests {
 
     #[test]
     fn test_xor_bind_self_inverse() {
-        let a = Base17 { dims: [100, -200, 300, -400, 500, -600, 700, -800, 900, -1000, 1100, -1200, 1300, -1400, 1500, -1600, 1700] };
-        let b = Base17 { dims: [-50, 150, -250, 350, -450, 550, -650, 750, -850, 950, -1050, 1150, -1250, 1350, -1450, 1550, -1650] };
+        let a = Base17 {
+            dims: [100, -200, 300, -400, 500, -600, 700, -800, 900, -1000, 1100, -1200, 1300, -1400, 1500, -1600, 1700],
+        };
+        let b = Base17 {
+            dims: [-50, 150, -250, 350, -450, 550, -650, 750, -850, 950, -1050, 1150, -1250, 1350, -1450, 1550, -1650],
+        };
         let bound = a.xor_bind(&b);
         let recovered = bound.xor_bind(&b);
         assert_eq!(a, recovered, "xor_bind must be its own inverse");
@@ -598,7 +608,9 @@ mod tests {
 
     #[test]
     fn test_xor_bind_identity() {
-        let a = Base17 { dims: [100, -200, 300, -400, 500, -600, 700, -800, 900, -1000, 1100, -1200, 1300, -1400, 1500, -1600, 1700] };
+        let a = Base17 {
+            dims: [100, -200, 300, -400, 500, -600, 700, -800, 900, -1000, 1100, -1200, 1300, -1400, 1500, -1600, 1700],
+        };
         let zero = Base17::zero();
         assert_eq!(a.xor_bind(&zero), a, "xor_bind with zero must be identity");
     }
@@ -622,14 +634,18 @@ mod tests {
 
     #[test]
     fn test_permute_identity() {
-        let a = Base17 { dims: [1, -2, 3, -4, 5, -6, 7, -8, 9, -10, 11, -12, 13, -14, 15, -16, 17] };
+        let a = Base17 {
+            dims: [1, -2, 3, -4, 5, -6, 7, -8, 9, -10, 11, -12, 13, -14, 15, -16, 17],
+        };
         assert_eq!(a.permute(0), a, "permute(0) must be identity");
         assert_eq!(a.permute(BASE_DIM), a, "permute(17) must wrap to identity");
     }
 
     #[test]
     fn test_permute_cyclic() {
-        let a = Base17 { dims: [1, -2, 3, -4, 5, -6, 7, -8, 9, -10, 11, -12, 13, -14, 15, -16, 17] };
+        let a = Base17 {
+            dims: [1, -2, 3, -4, 5, -6, 7, -8, 9, -10, 11, -12, 13, -14, 15, -16, 17],
+        };
         let shifted = a.permute(1);
         for i in 0..BASE_DIM {
             assert_eq!(shifted.dims[i], a.dims[(i + 1) % BASE_DIM]);
@@ -638,7 +654,9 @@ mod tests {
 
     #[test]
     fn test_byte_roundtrip() {
-        let a = Base17 { dims: [1, -2, 3, -4, 5, -6, 7, -8, 9, -10, 11, -12, 13, -14, 15, -16, 17] };
+        let a = Base17 {
+            dims: [1, -2, 3, -4, 5, -6, 7, -8, 9, -10, 11, -12, 13, -14, 15, -16, 17],
+        };
         let bytes = a.to_bytes();
         let b = Base17::from_bytes(&bytes);
         assert_eq!(a, b);
@@ -684,7 +702,11 @@ mod tests {
 
     #[test]
     fn test_palette_edge_roundtrip() {
-        let pe = PaletteEdge { s_idx: 42, p_idx: 128, o_idx: 255 };
+        let pe = PaletteEdge {
+            s_idx: 42,
+            p_idx: 128,
+            o_idx: 255,
+        };
         let bytes = pe.to_bytes();
         let pe2 = PaletteEdge::from_bytes(&bytes);
         assert_eq!(pe, pe2);
@@ -718,7 +740,9 @@ mod tests {
 
     #[test]
     fn test_sign_agreement_self() {
-        let a = Base17 { dims: [100, -50, 30, 0, 10, -20, 40, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10] };
+        let a = Base17 {
+            dims: [100, -50, 30, 0, 10, -20, 40, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        };
         assert_eq!(a.sign_agreement(&a), BASE_DIM as u32);
     }
 

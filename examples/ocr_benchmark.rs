@@ -14,17 +14,9 @@ fn main() {
     eprintln!("  OCR Benchmark: ndarray SIMD vs tesseract");
     eprintln!("═══════════════════════════════════════════════════════════\n");
 
-    let pages = vec![
-        "/tmp/ocr_bench/page-01.raw",
-        "/tmp/ocr_bench/page-02.raw",
-        "/tmp/ocr_bench/page-03.raw",
-    ];
+    let pages = vec!["/tmp/ocr_bench/page-01.raw", "/tmp/ocr_bench/page-02.raw", "/tmp/ocr_bench/page-03.raw"];
 
-    let png_pages = vec![
-        "/tmp/ocr_bench/page-01.png",
-        "/tmp/ocr_bench/page-02.png",
-        "/tmp/ocr_bench/page-03.png",
-    ];
+    let png_pages = vec!["/tmp/ocr_bench/page-01.png", "/tmp/ocr_bench/page-02.png", "/tmp/ocr_bench/page-03.png"];
 
     // ── ndarray SIMD preprocessing ────────────────────────────────────
     eprintln!("=== ndarray SIMD preprocessing ===\n");
@@ -33,18 +25,26 @@ fn main() {
     for (i, path) in pages.iter().enumerate() {
         let data = match std::fs::read(path) {
             Ok(d) => d,
-            Err(e) => { eprintln!("  skip {}: {}", path, e); continue; }
+            Err(e) => {
+                eprintln!("  skip {}: {}", path, e);
+                continue;
+            }
         };
-        if data.len() < 8 { continue; }
+        if data.len() < 8 {
+            continue;
+        }
 
         let width = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
         let height = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
         let pixels = &data[8..];
 
-        eprintln!("  Page {}: {}×{} ({:.1}M pixels)", i + 1, width, height,
-            (width * height) as f64 / 1_000_000.0);
+        eprintln!("  Page {}: {}×{} ({:.1}M pixels)", i + 1, width, height, (width * height) as f64 / 1_000_000.0);
 
-        let img = GrayImage { data: pixels, width, height };
+        let img = GrayImage {
+            data: pixels,
+            width,
+            height,
+        };
 
         // Warm up
         let _ = otsu_threshold(&img);
@@ -113,8 +113,7 @@ fn main() {
             Ok(o) if o.status.success() => {
                 let text = String::from_utf8_lossy(&o.stdout);
                 let words = text.split_whitespace().count();
-                eprintln!("  Page {}: {} words, {:.3}ms",
-                    i + 1, words, elapsed.as_secs_f64() * 1000.0);
+                eprintln!("  Page {}: {} words, {:.3}ms", i + 1, words, elapsed.as_secs_f64() * 1000.0);
                 // Show first 100 chars
                 let preview: String = text.chars().take(100).collect();
                 eprintln!("    Preview: {}", preview.replace('\n', " "));

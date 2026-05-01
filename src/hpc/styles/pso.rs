@@ -13,7 +13,15 @@ pub struct FieldModulation {
 
 impl Default for FieldModulation {
     fn default() -> Self {
-        Self { resonance_threshold: 0.7, fan_out: 6, depth_bias: 0.5, breadth_bias: 0.5, noise_tolerance: 0.3, speed_bias: 0.5, exploration: 0.3 }
+        Self {
+            resonance_threshold: 0.7,
+            fan_out: 6,
+            depth_bias: 0.5,
+            breadth_bias: 0.5,
+            noise_tolerance: 0.3,
+            speed_bias: 0.5,
+            exploration: 0.3,
+        }
     }
 }
 

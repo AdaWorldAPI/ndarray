@@ -9,8 +9,7 @@ use ndarray::Order;
 use ndarray::ShapeBuilder;
 
 #[test]
-fn test_ixdyn()
-{
+fn test_ixdyn() {
     // check that we can use fixed size arrays for indexing
     let mut a = Array::zeros(vec![2, 3, 4]);
     a[[1, 1, 1]] = 1.;
@@ -19,8 +18,7 @@ fn test_ixdyn()
 
 #[should_panic]
 #[test]
-fn test_ixdyn_wrong_dim()
-{
+fn test_ixdyn_wrong_dim() {
     // check that we can use but it panics at runtime, if number of axes is wrong
     let mut a = Array::zeros(vec![2, 3, 4]);
     a[[1, 1, 1]] = 1.;
@@ -29,8 +27,7 @@ fn test_ixdyn_wrong_dim()
 }
 
 #[test]
-fn test_ixdyn_out_of_bounds()
-{
+fn test_ixdyn_out_of_bounds() {
     // check that we are out of bounds
     let a = Array::<f32, _>::zeros(vec![2, 3, 4]);
     let res = a.get([0, 3, 0]);
@@ -38,8 +35,7 @@ fn test_ixdyn_out_of_bounds()
 }
 
 #[test]
-fn test_ixdyn_iterate()
-{
+fn test_ixdyn_iterate() {
     for &order in &[Order::C, Order::F] {
         let mut a = Array::zeros((2, 3, 4).set_f(order.is_column_major()));
         let dim = a.shape().to_vec();
@@ -59,8 +55,7 @@ fn test_ixdyn_iterate()
 }
 
 #[test]
-fn test_ixdyn_index_iterate()
-{
+fn test_ixdyn_index_iterate() {
     for &order in &[Order::C, Order::F] {
         let mut a = Array::zeros((2, 3, 4).set_f(order.is_column_major()));
         let dim = a.shape().to_vec();
@@ -79,8 +74,7 @@ fn test_ixdyn_index_iterate()
 }
 
 #[test]
-fn test_ixdyn_uget()
-{
+fn test_ixdyn_uget() {
     // check that we are out of bounds
     let mut a = Array::<f32, _>::zeros(vec![2, 3, 4]);
 
@@ -109,8 +103,7 @@ fn test_ixdyn_uget()
 }
 
 #[test]
-fn test_0()
-{
+fn test_0() {
     let mut a = Array::zeros(vec![]);
     let z = vec![].into_dimension();
     assert_eq!(a[z.clone()], 0.);
@@ -130,8 +123,7 @@ fn test_0()
 }
 
 #[test]
-fn test_0_add()
-{
+fn test_0_add() {
     let mut a = Array::zeros(vec![]);
     a += 1.;
     assert_eq!(a[[]], 1.);
@@ -140,8 +132,7 @@ fn test_0_add()
 }
 
 #[test]
-fn test_0_add_add()
-{
+fn test_0_add_add() {
     let mut a = Array::zeros(vec![]);
     a += 1.;
     let mut b = Array::zeros(vec![]);
@@ -151,8 +142,7 @@ fn test_0_add_add()
 }
 
 #[test]
-fn test_0_add_broad()
-{
+fn test_0_add_broad() {
     let mut b = Array::from(vec![5., 6.]);
     let mut a = Array::zeros(vec![]);
     a += 1.;
@@ -162,8 +152,7 @@ fn test_0_add_broad()
 }
 
 #[test]
-fn test_into_dimension()
-{
+fn test_into_dimension() {
     use ndarray::{Ix0, Ix1, Ix2, IxDyn};
 
     let a = Array::from_iter(0..42)

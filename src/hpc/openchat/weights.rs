@@ -29,7 +29,7 @@ pub const NUM_LAYERS: usize = 32;
 pub const NUM_Q_HEADS: usize = 32;
 pub const NUM_KV_HEADS: usize = 8;
 pub const HEAD_DIM: usize = EMBED_DIM / NUM_Q_HEADS; // 128
-pub const KV_DIM: usize = NUM_KV_HEADS * HEAD_DIM;   // 1024
+pub const KV_DIM: usize = NUM_KV_HEADS * HEAD_DIM; // 1024
 pub const MLP_DIM: usize = 14336; // Mistral uses 14336 (not 4× embed)
 pub const MAX_SEQ_LEN: usize = 8192; // Mistral supports 8K context (32K with sliding window)
 pub const ROPE_THETA: f32 = 10000.0;
@@ -81,13 +81,11 @@ impl OpenChatWeights {
     ///
     /// Pre-transposes weight matrices for SIMD-contiguous `matmul_vec`.
     pub fn from_gguf(path: &std::path::Path) -> Result<Self, String> {
-        let mut file = std::fs::File::open(path)
-            .map_err(|e| format!("open {}: {}", path.display(), e))?;
+        let mut file = std::fs::File::open(path).map_err(|e| format!("open {}: {}", path.display(), e))?;
         let header = gguf::read_gguf_header(&mut file)?;
 
         let mut read = |name: &str| -> Result<Vec<f32>, String> {
-            let tensor = gguf::find_tensor(&header, name)
-                .ok_or_else(|| format!("missing tensor: {}", name))?;
+            let tensor = gguf::find_tensor(&header, name).ok_or_else(|| format!("missing tensor: {}", name))?;
             gguf::read_tensor_f32(&mut file, &header, tensor)
         };
 

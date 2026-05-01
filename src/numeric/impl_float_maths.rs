@@ -162,8 +162,7 @@ where
 
     /// Square (two powers) of each element.
     #[must_use = "method returns a new array and does not mutate the original value"]
-    pub fn pow2(&self) -> Array<A, D>
-    {
+    pub fn pow2(&self) -> Array<A, D> {
         self.mapv(|v: A| v * v)
     }
 }
@@ -192,8 +191,7 @@ where
     /// # See Also
     /// [ArrayRef::to_complex_im]
     #[must_use = "method returns a new array and does not mutate the original value"]
-    pub fn to_complex_re(&self) -> Array<Complex<A>, D>
-    {
+    pub fn to_complex_re(&self) -> Array<Complex<A>, D> {
         self.mapv(|v| Complex::new(v, A::zero()))
     }
 
@@ -215,8 +213,7 @@ where
     /// # See Also
     /// [ArrayRef::to_complex_re]
     #[must_use = "method returns a new array and does not mutate the original value"]
-    pub fn to_complex_im(&self) -> Array<Complex<A>, D>
-    {
+    pub fn to_complex_im(&self) -> Array<Complex<A>, D> {
         self.mapv(|v| Complex::new(A::zero(), v))
     }
 }
@@ -254,8 +251,7 @@ where
     /// assert!((angles[2] - PI/4.0).abs() < 1e-10);
     /// ```
     #[must_use = "method returns a new array and does not mutate the original value"]
-    pub fn angle(&self) -> Array<A, D>
-    {
+    pub fn angle(&self) -> Array<A, D> {
         self.mapv(|v| v.im.atan2(v.re))
     }
 }
@@ -278,16 +274,14 @@ where
     /// # Panics
     ///
     /// Panics if `!(min <= max)`.
-    pub fn clamp(&self, min: A, max: A) -> Array<A, D>
-    {
+    pub fn clamp(&self, min: A, max: A) -> Array<A, D> {
         assert!(min <= max, "min must be less than or equal to max");
         self.mapv(|a| num_traits::clamp(a, min.clone(), max.clone()))
     }
 }
 
 #[cfg(all(test, feature = "std"))]
-mod angle_tests
-{
+mod angle_tests {
     use crate::Array;
     use num_complex::Complex;
     use std::f64::consts::PI;
@@ -311,10 +305,9 @@ mod angle_tests
     }
 
     #[test]
-    fn test_complex_numbers_radians()
-    {
+    fn test_complex_numbers_radians() {
         let arr = Array::from_vec(vec![
-            Complex::new(1.0f64, 0.0),    // 0
+            Complex::new(1.0f64, 0.0), // 0
             Complex::new(0.0, 1.0),    // π/2
             Complex::new(-1.0, 0.0),   // π
             Complex::new(0.0, -1.0),   // -π/2
@@ -332,8 +325,7 @@ mod angle_tests
     }
 
     #[test]
-    fn test_complex_numbers_degrees()
-    {
+    fn test_complex_numbers_degrees() {
         let arr = Array::from_vec(vec![
             Complex::new(1.0f64, 0.0),
             Complex::new(0.0, 1.0),
@@ -349,8 +341,7 @@ mod angle_tests
     }
 
     #[test]
-    fn test_signed_zeros()
-    {
+    fn test_signed_zeros() {
         let arr = Array::from_vec(vec![
             Complex::new(0.0f64, 0.0),
             Complex::new(-0.0, 0.0),
@@ -366,8 +357,7 @@ mod angle_tests
     }
 
     #[test]
-    fn test_edge_cases()
-    {
+    fn test_edge_cases() {
         let arr = Array::from_vec(vec![
             Complex::new(f64::INFINITY, 0.0),
             Complex::new(0.0, f64::INFINITY),
@@ -383,8 +373,7 @@ mod angle_tests
     }
 
     #[test]
-    fn test_range_validation()
-    {
+    fn test_range_validation() {
         let n = 16;
         let complex_arr: Vec<_> = (0..n)
             .map(|i| {

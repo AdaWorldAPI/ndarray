@@ -28,48 +28,25 @@ impl core::fmt::Display for ValidationError {
 
 /// All AVX-512 feature flags supported by the patched Cranelift backend.
 pub const KNOWN_FEATURES: &[&str] = &[
-    "avx512f",
-    "avx512vl",
-    "avx512bw",
-    "avx512dq",
-    "avx512bitalg",
-    "avx512vbmi",
-    "avx512vpopcntdq",
-    "avx512vnni",
+    "avx512f", "avx512vl", "avx512bw", "avx512dq", "avx512bitalg", "avx512vbmi", "avx512vpopcntdq", "avx512vnni",
     "avx512ifma",
 ];
 
 /// All AVX-512 instruction mnemonics from the patched Cranelift.
 pub const KNOWN_INSTRUCTIONS: &[&str] = &[
     // abs
-    "vpabsb", "vpabsw", "vpabsd", "vpabsq",
-    // and / ternlog
-    "vpandd", "vpandq", "vpandnd", "vpandnq", "vpternlogd", "vpternlogq",
-    // bitmanip
-    "vpopcntb", "vpopcntw", "vpopcntd", "vpopcntq",
-    // fma (132/213/231 x ps/pd x add/sub/nmadd)
-    "vfmadd132ps", "vfmadd213ps", "vfmadd231ps",
-    "vfmadd132pd", "vfmadd213pd", "vfmadd231pd",
-    "vfmsub132ps", "vfmsub213ps", "vfmsub231ps",
-    "vfmsub132pd", "vfmsub213pd", "vfmsub231pd",
-    "vfnmadd132ps", "vfnmadd213ps", "vfnmadd231ps",
-    "vfnmadd132pd", "vfnmadd213pd", "vfnmadd231pd",
-    // mul / vnni
-    "vpmulld", "vpmullq",
-    "vpdpbusd", "vpdpbusds", "vpdpwssd", "vpdpwssds",
-    // or
-    "vpord", "vporq",
-    // shift
-    "vpsllw", "vpslld", "vpsllq",
-    "vpsraw", "vpsrad", "vpsraq",
-    "vpsrlw", "vpsrld", "vpsrlq",
-    // xor
-    "vpxord", "vpxorq",
-    // add
-    "vaddpd",
-    // cvt
-    "vcvtudq2ps",
-    // lanes
+    "vpabsb", "vpabsw", "vpabsd", "vpabsq", // and / ternlog
+    "vpandd", "vpandq", "vpandnd", "vpandnq", "vpternlogd", "vpternlogq", // bitmanip
+    "vpopcntb", "vpopcntw", "vpopcntd", "vpopcntq", // fma (132/213/231 x ps/pd x add/sub/nmadd)
+    "vfmadd132ps", "vfmadd213ps", "vfmadd231ps", "vfmadd132pd", "vfmadd213pd", "vfmadd231pd", "vfmsub132ps",
+    "vfmsub213ps", "vfmsub231ps", "vfmsub132pd", "vfmsub213pd", "vfmsub231pd", "vfnmadd132ps", "vfnmadd213ps",
+    "vfnmadd231ps", "vfnmadd132pd", "vfnmadd213pd", "vfnmadd231pd", // mul / vnni
+    "vpmulld", "vpmullq", "vpdpbusd", "vpdpbusds", "vpdpwssd", "vpdpwssds", // or
+    "vpord", "vporq", // shift
+    "vpsllw", "vpslld", "vpsllq", "vpsraw", "vpsrad", "vpsraq", "vpsrlw", "vpsrld", "vpsrlq", // xor
+    "vpxord", "vpxorq",     // add
+    "vaddpd",     // cvt
+    "vcvtudq2ps", // lanes
     "vpermi2b",
 ];
 
@@ -81,10 +58,9 @@ pub const KNOWN_BACKENDS: &[&str] = &["lancedb", "dragonfly"];
 
 /// Known Cranelift presets.
 const KNOWN_PRESETS: &[&str] = &[
-    "baseline", "nehalem", "haswell", "broadwell", "skylake",
-    "knl", "knm", "skylake_avx512", "cascade_lake", "cooper_lake",
-    "cannon_lake", "ice_lake_client", "ice_lake_server", "tiger_lake",
-    "sapphire_rapids", "x86_64_v2", "x86_64_v3", "x86_64_v4",
+    "baseline", "nehalem", "haswell", "broadwell", "skylake", "knl", "knm", "skylake_avx512", "cascade_lake",
+    "cooper_lake", "cannon_lake", "ice_lake_client", "ice_lake_server", "tiger_lake", "sapphire_rapids", "x86_64_v2",
+    "x86_64_v3", "x86_64_v4",
 ];
 
 /// Known opt levels.
@@ -132,11 +108,7 @@ pub fn validate(root: &JsonValue) -> Vec<ValidationError> {
             Some(s) if KNOWN_KERNELS.contains(&s) => {}
             Some(s) => errs.push(ValidationError {
                 path: String::from("/kernel"),
-                message: alloc::format!(
-                    "unknown kernel \"{}\", expected one of: {}",
-                    s,
-                    KNOWN_KERNELS.join(", ")
-                ),
+                message: alloc::format!("unknown kernel \"{}\", expected one of: {}", s, KNOWN_KERNELS.join(", ")),
             }),
             None => errs.push(ValidationError {
                 path: String::from("/kernel"),
@@ -192,10 +164,7 @@ pub fn validate(root: &JsonValue) -> Vec<ValidationError> {
                         if !KNOWN_INSTRUCTIONS.contains(&instr) {
                             errs.push(ValidationError {
                                 path: alloc::format!("{}/avx512", prefix),
-                                message: alloc::format!(
-                                    "unknown instruction \"{}\"; not in patched Cranelift",
-                                    instr
-                                ),
+                                message: alloc::format!("unknown instruction \"{}\"; not in patched Cranelift", instr),
                             });
                         }
                     }
@@ -312,10 +281,7 @@ pub fn validate(root: &JsonValue) -> Vec<ValidationError> {
                 if !declared_backends.contains(&backend) {
                     errs.push(ValidationError {
                         path: alloc::format!("/pipeline/{}/backend", i),
-                        message: alloc::format!(
-                            "backend \"{}\" referenced but not declared in /backends",
-                            backend
-                        ),
+                        message: alloc::format!("backend \"{}\" referenced but not declared in /backends", backend),
                     });
                 }
             }
@@ -323,9 +289,7 @@ pub fn validate(root: &JsonValue) -> Vec<ValidationError> {
     }
 
     // Warn on unknown top-level keys
-    let known_top: &[&str] = &[
-        "version", "kernel", "scan", "pipeline", "features", "cranelift", "backends",
-    ];
+    let known_top: &[&str] = &["version", "kernel", "scan", "pipeline", "features", "cranelift", "backends"];
     for (key, _) in obj {
         if !known_top.contains(&key.as_str()) {
             errs.push(ValidationError {
@@ -360,23 +324,20 @@ pub fn required_features(instruction: &str) -> &'static [&'static str] {
     match instruction {
         "vpabsb" | "vpabsw" => &["avx512vl", "avx512bw"],
         "vpabsd" | "vpabsq" => &["avx512vl", "avx512f"],
-        "vpandd" | "vpandq" | "vpandnd" | "vpandnq" | "vpternlogd" | "vpternlogq" => {
-            &["avx512vl", "avx512f"]
-        }
+        "vpandd" | "vpandq" | "vpandnd" | "vpandnq" | "vpternlogd" | "vpternlogq" => &["avx512vl", "avx512f"],
         "vpopcntb" | "vpopcntw" => &["avx512vl", "avx512bitalg"],
         "vpopcntd" | "vpopcntq" => &["avx512vl", "avx512vpopcntdq"],
-        "vfmadd132ps" | "vfmadd213ps" | "vfmadd231ps" | "vfmadd132pd" | "vfmadd213pd"
-        | "vfmadd231pd" | "vfmsub132ps" | "vfmsub213ps" | "vfmsub231ps" | "vfmsub132pd"
-        | "vfmsub213pd" | "vfmsub231pd" | "vfnmadd132ps" | "vfnmadd213ps" | "vfnmadd231ps"
-        | "vfnmadd132pd" | "vfnmadd213pd" | "vfnmadd231pd" => &["avx512vl", "avx512f"],
+        "vfmadd132ps" | "vfmadd213ps" | "vfmadd231ps" | "vfmadd132pd" | "vfmadd213pd" | "vfmadd231pd"
+        | "vfmsub132ps" | "vfmsub213ps" | "vfmsub231ps" | "vfmsub132pd" | "vfmsub213pd" | "vfmsub231pd"
+        | "vfnmadd132ps" | "vfnmadd213ps" | "vfnmadd231ps" | "vfnmadd132pd" | "vfnmadd213pd" | "vfnmadd231pd" => {
+            &["avx512vl", "avx512f"]
+        }
         "vpmulld" => &["avx512vl", "avx512f"],
         "vpmullq" => &["avx512vl", "avx512dq"],
         "vpdpbusd" | "vpdpbusds" | "vpdpwssd" | "vpdpwssds" => &["avx512vl", "avx512vnni"],
         "vpord" | "vporq" => &["avx512vl", "avx512f"],
         "vpsllw" | "vpsraw" | "vpsrlw" => &["avx512vl", "avx512bw"],
-        "vpslld" | "vpsllq" | "vpsrad" | "vpsraq" | "vpsrld" | "vpsrlq" => {
-            &["avx512vl", "avx512f"]
-        }
+        "vpslld" | "vpsllq" | "vpsrad" | "vpsraq" | "vpsrld" | "vpsrlq" => &["avx512vl", "avx512f"],
         "vpxord" | "vpxorq" => &["avx512vl", "avx512f"],
         "vaddpd" => &["avx512vl"],
         "vcvtudq2ps" => &["avx512vl", "avx512f"],
@@ -458,10 +419,7 @@ mod tests {
     #[test]
     fn test_required_features_mapping() {
         assert_eq!(required_features("vpxord"), &["avx512vl", "avx512f"]);
-        assert_eq!(
-            required_features("vpopcntd"),
-            &["avx512vl", "avx512vpopcntdq"]
-        );
+        assert_eq!(required_features("vpopcntd"), &["avx512vl", "avx512vpopcntdq"]);
         assert_eq!(required_features("vpdpbusd"), &["avx512vl", "avx512vnni"]);
         assert_eq!(required_features("vpermi2b"), &["avx512vl", "avx512vbmi"]);
         assert_eq!(required_features("not_real"), &[] as &[&str]);

@@ -33,8 +33,7 @@ pub struct BnnDotResult {
 #[inline]
 pub fn bnn_dot(activation: &Fingerprint<256>, weight: &Fingerprint<256>) -> BnnDotResult {
     let total_bits = Fingerprint::<256>::BITS as u32;
-    let xor_popcount =
-        super::bitwise::hamming_distance_raw(activation.as_bytes(), weight.as_bytes()) as u32;
+    let xor_popcount = super::bitwise::hamming_distance_raw(activation.as_bytes(), weight.as_bytes()) as u32;
     let match_count = total_bits - xor_popcount;
     let score = (2.0 * match_count as f32 / total_bits as f32) - 1.0;
     BnnDotResult {
@@ -49,10 +48,9 @@ pub fn bnn_dot_3ch(activation: &GraphHV, weight: &GraphHV) -> BnnDotResult {
     let total_bits = (Fingerprint::<256>::BITS * 3) as u32;
     let mut xor_total = 0u32;
     for ch in 0..3 {
-        xor_total += super::bitwise::hamming_distance_raw(
-            activation.channels[ch].as_bytes(),
-            weight.channels[ch].as_bytes(),
-        ) as u32;
+        xor_total +=
+            super::bitwise::hamming_distance_raw(activation.channels[ch].as_bytes(), weight.channels[ch].as_bytes())
+                as u32;
     }
     let match_count = total_bits - xor_total;
     let score = (2.0 * match_count as f32 / total_bits as f32) - 1.0;
@@ -101,13 +99,7 @@ impl BnnNeuron {
     }
 
     /// Forward pass: compute binary activation from input.
-    pub fn forward(
-        &mut self,
-        input: &Fingerprint<256>,
-        learn: bool,
-        learning_rate: f64,
-        rng: &mut SplitMix64,
-    ) -> f32 {
+    pub fn forward(&mut self, input: &Fingerprint<256>, learn: bool, learning_rate: f64, rng: &mut SplitMix64) -> f32 {
         let dot = bnn_dot(input, &self.state.channels[1]);
         let pre_activation = dot.score + self.bias;
 
@@ -184,11 +176,7 @@ impl BnnLayer {
 
     /// Forward pass: compute all neurons' activations.
     pub fn forward(
-        &mut self,
-        input: &Fingerprint<256>,
-        learn: bool,
-        learning_rate: f64,
-        rng: &mut SplitMix64,
+        &mut self, input: &Fingerprint<256>, learn: bool, learning_rate: f64, rng: &mut SplitMix64,
     ) -> Vec<f32> {
         self.neurons
             .iter_mut()
@@ -235,10 +223,7 @@ impl BnnLayer {
 
     /// Winner-take-all using CAM index: O(log N) instead of O(N).
     pub fn winner_cam(
-        &self,
-        input: &Fingerprint<256>,
-        cam: &CamIndex,
-        shortlist_size: usize,
+        &self, input: &Fingerprint<256>, cam: &CamIndex, shortlist_size: usize,
     ) -> Option<(usize, BnnDotResult)> {
         let query_hv = GraphHV {
             channels: [input.clone(), input.clone(), input.clone()],
@@ -268,9 +253,7 @@ impl BnnLayer {
 
 /// Batch XNOR+popcount: compute binary dot products for multiple candidates.
 pub fn bnn_batch_dot(
-    query: &Fingerprint<256>,
-    weights: &[Fingerprint<256>],
-    top_k: usize,
+    query: &Fingerprint<256>, weights: &[Fingerprint<256>], top_k: usize,
 ) -> Vec<(usize, BnnDotResult)> {
     let mut results: Vec<(usize, BnnDotResult)> = weights
         .iter()
@@ -304,11 +287,7 @@ impl BnnNetwork {
 
     /// Forward pass through all layers.
     pub fn forward(
-        &mut self,
-        input: &Fingerprint<256>,
-        learn: bool,
-        learning_rate: f64,
-        rng: &mut SplitMix64,
+        &mut self, input: &Fingerprint<256>, learn: bool, learning_rate: f64, rng: &mut SplitMix64,
     ) -> (usize, BnnDotResult) {
         let mut current_input = input.clone();
 
@@ -352,10 +331,7 @@ pub struct BnnCascadeResult {
 
 /// Cascade-accelerated BNN batch search using K0/K1/K2 pipeline.
 pub fn bnn_cascade_search(
-    query: &Fingerprint<256>,
-    weights: &[Fingerprint<256>],
-    top_k: usize,
-    gate: &SliceGate,
+    query: &Fingerprint<256>, weights: &[Fingerprint<256>], top_k: usize, gate: &SliceGate,
 ) -> BnnCascadeResult {
     if weights.is_empty() {
         return BnnCascadeResult {
@@ -370,8 +346,7 @@ pub fn bnn_cascade_search(
         db_words.extend_from_slice(&w.words);
     }
 
-    let (kernel_matches, stats) =
-        kernel_pipeline(&query.words, &db_words, n_candidates, SKU_16K_WORDS, gate);
+    let (kernel_matches, stats) = kernel_pipeline(&query.words, &db_words, n_candidates, SKU_16K_WORDS, gate);
 
     let total_bits = Fingerprint::<256>::BITS as u32;
     let mut results: Vec<(usize, BnnDotResult)> = kernel_matches
@@ -414,10 +389,7 @@ pub struct BnnEnergyResult {
 
 /// Like `bnn_cascade_search` but also returns EnergyConflict decomposition.
 pub fn bnn_cascade_search_with_energy(
-    query: &Fingerprint<256>,
-    weights: &[Fingerprint<256>],
-    top_k: usize,
-    gate: &SliceGate,
+    query: &Fingerprint<256>, weights: &[Fingerprint<256>], top_k: usize, gate: &SliceGate,
 ) -> (Vec<BnnEnergyResult>, PipelineStats) {
     if weights.is_empty() {
         return (Vec::new(), PipelineStats::default());
@@ -429,8 +401,7 @@ pub fn bnn_cascade_search_with_energy(
         db_words.extend_from_slice(&w.words);
     }
 
-    let (kernel_matches, stats) =
-        kernel_pipeline(&query.words, &db_words, n_candidates, SKU_16K_WORDS, gate);
+    let (kernel_matches, stats) = kernel_pipeline(&query.words, &db_words, n_candidates, SKU_16K_WORDS, gate);
 
     let total_bits = Fingerprint::<256>::BITS as u32;
     let mut results: Vec<BnnEnergyResult> = kernel_matches
@@ -466,10 +437,7 @@ pub fn bnn_cascade_search_with_energy(
 
 /// HDR-cascade-accelerated BNN search.
 pub fn bnn_hdr_search(
-    query: &Fingerprint<256>,
-    weights: &[Fingerprint<256>],
-    threshold: u64,
-    top_k: usize,
+    query: &Fingerprint<256>, weights: &[Fingerprint<256>], threshold: u64, top_k: usize,
 ) -> Vec<(usize, BnnDotResult)> {
     use super::cascade::Cascade;
 
@@ -517,11 +485,7 @@ pub fn bnn_hdr_search(
 // ─── Binary convolution ──────────────────────────────
 
 /// 1D binary convolution: slide a kernel over a sequence of Fingerprints.
-pub fn bnn_conv1d(
-    input: &[Fingerprint<256>],
-    kernel: &Fingerprint<256>,
-    stride: usize,
-) -> Vec<BnnDotResult> {
+pub fn bnn_conv1d(input: &[Fingerprint<256>], kernel: &Fingerprint<256>, stride: usize) -> Vec<BnnDotResult> {
     let stride = stride.max(1);
     (0..input.len())
         .step_by(stride)
@@ -540,10 +504,7 @@ pub fn bnn_conv1d_3ch(input: &[GraphHV], kernel: &GraphHV, stride: usize) -> Vec
 
 /// Cascade-accelerated 1D convolution.
 pub fn bnn_conv1d_cascade(
-    input: &[Fingerprint<256>],
-    kernel: &Fingerprint<256>,
-    stride: usize,
-    gate: &SliceGate,
+    input: &[Fingerprint<256>], kernel: &Fingerprint<256>, stride: usize, gate: &SliceGate,
 ) -> BnnCascadeResult {
     let stride = stride.max(1);
     let positions: Vec<Fingerprint<256>> = (0..input.len())
@@ -596,11 +557,7 @@ mod tests {
         let a = random_fp(&mut rng);
         let b = random_fp(&mut rng);
         let result = bnn_dot(&a, &b);
-        assert!(
-            result.score.abs() < 0.05,
-            "Expected ~0.0 score for random, got {:.4}",
-            result.score
-        );
+        assert!(result.score.abs() < 0.05, "Expected ~0.0 score for random, got {:.4}", result.score);
     }
 
     #[test]
@@ -632,11 +589,7 @@ mod tests {
             neuron.forward(&input, true, 0.1, &mut rng);
         }
 
-        assert_ne!(
-            *neuron.plastic(),
-            initial_plastic,
-            "Plastic channel should change after learning"
-        );
+        assert_ne!(*neuron.plastic(), initial_plastic, "Plastic channel should change after learning");
     }
 
     #[test]
@@ -861,11 +814,7 @@ mod tests {
         let result = layer.winner_cam(&target, &cam, 20);
         assert!(result.is_some());
         let (_, dot) = result.unwrap();
-        assert!(
-            dot.score > 0.5,
-            "Expected high score for planted match, got {:.4}",
-            dot.score
-        );
+        assert!(dot.score > 0.5, "Expected high score for planted match, got {:.4}", dot.score);
     }
 
     // ─── Convolution tests ──────────────────────────────
@@ -878,11 +827,7 @@ mod tests {
         let results = bnn_conv1d(&sequence, &kernel, 1);
 
         assert_eq!(results.len(), 10);
-        assert!(
-            (results[5].score - 1.0).abs() < f32::EPSILON,
-            "Expected 1.0 at pos 5, got {:.4}",
-            results[5].score
-        );
+        assert!((results[5].score - 1.0).abs() < f32::EPSILON, "Expected 1.0 at pos 5, got {:.4}", results[5].score);
     }
 
     #[test]
@@ -934,9 +879,6 @@ mod tests {
         weights[25] = query.clone();
 
         let results = bnn_hdr_search(&query, &weights, 16384, 10);
-        assert!(
-            results.iter().any(|(i, _)| *i == 25),
-            "HDR search should find exact match at 25"
-        );
+        assert!(results.iter().any(|(i, _)| *i == 25), "HDR search should find exact match at 25");
     }
 }

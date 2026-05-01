@@ -123,12 +123,7 @@ pub fn majority_vote_3(a: &[u64; N], b: &[u64; N], c: &[u64; N]) -> [u64; N] {
 }
 
 /// Bundle SPO triple: S stays at identity, P shifted by `shift`, O shifted by 2*shift.
-pub fn bundle_spo(
-    s: &[u64; N],
-    p: &[u64; N],
-    o: &[u64; N],
-    shift: usize,
-) -> [u64; N] {
+pub fn bundle_spo(s: &[u64; N], p: &[u64; N], o: &[u64; N], shift: usize) -> [u64; N] {
     let p_shifted = cyclic_shift(p, shift);
     let o_shifted = cyclic_shift(o, 2 * shift);
     majority_vote_3(s, &p_shifted, &o_shifted)
@@ -326,14 +321,8 @@ mod tests {
             );
 
             // Expect ~75% accuracy for n=3 majority vote
-            assert!(
-                mean_all > 0.70,
-                "shift={shift}: mean accuracy {mean_all:.4} too low (expect ~0.75)"
-            );
-            assert!(
-                mean_all < 0.80,
-                "shift={shift}: mean accuracy {mean_all:.4} unexpectedly high"
-            );
+            assert!(mean_all > 0.70, "shift={shift}: mean accuracy {mean_all:.4} too low (expect ~0.75)");
+            assert!(mean_all < 0.80, "shift={shift}: mean accuracy {mean_all:.4} unexpectedly high");
         }
     }
 
@@ -378,8 +367,10 @@ mod tests {
                 vec2[i] ^= noisy[i]; // flip ~5% of bits
             }
 
-            let bundle_3130 = bundle_spo(&vec2, &random_128(trial as u64 + 100), &random_128(trial as u64 + 200), GOLDEN_SHIFT);
-            let bundle_3131 = bundle_spo(&vec2, &random_128(trial as u64 + 100), &random_128(trial as u64 + 200), GOLDEN_SHIFT_ODD);
+            let bundle_3130 =
+                bundle_spo(&vec2, &random_128(trial as u64 + 100), &random_128(trial as u64 + 200), GOLDEN_SHIFT);
+            let bundle_3131 =
+                bundle_spo(&vec2, &random_128(trial as u64 + 100), &random_128(trial as u64 + 200), GOLDEN_SHIFT_ODD);
 
             let rec_3130 = recover_s(&bundle_3130, GOLDEN_SHIFT);
             let rec_3131 = recover_s(&bundle_3131, GOLDEN_SHIFT_ODD);
@@ -393,9 +384,7 @@ mod tests {
         let acc_3130 = 1.0 - avg_err_3130;
         let acc_3131 = 1.0 - avg_err_3131;
 
-        eprintln!(
-            "[Experiment 2] Noisy period-2: acc_3130={acc_3130:.4}, acc_3131={acc_3131:.4}"
-        );
+        eprintln!("[Experiment 2] Noisy period-2: acc_3130={acc_3130:.4}, acc_3131={acc_3131:.4}");
 
         // Test 3: Period-4 vectors
         let mut period4 = [0u64; N];
@@ -424,14 +413,8 @@ mod tests {
         // Both shifts should give reasonable accuracy on noisy data
         // The key question: does 3130 fail on periodic inputs?
         // With random P and O, even periodic S should bundle reasonably.
-        assert!(
-            acc_3130 > 0.60,
-            "shift=3130 accuracy {acc_3130:.4} on noisy period-2 is catastrophically low"
-        );
-        assert!(
-            acc_3131 > 0.60,
-            "shift=3131 accuracy {acc_3131:.4} on noisy period-2 is catastrophically low"
-        );
+        assert!(acc_3130 > 0.60, "shift=3130 accuracy {acc_3130:.4} on noisy period-2 is catastrophically low");
+        assert!(acc_3131 > 0.60, "shift=3131 accuracy {acc_3131:.4} on noisy period-2 is catastrophically low");
     }
 
     // ── EXPERIMENT 3: Ranking preservation ─────────────────────────
@@ -486,10 +469,7 @@ mod tests {
         // With n=3 majority vote and independent P,O per node, the noise from
         // P,O reduces rank correlation. rho ~ 0.20-0.30 is expected for
         // random independent triples. The ranking is partially preserved.
-        assert!(
-            rho > 0.15,
-            "Spearman rho={rho:.4} too low — ranking not preserved at all"
-        );
+        assert!(rho > 0.15, "Spearman rho={rho:.4} too low — ranking not preserved at all");
     }
 
     // ── EXPERIMENT 4: Search quality (Recall@10) ──────────────────
@@ -565,10 +545,7 @@ mod tests {
 
         // We expect decent recall since similar S-planes should produce
         // closer bundles
-        assert!(
-            recall >= 0.3,
-            "Recall@{k}={recall:.2} is too low for practical use"
-        );
+        assert!(recall >= 0.3, "Recall@{k}={recall:.2} is too low for practical use");
     }
 
     // ── EXPERIMENT 5: CLAM clustering on cyclic bundles ────────────
@@ -622,8 +599,7 @@ mod tests {
                 .map(|j| (j, hamming_128(&bundles[i], &bundles[j])))
                 .collect();
             bundle_dists.sort_by_key(|&(_, d)| d);
-            let bundle_knn: Vec<usize> =
-                bundle_dists.iter().take(kk).map(|&(j, _)| j).collect();
+            let bundle_knn: Vec<usize> = bundle_dists.iter().take(kk).map(|&(j, _)| j).collect();
 
             // k-NN by original S distance
             let mut orig_dists: Vec<(usize, u32)> = (0..total_nodes)
@@ -631,8 +607,7 @@ mod tests {
                 .map(|j| (j, hamming_128(&s_planes[i], &s_planes[j])))
                 .collect();
             orig_dists.sort_by_key(|&(_, d)| d);
-            let orig_knn: Vec<usize> =
-                orig_dists.iter().take(kk).map(|&(j, _)| j).collect();
+            let orig_knn: Vec<usize> = orig_dists.iter().take(kk).map(|&(j, _)| j).collect();
 
             // Purity: fraction of k-NN sharing same label
             let bundle_purity = bundle_knn
@@ -640,11 +615,7 @@ mod tests {
                 .filter(|&&j| labels[j] == labels[i])
                 .count() as f64
                 / kk as f64;
-            let orig_purity = orig_knn
-                .iter()
-                .filter(|&&j| labels[j] == labels[i])
-                .count() as f64
-                / kk as f64;
+            let orig_purity = orig_knn.iter().filter(|&&j| labels[j] == labels[i]).count() as f64 / kk as f64;
 
             // k-NN recall: how many of the true k-NN are in bundle k-NN
             let knn_recall = orig_knn
@@ -723,9 +694,7 @@ mod tests {
             let actual_p = acc_p_sum / num_trials as f64;
             let actual_o = acc_o_sum / num_trials as f64;
 
-            eprintln!(
-                "  {p:.2}  | {predicted:.4}    | {actual_s:.4}    | {actual_p:.4}    | {actual_o:.4}"
-            );
+            eprintln!("  {p:.2}  | {predicted:.4}    | {actual_s:.4}    | {actual_p:.4}    | {actual_o:.4}");
 
             // Verify predicted vs actual are reasonably close
             // The formula P(correct) = 1 - p(1-p) is for two independent random

@@ -9,11 +9,19 @@ pub struct SkepticismSchedule {
 }
 
 impl SkepticismSchedule {
-    pub fn new(base: f32) -> Self { Self { consecutive_confident: 0, base_skepticism: base } }
+    pub fn new(base: f32) -> Self {
+        Self {
+            consecutive_confident: 0,
+            base_skepticism: base,
+        }
+    }
 
     pub fn update(&mut self, truth: &NarsTruth) -> f32 {
-        if truth.confidence > 0.8 { self.consecutive_confident += 1; }
-        else { self.consecutive_confident = 0; }
+        if truth.confidence > 0.8 {
+            self.consecutive_confident += 1;
+        } else {
+            self.consecutive_confident = 0;
+        }
         self.base_skepticism + (self.consecutive_confident as f32 + 1.0).ln() * 0.1
     }
 }

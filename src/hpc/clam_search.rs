@@ -178,13 +178,7 @@ pub fn rho_nn(tree: &ClamTree, data: &[u8], vec_len: usize, query: &[u8], rho: u
 ///
 /// This is NOT the fastest CAKES algorithm (Depth-First Sieve is),
 /// but it's the simplest and demonstrates the LFD-guided radius ratchet.
-pub fn knn_repeated_rho(
-    tree: &ClamTree,
-    data: &[u8],
-    vec_len: usize,
-    query: &[u8],
-    k: usize,
-) -> KnnResult {
+pub fn knn_repeated_rho(tree: &ClamTree, data: &[u8], vec_len: usize, query: &[u8], k: usize) -> KnnResult {
     let root = tree.root();
     if root.cardinality == 0 {
         return KnnResult {
@@ -304,13 +298,7 @@ fn estimate_local_lfd(tree: &ClamTree, data: &[u8], vec_len: usize, query: &[u8]
 ///
 /// where d = LFD, N = metric entropy, |C_bar| = mean leaf cardinality.
 /// This is sublinear in n when LFD << embedding dimension.
-pub fn knn_dfs_sieve(
-    tree: &ClamTree,
-    data: &[u8],
-    vec_len: usize,
-    query: &[u8],
-    k: usize,
-) -> KnnResult {
+pub fn knn_dfs_sieve(tree: &ClamTree, data: &[u8], vec_len: usize, query: &[u8], k: usize) -> KnnResult {
     let mut distance_calls = 0usize;
     let mut clusters_pruned = 0usize;
 
@@ -400,9 +388,9 @@ pub fn knn_dfs_sieve(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use super::super::clam::ClamTree;
     use super::super::bitwise;
+    use super::super::clam::ClamTree;
+    use super::*;
 
     /// Simple SplitMix64 RNG for deterministic test data generation.
     struct SplitMix64(u64);
@@ -430,13 +418,7 @@ mod tests {
     }
 
     /// Linear scan for ground truth.
-    fn linear_knn(
-        data: &[u8],
-        vec_len: usize,
-        count: usize,
-        query: &[u8],
-        k: usize,
-    ) -> Vec<(usize, u64)> {
+    fn linear_knn(data: &[u8], vec_len: usize, count: usize, query: &[u8], k: usize) -> Vec<(usize, u64)> {
         let mut dists: Vec<(usize, u64)> = (0..count)
             .map(|i| {
                 let point = &data[i * vec_len..(i + 1) * vec_len];
@@ -495,11 +477,7 @@ mod tests {
             .collect();
 
         // Hamming is a metric -> exact recall
-        assert_eq!(
-            result.hits.len(),
-            ground_truth.len(),
-            "rho-NN should have perfect recall for metric distances"
-        );
+        assert_eq!(result.hits.len(), ground_truth.len(), "rho-NN should have perfect recall for metric distances");
     }
 
     #[test]
@@ -521,10 +499,7 @@ mod tests {
         // Check exact recall: our k-th hit should match linear scan's k-th hit distance
         let our_max_dist = result.hits.last().unwrap().1;
         let gt_max_dist = ground_truth.last().unwrap().1;
-        assert_eq!(
-            our_max_dist, gt_max_dist,
-            "k-NN should find exact same max distance as linear scan"
-        );
+        assert_eq!(our_max_dist, gt_max_dist, "k-NN should find exact same max distance as linear scan");
 
         println!(
             "Repeated rho-NN: {} distance calls, {} pruned (vs {} linear)",
@@ -551,10 +526,7 @@ mod tests {
         // Verify exact recall
         let our_max_dist = result.hits.last().unwrap().1;
         let gt_max_dist = ground_truth.last().unwrap().1;
-        assert_eq!(
-            our_max_dist, gt_max_dist,
-            "DFS Sieve should find exact same max distance as linear scan"
-        );
+        assert_eq!(our_max_dist, gt_max_dist, "DFS Sieve should find exact same max distance as linear scan");
 
         println!(
             "DFS Sieve: {} distance calls, {} pruned (vs {} linear)",
@@ -583,10 +555,7 @@ mod tests {
         );
 
         // With random data, speedup may be modest, but should prune something
-        assert!(
-            result.clusters_pruned > 0,
-            "should prune at least some clusters"
-        );
+        assert!(result.clusters_pruned > 0, "should prune at least some clusters");
     }
 
     #[test]

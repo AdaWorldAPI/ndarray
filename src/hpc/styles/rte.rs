@@ -20,7 +20,10 @@ pub struct ExpansionTrace {
 
 impl RecursiveExpansion {
     pub fn new(max_depth: u8, convergence_threshold: f32) -> Self {
-        Self { max_depth, convergence_threshold }
+        Self {
+            max_depth,
+            convergence_threshold,
+        }
     }
 
     /// Apply recursive expansion: output of depth N becomes input to depth N+1.
@@ -42,11 +45,19 @@ impl RecursiveExpansion {
             }
             let max_l1 = (17 * 65535) as f32;
             let delta = best_dist as f32 / max_l1;
-            steps.push(ExpansionStep { depth, delta, fingerprint: best.clone() });
-            if delta < self.convergence_threshold { break; }
+            steps.push(ExpansionStep {
+                depth,
+                delta,
+                fingerprint: best.clone(),
+            });
+            if delta < self.convergence_threshold {
+                break;
+            }
             current = best;
         }
-        let converged = steps.last().map_or(false, |s| s.delta < self.convergence_threshold);
+        let converged = steps
+            .last()
+            .map_or(false, |s| s.delta < self.convergence_threshold);
         ExpansionTrace { steps, converged }
     }
 }
@@ -58,12 +69,16 @@ mod tests {
     #[test]
     fn test_recursive_expansion_converges() {
         let seed = Base17 { dims: [100; 17] };
-        let corpus: Vec<Base17> = (0..10).map(|i| {
-            let mut dims = [0i16; 17];
-            dims[0] = 100 - (i * 5) as i16;
-            for d in 1..17 { dims[d] = 100 - (i * 3) as i16; }
-            Base17 { dims }
-        }).collect();
+        let corpus: Vec<Base17> = (0..10)
+            .map(|i| {
+                let mut dims = [0i16; 17];
+                dims[0] = 100 - (i * 5) as i16;
+                for d in 1..17 {
+                    dims[d] = 100 - (i * 3) as i16;
+                }
+                Base17 { dims }
+            })
+            .collect();
 
         let re = RecursiveExpansion::new(7, 0.001);
         let trace = re.expand(&seed, &corpus);

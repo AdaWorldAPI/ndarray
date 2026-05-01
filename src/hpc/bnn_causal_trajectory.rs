@@ -1,4 +1,6 @@
-#![allow(clippy::assign_op_pattern, clippy::too_many_arguments, clippy::manual_range_contains, clippy::needless_range_loop)]
+#![allow(
+    clippy::assign_op_pattern, clippy::too_many_arguments, clippy::manual_range_contains, clippy::needless_range_loop
+)]
 
 //! Causal Trajectory Hydration via BNN Instrumentation.
 //!
@@ -35,9 +37,9 @@
 //! - Pearl 2009: do-calculus (BPReLU forward ≈ interventional, backward ≈ observational)
 //! - Czégel et al. 2021: error thresholds for staged assembly via Hold state
 
+use super::bnn_cross_plane::CollapseGate;
 use super::fingerprint::Fingerprint;
 use super::kernels::{score_sigma, EnergyConflict, SigmaGate, SignificanceLevel};
-use super::bnn_cross_plane::CollapseGate;
 
 use super::bnn_cross_plane::{CrossPlaneVote, HaloType, InferenceMode};
 
@@ -273,22 +275,15 @@ impl EwmCorrection {
     }
 
     /// Compute with a specific σ-gate (e.g., for SKU-64K).
-    pub fn compute_with_gate(
-        prev: &ResonatorSnapshot,
-        curr: &ResonatorSnapshot,
-        gate: &SigmaGate,
-    ) -> Self {
+    pub fn compute_with_gate(prev: &ResonatorSnapshot, curr: &ResonatorSnapshot, gate: &SigmaGate) -> Self {
         let s_correction = per_word_popcount(&(&curr.s_est ^ &prev.s_est));
         let p_correction = per_word_popcount(&(&curr.p_est ^ &prev.p_est));
         let o_correction = per_word_popcount(&(&curr.o_est ^ &prev.o_est));
 
         // Classify per-plane aggregate correction → EwmTier.
         // Lower aggregate correction = resonator converging = higher tier.
-        let totals = [
-            s_correction.iter().sum::<u32>(),
-            p_correction.iter().sum::<u32>(),
-            o_correction.iter().sum::<u32>(),
-        ];
+        let totals =
+            [s_correction.iter().sum::<u32>(), p_correction.iter().sum::<u32>(), o_correction.iter().sum::<u32>()];
         let plane_tiers = totals.map(|total| {
             let ec = EnergyConflict {
                 conflict: total,
@@ -390,44 +385,21 @@ impl CausalSaliency {
         for word_idx in 0..n_words {
             // S-plane
             classify_word_trend(
-                first.s_correction[word_idx],
-                last.s_correction[word_idx],
-                corrections,
-                word_idx,
+                first.s_correction[word_idx], last.s_correction[word_idx], corrections, word_idx,
                 0, // plane index
-                &mut crystallizing,
-                &mut dissolving,
-                &mut contested,
-                &mut cryst_count,
-                &mut diss_count,
+                &mut crystallizing, &mut dissolving, &mut contested, &mut cryst_count, &mut diss_count,
                 &mut cont_count,
             );
             // P-plane
             classify_word_trend(
-                first.p_correction[word_idx],
-                last.p_correction[word_idx],
-                corrections,
-                word_idx,
-                1,
-                &mut crystallizing,
-                &mut dissolving,
-                &mut contested,
-                &mut cryst_count,
-                &mut diss_count,
+                first.p_correction[word_idx], last.p_correction[word_idx], corrections, word_idx, 1,
+                &mut crystallizing, &mut dissolving, &mut contested, &mut cryst_count, &mut diss_count,
                 &mut cont_count,
             );
             // O-plane
             classify_word_trend(
-                first.o_correction[word_idx],
-                last.o_correction[word_idx],
-                corrections,
-                word_idx,
-                2,
-                &mut crystallizing,
-                &mut dissolving,
-                &mut contested,
-                &mut cryst_count,
-                &mut diss_count,
+                first.o_correction[word_idx], last.o_correction[word_idx], corrections, word_idx, 2,
+                &mut crystallizing, &mut dissolving, &mut contested, &mut cryst_count, &mut diss_count,
                 &mut cont_count,
             );
         }
@@ -583,11 +555,7 @@ impl CausalArrow {
 /// We use popcount of the XOR as unsigned magnitude, then apply the BPReLU
 /// based on whether the estimate moved TOWARD the codebook (forward) or
 /// AWAY from it (backward), as indicated by the convergence delta.
-fn plane_asymmetry(
-    prev_est: &Fingerprint<256>,
-    curr_est: &Fingerprint<256>,
-    bprelu: &BPReLU,
-) -> (f32, f32) {
+fn plane_asymmetry(prev_est: &Fingerprint<256>, curr_est: &Fingerprint<256>, bprelu: &BPReLU) -> (f32, f32) {
     let diff = prev_est ^ curr_est;
     let changed_bits = diff.popcount() as f32;
     let total_bits = Fingerprint::<256>::BITS as f32;
@@ -682,48 +650,12 @@ impl CausalChain {
 
             // Generate all cause→effect links
             let pairs: [(bool, DominantPlane, u32, bool, DominantPlane); 6] = [
-                (
-                    s_stabilized,
-                    DominantPlane::S,
-                    early.s_activity,
-                    p_responding,
-                    DominantPlane::P,
-                ),
-                (
-                    s_stabilized,
-                    DominantPlane::S,
-                    early.s_activity,
-                    o_responding,
-                    DominantPlane::O,
-                ),
-                (
-                    p_stabilized,
-                    DominantPlane::P,
-                    early.p_activity,
-                    s_responding,
-                    DominantPlane::S,
-                ),
-                (
-                    p_stabilized,
-                    DominantPlane::P,
-                    early.p_activity,
-                    o_responding,
-                    DominantPlane::O,
-                ),
-                (
-                    o_stabilized,
-                    DominantPlane::O,
-                    early.o_activity,
-                    s_responding,
-                    DominantPlane::S,
-                ),
-                (
-                    o_stabilized,
-                    DominantPlane::O,
-                    early.o_activity,
-                    p_responding,
-                    DominantPlane::P,
-                ),
+                (s_stabilized, DominantPlane::S, early.s_activity, p_responding, DominantPlane::P),
+                (s_stabilized, DominantPlane::S, early.s_activity, o_responding, DominantPlane::O),
+                (p_stabilized, DominantPlane::P, early.p_activity, s_responding, DominantPlane::S),
+                (p_stabilized, DominantPlane::P, early.p_activity, o_responding, DominantPlane::O),
+                (o_stabilized, DominantPlane::O, early.o_activity, s_responding, DominantPlane::S),
+                (o_stabilized, DominantPlane::O, early.o_activity, p_responding, DominantPlane::P),
             ];
 
             for &(cause_stable, cause_plane, cause_activity, effect_resp, effect_plane) in &pairs {
@@ -780,10 +712,7 @@ pub struct HaloTransition {
 ///
 /// Compares the cross-plane vote at iteration t-1 with iteration t
 /// and identifies entries that moved between halo types.
-pub fn detect_halo_transitions(
-    prev: &ResonatorSnapshot,
-    curr: &ResonatorSnapshot,
-) -> Vec<HaloTransition> {
+pub fn detect_halo_transitions(prev: &ResonatorSnapshot, curr: &ResonatorSnapshot) -> Vec<HaloTransition> {
     let prev_vote = prev.cross_plane_vote();
     let curr_vote = curr.cross_plane_vote();
     let mut transitions = Vec::new();
@@ -874,10 +803,7 @@ impl NarsTruth {
         if w_total < 1e-9 {
             return NarsTruth::new(0.5, 0.0);
         }
-        NarsTruth::new(
-            (w1 * self.f + w2 * other.f) / w_total,
-            w_total / (w_total + 1.0),
-        )
+        NarsTruth::new((w1 * self.f + w2 * other.f) / w_total, w_total / (w_total + 1.0))
     }
 
     /// NARS deduction: <A→B> ⊗ <B→C> = <A→C>.
@@ -1079,7 +1005,7 @@ impl CausalTrajectory {
         }
 
         // Advance shift window every 4 iterations for smoothing.
-        if (snapshot.iter + 1)% 4 == 0 {
+        if (snapshot.iter + 1) % 4 == 0 {
             self.shift_detector.advance_window();
         }
 
@@ -1189,10 +1115,7 @@ impl CausalTrajectory {
                         relation: CausalRelation::Contradicts,
                         source_plane: *plane,
                         target_plane: None,
-                        truth: NarsTruth::new(
-                            saliency.contested_count[plane_idx] as f32 / 256.0,
-                            0.7,
-                        ),
+                        truth: NarsTruth::new(saliency.contested_count[plane_idx] as f32 / 256.0, 0.7),
                         iter: self.snapshots.last().map_or(0, |s| s.iter),
                         inference_mode: None,
                         sigma: None,
@@ -1326,12 +1249,7 @@ impl StripeHistogram {
     /// Total population across all stripes.
     #[inline]
     pub fn total(&self) -> u32 {
-        self.below_1s
-            + self.s1_to_s15
-            + self.s15_to_s2
-            + self.s2_to_s25
-            + self.s25_to_s3
-            + self.above_3s
+        self.below_1s + self.s1_to_s15 + self.s15_to_s2 + self.s2_to_s25 + self.s25_to_s3 + self.above_3s
     }
 
     /// Classify a σ-value into the appropriate stripe and increment.
@@ -1354,14 +1272,7 @@ impl StripeHistogram {
 
     /// Convert to array of 6 bin counts [below_1s, ..., above_3s].
     pub fn as_array(&self) -> [u32; 6] {
-        [
-            self.below_1s,
-            self.s1_to_s15,
-            self.s15_to_s2,
-            self.s2_to_s25,
-            self.s25_to_s3,
-            self.above_3s,
-        ]
+        [self.below_1s, self.s1_to_s15, self.s15_to_s2, self.s2_to_s25, self.s25_to_s3, self.above_3s]
     }
 
     /// Center of mass in σ-space: weighted average of bin centers.
@@ -1549,7 +1460,9 @@ mod tests {
     use super::*;
     struct SplitMix64(u64);
     impl SplitMix64 {
-        fn new(seed: u64) -> Self { Self(seed) }
+        fn new(seed: u64) -> Self {
+            Self(seed)
+        }
         fn next_u64(&mut self) -> u64 {
             self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
             let mut z = self.0;
@@ -1596,18 +1509,9 @@ mod tests {
         let t2 = NarsTruth::new(0.6, 0.5);
         let revised = t1.revise(t2);
         // Revision of equal-weight evidence should give mean frequency
-        assert!(
-            (revised.f - 0.7).abs() < 0.01,
-            "Revised frequency should be ~0.7, got {}",
-            revised.f
-        );
+        assert!((revised.f - 0.7).abs() < 0.01, "Revised frequency should be ~0.7, got {}", revised.f);
         // Confidence should increase
-        assert!(
-            revised.c > t1.c,
-            "Revised confidence {} should exceed input {}",
-            revised.c,
-            t1.c
-        );
+        assert!(revised.c > t1.c, "Revised confidence {} should exceed input {}", revised.c, t1.c);
     }
 
     #[test]
@@ -1615,11 +1519,7 @@ mod tests {
         let ab = NarsTruth::new(0.9, 0.8);
         let bc = NarsTruth::new(0.9, 0.8);
         let ac = ab.deduction(bc);
-        assert!(
-            ac.f > 0.7,
-            "Deduction frequency should be high, got {}",
-            ac.f
-        );
+        assert!(ac.f > 0.7, "Deduction frequency should be high, got {}", ac.f);
         assert!(ac.c > 0.0, "Deduction confidence should be > 0");
     }
 
@@ -1630,10 +1530,7 @@ mod tests {
         let mut rng = make_rng();
         let snap = make_snapshot(&mut rng, 0, 100);
         let diff = RifDiff::compute(&snap, &snap);
-        assert_eq!(
-            diff.s_activity, 0,
-            "Identical snapshots should have 0 S activity"
-        );
+        assert_eq!(diff.s_activity, 0, "Identical snapshots should have 0 S activity");
         assert_eq!(diff.total_activity(), 0, "Total activity should be 0");
     }
 
@@ -1643,10 +1540,7 @@ mod tests {
         let snap1 = make_snapshot(&mut rng, 0, 100);
         let snap2 = make_snapshot(&mut rng, 2, 100);
         let diff = RifDiff::compute(&snap1, &snap2);
-        assert!(
-            diff.total_activity() > 0,
-            "Different snapshots should have activity"
-        );
+        assert!(diff.total_activity() > 0, "Different snapshots should have activity");
     }
 
     // --- EWM Correction tests ---
@@ -1667,10 +1561,7 @@ mod tests {
         let snap1 = make_snapshot(&mut rng, 0, 100);
         let snap2 = make_snapshot(&mut rng, 1, 100);
         let corr = EwmCorrection::compute(&snap1, &snap2);
-        assert!(
-            corr.s_total() > 0,
-            "Different snapshots should have nonzero correction"
-        );
+        assert!(corr.s_total() > 0, "Different snapshots should have nonzero correction");
     }
 
     // --- Causal Arrow tests ---
@@ -1734,11 +1625,7 @@ mod tests {
 
         let chain = CausalChain::from_rif_diffs(&[diff1, diff2]);
         assert!(chain.depth() > 0, "Should detect S→P causal link");
-        assert_eq!(
-            chain.root_cause(),
-            Some(DominantPlane::S),
-            "Root cause should be S-plane"
-        );
+        assert_eq!(chain.root_cause(), Some(DominantPlane::S), "Root cause should be S-plane");
         assert_eq!(chain.links[0].effect_plane, DominantPlane::P);
     }
 
@@ -1768,10 +1655,7 @@ mod tests {
         corr2.iter = 2;
 
         let saliency = CausalSaliency::from_ewm_window(&[corr1, corr2]);
-        assert!(
-            saliency.crystallizing_count[0] > 0,
-            "Should detect crystallizing S-plane words"
-        );
+        assert!(saliency.crystallizing_count[0] > 0, "Should detect crystallizing S-plane words");
     }
 
     // --- Halo Transition tests ---
@@ -1893,14 +1777,8 @@ mod tests {
         snap.delta_s = 5;
         snap.delta_p = 3;
         snap.delta_o = 7;
-        assert!(
-            snap.converged(10),
-            "Should be converged when all deltas < threshold"
-        );
-        assert!(
-            !snap.converged(5),
-            "Should not converge when delta_o >= threshold"
-        );
+        assert!(snap.converged(10), "Should be converged when all deltas < threshold");
+        assert!(!snap.converged(5), "Should not converge when delta_o >= threshold");
     }
 
     #[test]
@@ -1941,10 +1819,7 @@ mod tests {
 
     #[test]
     fn test_ewm_tier_from_significance_discovery() {
-        assert_eq!(
-            EwmTier::from(SignificanceLevel::Discovery),
-            EwmTier::Crystallized
-        );
+        assert_eq!(EwmTier::from(SignificanceLevel::Discovery), EwmTier::Crystallized);
     }
 
     #[test]
@@ -1954,18 +1829,12 @@ mod tests {
 
     #[test]
     fn test_ewm_tier_from_significance_evidence() {
-        assert_eq!(
-            EwmTier::from(SignificanceLevel::Evidence),
-            EwmTier::Transitional
-        );
+        assert_eq!(EwmTier::from(SignificanceLevel::Evidence), EwmTier::Transitional);
     }
 
     #[test]
     fn test_ewm_tier_from_significance_hint() {
-        assert_eq!(
-            EwmTier::from(SignificanceLevel::Hint),
-            EwmTier::Transitional
-        );
+        assert_eq!(EwmTier::from(SignificanceLevel::Hint), EwmTier::Transitional);
     }
 
     #[test]

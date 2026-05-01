@@ -4,9 +4,9 @@
 //!
 //! Uses the OpenChat template: `GPT4 Correct User: {msg}<|end_of_turn|>`
 
-use crate::hpc::models::api_types::*;
 use super::inference::{GeneratedToken, OpenChatEngine};
 use super::weights::*;
+use crate::hpc::models::api_types::*;
 
 /// OpenChat API wrapper.
 pub struct OpenChatApi {
@@ -16,7 +16,10 @@ pub struct OpenChatApi {
 
 impl OpenChatApi {
     pub fn new(weights: OpenChatWeights) -> Self {
-        Self { engine: OpenChatEngine::new(weights), request_counter: 0 }
+        Self {
+            engine: OpenChatEngine::new(weights),
+            request_counter: 0,
+        }
     }
 
     /// `/v1/chat/completions`
@@ -34,7 +37,10 @@ impl OpenChatApi {
             FinishReason::Length
         };
 
-        let content: String = generated.iter().map(|t| format!("[{}]", t.token_id)).collect();
+        let content: String = generated
+            .iter()
+            .map(|t| format!("[{}]", t.token_id))
+            .collect();
 
         ChatCompletionResponse::new(
             format!("chatcmpl-{}", self.request_counter),
@@ -123,11 +129,8 @@ mod tests {
 
     #[test]
     fn test_chat_template_multi_turn() {
-        let messages = vec![
-            ChatMessage::user("Hi"),
-            ChatMessage::assistant("Hello!"),
-            ChatMessage::user("How are you?"),
-        ];
+        let messages =
+            vec![ChatMessage::user("Hi"), ChatMessage::assistant("Hello!"), ChatMessage::user("How are you?")];
         let prompt = OpenChatApi::format_chat_template(&messages);
         assert_eq!(prompt.matches("GPT4 Correct User:").count(), 2);
         assert!(prompt.contains("Hello!"));
@@ -135,10 +138,7 @@ mod tests {
 
     #[test]
     fn test_chat_template_with_system() {
-        let messages = vec![
-            ChatMessage::system("You are helpful."),
-            ChatMessage::user("Hi"),
-        ];
+        let messages = vec![ChatMessage::system("You are helpful."), ChatMessage::user("Hi")];
         let prompt = OpenChatApi::format_chat_template(&messages);
         assert!(prompt.starts_with("You are helpful."));
     }

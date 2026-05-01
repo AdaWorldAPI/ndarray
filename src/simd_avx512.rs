@@ -33,8 +33,8 @@ use core::arch::x86_64::*;
 
 use core::fmt;
 use core::ops::{
-    Add, AddAssign, BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Div, DivAssign,
-    Mul, MulAssign, Neg, Not, Shl, Shr, Sub, SubAssign,
+    Add, AddAssign, BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Div, DivAssign, Mul, MulAssign,
+    Neg, Not, Shl, Shr, Sub, SubAssign,
 };
 
 // ============================================================================
@@ -175,10 +175,7 @@ impl F32x16 {
     pub fn abs(self) -> Self {
         unsafe {
             let mask = _mm512_set1_epi32(0x7FFF_FFFFi32);
-            Self(_mm512_castsi512_ps(_mm512_and_si512(
-                _mm512_castps_si512(self.0),
-                mask,
-            )))
+            Self(_mm512_castsi512_ps(_mm512_and_si512(_mm512_castps_si512(self.0), mask)))
         }
     }
 
@@ -264,10 +261,7 @@ impl Neg for F32x16 {
     fn neg(self) -> Self {
         unsafe {
             let sign = _mm512_set1_epi32(i32::MIN); // 0x80000000
-            Self(_mm512_castsi512_ps(_mm512_xor_si512(
-                _mm512_castps_si512(self.0),
-                sign,
-            )))
+            Self(_mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(self.0), sign)))
         }
     }
 }
@@ -402,10 +396,7 @@ impl F64x8 {
     pub fn abs(self) -> Self {
         unsafe {
             let mask = _mm512_set1_epi64(0x7FFF_FFFF_FFFF_FFFFi64);
-            Self(_mm512_castsi512_pd(_mm512_and_si512(
-                _mm512_castpd_si512(self.0),
-                mask,
-            )))
+            Self(_mm512_castsi512_pd(_mm512_and_si512(_mm512_castpd_si512(self.0), mask)))
         }
     }
 
@@ -467,10 +458,7 @@ impl Neg for F64x8 {
     fn neg(self) -> Self {
         unsafe {
             let sign = _mm512_set1_epi64(i64::MIN); // 0x8000000000000000
-            Self(_mm512_castsi512_pd(_mm512_xor_si512(
-                _mm512_castpd_si512(self.0),
-                sign,
-            )))
+            Self(_mm512_castsi512_pd(_mm512_xor_si512(_mm512_castpd_si512(self.0), sign)))
         }
     }
 }
@@ -605,17 +593,19 @@ impl U8x64 {
     pub fn shr_epi16(self, imm: u32) -> Self {
         // _mm512_srli_epi16 shifts each 16-bit lane right
         // Use match for const immediate (intrinsic requires const)
-        Self(unsafe { match imm {
-            1 => _mm512_srli_epi16(self.0, 1),
-            2 => _mm512_srli_epi16(self.0, 2),
-            3 => _mm512_srli_epi16(self.0, 3),
-            4 => _mm512_srli_epi16(self.0, 4),
-            5 => _mm512_srli_epi16(self.0, 5),
-            6 => _mm512_srli_epi16(self.0, 6),
-            7 => _mm512_srli_epi16(self.0, 7),
-            8 => _mm512_srli_epi16(self.0, 8),
-            _ => _mm512_setzero_si512(),
-        }})
+        Self(unsafe {
+            match imm {
+                1 => _mm512_srli_epi16(self.0, 1),
+                2 => _mm512_srli_epi16(self.0, 2),
+                3 => _mm512_srli_epi16(self.0, 3),
+                4 => _mm512_srli_epi16(self.0, 4),
+                5 => _mm512_srli_epi16(self.0, 5),
+                6 => _mm512_srli_epi16(self.0, 6),
+                7 => _mm512_srli_epi16(self.0, 7),
+                8 => _mm512_srli_epi16(self.0, 8),
+                _ => _mm512_setzero_si512(),
+            }
+        })
     }
 
     /// Saturating unsigned subtraction: max(a - b, 0) per byte.
@@ -655,17 +645,19 @@ impl U8x64 {
     /// Completes the nibble shift pair with `shr_epi16`.
     #[inline(always)]
     pub fn shl_epi16(self, imm: u32) -> Self {
-        Self(unsafe { match imm {
-            1 => _mm512_slli_epi16(self.0, 1),
-            2 => _mm512_slli_epi16(self.0, 2),
-            3 => _mm512_slli_epi16(self.0, 3),
-            4 => _mm512_slli_epi16(self.0, 4),
-            5 => _mm512_slli_epi16(self.0, 5),
-            6 => _mm512_slli_epi16(self.0, 6),
-            7 => _mm512_slli_epi16(self.0, 7),
-            8 => _mm512_slli_epi16(self.0, 8),
-            _ => _mm512_setzero_si512(),
-        }})
+        Self(unsafe {
+            match imm {
+                1 => _mm512_slli_epi16(self.0, 1),
+                2 => _mm512_slli_epi16(self.0, 2),
+                3 => _mm512_slli_epi16(self.0, 3),
+                4 => _mm512_slli_epi16(self.0, 4),
+                5 => _mm512_slli_epi16(self.0, 5),
+                6 => _mm512_slli_epi16(self.0, 6),
+                7 => _mm512_slli_epi16(self.0, 7),
+                8 => _mm512_slli_epi16(self.0, 8),
+                _ => _mm512_setzero_si512(),
+            }
+        })
     }
 
     // ── Tier 2: sprite blit + palette LUT + cross-lane shuffle ────────
@@ -748,12 +740,11 @@ impl U8x64 {
     #[inline(always)]
     pub fn nibble_popcount_lut() -> Self {
         // 0x04030302_03020201_03020201_02010100 replicated ×4
-        Self(unsafe { _mm512_set4_epi32(
-            0x04030302_u32 as i32,
-            0x03020201_u32 as i32,
-            0x03020201_u32 as i32,
-            0x02010100_u32 as i32,
-        )})
+        Self(unsafe {
+            _mm512_set4_epi32(
+                0x04030302_u32 as i32, 0x03020201_u32 as i32, 0x03020201_u32 as i32, 0x02010100_u32 as i32,
+            )
+        })
     }
 }
 
@@ -789,10 +780,7 @@ impl Mul for U8x64 {
             let packed_lo = _mm512_cvtepi16_epi8(prod_lo);
             let packed_hi = _mm512_cvtepi16_epi8(prod_hi);
 
-            Self(_mm512_inserti64x4::<1>(
-                _mm512_castsi256_si512(packed_lo),
-                packed_hi,
-            ))
+            Self(_mm512_inserti64x4::<1>(_mm512_castsi256_si512(packed_lo), packed_hi))
         }
     }
 }
@@ -1252,25 +1240,29 @@ impl U16x32 {
     /// Shift right each 16-bit lane by immediate.
     #[inline(always)]
     pub fn shr(self, imm: u32) -> Self {
-        Self(unsafe { match imm {
-            1 => _mm512_srli_epi16(self.0, 1),
-            2 => _mm512_srli_epi16(self.0, 2),
-            4 => _mm512_srli_epi16(self.0, 4),
-            8 => _mm512_srli_epi16(self.0, 8),
-            _ => _mm512_setzero_si512(),
-        }})
+        Self(unsafe {
+            match imm {
+                1 => _mm512_srli_epi16(self.0, 1),
+                2 => _mm512_srli_epi16(self.0, 2),
+                4 => _mm512_srli_epi16(self.0, 4),
+                8 => _mm512_srli_epi16(self.0, 8),
+                _ => _mm512_setzero_si512(),
+            }
+        })
     }
 
     /// Shift left each 16-bit lane by immediate.
     #[inline(always)]
     pub fn shl(self, imm: u32) -> Self {
-        Self(unsafe { match imm {
-            1 => _mm512_slli_epi16(self.0, 1),
-            2 => _mm512_slli_epi16(self.0, 2),
-            4 => _mm512_slli_epi16(self.0, 4),
-            8 => _mm512_slli_epi16(self.0, 8),
-            _ => _mm512_setzero_si512(),
-        }})
+        Self(unsafe {
+            match imm {
+                1 => _mm512_slli_epi16(self.0, 1),
+                2 => _mm512_slli_epi16(self.0, 2),
+                4 => _mm512_slli_epi16(self.0, 4),
+                8 => _mm512_slli_epi16(self.0, 8),
+                _ => _mm512_setzero_si512(),
+            }
+        })
     }
 
     /// Multiply and keep low 16 bits (wrapping).
@@ -1291,16 +1283,22 @@ impl U16x32 {
 impl Add for U16x32 {
     type Output = Self;
     #[inline(always)]
-    fn add(self, rhs: Self) -> Self { Self(unsafe { _mm512_add_epi16(self.0, rhs.0) }) }
+    fn add(self, rhs: Self) -> Self {
+        Self(unsafe { _mm512_add_epi16(self.0, rhs.0) })
+    }
 }
 impl Sub for U16x32 {
     type Output = Self;
     #[inline(always)]
-    fn sub(self, rhs: Self) -> Self { Self(unsafe { _mm512_sub_epi16(self.0, rhs.0) }) }
+    fn sub(self, rhs: Self) -> Self {
+        Self(unsafe { _mm512_sub_epi16(self.0, rhs.0) })
+    }
 }
 impl AddAssign for U16x32 {
     #[inline(always)]
-    fn add_assign(&mut self, rhs: Self) { self.0 = unsafe { _mm512_add_epi16(self.0, rhs.0) }; }
+    fn add_assign(&mut self, rhs: Self) {
+        self.0 = unsafe { _mm512_add_epi16(self.0, rhs.0) };
+    }
 }
 
 impl fmt::Debug for U16x32 {
@@ -1310,7 +1308,9 @@ impl fmt::Debug for U16x32 {
 }
 
 impl PartialEq for U16x32 {
-    fn eq(&self, other: &Self) -> bool { self.to_array() == other.to_array() }
+    fn eq(&self, other: &Self) -> bool {
+        self.to_array() == other.to_array()
+    }
 }
 
 // ============================================================================
@@ -1593,7 +1593,9 @@ impl fmt::Debug for I8x64 {
     }
 }
 impl PartialEq for I8x64 {
-    fn eq(&self, other: &Self) -> bool { self.to_array() == other.to_array() }
+    fn eq(&self, other: &Self) -> bool {
+        self.to_array() == other.to_array()
+    }
 }
 
 // ============================================================================
@@ -1673,20 +1675,28 @@ impl I8x32 {
 impl Add for I8x32 {
     type Output = Self;
     #[inline(always)]
-    fn add(self, rhs: Self) -> Self { Self(unsafe { _mm256_add_epi8(self.0, rhs.0) }) }
+    fn add(self, rhs: Self) -> Self {
+        Self(unsafe { _mm256_add_epi8(self.0, rhs.0) })
+    }
 }
 impl Sub for I8x32 {
     type Output = Self;
     #[inline(always)]
-    fn sub(self, rhs: Self) -> Self { Self(unsafe { _mm256_sub_epi8(self.0, rhs.0) }) }
+    fn sub(self, rhs: Self) -> Self {
+        Self(unsafe { _mm256_sub_epi8(self.0, rhs.0) })
+    }
 }
 impl AddAssign for I8x32 {
     #[inline(always)]
-    fn add_assign(&mut self, rhs: Self) { self.0 = unsafe { _mm256_add_epi8(self.0, rhs.0) }; }
+    fn add_assign(&mut self, rhs: Self) {
+        self.0 = unsafe { _mm256_add_epi8(self.0, rhs.0) };
+    }
 }
 impl SubAssign for I8x32 {
     #[inline(always)]
-    fn sub_assign(&mut self, rhs: Self) { self.0 = unsafe { _mm256_sub_epi8(self.0, rhs.0) }; }
+    fn sub_assign(&mut self, rhs: Self) {
+        self.0 = unsafe { _mm256_sub_epi8(self.0, rhs.0) };
+    }
 }
 impl fmt::Debug for I8x32 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1694,7 +1704,9 @@ impl fmt::Debug for I8x32 {
     }
 }
 impl PartialEq for I8x32 {
-    fn eq(&self, other: &Self) -> bool { self.to_array() == other.to_array() }
+    fn eq(&self, other: &Self) -> bool {
+        self.to_array() == other.to_array()
+    }
 }
 
 // ============================================================================
@@ -1781,7 +1793,9 @@ impl fmt::Debug for I16x32 {
     }
 }
 impl PartialEq for I16x32 {
-    fn eq(&self, other: &Self) -> bool { self.to_array() == other.to_array() }
+    fn eq(&self, other: &Self) -> bool {
+        self.to_array() == other.to_array()
+    }
 }
 
 // ============================================================================
@@ -1870,20 +1884,28 @@ impl I16x16 {
 impl Add for I16x16 {
     type Output = Self;
     #[inline(always)]
-    fn add(self, rhs: Self) -> Self { Self(unsafe { _mm256_add_epi16(self.0, rhs.0) }) }
+    fn add(self, rhs: Self) -> Self {
+        Self(unsafe { _mm256_add_epi16(self.0, rhs.0) })
+    }
 }
 impl Sub for I16x16 {
     type Output = Self;
     #[inline(always)]
-    fn sub(self, rhs: Self) -> Self { Self(unsafe { _mm256_sub_epi16(self.0, rhs.0) }) }
+    fn sub(self, rhs: Self) -> Self {
+        Self(unsafe { _mm256_sub_epi16(self.0, rhs.0) })
+    }
 }
 impl AddAssign for I16x16 {
     #[inline(always)]
-    fn add_assign(&mut self, rhs: Self) { self.0 = unsafe { _mm256_add_epi16(self.0, rhs.0) }; }
+    fn add_assign(&mut self, rhs: Self) {
+        self.0 = unsafe { _mm256_add_epi16(self.0, rhs.0) };
+    }
 }
 impl SubAssign for I16x16 {
     #[inline(always)]
-    fn sub_assign(&mut self, rhs: Self) { self.0 = unsafe { _mm256_sub_epi16(self.0, rhs.0) }; }
+    fn sub_assign(&mut self, rhs: Self) {
+        self.0 = unsafe { _mm256_sub_epi16(self.0, rhs.0) };
+    }
 }
 impl fmt::Debug for I16x16 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1891,7 +1913,9 @@ impl fmt::Debug for I16x16 {
     }
 }
 impl PartialEq for I16x16 {
-    fn eq(&self, other: &Self) -> bool { self.to_array() == other.to_array() }
+    fn eq(&self, other: &Self) -> bool {
+        self.to_array() == other.to_array()
+    }
 }
 
 // ============================================================================
@@ -2335,11 +2359,11 @@ pub fn bf16_to_f32_batch(input: &[u16], output: &mut [f32]) {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if is_x86_feature_detected!("avx512bf16")
-            && is_x86_feature_detected!("avx512vl")
-        {
+        if is_x86_feature_detected!("avx512bf16") && is_x86_feature_detected!("avx512vl") {
             // SAFETY: feature detection confirmed avx512bf16 + avx512vl
-            unsafe { convert_bf16_to_f32_avx512bf16(input, output); }
+            unsafe {
+                convert_bf16_to_f32_avx512bf16(input, output);
+            }
             return;
         }
     }
@@ -2356,10 +2380,10 @@ pub fn f32_to_bf16_batch(input: &[f32], output: &mut [u16]) {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if is_x86_feature_detected!("avx512bf16")
-            && is_x86_feature_detected!("avx512vl")
-        {
-            unsafe { convert_f32_to_bf16_avx512bf16(input, output); }
+        if is_x86_feature_detected!("avx512bf16") && is_x86_feature_detected!("avx512vl") {
+            unsafe {
+                convert_f32_to_bf16_avx512bf16(input, output);
+            }
             return;
         }
     }
@@ -2507,21 +2531,16 @@ pub unsafe fn f32_to_bf16_x16_rne(lane: __m512) -> __m256i {
     let abs_bits = _mm512_and_si512(bits, _mm512_set1_epi32(0x7FFF_FFFFu32 as i32));
     let exp_bound = _mm512_set1_epi32(0x0080_0000);
     let is_sub_or_zero: __mmask16 = _mm512_cmplt_epu32_mask(abs_bits, exp_bound);
-    let is_nonzero: __mmask16 =
-        _mm512_cmpgt_epu32_mask(abs_bits, _mm512_setzero_si512());
+    let is_nonzero: __mmask16 = _mm512_cmpgt_epu32_mask(abs_bits, _mm512_setzero_si512());
     let is_subnormal: __mmask16 = is_sub_or_zero & is_nonzero;
 
-    let is_nan: __mmask16 = _mm512_cmpgt_epu32_mask(
-        abs_bits,
-        _mm512_set1_epi32(0x7F80_0000u32 as i32),
-    );
+    let is_nan: __mmask16 = _mm512_cmpgt_epu32_mask(abs_bits, _mm512_set1_epi32(0x7F80_0000u32 as i32));
 
     // Blend order:
     //   1. start from the normal RNE result,
     //   2. overwrite subnormal lanes with the sign-only zero,
     //   3. overwrite NaN lanes with the quieted payload.
-    let with_subnormal =
-        _mm512_mask_blend_epi32(is_subnormal, normal_out, sign_only);
+    let with_subnormal = _mm512_mask_blend_epi32(is_subnormal, normal_out, sign_only);
     let merged = _mm512_mask_blend_epi32(is_nan, with_subnormal, nan_out);
 
     // Pack 16 × i32 low-halves into 16 × i16.  `_mm512_cvtepi32_epi16` is
@@ -2592,30 +2611,18 @@ unsafe fn convert_f32_to_bf16_avx512f_rne(input: &[f32], output: &mut [u16]) {
         let sign_only = _mm512_and_si512(shifted, _mm512_set1_epi32(0x0000_8000));
         let nan_out = _mm512_or_si512(shifted, _mm512_set1_epi32(0x0040));
 
-        let abs_bits =
-            _mm512_and_si512(bits, _mm512_set1_epi32(0x7FFF_FFFFu32 as i32));
+        let abs_bits = _mm512_and_si512(bits, _mm512_set1_epi32(0x7FFF_FFFFu32 as i32));
         let exp_bound = _mm512_set1_epi32(0x0080_0000);
-        let is_sub_or_zero: __mmask16 =
-            _mm512_cmplt_epu32_mask(abs_bits, exp_bound);
-        let is_nonzero: __mmask16 =
-            _mm512_cmpgt_epu32_mask(abs_bits, _mm512_setzero_si512());
+        let is_sub_or_zero: __mmask16 = _mm512_cmplt_epu32_mask(abs_bits, exp_bound);
+        let is_nonzero: __mmask16 = _mm512_cmpgt_epu32_mask(abs_bits, _mm512_setzero_si512());
         let is_subnormal: __mmask16 = is_sub_or_zero & is_nonzero;
-        let is_nan: __mmask16 = _mm512_cmpgt_epu32_mask(
-            abs_bits,
-            _mm512_set1_epi32(0x7F80_0000u32 as i32),
-        );
+        let is_nan: __mmask16 = _mm512_cmpgt_epu32_mask(abs_bits, _mm512_set1_epi32(0x7F80_0000u32 as i32));
 
-        let with_subnormal =
-            _mm512_mask_blend_epi32(is_subnormal, normal_out, sign_only);
-        let merged =
-            _mm512_mask_blend_epi32(is_nan, with_subnormal, nan_out);
+        let with_subnormal = _mm512_mask_blend_epi32(is_subnormal, normal_out, sign_only);
+        let merged = _mm512_mask_blend_epi32(is_nan, with_subnormal, nan_out);
 
         // SAFETY: masked store — only lanes [0, rem) are touched.
-        _mm512_mask_cvtepi32_storeu_epi16(
-            output.as_mut_ptr().add(i) as *mut _,
-            mask,
-            merged,
-        );
+        _mm512_mask_cvtepi32_storeu_epi16(output.as_mut_ptr().add(i) as *mut _, mask, merged);
     }
 }
 
@@ -2635,7 +2642,9 @@ mod bf16_tests {
 
     #[test]
     fn batch_conversion_matches_scalar() {
-        let input: Vec<u16> = (0..100).map(|i| f32_to_bf16_scalar(i as f32 * 0.1 - 5.0)).collect();
+        let input: Vec<u16> = (0..100)
+            .map(|i| f32_to_bf16_scalar(i as f32 * 0.1 - 5.0))
+            .collect();
         let mut batch_output = vec![0.0f32; 100];
         bf16_to_f32_batch(&input, &mut batch_output);
 
@@ -2707,9 +2716,8 @@ mod bf16_tests {
         // Normals across the exponent range.
         for exp_byte in [1u32, 50, 126, 127, 128, 200, 254] {
             for mant in [
-                0x0000_00u32,
-                0x400000, // halfway-below-LSB for even mantissa
-                0x7FFFFF, // top of mantissa (rounding into next exponent)
+                0x0000_00u32, 0x400000,  // halfway-below-LSB for even mantissa
+                0x7FFFFF,  // top of mantissa (rounding into next exponent)
                 0x0080_00, // round bit alone
                 0x00_FFFF, // sticky bits only
                 0x01_8000, // round + tie, LSB=1 → round up
@@ -2779,18 +2787,13 @@ mod bf16_tests {
             while i < n {
                 let v = _mm512_loadu_ps(corpus.as_ptr().add(i));
                 let packed = f32_to_bf16_x16_rne(v);
-                _mm256_storeu_si256(
-                    rne_out.as_mut_ptr().add(i) as *mut __m256i,
-                    packed,
-                );
+                _mm256_storeu_si256(rne_out.as_mut_ptr().add(i) as *mut __m256i, packed);
                 i += 16;
             }
         }
 
         // Reference: hardware `_mm512_cvtneps_pbh` if available.
-        if is_x86_feature_detected!("avx512bf16")
-            && is_x86_feature_detected!("avx512vl")
-        {
+        if is_x86_feature_detected!("avx512bf16") && is_x86_feature_detected!("avx512vl") {
             let mut hw_out: Vec<u16> = vec![0; corpus.len()];
             unsafe {
                 // SAFETY: feature detection confirmed avx512bf16 + avx512vl.
@@ -2811,7 +2814,8 @@ mod bf16_tests {
                 }
             }
             assert_eq!(
-                mismatches, 0,
+                mismatches,
+                0,
                 "byte-equality with _mm512_cvtneps_pbh failed on {} / {} inputs",
                 mismatches,
                 corpus.len()
@@ -2823,15 +2827,15 @@ mod bf16_tests {
             // walking the Intel SDM VCVTNEPS2BF16 pseudocode by hand.  Do not
             // regenerate these — they are the published oracle.
             let reference: &[(u32, u16)] = &[
-                (0x0000_0000, 0x0000),                  // +0
-                (0x8000_0000, 0x8000),                  // -0
-                (0x3F80_0000, 0x3F80),                  // 1.0
-                (0xBF80_0000, 0xBF80),                  // -1.0
-                (0x7F80_0000, 0x7F80),                  // +Inf
-                (0xFF80_0000, 0xFF80),                  // -Inf
-                (0x7FC0_0000, 0x7FC0),                  // canonical qNaN
-                (0x7F80_0001, 0x7FC0),                  // sNaN → qNaN
-                (0x7FBF_FFFF, 0x7FFF),                  // sNaN payload → QNaN'd
+                (0x0000_0000, 0x0000), // +0
+                (0x8000_0000, 0x8000), // -0
+                (0x3F80_0000, 0x3F80), // 1.0
+                (0xBF80_0000, 0xBF80), // -1.0
+                (0x7F80_0000, 0x7F80), // +Inf
+                (0xFF80_0000, 0xFF80), // -Inf
+                (0x7FC0_0000, 0x7FC0), // canonical qNaN
+                (0x7F80_0001, 0x7FC0), // sNaN → qNaN
+                (0x7FBF_FFFF, 0x7FFF), // sNaN payload → QNaN'd
                 // Halfway, LSB=0 → round down (stay even).
                 // f32 bits = 0x3F80_8000  (1 + 2^-8).  Kept LSB = 0, ties.
                 (0x3F80_8000, 0x3F80),
@@ -2858,8 +2862,7 @@ mod bf16_tests {
 
             // And run the SIMD path on a padded batch of those same inputs
             // so the routine's SIMD code path is actually exercised.
-            let mut batch: Vec<f32> =
-                reference.iter().map(|&(b, _)| f32::from_bits(b)).collect();
+            let mut batch: Vec<f32> = reference.iter().map(|&(b, _)| f32::from_bits(b)).collect();
             while batch.len() % 16 != 0 {
                 batch.push(0.0);
             }
@@ -2868,10 +2871,7 @@ mod bf16_tests {
                 // SAFETY: avx512f confirmed above.
                 let v = _mm512_loadu_ps(batch.as_ptr());
                 let packed = f32_to_bf16_x16_rne(v);
-                _mm256_storeu_si256(
-                    simd_out.as_mut_ptr() as *mut __m256i,
-                    packed,
-                );
+                _mm256_storeu_si256(simd_out.as_mut_ptr() as *mut __m256i, packed);
             }
             for (i, &(in_bits, expected)) in reference.iter().enumerate() {
                 assert_eq!(
@@ -2917,10 +2917,7 @@ mod bf16_tests {
             while i < n {
                 let v = _mm512_loadu_ps(cases.as_ptr().add(i));
                 let packed = f32_to_bf16_x16_rne(v);
-                _mm256_storeu_si256(
-                    out.as_mut_ptr().add(i) as *mut __m256i,
-                    packed,
-                );
+                _mm256_storeu_si256(out.as_mut_ptr().add(i) as *mut __m256i, packed);
                 i += 16;
             }
         }
@@ -2932,17 +2929,15 @@ mod bf16_tests {
             }
             let bf16_mant_lsb = got & 0x0001;
             assert_eq!(
-                bf16_mant_lsb, 0,
+                bf16_mant_lsb,
+                0,
                 "round-to-even failed for input idx={idx} bits=0x{:08X}: bf16=0x{got:04X}",
                 v.to_bits()
             );
 
             // Also cross-check with the scalar reference.
             let scalar = f32_to_bf16_scalar_rne(v);
-            assert_eq!(
-                got, scalar,
-                "SIMD vs scalar RNE disagree for 0x{:08X}", v.to_bits()
-            );
+            assert_eq!(got, scalar, "SIMD vs scalar RNE disagree for 0x{:08X}", v.to_bits());
         }
     }
 
@@ -2969,11 +2964,7 @@ mod bf16_tests {
 
             for (i, &v) in input.iter().enumerate() {
                 let expected = f32_to_bf16_scalar_rne(v);
-                assert_eq!(
-                    batch_out[i], expected,
-                    "batch RNE mismatch len={len} idx={i} bits=0x{:08X}",
-                    v.to_bits()
-                );
+                assert_eq!(batch_out[i], expected, "batch RNE mismatch len={len} idx={i} bits=0x{:08X}", v.to_bits());
             }
         }
     }
@@ -3040,7 +3031,7 @@ pub fn f16_to_f32_ieee754(bits: u16) -> f32 {
             // Normalize: find leading 1 in mantissa, adjust exponent
             let mut m = mant;
             let mut e: i32 = 1 - 15; // subnormal effective exponent = 1 - bias
-            // Shift mantissa left until the implicit 1 is in bit 10
+                                     // Shift mantissa left until the implicit 1 is in bit 10
             while m & 0x400 == 0 {
                 m <<= 1;
                 e -= 1;
@@ -3106,7 +3097,7 @@ pub fn f32_to_f16_ieee754_rne(v: f32) -> u16 {
             let shift = (-14 - unbiased) as u32;
             // Add implicit 1 to f32 mantissa, then shift right
             let full_mant = mant | 0x800000; // 24 bits with implicit 1
-            // We need to map 24-bit mantissa to 10-bit with proper shift
+                                             // We need to map 24-bit mantissa to 10-bit with proper shift
             let total_shift = 13 + shift; // 13 to go from 23→10, plus extra for subnormal
 
             // Round-to-nearest-even
@@ -3118,7 +3109,11 @@ pub fn f32_to_f16_ieee754_rne(v: f32) -> u16 {
                 truncated + 1
             } else if remainder == halfway {
                 // Ties to even: round up if truncated is odd
-                if truncated & 1 != 0 { truncated + 1 } else { truncated }
+                if truncated & 1 != 0 {
+                    truncated + 1
+                } else {
+                    truncated
+                }
             } else {
                 truncated
             };
@@ -3130,7 +3125,7 @@ pub fn f32_to_f16_ieee754_rne(v: f32) -> u16 {
         } else {
             // Normal f16 range
             let h_exp = (unbiased + 15) as u32; // rebias: +15
-            // Round mantissa from 23 bits to 10 bits using RNE
+                                                // Round mantissa from 23 bits to 10 bits using RNE
             let truncated = mant >> 13;
             let remainder = mant & 0x1FFF; // lower 13 bits
             let halfway = 0x1000; // 2^12
@@ -3138,7 +3133,11 @@ pub fn f32_to_f16_ieee754_rne(v: f32) -> u16 {
             let rounded = if remainder > halfway {
                 truncated + 1
             } else if remainder == halfway {
-                if truncated & 1 != 0 { truncated + 1 } else { truncated }
+                if truncated & 1 != 0 {
+                    truncated + 1
+                } else {
+                    truncated
+                }
             } else {
                 truncated
             };
@@ -3175,13 +3174,13 @@ pub fn f16_to_f32_batch_ieee754(input: &[u16], output: &mut [f32]) {
             for c in 0..chunks16 {
                 unsafe {
                     // SAFETY: avx512f + f16c verified above.
-                    let src = _mm256_loadu_si256(input[c*16..].as_ptr() as *const __m256i);
+                    let src = _mm256_loadu_si256(input[c * 16..].as_ptr() as *const __m256i);
                     let dst = _mm512_cvtph_ps(src);
-                    _mm512_storeu_ps(output[c*16..].as_mut_ptr(), dst);
+                    _mm512_storeu_ps(output[c * 16..].as_mut_ptr(), dst);
                 }
             }
             // Scalar tail
-            for i in (chunks16*16)..n {
+            for i in (chunks16 * 16)..n {
                 output[i] = f16_to_f32_ieee754(input[i]);
             }
             return;
@@ -3192,12 +3191,12 @@ pub fn f16_to_f32_batch_ieee754(input: &[u16], output: &mut [f32]) {
             for c in 0..chunks8 {
                 unsafe {
                     // SAFETY: f16c verified above.
-                    let src = _mm_loadu_si128(input[c*8..].as_ptr() as *const __m128i);
+                    let src = _mm_loadu_si128(input[c * 8..].as_ptr() as *const __m128i);
                     let dst = _mm256_cvtph_ps(src);
-                    _mm256_storeu_ps(output[c*8..].as_mut_ptr(), dst);
+                    _mm256_storeu_ps(output[c * 8..].as_mut_ptr(), dst);
                 }
             }
-            for i in (chunks8*8)..n {
+            for i in (chunks8 * 8)..n {
                 output[i] = f16_to_f32_ieee754(input[i]);
             }
             return;
@@ -3225,13 +3224,13 @@ pub fn f32_to_f16_batch_ieee754_rne(input: &[f32], output: &mut [u16]) {
             for c in 0..chunks16 {
                 unsafe {
                     // SAFETY: avx512f + f16c verified above.
-                    let src = _mm512_loadu_ps(input[c*16..].as_ptr());
+                    let src = _mm512_loadu_ps(input[c * 16..].as_ptr());
                     // imm8=0x00: _MM_FROUND_TO_NEAREST_INT (RNE)
                     let dst: __m256i = _mm512_cvtps_ph::<0x00>(src);
-                    _mm256_storeu_si256(output[c*16..].as_mut_ptr() as *mut __m256i, dst);
+                    _mm256_storeu_si256(output[c * 16..].as_mut_ptr() as *mut __m256i, dst);
                 }
             }
-            for i in (chunks16*16)..n {
+            for i in (chunks16 * 16)..n {
                 output[i] = f32_to_f16_ieee754_rne(input[i]);
             }
             return;
@@ -3242,12 +3241,12 @@ pub fn f32_to_f16_batch_ieee754_rne(input: &[f32], output: &mut [u16]) {
             for c in 0..chunks8 {
                 unsafe {
                     // SAFETY: f16c verified above.
-                    let src = _mm256_loadu_ps(input[c*8..].as_ptr());
+                    let src = _mm256_loadu_ps(input[c * 8..].as_ptr());
                     let dst: __m128i = _mm256_cvtps_ph::<0x00>(src);
-                    _mm_storeu_si128(output[c*8..].as_mut_ptr() as *mut __m128i, dst);
+                    _mm_storeu_si128(output[c * 8..].as_mut_ptr() as *mut __m128i, dst);
                 }
             }
-            for i in (chunks8*8)..n {
+            for i in (chunks8 * 8)..n {
                 output[i] = f32_to_f16_ieee754_rne(input[i]);
             }
             return;
@@ -3267,17 +3266,17 @@ mod f16_tests {
     #[test]
     fn f16_ieee754_exact_values() {
         // IEEE 754 binary16 exact test vectors
-        assert_eq!(f16_to_f32_ieee754(0x0000), 0.0);            // +0
-        assert_eq!(f16_to_f32_ieee754(0x8000), -0.0);           // −0
-        assert_eq!(f16_to_f32_ieee754(0x3C00), 1.0);            // 1.0
-        assert_eq!(f16_to_f32_ieee754(0xBC00), -1.0);           // −1.0
-        assert_eq!(f16_to_f32_ieee754(0x4000), 2.0);            // 2.0
-        assert_eq!(f16_to_f32_ieee754(0x3800), 0.5);            // 0.5
-        assert_eq!(f16_to_f32_ieee754(0x7BFF), 65504.0);        // max normal
-        assert!(f16_to_f32_ieee754(0x7C00).is_infinite());       // +Inf
-        assert!(f16_to_f32_ieee754(0xFC00).is_infinite());       // −Inf
-        assert!(f16_to_f32_ieee754(0x7C01).is_nan());            // NaN
-        // Smallest positive subnormal: 2^(−24) ≈ 5.96e-8
+        assert_eq!(f16_to_f32_ieee754(0x0000), 0.0); // +0
+        assert_eq!(f16_to_f32_ieee754(0x8000), -0.0); // −0
+        assert_eq!(f16_to_f32_ieee754(0x3C00), 1.0); // 1.0
+        assert_eq!(f16_to_f32_ieee754(0xBC00), -1.0); // −1.0
+        assert_eq!(f16_to_f32_ieee754(0x4000), 2.0); // 2.0
+        assert_eq!(f16_to_f32_ieee754(0x3800), 0.5); // 0.5
+        assert_eq!(f16_to_f32_ieee754(0x7BFF), 65504.0); // max normal
+        assert!(f16_to_f32_ieee754(0x7C00).is_infinite()); // +Inf
+        assert!(f16_to_f32_ieee754(0xFC00).is_infinite()); // −Inf
+        assert!(f16_to_f32_ieee754(0x7C01).is_nan()); // NaN
+                                                      // Smallest positive subnormal: 2^(−24) ≈ 5.96e-8
         let smallest_sub = f16_to_f32_ieee754(0x0001);
         assert!((smallest_sub - 5.960464e-8).abs() < 1e-14);
     }
@@ -3290,8 +3289,7 @@ mod f16_tests {
                 let h = (exp << 10) | mant;
                 let f = f16_to_f32_ieee754(h);
                 let back = f32_to_f16_ieee754_rne(f);
-                assert_eq!(h, back,
-                    "roundtrip failed: 0x{:04X} → {} → 0x{:04X}", h, f, back);
+                assert_eq!(h, back, "roundtrip failed: 0x{:04X} → {} → 0x{:04X}", h, f, back);
             }
         }
     }
@@ -3300,15 +3298,13 @@ mod f16_tests {
     fn f16_exact_representable_values() {
         // Values that are exactly representable in f16 must roundtrip perfectly
         let exact_values: &[f32] = &[
-            0.0, 1.0, -1.0, 2.0, -2.0, 0.5, -0.5, 0.25, 0.125,
-            65504.0, -65504.0, // max f16
+            0.0, 1.0, -1.0, 2.0, -2.0, 0.5, -0.5, 0.25, 0.125, 65504.0, -65504.0,       // max f16
             0.000061035156, // smallest normal f16 (2^-14)
         ];
         for &v in exact_values {
             let h = f32_to_f16_ieee754_rne(v);
             let back = f16_to_f32_ieee754(h);
-            assert_eq!(v, back,
-                "exact value roundtrip failed: {} → 0x{:04X} → {}", v, h, back);
+            assert_eq!(v, back, "exact value roundtrip failed: {} → 0x{:04X} → {}", v, h, back);
         }
     }
 
@@ -3321,18 +3317,25 @@ mod f16_tests {
 
     #[test]
     fn f16_batch_matches_scalar() {
-        let input: Vec<u16> = (0..200).map(|i| {
-            let v = (i as f32 - 100.0) * 0.5;
-            f32_to_f16_ieee754_rne(v)
-        }).collect();
+        let input: Vec<u16> = (0..200)
+            .map(|i| {
+                let v = (i as f32 - 100.0) * 0.5;
+                f32_to_f16_ieee754_rne(v)
+            })
+            .collect();
         let mut batch_out = vec![0.0f32; 200];
         f16_to_f32_batch_ieee754(&input, &mut batch_out);
 
         for (i, &h) in input.iter().enumerate() {
             let scalar = f16_to_f32_ieee754(h);
-            assert_eq!(batch_out[i].to_bits(), scalar.to_bits(),
+            assert_eq!(
+                batch_out[i].to_bits(),
+                scalar.to_bits(),
                 "batch/scalar mismatch at {}: batch=0x{:08X} scalar=0x{:08X}",
-                i, batch_out[i].to_bits(), scalar.to_bits());
+                i,
+                batch_out[i].to_bits(),
+                scalar.to_bits()
+            );
         }
     }
 
@@ -3344,9 +3347,11 @@ mod f16_tests {
 
         for (i, &v) in input.iter().enumerate() {
             let scalar = f32_to_f16_ieee754_rne(v);
-            assert_eq!(batch_out[i], scalar,
+            assert_eq!(
+                batch_out[i], scalar,
                 "f32→f16 batch/scalar mismatch at {}: input={} batch=0x{:04X} scalar=0x{:04X}",
-                i, v, batch_out[i], scalar);
+                i, v, batch_out[i], scalar
+            );
         }
     }
 }
@@ -3382,8 +3387,8 @@ mod u8x64_rasterizer_tests {
         let a = U8x64::splat(10);
         let b = U8x64::splat(5);
         assert_eq!(a.cmpgt_mask(b), u64::MAX); // all greater
-        assert_eq!(b.cmpgt_mask(a), 0);         // none greater
-        assert_eq!(a.cmpgt_mask(a), 0);         // equal = not greater
+        assert_eq!(b.cmpgt_mask(a), 0); // none greater
+        assert_eq!(a.cmpgt_mask(a), 0); // equal = not greater
     }
 
     #[test]
@@ -3409,7 +3414,8 @@ mod u8x64_rasterizer_tests {
     #[test]
     fn shl_epi16_shift_4() {
         let mut data = [0u8; 64];
-        data[0] = 0x0F; data[1] = 0x00; // u16 = 0x000F
+        data[0] = 0x0F;
+        data[1] = 0x00; // u16 = 0x000F
         let v = U8x64::from_slice(&data);
         let shifted = v.shl_epi16(4);
         let mut out = [0u8; 64];
@@ -3441,11 +3447,15 @@ mod u8x64_rasterizer_tests {
     #[test]
     fn permute_bytes_identity() {
         let mut data = [0u8; 64];
-        for i in 0..64 { data[i] = i as u8; }
+        for i in 0..64 {
+            data[i] = i as u8;
+        }
         let v = U8x64::from_slice(&data);
         // Identity permutation
         let mut idx = [0u8; 64];
-        for i in 0..64 { idx[i] = i as u8; }
+        for i in 0..64 {
+            idx[i] = i as u8;
+        }
         let perm = v.permute_bytes(U8x64::from_slice(&idx));
         let mut out = [0u8; 64];
         perm.copy_to_slice(&mut out);
@@ -3455,21 +3465,27 @@ mod u8x64_rasterizer_tests {
     #[test]
     fn permute_bytes_reverse() {
         let mut data = [0u8; 64];
-        for i in 0..64 { data[i] = i as u8; }
+        for i in 0..64 {
+            data[i] = i as u8;
+        }
         let v = U8x64::from_slice(&data);
         // Reverse permutation
         let mut idx = [0u8; 64];
-        for i in 0..64 { idx[i] = (63 - i) as u8; }
+        for i in 0..64 {
+            idx[i] = (63 - i) as u8;
+        }
         let perm = v.permute_bytes(U8x64::from_slice(&idx));
         let mut out = [0u8; 64];
         perm.copy_to_slice(&mut out);
-        for i in 0..64 { assert_eq!(out[i], (63 - i) as u8); }
+        for i in 0..64 {
+            assert_eq!(out[i], (63 - i) as u8);
+        }
     }
 }
 
 #[cfg(test)]
 mod tier3_tests {
-    use super::{U8x64, U16x32};
+    use super::{U16x32, U8x64};
 
     #[test]
     fn movemask_all_zero() {
@@ -3486,8 +3502,8 @@ mod tier3_tests {
     #[test]
     fn movemask_selective() {
         let mut data = [0u8; 64];
-        data[0] = 0x80;  // MSB set → bit 0
-        data[3] = 0xFF;  // MSB set → bit 3
+        data[0] = 0x80; // MSB set → bit 0
+        data[3] = 0xFF; // MSB set → bit 3
         data[63] = 0x80; // MSB set → bit 63
         let v = U8x64::from_slice(&data);
         let mask = v.movemask();
@@ -3515,21 +3531,29 @@ mod tier3_tests {
     #[test]
     fn u16x32_from_u8x64_lo() {
         let mut data = [0u8; 64];
-        for i in 0..32 { data[i] = (i + 1) as u8; }
+        for i in 0..32 {
+            data[i] = (i + 1) as u8;
+        }
         let v = U8x64::from_slice(&data);
         let wide = U16x32::from_u8x64_lo(v);
         let arr = wide.to_array();
-        for i in 0..32 { assert_eq!(arr[i], (i + 1) as u16); }
+        for i in 0..32 {
+            assert_eq!(arr[i], (i + 1) as u16);
+        }
     }
 
     #[test]
     fn u16x32_from_u8x64_hi() {
         let mut data = [0u8; 64];
-        for i in 32..64 { data[i] = i as u8; }
+        for i in 32..64 {
+            data[i] = i as u8;
+        }
         let v = U8x64::from_slice(&data);
         let wide = U16x32::from_u8x64_hi(v);
         let arr = wide.to_array();
-        for i in 0..32 { assert_eq!(arr[i], (32 + i) as u16); }
+        for i in 0..32 {
+            assert_eq!(arr[i], (32 + i) as u16);
+        }
     }
 
     #[test]
@@ -3592,7 +3616,7 @@ mod tier3_tests {
 
 #[cfg(test)]
 mod int_simd_tests {
-    use crate::simd::{I8x32, I8x64, I16x16, I16x32};
+    use crate::simd::{I16x16, I16x32, I8x32, I8x64};
 
     #[test]
     fn i8x64_add_pair_to_constant() {
@@ -3715,14 +3739,10 @@ mod int_simd_tests {
 
     #[test]
     fn i16x16_add_round_trip_and_min() {
-        let a = I16x16::from_array([
-            -100, -50, 0, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200,
-        ]);
+        let a = I16x16::from_array([-100, -50, 0, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200]);
         let b = I16x16::splat(10);
         let c = a.add(b);
-        let exp: [i16; 16] = [
-            -90, -40, 10, 60, 110, 210, 310, 410, 510, 610, 710, 810, 910, 1010, 1110, 1210,
-        ];
+        let exp: [i16; 16] = [-90, -40, 10, 60, 110, 210, 310, 410, 510, 610, 710, 810, 910, 1010, 1110, 1210];
         assert_eq!(c.to_array(), exp);
 
         let mn = a.min(I16x16::splat(0));

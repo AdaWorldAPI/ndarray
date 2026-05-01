@@ -65,12 +65,8 @@ pub enum Substrate {
 
 impl Substrate {
     /// All four substrates in priority order.
-    pub const ALL: [Substrate; 4] = [
-        Substrate::Structural,
-        Substrate::Soaking,
-        Substrate::Evidential,
-        Substrate::Semantic,
-    ];
+    pub const ALL: [Substrate; 4] =
+        [Substrate::Structural, Substrate::Soaking, Substrate::Evidential, Substrate::Semantic];
 
     /// Convert from raw u8.
     #[inline]
@@ -129,12 +125,7 @@ impl SubstrateRoute {
 
     /// Create a dual-substrate route.
     #[inline]
-    pub fn dual(
-        primary: Substrate,
-        secondary: Substrate,
-        primary_weight: f32,
-        parallel: bool,
-    ) -> Self {
+    pub fn dual(primary: Substrate, secondary: Substrate, primary_weight: f32, parallel: bool) -> Self {
         Self {
             primary,
             secondary: Some(secondary),
@@ -147,11 +138,7 @@ impl SubstrateRoute {
     /// Create a triple-substrate route.
     #[inline]
     pub fn triple(
-        primary: Substrate,
-        secondary: Substrate,
-        tertiary: Substrate,
-        primary_weight: f32,
-        parallel: bool,
+        primary: Substrate, secondary: Substrate, tertiary: Substrate, primary_weight: f32, parallel: bool,
     ) -> Self {
         Self {
             primary,
@@ -183,9 +170,7 @@ impl SubstrateRoute {
     /// Whether this route uses a specific substrate.
     #[inline]
     pub fn uses(&self, substrate: Substrate) -> bool {
-        self.primary == substrate
-            || self.secondary == Some(substrate)
-            || self.tertiary == Some(substrate)
+        self.primary == substrate || self.secondary == Some(substrate) || self.tertiary == Some(substrate)
     }
 }
 
@@ -375,10 +360,7 @@ pub fn coherence(signals: &SubstrateSignals) -> Coherence {
 /// but this provides the substrate-level recommendation.
 ///
 /// Returns `None` if no transition is warranted.
-pub fn recommend_transition(
-    current_primary: Substrate,
-    signals: &SubstrateSignals,
-) -> Option<Substrate> {
+pub fn recommend_transition(current_primary: Substrate, signals: &SubstrateSignals) -> Option<Substrate> {
     // === CRYSTALLIZATION: soaking saturated → move to structural ===
     if signals.soaking_saturation > 0.85
         && signals.theta_average > 100.0
@@ -388,10 +370,7 @@ pub fn recommend_transition(
     }
 
     // === DOUBT: NARS confidence dropping → move to evidential ===
-    if signals.nars_confidence < 0.3
-        && signals.nars_contradictions > 2
-        && current_primary == Substrate::Structural
-    {
+    if signals.nars_confidence < 0.3 && signals.nars_contradictions > 2 && current_primary == Substrate::Structural {
         return Some(Substrate::Evidential); // need to re-examine
     }
 
@@ -413,10 +392,7 @@ pub fn recommend_transition(
     }
 
     // === ASSOCIATION: structural miss but semantic hit → move to semantic ===
-    if signals.structural_hits == 0
-        && signals.semantic_nearest > 0.5
-        && current_primary == Substrate::Structural
-    {
+    if signals.structural_hits == 0 && signals.semantic_nearest > 0.5 && current_primary == Substrate::Structural {
         return Some(Substrate::Semantic); // try analogy instead
     }
 
@@ -482,16 +458,11 @@ impl SubstrateSnapshot {
         let coh = coherence(signals);
 
         // Capture soaking state if soaking was active
-        let (theta, maturity, saturation) =
-            if route.uses(Substrate::Soaking) && signals.has_soaking() {
-                (
-                    Some(signals.theta_average),
-                    Some(signals.maturity_average as u8),
-                    Some(signals.soaking_saturation),
-                )
-            } else {
-                (None, None, None)
-            };
+        let (theta, maturity, saturation) = if route.uses(Substrate::Soaking) && signals.has_soaking() {
+            (Some(signals.theta_average), Some(signals.maturity_average as u8), Some(signals.soaking_saturation))
+        } else {
+            (None, None, None)
+        };
 
         // Capture NARS state if evidential was active
         let nars = if route.uses(Substrate::Evidential) && signals.has_evidential() {
@@ -622,13 +593,8 @@ mod tests {
 
     #[test]
     fn test_substrate_route_triple() {
-        let route = SubstrateRoute::triple(
-            Substrate::Structural,
-            Substrate::Evidential,
-            Substrate::Semantic,
-            0.6,
-            true,
-        );
+        let route =
+            SubstrateRoute::triple(Substrate::Structural, Substrate::Evidential, Substrate::Semantic, 0.6, true);
         assert_eq!(route.depth(), 3);
         assert!(route.uses(Substrate::Structural));
         assert!(route.uses(Substrate::Evidential));

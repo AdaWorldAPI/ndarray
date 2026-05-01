@@ -9,7 +9,9 @@ pub struct ShadowResult {
 
 pub fn precompute_shadows(current: &Base17, corpus: &[Base17], depth: usize, top_k: usize) -> Vec<ShadowResult> {
     // Level 1: neighbors of current
-    let mut neighbors: Vec<(usize, u32)> = corpus.iter().enumerate()
+    let mut neighbors: Vec<(usize, u32)> = corpus
+        .iter()
+        .enumerate()
         .map(|(i, c)| (i, current.l1(c)))
         .collect();
     neighbors.sort_by_key(|&(_, d)| d);
@@ -19,7 +21,9 @@ pub fn precompute_shadows(current: &Base17, corpus: &[Base17], depth: usize, top
     // Level 2: for each neighbor, find ITS neighbors
     if depth > 1 {
         for &(idx, _) in &neighbors {
-            let mut sub: Vec<(usize, u32)> = corpus.iter().enumerate()
+            let mut sub: Vec<(usize, u32)> = corpus
+                .iter()
+                .enumerate()
                 .map(|(i, c)| (i, corpus[idx].l1(c)))
                 .collect();
             sub.sort_by_key(|&(_, d)| d);
@@ -39,7 +43,13 @@ mod tests {
     #[test]
     fn test_shadow_precompute() {
         let current = Base17 { dims: [100; 17] };
-        let corpus: Vec<Base17> = (0..20).map(|i| { let mut d = [0i16; 17]; d[0] = (i*50) as i16; Base17 { dims: d } }).collect();
+        let corpus: Vec<Base17> = (0..20)
+            .map(|i| {
+                let mut d = [0i16; 17];
+                d[0] = (i * 50) as i16;
+                Base17 { dims: d }
+            })
+            .collect();
         let shadows = precompute_shadows(&current, &corpus, 2, 5);
         assert!(!shadows.is_empty());
         assert!(shadows[0].predictions.len() <= 5);

@@ -4,12 +4,19 @@
 use super::super::bgz17_bridge::Base17;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Modality { Text, Image, Audio, Code }
+pub enum Modality {
+    Text,
+    Image,
+    Audio,
+    Code,
+}
 
 pub fn cross_modal_bind(text: &Base17, image: &Base17, relation: &Base17) -> Base17 {
     let mut dims = [0i16; 17];
     for d in 0..17 {
-        dims[d] = text.dims[d].wrapping_add(relation.dims[d]).wrapping_add(image.dims[d]);
+        dims[d] = text.dims[d]
+            .wrapping_add(relation.dims[d])
+            .wrapping_add(image.dims[d]);
     }
     Base17 { dims }
 }
@@ -25,7 +32,11 @@ pub fn fusion_quality(fused: &Base17, parent_a: &Base17, parent_b: &Base17, rela
 
 fn recover(fused: &Base17, other: &Base17, relation: &Base17) -> Base17 {
     let mut dims = [0i16; 17];
-    for d in 0..17 { dims[d] = fused.dims[d].wrapping_sub(relation.dims[d]).wrapping_sub(other.dims[d]); }
+    for d in 0..17 {
+        dims[d] = fused.dims[d]
+            .wrapping_sub(relation.dims[d])
+            .wrapping_sub(other.dims[d]);
+    }
     Base17 { dims }
 }
 

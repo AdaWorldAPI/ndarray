@@ -88,9 +88,7 @@ impl JitEngineBuilder {
             .into_iter()
             .map(|(k, v)| (k, v as usize))
             .collect();
-        builder.symbol_lookup_fn(Box::new(move |name| {
-            symbols.get(name).map(|&addr| addr as *const u8)
-        }));
+        builder.symbol_lookup_fn(Box::new(move |name| symbols.get(name).map(|&addr| addr as *const u8)));
 
         let module = JITModule::new(builder);
 
@@ -193,11 +191,7 @@ impl JitEngine {
     ///
     /// The `distance_fn_name` must be a symbol registered via
     /// `JitEngineBuilder::register_fn()`.
-    pub fn compile_hybrid(
-        &mut self,
-        params: ScanParams,
-        distance_fn_name: &str,
-    ) -> Result<u64, JitError> {
+    pub fn compile_hybrid(&mut self, params: ScanParams, distance_fn_name: &str) -> Result<u64, JitError> {
         self.compile_inner(params, Some(distance_fn_name))
     }
 
@@ -206,15 +200,11 @@ impl JitEngine {
         queue.iter().map(|p| self.compile(p.clone())).collect()
     }
 
-    fn compile_inner(
-        &mut self,
-        params: ScanParams,
-        distance_fn: Option<&str>,
-    ) -> Result<u64, JitError> {
+    fn compile_inner(&mut self, params: ScanParams, distance_fn: Option<&str>) -> Result<u64, JitError> {
         let cache_key = params_hash(&params, distance_fn);
 
-        let cache = LazyLock::get_mut(&mut self.cache)
-            .expect("JitEngine: cannot compile after freeze — cache is immutable");
+        let cache =
+            LazyLock::get_mut(&mut self.cache).expect("JitEngine: cannot compile after freeze — cache is immutable");
 
         // Already compiled? Return existing hash.
         if cache.map.contains_key(&cache_key) {
@@ -306,9 +296,7 @@ impl JitEngine {
                 #[cfg(target_arch = "x86_64")]
                 unsafe {
                     #[cfg(target_feature = "sse")]
-                    core::arch::x86_64::_mm_prefetch::<
-                        { core::arch::x86_64::_MM_HINT_T0 },
-                    >(next_ptr as *const i8);
+                    core::arch::x86_64::_mm_prefetch::<{ core::arch::x86_64::_MM_HINT_T0 }>(next_ptr as *const i8);
                 }
                 let _ = next_ptr; // suppress unused warning on non-x86
             }
@@ -339,11 +327,7 @@ impl JitEngine {
     }
 
     /// Compile a hybrid scan kernel (legacy API).
-    pub fn compile_hybrid_scan(
-        &mut self,
-        params: ScanParams,
-        distance_fn_name: &str,
-    ) -> Result<ScanKernel, JitError> {
+    pub fn compile_hybrid_scan(&mut self, params: ScanParams, distance_fn_name: &str) -> Result<ScanKernel, JitError> {
         let hash = self.compile_hybrid(params.clone(), distance_fn_name)?;
         Ok(self.get(hash).expect("just compiled"))
     }
@@ -444,9 +428,18 @@ mod tests {
     fn engine_compile_batch() {
         let mut engine = JitEngine::new().unwrap();
         let params_list = vec![
-            ScanParams { threshold: 100, ..ScanParams::default() },
-            ScanParams { threshold: 200, ..ScanParams::default() },
-            ScanParams { threshold: 300, ..ScanParams::default() },
+            ScanParams {
+                threshold: 100,
+                ..ScanParams::default()
+            },
+            ScanParams {
+                threshold: 200,
+                ..ScanParams::default()
+            },
+            ScanParams {
+                threshold: 300,
+                ..ScanParams::default()
+            },
         ];
         let hashes = engine.compile_batch(&params_list).unwrap();
         assert_eq!(hashes.len(), 3);
@@ -477,13 +470,22 @@ mod tests {
     fn engine_prefetch_chain_order() {
         let mut engine = JitEngine::new().unwrap();
         let h1 = engine
-            .compile(ScanParams { threshold: 10, ..ScanParams::default() })
+            .compile(ScanParams {
+                threshold: 10,
+                ..ScanParams::default()
+            })
             .unwrap();
         let h2 = engine
-            .compile(ScanParams { threshold: 20, ..ScanParams::default() })
+            .compile(ScanParams {
+                threshold: 20,
+                ..ScanParams::default()
+            })
             .unwrap();
         let _h3 = engine
-            .compile(ScanParams { threshold: 30, ..ScanParams::default() })
+            .compile(ScanParams {
+                threshold: 30,
+                ..ScanParams::default()
+            })
             .unwrap();
 
         // Verify prefetch chain is populated
@@ -524,8 +526,8 @@ mod tests {
             kernel.scan(
                 query.as_ptr(),
                 field.as_ptr(),
-                4,  // 4 records
-                8,  // record_size (ignored by JIT — baked as immediate)
+                4, // 4 records
+                8, // record_size (ignored by JIT — baked as immediate)
                 candidates.as_mut_ptr(),
             )
         };
@@ -541,9 +543,18 @@ mod tests {
     #[test]
     fn kernel_caching_dedup() {
         let mut engine = JitEngine::new().unwrap();
-        let p1 = ScanParams { threshold: 42, ..ScanParams::default() };
-        let p2 = ScanParams { threshold: 42, ..ScanParams::default() };
-        let p3 = ScanParams { threshold: 99, ..ScanParams::default() };
+        let p1 = ScanParams {
+            threshold: 42,
+            ..ScanParams::default()
+        };
+        let p2 = ScanParams {
+            threshold: 42,
+            ..ScanParams::default()
+        };
+        let p3 = ScanParams {
+            threshold: 99,
+            ..ScanParams::default()
+        };
 
         let h1 = engine.compile(p1).unwrap();
         let h2 = engine.compile(p2).unwrap();

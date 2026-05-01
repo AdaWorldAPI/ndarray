@@ -39,27 +39,31 @@ impl SafeTensorsFile {
             return Err("file too small for safetensors header".into());
         }
 
-        let header_size = u64::from_le_bytes([
-            data[0], data[1], data[2], data[3],
-            data[4], data[5], data[6], data[7],
-        ]) as usize;
+        let header_size =
+            u64::from_le_bytes([data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7]]) as usize;
 
         if 8 + header_size > data.len() {
             return Err(format!("header_size {} exceeds file len {}", header_size, data.len()));
         }
 
-        let header_json = std::str::from_utf8(&data[8..8 + header_size])
-            .map_err(|e| format!("invalid UTF-8 in header: {}", e))?;
+        let header_json =
+            std::str::from_utf8(&data[8..8 + header_size]).map_err(|e| format!("invalid UTF-8 in header: {}", e))?;
 
         let data_start = 8 + header_size;
         let tensors = parse_header(header_json)?;
 
-        Ok(Self { data, data_start, tensors })
+        Ok(Self {
+            data,
+            data_start,
+            tensors,
+        })
     }
 
     /// Read a tensor as Vec<f32> (little-endian F32).
     pub fn read_f32(&self, name: &str) -> Result<Vec<f32>, String> {
-        let meta = self.tensors.get(name)
+        let meta = self
+            .tensors
+            .get(name)
             .ok_or_else(|| format!("missing tensor: {}", name))?;
         let start = self.data_start + meta.offset;
         let end = start + meta.size;
@@ -74,7 +78,9 @@ impl SafeTensorsFile {
 
     /// Read a tensor as Vec<f16> stored as raw u16 (for F16 tensors).
     pub fn read_f16_raw(&self, name: &str) -> Result<Vec<u16>, String> {
-        let meta = self.tensors.get(name)
+        let meta = self
+            .tensors
+            .get(name)
             .ok_or_else(|| format!("missing tensor: {}", name))?;
         let start = self.data_start + meta.offset;
         let end = start + meta.size;
@@ -145,14 +151,18 @@ fn parse_header(json: &str) -> Result<HashMap<String, TensorMeta>, String> {
                 let arr_start = search_start + bracket_start + 1;
                 if let Some(bracket_end) = json[arr_start..].find(']') {
                     let arr = &json[arr_start..arr_start + bracket_end];
-                    let nums: Vec<usize> = arr.split(',')
+                    let nums: Vec<usize> = arr
+                        .split(',')
                         .filter_map(|s| s.trim().parse().ok())
                         .collect();
                     if nums.len() == 2 {
-                        tensors.insert(key.to_string(), TensorMeta {
-                            offset: nums[0],
-                            size: nums[1] - nums[0],
-                        });
+                        tensors.insert(
+                            key.to_string(),
+                            TensorMeta {
+                                offset: nums[0],
+                                size: nums[1] - nums[0],
+                            },
+                        );
                     }
                 }
             }
@@ -183,7 +193,8 @@ mod tests {
 
     #[test]
     fn test_parse_header_with_metadata() {
-        let json = r#"{"__metadata__": {"format": "pt"}, "w": {"dtype": "F32", "shape": [3], "data_offsets": [0, 12]}}"#;
+        let json =
+            r#"{"__metadata__": {"format": "pt"}, "w": {"dtype": "F32", "shape": [3], "data_offsets": [0, 12]}}"#;
         let tensors = parse_header(json).unwrap();
         assert_eq!(tensors.len(), 1);
         assert!(tensors.contains_key("w"));

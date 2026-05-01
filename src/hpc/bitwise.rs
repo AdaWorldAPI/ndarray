@@ -199,11 +199,7 @@ pub fn hamming_batch_raw(query: &[u8], database: &[u8], num_rows: usize, row_byt
 /// Returns (indices, distances) of the k closest rows in the database.
 /// Uses `select_nth_unstable` for O(n) partial sort instead of O(n log n).
 pub fn hamming_top_k_raw(
-    query: &[u8],
-    database: &[u8],
-    num_rows: usize,
-    row_bytes: usize,
-    k: usize,
+    query: &[u8], database: &[u8], num_rows: usize, row_bytes: usize, k: usize,
 ) -> (Vec<usize>, Vec<u64>) {
     let distances = dispatch_hamming_batch(query, database, num_rows, row_bytes);
     let k = k.min(num_rows);
@@ -297,7 +293,8 @@ pub fn masked_popcount_total(words: &[u64], mask: u64) -> u64 {
 }
 
 impl<S> BitwiseOps for ArrayBase<S, Ix1>
-where S: Data<Elem = u8>
+where
+    S: Data<Elem = u8>,
 {
     fn hamming_distance(&self, other: &Self) -> u64 {
         if let (Some(a), Some(b)) = (self.as_slice(), other.as_slice()) {
@@ -438,12 +435,23 @@ mod tests {
 
     /// Generate deterministic pseudo-random test data.
     fn test_data(n: usize, seed: u8) -> Vec<u8> {
-        (0..n).map(|i| ((i as u8).wrapping_mul(7).wrapping_add(seed).wrapping_mul(13)) ^ (i as u8)).collect()
+        (0..n)
+            .map(|i| {
+                ((i as u8)
+                    .wrapping_mul(7)
+                    .wrapping_add(seed)
+                    .wrapping_mul(13))
+                    ^ (i as u8)
+            })
+            .collect()
     }
 
     /// Scalar reference — always correct, used to verify SIMD tiers.
     fn reference_hamming(a: &[u8], b: &[u8]) -> u64 {
-        a.iter().zip(b.iter()).map(|(&x, &y)| (x ^ y).count_ones() as u64).sum()
+        a.iter()
+            .zip(b.iter())
+            .map(|(&x, &y)| (x ^ y).count_ones() as u64)
+            .sum()
     }
 
     fn reference_popcount(a: &[u8]) -> u64 {
@@ -553,8 +561,7 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn test_all_tiers_agree() {
-        let sizes = [0, 1, 3, 7, 15, 16, 31, 32, 33, 63, 64, 65,
-                     127, 128, 129, 255, 256, 512, 1024, 2048, 4096, 8192];
+        let sizes = [0, 1, 3, 7, 15, 16, 31, 32, 33, 63, 64, 65, 127, 128, 129, 255, 256, 512, 1024, 2048, 4096, 8192];
 
         for &n in &sizes {
             let a = test_data(n, 0x42);
@@ -563,18 +570,15 @@ mod tests {
 
             if is_x86_feature_detected!("avx2") {
                 let avx2 = unsafe { hamming_avx2(&a, &b) };
-                assert_eq!(scalar, avx2,
-                    "scalar≠avx2 at n={}: {} vs {}", n, scalar, avx2);
+                assert_eq!(scalar, avx2, "scalar≠avx2 at n={}: {} vs {}", n, scalar, avx2);
             }
             if is_x86_feature_detected!("avx512bw") {
                 let bw = unsafe { hamming_avx512bw(&a, &b) };
-                assert_eq!(scalar, bw,
-                    "scalar≠avx512bw at n={}: {} vs {}", n, scalar, bw);
+                assert_eq!(scalar, bw, "scalar≠avx512bw at n={}: {} vs {}", n, scalar, bw);
             }
             if is_x86_feature_detected!("avx512vpopcntdq") && is_x86_feature_detected!("avx512bw") {
                 let vpc = unsafe { crate::backend::kernels_avx512::hamming_distance(&a, &b) };
-                assert_eq!(scalar, vpc,
-                    "scalar≠vpopcntdq at n={}: {} vs {}", n, scalar, vpc);
+                assert_eq!(scalar, vpc, "scalar≠vpopcntdq at n={}: {} vs {}", n, scalar, vpc);
             }
         }
     }
@@ -591,13 +595,11 @@ mod tests {
 
             if is_x86_feature_detected!("avx512bw") {
                 let bw = unsafe { popcount_avx512bw(&a) };
-                assert_eq!(scalar, bw,
-                    "popcount scalar≠avx512bw at n={}: {} vs {}", n, scalar, bw);
+                assert_eq!(scalar, bw, "popcount scalar≠avx512bw at n={}: {} vs {}", n, scalar, bw);
             }
             if is_x86_feature_detected!("avx512vpopcntdq") {
                 let vpc = unsafe { crate::backend::kernels_avx512::popcount(&a) };
-                assert_eq!(scalar, vpc,
-                    "popcount scalar≠vpopcntdq at n={}: {} vs {}", n, scalar, vpc);
+                assert_eq!(scalar, vpc, "popcount scalar≠vpopcntdq at n={}: {} vs {}", n, scalar, vpc);
             }
         }
     }
@@ -623,7 +625,8 @@ mod tests {
         if is_x86_feature_detected!("avx512vpopcntdq") && is_x86_feature_detected!("avx512bw") {
             assert_eq!(
                 unsafe { crate::backend::kernels_avx512::hamming_distance(&a, &b) },
-                expected, "vpopcntdq large"
+                expected,
+                "vpopcntdq large"
             );
         }
     }
@@ -667,7 +670,9 @@ mod tests {
             if is_x86_feature_detected!("avx512vpopcntdq") && is_x86_feature_detected!("avx512bw") {
                 assert_eq!(
                     unsafe { crate::backend::kernels_avx512::hamming_distance(&a, &b) },
-                    0, "vpc identical n={}", n
+                    0,
+                    "vpc identical n={}",
+                    n
                 );
             }
         }

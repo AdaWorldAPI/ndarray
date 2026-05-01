@@ -87,26 +87,22 @@ macro_rules! array {
 }
 
 /// Create a zero-dimensional array with the element `x`.
-pub fn arr0<A>(x: A) -> Array0<A>
-{
+pub fn arr0<A>(x: A) -> Array0<A> {
     unsafe { ArrayBase::from_shape_vec_unchecked((), vec![x]) }
 }
 
 /// Create a one-dimensional array with elements from `xs`.
-pub fn arr1<A: Clone>(xs: &[A]) -> Array1<A>
-{
+pub fn arr1<A: Clone>(xs: &[A]) -> Array1<A> {
     ArrayBase::from(xs.to_vec())
 }
 
 /// Create a one-dimensional array with elements from `xs`.
-pub fn rcarr1<A: Clone>(xs: &[A]) -> ArcArray1<A>
-{
+pub fn rcarr1<A: Clone>(xs: &[A]) -> ArcArray1<A> {
     arr1(xs).into_shared()
 }
 
 /// Create a zero-dimensional array view borrowing `x`.
-pub const fn aview0<A>(x: &A) -> ArrayView0<'_, A>
-{
+pub const fn aview0<A>(x: &A) -> ArrayView0<'_, A> {
     ArrayBase {
         data: ViewRepr::new(),
         parts: ArrayPartsSized::new(
@@ -139,13 +135,9 @@ pub const fn aview0<A>(x: &A) -> ArrayView0<'_, A>
 ///
 /// assert_eq!(C.sum(), 6.);
 /// ```
-pub const fn aview1<A>(xs: &[A]) -> ArrayView1<'_, A>
-{
+pub const fn aview1<A>(xs: &[A]) -> ArrayView1<'_, A> {
     if size_of::<A>() == 0 {
-        assert!(
-            xs.len() <= isize::MAX as usize,
-            "Slice length must fit in `isize`.",
-        );
+        assert!(xs.len() <= isize::MAX as usize, "Slice length must fit in `isize`.",);
     }
     ArrayBase {
         data: ViewRepr::new(),
@@ -176,26 +168,20 @@ pub const fn aview1<A>(xs: &[A]) -> ArrayView1<'_, A>
 /// const C: ArrayView2<'static, f64> = aview2(&[[1., 2., 3.], [4., 5., 6.]]);
 /// assert_eq!(C.sum(), 21.);
 /// ```
-pub const fn aview2<A, const N: usize>(xs: &[[A; N]]) -> ArrayView2<'_, A>
-{
+pub const fn aview2<A, const N: usize>(xs: &[[A; N]]) -> ArrayView2<'_, A> {
     let cols = N;
     let rows = xs.len();
     if size_of::<A>() == 0 {
         if let Some(n_elems) = rows.checked_mul(cols) {
             assert!(
-                rows <= isize::MAX as usize
-                    && cols <= isize::MAX as usize
-                    && n_elems <= isize::MAX as usize,
+                rows <= isize::MAX as usize && cols <= isize::MAX as usize && n_elems <= isize::MAX as usize,
                 "Product of non-zero axis lengths must not overflow isize.",
             );
         } else {
             panic!("Overflow in number of elements.");
         }
     } else if N == 0 {
-        assert!(
-            rows <= isize::MAX as usize,
-            "Product of non-zero axis lengths must not overflow isize.",
-        );
+        assert!(rows <= isize::MAX as usize, "Product of non-zero axis lengths must not overflow isize.",);
     }
     // Safe because references are always non-null.
     let ptr = unsafe { NonNull::new_unchecked(xs.as_ptr() as *mut A) };
@@ -223,8 +209,7 @@ pub const fn aview2<A, const N: usize>(xs: &[[A; N]]) -> ArrayView2<'_, A>
 /// }
 /// assert_eq!(&data[..10], [5, 0, 0, 5, 0, 0, 5, 0, 0, 5]);
 /// ```
-pub fn aview_mut1<A>(xs: &mut [A]) -> ArrayViewMut1<'_, A>
-{
+pub fn aview_mut1<A>(xs: &mut [A]) -> ArrayViewMut1<'_, A> {
     ArrayViewMut::from(xs)
 }
 
@@ -250,8 +235,7 @@ pub fn aview_mut1<A>(xs: &mut [A]) -> ArrayViewMut1<'_, A>
 /// // look at the start of the result
 /// assert_eq!(&data[..3], [[1., -1.], [1., -1.], [1., -1.]]);
 /// ```
-pub fn aview_mut2<A, const N: usize>(xs: &mut [[A; N]]) -> ArrayViewMut2<'_, A>
-{
+pub fn aview_mut2<A, const N: usize>(xs: &mut [[A; N]]) -> ArrayViewMut2<'_, A> {
     ArrayViewMut2::from(xs)
 }
 
@@ -266,8 +250,7 @@ pub fn aview_mut2<A, const N: usize>(xs: &mut [[A; N]]) -> ArrayViewMut2<'_, A>
 ///     a.shape() == [2, 3]
 /// );
 /// ```
-pub fn arr2<A: Clone, const N: usize>(xs: &[[A; N]]) -> Array2<A>
-{
+pub fn arr2<A: Clone, const N: usize>(xs: &[[A; N]]) -> Array2<A> {
     Array2::from(xs.to_vec())
 }
 
@@ -307,8 +290,7 @@ impl_from_nested_vec!([[[[[A; J]; K]; L]; M]; N], Ix6, N, M, L, K, J);
 
 /// Create a two-dimensional array with elements from `xs`.
 ///
-pub fn rcarr2<A: Clone, const N: usize>(xs: &[[A; N]]) -> ArcArray2<A>
-{
+pub fn rcarr2<A: Clone, const N: usize>(xs: &[[A; N]]) -> ArcArray2<A> {
     arr2(xs).into_shared()
 }
 
@@ -329,14 +311,12 @@ pub fn rcarr2<A: Clone, const N: usize>(xs: &[[A; N]]) -> ArcArray2<A>
 ///     a.shape() == [3, 2, 2]
 /// );
 /// ```
-pub fn arr3<A: Clone, const N: usize, const M: usize>(xs: &[[[A; M]; N]]) -> Array3<A>
-{
+pub fn arr3<A: Clone, const N: usize, const M: usize>(xs: &[[[A; M]; N]]) -> Array3<A> {
     Array3::from(xs.to_vec())
 }
 
 /// Create a three-dimensional array with elements from `xs`.
-pub fn rcarr3<A: Clone, const N: usize, const M: usize>(xs: &[[[A; M]; N]]) -> ArcArray<A, Ix3>
-{
+pub fn rcarr3<A: Clone, const N: usize, const M: usize>(xs: &[[[A; M]; N]]) -> ArcArray<A, Ix3> {
     arr3(xs).into_shared()
 }
 
@@ -344,8 +324,7 @@ pub fn rcarr3<A: Clone, const N: usize, const M: usize>(xs: &[[[A; M]; N]]) -> A
 ///
 /// Controls whether the first argument to `meshgrid` will fill the rows or columns of the outputs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MeshIndex
-{
+pub enum MeshIndex {
     /// Cartesian indexing.
     ///
     /// The first argument of `meshgrid` will repeat over the columns of the output.
@@ -358,32 +337,20 @@ pub enum MeshIndex
     IJ,
 }
 
-mod meshgrid_impl
-{
+mod meshgrid_impl {
     use super::MeshIndex;
     use crate::extension::nonnull::nonnull_debug_checked_from_ptr;
     use crate::{
-        ArrayBase,
-        ArrayRef1,
-        ArrayView,
-        ArrayView2,
-        ArrayView3,
-        ArrayView4,
-        ArrayView5,
-        ArrayView6,
-        Axis,
-        Data,
-        Dim,
-        IntoDimension,
-        Ix1,
-        LayoutRef1,
+        ArrayBase, ArrayRef1, ArrayView, ArrayView2, ArrayView3, ArrayView4, ArrayView5, ArrayView6, Axis, Data, Dim,
+        IntoDimension, Ix1, LayoutRef1,
     };
 
     /// Construct the correct strides for the `idx`-th entry into meshgrid
     fn construct_strides<A, const N: usize>(
         arr: &LayoutRef1<A>, idx: usize, indexing: MeshIndex,
     ) -> <[usize; N] as IntoDimension>::Dim
-    where [usize; N]: IntoDimension
+    where
+        [usize; N]: IntoDimension,
     {
         let mut ret = [0; N];
         if idx < 2 && indexing == MeshIndex::XY {
@@ -398,7 +365,8 @@ mod meshgrid_impl
     fn construct_shape<A, const N: usize>(
         arrays: [&LayoutRef1<A>; N], indexing: MeshIndex,
     ) -> <[usize; N] as IntoDimension>::Dim
-    where [usize; N]: IntoDimension
+    where
+        [usize; N]: IntoDimension,
     {
         let mut ret = arrays.map(|a| a.len());
         if indexing == MeshIndex::XY {
@@ -413,8 +381,7 @@ mod meshgrid_impl
     /// The outputs should always be ND arrays where N is the number of inputs.
     ///
     /// Where possible, this trait tries to return array views rather than allocating additional memory.
-    pub trait Meshgrid
-    {
+    pub trait Meshgrid {
         type Output;
 
         fn meshgrid(arrays: Self, indexing: MeshIndex) -> Self::Output;
@@ -434,12 +401,10 @@ mod meshgrid_impl
     };
     }
 
-    impl<'a, 'b, A> Meshgrid for (&'a ArrayRef1<A>, &'b ArrayRef1<A>)
-    {
+    impl<'a, 'b, A> Meshgrid for (&'a ArrayRef1<A>, &'b ArrayRef1<A>) {
         type Output = (ArrayView2<'a, A>, ArrayView2<'b, A>);
 
-        fn meshgrid(arrays: Self, indexing: MeshIndex) -> Self::Output
-        {
+        fn meshgrid(arrays: Self, indexing: MeshIndex) -> Self::Output {
             meshgrid_body!(2, indexing, (arrays.0, 0), (arrays.1, 1))
         }
     }
@@ -451,18 +416,15 @@ mod meshgrid_impl
     {
         type Output = (ArrayView2<'a, A>, ArrayView2<'b, A>);
 
-        fn meshgrid(arrays: Self, indexing: MeshIndex) -> Self::Output
-        {
+        fn meshgrid(arrays: Self, indexing: MeshIndex) -> Self::Output {
             Meshgrid::meshgrid((&**arrays.0, &**arrays.1), indexing)
         }
     }
 
-    impl<'a, 'b, 'c, A> Meshgrid for (&'a ArrayRef1<A>, &'b ArrayRef1<A>, &'c ArrayRef1<A>)
-    {
+    impl<'a, 'b, 'c, A> Meshgrid for (&'a ArrayRef1<A>, &'b ArrayRef1<A>, &'c ArrayRef1<A>) {
         type Output = (ArrayView3<'a, A>, ArrayView3<'b, A>, ArrayView3<'c, A>);
 
-        fn meshgrid(arrays: Self, indexing: MeshIndex) -> Self::Output
-        {
+        fn meshgrid(arrays: Self, indexing: MeshIndex) -> Self::Output {
             meshgrid_body!(3, indexing, (arrays.0, 0), (arrays.1, 1), (arrays.2, 2))
         }
     }
@@ -476,18 +438,15 @@ mod meshgrid_impl
     {
         type Output = (ArrayView3<'a, A>, ArrayView3<'b, A>, ArrayView3<'c, A>);
 
-        fn meshgrid(arrays: Self, indexing: MeshIndex) -> Self::Output
-        {
+        fn meshgrid(arrays: Self, indexing: MeshIndex) -> Self::Output {
             Meshgrid::meshgrid((&**arrays.0, &**arrays.1, &**arrays.2), indexing)
         }
     }
 
-    impl<'a, 'b, 'c, 'd, A> Meshgrid for (&'a ArrayRef1<A>, &'b ArrayRef1<A>, &'c ArrayRef1<A>, &'d ArrayRef1<A>)
-    {
+    impl<'a, 'b, 'c, 'd, A> Meshgrid for (&'a ArrayRef1<A>, &'b ArrayRef1<A>, &'c ArrayRef1<A>, &'d ArrayRef1<A>) {
         type Output = (ArrayView4<'a, A>, ArrayView4<'b, A>, ArrayView4<'c, A>, ArrayView4<'d, A>);
 
-        fn meshgrid(arrays: Self, indexing: MeshIndex) -> Self::Output
-        {
+        fn meshgrid(arrays: Self, indexing: MeshIndex) -> Self::Output {
             meshgrid_body!(4, indexing, (arrays.0, 0), (arrays.1, 1), (arrays.2, 2), (arrays.3, 3))
         }
     }
@@ -502,8 +461,7 @@ mod meshgrid_impl
     {
         type Output = (ArrayView4<'a, A>, ArrayView4<'b, A>, ArrayView4<'c, A>, ArrayView4<'d, A>);
 
-        fn meshgrid(arrays: Self, indexing: MeshIndex) -> Self::Output
-        {
+        fn meshgrid(arrays: Self, indexing: MeshIndex) -> Self::Output {
             Meshgrid::meshgrid((&**arrays.0, &**arrays.1, &**arrays.2, &**arrays.3), indexing)
         }
     }
@@ -513,8 +471,7 @@ mod meshgrid_impl
     {
         type Output = (ArrayView5<'a, A>, ArrayView5<'b, A>, ArrayView5<'c, A>, ArrayView5<'d, A>, ArrayView5<'e, A>);
 
-        fn meshgrid(arrays: Self, indexing: MeshIndex) -> Self::Output
-        {
+        fn meshgrid(arrays: Self, indexing: MeshIndex) -> Self::Output {
             meshgrid_body!(5, indexing, (arrays.0, 0), (arrays.1, 1), (arrays.2, 2), (arrays.3, 3), (arrays.4, 4))
         }
     }
@@ -536,8 +493,7 @@ mod meshgrid_impl
     {
         type Output = (ArrayView5<'a, A>, ArrayView5<'b, A>, ArrayView5<'c, A>, ArrayView5<'d, A>, ArrayView5<'e, A>);
 
-        fn meshgrid(arrays: Self, indexing: MeshIndex) -> Self::Output
-        {
+        fn meshgrid(arrays: Self, indexing: MeshIndex) -> Self::Output {
             Meshgrid::meshgrid((&**arrays.0, &**arrays.1, &**arrays.2, &**arrays.3, &**arrays.4), indexing)
         }
     }
@@ -561,9 +517,17 @@ mod meshgrid_impl
             ArrayView6<'f, A>,
         );
 
-        fn meshgrid(arrays: Self, indexing: MeshIndex) -> Self::Output
-        {
-            meshgrid_body!(6, indexing, (arrays.0, 0), (arrays.1, 1), (arrays.2, 2), (arrays.3, 3), (arrays.4, 4), (arrays.5, 5))
+        fn meshgrid(arrays: Self, indexing: MeshIndex) -> Self::Output {
+            meshgrid_body!(
+                6,
+                indexing,
+                (arrays.0, 0),
+                (arrays.1, 1),
+                (arrays.2, 2),
+                (arrays.3, 3),
+                (arrays.4, 4),
+                (arrays.5, 5)
+            )
         }
     }
 
@@ -593,8 +557,7 @@ mod meshgrid_impl
             ArrayView6<'f, A>,
         );
 
-        fn meshgrid(arrays: Self, indexing: MeshIndex) -> Self::Output
-        {
+        fn meshgrid(arrays: Self, indexing: MeshIndex) -> Self::Output {
             Meshgrid::meshgrid((&**arrays.0, &**arrays.1, &**arrays.2, &**arrays.3, &**arrays.4, &**arrays.5), indexing)
         }
     }
@@ -649,22 +612,19 @@ mod meshgrid_impl
 ///      [5, 6]],
 /// ]);
 /// ```
-pub fn meshgrid<T: Meshgrid>(arrays: T, indexing: MeshIndex) -> T::Output
-{
+pub fn meshgrid<T: Meshgrid>(arrays: T, indexing: MeshIndex) -> T::Output {
     Meshgrid::meshgrid(arrays, indexing)
 }
 
 #[cfg(test)]
-mod tests
-{
+mod tests {
     use super::s;
     use crate::{meshgrid, Axis, MeshIndex};
     #[cfg(not(feature = "std"))]
     use alloc::vec;
 
     #[test]
-    fn test_meshgrid2()
-    {
+    fn test_meshgrid2() {
         let x = array![1, 2, 3];
         let y = array![4, 5, 6, 7];
         let (xx, yy) = meshgrid((&x, &y), MeshIndex::XY);
@@ -677,52 +637,68 @@ mod tests
     }
 
     #[test]
-    fn test_meshgrid3()
-    {
+    fn test_meshgrid3() {
         let x = array![1, 2, 3];
         let y = array![4, 5, 6, 7];
         let z = array![-1, -2];
         let (xx, yy, zz) = meshgrid((&x, &y, &z), MeshIndex::XY);
-        assert_eq!(xx, array![
-            [[1, 1], [2, 2], [3, 3]],
-            [[1, 1], [2, 2], [3, 3]],
-            [[1, 1], [2, 2], [3, 3]],
-            [[1, 1], [2, 2], [3, 3]],
-        ]);
-        assert_eq!(yy, array![
-            [[4, 4], [4, 4], [4, 4]],
-            [[5, 5], [5, 5], [5, 5]],
-            [[6, 6], [6, 6], [6, 6]],
-            [[7, 7], [7, 7], [7, 7]],
-        ]);
-        assert_eq!(zz, array![
-            [[-1, -2], [-1, -2], [-1, -2]],
-            [[-1, -2], [-1, -2], [-1, -2]],
-            [[-1, -2], [-1, -2], [-1, -2]],
-            [[-1, -2], [-1, -2], [-1, -2]],
-        ]);
+        assert_eq!(
+            xx,
+            array![
+                [[1, 1], [2, 2], [3, 3]],
+                [[1, 1], [2, 2], [3, 3]],
+                [[1, 1], [2, 2], [3, 3]],
+                [[1, 1], [2, 2], [3, 3]],
+            ]
+        );
+        assert_eq!(
+            yy,
+            array![
+                [[4, 4], [4, 4], [4, 4]],
+                [[5, 5], [5, 5], [5, 5]],
+                [[6, 6], [6, 6], [6, 6]],
+                [[7, 7], [7, 7], [7, 7]],
+            ]
+        );
+        assert_eq!(
+            zz,
+            array![
+                [[-1, -2], [-1, -2], [-1, -2]],
+                [[-1, -2], [-1, -2], [-1, -2]],
+                [[-1, -2], [-1, -2], [-1, -2]],
+                [[-1, -2], [-1, -2], [-1, -2]],
+            ]
+        );
 
         let (xx, yy, zz) = meshgrid((&x, &y, &z), MeshIndex::IJ);
-        assert_eq!(xx, array![
-            [[1, 1], [1, 1], [1, 1], [1, 1]],
-            [[2, 2], [2, 2], [2, 2], [2, 2]],
-            [[3, 3], [3, 3], [3, 3], [3, 3]],
-        ]);
-        assert_eq!(yy, array![
-            [[4, 4], [5, 5], [6, 6], [7, 7]],
-            [[4, 4], [5, 5], [6, 6], [7, 7]],
-            [[4, 4], [5, 5], [6, 6], [7, 7]],
-        ]);
-        assert_eq!(zz, array![
-            [[-1, -2], [-1, -2], [-1, -2], [-1, -2]],
-            [[-1, -2], [-1, -2], [-1, -2], [-1, -2]],
-            [[-1, -2], [-1, -2], [-1, -2], [-1, -2]],
-        ]);
+        assert_eq!(
+            xx,
+            array![
+                [[1, 1], [1, 1], [1, 1], [1, 1]],
+                [[2, 2], [2, 2], [2, 2], [2, 2]],
+                [[3, 3], [3, 3], [3, 3], [3, 3]],
+            ]
+        );
+        assert_eq!(
+            yy,
+            array![
+                [[4, 4], [5, 5], [6, 6], [7, 7]],
+                [[4, 4], [5, 5], [6, 6], [7, 7]],
+                [[4, 4], [5, 5], [6, 6], [7, 7]],
+            ]
+        );
+        assert_eq!(
+            zz,
+            array![
+                [[-1, -2], [-1, -2], [-1, -2], [-1, -2]],
+                [[-1, -2], [-1, -2], [-1, -2], [-1, -2]],
+                [[-1, -2], [-1, -2], [-1, -2], [-1, -2]],
+            ]
+        );
     }
 
     #[test]
-    fn test_meshgrid_from_offset()
-    {
+    fn test_meshgrid_from_offset() {
         let x = array![1, 2, 3];
         let x = x.slice(s![1..]);
         let y = array![4, 5, 6];
@@ -733,8 +709,7 @@ mod tests
     }
 
     #[test]
-    fn test_meshgrid_neg_stride()
-    {
+    fn test_meshgrid_neg_stride() {
         let x = array![1, 2, 3];
         let x = x.slice(s![..;-1]);
         assert!(x.stride_of(Axis(0)) < 0); // Setup for test

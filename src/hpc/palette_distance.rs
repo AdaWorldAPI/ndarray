@@ -34,9 +34,18 @@ unsafe fn nearest_avx512(entries: &[Base17], query: &Base17) -> u8 {
         let d3 = query.l1(&entries[base + 3]);
         // Find min of 4
         let (mut min_d, mut min_i) = (d0, 0usize);
-        if d1 < min_d { min_d = d1; min_i = 1; }
-        if d2 < min_d { min_d = d2; min_i = 2; }
-        if d3 < min_d { min_d = d3; min_i = 3; }
+        if d1 < min_d {
+            min_d = d1;
+            min_i = 1;
+        }
+        if d2 < min_d {
+            min_d = d2;
+            min_i = 2;
+        }
+        if d3 < min_d {
+            min_d = d3;
+            min_i = 3;
+        }
         if min_d < best_dist {
             best_dist = min_d;
             best_idx = (base + min_i) as u8;
@@ -67,9 +76,18 @@ unsafe fn nearest_avx2(entries: &[Base17], query: &Base17) -> u8 {
         let d2 = query.l1(&entries[base + 2]);
         let d3 = query.l1(&entries[base + 3]);
         let (mut min_d, mut min_i) = (d0, 0usize);
-        if d1 < min_d { min_d = d1; min_i = 1; }
-        if d2 < min_d { min_d = d2; min_i = 2; }
-        if d3 < min_d { min_d = d3; min_i = 3; }
+        if d1 < min_d {
+            min_d = d1;
+            min_i = 1;
+        }
+        if d2 < min_d {
+            min_d = d2;
+            min_i = 2;
+        }
+        if d3 < min_d {
+            min_d = d3;
+            min_i = 3;
+        }
         if min_d < best_dist {
             best_dist = min_d;
             best_idx = (base + min_i) as u8;
@@ -488,7 +506,9 @@ mod tests {
         assert!(
             d_ac <= d_ab + d_bc,
             "triangle inequality violated: d(a,c)={} > d(a,b)={} + d(b,c)={}",
-            d_ac, d_ab, d_bc
+            d_ac,
+            d_ab,
+            d_bc
         );
     }
 
@@ -541,10 +561,9 @@ mod tests {
                     let i = row * 64 + col;
                     for target in 0..64 {
                         let j = row * 64 + target;
-                        total_dist += spo.spo_distance(
-                            heads_s[i], heads_p[i], heads_o[i],
-                            heads_s[j], heads_p[j], heads_o[j],
-                        ) as u64;
+                        total_dist += spo
+                            .spo_distance(heads_s[i], heads_p[i], heads_o[i], heads_s[j], heads_p[j], heads_o[j])
+                            as u64;
                     }
                 }
             }
@@ -573,8 +592,11 @@ mod tests {
         eprintln!("    Pearl 2³:       {:.0} tokens/sec (8 projections per head)", tokens_per_sec_pearl);
         eprintln!("    Triple model:   {:.0} tokens/sec (self+user+impact)", tokens_per_sec_pearl / 3.0);
         eprintln!();
-        eprintln!("  Memory: {} KB SPO tables + 4 KB head indices = {} KB total",
-            spo.byte_size() / 1024, spo.byte_size() / 1024 + 4);
+        eprintln!(
+            "  Memory: {} KB SPO tables + 4 KB head indices = {} KB total",
+            spo.byte_size() / 1024,
+            spo.byte_size() / 1024 + 4
+        );
         eprintln!("  (blackhole: {})", total_dist); // prevent optimizer from eliding
     }
 }

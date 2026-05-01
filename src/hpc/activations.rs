@@ -2,8 +2,8 @@
 //!
 //! Generic trait impl via `mapv` + standalone SIMD-accelerated f32 slice functions.
 
-use crate::simd::{simd_exp_f32, F32x16};
 use crate::imp_prelude::*;
+use crate::simd::{simd_exp_f32, F32x16};
 use num_traits::Float;
 
 /// Neural network activation functions.
@@ -52,7 +52,11 @@ where
     fn log_softmax(&self) -> Array<A, Ix1> {
         let max_val = self.iter().fold(A::neg_infinity(), |a, &b| a.max(b));
         let shifted = self.mapv(|v| v - max_val);
-        let log_sum_exp = shifted.mapv(|v| v.exp()).iter().fold(A::zero(), |acc, &v| acc + v).ln();
+        let log_sum_exp = shifted
+            .mapv(|v| v.exp())
+            .iter()
+            .fold(A::zero(), |acc, &v| acc + v)
+            .ln();
         shifted.mapv(|v| v - log_sum_exp)
     }
 }
@@ -90,7 +94,9 @@ pub fn sigmoid_f32(x: &[f32], out: &mut [f32]) {
 /// Numerically stable. Uses F32x16 for exp and reduce_sum.
 pub fn softmax_f32(x: &[f32], out: &mut [f32]) {
     let n = x.len().min(out.len());
-    if n == 0 { return; }
+    if n == 0 {
+        return;
+    }
 
     // Pass 1: find max (SIMD reduce_max)
     let mut max_acc = F32x16::splat(f32::NEG_INFINITY);
@@ -143,7 +149,9 @@ pub fn softmax_f32(x: &[f32], out: &mut [f32]) {
 /// Numerically stable. Single pass for max, single pass for sum-exp.
 pub fn log_softmax_f32(x: &[f32], out: &mut [f32]) {
     let n = x.len().min(out.len());
-    if n == 0 { return; }
+    if n == 0 {
+        return;
+    }
 
     // Pass 1: find max
     let mut max_acc = F32x16::splat(f32::NEG_INFINITY);
@@ -273,8 +281,13 @@ mod tests {
         log_softmax_f32(&x, &mut logsm_out);
         for i in 0..10 {
             let expected = softmax_out[i].ln();
-            assert!((logsm_out[i] - expected).abs() < 1e-2,
-                "log_softmax[{}] = {}, expected {}", i, logsm_out[i], expected);
+            assert!(
+                (logsm_out[i] - expected).abs() < 1e-2,
+                "log_softmax[{}] = {}, expected {}",
+                i,
+                logsm_out[i],
+                expected
+            );
         }
     }
 

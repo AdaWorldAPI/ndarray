@@ -12,16 +12,13 @@
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-use crate::simd::{F64x8, U64x8};
 use crate::hpc::nars::NarsTruth;
 use crate::hpc::simd_caps::simd_caps;
+use crate::simd::{F64x8, U64x8};
 
 // Re-export p64 types for consumers.
-pub use p64::{
-    AttentionResult, CombineMode, ContraMode, HeelPlanes, Palette3D, Palette64, ThinkingStyle,
-    predicate,
-};
 pub use fractal::consts as manifold_consts;
+pub use p64::{predicate, AttentionResult, CombineMode, ContraMode, HeelPlanes, Palette3D, Palette64, ThinkingStyle};
 
 // ============================================================================
 // Section 1: SIMD manifold expansion
@@ -203,8 +200,7 @@ pub fn attend_simd(palette: &Palette64, query: u64, gamma: u8) -> AttentionResul
 /// assert!((tv.confidence - 1.0).abs() < 0.01);
 /// ```
 pub fn resonance_to_nars(resonance_7bit: u8, contradiction: f64, max_contra: f64) -> NarsTruth {
-    let (f, c) =
-        fractal::seven_plus_one::nars_truth(resonance_7bit, contradiction, max_contra);
+    let (f, c) = fractal::seven_plus_one::nars_truth(resonance_7bit, contradiction, max_contra);
     NarsTruth::new(f as f32, c as f32)
 }
 
@@ -705,11 +701,9 @@ mod tests {
         use causal_edge_compat::*;
 
         let edge_causes = (1u64 << SRC_SHIFT) | (2u64 << TGT_SHIFT) | (0u64 << LAYER_SHIFT);
-        let edge_contra =
-            (3u64 << SRC_SHIFT) | (4u64 << TGT_SHIFT) | (3u64 << LAYER_SHIFT);
+        let edge_contra = (3u64 << SRC_SHIFT) | (4u64 << TGT_SHIFT) | (3u64 << LAYER_SHIFT);
 
-        let p3d =
-            palette3d_from_edges(&[edge_causes, edge_contra], ThinkingStyle::ANALYTICAL);
+        let p3d = palette3d_from_edges(&[edge_causes, edge_contra], ThinkingStyle::ANALYTICAL);
 
         // CAUSES layer: row 1 has bit 2 set
         assert_ne!(p3d.layers[0].rows[1] & (1 << 2), 0);
@@ -751,8 +745,13 @@ mod tests {
         let median = all_dists[all_dists.len() / 2];
         // Use 25th percentile for sparse palette (~12.5% density)
         let p25 = all_dists[all_dists.len() / 4];
-        eprintln!("Distance stats: median={}, p25={}, min={}, max={}",
-            median, p25, all_dists[0], all_dists.last().unwrap());
+        eprintln!(
+            "Distance stats: median={}, p25={}, min={}, max={}",
+            median,
+            p25,
+            all_dists[0],
+            all_dists.last().unwrap()
+        );
 
         // Build Palette64 from GPT-2's learned distance table
         let palette = palette_from_deepnsm_distances(&flat, 256, p25);
@@ -773,12 +772,14 @@ mod tests {
         let r_analytical = p3d_analytical.infer(42);
         let r_creative = p3d_creative.infer(42);
 
-        eprintln!("Analytical: attention={:064b}, tension={}, active_layers={}, new={}",
-            r_analytical.attention, r_analytical.tension,
-            r_analytical.active_layers, r_analytical.new_connections);
-        eprintln!("Creative:   attention={:064b}, tension={}, active_layers={}, new={}",
-            r_creative.attention, r_creative.tension,
-            r_creative.active_layers, r_creative.new_connections);
+        eprintln!(
+            "Analytical: attention={:064b}, tension={}, active_layers={}, new={}",
+            r_analytical.attention, r_analytical.tension, r_analytical.active_layers, r_analytical.new_connections
+        );
+        eprintln!(
+            "Creative:   attention={:064b}, tension={}, active_layers={}, new={}",
+            r_creative.attention, r_creative.tension, r_creative.active_layers, r_creative.new_connections
+        );
 
         // KEY ASSERTION: different styles produce different fan-out
         // Creative (Union, all layers, density 0.40) should activate MORE targets
@@ -787,9 +788,12 @@ mod tests {
         let creative_popcount = r_creative.attention.count_ones();
         eprintln!("Fan-out: analytical={}, creative={}", analytical_popcount, creative_popcount);
 
-        assert!(creative_popcount >= analytical_popcount,
+        assert!(
+            creative_popcount >= analytical_popcount,
             "Creative should have wider fan-out than Analytical: {} vs {}",
-            creative_popcount, analytical_popcount);
+            creative_popcount,
+            analytical_popcount
+        );
 
         // Verify attention is non-trivial
         assert!(analytical_popcount > 0, "Analytical should fire something");
@@ -801,31 +805,40 @@ mod tests {
         let mut non_interacting = None;
         for i in 0..64 {
             for j in 0..64 {
-                if i == j { continue; }
+                if i == j {
+                    continue;
+                }
                 if palette.rows[i] & (1 << j) != 0 && interacting.is_none() {
                     interacting = Some((i, j));
                 }
                 if palette.rows[i] & (1 << j) == 0 && non_interacting.is_none() {
                     non_interacting = Some((i, j));
                 }
-                if interacting.is_some() && non_interacting.is_some() { break; }
+                if interacting.is_some() && non_interacting.is_some() {
+                    break;
+                }
             }
-            if interacting.is_some() && non_interacting.is_some() { break; }
+            if interacting.is_some() && non_interacting.is_some() {
+                break;
+            }
         }
 
         if let (Some((ia, ib)), Some((na, nb))) = (interacting, non_interacting) {
             // Interacting pair should have LOWER distance than non-interacting
             let d_interact = flat[ia * 256 + ib];
             let d_non = flat[na * 256 + nb];
-            eprintln!("Interacting ({},{}) distance={}, Non-interacting ({},{}) distance={}",
-                ia, ib, d_interact, na, nb, d_non);
-            assert!(d_interact <= d_non,
-                "Interacting pair should be closer: {} vs {}", d_interact, d_non);
+            eprintln!(
+                "Interacting ({},{}) distance={}, Non-interacting ({},{}) distance={}",
+                ia, ib, d_interact, na, nb, d_non
+            );
+            assert!(d_interact <= d_non, "Interacting pair should be closer: {} vs {}", d_interact, d_non);
         }
 
         eprintln!("GPT-2 → P64 rehydration: PASS");
         eprintln!("  50K tokens → 256 archetypes → 64×64 palette → 8-layer Palette3D");
-        eprintln!("  Thinking style modulates fan-out: Analytical={}, Creative={}",
-            analytical_popcount, creative_popcount);
+        eprintln!(
+            "  Thinking style modulates fan-out: Analytical={}, Creative={}",
+            analytical_popcount, creative_popcount
+        );
     }
 }

@@ -10,7 +10,7 @@ use crate::simd_avx512::{f32x8, f64x4};
 
 // AVX2-native I8x32 / I16x16 live in simd_avx512.rs (256-bit __m256i types).
 // Re-export so consumers see a unified `crate::simd_avx2::I8x32` symbol.
-pub use crate::simd_avx512::{I8x32, I16x16, i8x32, i16x16};
+pub use crate::simd_avx512::{i16x16, i8x32, I16x16, I8x32};
 
 // ============================================================================
 // AVX2 lane counts (half of AVX-512)
@@ -67,12 +67,9 @@ pub fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
     for i in 0..full_iters {
         let base = i * 4 * F32_LANES;
         acc0 += f32x8::from_slice(&a[base..]) * f32x8::from_slice(&b[base..]);
-        acc1 +=
-            f32x8::from_slice(&a[base + F32_LANES..]) * f32x8::from_slice(&b[base + F32_LANES..]);
-        acc2 += f32x8::from_slice(&a[base + 2 * F32_LANES..])
-            * f32x8::from_slice(&b[base + 2 * F32_LANES..]);
-        acc3 += f32x8::from_slice(&a[base + 3 * F32_LANES..])
-            * f32x8::from_slice(&b[base + 3 * F32_LANES..]);
+        acc1 += f32x8::from_slice(&a[base + F32_LANES..]) * f32x8::from_slice(&b[base + F32_LANES..]);
+        acc2 += f32x8::from_slice(&a[base + 2 * F32_LANES..]) * f32x8::from_slice(&b[base + 2 * F32_LANES..]);
+        acc3 += f32x8::from_slice(&a[base + 3 * F32_LANES..]) * f32x8::from_slice(&b[base + 3 * F32_LANES..]);
     }
 
     for i in (full_iters * 4)..chunks {
@@ -102,12 +99,9 @@ pub fn dot_f64(a: &[f64], b: &[f64]) -> f64 {
     for i in 0..full_iters {
         let base = i * 4 * F64_LANES;
         acc0 += f64x4::from_slice(&a[base..]) * f64x4::from_slice(&b[base..]);
-        acc1 +=
-            f64x4::from_slice(&a[base + F64_LANES..]) * f64x4::from_slice(&b[base + F64_LANES..]);
-        acc2 += f64x4::from_slice(&a[base + 2 * F64_LANES..])
-            * f64x4::from_slice(&b[base + 2 * F64_LANES..]);
-        acc3 += f64x4::from_slice(&a[base + 3 * F64_LANES..])
-            * f64x4::from_slice(&b[base + 3 * F64_LANES..]);
+        acc1 += f64x4::from_slice(&a[base + F64_LANES..]) * f64x4::from_slice(&b[base + F64_LANES..]);
+        acc2 += f64x4::from_slice(&a[base + 2 * F64_LANES..]) * f64x4::from_slice(&b[base + 2 * F64_LANES..]);
+        acc3 += f64x4::from_slice(&a[base + 3 * F64_LANES..]) * f64x4::from_slice(&b[base + 3 * F64_LANES..]);
     }
 
     for i in (full_iters * 4)..chunks {
@@ -328,20 +322,10 @@ pub fn hamming_batch(query: &[u8], database: &[u8], num_rows: usize, row_bytes: 
     let full = num_rows / 4;
     for i in 0..full {
         let base = i * 4;
-        distances[base] =
-            hamming_distance(query, &database[base * row_bytes..(base + 1) * row_bytes]);
-        distances[base + 1] = hamming_distance(
-            query,
-            &database[(base + 1) * row_bytes..(base + 2) * row_bytes],
-        );
-        distances[base + 2] = hamming_distance(
-            query,
-            &database[(base + 2) * row_bytes..(base + 3) * row_bytes],
-        );
-        distances[base + 3] = hamming_distance(
-            query,
-            &database[(base + 3) * row_bytes..(base + 4) * row_bytes],
-        );
+        distances[base] = hamming_distance(query, &database[base * row_bytes..(base + 1) * row_bytes]);
+        distances[base + 1] = hamming_distance(query, &database[(base + 1) * row_bytes..(base + 2) * row_bytes]);
+        distances[base + 2] = hamming_distance(query, &database[(base + 2) * row_bytes..(base + 3) * row_bytes]);
+        distances[base + 3] = hamming_distance(query, &database[(base + 3) * row_bytes..(base + 4) * row_bytes]);
     }
     for i in (full * 4)..num_rows {
         distances[i] = hamming_distance(query, &database[i * row_bytes..(i + 1) * row_bytes]);
@@ -352,11 +336,7 @@ pub fn hamming_batch(query: &[u8], database: &[u8], num_rows: usize, row_bytes: 
 
 /// Top-k nearest neighbors by Hamming distance.
 pub fn hamming_top_k(
-    query: &[u8],
-    database: &[u8],
-    num_rows: usize,
-    row_bytes: usize,
-    k: usize,
+    query: &[u8], database: &[u8], num_rows: usize, row_bytes: usize, k: usize,
 ) -> (Vec<usize>, Vec<u64>) {
     let distances = hamming_batch(query, database, num_rows, row_bytes);
     let k = k.min(num_rows);
@@ -380,8 +360,7 @@ pub fn popcount(a: &[u8]) -> u64 {
             let chunks = len / 32;
             let low_mask = _mm256_set1_epi8(0x0f);
             let lookup = _mm256_setr_epi8(
-                0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
-                0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
+                0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4, 0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
             );
             let mut total = _mm256_setzero_si256();
             let blocks = chunks / 8;
@@ -392,10 +371,7 @@ pub fn popcount(a: &[u8]) -> u64 {
                     let v = _mm256_loadu_si256(a[idx..].as_ptr() as *const __m256i);
                     let lo = _mm256_and_si256(v, low_mask);
                     let hi = _mm256_and_si256(_mm256_srli_epi16(v, 4), low_mask);
-                    let cnt = _mm256_add_epi8(
-                        _mm256_shuffle_epi8(lookup, lo),
-                        _mm256_shuffle_epi8(lookup, hi),
-                    );
+                    let cnt = _mm256_add_epi8(_mm256_shuffle_epi8(lookup, lo), _mm256_shuffle_epi8(lookup, hi));
                     local = _mm256_add_epi8(local, cnt);
                 }
                 total = _mm256_add_epi64(total, _mm256_sad_epu8(local, _mm256_setzero_si256()));
@@ -407,10 +383,7 @@ pub fn popcount(a: &[u8]) -> u64 {
                     let v = _mm256_loadu_si256(a[idx..].as_ptr() as *const __m256i);
                     let lo = _mm256_and_si256(v, low_mask);
                     let hi = _mm256_and_si256(_mm256_srli_epi16(v, 4), low_mask);
-                    let cnt = _mm256_add_epi8(
-                        _mm256_shuffle_epi8(lookup, lo),
-                        _mm256_shuffle_epi8(lookup, hi),
-                    );
+                    let cnt = _mm256_add_epi8(_mm256_shuffle_epi8(lookup, lo), _mm256_shuffle_epi8(lookup, hi));
                     local = _mm256_add_epi8(local, cnt);
                 }
                 total = _mm256_add_epi64(total, _mm256_sad_epu8(local, _mm256_setzero_si256()));
@@ -469,7 +442,10 @@ pub fn dot_i8(a: &[u8], b: &[u8]) -> i64 {
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
-        a.iter().zip(b.iter()).map(|(&x, &y)| (x as i8 as i64) * (y as i8 as i64)).sum()
+        a.iter()
+            .zip(b.iter())
+            .map(|(&x, &y)| (x as i8 as i64) * (y as i8 as i64))
+            .sum()
     }
 }
 
@@ -484,10 +460,7 @@ pub fn dot_i8(a: &[u8], b: &[u8]) -> i64 {
 /// sufficient as the AVX2 fallback tier.
 #[allow(clippy::too_many_arguments)]
 pub fn sgemm_blocked(
-    m: usize, n: usize, k: usize,
-    alpha: f32, a: &[f32], lda: usize,
-    b: &[f32], ldb: usize,
-    c: &mut [f32], ldc: usize,
+    m: usize, n: usize, k: usize, alpha: f32, a: &[f32], lda: usize, b: &[f32], ldb: usize, c: &mut [f32], ldc: usize,
 ) {
     // Scalar fallback: row-by-row dot products
     for i in 0..m {
@@ -504,10 +477,7 @@ pub fn sgemm_blocked(
 /// AVX2 blocked DGEMM fallback — delegates to scalar implementation.
 #[allow(clippy::too_many_arguments)]
 pub fn dgemm_blocked(
-    m: usize, n: usize, k: usize,
-    alpha: f64, a: &[f64], lda: usize,
-    b: &[f64], ldb: usize,
-    c: &mut [f64], ldc: usize,
+    m: usize, n: usize, k: usize, alpha: f64, a: &[f64], lda: usize, b: &[f64], ldb: usize, c: &mut [f64], ldc: usize,
 ) {
     // Scalar fallback: row-by-row dot products
     for i in 0..m {
@@ -529,8 +499,10 @@ pub fn dgemm_blocked(
 // ============================================================================
 
 use core::fmt;
-use core::ops::{Add, AddAssign, Sub, SubAssign, Mul, MulAssign, Div, DivAssign, Neg,
-                BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not};
+use core::ops::{
+    Add, AddAssign, BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Div, DivAssign, Mul, MulAssign,
+    Neg, Not, Sub, SubAssign,
+};
 
 /// 16×f32 via 2× AVX2 F32x8 (__m256). Same API as simd_avx512::F32x16.
 #[derive(Copy, Clone)]
@@ -539,77 +511,167 @@ pub struct F32x16(pub f32x8, pub f32x8);
 
 impl F32x16 {
     pub const LANES: usize = 16;
-    #[inline(always)] pub fn splat(v: f32) -> Self { Self(f32x8::splat(v), f32x8::splat(v)) }
-    #[inline(always)] pub fn from_slice(s: &[f32]) -> Self {
+    #[inline(always)]
+    pub fn splat(v: f32) -> Self {
+        Self(f32x8::splat(v), f32x8::splat(v))
+    }
+    #[inline(always)]
+    pub fn from_slice(s: &[f32]) -> Self {
         assert!(s.len() >= 16);
         Self(f32x8::from_slice(&s[..8]), f32x8::from_slice(&s[8..16]))
     }
-    #[inline(always)] pub fn from_array(a: [f32; 16]) -> Self {
+    #[inline(always)]
+    pub fn from_array(a: [f32; 16]) -> Self {
         Self(f32x8::from_array(a[..8].try_into().unwrap()), f32x8::from_array(a[8..].try_into().unwrap()))
     }
-    #[inline(always)] pub fn to_array(self) -> [f32; 16] {
+    #[inline(always)]
+    pub fn to_array(self) -> [f32; 16] {
         let mut out = [0.0f32; 16];
         out[..8].copy_from_slice(&self.0.to_array());
         out[8..].copy_from_slice(&self.1.to_array());
         out
     }
-    #[inline(always)] pub fn copy_to_slice(self, s: &mut [f32]) {
+    #[inline(always)]
+    pub fn copy_to_slice(self, s: &mut [f32]) {
         assert!(s.len() >= 16);
         self.0.copy_to_slice(&mut s[..8]);
         self.1.copy_to_slice(&mut s[8..16]);
     }
-    #[inline(always)] pub fn reduce_sum(self) -> f32 { self.0.reduce_sum() + self.1.reduce_sum() }
-    #[inline(always)] pub fn reduce_min(self) -> f32 {
+    #[inline(always)]
+    pub fn reduce_sum(self) -> f32 {
+        self.0.reduce_sum() + self.1.reduce_sum()
+    }
+    #[inline(always)]
+    pub fn reduce_min(self) -> f32 {
         let a = self.to_array();
         a.iter().copied().fold(f32::INFINITY, f32::min)
     }
-    #[inline(always)] pub fn reduce_max(self) -> f32 {
+    #[inline(always)]
+    pub fn reduce_max(self) -> f32 {
         let a = self.to_array();
         a.iter().copied().fold(f32::NEG_INFINITY, f32::max)
     }
-    #[inline(always)] pub fn abs(self) -> Self { Self(self.0.abs(), self.1.abs()) }
-    #[inline(always)] pub fn sqrt(self) -> Self {
+    #[inline(always)]
+    pub fn abs(self) -> Self {
+        Self(self.0.abs(), self.1.abs())
+    }
+    #[inline(always)]
+    pub fn sqrt(self) -> Self {
         let a = self.to_array();
-        let mut o = [0.0f32; 16]; for i in 0..16 { o[i] = a[i].sqrt(); } Self::from_array(o)
+        let mut o = [0.0f32; 16];
+        for i in 0..16 {
+            o[i] = a[i].sqrt();
+        }
+        Self::from_array(o)
     }
-    #[inline(always)] pub fn round(self) -> Self {
+    #[inline(always)]
+    pub fn round(self) -> Self {
         let a = self.to_array();
-        let mut o = [0.0f32; 16]; for i in 0..16 { o[i] = a[i].round(); } Self::from_array(o)
+        let mut o = [0.0f32; 16];
+        for i in 0..16 {
+            o[i] = a[i].round();
+        }
+        Self::from_array(o)
     }
-    #[inline(always)] pub fn floor(self) -> Self {
+    #[inline(always)]
+    pub fn floor(self) -> Self {
         let a = self.to_array();
-        let mut o = [0.0f32; 16]; for i in 0..16 { o[i] = a[i].floor(); } Self::from_array(o)
+        let mut o = [0.0f32; 16];
+        for i in 0..16 {
+            o[i] = a[i].floor();
+        }
+        Self::from_array(o)
     }
-    #[inline(always)] pub fn mul_add(self, b: Self, c: Self) -> Self {
-        let a = self.to_array(); let ba = b.to_array(); let ca = c.to_array();
-        let mut o = [0.0f32; 16]; for i in 0..16 { o[i] = a[i].mul_add(ba[i], ca[i]); } Self::from_array(o)
+    #[inline(always)]
+    pub fn mul_add(self, b: Self, c: Self) -> Self {
+        let a = self.to_array();
+        let ba = b.to_array();
+        let ca = c.to_array();
+        let mut o = [0.0f32; 16];
+        for i in 0..16 {
+            o[i] = a[i].mul_add(ba[i], ca[i]);
+        }
+        Self::from_array(o)
     }
-    #[inline(always)] pub fn simd_min(self, other: Self) -> Self {
-        let a = self.to_array(); let b = other.to_array();
-        let mut o = [0.0f32; 16]; for i in 0..16 { o[i] = a[i].min(b[i]); } Self::from_array(o)
+    #[inline(always)]
+    pub fn simd_min(self, other: Self) -> Self {
+        let a = self.to_array();
+        let b = other.to_array();
+        let mut o = [0.0f32; 16];
+        for i in 0..16 {
+            o[i] = a[i].min(b[i]);
+        }
+        Self::from_array(o)
     }
-    #[inline(always)] pub fn simd_max(self, other: Self) -> Self {
-        let a = self.to_array(); let b = other.to_array();
-        let mut o = [0.0f32; 16]; for i in 0..16 { o[i] = a[i].max(b[i]); } Self::from_array(o)
+    #[inline(always)]
+    pub fn simd_max(self, other: Self) -> Self {
+        let a = self.to_array();
+        let b = other.to_array();
+        let mut o = [0.0f32; 16];
+        for i in 0..16 {
+            o[i] = a[i].max(b[i]);
+        }
+        Self::from_array(o)
     }
-    #[inline(always)] pub fn simd_clamp(self, lo: Self, hi: Self) -> Self { self.simd_max(lo).simd_min(hi) }
-    #[inline(always)] pub fn simd_lt(self, other: Self) -> F32Mask16 {
-        let a = self.to_array(); let b = other.to_array();
-        let mut bits: u16 = 0; for i in 0..16 { if a[i] < b[i] { bits |= 1 << i; } } F32Mask16(bits)
+    #[inline(always)]
+    pub fn simd_clamp(self, lo: Self, hi: Self) -> Self {
+        self.simd_max(lo).simd_min(hi)
     }
-    #[inline(always)] pub fn simd_le(self, other: Self) -> F32Mask16 {
-        let a = self.to_array(); let b = other.to_array();
-        let mut bits: u16 = 0; for i in 0..16 { if a[i] <= b[i] { bits |= 1 << i; } } F32Mask16(bits)
+    #[inline(always)]
+    pub fn simd_lt(self, other: Self) -> F32Mask16 {
+        let a = self.to_array();
+        let b = other.to_array();
+        let mut bits: u16 = 0;
+        for i in 0..16 {
+            if a[i] < b[i] {
+                bits |= 1 << i;
+            }
+        }
+        F32Mask16(bits)
     }
-    #[inline(always)] pub fn simd_gt(self, other: Self) -> F32Mask16 { other.simd_lt(self) }
-    #[inline(always)] pub fn simd_ge(self, other: Self) -> F32Mask16 { other.simd_le(self) }
-    #[inline(always)] pub fn simd_eq(self, other: Self) -> F32Mask16 {
-        let a = self.to_array(); let b = other.to_array();
-        let mut bits: u16 = 0; for i in 0..16 { if a[i] == b[i] { bits |= 1 << i; } } F32Mask16(bits)
+    #[inline(always)]
+    pub fn simd_le(self, other: Self) -> F32Mask16 {
+        let a = self.to_array();
+        let b = other.to_array();
+        let mut bits: u16 = 0;
+        for i in 0..16 {
+            if a[i] <= b[i] {
+                bits |= 1 << i;
+            }
+        }
+        F32Mask16(bits)
     }
-    #[inline(always)] pub fn simd_ne(self, other: Self) -> F32Mask16 {
-        let a = self.to_array(); let b = other.to_array();
-        let mut bits: u16 = 0; for i in 0..16 { if a[i] != b[i] { bits |= 1 << i; } } F32Mask16(bits)
+    #[inline(always)]
+    pub fn simd_gt(self, other: Self) -> F32Mask16 {
+        other.simd_lt(self)
+    }
+    #[inline(always)]
+    pub fn simd_ge(self, other: Self) -> F32Mask16 {
+        other.simd_le(self)
+    }
+    #[inline(always)]
+    pub fn simd_eq(self, other: Self) -> F32Mask16 {
+        let a = self.to_array();
+        let b = other.to_array();
+        let mut bits: u16 = 0;
+        for i in 0..16 {
+            if a[i] == b[i] {
+                bits |= 1 << i;
+            }
+        }
+        F32Mask16(bits)
+    }
+    #[inline(always)]
+    pub fn simd_ne(self, other: Self) -> F32Mask16 {
+        let a = self.to_array();
+        let b = other.to_array();
+        let mut bits: u16 = 0;
+        for i in 0..16 {
+            if a[i] != b[i] {
+                bits |= 1 << i;
+            }
+        }
+        F32Mask16(bits)
     }
     /// Gather 16 f32 values from `base_ptr` using 16 i32 indices.
     ///
@@ -619,43 +681,130 @@ impl F32x16 {
     pub unsafe fn gather(indices: I32x16, base_ptr: *const f32) -> Self {
         let idx = indices.0;
         let mut o = [0.0f32; 16];
-        for i in 0..16 { o[i] = *base_ptr.add(idx[i] as usize); }
+        for i in 0..16 {
+            o[i] = *base_ptr.add(idx[i] as usize);
+        }
         Self::from_array(o)
     }
-    #[inline(always)] pub fn to_bits(self) -> U32x16 {
+    #[inline(always)]
+    pub fn to_bits(self) -> U32x16 {
         let a = self.to_array();
-        let mut o = [0u32; 16]; for i in 0..16 { o[i] = a[i].to_bits(); } U32x16(o)
+        let mut o = [0u32; 16];
+        for i in 0..16 {
+            o[i] = a[i].to_bits();
+        }
+        U32x16(o)
     }
-    #[inline(always)] pub fn from_bits(bits: U32x16) -> Self {
-        let mut o = [0.0f32; 16]; for i in 0..16 { o[i] = f32::from_bits(bits.0[i]); } Self::from_array(o)
+    #[inline(always)]
+    pub fn from_bits(bits: U32x16) -> Self {
+        let mut o = [0.0f32; 16];
+        for i in 0..16 {
+            o[i] = f32::from_bits(bits.0[i]);
+        }
+        Self::from_array(o)
     }
-    #[inline(always)] pub fn cast_i32(self) -> I32x16 {
+    #[inline(always)]
+    pub fn cast_i32(self) -> I32x16 {
         let a = self.to_array();
-        let mut o = [0i32; 16]; for i in 0..16 { o[i] = a[i] as i32; } I32x16(o)
+        let mut o = [0i32; 16];
+        for i in 0..16 {
+            o[i] = a[i] as i32;
+        }
+        I32x16(o)
     }
 }
 
-impl Add for F32x16 { type Output = Self; #[inline(always)] fn add(self, rhs: Self) -> Self { Self(self.0 + rhs.0, self.1 + rhs.1) } }
-impl Sub for F32x16 { type Output = Self; #[inline(always)] fn sub(self, rhs: Self) -> Self { Self(self.0 - rhs.0, self.1 - rhs.1) } }
-impl Mul for F32x16 { type Output = Self; #[inline(always)] fn mul(self, rhs: Self) -> Self { Self(self.0 * rhs.0, self.1 * rhs.1) } }
-impl Div for F32x16 { type Output = Self; #[inline(always)] fn div(self, rhs: Self) -> Self { Self(self.0 / rhs.0, self.1 / rhs.1) } }
-impl AddAssign for F32x16 { #[inline(always)] fn add_assign(&mut self, rhs: Self) { *self = *self + rhs; } }
-impl SubAssign for F32x16 { #[inline(always)] fn sub_assign(&mut self, rhs: Self) { *self = *self - rhs; } }
-impl MulAssign for F32x16 { #[inline(always)] fn mul_assign(&mut self, rhs: Self) { *self = *self * rhs; } }
-impl DivAssign for F32x16 { #[inline(always)] fn div_assign(&mut self, rhs: Self) { *self = *self / rhs; } }
-impl Neg for F32x16 { type Output = Self; #[inline(always)] fn neg(self) -> Self { let a = self.to_array(); let mut o = [0.0f32; 16]; for i in 0..16 { o[i] = -a[i]; } Self::from_array(o) } }
-impl fmt::Debug for F32x16 { fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "F32x16({:?})", self.to_array()) } }
-impl PartialEq for F32x16 { fn eq(&self, other: &Self) -> bool { self.to_array() == other.to_array() } }
-impl Default for F32x16 { fn default() -> Self { Self::splat(0.0) } }
+impl Add for F32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn add(self, rhs: Self) -> Self {
+        Self(self.0 + rhs.0, self.1 + rhs.1)
+    }
+}
+impl Sub for F32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn sub(self, rhs: Self) -> Self {
+        Self(self.0 - rhs.0, self.1 - rhs.1)
+    }
+}
+impl Mul for F32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn mul(self, rhs: Self) -> Self {
+        Self(self.0 * rhs.0, self.1 * rhs.1)
+    }
+}
+impl Div for F32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn div(self, rhs: Self) -> Self {
+        Self(self.0 / rhs.0, self.1 / rhs.1)
+    }
+}
+impl AddAssign for F32x16 {
+    #[inline(always)]
+    fn add_assign(&mut self, rhs: Self) {
+        *self = *self + rhs;
+    }
+}
+impl SubAssign for F32x16 {
+    #[inline(always)]
+    fn sub_assign(&mut self, rhs: Self) {
+        *self = *self - rhs;
+    }
+}
+impl MulAssign for F32x16 {
+    #[inline(always)]
+    fn mul_assign(&mut self, rhs: Self) {
+        *self = *self * rhs;
+    }
+}
+impl DivAssign for F32x16 {
+    #[inline(always)]
+    fn div_assign(&mut self, rhs: Self) {
+        *self = *self / rhs;
+    }
+}
+impl Neg for F32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn neg(self) -> Self {
+        let a = self.to_array();
+        let mut o = [0.0f32; 16];
+        for i in 0..16 {
+            o[i] = -a[i];
+        }
+        Self::from_array(o)
+    }
+}
+impl fmt::Debug for F32x16 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "F32x16({:?})", self.to_array())
+    }
+}
+impl PartialEq for F32x16 {
+    fn eq(&self, other: &Self) -> bool {
+        self.to_array() == other.to_array()
+    }
+}
+impl Default for F32x16 {
+    fn default() -> Self {
+        Self::splat(0.0)
+    }
+}
 
 #[derive(Copy, Clone, Debug)]
 pub struct F32Mask16(pub u16);
 impl F32Mask16 {
     #[inline(always)]
     pub fn select(self, true_val: F32x16, false_val: F32x16) -> F32x16 {
-        let t = true_val.to_array(); let f = false_val.to_array();
+        let t = true_val.to_array();
+        let f = false_val.to_array();
         let mut o = [0.0f32; 16];
-        for i in 0..16 { o[i] = if (self.0 >> i) & 1 == 1 { t[i] } else { f[i] }; }
+        for i in 0..16 {
+            o[i] = if (self.0 >> i) & 1 == 1 { t[i] } else { f[i] };
+        }
         F32x16::from_array(o)
     }
 }
@@ -667,76 +816,251 @@ pub struct F64x8(pub f64x4, pub f64x4);
 
 impl F64x8 {
     pub const LANES: usize = 8;
-    #[inline(always)] pub fn splat(v: f64) -> Self { Self(f64x4::splat(v), f64x4::splat(v)) }
-    #[inline(always)] pub fn from_slice(s: &[f64]) -> Self {
+    #[inline(always)]
+    pub fn splat(v: f64) -> Self {
+        Self(f64x4::splat(v), f64x4::splat(v))
+    }
+    #[inline(always)]
+    pub fn from_slice(s: &[f64]) -> Self {
         assert!(s.len() >= 8);
         Self(f64x4::from_slice(&s[..4]), f64x4::from_slice(&s[4..8]))
     }
-    #[inline(always)] pub fn from_array(a: [f64; 8]) -> Self {
+    #[inline(always)]
+    pub fn from_array(a: [f64; 8]) -> Self {
         Self(f64x4::from_array(a[..4].try_into().unwrap()), f64x4::from_array(a[4..].try_into().unwrap()))
     }
-    #[inline(always)] pub fn to_array(self) -> [f64; 8] {
+    #[inline(always)]
+    pub fn to_array(self) -> [f64; 8] {
         let mut out = [0.0f64; 8];
         out[..4].copy_from_slice(&self.0.to_array());
         out[4..].copy_from_slice(&self.1.to_array());
         out
     }
-    #[inline(always)] pub fn copy_to_slice(self, s: &mut [f64]) {
+    #[inline(always)]
+    pub fn copy_to_slice(self, s: &mut [f64]) {
         assert!(s.len() >= 8);
         self.0.copy_to_slice(&mut s[..4]);
         self.1.copy_to_slice(&mut s[4..8]);
     }
-    #[inline(always)] pub fn reduce_sum(self) -> f64 { self.0.reduce_sum() + self.1.reduce_sum() }
-    #[inline(always)] pub fn reduce_min(self) -> f64 { let a = self.to_array(); a.iter().copied().fold(f64::INFINITY, f64::min) }
-    #[inline(always)] pub fn reduce_max(self) -> f64 { let a = self.to_array(); a.iter().copied().fold(f64::NEG_INFINITY, f64::max) }
-    #[inline(always)] pub fn abs(self) -> Self { let a = self.to_array(); let mut o = [0.0f64; 8]; for i in 0..8 { o[i] = a[i].abs(); } Self::from_array(o) }
-    #[inline(always)] pub fn sqrt(self) -> Self { let a = self.to_array(); let mut o = [0.0f64; 8]; for i in 0..8 { o[i] = a[i].sqrt(); } Self::from_array(o) }
-    #[inline(always)] pub fn round(self) -> Self { let a = self.to_array(); let mut o = [0.0f64; 8]; for i in 0..8 { o[i] = a[i].round(); } Self::from_array(o) }
-    #[inline(always)] pub fn floor(self) -> Self { let a = self.to_array(); let mut o = [0.0f64; 8]; for i in 0..8 { o[i] = a[i].floor(); } Self::from_array(o) }
-    #[inline(always)] pub fn mul_add(self, b: Self, c: Self) -> Self {
-        let a = self.to_array(); let ba = b.to_array(); let ca = c.to_array();
-        let mut o = [0.0f64; 8]; for i in 0..8 { o[i] = a[i].mul_add(ba[i], ca[i]); } Self::from_array(o)
+    #[inline(always)]
+    pub fn reduce_sum(self) -> f64 {
+        self.0.reduce_sum() + self.1.reduce_sum()
     }
-    #[inline(always)] pub fn simd_min(self, other: Self) -> Self { let a = self.to_array(); let b = other.to_array(); let mut o = [0.0f64; 8]; for i in 0..8 { o[i] = a[i].min(b[i]); } Self::from_array(o) }
-    #[inline(always)] pub fn simd_max(self, other: Self) -> Self { let a = self.to_array(); let b = other.to_array(); let mut o = [0.0f64; 8]; for i in 0..8 { o[i] = a[i].max(b[i]); } Self::from_array(o) }
-    #[inline(always)] pub fn simd_clamp(self, lo: Self, hi: Self) -> Self { self.simd_max(lo).simd_min(hi) }
-    #[inline(always)] pub fn simd_ge(self, other: Self) -> F64Mask8 {
-        let a = self.to_array(); let b = other.to_array();
-        let mut bits: u8 = 0; for i in 0..8 { if a[i] >= b[i] { bits |= 1 << i; } } F64Mask8(bits)
+    #[inline(always)]
+    pub fn reduce_min(self) -> f64 {
+        let a = self.to_array();
+        a.iter().copied().fold(f64::INFINITY, f64::min)
     }
-    #[inline(always)] pub fn simd_le(self, other: Self) -> F64Mask8 {
-        let a = self.to_array(); let b = other.to_array();
-        let mut bits: u8 = 0; for i in 0..8 { if a[i] <= b[i] { bits |= 1 << i; } } F64Mask8(bits)
+    #[inline(always)]
+    pub fn reduce_max(self) -> f64 {
+        let a = self.to_array();
+        a.iter().copied().fold(f64::NEG_INFINITY, f64::max)
     }
-    #[inline(always)] pub fn to_bits(self) -> U64x8 {
-        let a = self.to_array(); let mut o = [0u64; 8]; for i in 0..8 { o[i] = a[i].to_bits(); } U64x8(o)
+    #[inline(always)]
+    pub fn abs(self) -> Self {
+        let a = self.to_array();
+        let mut o = [0.0f64; 8];
+        for i in 0..8 {
+            o[i] = a[i].abs();
+        }
+        Self::from_array(o)
     }
-    #[inline(always)] pub fn from_bits(bits: U64x8) -> Self {
-        let mut o = [0.0f64; 8]; for i in 0..8 { o[i] = f64::from_bits(bits.0[i]); } Self::from_array(o)
+    #[inline(always)]
+    pub fn sqrt(self) -> Self {
+        let a = self.to_array();
+        let mut o = [0.0f64; 8];
+        for i in 0..8 {
+            o[i] = a[i].sqrt();
+        }
+        Self::from_array(o)
+    }
+    #[inline(always)]
+    pub fn round(self) -> Self {
+        let a = self.to_array();
+        let mut o = [0.0f64; 8];
+        for i in 0..8 {
+            o[i] = a[i].round();
+        }
+        Self::from_array(o)
+    }
+    #[inline(always)]
+    pub fn floor(self) -> Self {
+        let a = self.to_array();
+        let mut o = [0.0f64; 8];
+        for i in 0..8 {
+            o[i] = a[i].floor();
+        }
+        Self::from_array(o)
+    }
+    #[inline(always)]
+    pub fn mul_add(self, b: Self, c: Self) -> Self {
+        let a = self.to_array();
+        let ba = b.to_array();
+        let ca = c.to_array();
+        let mut o = [0.0f64; 8];
+        for i in 0..8 {
+            o[i] = a[i].mul_add(ba[i], ca[i]);
+        }
+        Self::from_array(o)
+    }
+    #[inline(always)]
+    pub fn simd_min(self, other: Self) -> Self {
+        let a = self.to_array();
+        let b = other.to_array();
+        let mut o = [0.0f64; 8];
+        for i in 0..8 {
+            o[i] = a[i].min(b[i]);
+        }
+        Self::from_array(o)
+    }
+    #[inline(always)]
+    pub fn simd_max(self, other: Self) -> Self {
+        let a = self.to_array();
+        let b = other.to_array();
+        let mut o = [0.0f64; 8];
+        for i in 0..8 {
+            o[i] = a[i].max(b[i]);
+        }
+        Self::from_array(o)
+    }
+    #[inline(always)]
+    pub fn simd_clamp(self, lo: Self, hi: Self) -> Self {
+        self.simd_max(lo).simd_min(hi)
+    }
+    #[inline(always)]
+    pub fn simd_ge(self, other: Self) -> F64Mask8 {
+        let a = self.to_array();
+        let b = other.to_array();
+        let mut bits: u8 = 0;
+        for i in 0..8 {
+            if a[i] >= b[i] {
+                bits |= 1 << i;
+            }
+        }
+        F64Mask8(bits)
+    }
+    #[inline(always)]
+    pub fn simd_le(self, other: Self) -> F64Mask8 {
+        let a = self.to_array();
+        let b = other.to_array();
+        let mut bits: u8 = 0;
+        for i in 0..8 {
+            if a[i] <= b[i] {
+                bits |= 1 << i;
+            }
+        }
+        F64Mask8(bits)
+    }
+    #[inline(always)]
+    pub fn to_bits(self) -> U64x8 {
+        let a = self.to_array();
+        let mut o = [0u64; 8];
+        for i in 0..8 {
+            o[i] = a[i].to_bits();
+        }
+        U64x8(o)
+    }
+    #[inline(always)]
+    pub fn from_bits(bits: U64x8) -> Self {
+        let mut o = [0.0f64; 8];
+        for i in 0..8 {
+            o[i] = f64::from_bits(bits.0[i]);
+        }
+        Self::from_array(o)
     }
 }
 
-impl Add for F64x8 { type Output = Self; #[inline(always)] fn add(self, rhs: Self) -> Self { Self(self.0 + rhs.0, self.1 + rhs.1) } }
-impl Sub for F64x8 { type Output = Self; #[inline(always)] fn sub(self, rhs: Self) -> Self { Self(self.0 - rhs.0, self.1 - rhs.1) } }
-impl Mul for F64x8 { type Output = Self; #[inline(always)] fn mul(self, rhs: Self) -> Self { Self(self.0 * rhs.0, self.1 * rhs.1) } }
-impl Div for F64x8 { type Output = Self; #[inline(always)] fn div(self, rhs: Self) -> Self { Self(self.0 / rhs.0, self.1 / rhs.1) } }
-impl AddAssign for F64x8 { #[inline(always)] fn add_assign(&mut self, rhs: Self) { *self = *self + rhs; } }
-impl SubAssign for F64x8 { #[inline(always)] fn sub_assign(&mut self, rhs: Self) { *self = *self - rhs; } }
-impl MulAssign for F64x8 { #[inline(always)] fn mul_assign(&mut self, rhs: Self) { *self = *self * rhs; } }
-impl DivAssign for F64x8 { #[inline(always)] fn div_assign(&mut self, rhs: Self) { *self = *self / rhs; } }
-impl Neg for F64x8 { type Output = Self; #[inline(always)] fn neg(self) -> Self { let a = self.to_array(); let mut o = [0.0f64; 8]; for i in 0..8 { o[i] = -a[i]; } Self::from_array(o) } }
-impl fmt::Debug for F64x8 { fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "F64x8({:?})", self.to_array()) } }
-impl PartialEq for F64x8 { fn eq(&self, other: &Self) -> bool { self.to_array() == other.to_array() } }
-impl Default for F64x8 { fn default() -> Self { Self::splat(0.0) } }
+impl Add for F64x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn add(self, rhs: Self) -> Self {
+        Self(self.0 + rhs.0, self.1 + rhs.1)
+    }
+}
+impl Sub for F64x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn sub(self, rhs: Self) -> Self {
+        Self(self.0 - rhs.0, self.1 - rhs.1)
+    }
+}
+impl Mul for F64x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn mul(self, rhs: Self) -> Self {
+        Self(self.0 * rhs.0, self.1 * rhs.1)
+    }
+}
+impl Div for F64x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn div(self, rhs: Self) -> Self {
+        Self(self.0 / rhs.0, self.1 / rhs.1)
+    }
+}
+impl AddAssign for F64x8 {
+    #[inline(always)]
+    fn add_assign(&mut self, rhs: Self) {
+        *self = *self + rhs;
+    }
+}
+impl SubAssign for F64x8 {
+    #[inline(always)]
+    fn sub_assign(&mut self, rhs: Self) {
+        *self = *self - rhs;
+    }
+}
+impl MulAssign for F64x8 {
+    #[inline(always)]
+    fn mul_assign(&mut self, rhs: Self) {
+        *self = *self * rhs;
+    }
+}
+impl DivAssign for F64x8 {
+    #[inline(always)]
+    fn div_assign(&mut self, rhs: Self) {
+        *self = *self / rhs;
+    }
+}
+impl Neg for F64x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn neg(self) -> Self {
+        let a = self.to_array();
+        let mut o = [0.0f64; 8];
+        for i in 0..8 {
+            o[i] = -a[i];
+        }
+        Self::from_array(o)
+    }
+}
+impl fmt::Debug for F64x8 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "F64x8({:?})", self.to_array())
+    }
+}
+impl PartialEq for F64x8 {
+    fn eq(&self, other: &Self) -> bool {
+        self.to_array() == other.to_array()
+    }
+}
+impl Default for F64x8 {
+    fn default() -> Self {
+        Self::splat(0.0)
+    }
+}
 
 #[derive(Copy, Clone, Debug)]
 pub struct F64Mask8(pub u8);
 impl F64Mask8 {
     #[inline(always)]
     pub fn select(self, true_val: F64x8, false_val: F64x8) -> F64x8 {
-        let t = true_val.to_array(); let f = false_val.to_array();
+        let t = true_val.to_array();
+        let f = false_val.to_array();
         let mut o = [0.0f64; 8];
-        for i in 0..8 { o[i] = if (self.0 >> i) & 1 == 1 { t[i] } else { f[i] }; }
+        for i in 0..8 {
+            o[i] = if (self.0 >> i) & 1 == 1 { t[i] } else { f[i] };
+        }
         F64x8::from_array(o)
     }
 }
@@ -749,29 +1073,163 @@ macro_rules! avx2_int_type {
         #[repr(align(64))]
         pub struct $name(pub [$elem; $lanes]);
 
-        impl Default for $name { #[inline(always)] fn default() -> Self { Self([$zero; $lanes]) } }
+        impl Default for $name {
+            #[inline(always)]
+            fn default() -> Self {
+                Self([$zero; $lanes])
+            }
+        }
         impl $name {
             pub const LANES: usize = $lanes;
-            #[inline(always)] pub fn splat(v: $elem) -> Self { Self([v; $lanes]) }
-            #[inline(always)] pub fn from_slice(s: &[$elem]) -> Self { assert!(s.len() >= $lanes); let mut a = [$zero; $lanes]; a.copy_from_slice(&s[..$lanes]); Self(a) }
-            #[inline(always)] pub fn from_array(a: [$elem; $lanes]) -> Self { Self(a) }
-            #[inline(always)] pub fn to_array(self) -> [$elem; $lanes] { self.0 }
-            #[inline(always)] pub fn copy_to_slice(self, s: &mut [$elem]) { assert!(s.len() >= $lanes); s[..$lanes].copy_from_slice(&self.0); }
-            #[inline(always)] pub fn reduce_sum(self) -> $elem { let mut s: $elem = $zero; for i in 0..$lanes { s = s.wrapping_add(self.0[i]); } s }
+            #[inline(always)]
+            pub fn splat(v: $elem) -> Self {
+                Self([v; $lanes])
+            }
+            #[inline(always)]
+            pub fn from_slice(s: &[$elem]) -> Self {
+                assert!(s.len() >= $lanes);
+                let mut a = [$zero; $lanes];
+                a.copy_from_slice(&s[..$lanes]);
+                Self(a)
+            }
+            #[inline(always)]
+            pub fn from_array(a: [$elem; $lanes]) -> Self {
+                Self(a)
+            }
+            #[inline(always)]
+            pub fn to_array(self) -> [$elem; $lanes] {
+                self.0
+            }
+            #[inline(always)]
+            pub fn copy_to_slice(self, s: &mut [$elem]) {
+                assert!(s.len() >= $lanes);
+                s[..$lanes].copy_from_slice(&self.0);
+            }
+            #[inline(always)]
+            pub fn reduce_sum(self) -> $elem {
+                let mut s: $elem = $zero;
+                for i in 0..$lanes {
+                    s = s.wrapping_add(self.0[i]);
+                }
+                s
+            }
         }
-        impl Add for $name { type Output = Self; #[inline(always)] fn add(self, r: Self) -> Self { let mut o = [$zero; $lanes]; for i in 0..$lanes { o[i] = self.0[i].wrapping_add(r.0[i]); } Self(o) } }
-        impl Sub for $name { type Output = Self; #[inline(always)] fn sub(self, r: Self) -> Self { let mut o = [$zero; $lanes]; for i in 0..$lanes { o[i] = self.0[i].wrapping_sub(r.0[i]); } Self(o) } }
-        impl BitAnd for $name { type Output = Self; #[inline(always)] fn bitand(self, r: Self) -> Self { let mut o = [$zero; $lanes]; for i in 0..$lanes { o[i] = self.0[i] & r.0[i]; } Self(o) } }
-        impl BitOr for $name { type Output = Self; #[inline(always)] fn bitor(self, r: Self) -> Self { let mut o = [$zero; $lanes]; for i in 0..$lanes { o[i] = self.0[i] | r.0[i]; } Self(o) } }
-        impl BitXor for $name { type Output = Self; #[inline(always)] fn bitxor(self, r: Self) -> Self { let mut o = [$zero; $lanes]; for i in 0..$lanes { o[i] = self.0[i] ^ r.0[i]; } Self(o) } }
-        impl BitAndAssign for $name { #[inline(always)] fn bitand_assign(&mut self, r: Self) { for i in 0..$lanes { self.0[i] &= r.0[i]; } } }
-        impl BitOrAssign for $name { #[inline(always)] fn bitor_assign(&mut self, r: Self) { for i in 0..$lanes { self.0[i] |= r.0[i]; } } }
-        impl BitXorAssign for $name { #[inline(always)] fn bitxor_assign(&mut self, r: Self) { for i in 0..$lanes { self.0[i] ^= r.0[i]; } } }
-        impl Not for $name { type Output = Self; #[inline(always)] fn not(self) -> Self { let mut o = [$zero; $lanes]; for i in 0..$lanes { o[i] = !self.0[i]; } Self(o) } }
-        impl AddAssign for $name { #[inline(always)] fn add_assign(&mut self, r: Self) { for i in 0..$lanes { self.0[i] = self.0[i].wrapping_add(r.0[i]); } } }
-        impl SubAssign for $name { #[inline(always)] fn sub_assign(&mut self, r: Self) { for i in 0..$lanes { self.0[i] = self.0[i].wrapping_sub(r.0[i]); } } }
-        impl fmt::Debug for $name { fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, concat!(stringify!($name), "({:?})"), &self.0[..]) } }
-        impl PartialEq for $name { fn eq(&self, other: &Self) -> bool { self.0 == other.0 } }
+        impl Add for $name {
+            type Output = Self;
+            #[inline(always)]
+            fn add(self, r: Self) -> Self {
+                let mut o = [$zero; $lanes];
+                for i in 0..$lanes {
+                    o[i] = self.0[i].wrapping_add(r.0[i]);
+                }
+                Self(o)
+            }
+        }
+        impl Sub for $name {
+            type Output = Self;
+            #[inline(always)]
+            fn sub(self, r: Self) -> Self {
+                let mut o = [$zero; $lanes];
+                for i in 0..$lanes {
+                    o[i] = self.0[i].wrapping_sub(r.0[i]);
+                }
+                Self(o)
+            }
+        }
+        impl BitAnd for $name {
+            type Output = Self;
+            #[inline(always)]
+            fn bitand(self, r: Self) -> Self {
+                let mut o = [$zero; $lanes];
+                for i in 0..$lanes {
+                    o[i] = self.0[i] & r.0[i];
+                }
+                Self(o)
+            }
+        }
+        impl BitOr for $name {
+            type Output = Self;
+            #[inline(always)]
+            fn bitor(self, r: Self) -> Self {
+                let mut o = [$zero; $lanes];
+                for i in 0..$lanes {
+                    o[i] = self.0[i] | r.0[i];
+                }
+                Self(o)
+            }
+        }
+        impl BitXor for $name {
+            type Output = Self;
+            #[inline(always)]
+            fn bitxor(self, r: Self) -> Self {
+                let mut o = [$zero; $lanes];
+                for i in 0..$lanes {
+                    o[i] = self.0[i] ^ r.0[i];
+                }
+                Self(o)
+            }
+        }
+        impl BitAndAssign for $name {
+            #[inline(always)]
+            fn bitand_assign(&mut self, r: Self) {
+                for i in 0..$lanes {
+                    self.0[i] &= r.0[i];
+                }
+            }
+        }
+        impl BitOrAssign for $name {
+            #[inline(always)]
+            fn bitor_assign(&mut self, r: Self) {
+                for i in 0..$lanes {
+                    self.0[i] |= r.0[i];
+                }
+            }
+        }
+        impl BitXorAssign for $name {
+            #[inline(always)]
+            fn bitxor_assign(&mut self, r: Self) {
+                for i in 0..$lanes {
+                    self.0[i] ^= r.0[i];
+                }
+            }
+        }
+        impl Not for $name {
+            type Output = Self;
+            #[inline(always)]
+            fn not(self) -> Self {
+                let mut o = [$zero; $lanes];
+                for i in 0..$lanes {
+                    o[i] = !self.0[i];
+                }
+                Self(o)
+            }
+        }
+        impl AddAssign for $name {
+            #[inline(always)]
+            fn add_assign(&mut self, r: Self) {
+                for i in 0..$lanes {
+                    self.0[i] = self.0[i].wrapping_add(r.0[i]);
+                }
+            }
+        }
+        impl SubAssign for $name {
+            #[inline(always)]
+            fn sub_assign(&mut self, r: Self) {
+                for i in 0..$lanes {
+                    self.0[i] = self.0[i].wrapping_sub(r.0[i]);
+                }
+            }
+        }
+        impl fmt::Debug for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, concat!(stringify!($name), "({:?})"), &self.0[..])
+            }
+        }
+        impl PartialEq for $name {
+            fn eq(&self, other: &Self) -> bool {
+                self.0 == other.0
+            }
+        }
     };
 }
 
@@ -782,38 +1240,98 @@ avx2_int_type!(I16x32, i16, 32, 0i16);
 // I8x64 / I16x32: AVX2 scalar polyfill — methods matching the AVX-512BW API
 impl I8x64 {
     #[inline(always)]
-    pub fn zero() -> Self { Self([0i8; 64]) }
+    pub fn zero() -> Self {
+        Self([0i8; 64])
+    }
     #[inline(always)]
-    pub fn add(self, other: Self) -> Self { let mut o = [0i8; 64]; for i in 0..64 { o[i] = self.0[i].wrapping_add(other.0[i]); } Self(o) }
+    pub fn add(self, other: Self) -> Self {
+        let mut o = [0i8; 64];
+        for i in 0..64 {
+            o[i] = self.0[i].wrapping_add(other.0[i]);
+        }
+        Self(o)
+    }
     #[inline(always)]
-    pub fn sub(self, other: Self) -> Self { let mut o = [0i8; 64]; for i in 0..64 { o[i] = self.0[i].wrapping_sub(other.0[i]); } Self(o) }
+    pub fn sub(self, other: Self) -> Self {
+        let mut o = [0i8; 64];
+        for i in 0..64 {
+            o[i] = self.0[i].wrapping_sub(other.0[i]);
+        }
+        Self(o)
+    }
     #[inline(always)]
-    pub fn min(self, other: Self) -> Self { let mut o = [0i8; 64]; for i in 0..64 { o[i] = self.0[i].min(other.0[i]); } Self(o) }
+    pub fn min(self, other: Self) -> Self {
+        let mut o = [0i8; 64];
+        for i in 0..64 {
+            o[i] = self.0[i].min(other.0[i]);
+        }
+        Self(o)
+    }
     #[inline(always)]
-    pub fn max(self, other: Self) -> Self { let mut o = [0i8; 64]; for i in 0..64 { o[i] = self.0[i].max(other.0[i]); } Self(o) }
+    pub fn max(self, other: Self) -> Self {
+        let mut o = [0i8; 64];
+        for i in 0..64 {
+            o[i] = self.0[i].max(other.0[i]);
+        }
+        Self(o)
+    }
     #[inline(always)]
     pub fn cmp_gt(self, other: Self) -> u64 {
         let mut m: u64 = 0;
-        for i in 0..64 { if self.0[i] > other.0[i] { m |= 1u64 << i; } }
+        for i in 0..64 {
+            if self.0[i] > other.0[i] {
+                m |= 1u64 << i;
+            }
+        }
         m
     }
 }
 
 impl I16x32 {
     #[inline(always)]
-    pub fn zero() -> Self { Self([0i16; 32]) }
+    pub fn zero() -> Self {
+        Self([0i16; 32])
+    }
     #[inline(always)]
-    pub fn add(self, other: Self) -> Self { let mut o = [0i16; 32]; for i in 0..32 { o[i] = self.0[i].wrapping_add(other.0[i]); } Self(o) }
+    pub fn add(self, other: Self) -> Self {
+        let mut o = [0i16; 32];
+        for i in 0..32 {
+            o[i] = self.0[i].wrapping_add(other.0[i]);
+        }
+        Self(o)
+    }
     #[inline(always)]
-    pub fn sub(self, other: Self) -> Self { let mut o = [0i16; 32]; for i in 0..32 { o[i] = self.0[i].wrapping_sub(other.0[i]); } Self(o) }
+    pub fn sub(self, other: Self) -> Self {
+        let mut o = [0i16; 32];
+        for i in 0..32 {
+            o[i] = self.0[i].wrapping_sub(other.0[i]);
+        }
+        Self(o)
+    }
     #[inline(always)]
-    pub fn min(self, other: Self) -> Self { let mut o = [0i16; 32]; for i in 0..32 { o[i] = self.0[i].min(other.0[i]); } Self(o) }
+    pub fn min(self, other: Self) -> Self {
+        let mut o = [0i16; 32];
+        for i in 0..32 {
+            o[i] = self.0[i].min(other.0[i]);
+        }
+        Self(o)
+    }
     #[inline(always)]
-    pub fn max(self, other: Self) -> Self { let mut o = [0i16; 32]; for i in 0..32 { o[i] = self.0[i].max(other.0[i]); } Self(o) }
+    pub fn max(self, other: Self) -> Self {
+        let mut o = [0i16; 32];
+        for i in 0..32 {
+            o[i] = self.0[i].max(other.0[i]);
+        }
+        Self(o)
+    }
     #[inline(always)]
     pub fn cmp_gt(self, other: Self) -> u32 {
         let mut m: u32 = 0;
-        for i in 0..32 { if self.0[i] > other.0[i] { m |= 1u32 << i; } }
+        for i in 0..32 {
+            if self.0[i] > other.0[i] {
+                m |= 1u32 << i;
+            }
+        }
         m
     }
 }
@@ -825,7 +1343,11 @@ impl U8x64 {
     #[inline(always)]
     pub fn cmpeq_mask(self, other: Self) -> u64 {
         let mut mask = 0u64;
-        for i in 0..64 { if self.0[i] == other.0[i] { mask |= 1u64 << i; } }
+        for i in 0..64 {
+            if self.0[i] == other.0[i] {
+                mask |= 1u64 << i;
+            }
+        }
         mask
     }
 
@@ -847,7 +1369,9 @@ impl U8x64 {
     #[inline(always)]
     pub fn saturating_sub(self, other: Self) -> Self {
         let mut out = [0u8; 64];
-        for i in 0..64 { out[i] = self.0[i].saturating_sub(other.0[i]); }
+        for i in 0..64 {
+            out[i] = self.0[i].saturating_sub(other.0[i]);
+        }
         Self(out)
     }
 
@@ -855,41 +1379,75 @@ impl U8x64 {
 
     #[inline(always)]
     pub fn pairwise_avg(self, other: Self) -> Self {
-        let mut out = [0u8; 64]; for i in 0..64 { out[i] = ((self.0[i] as u16 + other.0[i] as u16 + 1) >> 1) as u8; } Self(out)
+        let mut out = [0u8; 64];
+        for i in 0..64 {
+            out[i] = ((self.0[i] as u16 + other.0[i] as u16 + 1) >> 1) as u8;
+        }
+        Self(out)
     }
     #[inline(always)]
     pub fn cmpgt_mask(self, other: Self) -> u64 {
-        let mut m: u64 = 0; for i in 0..64 { if self.0[i] > other.0[i] { m |= 1 << i; } } m
+        let mut m: u64 = 0;
+        for i in 0..64 {
+            if self.0[i] > other.0[i] {
+                m |= 1 << i;
+            }
+        }
+        m
     }
     #[inline(always)]
     pub fn mask_blend(mask: u64, a: Self, b: Self) -> Self {
-        let mut out = [0u8; 64]; for i in 0..64 { out[i] = if mask & (1 << i) != 0 { b.0[i] } else { a.0[i] }; } Self(out)
+        let mut out = [0u8; 64];
+        for i in 0..64 {
+            out[i] = if mask & (1 << i) != 0 { b.0[i] } else { a.0[i] };
+        }
+        Self(out)
     }
     #[inline(always)]
     pub fn shl_epi16(self, imm: u32) -> Self {
         let mut out = [0u8; 64];
         for i in (0..64).step_by(2) {
-            let v = u16::from_le_bytes([self.0[i], self.0[i+1]]);
+            let v = u16::from_le_bytes([self.0[i], self.0[i + 1]]);
             let s = if imm < 16 { v << imm } else { 0 };
-            let b = s.to_le_bytes(); out[i] = b[0]; out[i+1] = b[1];
+            let b = s.to_le_bytes();
+            out[i] = b[0];
+            out[i + 1] = b[1];
         }
         Self(out)
     }
     #[inline(always)]
     pub unsafe fn mask_store(self, ptr: *mut u8, mask: u64) {
-        for i in 0..64 { if mask & (1 << i) != 0 { *ptr.add(i) = self.0[i]; } }
+        for i in 0..64 {
+            if mask & (1 << i) != 0 {
+                *ptr.add(i) = self.0[i];
+            }
+        }
     }
     #[inline(always)]
     pub fn saturating_add(self, other: Self) -> Self {
-        let mut out = [0u8; 64]; for i in 0..64 { out[i] = self.0[i].saturating_add(other.0[i]); } Self(out)
+        let mut out = [0u8; 64];
+        for i in 0..64 {
+            out[i] = self.0[i].saturating_add(other.0[i]);
+        }
+        Self(out)
     }
     #[inline(always)]
     pub fn permute_bytes(self, idx: Self) -> Self {
-        let mut out = [0u8; 64]; for i in 0..64 { out[i] = self.0[(idx.0[i] & 63) as usize]; } Self(out)
+        let mut out = [0u8; 64];
+        for i in 0..64 {
+            out[i] = self.0[(idx.0[i] & 63) as usize];
+        }
+        Self(out)
     }
     #[inline(always)]
     pub fn movemask(self) -> u64 {
-        let mut m: u64 = 0; for i in 0..64 { if self.0[i] & 0x80 != 0 { m |= 1 << i; } } m
+        let mut m: u64 = 0;
+        for i in 0..64 {
+            if self.0[i] & 0x80 != 0 {
+                m |= 1 << i;
+            }
+        }
+        m
     }
 
     /// Interleave low bytes within each 128-bit lane.
@@ -922,10 +1480,30 @@ impl U8x64 {
     }
 
     /// Reduce min/max (not in macro).
-    #[inline(always)] pub fn reduce_min(self) -> u8 { *self.0.iter().min().unwrap() }
-    #[inline(always)] pub fn reduce_max(self) -> u8 { *self.0.iter().max().unwrap() }
-    #[inline(always)] pub fn simd_min(self, other: Self) -> Self { let mut o = [0u8; 64]; for i in 0..64 { o[i] = self.0[i].min(other.0[i]); } Self(o) }
-    #[inline(always)] pub fn simd_max(self, other: Self) -> Self { let mut o = [0u8; 64]; for i in 0..64 { o[i] = self.0[i].max(other.0[i]); } Self(o) }
+    #[inline(always)]
+    pub fn reduce_min(self) -> u8 {
+        *self.0.iter().min().unwrap()
+    }
+    #[inline(always)]
+    pub fn reduce_max(self) -> u8 {
+        *self.0.iter().max().unwrap()
+    }
+    #[inline(always)]
+    pub fn simd_min(self, other: Self) -> Self {
+        let mut o = [0u8; 64];
+        for i in 0..64 {
+            o[i] = self.0[i].min(other.0[i]);
+        }
+        Self(o)
+    }
+    #[inline(always)]
+    pub fn simd_max(self, other: Self) -> Self {
+        let mut o = [0u8; 64];
+        for i in 0..64 {
+            o[i] = self.0[i].max(other.0[i]);
+        }
+        Self(o)
+    }
 
     /// Byte-wise shuffle: use `self` as a LUT, `idx` selects bytes within each 16-byte lane.
     #[inline(always)]
@@ -949,9 +1527,11 @@ impl U8x64 {
     /// Build a nibble-popcount lookup table (replicated across 4 x 16-byte lanes).
     #[inline(always)]
     pub fn nibble_popcount_lut() -> Self {
-        let lane: [u8; 16] = [0,1,1,2,1,2,2,3,1,2,2,3,2,3,3,4];
+        let lane: [u8; 16] = [0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4];
         let mut arr = [0u8; 64];
-        for l in 0..4 { arr[l*16..(l+1)*16].copy_from_slice(&lane); }
+        for l in 0..4 {
+            arr[l * 16..(l + 1) * 16].copy_from_slice(&lane);
+        }
         Self(arr)
     }
 }
@@ -966,47 +1546,107 @@ avx2_int_type!(U64x8, u64, 8, 0u64);
 impl U16x32 {
     #[inline(always)]
     pub fn from_u8x64_lo(v: U8x64) -> Self {
-        let mut out = [0u16; 32]; for i in 0..32 { out[i] = v.0[i] as u16; } Self(out)
+        let mut out = [0u16; 32];
+        for i in 0..32 {
+            out[i] = v.0[i] as u16;
+        }
+        Self(out)
     }
     #[inline(always)]
     pub fn from_u8x64_hi(v: U8x64) -> Self {
-        let mut out = [0u16; 32]; for i in 0..32 { out[i] = v.0[32 + i] as u16; } Self(out)
+        let mut out = [0u16; 32];
+        for i in 0..32 {
+            out[i] = v.0[32 + i] as u16;
+        }
+        Self(out)
     }
     #[inline(always)]
     pub fn pack_saturate_u8(self, other: Self) -> U8x64 {
         let mut out = [0u8; 64];
-        for i in 0..32 { out[i] = self.0[i].min(255) as u8; }
-        for i in 0..32 { out[32 + i] = other.0[i].min(255) as u8; }
+        for i in 0..32 {
+            out[i] = self.0[i].min(255) as u8;
+        }
+        for i in 0..32 {
+            out[32 + i] = other.0[i].min(255) as u8;
+        }
         U8x64(out)
     }
     #[inline(always)]
     pub fn shr(self, imm: u32) -> Self {
-        let mut out = [0u16; 32]; for i in 0..32 { out[i] = if imm < 16 { self.0[i] >> imm } else { 0 }; } Self(out)
+        let mut out = [0u16; 32];
+        for i in 0..32 {
+            out[i] = if imm < 16 { self.0[i] >> imm } else { 0 };
+        }
+        Self(out)
     }
     #[inline(always)]
     pub fn shl(self, imm: u32) -> Self {
-        let mut out = [0u16; 32]; for i in 0..32 { out[i] = if imm < 16 { self.0[i] << imm } else { 0 }; } Self(out)
+        let mut out = [0u16; 32];
+        for i in 0..32 {
+            out[i] = if imm < 16 { self.0[i] << imm } else { 0 };
+        }
+        Self(out)
     }
     #[inline(always)]
     pub fn mullo(self, other: Self) -> Self {
-        let mut out = [0u16; 32]; for i in 0..32 { out[i] = self.0[i].wrapping_mul(other.0[i]); } Self(out)
+        let mut out = [0u16; 32];
+        for i in 0..32 {
+            out[i] = self.0[i].wrapping_mul(other.0[i]);
+        }
+        Self(out)
     }
 }
 
 impl I32x16 {
-    #[inline(always)] pub fn reduce_min(self) -> i32 { *self.0.iter().min().unwrap() }
-    #[inline(always)] pub fn reduce_max(self) -> i32 { *self.0.iter().max().unwrap() }
-    #[inline(always)] pub fn simd_min(self, other: Self) -> Self { let mut o = [0i32; 16]; for i in 0..16 { o[i] = self.0[i].min(other.0[i]); } Self(o) }
-    #[inline(always)] pub fn simd_max(self, other: Self) -> Self { let mut o = [0i32; 16]; for i in 0..16 { o[i] = self.0[i].max(other.0[i]); } Self(o) }
-    #[inline(always)] pub fn cast_f32(self) -> F32x16 { let mut o = [0.0f32; 16]; for i in 0..16 { o[i] = self.0[i] as f32; } F32x16::from_array(o) }
-    #[inline(always)] pub fn abs(self) -> Self { let mut o = [0i32; 16]; for i in 0..16 { o[i] = self.0[i].abs(); } Self(o) }
+    #[inline(always)]
+    pub fn reduce_min(self) -> i32 {
+        *self.0.iter().min().unwrap()
+    }
+    #[inline(always)]
+    pub fn reduce_max(self) -> i32 {
+        *self.0.iter().max().unwrap()
+    }
+    #[inline(always)]
+    pub fn simd_min(self, other: Self) -> Self {
+        let mut o = [0i32; 16];
+        for i in 0..16 {
+            o[i] = self.0[i].min(other.0[i]);
+        }
+        Self(o)
+    }
+    #[inline(always)]
+    pub fn simd_max(self, other: Self) -> Self {
+        let mut o = [0i32; 16];
+        for i in 0..16 {
+            o[i] = self.0[i].max(other.0[i]);
+        }
+        Self(o)
+    }
+    #[inline(always)]
+    pub fn cast_f32(self) -> F32x16 {
+        let mut o = [0.0f32; 16];
+        for i in 0..16 {
+            o[i] = self.0[i] as f32;
+        }
+        F32x16::from_array(o)
+    }
+    #[inline(always)]
+    pub fn abs(self) -> Self {
+        let mut o = [0i32; 16];
+        for i in 0..16 {
+            o[i] = self.0[i].abs();
+        }
+        Self(o)
+    }
 
     /// Load 16 × i16, sign-extend to 16 × i32.
     #[inline(always)]
     pub fn from_i16_slice(s: &[i16]) -> Self {
         assert!(s.len() >= 16);
         let mut o = [0i32; 16];
-        for i in 0..16 { o[i] = s[i] as i32; }
+        for i in 0..16 {
+            o[i] = s[i] as i32;
+        }
         Self(o)
     }
 
@@ -1014,7 +1654,9 @@ impl I32x16 {
     #[inline(always)]
     pub fn to_i16_array(self) -> [i16; 16] {
         let mut o = [0i16; 16];
-        for i in 0..16 { o[i] = self.0[i] as i16; }
+        for i in 0..16 {
+            o[i] = self.0[i] as i16;
+        }
         o
     }
 
@@ -1022,19 +1664,68 @@ impl I32x16 {
     #[inline(always)]
     pub fn cmpge_zero_mask(self) -> u16 {
         let mut mask = 0u16;
-        for i in 0..16 { if self.0[i] >= 0 { mask |= 1 << i; } }
+        for i in 0..16 {
+            if self.0[i] >= 0 {
+                mask |= 1 << i;
+            }
+        }
         mask
     }
 }
-impl Mul for I32x16 { type Output = Self; #[inline(always)] fn mul(self, r: Self) -> Self { let mut o = [0i32; 16]; for i in 0..16 { o[i] = self.0[i].wrapping_mul(r.0[i]); } Self(o) } }
-impl MulAssign for I32x16 { #[inline(always)] fn mul_assign(&mut self, r: Self) { *self = *self * r; } }
-impl Neg for I32x16 { type Output = Self; #[inline(always)] fn neg(self) -> Self { let mut o = [0i32; 16]; for i in 0..16 { o[i] = -self.0[i]; } Self(o) } }
+impl Mul for I32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn mul(self, r: Self) -> Self {
+        let mut o = [0i32; 16];
+        for i in 0..16 {
+            o[i] = self.0[i].wrapping_mul(r.0[i]);
+        }
+        Self(o)
+    }
+}
+impl MulAssign for I32x16 {
+    #[inline(always)]
+    fn mul_assign(&mut self, r: Self) {
+        *self = *self * r;
+    }
+}
+impl Neg for I32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn neg(self) -> Self {
+        let mut o = [0i32; 16];
+        for i in 0..16 {
+            o[i] = -self.0[i];
+        }
+        Self(o)
+    }
+}
 
 impl I64x8 {
-    #[inline(always)] pub fn reduce_min(self) -> i64 { *self.0.iter().min().unwrap() }
-    #[inline(always)] pub fn reduce_max(self) -> i64 { *self.0.iter().max().unwrap() }
-    #[inline(always)] pub fn simd_min(self, other: Self) -> Self { let mut o = [0i64; 8]; for i in 0..8 { o[i] = self.0[i].min(other.0[i]); } Self(o) }
-    #[inline(always)] pub fn simd_max(self, other: Self) -> Self { let mut o = [0i64; 8]; for i in 0..8 { o[i] = self.0[i].max(other.0[i]); } Self(o) }
+    #[inline(always)]
+    pub fn reduce_min(self) -> i64 {
+        *self.0.iter().min().unwrap()
+    }
+    #[inline(always)]
+    pub fn reduce_max(self) -> i64 {
+        *self.0.iter().max().unwrap()
+    }
+    #[inline(always)]
+    pub fn simd_min(self, other: Self) -> Self {
+        let mut o = [0i64; 8];
+        for i in 0..8 {
+            o[i] = self.0[i].min(other.0[i]);
+        }
+        Self(o)
+    }
+    #[inline(always)]
+    pub fn simd_max(self, other: Self) -> Self {
+        let mut o = [0i64; 8];
+        for i in 0..8 {
+            o[i] = self.0[i].max(other.0[i]);
+        }
+        Self(o)
+    }
 }
 
 /// Lowercase aliases (std::simd convention).
@@ -1067,12 +1758,7 @@ mod tests {
         let b: Vec<f32> = (0..100).map(|i| (i * 2) as f32).collect();
         let result = dot_f32(&a, &b);
         let expected: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-        assert!(
-            (result - expected).abs() < 1.0,
-            "dot_f32: {} vs {}",
-            result,
-            expected
-        );
+        assert!((result - expected).abs() < 1.0, "dot_f32: {} vs {}", result, expected);
     }
 
     #[test]
@@ -1187,10 +1873,7 @@ mod tests {
 
 // Re-use the exact IEEE 754 scalar functions from simd_avx512
 pub use crate::simd_avx512::{
-    f16_to_f32_ieee754,
-    f32_to_f16_ieee754_rne,
-    f16_to_f32_batch_ieee754,
-    f32_to_f16_batch_ieee754_rne,
+    f16_to_f32_batch_ieee754, f16_to_f32_ieee754, f32_to_f16_batch_ieee754_rne, f32_to_f16_ieee754_rne,
 };
 
 // ── Trick 1: Double-f16 (Error-Free Split) ──────────────────────────────
@@ -1230,7 +1913,7 @@ pub use crate::simd_avx512::{
 pub fn f16_double_encode(value: f32) -> (u16, u16) {
     let hi = f32_to_f16_ieee754_rne(value);
     let hi_f32 = f16_to_f32_ieee754(hi); // exact (lossless widening)
-    let residual = value - hi_f32;        // exact (f32 subtraction)
+    let residual = value - hi_f32; // exact (f32 subtraction)
     let lo = f32_to_f16_ieee754_rne(residual);
     (hi, lo)
 }
@@ -1375,22 +2058,35 @@ impl F16Scaler {
         assert!(min_val < max_val, "min must be less than max");
         let abs_max = min_val.abs().max(max_val.abs());
         if abs_max < f32::EPSILON {
-            return Self { scale: 1.0, inv_scale: 1.0 };
+            return Self {
+                scale: 1.0,
+                inv_scale: 1.0,
+            };
         }
         let scale = 1.0 / abs_max;
-        Self { scale, inv_scale: abs_max }
+        Self {
+            scale,
+            inv_scale: abs_max,
+        }
     }
 
     /// Create by scanning data for min/max.
     pub fn from_data(data: &[f32]) -> Self {
         if data.is_empty() {
-            return Self { scale: 1.0, inv_scale: 1.0 };
+            return Self {
+                scale: 1.0,
+                inv_scale: 1.0,
+            };
         }
         let mut min = f32::INFINITY;
         let mut max = f32::NEG_INFINITY;
         for &v in data {
-            if v < min { min = v; }
-            if v > max { max = v; }
+            if v < min {
+                min = v;
+            }
+            if v > max {
+                max = v;
+            }
         }
         Self::from_range(min, max)
     }
@@ -1452,10 +2148,17 @@ mod f16_precision_tests {
         let (hi, lo) = f16_double_encode(value);
         let double_err = (value - f16_double_decode(hi, lo)).abs();
 
-        assert!(double_err < single_err,
-            "double should be better: single={:.8} double={:.8}", single_err, double_err);
-        assert!(double_err < single_err / 100.0,
-            "double should be >100× better: ratio={:.0}", single_err / double_err);
+        assert!(
+            double_err < single_err,
+            "double should be better: single={:.8} double={:.8}",
+            single_err,
+            double_err
+        );
+        assert!(
+            double_err < single_err / 100.0,
+            "double should be >100× better: ratio={:.0}",
+            single_err / double_err
+        );
     }
 
     #[test]
@@ -1487,15 +2190,18 @@ mod f16_precision_tests {
 
     #[test]
     fn kahan_dot_vs_f64_reference() {
-        let a: Vec<u16> = (0..64).map(|i| f32_to_f16_ieee754_rne(i as f32 * 0.1)).collect();
-        let b: Vec<u16> = (0..64).map(|i| f32_to_f16_ieee754_rne(1.0 - i as f32 * 0.01)).collect();
+        let a: Vec<u16> = (0..64)
+            .map(|i| f32_to_f16_ieee754_rne(i as f32 * 0.1))
+            .collect();
+        let b: Vec<u16> = (0..64)
+            .map(|i| f32_to_f16_ieee754_rne(1.0 - i as f32 * 0.01))
+            .collect();
         let dot = f16_kahan_dot(&a, &b);
         let mut ref_sum = 0.0f64;
         for i in 0..64 {
             ref_sum += f16_to_f32_ieee754(a[i]) as f64 * f16_to_f32_ieee754(b[i]) as f64;
         }
-        assert!((dot as f64 - ref_sum).abs() < 0.01,
-            "got={} expected={}", dot, ref_sum);
+        assert!((dot as f64 - ref_sum).abs() < 0.01, "got={} expected={}", dot, ref_sum);
     }
 
     #[test]
@@ -1503,19 +2209,29 @@ mod f16_precision_tests {
         let data: Vec<f32> = (0..100).map(|i| 0.001 + (i as f32) * 0.00004).collect();
 
         let no_scale: Vec<u16> = data.iter().map(|&v| f32_to_f16_ieee754_rne(v)).collect();
-        let no_scale_err: f64 = data.iter().enumerate()
-            .map(|(i, &v)| (v as f64 - f16_to_f32_ieee754(no_scale[i]) as f64).powi(2)).sum();
+        let no_scale_err: f64 = data
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| (v as f64 - f16_to_f32_ieee754(no_scale[i]) as f64).powi(2))
+            .sum();
 
         let scaler = F16Scaler::from_data(&data);
         let mut scaled = vec![0u16; 100];
         scaler.encode_batch(&data, &mut scaled);
         let mut back = vec![0.0f32; 100];
         scaler.decode_batch(&scaled, &mut back);
-        let scaled_err: f64 = data.iter().enumerate()
-            .map(|(i, &v)| (v as f64 - back[i] as f64).powi(2)).sum();
+        let scaled_err: f64 = data
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| (v as f64 - back[i] as f64).powi(2))
+            .sum();
 
-        assert!(scaled_err < no_scale_err,
-            "scaling should help: unscaled={:.2e} scaled={:.2e}", no_scale_err, scaled_err);
+        assert!(
+            scaled_err < no_scale_err,
+            "scaling should help: unscaled={:.2e} scaled={:.2e}",
+            no_scale_err,
+            scaled_err
+        );
     }
 
     #[test]
@@ -1528,8 +2244,7 @@ mod f16_precision_tests {
         scaler.decode_batch(&enc, &mut dec);
         for i in 0..50 {
             let err = (data[i] - dec[i]).abs();
-            assert!(err < data[i].abs() * 0.01 + 1e-6,
-                "at {}: {} → {} err={}", i, data[i], dec[i], err);
+            assert!(err < data[i].abs() * 0.01 + 1e-6, "at {}: {} → {} err={}", i, data[i], dec[i], err);
         }
     }
 }

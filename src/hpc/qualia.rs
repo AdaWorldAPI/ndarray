@@ -418,7 +418,7 @@ mod tests {
         assert_eq!(q.channels[qualia_dim::PITCH], 0); // no transitions
         assert_eq!(q.channels[qualia_dim::WARMTH], 0);
         assert_eq!(q.channels[qualia_dim::PRESSURE], 0); // zero variance
-        // SOCIAL: all pairs agree perfectly (xor=0, agreement=8)
+                                                         // SOCIAL: all pairs agree perfectly (xor=0, agreement=8)
         assert_eq!(q.channels[qualia_dim::SOCIAL], 65535);
         // TEMPORAL: no gradient => 0.5 * 65535 = 32767
         assert_eq!(q.channels[qualia_dim::TEMPORAL], 32767);
@@ -444,10 +444,10 @@ mod tests {
         assert_eq!(q.channels[qualia_dim::PITCH], 0); // no transitions (xor of identical bytes = 0)
         assert_eq!(q.channels[qualia_dim::WARMTH], 65535);
         assert_eq!(q.channels[qualia_dim::PRESSURE], 0); // zero variance
-        // SOCIAL: all pairs identical => max agreement
+                                                         // SOCIAL: all pairs identical => max agreement
         assert_eq!(q.channels[qualia_dim::SOCIAL], 65535);
         assert_eq!(q.channels[qualia_dim::TEMPORAL], 32767); // no gradient
-        // SACREDNESS: only one byte value => entropy = 0
+                                                             // SACREDNESS: only one byte value => entropy = 0
         assert_eq!(q.channels[qualia_dim::SACREDNESS], 0);
         // AROUSAL: 1.0^2 = 1.0
         assert_eq!(q.channels[qualia_dim::AROUSAL], 65535);
@@ -487,12 +487,7 @@ mod tests {
         let b = qualia_color(&data_b);
         let d_ab = qualia_distance(&a, &b);
         let d_ba = qualia_distance(&b, &a);
-        assert!(
-            (d_ab - d_ba).abs() < 1e-6,
-            "distance should be symmetric: {} vs {}",
-            d_ab,
-            d_ba
-        );
+        assert!((d_ab - d_ba).abs() < 1e-6, "distance should be symmetric: {} vs {}", d_ab, d_ba);
     }
 
     #[test]
@@ -500,11 +495,7 @@ mod tests {
         let a = QualiaVector { channels: [0; 16] };
         let b = QualiaVector { channels: [65535; 16] };
         let d = qualia_distance(&a, &b);
-        assert!(
-            (d - 1.0).abs() < 1e-5,
-            "max distance should be ~1.0, got {}",
-            d
-        );
+        assert!((d - 1.0).abs() < 1e-5, "max distance should be ~1.0, got {}", d);
     }
 
     #[test]
@@ -537,10 +528,7 @@ mod tests {
         let b = qualia_color(&data_b);
         let d = qualia_distance(&a, &b);
         let s = qualia_similarity(&a, &b);
-        assert!(
-            (d + s - 1.0).abs() < 1e-6,
-            "distance + similarity should = 1.0"
-        );
+        assert!((d + s - 1.0).abs() < 1e-6, "distance + similarity should = 1.0");
     }
 
     #[test]
@@ -565,10 +553,7 @@ mod tests {
     #[test]
     fn test_qualia_roundtrip_packed() {
         // Create a PackedQualia with known values
-        let packed = PackedQualia::new(
-            [0, 10, -10, 50, -50, 100, -100, 127, -128, 1, -1, 42, -42, 63, -63, 0],
-            0.0,
-        );
+        let packed = PackedQualia::new([0, 10, -10, 50, -50, 100, -100, 127, -128, 1, -1, 42, -42, 63, -63, 0], 0.0);
         let qv = qualia_from_packed(&packed);
         let packed2 = qualia_to_packed(&qv);
 

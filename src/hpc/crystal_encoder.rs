@@ -170,11 +170,7 @@ impl CrystalEncoder {
     /// CrystalEncoder::absorb_into_node(&fp, &mut node, Role::Subject);
     /// assert!(node.s.encounters() > 0);
     /// ```
-    pub fn absorb_into_node(
-        fingerprint: &Fingerprint<FP_WORDS>,
-        node: &mut Node,
-        role: Role,
-    ) {
+    pub fn absorb_into_node(fingerprint: &Fingerprint<FP_WORDS>, node: &mut Node, role: Role) {
         let plane: &mut Plane = match role {
             Role::Subject => &mut node.s,
             Role::Predicate => &mut node.p,
@@ -211,12 +207,7 @@ impl CrystalEncoder {
     /// assert!(node.s.encounters() > 0);
     /// assert!(!fp.is_zero());
     /// ```
-    pub fn encode_and_absorb(
-        &self,
-        embedding: &[f32],
-        node: &mut Node,
-        role: Role,
-    ) -> Fingerprint<FP_WORDS> {
+    pub fn encode_and_absorb(&self, embedding: &[f32], node: &mut Node, role: Role) -> Fingerprint<FP_WORDS> {
         let fp = self.encode_embedding(embedding);
         Self::absorb_into_node(&fp, node, role);
         fp
@@ -245,11 +236,7 @@ impl CrystalEncoder {
     /// assert!(!results.is_empty());
     /// assert_eq!(results[0].1, 0); // exact match should have distance 0
     /// ```
-    pub fn search_similar(
-        query: &mut Node,
-        database: &mut [Node],
-        top_k: usize,
-    ) -> Vec<(usize, u32)> {
+    pub fn search_similar(query: &mut Node, database: &mut [Node], top_k: usize) -> Vec<(usize, u32)> {
         let mut results: Vec<(usize, u32)> = database
             .iter_mut()
             .enumerate()
@@ -301,11 +288,7 @@ impl CrystalEncoder {
 /// assert!(!results.is_empty());
 /// ```
 pub fn pipeline_encode_search(
-    encoder: &CrystalEncoder,
-    subject_emb: &[f32],
-    predicate_emb: &[f32],
-    object_emb: &[f32],
-    database: &mut [Node],
+    encoder: &CrystalEncoder, subject_emb: &[f32], predicate_emb: &[f32], object_emb: &[f32], database: &mut [Node],
     top_k: usize,
 ) -> (Node, Vec<(usize, u32)>) {
     let mut query_node = Node::new();
@@ -379,11 +362,7 @@ fn distillation_loss(student: &mut Node, teacher: &mut Node, lambda: f32) -> f32
 /// let losses = distill(&[teacher], &mut student, 3);
 /// assert_eq!(losses.len(), 3);
 /// ```
-pub fn distill(
-    teacher_nodes: &[Node],
-    student_encoder: &mut CrystalEncoder,
-    epochs: usize,
-) -> Vec<f32> {
+pub fn distill(teacher_nodes: &[Node], student_encoder: &mut CrystalEncoder, epochs: usize) -> Vec<f32> {
     let lambda = 0.1f32;
     let dim = student_encoder.embedding_dim;
     let total_weights = student_encoder.projection.len();
@@ -394,7 +373,9 @@ pub fn distill(
         .iter()
         .map(|t| {
             let acc = t.s.acc();
-            (0..dim).map(|i| acc[i % acc.len()] as f32 / 127.0).collect()
+            (0..dim)
+                .map(|i| acc[i % acc.len()] as f32 / 127.0)
+                .collect()
         })
         .collect();
 
@@ -411,7 +392,9 @@ pub fn distill(
             let fp_s = student_encoder.encode_embedding(emb);
             let fp_p = {
                 // Slightly rotated embedding for predicate
-                let shifted: Vec<f32> = emb.iter().enumerate()
+                let shifted: Vec<f32> = emb
+                    .iter()
+                    .enumerate()
                     .map(|(i, &v)| if i % 2 == 0 { v } else { -v })
                     .collect();
                 student_encoder.encode_embedding(&shifted)
@@ -438,7 +421,9 @@ pub fn distill(
                 student_encoder.flip_weight(idx);
 
                 let fp_s2 = student_encoder.encode_embedding(emb);
-                let shifted: Vec<f32> = emb.iter().enumerate()
+                let shifted: Vec<f32> = emb
+                    .iter()
+                    .enumerate()
                     .map(|(i, &v)| if i % 2 == 0 { v } else { -v })
                     .collect();
                 let fp_p2 = student_encoder.encode_embedding(&shifted);
@@ -476,38 +461,22 @@ pub fn distill(
 /// These are the universal semantic primitives proposed by Anna Wierzbicka.
 const NSM_PRIMES: [&str; 65] = [
     // Substantives
-    "I", "you", "someone", "something", "people", "body",
-    // Determiners
-    "this", "the same", "other", "else",
-    // Quantifiers
-    "one", "two", "some", "all", "much", "many",
-    // Evaluators
-    "good", "bad",
-    // Descriptors
-    "big", "small",
-    // Mental predicates
-    "think", "know", "want", "feel", "see", "hear",
-    // Speech
-    "say", "words", "true",
-    // Actions/events/movement
-    "do", "happen", "move",
-    // Existence/possession
-    "there is", "have",
-    // Life/death
-    "live", "die",
-    // Time
-    "when", "now", "before", "after", "a long time", "a short time", "for some time", "moment",
-    // Space
-    "where", "here", "above", "below", "far", "near", "side", "inside", "touch",
-    // Logical concepts
-    "not", "maybe", "can", "because", "if",
-    // Intensifier/augmentor
-    "very", "more",
-    // Similarity
-    "like", "as",
-    // Taxonomy/partonomy
-    "kind of", "part of",
-    // Relational
+    "I", "you", "someone", "something", "people", "body", // Determiners
+    "this", "the same", "other", "else", // Quantifiers
+    "one", "two", "some", "all", "much", "many", // Evaluators
+    "good", "bad", // Descriptors
+    "big", "small", // Mental predicates
+    "think", "know", "want", "feel", "see", "hear", // Speech
+    "say", "words", "true", // Actions/events/movement
+    "do", "happen", "move", // Existence/possession
+    "there is", "have", // Life/death
+    "live", "die", // Time
+    "when", "now", "before", "after", "a long time", "a short time", "for some time", "moment", // Space
+    "where", "here", "above", "below", "far", "near", "side", "inside", "touch", // Logical concepts
+    "not", "maybe", "can", "because", "if", // Intensifier/augmentor
+    "very", "more", // Similarity
+    "like", "as", // Taxonomy/partonomy
+    "kind of", "part of", // Relational
     "way",
 ];
 
@@ -620,8 +589,8 @@ pub fn encode_word(word: &str, codebook: &NsmCodebook) -> Fingerprint<FP_WORDS> 
 
     // Select codebook entry: first 8 bytes of hash mod 65
     let selector = u64::from_le_bytes([
-        hash_bytes[0], hash_bytes[1], hash_bytes[2], hash_bytes[3],
-        hash_bytes[4], hash_bytes[5], hash_bytes[6], hash_bytes[7],
+        hash_bytes[0], hash_bytes[1], hash_bytes[2], hash_bytes[3], hash_bytes[4], hash_bytes[5], hash_bytes[6],
+        hash_bytes[7],
     ]);
     let prime_idx = (selector % NSM_PRIMES.len() as u64) as usize;
     let base = codebook.get_prime(prime_idx).clone();
@@ -675,8 +644,8 @@ pub fn encode_sentence(words: &[&str], codebook: &NsmCodebook) -> Node {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::node::SPO;
+    use super::*;
 
     // -- Phase 1 tests -------------------------------------------------------
 
@@ -835,13 +804,7 @@ mod tests {
         let cb = NsmCodebook::new();
         for i in 0..65 {
             for j in (i + 1)..65 {
-                assert_ne!(
-                    cb.get_prime(i),
-                    cb.get_prime(j),
-                    "primes {} and {} should differ",
-                    i,
-                    j
-                );
+                assert_ne!(cb.get_prime(i), cb.get_prime(j), "primes {} and {} should differ", i, j);
             }
         }
     }

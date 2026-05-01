@@ -12,11 +12,7 @@ pub struct PerspectiveResult {
 /// Perspective sweep: each role modulates the query via XOR-analog (dim-wise add),
 /// then the nearest in corpus is found. Novelty = L1 from accumulated perspectives.
 /// Science: Kanerva (2009) XOR binding, De Bono (1985), Galton (1907).
-pub fn perspective_sweep(
-    query: &Base17,
-    roles: &[Base17],
-    corpus: &[Base17],
-) -> Vec<PerspectiveResult> {
+pub fn perspective_sweep(query: &Base17, roles: &[Base17], corpus: &[Base17]) -> Vec<PerspectiveResult> {
     let max_l1 = (17u32 * 65535) as f32;
     let mut results = Vec::new();
     let mut seen = query.clone();
@@ -41,7 +37,11 @@ pub fn perspective_sweep(
 
         // Novelty: how different from accumulated perspectives
         let novelty = best.l1(&seen) as f32 / max_l1;
-        results.push(PerspectiveResult { role_idx: idx, result: best.clone(), novelty });
+        results.push(PerspectiveResult {
+            role_idx: idx,
+            result: best.clone(),
+            novelty,
+        });
 
         // Accumulate: running mean
         for d in 0..17 {
@@ -60,16 +60,14 @@ mod tests {
     #[test]
     fn test_perspective_sweep() {
         let query = Base17 { dims: [100; 17] };
-        let roles = vec![
-            Base17 { dims: [10; 17] },
-            Base17 { dims: [-50; 17] },
-            Base17 { dims: [200; 17] },
-        ];
-        let corpus: Vec<Base17> = (0..20).map(|i| {
-            let mut dims = [0i16; 17];
-            dims[0] = (i * 50) as i16;
-            Base17 { dims }
-        }).collect();
+        let roles = vec![Base17 { dims: [10; 17] }, Base17 { dims: [-50; 17] }, Base17 { dims: [200; 17] }];
+        let corpus: Vec<Base17> = (0..20)
+            .map(|i| {
+                let mut dims = [0i16; 17];
+                dims[0] = (i * 50) as i16;
+                Base17 { dims }
+            })
+            .collect();
 
         let results = perspective_sweep(&query, &roles, &corpus);
         assert_eq!(results.len(), 3);
@@ -82,12 +80,9 @@ mod tests {
         let query = Base17 { dims: [0; 17] };
         let roles = vec![
             Base17 { dims: [0; 17] },     // same as query -> low novelty
-            Base17 { dims: [10000; 17] },  // very different -> high novelty
+            Base17 { dims: [10000; 17] }, // very different -> high novelty
         ];
-        let corpus = vec![
-            Base17 { dims: [0; 17] },
-            Base17 { dims: [10000; 17] },
-        ];
+        let corpus = vec![Base17 { dims: [0; 17] }, Base17 { dims: [10000; 17] }];
         let results = perspective_sweep(&query, &roles, &corpus);
         assert!(results[0].novelty > results[1].novelty);
     }

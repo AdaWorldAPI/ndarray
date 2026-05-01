@@ -43,14 +43,7 @@ use super::simd_caps::simd_caps;
 /// # Panics
 ///
 /// Panics if the slice lengths are inconsistent with the given dimensions.
-pub fn int8_gemm_vnni(
-    a: &[u8],
-    b: &[i8],
-    c: &mut [i32],
-    m: usize,
-    n: usize,
-    k: usize,
-) {
+pub fn int8_gemm_vnni(a: &[u8], b: &[i8], c: &mut [i32], m: usize, n: usize, k: usize) {
     assert!(a.len() >= m * k, "a.len()={} < m*k={}", a.len(), m * k);
     assert!(b.len() >= k * n, "b.len()={} < k*n={}", b.len(), k * n);
     assert!(c.len() >= m * n, "c.len()={} < m*n={}", c.len(), m * n);
@@ -98,14 +91,7 @@ pub fn has_vnni() -> bool {
 ///     contains 4 bytes from consecutive rows.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f,avx512vnni,avx512bw")]
-unsafe fn int8_gemm_vnni_avx512(
-    a: &[u8],
-    b: &[i8],
-    c: &mut [i32],
-    m: usize,
-    n: usize,
-    k: usize,
-) {
+unsafe fn int8_gemm_vnni_avx512(a: &[u8], b: &[i8], c: &mut [i32], m: usize, n: usize, k: usize) {
     use core::arch::x86_64::*;
 
     // Zero output
@@ -229,18 +215,8 @@ mod tests {
         let n = 4;
         let k = 4;
         // Simple identity-like test
-        let a: Vec<u8> = vec![
-            1, 2, 3, 4,
-            5, 6, 7, 8,
-            9, 10, 11, 12,
-            13, 14, 15, 16,
-        ];
-        let b: Vec<i8> = vec![
-            1, 0, 0, 0,
-            0, 1, 0, 0,
-            0, 0, 1, 0,
-            0, 0, 0, 1,
-        ];
+        let a: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+        let b: Vec<i8> = vec![1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
         let expected = scalar_gemm(&a, &b, m, n, k);
         let mut c = vec![0i32; m * n];
         int8_gemm_vnni(&a, &b, &mut c, m, n, k);
@@ -252,18 +228,8 @@ mod tests {
         let m = 4;
         let n = 4;
         let k = 4;
-        let a: Vec<u8> = vec![
-            128, 64, 32, 16,
-            255, 0, 128, 64,
-            1, 2, 3, 4,
-            200, 100, 50, 25,
-        ];
-        let b: Vec<i8> = vec![
-            1, -1, 2, -2,
-            3, -3, 4, -4,
-            5, -5, 6, -6,
-            7, -7, 8, -8,
-        ];
+        let a: Vec<u8> = vec![128, 64, 32, 16, 255, 0, 128, 64, 1, 2, 3, 4, 200, 100, 50, 25];
+        let b: Vec<i8> = vec![1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7, 8, -8];
         let expected = scalar_gemm(&a, &b, m, n, k);
         let mut c = vec![0i32; m * n];
         int8_gemm_vnni(&a, &b, &mut c, m, n, k);
@@ -276,7 +242,9 @@ mod tests {
         let n = 16;
         let k = 16;
         let a: Vec<u8> = (0..m * k).map(|i| (i % 251) as u8).collect();
-        let b: Vec<i8> = (0..k * n).map(|i| ((i % 127) as i8).wrapping_sub(63)).collect();
+        let b: Vec<i8> = (0..k * n)
+            .map(|i| ((i % 127) as i8).wrapping_sub(63))
+            .collect();
         let expected = scalar_gemm(&a, &b, m, n, k);
         let mut c = vec![0i32; m * n];
         int8_gemm_vnni(&a, &b, &mut c, m, n, k);

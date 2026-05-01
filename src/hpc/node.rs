@@ -11,14 +11,46 @@ pub struct Mask {
     pub o: bool,
 }
 
-pub const SPO: Mask = Mask { s: true, p: true, o: true };
-pub const SP_: Mask = Mask { s: true, p: true, o: false };
-pub const S_O: Mask = Mask { s: true, p: false, o: true };
-pub const _PO: Mask = Mask { s: false, p: true, o: true };
-pub const S__: Mask = Mask { s: true, p: false, o: false };
-pub const _P_: Mask = Mask { s: false, p: true, o: false };
-pub const __O: Mask = Mask { s: false, p: false, o: true };
-pub const ___: Mask = Mask { s: false, p: false, o: false };
+pub const SPO: Mask = Mask {
+    s: true,
+    p: true,
+    o: true,
+};
+pub const SP_: Mask = Mask {
+    s: true,
+    p: true,
+    o: false,
+};
+pub const S_O: Mask = Mask {
+    s: true,
+    p: false,
+    o: true,
+};
+pub const _PO: Mask = Mask {
+    s: false,
+    p: true,
+    o: true,
+};
+pub const S__: Mask = Mask {
+    s: true,
+    p: false,
+    o: false,
+};
+pub const _P_: Mask = Mask {
+    s: false,
+    p: true,
+    o: false,
+};
+pub const __O: Mask = Mask {
+    s: false,
+    p: false,
+    o: true,
+};
+pub const ___: Mask = Mask {
+    s: false,
+    p: false,
+    o: false,
+};
 
 impl Mask {
     #[inline]
@@ -96,7 +128,11 @@ impl Node {
             ($self_plane:expr, $other_plane:expr, $active:expr) => {
                 if $active {
                     match $self_plane.distance(&mut $other_plane) {
-                        Distance::Measured { disagreement, overlap, penalty } => {
+                        Distance::Measured {
+                            disagreement,
+                            overlap,
+                            penalty,
+                        } => {
                             total_disagreement += disagreement;
                             total_overlap += overlap;
                             total_penalty += penalty;
@@ -220,10 +256,7 @@ mod tests {
         let d_spo = a.distance(&mut b, SPO);
         let d_s = a.distance(&mut b, S__);
         match (d_spo, d_s) {
-            (
-                Distance::Measured { overlap: o_spo, .. },
-                Distance::Measured { overlap: o_s, .. },
-            ) => {
+            (Distance::Measured { overlap: o_spo, .. }, Distance::Measured { overlap: o_s, .. }) => {
                 assert!(o_spo >= o_s);
             }
             _ => panic!("expected Measured for random nodes"),
@@ -273,8 +306,16 @@ mod tests {
         // SPO is the last element (index 6)
         match (projections[6], direct_spo) {
             (
-                Distance::Measured { disagreement: d1, overlap: o1, penalty: p1 },
-                Distance::Measured { disagreement: d2, overlap: o2, penalty: p2 },
+                Distance::Measured {
+                    disagreement: d1,
+                    overlap: o1,
+                    penalty: p1,
+                },
+                Distance::Measured {
+                    disagreement: d2,
+                    overlap: o2,
+                    penalty: p2,
+                },
             ) => {
                 assert_eq!(d1, d2);
                 assert_eq!(o1, o2);
@@ -293,10 +334,9 @@ mod tests {
         // S__ is index 0
         let d_s = a.distance(&mut b, S__);
         match (projections[0], d_s) {
-            (
-                Distance::Measured { disagreement: d1, .. },
-                Distance::Measured { disagreement: d2, .. },
-            ) => assert_eq!(d1, d2),
+            (Distance::Measured { disagreement: d1, .. }, Distance::Measured { disagreement: d2, .. }) => {
+                assert_eq!(d1, d2)
+            }
             _ => panic!("expected Measured"),
         }
     }

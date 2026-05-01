@@ -11,19 +11,36 @@ pub struct AnalogyResult {
 
 pub fn structural_analogy(relation: &Base17, domain: &[Base17], corpus: &[Base17]) -> Vec<AnalogyResult> {
     let max_l1 = (17u32 * 65535) as f32;
-    domain.iter().enumerate().filter_map(|(idx, c)| {
-        let mut predicted_dims = [0i16; 17];
-        for d in 0..17 { predicted_dims[d] = c.dims[d].wrapping_add(relation.dims[d]); }
-        let predicted = Base17 { dims: predicted_dims };
-        let mut best_dist = u32::MAX;
-        let mut best = predicted.clone();
-        for target in corpus {
-            let d = predicted.l1(target);
-            if d < best_dist { best_dist = d; best = target.clone(); }
-        }
-        let strength = 1.0 - best_dist as f32 / max_l1;
-        if strength > 0.6 { Some(AnalogyResult { source_idx: idx, predicted: best, strength }) } else { None }
-    }).collect()
+    domain
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, c)| {
+            let mut predicted_dims = [0i16; 17];
+            for d in 0..17 {
+                predicted_dims[d] = c.dims[d].wrapping_add(relation.dims[d]);
+            }
+            let predicted = Base17 { dims: predicted_dims };
+            let mut best_dist = u32::MAX;
+            let mut best = predicted.clone();
+            for target in corpus {
+                let d = predicted.l1(target);
+                if d < best_dist {
+                    best_dist = d;
+                    best = target.clone();
+                }
+            }
+            let strength = 1.0 - best_dist as f32 / max_l1;
+            if strength > 0.6 {
+                Some(AnalogyResult {
+                    source_idx: idx,
+                    predicted: best,
+                    strength,
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

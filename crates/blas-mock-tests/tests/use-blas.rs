@@ -10,8 +10,7 @@ use ndarray_gen::array_builder::ArrayBuilder;
 use itertools::iproduct;
 
 #[test]
-fn test_gen_mat_mul_uses_blas()
-{
+fn test_gen_mat_mul_uses_blas() {
     let alpha = 1.0;
     let beta = 0.0;
 

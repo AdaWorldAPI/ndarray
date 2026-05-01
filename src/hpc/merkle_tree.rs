@@ -19,14 +19,14 @@ const BITS_WORDS: usize = 128;
 /// Branch region definitions: (start_word, end_word_exclusive) within the
 /// 256-word u64 metadata container, except branch 7 which covers content.
 const BRANCH_REGIONS: [(usize, usize); 8] = [
-    (0, 16),    // [0] identity
-    (4, 8),     // [1] nars (overlaps identity — NARS truth words)
-    (16, 32),   // [2] edges
-    (32, 40),   // [3] rl
-    (40, 48),   // [4] bloom
-    (56, 64),   // [5] qualia
-    (96, 112),  // [6] adjacency
-    (0, 0),     // [7] content — handled specially
+    (0, 16),   // [0] identity
+    (4, 8),    // [1] nars (overlaps identity — NARS truth words)
+    (16, 32),  // [2] edges
+    (32, 40),  // [3] rl
+    (40, 48),  // [4] bloom
+    (56, 64),  // [5] qualia
+    (96, 112), // [6] adjacency
+    (0, 0),    // [7] content — handled specially
 ];
 
 /// Type of change detected between two Merkle trees.
@@ -89,9 +89,7 @@ fn truncate_hash(hash: &blake3::Hash) -> MerkleRoot {
 fn hash_words(words: &[u64]) -> MerkleRoot {
     // SAFETY: u64 slice reinterpretation as u8 is safe — u8 has no alignment
     // requirement, and the byte count is exact (words.len() * 8).
-    let bytes = unsafe {
-        core::slice::from_raw_parts(words.as_ptr() as *const u8, words.len() * 8)
-    };
+    let bytes = unsafe { core::slice::from_raw_parts(words.as_ptr() as *const u8, words.len() * 8) };
     truncate_hash(&blake3::hash(bytes))
 }
 
@@ -119,9 +117,7 @@ impl MerkleTree {
         for container in content {
             // SAFETY: u64 array reinterpretation as u8 is safe — u8 has no
             // alignment requirement, and the byte count is exact (256 * 8).
-            let bytes = unsafe {
-                core::slice::from_raw_parts(container.as_ptr() as *const u8, 256 * 8)
-            };
+            let bytes = unsafe { core::slice::from_raw_parts(container.as_ptr() as *const u8, 256 * 8) };
             content_hasher.update(bytes);
         }
         branches[7] = truncate_hash(&content_hasher.finalize());
@@ -192,9 +188,7 @@ impl MerkleTree {
 
     /// Pack root, branches, and leaves into a flat 8Kbit (128 x u64) array.
     fn pack_bits(
-        root: &MerkleRoot,
-        branches: &[MerkleRoot; NUM_BRANCHES],
-        leaves: &[MerkleRoot; NUM_LEAVES],
+        root: &MerkleRoot, branches: &[MerkleRoot; NUM_BRANCHES], leaves: &[MerkleRoot; NUM_LEAVES],
     ) -> [u64; BITS_WORDS] {
         let mut bits = [0u64; BITS_WORDS];
 
@@ -239,9 +233,7 @@ impl MerkleTree {
     fn bits_as_bytes(&self) -> &[u8] {
         // SAFETY: [u64; 128] is contiguous in memory. u8 has no alignment
         // requirement stricter than u64. Length 128 * 8 = 1024 is exact.
-        unsafe {
-            core::slice::from_raw_parts(self.bits.as_ptr() as *const u8, BITS_WORDS * 8)
-        }
+        unsafe { core::slice::from_raw_parts(self.bits.as_ptr() as *const u8, BITS_WORDS * 8) }
     }
 
     /// Hamming distance between two Merkle trees over the full 8Kbit vector.
@@ -343,10 +335,7 @@ impl MerkleTree {
     /// Returns a sparsity score 0..=8 (0 = identical, 8 = all branches differ).
     #[inline]
     pub fn diff_sparsity(&self, other: &MerkleTree) -> u8 {
-        self.diff_branches(other)
-            .iter()
-            .filter(|&&d| d)
-            .count() as u8
+        self.diff_branches(other).iter().filter(|&&d| d).count() as u8
     }
 }
 
@@ -370,7 +359,9 @@ mod tests {
         let mut meta = [0u64; 256];
         let mut state = seed;
         for word in meta.iter_mut() {
-            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             *word = state;
         }
         meta
@@ -382,7 +373,9 @@ mod tests {
         let mut state = seed;
         for container in containers.iter_mut() {
             for word in container.iter_mut() {
-                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 *word = state;
             }
         }

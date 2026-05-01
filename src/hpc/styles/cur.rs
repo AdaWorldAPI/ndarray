@@ -18,7 +18,15 @@ mod tests {
     use super::*;
     #[test]
     fn test_uncertainty_decreases() {
-        let dist = ClusterDistribution { mu: 5000.0, sigma: 1000.0, p25: 4325.5, p50: 5000.0, p75: 5674.5, p95: 6644.9, p99: 7326.3 };
+        let dist = ClusterDistribution {
+            mu: 5000.0,
+            sigma: 1000.0,
+            p25: 4325.5,
+            p50: 5000.0,
+            p75: 5674.5,
+            p95: 6644.9,
+            p99: 7326.3,
+        };
         let levels = cascading_uncertainty(&dist);
         assert!(levels[0].1 > levels[3].1); // coarsest has most uncertainty
     }

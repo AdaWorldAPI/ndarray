@@ -41,11 +41,7 @@ pub fn heel_plane_distances(a: &[u64; 8], b: &[u64; 8]) -> [f64; 8] {
 
 /// Full pipeline: 8 HEEL planes → Hamming per plane → weighted F64x8 dot → scalar.
 #[inline]
-pub fn heel_weighted_hamming(
-    a_planes: &[u64; 8],
-    b_planes: &[u64; 8],
-    weights: &[f64; 8],
-) -> f64 {
+pub fn heel_weighted_hamming(a_planes: &[u64; 8], b_planes: &[u64; 8], weights: &[f64; 8]) -> f64 {
     let dists = heel_plane_distances(a_planes, b_planes);
     heel_weighted_distance(&dists, weights)
 }
@@ -122,9 +118,9 @@ pub fn cosine_f64_simd(a: &[f64], b: &[f64]) -> f64 {
     for i in 0..chunks {
         let va = F64x8::from_slice(&a[i * 8..]);
         let vb = F64x8::from_slice(&b[i * 8..]);
-        dot_acc = va.mul_add(vb, dot_acc);  // dot += a*b
-        na_acc = va.mul_add(va, na_acc);    // na += a*a
-        nb_acc = vb.mul_add(vb, nb_acc);    // nb += b*b
+        dot_acc = va.mul_add(vb, dot_acc); // dot += a*b
+        na_acc = va.mul_add(va, na_acc); // na += a*a
+        nb_acc = vb.mul_add(vb, nb_acc); // nb += b*b
     }
 
     let mut dot = dot_acc.reduce_sum();
@@ -139,7 +135,11 @@ pub fn cosine_f64_simd(a: &[f64], b: &[f64]) -> f64 {
     }
 
     let denom = (na * nb).sqrt();
-    if denom < 1e-12 { 0.0 } else { dot / denom }
+    if denom < 1e-12 {
+        0.0
+    } else {
+        dot / denom
+    }
 }
 
 /// SIMD cosine similarity on f32 slices (converts to f64 internally for precision).
@@ -185,7 +185,11 @@ pub fn cosine_f32_to_f64_simd(a: &[f32], b: &[f32]) -> f64 {
     }
 
     let denom = (na * nb).sqrt();
-    if denom < 1e-12 { 0.0 } else { dot / denom }
+    if denom < 1e-12 {
+        0.0
+    } else {
+        dot / denom
+    }
 }
 
 #[cfg(test)]
@@ -212,7 +216,9 @@ mod tests {
     fn plane_distances_self_zero() {
         let planes = [0x1234u64; 8];
         let dists = heel_plane_distances(&planes, &planes);
-        for d in &dists { assert_eq!(*d, 0.0); }
+        for d in &dists {
+            assert_eq!(*d, 0.0);
+        }
     }
 
     #[test]
@@ -220,7 +226,9 @@ mod tests {
         let a = [0u64; 8];
         let b = [u64::MAX; 8];
         let dists = heel_plane_distances(&a, &b);
-        for d in &dists { assert_eq!(*d, 64.0); }
+        for d in &dists {
+            assert_eq!(*d, 64.0);
+        }
     }
 
     #[test]
@@ -279,8 +287,7 @@ mod tests {
         let nb: f64 = b.iter().map(|x| x * x).sum();
         let scalar_cos = dot / (na * nb).sqrt();
 
-        assert!((simd_cos - scalar_cos).abs() < 1e-10,
-            "SIMD {:.12} vs scalar {:.12}", simd_cos, scalar_cos);
+        assert!((simd_cos - scalar_cos).abs() < 1e-10, "SIMD {:.12} vs scalar {:.12}", simd_cos, scalar_cos);
     }
 
     #[test]
@@ -294,8 +301,7 @@ mod tests {
         let cos_f64 = cosine_f64_simd(&a_f64, &b_f64);
         let cos_f32 = cosine_f32_to_f64_simd(&a_f32, &b_f32);
 
-        assert!((cos_f64 - cos_f32).abs() < 1e-6,
-            "f32 {:.10} vs f64 {:.10}", cos_f32, cos_f64);
+        assert!((cos_f64 - cos_f32).abs() < 1e-6, "f32 {:.10} vs f64 {:.10}", cos_f32, cos_f64);
     }
 
     #[test]

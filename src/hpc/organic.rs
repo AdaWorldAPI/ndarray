@@ -1,4 +1,6 @@
-#![allow(clippy::assign_op_pattern, clippy::too_many_arguments, clippy::manual_range_contains, clippy::needless_range_loop)]
+#![allow(
+    clippy::assign_op_pattern, clippy::too_many_arguments, clippy::manual_range_contains, clippy::needless_range_loop
+)]
 
 //! Organic Plasticity Model — BCM-inspired synapse dynamics.
 //!
@@ -93,11 +95,7 @@ pub fn unpack_three(byte: u8) -> (FiveState, FiveState, FiveState) {
     let rem = byte % 25;
     let b = rem / 5;
     let c = rem % 5;
-    (
-        FiveState::from_raw(a),
-        FiveState::from_raw(b),
-        FiveState::from_raw(c),
-    )
+    (FiveState::from_raw(a), FiveState::from_raw(b), FiveState::from_raw(c))
 }
 
 /// Pack a slice of `FiveState` values into bytes (3 values per byte).
@@ -275,11 +273,7 @@ pub fn organic_deposit(state: &mut SynapseState, evidence: i8) {
 ///
 /// `states` and `evidence` must have the same length.
 pub fn organic_deposit_batch(states: &mut [SynapseState], evidence: &[i8]) {
-    assert_eq!(
-        states.len(),
-        evidence.len(),
-        "states and evidence must have same length"
-    );
+    assert_eq!(states.len(), evidence.len(), "states and evidence must have same length");
     for (state, &ev) in states.iter_mut().zip(evidence.iter()) {
         organic_deposit(state, ev);
     }
@@ -525,10 +519,7 @@ mod tests {
         let theta_before = s.theta;
         // Deposit — theta should slide toward |efficacy|
         organic_deposit(&mut s, 10);
-        assert!(
-            s.theta >= theta_before,
-            "theta should slide upward toward high efficacy"
-        );
+        assert!(s.theta >= theta_before, "theta should slide upward toward high efficacy");
     }
 
     #[test]
@@ -735,12 +726,7 @@ mod tests {
         }
 
         // Love should have higher theta (harder to potentiate further)
-        assert!(
-            love.theta > kube.theta,
-            "love theta={} should be > kube theta={}",
-            love.theta,
-            kube.theta
-        );
+        assert!(love.theta > kube.theta, "love theta={} should be > kube theta={}", love.theta, kube.theta);
         // Love should have higher maturity
         assert!(love.maturity > kube.maturity);
     }
@@ -773,11 +759,6 @@ mod tests {
         let eff_before = s.efficacy;
         organic_deposit(&mut s, 10); // positive evidence, but below threshold
                                      // Should depress (move toward zero) since |50| < 80 and |50| > 40
-        assert!(
-            s.efficacy < eff_before,
-            "should depress: before={}, after={}",
-            eff_before,
-            s.efficacy
-        );
+        assert!(s.efficacy < eff_before, "should depress: before={}, after={}", eff_before, s.efficacy);
     }
 }

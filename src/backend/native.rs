@@ -13,12 +13,18 @@ use std::sync::LazyLock;
 // ─── Tier detection: happens ONCE, at first access ─────────────────
 
 #[derive(Clone, Copy, PartialEq)]
-enum Tier { Avx512, Avx2, Scalar }
+enum Tier {
+    Avx512,
+    Avx2,
+    Scalar,
+}
 
 static TIER: LazyLock<Tier> = LazyLock::new(|| {
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx512f") { return Tier::Avx512; }
+        if is_x86_feature_detected!("avx512f") {
+            return Tier::Avx512;
+        }
         if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
             return Tier::Avx2;
         }
@@ -27,7 +33,9 @@ static TIER: LazyLock<Tier> = LazyLock::new(|| {
 });
 
 #[inline(always)]
-fn tier() -> Tier { *TIER }
+fn tier() -> Tier {
+    *TIER
+}
 
 // ─── Runtime GEMM tile constants ───────────────────────────────────
 
@@ -36,7 +44,7 @@ fn tier() -> Tier { *TIER }
 pub fn sgemm_nr() -> usize {
     match tier() {
         Tier::Avx512 => 16,
-        Tier::Avx2   => 8,
+        Tier::Avx2 => 8,
         Tier::Scalar => 4,
     }
 }
@@ -45,7 +53,7 @@ pub fn sgemm_nr() -> usize {
 pub fn sgemm_mr() -> usize {
     match tier() {
         Tier::Avx512 => 6,
-        Tier::Avx2   => 6,
+        Tier::Avx2 => 6,
         Tier::Scalar => 4,
     }
 }
@@ -54,7 +62,7 @@ pub fn sgemm_mr() -> usize {
 pub fn dgemm_nr() -> usize {
     match tier() {
         Tier::Avx512 => 8,
-        Tier::Avx2   => 4,
+        Tier::Avx2 => 4,
         Tier::Scalar => 4,
     }
 }
@@ -63,7 +71,7 @@ pub fn dgemm_nr() -> usize {
 pub fn dgemm_mr() -> usize {
     match tier() {
         Tier::Avx512 => 6,
-        Tier::Avx2   => 6,
+        Tier::Avx2 => 6,
         Tier::Scalar => 4,
     }
 }
@@ -194,10 +202,8 @@ dispatch!(
 /// The custom AVX-512 kernels in `kernels_avx512` are retained for
 /// non-GEMM paths (Hamming, bitwise) where matrixmultiply has no equivalent.
 pub fn gemm_f32(
-    m: usize, n: usize, k: usize,
-    alpha: f32, a: &[f32], lda: usize,
-    b: &[f32], ldb: usize,
-    beta: f32, c: &mut [f32], ldc: usize,
+    m: usize, n: usize, k: usize, alpha: f32, a: &[f32], lda: usize, b: &[f32], ldb: usize, beta: f32, c: &mut [f32],
+    ldc: usize,
 ) {
     if m == 0 || n == 0 {
         return;
@@ -206,22 +212,28 @@ pub fn gemm_f32(
     // Row-major: row stride = lda/ldb/ldc, col stride = 1.
     unsafe {
         matrixmultiply::sgemm(
-            m, k, n,
+            m,
+            k,
+            n,
             alpha,
-            a.as_ptr(), lda as isize, 1,
-            b.as_ptr(), ldb as isize, 1,
+            a.as_ptr(),
+            lda as isize,
+            1,
+            b.as_ptr(),
+            ldb as isize,
+            1,
             beta,
-            c.as_mut_ptr(), ldc as isize, 1,
+            c.as_mut_ptr(),
+            ldc as isize,
+            1,
         );
     }
 }
 
 /// GEMM: C = alpha * A * B + beta * C (f64, row-major).
 pub fn gemm_f64(
-    m: usize, n: usize, k: usize,
-    alpha: f64, a: &[f64], lda: usize,
-    b: &[f64], ldb: usize,
-    beta: f64, c: &mut [f64], ldc: usize,
+    m: usize, n: usize, k: usize, alpha: f64, a: &[f64], lda: usize, b: &[f64], ldb: usize, beta: f64, c: &mut [f64],
+    ldc: usize,
 ) {
     if m == 0 || n == 0 {
         return;
@@ -229,12 +241,20 @@ pub fn gemm_f64(
     // SAFETY: same as sgemm — valid slices, row-major strides.
     unsafe {
         matrixmultiply::dgemm(
-            m, k, n,
+            m,
+            k,
+            n,
             alpha,
-            a.as_ptr(), lda as isize, 1,
-            b.as_ptr(), ldb as isize, 1,
+            a.as_ptr(),
+            lda as isize,
+            1,
+            b.as_ptr(),
+            ldb as isize,
+            1,
             beta,
-            c.as_mut_ptr(), ldc as isize, 1,
+            c.as_mut_ptr(),
+            ldc as isize,
+            1,
         );
     }
 }
@@ -242,20 +262,12 @@ pub fn gemm_f64(
 // ─── GEMV dispatch ───────────────────────────────────────────────
 
 /// GEMV: y = alpha * A * x + beta * y (f32)
-pub fn gemv_f32(
-    m: usize, n: usize,
-    alpha: f32, a: &[f32], lda: usize,
-    x: &[f32], beta: f32, y: &mut [f32],
-) {
+pub fn gemv_f32(m: usize, n: usize, alpha: f32, a: &[f32], lda: usize, x: &[f32], beta: f32, y: &mut [f32]) {
     scalar::gemv_f32(m, n, alpha, a, lda, x, beta, y);
 }
 
 /// GEMV: y = alpha * A * x + beta * y (f64)
-pub fn gemv_f64(
-    m: usize, n: usize,
-    alpha: f64, a: &[f64], lda: usize,
-    x: &[f64], beta: f64, y: &mut [f64],
-) {
+pub fn gemv_f64(m: usize, n: usize, alpha: f64, a: &[f64], lda: usize, x: &[f64], beta: f64, y: &mut [f64]) {
     scalar::gemv_f64(m, n, alpha, a, lda, x, beta, y);
 }
 
@@ -271,8 +283,7 @@ mod scalar {
         let mut sum = 0.0f32;
         let mut i = 0;
         while i + 4 <= n {
-            sum += x[i] * y[i] + x[i + 1] * y[i + 1]
-                + x[i + 2] * y[i + 2] + x[i + 3] * y[i + 3];
+            sum += x[i] * y[i] + x[i + 1] * y[i + 1] + x[i + 2] * y[i + 2] + x[i + 3] * y[i + 3];
             i += 4;
         }
         while i < n {
@@ -287,8 +298,7 @@ mod scalar {
         let mut sum = 0.0f64;
         let mut i = 0;
         while i + 4 <= n {
-            sum += x[i] * y[i] + x[i + 1] * y[i + 1]
-                + x[i + 2] * y[i + 2] + x[i + 3] * y[i + 3];
+            sum += x[i] * y[i] + x[i + 1] * y[i + 1] + x[i + 2] * y[i + 2] + x[i + 3] * y[i + 3];
             i += 4;
         }
         while i < n {
@@ -359,10 +369,8 @@ mod scalar {
     /// Tiled GEMM: C = alpha * A * B + beta * C (scalar reference)
     #[allow(dead_code)]
     pub fn gemm_f32_tiled(
-        m: usize, n: usize, k: usize,
-        alpha: f32, a: &[f32], lda: usize,
-        b: &[f32], ldb: usize,
-        beta: f32, c: &mut [f32], ldc: usize,
+        m: usize, n: usize, k: usize, alpha: f32, a: &[f32], lda: usize, b: &[f32], ldb: usize, beta: f32,
+        c: &mut [f32], ldc: usize,
     ) {
         const TILE: usize = 64;
 
@@ -408,10 +416,8 @@ mod scalar {
     /// Tiled GEMM (f64, scalar reference)
     #[allow(dead_code)]
     pub fn gemm_f64_tiled(
-        m: usize, n: usize, k: usize,
-        alpha: f64, a: &[f64], lda: usize,
-        b: &[f64], ldb: usize,
-        beta: f64, c: &mut [f64], ldc: usize,
+        m: usize, n: usize, k: usize, alpha: f64, a: &[f64], lda: usize, b: &[f64], ldb: usize, beta: f64,
+        c: &mut [f64], ldc: usize,
     ) {
         const TILE: usize = 64;
 
@@ -454,11 +460,7 @@ mod scalar {
         }
     }
 
-    pub fn gemv_f32(
-        m: usize, n: usize,
-        alpha: f32, a: &[f32], lda: usize,
-        x: &[f32], beta: f32, y: &mut [f32],
-    ) {
+    pub fn gemv_f32(m: usize, n: usize, alpha: f32, a: &[f32], lda: usize, x: &[f32], beta: f32, y: &mut [f32]) {
         for i in 0..m {
             let mut sum = 0.0f32;
             for j in 0..n {
@@ -468,11 +470,7 @@ mod scalar {
         }
     }
 
-    pub fn gemv_f64(
-        m: usize, n: usize,
-        alpha: f64, a: &[f64], lda: usize,
-        x: &[f64], beta: f64, y: &mut [f64],
-    ) {
+    pub fn gemv_f64(m: usize, n: usize, alpha: f64, a: &[f64], lda: usize, x: &[f64], beta: f64, y: &mut [f64]) {
         for i in 0..m {
             let mut sum = 0.0f64;
             for j in 0..n {
@@ -537,12 +535,24 @@ mod avx2 {
     }
 
     // No AVX2 specialization — fall through to scalar
-    pub fn scal_f32(alpha: f32, x: &mut [f32]) { super::scalar::scal_f32(alpha, x); }
-    pub fn scal_f64(alpha: f64, x: &mut [f64]) { super::scalar::scal_f64(alpha, x); }
-    pub fn nrm2_f32(x: &[f32]) -> f32 { super::scalar::nrm2_f32(x) }
-    pub fn nrm2_f64(x: &[f64]) -> f64 { super::scalar::nrm2_f64(x) }
-    pub fn asum_f32(x: &[f32]) -> f32 { super::scalar::asum_f32(x) }
-    pub fn asum_f64(x: &[f64]) -> f64 { super::scalar::asum_f64(x) }
+    pub fn scal_f32(alpha: f32, x: &mut [f32]) {
+        super::scalar::scal_f32(alpha, x);
+    }
+    pub fn scal_f64(alpha: f64, x: &mut [f64]) {
+        super::scalar::scal_f64(alpha, x);
+    }
+    pub fn nrm2_f32(x: &[f32]) -> f32 {
+        super::scalar::nrm2_f32(x)
+    }
+    pub fn nrm2_f64(x: &[f64]) -> f64 {
+        super::scalar::nrm2_f64(x)
+    }
+    pub fn asum_f32(x: &[f32]) -> f32 {
+        super::scalar::asum_f32(x)
+    }
+    pub fn asum_f64(x: &[f64]) -> f64 {
+        super::scalar::asum_f64(x)
+    }
 
     // ── AVX2 intrinsic implementations ─────────────────────────────
 
