@@ -2619,7 +2619,7 @@ unsafe fn convert_f32_to_bf16_avx512f_rne(input: &[f32], output: &mut [u16]) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_feature = "avx512f"))]
 mod bf16_tests {
     use super::*;
 
@@ -3260,7 +3260,7 @@ pub fn f32_to_f16_batch_ieee754_rne(input: &[f32], output: &mut [u16]) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_feature = "avx512f"))]
 mod f16_tests {
     use super::*;
 
@@ -3351,7 +3351,7 @@ mod f16_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_feature = "avx512f"))]
 mod u8x64_rasterizer_tests {
     use super::U8x64;
 
@@ -3467,7 +3467,7 @@ mod u8x64_rasterizer_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_feature = "avx512f"))]
 mod tier3_tests {
     use super::{U8x64, U16x32};
 
@@ -3590,7 +3590,7 @@ mod tier3_tests {
 // whichever path the linker selected.
 // ────────────────────────────────────────────────────────────────────────
 
-#[cfg(test)]
+#[cfg(all(test, target_feature = "avx512f"))]
 mod int_simd_tests {
     use crate::simd::{I8x32, I8x64, I16x16, I16x32};
 
