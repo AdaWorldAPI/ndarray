@@ -40,9 +40,9 @@ export_tests = []
 # Upstream burn crates — vendored at pinned commit, we only override our additions.
 # Our changes: crates/burn/src/ops/tensor.rs (try_vml_unary + 4 SIMD wires)
 #              crates/burn/src/ops/activation.rs (fused sigmoid)
-burn-backend = { git = "https://github.com/tracel-ai/burn.git", rev = "ed72d2b", default-features = false }
-burn-std = { git = "https://github.com/tracel-ai/burn.git", rev = "ed72d2b", default-features = false }
-burn-ir = { git = "https://github.com/tracel-ai/burn.git", rev = "ed72d2b", default-features = false }
+burn-backend = { git = "https://github.com/AdaWorldAPI/burn.git", rev = "9b2b671", default-features = false }
+burn-std = { git = "https://github.com/AdaWorldAPI/burn.git", rev = "9b2b671", default-features = false }
+burn-ir = { git = "https://github.com/AdaWorldAPI/burn.git", rev = "9b2b671", default-features = false }
 
 # ndarray — uses our workspace root (adaworldapi/ndarray with SIMD + HPC)
 ndarray = { path = "../..", default-features = false }
