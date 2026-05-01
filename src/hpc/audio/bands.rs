@@ -9,10 +9,8 @@
 /// Opus CELT band boundaries at 48kHz, 960-sample frames (480 MDCT bins).
 /// 22 boundaries define 21 bands. Bin index = frequency / (48000 / 960).
 /// Band 0: bins 0-3 (~0-200 Hz), Band 20: bins 400-480 (~20-24 kHz).
-pub const CELT_BANDS_48K: [usize; 22] = [
-    0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 44, 52, 60, 68, 80, 96,
-    112, 136, 160, 200, 256, 480,
-];
+pub const CELT_BANDS_48K: [usize; 22] =
+    [0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 44, 52, 60, 68, 80, 96, 112, 136, 160, 200, 256, 480];
 
 /// Number of critical bands.
 pub const N_BANDS: usize = 21;
@@ -121,15 +119,15 @@ mod tests {
         let recovered = denormalize_bands(&shape, &e);
 
         for (orig, rec) in coeffs.iter().zip(recovered.iter()) {
-            assert!((orig - rec).abs() < 0.01,
-                "Roundtrip mismatch: {} vs {}", orig, rec);
+            assert!((orig - rec).abs() < 0.01, "Roundtrip mismatch: {} vs {}", orig, rec);
         }
     }
 
     #[test]
     fn bf16_energy_roundtrip() {
-        let e = [1.0, 0.5, 2.0, 0.001, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let e = [
+            1.0, 0.5, 2.0, 0.001, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
         let bf16 = energies_to_bf16(&e);
         let recovered = bf16_to_energies(&bf16);
         for i in 0..5 {

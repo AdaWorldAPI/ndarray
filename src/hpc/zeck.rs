@@ -90,10 +90,7 @@ pub fn zeckf64_from_distances(ds: u32, dp: u32, d_o: u32) -> u64 {
 /// Compute ZeckF64 encoding from raw fingerprint byte slices.
 ///
 /// Each triple is `(subject, predicate, object)` as `&[u8]` (16384-bit / 2048 bytes).
-pub fn zeckf64(
-    a: (&[u8], &[u8], &[u8]),
-    b: (&[u8], &[u8], &[u8]),
-) -> u64 {
+pub fn zeckf64(a: (&[u8], &[u8], &[u8]), b: (&[u8], &[u8], &[u8])) -> u64 {
     let ds = hamming_distance_raw(a.0, b.0) as u32;
     let dp = hamming_distance_raw(a.1, b.1) as u32;
     let d_o = hamming_distance_raw(a.2, b.2) as u32;
@@ -120,7 +117,11 @@ pub fn resolution(edge: u64, byte_n: u8) -> u8 {
 /// Set the sign (causality direction) bit.
 #[inline]
 pub fn set_sign(edge: u64, sign: bool) -> u64 {
-    if sign { edge | (1u64 << 7) } else { edge & !(1u64 << 7) }
+    if sign {
+        edge | (1u64 << 7)
+    } else {
+        edge & !(1u64 << 7)
+    }
 }
 
 /// Read the sign bit.
@@ -185,11 +186,19 @@ pub fn is_legal_scent(byte0: u8) -> bool {
     let spo = (byte0 >> 6) & 1;
 
     // Lattice: pair bit implies both individual bits
-    if sp == 1 && (s == 0 || p == 0) { return false; }
-    if so == 1 && (s == 0 || o == 0) { return false; }
-    if po == 1 && (p == 0 || o == 0) { return false; }
+    if sp == 1 && (s == 0 || p == 0) {
+        return false;
+    }
+    if so == 1 && (s == 0 || o == 0) {
+        return false;
+    }
+    if po == 1 && (p == 0 || o == 0) {
+        return false;
+    }
     // Triple implies all three pairs
-    if spo == 1 && (sp == 0 || so == 0 || po == 0) { return false; }
+    if spo == 1 && (sp == 0 || so == 0 || po == 0) {
+        return false;
+    }
     true
 }
 
@@ -206,7 +215,10 @@ pub fn zeckf64_batch(query: u64, edges: &[u64]) -> Vec<u32> {
 
 /// Batch scent-only distance: compute scent distance from `query` to each edge.
 pub fn zeckf64_scent_batch(query: u64, edges: &[u64]) -> Vec<u32> {
-    edges.iter().map(|&e| zeckf64_scent_distance(query, e)).collect()
+    edges
+        .iter()
+        .map(|&e| zeckf64_scent_distance(query, e))
+        .collect()
 }
 
 /// Top-k nearest edges by ZeckF64 distance.
@@ -254,10 +266,7 @@ pub fn zeckf64_scent_top_k(query: u64, edges: &[u64], k: usize) -> (Vec<usize>, 
 /// `database` = flat buffer of concatenated S+P+O planes (6144 bytes per row).
 /// Returns a Vec of `num_rows` u64 ZeckF64 values.
 pub fn zeckf64_encode_batch(
-    query: (&[u8], &[u8], &[u8]),
-    database: &[u8],
-    num_rows: usize,
-    plane_bytes: usize,
+    query: (&[u8], &[u8], &[u8]), database: &[u8], num_rows: usize, plane_bytes: usize,
 ) -> Vec<u64> {
     let row_bytes = plane_bytes * 3;
     (0..num_rows)
@@ -352,9 +361,9 @@ mod tests {
     fn test_zeckf64_batch() {
         let query = zeckf64_from_distances(1000, 2000, 3000);
         let edges = vec![
-            zeckf64_from_distances(1000, 2000, 3000), // identical
+            zeckf64_from_distances(1000, 2000, 3000),  // identical
             zeckf64_from_distances(5000, 8000, 10000), // far
-            zeckf64_from_distances(1100, 2100, 3100), // close
+            zeckf64_from_distances(1100, 2100, 3100),  // close
         ];
         let dists = zeckf64_batch(query, &edges);
         assert_eq!(dists[0], 0); // identical → 0
@@ -366,9 +375,9 @@ mod tests {
         let query = zeckf64_from_distances(1000, 2000, 3000);
         let edges = vec![
             zeckf64_from_distances(5000, 8000, 10000), // far
-            zeckf64_from_distances(1000, 2000, 3000), // identical
-            zeckf64_from_distances(1100, 2100, 3100), // close
-            zeckf64_from_distances(8000, 8000, 8000), // very far
+            zeckf64_from_distances(1000, 2000, 3000),  // identical
+            zeckf64_from_distances(1100, 2100, 3100),  // close
+            zeckf64_from_distances(8000, 8000, 8000),  // very far
         ];
         let (indices, dists) = zeckf64_top_k(query, &edges, 2);
         assert_eq!(indices.len(), 2);
@@ -381,8 +390,8 @@ mod tests {
         let query = zeckf64_from_distances(0, 0, 0); // all close
         let edges = vec![
             zeckf64_from_distances(D_MAX, D_MAX, D_MAX), // none close
-            zeckf64_from_distances(0, 0, 0), // all close (match)
-            zeckf64_from_distances(100, 100, 100), // all close (close)
+            zeckf64_from_distances(0, 0, 0),             // all close (match)
+            zeckf64_from_distances(100, 100, 100),       // all close (close)
         ];
         let (indices, _) = zeckf64_scent_top_k(query, &edges, 2);
         // Both edges 1 and 2 have all-close scent bytes

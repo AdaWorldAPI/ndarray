@@ -6,8 +6,7 @@ use test::Bencher;
 use ndarray::prelude::*;
 
 #[bench]
-fn push_reserve(bench: &mut Bencher)
-{
+fn push_reserve(bench: &mut Bencher) {
     let ones: Array<f32, _> = array![1f32];
     bench.iter(|| {
         let mut a: Array<f32, Ix1> = array![];
@@ -19,8 +18,7 @@ fn push_reserve(bench: &mut Bencher)
 }
 
 #[bench]
-fn push_no_reserve(bench: &mut Bencher)
-{
+fn push_no_reserve(bench: &mut Bencher) {
     let ones: Array<f32, _> = array![1f32];
     bench.iter(|| {
         let mut a: Array<f32, Ix1> = array![];

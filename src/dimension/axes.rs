@@ -2,7 +2,8 @@ use crate::{Axis, Dimension, Ixs};
 
 /// Create a new Axes iterator
 pub(crate) fn axes_of<'a, D>(d: &'a D, strides: &'a D) -> Axes<'a, D>
-where D: Dimension
+where
+    D: Dimension,
 {
     Axes {
         dim: d,
@@ -37,8 +38,7 @@ where D: Dimension
 /// assert_eq!(largest_axis.len, 5);
 /// ```
 #[derive(Debug)]
-pub struct Axes<'a, D>
-{
+pub struct Axes<'a, D> {
     dim: &'a D,
     strides: &'a D,
     start: usize,
@@ -47,8 +47,7 @@ pub struct Axes<'a, D>
 
 /// Description of the axis, its length and its stride.
 #[derive(Debug)]
-pub struct AxisDescription
-{
+pub struct AxisDescription {
     /// Axis identifier (index)
     pub axis: Axis,
     /// Length in count of elements of the current axis
@@ -61,13 +60,13 @@ copy_and_clone!(AxisDescription);
 copy_and_clone!(['a, D] Axes<'a, D>);
 
 impl<D> Iterator for Axes<'_, D>
-where D: Dimension
+where
+    D: Dimension,
 {
     /// Description of the axis, its length and its stride.
     type Item = AxisDescription;
 
-    fn next(&mut self) -> Option<Self::Item>
-    {
+    fn next(&mut self) -> Option<Self::Item> {
         if self.start < self.end {
             let i = self.start.post_inc();
             Some(AxisDescription {
@@ -81,7 +80,8 @@ where D: Dimension
     }
 
     fn fold<B, F>(self, init: B, f: F) -> B
-    where F: FnMut(B, AxisDescription) -> B
+    where
+        F: FnMut(B, AxisDescription) -> B,
     {
         (self.start..self.end)
             .map(move |i| AxisDescription {
@@ -92,18 +92,17 @@ where D: Dimension
             .fold(init, f)
     }
 
-    fn size_hint(&self) -> (usize, Option<usize>)
-    {
+    fn size_hint(&self) -> (usize, Option<usize>) {
         let len = self.end - self.start;
         (len, Some(len))
     }
 }
 
 impl<D> DoubleEndedIterator for Axes<'_, D>
-where D: Dimension
+where
+    D: Dimension,
 {
-    fn next_back(&mut self) -> Option<Self::Item>
-    {
+    fn next_back(&mut self) -> Option<Self::Item> {
         if self.start < self.end {
             let i = self.end.pre_dec();
             Some(AxisDescription {
@@ -117,24 +116,20 @@ where D: Dimension
     }
 }
 
-trait IncOps: Copy
-{
+trait IncOps: Copy {
     fn post_inc(&mut self) -> Self;
     fn pre_dec(&mut self) -> Self;
 }
 
-impl IncOps for usize
-{
+impl IncOps for usize {
     #[inline(always)]
-    fn post_inc(&mut self) -> Self
-    {
+    fn post_inc(&mut self) -> Self {
         let x = *self;
         *self += 1;
         x
     }
     #[inline(always)]
-    fn pre_dec(&mut self) -> Self
-    {
+    fn pre_dec(&mut self) -> Self {
         *self -= 1;
         *self
     }

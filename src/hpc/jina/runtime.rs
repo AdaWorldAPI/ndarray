@@ -141,10 +141,9 @@ pub struct ModelRuntime {
 impl ModelRuntime {
     /// Load from embedded weight bytes.
     fn load(source: ModelSource, base17_bytes: &[u8], palette_bytes: &[u8]) -> Self {
-        let tokens = load_base17_cache(&mut std::io::Cursor::new(base17_bytes))
-            .expect("Failed to load Base17 cache");
-        let palette = load_palette_cache(&mut std::io::Cursor::new(palette_bytes))
-            .expect("Failed to load palette cache");
+        let tokens = load_base17_cache(&mut std::io::Cursor::new(base17_bytes)).expect("Failed to load Base17 cache");
+        let palette =
+            load_palette_cache(&mut std::io::Cursor::new(palette_bytes)).expect("Failed to load palette cache");
 
         // Build SimilarityTable from the EXACT 256×256 distance distribution.
         // This IS the bgz17 SimilarityTable pattern: empirical CDF → calibrated f32.
@@ -199,12 +198,7 @@ impl ModelRuntime {
     /// Pack two tokens + a predicate into a CausalEdge64.
     #[inline]
     pub fn pack_spo_edge(
-        &self,
-        subject_token: usize,
-        predicate_token: usize,
-        object_token: usize,
-        frequency: f32,
-        confidence: f32,
+        &self, subject_token: usize, predicate_token: usize, object_token: usize, frequency: f32, confidence: f32,
         temporal: u16,
     ) -> u64 {
         causal::pack_edge(
@@ -309,19 +303,16 @@ pub static JINA: LazyLock<ModelRuntime> = LazyLock::new(|| {
 /// silently upgraded to v5 when the main route is swapped. Today this is
 /// functionally identical to `JINA` (both load v4 bytes), but after the v5
 /// bake `JINA` will load v5 while `JINA_V4` keeps loading v4.
-pub static JINA_V4: LazyLock<ModelRuntime> = LazyLock::new(|| {
-    ModelRuntime::load(ModelSource::JinaV4, JINA_V4_BASE17, JINA_V4_PALETTE)
-});
+pub static JINA_V4: LazyLock<ModelRuntime> =
+    LazyLock::new(|| ModelRuntime::load(ModelSource::JinaV4, JINA_V4_BASE17, JINA_V4_PALETTE));
 
 /// GPT-2 runtime (50K tokens). Same BPE as Jina → interoperable palettes.
-pub static GPT2: LazyLock<ModelRuntime> = LazyLock::new(|| {
-    ModelRuntime::load(ModelSource::Gpt2, GPT2_BASE17, GPT2_PALETTE)
-});
+pub static GPT2: LazyLock<ModelRuntime> =
+    LazyLock::new(|| ModelRuntime::load(ModelSource::Gpt2, GPT2_BASE17, GPT2_PALETTE));
 
 /// BERT runtime (30K tokens). WordPiece tokenizer (different from GPT-2 BPE).
-pub static BERT: LazyLock<ModelRuntime> = LazyLock::new(|| {
-    ModelRuntime::load(ModelSource::Bert, BERT_BASE17, BERT_PALETTE)
-});
+pub static BERT: LazyLock<ModelRuntime> =
+    LazyLock::new(|| ModelRuntime::load(ModelSource::Bert, BERT_BASE17, BERT_PALETTE));
 
 #[cfg(test)]
 mod tests {

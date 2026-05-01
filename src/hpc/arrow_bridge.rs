@@ -382,11 +382,7 @@ impl BindNodeV2 {
         }
 
         // Recompute SPO XOR
-        self.spo_binary = Self::compute_spo_xor(
-            &self.subject_binary,
-            &self.predicate_binary,
-            &self.object_binary,
-        );
+        self.spo_binary = Self::compute_spo_xor(&self.subject_binary, &self.predicate_binary, &self.object_binary);
 
         // Null soaking
         self.subject_soaking = None;
@@ -559,9 +555,7 @@ impl BindNodeV2 {
 
     /// Compute the XOR of three plane binaries.
     fn compute_spo_xor(
-        s: &[u8; PLANE_BINARY_BYTES],
-        p: &[u8; PLANE_BINARY_BYTES],
-        o: &[u8; PLANE_BINARY_BYTES],
+        s: &[u8; PLANE_BINARY_BYTES], p: &[u8; PLANE_BINARY_BYTES], o: &[u8; PLANE_BINARY_BYTES],
     ) -> [u8; PLANE_BINARY_BYTES] {
         let mut result = [0u8; PLANE_BINARY_BYTES];
         for i in 0..PLANE_BINARY_BYTES {
@@ -817,7 +811,8 @@ mod tests {
     #[test]
     fn crystallize_positive() {
         let mut buf = SoakingBuffer::new(1, 8);
-        buf.entry_mut(0).copy_from_slice(&[1, -1, 1, -1, 1, -1, 1, -1]);
+        buf.entry_mut(0)
+            .copy_from_slice(&[1, -1, 1, -1, 1, -1, 1, -1]);
         let bits = buf.crystallize(0);
         assert_eq!(bits[0], 0b01010101);
     }
@@ -923,11 +918,7 @@ mod tests {
     fn bind_node_v2_spo_xor_is_correct() {
         let (mut s, mut p, mut o) = make_test_planes();
         let node = BindNodeV2::new(&mut s, &mut p, &mut o, "test");
-        let expected = BindNodeV2::compute_spo_xor(
-            &node.subject_binary,
-            &node.predicate_binary,
-            &node.object_binary,
-        );
+        let expected = BindNodeV2::compute_spo_xor(&node.subject_binary, &node.predicate_binary, &node.object_binary);
         assert_eq!(node.spo_binary, expected);
         assert_eq!(node.spo_xor(), expected);
     }
@@ -1124,11 +1115,7 @@ mod tests {
         let spo_after = node.spo_binary;
 
         // After crystallize, SPO should be recomputed from updated binaries
-        let expected = BindNodeV2::compute_spo_xor(
-            &node.subject_binary,
-            &node.predicate_binary,
-            &node.object_binary,
-        );
+        let expected = BindNodeV2::compute_spo_xor(&node.subject_binary, &node.predicate_binary, &node.object_binary);
         assert_eq!(spo_after, expected);
         // SPO may or may not change depending on soaking content;
         // what matters is consistency
@@ -1261,7 +1248,10 @@ mod tests {
     #[test]
     fn soaking_row_buffer_crystallize() {
         let mut buf = SoakingRowBuffer::new(8);
-        buf.data.as_mut().unwrap().copy_from_slice(&[1, -1, 1, -1, 1, -1, 1, -1]);
+        buf.data
+            .as_mut()
+            .unwrap()
+            .copy_from_slice(&[1, -1, 1, -1, 1, -1, 1, -1]);
         let bits = buf.crystallize();
         assert_eq!(bits[0], 0b01010101);
         assert!(!buf.is_active()); // should be nulled after crystallize

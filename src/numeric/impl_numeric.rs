@@ -18,7 +18,8 @@ use crate::Slice;
 
 /// # Numerical Methods for Arrays
 impl<A, D> ArrayRef<A, D>
-where D: Dimension
+where
+    D: Dimension,
 {
     /// Return the sum of all elements in the array.
     ///
@@ -30,7 +31,8 @@ where D: Dimension
     /// assert_eq!(a.sum(), 10.);
     /// ```
     pub fn sum(&self) -> A
-    where A: Clone + Add<Output = A> + num_traits::Zero
+    where
+        A: Clone + Add<Output = A> + num_traits::Zero,
     {
         if let Some(slc) = self.as_slice_memory_order() {
             return numeric_util::unrolled_fold(slc, A::zero, A::add);
@@ -60,7 +62,8 @@ where D: Dimension
     ///
     /// [arithmetic mean]: https://en.wikipedia.org/wiki/Arithmetic_mean
     pub fn mean(&self) -> Option<A>
-    where A: Clone + FromPrimitive + Add<Output = A> + Div<Output = A> + Zero
+    where
+        A: Clone + FromPrimitive + Add<Output = A> + Div<Output = A> + Zero,
     {
         let n_elements = self.len();
         if n_elements == 0 {
@@ -81,7 +84,8 @@ where D: Dimension
     /// assert_eq!(a.product(), 24.);
     /// ```
     pub fn product(&self) -> A
-    where A: Clone + Mul<Output = A> + num_traits::One
+    where
+        A: Clone + Mul<Output = A> + num_traits::One,
     {
         if let Some(slc) = self.as_slice_memory_order() {
             return numeric_util::unrolled_fold(slc, A::one, A::mul);
@@ -178,7 +182,8 @@ where D: Dimension
     #[track_caller]
     #[cfg(feature = "std")]
     pub fn var(&self, ddof: A) -> A
-    where A: Float + FromPrimitive
+    where
+        A: Float + FromPrimitive,
     {
         let zero = A::from_usize(0).expect("Converting 0 to `A` must not fail.");
         let n = A::from_usize(self.len()).expect("Converting length to `A` must not fail.");
@@ -243,7 +248,8 @@ where D: Dimension
     #[track_caller]
     #[cfg(feature = "std")]
     pub fn std(&self, ddof: A) -> A
-    where A: Float + FromPrimitive
+    where
+        A: Float + FromPrimitive,
     {
         self.var(ddof).sqrt()
     }
@@ -493,7 +499,8 @@ where D: Dimension
     /// array![1.0, 2.0, 3.0].diff(10, Axis(0));
     /// ```
     pub fn diff(&self, n: usize, axis: Axis) -> Array<A, D>
-    where A: Sub<A, Output = A> + Zero + Clone
+    where
+        A: Sub<A, Output = A> + Zero + Clone,
     {
         if n == 0 {
             return self.to_owned();

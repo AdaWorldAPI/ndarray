@@ -107,11 +107,7 @@ impl Ray {
     pub fn new(origin: [f32; 3], direction: [f32; 3]) -> Self {
         Self {
             origin,
-            inv_dir: [
-                1.0 / direction[0],
-                1.0 / direction[1],
-                1.0 / direction[2],
-            ],
+            inv_dir: [1.0 / direction[0], 1.0 / direction[1], 1.0 / direction[2]],
         }
     }
 
@@ -177,7 +173,7 @@ fn aabb_intersect_batch_scalar(query: &Aabb, candidates: &[Aabb]) -> Vec<bool> {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 unsafe fn aabb_intersect_batch_avx512(query: &Aabb, candidates: &[Aabb]) -> Vec<bool> {
-    use crate::simd::{F32x16};
+    use crate::simd::F32x16;
 
     let mut result = Vec::with_capacity(candidates.len());
 
@@ -485,11 +481,7 @@ pub fn aabb_squared_distance_batch(point: [f32; 3], aabbs: &[Aabb]) -> Vec<f32> 
 
 /// Filter AABBs by maximum squared distance from a point. Returns indices
 /// of AABBs whose nearest point is within `max_sq_dist` of `point`.
-pub fn aabb_filter_by_distance(
-    point: [f32; 3],
-    aabbs: &[Aabb],
-    max_sq_dist: f32,
-) -> Vec<usize> {
+pub fn aabb_filter_by_distance(point: [f32; 3], aabbs: &[Aabb], max_sq_dist: f32) -> Vec<usize> {
     let distances = aabb_squared_distance_batch(point, aabbs);
     distances
         .iter()
@@ -586,10 +578,10 @@ mod tests {
     fn test_intersect_batch() {
         let query = Aabb::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
         let candidates = vec![
-            Aabb::new([0.5, 0.5, 0.5], [1.5, 1.5, 1.5]),  // yes
-            Aabb::new([2.0, 2.0, 2.0], [3.0, 3.0, 3.0]),  // no
+            Aabb::new([0.5, 0.5, 0.5], [1.5, 1.5, 1.5]),    // yes
+            Aabb::new([2.0, 2.0, 2.0], [3.0, 3.0, 3.0]),    // no
             Aabb::new([-1.0, -1.0, -1.0], [0.5, 0.5, 0.5]), // yes
-            Aabb::new([1.0, 1.0, 1.0], [2.0, 2.0, 2.0]),  // yes (touching)
+            Aabb::new([1.0, 1.0, 1.0], [2.0, 2.0, 2.0]),    // yes (touching)
         ];
         let results = aabb_intersect_batch(&query, &candidates);
         assert_eq!(results, vec![true, false, true, true]);
@@ -619,10 +611,7 @@ mod tests {
 
     #[test]
     fn test_expand_batch() {
-        let mut aabbs = vec![
-            Aabb::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]),
-            Aabb::new([5.0, 5.0, 5.0], [6.0, 6.0, 6.0]),
-        ];
+        let mut aabbs = vec![Aabb::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]), Aabb::new([5.0, 5.0, 5.0], [6.0, 6.0, 6.0])];
         aabb_expand_batch(&mut aabbs, 0.5, 1.0, 1.5);
 
         assert!(approx_eq(aabbs[0].min[0], -0.5));
@@ -646,18 +635,8 @@ mod tests {
         for (i, orig) in base.iter().enumerate() {
             let expected = orig.expand(0.25, 0.5, 0.75);
             for axis in 0..3 {
-                assert!(
-                    approx_eq(batch[i].min[axis], expected.min[axis]),
-                    "min mismatch at [{},{}]",
-                    i,
-                    axis
-                );
-                assert!(
-                    approx_eq(batch[i].max[axis], expected.max[axis]),
-                    "max mismatch at [{},{}]",
-                    i,
-                    axis
-                );
+                assert!(approx_eq(batch[i].min[axis], expected.min[axis]), "min mismatch at [{},{}]", i, axis);
+                assert!(approx_eq(batch[i].max[axis], expected.max[axis]), "max mismatch at [{},{}]", i, axis);
             }
         }
     }
@@ -689,21 +668,19 @@ mod tests {
 
     #[test]
     fn test_squared_distance_batch() {
-        let aabbs = vec![
-            Aabb::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]),
-            Aabb::new([10.0, 10.0, 10.0], [11.0, 11.0, 11.0]),
-        ];
+        let aabbs =
+            vec![Aabb::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]), Aabb::new([10.0, 10.0, 10.0], [11.0, 11.0, 11.0])];
         let dists = aabb_squared_distance_batch([0.5, 0.5, 0.5], &aabbs);
-        assert!(approx_eq(dists[0], 0.0));   // inside
-        assert!(dists[1] > 200.0);           // far away
+        assert!(approx_eq(dists[0], 0.0)); // inside
+        assert!(dists[1] > 200.0); // far away
     }
 
     #[test]
     fn test_filter_by_distance() {
         let aabbs = vec![
-            Aabb::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]),     // 0: dist=0
-            Aabb::new([2.0, 0.0, 0.0], [3.0, 1.0, 1.0]),     // 1: nearest pt (2,0.5,0.5), dist=1.5, sq=2.25
-            Aabb::new([10.0, 10.0, 10.0], [11.0, 11.0, 11.0]),// 2: far
+            Aabb::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]),       // 0: dist=0
+            Aabb::new([2.0, 0.0, 0.0], [3.0, 1.0, 1.0]),       // 1: nearest pt (2,0.5,0.5), dist=1.5, sq=2.25
+            Aabb::new([10.0, 10.0, 10.0], [11.0, 11.0, 11.0]), // 2: far
         ];
         let indices = aabb_filter_by_distance([0.5, 0.5, 0.5], &aabbs, 5.0);
         assert_eq!(indices, vec![0, 1]);
@@ -711,19 +688,14 @@ mod tests {
 
     #[test]
     fn test_filter_by_distance_none() {
-        let aabbs = vec![
-            Aabb::new([100.0, 100.0, 100.0], [101.0, 101.0, 101.0]),
-        ];
+        let aabbs = vec![Aabb::new([100.0, 100.0, 100.0], [101.0, 101.0, 101.0])];
         let indices = aabb_filter_by_distance([0.0, 0.0, 0.0], &aabbs, 1.0);
         assert!(indices.is_empty());
     }
 
     #[test]
     fn test_filter_by_distance_all() {
-        let aabbs = vec![
-            Aabb::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]),
-            Aabb::new([0.5, 0.5, 0.5], [1.5, 1.5, 1.5]),
-        ];
+        let aabbs = vec![Aabb::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]), Aabb::new([0.5, 0.5, 0.5], [1.5, 1.5, 1.5])];
         let indices = aabb_filter_by_distance([0.7, 0.7, 0.7], &aabbs, 100.0);
         assert_eq!(indices, vec![0, 1]);
     }
@@ -846,7 +818,8 @@ mod tests {
             assert!(
                 approx_eq(ts_batch[i], ts_scalar[i]),
                 "ray AVX-512 t parity at {i}: {} vs {}",
-                ts_batch[i], ts_scalar[i]
+                ts_batch[i],
+                ts_scalar[i]
             );
         }
     }

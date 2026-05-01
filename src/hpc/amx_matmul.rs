@@ -207,7 +207,7 @@ pub fn vnni_pack_bf16(src: &[u16], dst: &mut [u16], k: usize, n: usize) {
 // strided (e.g. `view.slice(s![.., ..;2])`). Strided inputs are repacked
 // into contiguous staging buffers before the kernel runs.
 
-use crate::hpc::quantized::{BF16, bf16_gemm_f32, int8_gemm_i32};
+use crate::hpc::quantized::{bf16_gemm_f32, int8_gemm_i32, BF16};
 use crate::{ArrayView2, ArrayViewMut2};
 
 /// Errors returned by the public AMX matmul API.
@@ -470,7 +470,7 @@ mod tests {
     // ── Public matmul API tests (sprint A4) ────────────────────────────────
 
     use crate::hpc::quantized::BF16;
-    use crate::{Array2, s};
+    use crate::{s, Array2};
 
     /// Reference f32 matmul, fully scalar.
     fn ref_matmul_f32(a: &Array2<f32>, b: &Array2<f32>) -> Array2<f32> {

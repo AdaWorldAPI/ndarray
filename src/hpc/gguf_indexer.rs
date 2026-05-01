@@ -19,7 +19,7 @@
 //! Supports: F32, F16, BF16, Q8_0, Q4_0, Q4_K (via gguf.rs dequant).
 
 use super::bgz17_bridge::Base17;
-use super::gguf::{self, GgufFile, TensorInfo, GgmlType};
+use super::gguf::{self, GgmlType, GgufFile, TensorInfo};
 use std::io::{Read, Seek, SeekFrom, Write};
 
 // ============================================================================
@@ -69,19 +69,30 @@ pub fn classify_tensor(name: &str, dims: &[u64]) -> LayerType {
     }
 
     // Attention projections
-    if name.contains("attn") || name.contains("self_attn")
-        || name.contains("attn_q") || name.contains("attn_k")
-        || name.contains("attn_v") || name.contains("attn_output")
-        || name.contains("q_proj") || name.contains("k_proj")
-        || name.contains("v_proj") || name.contains("o_proj")
+    if name.contains("attn")
+        || name.contains("self_attn")
+        || name.contains("attn_q")
+        || name.contains("attn_k")
+        || name.contains("attn_v")
+        || name.contains("attn_output")
+        || name.contains("q_proj")
+        || name.contains("k_proj")
+        || name.contains("v_proj")
+        || name.contains("o_proj")
     {
         return LayerType::Attention;
     }
 
     // Feed-forward
-    if name.contains("ffn") || name.contains("mlp") || name.contains("fc1")
-        || name.contains("fc2") || name.contains("gate") || name.contains("up_proj")
-        || name.contains("down_proj") || name.contains("w1") || name.contains("w2")
+    if name.contains("ffn")
+        || name.contains("mlp")
+        || name.contains("fc1")
+        || name.contains("fc2")
+        || name.contains("gate")
+        || name.contains("up_proj")
+        || name.contains("down_proj")
+        || name.contains("w1")
+        || name.contains("w2")
         || name.contains("w3")
     {
         return LayerType::FeedForward;
@@ -210,10 +221,7 @@ fn gather_bf16_x8(buf: &[u16], offsets: &[usize; 8]) -> crate::simd::F64x8 {
 ///
 /// Memory: 17 × F64x8 accumulators on stack = 17 × 64 = 1088 bytes.
 pub fn project_8rows_bf16_simd(
-    buf: &[u16],
-    row_starts: &[usize; 8],
-    n_cols: usize,
-    octave_stride: usize,
+    buf: &[u16], row_starts: &[usize; 8], n_cols: usize, octave_stride: usize,
 ) -> [Base17; 8] {
     use crate::simd::F64x8;
 
@@ -230,10 +238,14 @@ pub fn project_8rows_bf16_simd(
             let col = octave * BASE_DIM + GOLDEN_POS[bi] as usize;
             if col < n_cols {
                 let offsets: [usize; 8] = [
-                    row_starts[0] + col, row_starts[1] + col,
-                    row_starts[2] + col, row_starts[3] + col,
-                    row_starts[4] + col, row_starts[5] + col,
-                    row_starts[6] + col, row_starts[7] + col,
+                    row_starts[0] + col,
+                    row_starts[1] + col,
+                    row_starts[2] + col,
+                    row_starts[3] + col,
+                    row_starts[4] + col,
+                    row_starts[5] + col,
+                    row_starts[6] + col,
+                    row_starts[7] + col,
                 ];
                 sums[bi] += gather_bf16_x8(buf, &offsets);
                 counts[bi] += 1;
@@ -259,10 +271,14 @@ pub fn project_8rows_bf16_simd(
     }
 
     [
-        Base17 { dims: dims_x8[0] }, Base17 { dims: dims_x8[1] },
-        Base17 { dims: dims_x8[2] }, Base17 { dims: dims_x8[3] },
-        Base17 { dims: dims_x8[4] }, Base17 { dims: dims_x8[5] },
-        Base17 { dims: dims_x8[6] }, Base17 { dims: dims_x8[7] },
+        Base17 { dims: dims_x8[0] },
+        Base17 { dims: dims_x8[1] },
+        Base17 { dims: dims_x8[2] },
+        Base17 { dims: dims_x8[3] },
+        Base17 { dims: dims_x8[4] },
+        Base17 { dims: dims_x8[5] },
+        Base17 { dims: dims_x8[6] },
+        Base17 { dims: dims_x8[7] },
     ]
 }
 
@@ -304,12 +320,7 @@ pub fn project_1row_bf16_strided(row: &[u16], octave_stride: usize) -> Base17 {
 ///
 /// Per sampled octave: 17 positions × 8 bf16_to_f64 gathers → 17 vaddpd.
 /// For 5120-col rows at stride=16: 19 octaves × 17 = 323 vaddpd per 8-row batch.
-pub fn project_tensor_bf16_simd(
-    buf: &[u16],
-    n_rows: usize,
-    n_cols: usize,
-    octave_stride: usize,
-) -> Vec<Base17> {
+pub fn project_tensor_bf16_simd(buf: &[u16], n_rows: usize, n_cols: usize, octave_stride: usize) -> Vec<Base17> {
     let mut result = Vec::with_capacity(n_rows);
 
     let full_batches = n_rows / 8;
@@ -317,10 +328,14 @@ pub fn project_tensor_bf16_simd(
     for batch in 0..full_batches {
         let base_row = batch * 8;
         let row_starts: [usize; 8] = [
-            (base_row + 0) * n_cols, (base_row + 1) * n_cols,
-            (base_row + 2) * n_cols, (base_row + 3) * n_cols,
-            (base_row + 4) * n_cols, (base_row + 5) * n_cols,
-            (base_row + 6) * n_cols, (base_row + 7) * n_cols,
+            (base_row + 0) * n_cols,
+            (base_row + 1) * n_cols,
+            (base_row + 2) * n_cols,
+            (base_row + 3) * n_cols,
+            (base_row + 4) * n_cols,
+            (base_row + 5) * n_cols,
+            (base_row + 6) * n_cols,
+            (base_row + 7) * n_cols,
         ];
         let b17s = project_8rows_bf16_simd(buf, &row_starts, n_cols, octave_stride);
         result.extend_from_slice(&b17s);
@@ -339,9 +354,7 @@ pub fn project_tensor_bf16_simd(
 /// Helper: tensor dimensions → (rows, cols) without needing data.
 fn tensor_to_rows_dims(dims: &[u64], layer_type: &LayerType) -> (usize, usize) {
     match layer_type {
-        LayerType::Conv2D if dims.len() == 4 => {
-            (dims[0] as usize, (dims[1] * dims[2] * dims[3]) as usize)
-        }
+        LayerType::Conv2D if dims.len() == 4 => (dims[0] as usize, (dims[1] * dims[2] * dims[3]) as usize),
         _ if dims.len() >= 2 => {
             let rows = dims[0] as usize;
             let cols: usize = dims[1..].iter().map(|&d| d as usize).product();
@@ -376,10 +389,7 @@ fn layer_type_index(lt: &LayerType) -> usize {
 ///
 /// Falls back to f32 path for non-BF16 dtypes.
 pub fn stream_index_gguf_bf16<R: Read + Seek, W: Write>(
-    reader: &mut R,
-    writer: &mut W,
-    octave_stride: usize,
-    callback: Option<&dyn Fn(&str, &LayerType, usize, usize)>,
+    reader: &mut R, writer: &mut W, octave_stride: usize, callback: Option<&dyn Fn(&str, &LayerType, usize, usize)>,
 ) -> Result<IndexStats, String> {
     let header = gguf::read_gguf_header(reader)?;
     stream_index_gguf_bf16_with_header(reader, writer, &header, octave_stride, callback)
@@ -391,17 +401,16 @@ pub fn stream_index_gguf_bf16<R: Read + Seek, W: Write>(
 /// - `tensor_data_offset`: absolute byte offset where tensor data starts
 /// - `tensors`: Vec<TensorInfo> with name, dimensions, dtype, offset (relative to data start)
 pub fn stream_index_gguf_bf16_with_header<R: Read + Seek, W: Write>(
-    reader: &mut R,
-    writer: &mut W,
-    header: &gguf::GgufFile,
-    octave_stride: usize,
+    reader: &mut R, writer: &mut W, header: &gguf::GgufFile, octave_stride: usize,
     callback: Option<&dyn Fn(&str, &LayerType, usize, usize)>,
 ) -> Result<IndexStats, String> {
     let mut stats = IndexStats::default();
     stats.tensors_total = header.tensors.len();
 
     writer.write_all(b"BGZ7").map_err(|e| e.to_string())?;
-    writer.write_all(&(header.tensors.len() as u32).to_le_bytes()).map_err(|e| e.to_string())?;
+    writer
+        .write_all(&(header.tensors.len() as u32).to_le_bytes())
+        .map_err(|e| e.to_string())?;
 
     // Reusable buffer — capped at 128 MB (64M u16 elements).
     // Tensors larger than this are read in row batches.
@@ -437,7 +446,9 @@ pub fn stream_index_gguf_bf16_with_header<R: Read + Seek, W: Write>(
 
             // Seek to tensor start
             let abs_offset = header.tensor_data_offset + tensor.offset;
-            reader.seek(std::io::SeekFrom::Start(abs_offset)).map_err(|e| e.to_string())?;
+            reader
+                .seek(std::io::SeekFrom::Start(abs_offset))
+                .map_err(|e| e.to_string())?;
 
             let mut rows: Vec<Base17> = Vec::with_capacity(n_rows);
             let mut rows_done: usize = 0;
@@ -448,19 +459,13 @@ pub fn stream_index_gguf_bf16_with_header<R: Read + Seek, W: Write>(
                 let batch_elems = batch_n * n_cols;
 
                 // Read batch bytes into reusable buffer
-                let byte_slice = unsafe {
-                    std::slice::from_raw_parts_mut(
-                        bf16_buf.as_mut_ptr() as *mut u8,
-                        batch_elems * 2,
-                    )
-                };
+                let byte_slice =
+                    unsafe { std::slice::from_raw_parts_mut(bf16_buf.as_mut_ptr() as *mut u8, batch_elems * 2) };
                 reader.read_exact(byte_slice).map_err(|e| e.to_string())?;
 
                 // Project this batch
                 if octave_stride > 1 {
-                    let batch_b17 = project_tensor_bf16_simd(
-                        &bf16_buf[..batch_elems], batch_n, n_cols, octave_stride
-                    );
+                    let batch_b17 = project_tensor_bf16_simd(&bf16_buf[..batch_elems], batch_n, n_cols, octave_stride);
                     rows.extend_from_slice(&batch_b17);
                 } else {
                     for r in 0..batch_n {
@@ -473,8 +478,12 @@ pub fn stream_index_gguf_bf16_with_header<R: Read + Seek, W: Write>(
 
                 // Progress for large tensors (every chunk)
                 if is_large && rows_done < n_rows {
-                    eprintln!("    ... {}/{} rows ({:.0}%)",
-                        rows_done, n_rows, rows_done as f64 / n_rows as f64 * 100.0);
+                    eprintln!(
+                        "    ... {}/{} rows ({:.0}%)",
+                        rows_done,
+                        n_rows,
+                        rows_done as f64 / n_rows as f64 * 100.0
+                    );
                 }
             }
 
@@ -500,7 +509,9 @@ pub fn stream_index_gguf_bf16_with_header<R: Read + Seek, W: Write>(
             stats.tensors_indexed += 1;
 
             let buf_bytes = chunk_elems as u64 * 2;
-            if buf_bytes > stats.peak_tensor_bytes { stats.peak_tensor_bytes = buf_bytes; }
+            if buf_bytes > stats.peak_tensor_bytes {
+                stats.peak_tensor_bytes = buf_bytes;
+            }
 
             // Shrink buffer if it grew past the cap (shouldn't, but defensive)
             if bf16_buf.len() > MAX_BUF_ELEMS {
@@ -588,14 +599,17 @@ impl CompressedTensor {
 
     /// Compression ratio.
     pub fn ratio(&self) -> f64 {
-        if self.compressed_bytes() == 0 { return 0.0; }
+        if self.compressed_bytes() == 0 {
+            return 0.0;
+        }
         self.original_bytes() as f64 / self.compressed_bytes() as f64
     }
 
     /// Serialize to bytes: [name_len:u32][name][layer_type:u8][n_rows:u32][n_cols:u32][base17 × n_rows]
     pub fn write_to<W: Write>(&self, w: &mut W) -> Result<(), String> {
         let name_bytes = self.name.as_bytes();
-        w.write_all(&(name_bytes.len() as u32).to_le_bytes()).map_err(|e| e.to_string())?;
+        w.write_all(&(name_bytes.len() as u32).to_le_bytes())
+            .map_err(|e| e.to_string())?;
         w.write_all(name_bytes).map_err(|e| e.to_string())?;
 
         let lt_byte: u8 = match self.layer_type {
@@ -607,8 +621,10 @@ impl CompressedTensor {
             LayerType::Skip => 5,
         };
         w.write_all(&[lt_byte]).map_err(|e| e.to_string())?;
-        w.write_all(&(self.n_rows as u32).to_le_bytes()).map_err(|e| e.to_string())?;
-        w.write_all(&(self.n_cols as u32).to_le_bytes()).map_err(|e| e.to_string())?;
+        w.write_all(&(self.n_rows as u32).to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        w.write_all(&(self.n_cols as u32).to_le_bytes())
+            .map_err(|e| e.to_string())?;
 
         for b17 in &self.rows {
             w.write_all(&b17.to_bytes()).map_err(|e| e.to_string())?;
@@ -704,9 +720,7 @@ fn tensor_to_rows(data: &[f32], dims: &[u64], layer_type: &LayerType) -> (usize,
             let cols: usize = dims[1..].iter().map(|&d| d as usize).product();
             (rows, cols)
         }
-        _ => {
-            (1, data.len())
-        }
+        _ => (1, data.len()),
     }
 }
 
@@ -728,7 +742,9 @@ pub struct IndexStats {
 
 impl IndexStats {
     pub fn overall_ratio(&self) -> f64 {
-        if self.compressed_bytes == 0 { return 0.0; }
+        if self.compressed_bytes == 0 {
+            return 0.0;
+        }
         self.original_bytes as f64 / self.compressed_bytes as f64
     }
 }
@@ -739,9 +755,7 @@ impl IndexStats {
 /// For Llama 4 Scout: largest expert = 5120 × 13824 × 4 = ~270 MB.
 /// Total RAM: ~300 MB regardless of model size.
 pub fn stream_index_gguf<R: Read + Seek, W: Write>(
-    reader: &mut R,
-    writer: &mut W,
-    callback: Option<&dyn Fn(&str, &LayerType, usize, usize)>,
+    reader: &mut R, writer: &mut W, callback: Option<&dyn Fn(&str, &LayerType, usize, usize)>,
 ) -> Result<IndexStats, String> {
     let gguf = gguf::read_gguf_header(reader)?;
     let mut stats = IndexStats::default();
@@ -749,7 +763,9 @@ pub fn stream_index_gguf<R: Read + Seek, W: Write>(
 
     // Write file header: magic + tensor count
     writer.write_all(b"BGZ7").map_err(|e| e.to_string())?;
-    writer.write_all(&(gguf.tensors.len() as u32).to_le_bytes()).map_err(|e| e.to_string())?;
+    writer
+        .write_all(&(gguf.tensors.len() as u32).to_le_bytes())
+        .map_err(|e| e.to_string())?;
 
     for tensor in &gguf.tensors {
         let layer_type = classify_tensor(&tensor.name, &tensor.dimensions);
@@ -970,7 +986,9 @@ mod tests {
         buf.extend_from_slice(&(t2_offset as u64).to_le_bytes());
 
         // Pad to alignment (32 bytes)
-        while buf.len() % 32 != 0 { buf.push(0); }
+        while buf.len() % 32 != 0 {
+            buf.push(0);
+        }
 
         // Tensor 1 data: 64×64 f32
         for i in 0..(64 * 64) {
@@ -1006,7 +1024,10 @@ mod tests {
         let path = "/tmp/openchat/openchat-3.5-0106.Q8_0.gguf";
         let file = match std::fs::File::open(path) {
             Ok(f) => f,
-            Err(_) => { eprintln!("SKIP: {} not found", path); return; }
+            Err(_) => {
+                eprintln!("SKIP: {} not found", path);
+                return;
+            }
         };
         let input_size = file.metadata().map(|m| m.len()).unwrap_or(0);
         let mut reader = BufReader::new(file);
@@ -1020,10 +1041,10 @@ mod tests {
             &mut writer,
             Some(&|name, layer_type, orig, comp| {
                 let ratio = if comp > 0 { orig as f64 / comp as f64 } else { 0.0 };
-                eprintln!("  {:50} {:12?} {:>10} → {:>8} ({:.0}×)",
-                    name, layer_type, orig, comp, ratio);
+                eprintln!("  {:50} {:12?} {:>10} → {:>8} ({:.0}×)", name, layer_type, orig, comp, ratio);
             }),
-        ).expect("stream_index_gguf");
+        )
+        .expect("stream_index_gguf");
 
         drop(writer);
         let out_size = std::fs::metadata(out_path).map(|m| m.len()).unwrap_or(0);
@@ -1032,8 +1053,10 @@ mod tests {
         eprintln!("=== OpenChat 3.5 Q8_0 → bgz17 Results ===");
         eprintln!("  Input:  {:.2} GB ({})", input_size as f64 / 1e9, path);
         eprintln!("  Output: {:.2} MB ({})", out_size as f64 / 1e6, out_path);
-        eprintln!("  Tensors: {} total, {} indexed, {} skipped",
-            stats.tensors_total, stats.tensors_indexed, stats.tensors_skipped);
+        eprintln!(
+            "  Tensors: {} total, {} indexed, {} skipped",
+            stats.tensors_total, stats.tensors_indexed, stats.tensors_skipped
+        );
         eprintln!("  Original (f32): {:.2} MB", stats.original_bytes as f64 / 1e6);
         eprintln!("  Compressed:     {:.2} MB", stats.compressed_bytes as f64 / 1e6);
         eprintln!("  Overall ratio:  {:.1}×", stats.overall_ratio());
@@ -1045,8 +1068,14 @@ mod tests {
             let (count, orig, comp) = stats.by_type[i];
             if count > 0 {
                 let ratio = if comp > 0 { orig as f64 / comp as f64 } else { 0.0 };
-                eprintln!("  {:<12} {:>3} tensors: {:>10.2} MB → {:>8.2} MB ({:.1}×)",
-                    name, count, orig as f64 / 1e6, comp as f64 / 1e6, ratio);
+                eprintln!(
+                    "  {:<12} {:>3} tensors: {:>10.2} MB → {:>8.2} MB ({:.1}×)",
+                    name,
+                    count,
+                    orig as f64 / 1e6,
+                    comp as f64 / 1e6,
+                    ratio
+                );
             }
         }
 
@@ -1057,7 +1086,7 @@ mod tests {
     #[test]
     #[ignore] // Streams from HuggingFace — requires network + time
     fn test_stream_index_llama4_scout_from_hf() {
-        use super::super::http_reader::{HttpRangeReader, resolve_hf_url};
+        use super::super::http_reader::{resolve_hf_url, HttpRangeReader};
         use std::io::BufWriter;
 
         let repo = "unsloth/Llama-4-Scout-17B-16E-Instruct-GGUF";
@@ -1066,7 +1095,10 @@ mod tests {
         eprintln!("Resolving {} / {} ...", repo, filename);
         let (url, size) = match resolve_hf_url(repo, filename) {
             Ok(r) => r,
-            Err(e) => { eprintln!("SKIP: {}", e); return; }
+            Err(e) => {
+                eprintln!("SKIP: {}", e);
+                return;
+            }
         };
         eprintln!("  URL resolved, size: {:.2} GB", size as f64 / 1e9);
 
@@ -1082,10 +1114,10 @@ mod tests {
             &mut writer,
             Some(&|name, layer_type, orig, comp| {
                 let ratio = if comp > 0 { orig as f64 / comp as f64 } else { 0.0 };
-                eprintln!("  {:60} {:12?} {:>12} → {:>8} ({:.0}×)",
-                    name, layer_type, orig, comp, ratio);
+                eprintln!("  {:60} {:12?} {:>12} → {:>8} ({:.0}×)", name, layer_type, orig, comp, ratio);
             }),
-        ).expect("stream_index_gguf");
+        )
+        .expect("stream_index_gguf");
 
         drop(writer);
         let out_size = std::fs::metadata(out_path).map(|m| m.len()).unwrap_or(0);
@@ -1095,8 +1127,7 @@ mod tests {
         eprintln!("  Source:     {:.2} GB ({})", size as f64 / 1e9, filename);
         eprintln!("  Output:     {:.2} MB ({})", out_size as f64 / 1e6, out_path);
         eprintln!("  Downloaded: {:.2} GB", reader.bytes_downloaded() as f64 / 1e9);
-        eprintln!("  Tensors:    {} indexed, {} skipped",
-            stats.tensors_indexed, stats.tensors_skipped);
+        eprintln!("  Tensors:    {} indexed, {} skipped", stats.tensors_indexed, stats.tensors_skipped);
         eprintln!("  Original (f32): {:.2} GB", stats.original_bytes as f64 / 1e9);
         eprintln!("  Compressed:     {:.2} MB", stats.compressed_bytes as f64 / 1e6);
         eprintln!("  Ratio:          {:.1}×", stats.overall_ratio());
@@ -1107,8 +1138,14 @@ mod tests {
             let (count, orig, comp) = stats.by_type[i];
             if count > 0 {
                 let ratio = if comp > 0 { orig as f64 / comp as f64 } else { 0.0 };
-                eprintln!("  {:<12} {:>3} tensors: {:>10.2} GB → {:>8.2} MB ({:.1}×)",
-                    name, count, orig as f64 / 1e9, comp as f64 / 1e6, ratio);
+                eprintln!(
+                    "  {:<12} {:>3} tensors: {:>10.2} GB → {:>8.2} MB ({:.1}×)",
+                    name,
+                    count,
+                    orig as f64 / 1e9,
+                    comp as f64 / 1e6,
+                    ratio
+                );
             }
         }
 
@@ -1125,9 +1162,7 @@ mod tests {
         use std::io::BufWriter;
 
         let repo = "unsloth/Llama-4-Scout-17B-16E-Instruct-GGUF";
-        let filename = format!(
-            "BF16/Llama-4-Scout-17B-16E-Instruct-BF16-{:05}-of-00005.gguf", shard
-        );
+        let filename = format!("BF16/Llama-4-Scout-17B-16E-Instruct-BF16-{:05}-of-00005.gguf", shard);
         let octave_stride: usize = 16;
 
         eprintln!("Streaming shard {}/5: {}", shard, filename);
@@ -1146,10 +1181,10 @@ mod tests {
             octave_stride,
             Some(&|name, layer_type, orig, comp| {
                 let ratio = if comp > 0 { orig as f64 / comp as f64 } else { 0.0 };
-                eprintln!("  {:60} {:12?} {:>12} → {:>8} ({:.0}×)",
-                    name, layer_type, orig, comp, ratio);
+                eprintln!("  {:60} {:12?} {:>12} → {:>8} ({:.0}×)", name, layer_type, orig, comp, ratio);
             }),
-        ).expect("stream_index_gguf_bf16");
+        )
+        .expect("stream_index_gguf_bf16");
 
         drop(writer);
         let out_size = std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
@@ -1158,8 +1193,7 @@ mod tests {
         eprintln!("=== Llama 4 Scout BF16 Shard {}/5 → bgz17 (BF16-direct) ===", shard);
         eprintln!("  Output:     {:.2} MB ({})", out_size as f64 / 1e6, out_path);
         eprintln!("  Downloaded: {:.2} GB", reader.bytes_downloaded() as f64 / 1e9);
-        eprintln!("  Tensors:    {} indexed, {} skipped",
-            stats.tensors_indexed, stats.tensors_skipped);
+        eprintln!("  Tensors:    {} indexed, {} skipped", stats.tensors_indexed, stats.tensors_skipped);
         eprintln!("  Original (f32): {:.2} GB", stats.original_bytes as f64 / 1e9);
         eprintln!("  Compressed:     {:.2} MB", stats.compressed_bytes as f64 / 1e6);
         eprintln!("  Ratio:          {:.1}×", stats.overall_ratio());
@@ -1170,8 +1204,14 @@ mod tests {
             let (count, orig, comp) = stats.by_type[i];
             if count > 0 {
                 let ratio = if comp > 0 { orig as f64 / comp as f64 } else { 0.0 };
-                eprintln!("  {:<12} {:>3} tensors: {:>10.2} GB → {:>8.2} MB ({:.1}×)",
-                    name, count, orig as f64 / 1e9, comp as f64 / 1e6, ratio);
+                eprintln!(
+                    "  {:<12} {:>3} tensors: {:>10.2} GB → {:>8.2} MB ({:.1}×)",
+                    name,
+                    count,
+                    orig as f64 / 1e9,
+                    comp as f64 / 1e6,
+                    ratio
+                );
             }
         }
 
@@ -1181,19 +1221,29 @@ mod tests {
 
     #[test]
     #[ignore]
-    fn test_stream_index_llama4_bf16_shard1() { run_llama4_shard(1); }
+    fn test_stream_index_llama4_bf16_shard1() {
+        run_llama4_shard(1);
+    }
     #[test]
     #[ignore]
-    fn test_stream_index_llama4_bf16_shard2() { run_llama4_shard(2); }
+    fn test_stream_index_llama4_bf16_shard2() {
+        run_llama4_shard(2);
+    }
     #[test]
     #[ignore]
-    fn test_stream_index_llama4_bf16_shard3() { run_llama4_shard(3); }
+    fn test_stream_index_llama4_bf16_shard3() {
+        run_llama4_shard(3);
+    }
     #[test]
     #[ignore]
-    fn test_stream_index_llama4_bf16_shard4() { run_llama4_shard(4); }
+    fn test_stream_index_llama4_bf16_shard4() {
+        run_llama4_shard(4);
+    }
     #[test]
     #[ignore]
-    fn test_stream_index_llama4_bf16_shard5() { run_llama4_shard(5); }
+    fn test_stream_index_llama4_bf16_shard5() {
+        run_llama4_shard(5);
+    }
 
     // ── BF16-direct optimization tests ──
 
@@ -1215,8 +1265,7 @@ mod tests {
 
         for i in 0..17 {
             let diff = (full.dims[i] as i32 - strided.dims[i] as i32).abs();
-            assert!(diff <= 1, "bin {} differs by {}: full={}, strided={}",
-                i, diff, full.dims[i], strided.dims[i]);
+            assert!(diff <= 1, "bin {} differs by {}: full={}, strided={}", i, diff, full.dims[i], strided.dims[i]);
         }
     }
 
@@ -1224,7 +1273,10 @@ mod tests {
     fn test_bf16_direct_matches_f32_path() {
         // Same data in BF16 and f32 should produce identical Base17
         let f32_row: Vec<f32> = (0..4096).map(|i| (i as f32) * 0.001).collect();
-        let bf16_row: Vec<u16> = f32_row.iter().map(|&v| (v.to_bits() >> 16) as u16).collect();
+        let bf16_row: Vec<u16> = f32_row
+            .iter()
+            .map(|&v| (v.to_bits() >> 16) as u16)
+            .collect();
 
         let from_f32 = project_row_to_base17(&f32_row);
         let from_bf16 = project_row_bf16_direct(&bf16_row);
@@ -1248,8 +1300,14 @@ mod tests {
         for r in 1..n_rows {
             for bin in 0..BASE_DIM {
                 let diff = (simd_results[0].dims[bin] as i32 - simd_results[r].dims[bin] as i32).abs();
-                assert!(diff == 0, "row {} bin {} differs: {} vs {}",
-                    r, bin, simd_results[0].dims[bin], simd_results[r].dims[bin]);
+                assert!(
+                    diff == 0,
+                    "row {} bin {} differs: {} vs {}",
+                    r,
+                    bin,
+                    simd_results[0].dims[bin],
+                    simd_results[r].dims[bin]
+                );
             }
         }
     }
@@ -1271,8 +1329,15 @@ mod tests {
             let scalar = project_1row_bf16_strided(&buf[start..start + n_cols], 16);
             for bin in 0..BASE_DIM {
                 let diff = (simd_results[r].dims[bin] as i32 - scalar.dims[bin] as i32).abs();
-                assert!(diff <= 1, "row {} bin {} simd={} scalar={} diff={}",
-                    r, bin, simd_results[r].dims[bin], scalar.dims[bin], diff);
+                assert!(
+                    diff <= 1,
+                    "row {} bin {} simd={} scalar={} diff={}",
+                    r,
+                    bin,
+                    simd_results[r].dims[bin],
+                    scalar.dims[bin],
+                    diff
+                );
             }
         }
     }
@@ -1296,15 +1361,15 @@ mod tests {
         let repo = "unsloth/Llama-4-Maverick-17B-128E-Instruct-GGUF";
 
         let shards: [(u8, &str, u64); 18] = [
-            ( 1, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00001-of-00018.gguf", 46_166_870_240),
-            ( 2, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00002-of-00018.gguf", 42_949_673_376),
-            ( 3, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00003-of-00018.gguf", 42_949_673_376),
-            ( 4, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00004-of-00018.gguf", 42_949_673_376),
-            ( 5, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00005-of-00018.gguf", 47_943_931_840),
-            ( 6, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00006-of-00018.gguf", 42_949_673_376),
-            ( 7, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00007-of-00018.gguf", 42_949_673_376),
-            ( 8, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00008-of-00018.gguf", 42_949_673_376),
-            ( 9, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00009-of-00018.gguf", 47_922_960_288),
+            (1, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00001-of-00018.gguf", 46_166_870_240),
+            (2, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00002-of-00018.gguf", 42_949_673_376),
+            (3, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00003-of-00018.gguf", 42_949_673_376),
+            (4, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00004-of-00018.gguf", 42_949_673_376),
+            (5, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00005-of-00018.gguf", 47_943_931_840),
+            (6, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00006-of-00018.gguf", 42_949_673_376),
+            (7, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00007-of-00018.gguf", 42_949_673_376),
+            (8, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00008-of-00018.gguf", 42_949_673_376),
+            (9, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00009-of-00018.gguf", 47_922_960_288),
             (10, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00010-of-00018.gguf", 42_949_673_376),
             (11, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00011-of-00018.gguf", 42_949_673_376),
             (12, "BF16/Llama-4-Maverick-17B-128E-Instruct-BF16-00012-of-00018.gguf", 47_912_433_568),
@@ -1340,8 +1405,8 @@ mod tests {
 
             eprintln!("━━━ Shard {:02}/18 ━━━", shard_num);
 
-            let mut reader = HttpRangeReader::from_hf(repo, filename, 256 * 1024 * 1024)
-                .expect("failed to resolve HF URL");
+            let mut reader =
+                HttpRangeReader::from_hf(repo, filename, 256 * 1024 * 1024).expect("failed to resolve HF URL");
 
             let out = std::fs::File::create(&out_path).expect("create output");
             let mut writer = BufWriter::new(out);
@@ -1352,26 +1417,36 @@ mod tests {
                 octave_stride,
                 Some(&|name, layer_type, orig, comp| {
                     let ratio = if comp > 0 { orig as f64 / comp as f64 } else { 0.0 };
-                    eprintln!("  {:60} {:12?} {:>12} → {:>8} ({:.0}×)",
-                        name, layer_type, orig, comp, ratio);
+                    eprintln!("  {:60} {:12?} {:>12} → {:>8} ({:.0}×)", name, layer_type, orig, comp, ratio);
                 }),
-            ).unwrap_or_else(|e| panic!("stream_index_gguf_bf16 shard {} failed: {}", shard_num, e));
+            )
+            .unwrap_or_else(|e| panic!("stream_index_gguf_bf16 shard {} failed: {}", shard_num, e));
 
             drop(writer);
             let out_size = std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
 
-            eprintln!("  Shard {:02}: {:.2} GB → {:.2} MB ({:.0}×)  peak_buf={:.1} MB",
-                shard_num, *size as f64 / 1e9, out_size as f64 / 1e6,
+            eprintln!(
+                "  Shard {:02}: {:.2} GB → {:.2} MB ({:.0}×)  peak_buf={:.1} MB",
+                shard_num,
+                *size as f64 / 1e9,
+                out_size as f64 / 1e6,
                 stats.overall_ratio(),
-                stats.peak_tensor_bytes as f64 / 1e6);
+                stats.peak_tensor_bytes as f64 / 1e6
+            );
 
             let type_names = ["Attention", "FeedForward", "Conv2D", "Norm", "Embedding", "Skip"];
             for (j, name) in type_names.iter().enumerate() {
                 let (count, orig, comp) = stats.by_type[j];
                 if count > 0 {
                     let ratio = if comp > 0 { orig as f64 / comp as f64 } else { 0.0 };
-                    eprintln!("    {:<12} {:>3} tensors: {:>10.2} GB → {:>8.2} MB ({:.0}×)",
-                        name, count, orig as f64 / 1e9, comp as f64 / 1e6, ratio);
+                    eprintln!(
+                        "    {:<12} {:>3} tensors: {:>10.2} GB → {:>8.2} MB ({:.0}×)",
+                        name,
+                        count,
+                        orig as f64 / 1e9,
+                        comp as f64 / 1e6,
+                        ratio
+                    );
                     grand_by_type[j].0 += count;
                     grand_by_type[j].1 += orig;
                     grand_by_type[j].2 += comp;
@@ -1410,8 +1485,7 @@ mod tests {
         eprintln!("  Source (BF16):   {:>10.2} GB", grand_total_source as f64 / 1e9);
         eprintln!("  Original (f32):  {:>10.2} GB", grand_total_original as f64 / 1e9);
         eprintln!("  Compressed:      {:>10.2} MB", grand_total_compressed as f64 / 1e6);
-        eprintln!("  Overall ratio:   {:>10.0}×",
-            grand_total_original as f64 / grand_total_compressed.max(1) as f64);
+        eprintln!("  Overall ratio:   {:>10.0}×", grand_total_original as f64 / grand_total_compressed.max(1) as f64);
         eprintln!("  Tensors indexed: {}", grand_total_tensors);
 
         let type_names = ["Attention", "FeedForward", "Conv2D", "Norm", "Embedding", "Skip"];
@@ -1419,8 +1493,14 @@ mod tests {
             let (count, orig, comp) = grand_by_type[j];
             if count > 0 {
                 let ratio = if comp > 0 { orig as f64 / comp as f64 } else { 0.0 };
-                eprintln!("    {:<12} {:>4} tensors: {:>10.2} GB → {:>8.2} MB ({:.0}×)",
-                    name, count, orig as f64 / 1e9, comp as f64 / 1e6, ratio);
+                eprintln!(
+                    "    {:<12} {:>4} tensors: {:>10.2} GB → {:>8.2} MB ({:.0}×)",
+                    name,
+                    count,
+                    orig as f64 / 1e9,
+                    comp as f64 / 1e6,
+                    ratio
+                );
             }
         }
         eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");

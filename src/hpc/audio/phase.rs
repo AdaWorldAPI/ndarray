@@ -23,9 +23,9 @@
 //! Uses the same STFT from mel.rs but keeps phase info instead of
 //! discarding it (which is what magnitude spectrograms do).
 
+use super::bands;
 use crate::hpc::fft;
 use core::f32::consts::PI;
-use super::bands;
 
 /// Phase coherence between adjacent harmonics within one frame.
 ///
@@ -34,16 +34,15 @@ use super::bands;
 /// Noise: random phase relationships (coherence ≈ 0.0).
 ///
 /// Returns per-band coherence values [0.0, 1.0].
-pub fn band_phase_coherence(
-    real: &[f32],
-    imag: &[f32],
-) -> [f32; bands::N_BANDS] {
+pub fn band_phase_coherence(real: &[f32], imag: &[f32]) -> [f32; bands::N_BANDS] {
     let mut coherence = [0.0f32; bands::N_BANDS];
 
     for band in 0..bands::N_BANDS {
         let lo = bands::CELT_BANDS_48K[band];
         let hi = bands::CELT_BANDS_48K[band + 1].min(real.len().min(imag.len()));
-        if hi <= lo + 1 { continue; }
+        if hi <= lo + 1 {
+            continue;
+        }
 
         // Phase differences between adjacent bins within this band
         let mut cos_sum = 0.0f64;
@@ -51,7 +50,9 @@ pub fn band_phase_coherence(
         let mut count = 0u32;
 
         for i in lo..(hi - 1) {
-            if i >= real.len() || i + 1 >= real.len() { break; }
+            if i >= real.len() || i + 1 >= real.len() {
+                break;
+            }
             let phase_i = imag[i].atan2(real[i]);
             let phase_next = imag[i + 1].atan2(real[i + 1]);
             let diff = phase_next - phase_i;
@@ -79,8 +80,7 @@ pub fn band_phase_coherence(
 ///
 /// Returns per-band gradient in radians/frame.
 pub fn phase_gradient(
-    prev_real: &[f32], prev_imag: &[f32],
-    curr_real: &[f32], curr_imag: &[f32],
+    prev_real: &[f32], prev_imag: &[f32], curr_real: &[f32], curr_imag: &[f32],
 ) -> [f32; bands::N_BANDS] {
     let mut gradient = [0.0f32; bands::N_BANDS];
 
@@ -89,19 +89,27 @@ pub fn phase_gradient(
         let hi = bands::CELT_BANDS_48K[band + 1]
             .min(prev_real.len())
             .min(curr_real.len());
-        if hi <= lo { continue; }
+        if hi <= lo {
+            continue;
+        }
 
         let mut total_diff = 0.0f64;
         let mut count = 0u32;
 
         for i in lo..hi {
-            if i >= prev_real.len() || i >= curr_real.len() { break; }
+            if i >= prev_real.len() || i >= curr_real.len() {
+                break;
+            }
             let prev_phase = prev_imag[i].atan2(prev_real[i]);
             let curr_phase = curr_imag[i].atan2(curr_real[i]);
             // Unwrap phase difference to [-π, π]
             let mut diff = curr_phase - prev_phase;
-            while diff > PI { diff -= 2.0 * PI; }
-            while diff < -PI { diff += 2.0 * PI; }
+            while diff > PI {
+                diff -= 2.0 * PI;
+            }
+            while diff < -PI {
+                diff += 2.0 * PI;
+            }
             total_diff += diff.abs() as f64;
             count += 1;
         }
@@ -162,9 +170,11 @@ impl PhaseDescriptor {
 
         // Gradient stability: std dev of gradients (high = changing pitch)
         let grad_mean = gradient.iter().sum::<f32>() / bands::N_BANDS as f32;
-        let grad_var = gradient.iter()
+        let grad_var = gradient
+            .iter()
             .map(|g| (g - grad_mean) * (g - grad_mean))
-            .sum::<f32>() / bands::N_BANDS as f32;
+            .sum::<f32>()
+            / bands::N_BANDS as f32;
         let grad_std = grad_var.sqrt();
 
         PhaseDescriptor {
@@ -188,11 +198,11 @@ impl PhaseDescriptor {
         let stability = 1.0 - self.bytes[3] as f32 / 255.0;
 
         [
-            (9,  coherence),    // coherence: phase-locked = unified
-            (4,  coherence),    // clarity: locked harmonics = clear
-            (7,  gradient),     // velocity: phase rotation = movement
-            (8,  coh_entropy),  // entropy: mixed voiced/unvoiced
-            (14, stability),    // groundedness: steady pitch = rooted
+            (9, coherence),   // coherence: phase-locked = unified
+            (4, coherence),   // clarity: locked harmonics = clear
+            (7, gradient),    // velocity: phase rotation = movement
+            (8, coh_entropy), // entropy: mixed voiced/unvoiced
+            (14, stability),  // groundedness: steady pitch = rooted
         ]
     }
 
@@ -212,9 +222,7 @@ impl PhaseDescriptor {
 /// Returns (magnitude_per_frame, real_per_frame, imag_per_frame).
 /// Each frame has n_fft/2+1 bins.
 pub fn stft_with_phase(
-    pcm: &[f32],
-    window_size: usize,
-    hop_size: usize,
+    pcm: &[f32], window_size: usize, hop_size: usize,
 ) -> (Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<Vec<f32>>) {
     let n_fft = window_size.next_power_of_two();
     let n_bins = n_fft / 2 + 1;
@@ -274,7 +282,9 @@ mod tests {
             .collect();
 
         let (_mags, reals, imags) = stft_with_phase(&pcm, 512, 256);
-        if reals.is_empty() { return; }
+        if reals.is_empty() {
+            return;
+        }
 
         let coh = band_phase_coherence(&reals[0], &imags[0]);
         // At least one band should have high coherence (the one with 440Hz)
@@ -287,13 +297,19 @@ mod tests {
         // White noise → random phases → low coherence
         let n = 1024;
         let mut rng = 0x12345678u64;
-        let pcm: Vec<f32> = (0..n).map(|_| {
-            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            ((rng >> 33) as f32 / (1u64 << 31) as f32) * 2.0 - 1.0
-        }).collect();
+        let pcm: Vec<f32> = (0..n)
+            .map(|_| {
+                rng = rng
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                ((rng >> 33) as f32 / (1u64 << 31) as f32) * 2.0 - 1.0
+            })
+            .collect();
 
         let (_mags, reals, imags) = stft_with_phase(&pcm, 512, 256);
-        if reals.is_empty() { return; }
+        if reals.is_empty() {
+            return;
+        }
 
         let coh = band_phase_coherence(&reals[0], &imags[0]);
         let mean_coh: f32 = coh.iter().sum::<f32>() / bands::N_BANDS as f32;
@@ -321,7 +337,9 @@ mod tests {
 
     #[test]
     fn phase_to_qualia_dims_valid() {
-        let desc = PhaseDescriptor { bytes: [200, 50, 100, 30] };
+        let desc = PhaseDescriptor {
+            bytes: [200, 50, 100, 30],
+        };
         let dims = desc.to_qualia_dims();
         for (dim_idx, value) in dims {
             assert!(dim_idx < 17, "Invalid dim index: {}", dim_idx);

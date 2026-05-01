@@ -9,13 +9,17 @@ use std::io::{Read, Write};
 /// Save Base17 tokens to binary cache.
 pub fn save_base17_cache<W: Write>(tokens: &[Base17Token], writer: &mut W) -> Result<(), String> {
     let n = tokens.len() as u32;
-    writer.write_all(&n.to_le_bytes()).map_err(|e| e.to_string())?;
+    writer
+        .write_all(&n.to_le_bytes())
+        .map_err(|e| e.to_string())?;
     writer
         .write_all(&(BASE_DIM as u32).to_le_bytes())
         .map_err(|e| e.to_string())?;
     for t in tokens {
         for &d in &t.dims {
-            writer.write_all(&d.to_le_bytes()).map_err(|e| e.to_string())?;
+            writer
+                .write_all(&d.to_le_bytes())
+                .map_err(|e| e.to_string())?;
         }
     }
     Ok(())
@@ -48,7 +52,9 @@ pub fn load_base17_cache<R: Read>(reader: &mut R) -> Result<Vec<Base17Token>, St
 /// Save palette to binary cache.
 pub fn save_palette_cache<W: Write>(palette: &JinaPalette, writer: &mut W) -> Result<(), String> {
     let n = palette.assignments.len() as u32;
-    writer.write_all(&n.to_le_bytes()).map_err(|e| e.to_string())?;
+    writer
+        .write_all(&n.to_le_bytes())
+        .map_err(|e| e.to_string())?;
     writer
         .write_all(&(BASE_DIM as u32).to_le_bytes())
         .map_err(|e| e.to_string())?;
@@ -59,7 +65,9 @@ pub fn save_palette_cache<W: Write>(palette: &JinaPalette, writer: &mut W) -> Re
     // Centroids
     for k in 0..PALETTE_K {
         for &d in &palette.centroids[k].dims {
-            writer.write_all(&d.to_le_bytes()).map_err(|e| e.to_string())?;
+            writer
+                .write_all(&d.to_le_bytes())
+                .map_err(|e| e.to_string())?;
         }
     }
     // Assignments

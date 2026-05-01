@@ -17,11 +17,7 @@ pub struct DecompositionTree {
 /// Hierarchical decompose: CLAM-style bipolar split.
 /// Find medoid, find farthest, partition into two clusters, recurse.
 /// Science: Ishaq et al. (2019), Dasgupta & Long (2005), Simon (1962).
-pub fn hierarchical_decompose(
-    _query: &Base17,
-    corpus: &[Base17],
-    max_levels: usize,
-) -> DecompositionTree {
+pub fn hierarchical_decompose(_query: &Base17, corpus: &[Base17], max_levels: usize) -> DecompositionTree {
     let root = decompose_recursive(corpus, max_levels, 0);
     let depth = tree_depth(&root);
     DecompositionTree { root, depth }
@@ -31,7 +27,9 @@ fn decompose_recursive(items: &[Base17], max_levels: usize, level: usize) -> Dec
     if items.is_empty() {
         return DecompositionNode {
             centroid: Base17 { dims: [0; 17] },
-            radius: 0, count: 0, children: Vec::new(),
+            radius: 0,
+            count: 0,
+            children: Vec::new(),
         };
     }
 
@@ -40,13 +38,21 @@ fn decompose_recursive(items: &[Base17], max_levels: usize, level: usize) -> Dec
     let radius = items.iter().map(|i| centroid.l1(i)).max().unwrap_or(0);
 
     if items.len() <= 2 || level >= max_levels {
-        return DecompositionNode { centroid, radius, count: items.len(), children: Vec::new() };
+        return DecompositionNode {
+            centroid,
+            radius,
+            count: items.len(),
+            children: Vec::new(),
+        };
     }
 
     // Bipolar split: find farthest from centroid, partition
-    let farthest_idx = items.iter().enumerate()
+    let farthest_idx = items
+        .iter()
+        .enumerate()
         .max_by_key(|(_, i)| centroid.l1(i))
-        .map(|(idx, _)| idx).unwrap_or(0);
+        .map(|(idx, _)| idx)
+        .unwrap_or(0);
 
     let pole = &items[farthest_idx];
     let mut left = Vec::new();
@@ -61,7 +67,12 @@ fn decompose_recursive(items: &[Base17], max_levels: usize, level: usize) -> Dec
 
     // Guard against degenerate splits
     if left.is_empty() || right.is_empty() {
-        return DecompositionNode { centroid, radius, count: items.len(), children: Vec::new() };
+        return DecompositionNode {
+            centroid,
+            radius,
+            count: items.len(),
+            children: Vec::new(),
+        };
     }
 
     let children = vec![
@@ -69,23 +80,35 @@ fn decompose_recursive(items: &[Base17], max_levels: usize, level: usize) -> Dec
         decompose_recursive(&right, max_levels, level + 1),
     ];
 
-    DecompositionNode { centroid, radius, count: items.len(), children }
+    DecompositionNode {
+        centroid,
+        radius,
+        count: items.len(),
+        children,
+    }
 }
 
 fn compute_centroid(items: &[Base17]) -> Base17 {
     let n = items.len() as i32;
     let mut dims = [0i32; 17];
     for item in items {
-        for d in 0..17 { dims[d] += item.dims[d] as i32; }
+        for d in 0..17 {
+            dims[d] += item.dims[d] as i32;
+        }
     }
     let mut result = [0i16; 17];
-    for d in 0..17 { result[d] = (dims[d] / n) as i16; }
+    for d in 0..17 {
+        result[d] = (dims[d] / n) as i16;
+    }
     Base17 { dims: result }
 }
 
 fn tree_depth(node: &DecompositionNode) -> usize {
-    if node.children.is_empty() { 0 }
-    else { 1 + node.children.iter().map(tree_depth).max().unwrap_or(0) }
+    if node.children.is_empty() {
+        0
+    } else {
+        1 + node.children.iter().map(tree_depth).max().unwrap_or(0)
+    }
 }
 
 #[cfg(test)]
@@ -94,11 +117,13 @@ mod tests {
 
     #[test]
     fn test_decompose_basic() {
-        let corpus: Vec<Base17> = (0..20).map(|i| {
-            let mut dims = [0i16; 17];
-            dims[0] = (i * 100) as i16;
-            Base17 { dims }
-        }).collect();
+        let corpus: Vec<Base17> = (0..20)
+            .map(|i| {
+                let mut dims = [0i16; 17];
+                dims[0] = (i * 100) as i16;
+                Base17 { dims }
+            })
+            .collect();
 
         let query = Base17 { dims: [500; 17] };
         let tree = hierarchical_decompose(&query, &corpus, 4);

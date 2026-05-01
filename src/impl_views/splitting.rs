@@ -12,7 +12,8 @@ use num_complex::Complex;
 
 /// Methods for read-only array views.
 impl<A, D> ArrayView<'_, A, D>
-where D: Dimension
+where
+    D: Dimension,
 {
     /// Split the array view along `axis` and return one view strictly before the
     /// split and one view after the split.
@@ -89,8 +90,7 @@ where D: Dimension
     /// ```
     #[track_caller]
     #[inline]
-    pub fn split_at(self, axis: Axis, index: Ix) -> (Self, Self)
-    {
+    pub fn split_at(self, axis: Axis, index: Ix) -> (Self, Self) {
         unsafe {
             let (left, right) = self.into_raw_view().split_at(axis, index);
             (left.deref_into_view(), right.deref_into_view())
@@ -99,7 +99,8 @@ where D: Dimension
 }
 
 impl<'a, T, D> ArrayView<'a, Complex<T>, D>
-where D: Dimension
+where
+    D: Dimension,
 {
     /// Splits the view into views of the real and imaginary components of the
     /// elements.
@@ -117,8 +118,7 @@ where D: Dimension
     /// assert_eq!(re, array![[1., 3.], [5., 7.], [9., 11.]]);
     /// assert_eq!(im, array![[2., 4.], [6., 8.], [10., 12.]]);
     /// ```
-    pub fn split_complex(self) -> Complex<ArrayView<'a, T, D>>
-    {
+    pub fn split_complex(self) -> Complex<ArrayView<'a, T, D>> {
         unsafe {
             let Complex { re, im } = self.into_raw_view().split_complex();
             Complex {
@@ -131,7 +131,8 @@ where D: Dimension
 
 /// Methods for read-write array views.
 impl<'a, A, D> ArrayViewMut<'a, A, D>
-where D: Dimension
+where
+    D: Dimension,
 {
     /// Split the array view along `axis` and return one mutable view strictly
     /// before the split and one mutable view after the split.
@@ -139,8 +140,7 @@ where D: Dimension
     /// **Panics** if `axis` or `index` is out of bounds.
     #[track_caller]
     #[inline]
-    pub fn split_at(self, axis: Axis, index: Ix) -> (Self, Self)
-    {
+    pub fn split_at(self, axis: Axis, index: Ix) -> (Self, Self) {
         unsafe {
             let (left, right) = self.into_raw_view_mut().split_at(axis, index);
             (left.deref_into_view_mut(), right.deref_into_view_mut())
@@ -166,14 +166,16 @@ where D: Dimension
     /// * if `D` is `IxDyn` and `info` does not match the number of array axes
     #[track_caller]
     pub fn multi_slice_move<M>(self, info: M) -> M::Output
-    where M: MultiSliceArg<'a, A, D>
+    where
+        M: MultiSliceArg<'a, A, D>,
     {
         info.multi_slice_move(self)
     }
 }
 
 impl<'a, T, D> ArrayViewMut<'a, Complex<T>, D>
-where D: Dimension
+where
+    D: Dimension,
 {
     /// Splits the view into views of the real and imaginary components of the
     /// elements.
@@ -198,8 +200,7 @@ where D: Dimension
     /// assert_eq!(arr[[0, 1]], Complex64::new(13., 4.));
     /// assert_eq!(arr[[2, 0]], Complex64::new(9., 14.));
     /// ```
-    pub fn split_complex(self) -> Complex<ArrayViewMut<'a, T, D>>
-    {
+    pub fn split_complex(self) -> Complex<ArrayViewMut<'a, T, D>> {
         unsafe {
             let Complex { re, im } = self.into_raw_view_mut().split_complex();
             Complex {

@@ -44,15 +44,26 @@ impl BF16Weights {
         assert!(
             max_per_elem <= 65535,
             "BF16Weights overflow: sign({}) + 8*exp({}) + 7*man({}) = {} > 65535",
-            sign, exponent, mantissa, max_per_elem
+            sign,
+            exponent,
+            mantissa,
+            max_per_elem
         );
-        Self { sign, exponent, mantissa }
+        Self {
+            sign,
+            exponent,
+            mantissa,
+        }
     }
 }
 
 impl Default for BF16Weights {
     fn default() -> Self {
-        Self { sign: 256, exponent: 16, mantissa: 1 }
+        Self {
+            sign: 256,
+            exponent: 16,
+            mantissa: 1,
+        }
     }
 }
 
@@ -146,7 +157,10 @@ pub struct AwarenessThresholds {
 
 impl Default for AwarenessThresholds {
     fn default() -> Self {
-        Self { exp_spread_limit: 2, noise_mantissa_bits: 5 }
+        Self {
+            exp_spread_limit: 2,
+            noise_mantissa_bits: 5,
+        }
     }
 }
 
@@ -187,7 +201,10 @@ impl PackedQualia {
 
     /// Zero-initialized qualia point.
     pub fn zero() -> Self {
-        Self { resonance: [0i8; 16], scalar: [0u8; 2] }
+        Self {
+            resonance: [0i8; 16],
+            scalar: [0u8; 2],
+        }
     }
 
     /// Decode the BF16 scalar back to f32.
@@ -245,9 +262,7 @@ pub fn bf16_hamming_scalar(a: &[u8], b: &[u8], weights: &BF16Weights) -> u64 {
         let man_bits = xor & 0x7F;
         let man_pop = man_bits.count_ones() as u16;
 
-        let dist = sign_flip * weights.sign
-            + exp_pop * weights.exponent
-            + man_pop * weights.mantissa;
+        let dist = sign_flip * weights.sign + exp_pop * weights.exponent + man_pop * weights.mantissa;
         total += dist as u64;
     }
 
@@ -269,12 +284,7 @@ pub fn bf16_hamming_scalar(a: &[u8], b: &[u8], weights: &BF16Weights) -> u64 {
 /// # Returns
 ///
 /// A [`SuperpositionState`] summarizing all dimensions.
-pub fn awareness_classify(
-    a: &[u8],
-    b: &[u8],
-    n_dims: usize,
-    thresholds: &AwarenessThresholds,
-) -> SuperpositionState {
+pub fn awareness_classify(a: &[u8], b: &[u8], n_dims: usize, thresholds: &AwarenessThresholds) -> SuperpositionState {
     assert_eq!(a.len(), b.len(), "awareness_classify: length mismatch");
     assert!(a.len() >= n_dims * 2, "awareness_classify: not enough bytes for n_dims");
 
@@ -388,9 +398,7 @@ pub fn awareness_classify(
 /// assert_ne!(packed, 0);
 /// ```
 pub fn bf16_from_projections(
-    bands: &[super::cascade::Band; 7],
-    finest_distance: u32,
-    finest_max: u32,
+    bands: &[super::cascade::Band; 7], finest_distance: u32, finest_max: u32,
     direction: super::causality::CausalityDirection,
 ) -> u16 {
     use super::cascade::Band;
@@ -441,9 +449,7 @@ pub fn bf16_from_projections(
 /// assert_eq!(exp, 0x7F);
 /// assert_eq!(man, 0);
 /// ```
-pub fn bf16_unpack_projections(
-    packed: u16,
-) -> (super::causality::CausalityDirection, u8, u8) {
+pub fn bf16_unpack_projections(packed: u16) -> (super::causality::CausalityDirection, u8, u8) {
     use super::causality::CausalityDirection;
 
     let direction = if packed & 0x8000 != 0 {
@@ -558,7 +564,10 @@ mod tests {
         let s = awareness_classify(&data, &data, 4, &t);
         assert_eq!(s.n_dims, 4);
         assert!((s.crystallized_pct - 1.0).abs() < 1e-6);
-        assert!(s.states.iter().all(|st| *st == AwarenessState::Crystallized));
+        assert!(s
+            .states
+            .iter()
+            .all(|st| *st == AwarenessState::Crystallized));
     }
 
     #[test]
@@ -609,7 +618,7 @@ mod tests {
         let (dir, exp, man) = bf16_unpack_projections(packed);
         assert_eq!(dir, CausalityDirection::Backward);
         assert_eq!(exp, 0); // no close projections
-        // mantissa: 500/1000 * 127 = 63
+                            // mantissa: 500/1000 * 127 = 63
         assert_eq!(man, 63);
     }
 

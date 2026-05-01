@@ -65,7 +65,8 @@ pub fn build_mel_filters(sample_rate: usize, n_fft: usize, n_mels: usize) -> Vec
 
     // Convert mel points back to Hz, then to FFT bin indices
     let hz_points: Vec<f32> = mel_points.iter().map(|&m| mel_to_hz(m)).collect();
-    let bin_points: Vec<f32> = hz_points.iter()
+    let bin_points: Vec<f32> = hz_points
+        .iter()
         .map(|&h| h * n_fft as f32 / sample_rate as f32)
         .collect();
 
@@ -95,7 +96,9 @@ pub fn build_mel_filters(sample_rate: usize, n_fft: usize, n_mels: usize) -> Vec
 
 /// Hann window for STFT.
 pub fn hann_window(n: usize) -> Vec<f32> {
-    (0..n).map(|i| 0.5 * (1.0 - (2.0 * PI * i as f32 / n as f32).cos())).collect()
+    (0..n)
+        .map(|i| 0.5 * (1.0 - (2.0 * PI * i as f32 / n as f32).cos()))
+        .collect()
 }
 
 /// Compute magnitude spectrogram via STFT.
@@ -124,7 +127,7 @@ pub fn stft_magnitude(pcm: &[f32], window_size: usize, hop_size: usize) -> Vec<f
         let mut data = vec![0.0f32; 2 * n_fft];
         for i in 0..window_size.min(pcm.len() - start) {
             data[2 * i] = pcm[start + i] * window[i]; // real
-            // imaginary stays 0
+                                                      // imaginary stays 0
         }
 
         // FFT (interleaved complex: data[2*k] = re, data[2*k+1] = im)
@@ -250,7 +253,8 @@ mod tests {
         // The mel channel containing 440Hz should have high energy
         // 440Hz ≈ mel channel ~14 (depends on exact mel spacing)
         let frame0 = &log_mel[0..N_MELS];
-        let max_mel = frame0.iter()
+        let max_mel = frame0
+            .iter()
             .enumerate()
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
             .unwrap();

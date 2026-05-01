@@ -29,7 +29,11 @@ impl NoiseParams {
             freq *= lacunarity;
             amp *= persistence;
         }
-        Self { octaves, lacunarity, persistence }
+        Self {
+            octaves,
+            lacunarity,
+            persistence,
+        }
     }
 
     /// Number of octaves.
@@ -55,9 +59,18 @@ impl NoiseParams {
 
 /// Gradient vectors for 3D Perlin noise (12 edges of a cube).
 pub const GRAD3: [[f64; 3]; 12] = [
-    [1.0, 1.0, 0.0], [-1.0, 1.0, 0.0], [1.0, -1.0, 0.0], [-1.0, -1.0, 0.0],
-    [1.0, 0.0, 1.0], [-1.0, 0.0, 1.0], [1.0, 0.0, -1.0], [-1.0, 0.0, -1.0],
-    [0.0, 1.0, 1.0], [0.0, -1.0, 1.0], [0.0, 1.0, -1.0], [0.0, -1.0, -1.0],
+    [1.0, 1.0, 0.0],
+    [-1.0, 1.0, 0.0],
+    [1.0, -1.0, 0.0],
+    [-1.0, -1.0, 0.0],
+    [1.0, 0.0, 1.0],
+    [-1.0, 0.0, 1.0],
+    [1.0, 0.0, -1.0],
+    [-1.0, 0.0, -1.0],
+    [0.0, 1.0, 1.0],
+    [0.0, -1.0, 1.0],
+    [0.0, 1.0, -1.0],
+    [0.0, -1.0, -1.0],
 ];
 
 /// Simple hash-based 3D noise (deterministic, not cryptographic).
@@ -120,7 +133,12 @@ impl CompiledNoiseConfig {
         let amp_sum = params.amplitude_sum();
         let normalization = if amp_sum > 0.0 { 1.0 / amp_sum } else { 1.0 };
 
-        Self { frequencies, amplitudes, seed_offsets, normalization }
+        Self {
+            frequencies,
+            amplitudes,
+            seed_offsets,
+            normalization,
+        }
     }
 
     /// Evaluate using the compiled config (reference, matches what JIT would produce).
@@ -134,13 +152,7 @@ impl CompiledNoiseConfig {
     }
 
     /// Evaluate and normalize to [-1, 1] range.
-    pub fn evaluate_normalized(
-        &self,
-        x: f64,
-        y: f64,
-        z: f64,
-        base_noise: fn(f64, f64, f64) -> f64,
-    ) -> f64 {
+    pub fn evaluate_normalized(&self, x: f64, y: f64, z: f64, base_noise: fn(f64, f64, f64) -> f64) -> f64 {
         self.evaluate(x, y, z, base_noise) * self.normalization
     }
 
@@ -196,12 +208,7 @@ impl TerrainFillParams {
     /// index = y * 256 + z * 16 + x).
     ///
     /// Block state ID 0 = air.
-    pub fn fill_section_reference(
-        &self,
-        section_y: i32,
-        seed: u64,
-        base_noise: fn(f64, f64, f64) -> f64,
-    ) -> Vec<u16> {
+    pub fn fill_section_reference(&self, section_y: i32, seed: u64, base_noise: fn(f64, f64, f64) -> f64) -> Vec<u16> {
         let mut blocks = vec![0u16; 4096]; // all air initially
         let section_base_y = section_y * 16;
 

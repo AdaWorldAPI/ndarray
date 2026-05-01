@@ -61,20 +61,18 @@ impl Gpt2Weights {
         // Safetensors format: [header_size:u64_le][header_json][tensor_data]
         let file = std::fs::read(path).map_err(|e| e.to_string())?;
 
-        let header_size = u64::from_le_bytes([
-            file[0], file[1], file[2], file[3],
-            file[4], file[5], file[6], file[7],
-        ]) as usize;
+        let header_size =
+            u64::from_le_bytes([file[0], file[1], file[2], file[3], file[4], file[5], file[6], file[7]]) as usize;
 
-        let header_json = std::str::from_utf8(&file[8..8 + header_size])
-            .map_err(|e| e.to_string())?;
+        let header_json = std::str::from_utf8(&file[8..8 + header_size]).map_err(|e| e.to_string())?;
 
         // Parse tensor metadata from JSON header
         let data_start = 8 + header_size;
         let tensors = parse_safetensors_header(header_json)?;
 
         let read_tensor = |name: &str| -> Result<Vec<f32>, String> {
-            let info = tensors.get(name)
+            let info = tensors
+                .get(name)
                 .ok_or_else(|| format!("Missing tensor: {}", name))?;
             let start = data_start + info.offset;
             let end = start + info.size;
@@ -112,7 +110,11 @@ impl Gpt2Weights {
         }
 
         let mut weights = Gpt2Weights {
-            wte, wpe, layers, ln_f_weight, ln_f_bias,
+            wte,
+            wpe,
+            layers,
+            ln_f_weight,
+            ln_f_bias,
         };
         weights.transpose_weights_for_simd();
         Ok(weights)
@@ -180,14 +182,18 @@ fn parse_safetensors_header(json: &str) -> Result<HashMap<String, TensorMeta>, S
                 let arr_start = search_start + bracket_start + 1;
                 if let Some(bracket_end) = json[arr_start..].find(']') {
                     let arr = &json[arr_start..arr_start + bracket_end];
-                    let nums: Vec<usize> = arr.split(',')
+                    let nums: Vec<usize> = arr
+                        .split(',')
                         .filter_map(|s| s.trim().parse().ok())
                         .collect();
                     if nums.len() == 2 {
-                        tensors.insert(key.to_string(), TensorMeta {
-                            offset: nums[0],
-                            size: nums[1] - nums[0],
-                        });
+                        tensors.insert(
+                            key.to_string(),
+                            TensorMeta {
+                                offset: nums[0],
+                                size: nums[1] - nums[0],
+                            },
+                        );
                     }
                 }
             }

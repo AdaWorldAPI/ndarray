@@ -44,9 +44,7 @@ impl DdimScheduler {
 
         // Linear beta schedule
         let betas: Vec<f32> = (0..n)
-            .map(|i| {
-                config.beta_start + (config.beta_end - config.beta_start) * i as f32 / (n - 1) as f32
-            })
+            .map(|i| config.beta_start + (config.beta_end - config.beta_start) * i as f32 / (n - 1) as f32)
             .collect();
 
         // Alphas = 1 - beta
@@ -67,7 +65,11 @@ impl DdimScheduler {
             .map(|i| i * step_size)
             .collect();
 
-        Self { config, alphas_cumprod, timesteps }
+        Self {
+            config,
+            alphas_cumprod,
+            timesteps,
+        }
     }
 
     /// Single denoising step: given model noise prediction, compute x_{t-1} from x_t.
@@ -98,9 +100,11 @@ impl DdimScheduler {
         let sqrt_alpha = alpha.sqrt();
         let sqrt_one_minus = (1.0 - alpha).sqrt();
 
-        original.iter().zip(noise).map(|(&x, &n)| {
-            sqrt_alpha * x + sqrt_one_minus * n
-        }).collect()
+        original
+            .iter()
+            .zip(noise)
+            .map(|(&x, &n)| sqrt_alpha * x + sqrt_one_minus * n)
+            .collect()
     }
 
     /// Number of inference steps.

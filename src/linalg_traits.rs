@@ -28,8 +28,10 @@ pub trait LinalgScalar:
 {
 }
 
-impl<T> LinalgScalar for T where T: 'static + Copy + Zero + One + Add<Output = T> + Sub<Output = T> + Mul<Output = T> + Div<Output = T>
-{}
+impl<T> LinalgScalar for T where
+    T: 'static + Copy + Zero + One + Add<Output = T> + Sub<Output = T> + Mul<Output = T> + Div<Output = T>
+{
+}
 
 /// Floating-point element types `f32` and `f64`.
 ///

@@ -3,8 +3,8 @@
 //! Provides vector-vector operations: dot, axpy, scal, nrm2, asum,
 //! iamax, copy, swap, and element-wise scalar/vector arithmetic.
 
-use crate::imp_prelude::*;
 use crate::backend::BlasFloat;
+use crate::imp_prelude::*;
 
 /// BLAS Level 1 operations on 1-D arrays.
 ///

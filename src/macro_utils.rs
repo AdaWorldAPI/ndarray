@@ -61,12 +61,11 @@ macro_rules! expand_if {
 #[cfg(debug_assertions)]
 macro_rules! debug_bounds_check {
     ($self_:ident, $index:expr) => {
-        if $index.index_checked(&$self_._dim(), &$self_._strides()).is_none() {
-            panic!(
-                "ndarray: index {:?} is out of bounds for array of shape {:?}",
-                $index,
-                $self_.shape()
-            );
+        if $index
+            .index_checked(&$self_._dim(), &$self_._strides())
+            .is_none()
+        {
+            panic!("ndarray: index {:?} is out of bounds for array of shape {:?}", $index, $self_.shape());
         }
     };
 }
@@ -79,12 +78,11 @@ macro_rules! debug_bounds_check {
 #[cfg(debug_assertions)]
 macro_rules! debug_bounds_check_ref {
     ($self_:ident, $index:expr) => {
-        if $index.index_checked(&$self_._dim(), &$self_._strides()).is_none() {
-            panic!(
-                "ndarray: index {:?} is out of bounds for array of shape {:?}",
-                $index,
-                $self_.shape()
-            );
+        if $index
+            .index_checked(&$self_._dim(), &$self_._strides())
+            .is_none()
+        {
+            panic!("ndarray: index {:?} is out of bounds for array of shape {:?}", $index, $self_.shape());
         }
     };
 }

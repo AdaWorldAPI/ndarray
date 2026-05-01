@@ -259,10 +259,7 @@ mod tests {
     fn test_gate_level_from_str() {
         assert_eq!(QualiaGateLevel::parse("flow"), Some(QualiaGateLevel::Flow));
         assert_eq!(QualiaGateLevel::parse("hold"), Some(QualiaGateLevel::Hold));
-        assert_eq!(
-            QualiaGateLevel::parse("block"),
-            Some(QualiaGateLevel::Block)
-        );
+        assert_eq!(QualiaGateLevel::parse("block"), Some(QualiaGateLevel::Block));
         assert_eq!(QualiaGateLevel::parse("invalid"), None);
     }
 

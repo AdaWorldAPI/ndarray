@@ -12,7 +12,8 @@ use crate::{imp_prelude::*, ArrayPartsSized};
 
 // internal "builder-like" methods
 impl<A, S> ArrayBase<S, Ix1>
-where S: RawData<Elem = A>
+where
+    S: RawData<Elem = A>,
 {
     /// Create an (initially) empty one-dimensional array from the given data and array head
     /// pointer
@@ -23,8 +24,7 @@ where S: RawData<Elem = A>
     ///
     /// See ArrayView::from_shape_ptr for general pointer validity documentation.
     #[inline]
-    pub(crate) unsafe fn from_data_ptr(data: S, ptr: NonNull<A>) -> Self
-    {
+    pub(crate) unsafe fn from_data_ptr(data: S, ptr: NonNull<A>) -> Self {
         let array = ArrayBase {
             data,
             parts: ArrayPartsSized::new(ptr, Ix1(0), Ix1(1)),
@@ -51,7 +51,8 @@ where
     /// for the array data.
     #[inline]
     pub(crate) unsafe fn with_strides_dim<E>(self, strides: E, dim: E) -> ArrayBase<S, E>
-    where E: Dimension
+    where
+        E: Dimension,
     {
         debug_assert_eq!(strides.ndim(), dim.ndim());
         ArrayBase {

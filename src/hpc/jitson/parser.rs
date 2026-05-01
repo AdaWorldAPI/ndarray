@@ -99,11 +99,7 @@ pub struct ParseError {
 
 impl core::fmt::Display for ParseError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "JITSON parse error at byte {}: {}",
-            self.offset, self.message
-        )
+        write!(f, "JITSON parse error at byte {}: {}", self.offset, self.message)
     }
 }
 
@@ -169,24 +165,15 @@ impl<'a> Parser<'a> {
     fn expect(&mut self, expected: u8) -> Result<(), ParseError> {
         match self.advance() {
             Some(b) if b == expected => Ok(()),
-            Some(b) => Err(self.err(&alloc::format!(
-                "expected '{}', found '{}'",
-                expected as char,
-                b as char
-            ))),
+            Some(b) => Err(self.err(&alloc::format!("expected '{}', found '{}'", expected as char, b as char))),
             None => {
                 // Bracket recovery: if we hit EOF expecting a closing bracket,
                 // check if it matches the top of our open_stack.
-                if (expected == b'}' || expected == b']')
-                    && self.open_stack.last().copied() == Some(expected)
-                {
+                if (expected == b'}' || expected == b']') && self.open_stack.last().copied() == Some(expected) {
                     self.open_stack.pop();
                     Ok(())
                 } else {
-                    Err(self.err(&alloc::format!(
-                        "unexpected EOF, expected '{}'",
-                        expected as char
-                    )))
+                    Err(self.err(&alloc::format!("unexpected EOF, expected '{}'", expected as char)))
                 }
             }
         }
@@ -238,10 +225,8 @@ impl<'a> Parser<'a> {
                             }
                             let hex = &self.input[self.pos..self.pos + 4];
                             self.pos += 4;
-                            let hex_str = core::str::from_utf8(hex)
-                                .map_err(|_| self.err("invalid \\u hex"))?;
-                            let cp = u32::from_str_radix(hex_str, 16)
-                                .map_err(|_| self.err("invalid \\u hex"))?;
+                            let hex_str = core::str::from_utf8(hex).map_err(|_| self.err("invalid \\u hex"))?;
+                            let cp = u32::from_str_radix(hex_str, 16).map_err(|_| self.err("invalid \\u hex"))?;
                             if let Some(c) = char::from_u32(cp) {
                                 s.push(c);
                             }
@@ -272,13 +257,9 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
             }
         }
-        if self.pos < self.input.len()
-            && (self.input[self.pos] == b'e' || self.input[self.pos] == b'E')
-        {
+        if self.pos < self.input.len() && (self.input[self.pos] == b'e' || self.input[self.pos] == b'E') {
             self.pos += 1;
-            if self.pos < self.input.len()
-                && (self.input[self.pos] == b'+' || self.input[self.pos] == b'-')
-            {
+            if self.pos < self.input.len() && (self.input[self.pos] == b'+' || self.input[self.pos] == b'-') {
                 self.pos += 1;
             }
             while self.pos < self.input.len() && self.input[self.pos].is_ascii_digit() {
@@ -420,15 +401,13 @@ mod tests {
         let input = r#"{"version": 1, "kernel": "hamming_distance", "scan": {"threshold": 2048}}"#;
         let root = parse_json(input).unwrap();
         assert_eq!(root.get("version").unwrap().as_u64(), Some(1));
-        assert_eq!(
-            root.get("kernel").unwrap().as_str(),
-            Some("hamming_distance")
-        );
+        assert_eq!(root.get("kernel").unwrap().as_str(), Some("hamming_distance"));
     }
 
     #[test]
     fn test_bracket_recovery_missing_closing_brace() {
-        let input = r#"{"version": 1, "kernel": "hamming_distance", "scan": {"threshold": 1, "record_size": 64, "top_k": 5}"#;
+        let input =
+            r#"{"version": 1, "kernel": "hamming_distance", "scan": {"threshold": 1, "record_size": 64, "top_k": 5}"#;
         let root = parse_json(input).unwrap();
         assert_eq!(root.get("version").unwrap().as_u64(), Some(1));
     }
@@ -443,7 +422,8 @@ mod tests {
 
     #[test]
     fn test_bracket_recovery_nested() {
-        let input = r#"{"version": 1, "kernel": "cosine_i8", "scan": {"threshold": 100, "record_size": 128, "top_k": 3"#;
+        let input =
+            r#"{"version": 1, "kernel": "cosine_i8", "scan": {"threshold": 100, "record_size": 128, "top_k": 3"#;
         let root = parse_json(input).unwrap();
         let scan = root.get("scan").unwrap();
         assert_eq!(scan.get("top_k").unwrap().as_u64(), Some(3));

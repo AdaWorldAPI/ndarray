@@ -6,8 +6,8 @@
 //!
 //! One AudioFrame = one graph node in lance-graph. 48 bytes = CAM-compatible.
 
-use super::mdct;
 use super::bands;
+use super::mdct;
 use super::pvq;
 
 /// One audio frame: 42 bytes gain + 6 bytes shape = 48 bytes.
@@ -103,7 +103,10 @@ impl AudioFrame {
         }
         let mut pvq_summary = [0u8; 6];
         pvq_summary.copy_from_slice(&bytes[42..48]);
-        AudioFrame { band_energies, pvq_summary }
+        AudioFrame {
+            band_energies,
+            pvq_summary,
+        }
     }
 }
 
@@ -127,7 +130,9 @@ mod tests {
         let frame = AudioFrame::encode(&pcm, 8);
 
         // Band energies should be nonzero (at least the band containing 440Hz)
-        let total_energy: f32 = frame.band_energies.iter()
+        let total_energy: f32 = frame
+            .band_energies
+            .iter()
             .map(|&b| f32::from_bits((b as u32) << 16))
             .sum();
         assert!(total_energy > 0.01, "Encoded frame has no energy: {}", total_energy);

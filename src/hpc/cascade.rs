@@ -5,8 +5,8 @@
 //!
 //! Extracted from rustynum-core/hdr.rs — the cascade algorithm and types.
 
-use super::bitwise;
 use super::bf16_truth::BF16Weights;
+use super::bitwise;
 
 /// A ranked hit from the HDR cascade search.
 #[derive(Debug, Clone)]
@@ -70,15 +70,27 @@ impl PartialEq for PreciseMode {
         match (self, other) {
             (Self::Off, Self::Off) => true,
             (Self::Vnni, Self::Vnni) => true,
-            (Self::F32 { scale: s1, zero_point: z1 }, Self::F32 { scale: s2, zero_point: z2 }) => {
-                s1.to_bits() == s2.to_bits() && z1 == z2
-            }
-            (Self::BF16 { scale: s1, zero_point: z1 }, Self::BF16 { scale: s2, zero_point: z2 }) => {
-                s1.to_bits() == s2.to_bits() && z1 == z2
-            }
-            (Self::DeltaXor { delta_weight: w1 }, Self::DeltaXor { delta_weight: w2 }) => {
-                w1.to_bits() == w2.to_bits()
-            }
+            (
+                Self::F32 {
+                    scale: s1,
+                    zero_point: z1,
+                },
+                Self::F32 {
+                    scale: s2,
+                    zero_point: z2,
+                },
+            ) => s1.to_bits() == s2.to_bits() && z1 == z2,
+            (
+                Self::BF16 {
+                    scale: s1,
+                    zero_point: z1,
+                },
+                Self::BF16 {
+                    scale: s2,
+                    zero_point: z2,
+                },
+            ) => s1.to_bits() == s2.to_bits() && z1 == z2,
+            (Self::DeltaXor { delta_weight: w1 }, Self::DeltaXor { delta_weight: w2 }) => w1.to_bits() == w2.to_bits(),
             (Self::BF16Hamming { weights: w1 }, Self::BF16Hamming { weights: w2 }) => w1 == w2,
             _ => false,
         }
@@ -98,16 +110,28 @@ pub struct Cascade {
 
 impl Cascade {
     /// Current distribution mean (Welford online estimate).
-    pub fn mu(&self) -> f64 { self.mu }
+    pub fn mu(&self) -> f64 {
+        self.mu
+    }
 
     /// Current distribution standard deviation (Welford online estimate).
-    pub fn sigma(&self) -> f64 { self.sigma }
+    pub fn sigma(&self) -> f64 {
+        self.sigma
+    }
 
     /// Number of observations processed.
-    pub fn observations(&self) -> usize { self.observations }
+    pub fn observations(&self) -> usize {
+        self.observations
+    }
 
     pub fn from_threshold(threshold: u64, vec_bytes: usize) -> Self {
-        Self { threshold, vec_bytes, mu: 0.0, sigma: 0.0, observations: 0 }
+        Self {
+            threshold,
+            vec_bytes,
+            mu: 0.0,
+            sigma: 0.0,
+            observations: 0,
+        }
     }
 
     pub fn calibrate(distances: &[u32], vec_bytes: usize) -> Self {
@@ -116,10 +140,23 @@ impl Cascade {
         }
         let n = distances.len() as f64;
         let mu = distances.iter().map(|&d| d as f64).sum::<f64>() / n;
-        let var = distances.iter().map(|&d| { let diff = d as f64 - mu; diff * diff }).sum::<f64>() / n;
+        let var = distances
+            .iter()
+            .map(|&d| {
+                let diff = d as f64 - mu;
+                diff * diff
+            })
+            .sum::<f64>()
+            / n;
         let sigma = var.sqrt();
         let threshold = (mu + 3.0 * sigma) as u64;
-        Self { threshold, vec_bytes, mu, sigma, observations: distances.len() }
+        Self {
+            threshold,
+            vec_bytes,
+            mu,
+            sigma,
+            observations: distances.len(),
+        }
     }
 
     pub fn expose(&self, distance: u32) -> Band {
@@ -178,13 +215,7 @@ impl Cascade {
     }
 
     /// Run the full 3-stroke cascade query.
-    pub fn query(
-        &self,
-        query: &[u8],
-        database: &[u8],
-        vec_bytes: usize,
-        num_vectors: usize,
-    ) -> Vec<RankedHit> {
+    pub fn query(&self, query: &[u8], database: &[u8], vec_bytes: usize, num_vectors: usize) -> Vec<RankedHit> {
         assert_eq!(query.len(), vec_bytes);
         assert_eq!(database.len(), vec_bytes * num_vectors);
 
@@ -232,7 +263,14 @@ impl Cascade {
         } else {
             let var: f64 = {
                 let mu: f64 = warmup_dists.iter().map(|&d| d as f64).sum::<f64>() / warmup_n as f64;
-                warmup_dists.iter().map(|&d| { let diff = d as f64 - mu; diff * diff }).sum::<f64>() / warmup_n as f64
+                warmup_dists
+                    .iter()
+                    .map(|&d| {
+                        let diff = d as f64 - mu;
+                        diff * diff
+                    })
+                    .sum::<f64>()
+                    / warmup_n as f64
             };
             var.sqrt()
         };
@@ -280,11 +318,7 @@ impl Cascade {
     /// Because CLAM already provides geometrically tight candidates, Stroke 1
     /// is partially redundant -- we skip directly to full Hamming verification.
     pub fn query_candidates(
-        &self,
-        query: &[u8],
-        database: &[u8],
-        vec_bytes: usize,
-        candidate_indices: &[(usize, u64)],
+        &self, query: &[u8], database: &[u8], vec_bytes: usize, candidate_indices: &[(usize, u64)],
     ) -> Vec<RankedHit> {
         let threshold = self.threshold;
         let mut results = Vec::with_capacity(candidate_indices.len());
@@ -316,12 +350,7 @@ impl Cascade {
 
     /// Run the full 3-stroke cascade query with precision scoring (Stroke 3).
     pub fn query_precise(
-        &self,
-        query: &[u8],
-        database: &[u8],
-        vec_bytes: usize,
-        num_vectors: usize,
-        precise_mode: PreciseMode,
+        &self, query: &[u8], database: &[u8], vec_bytes: usize, num_vectors: usize, precise_mode: PreciseMode,
     ) -> Vec<RankedHit> {
         let mut results = self.query(query, database, vec_bytes, num_vectors);
 
@@ -380,11 +409,7 @@ fn bf16_hamming_scalar(a: &[u8], b: &[u8], weights: &BF16Weights) -> u64 {
 ///
 /// Sorts by precise distance descending (most similar first).
 fn apply_precision_tier(
-    query: &[u8],
-    database: &[u8],
-    vec_bytes: usize,
-    finalists: &mut [RankedHit],
-    precise_mode: PreciseMode,
+    query: &[u8], database: &[u8], vec_bytes: usize, finalists: &mut [RankedHit], precise_mode: PreciseMode,
 ) {
     match precise_mode {
         PreciseMode::Off => return,
@@ -471,8 +496,7 @@ fn apply_precision_tier(
         }
 
         PreciseMode::BF16Hamming { weights } => {
-            let max_per_dim =
-                weights.sign as u64 + 8 * weights.exponent as u64 + 7 * weights.mantissa as u64;
+            let max_per_dim = weights.sign as u64 + 8 * weights.exponent as u64 + 7 * weights.mantissa as u64;
             let n_dims = vec_bytes / 2;
             let max_total = max_per_dim * n_dims as u64;
 
@@ -544,7 +568,15 @@ impl PackedDatabase {
             }
         }
 
-        Self { stroke1, stroke2, stroke3, num_vectors, s1_bytes, s2_bytes, s3_bytes }
+        Self {
+            stroke1,
+            stroke2,
+            stroke3,
+            num_vectors,
+            s1_bytes,
+            s2_bytes,
+            s3_bytes,
+        }
     }
 
     /// Run cascade query on packed layout.
@@ -701,8 +733,14 @@ mod tests {
         database[2 * vec_bytes..3 * vec_bytes].copy_from_slice(&query);
         let cascade = Cascade::from_threshold(vec_bytes as u64 * 4, vec_bytes);
         let results = cascade.query_precise(
-            &query, &database, vec_bytes, 5,
-            PreciseMode::F32 { scale: 1.0 / 128.0, zero_point: 128 },
+            &query,
+            &database,
+            vec_bytes,
+            5,
+            PreciseMode::F32 {
+                scale: 1.0 / 128.0,
+                zero_point: 128,
+            },
         );
         let exact = results.iter().find(|r| r.index == 2).unwrap();
         assert!(!exact.precise.is_nan());
@@ -716,10 +754,7 @@ mod tests {
         database[1 * vec_bytes..2 * vec_bytes].copy_from_slice(&query);
         let cascade = Cascade::from_threshold(vec_bytes as u64 * 4, vec_bytes);
         let weights = BF16Weights::new(256, 16, 1);
-        let results = cascade.query_precise(
-            &query, &database, vec_bytes, 5,
-            PreciseMode::BF16Hamming { weights },
-        );
+        let results = cascade.query_precise(&query, &database, vec_bytes, 5, PreciseMode::BF16Hamming { weights });
         let exact = results.iter().find(|r| r.index == 1).unwrap();
         assert!((exact.precise - 1.0).abs() < 1e-6, "exact match should have precise=1.0");
     }
@@ -750,7 +785,7 @@ mod tests {
         let vec_bytes = 64;
         let query = vec![0xFFu8; vec_bytes];
         let database = vec![0x00u8; vec_bytes * 5]; // all zeros, max hamming from query
-        // Hamming(0xFF, 0x00) = 8 bits per byte * 64 bytes = 512
+                                                    // Hamming(0xFF, 0x00) = 8 bits per byte * 64 bytes = 512
         let cascade = Cascade::from_threshold(100, vec_bytes); // tight threshold
 
         let candidates = vec![(0, 512), (1, 512)];

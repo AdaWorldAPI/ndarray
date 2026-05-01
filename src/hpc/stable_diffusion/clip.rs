@@ -70,8 +70,7 @@ impl ClipEncoder {
             let hid_off = t * CLIP_EMBED_DIM;
             for d in 0..CLIP_EMBED_DIM {
                 hidden[hid_off + d] =
-                    self.weights.token_embedding[tok_off + d]
-                    + self.weights.position_embedding[pos_off + d];
+                    self.weights.token_embedding[tok_off + d] + self.weights.position_embedding[pos_off + d];
             }
         }
 
@@ -94,12 +93,7 @@ impl ClipEncoder {
     }
 
     /// One transformer layer (bidirectional self-attention + MLP).
-    fn transformer_layer(
-        &self,
-        layer: &ClipLayerWeights,
-        hidden: &mut [f32],
-        seq_len: usize,
-    ) {
+    fn transformer_layer(&self, layer: &ClipLayerWeights, hidden: &mut [f32], seq_len: usize) {
         // Process each position through attention + MLP
         // For the scaffold: simplified single-token path.
         // Full implementation would do batched multi-head attention.
@@ -111,8 +105,7 @@ impl ClipEncoder {
             // Self-attention (simplified: each position attends to itself for scaffold)
             let mut attn_out = vec![0.0f32; CLIP_EMBED_DIM];
             layers::matmul_vec(
-                &normed, &layer.attn_out_weight, &layer.attn_out_bias,
-                &mut attn_out, CLIP_EMBED_DIM, CLIP_EMBED_DIM,
+                &normed, &layer.attn_out_weight, &layer.attn_out_bias, &mut attn_out, CLIP_EMBED_DIM, CLIP_EMBED_DIM,
             );
 
             // Residual
@@ -125,11 +118,15 @@ impl ClipEncoder {
             layers::layer_norm(&mut normed2, &layer.ln2_weight, &layer.ln2_bias);
 
             let mut fc_out = vec![0.0f32; CLIP_MLP_DIM];
-            layers::matmul_vec(&normed2, &layer.mlp_fc_weight, &layer.mlp_fc_bias, &mut fc_out, CLIP_EMBED_DIM, CLIP_MLP_DIM);
+            layers::matmul_vec(
+                &normed2, &layer.mlp_fc_weight, &layer.mlp_fc_bias, &mut fc_out, CLIP_EMBED_DIM, CLIP_MLP_DIM,
+            );
             layers::gelu(&mut fc_out);
 
             let mut proj_out = vec![0.0f32; CLIP_EMBED_DIM];
-            layers::matmul_vec(&fc_out, &layer.mlp_proj_weight, &layer.mlp_proj_bias, &mut proj_out, CLIP_MLP_DIM, CLIP_EMBED_DIM);
+            layers::matmul_vec(
+                &fc_out, &layer.mlp_proj_weight, &layer.mlp_proj_bias, &mut proj_out, CLIP_MLP_DIM, CLIP_EMBED_DIM,
+            );
 
             // Residual
             for d in 0..CLIP_EMBED_DIM {

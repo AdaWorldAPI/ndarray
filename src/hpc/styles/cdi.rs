@@ -13,12 +13,17 @@ pub fn induce_dissonance(belief: &Base17, truth: &NarsTruth, corpus: &[Base17]) 
         let similarity = 1.0 - belief.l1(c) as f32 / max_l1;
         if similarity > 0.3 && similarity < 0.7 {
             let tension = similarity * (1.0 - similarity); // Maximum at 0.5
-            if tension > best_tension { best_tension = tension; best = c.clone(); }
+            if tension > best_tension {
+                best_tension = tension;
+                best = c.clone();
+            }
         }
     }
     // Dissonance = midpoint between belief and its tension partner
     let mut dims = [0i16; 17];
-    for d in 0..17 { dims[d] = ((belief.dims[d] as i32 + best.dims[d] as i32) / 2) as i16; }
+    for d in 0..17 {
+        dims[d] = ((belief.dims[d] as i32 + best.dims[d] as i32) / 2) as i16;
+    }
     let dissonance = Base17 { dims };
     let dissonant_truth = NarsTruth::new(0.5, truth.confidence * 0.5);
     (dissonance, dissonant_truth)

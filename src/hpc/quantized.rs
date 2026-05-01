@@ -441,16 +441,7 @@ impl_half_ops!(F16);
 /// BF16 GEMM with f32 accumulation: C = alpha * A * B + beta * C
 ///
 /// A and B are BF16, C is f32. Accumulation done in f32 for precision.
-pub fn bf16_gemm_f32(
-    a: &[BF16],
-    b: &[BF16],
-    c: &mut [f32],
-    m: usize,
-    n: usize,
-    k: usize,
-    alpha: f32,
-    beta: f32,
-) {
+pub fn bf16_gemm_f32(a: &[BF16], b: &[BF16], c: &mut [f32], m: usize, n: usize, k: usize, alpha: f32, beta: f32) {
     // Apply beta
     if beta == 0.0 {
         for v in c.iter_mut() {
@@ -477,8 +468,7 @@ pub fn bf16_gemm_f32(
                     for p in 0..kb {
                         let a_val = alpha * a[(ii + i) * k + (kk + p)].to_f32();
                         for j in 0..jb {
-                            c[(ii + i) * n + (jj + j)] +=
-                                a_val * b[(kk + p) * n + (jj + j)].to_f32();
+                            c[(ii + i) * n + (jj + j)] += a_val * b[(kk + p) * n + (jj + j)].to_f32();
                         }
                     }
                 }
@@ -492,14 +482,7 @@ pub fn bf16_gemm_f32(
 
 /// Mixed precision GEMM: f32 inputs, BF16 compute, f32 output.
 pub fn mixed_precision_gemm(
-    a_f32: &[f32],
-    b_f32: &[f32],
-    c: &mut [f32],
-    m: usize,
-    n: usize,
-    k: usize,
-    alpha: f32,
-    beta: f32,
+    a_f32: &[f32], b_f32: &[f32], c: &mut [f32], m: usize, n: usize, k: usize, alpha: f32, beta: f32,
 ) {
     let a_bf16 = f32_vec_to_bf16(a_f32);
     let b_bf16 = f32_vec_to_bf16(b_f32);
@@ -547,7 +530,15 @@ pub fn quantize_f32_to_u8(data: &[f32]) -> (Vec<u8>, QuantParams) {
         .map(|&v| ((v / scale + zero_point as f32).round() as i32).clamp(0, 255) as u8)
         .collect();
 
-    (quantized, QuantParams { scale, zero_point, min_val, max_val })
+    (
+        quantized,
+        QuantParams {
+            scale,
+            zero_point,
+            min_val,
+            max_val,
+        },
+    )
 }
 
 /// Quantize f32 to i8.
@@ -562,7 +553,15 @@ pub fn quantize_f32_to_i8(data: &[f32]) -> (Vec<i8>, QuantParams) {
         .map(|&v| (v / scale).round().clamp(-128.0, 127.0) as i8)
         .collect();
 
-    (quantized, QuantParams { scale, zero_point: 0, min_val, max_val })
+    (
+        quantized,
+        QuantParams {
+            scale,
+            zero_point: 0,
+            min_val,
+            max_val,
+        },
+    )
 }
 
 /// Dequantize i8 codes back to f32 using the [`QuantParams`] from
@@ -593,11 +592,7 @@ pub fn dequantize_i8_to_f32(codes: &[i8], params: &QuantParams, n: usize) -> Vec
 }
 
 /// Per-channel i8 quantization (per row).
-pub fn quantize_per_channel_i8(
-    data: &[f32],
-    rows: usize,
-    cols: usize,
-) -> (Vec<i8>, PerChannelQuantParams) {
+pub fn quantize_per_channel_i8(data: &[f32], rows: usize, cols: usize) -> (Vec<i8>, PerChannelQuantParams) {
     let mut quantized = vec![0i8; data.len()];
     let mut scales = Vec::with_capacity(rows);
     let mut zero_points = Vec::with_capacity(rows);
@@ -636,15 +631,7 @@ pub fn int8_gemm_i32(a: &[u8], b: &[i8], c: &mut [i32], m: usize, n: usize, k: u
 
 /// Int8 GEMM with f32 dequantization.
 pub fn int8_gemm_f32(
-    a: &[u8],
-    b: &[i8],
-    c: &mut [f32],
-    m: usize,
-    n: usize,
-    k: usize,
-    scale_a: f32,
-    zero_point_a: i32,
-    scale_b: f32,
+    a: &[u8], b: &[i8], c: &mut [f32], m: usize, n: usize, k: usize, scale_a: f32, zero_point_a: i32, scale_b: f32,
 ) {
     let mut c_i32 = vec![0i32; m * n];
     int8_gemm_i32(a, b, &mut c_i32, m, n, k);
@@ -666,14 +653,7 @@ pub fn int8_gemm_f32(
 
 /// Per-channel int8 GEMM with f32 output.
 pub fn int8_gemm_per_channel_f32(
-    a: &[u8],
-    b: &[i8],
-    c: &mut [f32],
-    m: usize,
-    n: usize,
-    k: usize,
-    a_scales: &[f32],
-    a_zero_points: &[i32],
+    a: &[u8], b: &[i8], c: &mut [f32], m: usize, n: usize, k: usize, a_scales: &[f32], a_zero_points: &[i32],
     b_scales: &[f32],
 ) {
     for i in 0..m {
@@ -721,11 +701,7 @@ pub fn dequantize_i4_to_f32(packed: &[u8], params: &QuantParams, len: usize) -> 
     let mut result = Vec::with_capacity(len);
     for i in 0..len {
         let byte = packed[i / 2];
-        let nibble = if i % 2 == 0 {
-            byte & 0x0F
-        } else {
-            byte >> 4
-        };
+        let nibble = if i % 2 == 0 { byte & 0x0F } else { byte >> 4 };
         // Sign-extend from 4 bits
         let val = if nibble & 0x08 != 0 {
             nibble as i8 | !0x0F_u8 as i8
@@ -1051,12 +1027,7 @@ mod tests {
         for &v in &approx {
             let h = F16::from_f32(v);
             let back = h.to_f32();
-            assert!(
-                (back - v).abs() / v.abs().max(1.0) < 0.001,
-                "F16 roundtrip {} → {}",
-                v,
-                back
-            );
+            assert!((back - v).abs() / v.abs().max(1.0) < 0.001, "F16 roundtrip {} → {}", v, back);
         }
     }
 

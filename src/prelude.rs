@@ -19,16 +19,7 @@
 
 #[doc(no_inline)]
 pub use crate::{
-    ArcArray,
-    Array,
-    ArrayBase,
-    ArrayRef,
-    ArrayView,
-    ArrayViewMut,
-    CowArray,
-    LayoutRef,
-    RawArrayView,
-    RawArrayViewMut,
+    ArcArray, Array, ArrayBase, ArrayRef, ArrayView, ArrayViewMut, CowArray, LayoutRef, RawArrayView, RawArrayViewMut,
     RawRef,
 };
 
@@ -46,13 +37,7 @@ pub use crate::{ArrayView0, ArrayView1, ArrayView2, ArrayView3, ArrayView4, Arra
 
 #[doc(no_inline)]
 pub use crate::{
-    ArrayViewMut0,
-    ArrayViewMut1,
-    ArrayViewMut2,
-    ArrayViewMut3,
-    ArrayViewMut4,
-    ArrayViewMut5,
-    ArrayViewMut6,
+    ArrayViewMut0, ArrayViewMut1, ArrayViewMut2, ArrayViewMut3, ArrayViewMut4, ArrayViewMut5, ArrayViewMut6,
     ArrayViewMutD,
 };
 

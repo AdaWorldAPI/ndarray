@@ -426,7 +426,11 @@ mod tests {
         rope_apply(&mut q, &mut k, 4, 42, 10000.0);
         let norm_after: f32 = q.iter().map(|x| x * x).sum::<f32>().sqrt();
         // RoPE is a rotation — should preserve L2 norm
-        assert!((norm_before - norm_after).abs() < 0.01,
-            "RoPE should preserve norm: {} vs {}", norm_before, norm_after);
+        assert!(
+            (norm_before - norm_after).abs() < 0.01,
+            "RoPE should preserve norm: {} vs {}",
+            norm_before,
+            norm_after
+        );
     }
 }

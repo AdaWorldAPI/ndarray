@@ -49,8 +49,8 @@ pub mod qualia_dim {
 
 /// The three causality-relevant dimensions: warmth, social, sacredness.
 pub const CAUSALITY_DIMS: [usize; 3] = [
-    qualia_dim::WARMTH,    // 4
-    qualia_dim::SOCIAL,    // 6
+    qualia_dim::WARMTH,     // 4
+    qualia_dim::SOCIAL,     // 6
     qualia_dim::SACREDNESS, // 8
 ];
 
@@ -169,7 +169,10 @@ impl NarsTruthValue {
 
     /// Total ignorance: frequency 0.5, confidence 0.
     pub fn ignorance() -> Self {
-        Self { frequency: 0.5, confidence: 0.0 }
+        Self {
+            frequency: 0.5,
+            confidence: 0.0,
+        }
     }
 
     /// Expectation: `c * (f - 0.5) + 0.5`.
@@ -236,9 +239,7 @@ pub struct CausalityDecomposition {
 /// assert_eq!(dec.sacredness_dir, ndarray::hpc::causality::CausalityDirection::Forward);
 /// ```
 pub fn causality_decompose(
-    a: &PackedQualia,
-    b: &PackedQualia,
-    superposition: Option<&SuperpositionState>,
+    a: &PackedQualia, b: &PackedQualia, superposition: Option<&SuperpositionState>,
 ) -> CausalityDecomposition {
     let warmth_dir = CausalityDirection::from_qualia(a, b, qualia_dim::WARMTH);
     let social_dir = CausalityDirection::from_qualia(a, b, qualia_dim::SOCIAL);
@@ -250,17 +251,10 @@ pub fn causality_decompose(
             NarsTruthValue::from_awareness(sp.states[qualia_dim::SOCIAL]),
             NarsTruthValue::from_awareness(sp.states[qualia_dim::SACREDNESS]),
         ),
-        _ => (
-            NarsTruthValue::ignorance(),
-            NarsTruthValue::ignorance(),
-            NarsTruthValue::ignorance(),
-        ),
+        _ => (NarsTruthValue::ignorance(), NarsTruthValue::ignorance(), NarsTruthValue::ignorance()),
     };
 
-    let overall_strength = (warmth_tv.expectation()
-        + social_tv.expectation()
-        + sacredness_tv.expectation())
-        / 3.0;
+    let overall_strength = (warmth_tv.expectation() + social_tv.expectation() + sacredness_tv.expectation()) / 3.0;
 
     CausalityDecomposition {
         warmth_dir,

@@ -79,17 +79,10 @@ fn permute<const N: usize>(fp: &Fingerprint<N>, offset: usize) -> Fingerprint<N>
 /// assert_eq!(matrix.len(), 4 * 4 * 4);
 /// ```
 pub fn binding_popcount_3d(
-    x: &Fingerprint<256>,
-    y: &Fingerprint<256>,
-    z: &Fingerprint<256>,
-    resolution: usize,
+    x: &Fingerprint<256>, y: &Fingerprint<256>, z: &Fingerprint<256>, resolution: usize,
 ) -> Vec<u32> {
     let total_bits = 256 * 64; // 16384
-    let step = if resolution > 1 {
-        total_bits / resolution
-    } else {
-        0
-    };
+    let step = if resolution > 1 { total_bits / resolution } else { 0 };
 
     // Pre-compute all permutations (avoid recomputation in inner loops)
     let x_perms: Vec<Fingerprint<256>> = (0..resolution).map(|i| permute(x, i * step)).collect();
@@ -120,9 +113,7 @@ pub fn binding_popcount_3d(
 /// Returns `(i, j, k, z_score)` sorted by z_score (ascending).
 /// Points with z_score < 1.0 are in the holographic basin.
 pub fn find_holographic_sweet_spot(
-    matrix: &[u32],
-    resolution: usize,
-    total_bits: usize,
+    matrix: &[u32], resolution: usize, total_bits: usize,
 ) -> Vec<(usize, usize, usize, f64)> {
     let target = total_bits as f64 / 2.0;
     let sigma = (total_bits as f64 / 4.0).sqrt();
@@ -152,9 +143,7 @@ pub fn find_holographic_sweet_spot(
 /// Returns `(i, j, k, z_score)` sorted by z_score (descending).
 /// Points with z_score > 2.0 are in the discriminative zone.
 pub fn find_discriminative_spots(
-    matrix: &[u32],
-    resolution: usize,
-    total_bits: usize,
+    matrix: &[u32], resolution: usize, total_bits: usize,
 ) -> Vec<(usize, usize, usize, f64)> {
     let target = total_bits as f64 / 2.0;
     let sigma = (total_bits as f64 / 4.0).sqrt();
@@ -269,7 +258,8 @@ mod tests {
             Self(seed)
         }
         fn next_u64(&mut self) -> u64 {
-            self.0 = self.0
+            self.0 = self
+                .0
                 .wrapping_mul(6364136223846793005)
                 .wrapping_add(1442695040888963407);
             self.0 >> 1
@@ -354,10 +344,7 @@ mod tests {
         let matrix = binding_popcount_3d(&x, &y, &z, res);
 
         let sweet_spots = find_holographic_sweet_spot(&matrix, res, total_bits);
-        assert!(
-            !sweet_spots.is_empty(),
-            "Should find holographic sweet spots"
-        );
+        assert!(!sweet_spots.is_empty(), "Should find holographic sweet spots");
 
         if sweet_spots.len() > 1 {
             assert!(sweet_spots[0].3 <= sweet_spots[1].3);
@@ -378,11 +365,7 @@ mod tests {
         assert!(mean > 0.0);
         assert!(std > 0.0);
         assert!(min < max);
-        assert!(
-            holo_frac > 0.05,
-            "Expected >5% holographic, got {}",
-            holo_frac
-        );
+        assert!(holo_frac > 0.05, "Expected >5% holographic, got {}", holo_frac);
     }
 
     #[test]

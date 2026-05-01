@@ -144,7 +144,7 @@ members = [
     "ndarray-rand",
     "crates/*",
 ]
-exclude = []
+exclude = ["crates/burn"]
 default-members = [
     ".",
     "ndarray-rand",

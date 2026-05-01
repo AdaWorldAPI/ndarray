@@ -42,14 +42,12 @@ use ndarray::{ArrayBase, Data, DataOwned, Dimension, RawData};
 use quickcheck::{Arbitrary, Gen};
 
 /// `rand`, re-exported for convenience and version-compatibility.
-pub mod rand
-{
+pub mod rand {
     pub use rand::*;
 }
 
 /// `rand-distr`, re-exported for convenience and version-compatibility.
-pub mod rand_distr
-{
+pub mod rand_distr {
     pub use rand_distr::*;
 }
 
@@ -155,7 +153,8 @@ where
 /// documentation for information. You can select a different RNG with
 /// [`.sample_axis_using()`](RandomRefExt::sample_axis_using).
 pub trait RandomRefExt<A, D>
-where D: Dimension
+where
+    D: Dimension,
 {
     /// Sample `n_samples` lanes slicing along `axis` using the default RNG.
     ///
@@ -305,7 +304,8 @@ where
 }
 
 impl<A, D> RandomRefExt<A, D> for ArrayRef<A, D>
-where D: Dimension
+where
+    D: Dimension,
 {
     fn sample_axis(&self, axis: Axis, n_samples: usize, strategy: SamplingStrategy) -> Array<A, D>
     where
@@ -340,18 +340,15 @@ where D: Dimension
 /// [`sample_axis_using`]: RandomRefExt::sample_axis_using
 #[derive(Debug, Clone)]
 #[allow(missing_docs)]
-pub enum SamplingStrategy
-{
+pub enum SamplingStrategy {
     WithReplacement,
     WithoutReplacement,
 }
 
 // `Arbitrary` enables `quickcheck` to generate random `SamplingStrategy` values for testing.
 #[cfg(feature = "quickcheck")]
-impl Arbitrary for SamplingStrategy
-{
-    fn arbitrary(g: &mut Gen) -> Self
-    {
+impl Arbitrary for SamplingStrategy {
+    fn arbitrary(g: &mut Gen) -> Self {
         if bool::arbitrary(g) {
             SamplingStrategy::WithReplacement
         } else {
@@ -360,7 +357,6 @@ impl Arbitrary for SamplingStrategy
     }
 }
 
-fn get_rng() -> SmallRng
-{
+fn get_rng() -> SmallRng {
     SmallRng::from_rng(&mut rng())
 }

@@ -254,7 +254,14 @@ impl OpenChatEngine {
         // Output projection
         let zero_bias = vec![0.0f32; EMBED_DIM];
         let mut projected = vec![0.0f32; EMBED_DIM];
-        layers::matmul_vec(&output, &self.weights.layers[layer_idx].attn_output, &zero_bias, &mut projected, EMBED_DIM, EMBED_DIM);
+        layers::matmul_vec(
+            &output,
+            &self.weights.layers[layer_idx].attn_output,
+            &zero_bias,
+            &mut projected,
+            EMBED_DIM,
+            EMBED_DIM,
+        );
 
         projected
     }
@@ -296,12 +303,7 @@ impl OpenChatEngine {
     }
 
     /// Generate tokens autoregressively.
-    pub fn generate(
-        &mut self,
-        prompt_tokens: &[u32],
-        max_new_tokens: usize,
-        temperature: f32,
-    ) -> Vec<GeneratedToken> {
+    pub fn generate(&mut self, prompt_tokens: &[u32], max_new_tokens: usize, temperature: f32) -> Vec<GeneratedToken> {
         self.reset();
         let mut generated = Vec::new();
 

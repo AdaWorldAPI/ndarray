@@ -39,8 +39,7 @@ use std::ops::{Deref, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, Rang
 /// reverse order. It can also be created with `Slice::from(a..).step_by(-1)`.
 /// The Python equivalent is `[a::-1]`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Slice
-{
+pub struct Slice {
     /// start index; negative are counted from the back of the axis
     pub start: isize,
     /// end index; negative are counted from the back of the axis; when not present
@@ -50,8 +49,7 @@ pub struct Slice
     pub step: isize,
 }
 
-impl Slice
-{
+impl Slice {
     /// Create a new `Slice` with the given extents.
     ///
     /// See also the `From` impls, converting from ranges; for example
@@ -59,8 +57,7 @@ impl Slice
     ///
     /// `step` must be nonzero.
     /// (This method checks with a debug assertion that `step` is not zero.)
-    pub fn new(start: isize, end: Option<isize>, step: isize) -> Slice
-    {
+    pub fn new(start: isize, end: Option<isize>, step: isize) -> Slice {
         debug_assert_ne!(step, 0, "Slice::new: step must be nonzero");
         Slice { start, end, step }
     }
@@ -71,8 +68,7 @@ impl Slice
     /// `step` must be nonzero.
     /// (This method checks with a debug assertion that `step` is not zero.)
     #[inline]
-    pub fn step_by(self, step: isize) -> Self
-    {
+    pub fn step_by(self, step: isize) -> Self {
         debug_assert_ne!(step, 0, "Slice::step_by: step must be nonzero");
         Slice {
             step: self.step * step,
@@ -116,13 +112,11 @@ pub struct NewAxis;
 /// with `SliceInfoElem::from(NewAxis)`. The Python equivalent is
 /// `[np.newaxis]`. The macro equivalent is `s![NewAxis]`.
 #[derive(Debug, PartialEq, Eq, Hash)]
-pub enum SliceInfoElem
-{
+pub enum SliceInfoElem {
     /// A range with step size. `end` is an exclusive index. Negative `start`
     /// or `end` indexes are counted from the back of the axis. If `end` is
     /// `None`, the slice extends to the end of the axis.
-    Slice
-    {
+    Slice {
         /// start index; negative are counted from the back of the axis
         start: isize,
         /// end index; negative are counted from the back of the axis; when not present
@@ -139,31 +133,25 @@ pub enum SliceInfoElem
 
 copy_and_clone! {SliceInfoElem}
 
-impl SliceInfoElem
-{
+impl SliceInfoElem {
     /// Returns `true` if `self` is a `Slice` value.
-    pub fn is_slice(&self) -> bool
-    {
+    pub fn is_slice(&self) -> bool {
         matches!(self, SliceInfoElem::Slice { .. })
     }
 
     /// Returns `true` if `self` is an `Index` value.
-    pub fn is_index(&self) -> bool
-    {
+    pub fn is_index(&self) -> bool {
         matches!(self, SliceInfoElem::Index(_))
     }
 
     /// Returns `true` if `self` is a `NewAxis` value.
-    pub fn is_new_axis(&self) -> bool
-    {
+    pub fn is_new_axis(&self) -> bool {
         matches!(self, SliceInfoElem::NewAxis)
     }
 }
 
-impl fmt::Display for SliceInfoElem
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
-    {
+impl fmt::Display for SliceInfoElem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             SliceInfoElem::Index(index) => write!(f, "{}", index)?,
             SliceInfoElem::Slice { start, end, step } => {
@@ -251,11 +239,9 @@ impl_slice_variant_from_range!(SliceInfoElem, SliceInfoElem::Slice, isize);
 impl_slice_variant_from_range!(SliceInfoElem, SliceInfoElem::Slice, usize);
 impl_slice_variant_from_range!(SliceInfoElem, SliceInfoElem::Slice, i32);
 
-impl From<RangeFull> for Slice
-{
+impl From<RangeFull> for Slice {
     #[inline]
-    fn from(_: RangeFull) -> Slice
-    {
+    fn from(_: RangeFull) -> Slice {
         Slice {
             start: 0,
             end: None,
@@ -264,11 +250,9 @@ impl From<RangeFull> for Slice
     }
 }
 
-impl From<RangeFull> for SliceInfoElem
-{
+impl From<RangeFull> for SliceInfoElem {
     #[inline]
-    fn from(_: RangeFull) -> SliceInfoElem
-    {
+    fn from(_: RangeFull) -> SliceInfoElem {
         SliceInfoElem::Slice {
             start: 0,
             end: None,
@@ -277,11 +261,9 @@ impl From<RangeFull> for SliceInfoElem
     }
 }
 
-impl From<Slice> for SliceInfoElem
-{
+impl From<Slice> for SliceInfoElem {
     #[inline]
-    fn from(s: Slice) -> SliceInfoElem
-    {
+    fn from(s: Slice) -> SliceInfoElem {
         SliceInfoElem::Slice {
             start: s.start,
             end: s.end,
@@ -304,11 +286,9 @@ impl_sliceinfoelem_from_index!(isize);
 impl_sliceinfoelem_from_index!(usize);
 impl_sliceinfoelem_from_index!(i32);
 
-impl From<NewAxis> for SliceInfoElem
-{
+impl From<NewAxis> for SliceInfoElem {
     #[inline]
-    fn from(_: NewAxis) -> SliceInfoElem
-    {
+    fn from(_: NewAxis) -> SliceInfoElem {
         SliceInfoElem::NewAxis
     }
 }
@@ -320,8 +300,7 @@ impl From<NewAxis> for SliceInfoElem
 /// consistent with the `&[SliceInfoElem]` returned by `self.as_ref()` and that
 /// `self.as_ref()` always returns the same value when called multiple times.
 #[allow(clippy::missing_safety_doc)] // not implementable downstream
-pub unsafe trait SliceArg<D: Dimension>: AsRef<[SliceInfoElem]>
-{
+pub unsafe trait SliceArg<D: Dimension>: AsRef<[SliceInfoElem]> {
     /// Dimensionality of the output array.
     type OutDim: Dimension;
 
@@ -341,13 +320,11 @@ where
 {
     type OutDim = T::OutDim;
 
-    fn in_ndim(&self) -> usize
-    {
+    fn in_ndim(&self) -> usize {
         T::in_ndim(self)
     }
 
-    fn out_ndim(&self) -> usize
-    {
+    fn out_ndim(&self) -> usize {
         T::out_ndim(self)
     }
 
@@ -391,30 +368,25 @@ where
 {
     type OutDim = Dout;
 
-    fn in_ndim(&self) -> usize
-    {
+    fn in_ndim(&self) -> usize {
         self.in_ndim()
     }
 
-    fn out_ndim(&self) -> usize
-    {
+    fn out_ndim(&self) -> usize {
         self.out_ndim()
     }
 
     private_impl! {}
 }
 
-unsafe impl SliceArg<IxDyn> for [SliceInfoElem]
-{
+unsafe impl SliceArg<IxDyn> for [SliceInfoElem] {
     type OutDim = IxDyn;
 
-    fn in_ndim(&self) -> usize
-    {
+    fn in_ndim(&self) -> usize {
         self.iter().filter(|s| !s.is_new_axis()).count()
     }
 
-    fn out_ndim(&self) -> usize
-    {
+    fn out_ndim(&self) -> usize {
         self.iter().filter(|s| !s.is_index()).count()
     }
 
@@ -432,8 +404,7 @@ unsafe impl SliceArg<IxDyn> for [SliceInfoElem]
 ///
 /// [`.slice()`]: crate::ArrayRef::slice
 #[derive(Debug)]
-pub struct SliceInfo<T, Din: Dimension, Dout: Dimension>
-{
+pub struct SliceInfo<T, Din: Dimension, Dout: Dimension> {
     in_dim: PhantomData<Din>,
     out_dim: PhantomData<Dout>,
     indices: T,
@@ -445,8 +416,7 @@ where
     Dout: Dimension,
 {
     type Target = T;
-    fn deref(&self) -> &Self::Target
-    {
+    fn deref(&self) -> &Self::Target {
         &self.indices
     }
 }
@@ -487,8 +457,7 @@ where
     #[doc(hidden)]
     pub unsafe fn new_unchecked(
         indices: T, in_dim: PhantomData<Din>, out_dim: PhantomData<Dout>,
-    ) -> SliceInfo<T, Din, Dout>
-    {
+    ) -> SliceInfo<T, Din, Dout> {
         if cfg!(debug_assertions) {
             check_dims_for_sliceinfo::<Din, Dout>(indices.as_ref())
                 .expect("`Din` and `Dout` must be consistent with `indices`.");
@@ -510,8 +479,7 @@ where
     ///
     /// The caller must ensure `indices.as_ref()` always returns the same value
     /// when called multiple times.
-    pub unsafe fn new(indices: T) -> Result<SliceInfo<T, Din, Dout>, ShapeError>
-    {
+    pub unsafe fn new(indices: T) -> Result<SliceInfo<T, Din, Dout>, ShapeError> {
         check_dims_for_sliceinfo::<Din, Dout>(indices.as_ref())?;
         Ok(SliceInfo {
             in_dim: PhantomData,
@@ -526,8 +494,7 @@ where
     /// If `Din` is a fixed-size dimension type, then this is equivalent to
     /// `Din::NDIM.unwrap()`. Otherwise, the value is calculated by iterating
     /// over the `SliceInfoElem` elements.
-    pub fn in_ndim(&self) -> usize
-    {
+    pub fn in_ndim(&self) -> usize {
         if let Some(ndim) = Din::NDIM {
             ndim
         } else {
@@ -542,8 +509,7 @@ where
     /// If `Dout` is a fixed-size dimension type, then this is equivalent to
     /// `Dout::NDIM.unwrap()`. Otherwise, the value is calculated by iterating
     /// over the `SliceInfoElem` elements.
-    pub fn out_ndim(&self) -> usize
-    {
+    pub fn out_ndim(&self) -> usize {
         if let Some(ndim) = Dout::NDIM {
             ndim
         } else {
@@ -559,8 +525,7 @@ where
 {
     type Error = ShapeError;
 
-    fn try_from(indices: &'a [SliceInfoElem]) -> Result<SliceInfo<&'a [SliceInfoElem], Din, Dout>, ShapeError>
-    {
+    fn try_from(indices: &'a [SliceInfoElem]) -> Result<SliceInfo<&'a [SliceInfoElem], Din, Dout>, ShapeError> {
         unsafe {
             // This is okay because `&[SliceInfoElem]` always returns the same
             // value for `.as_ref()`.
@@ -576,8 +541,7 @@ where
 {
     type Error = ShapeError;
 
-    fn try_from(indices: Vec<SliceInfoElem>) -> Result<SliceInfo<Vec<SliceInfoElem>, Din, Dout>, ShapeError>
-    {
+    fn try_from(indices: Vec<SliceInfoElem>) -> Result<SliceInfo<Vec<SliceInfoElem>, Din, Dout>, ShapeError> {
         unsafe {
             // This is okay because `Vec` always returns the same value for
             // `.as_ref()`.
@@ -588,8 +552,7 @@ where
 
 macro_rules! impl_tryfrom_array_for_sliceinfo {
     ($len:expr) => {
-        impl<Din, Dout> TryFrom<[SliceInfoElem; $len]>
-            for SliceInfo<[SliceInfoElem; $len], Din, Dout>
+        impl<Din, Dout> TryFrom<[SliceInfoElem; $len]> for SliceInfo<[SliceInfoElem; $len], Din, Dout>
         where
             Din: Dimension,
             Dout: Dimension,
@@ -624,8 +587,7 @@ where
     Din: Dimension,
     Dout: Dimension,
 {
-    fn as_ref(&self) -> &[SliceInfoElem]
-    {
+    fn as_ref(&self) -> &[SliceInfoElem] {
         self.indices.as_ref()
     }
 }
@@ -636,8 +598,7 @@ where
     Din: Dimension,
     Dout: Dimension,
 {
-    fn from(info: &'a SliceInfo<T, Din, Dout>) -> SliceInfo<&'a [SliceInfoElem], Din, Dout>
-    {
+    fn from(info: &'a SliceInfo<T, Din, Dout>) -> SliceInfo<&'a [SliceInfoElem], Din, Dout> {
         SliceInfo {
             in_dim: info.in_dim,
             out_dim: info.out_dim,
@@ -660,8 +621,7 @@ where
     Din: Dimension,
     Dout: Dimension,
 {
-    fn clone(&self) -> Self
-    {
+    fn clone(&self) -> Self {
         SliceInfo {
             in_dim: PhantomData,
             out_dim: PhantomData,
@@ -672,21 +632,22 @@ where
 
 /// Trait for determining dimensionality of input and output for [`s!`] macro.
 #[doc(hidden)]
-pub trait SliceNextDim
-{
+pub trait SliceNextDim {
     /// Number of dimensions that this slicing argument consumes in the input array.
     type InDim: Dimension;
     /// Number of dimensions that this slicing argument produces in the output array.
     type OutDim: Dimension;
 
     fn next_in_dim<D>(&self, _: PhantomData<D>) -> PhantomData<<D as DimAdd<Self::InDim>>::Output>
-    where D: Dimension + DimAdd<Self::InDim>
+    where
+        D: Dimension + DimAdd<Self::InDim>,
     {
         PhantomData
     }
 
     fn next_out_dim<D>(&self, _: PhantomData<D>) -> PhantomData<<D as DimAdd<Self::OutDim>>::Output>
-    where D: Dimension + DimAdd<Self::OutDim>
+    where
+        D: Dimension + DimAdd<Self::OutDim>,
     {
         PhantomData
     }
@@ -949,8 +910,7 @@ where
 {
     type Output = (ArrayViewMut<'a, A, I0::OutDim>,);
 
-    fn multi_slice_move(&self, view: ArrayViewMut<'a, A, D>) -> Self::Output
-    {
+    fn multi_slice_move(&self, view: ArrayViewMut<'a, A, D>) -> Self::Output {
         (view.slice_move(&self.0),)
     }
 
@@ -1012,8 +972,7 @@ where
 {
     type Output = T::Output;
 
-    fn multi_slice_move(&self, view: ArrayViewMut<'a, A, D>) -> Self::Output
-    {
+    fn multi_slice_move(&self, view: ArrayViewMut<'a, A, D>) -> Self::Output {
         T::multi_slice_move(self, view)
     }
 

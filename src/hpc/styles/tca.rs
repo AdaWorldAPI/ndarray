@@ -19,11 +19,7 @@ pub struct TemporalFingerprint {
 /// Augment a Base17 fingerprint with temporal context.
 /// Recency decays with time distance from reference.
 /// Science: Reichenbach (1947), Kamp & Reyle (1993 Ch.5), Vendler (1957).
-pub fn temporalize(
-    base: &Base17,
-    event_time: u64,
-    reference_time: u64,
-) -> TemporalFingerprint {
+pub fn temporalize(base: &Base17, event_time: u64, reference_time: u64) -> TemporalFingerprint {
     let speech_time = reference_time; // default: now = reference
     let time_delta = if event_time > reference_time {
         event_time - reference_time
@@ -36,7 +32,11 @@ pub fn temporalize(
 
     TemporalFingerprint {
         base: base.clone(),
-        temporal: TemporalContext { event_time, reference_time, speech_time },
+        temporal: TemporalContext {
+            event_time,
+            reference_time,
+            speech_time,
+        },
         recency,
     }
 }

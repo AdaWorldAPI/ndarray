@@ -75,10 +75,14 @@ pub fn otsu_threshold(img: &GrayImage) -> u8 {
 
     for (t, &count) in histogram.iter().enumerate() {
         weight_bg += count as f64;
-        if weight_bg == 0.0 { continue; }
+        if weight_bg == 0.0 {
+            continue;
+        }
 
         let weight_fg = total - weight_bg;
-        if weight_fg == 0.0 { break; }
+        if weight_fg == 0.0 {
+            break;
+        }
 
         sum_bg += t as f64 * count as f64;
         let mean_bg = sum_bg / weight_bg;
@@ -130,7 +134,11 @@ pub fn binarize(img: &GrayImage, threshold: u8) -> BinaryImage {
         bits[word_idx] = mask;
     }
 
-    BinaryImage { bits, width: img.width, height: img.height }
+    BinaryImage {
+        bits,
+        width: img.width,
+        height: img.height,
+    }
 }
 
 /// Binarize with automatic Otsu threshold.
@@ -176,9 +184,7 @@ pub fn adaptive_binarize(img: &GrayImage, window: usize, c: f32) -> BinaryImage 
             let y2 = (y + half + 1).min(h);
             let area = ((x2 - x1) * (y2 - y1)) as f32;
 
-            let sum = integral[y2 * (w + 1) + x2]
-                - integral[y1 * (w + 1) + x2]
-                - integral[y2 * (w + 1) + x1]
+            let sum = integral[y2 * (w + 1) + x2] - integral[y1 * (w + 1) + x2] - integral[y2 * (w + 1) + x1]
                 + integral[y1 * (w + 1) + x1];
             let mean = sum as f32 / area;
             let threshold = mean - c;
@@ -192,7 +198,11 @@ pub fn adaptive_binarize(img: &GrayImage, window: usize, c: f32) -> BinaryImage 
         }
     }
 
-    BinaryImage { bits, width: w, height: h }
+    BinaryImage {
+        bits,
+        width: w,
+        height: h,
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -236,9 +246,13 @@ fn projection_variance(bin: &BinaryImage, angle_deg: f32) -> f64 {
     for y in 0..h {
         for x_word in 0..(w + 63) / 64 {
             let word_idx = y * ((w + 63) / 64) + x_word;
-            if word_idx >= bin.bits.len() { break; }
+            if word_idx >= bin.bits.len() {
+                break;
+            }
             let word = bin.bits[word_idx];
-            if word == 0 { continue; }
+            if word == 0 {
+                continue;
+            }
 
             // Process set bits
             let mut bits = word;
@@ -258,11 +272,14 @@ fn projection_variance(bin: &BinaryImage, angle_deg: f32) -> f64 {
     }
 
     // Compute variance of non-zero rows
-    let non_zero: Vec<f64> = row_counts.iter()
+    let non_zero: Vec<f64> = row_counts
+        .iter()
         .filter(|&&c| c > 0)
         .map(|&c| c as f64)
         .collect();
-    if non_zero.len() < 2 { return 0.0; }
+    if non_zero.len() < 2 {
+        return 0.0;
+    }
 
     let mean = non_zero.iter().sum::<f64>() / non_zero.len() as f64;
     non_zero.iter().map(|&v| (v - mean).powi(2)).sum::<f64>() / non_zero.len() as f64
@@ -280,7 +297,9 @@ pub fn foreground_count(bin: &BinaryImage) -> usize {
 /// Foreground density (ratio of foreground pixels to total).
 pub fn foreground_density(bin: &BinaryImage) -> f32 {
     let total = bin.width * bin.height;
-    if total == 0 { return 0.0; }
+    if total == 0 {
+        return 0.0;
+    }
     foreground_count(bin) as f32 / total as f32
 }
 
@@ -314,7 +333,13 @@ pub fn preprocess_page(img: &GrayImage) -> PreprocessResult {
     let is_content = density > 0.01 && density < 0.5;
     let skew_angle = if is_content { estimate_skew(&binary) } else { 0.0 };
 
-    PreprocessResult { binary, threshold, skew_angle, density, is_content }
+    PreprocessResult {
+        binary,
+        threshold,
+        skew_angle,
+        density,
+        is_content,
+    }
 }
 
 #[cfg(test)]
@@ -338,7 +363,11 @@ mod tests {
     #[test]
     fn test_otsu_uniform_black() {
         let data = make_image(128, 128, 0);
-        let img = GrayImage { data: &data, width: 128, height: 128 };
+        let img = GrayImage {
+            data: &data,
+            width: 128,
+            height: 128,
+        };
         let t = otsu_threshold(&img);
         assert_eq!(t, 0); // all same value
     }
@@ -347,7 +376,11 @@ mod tests {
     fn test_otsu_bimodal() {
         let mut data = vec![30u8; 64 * 64]; // dark half
         data.extend(vec![220u8; 64 * 64]); // light half
-        let img = GrayImage { data: &data, width: 128, height: 64 };
+        let img = GrayImage {
+            data: &data,
+            width: 128,
+            height: 64,
+        };
         let t = otsu_threshold(&img);
         // Threshold should be between the two modes (30 and 220)
         assert!(t >= 30 && t <= 220, "bimodal threshold should be between modes: {}", t);
@@ -356,7 +389,11 @@ mod tests {
     #[test]
     fn test_binarize_all_white() {
         let data = make_image(128, 128, 255);
-        let img = GrayImage { data: &data, width: 128, height: 128 };
+        let img = GrayImage {
+            data: &data,
+            width: 128,
+            height: 128,
+        };
         let bin = binarize(&img, 128);
         assert_eq!(foreground_count(&bin), 0); // 255 > 128, no foreground
     }
@@ -364,7 +401,11 @@ mod tests {
     #[test]
     fn test_binarize_all_black() {
         let data = make_image(128, 128, 0);
-        let img = GrayImage { data: &data, width: 128, height: 128 };
+        let img = GrayImage {
+            data: &data,
+            width: 128,
+            height: 128,
+        };
         let bin = binarize(&img, 128);
         assert_eq!(foreground_count(&bin), 128 * 128); // 0 < 128, all foreground
     }
@@ -372,7 +413,11 @@ mod tests {
     #[test]
     fn test_binarize_checkerboard() {
         let data = make_checkerboard(64, 64);
-        let img = GrayImage { data: &data, width: 64, height: 64 };
+        let img = GrayImage {
+            data: &data,
+            width: 64,
+            height: 64,
+        };
         let bin = binarize(&img, 128);
         let count = foreground_count(&bin);
         // Half should be foreground (50 < 128), half background (200 > 128)
@@ -382,7 +427,11 @@ mod tests {
     #[test]
     fn test_foreground_density() {
         let data = make_image(100, 100, 0);
-        let img = GrayImage { data: &data, width: 100, height: 100 };
+        let img = GrayImage {
+            data: &data,
+            width: 100,
+            height: 100,
+        };
         let bin = binarize(&img, 128);
         let d = foreground_density(&bin);
         assert!((d - 1.0).abs() < 0.01, "all black = density 1.0: {}", d);
@@ -391,7 +440,11 @@ mod tests {
     #[test]
     fn test_preprocess_blank_page() {
         let data = make_image(200, 200, 250); // nearly white
-        let img = GrayImage { data: &data, width: 200, height: 200 };
+        let img = GrayImage {
+            data: &data,
+            width: 200,
+            height: 200,
+        };
         let result = preprocess_page(&img);
         assert!(!result.is_content, "blank page should not be content");
     }
@@ -406,7 +459,11 @@ mod tests {
                 data[y * 200 + x] = 20; // dark text
             }
         }
-        let img = GrayImage { data: &data, width: 200, height: 200 };
+        let img = GrayImage {
+            data: &data,
+            width: 200,
+            height: 200,
+        };
         let result = preprocess_page(&img);
         assert!(result.is_content, "text page should be content, density={}", result.density);
         assert!(result.density > 0.01 && result.density < 0.5);
@@ -421,7 +478,11 @@ mod tests {
                 data[y * 200 + x] = 0; // dark horizontal line
             }
         }
-        let img = GrayImage { data: &data, width: 200, height: 100 };
+        let img = GrayImage {
+            data: &data,
+            width: 200,
+            height: 100,
+        };
         let (bin, _) = auto_binarize(&img);
         let skew = estimate_skew(&bin);
         assert!(skew.abs() < 1.0, "horizontal lines should have near-zero skew: {}", skew);
@@ -438,7 +499,11 @@ mod tests {
                 data[y * 200 + x] = if has_text { bg.saturating_sub(80) } else { bg };
             }
         }
-        let img = GrayImage { data: &data, width: 200, height: 100 };
+        let img = GrayImage {
+            data: &data,
+            width: 200,
+            height: 100,
+        };
 
         let otsu_bin = binarize(&img, otsu_threshold(&img));
         let adaptive_bin = adaptive_binarize(&img, 31, 10.0);

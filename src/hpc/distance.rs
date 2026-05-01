@@ -38,11 +38,7 @@ pub(crate) mod simd_impl {
     /// # Safety
     /// Caller must ensure AVX2 is available.
     #[target_feature(enable = "avx2")]
-    pub(crate) unsafe fn squared_distances_avx2(
-        query: [f32; 3],
-        points: &[[f32; 3]],
-        out: &mut Vec<f32>,
-    ) {
+    pub(crate) unsafe fn squared_distances_avx2(query: [f32; 3], points: &[[f32; 3]], out: &mut Vec<f32>) {
         let n = points.len();
         out.clear();
         out.reserve(n);
@@ -114,11 +110,7 @@ pub fn squared_distances_f32(query: [f32; 3], points: &[[f32; 3]]) -> Vec<f32> {
 }
 
 /// Filter points by max squared distance. Returns indices of survivors.
-pub fn filter_by_radius_sq(
-    query: [f32; 3],
-    points: &[[f32; 3]],
-    radius_sq: f32,
-) -> Vec<usize> {
+pub fn filter_by_radius_sq(query: [f32; 3], points: &[[f32; 3]], radius_sq: f32) -> Vec<usize> {
     let dists = squared_distances_f32(query, points);
     dists
         .iter()
@@ -129,11 +121,7 @@ pub fn filter_by_radius_sq(
 
 /// Find K nearest points (f32). Returns `(indices, squared_distances)` sorted
 /// ascending by distance.
-pub fn knn_f32(
-    query: [f32; 3],
-    points: &[[f32; 3]],
-    k: usize,
-) -> (Vec<usize>, Vec<f32>) {
+pub fn knn_f32(query: [f32; 3], points: &[[f32; 3]], k: usize) -> (Vec<usize>, Vec<f32>) {
     let dists = squared_distances_f32(query, points);
     let mut indexed: Vec<(usize, f32)> = dists.into_iter().enumerate().collect();
     indexed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(core::cmp::Ordering::Equal));
@@ -156,11 +144,7 @@ pub fn squared_distances_f64(query: [f64; 3], points: &[[f64; 3]]) -> Vec<f64> {
 }
 
 /// Filter f64 points by squared-distance radius. Returns survivor indices.
-pub fn filter_by_radius_sq_f64(
-    query: [f64; 3],
-    points: &[[f64; 3]],
-    radius_sq: f64,
-) -> Vec<usize> {
+pub fn filter_by_radius_sq_f64(query: [f64; 3], points: &[[f64; 3]], radius_sq: f64) -> Vec<usize> {
     let dists = squared_distances_f64(query, points);
     dists
         .iter()
@@ -171,11 +155,7 @@ pub fn filter_by_radius_sq_f64(
 
 /// Find K nearest points (f64). Returns `(indices, squared_distances)` sorted
 /// ascending by distance.
-pub fn knn_f64(
-    query: [f64; 3],
-    points: &[[f64; 3]],
-    k: usize,
-) -> (Vec<usize>, Vec<f64>) {
+pub fn knn_f64(query: [f64; 3], points: &[[f64; 3]], k: usize) -> (Vec<usize>, Vec<f64>) {
     let dists = squared_distances_f64(query, points);
     let mut indexed: Vec<(usize, f64)> = dists.into_iter().enumerate().collect();
     indexed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(core::cmp::Ordering::Equal));
@@ -216,10 +196,7 @@ mod tests {
         assert_eq!(result.len(), points.len());
         for (i, &d) in result.iter().enumerate() {
             let expected = sq_dist_f32(query, points[i]);
-            assert!(
-                approx_eq_f32(d, expected),
-                "mismatch at {i}: {d} vs {expected}"
-            );
+            assert!(approx_eq_f32(d, expected), "mismatch at {i}: {d} vs {expected}");
         }
     }
 
@@ -235,10 +212,7 @@ mod tests {
         let result = squared_distances_f64(query, &points);
         for (i, &d) in result.iter().enumerate() {
             let expected = sq_dist_f64(query, points[i]);
-            assert!(
-                approx_eq_f64(d, expected),
-                "mismatch at {i}: {d} vs {expected}"
-            );
+            assert!(approx_eq_f64(d, expected), "mismatch at {i}: {d} vs {expected}");
         }
     }
 
@@ -286,12 +260,7 @@ mod tests {
     #[test]
     fn test_knn_f32() {
         let query = [0.0f32, 0.0, 0.0];
-        let points = vec![
-            [3.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [2.0, 0.0, 0.0],
-            [0.5, 0.0, 0.0],
-        ];
+        let points = vec![[3.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.5, 0.0, 0.0]];
         let (idx, dist) = knn_f32(query, &points, 2);
         assert_eq!(idx, vec![3, 1]); // 0.25, 1.0
         assert!(approx_eq_f32(dist[0], 0.25));
@@ -301,12 +270,7 @@ mod tests {
     #[test]
     fn test_knn_f64() {
         let query = [0.0f64, 0.0, 0.0];
-        let points = vec![
-            [3.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [2.0, 0.0, 0.0],
-            [0.5, 0.0, 0.0],
-        ];
+        let points = vec![[3.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.5, 0.0, 0.0]];
         let (idx, dist) = knn_f64(query, &points, 2);
         assert_eq!(idx, vec![3, 1]);
         assert!(approx_eq_f64(dist[0], 0.25));

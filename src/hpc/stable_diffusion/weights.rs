@@ -6,8 +6,8 @@
 //! No weights are stored in this crate — they're loaded at runtime
 //! from user-provided safetensors files (disk space conscious).
 
-use crate::hpc::models::safetensors::{SafeTensorsFile, transpose_matrix};
 use super::clip::*;
+use crate::hpc::models::safetensors::{transpose_matrix, SafeTensorsFile};
 
 /// Load CLIP text encoder weights from a safetensors file.
 ///

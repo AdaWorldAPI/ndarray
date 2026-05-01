@@ -101,10 +101,7 @@ impl RenderFrame {
 
     /// Total bytes resident for this frame (debug / health).
     pub fn byte_footprint(&self) -> usize {
-        self.positions.len() * 4
-            + self.velocities.len() * 4
-            + self.charges.len() * 4
-            + self.fingerprints.len() * 8
+        self.positions.len() * 4 + self.velocities.len() * 4 + self.charges.len() * 4 + self.fingerprints.len() * 8
     }
 }
 
@@ -135,10 +132,7 @@ impl Renderer {
     /// Allocate a renderer with capacity for `n` nodes per frame.
     pub fn with_capacity(n: usize) -> Self {
         Self {
-            frames: [
-                RwLock::new(RenderFrame::with_capacity(n)),
-                RwLock::new(RenderFrame::with_capacity(n)),
-            ],
+            frames: [RwLock::new(RenderFrame::with_capacity(n)), RwLock::new(RenderFrame::with_capacity(n))],
             front_idx: AtomicUsize::new(0),
             tick_count: AtomicU64::new(0),
         }
@@ -158,12 +152,16 @@ impl Renderer {
 
     /// Read-lock the front frame (for REST / SSE consumers).
     pub fn read_front(&self) -> std::sync::RwLockReadGuard<'_, RenderFrame> {
-        self.frames[self.front_index()].read().expect("front lock poisoned")
+        self.frames[self.front_index()]
+            .read()
+            .expect("front lock poisoned")
     }
 
     /// Write-lock the back frame (for the shader cycle to mutate).
     pub fn write_back(&self) -> std::sync::RwLockWriteGuard<'_, RenderFrame> {
-        self.frames[self.back_index()].write().expect("back lock poisoned")
+        self.frames[self.back_index()]
+            .write()
+            .expect("back lock poisoned")
     }
 
     /// Atomically swap front and back. Readers acquired BEFORE the swap
@@ -186,7 +184,12 @@ impl Renderer {
     pub fn tick(&self, dt: f32, damping: f32) {
         {
             let mut back = self.write_back();
-            let RenderFrame { positions, velocities, tick, .. } = &mut *back;
+            let RenderFrame {
+                positions,
+                velocities,
+                tick,
+                ..
+            } = &mut *back;
             integrate_simd(positions, velocities, dt, damping);
             *tick = self.tick_count.load(Ordering::Acquire) + 1;
         }
@@ -206,8 +209,7 @@ impl Default for Renderer {
 /// Capacity is bootstrapped at 4096 nodes (rounded up to PREFERRED_F32_LANES).
 /// Consumers wanting a different capacity should construct their own
 /// `Renderer::with_capacity(...)` in their binary, not touch this static.
-pub static GLOBAL_RENDERER: LazyLock<Renderer> =
-    LazyLock::new(|| Renderer::with_capacity(4096));
+pub static GLOBAL_RENDERER: LazyLock<Renderer> = LazyLock::new(|| Renderer::with_capacity(4096));
 
 // ─────────────────────────────────────────────────────────────────────
 // SIMD hot path — integrate_simd dispatches via crate::simd::F32x16
@@ -406,7 +408,7 @@ mod tests {
         let mut velocities = vec![0.0f32; 48];
         apply_uniform_force(&mut velocities, [1.0, 2.0, 3.0], 0.5);
         for n in 0..16 {
-            assert!((velocities[n * 3] - 0.5).abs() < 1e-6);     // X: 1·0.5
+            assert!((velocities[n * 3] - 0.5).abs() < 1e-6); // X: 1·0.5
             assert!((velocities[n * 3 + 1] - 1.0).abs() < 1e-6); // Y: 2·0.5
             assert!((velocities[n * 3 + 2] - 1.5).abs() < 1e-6); // Z: 3·0.5
         }
@@ -459,10 +461,15 @@ static SPLAT_15: LazyLock<F32x16> = LazyLock::new(|| F32x16::splat(DT_15));
 #[inline]
 pub fn cached_splat(dt: f32) -> F32x16 {
     const TOL: f32 = 2e-6;
-    if (dt - DT_60).abs() < TOL { *SPLAT_60 }
-    else if (dt - DT_30).abs() < TOL { *SPLAT_30 }
-    else if (dt - DT_15).abs() < TOL { *SPLAT_15 }
-    else { F32x16::splat(dt) }
+    if (dt - DT_60).abs() < TOL {
+        *SPLAT_60
+    } else if (dt - DT_30).abs() < TOL {
+        *SPLAT_30
+    } else if (dt - DT_15).abs() < TOL {
+        *SPLAT_15
+    } else {
+        F32x16::splat(dt)
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -491,7 +498,12 @@ pub struct Viewport {
 impl Viewport {
     /// Default: 4.0 unit foveal, 16.0 peripheral, 64.0 cull.
     pub fn default_at(center: [f32; 3]) -> Self {
-        Self { center, foveal_radius: 4.0, peripheral_radius: 16.0, cull_radius: 64.0 }
+        Self {
+            center,
+            foveal_radius: 4.0,
+            peripheral_radius: 16.0,
+            cull_radius: 64.0,
+        }
     }
 }
 
@@ -525,7 +537,11 @@ impl UpdatePriority {
     #[inline]
     pub fn should_update(self, tick: u64) -> bool {
         let stride = self.tick_stride();
-        if stride == u64::MAX { false } else { tick % stride == 0 }
+        if stride == u64::MAX {
+            false
+        } else {
+            tick % stride == 0
+        }
     }
 }
 
@@ -539,16 +555,19 @@ pub fn classify_priorities(positions: &[f32], len: usize, vp: &Viewport) -> Vec<
     let p2 = vp.peripheral_radius * vp.peripheral_radius;
     let c2 = vp.cull_radius * vp.cull_radius;
     for i in 0..len {
-        let dx = positions[i * POSITION_DIMS]     - vp.center[0];
+        let dx = positions[i * POSITION_DIMS] - vp.center[0];
         let dy = positions[i * POSITION_DIMS + 1] - vp.center[1];
         let dz = positions[i * POSITION_DIMS + 2] - vp.center[2];
         let d2 = dx * dx + dy * dy + dz * dz;
-        out.push(
-            if d2 <= f2 { UpdatePriority::Foveal }
-            else if d2 <= p2 { UpdatePriority::Peripheral }
-            else if d2 <= c2 { UpdatePriority::Distant }
-            else { UpdatePriority::OffScreen }
-        );
+        out.push(if d2 <= f2 {
+            UpdatePriority::Foveal
+        } else if d2 <= p2 {
+            UpdatePriority::Peripheral
+        } else if d2 <= c2 {
+            UpdatePriority::Distant
+        } else {
+            UpdatePriority::OffScreen
+        });
     }
     out
 }
@@ -563,12 +582,7 @@ pub fn classify_priorities(positions: &[f32], len: usize, vp: &Viewport) -> Vec<
 /// random-priority graphs, foveated savings drop toward zero (worst case
 /// is the same cost as `integrate_simd`).
 pub fn integrate_foveated(
-    positions: &mut [f32],
-    velocities: &mut [f32],
-    priorities: &[UpdatePriority],
-    tick: u64,
-    dt: f32,
-    damping: f32,
+    positions: &mut [f32], velocities: &mut [f32], priorities: &[UpdatePriority], tick: u64, dt: f32, damping: f32,
 ) {
     debug_assert_eq!(positions.len(), velocities.len());
     debug_assert_eq!(positions.len() % PREFERRED_F32_LANES, 0);
@@ -591,9 +605,10 @@ pub fn integrate_foveated(
         let node_hi = (node_lo + nodes_per_chunk).min(priorities.len());
 
         // Skip only if every node in the band agrees to skip THIS tick.
-        let all_skip = (node_lo..node_hi)
-            .all(|n| !priorities[n].should_update(tick));
-        if all_skip { continue; }
+        let all_skip = (node_lo..node_hi).all(|n| !priorities[n].should_update(tick));
+        if all_skip {
+            continue;
+        }
 
         let pv = F32x16::from_array(*p);
         let vv = F32x16::from_array(*v);
@@ -661,7 +676,7 @@ impl FpsController {
         match self.target_hz() {
             60 => DT_60,
             30 => DT_30,
-            _  => DT_15,
+            _ => DT_15,
         }
     }
 
@@ -688,8 +703,7 @@ impl FpsController {
         let next = if prev == 0 {
             duration_ns
         } else {
-            prev + (duration_ns.saturating_sub(prev) / 8)
-                 - (prev.saturating_sub(duration_ns) / 8)
+            prev + (duration_ns.saturating_sub(prev) / 8) - (prev.saturating_sub(duration_ns) / 8)
         };
         self.avg_tick_ns.store(next, Ordering::Release);
 
@@ -698,14 +712,22 @@ impl FpsController {
         if duration_ns > budget {
             self.under_budget_streak.store(0, Ordering::Release);
             // Step down 60 → 30 → 15. Don't go below 15.
-            let new_hz = match cur { 60 => 30, 30 => 15, _ => 15 };
+            let new_hz = match cur {
+                60 => 30,
+                30 => 15,
+                _ => 15,
+            };
             if new_hz != cur {
                 self.target_hz.store(new_hz, Ordering::Release);
             }
         } else {
             let streak = self.under_budget_streak.fetch_add(1, Ordering::AcqRel) + 1;
             if streak >= 60 {
-                let new_hz = match cur { 15 => 30, 30 => 60, _ => 60 };
+                let new_hz = match cur {
+                    15 => 30,
+                    30 => 60,
+                    _ => 60,
+                };
                 if new_hz != cur {
                     self.target_hz.store(new_hz, Ordering::Release);
                 }
@@ -754,7 +776,13 @@ impl Renderer {
         let tick_now = self.tick_count.load(Ordering::Acquire) + 1;
         {
             let mut back = self.write_back();
-            let RenderFrame { positions, velocities, len, tick, .. } = &mut *back;
+            let RenderFrame {
+                positions,
+                velocities,
+                len,
+                tick,
+                ..
+            } = &mut *back;
             let priorities = classify_priorities(positions, *len, vp);
             integrate_foveated(positions, velocities, &priorities, tick_now, dt, damping);
             *tick = tick_now;
@@ -787,7 +815,9 @@ mod adaptive_tests {
         let v = cached_splat(0.0314);
         let mut out = [0.0f32; 16];
         v.copy_to_slice(&mut out);
-        for x in out { assert!((x - 0.0314).abs() < 1e-6); }
+        for x in out {
+            assert!((x - 0.0314).abs() < 1e-6);
+        }
     }
 
     #[test]
@@ -826,10 +856,10 @@ mod adaptive_tests {
     fn classify_priorities_assigns_zones() {
         // 4 nodes: at center, foveal-edge, peripheral-zone, off-screen.
         let positions = vec![
-             0.0,  0.0,  0.0,   // node 0 — at center → Foveal
-             3.0,  0.0,  0.0,   // node 1 — within foveal radius (4)
-             8.0,  0.0,  0.0,   // node 2 — within peripheral (16)
-            70.0,  0.0,  0.0,   // node 3 — beyond cull (64)
+            0.0, 0.0, 0.0, // node 0 — at center → Foveal
+            3.0, 0.0, 0.0, // node 1 — within foveal radius (4)
+            8.0, 0.0, 0.0, // node 2 — within peripheral (16)
+            70.0, 0.0, 0.0, // node 3 — beyond cull (64)
         ];
         let vp = Viewport::default_at([0.0, 0.0, 0.0]);
         let p = classify_priorities(&positions, 4, &vp);
@@ -846,8 +876,12 @@ mod adaptive_tests {
         let mut velocities = vec![1.0f32; 32];
         let priorities = vec![UpdatePriority::OffScreen; 12]; // covers both chunks
         integrate_foveated(&mut positions, &mut velocities, &priorities, 0, 0.5, 0.9);
-        for &p in &positions { assert_eq!(p, 1.0); } // unchanged
-        for &v in &velocities { assert_eq!(v, 1.0); } // unchanged
+        for &p in &positions {
+            assert_eq!(p, 1.0);
+        } // unchanged
+        for &v in &velocities {
+            assert_eq!(v, 1.0);
+        } // unchanged
     }
 
     #[test]
@@ -871,10 +905,14 @@ mod adaptive_tests {
         let priorities = vec![UpdatePriority::Peripheral; 12];
         // Tick 1 (odd) — peripheral skips
         integrate_foveated(&mut positions, &mut velocities, &priorities, 1, 0.5, 0.9);
-        for &p in &positions { assert_eq!(p, 0.0); }
+        for &p in &positions {
+            assert_eq!(p, 0.0);
+        }
         // Tick 2 (even) — peripheral updates
         integrate_foveated(&mut positions, &mut velocities, &priorities, 2, 0.5, 0.9);
-        for &p in &positions { assert!((p - 0.5).abs() < 1e-6); }
+        for &p in &positions {
+            assert!((p - 0.5).abs() < 1e-6);
+        }
     }
 
     #[test]
@@ -900,10 +938,14 @@ mod adaptive_tests {
     fn fps_controller_steps_up_on_sustained_under_budget() {
         let c = FpsController::new(15);
         // Record 60 fast ticks → climb to 30.
-        for _ in 0..60 { c.record_tick(1_000_000); } // 1ms each
+        for _ in 0..60 {
+            c.record_tick(1_000_000);
+        } // 1ms each
         assert_eq!(c.target_hz(), 30);
         // Another 60 fast → climb to 60.
-        for _ in 0..60 { c.record_tick(1_000_000); }
+        for _ in 0..60 {
+            c.record_tick(1_000_000);
+        }
         assert_eq!(c.target_hz(), 60);
     }
 

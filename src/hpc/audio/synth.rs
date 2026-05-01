@@ -18,11 +18,11 @@
 //! applied at step 3: band energies are scaled by the QPL family's
 //! spectral EQ before synthesis.
 
-use super::codec::AudioFrame;
 use super::bands;
-use super::voice::{VoiceArchetype, VoiceCodebook, VoiceFrame, RvqFrame};
-use super::phase::PhaseDescriptor;
+use super::codec::AudioFrame;
 use super::modes;
+use super::phase::PhaseDescriptor;
+use super::voice::{RvqFrame, VoiceArchetype, VoiceCodebook, VoiceFrame};
 
 /// Decode a sequence of VoiceFrames into PCM audio.
 ///
@@ -35,12 +35,11 @@ use super::modes;
 ///
 /// Returns mono f32 PCM samples.
 pub fn synthesize(
-    frames: &[VoiceFrame],
-    codebook: &VoiceCodebook,
-    coarse_centroids: &[[u16; bands::N_BANDS]; 256],
-    sample_rate: u32,
+    frames: &[VoiceFrame], codebook: &VoiceCodebook, coarse_centroids: &[[u16; bands::N_BANDS]; 256], sample_rate: u32,
 ) -> Vec<f32> {
-    if frames.is_empty() { return vec![]; }
+    if frames.is_empty() {
+        return vec![];
+    }
 
     // Frame parameters (Opus CELT compatible)
     let frame_samples = 960; // 20ms at 48kHz
@@ -93,7 +92,8 @@ pub fn synthesize(
     // Resample if needed (our MDCT produces at 48kHz, caller may want 24kHz)
     if sample_rate == 24000 {
         // Simple 2:1 decimation with averaging
-        output = output.chunks(2)
+        output = output
+            .chunks(2)
             .map(|c| if c.len() == 2 { (c[0] + c[1]) * 0.5 } else { c[0] })
             .collect();
     }
@@ -113,22 +113,19 @@ pub fn synthesize(
 ///   code[5]: bands 15-17 (brilliance)
 ///   code[6]: bands 18-20 (air)
 ///   code[7]: global gain  (scales all bands)
-fn reconstruct_band_energies(
-    rvq: &RvqFrame,
-    centroids: &[[u16; bands::N_BANDS]; 256],
-) -> [u16; bands::N_BANDS] {
+fn reconstruct_band_energies(rvq: &RvqFrame, centroids: &[[u16; bands::N_BANDS]; 256]) -> [u16; bands::N_BANDS] {
     // Start with the centroid pointed to by code[0] (base spectral shape)
     let base = centroids[rvq.coarse[0] as usize];
     let mut energies = base;
 
     // Blend in contributions from other coarse codes per band group
-    let band_groups: [(usize, usize); 7] = [
-        (0, 3), (3, 6), (6, 9), (9, 12), (12, 15), (15, 18), (18, 21),
-    ];
+    let band_groups: [(usize, usize); 7] = [(0, 3), (3, 6), (6, 9), (9, 12), (12, 15), (15, 18), (18, 21)];
 
     for (group_idx, &(lo, hi)) in band_groups.iter().enumerate() {
         let code_idx = group_idx + 1;
-        if code_idx >= 8 { break; }
+        if code_idx >= 8 {
+            break;
+        }
         let centroid = &centroids[rvq.coarse[code_idx] as usize];
         for band in lo..hi.min(bands::N_BANDS) {
             // Weighted blend: 60% base + 40% group-specific centroid
@@ -159,12 +156,12 @@ fn reconstruct_band_energies(
 ///   bytes 4-5: harmonic detail (from fine[5..8])
 fn fine_to_pvq_summary(fine: &[u8; 8]) -> [u8; 6] {
     [
-        fine[0] ^ fine[1],  // sign pattern XOR
-        fine[1] ^ fine[2],  // sign pattern continuation
-        fine[2],            // temporal gradient
-        fine[3] ^ fine[4],  // temporal modulation
-        fine[5],            // harmonic detail
-        fine[6] ^ fine[7],  // harmonic modulation
+        fine[0] ^ fine[1], // sign pattern XOR
+        fine[1] ^ fine[2], // sign pattern continuation
+        fine[2],           // temporal gradient
+        fine[3] ^ fine[4], // temporal modulation
+        fine[5],           // harmonic detail
+        fine[6] ^ fine[7], // harmonic modulation
     ]
 }
 
@@ -223,7 +220,7 @@ pub fn write_wav(pcm: &[f32], sample_rate: u32) -> Vec<u8> {
     // fmt sub-chunk
     wav.extend_from_slice(b"fmt ");
     wav.extend_from_slice(&16u32.to_le_bytes()); // sub-chunk size
-    wav.extend_from_slice(&1u16.to_le_bytes());  // PCM format
+    wav.extend_from_slice(&1u16.to_le_bytes()); // PCM format
     wav.extend_from_slice(&n_channels.to_le_bytes());
     wav.extend_from_slice(&sample_rate.to_le_bytes());
     wav.extend_from_slice(&byte_rate.to_le_bytes());
@@ -235,7 +232,11 @@ pub fn write_wav(pcm: &[f32], sample_rate: u32) -> Vec<u8> {
     wav.extend_from_slice(&data_size.to_le_bytes());
 
     // Normalize and convert to i16
-    let max_abs = pcm.iter().map(|s| s.abs()).fold(0.0f32, f32::max).max(1e-10);
+    let max_abs = pcm
+        .iter()
+        .map(|s| s.abs())
+        .fold(0.0f32, f32::max)
+        .max(1e-10);
     let scale = 32767.0 / max_abs;
 
     for &sample in pcm {
@@ -248,10 +249,18 @@ pub fn write_wav(pcm: &[f32], sample_rate: u32) -> Vec<u8> {
 
 /// Validate a WAV byte buffer (basic sanity check).
 pub fn validate_wav(wav: &[u8]) -> Result<(u32, usize), &'static str> {
-    if wav.len() < 44 { return Err("WAV too short"); }
-    if &wav[0..4] != b"RIFF" { return Err("Missing RIFF header"); }
-    if &wav[8..12] != b"WAVE" { return Err("Missing WAVE format"); }
-    if &wav[12..16] != b"fmt " { return Err("Missing fmt chunk"); }
+    if wav.len() < 44 {
+        return Err("WAV too short");
+    }
+    if &wav[0..4] != b"RIFF" {
+        return Err("Missing RIFF header");
+    }
+    if &wav[8..12] != b"WAVE" {
+        return Err("Missing WAVE format");
+    }
+    if &wav[12..16] != b"fmt " {
+        return Err("Missing fmt chunk");
+    }
 
     let sample_rate = u32::from_le_bytes([wav[24], wav[25], wav[26], wav[27]]);
     let data_start = 44; // standard PCM WAV
@@ -288,7 +297,9 @@ mod tests {
 
     #[test]
     fn synthesize_empty_returns_empty() {
-        let codebook = VoiceCodebook { entries: vec![VoiceArchetype::zero()] };
+        let codebook = VoiceCodebook {
+            entries: vec![VoiceArchetype::zero()],
+        };
         let centroids = [[0u16; bands::N_BANDS]; 256];
         let pcm = synthesize(&[], &codebook, &centroids, 48000);
         assert!(pcm.is_empty());
@@ -296,7 +307,9 @@ mod tests {
 
     #[test]
     fn synthesize_single_frame() {
-        let codebook = VoiceCodebook { entries: vec![VoiceArchetype::zero(); 256] };
+        let codebook = VoiceCodebook {
+            entries: vec![VoiceArchetype::zero(); 256],
+        };
         // Create centroids with some energy in mid-bands
         let mut centroids = [[0u16; bands::N_BANDS]; 256];
         for c in centroids.iter_mut() {
@@ -307,8 +320,14 @@ mod tests {
         }
 
         let frame = VoiceFrame {
-            rvq: RvqFrame { archetype: 0, coarse: [0, 0, 0, 0, 0, 0, 0, 128], fine: [128; 8] },
-            phase: PhaseDescriptor { bytes: [200, 30, 128, 50] }, // voiced, steady
+            rvq: RvqFrame {
+                archetype: 0,
+                coarse: [0, 0, 0, 0, 0, 0, 0, 128],
+                fine: [128; 8],
+            },
+            phase: PhaseDescriptor {
+                bytes: [200, 30, 128, 50],
+            }, // voiced, steady
         };
 
         let pcm = synthesize(&[frame], &codebook, &centroids, 48000);
@@ -331,14 +350,23 @@ mod tests {
         for band in 0..bands::N_BANDS {
             energies[band] = (0.5f32.to_bits() >> 16) as u16;
         }
-        let frame = AudioFrame { band_energies: energies, pvq_summary: [0; 6] };
-        let voiced = PhaseDescriptor { bytes: [255, 30, 128, 50] }; // high coherence
+        let frame = AudioFrame {
+            band_energies: energies,
+            pvq_summary: [0; 6],
+        };
+        let voiced = PhaseDescriptor {
+            bytes: [255, 30, 128, 50],
+        }; // high coherence
 
         let modulated = phase_modulate_frame(&frame, &voiced);
 
         // Mid-bands (4-14) should be boosted
-        let mid_orig: f32 = (4..=14).map(|b| f32::from_bits((frame.band_energies[b] as u32) << 16)).sum();
-        let mid_mod: f32 = (4..=14).map(|b| f32::from_bits((modulated.band_energies[b] as u32) << 16)).sum();
+        let mid_orig: f32 = (4..=14)
+            .map(|b| f32::from_bits((frame.band_energies[b] as u32) << 16))
+            .sum();
+        let mid_mod: f32 = (4..=14)
+            .map(|b| f32::from_bits((modulated.band_energies[b] as u32) << 16))
+            .sum();
         assert!(mid_mod > mid_orig, "Voiced phase should boost mid-bands: {} vs {}", mid_mod, mid_orig);
     }
 
@@ -352,13 +380,21 @@ mod tests {
         let audio_frame = AudioFrame::encode(&pcm, 8);
 
         // Build a codebook with this frame's energies as the only centroid
-        let codebook = VoiceCodebook { entries: vec![VoiceArchetype::zero(); 256] };
+        let codebook = VoiceCodebook {
+            entries: vec![VoiceArchetype::zero(); 256],
+        };
         let mut centroids = [[0u16; bands::N_BANDS]; 256];
         centroids[0] = audio_frame.band_energies;
 
         let voice_frame = VoiceFrame {
-            rvq: RvqFrame { archetype: 0, coarse: [0, 0, 0, 0, 0, 0, 0, 128], fine: [0; 8] },
-            phase: PhaseDescriptor { bytes: [200, 30, 128, 50] },
+            rvq: RvqFrame {
+                archetype: 0,
+                coarse: [0, 0, 0, 0, 0, 0, 0, 128],
+                fine: [0; 8],
+            },
+            phase: PhaseDescriptor {
+                bytes: [200, 30, 128, 50],
+            },
         };
 
         let decoded = synthesize(&[voice_frame], &codebook, &centroids, 48000);

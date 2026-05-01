@@ -13,13 +13,7 @@ use super::codec::JinaPalette;
 /// ```
 #[inline(always)]
 pub fn pack_edge(
-    s_palette: u8,
-    p_palette: u8,
-    o_palette: u8,
-    frequency: f32,
-    confidence: f32,
-    pearl_mask: u8,
-    temporal: u16,
+    s_palette: u8, p_palette: u8, o_palette: u8, frequency: f32, confidence: f32, pearl_mask: u8, temporal: u16,
 ) -> u64 {
     let f_u8 = (frequency.clamp(0.0, 1.0) * 255.0) as u8;
     let c_u8 = (confidence.clamp(0.0, 1.0) * 255.0) as u8;
@@ -216,8 +210,11 @@ mod tests {
 
         assert!(d_spo > d_po, "removing S should reduce distance");
         assert!(d_spo > d_so, "removing P should reduce distance");
-        assert_eq!(d_spo, d_s + d_po - causal_distance(e1, e2, &palette, 0b000),
-            "planes should be additive (within rounding)... actually just check ordering");
+        assert_eq!(
+            d_spo,
+            d_s + d_po - causal_distance(e1, e2, &palette, 0b000),
+            "planes should be additive (within rounding)... actually just check ordering"
+        );
         assert!(d_s > 0, "different S should have positive distance");
     }
 }

@@ -42,7 +42,9 @@ impl VoiceArchetype {
 
     /// Zero archetype (neutral voice).
     pub fn zero() -> Self {
-        VoiceArchetype { channels: [0i8; N_VOICE_CHANNELS] }
+        VoiceArchetype {
+            channels: [0i8; N_VOICE_CHANNELS],
+        }
     }
 
     /// L1 distance between two archetypes.
@@ -68,7 +70,11 @@ impl VoiceArchetype {
             nb += b * b;
         }
         let denom = ((na as f64) * (nb as f64)).sqrt();
-        if denom < 1e-12 { 0.0 } else { dot as f64 / denom }
+        if denom < 1e-12 {
+            0.0
+        } else {
+            dot as f64 / denom
+        }
     }
 
     /// Extract archetype from raw embedding by quantizing to 16 channels.
@@ -83,7 +89,8 @@ impl VoiceArchetype {
         let mut channels = [0i8; N_VOICE_CHANNELS];
 
         // Find scale factor for quantization to i8 range
-        let max_abs = embedding.iter()
+        let max_abs = embedding
+            .iter()
             .map(|v| v.abs())
             .fold(0.0f32, f32::max)
             .max(1e-10);
@@ -129,12 +136,16 @@ impl VoiceArchetype {
 
     /// Articulation quality (channels 8-11 magnitude).
     pub fn articulation_energy(&self) -> u32 {
-        (8..12).map(|i| self.channels[i].unsigned_abs() as u32).sum()
+        (8..12)
+            .map(|i| self.channels[i].unsigned_abs() as u32)
+            .sum()
     }
 
     /// Prosody quality (channels 12-15 magnitude).
     pub fn prosody_energy(&self) -> u32 {
-        (12..16).map(|i| self.channels[i].unsigned_abs() as u32).sum()
+        (12..16)
+            .map(|i| self.channels[i].unsigned_abs() as u32)
+            .sum()
     }
 
     /// Modulate archetype with phase dynamics.
@@ -186,7 +197,8 @@ pub struct VoiceCodebook {
 impl VoiceCodebook {
     /// Build from raw embeddings (e.g., from Bark speaker prompts).
     pub fn build(embeddings: &[Vec<f32>], stride: usize) -> Self {
-        let entries: Vec<VoiceArchetype> = embeddings.iter()
+        let entries: Vec<VoiceArchetype> = embeddings
+            .iter()
             .map(|e| VoiceArchetype::from_embedding(e, stride))
             .collect();
         VoiceCodebook { entries }
@@ -266,7 +278,11 @@ impl RvqFrame {
         let mut fine = [0u8; 8];
         coarse.copy_from_slice(&bytes[1..9]);
         fine.copy_from_slice(&bytes[9..17]);
-        RvqFrame { archetype: bytes[0], coarse, fine }
+        RvqFrame {
+            archetype: bytes[0],
+            coarse,
+            fine,
+        }
     }
 
     /// HEEL check: same voice archetype?
@@ -343,15 +359,17 @@ mod tests {
 
     #[test]
     fn archetype_self_distance_zero() {
-        let a = VoiceArchetype { channels: [10, -20, 30, -40, 50, -60, 70, -80,
-                                             90, -100, 110, -120, 5, -15, 25, -35] };
+        let a = VoiceArchetype {
+            channels: [10, -20, 30, -40, 50, -60, 70, -80, 90, -100, 110, -120, 5, -15, 25, -35],
+        };
         assert_eq!(a.l1(&a), 0);
     }
 
     #[test]
     fn archetype_self_cosine_one() {
-        let a = VoiceArchetype { channels: [10, -20, 30, -40, 50, -60, 70, -80,
-                                             1, 2, 3, 4, 5, 6, 7, 8] };
+        let a = VoiceArchetype {
+            channels: [10, -20, 30, -40, 50, -60, 70, -80, 1, 2, 3, 4, 5, 6, 7, 8],
+        };
         let c = a.cosine(&a);
         assert!((c - 1.0).abs() < 1e-10, "Self cosine should be 1.0: {}", c);
     }
@@ -367,8 +385,9 @@ mod tests {
 
     #[test]
     fn archetype_serialize_roundtrip() {
-        let a = VoiceArchetype { channels: [1, -2, 3, -4, 5, -6, 7, -8,
-                                             9, -10, 11, -12, 13, -14, 15, -16] };
+        let a = VoiceArchetype {
+            channels: [1, -2, 3, -4, 5, -6, 7, -8, 9, -10, 11, -12, 13, -14, 15, -16],
+        };
         let bytes = a.to_bytes();
         let recovered = VoiceArchetype::from_bytes(&bytes);
         assert_eq!(a, recovered);
@@ -402,23 +421,36 @@ mod tests {
 
     #[test]
     fn phase_modulation_changes_articulation() {
-        let base = VoiceArchetype { channels: [0, 0, 0, 0, 0, 0, 0, 0,
-                                                50, 50, 50, 50, 0, 0, 0, 0] };
+        let base = VoiceArchetype {
+            channels: [0, 0, 0, 0, 0, 0, 0, 0, 50, 50, 50, 50, 0, 0, 0, 0],
+        };
         // High coherence → should boost articulation channels
-        let high_coh = super::super::phase::PhaseDescriptor { bytes: [255, 128, 128, 128] };
+        let high_coh = super::super::phase::PhaseDescriptor {
+            bytes: [255, 128, 128, 128],
+        };
         let modulated = base.modulate_with_phase(&high_coh);
 
         // Articulation channels (8-11) should be boosted
-        let base_art: i32 = (8..12).map(|i| base.channels[i].unsigned_abs() as i32).sum();
-        let mod_art: i32 = (8..12).map(|i| modulated.channels[i].unsigned_abs() as i32).sum();
+        let base_art: i32 = (8..12)
+            .map(|i| base.channels[i].unsigned_abs() as i32)
+            .sum();
+        let mod_art: i32 = (8..12)
+            .map(|i| modulated.channels[i].unsigned_abs() as i32)
+            .sum();
         assert!(mod_art >= base_art, "High coherence should boost articulation: {} vs {}", mod_art, base_art);
     }
 
     #[test]
     fn voice_frame_roundtrip() {
         let frame = VoiceFrame {
-            rvq: RvqFrame { archetype: 7, coarse: [1; 8], fine: [2; 8] },
-            phase: super::super::phase::PhaseDescriptor { bytes: [200, 50, 100, 30] },
+            rvq: RvqFrame {
+                archetype: 7,
+                coarse: [1; 8],
+                fine: [2; 8],
+            },
+            phase: super::super::phase::PhaseDescriptor {
+                bytes: [200, 50, 100, 30],
+            },
         };
         let bytes = frame.to_bytes();
         assert_eq!(bytes.len(), VoiceFrame::BYTE_SIZE);
@@ -443,8 +475,7 @@ mod tests {
         let k = 3;
         for i in 0..k {
             for j in 0..k {
-                assert_eq!(table[i * k + j], table[j * k + i],
-                    "Distance table not symmetric at ({}, {})", i, j);
+                assert_eq!(table[i * k + j], table[j * k + i], "Distance table not symmetric at ({}, {})", i, j);
             }
         }
     }

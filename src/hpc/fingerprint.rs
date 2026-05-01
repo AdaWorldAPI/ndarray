@@ -39,9 +39,7 @@ impl<const N: usize> Fingerprint<N> {
     /// All-ones fingerprint.
     #[inline]
     pub fn ones() -> Self {
-        Self {
-            words: [u64::MAX; N],
-        }
+        Self { words: [u64::MAX; N] }
     }
 
     /// Create from a word array.
@@ -52,12 +50,7 @@ impl<const N: usize> Fingerprint<N> {
 
     /// Create from a byte slice. Panics if `bytes.len() < N * 8`.
     pub fn from_bytes(bytes: &[u8]) -> Self {
-        assert!(
-            bytes.len() >= N * 8,
-            "need at least {} bytes, got {}",
-            N * 8,
-            bytes.len()
-        );
+        assert!(bytes.len() >= N * 8, "need at least {} bytes, got {}", N * 8, bytes.len());
         let mut words = [0u64; N];
         for i in 0..N {
             let offset = i * 8;
@@ -150,7 +143,9 @@ impl<const N: usize> Fingerprint<N> {
     #[inline]
     pub fn bind(&self, other: &Self) -> Self {
         let mut words = [0u64; N];
-        for i in 0..N { words[i] = self.words[i] ^ other.words[i]; }
+        for i in 0..N {
+            words[i] = self.words[i] ^ other.words[i];
+        }
         Self { words }
     }
 
@@ -158,7 +153,9 @@ impl<const N: usize> Fingerprint<N> {
     #[inline]
     pub fn and(&self, other: &Self) -> Self {
         let mut words = [0u64; N];
-        for i in 0..N { words[i] = self.words[i] & other.words[i]; }
+        for i in 0..N {
+            words[i] = self.words[i] & other.words[i];
+        }
         Self { words }
     }
 
@@ -166,7 +163,9 @@ impl<const N: usize> Fingerprint<N> {
     #[inline]
     pub fn not(&self) -> Self {
         let mut words = [0u64; N];
-        for i in 0..N { words[i] = !self.words[i]; }
+        for i in 0..N {
+            words[i] = !self.words[i];
+        }
         Self { words }
     }
 
@@ -207,12 +206,15 @@ impl<const N: usize> Fingerprint<N> {
     /// half of the input fingerprints have it set.
     pub fn bundle(items: &[&Self]) -> Self {
         let n = items.len();
-        if n == 0 { return Self::zero(); }
+        if n == 0 {
+            return Self::zero();
+        }
         let threshold = n / 2;
         let mut result = [0u64; N];
         for w in 0..N {
             for bit in 0..64 {
-                let count: usize = items.iter()
+                let count: usize = items
+                    .iter()
                     .filter(|fp| (fp.words[w] >> bit) & 1 == 1)
                     .count();
                 if count > threshold {
@@ -233,7 +235,9 @@ impl<const N: usize> Fingerprint<N> {
     #[inline]
     pub fn or(&self, other: &Self) -> Self {
         let mut words = [0u64; N];
-        for i in 0..N { words[i] = self.words[i] | other.words[i]; }
+        for i in 0..N {
+            words[i] = self.words[i] | other.words[i];
+        }
         Self { words }
     }
 
@@ -251,7 +255,9 @@ impl<const N: usize> Fingerprint<N> {
     pub fn permute(&self, positions: i32) -> Self {
         let total = Self::BITS as i32;
         let shift = ((positions % total) + total) % total;
-        if shift == 0 { return self.clone(); }
+        if shift == 0 {
+            return self.clone();
+        }
         let mut result = Self::zero();
         for i in 0..Self::BITS {
             if self.get_bit(i) {
@@ -469,7 +475,12 @@ pub struct VectorConfig {
 impl VectorConfig {
     const fn from_width(w: VectorWidth) -> Self {
         let words = w as usize;
-        VectorConfig { width: w, words, bits: words * 64, bytes: words * 8 }
+        VectorConfig {
+            width: w,
+            words,
+            bits: words * 64,
+            bytes: words * 8,
+        }
     }
 }
 
@@ -525,15 +536,9 @@ mod tests {
 
     #[test]
     fn test_xor_associative() {
-        let a = Fingerprint::<4> {
-            words: [1, 2, 3, 4],
-        };
-        let b = Fingerprint::<4> {
-            words: [5, 6, 7, 8],
-        };
-        let c = Fingerprint::<4> {
-            words: [9, 10, 11, 12],
-        };
+        let a = Fingerprint::<4> { words: [1, 2, 3, 4] };
+        let b = Fingerprint::<4> { words: [5, 6, 7, 8] };
+        let c = Fingerprint::<4> { words: [9, 10, 11, 12] };
         let ab_c = &(&a ^ &b) ^ &c;
         let a_bc = &a ^ &(&b ^ &c);
         assert_eq!(ab_c, a_bc);
@@ -541,12 +546,8 @@ mod tests {
 
     #[test]
     fn test_hamming_distance() {
-        let a = Fingerprint::<2> {
-            words: [0xFF, 0x00],
-        };
-        let b = Fingerprint::<2> {
-            words: [0x00, 0x00],
-        };
+        let a = Fingerprint::<2> { words: [0xFF, 0x00] };
+        let b = Fingerprint::<2> { words: [0x00, 0x00] };
         assert_eq!(a.hamming_distance(&b), 8);
     }
 
@@ -563,9 +564,7 @@ mod tests {
         let a = Fingerprint::<1> { words: [0xFF] };
         assert_eq!(a.popcount(), 8);
 
-        let b = Fingerprint::<2> {
-            words: [0xFF, 0xFF],
-        };
+        let b = Fingerprint::<2> { words: [0xFF, 0xFF] };
         assert_eq!(b.popcount(), 16);
     }
 
@@ -598,12 +597,8 @@ mod tests {
 
     #[test]
     fn test_xor_assign() {
-        let a = Fingerprint::<2> {
-            words: [0xFF, 0x00],
-        };
-        let b = Fingerprint::<2> {
-            words: [0x0F, 0xF0],
-        };
+        let a = Fingerprint::<2> { words: [0xFF, 0x00] };
+        let b = Fingerprint::<2> { words: [0x0F, 0xF0] };
         let mut c = a.clone();
         c ^= &b;
         assert_eq!(c, &a ^ &b);

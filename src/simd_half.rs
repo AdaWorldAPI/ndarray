@@ -374,8 +374,12 @@ mod tests {
 
     #[test]
     fn bf16x16_add_matches_scalar() {
-        let a_vals: Vec<BF16> = (0..16).map(|i| BF16::from_f32_rounded(i as f32 * 0.5)).collect();
-        let b_vals: Vec<BF16> = (0..16).map(|i| BF16::from_f32_rounded(i as f32 * 0.25 + 1.0)).collect();
+        let a_vals: Vec<BF16> = (0..16)
+            .map(|i| BF16::from_f32_rounded(i as f32 * 0.5))
+            .collect();
+        let b_vals: Vec<BF16> = (0..16)
+            .map(|i| BF16::from_f32_rounded(i as f32 * 0.25 + 1.0))
+            .collect();
 
         let va = BF16x16::from_slice(&a_vals);
         let vb = BF16x16::from_slice(&b_vals);
@@ -392,8 +396,12 @@ mod tests {
 
     #[test]
     fn bf16x16_sub_matches_scalar() {
-        let a_vals: Vec<BF16> = (0..16).map(|i| BF16::from_f32_rounded(10.0 + i as f32)).collect();
-        let b_vals: Vec<BF16> = (0..16).map(|i| BF16::from_f32_rounded(i as f32 * 0.5)).collect();
+        let a_vals: Vec<BF16> = (0..16)
+            .map(|i| BF16::from_f32_rounded(10.0 + i as f32))
+            .collect();
+        let b_vals: Vec<BF16> = (0..16)
+            .map(|i| BF16::from_f32_rounded(i as f32 * 0.5))
+            .collect();
 
         let result = BF16x16::from_slice(&a_vals).sub(BF16x16::from_slice(&b_vals));
         let mut out = vec![BF16::ZERO; 16];
@@ -407,8 +415,12 @@ mod tests {
 
     #[test]
     fn bf16x16_mul_matches_scalar() {
-        let a_vals: Vec<BF16> = (0..16).map(|i| BF16::from_f32_rounded(i as f32 * 0.5 + 0.1)).collect();
-        let b_vals: Vec<BF16> = (0..16).map(|i| BF16::from_f32_rounded(i as f32 * 0.3 + 0.2)).collect();
+        let a_vals: Vec<BF16> = (0..16)
+            .map(|i| BF16::from_f32_rounded(i as f32 * 0.5 + 0.1))
+            .collect();
+        let b_vals: Vec<BF16> = (0..16)
+            .map(|i| BF16::from_f32_rounded(i as f32 * 0.3 + 0.2))
+            .collect();
 
         let result = BF16x16::from_slice(&a_vals).mul(BF16x16::from_slice(&b_vals));
         let mut out = vec![BF16::ZERO; 16];
@@ -422,25 +434,31 @@ mod tests {
 
     #[test]
     fn bf16x16_fma_matches_scalar() {
-        let a: Vec<BF16> = (0..16).map(|i| BF16::from_f32_rounded(i as f32 + 1.0)).collect();
-        let b: Vec<BF16> = (0..16).map(|i| BF16::from_f32_rounded(0.5 * i as f32)).collect();
-        let c: Vec<BF16> = (0..16).map(|i| BF16::from_f32_rounded(i as f32 * 0.1)).collect();
+        let a: Vec<BF16> = (0..16)
+            .map(|i| BF16::from_f32_rounded(i as f32 + 1.0))
+            .collect();
+        let b: Vec<BF16> = (0..16)
+            .map(|i| BF16::from_f32_rounded(0.5 * i as f32))
+            .collect();
+        let c: Vec<BF16> = (0..16)
+            .map(|i| BF16::from_f32_rounded(i as f32 * 0.1))
+            .collect();
 
         let result = BF16x16::from_slice(&a).fma(BF16x16::from_slice(&b), BF16x16::from_slice(&c));
         let mut out = vec![BF16::ZERO; 16];
         result.copy_to_slice(&mut out);
 
         for i in 0..16 {
-            let expected = BF16::from_f32_rounded(
-                a[i].to_f32().mul_add(b[i].to_f32(), c[i].to_f32()),
-            );
+            let expected = BF16::from_f32_rounded(a[i].to_f32().mul_add(b[i].to_f32(), c[i].to_f32()));
             assert_eq!(out[i], expected, "BF16x16 fma mismatch at lane {}", i);
         }
     }
 
     #[test]
     fn bf16x16_to_f32x16_roundtrip() {
-        let vals: Vec<BF16> = (0..16).map(|i| BF16::from_f32_rounded(i as f32 * 1.5)).collect();
+        let vals: Vec<BF16> = (0..16)
+            .map(|i| BF16::from_f32_rounded(i as f32 * 1.5))
+            .collect();
         let v = BF16x16::from_slice(&vals);
         let f32s = v.to_f32x16();
 
@@ -463,8 +481,12 @@ mod tests {
 
     #[test]
     fn f16x16_add_matches_scalar() {
-        let a_vals: Vec<F16> = (0..16).map(|i| F16::from_f32_rounded(i as f32 * 0.5)).collect();
-        let b_vals: Vec<F16> = (0..16).map(|i| F16::from_f32_rounded(i as f32 * 0.25 + 1.0)).collect();
+        let a_vals: Vec<F16> = (0..16)
+            .map(|i| F16::from_f32_rounded(i as f32 * 0.5))
+            .collect();
+        let b_vals: Vec<F16> = (0..16)
+            .map(|i| F16::from_f32_rounded(i as f32 * 0.25 + 1.0))
+            .collect();
 
         let result = F16x16::from_slice(&a_vals).add(F16x16::from_slice(&b_vals));
         let mut out = vec![F16::ZERO; 16];
@@ -478,8 +500,12 @@ mod tests {
 
     #[test]
     fn f16x16_mul_matches_scalar() {
-        let a_vals: Vec<F16> = (0..16).map(|i| F16::from_f32_rounded(i as f32 * 0.5 + 0.1)).collect();
-        let b_vals: Vec<F16> = (0..16).map(|i| F16::from_f32_rounded(i as f32 * 0.3 + 0.2)).collect();
+        let a_vals: Vec<F16> = (0..16)
+            .map(|i| F16::from_f32_rounded(i as f32 * 0.5 + 0.1))
+            .collect();
+        let b_vals: Vec<F16> = (0..16)
+            .map(|i| F16::from_f32_rounded(i as f32 * 0.3 + 0.2))
+            .collect();
 
         let result = F16x16::from_slice(&a_vals).mul(F16x16::from_slice(&b_vals));
         let mut out = vec![F16::ZERO; 16];
@@ -493,8 +519,12 @@ mod tests {
 
     #[test]
     fn f16x16_sub_matches_scalar() {
-        let a_vals: Vec<F16> = (0..16).map(|i| F16::from_f32_rounded(10.0 + i as f32)).collect();
-        let b_vals: Vec<F16> = (0..16).map(|i| F16::from_f32_rounded(i as f32 * 0.5)).collect();
+        let a_vals: Vec<F16> = (0..16)
+            .map(|i| F16::from_f32_rounded(10.0 + i as f32))
+            .collect();
+        let b_vals: Vec<F16> = (0..16)
+            .map(|i| F16::from_f32_rounded(i as f32 * 0.5))
+            .collect();
 
         let result = F16x16::from_slice(&a_vals).sub(F16x16::from_slice(&b_vals));
         let mut out = vec![F16::ZERO; 16];
@@ -508,25 +538,31 @@ mod tests {
 
     #[test]
     fn f16x16_fma_matches_scalar() {
-        let a: Vec<F16> = (0..16).map(|i| F16::from_f32_rounded(i as f32 + 1.0)).collect();
-        let b: Vec<F16> = (0..16).map(|i| F16::from_f32_rounded(0.5 * i as f32)).collect();
-        let c: Vec<F16> = (0..16).map(|i| F16::from_f32_rounded(i as f32 * 0.1)).collect();
+        let a: Vec<F16> = (0..16)
+            .map(|i| F16::from_f32_rounded(i as f32 + 1.0))
+            .collect();
+        let b: Vec<F16> = (0..16)
+            .map(|i| F16::from_f32_rounded(0.5 * i as f32))
+            .collect();
+        let c: Vec<F16> = (0..16)
+            .map(|i| F16::from_f32_rounded(i as f32 * 0.1))
+            .collect();
 
         let result = F16x16::from_slice(&a).fma(F16x16::from_slice(&b), F16x16::from_slice(&c));
         let mut out = vec![F16::ZERO; 16];
         result.copy_to_slice(&mut out);
 
         for i in 0..16 {
-            let expected = F16::from_f32_rounded(
-                a[i].to_f32().mul_add(b[i].to_f32(), c[i].to_f32()),
-            );
+            let expected = F16::from_f32_rounded(a[i].to_f32().mul_add(b[i].to_f32(), c[i].to_f32()));
             assert_eq!(out[i], expected, "F16x16 fma mismatch at lane {}", i);
         }
     }
 
     #[test]
     fn f16x16_to_f32x16_roundtrip() {
-        let vals: Vec<F16> = (0..16).map(|i| F16::from_f32_rounded(i as f32 * 1.5)).collect();
+        let vals: Vec<F16> = (0..16)
+            .map(|i| F16::from_f32_rounded(i as f32 * 1.5))
+            .collect();
         let v = F16x16::from_slice(&vals);
         let f32s = v.to_f32x16();
 
@@ -551,7 +587,9 @@ mod tests {
     fn add_bf16_inplace_tail_15() {
         let n = 15;
         let mut dst: Vec<BF16> = (0..n).map(|i| BF16::from_f32_rounded(i as f32)).collect();
-        let src: Vec<BF16> = (0..n).map(|i| BF16::from_f32_rounded(i as f32 * 0.5)).collect();
+        let src: Vec<BF16> = (0..n)
+            .map(|i| BF16::from_f32_rounded(i as f32 * 0.5))
+            .collect();
         let expected: Vec<BF16> = (0..n)
             .map(|i| BF16::from_f32_rounded(i as f32 + i as f32 * 0.5))
             .collect();
@@ -566,7 +604,9 @@ mod tests {
     fn add_bf16_inplace_tail_17() {
         let n = 17;
         let mut dst: Vec<BF16> = (0..n).map(|i| BF16::from_f32_rounded(i as f32)).collect();
-        let src: Vec<BF16> = (0..n).map(|i| BF16::from_f32_rounded(i as f32 * 0.5)).collect();
+        let src: Vec<BF16> = (0..n)
+            .map(|i| BF16::from_f32_rounded(i as f32 * 0.5))
+            .collect();
         let expected: Vec<BF16> = (0..n)
             .map(|i| BF16::from_f32_rounded(i as f32 + i as f32 * 0.5))
             .collect();
@@ -611,7 +651,9 @@ mod tests {
 
     #[test]
     fn cast_bf16_f32_roundtrip() {
-        let bf16_vals: Vec<BF16> = (0..33).map(|i| BF16::from_f32_rounded(i as f32 * 0.75)).collect();
+        let bf16_vals: Vec<BF16> = (0..33)
+            .map(|i| BF16::from_f32_rounded(i as f32 * 0.75))
+            .collect();
         let mut f32_buf = vec![0.0f32; 33];
         let mut bf16_buf = vec![BF16::ZERO; 33];
 
@@ -626,7 +668,9 @@ mod tests {
     #[test]
     fn cast_f16_f32_roundtrip() {
         // Use small values to stay within F16 range
-        let f16_vals: Vec<F16> = (0..33).map(|i| F16::from_f32_rounded(i as f32 * 0.5)).collect();
+        let f16_vals: Vec<F16> = (0..33)
+            .map(|i| F16::from_f32_rounded(i as f32 * 0.5))
+            .collect();
         let mut f32_buf = vec![0.0f32; 33];
         let mut f16_buf = vec![F16::ZERO; 33];
 
@@ -643,7 +687,9 @@ mod tests {
     #[test]
     fn mul_bf16_inplace_basic() {
         let n = 17;
-        let mut dst: Vec<BF16> = (0..n).map(|i| BF16::from_f32_rounded(i as f32 + 1.0)).collect();
+        let mut dst: Vec<BF16> = (0..n)
+            .map(|i| BF16::from_f32_rounded(i as f32 + 1.0))
+            .collect();
         let src: Vec<BF16> = (0..n).map(|_| BF16::from_f32_rounded(2.0)).collect();
         let expected: Vec<BF16> = (0..n)
             .map(|i| BF16::from_f32_rounded((i as f32 + 1.0) * 2.0))
@@ -661,7 +707,9 @@ mod tests {
     fn add_f16_inplace_tail_17() {
         let n = 17;
         let mut dst: Vec<F16> = (0..n).map(|i| F16::from_f32_rounded(i as f32)).collect();
-        let src: Vec<F16> = (0..n).map(|i| F16::from_f32_rounded(i as f32 * 0.5)).collect();
+        let src: Vec<F16> = (0..n)
+            .map(|i| F16::from_f32_rounded(i as f32 * 0.5))
+            .collect();
         let expected: Vec<F16> = (0..n)
             .map(|i| F16::from_f32_rounded(i as f32 + i as f32 * 0.5))
             .collect();
@@ -677,7 +725,9 @@ mod tests {
     #[test]
     fn mul_f16_inplace_basic() {
         let n = 17;
-        let mut dst: Vec<F16> = (0..n).map(|i| F16::from_f32_rounded(i as f32 + 1.0)).collect();
+        let mut dst: Vec<F16> = (0..n)
+            .map(|i| F16::from_f32_rounded(i as f32 + 1.0))
+            .collect();
         let src: Vec<F16> = (0..n).map(|_| F16::from_f32_rounded(2.0)).collect();
         let expected: Vec<F16> = (0..n)
             .map(|i| F16::from_f32_rounded((i as f32 + 1.0) * 2.0))

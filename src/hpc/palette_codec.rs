@@ -135,12 +135,7 @@ pub fn compression_ratio(bits_per_index: usize) -> f32 {
 ///
 /// Useful when a palette grows (e.g., 4-bit → 5-bit after inserting a 17th entry).
 /// More efficient than unpack→repack because it avoids the intermediate Vec<u8>.
-pub fn transcode(
-    packed: &[u64],
-    old_bits: usize,
-    new_bits: usize,
-    count: usize,
-) -> Vec<u64> {
+pub fn transcode(packed: &[u64], old_bits: usize, new_bits: usize, count: usize) -> Vec<u64> {
     assert!(old_bits > 0 && old_bits <= 8);
     assert!(new_bits > 0 && new_bits <= 8);
 
@@ -190,7 +185,12 @@ impl PackedPaletteArray {
     pub fn from_indices(indices: &[u8], palette_size: usize) -> Self {
         let bits = bits_for_palette_size(palette_size).max(1);
         let data = pack_indices(indices, bits);
-        Self { data, count: indices.len(), bits_per_index: bits, palette_size }
+        Self {
+            data,
+            count: indices.len(),
+            bits_per_index: bits,
+            palette_size,
+        }
     }
 
     /// Decode all indices.
@@ -402,12 +402,7 @@ unsafe fn unpack_4bit_avx2(packed: &[u64], count: usize) -> Vec<u8> {
 /// Reinterpret &[u64] as &[u8] (little-endian safe).
 fn bytemuck_cast_u64_to_u8(words: &[u64]) -> &[u8] {
     // SAFETY: u64 and u8 have compatible layouts on little-endian
-    unsafe {
-        core::slice::from_raw_parts(
-            words.as_ptr() as *const u8,
-            words.len() * 8,
-        )
-    }
+    unsafe { core::slice::from_raw_parts(words.as_ptr() as *const u8, words.len() * 8) }
 }
 
 /// Reorder 4096 block states from Java Y-major ordering (y*256+z*16+x)
@@ -483,9 +478,7 @@ pub fn bedrock_reorder_xzy_inverse(states: &[u16]) -> Vec<u16> {
 /// assert!(packed.is_some());
 /// ```
 pub fn bedrock_pack_section(
-    states: &[u16],
-    palette: &std::collections::HashMap<u16, u8>,
-    bits_per_index: usize,
+    states: &[u16], palette: &std::collections::HashMap<u16, u8>, bits_per_index: usize,
 ) -> Option<Vec<u64>> {
     let reordered = bedrock_reorder_xzy(states);
     let mut indices = Vec::with_capacity(4096);
@@ -822,15 +815,17 @@ mod tests {
         palette.insert(3u16, 3u8);
 
         let bits = bits_for_palette_size(4); // 2 bits
-        let packed = bedrock_pack_section(&states, &palette, bits)
-            .expect("all states should be in palette");
+        let packed = bedrock_pack_section(&states, &palette, bits).expect("all states should be in palette");
 
         // Verify by unpacking and inverse-reordering
         let unpacked = unpack_indices(&packed, bits, 4096);
-        let bedrock_states: Vec<u16> = unpacked.iter().map(|&idx| {
-            // Reverse palette lookup: idx → state
-            *palette.iter().find(|(_, &v)| v == idx).unwrap().0
-        }).collect();
+        let bedrock_states: Vec<u16> = unpacked
+            .iter()
+            .map(|&idx| {
+                // Reverse palette lookup: idx → state
+                *palette.iter().find(|(_, &v)| v == idx).unwrap().0
+            })
+            .collect();
         let java_states = bedrock_reorder_xzy_inverse(&bedrock_states);
         assert_eq!(states, java_states, "pack then unpack+inverse must recover original");
     }

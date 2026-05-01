@@ -33,9 +33,13 @@ pub fn simhash_project(embedding: &[f32], container_bits: usize, seed: u64) -> A
     for bit_idx in 0..container_bits {
         // Generate random hyperplane using LCG
         let mut dot = 0.0f32;
-        let mut rng_state = seed.wrapping_mul(6364136223846793005).wrapping_add(bit_idx as u64);
+        let mut rng_state = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(bit_idx as u64);
         for d in 0..dim {
-            rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(d as u64 + 1);
+            rng_state = rng_state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(d as u64 + 1);
             // Convert to [-1, 1] range
             let random_val = ((rng_state >> 33) as f32 / (u32::MAX >> 1) as f32) * 2.0 - 1.0;
             dot += embedding[d] * random_val;
@@ -68,11 +72,7 @@ pub fn simhash_project(embedding: &[f32], container_bits: usize, seed: u64) -> A
 /// assert_eq!(results[0].len(), 2); // 16 bits = 2 bytes
 /// ```
 pub fn simhash_batch_project(
-    embeddings: &[f32],
-    n: usize,
-    d: usize,
-    container_bits: usize,
-    seed: u64,
+    embeddings: &[f32], n: usize, d: usize, container_bits: usize, seed: u64,
 ) -> Vec<Array<u8, Ix1>> {
     (0..n)
         .map(|i| {
@@ -93,9 +93,13 @@ pub fn simhash_int8_project(embedding_i8: &[i8], container_bits: usize, seed: u6
 
     for bit_idx in 0..container_bits {
         let mut dot = 0i64;
-        let mut rng_state = seed.wrapping_mul(6364136223846793005).wrapping_add(bit_idx as u64);
+        let mut rng_state = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(bit_idx as u64);
         for d in 0..dim {
-            rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(d as u64 + 1);
+            rng_state = rng_state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(d as u64 + 1);
             let random_val = if (rng_state >> 63) == 0 { 1i64 } else { -1i64 };
             dot += embedding_i8[d] as i64 * random_val;
         }

@@ -5,9 +5,9 @@
 //! - `/v1/embeddings` — token embeddings via wte
 //! - `/v1/models` — model info
 
-use crate::hpc::models::api_types::*;
 use super::inference::{GeneratedToken, Gpt2Engine};
 use super::weights::*;
+use crate::hpc::models::api_types::*;
 
 /// Stateless API wrapper around Gpt2Engine.
 pub struct Gpt2Api {
@@ -17,7 +17,10 @@ pub struct Gpt2Api {
 
 impl Gpt2Api {
     pub fn new(weights: Gpt2Weights) -> Self {
-        Self { engine: Gpt2Engine::new(weights), request_counter: 0 }
+        Self {
+            engine: Gpt2Engine::new(weights),
+            request_counter: 0,
+        }
     }
 
     /// `/v1/completions`
@@ -35,14 +38,20 @@ impl Gpt2Api {
             FinishReason::Length
         };
 
-        let text = generated.iter().map(|t| format!("[{}]", t.token_id)).collect::<String>();
-        let logprobs: Vec<LogprobInfo> = generated.iter().map(|t| LogprobInfo {
-            token: format!("{}", t.token_id),
-            token_id: t.token_id,
-            logprob: t.logprob,
-            bytes: None,
-            top_logprobs: Vec::new(),
-        }).collect();
+        let text = generated
+            .iter()
+            .map(|t| format!("[{}]", t.token_id))
+            .collect::<String>();
+        let logprobs: Vec<LogprobInfo> = generated
+            .iter()
+            .map(|t| LogprobInfo {
+                token: format!("{}", t.token_id),
+                token_id: t.token_id,
+                logprob: t.logprob,
+                bytes: None,
+                top_logprobs: Vec::new(),
+            })
+            .collect();
 
         let use_logprobs = req.logprobs.is_some();
 
@@ -71,19 +80,27 @@ impl Gpt2Api {
             _ => req.input_tokens.clone().unwrap_or_default(),
         };
 
-        let data: Vec<EmbeddingData> = token_ids.iter().enumerate().map(|(idx, &tid)| {
-            let offset = tid as usize * EMBED_DIM;
-            let mut emb = self.engine.weights().wte[offset..offset + EMBED_DIM].to_vec();
-            if let Some(dim) = req.dimensions {
-                emb.truncate(dim);
-            }
-            EmbeddingData::new(idx, emb)
-        }).collect();
+        let data: Vec<EmbeddingData> = token_ids
+            .iter()
+            .enumerate()
+            .map(|(idx, &tid)| {
+                let offset = tid as usize * EMBED_DIM;
+                let mut emb = self.engine.weights().wte[offset..offset + EMBED_DIM].to_vec();
+                if let Some(dim) = req.dimensions {
+                    emb.truncate(dim);
+                }
+                EmbeddingData::new(idx, emb)
+            })
+            .collect();
 
         EmbeddingResponse::new(
             "gpt2".into(),
             data,
-            Usage { prompt_tokens: token_ids.len(), completion_tokens: 0, total_tokens: token_ids.len() },
+            Usage {
+                prompt_tokens: token_ids.len(),
+                completion_tokens: 0,
+                total_tokens: token_ids.len(),
+            },
         )
     }
 

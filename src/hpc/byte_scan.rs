@@ -256,17 +256,26 @@ pub struct NbtSchemaEntry {
 impl NbtSchemaEntry {
     /// Create a schema entry for a named compound tag.
     pub fn compound(name: &str) -> Self {
-        Self { tag_id: NbtTagId::Compound, name: name.as_bytes().to_vec() }
+        Self {
+            tag_id: NbtTagId::Compound,
+            name: name.as_bytes().to_vec(),
+        }
     }
 
     /// Create a schema entry for a named list tag.
     pub fn list(name: &str) -> Self {
-        Self { tag_id: NbtTagId::List, name: name.as_bytes().to_vec() }
+        Self {
+            tag_id: NbtTagId::List,
+            name: name.as_bytes().to_vec(),
+        }
     }
 
     /// Create a schema entry for any tag type with given name.
     pub fn new(tag_id: NbtTagId, name: &str) -> Self {
-        Self { tag_id, name: name.as_bytes().to_vec() }
+        Self {
+            tag_id,
+            name: name.as_bytes().to_vec(),
+        }
     }
 }
 
@@ -353,11 +362,11 @@ pub fn nbt_schema_scan(data: &[u8], schema: &[NbtSchemaEntry]) -> Vec<NbtSchemaM
 ///
 /// Returns per-buffer match vectors. Useful for batch region loading
 /// where 1024 chunk NBT blobs are processed together.
-pub fn nbt_schema_scan_batch(
-    buffers: &[&[u8]],
-    schema: &[NbtSchemaEntry],
-) -> Vec<Vec<NbtSchemaMatch>> {
-    buffers.iter().map(|buf| nbt_schema_scan(buf, schema)).collect()
+pub fn nbt_schema_scan_batch(buffers: &[&[u8]], schema: &[NbtSchemaEntry]) -> Vec<Vec<NbtSchemaMatch>> {
+    buffers
+        .iter()
+        .map(|buf| nbt_schema_scan(buf, schema))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -385,11 +394,7 @@ mod tests {
         // Use a buffer that exercises both SIMD and scalar tail.
         let buf: Vec<u8> = (0..200).map(|i| (i % 7) as u8).collect();
         for needle in 0..7u8 {
-            assert_eq!(
-                byte_find_all(&buf, needle),
-                naive_byte_find_all(&buf, needle),
-                "mismatch for needle {needle}"
-            );
+            assert_eq!(byte_find_all(&buf, needle), naive_byte_find_all(&buf, needle), "mismatch for needle {needle}");
         }
     }
 
@@ -397,11 +402,7 @@ mod tests {
     fn test_byte_count_matches_naive() {
         let buf: Vec<u8> = (0..200).map(|i| (i % 7) as u8).collect();
         for needle in 0..7u8 {
-            assert_eq!(
-                byte_count(&buf, needle),
-                naive_byte_count(&buf, needle),
-                "mismatch for needle {needle}"
-            );
+            assert_eq!(byte_count(&buf, needle), naive_byte_count(&buf, needle), "mismatch for needle {needle}");
         }
     }
 
@@ -520,10 +521,7 @@ mod tests {
         data.extend_from_slice(b"BlockEntities");
         data.extend_from_slice(&[0; 5]);
 
-        let schema = vec![
-            NbtSchemaEntry::compound("Entities"),
-            NbtSchemaEntry::list("BlockEntities"),
-        ];
+        let schema = vec![NbtSchemaEntry::compound("Entities"), NbtSchemaEntry::list("BlockEntities")];
         let matches = nbt_schema_scan(&data, &schema);
         assert_eq!(matches.len(), 2);
         assert_eq!(matches[0].tag_offset, 0);

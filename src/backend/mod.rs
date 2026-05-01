@@ -14,8 +14,6 @@ pub mod native;
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod kernels_avx512;
 
-
-
 #[cfg(feature = "intel-mkl")]
 pub mod mkl;
 #[cfg(feature = "openblas")]
@@ -40,38 +38,20 @@ compile_error!("Features `intel-mkl` and `openblas` are mutually exclusive. Enab
 
 #[cfg(feature = "intel-mkl")]
 pub use mkl::{
-    dot_f32, dot_f64,
-    axpy_f32, axpy_f64,
-    scal_f32, scal_f64,
-    nrm2_f32, nrm2_f64,
-    asum_f32, asum_f64,
-    gemm_f32, gemm_f64,
-    gemv_f32, gemv_f64,
-    sgemm_nr, sgemm_mr, dgemm_nr, dgemm_mr,
+    asum_f32, asum_f64, axpy_f32, axpy_f64, dgemm_mr, dgemm_nr, dot_f32, dot_f64, gemm_f32, gemm_f64, gemv_f32,
+    gemv_f64, nrm2_f32, nrm2_f64, scal_f32, scal_f64, sgemm_mr, sgemm_nr,
 };
 
 #[cfg(all(feature = "openblas", not(feature = "intel-mkl")))]
 pub use openblas::{
-    dot_f32, dot_f64,
-    axpy_f32, axpy_f64,
-    scal_f32, scal_f64,
-    nrm2_f32, nrm2_f64,
-    asum_f32, asum_f64,
-    gemm_f32, gemm_f64,
-    gemv_f32, gemv_f64,
-    sgemm_nr, sgemm_mr, dgemm_nr, dgemm_mr,
+    asum_f32, asum_f64, axpy_f32, axpy_f64, dgemm_mr, dgemm_nr, dot_f32, dot_f64, gemm_f32, gemm_f64, gemv_f32,
+    gemv_f64, nrm2_f32, nrm2_f64, scal_f32, scal_f64, sgemm_mr, sgemm_nr,
 };
 
 #[cfg(not(any(feature = "intel-mkl", feature = "openblas")))]
 pub use native::{
-    dot_f32, dot_f64,
-    axpy_f32, axpy_f64,
-    scal_f32, scal_f64,
-    nrm2_f32, nrm2_f64,
-    asum_f32, asum_f64,
-    gemm_f32, gemm_f64,
-    gemv_f32, gemv_f64,
-    sgemm_nr, sgemm_mr, dgemm_nr, dgemm_mr,
+    asum_f32, asum_f64, axpy_f32, axpy_f64, dgemm_mr, dgemm_nr, dot_f32, dot_f64, gemm_f32, gemm_f64, gemv_f32,
+    gemv_f64, nrm2_f32, nrm2_f64, scal_f32, scal_f64, sgemm_mr, sgemm_nr,
 };
 
 // ─── BlasFloat: type-level dispatch for generic code ──────────────
@@ -93,17 +73,11 @@ pub trait BlasFloat: num_traits::Float + Default + Send + Sync + 'static {
     fn backend_asum(x: &[Self]) -> Self;
     /// GEMM using the active backend.
     fn backend_gemm(
-        m: usize, n: usize, k: usize,
-        alpha: Self, a: &[Self], lda: usize,
-        b: &[Self], ldb: usize,
-        beta: Self, c: &mut [Self], ldc: usize,
+        m: usize, n: usize, k: usize, alpha: Self, a: &[Self], lda: usize, b: &[Self], ldb: usize, beta: Self,
+        c: &mut [Self], ldc: usize,
     );
     /// GEMV using the active backend.
-    fn backend_gemv(
-        m: usize, n: usize,
-        alpha: Self, a: &[Self], lda: usize,
-        x: &[Self], beta: Self, y: &mut [Self],
-    );
+    fn backend_gemv(m: usize, n: usize, alpha: Self, a: &[Self], lda: usize, x: &[Self], beta: Self, y: &mut [Self]);
 }
 
 impl BlasFloat for f32 {
@@ -123,18 +97,12 @@ impl BlasFloat for f32 {
         asum_f32(x)
     }
     fn backend_gemm(
-        m: usize, n: usize, k: usize,
-        alpha: Self, a: &[Self], lda: usize,
-        b: &[Self], ldb: usize,
-        beta: Self, c: &mut [Self], ldc: usize,
+        m: usize, n: usize, k: usize, alpha: Self, a: &[Self], lda: usize, b: &[Self], ldb: usize, beta: Self,
+        c: &mut [Self], ldc: usize,
     ) {
         gemm_f32(m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
     }
-    fn backend_gemv(
-        m: usize, n: usize,
-        alpha: Self, a: &[Self], lda: usize,
-        x: &[Self], beta: Self, y: &mut [Self],
-    ) {
+    fn backend_gemv(m: usize, n: usize, alpha: Self, a: &[Self], lda: usize, x: &[Self], beta: Self, y: &mut [Self]) {
         gemv_f32(m, n, alpha, a, lda, x, beta, y);
     }
 }
@@ -156,18 +124,12 @@ impl BlasFloat for f64 {
         asum_f64(x)
     }
     fn backend_gemm(
-        m: usize, n: usize, k: usize,
-        alpha: Self, a: &[Self], lda: usize,
-        b: &[Self], ldb: usize,
-        beta: Self, c: &mut [Self], ldc: usize,
+        m: usize, n: usize, k: usize, alpha: Self, a: &[Self], lda: usize, b: &[Self], ldb: usize, beta: Self,
+        c: &mut [Self], ldc: usize,
     ) {
         gemm_f64(m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
     }
-    fn backend_gemv(
-        m: usize, n: usize,
-        alpha: Self, a: &[Self], lda: usize,
-        x: &[Self], beta: Self, y: &mut [Self],
-    ) {
+    fn backend_gemv(m: usize, n: usize, alpha: Self, a: &[Self], lda: usize, x: &[Self], beta: Self, y: &mut [Self]) {
         gemv_f64(m, n, alpha, a, lda, x, beta, y);
     }
 }
@@ -185,10 +147,8 @@ impl BlasFloat for f64 {
 /// `cblas_sgemm` equivalent — pure Rust SIMD-dispatched f32 GEMM.
 #[inline]
 pub fn cblas_sgemm(
-    m: usize, n: usize, k: usize,
-    alpha: f32, a: &[f32], lda: usize,
-    b: &[f32], ldb: usize,
-    beta: f32, c: &mut [f32], ldc: usize,
+    m: usize, n: usize, k: usize, alpha: f32, a: &[f32], lda: usize, b: &[f32], ldb: usize, beta: f32, c: &mut [f32],
+    ldc: usize,
 ) {
     gemm_f32(m, n, k, alpha, a, lda, b, ldb, beta, c, ldc)
 }
@@ -196,10 +156,8 @@ pub fn cblas_sgemm(
 /// `cblas_dgemm` equivalent — pure Rust SIMD-dispatched f64 GEMM.
 #[inline]
 pub fn cblas_dgemm(
-    m: usize, n: usize, k: usize,
-    alpha: f64, a: &[f64], lda: usize,
-    b: &[f64], ldb: usize,
-    beta: f64, c: &mut [f64], ldc: usize,
+    m: usize, n: usize, k: usize, alpha: f64, a: &[f64], lda: usize, b: &[f64], ldb: usize, beta: f64, c: &mut [f64],
+    ldc: usize,
 ) {
     gemm_f64(m, n, k, alpha, a, lda, b, ldb, beta, c, ldc)
 }
@@ -215,10 +173,7 @@ pub fn cblas_dgemm(
 /// Same signature across all paths.
 #[inline]
 #[allow(clippy::needless_return)]
-pub fn gemm_i8(
-    a: &[u8], b: &[i8], c: &mut [i32],
-    m: usize, n: usize, k: usize,
-) {
+pub fn gemm_i8(a: &[u8], b: &[i8], c: &mut [i32], m: usize, n: usize, k: usize) {
     // VNNI path (Ice Lake, Sapphire Rapids, Zen 4) — includes AMX fallback
     #[cfg(feature = "std")]
     {
@@ -239,10 +194,7 @@ pub fn gemm_i8(
 /// `ndarray::hpc::quantized::BF16`).
 #[inline]
 #[allow(clippy::needless_return)]
-pub fn gemm_bf16(
-    a: &[u16], b: &[u16], c: &mut [f32],
-    m: usize, n: usize, k: usize,
-) {
+pub fn gemm_bf16(a: &[u16], b: &[u16], c: &mut [f32], m: usize, n: usize, k: usize) {
     // Reinterpret u16 slices as BF16 slices (repr(transparent))
     #[cfg(feature = "std")]
     {
@@ -250,9 +202,8 @@ pub fn gemm_bf16(
             // SAFETY: BF16 is #[repr(transparent)] over u16
             core::slice::from_raw_parts(a.as_ptr() as *const crate::hpc::quantized::BF16, a.len())
         };
-        let b_bf16: &[crate::hpc::quantized::BF16] = unsafe {
-            core::slice::from_raw_parts(b.as_ptr() as *const crate::hpc::quantized::BF16, b.len())
-        };
+        let b_bf16: &[crate::hpc::quantized::BF16] =
+            unsafe { core::slice::from_raw_parts(b.as_ptr() as *const crate::hpc::quantized::BF16, b.len()) };
         crate::hpc::quantized::bf16_gemm_f32(a_bf16, b_bf16, c, m, n, k, 1.0, 0.0);
         return;
     }
@@ -265,19 +216,13 @@ pub fn gemm_bf16(
 
 /// CBLAS-compat alias for INT8 GEMM.
 #[inline]
-pub fn cblas_gemm_s8s8s32(
-    a: &[u8], b: &[i8], c: &mut [i32],
-    m: usize, n: usize, k: usize,
-) {
+pub fn cblas_gemm_s8s8s32(a: &[u8], b: &[i8], c: &mut [i32], m: usize, n: usize, k: usize) {
     gemm_i8(a, b, c, m, n, k)
 }
 
 /// CBLAS-compat alias for BF16 GEMM.
 #[inline]
-pub fn cblas_gemm_bf16bf16f32(
-    a: &[u16], b: &[u16], c: &mut [f32],
-    m: usize, n: usize, k: usize,
-) {
+pub fn cblas_gemm_bf16bf16f32(a: &[u16], b: &[u16], c: &mut [f32], m: usize, n: usize, k: usize) {
     gemm_bf16(a, b, c, m, n, k)
 }
 
@@ -293,9 +238,8 @@ pub fn cblas_gemm_bf16bf16f32(
 
 #[cfg(target_arch = "x86_64")]
 pub use kernels_avx512::{
-    add_f32_vec, sub_f32_vec, mul_f32_vec, div_f32_vec,
-    add_f32_scalar, sub_f32_scalar, mul_f32_scalar, div_f32_scalar,
-    iamax_f32, iamax_f64,
+    add_f32_scalar, add_f32_vec, div_f32_scalar, div_f32_vec, iamax_f32, iamax_f64, mul_f32_scalar, mul_f32_vec,
+    sub_f32_scalar, sub_f32_vec,
 };
 
 // ─── Slice-level ops by dtype (unified re-exports) ──────────────
@@ -304,23 +248,15 @@ pub use kernels_avx512::{
 // Integer: simd_int_ops. Half: simd_half. Float: kernels_avx512 + reductions.
 
 #[cfg(feature = "std")]
-pub use crate::simd_int_ops::{
-    add_i8, sub_i8, add_i16,
-    dot_i8, dot_i16,
-    min_i8, max_i8,
-};
+pub use crate::simd_int_ops::{add_i16, add_i8, dot_i16, dot_i8, max_i8, min_i8, sub_i8};
 
 #[cfg(feature = "std")]
 pub use crate::simd_half::{
-    add_bf16_inplace, mul_bf16_inplace,
-    add_f16_inplace, mul_f16_inplace,
-    cast_bf16_to_f32_batch, cast_f16_to_f32_batch,
-    cast_f32_to_bf16_batch, cast_f32_to_f16_batch,
+    add_bf16_inplace, add_f16_inplace, cast_bf16_to_f32_batch, cast_f16_to_f32_batch, cast_f32_to_bf16_batch,
+    cast_f32_to_f16_batch, mul_bf16_inplace, mul_f16_inplace,
 };
 
 #[cfg(feature = "std")]
 pub use crate::hpc::reductions::{
-    sum_f32, sum_f64, mean_f32, mean_f64,
-    max_f32, min_f32, argmax_f32, argmin_f32,
-    nrm2_f32 as nrm2_f32_simd,
+    argmax_f32, argmin_f32, max_f32, mean_f32, mean_f64, min_f32, nrm2_f32 as nrm2_f32_simd, sum_f32, sum_f64,
 };

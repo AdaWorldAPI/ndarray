@@ -23,8 +23,8 @@
 //!
 //! On wasm32 (future): tier would be WASM SIMD (128-bit, `+simd128`).
 
-use std::sync::LazyLock;
 use super::simd_caps::simd_caps;
+use std::sync::LazyLock;
 
 /// The selected SIMD tier, frozen at first access.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,10 +159,7 @@ impl SimdDispatch {
         // will be wired when simd_neon.rs types are activated. For now,
         // dispatch to scalar which auto-vectorizes well on aarch64 with
         // `-C target-feature=+neon` (mandatory on aarch64).
-        Self {
-            tier,
-            ..Self::scalar()
-        }
+        Self { tier, ..Self::scalar() }
     }
 
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
@@ -194,7 +191,9 @@ impl SimdDispatch {
 // ── byte_scan wrappers ──
 
 fn byte_find_all_scalar(haystack: &[u8], needle: u8) -> Vec<usize> {
-    haystack.iter().enumerate()
+    haystack
+        .iter()
+        .enumerate()
         .filter(|(_, &b)| b == needle)
         .map(|(i, _)| i)
         .collect()
@@ -231,12 +230,15 @@ fn byte_count_avx2_wrapper(haystack: &[u8], needle: u8) -> usize {
 // ── distance wrappers ──
 
 fn squared_distances_scalar(query: [f32; 3], points: &[[f32; 3]]) -> Vec<f32> {
-    points.iter().map(|p| {
-        let dx = query[0] - p[0];
-        let dy = query[1] - p[1];
-        let dz = query[2] - p[2];
-        dx * dx + dy * dy + dz * dz
-    }).collect()
+    points
+        .iter()
+        .map(|p| {
+            let dx = query[0] - p[0];
+            let dy = query[1] - p[1];
+            let dz = query[2] - p[2];
+            dx * dx + dy * dy + dz * dz
+        })
+        .collect()
 }
 
 #[cfg(target_arch = "x86_64")]

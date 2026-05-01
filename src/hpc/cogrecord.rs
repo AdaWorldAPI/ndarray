@@ -3,8 +3,8 @@
 //! Each container is an `Array<u8, Ix1>` of 16384 bytes, queryable via
 //! Hamming distance (VPOPCNTDQ) or int8 dot product.
 
-use crate::imp_prelude::*;
 use super::bitwise::BitwiseOps;
+use crate::imp_prelude::*;
 
 /// Size of each container in bytes (16384 = 131072 bits).
 pub const CONTAINER_BYTES: usize = 16384;
@@ -72,13 +72,13 @@ impl Default for CogRecord {
 
 impl CogRecord {
     /// Create a new CogRecord from 4 containers.
-    pub fn new(
-        meta: Array<u8, Ix1>,
-        cam: Array<u8, Ix1>,
-        btree: Array<u8, Ix1>,
-        embed: Array<u8, Ix1>,
-    ) -> Self {
-        Self { meta, cam, btree, embed }
+    pub fn new(meta: Array<u8, Ix1>, cam: Array<u8, Ix1>, btree: Array<u8, Ix1>, embed: Array<u8, Ix1>) -> Self {
+        Self {
+            meta,
+            cam,
+            btree,
+            embed,
+        }
     }
 
     /// Create a zero-initialized CogRecord.
@@ -172,19 +172,14 @@ impl CogRecord {
 /// Batch sweep across multiple CogRecords.
 ///
 /// Returns `SweepResult` for all candidates that pass the threshold.
-pub fn sweep_cogrecords(
-    query: &CogRecord,
-    candidates: &[CogRecord],
-    thresholds: &[u64; 4],
-) -> Vec<SweepResult> {
+pub fn sweep_cogrecords(query: &CogRecord, candidates: &[CogRecord], thresholds: &[u64; 4]) -> Vec<SweepResult> {
     candidates
         .iter()
         .enumerate()
         .filter_map(|(i, candidate)| {
-            query.sweep_adaptive(candidate, thresholds).map(|distances| SweepResult {
-                index: i,
-                distances,
-            })
+            query
+                .sweep_adaptive(candidate, thresholds)
+                .map(|distances| SweepResult { index: i, distances })
         })
         .collect()
 }
