@@ -354,7 +354,7 @@ fn distillation_loss(student: &mut Node, teacher: &mut Node, lambda: f32) -> f32
 /// # Example
 ///
 /// ```
-/// use ndarray::hpc::crystal_encoder::{CrystalEncoder, Role, distill};
+/// use ndarray::hpc::crystal_encoder::{CrystalEncoder, distill};
 /// use ndarray::hpc::node::Node;
 ///
 /// let teacher = Node::random(42);

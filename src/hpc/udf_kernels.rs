@@ -188,8 +188,8 @@ pub fn udf_nars_revision(freq1: u16, conf1: u16, freq2: u16, conf2: u16) -> (u16
 /// ```
 /// use ndarray::hpc::udf_kernels::udf_sigma_classify;
 ///
-/// assert_eq!(udf_sigma_classify(1000, 100), "exact");
-/// assert_eq!(udf_sigma_classify(1000, 1500), "noise");
+/// assert_eq!(udf_sigma_classify(100, 1000), "exact");
+/// assert_eq!(udf_sigma_classify(1500, 1000), "noise");
 /// ```
 pub fn udf_sigma_classify(band: u32, threshold: u64) -> &'static str {
     use super::cascade::Band;
