@@ -101,6 +101,10 @@ jobs:
         with:
           toolchain: ${{ matrix.rust }}
           targets: ${{ matrix.target }}
+      # rust-toolchain.toml pins 1.94.1 — install the cross-compile target
+      # for that toolchain too, since dtolnay/rust-toolchain only installs
+      # for the matrix value which may differ from the pinned version.
+      - run: rustup target add ${{ matrix.target }}
       - name: Tests
         run: |
           cargo rustc "--target=${{ matrix.target }}" --no-default-features --features portable-atomic-critical-section
