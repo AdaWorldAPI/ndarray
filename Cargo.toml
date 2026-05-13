@@ -79,6 +79,56 @@ quickcheck = { workspace = true }
 approx = { workspace = true, default-features = true }
 itertools = { workspace = true }
 ndarray-gen = { workspace = true }
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "append"
+harness = false
+
+[[bench]]
+name = "bench1"
+harness = false
+
+[[bench]]
+name = "chunks"
+harness = false
+
+[[bench]]
+name = "construct"
+harness = false
+
+[[bench]]
+name = "gemv_gemm"
+harness = false
+
+[[bench]]
+name = "higher-order"
+harness = false
+
+[[bench]]
+name = "iter"
+harness = false
+
+[[bench]]
+name = "numeric"
+harness = false
+
+[[bench]]
+name = "par_rayon"
+harness = false
+required-features = ["rayon"]
+
+[[bench]]
+name = "reserve"
+harness = false
+
+[[bench]]
+name = "to_shape"
+harness = false
+
+[[bench]]
+name = "zip"
+harness = false
 
 [features]
 default = ["std", "hpc-extras"]

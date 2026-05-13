@@ -1,9 +1,6 @@
-#![feature(test)]
 #![allow(clippy::many_single_char_names, clippy::deref_addrof, clippy::unreadable_literal)]
 
-extern crate test;
-use test::Bencher;
-
+use criterion::{criterion_group, criterion_main, Criterion};
 use num_complex::Complex;
 use num_traits::{Float, One, Zero};
 
@@ -13,59 +10,69 @@ use ndarray::linalg::general_mat_mul;
 use ndarray::linalg::general_mat_vec_mul;
 use ndarray::LinalgScalar;
 
-#[bench]
-fn gemv_64_64c(bench: &mut Bencher) {
+fn gemv_64_64c(c: &mut Criterion)
+{
     let a = Array::zeros((64, 64));
     let (m, n) = a.dim();
     let x = Array::zeros(n);
     let mut y = Array::zeros(m);
-    bench.iter(|| {
-        general_mat_vec_mul(1.0, &a, &x, 1.0, &mut y);
+    c.bench_function("gemv_64_64c", |b| {
+        b.iter(|| {
+            general_mat_vec_mul(1.0, &a, &x, 1.0, &mut y);
+        });
     });
 }
 
-#[bench]
-fn gemv_64_64f(bench: &mut Bencher) {
+fn gemv_64_64f(c: &mut Criterion)
+{
     let a = Array::zeros((64, 64).f());
     let (m, n) = a.dim();
     let x = Array::zeros(n);
     let mut y = Array::zeros(m);
-    bench.iter(|| {
-        general_mat_vec_mul(1.0, &a, &x, 1.0, &mut y);
+    c.bench_function("gemv_64_64f", |b| {
+        b.iter(|| {
+            general_mat_vec_mul(1.0, &a, &x, 1.0, &mut y);
+        });
     });
 }
 
-#[bench]
-fn gemv_64_32(bench: &mut Bencher) {
+fn gemv_64_32(c: &mut Criterion)
+{
     let a = Array::zeros((64, 32));
     let (m, n) = a.dim();
     let x = Array::zeros(n);
     let mut y = Array::zeros(m);
-    bench.iter(|| {
-        general_mat_vec_mul(1.0, &a, &x, 1.0, &mut y);
+    c.bench_function("gemv_64_32", |b| {
+        b.iter(|| {
+            general_mat_vec_mul(1.0, &a, &x, 1.0, &mut y);
+        });
     });
 }
 
-#[bench]
-fn cgemm_100(bench: &mut Bencher) {
-    cgemm_bench::<f32>(100, bench);
+fn cgemm_100(c: &mut Criterion)
+{
+    cgemm_bench::<f32>("cgemm_100", 100, c);
 }
 
-#[bench]
-fn zgemm_100(bench: &mut Bencher) {
-    cgemm_bench::<f64>(100, bench);
+fn zgemm_100(c: &mut Criterion)
+{
+    cgemm_bench::<f64>("zgemm_100", 100, c);
 }
 
-fn cgemm_bench<A>(size: usize, bench: &mut Bencher)
-where
-    A: LinalgScalar + Float,
+fn cgemm_bench<A>(name: &str, size: usize, c: &mut Criterion)
+where A: LinalgScalar + Float
 {
     let (m, k, n) = (size, size, size);
     let a = Array::<Complex<A>, _>::zeros((m, k));
 
     let x = Array::zeros((k, n));
     let mut y = Array::zeros((m, n));
-    bench.iter(|| {
-        general_mat_mul(Complex::one(), &a, &x, Complex::zero(), &mut y);
+    c.bench_function(name, |b| {
+        b.iter(|| {
+            general_mat_mul(Complex::one(), &a, &x, Complex::zero(), &mut y);
+        });
     });
 }
+
+criterion_group!(benches, gemv_64_64c, gemv_64_64f, gemv_64_32, cgemm_100, zgemm_100);
+criterion_main!(benches);
