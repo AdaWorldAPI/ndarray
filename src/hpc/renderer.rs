@@ -252,6 +252,60 @@ pub fn integrate_simd(positions: &mut [f32], velocities: &mut [f32], dt: f32, da
     }
 }
 
+/// Rayon-parallel block size in floats. Each worker processes `BLOCK_FLOATS`
+/// consecutive elements, which is `BLOCK_LANES * 16` to stay aligned with the
+/// inner `as_chunks_mut::<16>()` SIMD loop. 1024 floats × 4 bytes = 4 KB →
+/// L1-resident, large enough to amortize work-stealing overhead.
+#[cfg(feature = "rayon")]
+pub const BLOCK_FLOATS: usize = 1024;
+
+/// Rayon-parallel variant of [`integrate_simd`]: same FMA body, split across
+/// the rayon thread pool in [`BLOCK_FLOATS`]-sized chunks.
+///
+/// Composition: 16 SIMD lanes × N rayon threads. Each worker runs the same
+/// `F32x16::mul_add` inner loop on its block; rayon handles work-stealing.
+///
+/// Buffers must be a multiple of `BLOCK_FLOATS` so no worker hits a partial
+/// chunk (which would still be a multiple of 16 by construction, but the
+/// debug-assert is stricter to make alignment intent explicit).
+///
+/// Single-threaded sanity: at small `N` (< ~10K floats) sequential beats this
+/// because work-stealing overhead exceeds the SIMD savings. Use the parallel
+/// variant only for ≥ ~64 K floats (≈ 21 K nodes at 3 components each).
+#[cfg(feature = "rayon")]
+#[inline]
+pub fn integrate_simd_par(positions: &mut [f32], velocities: &mut [f32], dt: f32, damping: f32) {
+    use rayon::prelude::*;
+
+    debug_assert_eq!(positions.len(), velocities.len());
+    debug_assert_eq!(positions.len() % PREFERRED_F32_LANES, 0);
+    debug_assert_eq!(positions.len() % 16, 0);
+
+    let dt_v = cached_splat(dt);
+    let damping_v = F32x16::splat(damping);
+
+    positions
+        .par_chunks_mut(BLOCK_FLOATS)
+        .zip(velocities.par_chunks_mut(BLOCK_FLOATS))
+        .for_each(|(p_block, v_block)| {
+            // Inner SIMD loop is byte-identical to integrate_simd's body.
+            // The last block may be < BLOCK_FLOATS but is still a multiple
+            // of 16 because the caller guarantees positions.len() % 16 == 0.
+            let (p_chunks, p_tail) = p_block.as_chunks_mut::<16>();
+            let (v_chunks, v_tail) = v_block.as_chunks_mut::<16>();
+            debug_assert!(p_tail.is_empty() && v_tail.is_empty());
+
+            for (p, v) in p_chunks.iter_mut().zip(v_chunks.iter_mut()) {
+                let pv = F32x16::from_array(*p);
+                let vv = F32x16::from_array(*v);
+                let p_new = vv.mul_add(dt_v, pv);
+                let v_new = vv * damping_v;
+                p_new.copy_to_slice(p);
+                v_new.copy_to_slice(v);
+            }
+        });
+}
+
 /// Apply a uniform per-axis force to every node's velocity (e.g. gravity).
 /// `force` is `[fx, fy, fz]` accelerated by `dt`.
 ///
@@ -991,5 +1045,41 @@ mod adaptive_tests {
         let mut p = vec![0.0f32; 16_384];
         let (_chunks, tail) = p.as_chunks_mut::<16>();
         assert!(tail.is_empty(), "no scalar tail at 16384");
+    }
+
+    #[cfg(feature = "rayon")]
+    #[test]
+    fn integrate_simd_par_matches_sequential() {
+        // 4096 floats = 4 × BLOCK_FLOATS — guaranteed multi-block, so rayon
+        // actually parallelizes instead of degenerating to one worker.
+        let n = 4 * BLOCK_FLOATS;
+        let mut p_seq = (0..n).map(|i| i as f32 * 0.001).collect::<Vec<_>>();
+        let mut v_seq = (0..n).map(|i| (i as f32).sin() * 0.1).collect::<Vec<_>>();
+        let mut p_par = p_seq.clone();
+        let mut v_par = v_seq.clone();
+
+        integrate_simd(&mut p_seq, &mut v_seq, DT_60, 0.98);
+        integrate_simd_par(&mut p_par, &mut v_par, DT_60, 0.98);
+
+        // FMA + mul are deterministic at the same dispatch tier — every lane
+        // bit-identical across sequential and parallel runs.
+        for i in 0..n {
+            assert_eq!(p_seq[i].to_bits(), p_par[i].to_bits(), "pos mismatch at {}", i);
+            assert_eq!(v_seq[i].to_bits(), v_par[i].to_bits(), "vel mismatch at {}", i);
+        }
+    }
+
+    #[cfg(feature = "rayon")]
+    #[test]
+    fn integrate_simd_par_advances_positions_exactly() {
+        // Single-tick contract: x[i] += v[i] * dt. With v=1, dt=DT_60, after
+        // one tick every element is initial + 1/60 (within f32 epsilon).
+        let n = 2 * BLOCK_FLOATS;
+        let mut p = vec![0.0f32; n];
+        let mut v = vec![1.0f32; n];
+        integrate_simd_par(&mut p, &mut v, DT_60, 1.0);
+        for &x in &p {
+            assert!((x - DT_60).abs() < 1e-6, "got {}, expected {}", x, DT_60);
+        }
     }
 }
