@@ -1,8 +1,10 @@
 [toolchain]
-channel = "1.94.1"
-# Pinned to 1.94.1 (latest 1.94 patch, 2026-03-25). 1.95 turned several
-# previously-safe patterns into denied lints (e.g. unnecessary_sort_by)
-# without sufficient value to justify the churn — bump explicitly when
-# a future version is reviewed, never auto-track stable. Mirrors the
-# pin in lance-graph, smb-office-rs, and MedCare-rs.
+channel = "1.95.0"
+# Pinned to 1.95.0 (2026-04-14). Aligns ndarray with the rest of the
+# AdaWorldAPI stack: bevy (already on 1.95 for edition 2024) and
+# lance-graph (bumped in parallel). 1.95 introduced one new clippy lint
+# that fires on this codebase (`clippy::manual_checked_ops` on
+# `impl_owned_array.rs::into_scalar`); that's fixed in this same commit.
+# Never auto-track `stable` — bump explicitly when a future version is
+# reviewed and the workspace clippy passes clean.
 components = ["clippy", "rustfmt"]

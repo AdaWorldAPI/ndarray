@@ -247,7 +247,7 @@ mod e2e_tests {
     use super::causality::{causality_decompose, CausalityDirection};
     use super::clam::{knn_brute, ClamTree};
     use super::fingerprint::Fingerprint;
-    use super::node::{Node, SPO, S__, _P_, __O};
+    use super::node::{Node, _P_, __O, SPO, S__};
     use super::seal::Seal;
 
     #[test]

@@ -21,8 +21,8 @@ env:
   # `LazyLock<Tier>` detection means one binary, all ISAs. Jobs that
   # specifically need a higher target-cpu can opt in via per-job env.
   RUSTFLAGS: "-D warnings"
-  MSRV: 1.94.0
-  BLAS_MSRV: 1.94.0
+  MSRV: 1.95.0
+  BLAS_MSRV: 1.95.0
 
 jobs:
   pass-msrv:
@@ -41,15 +41,18 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # Pinned to 1.94.1 to match `rust-toolchain.toml`. Auto-tracking
-        # `stable` would silently bump to 1.95 and start rejecting code
-        # on lints like `clippy::unnecessary_sort_by` that 1.94 accepted.
+        # Pinned to 1.95.0 to match `rust-toolchain.toml`. The workspace
+        # bumped from 1.94.1 → 1.95.0 in commit
+        # https://github.com/AdaWorldAPI/ndarray (this PR) to align with
+        # bevy (edition 2024 → 1.95 MSRV) and lance-graph. 1.95 added the
+        # `clippy::manual_checked_ops` lint which fires on
+        # `impl_owned_array.rs::into_scalar` — fixed in this same PR.
         rust:
-          - "1.94.1"
+          - "1.95.0"
     name: clippy/${{ matrix.rust }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.94.1
+      - uses: dtolnay/rust-toolchain@1.95.0
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
@@ -58,28 +61,23 @@ jobs:
 
   format:
     runs-on: ubuntu-latest
-    name: format/nightly
-    # Marked non-blocking until a separate fmt-sweep PR aligns the
-    # codebase with `rustfmt.toml`. Local audit (2026-04-30) under
-    # `cargo +nightly fmt --all -- --check` reports 5,679 drift sites —
-    # too large to bundle into a CI-fix PR. The format job remains in
-    # the pipeline as a continuous signal so the sweep author can verify
-    # zero drift after running `cargo +nightly fmt --all`, but it does
-    # not gate merge until that sweep lands.
-    continue-on-error: true
+    name: format/stable
+    # Blocking — no continue-on-error. `rustfmt.toml` was stripped of all
+    # nightly-only directives in PR #133 (`7ca1cf3d chore(fmt): strip
+    # unstable rustfmt options, keep stable-only config` + `ed59b3b1
+    # style: normalize codebase to stable rustfmt 1.94.1`) and the
+    # codebase normalized — so stable rustfmt enforces the project's
+    # style losslessly. The previous `continue-on-error: true` +
+    # `dtolnay/rust-toolchain@nightly` setup was a stale band-aid from
+    # when `brace_style = AlwaysNextLine`, `imports_granularity =
+    # Preserve`, `unstable_features = true` still lived in rustfmt.toml.
+    # That state no longer exists; the band-aid is removed in this PR.
     steps:
       - uses: actions/checkout@v4
-      # `rustfmt.toml` declares 13 nightly-only options
-      # (`brace_style = AlwaysNextLine`, `imports_granularity = Preserve`,
-      # `unstable_features = true`, etc.). Stable rustfmt warns and
-      # ignores them, then produces drift on every nightly-formatted
-      # file because its defaults differ from the unstable settings.
-      # The format job MUST use nightly rustfmt for the project's chosen
-      # style to be enforceable.
-      #
-      # The compile + clippy jobs stay on 1.94.1 (pinned in
-      # `rust-toolchain.toml`) — only this fmt job needs nightly.
-      - uses: dtolnay/rust-toolchain@nightly
+      # Stable rustfmt 1.95.0 — pinned in `rust-toolchain.toml`. No
+      # nightly dependency since rustfmt.toml is stable-clean post-PR
+      # #133.
+      - uses: dtolnay/rust-toolchain@1.95.0
         with:
           components: rustfmt
       - run: cargo fmt --all --check
@@ -101,7 +99,7 @@ jobs:
         with:
           toolchain: ${{ matrix.rust }}
           targets: ${{ matrix.target }}
-      # rust-toolchain.toml pins 1.94.1 — install the cross-compile target
+      # rust-toolchain.toml pins 1.95.0 — install the cross-compile target
       # for that toolchain too, since dtolnay/rust-toolchain only installs
       # for the matrix value which may differ from the pinned version.
       - run: rustup target add ${{ matrix.target }}
