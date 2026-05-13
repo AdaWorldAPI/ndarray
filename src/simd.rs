@@ -265,6 +265,14 @@ pub use crate::simd_avx2::{
     I32x16, I64x8, I8x64, U16x32, U32x16, U64x8, U8x64,
 };
 
+// U8x32 — native AVX2 byte width (one __m256i = 32 bytes). Available on
+// both AVX-512 and AVX2 builds: it's the natural width for byte-level
+// AVX2 ops, and on AVX-512 builds it's the half-register companion to
+// U8x64. Lives in simd_avx2.rs (single source of truth) and is re-exported
+// from both tier branches.
+#[cfg(target_arch = "x86_64")]
+pub use crate::simd_avx2::{u8x32, U8x32};
+
 // ============================================================================
 // Non-x86: scalar fallback types with identical API
 // ============================================================================
