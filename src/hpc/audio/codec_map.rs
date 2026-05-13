@@ -116,7 +116,6 @@ pub const PROVENANCE: &[Provenance] = &[
         source_concept: "CELT MDCT: 960-sample window → 480 frequency bins",
         what_it_replaces: "FFT+windowing (all codecs use some form)",
     },
-
     // ═══ From Whisper ═══
     Provenance {
         our_type: "mel::log_mel_spectrogram",
@@ -126,7 +125,6 @@ pub const PROVENANCE: &[Provenance] = &[
         source_concept: "80-channel mel filterbank at 16kHz, Hann STFT",
         what_it_replaces: "Transformer encoder (150M params → 80 f32 per frame)",
     },
-
     // ═══ From MP3 ═══
     Provenance {
         our_type: "HhtlCache::route() → Skip",
@@ -144,7 +142,6 @@ pub const PROVENANCE: &[Provenance] = &[
         source_concept: "32-subband polyphase filterbank (octave-spaced)",
         what_it_replaces: "Per-subband quantization + Huffman (MP3 granules)",
     },
-
     // ═══ From Ogg Vorbis ═══
     Provenance {
         our_type: "CompiledLinear (ndarray burn)",
@@ -154,7 +151,6 @@ pub const PROVENANCE: &[Provenance] = &[
         source_concept: "VQ codebook: precomputed centroids, lookup-based decode",
         what_it_replaces: "Huffman trees (MP3) / arithmetic coding (Opus range coder)",
     },
-
     // ═══ From Bark (Suno) ═══
     Provenance {
         our_type: "RvqFrame.archetype (HEEL)",
@@ -180,7 +176,6 @@ pub const PROVENANCE: &[Provenance] = &[
         source_concept: "Stage 3: non-autoregressive fine acoustic tokens",
         what_it_replaces: "Fine model (smaller network, fills spectral detail)",
     },
-
     // ═══ From ElevenLabs ═══
     Provenance {
         our_type: "VoiceArchetype",
@@ -190,7 +185,6 @@ pub const PROVENANCE: &[Provenance] = &[
         source_concept: "Speaker embedding (voice cloning conditioning vector)",
         what_it_replaces: "512-dim speaker embedding (2KB → 16 bytes)",
     },
-
     // ═══ Phase (novel — no codec stores this) ═══
     Provenance {
         our_type: "PhaseDescriptor",
@@ -200,7 +194,6 @@ pub const PROVENANCE: &[Provenance] = &[
         source_concept: "STFT phase (discarded by all codecs except Griffin-Lim)",
         what_it_replaces: "Nothing — all codecs discard phase. We keep it as relative pressure.",
     },
-
     // ═══ Qualia (novel — derived from QPL musical calibration) ═══
     Provenance {
         our_type: "Qualia17D",
@@ -232,21 +225,22 @@ pub const FRAME_BUDGET_WITH_TTS: usize = 69;
 /// These are approximate — our codec is lossy in a fundamentally
 /// different way (palette quantization, not psychoacoustic masking).
 pub const BITRATE_COMPARISON: &[(&str, u32, &str)] = &[
-    ("MP3 128k",     128_000, "psychoacoustic masking, Huffman"),
-    ("Opus 64k",      64_000, "CELT+SILK hybrid, range coder"),
-    ("Vorbis 128k",  128_000, "MDCT, floor+residue, VQ codebook"),
-    ("Bark tokens",   25_600, "3-stage RVQ, ~100 tokens/sec × 256 bits"),
-    ("Ours (48kHz)",  20_800, "52 bytes × 50 fps × 8 bits = 20.8 kbps"),
-    ("Ours (24kHz)",  10_400, "52 bytes × 25 fps × 8 bits = 10.4 kbps"),
+    ("MP3 128k", 128_000, "psychoacoustic masking, Huffman"),
+    ("Opus 64k", 64_000, "CELT+SILK hybrid, range coder"),
+    ("Vorbis 128k", 128_000, "MDCT, floor+residue, VQ codebook"),
+    ("Bark tokens", 25_600, "3-stage RVQ, ~100 tokens/sec × 256 bits"),
+    ("Ours (48kHz)", 20_800, "52 bytes × 50 fps × 8 bits = 20.8 kbps"),
+    ("Ours (24kHz)", 10_400, "52 bytes × 25 fps × 8 bits = 10.4 kbps"),
 ];
 
 /// Verify every AudioAspect is covered by at least one primitive.
 /// If an aspect is missing, we have a hole in our codec design.
 pub fn verify_aspect_coverage() -> Vec<AudioAspect> {
     use AudioAspect::*;
-    let all = [SpectralEnvelope, SpectralShape, PerceptualMapping,
-               PhaseRelationship, SpeakerIdentity, SemanticContent,
-               MaskingDecision, CodebookLookup];
+    let all = [
+        SpectralEnvelope, SpectralShape, PerceptualMapping, PhaseRelationship, SpeakerIdentity, SemanticContent,
+        MaskingDecision, CodebookLookup,
+    ];
 
     all.iter()
         .filter(|&&aspect| !PROVENANCE.iter().any(|p| p.aspect == aspect))
@@ -275,36 +269,64 @@ mod tests {
     #[test]
     fn provenance_byte_sizes_consistent() {
         // AudioFrame = 42 (energies) + 6 (pvq) = 48
-        let af_energies = PROVENANCE.iter().find(|p| p.our_type == "AudioFrame.band_energies").unwrap();
-        let af_pvq = PROVENANCE.iter().find(|p| p.our_type == "AudioFrame.pvq_summary").unwrap();
+        let af_energies = PROVENANCE
+            .iter()
+            .find(|p| p.our_type == "AudioFrame.band_energies")
+            .unwrap();
+        let af_pvq = PROVENANCE
+            .iter()
+            .find(|p| p.our_type == "AudioFrame.pvq_summary")
+            .unwrap();
         assert_eq!(af_energies.byte_size + af_pvq.byte_size, 48);
 
         // RvqFrame = 1 (HEEL) + 8 (HIP) + 8 (TWIG) = 17
-        let rvq_heel = PROVENANCE.iter().find(|p| p.our_type == "RvqFrame.archetype (HEEL)").unwrap();
-        let rvq_hip = PROVENANCE.iter().find(|p| p.our_type == "RvqFrame.coarse (HIP)").unwrap();
-        let rvq_twig = PROVENANCE.iter().find(|p| p.our_type == "RvqFrame.fine (TWIG)").unwrap();
+        let rvq_heel = PROVENANCE
+            .iter()
+            .find(|p| p.our_type == "RvqFrame.archetype (HEEL)")
+            .unwrap();
+        let rvq_hip = PROVENANCE
+            .iter()
+            .find(|p| p.our_type == "RvqFrame.coarse (HIP)")
+            .unwrap();
+        let rvq_twig = PROVENANCE
+            .iter()
+            .find(|p| p.our_type == "RvqFrame.fine (TWIG)")
+            .unwrap();
         assert_eq!(rvq_heel.byte_size + rvq_hip.byte_size + rvq_twig.byte_size, 17);
     }
 
     #[test]
     fn every_source_codec_represented() {
         // All 6 source codecs should appear at least once
-        for source in [CodecSource::Opus, CodecSource::Whisper, CodecSource::Mp3,
-                       CodecSource::OggVorbis, CodecSource::Bark, CodecSource::ElevenLabs] {
-            assert!(PROVENANCE.iter().any(|p| p.source == source),
-                "Codec {:?} not represented in provenance table", source);
+        for source in [
+            CodecSource::Opus,
+            CodecSource::Whisper,
+            CodecSource::Mp3,
+            CodecSource::OggVorbis,
+            CodecSource::Bark,
+            CodecSource::ElevenLabs,
+        ] {
+            assert!(
+                PROVENANCE.iter().any(|p| p.source == source),
+                "Codec {:?} not represented in provenance table",
+                source
+            );
         }
     }
 
     #[test]
     fn our_bitrate_competitive() {
         // Our codec should be lower bitrate than all traditional codecs
-        let ours_24k = BITRATE_COMPARISON.iter()
+        let ours_24k = BITRATE_COMPARISON
+            .iter()
             .find(|&&(name, _, _)| name == "Ours (24kHz)")
-            .unwrap().1;
-        let mp3 = BITRATE_COMPARISON.iter()
+            .unwrap()
+            .1;
+        let mp3 = BITRATE_COMPARISON
+            .iter()
             .find(|&&(name, _, _)| name == "MP3 128k")
-            .unwrap().1;
+            .unwrap()
+            .1;
         assert!(ours_24k < mp3, "Our codec should be lower bitrate than MP3");
     }
 }

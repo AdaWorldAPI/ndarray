@@ -8,7 +8,9 @@ pub struct Snapshot {
 }
 
 pub fn snapshot_region(corpus: &[(u16, Base17)]) -> Snapshot {
-    Snapshot { entries: corpus.to_vec() }
+    Snapshot {
+        entries: corpus.to_vec(),
+    }
 }
 
 pub fn restore_region(snapshot: &Snapshot) -> Vec<(u16, Base17)> {
@@ -18,7 +20,9 @@ pub fn restore_region(snapshot: &Snapshot) -> Vec<(u16, Base17)> {
 pub fn merge_snapshots(a: &Snapshot, b: &Snapshot) -> Snapshot {
     let mut merged = a.entries.clone();
     for (addr, fp) in &b.entries {
-        if !merged.iter().any(|(a, _)| a == addr) { merged.push((*addr, fp.clone())); }
+        if !merged.iter().any(|(a, _)| a == addr) {
+            merged.push((*addr, fp.clone()));
+        }
     }
     Snapshot { entries: merged }
 }

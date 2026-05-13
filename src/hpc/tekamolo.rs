@@ -70,26 +70,15 @@ pub struct CrystalizedSentence {
 
 fn verbs() -> HashSet<&'static str> {
     [
-        "is", "are", "was", "were", "am", "be", "been", "being",
-        "have", "has", "had", "do", "does", "did",
-        "will", "would", "shall", "should", "can", "could", "may", "might", "must",
-        "go", "goes", "went", "come", "came",
-        "get", "gets", "got", "make", "makes", "made",
-        "take", "takes", "took", "give", "gives", "gave",
-        "say", "says", "said", "see", "sees", "saw",
-        "know", "knows", "knew", "think", "thinks", "thought",
-        "want", "wants", "wanted",
-        "run", "runs", "ran", "walk", "walks", "walked",
-        "sit", "sits", "sat", "stand", "stands", "stood",
-        "eat", "eats", "ate", "drink", "drinks", "drank",
-        "sleep", "sleeps", "slept",
-        "read", "reads", "write", "writes", "wrote",
-        "speak", "speaks", "spoke", "hear", "hears", "heard",
-        "feel", "feels", "felt", "live", "lives", "lived",
-        "die", "dies", "died", "love", "loves", "loved",
-        "hate", "hates", "hated", "play", "plays", "played",
-        "work", "works", "worked", "move", "moves", "moved",
-        "happen", "happens", "happened", "touch", "touched",
+        "is", "are", "was", "were", "am", "be", "been", "being", "have", "has", "had", "do", "does", "did", "will",
+        "would", "shall", "should", "can", "could", "may", "might", "must", "go", "goes", "went", "come", "came",
+        "get", "gets", "got", "make", "makes", "made", "take", "takes", "took", "give", "gives", "gave", "say", "says",
+        "said", "see", "sees", "saw", "know", "knows", "knew", "think", "thinks", "thought", "want", "wants", "wanted",
+        "run", "runs", "ran", "walk", "walks", "walked", "sit", "sits", "sat", "stand", "stands", "stood", "eat",
+        "eats", "ate", "drink", "drinks", "drank", "sleep", "sleeps", "slept", "read", "reads", "write", "writes",
+        "wrote", "speak", "speaks", "spoke", "hear", "hears", "heard", "feel", "feels", "felt", "live", "lives",
+        "lived", "die", "dies", "died", "love", "loves", "loved", "hate", "hates", "hated", "play", "plays", "played",
+        "work", "works", "worked", "move", "moves", "moved", "happen", "happens", "happened", "touch", "touched",
         "left", "flew",
     ]
     .iter()
@@ -99,10 +88,9 @@ fn verbs() -> HashSet<&'static str> {
 
 fn temporal_keywords() -> HashSet<&'static str> {
     [
-        "yesterday", "today", "tomorrow", "now", "then", "always", "never",
-        "before", "after", "when", "while", "during", "already", "soon",
-        "later", "recently", "once", "often", "sometimes", "usually",
-        "morning", "evening", "night",
+        "yesterday", "today", "tomorrow", "now", "then", "always", "never", "before", "after", "when", "while",
+        "during", "already", "soon", "later", "recently", "once", "often", "sometimes", "usually", "morning",
+        "evening", "night",
     ]
     .iter()
     .copied()
@@ -111,8 +99,7 @@ fn temporal_keywords() -> HashSet<&'static str> {
 
 fn kausal_keywords() -> HashSet<&'static str> {
     [
-        "because", "since", "therefore", "hence", "thus", "so",
-        "consequently", "due", "reason", "cause", "why",
+        "because", "since", "therefore", "hence", "thus", "so", "consequently", "due", "reason", "cause", "why",
     ]
     .iter()
     .copied()
@@ -121,9 +108,8 @@ fn kausal_keywords() -> HashSet<&'static str> {
 
 fn modal_keywords() -> HashSet<&'static str> {
     [
-        "quickly", "slowly", "carefully", "easily", "well", "badly",
-        "hard", "gently", "loudly", "quietly", "happily", "sadly",
-        "with", "without", "by",
+        "quickly", "slowly", "carefully", "easily", "well", "badly", "hard", "gently", "loudly", "quietly", "happily",
+        "sadly", "with", "without", "by",
     ]
     .iter()
     .copied()
@@ -132,11 +118,8 @@ fn modal_keywords() -> HashSet<&'static str> {
 
 fn lokal_keywords() -> HashSet<&'static str> {
     [
-        "here", "there", "above", "below", "near", "far",
-        "inside", "outside", "between", "behind", "front",
-        "under", "over", "in", "on", "at", "from", "to",
-        "into", "through", "across", "around", "along",
-        "up", "down",
+        "here", "there", "above", "below", "near", "far", "inside", "outside", "between", "behind", "front", "under",
+        "over", "in", "on", "at", "from", "to", "into", "through", "across", "around", "along", "up", "down",
     ]
     .iter()
     .copied()
@@ -152,9 +135,8 @@ fn determiners() -> HashSet<&'static str> {
 
 fn lokal_prepositions() -> HashSet<&'static str> {
     [
-        "in", "on", "at", "from", "to", "into", "through", "across",
-        "around", "along", "up", "down", "under", "over", "between",
-        "behind", "above", "below",
+        "in", "on", "at", "from", "to", "into", "through", "across", "around", "along", "up", "down", "under", "over",
+        "between", "behind", "above", "below",
     ]
     .iter()
     .copied()
@@ -168,7 +150,7 @@ fn lokal_prepositions() -> HashSet<&'static str> {
 /// Strip common trailing punctuation from a token for matching purposes.
 fn normalize_token(tok: &str) -> String {
     tok.trim_end_matches(['.', ',', '!', '?', ';', ':'])
-       .to_lowercase()
+        .to_lowercase()
 }
 
 /// Classify a single (normalized) token into an adverbial slot, if any.
@@ -269,7 +251,11 @@ pub fn tekamolo_parse(sentence: &str) -> Vec<SlotEntry> {
     }
 
     // 2d. Post-predicate tokens: classify adverbials and lokal phrases; rest is object.
-    let start = if let Some(pi) = pred_idx { pi + 1 } else { raw_tokens.len() };
+    let start = if let Some(pi) = pred_idx {
+        pi + 1
+    } else {
+        raw_tokens.len()
+    };
     let mut obj_words: Vec<&str> = Vec::new();
     let mut i = start;
     while i < raw_tokens.len() {
@@ -447,10 +433,22 @@ mod tests {
     #[test]
     fn test_reorder_tekamolo() {
         let slots = vec![
-            SlotEntry { slot: TekmoloSlot::Subject, text: "cat".into() },
-            SlotEntry { slot: TekmoloSlot::Predicate, text: "sat".into() },
-            SlotEntry { slot: TekmoloSlot::Lokal, text: "on the mat".into() },
-            SlotEntry { slot: TekmoloSlot::Temporal, text: "yesterday".into() },
+            SlotEntry {
+                slot: TekmoloSlot::Subject,
+                text: "cat".into(),
+            },
+            SlotEntry {
+                slot: TekmoloSlot::Predicate,
+                text: "sat".into(),
+            },
+            SlotEntry {
+                slot: TekmoloSlot::Lokal,
+                text: "on the mat".into(),
+            },
+            SlotEntry {
+                slot: TekmoloSlot::Temporal,
+                text: "yesterday".into(),
+            },
         ];
         let reordered = reorder_tekamolo(&slots);
         assert_eq!(reordered[0].slot, TekmoloSlot::Temporal);
@@ -486,9 +484,18 @@ mod tests {
     #[test]
     fn test_spo_extraction() {
         let slots = vec![
-            SlotEntry { slot: TekmoloSlot::Subject, text: "dog".into() },
-            SlotEntry { slot: TekmoloSlot::Predicate, text: "ran".into() },
-            SlotEntry { slot: TekmoloSlot::Object, text: "fast".into() },
+            SlotEntry {
+                slot: TekmoloSlot::Subject,
+                text: "dog".into(),
+            },
+            SlotEntry {
+                slot: TekmoloSlot::Predicate,
+                text: "ran".into(),
+            },
+            SlotEntry {
+                slot: TekmoloSlot::Object,
+                text: "fast".into(),
+            },
         ];
         let spo = spo_extract(&slots);
         assert_eq!(spo.subject.as_deref(), Some("dog"));

@@ -122,7 +122,13 @@ impl PackedDatabase {
             index.push(i as u32);
         }
 
-        Self { stroke1, stroke2, stroke3, index, num_candidates: n }
+        Self {
+            stroke1,
+            stroke2,
+            stroke3,
+            index,
+            num_candidates: n,
+        }
     }
 
     /// Get stroke 1 slice for candidate i (128 bytes).
@@ -177,11 +183,7 @@ impl PackedDatabase {
     ///
     /// Returns top-k results sorted by distance ascending.
     pub fn cascade_query(
-        &self,
-        query: &[u8],
-        reject_threshold_s1: u64,
-        reject_threshold_s12: u64,
-        k: usize,
+        &self, query: &[u8], reject_threshold_s1: u64, reject_threshold_s12: u64, k: usize,
     ) -> Vec<RankedHit> {
         assert!(query.len() >= FINGERPRINT_BYTES, "query must be at least {FINGERPRINT_BYTES} bytes");
 
@@ -255,7 +257,10 @@ impl PackedDatabase {
                 let d1 = bitwise::hamming_distance_raw(query_s1, self.get_stroke1(i));
                 let d2 = bitwise::hamming_distance_raw(query_s2, self.get_stroke2(i));
                 let d3 = bitwise::hamming_distance_raw(query_s3, self.get_stroke3(i));
-                RankedHit { index: self.original_id(i) as usize, distance: d1 + d2 + d3 }
+                RankedHit {
+                    index: self.original_id(i) as usize,
+                    distance: d1 + d2 + d3,
+                }
             })
             .collect();
 
@@ -285,14 +290,8 @@ mod tests {
         for i in 0..n {
             let base = i * FINGERPRINT_BYTES;
             assert_eq!(packed.get_stroke1(i), &db[base..base + STROKE1_BYTES]);
-            assert_eq!(
-                packed.get_stroke2(i),
-                &db[base + STROKE1_BYTES..base + STROKE1_BYTES + STROKE2_BYTES]
-            );
-            assert_eq!(
-                packed.get_stroke3(i),
-                &db[base + STROKE1_BYTES + STROKE2_BYTES..base + FINGERPRINT_BYTES]
-            );
+            assert_eq!(packed.get_stroke2(i), &db[base + STROKE1_BYTES..base + STROKE1_BYTES + STROKE2_BYTES]);
+            assert_eq!(packed.get_stroke3(i), &db[base + STROKE1_BYTES + STROKE2_BYTES..base + FINGERPRINT_BYTES]);
         }
     }
 
@@ -368,7 +367,9 @@ mod tests {
     #[test]
     fn test_cascade_vs_brute_force_consistency() {
         let n = 50;
-        let db: Vec<u8> = (0..n * FINGERPRINT_BYTES).map(|i| (i * 7 + 13) as u8).collect();
+        let db: Vec<u8> = (0..n * FINGERPRINT_BYTES)
+            .map(|i| (i * 7 + 13) as u8)
+            .collect();
         let packed = PackedDatabase::pack(&db, FINGERPRINT_BYTES);
         let query: Vec<u8> = (0..FINGERPRINT_BYTES).map(|i| (i * 3) as u8).collect();
 

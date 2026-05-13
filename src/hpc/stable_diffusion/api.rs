@@ -2,11 +2,11 @@
 //!
 //! Endpoint: `/v1/images/generations`
 
-use crate::hpc::models::api_types::*;
 use super::clip::ClipEncoder;
 use super::scheduler::{DdimScheduler, SchedulerConfig};
 use super::unet;
 use super::vae;
+use crate::hpc::models::api_types::*;
 
 /// Stable Diffusion API wrapper.
 pub struct StableDiffusionApi {
@@ -16,7 +16,10 @@ pub struct StableDiffusionApi {
 
 impl StableDiffusionApi {
     pub fn new(clip: ClipEncoder) -> Self {
-        Self { clip, scheduler_config: SchedulerConfig::default() }
+        Self {
+            clip,
+            scheduler_config: SchedulerConfig::default(),
+        }
     }
 
     /// `/v1/images/generations`
@@ -56,7 +59,10 @@ impl StableDiffusionApi {
             });
         }
 
-        ImageResponse { created: 0, data: images }
+        ImageResponse {
+            created: 0,
+            data: images,
+        }
     }
 
     /// `/v1/models/{id}`
@@ -82,8 +88,8 @@ fn base64_placeholder(rgb: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::super::clip::{ClipWeights, CLIP_EMBED_DIM, CLIP_MAX_SEQ, CLIP_VOCAB_SIZE};
     use super::*;
-    use super::super::clip::{ClipWeights, CLIP_VOCAB_SIZE, CLIP_EMBED_DIM, CLIP_MAX_SEQ};
 
     fn dummy_clip() -> ClipEncoder {
         ClipEncoder::new(ClipWeights {

@@ -4,8 +4,8 @@
 //! ported from rustynum.
 
 use crate::imp_prelude::*;
+use core::ops::{Add, Div, Mul, Sub};
 use num_traits::{Float, FromPrimitive, Zero};
-use core::ops::{Add, Div, Sub, Mul};
 
 /// Statistical operations on arrays.
 ///
@@ -64,8 +64,15 @@ pub trait Statistics<A> {
 
 impl<A, S, D> Statistics<A> for ArrayBase<S, D>
 where
-    A: Float + FromPrimitive + Zero + Add<Output = A> + Sub<Output = A>
-        + Mul<Output = A> + Div<Output = A> + PartialOrd + 'static,
+    A: Float
+        + FromPrimitive
+        + Zero
+        + Add<Output = A>
+        + Sub<Output = A>
+        + Mul<Output = A>
+        + Div<Output = A>
+        + PartialOrd
+        + 'static,
     S: Data<Elem = A>,
     D: Dimension,
 {
@@ -233,7 +240,10 @@ where
     }
 
     fn cosine_similarity(&self, other: &Self) -> A {
-        let dot: A = self.iter().zip(other.iter()).fold(A::zero(), |acc, (&a, &b)| acc + a * b);
+        let dot: A = self
+            .iter()
+            .zip(other.iter())
+            .fold(A::zero(), |acc, (&a, &b)| acc + a * b);
         let norm_a: A = self.iter().fold(A::zero(), |acc, &v| acc + v * v).sqrt();
         let norm_b: A = other.iter().fold(A::zero(), |acc, &v| acc + v * v).sqrt();
         if norm_a == A::zero() || norm_b == A::zero() {
@@ -249,12 +259,8 @@ where
                 // L0 "norm": count of non-zero elements
                 A::from_usize(self.iter().filter(|&&v| v != A::zero()).count()).unwrap()
             }
-            1 => {
-                self.iter().fold(A::zero(), |acc, &v| acc + v.abs())
-            }
-            2 => {
-                self.iter().fold(A::zero(), |acc, &v| acc + v * v).sqrt()
-            }
+            1 => self.iter().fold(A::zero(), |acc, &v| acc + v.abs()),
+            2 => self.iter().fold(A::zero(), |acc, &v| acc + v * v).sqrt(),
             _ => {
                 let p_f = A::from_u32(p).unwrap();
                 let inv_p = A::one() / p_f;

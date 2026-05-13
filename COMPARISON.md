@@ -186,7 +186,7 @@
 | Crate | Upstream | **Fork** | Detail |
 |-------|----------|----------|--------|
 | `crates/p64` | Not present | **P64** | Palette64 data structure — convergence highway between ndarray and lance-graph |
-| `crates/phyllotactic-manifold` | Not present | **Phyllotactic Manifold** | Golden-angle spiral geometry for uniform point distribution |
+| `crates/fractal` | Not present | **Phyllotactic Manifold** | Golden-angle spiral geometry for uniform point distribution |
 
 ## Burn Backend (20 ops files)
 

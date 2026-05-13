@@ -462,10 +462,7 @@ pub struct Contradiction {
 /// #11 Detect contradictions: high structural similarity + opposing truth values.
 /// Science: Wang (2006) revision, Priest (2002) paraconsistent logic, CHAODA.
 pub fn detect_contradiction(
-    truth_a: &NarsTruth,
-    truth_b: &NarsTruth,
-    structural_similarity: f32,
-    threshold: f32,
+    truth_a: &NarsTruth, truth_b: &NarsTruth, structural_similarity: f32, threshold: f32,
 ) -> Option<Contradiction> {
     let truth_conflict = (truth_a.frequency - truth_b.frequency).abs();
     if structural_similarity > 0.7 && truth_conflict > threshold {
@@ -607,16 +604,8 @@ mod tests {
     fn test_from_evidence_roundtrip() {
         let tv = NarsTruth::from_evidence(9.0, 1.0);
         let ev = tv.to_evidence();
-        assert!(
-            (ev.positive - 9.0).abs() < 0.5,
-            "positive: {} expected ~9.0",
-            ev.positive
-        );
-        assert!(
-            (ev.negative - 1.0).abs() < 0.5,
-            "negative: {} expected ~1.0",
-            ev.negative
-        );
+        assert!((ev.positive - 9.0).abs() < 0.5, "positive: {} expected ~9.0", ev.positive);
+        assert!((ev.negative - 1.0).abs() < 0.5, "negative: {} expected ~1.0", ev.negative);
     }
 
     #[test]
@@ -624,11 +613,7 @@ mod tests {
         let a = NarsTruth::new(0.9, 0.5);
         let b = NarsTruth::new(0.9, 0.5);
         let r = nars_revision(a, b);
-        assert!(
-            (r.frequency - 0.9).abs() < 0.05,
-            "frequency: {} expected ~0.9",
-            r.frequency
-        );
+        assert!((r.frequency - 0.9).abs() < 0.05, "frequency: {} expected ~0.9", r.frequency);
         assert!(
             r.confidence > a.confidence,
             "revised confidence {} should exceed input {}",
@@ -810,29 +795,17 @@ mod tests {
     #[test]
     fn test_ignorance_expectation() {
         let tv = NarsTruth::ignorance();
-        assert!(
-            (tv.expectation() - 0.5).abs() < 1e-6,
-            "expectation={}",
-            tv.expectation()
-        );
+        assert!((tv.expectation() - 0.5).abs() < 1e-6, "expectation={}", tv.expectation());
     }
 
     #[test]
     fn test_expectation_formula() {
         let tv = NarsTruth::new(1.0, 0.9);
         // c * (f - 0.5) + 0.5 = 0.9 * 0.5 + 0.5 = 0.95
-        assert!(
-            (tv.expectation() - 0.95).abs() < 1e-4,
-            "expectation={}",
-            tv.expectation()
-        );
+        assert!((tv.expectation() - 0.95).abs() < 1e-4, "expectation={}", tv.expectation());
 
         let tv2 = NarsTruth::new(0.0, 0.8);
         // 0.8 * (0.0 - 0.5) + 0.5 = -0.4 + 0.5 = 0.1
-        assert!(
-            (tv2.expectation() - 0.1).abs() < 1e-4,
-            "expectation={}",
-            tv2.expectation()
-        );
+        assert!((tv2.expectation() - 0.1).abs() < 1e-4, "expectation={}", tv2.expectation());
     }
 }

@@ -1,4 +1,6 @@
-#![allow(clippy::assign_op_pattern, clippy::too_many_arguments, clippy::manual_range_contains, clippy::needless_range_loop)]
+#![allow(
+    clippy::assign_op_pattern, clippy::too_many_arguments, clippy::manual_range_contains, clippy::needless_range_loop
+)]
 
 //! Cross-Plane Partial Binding Algebra for 3D SPO Inference.
 //!
@@ -425,9 +427,7 @@ impl TypedQuery {
 
     /// Number of known slots (1 for analogy, 2 for forward/backward/abduction).
     pub fn known_count(&self) -> usize {
-        self.subject.is_some() as usize
-            + self.predicate.is_some() as usize
-            + self.object.is_some() as usize
+        self.subject.is_some() as usize + self.predicate.is_some() as usize + self.object.is_some() as usize
     }
 }
 
@@ -474,11 +474,7 @@ impl PartialBinding {
                 count += 1;
             }
         }
-        let freq = if count > 0 {
-            sum_sim / count as f32
-        } else {
-            0.0
-        };
+        let freq = if count > 0 { sum_sim / count as f32 } else { 0.0 };
         (freq, conf)
     }
 }
@@ -606,10 +602,7 @@ impl LatticeClimber {
     /// noise floor, and the resulting per-plane significance levels determine
     /// the B_3 halo type.
     pub fn ingest_with_sigma(
-        &mut self,
-        candidates: &[(usize, [u32; 3])],
-        sigma_gate: &SigmaGate,
-        min_level: SignificanceLevel,
+        &mut self, candidates: &[(usize, [u32; 3])], sigma_gate: &SigmaGate, min_level: SignificanceLevel,
     ) {
         for &(entry_index, plane_distances) in candidates {
             let binding = classify_with_sigma(entry_index, plane_distances, sigma_gate, min_level);
@@ -630,10 +623,7 @@ impl LatticeClimber {
     ///
     /// Returns newly promoted bindings.
     pub fn try_compose(
-        &mut self,
-        codebook_s: &[Fingerprint<256>],
-        codebook_p: &[Fingerprint<256>],
-        codebook_o: &[Fingerprint<256>],
+        &mut self, codebook_s: &[Fingerprint<256>], codebook_p: &[Fingerprint<256>], codebook_o: &[Fingerprint<256>],
         threshold: u32,
     ) -> Vec<PartialBinding> {
         let mut promoted = Vec::new();
@@ -645,9 +635,7 @@ impl LatticeClimber {
 
         for pair in &pairs {
             for fv in &fvs {
-                let composed = try_compose_pair_and_free(
-                    pair, fv, codebook_s, codebook_p, codebook_o, threshold,
-                );
+                let composed = try_compose_pair_and_free(pair, fv, codebook_s, codebook_p, codebook_o, threshold);
                 if let Some(full) = composed {
                     promoted.push(full);
                 }
@@ -670,8 +658,8 @@ impl LatticeClimber {
     pub fn gate_decision(&self) -> CollapseGate {
         if !self.full_triples.is_empty() {
             // Check average confidence of full triples
-            let avg_conf: f32 = self.full_triples.iter().map(|t| t.confidence).sum::<f32>()
-                / self.full_triples.len() as f32;
+            let avg_conf: f32 =
+                self.full_triples.iter().map(|t| t.confidence).sum::<f32>() / self.full_triples.len() as f32;
             if avg_conf > 1.5 {
                 return CollapseGate::Flow;
             }
@@ -718,12 +706,7 @@ pub struct SpoTriple {
 
 impl SpoTriple {
     /// Apply a mutation operator, replacing slot(s) with new fingerprint(s).
-    pub fn mutate(
-        &self,
-        op: MutationOp,
-        replacement: &Fingerprint<256>,
-        rng: &mut SplitMix64,
-    ) -> Self {
+    pub fn mutate(&self, op: MutationOp, replacement: &Fingerprint<256>, rng: &mut SplitMix64) -> Self {
         let random_fp = random_fingerprint(rng);
         match op {
             MutationOp::MutateS => SpoTriple {
@@ -767,11 +750,7 @@ impl SpoTriple {
 
     /// XOR-encode into 3D crystal (S^P, P^O, S^O).
     pub fn encode(&self) -> [Fingerprint<256>; 3] {
-        [
-            &self.subject ^ &self.predicate,
-            &self.predicate ^ &self.object,
-            &self.subject ^ &self.object,
-        ]
+        [&self.subject ^ &self.predicate, &self.predicate ^ &self.object, &self.subject ^ &self.object]
     }
 }
 
@@ -951,10 +930,7 @@ impl PlaneSignificance {
 /// Each plane's distance is scored against its noise floor, and the resulting
 /// per-plane significance levels determine the B_3 halo type.
 pub fn classify_with_sigma(
-    entry_index: usize,
-    plane_distances: [u32; 3],
-    sigma_gate: &SigmaGate,
-    min_level: SignificanceLevel,
+    entry_index: usize, plane_distances: [u32; 3], sigma_gate: &SigmaGate, min_level: SignificanceLevel,
 ) -> PartialBinding {
     // Score each plane independently
     let levels: [SignificanceLevel; 3] = plane_distances.map(|dist| {
@@ -967,11 +943,7 @@ pub fn classify_with_sigma(
         score_sigma(&ec, sigma_gate).level
     });
 
-    let halo = HaloType::from_membership(
-        levels[0] >= min_level,
-        levels[1] >= min_level,
-        levels[2] >= min_level,
-    );
+    let halo = HaloType::from_membership(levels[0] >= min_level, levels[1] >= min_level, levels[2] >= min_level);
 
     // Confidence from sigma-significance: sum of per-plane sigma values
     let sigmas: [f32; 3] = plane_distances.map(|dist| {
@@ -1015,9 +987,7 @@ fn popcount_mask(mask: &[u64], n_entries: usize) -> usize {
 
 /// Find best matching codebook entry by Hamming distance.
 fn find_best_match(
-    estimate: &Fingerprint<256>,
-    codebook: &[Fingerprint<256>],
-    mode: InferenceMode,
+    estimate: &Fingerprint<256>, codebook: &[Fingerprint<256>], mode: InferenceMode,
 ) -> Option<InferenceResult> {
     let mut best_idx = 0;
     let mut best_dist = u32::MAX;
@@ -1052,12 +1022,8 @@ fn random_fingerprint(rng: &mut SplitMix64) -> Fingerprint<256> {
 /// and if the resulting triple has Hamming distance below threshold on
 /// the newly filled plane.
 fn try_compose_pair_and_free(
-    pair: &PartialBinding,
-    fv: &PartialBinding,
-    _codebook_s: &[Fingerprint<256>],
-    _codebook_p: &[Fingerprint<256>],
-    _codebook_o: &[Fingerprint<256>],
-    threshold: u32,
+    pair: &PartialBinding, fv: &PartialBinding, _codebook_s: &[Fingerprint<256>], _codebook_p: &[Fingerprint<256>],
+    _codebook_o: &[Fingerprint<256>], threshold: u32,
 ) -> Option<PartialBinding> {
     // SP + O -> Core
     if pair.halo_type == HaloType::SP && fv.halo_type == HaloType::O {
@@ -1143,10 +1109,7 @@ mod tests {
         assert_eq!(HaloType::from_membership(true, false, false), HaloType::S);
         assert_eq!(HaloType::from_membership(false, true, false), HaloType::P);
         assert_eq!(HaloType::from_membership(false, false, true), HaloType::O);
-        assert_eq!(
-            HaloType::from_membership(false, false, false),
-            HaloType::Noise
-        );
+        assert_eq!(HaloType::from_membership(false, false, false), HaloType::Noise);
     }
 
     #[test]
@@ -1175,25 +1138,12 @@ mod tests {
 
             // Pairwise disjoint: AND of any two should be 0
             let masks = [
-                vote.core[i],
-                vote.sp[i],
-                vote.so[i],
-                vote.po[i],
-                vote.s_only[i],
-                vote.p_only[i],
-                vote.o_only[i],
+                vote.core[i], vote.sp[i], vote.so[i], vote.po[i], vote.s_only[i], vote.p_only[i], vote.o_only[i],
                 vote.noise[i],
             ];
             for a in 0..8 {
                 for b in (a + 1)..8 {
-                    assert_eq!(
-                        masks[a] & masks[b],
-                        0,
-                        "word {}: masks {} and {} overlap",
-                        i,
-                        a,
-                        b
-                    );
+                    assert_eq!(masks[a] & masks[b], 0, "word {}: masks {} and {} overlap", i, a, b);
                 }
             }
         }
@@ -1278,10 +1228,7 @@ mod tests {
     fn test_halo_inference_mode() {
         assert_eq!(HaloType::SP.inference_mode(), Some(InferenceMode::Forward));
         assert_eq!(HaloType::PO.inference_mode(), Some(InferenceMode::Backward));
-        assert_eq!(
-            HaloType::SO.inference_mode(),
-            Some(InferenceMode::Abduction)
-        );
+        assert_eq!(HaloType::SO.inference_mode(), Some(InferenceMode::Abduction));
         assert_eq!(HaloType::S.inference_mode(), Some(InferenceMode::Analogy));
         assert_eq!(HaloType::Core.inference_mode(), None);
         assert_eq!(HaloType::Noise.inference_mode(), None);
@@ -1439,33 +1386,21 @@ mod tests {
                 halo_type: HaloType::S,
                 confidence: 0.8,
                 plane_distances: [1000, u32::MAX, u32::MAX],
-                plane_sigma: [
-                    SignificanceLevel::Discovery,
-                    SignificanceLevel::Noise,
-                    SignificanceLevel::Noise,
-                ],
+                plane_sigma: [SignificanceLevel::Discovery, SignificanceLevel::Noise, SignificanceLevel::Noise],
             },
             PartialBinding {
                 entry_index: 1,
                 halo_type: HaloType::SP,
                 confidence: 1.5,
                 plane_distances: [1000, 2000, u32::MAX],
-                plane_sigma: [
-                    SignificanceLevel::Discovery,
-                    SignificanceLevel::Discovery,
-                    SignificanceLevel::Noise,
-                ],
+                plane_sigma: [SignificanceLevel::Discovery, SignificanceLevel::Discovery, SignificanceLevel::Noise],
             },
             PartialBinding {
                 entry_index: 2,
                 halo_type: HaloType::Core,
                 confidence: 2.5,
                 plane_distances: [1000, 2000, 3000],
-                plane_sigma: [
-                    SignificanceLevel::Discovery,
-                    SignificanceLevel::Discovery,
-                    SignificanceLevel::Discovery,
-                ],
+                plane_sigma: [SignificanceLevel::Discovery, SignificanceLevel::Discovery, SignificanceLevel::Discovery],
             },
         ];
 
@@ -1490,11 +1425,7 @@ mod tests {
             halo_type: HaloType::S,
             confidence: 0.5,
             plane_distances: [1000, u32::MAX, u32::MAX],
-            plane_sigma: [
-                SignificanceLevel::Discovery,
-                SignificanceLevel::Noise,
-                SignificanceLevel::Noise,
-            ],
+            plane_sigma: [SignificanceLevel::Discovery, SignificanceLevel::Noise, SignificanceLevel::Noise],
         });
         assert_eq!(climber.gate_decision(), CollapseGate::Hold);
 
@@ -1504,11 +1435,7 @@ mod tests {
             halo_type: HaloType::Core,
             confidence: 2.5,
             plane_distances: [500, 600, 700],
-            plane_sigma: [
-                SignificanceLevel::Discovery,
-                SignificanceLevel::Discovery,
-                SignificanceLevel::Discovery,
-            ],
+            plane_sigma: [SignificanceLevel::Discovery, SignificanceLevel::Discovery, SignificanceLevel::Discovery],
         });
         assert_eq!(climber.gate_decision(), CollapseGate::Flow);
     }
@@ -1524,11 +1451,7 @@ mod tests {
                 2000, // P-plane: 2000 / 16384 ~ 12.2% distance -> 87.8% similarity
                 u32::MAX,
             ],
-            plane_sigma: [
-                SignificanceLevel::Discovery,
-                SignificanceLevel::Discovery,
-                SignificanceLevel::Noise,
-            ],
+            plane_sigma: [SignificanceLevel::Discovery, SignificanceLevel::Discovery, SignificanceLevel::Noise],
         };
 
         let (freq, conf) = binding.nars_truth();
@@ -1596,11 +1519,7 @@ mod tests {
             halo_type: HaloType::SP,
             confidence: 1.5,
             plane_distances: [1000, 1200, u32::MAX],
-            plane_sigma: [
-                SignificanceLevel::Discovery,
-                SignificanceLevel::Discovery,
-                SignificanceLevel::Noise,
-            ],
+            plane_sigma: [SignificanceLevel::Discovery, SignificanceLevel::Discovery, SignificanceLevel::Noise],
         });
 
         // O free var at entry 1
@@ -1609,11 +1528,7 @@ mod tests {
             halo_type: HaloType::O,
             confidence: 0.7,
             plane_distances: [u32::MAX, u32::MAX, 800],
-            plane_sigma: [
-                SignificanceLevel::Noise,
-                SignificanceLevel::Noise,
-                SignificanceLevel::Discovery,
-            ],
+            plane_sigma: [SignificanceLevel::Noise, SignificanceLevel::Noise, SignificanceLevel::Discovery],
         });
 
         // Create dummy codebooks

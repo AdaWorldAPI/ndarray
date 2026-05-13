@@ -39,7 +39,11 @@ pub struct ModelRouter {
 impl ModelRouter {
     /// Create an empty router (no models loaded).
     pub fn new() -> Self {
-        Self { gpt2: None, openchat: None, request_counter: 0 }
+        Self {
+            gpt2: None,
+            openchat: None,
+            request_counter: 0,
+        }
     }
 
     // ── Model registration ─────────────────────────────────────────────
@@ -57,8 +61,12 @@ impl ModelRouter {
     /// Check which models are loaded.
     pub fn loaded_models(&self) -> Vec<&'static str> {
         let mut models = Vec::new();
-        if self.gpt2.is_some() { models.push("gpt2"); }
-        if self.openchat.is_some() { models.push("openchat_3.5"); }
+        if self.gpt2.is_some() {
+            models.push("gpt2");
+        }
+        if self.openchat.is_some() {
+            models.push("openchat_3.5");
+        }
         models
     }
 
@@ -97,7 +105,9 @@ impl ModelRouter {
     ///
     /// Routes to GPT-2. Returns error if GPT-2 is not loaded.
     pub fn complete(&mut self, req: &CompletionRequest) -> Result<CompletionResponse, ApiError> {
-        let engine = self.gpt2.as_mut()
+        let engine = self
+            .gpt2
+            .as_mut()
             .ok_or_else(|| ApiError::model_not_found(&req.model))?;
         Ok(engine.complete(req))
     }
@@ -112,13 +122,17 @@ impl ModelRouter {
     pub fn chat_complete(&mut self, req: &ChatCompletionRequest) -> Result<ChatCompletionResponse, ApiError> {
         match req.model.as_str() {
             "openchat_3.5" | "openchat" => {
-                let engine = self.openchat.as_mut()
+                let engine = self
+                    .openchat
+                    .as_mut()
                     .ok_or_else(|| ApiError::model_not_found(&req.model))?;
                 Ok(engine.chat_complete(req))
             }
             "gpt2" => {
                 // Adapter: convert chat messages to a single text prompt for GPT-2
-                let engine = self.gpt2.as_mut()
+                let engine = self
+                    .gpt2
+                    .as_mut()
                     .ok_or_else(|| ApiError::model_not_found("gpt2"))?;
                 let completion_req = chat_to_completion(req);
                 let completion_resp = engine.complete(&completion_req);
@@ -136,7 +150,9 @@ impl ModelRouter {
     pub fn embed(&self, req: &EmbeddingRequest) -> Result<EmbeddingResponse, ApiError> {
         match req.model.as_str() {
             "gpt2" | "text-embedding-gpt2" => {
-                let engine = self.gpt2.as_ref()
+                let engine = self
+                    .gpt2
+                    .as_ref()
                     .ok_or_else(|| ApiError::model_not_found(&req.model))?;
                 Ok(engine.embed(req))
             }
@@ -206,22 +222,18 @@ fn chat_to_completion(req: &ChatCompletionRequest) -> CompletionRequest {
 
 /// Convert a completion response to a chat response (for GPT-2 chat adapter).
 fn completion_to_chat(resp: CompletionResponse) -> ChatCompletionResponse {
-    let choices: Vec<ChatChoice> = resp.choices.into_iter().map(|c| {
-        ChatChoice {
+    let choices: Vec<ChatChoice> = resp
+        .choices
+        .into_iter()
+        .map(|c| ChatChoice {
             index: c.index,
             message: ChatMessage::assistant(c.text),
             finish_reason: c.finish_reason,
             logprobs: None,
-        }
-    }).collect();
+        })
+        .collect();
 
-    ChatCompletionResponse::new(
-        resp.id.replace("cmpl-", "chatcmpl-"),
-        resp.model,
-        choices,
-        resp.usage,
-        resp.created,
-    )
+    ChatCompletionResponse::new(resp.id.replace("cmpl-", "chatcmpl-"), resp.model, choices, resp.usage, resp.created)
 }
 
 #[cfg(test)]
@@ -252,7 +264,10 @@ mod tests {
     #[test]
     fn test_complete_no_model() {
         let mut router = ModelRouter::new();
-        let req = CompletionRequest { model: "gpt2".into(), ..Default::default() };
+        let req = CompletionRequest {
+            model: "gpt2".into(),
+            ..Default::default()
+        };
         let err = router.complete(&req);
         assert!(err.is_err());
     }
@@ -260,7 +275,10 @@ mod tests {
     #[test]
     fn test_chat_complete_no_model() {
         let mut router = ModelRouter::new();
-        let req = ChatCompletionRequest { model: "openchat_3.5".into(), ..Default::default() };
+        let req = ChatCompletionRequest {
+            model: "openchat_3.5".into(),
+            ..Default::default()
+        };
         let err = router.chat_complete(&req);
         assert!(err.is_err());
     }
@@ -268,7 +286,10 @@ mod tests {
     #[test]
     fn test_embed_no_model() {
         let router = ModelRouter::new();
-        let req = EmbeddingRequest { model: "gpt2".into(), ..Default::default() };
+        let req = EmbeddingRequest {
+            model: "gpt2".into(),
+            ..Default::default()
+        };
         let err = router.embed(&req);
         assert!(err.is_err());
     }
@@ -277,10 +298,7 @@ mod tests {
     fn test_chat_to_completion_adapter() {
         let req = ChatCompletionRequest {
             model: "gpt2".into(),
-            messages: vec![
-                ChatMessage::system("Be helpful"),
-                ChatMessage::user("Hello"),
-            ],
+            messages: vec![ChatMessage::system("Be helpful"), ChatMessage::user("Hello")],
             max_tokens: Some(100),
             temperature: Some(0.5),
             ..Default::default()
@@ -304,7 +322,11 @@ mod tests {
                 logprobs: None,
                 finish_reason: Some(FinishReason::Stop),
             }],
-            Usage { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 },
+            Usage {
+                prompt_tokens: 5,
+                completion_tokens: 2,
+                total_tokens: 7,
+            },
             0,
         );
         let chat = completion_to_chat(resp);

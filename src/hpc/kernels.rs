@@ -83,12 +83,7 @@ impl SliceGate {
     /// `safety_margin` multiplicatively relaxes K0/K1 thresholds to guarantee
     /// zero false negatives (typically 1.5).
     pub fn new(
-        total_bits: usize,
-        hot_frac: f64,
-        mid_frac: f64,
-        cold_frac: f64,
-        anti_frac: f64,
-        safety_margin: f64,
+        total_bits: usize, hot_frac: f64, mid_frac: f64, cold_frac: f64, anti_frac: f64, safety_margin: f64,
     ) -> Self {
         let d = total_bits as f64;
 
@@ -334,32 +329,16 @@ pub fn k2_exact(query: &[u64], candidate: &[u64], n_words: usize) -> EnergyConfl
     let full_quads = n_words / 4;
     for q in 0..full_quads {
         let base = q * 4;
-        let (qa, qb, qc, qd) = (
-            query[base],
-            query[base + 1],
-            query[base + 2],
-            query[base + 3],
-        );
-        let (ca, cb, cc, cd) = (
-            candidate[base],
-            candidate[base + 1],
-            candidate[base + 2],
-            candidate[base + 3],
-        );
+        let (qa, qb, qc, qd) = (query[base], query[base + 1], query[base + 2], query[base + 3]);
+        let (ca, cb, cc, cd) = (candidate[base], candidate[base + 1], candidate[base + 2], candidate[base + 3]);
 
-        conflict += (qa ^ ca).count_ones()
-            + (qb ^ cb).count_ones()
-            + (qc ^ cc).count_ones()
-            + (qd ^ cd).count_ones();
+        conflict += (qa ^ ca).count_ones() + (qb ^ cb).count_ones() + (qc ^ cc).count_ones() + (qd ^ cd).count_ones();
 
         energy_a += qa.count_ones() + qb.count_ones() + qc.count_ones() + qd.count_ones();
 
         energy_b += ca.count_ones() + cb.count_ones() + cc.count_ones() + cd.count_ones();
 
-        agreement += (qa & ca).count_ones()
-            + (qb & cb).count_ones()
-            + (qc & cc).count_ones()
-            + (qd & cd).count_ones();
+        agreement += (qa & ca).count_ones() + (qb & cb).count_ones() + (qc & cc).count_ones() + (qd & cd).count_ones();
     }
 
     // Remaining words
@@ -653,14 +632,8 @@ impl K2Histogram {
 /// allocation cost is negligible.
 #[inline]
 pub fn k2_exact_histogram(query: &[u64], candidate: &[u64], n_words: usize) -> K2Histogram {
-    assert!(
-        query.len() >= n_words,
-        "k2_exact_histogram: query too short"
-    );
-    assert!(
-        candidate.len() >= n_words,
-        "k2_exact_histogram: candidate too short"
-    );
+    assert!(query.len() >= n_words, "k2_exact_histogram: query too short");
+    assert!(candidate.len() >= n_words, "k2_exact_histogram: candidate too short");
 
     let mut conflict: u32 = 0;
     let mut energy_a: u32 = 0;
@@ -672,18 +645,8 @@ pub fn k2_exact_histogram(query: &[u64], candidate: &[u64], n_words: usize) -> K
     let full_quads = n_words / 4;
     for q in 0..full_quads {
         let base = q * 4;
-        let (qa, qb, qc, qd) = (
-            query[base],
-            query[base + 1],
-            query[base + 2],
-            query[base + 3],
-        );
-        let (ca, cb, cc, cd) = (
-            candidate[base],
-            candidate[base + 1],
-            candidate[base + 2],
-            candidate[base + 3],
-        );
+        let (qa, qb, qc, qd) = (query[base], query[base + 1], query[base + 2], query[base + 3]);
+        let (ca, cb, cc, cd) = (candidate[base], candidate[base + 1], candidate[base + 2], candidate[base + 3]);
 
         let pa = (qa ^ ca).count_ones();
         let pb = (qb ^ cb).count_ones();
@@ -699,10 +662,7 @@ pub fn k2_exact_histogram(query: &[u64], candidate: &[u64], n_words: usize) -> K
         conflict += pa + pb + pc + pd;
         energy_a += qa.count_ones() + qb.count_ones() + qc.count_ones() + qd.count_ones();
         energy_b += ca.count_ones() + cb.count_ones() + cc.count_ones() + cd.count_ones();
-        agreement += (qa & ca).count_ones()
-            + (qb & cb).count_ones()
-            + (qc & cc).count_ones()
-            + (qd & cd).count_ones();
+        agreement += (qa & ca).count_ones() + (qb & cb).count_ones() + (qc & cc).count_ones() + (qd & cd).count_ones();
     }
 
     // Remaining words
@@ -741,11 +701,7 @@ pub fn k2_exact_histogram(query: &[u64], candidate: &[u64], n_words: usize) -> K
 /// Returns all matches (candidates that survived K0+K1 and have HDR > 0
 /// OR sigma level ≥ Hint) and pipeline statistics.
 pub fn kernel_pipeline(
-    query_words: &[u64],
-    database_words: &[u64],
-    n_candidates: usize,
-    n_words: usize,
-    gate: &SliceGate,
+    query_words: &[u64], database_words: &[u64], n_candidates: usize, n_words: usize, gate: &SliceGate,
 ) -> (Vec<KernelResult>, PipelineStats) {
     let sigma_gate = SigmaGate::new(gate.total_bits as usize);
     assert!(
@@ -815,10 +771,7 @@ pub fn kernel_pipeline(
 /// `database_bytes`: flat byte array
 /// `n_candidates`: number of containers
 pub fn kernel_pipeline_bytes(
-    query_bytes: &[u8],
-    database_bytes: &[u8],
-    n_candidates: usize,
-    gate: &SliceGate,
+    query_bytes: &[u8], database_bytes: &[u8], n_candidates: usize, gate: &SliceGate,
 ) -> (Vec<KernelResult>, PipelineStats) {
     let n_bytes = query_bytes.len();
     assert!(
@@ -843,11 +796,7 @@ pub fn kernel_pipeline_bytes(
 ///
 /// For benchmarking Rule 7 (B0 vs pipeline) and verifying zero false negatives.
 pub fn full_sweep(
-    query_words: &[u64],
-    database_words: &[u64],
-    n_candidates: usize,
-    n_words: usize,
-    gate: &SliceGate,
+    query_words: &[u64], database_words: &[u64], n_candidates: usize, n_words: usize, gate: &SliceGate,
 ) -> Vec<KernelResult> {
     assert_eq!(query_words.len(), n_words);
     assert!(database_words.len() >= n_candidates * n_words);
@@ -890,11 +839,7 @@ pub fn full_sweep(
 ///
 /// Accumulates in FP32 — never stores intermediate BF16 results.
 pub fn bf16_tail_score(
-    query_bytes: &[u8],
-    candidate_bytes: &[u8],
-    sign_weight: f32,
-    exp_weight: f32,
-    man_weight: f32,
+    query_bytes: &[u8], candidate_bytes: &[u8], sign_weight: f32, exp_weight: f32, man_weight: f32,
 ) -> f32 {
     assert_eq!(query_bytes.len(), candidate_bytes.len());
     assert!(query_bytes.len() % 2 == 0);
@@ -1028,7 +973,11 @@ where
 {
     let n = a.len().min(b.len()).min(out.len());
     let (a, b, out) = (&a[..n], &b[..n], &mut out[..n]);
-    for ((a_chunk, b_chunk), out_chunk) in a.chunks_exact(16).zip(b.chunks_exact(16)).zip(out.chunks_exact_mut(16)) {
+    for ((a_chunk, b_chunk), out_chunk) in a
+        .chunks_exact(16)
+        .zip(b.chunks_exact(16))
+        .zip(out.chunks_exact_mut(16))
+    {
         let va = F32x16::from_slice(a_chunk);
         let vb = F32x16::from_slice(b_chunk);
         f(va, vb).copy_to_slice(out_chunk);
@@ -1283,11 +1232,7 @@ mod tests {
         );
 
         // All planted matches should be found by both
-        assert!(
-            full.len() >= 5,
-            "Expected at least 5 matches from full sweep, got {}",
-            full.len()
-        );
+        assert!(full.len() >= 5, "Expected at least 5 matches from full sweep, got {}", full.len());
     }
 
     #[test]
@@ -1385,10 +1330,7 @@ mod tests {
         let (matches, stats) = kernel_pipeline_bytes(&query_bytes, &db_bytes, n, &gate);
 
         // Should find at least the exact match at index 0
-        assert!(
-            matches.iter().any(|m| m.index == 0 && m.distance == 0),
-            "Expected exact match at index 0"
-        );
+        assert!(matches.iter().any(|m| m.index == 0 && m.distance == 0), "Expected exact match at index 0");
         assert!(stats.matches >= 1);
     }
 
@@ -1475,11 +1417,7 @@ mod tests {
         };
         let sigma = score_sigma(&ec, &gate);
         assert_eq!(sigma.level, SignificanceLevel::Noise);
-        assert!(
-            sigma.sigma.abs() < 0.1,
-            "z should be ~0, got {}",
-            sigma.sigma
-        );
+        assert!(sigma.sigma.abs() < 0.1, "z should be ~0, got {}", sigma.sigma);
     }
 
     #[test]
@@ -1594,10 +1532,7 @@ mod tests {
 
         let hist = k2_exact_histogram(&a, &b, SKU_16K_WORDS);
         let sum: u32 = hist.word_conflicts.iter().map(|&v| v as u32).sum();
-        assert_eq!(
-            sum, hist.energy.conflict,
-            "Sum of per-word conflicts must equal total conflict"
-        );
+        assert_eq!(sum, hist.energy.conflict, "Sum of per-word conflicts must equal total conflict");
     }
 
     #[test]
@@ -1619,10 +1554,7 @@ mod tests {
         let hist = k2_exact_histogram(&ones, &zeros, SKU_16K_WORDS);
 
         assert_eq!(hist.energy.conflict, SKU_16K_BITS as u32);
-        assert!(
-            hist.word_conflicts.iter().all(|&v| v == 64),
-            "Each word should have 64 bits conflict"
-        );
+        assert!(hist.word_conflicts.iter().all(|&v| v == 64), "Each word should have 64 bits conflict");
     }
 
     #[test]
@@ -1635,10 +1567,7 @@ mod tests {
         let hist = k2_exact_histogram(&a, &b, SKU_16K_WORDS);
         assert_eq!(hist.max_word_conflict(), 64);
         assert_eq!(hist.hottest_word(), 100);
-        assert!(
-            hist.variance() > 0.5,
-            "Localized difference should have high variance"
-        );
+        assert!(hist.variance() > 0.5, "Localized difference should have high variance");
     }
 
     #[test]

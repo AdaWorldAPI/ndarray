@@ -5,38 +5,123 @@
 //!
 //! When `std::simd` stabilizes: swap this file. Zero consumer changes.
 
+#[cfg(feature = "std")]
 use std::sync::LazyLock;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
+#[repr(u8)]
 enum Tier {
-    Avx512,
-    Avx2,
+    Avx512 = 1,
+    Avx2 = 2,
     /// ARM NEON 128-bit + dotprod (Pi 5 / A76+). 4× int8 throughput.
-    NeonDotProd,
+    NeonDotProd = 3,
     /// ARM NEON 128-bit baseline (Pi 3/4 / A53/A72). Pure float SIMD.
-    Neon,
-    Scalar,
+    Neon = 4,
+    Scalar = 5,
 }
 
-static TIER: LazyLock<Tier> = LazyLock::new(|| {
-    #[cfg(target_arch = "x86_64")]
-    {
-        if is_x86_feature_detected!("avx512f") { return Tier::Avx512; }
-        if is_x86_feature_detected!("avx2") { return Tier::Avx2; }
+impl Tier {
+    /// Inverse of `as u8` — used by the no_std `critical_section`
+    /// polyfill below so we can stash a `Tier` into an `AtomicU8`.
+    #[allow(dead_code)]
+    #[inline(always)]
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Tier::Avx512,
+            2 => Tier::Avx2,
+            3 => Tier::NeonDotProd,
+            4 => Tier::Neon,
+            _ => Tier::Scalar,
+        }
     }
-    #[cfg(target_arch = "aarch64")]
+}
+
+/// Detect the best SIMD tier the current CPU supports.
+///
+/// Pulled out of the original `LazyLock::new` closure so it can be
+/// reused by both the `std` and `no_std` cache implementations below.
+#[allow(dead_code)]
+fn detect_tier() -> Tier {
+    #[cfg(all(feature = "std", target_arch = "x86_64"))]
+    {
+        if is_x86_feature_detected!("avx512f") {
+            return Tier::Avx512;
+        }
+        if is_x86_feature_detected!("avx2") {
+            return Tier::Avx2;
+        }
+    }
+    #[cfg(all(feature = "std", target_arch = "aarch64"))]
     {
         // NEON is mandatory on aarch64 — always available.
         // dotprod (ARMv8.2+) distinguishes Pi 5 from Pi 3/4.
-        if std::arch::is_aarch64_feature_detected!("dotprod") { return Tier::NeonDotProd; }
+        if std::arch::is_aarch64_feature_detected!("dotprod") {
+            return Tier::NeonDotProd;
+        }
         return Tier::Neon;
+    }
+    #[cfg(all(not(feature = "std"), target_arch = "aarch64"))]
+    {
+        // No runtime feature detection available without std — fall back
+        // to whatever the compile-time target features advertise.
+        #[cfg(target_feature = "dotprod")]
+        return Tier::NeonDotProd;
+        #[cfg(not(target_feature = "dotprod"))]
+        return Tier::Neon;
+    }
+    #[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
+    {
+        // No `is_x86_feature_detected!` without std — pick the highest
+        // tier whose features were enabled at compile time.
+        #[cfg(target_feature = "avx512f")]
+        return Tier::Avx512;
+        #[cfg(all(not(target_feature = "avx512f"), target_feature = "avx2"))]
+        return Tier::Avx2;
     }
     #[allow(unreachable_code)]
     Tier::Scalar
-});
+}
 
+// ── std path: original `LazyLock`-backed cache ───────────────────────
+#[cfg(feature = "std")]
+static TIER: LazyLock<Tier> = LazyLock::new(detect_tier);
+
+#[cfg(feature = "std")]
 #[inline(always)]
-fn tier() -> Tier { *TIER }
+#[allow(dead_code)]
+fn tier() -> Tier {
+    *TIER
+}
+
+// ── no_std path: portable-atomic + critical-section polyfill ────────
+#[cfg(all(not(feature = "std"), feature = "portable-atomic-critical-section"))]
+use portable_atomic::{AtomicU8, Ordering};
+
+#[cfg(all(not(feature = "std"), feature = "portable-atomic-critical-section"))]
+static TIER_INIT: AtomicU8 = AtomicU8::new(0);
+
+#[cfg(all(not(feature = "std"), feature = "portable-atomic-critical-section"))]
+#[inline]
+#[allow(dead_code)]
+fn tier() -> Tier {
+    let cached = TIER_INIT.load(Ordering::Relaxed);
+    if cached != 0 {
+        return Tier::from_u8(cached);
+    }
+    critical_section::with(|_| {
+        let detected = detect_tier();
+        TIER_INIT.store(detected as u8, Ordering::Relaxed);
+        detected
+    })
+}
+
+// ── no_std path with no polyfill: compile-time fallback ──────────────
+#[cfg(all(not(feature = "std"), not(feature = "portable-atomic-critical-section")))]
+#[inline(always)]
+#[allow(dead_code)]
+fn tier() -> Tier {
+    detect_tier()
+}
 
 // BF16 tier detection happens inline in bf16_to_f32_batch() via
 // is_x86_feature_detected!("avx512bf16") — no LazyLock needed.
@@ -115,20 +200,42 @@ pub const PREFERRED_I16_LANES: usize = 16;
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 pub use crate::simd_avx512::{
-    // 256-bit (AVX2 baseline, __m256/__m256d)
-    F32x8, F64x4, f32x8, f64x4,
+    f32x16,
+    f32x8,
+    f64x4,
+    f64x8,
+    i16x16,
+    i16x32,
+    i32x16,
+    i64x8,
+    i8x32,
+    i8x64,
+    u32x16,
+    u64x8,
+    u8x64,
+    F32Mask16,
     // 512-bit (native AVX-512, __m512/__m512d/__m512i)
-    F32x16, F64x8, U8x64, I32x16, I64x8, U16x32, U32x16, U64x8,
-    F32Mask16, F64Mask8,
-    f32x16, f64x8, u8x64, i32x16, i64x8, u32x16, u64x8,
+    F32x16,
+    // 256-bit (AVX2 baseline, __m256/__m256d/__m256i)
+    F32x8,
+    F64Mask8,
+    F64x4,
+    F64x8,
+    I16x16,
+    I16x32,
+    I32x16,
+    I64x8,
+    I8x32,
+    I8x64,
+    U16x32,
+    U32x16,
+    U64x8,
+    U8x64,
 };
 
 // BF16 types + batch conversion (always available — scalar fallback built in)
 #[cfg(target_arch = "x86_64")]
-pub use crate::simd_avx512::{
-    bf16_to_f32_scalar, f32_to_bf16_scalar,
-    bf16_to_f32_batch, f32_to_bf16_batch,
-};
+pub use crate::simd_avx512::{bf16_to_f32_batch, bf16_to_f32_scalar, f32_to_bf16_batch, f32_to_bf16_scalar};
 
 // BF16 RNE (round-to-nearest-even) path — pure AVX-512-F, byte-exact vs
 // hardware `_mm512_cvtneps_pbh` on Sapphire Rapids+ (verified on 1M inputs
@@ -139,22 +246,18 @@ pub use crate::simd_avx512::{
 // loops per the workspace-wide "never scalar ever" rule for F32→BF16.
 // See lance-graph/CLAUDE.md § Certification Process.
 #[cfg(target_arch = "x86_64")]
-pub use crate::simd_avx512::{
-    f32_to_bf16_scalar_rne,
-    f32_to_bf16_batch_rne,
-};
+pub use crate::simd_avx512::{f32_to_bf16_batch_rne, f32_to_bf16_scalar_rne};
 // BF16 SIMD types only available when avx512bf16 is enabled at compile time
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512bf16"))]
 pub use crate::simd_avx512::{BF16x16, BF16x8};
 
 #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
-pub use crate::simd_avx512::{F32x8, F64x4, f32x8, f64x4};
+pub use crate::simd_avx512::{f32x8, f64x4, i16x16, i8x32, F32x8, F64x4, I16x16, I8x32};
 
 #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
 pub use crate::simd_avx2::{
-    F32x16, F64x8, U8x64, I32x16, I64x8, U16x32, U32x16, U64x8,
-    F32Mask16, F64Mask8,
-    f32x16, f64x8, u8x64, i32x16, i64x8, u32x16, u64x8,
+    f32x16, f64x8, i16x32, i32x16, i64x8, i8x64, u32x16, u64x8, u8x64, F32Mask16, F32x16, F64Mask8, F64x8, I16x32,
+    I32x16, I64x8, I8x64, U16x32, U32x16, U64x8, U8x64,
 };
 
 // ============================================================================
@@ -162,11 +265,11 @@ pub use crate::simd_avx2::{
 // ============================================================================
 
 #[cfg(not(target_arch = "x86_64"))]
-mod scalar {
+pub(crate) mod scalar {
     use core::fmt;
     use core::ops::{
-        Add, AddAssign, BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign,
-        Div, DivAssign, Mul, MulAssign, Neg, Not, Shl, Shr, Sub, SubAssign,
+        Add, AddAssign, BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Div, DivAssign, Mul, MulAssign,
+        Neg, Not, Shl, Shr, Sub, SubAssign,
     };
 
     // ── Macros for scalar fallback boilerplate ────────────────────────
@@ -179,14 +282,18 @@ mod scalar {
 
             impl Default for $name {
                 #[inline(always)]
-                fn default() -> Self { Self([0.0; $lanes]) }
+                fn default() -> Self {
+                    Self([0.0; $lanes])
+                }
             }
 
             impl $name {
                 pub const LANES: usize = $lanes;
 
                 #[inline(always)]
-                pub fn splat(v: $elem) -> Self { Self([v; $lanes]) }
+                pub fn splat(v: $elem) -> Self {
+                    Self([v; $lanes])
+                }
 
                 #[inline(always)]
                 pub fn from_slice(s: &[$elem]) -> Self {
@@ -197,10 +304,14 @@ mod scalar {
                 }
 
                 #[inline(always)]
-                pub fn from_array(arr: [$elem; $lanes]) -> Self { Self(arr) }
+                pub fn from_array(arr: [$elem; $lanes]) -> Self {
+                    Self(arr)
+                }
 
                 #[inline(always)]
-                pub fn to_array(self) -> [$elem; $lanes] { self.0 }
+                pub fn to_array(self) -> [$elem; $lanes] {
+                    self.0
+                }
 
                 #[inline(always)]
                 pub fn copy_to_slice(self, s: &mut [$elem]) {
@@ -209,7 +320,9 @@ mod scalar {
                 }
 
                 #[inline(always)]
-                pub fn reduce_sum(self) -> $elem { self.0.iter().sum() }
+                pub fn reduce_sum(self) -> $elem {
+                    self.0.iter().sum()
+                }
 
                 #[inline(always)]
                 pub fn reduce_min(self) -> $elem {
@@ -218,20 +331,27 @@ mod scalar {
 
                 #[inline(always)]
                 pub fn reduce_max(self) -> $elem {
-                    self.0.iter().copied().fold(<$elem>::NEG_INFINITY, <$elem>::max)
+                    self.0
+                        .iter()
+                        .copied()
+                        .fold(<$elem>::NEG_INFINITY, <$elem>::max)
                 }
 
                 #[inline(always)]
                 pub fn simd_min(self, other: Self) -> Self {
                     let mut out = [0.0 as $elem; $lanes];
-                    for i in 0..$lanes { out[i] = self.0[i].min(other.0[i]); }
+                    for i in 0..$lanes {
+                        out[i] = self.0[i].min(other.0[i]);
+                    }
                     Self(out)
                 }
 
                 #[inline(always)]
                 pub fn simd_max(self, other: Self) -> Self {
                     let mut out = [0.0 as $elem; $lanes];
-                    for i in 0..$lanes { out[i] = self.0[i].max(other.0[i]); }
+                    for i in 0..$lanes {
+                        out[i] = self.0[i].max(other.0[i]);
+                    }
                     Self(out)
                 }
 
@@ -243,69 +363,99 @@ mod scalar {
                 #[inline(always)]
                 pub fn mul_add(self, b: Self, c: Self) -> Self {
                     let mut out = [0.0 as $elem; $lanes];
-                    for i in 0..$lanes { out[i] = self.0[i].mul_add(b.0[i], c.0[i]); }
+                    for i in 0..$lanes {
+                        out[i] = self.0[i].mul_add(b.0[i], c.0[i]);
+                    }
                     Self(out)
                 }
 
                 #[inline(always)]
                 pub fn sqrt(self) -> Self {
                     let mut out = [0.0 as $elem; $lanes];
-                    for i in 0..$lanes { out[i] = self.0[i].sqrt(); }
+                    for i in 0..$lanes {
+                        out[i] = self.0[i].sqrt();
+                    }
                     Self(out)
                 }
 
                 #[inline(always)]
                 pub fn round(self) -> Self {
                     let mut out = [0.0 as $elem; $lanes];
-                    for i in 0..$lanes { out[i] = self.0[i].round(); }
+                    for i in 0..$lanes {
+                        out[i] = self.0[i].round();
+                    }
                     Self(out)
                 }
 
                 #[inline(always)]
                 pub fn floor(self) -> Self {
                     let mut out = [0.0 as $elem; $lanes];
-                    for i in 0..$lanes { out[i] = self.0[i].floor(); }
+                    for i in 0..$lanes {
+                        out[i] = self.0[i].floor();
+                    }
                     Self(out)
                 }
 
                 #[inline(always)]
                 pub fn abs(self) -> Self {
                     let mut out = [0.0 as $elem; $lanes];
-                    for i in 0..$lanes { out[i] = self.0[i].abs(); }
+                    for i in 0..$lanes {
+                        out[i] = self.0[i].abs();
+                    }
                     Self(out)
                 }
 
                 #[inline(always)]
                 pub fn simd_lt(self, other: Self) -> $mask {
                     let mut bits: $mask_prim = 0;
-                    for i in 0..$lanes { if self.0[i] < other.0[i] { bits |= 1 << i; } }
+                    for i in 0..$lanes {
+                        if self.0[i] < other.0[i] {
+                            bits |= 1 << i;
+                        }
+                    }
                     $mask(bits)
                 }
 
                 #[inline(always)]
                 pub fn simd_le(self, other: Self) -> $mask {
                     let mut bits: $mask_prim = 0;
-                    for i in 0..$lanes { if self.0[i] <= other.0[i] { bits |= 1 << i; } }
+                    for i in 0..$lanes {
+                        if self.0[i] <= other.0[i] {
+                            bits |= 1 << i;
+                        }
+                    }
                     $mask(bits)
                 }
 
                 #[inline(always)]
-                pub fn simd_gt(self, other: Self) -> $mask { other.simd_lt(self) }
+                pub fn simd_gt(self, other: Self) -> $mask {
+                    other.simd_lt(self)
+                }
 
                 #[inline(always)]
-                pub fn simd_ge(self, other: Self) -> $mask { other.simd_le(self) }
+                pub fn simd_ge(self, other: Self) -> $mask {
+                    other.simd_le(self)
+                }
 
                 #[inline(always)]
                 pub fn simd_eq(self, other: Self) -> $mask {
                     let mut bits: $mask_prim = 0;
-                    for i in 0..$lanes { if self.0[i] == other.0[i] { bits |= 1 << i; } }
+                    for i in 0..$lanes {
+                        if self.0[i] == other.0[i] {
+                            bits |= 1 << i;
+                        }
+                    }
                     $mask(bits)
                 }
 
                 #[inline(always)]
                 pub fn simd_ne(self, other: Self) -> $mask {
                     let mut bits: $mask_prim = 0;
-                    for i in 0..$lanes { if self.0[i] != other.0[i] { bits |= 1 << i; } }
+                    for i in 0..$lanes {
+                        if self.0[i] != other.0[i] {
+                            bits |= 1 << i;
+                        }
+                    }
                     $mask(bits)
                 }
             }
@@ -315,7 +465,9 @@ mod scalar {
                 #[inline(always)]
                 fn add(self, rhs: Self) -> Self {
                     let mut out = [0.0 as $elem; $lanes];
-                    for i in 0..$lanes { out[i] = self.0[i] + rhs.0[i]; }
+                    for i in 0..$lanes {
+                        out[i] = self.0[i] + rhs.0[i];
+                    }
                     Self(out)
                 }
             }
@@ -324,7 +476,9 @@ mod scalar {
                 #[inline(always)]
                 fn sub(self, rhs: Self) -> Self {
                     let mut out = [0.0 as $elem; $lanes];
-                    for i in 0..$lanes { out[i] = self.0[i] - rhs.0[i]; }
+                    for i in 0..$lanes {
+                        out[i] = self.0[i] - rhs.0[i];
+                    }
                     Self(out)
                 }
             }
@@ -333,7 +487,9 @@ mod scalar {
                 #[inline(always)]
                 fn mul(self, rhs: Self) -> Self {
                     let mut out = [0.0 as $elem; $lanes];
-                    for i in 0..$lanes { out[i] = self.0[i] * rhs.0[i]; }
+                    for i in 0..$lanes {
+                        out[i] = self.0[i] * rhs.0[i];
+                    }
                     Self(out)
                 }
             }
@@ -342,32 +498,52 @@ mod scalar {
                 #[inline(always)]
                 fn div(self, rhs: Self) -> Self {
                     let mut out = [0.0 as $elem; $lanes];
-                    for i in 0..$lanes { out[i] = self.0[i] / rhs.0[i]; }
+                    for i in 0..$lanes {
+                        out[i] = self.0[i] / rhs.0[i];
+                    }
                     Self(out)
                 }
             }
             impl AddAssign for $name {
                 #[inline(always)]
-                fn add_assign(&mut self, rhs: Self) { for i in 0..$lanes { self.0[i] += rhs.0[i]; } }
+                fn add_assign(&mut self, rhs: Self) {
+                    for i in 0..$lanes {
+                        self.0[i] += rhs.0[i];
+                    }
+                }
             }
             impl SubAssign for $name {
                 #[inline(always)]
-                fn sub_assign(&mut self, rhs: Self) { for i in 0..$lanes { self.0[i] -= rhs.0[i]; } }
+                fn sub_assign(&mut self, rhs: Self) {
+                    for i in 0..$lanes {
+                        self.0[i] -= rhs.0[i];
+                    }
+                }
             }
             impl MulAssign for $name {
                 #[inline(always)]
-                fn mul_assign(&mut self, rhs: Self) { for i in 0..$lanes { self.0[i] *= rhs.0[i]; } }
+                fn mul_assign(&mut self, rhs: Self) {
+                    for i in 0..$lanes {
+                        self.0[i] *= rhs.0[i];
+                    }
+                }
             }
             impl DivAssign for $name {
                 #[inline(always)]
-                fn div_assign(&mut self, rhs: Self) { for i in 0..$lanes { self.0[i] /= rhs.0[i]; } }
+                fn div_assign(&mut self, rhs: Self) {
+                    for i in 0..$lanes {
+                        self.0[i] /= rhs.0[i];
+                    }
+                }
             }
             impl Neg for $name {
                 type Output = Self;
                 #[inline(always)]
                 fn neg(self) -> Self {
                     let mut out = [0.0 as $elem; $lanes];
-                    for i in 0..$lanes { out[i] = -self.0[i]; }
+                    for i in 0..$lanes {
+                        out[i] = -self.0[i];
+                    }
                     Self(out)
                 }
             }
@@ -377,7 +553,9 @@ mod scalar {
                 }
             }
             impl PartialEq for $name {
-                fn eq(&self, other: &Self) -> bool { self.0 == other.0 }
+                fn eq(&self, other: &Self) -> bool {
+                    self.0 == other.0
+                }
             }
 
             // Mask type
@@ -389,7 +567,11 @@ mod scalar {
                 pub fn select(self, true_val: $name, false_val: $name) -> $name {
                     let mut out = [0.0 as $elem; $lanes];
                     for i in 0..$lanes {
-                        out[i] = if (self.0 >> i) & 1 == 1 { true_val.0[i] } else { false_val.0[i] };
+                        out[i] = if (self.0 >> i) & 1 == 1 {
+                            true_val.0[i]
+                        } else {
+                            false_val.0[i]
+                        };
                     }
                     $name(out)
                 }
@@ -405,14 +587,18 @@ mod scalar {
 
             impl Default for $name {
                 #[inline(always)]
-                fn default() -> Self { Self([$zero; $lanes]) }
+                fn default() -> Self {
+                    Self([$zero; $lanes])
+                }
             }
 
             impl $name {
                 pub const LANES: usize = $lanes;
 
                 #[inline(always)]
-                pub fn splat(v: $elem) -> Self { Self([v; $lanes]) }
+                pub fn splat(v: $elem) -> Self {
+                    Self([v; $lanes])
+                }
 
                 #[inline(always)]
                 pub fn from_slice(s: &[$elem]) -> Self {
@@ -423,10 +609,14 @@ mod scalar {
                 }
 
                 #[inline(always)]
-                pub fn from_array(arr: [$elem; $lanes]) -> Self { Self(arr) }
+                pub fn from_array(arr: [$elem; $lanes]) -> Self {
+                    Self(arr)
+                }
 
                 #[inline(always)]
-                pub fn to_array(self) -> [$elem; $lanes] { self.0 }
+                pub fn to_array(self) -> [$elem; $lanes] {
+                    self.0
+                }
 
                 #[inline(always)]
                 pub fn copy_to_slice(self, s: &mut [$elem]) {
@@ -437,7 +627,9 @@ mod scalar {
                 #[inline(always)]
                 pub fn reduce_sum(self) -> $elem {
                     let mut s: $elem = $zero;
-                    for i in 0..$lanes { s = s.wrapping_add(self.0[i]); }
+                    for i in 0..$lanes {
+                        s = s.wrapping_add(self.0[i]);
+                    }
                     s
                 }
             }
@@ -447,7 +639,9 @@ mod scalar {
                 #[inline(always)]
                 fn add(self, rhs: Self) -> Self {
                     let mut out = [$zero; $lanes];
-                    for i in 0..$lanes { out[i] = self.0[i].wrapping_add(rhs.0[i]); }
+                    for i in 0..$lanes {
+                        out[i] = self.0[i].wrapping_add(rhs.0[i]);
+                    }
                     Self(out)
                 }
             }
@@ -456,20 +650,26 @@ mod scalar {
                 #[inline(always)]
                 fn sub(self, rhs: Self) -> Self {
                     let mut out = [$zero; $lanes];
-                    for i in 0..$lanes { out[i] = self.0[i].wrapping_sub(rhs.0[i]); }
+                    for i in 0..$lanes {
+                        out[i] = self.0[i].wrapping_sub(rhs.0[i]);
+                    }
                     Self(out)
                 }
             }
             impl AddAssign for $name {
                 #[inline(always)]
                 fn add_assign(&mut self, rhs: Self) {
-                    for i in 0..$lanes { self.0[i] = self.0[i].wrapping_add(rhs.0[i]); }
+                    for i in 0..$lanes {
+                        self.0[i] = self.0[i].wrapping_add(rhs.0[i]);
+                    }
                 }
             }
             impl SubAssign for $name {
                 #[inline(always)]
                 fn sub_assign(&mut self, rhs: Self) {
-                    for i in 0..$lanes { self.0[i] = self.0[i].wrapping_sub(rhs.0[i]); }
+                    for i in 0..$lanes {
+                        self.0[i] = self.0[i].wrapping_sub(rhs.0[i]);
+                    }
                 }
             }
             impl BitAnd for $name {
@@ -477,7 +677,9 @@ mod scalar {
                 #[inline(always)]
                 fn bitand(self, rhs: Self) -> Self {
                     let mut out = [$zero; $lanes];
-                    for i in 0..$lanes { out[i] = self.0[i] & rhs.0[i]; }
+                    for i in 0..$lanes {
+                        out[i] = self.0[i] & rhs.0[i];
+                    }
                     Self(out)
                 }
             }
@@ -486,7 +688,9 @@ mod scalar {
                 #[inline(always)]
                 fn bitor(self, rhs: Self) -> Self {
                     let mut out = [$zero; $lanes];
-                    for i in 0..$lanes { out[i] = self.0[i] | rhs.0[i]; }
+                    for i in 0..$lanes {
+                        out[i] = self.0[i] | rhs.0[i];
+                    }
                     Self(out)
                 }
             }
@@ -495,28 +699,44 @@ mod scalar {
                 #[inline(always)]
                 fn bitxor(self, rhs: Self) -> Self {
                     let mut out = [$zero; $lanes];
-                    for i in 0..$lanes { out[i] = self.0[i] ^ rhs.0[i]; }
+                    for i in 0..$lanes {
+                        out[i] = self.0[i] ^ rhs.0[i];
+                    }
                     Self(out)
                 }
             }
             impl BitAndAssign for $name {
                 #[inline(always)]
-                fn bitand_assign(&mut self, rhs: Self) { for i in 0..$lanes { self.0[i] &= rhs.0[i]; } }
+                fn bitand_assign(&mut self, rhs: Self) {
+                    for i in 0..$lanes {
+                        self.0[i] &= rhs.0[i];
+                    }
+                }
             }
             impl BitOrAssign for $name {
                 #[inline(always)]
-                fn bitor_assign(&mut self, rhs: Self) { for i in 0..$lanes { self.0[i] |= rhs.0[i]; } }
+                fn bitor_assign(&mut self, rhs: Self) {
+                    for i in 0..$lanes {
+                        self.0[i] |= rhs.0[i];
+                    }
+                }
             }
             impl BitXorAssign for $name {
                 #[inline(always)]
-                fn bitxor_assign(&mut self, rhs: Self) { for i in 0..$lanes { self.0[i] ^= rhs.0[i]; } }
+                fn bitxor_assign(&mut self, rhs: Self) {
+                    for i in 0..$lanes {
+                        self.0[i] ^= rhs.0[i];
+                    }
+                }
             }
             impl Not for $name {
                 type Output = Self;
                 #[inline(always)]
                 fn not(self) -> Self {
                     let mut out = [$zero; $lanes];
-                    for i in 0..$lanes { out[i] = !self.0[i]; }
+                    for i in 0..$lanes {
+                        out[i] = !self.0[i];
+                    }
                     Self(out)
                 }
             }
@@ -526,7 +746,9 @@ mod scalar {
                 }
             }
             impl PartialEq for $name {
-                fn eq(&self, other: &Self) -> bool { self.0 == other.0 }
+                fn eq(&self, other: &Self) -> bool {
+                    self.0 == other.0
+                }
             }
         };
     }
@@ -555,84 +777,328 @@ mod scalar {
     impl_int_type!(U32x16, u32, 16, 0u32);
     impl_int_type!(U64x8, u64, 8, 0u64);
 
+    // I8/I16 SIMD types (scalar fallback)
+    impl_int_type!(I8x64, i8, 64, 0i8);
+    impl_int_type!(I8x32, i8, 32, 0i8);
+    impl_int_type!(I16x32, i16, 32, 0i16);
+    impl_int_type!(I16x16, i16, 16, 0i16);
+
+    // I8x64 / I8x32 / I16x32 / I16x16 — AVX-512BW-style methods (scalar shape)
+    impl I8x64 {
+        #[inline(always)]
+        pub fn zero() -> Self {
+            Self([0i8; 64])
+        }
+        #[inline(always)]
+        pub fn add(self, other: Self) -> Self {
+            let mut o = [0i8; 64];
+            for i in 0..64 {
+                o[i] = self.0[i].wrapping_add(other.0[i]);
+            }
+            Self(o)
+        }
+        #[inline(always)]
+        pub fn sub(self, other: Self) -> Self {
+            let mut o = [0i8; 64];
+            for i in 0..64 {
+                o[i] = self.0[i].wrapping_sub(other.0[i]);
+            }
+            Self(o)
+        }
+        #[inline(always)]
+        pub fn min(self, other: Self) -> Self {
+            let mut o = [0i8; 64];
+            for i in 0..64 {
+                o[i] = self.0[i].min(other.0[i]);
+            }
+            Self(o)
+        }
+        #[inline(always)]
+        pub fn max(self, other: Self) -> Self {
+            let mut o = [0i8; 64];
+            for i in 0..64 {
+                o[i] = self.0[i].max(other.0[i]);
+            }
+            Self(o)
+        }
+        #[inline(always)]
+        pub fn cmp_gt(self, other: Self) -> u64 {
+            let mut m: u64 = 0;
+            for i in 0..64 {
+                if self.0[i] > other.0[i] {
+                    m |= 1u64 << i;
+                }
+            }
+            m
+        }
+    }
+    impl I8x32 {
+        #[inline(always)]
+        pub fn zero() -> Self {
+            Self([0i8; 32])
+        }
+        #[inline(always)]
+        pub fn add(self, other: Self) -> Self {
+            let mut o = [0i8; 32];
+            for i in 0..32 {
+                o[i] = self.0[i].wrapping_add(other.0[i]);
+            }
+            Self(o)
+        }
+        #[inline(always)]
+        pub fn sub(self, other: Self) -> Self {
+            let mut o = [0i8; 32];
+            for i in 0..32 {
+                o[i] = self.0[i].wrapping_sub(other.0[i]);
+            }
+            Self(o)
+        }
+        #[inline(always)]
+        pub fn min(self, other: Self) -> Self {
+            let mut o = [0i8; 32];
+            for i in 0..32 {
+                o[i] = self.0[i].min(other.0[i]);
+            }
+            Self(o)
+        }
+        #[inline(always)]
+        pub fn max(self, other: Self) -> Self {
+            let mut o = [0i8; 32];
+            for i in 0..32 {
+                o[i] = self.0[i].max(other.0[i]);
+            }
+            Self(o)
+        }
+        #[inline(always)]
+        pub fn cmp_gt(self, other: Self) -> u32 {
+            let mut m: u32 = 0;
+            for i in 0..32 {
+                if self.0[i] > other.0[i] {
+                    m |= 1u32 << i;
+                }
+            }
+            m
+        }
+    }
+    impl I16x32 {
+        #[inline(always)]
+        pub fn zero() -> Self {
+            Self([0i16; 32])
+        }
+        #[inline(always)]
+        pub fn add(self, other: Self) -> Self {
+            let mut o = [0i16; 32];
+            for i in 0..32 {
+                o[i] = self.0[i].wrapping_add(other.0[i]);
+            }
+            Self(o)
+        }
+        #[inline(always)]
+        pub fn sub(self, other: Self) -> Self {
+            let mut o = [0i16; 32];
+            for i in 0..32 {
+                o[i] = self.0[i].wrapping_sub(other.0[i]);
+            }
+            Self(o)
+        }
+        #[inline(always)]
+        pub fn min(self, other: Self) -> Self {
+            let mut o = [0i16; 32];
+            for i in 0..32 {
+                o[i] = self.0[i].min(other.0[i]);
+            }
+            Self(o)
+        }
+        #[inline(always)]
+        pub fn max(self, other: Self) -> Self {
+            let mut o = [0i16; 32];
+            for i in 0..32 {
+                o[i] = self.0[i].max(other.0[i]);
+            }
+            Self(o)
+        }
+        #[inline(always)]
+        pub fn cmp_gt(self, other: Self) -> u32 {
+            let mut m: u32 = 0;
+            for i in 0..32 {
+                if self.0[i] > other.0[i] {
+                    m |= 1u32 << i;
+                }
+            }
+            m
+        }
+    }
+    impl I16x16 {
+        #[inline(always)]
+        pub fn zero() -> Self {
+            Self([0i16; 16])
+        }
+        #[inline(always)]
+        pub fn add(self, other: Self) -> Self {
+            let mut o = [0i16; 16];
+            for i in 0..16 {
+                o[i] = self.0[i].wrapping_add(other.0[i]);
+            }
+            Self(o)
+        }
+        #[inline(always)]
+        pub fn sub(self, other: Self) -> Self {
+            let mut o = [0i16; 16];
+            for i in 0..16 {
+                o[i] = self.0[i].wrapping_sub(other.0[i]);
+            }
+            Self(o)
+        }
+        #[inline(always)]
+        pub fn min(self, other: Self) -> Self {
+            let mut o = [0i16; 16];
+            for i in 0..16 {
+                o[i] = self.0[i].min(other.0[i]);
+            }
+            Self(o)
+        }
+        #[inline(always)]
+        pub fn max(self, other: Self) -> Self {
+            let mut o = [0i16; 16];
+            for i in 0..16 {
+                o[i] = self.0[i].max(other.0[i]);
+            }
+            Self(o)
+        }
+        #[inline(always)]
+        pub fn cmp_gt(self, other: Self) -> u16 {
+            let mut m: u16 = 0;
+            for i in 0..16 {
+                if self.0[i] > other.0[i] {
+                    m |= 1u16 << i;
+                }
+            }
+            m
+        }
+    }
+
     // Extra methods for U16x32 (widen/narrow, shift, multiply)
     impl U16x32 {
         #[inline(always)]
         pub fn from_u8x64_lo(v: U8x64) -> Self {
-            let mut out = [0u16; 32]; for i in 0..32 { out[i] = v.0[i] as u16; } Self(out)
+            let mut out = [0u16; 32];
+            for i in 0..32 {
+                out[i] = v.0[i] as u16;
+            }
+            Self(out)
         }
         #[inline(always)]
         pub fn from_u8x64_hi(v: U8x64) -> Self {
-            let mut out = [0u16; 32]; for i in 0..32 { out[i] = v.0[32 + i] as u16; } Self(out)
+            let mut out = [0u16; 32];
+            for i in 0..32 {
+                out[i] = v.0[32 + i] as u16;
+            }
+            Self(out)
         }
         #[inline(always)]
         pub fn pack_saturate_u8(self, other: Self) -> U8x64 {
             let mut out = [0u8; 64];
-            for i in 0..32 { out[i] = self.0[i].min(255) as u8; }
-            for i in 0..32 { out[32 + i] = other.0[i].min(255) as u8; }
+            for i in 0..32 {
+                out[i] = self.0[i].min(255) as u8;
+            }
+            for i in 0..32 {
+                out[32 + i] = other.0[i].min(255) as u8;
+            }
             U8x64(out)
         }
         #[inline(always)]
         pub fn shr(self, imm: u32) -> Self {
-            let mut out = [0u16; 32]; for i in 0..32 { out[i] = if imm < 16 { self.0[i] >> imm } else { 0 }; } Self(out)
+            let mut out = [0u16; 32];
+            for i in 0..32 {
+                out[i] = if imm < 16 { self.0[i] >> imm } else { 0 };
+            }
+            Self(out)
         }
         #[inline(always)]
         pub fn shl(self, imm: u32) -> Self {
-            let mut out = [0u16; 32]; for i in 0..32 { out[i] = if imm < 16 { self.0[i] << imm } else { 0 }; } Self(out)
+            let mut out = [0u16; 32];
+            for i in 0..32 {
+                out[i] = if imm < 16 { self.0[i] << imm } else { 0 };
+            }
+            Self(out)
         }
         #[inline(always)]
         pub fn mullo(self, other: Self) -> Self {
-            let mut out = [0u16; 32]; for i in 0..32 { out[i] = self.0[i].wrapping_mul(other.0[i]); } Self(out)
+            let mut out = [0u16; 32];
+            for i in 0..32 {
+                out[i] = self.0[i].wrapping_mul(other.0[i]);
+            }
+            Self(out)
         }
     }
 
     // Extra methods for I32x16 that float types have via the macro
     impl I32x16 {
         #[inline(always)]
-        pub fn reduce_min(self) -> i32 { *self.0.iter().min().unwrap_or(&0) }
+        pub fn reduce_min(self) -> i32 {
+            *self.0.iter().min().unwrap_or(&0)
+        }
         #[inline(always)]
-        pub fn reduce_max(self) -> i32 { *self.0.iter().max().unwrap_or(&0) }
+        pub fn reduce_max(self) -> i32 {
+            *self.0.iter().max().unwrap_or(&0)
+        }
         #[inline(always)]
         pub fn simd_min(self, other: Self) -> Self {
             let mut out = [0i32; 16];
-            for i in 0..16 { out[i] = self.0[i].min(other.0[i]); }
+            for i in 0..16 {
+                out[i] = self.0[i].min(other.0[i]);
+            }
             Self(out)
         }
         #[inline(always)]
         pub fn simd_max(self, other: Self) -> Self {
             let mut out = [0i32; 16];
-            for i in 0..16 { out[i] = self.0[i].max(other.0[i]); }
+            for i in 0..16 {
+                out[i] = self.0[i].max(other.0[i]);
+            }
             Self(out)
         }
         #[inline(always)]
         pub fn cast_f32(self) -> F32x16 {
             let mut out = [0.0f32; 16];
-            for i in 0..16 { out[i] = self.0[i] as f32; }
+            for i in 0..16 {
+                out[i] = self.0[i] as f32;
+            }
             F32x16(out)
         }
         #[inline(always)]
         pub fn abs(self) -> Self {
             let mut out = [0i32; 16];
-            for i in 0..16 { out[i] = self.0[i].abs(); }
+            for i in 0..16 {
+                out[i] = self.0[i].abs();
+            }
             Self(out)
         }
         #[inline(always)]
         pub fn from_i16_slice(s: &[i16]) -> Self {
             assert!(s.len() >= 16);
             let mut o = [0i32; 16];
-            for i in 0..16 { o[i] = s[i] as i32; }
+            for i in 0..16 {
+                o[i] = s[i] as i32;
+            }
             Self(o)
         }
         #[inline(always)]
         pub fn to_i16_array(self) -> [i16; 16] {
             let mut o = [0i16; 16];
-            for i in 0..16 { o[i] = self.0[i] as i16; }
+            for i in 0..16 {
+                o[i] = self.0[i] as i16;
+            }
             o
         }
         #[inline(always)]
         pub fn cmpge_zero_mask(self) -> u16 {
             let mut mask = 0u16;
-            for i in 0..16 { if self.0[i] >= 0 { mask |= 1 << i; } }
+            for i in 0..16 {
+                if self.0[i] >= 0 {
+                    mask |= 1 << i;
+                }
+            }
             mask
         }
     }
@@ -642,20 +1108,26 @@ mod scalar {
         #[inline(always)]
         fn mul(self, rhs: Self) -> Self {
             let mut out = [0i32; 16];
-            for i in 0..16 { out[i] = self.0[i].wrapping_mul(rhs.0[i]); }
+            for i in 0..16 {
+                out[i] = self.0[i].wrapping_mul(rhs.0[i]);
+            }
             Self(out)
         }
     }
     impl MulAssign for I32x16 {
         #[inline(always)]
-        fn mul_assign(&mut self, rhs: Self) { *self = *self * rhs; }
+        fn mul_assign(&mut self, rhs: Self) {
+            *self = *self * rhs;
+        }
     }
     impl Neg for I32x16 {
         type Output = Self;
         #[inline(always)]
         fn neg(self) -> Self {
             let mut out = [0i32; 16];
-            for i in 0..16 { out[i] = -self.0[i]; }
+            for i in 0..16 {
+                out[i] = -self.0[i];
+            }
             Self(out)
         }
     }
@@ -665,19 +1137,25 @@ mod scalar {
         #[inline(always)]
         pub fn to_bits(self) -> U32x16 {
             let mut out = [0u32; 16];
-            for i in 0..16 { out[i] = self.0[i].to_bits(); }
+            for i in 0..16 {
+                out[i] = self.0[i].to_bits();
+            }
             U32x16(out)
         }
         #[inline(always)]
         pub fn from_bits(bits: U32x16) -> Self {
             let mut out = [0.0f32; 16];
-            for i in 0..16 { out[i] = f32::from_bits(bits.0[i]); }
+            for i in 0..16 {
+                out[i] = f32::from_bits(bits.0[i]);
+            }
             Self(out)
         }
         #[inline(always)]
         pub fn cast_i32(self) -> I32x16 {
             let mut out = [0i32; 16];
-            for i in 0..16 { out[i] = self.0[i] as i32; }
+            for i in 0..16 {
+                out[i] = self.0[i] as i32;
+            }
             I32x16(out)
         }
     }
@@ -687,13 +1165,17 @@ mod scalar {
         #[inline(always)]
         pub fn to_bits(self) -> U64x8 {
             let mut out = [0u64; 8];
-            for i in 0..8 { out[i] = self.0[i].to_bits(); }
+            for i in 0..8 {
+                out[i] = self.0[i].to_bits();
+            }
             U64x8(out)
         }
         #[inline(always)]
         pub fn from_bits(bits: U64x8) -> Self {
             let mut out = [0.0f64; 8];
-            for i in 0..8 { out[i] = f64::from_bits(bits.0[i]); }
+            for i in 0..8 {
+                out[i] = f64::from_bits(bits.0[i]);
+            }
             Self(out)
         }
     }
@@ -701,25 +1183,35 @@ mod scalar {
     // Extra for I64x8
     impl I64x8 {
         #[inline(always)]
-        pub fn reduce_min(self) -> i64 { *self.0.iter().min().unwrap_or(&0) }
+        pub fn reduce_min(self) -> i64 {
+            *self.0.iter().min().unwrap_or(&0)
+        }
         #[inline(always)]
-        pub fn reduce_max(self) -> i64 { *self.0.iter().max().unwrap_or(&0) }
+        pub fn reduce_max(self) -> i64 {
+            *self.0.iter().max().unwrap_or(&0)
+        }
         #[inline(always)]
         pub fn simd_min(self, other: Self) -> Self {
             let mut out = [0i64; 8];
-            for i in 0..8 { out[i] = self.0[i].min(other.0[i]); }
+            for i in 0..8 {
+                out[i] = self.0[i].min(other.0[i]);
+            }
             Self(out)
         }
         #[inline(always)]
         pub fn simd_max(self, other: Self) -> Self {
             let mut out = [0i64; 8];
-            for i in 0..8 { out[i] = self.0[i].max(other.0[i]); }
+            for i in 0..8 {
+                out[i] = self.0[i].max(other.0[i]);
+            }
             Self(out)
         }
         #[inline(always)]
         pub fn abs(self) -> Self {
             let mut out = [0i64; 8];
-            for i in 0..8 { out[i] = self.0[i].abs(); }
+            for i in 0..8 {
+                out[i] = self.0[i].abs();
+            }
             Self(out)
         }
     }
@@ -729,20 +1221,26 @@ mod scalar {
         #[inline(always)]
         fn mul(self, rhs: Self) -> Self {
             let mut out = [0i64; 8];
-            for i in 0..8 { out[i] = self.0[i].wrapping_mul(rhs.0[i]); }
+            for i in 0..8 {
+                out[i] = self.0[i].wrapping_mul(rhs.0[i]);
+            }
             Self(out)
         }
     }
     impl MulAssign for I64x8 {
         #[inline(always)]
-        fn mul_assign(&mut self, rhs: Self) { *self = *self * rhs; }
+        fn mul_assign(&mut self, rhs: Self) {
+            *self = *self * rhs;
+        }
     }
     impl Neg for I64x8 {
         type Output = Self;
         #[inline(always)]
         fn neg(self) -> Self {
             let mut out = [0i64; 8];
-            for i in 0..8 { out[i] = -self.0[i]; }
+            for i in 0..8 {
+                out[i] = -self.0[i];
+            }
             Self(out)
         }
     }
@@ -753,7 +1251,9 @@ mod scalar {
         #[inline(always)]
         fn shr(self, rhs: Self) -> Self {
             let mut out = [0u32; 16];
-            for i in 0..16 { out[i] = self.0[i] >> rhs.0[i]; }
+            for i in 0..16 {
+                out[i] = self.0[i] >> rhs.0[i];
+            }
             Self(out)
         }
     }
@@ -762,7 +1262,9 @@ mod scalar {
         #[inline(always)]
         fn shl(self, rhs: Self) -> Self {
             let mut out = [0u32; 16];
-            for i in 0..16 { out[i] = self.0[i] << rhs.0[i]; }
+            for i in 0..16 {
+                out[i] = self.0[i] << rhs.0[i];
+            }
             Self(out)
         }
     }
@@ -773,7 +1275,9 @@ mod scalar {
         #[inline(always)]
         fn shr(self, rhs: Self) -> Self {
             let mut out = [0u64; 8];
-            for i in 0..8 { out[i] = self.0[i] >> rhs.0[i]; }
+            for i in 0..8 {
+                out[i] = self.0[i] >> rhs.0[i];
+            }
             Self(out)
         }
     }
@@ -782,7 +1286,9 @@ mod scalar {
         #[inline(always)]
         fn shl(self, rhs: Self) -> Self {
             let mut out = [0u64; 8];
-            for i in 0..8 { out[i] = self.0[i] << rhs.0[i]; }
+            for i in 0..8 {
+                out[i] = self.0[i] << rhs.0[i];
+            }
             Self(out)
         }
     }
@@ -793,33 +1299,53 @@ mod scalar {
         #[inline(always)]
         fn mul(self, rhs: Self) -> Self {
             let mut out = [0u8; 64];
-            for i in 0..64 { out[i] = self.0[i].wrapping_mul(rhs.0[i]); }
+            for i in 0..64 {
+                out[i] = self.0[i].wrapping_mul(rhs.0[i]);
+            }
             Self(out)
         }
     }
     impl MulAssign for U8x64 {
         #[inline(always)]
-        fn mul_assign(&mut self, rhs: Self) { *self = *self * rhs; }
+        fn mul_assign(&mut self, rhs: Self) {
+            *self = *self * rhs;
+        }
     }
 
     // U8x64 extra methods — byte-level operations for palette codec, nibble, byte scan
     impl U8x64 {
         #[inline(always)]
-        pub fn reduce_min(self) -> u8 { *self.0.iter().min().unwrap_or(&0) }
+        pub fn reduce_min(self) -> u8 {
+            *self.0.iter().min().unwrap_or(&0)
+        }
         #[inline(always)]
-        pub fn reduce_max(self) -> u8 { *self.0.iter().max().unwrap_or(&0) }
+        pub fn reduce_max(self) -> u8 {
+            *self.0.iter().max().unwrap_or(&0)
+        }
         #[inline(always)]
         pub fn simd_min(self, other: Self) -> Self {
-            let mut out = [0u8; 64]; for i in 0..64 { out[i] = self.0[i].min(other.0[i]); } Self(out)
+            let mut out = [0u8; 64];
+            for i in 0..64 {
+                out[i] = self.0[i].min(other.0[i]);
+            }
+            Self(out)
         }
         #[inline(always)]
         pub fn simd_max(self, other: Self) -> Self {
-            let mut out = [0u8; 64]; for i in 0..64 { out[i] = self.0[i].max(other.0[i]); } Self(out)
+            let mut out = [0u8; 64];
+            for i in 0..64 {
+                out[i] = self.0[i].max(other.0[i]);
+            }
+            Self(out)
         }
         #[inline(always)]
         pub fn cmpeq_mask(self, other: Self) -> u64 {
             let mut mask = 0u64;
-            for i in 0..64 { if self.0[i] == other.0[i] { mask |= 1u64 << i; } }
+            for i in 0..64 {
+                if self.0[i] == other.0[i] {
+                    mask |= 1u64 << i;
+                }
+            }
             mask
         }
         #[inline(always)]
@@ -829,64 +1355,115 @@ mod scalar {
                 let val = u16::from_le_bytes([self.0[i], self.0[i + 1]]);
                 let shifted = val >> imm;
                 let bytes = shifted.to_le_bytes();
-                out[i] = bytes[0]; out[i + 1] = bytes[1];
+                out[i] = bytes[0];
+                out[i + 1] = bytes[1];
             }
             Self(out)
         }
         #[inline(always)]
         pub fn saturating_sub(self, other: Self) -> Self {
-            let mut out = [0u8; 64]; for i in 0..64 { out[i] = self.0[i].saturating_sub(other.0[i]); } Self(out)
+            let mut out = [0u8; 64];
+            for i in 0..64 {
+                out[i] = self.0[i].saturating_sub(other.0[i]);
+            }
+            Self(out)
         }
         // ── Tier 1: seismon rasterizer primitives (scalar fallbacks) ──
         #[inline(always)]
         pub fn pairwise_avg(self, other: Self) -> Self {
-            let mut out = [0u8; 64]; for i in 0..64 { out[i] = ((self.0[i] as u16 + other.0[i] as u16 + 1) >> 1) as u8; } Self(out)
+            let mut out = [0u8; 64];
+            for i in 0..64 {
+                out[i] = ((self.0[i] as u16 + other.0[i] as u16 + 1) >> 1) as u8;
+            }
+            Self(out)
         }
         #[inline(always)]
         pub fn cmpgt_mask(self, other: Self) -> u64 {
-            let mut m: u64 = 0; for i in 0..64 { if self.0[i] > other.0[i] { m |= 1 << i; } } m
+            let mut m: u64 = 0;
+            for i in 0..64 {
+                if self.0[i] > other.0[i] {
+                    m |= 1 << i;
+                }
+            }
+            m
         }
         #[inline(always)]
         pub fn mask_blend(mask: u64, a: Self, b: Self) -> Self {
-            let mut out = [0u8; 64]; for i in 0..64 { out[i] = if mask & (1 << i) != 0 { b.0[i] } else { a.0[i] }; } Self(out)
+            let mut out = [0u8; 64];
+            for i in 0..64 {
+                out[i] = if mask & (1 << i) != 0 { b.0[i] } else { a.0[i] };
+            }
+            Self(out)
         }
         #[inline(always)]
         pub fn shl_epi16(self, imm: u32) -> Self {
             let mut out = [0u8; 64];
             for i in (0..64).step_by(2) {
-                let v = u16::from_le_bytes([self.0[i], self.0[i+1]]);
+                let v = u16::from_le_bytes([self.0[i], self.0[i + 1]]);
                 let s = if imm < 16 { v << imm } else { 0 };
-                let b = s.to_le_bytes(); out[i] = b[0]; out[i+1] = b[1];
+                let b = s.to_le_bytes();
+                out[i] = b[0];
+                out[i + 1] = b[1];
             }
             Self(out)
         }
         // ── Tier 2: sprite blit + palette remap (scalar fallbacks) ──
         #[inline(always)]
         pub unsafe fn mask_store(self, ptr: *mut u8, mask: u64) {
-            for i in 0..64 { if mask & (1 << i) != 0 { *ptr.add(i) = self.0[i]; } }
+            for i in 0..64 {
+                if mask & (1 << i) != 0 {
+                    *ptr.add(i) = self.0[i];
+                }
+            }
         }
         #[inline(always)]
         pub fn saturating_add(self, other: Self) -> Self {
-            let mut out = [0u8; 64]; for i in 0..64 { out[i] = self.0[i].saturating_add(other.0[i]); } Self(out)
+            let mut out = [0u8; 64];
+            for i in 0..64 {
+                out[i] = self.0[i].saturating_add(other.0[i]);
+            }
+            Self(out)
         }
         #[inline(always)]
         pub fn permute_bytes(self, idx: Self) -> Self {
-            let mut out = [0u8; 64]; for i in 0..64 { out[i] = self.0[(idx.0[i] & 63) as usize]; } Self(out)
+            let mut out = [0u8; 64];
+            for i in 0..64 {
+                out[i] = self.0[(idx.0[i] & 63) as usize];
+            }
+            Self(out)
         }
         #[inline(always)]
         pub fn movemask(self) -> u64 {
-            let mut m: u64 = 0; for i in 0..64 { if self.0[i] & 0x80 != 0 { m |= 1 << i; } } m
+            let mut m: u64 = 0;
+            for i in 0..64 {
+                if self.0[i] & 0x80 != 0 {
+                    m |= 1 << i;
+                }
+            }
+            m
         }
         #[inline(always)]
         pub fn unpack_lo_epi8(self, other: Self) -> Self {
             let mut out = [0u8; 64];
-            for lane in 0..4 { let b = lane * 16; for i in 0..8 { out[b+i*2] = self.0[b+i]; out[b+i*2+1] = other.0[b+i]; } }
+            for lane in 0..4 {
+                let b = lane * 16;
+                for i in 0..8 {
+                    out[b + i * 2] = self.0[b + i];
+                    out[b + i * 2 + 1] = other.0[b + i];
+                }
+            }
             Self(out)
         }
         #[inline(always)]
         pub fn unpack_hi_epi8(self, other: Self) -> Self {
             let mut out = [0u8; 64];
-            for lane in 0..4 { let b = lane * 16; for i in 0..8 { out[b+i*2] = self.0[b+8+i]; out[b+i*2+1] = other.0[b+8+i]; } }
+            for lane in 0..4 {
+                let b = lane * 16;
+                for i in 0..8 {
+                    out[b + i * 2] = self.0[b + 8 + i];
+                    out[b + i * 2 + 1] = other.0[b + 8 + i];
+                }
+            }
             Self(out)
         }
         /// Byte-wise shuffle: use `self` as a LUT, `idx` selects bytes within each 128-bit (16-byte) lane.
@@ -909,9 +1486,11 @@ mod scalar {
         /// Build a nibble-popcount lookup table (replicated across 4 x 16-byte lanes).
         #[inline(always)]
         pub fn nibble_popcount_lut() -> Self {
-            let lane: [u8; 16] = [0,1,1,2,1,2,2,3,1,2,2,3,2,3,3,4];
+            let lane: [u8; 16] = [0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4];
             let mut arr = [0u8; 64];
-            for l in 0..4 { arr[l*16..(l+1)*16].copy_from_slice(&lane); }
+            for l in 0..4 {
+                arr[l * 16..(l + 1) * 16].copy_from_slice(&lane);
+            }
             Self(arr)
         }
     }
@@ -922,44 +1501,84 @@ mod scalar {
         #[inline(always)]
         fn mul(self, rhs: Self) -> Self {
             let mut out = [0u32; 16];
-            for i in 0..16 { out[i] = self.0[i].wrapping_mul(rhs.0[i]); }
+            for i in 0..16 {
+                out[i] = self.0[i].wrapping_mul(rhs.0[i]);
+            }
             Self(out)
         }
     }
 
     // Lowercase aliases
-    #[allow(non_camel_case_types)] pub type f32x16 = F32x16;
-    #[allow(non_camel_case_types)] pub type f64x8 = F64x8;
-    #[allow(non_camel_case_types)] pub type u8x64 = U8x64;
-    #[allow(non_camel_case_types)] pub type i32x16 = I32x16;
-    #[allow(non_camel_case_types)] pub type i64x8 = I64x8;
-    #[allow(non_camel_case_types)] pub type u32x16 = U32x16;
-    #[allow(non_camel_case_types)] pub type u64x8 = U64x8;
-    #[allow(non_camel_case_types)] pub type f32x8 = F32x8;
-    #[allow(non_camel_case_types)] pub type f64x4 = F64x4;
+    #[allow(non_camel_case_types)]
+    pub type f32x16 = F32x16;
+    #[allow(non_camel_case_types)]
+    pub type f64x8 = F64x8;
+    #[allow(non_camel_case_types)]
+    pub type u8x64 = U8x64;
+    #[allow(non_camel_case_types)]
+    pub type i32x16 = I32x16;
+    #[allow(non_camel_case_types)]
+    pub type i64x8 = I64x8;
+    #[allow(non_camel_case_types)]
+    pub type u32x16 = U32x16;
+    #[allow(non_camel_case_types)]
+    pub type u64x8 = U64x8;
+    #[allow(non_camel_case_types)]
+    pub type f32x8 = F32x8;
+    #[allow(non_camel_case_types)]
+    pub type f64x4 = F64x4;
+    #[allow(non_camel_case_types)]
+    pub type i8x64 = I8x64;
+    #[allow(non_camel_case_types)]
+    pub type i8x32 = I8x32;
+    #[allow(non_camel_case_types)]
+    pub type i16x32 = I16x32;
+    #[allow(non_camel_case_types)]
+    pub type i16x16 = I16x16;
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+// aarch64: F32x16/F64x8 come from the real NEON paired-load implementation
+// in simd_neon::aarch64_simd (verified 2026-04-30, agent A7 — burn parity item 9).
+// Integer + 256-bit float types still come from the scalar fallback; they're
+// not on the critical path for f32 BLAS-1 / VML kernels.
+#[cfg(target_arch = "aarch64")]
+pub use crate::simd_neon::aarch64_simd::{f32x16, f64x8, F32Mask16, F32x16, F64Mask8, F64x8};
+#[cfg(target_arch = "aarch64")]
 pub use scalar::{
-    F32x16, F64x8, U8x64, I32x16, I64x8, U16x32, U32x16, U64x8,
-    F32x8, F64x4,
-    F32Mask16, F64Mask8,
-    f32x16, f64x8, u8x64, i32x16, i64x8, u32x16, u64x8,
-    f32x8, f64x4,
+    f32x8, f64x4, i32x16, i64x8, u32x16, u64x8, u8x64, F32x8, F64x4, I32x16, I64x8, U16x32, U32x16, U64x8, U8x64,
+};
+
+// Other non-x86 targets (wasm, riscv, etc.): full scalar fallback.
+#[cfg(all(not(target_arch = "x86_64"), not(target_arch = "aarch64")))]
+pub use scalar::{
+    f32x16, f32x8, f64x4, f64x8, i16x16, i16x32, i32x16, i64x8, i8x32, i8x64, u32x16, u64x8, u8x64, F32Mask16, F32x16,
+    F32x8, F64Mask8, F64x4, F64x8, I16x16, I16x32, I32x16, I64x8, I8x32, I8x64, U16x32, U32x16, U64x8, U8x64,
 };
 
 // Scalar BF16 conversion — always available on all platforms
 #[cfg(not(target_arch = "x86_64"))]
-pub fn bf16_to_f32_scalar(bits: u16) -> f32 { f32::from_bits((bits as u32) << 16) }
+pub fn bf16_to_f32_scalar(bits: u16) -> f32 {
+    f32::from_bits((bits as u32) << 16)
+}
 #[cfg(not(target_arch = "x86_64"))]
-pub fn f32_to_bf16_scalar(v: f32) -> u16 { (v.to_bits() >> 16) as u16 }
+pub fn f32_to_bf16_scalar(v: f32) -> u16 {
+    (v.to_bits() >> 16) as u16
+}
 #[cfg(not(target_arch = "x86_64"))]
 pub fn bf16_to_f32_batch(input: &[u16], output: &mut [f32]) {
-    for (i, &b) in input.iter().enumerate() { if i < output.len() { output[i] = bf16_to_f32_scalar(b); } }
+    for (i, &b) in input.iter().enumerate() {
+        if i < output.len() {
+            output[i] = bf16_to_f32_scalar(b);
+        }
+    }
 }
 #[cfg(not(target_arch = "x86_64"))]
 pub fn f32_to_bf16_batch(input: &[f32], output: &mut [u16]) {
-    for (i, &v) in input.iter().enumerate() { if i < output.len() { output[i] = f32_to_bf16_scalar(v); } }
+    for (i, &v) in input.iter().enumerate() {
+        if i < output.len() {
+            output[i] = f32_to_bf16_scalar(v);
+        }
+    }
 }
 
 // ============================================================================
@@ -1025,37 +1644,55 @@ pub fn simd_ln_f32(x: F32x16) -> F32x16 {
 // Cognitive shader foundation re-exports
 // ============================================================================
 
-// Fingerprint<N>: const-generic binary vector, the BindSpace atom
-pub use crate::hpc::fingerprint::{
-    Fingerprint,
-    Fingerprint2K, Fingerprint1K, Fingerprint64K,
-    VectorWidth, VectorConfig, vector_config,
-};
+// HPC re-exports — only available when the hpc module is compiled.
+// Without `hpc-extras`, consumers still get the SIMD polyfill types above
+// (F32x16, I8x32, etc.) but NOT the domain-specific functions below.
 
-// CollapseGate: Flow/Block/Hold write gate (Layer 3 in the 7-layer stack)
+pub use crate::hpc::bitwise::{hamming_distance_raw, popcount_raw};
 pub use crate::hpc::bnn_cross_plane::CollapseGate;
-
-// Bitwise: SIMD-dispatched Hamming distance + popcount
-pub use crate::hpc::bitwise::{
-    hamming_distance_raw, popcount_raw,
-};
-
-// WHT: Walsh-Hadamard Transform (SIMD butterfly)
 pub use crate::hpc::fft::{wht_f32, wht_f32_new};
-
-// Quantization: i4/i2/i8 pack/unpack + BF16
-pub use crate::hpc::quantized::{
-    quantize_f32_to_i4, dequantize_i4_to_f32,
-    quantize_f32_to_i2, dequantize_i2_to_f32,
-    quantize_f32_to_i8, dequantize_i8_to_f32,
-    QuantParams,
+pub use crate::hpc::fingerprint::{
+    vector_config, Fingerprint, Fingerprint1K, Fingerprint2K, Fingerprint64K, VectorConfig, VectorWidth,
 };
+pub use crate::hpc::quantized::{
+    dequantize_i2_to_f32, dequantize_i4_to_f32, dequantize_i8_to_f32, quantize_f32_to_i2, quantize_f32_to_i4,
+    quantize_f32_to_i8, QuantParams,
+};
+
+// Half-precision SIMD vectors (BF16x16, F16x16) — portable scalar impl, always
+// available. Note: when `target_feature = "avx512bf16"` is active a separate
+// hardware-native `BF16x16` is also exported above from `simd_avx512`; in that
+// case we only re-export F16x16 + slice ops to avoid name collisions.
+//
+// On all other targets (including avx512f-without-bf16, NEON, scalar) the
+// portable `simd_half::BF16x16` is the canonical 16-lane BF16 vector.
+
+// Always re-export F16x16 + all slice-level ops (no naming conflict).
+#[cfg(feature = "std")]
+pub use crate::simd_half::{
+    add_bf16_inplace, add_f16_inplace, cast_bf16_to_f32_batch, cast_f16_to_f32_batch, cast_f32_to_bf16_batch,
+    cast_f32_to_f16_batch, mul_bf16_inplace, mul_f16_inplace, F16x16,
+};
+
+// Re-export portable BF16x16 only when the hardware-native avx512bf16 variant
+// is NOT active (otherwise `simd_avx512::BF16x16` already occupies the name).
+#[cfg(all(feature = "std", not(all(target_arch = "x86_64", target_feature = "avx512bf16"))))]
+pub use crate::simd_half::BF16x16;
 
 // K-means + L2 distance
+
 pub use crate::hpc::cam_pq::{kmeans, squared_l2};
 
 // SIMD cosine
+
 pub use crate::hpc::heel_f64x8::cosine_f32_to_f64_simd;
+
+// Elementwise slice ops — polyfill-dispatched (F32x16/F64x8 chunks + scalar tail).
+#[cfg(feature = "std")]
+pub use crate::simd_ops::{
+    add_f32, add_f32_inplace, add_f64, add_f64_inplace, add_scalar_f32, div_f32, div_f32_inplace, mul_f32,
+    mul_f32_inplace, mul_f64, scale_f32, scale_f32_inplace, sub_f32, sub_f32_inplace,
+};
 
 // ============================================================================
 // Tests
@@ -1073,8 +1710,7 @@ mod tests {
 
     #[test]
     fn f32x16_from_array_roundtrip() {
-        let data: [f32; 16] = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0,
-                                8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0];
+        let data: [f32; 16] = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0];
         let v = F32x16::from_array(data);
         assert_eq!(v.to_array(), data);
     }
@@ -1100,10 +1736,8 @@ mod tests {
 
     #[test]
     fn f32x16_mask_select() {
-        let a = F32x16::from_array([
-            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0,
-            9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
-        ]);
+        let a =
+            F32x16::from_array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0]);
         let threshold = F32x16::splat(8.5);
         let mask = a.simd_lt(threshold);
         let result = mask.select(F32x16::splat(1.0), F32x16::splat(0.0));

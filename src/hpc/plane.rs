@@ -24,9 +24,7 @@ pub struct Acc16K {
 
 impl Default for Acc16K {
     fn default() -> Self {
-        Self {
-            values: [0i8; 16384],
-        }
+        Self { values: [0i8; 16384] }
     }
 }
 
@@ -259,12 +257,7 @@ impl Plane {
     pub fn distance(&mut self, other: &mut Plane) -> Distance {
         self.ensure_cache();
         other.ensure_cache();
-        distance_slices(
-            self.bits_bytes_ref(),
-            self.alpha_bytes_ref(),
-            other.bits_bytes_ref(),
-            other.alpha_bytes_ref(),
-        )
+        distance_slices(self.bits_bytes_ref(), self.alpha_bytes_ref(), other.bits_bytes_ref(), other.alpha_bytes_ref())
     }
 
     // ========================================================================
@@ -400,11 +393,9 @@ impl Truth {
                 evidence: 0,
             };
         }
-        let f = ((self.frequency as u64 * self.evidence as u64)
-            + (other.frequency as u64 * other.evidence as u64))
+        let f = ((self.frequency as u64 * self.evidence as u64) + (other.frequency as u64 * other.evidence as u64))
             / total_evidence as u64;
-        let c = ((self.confidence as u64 * self.evidence as u64)
-            + (other.confidence as u64 * other.evidence as u64))
+        let c = ((self.confidence as u64 * self.evidence as u64) + (other.confidence as u64 * other.evidence as u64))
             / total_evidence as u64;
         Truth {
             frequency: f.min(65535) as u16,
@@ -440,7 +431,11 @@ thread_local! {
 }
 
 pub fn distance_slices(a_bits: &[u8], a_alpha: &[u8], b_bits: &[u8], b_alpha: &[u8]) -> Distance {
-    let shared_len = a_bits.len().min(b_bits.len()).min(a_alpha.len()).min(b_alpha.len());
+    let shared_len = a_bits
+        .len()
+        .min(b_bits.len())
+        .min(a_alpha.len())
+        .min(b_alpha.len());
     if shared_len == 0 {
         return Distance::Incomparable;
     }
@@ -571,9 +566,7 @@ mod tests {
         let d = a.distance(&mut b);
         match d {
             Distance::Measured {
-                disagreement,
-                overlap,
-                ..
+                disagreement, overlap, ..
             } => {
                 assert!(overlap > 0);
                 assert_eq!(disagreement, 0);
@@ -658,7 +651,9 @@ mod tests {
 
         let d = learner.distance(&mut teacher);
         match d {
-            Distance::Measured { disagreement, overlap, .. } => {
+            Distance::Measured {
+                disagreement, overlap, ..
+            } => {
                 assert!(overlap > 0);
                 assert_eq!(disagreement, 0, "encounter_toward should match teacher bits");
             }
@@ -680,7 +675,9 @@ mod tests {
 
         let d = learner.distance(&mut target);
         match d {
-            Distance::Measured { disagreement, overlap, .. } => {
+            Distance::Measured {
+                disagreement, overlap, ..
+            } => {
                 assert!(overlap > 0);
                 assert_eq!(disagreement, overlap, "encounter_away should maximally disagree");
             }
@@ -723,7 +720,9 @@ mod tests {
 
         let d = learner.distance(&mut evidence);
         match d {
-            Distance::Measured { disagreement, overlap, .. } => {
+            Distance::Measured {
+                disagreement, overlap, ..
+            } => {
                 assert_eq!(disagreement, overlap, "negative reward should punish");
             }
             _ => panic!("expected Measured"),

@@ -3,9 +3,9 @@
 //! Encodes directed edges as XOR bindings: edge = src ⊕ verb ⊕ tgt.
 //! Supports causality checking and verb inference.
 
-use crate::imp_prelude::*;
-use super::hdc::HdcOps;
 use super::bitwise::BitwiseOps;
+use super::hdc::HdcOps;
+use crate::imp_prelude::*;
 
 /// A VerbCodebook maps verb names to binary hypervectors.
 ///
@@ -66,7 +66,9 @@ impl VerbCodebook {
         let mut v = Array::zeros(self.base_dim);
         let mut state = (offset as u64).wrapping_mul(2654435761);
         for byte in v.iter_mut() {
-            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             *byte = (state >> 33) as u8;
         }
         Some(v)
@@ -79,10 +81,7 @@ impl VerbCodebook {
     /// # Errors
     /// Returns `Err` if the verb is not in the codebook.
     pub fn try_encode_edge(
-        &self,
-        src: &Array<u8, Ix1>,
-        verb: &str,
-        tgt: &Array<u8, Ix1>,
+        &self, src: &Array<u8, Ix1>, verb: &str, tgt: &Array<u8, Ix1>,
     ) -> Result<Array<u8, Ix1>, &'static str> {
         let verb_vec = self.verb_vector(verb).ok_or("Unknown verb")?;
         let offset = self.offset(verb).unwrap_or(1);
@@ -91,21 +90,13 @@ impl VerbCodebook {
     }
 
     /// Encode an edge (panics on unknown verb).
-    pub fn encode_edge(
-        &self,
-        src: &Array<u8, Ix1>,
-        verb: &str,
-        tgt: &Array<u8, Ix1>,
-    ) -> Array<u8, Ix1> {
+    pub fn encode_edge(&self, src: &Array<u8, Ix1>, verb: &str, tgt: &Array<u8, Ix1>) -> Array<u8, Ix1> {
         self.try_encode_edge(src, verb, tgt).unwrap()
     }
 
     /// Decode target: tgt = edge ⊕ permute(src) ⊕ verb_vec
     pub fn try_decode_target(
-        &self,
-        edge: &Array<u8, Ix1>,
-        src: &Array<u8, Ix1>,
-        verb: &str,
+        &self, edge: &Array<u8, Ix1>, src: &Array<u8, Ix1>, verb: &str,
     ) -> Result<Array<u8, Ix1>, &'static str> {
         let verb_vec = self.verb_vector(verb).ok_or("Unknown verb")?;
         let offset = self.offset(verb).unwrap_or(1);
@@ -114,24 +105,14 @@ impl VerbCodebook {
     }
 
     /// Decode target (panics on unknown verb).
-    pub fn decode_target(
-        &self,
-        edge: &Array<u8, Ix1>,
-        src: &Array<u8, Ix1>,
-        verb: &str,
-    ) -> Array<u8, Ix1> {
+    pub fn decode_target(&self, edge: &Array<u8, Ix1>, src: &Array<u8, Ix1>, verb: &str) -> Array<u8, Ix1> {
         self.try_decode_target(edge, src, verb).unwrap()
     }
 
     /// Causality asymmetry: measures how well edge(src→tgt) differs from edge(tgt→src).
     ///
     /// Returns a value between 0 (symmetric) and 1 (fully asymmetric).
-    pub fn causality_asymmetry(
-        &self,
-        src: &Array<u8, Ix1>,
-        verb: &str,
-        tgt: &Array<u8, Ix1>,
-    ) -> f64 {
+    pub fn causality_asymmetry(&self, src: &Array<u8, Ix1>, verb: &str, tgt: &Array<u8, Ix1>) -> f64 {
         let forward = self.encode_edge(src, verb, tgt);
         let backward = self.encode_edge(tgt, verb, src);
         let dist = forward.hamming_distance(&backward);
@@ -141,10 +122,7 @@ impl VerbCodebook {
 
     /// Full causality check: returns (forward_edge, backward_edge, asymmetry).
     pub fn causality_check(
-        &self,
-        src: &Array<u8, Ix1>,
-        verb: &str,
-        tgt: &Array<u8, Ix1>,
+        &self, src: &Array<u8, Ix1>, verb: &str, tgt: &Array<u8, Ix1>,
     ) -> (Array<u8, Ix1>, Array<u8, Ix1>, f64) {
         let forward = self.encode_edge(src, verb, tgt);
         let backward = self.encode_edge(tgt, verb, src);
@@ -158,9 +136,7 @@ impl VerbCodebook {
 
     /// Find edges with low causality asymmetry (potentially non-causal).
     pub fn find_non_causal_edges(
-        &self,
-        edges: &[(Array<u8, Ix1>, &str, Array<u8, Ix1>)],
-        threshold: f64,
+        &self, edges: &[(Array<u8, Ix1>, &str, Array<u8, Ix1>)], threshold: f64,
     ) -> Vec<(usize, f64)> {
         edges
             .iter()
@@ -180,10 +156,7 @@ impl VerbCodebook {
     ///
     /// Returns (verb_name, verb_offset, hamming_distance).
     pub fn infer_verb(
-        &self,
-        edge: &Array<u8, Ix1>,
-        src: &Array<u8, Ix1>,
-        candidates: &[Array<u8, Ix1>],
+        &self, edge: &Array<u8, Ix1>, src: &Array<u8, Ix1>, candidates: &[Array<u8, Ix1>],
     ) -> Option<(String, usize, u64)> {
         if candidates.is_empty() {
             return None;
@@ -206,19 +179,13 @@ impl VerbCodebook {
 }
 
 /// Encode an edge using explicit verb vector (no codebook needed).
-pub fn encode_edge_explicit(
-    src: &Array<u8, Ix1>,
-    verb_vec: &Array<u8, Ix1>,
-    tgt: &Array<u8, Ix1>,
-) -> Array<u8, Ix1> {
+pub fn encode_edge_explicit(src: &Array<u8, Ix1>, verb_vec: &Array<u8, Ix1>, tgt: &Array<u8, Ix1>) -> Array<u8, Ix1> {
     src.hdc_bind(verb_vec).hdc_bind(tgt)
 }
 
 /// Decode target using explicit verb vector.
 pub fn decode_target_explicit(
-    edge: &Array<u8, Ix1>,
-    src: &Array<u8, Ix1>,
-    verb_vec: &Array<u8, Ix1>,
+    edge: &Array<u8, Ix1>, src: &Array<u8, Ix1>, verb_vec: &Array<u8, Ix1>,
 ) -> Array<u8, Ix1> {
     edge.hdc_bind(src).hdc_bind(verb_vec)
 }

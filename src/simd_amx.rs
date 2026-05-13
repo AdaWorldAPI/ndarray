@@ -50,12 +50,16 @@ pub fn amx_available() -> bool {
     let cpuid = core::arch::x86_64::__cpuid_count(7, 0);
     let amx_tile = (cpuid.edx >> 24) & 1;
     let amx_int8 = (cpuid.edx >> 25) & 1;
-    if amx_tile == 0 || amx_int8 == 0 { return false; }
+    if amx_tile == 0 || amx_int8 == 0 {
+        return false;
+    }
 
     // Step 2: OS enabled XSAVE? (CPUID.01H:ECX bit 27 = OSXSAVE)
     let cpuid_01 = core::arch::x86_64::__cpuid(1);
     let osxsave = (cpuid_01.ecx >> 27) & 1;
-    if osxsave == 0 { return false; }
+    if osxsave == 0 {
+        return false;
+    }
 
     // Step 3: OS actually enabled tile state in XCR0?
     // _xgetbv(0) reads the ACTUAL XCR0 register (what the OS set),
@@ -64,7 +68,9 @@ pub fn amx_available() -> bool {
     let xcr0: u64 = unsafe { core::arch::x86_64::_xgetbv(0) };
     let tilecfg = (xcr0 >> 17) & 1;
     let tiledata = (xcr0 >> 18) & 1;
-    if tilecfg == 0 || tiledata == 0 { return false; }
+    if tilecfg == 0 || tiledata == 0 {
+        return false;
+    }
 
     // Step 4: Request XCOMP_PERM for TILEDATA.
     // Linux kernel 5.19+: processes must call prctl(ARCH_REQ_XCOMP_PERM, 18)
@@ -95,14 +101,18 @@ pub fn amx_available() -> bool {
                 options(nostack),
             );
         }
-        if ret != 0 { return false; }
+        if ret != 0 {
+            return false;
+        }
     }
 
     true
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-pub fn amx_available() -> bool { false }
+pub fn amx_available() -> bool {
+    false
+}
 
 /// AMX capability report.
 pub fn amx_report() -> String {
@@ -115,7 +125,9 @@ pub fn amx_report() -> String {
         format!("AMX: TILE={} INT8={} BF16={} available={}", tile, int8, bf16, amx_available())
     }
     #[cfg(not(target_arch = "x86_64"))]
-    { "AMX: not x86_64".to_string() }
+    {
+        "AMX: not x86_64".to_string()
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -132,8 +144,8 @@ pub fn amx_report() -> String {
 #[target_feature(enable = "avx512vnni")]
 pub unsafe fn vnni_dpbusd(
     acc: core::arch::x86_64::__m512i,
-    a: core::arch::x86_64::__m512i,   // 64 × u8
-    b: core::arch::x86_64::__m512i,   // 64 × i8 (energy, quantized)
+    a: core::arch::x86_64::__m512i, // 64 × u8
+    b: core::arch::x86_64::__m512i, // 64 × i8 (energy, quantized)
 ) -> core::arch::x86_64::__m512i {
     core::arch::x86_64::_mm512_dpbusd_epi32(acc, a, b)
 }
@@ -173,14 +185,12 @@ pub unsafe fn vnni_dot_u8_i8(row: &[u8], energy: &[i8]) -> i32 {
 /// This IS the ThinkingEngine's core loop at VNNI resolution.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512vnni")]
-pub unsafe fn vnni_matvec(
-    table: &[u8],
-    energy_i8: &[i8],
-    result: &mut [i32],
-    n: usize,
-) {
+pub unsafe fn vnni_matvec(table: &[u8], energy_i8: &[i8], result: &mut [i32], n: usize) {
     for i in 0..n {
-        if energy_i8.iter().all(|&e| e == 0) { result[i] = 0; continue; }
+        if energy_i8.iter().all(|&e| e == 0) {
+            result[i] = 0;
+            continue;
+        }
         let row = &table[i * n..(i + 1) * n];
         result[i] = vnni_dot_u8_i8(row, energy_i8);
     }
@@ -223,12 +233,7 @@ pub unsafe fn vnni2_dot_u8_i8(row: &[u8], energy: &[i8]) -> i32 {
 /// VNNI2 MatVec for the entire distance table × energy vector (ymm path).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avxvnniint8")]
-pub unsafe fn vnni2_matvec(
-    table: &[u8],
-    energy_i8: &[i8],
-    result: &mut [i32],
-    n: usize,
-) {
+pub unsafe fn vnni2_matvec(table: &[u8], energy_i8: &[i8], result: &mut [i32], n: usize) {
     for i in 0..n {
         let row = &table[i * n..(i + 1) * n];
         result[i] = vnni2_dot_u8_i8(row, energy_i8);
@@ -246,12 +251,7 @@ pub fn vnni_dot_u8_i8_scalar(row: &[u8], energy: &[i8]) -> i32 {
 }
 
 /// Scalar MatVec fallback.
-pub fn vnni_matvec_scalar(
-    table: &[u8],
-    energy_i8: &[i8],
-    result: &mut [i32],
-    n: usize,
-) {
+pub fn vnni_matvec_scalar(table: &[u8], energy_i8: &[i8], result: &mut [i32], n: usize) {
     for i in 0..n {
         let row = &table[i * n..(i + 1) * n];
         result[i] = vnni_dot_u8_i8_scalar(row, energy_i8);
@@ -279,20 +279,19 @@ pub fn vnni_matvec_scalar(
 /// The thinking engine's cycle_auto() dispatches:
 ///   VNNI detected → cycle_vnni() → this function
 ///   No VNNI       → cycle() → F32x16 FMA (never reaches here)
-pub fn matvec_dispatch(
-    table: &[u8],
-    energy_i8: &[i8],
-    result: &mut [i32],
-    n: usize,
-) {
+pub fn matvec_dispatch(table: &[u8], energy_i8: &[i8], result: &mut [i32], n: usize) {
     #[cfg(target_arch = "x86_64")]
     {
         if is_x86_feature_detected!("avx512vnni") {
-            unsafe { vnni_matvec(table, energy_i8, result, n); }
+            unsafe {
+                vnni_matvec(table, energy_i8, result, n);
+            }
             return;
         }
         if is_x86_feature_detected!("avxvnniint8") {
-            unsafe { vnni2_matvec(table, energy_i8, result, n); }
+            unsafe {
+                vnni2_matvec(table, energy_i8, result, n);
+            }
             return;
         }
     }
@@ -311,7 +310,9 @@ pub fn quantize_energy_i8(energy: &[f64], output: &mut [i8]) {
     let n = energy.len().min(output.len());
     let max_e = energy.iter().cloned().fold(0.0f64, f64::max);
     if max_e < 1e-15 {
-        for o in output[..n].iter_mut() { *o = 0; }
+        for o in output[..n].iter_mut() {
+            *o = 0;
+        }
         return;
     }
     let scale = 127.0 / max_e;
@@ -343,7 +344,7 @@ mod tests {
 
     #[test]
     fn test_vnni_dot_scalar() {
-        let row = vec![128u8; 64];  // similarity = 0.5
+        let row = vec![128u8; 64]; // similarity = 0.5
         let energy = vec![10i8; 64]; // energy = 10
         let dot = vnni_dot_u8_i8_scalar(&row, &energy);
         assert_eq!(dot, 128 * 10 * 64);
@@ -354,7 +355,9 @@ mod tests {
     fn test_vnni_matvec_scalar() {
         let n = 64;
         let mut table = vec![128u8; n * n];
-        for i in 0..n { table[i * n + i] = 255; } // diagonal = max
+        for i in 0..n {
+            table[i * n + i] = 255;
+        } // diagonal = max
 
         let energy = vec![10i8; n];
         let mut result = vec![0i32; n];
@@ -369,7 +372,9 @@ mod tests {
     fn test_vnni_dispatch() {
         let n = 64;
         let mut table = vec![128u8; n * n];
-        for i in 0..n { table[i * n + i] = 255; }
+        for i in 0..n {
+            table[i * n + i] = 255;
+        }
         let energy = vec![10i8; n];
         let mut result = vec![0i32; n];
 
@@ -396,7 +401,7 @@ mod tests {
     #[test]
     fn test_vnni_matches_scalar() {
         let n = 128;
-        let table: Vec<u8> = (0..n*n).map(|i| (i % 256) as u8).collect();
+        let table: Vec<u8> = (0..n * n).map(|i| (i % 256) as u8).collect();
         let energy: Vec<i8> = (0..n).map(|i| (i % 100) as i8).collect();
 
         let mut scalar_result = vec![0i32; n];
@@ -406,8 +411,11 @@ mod tests {
         matvec_dispatch(&table, &energy, &mut dispatch_result, n);
 
         for i in 0..n {
-            assert_eq!(scalar_result[i], dispatch_result[i],
-                "mismatch at row {}: scalar={} dispatch={}", i, scalar_result[i], dispatch_result[i]);
+            assert_eq!(
+                scalar_result[i], dispatch_result[i],
+                "mismatch at row {}: scalar={} dispatch={}",
+                i, scalar_result[i], dispatch_result[i]
+            );
         }
     }
 }

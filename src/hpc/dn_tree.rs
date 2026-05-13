@@ -56,11 +56,7 @@ impl SplitMix64 {
 /// Create a random `GraphHV` from the local RNG.
 #[cfg(test)]
 fn random_graphhv(rng: &mut SplitMix64) -> GraphHV {
-    let mut channels = [
-        Fingerprint::<256>::zero(),
-        Fingerprint::<256>::zero(),
-        Fingerprint::<256>::zero(),
-    ];
+    let mut channels = [Fingerprint::<256>::zero(), Fingerprint::<256>::zero(), Fingerprint::<256>::zero()];
     for ch in &mut channels {
         for w in ch.words.iter_mut() {
             *w = rng.next_u64();
@@ -109,13 +105,7 @@ fn is_zero(hv: &GraphHV) -> bool {
 /// For each bit position, the existing summary bit is kept with probability
 /// `1 - lr * boost`, and replaced by the input bit with probability `lr * boost`.
 /// This is implemented per-word using a stochastic mask.
-fn bundle_into(
-    current: &GraphHV,
-    hv: &GraphHV,
-    lr: f64,
-    boost: f64,
-    rng: &mut SplitMix64,
-) -> GraphHV {
+fn bundle_into(current: &GraphHV, hv: &GraphHV, lr: f64, boost: f64, rng: &mut SplitMix64) -> GraphHV {
     let effective_lr = (lr * boost).min(1.0);
     let mut result = current.clone();
 
@@ -125,8 +115,7 @@ fn bundle_into(
             // Approximate by AND-ing multiple random words (each AND halves probability).
             let mask = make_probability_mask(effective_lr, rng);
             // Where mask is 1: take from hv; where 0: keep current.
-            result.channels[ch].words[w] =
-                (current.channels[ch].words[w] & !mask) | (hv.channels[ch].words[w] & mask);
+            result.channels[ch].words[w] = (current.channels[ch].words[w] & !mask) | (hv.channels[ch].words[w] & mask);
         }
     }
 
@@ -330,12 +319,11 @@ impl DNTree {
         );
 
         // Determine BTSP boost for this update
-        let btsp_boost =
-            if self.config.btsp_gate_prob > 0.0 && rng.next_f64() < self.config.btsp_gate_prob {
-                self.config.btsp_boost
-            } else {
-                1.0
-            };
+        let btsp_boost = if self.config.btsp_gate_prob > 0.0 && rng.next_f64() < self.config.btsp_gate_prob {
+            self.config.btsp_boost
+        } else {
+            1.0
+        };
 
         let lr = self.config.learning_rate;
         let growth = self.config.growth_factor;
@@ -409,8 +397,7 @@ impl DNTree {
                     .iter()
                     .filter(|&&c| self.nodes[c].access_count > 0)
                     .map(|&c| {
-                        let sim =
-                            partial_similarity(query, &self.summaries[c], self.config.partial_bits);
+                        let sim = partial_similarity(query, &self.summaries[c], self.config.partial_bits);
                         (c, sim)
                     })
                     .collect();
@@ -420,8 +407,7 @@ impl DNTree {
                 }
 
                 // Sort by similarity (descending)
-                child_sims
-                    .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                child_sims.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
                 // Early exit: if best child exceeds threshold, prune beam
                 let best_sim = child_sims[0].1;
@@ -592,11 +578,7 @@ mod tests {
 
         assert!(!is_zero(&tree.summaries[0]));
         let sim = similarity(&hv, &tree.summaries[0]);
-        assert!(
-            sim > 0.5,
-            "After 20 updates, summary should resemble input: sim={:.4}",
-            sim
-        );
+        assert!(sim > 0.5, "After 20 updates, summary should resemble input: sim={:.4}", sim);
     }
 
     #[test]
@@ -617,12 +599,7 @@ mod tests {
             tree.update(10, &hv, &mut rng);
         }
 
-        assert!(
-            tree.num_nodes() > initial_nodes,
-            "Expected split: {} -> {}",
-            initial_nodes,
-            tree.num_nodes()
-        );
+        assert!(tree.num_nodes() > initial_nodes, "Expected split: {} -> {}", initial_nodes, tree.num_nodes());
     }
 
     #[test]
@@ -718,11 +695,7 @@ mod tests {
         }
 
         let sim = similarity(&hv, &tree.summaries[0]);
-        assert!(
-            sim > 0.5,
-            "BTSP boost should accelerate learning: sim={:.4}",
-            sim
-        );
+        assert!(sim > 0.5, "BTSP boost should accelerate learning: sim={:.4}", sim);
     }
 
     #[test]

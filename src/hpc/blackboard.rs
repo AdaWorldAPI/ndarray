@@ -39,9 +39,7 @@ pub struct Blackboard {
 impl Blackboard {
     /// Create an empty blackboard.
     pub fn new() -> Self {
-        Self {
-            slots: HashMap::new(),
-        }
+        Self { slots: HashMap::new() }
     }
 
     /// Create a blackboard with pre-allocated capacity.
@@ -87,16 +85,16 @@ impl Blackboard {
 
     /// Allocate (insert or replace) a value of any `'static` type.
     pub fn alloc<T: 'static>(&mut self, key: &str, value: T) {
-        self.slots.insert(
-            key.to_string(),
-            Slot { data: Box::new(value) },
-        );
+        self.slots
+            .insert(key.to_string(), Slot { data: Box::new(value) });
     }
 
     /// Get an immutable reference to a value, returning `None` if the key is
     /// missing or the type does not match.
     pub fn get<T: 'static>(&self, key: &str) -> Option<&T> {
-        self.slots.get(key).and_then(|slot| slot.data.downcast_ref::<T>())
+        self.slots
+            .get(key)
+            .and_then(|slot| slot.data.downcast_ref::<T>())
     }
 
     /// Get a mutable reference to a value, returning `None` if the key is
@@ -290,11 +288,7 @@ impl Blackboard {
     /// Uses raw pointers internally to circumvent the borrow checker for
     /// distinct HashMap entries. This is safe because the two keys are verified
     /// to be different, guaranteeing non-overlapping memory.
-    pub fn borrow_2_mut_vec_f32(
-        &mut self,
-        key_a: &str,
-        key_b: &str,
-    ) -> (&mut Vec<f32>, &mut Vec<f32>) {
+    pub fn borrow_2_mut_vec_f32(&mut self, key_a: &str, key_b: &str) -> (&mut Vec<f32>, &mut Vec<f32>) {
         assert_ne!(key_a, key_b, "borrow_2_mut: keys must be distinct");
         // SAFETY: key_a != key_b, so the two mutable references point to
         // different HashMap entries and cannot alias.
@@ -321,11 +315,7 @@ impl Blackboard {
     /// # Panics
     ///
     /// Panics if `key_a == key_b`, or if either key is missing or wrong type.
-    pub fn borrow_2_mut_vec_f64(
-        &mut self,
-        key_a: &str,
-        key_b: &str,
-    ) -> (&mut Vec<f64>, &mut Vec<f64>) {
+    pub fn borrow_2_mut_vec_f64(&mut self, key_a: &str, key_b: &str) -> (&mut Vec<f64>, &mut Vec<f64>) {
         assert_ne!(key_a, key_b, "borrow_2_mut: keys must be distinct");
         // SAFETY: key_a != key_b => distinct entries, no aliasing.
         unsafe {
@@ -351,11 +341,7 @@ impl Blackboard {
     /// # Panics
     ///
     /// Panics if `key_a == key_b`, or if either key is missing or wrong type.
-    pub fn borrow_2_mut_vec_u8(
-        &mut self,
-        key_a: &str,
-        key_b: &str,
-    ) -> (&mut Vec<u8>, &mut Vec<u8>) {
+    pub fn borrow_2_mut_vec_u8(&mut self, key_a: &str, key_b: &str) -> (&mut Vec<u8>, &mut Vec<u8>) {
         assert_ne!(key_a, key_b, "borrow_2_mut: keys must be distinct");
         // SAFETY: key_a != key_b => distinct entries, no aliasing.
         unsafe {
@@ -382,10 +368,7 @@ impl Blackboard {
     ///
     /// Panics if any two keys are equal, or if any key is missing or wrong type.
     pub fn borrow_3_mut_vec_f32(
-        &mut self,
-        key_a: &str,
-        key_b: &str,
-        key_c: &str,
+        &mut self, key_a: &str, key_b: &str, key_c: &str,
     ) -> (&mut Vec<f32>, &mut Vec<f32>, &mut Vec<f32>) {
         assert_ne!(key_a, key_b, "borrow_3_mut: keys must be distinct (a == b)");
         assert_ne!(key_b, key_c, "borrow_3_mut: keys must be distinct (b == c)");
@@ -421,10 +404,7 @@ impl Blackboard {
     ///
     /// Panics if any two keys are equal, or if any key is missing or wrong type.
     pub fn borrow_3_mut_vec_f64(
-        &mut self,
-        key_a: &str,
-        key_b: &str,
-        key_c: &str,
+        &mut self, key_a: &str, key_b: &str, key_c: &str,
     ) -> (&mut Vec<f64>, &mut Vec<f64>, &mut Vec<f64>) {
         assert_ne!(key_a, key_b, "borrow_3_mut: keys must be distinct (a == b)");
         assert_ne!(key_b, key_c, "borrow_3_mut: keys must be distinct (b == c)");
@@ -749,7 +729,10 @@ mod tests {
     #[test]
     fn test_generic_alloc_custom_type() {
         #[derive(Debug, PartialEq)]
-        struct Point { x: f32, y: f32 }
+        struct Point {
+            x: f32,
+            y: f32,
+        }
 
         let mut bb = Blackboard::new();
         bb.alloc("origin", Point { x: 0.0, y: 0.0 });

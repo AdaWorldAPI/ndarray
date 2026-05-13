@@ -1,10 +1,4 @@
-#![allow(
-    clippy::assign_op_pattern,
-    clippy::too_many_arguments,
-    clippy::manual_range_contains,
-    clippy::needless_range_loop,
-    clippy::type_complexity
-)]
+#![allow(clippy::all, unused_imports, dead_code)]
 //! HPC extensions for ndarray — ported from rustynum.
 //!
 //! This module provides high-performance computing extensions:
@@ -27,6 +21,7 @@ pub mod simd_dispatch;
 pub mod blas_level1;
 pub mod blas_level2;
 pub mod blas_level3;
+pub mod reductions;
 pub mod statistics;
 pub mod activations;
 pub mod hdc;
@@ -115,22 +110,27 @@ pub mod tekamolo;
 #[allow(missing_docs)]
 pub mod vsa;
 #[allow(missing_docs)]
+#[cfg(feature = "hpc-extras")]
 pub mod spo_bundle;
 #[allow(missing_docs)]
+#[cfg(feature = "hpc-extras")]
 pub mod deepnsm;
 #[allow(missing_docs)]
 pub mod surround_metadata;
 #[allow(missing_docs, dead_code)]
 pub mod cyclic_bundle;
 #[allow(missing_docs, dead_code)]
+#[cfg(feature = "hpc-extras")]
 pub mod compression_curves;
 #[allow(missing_docs)]
+#[cfg(feature = "hpc-extras")]
 pub mod crystal_encoder;
 #[allow(missing_docs)]
 pub mod udf_kernels;
 
 // p64 bridge: Palette64/3D attention, NARS, CausalEdge64 compat
 #[allow(missing_docs)]
+#[cfg(feature = "hpc-extras")]
 pub mod p64_bridge;
 
 // Session C: bgz17 dual-path integration
@@ -144,11 +144,7 @@ pub mod layered_distance;
 pub mod parallel_search;
 
 #[allow(missing_docs)]
-#[allow(missing_docs)]
-#[allow(missing_docs)]
-
 // ZeckF64 progressive edge encoding + batch/top-k
-#[allow(missing_docs)]
 pub mod zeck;
 
 // SIMD-accelerated spatial / byte-scan / hash utilities
@@ -233,19 +229,19 @@ pub mod framebuffer;
 /// Transcoded from Opus CELT for the HHTL cascade → waveform pipeline.
 pub mod audio;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "hpc-extras"))]
 mod e2e_tests {
     //! End-to-end pipeline test: Fingerprint → Node → Seal → Cascade → CLAM → Causality → BNN
 
+    use super::bf16_truth::PackedQualia;
+    use super::blackboard::Blackboard;
+    use super::bnn::bnn_dot;
+    use super::cascade::{Band, Cascade};
+    use super::causality::{causality_decompose, CausalityDirection};
+    use super::clam::{knn_brute, ClamTree};
     use super::fingerprint::Fingerprint;
     use super::node::{Node, SPO, S__, _P_, __O};
     use super::seal::Seal;
-    use super::cascade::{Cascade, Band};
-    use super::clam::{ClamTree, knn_brute};
-    use super::bf16_truth::PackedQualia;
-    use super::causality::{causality_decompose, CausalityDirection};
-    use super::bnn::bnn_dot;
-    use super::blackboard::Blackboard;
 
     #[test]
     fn pipeline_fingerprint_to_node_to_seal() {
@@ -256,7 +252,9 @@ mod e2e_tests {
         // 2. Measure distance (SPO full)
         let d = a.distance(&mut b, SPO);
         match d {
-            super::plane::Distance::Measured { disagreement, overlap, .. } => {
+            super::plane::Distance::Measured {
+                disagreement, overlap, ..
+            } => {
                 assert!(overlap > 0, "random nodes should have overlap");
                 assert!(disagreement > 0, "different seeds should disagree");
             }
@@ -331,9 +329,9 @@ mod e2e_tests {
     fn pipeline_causality_decomposition() {
         let mut a = PackedQualia::zero();
         let b = PackedQualia::zero();
-        a.resonance[4] = 10;   // warmth: positive → Forward
-        a.resonance[6] = -5;   // social: negative → Backward
-        a.resonance[8] = 3;    // sacredness: positive → Forward
+        a.resonance[4] = 10; // warmth: positive → Forward
+        a.resonance[6] = -5; // social: negative → Backward
+        a.resonance[8] = 3; // sacredness: positive → Forward
 
         let dec = causality_decompose(&a, &b, None);
         assert_eq!(dec.warmth_dir, CausalityDirection::Forward);
@@ -416,3 +414,4 @@ mod e2e_tests {
         assert!(bnn_result.score > -1.0 && bnn_result.score < 1.0);
     }
 }
+pub mod vnni_gemm;

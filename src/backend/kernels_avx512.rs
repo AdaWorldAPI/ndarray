@@ -3,6 +3,7 @@
 //! All functions have `#[target_feature(enable = "avx512f")]`.
 //! The dispatch! macro's LazyLock tier check ensures these are only called
 //! on AVX-512 CPUs.
+
 //!
 //! BLAS-1 and element-wise functions use `F32x16`/`F64x8` from `crate::simd`.
 //! GEMM microkernels retain raw intrinsics for masked stores and broadcast patterns.
@@ -21,6 +22,8 @@ use crate::simd::{F32x16, F64x8};
 // ═══════════════════════════════════════════════════════════════════
 
 /// Dot product: sum(x[i] * y[i]) using 4x-unrolled FMA.
+/// # Safety
+/// Caller must ensure AVX-512F is available (`simd_caps().avx512f`).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 pub fn dot_f32(x: &[f32], y: &[f32]) -> f32 {
@@ -52,6 +55,8 @@ pub fn dot_f32(x: &[f32], y: &[f32]) -> f32 {
 }
 
 /// Dot product f64: 4x-unrolled FMA (8 doubles each).
+/// # Safety
+/// Caller must ensure AVX-512F is available (`simd_caps().avx512f`).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 pub fn dot_f64(x: &[f64], y: &[f64]) -> f64 {
@@ -83,6 +88,8 @@ pub fn dot_f64(x: &[f64], y: &[f64]) -> f64 {
 }
 
 /// AXPY: y = alpha * x + y (f32, 16-wide FMA).
+/// # Safety
+/// Caller must ensure AVX-512F is available (`simd_caps().avx512f`).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 pub fn axpy_f32(alpha: f32, x: &[f32], y: &mut [f32]) {
@@ -102,6 +109,8 @@ pub fn axpy_f32(alpha: f32, x: &[f32], y: &mut [f32]) {
 }
 
 /// AXPY: y = alpha * x + y (f64, 8-wide FMA).
+/// # Safety
+/// Caller must ensure AVX-512F is available (`simd_caps().avx512f`).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 pub fn axpy_f64(alpha: f64, x: &[f64], y: &mut [f64]) {
@@ -121,6 +130,8 @@ pub fn axpy_f64(alpha: f64, x: &[f64], y: &mut [f64]) {
 }
 
 /// Scale: x = alpha * x (f32, 16-wide).
+/// # Safety
+/// Caller must ensure AVX-512F is available (`simd_caps().avx512f`).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 pub fn scal_f32(alpha: f32, x: &mut [f32]) {
@@ -138,6 +149,8 @@ pub fn scal_f32(alpha: f32, x: &mut [f32]) {
 }
 
 /// Scale: x = alpha * x (f64, 8-wide).
+/// # Safety
+/// Caller must ensure AVX-512F is available (`simd_caps().avx512f`).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 pub fn scal_f64(alpha: f64, x: &mut [f64]) {
@@ -155,6 +168,8 @@ pub fn scal_f64(alpha: f64, x: &mut [f64]) {
 }
 
 /// L1 norm: sum(|x[i]|) (f32, 16-wide).
+/// # Safety
+/// Caller must ensure AVX-512F is available (`simd_caps().avx512f`).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 pub fn asum_f32(x: &[f32]) -> f32 {
@@ -170,6 +185,8 @@ pub fn asum_f32(x: &[f32]) -> f32 {
 }
 
 /// L1 norm: sum(|x[i]|) (f64, 8-wide).
+/// # Safety
+/// Caller must ensure AVX-512F is available (`simd_caps().avx512f`).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 pub fn asum_f64(x: &[f64]) -> f64 {
@@ -185,6 +202,8 @@ pub fn asum_f64(x: &[f64]) -> f64 {
 }
 
 /// L2 norm: sqrt(sum(x[i]^2)) (f32, 16-wide FMA).
+/// # Safety
+/// Caller must ensure AVX-512F is available (`simd_caps().avx512f`).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 pub fn nrm2_f32(x: &[f32]) -> f32 {
@@ -205,6 +224,8 @@ pub fn nrm2_f32(x: &[f32]) -> f32 {
 }
 
 /// L2 norm: sqrt(sum(x[i]^2)) (f64, 8-wide FMA).
+/// # Safety
+/// Caller must ensure AVX-512F is available (`simd_caps().avx512f`).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 pub fn nrm2_f64(x: &[f64]) -> f64 {
@@ -225,29 +246,43 @@ pub fn nrm2_f64(x: &[f64]) -> f64 {
 }
 
 /// Index of max absolute value (f32). Scalar — no AVX-512 specialization.
+/// # Safety
+/// Caller must ensure AVX-512F is available (`simd_caps().avx512f`).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 pub fn iamax_f32(x: &[f32]) -> (usize, f32) {
-    if x.is_empty() { return (0, 0.0); }
+    if x.is_empty() {
+        return (0, 0.0);
+    }
     let mut max_idx = 0;
     let mut max_val = x[0].abs();
     for (i, &v) in x.iter().enumerate().skip(1) {
         let a = v.abs();
-        if a > max_val { max_val = a; max_idx = i; }
+        if a > max_val {
+            max_val = a;
+            max_idx = i;
+        }
     }
     (max_idx, x[max_idx])
 }
 
 /// Index of max absolute value (f64). Scalar — no AVX-512 specialization.
+/// # Safety
+/// Caller must ensure AVX-512F is available (`simd_caps().avx512f`).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 pub fn iamax_f64(x: &[f64]) -> (usize, f64) {
-    if x.is_empty() { return (0, 0.0); }
+    if x.is_empty() {
+        return (0, 0.0);
+    }
     let mut max_idx = 0;
     let mut max_val = x[0].abs();
     for (i, &v) in x.iter().enumerate().skip(1) {
         let a = v.abs();
-        if a > max_val { max_val = a; max_idx = i; }
+        if a > max_val {
+            max_val = a;
+            max_idx = i;
+        }
     }
     (max_idx, x[max_idx])
 }
@@ -256,31 +291,71 @@ pub fn iamax_f64(x: &[f64]) -> (usize, f64) {
 // Element-wise f32 — 8 functions (16-wide, compat types)
 // ═══════════════════════════════════════════════════════════════════
 
+/// Elementwise `out[i] = a[i] + scalar` (AVX-512 F32x16 kernel).
+/// # Safety
+/// Caller must ensure AVX-512F is available (`simd_caps().avx512f`).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub fn add_f32_scalar(a: &[f32], scalar: f32) -> Vec<f32> { ew_f32_s(a, scalar, EwOp::Add) }
+pub fn add_f32_scalar(a: &[f32], scalar: f32) -> Vec<f32> {
+    ew_f32_s(a, scalar, EwOp::Add)
+}
+/// Elementwise `out[i] = a[i] - scalar`.
+/// # Safety
+/// Caller must ensure AVX-512F is available (`simd_caps().avx512f`).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub fn sub_f32_scalar(a: &[f32], scalar: f32) -> Vec<f32> { ew_f32_s(a, scalar, EwOp::Sub) }
+pub fn sub_f32_scalar(a: &[f32], scalar: f32) -> Vec<f32> {
+    ew_f32_s(a, scalar, EwOp::Sub)
+}
+/// Elementwise `out[i] = a[i] * scalar`.
+/// # Safety
+/// Caller must ensure AVX-512F is available (`simd_caps().avx512f`).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub fn mul_f32_scalar(a: &[f32], scalar: f32) -> Vec<f32> { ew_f32_s(a, scalar, EwOp::Mul) }
+pub fn mul_f32_scalar(a: &[f32], scalar: f32) -> Vec<f32> {
+    ew_f32_s(a, scalar, EwOp::Mul)
+}
+/// Elementwise `out[i] = a[i] / scalar`.
+/// # Safety
+/// Caller must ensure AVX-512F is available (`simd_caps().avx512f`).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub fn div_f32_scalar(a: &[f32], scalar: f32) -> Vec<f32> { ew_f32_s(a, scalar, EwOp::Div) }
+pub fn div_f32_scalar(a: &[f32], scalar: f32) -> Vec<f32> {
+    ew_f32_s(a, scalar, EwOp::Div)
+}
 
+/// Elementwise `out[i] = a[i] + b[i]` (AVX-512 F32x16 kernel).
+/// # Safety
+/// Caller must ensure AVX-512F is available (`simd_caps().avx512f`).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub fn add_f32_vec(a: &[f32], b: &[f32]) -> Vec<f32> { ew_f32_v(a, b, EwOp::Add) }
+pub fn add_f32_vec(a: &[f32], b: &[f32]) -> Vec<f32> {
+    ew_f32_v(a, b, EwOp::Add)
+}
+/// Elementwise `out[i] = a[i] - b[i]`.
+/// # Safety
+/// Caller must ensure AVX-512F is available (`simd_caps().avx512f`).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub fn sub_f32_vec(a: &[f32], b: &[f32]) -> Vec<f32> { ew_f32_v(a, b, EwOp::Sub) }
+pub fn sub_f32_vec(a: &[f32], b: &[f32]) -> Vec<f32> {
+    ew_f32_v(a, b, EwOp::Sub)
+}
+/// Elementwise `out[i] = a[i] * b[i]`.
+/// # Safety
+/// Caller must ensure AVX-512F is available (`simd_caps().avx512f`).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub fn mul_f32_vec(a: &[f32], b: &[f32]) -> Vec<f32> { ew_f32_v(a, b, EwOp::Mul) }
+pub fn mul_f32_vec(a: &[f32], b: &[f32]) -> Vec<f32> {
+    ew_f32_v(a, b, EwOp::Mul)
+}
+/// Elementwise `out[i] = a[i] / b[i]`.
+/// # Safety
+/// Caller must ensure AVX-512F is available (`simd_caps().avx512f`).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub fn div_f32_vec(a: &[f32], b: &[f32]) -> Vec<f32> { ew_f32_v(a, b, EwOp::Div) }
+pub fn div_f32_vec(a: &[f32], b: &[f32]) -> Vec<f32> {
+    ew_f32_v(a, b, EwOp::Div)
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // Element-wise f64 — 8 functions (8-wide, compat types)
@@ -288,34 +363,55 @@ pub fn div_f32_vec(a: &[f32], b: &[f32]) -> Vec<f32> { ew_f32_v(a, b, EwOp::Div)
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub fn add_f64_scalar(a: &[f64], scalar: f64) -> Vec<f64> { ew_f64_s(a, scalar, EwOp::Add) }
+pub fn add_f64_scalar(a: &[f64], scalar: f64) -> Vec<f64> {
+    ew_f64_s(a, scalar, EwOp::Add)
+}
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub fn sub_f64_scalar(a: &[f64], scalar: f64) -> Vec<f64> { ew_f64_s(a, scalar, EwOp::Sub) }
+pub fn sub_f64_scalar(a: &[f64], scalar: f64) -> Vec<f64> {
+    ew_f64_s(a, scalar, EwOp::Sub)
+}
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub fn mul_f64_scalar(a: &[f64], scalar: f64) -> Vec<f64> { ew_f64_s(a, scalar, EwOp::Mul) }
+pub fn mul_f64_scalar(a: &[f64], scalar: f64) -> Vec<f64> {
+    ew_f64_s(a, scalar, EwOp::Mul)
+}
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub fn div_f64_scalar(a: &[f64], scalar: f64) -> Vec<f64> { ew_f64_s(a, scalar, EwOp::Div) }
+pub fn div_f64_scalar(a: &[f64], scalar: f64) -> Vec<f64> {
+    ew_f64_s(a, scalar, EwOp::Div)
+}
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub fn add_f64_vec(a: &[f64], b: &[f64]) -> Vec<f64> { ew_f64_v(a, b, EwOp::Add) }
+pub fn add_f64_vec(a: &[f64], b: &[f64]) -> Vec<f64> {
+    ew_f64_v(a, b, EwOp::Add)
+}
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub fn sub_f64_vec(a: &[f64], b: &[f64]) -> Vec<f64> { ew_f64_v(a, b, EwOp::Sub) }
+pub fn sub_f64_vec(a: &[f64], b: &[f64]) -> Vec<f64> {
+    ew_f64_v(a, b, EwOp::Sub)
+}
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub fn mul_f64_vec(a: &[f64], b: &[f64]) -> Vec<f64> { ew_f64_v(a, b, EwOp::Mul) }
+pub fn mul_f64_vec(a: &[f64], b: &[f64]) -> Vec<f64> {
+    ew_f64_v(a, b, EwOp::Mul)
+}
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub fn div_f64_vec(a: &[f64], b: &[f64]) -> Vec<f64> { ew_f64_v(a, b, EwOp::Div) }
+pub fn div_f64_vec(a: &[f64], b: &[f64]) -> Vec<f64> {
+    ew_f64_v(a, b, EwOp::Div)
+}
 
 // ─── Element-wise helpers (compat types) ─────────────────────────
 
 #[cfg(target_arch = "x86_64")]
-enum EwOp { Add, Sub, Mul, Div }
+enum EwOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
 
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
@@ -369,8 +465,7 @@ fn ew_f32_v(a: &[f32], b: &[f32], op: EwOp) -> Vec<f32> {
     let mut result = vec![0.0f32; n];
     let mut i = 0;
     while i + 16 <= n {
-        apply_f32(F32x16::from_slice(&a[i..]), F32x16::from_slice(&b[i..]), &op)
-            .copy_to_slice(&mut result[i..]);
+        apply_f32(F32x16::from_slice(&a[i..]), F32x16::from_slice(&b[i..]), &op).copy_to_slice(&mut result[i..]);
         i += 16;
     }
     while i < n {
@@ -415,8 +510,7 @@ fn ew_f64_v(a: &[f64], b: &[f64], op: EwOp) -> Vec<f64> {
     let mut result = vec![0.0f64; n];
     let mut i = 0;
     while i + 8 <= n {
-        apply_f64(F64x8::from_slice(&a[i..]), F64x8::from_slice(&b[i..]), &op)
-            .copy_to_slice(&mut result[i..]);
+        apply_f64(F64x8::from_slice(&a[i..]), F64x8::from_slice(&b[i..]), &op).copy_to_slice(&mut result[i..]);
         i += 8;
     }
     while i < n {
@@ -469,7 +563,11 @@ fn pack_a_f32(a: &[f32], lda: usize, mc: usize, kc: usize, i_start: usize, k_sta
         let rem = mc - ii;
         for p in 0..kc {
             for ir in 0..SGEMM_MR {
-                buf[idx] = if ir < rem { a[(i_start + ii + ir) * lda + (k_start + p)] } else { 0.0 };
+                buf[idx] = if ir < rem {
+                    a[(i_start + ii + ir) * lda + (k_start + p)]
+                } else {
+                    0.0
+                };
                 idx += 1;
             }
         }
@@ -494,7 +592,11 @@ fn pack_b_f32(b: &[f32], ldb: usize, kc: usize, nc: usize, k_start: usize, j_sta
         let rem = nc - jj;
         for p in 0..kc {
             for jr in 0..SGEMM_NR {
-                buf[idx] = if jr < rem { b[(k_start + p) * ldb + (j_start + jj + jr)] } else { 0.0 };
+                buf[idx] = if jr < rem {
+                    b[(k_start + p) * ldb + (j_start + jj + jr)]
+                } else {
+                    0.0
+                };
                 idx += 1;
             }
         }
@@ -504,17 +606,12 @@ fn pack_b_f32(b: &[f32], ldb: usize, kc: usize, nc: usize, k_start: usize, j_sta
 /// AVX-512 microkernel: C[MR×NR] += A_packed[MR×kc] * B_packed[kc×NR]
 ///
 /// Uses raw intrinsics for broadcast-FMA and masked store patterns.
+/// # Safety
+/// Caller must ensure AVX-512F is available (`simd_caps().avx512f`).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 unsafe fn sgemm_ukernel_6x16(
-    kc: usize,
-    alpha: f32,
-    a_packed: &[f32],
-    b_packed: &[f32],
-    c: &mut [f32],
-    ldc: usize,
-    mr_eff: usize,
-    nr_eff: usize,
+    kc: usize, alpha: f32, a_packed: &[f32], b_packed: &[f32], c: &mut [f32], ldc: usize, mr_eff: usize, nr_eff: usize,
 ) {
     let mut c0 = _mm512_setzero_ps();
     let mut c1 = _mm512_setzero_ps();
@@ -559,13 +656,12 @@ unsafe fn sgemm_ukernel_6x16(
 }
 
 /// Goto BLAS style blocked SGEMM with packing and AVX-512 microkernel.
+/// # Safety
+/// Caller must ensure AVX-512F is available (`simd_caps().avx512f`).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 pub fn sgemm_blocked(
-    m: usize, n: usize, k: usize,
-    alpha: f32, a: &[f32], lda: usize,
-    b: &[f32], ldb: usize,
-    c: &mut [f32], ldc: usize,
+    m: usize, n: usize, k: usize, alpha: f32, a: &[f32], lda: usize, b: &[f32], ldb: usize, c: &mut [f32], ldc: usize,
 ) {
     let mut a_packed = vec![0.0f32; SGEMM_MC * SGEMM_KC];
     let mut b_packed = vec![0.0f32; SGEMM_KC * SGEMM_NC];
@@ -595,11 +691,14 @@ pub fn sgemm_blocked(
                         // SAFETY: tier() verified AVX-512F, buffers sized correctly
                         unsafe {
                             sgemm_ukernel_6x16(
-                                kc, alpha,
+                                kc,
+                                alpha,
                                 &a_packed[a_off..],
                                 &b_packed[b_off..],
                                 &mut c[(ii + ir) * ldc + (jj + jr)..],
-                                ldc, mr_eff, nr_eff,
+                                ldc,
+                                mr_eff,
+                                nr_eff,
                             );
                         }
                         jr += SGEMM_NR;
@@ -634,7 +733,11 @@ fn pack_a_f64(a: &[f64], lda: usize, mc: usize, kc: usize, i_start: usize, k_sta
         let rem = mc - ii;
         for p in 0..kc {
             for ir in 0..DGEMM_MR {
-                buf[idx] = if ir < rem { a[(i_start + ii + ir) * lda + (k_start + p)] } else { 0.0 };
+                buf[idx] = if ir < rem {
+                    a[(i_start + ii + ir) * lda + (k_start + p)]
+                } else {
+                    0.0
+                };
                 idx += 1;
             }
         }
@@ -659,7 +762,11 @@ fn pack_b_f64(b: &[f64], ldb: usize, kc: usize, nc: usize, k_start: usize, j_sta
         let rem = nc - jj;
         for p in 0..kc {
             for jr in 0..DGEMM_NR {
-                buf[idx] = if jr < rem { b[(k_start + p) * ldb + (j_start + jj + jr)] } else { 0.0 };
+                buf[idx] = if jr < rem {
+                    b[(k_start + p) * ldb + (j_start + jj + jr)]
+                } else {
+                    0.0
+                };
                 idx += 1;
             }
         }
@@ -667,17 +774,12 @@ fn pack_b_f64(b: &[f64], ldb: usize, kc: usize, nc: usize, k_start: usize, j_sta
 }
 
 /// AVX-512 microkernel: C[6×8] += A_packed[6×kc] * B_packed[kc×8] (f64)
+/// # Safety
+/// Caller must ensure AVX-512F is available (`simd_caps().avx512f`).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 unsafe fn dgemm_ukernel_6x8(
-    kc: usize,
-    alpha: f64,
-    a_packed: &[f64],
-    b_packed: &[f64],
-    c: &mut [f64],
-    ldc: usize,
-    mr_eff: usize,
-    nr_eff: usize,
+    kc: usize, alpha: f64, a_packed: &[f64], b_packed: &[f64], c: &mut [f64], ldc: usize, mr_eff: usize, nr_eff: usize,
 ) {
     let mut c0 = _mm512_setzero_pd();
     let mut c1 = _mm512_setzero_pd();
@@ -722,13 +824,12 @@ unsafe fn dgemm_ukernel_6x8(
 }
 
 /// Goto BLAS style blocked DGEMM with packing and AVX-512 microkernel.
+/// # Safety
+/// Caller must ensure AVX-512F is available (`simd_caps().avx512f`).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 pub fn dgemm_blocked(
-    m: usize, n: usize, k: usize,
-    alpha: f64, a: &[f64], lda: usize,
-    b: &[f64], ldb: usize,
-    c: &mut [f64], ldc: usize,
+    m: usize, n: usize, k: usize, alpha: f64, a: &[f64], lda: usize, b: &[f64], ldb: usize, c: &mut [f64], ldc: usize,
 ) {
     let mut a_packed = vec![0.0f64; DGEMM_MC * DGEMM_KC];
     let mut b_packed = vec![0.0f64; DGEMM_KC * DGEMM_NC];
@@ -757,11 +858,14 @@ pub fn dgemm_blocked(
 
                         unsafe {
                             dgemm_ukernel_6x8(
-                                kc, alpha,
+                                kc,
+                                alpha,
                                 &a_packed[a_off..],
                                 &b_packed[b_off..],
                                 &mut c[(ii + ir) * ldc + (jj + jr)..],
-                                ldc, mr_eff, nr_eff,
+                                ldc,
+                                mr_eff,
+                                nr_eff,
                             );
                         }
                         jr += DGEMM_NR;
@@ -835,6 +939,8 @@ pub fn popcount(a: &[u8]) -> u64 {
 }
 
 /// Int8 dot product (scalar — no AVX-512 VNNI specialization yet).
+/// # Safety
+/// Caller must ensure AVX-512F is available (`simd_caps().avx512f`).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 pub fn dot_i8(a: &[u8], b: &[u8]) -> i64 {

@@ -37,18 +37,16 @@ pub use validator::{validate, ValidationError};
 
 // Re-exports: template layer
 pub use template::{
-    from_json, check_pipeline_features, template_hash,
-    JitsonTemplate, PipelineStage, BackendConfig, JitsonError,
+    check_pipeline_features, from_json, template_hash, BackendConfig, JitsonError, JitsonTemplate, PipelineStage,
 };
 
 // Re-exports: precompile queue
-pub use precompile::{PrecompileQueue, PrecompileEntry, CompileState};
+pub use precompile::{CompileState, PrecompileEntry, PrecompileQueue};
 
 // Re-exports: scan config + SIMD trampolines
 pub use scan_config::{
-    ScanConfig, ScanResult, SimdKernelRegistry, DefaultKernelRegistry,
-    scan_hamming, jit_symbol_table,
+    jit_symbol_table, scan_hamming, DefaultKernelRegistry, ScanConfig, ScanResult, SimdKernelRegistry,
 };
 
 // Re-exports: noise parameters + terrain templates
-pub use noise::{NoiseParams, GRAD3, simple_noise_3d, CompiledNoiseConfig, TerrainFillParams};
+pub use noise::{simple_noise_3d, CompiledNoiseConfig, NoiseParams, TerrainFillParams, GRAD3};

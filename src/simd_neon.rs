@@ -77,9 +77,9 @@ pub unsafe fn hamming_u8x16(a: &[u8; 16], b: &[u8; 16]) -> u32 {
     let xored = veorq_u8(va, vb);
     let counts = vcntq_u8(xored);
     // Widen and sum: u8→u16→u32→u64→scalar
-    let sum16 = vpaddlq_u8(counts);   // 8×u16
-    let sum32 = vpaddlq_u16(sum16);   // 4×u32
-    let sum64 = vpaddlq_u32(sum32);   // 2×u64
+    let sum16 = vpaddlq_u8(counts); // 8×u16
+    let sum32 = vpaddlq_u16(sum16); // 4×u32
+    let sum64 = vpaddlq_u32(sum32); // 2×u64
     vgetq_lane_u64(sum64, 0) as u32 + vgetq_lane_u64(sum64, 1) as u32
 }
 
@@ -92,7 +92,7 @@ pub unsafe fn base17_l1_neon(a: &[i16; 17], b: &[i16; 17]) -> i32 {
     let va0 = vld1q_s16(a.as_ptr());
     let vb0 = vld1q_s16(b.as_ptr());
     let diff0 = vabdq_s16(va0, vb0); // absolute difference per lane
-    let sum0 = vpaddlq_s16(diff0);   // widen to i32, pairwise add → 4×i32
+    let sum0 = vpaddlq_s16(diff0); // widen to i32, pairwise add → 4×i32
 
     // Next 8 elements
     let va1 = vld1q_s16(a[8..].as_ptr());
@@ -113,10 +113,10 @@ pub unsafe fn base17_l1_neon(a: &[i16; 17], b: &[i16; 17]) -> i32 {
 /// This is O(N) with NEON FMA — the core of ada-brain inference.
 #[cfg(target_arch = "aarch64")]
 pub unsafe fn codebook_gather_f32x4_neon(
-    centroids: &[f32],    // flat array: N_centroids × dim, row-major
-    indices: &[u8],       // which centroids to gather
-    dim: usize,           // must be multiple of 4
-    output: &mut [f32],   // dim elements, accumulated
+    centroids: &[f32],  // flat array: N_centroids × dim, row-major
+    indices: &[u8],     // which centroids to gather
+    dim: usize,         // must be multiple of 4
+    output: &mut [f32], // dim elements, accumulated
 ) {
     debug_assert!(dim % 4 == 0);
     debug_assert!(output.len() >= dim);
@@ -144,12 +144,7 @@ pub unsafe fn codebook_gather_f32x4_neon(
 /// Codebook gather with 2× unroll for A72 dual-pipeline saturation.
 /// Processes 2 index lookups per iteration to keep both NEON pipes fed.
 #[cfg(target_arch = "aarch64")]
-pub unsafe fn codebook_gather_f32x4_a72(
-    centroids: &[f32],
-    indices: &[u8],
-    dim: usize,
-    output: &mut [f32],
-) {
+pub unsafe fn codebook_gather_f32x4_a72(centroids: &[f32], indices: &[u8], dim: usize, output: &mut [f32]) {
     debug_assert!(dim % 4 == 0);
     debug_assert!(output.len() >= dim);
 
@@ -207,7 +202,7 @@ pub unsafe fn dot_i8x16_neon(a: &[i8; 16], b: &[i8; 16]) -> i32 {
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "dotprod")]
 pub unsafe fn codebook_gather_i8_dotprod(
-    centroids_i8: &[i8],   // quantized centroids: N × dim (i8)
+    centroids_i8: &[i8], // quantized centroids: N × dim (i8)
     indices: &[u8],
     dim: usize,             // must be multiple of 16
     output_i32: &mut [i32], // accumulated i32 (dequantize later)
@@ -403,9 +398,9 @@ pub fn f16_to_f32_batch(input: &[u16], output: &mut [f32]) {
             // Pi 5 path: FCVTL (4× f16 → 4× f32 per instruction)
             let chunks = n / 4;
             for c in 0..chunks {
-                let src: &[u16; 4] = input[c*4..c*4+4].try_into().unwrap();
+                let src: &[u16; 4] = input[c * 4..c * 4 + 4].try_into().unwrap();
                 let dst = unsafe { f16x4_to_f32x4(src) };
-                output[c*4..c*4+4].copy_from_slice(&dst);
+                output[c * 4..c * 4 + 4].copy_from_slice(&dst);
             }
             // Scalar tail
             for i in (chunks * 4)..n {
@@ -430,9 +425,9 @@ pub fn f32_to_f16_batch(input: &[f32], output: &mut [u16]) {
         if std::arch::is_aarch64_feature_detected!("fp16") {
             let chunks = n / 4;
             for c in 0..chunks {
-                let src: &[f32; 4] = input[c*4..c*4+4].try_into().unwrap();
+                let src: &[f32; 4] = input[c * 4..c * 4 + 4].try_into().unwrap();
                 let dst = unsafe { f32x4_to_f16x4(src) };
-                output[c*4..c*4+4].copy_from_slice(&dst);
+                output[c * 4..c * 4 + 4].copy_from_slice(&dst);
             }
             for i in (chunks * 4)..n {
                 output[i] = f32_to_f16_scalar(input[i]);
@@ -445,6 +440,1404 @@ pub fn f32_to_f16_batch(input: &[f32], output: &mut [u16]) {
         output[i] = f32_to_f16_scalar(input[i]);
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// NEON-backed F32x16 / F64x8 — paired loads, NOT scalar fallback
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Burn parity item 9 (verified 2026-04-30, agent A7): on aarch64, `F32x16`
+// previously dispatched to `simd::scalar` mod (element-wise [f32;16] loop).
+// This module provides a real NEON implementation backed by 4× `float32x4_t`
+// for `F32x16` and 4× `float64x2_t` for `F64x8`. Hot-path ops (add, sub, mul,
+// div, mul_add via `vfmaq_f32`/`vfmaq_f64`, splat, vld1q_*, vst1q_*) compile
+// to a single NEON instruction per pair. `simd.rs` re-exports these for
+// `target_arch = "aarch64"` ahead of the scalar fallback module.
+//
+// API matches `simd_avx2::F32x16` (the "dual-tuple" pattern). Methods that
+// don't have a direct NEON counterpart (comparisons, reduce_min/max,
+// to_bits/from_bits, cast_i32) round-trip through `to_array` — same shape
+// as the AVX2 polyfill, so consumer code on aarch64 gets the same
+// correctness with vectorized arithmetic kernels.
+
+#[cfg(target_arch = "aarch64")]
+pub mod aarch64_simd {
+    use super::*;
+    use core::fmt;
+    use core::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
+
+    // Integer types come from the scalar fallback in simd.rs — they aren't on
+    // the perf-critical f32 BLAS-1 / VML path that this module accelerates.
+    pub use crate::simd::scalar::{I32x16, U32x16, U64x8};
+
+    /// 16×f32 backed by 4× NEON `float32x4_t` registers (paired loads).
+    #[derive(Copy, Clone)]
+    #[repr(align(64))]
+    pub struct F32x16(pub [float32x4_t; 4]);
+
+    impl F32x16 {
+        pub const LANES: usize = 16;
+
+        #[inline(always)]
+        pub fn splat(v: f32) -> Self {
+            unsafe {
+                let s = vdupq_n_f32(v);
+                Self([s, s, s, s])
+            }
+        }
+
+        #[inline(always)]
+        pub fn from_slice(s: &[f32]) -> Self {
+            assert!(s.len() >= 16);
+            unsafe {
+                let p = s.as_ptr();
+                Self([vld1q_f32(p), vld1q_f32(p.add(4)), vld1q_f32(p.add(8)), vld1q_f32(p.add(12))])
+            }
+        }
+
+        #[inline(always)]
+        pub fn from_array(a: [f32; 16]) -> Self {
+            Self::from_slice(&a)
+        }
+
+        #[inline(always)]
+        pub fn to_array(self) -> [f32; 16] {
+            let mut out = [0.0f32; 16];
+            self.copy_to_slice(&mut out);
+            out
+        }
+
+        #[inline(always)]
+        pub fn copy_to_slice(self, s: &mut [f32]) {
+            assert!(s.len() >= 16);
+            unsafe {
+                let p = s.as_mut_ptr();
+                vst1q_f32(p, self.0[0]);
+                vst1q_f32(p.add(4), self.0[1]);
+                vst1q_f32(p.add(8), self.0[2]);
+                vst1q_f32(p.add(12), self.0[3]);
+            }
+        }
+
+        #[inline(always)]
+        pub fn reduce_sum(self) -> f32 {
+            unsafe {
+                let s01 = vaddq_f32(self.0[0], self.0[1]);
+                let s23 = vaddq_f32(self.0[2], self.0[3]);
+                vaddvq_f32(vaddq_f32(s01, s23))
+            }
+        }
+
+        #[inline(always)]
+        pub fn reduce_min(self) -> f32 {
+            self.to_array()
+                .iter()
+                .copied()
+                .fold(f32::INFINITY, f32::min)
+        }
+
+        #[inline(always)]
+        pub fn reduce_max(self) -> f32 {
+            self.to_array()
+                .iter()
+                .copied()
+                .fold(f32::NEG_INFINITY, f32::max)
+        }
+
+        #[inline(always)]
+        pub fn abs(self) -> Self {
+            unsafe { Self([vabsq_f32(self.0[0]), vabsq_f32(self.0[1]), vabsq_f32(self.0[2]), vabsq_f32(self.0[3])]) }
+        }
+
+        #[inline(always)]
+        pub fn sqrt(self) -> Self {
+            unsafe {
+                Self([vsqrtq_f32(self.0[0]), vsqrtq_f32(self.0[1]), vsqrtq_f32(self.0[2]), vsqrtq_f32(self.0[3])])
+            }
+        }
+
+        #[inline(always)]
+        pub fn round(self) -> Self {
+            unsafe {
+                Self([vrndnq_f32(self.0[0]), vrndnq_f32(self.0[1]), vrndnq_f32(self.0[2]), vrndnq_f32(self.0[3])])
+            }
+        }
+
+        #[inline(always)]
+        pub fn floor(self) -> Self {
+            unsafe {
+                Self([vrndmq_f32(self.0[0]), vrndmq_f32(self.0[1]), vrndmq_f32(self.0[2]), vrndmq_f32(self.0[3])])
+            }
+        }
+
+        #[inline(always)]
+        pub fn mul_add(self, b: Self, c: Self) -> Self {
+            unsafe {
+                Self([
+                    vfmaq_f32(c.0[0], self.0[0], b.0[0]),
+                    vfmaq_f32(c.0[1], self.0[1], b.0[1]),
+                    vfmaq_f32(c.0[2], self.0[2], b.0[2]),
+                    vfmaq_f32(c.0[3], self.0[3], b.0[3]),
+                ])
+            }
+        }
+
+        #[inline(always)]
+        pub fn simd_min(self, other: Self) -> Self {
+            unsafe {
+                Self([
+                    vminq_f32(self.0[0], other.0[0]),
+                    vminq_f32(self.0[1], other.0[1]),
+                    vminq_f32(self.0[2], other.0[2]),
+                    vminq_f32(self.0[3], other.0[3]),
+                ])
+            }
+        }
+
+        #[inline(always)]
+        pub fn simd_max(self, other: Self) -> Self {
+            unsafe {
+                Self([
+                    vmaxq_f32(self.0[0], other.0[0]),
+                    vmaxq_f32(self.0[1], other.0[1]),
+                    vmaxq_f32(self.0[2], other.0[2]),
+                    vmaxq_f32(self.0[3], other.0[3]),
+                ])
+            }
+        }
+
+        #[inline(always)]
+        pub fn simd_clamp(self, lo: Self, hi: Self) -> Self {
+            self.simd_max(lo).simd_min(hi)
+        }
+
+        #[inline(always)]
+        pub fn simd_lt(self, other: Self) -> F32Mask16 {
+            let a = self.to_array();
+            let b = other.to_array();
+            let mut bits: u16 = 0;
+            for i in 0..16 {
+                if a[i] < b[i] {
+                    bits |= 1 << i;
+                }
+            }
+            F32Mask16(bits)
+        }
+        #[inline(always)]
+        pub fn simd_le(self, other: Self) -> F32Mask16 {
+            let a = self.to_array();
+            let b = other.to_array();
+            let mut bits: u16 = 0;
+            for i in 0..16 {
+                if a[i] <= b[i] {
+                    bits |= 1 << i;
+                }
+            }
+            F32Mask16(bits)
+        }
+        #[inline(always)]
+        pub fn simd_gt(self, other: Self) -> F32Mask16 {
+            other.simd_lt(self)
+        }
+        #[inline(always)]
+        pub fn simd_ge(self, other: Self) -> F32Mask16 {
+            other.simd_le(self)
+        }
+        #[inline(always)]
+        pub fn simd_eq(self, other: Self) -> F32Mask16 {
+            let a = self.to_array();
+            let b = other.to_array();
+            let mut bits: u16 = 0;
+            for i in 0..16 {
+                if a[i] == b[i] {
+                    bits |= 1 << i;
+                }
+            }
+            F32Mask16(bits)
+        }
+        #[inline(always)]
+        pub fn simd_ne(self, other: Self) -> F32Mask16 {
+            let a = self.to_array();
+            let b = other.to_array();
+            let mut bits: u16 = 0;
+            for i in 0..16 {
+                if a[i] != b[i] {
+                    bits |= 1 << i;
+                }
+            }
+            F32Mask16(bits)
+        }
+
+        #[inline(always)]
+        pub fn to_bits(self) -> U32x16 {
+            let a = self.to_array();
+            let mut o = [0u32; 16];
+            for i in 0..16 {
+                o[i] = a[i].to_bits();
+            }
+            U32x16(o)
+        }
+        #[inline(always)]
+        pub fn from_bits(bits: U32x16) -> Self {
+            let mut o = [0.0f32; 16];
+            for i in 0..16 {
+                o[i] = f32::from_bits(bits.0[i]);
+            }
+            Self::from_array(o)
+        }
+        #[inline(always)]
+        pub fn cast_i32(self) -> I32x16 {
+            let a = self.to_array();
+            let mut o = [0i32; 16];
+            for i in 0..16 {
+                o[i] = a[i] as i32;
+            }
+            I32x16(o)
+        }
+    }
+
+    impl Add for F32x16 {
+        type Output = Self;
+        #[inline(always)]
+        fn add(self, rhs: Self) -> Self {
+            unsafe {
+                Self([
+                    vaddq_f32(self.0[0], rhs.0[0]),
+                    vaddq_f32(self.0[1], rhs.0[1]),
+                    vaddq_f32(self.0[2], rhs.0[2]),
+                    vaddq_f32(self.0[3], rhs.0[3]),
+                ])
+            }
+        }
+    }
+    impl Sub for F32x16 {
+        type Output = Self;
+        #[inline(always)]
+        fn sub(self, rhs: Self) -> Self {
+            unsafe {
+                Self([
+                    vsubq_f32(self.0[0], rhs.0[0]),
+                    vsubq_f32(self.0[1], rhs.0[1]),
+                    vsubq_f32(self.0[2], rhs.0[2]),
+                    vsubq_f32(self.0[3], rhs.0[3]),
+                ])
+            }
+        }
+    }
+    impl Mul for F32x16 {
+        type Output = Self;
+        #[inline(always)]
+        fn mul(self, rhs: Self) -> Self {
+            unsafe {
+                Self([
+                    vmulq_f32(self.0[0], rhs.0[0]),
+                    vmulq_f32(self.0[1], rhs.0[1]),
+                    vmulq_f32(self.0[2], rhs.0[2]),
+                    vmulq_f32(self.0[3], rhs.0[3]),
+                ])
+            }
+        }
+    }
+    impl Div for F32x16 {
+        type Output = Self;
+        #[inline(always)]
+        fn div(self, rhs: Self) -> Self {
+            unsafe {
+                Self([
+                    vdivq_f32(self.0[0], rhs.0[0]),
+                    vdivq_f32(self.0[1], rhs.0[1]),
+                    vdivq_f32(self.0[2], rhs.0[2]),
+                    vdivq_f32(self.0[3], rhs.0[3]),
+                ])
+            }
+        }
+    }
+    impl AddAssign for F32x16 {
+        #[inline(always)]
+        fn add_assign(&mut self, rhs: Self) {
+            *self = *self + rhs;
+        }
+    }
+    impl SubAssign for F32x16 {
+        #[inline(always)]
+        fn sub_assign(&mut self, rhs: Self) {
+            *self = *self - rhs;
+        }
+    }
+    impl MulAssign for F32x16 {
+        #[inline(always)]
+        fn mul_assign(&mut self, rhs: Self) {
+            *self = *self * rhs;
+        }
+    }
+    impl DivAssign for F32x16 {
+        #[inline(always)]
+        fn div_assign(&mut self, rhs: Self) {
+            *self = *self / rhs;
+        }
+    }
+    impl Neg for F32x16 {
+        type Output = Self;
+        #[inline(always)]
+        fn neg(self) -> Self {
+            unsafe { Self([vnegq_f32(self.0[0]), vnegq_f32(self.0[1]), vnegq_f32(self.0[2]), vnegq_f32(self.0[3])]) }
+        }
+    }
+    impl fmt::Debug for F32x16 {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "F32x16({:?})", self.to_array())
+        }
+    }
+    impl PartialEq for F32x16 {
+        fn eq(&self, other: &Self) -> bool {
+            self.to_array() == other.to_array()
+        }
+    }
+    impl Default for F32x16 {
+        fn default() -> Self {
+            Self::splat(0.0)
+        }
+    }
+
+    #[derive(Copy, Clone, Debug)]
+    pub struct F32Mask16(pub u16);
+    impl F32Mask16 {
+        #[inline(always)]
+        pub fn select(self, true_val: F32x16, false_val: F32x16) -> F32x16 {
+            let t = true_val.to_array();
+            let f = false_val.to_array();
+            let mut o = [0.0f32; 16];
+            for i in 0..16 {
+                o[i] = if (self.0 >> i) & 1 == 1 { t[i] } else { f[i] };
+            }
+            F32x16::from_array(o)
+        }
+    }
+
+    /// 8×f64 backed by 4× NEON `float64x2_t` registers (paired loads).
+    #[derive(Copy, Clone)]
+    #[repr(align(64))]
+    pub struct F64x8(pub [float64x2_t; 4]);
+
+    impl F64x8 {
+        pub const LANES: usize = 8;
+
+        #[inline(always)]
+        pub fn splat(v: f64) -> Self {
+            unsafe {
+                let s = vdupq_n_f64(v);
+                Self([s, s, s, s])
+            }
+        }
+
+        #[inline(always)]
+        pub fn from_slice(s: &[f64]) -> Self {
+            assert!(s.len() >= 8);
+            unsafe {
+                let p = s.as_ptr();
+                Self([vld1q_f64(p), vld1q_f64(p.add(2)), vld1q_f64(p.add(4)), vld1q_f64(p.add(6))])
+            }
+        }
+
+        #[inline(always)]
+        pub fn from_array(a: [f64; 8]) -> Self {
+            Self::from_slice(&a)
+        }
+
+        #[inline(always)]
+        pub fn to_array(self) -> [f64; 8] {
+            let mut out = [0.0f64; 8];
+            self.copy_to_slice(&mut out);
+            out
+        }
+
+        #[inline(always)]
+        pub fn copy_to_slice(self, s: &mut [f64]) {
+            assert!(s.len() >= 8);
+            unsafe {
+                let p = s.as_mut_ptr();
+                vst1q_f64(p, self.0[0]);
+                vst1q_f64(p.add(2), self.0[1]);
+                vst1q_f64(p.add(4), self.0[2]);
+                vst1q_f64(p.add(6), self.0[3]);
+            }
+        }
+
+        #[inline(always)]
+        pub fn reduce_sum(self) -> f64 {
+            unsafe {
+                let s01 = vaddq_f64(self.0[0], self.0[1]);
+                let s23 = vaddq_f64(self.0[2], self.0[3]);
+                vaddvq_f64(vaddq_f64(s01, s23))
+            }
+        }
+
+        #[inline(always)]
+        pub fn reduce_min(self) -> f64 {
+            self.to_array()
+                .iter()
+                .copied()
+                .fold(f64::INFINITY, f64::min)
+        }
+
+        #[inline(always)]
+        pub fn reduce_max(self) -> f64 {
+            self.to_array()
+                .iter()
+                .copied()
+                .fold(f64::NEG_INFINITY, f64::max)
+        }
+
+        #[inline(always)]
+        pub fn abs(self) -> Self {
+            unsafe { Self([vabsq_f64(self.0[0]), vabsq_f64(self.0[1]), vabsq_f64(self.0[2]), vabsq_f64(self.0[3])]) }
+        }
+
+        #[inline(always)]
+        pub fn sqrt(self) -> Self {
+            unsafe {
+                Self([vsqrtq_f64(self.0[0]), vsqrtq_f64(self.0[1]), vsqrtq_f64(self.0[2]), vsqrtq_f64(self.0[3])])
+            }
+        }
+
+        #[inline(always)]
+        pub fn round(self) -> Self {
+            unsafe {
+                Self([vrndnq_f64(self.0[0]), vrndnq_f64(self.0[1]), vrndnq_f64(self.0[2]), vrndnq_f64(self.0[3])])
+            }
+        }
+
+        #[inline(always)]
+        pub fn floor(self) -> Self {
+            unsafe {
+                Self([vrndmq_f64(self.0[0]), vrndmq_f64(self.0[1]), vrndmq_f64(self.0[2]), vrndmq_f64(self.0[3])])
+            }
+        }
+
+        #[inline(always)]
+        pub fn mul_add(self, b: Self, c: Self) -> Self {
+            unsafe {
+                Self([
+                    vfmaq_f64(c.0[0], self.0[0], b.0[0]),
+                    vfmaq_f64(c.0[1], self.0[1], b.0[1]),
+                    vfmaq_f64(c.0[2], self.0[2], b.0[2]),
+                    vfmaq_f64(c.0[3], self.0[3], b.0[3]),
+                ])
+            }
+        }
+
+        #[inline(always)]
+        pub fn simd_min(self, other: Self) -> Self {
+            unsafe {
+                Self([
+                    vminq_f64(self.0[0], other.0[0]),
+                    vminq_f64(self.0[1], other.0[1]),
+                    vminq_f64(self.0[2], other.0[2]),
+                    vminq_f64(self.0[3], other.0[3]),
+                ])
+            }
+        }
+
+        #[inline(always)]
+        pub fn simd_max(self, other: Self) -> Self {
+            unsafe {
+                Self([
+                    vmaxq_f64(self.0[0], other.0[0]),
+                    vmaxq_f64(self.0[1], other.0[1]),
+                    vmaxq_f64(self.0[2], other.0[2]),
+                    vmaxq_f64(self.0[3], other.0[3]),
+                ])
+            }
+        }
+
+        #[inline(always)]
+        pub fn simd_clamp(self, lo: Self, hi: Self) -> Self {
+            self.simd_max(lo).simd_min(hi)
+        }
+
+        #[inline(always)]
+        pub fn simd_ge(self, other: Self) -> F64Mask8 {
+            let a = self.to_array();
+            let b = other.to_array();
+            let mut bits: u8 = 0;
+            for i in 0..8 {
+                if a[i] >= b[i] {
+                    bits |= 1 << i;
+                }
+            }
+            F64Mask8(bits)
+        }
+        #[inline(always)]
+        pub fn simd_le(self, other: Self) -> F64Mask8 {
+            let a = self.to_array();
+            let b = other.to_array();
+            let mut bits: u8 = 0;
+            for i in 0..8 {
+                if a[i] <= b[i] {
+                    bits |= 1 << i;
+                }
+            }
+            F64Mask8(bits)
+        }
+
+        #[inline(always)]
+        pub fn to_bits(self) -> U64x8 {
+            let a = self.to_array();
+            let mut o = [0u64; 8];
+            for i in 0..8 {
+                o[i] = a[i].to_bits();
+            }
+            U64x8(o)
+        }
+        #[inline(always)]
+        pub fn from_bits(bits: U64x8) -> Self {
+            let mut o = [0.0f64; 8];
+            for i in 0..8 {
+                o[i] = f64::from_bits(bits.0[i]);
+            }
+            Self::from_array(o)
+        }
+    }
+
+    impl Add for F64x8 {
+        type Output = Self;
+        #[inline(always)]
+        fn add(self, rhs: Self) -> Self {
+            unsafe {
+                Self([
+                    vaddq_f64(self.0[0], rhs.0[0]),
+                    vaddq_f64(self.0[1], rhs.0[1]),
+                    vaddq_f64(self.0[2], rhs.0[2]),
+                    vaddq_f64(self.0[3], rhs.0[3]),
+                ])
+            }
+        }
+    }
+    impl Sub for F64x8 {
+        type Output = Self;
+        #[inline(always)]
+        fn sub(self, rhs: Self) -> Self {
+            unsafe {
+                Self([
+                    vsubq_f64(self.0[0], rhs.0[0]),
+                    vsubq_f64(self.0[1], rhs.0[1]),
+                    vsubq_f64(self.0[2], rhs.0[2]),
+                    vsubq_f64(self.0[3], rhs.0[3]),
+                ])
+            }
+        }
+    }
+    impl Mul for F64x8 {
+        type Output = Self;
+        #[inline(always)]
+        fn mul(self, rhs: Self) -> Self {
+            unsafe {
+                Self([
+                    vmulq_f64(self.0[0], rhs.0[0]),
+                    vmulq_f64(self.0[1], rhs.0[1]),
+                    vmulq_f64(self.0[2], rhs.0[2]),
+                    vmulq_f64(self.0[3], rhs.0[3]),
+                ])
+            }
+        }
+    }
+    impl Div for F64x8 {
+        type Output = Self;
+        #[inline(always)]
+        fn div(self, rhs: Self) -> Self {
+            unsafe {
+                Self([
+                    vdivq_f64(self.0[0], rhs.0[0]),
+                    vdivq_f64(self.0[1], rhs.0[1]),
+                    vdivq_f64(self.0[2], rhs.0[2]),
+                    vdivq_f64(self.0[3], rhs.0[3]),
+                ])
+            }
+        }
+    }
+    impl AddAssign for F64x8 {
+        #[inline(always)]
+        fn add_assign(&mut self, rhs: Self) {
+            *self = *self + rhs;
+        }
+    }
+    impl SubAssign for F64x8 {
+        #[inline(always)]
+        fn sub_assign(&mut self, rhs: Self) {
+            *self = *self - rhs;
+        }
+    }
+    impl MulAssign for F64x8 {
+        #[inline(always)]
+        fn mul_assign(&mut self, rhs: Self) {
+            *self = *self * rhs;
+        }
+    }
+    impl DivAssign for F64x8 {
+        #[inline(always)]
+        fn div_assign(&mut self, rhs: Self) {
+            *self = *self / rhs;
+        }
+    }
+    impl Neg for F64x8 {
+        type Output = Self;
+        #[inline(always)]
+        fn neg(self) -> Self {
+            unsafe { Self([vnegq_f64(self.0[0]), vnegq_f64(self.0[1]), vnegq_f64(self.0[2]), vnegq_f64(self.0[3])]) }
+        }
+    }
+    impl fmt::Debug for F64x8 {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "F64x8({:?})", self.to_array())
+        }
+    }
+    impl PartialEq for F64x8 {
+        fn eq(&self, other: &Self) -> bool {
+            self.to_array() == other.to_array()
+        }
+    }
+    impl Default for F64x8 {
+        fn default() -> Self {
+            Self::splat(0.0)
+        }
+    }
+
+    #[derive(Copy, Clone, Debug)]
+    pub struct F64Mask8(pub u8);
+    impl F64Mask8 {
+        #[inline(always)]
+        pub fn select(self, true_val: F64x8, false_val: F64x8) -> F64x8 {
+            let t = true_val.to_array();
+            let f = false_val.to_array();
+            let mut o = [0.0f64; 8];
+            for i in 0..8 {
+                o[i] = if (self.0 >> i) & 1 == 1 { t[i] } else { f[i] };
+            }
+            F64x8::from_array(o)
+        }
+    }
+
+    // Lowercase aliases (consumer-API parity)
+    #[allow(non_camel_case_types)]
+    pub type f32x16 = F32x16;
+    #[allow(non_camel_case_types)]
+    pub type f64x8 = F64x8;
+}
+
+#[cfg(all(target_arch = "aarch64", test))]
+mod neon_pair_tests {
+    use super::aarch64_simd::*;
+
+    #[test]
+    fn f32x16_neon_load_add_store() {
+        let a: [f32; 16] = core::array::from_fn(|i| i as f32);
+        let b: [f32; 16] = core::array::from_fn(|i| (i * 10) as f32);
+        let va = F32x16::from_slice(&a);
+        let vb = F32x16::from_slice(&b);
+        let vc = va + vb;
+        let mut out = [0.0f32; 16];
+        vc.copy_to_slice(&mut out);
+        for i in 0..16 {
+            assert_eq!(out[i], (i + i * 10) as f32);
+        }
+    }
+
+    #[test]
+    fn f32x16_neon_mul_add() {
+        let a = F32x16::splat(2.0);
+        let b = F32x16::splat(3.0);
+        let c = F32x16::splat(1.0);
+        let r = a.mul_add(b, c).to_array();
+        for &v in &r {
+            assert_eq!(v, 7.0);
+        }
+    }
+
+    #[test]
+    fn f32x16_neon_reduce_sum() {
+        let v = F32x16::from_array(core::array::from_fn(|i| (i + 1) as f32));
+        // sum 1..=16 = 136
+        assert_eq!(v.reduce_sum(), 136.0);
+    }
+
+    #[test]
+    fn f64x8_neon_load_add_store() {
+        let a: [f64; 8] = core::array::from_fn(|i| i as f64);
+        let b: [f64; 8] = core::array::from_fn(|i| (i * 10) as f64);
+        let va = F64x8::from_slice(&a);
+        let vb = F64x8::from_slice(&b);
+        let vc = va + vb;
+        let mut out = [0.0f64; 8];
+        vc.copy_to_slice(&mut out);
+        for i in 0..8 {
+            assert_eq!(out[i], (i + i * 10) as f64);
+        }
+    }
+
+    #[test]
+    fn f64x8_neon_mul_add_reduce() {
+        let a = F64x8::splat(2.0);
+        let b = F64x8::splat(3.0);
+        let c = F64x8::splat(1.0);
+        let r = a.mul_add(b, c);
+        // 8 lanes × 7.0 = 56.0
+        assert_eq!(r.reduce_sum(), 56.0);
+    }
+}
+
+// I8/I16 SIMD vector types — NEON 128-bit native + scalar polyfills.
+//
+// Native 128-bit shapes:
+//   • I8x16  ← int8x16_t   (vaddq_s8 / vminq_s8 / vcgtq_s8 …)
+//   • I16x8  ← int16x8_t   (vaddq_s16 / vcgtq_s16 …)
+//
+// Polyfills (scalar arrays) for cross-tier API parity:
+//   • I8x32  = [i8; 32]
+//   • I8x64  = [i8; 64]
+//   • I16x16 = [i16; 16]
+//   • I16x32 = [i16; 32]
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[cfg(target_arch = "aarch64")]
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct I8x16(pub int8x16_t);
+
+#[cfg(target_arch = "aarch64")]
+impl I8x16 {
+    pub const LANES: usize = 16;
+
+    #[inline(always)]
+    pub fn splat(v: i8) -> Self {
+        Self(unsafe { vdupq_n_s8(v) })
+    }
+
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self(unsafe { vdupq_n_s8(0) })
+    }
+
+    #[inline(always)]
+    pub fn from_slice(s: &[i8]) -> Self {
+        assert!(s.len() >= 16);
+        Self(unsafe { vld1q_s8(s.as_ptr()) })
+    }
+
+    #[inline(always)]
+    pub fn from_array(arr: [i8; 16]) -> Self {
+        Self(unsafe { vld1q_s8(arr.as_ptr()) })
+    }
+
+    #[inline(always)]
+    pub fn to_array(self) -> [i8; 16] {
+        let mut arr = [0i8; 16];
+        unsafe { vst1q_s8(arr.as_mut_ptr(), self.0) };
+        arr
+    }
+
+    #[inline(always)]
+    pub fn copy_to_slice(self, s: &mut [i8]) {
+        assert!(s.len() >= 16);
+        unsafe { vst1q_s8(s.as_mut_ptr(), self.0) };
+    }
+
+    #[inline(always)]
+    pub fn add(self, other: Self) -> Self {
+        Self(unsafe { vaddq_s8(self.0, other.0) })
+    }
+    #[inline(always)]
+    pub fn sub(self, other: Self) -> Self {
+        Self(unsafe { vsubq_s8(self.0, other.0) })
+    }
+    #[inline(always)]
+    pub fn min(self, other: Self) -> Self {
+        Self(unsafe { vminq_s8(self.0, other.0) })
+    }
+    #[inline(always)]
+    pub fn max(self, other: Self) -> Self {
+        Self(unsafe { vmaxq_s8(self.0, other.0) })
+    }
+
+    /// Compare-greater-than: returns 16-bit mask. Bit i set where self[i] > other[i].
+    #[inline(always)]
+    pub fn cmp_gt(self, other: Self) -> u16 {
+        unsafe {
+            let cmp = vcgtq_s8(self.0, other.0); // uint8x16_t, 0xFF where true
+            let arr: [u8; 16] = core::mem::transmute(cmp);
+            let mut m: u16 = 0;
+            for i in 0..16 {
+                if arr[i] != 0 {
+                    m |= 1u16 << i;
+                }
+            }
+            m
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl core::fmt::Debug for I8x16 {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "I8x16({:?})", self.to_array())
+    }
+}
+#[cfg(target_arch = "aarch64")]
+impl PartialEq for I8x16 {
+    fn eq(&self, other: &Self) -> bool {
+        self.to_array() == other.to_array()
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct I16x8(pub int16x8_t);
+
+#[cfg(target_arch = "aarch64")]
+impl I16x8 {
+    pub const LANES: usize = 8;
+
+    #[inline(always)]
+    pub fn splat(v: i16) -> Self {
+        Self(unsafe { vdupq_n_s16(v) })
+    }
+
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self(unsafe { vdupq_n_s16(0) })
+    }
+
+    #[inline(always)]
+    pub fn from_slice(s: &[i16]) -> Self {
+        assert!(s.len() >= 8);
+        Self(unsafe { vld1q_s16(s.as_ptr()) })
+    }
+
+    #[inline(always)]
+    pub fn from_array(arr: [i16; 8]) -> Self {
+        Self(unsafe { vld1q_s16(arr.as_ptr()) })
+    }
+
+    #[inline(always)]
+    pub fn to_array(self) -> [i16; 8] {
+        let mut arr = [0i16; 8];
+        unsafe { vst1q_s16(arr.as_mut_ptr(), self.0) };
+        arr
+    }
+
+    #[inline(always)]
+    pub fn copy_to_slice(self, s: &mut [i16]) {
+        assert!(s.len() >= 8);
+        unsafe { vst1q_s16(s.as_mut_ptr(), self.0) };
+    }
+
+    #[inline(always)]
+    pub fn add(self, other: Self) -> Self {
+        Self(unsafe { vaddq_s16(self.0, other.0) })
+    }
+    #[inline(always)]
+    pub fn sub(self, other: Self) -> Self {
+        Self(unsafe { vsubq_s16(self.0, other.0) })
+    }
+    #[inline(always)]
+    pub fn min(self, other: Self) -> Self {
+        Self(unsafe { vminq_s16(self.0, other.0) })
+    }
+    #[inline(always)]
+    pub fn max(self, other: Self) -> Self {
+        Self(unsafe { vmaxq_s16(self.0, other.0) })
+    }
+
+    /// Compare-greater-than: returns 8-bit mask. Bit i set where self[i] > other[i].
+    #[inline(always)]
+    pub fn cmp_gt(self, other: Self) -> u8 {
+        unsafe {
+            let cmp = vcgtq_s16(self.0, other.0); // uint16x8_t, 0xFFFF where true
+            let arr: [u16; 8] = core::mem::transmute(cmp);
+            let mut m: u8 = 0;
+            for i in 0..8 {
+                if arr[i] != 0 {
+                    m |= 1u8 << i;
+                }
+            }
+            m
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl core::fmt::Debug for I16x8 {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "I16x8({:?})", self.to_array())
+    }
+}
+#[cfg(target_arch = "aarch64")]
+impl PartialEq for I16x8 {
+    fn eq(&self, other: &Self) -> bool {
+        self.to_array() == other.to_array()
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// W3-B: NEON integer wrapper types (item 8 of burn parity list)
+// ─ U8x16, U16x8, U32x4, U64x2, I32x4, I64x2 ─
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[cfg(target_arch = "aarch64")]
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct U8x16(pub uint8x16_t);
+
+#[cfg(target_arch = "aarch64")]
+impl U8x16 {
+    pub const LANES: usize = 16;
+    #[inline(always)]
+    pub fn splat(v: u8) -> Self {
+        Self(unsafe { vdupq_n_u8(v) })
+    }
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self(unsafe { vdupq_n_u8(0) })
+    }
+    #[inline(always)]
+    pub fn from_slice(s: &[u8]) -> Self {
+        assert!(s.len() >= 16);
+        Self(unsafe { vld1q_u8(s.as_ptr()) })
+    }
+    #[inline(always)]
+    pub fn from_array(arr: [u8; 16]) -> Self {
+        Self(unsafe { vld1q_u8(arr.as_ptr()) })
+    }
+    #[inline(always)]
+    pub fn to_array(self) -> [u8; 16] {
+        let mut arr = [0u8; 16];
+        unsafe { vst1q_u8(arr.as_mut_ptr(), self.0) };
+        arr
+    }
+    #[inline(always)]
+    pub fn copy_to_slice(self, s: &mut [u8]) {
+        assert!(s.len() >= 16);
+        unsafe { vst1q_u8(s.as_mut_ptr(), self.0) };
+    }
+    #[inline(always)]
+    pub fn add(self, other: Self) -> Self {
+        Self(unsafe { vaddq_u8(self.0, other.0) })
+    }
+    #[inline(always)]
+    pub fn sub(self, other: Self) -> Self {
+        Self(unsafe { vsubq_u8(self.0, other.0) })
+    }
+    #[inline(always)]
+    pub fn min(self, other: Self) -> Self {
+        Self(unsafe { vminq_u8(self.0, other.0) })
+    }
+    #[inline(always)]
+    pub fn max(self, other: Self) -> Self {
+        Self(unsafe { vmaxq_u8(self.0, other.0) })
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct U16x8(pub uint16x8_t);
+
+#[cfg(target_arch = "aarch64")]
+impl U16x8 {
+    pub const LANES: usize = 8;
+    #[inline(always)]
+    pub fn splat(v: u16) -> Self {
+        Self(unsafe { vdupq_n_u16(v) })
+    }
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self(unsafe { vdupq_n_u16(0) })
+    }
+    #[inline(always)]
+    pub fn from_slice(s: &[u16]) -> Self {
+        assert!(s.len() >= 8);
+        Self(unsafe { vld1q_u16(s.as_ptr()) })
+    }
+    #[inline(always)]
+    pub fn from_array(arr: [u16; 8]) -> Self {
+        Self(unsafe { vld1q_u16(arr.as_ptr()) })
+    }
+    #[inline(always)]
+    pub fn to_array(self) -> [u16; 8] {
+        let mut arr = [0u16; 8];
+        unsafe { vst1q_u16(arr.as_mut_ptr(), self.0) };
+        arr
+    }
+    #[inline(always)]
+    pub fn copy_to_slice(self, s: &mut [u16]) {
+        assert!(s.len() >= 8);
+        unsafe { vst1q_u16(s.as_mut_ptr(), self.0) };
+    }
+    #[inline(always)]
+    pub fn add(self, other: Self) -> Self {
+        Self(unsafe { vaddq_u16(self.0, other.0) })
+    }
+    #[inline(always)]
+    pub fn sub(self, other: Self) -> Self {
+        Self(unsafe { vsubq_u16(self.0, other.0) })
+    }
+    #[inline(always)]
+    pub fn min(self, other: Self) -> Self {
+        Self(unsafe { vminq_u16(self.0, other.0) })
+    }
+    #[inline(always)]
+    pub fn max(self, other: Self) -> Self {
+        Self(unsafe { vmaxq_u16(self.0, other.0) })
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct U32x4(pub uint32x4_t);
+
+#[cfg(target_arch = "aarch64")]
+impl U32x4 {
+    pub const LANES: usize = 4;
+    #[inline(always)]
+    pub fn splat(v: u32) -> Self {
+        Self(unsafe { vdupq_n_u32(v) })
+    }
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self(unsafe { vdupq_n_u32(0) })
+    }
+    #[inline(always)]
+    pub fn from_slice(s: &[u32]) -> Self {
+        assert!(s.len() >= 4);
+        Self(unsafe { vld1q_u32(s.as_ptr()) })
+    }
+    #[inline(always)]
+    pub fn from_array(arr: [u32; 4]) -> Self {
+        Self(unsafe { vld1q_u32(arr.as_ptr()) })
+    }
+    #[inline(always)]
+    pub fn to_array(self) -> [u32; 4] {
+        let mut arr = [0u32; 4];
+        unsafe { vst1q_u32(arr.as_mut_ptr(), self.0) };
+        arr
+    }
+    #[inline(always)]
+    pub fn copy_to_slice(self, s: &mut [u32]) {
+        assert!(s.len() >= 4);
+        unsafe { vst1q_u32(s.as_mut_ptr(), self.0) };
+    }
+    #[inline(always)]
+    pub fn add(self, other: Self) -> Self {
+        Self(unsafe { vaddq_u32(self.0, other.0) })
+    }
+    #[inline(always)]
+    pub fn sub(self, other: Self) -> Self {
+        Self(unsafe { vsubq_u32(self.0, other.0) })
+    }
+    #[inline(always)]
+    pub fn min(self, other: Self) -> Self {
+        Self(unsafe { vminq_u32(self.0, other.0) })
+    }
+    #[inline(always)]
+    pub fn max(self, other: Self) -> Self {
+        Self(unsafe { vmaxq_u32(self.0, other.0) })
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct U64x2(pub uint64x2_t);
+
+#[cfg(target_arch = "aarch64")]
+impl U64x2 {
+    pub const LANES: usize = 2;
+    #[inline(always)]
+    pub fn splat(v: u64) -> Self {
+        Self(unsafe { vdupq_n_u64(v) })
+    }
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self(unsafe { vdupq_n_u64(0) })
+    }
+    #[inline(always)]
+    pub fn from_slice(s: &[u64]) -> Self {
+        assert!(s.len() >= 2);
+        Self(unsafe { vld1q_u64(s.as_ptr()) })
+    }
+    #[inline(always)]
+    pub fn from_array(arr: [u64; 2]) -> Self {
+        Self(unsafe { vld1q_u64(arr.as_ptr()) })
+    }
+    #[inline(always)]
+    pub fn to_array(self) -> [u64; 2] {
+        let mut arr = [0u64; 2];
+        unsafe { vst1q_u64(arr.as_mut_ptr(), self.0) };
+        arr
+    }
+    #[inline(always)]
+    pub fn copy_to_slice(self, s: &mut [u64]) {
+        assert!(s.len() >= 2);
+        unsafe { vst1q_u64(s.as_mut_ptr(), self.0) };
+    }
+    #[inline(always)]
+    pub fn add(self, other: Self) -> Self {
+        Self(unsafe { vaddq_u64(self.0, other.0) })
+    }
+    #[inline(always)]
+    pub fn sub(self, other: Self) -> Self {
+        Self(unsafe { vsubq_u64(self.0, other.0) })
+    }
+    // NEON has no vminq_u64 / vmaxq_u64 — scalar fallback
+    #[inline(always)]
+    pub fn min(self, other: Self) -> Self {
+        let a = self.to_array();
+        let b = other.to_array();
+        Self::from_array([a[0].min(b[0]), a[1].min(b[1])])
+    }
+    #[inline(always)]
+    pub fn max(self, other: Self) -> Self {
+        let a = self.to_array();
+        let b = other.to_array();
+        Self::from_array([a[0].max(b[0]), a[1].max(b[1])])
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct I32x4(pub int32x4_t);
+
+#[cfg(target_arch = "aarch64")]
+impl I32x4 {
+    pub const LANES: usize = 4;
+    #[inline(always)]
+    pub fn splat(v: i32) -> Self {
+        Self(unsafe { vdupq_n_s32(v) })
+    }
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self(unsafe { vdupq_n_s32(0) })
+    }
+    #[inline(always)]
+    pub fn from_slice(s: &[i32]) -> Self {
+        assert!(s.len() >= 4);
+        Self(unsafe { vld1q_s32(s.as_ptr()) })
+    }
+    #[inline(always)]
+    pub fn from_array(arr: [i32; 4]) -> Self {
+        Self(unsafe { vld1q_s32(arr.as_ptr()) })
+    }
+    #[inline(always)]
+    pub fn to_array(self) -> [i32; 4] {
+        let mut arr = [0i32; 4];
+        unsafe { vst1q_s32(arr.as_mut_ptr(), self.0) };
+        arr
+    }
+    #[inline(always)]
+    pub fn copy_to_slice(self, s: &mut [i32]) {
+        assert!(s.len() >= 4);
+        unsafe { vst1q_s32(s.as_mut_ptr(), self.0) };
+    }
+    #[inline(always)]
+    pub fn add(self, other: Self) -> Self {
+        Self(unsafe { vaddq_s32(self.0, other.0) })
+    }
+    #[inline(always)]
+    pub fn sub(self, other: Self) -> Self {
+        Self(unsafe { vsubq_s32(self.0, other.0) })
+    }
+    #[inline(always)]
+    pub fn min(self, other: Self) -> Self {
+        Self(unsafe { vminq_s32(self.0, other.0) })
+    }
+    #[inline(always)]
+    pub fn max(self, other: Self) -> Self {
+        Self(unsafe { vmaxq_s32(self.0, other.0) })
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct I64x2(pub int64x2_t);
+
+#[cfg(target_arch = "aarch64")]
+impl I64x2 {
+    pub const LANES: usize = 2;
+    #[inline(always)]
+    pub fn splat(v: i64) -> Self {
+        Self(unsafe { vdupq_n_s64(v) })
+    }
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self(unsafe { vdupq_n_s64(0) })
+    }
+    #[inline(always)]
+    pub fn from_slice(s: &[i64]) -> Self {
+        assert!(s.len() >= 2);
+        Self(unsafe { vld1q_s64(s.as_ptr()) })
+    }
+    #[inline(always)]
+    pub fn from_array(arr: [i64; 2]) -> Self {
+        Self(unsafe { vld1q_s64(arr.as_ptr()) })
+    }
+    #[inline(always)]
+    pub fn to_array(self) -> [i64; 2] {
+        let mut arr = [0i64; 2];
+        unsafe { vst1q_s64(arr.as_mut_ptr(), self.0) };
+        arr
+    }
+    #[inline(always)]
+    pub fn copy_to_slice(self, s: &mut [i64]) {
+        assert!(s.len() >= 2);
+        unsafe { vst1q_s64(s.as_mut_ptr(), self.0) };
+    }
+    #[inline(always)]
+    pub fn add(self, other: Self) -> Self {
+        Self(unsafe { vaddq_s64(self.0, other.0) })
+    }
+    #[inline(always)]
+    pub fn sub(self, other: Self) -> Self {
+        Self(unsafe { vsubq_s64(self.0, other.0) })
+    }
+    // NEON has no vminq_s64 / vmaxq_s64 — scalar fallback
+    #[inline(always)]
+    pub fn min(self, other: Self) -> Self {
+        let a = self.to_array();
+        let b = other.to_array();
+        Self::from_array([a[0].min(b[0]), a[1].min(b[1])])
+    }
+    #[inline(always)]
+    pub fn max(self, other: Self) -> Self {
+        let a = self.to_array();
+        let b = other.to_array();
+        Self::from_array([a[0].max(b[0]), a[1].max(b[1])])
+    }
+}
+
+// ── Polyfills for wider lanes (scalar arrays) ─────────────────────────────
+
+#[allow(unused_macros)]
+macro_rules! neon_int_polyfill {
+    ($name:ident, $elem:ty, $lanes:expr, $zero:expr, $mask:ty) => {
+        #[derive(Copy, Clone)]
+        #[repr(align(64))]
+        pub struct $name(pub [$elem; $lanes]);
+
+        impl $name {
+            pub const LANES: usize = $lanes;
+            #[inline(always)]
+            pub fn splat(v: $elem) -> Self {
+                Self([v; $lanes])
+            }
+            #[inline(always)]
+            pub fn zero() -> Self {
+                Self([$zero; $lanes])
+            }
+            #[inline(always)]
+            pub fn from_slice(s: &[$elem]) -> Self {
+                assert!(s.len() >= $lanes);
+                let mut a = [$zero; $lanes];
+                a.copy_from_slice(&s[..$lanes]);
+                Self(a)
+            }
+            #[inline(always)]
+            pub fn from_array(a: [$elem; $lanes]) -> Self {
+                Self(a)
+            }
+            #[inline(always)]
+            pub fn to_array(self) -> [$elem; $lanes] {
+                self.0
+            }
+            #[inline(always)]
+            pub fn copy_to_slice(self, s: &mut [$elem]) {
+                assert!(s.len() >= $lanes);
+                s[..$lanes].copy_from_slice(&self.0);
+            }
+            #[inline(always)]
+            pub fn add(self, other: Self) -> Self {
+                let mut o = [$zero; $lanes];
+                for i in 0..$lanes {
+                    o[i] = self.0[i].wrapping_add(other.0[i]);
+                }
+                Self(o)
+            }
+            #[inline(always)]
+            pub fn sub(self, other: Self) -> Self {
+                let mut o = [$zero; $lanes];
+                for i in 0..$lanes {
+                    o[i] = self.0[i].wrapping_sub(other.0[i]);
+                }
+                Self(o)
+            }
+            #[inline(always)]
+            pub fn min(self, other: Self) -> Self {
+                let mut o = [$zero; $lanes];
+                for i in 0..$lanes {
+                    o[i] = self.0[i].min(other.0[i]);
+                }
+                Self(o)
+            }
+            #[inline(always)]
+            pub fn max(self, other: Self) -> Self {
+                let mut o = [$zero; $lanes];
+                for i in 0..$lanes {
+                    o[i] = self.0[i].max(other.0[i]);
+                }
+                Self(o)
+            }
+            #[inline(always)]
+            pub fn cmp_gt(self, other: Self) -> $mask {
+                let mut m: $mask = 0;
+                for i in 0..$lanes {
+                    if self.0[i] > other.0[i] {
+                        m |= (1 as $mask) << i;
+                    }
+                }
+                m
+            }
+        }
+        impl core::fmt::Debug for $name {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                write!(f, concat!(stringify!($name), "({:?})"), &self.0[..])
+            }
+        }
+        impl PartialEq for $name {
+            fn eq(&self, other: &Self) -> bool {
+                self.0 == other.0
+            }
+        }
+    };
+}
+
+#[cfg(target_arch = "aarch64")]
+neon_int_polyfill!(I8x32, i8, 32, 0i8, u32);
+#[cfg(target_arch = "aarch64")]
+neon_int_polyfill!(I8x64, i8, 64, 0i8, u64);
+#[cfg(target_arch = "aarch64")]
+neon_int_polyfill!(I16x16, i16, 16, 0i16, u16);
+#[cfg(target_arch = "aarch64")]
+neon_int_polyfill!(I16x32, i16, 32, 0i16, u32);
+
+#[cfg(target_arch = "aarch64")]
+#[allow(non_camel_case_types)]
+pub type i8x16 = I8x16;
+#[cfg(target_arch = "aarch64")]
+#[allow(non_camel_case_types)]
+pub type i16x8 = I16x8;
+#[cfg(target_arch = "aarch64")]
+#[allow(non_camel_case_types)]
+pub type i8x32 = I8x32;
+#[cfg(target_arch = "aarch64")]
+#[allow(non_camel_case_types)]
+pub type i8x64 = I8x64;
+#[cfg(target_arch = "aarch64")]
+#[allow(non_camel_case_types)]
+pub type i16x16 = I16x16;
+#[cfg(target_arch = "aarch64")]
+#[allow(non_camel_case_types)]
+pub type i16x32 = I16x32;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Tests (run on x86 as compile-check, actual NEON tests need aarch64)
@@ -461,8 +1854,7 @@ mod tests {
             let h = f32_to_f16_scalar(v);
             let back = f16_to_f32_scalar(h);
             let err = (v - back).abs() / v.abs().max(1e-10);
-            assert!(err < 0.01 || v == 0.0,
-                "f16 roundtrip failed for {}: got {}, err={:.4}", v, back, err);
+            assert!(err < 0.01 || v == 0.0, "f16 roundtrip failed for {}: got {}, err={:.4}", v, back, err);
         }
     }
 
@@ -483,14 +1875,19 @@ mod tests {
 
     #[test]
     fn f16_batch_matches_scalar() {
-        let input: Vec<u16> = (0..100).map(|i| f32_to_f16_scalar(i as f32 * 0.1 - 5.0)).collect();
+        let input: Vec<u16> = (0..100)
+            .map(|i| f32_to_f16_scalar(i as f32 * 0.1 - 5.0))
+            .collect();
         let mut batch_out = vec![0.0f32; 100];
         f16_to_f32_batch(&input, &mut batch_out);
 
         for (i, &h) in input.iter().enumerate() {
             let scalar = f16_to_f32_scalar(h);
-            assert_eq!(batch_out[i], scalar,
-                "batch/scalar mismatch at {}: batch={} scalar={}", i, batch_out[i], scalar);
+            assert_eq!(
+                batch_out[i], scalar,
+                "batch/scalar mismatch at {}: batch={} scalar={}",
+                i, batch_out[i], scalar
+            );
         }
     }
 
@@ -506,8 +1903,15 @@ mod tests {
         for i in 0..50 {
             let err = (input[i] - f32_back[i]).abs();
             // f16 has ~3 decimal digits of precision
-            assert!(err < 0.1 || input[i].abs() < 0.001,
-                "roundtrip error at {}: {} → {} → {}, err={}", i, input[i], f16_out[i], f32_back[i], err);
+            assert!(
+                err < 0.1 || input[i].abs() < 0.001,
+                "roundtrip error at {}: {} → {} → {}, err={}",
+                i,
+                input[i],
+                f16_out[i],
+                f32_back[i],
+                err
+            );
         }
     }
 }

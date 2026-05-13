@@ -10,8 +10,7 @@
 use crate::imp_prelude::*;
 
 /// # Methods For 2-D Arrays
-impl<A> ArrayRef<A, Ix2>
-{
+impl<A> ArrayRef<A, Ix2> {
     /// Return an array view of row `index`.
     ///
     /// **Panics** if `index` is out of bounds.
@@ -22,8 +21,7 @@ impl<A> ArrayRef<A, Ix2>
     /// assert_eq!(array.row(0), array![1., 2.]);
     /// ```
     #[track_caller]
-    pub fn row(&self, index: Ix) -> ArrayView1<'_, A>
-    {
+    pub fn row(&self, index: Ix) -> ArrayView1<'_, A> {
         self.index_axis(Axis(0), index)
     }
 
@@ -38,14 +36,12 @@ impl<A> ArrayRef<A, Ix2>
     /// assert_eq!(array, array![[1., 5.], [3., 4.]]);
     /// ```
     #[track_caller]
-    pub fn row_mut(&mut self, index: Ix) -> ArrayViewMut1<'_, A>
-    {
+    pub fn row_mut(&mut self, index: Ix) -> ArrayViewMut1<'_, A> {
         self.index_axis_mut(Axis(0), index)
     }
 }
 
-impl<A> LayoutRef<A, Ix2>
-{
+impl<A> LayoutRef<A, Ix2> {
     /// Return the number of rows (length of `Axis(0)`) in the two-dimensional array.
     ///
     /// ```
@@ -63,14 +59,12 @@ impl<A> LayoutRef<A, Ix2>
     /// // get length of any particular axis with .len_of()
     /// assert_eq!(m, array.len_of(Axis(0)));
     /// ```
-    pub fn nrows(&self) -> usize
-    {
+    pub fn nrows(&self) -> usize {
         self.len_of(Axis(0))
     }
 }
 
-impl<A> ArrayRef<A, Ix2>
-{
+impl<A> ArrayRef<A, Ix2> {
     /// Return an array view of column `index`.
     ///
     /// **Panics** if `index` is out of bounds.
@@ -81,8 +75,7 @@ impl<A> ArrayRef<A, Ix2>
     /// assert_eq!(array.column(0), array![1., 3.]);
     /// ```
     #[track_caller]
-    pub fn column(&self, index: Ix) -> ArrayView1<'_, A>
-    {
+    pub fn column(&self, index: Ix) -> ArrayView1<'_, A> {
         self.index_axis(Axis(1), index)
     }
 
@@ -97,14 +90,12 @@ impl<A> ArrayRef<A, Ix2>
     /// assert_eq!(array, array![[1., 2.], [5., 4.]]);
     /// ```
     #[track_caller]
-    pub fn column_mut(&mut self, index: Ix) -> ArrayViewMut1<'_, A>
-    {
+    pub fn column_mut(&mut self, index: Ix) -> ArrayViewMut1<'_, A> {
         self.index_axis_mut(Axis(1), index)
     }
 }
 
-impl<A> LayoutRef<A, Ix2>
-{
+impl<A> LayoutRef<A, Ix2> {
     /// Return the number of columns (length of `Axis(1)`) in the two-dimensional array.
     ///
     /// ```
@@ -122,8 +113,7 @@ impl<A> LayoutRef<A, Ix2>
     /// // get length of any particular axis with .len_of()
     /// assert_eq!(n, array.len_of(Axis(1)));
     /// ```
-    pub fn ncols(&self) -> usize
-    {
+    pub fn ncols(&self) -> usize {
         self.len_of(Axis(1))
     }
 
@@ -142,15 +132,13 @@ impl<A> LayoutRef<A, Ix2>
     /// let array = array![[1., 2., 5.], [3., 4., 6.]];
     /// assert!(!array.is_square());
     /// ```
-    pub fn is_square(&self) -> bool
-    {
+    pub fn is_square(&self) -> bool {
         let (m, n) = self.dim();
         m == n
     }
 }
 
-impl<S: RawData> ArrayBase<S, Ix2>
-{
+impl<S: RawData> ArrayBase<S, Ix2> {
     /// Return the number of rows (length of `Axis(0)`) in the two-dimensional array.
     ///
     /// ```
@@ -168,8 +156,7 @@ impl<S: RawData> ArrayBase<S, Ix2>
     /// // get length of any particular axis with .len_of()
     /// assert_eq!(m, array.len_of(Axis(0)));
     /// ```
-    pub fn nrows(&self) -> usize
-    {
+    pub fn nrows(&self) -> usize {
         self.as_layout_ref().nrows()
     }
 
@@ -190,8 +177,7 @@ impl<S: RawData> ArrayBase<S, Ix2>
     /// // get length of any particular axis with .len_of()
     /// assert_eq!(n, array.len_of(Axis(1)));
     /// ```
-    pub fn ncols(&self) -> usize
-    {
+    pub fn ncols(&self) -> usize {
         self.as_layout_ref().ncols()
     }
 
@@ -210,8 +196,7 @@ impl<S: RawData> ArrayBase<S, Ix2>
     /// let array = array![[1., 2., 5.], [3., 4., 6.]];
     /// assert!(!array.is_square());
     /// ```
-    pub fn is_square(&self) -> bool
-    {
+    pub fn is_square(&self) -> bool {
         self.as_layout_ref().is_square()
     }
 }

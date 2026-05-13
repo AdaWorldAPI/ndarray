@@ -10,7 +10,10 @@ pub struct ChainPruner {
 impl ChainPruner {
     /// Default: Berry-Esseen noise floor at d=17 (Base17 dimensions).
     pub fn new(max_branches: usize) -> Self {
-        Self { noise_floor: 0.01, max_branches }
+        Self {
+            noise_floor: 0.01,
+            max_branches,
+        }
     }
 
     /// Prune chain: keep branches where L1 from accumulated bundle exceeds noise floor.
@@ -29,7 +32,9 @@ impl ChainPruner {
                     bundle.dims[d] = ((bundle.dims[d] as i32 + chain[i].dims[d] as i32) / 2) as i16;
                 }
             }
-            if kept.len() >= self.max_branches { break; }
+            if kept.len() >= self.max_branches {
+                break;
+            }
         }
         kept
     }
@@ -43,9 +48,9 @@ mod tests {
     fn test_prune_keeps_novel() {
         let chain = vec![
             Base17 { dims: [0; 17] },
-            Base17 { dims: [1000; 17] },  // very different -> keep
-            Base17 { dims: [1; 17] },     // near duplicate of bundle -> prune
-            Base17 { dims: [2000; 17] },  // very different -> keep
+            Base17 { dims: [1000; 17] }, // very different -> keep
+            Base17 { dims: [1; 17] },    // near duplicate of bundle -> prune
+            Base17 { dims: [2000; 17] }, // very different -> keep
         ];
         let pruner = ChainPruner::new(10);
         let kept = pruner.prune(&chain);
@@ -56,9 +61,11 @@ mod tests {
 
     #[test]
     fn test_prune_respects_max() {
-        let chain: Vec<Base17> = (0..20).map(|i| {
-            Base17 { dims: [(i * 1000) as i16; 17] }
-        }).collect();
+        let chain: Vec<Base17> = (0..20)
+            .map(|i| Base17 {
+                dims: [(i * 1000) as i16; 17],
+            })
+            .collect();
         let pruner = ChainPruner::new(3);
         let kept = pruner.prune(&chain);
         assert!(kept.len() <= 3);

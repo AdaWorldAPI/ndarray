@@ -32,17 +32,14 @@ const AXIS_2D_OVERFLOW_LIMIT: usize = 22;
 const ELLIPSIS: &str = "...";
 
 #[derive(Clone, Debug)]
-struct FormatOptions
-{
+struct FormatOptions {
     axis_collapse_limit: usize,
     axis_collapse_limit_next_last: usize,
     axis_collapse_limit_last: usize,
 }
 
-impl FormatOptions
-{
-    pub(crate) fn default_for_array(nelem: usize, no_limit: bool) -> Self
-    {
+impl FormatOptions {
+    pub(crate) fn default_for_array(nelem: usize, no_limit: bool) -> Self {
         let default = Self {
             axis_collapse_limit: AXIS_LIMIT_STACKED,
             axis_collapse_limit_next_last: AXIS_LIMIT_COL,
@@ -51,8 +48,7 @@ impl FormatOptions
         default.set_no_limit(no_limit || nelem < ARRAY_MANY_ELEMENT_LIMIT)
     }
 
-    fn set_no_limit(mut self, no_limit: bool) -> Self
-    {
+    fn set_no_limit(mut self, no_limit: bool) -> Self {
         if no_limit {
             self.axis_collapse_limit = usize::MAX;
             self.axis_collapse_limit_next_last = usize::MAX;
@@ -63,8 +59,7 @@ impl FormatOptions
 
     /// Axis length collapse limit before ellipsizing, where `axis_rindex` is
     /// the index of the axis from the back.
-    pub(crate) fn collapse_limit(&self, axis_rindex: usize) -> usize
-    {
+    pub(crate) fn collapse_limit(&self, axis_rindex: usize) -> usize {
         match axis_rindex {
             0 => self.axis_collapse_limit_last,
             1 => self.axis_collapse_limit_next_last,
@@ -88,8 +83,7 @@ impl FormatOptions
 fn format_with_overflow(
     f: &mut fmt::Formatter<'_>, length: usize, limit: usize, separator: &str, ellipsis: &str,
     fmt_elem: &mut dyn FnMut(&mut fmt::Formatter, usize) -> fmt::Result,
-) -> fmt::Result
-{
+) -> fmt::Result {
     if length == 0 {
         // no-op
     } else if length <= limit {
@@ -175,10 +169,10 @@ where
 ///
 /// The array is shown in multiline style.
 impl<A: fmt::Display, S, D: Dimension> fmt::Display for ArrayBase<S, D>
-where S: Data<Elem = A>
+where
+    S: Data<Elem = A>,
 {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
-    {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         (**self).fmt(f)
     }
 }
@@ -187,10 +181,8 @@ where S: Data<Elem = A>
 /// used to each element.
 ///
 /// The array is shown in multiline style.
-impl<A: fmt::Display, D: Dimension> fmt::Display for ArrayRef<A, D>
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
-    {
+impl<A: fmt::Display, D: Dimension> fmt::Display for ArrayRef<A, D> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let fmt_opt = FormatOptions::default_for_array(self.len(), f.alternate());
         format_array(self, f, <_>::fmt, &fmt_opt)
     }
@@ -201,10 +193,10 @@ impl<A: fmt::Display, D: Dimension> fmt::Display for ArrayRef<A, D>
 ///
 /// The array is shown in multiline style.
 impl<A: fmt::Debug, S, D: Dimension> fmt::Debug for ArrayBase<S, D>
-where S: Data<Elem = A>
+where
+    S: Data<Elem = A>,
 {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
-    {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         (**self).fmt(f)
     }
 }
@@ -213,21 +205,13 @@ where S: Data<Elem = A>
 /// to each element.
 ///
 /// The array is shown in multiline style.
-impl<A: fmt::Debug, D: Dimension> fmt::Debug for ArrayRef<A, D>
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
-    {
+impl<A: fmt::Debug, D: Dimension> fmt::Debug for ArrayRef<A, D> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let fmt_opt = FormatOptions::default_for_array(self.len(), f.alternate());
         format_array(self, f, <_>::fmt, &fmt_opt)?;
 
         // Add extra information for Debug
-        write!(
-            f,
-            ", shape={:?}, strides={:?}, layout={:?}",
-            self.shape(),
-            self.strides(),
-            self.view().layout(),
-        )?;
+        write!(f, ", shape={:?}, strides={:?}, layout={:?}", self.shape(), self.strides(), self.view().layout(),)?;
         match D::NDIM {
             Some(ndim) => write!(f, ", const ndim={}", ndim)?,
             None => write!(f, ", dynamic ndim={}", self.ndim())?,
@@ -241,10 +225,10 @@ impl<A: fmt::Debug, D: Dimension> fmt::Debug for ArrayRef<A, D>
 ///
 /// The array is shown in multiline style.
 impl<A: fmt::LowerExp, S, D: Dimension> fmt::LowerExp for ArrayBase<S, D>
-where S: Data<Elem = A>
+where
+    S: Data<Elem = A>,
 {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
-    {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         (**self).fmt(f)
     }
 }
@@ -253,10 +237,8 @@ where S: Data<Elem = A>
 /// to each element.
 ///
 /// The array is shown in multiline style.
-impl<A: fmt::LowerExp, D: Dimension> fmt::LowerExp for ArrayRef<A, D>
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
-    {
+impl<A: fmt::LowerExp, D: Dimension> fmt::LowerExp for ArrayRef<A, D> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let fmt_opt = FormatOptions::default_for_array(self.len(), f.alternate());
         format_array(self, f, <_>::fmt, &fmt_opt)
     }
@@ -267,10 +249,10 @@ impl<A: fmt::LowerExp, D: Dimension> fmt::LowerExp for ArrayRef<A, D>
 ///
 /// The array is shown in multiline style.
 impl<A: fmt::UpperExp, S, D: Dimension> fmt::UpperExp for ArrayBase<S, D>
-where S: Data<Elem = A>
+where
+    S: Data<Elem = A>,
 {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
-    {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         (**self).fmt(f)
     }
 }
@@ -279,10 +261,8 @@ where S: Data<Elem = A>
 /// to each element.
 ///
 /// The array is shown in multiline style.
-impl<A: fmt::UpperExp, D: Dimension> fmt::UpperExp for ArrayRef<A, D>
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
-    {
+impl<A: fmt::UpperExp, D: Dimension> fmt::UpperExp for ArrayRef<A, D> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let fmt_opt = FormatOptions::default_for_array(self.len(), f.alternate());
         format_array(self, f, <_>::fmt, &fmt_opt)
     }
@@ -293,10 +273,10 @@ impl<A: fmt::UpperExp, D: Dimension> fmt::UpperExp for ArrayRef<A, D>
 ///
 /// The array is shown in multiline style.
 impl<A: fmt::LowerHex, S, D: Dimension> fmt::LowerHex for ArrayBase<S, D>
-where S: Data<Elem = A>
+where
+    S: Data<Elem = A>,
 {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
-    {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         (**self).fmt(f)
     }
 }
@@ -305,10 +285,8 @@ where S: Data<Elem = A>
 /// to each element.
 ///
 /// The array is shown in multiline style.
-impl<A: fmt::LowerHex, D: Dimension> fmt::LowerHex for ArrayRef<A, D>
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
-    {
+impl<A: fmt::LowerHex, D: Dimension> fmt::LowerHex for ArrayRef<A, D> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let fmt_opt = FormatOptions::default_for_array(self.len(), f.alternate());
         format_array(self, f, <_>::fmt, &fmt_opt)
     }
@@ -319,10 +297,10 @@ impl<A: fmt::LowerHex, D: Dimension> fmt::LowerHex for ArrayRef<A, D>
 ///
 /// The array is shown in multiline style.
 impl<A: fmt::Binary, S, D: Dimension> fmt::Binary for ArrayBase<S, D>
-where S: Data<Elem = A>
+where
+    S: Data<Elem = A>,
 {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
-    {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         (**self).fmt(f)
     }
 }
@@ -331,18 +309,15 @@ where S: Data<Elem = A>
 /// to each element.
 ///
 /// The array is shown in multiline style.
-impl<A: fmt::Binary, D: Dimension> fmt::Binary for ArrayRef<A, D>
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
-    {
+impl<A: fmt::Binary, D: Dimension> fmt::Binary for ArrayRef<A, D> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let fmt_opt = FormatOptions::default_for_array(self.len(), f.alternate());
         format_array(self, f, <_>::fmt, &fmt_opt)
     }
 }
 
 #[cfg(test)]
-mod formatting_with_omit
-{
+mod formatting_with_omit {
     #[cfg(not(feature = "std"))]
     use alloc::string::String;
     #[cfg(not(feature = "std"))]
@@ -352,19 +327,12 @@ mod formatting_with_omit
     use super::*;
     use crate::prelude::*;
 
-    fn assert_str_eq(expected: &str, actual: &str)
-    {
+    fn assert_str_eq(expected: &str, actual: &str) {
         // use assert to avoid printing the strings twice on failure
-        assert!(
-            expected == actual,
-            "formatting assertion failed\nexpected:\n{}\nactual:\n{}\n",
-            expected,
-            actual,
-        );
+        assert!(expected == actual, "formatting assertion failed\nexpected:\n{}\nactual:\n{}\n", expected, actual,);
     }
 
-    fn ellipsize(limit: usize, sep: &str, elements: impl IntoIterator<Item = impl fmt::Display>) -> String
-    {
+    fn ellipsize(limit: usize, sep: &str, elements: impl IntoIterator<Item = impl fmt::Display>) -> String {
         let elements = elements.into_iter().collect::<Vec<_>>();
         let edge = limit / 2;
         if elements.len() <= limit {
@@ -382,8 +350,7 @@ mod formatting_with_omit
     }
 
     #[test]
-    fn empty_arrays()
-    {
+    fn empty_arrays() {
         let a: Array2<u32> = arr2(&[[], []]);
         let actual = format!("{}", a);
         let expected = "[[]]";
@@ -391,8 +358,7 @@ mod formatting_with_omit
     }
 
     #[test]
-    fn zero_length_axes()
-    {
+    fn zero_length_axes() {
         let a = Array3::<f32>::zeros((3, 0, 4));
         let actual = format!("{}", a);
         let expected = "[[[]]]";
@@ -400,8 +366,7 @@ mod formatting_with_omit
     }
 
     #[test]
-    fn dim_0()
-    {
+    fn dim_0() {
         let element = 12;
         let a = arr0(element);
         let actual = format!("{}", a);
@@ -410,8 +375,7 @@ mod formatting_with_omit
     }
 
     #[test]
-    fn dim_1()
-    {
+    fn dim_1() {
         let overflow: usize = 2;
         let a = Array1::from_elem(ARRAY_MANY_ELEMENT_LIMIT + overflow, 1);
         let actual = format!("{}", a);
@@ -420,8 +384,7 @@ mod formatting_with_omit
     }
 
     #[test]
-    fn dim_1_alternate()
-    {
+    fn dim_1_alternate() {
         let overflow: usize = 2;
         let a = Array1::from_elem(ARRAY_MANY_ELEMENT_LIMIT + overflow, 1);
         let actual = format!("{:#}", a);
@@ -430,8 +393,7 @@ mod formatting_with_omit
     }
 
     #[test]
-    fn dim_2_last_axis_overflow()
-    {
+    fn dim_2_last_axis_overflow() {
         let overflow: usize = 2;
         let a = Array2::from_elem((AXIS_2D_OVERFLOW_LIMIT, AXIS_2D_OVERFLOW_LIMIT + overflow), 1);
         let actual = format!("{}", a);
@@ -451,21 +413,16 @@ mod formatting_with_omit
     }
 
     #[test]
-    fn dim_2_non_last_axis_overflow()
-    {
+    fn dim_2_non_last_axis_overflow() {
         let a = Array2::from_elem((ARRAY_MANY_ELEMENT_LIMIT / 10, 10), 1);
         let actual = format!("{}", a);
         let row = format!("{}", a.row(0));
-        let expected = format!(
-            "[{}]",
-            ellipsize(AXIS_LIMIT_COL, ",\n ", (0..a.nrows()).map(|_| &row))
-        );
+        let expected = format!("[{}]", ellipsize(AXIS_LIMIT_COL, ",\n ", (0..a.nrows()).map(|_| &row)));
         assert_str_eq(&expected, &actual);
     }
 
     #[test]
-    fn dim_2_non_last_axis_overflow_alternate()
-    {
+    fn dim_2_non_last_axis_overflow_alternate() {
         let a = Array2::from_elem((AXIS_LIMIT_COL * 4, 6), 1);
         let actual = format!("{:#}", a);
         let row = format!("{}", a.row(0));
@@ -474,22 +431,17 @@ mod formatting_with_omit
     }
 
     #[test]
-    fn dim_2_multi_directional_overflow()
-    {
+    fn dim_2_multi_directional_overflow() {
         let overflow: usize = 2;
         let a = Array2::from_elem((AXIS_2D_OVERFLOW_LIMIT + overflow, AXIS_2D_OVERFLOW_LIMIT + overflow), 1);
         let actual = format!("{}", a);
         let row = format!("[{}]", ellipsize(AXIS_LIMIT_ROW, ", ", a.row(0)));
-        let expected = format!(
-            "[{}]",
-            ellipsize(AXIS_LIMIT_COL, ",\n ", (0..a.nrows()).map(|_| &row))
-        );
+        let expected = format!("[{}]", ellipsize(AXIS_LIMIT_COL, ",\n ", (0..a.nrows()).map(|_| &row)));
         assert_str_eq(&expected, &actual);
     }
 
     #[test]
-    fn dim_2_multi_directional_overflow_alternate()
-    {
+    fn dim_2_multi_directional_overflow_alternate() {
         let overflow: usize = 2;
         let a = Array2::from_elem((AXIS_2D_OVERFLOW_LIMIT + overflow, AXIS_2D_OVERFLOW_LIMIT + overflow), 1);
         let actual = format!("{:#}", a);
@@ -499,8 +451,7 @@ mod formatting_with_omit
     }
 
     #[test]
-    fn dim_3_overflow_most()
-    {
+    fn dim_3_overflow_most() {
         let a = Array3::from_shape_fn((AXIS_LIMIT_STACKED + 1, AXIS_LIMIT_COL, AXIS_LIMIT_ROW + 1), |(i, j, k)| {
             1000. + (100. * ((i as f64).sqrt() + (j as f64).sin() + k as f64)).round() / 100.
         });
@@ -583,8 +534,7 @@ mod formatting_with_omit
     }
 
     #[test]
-    fn dim_4_overflow_outer()
-    {
+    fn dim_4_overflow_outer() {
         let a = Array4::from_shape_fn((10, 10, 3, 3), |(i, j, k, l)| i + j + k + l);
         let actual = format!("{:2}", a);
         // Generated using NumPy with:

@@ -404,25 +404,21 @@ impl<'a, D> $trt<&'a ArrayRef<$scalar, D>> for $scalar
     );
 }
 
-mod arithmetic_ops
-{
+mod arithmetic_ops {
     use super::*;
     use crate::imp_prelude::*;
 
     use std::ops::*;
 
-    fn clone_opf<A: Clone, B: Clone, C>(f: impl Fn(A, B) -> C) -> impl FnMut(&A, &B) -> C
-    {
+    fn clone_opf<A: Clone, B: Clone, C>(f: impl Fn(A, B) -> C) -> impl FnMut(&A, &B) -> C {
         move |x, y| f(x.clone(), y.clone())
     }
 
-    fn clone_iopf<A: Clone, B: Clone>(f: impl Fn(A, B) -> A) -> impl FnMut(&mut A, &B)
-    {
+    fn clone_iopf<A: Clone, B: Clone>(f: impl Fn(A, B) -> A) -> impl FnMut(&mut A, &B) {
         move |x, y| *x = f(x.clone(), y.clone())
     }
 
-    fn clone_iopf_rev<A: Clone, B: Clone>(f: impl Fn(A, B) -> B) -> impl FnMut(&mut B, &A)
-    {
+    fn clone_iopf_rev<A: Clone, B: Clone>(f: impl Fn(A, B) -> B) -> impl FnMut(&mut B, &A) {
         move |x, y| *x = f(y.clone(), x.clone())
     }
 
@@ -499,8 +495,7 @@ mod arithmetic_ops
         type Output = Self;
 
         /// Perform an elementwise negation of `self` and return the result.
-        fn neg(mut self) -> Self
-        {
+        fn neg(mut self) -> Self {
             self.map_inplace(|elt| {
                 *elt = -elt.clone();
             });
@@ -518,8 +513,7 @@ mod arithmetic_ops
 
         /// Perform an elementwise negation of reference `self` and return the
         /// result as a new `Array`.
-        fn neg(self) -> Array<A, D>
-        {
+        fn neg(self) -> Array<A, D> {
             (&**self).neg()
         }
     }
@@ -533,8 +527,7 @@ mod arithmetic_ops
 
         /// Perform an elementwise negation of reference `self` and return the
         /// result as a new `Array`.
-        fn neg(self) -> Array<A, D>
-        {
+        fn neg(self) -> Array<A, D> {
             self.map(Neg::neg)
         }
     }
@@ -548,8 +541,7 @@ mod arithmetic_ops
         type Output = Self;
 
         /// Perform an elementwise unary not of `self` and return the result.
-        fn not(mut self) -> Self
-        {
+        fn not(mut self) -> Self {
             self.map_inplace(|elt| {
                 *elt = !elt.clone();
             });
@@ -567,8 +559,7 @@ mod arithmetic_ops
 
         /// Perform an elementwise unary not of reference `self` and return the
         /// result as a new `Array`.
-        fn not(self) -> Array<A, D>
-        {
+        fn not(self) -> Array<A, D> {
             (&**self).not()
         }
     }
@@ -582,15 +573,13 @@ mod arithmetic_ops
 
         /// Perform an elementwise unary not of reference `self` and return the
         /// result as a new `Array`.
-        fn not(self) -> Array<A, D>
-        {
+        fn not(self) -> Array<A, D> {
             self.map(Not::not)
         }
     }
 }
 
-mod assign_ops
-{
+mod assign_ops {
     use super::*;
     use crate::imp_prelude::*;
 
@@ -661,54 +650,14 @@ mod assign_ops
         };
     }
 
-    impl_assign_op!(
-        AddAssign,
-        add_assign,
-        "Perform `self += rhs` as elementwise addition (in place).\n"
-    );
-    impl_assign_op!(
-        SubAssign,
-        sub_assign,
-        "Perform `self -= rhs` as elementwise subtraction (in place).\n"
-    );
-    impl_assign_op!(
-        MulAssign,
-        mul_assign,
-        "Perform `self *= rhs` as elementwise multiplication (in place).\n"
-    );
-    impl_assign_op!(
-        DivAssign,
-        div_assign,
-        "Perform `self /= rhs` as elementwise division (in place).\n"
-    );
-    impl_assign_op!(
-        RemAssign,
-        rem_assign,
-        "Perform `self %= rhs` as elementwise remainder (in place).\n"
-    );
-    impl_assign_op!(
-        BitAndAssign,
-        bitand_assign,
-        "Perform `self &= rhs` as elementwise bit and (in place).\n"
-    );
-    impl_assign_op!(
-        BitOrAssign,
-        bitor_assign,
-        "Perform `self |= rhs` as elementwise bit or (in place).\n"
-    );
-    impl_assign_op!(
-        BitXorAssign,
-        bitxor_assign,
-        "Perform `self ^= rhs` as elementwise bit xor (in place).\n"
-    );
-    impl_assign_op!(
-        ShlAssign,
-        shl_assign,
-        "Perform `self <<= rhs` as elementwise left shift (in place).\n"
-    );
-    impl_assign_op!(
-        ShrAssign,
-        shr_assign,
-        "Perform `self >>= rhs` as elementwise right shift (in place).\n"
-    );
+    impl_assign_op!(AddAssign, add_assign, "Perform `self += rhs` as elementwise addition (in place).\n");
+    impl_assign_op!(SubAssign, sub_assign, "Perform `self -= rhs` as elementwise subtraction (in place).\n");
+    impl_assign_op!(MulAssign, mul_assign, "Perform `self *= rhs` as elementwise multiplication (in place).\n");
+    impl_assign_op!(DivAssign, div_assign, "Perform `self /= rhs` as elementwise division (in place).\n");
+    impl_assign_op!(RemAssign, rem_assign, "Perform `self %= rhs` as elementwise remainder (in place).\n");
+    impl_assign_op!(BitAndAssign, bitand_assign, "Perform `self &= rhs` as elementwise bit and (in place).\n");
+    impl_assign_op!(BitOrAssign, bitor_assign, "Perform `self |= rhs` as elementwise bit or (in place).\n");
+    impl_assign_op!(BitXorAssign, bitxor_assign, "Perform `self ^= rhs` as elementwise bit xor (in place).\n");
+    impl_assign_op!(ShlAssign, shl_assign, "Perform `self <<= rhs` as elementwise left shift (in place).\n");
+    impl_assign_op!(ShrAssign, shr_assign, "Perform `self >>= rhs` as elementwise right shift (in place).\n");
 }

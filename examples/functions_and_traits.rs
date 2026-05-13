@@ -18,8 +18,7 @@ use ndarray::{ArrayBase, ArrayRef, Data, DataMut, Dimension, LayoutRef, RawRef};
 ///
 /// This is probably the most common pattern for users.
 /// Once we have an array reference, we can go to [`RawRef`] and [`LayoutRef`] very easily.
-fn takes_arrref<A, D>(arr: &ArrayRef<A, D>)
-{
+fn takes_arrref<A, D>(arr: &ArrayRef<A, D>) {
     // Since `ArrayRef` implements `Deref` to `RawRef`, we can pass `arr` directly to a function
     // that takes `RawRef`. Similarly, since `RawRef` implements `Deref` to `LayoutRef`, we can pass
     // `arr` directly to a function that takes `LayoutRef`.
@@ -40,8 +39,7 @@ fn takes_arrref<A, D>(arr: &ArrayRef<A, D>)
 /// So, ***users should only accept `&mut ArrayRef` when they want to mutate data***.
 /// If they just want to mutate shape and strides, use `&mut LayoutRef` or `&AsMut<LayoutRef>`.
 #[allow(dead_code)]
-fn takes_arrref_mut<A, D>(arr: &mut ArrayRef<A, D>)
-{
+fn takes_arrref_mut<A, D>(arr: &mut ArrayRef<A, D>) {
     // We can do everything we did with a `&ArrayRef`
     takes_arrref(arr);
 
@@ -64,8 +62,7 @@ fn takes_arrref_mut<A, D>(arr: &mut ArrayRef<A, D>)
 ///
 /// Let's see what we can do with this array:
 #[allow(dead_code)]
-fn takes_base<S: Data, D>(arr: &ArrayBase<S, D>)
-{
+fn takes_base<S: Data, D>(arr: &ArrayBase<S, D>) {
     // First off: we can pass it to functions that accept `&ArrayRef`.
     //
     // This is always "cheap", in the sense that even if `arr` is an
@@ -83,8 +80,7 @@ fn takes_base<S: Data, D>(arr: &ArrayBase<S, D>)
 
 /// Now, let's take a mutable reference to an `ArrayBase` - but let's keep `S: Data`, such
 /// that we are allowed to change the _layout_ of the array, but not its data.
-fn takes_base_mut<S: Data, D>(arr: &mut ArrayBase<S, D>)
-{
+fn takes_base_mut<S: Data, D>(arr: &mut ArrayBase<S, D>) {
     // Of course we can call everything we did with a immutable reference:
     takes_base(arr);
 
@@ -108,8 +104,7 @@ fn takes_base_mut<S: Data, D>(arr: &mut ArrayBase<S, D>)
 ///
 /// Note that we require a constraint of `D: Dimension` to dereference to `&mut ArrayRef`.
 #[allow(dead_code)]
-fn takes_base_data_mut<S: DataMut, D: Dimension>(arr: &mut ArrayBase<S, D>)
-{
+fn takes_base_data_mut<S: DataMut, D: Dimension>(arr: &mut ArrayBase<S, D>) {
     // Of course, everything we can do with just `S: Data`:
     takes_base_mut(arr);
 
@@ -143,7 +138,8 @@ fn takes_layout_mut<A, D>(_arr: &mut LayoutRef<A, D>) {}
 /// without having to call `.as_ref` or `.as_layout_ref`.
 #[allow(dead_code)]
 fn takes_layout_asref<T, A, D>(_arr: &T)
-where T: AsRef<LayoutRef<A, D>> + ?Sized
+where
+    T: AsRef<LayoutRef<A, D>> + ?Sized,
 {
 }
 
@@ -153,7 +149,8 @@ where T: AsRef<LayoutRef<A, D>> + ?Sized
 /// `&mut ArcArray --(unshare)--> &mut ArrayRef -> &mut RawRef -> &mut LayoutRef`.
 #[allow(dead_code)]
 fn takes_layout_asmut<T, A, D>(_arr: &mut T)
-where T: AsMut<LayoutRef<A, D>> + ?Sized
+where
+    T: AsMut<LayoutRef<A, D>> + ?Sized,
 {
 }
 
@@ -167,16 +164,14 @@ where T: AsMut<LayoutRef<A, D>> + ?Sized
 /// Like `LayoutRef`, writing functions with `RawRef` can be done in a few ways.
 /// We start with a direct, immutable reference
 #[allow(dead_code)]
-fn takes_rawref<A, D>(arr: &RawRef<A, D>)
-{
+fn takes_rawref<A, D>(arr: &RawRef<A, D>) {
     takes_layout(arr);
     takes_layout_asref(arr);
 }
 
 /// We can also directly take a mutable reference.
 #[allow(dead_code)]
-fn takes_rawref_mut<A, D>(arr: &mut RawRef<A, D>)
-{
+fn takes_rawref_mut<A, D>(arr: &mut RawRef<A, D>) {
     takes_layout(arr);
     takes_layout_asmut(arr);
 }
@@ -185,7 +180,8 @@ fn takes_rawref_mut<A, D>(arr: &mut RawRef<A, D>)
 /// for the same reasons as for `LayoutRef`:
 #[allow(dead_code)]
 fn takes_rawref_asref<T, A, D>(_arr: &T)
-where T: AsRef<RawRef<A, D>> + ?Sized
+where
+    T: AsRef<RawRef<A, D>> + ?Sized,
 {
     takes_layout(_arr.as_ref());
     takes_layout_asref(_arr.as_ref());
@@ -194,7 +190,8 @@ where T: AsRef<RawRef<A, D>> + ?Sized
 /// Finally, mutably:
 #[allow(dead_code)]
 fn takes_rawref_asmut<T, A, D>(_arr: &mut T)
-where T: AsMut<RawRef<A, D>> + ?Sized
+where
+    T: AsMut<RawRef<A, D>> + ?Sized,
 {
     takes_layout_mut(_arr.as_mut());
     takes_layout_asmut(_arr.as_mut());

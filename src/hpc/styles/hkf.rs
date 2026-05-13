@@ -16,7 +16,9 @@ pub fn cross_domain_fuse(domain_a: &Base17, domain_b: &Base17, relation: &Base17
     let max_l1 = (17u32 * 65535) as f32;
     let mut fused_dims = [0i16; 17];
     for d in 0..17 {
-        fused_dims[d] = domain_a.dims[d].wrapping_add(relation.dims[d]).wrapping_add(domain_b.dims[d]);
+        fused_dims[d] = domain_a.dims[d]
+            .wrapping_add(relation.dims[d])
+            .wrapping_add(domain_b.dims[d]);
     }
     let fused = Base17 { dims: fused_dims };
 
@@ -24,8 +26,12 @@ pub fn cross_domain_fuse(domain_a: &Base17, domain_b: &Base17, relation: &Base17
     let mut ra_dims = [0i16; 17];
     let mut rb_dims = [0i16; 17];
     for d in 0..17 {
-        ra_dims[d] = fused.dims[d].wrapping_sub(relation.dims[d]).wrapping_sub(domain_b.dims[d]);
-        rb_dims[d] = fused.dims[d].wrapping_sub(relation.dims[d]).wrapping_sub(domain_a.dims[d]);
+        ra_dims[d] = fused.dims[d]
+            .wrapping_sub(relation.dims[d])
+            .wrapping_sub(domain_b.dims[d]);
+        rb_dims[d] = fused.dims[d]
+            .wrapping_sub(relation.dims[d])
+            .wrapping_sub(domain_a.dims[d]);
     }
     let ra = Base17 { dims: ra_dims };
     let rb = Base17 { dims: rb_dims };

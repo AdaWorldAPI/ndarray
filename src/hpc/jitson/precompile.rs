@@ -41,9 +41,7 @@ pub struct PrecompileQueue {
 
 impl PrecompileQueue {
     pub fn new() -> Self {
-        Self {
-            entries: Vec::new(),
-        }
+        Self { entries: Vec::new() }
     }
 
     /// Enqueue a template for precompilation. Returns the stable hash.

@@ -55,10 +55,7 @@ impl SurroundBundler {
             phases.push(Self::compute_phases(i, n_atoms));
         }
         let noise_floor = Self::euler_gamma_noise_floor();
-        SurroundBundler {
-            phases,
-            noise_floor,
-        }
+        SurroundBundler { phases, noise_floor }
     }
 
     /// Compute phase angles for atom `i` across all rotation planes.
@@ -281,14 +278,8 @@ impl SurroundMetadata {
     /// Create from 7 components (S, P, O, T, K, M, L).
     /// S, P, O are dense Fingerprint<256> (16Kbit).
     /// T, K, M, L are sparse Fingerprint<256> (16Kbit, low density).
-    pub fn from_components(
-        components: &[Fingerprint<256>; 7],
-        bundler: &SurroundBundler,
-    ) -> Self {
-        let f64_atoms: Vec<Vec<f64>> = components
-            .iter()
-            .map(fingerprint_to_f64)
-            .collect();
+    pub fn from_components(components: &[Fingerprint<256>; 7], bundler: &SurroundBundler) -> Self {
+        let f64_atoms: Vec<Vec<f64>> = components.iter().map(fingerprint_to_f64).collect();
         let f64_bundle = bundler.bundle_raw(&f64_atoms);
         let bundle = f64_to_fingerprint_128(&f64_bundle);
         SurroundMetadata { bundle, f64_bundle }
@@ -363,7 +354,9 @@ pub fn random_fingerprint_256(seed: u64) -> Fingerprint<256> {
     let mut words = [0u64; 256];
     let mut state = seed.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(1);
     for w in words.iter_mut() {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         *w = state;
     }
     Fingerprint::from_words(words)
@@ -377,7 +370,9 @@ pub fn sparse_fingerprint_256(seed: u64, density: f64) -> Fingerprint<256> {
     for w in words.iter_mut() {
         let mut word = 0u64;
         for bit in 0..64 {
-            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             if state < threshold {
                 word |= 1u64 << bit;
             }
@@ -452,9 +447,9 @@ mod tests {
 
         // Create 7 components with realistic density
         let components: [Fingerprint<256>; 7] = [
-            random_fingerprint_256(100), // S: dense
-            random_fingerprint_256(200), // P: dense
-            random_fingerprint_256(300), // O: dense
+            random_fingerprint_256(100),      // S: dense
+            random_fingerprint_256(200),      // P: dense
+            random_fingerprint_256(300),      // O: dense
             sparse_fingerprint_256(400, 0.1), // T: sparse
             sparse_fingerprint_256(500, 0.1), // K: sparse
             sparse_fingerprint_256(600, 0.1), // M: sparse
@@ -462,10 +457,7 @@ mod tests {
         ];
 
         // Convert to f64
-        let f64_atoms: Vec<Vec<f64>> = components
-            .iter()
-            .map(fingerprint_to_f64)
-            .collect();
+        let f64_atoms: Vec<Vec<f64>> = components.iter().map(fingerprint_to_f64).collect();
 
         // Bundle
         let bundle = bundler.bundle_raw(&f64_atoms);
@@ -501,29 +493,15 @@ mod tests {
             );
         }
 
-        eprintln!(
-            "\n  Mean fidelity: {:.6}",
-            fidelities.iter().sum::<f64>() / fidelities.len() as f64
-        );
-        eprintln!(
-            "  Min fidelity:  {:.6}",
-            fidelities.iter().cloned().fold(f64::INFINITY, f64::min)
-        );
+        eprintln!("\n  Mean fidelity: {:.6}", fidelities.iter().sum::<f64>() / fidelities.len() as f64);
+        eprintln!("  Min fidelity:  {:.6}", fidelities.iter().cloned().fold(f64::INFINITY, f64::min));
 
         // THRESHOLD: 100% classification accuracy (surround must beat mono)
-        assert!(
-            all_pass,
-            "FAIL: Not all 7 components correctly classified after recovery"
-        );
+        assert!(all_pass, "FAIL: Not all 7 components correctly classified after recovery");
 
         // Record: fidelity for each component
         for (i, f) in fidelities.iter().enumerate() {
-            assert!(
-                *f > 0.05,
-                "Component {} fidelity too low: {}",
-                COMPONENT_NAMES[i],
-                f
-            );
+            assert!(*f > 0.05, "Component {} fidelity too low: {}", COMPONENT_NAMES[i], f);
         }
     }
 
@@ -550,10 +528,7 @@ mod tests {
                 sparse_fingerprint_256(base_seed + 6, 0.1),
             ];
 
-            let f64_atoms: Vec<Vec<f64>> = components
-                .iter()
-                .map(fingerprint_to_f64)
-                .collect();
+            let f64_atoms: Vec<Vec<f64>> = components.iter().map(fingerprint_to_f64).collect();
 
             let bundle = bundler.bundle_raw(&f64_atoms);
 
@@ -584,11 +559,7 @@ mod tests {
         );
 
         // THRESHOLD: >95% classification accuracy across 700 recoveries
-        assert!(
-            accuracy > 0.95,
-            "FAIL: Classification accuracy {:.2}% < 95%",
-            accuracy * 100.0
-        );
+        assert!(accuracy > 0.95, "FAIL: Classification accuracy {:.2}% < 95%", accuracy * 100.0);
     }
 
     // ========================================================================
@@ -636,19 +607,16 @@ mod tests {
         eprintln!("\n  Full 7-component density mismatch:");
         let bundler7 = SurroundBundler::new(7);
         let components: [Fingerprint<256>; 7] = [
-            random_fingerprint_256(10),            // S: 50% fill
-            random_fingerprint_256(20),            // P: 50% fill
-            random_fingerprint_256(30),            // O: 50% fill
-            sparse_fingerprint_256(40, 0.05),      // T: 5% fill
-            sparse_fingerprint_256(50, 0.05),      // K: 5% fill
-            sparse_fingerprint_256(60, 0.05),      // M: 5% fill
-            sparse_fingerprint_256(70, 0.05),      // L: 5% fill
+            random_fingerprint_256(10),       // S: 50% fill
+            random_fingerprint_256(20),       // P: 50% fill
+            random_fingerprint_256(30),       // O: 50% fill
+            sparse_fingerprint_256(40, 0.05), // T: 5% fill
+            sparse_fingerprint_256(50, 0.05), // K: 5% fill
+            sparse_fingerprint_256(60, 0.05), // M: 5% fill
+            sparse_fingerprint_256(70, 0.05), // L: 5% fill
         ];
 
-        let f64_atoms: Vec<Vec<f64>> = components
-            .iter()
-            .map(fingerprint_to_f64)
-            .collect();
+        let f64_atoms: Vec<Vec<f64>> = components.iter().map(fingerprint_to_f64).collect();
         let bundle = bundler7.bundle_raw(&f64_atoms);
 
         let mut all_classified = true;
@@ -668,16 +636,10 @@ mod tests {
             if !ok {
                 all_classified = false;
             }
-            eprintln!(
-                "  {}: fid={:.4}, classified={} (best_match={})",
-                name, fid, ok, COMPONENT_NAMES[best_match]
-            );
+            eprintln!("  {}: fid={:.4}, classified={} (best_match={})", name, fid, ok, COMPONENT_NAMES[best_match]);
         }
 
-        assert!(
-            all_classified,
-            "FAIL: Density-mismatched components not all correctly classified"
-        );
+        assert!(all_classified, "FAIL: Density-mismatched components not all correctly classified");
     }
 
     // ========================================================================
@@ -705,10 +667,7 @@ mod tests {
                 sparse_fingerprint_256(seed + 5, 0.1),
                 sparse_fingerprint_256(seed + 6, 0.1),
             ];
-            let f64_atoms: Vec<Vec<f64>> = components
-                .iter()
-                .map(fingerprint_to_f64)
-                .collect();
+            let f64_atoms: Vec<Vec<f64>> = components.iter().map(fingerprint_to_f64).collect();
             let sm = SurroundMetadata::from_components(&components, &bundler);
             all_f64.push(f64_atoms);
             all_components.push(components);
@@ -734,8 +693,7 @@ mod tests {
             }
             all_components[i][0] = Fingerprint::from_words(blended_words);
             all_f64[i][0] = fingerprint_to_f64(&all_components[i][0]);
-            all_bundles[i] =
-                SurroundMetadata::from_components(&all_components[i], &bundler);
+            all_bundles[i] = SurroundMetadata::from_components(&all_components[i], &bundler);
         }
 
         // Query: find nodes similar in S component
@@ -775,9 +733,7 @@ mod tests {
         let mut full_separate: Vec<(usize, u32)> = (0..n_nodes)
             .map(|i| {
                 let total: u32 = (0..N_ATOMS)
-                    .map(|c| {
-                        all_components[query_idx][c].hamming_distance(&all_components[i][c])
-                    })
+                    .map(|c| all_components[query_idx][c].hamming_distance(&all_components[i][c]))
                     .sum();
                 (i, total)
             })
@@ -861,20 +817,11 @@ mod tests {
                     finest = d;
                 }
             }
-            let bf16 = bf16_from_projections(
-                &bands,
-                finest,
-                16384,
-                super::super::causality::CausalityDirection::None,
-            );
+            let bf16 = bf16_from_projections(&bands, finest, 16384, super::super::causality::CausalityDirection::None);
 
             // BF16 distance: simple XOR popcount
-            let bf16_zero = bf16_from_projections(
-                &[Band::Foveal; 7],
-                0,
-                16384,
-                super::super::causality::CausalityDirection::None,
-            );
+            let bf16_zero =
+                bf16_from_projections(&[Band::Foveal; 7], 0, 16384, super::super::causality::CausalityDirection::None);
             let bf16_d = (bf16 ^ bf16_zero).count_ones();
             bf16_dists.push(bf16_d as f64);
         }
@@ -902,11 +849,7 @@ mod tests {
         // it means BF16 is NOT a compressed version of the bundle.
         // They are complementary cascade levels, not redundant ones.
         // The assertion below documents this finding — any positive correlation is bonus.
-        assert!(
-            rho > -0.50,
-            "BF16-bundle correlation is strongly negative: ρ={:.4} (unexpected)",
-            rho
-        );
+        assert!(rho > -0.50, "BF16-bundle correlation is strongly negative: ρ={:.4} (unexpected)", rho);
     }
 
     // ========================================================================
@@ -923,8 +866,9 @@ mod tests {
         let n_nodes = clusters * per_cluster;
 
         // Create ground-truth clusters: each cluster shares similar S planes
-        let cluster_centers: Vec<Fingerprint<256>> =
-            (0..clusters).map(|c| random_fingerprint_256(c as u64 * 10000 + 7777)).collect();
+        let cluster_centers: Vec<Fingerprint<256>> = (0..clusters)
+            .map(|c| random_fingerprint_256(c as u64 * 10000 + 7777))
+            .collect();
 
         let mut labels = Vec::with_capacity(n_nodes);
         let mut bundle_bytes = Vec::with_capacity(n_nodes * 1024);
@@ -1032,10 +976,7 @@ mod tests {
         eprintln!("  Content CLAM tree nodes: {}", content_tree.nodes.len());
         eprintln!("  Bundle CLAM tree nodes:  {}", bundle_tree.nodes.len());
         eprintln!("  k-NN Recall@{} (content vs bundle): {:.2}", k, knn_recall);
-        eprintln!(
-            "  Cluster purity: content={:.2}, bundle={:.2}",
-            content_purity, bundle_purity
-        );
+        eprintln!("  Cluster purity: content={:.2}, bundle={:.2}", content_purity, bundle_purity);
 
         if bundle_purity > 0.9 * content_purity {
             eprintln!("  Verdict: GO — bundle CLAM ≥90% of content CLAM purity");
@@ -1118,18 +1059,10 @@ mod tests {
                     finest = d;
                 }
             }
-            let bf16_q = bf16_from_projections(
-                &[Band::Foveal; 7],
-                0,
-                16384,
-                super::super::causality::CausalityDirection::None,
-            );
-            let bf16_c = bf16_from_projections(
-                &bands,
-                finest,
-                16384,
-                super::super::causality::CausalityDirection::None,
-            );
+            let bf16_q =
+                bf16_from_projections(&[Band::Foveal; 7], 0, 16384, super::super::causality::CausalityDirection::None);
+            let bf16_c =
+                bf16_from_projections(&bands, finest, 16384, super::super::causality::CausalityDirection::None);
             let bf16_d = (bf16_q ^ bf16_c).count_ones();
             rank_bf16.push((ci, bf16_d as f64));
 
@@ -1182,8 +1115,7 @@ mod tests {
         let k = 10;
         let full_top_k: Vec<usize> = rank_full.iter().take(k).map(|&(i, _)| i).collect();
         let bundle_top_k: Vec<usize> = rank_bundle.iter().take(k * 2).map(|&(i, _)| i).collect();
-        let merkle_top_k: Vec<usize> =
-            rank_merkle.iter().take(k * 5).map(|&(i, _)| i).collect();
+        let merkle_top_k: Vec<usize> = rank_merkle.iter().take(k * 5).map(|&(i, _)| i).collect();
 
         let bundle_recall = full_top_k
             .iter()
@@ -1197,32 +1129,15 @@ mod tests {
             / k as f64;
 
         eprintln!("\n  Cascade recall (preserving full top-{}):", k);
-        eprintln!(
-            "    Bundle top-{} contains {:.0}% of full top-{}",
-            k * 2,
-            bundle_recall * 100.0,
-            k
-        );
-        eprintln!(
-            "    Merkle top-{} contains {:.0}% of full top-{}",
-            k * 5,
-            merkle_recall * 100.0,
-            k
-        );
+        eprintln!("    Bundle top-{} contains {:.0}% of full top-{}", k * 2, bundle_recall * 100.0, k);
+        eprintln!("    Merkle top-{} contains {:.0}% of full top-{}", k * 5, merkle_recall * 100.0, k);
 
         // Assess overall cascade coherence
-        let cascade_ok = rho_23 > 0.30;  // Bundle→Full must be positively correlated
-        eprintln!(
-            "\n  Overall cascade coherence: {}",
-            if cascade_ok { "GO" } else { "NO-GO" }
-        );
+        let cascade_ok = rho_23 > 0.30; // Bundle→Full must be positively correlated
+        eprintln!("\n  Overall cascade coherence: {}", if cascade_ok { "GO" } else { "NO-GO" });
 
         // At minimum, bundle→full must show positive correlation
-        assert!(
-            rho_23 > 0.0,
-            "Bundle→Full rank correlation is negative: {:.4}",
-            rho_23
-        );
+        assert!(rho_23 > 0.0, "Bundle→Full rank correlation is negative: {:.4}", rho_23);
     }
 
     /// Helper: convert sorted ranking to an array indexed by candidate ID
@@ -1253,12 +1168,7 @@ mod tests {
                 .zip(recovered.iter())
                 .map(|(a, b)| (a - b).abs())
                 .sum::<f64>();
-            assert!(
-                err < 1e-10,
-                "Rotation roundtrip error for atom {}: {}",
-                atom_idx,
-                err
-            );
+            assert!(err < 1e-10, "Rotation roundtrip error for atom {}: {}", atom_idx, err);
         }
     }
 
@@ -1274,10 +1184,6 @@ mod tests {
 
         // The f64 vector should be unit-normalized
         let norm: f64 = f64_v.iter().map(|x| x * x).sum::<f64>().sqrt();
-        assert!(
-            (norm - 1.0).abs() < 0.01,
-            "f64 vector not normalized: {}",
-            norm
-        );
+        assert!((norm - 1.0).abs() < 0.01, "f64 vector not normalized: {}", norm);
     }
 }

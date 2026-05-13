@@ -13,7 +13,9 @@ pub struct FusionResult {
 pub fn fuse(a: &Base17, b: &Base17) -> FusionResult {
     let max_l1 = (17u32 * 65535) as f32;
     let mut fused_dims = [0i16; 17];
-    for d in 0..17 { fused_dims[d] = a.dims[d].wrapping_add(b.dims[d]); }
+    for d in 0..17 {
+        fused_dims[d] = a.dims[d].wrapping_add(b.dims[d]);
+    }
     let fused = Base17 { dims: fused_dims };
     let mut recover_a_dims = [0i16; 17];
     let mut recover_b_dims = [0i16; 17];

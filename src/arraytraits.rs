@@ -22,17 +22,12 @@ use crate::Arc;
 use crate::{
     dimension,
     iter::{Iter, IterMut},
-    numeric_util,
-    FoldWhile,
-    NdIndex,
-    OwnedArcRepr,
-    Zip,
+    numeric_util, FoldWhile, NdIndex, OwnedArcRepr, Zip,
 };
 
 #[cold]
 #[inline(never)]
-pub(crate) fn array_out_of_bounds() -> !
-{
+pub(crate) fn array_out_of_bounds() -> ! {
     panic!("ndarray: index out of bounds");
 }
 
@@ -58,8 +53,7 @@ where
     type Output = A;
 
     #[inline]
-    fn index(&self, index: I) -> &Self::Output
-    {
+    fn index(&self, index: I) -> &Self::Output {
         debug_bounds_check_ref!(self, index);
         unsafe {
             &*self._ptr().as_ptr().offset(
@@ -80,8 +74,7 @@ where
     I: NdIndex<D>,
 {
     #[inline]
-    fn index_mut(&mut self, index: I) -> &mut A
-    {
+    fn index_mut(&mut self, index: I) -> &mut A {
         debug_bounds_check_ref!(self, index);
         unsafe {
             &mut *self.as_mut_ptr().offset(
@@ -105,8 +98,7 @@ where
     type Output = S::Elem;
 
     #[inline]
-    fn index(&self, index: I) -> &S::Elem
-    {
+    fn index(&self, index: I) -> &S::Elem {
         Index::index(&**self, index)
     }
 }
@@ -121,8 +113,7 @@ where
     S: DataMut,
 {
     #[inline]
-    fn index_mut(&mut self, index: I) -> &mut S::Elem
-    {
+    fn index_mut(&mut self, index: I) -> &mut S::Elem {
         IndexMut::index_mut(&mut (**self), index)
     }
 }
@@ -134,8 +125,7 @@ where
     A: PartialEq<B>,
     D: Dimension,
 {
-    fn eq(&self, rhs: &ArrayRef<B, D>) -> bool
-    {
+    fn eq(&self, rhs: &ArrayRef<B, D>) -> bool {
         if self.shape() != rhs.shape() {
             return false;
         }
@@ -164,8 +154,7 @@ where
     A: PartialEq<B>,
     D: Dimension,
 {
-    fn eq(&self, rhs: &&ArrayRef<B, D>) -> bool
-    {
+    fn eq(&self, rhs: &&ArrayRef<B, D>) -> bool {
         *self == **rhs
     }
 }
@@ -177,8 +166,7 @@ where
     A: PartialEq<B>,
     D: Dimension,
 {
-    fn eq(&self, rhs: &ArrayRef<B, D>) -> bool
-    {
+    fn eq(&self, rhs: &ArrayRef<B, D>) -> bool {
         **self == *rhs
     }
 }
@@ -199,8 +187,7 @@ where
     S2: Data<Elem = B>,
     D: Dimension,
 {
-    fn eq(&self, rhs: &ArrayBase<S2, D>) -> bool
-    {
+    fn eq(&self, rhs: &ArrayBase<S2, D>) -> bool {
         PartialEq::eq(&**self, &**rhs)
     }
 }
@@ -214,8 +201,7 @@ where
     S2: Data<Elem = B>,
     D: Dimension,
 {
-    fn eq(&self, rhs: &&ArrayBase<S2, D>) -> bool
-    {
+    fn eq(&self, rhs: &&ArrayBase<S2, D>) -> bool {
         *self == **rhs
     }
 }
@@ -229,8 +215,7 @@ where
     S2: Data<Elem = B>,
     D: Dimension,
 {
-    fn eq(&self, rhs: &ArrayBase<S2, D>) -> bool
-    {
+    fn eq(&self, rhs: &ArrayBase<S2, D>) -> bool {
         **self == *rhs
     }
 }
@@ -248,8 +233,7 @@ where
     A: PartialEq<B>,
     D: Dimension,
 {
-    fn eq(&self, other: &ArrayRef<B, D>) -> bool
-    {
+    fn eq(&self, other: &ArrayRef<B, D>) -> bool {
         **self == other
     }
 }
@@ -260,8 +244,7 @@ where
     A: PartialEq<B>,
     D: Dimension,
 {
-    fn eq(&self, other: &&ArrayRef<B, D>) -> bool
-    {
+    fn eq(&self, other: &&ArrayRef<B, D>) -> bool {
         **self == *other
     }
 }
@@ -272,8 +255,7 @@ where
     A: PartialEq<B>,
     D: Dimension,
 {
-    fn eq(&self, other: &ArrayRef<B, D>) -> bool
-    {
+    fn eq(&self, other: &ArrayRef<B, D>) -> bool {
         **self == other
     }
 }
@@ -284,8 +266,7 @@ where
     A: PartialEq<B>,
     D: Dimension,
 {
-    fn eq(&self, other: &ArrayBase<S, D>) -> bool
-    {
+    fn eq(&self, other: &ArrayBase<S, D>) -> bool {
         self == **other
     }
 }
@@ -296,8 +277,7 @@ where
     A: PartialEq<B>,
     D: Dimension,
 {
-    fn eq(&self, other: &&ArrayBase<S, D>) -> bool
-    {
+    fn eq(&self, other: &&ArrayBase<S, D>) -> bool {
         self == ***other
     }
 }
@@ -308,26 +288,26 @@ where
     A: PartialEq<B>,
     D: Dimension,
 {
-    fn eq(&self, other: &ArrayBase<S, D>) -> bool
-    {
+    fn eq(&self, other: &ArrayBase<S, D>) -> bool {
         *self == **other
     }
 }
 
 impl<A, S> From<Box<[A]>> for ArrayBase<S, Ix1>
-where S: DataOwned<Elem = A>
+where
+    S: DataOwned<Elem = A>,
 {
     /// Create a one-dimensional array from a boxed slice (no copying needed).
     ///
     /// **Panics** if the length is greater than `isize::MAX`.
-    fn from(b: Box<[A]>) -> Self
-    {
+    fn from(b: Box<[A]>) -> Self {
         Self::from_vec(b.into_vec())
     }
 }
 
 impl<A, S> From<Vec<A>> for ArrayBase<S, Ix1>
-where S: DataOwned<Elem = A>
+where
+    S: DataOwned<Elem = A>,
 {
     /// Create a one-dimensional array from a vector (no copying needed).
     ///
@@ -338,14 +318,14 @@ where S: DataOwned<Elem = A>
     ///
     /// let array = Array::from(vec![1., 2., 3., 4.]);
     /// ```
-    fn from(v: Vec<A>) -> Self
-    {
+    fn from(v: Vec<A>) -> Self {
         Self::from_vec(v)
     }
 }
 
 impl<A, S> FromIterator<A> for ArrayBase<S, Ix1>
-where S: DataOwned<Elem = A>
+where
+    S: DataOwned<Elem = A>,
 {
     /// Create a one-dimensional array from an iterable.
     ///
@@ -359,34 +339,35 @@ where S: DataOwned<Elem = A>
     /// assert!(array == arr1(&[0, 1, 4, 9, 16]))
     /// ```
     fn from_iter<I>(iterable: I) -> ArrayBase<S, Ix1>
-    where I: IntoIterator<Item = A>
+    where
+        I: IntoIterator<Item = A>,
     {
         Self::from_iter(iterable)
     }
 }
 
 impl<'a, A, D> IntoIterator for &'a ArrayRef<A, D>
-where D: Dimension
+where
+    D: Dimension,
 {
     type Item = &'a A;
 
     type IntoIter = Iter<'a, A, D>;
 
-    fn into_iter(self) -> Self::IntoIter
-    {
+    fn into_iter(self) -> Self::IntoIter {
         self.iter()
     }
 }
 
 impl<'a, A, D> IntoIterator for &'a mut ArrayRef<A, D>
-where D: Dimension
+where
+    D: Dimension,
 {
     type Item = &'a mut A;
 
     type IntoIter = IterMut<'a, A, D>;
 
-    fn into_iter(self) -> Self::IntoIter
-    {
+    fn into_iter(self) -> Self::IntoIter {
         self.iter_mut()
     }
 }
@@ -399,8 +380,7 @@ where
     type Item = &'a S::Elem;
     type IntoIter = Iter<'a, S::Elem, D>;
 
-    fn into_iter(self) -> Self::IntoIter
-    {
+    fn into_iter(self) -> Self::IntoIter {
         self.iter()
     }
 }
@@ -413,32 +393,31 @@ where
     type Item = &'a mut S::Elem;
     type IntoIter = IterMut<'a, S::Elem, D>;
 
-    fn into_iter(self) -> Self::IntoIter
-    {
+    fn into_iter(self) -> Self::IntoIter {
         self.iter_mut()
     }
 }
 
 impl<'a, A, D> IntoIterator for ArrayView<'a, A, D>
-where D: Dimension
+where
+    D: Dimension,
 {
     type Item = &'a A;
     type IntoIter = Iter<'a, A, D>;
 
-    fn into_iter(self) -> Self::IntoIter
-    {
+    fn into_iter(self) -> Self::IntoIter {
         Iter::new(self)
     }
 }
 
 impl<'a, A, D> IntoIterator for ArrayViewMut<'a, A, D>
-where D: Dimension
+where
+    D: Dimension,
 {
     type Item = &'a mut A;
     type IntoIter = IterMut<'a, A, D>;
 
-    fn into_iter(self) -> Self::IntoIter
-    {
+    fn into_iter(self) -> Self::IntoIter {
         IterMut::new(self)
     }
 }
@@ -449,8 +428,7 @@ where
     A: hash::Hash,
 {
     // Note: elements are hashed in the logical order
-    fn hash<H: hash::Hasher>(&self, state: &mut H)
-    {
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
         self.shape().hash(state);
         if let Some(self_s) = self.as_slice() {
             hash::Hash::hash_slice(self_s, state);
@@ -475,8 +453,7 @@ where
     S::Elem: hash::Hash,
 {
     // Note: elements are hashed in the logical order
-    fn hash<H: hash::Hasher>(&self, state: &mut H)
-    {
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
         (**self).hash(state)
     }
 }
@@ -517,13 +494,13 @@ pub const ARRAY_FORMAT_VERSION: u8 = 1u8;
 /// occur if `A` is zero-sized, because slices cannot contain more than
 /// `isize::MAX` number of bytes.)
 impl<'a, A, Slice: ?Sized> From<&'a Slice> for ArrayView<'a, A, Ix1>
-where Slice: AsRef<[A]>
+where
+    Slice: AsRef<[A]>,
 {
     /// Create a one-dimensional read-only array view of the data in `slice`.
     ///
     /// **Panics** if the slice length is greater than `isize::MAX`.
-    fn from(slice: &'a Slice) -> Self
-    {
+    fn from(slice: &'a Slice) -> Self {
         aview1(slice.as_ref())
     }
 }
@@ -533,11 +510,9 @@ where Slice: AsRef<[A]>
 /// **Panics** if the product of non-zero axis lengths overflows `isize` (This can only occur if A
 /// is zero-sized because slices cannot contain more than `isize::MAX` number of bytes).
 /// **Panics** if N == 0 and the number of rows is greater than isize::MAX.
-impl<'a, A, const M: usize, const N: usize> From<&'a [[A; N]; M]> for ArrayView<'a, A, Ix2>
-{
+impl<'a, A, const M: usize, const N: usize> From<&'a [[A; N]; M]> for ArrayView<'a, A, Ix2> {
     /// Create a two-dimensional read-only array view of the data in `slice`
-    fn from(xs: &'a [[A; N]; M]) -> Self
-    {
+    fn from(xs: &'a [[A; N]; M]) -> Self {
         Self::from(&xs[..])
     }
 }
@@ -547,11 +522,9 @@ impl<'a, A, const M: usize, const N: usize> From<&'a [[A; N]; M]> for ArrayView<
 /// **Panics** if the product of non-zero axis lengths overflows `isize`. (This
 /// can only occur if A is zero-sized or if `N` is zero, because slices cannot
 /// contain more than `isize::MAX` number of bytes.)
-impl<'a, A, const N: usize> From<&'a [[A; N]]> for ArrayView<'a, A, Ix2>
-{
+impl<'a, A, const N: usize> From<&'a [[A; N]]> for ArrayView<'a, A, Ix2> {
     /// Create a two-dimensional read-only array view of the data in `slice`
-    fn from(xs: &'a [[A; N]]) -> Self
-    {
+    fn from(xs: &'a [[A; N]]) -> Self {
         aview2(xs)
     }
 }
@@ -563,27 +536,23 @@ where
     D: Dimension,
 {
     /// Create a read-only array view of the array.
-    fn from(array: &'a ArrayBase<S, D>) -> Self
-    {
+    fn from(array: &'a ArrayBase<S, D>) -> Self {
         array.view()
     }
 }
 
 /// Implementation of `ArrayViewMut::from(&mut S)` where `S` is a slice or sliceable.
 impl<'a, A, Slice: ?Sized> From<&'a mut Slice> for ArrayViewMut<'a, A, Ix1>
-where Slice: AsMut<[A]>
+where
+    Slice: AsMut<[A]>,
 {
     /// Create a one-dimensional read-write array view of the data in `slice`.
     ///
     /// **Panics** if the slice length is greater than `isize::MAX`.
-    fn from(slice: &'a mut Slice) -> Self
-    {
+    fn from(slice: &'a mut Slice) -> Self {
         let xs = slice.as_mut();
         if mem::size_of::<A>() == 0 {
-            assert!(
-                xs.len() <= isize::MAX as usize,
-                "Slice length must fit in `isize`.",
-            );
+            assert!(xs.len() <= isize::MAX as usize, "Slice length must fit in `isize`.",);
         }
         unsafe { Self::from_shape_ptr(xs.len(), xs.as_mut_ptr()) }
     }
@@ -594,11 +563,9 @@ where Slice: AsMut<[A]>
 /// **Panics** if the product of non-zero axis lengths overflows `isize` (This can only occur if A
 /// is zero-sized because slices cannot contain more than `isize::MAX` number of bytes).
 /// **Panics** if N == 0 and the number of rows is greater than isize::MAX.
-impl<'a, A, const M: usize, const N: usize> From<&'a mut [[A; N]; M]> for ArrayViewMut<'a, A, Ix2>
-{
+impl<'a, A, const M: usize, const N: usize> From<&'a mut [[A; N]; M]> for ArrayViewMut<'a, A, Ix2> {
     /// Create a two-dimensional read-write array view of the data in `slice`
-    fn from(xs: &'a mut [[A; N]; M]) -> Self
-    {
+    fn from(xs: &'a mut [[A; N]; M]) -> Self {
         Self::from(&mut xs[..])
     }
 }
@@ -608,21 +575,16 @@ impl<'a, A, const M: usize, const N: usize> From<&'a mut [[A; N]; M]> for ArrayV
 /// **Panics** if the product of non-zero axis lengths overflows `isize`. (This
 /// can only occur if `A` is zero-sized or if `N` is zero, because slices
 /// cannot contain more than `isize::MAX` number of bytes.)
-impl<'a, A, const N: usize> From<&'a mut [[A; N]]> for ArrayViewMut<'a, A, Ix2>
-{
+impl<'a, A, const N: usize> From<&'a mut [[A; N]]> for ArrayViewMut<'a, A, Ix2> {
     /// Create a two-dimensional read-write array view of the data in `slice`
-    fn from(xs: &'a mut [[A; N]]) -> Self
-    {
+    fn from(xs: &'a mut [[A; N]]) -> Self {
         let cols = N;
         let rows = xs.len();
         let dim = Ix2(rows, cols);
         if size_of::<A>() == 0 {
             dimension::size_of_shape_checked(&dim).expect("Product of non-zero axis lengths must not overflow isize.");
         } else if N == 0 {
-            assert!(
-                xs.len() <= isize::MAX as usize,
-                "Product of non-zero axis lengths must not overflow isize.",
-            );
+            assert!(xs.len() <= isize::MAX as usize, "Product of non-zero axis lengths must not overflow isize.",);
         }
 
         // `cols * rows` is guaranteed to fit in `isize` because we checked that it fits in
@@ -641,17 +603,16 @@ where
     D: Dimension,
 {
     /// Create a read-write array view of the array.
-    fn from(array: &'a mut ArrayBase<S, D>) -> Self
-    {
+    fn from(array: &'a mut ArrayBase<S, D>) -> Self {
         array.view_mut()
     }
 }
 
 impl<A, D> From<Array<A, D>> for ArcArray<A, D>
-where D: Dimension
+where
+    D: Dimension,
 {
-    fn from(arr: Array<A, D>) -> ArcArray<A, D>
-    {
+    fn from(arr: Array<A, D>) -> ArcArray<A, D> {
         let data = OwnedArcRepr(Arc::new(arr.data));
         // safe because: equivalent unmoved data, ptr and dims remain valid
         unsafe { ArrayBase::from_data_ptr(data, arr.parts.ptr).with_strides_dim(arr.parts.strides, arr.parts.dim) }
@@ -680,7 +641,8 @@ where D: Dimension
 ///
 /// ```
 pub trait AsArray<'a, A: 'a, D = Ix1>: Into<ArrayView<'a, A, D>>
-where D: Dimension
+where
+    D: Dimension,
 {
 }
 impl<'a, A: 'a, D, T> AsArray<'a, A, D> for T
@@ -710,21 +672,18 @@ where
 {
     // NOTE: We can implement Default for non-zero dimensional array views by
     // using an empty slice, however we need a trait for nonzero Dimension.
-    fn default() -> Self
-    {
+    fn default() -> Self {
         ArrayBase::default(D::default())
     }
 }
 
 #[cfg(test)]
-mod tests
-{
+mod tests {
     use crate::array;
     use alloc::vec;
 
     #[test]
-    fn test_eq_traits()
-    {
+    fn test_eq_traits() {
         let a = array![1, 2, 3];
         let a_ref = &*a;
         let b = array![1, 2, 3];

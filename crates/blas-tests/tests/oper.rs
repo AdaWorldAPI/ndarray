@@ -22,8 +22,7 @@ use num_complex::Complex64;
 use num_traits::Num;
 
 #[test]
-fn mat_vec_product_1d()
-{
+fn mat_vec_product_1d() {
     let a = arr2(&[[1.], [2.]]);
     let b = arr1(&[1., 2.]);
     let ans = arr1(&[5.]);
@@ -31,8 +30,7 @@ fn mat_vec_product_1d()
 }
 
 #[test]
-fn mat_vec_product_1d_broadcast()
-{
+fn mat_vec_product_1d_broadcast() {
     let a = arr2(&[[1.], [2.], [3.]]);
     let b = arr1(&[1.]);
     let b = b.broadcast(3).unwrap();
@@ -41,8 +39,7 @@ fn mat_vec_product_1d_broadcast()
 }
 
 #[test]
-fn mat_vec_product_1d_inverted_axis()
-{
+fn mat_vec_product_1d_inverted_axis() {
     let a = arr2(&[[1.], [2.], [3.]]);
     let mut b = arr1(&[1., 2., 3.]);
     b.invert_axis(Axis(0));
@@ -51,28 +48,23 @@ fn mat_vec_product_1d_inverted_axis()
     assert_eq!(a.t().dot(&b), ans);
 }
 
-fn range_mat<A: Num + Copy>(m: Ix, n: Ix) -> Array2<A>
-{
+fn range_mat<A: Num + Copy>(m: Ix, n: Ix) -> Array2<A> {
     ArrayBuilder::new((m, n)).build()
 }
 
-fn range_mat_complex(m: Ix, n: Ix) -> Array2<Complex32>
-{
+fn range_mat_complex(m: Ix, n: Ix) -> Array2<Complex32> {
     ArrayBuilder::new((m, n)).build()
 }
 
-fn range_mat_complex64(m: Ix, n: Ix) -> Array2<Complex64>
-{
+fn range_mat_complex64(m: Ix, n: Ix) -> Array2<Complex64> {
     ArrayBuilder::new((m, n)).build()
 }
 
-fn range1_mat64(m: Ix) -> Array1<f64>
-{
+fn range1_mat64(m: Ix) -> Array1<f64> {
     ArrayBuilder::new(m).build()
 }
 
-fn range_i32(m: Ix, n: Ix) -> Array2<i32>
-{
+fn range_i32(m: Ix, n: Ix) -> Array2<i32> {
     ArrayBuilder::new((m, n)).build()
 }
 
@@ -145,8 +137,7 @@ where
 // Check that matrix multiplication of contiguous matrices returns a
 // matrix with the same order
 #[test]
-fn mat_mul_order()
-{
+fn mat_mul_order() {
     let (m, n, k) = (50, 50, 50);
     let a = range_mat::<f32>(m, n);
     let b = range_mat::<f32>(n, k);
@@ -165,8 +156,7 @@ fn mat_mul_order()
 // Check that matrix multiplication
 // supports broadcast arrays.
 #[test]
-fn mat_mul_broadcast()
-{
+fn mat_mul_broadcast() {
     let (m, n, k) = (16, 16, 16);
     let a = range_mat::<f32>(m, n);
     let x1 = 1.;
@@ -185,8 +175,7 @@ fn mat_mul_broadcast()
 
 // Check that matrix multiplication supports reversed axes
 #[test]
-fn mat_mul_rev()
-{
+fn mat_mul_rev() {
     let (m, n, k) = (16, 16, 16);
     let a = range_mat::<f32>(m, n);
     let b = range_mat::<f32>(n, k);
@@ -202,8 +191,7 @@ fn mat_mul_rev()
 
 // Check that matrix multiplication supports arrays with zero rows or columns
 #[test]
-fn mat_mut_zero_len()
-{
+fn mat_mut_zero_len() {
     defmac!(mat_mul_zero_len range_mat_fn => {
         for n in 0..4 {
             for m in 0..4 {
@@ -224,8 +212,7 @@ fn mat_mut_zero_len()
 }
 
 #[test]
-fn gen_mat_mul()
-{
+fn gen_mat_mul() {
     let alpha = -2.3;
     let beta = 3.14;
     let sizes = vec![
@@ -293,8 +280,7 @@ fn gen_mat_mul()
 
 // Test y = A x where A is f-order
 #[test]
-fn gemm_64_1_f()
-{
+fn gemm_64_1_f() {
     let a = range_mat::<f64>(64, 64).reversed_axes();
     let (m, n) = a.dim();
     // m x n  times n x 1  == m x 1
@@ -306,8 +292,7 @@ fn gemm_64_1_f()
 }
 
 #[test]
-fn gemm_c64_1_f()
-{
+fn gemm_c64_1_f() {
     let a = range_mat_complex64(64, 64).reversed_axes();
     let (m, n) = a.dim();
     // m x n  times n x 1  == m x 1
@@ -315,17 +300,11 @@ fn gemm_c64_1_f()
     let mut y = range_mat_complex64(m, 1);
     let answer = reference_mat_mul(&a, &x) + &y;
     general_mat_mul(Complex64::new(1.0, 0.), &a, &x, Complex64::new(1.0, 0.), &mut y);
-    assert_relative_eq!(
-        y.mapv(|i| i.norm_sqr()),
-        answer.mapv(|i| i.norm_sqr()),
-        epsilon = 1e-12,
-        max_relative = 1e-7
-    );
+    assert_relative_eq!(y.mapv(|i| i.norm_sqr()), answer.mapv(|i| i.norm_sqr()), epsilon = 1e-12, max_relative = 1e-7);
 }
 
 #[test]
-fn gemm_c32_1_f()
-{
+fn gemm_c32_1_f() {
     let a = range_mat_complex(64, 64).reversed_axes();
     let (m, n) = a.dim();
     // m x n  times n x 1  == m x 1
@@ -333,17 +312,11 @@ fn gemm_c32_1_f()
     let mut y = range_mat_complex(m, 1);
     let answer = reference_mat_mul(&a, &x) + &y;
     general_mat_mul(Complex32::new(1.0, 0.), &a, &x, Complex32::new(1.0, 0.), &mut y);
-    assert_relative_eq!(
-        y.mapv(|i| i.norm_sqr()),
-        answer.mapv(|i| i.norm_sqr()),
-        epsilon = 1e-12,
-        max_relative = 1e-7
-    );
+    assert_relative_eq!(y.mapv(|i| i.norm_sqr()), answer.mapv(|i| i.norm_sqr()), epsilon = 1e-12, max_relative = 1e-7);
 }
 
 #[test]
-fn gemm_c64_actually_complex()
-{
+fn gemm_c64_actually_complex() {
     let mut a = range_mat_complex64(4, 4);
     a = a.map(|&i| if i.re > 8. { i.conj() } else { i });
     let mut b = range_mat_complex64(4, 6);
@@ -353,30 +326,14 @@ fn gemm_c64_actually_complex()
     let beta = Complex64::new(1.0, 1.0);
     let answer = alpha * reference_mat_mul(&a, &b) + beta * &y;
     general_mat_mul(alpha.clone(), &a, &b, beta.clone(), &mut y);
-    assert_relative_eq!(
-        y.mapv(|i| i.norm_sqr()),
-        answer.mapv(|i| i.norm_sqr()),
-        epsilon = 1e-12,
-        max_relative = 1e-7
-    );
+    assert_relative_eq!(y.mapv(|i| i.norm_sqr()), answer.mapv(|i| i.norm_sqr()), epsilon = 1e-12, max_relative = 1e-7);
 }
 
 #[test]
-fn gen_mat_vec_mul()
-{
+fn gen_mat_vec_mul() {
     let alpha = -2.3;
     let beta = 3.14;
-    let sizes = vec![
-        (4, 4),
-        (8, 8),
-        (17, 15),
-        (4, 17),
-        (17, 3),
-        (19, 18),
-        (16, 17),
-        (15, 16),
-        (67, 63),
-    ];
+    let sizes = vec![(4, 4), (8, 8), (17, 15), (4, 17), (17, 3), (19, 18), (16, 17), (15, 16), (67, 63)];
     // test different strides
     for &s1 in &[1, 2, -1, -2] {
         for &s2 in &[1, 2, -1, -2] {
@@ -406,19 +363,8 @@ fn gen_mat_vec_mul()
 }
 
 #[test]
-fn vec_mat_mul()
-{
-    let sizes = vec![
-        (4, 4),
-        (8, 8),
-        (17, 15),
-        (4, 17),
-        (17, 3),
-        (19, 18),
-        (16, 17),
-        (15, 16),
-        (67, 63),
-    ];
+fn vec_mat_mul() {
+    let sizes = vec![(4, 4), (8, 8), (17, 15), (4, 17), (17, 3), (19, 18), (16, 17), (15, 16), (67, 63)];
     // test different strides
     for &s1 in &[1, 2, -1, -2] {
         for &s2 in &[1, 2, -1, -2] {

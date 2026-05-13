@@ -311,8 +311,7 @@ mod tests {
         let norm_before: f32 = data.iter().map(|x| x * x).sum::<f32>().sqrt();
         wht_f32(&mut data);
         let norm_after: f32 = data.iter().map(|x| x * x).sum::<f32>().sqrt();
-        assert!((norm_before - norm_after).abs() < 1e-4,
-            "energy: {} vs {}", norm_before, norm_after);
+        assert!((norm_before - norm_after).abs() < 1e-4, "energy: {} vs {}", norm_before, norm_after);
     }
 
     #[test]
@@ -323,12 +322,14 @@ mod tests {
         // Norm preservation at 1024-d (hits SIMD path)
         let n_orig: f32 = original.iter().map(|x| x * x).sum::<f32>().sqrt();
         let n_wht: f32 = data.iter().map(|x| x * x).sum::<f32>().sqrt();
-        assert!((n_orig - n_wht).abs() / n_orig < 1e-4,
-            "SIMD WHT norm: {} vs {}", n_orig, n_wht);
+        assert!((n_orig - n_wht).abs() / n_orig < 1e-4, "SIMD WHT norm: {} vs {}", n_orig, n_wht);
         // Self-inverse
         wht_f32(&mut data);
-        let max_err = original.iter().zip(data.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+        let max_err = original
+            .iter()
+            .zip(data.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
         assert!(max_err < 1e-3, "SIMD self-inverse max_err: {}", max_err);
     }
 

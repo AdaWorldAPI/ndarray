@@ -39,12 +39,12 @@ pub const NUM_CENTROIDS: usize = 256;
 /// Semantic names for the 6 CAM bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CamByte {
-    Heel = 0,     // Coarse category
-    Branch = 1,   // Archetype selection
-    TwigA = 2,    // Shape parameter A
-    TwigB = 3,    // Shape parameter B
-    Leaf = 4,     // Fine detail
-    Gamma = 5,    // Euler tension/energy
+    Heel = 0,   // Coarse category
+    Branch = 1, // Archetype selection
+    TwigA = 2,  // Shape parameter A
+    TwigB = 3,  // Shape parameter B
+    Leaf = 4,   // Fine detail
+    Gamma = 5,  // Euler tension/energy
 }
 
 /// 6-byte CAM fingerprint.
@@ -227,14 +227,22 @@ impl DistanceTables {
             for s in 0..NUM_SUBSPACES {
                 // Gather 16 centroid indices for subspace s
                 let idx_arr = [
-                    cams[base][s] as i32,      cams[base + 1][s] as i32,
-                    cams[base + 2][s] as i32,  cams[base + 3][s] as i32,
-                    cams[base + 4][s] as i32,  cams[base + 5][s] as i32,
-                    cams[base + 6][s] as i32,  cams[base + 7][s] as i32,
-                    cams[base + 8][s] as i32,  cams[base + 9][s] as i32,
-                    cams[base + 10][s] as i32, cams[base + 11][s] as i32,
-                    cams[base + 12][s] as i32, cams[base + 13][s] as i32,
-                    cams[base + 14][s] as i32, cams[base + 15][s] as i32,
+                    cams[base][s] as i32,
+                    cams[base + 1][s] as i32,
+                    cams[base + 2][s] as i32,
+                    cams[base + 3][s] as i32,
+                    cams[base + 4][s] as i32,
+                    cams[base + 5][s] as i32,
+                    cams[base + 6][s] as i32,
+                    cams[base + 7][s] as i32,
+                    cams[base + 8][s] as i32,
+                    cams[base + 9][s] as i32,
+                    cams[base + 10][s] as i32,
+                    cams[base + 11][s] as i32,
+                    cams[base + 12][s] as i32,
+                    cams[base + 13][s] as i32,
+                    cams[base + 14][s] as i32,
+                    cams[base + 15][s] as i32,
                 ];
                 let indices = I32x16::from_array(idx_arr);
 
@@ -277,27 +285,27 @@ impl PackedDatabase {
         let stroke1: Vec<u8> = fingerprints.iter().map(|f| f[0]).collect();
 
         // Stroke 2: HEEL + BRANCH interleaved (2 bytes per candidate)
-        let stroke2: Vec<u8> = fingerprints.iter()
-            .flat_map(|f| [f[0], f[1]])
-            .collect();
+        let stroke2: Vec<u8> = fingerprints.iter().flat_map(|f| [f[0], f[1]]).collect();
 
         // Stroke 3: full CAM (6 bytes per candidate)
-        let stroke3: Vec<u8> = fingerprints.iter()
+        let stroke3: Vec<u8> = fingerprints
+            .iter()
             .flat_map(|f| f.iter().copied())
             .collect();
 
-        PackedDatabase { stroke1, stroke2, stroke3, num_candidates: n }
+        PackedDatabase {
+            stroke1,
+            stroke2,
+            stroke3,
+            num_candidates: n,
+        }
     }
 
     /// Cascade query: Stroke 1 → Stroke 2 → Stroke 3.
     ///
     /// 99% rejection before full ADC. Scans 1MB instead of 6MB for 1M vectors.
     pub fn cascade_query(
-        &self,
-        dist_tables: &DistanceTables,
-        heel_threshold: f32,
-        branch_threshold: f32,
-        top_k: usize,
+        &self, dist_tables: &DistanceTables, heel_threshold: f32, branch_threshold: f32, top_k: usize,
     ) -> Vec<(usize, f32)> {
         // Stroke 1: scan HEEL bytes (1 byte/candidate)
         let mut survivors: Vec<usize> = Vec::new();
@@ -313,25 +321,28 @@ impl PackedDatabase {
         for &i in &survivors {
             let base = i * 2;
             let dist = dist_tables.tables[0][self.stroke2[base] as usize]
-                     + dist_tables.tables[1][self.stroke2[base + 1] as usize];
+                + dist_tables.tables[1][self.stroke2[base + 1] as usize];
             if dist < branch_threshold {
                 refined.push(i);
             }
         }
 
         // Stroke 3: full ADC on refined candidates (6 bytes/candidate)
-        let mut hits: Vec<(usize, f32)> = refined.iter().map(|&i| {
-            let base = i * 6;
-            let cam: CamFingerprint = [
-                self.stroke3[base],
-                self.stroke3[base + 1],
-                self.stroke3[base + 2],
-                self.stroke3[base + 3],
-                self.stroke3[base + 4],
-                self.stroke3[base + 5],
-            ];
-            (i, dist_tables.distance(&cam))
-        }).collect();
+        let mut hits: Vec<(usize, f32)> = refined
+            .iter()
+            .map(|&i| {
+                let base = i * 6;
+                let cam: CamFingerprint = [
+                    self.stroke3[base],
+                    self.stroke3[base + 1],
+                    self.stroke3[base + 2],
+                    self.stroke3[base + 3],
+                    self.stroke3[base + 4],
+                    self.stroke3[base + 5],
+                ];
+                (i, dist_tables.distance(&cam))
+            })
+            .collect();
 
         hits.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
         hits.truncate(top_k);
@@ -359,11 +370,7 @@ impl PackedDatabase {
 /// Train codebooks via k-means on subvectors (standard FAISS PQ).
 ///
 /// Minimizes reconstruction error: ||x - decode(encode(x))||².
-pub fn train_geometric(
-    vectors: &[Vec<f32>],
-    total_dim: usize,
-    iterations: usize,
-) -> CamCodebook {
+pub fn train_geometric(vectors: &[Vec<f32>], total_dim: usize, iterations: usize) -> CamCodebook {
     assert!(!vectors.is_empty(), "need at least one training vector");
     assert!(total_dim >= NUM_SUBSPACES, "dimension must be >= 6");
     let subspace_dim = total_dim / NUM_SUBSPACES;
@@ -372,19 +379,23 @@ pub fn train_geometric(
 
     for s in 0..NUM_SUBSPACES {
         // Extract subvectors for this subspace
-        let subs: Vec<Vec<f32>> = vectors.iter()
+        let subs: Vec<Vec<f32>> = vectors
+            .iter()
             .map(|v| v[s * subspace_dim..(s + 1) * subspace_dim].to_vec())
             .collect();
 
         // k-means clustering
         let centroids = kmeans(&subs, NUM_CENTROIDS.min(subs.len()), subspace_dim, iterations);
-        codebooks_vec.push(SubspaceCodebook { centroids, subspace_dim });
+        codebooks_vec.push(SubspaceCodebook {
+            centroids,
+            subspace_dim,
+        });
     }
 
     CamCodebook {
-        codebooks: codebooks_vec.try_into().unwrap_or_else(|v: Vec<SubspaceCodebook>| {
-            panic!("expected {} codebooks, got {}", NUM_SUBSPACES, v.len())
-        }),
+        codebooks: codebooks_vec
+            .try_into()
+            .unwrap_or_else(|v: Vec<SubspaceCodebook>| panic!("expected {} codebooks, got {}", NUM_SUBSPACES, v.len())),
         total_dim,
         subspace_dim,
     }
@@ -394,12 +405,7 @@ pub fn train_geometric(
 ///
 /// Codebooks balance reconstruction error AND semantic separation.
 /// `labels[i]` is a set of semantic tags for vector `i`.
-pub fn train_semantic(
-    vectors: &[Vec<f32>],
-    labels: &[Vec<String>],
-    total_dim: usize,
-    alpha: f32,
-) -> CamCodebook {
+pub fn train_semantic(vectors: &[Vec<f32>], labels: &[Vec<String>], total_dim: usize, alpha: f32) -> CamCodebook {
     assert_eq!(vectors.len(), labels.len(), "vectors and labels must match");
 
     // Phase 1: geometric initialization
@@ -430,8 +436,8 @@ pub fn train_semantic(
                         let cj = cam_j[s] as usize;
                         let dim = codebook.subspace_dim;
                         for d in 0..dim {
-                            let delta = grad * (codebook.codebooks[s].centroids[cj][d]
-                                              - codebook.codebooks[s].centroids[ci][d]);
+                            let delta = grad
+                                * (codebook.codebooks[s].centroids[cj][d] - codebook.codebooks[s].centroids[ci][d]);
                             codebook.codebooks[s].centroids[ci][d] += delta * 0.01;
                             codebook.codebooks[s].centroids[cj][d] -= delta * 0.01;
                         }
@@ -445,11 +451,7 @@ pub fn train_semantic(
 }
 
 /// Hybrid training: geometric init + semantic fine-tune (convenience wrapper).
-pub fn train_hybrid(
-    vectors: &[Vec<f32>],
-    labels: &[Vec<String>],
-    total_dim: usize,
-) -> CamCodebook {
+pub fn train_hybrid(vectors: &[Vec<f32>], labels: &[Vec<String>], total_dim: usize) -> CamCodebook {
     train_semantic(vectors, labels, total_dim, 0.1)
 }
 
@@ -459,9 +461,17 @@ pub fn train_hybrid(
 ///
 /// For 16D subvectors (CAM-PQ subspace dimension), this is one F32x16
 /// load-subtract-multiply-reduce. Consumer never sees hardware details.
+///
+/// Exposed for downstream HPC consumers (e.g. tensor codecs) that need
+/// the same SIMD-accelerated metric used by the CAM-PQ codec internally.
+///
+/// # Panics
+/// Panics if `a.len() != b.len()`. This is enforced unconditionally
+/// (not `debug_assert`) so callers in release builds can't silently
+/// drop trailing elements via the scalar `zip` fallback.
 #[inline(always)]
 pub fn squared_l2(a: &[f32], b: &[f32]) -> f32 {
-    debug_assert_eq!(a.len(), b.len());
+    assert_eq!(a.len(), b.len(), "squared_l2: input length mismatch ({} vs {})", a.len(), b.len(),);
     let n = a.len();
 
     // Fast path: exactly 16 elements = one F32x16 lane (most common in CAM-PQ).
@@ -500,7 +510,8 @@ pub fn squared_l2(a: &[f32], b: &[f32]) -> f32 {
 
 /// L1 distance between two CAM fingerprints.
 fn cam_l1_distance(a: &CamFingerprint, b: &CamFingerprint) -> u32 {
-    a.iter().zip(b.iter())
+    a.iter()
+        .zip(b.iter())
         .map(|(&x, &y)| (x as i32 - y as i32).unsigned_abs())
         .sum()
 }
@@ -512,12 +523,21 @@ fn jaccard_similarity(a: &[String], b: &[String]) -> f32 {
     }
     let intersection = a.iter().filter(|x| b.contains(x)).count();
     let union = a.len() + b.len() - intersection;
-    if union == 0 { 1.0 } else { intersection as f32 / union as f32 }
+    if union == 0 {
+        1.0
+    } else {
+        intersection as f32 / union as f32
+    }
 }
 
-/// Simple k-means clustering.
+/// Simple k-means clustering (Lloyd's algorithm with farthest-first seeding).
 ///
-/// Returns `k` centroid vectors of length `dim`.
+/// Returns `k` centroid vectors of length `dim`. Empty `data` or `k == 0`
+/// returns `k` zero centroids; if `data.len() < k`, the effective number of
+/// centroids is clamped to `data.len()`.
+///
+/// Exposed for downstream HPC consumers (e.g. tensor codebooks). Uses the
+/// same SIMD-accelerated [`squared_l2`] as the CAM-PQ codec.
 pub fn kmeans(data: &[Vec<f32>], k: usize, dim: usize, iterations: usize) -> Vec<Vec<f32>> {
     let n = data.len();
     if n == 0 || k == 0 {
@@ -539,7 +559,9 @@ pub fn kmeans(data: &[Vec<f32>], k: usize, dim: usize, iterations: usize) -> Vec
             }
         }
         // Pick farthest point
-        let best = min_dists.iter().enumerate()
+        let best = min_dists
+            .iter()
+            .enumerate()
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(Ordering::Equal))
             .map(|(i, _)| i)
             .unwrap_or(0);
@@ -762,9 +784,7 @@ mod tests {
     #[test]
     fn test_train_hybrid() {
         let vecs = make_test_vectors(100, 24);
-        let labels: Vec<Vec<String>> = (0..100)
-            .map(|i| vec![format!("cat_{}", i % 5)])
-            .collect();
+        let labels: Vec<Vec<String>> = (0..100).map(|i| vec![format!("cat_{}", i % 5)]).collect();
 
         let codebook = train_hybrid(&vecs, &labels, 24);
         assert_eq!(codebook.total_dim, 24);
@@ -792,8 +812,7 @@ mod tests {
         // Centroids should be near (0,0) and (10,10)
         let c0 = &centroids[0];
         let c1 = &centroids[1];
-        let near_origin = (c0[0].abs() < 1.0 && c0[1].abs() < 1.0)
-            || (c1[0].abs() < 1.0 && c1[1].abs() < 1.0);
+        let near_origin = (c0[0].abs() < 1.0 && c0[1].abs() < 1.0) || (c1[0].abs() < 1.0 && c1[1].abs() < 1.0);
         let near_ten = ((c0[0] - 10.0).abs() < 1.0 && (c0[1] - 10.0).abs() < 1.0)
             || ((c1[0] - 10.0).abs() < 1.0 && (c1[1] - 10.0).abs() < 1.0);
         assert!(near_origin, "one centroid should be near origin");

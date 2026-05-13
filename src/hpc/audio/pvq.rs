@@ -87,7 +87,9 @@ pub fn pvq_summary(pulses: &[i32]) -> [u8; 6] {
     // HEEL (bytes 0-1): sign pattern of first 16 dims → 16 bits
     let mut sign_bits = 0u16;
     for i in 0..n.min(16) {
-        if pulses[i] > 0 { sign_bits |= 1 << i; }
+        if pulses[i] > 0 {
+            sign_bits |= 1 << i;
+        }
     }
     summary[0] = sign_bits as u8;
     summary[1] = (sign_bits >> 8) as u8;
@@ -102,12 +104,17 @@ pub fn pvq_summary(pulses: &[i32]) -> [u8; 6] {
     let total = quarter_energy.iter().sum::<u32>().max(1);
     for i in 0..4 {
         let frac = (quarter_energy[i] * 255 / total) as u8;
-        if i < 2 { summary[2] |= frac >> (4 * (1 - i)); }
-        else { summary[3] |= frac >> (4 * (3 - i)); }
+        if i < 2 {
+            summary[2] |= frac >> (4 * (1 - i));
+        } else {
+            summary[3] |= frac >> (4 * (3 - i));
+        }
     }
 
     // TWIG (bytes 4-5): max pulse position + magnitude
-    let (max_pos, max_val) = pulses.iter().enumerate()
+    let (max_pos, max_val) = pulses
+        .iter()
+        .enumerate()
         .max_by_key(|(_, &p)| p.unsigned_abs())
         .map(|(i, &p)| (i, p.unsigned_abs()))
         .unwrap_or((0, 0));
@@ -135,8 +142,14 @@ mod tests {
         // Dominant pulse signs should match input signs
         for i in 0..band.len() {
             if band[i].abs() > 0.3 {
-                assert_eq!(pulses[i].signum(), band[i].signum() as i32,
-                    "Sign mismatch at dim {}: pulse={}, band={}", i, pulses[i], band[i]);
+                assert_eq!(
+                    pulses[i].signum(),
+                    band[i].signum() as i32,
+                    "Sign mismatch at dim {}: pulse={}, band={}",
+                    i,
+                    pulses[i],
+                    band[i]
+                );
             }
         }
     }

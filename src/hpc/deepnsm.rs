@@ -15,37 +15,95 @@ use std::sync::LazyLock;
 #[repr(u8)]
 pub enum NsmPrime {
     // Substantives
-    I = 0, You, Someone, Something, Thing, Body,
+    I = 0,
+    You,
+    Someone,
+    Something,
+    Thing,
+    Body,
     // Relational
-    Kind, Part,
+    Kind,
+    Part,
     // Determiners
-    This, TheSame, Other, Else, Another,
+    This,
+    TheSame,
+    Other,
+    Else,
+    Another,
     // Quantifiers
-    One, Two, Some, All, Much, Many, Little, Few,
+    One,
+    Two,
+    Some,
+    All,
+    Much,
+    Many,
+    Little,
+    Few,
     // Evaluators
-    Good, Bad,
+    Good,
+    Bad,
     // Descriptors
-    Big, Small,
+    Big,
+    Small,
     // Mental
-    Think, Know, Want, DontWant, Feel, See, Hear,
+    Think,
+    Know,
+    Want,
+    DontWant,
+    Feel,
+    See,
+    Hear,
     // Speech
-    Say, Words, True,
+    Say,
+    Words,
+    True,
     // Actions
-    Do, Happen, Move,
+    Do,
+    Happen,
+    Move,
     // Existence
-    Be, ThereIs, BeSomeone, Mine,
+    Be,
+    ThereIs,
+    BeSomeone,
+    Mine,
     // Life
-    Live, Die,
+    Live,
+    Die,
     // Time
-    When, Time, Now, Before, After, ALongTime, AShortTime, ForSomeTime, Moment,
+    When,
+    Time,
+    Now,
+    Before,
+    After,
+    ALongTime,
+    AShortTime,
+    ForSomeTime,
+    Moment,
     // Space
-    Where, Place, Here, Above, Below, Far, Near, Side, Inside, Touch, Contact,
+    Where,
+    Place,
+    Here,
+    Above,
+    Below,
+    Far,
+    Near,
+    Side,
+    Inside,
+    Touch,
+    Contact,
     // Logical
-    Not, Maybe, Can, Because, If,
+    Not,
+    Maybe,
+    Can,
+    Because,
+    If,
     // Intensifier
-    Very, More,
+    Very,
+    More,
     // Similarity
-    Like, As, Way,
+    Like,
+    As,
+    Way,
 }
 // Total: 74 variants (indices 0..73)
 
@@ -86,69 +144,104 @@ pub struct NsmEntry {
 
 static ALL_PRIMES: [NsmPrime; 74] = [
     // Substantives (6)
-    NsmPrime::I, NsmPrime::You, NsmPrime::Someone, NsmPrime::Something,
-    NsmPrime::Thing, NsmPrime::Body,
+    NsmPrime::I,
+    NsmPrime::You,
+    NsmPrime::Someone,
+    NsmPrime::Something,
+    NsmPrime::Thing,
+    NsmPrime::Body,
     // Relational (2)
-    NsmPrime::Kind, NsmPrime::Part,
+    NsmPrime::Kind,
+    NsmPrime::Part,
     // Determiners (5)
-    NsmPrime::This, NsmPrime::TheSame, NsmPrime::Other, NsmPrime::Else,
+    NsmPrime::This,
+    NsmPrime::TheSame,
+    NsmPrime::Other,
+    NsmPrime::Else,
     NsmPrime::Another,
     // Quantifiers (8)
-    NsmPrime::One, NsmPrime::Two, NsmPrime::Some,
-    NsmPrime::All, NsmPrime::Much, NsmPrime::Many, NsmPrime::Little,
+    NsmPrime::One,
+    NsmPrime::Two,
+    NsmPrime::Some,
+    NsmPrime::All,
+    NsmPrime::Much,
+    NsmPrime::Many,
+    NsmPrime::Little,
     NsmPrime::Few,
     // Evaluators (2)
-    NsmPrime::Good, NsmPrime::Bad,
+    NsmPrime::Good,
+    NsmPrime::Bad,
     // Descriptors (2)
-    NsmPrime::Big, NsmPrime::Small,
+    NsmPrime::Big,
+    NsmPrime::Small,
     // Mental (7)
-    NsmPrime::Think, NsmPrime::Know, NsmPrime::Want,
-    NsmPrime::DontWant, NsmPrime::Feel, NsmPrime::See, NsmPrime::Hear,
+    NsmPrime::Think,
+    NsmPrime::Know,
+    NsmPrime::Want,
+    NsmPrime::DontWant,
+    NsmPrime::Feel,
+    NsmPrime::See,
+    NsmPrime::Hear,
     // Speech (3)
-    NsmPrime::Say, NsmPrime::Words, NsmPrime::True,
+    NsmPrime::Say,
+    NsmPrime::Words,
+    NsmPrime::True,
     // Actions (3)
-    NsmPrime::Do, NsmPrime::Happen, NsmPrime::Move,
+    NsmPrime::Do,
+    NsmPrime::Happen,
+    NsmPrime::Move,
     // Existence (4)
-    NsmPrime::Be, NsmPrime::ThereIs, NsmPrime::BeSomeone, NsmPrime::Mine,
+    NsmPrime::Be,
+    NsmPrime::ThereIs,
+    NsmPrime::BeSomeone,
+    NsmPrime::Mine,
     // Life (2)
-    NsmPrime::Live, NsmPrime::Die,
+    NsmPrime::Live,
+    NsmPrime::Die,
     // Time (9)
-    NsmPrime::When, NsmPrime::Time, NsmPrime::Now, NsmPrime::Before,
-    NsmPrime::After, NsmPrime::ALongTime, NsmPrime::AShortTime,
-    NsmPrime::ForSomeTime, NsmPrime::Moment,
+    NsmPrime::When,
+    NsmPrime::Time,
+    NsmPrime::Now,
+    NsmPrime::Before,
+    NsmPrime::After,
+    NsmPrime::ALongTime,
+    NsmPrime::AShortTime,
+    NsmPrime::ForSomeTime,
+    NsmPrime::Moment,
     // Space (11)
-    NsmPrime::Where, NsmPrime::Place,
-    NsmPrime::Here, NsmPrime::Above, NsmPrime::Below, NsmPrime::Far,
-    NsmPrime::Near, NsmPrime::Side, NsmPrime::Inside, NsmPrime::Touch,
+    NsmPrime::Where,
+    NsmPrime::Place,
+    NsmPrime::Here,
+    NsmPrime::Above,
+    NsmPrime::Below,
+    NsmPrime::Far,
+    NsmPrime::Near,
+    NsmPrime::Side,
+    NsmPrime::Inside,
+    NsmPrime::Touch,
     NsmPrime::Contact,
     // Logical (5)
-    NsmPrime::Not, NsmPrime::Maybe, NsmPrime::Can,
-    NsmPrime::Because, NsmPrime::If,
+    NsmPrime::Not,
+    NsmPrime::Maybe,
+    NsmPrime::Can,
+    NsmPrime::Because,
+    NsmPrime::If,
     // Intensifier (2)
-    NsmPrime::Very, NsmPrime::More,
+    NsmPrime::Very,
+    NsmPrime::More,
     // Similarity (3)
-    NsmPrime::Like, NsmPrime::As, NsmPrime::Way,
+    NsmPrime::Like,
+    NsmPrime::As,
+    NsmPrime::Way,
 ];
 
 static PRIME_NAMES: [&str; 74] = [
-    "I", "YOU", "SOMEONE", "SOMETHING", "THING", "BODY",
-    "KIND", "PART",
-    "THIS", "THE_SAME", "OTHER", "ELSE", "ANOTHER",
-    "ONE", "TWO", "SOME", "ALL", "MUCH", "MANY", "LITTLE", "FEW",
-    "GOOD", "BAD",
-    "BIG", "SMALL",
-    "THINK", "KNOW", "WANT", "DONT_WANT", "FEEL", "SEE", "HEAR",
-    "SAY", "WORDS", "TRUE",
-    "DO", "HAPPEN", "MOVE",
-    "BE", "THERE_IS", "BE_SOMEONE", "MINE",
-    "LIVE", "DIE",
-    "WHEN", "TIME", "NOW", "BEFORE", "AFTER", "A_LONG_TIME", "A_SHORT_TIME",
-    "FOR_SOME_TIME", "MOMENT",
-    "WHERE", "PLACE", "HERE", "ABOVE", "BELOW", "FAR", "NEAR", "SIDE",
-    "INSIDE", "TOUCH", "CONTACT",
-    "NOT", "MAYBE", "CAN", "BECAUSE", "IF",
-    "VERY", "MORE",
-    "LIKE", "AS", "WAY",
+    "I", "YOU", "SOMEONE", "SOMETHING", "THING", "BODY", "KIND", "PART", "THIS", "THE_SAME", "OTHER", "ELSE",
+    "ANOTHER", "ONE", "TWO", "SOME", "ALL", "MUCH", "MANY", "LITTLE", "FEW", "GOOD", "BAD", "BIG", "SMALL", "THINK",
+    "KNOW", "WANT", "DONT_WANT", "FEEL", "SEE", "HEAR", "SAY", "WORDS", "TRUE", "DO", "HAPPEN", "MOVE", "BE",
+    "THERE_IS", "BE_SOMEONE", "MINE", "LIVE", "DIE", "WHEN", "TIME", "NOW", "BEFORE", "AFTER", "A_LONG_TIME",
+    "A_SHORT_TIME", "FOR_SOME_TIME", "MOMENT", "WHERE", "PLACE", "HERE", "ABOVE", "BELOW", "FAR", "NEAR", "SIDE",
+    "INSIDE", "TOUCH", "CONTACT", "NOT", "MAYBE", "CAN", "BECAUSE", "IF", "VERY", "MORE", "LIKE", "AS", "WAY",
 ];
 
 impl NsmPrime {
@@ -160,33 +253,58 @@ impl NsmPrime {
     /// Category this prime belongs to.
     pub fn category(&self) -> NsmCategory {
         match *self {
-            NsmPrime::I | NsmPrime::You | NsmPrime::Someone
-            | NsmPrime::Something | NsmPrime::Thing | NsmPrime::Body => NsmCategory::Substantive,
+            NsmPrime::I
+            | NsmPrime::You
+            | NsmPrime::Someone
+            | NsmPrime::Something
+            | NsmPrime::Thing
+            | NsmPrime::Body => NsmCategory::Substantive,
             NsmPrime::Kind | NsmPrime::Part => NsmCategory::Relational,
-            NsmPrime::This | NsmPrime::TheSame | NsmPrime::Other
-            | NsmPrime::Else | NsmPrime::Another => NsmCategory::Determiner,
-            NsmPrime::One | NsmPrime::Two | NsmPrime::Some | NsmPrime::All
-            | NsmPrime::Much | NsmPrime::Many | NsmPrime::Little | NsmPrime::Few => {
-                NsmCategory::Quantifier
+            NsmPrime::This | NsmPrime::TheSame | NsmPrime::Other | NsmPrime::Else | NsmPrime::Another => {
+                NsmCategory::Determiner
             }
+            NsmPrime::One
+            | NsmPrime::Two
+            | NsmPrime::Some
+            | NsmPrime::All
+            | NsmPrime::Much
+            | NsmPrime::Many
+            | NsmPrime::Little
+            | NsmPrime::Few => NsmCategory::Quantifier,
             NsmPrime::Good | NsmPrime::Bad => NsmCategory::Evaluator,
             NsmPrime::Big | NsmPrime::Small => NsmCategory::Descriptor,
-            NsmPrime::Think | NsmPrime::Know | NsmPrime::Want | NsmPrime::DontWant
-            | NsmPrime::Feel | NsmPrime::See | NsmPrime::Hear => NsmCategory::Mental,
+            NsmPrime::Think
+            | NsmPrime::Know
+            | NsmPrime::Want
+            | NsmPrime::DontWant
+            | NsmPrime::Feel
+            | NsmPrime::See
+            | NsmPrime::Hear => NsmCategory::Mental,
             NsmPrime::Say | NsmPrime::Words | NsmPrime::True => NsmCategory::Speech,
             NsmPrime::Do | NsmPrime::Happen | NsmPrime::Move => NsmCategory::Action,
-            NsmPrime::Be | NsmPrime::ThereIs | NsmPrime::BeSomeone | NsmPrime::Mine => {
-                NsmCategory::Existence
-            }
+            NsmPrime::Be | NsmPrime::ThereIs | NsmPrime::BeSomeone | NsmPrime::Mine => NsmCategory::Existence,
             NsmPrime::Live | NsmPrime::Die => NsmCategory::Life,
-            NsmPrime::When | NsmPrime::Time | NsmPrime::Now | NsmPrime::Before
-            | NsmPrime::After | NsmPrime::ALongTime | NsmPrime::AShortTime
-            | NsmPrime::ForSomeTime | NsmPrime::Moment => NsmCategory::Time,
-            NsmPrime::Where | NsmPrime::Place | NsmPrime::Here | NsmPrime::Above
-            | NsmPrime::Below | NsmPrime::Far | NsmPrime::Near | NsmPrime::Side
-            | NsmPrime::Inside | NsmPrime::Touch | NsmPrime::Contact => NsmCategory::Space,
-            NsmPrime::Not | NsmPrime::Maybe | NsmPrime::Can | NsmPrime::Because
-            | NsmPrime::If => NsmCategory::Logical,
+            NsmPrime::When
+            | NsmPrime::Time
+            | NsmPrime::Now
+            | NsmPrime::Before
+            | NsmPrime::After
+            | NsmPrime::ALongTime
+            | NsmPrime::AShortTime
+            | NsmPrime::ForSomeTime
+            | NsmPrime::Moment => NsmCategory::Time,
+            NsmPrime::Where
+            | NsmPrime::Place
+            | NsmPrime::Here
+            | NsmPrime::Above
+            | NsmPrime::Below
+            | NsmPrime::Far
+            | NsmPrime::Near
+            | NsmPrime::Side
+            | NsmPrime::Inside
+            | NsmPrime::Touch
+            | NsmPrime::Contact => NsmCategory::Space,
+            NsmPrime::Not | NsmPrime::Maybe | NsmPrime::Can | NsmPrime::Because | NsmPrime::If => NsmCategory::Logical,
             NsmPrime::Very | NsmPrime::More => NsmCategory::Intensifier,
             NsmPrime::Like | NsmPrime::As | NsmPrime::Way => NsmCategory::Similarity,
         }
@@ -763,8 +881,7 @@ mod tests {
 
     #[test]
     fn test_category_coverage() {
-        let categories: HashSet<NsmCategory> =
-            NsmPrime::all().iter().map(|p| p.category()).collect();
+        let categories: HashSet<NsmCategory> = NsmPrime::all().iter().map(|p| p.category()).collect();
         // 16 categories
         assert_eq!(categories.len(), 16);
         assert!(categories.contains(&NsmCategory::Substantive));
@@ -836,11 +953,7 @@ mod tests {
     #[test]
     fn test_vocabulary_has_entries() {
         let vocab = nsm_vocabulary();
-        assert!(
-            vocab.len() >= 200,
-            "vocabulary should have ≥200 entries, got {}",
-            vocab.len()
-        );
+        assert!(vocab.len() >= 200, "vocabulary should have ≥200 entries, got {}", vocab.len());
     }
 
     #[test]
@@ -856,29 +969,13 @@ mod tests {
         let dog = nsm_lookup("dog").unwrap();
         let cat_primes: HashSet<NsmPrime> = cat.iter().map(|(p, _)| *p).collect();
         let dog_primes: HashSet<NsmPrime> = dog.iter().map(|(p, _)| *p).collect();
-        assert!(
-            cat_primes.contains(&NsmPrime::Something),
-            "cat should have SOMETHING"
-        );
-        assert!(
-            cat_primes.contains(&NsmPrime::Live),
-            "cat should have LIVE"
-        );
-        assert!(
-            dog_primes.contains(&NsmPrime::Something),
-            "dog should have SOMETHING"
-        );
-        assert!(
-            dog_primes.contains(&NsmPrime::Live),
-            "dog should have LIVE"
-        );
+        assert!(cat_primes.contains(&NsmPrime::Something), "cat should have SOMETHING");
+        assert!(cat_primes.contains(&NsmPrime::Live), "cat should have LIVE");
+        assert!(dog_primes.contains(&NsmPrime::Something), "dog should have SOMETHING");
+        assert!(dog_primes.contains(&NsmPrime::Live), "dog should have LIVE");
         // Shared primes
         let shared: HashSet<_> = cat_primes.intersection(&dog_primes).collect();
-        assert!(
-            shared.len() >= 2,
-            "cat and dog should share ≥2 primes, shared: {:?}",
-            shared
-        );
+        assert!(shared.len() >= 2, "cat and dog should share ≥2 primes, shared: {:?}", shared);
     }
 
     #[test]
@@ -886,13 +983,7 @@ mod tests {
         for prime in NsmPrime::all() {
             let name = prime.name();
             let recovered = NsmPrime::from_name(name);
-            assert_eq!(
-                recovered,
-                Some(*prime),
-                "roundtrip failed for {:?} (name={})",
-                prime,
-                name
-            );
+            assert_eq!(recovered, Some(*prime), "roundtrip failed for {:?} (name={})", prime, name);
         }
     }
 }
@@ -904,16 +995,15 @@ mod tests {
 /// The full NSM primes set including multi-word primes (from Python utils.py).
 static NSM_PRIMES_SET: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     [
-        "i", "you", "someone", "people", "something", "thing", "body", "kind", "part",
-        "this", "the same", "other", "else", "another", "one", "two", "some", "all",
-        "much", "many", "little", "few", "good", "bad", "big", "small", "think", "know",
-        "want", "don't want", "feel", "see", "hear", "say", "words", "true", "do",
-        "happen", "move", "there", "is", "be", "mine", "live", "die", "when", "time",
-        "now", "before", "after", "a long time", "a short time", "for some time",
-        "moment", "where", "place", "here", "above", "below", "far", "near", "side",
-        "inside", "touch", "not", "maybe", "can", "because", "if", "very", "more",
-        "like", "as", "way", "said",
-    ].into_iter().collect()
+        "i", "you", "someone", "people", "something", "thing", "body", "kind", "part", "this", "the same", "other",
+        "else", "another", "one", "two", "some", "all", "much", "many", "little", "few", "good", "bad", "big", "small",
+        "think", "know", "want", "don't want", "feel", "see", "hear", "say", "words", "true", "do", "happen", "move",
+        "there", "is", "be", "mine", "live", "die", "when", "time", "now", "before", "after", "a long time",
+        "a short time", "for some time", "moment", "where", "place", "here", "above", "below", "far", "near", "side",
+        "inside", "touch", "not", "maybe", "can", "because", "if", "very", "more", "like", "as", "way", "said",
+    ]
+    .into_iter()
+    .collect()
 });
 
 /// Check if a word is an NSM semantic prime.
@@ -924,19 +1014,19 @@ pub fn is_nsm_prime(word: &str) -> bool {
 /// English stopwords excluding NSM primes. `LazyLock` one-time init.
 static STOP_WORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     let sw: HashSet<&str> = [
-        "a", "an", "and", "are", "at", "been", "but", "by", "did", "does",
-        "doing", "down", "during", "each", "for", "from", "further", "had",
-        "has", "having", "he", "her", "herself", "him", "himself", "his",
-        "how", "in", "into", "it", "its", "itself", "just", "me", "my",
-        "myself", "no", "nor", "of", "off", "on", "once", "only", "or",
-        "our", "ours", "ourselves", "out", "over", "own", "re", "s", "she",
-        "should", "so", "such", "t", "than", "that", "the", "their",
-        "theirs", "them", "themselves", "then", "these", "they", "those",
-        "through", "to", "too", "under", "until", "up", "ve", "was", "we",
-        "were", "what", "which", "while", "who", "whom", "why", "will",
-        "with", "won", "would", "your", "yours", "yourself", "yourselves",
-    ].into_iter().collect();
-    sw.into_iter().filter(|w| !NSM_PRIMES_SET.contains(*w)).collect()
+        "a", "an", "and", "are", "at", "been", "but", "by", "did", "does", "doing", "down", "during", "each", "for",
+        "from", "further", "had", "has", "having", "he", "her", "herself", "him", "himself", "his", "how", "in",
+        "into", "it", "its", "itself", "just", "me", "my", "myself", "no", "nor", "of", "off", "on", "once", "only",
+        "or", "our", "ours", "ourselves", "out", "over", "own", "re", "s", "she", "should", "so", "such", "t", "than",
+        "that", "the", "their", "theirs", "them", "themselves", "then", "these", "they", "those", "through", "to",
+        "too", "under", "until", "up", "ve", "was", "we", "were", "what", "which", "while", "who", "whom", "why",
+        "will", "with", "won", "would", "your", "yours", "yourself", "yourselves",
+    ]
+    .into_iter()
+    .collect();
+    sw.into_iter()
+        .filter(|w| !NSM_PRIMES_SET.contains(*w))
+        .collect()
 });
 
 /// Check if a word is a stopword (but not an NSM prime).
@@ -961,7 +1051,13 @@ pub struct Prediction {
 
 impl Prediction {
     pub fn new(prediction: &str) -> Self {
-        Self { prediction: prediction.to_string(), answer_logprob: 0.0, answer_ranks: Vec::new(), is_match: false, lines_removed: 0 }
+        Self {
+            prediction: prediction.to_string(),
+            answer_logprob: 0.0,
+            answer_ranks: Vec::new(),
+            is_match: false,
+            lines_removed: 0,
+        }
     }
 }
 
@@ -982,7 +1078,18 @@ pub struct SubstitutabilityScore {
 
 impl SubstitutabilityScore {
     pub fn new(model: &str) -> Self {
-        Self { model: model.to_string(), baselines: Vec::new(), exp_baselines: Vec::new(), minimality: Vec::new(), entailments: Vec::new(), adj_score: 0.0, avg_delta_log: 0.0, avg_min_delta_log: 0.0, avg_ent_delta_log: 0.0, total_match: 0 }
+        Self {
+            model: model.to_string(),
+            baselines: Vec::new(),
+            exp_baselines: Vec::new(),
+            minimality: Vec::new(),
+            entailments: Vec::new(),
+            adj_score: 0.0,
+            avg_delta_log: 0.0,
+            avg_min_delta_log: 0.0,
+            avg_ent_delta_log: 0.0,
+            total_match: 0,
+        }
     }
 }
 
@@ -1010,44 +1117,86 @@ pub struct Explication {
 impl Explication {
     pub fn new(text: &str) -> Self {
         Self {
-            text: text.to_string(), target_word: String::new(),
-            length: 0, primes: 0, stop_words_count: 0, molecules: 0,
-            unique_molecules: 0, uses_original_word: false, primes_ratio: 0.0,
-            molecules_ratio: 0.0, sub_scores: Vec::new(), avg_delta: 0.0,
-            avg_delta_min: 0.0, avg_delta_ent: 0.0, score_exp: 0.0, total_score: 0.0,
+            text: text.to_string(),
+            target_word: String::new(),
+            length: 0,
+            primes: 0,
+            stop_words_count: 0,
+            molecules: 0,
+            unique_molecules: 0,
+            uses_original_word: false,
+            primes_ratio: 0.0,
+            molecules_ratio: 0.0,
+            sub_scores: Vec::new(),
+            avg_delta: 0.0,
+            avg_delta_min: 0.0,
+            avg_delta_ent: 0.0,
+            score_exp: 0.0,
+            total_score: 0.0,
         }
     }
 
     /// Score legality against a target word (circularity via stem matching).
     pub fn legality_score(&mut self, word: &str) {
-        let clean: String = self.text.to_lowercase().chars()
-            .filter(|c| c.is_alphanumeric() || c.is_whitespace()).collect();
+        let clean: String = self
+            .text
+            .to_lowercase()
+            .chars()
+            .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+            .collect();
         let tokens: Vec<&str> = clean.split_whitespace().collect();
         self.target_word = word.to_string();
         self.length = tokens.len();
         self.primes = tokens.iter().filter(|t| is_nsm_prime(t)).count();
         self.stop_words_count = tokens.iter().filter(|t| is_stop_word(t)).count();
-        let mols: Vec<&&str> = tokens.iter().filter(|t| !is_nsm_prime(t) && !is_stop_word(t)).collect();
+        let mols: Vec<&&str> = tokens
+            .iter()
+            .filter(|t| !is_nsm_prime(t) && !is_stop_word(t))
+            .collect();
         self.molecules = mols.len();
         self.unique_molecules = mols.iter().collect::<HashSet<_>>().len();
         let wl = word.to_lowercase();
         let stem = if wl.len() >= 4 { &wl[..4] } else { &wl };
-        self.uses_original_word = tokens.iter().any(|t| *t == wl || (t.len() >= 4 && t.starts_with(stem)));
-        self.primes_ratio = if self.length > 0 { self.primes as f32 / self.length as f32 } else { 0.0 };
-        self.molecules_ratio = if self.length > 0 { self.molecules as f32 / self.length as f32 } else { 0.0 };
+        self.uses_original_word = tokens
+            .iter()
+            .any(|t| *t == wl || (t.len() >= 4 && t.starts_with(stem)));
+        self.primes_ratio = if self.length > 0 {
+            self.primes as f32 / self.length as f32
+        } else {
+            0.0
+        };
+        self.molecules_ratio = if self.length > 0 {
+            self.molecules as f32 / self.length as f32
+        } else {
+            0.0
+        };
     }
 
     /// Compute averages from substitutability sub-scores.
     pub fn calculate_averages(&mut self) {
-        if self.sub_scores.is_empty() { return; }
+        if self.sub_scores.is_empty() {
+            return;
+        }
         let n = self.sub_scores.len() as f32;
         self.avg_delta = self.sub_scores.iter().map(|s| s.avg_delta_log).sum::<f32>() / n;
-        self.avg_delta_min = self.sub_scores.iter().map(|s| s.avg_min_delta_log).sum::<f32>() / n;
-        self.avg_delta_ent = self.sub_scores.iter().map(|s| s.avg_ent_delta_log).sum::<f32>() / n;
+        self.avg_delta_min = self
+            .sub_scores
+            .iter()
+            .map(|s| s.avg_min_delta_log)
+            .sum::<f32>()
+            / n;
+        self.avg_delta_ent = self
+            .sub_scores
+            .iter()
+            .map(|s| s.avg_ent_delta_log)
+            .sum::<f32>()
+            / n;
         self.score_exp = self.sub_scores.iter().map(|s| s.adj_score).sum::<f32>() / n;
         self.total_score = if !self.uses_original_word {
             2.0 * (self.score_exp + 10.0 * self.primes_ratio - 10.0 * self.molecules_ratio)
-        } else { 0.0 };
+        } else {
+            0.0
+        };
     }
 
     /// Truncated versions with lines removed from the end.
@@ -1067,17 +1216,39 @@ pub struct AmbiguousExample {
 }
 
 impl AmbiguousExample {
-    pub fn new(text: &str) -> Self { Self { text: text.to_string(), source: None } }
+    pub fn new(text: &str) -> Self {
+        Self {
+            text: text.to_string(),
+            source: None,
+        }
+    }
 
     /// Truncated versions removing non-UNK sentences.
     pub fn get_truncated(&self, max_remove: usize) -> Vec<AmbiguousExample> {
-        let sents: Vec<&str> = self.text.split('.').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
-        let non_unk: Vec<usize> = sents.iter().enumerate().filter(|(_, s)| !s.contains("<UNK>")).map(|(i, _)| i).collect();
-        (0..max_remove.min(non_unk.len())).map(|i| {
-            let exclude: HashSet<usize> = non_unk[..=i].iter().copied().collect();
-            let kept: Vec<&str> = sents.iter().enumerate().filter(|(j, _)| !exclude.contains(j)).map(|(_, s)| *s).collect();
-            AmbiguousExample::new(&kept.join(". "))
-        }).collect()
+        let sents: Vec<&str> = self
+            .text
+            .split('.')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let non_unk: Vec<usize> = sents
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| !s.contains("<UNK>"))
+            .map(|(i, _)| i)
+            .collect();
+        (0..max_remove.min(non_unk.len()))
+            .map(|i| {
+                let exclude: HashSet<usize> = non_unk[..=i].iter().copied().collect();
+                let kept: Vec<&str> = sents
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, _)| !exclude.contains(j))
+                    .map(|(_, s)| *s)
+                    .collect();
+                AmbiguousExample::new(&kept.join(". "))
+            })
+            .collect()
     }
 }
 
@@ -1094,13 +1265,32 @@ pub struct ModelResult {
 
 impl ModelResult {
     pub fn new(model_name: &str) -> Self {
-        Self { model_name: model_name.to_string(), num_examples: 0, explications: Vec::new(), avg_primes_ratio: 0.0, avg_molecules_ratio: 0.0, avg_total_score: 0.0 }
+        Self {
+            model_name: model_name.to_string(),
+            num_examples: 0,
+            explications: Vec::new(),
+            avg_primes_ratio: 0.0,
+            avg_molecules_ratio: 0.0,
+            avg_total_score: 0.0,
+        }
     }
     pub fn calculate_averages(&mut self) {
         let n = self.explications.len() as f32;
-        if n == 0.0 { return; }
-        self.avg_primes_ratio = self.explications.iter().map(|e| e.primes_ratio).sum::<f32>() / n;
-        self.avg_molecules_ratio = self.explications.iter().map(|e| e.molecules_ratio).sum::<f32>() / n;
+        if n == 0.0 {
+            return;
+        }
+        self.avg_primes_ratio = self
+            .explications
+            .iter()
+            .map(|e| e.primes_ratio)
+            .sum::<f32>()
+            / n;
+        self.avg_molecules_ratio = self
+            .explications
+            .iter()
+            .map(|e| e.molecules_ratio)
+            .sum::<f32>()
+            / n;
         self.avg_total_score = self.explications.iter().map(|e| e.total_score).sum::<f32>() / n;
     }
 }
@@ -1111,7 +1301,12 @@ impl ModelResult {
 pub fn load_nsm_codebook(codebook_bytes: &[u8]) -> super::cam_pq::CamCodebook {
     use super::cam_pq::{CamCodebook, SubspaceCodebook, NUM_CENTROIDS, NUM_SUBSPACES};
     let expected = NUM_SUBSPACES * NUM_CENTROIDS * 16 * 4;
-    assert_eq!(codebook_bytes.len(), expected, "codebook_pq.bin: expected {expected} bytes, got {}", codebook_bytes.len());
+    assert_eq!(
+        codebook_bytes.len(),
+        expected,
+        "codebook_pq.bin: expected {expected} bytes, got {}",
+        codebook_bytes.len()
+    );
     let mut codebooks: Vec<SubspaceCodebook> = Vec::with_capacity(NUM_SUBSPACES);
     for s in 0..NUM_SUBSPACES {
         let mut centroids = Vec::with_capacity(NUM_CENTROIDS);
@@ -1119,35 +1314,64 @@ pub fn load_nsm_codebook(codebook_bytes: &[u8]) -> super::cam_pq::CamCodebook {
             let mut centroid = Vec::with_capacity(16);
             for d in 0..16 {
                 let off = (s * NUM_CENTROIDS * 16 + c * 16 + d) * 4;
-                centroid.push(f32::from_le_bytes([codebook_bytes[off], codebook_bytes[off+1], codebook_bytes[off+2], codebook_bytes[off+3]]));
+                centroid.push(f32::from_le_bytes([
+                    codebook_bytes[off],
+                    codebook_bytes[off + 1],
+                    codebook_bytes[off + 2],
+                    codebook_bytes[off + 3],
+                ]));
             }
             centroids.push(centroid);
         }
-        codebooks.push(SubspaceCodebook { centroids, subspace_dim: 16 });
+        codebooks.push(SubspaceCodebook {
+            centroids,
+            subspace_dim: 16,
+        });
     }
-    CamCodebook { codebooks: codebooks.try_into().unwrap(), total_dim: 96, subspace_dim: 16 }
+    CamCodebook {
+        codebooks: codebooks.try_into().unwrap(),
+        total_dim: 96,
+        subspace_dim: 16,
+    }
 }
 
 /// Load CAM codes (`cam_codes.bin`): N words × 6 bytes.
 pub fn load_cam_codes(bytes: &[u8]) -> Vec<super::cam_pq::CamFingerprint> {
     assert_eq!(bytes.len() % 6, 0);
-    bytes.chunks_exact(6).map(|c| { let mut fp = [0u8; 6]; fp.copy_from_slice(c); fp }).collect()
+    bytes
+        .chunks_exact(6)
+        .map(|c| {
+            let mut fp = [0u8; 6];
+            fp.copy_from_slice(c);
+            fp
+        })
+        .collect()
 }
 
 // ── 36-bit SPO triple ───────────────────────────────────────────────────────
 
 /// 36-bit SPO triple packed in u64. 12-bit subject + predicate + object.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct SpoTriple { packed: u64 }
+pub struct SpoTriple {
+    packed: u64,
+}
 
 impl SpoTriple {
     pub fn new(subject: u16, predicate: u16, object: u16) -> Self {
         debug_assert!(subject < 4096 && predicate < 4096 && object < 4096);
-        Self { packed: ((subject as u64) << 24) | ((predicate as u64) << 12) | object as u64 }
+        Self {
+            packed: ((subject as u64) << 24) | ((predicate as u64) << 12) | object as u64,
+        }
     }
-    pub fn subject(&self) -> u16 { ((self.packed >> 24) & 0xFFF) as u16 }
-    pub fn predicate(&self) -> u16 { ((self.packed >> 12) & 0xFFF) as u16 }
-    pub fn object(&self) -> u16 { (self.packed & 0xFFF) as u16 }
+    pub fn subject(&self) -> u16 {
+        ((self.packed >> 24) & 0xFFF) as u16
+    }
+    pub fn predicate(&self) -> u16 {
+        ((self.packed >> 12) & 0xFFF) as u16
+    }
+    pub fn object(&self) -> u16 {
+        (self.packed & 0xFFF) as u16
+    }
 }
 
 // ── Prompt templates ────────────────────────────────────────────────────────
@@ -1156,20 +1380,38 @@ impl SpoTriple {
 pub const NSM_EXPLICATION_SYS_INST: &str = "You are a linguist specializing in semantic analysis using the Natural Semantic Metalanguage (NSM) approach. NSM reduces lexicons to universal semantic primes. Paraphrase the word's meaning using NSM primes.";
 
 /// Recovery prompt: predict masked word.
-pub const RECOVERY_PROMPT_SYS_INST: &str = "Read the passage with a missing word indicated by <UNK>. Predict the missing word. Output only your prediction.";
+pub const RECOVERY_PROMPT_SYS_INST: &str =
+    "Read the passage with a missing word indicated by <UNK>. Predict the missing word. Output only your prediction.";
 
 /// Chat message for prompt construction.
 #[derive(Clone, Debug)]
-pub struct ChatMessage { pub role: String, pub content: String }
+pub struct ChatMessage {
+    pub role: String,
+    pub content: String,
+}
 
 /// Build explication prompt with optional few-shot.
-pub fn build_explication_prompt(word: &str, examples: &[&str], few_shot: &[(String, String)], max: Option<usize>) -> Vec<ChatMessage> {
-    let mut msgs = vec![ChatMessage { role: "system".into(), content: NSM_EXPLICATION_SYS_INST.into() }];
+pub fn build_explication_prompt(
+    word: &str, examples: &[&str], few_shot: &[(String, String)], max: Option<usize>,
+) -> Vec<ChatMessage> {
+    let mut msgs = vec![ChatMessage {
+        role: "system".into(),
+        content: NSM_EXPLICATION_SYS_INST.into(),
+    }];
     for (u, a) in &few_shot[..max.unwrap_or(few_shot.len()).min(few_shot.len())] {
-        msgs.push(ChatMessage { role: "user".into(), content: u.clone() });
-        msgs.push(ChatMessage { role: "assistant".into(), content: a.clone() });
+        msgs.push(ChatMessage {
+            role: "user".into(),
+            content: u.clone(),
+        });
+        msgs.push(ChatMessage {
+            role: "assistant".into(),
+            content: a.clone(),
+        });
     }
-    msgs.push(ChatMessage { role: "user".into(), content: format!("Word: {word}\nExamples:\n{}\nParaphrase:", examples.join("\n\n")) });
+    msgs.push(ChatMessage {
+        role: "user".into(),
+        content: format!("Word: {word}\nExamples:\n{}\nParaphrase:", examples.join("\n\n")),
+    });
     msgs
 }
 
@@ -1180,8 +1422,14 @@ pub fn build_recover_prompt(ambig: &AmbiguousExample, exp: Option<&Explication>)
         None => format!("Passage: {}\nMissing Word:", ambig.text),
     };
     vec![
-        ChatMessage { role: "system".into(), content: RECOVERY_PROMPT_SYS_INST.into() },
-        ChatMessage { role: "user".into(), content: user },
+        ChatMessage {
+            role: "system".into(),
+            content: RECOVERY_PROMPT_SYS_INST.into(),
+        },
+        ChatMessage {
+            role: "user".into(),
+            content: user,
+        },
     ]
 }
 
@@ -1265,10 +1513,10 @@ mod eval_tests {
 
     #[test]
     fn test_cam_codes_load() {
-        let bytes = vec![1,2,3,4,5,6, 7,8,9,10,11,12];
+        let bytes = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
         let codes = load_cam_codes(&bytes);
         assert_eq!(codes.len(), 2);
-        assert_eq!(codes[0], [1,2,3,4,5,6]);
+        assert_eq!(codes[0], [1, 2, 3, 4, 5, 6]);
     }
 
     #[test]

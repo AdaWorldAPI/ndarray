@@ -119,11 +119,19 @@ pub fn vdabs(x: &[f64], out: &mut [f64]) {
 pub fn vsadd(a: &[f32], b: &[f32], out: &mut [f32]) {
     let n = a.len().min(b.len()).min(out.len());
     let (a, b, out) = (&a[..n], &b[..n], &mut out[..n]);
-    for ((a_chunk, b_chunk), out_chunk) in a.chunks_exact(16).zip(b.chunks_exact(16)).zip(out.chunks_exact_mut(16)) {
+    for ((a_chunk, b_chunk), out_chunk) in a
+        .chunks_exact(16)
+        .zip(b.chunks_exact(16))
+        .zip(out.chunks_exact_mut(16))
+    {
         (F32x16::from_slice(a_chunk) + F32x16::from_slice(b_chunk)).copy_to_slice(out_chunk);
     }
     let tail_start = n - n % 16;
-    for ((&av, &bv), o) in a[tail_start..].iter().zip(b[tail_start..].iter()).zip(out[tail_start..].iter_mut()) {
+    for ((&av, &bv), o) in a[tail_start..]
+        .iter()
+        .zip(b[tail_start..].iter())
+        .zip(out[tail_start..].iter_mut())
+    {
         *o = av + bv;
     }
 }
@@ -134,11 +142,19 @@ pub fn vsadd(a: &[f32], b: &[f32], out: &mut [f32]) {
 pub fn vsmul(a: &[f32], b: &[f32], out: &mut [f32]) {
     let n = a.len().min(b.len()).min(out.len());
     let (a, b, out) = (&a[..n], &b[..n], &mut out[..n]);
-    for ((a_chunk, b_chunk), out_chunk) in a.chunks_exact(16).zip(b.chunks_exact(16)).zip(out.chunks_exact_mut(16)) {
+    for ((a_chunk, b_chunk), out_chunk) in a
+        .chunks_exact(16)
+        .zip(b.chunks_exact(16))
+        .zip(out.chunks_exact_mut(16))
+    {
         (F32x16::from_slice(a_chunk) * F32x16::from_slice(b_chunk)).copy_to_slice(out_chunk);
     }
     let tail_start = n - n % 16;
-    for ((&av, &bv), o) in a[tail_start..].iter().zip(b[tail_start..].iter()).zip(out[tail_start..].iter_mut()) {
+    for ((&av, &bv), o) in a[tail_start..]
+        .iter()
+        .zip(b[tail_start..].iter())
+        .zip(out[tail_start..].iter_mut())
+    {
         *o = av * bv;
     }
 }
@@ -149,11 +165,19 @@ pub fn vsmul(a: &[f32], b: &[f32], out: &mut [f32]) {
 pub fn vsdiv(a: &[f32], b: &[f32], out: &mut [f32]) {
     let n = a.len().min(b.len()).min(out.len());
     let (a, b, out) = (&a[..n], &b[..n], &mut out[..n]);
-    for ((a_chunk, b_chunk), out_chunk) in a.chunks_exact(16).zip(b.chunks_exact(16)).zip(out.chunks_exact_mut(16)) {
+    for ((a_chunk, b_chunk), out_chunk) in a
+        .chunks_exact(16)
+        .zip(b.chunks_exact(16))
+        .zip(out.chunks_exact_mut(16))
+    {
         (F32x16::from_slice(a_chunk) / F32x16::from_slice(b_chunk)).copy_to_slice(out_chunk);
     }
     let tail_start = n - n % 16;
-    for ((&av, &bv), o) in a[tail_start..].iter().zip(b[tail_start..].iter()).zip(out[tail_start..].iter_mut()) {
+    for ((&av, &bv), o) in a[tail_start..]
+        .iter()
+        .zip(b[tail_start..].iter())
+        .zip(out[tail_start..].iter_mut())
+    {
         *o = av / bv;
     }
 }
@@ -213,14 +237,22 @@ pub fn vscos(x: &[f32], out: &mut [f32]) {
 pub fn vspow(a: &[f32], b: &[f32], out: &mut [f32]) {
     let n = a.len().min(b.len()).min(out.len());
     let (a, b, out) = (&a[..n], &b[..n], &mut out[..n]);
-    for ((a_chunk, b_chunk), out_chunk) in a.chunks_exact(16).zip(b.chunks_exact(16)).zip(out.chunks_exact_mut(16)) {
+    for ((a_chunk, b_chunk), out_chunk) in a
+        .chunks_exact(16)
+        .zip(b.chunks_exact(16))
+        .zip(out.chunks_exact_mut(16))
+    {
         let va = F32x16::from_slice(a_chunk);
         let vb = F32x16::from_slice(b_chunk);
         // a^b = exp(b * ln(a))
         simd_exp_f32(vb * simd_ln_f32(va)).copy_to_slice(out_chunk);
     }
     let tail_start = n - n % 16;
-    for ((&av, &bv), o) in a[tail_start..].iter().zip(b[tail_start..].iter()).zip(out[tail_start..].iter_mut()) {
+    for ((&av, &bv), o) in a[tail_start..]
+        .iter()
+        .zip(b[tail_start..].iter())
+        .zip(out[tail_start..].iter_mut())
+    {
         *o = av.powf(bv);
     }
 }
@@ -475,7 +507,7 @@ mod tests {
 
         // Generate "weight" data (deterministic, mimics Gaussian distribution)
         let weights: Vec<f64> = (0..d)
-            .map(|i| ((i as f64 * 0.7 + 13.0).sin() * 2.5))
+            .map(|i| (i as f64 * 0.7 + 13.0).sin() * 2.5)
             .collect();
 
         // ── ENCODING: f64[4096] → f64[17] (golden-step projection) ──
@@ -502,7 +534,8 @@ mod tests {
 
         // ── QUANTIZE: f64[17] → i16[17] (what Base17 stores) ──
         let fp_scale = 1000.0;
-        let coefficients_i16: Vec<i16> = coefficients_f64.iter()
+        let coefficients_i16: Vec<i16> = coefficients_f64
+            .iter()
             .map(|&v| (v * fp_scale).round().clamp(-32768.0, 32767.0) as i16)
             .collect();
 
@@ -555,12 +588,12 @@ mod tests {
         // Compare: golden-step 17D projection vs random 17D projection
         // on synthetic weight-like data (approximate Gaussian).
         // Measures Spearman ρ of pairwise distances.
-        
+
         let d = 256; // weight vector dimension (small for test speed)
-        let n = 50;  // number of vectors to compare
+        let n = 50; // number of vectors to compare
         let base_dim = 17;
         let golden_step = 11;
-        
+
         // Generate weight-like vectors (deterministic, Gaussian-ish)
         let vectors: Vec<Vec<f64>> = (0..n)
             .map(|i| {
@@ -569,21 +602,24 @@ mod tests {
                     .collect()
             })
             .collect();
-        
+
         // Ground truth: pairwise L2 distances in full d-D space
         let mut gt_distances = Vec::new();
         for i in 0..n {
             for j in (i + 1)..n {
-                let dist: f64 = vectors[i].iter().zip(&vectors[j])
+                let dist: f64 = vectors[i]
+                    .iter()
+                    .zip(&vectors[j])
                     .map(|(a, b)| (a - b) * (a - b))
                     .sum::<f64>()
                     .sqrt();
                 gt_distances.push(dist);
             }
         }
-        
+
         // Golden-step projection: project each vector to 17D
-        let golden_projected: Vec<Vec<f64>> = vectors.iter()
+        let golden_projected: Vec<Vec<f64>> = vectors
+            .iter()
             .map(|v| {
                 let n_octaves = (d + base_dim - 1) / base_dim;
                 let mut sum = vec![0.0f64; base_dim];
@@ -597,12 +633,13 @@ mod tests {
                         }
                     }
                 }
-                sum.iter().zip(&count)
+                sum.iter()
+                    .zip(&count)
                     .map(|(&s, &c)| if c > 0 { s / c as f64 } else { 0.0 })
                     .collect()
             })
             .collect();
-        
+
         // Random projection: use a deterministic "random" 17×d matrix
         let random_matrix: Vec<Vec<f64>> = (0..base_dim)
             .map(|i| {
@@ -611,23 +648,25 @@ mod tests {
                     .collect()
             })
             .collect();
-        
-        let random_projected: Vec<Vec<f64>> = vectors.iter()
+
+        let random_projected: Vec<Vec<f64>> = vectors
+            .iter()
             .map(|v| {
-                random_matrix.iter()
-                    .map(|row| {
-                        row.iter().zip(v).map(|(r, x)| r * x).sum::<f64>()
-                    })
+                random_matrix
+                    .iter()
+                    .map(|row| row.iter().zip(v).map(|(r, x)| r * x).sum::<f64>())
                     .collect()
             })
             .collect();
-        
+
         // Compute pairwise distances in both projected spaces
         let golden_distances: Vec<f64> = {
             let mut dists = Vec::new();
             for i in 0..n {
                 for j in (i + 1)..n {
-                    let dist: f64 = golden_projected[i].iter().zip(&golden_projected[j])
+                    let dist: f64 = golden_projected[i]
+                        .iter()
+                        .zip(&golden_projected[j])
                         .map(|(a, b)| (a - b) * (a - b))
                         .sum::<f64>()
                         .sqrt();
@@ -636,12 +675,14 @@ mod tests {
             }
             dists
         };
-        
+
         let random_distances: Vec<f64> = {
             let mut dists = Vec::new();
             for i in 0..n {
                 for j in (i + 1)..n {
-                    let dist: f64 = random_projected[i].iter().zip(&random_projected[j])
+                    let dist: f64 = random_projected[i]
+                        .iter()
+                        .zip(&random_projected[j])
                         .map(|(a, b)| (a - b) * (a - b))
                         .sum::<f64>()
                         .sqrt();
@@ -650,7 +691,7 @@ mod tests {
             }
             dists
         };
-        
+
         // Compute Spearman ρ: rank correlation between GT and projected distances
         fn spearman_rho(a: &[f64], b: &[f64]) -> f64 {
             let n = a.len();
@@ -668,10 +709,12 @@ mod tests {
                 var_a += da * da;
                 var_b += db * db;
             }
-            if var_a < 1e-10 || var_b < 1e-10 { return 0.0; }
+            if var_a < 1e-10 || var_b < 1e-10 {
+                return 0.0;
+            }
             cov / (var_a * var_b).sqrt()
         }
-        
+
         fn ranks(values: &[f64]) -> Vec<f64> {
             let mut indexed: Vec<(usize, f64)> = values.iter().copied().enumerate().collect();
             indexed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
@@ -681,15 +724,15 @@ mod tests {
             }
             result
         }
-        
+
         let rho_golden = spearman_rho(&gt_distances, &golden_distances);
         let rho_random = spearman_rho(&gt_distances, &random_distances);
-        
+
         eprintln!("=== Projection Quality (Spearman ρ) ===");
         eprintln!("  Golden-step 17D: ρ = {:.4}", rho_golden);
         eprintln!("  Random 17D:      ρ = {:.4}", rho_random);
         eprintln!("  Δ (golden - random): {:.4}", rho_golden - rho_random);
-        
+
         // Both should preserve SOME ranking (ρ > 0)
         assert!(rho_golden > 0.0, "golden-step ρ should be positive");
         assert!(rho_random > 0.0, "random ρ should be positive");
@@ -720,28 +763,31 @@ mod tests {
             let v: Vec<f64> = (0..d)
                 .map(|j| {
                     let off = (i * d + j) * 4;
-                    f32::from_le_bytes([float_data[off], float_data[off+1], float_data[off+2], float_data[off+3]]) as f64
+                    f32::from_le_bytes([float_data[off], float_data[off + 1], float_data[off + 2], float_data[off + 3]])
+                        as f64
                 })
                 .collect();
             vectors.push(v);
         }
-        
+
         let n = vectors.len();
         eprintln!("Loaded {} vectors of dim {} from tiny-imagenet", n, d);
         assert!(n >= 50, "Need at least 50 vectors");
-        
+
         // Use first 100 for speed
         let n = n.min(100);
         let vectors = &vectors[..n];
-        
+
         let base_dim = 17;
         let golden_step = 11;
 
         // Ground truth: pairwise L2 distances
         let mut gt_distances = Vec::new();
         for i in 0..n {
-            for j in (i+1)..n {
-                let dist: f64 = vectors[i].iter().zip(&vectors[j])
+            for j in (i + 1)..n {
+                let dist: f64 = vectors[i]
+                    .iter()
+                    .zip(&vectors[j])
                     .map(|(a, b)| (a - b) * (a - b))
                     .sum::<f64>()
                     .sqrt();
@@ -750,7 +796,8 @@ mod tests {
         }
 
         // Golden-step projection
-        let golden_projected: Vec<Vec<f64>> = vectors.iter()
+        let golden_projected: Vec<Vec<f64>> = vectors
+            .iter()
             .map(|v| {
                 let n_octaves = (d + base_dim - 1) / base_dim;
                 let mut sum = vec![0.0f64; base_dim];
@@ -758,28 +805,51 @@ mod tests {
                 for octave in 0..n_octaves {
                     for bi in 0..base_dim {
                         let dim = octave * base_dim + ((bi * golden_step) % base_dim);
-                        if dim < d { sum[bi] += v[dim]; count[bi] += 1; }
+                        if dim < d {
+                            sum[bi] += v[dim];
+                            count[bi] += 1;
+                        }
                     }
                 }
-                sum.iter().zip(&count).map(|(&s, &c)| if c > 0 { s / c as f64 } else { 0.0 }).collect()
+                sum.iter()
+                    .zip(&count)
+                    .map(|(&s, &c)| if c > 0 { s / c as f64 } else { 0.0 })
+                    .collect()
             })
             .collect();
 
         // Random projection
         let random_matrix: Vec<Vec<f64>> = (0..base_dim)
-            .map(|i| (0..d).map(|j| ((i * 7919 + j * 104729) as f64 * 0.00001).sin()).collect())
+            .map(|i| {
+                (0..d)
+                    .map(|j| ((i * 7919 + j * 104729) as f64 * 0.00001).sin())
+                    .collect()
+            })
             .collect();
-        let random_projected: Vec<Vec<f64>> = vectors.iter()
-            .map(|v| random_matrix.iter().map(|row| row.iter().zip(v).map(|(r, x)| r * x).sum::<f64>()).collect())
+        let random_projected: Vec<Vec<f64>> = vectors
+            .iter()
+            .map(|v| {
+                random_matrix
+                    .iter()
+                    .map(|row| row.iter().zip(v).map(|(r, x)| r * x).sum::<f64>())
+                    .collect()
+            })
             .collect();
 
         // Simple mean projection (average every 17 consecutive dims)
-        let mean_projected: Vec<Vec<f64>> = vectors.iter()
+        let mean_projected: Vec<Vec<f64>> = vectors
+            .iter()
             .map(|v| {
-                (0..base_dim).map(|bi| {
-                    let chunk: Vec<f64> = (bi..d).step_by(base_dim).map(|i| v[i]).collect();
-                    if chunk.is_empty() { 0.0 } else { chunk.iter().sum::<f64>() / chunk.len() as f64 }
-                }).collect()
+                (0..base_dim)
+                    .map(|bi| {
+                        let chunk: Vec<f64> = (bi..d).step_by(base_dim).map(|i| v[i]).collect();
+                        if chunk.is_empty() {
+                            0.0
+                        } else {
+                            chunk.iter().sum::<f64>() / chunk.len() as f64
+                        }
+                    })
+                    .collect()
             })
             .collect();
 
@@ -787,10 +857,17 @@ mod tests {
         fn pairwise_l2(proj: &[Vec<f64>]) -> Vec<f64> {
             let n = proj.len();
             let mut dists = Vec::new();
-            for i in 0..n { for j in (i+1)..n {
-                let d: f64 = proj[i].iter().zip(&proj[j]).map(|(a,b)| (a-b)*(a-b)).sum::<f64>().sqrt();
-                dists.push(d);
-            }}
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    let d: f64 = proj[i]
+                        .iter()
+                        .zip(&proj[j])
+                        .map(|(a, b)| (a - b) * (a - b))
+                        .sum::<f64>()
+                        .sqrt();
+                    dists.push(d);
+                }
+            }
             dists
         }
 
@@ -804,19 +881,28 @@ mod tests {
                 let mut idx: Vec<(usize, f64)> = v.iter().copied().enumerate().collect();
                 idx.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
                 let mut r = vec![0.0; v.len()];
-                for (rank, (i, _)) in idx.into_iter().enumerate() { r[i] = rank as f64; }
+                for (rank, (i, _)) in idx.into_iter().enumerate() {
+                    r[i] = rank as f64;
+                }
                 r
             }
-            let ra = ranks(a); let rb = ranks(b);
+            let ra = ranks(a);
+            let rb = ranks(b);
             let n = a.len() as f64;
             let ma: f64 = ra.iter().sum::<f64>() / n;
             let mb: f64 = rb.iter().sum::<f64>() / n;
             let (mut cov, mut va, mut vb) = (0.0, 0.0, 0.0);
             for i in 0..a.len() {
                 let (da, db) = (ra[i] - ma, rb[i] - mb);
-                cov += da * db; va += da * da; vb += db * db;
+                cov += da * db;
+                va += da * da;
+                vb += db * db;
             }
-            if va < 1e-10 || vb < 1e-10 { 0.0 } else { cov / (va * vb).sqrt() }
+            if va < 1e-10 || vb < 1e-10 {
+                0.0
+            } else {
+                cov / (va * vb).sqrt()
+            }
         }
 
         let rho_golden = spearman(&gt_distances, &golden_dists);
@@ -851,7 +937,10 @@ mod tests {
         // Compare: 1/3 grid line sampling vs golden-step on tiny-imagenet
         let bytes = match std::fs::read("/tmp/tiny_imagenet_200.bin") {
             Ok(b) => b,
-            Err(_) => { eprintln!("SKIP: /tmp/tiny_imagenet_200.bin not found"); return; }
+            Err(_) => {
+                eprintln!("SKIP: /tmp/tiny_imagenet_200.bin not found");
+                return;
+            }
         };
 
         let d = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize; // 12288
@@ -869,21 +958,21 @@ mod tests {
             let v: Vec<f64> = (0..d)
                 .map(|j| {
                     let off = (i * d + j) * 4;
-                    f32::from_le_bytes([float_data[off], float_data[off+1], float_data[off+2], float_data[off+3]]) as f64
+                    f32::from_le_bytes([float_data[off], float_data[off + 1], float_data[off + 2], float_data[off + 3]])
+                        as f64
                 })
                 .collect();
             vectors.push(v);
         }
 
         // Helper: extract pixel at (row, col, channel) from flat vector
-        let pixel = |v: &[f64], r: usize, c: usize, ch: usize| -> f64 {
-            v[r * img_w * channels + c * channels + ch]
-        };
+        let pixel = |v: &[f64], r: usize, c: usize, ch: usize| -> f64 { v[r * img_w * channels + c * channels + ch] };
 
         // ── Projection 1: Golden-step 17D (baseline) ──
         let base_dim = 17;
         let golden_step = 11;
-        let golden_proj: Vec<Vec<f64>> = vectors.iter()
+        let golden_proj: Vec<Vec<f64>> = vectors
+            .iter()
             .map(|v| {
                 let n_octaves = (d + base_dim - 1) / base_dim;
                 let mut sum = vec![0.0f64; base_dim];
@@ -891,20 +980,27 @@ mod tests {
                 for octave in 0..n_octaves {
                     for bi in 0..base_dim {
                         let dim = octave * base_dim + ((bi * golden_step) % base_dim);
-                        if dim < d { sum[bi] += v[dim]; count[bi] += 1; }
+                        if dim < d {
+                            sum[bi] += v[dim];
+                            count[bi] += 1;
+                        }
                     }
                 }
-                sum.iter().zip(&count).map(|(&s, &c)| if c > 0 { s / c as f64 } else { 0.0 }).collect()
+                sum.iter()
+                    .zip(&count)
+                    .map(|(&s, &c)| if c > 0 { s / c as f64 } else { 0.0 })
+                    .collect()
             })
             .collect();
 
         // ── Projection 2: 1/3 + 2/3 grid lines (4 lines × 64 × 3 = 768D) ──
-        let grid_lines_proj: Vec<Vec<f64>> = vectors.iter()
+        let grid_lines_proj: Vec<Vec<f64>> = vectors
+            .iter()
             .map(|v| {
                 let mut features = Vec::with_capacity(768);
                 // Horizontal lines at row 1/3 and 2/3
-                let r1 = img_h / 3;      // row 21
-                let r2 = 2 * img_h / 3;  // row 43
+                let r1 = img_h / 3; // row 21
+                let r2 = 2 * img_h / 3; // row 43
                 for &r in &[r1, r2] {
                     for c in 0..img_w {
                         for ch in 0..channels {
@@ -927,19 +1023,24 @@ mod tests {
             .collect();
 
         // ── Projection 3: 1/2 + 1/3 + 2/3 grid (6 lines × 64 × 3 = 1152D) ──
-        let full_grid_proj: Vec<Vec<f64>> = vectors.iter()
+        let full_grid_proj: Vec<Vec<f64>> = vectors
+            .iter()
             .map(|v| {
                 let mut features = Vec::with_capacity(1152);
                 // Horizontal: 1/3, 1/2, 2/3
                 for &r in &[img_h / 3, img_h / 2, 2 * img_h / 3] {
                     for c in 0..img_w {
-                        for ch in 0..channels { features.push(pixel(v, r, c, ch)); }
+                        for ch in 0..channels {
+                            features.push(pixel(v, r, c, ch));
+                        }
                     }
                 }
                 // Vertical: 1/3, 1/2, 2/3
                 for &c in &[img_w / 3, img_w / 2, 2 * img_w / 3] {
                     for r in 0..img_h {
-                        for ch in 0..channels { features.push(pixel(v, r, c, ch)); }
+                        for ch in 0..channels {
+                            features.push(pixel(v, r, c, ch));
+                        }
                     }
                 }
                 features
@@ -947,12 +1048,15 @@ mod tests {
             .collect();
 
         // ── Projection 4: 4 intersection points only (4 × 3 = 12D) ──
-        let intersections_proj: Vec<Vec<f64>> = vectors.iter()
+        let intersections_proj: Vec<Vec<f64>> = vectors
+            .iter()
             .map(|v| {
                 let mut features = Vec::with_capacity(12);
                 for &r in &[img_h / 3, 2 * img_h / 3] {
                     for &c in &[img_w / 3, 2 * img_w / 3] {
-                        for ch in 0..channels { features.push(pixel(v, r, c, ch)); }
+                        for ch in 0..channels {
+                            features.push(pixel(v, r, c, ch));
+                        }
                     }
                 }
                 features
@@ -961,18 +1065,32 @@ mod tests {
 
         // ── Ground truth pairwise distances ──
         let mut gt_dists = Vec::new();
-        for i in 0..n { for j in (i+1)..n {
-            let d: f64 = vectors[i].iter().zip(&vectors[j]).map(|(a,b)| (a-b)*(a-b)).sum::<f64>().sqrt();
-            gt_dists.push(d);
-        }}
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let d: f64 = vectors[i]
+                    .iter()
+                    .zip(&vectors[j])
+                    .map(|(a, b)| (a - b) * (a - b))
+                    .sum::<f64>()
+                    .sqrt();
+                gt_dists.push(d);
+            }
+        }
 
         fn pairwise_l2(proj: &[Vec<f64>]) -> Vec<f64> {
             let n = proj.len();
             let mut d = Vec::new();
-            for i in 0..n { for j in (i+1)..n {
-                let dist: f64 = proj[i].iter().zip(&proj[j]).map(|(a,b)| (a-b)*(a-b)).sum::<f64>().sqrt();
-                d.push(dist);
-            }}
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    let dist: f64 = proj[i]
+                        .iter()
+                        .zip(&proj[j])
+                        .map(|(a, b)| (a - b) * (a - b))
+                        .sum::<f64>()
+                        .sqrt();
+                    d.push(dist);
+                }
+            }
             d
         }
 
@@ -981,7 +1099,9 @@ mod tests {
                 let mut idx: Vec<(usize, f64)> = v.iter().copied().enumerate().collect();
                 idx.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
                 let mut r = vec![0.0; v.len()];
-                for (rank, (i, _)) in idx.into_iter().enumerate() { r[i] = rank as f64; }
+                for (rank, (i, _)) in idx.into_iter().enumerate() {
+                    r[i] = rank as f64;
+                }
                 r
             }
             let (ra, rb) = (ranks(a), ranks(b));
@@ -990,9 +1110,15 @@ mod tests {
             let (mut cov, mut va, mut vb) = (0.0, 0.0, 0.0);
             for i in 0..a.len() {
                 let (da, db) = (ra[i] - ma, rb[i] - mb);
-                cov += da * db; va += da * da; vb += db * db;
+                cov += da * db;
+                va += da * da;
+                vb += db * db;
             }
-            if va < 1e-10 || vb < 1e-10 { 0.0 } else { cov / (va * vb).sqrt() }
+            if va < 1e-10 || vb < 1e-10 {
+                0.0
+            } else {
+                cov / (va * vb).sqrt()
+            }
         }
 
         let rho_golden = spearman(&gt_dists, &pairwise_l2(&golden_proj));
@@ -1022,7 +1148,10 @@ mod tests {
         // Test: can we identify which class an image belongs to via bundle similarity?
         let bytes = match std::fs::read("/tmp/tiny_imagenet_labeled.bin") {
             Ok(b) => b,
-            Err(_) => { eprintln!("SKIP: /tmp/tiny_imagenet_labeled.bin not found"); return; }
+            Err(_) => {
+                eprintln!("SKIP: /tmp/tiny_imagenet_labeled.bin not found");
+                return;
+            }
         };
 
         let n = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
@@ -1033,7 +1162,7 @@ mod tests {
         let mut labels = Vec::with_capacity(n);
         for i in 0..n {
             let off = 12 + i * 4;
-            labels.push(u32::from_le_bytes([bytes[off], bytes[off+1], bytes[off+2], bytes[off+3]]) as usize);
+            labels.push(u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]) as usize);
         }
 
         // Read pixel vectors
@@ -1043,7 +1172,7 @@ mod tests {
             let v: Vec<f64> = (0..d)
                 .map(|j| {
                     let off = pixel_start + (i * d + j) * 4;
-                    f32::from_le_bytes([bytes[off], bytes[off+1], bytes[off+2], bytes[off+3]]) as f64
+                    f32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]) as f64
                 })
                 .collect();
             vectors.push(v);
@@ -1055,18 +1184,25 @@ mod tests {
         let img_w = 64usize;
         let img_h = 64usize;
         let ch = 3usize;
-        let pixel = |v: &[f64], r: usize, c: usize, channel: usize| -> f64 {
-            v[r * img_w * ch + c * ch + channel]
-        };
+        let pixel = |v: &[f64], r: usize, c: usize, channel: usize| -> f64 { v[r * img_w * ch + c * ch + channel] };
 
-        let features: Vec<Vec<f64>> = vectors.iter()
+        let features: Vec<Vec<f64>> = vectors
+            .iter()
             .map(|v| {
                 let mut f = Vec::with_capacity(768);
                 for &r in &[img_h / 3, 2 * img_h / 3] {
-                    for c in 0..img_w { for channel in 0..ch { f.push(pixel(v, r, c, channel)); } }
+                    for c in 0..img_w {
+                        for channel in 0..ch {
+                            f.push(pixel(v, r, c, channel));
+                        }
+                    }
                 }
                 for &c in &[img_w / 3, 2 * img_w / 3] {
-                    for r in 0..img_h { for channel in 0..ch { f.push(pixel(v, r, c, channel)); } }
+                    for r in 0..img_h {
+                        for channel in 0..ch {
+                            f.push(pixel(v, r, c, channel));
+                        }
+                    }
                 }
                 f
             })
@@ -1098,8 +1234,12 @@ mod tests {
             let mut best_class = 0;
             let mut best_dist = f64::MAX;
             for c in 0..n_classes {
-                if class_counts[c] == 0 { continue; }
-                let dist: f64 = features[i].iter().zip(&heel_archetypes[c])
+                if class_counts[c] == 0 {
+                    continue;
+                }
+                let dist: f64 = features[i]
+                    .iter()
+                    .zip(&heel_archetypes[c])
                     .map(|(a, b)| (a - b) * (a - b))
                     .sum::<f64>()
                     .sqrt();
@@ -1127,10 +1267,16 @@ mod tests {
             for oct in 0..n_oct {
                 for bi in 0..base_dim {
                     let dim = oct * base_dim + ((bi * golden_step) % base_dim);
-                    if dim < fd { sum[bi] += v[dim]; cnt[bi] += 1; }
+                    if dim < fd {
+                        sum[bi] += v[dim];
+                        cnt[bi] += 1;
+                    }
                 }
             }
-            sum.iter().zip(&cnt).map(|(&s, &c)| if c > 0 { s / c as f64 } else { 0.0 }).collect()
+            sum.iter()
+                .zip(&cnt)
+                .map(|(&s, &c)| if c > 0 { s / c as f64 } else { 0.0 })
+                .collect()
         };
 
         let compressed_archetypes: Vec<Vec<f64>> = heel_archetypes.iter().map(|a| compress(a)).collect();
@@ -1141,14 +1287,23 @@ mod tests {
             let mut best_class = 0;
             let mut best_dist = f64::MAX;
             for c in 0..n_classes {
-                if class_counts[c] == 0 { continue; }
-                let dist: f64 = compressed_features[i].iter().zip(&compressed_archetypes[c])
+                if class_counts[c] == 0 {
+                    continue;
+                }
+                let dist: f64 = compressed_features[i]
+                    .iter()
+                    .zip(&compressed_archetypes[c])
                     .map(|(a, b)| (a - b) * (a - b))
                     .sum::<f64>()
                     .sqrt();
-                if dist < best_dist { best_dist = dist; best_class = c; }
+                if dist < best_dist {
+                    best_dist = dist;
+                    best_class = c;
+                }
             }
-            if best_class == true_label { correct_compressed += 1; }
+            if best_class == true_label {
+                correct_compressed += 1;
+            }
         }
         let accuracy_compressed = correct_compressed as f64 / total as f64;
 
@@ -1157,12 +1312,18 @@ mod tests {
         for (i, _) in labels.iter().enumerate() {
             let mut min_dist = f64::MAX;
             for c in 0..n_classes {
-                if class_counts[c] == 0 { continue; }
-                let dist: f64 = features[i].iter().zip(&heel_archetypes[c])
+                if class_counts[c] == 0 {
+                    continue;
+                }
+                let dist: f64 = features[i]
+                    .iter()
+                    .zip(&heel_archetypes[c])
                     .map(|(a, b)| (a - b) * (a - b))
                     .sum::<f64>()
                     .sqrt();
-                if dist < min_dist { min_dist = dist; }
+                if dist < min_dist {
+                    min_dist = dist;
+                }
             }
             max_distances.push((i, min_dist));
         }
@@ -1174,7 +1335,12 @@ mod tests {
         eprintln!("  Grid-line features (768D):");
         eprintln!("    HEEL accuracy:           {:.1}% ({}/{})", accuracy * 100.0, correct, total);
         eprintln!("  Golden-step compressed (17D = 34 bytes):");
-        eprintln!("    Compressed accuracy:     {:.1}% ({}/{})", accuracy_compressed * 100.0, correct_compressed, total);
+        eprintln!(
+            "    Compressed accuracy:     {:.1}% ({}/{})",
+            accuracy_compressed * 100.0,
+            correct_compressed,
+            total
+        );
         eprintln!("  Accuracy loss from compression: {:.1}%", (accuracy - accuracy_compressed) * 100.0);
         eprintln!("  Top-10 outliers (CHAODA candidates):");
         for (idx, dist) in max_distances.iter().take(5) {
@@ -1193,10 +1359,13 @@ mod tests {
         // by unbinding one class archetype and checking residual against others.
         //
         // Bird/fence scenario: if unbind(image, bird) correlates with fence → both present.
-        
+
         let bytes = match std::fs::read("/tmp/tiny_imagenet_labeled.bin") {
             Ok(b) => b,
-            Err(_) => { eprintln!("SKIP: /tmp/tiny_imagenet_labeled.bin not found"); return; }
+            Err(_) => {
+                eprintln!("SKIP: /tmp/tiny_imagenet_labeled.bin not found");
+                return;
+            }
         };
 
         let n = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
@@ -1206,7 +1375,7 @@ mod tests {
         let mut labels = Vec::with_capacity(n);
         for i in 0..n {
             let off = 12 + i * 4;
-            labels.push(u32::from_le_bytes([bytes[off], bytes[off+1], bytes[off+2], bytes[off+3]]) as usize);
+            labels.push(u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]) as usize);
         }
 
         let pixel_start = 12 + n * 4;
@@ -1215,21 +1384,31 @@ mod tests {
         let ch = 3usize;
 
         // Extract grid-line features (768D)
-        let features: Vec<Vec<f64>> = (0..n).map(|i| {
-            let v_start = pixel_start + i * d * 4;
-            let pixel = |r: usize, c: usize, channel: usize| -> f64 {
-                let off = v_start + (r * img_w * ch + c * ch + channel) * 4;
-                f32::from_le_bytes([bytes[off], bytes[off+1], bytes[off+2], bytes[off+3]]) as f64
-            };
-            let mut f = Vec::with_capacity(768);
-            for &r in &[img_h / 3, 2 * img_h / 3] {
-                for c in 0..img_w { for channel in 0..ch { f.push(pixel(r, c, channel)); } }
-            }
-            for &c in &[img_w / 3, 2 * img_w / 3] {
-                for r in 0..img_h { for channel in 0..ch { f.push(pixel(r, c, channel)); } }
-            }
-            f
-        }).collect();
+        let features: Vec<Vec<f64>> = (0..n)
+            .map(|i| {
+                let v_start = pixel_start + i * d * 4;
+                let pixel = |r: usize, c: usize, channel: usize| -> f64 {
+                    let off = v_start + (r * img_w * ch + c * ch + channel) * 4;
+                    f32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]) as f64
+                };
+                let mut f = Vec::with_capacity(768);
+                for &r in &[img_h / 3, 2 * img_h / 3] {
+                    for c in 0..img_w {
+                        for channel in 0..ch {
+                            f.push(pixel(r, c, channel));
+                        }
+                    }
+                }
+                for &c in &[img_w / 3, 2 * img_w / 3] {
+                    for r in 0..img_h {
+                        for channel in 0..ch {
+                            f.push(pixel(r, c, channel));
+                        }
+                    }
+                }
+                f
+            })
+            .collect();
 
         let feat_d = features[0].len();
 
@@ -1237,12 +1416,16 @@ mod tests {
         let mut archetypes: Vec<Vec<f64>> = vec![vec![0.0; feat_d]; n_classes];
         let mut counts = vec![0usize; n_classes];
         for (i, &label) in labels.iter().enumerate() {
-            for j in 0..feat_d { archetypes[label][j] += features[i][j]; }
+            for j in 0..feat_d {
+                archetypes[label][j] += features[i][j];
+            }
             counts[label] += 1;
         }
         for c in 0..n_classes {
             if counts[c] > 0 {
-                for j in 0..feat_d { archetypes[c][j] /= counts[c] as f64; }
+                for j in 0..feat_d {
+                    archetypes[c][j] /= counts[c] as f64;
+                }
             }
         }
 
@@ -1251,20 +1434,28 @@ mod tests {
             let dot: f64 = a.iter().zip(b).map(|(x, y)| x * y).sum();
             let mag_a: f64 = a.iter().map(|x| x * x).sum::<f64>().sqrt();
             let mag_b: f64 = b.iter().map(|x| x * x).sum::<f64>().sqrt();
-            if mag_a < 1e-10 || mag_b < 1e-10 { 0.0 } else { dot / (mag_a * mag_b) }
+            if mag_a < 1e-10 || mag_b < 1e-10 {
+                0.0
+            } else {
+                dot / (mag_a * mag_b)
+            }
         };
 
         // ── HIP: within-class variance (how spread is each class?) ──
         let mut hip_variance = vec![0.0f64; n_classes];
         for (i, &label) in labels.iter().enumerate() {
-            let dist: f64 = features[i].iter().zip(&archetypes[label])
+            let dist: f64 = features[i]
+                .iter()
+                .zip(&archetypes[label])
                 .map(|(a, b)| (a - b) * (a - b))
                 .sum::<f64>()
                 .sqrt();
             hip_variance[label] += dist;
         }
         for c in 0..n_classes {
-            if counts[c] > 0 { hip_variance[c] /= counts[c] as f64; }
+            if counts[c] > 0 {
+                hip_variance[c] /= counts[c] as f64;
+            }
         }
 
         // ── Multi-object simulation: "subtract" one class, check residual ──
@@ -1275,7 +1466,9 @@ mod tests {
         let mut multi_object_candidates = Vec::new();
         for (i, &true_label) in labels.iter().enumerate() {
             // Subtract the true class archetype (simulates "removing" the primary object)
-            let residual: Vec<f64> = features[i].iter().zip(&archetypes[true_label])
+            let residual: Vec<f64> = features[i]
+                .iter()
+                .zip(&archetypes[true_label])
                 .map(|(a, b)| a - b)
                 .collect();
 
@@ -1283,7 +1476,9 @@ mod tests {
             let mut best_other_class = 0;
             let mut best_other_sim = f64::NEG_INFINITY;
             for c in 0..n_classes {
-                if c == true_label || counts[c] == 0 { continue; }
+                if c == true_label || counts[c] == 0 {
+                    continue;
+                }
                 let sim = cosine(&residual, &archetypes[c]);
                 if sim > best_other_sim {
                     best_other_sim = sim;
@@ -1301,7 +1496,11 @@ mod tests {
         // features — what's left after removing the primary class IS the secondary class.
         let mut pair_counts: std::collections::HashMap<(usize, usize), usize> = std::collections::HashMap::new();
         for &(_, primary, secondary, _) in &multi_object_candidates {
-            let key = if primary < secondary { (primary, secondary) } else { (secondary, primary) };
+            let key = if primary < secondary {
+                (primary, secondary)
+            } else {
+                (secondary, primary)
+            };
             *pair_counts.entry(key).or_insert(0) += 1;
         }
 
@@ -1309,13 +1508,17 @@ mod tests {
         // (far from primary AND residual doesn't match secondary)
         let mut outliers = Vec::new();
         for (i, &true_label) in labels.iter().enumerate() {
-            let primary_dist: f64 = features[i].iter().zip(&archetypes[true_label])
+            let primary_dist: f64 = features[i]
+                .iter()
+                .zip(&archetypes[true_label])
                 .map(|(a, b)| (a - b) * (a - b))
                 .sum::<f64>()
                 .sqrt();
-            
+
             // If far from own class AND not detected as multi-object
-            let is_multi = multi_object_candidates.iter().any(|&(idx, _, _, _)| idx == i);
+            let is_multi = multi_object_candidates
+                .iter()
+                .any(|&(idx, _, _, _)| idx == i);
             if primary_dist > hip_variance[true_label] * 2.0 && !is_multi {
                 outliers.push((i, true_label, primary_dist));
             }
@@ -1332,8 +1535,13 @@ mod tests {
         }
         eprintln!("  CHAODA outliers (far from all archetypes): {}", outliers.len());
         for (idx, label, dist) in outliers.iter().take(3) {
-            eprintln!("    image {} (class {}): dist={:.3} (>{:.3} threshold)",
-                idx, label, dist, hip_variance[*label] * 2.0);
+            eprintln!(
+                "    image {} (class {}): dist={:.3} (>{:.3} threshold)",
+                idx,
+                label,
+                dist,
+                hip_variance[*label] * 2.0
+            );
         }
         eprintln!("  Per-class HIP spread (intra-class variance):");
         for c in 0..n_classes {
@@ -1351,10 +1559,13 @@ mod tests {
         // 1. Find energy centroid around each 1/3 intersection
         // 2. Extract detailed patch at centroid
         // 3. Classify patch → more precise than whole-image archetype
-        
+
         let bytes = match std::fs::read("/tmp/tiny_imagenet_labeled.bin") {
             Ok(b) => b,
-            Err(_) => { eprintln!("SKIP: /tmp/tiny_imagenet_labeled.bin not found"); return; }
+            Err(_) => {
+                eprintln!("SKIP: /tmp/tiny_imagenet_labeled.bin not found");
+                return;
+            }
         };
 
         let n = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
@@ -1364,7 +1575,7 @@ mod tests {
         let mut labels = Vec::with_capacity(n);
         for i in 0..n {
             let off = 12 + i * 4;
-            labels.push(u32::from_le_bytes([bytes[off], bytes[off+1], bytes[off+2], bytes[off+3]]) as usize);
+            labels.push(u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]) as usize);
         }
 
         let pixel_start = 12 + n * 4;
@@ -1375,7 +1586,7 @@ mod tests {
         // ── Helper: read pixel from binary ──
         let pixel = |img_idx: usize, r: usize, c: usize, channel: usize| -> f64 {
             let off = pixel_start + (img_idx * d + r * img_w * ch + c * ch + channel) * 4;
-            f32::from_le_bytes([bytes[off], bytes[off+1], bytes[off+2], bytes[off+3]]) as f64
+            f32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]) as f64
         };
 
         // ── Helper: luminance at (r,c) ──
@@ -1385,8 +1596,12 @@ mod tests {
 
         // ── Step 1: For each image, find energy centroid around each 1/3 intersection ──
         let patch_radius = 8usize; // 16×16 patch around each intersection
-        let intersections = [(img_h/3, img_w/3), (img_h/3, 2*img_w/3),
-                             (2*img_h/3, img_w/3), (2*img_h/3, 2*img_w/3)];
+        let intersections = [
+            (img_h / 3, img_w / 3),
+            (img_h / 3, 2 * img_w / 3),
+            (2 * img_h / 3, img_w / 3),
+            (2 * img_h / 3, 2 * img_w / 3),
+        ];
 
         struct FocusPoint {
             centroid_r: f64,
@@ -1400,7 +1615,11 @@ mod tests {
         let mut focus_features: Vec<Vec<f64>> = Vec::with_capacity(n_use);
 
         for img_idx in 0..n_use {
-            let mut best_focus = FocusPoint { centroid_r: 32.0, centroid_c: 32.0, energy: 0.0 };
+            let mut best_focus = FocusPoint {
+                centroid_r: 32.0,
+                centroid_c: 32.0,
+                energy: 0.0,
+            };
 
             for &(ir, ic) in &intersections {
                 // Compute energy centroid within patch
@@ -1417,9 +1636,9 @@ mod tests {
                     for c in c_min..c_max {
                         let e = luma(img_idx, r, c);
                         // Use gradient magnitude as energy (edges = objects)
-                        let grad = if r > 0 && r < img_h-1 && c > 0 && c < img_w-1 {
-                            let dx = luma(img_idx, r, c+1) - luma(img_idx, r, c-1);
-                            let dy = luma(img_idx, r+1, c) - luma(img_idx, r-1, c);
+                        let grad = if r > 0 && r < img_h - 1 && c > 0 && c < img_w - 1 {
+                            let dx = luma(img_idx, r, c + 1) - luma(img_idx, r, c - 1);
+                            let dy = luma(img_idx, r + 1, c) - luma(img_idx, r - 1, c);
                             (dx * dx + dy * dy).sqrt()
                         } else {
                             0.0
@@ -1432,8 +1651,16 @@ mod tests {
 
                 if total_energy > best_focus.energy {
                     best_focus = FocusPoint {
-                        centroid_r: if total_energy > 0.0 { weighted_r / total_energy } else { ir as f64 },
-                        centroid_c: if total_energy > 0.0 { weighted_c / total_energy } else { ic as f64 },
+                        centroid_r: if total_energy > 0.0 {
+                            weighted_r / total_energy
+                        } else {
+                            ir as f64
+                        },
+                        centroid_c: if total_energy > 0.0 {
+                            weighted_c / total_energy
+                        } else {
+                            ic as f64
+                        },
                         energy: total_energy,
                     };
                 }
@@ -1467,11 +1694,17 @@ mod tests {
         let mut focus_archetypes: Vec<Vec<f64>> = vec![vec![0.0; feat_d]; n_classes];
         let mut counts = vec![0usize; n_classes];
         for (i, &label) in labels[..n_use].iter().enumerate() {
-            for j in 0..feat_d { focus_archetypes[label][j] += focus_features[i][j]; }
+            for j in 0..feat_d {
+                focus_archetypes[label][j] += focus_features[i][j];
+            }
             counts[label] += 1;
         }
         for c in 0..n_classes {
-            if counts[c] > 0 { for j in 0..feat_d { focus_archetypes[c][j] /= counts[c] as f64; } }
+            if counts[c] > 0 {
+                for j in 0..feat_d {
+                    focus_archetypes[c][j] /= counts[c] as f64;
+                }
+            }
         }
 
         // ── Step 4: Classify by nearest centroid-patch archetype ──
@@ -1480,12 +1713,23 @@ mod tests {
             let mut best_class = 0;
             let mut best_dist = f64::MAX;
             for c in 0..n_classes {
-                if counts[c] == 0 { continue; }
-                let dist: f64 = focus_features[i].iter().zip(&focus_archetypes[c])
-                    .map(|(a, b)| (a - b) * (a - b)).sum::<f64>().sqrt();
-                if dist < best_dist { best_dist = dist; best_class = c; }
+                if counts[c] == 0 {
+                    continue;
+                }
+                let dist: f64 = focus_features[i]
+                    .iter()
+                    .zip(&focus_archetypes[c])
+                    .map(|(a, b)| (a - b) * (a - b))
+                    .sum::<f64>()
+                    .sqrt();
+                if dist < best_dist {
+                    best_dist = dist;
+                    best_class = c;
+                }
             }
-            if best_class == true_label { correct_focus += 1; }
+            if best_class == true_label {
+                correct_focus += 1;
+            }
         }
         let accuracy_focus = correct_focus as f64 / n_use as f64;
 
@@ -1500,10 +1744,16 @@ mod tests {
             for oct in 0..n_oct {
                 for bi in 0..base_dim {
                     let dim = oct * base_dim + ((bi * golden_step) % base_dim);
-                    if dim < fd { sum[bi] += v[dim]; cnt[bi] += 1; }
+                    if dim < fd {
+                        sum[bi] += v[dim];
+                        cnt[bi] += 1;
+                    }
                 }
             }
-            sum.iter().zip(&cnt).map(|(&s, &c)| if c > 0 { s / c as f64 } else { 0.0 }).collect()
+            sum.iter()
+                .zip(&cnt)
+                .map(|(&s, &c)| if c > 0 { s / c as f64 } else { 0.0 })
+                .collect()
         };
 
         let compressed_arch: Vec<Vec<f64>> = focus_archetypes.iter().map(|a| compress(a)).collect();
@@ -1514,12 +1764,23 @@ mod tests {
             let mut best_class = 0;
             let mut best_dist = f64::MAX;
             for c in 0..n_classes {
-                if counts[c] == 0 { continue; }
-                let dist: f64 = compressed_feat[i].iter().zip(&compressed_arch[c])
-                    .map(|(a, b)| (a - b) * (a - b)).sum::<f64>().sqrt();
-                if dist < best_dist { best_dist = dist; best_class = c; }
+                if counts[c] == 0 {
+                    continue;
+                }
+                let dist: f64 = compressed_feat[i]
+                    .iter()
+                    .zip(&compressed_arch[c])
+                    .map(|(a, b)| (a - b) * (a - b))
+                    .sum::<f64>()
+                    .sqrt();
+                if dist < best_dist {
+                    best_dist = dist;
+                    best_class = c;
+                }
             }
-            if best_class == true_label { correct_compressed += 1; }
+            if best_class == true_label {
+                correct_compressed += 1;
+            }
         }
         let accuracy_compressed = correct_compressed as f64 / n_use as f64;
 
@@ -1544,10 +1805,13 @@ mod tests {
         // Multiple scan strategies with NARS evidence revision.
         // Each scan is independent evidence. Revision increases confidence.
         // Stop when confidence > threshold (elevation cascade).
-        
+
         let bytes = match std::fs::read("/tmp/tiny_imagenet_labeled.bin") {
             Ok(b) => b,
-            Err(_) => { eprintln!("SKIP: /tmp/tiny_imagenet_labeled.bin not found"); return; }
+            Err(_) => {
+                eprintln!("SKIP: /tmp/tiny_imagenet_labeled.bin not found");
+                return;
+            }
         };
 
         let n = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
@@ -1556,15 +1820,17 @@ mod tests {
         let mut labels = Vec::with_capacity(n);
         for i in 0..n {
             let off = 12 + i * 4;
-            labels.push(u32::from_le_bytes([bytes[off], bytes[off+1], bytes[off+2], bytes[off+3]]) as usize);
+            labels.push(u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]) as usize);
         }
         let pixel_start = 12 + n * 4;
-        let img_w = 64usize; let img_h = 64usize; let ch = 3usize;
+        let img_w = 64usize;
+        let img_h = 64usize;
+        let ch = 3usize;
         let n_use = n.min(200);
 
         let pixel = |img: usize, r: usize, c: usize, channel: usize| -> f64 {
             let off = pixel_start + (img * d + r * img_w * ch + c * ch + channel) * 4;
-            f32::from_le_bytes([bytes[off], bytes[off+1], bytes[off+2], bytes[off+3]]) as f64
+            f32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]) as f64
         };
         let luma = |img: usize, r: usize, c: usize| -> f64 {
             0.299 * pixel(img, r, c, 0) + 0.587 * pixel(img, r, c, 1) + 0.114 * pixel(img, r, c, 2)
@@ -1581,17 +1847,22 @@ mod tests {
         }
 
         // ── Scan strategy: extract features from a region ──
-        fn extract_patch(pixel_fn: &dyn Fn(usize, usize, usize) -> f64,
-                         r_center: usize, c_center: usize, radius: usize,
-                         img_h: usize, img_w: usize, ch: usize) -> Vec<f64> {
+        fn extract_patch(
+            pixel_fn: &dyn Fn(usize, usize, usize) -> f64, r_center: usize, c_center: usize, radius: usize,
+            img_h: usize, img_w: usize, ch: usize,
+        ) -> Vec<f64> {
             let mut f = Vec::new();
             let r0 = r_center.saturating_sub(radius);
             let r1 = (r_center + radius).min(img_h);
             let c0 = c_center.saturating_sub(radius);
             let c1 = (c_center + radius).min(img_w);
-            for r in r0..r1 { for c in c0..c1 { for channel in 0..ch {
-                f.push(pixel_fn(r, c, channel));
-            }}}
+            for r in r0..r1 {
+                for c in c0..c1 {
+                    for channel in 0..ch {
+                        f.push(pixel_fn(r, c, channel));
+                    }
+                }
+            }
             f
         }
 
@@ -1611,11 +1882,11 @@ mod tests {
 
         // Build per-class archetypes for each strategy, then score
         let intersections = [
-            ("NW patch", img_h/3, img_w/3, 4usize),
-            ("NE patch", img_h/3, 2*img_w/3, 4),
-            ("SW patch", 2*img_h/3, img_w/3, 4),
-            ("SE patch", 2*img_h/3, 2*img_w/3, 4),
-            ("Center",   img_h/2, img_w/2, 6),
+            ("NW patch", img_h / 3, img_w / 3, 4usize),
+            ("NE patch", img_h / 3, 2 * img_w / 3, 4),
+            ("SW patch", 2 * img_h / 3, img_w / 3, 4),
+            ("SE patch", 2 * img_h / 3, 2 * img_w / 3, 4),
+            ("Center", img_h / 2, img_w / 2, 6),
         ];
 
         // For each strategy, build archetypes and classify
@@ -1623,23 +1894,33 @@ mod tests {
 
         for &(name, cr, cc, radius) in &intersections {
             // Extract features for all images
-            let features: Vec<Vec<f64>> = (0..n_use).map(|img| {
-                let p = |r: usize, c: usize, channel: usize| pixel(img, r, c, channel);
-                extract_patch(&p, cr, cc, radius, img_h, img_w, ch)
-            }).collect();
+            let features: Vec<Vec<f64>> = (0..n_use)
+                .map(|img| {
+                    let p = |r: usize, c: usize, channel: usize| pixel(img, r, c, channel);
+                    extract_patch(&p, cr, cc, radius, img_h, img_w, ch)
+                })
+                .collect();
 
-            if features[0].is_empty() { continue; }
+            if features[0].is_empty() {
+                continue;
+            }
             let fd = features[0].len();
 
             // Build archetypes
             let mut arch = vec![vec![0.0; fd]; n_classes];
             let mut cnt = vec![0usize; n_classes];
             for (i, &l) in labels[..n_use].iter().enumerate() {
-                for j in 0..fd { arch[l][j] += features[i][j]; }
+                for j in 0..fd {
+                    arch[l][j] += features[i][j];
+                }
                 cnt[l] += 1;
             }
             for c in 0..n_classes {
-                if cnt[c] > 0 { for j in 0..fd { arch[c][j] /= cnt[c] as f64; } }
+                if cnt[c] > 0 {
+                    for j in 0..fd {
+                        arch[c][j] /= cnt[c] as f64;
+                    }
+                }
             }
 
             // Score each image
@@ -1647,11 +1928,20 @@ mod tests {
                 let mut best_c = 0;
                 let mut best_sim = f64::NEG_INFINITY;
                 for c in 0..n_classes {
-                    if cnt[c] == 0 { continue; }
-                    let dist: f64 = features[i].iter().zip(&arch[c])
-                        .map(|(a, b)| (a-b)*(a-b)).sum::<f64>().sqrt();
+                    if cnt[c] == 0 {
+                        continue;
+                    }
+                    let dist: f64 = features[i]
+                        .iter()
+                        .zip(&arch[c])
+                        .map(|(a, b)| (a - b) * (a - b))
+                        .sum::<f64>()
+                        .sqrt();
                     let sim = 1.0 / (1.0 + dist); // convert distance to similarity
-                    if sim > best_sim { best_sim = sim; best_c = c; }
+                    if sim > best_sim {
+                        best_sim = sim;
+                        best_c = c;
+                    }
                 }
                 strategy_scores[i].push((best_c, best_sim));
             }
@@ -1666,14 +1956,16 @@ mod tests {
 
             // Single strategy accuracies
             for (s, &(pred_class, _)) in strategy_scores[i].iter().enumerate() {
-                if pred_class == true_label { correct_single[s] += 1; }
+                if pred_class == true_label {
+                    correct_single[s] += 1;
+                }
             }
 
             // NARS revision: accumulate weighted evidence across all strategies.
             // Each scan contributes its similarity as evidence weight for the class it detected.
             // Confidence grows with number of agreeing scans (NARS: more evidence = more confident).
             let mut class_evidence: Vec<f64> = vec![0.0; n_classes]; // total similarity weight
-            let mut class_votes: Vec<u32> = vec![0; n_classes];      // vote count
+            let mut class_votes: Vec<u32> = vec![0; n_classes]; // vote count
 
             for &(pred_class, similarity) in &strategy_scores[i] {
                 class_evidence[pred_class] += similarity;
@@ -1686,14 +1978,21 @@ mod tests {
             let mut best_c = 0;
             let mut best_score = f64::NEG_INFINITY;
             for c in 0..n_classes {
-                if class_votes[c] == 0 { continue; }
+                if class_votes[c] == 0 {
+                    continue;
+                }
                 let avg_sim = class_evidence[c] / class_votes[c] as f64;
                 let vote_frac = class_votes[c] as f64 / total_scans;
                 // Combined: how similar (frequency) × how many agree (confidence)
                 let score = avg_sim * vote_frac;
-                if score > best_score { best_score = score; best_c = c; }
+                if score > best_score {
+                    best_score = score;
+                    best_c = c;
+                }
             }
-            if best_c == true_label { correct_revised += 1; }
+            if best_c == true_label {
+                correct_revised += 1;
+            }
         }
 
         let revised_accuracy = correct_revised as f64 / n_use as f64;
@@ -1707,8 +2006,12 @@ mod tests {
             eprintln!("    {}: {:.1}% ({}/{})", name, acc * 100.0, correct_single[s], n_use);
         }
         eprintln!();
-        eprintln!("  NARS-revised (all strategies combined): {:.1}% ({}/{})",
-            revised_accuracy * 100.0, correct_revised, n_use);
+        eprintln!(
+            "  NARS-revised (all strategies combined): {:.1}% ({}/{})",
+            revised_accuracy * 100.0,
+            correct_revised,
+            n_use
+        );
         eprintln!("  Random baseline: {:.1}%", 100.0 / n_classes as f64);
         eprintln!();
         let best_single = correct_single.iter().max().unwrap();
@@ -1717,19 +2020,25 @@ mod tests {
         eprintln!("  Improvement over best single scan: {:.1}%", improvement * 100.0);
         eprintln!("  This is NARS evidence accumulation — each scan adds confidence.");
 
-        assert!(revised_accuracy > best_single_acc,
+        assert!(
+            revised_accuracy > best_single_acc,
             "NARS revision should improve over best single: {:.1}% vs {:.1}%",
-            revised_accuracy * 100.0, best_single_acc * 100.0);
+            revised_accuracy * 100.0,
+            best_single_acc * 100.0
+        );
     }
     #[test]
     #[ignore]
     fn test_hotspot_8x8_grid_bundling() {
         // 8×8 grid of 8×8 cells. For each 1/3 intersection, find the 4 hottest
         // neighboring cells (by gradient energy), bundle their features.
-        
+
         let bytes = match std::fs::read("/tmp/tiny_imagenet_labeled.bin") {
             Ok(b) => b,
-            Err(_) => { eprintln!("SKIP: /tmp/tiny_imagenet_labeled.bin not found"); return; }
+            Err(_) => {
+                eprintln!("SKIP: /tmp/tiny_imagenet_labeled.bin not found");
+                return;
+            }
         };
 
         let n = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
@@ -1738,15 +2047,17 @@ mod tests {
         let mut labels = Vec::with_capacity(n);
         for i in 0..n {
             let off = 12 + i * 4;
-            labels.push(u32::from_le_bytes([bytes[off], bytes[off+1], bytes[off+2], bytes[off+3]]) as usize);
+            labels.push(u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]) as usize);
         }
         let pixel_start = 12 + n * 4;
-        let img_w = 64usize; let img_h = 64usize; let ch = 3usize;
+        let img_w = 64usize;
+        let img_h = 64usize;
+        let ch = 3usize;
         let n_use = n.min(200);
 
         let pixel = |img: usize, r: usize, c: usize, channel: usize| -> f64 {
             let off = pixel_start + (img * d + r * img_w * ch + c * ch + channel) * 4;
-            f32::from_le_bytes([bytes[off], bytes[off+1], bytes[off+2], bytes[off+3]]) as f64
+            f32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]) as f64
         };
         let luma = |img: usize, r: usize, c: usize| -> f64 {
             0.299 * pixel(img, r, c, 0) + 0.587 * pixel(img, r, c, 1) + 0.114 * pixel(img, r, c, 2)
@@ -1759,9 +2070,9 @@ mod tests {
 
         // 1/3 intersections in cell coordinates
         let intersections_cell = [
-            (grid_h / 3, grid_w / 3),     // ~(2,2)
-            (grid_h / 3, 2 * grid_w / 3), // ~(2,5)
-            (2 * grid_h / 3, grid_w / 3), // ~(5,2)
+            (grid_h / 3, grid_w / 3),         // ~(2,2)
+            (grid_h / 3, 2 * grid_w / 3),     // ~(2,5)
+            (2 * grid_h / 3, grid_w / 3),     // ~(5,2)
             (2 * grid_h / 3, 2 * grid_w / 3), // ~(5,5)
         ];
 
@@ -1780,10 +2091,10 @@ mod tests {
                     let c0 = gc * cell_size;
                     for r in r0..(r0 + cell_size) {
                         for c in c0..(c0 + cell_size) {
-                            if r > 0 && r < img_h-1 && c > 0 && c < img_w-1 {
-                                let dx = luma(img, r, c+1) - luma(img, r, c.saturating_sub(1));
-                                let dy = luma(img, r+1, c) - luma(img, r.saturating_sub(1), c);
-                                energy += (dx*dx + dy*dy).sqrt();
+                            if r > 0 && r < img_h - 1 && c > 0 && c < img_w - 1 {
+                                let dx = luma(img, r, c + 1) - luma(img, r, c.saturating_sub(1));
+                                let dy = luma(img, r + 1, c) - luma(img, r.saturating_sub(1), c);
+                                energy += (dx * dx + dy * dy).sqrt();
                             }
                         }
                     }
@@ -1821,7 +2132,9 @@ mod tests {
                     }
                 }
                 // Normalize bundle (mean of 4 cells)
-                for v in bundle.iter_mut() { *v /= 4.0; }
+                for v in bundle.iter_mut() {
+                    *v /= 4.0;
+                }
                 img_features.extend_from_slice(&bundle);
             }
 
@@ -1834,11 +2147,17 @@ mod tests {
         let mut archetypes = vec![vec![0.0; feat_d]; n_classes];
         let mut counts = vec![0usize; n_classes];
         for (i, &l) in labels[..n_use].iter().enumerate() {
-            for j in 0..feat_d { archetypes[l][j] += features[i][j]; }
+            for j in 0..feat_d {
+                archetypes[l][j] += features[i][j];
+            }
             counts[l] += 1;
         }
         for c in 0..n_classes {
-            if counts[c] > 0 { for j in 0..feat_d { archetypes[c][j] /= counts[c] as f64; } }
+            if counts[c] > 0 {
+                for j in 0..feat_d {
+                    archetypes[c][j] /= counts[c] as f64;
+                }
+            }
         }
 
         let mut correct = 0usize;
@@ -1846,17 +2165,29 @@ mod tests {
             let mut best_c = 0;
             let mut best_d = f64::MAX;
             for c in 0..n_classes {
-                if counts[c] == 0 { continue; }
-                let dist: f64 = features[i].iter().zip(&archetypes[c])
-                    .map(|(a, b)| (a-b)*(a-b)).sum::<f64>().sqrt();
-                if dist < best_d { best_d = dist; best_c = c; }
+                if counts[c] == 0 {
+                    continue;
+                }
+                let dist: f64 = features[i]
+                    .iter()
+                    .zip(&archetypes[c])
+                    .map(|(a, b)| (a - b) * (a - b))
+                    .sum::<f64>()
+                    .sqrt();
+                if dist < best_d {
+                    best_d = dist;
+                    best_c = c;
+                }
             }
-            if best_c == true_label { correct += 1; }
+            if best_c == true_label {
+                correct += 1;
+            }
         }
         let accuracy = correct as f64 / n_use as f64;
 
         // Also: golden-step compressed
-        let base_dim = 17; let golden_step = 11;
+        let base_dim = 17;
+        let golden_step = 11;
         let compress = |v: &[f64]| -> Vec<f64> {
             let fd = v.len();
             let n_oct = (fd + base_dim - 1) / base_dim;
@@ -1865,22 +2196,41 @@ mod tests {
             for oct in 0..n_oct {
                 for bi in 0..base_dim {
                     let dim = oct * base_dim + ((bi * golden_step) % base_dim);
-                    if dim < fd { sum[bi] += v[dim]; cnt[bi] += 1; }
+                    if dim < fd {
+                        sum[bi] += v[dim];
+                        cnt[bi] += 1;
+                    }
                 }
             }
-            sum.iter().zip(&cnt).map(|(&s, &c)| if c > 0 { s / c as f64 } else { 0.0 }).collect()
+            sum.iter()
+                .zip(&cnt)
+                .map(|(&s, &c)| if c > 0 { s / c as f64 } else { 0.0 })
+                .collect()
         };
         let c_arch: Vec<Vec<f64>> = archetypes.iter().map(|a| compress(a)).collect();
         let c_feat: Vec<Vec<f64>> = features.iter().map(|f| compress(f)).collect();
         let mut correct_c = 0;
         for (i, &tl) in labels[..n_use].iter().enumerate() {
-            let mut best_c = 0; let mut best_d = f64::MAX;
+            let mut best_c = 0;
+            let mut best_d = f64::MAX;
             for c in 0..n_classes {
-                if counts[c] == 0 { continue; }
-                let dist: f64 = c_feat[i].iter().zip(&c_arch[c]).map(|(a,b)|(a-b)*(a-b)).sum::<f64>().sqrt();
-                if dist < best_d { best_d = dist; best_c = c; }
+                if counts[c] == 0 {
+                    continue;
+                }
+                let dist: f64 = c_feat[i]
+                    .iter()
+                    .zip(&c_arch[c])
+                    .map(|(a, b)| (a - b) * (a - b))
+                    .sum::<f64>()
+                    .sqrt();
+                if dist < best_d {
+                    best_d = dist;
+                    best_c = c;
+                }
             }
-            if best_c == tl { correct_c += 1; }
+            if best_c == tl {
+                correct_c += 1;
+            }
         }
         let acc_c = correct_c as f64 / n_use as f64;
 
@@ -1909,7 +2259,10 @@ mod tests {
 
         let bytes = match std::fs::read("/tmp/tiny_imagenet_labeled.bin") {
             Ok(b) => b,
-            Err(_) => { eprintln!("SKIP: /tmp/tiny_imagenet_labeled.bin not found"); return; }
+            Err(_) => {
+                eprintln!("SKIP: /tmp/tiny_imagenet_labeled.bin not found");
+                return;
+            }
         };
 
         let n = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
@@ -1918,15 +2271,17 @@ mod tests {
         let mut labels = Vec::with_capacity(n);
         for i in 0..n {
             let off = 12 + i * 4;
-            labels.push(u32::from_le_bytes([bytes[off], bytes[off+1], bytes[off+2], bytes[off+3]]) as usize);
+            labels.push(u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]) as usize);
         }
         let pixel_start = 12 + n * 4;
-        let img_w = 64usize; let img_h = 64usize; let ch = 3usize;
+        let img_w = 64usize;
+        let img_h = 64usize;
+        let ch = 3usize;
         let n_use = n.min(200);
 
         let pixel = |img: usize, r: usize, c: usize, channel: usize| -> f64 {
             let off = pixel_start + (img * d + r * img_w * ch + c * ch + channel) * 4;
-            f32::from_le_bytes([bytes[off], bytes[off+1], bytes[off+2], bytes[off+3]]) as f64
+            f32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]) as f64
         };
         let luma = |img: usize, r: usize, c: usize| -> f64 {
             0.299 * pixel(img, r, c, 0) + 0.587 * pixel(img, r, c, 1) + 0.114 * pixel(img, r, c, 2)
@@ -1934,42 +2289,61 @@ mod tests {
 
         // ── LEAF: full centroid focus patch (432D, highest resolution) ──
         let focus_radius = 6usize;
-        let intersections = [(img_h/3, img_w/3), (img_h/3, 2*img_w/3),
-                             (2*img_h/3, img_w/3), (2*img_h/3, 2*img_w/3)];
+        let intersections = [
+            (img_h / 3, img_w / 3),
+            (img_h / 3, 2 * img_w / 3),
+            (2 * img_h / 3, img_w / 3),
+            (2 * img_h / 3, 2 * img_w / 3),
+        ];
 
-        let leaf_features: Vec<Vec<f64>> = (0..n_use).map(|img| {
-            // Find highest-energy intersection
-            let mut best_r = img_h / 2;
-            let mut best_c = img_w / 2;
-            let mut best_energy = 0.0f64;
-            for &(ir, ic) in &intersections {
-                let mut energy = 0.0;
-                let r0 = ir.saturating_sub(8); let r1 = (ir+8).min(img_h);
-                let c0 = ic.saturating_sub(8); let c1 = (ic+8).min(img_w);
-                for r in r0..r1 { for c in c0..c1 {
-                    if r > 0 && r < img_h-1 && c > 0 && c < img_w-1 {
-                        let dx = luma(img, r, c+1) - luma(img, r, c.saturating_sub(1));
-                        let dy = luma(img, r+1, c) - luma(img, r.saturating_sub(1), c);
-                        energy += (dx*dx + dy*dy).sqrt();
+        let leaf_features: Vec<Vec<f64>> = (0..n_use)
+            .map(|img| {
+                // Find highest-energy intersection
+                let mut best_r = img_h / 2;
+                let mut best_c = img_w / 2;
+                let mut best_energy = 0.0f64;
+                for &(ir, ic) in &intersections {
+                    let mut energy = 0.0;
+                    let r0 = ir.saturating_sub(8);
+                    let r1 = (ir + 8).min(img_h);
+                    let c0 = ic.saturating_sub(8);
+                    let c1 = (ic + 8).min(img_w);
+                    for r in r0..r1 {
+                        for c in c0..c1 {
+                            if r > 0 && r < img_h - 1 && c > 0 && c < img_w - 1 {
+                                let dx = luma(img, r, c + 1) - luma(img, r, c.saturating_sub(1));
+                                let dy = luma(img, r + 1, c) - luma(img, r.saturating_sub(1), c);
+                                energy += (dx * dx + dy * dy).sqrt();
+                            }
+                        }
                     }
-                }}
-                if energy > best_energy { best_energy = energy; best_r = ir; best_c = ic; }
-            }
-            // Extract patch
-            let mut f = Vec::with_capacity(432);
-            let r0 = best_r.saturating_sub(focus_radius);
-            let r1 = (best_r + focus_radius).min(img_h);
-            let c0 = best_c.saturating_sub(focus_radius);
-            let c1 = (best_c + focus_radius).min(img_w);
-            for r in r0..r1 { for c in c0..c1 { for channel in 0..ch {
-                f.push(pixel(img, r, c, channel));
-            }}}
-            f.resize(432, 0.0);
-            f
-        }).collect();
+                    if energy > best_energy {
+                        best_energy = energy;
+                        best_r = ir;
+                        best_c = ic;
+                    }
+                }
+                // Extract patch
+                let mut f = Vec::with_capacity(432);
+                let r0 = best_r.saturating_sub(focus_radius);
+                let r1 = (best_r + focus_radius).min(img_h);
+                let c0 = best_c.saturating_sub(focus_radius);
+                let c1 = (best_c + focus_radius).min(img_w);
+                for r in r0..r1 {
+                    for c in c0..c1 {
+                        for channel in 0..ch {
+                            f.push(pixel(img, r, c, channel));
+                        }
+                    }
+                }
+                f.resize(432, 0.0);
+                f
+            })
+            .collect();
 
         // ── BRANCH: golden-step compress (432D → 17D = 34 bytes) ──
-        let base_dim = 17; let golden_step = 11;
+        let base_dim = 17;
+        let golden_step = 11;
         let compress17 = |v: &[f64]| -> Vec<f64> {
             let fd = v.len();
             let n_oct = (fd + base_dim - 1) / base_dim;
@@ -1978,28 +2352,45 @@ mod tests {
             for oct in 0..n_oct {
                 for bi in 0..base_dim {
                     let dim = oct * base_dim + ((bi * golden_step) % base_dim);
-                    if dim < fd { sum[bi] += v[dim]; cnt[bi] += 1; }
+                    if dim < fd {
+                        sum[bi] += v[dim];
+                        cnt[bi] += 1;
+                    }
                 }
             }
-            sum.iter().zip(&cnt).map(|(&s, &c)| if c > 0 { s / c as f64 } else { 0.0 }).collect()
+            sum.iter()
+                .zip(&cnt)
+                .map(|(&s, &c)| if c > 0 { s / c as f64 } else { 0.0 })
+                .collect()
         };
         let branch_features: Vec<Vec<f64>> = leaf_features.iter().map(|f| compress17(f)).collect();
 
         // ── HIP: quantize to i16 (17D × 2 bytes = 34 bytes, same size but integer) ──
-        let hip_features: Vec<Vec<f64>> = branch_features.iter().map(|f| {
-            f.iter().map(|&v| ((v * 1000.0).round().clamp(-32768.0, 32767.0) as i16) as f64 / 1000.0).collect()
-        }).collect();
+        let hip_features: Vec<Vec<f64>> = branch_features
+            .iter()
+            .map(|f| {
+                f.iter()
+                    .map(|&v| ((v * 1000.0).round().clamp(-32768.0, 32767.0) as i16) as f64 / 1000.0)
+                    .collect()
+            })
+            .collect();
 
         // ── HEEL: scent byte — reduce to single energy + top category vote ──
         // Scent = which of the 17 dimensions has highest absolute value
-        let heel_features: Vec<Vec<f64>> = branch_features.iter().map(|f| {
-            let max_dim = f.iter().enumerate()
-                .max_by(|a, b| a.1.abs().partial_cmp(&b.1.abs()).unwrap())
-                .map(|(i, _)| i).unwrap_or(0);
-            let energy: f64 = f.iter().map(|v| v * v).sum::<f64>().sqrt();
-            // 2D scent: dominant dimension + energy level
-            vec![max_dim as f64, energy]
-        }).collect();
+        let heel_features: Vec<Vec<f64>> = branch_features
+            .iter()
+            .map(|f| {
+                let max_dim = f
+                    .iter()
+                    .enumerate()
+                    .max_by(|a, b| a.1.abs().partial_cmp(&b.1.abs()).unwrap())
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+                let energy: f64 = f.iter().map(|v| v * v).sum::<f64>().sqrt();
+                // 2D scent: dominant dimension + energy level
+                vec![max_dim as f64, energy]
+            })
+            .collect();
 
         // ── Classify at each level ──
         fn classify(features: &[Vec<f64>], labels: &[usize], n_classes: usize) -> (f64, usize) {
@@ -2008,22 +2399,40 @@ mod tests {
             let mut arch = vec![vec![0.0; fd]; n_classes];
             let mut cnt = vec![0usize; n_classes];
             for (i, &l) in labels.iter().enumerate() {
-                for j in 0..fd { arch[l][j] += features[i][j]; }
+                for j in 0..fd {
+                    arch[l][j] += features[i][j];
+                }
                 cnt[l] += 1;
             }
             for c in 0..n_classes {
-                if cnt[c] > 0 { for j in 0..fd { arch[c][j] /= cnt[c] as f64; } }
+                if cnt[c] > 0 {
+                    for j in 0..fd {
+                        arch[c][j] /= cnt[c] as f64;
+                    }
+                }
             }
             let mut correct = 0;
             for (i, &tl) in labels.iter().enumerate() {
-                let mut best_c = 0; let mut best_d = f64::MAX;
+                let mut best_c = 0;
+                let mut best_d = f64::MAX;
                 for c in 0..n_classes {
-                    if cnt[c] == 0 { continue; }
-                    let dist: f64 = features[i].iter().zip(&arch[c])
-                        .map(|(a, b)| (a-b)*(a-b)).sum::<f64>().sqrt();
-                    if dist < best_d { best_d = dist; best_c = c; }
+                    if cnt[c] == 0 {
+                        continue;
+                    }
+                    let dist: f64 = features[i]
+                        .iter()
+                        .zip(&arch[c])
+                        .map(|(a, b)| (a - b) * (a - b))
+                        .sum::<f64>()
+                        .sqrt();
+                    if dist < best_d {
+                        best_d = dist;
+                        best_c = c;
+                    }
                 }
-                if best_c == tl { correct += 1; }
+                if best_c == tl {
+                    correct += 1;
+                }
             }
             (correct as f64 / n as f64, correct)
         }
@@ -2032,11 +2441,17 @@ mod tests {
         fn pairwise_dists(feats: &[Vec<f64>]) -> Vec<f64> {
             let n = feats.len().min(50); // limit for speed
             let mut d = Vec::new();
-            for i in 0..n { for j in (i+1)..n {
-                let dist: f64 = feats[i].iter().zip(&feats[j])
-                    .map(|(a,b)| (a-b)*(a-b)).sum::<f64>().sqrt();
-                d.push(dist);
-            }}
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    let dist: f64 = feats[i]
+                        .iter()
+                        .zip(&feats[j])
+                        .map(|(a, b)| (a - b) * (a - b))
+                        .sum::<f64>()
+                        .sqrt();
+                    d.push(dist);
+                }
+            }
             d
         }
         fn spearman(a: &[f64], b: &[f64]) -> f64 {
@@ -2044,7 +2459,9 @@ mod tests {
                 let mut idx: Vec<(usize, f64)> = v.iter().copied().enumerate().collect();
                 idx.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
                 let mut r = vec![0.0; v.len()];
-                for (rank, (i, _)) in idx.into_iter().enumerate() { r[i] = rank as f64; }
+                for (rank, (i, _)) in idx.into_iter().enumerate() {
+                    r[i] = rank as f64;
+                }
                 r
             }
             let (ra, rb) = (ranks(a), ranks(b));
@@ -2053,9 +2470,15 @@ mod tests {
             let (mut cov, mut va, mut vb) = (0.0, 0.0, 0.0);
             for i in 0..a.len() {
                 let (da, db) = (ra[i] - ma, rb[i] - mb);
-                cov += da * db; va += da * da; vb += db * db;
+                cov += da * db;
+                va += da * da;
+                vb += db * db;
             }
-            if va < 1e-10 || vb < 1e-10 { 0.0 } else { cov / (va * vb).sqrt() }
+            if va < 1e-10 || vb < 1e-10 {
+                0.0
+            } else {
+                cov / (va * vb).sqrt()
+            }
         }
 
         let leaf_dists = pairwise_dists(&leaf_features);
@@ -2073,21 +2496,45 @@ mod tests {
         eprintln!();
         eprintln!("  Level      Dims    Bytes   Accuracy    ρ vs LEAF    ρ/byte");
         eprintln!("  ─────────  ─────   ─────   ─────────   ─────────    ──────");
-        eprintln!("  LEAF       432D    864B    {:.1}% ({}/{})  1.0000       {:.6}",
-            acc_leaf*100.0, cor_leaf, n_use, 1.0/864.0);
-        eprintln!("  BRANCH     17D     34B     {:.1}% ({}/{})  {:.4}       {:.6}",
-            acc_branch*100.0, cor_branch, n_use, rho_branch, rho_branch/34.0);
-        eprintln!("  HIP        17D     34B     {:.1}% ({}/{})  {:.4}       {:.6}",
-            acc_hip*100.0, cor_hip, n_use, rho_hip, rho_hip/34.0);
-        eprintln!("  HEEL       2D      2B      {:.1}% ({}/{})  {:.4}       {:.6}",
-            acc_heel*100.0, cor_heel, n_use, rho_heel, rho_heel/2.0);
-        eprintln!("  Random     —       0B      {:.1}%", 100.0/n_classes as f64);
+        eprintln!(
+            "  LEAF       432D    864B    {:.1}% ({}/{})  1.0000       {:.6}",
+            acc_leaf * 100.0,
+            cor_leaf,
+            n_use,
+            1.0 / 864.0
+        );
+        eprintln!(
+            "  BRANCH     17D     34B     {:.1}% ({}/{})  {:.4}       {:.6}",
+            acc_branch * 100.0,
+            cor_branch,
+            n_use,
+            rho_branch,
+            rho_branch / 34.0
+        );
+        eprintln!(
+            "  HIP        17D     34B     {:.1}% ({}/{})  {:.4}       {:.6}",
+            acc_hip * 100.0,
+            cor_hip,
+            n_use,
+            rho_hip,
+            rho_hip / 34.0
+        );
+        eprintln!(
+            "  HEEL       2D      2B      {:.1}% ({}/{})  {:.4}       {:.6}",
+            acc_heel * 100.0,
+            cor_heel,
+            n_use,
+            rho_heel,
+            rho_heel / 2.0
+        );
+        eprintln!("  Random     —       0B      {:.1}%", 100.0 / n_classes as f64);
         eprintln!();
         eprintln!("  Cascade rejection simulation:");
-        eprintln!("  HEEL rejects:   {:.0}% of wrong classes (scent screening)",
-            (1.0 - 1.0/n_classes as f64) * (1.0 - acc_heel) * 100.0);
-        eprintln!("  After HEEL→HIP: {:.0}% remaining need full BRANCH check",
-            (1.0 - acc_hip) * 100.0);
+        eprintln!(
+            "  HEEL rejects:   {:.0}% of wrong classes (scent screening)",
+            (1.0 - 1.0 / n_classes as f64) * (1.0 - acc_heel) * 100.0
+        );
+        eprintln!("  After HEEL→HIP: {:.0}% remaining need full BRANCH check", (1.0 - acc_hip) * 100.0);
 
         assert!(acc_leaf > acc_branch, "LEAF should beat BRANCH");
         assert!(acc_branch >= acc_heel, "BRANCH should beat or match HEEL");

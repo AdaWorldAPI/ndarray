@@ -3,9 +3,9 @@
 //! Provides gemm, syrk (symmetric rank-k update), trsm (triangular solve),
 //! symm (symmetric matrix multiply).
 
-use crate::imp_prelude::*;
-use crate::backend::BlasFloat;
 use super::blas_level2::Uplo;
+use crate::backend::BlasFloat;
+use crate::imp_prelude::*;
 
 /// Side specification for operations like symm and trsm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,64 +33,27 @@ pub trait BlasLevel3<A> {
     /// General matrix multiply: result = alpha * self * B + beta * C_init
     ///
     /// If C_init is None, assumes zero initialization.
-    fn blas_gemm(
-        &self,
-        alpha: A,
-        b: &Self,
-        beta: A,
-    ) -> Array<A, Ix2>;
+    fn blas_gemm(&self, alpha: A, b: &Self, beta: A) -> Array<A, Ix2>;
 
     /// General matrix multiply with explicit C: C = alpha * self * B + beta * C
-    fn blas_gemm_into(
-        &self,
-        alpha: A,
-        b: &Self,
-        beta: A,
-        c: &mut Array<A, Ix2>,
-    );
+    fn blas_gemm_into(&self, alpha: A, b: &Self, beta: A, c: &mut Array<A, Ix2>);
 
     /// Symmetric rank-k update: C = alpha * A * A^T + beta * C_init
-    fn blas_syrk(
-        &self,
-        uplo: Uplo,
-        alpha: A,
-        beta: A,
-        c_init: Option<&Self>,
-    ) -> Array<A, Ix2>;
+    fn blas_syrk(&self, uplo: Uplo, alpha: A, beta: A, c_init: Option<&Self>) -> Array<A, Ix2>;
 
     /// Symmetric matrix multiply: C = alpha * A * B + beta * C_init
     ///
     /// A is the symmetric matrix (specified by `side`).
-    fn blas_symm(
-        &self,
-        side: Side,
-        uplo: Uplo,
-        alpha: A,
-        b: &Self,
-        beta: A,
-        c_init: Option<&Self>,
-    ) -> Array<A, Ix2>;
+    fn blas_symm(&self, side: Side, uplo: Uplo, alpha: A, b: &Self, beta: A, c_init: Option<&Self>) -> Array<A, Ix2>;
 
     /// Triangular matrix-matrix multiply: B = alpha * op(A) * B (Left)
     /// or B = alpha * B * op(A) (Right).
     ///
     /// `a` is the triangular matrix. Only the triangle specified by `uplo` is read.
-    fn blas_trmm(
-        &self,
-        side: Side,
-        uplo: Uplo,
-        alpha: A,
-        a_tri: &Self,
-    ) -> Array<A, Ix2>;
+    fn blas_trmm(&self, side: Side, uplo: Uplo, alpha: A, a_tri: &Self) -> Array<A, Ix2>;
 
     /// Triangular solve (matrix): solve A * X = alpha * B for X
-    fn blas_trsm(
-        &self,
-        side: Side,
-        uplo: Uplo,
-        alpha: A,
-        b: &Self,
-    ) -> Array<A, Ix2>;
+    fn blas_trsm(&self, side: Side, uplo: Uplo, alpha: A, b: &Self) -> Array<A, Ix2>;
 }
 
 impl<A, S> BlasLevel3<A> for ArrayBase<S, Ix2>
@@ -98,21 +61,14 @@ where
     A: BlasFloat + num_traits::Float + core::ops::AddAssign,
     S: Data<Elem = A>,
 {
-    fn blas_gemm(
-        &self,
-        alpha: A,
-        b: &Self,
-        beta: A,
-    ) -> Array<A, Ix2> {
+    fn blas_gemm(&self, alpha: A, b: &Self, beta: A) -> Array<A, Ix2> {
         let (m, k) = (self.nrows(), self.ncols());
         let (k2, n) = (b.nrows(), b.ncols());
         assert_eq!(k, k2, "Inner dimensions must match for GEMM");
 
         let mut c = Array::zeros((m, n));
 
-        if let (Some(a_s), Some(b_s), Some(c_s)) =
-            (self.as_slice(), b.as_slice(), c.as_slice_mut())
-        {
+        if let (Some(a_s), Some(b_s), Some(c_s)) = (self.as_slice(), b.as_slice(), c.as_slice_mut()) {
             A::backend_gemm(m, n, k, alpha, a_s, k, b_s, n, beta, c_s, n);
         } else {
             // Fallback for non-contiguous
@@ -129,22 +85,14 @@ where
         c
     }
 
-    fn blas_gemm_into(
-        &self,
-        alpha: A,
-        b: &Self,
-        beta: A,
-        c: &mut Array<A, Ix2>,
-    ) {
+    fn blas_gemm_into(&self, alpha: A, b: &Self, beta: A, c: &mut Array<A, Ix2>) {
         let (m, k) = (self.nrows(), self.ncols());
         let (k2, n) = (b.nrows(), b.ncols());
         assert_eq!(k, k2, "Inner dimensions must match for GEMM");
         assert_eq!(c.nrows(), m);
         assert_eq!(c.ncols(), n);
 
-        if let (Some(a_s), Some(b_s), Some(c_s)) =
-            (self.as_slice(), b.as_slice(), c.as_slice_mut())
-        {
+        if let (Some(a_s), Some(b_s), Some(c_s)) = (self.as_slice(), b.as_slice(), c.as_slice_mut()) {
             A::backend_gemm(m, n, k, alpha, a_s, k, b_s, n, beta, c_s, n);
         } else {
             for i in 0..m {
@@ -159,13 +107,7 @@ where
         }
     }
 
-    fn blas_syrk(
-        &self,
-        uplo: Uplo,
-        alpha: A,
-        beta: A,
-        c_init: Option<&Self>,
-    ) -> Array<A, Ix2> {
+    fn blas_syrk(&self, uplo: Uplo, alpha: A, beta: A, c_init: Option<&Self>) -> Array<A, Ix2> {
         let (m, k) = (self.nrows(), self.ncols());
         let mut c = match c_init {
             Some(ci) => ci.to_owned(),
@@ -188,15 +130,7 @@ where
         c
     }
 
-    fn blas_symm(
-        &self,
-        side: Side,
-        uplo: Uplo,
-        alpha: A,
-        b: &Self,
-        beta: A,
-        c_init: Option<&Self>,
-    ) -> Array<A, Ix2> {
+    fn blas_symm(&self, side: Side, uplo: Uplo, alpha: A, b: &Self, beta: A, c_init: Option<&Self>) -> Array<A, Ix2> {
         let (m, n) = (b.nrows(), b.ncols());
         let mut c = match c_init {
             Some(ci) => ci.to_owned(),
@@ -216,10 +150,18 @@ where
                         for p in 0..m {
                             let a_val = match uplo {
                                 Uplo::Upper => {
-                                    if p >= i { sym[[i, p]] } else { sym[[p, i]] }
+                                    if p >= i {
+                                        sym[[i, p]]
+                                    } else {
+                                        sym[[p, i]]
+                                    }
                                 }
                                 Uplo::Lower => {
-                                    if p <= i { sym[[i, p]] } else { sym[[p, i]] }
+                                    if p <= i {
+                                        sym[[i, p]]
+                                    } else {
+                                        sym[[p, i]]
+                                    }
                                 }
                             };
                             sum = sum + a_val * b[[p, j]];
@@ -230,10 +172,18 @@ where
                         for p in 0..n {
                             let a_val = match uplo {
                                 Uplo::Upper => {
-                                    if p >= j { sym[[j, p]] } else { sym[[p, j]] }
+                                    if p >= j {
+                                        sym[[j, p]]
+                                    } else {
+                                        sym[[p, j]]
+                                    }
                                 }
                                 Uplo::Lower => {
-                                    if p <= j { sym[[j, p]] } else { sym[[p, j]] }
+                                    if p <= j {
+                                        sym[[j, p]]
+                                    } else {
+                                        sym[[p, j]]
+                                    }
                                 }
                             };
                             sum = sum + b[[i, p]] * a_val;
@@ -246,13 +196,7 @@ where
         c
     }
 
-    fn blas_trmm(
-        &self,
-        side: Side,
-        uplo: Uplo,
-        alpha: A,
-        a_tri: &Self,
-    ) -> Array<A, Ix2> {
+    fn blas_trmm(&self, side: Side, uplo: Uplo, alpha: A, a_tri: &Self) -> Array<A, Ix2> {
         let (m, n) = (self.nrows(), self.ncols());
         let mut result = Array::zeros((m, n));
         let b = self;
@@ -314,13 +258,7 @@ where
         result
     }
 
-    fn blas_trsm(
-        &self,
-        side: Side,
-        uplo: Uplo,
-        alpha: A,
-        b: &Self,
-    ) -> Array<A, Ix2> {
+    fn blas_trsm(&self, side: Side, uplo: Uplo, alpha: A, b: &Self) -> Array<A, Ix2> {
         let (m, n) = (b.nrows(), b.ncols());
         let mut x = b.mapv(|v| alpha * v);
         let a = self;

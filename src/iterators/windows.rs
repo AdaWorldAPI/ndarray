@@ -11,18 +11,17 @@ use crate::Slice;
 ///
 /// See [`.windows()`](crate::ArrayRef::windows) for more
 /// information.
-pub struct Windows<'a, A, D>
-{
+pub struct Windows<'a, A, D> {
     base: RawArrayView<A, D>,
     life: PhantomData<&'a A>,
     window: D,
     strides: D,
 }
 
-impl<'a, A, D: Dimension> Windows<'a, A, D>
-{
+impl<'a, A, D: Dimension> Windows<'a, A, D> {
     pub(crate) fn new<E>(a: ArrayView<'a, A, D>, window_size: E) -> Self
-    where E: IntoDimension<Dim = D>
+    where
+        E: IntoDimension<Dim = D>,
     {
         let window = window_size.into_dimension();
         let ndim = window.ndim();
@@ -34,7 +33,8 @@ impl<'a, A, D: Dimension> Windows<'a, A, D>
     }
 
     pub(crate) fn new_with_stride<E>(a: ArrayView<'a, A, D>, window_size: E, axis_strides: E) -> Self
-    where E: IntoDimension<Dim = D>
+    where
+        E: IntoDimension<Dim = D>,
     {
         let window = window_size.into_dimension();
 
@@ -78,8 +78,7 @@ where
 {
     type Item = <Self::IntoIter as Iterator>::Item;
     type IntoIter = WindowsIter<'a, A, D>;
-    fn into_iter(self) -> Self::IntoIter
-    {
+    fn into_iter(self) -> Self::IntoIter {
         WindowsIter {
             iter: self.base.into_base_iter(),
             life: self.life,
@@ -93,8 +92,7 @@ where
 ///
 /// See [`.windows()`](crate::ArrayRef::windows) for more
 /// information.
-pub struct WindowsIter<'a, A, D>
-{
+pub struct WindowsIter<'a, A, D> {
     iter: Baseiter<A, D>,
     life: PhantomData<&'a A>,
     window: D,
@@ -131,18 +129,15 @@ send_sync_read_only!(WindowsIter);
 ///
 /// See [`.axis_windows()`](crate::ArrayRef::axis_windows) for more
 /// information.
-pub struct AxisWindows<'a, A, D>
-{
+pub struct AxisWindows<'a, A, D> {
     base: ArrayView<'a, A, D>,
     axis_idx: usize,
     window: D,
     strides: D,
 }
 
-impl<'a, A, D: Dimension> AxisWindows<'a, A, D>
-{
-    pub(crate) fn new_with_stride(a: ArrayView<'a, A, D>, axis: Axis, window_size: usize, stride_size: usize) -> Self
-    {
+impl<'a, A, D: Dimension> AxisWindows<'a, A, D> {
+    pub(crate) fn new_with_stride(a: ArrayView<'a, A, D>, axis: Axis, window_size: usize, stride_size: usize) -> Self {
         let window_strides = a.parts.strides.clone();
         let axis_idx = axis.index();
 
@@ -164,53 +159,44 @@ impl<'a, A, D: Dimension> AxisWindows<'a, A, D>
     }
 }
 
-impl<'a, A, D: Dimension> NdProducer for AxisWindows<'a, A, D>
-{
+impl<'a, A, D: Dimension> NdProducer for AxisWindows<'a, A, D> {
     type Item = ArrayView<'a, A, D>;
     type Dim = Ix1;
     type Ptr = *mut A;
     type Stride = isize;
 
-    fn raw_dim(&self) -> Ix1
-    {
+    fn raw_dim(&self) -> Ix1 {
         Ix1(self.base.raw_dim()[self.axis_idx])
     }
 
-    fn layout(&self) -> Layout
-    {
+    fn layout(&self) -> Layout {
         self.base.layout()
     }
 
-    fn as_ptr(&self) -> *mut A
-    {
+    fn as_ptr(&self) -> *mut A {
         self.base.as_ptr() as *mut _
     }
 
-    fn contiguous_stride(&self) -> isize
-    {
+    fn contiguous_stride(&self) -> isize {
         self.base.contiguous_stride()
     }
 
-    unsafe fn as_ref(&self, ptr: *mut A) -> Self::Item
-    {
+    unsafe fn as_ref(&self, ptr: *mut A) -> Self::Item {
         ArrayView::new_(ptr, self.window.clone(), self.strides.clone())
     }
 
-    unsafe fn uget_ptr(&self, i: &Self::Dim) -> *mut A
-    {
+    unsafe fn uget_ptr(&self, i: &Self::Dim) -> *mut A {
         let mut d = D::zeros(self.base.ndim());
         d[self.axis_idx] = i[0];
         self.base.uget_ptr(&d)
     }
 
-    fn stride_of(&self, axis: Axis) -> isize
-    {
+    fn stride_of(&self, axis: Axis) -> isize {
         assert_eq!(axis, Axis(0));
         self.base.stride_of(Axis(self.axis_idx))
     }
 
-    fn split_at(self, axis: Axis, index: usize) -> (Self, Self)
-    {
+    fn split_at(self, axis: Axis, index: usize) -> (Self, Self) {
         assert_eq!(axis, Axis(0));
         let (a, b) = self.base.split_at(Axis(self.axis_idx), index);
         (
@@ -229,7 +215,7 @@ impl<'a, A, D: Dimension> NdProducer for AxisWindows<'a, A, D>
         )
     }
 
-    private_impl!{}
+    private_impl! {}
 }
 
 impl<'a, A, D> IntoIterator for AxisWindows<'a, A, D>
@@ -239,8 +225,7 @@ where
 {
     type Item = <Self::IntoIter as Iterator>::Item;
     type IntoIter = WindowsIter<'a, A, D>;
-    fn into_iter(self) -> Self::IntoIter
-    {
+    fn into_iter(self) -> Self::IntoIter {
         WindowsIter {
             iter: self.base.into_base_iter(),
             life: PhantomData,
@@ -252,14 +237,12 @@ where
 
 /// build the base array of the `Windows` and `AxisWindows` structs
 fn build_base<A, D>(a: ArrayView<A, D>, window: D, strides: D) -> ArrayView<A, D>
-where D: Dimension
+where
+    D: Dimension,
 {
     ndassert!(
         a.ndim() == window.ndim(),
-        concat!(
-            "Window dimension {} does not match array dimension {} ",
-            "(with array of shape {:?})"
-        ),
+        concat!("Window dimension {} does not match array dimension {} ", "(with array of shape {:?})"),
         window.ndim(),
         a.ndim(),
         a.shape()
@@ -267,10 +250,7 @@ where D: Dimension
 
     ndassert!(
         a.ndim() == strides.ndim(),
-        concat!(
-            "Stride dimension {} does not match array dimension {} ",
-            "(with array of shape {:?})"
-        ),
+        concat!("Stride dimension {} does not match array dimension {} ", "(with array of shape {:?})"),
         strides.ndim(),
         a.ndim(),
         a.shape()

@@ -36,10 +36,7 @@ unsafe impl Sync for ScanKernel {}
 impl ScanKernel {
     /// Wrap a raw function pointer as a ScanKernel.
     pub(crate) fn from_raw(ptr: *const u8, params: ScanParams) -> Self {
-        Self {
-            fn_ptr: ptr,
-            params,
-        }
+        Self { fn_ptr: ptr, params }
     }
 
     /// Execute the compiled scan.
@@ -50,12 +47,7 @@ impl ScanKernel {
     /// - `field` must point to `field_len * record_size` bytes.
     /// - `candidates_out` must point to a buffer large enough for results.
     pub unsafe fn scan(
-        &self,
-        query: *const u8,
-        field: *const u8,
-        field_len: u64,
-        record_size: u64,
-        candidates_out: *mut u64,
+        &self, query: *const u8, field: *const u8, field_len: u64, record_size: u64, candidates_out: *mut u64,
     ) -> u64 {
         // SAFETY: caller guarantees pointer validity; fn_ptr was compiled
         // by Cranelift with the matching signature.
@@ -90,9 +82,7 @@ impl ScanKernel {
 ///     return candidate_count
 /// ```
 pub fn build_scan_ir(
-    func: &mut Function,
-    params: &ScanParams,
-    dist_func_ref: Option<cranelift_codegen::ir::FuncRef>,
+    func: &mut Function, params: &ScanParams, dist_func_ref: Option<cranelift_codegen::ir::FuncRef>,
 ) -> Result<(), JitError> {
     let mut fbc = FunctionBuilderContext::new();
     let mut builder = FunctionBuilder::new(func, &mut fbc);
@@ -119,12 +109,8 @@ pub fn build_scan_ir(
     let candidates_out = builder.block_params(entry)[4];
 
     // Baked constants (the whole point of JIT compilation)
-    let threshold_imm = builder
-        .ins()
-        .iconst(types::I64, params.threshold as i64);
-    let record_size_imm = builder
-        .ins()
-        .iconst(types::I64, params.record_size as i64);
+    let threshold_imm = builder.ins().iconst(types::I64, params.threshold as i64);
+    let record_size_imm = builder.ins().iconst(types::I64, params.record_size as i64);
     let top_k_imm = builder.ins().iconst(types::I64, params.top_k as i64);
     let zero = builder.ins().iconst(types::I64, 0);
     let one = builder.ins().iconst(types::I64, 1);
@@ -194,9 +180,7 @@ pub fn build_scan_ir(
     // candidates_out[count] = i
     let out_offset = builder.ins().imul(count, eight);
     let out_ptr = builder.ins().iadd(candidates_out, out_offset);
-    builder
-        .ins()
-        .store(MemFlags::trusted(), i, out_ptr, 0);
+    builder.ins().store(MemFlags::trusted(), i, out_ptr, 0);
 
     // count++
     let new_count = builder.ins().iadd(count, one);

@@ -4,7 +4,6 @@
 //! builds k-means palette. All via `crate::simd` for SIMD acceleration.
 
 use crate::simd::F32x16;
-use std::sync::LazyLock;
 
 /// Base17 projection parameters.
 pub const BASE_DIM: usize = 17;
@@ -134,8 +133,7 @@ impl JinaPalette {
             for k in 0..PALETTE_K {
                 if counts[k] > 0 {
                     for d in 0..BASE_DIM {
-                        centroids[k].dims[d] =
-                            (sums[k][d] / counts[k] as i64).clamp(-32768, 32767) as i16;
+                        centroids[k].dims[d] = (sums[k][d] / counts[k] as i64).clamp(-32768, 32767) as i16;
                     }
                 }
             }
@@ -161,8 +159,7 @@ impl JinaPalette {
     /// O(1) distance between two tokens via palette lookup.
     #[inline(always)]
     pub fn distance(&self, token_a: usize, token_b: usize) -> u16 {
-        self.distance_table[self.assignments[token_a] as usize]
-            [self.assignments[token_b] as usize]
+        self.distance_table[self.assignments[token_a] as usize][self.assignments[token_b] as usize]
     }
 
     /// Palette index for a token.
@@ -233,11 +230,7 @@ mod tests {
         let palette = JinaPalette::build(&tokens, 5);
         for i in 0..PALETTE_K {
             for j in 0..PALETTE_K {
-                assert_eq!(
-                    palette.distance_table[i][j],
-                    palette.distance_table[j][i],
-                    "Asymmetric at [{i}][{j}]"
-                );
+                assert_eq!(palette.distance_table[i][j], palette.distance_table[j][i], "Asymmetric at [{i}][{j}]");
             }
         }
     }

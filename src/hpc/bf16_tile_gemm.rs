@@ -18,10 +18,10 @@
 //! ```
 
 use crate::hpc::amx_matmul::{
-    amx_available, TileConfig, tile_loadconfig, tile_zero,
-    tile_load, tile_store, tile_release, tile_dpbf16ps, vnni_pack_bf16,
+    amx_available, tile_dpbf16ps, tile_load, tile_loadconfig, tile_release, tile_store, tile_zero, vnni_pack_bf16,
+    TileConfig,
 };
-use crate::simd::{F32x16, bf16_to_f32_batch};
+use crate::simd::{bf16_to_f32_batch, F32x16};
 
 // ═════════════════════════════════════════════════════════════════════
 // Public API — safe dispatching wrapper
@@ -47,7 +47,9 @@ pub fn bf16_tile_gemm_16x16(a_bf16: &[u16], b_bf16: &[u16], c: &mut [f32], k: us
         let mut b_vnni = vec![0u16; k * 16];
         vnni_pack_bf16(b_bf16, &mut b_vnni, k, 16);
         // SAFETY: amx_available() just confirmed CPUID + XCR0 + prctl.
-        unsafe { amx_path(a_bf16, &b_vnni, c, k); }
+        unsafe {
+            amx_path(a_bf16, &b_vnni, c, k);
+        }
     } else {
         fallback_path(a_bf16, b_bf16, c, k);
     }
@@ -69,8 +71,8 @@ unsafe fn amx_path(a_bf16: &[u16], b_vnni: &[u16], c: &mut [f32], k: usize) {
 
     // Accumulate over K/32 tile blocks
     let k_blocks = k / 32;
-    let a_stride = (k * 2) as usize;    // full A row stride in bytes (bf16 = 2B)
-    let b_stride = 64usize;             // VNNI row stride in bytes
+    let a_stride = (k * 2) as usize; // full A row stride in bytes (bf16 = 2B)
+    let b_stride = 64usize; // VNNI row stride in bytes
 
     for kb in 0..k_blocks {
         let a_ptr = a_bf16.as_ptr().add(kb * 32) as *const u8;
@@ -103,11 +105,13 @@ fn fallback_path(a_bf16: &[u16], b_bf16: &[u16], c: &mut [f32], k: usize) {
     // We gather the column into a stack-sized buffer once per (i,j) pair to hit
     // the chunks_exact(16) + mul_add fast path on contiguous memory.
     for i in 0..16 {
-        let a_row = &a_f32[i * k .. i * k + k];
+        let a_row = &a_f32[i * k..i * k + k];
         for j in 0..16 {
             // Stream the column into a contiguous buffer
             let mut col = vec![0.0f32; k];
-            for kk in 0..k { col[kk] = b_f32[kk * 16 + j]; }
+            for kk in 0..k {
+                col[kk] = b_f32[kk * 16 + j];
+            }
 
             // Accumulate via F32x16::mul_add (FMA)
             let mut acc = F32x16::splat(0.0);
@@ -128,7 +132,7 @@ fn fallback_path(a_bf16: &[u16], b_bf16: &[u16], c: &mut [f32], k: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::simd::{f32_to_bf16_batch, bf16_to_f32_batch};
+    use crate::simd::{bf16_to_f32_batch, f32_to_bf16_batch};
 
     /// Scalar BF16 reference (f32-accumulated) — ground truth.
     fn ref_gemm(a: &[f32], b: &[f32], c: &mut [f32], k: usize) {
@@ -150,12 +154,11 @@ mod tests {
         let mut a_f32 = vec![0.0f32; 16 * k];
         let mut b_f32 = vec![0.0f32; k * 16];
         for i in 0..a_f32.len() {
-            a_f32[i] = (((i as i32).wrapping_mul(1103515245).wrapping_add(12345) >> 8) as f32
-                        / 2147483648.0).clamp(-1.0, 1.0);
+            a_f32[i] =
+                (((i as i32).wrapping_mul(1103515245).wrapping_add(12345) >> 8) as f32 / 2147483648.0).clamp(-1.0, 1.0);
         }
         for i in 0..b_f32.len() {
-            b_f32[i] = (((i as i32).wrapping_mul(69069).wrapping_add(1) >> 8) as f32
-                        / 2147483648.0).clamp(-1.0, 1.0);
+            b_f32[i] = (((i as i32).wrapping_mul(69069).wrapping_add(1) >> 8) as f32 / 2147483648.0).clamp(-1.0, 1.0);
         }
         let mut a_bf16 = vec![0u16; a_f32.len()];
         let mut b_bf16 = vec![0u16; b_f32.len()];
@@ -178,7 +181,9 @@ mod tests {
         let mut max_err = 0.0f32;
         for i in 0..(16 * 16) {
             let e = (c_fb[i] - c_ref[i]).abs();
-            if e > max_err { max_err = e; }
+            if e > max_err {
+                max_err = e;
+            }
         }
         assert!(max_err < 1e-3, "fallback vs scalar ref max_err = {}", max_err);
     }
@@ -193,6 +198,8 @@ mod tests {
         let mut c = vec![0.0f32; 16 * 16];
         bf16_tile_gemm_16x16(&a, &b, &mut c, k);
         // All zeros × all zeros = 0
-        for v in c.iter() { assert_eq!(*v, 0.0); }
+        for v in c.iter() {
+            assert_eq!(*v, 0.0);
+        }
     }
 }

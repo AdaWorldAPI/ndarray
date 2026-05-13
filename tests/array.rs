@@ -35,8 +35,7 @@ macro_rules! assert_panics {
 }
 
 #[test]
-fn test_matmul_arcarray()
-{
+fn test_matmul_arcarray() {
     let mut A = ArcArray::<usize, _>::zeros((2, 3));
     for (i, elt) in A.iter_mut().enumerate() {
         *elt = i;
@@ -60,20 +59,17 @@ fn test_matmul_arcarray()
 }
 
 #[allow(unused)]
-fn arrayview_shrink_lifetime<'a, 'b: 'a>(view: ArrayView1<'b, f64>) -> ArrayView1<'a, f64>
-{
+fn arrayview_shrink_lifetime<'a, 'b: 'a>(view: ArrayView1<'b, f64>) -> ArrayView1<'a, f64> {
     view.reborrow()
 }
 
 #[allow(unused)]
-fn arrayviewmut_shrink_lifetime<'a, 'b: 'a>(view: ArrayViewMut1<'b, f64>) -> ArrayViewMut1<'a, f64>
-{
+fn arrayviewmut_shrink_lifetime<'a, 'b: 'a>(view: ArrayViewMut1<'b, f64>) -> ArrayViewMut1<'a, f64> {
     view.reborrow()
 }
 
 #[test]
-fn test_mat_mul()
-{
+fn test_mat_mul() {
     // smoke test, a big matrix multiplication of uneven size
     let (n, m) = (45, 33);
     let a = Array::from_iter(0..(n * m))
@@ -87,8 +83,7 @@ fn test_mat_mul()
 
 #[deny(unsafe_code)]
 #[test]
-fn test_slice()
-{
+fn test_slice() {
     let mut A = ArcArray::<usize, _>::zeros((3, 4, 5));
     for (i, elt) in A.iter_mut().enumerate() {
         *elt = i;
@@ -103,15 +98,13 @@ fn test_slice()
 
 #[deny(unsafe_code)]
 #[test]
-fn test_slice_ix0()
-{
+fn test_slice_ix0() {
     let arr = arr0(5);
     assert_eq!(arr.slice(s![]), aview0(&5));
 }
 
 #[test]
-fn test_slice_edge_cases()
-{
+fn test_slice_edge_cases() {
     let mut arr = Array3::<u8>::zeros((3, 4, 5));
     arr.slice_collapse(s![0..0;-1, .., ..]);
     assert_eq!(arr.shape(), &[0, 4, 5]);
@@ -121,8 +114,7 @@ fn test_slice_edge_cases()
 }
 
 #[test]
-fn test_slice_inclusive_range()
-{
+fn test_slice_inclusive_range() {
     let arr = array![[1, 2, 3], [4, 5, 6]];
     assert_eq!(arr.slice(s![1..=1, 1..=2]), array![[5, 6]]);
     assert_eq!(arr.slice(s![1..=-1, -2..=2;-1]), array![[6, 5]]);
@@ -136,8 +128,7 @@ fn test_slice_inclusive_range()
 /// `ArrayView1` and `ArrayView2`, so the compiler needs to determine which
 /// type is the correct result for the `.slice()` call.
 #[test]
-fn test_slice_infer()
-{
+fn test_slice_infer() {
     let a = array![1., 2.];
     let b = array![[3., 4.], [5., 6.]];
     b.slice(s![..-1, ..]).dot(&a);
@@ -145,8 +136,7 @@ fn test_slice_infer()
 }
 
 #[test]
-fn test_slice_with_many_dim()
-{
+fn test_slice_with_many_dim() {
     let mut A = ArcArray::<usize, _>::zeros(&[3, 1, 4, 1, 3, 2, 1][..]);
     for (i, elt) in A.iter_mut().enumerate() {
         *elt = i;
@@ -173,16 +163,14 @@ fn test_slice_with_many_dim()
 }
 
 #[test]
-fn test_slice_range_variable()
-{
+fn test_slice_range_variable() {
     let range = 1..4;
     let arr = array![0, 1, 2, 3, 4];
     assert_eq!(arr.slice(s![range]), array![1, 2, 3]);
 }
 
 #[test]
-fn test_slice_args_eval_range_once()
-{
+fn test_slice_args_eval_range_once() {
     let mut eval_count = 0;
     {
         let mut range = || {
@@ -196,8 +184,7 @@ fn test_slice_args_eval_range_once()
 }
 
 #[test]
-fn test_slice_args_eval_step_once()
-{
+fn test_slice_args_eval_step_once() {
     let mut eval_count = 0;
     {
         let mut step = || {
@@ -211,8 +198,7 @@ fn test_slice_args_eval_step_once()
 }
 
 #[test]
-fn test_slice_array_fixed()
-{
+fn test_slice_array_fixed() {
     let mut arr = Array3::<f64>::zeros((5, 2, 5));
     let info = s![1.., 1, NewAxis, ..;2];
     arr.slice(info);
@@ -223,8 +209,7 @@ fn test_slice_array_fixed()
 }
 
 #[test]
-fn test_slice_dyninput_array_fixed()
-{
+fn test_slice_dyninput_array_fixed() {
     let mut arr = Array3::<f64>::zeros((5, 2, 5)).into_dyn();
     let info = s![1.., 1, NewAxis, ..;2];
     arr.slice(info);
@@ -235,8 +220,7 @@ fn test_slice_dyninput_array_fixed()
 }
 
 #[test]
-fn test_slice_array_dyn()
-{
+fn test_slice_array_dyn() {
     let mut arr = Array3::<f64>::zeros((5, 2, 5));
     let info = SliceInfo::<_, Ix3, IxDyn>::try_from([
         SliceInfoElem::from(1..),
@@ -258,8 +242,7 @@ fn test_slice_array_dyn()
 }
 
 #[test]
-fn test_slice_dyninput_array_dyn()
-{
+fn test_slice_dyninput_array_dyn() {
     let mut arr = Array3::<f64>::zeros((5, 2, 5)).into_dyn();
     let info = SliceInfo::<_, Ix3, IxDyn>::try_from([
         SliceInfoElem::from(1..),
@@ -281,8 +264,7 @@ fn test_slice_dyninput_array_dyn()
 }
 
 #[test]
-fn test_slice_dyninput_vec_fixed()
-{
+fn test_slice_dyninput_vec_fixed() {
     let mut arr = Array3::<f64>::zeros((5, 2, 5)).into_dyn();
     let info = &SliceInfo::<_, Ix3, Ix3>::try_from(vec![
         SliceInfoElem::from(1..),
@@ -304,8 +286,7 @@ fn test_slice_dyninput_vec_fixed()
 }
 
 #[test]
-fn test_slice_dyninput_vec_dyn()
-{
+fn test_slice_dyninput_vec_dyn() {
     let mut arr = Array3::<f64>::zeros((5, 2, 5)).into_dyn();
     let info = &SliceInfo::<_, Ix3, IxDyn>::try_from(vec![
         SliceInfoElem::from(1..),
@@ -327,8 +308,7 @@ fn test_slice_dyninput_vec_dyn()
 }
 
 #[test]
-fn test_slice_with_subview_and_new_axis()
-{
+fn test_slice_with_subview_and_new_axis() {
     let mut arr = ArcArray::<usize, _>::zeros((3, 5, 4));
     for (i, elt) in arr.iter_mut().enumerate() {
         *elt = i;
@@ -365,8 +345,7 @@ fn test_slice_with_subview_and_new_axis()
 }
 
 #[test]
-fn test_slice_collapse_with_indices()
-{
+fn test_slice_collapse_with_indices() {
     let mut arr = ArcArray::<usize, _>::zeros((3, 5, 4));
     for (i, elt) in arr.iter_mut().enumerate() {
         *elt = i;
@@ -405,15 +384,13 @@ fn test_slice_collapse_with_indices()
 
 #[test]
 #[should_panic]
-fn test_slice_collapse_with_newaxis()
-{
+fn test_slice_collapse_with_newaxis() {
     let mut arr = Array2::<u8>::zeros((2, 3));
     arr.slice_collapse(s![0, 0, NewAxis]);
 }
 
 #[test]
-fn test_multislice()
-{
+fn test_multislice() {
     macro_rules! do_test {
         ($arr:expr, $($s:expr),*) => {
             {
@@ -431,10 +408,7 @@ fn test_multislice()
         .into_shape_with_order((8, 6))
         .unwrap();
 
-    assert_eq!(
-        (arr.clone().view_mut(),),
-        arr.multi_slice_mut((s![.., ..],)),
-    );
+    assert_eq!((arr.clone().view_mut(),), arr.multi_slice_mut((s![.., ..],)),);
     assert_eq!(arr.multi_slice_mut(()), ());
     do_test!(&mut arr, s![0, ..]);
     do_test!(&mut arr, s![0, ..], s![1, ..]);
@@ -451,8 +425,7 @@ fn test_multislice()
 }
 
 #[test]
-fn test_multislice_intersecting()
-{
+fn test_multislice_intersecting() {
     assert_panics!({
         let mut arr = Array2::<u8>::zeros((8, 6));
         arr.multi_slice_mut((s![3, .., NewAxis], s![3, ..]));
@@ -493,39 +466,34 @@ fn test_multislice_intersecting()
 
 #[should_panic]
 #[test]
-fn index_out_of_bounds()
-{
+fn index_out_of_bounds() {
     let mut a = Array::<i32, _>::zeros((3, 4));
     a[[3, 2]] = 1;
 }
 
 #[should_panic]
 #[test]
-fn slice_oob()
-{
+fn slice_oob() {
     let a = ArcArray::<i32, _>::zeros((3, 4));
     let _vi = a.slice(s![..10, ..]);
 }
 
 #[should_panic]
 #[test]
-fn slice_axis_oob()
-{
+fn slice_axis_oob() {
     let a = ArcArray::<i32, _>::zeros((3, 4));
     let _vi = a.slice_axis(Axis(0), Slice::new(0, Some(10), 1));
 }
 
 #[should_panic]
 #[test]
-fn slice_wrong_dim()
-{
+fn slice_wrong_dim() {
     let a = ArcArray::<i32, _>::zeros(vec![3, 4, 5]);
     let _vi = a.slice(s![.., ..]);
 }
 
 #[test]
-fn test_index()
-{
+fn test_index() {
     let mut A = ArcArray::<usize, _>::zeros((2, 3));
     for (i, elt) in A.iter_mut().enumerate() {
         *elt = i;
@@ -546,8 +514,7 @@ fn test_index()
 }
 
 #[test]
-fn test_index_arrays()
-{
+fn test_index_arrays() {
     let a = Array1::from_iter(0..12);
     assert_eq!(a[1], a[[1]]);
     let v = a.view().into_shape_with_order((3, 4)).unwrap();
@@ -558,8 +525,7 @@ fn test_index_arrays()
 
 #[test]
 #[allow(clippy::assign_op_pattern)]
-fn test_add()
-{
+fn test_add() {
     let mut A = ArcArray::<usize, _>::zeros((2, 2));
     for (i, elt) in A.iter_mut().enumerate() {
         *elt = i;
@@ -574,8 +540,7 @@ fn test_add()
 }
 
 #[test]
-fn test_multidim()
-{
+fn test_multidim() {
     let mut mat = ArcArray::zeros(2 * 3 * 4 * 5 * 6)
         .into_shape_with_order((2, 3, 4, 5, 6))
         .unwrap();
@@ -600,8 +565,7 @@ array([[[ 7,  6],
         [ 9,  8]]])
 */
 #[test]
-fn test_negative_stride_arcarray()
-{
+fn test_negative_stride_arcarray() {
     let mut mat = ArcArray::zeros((2, 4, 2));
     mat[[0, 0, 0]] = 1.0f32;
     for (i, elt) in mat.iter_mut().enumerate() {
@@ -627,8 +591,7 @@ fn test_negative_stride_arcarray()
 }
 
 #[test]
-fn test_cow()
-{
+fn test_cow() {
     let mut mat = ArcArray::zeros((2, 2));
     mat[[0, 0]] = 1;
     let n = mat.clone();
@@ -660,8 +623,7 @@ fn test_cow()
 }
 
 #[test]
-fn test_cow_shrink()
-{
+fn test_cow_shrink() {
     // A test for clone-on-write in the case that
     // mutation shrinks the array and gives it different strides
     //
@@ -695,8 +657,7 @@ fn test_cow_shrink()
 }
 
 #[test]
-fn test_sub()
-{
+fn test_sub() {
     let mat = Array::from_iter(0..16)
         .into_shape_with_order((2, 4, 2))
         .unwrap();
@@ -716,8 +677,7 @@ fn test_sub()
 
 #[should_panic]
 #[test]
-fn test_sub_oob_1()
-{
+fn test_sub_oob_1() {
     let mat = Array::from_iter(0..16)
         .into_shape_with_order((2, 4, 2))
         .unwrap();
@@ -726,8 +686,7 @@ fn test_sub_oob_1()
 
 #[test]
 #[cfg(feature = "approx")]
-fn test_select()
-{
+fn test_select() {
     use approx::assert_abs_diff_eq;
 
     // test for 2-d array
@@ -750,8 +709,7 @@ fn test_select()
 }
 
 #[test]
-fn test_select_1d()
-{
+fn test_select_1d() {
     let x = arr1(&[0, 1, 2, 3, 4, 5, 6]);
     let r1 = x.select(Axis(0), &[1, 3, 4, 2, 2, 5]);
     assert_eq!(r1, arr1(&[1, 3, 4, 2, 2, 5]));
@@ -764,8 +722,7 @@ fn test_select_1d()
 }
 
 #[test]
-fn diag()
-{
+fn diag() {
     let d = arr2(&[[1., 2., 3.0f32]]).into_diag();
     assert_eq!(d.dim(), 1);
     let a = arr2(&[[1., 2., 3.0f32], [0., 0., 0.]]);
@@ -782,8 +739,7 @@ fn diag()
 /// Note that this does not check the strides in the "merged" case!
 #[test]
 #[allow(clippy::cognitive_complexity)]
-fn merge_axes()
-{
+fn merge_axes() {
     macro_rules! assert_merged {
         ($arr:expr, $slice:expr, $take:expr, $into:expr) => {
             let mut v = $arr.slice($slice);
@@ -871,8 +827,7 @@ fn merge_axes()
 }
 
 #[test]
-fn swapaxes()
-{
+fn swapaxes() {
     let mut a = arr2(&[[1., 2.], [3., 4.0f32]]);
     let b = arr2(&[[1., 3.], [2., 4.0f32]]);
     assert!(a != b);
@@ -885,8 +840,7 @@ fn swapaxes()
 }
 
 #[test]
-fn permuted_axes()
-{
+fn permuted_axes() {
     let a = array![1].index_axis_move(Axis(0), 0);
     let permuted = a.view().permuted_axes([]);
     assert_eq!(a, permuted);
@@ -922,8 +876,7 @@ fn permuted_axes()
 
 #[should_panic]
 #[test]
-fn permuted_axes_repeated_axis()
-{
+fn permuted_axes_repeated_axis() {
     let a = Array::from_iter(0..24)
         .into_shape_with_order((2, 3, 4))
         .unwrap();
@@ -932,8 +885,7 @@ fn permuted_axes_repeated_axis()
 
 #[should_panic]
 #[test]
-fn permuted_axes_missing_axis()
-{
+fn permuted_axes_missing_axis() {
     let a = Array::from_iter(0..24)
         .into_shape_with_order((2, 3, 4))
         .unwrap()
@@ -943,8 +895,7 @@ fn permuted_axes_missing_axis()
 
 #[should_panic]
 #[test]
-fn permuted_axes_oob()
-{
+fn permuted_axes_oob() {
     let a = Array::from_iter(0..24)
         .into_shape_with_order((2, 3, 4))
         .unwrap();
@@ -952,8 +903,7 @@ fn permuted_axes_oob()
 }
 
 #[test]
-fn standard_layout()
-{
+fn standard_layout() {
     let mut a = arr2(&[[1., 2.], [3., 4.0]]);
     assert!(a.is_standard_layout());
     a.swap_axes(0, 1);
@@ -971,8 +921,7 @@ fn standard_layout()
 }
 
 #[test]
-fn iter_size_hint()
-{
+fn iter_size_hint() {
     let mut a = arr2(&[[1., 2.], [3., 4.]]);
     {
         let mut it = a.iter();
@@ -1007,8 +956,7 @@ fn iter_size_hint()
 }
 
 #[test]
-fn zero_axes()
-{
+fn zero_axes() {
     let mut a = arr1::<f32>(&[]);
     if a.iter().next().is_some() {
         panic!();
@@ -1026,8 +974,7 @@ fn zero_axes()
 }
 
 #[test]
-fn equality()
-{
+fn equality() {
     let a = arr2(&[[1., 2.], [3., 4.]]);
     let mut b = arr2(&[[1., 2.], [2., 4.]]);
     assert!(a != b);
@@ -1040,8 +987,7 @@ fn equality()
 }
 
 #[test]
-fn map1()
-{
+fn map1() {
     let a = arr2(&[[1., 2.], [3., 4.]]);
     let b = a.map(|&x| (x / 3.) as isize);
     assert_eq!(b, arr2(&[[0, 0], [1, 1]]));
@@ -1051,24 +997,21 @@ fn map1()
 }
 
 #[test]
-fn mapv_into_any_same_type()
-{
+fn mapv_into_any_same_type() {
     let a: Array<f64, _> = array![[1., 2., 3.], [4., 5., 6.]];
     let a_plus_one: Array<f64, _> = array![[2., 3., 4.], [5., 6., 7.]];
     assert_eq!(a.mapv_into_any(|a| a + 1.), a_plus_one);
 }
 
 #[test]
-fn mapv_into_any_diff_types()
-{
+fn mapv_into_any_diff_types() {
     let a: Array<f64, _> = array![[1., 2., 3.], [4., 5., 6.]];
     let a_even: Array<bool, _> = array![[false, true, false], [true, false, true]];
     assert_eq!(a.mapv_into_any(|a| a.round() as i32 % 2 == 0), a_even);
 }
 
 #[test]
-fn as_slice_memory_order_mut_arcarray()
-{
+fn as_slice_memory_order_mut_arcarray() {
     // Test that mutation breaks sharing for `ArcArray`.
     let a = rcarr2(&[[1., 2.], [3., 4.0f32]]);
     let mut b = a.clone();
@@ -1079,8 +1022,7 @@ fn as_slice_memory_order_mut_arcarray()
 }
 
 #[test]
-fn as_slice_memory_order_mut_cowarray()
-{
+fn as_slice_memory_order_mut_cowarray() {
     // Test that mutation breaks sharing for `CowArray`.
     let a = arr2(&[[1., 2.], [3., 4.0f32]]);
     let mut b = CowArray::from(a.view());
@@ -1091,8 +1033,7 @@ fn as_slice_memory_order_mut_cowarray()
 }
 
 #[test]
-fn as_slice_memory_order_mut_contiguous_arcarray()
-{
+fn as_slice_memory_order_mut_contiguous_arcarray() {
     // Test that unsharing preserves the strides in the contiguous case for `ArcArray`.
     let a = rcarr2(&[[0, 5], [1, 6], [2, 7], [3, 8], [4, 9]]).reversed_axes();
     let mut b = a.clone().slice_move(s![.., ..2]);
@@ -1102,8 +1043,7 @@ fn as_slice_memory_order_mut_contiguous_arcarray()
 }
 
 #[test]
-fn as_slice_memory_order_mut_contiguous_cowarray()
-{
+fn as_slice_memory_order_mut_contiguous_cowarray() {
     // Test that unsharing preserves the strides in the contiguous case for `CowArray`.
     let a = arr2(&[[0, 5], [1, 6], [2, 7], [3, 8], [4, 9]]).reversed_axes();
     let mut b = CowArray::from(a.slice(s![.., ..2]));
@@ -1114,8 +1054,7 @@ fn as_slice_memory_order_mut_contiguous_cowarray()
 }
 
 #[test]
-fn to_slice_memory_order()
-{
+fn to_slice_memory_order() {
     for shape in [[2, 0, 3, 5], [2, 1, 3, 5], [2, 4, 3, 5]] {
         let data: Vec<usize> = (0..shape.iter().product()).collect();
         let mut orig = Array1::from(data.clone())
@@ -1132,8 +1071,7 @@ fn to_slice_memory_order()
 }
 
 #[test]
-fn to_slice_memory_order_discontiguous()
-{
+fn to_slice_memory_order_discontiguous() {
     let mut orig = Array3::<u8>::zeros([3, 2, 4]);
     assert!(orig
         .slice(s![.., 1.., ..])
@@ -1154,8 +1092,7 @@ fn to_slice_memory_order_discontiguous()
 }
 
 #[test]
-fn array0_into_scalar()
-{
+fn array0_into_scalar() {
     // With this kind of setup, the `Array`'s pointer is not the same as the
     // underlying `Vec`'s pointer.
     let a: Array0<i32> = array![4, 5, 6, 7].index_axis_move(Axis(0), 2);
@@ -1173,8 +1110,7 @@ fn array0_into_scalar()
 }
 
 #[test]
-fn array_view0_into_scalar()
-{
+fn array_view0_into_scalar() {
     // With this kind of setup, the `Array`'s pointer is not the same as the
     // underlying `Vec`'s pointer.
     let a: Array0<i32> = array![4, 5, 6, 7].index_axis_move(Axis(0), 2);
@@ -1192,8 +1128,7 @@ fn array_view0_into_scalar()
 }
 
 #[test]
-fn array_view_mut0_into_scalar()
-{
+fn array_view_mut0_into_scalar() {
     // With this kind of setup, the `Array`'s pointer is not the same as the
     // underlying `Vec`'s pointer.
     let a: Array0<i32> = array![4, 5, 6, 7].index_axis_move(Axis(0), 2);
@@ -1208,8 +1143,7 @@ fn array_view_mut0_into_scalar()
 }
 
 #[test]
-fn array1_into_raw_vec()
-{
+fn array1_into_raw_vec() {
     let data = vec![4, 5, 6, 7];
     let array = Array::from(data.clone());
     let (raw_vec, offset) = array.into_raw_vec_and_offset();
@@ -1218,8 +1152,7 @@ fn array1_into_raw_vec()
 }
 
 #[test]
-fn owned_array1()
-{
+fn owned_array1() {
     let mut a = Array::from(vec![1, 2, 3, 4]);
     for elt in a.iter_mut() {
         *elt = 2;
@@ -1244,8 +1177,7 @@ fn owned_array1()
 }
 
 #[test]
-fn owned_array_with_stride()
-{
+fn owned_array_with_stride() {
     let v: Vec<_> = (0..12).collect();
     let dim = (2, 3, 2);
     let strides = (1, 4, 2);
@@ -1255,8 +1187,7 @@ fn owned_array_with_stride()
 }
 
 #[test]
-fn owned_array_discontiguous()
-{
+fn owned_array_discontiguous() {
     use std::iter::repeat;
     let v: Vec<_> = (0..12).flat_map(|x| repeat(x).take(2)).collect();
     let dim = (3, 2, 2);
@@ -1269,17 +1200,14 @@ fn owned_array_discontiguous()
 }
 
 #[test]
-fn owned_array_discontiguous_drop()
-{
+fn owned_array_discontiguous_drop() {
     use std::cell::RefCell;
     use std::collections::BTreeSet;
     use std::rc::Rc;
 
     struct InsertOnDrop<T: Ord>(Rc<RefCell<BTreeSet<T>>>, Option<T>);
-    impl<T: Ord> Drop for InsertOnDrop<T>
-    {
-        fn drop(&mut self)
-        {
+    impl<T: Ord> Drop for InsertOnDrop<T> {
+        fn drop(&mut self) {
             let InsertOnDrop(ref set, ref mut value) = *self;
             set.borrow_mut().insert(value.take().expect("double drop!"));
         }
@@ -1302,34 +1230,26 @@ macro_rules! assert_matches {
     ($value:expr, $pat:pat) => {
         match $value {
             $pat => {}
-            ref err => panic!(
-                "assertion failed: `{}` matches `{}` found: {:?}",
-                stringify!($value),
-                stringify!($pat),
-                err
-            ),
+            ref err => {
+                panic!("assertion failed: `{}` matches `{}` found: {:?}", stringify!($value), stringify!($pat), err)
+            }
         }
     };
 }
 
 #[test]
-fn from_vec_dim_stride_empty_1d()
-{
+fn from_vec_dim_stride_empty_1d() {
     let empty: [f32; 0] = [];
     assert_matches!(Array::from_shape_vec(0.strides(1), empty.to_vec()), Ok(_));
 }
 
 #[test]
-fn from_vec_dim_stride_0d()
-{
+fn from_vec_dim_stride_0d() {
     let empty: [f32; 0] = [];
     let one = [1.];
     let two = [1., 2.];
     // too few elements
-    assert_matches!(
-        Array::from_shape_vec(().strides(()), empty.to_vec()),
-        Err(_)
-    );
+    assert_matches!(Array::from_shape_vec(().strides(()), empty.to_vec()), Err(_));
     // exact number of elements
     assert_matches!(Array::from_shape_vec(().strides(()), one.to_vec()), Ok(_));
     // too many are ok
@@ -1337,8 +1257,7 @@ fn from_vec_dim_stride_0d()
 }
 
 #[test]
-fn from_vec_dim_stride_2d_1()
-{
+fn from_vec_dim_stride_2d_1() {
     let two = [1., 2.];
     let d = Ix2(2, 1);
     let s = d.default_strides();
@@ -1346,8 +1265,7 @@ fn from_vec_dim_stride_2d_1()
 }
 
 #[test]
-fn from_vec_dim_stride_2d_2()
-{
+fn from_vec_dim_stride_2d_2() {
     let two = [1., 2.];
     let d = Ix2(1, 2);
     let s = d.default_strides();
@@ -1355,44 +1273,31 @@ fn from_vec_dim_stride_2d_2()
 }
 
 #[test]
-fn from_vec_dim_stride_2d_3()
-{
+fn from_vec_dim_stride_2d_3() {
     let a = arr3(&[[[1]], [[2]], [[3]]]);
     let d = a.raw_dim();
     let s = d.default_strides();
-    assert_matches!(
-        Array::from_shape_vec(d.strides(s), a.as_slice().unwrap().to_vec()),
-        Ok(_)
-    );
+    assert_matches!(Array::from_shape_vec(d.strides(s), a.as_slice().unwrap().to_vec()), Ok(_));
 }
 
 #[test]
-fn from_vec_dim_stride_2d_4()
-{
+fn from_vec_dim_stride_2d_4() {
     let a = arr3(&[[[1]], [[2]], [[3]]]);
     let d = a.raw_dim();
     let s = d.fortran_strides();
-    assert_matches!(
-        Array::from_shape_vec(d.strides(s), a.as_slice().unwrap().to_vec()),
-        Ok(_)
-    );
+    assert_matches!(Array::from_shape_vec(d.strides(s), a.as_slice().unwrap().to_vec()), Ok(_));
 }
 
 #[test]
-fn from_vec_dim_stride_2d_5()
-{
+fn from_vec_dim_stride_2d_5() {
     let a = arr3(&[[[1, 2, 3]]]);
     let d = a.raw_dim();
     let s = d.fortran_strides();
-    assert_matches!(
-        Array::from_shape_vec(d.strides(s), a.as_slice().unwrap().to_vec()),
-        Ok(_)
-    );
+    assert_matches!(Array::from_shape_vec(d.strides(s), a.as_slice().unwrap().to_vec()), Ok(_));
 }
 
 #[test]
-fn from_vec_dim_stride_2d_6()
-{
+fn from_vec_dim_stride_2d_6() {
     let a = [1., 2., 3., 4., 5., 6.];
     let d = (2, 1, 1);
     let s = (2, 2, 1);
@@ -1404,8 +1309,7 @@ fn from_vec_dim_stride_2d_6()
 }
 
 #[test]
-fn from_vec_dim_stride_2d_7()
-{
+fn from_vec_dim_stride_2d_7() {
     // empty arrays can have 0 strides
     let a: [f32; 0] = [];
     // [[]] shape=[4, 0], strides=[0, 1]
@@ -1415,8 +1319,7 @@ fn from_vec_dim_stride_2d_7()
 }
 
 #[test]
-fn from_vec_dim_stride_2d_8()
-{
+fn from_vec_dim_stride_2d_8() {
     // strides of length 1 axes can be zero
     let a = [1.];
     let d = (1, 1);
@@ -1425,8 +1328,7 @@ fn from_vec_dim_stride_2d_8()
 }
 
 #[test]
-fn from_vec_dim_stride_2d_rejects()
-{
+fn from_vec_dim_stride_2d_rejects() {
     let two = [1., 2.];
     let d = (2, 2);
     let s = (1, 0);
@@ -1438,8 +1340,7 @@ fn from_vec_dim_stride_2d_rejects()
 }
 
 #[test]
-fn views()
-{
+fn views() {
     let a = ArcArray::from(vec![1, 2, 3, 4])
         .into_shape_with_order((2, 2))
         .unwrap();
@@ -1451,15 +1352,11 @@ fn views()
     a.clone()[(0, 0)] = 99;
     assert_eq!(b[(0, 0)], 1);
 
-    assert_eq!(
-        a.view().into_iter().cloned().collect::<Vec<_>>(),
-        vec![1, 2, 3, 4]
-    );
+    assert_eq!(a.view().into_iter().cloned().collect::<Vec<_>>(), vec![1, 2, 3, 4]);
 }
 
 #[test]
-fn view_mut()
-{
+fn view_mut() {
     let mut a = ArcArray::from(vec![1, 2, 3, 4])
         .into_shape_with_order((2, 2))
         .unwrap();
@@ -1480,8 +1377,7 @@ fn view_mut()
 }
 
 #[test]
-fn slice_mut()
-{
+fn slice_mut() {
     let mut a = ArcArray::from(vec![1, 2, 3, 4])
         .into_shape_with_order((2, 2))
         .unwrap();
@@ -1505,8 +1401,7 @@ fn slice_mut()
 }
 
 #[test]
-fn assign_ops()
-{
+fn assign_ops() {
     let mut a = arr2(&[[1., 2.], [3., 4.]]);
     let b = arr2(&[[1., 3.], [2., 4.]]);
     (*&mut a.view_mut()) += &b;
@@ -1524,8 +1419,7 @@ fn assign_ops()
 }
 
 #[test]
-fn aview()
-{
+fn aview() {
     let a = arr2(&[[1., 2., 3.], [4., 5., 6.]]);
     let data = [[1., 2., 3.], [4., 5., 6.]];
     let b = aview2(&data);
@@ -1534,8 +1428,7 @@ fn aview()
 }
 
 #[test]
-fn aview_mut()
-{
+fn aview_mut() {
     let mut data = [0; 16];
     {
         let mut a = aview_mut1(&mut data).into_shape_with_order((4, 4)).unwrap();
@@ -1548,8 +1441,7 @@ fn aview_mut()
 }
 
 #[test]
-fn transpose_view()
-{
+fn transpose_view() {
     let a = arr2(&[[1, 2], [3, 4]]);
     let at = a.view().reversed_axes();
     assert_eq!(at, arr2(&[[1, 3], [2, 4]]));
@@ -1560,8 +1452,7 @@ fn transpose_view()
 }
 
 #[test]
-fn transpose_view_mut()
-{
+fn transpose_view_mut() {
     let mut a = arr2(&[[1, 2], [3, 4]]);
     let mut at = a.view_mut().reversed_axes();
     at[[0, 1]] = 5;
@@ -1575,8 +1466,7 @@ fn transpose_view_mut()
 
 #[test]
 #[allow(clippy::cognitive_complexity)]
-fn insert_axis()
-{
+fn insert_axis() {
     defmac!(test_insert orig, index, new => {
         let res = orig.insert_axis(Axis(index));
         assert_eq!(res, new);
@@ -1591,155 +1481,63 @@ fn insert_axis()
     test_insert!(arr1(&[1, 2, 3]), 1, arr2(&[[1], [2], [3]]));
     assert!(::std::panic::catch_unwind(|| arr1(&[1, 2, 3]).insert_axis(Axis(2))).is_err());
 
-    test_insert!(
-        arr2(&[[1, 2, 3], [4, 5, 6]]),
-        0,
-        arr3(&[[[1, 2, 3], [4, 5, 6]]])
-    );
-    test_insert!(
-        arr2(&[[1, 2, 3], [4, 5, 6]]),
-        1,
-        arr3(&[[[1, 2, 3]], [[4, 5, 6]]])
-    );
-    test_insert!(
-        arr2(&[[1, 2, 3], [4, 5, 6]]),
-        2,
-        arr3(&[[[1], [2], [3]], [[4], [5], [6]]])
-    );
-    assert!(
-        ::std::panic::catch_unwind(|| arr2(&[[1, 2, 3], [4, 5, 6]]).insert_axis(Axis(3))).is_err()
-    );
+    test_insert!(arr2(&[[1, 2, 3], [4, 5, 6]]), 0, arr3(&[[[1, 2, 3], [4, 5, 6]]]));
+    test_insert!(arr2(&[[1, 2, 3], [4, 5, 6]]), 1, arr3(&[[[1, 2, 3]], [[4, 5, 6]]]));
+    test_insert!(arr2(&[[1, 2, 3], [4, 5, 6]]), 2, arr3(&[[[1], [2], [3]], [[4], [5], [6]]]));
+    assert!(::std::panic::catch_unwind(|| arr2(&[[1, 2, 3], [4, 5, 6]]).insert_axis(Axis(3))).is_err());
 
-    test_insert!(
-        Array3::<u8>::zeros((3, 4, 5)),
-        0,
-        Array4::<u8>::zeros((1, 3, 4, 5))
-    );
-    test_insert!(
-        Array3::<u8>::zeros((3, 4, 5)),
-        1,
-        Array4::<u8>::zeros((3, 1, 4, 5))
-    );
-    test_insert!(
-        Array3::<u8>::zeros((3, 4, 5)),
-        3,
-        Array4::<u8>::zeros((3, 4, 5, 1))
-    );
-    assert!(
-        ::std::panic::catch_unwind(|| Array3::<u8>::zeros((3, 4, 5)).insert_axis(Axis(4))).is_err()
-    );
+    test_insert!(Array3::<u8>::zeros((3, 4, 5)), 0, Array4::<u8>::zeros((1, 3, 4, 5)));
+    test_insert!(Array3::<u8>::zeros((3, 4, 5)), 1, Array4::<u8>::zeros((3, 1, 4, 5)));
+    test_insert!(Array3::<u8>::zeros((3, 4, 5)), 3, Array4::<u8>::zeros((3, 4, 5, 1)));
+    assert!(::std::panic::catch_unwind(|| Array3::<u8>::zeros((3, 4, 5)).insert_axis(Axis(4))).is_err());
 
-    test_insert!(
-        Array6::<u8>::zeros((2, 3, 4, 3, 2, 3)),
-        0,
-        ArrayD::<u8>::zeros(vec![1, 2, 3, 4, 3, 2, 3])
-    );
-    test_insert!(
-        Array6::<u8>::zeros((2, 3, 4, 3, 2, 3)),
-        3,
-        ArrayD::<u8>::zeros(vec![2, 3, 4, 1, 3, 2, 3])
-    );
-    test_insert!(
-        Array6::<u8>::zeros((2, 3, 4, 3, 2, 3)),
-        6,
-        ArrayD::<u8>::zeros(vec![2, 3, 4, 3, 2, 3, 1])
-    );
-    assert!(::std::panic::catch_unwind(
-        || Array6::<u8>::zeros((2, 3, 4, 3, 2, 3)).insert_axis(Axis(7))
-    )
-    .is_err());
+    test_insert!(Array6::<u8>::zeros((2, 3, 4, 3, 2, 3)), 0, ArrayD::<u8>::zeros(vec![1, 2, 3, 4, 3, 2, 3]));
+    test_insert!(Array6::<u8>::zeros((2, 3, 4, 3, 2, 3)), 3, ArrayD::<u8>::zeros(vec![2, 3, 4, 1, 3, 2, 3]));
+    test_insert!(Array6::<u8>::zeros((2, 3, 4, 3, 2, 3)), 6, ArrayD::<u8>::zeros(vec![2, 3, 4, 3, 2, 3, 1]));
+    assert!(::std::panic::catch_unwind(|| Array6::<u8>::zeros((2, 3, 4, 3, 2, 3)).insert_axis(Axis(7))).is_err());
 
-    test_insert!(
-        ArrayD::<u8>::zeros(vec![3, 4, 5]),
-        0,
-        ArrayD::<u8>::zeros(vec![1, 3, 4, 5])
-    );
-    test_insert!(
-        ArrayD::<u8>::zeros(vec![3, 4, 5]),
-        1,
-        ArrayD::<u8>::zeros(vec![3, 1, 4, 5])
-    );
-    test_insert!(
-        ArrayD::<u8>::zeros(vec![3, 4, 5]),
-        3,
-        ArrayD::<u8>::zeros(vec![3, 4, 5, 1])
-    );
-    assert!(
-        ::std::panic::catch_unwind(|| ArrayD::<u8>::zeros(vec![3, 4, 5]).insert_axis(Axis(4)))
-            .is_err()
-    );
+    test_insert!(ArrayD::<u8>::zeros(vec![3, 4, 5]), 0, ArrayD::<u8>::zeros(vec![1, 3, 4, 5]));
+    test_insert!(ArrayD::<u8>::zeros(vec![3, 4, 5]), 1, ArrayD::<u8>::zeros(vec![3, 1, 4, 5]));
+    test_insert!(ArrayD::<u8>::zeros(vec![3, 4, 5]), 3, ArrayD::<u8>::zeros(vec![3, 4, 5, 1]));
+    assert!(::std::panic::catch_unwind(|| ArrayD::<u8>::zeros(vec![3, 4, 5]).insert_axis(Axis(4))).is_err());
 }
 
 #[test]
-fn insert_axis_f()
-{
+fn insert_axis_f() {
     defmac!(test_insert_f orig, index, new => {
         let res = orig.insert_axis(Axis(index));
         assert_eq!(res, new);
         assert!(res.t().is_standard_layout());
     });
 
-    test_insert_f!(
-        Array0::from_shape_vec(().f(), vec![1]).unwrap(),
-        0,
-        arr1(&[1])
-    );
-    assert!(
-        ::std::panic::catch_unwind(|| Array0::from_shape_vec(().f(), vec![1])
-            .unwrap()
-            .insert_axis(Axis(1)))
-        .is_err()
-    );
+    test_insert_f!(Array0::from_shape_vec(().f(), vec![1]).unwrap(), 0, arr1(&[1]));
+    assert!(::std::panic::catch_unwind(|| Array0::from_shape_vec(().f(), vec![1])
+        .unwrap()
+        .insert_axis(Axis(1)))
+    .is_err());
 
     test_insert_f!(Array1::<u8>::zeros((3).f()), 0, Array2::<u8>::zeros((1, 3)));
     test_insert_f!(Array1::<u8>::zeros((3).f()), 1, Array2::<u8>::zeros((3, 1)));
-    assert!(
-        ::std::panic::catch_unwind(|| Array1::<u8>::zeros((3).f()).insert_axis(Axis(2))).is_err()
-    );
+    assert!(::std::panic::catch_unwind(|| Array1::<u8>::zeros((3).f()).insert_axis(Axis(2))).is_err());
 
-    test_insert_f!(
-        Array3::<u8>::zeros((3, 4, 5).f()),
-        1,
-        Array4::<u8>::zeros((3, 1, 4, 5))
-    );
-    assert!(
-        ::std::panic::catch_unwind(|| Array3::<u8>::zeros((3, 4, 5).f()).insert_axis(Axis(4)))
-            .is_err()
-    );
+    test_insert_f!(Array3::<u8>::zeros((3, 4, 5).f()), 1, Array4::<u8>::zeros((3, 1, 4, 5)));
+    assert!(::std::panic::catch_unwind(|| Array3::<u8>::zeros((3, 4, 5).f()).insert_axis(Axis(4))).is_err());
 
-    test_insert_f!(
-        ArrayD::<u8>::zeros(vec![3, 4, 5].f()),
-        1,
-        ArrayD::<u8>::zeros(vec![3, 1, 4, 5])
-    );
-    assert!(::std::panic::catch_unwind(
-        || ArrayD::<u8>::zeros(vec![3, 4, 5].f()).insert_axis(Axis(4))
-    )
-    .is_err());
+    test_insert_f!(ArrayD::<u8>::zeros(vec![3, 4, 5].f()), 1, ArrayD::<u8>::zeros(vec![3, 1, 4, 5]));
+    assert!(::std::panic::catch_unwind(|| ArrayD::<u8>::zeros(vec![3, 4, 5].f()).insert_axis(Axis(4))).is_err());
 }
 
 #[test]
-fn insert_axis_view()
-{
+fn insert_axis_view() {
     let a = array![[[1, 2], [3, 4]], [[5, 6], [7, 8]], [[9, 10], [11, 12]]];
 
-    assert_eq!(
-        a.index_axis(Axis(1), 0).insert_axis(Axis(0)),
-        array![[[1, 2], [5, 6], [9, 10]]]
-    );
-    assert_eq!(
-        a.index_axis(Axis(1), 0).insert_axis(Axis(1)),
-        array![[[1, 2]], [[5, 6]], [[9, 10]]]
-    );
-    assert_eq!(
-        a.index_axis(Axis(1), 0).insert_axis(Axis(2)),
-        array![[[1], [2]], [[5], [6]], [[9], [10]]]
-    );
+    assert_eq!(a.index_axis(Axis(1), 0).insert_axis(Axis(0)), array![[[1, 2], [5, 6], [9, 10]]]);
+    assert_eq!(a.index_axis(Axis(1), 0).insert_axis(Axis(1)), array![[[1, 2]], [[5, 6]], [[9, 10]]]);
+    assert_eq!(a.index_axis(Axis(1), 0).insert_axis(Axis(2)), array![[[1], [2]], [[5], [6]], [[9], [10]]]);
 }
 
 #[test]
-fn arithmetic_broadcast()
-{
+fn arithmetic_broadcast() {
     let mut a = arr2(&[[1., 2.], [3., 4.]]);
     let b = a.clone() * aview0(&1.);
     assert_eq!(a, b);
@@ -1751,14 +1549,8 @@ fn arithmetic_broadcast()
     let a = arr2(&[[2], [3], [4]]);
     let b = arr1(&[5, 6, 7]);
     assert_eq!(&a + &b, arr2(&[[7, 8, 9], [8, 9, 10], [9, 10, 11]]));
-    assert_eq!(
-        a.clone() - &b,
-        arr2(&[[-3, -4, -5], [-2, -3, -4], [-1, -2, -3]])
-    );
-    assert_eq!(
-        a.clone() * b.clone(),
-        arr2(&[[10, 12, 14], [15, 18, 21], [20, 24, 28]])
-    );
+    assert_eq!(a.clone() - &b, arr2(&[[-3, -4, -5], [-2, -3, -4], [-1, -2, -3]]));
+    assert_eq!(a.clone() * b.clone(), arr2(&[[10, 12, 14], [15, 18, 21], [20, 24, 28]]));
     assert_eq!(&b / a, arr2(&[[2, 3, 3], [1, 2, 2], [1, 1, 1]]));
 
     // Negative strides and non-contiguous memory
@@ -1769,14 +1561,8 @@ fn arithmetic_broadcast()
     let mut c = s.clone();
     c.collapse_axis(Axis(2), 1);
     let c = c.slice(s![1,..;2,..]);
-    assert_eq!(
-        &a.to_owned() + &b,
-        arr3(&[[[11, 15], [20, 24]], [[10, 14], [19, 23]]])
-    );
-    assert_eq!(
-        &a + b.into_owned() + c,
-        arr3(&[[[15, 19], [32, 36]], [[14, 18], [31, 35]]])
-    );
+    assert_eq!(&a.to_owned() + &b, arr3(&[[[11, 15], [20, 24]], [[10, 14], [19, 23]]]));
+    assert_eq!(&a + b.into_owned() + c, arr3(&[[[15, 19], [32, 36]], [[14, 18], [31, 35]]]));
 
     // shared array
     let sa = a.to_shared();
@@ -1785,10 +1571,7 @@ fn arithmetic_broadcast()
     let sb2 = sb.to_shared();
     let sc = c.to_shared();
     let sc2 = sc.into_shared();
-    assert_eq!(
-        sa2 + &sb2 + sc2.into_owned(),
-        arr3(&[[[15, 19], [32, 36]], [[14, 18], [31, 35]]])
-    );
+    assert_eq!(sa2 + &sb2 + sc2.into_owned(), arr3(&[[[15, 19], [32, 36]], [[14, 18], [31, 35]]]));
 
     // Same shape
     let a = s.slice(s![..;-1, ..;2, ..]);
@@ -1798,8 +1581,7 @@ fn arithmetic_broadcast()
 }
 
 #[test]
-fn char_array()
-{
+fn char_array() {
     // test compilation & basics of non-numerical array
     let cc = ArcArray::from_iter("alphabet".chars())
         .into_shape_with_order((4, 2))
@@ -1808,8 +1590,7 @@ fn char_array()
 }
 
 #[test]
-fn scalar_ops()
-{
+fn scalar_ops() {
     let a = Array::<i32, _>::zeros((5, 5));
     let b = &a + 1;
     let c = (&a + &a + 2) - 3;
@@ -1846,8 +1627,7 @@ fn scalar_ops()
 }
 
 #[test]
-fn split_at()
-{
+fn split_at() {
     let mut a = arr2(&[[1., 2.], [3., 4.]]);
 
     {
@@ -1887,24 +1667,21 @@ fn split_at()
 
 #[test]
 #[should_panic]
-fn deny_split_at_axis_out_of_bounds()
-{
+fn deny_split_at_axis_out_of_bounds() {
     let a = arr2(&[[1., 2.], [3., 4.]]);
     a.view().split_at(Axis(2), 0);
 }
 
 #[test]
 #[should_panic]
-fn deny_split_at_index_out_of_bounds()
-{
+fn deny_split_at_index_out_of_bounds() {
     let a = arr2(&[[1., 2.], [3., 4.]]);
     a.view().split_at(Axis(1), 3);
 }
 
 #[test]
 #[cfg(feature = "std")]
-fn test_range()
-{
+fn test_range() {
     let a = Array::range(0., 5., 1.);
     assert_eq!(a.len(), 5);
     assert_eq!(a[0], 0.);
@@ -1933,8 +1710,7 @@ fn test_range()
 }
 
 #[test]
-fn test_f_order()
-{
+fn test_f_order() {
     // Test that arrays are logically equal in every way,
     // even if the underlying memory order is different
     let c = arr2(&[[1, 2, 3], [4, 5, 6]]);
@@ -1956,8 +1732,7 @@ fn test_f_order()
 }
 
 #[test]
-fn to_owned_memory_order()
-{
+fn to_owned_memory_order() {
     // check that .to_owned() makes f-contiguous arrays out of f-contiguous
     // input.
     let c = arr2(&[[1, 2, 3], [4, 5, 6]]);
@@ -1977,8 +1752,7 @@ fn to_owned_memory_order()
 }
 
 #[test]
-fn to_owned_neg_stride()
-{
+fn to_owned_neg_stride() {
     let mut c = arr2(&[[1, 2, 3], [4, 5, 6]]);
     c.slice_collapse(s![.., ..;-1]);
     let co = c.to_owned();
@@ -1987,8 +1761,7 @@ fn to_owned_neg_stride()
 }
 
 #[test]
-fn discontiguous_owned_to_owned()
-{
+fn discontiguous_owned_to_owned() {
     let mut c = arr2(&[[1, 2, 3], [4, 5, 6]]);
     c.slice_collapse(s![.., ..;2]);
 
@@ -1999,8 +1772,7 @@ fn discontiguous_owned_to_owned()
 }
 
 #[test]
-fn map_memory_order()
-{
+fn map_memory_order() {
     let a = arr3(&[[[1, 2, 3], [4, 5, 6]], [[7, 8, 9], [0, -1, -2]]]);
     let mut v = a.view();
     v.swap_axes(0, 1);
@@ -2010,16 +1782,12 @@ fn map_memory_order()
 }
 
 #[test]
-fn map_mut_with_unsharing()
-{
+fn map_mut_with_unsharing() {
     // Fortran-layout `ArcArray`.
     let a = rcarr2(&[[0, 5], [1, 6], [2, 7], [3, 8], [4, 9]]).reversed_axes();
     assert_eq!(a.shape(), &[2, 5]);
     assert_eq!(a.strides(), &[1, 2]);
-    assert_eq!(
-        a.as_slice_memory_order(),
-        Some(&[0, 5, 1, 6, 2, 7, 3, 8, 4, 9][..])
-    );
+    assert_eq!(a.as_slice_memory_order(), Some(&[0, 5, 1, 6, 2, 7, 3, 8, 4, 9][..]));
 
     // Shared reference of a portion of `a`.
     let mut b = a.clone().slice_move(s![.., ..2]);
@@ -2038,8 +1806,7 @@ fn map_mut_with_unsharing()
 }
 
 #[test]
-fn test_view_from_shape()
-{
+fn test_view_from_shape() {
     let s = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
     let a = ArrayView::from_shape((2, 3, 2), &s).unwrap();
     let mut answer = Array::from(s.to_vec())
@@ -2062,24 +1829,21 @@ fn test_view_from_shape()
 }
 
 #[test]
-fn test_view_from_shape_allow_overlap()
-{
+fn test_view_from_shape_allow_overlap() {
     let data = [0, 1, 2];
     let view = ArrayView::from_shape((2, 3).strides((0, 1)), &data).unwrap();
     assert_eq!(view, aview2(&[data; 2]));
 }
 
 #[test]
-fn test_view_mut_from_shape_deny_overlap()
-{
+fn test_view_mut_from_shape_deny_overlap() {
     let mut data = [0, 1, 2];
     let result = ArrayViewMut::from_shape((2, 3).strides((0, 1)), &mut data);
     assert_matches!(result.map_err(|e| e.kind()), Err(ErrorKind::Unsupported));
 }
 
 #[test]
-fn test_contiguous()
-{
+fn test_contiguous() {
     let c = arr3(&[[[1, 2, 3], [4, 5, 6]], [[4, 5, 6], [7, 7, 7]]]);
     assert!(c.is_standard_layout());
     assert!(c.as_slice_memory_order().is_some());
@@ -2113,8 +1877,7 @@ fn test_contiguous()
 }
 
 #[test]
-fn test_contiguous_single_element()
-{
+fn test_contiguous_single_element() {
     assert_matches!(array![1].as_slice_memory_order(), Some(&[1]));
 
     let arr1 = array![1, 2, 3];
@@ -2129,21 +1892,14 @@ fn test_contiguous_single_element()
 }
 
 #[test]
-fn test_contiguous_neg_strides()
-{
+fn test_contiguous_neg_strides() {
     let s = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
     let a = ArrayView::from_shape((2, 3, 2).strides((1, 4, 2)), &s).unwrap();
-    assert_eq!(
-        a,
-        arr3(&[[[0, 2], [4, 6], [8, 10]], [[1, 3], [5, 7], [9, 11]]])
-    );
+    assert_eq!(a, arr3(&[[[0, 2], [4, 6], [8, 10]], [[1, 3], [5, 7], [9, 11]]]));
     assert!(a.as_slice_memory_order().is_some());
 
     let mut b = a.slice(s![..;1, ..;-1, ..;-1]);
-    assert_eq!(
-        b,
-        arr3(&[[[10, 8], [6, 4], [2, 0]], [[11, 9], [7, 5], [3, 1]]])
-    );
+    assert_eq!(b, arr3(&[[[10, 8], [6, 4], [2, 0]], [[11, 9], [7, 5], [3, 1]]]));
     assert!(b.as_slice_memory_order().is_some());
 
     b.swap_axes(1, 2);
@@ -2155,10 +1911,7 @@ fn test_contiguous_neg_strides()
     assert!(b.as_slice_memory_order().is_some());
 
     let mut c = b.reversed_axes();
-    assert_eq!(
-        c,
-        arr3(&[[[11, 10], [9, 8]], [[7, 6], [5, 4]], [[3, 2], [1, 0]]])
-    );
+    assert_eq!(c, arr3(&[[[11, 10], [9, 8]], [[7, 6], [5, 4]], [[3, 2], [1, 0]]]));
     assert!(c.as_slice_memory_order().is_some());
 
     c.merge_axes(Axis(1), Axis(2));
@@ -2188,8 +1941,7 @@ fn test_contiguous_neg_strides()
 }
 
 #[test]
-fn test_swap()
-{
+fn test_swap() {
     let mut a = arr2(&[[1, 2, 3], [4, 5, 6], [7, 8, 9]]);
     let b = a.clone();
 
@@ -2202,8 +1954,7 @@ fn test_swap()
 }
 
 #[test]
-fn test_uswap()
-{
+fn test_uswap() {
     let mut a = arr2(&[[1, 2, 3], [4, 5, 6], [7, 8, 9]]);
     let b = a.clone();
 
@@ -2216,8 +1967,7 @@ fn test_uswap()
 }
 
 #[test]
-fn test_shape()
-{
+fn test_shape() {
     let data = [0, 1, 2, 3, 4, 5];
     let a = Array::from_shape_vec((1, 2, 3), data.to_vec()).unwrap();
     let b = Array::from_shape_vec((1, 2, 3).f(), data.to_vec()).unwrap();
@@ -2231,8 +1981,7 @@ fn test_shape()
 }
 
 #[test]
-fn test_view_from_shape_ptr()
-{
+fn test_view_from_shape_ptr() {
     let data = [0, 1, 2, 3, 4, 5];
     let view = unsafe { ArrayView::from_shape_ptr((2, 3), data.as_ptr()) };
     assert_eq!(view, aview2(&[[0, 1, 2], [3, 4, 5]]));
@@ -2248,8 +1997,7 @@ fn test_view_from_shape_ptr()
 #[should_panic(expected = "Unsupported")]
 #[cfg(debug_assertions)]
 #[test]
-fn test_view_from_shape_ptr_deny_neg_strides()
-{
+fn test_view_from_shape_ptr_deny_neg_strides() {
     let data = [0, 1, 2, 3, 4, 5];
     let _view = unsafe { ArrayView::from_shape_ptr((2, 3).strides((-3isize as usize, 1)), data.as_ptr()) };
 }
@@ -2257,8 +2005,7 @@ fn test_view_from_shape_ptr_deny_neg_strides()
 #[should_panic(expected = "Unsupported")]
 #[cfg(debug_assertions)]
 #[test]
-fn test_view_mut_from_shape_ptr_deny_neg_strides()
-{
+fn test_view_mut_from_shape_ptr_deny_neg_strides() {
     let mut data = [0, 1, 2, 3, 4, 5];
     let _view = unsafe { ArrayViewMut::from_shape_ptr((2, 3).strides((-3isize as usize, 1)), data.as_mut_ptr()) };
 }
@@ -2266,8 +2013,7 @@ fn test_view_mut_from_shape_ptr_deny_neg_strides()
 #[should_panic(expected = "Unsupported")]
 #[cfg(debug_assertions)]
 #[test]
-fn test_raw_view_from_shape_ptr_deny_neg_strides()
-{
+fn test_raw_view_from_shape_ptr_deny_neg_strides() {
     let data = [0, 1, 2, 3, 4, 5];
     let _view = unsafe { RawArrayView::from_shape_ptr((2, 3).strides((-3isize as usize, 1)), data.as_ptr()) };
 }
@@ -2275,15 +2021,13 @@ fn test_raw_view_from_shape_ptr_deny_neg_strides()
 #[should_panic(expected = "Unsupported")]
 #[cfg(debug_assertions)]
 #[test]
-fn test_raw_view_mut_from_shape_ptr_deny_neg_strides()
-{
+fn test_raw_view_mut_from_shape_ptr_deny_neg_strides() {
     let mut data = [0, 1, 2, 3, 4, 5];
     let _view = unsafe { RawArrayViewMut::from_shape_ptr((2, 3).strides((-3isize as usize, 1)), data.as_mut_ptr()) };
 }
 
 #[test]
-fn test_raw_view_from_shape_allow_overlap()
-{
+fn test_raw_view_from_shape_allow_overlap() {
     let data = [0, 1, 2];
     let view;
     unsafe {
@@ -2296,8 +2040,7 @@ fn test_raw_view_from_shape_allow_overlap()
 #[should_panic(expected = "strides must not allow any element")]
 #[cfg(debug_assertions)]
 #[test]
-fn test_raw_view_mut_from_shape_deny_overlap()
-{
+fn test_raw_view_mut_from_shape_deny_overlap() {
     let mut data = [0, 1, 2];
     unsafe {
         RawArrayViewMut::from_shape_ptr((2, 3).strides((0, 1)), data.as_mut_ptr());
@@ -2305,8 +2048,7 @@ fn test_raw_view_mut_from_shape_deny_overlap()
 }
 
 #[test]
-fn test_default()
-{
+fn test_default() {
     let a = <Array<f32, Ix2> as Default>::default();
     assert_eq!(a, aview2(&[[0.0; 0]; 0]));
 
@@ -2317,16 +2059,14 @@ fn test_default()
 }
 
 #[test]
-fn test_default_ixdyn()
-{
+fn test_default_ixdyn() {
     let a = <Array<f32, IxDyn> as Default>::default();
     let b = <Array<f32, _>>::zeros(IxDyn(&[0]));
     assert_eq!(a, b);
 }
 
 #[test]
-fn test_map_axis()
-{
+fn test_map_axis() {
     let a = arr2(&[[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]]);
 
     let b = a.map_axis(Axis(0), |view| view.sum());
@@ -2359,8 +2099,7 @@ fn test_map_axis()
 }
 
 #[test]
-fn test_accumulate_axis_inplace_noop()
-{
+fn test_accumulate_axis_inplace_noop() {
     let mut a = Array2::<u8>::zeros((0, 3));
     a.accumulate_axis_inplace(Axis(0), |&prev, curr| *curr += prev);
     assert_eq!(a, Array2::zeros((0, 3)));
@@ -2402,8 +2141,7 @@ fn test_accumulate_axis_inplace_nonstandard_layout() {
 }
 
 #[test]
-fn test_to_vec()
-{
+fn test_to_vec() {
     let mut a = arr2(&[[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]]);
 
     a.slice_collapse(s![..;-1, ..]);
@@ -2414,8 +2152,7 @@ fn test_to_vec()
 }
 
 #[test]
-fn test_array_clone_unalias()
-{
+fn test_array_clone_unalias() {
     let a = Array::<i32, _>::zeros((3, 3));
     let mut b = a.clone();
     b.fill(1);
@@ -2424,8 +2161,7 @@ fn test_array_clone_unalias()
 }
 
 #[test]
-fn test_array_clone_same_view()
-{
+fn test_array_clone_same_view() {
     let mut a = Array::from_iter(0..9)
         .into_shape_with_order((3, 3))
         .unwrap();
@@ -2435,8 +2171,7 @@ fn test_array_clone_same_view()
 }
 
 #[test]
-fn test_array2_from_diag()
-{
+fn test_array2_from_diag() {
     let diag = arr1(&[0, 1, 2]);
     let x = Array2::from_diag(&diag);
     let x_exp = arr2(&[[0, 0, 0], [0, 1, 0], [0, 0, 2]]);
@@ -2450,8 +2185,7 @@ fn test_array2_from_diag()
 }
 
 #[test]
-fn array_macros()
-{
+fn array_macros() {
     // array
     let a1 = array![1, 2, 3];
     assert_eq!(a1, arr1(&[1, 2, 3]));
@@ -2463,10 +2197,7 @@ fn array_macros()
     assert_eq!(a4, arr3(&[[[1, 2], [3, 4]], [[5, 6], [7, 8]]]));
 
     let s = String::from("abc");
-    let a2s = array![
-        [String::from("w"), s],
-        [String::from("x"), String::from("y")]
-    ];
+    let a2s = array![[String::from("w"), s], [String::from("x"), String::from("y")]];
     assert_eq!(a2s[[0, 0]], "w");
     assert_eq!(a2s[[0, 1]], "abc");
     assert_eq!(a2s[[1, 0]], "x");
@@ -2479,8 +2210,7 @@ fn array_macros()
 }
 
 #[cfg(test)]
-mod as_standard_layout_tests
-{
+mod as_standard_layout_tests {
     use super::*;
     use ndarray::Data;
     use std::fmt::Debug;
@@ -2499,8 +2229,7 @@ mod as_standard_layout_tests
     }
 
     #[test]
-    fn test_f_layout()
-    {
+    fn test_f_layout() {
         let shape = (2, 2).f();
         let arr = Array::<i32, Ix2>::from_shape_vec(shape, vec![1, 2, 3, 4]).unwrap();
         assert!(!arr.is_standard_layout());
@@ -2508,16 +2237,14 @@ mod as_standard_layout_tests
     }
 
     #[test]
-    fn test_c_layout()
-    {
+    fn test_c_layout() {
         let arr = Array::<i32, Ix2>::from_shape_vec((2, 2), vec![1, 2, 3, 4]).unwrap();
         assert!(arr.is_standard_layout());
         test_as_standard_layout_for(arr);
     }
 
     #[test]
-    fn test_f_layout_view()
-    {
+    fn test_f_layout_view() {
         let shape = (2, 2).f();
         let arr = Array::<i32, Ix2>::from_shape_vec(shape, vec![1, 2, 3, 4]).unwrap();
         let arr_view = arr.view();
@@ -2526,8 +2253,7 @@ mod as_standard_layout_tests
     }
 
     #[test]
-    fn test_c_layout_view()
-    {
+    fn test_c_layout_view() {
         let arr = Array::<i32, Ix2>::from_shape_vec((2, 2), vec![1, 2, 3, 4]).unwrap();
         let arr_view = arr.view();
         assert!(arr_view.is_standard_layout());
@@ -2535,16 +2261,14 @@ mod as_standard_layout_tests
     }
 
     #[test]
-    fn test_zero_dimensional_array()
-    {
+    fn test_zero_dimensional_array() {
         let arr_view = ArrayView1::<i32>::from(&[]);
         assert!(arr_view.is_standard_layout());
         test_as_standard_layout_for(arr_view);
     }
 
     #[test]
-    fn test_custom_layout()
-    {
+    fn test_custom_layout() {
         let shape = (1, 2, 3, 2).strides((12, 1, 2, 6));
         let arr_data: Vec<i32> = (0..12).collect();
         let arr = Array::<i32, Ix4>::from_shape_vec(shape, arr_data).unwrap();
@@ -2554,13 +2278,11 @@ mod as_standard_layout_tests
 }
 
 #[cfg(test)]
-mod array_cow_tests
-{
+mod array_cow_tests {
     use super::*;
 
     #[test]
-    fn test_is_variant()
-    {
+    fn test_is_variant() {
         let arr: Array<i32, Ix2> = array![[1, 2], [3, 4]];
         let arr_cow = CowArray::<i32, Ix2>::from(arr.view());
         assert!(arr_cow.is_view());
@@ -2570,8 +2292,7 @@ mod array_cow_tests
         assert!(!arr_cow.is_view());
     }
 
-    fn run_with_various_layouts(mut f: impl FnMut(Array2<i32>))
-    {
+    fn run_with_various_layouts(mut f: impl FnMut(Array2<i32>)) {
         for all in [
             Array2::from_shape_vec((7, 8), (0..7 * 8).collect()).unwrap(),
             Array2::from_shape_vec((7, 8).f(), (0..7 * 8).collect()).unwrap(),
@@ -2589,8 +2310,7 @@ mod array_cow_tests
     }
 
     #[test]
-    fn test_element_mutation()
-    {
+    fn test_element_mutation() {
         run_with_various_layouts(|arr: Array2<i32>| {
             let mut expected = arr.clone();
             expected[(1, 1)] = 2;
@@ -2610,8 +2330,7 @@ mod array_cow_tests
     }
 
     #[test]
-    fn test_clone()
-    {
+    fn test_clone() {
         run_with_various_layouts(|arr: Array2<i32>| {
             let arr_cow = CowArray::<i32, Ix2>::from(arr.view());
             let arr_cow_clone = arr_cow.clone();
@@ -2631,10 +2350,8 @@ mod array_cow_tests
 
     #[cfg_attr(miri, ignore)] // Very slow on CI/CD machines
     #[test]
-    fn test_clone_from()
-    {
-        fn assert_eq_contents_and_layout(arr1: &CowArray<'_, i32, Ix2>, arr2: &CowArray<'_, i32, Ix2>)
-        {
+    fn test_clone_from() {
+        fn assert_eq_contents_and_layout(arr1: &CowArray<'_, i32, Ix2>, arr2: &CowArray<'_, i32, Ix2>) {
             assert_eq!(arr1, arr2);
             assert_eq!(arr1.dim(), arr2.dim());
             assert_eq!(arr1.strides(), arr2.strides());
@@ -2670,8 +2387,7 @@ mod array_cow_tests
     }
 
     #[test]
-    fn test_into_owned()
-    {
+    fn test_into_owned() {
         run_with_various_layouts(|arr: Array2<i32>| {
             let before = CowArray::<i32, Ix2>::from(arr.view());
             let after = before.into_owned();
@@ -2687,79 +2403,57 @@ mod array_cow_tests
 }
 
 #[test]
-fn test_remove_index()
-{
+fn test_remove_index() {
     let mut a = arr2(&[[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]]);
     a.remove_index(Axis(0), 1);
     a.remove_index(Axis(1), 2);
     assert_eq!(a.shape(), &[3, 2]);
-    assert_eq!(a,
-        array![[1, 2],
-               [7, 8],
-               [10,11]]);
+    assert_eq!(a, array![[1, 2], [7, 8], [10, 11]]);
 
     let mut a = arr2(&[[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]]);
     a.invert_axis(Axis(0));
     a.remove_index(Axis(0), 1);
     a.remove_index(Axis(1), 2);
     assert_eq!(a.shape(), &[3, 2]);
-    assert_eq!(a,
-        array![[10,11],
-               [4, 5],
-               [1, 2]]);
+    assert_eq!(a, array![[10, 11], [4, 5], [1, 2]]);
 
     a.remove_index(Axis(1), 1);
 
     assert_eq!(a.shape(), &[3, 1]);
-    assert_eq!(a,
-        array![[10],
-               [4],
-               [1]]);
+    assert_eq!(a, array![[10], [4], [1]]);
     a.remove_index(Axis(1), 0);
     assert_eq!(a.shape(), &[3, 0]);
-    assert_eq!(a,
-        array![[],
-               [],
-               []]);
+    assert_eq!(a, array![[], [], []]);
 }
 
 #[should_panic(expected = "must be less")]
 #[test]
-fn test_remove_index_oob1()
-{
+fn test_remove_index_oob1() {
     let mut a = arr2(&[[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]]);
     a.remove_index(Axis(0), 4);
 }
 
 #[should_panic(expected = "must be less")]
 #[test]
-fn test_remove_index_oob2()
-{
+fn test_remove_index_oob2() {
     let mut a = array![[10], [4], [1]];
     a.remove_index(Axis(1), 0);
     assert_eq!(a.shape(), &[3, 0]);
-    assert_eq!(a,
-        array![[],
-               [],
-               []]);
+    assert_eq!(a, array![[], [], []]);
     a.remove_index(Axis(0), 1); // ok
-    assert_eq!(a,
-        array![[],
-               []]);
+    assert_eq!(a, array![[], []]);
     a.remove_index(Axis(1), 0); // oob
 }
 
 #[should_panic(expected = "index out of bounds")]
 #[test]
-fn test_remove_index_oob3()
-{
+fn test_remove_index_oob3() {
     let mut a = array![[10], [4], [1]];
     a.remove_index(Axis(2), 0);
 }
 
 #[test]
-fn test_split_complex_view()
-{
+fn test_split_complex_view() {
     let a = Array3::from_shape_fn((3, 4, 5), |(i, j, k)| Complex::<f32>::new(i as f32 * j as f32, k as f32));
     let Complex { re, im } = a.view().split_complex();
     assert_relative_eq!(re.sum(), 90.);
@@ -2767,8 +2461,7 @@ fn test_split_complex_view()
 }
 
 #[test]
-fn test_split_complex_view_roundtrip()
-{
+fn test_split_complex_view_roundtrip() {
     let a_re = Array3::from_shape_fn((3, 1, 5), |(i, j, _k)| i * j);
     let a_im = Array3::from_shape_fn((3, 1, 5), |(_i, _j, k)| k);
     let a = Array3::from_shape_fn((3, 1, 5), |(i, j, k)| Complex::new(a_re[[i, j, k]], a_im[[i, j, k]]));
@@ -2778,8 +2471,7 @@ fn test_split_complex_view_roundtrip()
 }
 
 #[test]
-fn test_split_complex_view_mut()
-{
+fn test_split_complex_view_mut() {
     let eye_scalar = Array2::<u32>::eye(4);
     let eye_complex = Array2::<Complex<u32>>::eye(4);
     let mut a = Array2::<Complex<u32>>::zeros((4, 4));
@@ -2790,8 +2482,7 @@ fn test_split_complex_view_mut()
 }
 
 #[test]
-fn test_split_complex_zerod()
-{
+fn test_split_complex_zerod() {
     let mut a = Array0::from_elem((), Complex::new(42, 32));
     let Complex { re, im } = a.view().split_complex();
     assert_eq!(re.get(()), Some(&42));
@@ -2802,18 +2493,16 @@ fn test_split_complex_zerod()
 }
 
 #[test]
-fn test_split_complex_permuted()
-{
+fn test_split_complex_permuted() {
     let a = Array3::from_shape_fn((3, 4, 5), |(i, j, k)| Complex::new(i * k + j, k));
     let permuted = a.view().permuted_axes([1, 0, 2]);
     let Complex { re, im } = permuted.split_complex();
-    assert_eq!(re.get((3,2,4)).unwrap(), &11);
-    assert_eq!(im.get((3,2,4)).unwrap(), &4);
+    assert_eq!(re.get((3, 2, 4)).unwrap(), &11);
+    assert_eq!(im.get((3, 2, 4)).unwrap(), &4);
 }
 
 #[test]
-fn test_split_complex_invert_axis()
-{
+fn test_split_complex_invert_axis() {
     let mut a = Array::from_shape_fn((2, 3, 2), |(i, j, k)| Complex::new(i as f64 + j as f64, i as f64 + k as f64));
     a.invert_axis(Axis(1));
     let cmplx = a.view().split_complex();
@@ -2822,16 +2511,14 @@ fn test_split_complex_invert_axis()
 }
 
 #[test]
-fn test_slice_assign()
-{
+fn test_slice_assign() {
     let mut a = array![0, 1, 2, 3, 4];
     *a.slice_mut(s![1..3]) += 1;
     assert_eq!(a, array![0, 2, 3, 3, 4]);
 }
 
 #[test]
-fn reverse_axes()
-{
+fn reverse_axes() {
     let mut a = arr2(&[[1, 2], [3, 4]]);
     a.reverse_axes();
     assert_eq!(a, arr2(&[[1, 3], [2, 4]]));
@@ -2851,8 +2538,7 @@ fn reverse_axes()
 }
 
 #[test]
-fn permute_axes()
-{
+fn permute_axes() {
     let mut a = arr2(&[[1, 2], [3, 4]]);
     a.permute_axes([1, 0]);
     assert_eq!(a, arr2(&[[1, 3], [2, 4]]));
@@ -2878,8 +2564,7 @@ fn permute_axes()
 
 #[should_panic]
 #[test]
-fn permute_axes_repeated_axis()
-{
+fn permute_axes_repeated_axis() {
     let mut a = Array::from_iter(0..24)
         .into_shape_with_order((2, 3, 4))
         .unwrap();
@@ -2888,8 +2573,7 @@ fn permute_axes_repeated_axis()
 
 #[should_panic]
 #[test]
-fn permute_axes_missing_axis()
-{
+fn permute_axes_missing_axis() {
     let mut a = Array::from_iter(0..24)
         .into_shape_with_order((2, 3, 4))
         .unwrap()
@@ -2899,8 +2583,7 @@ fn permute_axes_missing_axis()
 
 #[should_panic]
 #[test]
-fn permute_axes_oob()
-{
+fn permute_axes_oob() {
     let mut a = Array::from_iter(0..24)
         .into_shape_with_order((2, 3, 4))
         .unwrap();

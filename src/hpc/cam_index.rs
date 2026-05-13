@@ -57,21 +57,13 @@ impl GraphHV {
     /// Create a zero-initialized GraphHV.
     pub fn zero() -> Self {
         Self {
-            channels: [
-                Fingerprint::<256>::zero(),
-                Fingerprint::<256>::zero(),
-                Fingerprint::<256>::zero(),
-            ],
+            channels: [Fingerprint::<256>::zero(), Fingerprint::<256>::zero(), Fingerprint::<256>::zero()],
         }
     }
 
     /// Create a random GraphHV from a PRNG.
     pub fn random(rng: &mut SplitMix64) -> Self {
-        let mut channels = [
-            Fingerprint::<256>::zero(),
-            Fingerprint::<256>::zero(),
-            Fingerprint::<256>::zero(),
-        ];
+        let mut channels = [Fingerprint::<256>::zero(), Fingerprint::<256>::zero(), Fingerprint::<256>::zero()];
         for ch in &mut channels {
             for w in ch.words.iter_mut() {
                 *w = rng.next_u64();
@@ -90,11 +82,7 @@ impl GraphHV {
 
 impl std::fmt::Debug for GraphHV {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "GraphHV[S:{:?}, P:{:?}, O:{:?}]",
-            self.channels[0], self.channels[1], self.channels[2]
-        )
+        write!(f, "GraphHV[S:{:?}, P:{:?}, O:{:?}]", self.channels[0], self.channels[1], self.channels[2])
     }
 }
 
@@ -140,11 +128,7 @@ impl LshProjector {
     fn new(rng: &mut SplitMix64, sample_size: usize) -> Self {
         let mut masks = Vec::with_capacity(64);
         for _ in 0..64 {
-            let mut ch_masks = [
-                Fingerprint::<256>::zero(),
-                Fingerprint::<256>::zero(),
-                Fingerprint::<256>::zero(),
-            ];
+            let mut ch_masks = [Fingerprint::<256>::zero(), Fingerprint::<256>::zero(), Fingerprint::<256>::zero()];
             for _ in 0..sample_size {
                 let ch = (rng.next_u64() % 3) as usize;
                 let word = (rng.next_u64() % 256) as usize;
@@ -409,20 +393,14 @@ mod tests {
         for ch in 0..3 {
             for w in 0..256 {
                 // Flip ~5% of bits: AND 4 randoms = ~6.25% kill rate
-                let kill = flip_rng.next_u64()
-                    & flip_rng.next_u64()
-                    & flip_rng.next_u64()
-                    & flip_rng.next_u64();
+                let kill = flip_rng.next_u64() & flip_rng.next_u64() & flip_rng.next_u64() & flip_rng.next_u64();
                 noisy.channels[ch].words[w] ^= kill;
             }
         }
 
         let results = cam.query(&noisy, 10);
         let found = results.iter().any(|h| h.index == original_idx);
-        assert!(
-            found,
-            "Similar prototype not found (may be LSH collision miss — non-deterministic)"
-        );
+        assert!(found, "Similar prototype not found (may be LSH collision miss — non-deterministic)");
     }
 
     #[test]
@@ -458,10 +436,7 @@ mod tests {
 
         let hv2 = GraphHV::random(&mut rng);
         let h3 = cam.projectors[0].hash(&hv2);
-        assert_ne!(
-            h1, h3,
-            "Random vectors should produce different hashes (probabilistic)"
-        );
+        assert_ne!(h1, h3, "Random vectors should produce different hashes (probabilistic)");
     }
 
     #[test]

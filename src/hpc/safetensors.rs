@@ -21,7 +21,7 @@
 //! safetensors stores full BF16 precision, while GGUF Q8_0 introduces
 //! quantization noise. BF16→BF16 diff gives cleaner causal attribution.
 
-use super::gguf::{GgufFile, TensorInfo, GgmlType};
+use super::gguf::{GgmlType, GgufFile, TensorInfo};
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 
@@ -68,13 +68,21 @@ fn parse_safetensors_json(json: &str) -> Result<Vec<TensorInfo>, String> {
 
     while pos < len - 1 {
         // Skip whitespace and commas
-        while pos < len && (bytes[pos] == b' ' || bytes[pos] == b'\n' ||
-                            bytes[pos] == b'\r' || bytes[pos] == b'\t' ||
-                            bytes[pos] == b',') {
+        while pos < len
+            && (bytes[pos] == b' '
+                || bytes[pos] == b'\n'
+                || bytes[pos] == b'\r'
+                || bytes[pos] == b'\t'
+                || bytes[pos] == b',')
+        {
             pos += 1;
         }
-        if pos >= len - 1 { break; }
-        if bytes[pos] == b'}' { break; }
+        if pos >= len - 1 {
+            break;
+        }
+        if bytes[pos] == b'}' {
+            break;
+        }
 
         // Read key (tensor name)
         if bytes[pos] != b'"' {
@@ -84,19 +92,22 @@ fn parse_safetensors_json(json: &str) -> Result<Vec<TensorInfo>, String> {
         let key_start = pos + 1;
         pos += 1;
         while pos < len && bytes[pos] != b'"' {
-            if bytes[pos] == b'\\' { pos += 1; } // skip escaped char
+            if bytes[pos] == b'\\' {
+                pos += 1;
+            } // skip escaped char
             pos += 1;
         }
         let key = &json[key_start..pos];
         pos += 1; // skip closing "
 
         // Skip colon
-        while pos < len && bytes[pos] != b':' { pos += 1; }
+        while pos < len && bytes[pos] != b':' {
+            pos += 1;
+        }
         pos += 1; // skip :
 
         // Skip whitespace
-        while pos < len && (bytes[pos] == b' ' || bytes[pos] == b'\n' ||
-                            bytes[pos] == b'\r' || bytes[pos] == b'\t') {
+        while pos < len && (bytes[pos] == b' ' || bytes[pos] == b'\n' || bytes[pos] == b'\r' || bytes[pos] == b'\t') {
             pos += 1;
         }
 
@@ -107,12 +118,18 @@ fn parse_safetensors_json(json: &str) -> Result<Vec<TensorInfo>, String> {
                 let mut depth = 1;
                 pos += 1;
                 while pos < len && depth > 0 {
-                    if bytes[pos] == b'{' { depth += 1; }
-                    if bytes[pos] == b'}' { depth -= 1; }
+                    if bytes[pos] == b'{' {
+                        depth += 1;
+                    }
+                    if bytes[pos] == b'}' {
+                        depth -= 1;
+                    }
                     if bytes[pos] == b'"' {
                         pos += 1;
                         while pos < len && bytes[pos] != b'"' {
-                            if bytes[pos] == b'\\' { pos += 1; }
+                            if bytes[pos] == b'\\' {
+                                pos += 1;
+                            }
                             pos += 1;
                         }
                     }
@@ -125,7 +142,9 @@ fn parse_safetensors_json(json: &str) -> Result<Vec<TensorInfo>, String> {
         // Parse tensor value object: { "dtype": "...", "shape": [...], "data_offsets": [...] }
         if bytes[pos] != b'{' {
             // Not an object — skip until next comma or closing brace
-            while pos < len && bytes[pos] != b',' && bytes[pos] != b'}' { pos += 1; }
+            while pos < len && bytes[pos] != b',' && bytes[pos] != b'}' {
+                pos += 1;
+            }
             continue;
         }
 
@@ -134,12 +153,18 @@ fn parse_safetensors_json(json: &str) -> Result<Vec<TensorInfo>, String> {
         let mut depth = 1;
         pos += 1;
         while pos < len && depth > 0 {
-            if bytes[pos] == b'{' { depth += 1; }
-            if bytes[pos] == b'}' { depth -= 1; }
+            if bytes[pos] == b'{' {
+                depth += 1;
+            }
+            if bytes[pos] == b'}' {
+                depth -= 1;
+            }
             if bytes[pos] == b'"' {
                 pos += 1;
                 while pos < len && bytes[pos] != b'"' {
-                    if bytes[pos] == b'\\' { pos += 1; }
+                    if bytes[pos] == b'\\' {
+                        pos += 1;
+                    }
                     pos += 1;
                 }
             }
@@ -201,7 +226,8 @@ fn extract_json_array_u64(obj: &str, key: &str) -> Option<Vec<u64>> {
     let bracket_close = after_key.find(']')?;
     let array_str = &after_key[bracket_open + 1..bracket_close];
 
-    let values: Vec<u64> = array_str.split(',')
+    let values: Vec<u64> = array_str
+        .split(',')
         .filter_map(|s| s.trim().parse().ok())
         .collect();
 
@@ -222,7 +248,9 @@ fn extract_json_array_u64(obj: &str, key: &str) -> Option<Vec<u64>> {
 pub fn read_safetensors_header<R: Read + Seek>(reader: &mut R) -> Result<GgufFile, String> {
     // Read header size (first 8 bytes, u64 LE)
     let mut size_buf = [0u8; 8];
-    reader.read_exact(&mut size_buf).map_err(|e| format!("read header size: {}", e))?;
+    reader
+        .read_exact(&mut size_buf)
+        .map_err(|e| format!("read header size: {}", e))?;
     let header_size = u64::from_le_bytes(size_buf);
 
     if header_size > 100_000_000 {
@@ -231,7 +259,9 @@ pub fn read_safetensors_header<R: Read + Seek>(reader: &mut R) -> Result<GgufFil
 
     // Read JSON header
     let mut json_buf = vec![0u8; header_size as usize];
-    reader.read_exact(&mut json_buf).map_err(|e| format!("read header JSON: {}", e))?;
+    reader
+        .read_exact(&mut json_buf)
+        .map_err(|e| format!("read header JSON: {}", e))?;
     let json_str = String::from_utf8(json_buf).map_err(|e| format!("header not UTF-8: {}", e))?;
 
     // Parse tensors
@@ -240,8 +270,7 @@ pub fn read_safetensors_header<R: Read + Seek>(reader: &mut R) -> Result<GgufFil
     // Data starts immediately after the header
     let tensor_data_offset = 8 + header_size;
 
-    eprintln!("  Safetensors: {} tensors, data at byte {}",
-        tensors.len(), tensor_data_offset);
+    eprintln!("  Safetensors: {} tensors, data at byte {}", tensors.len(), tensor_data_offset);
 
     Ok(GgufFile {
         version: 0,
@@ -265,9 +294,7 @@ pub fn read_safetensors_header<R: Read + Seek>(reader: &mut R) -> Result<GgufFil
 /// The GGUF Q8_0 path introduces 8-bit quantization noise before projection.
 /// BF16→Base17 gives cleaner fingerprints for causal diffing.
 pub fn stream_index_safetensors_bf16<R: Read + Seek, W: std::io::Write>(
-    reader: &mut R,
-    writer: &mut W,
-    octave_stride: usize,
+    reader: &mut R, writer: &mut W, octave_stride: usize,
     callback: Option<&dyn Fn(&str, &super::gguf_indexer::LayerType, usize, usize)>,
 ) -> Result<super::gguf_indexer::IndexStats, String> {
     // Parse safetensors header (produces GgufFile-compatible struct)
@@ -276,9 +303,7 @@ pub fn stream_index_safetensors_bf16<R: Read + Seek, W: std::io::Write>(
     // Delegate to the existing BF16-direct chunked indexer
     // The indexer uses: header.tensors, header.tensor_data_offset, tensor.offset, tensor.dtype
     // All of these are populated by read_safetensors_header identically to read_gguf_header.
-    super::gguf_indexer::stream_index_gguf_bf16_with_header(
-        reader, writer, &header, octave_stride, callback,
-    )
+    super::gguf_indexer::stream_index_gguf_bf16_with_header(reader, writer, &header, octave_stride, callback)
 }
 
 // ============================================================================
@@ -387,7 +412,8 @@ mod tests {
                 .output()
                 .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
                 .unwrap_or_default();
-            let size: u64 = size_str.lines()
+            let size: u64 = size_str
+                .lines()
                 .filter(|l| l.to_lowercase().starts_with("content-length:"))
                 .last()
                 .and_then(|l| l.split(':').nth(1))
@@ -399,17 +425,22 @@ mod tests {
             let mut writer = BufWriter::new(out);
 
             let stats = stream_index_safetensors_bf16(
-                &mut reader, &mut writer, 16,
+                &mut reader,
+                &mut writer,
+                16,
                 Some(&|name, lt, orig, comp| {
                     let ratio = if comp > 0 { orig as f64 / comp as f64 } else { 0.0 };
                     eprintln!("  {:50} {:>12} → {:>8} ({:.0}×)", name, orig, comp, ratio);
                 }),
-            ).expect("safetensors indexing failed");
+            )
+            .expect("safetensors indexing failed");
 
             drop(writer);
-            eprintln!("  → {:.2} MB, {} tensors",
+            eprintln!(
+                "  → {:.2} MB, {} tensors",
                 std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0) as f64 / 1e6,
-                stats.tensors_indexed);
+                stats.tensors_indexed
+            );
         }
     }
 
@@ -417,10 +448,7 @@ mod tests {
 
     /// Helper: index safetensors shards from a HuggingFace repo.
     fn index_safetensors_shards(
-        repo: &str,
-        filenames: &[&str],
-        out_prefix: &str,
-        octave_stride: usize,
+        repo: &str, filenames: &[&str], out_prefix: &str, octave_stride: usize,
     ) -> Vec<super::super::gguf_indexer::IndexStats> {
         use super::super::http_reader::HttpRangeReader;
         use std::io::BufWriter;
@@ -449,7 +477,8 @@ mod tests {
                 .output()
                 .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
                 .unwrap_or_default();
-            let size: u64 = size_str.lines()
+            let size: u64 = size_str
+                .lines()
                 .filter(|l| l.to_lowercase().starts_with("content-length:"))
                 .last()
                 .and_then(|l| l.split(':').nth(1))
@@ -461,17 +490,24 @@ mod tests {
             let mut writer = BufWriter::new(out);
 
             let stats = super::stream_index_safetensors_bf16(
-                &mut reader, &mut writer, octave_stride,
+                &mut reader,
+                &mut writer,
+                octave_stride,
                 Some(&|name, lt, orig, comp| {
                     let ratio = if comp > 0 { orig as f64 / comp as f64 } else { 0.0 };
                     eprintln!("  {:50} {:>12} → {:>8} ({:.0}×)", name, orig, comp, ratio);
                 }),
-            ).expect("safetensors indexing failed");
+            )
+            .expect("safetensors indexing failed");
 
             drop(writer);
             let out_size = std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
-            eprintln!("  → {:.2} MB, {} tensors, {:.0}×",
-                out_size as f64 / 1e6, stats.tensors_indexed, stats.overall_ratio());
+            eprintln!(
+                "  → {:.2} MB, {} tensors, {:.0}×",
+                out_size as f64 / 1e6,
+                stats.tensors_indexed,
+                stats.overall_ratio()
+            );
 
             all_stats.push(stats);
         }
@@ -483,12 +519,13 @@ mod tests {
     #[ignore] // Streams ~35 GB from HuggingFace
     fn test_stream_index_hidream_transformer() {
         let repo = "HiDream-ai/HiDream-I1-Full";
-        let shards: Vec<&str> = (1..=7).map(|i| {
-            // Leak the string so it lives long enough — test only
-            Box::leak(format!(
-                "transformer/diffusion_pytorch_model-{:05}-of-00007.safetensors", i
-            ).into_boxed_str()) as &str
-        }).collect();
+        let shards: Vec<&str> = (1..=7)
+            .map(|i| {
+                // Leak the string so it lives long enough — test only
+                Box::leak(format!("transformer/diffusion_pytorch_model-{:05}-of-00007.safetensors", i).into_boxed_str())
+                    as &str
+            })
+            .collect();
 
         let stats = index_safetensors_shards(repo, &shards, "/tmp/hidream_transformer", 16);
 
@@ -513,33 +550,29 @@ mod tests {
 
         // CLIP-L
         eprintln!("━━━ CLIP-L ━━━");
-        index_safetensors_shards(repo,
-            &["text_encoder/model.safetensors"],
-            "/tmp/hidream_clip_l", 16);
+        index_safetensors_shards(repo, &["text_encoder/model.safetensors"], "/tmp/hidream_clip_l", 16);
 
         // CLIP-G
         eprintln!("━━━ CLIP-G ━━━");
-        index_safetensors_shards(repo,
-            &["text_encoder_2/model.safetensors"],
-            "/tmp/hidream_clip_g", 16);
+        index_safetensors_shards(repo, &["text_encoder_2/model.safetensors"], "/tmp/hidream_clip_g", 16);
 
         // Llama-3.1-8B text encoder (2 shards)
         eprintln!("━━━ Llama-3.1-8B (HiDream text encoder) ━━━");
-        index_safetensors_shards(repo,
-            &["text_encoder_3/model-00001-of-00002.safetensors",
-              "text_encoder_3/model-00002-of-00002.safetensors"],
-            "/tmp/hidream_llama_enc", 16);
+        index_safetensors_shards(
+            repo,
+            &["text_encoder_3/model-00001-of-00002.safetensors", "text_encoder_3/model-00002-of-00002.safetensors"],
+            "/tmp/hidream_llama_enc",
+            16,
+        );
     }
 
     #[test]
     #[ignore] // Streams ~16 GB (base Llama-3.1-8B)
     fn test_stream_index_llama31_8b_base() {
         let repo = "unsloth/Llama-3.1-8B";
-        let shards: Vec<&str> = (1..=4).map(|i| {
-            Box::leak(format!(
-                "model-{:05}-of-00004.safetensors", i
-            ).into_boxed_str()) as &str
-        }).collect();
+        let shards: Vec<&str> = (1..=4)
+            .map(|i| Box::leak(format!("model-{:05}-of-00004.safetensors", i).into_boxed_str()) as &str)
+            .collect();
 
         index_safetensors_shards(repo, &shards, "/tmp/llama31_8b_base", 16);
     }
@@ -547,7 +580,7 @@ mod tests {
     #[test]
     #[ignore] // Requires: HiDream Llama enc + base Llama indexed
     fn test_hidream_llama_diff() {
-        use super::super::causal_diff::{causal_diff, print_diff_summary, find_reasoning_scaffold};
+        use super::super::causal_diff::{causal_diff, find_reasoning_scaffold, print_diff_summary};
 
         // Compare HiDream's Llama-3.1-8B (image-conditioned) vs base
         // Shards need to be concatenated or diffed per-shard
@@ -568,7 +601,9 @@ mod tests {
             let (edges, stats) = causal_diff(base, dist, 100).expect("diff failed");
             print_diff_summary(
                 &format!("Llama-3.1-8B: base vs HiDream image encoder ({})", label),
-                &stats, edges.len());
+                &stats,
+                edges.len(),
+            );
 
             let scaffold = find_reasoning_scaffold(&edges, 0.3);
             eprintln!("  Visual grounding scaffold blocks: {:?}", scaffold);
@@ -580,9 +615,12 @@ mod tests {
         if total_compared > 0 {
             eprintln!();
             eprintln!("━━━ Cross-Domain Insight ━━━");
-            eprintln!("  Total rows shifted: {}/{} ({:.1}%)",
-                total_shifted, total_compared,
-                total_shifted as f64 / total_compared as f64 * 100.0);
+            eprintln!(
+                "  Total rows shifted: {}/{} ({:.1}%)",
+                total_shifted,
+                total_compared,
+                total_shifted as f64 / total_compared as f64 * 100.0
+            );
             eprintln!("  → These shifts = what 'visual grounding' looks like in LLM weight space");
         }
     }
@@ -594,12 +632,7 @@ mod tests {
     fn test_stream_index_reader_lm() {
         // jinaai/reader-lm-1.5b: 1 shard, 1.54B params, 3.1 GB BF16
         // Produces ~30 MB bgz7 for local HTML→Markdown palette routing
-        index_safetensors_shards(
-            "jinaai/reader-lm-1.5b",
-            &["model.safetensors"],
-            "/tmp/reader_lm_1_5b",
-            16,
-        );
+        index_safetensors_shards("jinaai/reader-lm-1.5b", &["model.safetensors"], "/tmp/reader_lm_1_5b", 16);
     }
 
     // ── BGE-M3: multilingual embedding model (GGUF path) ──
@@ -639,16 +672,23 @@ mod tests {
         let mut writer = BufWriter::new(out);
 
         let stats = super::super::gguf_indexer::stream_index_gguf_bf16(
-            &mut reader, &mut writer, 16,
+            &mut reader,
+            &mut writer,
+            16,
             Some(&|name, _lt, orig, comp| {
                 let ratio = if comp > 0 { orig as f64 / comp as f64 } else { 0.0 };
                 eprintln!("  {:50} {:>12} → {:>8} ({:.0}×)", name, orig, comp, ratio);
             }),
-        ).expect("GGUF indexing failed");
+        )
+        .expect("GGUF indexing failed");
 
         drop(writer);
         let out_size = std::fs::metadata(out_path).map(|m| m.len()).unwrap_or(0);
-        eprintln!("  → {:.2} MB, {} tensors, {:.0}×",
-            out_size as f64 / 1e6, stats.tensors_indexed, stats.overall_ratio());
+        eprintln!(
+            "  → {:.2} MB, {} tensors, {:.0}×",
+            out_size as f64 / 1e6,
+            stats.tensors_indexed,
+            stats.overall_ratio()
+        );
     }
 }

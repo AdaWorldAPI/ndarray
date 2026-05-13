@@ -80,8 +80,7 @@ impl PropertyMask {
     /// Test a single block state against the compiled mask.
     #[inline(always)]
     pub fn test(&self, block_state: u64) -> bool {
-        (block_state & self.and_mask) == self.and_expect
-            && (block_state & self.andn_mask) == 0
+        (block_state & self.and_mask) == self.and_expect && (block_state & self.andn_mask) == 0
     }
 
     /// Batch test up to 4096 block states (one chunk section).
@@ -254,9 +253,7 @@ impl PropertyMask {
 
             for lane in 0..4usize {
                 let val = states[base + lane];
-                if (val & self.and_mask) == self.and_expect
-                    && (val & self.andn_mask) == 0
-                {
+                if (val & self.and_mask) == self.and_expect && (val & self.andn_mask) == 0 {
                     let idx = base + lane;
                     result[idx / 64] |= 1u64 << (idx % 64);
                 }
@@ -424,9 +421,9 @@ mod tests {
     fn test_require_value() {
         // bits [2..4] must equal 2 (binary 10)
         let m = PropertyMask::new().require_value(2, 2, 2);
-        assert!(m.test(0b1000));       // field = 10 => 2
-        assert!(!m.test(0b0100));      // field = 01 => 1
-        assert!(!m.test(0b1100));      // field = 11 => 3
+        assert!(m.test(0b1000)); // field = 10 => 2
+        assert!(!m.test(0b0100)); // field = 01 => 1
+        assert!(!m.test(0b1100)); // field = 11 => 3
         assert!(m.test(0b11111_1000)); // field still 10
     }
 
@@ -605,11 +602,7 @@ mod tests {
         assert_eq!(result.counts.len(), masks.len());
         for (m_idx, mask) in masks.iter().enumerate() {
             let expected = mask.count_section(&states);
-            assert_eq!(
-                result.counts[m_idx], expected,
-                "multi-mask parity mismatch for mask index {}",
-                m_idx
-            );
+            assert_eq!(result.counts[m_idx], expected, "multi-mask parity mismatch for mask index {}", m_idx);
         }
     }
 }

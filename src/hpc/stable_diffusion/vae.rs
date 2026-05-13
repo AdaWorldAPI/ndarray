@@ -41,8 +41,7 @@ pub fn decode(latent: &[f32], h: usize, w: usize) -> Vec<f32> {
             for ow in 0..out_w {
                 let ih = oh / VAE_SCALE_FACTOR;
                 let iw = ow / VAE_SCALE_FACTOR;
-                upsampled[c * out_h * out_w + oh * out_w + ow] =
-                    scaled[c * h * w + ih * w + iw];
+                upsampled[c * out_h * out_w + oh * out_w + ow] = scaled[c * h * w + ih * w + iw];
             }
         }
     }
@@ -94,16 +93,16 @@ mod tests {
         let tensor = vec![0.0f32, 0.5, 1.0, 0.0, 0.5, 1.0, 0.0, 0.5, 1.0]; // 3ch, 1×3
         let rgb = to_rgb_u8(&tensor, 3, 1, 3);
         assert_eq!(rgb.len(), 9);
-        assert_eq!(rgb[0], 0);   // R of pixel 0
-        assert_eq!(rgb[1], 0);   // G of pixel 0
-        assert_eq!(rgb[2], 0);   // B of pixel 0
+        assert_eq!(rgb[0], 0); // R of pixel 0
+        assert_eq!(rgb[1], 0); // G of pixel 0
+        assert_eq!(rgb[2], 0); // B of pixel 0
     }
 
     #[test]
     fn test_to_rgb_u8_clamp() {
         let tensor = vec![-1.0f32, 2.0, 0.5]; // 3ch, 1×1
         let rgb = to_rgb_u8(&tensor, 3, 1, 1);
-        assert_eq!(rgb[0], 0);   // clamped from -1
+        assert_eq!(rgb[0], 0); // clamped from -1
         assert_eq!(rgb[1], 255); // clamped from 2
         assert_eq!(rgb[2], 127); // 0.5 * 255 = 127.5 → 127
     }

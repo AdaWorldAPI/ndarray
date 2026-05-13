@@ -28,19 +28,19 @@ use super::bands;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Mode {
     /// Ionian (major): W-W-H-W-W-W-H — bright, resolved.
-    Ionian,     // Major: W-W-H-W-W-W-H → bright, resolved
+    Ionian, // Major: W-W-H-W-W-W-H → bright, resolved
     /// Dorian: minor with natural 6th — warm, jazz.
-    Dorian,     // Minor with ♮6: warm, jazz
+    Dorian, // Minor with ♮6: warm, jazz
     /// Phrygian: minor with flat 2nd — dark, flamenco.
-    Phrygian,   // Minor with ♭2: dark, flamenco
+    Phrygian, // Minor with ♭2: dark, flamenco
     /// Lydian: major with sharp 4th — dreamy, floating.
-    Lydian,     // Major with ♯4: dreamy, floating
+    Lydian, // Major with ♯4: dreamy, floating
     /// Mixolydian: major with flat 7th — dominant, bluesy.
     Mixolydian, // Major with ♭7: dominant, bluesy
     /// Aeolian (natural minor) — sad, reflective.
-    Aeolian,    // Natural minor: sad, reflective
+    Aeolian, // Natural minor: sad, reflective
     /// Locrian (diminished) — unstable, tense.
-    Locrian,    // Diminished: unstable, tense
+    Locrian, // Diminished: unstable, tense
 }
 
 impl Mode {
@@ -51,13 +51,13 @@ impl Mode {
     ///   smaller stride = finer sampling = tighter detail
     pub fn stride(&self) -> u32 {
         match self {
-            Mode::Ionian     => 8,  // Gate: broad, confident
-            Mode::Dorian     => 5,  // V: warm content
-            Mode::Phrygian   => 3,  // QK: tight, exotic
-            Mode::Lydian     => 2,  // Up: fine, dreamy
-            Mode::Mixolydian => 4,  // Down: driving compression
-            Mode::Aeolian    => 3,  // QK: minor, offset start
-            Mode::Locrian    => 8,  // Gate: unstable, offset start
+            Mode::Ionian => 8,     // Gate: broad, confident
+            Mode::Dorian => 5,     // V: warm content
+            Mode::Phrygian => 3,   // QK: tight, exotic
+            Mode::Lydian => 2,     // Up: fine, dreamy
+            Mode::Mixolydian => 4, // Down: driving compression
+            Mode::Aeolian => 3,    // QK: minor, offset start
+            Mode::Locrian => 8,    // Gate: unstable, offset start
         }
     }
 
@@ -68,13 +68,13 @@ impl Mode {
     /// transposing the key.
     pub fn start_offset(&self) -> u32 {
         match self {
-            Mode::Ionian     => 0,
-            Mode::Dorian     => 2,
-            Mode::Phrygian   => 4,
-            Mode::Lydian     => 5,
+            Mode::Ionian => 0,
+            Mode::Dorian => 2,
+            Mode::Phrygian => 4,
+            Mode::Lydian => 5,
             Mode::Mixolydian => 7,
-            Mode::Aeolian    => 9,
-            Mode::Locrian    => 11,
+            Mode::Aeolian => 9,
+            Mode::Locrian => 11,
         }
     }
 
@@ -84,13 +84,13 @@ impl Mode {
     /// This is more accurate than 12-EDO for both fifths and thirds.
     pub fn intervals_17edo(&self) -> [u8; 7] {
         match self {
-            Mode::Ionian     => [3, 3, 2, 3, 3, 3, 0], // W W H W W W (last H implicit)
-            Mode::Dorian     => [3, 2, 3, 3, 3, 2, 1], // W H W W W H W-1
-            Mode::Phrygian   => [2, 3, 3, 3, 2, 3, 1], // H W W W H W W-1
-            Mode::Lydian     => [3, 3, 3, 2, 3, 3, 0], // W W W H W W (last H implicit)
+            Mode::Ionian => [3, 3, 2, 3, 3, 3, 0],     // W W H W W W (last H implicit)
+            Mode::Dorian => [3, 2, 3, 3, 3, 2, 1],     // W H W W W H W-1
+            Mode::Phrygian => [2, 3, 3, 3, 2, 3, 1],   // H W W W H W W-1
+            Mode::Lydian => [3, 3, 3, 2, 3, 3, 0],     // W W W H W W (last H implicit)
             Mode::Mixolydian => [3, 3, 2, 3, 3, 2, 1], // W W H W W H W-1
-            Mode::Aeolian    => [3, 2, 3, 3, 2, 3, 1], // W H W W H W W-1
-            Mode::Locrian    => [2, 3, 3, 2, 3, 3, 1], // H W W H W W W-1
+            Mode::Aeolian => [3, 2, 3, 3, 2, 3, 1],    // W H W W H W W-1
+            Mode::Locrian => [2, 3, 3, 2, 3, 3, 1],    // H W W H W W W-1
         }
     }
 
@@ -101,13 +101,13 @@ impl Mode {
     /// high tension → less skipping (preserve detail).
     pub fn tension(&self) -> f32 {
         match self {
-            Mode::Ionian     => 0.1,  // most resolved
-            Mode::Lydian     => 0.2,  // floating but stable
-            Mode::Mixolydian => 0.3,  // dominant tension
-            Mode::Dorian     => 0.4,  // warm but minor
-            Mode::Aeolian    => 0.6,  // sad minor
-            Mode::Phrygian   => 0.8,  // dark, exotic
-            Mode::Locrian    => 1.0,  // maximum instability
+            Mode::Ionian => 0.1,     // most resolved
+            Mode::Lydian => 0.2,     // floating but stable
+            Mode::Mixolydian => 0.3, // dominant tension
+            Mode::Dorian => 0.4,     // warm but minor
+            Mode::Aeolian => 0.6,    // sad minor
+            Mode::Phrygian => 0.8,   // dark, exotic
+            Mode::Locrian => 1.0,    // maximum instability
         }
     }
 }
@@ -127,35 +127,53 @@ pub fn mode_band_weights(mode: Mode) -> [f32; bands::N_BANDS] {
     match mode {
         Mode::Ionian => {
             // Bright: boost presence (bands 10-14, ~2-5 kHz)
-            for i in 10..=14 { weights[i] = 1.3; }
+            for i in 10..=14 {
+                weights[i] = 1.3;
+            }
         }
         Mode::Dorian => {
             // Warm: boost low-mid (bands 4-8, ~800-1800 Hz)
-            for i in 4..=8 { weights[i] = 1.2; }
+            for i in 4..=8 {
+                weights[i] = 1.2;
+            }
         }
         Mode::Phrygian => {
             // Dark: boost sub-bass (bands 0-3), cut presence
-            for i in 0..=3 { weights[i] = 1.4; }
-            for i in 10..=14 { weights[i] = 0.7; }
+            for i in 0..=3 {
+                weights[i] = 1.4;
+            }
+            for i in 10..=14 {
+                weights[i] = 0.7;
+            }
         }
         Mode::Lydian => {
             // Shimmering: boost harmonics (bands 14-18, ~5-13 kHz)
-            for i in 14..=18 { weights[i] = 1.3; }
+            for i in 14..=18 {
+                weights[i] = 1.3;
+            }
         }
         Mode::Mixolydian => {
             // Driving: boost fundamental + mid (bands 2-6, ~400-1400 Hz)
-            for i in 2..=6 { weights[i] = 1.25; }
+            for i in 2..=6 {
+                weights[i] = 1.25;
+            }
         }
         Mode::Aeolian => {
             // Sad: slight low emphasis, gentle roll-off
-            for i in 0..=5 { weights[i] = 1.15; }
-            for i in 16..=20 { weights[i] = 0.85; }
+            for i in 0..=5 {
+                weights[i] = 1.15;
+            }
+            for i in 16..=20 {
+                weights[i] = 0.85;
+            }
         }
         Mode::Locrian => {
             // Unstable: emphasize dissonant regions
             weights[6] = 1.4; // ~1400 Hz tritone region
             weights[13] = 1.3; // ~3400 Hz
-            for i in 0..=2 { weights[i] = 0.8; } // weaken root
+            for i in 0..=2 {
+                weights[i] = 0.8;
+            } // weaken root
         }
     }
 
@@ -182,21 +200,21 @@ pub fn apply_mode(energies: &mut [f32; bands::N_BANDS], mode: Mode) {
 /// create natural-sounding prosody contours.
 pub fn circle_of_fifths_progression() -> Vec<(Mode, u32)> {
     vec![
-        (Mode::Ionian, 0),      // I  (tonic, resolved)
-        (Mode::Lydian, 5),      // IV (subdominant, floating)
-        (Mode::Mixolydian, 7),  // V  (dominant, driving)
-        (Mode::Ionian, 0),      // I  (return to tonic)
+        (Mode::Ionian, 0),     // I  (tonic, resolved)
+        (Mode::Lydian, 5),     // IV (subdominant, floating)
+        (Mode::Mixolydian, 7), // V  (dominant, driving)
+        (Mode::Ionian, 0),     // I  (return to tonic)
     ]
 }
 
 /// Minor progression: i → iv → VI → V → i
 pub fn minor_progression() -> Vec<(Mode, u32)> {
     vec![
-        (Mode::Aeolian, 0),     // i   (tonic minor)
-        (Mode::Dorian, 5),      // iv  (subdominant, warm)
-        (Mode::Ionian, 8),      // VI  (relative major, bright)
-        (Mode::Mixolydian, 7),  // V   (dominant, driving)
-        (Mode::Aeolian, 0),     // i   (return)
+        (Mode::Aeolian, 0),    // i   (tonic minor)
+        (Mode::Dorian, 5),     // iv  (subdominant, warm)
+        (Mode::Ionian, 8),     // VI  (relative major, bright)
+        (Mode::Mixolydian, 7), // V   (dominant, driving)
+        (Mode::Aeolian, 0),    // i   (return)
     ]
 }
 
@@ -286,8 +304,8 @@ impl OctaveBand {
 
         // Build harmonic pattern with given decay rate
         let pattern = [
-            1.0,                          // fundamental (always 1.0)
-            harmonic_decay,               // 2nd harmonic
+            1.0,                             // fundamental (always 1.0)
+            harmonic_decay,                  // 2nd harmonic
             harmonic_decay * harmonic_decay, // 3rd harmonic
         ];
 
@@ -295,7 +313,10 @@ impl OctaveBand {
         let sum: f32 = pattern.iter().sum();
         let norm = [pattern[0] / sum * 3.0, pattern[1] / sum * 3.0, pattern[2] / sum * 3.0];
 
-        OctaveBand { pattern: norm, octave: octave.min(6) }
+        OctaveBand {
+            pattern: norm,
+            octave: octave.min(6),
+        }
     }
 
     /// Compress a full 21-band energy vector to octave bands.
@@ -308,7 +329,10 @@ impl OctaveBand {
     /// BUT: if many frames share the same pattern (same pitch class),
     /// store pattern ONCE + per-frame octave offset = massive savings.
     pub fn compress_to_octaves(energies: &[f32; bands::N_BANDS]) -> [OctaveBand; 7] {
-        let mut result = [OctaveBand { pattern: [1.0; 3], octave: 0 }; 7];
+        let mut result = [OctaveBand {
+            pattern: [1.0; 3],
+            octave: 0,
+        }; 7];
         for oct in 0..7 {
             let start = oct * Self::BANDS_PER_OCTAVE;
             let mut pattern = [0.0f32; 3];
@@ -321,9 +345,15 @@ impl OctaveBand {
             }
             // Normalize
             if sum > 1e-10 {
-                for p in &mut pattern { *p /= sum; *p *= 3.0; }
+                for p in &mut pattern {
+                    *p /= sum;
+                    *p *= 3.0;
+                }
             }
-            result[oct] = OctaveBand { pattern, octave: oct as u8 };
+            result[oct] = OctaveBand {
+                pattern,
+                octave: oct as u8,
+            };
         }
         result
     }
@@ -373,11 +403,11 @@ mod tests {
     #[test]
     fn mode_stride_matches_highheelbgz() {
         // Verify stride→role mapping is consistent with highheelbgz::TensorRole
-        assert_eq!(Mode::Ionian.stride(), 8);     // Gate
-        assert_eq!(Mode::Dorian.stride(), 5);      // V
-        assert_eq!(Mode::Phrygian.stride(), 3);    // QK
-        assert_eq!(Mode::Lydian.stride(), 2);       // Up
-        assert_eq!(Mode::Mixolydian.stride(), 4);  // Down
+        assert_eq!(Mode::Ionian.stride(), 8); // Gate
+        assert_eq!(Mode::Dorian.stride(), 5); // V
+        assert_eq!(Mode::Phrygian.stride(), 3); // QK
+        assert_eq!(Mode::Lydian.stride(), 2); // Up
+        assert_eq!(Mode::Mixolydian.stride(), 4); // Down
     }
 
     #[test]
@@ -390,12 +420,18 @@ mod tests {
     #[test]
     fn band_weights_centered() {
         // All mode weights should average close to 1.0
-        for mode in [Mode::Ionian, Mode::Dorian, Mode::Phrygian,
-                     Mode::Lydian, Mode::Mixolydian, Mode::Aeolian, Mode::Locrian] {
+        for mode in [
+            Mode::Ionian,
+            Mode::Dorian,
+            Mode::Phrygian,
+            Mode::Lydian,
+            Mode::Mixolydian,
+            Mode::Aeolian,
+            Mode::Locrian,
+        ] {
             let weights = mode_band_weights(mode);
             let avg: f32 = weights.iter().sum::<f32>() / bands::N_BANDS as f32;
-            assert!(avg > 0.8 && avg < 1.3,
-                "Mode {:?} weights avg {:.2} — should be ~1.0", mode, avg);
+            assert!(avg > 0.8 && avg < 1.3, "Mode {:?} weights avg {:.2} — should be ~1.0", mode, avg);
         }
     }
 
@@ -410,8 +446,15 @@ mod tests {
     #[test]
     fn intervals_sum_to_17() {
         // Each mode's intervals should sum close to 17 (one octave in 17-EDO)
-        for mode in [Mode::Ionian, Mode::Dorian, Mode::Phrygian,
-                     Mode::Lydian, Mode::Mixolydian, Mode::Aeolian, Mode::Locrian] {
+        for mode in [
+            Mode::Ionian,
+            Mode::Dorian,
+            Mode::Phrygian,
+            Mode::Lydian,
+            Mode::Mixolydian,
+            Mode::Aeolian,
+            Mode::Locrian,
+        ] {
             let intervals = mode.intervals_17edo();
             let sum: u8 = intervals.iter().sum();
             // 7 intervals sum to 17 (W=3, H=2): 5W+2H = 5×3+2×2 = 19?
@@ -451,8 +494,11 @@ mod tests {
         energies[11] = 0.25;
         let octaves = OctaveBand::compress_to_octaves(&energies);
         // Octave 3 (bands 9-11) should have the most energy in pattern[0]
-        assert!(octaves[3].pattern[0] > octaves[3].pattern[2],
-            "Octave 3 pattern should peak at fundamental: {:?}", octaves[3].pattern);
+        assert!(
+            octaves[3].pattern[0] > octaves[3].pattern[2],
+            "Octave 3 pattern should peak at fundamental: {:?}",
+            octaves[3].pattern
+        );
         // The fundamental (1.0) should have ~57% of the energy (1.0 / 1.75 × 3)
         assert!(octaves[3].pattern[0] > 1.5, "Fundamental weight should be > 1.5: {}", octaves[3].pattern[0]);
     }

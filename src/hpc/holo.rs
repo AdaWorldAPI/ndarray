@@ -20,7 +20,6 @@ use std::f64::consts::PI;
 // Binding = addition mod 256 (VPADDB). Unbinding = subtraction mod 256 (VPSUBB).
 // Unlike binary XOR, phase operations preserve spatial locality.
 
-
 // -------------------------------------------------------------------------
 // Operation 1: phase_bind_i8
 // -------------------------------------------------------------------------
@@ -91,11 +90,7 @@ pub fn wasserstein_sorted_i8(a: &[u8], b: &[u8]) -> u64 {
 /// Stage 2: sample 1/4, reject at 2σ
 /// Stage 3: full Wasserstein on survivors
 pub fn wasserstein_search_adaptive(
-    query: &[u8],
-    database: &[u8],
-    vec_len: usize,
-    n: usize,
-    max_distance: u64,
+    query: &[u8], database: &[u8], vec_len: usize, n: usize, max_distance: u64,
 ) -> Vec<(usize, u64)> {
     let mut results = Vec::new();
     let sample_16 = vec_len / 16;
@@ -642,10 +637,7 @@ mod phase_tests {
         let (sb, _) = sort_phase_vector(&b);
 
         let w = wasserstein_sorted_i8(&sa, &sb);
-        assert!(
-            w > 0,
-            "distinct random vectors should have nonzero Wasserstein"
-        );
+        assert!(w > 0, "distinct random vectors should have nonzero Wasserstein");
     }
 
     #[test]
@@ -736,8 +728,6 @@ mod phase_tests {
 // which uses **u8** (unsigned, each byte = an angle on [0°, 360°)).
 // Binary containers (META, BTREE) remain unchanged.
 
-
-
 // ============================================================================
 // Constants
 // ============================================================================
@@ -746,9 +736,7 @@ mod phase_tests {
 ///
 /// If f1=5 and f2=10, then f2 is the 2nd harmonic of f1 — they interfere.
 /// Fibonacci spacing avoids integer-ratio relationships between any pair.
-pub const CARRIER_FREQUENCIES: [u16; 16] = [
-    1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 987, 1024,
-];
+pub const CARRIER_FREQUENCIES: [u16; 16] = [1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 987, 1024];
 
 /// Per-carrier amplitude. With 16 carriers superimposed in i8 (-128..+127):
 ///   max amplitude per carrier = 127 / 16 ≈ 7
@@ -849,13 +837,7 @@ impl CarrierBasis {
 ///
 /// Uses float per element for phase precision. Maps to VCVTDQ2PS + VMULPS +
 /// VCVTPS2DQ on AVX-512 (~128 instructions for 2048 bytes).
-pub fn carrier_encode(
-    container: &mut [i8],
-    basis: &CarrierBasis,
-    freq_idx: u8,
-    phase_offset: f32,
-    amplitude: f32,
-) {
+pub fn carrier_encode(container: &mut [i8], basis: &CarrierBasis, freq_idx: u8, phase_offset: f32, amplitude: f32) {
     assert_eq!(container.len(), 2048);
     assert!((freq_idx as usize) < CARRIER_FREQUENCIES.len());
 
@@ -1090,23 +1072,15 @@ impl CarrierRecord {
     /// 4-channel hybrid sweep.
     /// META + BTREE: Hamming (same as CogRecordV3).
     /// CAM + EMBED: carrier L1 distance.
-    pub fn hybrid_sweep(
-        &self,
-        other: &Self,
-        thresholds: &CarrierThresholds,
-    ) -> Option<CarrierDistances> {
+    pub fn hybrid_sweep(&self, other: &Self, thresholds: &CarrierThresholds) -> Option<CarrierDistances> {
         // Stage 1: META — binary Hamming (cheapest rejection)
-        let meta_dist =
-            super::bitwise::hamming_distance_raw(self.meta.as_slice(), other.meta.as_slice());
+        let meta_dist = super::bitwise::hamming_distance_raw(self.meta.as_slice(), other.meta.as_slice());
         if meta_dist > thresholds.meta_hamming {
             return None;
         }
 
         // Stage 2: BTREE — binary Hamming
-        let btree_dist = super::bitwise::hamming_distance_raw(
-            self.btree.as_slice(),
-            other.btree.as_slice(),
-        );
+        let btree_dist = super::bitwise::hamming_distance_raw(self.btree.as_slice(), other.btree.as_slice());
         if btree_dist > thresholds.btree_hamming {
             return None;
         }
@@ -1132,11 +1106,7 @@ impl CarrierRecord {
     }
 
     /// Batch hybrid sweep against a database of CarrierRecords.
-    pub fn hybrid_search(
-        &self,
-        database: &[Self],
-        thresholds: &CarrierThresholds,
-    ) -> Vec<(usize, CarrierDistances)> {
+    pub fn hybrid_search(&self, database: &[Self], thresholds: &CarrierThresholds) -> Vec<(usize, CarrierDistances)> {
         database
             .iter()
             .enumerate()
@@ -1240,8 +1210,7 @@ mod carrier_tests {
                     .zip(basis.basis_cos[j].iter())
                     .map(|(&a, &b)| a as i64 * b as i64)
                     .sum();
-                let normalized = (dot as f64).abs()
-                    / (2048.0 * CARRIER_AMPLITUDE as f64 * CARRIER_AMPLITUDE as f64);
+                let normalized = (dot as f64).abs() / (2048.0 * CARRIER_AMPLITUDE as f64 * CARRIER_AMPLITUDE as f64);
                 assert!(
                     normalized < 0.15,
                     "cos[{}] and cos[{}] should be orthogonal, dot/norm = {:.4}",
@@ -1287,11 +1256,7 @@ mod carrier_tests {
         let mut waveform = vec![0i8; 2048];
         carrier_encode(&mut waveform, &basis, 0, 0.0, CARRIER_AMPLITUDE);
         let (phase, amp) = carrier_decode(&waveform, &basis, 0);
-        assert!(
-            phase_error(phase, 0.0) < 0.15,
-            "phase=0 recovery: got {:.4}",
-            phase
-        );
+        assert!(phase_error(phase, 0.0) < 0.15, "phase=0 recovery: got {:.4}", phase);
         assert!(amp > 1.0, "amplitude should be significant, got {:.4}", amp);
     }
 
@@ -1299,13 +1264,7 @@ mod carrier_tests {
     fn test_encode_decode_phase_pi() {
         let basis = CarrierBasis::new();
         let mut waveform = vec![0i8; 2048];
-        carrier_encode(
-            &mut waveform,
-            &basis,
-            0,
-            std::f32::consts::PI,
-            CARRIER_AMPLITUDE,
-        );
+        carrier_encode(&mut waveform, &basis, 0, std::f32::consts::PI, CARRIER_AMPLITUDE);
         let (phase, amp) = carrier_decode(&waveform, &basis, 0);
         assert!(
             phase_error(phase, std::f32::consts::PI) < 0.15,
@@ -1323,12 +1282,7 @@ mod carrier_tests {
         let target = TAU - 0.01;
         carrier_encode(&mut waveform, &basis, 0, target, CARRIER_AMPLITUDE);
         let (phase, _) = carrier_decode(&waveform, &basis, 0);
-        assert!(
-            phase_error(phase, target) < 0.15,
-            "wrap-around recovery: got {:.4}, expected {:.4}",
-            phase,
-            target
-        );
+        assert!(phase_error(phase, target) < 0.15, "wrap-around recovery: got {:.4}, expected {:.4}", phase, target);
     }
 
     #[test]
@@ -1345,18 +1299,8 @@ mod carrier_tests {
         let (rec_a, _) = carrier_decode(&waveform, &basis, 0);
         let (rec_b, _) = carrier_decode(&waveform, &basis, 5);
 
-        assert!(
-            phase_error(rec_a, phase_a) < 0.2,
-            "carrier 0: expected {:.4}, got {:.4}",
-            phase_a,
-            rec_a
-        );
-        assert!(
-            phase_error(rec_b, phase_b) < 0.2,
-            "carrier 5: expected {:.4}, got {:.4}",
-            phase_b,
-            rec_b
-        );
+        assert!(phase_error(rec_a, phase_a) < 0.2, "carrier 0: expected {:.4}, got {:.4}", phase_a, rec_a);
+        assert!(phase_error(rec_b, phase_b) < 0.2, "carrier 5: expected {:.4}, got {:.4}", phase_b, rec_b);
     }
 
     #[test]
@@ -1418,16 +1362,8 @@ mod carrier_tests {
         let (rec_a, _) = carrier_decode(&bundled, &basis, 0);
         let (rec_b, _) = carrier_decode(&bundled, &basis, 5);
 
-        assert!(
-            phase_error(rec_a, 1.0) < 0.25,
-            "bundled carrier 0: expected 1.0, got {:.4}",
-            rec_a
-        );
-        assert!(
-            phase_error(rec_b, 2.5) < 0.25,
-            "bundled carrier 5: expected 2.5, got {:.4}",
-            rec_b
-        );
+        assert!(phase_error(rec_a, 1.0) < 0.25, "bundled carrier 0: expected 1.0, got {:.4}", rec_a);
+        assert!(phase_error(rec_b, 2.5) < 0.25, "bundled carrier 5: expected 2.5, got {:.4}", rec_b);
     }
 
     #[test]
@@ -1471,13 +1407,7 @@ mod carrier_tests {
         let mut waveforms: Vec<Vec<i8>> = Vec::new();
         for i in 0..n {
             let mut wf = vec![0i8; 2048];
-            carrier_encode(
-                &mut wf,
-                &basis,
-                (i % 16) as u8,
-                phases[i],
-                CARRIER_AMPLITUDE,
-            );
+            carrier_encode(&mut wf, &basis, (i % 16) as u8, phases[i], CARRIER_AMPLITUDE);
             waveforms.push(wf);
         }
 
@@ -1496,11 +1426,7 @@ mod carrier_tests {
         let mean_single = single_freq_errors.iter().sum::<f32>() / single_freq_errors.len() as f32;
 
         // Unshared frequencies should still work
-        assert!(
-            mean_single < 0.6,
-            "unshared frequencies at N=21 mean error = {:.4} rad",
-            mean_single
-        );
+        assert!(mean_single < 0.6, "unshared frequencies at N=21 mean error = {:.4} rad", mean_single);
     }
 
     // ---- Distance tests ----
@@ -1524,11 +1450,7 @@ mod carrier_tests {
         let mut wf = vec![0i8; 2048];
         carrier_encode(&mut wf, &basis, 0, 1.0, CARRIER_AMPLITUDE);
         let corr = carrier_correlation(&wf, &wf);
-        assert!(
-            (corr - 1.0).abs() < 0.01,
-            "self-correlation should be 1.0, got {:.4}",
-            corr
-        );
+        assert!((corr - 1.0).abs() < 0.01, "self-correlation should be 1.0, got {:.4}", corr);
     }
 
     #[test]
@@ -1538,11 +1460,7 @@ mod carrier_tests {
         carrier_encode(&mut wf, &basis, 0, 1.0, CARRIER_AMPLITUDE);
         let neg: Vec<i8> = wf.iter().map(|&v| v.saturating_neg()).collect();
         let corr = carrier_correlation(&wf, &neg);
-        assert!(
-            (corr + 1.0).abs() < 0.05,
-            "negation correlation should be -1.0, got {:.4}",
-            corr
-        );
+        assert!((corr + 1.0).abs() < 0.05, "negation correlation should be -1.0, got {:.4}", corr);
     }
 
     #[test]
@@ -1554,11 +1472,7 @@ mod carrier_tests {
         carrier_encode(&mut wf_b, &basis, 5, 0.0, CARRIER_AMPLITUDE);
 
         let corr = carrier_correlation(&wf_a, &wf_b);
-        assert!(
-            corr.abs() < 0.2,
-            "orthogonal carriers should have near-zero correlation, got {:.4}",
-            corr
-        );
+        assert!(corr.abs() < 0.2, "orthogonal carriers should have near-zero correlation, got {:.4}", corr);
     }
 
     // ---- Spectrum tests ----
@@ -1718,13 +1632,7 @@ mod carrier_tests {
             let phases: Vec<f32> = (0..n).map(|i| (i as f32) * 0.7 + 0.3).collect();
 
             for i in 0..n as usize {
-                carrier_encode(
-                    &mut carrier_waveform,
-                    &basis,
-                    i as u8 % 16,
-                    phases[i],
-                    CARRIER_AMPLITUDE,
-                );
+                carrier_encode(&mut carrier_waveform, &basis, i as u8 % 16, phases[i], CARRIER_AMPLITUDE);
             }
 
             let mut carrier_errors = Vec::new();
@@ -1735,10 +1643,8 @@ mod carrier_tests {
                 carrier_amps.push(rec_amp);
             }
 
-            let carrier_mean_error: f32 =
-                carrier_errors.iter().sum::<f32>() / carrier_errors.len() as f32;
-            let carrier_mean_amp: f32 =
-                carrier_amps.iter().sum::<f32>() / carrier_amps.len() as f32;
+            let carrier_mean_error: f32 = carrier_errors.iter().sum::<f32>() / carrier_errors.len() as f32;
+            let carrier_mean_amp: f32 = carrier_amps.iter().sum::<f32>() / carrier_amps.len() as f32;
 
             // --- Random-phase path (using phase.rs functions) ---
             use self::{circular_distance_i8, phase_bundle_circular, phase_unbind_i8};
@@ -1758,8 +1664,7 @@ mod carrier_tests {
                 let dist = circular_distance_i8(&recovered, &phase_vecs[0]);
                 phase_errors.push(dist);
             }
-            let phase_self_recovery =
-                circular_distance_i8(&phase_unbind_i8(&bundle, &phase_vecs[0]), &phase_vecs[0]);
+            let phase_self_recovery = circular_distance_i8(&phase_unbind_i8(&bundle, &phase_vecs[0]), &phase_vecs[0]);
 
             println!(
                 "N={:>2}: carrier_err={:.4} rad ({:>5.1}°)  amp={:.2}  |  phase_self_dist={}",
@@ -1784,11 +1689,7 @@ mod carrier_tests {
                 total_err += phase_error(rec, phases[i]);
             }
             let mean = total_err / 16.0;
-            assert!(
-                mean < 0.5,
-                "Carrier at N=16 mean error = {:.4} rad — capacity limit exceeded",
-                mean
-            );
+            assert!(mean < 0.5, "Carrier at N=16 mean error = {:.4} rad — capacity limit exceeded", mean);
         }
     }
 
@@ -1800,10 +1701,7 @@ mod carrier_tests {
         let u8_carrier = basis.cos_as_u8(0);
         assert_eq!(u8_carrier.len(), 2048);
         // First sample: cos[0][0] = amplitude (7), offset = 7+128 = 135
-        assert_eq!(
-            u8_carrier[0],
-            (CARRIER_AMPLITUDE.round() as u8).wrapping_add(128)
-        );
+        assert_eq!(u8_carrier[0], (CARRIER_AMPLITUDE.round() as u8).wrapping_add(128));
     }
 }
 
@@ -1833,7 +1731,6 @@ mod carrier_tests {
 //
 // Three masks: `mask_x: u8`, `mask_y: u8`, `mask_z: u32` = 48 bits.
 // A byte is "in focus" only if ALL THREE masks select its slab.
-
 
 // ============================================================================
 // Constants
@@ -2176,36 +2073,18 @@ pub fn focus_xor_auto(container: &mut [u8], mask_x: u8, mask_y: u8, mask_z: u32,
 
 /// Write a concept into a binary container at a focused region.
 /// Uses XOR binding. Self-inverse: call again to erase.
-pub fn focus_bind_binary(
-    container: &mut [u8],
-    mask_x: u8,
-    mask_y: u8,
-    mask_z: u32,
-    concept_vec: &[u8],
-) {
+pub fn focus_bind_binary(container: &mut [u8], mask_x: u8, mask_y: u8, mask_z: u32, concept_vec: &[u8]) {
     focus_xor(container, mask_x, mask_y, mask_z, concept_vec);
 }
 
 /// Write a concept into a phase container at a focused region.
 /// Uses ADD binding. NOT self-inverse — use focus_unbind_phase to erase.
-pub fn focus_bind_phase(
-    container: &mut [u8],
-    mask_x: u8,
-    mask_y: u8,
-    mask_z: u32,
-    concept_vec: &[u8],
-) {
+pub fn focus_bind_phase(container: &mut [u8], mask_x: u8, mask_y: u8, mask_z: u32, concept_vec: &[u8]) {
     focus_add(container, mask_x, mask_y, mask_z, concept_vec);
 }
 
 /// Erase a concept from a phase container at a focused region.
-pub fn focus_unbind_phase(
-    container: &mut [u8],
-    mask_x: u8,
-    mask_y: u8,
-    mask_z: u32,
-    concept_vec: &[u8],
-) {
+pub fn focus_unbind_phase(container: &mut [u8], mask_x: u8, mask_y: u8, mask_z: u32, concept_vec: &[u8]) {
     focus_sub(container, mask_x, mask_y, mask_z, concept_vec);
 }
 
@@ -2215,13 +2094,7 @@ pub fn focus_unbind_phase(
 /// (spatial partitioning). The carrier signal only exists in the focused
 /// region.
 pub fn focus_carrier_encode(
-    container: &mut [i8],
-    basis: &CarrierBasis,
-    mask_x: u8,
-    mask_y: u8,
-    mask_z: u32,
-    freq_idx: u8,
-    phase_offset: f32,
+    container: &mut [i8], basis: &CarrierBasis, mask_x: u8, mask_y: u8, mask_z: u32, freq_idx: u8, phase_offset: f32,
     amplitude: f32,
 ) {
     let cos_phi = phase_offset.cos();
@@ -2338,9 +2211,7 @@ impl Default for FocusRegistry {
 
 impl FocusRegistry {
     pub fn new() -> Self {
-        Self {
-            entries: Vec::new(),
-        }
+        Self { entries: Vec::new() }
     }
 
     /// Register a concept at a focus address.
@@ -2350,12 +2221,7 @@ impl FocusRegistry {
 
     /// Check if a proposed focus address overlaps with any existing entry.
     /// Returns overlapping (concept_id, overlap_size_bytes) pairs.
-    pub fn check_overlap(
-        &self,
-        new_mask_x: u8,
-        new_mask_y: u8,
-        new_mask_z: u32,
-    ) -> Vec<(u64, u32)> {
+    pub fn check_overlap(&self, new_mask_x: u8, new_mask_y: u8, new_mask_z: u32) -> Vec<(u64, u32)> {
         let mut overlaps = Vec::new();
 
         for &(existing_packed, concept_id) in &self.entries {
@@ -2475,8 +2341,7 @@ mod focus_tests {
         for (mx, my, mz) in test_cases {
             let mask = materialize_focus_mask(mx, my, mz);
             let count = mask.iter().filter(|&&b| b == 0xFF).count();
-            let expected =
-                mx.count_ones() as usize * my.count_ones() as usize * mz.count_ones() as usize;
+            let expected = mx.count_ones() as usize * my.count_ones() as usize * mz.count_ones() as usize;
             assert_eq!(count, expected, "mx={:#x} my={:#x} mz={:#x}", mx, my, mz);
         }
     }
@@ -2545,11 +2410,7 @@ mod focus_tests {
         let mask = materialize_focus_mask(mx, my, mz);
         for i in 0..2048 {
             if mask[i] == 0 {
-                assert_eq!(
-                    container[i], original[i],
-                    "position {} outside mask changed",
-                    i
-                );
+                assert_eq!(container[i], original[i], "position {} outside mask changed", i);
             }
         }
     }
@@ -2805,20 +2666,12 @@ mod focus_tests {
             masks.insert((mx, my, mz));
         }
         // With 100 random IDs and medium density, most should be distinct
-        assert!(
-            masks.len() > 50,
-            "expected most masks unique, got {}",
-            masks.len()
-        );
+        assert!(masks.len() > 50, "expected most masks unique, got {}", masks.len());
     }
 
     #[test]
     fn test_concept_to_focus_density_bits() {
-        for density in [
-            FocusDensity::Sparse,
-            FocusDensity::Medium,
-            FocusDensity::Broad,
-        ] {
+        for density in [FocusDensity::Sparse, FocusDensity::Medium, FocusDensity::Broad] {
             let (bits_x, bits_y, bits_z) = density.bit_counts();
             let (mx, my, mz) = concept_to_focus(42, density);
             assert_eq!(mx.count_ones(), bits_x, "density={:?} mask_x bits", density);
@@ -2866,13 +2719,7 @@ mod focus_tests {
             }
             // With sparse non-overlapping, most/all should match
             // (some may collide due to birthday effect)
-            assert!(
-                matches as f64 / total as f64 > 0.5,
-                "concept {} signal too weak: {}/{}",
-                id,
-                matches,
-                total
-            );
+            assert!(matches as f64 / total as f64 > 0.5, "concept {} signal too weak: {}/{}", id, matches, total);
         }
     }
 
@@ -2968,14 +2815,8 @@ mod focus_tests {
         let delta = focus_delta(&old, &new, mx, my, mz);
         let compact = CompactDelta::from_delta(&delta, mx, my, mz);
 
-        assert!(
-            compact.wire_size() < 2048,
-            "compact should be smaller than full"
-        );
-        assert!(
-            compact.changes.len() <= 4,
-            "sparse focus: at most 4 changes"
-        );
+        assert!(compact.wire_size() < 2048, "compact should be smaller than full");
+        assert!(compact.changes.len() <= 4, "sparse focus: at most 4 changes");
     }
 
     #[test]
@@ -3030,11 +2871,7 @@ mod focus_tests {
     fn test_focus_capacity_experiment() {
         println!("\n=== Focus Gating Capacity Experiment ===\n");
 
-        for &density in &[
-            FocusDensity::Sparse,
-            FocusDensity::Medium,
-            FocusDensity::Broad,
-        ] {
+        for &density in &[FocusDensity::Sparse, FocusDensity::Medium, FocusDensity::Broad] {
             let (bits_x, bits_y, bits_z) = density.bit_counts();
             let region_bytes = bits_x * bits_y * bits_z;
 
@@ -3125,11 +2962,7 @@ mod focus_tests {
                 }
             }
             let accuracy = total_match as f64 / total_bits as f64;
-            assert!(
-                accuracy > 0.7,
-                "Sparse N=10 accuracy {:.1}% too low",
-                accuracy * 100.0
-            );
+            assert!(accuracy > 0.7, "Sparse N=10 accuracy {:.1}% too low", accuracy * 100.0);
         }
     }
 
@@ -3144,26 +2977,13 @@ mod focus_tests {
         let my = 0x01u8;
         let mz = 0x0000000Fu32; // 1×1×4 = 4 bytes
 
-        focus_carrier_encode(
-            &mut container,
-            &basis,
-            mx,
-            my,
-            mz,
-            0,
-            1.0,
-            self::CARRIER_AMPLITUDE,
-        );
+        focus_carrier_encode(&mut container, &basis, mx, my, mz, 0, 1.0, self::CARRIER_AMPLITUDE);
 
         // Check that only masked positions are non-zero
         let mask = materialize_focus_mask(mx, my, mz);
         for i in 0..2048 {
             if mask[i] == 0 {
-                assert_eq!(
-                    container[i], 0,
-                    "position {} outside mask should be zero, got {}",
-                    i, container[i]
-                );
+                assert_eq!(container[i], 0, "position {} outside mask should be zero, got {}", i, container[i]);
             }
         }
 
@@ -3171,9 +2991,6 @@ mod focus_tests {
         let nonzero_in_mask = (0..2048)
             .filter(|&i| mask[i] == 0xFF && container[i] != 0)
             .count();
-        assert!(
-            nonzero_in_mask > 0,
-            "carrier should write some non-zero values"
-        );
+        assert!(nonzero_in_mask > 0, "carrier should write some non-zero values");
     }
 }

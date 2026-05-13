@@ -45,8 +45,7 @@ mod sequence;
 
 /// Calculate offset from `Ix` stride converting sign properly
 #[inline(always)]
-pub fn stride_offset(n: Ix, stride: Ix) -> isize
-{
+pub fn stride_offset(n: Ix, stride: Ix) -> isize {
     (n as isize) * (stride as Ixs)
 }
 
@@ -55,8 +54,7 @@ pub fn stride_offset(n: Ix, stride: Ix) -> isize
 /// There is overlap if, when iterating through the dimensions in order of
 /// increasing stride, the current stride is less than or equal to the maximum
 /// possible offset along the preceding axes. (Axes of length ≤1 are ignored.)
-pub(crate) fn dim_stride_overlap<D: Dimension>(dim: &D, strides: &D) -> bool
-{
+pub(crate) fn dim_stride_overlap<D: Dimension>(dim: &D, strides: &D) -> bool {
     let order = strides._fastest_varying_stride_order();
     let mut sum_prev_offsets = 0;
     for &index in order.slice() {
@@ -85,8 +83,7 @@ pub(crate) fn dim_stride_overlap<D: Dimension>(dim: &D, strides: &D) -> bool
 /// are met to construct an array from the data buffer, `dim`, and `strides`.
 /// (The data buffer being a slice or `Vec` guarantees that it contains no more
 /// than `isize::MAX` bytes.)
-pub fn size_of_shape_checked<D: Dimension>(dim: &D) -> Result<usize, ShapeError>
-{
+pub fn size_of_shape_checked<D: Dimension>(dim: &D) -> Result<usize, ShapeError> {
     let size_nonzero = dim
         .slice()
         .iter()
@@ -107,8 +104,7 @@ pub fn size_of_shape_checked<D: Dimension>(dim: &D) -> Result<usize, ShapeError>
 ///   The strides must not allow any element to be referenced by two different indices.
 ///
 #[derive(Copy, Clone, PartialEq)]
-pub(crate) enum CanIndexCheckMode
-{
+pub(crate) enum CanIndexCheckMode {
     /// Owned or mutable: No aliasing
     OwnedMutable,
     /// Aliasing
@@ -141,8 +137,7 @@ pub(crate) enum CanIndexCheckMode
 /// accessible by moving along all axes does not exceed `isize::MAX`.
 pub(crate) fn can_index_slice_with_strides<A, D: Dimension>(
     data: &[A], dim: &D, strides: &Strides<D>, mode: CanIndexCheckMode,
-) -> Result<(), ShapeError>
-{
+) -> Result<(), ShapeError> {
     if let Strides::Custom(strides) = strides {
         can_index_slice(data, dim, strides, mode)
     } else {
@@ -151,8 +146,7 @@ pub(crate) fn can_index_slice_with_strides<A, D: Dimension>(
     }
 }
 
-pub(crate) fn can_index_slice_not_custom<D: Dimension>(data_len: usize, dim: &D) -> Result<(), ShapeError>
-{
+pub(crate) fn can_index_slice_not_custom<D: Dimension>(data_len: usize, dim: &D) -> Result<(), ShapeError> {
     // Condition 1.
     let len = size_of_shape_checked(dim)?;
     // Condition 2.
@@ -177,13 +171,15 @@ pub(crate) fn can_index_slice_not_custom<D: Dimension>(data_len: usize, dim: &D)
 ///    also implies that the length of any individual axis does not exceed
 ///    `isize::MAX`.)
 pub fn max_abs_offset_check_overflow<A, D>(dim: &D, strides: &D) -> Result<usize, ShapeError>
-where D: Dimension
+where
+    D: Dimension,
 {
     max_abs_offset_check_overflow_impl(mem::size_of::<A>(), dim, strides)
 }
 
 fn max_abs_offset_check_overflow_impl<D>(elem_size: usize, dim: &D, strides: &D) -> Result<usize, ShapeError>
-where D: Dimension
+where
+    D: Dimension,
 {
     // Condition 1.
     if dim.ndim() != strides.ndim() {
@@ -257,8 +253,7 @@ where D: Dimension
 /// negative strides are correctly handled.)
 pub(crate) fn can_index_slice<A, D: Dimension>(
     data: &[A], dim: &D, strides: &D, mode: CanIndexCheckMode,
-) -> Result<(), ShapeError>
-{
+) -> Result<(), ShapeError> {
     // Check conditions 1 and 2 and calculate `max_offset`.
     let max_offset = max_abs_offset_check_overflow::<A, _>(dim, strides)?;
     can_index_slice_impl(max_offset, data.len(), dim, strides, mode)
@@ -266,8 +261,7 @@ pub(crate) fn can_index_slice<A, D: Dimension>(
 
 fn can_index_slice_impl<D: Dimension>(
     max_offset: usize, data_len: usize, dim: &D, strides: &D, mode: CanIndexCheckMode,
-) -> Result<(), ShapeError>
-{
+) -> Result<(), ShapeError> {
     // Check condition 3.
     let is_empty = dim.slice().contains(&0);
     if is_empty && max_offset > data_len {
@@ -287,8 +281,7 @@ fn can_index_slice_impl<D: Dimension>(
 
 /// Stride offset checked general version (slices)
 #[inline]
-pub fn stride_offset_checked(dim: &[Ix], strides: &[Ix], index: &[Ix]) -> Option<isize>
-{
+pub fn stride_offset_checked(dim: &[Ix], strides: &[Ix], index: &[Ix]) -> Option<isize> {
     if index.len() != dim.len() {
         return None;
     }
@@ -304,7 +297,8 @@ pub fn stride_offset_checked(dim: &[Ix], strides: &[Ix], index: &[Ix]) -> Option
 
 /// Checks if strides are non-negative.
 pub fn strides_non_negative<D>(strides: &D) -> Result<(), ShapeError>
-where D: Dimension
+where
+    D: Dimension,
 {
     for &stride in strides.slice() {
         if (stride as isize) < 0 {
@@ -315,8 +309,7 @@ where D: Dimension
 }
 
 /// Implementation-specific extensions to `Dimension`
-pub trait DimensionExt
-{
+pub trait DimensionExt {
     // note: many extensions go in the main trait if they need to be special-
     // cased per dimension
     /// Get the dimension at `axis`.
@@ -333,32 +326,28 @@ pub trait DimensionExt
 }
 
 impl<D> DimensionExt for D
-where D: Dimension
+where
+    D: Dimension,
 {
     #[inline]
-    fn axis(&self, axis: Axis) -> Ix
-    {
+    fn axis(&self, axis: Axis) -> Ix {
         self[axis.index()]
     }
 
     #[inline]
-    fn set_axis(&mut self, axis: Axis, value: Ix)
-    {
+    fn set_axis(&mut self, axis: Axis, value: Ix) {
         self[axis.index()] = value;
     }
 }
 
-impl DimensionExt for [Ix]
-{
+impl DimensionExt for [Ix] {
     #[inline]
-    fn axis(&self, axis: Axis) -> Ix
-    {
+    fn axis(&self, axis: Axis) -> Ix {
         self[axis.index()]
     }
 
     #[inline]
-    fn set_axis(&mut self, axis: Axis, value: Ix)
-    {
+    fn set_axis(&mut self, axis: Axis, value: Ix) {
         self[axis.index()] = value;
     }
 }
@@ -369,8 +358,7 @@ impl DimensionExt for [Ix]
 /// **Panics** if `index` is larger than the size of the axis
 #[track_caller]
 // FIXME: Move to Dimension trait
-pub fn do_collapse_axis<D: Dimension>(dims: &mut D, strides: &D, axis: usize, index: usize) -> isize
-{
+pub fn do_collapse_axis<D: Dimension>(dims: &mut D, strides: &D, axis: usize, index: usize) -> isize {
     let dim = dims.slice()[axis];
     let stride = strides.slice()[axis];
     ndassert!(
@@ -387,8 +375,7 @@ pub fn do_collapse_axis<D: Dimension>(dims: &mut D, strides: &D, axis: usize, in
 
 /// Compute the equivalent unsigned index given the axis length and signed index.
 #[inline]
-pub fn abs_index(len: Ix, index: Ixs) -> Ix
-{
+pub fn abs_index(len: Ix, index: Ixs) -> Ix {
     if index < 0 {
         len - (-index as Ix)
     } else {
@@ -402,34 +389,22 @@ pub fn abs_index(len: Ix, index: Ixs) -> Ix
 ///
 /// **Panics** if stride is 0 or if any index is out of bounds.
 #[track_caller]
-fn to_abs_slice(axis_len: usize, slice: Slice) -> (usize, usize, isize)
-{
+fn to_abs_slice(axis_len: usize, slice: Slice) -> (usize, usize, isize) {
     let Slice { start, end, step } = slice;
     let start = abs_index(axis_len, start);
     let mut end = abs_index(axis_len, end.unwrap_or(axis_len as isize));
     if end < start {
         end = start;
     }
-    ndassert!(
-        start <= axis_len,
-        "Slice begin {} is past end of axis of length {}",
-        start,
-        axis_len,
-    );
-    ndassert!(
-        end <= axis_len,
-        "Slice end {} is past end of axis of length {}",
-        end,
-        axis_len,
-    );
+    ndassert!(start <= axis_len, "Slice begin {} is past end of axis of length {}", start, axis_len,);
+    ndassert!(end <= axis_len, "Slice end {} is past end of axis of length {}", end, axis_len,);
     ndassert!(step != 0, "Slice stride must not be zero");
     (start, end, step)
 }
 
 /// This function computes the offset from the lowest address element to the
 /// logically first element.
-pub fn offset_from_low_addr_ptr_to_logical_ptr<D: Dimension>(dim: &D, strides: &D) -> usize
-{
+pub fn offset_from_low_addr_ptr_to_logical_ptr<D: Dimension>(dim: &D, strides: &D) -> usize {
     let offset = izip!(dim.slice(), strides.slice()).fold(0, |_offset, (&d, &s)| {
         let s = s as isize;
         if s < 0 && d > 1 {
@@ -446,8 +421,7 @@ pub fn offset_from_low_addr_ptr_to_logical_ptr<D: Dimension>(dim: &D, strides: &
 ///
 /// **Panics** if stride is 0 or if any index is out of bounds.
 #[track_caller]
-pub fn do_slice(dim: &mut usize, stride: &mut usize, slice: Slice) -> isize
-{
+pub fn do_slice(dim: &mut usize, stride: &mut usize, slice: Slice) -> isize {
     let (start, end, step) = to_abs_slice(*dim, slice);
 
     let m = end - start;
@@ -500,8 +474,7 @@ pub fn do_slice(dim: &mut usize, stride: &mut usize, slice: Slice) -> isize
 /// nonnegative.
 ///
 /// See https://en.wikipedia.org/wiki/Extended_Euclidean_algorithm
-fn extended_gcd(a: isize, b: isize) -> (isize, (isize, isize))
-{
+fn extended_gcd(a: isize, b: isize) -> (isize, (isize, isize)) {
     if a == 0 {
         (b.abs(), (0, b.signum()))
     } else if b == 0 {
@@ -537,8 +510,7 @@ fn extended_gcd(a: isize, b: isize) -> (isize, (isize, isize))
 ///
 /// See https://en.wikipedia.org/wiki/Diophantine_equation#One_equation
 /// and https://math.stackexchange.com/questions/1656120#1656138
-fn solve_linear_diophantine_eq(a: isize, b: isize, c: isize) -> Option<(isize, isize)>
-{
+fn solve_linear_diophantine_eq(a: isize, b: isize, c: isize) -> Option<(isize, isize)> {
     debug_assert_ne!(a, 0);
     debug_assert_ne!(b, 0);
     let (g, (u, _)) = extended_gcd(a, b);
@@ -556,8 +528,7 @@ fn solve_linear_diophantine_eq(a: isize, b: isize, c: isize) -> Option<(isize, i
 /// consecutive elements (the sign is irrelevant).
 ///
 /// **Note** `step1` and `step2` must be nonzero.
-fn arith_seq_intersect((min1, max1, step1): (isize, isize, isize), (min2, max2, step2): (isize, isize, isize)) -> bool
-{
+fn arith_seq_intersect((min1, max1, step1): (isize, isize, isize), (min2, max2, step2): (isize, isize, isize)) -> bool {
     debug_assert!(max1 >= min1);
     debug_assert!(max2 >= min2);
     debug_assert_eq!((max1 - min1) % step1, 0);
@@ -613,8 +584,7 @@ fn arith_seq_intersect((min1, max1, step1): (isize, isize, isize), (min2, max2, 
 /// Returns the minimum and maximum values of the indices (inclusive).
 ///
 /// If the slice is empty, then returns `None`, otherwise returns `Some((min, max))`.
-fn slice_min_max(axis_len: usize, slice: Slice) -> Option<(usize, usize)>
-{
+fn slice_min_max(axis_len: usize, slice: Slice) -> Option<(usize, usize)> {
     let (start, end, step) = to_abs_slice(axis_len, slice);
     if start == end {
         None
@@ -626,8 +596,7 @@ fn slice_min_max(axis_len: usize, slice: Slice) -> Option<(usize, usize)>
 }
 
 /// Returns `true` iff the slices intersect.
-pub fn slices_intersect<D: Dimension>(dim: &D, indices1: impl SliceArg<D>, indices2: impl SliceArg<D>) -> bool
-{
+pub fn slices_intersect<D: Dimension>(dim: &D, indices1: impl SliceArg<D>, indices2: impl SliceArg<D>) -> bool {
     debug_assert_eq!(indices1.in_ndim(), indices2.in_ndim());
     for (&axis_len, &si1, &si2) in izip!(
         dim.slice(),
@@ -667,7 +636,7 @@ pub fn slices_intersect<D: Dimension>(dim: &D, indices1: impl SliceArg<D>, indic
                     Some(m) => m,
                     None => return false,
                 };
-                if ind < min || ind > max || (ind - min) % step.unsigned_abs() != 0 {
+                if ind < min || ind > max || !(ind - min).is_multiple_of(step.unsigned_abs()) {
                     return false;
                 }
             }
@@ -684,8 +653,7 @@ pub fn slices_intersect<D: Dimension>(dim: &D, indices1: impl SliceArg<D>, indic
     true
 }
 
-pub(crate) fn is_layout_c<D: Dimension>(dim: &D, strides: &D) -> bool
-{
+pub(crate) fn is_layout_c<D: Dimension>(dim: &D, strides: &D) -> bool {
     if let Some(1) = D::NDIM {
         return strides[0] == 1 || dim[0] <= 1;
     }
@@ -710,8 +678,7 @@ pub(crate) fn is_layout_c<D: Dimension>(dim: &D, strides: &D) -> bool
     true
 }
 
-pub(crate) fn is_layout_f<D: Dimension>(dim: &D, strides: &D) -> bool
-{
+pub(crate) fn is_layout_f<D: Dimension>(dim: &D, strides: &D) -> bool {
     if let Some(1) = D::NDIM {
         return strides[0] == 1 || dim[0] <= 1;
     }
@@ -737,7 +704,8 @@ pub(crate) fn is_layout_f<D: Dimension>(dim: &D, strides: &D) -> bool
 }
 
 pub fn merge_axes<D>(dim: &mut D, strides: &mut D, take: Axis, into: Axis) -> bool
-where D: Dimension
+where
+    D: Dimension,
 {
     let into_len = dim.axis(into);
     let into_stride = strides.axis(into) as isize;
@@ -765,16 +733,18 @@ where D: Dimension
 /// Move the axis which has the smallest absolute stride and a length
 /// greater than one to be the last axis.
 pub fn move_min_stride_axis_to_last<D>(dim: &mut D, strides: &mut D)
-where D: Dimension
+where
+    D: Dimension,
 {
     debug_assert_eq!(dim.ndim(), strides.ndim());
     match dim.ndim() {
         0 | 1 => {}
-        2 =>
+        2 => {
             if dim[1] <= 1 || dim[0] > 1 && (strides[0] as isize).abs() < (strides[1] as isize).abs() {
                 dim.slice_mut().swap(0, 1);
                 strides.slice_mut().swap(0, 1);
-            },
+            }
+        }
         n => {
             if let Some(min_stride_axis) = (0..n)
                 .filter(|&ax| dim[ax] > 1)
@@ -789,19 +759,10 @@ where D: Dimension
 }
 
 #[cfg(test)]
-mod test
-{
+mod test {
     use super::{
-        arith_seq_intersect,
-        can_index_slice,
-        can_index_slice_not_custom,
-        extended_gcd,
-        max_abs_offset_check_overflow,
-        slice_min_max,
-        slices_intersect,
-        solve_linear_diophantine_eq,
-        CanIndexCheckMode,
-        IntoDimension,
+        arith_seq_intersect, can_index_slice, can_index_slice_not_custom, extended_gcd, max_abs_offset_check_overflow,
+        slice_min_max, slices_intersect, solve_linear_diophantine_eq, CanIndexCheckMode, IntoDimension,
     };
     use crate::error::{from_kind, ErrorKind};
     use crate::slice::Slice;
@@ -810,8 +771,7 @@ mod test
     use quickcheck::{quickcheck, TestResult};
 
     #[test]
-    fn slice_indexing_uncommon_strides()
-    {
+    fn slice_indexing_uncommon_strides() {
         let v: alloc::vec::Vec<_> = (0..12).collect();
         let dim = (2, 3, 2).into_dimension();
         let strides = (1, 2, 6).into_dimension();
@@ -825,8 +785,7 @@ mod test
     }
 
     #[test]
-    fn overlapping_strides_dim()
-    {
+    fn overlapping_strides_dim() {
         let dim = (2, 3, 2).into_dimension();
         let strides = (5, 2, 1).into_dimension();
         assert!(super::dim_stride_overlap(&dim, &strides));
@@ -848,8 +807,7 @@ mod test
     }
 
     #[test]
-    fn max_abs_offset_check_overflow_examples()
-    {
+    fn max_abs_offset_check_overflow_examples() {
         let dim = (1, isize::MAX as usize, 1).into_dimension();
         let strides = (1, 1, 1).into_dimension();
         max_abs_offset_check_overflow::<u8, _>(&dim, &strides).unwrap();
@@ -865,15 +823,13 @@ mod test
     }
 
     #[test]
-    fn can_index_slice_ix0()
-    {
+    fn can_index_slice_ix0() {
         can_index_slice::<i32, _>(&[1], &Ix0(), &Ix0(), CanIndexCheckMode::OwnedMutable).unwrap();
         can_index_slice::<i32, _>(&[], &Ix0(), &Ix0(), CanIndexCheckMode::OwnedMutable).unwrap_err();
     }
 
     #[test]
-    fn can_index_slice_ix1()
-    {
+    fn can_index_slice_ix1() {
         let mode = CanIndexCheckMode::OwnedMutable;
         can_index_slice::<i32, _>(&[], &Ix1(0), &Ix1(0), mode).unwrap();
         can_index_slice::<i32, _>(&[], &Ix1(0), &Ix1(1), mode).unwrap();
@@ -889,8 +845,7 @@ mod test
     }
 
     #[test]
-    fn can_index_slice_ix2()
-    {
+    fn can_index_slice_ix2() {
         let mode = CanIndexCheckMode::OwnedMutable;
         can_index_slice::<i32, _>(&[], &Ix2(0, 0), &Ix2(0, 0), mode).unwrap();
         can_index_slice::<i32, _>(&[], &Ix2(0, 0), &Ix2(2, 1), mode).unwrap();
@@ -910,8 +865,7 @@ mod test
     }
 
     #[test]
-    fn can_index_slice_ix3()
-    {
+    fn can_index_slice_ix3() {
         let mode = CanIndexCheckMode::OwnedMutable;
         can_index_slice::<i32, _>(&[], &Ix3(0, 0, 1), &Ix3(2, 1, 3), mode).unwrap();
         can_index_slice::<i32, _>(&[], &Ix3(1, 1, 1), &Ix3(2, 1, 3), mode).unwrap_err();
@@ -921,8 +875,7 @@ mod test
     }
 
     #[test]
-    fn can_index_slice_zero_size_elem()
-    {
+    fn can_index_slice_zero_size_elem() {
         let mode = CanIndexCheckMode::OwnedMutable;
         can_index_slice::<(), _>(&[], &Ix1(0), &Ix1(1), mode).unwrap();
         can_index_slice::<(), _>(&[()], &Ix1(1), &Ix1(1), mode).unwrap();
@@ -973,8 +926,7 @@ mod test
     }
 
     #[test]
-    fn extended_gcd_zero()
-    {
+    fn extended_gcd_zero() {
         assert_eq!(extended_gcd(0, 0), (0, (0, 0)));
         assert_eq!(extended_gcd(0, 5), (5, (0, 1)));
         assert_eq!(extended_gcd(5, 0), (5, (1, 0)));
@@ -1065,8 +1017,7 @@ mod test
     }
 
     #[test]
-    fn slice_min_max_empty()
-    {
+    fn slice_min_max_empty() {
         assert_eq!(slice_min_max(0, Slice::new(0, None, 3)), None);
         assert_eq!(slice_min_max(10, Slice::new(1, Some(1), 3)), None);
         assert_eq!(slice_min_max(10, Slice::new(-1, Some(-1), 3)), None);
@@ -1075,8 +1026,7 @@ mod test
     }
 
     #[test]
-    fn slice_min_max_pos_step()
-    {
+    fn slice_min_max_pos_step() {
         assert_eq!(slice_min_max(10, Slice::new(1, Some(8), 3)), Some((1, 7)));
         assert_eq!(slice_min_max(10, Slice::new(1, Some(9), 3)), Some((1, 7)));
         assert_eq!(slice_min_max(10, Slice::new(-9, Some(8), 3)), Some((1, 7)));
@@ -1092,22 +1042,15 @@ mod test
     }
 
     #[test]
-    fn slice_min_max_neg_step()
-    {
+    fn slice_min_max_neg_step() {
         assert_eq!(slice_min_max(10, Slice::new(1, Some(8), -3)), Some((1, 7)));
         assert_eq!(slice_min_max(10, Slice::new(2, Some(8), -3)), Some((4, 7)));
         assert_eq!(slice_min_max(10, Slice::new(-9, Some(8), -3)), Some((1, 7)));
         assert_eq!(slice_min_max(10, Slice::new(-8, Some(8), -3)), Some((4, 7)));
         assert_eq!(slice_min_max(10, Slice::new(1, Some(-2), -3)), Some((1, 7)));
         assert_eq!(slice_min_max(10, Slice::new(2, Some(-2), -3)), Some((4, 7)));
-        assert_eq!(
-            slice_min_max(10, Slice::new(-9, Some(-2), -3)),
-            Some((1, 7))
-        );
-        assert_eq!(
-            slice_min_max(10, Slice::new(-8, Some(-2), -3)),
-            Some((4, 7))
-        );
+        assert_eq!(slice_min_max(10, Slice::new(-9, Some(-2), -3)), Some((1, 7)));
+        assert_eq!(slice_min_max(10, Slice::new(-8, Some(-2), -3)), Some((4, 7)));
         assert_eq!(slice_min_max(9, Slice::new(2, None, -3)), Some((2, 8)));
         assert_eq!(slice_min_max(9, Slice::new(-7, None, -3)), Some((2, 8)));
         assert_eq!(slice_min_max(9, Slice::new(3, None, -3)), Some((5, 8)));
@@ -1115,48 +1058,18 @@ mod test
     }
 
     #[test]
-    fn slices_intersect_true()
-    {
-        assert!(slices_intersect(
-            &Dim([4, 5]),
-            s![NewAxis, .., NewAxis, ..],
-            s![.., NewAxis, .., NewAxis]
-        ));
-        assert!(slices_intersect(
-            &Dim([4, 5]),
-            s![NewAxis, 0, ..],
-            s![0, ..]
-        ));
-        assert!(slices_intersect(
-            &Dim([4, 5]),
-            s![..;2, ..],
-            s![..;3, NewAxis, ..]
-        ));
-        assert!(slices_intersect(
-            &Dim([4, 5]),
-            s![.., ..;2],
-            s![.., 1..;3, NewAxis]
-        ));
+    fn slices_intersect_true() {
+        assert!(slices_intersect(&Dim([4, 5]), s![NewAxis, .., NewAxis, ..], s![.., NewAxis, .., NewAxis]));
+        assert!(slices_intersect(&Dim([4, 5]), s![NewAxis, 0, ..], s![0, ..]));
+        assert!(slices_intersect(&Dim([4, 5]), s![..;2, ..], s![..;3, NewAxis, ..]));
+        assert!(slices_intersect(&Dim([4, 5]), s![.., ..;2], s![.., 1..;3, NewAxis]));
         assert!(slices_intersect(&Dim([4, 10]), s![.., ..;9], s![.., 3..;6]));
     }
 
     #[test]
-    fn slices_intersect_false()
-    {
-        assert!(!slices_intersect(
-            &Dim([4, 5]),
-            s![..;2, ..],
-            s![NewAxis, 1..;2, ..]
-        ));
-        assert!(!slices_intersect(
-            &Dim([4, 5]),
-            s![..;2, NewAxis, ..],
-            s![1..;3, ..]
-        ));
-        assert!(!slices_intersect(
-            &Dim([4, 5]),
-            s![.., ..;9],
-            s![.., 3..;6, NewAxis]
-        ));
+    fn slices_intersect_false() {
+        assert!(!slices_intersect(&Dim([4, 5]), s![..;2, ..], s![NewAxis, 1..;2, ..]));
+        assert!(!slices_intersect(&Dim([4, 5]), s![..;2, NewAxis, ..], s![1..;3, ..]));
+        assert!(!slices_intersect(&Dim([4, 5]), s![.., ..;9], s![.., 3..;6, NewAxis]));
     }
 }

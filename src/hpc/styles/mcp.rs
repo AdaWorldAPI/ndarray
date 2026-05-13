@@ -19,7 +19,11 @@ pub struct MetaCognition {
 
 impl MetaCognition {
     pub fn new(max_history: usize) -> Self {
-        Self { history: Vec::new(), max_history, calibration_error: 0.5 }
+        Self {
+            history: Vec::new(),
+            max_history,
+            calibration_error: 0.5,
+        }
     }
 
     /// Assess meta-confidence: how reliable is our confidence?
@@ -31,9 +35,7 @@ impl MetaCognition {
         }
 
         let mean = self.history.iter().sum::<f32>() / self.history.len() as f32;
-        let variance = self.history.iter()
-            .map(|c| (c - mean).powi(2))
-            .sum::<f32>() / self.history.len() as f32;
+        let variance = self.history.iter().map(|c| (c - mean).powi(2)).sum::<f32>() / self.history.len() as f32;
 
         let meta_confidence = 1.0 - variance.sqrt();
 

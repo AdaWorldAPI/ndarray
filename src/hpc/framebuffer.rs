@@ -48,9 +48,9 @@ impl PaletteTier {
     /// Auto-detect from the active SIMD lane width.
     pub fn detect() -> Self {
         match PREFERRED_F32_LANES {
-            16 => Self::Full16,   // AVX-512 / AMX
-            8  => Self::Mid8,     // AVX2
-            _  => Self::Low4,     // NEON (4), scalar (≤4)
+            16 => Self::Full16, // AVX-512 / AMX
+            8 => Self::Mid8,    // AVX2
+            _ => Self::Low4,    // NEON (4), scalar (≤4)
         }
     }
 
@@ -189,10 +189,18 @@ impl Framebuffer {
             if x0 >= 0 && y0 >= 0 && (x0 as usize) < self.width && (y0 as usize) < self.height {
                 self.pixels[y0 as usize * self.width + x0 as usize] = color;
             }
-            if x0 == x1 && y0 == y1 { break; }
+            if x0 == x1 && y0 == y1 {
+                break;
+            }
             let e2 = 2 * err;
-            if e2 >= dy { err += dy; x0 += sx; }
-            if e2 <= dx { err += dx; y0 += sy; }
+            if e2 >= dy {
+                err += dy;
+                x0 += sx;
+            }
+            if e2 <= dx {
+                err += dx;
+                y0 += sy;
+            }
         }
         let (lx, rx) = (x0.min(x1).max(0) as usize, (x0.max(x1) as usize + 1).min(self.width));
         let (ly, ry) = (y0.min(y1).max(0) as usize, (y0.max(y1) as usize + 1).min(self.height));
@@ -291,9 +299,7 @@ pub fn build_mipmap_pyramid(fb: &Framebuffer, min_dim: usize) -> Vec<(Vec<u8>, u
 /// works; replace with perspective when q2 has a camera matrix.
 #[inline]
 pub fn project_ortho(
-    pos_x: f32, pos_y: f32,
-    scale: f32, offset_x: f32, offset_y: f32,
-    screen_w: usize, screen_h: usize,
+    pos_x: f32, pos_y: f32, scale: f32, offset_x: f32, offset_y: f32, screen_w: usize, screen_h: usize,
 ) -> (usize, usize) {
     let sx = ((pos_x * scale + offset_x) as usize).min(screen_w.saturating_sub(1));
     let sy = ((pos_y * scale + offset_y) as usize).min(screen_h.saturating_sub(1));
@@ -307,13 +313,8 @@ use crate::hpc::renderer::RenderFrame;
 /// `edges` is a list of (source_idx, target_idx) pairs into the frame's
 /// node arrays. `color_fn` maps node index → palette color.
 pub fn compose_neo4j(
-    fb: &mut Framebuffer,
-    frame: &RenderFrame,
-    edges: &[(usize, usize)],
-    scale: f32,
-    offset: (f32, f32),
-    node_color: u8,
-    edge_color: u8,
+    fb: &mut Framebuffer, frame: &RenderFrame, edges: &[(usize, usize)], scale: f32, offset: (f32, f32),
+    node_color: u8, edge_color: u8,
 ) {
     fb.clear();
     let w = fb.width;
@@ -321,35 +322,26 @@ pub fn compose_neo4j(
 
     // Edges first (so nodes overdraw on top).
     for &(src, tgt) in edges {
-        if src >= frame.len || tgt >= frame.len { continue; }
-        let (sx0, sy0) = project_ortho(
-            frame.positions[src * 3], frame.positions[src * 3 + 1],
-            scale, offset.0, offset.1, w, h,
-        );
-        let (sx1, sy1) = project_ortho(
-            frame.positions[tgt * 3], frame.positions[tgt * 3 + 1],
-            scale, offset.0, offset.1, w, h,
-        );
+        if src >= frame.len || tgt >= frame.len {
+            continue;
+        }
+        let (sx0, sy0) =
+            project_ortho(frame.positions[src * 3], frame.positions[src * 3 + 1], scale, offset.0, offset.1, w, h);
+        let (sx1, sy1) =
+            project_ortho(frame.positions[tgt * 3], frame.positions[tgt * 3 + 1], scale, offset.0, offset.1, w, h);
         fb.draw_line(sx0 as i32, sy0 as i32, sx1 as i32, sy1 as i32, edge_color);
     }
 
     // Nodes as dot sprites.
     for i in 0..frame.len {
-        let (sx, sy) = project_ortho(
-            frame.positions[i * 3], frame.positions[i * 3 + 1],
-            scale, offset.0, offset.1, w, h,
-        );
+        let (sx, sy) =
+            project_ortho(frame.positions[i * 3], frame.positions[i * 3 + 1], scale, offset.0, offset.1, w, h);
         fb.plot_dot(sx, sy, node_color);
     }
 }
 
 /// Compose an MRI density heatmap view.
-pub fn compose_mri(
-    fb: &mut Framebuffer,
-    frame: &RenderFrame,
-    scale: f32,
-    offset: (f32, f32),
-) {
+pub fn compose_mri(fb: &mut Framebuffer, frame: &RenderFrame, scale: f32, offset: (f32, f32)) {
     fb.clear();
     let w = fb.width;
     let h = fb.height;
@@ -357,10 +349,8 @@ pub fn compose_mri(
     let mut xs = Vec::with_capacity(frame.len);
     let mut ys = Vec::with_capacity(frame.len);
     for i in 0..frame.len {
-        let (sx, sy) = project_ortho(
-            frame.positions[i * 3], frame.positions[i * 3 + 1],
-            scale, offset.0, offset.1, w, h,
-        );
+        let (sx, sy) =
+            project_ortho(frame.positions[i * 3], frame.positions[i * 3 + 1], scale, offset.0, offset.1, w, h);
         xs.push(sx);
         ys.push(sy);
     }
@@ -377,8 +367,8 @@ mod tests {
         let tier = PaletteTier::detect();
         match PREFERRED_F32_LANES {
             16 => assert_eq!(tier, PaletteTier::Full16),
-            8  => assert_eq!(tier, PaletteTier::Mid8),
-            _  => assert_eq!(tier, PaletteTier::Low4),
+            8 => assert_eq!(tier, PaletteTier::Mid8),
+            _ => assert_eq!(tier, PaletteTier::Low4),
         }
     }
 
@@ -495,8 +485,12 @@ mod tests {
         let mut frame = RenderFrame::with_capacity(16);
         // Two nodes
         frame.len = 2;
-        frame.positions[0] = 10.0; frame.positions[1] = 10.0; frame.positions[2] = 0.0;
-        frame.positions[3] = 50.0; frame.positions[4] = 50.0; frame.positions[5] = 0.0;
+        frame.positions[0] = 10.0;
+        frame.positions[1] = 10.0;
+        frame.positions[2] = 0.0;
+        frame.positions[3] = 50.0;
+        frame.positions[4] = 50.0;
+        frame.positions[5] = 0.0;
         let edges = vec![(0, 1)];
         compose_neo4j(&mut fb, &frame, &edges, 1.0, (0.0, 0.0), 5, 2);
         // Node 0 should have a dot around (10, 10).
@@ -576,8 +570,8 @@ impl WobbleState {
             if speed > self.inject_threshold {
                 // Perpendicular to velocity direction → organic wobble
                 let norm = speed.recip();
-                self.displace[i * 2]     += -vy * norm * self.amplitude;
-                self.displace[i * 2 + 1] +=  vx * norm * self.amplitude;
+                self.displace[i * 2] += -vy * norm * self.amplitude;
+                self.displace[i * 2 + 1] += vx * norm * self.amplitude;
             }
         }
         // Decay all
@@ -591,10 +585,7 @@ impl WobbleState {
     pub fn adjust(&self, sx: usize, sy: usize, node_idx: usize) -> (usize, usize) {
         let dx = self.displace.get(node_idx * 2).copied().unwrap_or(0.0);
         let dy = self.displace.get(node_idx * 2 + 1).copied().unwrap_or(0.0);
-        (
-            (sx as f32 + dx).max(0.0) as usize,
-            (sy as f32 + dy).max(0.0) as usize,
-        )
+        ((sx as f32 + dx).max(0.0) as usize, (sy as f32 + dy).max(0.0) as usize)
     }
 }
 
@@ -665,7 +656,7 @@ pub type Glyph = [u8; 5];
 /// Missing chars render as a filled block.
 pub static GLYPH_ATLAS: [Glyph; 128] = {
     let mut atlas = [[0x7Fu8; 5]; 128]; // default = filled block
-    // Space
+                                        // Space
     atlas[b' ' as usize] = [0, 0, 0, 0, 0];
     // Digits 0-9
     atlas[b'0' as usize] = [0x3E, 0x51, 0x49, 0x45, 0x3E];
@@ -787,14 +778,8 @@ impl FlybyCache {
     /// one full loop over `n_frames`. Scale determines the orbital radius
     /// in world units; zoom_range controls the min/max camera zoom.
     pub fn prerender(
-        fb_template: &Framebuffer,
-        frame: &RenderFrame,
-        edges: &[(usize, usize)],
-        n_frames: usize,
-        orbit_radius: f32,
-        zoom_range: (f32, f32),
-        node_color: u8,
-        edge_color: u8,
+        fb_template: &Framebuffer, frame: &RenderFrame, edges: &[(usize, usize)], n_frames: usize, orbit_radius: f32,
+        zoom_range: (f32, f32), node_color: u8, edge_color: u8,
     ) -> Self {
         let mut frames = Vec::with_capacity(n_frames);
         let w = fb_template.width;
@@ -812,15 +797,29 @@ impl FlybyCache {
 
             let mut fb = Framebuffer::with_tier(w, h, tier);
             compose_neo4j(
-                &mut fb, frame, edges,
-                cam_zoom, (-cam_x * cam_zoom + w as f32 / 2.0,
-                           -cam_y * cam_zoom + h as f32 / 2.0),
-                node_color, edge_color,
+                &mut fb,
+                frame,
+                edges,
+                cam_zoom,
+                (-cam_x * cam_zoom + w as f32 / 2.0, -cam_y * cam_zoom + h as f32 / 2.0),
+                node_color,
+                edge_color,
             );
             let (packed, bpp) = fb.pack();
-            frames.push(FlybyFrame { packed, bpp, cam_x, cam_y, cam_zoom });
+            frames.push(FlybyFrame {
+                packed,
+                bpp,
+                cam_x,
+                cam_y,
+                cam_zoom,
+            });
         }
-        Self { frames, cursor: 0, width: w, height: h }
+        Self {
+            frames,
+            cursor: 0,
+            width: w,
+            height: h,
+        }
     }
 
     /// Advance the cursor and return the next keyframe (looping).
@@ -854,10 +853,14 @@ impl FlybyCache {
 
     /// Frame count.
     /// Frame count.
-    pub fn len(&self) -> usize { self.frames.len() }
+    pub fn len(&self) -> usize {
+        self.frames.len()
+    }
 
     /// True when no keyframes have been pre-rendered.
-    pub fn is_empty(&self) -> bool { self.frames.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.frames.is_empty()
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -866,17 +869,8 @@ impl FlybyCache {
 
 /// Full Neo4j-style compose with wobble, neuron fire, and labels.
 pub fn compose_neo4j_full(
-    fb: &mut Framebuffer,
-    frame: &RenderFrame,
-    edges: &[(usize, usize)],
-    scale: f32,
-    offset: (f32, f32),
-    wobble: &WobbleState,
-    fire: &FireState,
-    labels: &[&str],
-    node_base_color: u8,
-    edge_color: u8,
-    label_color: u8,
+    fb: &mut Framebuffer, frame: &RenderFrame, edges: &[(usize, usize)], scale: f32, offset: (f32, f32),
+    wobble: &WobbleState, fire: &FireState, labels: &[&str], node_base_color: u8, edge_color: u8, label_color: u8,
 ) {
     fb.clear();
     let w = fb.width;
@@ -885,15 +879,13 @@ pub fn compose_neo4j_full(
 
     // 1. Edges (drawn first so nodes overdraw).
     for &(src, tgt) in edges {
-        if src >= frame.len || tgt >= frame.len { continue; }
-        let (sx0, sy0) = project_ortho(
-            frame.positions[src * 3], frame.positions[src * 3 + 1],
-            scale, offset.0, offset.1, w, h,
-        );
-        let (sx1, sy1) = project_ortho(
-            frame.positions[tgt * 3], frame.positions[tgt * 3 + 1],
-            scale, offset.0, offset.1, w, h,
-        );
+        if src >= frame.len || tgt >= frame.len {
+            continue;
+        }
+        let (sx0, sy0) =
+            project_ortho(frame.positions[src * 3], frame.positions[src * 3 + 1], scale, offset.0, offset.1, w, h);
+        let (sx1, sy1) =
+            project_ortho(frame.positions[tgt * 3], frame.positions[tgt * 3 + 1], scale, offset.0, offset.1, w, h);
         let (wx0, wy0) = wobble.adjust(sx0, sy0, src);
         let (wx1, wy1) = wobble.adjust(sx1, sy1, tgt);
         fb.draw_line(wx0 as i32, wy0 as i32, wx1 as i32, wy1 as i32, edge_color);
@@ -901,10 +893,8 @@ pub fn compose_neo4j_full(
 
     // 2. Nodes as dot sprites with fire boost.
     for i in 0..frame.len {
-        let (sx, sy) = project_ortho(
-            frame.positions[i * 3], frame.positions[i * 3 + 1],
-            scale, offset.0, offset.1, w, h,
-        );
+        let (sx, sy) =
+            project_ortho(frame.positions[i * 3], frame.positions[i * 3 + 1], scale, offset.0, offset.1, w, h);
         let (wx, wy) = wobble.adjust(sx, sy, i);
         let boost = fire.color_boost(i, pal_max);
         let color = (node_base_color + boost).min(pal_max);
@@ -913,11 +903,11 @@ pub fn compose_neo4j_full(
 
     // 3. Labels (drawn last so text is on top).
     for (i, &label) in labels.iter().enumerate().take(frame.len) {
-        if label.is_empty() { continue; }
-        let (sx, sy) = project_ortho(
-            frame.positions[i * 3], frame.positions[i * 3 + 1],
-            scale, offset.0, offset.1, w, h,
-        );
+        if label.is_empty() {
+            continue;
+        }
+        let (sx, sy) =
+            project_ortho(frame.positions[i * 3], frame.positions[i * 3 + 1], scale, offset.0, offset.1, w, h);
         let (wx, wy) = wobble.adjust(sx, sy, i);
         let label_y = wy + fb.tier.sprite_size() / 2 + 1;
         fb.draw_label(wx.saturating_sub(label.len() * 3), label_y, label, label_color);
@@ -985,13 +975,13 @@ mod visual_tests {
     fn flyby_cache_loops_seamlessly() {
         let mut frame = RenderFrame::with_capacity(16);
         frame.len = 2;
-        frame.positions[0] = 10.0; frame.positions[1] = 10.0;
-        frame.positions[3] = 20.0; frame.positions[4] = 20.0;
+        frame.positions[0] = 10.0;
+        frame.positions[1] = 10.0;
+        frame.positions[3] = 20.0;
+        frame.positions[4] = 20.0;
         let edges = vec![(0, 1)];
         let fb_template = Framebuffer::with_tier(64, 64, PaletteTier::Full16);
-        let mut cache = FlybyCache::prerender(
-            &fb_template, &frame, &edges, 8, 10.0, (0.5, 2.0), 5, 2,
-        );
+        let mut cache = FlybyCache::prerender(&fb_template, &frame, &edges, 8, 10.0, (0.5, 2.0), 5, 2);
         assert_eq!(cache.len(), 8);
         // Play through more than one loop — should not panic.
         for _ in 0..20 {
@@ -1005,11 +995,10 @@ mod visual_tests {
     fn flyby_seek_nearest_finds_closest_frame() {
         let mut frame = RenderFrame::with_capacity(16);
         frame.len = 1;
-        frame.positions[0] = 32.0; frame.positions[1] = 32.0;
+        frame.positions[0] = 32.0;
+        frame.positions[1] = 32.0;
         let fb_template = Framebuffer::with_tier(64, 64, PaletteTier::Full16);
-        let mut cache = FlybyCache::prerender(
-            &fb_template, &frame, &[], 16, 10.0, (1.0, 1.0), 5, 2,
-        );
+        let mut cache = FlybyCache::prerender(&fb_template, &frame, &[], 16, 10.0, (1.0, 1.0), 5, 2);
         cache.seek_nearest(32.0, 32.0);
         let f = &cache.frames[cache.cursor];
         let dx = f.cam_x - 32.0;
@@ -1022,17 +1011,16 @@ mod visual_tests {
         let mut fb = Framebuffer::with_tier(128, 128, PaletteTier::Full16);
         let mut frame = RenderFrame::with_capacity(16);
         frame.len = 2;
-        frame.positions[0] = 30.0; frame.positions[1] = 30.0;
-        frame.positions[3] = 90.0; frame.positions[4] = 90.0;
+        frame.positions[0] = 30.0;
+        frame.positions[1] = 30.0;
+        frame.positions[3] = 90.0;
+        frame.positions[4] = 90.0;
         let edges = vec![(0, 1)];
         let wobble = WobbleState::new(16);
         let mut fire = FireState::new(16);
         fire.fire(0, 255);
         let labels = vec!["NODE0", "NODE1"];
-        compose_neo4j_full(
-            &mut fb, &frame, &edges, 1.0, (0.0, 0.0),
-            &wobble, &fire, &labels, 3, 1, 7,
-        );
+        compose_neo4j_full(&mut fb, &frame, &edges, 1.0, (0.0, 0.0), &wobble, &fire, &labels, 3, 1, 7);
         // Node 0 should be brighter (fire boost) than base color 3.
         let node0_pixel = fb.pixels[30 * 128 + 30];
         assert!(node0_pixel >= 3, "node0 should have at least base color");
@@ -1059,11 +1047,7 @@ mod visual_tests {
 /// 3×3 box-blur diffusion: each pixel = average of itself + 8 neighbors.
 /// In-place via double buffer (src → dst, then swap pointers).
 /// Palette-safe: result is clamped to [0, max_palette].
-pub fn diffuse_step(
-    src: &[u8], dst: &mut [u8],
-    width: usize, height: usize,
-    max_palette: u8,
-) {
+pub fn diffuse_step(src: &[u8], dst: &mut [u8], width: usize, height: usize, max_palette: u8) {
     for y in 0..height {
         for x in 0..width {
             let mut sum: u16 = 0;
@@ -1141,7 +1125,9 @@ impl PyramidShader {
     /// Inject heat at L1 coordinates (0..64, 0..64).
     pub fn inject(&mut self, x: usize, y: usize, intensity: u8) {
         if x < 64 && y < 64 {
-            self.l1[y * 64 + x] = self.l1[y * 64 + x].saturating_add(intensity).min(self.palette_max);
+            self.l1[y * 64 + x] = self.l1[y * 64 + x]
+                .saturating_add(intensity)
+                .min(self.palette_max);
         }
     }
 
@@ -1169,19 +1155,19 @@ impl PyramidShader {
 
         // 2. Cascade: L1 upscales into L2, L2 into L3, L3 into L4.
         //    Additive blend (saturating) so existing diffusion + upscaled signal combine.
-        let (up1, _, _) = upscale_2x(&self.l1, 64, 64);       // 128²
-        let (up1b, _, _) = upscale_2x(&up1, 128, 128);         // 256²
+        let (up1, _, _) = upscale_2x(&self.l1, 64, 64); // 128²
+        let (up1b, _, _) = upscale_2x(&up1, 128, 128); // 256²
         for (dst, src) in self.l2.iter_mut().zip(up1b.iter()) {
             *dst = dst.saturating_add(*src).min(self.palette_max);
         }
 
-        let (up2, _, _) = upscale_2x(&self.l2, 256, 256);      // 512²
-        let (up2b, _, _) = upscale_2x(&up2, 512, 512);          // 1024²
+        let (up2, _, _) = upscale_2x(&self.l2, 256, 256); // 512²
+        let (up2b, _, _) = upscale_2x(&up2, 512, 512); // 1024²
         for (dst, src) in self.l3.iter_mut().zip(up2b.iter()) {
             *dst = dst.saturating_add(*src).min(self.palette_max);
         }
 
-        let (up3, _, _) = upscale_2x(&self.l3, 1024, 1024);    // 2048²
+        let (up3, _, _) = upscale_2x(&self.l3, 1024, 1024); // 2048²
         for (dst, src) in self.l4.iter_mut().zip(up3.iter()) {
             *dst = dst.saturating_add(*src).min(self.palette_max);
         }
@@ -1223,10 +1209,8 @@ impl PyramidShader {
 /// Nearest-neighbor scale-blit from src (src_w × src_h) into a region
 /// of the framebuffer at (dst_x, dst_y) with size (dst_w × dst_h).
 fn blit_scaled(
-    src: &[u8], src_w: usize, src_h: usize,
-    fb: &mut Framebuffer,
-    dst_x: usize, dst_y: usize,
-    dst_w: usize, dst_h: usize,
+    src: &[u8], src_w: usize, src_h: usize, fb: &mut Framebuffer, dst_x: usize, dst_y: usize, dst_w: usize,
+    dst_h: usize,
 ) {
     for dy in 0..dst_h {
         let sy = (dy * src_h) / dst_h;
@@ -1306,10 +1290,10 @@ mod pyramid_tests {
         // Center should have decreased (averaged with zero neighbors).
         assert!(dst[8 * 16 + 8] < 15);
         // At least one neighbor should be nonzero.
-        let neighbor_sum: u16 = [
-            dst[7 * 16 + 8], dst[9 * 16 + 8],
-            dst[8 * 16 + 7], dst[8 * 16 + 9],
-        ].iter().map(|&v| v as u16).sum();
+        let neighbor_sum: u16 = [dst[7 * 16 + 8], dst[9 * 16 + 8], dst[8 * 16 + 7], dst[8 * 16 + 9]]
+            .iter()
+            .map(|&v| v as u16)
+            .sum();
         assert!(neighbor_sum > 0, "diffusion should spread to neighbors");
     }
 }

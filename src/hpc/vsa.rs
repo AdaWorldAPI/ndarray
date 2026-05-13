@@ -180,9 +180,7 @@ impl VsaVector {
     #[inline]
     pub fn as_bytes(&self) -> &[u8] {
         // SAFETY: [u64; N] is contiguous, u64→u8 cast is alignment-safe.
-        unsafe {
-            std::slice::from_raw_parts(self.words.as_ptr() as *const u8, VSA_WORDS * 8)
-        }
+        unsafe { std::slice::from_raw_parts(self.words.as_ptr() as *const u8, VSA_WORDS * 8) }
     }
 
     /// Population count: number of set bits (out of 16,384).
@@ -537,12 +535,7 @@ mod tests {
         let bundled = vsa_bundle(&[a.clone(), a.clone(), a.clone(), b.clone()]);
         let sim_a = vsa_similarity(&bundled, &a);
         let sim_b = vsa_similarity(&bundled, &b);
-        assert!(
-            sim_a > sim_b,
-            "bundled should be closer to a (sim_a={}, sim_b={})",
-            sim_a,
-            sim_b
-        );
+        assert!(sim_a > sim_b, "bundled should be closer to a (sim_a={}, sim_b={})", sim_a, sim_b);
     }
 
     #[test]
@@ -575,11 +568,7 @@ mod tests {
     fn test_similarity_self_one() {
         let a = VsaVector::random(42);
         let sim = vsa_similarity(&a, &a);
-        assert!(
-            (sim - 1.0).abs() < f32::EPSILON,
-            "self-similarity should be 1.0, got {}",
-            sim
-        );
+        assert!((sim - 1.0).abs() < f32::EPSILON, "self-similarity should be 1.0, got {}", sim);
     }
 
     #[test]
@@ -593,11 +582,7 @@ mod tests {
         complement.words[VSA_WORDS - 1] &= TAIL_MASK;
 
         let sim = vsa_similarity(&a, &complement);
-        assert!(
-            sim.abs() < 0.01,
-            "complement similarity should be ~0.0, got {}",
-            sim
-        );
+        assert!(sim.abs() < 0.01, "complement similarity should be ~0.0, got {}", sim);
     }
 
     #[test]
@@ -645,10 +630,7 @@ mod tests {
 
         let codebook = vec![other1, other2, entry.clone()];
         let found = vsa_clean(&noisy, &codebook).unwrap();
-        assert_eq!(
-            found, &entry,
-            "clean should recover the closest codebook entry"
-        );
+        assert_eq!(found, &entry, "clean should recover the closest codebook entry");
     }
 
     #[test]

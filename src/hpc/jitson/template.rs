@@ -316,11 +316,7 @@ mod tests {
     fn test_check_pipeline_features() {
         let tmpl = from_json(VALID_TEMPLATE).unwrap();
         let unsatisfied = check_pipeline_features(&tmpl);
-        assert!(
-            unsatisfied.is_empty(),
-            "unexpected unsatisfied: {:?}",
-            unsatisfied
-        );
+        assert!(unsatisfied.is_empty(), "unexpected unsatisfied: {:?}", unsatisfied);
     }
 
     #[test]
@@ -372,5 +368,4 @@ mod tests {
         let t2 = from_json(BACKEND_TEMPLATE).unwrap();
         assert_ne!(template_hash(&t1), template_hash(&t2));
     }
-
 }

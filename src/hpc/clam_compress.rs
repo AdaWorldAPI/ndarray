@@ -254,11 +254,7 @@ impl CompressedTree {
             comp[node_idx] = Some(ClusterCompression {
                 mode,
                 unitary_cost,
-                recursive_cost: if cluster.is_leaf() {
-                    unitary_cost
-                } else {
-                    min_cost
-                },
+                recursive_cost: if cluster.is_leaf() { unitary_cost } else { min_cost },
                 min_cost,
             });
         }
@@ -276,19 +272,13 @@ impl CompressedTree {
         let mut encoding_centers = vec![0usize; count];
 
         Self::assign_encodings(
-            tree,
-            data,
-            vec_len,
-            0, // root
-            &cluster_modes,
-            &mut encodings,
-            &mut encoding_centers,
+            tree, data, vec_len, 0, // root
+            &cluster_modes, &mut encodings, &mut encoding_centers,
         );
 
         // Compute stats
         let uncompressed_bytes = count * vec_len;
-        let compressed_bytes: usize =
-            encodings.iter().map(|e| e.storage_cost()).sum::<usize>() + count * 2; // 2 bytes per point for center reference overhead
+        let compressed_bytes: usize = encodings.iter().map(|e| e.storage_cost()).sum::<usize>() + count * 2; // 2 bytes per point for center reference overhead
         let ratio = if compressed_bytes > 0 {
             uncompressed_bytes as f64 / compressed_bytes as f64
         } else {
@@ -326,13 +316,8 @@ impl CompressedTree {
 
     /// Recursively assign encodings to points.
     fn assign_encodings(
-        tree: &ClamTree,
-        data: &[u8],
-        vec_len: usize,
-        node_idx: usize,
-        modes: &[CompressionMode],
-        encodings: &mut [XorDiffEncoding],
-        encoding_centers: &mut [usize],
+        tree: &ClamTree, data: &[u8], vec_len: usize, node_idx: usize, modes: &[CompressionMode],
+        encodings: &mut [XorDiffEncoding], encoding_centers: &mut [usize],
     ) {
         let cluster = &tree.nodes[node_idx];
         let center = tree.center_data(cluster, data, vec_len);
@@ -346,26 +331,10 @@ impl CompressedTree {
         } else {
             // Recursive: delegate to children
             if let Some(left) = cluster.left {
-                Self::assign_encodings(
-                    tree,
-                    data,
-                    vec_len,
-                    left,
-                    modes,
-                    encodings,
-                    encoding_centers,
-                );
+                Self::assign_encodings(tree, data, vec_len, left, modes, encodings, encoding_centers);
             }
             if let Some(right) = cluster.right {
-                Self::assign_encodings(
-                    tree,
-                    data,
-                    vec_len,
-                    right,
-                    modes,
-                    encodings,
-                    encoding_centers,
-                );
+                Self::assign_encodings(tree, data, vec_len, right, modes, encodings, encoding_centers);
             }
         }
     }
@@ -389,12 +358,7 @@ impl CompressedTree {
     ///
     /// Cost: O(num_diffs) per point instead of O(vec_len).
     pub fn hamming_to_compressed(
-        &self,
-        query: &[u8],
-        point_idx: usize,
-        data: &[u8],
-        vec_len: usize,
-        dist_cache: &mut DistanceCache,
+        &self, query: &[u8], point_idx: usize, data: &[u8], vec_len: usize, dist_cache: &mut DistanceCache,
         dist_fn: fn(&[u8], &[u8]) -> u64,
     ) -> u64 {
         let center_idx = self.encoding_centers[point_idx];
@@ -474,9 +438,9 @@ fn postorder_indices(tree: &ClamTree) -> Vec<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use super::super::clam::ClamTree;
     use super::super::bitwise;
+    use super::super::clam::ClamTree;
+    use super::*;
 
     /// Simple SplitMix64 RNG for deterministic test data generation.
     struct SplitMix64(u64);
@@ -505,10 +469,7 @@ mod tests {
 
     /// Make clustered data: groups of similar vectors.
     fn make_clustered_data(
-        num_clusters: usize,
-        points_per_cluster: usize,
-        vec_len: usize,
-        noise_bytes: usize,
+        num_clusters: usize, points_per_cluster: usize, vec_len: usize, noise_bytes: usize,
     ) -> Vec<u8> {
         let count = num_clusters * points_per_cluster;
         let mut data = vec![0u8; count * vec_len];
@@ -576,10 +537,7 @@ mod tests {
 
         let dist_q_point_compressed = enc.hamming_from_query(&query, &center, dist_q_center);
 
-        assert_eq!(
-            dist_q_point_compressed, dist_q_point_exact,
-            "Compressive Hamming should match exact Hamming"
-        );
+        assert_eq!(dist_q_point_compressed, dist_q_point_exact, "Compressive Hamming should match exact Hamming");
     }
 
     #[test]
@@ -594,9 +552,7 @@ mod tests {
 
         println!(
             "Random data compression: {:.2}x ({} -> {} bytes)",
-            compressed.stats.ratio,
-            compressed.stats.uncompressed_bytes,
-            compressed.stats.compressed_bytes
+            compressed.stats.ratio, compressed.stats.uncompressed_bytes, compressed.stats.compressed_bytes
         );
 
         // Random data: compression ratio may be < 1 (expansion)
@@ -606,11 +562,7 @@ mod tests {
         for i in 0..count {
             let decompressed = compressed.decompress_point(i, &data, vec_len);
             let original = &data[i * vec_len..(i + 1) * vec_len];
-            assert_eq!(
-                &decompressed, original,
-                "Decompressed point {} should match original",
-                i
-            );
+            assert_eq!(&decompressed, original, "Decompressed point {} should match original", i);
         }
     }
 
@@ -630,9 +582,7 @@ mod tests {
 
         println!(
             "Clustered data compression: {:.2}x ({} -> {} bytes)",
-            compressed.stats.ratio,
-            compressed.stats.uncompressed_bytes,
-            compressed.stats.compressed_bytes
+            compressed.stats.ratio, compressed.stats.uncompressed_bytes, compressed.stats.compressed_bytes
         );
 
         // Clustered data with low noise should compress well
@@ -668,19 +618,9 @@ mod tests {
         // Compare compressive search distances to exact distances
         for i in 0..count {
             let exact = bitwise::hamming_distance_raw(query, &data[i * vec_len..(i + 1) * vec_len]);
-            let comp = compressed.hamming_to_compressed(
-                query,
-                i,
-                &data,
-                vec_len,
-                &mut cache,
-                bitwise::hamming_distance_raw,
-            );
-            assert_eq!(
-                comp, exact,
-                "Compressive Hamming for point {} should match exact ({} vs {})",
-                i, comp, exact
-            );
+            let comp =
+                compressed.hamming_to_compressed(query, i, &data, vec_len, &mut cache, bitwise::hamming_distance_raw);
+            assert_eq!(comp, exact, "Compressive Hamming for point {} should match exact ({} vs {})", i, comp, exact);
         }
     }
 

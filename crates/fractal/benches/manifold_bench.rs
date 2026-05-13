@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use phyllotactic_manifold::*;
+use fractal::*;
 
 fn make_seeds(n: usize) -> Vec<[i8; 34]> {
     let mut seeds = Vec::with_capacity(n);
@@ -7,8 +7,8 @@ fn make_seeds(n: usize) -> Vec<[i8; 34]> {
         let mut seed = [0i8; 34];
         seed[0] = (i % 128) as i8; // HEEL
         seed[33] = ((i * 7) % 128) as i8; // GAMMA
-        for j in 1..33 {
-            seed[j] = ((i * 13 + j * 37) % 256) as i8;
+        for (j, slot) in seed.iter_mut().enumerate().take(33).skip(1) {
+            *slot = ((i * 13 + j * 37) % 256) as i8;
         }
         seeds.push(seed);
     }
@@ -59,10 +59,10 @@ fn bench_resonance(c: &mut Criterion) {
     let threshold = 1000.0;
 
     // Pre-encode
-    let flat8_enc: Vec<_> = seeds.iter().map(|s| flat8::encode(s)).collect();
-    let spiral8_enc: Vec<_> = seeds.iter().map(|s| spiral8::encode(s)).collect();
-    let spiral8g_enc: Vec<_> = seeds.iter().map(|s| spiral8_gamma::encode(s)).collect();
-    let s7p1_enc: Vec<_> = seeds.iter().map(|s| seven_plus_one::encode(s)).collect();
+    let flat8_enc: Vec<_> = seeds.iter().map(flat8::encode).collect();
+    let spiral8_enc: Vec<_> = seeds.iter().map(spiral8::encode).collect();
+    let spiral8g_enc: Vec<_> = seeds.iter().map(spiral8_gamma::encode).collect();
+    let s7p1_enc: Vec<_> = seeds.iter().map(seven_plus_one::encode).collect();
 
     let mut group = c.benchmark_group("resonance");
 
@@ -85,11 +85,7 @@ fn bench_resonance(c: &mut Criterion) {
     group.bench_function("spiral8_gamma", |b| {
         b.iter(|| {
             for (x, y) in &spiral8g_enc {
-                black_box(spiral8_gamma::resonance(
-                    black_box(x),
-                    black_box(y),
-                    threshold,
-                ));
+                black_box(spiral8_gamma::resonance(black_box(x), black_box(y), threshold));
             }
         })
     });
@@ -107,7 +103,7 @@ fn bench_resonance(c: &mut Criterion) {
 
 fn bench_clam48(c: &mut Criterion) {
     let seeds = make_seeds(1024);
-    let manifolds: Vec<_> = seeds.iter().map(|s| seven_plus_one::encode(s)).collect();
+    let manifolds: Vec<_> = seeds.iter().map(seven_plus_one::encode).collect();
 
     c.bench_function("clam48_extraction", |b| {
         b.iter(|| {
@@ -123,8 +119,8 @@ fn bench_dead_zone(c: &mut Criterion) {
         let mut s = [0i8; 34];
         s[0] = 42;
         s[33] = 7;
-        for i in 1..33 {
-            s[i] = (i as i8).wrapping_mul(13).wrapping_add(37);
+        for (i, slot) in s.iter_mut().enumerate().take(33).skip(1) {
+            *slot = (i as i8).wrapping_mul(13).wrapping_add(37);
         }
         s
     };
@@ -151,12 +147,5 @@ fn bench_encode_scaling(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(
-    benches,
-    bench_encode,
-    bench_resonance,
-    bench_clam48,
-    bench_dead_zone,
-    bench_encode_scaling,
-);
+criterion_group!(benches, bench_encode, bench_resonance, bench_clam48, bench_dead_zone, bench_encode_scaling,);
 criterion_main!(benches);

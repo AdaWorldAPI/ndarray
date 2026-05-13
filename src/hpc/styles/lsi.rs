@@ -4,24 +4,57 @@
 pub struct ClusterDistribution {
     pub mu: f32,
     pub sigma: f32,
-    pub p25: f32, pub p50: f32, pub p75: f32, pub p95: f32, pub p99: f32,
+    pub p25: f32,
+    pub p50: f32,
+    pub p75: f32,
+    pub p95: f32,
+    pub p99: f32,
 }
 
 impl ClusterDistribution {
     pub fn from_distances(distances: &[u32]) -> Self {
-        if distances.is_empty() { return Self { mu: 0.0, sigma: 0.0, p25: 0.0, p50: 0.0, p75: 0.0, p95: 0.0, p99: 0.0 }; }
+        if distances.is_empty() {
+            return Self {
+                mu: 0.0,
+                sigma: 0.0,
+                p25: 0.0,
+                p50: 0.0,
+                p75: 0.0,
+                p95: 0.0,
+                p99: 0.0,
+            };
+        }
         let n = distances.len() as f32;
         let mu = distances.iter().sum::<u32>() as f32 / n;
-        let sigma = (distances.iter().map(|d| (*d as f32 - mu).powi(2)).sum::<f32>() / n).sqrt();
-        Self { mu, sigma, p25: mu - 0.6745 * sigma, p50: mu, p75: mu + 0.6745 * sigma, p95: mu + 1.6449 * sigma, p99: mu + 2.3263 * sigma }
+        let sigma = (distances
+            .iter()
+            .map(|d| (*d as f32 - mu).powi(2))
+            .sum::<f32>()
+            / n)
+            .sqrt();
+        Self {
+            mu,
+            sigma,
+            p25: mu - 0.6745 * sigma,
+            p50: mu,
+            p75: mu + 0.6745 * sigma,
+            p95: mu + 1.6449 * sigma,
+            p99: mu + 2.3263 * sigma,
+        }
     }
 
     pub fn mexican_hat(&self, distance: f32) -> f32 {
-        if distance < self.p25 { 1.0 }
-        else if distance < self.p75 { 0.5 }
-        else if distance < self.p95 { 0.0 }
-        else if distance < self.p99 { -0.5 }
-        else { -1.0 }
+        if distance < self.p25 {
+            1.0
+        } else if distance < self.p75 {
+            0.5
+        } else if distance < self.p95 {
+            0.0
+        } else if distance < self.p99 {
+            -0.5
+        } else {
+            -1.0
+        }
     }
 }
 

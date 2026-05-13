@@ -10,14 +10,30 @@ pub struct FrameShift {
 }
 
 pub fn dynamic_reframe(gate_history: &[GateState]) -> FrameShift {
-    let recent_blocks = gate_history.iter().rev().take(3)
-        .filter(|g| **g == GateState::Block).count();
+    let recent_blocks = gate_history
+        .iter()
+        .rev()
+        .take(3)
+        .filter(|g| **g == GateState::Block)
+        .count();
     if recent_blocks >= 3 {
-        FrameShift { occurred: true, rung_jump: 3, style_flip: true }
+        FrameShift {
+            occurred: true,
+            rung_jump: 3,
+            style_flip: true,
+        }
     } else if recent_blocks >= 2 {
-        FrameShift { occurred: true, rung_jump: 1, style_flip: false }
+        FrameShift {
+            occurred: true,
+            rung_jump: 1,
+            style_flip: false,
+        }
     } else {
-        FrameShift { occurred: false, rung_jump: 0, style_flip: false }
+        FrameShift {
+            occurred: false,
+            rung_jump: 0,
+            style_flip: false,
+        }
     }
 }
 

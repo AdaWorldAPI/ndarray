@@ -5,8 +5,7 @@
 use ndarray::prelude::*;
 
 #[test]
-fn chunks()
-{
+fn chunks() {
     use ndarray::NdProducer;
     let a = Array1::from_iter(0..100)
         .into_shape_with_order((10, 10))
@@ -45,15 +44,13 @@ fn chunks()
 
 #[should_panic]
 #[test]
-fn chunks_different_size_1()
-{
+fn chunks_different_size_1() {
     let a = Array::<f32, _>::zeros(vec![2, 3]);
     a.exact_chunks(vec![2]);
 }
 
 #[test]
-fn chunks_ok_size()
-{
+fn chunks_ok_size() {
     let mut a = Array::<f32, _>::zeros(vec![2, 3]);
     a.fill(1.);
     let mut c = 0;
@@ -67,15 +64,13 @@ fn chunks_ok_size()
 
 #[should_panic]
 #[test]
-fn chunks_different_size_2()
-{
+fn chunks_different_size_2() {
     let a = Array::<f32, _>::zeros(vec![2, 3]);
     a.exact_chunks(vec![2, 3, 4]);
 }
 
 #[test]
-fn chunks_mut()
-{
+fn chunks_mut() {
     let mut a = Array::zeros((7, 8));
     for (i, mut chunk) in a.exact_chunks_mut((2, 3)).into_iter().enumerate() {
         chunk.fill(i);
@@ -95,8 +90,7 @@ fn chunks_mut()
 
 #[should_panic]
 #[test]
-fn chunks_different_size_3()
-{
+fn chunks_different_size_3() {
     let mut a = Array::<f32, _>::zeros(vec![2, 3]);
     a.exact_chunks_mut(vec![2, 3, 4]);
 }

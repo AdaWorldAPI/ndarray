@@ -9,21 +9,20 @@ use crate::is_aligned;
 use crate::shape_builder::{StrideShape, Strides};
 
 impl<A, D> RawArrayView<A, D>
-where D: Dimension
+where
+    D: Dimension,
 {
     /// Create a new `RawArrayView`.
     ///
     /// Unsafe because caller is responsible for ensuring that the array will
     /// meet all of the invariants of the `ArrayBase` type.
     #[inline]
-    pub(crate) unsafe fn new(ptr: NonNull<A>, dim: D, strides: D) -> Self
-    {
+    pub(crate) unsafe fn new(ptr: NonNull<A>, dim: D, strides: D) -> Self {
         RawArrayView::from_data_ptr(RawViewRepr::new(), ptr).with_strides_dim(strides, dim)
     }
 
     #[inline]
-    unsafe fn new_(ptr: *const A, dim: D, strides: D) -> Self
-    {
+    unsafe fn new_(ptr: *const A, dim: D, strides: D) -> Self {
         Self::new(nonnull_debug_checked_from_ptr(ptr as *mut A), dim, strides)
     }
 
@@ -69,7 +68,8 @@ where D: Dimension
     /// [`.offset()`]: https://doc.rust-lang.org/stable/std/primitive.pointer.html#method.offset
     #[inline]
     pub unsafe fn from_shape_ptr<Sh>(shape: Sh, ptr: *const A) -> Self
-    where Sh: Into<StrideShape<D>>
+    where
+        Sh: Into<StrideShape<D>>,
     {
         let shape = shape.into();
         let dim = shape.dim;
@@ -95,12 +95,8 @@ where D: Dimension
     /// data is valid, ensure that the pointer is aligned, and choose the
     /// correct lifetime.
     #[inline]
-    pub unsafe fn deref_into_view<'a>(self) -> ArrayView<'a, A, D>
-    {
-        debug_assert!(
-            is_aligned(self.parts.ptr.as_ptr()),
-            "The pointer must be aligned."
-        );
+    pub unsafe fn deref_into_view<'a>(self) -> ArrayView<'a, A, D> {
+        debug_assert!(is_aligned(self.parts.ptr.as_ptr()), "The pointer must be aligned.");
         ArrayView::new(self.parts.ptr, self.parts.dim, self.parts.strides)
     }
 
@@ -110,8 +106,7 @@ where D: Dimension
     /// **Panics** if `axis` or `index` is out of bounds.
     #[track_caller]
     #[inline]
-    pub fn split_at(self, axis: Axis, index: Ix) -> (Self, Self)
-    {
+    pub fn split_at(self, axis: Axis, index: Ix) -> (Self, Self) {
         assert!(index <= self.len_of(axis));
         let left_ptr = self.parts.ptr.as_ptr();
         let right_ptr = if index == self.len_of(axis) {
@@ -145,31 +140,23 @@ where D: Dimension
     /// casts are safe, access through the produced raw view is only possible
     /// in an unsafe block or function.
     #[track_caller]
-    pub fn cast<B>(self) -> RawArrayView<B, D>
-    {
-        assert_eq!(
-            mem::size_of::<B>(),
-            mem::size_of::<A>(),
-            "size mismatch in raw view cast"
-        );
+    pub fn cast<B>(self) -> RawArrayView<B, D> {
+        assert_eq!(mem::size_of::<B>(), mem::size_of::<A>(), "size mismatch in raw view cast");
         let ptr = self.parts.ptr.cast::<B>();
         unsafe { RawArrayView::new(ptr, self.parts.dim, self.parts.strides) }
     }
 }
 
 impl<T, D> RawArrayView<Complex<T>, D>
-where D: Dimension
+where
+    D: Dimension,
 {
     /// Splits the view into views of the real and imaginary components of the
     /// elements.
-    pub fn split_complex(self) -> Complex<RawArrayView<T, D>>
-    {
+    pub fn split_complex(self) -> Complex<RawArrayView<T, D>> {
         // Check that the size and alignment of `Complex<T>` are as expected.
         // These assertions should always pass, for arbitrary `T`.
-        assert_eq!(
-            mem::size_of::<Complex<T>>(),
-            mem::size_of::<T>().checked_mul(2).unwrap()
-        );
+        assert_eq!(mem::size_of::<Complex<T>>(), mem::size_of::<T>().checked_mul(2).unwrap());
         assert_eq!(mem::align_of::<Complex<T>>(), mem::align_of::<T>());
 
         let dim = self.parts.dim.clone();
@@ -225,21 +212,20 @@ where D: Dimension
 }
 
 impl<A, D> RawArrayViewMut<A, D>
-where D: Dimension
+where
+    D: Dimension,
 {
     /// Create a new `RawArrayViewMut`.
     ///
     /// Unsafe because caller is responsible for ensuring that the array will
     /// meet all of the invariants of the `ArrayBase` type.
     #[inline]
-    pub(crate) unsafe fn new(ptr: NonNull<A>, dim: D, strides: D) -> Self
-    {
+    pub(crate) unsafe fn new(ptr: NonNull<A>, dim: D, strides: D) -> Self {
         RawArrayViewMut::from_data_ptr(RawViewRepr::new(), ptr).with_strides_dim(strides, dim)
     }
 
     #[inline]
-    unsafe fn new_(ptr: *mut A, dim: D, strides: D) -> Self
-    {
+    unsafe fn new_(ptr: *mut A, dim: D, strides: D) -> Self {
         Self::new(nonnull_debug_checked_from_ptr(ptr), dim, strides)
     }
 
@@ -285,7 +271,8 @@ where D: Dimension
     /// [`.offset()`]: https://doc.rust-lang.org/stable/std/primitive.pointer.html#method.offset
     #[inline]
     pub unsafe fn from_shape_ptr<Sh>(shape: Sh, ptr: *mut A) -> Self
-    where Sh: Into<StrideShape<D>>
+    where
+        Sh: Into<StrideShape<D>>,
     {
         let shape = shape.into();
         let dim = shape.dim;
@@ -294,8 +281,10 @@ where D: Dimension
             if let Strides::Custom(strides) = &shape.strides {
                 dimension::strides_non_negative(strides).unwrap();
                 dimension::max_abs_offset_check_overflow::<A, _>(&dim, strides).unwrap();
-                assert!(!dimension::dim_stride_overlap(&dim, strides),
-                        "The strides must not allow any element to be referenced by two different indices");
+                assert!(
+                    !dimension::dim_stride_overlap(&dim, strides),
+                    "The strides must not allow any element to be referenced by two different indices"
+                );
             } else {
                 dimension::size_of_shape_checked(&dim).unwrap();
             }
@@ -306,8 +295,7 @@ where D: Dimension
 
     /// Converts to a non-mutable `RawArrayView`.
     #[inline]
-    pub(crate) fn into_raw_view(self) -> RawArrayView<A, D>
-    {
+    pub(crate) fn into_raw_view(self) -> RawArrayView<A, D> {
         unsafe { RawArrayView::new(self.parts.ptr, self.parts.dim, self.parts.strides) }
     }
 
@@ -320,12 +308,8 @@ where D: Dimension
     /// data is valid, ensure that the pointer is aligned, and choose the
     /// correct lifetime.
     #[inline]
-    pub unsafe fn deref_into_view<'a>(self) -> ArrayView<'a, A, D>
-    {
-        debug_assert!(
-            is_aligned(self.parts.ptr.as_ptr()),
-            "The pointer must be aligned."
-        );
+    pub unsafe fn deref_into_view<'a>(self) -> ArrayView<'a, A, D> {
+        debug_assert!(is_aligned(self.parts.ptr.as_ptr()), "The pointer must be aligned.");
         ArrayView::new(self.parts.ptr, self.parts.dim, self.parts.strides)
     }
 
@@ -338,12 +322,8 @@ where D: Dimension
     /// data is valid, ensure that the pointer is aligned, and choose the
     /// correct lifetime.
     #[inline]
-    pub unsafe fn deref_into_view_mut<'a>(self) -> ArrayViewMut<'a, A, D>
-    {
-        debug_assert!(
-            is_aligned(self.parts.ptr.as_ptr()),
-            "The pointer must be aligned."
-        );
+    pub unsafe fn deref_into_view_mut<'a>(self) -> ArrayViewMut<'a, A, D> {
+        debug_assert!(is_aligned(self.parts.ptr.as_ptr()), "The pointer must be aligned.");
         ArrayViewMut::new(self.parts.ptr, self.parts.dim, self.parts.strides)
     }
 
@@ -353,8 +333,7 @@ where D: Dimension
     /// **Panics** if `axis` or `index` is out of bounds.
     #[track_caller]
     #[inline]
-    pub fn split_at(self, axis: Axis, index: Ix) -> (Self, Self)
-    {
+    pub fn split_at(self, axis: Axis, index: Ix) -> (Self, Self) {
         let (left, right) = self.into_raw_view().split_at(axis, index);
         unsafe {
             (
@@ -375,25 +354,20 @@ where D: Dimension
     /// casts are safe, access through the produced raw view is only possible
     /// in an unsafe block or function.
     #[track_caller]
-    pub fn cast<B>(self) -> RawArrayViewMut<B, D>
-    {
-        assert_eq!(
-            mem::size_of::<B>(),
-            mem::size_of::<A>(),
-            "size mismatch in raw view cast"
-        );
+    pub fn cast<B>(self) -> RawArrayViewMut<B, D> {
+        assert_eq!(mem::size_of::<B>(), mem::size_of::<A>(), "size mismatch in raw view cast");
         let ptr = self.parts.ptr.cast::<B>();
         unsafe { RawArrayViewMut::new(ptr, self.parts.dim, self.parts.strides) }
     }
 }
 
 impl<T, D> RawArrayViewMut<Complex<T>, D>
-where D: Dimension
+where
+    D: Dimension,
 {
     /// Splits the view into views of the real and imaginary components of the
     /// elements.
-    pub fn split_complex(self) -> Complex<RawArrayViewMut<T, D>>
-    {
+    pub fn split_complex(self) -> Complex<RawArrayViewMut<T, D>> {
         let Complex { re, im } = self.into_raw_view().split_complex();
         unsafe {
             Complex {

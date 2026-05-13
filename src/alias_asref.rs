@@ -1,20 +1,10 @@
 use crate::{
-    iter::Axes,
-    ArrayBase,
-    Axis,
-    AxisDescription,
-    Dimension,
-    NdIndex,
-    RawArrayView,
-    RawData,
-    RawDataMut,
-    Slice,
+    iter::Axes, ArrayBase, Axis, AxisDescription, Dimension, NdIndex, RawArrayView, RawData, RawDataMut, Slice,
     SliceArg,
 };
 
 /// Functions coming from RawRef
-impl<A, S: RawData<Elem = A>, D: Dimension> ArrayBase<S, D>
-{
+impl<A, S: RawData<Elem = A>, D: Dimension> ArrayBase<S, D> {
     /// Return a raw pointer to the element at `index`, or return `None`
     /// if the index is out of bounds.
     ///
@@ -29,7 +19,8 @@ impl<A, S: RawData<Elem = A>, D: Dimension> ArrayBase<S, D>
     /// assert_eq!(unsafe { *p }, 2.);
     /// ```
     pub fn get_ptr<I>(&self, index: I) -> Option<*const A>
-    where I: NdIndex<D>
+    where
+        I: NdIndex<D>,
     {
         self.as_raw_ref().get_ptr(index)
     }
@@ -69,22 +60,19 @@ impl<A, S: RawData<Elem = A>, D: Dimension> ArrayBase<S, D>
     ///
     /// where *d* is `self.ndim()`.
     #[inline(always)]
-    pub fn as_ptr(&self) -> *const A
-    {
+    pub fn as_ptr(&self) -> *const A {
         self.as_raw_ref().as_ptr()
     }
 
     /// Return a raw view of the array.
     #[inline]
-    pub fn raw_view(&self) -> RawArrayView<S::Elem, D>
-    {
+    pub fn raw_view(&self) -> RawArrayView<S::Elem, D> {
         self.as_raw_ref().raw_view()
     }
 }
 
 /// Functions coming from LayoutRef
-impl<S: RawData, D: Dimension> ArrayBase<S, D>
-{
+impl<S: RawData, D: Dimension> ArrayBase<S, D> {
     /// Slice the array in place without changing the number of dimensions.
     ///
     /// In particular, if an axis is sliced with an index, the axis is
@@ -107,7 +95,8 @@ impl<S: RawData, D: Dimension> ArrayBase<S, D>
     /// - if `D` is `IxDyn` and `info` does not match the number of array axes
     #[track_caller]
     pub fn slice_collapse<I>(&mut self, info: I)
-    where I: SliceArg<D>
+    where
+        I: SliceArg<D>,
     {
         self.as_layout_ref_mut().slice_collapse(info);
     }
@@ -117,8 +106,7 @@ impl<S: RawData, D: Dimension> ArrayBase<S, D>
     /// **Panics** if an index is out of bounds or step size is zero.<br>
     /// **Panics** if `axis` is out of bounds.
     #[track_caller]
-    pub fn slice_axis_inplace(&mut self, axis: Axis, indices: Slice)
-    {
+    pub fn slice_axis_inplace(&mut self, axis: Axis, indices: Slice) {
         self.as_layout_ref_mut().slice_axis_inplace(axis, indices);
     }
 
@@ -131,7 +119,8 @@ impl<S: RawData, D: Dimension> ArrayBase<S, D>
     /// **Panics** if an index is out of bounds or step size is zero.
     #[track_caller]
     pub fn slice_each_axis_inplace<F>(&mut self, f: F)
-    where F: FnMut(AxisDescription) -> Slice
+    where
+        F: FnMut(AxisDescription) -> Slice,
     {
         self.as_layout_ref_mut().slice_each_axis_inplace(f);
     }
@@ -140,8 +129,7 @@ impl<S: RawData, D: Dimension> ArrayBase<S, D>
     ///
     /// **Panics** if `axis` or `index` is out of bounds.
     #[track_caller]
-    pub fn collapse_axis(&mut self, axis: Axis, index: usize)
-    {
+    pub fn collapse_axis(&mut self, axis: Axis, index: usize) {
         self.as_layout_ref_mut().collapse_axis(axis, index);
     }
 
@@ -150,20 +138,17 @@ impl<S: RawData, D: Dimension> ArrayBase<S, D>
     ///
     /// Return `false` otherwise, i.e. the array is possibly not
     /// contiguous in memory, it has custom strides, etc.
-    pub fn is_standard_layout(&self) -> bool
-    {
+    pub fn is_standard_layout(&self) -> bool {
         self.as_layout_ref().is_standard_layout()
     }
 
     /// Return true if the array is known to be contiguous.
-    pub(crate) fn is_contiguous(&self) -> bool
-    {
+    pub(crate) fn is_contiguous(&self) -> bool {
         self.as_layout_ref().is_contiguous()
     }
 
     /// Return an iterator over the length and stride of each axis.
-    pub fn axes(&self) -> Axes<'_, D>
-    {
+    pub fn axes(&self) -> Axes<'_, D> {
         self.as_layout_ref().axes()
     }
 
@@ -176,8 +161,7 @@ impl<S: RawData, D: Dimension> ArrayBase<S, D>
 
     /// Return the axis with the greatest stride (by absolute value),
     /// preferring axes with len > 1.
-    pub fn max_stride_axis(&self) -> Axis
-    {
+    pub fn max_stride_axis(&self) -> Axis {
         self.as_layout_ref().max_stride_axis()
     }
 
@@ -185,8 +169,7 @@ impl<S: RawData, D: Dimension> ArrayBase<S, D>
     ///
     /// ***Panics*** if the axis is out of bounds.
     #[track_caller]
-    pub fn invert_axis(&mut self, axis: Axis)
-    {
+    pub fn invert_axis(&mut self, axis: Axis) {
         self.as_layout_ref_mut().invert_axis(axis);
     }
 
@@ -207,8 +190,7 @@ impl<S: RawData, D: Dimension> ArrayBase<S, D>
     /// );
     /// ```
     #[track_caller]
-    pub fn swap_axes(&mut self, ax: usize, bx: usize)
-    {
+    pub fn swap_axes(&mut self, ax: usize, bx: usize) {
         self.as_layout_ref_mut().swap_axes(ax, bx);
     }
 
@@ -248,14 +230,12 @@ impl<S: RawData, D: Dimension> ArrayBase<S, D>
     ///
     /// ***Panics*** if an axis is out of bounds.
     #[track_caller]
-    pub fn merge_axes(&mut self, take: Axis, into: Axis) -> bool
-    {
+    pub fn merge_axes(&mut self, take: Axis, into: Axis) -> bool {
         self.as_layout_ref_mut().merge_axes(take, into)
     }
 
     /// Return the total number of elements in the array.
-    pub fn len(&self) -> usize
-    {
+    pub fn len(&self) -> usize {
         self.as_layout_ref().len()
     }
 
@@ -266,28 +246,24 @@ impl<S: RawData, D: Dimension> ArrayBase<S, D>
     ///
     /// ***Panics*** if the axis is out of bounds.
     #[track_caller]
-    pub fn len_of(&self, axis: Axis) -> usize
-    {
+    pub fn len_of(&self, axis: Axis) -> usize {
         self.as_layout_ref().len_of(axis)
     }
 
     /// Return whether the array has any elements
-    pub fn is_empty(&self) -> bool
-    {
+    pub fn is_empty(&self) -> bool {
         self.as_layout_ref().is_empty()
     }
 
     /// Return the number of dimensions (axes) in the array
-    pub fn ndim(&self) -> usize
-    {
+    pub fn ndim(&self) -> usize {
         self.as_layout_ref().ndim()
     }
 
     /// Return the shape of the array in its “pattern” form,
     /// an integer in the one-dimensional case, tuple in the n-dimensional cases
     /// and so on.
-    pub fn dim(&self) -> D::Pattern
-    {
+    pub fn dim(&self) -> D::Pattern {
         self.as_layout_ref().dim()
     }
 
@@ -305,8 +281,7 @@ impl<S: RawData, D: Dimension> ArrayBase<S, D>
     /// // Create an array of zeros that's the same shape and dimensionality as `a`.
     /// let b = Array::<f64, _>::zeros(a.raw_dim());
     /// ```
-    pub fn raw_dim(&self) -> D
-    {
+    pub fn raw_dim(&self) -> D {
         self.as_layout_ref().raw_dim()
     }
 
@@ -334,14 +309,12 @@ impl<S: RawData, D: Dimension> ArrayBase<S, D>
     /// let c = Array::zeros(a.raw_dim());
     /// assert_eq!(a, c);
     /// ```
-    pub fn shape(&self) -> &[usize]
-    {
+    pub fn shape(&self) -> &[usize] {
         self.as_layout_ref().shape()
     }
 
     /// Return the strides of the array as a slice.
-    pub fn strides(&self) -> &[isize]
-    {
+    pub fn strides(&self) -> &[isize] {
         self.as_layout_ref().strides()
     }
 
@@ -352,8 +325,7 @@ impl<S: RawData, D: Dimension> ArrayBase<S, D>
     ///
     /// ***Panics*** if the axis is out of bounds.
     #[track_caller]
-    pub fn stride_of(&self, axis: Axis) -> isize
-    {
+    pub fn stride_of(&self, axis: Axis) -> isize {
         self.as_layout_ref().stride_of(axis)
     }
 }
