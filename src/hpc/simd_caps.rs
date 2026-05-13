@@ -44,6 +44,11 @@ pub struct SimdCaps {
     /// AVX-512 VNNI (VPDPBUSD — u8×i8→i32 dot product of 4-element groups).
     /// Present on Ice Lake, Sapphire Rapids, Zen 4 (with AVX-512), Tiger Lake.
     pub avx512vnni: bool,
+    /// AVX-512 VBMI (`_mm512_permutexvar_epi8` — full-width byte permute).
+    /// Present on Ice Lake, Tiger Lake, Sapphire Rapids, Zen 4. ABSENT on
+    /// Skylake-X / Cascade Lake / Ice Lake-SP — calling VBMI intrinsics on
+    /// those CPUs SIGILLs even though `avx512f` is true.
+    pub avx512vbmi: bool,
 
     // ── aarch64 (ARM) ──
     /// NEON 128-bit SIMD (mandatory on aarch64, always true).
@@ -86,6 +91,7 @@ impl SimdCaps {
             sse2: is_x86_feature_detected!("sse2"),
             fma: is_x86_feature_detected!("fma"),
             avx512vnni: is_x86_feature_detected!("avx512vnni"),
+            avx512vbmi: is_x86_feature_detected!("avx512vbmi"),
             // ARM fields: all false on x86
             neon: false,
             asimd_dotprod: false,
@@ -112,6 +118,7 @@ impl SimdCaps {
             sse2: false,
             fma: false,
             avx512vnni: false,
+            avx512vbmi: false,
             // ARM fields: runtime detection
             neon: true, // mandatory on aarch64
             asimd_dotprod: std::arch::is_aarch64_feature_detected!("dotprod"),
@@ -135,6 +142,7 @@ impl SimdCaps {
             sse2: false,
             fma: false,
             avx512vnni: false,
+            avx512vbmi: false,
             neon: false,
             asimd_dotprod: false,
             fp16: false,

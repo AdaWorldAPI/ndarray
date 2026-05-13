@@ -1593,12 +1593,36 @@ pub fn f32_to_bf16_batch(input: &[f32], output: &mut [u16]) {
 ///
 /// Max error ~2 ULP in [-10, 10]. Uses the standard range-reduction
 /// approach: exp(x) = 2^n * exp(r) where r = x - n*ln(2).
+///
+/// Domain: clamps input to [-87.336, 88.722] before reduction so that the
+/// integer exponent `n` stays within the IEEE 754 f32 representable range.
+/// Beyond the upper bound we'd hit `i32` overflow in `pow2n_from_int` and
+/// silently return ~0.5 instead of +Inf (release) or panic (debug).
+///
+/// NaN handling: `simd_clamp` is `max(lo).min(hi)`, and `_mm512_max_ps` /
+/// `_mm512_min_ps` return the SECOND operand when the first is NaN (per
+/// Intel SDM § MAXPS/MINPS). That would silently clamp NaN inputs to `lo`
+/// (-87.336) producing `exp(-87.336) ≈ 1.4e-38` — a finite tiny value
+/// masquerading as valid output. Caught by codex review on PR #142.
+///
+/// Fix: capture NaN lanes via `x.simd_ne(x)` (NaN ≠ itself per IEEE 754)
+/// before the clamp, then mask-select NaN back into those lanes after
+/// the polynomial. NaN lanes propagate as NaN; finite lanes are unchanged.
 #[inline(always)]
 #[allow(dead_code)]
 pub fn simd_exp_f32(x: F32x16) -> F32x16 {
     let ln2 = F32x16::splat(core::f32::consts::LN_2);
     let inv_ln2 = F32x16::splat(1.0 / core::f32::consts::LN_2);
     let one = F32x16::splat(1.0);
+
+    // NaN-preservation mask: bit set wherever x is NaN. IEEE 754: NaN ≠ NaN.
+    // Captured BEFORE the clamp because simd_clamp destroys NaN lanes.
+    let nan_mask = x.simd_ne(x);
+
+    // Pre-clamp to the safe domain. Outside this band exp() is non-representable
+    // anyway (overflow → +Inf at ~88.7, underflow → +0 at ~-87.3) so the clamp
+    // is observable only at the saturation boundary.
+    let x = x.simd_clamp(F32x16::splat(-87.336_f32), F32x16::splat(88.722_f32));
 
     // Range reduction: n = round(x / ln2), r = x - n * ln2
     let n = (x * inv_ln2).round();
@@ -1613,19 +1637,30 @@ pub fn simd_exp_f32(x: F32x16) -> F32x16 {
     let poly = one + r * (one + r * (c2 + r * (c3 + r * (c4 + r * c5))));
 
     // Reconstruct: exp(x) = 2^n * poly
-    poly * pow2n_from_int(n)
+    let result = poly * pow2n_from_int(n);
+
+    // Restore NaN in lanes where the input was NaN (clamp had destroyed them).
+    nan_mask.select(F32x16::splat(f32::NAN), result)
 }
 
 /// Compute 2^n where n is an integer stored as f32.
 ///
 /// Uses the IEEE 754 trick: set the exponent field directly.
+///
+/// The `ni` is clamped to [-126, 127] before adding the 127 bias so that
+/// `(ni + 127) as u32` stays in [1, 254] (valid normal-number exponent
+/// field). Without this clamp, an `Inf` input from `simd_exp_f32` would
+/// saturate to `i32::MAX`, then `+ 127` would panic in debug or wrap in
+/// release, producing a garbage IEEE bit pattern (was: silent ~0.5 result).
+/// Caller `simd_exp_f32` already pre-clamps the domain so this is defense
+/// in depth.
 #[inline(always)]
 #[allow(dead_code)]
 fn pow2n_from_int(n: F32x16) -> F32x16 {
     let arr = n.to_array();
     let mut out = [0.0f32; 16];
     for i in 0..16 {
-        let ni = arr[i] as i32;
+        let ni = (arr[i] as i32).clamp(-126, 127);
         let bits = ((ni + 127) as u32) << 23;
         out[i] = f32::from_bits(bits);
     }
@@ -1792,5 +1827,81 @@ mod tests {
         let zero = F32x16::splat(0.0);
         let result = simd_exp_f32(zero);
         assert!((result.reduce_sum() / 16.0 - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn simd_exp_f32_handles_positive_infinity() {
+        // Pre-fix: pow2n_from_int saturated f32::INFINITY to i32::MAX,
+        // (i32::MAX + 127) panicked in debug / wrapped in release to a
+        // garbage exponent, and simd_exp_f32(+Inf) silently returned ~0.5.
+        // Post-fix: input is clamped to 88.722 → exp(88.722) ≈ 3.4e38,
+        // representable but near f32::MAX. Saturated, not garbage.
+        let inf = F32x16::splat(f32::INFINITY);
+        let result = simd_exp_f32(inf);
+        let arr = result.to_array();
+        for &v in &arr {
+            assert!(v.is_finite(), "exp(+Inf) must saturate to finite, got {}", v);
+            assert!(v > 1e30, "exp(+Inf) must saturate to a large value, got {}", v);
+        }
+    }
+
+    #[test]
+    fn simd_exp_f32_handles_negative_infinity() {
+        // -Inf → clamped to -87.336 → exp ≈ 1.4e-38, near zero but representable.
+        let neg_inf = F32x16::splat(f32::NEG_INFINITY);
+        let result = simd_exp_f32(neg_inf);
+        let arr = result.to_array();
+        for &v in &arr {
+            assert!(v.is_finite(), "exp(-Inf) must saturate to finite, got {}", v);
+            assert!(v >= 0.0 && v < 1e-30, "exp(-Inf) must saturate near 0, got {}", v);
+        }
+    }
+
+    #[test]
+    fn simd_exp_f32_propagates_nan() {
+        // simd_clamp is max(lo).min(hi); _mm512_max_ps returns the SECOND
+        // operand on NaN, so without the nan_mask save/restore, NaN would
+        // be silently clamped to -87.336 → exp ≈ 1.4e-38 (a tiny finite
+        // value pretending to be valid). With the mask, NaN propagates.
+        // Per codex review on PR #142.
+        let nan = F32x16::splat(f32::NAN);
+        let result = simd_exp_f32(nan);
+        let arr = result.to_array();
+        for &v in &arr {
+            assert!(v.is_nan(), "exp(NaN) must propagate NaN, got {}", v);
+        }
+    }
+
+    #[test]
+    fn simd_exp_f32_propagates_nan_per_lane() {
+        // Mixed input: lanes 0,4,8,12 are NaN; rest are 0.0. Verify that
+        // NaN propagates only in those lanes; the others compute exp(0)=1.
+        let mut data = [0.0f32; 16];
+        for i in (0..16).step_by(4) {
+            data[i] = f32::NAN;
+        }
+        let result = simd_exp_f32(F32x16::from_array(data));
+        let arr = result.to_array();
+        for (i, &v) in arr.iter().enumerate() {
+            if i % 4 == 0 {
+                assert!(v.is_nan(), "lane {} should be NaN, got {}", i, v);
+            } else {
+                assert!((v - 1.0).abs() < 1e-4, "lane {} should be exp(0)=1, got {}", i, v);
+            }
+        }
+    }
+
+    #[test]
+    fn simd_exp_f32_handles_large_positive() {
+        // Without the clamp, x = 200 produced n = 288, ni + 127 = 415 which
+        // is still in u32 range so didn't panic, but the resulting bits were
+        // outside valid f32 exponent range, producing garbage that masqueraded
+        // as a "valid" answer.
+        let big = F32x16::splat(200.0);
+        let result = simd_exp_f32(big);
+        let arr = result.to_array();
+        for &v in &arr {
+            assert!(v.is_finite(), "exp(200) must saturate, got {}", v);
+        }
     }
 }

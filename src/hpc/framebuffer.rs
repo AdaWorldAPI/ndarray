@@ -301,9 +301,14 @@ pub fn build_mipmap_pyramid(fb: &Framebuffer, min_dim: usize) -> Vec<(Vec<u8>, u
 pub fn project_ortho(
     pos_x: f32, pos_y: f32, scale: f32, offset_x: f32, offset_y: f32, screen_w: usize, screen_h: usize,
 ) -> (usize, usize) {
-    let sx = ((pos_x * scale + offset_x) as usize).min(screen_w.saturating_sub(1));
-    let sy = ((pos_y * scale + offset_y) as usize).min(screen_h.saturating_sub(1));
-    (sx, sy)
+    // f32 → usize is UB for negative / NaN / overflowing values (Rust ref §5.5.1).
+    // Clamp to [0, screen_dim - 1] in float domain BEFORE the cast so the cast input
+    // is always a finite non-negative f32 within usize range.
+    let max_x = screen_w.saturating_sub(1) as f32;
+    let max_y = screen_h.saturating_sub(1) as f32;
+    let fx = (pos_x * scale + offset_x).clamp(0.0, max_x);
+    let fy = (pos_y * scale + offset_y).clamp(0.0, max_y);
+    (fx as usize, fy as usize)
 }
 
 use crate::hpc::renderer::RenderFrame;
