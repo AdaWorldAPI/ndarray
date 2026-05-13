@@ -682,14 +682,32 @@ impl U8x64 {
     }
 
     /// Cross-lane byte permute: rearrange all 64 bytes by index vector.
-    /// `idx[i]` selects which byte of `self` appears at position `i`.
+    /// `idx[i]` selects which byte of `self` appears at position `i & 63`.
     /// Unlike `shuffle_bytes` (within-lane), this crosses 128-bit lane boundaries.
     /// Needed for sprite atlas reorder and palette remap > 16 entries.
-    #[inline(always)]
+    ///
+    /// Dispatch (one LazyLock check via `simd_caps()`):
+    /// - VBMI present (Ice Lake+, Tiger Lake+, Sapphire Rapids+, Zen 4): hardware
+    ///   `_mm512_permutexvar_epi8` — one instruction.
+    /// - AVX-512F without VBMI (Skylake-X, Cascade Lake, Ice Lake-SP): scalar
+    ///   permute via stack. Slower but does not SIGILL.
+    #[inline]
     pub fn permute_bytes(self, idx: Self) -> Self {
-        // SAFETY: AVX-512VBMI instruction (_mm512_permutexvar_epi8).
-        // Falls back to multi-shuffle on CPUs without VBMI.
-        Self(unsafe { _mm512_permutexvar_epi8(idx.0, self.0) })
+        if crate::hpc::simd_caps::simd_caps().avx512vbmi {
+            // SAFETY: avx512vbmi was verified by simd_caps() at startup
+            // (one LazyLock detect for the whole process).
+            unsafe { Self(permute_bytes_vbmi(self.0, idx.0)) }
+        } else {
+            // AVX-512F-only fallback: scalar permute via stack arrays.
+            // Same shape as the AVX2-tier fallback in simd_avx2.rs:1435.
+            let src = self.to_array();
+            let idx_arr = idx.to_array();
+            let mut out = [0u8; 64];
+            for i in 0..64 {
+                out[i] = src[(idx_arr[i] & 63) as usize];
+            }
+            Self::from_array(out)
+        }
     }
 
     /// Extract sign bits of all 64 bytes as a 64-bit mask.
@@ -746,6 +764,19 @@ impl U8x64 {
             )
         })
     }
+}
+
+/// AVX-512VBMI cross-lane byte permute. Inner unsafe leaf — `#[target_feature]`
+/// is required by Rust to call the VBMI intrinsic from a function not compiled
+/// with VBMI globally. Caller (`U8x64::permute_bytes`) gates this behind
+/// `simd_caps().avx512vbmi` so the SIGILL on Skylake-X / Cascade Lake / Ice
+/// Lake-SP is impossible by construction.
+///
+/// SAFETY: caller must verify `simd_caps().avx512vbmi == true` before calling.
+#[inline]
+#[target_feature(enable = "avx512vbmi")]
+unsafe fn permute_bytes_vbmi(v: __m512i, idx: __m512i) -> __m512i {
+    _mm512_permutexvar_epi8(idx, v)
 }
 
 // u8 add/sub use AVX-512BW instructions

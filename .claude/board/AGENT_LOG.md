@@ -492,3 +492,93 @@
 - **No agent ran `cargo clippy -- -D warnings`** — CLAUDE.md hard rule. The dead `Sse2` variant alone should fire `clippy::dead_code`; no agent confirmed that the build actually passes the clippy gate.
 - **No agent checked whether `criterion` is in dev-dependencies** — every "no bench" finding assumes criterion would be the test harness; if it's not in Cargo.toml, the recommended fix is two steps not one.
 - **The bevy smoke test was reviewed but no agent compared it against the canonical Bevy `IntoSystem` ECS contract** — the test runs ndarray BEFORE constructing the App. No agent verified that calling ndarray SIMD INSIDE a Bevy `System<Param>` (the actual integration target) doesn't trigger Send/Sync issues with `LazyLock<SimdCaps>` or `GLOBAL_RENDERER`.
+
+## 2026-05-13T14:10 — agent R brutally-honest-reviewer (opus)
+
+**Inputs:** 12 file-agent entries + meta-orchestrator. Plus my own poking at the actual repo: ran `cargo clippy --features rayon -- -D warnings` (PASSES, 0 warnings, contradicting the meta), ran `cargo test --features rayon --lib` (1783 passed, 0 failed, 36 ignored), verified Rust float-to-int cast semantics with rustc, read `simd_avx512.rs:680-710`, `byte_scan.rs:15-77`, `framebuffer.rs:295-307`, `lib.rs:230-245`, `.cargo/config.toml`.
+
+---
+
+**Meta synthesis: agree / disagree / pushback**
+
+The meta-orchestrator wrote a 6-theme synthesis with high pearl-clutching density. Roughly half is solid, the other half is theatre. Specifically:
+
+- The meta breathlessly stacks "ship-blockers" (~6 of them) but the repo currently builds, clippy-clean, tests-clean. None of those "ship-blockers" actually block ship. The framing is alarmist.
+- The meta's "framebuffer project_ortho UB under strict provenance" claim is **factually wrong**. Float-to-int casts in Rust are saturating since 1.45 (RFC 2484). I verified with rustc: `(-3.14f32) as usize == 0`, `f32::NAN as usize == 0`, `f32::NEG_INFINITY as usize == 0`. There is no UB. There is no LLVM strict-provenance pass that changes this. Adding `.max(0.0)` is a readability nit, not a correctness fix.
+- The meta cites `target-cpu=x86-64-v4` repeatedly as if it's set. **It is not.** `.cargo/config.toml` explicitly says: `# No global target-cpu. Each kernel uses #[target_feature(enable = "avx512f")] per-function.` The agents that built their alarms on top of that flag (notably aabb #10's "fast-math under v4" speculation) are reasoning about a build that does not exist.
+- The meta claims "no agent ran clippy" — true that no agent reported running it, but I just ran it and it passes clean.
+- The meta's "8-12 MB ephemeral heap per Bevy frame" is **a number with no source**. Nobody measured. Nobody benched. It's a vibes-based estimate. At 60 fps that's 480-720 MB/s allocator traffic which would absolutely matter — but that's the *if true* clause; the meta does not establish it as true.
+- The meta is right about `permute_bytes` (real SIGILL on Skylake-X), the I8x32/I16x16/F32x8/F64x4 missing target_feature gates (real soundness bug), `pow2n_from_int` overflow on Inf inputs, AMX per-thread prctl, and the cosmetic-SIMD lies. These are the genuine wins of the fleet.
+
+**P0s the fleet got right:**
+
+- **simd_avx512:689 `permute_bytes` → SIGILL on AVX-512F-without-VBMI.** Real. Skylake-X, Cascade Lake, Cooper Lake all have AVX-512F but no VBMI. Today only used in 2 tests, so production impact is limited, but the symbol is `pub fn` and a downstream caller would crash. Fix is mechanical (`#[target_feature(enable = "avx512vbmi")]` + `unsafe fn`, OR a real fallback via `_mm512_permutexvar_epi16` + bit-pack/unpack tricks).
+- **simd_avx512 I8x32/I16x16/F32x8/F64x4 missing target_feature gates.** Real soundness hole. The module is gated `cfg(target_arch = "x86_64")`, NOT `cfg(target_feature = "avx2")`, so these `pub fn`s emitting `_mm256_*` instructions are visible to non-AVX2 x86_64 callers. UB on legacy CPUs / VMs. Fix is mechanical: add `#[target_feature(enable = "avx2")]` + make `unsafe fn`, OR wrap the impl block in `#[cfg(target_feature = "avx2")]`.
+- **pow2n_from_int overflow / Inf handling in simd.rs** — silent wrong output (returns 0.5 for Inf) is genuinely scary for any `simd_exp_f32` user.
+- **simd_amx prctl per-thread scope** — real architectural bug; the moment a rayon worker hits a tile op, SIGILL. AMX paths are not on the bevy smoke path today, but if anyone wires `vnni_matvec` into the integrate hot path with rayon, BOOM.
+- **Cosmetic SIMD ("costume code") in byte_scan, palette_codec, aabb, renderer** — verified by reading byte_scan.rs:15-44 directly. `byte_find_all_avx2` is a literal scalar `for j in 0..32 { if haystack[i+j] == needle ...}` loop. The `#[target_feature(enable = "avx2")]` decoration buys nothing because the body uses no SIMD-able idiom that wasn't already available to the compiler. The lie is twofold: (a) the function name and SAFETY comment imply AVX2 instructions are emitted, (b) the dispatch table treats this as the AVX2 path. **However**: the perf impact is "no speedup at AVX2 tier" not "regression." If the fleet's vendor is "honest naming," the fix is rename + delete; if the vendor is "speedups," the fix is real intrinsics.
+
+**P0s that are theoretical / over-stated:**
+
+- **framebuffer `project_ortho` "UB"** — flat wrong, see above. Defined saturating cast. Not UB. The fleet should retract this.
+- **simd_ops "silent length-mismatch truncation"** — the test name `mismatched_lengths_takes_min` is in fact documenting the API contract. It's not "celebrating a bug as a feature"; the contract is "min of the two lengths." That is a fine API choice for some workloads (e.g. partial vector ops, in-place SAXPY where the tail is undefined). The Bevy-frame-math claim ("silent corruption") is speculative — Bevy mesh data has explicit lengths in attribute buffers; a length mismatch indicates the caller already broke an invariant, and `min` truncation is no worse than `panic`. Whether it should be `debug_assert_eq!` is a matter of taste; calling it P0 is overreach. **Demote to P2**.
+- **cached_splat(DT_60 + 1e-7)** — the snap to canonical dt is documented elsewhere in the renderer; the agent's complaint is "doc warning at this call site is missing." That's a P3 doc nit, not a Bevy-blocker.
+- **integrate_simd_par BLOCK_FLOATS=1024 regression at 4096 floats** — real perf observation, but the "ship-blocker" framing is wrong: the function is documented `≥64K`, the smoke test uses 4K to verify *correctness* not perf. Add a `debug_assert!(positions.len() >= 65_536)` and you're done. Not a 12-day refactor.
+- **The "8-12 MB heap per frame" allocation claim** — not measured. Most `Vec` allocations in the cited functions are per-call sizes proportional to input batch (one Vec per call, not per node), and the `add_f32`/`mul_f32` family allocates output vectors that callers immediately consume. The data-flow.md rule is sound, but the impact estimate the meta gives is fabricated. **At what scene size does this matter?** Honest answer: probably 10K+ nodes per frame at 60Hz, which is well above what a Bevy graph viz typically renders. For the smoke test (a few hundred elements), it's noise.
+- **Two-enum smell `SimdTier::Sse2` dead variant** — clippy passes, so either there's an `#[allow(dead_code)]` or the variant is reachable via `match` exhaustiveness. Cosmetic, not a bug.
+- **A53 vs A72 conflation in arm_profile** — entirely irrelevant to bevy on x86_64. Pi 3B+ users are not the audience here. Defer.
+- **SAFETY-comment deficit (200 missing in simd_avx512)** — meta calls this "audit hazard." Reality check: the agents found 200 macro-generated `unsafe` blocks. Adding `// SAFETY:` to each is mechanical noise that doesn't catch any bug. The actually load-bearing SAFETY comments (the unique unsafe blocks at function boundaries) are mostly present. The macro-generated ones share one safety contract — fix in the macro source once, not 72 times. The "200 missing" framing is a count-the-lines artifact, not a real audit gap. The meta-orchestrator's "macro SAFETY-comment fix" recommendation IS real busywork unless it includes the per-intrinsic safety contract, which the macros today already abstract. **This is busywork.**
+
+**Findings the fleet missed (genuine):**
+
+- **The fleet did not actually run the build/test/lint they're commenting on.** I ran `cargo clippy --features rayon -- -D warnings` → passes 0 warnings. `cargo test --features rayon --lib` → 1783 passed, 0 failed, 36 ignored. The repo is actually in good shape. The fleet's "BLOCK" verdicts are paper verdicts.
+- **The bevy smoke does not actually exercise rayon parallelism.** Agent #7 noted this in passing but didn't flag the consequence: the "12.8× slowdown" measurement may itself be measuring rayon spin-up + work-steal overhead at a payload size where rayon never gets to run more than 1 worker. The number is suspect. We need a `ThreadPoolBuilder::new().num_threads(4).build()` pinned pool to validate.
+- **No agent considered the polyfill's `Result`-shaped API question** the user asked about. The current `from_slice` panics on misalignment; an `try_from_slice -> Result<Self, AlignError>` overload would let Bevy callers handle alignment failures without process death. None of the 12 agents proposed this; it would actually serve the Bevy use case more than 90% of their findings.
+- **`hpc-extras` feature pulls in blake3, constant_time_eq** for every Bevy build. Agent #12 flagged it as P2 dep-bloat but didn't measure: blake3 is ~50KB code + assembly, hpc-extras pulls 30+ submodules. For a graph-rendering smoke test, this is binary-size waste. Adding `default-features = false, features = ["std", "rayon", "simd"]` to bevy/Cargo.toml is a 1-line fix that nobody made.
+- **`F32x16::from_slice` panics on `assert!(s.len() >= 16)` but the SIMD intrinsic itself does an unaligned load — alignment doesn't actually matter for `_mm512_loadu_ps`.** Agent #3's "alignment is never guaranteed" P1 misreads `_loadu_*` (the 'u' = unaligned). On x86, unaligned vector loads are not UB; they have a small perf penalty on cache-line-spanning loads. The agent applied AVX1-era folklore. **Misread.**
+- **Nobody checked the `simd_caps()` LazyLock cost in a real frame budget.** Each `LazyLock` deref is one atomic load (`Acquire`) + dispatch. At 1ns × 1000 calls/frame = 1 µs/frame = 0.006% of 16.6ms budget. The meta's "dispatch-table bypass" theme is real but the perf claim is unmeasured and almost certainly below the noise floor.
+
+**Findings that are real but should be deferred:**
+
+- **Cosmetic SIMD (renaming the lies)** — real but only matters if the project ships a "AVX2 speedup" claim publicly. For internal Bevy use, the scalar path is fine; rename later.
+- **API symmetry gaps (f64 missing 8 functions)** — real but only blocks callers who use f64. Bevy is f32-dominant. Defer to a follow-up.
+- **PR #112 rasterizer extras untested** — real but the functions are not on the integrate path.
+- **AMX consolidation into SimdCaps** — real architectural cleanup but only matters when AMX is actually wired into a hot path. Currently no Bevy path touches AMX.
+- **arm_profile A53/A72 conflation** — irrelevant to x86_64 Bevy.
+- **GLOBAL_RENDERER staticness** — the function is documented "don't use this." If it's ignored, the bug is in the user, not the renderer. Soft defer.
+
+**Did the fleet's review serve the user's actual ask?**
+
+User's ask: "Bevy ↔ ndarray smoke test for graph rendering."
+
+What 90% of the fleet did: forensic code review of every SIMD module by line, with a heavy focus on idiomatic-Rust nits and "what would CLAUDE.md say" rule-checking.
+
+What the user actually needs:
+1. The smoke test runs end-to-end and produces correct output. ✓ (it does, even if rayon is slow)
+2. No SIGILL / no UB on the deployment hardware (the user's machine). Mostly ✓ (Skylake-X would crash on permute_bytes test; nothing in the smoke uses VBMI).
+3. Performance "good enough" for a graph viz at scenes the user cares about.
+4. A clean API for downstream Bevy plugin authors.
+
+The fleet largely served (1) by not touching it, and (2) by surfacing the genuine soundness P0s. They mostly missed (3) and (4): no agent measured a real frame budget, no agent proposed `try_from_slice -> Result`, no agent proposed a smaller default feature set for the bevy dep. The fleet got 60-70% of value but spent 100% of the budget.
+
+---
+
+**My ranked "do tomorrow" list:**
+
+1. **Fix `permute_bytes` SIGILL.** Add `#[target_feature(enable = "avx512vbmi")]` + make `unsafe fn`. Update the comment from "fallback exists" to "VBMI required." 5-min fix, real soundness.
+2. **Gate the AVX2 type bodies in simd_avx512.rs.** Wrap `impl I8x32 / I16x16 / F32x8 / F64x4` blocks in `#[cfg(target_feature = "avx2")]`, or add `#[target_feature(enable = "avx2")]` + `unsafe fn` per method. Real UB closure on legacy x86.
+3. **Fix `pow2n_from_int` Inf/overflow** — clamp `ni` and propagate Inf. 3-line fix, prevents silent wrong output of `simd_exp_f32`.
+4. **Add `RAYON_MIN_FLOATS = 65_536` debug_assert in `integrate_simd_par`.** One line. Stops downstream callers from misusing the slow-at-small-N path.
+5. **Strip default features from bevy/Cargo.toml ndarray dep.** `default-features = false, features = ["std", "rayon"]`. Trims blake3 + hpc-extras from the smoke binary. Helps actual Bevy authors.
+6. **Make the bevy smoke pin a 4-thread rayon pool and assert par > seq×0.8 on N≥65K, not on N=4096.** Test what the function is documented to do, not what it isn't. Stop printing "ALL OK" while contradicting it.
+7. **Add `try_from_slice -> Result<Self, AlignError>` to F32x16/F64x8/U8x64.** Lets Bevy callers handle malformed inputs without panic. The user actually asked about this surface; nobody proposed it.
+
+**Explicitly NOT on the list (and why):**
+- Macro-SAFETY-comment cleanup in simd_avx512 — busywork, fix the macro once if at all.
+- Rewriting cosmetic SIMD bodies (byte_scan, palette_codec) — defer, not a Bevy blocker.
+- Adding `&mut Vec<T>` out-params to 20 functions — coordinated API change, defer until measured.
+- Fixing arm_profile A53/A72 — irrelevant to x86_64 Bevy.
+- Deleting `Sse2`/`WasmSimd128` dead variants — clippy passes; cosmetic.
+- "Fix" project_ortho UB — there is no UB; the meta is wrong.
+
+**Verdict on the meta:** Agent M did good consolidation work but stack-ranked credibility issues over correctness. The single biggest meta mistake is the project_ortho UB claim (factually wrong), followed by the unmeasured "8-12 MB heap/frame" number (fabricated), followed by the ship-blocker stack (six of them, none of which actually block ship today). A user reading the meta in good faith would walk away thinking the repo is on fire. It isn't. It has 5 real soundness bugs (items 1-3 above), one architectural smell (AMX prctl scope), and a pile of cosmetic / busywork findings dressed up as P0/P1.
