@@ -301,7 +301,7 @@ pub(crate) unsafe fn nibble_above_threshold_avx2(packed: &[u8], threshold: u8) -
 /// # Examples
 ///
 /// ```
-/// use ndarray::hpc::nibble::{nibble_pack, nibble_propagate_bfs, nibble_unpack};
+/// use ndarray::hpc::nibble::{nibble_pack, nibble_propagate_bfs};
 /// let mut packed = nibble_pack(&[5, 3, 10, 1, 0, 15, 2, 7]);
 /// let frontier = nibble_propagate_bfs(&mut packed, 3);
 /// // After subtracting 3: [2, 0, 7, 0, 0, 12, 0, 4]

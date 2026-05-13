@@ -12,6 +12,12 @@ use std::sync::LazyLock;
 
 // ─── Tier detection: happens ONCE, at first access ─────────────────
 
+// On non-x86_64 targets (e.g. i686 / aarch64 / s390x cross-tests) only the
+// `Scalar` variant is ever constructed — the AVX detection block below is
+// gated `#[cfg(target_arch = "x86_64")]`. Without `dead_code` allowance the
+// `-D warnings` build fails on i686 with `variants Avx512 and Avx2 are
+// never constructed`.
+#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq)]
 enum Tier {
     Avx512,

@@ -8,6 +8,11 @@
 #[cfg(feature = "std")]
 use std::sync::LazyLock;
 
+// On i686 / wasm32 / etc. only the `Scalar` variant is constructed —
+// `detect_tier()`'s feature-detection blocks are `target_arch = "x86_64"`
+// or `"aarch64"` gated, both false on i686. Without `dead_code` allowance
+// the `-D warnings` build fails with `variants ... are never constructed`.
+#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Debug)]
 #[repr(u8)]
 enum Tier {
@@ -760,14 +765,13 @@ pub(crate) mod scalar {
     impl_float_type!(F64x8, f64, 8, F64Mask8, u8);
 
     // 256-bit AVX2 float types
+    // The macro `impl_float_type!` already emits `pub struct $mask(pub $mask_prim);`,
+    // so calling it with `F32Mask8Scalar` / `F64Mask4Scalar` defines those mask
+    // structs. The previous explicit re-declaration below was a duplicate that
+    // tripped E0428 + 6× E0119 on i686-unknown-linux-gnu (where this scalar
+    // module compiles — `#[cfg(not(target_arch = "x86_64"))]`).
     impl_float_type!(F32x8, f32, 8, F32Mask8Scalar, u8);
     impl_float_type!(F64x4, f64, 4, F64Mask4Scalar, u8);
-
-    // Unused mask types for AVX2 scalars (not exported, just needed by macro)
-    #[derive(Copy, Clone, Debug)]
-    pub struct F32Mask8Scalar(pub u8);
-    #[derive(Copy, Clone, Debug)]
-    pub struct F64Mask4Scalar(pub u8);
 
     // 512-bit integer types
     impl_int_type!(U8x64, u8, 64, 0u8);

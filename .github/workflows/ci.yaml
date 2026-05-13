@@ -101,9 +101,18 @@ jobs:
         with:
           toolchain: ${{ matrix.rust }}
           targets: ${{ matrix.target }}
+      # rust-toolchain.toml pins 1.94.1 — install the cross-compile target
+      # for that toolchain too, since dtolnay/rust-toolchain only installs
+      # for the matrix value which may differ from the pinned version.
+      - run: rustup target add ${{ matrix.target }}
       - name: Tests
         run: |
-          cargo rustc "--target=${{ matrix.target }}" --no-default-features --features portable-atomic-critical-section
+          # Scope to `-p ndarray` so workspace dev-deps (criterion → serde_core
+          # → getrandom) don't get evaluated against the no_std target. The
+          # library itself builds cleanly under no_std + portable-atomic-
+          # critical-section; only its dev-dependency tree pulls std-requiring
+          # crates that have no business existing in the nostd build.
+          cargo rustc -p ndarray "--target=${{ matrix.target }}" --no-default-features --features portable-atomic-critical-section
 
   tests:
     runs-on: ubuntu-latest

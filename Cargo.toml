@@ -52,8 +52,13 @@ libc = { version = "0.2.82", optional = true }
 
 matrixmultiply = { version = "0.3.2", default-features = false, features=["cgemm"] }
 
-# blake3 — always available (integrity hashing in plane/seal/merkle_tree).
-blake3 = { version = "1" }
+# blake3 — gated behind `hpc-extras` (integrity hashing in
+# plane/seal/merkle_tree/vsa/spo_bundle/crystal_encoder/compression_curves/
+# deepnsm). Optional + opt-in because the transitive dep `constant_time_eq`
+# does not declare `#![no_std]`, so unconditionally including blake3 breaks
+# the `thumbv6m-none-eabi --no-default-features` nostd build with
+# `error[E0463]: can't find crate for std`.
+blake3 = { version = "1", optional = true }
 
 # p64 + fractal — specialized convergence / manifold math. Gated behind
 # `hpc-extras` since they pull in a dep tree burn-ndarray doesn't need.
@@ -146,7 +151,7 @@ rayon = ["dep:rayon", "std"]
 # These pull in a non-trivial dependency tree; downstream crates such as
 # burn-ndarray that only need the core array layer can disable this with
 # `default-features = false` (and re-enable `std` explicitly if needed).
-hpc-extras = ["std", "dep:p64", "dep:fractal", "fractal/std"]
+hpc-extras = ["std", "dep:p64", "dep:fractal", "fractal/std", "dep:blake3"]
 
 matrixmultiply-threading = ["matrixmultiply/threading"]
 

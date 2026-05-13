@@ -31,8 +31,7 @@ where
     z22.for_each(f);
 }
 
-pub fn zip_indexed(data: &Array3<f32>, out: &mut Array3<f32>)
-{
+pub fn zip_indexed(data: &Array3<f32>, out: &mut Array3<f32>) {
     Zip::indexed(data).and(out).for_each(|idx, &i, o| {
         let _ = black_box(idx);
         *o = i;
@@ -42,50 +41,43 @@ pub fn zip_indexed(data: &Array3<f32>, out: &mut Array3<f32>)
 // array size in benchmarks
 const SZ3: (usize, usize, usize) = (100, 110, 100);
 
-fn zip_cc(c: &mut Criterion)
-{
+fn zip_cc(c: &mut Criterion) {
     let data: Array3<f32> = Array3::zeros(SZ3);
     let mut out = Array3::zeros(data.dim());
     c.bench_function("zip_cc", |b| b.iter(|| zip_copy(&data, &mut out)));
 }
 
-fn zip_cf(c: &mut Criterion)
-{
+fn zip_cf(c: &mut Criterion) {
     let data: Array3<f32> = Array3::zeros(SZ3);
     let mut out = Array3::zeros(data.dim().f());
     c.bench_function("zip_cf", |b| b.iter(|| zip_copy(&data, &mut out)));
 }
 
-fn zip_fc(c: &mut Criterion)
-{
+fn zip_fc(c: &mut Criterion) {
     let data: Array3<f32> = Array3::zeros(SZ3.f());
     let mut out = Array3::zeros(data.dim());
     c.bench_function("zip_fc", |b| b.iter(|| zip_copy(&data, &mut out)));
 }
 
-fn zip_ff(c: &mut Criterion)
-{
+fn zip_ff(c: &mut Criterion) {
     let data: Array3<f32> = Array3::zeros(SZ3.f());
     let mut out = Array3::zeros(data.dim().f());
     c.bench_function("zip_ff", |b| b.iter(|| zip_copy(&data, &mut out)));
 }
 
-fn zip_indexed_cc(c: &mut Criterion)
-{
+fn zip_indexed_cc(c: &mut Criterion) {
     let data: Array3<f32> = Array3::zeros(SZ3);
     let mut out = Array3::zeros(data.dim());
     c.bench_function("zip_indexed_cc", |b| b.iter(|| zip_indexed(&data, &mut out)));
 }
 
-fn zip_indexed_ff(c: &mut Criterion)
-{
+fn zip_indexed_ff(c: &mut Criterion) {
     let data: Array3<f32> = Array3::zeros(SZ3.f());
     let mut out = Array3::zeros(data.dim().f());
     c.bench_function("zip_indexed_ff", |b| b.iter(|| zip_indexed(&data, &mut out)));
 }
 
-fn slice_zip_cc(c: &mut Criterion)
-{
+fn slice_zip_cc(c: &mut Criterion) {
     let data: Array3<f32> = Array3::zeros(SZ3);
     let mut out = Array3::zeros(data.dim());
     let data = data.slice(s![1.., 1.., 1..]);
@@ -93,8 +85,7 @@ fn slice_zip_cc(c: &mut Criterion)
     c.bench_function("slice_zip_cc", |b| b.iter(|| zip_copy(&data, &mut out)));
 }
 
-fn slice_zip_ff(c: &mut Criterion)
-{
+fn slice_zip_ff(c: &mut Criterion) {
     let data: Array3<f32> = Array3::zeros(SZ3.f());
     let mut out = Array3::zeros(data.dim().f());
     let data = data.slice(s![1.., 1.., 1..]);
@@ -102,8 +93,7 @@ fn slice_zip_ff(c: &mut Criterion)
     c.bench_function("slice_zip_ff", |b| b.iter(|| zip_copy(&data, &mut out)));
 }
 
-fn slice_split_zip_cc(c: &mut Criterion)
-{
+fn slice_split_zip_cc(c: &mut Criterion) {
     let data: Array3<f32> = Array3::zeros(SZ3);
     let mut out = Array3::zeros(data.dim());
     let data = data.slice(s![1.., 1.., 1..]);
@@ -111,8 +101,7 @@ fn slice_split_zip_cc(c: &mut Criterion)
     c.bench_function("slice_split_zip_cc", |b| b.iter(|| zip_copy_split(&data, &mut out)));
 }
 
-fn slice_split_zip_ff(c: &mut Criterion)
-{
+fn slice_split_zip_ff(c: &mut Criterion) {
     let data: Array3<f32> = Array3::zeros(SZ3.f());
     let mut out = Array3::zeros(data.dim().f());
     let data = data.slice(s![1.., 1.., 1..]);
@@ -121,16 +110,7 @@ fn slice_split_zip_ff(c: &mut Criterion)
 }
 
 criterion_group!(
-    benches,
-    zip_cc,
-    zip_cf,
-    zip_fc,
-    zip_ff,
-    zip_indexed_cc,
-    zip_indexed_ff,
-    slice_zip_cc,
-    slice_zip_ff,
-    slice_split_zip_cc,
-    slice_split_zip_ff
+    benches, zip_cc, zip_cf, zip_fc, zip_ff, zip_indexed_cc, zip_indexed_ff, slice_zip_cc, slice_zip_ff,
+    slice_split_zip_cc, slice_split_zip_ff
 );
 criterion_main!(benches);

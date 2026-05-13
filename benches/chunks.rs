@@ -2,8 +2,7 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use ndarray::prelude::*;
 use ndarray::NdProducer;
 
-fn chunk2x2_iter_sum(c: &mut Criterion)
-{
+fn chunk2x2_iter_sum(c: &mut Criterion) {
     let a = Array::<f32, _>::zeros((256, 256));
     let chunksz = (2, 2);
     let mut sum = Array::zeros(a.exact_chunks(chunksz).raw_dim());
@@ -16,8 +15,7 @@ fn chunk2x2_iter_sum(c: &mut Criterion)
     });
 }
 
-fn chunk2x2_sum(c: &mut Criterion)
-{
+fn chunk2x2_sum(c: &mut Criterion) {
     let a = Array::<f32, _>::zeros((256, 256));
     let chunksz = (2, 2);
     let mut sum = Array::zeros(a.exact_chunks(chunksz).raw_dim());
@@ -30,8 +28,7 @@ fn chunk2x2_sum(c: &mut Criterion)
     });
 }
 
-fn chunk2x2_sum_get1(c: &mut Criterion)
-{
+fn chunk2x2_sum_get1(c: &mut Criterion) {
     let a = Array::<f32, _>::zeros((256, 256));
     let chunksz = (2, 2);
     let mut sum = Array::<f32, _>::zeros(a.exact_chunks(chunksz).raw_dim());
@@ -47,8 +44,7 @@ fn chunk2x2_sum_get1(c: &mut Criterion)
     });
 }
 
-fn chunk2x2_sum_uget1(c: &mut Criterion)
-{
+fn chunk2x2_sum_uget1(c: &mut Criterion) {
     let a = Array::<f32, _>::zeros((256, 256));
     let chunksz = (2, 2);
     let mut sum = Array::<f32, _>::zeros(a.exact_chunks(chunksz).raw_dim());
@@ -67,8 +63,7 @@ fn chunk2x2_sum_uget1(c: &mut Criterion)
 }
 
 #[allow(clippy::identity_op)]
-fn chunk2x2_sum_get2(c: &mut Criterion)
-{
+fn chunk2x2_sum_get2(c: &mut Criterion) {
     let a = Array::<f32, _>::zeros((256, 256));
     let chunksz = (2, 2);
     let mut sum = Array::<f32, _>::zeros(a.exact_chunks(chunksz).raw_dim());
@@ -87,12 +82,5 @@ fn chunk2x2_sum_get2(c: &mut Criterion)
     });
 }
 
-criterion_group!(
-    benches,
-    chunk2x2_iter_sum,
-    chunk2x2_sum,
-    chunk2x2_sum_get1,
-    chunk2x2_sum_uget1,
-    chunk2x2_sum_get2
-);
+criterion_group!(benches, chunk2x2_iter_sum, chunk2x2_sum, chunk2x2_sum_get1, chunk2x2_sum_uget1, chunk2x2_sum_get2);
 criterion_main!(benches);

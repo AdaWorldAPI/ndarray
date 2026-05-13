@@ -8,8 +8,7 @@ const X: usize = 64;
 const Y: usize = 16;
 
 #[cfg(feature = "std")]
-fn map_regular(c: &mut Criterion)
-{
+fn map_regular(c: &mut Criterion) {
     let a = Array::linspace(0.0..=127.0, N)
         .into_shape_with_order((X, Y))
         .unwrap();
@@ -18,14 +17,12 @@ fn map_regular(c: &mut Criterion)
     });
 }
 
-pub fn double_array(mut a: ArrayViewMut2<'_, f64>)
-{
+pub fn double_array(mut a: ArrayViewMut2<'_, f64>) {
     a *= 2.0;
 }
 
 #[cfg(feature = "std")]
-fn map_stride_double_f64(c: &mut Criterion)
-{
+fn map_stride_double_f64(c: &mut Criterion) {
     let mut a = Array::linspace(0.0..=127.0, N * 2)
         .into_shape_with_order([X, Y * 2])
         .unwrap();
@@ -38,8 +35,7 @@ fn map_stride_double_f64(c: &mut Criterion)
 }
 
 #[cfg(feature = "std")]
-fn map_stride_f64(c: &mut Criterion)
-{
+fn map_stride_f64(c: &mut Criterion) {
     let a = Array::linspace(0.0..=127.0, N * 2)
         .into_shape_with_order([X, Y * 2])
         .unwrap();
@@ -50,8 +46,7 @@ fn map_stride_f64(c: &mut Criterion)
 }
 
 #[cfg(feature = "std")]
-fn map_stride_u32(c: &mut Criterion)
-{
+fn map_stride_u32(c: &mut Criterion) {
     let a = Array::linspace(0.0..=127.0, N * 2)
         .into_shape_with_order([X, Y * 2])
         .unwrap();
@@ -63,8 +58,7 @@ fn map_stride_u32(c: &mut Criterion)
 }
 
 #[cfg(feature = "std")]
-fn fold_axis(c: &mut Criterion)
-{
+fn fold_axis(c: &mut Criterion) {
     let a = Array::linspace(0.0..=127.0, N * 2)
         .into_shape_with_order([X, Y * 2])
         .unwrap();
@@ -76,8 +70,7 @@ fn fold_axis(c: &mut Criterion)
 const MA: usize = 64;
 const MASZ: usize = MA * MA;
 
-fn map_axis_0(c: &mut Criterion)
-{
+fn map_axis_0(c: &mut Criterion) {
     let a = Array::from_iter(0..MASZ as i32)
         .into_shape_with_order([MA, MA])
         .unwrap();
@@ -86,8 +79,7 @@ fn map_axis_0(c: &mut Criterion)
     });
 }
 
-fn map_axis_1(c: &mut Criterion)
-{
+fn map_axis_1(c: &mut Criterion) {
     let a = Array::from_iter(0..MASZ as i32)
         .into_shape_with_order([MA, MA])
         .unwrap();
@@ -98,14 +90,7 @@ fn map_axis_1(c: &mut Criterion)
 
 #[cfg(feature = "std")]
 criterion_group!(
-    benches,
-    map_regular,
-    map_stride_double_f64,
-    map_stride_f64,
-    map_stride_u32,
-    fold_axis,
-    map_axis_0,
-    map_axis_1
+    benches, map_regular, map_stride_double_f64, map_stride_f64, map_stride_u32, fold_axis, map_axis_0, map_axis_1
 );
 #[cfg(not(feature = "std"))]
 criterion_group!(benches, map_axis_0, map_axis_1);
