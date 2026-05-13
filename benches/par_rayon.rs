@@ -8,16 +8,14 @@ use ndarray::Zip;
 const EXP_N: usize = 256;
 const ADDN: usize = 512;
 
-fn set_threads()
-{
+fn set_threads() {
     // Consider setting a fixed number of threads here, for example to avoid
     // oversubscribing on hyperthreaded cores.
     // let n = 4;
     // let _ = rayon::ThreadPoolBuilder::new().num_threads(n).build_global();
 }
 
-fn map_exp_regular(c: &mut Criterion)
-{
+fn map_exp_regular(c: &mut Criterion) {
     let mut a = Array2::<f64>::zeros((EXP_N, EXP_N));
     a.swap_axes(0, 1);
     c.bench_function("map_exp_regular", |b| {
@@ -27,8 +25,7 @@ fn map_exp_regular(c: &mut Criterion)
     });
 }
 
-fn rayon_exp_regular(c: &mut Criterion)
-{
+fn rayon_exp_regular(c: &mut Criterion) {
     set_threads();
     let mut a = Array2::<f64>::zeros((EXP_N, EXP_N));
     a.swap_axes(0, 1);
@@ -42,20 +39,17 @@ fn rayon_exp_regular(c: &mut Criterion)
 const FASTEXP: usize = EXP_N;
 
 #[inline]
-fn fastexp(x: f64) -> f64
-{
+fn fastexp(x: f64) -> f64 {
     let x = 1. + x / 1024.;
     x.powi(1024)
 }
 
-fn map_fastexp_regular(c: &mut Criterion)
-{
+fn map_fastexp_regular(c: &mut Criterion) {
     let mut a = Array2::<f64>::zeros((FASTEXP, FASTEXP));
     c.bench_function("map_fastexp_regular", |b| b.iter(|| a.mapv_inplace(fastexp)));
 }
 
-fn rayon_fastexp_regular(c: &mut Criterion)
-{
+fn rayon_fastexp_regular(c: &mut Criterion) {
     set_threads();
     let mut a = Array2::<f64>::zeros((FASTEXP, FASTEXP));
     c.bench_function("rayon_fastexp_regular", |b| {
@@ -65,15 +59,13 @@ fn rayon_fastexp_regular(c: &mut Criterion)
     });
 }
 
-fn map_fastexp_cut(c: &mut Criterion)
-{
+fn map_fastexp_cut(c: &mut Criterion) {
     let mut a = Array2::<f64>::zeros((FASTEXP, FASTEXP));
     let mut a = a.slice_mut(s![.., ..-1]);
     c.bench_function("map_fastexp_cut", |b| b.iter(|| a.mapv_inplace(fastexp)));
 }
 
-fn rayon_fastexp_cut(c: &mut Criterion)
-{
+fn rayon_fastexp_cut(c: &mut Criterion) {
     set_threads();
     let mut a = Array2::<f64>::zeros((FASTEXP, FASTEXP));
     let mut a = a.slice_mut(s![.., ..-1]);
@@ -84,8 +76,7 @@ fn rayon_fastexp_cut(c: &mut Criterion)
     });
 }
 
-fn map_fastexp_by_axis(c: &mut Criterion)
-{
+fn map_fastexp_by_axis(c: &mut Criterion) {
     let mut a = Array2::<f64>::zeros((FASTEXP, FASTEXP));
     c.bench_function("map_fastexp_by_axis", |b| {
         b.iter(|| {
@@ -96,8 +87,7 @@ fn map_fastexp_by_axis(c: &mut Criterion)
     });
 }
 
-fn rayon_fastexp_by_axis(c: &mut Criterion)
-{
+fn rayon_fastexp_by_axis(c: &mut Criterion) {
     set_threads();
     let mut a = Array2::<f64>::zeros((FASTEXP, FASTEXP));
     c.bench_function("rayon_fastexp_by_axis", |b| {
@@ -109,8 +99,7 @@ fn rayon_fastexp_by_axis(c: &mut Criterion)
     });
 }
 
-fn rayon_fastexp_zip(c: &mut Criterion)
-{
+fn rayon_fastexp_zip(c: &mut Criterion) {
     set_threads();
     let mut a = Array2::<f64>::zeros((FASTEXP, FASTEXP));
     c.bench_function("rayon_fastexp_zip", |b| {
@@ -122,8 +111,7 @@ fn rayon_fastexp_zip(c: &mut Criterion)
     });
 }
 
-fn add(c: &mut Criterion)
-{
+fn add(c: &mut Criterion) {
     let mut a = Array2::<f64>::zeros((ADDN, ADDN));
     let b_arr = Array2::<f64>::zeros((ADDN, ADDN));
     let c_arr = Array2::<f64>::zeros((ADDN, ADDN));
@@ -137,8 +125,7 @@ fn add(c: &mut Criterion)
     });
 }
 
-fn rayon_add(c: &mut Criterion)
-{
+fn rayon_add(c: &mut Criterion) {
     set_threads();
     let mut a = Array2::<f64>::zeros((ADDN, ADDN));
     let b_arr = Array2::<f64>::zeros((ADDN, ADDN));
@@ -156,32 +143,28 @@ fn rayon_add(c: &mut Criterion)
 const COLL_STRING_N: usize = 64;
 const COLL_F64_N: usize = 128;
 
-fn vec_string_collect(c: &mut Criterion)
-{
+fn vec_string_collect(c: &mut Criterion) {
     let v = vec![""; COLL_STRING_N * COLL_STRING_N];
     c.bench_function("vec_string_collect", |b| {
         b.iter(|| v.iter().map(|s| s.to_owned()).collect::<Vec<_>>());
     });
 }
 
-fn array_string_collect(c: &mut Criterion)
-{
+fn array_string_collect(c: &mut Criterion) {
     let v = Array::from_elem((COLL_STRING_N, COLL_STRING_N), "");
     c.bench_function("array_string_collect", |b| {
         b.iter(|| Zip::from(&v).par_map_collect(|s| s.to_owned()));
     });
 }
 
-fn vec_f64_collect(c: &mut Criterion)
-{
+fn vec_f64_collect(c: &mut Criterion) {
     let v = vec![1.; COLL_F64_N * COLL_F64_N];
     c.bench_function("vec_f64_collect", |b| {
         b.iter(|| v.iter().map(|s| s + 1.).collect::<Vec<_>>());
     });
 }
 
-fn array_f64_collect(c: &mut Criterion)
-{
+fn array_f64_collect(c: &mut Criterion) {
     let v = Array::from_elem((COLL_F64_N, COLL_F64_N), 1.);
     c.bench_function("array_f64_collect", |b| {
         b.iter(|| Zip::from(&v).par_map_collect(|s| s + 1.));
@@ -189,21 +172,8 @@ fn array_f64_collect(c: &mut Criterion)
 }
 
 criterion_group!(
-    benches,
-    map_exp_regular,
-    rayon_exp_regular,
-    map_fastexp_regular,
-    rayon_fastexp_regular,
-    map_fastexp_cut,
-    rayon_fastexp_cut,
-    map_fastexp_by_axis,
-    rayon_fastexp_by_axis,
-    rayon_fastexp_zip,
-    add,
-    rayon_add,
-    vec_string_collect,
-    array_string_collect,
-    vec_f64_collect,
-    array_f64_collect
+    benches, map_exp_regular, rayon_exp_regular, map_fastexp_regular, rayon_fastexp_regular, map_fastexp_cut,
+    rayon_fastexp_cut, map_fastexp_by_axis, rayon_fastexp_by_axis, rayon_fastexp_zip, add, rayon_add,
+    vec_string_collect, array_string_collect, vec_f64_collect, array_f64_collect
 );
 criterion_main!(benches);

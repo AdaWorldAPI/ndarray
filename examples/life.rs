@@ -3,10 +3,7 @@
 // reads `1..-1` as a plain (empty) Rust range; the actual semantics are
 // correct.
 #![allow(
-    clippy::many_single_char_names,
-    clippy::deref_addrof,
-    clippy::unreadable_literal,
-    clippy::reversed_empty_ranges
+    clippy::many_single_char_names, clippy::deref_addrof, clippy::unreadable_literal, clippy::reversed_empty_ranges
 )]
 
 use ndarray::prelude::*;

@@ -48,8 +48,15 @@ pub mod node;
 pub mod cascade;
 #[allow(missing_docs)]
 pub mod heel_f64x8;
+// AMX is an x86_64-only ISA (Intel Sapphire Rapids+); both modules use
+// `asm!` with `rcx`/`rax` register names that don't exist on other
+// architectures (rejected at parse time on s390x / aarch64 / wasm32).
+// `bf16_tile_gemm` is the safe wrapper around `amx_matmul`, so it inherits
+// the same gate.
+#[cfg(target_arch = "x86_64")]
 #[allow(missing_docs)]
 pub mod amx_matmul;
+#[cfg(target_arch = "x86_64")]
 pub mod bf16_tile_gemm;
 #[allow(missing_docs)]
 pub mod bf16_truth;

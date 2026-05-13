@@ -242,6 +242,10 @@ pub mod simd_avx2;
 
 #[cfg(feature = "std")]
 #[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
+// AMX is an x86_64-only ISA (Intel Sapphire Rapids+); the module uses
+// `asm!` with `rcx`/`rax` register names that don't exist on other
+// architectures (rejected at parse time on s390x / aarch64 / wasm32).
+#[cfg(target_arch = "x86_64")]
 pub mod simd_amx;
 
 #[cfg(feature = "std")]

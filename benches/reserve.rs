@@ -1,8 +1,7 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use ndarray::prelude::*;
 
-fn push_reserve(c: &mut Criterion)
-{
+fn push_reserve(c: &mut Criterion) {
     let ones: Array<f32, _> = array![1f32];
     c.bench_function("push_reserve", |b| {
         b.iter(|| {
@@ -15,8 +14,7 @@ fn push_reserve(c: &mut Criterion)
     });
 }
 
-fn push_no_reserve(c: &mut Criterion)
-{
+fn push_no_reserve(c: &mut Criterion) {
     let ones: Array<f32, _> = array![1f32];
     c.bench_function("push_no_reserve", |b| {
         b.iter(|| {

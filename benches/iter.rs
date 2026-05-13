@@ -2,7 +2,9 @@
 // indexing where `-1` means "from end". Clippy can't see through the macro
 // and reads `1..-1` as a plain (empty) Rust range; the actual semantics are
 // correct.
-#![allow(clippy::many_single_char_names, clippy::deref_addrof, clippy::unreadable_literal, clippy::reversed_empty_ranges)]
+#![allow(
+    clippy::many_single_char_names, clippy::deref_addrof, clippy::unreadable_literal, clippy::reversed_empty_ranges
+)]
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use rawpointer::PointerExt;
@@ -11,88 +13,71 @@ use ndarray::prelude::*;
 use ndarray::Slice;
 use ndarray::{FoldWhile, Zip};
 
-fn iter_sum_2d_regular(c: &mut Criterion)
-{
+fn iter_sum_2d_regular(c: &mut Criterion) {
     let a = Array::<i32, _>::zeros((64, 64));
     c.bench_function("iter_sum_2d_regular", |b| b.iter(|| a.iter().sum::<i32>()));
 }
 
-fn iter_sum_2d_cutout(c: &mut Criterion)
-{
+fn iter_sum_2d_cutout(c: &mut Criterion) {
     let a = Array::<i32, _>::zeros((66, 66));
     let av = a.slice(s![1..-1, 1..-1]);
     let a = av;
     c.bench_function("iter_sum_2d_cutout", |b| b.iter(|| a.iter().sum::<i32>()));
 }
 
-fn iter_all_2d_cutout(c: &mut Criterion)
-{
+fn iter_all_2d_cutout(c: &mut Criterion) {
     let a = Array::<i32, _>::zeros((66, 66));
     let av = a.slice(s![1..-1, 1..-1]);
     let a = av;
     c.bench_function("iter_all_2d_cutout", |b| b.iter(|| a.iter().all(|&x| x >= 0)));
 }
 
-fn iter_sum_2d_transpose(c: &mut Criterion)
-{
+fn iter_sum_2d_transpose(c: &mut Criterion) {
     let a = Array::<i32, _>::zeros((66, 66));
     let a = a.t();
     c.bench_function("iter_sum_2d_transpose", |b| b.iter(|| a.iter().sum::<i32>()));
 }
 
 #[cfg(feature = "std")]
-fn iter_filter_sum_2d_u32(c: &mut Criterion)
-{
+fn iter_filter_sum_2d_u32(c: &mut Criterion) {
     let a = Array::linspace(0.0..=1.0, 256)
         .into_shape_with_order((16, 16))
         .unwrap();
     let b = a.mapv(|x| (x * 100.) as u32);
-    c.bench_function("iter_filter_sum_2d_u32", |bn| {
-        bn.iter(|| b.iter().filter(|&&x| x < 75).sum::<u32>())
-    });
+    c.bench_function("iter_filter_sum_2d_u32", |bn| bn.iter(|| b.iter().filter(|&&x| x < 75).sum::<u32>()));
 }
 
 #[cfg(feature = "std")]
-fn iter_filter_sum_2d_f32(c: &mut Criterion)
-{
+fn iter_filter_sum_2d_f32(c: &mut Criterion) {
     let a = Array::linspace(0.0..=1.0, 256)
         .into_shape_with_order((16, 16))
         .unwrap();
     let b = a * 100.;
-    c.bench_function("iter_filter_sum_2d_f32", |bn| {
-        bn.iter(|| b.iter().filter(|&&x| x < 75.).sum::<f32>())
-    });
+    c.bench_function("iter_filter_sum_2d_f32", |bn| bn.iter(|| b.iter().filter(|&&x| x < 75.).sum::<f32>()));
 }
 
 #[cfg(feature = "std")]
-fn iter_filter_sum_2d_stride_u32(c: &mut Criterion)
-{
+fn iter_filter_sum_2d_stride_u32(c: &mut Criterion) {
     let a = Array::linspace(0.0..=1.0, 256)
         .into_shape_with_order((16, 16))
         .unwrap();
     let b = a.mapv(|x| (x * 100.) as u32);
     let b = b.slice(s![.., ..;2]);
-    c.bench_function("iter_filter_sum_2d_stride_u32", |bn| {
-        bn.iter(|| b.iter().filter(|&&x| x < 75).sum::<u32>())
-    });
+    c.bench_function("iter_filter_sum_2d_stride_u32", |bn| bn.iter(|| b.iter().filter(|&&x| x < 75).sum::<u32>()));
 }
 
 #[cfg(feature = "std")]
-fn iter_filter_sum_2d_stride_f32(c: &mut Criterion)
-{
+fn iter_filter_sum_2d_stride_f32(c: &mut Criterion) {
     let a = Array::linspace(0.0..=1.0, 256)
         .into_shape_with_order((16, 16))
         .unwrap();
     let b = a * 100.;
     let b = b.slice(s![.., ..;2]);
-    c.bench_function("iter_filter_sum_2d_stride_f32", |bn| {
-        bn.iter(|| b.iter().filter(|&&x| x < 75.).sum::<f32>())
-    });
+    c.bench_function("iter_filter_sum_2d_stride_f32", |bn| bn.iter(|| b.iter().filter(|&&x| x < 75.).sum::<f32>()));
 }
 
 #[cfg(feature = "std")]
-fn iter_rev_step_by_contiguous(c: &mut Criterion)
-{
+fn iter_rev_step_by_contiguous(c: &mut Criterion) {
     let a = Array::linspace(0.0..=1.0, 512);
     c.bench_function("iter_rev_step_by_contiguous", |bn| {
         bn.iter(|| {
@@ -104,8 +89,7 @@ fn iter_rev_step_by_contiguous(c: &mut Criterion)
 }
 
 #[cfg(feature = "std")]
-fn iter_rev_step_by_discontiguous(c: &mut Criterion)
-{
+fn iter_rev_step_by_discontiguous(c: &mut Criterion) {
     let mut a = Array::linspace(0.0..=1.0, 1024);
     a.slice_axis_inplace(Axis(0), Slice::new(0, None, 2));
     c.bench_function("iter_rev_step_by_discontiguous", |bn| {
@@ -119,8 +103,7 @@ fn iter_rev_step_by_discontiguous(c: &mut Criterion)
 
 const ZIPSZ: usize = 10_000;
 
-fn sum_3_std_zip1(c: &mut Criterion)
-{
+fn sum_3_std_zip1(c: &mut Criterion) {
     let a = vec![1; ZIPSZ];
     let b = vec![1; ZIPSZ];
     let c_vec = vec![1; ZIPSZ];
@@ -133,8 +116,7 @@ fn sum_3_std_zip1(c: &mut Criterion)
     });
 }
 
-fn sum_3_std_zip2(c: &mut Criterion)
-{
+fn sum_3_std_zip2(c: &mut Criterion) {
     let a = vec![1; ZIPSZ];
     let b = vec![1; ZIPSZ];
     let c_vec = vec![1; ZIPSZ];
@@ -148,8 +130,7 @@ fn sum_3_std_zip2(c: &mut Criterion)
     });
 }
 
-fn sum_3_std_zip3(c: &mut Criterion)
-{
+fn sum_3_std_zip3(c: &mut Criterion) {
     let a = vec![1; ZIPSZ];
     let b = vec![1; ZIPSZ];
     let c_vec = vec![1; ZIPSZ];
@@ -164,8 +145,7 @@ fn sum_3_std_zip3(c: &mut Criterion)
     });
 }
 
-fn vector_sum_3_std_zip(c: &mut Criterion)
-{
+fn vector_sum_3_std_zip(c: &mut Criterion) {
     let a = vec![1.; ZIPSZ];
     let b = vec![1.; ZIPSZ];
     let mut c_vec = vec![1.; ZIPSZ];
@@ -178,8 +158,7 @@ fn vector_sum_3_std_zip(c: &mut Criterion)
     });
 }
 
-fn sum_3_azip(c: &mut Criterion)
-{
+fn sum_3_azip(c: &mut Criterion) {
     let a = vec![1; ZIPSZ];
     let b = vec![1; ZIPSZ];
     let c_vec = vec![1; ZIPSZ];
@@ -194,8 +173,7 @@ fn sum_3_azip(c: &mut Criterion)
     });
 }
 
-fn sum_3_azip_fold(c: &mut Criterion)
-{
+fn sum_3_azip_fold(c: &mut Criterion) {
     let a = vec![1; ZIPSZ];
     let b = vec![1; ZIPSZ];
     let c_vec = vec![1; ZIPSZ];
@@ -210,8 +188,7 @@ fn sum_3_azip_fold(c: &mut Criterion)
     });
 }
 
-fn vector_sum_3_azip(c: &mut Criterion)
-{
+fn vector_sum_3_azip(c: &mut Criterion) {
     let a = vec![1.; ZIPSZ];
     let b = vec![1.; ZIPSZ];
     let mut c_vec = vec![1.; ZIPSZ];
@@ -224,8 +201,7 @@ fn vector_sum_3_azip(c: &mut Criterion)
     });
 }
 
-fn vector_sum3_unchecked(a: &[f64], b: &[f64], c: &mut [f64])
-{
+fn vector_sum3_unchecked(a: &[f64], b: &[f64], c: &mut [f64]) {
     for i in 0..c.len() {
         unsafe {
             *c.get_unchecked_mut(i) += *a.get_unchecked(i) + *b.get_unchecked(i);
@@ -233,8 +209,7 @@ fn vector_sum3_unchecked(a: &[f64], b: &[f64], c: &mut [f64])
     }
 }
 
-fn vector_sum_3_zip_unchecked(c: &mut Criterion)
-{
+fn vector_sum_3_zip_unchecked(c: &mut Criterion) {
     let a = vec![1.; ZIPSZ];
     let b = vec![1.; ZIPSZ];
     let mut c_vec = vec![1.; ZIPSZ];
@@ -245,8 +220,7 @@ fn vector_sum_3_zip_unchecked(c: &mut Criterion)
     });
 }
 
-fn vector_sum_3_zip_unchecked_manual(c: &mut Criterion)
-{
+fn vector_sum_3_zip_unchecked_manual(c: &mut Criterion) {
     let a = vec![1.; ZIPSZ];
     let b = vec![1.; ZIPSZ];
     let mut c_vec = vec![1.; ZIPSZ];
@@ -267,8 +241,7 @@ fn vector_sum_3_zip_unchecked_manual(c: &mut Criterion)
 const ISZ: usize = 16;
 const I2DSZ: usize = 64;
 
-fn indexed_iter_1d_ix1(c: &mut Criterion)
-{
+fn indexed_iter_1d_ix1(c: &mut Criterion) {
     let mut a = Array::<f64, _>::zeros(I2DSZ * I2DSZ);
     for (i, elt) in a.indexed_iter_mut() {
         *elt = i as _;
@@ -283,8 +256,7 @@ fn indexed_iter_1d_ix1(c: &mut Criterion)
     });
 }
 
-fn indexed_zip_1d_ix1(c: &mut Criterion)
-{
+fn indexed_zip_1d_ix1(c: &mut Criterion) {
     let mut a = Array::<f64, _>::zeros(I2DSZ * I2DSZ);
     for (i, elt) in a.indexed_iter_mut() {
         *elt = i as _;
@@ -299,8 +271,7 @@ fn indexed_zip_1d_ix1(c: &mut Criterion)
     });
 }
 
-fn indexed_iter_2d_ix2(c: &mut Criterion)
-{
+fn indexed_iter_2d_ix2(c: &mut Criterion) {
     let mut a = Array::<f64, _>::zeros((I2DSZ, I2DSZ));
     for ((i, j), elt) in a.indexed_iter_mut() {
         *elt = (i + 100 * j) as _;
@@ -315,8 +286,7 @@ fn indexed_iter_2d_ix2(c: &mut Criterion)
     });
 }
 
-fn indexed_zip_2d_ix2(c: &mut Criterion)
-{
+fn indexed_zip_2d_ix2(c: &mut Criterion) {
     let mut a = Array::<f64, _>::zeros((I2DSZ, I2DSZ));
     for ((i, j), elt) in a.indexed_iter_mut() {
         *elt = (i + 100 * j) as _;
@@ -331,8 +301,7 @@ fn indexed_zip_2d_ix2(c: &mut Criterion)
     });
 }
 
-fn indexed_iter_3d_ix3(c: &mut Criterion)
-{
+fn indexed_iter_3d_ix3(c: &mut Criterion) {
     let mut a = Array::<f64, _>::zeros((ISZ, ISZ, ISZ));
     for ((i, j, k), elt) in a.indexed_iter_mut() {
         *elt = (i + 100 * j + 10000 * k) as _;
@@ -347,8 +316,7 @@ fn indexed_iter_3d_ix3(c: &mut Criterion)
     });
 }
 
-fn indexed_zip_3d_ix3(c: &mut Criterion)
-{
+fn indexed_zip_3d_ix3(c: &mut Criterion) {
     let mut a = Array::<f64, _>::zeros((ISZ, ISZ, ISZ));
     for ((i, j, k), elt) in a.indexed_iter_mut() {
         *elt = (i + 100 * j + 10000 * k) as _;
@@ -363,8 +331,7 @@ fn indexed_zip_3d_ix3(c: &mut Criterion)
     });
 }
 
-fn indexed_iter_3d_dyn(c: &mut Criterion)
-{
+fn indexed_iter_3d_dyn(c: &mut Criterion) {
     let mut a = Array::<f64, _>::zeros((ISZ, ISZ, ISZ));
     for ((i, j, k), elt) in a.indexed_iter_mut() {
         *elt = (i + 100 * j + 10000 * k) as _;
@@ -380,32 +347,24 @@ fn indexed_iter_3d_dyn(c: &mut Criterion)
     });
 }
 
-fn iter_sum_1d_strided_fold(c: &mut Criterion)
-{
+fn iter_sum_1d_strided_fold(c: &mut Criterion) {
     let mut a = Array::<u64, _>::ones(10240);
     a.slice_axis_inplace(Axis(0), Slice::new(0, None, 2));
     c.bench_function("iter_sum_1d_strided_fold", |bn| bn.iter(|| a.iter().sum::<u64>()));
 }
 
-fn iter_sum_1d_strided_rfold(c: &mut Criterion)
-{
+fn iter_sum_1d_strided_rfold(c: &mut Criterion) {
     let mut a = Array::<u64, _>::ones(10240);
     a.slice_axis_inplace(Axis(0), Slice::new(0, None, 2));
-    c.bench_function("iter_sum_1d_strided_rfold", |bn| {
-        bn.iter(|| a.iter().rfold(0, |acc, &x| acc + x))
-    });
+    c.bench_function("iter_sum_1d_strided_rfold", |bn| bn.iter(|| a.iter().rfold(0, |acc, &x| acc + x)));
 }
 
-fn iter_axis_iter_sum(c: &mut Criterion)
-{
+fn iter_axis_iter_sum(c: &mut Criterion) {
     let a = Array::<f32, _>::zeros((64, 64));
-    c.bench_function("iter_axis_iter_sum", |bn| {
-        bn.iter(|| a.axis_iter(Axis(0)).map(|plane| plane.sum()).sum::<f32>())
-    });
+    c.bench_function("iter_axis_iter_sum", |bn| bn.iter(|| a.axis_iter(Axis(0)).map(|plane| plane.sum()).sum::<f32>()));
 }
 
-fn iter_axis_chunks_1_iter_sum(c: &mut Criterion)
-{
+fn iter_axis_chunks_1_iter_sum(c: &mut Criterion) {
     let a = Array::<f32, _>::zeros((64, 64));
     c.bench_function("iter_axis_chunks_1_iter_sum", |bn| {
         bn.iter(|| {
@@ -416,8 +375,7 @@ fn iter_axis_chunks_1_iter_sum(c: &mut Criterion)
     });
 }
 
-fn iter_axis_chunks_5_iter_sum(c: &mut Criterion)
-{
+fn iter_axis_chunks_5_iter_sum(c: &mut Criterion) {
     let a = Array::<f32, _>::zeros((64, 64));
     c.bench_function("iter_axis_chunks_5_iter_sum", |bn| {
         bn.iter(|| {
@@ -428,22 +386,19 @@ fn iter_axis_chunks_5_iter_sum(c: &mut Criterion)
     });
 }
 
-pub fn zip_mut_with(data: &Array3<f32>, out: &mut Array3<f32>)
-{
+pub fn zip_mut_with(data: &Array3<f32>, out: &mut Array3<f32>) {
     out.zip_mut_with(data, |o, &i| {
         *o = i;
     });
 }
 
-fn zip_mut_with_cc(c: &mut Criterion)
-{
+fn zip_mut_with_cc(c: &mut Criterion) {
     let data: Array3<f32> = Array3::zeros((ISZ, ISZ, ISZ));
     let mut out = Array3::zeros(data.dim());
     c.bench_function("zip_mut_with_cc", |b| b.iter(|| zip_mut_with(&data, &mut out)));
 }
 
-fn zip_mut_with_ff(c: &mut Criterion)
-{
+fn zip_mut_with_ff(c: &mut Criterion) {
     let data: Array3<f32> = Array3::zeros((ISZ, ISZ, ISZ).f());
     let mut out = Array3::zeros(data.dim().f());
     c.bench_function("zip_mut_with_ff", |b| b.iter(|| zip_mut_with(&data, &mut out)));
@@ -451,13 +406,8 @@ fn zip_mut_with_ff(c: &mut Criterion)
 
 #[cfg(feature = "std")]
 criterion_group!(
-    benches_std,
-    iter_filter_sum_2d_u32,
-    iter_filter_sum_2d_f32,
-    iter_filter_sum_2d_stride_u32,
-    iter_filter_sum_2d_stride_f32,
-    iter_rev_step_by_contiguous,
-    iter_rev_step_by_discontiguous,
+    benches_std, iter_filter_sum_2d_u32, iter_filter_sum_2d_f32, iter_filter_sum_2d_stride_u32,
+    iter_filter_sum_2d_stride_f32, iter_rev_step_by_contiguous, iter_rev_step_by_discontiguous,
 );
 
 criterion_group!(

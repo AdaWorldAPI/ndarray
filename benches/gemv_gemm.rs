@@ -10,8 +10,7 @@ use ndarray::linalg::general_mat_mul;
 use ndarray::linalg::general_mat_vec_mul;
 use ndarray::LinalgScalar;
 
-fn gemv_64_64c(c: &mut Criterion)
-{
+fn gemv_64_64c(c: &mut Criterion) {
     let a = Array::zeros((64, 64));
     let (m, n) = a.dim();
     let x = Array::zeros(n);
@@ -23,8 +22,7 @@ fn gemv_64_64c(c: &mut Criterion)
     });
 }
 
-fn gemv_64_64f(c: &mut Criterion)
-{
+fn gemv_64_64f(c: &mut Criterion) {
     let a = Array::zeros((64, 64).f());
     let (m, n) = a.dim();
     let x = Array::zeros(n);
@@ -36,8 +34,7 @@ fn gemv_64_64f(c: &mut Criterion)
     });
 }
 
-fn gemv_64_32(c: &mut Criterion)
-{
+fn gemv_64_32(c: &mut Criterion) {
     let a = Array::zeros((64, 32));
     let (m, n) = a.dim();
     let x = Array::zeros(n);
@@ -49,18 +46,17 @@ fn gemv_64_32(c: &mut Criterion)
     });
 }
 
-fn cgemm_100(c: &mut Criterion)
-{
+fn cgemm_100(c: &mut Criterion) {
     cgemm_bench::<f32>("cgemm_100", 100, c);
 }
 
-fn zgemm_100(c: &mut Criterion)
-{
+fn zgemm_100(c: &mut Criterion) {
     cgemm_bench::<f64>("zgemm_100", 100, c);
 }
 
 fn cgemm_bench<A>(name: &str, size: usize, c: &mut Criterion)
-where A: LinalgScalar + Float
+where
+    A: LinalgScalar + Float,
 {
     let (m, k, n) = (size, size, size);
     let a = Array::<Complex<A>, _>::zeros((m, k));
