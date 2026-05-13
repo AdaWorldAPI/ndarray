@@ -184,7 +184,16 @@ jobs:
       - run: ./scripts/miri-tests.sh
 
   cross_test:
-    #if: ${{ github.event_name == 'merge_group' }}
+    # Gated on merge_group only — cross-compile via docker (cross-rs) for
+    # s390x / i686 is slow, flaky on the s390x docker image's toolchain
+    # resolution (rust-toolchain.toml's 1.94.1 pin doesn't resolve cleanly
+    # inside the s390x cross container), and reliably caught by the
+    # `tests/{stable,beta,1.94.0}` jobs on every PR push. Reserve cross
+    # validation for the merge queue where it can fail loudly without
+    # gating individual PRs on infra flakiness. The commented `if:` was
+    # the original intent (per the pre-existing comment) — uncommenting
+    # per the PR #143 codex thread that surfaced this consistently.
+    if: ${{ github.event_name == 'merge_group' }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
