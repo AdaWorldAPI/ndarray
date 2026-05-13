@@ -2055,6 +2055,7 @@ dependencies = [
  "cranelift-frontend",
  "cranelift-jit",
  "cranelift-module",
+ "criterion",
  "defmac",
  "itertools 0.13.0",
  "libc",
@@ -2086,6 +2087,7 @@ dependencies = [
 name = "ndarray-rand"
 version = "0.16.0"
 dependencies = [
+ "criterion",
  "ndarray",
  "quickcheck",
  "rand 0.9.2",

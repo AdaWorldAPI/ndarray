@@ -1,4 +1,8 @@
 #![allow(non_snake_case)]
+// `s![1..-1, ..]` etc. — ndarray's `s!` macro uses Python-style negative
+// indexing. Clippy can't see through the macro and reads `1..-1` as a plain
+// (empty) Rust range; the actual semantics are correct.
+#![allow(clippy::reversed_empty_ranges)]
 #![allow(
     clippy::many_single_char_names, clippy::deref_addrof, clippy::unreadable_literal, clippy::float_cmp
 )]

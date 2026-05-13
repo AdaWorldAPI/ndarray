@@ -1,31 +1,32 @@
-#![feature(test)]
-
-extern crate test;
-use test::Bencher;
-
+use criterion::{criterion_group, criterion_main, Criterion};
 use ndarray::prelude::*;
 
-#[bench]
-fn push_reserve(bench: &mut Bencher)
+fn push_reserve(c: &mut Criterion)
 {
     let ones: Array<f32, _> = array![1f32];
-    bench.iter(|| {
-        let mut a: Array<f32, Ix1> = array![];
-        a.reserve(Axis(0), 100).unwrap();
-        for _ in 0..100 {
-            a.append(Axis(0), ones.view()).unwrap();
-        }
+    c.bench_function("push_reserve", |b| {
+        b.iter(|| {
+            let mut a: Array<f32, Ix1> = array![];
+            a.reserve(Axis(0), 100).unwrap();
+            for _ in 0..100 {
+                a.append(Axis(0), ones.view()).unwrap();
+            }
+        });
     });
 }
 
-#[bench]
-fn push_no_reserve(bench: &mut Bencher)
+fn push_no_reserve(c: &mut Criterion)
 {
     let ones: Array<f32, _> = array![1f32];
-    bench.iter(|| {
-        let mut a: Array<f32, Ix1> = array![];
-        for _ in 0..100 {
-            a.append(Axis(0), ones.view()).unwrap();
-        }
+    c.bench_function("push_no_reserve", |b| {
+        b.iter(|| {
+            let mut a: Array<f32, Ix1> = array![];
+            for _ in 0..100 {
+                a.append(Axis(0), ones.view()).unwrap();
+            }
+        });
     });
 }
+
+criterion_group!(benches, push_reserve, push_no_reserve);
+criterion_main!(benches);

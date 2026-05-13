@@ -1,9 +1,7 @@
-#![feature(test)]
-extern crate test;
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use ndarray::s;
 use ndarray::IntoNdProducer;
 use ndarray::{Array3, ShapeBuilder, Zip};
-use test::{black_box, Bencher};
 
 pub fn zip_copy<'a, A, P, Q>(data: P, out: Q)
 where
@@ -44,90 +42,95 @@ pub fn zip_indexed(data: &Array3<f32>, out: &mut Array3<f32>)
 // array size in benchmarks
 const SZ3: (usize, usize, usize) = (100, 110, 100);
 
-#[bench]
-fn zip_cc(b: &mut Bencher)
+fn zip_cc(c: &mut Criterion)
 {
     let data: Array3<f32> = Array3::zeros(SZ3);
     let mut out = Array3::zeros(data.dim());
-    b.iter(|| zip_copy(&data, &mut out));
+    c.bench_function("zip_cc", |b| b.iter(|| zip_copy(&data, &mut out)));
 }
 
-#[bench]
-fn zip_cf(b: &mut Bencher)
+fn zip_cf(c: &mut Criterion)
 {
     let data: Array3<f32> = Array3::zeros(SZ3);
     let mut out = Array3::zeros(data.dim().f());
-    b.iter(|| zip_copy(&data, &mut out));
+    c.bench_function("zip_cf", |b| b.iter(|| zip_copy(&data, &mut out)));
 }
 
-#[bench]
-fn zip_fc(b: &mut Bencher)
+fn zip_fc(c: &mut Criterion)
 {
     let data: Array3<f32> = Array3::zeros(SZ3.f());
     let mut out = Array3::zeros(data.dim());
-    b.iter(|| zip_copy(&data, &mut out));
+    c.bench_function("zip_fc", |b| b.iter(|| zip_copy(&data, &mut out)));
 }
 
-#[bench]
-fn zip_ff(b: &mut Bencher)
+fn zip_ff(c: &mut Criterion)
 {
     let data: Array3<f32> = Array3::zeros(SZ3.f());
     let mut out = Array3::zeros(data.dim().f());
-    b.iter(|| zip_copy(&data, &mut out));
+    c.bench_function("zip_ff", |b| b.iter(|| zip_copy(&data, &mut out)));
 }
 
-#[bench]
-fn zip_indexed_cc(b: &mut Bencher)
+fn zip_indexed_cc(c: &mut Criterion)
 {
     let data: Array3<f32> = Array3::zeros(SZ3);
     let mut out = Array3::zeros(data.dim());
-    b.iter(|| zip_indexed(&data, &mut out));
+    c.bench_function("zip_indexed_cc", |b| b.iter(|| zip_indexed(&data, &mut out)));
 }
 
-#[bench]
-fn zip_indexed_ff(b: &mut Bencher)
+fn zip_indexed_ff(c: &mut Criterion)
 {
     let data: Array3<f32> = Array3::zeros(SZ3.f());
     let mut out = Array3::zeros(data.dim().f());
-    b.iter(|| zip_indexed(&data, &mut out));
+    c.bench_function("zip_indexed_ff", |b| b.iter(|| zip_indexed(&data, &mut out)));
 }
 
-#[bench]
-fn slice_zip_cc(b: &mut Bencher)
+fn slice_zip_cc(c: &mut Criterion)
 {
     let data: Array3<f32> = Array3::zeros(SZ3);
     let mut out = Array3::zeros(data.dim());
     let data = data.slice(s![1.., 1.., 1..]);
     let mut out = out.slice_mut(s![1.., 1.., 1..]);
-    b.iter(|| zip_copy(&data, &mut out));
+    c.bench_function("slice_zip_cc", |b| b.iter(|| zip_copy(&data, &mut out)));
 }
 
-#[bench]
-fn slice_zip_ff(b: &mut Bencher)
+fn slice_zip_ff(c: &mut Criterion)
 {
     let data: Array3<f32> = Array3::zeros(SZ3.f());
     let mut out = Array3::zeros(data.dim().f());
     let data = data.slice(s![1.., 1.., 1..]);
     let mut out = out.slice_mut(s![1.., 1.., 1..]);
-    b.iter(|| zip_copy(&data, &mut out));
+    c.bench_function("slice_zip_ff", |b| b.iter(|| zip_copy(&data, &mut out)));
 }
 
-#[bench]
-fn slice_split_zip_cc(b: &mut Bencher)
+fn slice_split_zip_cc(c: &mut Criterion)
 {
     let data: Array3<f32> = Array3::zeros(SZ3);
     let mut out = Array3::zeros(data.dim());
     let data = data.slice(s![1.., 1.., 1..]);
     let mut out = out.slice_mut(s![1.., 1.., 1..]);
-    b.iter(|| zip_copy_split(&data, &mut out));
+    c.bench_function("slice_split_zip_cc", |b| b.iter(|| zip_copy_split(&data, &mut out)));
 }
 
-#[bench]
-fn slice_split_zip_ff(b: &mut Bencher)
+fn slice_split_zip_ff(c: &mut Criterion)
 {
     let data: Array3<f32> = Array3::zeros(SZ3.f());
     let mut out = Array3::zeros(data.dim().f());
     let data = data.slice(s![1.., 1.., 1..]);
     let mut out = out.slice_mut(s![1.., 1.., 1..]);
-    b.iter(|| zip_copy_split(&data, &mut out));
+    c.bench_function("slice_split_zip_ff", |b| b.iter(|| zip_copy_split(&data, &mut out)));
 }
+
+criterion_group!(
+    benches,
+    zip_cc,
+    zip_cf,
+    zip_fc,
+    zip_ff,
+    zip_indexed_cc,
+    zip_indexed_ff,
+    slice_zip_cc,
+    slice_zip_ff,
+    slice_split_zip_cc,
+    slice_split_zip_ff
+);
+criterion_main!(benches);

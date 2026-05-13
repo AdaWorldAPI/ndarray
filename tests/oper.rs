@@ -1,4 +1,6 @@
 #![allow(clippy::many_single_char_names, clippy::deref_addrof, clippy::unreadable_literal)]
+use std::mem::MaybeUninit;
+
 use ndarray::linalg::general_mat_mul;
 use ndarray::linalg::kron;
 use ndarray::prelude::*;
@@ -297,16 +299,19 @@ where
     let ((m, k), (k2, n)) = (lhs.dim(), rhs.dim());
     assert!(m.checked_mul(n).is_some());
     assert_eq!(k, k2);
-    let mut res_elems = Vec::<A>::with_capacity(m * n);
-    unsafe {
-        res_elems.set_len(m * n);
-    }
+    // SAFETY: We allocate `m * n` MaybeUninit slots, then write into every
+    // slot exactly once via the `for rr in &mut res_elems` loop below
+    // (each iteration writes `*rr = ...`). After all writes complete every
+    // slot is initialized, so it's safe to transmute the buffer to
+    // `Vec<A>` via `assume_init`.
+    let mut res_elems: Vec<MaybeUninit<A>> = Vec::with_capacity(m * n);
+    res_elems.resize_with(m * n, MaybeUninit::uninit);
 
     let mut i = 0;
     let mut j = 0;
     for rr in &mut res_elems {
         unsafe {
-            *rr = (0..k).fold(A::zero(), move |s, x| s + *lhs.uget((i, x)) * *rhs.uget((x, j)));
+            rr.write((0..k).fold(A::zero(), move |s, x| s + *lhs.uget((i, x)) * *rhs.uget((x, j))));
         }
         j += 1;
         if j == n {
@@ -314,6 +319,11 @@ where
             i += 1;
         }
     }
+    // SAFETY: every slot was initialized in the loop above.
+    let res_elems: Vec<A> = unsafe {
+        let mut me = std::mem::ManuallyDrop::new(res_elems);
+        Vec::from_raw_parts(me.as_mut_ptr() as *mut A, me.len(), me.capacity())
+    };
     unsafe { ArrayBase::from_shape_vec_unchecked((m, n), res_elems) }
 }
 

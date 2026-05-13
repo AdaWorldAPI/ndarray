@@ -1,4 +1,13 @@
-#![allow(clippy::many_single_char_names, clippy::deref_addrof, clippy::unreadable_literal)]
+// `s![1..-1, 1..-1]` / `s![0..-2, 0..-2]` — ndarray's `s!` macro uses
+// Python-style negative indexing. Clippy can't see through the macro and
+// reads `1..-1` as a plain (empty) Rust range; the actual semantics are
+// correct.
+#![allow(
+    clippy::many_single_char_names,
+    clippy::deref_addrof,
+    clippy::unreadable_literal,
+    clippy::reversed_empty_ranges
+)]
 
 use ndarray::prelude::*;
 
