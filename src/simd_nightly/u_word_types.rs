@@ -3,7 +3,7 @@
 
 use core::simd::cmp::{SimdOrd, SimdPartialEq, SimdPartialOrd};
 use core::simd::num::SimdUint;
-use core::simd::{u16x32, u32x8, u32x16, u64x8, u64x4};
+use core::simd::{u16x32, u32x16, u32x8, u64x4, u64x8};
 
 // ════════════════════════════════════════════════════════════════════
 // U64x8 — 8-lane u64

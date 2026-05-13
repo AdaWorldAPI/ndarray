@@ -170,7 +170,9 @@ fn f64x4_reduce_sum_parity() {
 fn f32x16_cmpeq_mask_parity() {
     let a: [f32; 16] = core::array::from_fn(|i| (i % 4) as f32);
     let b: [f32; 16] = core::array::from_fn(|i| (i % 2) as f32);
-    let mask = F32x16::from_array(a).simd_eq(F32x16::from_array(b)).to_bitmask();
+    let mask = F32x16::from_array(a)
+        .simd_eq(F32x16::from_array(b))
+        .to_bitmask();
     let mut expected: u16 = 0;
     for i in 0..16 {
         if a[i] == b[i] {
@@ -198,7 +200,9 @@ fn f32x16_cmpgt_mask_parity() {
 fn f32x8_cmpeq_mask_parity() {
     let a: [f32; 8] = core::array::from_fn(|i| (i % 2) as f32);
     let b: [f32; 8] = [0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0];
-    let mask = F32x8::from_array(a).simd_eq(F32x8::from_array(b)).to_bitmask();
+    let mask = F32x8::from_array(a)
+        .simd_eq(F32x8::from_array(b))
+        .to_bitmask();
     let mut expected: u8 = 0;
     for i in 0..8 {
         if a[i] == b[i] {
@@ -212,7 +216,9 @@ fn f32x8_cmpeq_mask_parity() {
 fn f64x8_cmpeq_mask_parity() {
     let a: [f64; 8] = core::array::from_fn(|i| (i % 3) as f64);
     let b: [f64; 8] = core::array::from_fn(|i| (i % 2) as f64);
-    let mask = F64x8::from_array(a).simd_eq(F64x8::from_array(b)).to_bitmask();
+    let mask = F64x8::from_array(a)
+        .simd_eq(F64x8::from_array(b))
+        .to_bitmask();
     let mut expected: u8 = 0;
     for i in 0..8 {
         if a[i] == b[i] {
@@ -359,7 +365,9 @@ fn f32x16_fma_scalar_parity() {
     let b: [f32; 16] = core::array::from_fn(|i| (i as f32) * 0.3);
     let c: [f32; 16] = core::array::from_fn(|i| i as f32);
     let simd_result = F32x16::from_array(a).mul_add(F32x16::from_array(b), F32x16::from_array(c));
-    for (i, (&r, (&ai, (&bi, &ci)))) in simd_result.to_array().iter()
+    for (i, (&r, (&ai, (&bi, &ci)))) in simd_result
+        .to_array()
+        .iter()
         .zip(a.iter().zip(b.iter().zip(c.iter())))
         .enumerate()
     {
@@ -381,10 +389,7 @@ fn bf16x16_from_f32_to_f32_lossy_within_bounds() {
     for (i, (&orig, &back)) in inputs.iter().zip(out.iter()).enumerate() {
         // BF16 truncation error is at most |orig| * 2^-7
         let max_err = orig.abs() * (2.0_f32.powi(-7)) + f32::EPSILON;
-        assert!(
-            (orig - back).abs() <= max_err,
-            "lane {i}: orig={orig} back={back} err={}", (orig - back).abs()
-        );
+        assert!((orig - back).abs() <= max_err, "lane {i}: orig={orig} back={back} err={}", (orig - back).abs());
     }
 }
 
@@ -395,10 +400,7 @@ fn bf16x8_from_f32_to_f32_lossy_within_bounds() {
     let out = v.to_f32_lossy();
     for (i, (&orig, &back)) in inputs.iter().zip(out.iter()).enumerate() {
         let max_err = orig.abs() * (2.0_f32.powi(-7)) + f32::EPSILON;
-        assert!(
-            (orig - back).abs() <= max_err,
-            "lane {i}: orig={orig} back={back}"
-        );
+        assert!((orig - back).abs() <= max_err, "lane {i}: orig={orig} back={back}");
     }
 }
 
@@ -425,10 +427,7 @@ fn f16x16_from_f32_to_f32_roundtrip_within_1ulp() {
     let out = v.to_f32_array();
     for (i, (&orig, &back)) in inputs.iter().zip(out.iter()).enumerate() {
         // These integers are exactly representable in f16 (range 0..2048)
-        assert!(
-            (orig - back).abs() <= 0.5,
-            "lane {i}: orig={orig} back={back}"
-        );
+        assert!((orig - back).abs() <= 0.5, "lane {i}: orig={orig} back={back}");
     }
 }
 
@@ -483,7 +482,9 @@ fn f32mask16_select_scalar_parity() {
     let threshold = F32x16::splat(7.5);
     let va = F32x16::from_array(a);
     let mask = va.simd_lt(threshold);
-    let result = mask.select(F32x16::splat(100.0), F32x16::splat(200.0)).to_array();
+    let result = mask
+        .select(F32x16::splat(100.0), F32x16::splat(200.0))
+        .to_array();
     for i in 0..16 {
         let expected = if a[i] < 7.5 { 100.0_f32 } else { 200.0_f32 };
         assert_eq!(result[i], expected, "lane {i}");
@@ -496,7 +497,9 @@ fn f32mask8_select_scalar_parity() {
     let threshold = F32x8::splat(3.5);
     let va = F32x8::from_array(a);
     let mask = va.simd_gt(threshold);
-    let result = mask.select(F32x8::splat(10.0), F32x8::splat(20.0)).to_array();
+    let result = mask
+        .select(F32x8::splat(10.0), F32x8::splat(20.0))
+        .to_array();
     for i in 0..8 {
         let expected = if a[i] > 3.5 { 10.0_f32 } else { 20.0_f32 };
         assert_eq!(result[i], expected, "lane {i}");
@@ -522,7 +525,9 @@ fn f64mask4_select_scalar_parity() {
     let threshold = F64x4::splat(4.0);
     let va = F64x4::from_array(a);
     let mask = va.simd_gt(threshold);
-    let result = mask.select(F64x4::splat(99.0), F64x4::splat(0.0)).to_array();
+    let result = mask
+        .select(F64x4::splat(99.0), F64x4::splat(0.0))
+        .to_array();
     // Lanes 1 (5>4) and 3 (7>4) should be 99.0
     assert_eq!(result, [0.0, 99.0, 0.0, 99.0]);
 }
@@ -682,10 +687,7 @@ fn f32x16_floor_parity() {
 
 #[test]
 fn f32x16_round_parity() {
-    let src: [f32; 16] = [
-        0.5, 1.5, 2.5, 3.5, 4.5, 5.5, -0.5, -1.5,
-        0.4, 1.6, 2.3, 3.7, -0.4, -1.6, 100.0, -100.0,
-    ];
+    let src: [f32; 16] = [0.5, 1.5, 2.5, 3.5, 4.5, 5.5, -0.5, -1.5, 0.4, 1.6, 2.3, 3.7, -0.4, -1.6, 100.0, -100.0];
     let result = F32x16::from_array(src).round().to_array();
     for (i, (&r, &s)) in result.iter().zip(src.iter()).enumerate() {
         assert_eq!(r, s.round(), "lane {i}");

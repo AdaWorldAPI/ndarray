@@ -1,9 +1,9 @@
 //! U8x32 / U8x64 portable-simd wrappers — round-3-portable-simd agent #3.
 #![cfg(feature = "nightly-simd")]
 
-use core::simd::{u8x32 as core_u8x32, u8x64 as core_u8x64, Simd};
 use core::simd::cmp::{SimdOrd, SimdPartialEq, SimdPartialOrd};
 use core::simd::num::SimdUint;
+use core::simd::{u8x32 as core_u8x32, u8x64 as core_u8x64, Simd};
 
 // ════════════════════════════════════════════════════════════════════
 // U8x64 — 64-lane unsigned byte (rasterizer / palette / NBT width)
@@ -397,10 +397,8 @@ impl U8x64 {
     pub fn nibble_popcount_lut() -> Self {
         // LUT for nibbles 0..=15, replicated 4× to fill 64 bytes.
         Self::from_array([
-            0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
-            0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
-            0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
-            0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
+            0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4, 0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4, 0, 1, 1, 2,
+            1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4, 0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
         ])
     }
 }
@@ -800,8 +798,7 @@ impl U8x32 {
     pub fn nibble_popcount_lut() -> Self {
         // LUT replicated twice to fill 32 bytes (2 × 128-bit halves).
         Self::from_array([
-            0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
-            0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
+            0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4, 0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
         ])
     }
 }

@@ -1,9 +1,9 @@
 //! I8x32 / I8x64 portable-simd wrappers — round-3-portable-simd agent #5.
 #![cfg(feature = "nightly-simd")]
 
-use core::simd::{i8x32, i8x64};
 use core::simd::cmp::{SimdOrd, SimdPartialEq, SimdPartialOrd};
 use core::simd::num::SimdInt;
+use core::simd::{i8x32, i8x64};
 
 // ════════════════════════════════════════════════════════════════════
 // I8x64 — 64-lane signed byte

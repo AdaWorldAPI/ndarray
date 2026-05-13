@@ -228,10 +228,7 @@ mod tests {
         let v = F16x16::from_f32_array(inputs);
         let out = v.to_f32_array();
         for (i, (&orig, &back)) in inputs.iter().zip(out.iter()).enumerate() {
-            assert!(
-                (orig - back).abs() < 0.001,
-                "lane {i}: {orig} → f16 → {back}"
-            );
+            assert!((orig - back).abs() < 0.001, "lane {i}: {orig} → f16 → {back}");
         }
     }
 

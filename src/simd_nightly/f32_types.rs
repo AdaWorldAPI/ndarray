@@ -1,9 +1,9 @@
 //! F32x16 / F32x8 portable-simd wrappers — round-3-portable-simd agent #1.
 #![cfg(feature = "nightly-simd")]
 
-use core::simd::{f32x16 as core_f32x16, f32x8 as core_f32x8};
 use core::simd::cmp::{SimdPartialEq, SimdPartialOrd};
 use core::simd::num::SimdFloat;
+use core::simd::{f32x16 as core_f32x16, f32x8 as core_f32x8};
 // `mul_add`, `sqrt`, `round`, `floor`, `abs` live in `StdFloat` (std-only nightly trait).
 use std::simd::StdFloat;
 

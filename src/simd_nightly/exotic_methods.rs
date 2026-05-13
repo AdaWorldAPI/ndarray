@@ -138,7 +138,7 @@ impl U8x64 {
         for lane in 0..4 {
             let base = lane * 16;
             for i in 0..8 {
-                out[base + i * 2]     = a[base + i];
+                out[base + i * 2] = a[base + i];
                 out[base + i * 2 + 1] = b[base + i];
             }
         }
@@ -172,7 +172,7 @@ impl U8x64 {
         for lane in 0..4 {
             let base = lane * 16;
             for i in 0..8 {
-                out[base + i * 2]     = a[base + 8 + i];
+                out[base + i * 2] = a[base + 8 + i];
                 out[base + i * 2 + 1] = b[base + 8 + i];
             }
         }
@@ -310,7 +310,7 @@ impl U8x32 {
         for lane in 0..2 {
             let base = lane * 16;
             for i in 0..8 {
-                out[base + i * 2]     = a[base + i];
+                out[base + i * 2] = a[base + i];
                 out[base + i * 2 + 1] = b[base + i];
             }
         }
@@ -344,7 +344,7 @@ impl U8x32 {
         for lane in 0..2 {
             let base = lane * 16;
             for i in 0..8 {
-                out[base + i * 2]     = a[base + 8 + i];
+                out[base + i * 2] = a[base + 8 + i];
                 out[base + i * 2 + 1] = b[base + 8 + i];
             }
         }
@@ -436,7 +436,7 @@ mod tests {
         for lane in 0..4 {
             let base = lane * 16;
             for i in 0..8 {
-                assert_eq!(arr[base + i * 2],     0xAA, "lane {lane} pos {}", i * 2);
+                assert_eq!(arr[base + i * 2], 0xAA, "lane {lane} pos {}", i * 2);
                 assert_eq!(arr[base + i * 2 + 1], 0xBB, "lane {lane} pos {}", i * 2 + 1);
             }
         }
@@ -459,7 +459,7 @@ mod tests {
         for lane in 0..4 {
             let base = lane * 16;
             for i in 0..8 {
-                assert_eq!(arr[base + i * 2],     (8 + i) as u8, "lane {lane} a[{i}]");
+                assert_eq!(arr[base + i * 2], (8 + i) as u8, "lane {lane} a[{i}]");
                 assert_eq!(arr[base + i * 2 + 1], (108 + i) as u8, "lane {lane} b[{i}]");
             }
         }
@@ -533,7 +533,7 @@ mod tests {
         for lane in 0..2 {
             let base = lane * 16;
             for i in 0..8 {
-                assert_eq!(arr[base + i * 2],     0xAA);
+                assert_eq!(arr[base + i * 2], 0xAA);
                 assert_eq!(arr[base + i * 2 + 1], 0xBB);
             }
         }
@@ -556,7 +556,7 @@ mod tests {
         for lane in 0..2 {
             let base = lane * 16;
             for i in 0..8 {
-                assert_eq!(arr[base + i * 2],     (8 + i) as u8, "lane {lane} a[{i}]");
+                assert_eq!(arr[base + i * 2], (8 + i) as u8, "lane {lane} a[{i}]");
                 assert_eq!(arr[base + i * 2 + 1], (108 + i) as u8, "lane {lane} b[{i}]");
             }
         }

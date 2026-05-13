@@ -1,9 +1,9 @@
 //! F64x8 / F64x4 portable-simd wrappers — round-3-portable-simd agent #2.
 #![cfg(feature = "nightly-simd")]
 
-use core::simd::{f64x8 as core_f64x8, f64x4 as core_f64x4};
 use core::simd::cmp::{SimdPartialEq, SimdPartialOrd};
 use core::simd::num::SimdFloat;
+use core::simd::{f64x4 as core_f64x4, f64x8 as core_f64x8};
 use std::simd::StdFloat;
 
 // ════════════════════════════════════════════════════════════════════

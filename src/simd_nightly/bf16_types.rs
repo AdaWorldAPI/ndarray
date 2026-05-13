@@ -48,11 +48,7 @@ impl BF16x16 {
     /// Load 16 BF16 bit-patterns from a `u16` slice (must have `len >= 16`).
     #[inline]
     pub fn from_slice(s: &[u16]) -> Self {
-        assert!(
-            s.len() >= 16,
-            "BF16x16::from_slice: need >= 16 elements, got {}",
-            s.len()
-        );
+        assert!(s.len() >= 16, "BF16x16::from_slice: need >= 16 elements, got {}", s.len());
         let mut arr = [0u16; 16];
         arr.copy_from_slice(&s[..16]);
         Self(arr)
@@ -73,11 +69,7 @@ impl BF16x16 {
     /// Write the 16 BF16 bit-patterns into `dst` (must have `len >= 16`).
     #[inline]
     pub fn copy_to_slice(self, dst: &mut [u16]) {
-        assert!(
-            dst.len() >= 16,
-            "BF16x16::copy_to_slice: need >= 16 elements, got {}",
-            dst.len()
-        );
+        assert!(dst.len() >= 16, "BF16x16::copy_to_slice: need >= 16 elements, got {}", dst.len());
         dst[..16].copy_from_slice(&self.0);
     }
 
@@ -119,11 +111,7 @@ impl BF16x8 {
     /// Load 8 BF16 bit-patterns from a `u16` slice (must have `len >= 8`).
     #[inline]
     pub fn from_slice(s: &[u16]) -> Self {
-        assert!(
-            s.len() >= 8,
-            "BF16x8::from_slice: need >= 8 elements, got {}",
-            s.len()
-        );
+        assert!(s.len() >= 8, "BF16x8::from_slice: need >= 8 elements, got {}", s.len());
         let mut arr = [0u16; 8];
         arr.copy_from_slice(&s[..8]);
         Self(arr)
@@ -144,11 +132,7 @@ impl BF16x8 {
     /// Write the 8 BF16 bit-patterns into `dst` (must have `len >= 8`).
     #[inline]
     pub fn copy_to_slice(self, dst: &mut [u16]) {
-        assert!(
-            dst.len() >= 8,
-            "BF16x8::copy_to_slice: need >= 8 elements, got {}",
-            dst.len()
-        );
+        assert!(dst.len() >= 8, "BF16x8::copy_to_slice: need >= 8 elements, got {}", dst.len());
         dst[..8].copy_from_slice(&self.0);
     }
 

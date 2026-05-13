@@ -40,6 +40,6 @@ pub use f32_types::{F32x16, F32x8};
 pub use f64_types::{F64x4, F64x8};
 pub use i8_types::{I8x32, I8x64};
 pub use i_word_types::{I16x16, I16x32, I32x16, I64x8};
-pub use masks::{F32Mask16, F32Mask8, F64Mask8, F64Mask4};
+pub use masks::{F32Mask16, F32Mask8, F64Mask4, F64Mask8};
 pub use u8_types::{U8x32, U8x64};
-pub use u_word_types::{U16x32, U32x8, U32x16, U64x4, U64x8};
+pub use u_word_types::{U16x32, U32x16, U32x8, U64x4, U64x8};

@@ -1,9 +1,9 @@
 //! I16x16 / I16x32 / I32x16 / I64x8 portable-simd wrappers — round-3-portable-simd agent #6.
 #![cfg(feature = "nightly-simd")]
 
-use core::simd::{i16x16, i16x32, i32x16, i64x8};
 use core::simd::cmp::{SimdOrd, SimdPartialEq, SimdPartialOrd};
 use core::simd::num::SimdInt;
+use core::simd::{i16x16, i16x32, i32x16, i64x8};
 
 // ════════════════════════════════════════════════════════════════════
 // I16x16 — 16-lane signed 16-bit integer

@@ -1,9 +1,9 @@
 //! Comparison-result mask wrappers — round-3-portable-simd agent #7.
 #![cfg(feature = "nightly-simd")]
 
-use core::simd::Mask;
+use super::{F32x16, F32x8, F64x4, F64x8};
 use core::simd::prelude::Select;
-use super::{F32x16, F32x8, F64x8, F64x4};
+use core::simd::Mask;
 
 // ============================================================================
 // F32Mask16 — 16-lane mask for F32x16 comparisons
