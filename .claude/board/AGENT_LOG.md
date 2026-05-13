@@ -1178,3 +1178,39 @@ SIMD savings disappear below GPU baseline.
 integration candidate. The performance levers are GPU shader
 optimization + wgpu buffer bandwidth — outside ndarray's scope.
 
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Round 3-portable-simd — full 30-type coverage for crate::simd_nightly
+# ═══════════════════════════════════════════════════════════════════
+
+> **Branch:** `claude/portable-simd-nightly`
+> **Goal:** expand `src/simd_nightly/` from 5-type draft (F32x16, F64x8,
+> U8x64, U32x16, F32Mask16) to full 30-type coverage that mirrors the
+> AVX-512 / AVX2 polyfill surface. Miri-runnable backend wrapping
+> `core::simd::*`.
+> **Fleet:** 12 Sonnet workers + 1 Sonnet meta. Same A2A pattern
+> (`tee -a` to this file).
+> **Permission:** the `.claude/settings.local.json` allow-list set up
+> in round-2 still covers `tee -a /home/user/ndarray/.claude/board/AGENT_LOG.md`.
+
+## Fleet manifest (round 3-portable-simd)
+
+| # | Agent | Scope (file) | Types |
+|---|---|---|---|
+| 1 | f32-wrap | `src/simd_nightly/f32_types.rs` | F32x16, F32x8 |
+| 2 | f64-wrap | `src/simd_nightly/f64_types.rs` | F64x8, F64x4 |
+| 3 | u8-wrap | `src/simd_nightly/u8_types.rs` | U8x32, U8x64 |
+| 4 | u-word-wrap | `src/simd_nightly/u_word_types.rs` | U16x32, U32x16, U64x8 |
+| 5 | i8-wrap | `src/simd_nightly/i8_types.rs` | I8x32, I8x64 |
+| 6 | i-word-wrap | `src/simd_nightly/i_word_types.rs` | I16x16, I16x32, I32x16, I64x8 |
+| 7 | masks-wrap | `src/simd_nightly/masks.rs` | F32Mask16, F64Mask8 |
+| 8 | bf16-emul | `src/simd_nightly/bf16_types.rs` | BF16x16, BF16x8 (scalar emulation — no `core::simd` half-prec) |
+| 9 | f16-emul | `src/simd_nightly/f16_types.rs` | F16x16 (scalar emulation) |
+| 10 | ops-macros | `src/simd_nightly/ops.rs` | Add/Sub/Mul/Div/BitAnd/BitOr/BitXor/Default macros applied to all types |
+| 11 | exotic-fallbacks | `src/simd_nightly/exotic_methods.rs` | permute_bytes, shuffle_bytes scalar fallbacks for U8x32/U8x64 (`core::simd::swizzle` is const N — can't accept runtime idx vector) |
+| 12 | parity-tests | `src/simd_nightly/tests.rs` | Comprehensive parity tests vs simd_avx512 / simd_avx2 references where they exist |
+| M | meta-r3 | synthesis | Sonnet |
+
+## Round-3-portable-simd entries (newest first)
+

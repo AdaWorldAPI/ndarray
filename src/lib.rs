@@ -6,6 +6,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 #![crate_name = "ndarray"]
+// Crate-level nightly feature gate for the optional `nightly-simd` backend
+// (`src/simd_nightly/`). When the `nightly-simd` cargo feature is OFF
+// (default), this attribute is absent and stable rustc compiles the crate
+// normally. When ON, the crate requires nightly rustc to access
+// `core::simd::*` types.
+#![cfg_attr(feature = "nightly-simd", feature(portable_simd))]
 #![doc(html_root_url = "https://docs.rs/ndarray/0.15/")]
 #![doc(html_logo_url = "https://rust-ndarray.github.io/images/rust-ndarray_logo.svg")]
 #![allow(
@@ -239,6 +245,14 @@ pub(crate) mod simd_avx512;
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
 #[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
 pub mod simd_avx2;
+
+// Portable-SIMD backend — nightly-only. Wraps `core::simd::*` so miri can
+// execute the polyfill paths (intrinsic-based backends are opaque to
+// miri). Gated behind `nightly-simd` feature; the file itself requires
+// `#![feature(portable_simd)]` so it only compiles on nightly rustc.
+#[cfg(feature = "nightly-simd")]
+#[allow(clippy::all, missing_docs)]
+pub mod simd_nightly;
 
 #[cfg(feature = "std")]
 #[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]

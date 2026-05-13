@@ -147,6 +147,20 @@ serde = ["dep:serde"]
 std = ["num-traits/std", "matrixmultiply/std"]
 rayon = ["dep:rayon", "std"]
 
+# Portable-SIMD backend (NIGHTLY ONLY). Routes `crate::simd::*` types
+# through `core::simd::*` instead of the architecture-specific intrinsics
+# in `simd_avx512.rs` / `simd_avx2.rs` / `simd_neon.rs`. The point is
+# miri compatibility: miri can execute `core::simd` semantics but treats
+# `_mm*_*` intrinsics as opaque. With this feature on, miri-run tests
+# exercise the actual SIMD code paths in consumer code (`hpc/byte_scan`,
+# `hpc/framebuffer`, etc.) and catch UB that the intrinsics backend hides.
+#
+# Requires `cargo +nightly` because `src/simd_nightly.rs` is gated on
+# `#![feature(portable_simd)]` (Rust unstable issue #86656). The default
+# build (stable 1.95) does NOT touch this; the existing intrinsics
+# cfg-dispatch in `simd.rs` remains the production path.
+nightly-simd = ["std"]
+
 # HPC extras: blake3 hashing, p64 palette/NARS bridge, fractal manifold.
 # These pull in a non-trivial dependency tree; downstream crates such as
 # burn-ndarray that only need the core array layer can disable this with
