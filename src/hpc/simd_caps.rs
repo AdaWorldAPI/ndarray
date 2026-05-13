@@ -22,7 +22,14 @@ use std::sync::LazyLock;
 ///   Pi Zero 2 W / Pi 3 (A53, v8.0): neon only
 ///   Pi 4 (A72, v8.0):               neon only (but 2× throughput)
 ///   Pi 5 (A76, v8.2):               neon + dotprod + fp16 + aes + sha2
+///
+/// `#[non_exhaustive]` per codex P2 on PR #143: future capability fields
+/// can be added without source-breaking downstream crates that construct
+/// `SimdCaps` directly via struct literal (e.g. mocks, tests, custom
+/// capability values). Downstream code must use `simd_caps()` or the
+/// public constructor instead of struct-literal init.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct SimdCaps {
     // ── x86_64 ──
     /// AVX2 (256-bit integer/FP SIMD).
