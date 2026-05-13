@@ -428,7 +428,7 @@ mod tests {
 
     #[test]
     fn test_bf16_roundtrip() {
-        let values = [1.0f32, -1.0, 0.0, 3.14, 1000.0, 0.001];
+        let values = [1.0f32, -1.0, 0.0, 2.5, 1000.0, 0.001];
         for &v in &values {
             let bf = BF16::from_f32(v);
             let back = bf.to_f32();

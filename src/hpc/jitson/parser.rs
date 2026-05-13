@@ -481,10 +481,10 @@ mod tests {
 
     #[test]
     fn test_parse_negative_and_float() {
-        let input = r#"{"neg": -42, "flt": 3.14, "exp": 1e10}"#;
+        let input = r#"{"neg": -42, "flt": 2.5, "exp": 1e10}"#;
         let root = parse_json(input).unwrap();
         assert!((root.get("neg").unwrap().as_f64().unwrap() - (-42.0)).abs() < 1e-10);
-        assert!((root.get("flt").unwrap().as_f64().unwrap() - 3.14).abs() < 1e-10);
+        assert!((root.get("flt").unwrap().as_f64().unwrap() - 2.5).abs() < 1e-10);
         assert!((root.get("exp").unwrap().as_f64().unwrap() - 1e10).abs() < 1.0);
     }
 
