@@ -61,28 +61,23 @@ jobs:
 
   format:
     runs-on: ubuntu-latest
-    name: format/nightly
-    # Marked non-blocking until a separate fmt-sweep PR aligns the
-    # codebase with `rustfmt.toml`. Local audit (2026-04-30) under
-    # `cargo +nightly fmt --all -- --check` reports 5,679 drift sites —
-    # too large to bundle into a CI-fix PR. The format job remains in
-    # the pipeline as a continuous signal so the sweep author can verify
-    # zero drift after running `cargo +nightly fmt --all`, but it does
-    # not gate merge until that sweep lands.
-    continue-on-error: true
+    name: format/stable
+    # Blocking — no continue-on-error. `rustfmt.toml` was stripped of all
+    # nightly-only directives in PR #133 (`7ca1cf3d chore(fmt): strip
+    # unstable rustfmt options, keep stable-only config` + `ed59b3b1
+    # style: normalize codebase to stable rustfmt 1.94.1`) and the
+    # codebase normalized — so stable rustfmt enforces the project's
+    # style losslessly. The previous `continue-on-error: true` +
+    # `dtolnay/rust-toolchain@nightly` setup was a stale band-aid from
+    # when `brace_style = AlwaysNextLine`, `imports_granularity =
+    # Preserve`, `unstable_features = true` still lived in rustfmt.toml.
+    # That state no longer exists; the band-aid is removed in this PR.
     steps:
       - uses: actions/checkout@v4
-      # `rustfmt.toml` declares 13 nightly-only options
-      # (`brace_style = AlwaysNextLine`, `imports_granularity = Preserve`,
-      # `unstable_features = true`, etc.). Stable rustfmt warns and
-      # ignores them, then produces drift on every nightly-formatted
-      # file because its defaults differ from the unstable settings.
-      # The format job MUST use nightly rustfmt for the project's chosen
-      # style to be enforceable.
-      #
-      # The compile + clippy jobs stay on 1.95.0 (pinned in
-      # `rust-toolchain.toml`) — only this fmt job needs nightly.
-      - uses: dtolnay/rust-toolchain@nightly
+      # Stable rustfmt 1.95.0 — pinned in `rust-toolchain.toml`. No
+      # nightly dependency since rustfmt.toml is stable-clean post-PR
+      # #133.
+      - uses: dtolnay/rust-toolchain@1.95.0
         with:
           components: rustfmt
       - run: cargo fmt --all --check

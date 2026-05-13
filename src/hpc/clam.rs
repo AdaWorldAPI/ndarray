@@ -1281,7 +1281,7 @@ impl ClamTree {
 
 use super::bf16_truth::{AwarenessState, PackedQualia};
 use super::causality::{causality_decompose, CausalityDecomposition, NarsTruthValue};
-use super::node::{Node, SPO, S__, _P_, __O};
+use super::node::{Node, _P_, __O, SPO, S__};
 use super::plane::Distance as PlaneDistance;
 
 /// A verified hit enriched with causal metadata from SPO decomposition.

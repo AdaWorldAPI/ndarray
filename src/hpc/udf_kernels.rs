@@ -22,7 +22,7 @@ use super::bf16_truth::{bf16_hamming_scalar, BF16Weights};
 use super::bitwise::hamming_distance_raw;
 use super::cascade::Cascade;
 use super::causality::{causality_decompose, CausalityDirection};
-use super::node::{Node, SPO, S__, _P_, __O};
+use super::node::{Node, _P_, __O, SPO, S__};
 use super::plane::Truth;
 
 // ============================================================================
