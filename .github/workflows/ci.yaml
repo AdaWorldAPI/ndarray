@@ -21,8 +21,8 @@ env:
   # `LazyLock<Tier>` detection means one binary, all ISAs. Jobs that
   # specifically need a higher target-cpu can opt in via per-job env.
   RUSTFLAGS: "-D warnings"
-  MSRV: 1.94.0
-  BLAS_MSRV: 1.94.0
+  MSRV: 1.95.0
+  BLAS_MSRV: 1.95.0
 
 jobs:
   pass-msrv:
@@ -41,15 +41,18 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # Pinned to 1.94.1 to match `rust-toolchain.toml`. Auto-tracking
-        # `stable` would silently bump to 1.95 and start rejecting code
-        # on lints like `clippy::unnecessary_sort_by` that 1.94 accepted.
+        # Pinned to 1.95.0 to match `rust-toolchain.toml`. The workspace
+        # bumped from 1.94.1 → 1.95.0 in commit
+        # https://github.com/AdaWorldAPI/ndarray (this PR) to align with
+        # bevy (edition 2024 → 1.95 MSRV) and lance-graph. 1.95 added the
+        # `clippy::manual_checked_ops` lint which fires on
+        # `impl_owned_array.rs::into_scalar` — fixed in this same PR.
         rust:
-          - "1.94.1"
+          - "1.95.0"
     name: clippy/${{ matrix.rust }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.94.1
+      - uses: dtolnay/rust-toolchain@1.95.0
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
@@ -77,7 +80,7 @@ jobs:
       # The format job MUST use nightly rustfmt for the project's chosen
       # style to be enforceable.
       #
-      # The compile + clippy jobs stay on 1.94.1 (pinned in
+      # The compile + clippy jobs stay on 1.95.0 (pinned in
       # `rust-toolchain.toml`) — only this fmt job needs nightly.
       - uses: dtolnay/rust-toolchain@nightly
         with:
@@ -101,7 +104,7 @@ jobs:
         with:
           toolchain: ${{ matrix.rust }}
           targets: ${{ matrix.target }}
-      # rust-toolchain.toml pins 1.94.1 — install the cross-compile target
+      # rust-toolchain.toml pins 1.95.0 — install the cross-compile target
       # for that toolchain too, since dtolnay/rust-toolchain only installs
       # for the matrix value which may differ from the pinned version.
       - run: rustup target add ${{ matrix.target }}

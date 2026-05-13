@@ -45,7 +45,12 @@ impl<A> Array<A, Ix0> {
             // by `array![1, 2, 3, 4].slice_move(s![2])`.)
             let first = self.parts.ptr.as_ptr() as usize;
             let base = self.data.as_ptr() as usize;
-            let index = (first - base) / size;
+            // Use `checked_div` to satisfy `clippy::manual_checked_ops`
+            // (new lint in Rust 1.95). The `size == 0` branch above already
+            // covers the divisor-is-zero case, so the `unwrap_or` is
+            // unreachable in practice — `0` is the safest fallback if some
+            // future refactor lets a `size == 0` ZST sneak past the guard.
+            let index = (first - base).checked_div(size).unwrap_or(0);
             debug_assert_eq!((first - base) % size, 0);
             // Remove the element at the index and return it.
             self.data.into_vec().remove(index)
