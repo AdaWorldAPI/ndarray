@@ -582,3 +582,392 @@ The fleet largely served (1) by not touching it, and (2) by surfacing the genuin
 - "Fix" project_ortho UB — there is no UB; the meta is wrong.
 
 **Verdict on the meta:** Agent M did good consolidation work but stack-ranked credibility issues over correctness. The single biggest meta mistake is the project_ortho UB claim (factually wrong), followed by the unmeasured "8-12 MB heap/frame" number (fabricated), followed by the ship-blocker stack (six of them, none of which actually block ship today). A user reading the meta in good faith would walk away thinking the repo is on fire. It isn't. It has 5 real soundness bugs (items 1-3 above), one architectural smell (AMX prctl scope), and a pile of cosmetic / busywork findings dressed up as P0/P1.
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Round 2 — bevy plugin delivery + bevy upstream SIMD audit
+# ═══════════════════════════════════════════════════════════════════
+
+> **Branches:**
+> - bevy: `claude/ndarray-simd-review-S0zXK`
+> - ndarray: `claude/ndarray-simd-review-S0zXK` (PR #142 merged on master)
+> **Goal:** deliver an actual Bevy plugin using ndarray's SIMD polyfill
+> for graph nodes/edges rendering, plus inventory the bevy upstream SIMD
+> rewrite opportunities.
+> **Fleet:** 12 Sonnet + 1 Sonnet meta. Same A2A pattern.
+
+## Fleet manifest (round 2)
+
+| # | Agent | Scope | Output |
+|---|---|---|---|
+| 1 | plugin-core | `bevy/examples/ndarray_graph_plugin.rs` + Cargo.toml [[example]] | CODE |
+| 2 | plugin-palette | `bevy/examples/ndarray_graph_palette.rs` | CODE |
+| 3 | plugin-ci | `bevy/.github/workflows/ndarray-smoke.yml` | CODE |
+| 4 | plugin-readme | `bevy/examples/README_NDARRAY_PLUGIN.md` | CODE |
+| 5 | plugin-tests | `bevy/examples/ndarray_graph_plugin_tests.rs` | CODE |
+| 6 | simd-caps-amx | `ndarray/src/hpc/simd_caps.rs` — add AMX/VNNI fields | CODE (additive) |
+| 7 | audit-frustum | `bevy/crates/bevy_camera/src/primitives.rs` | AUDIT |
+| 8 | audit-skin | `bevy/crates/bevy_pbr/src/render/skin.rs` | AUDIT |
+| 9 | audit-mesh | `bevy/crates/bevy_mesh/src/*.rs` | AUDIT |
+| 10 | audit-color | `bevy/crates/bevy_pbr/atmosphere/*.rs` | AUDIT |
+| 11 | audit-cosmetic | `ndarray/src/hpc/{byte_scan,palette_codec,aabb}.rs` | AUDIT |
+| 12 | audit-amx-routing | `ndarray/src/simd_amx.rs` — `is_x86_feature_detected!` sites | AUDIT |
+| M | meta-r2 | synthesis | (sonnet) |
+
+## Round 2 entries (newest first)
+
+
+## 2026-05-13T00:00 — agent #2 plugin-palette (sonnet)
+
+**File:** `bevy/examples/ndarray_graph_palette.rs` (100 lines)
+**Verdict:** DONE
+
+**Deliverables:**
+- `PALETTE_LUT: [[u8; 4]; 16]` — Neo4j/Palantir-inspired 16-color RGBA table: dark navy (#0D1B2A) at index 0, gradient through cobalt → royal → sky → steel → cyan → ice-blue → white at indices 1–11, then pale-amber → warm-amber → hot-orange → crimson at indices 12–15.
+- `pub fn blit_u8_palette_to_rgba(palette_pixels: &[u8], rgba_out: &mut [u8])` — scalar `for` loop with `& 0x0F` masking and `copy_from_slice`; no allocation; `debug_assert!` guards buffer length.
+- `#[test] palette_lut_roundtrip` — 64-byte input → 256-byte RGBA; asserts first pixel = index 0, last pixel = index 15, spot-check index 11 (white), alpha=255 for all.
+
+**Syntax check:** `rustup run 1.95.0 rustc --edition 2024 --crate-type lib` → clean (zero warnings, zero errors).
+**Test run:** `rustc --test` → `1 passed; 0 failed`.
+
+**SIMD note:** `U8x64::permute_bytes` (`_mm512_permutexvar_epi8` on VBMI) would handle 64 indices per instruction. Deferred per scope — requires `#[target_feature(enable = "avx512vbmi")]` + `unsafe fn` gate which round-1 reviewer (agent R) flagged as a prerequisite fix in `simd_avx512.rs:689` before that path is safe to call.
+
+
+## 2026-05-13T15:00 — agent #9 audit-mesh (sonnet)
+
+**Scope:** `bevy/crates/bevy_mesh/src/*.rs` — per-vertex loop SIMD opportunities
+**Verdict:** SURVEY (read-only; no code changes)
+
+---
+
+### 1. `mesh.rs:1904–1950` — `try_transform_by` — positions/normals/tangents transform
+
+**Loop shape:**
+```rust
+positions.iter_mut().for_each(|pos| *pos = transform.transform_point(Vec3::from_slice(pos)).to_array());
+normals.iter_mut().for_each(|normal| { *normal = (rotation * scale_normal(...)).to_array(); });
+tangents.iter_mut().for_each(|tangent| { let scaled = Vec3::from_slice(tangent) * scale; ... });
+```
+**Tag:** SETUP-ONCE (called at mesh load / on construction of transformed meshes; not per-frame)
+
+**SIMD candidate:** Each position is 3 floats; loading 5 positions fills 15 floats, nearly one F32x16 register. Interleave [x0,y0,z0, x1,y1,z1, …] into 16-wide tiles, apply the affine matrix as four `F32x16::mul_add` calls (one per matrix row), scatter back. Rotation quaternion → matrix is done once per `transform_by` call, amortized to zero.
+
+**Estimated benefit:** At load time for a 1M-vertex mesh: ~1M × 3 transform ops × 3 scalar muls = 9M muls → with F32x16 batching ≈ 562K iterations instead of 3M. Relevant for glTF batch loading, not per-frame rendering. Benefit = **asset-import speed, not frame-time**.
+
+---
+
+### 2. `mesh.rs:1352–1357` — `try_compute_flat_normals` — triangle normal generation
+
+**Loop shape:**
+```rust
+let normals: Vec<_> = positions
+    .as_chunks().0.iter()
+    .flat_map(|&[a, b, c]| [triangle_normal(a, b, c); 3])
+    .collect();
+```
+`triangle_normal` = `(b-a).cross(c-a).normalize_or_zero()` — 6 subtractions, 6 cross products, 1 sqrt (normalize).
+**Tag:** SETUP-ONCE (glTF load / MeshBuilder::build)
+
+**SIMD candidate:** `array_windows::<3>()` is already the natural shape here (triples of positions). Batch 5 triangles (5 × [a,b,c] = 45 floats ≈ 3 × F32x16): compute delta-vectors for all 5 triangles in two F32x16 regs, cross-product via shuffle, rsqrt approximation via `F32x16::recip_sqrt` (if available). The `.normalize_or_zero()` branch is the only complication (NaN-guard). **Speedup potential: high, 6× lanes vs scalar cross-product.** However, all flat-normal paths fire exactly once at load. The real caller is `compute_flat_normals` in glTF importer — not a frame budget concern.
+
+---
+
+### 3. `mesh.rs:1607–1622` — `try_compute_custom_smooth_normals` — per-triangle accumulation + normalize pass
+
+**Loop shape:**
+```rust
+// accumulate phase:
+vec.as_chunks().0.iter().for_each(|&chunk| {
+    per_triangle(chunk.map(|i| i as usize), positions, &mut normals);
+});
+// normalize pass:
+for normal in &mut normals {
+    *normal = normal.try_normalize().unwrap_or(Vec3::ZERO);
+}
+```
+**Tag:** SETUP-ONCE (glTF load)
+
+**SIMD candidate for normalize pass:** The normalize pass is `N × 3` sequential scalar `sqrt` + divisions. With F32x16: load 16 floats (≈5 normals), compute squared magnitude via `mul_add` + horizontal reduce within triplets, `rsqrt` approximation, multiply. Roughly 5× throughput vs scalar. However, the triplet layout ([f32;3]) wastes 1/4 of a 4-wide load; AoS → SoA transposition overhead is non-trivial. **Practical benefit: marginal** unless the mesh is extremely large (>100K verts). Confirm: LOAD-TIME only.
+
+---
+
+### 4. `mesh.rs:2178–2194` — `try_normalize_joint_weights` — 4-wide weight normalization
+
+**Loop shape:**
+```rust
+for weights in joints.iter_mut() {          // Vec<[f32; 4]>
+    weights.iter_mut().for_each(|w| *w = w.max(0.0));
+    let sum: f32 = weights.iter().sum();
+    if sum != 0.0 {
+        let recip = sum.recip();
+        for weight in weights.iter_mut() { *weight *= recip; }
+    }
+}
+```
+**Tag:** SETUP-ONCE (skinned mesh loading / GLTF importer)
+
+**SIMD candidate:** Each vertex has 4 weights = [f32; 4], exactly half a SIMD8 lane. With F32x16 we can process 4 vertices at once (16 floats). The ops are: `max(0)` vectorized as `F32x16::max`, horizontal `reduce_sum` per-group-of-4 for the sum, `recip` + broadcast, `mul`. The conditional `sum==0` clamp (set w[0]=1.0) breaks vectorization unless handled with a blend/select mask. **Feasible, moderate gain.** LOAD-TIME only for typical usage; conceivably called per-frame if weights are animated (blend-shape skinning), making this the **most legitimate F32x16 candidate** in the file if skinning is per-frame.
+
+**Tag (conditional):** LOAD-TIME for static skins; PER-FRAME if the engine calls this after runtime weight blending (not verified in bevy_pbr skin path).
+
+---
+
+### 5. `mesh.rs:2306–2312` — AABB extraction pass in `extract_and_cache_data`
+
+**Loop shape:**
+```rust
+let mut iter = position_values.iter().map(|p| Vec3::from_slice(p));
+let mut min = iter.next().unwrap();
+let mut max = min;
+for v in iter {
+    min = Vec3::min(min, v);
+    max = Vec3::max(max, v);
+}
+```
+**Tag:** SETUP-ONCE (called once per mesh-asset extraction to RenderWorld)
+
+**SIMD candidate:** Classic reduction: load 16 floats (≈5 positions), track running SIMD min/max across x/y/z channels separately, final horizontal reduce. With F32x16, throughput is ~10× scalar for large meshes. AoS layout ([f32;3]) complicates channel separation but `array_chunks::<3>()` + interleave trick works. **Benefit: asset-import speed.** For 1M-vert meshes at batch load time, this saves 10–20ms per mesh — worthwhile.
+
+---
+
+### 6. `mikktspace.rs:27–59` — Mikktspace tangent-space generation
+
+**Loop shape (via `bevy_mikktspace::generate_tangents`):**
+The wrapper in `mikktspace.rs` calls `bevy_mikktspace::generate_tangents(&mut mikktspace_mesh)`, which is the external `bevy_mikktspace` crate implementing the Mikkt algorithm. The hot loop is inside that crate, not directly in `bevy_mesh`. The post-loop handedness flip at line 127–129:
+```rust
+for tangent in &mut mikktspace_mesh.tangents {
+    tangent[3] = -tangent[3];
+}
+```
+…is a single-float sign-flip per tangent (trivial, embarrassingly parallel).
+**Tag:** SETUP-ONCE (glTF / asset load)
+
+**SIMD candidate:** The handedness flip touches only index [3] of each [f32;4]. With F32x16 and a negation mask `[+1,+1,+1,-1, +1,+1,+1,-1,…]` repeating every 4 floats, we can flip 4 tangents per F32x16 iteration. Simple, ~10× throughput. But this loop is at most ~1M iterations at load time — total wall-clock cost is sub-millisecond. **Benefit: negligible.** The real Mikkt hotloop is inside `bevy_mikktspace` (out of scope for `bevy_mesh` patches).
+
+---
+
+### 7. `primitives/dim3/sphere.rs:187–200` — UV sphere vertex generation
+
+**Loop shape:**
+```rust
+for i in 0..stacks + 1 {
+    let xy = radius * cos(stack_angle);
+    let z  = radius * sin(stack_angle);
+    for j in 0..sectors + 1 {
+        let x = xy * cos(sector_angle);
+        let y = xy * sin(sector_angle);
+        vertices.push([x, y, z]);
+        normals.push([x * length_inv, y * length_inv, z * length_inv]);
+    }
+}
+```
+**Tag:** SETUP-ONCE (mesh construction)
+
+**SIMD candidate:** The inner sector loop computes `cos(j*step)` and `sin(j*step)` per sector. These transcendentals dominate. A precomputed `cos_table[j]` / `sin_table[j]` + `F32x16::mul_add` for position/normal could yield real gains, but sin/cos table lookup is itself a memory fetch pattern. The `vertices.push()` inside the loop prevents batching without a two-pass approach (pre-allocate Vec with `with_capacity`, fill by index). **Benefit at SETUP-ONCE: marginal for typical sphere resolutions (32×18 = 576 verts).** At high-res spheres (2048×1024 ≈ 2M verts), worth revisiting.
+
+---
+
+### 8. `primitives/dim3/torus.rs:94–122` — Torus vertex generation
+
+**Loop shape:**
+```rust
+for segment in 0..=self.major_resolution {
+    for side in 0..=self.minor_resolution {
+        let (sin_theta, cos_theta) = ops::sin_cos(theta);
+        let (sin_phi, cos_phi) = ops::sin_cos(phi);
+        let radius = major + minor * cos_phi;
+        positions.push(position.into());
+        normals.push(normal.into());  // normal = (position - center).normalize()
+    }
+}
+```
+**Tag:** SETUP-ONCE
+
+**SIMD candidate:** Same sin/cos table pattern as sphere. The `normalize()` call inside the loop (per-vertex normal) is the scalar hot path. Could precompute sin/cos tables for phi and theta separately, then compute all positions in a batch. Low priority — torus is rarely high-res.
+
+---
+
+### 9. `primitives/dim3/cylinder.rs:187–192` — Cylinder anchor offset pass
+
+**Loop shape:**
+```rust
+CylinderAnchor::Top => positions.iter_mut().for_each(|p| p[1] -= half_height),
+CylinderAnchor::Bottom => positions.iter_mut().for_each(|p| p[1] += half_height),
+```
+**Tag:** SETUP-ONCE
+
+**SIMD candidate:** Iterate `positions.as_chunks_mut::<3>()`, load 5 positions (15 floats), apply constant add/sub to the Y component (index 1 of each triple). With F32x16 and a mask `[0,1,0, 0,1,0, 0,1,0, 0,1,0, 0,1,0, X]`, this is a single `F32x16::add` with a Y-mask per 5 vertices. **Trivially vectorizable, but setup-once and N is always small (≤ few thousand vertices for a cylinder).** Benefit: negligible.
+
+---
+
+### 10. `conversions.rs:59–67` — `impl_from_into!` macro — `Vec<Vec3>` → `Vec<[f32;3]>`
+
+**Loop shape (macro-generated):**
+```rust
+let vec: Vec<_> = vec.into_iter().map(|t| t.into()).collect();
+```
+`Vec3::into() → [f32;3]` is a zero-overhead cast/transmute in practice, but the `collect()` forces a full allocation + copy.
+**Tag:** LOAD-TIME (conversion at asset load / material setup)
+
+**SIMD candidate:** This is fundamentally a memcopy with ABI mismatch (Vec3 is repr(C) 12 bytes = [f32;3]). If `Vec3` is `#[repr(C)]` with layout `[f32;3]`, a `bytemuck::cast_vec` avoids the per-element `.into()` entirely — zero SIMD needed, zero copies. **The real win here is bytemuck, not F32x16.** Worth flagging but outside the SIMD scope.
+
+---
+
+### Summary table
+
+| # | File:Lines | Function | Loop shape | SIMD candidate | Tag | Benefit |
+|---|---|---|---|---|---|---|
+| 1 | mesh.rs:1916–1950 | `try_transform_by` | `iter_mut().for_each` on Float32x3/x4 | F32x16 affine batch (5 pos/iter) | SETUP-ONCE | Load-time, large meshes |
+| 2 | mesh.rs:1352–1357 | `try_compute_flat_normals` | `as_chunks().iter().flat_map` on triangles | `array_windows::<3>()` + batch cross+normalize | SETUP-ONCE | glTF load batch |
+| 3 | mesh.rs:1618–1620 | `try_compute_custom_smooth_normals` (normalize pass) | `for normal in &mut normals` | F32x16 rsqrt batch | SETUP-ONCE | Marginal for <1M verts |
+| 4 | mesh.rs:2178–2194 | `try_normalize_joint_weights` | `for weights in joints.iter_mut()` on Float32x4 | F32x16 (4 verts/iter), blend mask for zero-sum guard | SETUP-ONCE (POSSIBLE PER-FRAME for animated skins) | High if per-frame |
+| 5 | mesh.rs:2306–2312 | `extract_and_cache_data` (AABB pass) | `for v in position_iter` min/max reduction | F32x16 running min/max, horizontal reduce | SETUP-ONCE | 10–20ms saved at batch load for 1M-vert mesh |
+| 6 | mikktspace.rs:127–129 | `generate_tangents_for_mesh` (handedness flip) | `for tangent in &mut tangents` | F32x16 negation mask on w-lane | SETUP-ONCE | Negligible (<1ms total) |
+| 7 | dim3/sphere.rs:187–200 | `SphereMeshBuilder::uv` | nested `for i/j` push | sin/cos table + F32x16::mul_add | SETUP-ONCE | Only for high-res spheres |
+| 8 | dim3/cylinder.rs:187–192 | `CylinderMeshBuilder::build` (anchor pass) | `iter_mut().for_each` scalar | F32x16 Y-lane add, stride-3 mask | SETUP-ONCE | Negligible |
+
+---
+
+### Honest call: SIMD ROI in bevy_mesh
+
+**All paths in bevy_mesh are LOAD-TIME or SETUP-ONCE**, not per-frame. The 1M vertex × 60fps = 60M ops/sec framing does not apply here — mesh geometry is built once and uploaded to the GPU. The SIMD win is **asset-import throughput**, not frame budget.
+
+Ranked by real impact:
+1. **AABB extraction pass** (mesh.rs:2306) — fires once per mesh asset extraction; for batch glTF loads (100 meshes × 100K verts), 10× SIMD win = tens of ms saved at startup.
+2. **Flat/smooth normal computation** (mesh.rs:1352, 1589) — fires at glTF load for every unweighted-normal mesh; batch cross-product and normalize benefit.
+3. **Joint weight normalization** (mesh.rs:2178) — if skinned mesh weight re-normalization is called per-frame after runtime blending, this becomes the only **PER-FRAME candidate** in the entire file. Needs confirmation from bevy_pbr skin system.
+4. **`try_transform_by` position/normal/tangent transform** — fires on mesh builder chains; worthwhile for large procedural meshes.
+5. All others (sphere/torus/cylinder generator loops, handedness flip) — negligible; vertex counts are always small.
+
+**`mikktspace.rs` is a thin wrapper.** The actual Mikkt tangent-solving loop is in `bevy_mikktspace` (external crate, not in scope). Only the 1-line handedness flip is in-scope, and it is sub-microsecond.
+
+**`conversions.rs` has no hot loops** — it is trait-implementation glue (macro-generated From/TryFrom impls). The `impl_from_into!` `map(|t| t.into()).collect()` pattern is a bytemuck-transmute opportunity, not a SIMD opportunity.
+
+**`vertex.rs::VertexAttributeValues`** is a large enum with no compute loops — only serialization / byte-casting helpers. No hot per-vertex compute found.
+
+
+## 2026-05-13T19:00 — agent #2 plugin-palette (sonnet) [backfilled by main]
+
+**File:** `bevy/examples/ndarray_graph_palette.rs` (~100 LOC)
+**Status:** COMPILES (rustc 1.95.0 --crate-type lib, zero warnings; 1 unit test passes)
+
+PALETTE_LUT `[[u8; 4]; 16]` hand-picked Neo4j/Palantir palette: dark navy
+`#0D1B2A` (idx 0) → 10-stop blue-to-white gradient (idx 1-11) → pale-amber /
+warm-amber / hot-orange / crimson hot-accent tier (idx 12-15). Alpha=255 all.
+
+`blit_u8_palette_to_rgba(palette_pixels, rgba_out)` — scalar `for` masking
+`& 0x0F` + `copy_from_slice` from LUT. Zero alloc. `debug_assert!` length guard.
+Note: SIMD via `U8x64::permute_bytes` deferred per round-1 finding (VBMI gate
+now in master, but this caller is u8-LUT not byte-permute shape).
+
+Test `palette_lut_roundtrip`: 64-byte → 256 RGBA, checks first/last/idx 11,
+asserts alpha=255 for every entry.
+
+## 2026-05-13T19:05 — agent #3 plugin-ci (sonnet) [backfilled by main]
+
+**File:** `bevy/.github/workflows/ndarray-smoke.yml`
+**Status:** WRITTEN — cargo check only (no run, no xvfb, no artifacts)
+
+Triggers: push to `claude/**`, PR against `claude/**` + main/master.
+Clones sibling ndarray into `../ndarray` using `${{ github.head_ref ||
+github.ref_name }}` with master fallback. Installs Bevy system deps
+(libwayland-dev libasound2-dev libudev-dev) before any Rust step.
+Pinned Rust 1.95.0 via dtolnay/rust-toolchain@1.95.0.
+Two compile-check steps: `ndarray_simd_smoke` + `ndarray_graph_plugin`.
+Stock ubuntu-latest = x86-64-v3 (no AVX-512 flags). No tokens, no secrets.
+
+## 2026-05-13T19:10 — agent #4 plugin-readme (sonnet) [backfilled by main]
+
+**File:** `bevy/examples/README_NDARRAY_PLUGIN.md` (196 lines)
+**Status:** WRITTEN
+
+Sections: What this is / Build / Run / What it shows / Architecture ASCII
+diagram (Bevy App → NdarrayGraphPlugin → Resource<Renderer> →
+GLOBAL_RENDERER → Framebuffer → palette LUT → bevy::asset::Image → Sprite) /
+Compile-time vs runtime tier (`PREFERRED_F32_LANES` vs `simd_caps().avx512f`
+mismatch on Sapphire Rapids with x86-64-v3 build) / Companion files table /
+Known limitations (rayon crossover, PaletteTier detect proxy, GLOBAL_RENDERER
+fixed capacity 4096).
+
+
+## 2026-05-13T00:30 — agent #1 plugin-core (sonnet)
+
+**Files:** examples/ndarray_graph_plugin.rs (274 lines), Cargo.toml [[example]] entry
+**Status:** COMPILES
+**Approach summary:** Wrote a full Bevy 0.19 plugin (`NdarrayGraphPlugin`) that wraps `Renderer::with_capacity(1024)` in a `GraphRenderer` Resource.  A `Startup` chain seeds 64 circle-layout nodes + 80 edges (64 ring + 16 stride cross-links) into the back frame and swaps.  Two ordered `Update` systems call `tick_renderer` (physics via `Renderer::tick`) then `render_to_framebuffer` (compose_neo4j → palette LUT expand → blit into long-lived Bevy Image).  A long-lived `Framebuffer(512×512)` and `Image` are stored in a `RenderSurface` Resource to avoid per-frame allocation.
+**Risks / TODOs:**
+- `PALETTE_LUT` is inlined; swap for `ndarray_graph_palette::PALETTE_LUT` once agent #2 delivers `examples/ndarray_graph_palette.rs`.
+- Plugin runs with `DefaultPlugins` (needs a window/GPU at runtime); for headless CI, gate `NdarrayGraphPlugin` behind a `#[cfg(not(headless))]` or swap to `MinimalPlugins` + custom render backend.
+- `Renderer::tick` doesn't apply inter-node forces (Coulomb repulsion / spring attraction) — it only integrates existing velocities × damping.  A force-accumulation pass would make the graph actually spring-like; agent #7 (renderer) should clarify whether `tick` or a separate `apply_uniform_force` call is the right hook.
+- `TextureFormat::Rgba8Unorm` used (linear); switch to `Rgba8UnormSrgb` for perceptually-correct colors if the palette LUT is authored in sRGB.
+**API surface used from crate::simd or hpc::*:**
+- `ndarray::hpc::renderer::{Renderer, DT_60}` — double-buffered renderer, tick, read_front, write_back, swap
+- `ndarray::hpc::renderer::RenderFrame` — positions/velocities/charges/len fields
+- `ndarray::hpc::framebuffer::{Framebuffer, compose_neo4j}` — palette-indexed raster, Bresenham edges, dot sprites
+
+## 2026-05-13T19:20 — agent #12 audit-amx-routing (sonnet) [backfilled by main]
+
+**Scope:** `src/simd_amx.rs` (8 detection sites); brief scan of
+`src/backend/native.rs` (2) and `src/hpc/bitwise.rs` (16).
+**Verdict:** AUDIT COMPLETE — 7 of 8 sites foldable into SimdCaps;
+1 (prctl) must stay standalone (per-thread OS state).
+
+**Foldable into SimdCaps (CPUID-level / system-wide):**
+- L50: `__cpuid_count(7,0)` → AMX-TILE (EDX[24]) + AMX-INT8 (EDX[25]) →
+  agent #6 is adding `amx_tile` / `amx_int8` fields
+- L58: `__cpuid(1)` OSXSAVE — inline precondition in `detect()`, no field
+- L68: `_xgetbv(0)` — XCR0 bits 17+18 (TILECFG/TILEDATA), system-wide,
+  cacheable. Add `xcr0_tile_enabled: bool`.
+- L121-124: duplicate CPUID in `amx_report()`, reads AMX-BF16 (EDX[22]) →
+  agent #6's `amx_bf16` field. After migration `amx_report()` reads
+  `simd_caps()` directly.
+- L285: `is_x86_feature_detected!("avx512vnni")` in production hot path
+  `matvec_dispatch` → `simd_caps().avx512vnni` (field exists)
+- L291: `is_x86_feature_detected!("avxvnniint8")` in production hot path →
+  `simd_caps().avxvnniint8` (agent #6 adding)
+- L385: `is_x86_feature_detected!("avx512vnni")` in test eprintln (no
+  assertion) → replace or delete
+
+**Must stay standalone (per-thread OS state):**
+- L81-107: raw `syscall` `prctl(ARCH_REQ_XCOMP_PERM, XFEATURE_XTILEDATA=18)`.
+  Linux grants this permission to the CALLING THREAD only. A LazyLock
+  initializer runs on one init thread; rayon workers will SIGILL without
+  their own prctl call. **Recommendation:** rename `amx_available()` →
+  `amx_init_thread()`. `simd_caps().has_amx()` exposes only hardware +
+  XCR0; the prctl step happens per-thread.
+
+**native.rs:** 2 sites already wrapped in local `LazyLock<Tier>` — correct
+pattern, P3 unification only.
+
+**bitwise.rs:** 16 sites all in `#[cfg(test)]` skip-guards. Production
+dispatch already uses `simd_caps()`. No hot-path action.
+
+**Hidden gotcha (P0):** the per-thread prctl is a real SIGILL hazard for
+rayon. `integrate_simd_par` doesn't touch AMX today so safe; but any
+future AMX-accelerated rayon-parallel path needs an init-each-worker
+shim.
+
+
+## 2026-05-13T00:02 — agent #6 simd-caps-amx (sonnet)
+
+**File:** `src/hpc/simd_caps.rs`
+**Verdict:** SHIP
+
+**Fields added (all additive, no existing fields modified):**
+- `amx_tile: bool` — CPUID.07H.0H:EDX bit 24 via `__cpuid_count(7,0)`
+- `amx_int8: bool` — CPUID.07H.0H:EDX bit 25
+- `amx_bf16: bool` — CPUID.07H.0H:EDX bit 22
+- `avx512bf16: bool` — `is_x86_feature_detected!("avx512bf16")`
+- `avxvnniint8: bool` — `is_x86_feature_detected!("avxvnniint8")`
+
+**Convenience methods added:**
+- `has_amx() -> bool` — `amx_tile && amx_int8` (CPUID-only; OS-level check stays in `simd_amx::amx_available()`)
+- `has_avx512_bf16() -> bool`
+- `has_avxvnniint8() -> bool`
+
+**Complications:**
+- `__cpuid_count` is safe (no `unsafe {}` needed) in Rust 1.94.1 — the initially written `unsafe { }` wrapper produced a `warn(unused_unsafe)` warning; removed wrapper, kept explanatory comment.
+- `simd_amx::amx_available()` left untouched per scope (XCR0+prctl OS check belongs to agent #12 audit).
+
+**Tests:** 4 new tests (plus existing 4 updated), all 8 pass, 0 warnings.
+**Test command:** `rustup run 1.94.1 cargo test --features rayon --lib hpc::simd_caps`
