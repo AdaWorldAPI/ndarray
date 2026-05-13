@@ -2004,8 +2004,7 @@ impl U8x32 {
     pub fn nibble_popcount_lut() -> Self {
         // Index i ∈ [0,15] → number of set bits in i.
         Self::from_array([
-            0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
-            0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
+            0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4, 0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
         ])
     }
 }
@@ -2209,7 +2208,9 @@ mod u8x32_tests {
     fn permute_bytes_reverse() {
         let src: [u8; 32] = core::array::from_fn(|i| i as u8);
         let idx: [u8; 32] = core::array::from_fn(|i| (31 - i) as u8);
-        let out = U8x32::from_array(src).permute_bytes(U8x32::from_array(idx)).to_array();
+        let out = U8x32::from_array(src)
+            .permute_bytes(U8x32::from_array(idx))
+            .to_array();
         for i in 0..32 {
             assert_eq!(out[i], src[31 - i]);
         }
