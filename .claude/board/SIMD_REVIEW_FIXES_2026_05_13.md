@@ -25,14 +25,6 @@ completion).
 The reviewer flagged that the broader fleet over-alarmed. These were
 considered and explicitly deferred:
 
-- **AVX2-types not gated on `target_feature = "avx2"`.** `I8x32`, `I16x16`,
-  `F32x8`, `F64x4` impls in `simd_avx512.rs` call `_mm256_*` intrinsics in
-  safe `pub fn`s with no AVX2 gate. Module is `cfg(target_arch = "x86_64")`
-  rather than `cfg(target_feature = "avx2")`. Real soundness hole on
-  pre-Haswell x86 — but **not surgical**: a fix would either break baseline
-  x86_64 builds or require a scalar fallback synthesis. Deferred to a
-  follow-up PR. Practical exposure: zero on any modern (post-2013) build
-  target including the Bevy smoke-test box (Sapphire Rapids).
 - **"Cosmetic SIMD" sweep.** ~6 files (`byte_scan::byte_find_all_avx2`,
   `palette_codec::pack_generic_avx512`, `aabb::aabb_intersect_batch_sse41`,
   `renderer::apply_uniform_force`, `simd_ln_f32`) wear `#[target_feature]`
