@@ -2,7 +2,7 @@
 #![cfg(feature = "nightly-simd")]
 
 use core::simd::{i16x16, i16x32, i32x16, i64x8};
-use core::simd::cmp::{SimdPartialEq, SimdPartialOrd};
+use core::simd::cmp::{SimdOrd, SimdPartialEq, SimdPartialOrd};
 use core::simd::num::SimdInt;
 
 // ════════════════════════════════════════════════════════════════════
@@ -94,13 +94,13 @@ impl I16x16 {
     /// Returns a `u16` matching the 16-lane count.
     #[inline(always)]
     pub fn cmpeq_mask(self, other: Self) -> u16 {
-        self.0.simd_eq(other.0).to_bitmask()
+        self.0.simd_eq(other.0).to_bitmask() as u16
     }
 
     /// Per-lane signed greater-than. Bit i set iff `self[i] > other[i]`.
     #[inline(always)]
     pub fn cmpgt_mask(self, other: Self) -> u16 {
-        self.0.simd_gt(other.0).to_bitmask()
+        self.0.simd_gt(other.0).to_bitmask() as u16
     }
 }
 
@@ -206,13 +206,13 @@ impl I16x32 {
     /// Returns a `u32` matching the 32-lane count.
     #[inline(always)]
     pub fn cmpeq_mask(self, other: Self) -> u32 {
-        self.0.simd_eq(other.0).to_bitmask()
+        self.0.simd_eq(other.0).to_bitmask() as u32
     }
 
     /// Per-lane signed greater-than. Bit i set iff `self[i] > other[i]`.
     #[inline(always)]
     pub fn cmpgt_mask(self, other: Self) -> u32 {
-        self.0.simd_gt(other.0).to_bitmask()
+        self.0.simd_gt(other.0).to_bitmask() as u32
     }
 }
 
@@ -306,13 +306,13 @@ impl I32x16 {
     /// Returns a `u16` matching the 16-lane count.
     #[inline(always)]
     pub fn cmpeq_mask(self, other: Self) -> u16 {
-        self.0.simd_eq(other.0).to_bitmask()
+        self.0.simd_eq(other.0).to_bitmask() as u16
     }
 
     /// Per-lane signed greater-than. Bit i set iff `self[i] > other[i]`.
     #[inline(always)]
     pub fn cmpgt_mask(self, other: Self) -> u16 {
-        self.0.simd_gt(other.0).to_bitmask()
+        self.0.simd_gt(other.0).to_bitmask() as u16
     }
 }
 
@@ -406,13 +406,13 @@ impl I64x8 {
     /// Returns a `u8` matching the 8-lane count.
     #[inline(always)]
     pub fn cmpeq_mask(self, other: Self) -> u8 {
-        self.0.simd_eq(other.0).to_bitmask()
+        self.0.simd_eq(other.0).to_bitmask() as u8
     }
 
     /// Per-lane signed greater-than. Bit i set iff `self[i] > other[i]`.
     #[inline(always)]
     pub fn cmpgt_mask(self, other: Self) -> u8 {
-        self.0.simd_gt(other.0).to_bitmask()
+        self.0.simd_gt(other.0).to_bitmask() as u8
     }
 }
 

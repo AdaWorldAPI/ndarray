@@ -4,6 +4,7 @@
 use core::simd::{f64x8 as core_f64x8, f64x4 as core_f64x4};
 use core::simd::cmp::{SimdPartialEq, SimdPartialOrd};
 use core::simd::num::SimdFloat;
+use std::simd::StdFloat;
 
 // ════════════════════════════════════════════════════════════════════
 // F64x8 — 8-lane double-precision float

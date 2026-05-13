@@ -4,6 +4,8 @@
 use core::simd::{f32x16 as core_f32x16, f32x8 as core_f32x8};
 use core::simd::cmp::{SimdPartialEq, SimdPartialOrd};
 use core::simd::num::SimdFloat;
+// `mul_add`, `sqrt`, `round`, `floor`, `abs` live in `StdFloat` (std-only nightly trait).
+use std::simd::StdFloat;
 
 use super::masks::{F32Mask16, F32Mask8};
 use super::u_word_types::{U32x16, U32x8};

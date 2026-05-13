@@ -2,7 +2,7 @@
 #![cfg(feature = "nightly-simd")]
 
 use core::simd::{i8x32, i8x64};
-use core::simd::cmp::{SimdPartialEq, SimdPartialOrd};
+use core::simd::cmp::{SimdOrd, SimdPartialEq, SimdPartialOrd};
 use core::simd::num::SimdInt;
 
 // ════════════════════════════════════════════════════════════════════

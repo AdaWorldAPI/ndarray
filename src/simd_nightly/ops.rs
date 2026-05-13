@@ -232,21 +232,16 @@ impl_default!(super::f64_types::F64x4);
 // Unsigned integer type invocations
 // ════════════════════════════════════════════════════════════════════
 
+// U8x32, U8x64 — ops only; Default already in u8_types.rs.
 impl_int_ops!(super::u8_types::U8x32);
-impl_default!(super::u8_types::U8x32);
 impl_int_ops!(super::u8_types::U8x64);
-impl_default!(super::u8_types::U8x64);
 
+// All u_word types have Default in u_word_types.rs — ops only.
 impl_int_ops!(super::u_word_types::U16x32);
-impl_default!(super::u_word_types::U16x32);
 impl_int_ops!(super::u_word_types::U32x16);
-impl_default!(super::u_word_types::U32x16);
 impl_int_ops!(super::u_word_types::U32x8);
-impl_default!(super::u_word_types::U32x8);
 impl_int_ops!(super::u_word_types::U64x8);
-impl_default!(super::u_word_types::U64x8);
 impl_int_ops!(super::u_word_types::U64x4);
-impl_default!(super::u_word_types::U64x4);
 
 // ════════════════════════════════════════════════════════════════════
 // Signed integer type invocations (int_ops + Neg + Default)
