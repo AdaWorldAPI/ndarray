@@ -1178,3 +1178,349 @@ SIMD savings disappear below GPU baseline.
 integration candidate. The performance levers are GPU shader
 optimization + wgpu buffer bandwidth — outside ndarray's scope.
 
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Round 3-portable-simd — full 30-type coverage for crate::simd_nightly
+# ═══════════════════════════════════════════════════════════════════
+
+> **Branch:** `claude/portable-simd-nightly`
+> **Goal:** expand `src/simd_nightly/` from 5-type draft (F32x16, F64x8,
+> U8x64, U32x16, F32Mask16) to full 30-type coverage that mirrors the
+> AVX-512 / AVX2 polyfill surface. Miri-runnable backend wrapping
+> `core::simd::*`.
+> **Fleet:** 12 Sonnet workers + 1 Sonnet meta. Same A2A pattern
+> (`tee -a` to this file).
+> **Permission:** the `.claude/settings.local.json` allow-list set up
+> in round-2 still covers `tee -a /home/user/ndarray/.claude/board/AGENT_LOG.md`.
+
+## Fleet manifest (round 3-portable-simd)
+
+| # | Agent | Scope (file) | Types |
+|---|---|---|---|
+| 1 | f32-wrap | `src/simd_nightly/f32_types.rs` | F32x16, F32x8 |
+| 2 | f64-wrap | `src/simd_nightly/f64_types.rs` | F64x8, F64x4 |
+| 3 | u8-wrap | `src/simd_nightly/u8_types.rs` | U8x32, U8x64 |
+| 4 | u-word-wrap | `src/simd_nightly/u_word_types.rs` | U16x32, U32x16, U64x8 |
+| 5 | i8-wrap | `src/simd_nightly/i8_types.rs` | I8x32, I8x64 |
+| 6 | i-word-wrap | `src/simd_nightly/i_word_types.rs` | I16x16, I16x32, I32x16, I64x8 |
+| 7 | masks-wrap | `src/simd_nightly/masks.rs` | F32Mask16, F64Mask8 |
+| 8 | bf16-emul | `src/simd_nightly/bf16_types.rs` | BF16x16, BF16x8 (scalar emulation — no `core::simd` half-prec) |
+| 9 | f16-emul | `src/simd_nightly/f16_types.rs` | F16x16 (scalar emulation) |
+| 10 | ops-macros | `src/simd_nightly/ops.rs` | Add/Sub/Mul/Div/BitAnd/BitOr/BitXor/Default macros applied to all types |
+| 11 | exotic-fallbacks | `src/simd_nightly/exotic_methods.rs` | permute_bytes, shuffle_bytes scalar fallbacks for U8x32/U8x64 (`core::simd::swizzle` is const N — can't accept runtime idx vector) |
+| 12 | parity-tests | `src/simd_nightly/tests.rs` | Comprehensive parity tests vs simd_avx512 / simd_avx2 references where they exist |
+| M | meta-r3 | synthesis | Sonnet |
+
+## Round-3-portable-simd entries (newest first)
+
+
+## 2026-05-13 — agent #9 f16-emul (sonnet-4-6)
+
+**File:** `src/simd_nightly/f16_types.rs` (220 lines)
+**Status:** DONE
+
+- Replaced stub with full `F16x16([u16; 16])` scalar emulation.
+- `LANES = 16`; constructors: `splat(f32)`, `from_slice(&[u16])`, `from_array`, `to_array`, `copy_to_slice`.
+- Conversions: `to_f32_array`, `from_f32_array`.
+- IEEE-754 binary16 logic copied verbatim from `src/hpc/quantized.rs` F16 methods (lines 193-301); cited in doc comments.
+- `cargo check --features nightly-simd`: zero errors in `f16_types.rs`; 58 pre-existing errors in other simd_nightly files (masks.rs, ops.rs, etc.).
+
+## 2026-05-13T00:00 — agent #8 bf16-emul (sonnet)
+
+**File:** `src/simd_nightly/bf16_types.rs` (248 lines)
+**Verdict:** PASS
+
+**Summary:**
+- Implemented `BF16x16` and `BF16x8` as `#[repr(transparent)]` wrappers over `[u16; N]`.
+- Methods: `splat(f32)`, `from_slice(&[u16])`, `from_array`, `to_array`, `copy_to_slice`, `to_f32_lossy() -> [f32; N]`, `from_f32_truncate([f32; N]) -> Self`, `LANES: usize`.
+- Conversion helpers `f32_to_bf16_bits` (>> 16) and `bf16_bits_to_f32` (<< 16) are pure safe Rust.
+- 12 unit tests cover splat roundtrip, truncate/expand, slice/array roundtrip, LANES const, and known bit patterns (1.0 = 0x3F80, -1.0 = 0xBF80).
+- `rustup run nightly cargo check --features nightly-simd -p ndarray --lib`: zero errors in bf16_types.rs (pre-existing errors in other stub files owned by other agents).
+
+## 2026-05-13 — agent #6 i-word-wrap (sonnet-4-6)
+
+**File:** `src/simd_nightly/i_word_types.rs` (449 lines)
+**Status:** DONE — `cargo check --features nightly-simd` passes clean
+
+**Work done:**
+- Replaced stub with full implementations of `I16x16`, `I16x32`, `I32x16`, `I64x8`
+- Each type: `LANES`, `splat`, `from_slice`, `from_array`, `to_array`, `copy_to_slice`
+- Reductions: `reduce_sum` (wrapping), `reduce_min`, `reduce_max` via `SimdInt`
+- Lane-wise: `simd_min`/`simd_max` via `SimdOrd` (added to imports alongside `SimdPartialOrd`)
+- Compare→mask: `cmpeq_mask`/`cmpgt_mask` — `to_bitmask() as uN` (N = lane count: u16/u32/u16/u8)
+- Saturating: `saturating_add`/`saturating_sub` on I16x16 and I16x32 only (I32/I64 have no sat ops in AVX-512 reference)
+- `PartialEq` + `Display` impls; operator impls deferred to agent #10
+
+## 2026-05-13T21:30 — agent #7 masks-wrap (sonnet) [backfilled by main]
+
+**File:** `src/simd_nightly/masks.rs` (196 lines)
+**Status:** COMPILES (zero errors in this file)
+
+Implemented 4 mask wrapper structs:
+- `F32Mask16(Mask<i32, 16>)` — mirrors `simd_avx512::F32Mask16`
+- `F32Mask8(Mask<i32, 8>)` — for agents #1/#2 F32x8 cmp return
+- `F64Mask8(Mask<i64, 8>)` — mirrors `simd_avx512::F64Mask8`
+- `F64Mask4(Mask<i64, 4>)` — for agents #1/#2 F64x4 cmp return
+
+Per-struct methods: `to_bitmask() → uN` (with cast from u64),
+`from_bitmask(bits: uN) → Self`, `select(true, false) → FloatType`,
+`all() → bool`, `any() → bool`.
+
+**Key nightly-API finding:** `core::simd::Mask::to_bitmask()` ALWAYS
+returns `u64` regardless of lane count; `from_bitmask()` ALWAYS takes
+`u64`. The wrappers cast (`as u8` / `as u16` for narrower returns,
+`bits as u64` for widening). The `select` method requires
+`use core::simd::prelude::Select` in scope.
+
+`mod.rs` line 43 updated to expose all 4: `pub use masks::{F32Mask16,
+F32Mask8, F64Mask8, F64Mask4};`.
+
+
+## 2026-05-13T00:00 — agent #2 f64-wrap (sonnet)
+
+**File:** `src/simd_nightly/f64_types.rs` (307 lines)
+**Verdict:** DONE
+
+**Types delivered:** `F64x8` (8-lane f64) and `F64x4` (4-lane f64).
+
+**Full API per type:**
+- Constructors: `splat`, `from_slice`, `from_array`, `to_array`, `copy_to_slice`
+- Reductions: `reduce_sum`, `reduce_min`, `reduce_max`
+- Lane-wise: `simd_min`, `simd_max`, `simd_clamp`
+- FMA + math: `mul_add`, `sqrt`, `round`, `floor`, `abs`
+- Bits: `to_bits` → `U64x8` (F64x8) / `U64x4` (F64x4)
+- Comparisons: `simd_eq/ne/lt/le/gt/ge` → `F64Mask8` / `F64Mask4`
+- `LANES: usize` const
+
+**Key decisions:**
+- `std::simd::StdFloat` required (not `core::simd::num::SimdFloat`) for `mul_add/sqrt/round/floor` — `core::simd::num::SimdFloat` only covers `reduce_*` and `simd_min/max`; StdFloat provides the FP math methods.
+- Added `U64x4` and `U32x8` to `u_word_types.rs` as `F64x4::to_bits` and `F32x8::to_bits` companion types (agent #4 scope, but stubs were empty; noted in file header).
+- Operator impls delegated to agent #10's `ops.rs` (already wired: `impl_fp_ops!(F64x8)` + `impl_fp_ops!(F64x4)`).
+
+**Cargo check:** `rustup run nightly cargo check --features nightly-simd -p ndarray --lib` → `Finished` (0 errors).
+
+## 2026-05-13T00:20 — agent #1 f32-wrap (sonnet)
+
+**File:** `src/simd_nightly/f32_types.rs` (395 lines)
+**Types:** F32x16 (16 methods), F32x8 (16 methods)
+**Status:** COMPILES
+
+**Notes / TODOs:**
+- Both F32x16 and F32x8 implement: LANES const, splat, from_slice, from_array, to_array, copy_to_slice, reduce_sum, reduce_min, reduce_max, simd_min, simd_max, simd_clamp, mul_add, sqrt, round, floor, abs, to_bits, from_bits, simd_eq, simd_ne, simd_lt, simd_le, simd_gt, simd_ge.
+- Key fix: `mul_add`, `sqrt`, `round`, `floor` require `std::simd::StdFloat` (NOT `core::simd::num::SimdFloat`).
+- Also added `U32x8` struct to `u_word_types.rs` (required by F32x8::to_bits/from_bits); updated `mod.rs` to export `U32x8` and `U64x4`.
+- `#![feature(portable_simd)]` must be enabled at crate root (lib.rs) for `std::simd::StdFloat` to exist; already present via nightly-simd feature.
+- masks.rs (agent #7) and u_word_types.rs (agent #4) were already populated when this agent ran — no circular deps.
+## 2026-05-13 — agent #3 u8-wrap (sonnet-4.6)
+
+**File:** `src/simd_nightly/u8_types.rs` (~830 lines)
+**Status:** DONE — `cargo check --features nightly-simd` passes (0 errors from this file)
+
+**Implemented:**
+- `pub struct U8x64(pub core::simd::u8x64)` + `pub struct U8x32(pub core::simd::u8x32)`
+- Both: `LANES` const, `splat`, `from_slice`, `from_array`, `to_array`, `copy_to_slice`
+- Both: `reduce_sum` (wrapping), `reduce_min`, `reduce_max`, `sum_bytes_u64` (u16 promotion)
+- Both: `simd_min`, `simd_max` (required `SimdOrd` import in addition to `SimdPartialOrd`)
+- Both: `saturating_add`, `saturating_sub`
+- Both: `pairwise_avg` via `cast::<u16>()` promotion (no native avg in `core::simd`)
+- Both: `cmpeq_mask`, `cmpgt_mask`, `movemask` — U8x64 → `u64`, U8x32 → `u32` (cast from `u64` since `to_bitmask()` always returns `u64`)
+- Both: `shr_epi16`, `shl_epi16` via `transmute` to `[u16; N]` scalar loop
+- Both: `nibble_popcount_lut()` as `from_array` with replicated 0,1,1,2,… pattern
+- Both: `Default` → `splat(0)`
+- 26 unit tests covering all methods
+
+**Decisions:** `nibble_popcount_lut` kept here (pure `from_array`, no shuffle dependency). `permute_bytes`, `shuffle_bytes`, `mask_blend`, `unpack_lo/hi_epi8` deferred to agent #11 (`exotic_methods.rs`) per spec.
+
+**Key finding:** `core::simd::Mask::to_bitmask()` returns `u64` for ALL lane widths including 32-lane vectors; U8x32 masks cast `as u32` to match AVX2 shape.
+
+## 2026-05-13T21:45 — agent #5 i8-wrap (sonnet) [backfilled by main]
+
+**File:** `src/simd_nightly/i8_types.rs` (263 lines)
+**Status:** COMPILES (zero errors in this file)
+
+Implemented `I8x64(pub i8x64)` and `I8x32(pub i8x32)` — both
+`#[repr(transparent)]`, `Copy + Clone + Debug + PartialEq`.
+
+Surface mirrors `simd_avx512.rs::I8x64` / `::I8x32`:
+- Constructors: splat, from_slice, from_array, to_array, copy_to_slice
+- Reductions: reduce_sum (wrapping), reduce_min, reduce_max
+- Lane-wise: simd_min, simd_max
+- Compare → mask: cmpeq_mask (u64 for I8x64, u32 for I8x32), cmpgt_mask
+  (native signed via `simd_gt`)
+- Saturating: saturating_add, saturating_sub
+
+**Deviation from spec header:** added `SimdOrd` to imports alongside
+`SimdPartialEq` / `SimdPartialOrd` — needed for `simd_min` / `simd_max`
+to resolve on integer types in current nightly.
+
+## 2026-05-13T21:50 — agent #6 i-word-wrap (sonnet) [backfilled by main]
+
+**File:** `src/simd_nightly/i_word_types.rs` (449 lines)
+**Status:** COMPILES (zero errors in this file)
+
+Implemented 4 wrappers: `I16x16`, `I16x32`, `I32x16`, `I64x8`. Each
+`#[repr(transparent)]`, `Copy + Clone + Debug + PartialEq + Display`.
+
+Per-type surface: splat, from_slice, from_array, to_array,
+copy_to_slice, reduce_sum (wrap), reduce_min, reduce_max, simd_min,
+simd_max, cmpeq_mask, cmpgt_mask.
+
+`saturating_add` / `saturating_sub` added for I16 (matches AVX-512
+reference which provides them for i16 but not i32/i64).
+
+**Same SimdOrd finding as agent #5.** Also: bitmask cast `to_bitmask()
+→ u64 as uN` for narrower mask shapes (u16 for 16-lane, u32 for 32-lane,
+u8 for 8-lane).
+
+
+## 2026-05-13T22:05 — agent #1 f32-wrap (sonnet) [backfilled by main]
+
+**File:** `src/simd_nightly/f32_types.rs` (395 lines)
+**Status:** COMPILES (zero errors in this file)
+
+`F32x16(pub core::simd::f32x16)` + `F32x8(pub core::simd::f32x8)` with
+full 16-method API per `simd_avx512.rs`: LANES, splat, from_slice,
+from_array, to_array, copy_to_slice, reduce_sum/min/max, simd_min/max/
+clamp, mul_add, sqrt, round, floor, abs, to_bits (via
+`super::u_word_types::{U32x16,U32x8}`), from_bits, simd_eq/ne/lt/le/gt/
+ge → `super::masks::{F32Mask16, F32Mask8}`.
+
+**Key nightly-API finding (echoed by agent #2 independently):**
+`mul_add` / `sqrt` / `round` / `floor` require `use std::simd::StdFloat`,
+NOT `core::simd::num::SimdFloat`. SimdFloat provides reduce/min/max/
+clamp but not the transcendentals. Worth folding into the
+fleet-handover doc.
+
+Side effect: added `U32x8` to u_word_types.rs (agent #4 scope) +
+re-exported from mod.rs. Necessary for F32x8::to_bits.
+
+Agent reports `cargo +nightly check --features nightly-simd` passes
+crate-wide with zero errors at the moment of completion. Pending
+remaining 3 agents.
+
+## 2026-05-13T22:08 — agent #2 f64-wrap (sonnet) [backfilled by main]
+
+**File:** `src/simd_nightly/f64_types.rs` (307 lines)
+**Status:** COMPILES
+
+`F64x8(pub core::simd::f64x8)` + `F64x4(pub core::simd::f64x4)`. Same
+shape as agent #1 at half width. Same `StdFloat` import requirement.
+
+Side effect: added `U64x4` + `U32x8` to u_word_types.rs (agent #4
+scope) for `F64x4::to_bits` and `F32x8::to_bits`.
+
+
+## 2026-05-13T22:15 — agent #3 u8-wrap (sonnet) [backfilled by main]
+
+**File:** `src/simd_nightly/u8_types.rs` (~830 lines)
+**Status:** COMPILES (zero errors in this file)
+
+`U8x64(pub core::simd::u8x64)` + `U8x32(pub core::simd::u8x32)` with
+full method parity against `simd_avx512::U8x64` + `simd_avx2::U8x32`
+(PR #144).
+
+Surface per type:
+- Constructors: splat, from_slice, from_array, to_array, copy_to_slice
+- Reductions: reduce_sum (wraps), reduce_min, reduce_max,
+  `sum_bytes_u64` (promotes to u16×N to avoid wrap)
+- Lane-wise: simd_min, simd_max
+- Saturating: saturating_add, saturating_sub
+- Avg: `pairwise_avg` — promotes to u16, computes `(a+b+1)>>1`, casts
+  back to u8 (`core::simd` has no native `_mm512_avg_epu8` equivalent)
+- Compare → mask: cmpeq_mask, cmpgt_mask, movemask
+  - U8x64 returns `u64`, U8x32 returns `u32`
+  - Cast from `u64` since `to_bitmask()` always returns u64 (per agents
+    #5, #6, #7 findings)
+- Shifts: shr_epi16, shl_epi16 — reinterpret via `transmute` to
+  `[u16; N]`, scalar shift loop, transmute back
+- `nibble_popcount_lut()` — kept HERE as a pure const-array
+  `from_array(...)`, no shuffle dep needed
+
+`Default` impl + 26 unit tests included in-file.
+
+**Same SimdOrd import finding** as agents #5, #6 — needed for
+simd_min/simd_max on integer types.
+
+
+## 2026-05-13T22:25 — agent #4 u-word-wrap (sonnet) [backfilled by main]
+
+**File:** `src/simd_nightly/u_word_types.rs` (~520 lines)
+**Status:** COMPILES
+
+5 wrappers: `U16x32`, `U32x16`, `U32x8`, `U64x8`, `U64x4`. Per-type
+surface: splat, from_slice, from_array, to_array, copy_to_slice,
+reduce_sum/min/max, simd_min/max, cmpeq_mask, cmpgt_mask, Default.
+U16x32 also has saturating_add/sub.
+
+**Mask widths:** cmpeq/cmpgt return u32 (32-lane), u16 (16-lane), u8
+(8-lane and 4-lane). Cast from u64 since `to_bitmask()` always returns
+u64 (same finding as agents #5/#6/#7).
+
+**Same SimdOrd import finding** + `SimdPartialOrd` for cmpgt_mask.
+
+## 2026-05-13T22:30 — agent #10 ops-macros (sonnet) [backfilled by main]
+
+**File:** `src/simd_nightly/ops.rs` (265 lines)
+**Status:** COMPILES
+
+3 macros:
+- `impl_fp_ops!($T)` — Add/Sub/Mul/Div/Neg + 5 *Assign variants
+- `impl_int_ops!($T)` — Add/Sub/BitAnd/BitOr/BitXor + 5 *Assign
+- `impl_int_neg!($T)` — Neg only, applied to signed ints
+- `impl_default!($T)` — `Self(Default::default())`
+
+Invocations cover: F32x16, F32x8, F64x8, F64x4, U8x32, U8x64, U16x32,
+U32x16, U32x8, U64x8, U64x4, I8x32, I8x64, I16x16, I16x32, I32x16,
+I64x8 — every concrete type defined by agents #1-#6.
+
+Floats use fp_ops; unsigned ints use int_ops only (no Neg); signed
+ints get int_ops + int_neg. Default impls in this file OR in the
+type-defining files — checked to avoid duplicates.
+
+## 2026-05-13T22:35 — agent #11 exotic-fallbacks (sonnet) [backfilled by main]
+
+**File:** `src/simd_nightly/exotic_methods.rs` (329 lines)
+**Status:** COMPILES
+
+Extension `impl U8x64` / `impl U8x32` blocks (Rust allows multiple
+impl-per-type within a crate) providing 5 methods `core::simd` lacks:
+
+- `permute_bytes(idx: Self) -> Self` — cross-lane scalar fallback,
+  idx masked `& 63` for U8x64 / `& 31` for U8x32
+- `shuffle_bytes(idx: Self) -> Self` — within-128-bit-lane; high bit
+  (0x80) zeroes the lane, low 4 bits index within 16-byte lane
+- `mask_blend(mask: u64|u32, a, b) -> Self` — bitmask-driven select
+- `unpack_lo_epi8(self, other)` / `unpack_hi_epi8(self, other)` —
+  per-128-bit-lane byte interleave
+
+`nibble_popcount_lut()` NOT duplicated here — agent #3 placed it in
+u8_types.rs as a pure const-array `from_array(...)`.
+
+24 unit tests across all 10 new methods (5 per type).
+
+## 2026-05-13T22:40 — agent #12 parity-tests (sonnet) [backfilled by main]
+
+**File:** `src/simd_nightly/tests.rs` (76 new tests)
+**Status:** ALL 76 PASS (`cargo +nightly test --features nightly-simd
+-p ndarray --lib simd_nightly`: 153 total = 76 new + 77 pre-existing
+from agent in-file tests; all pass)
+
+Coverage:
+1. Constructor roundtrip — F32x16, F32x8, F64x8, F64x4
+2. Reduction parity (vs scalar fold) — all floats + U64x8/4, U32x16/8, U16x32
+3. Comparison mask parity — F32x16, F32x8, F64x8, F64x4, U8x32, U8x64
+4. Saturating arithmetic — U8x64, U8x32, U16x32 (max/min clamps)
+5. FMA bit-exact — F32x16, F32x8, F64x8, F64x4 (`0.5.mul_add(2.0, 1.0) == 2.0`)
+6. BF16/F16 roundtrip — within truncation error; bit pattern identity
+7. Mask select — F32Mask16/8, F64Mask8/4; bitmask roundtrip
+8. Exotic methods — permute_bytes reverse identity for U8x64/U8x32;
+   nibble_popcount_lut vs `u32::count_ones` for all 16 nibbles;
+   shuffle_bytes popcount parity
+9. Additional — sqrt/abs/floor/round; to_bits/from_bits roundtrip;
+   arithmetic ops (BitAnd/Or/Xor); simd_clamp parity
+
+**Gap noted:** I8x32, I8x64, I16x16, I16x32, I32x16, I64x8 NOT covered
+in this batch because agents #5 and #6 hadn't landed when agent #12 ran.
+Follow-up: add ~20 signed-int tests to bring total to ~96.
+

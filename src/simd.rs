@@ -203,6 +203,15 @@ pub const PREFERRED_I16_LANES: usize = 16;
 // at compile time → all types use native __m512/__m512d/__m512i.
 // The 256-bit types (F32x8, F64x4) also live in simd_avx512 (__m256).
 
+// Note on the `nightly-simd` feature: it adds the `crate::simd_nightly`
+// module (a portable-simd backend wrapping `core::simd`) but does NOT
+// replace the intrinsics dispatch below. Full type-parity coverage
+// would require the nightly module to define ~30 types; the current
+// draft covers 5 (F32x16, F64x8, U8x64, U32x16, F32Mask16). Consumers
+// who want miri-runnable SIMD code import from `simd_nightly`
+// explicitly (e.g. `use ndarray::simd_nightly::F32x16`). The main
+// polyfill via `crate::simd::F32x16` continues to use intrinsics.
+
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 pub use crate::simd_avx512::{
     f32x16,
