@@ -49,6 +49,21 @@ pub struct SimdCaps {
     /// Skylake-X / Cascade Lake / Ice Lake-SP — calling VBMI intrinsics on
     /// those CPUs SIGILLs even though `avx512f` is true.
     pub avx512vbmi: bool,
+    /// AMX-TILE: tile register file present (CPUID.07H.0H:EDX bit 24).
+    /// Sapphire Rapids, Granite Rapids, Meteor Lake, Arrow Lake.
+    pub amx_tile: bool,
+    /// AMX-INT8: `TDPBUSD` u8×i8→i32 tile dot product (CPUID.07H.0H:EDX bit 25).
+    pub amx_int8: bool,
+    /// AMX-BF16: `TDPBF16PS` BF16×BF16→f32 tile dot product (CPUID.07H.0H:EDX bit 22).
+    pub amx_bf16: bool,
+    /// AVX-512 BF16: `VCVTNE2PS2BF16` / `VDPBF16PS` 512-bit BF16 math
+    /// (`is_x86_feature_detected!("avx512bf16")`).
+    /// Present on Cooper Lake, Sapphire Rapids, Zen 4.
+    pub avx512bf16: bool,
+    /// AVX-VNNI-INT8: 256-bit `VPDPBSSD`/`VPDPBUUD` (non-AVX-512) VNNI
+    /// (`is_x86_feature_detected!("avxvnniint8")`).
+    /// Present on Arrow Lake, Lunar Lake, NUC 14 (Meteor Lake-H).
+    pub avxvnniint8: bool,
 
     // ── aarch64 (ARM) ──
     /// NEON 128-bit SIMD (mandatory on aarch64, always true).
@@ -81,6 +96,14 @@ impl SimdCaps {
     /// Detect CPU capabilities at runtime.
     #[cfg(target_arch = "x86_64")]
     fn detect() -> Self {
+        // `__cpuid_count` is safe on x86_64 (Rust 1.87+): CPUID is always
+        // available on x86_64 (guaranteed by the ABI) and has no side effects
+        // beyond reading CPU registers.
+        let cpuid7 = core::arch::x86_64::__cpuid_count(7, 0);
+        let amx_tile = (cpuid7.edx >> 24) & 1 == 1;
+        let amx_int8 = (cpuid7.edx >> 25) & 1 == 1;
+        let amx_bf16 = (cpuid7.edx >> 22) & 1 == 1;
+
         Self {
             avx2: is_x86_feature_detected!("avx2"),
             avx512f: is_x86_feature_detected!("avx512f"),
@@ -92,6 +115,11 @@ impl SimdCaps {
             fma: is_x86_feature_detected!("fma"),
             avx512vnni: is_x86_feature_detected!("avx512vnni"),
             avx512vbmi: is_x86_feature_detected!("avx512vbmi"),
+            amx_tile,
+            amx_int8,
+            amx_bf16,
+            avx512bf16: is_x86_feature_detected!("avx512bf16"),
+            avxvnniint8: is_x86_feature_detected!("avxvnniint8"),
             // ARM fields: all false on x86
             neon: false,
             asimd_dotprod: false,
@@ -119,6 +147,11 @@ impl SimdCaps {
             fma: false,
             avx512vnni: false,
             avx512vbmi: false,
+            amx_tile: false,
+            amx_int8: false,
+            amx_bf16: false,
+            avx512bf16: false,
+            avxvnniint8: false,
             // ARM fields: runtime detection
             neon: true, // mandatory on aarch64
             asimd_dotprod: std::arch::is_aarch64_feature_detected!("dotprod"),
@@ -143,6 +176,11 @@ impl SimdCaps {
             fma: false,
             avx512vnni: false,
             avx512vbmi: false,
+            amx_tile: false,
+            amx_int8: false,
+            amx_bf16: false,
+            avx512bf16: false,
+            avxvnniint8: false,
             neon: false,
             asimd_dotprod: false,
             fp16: false,
@@ -169,6 +207,32 @@ impl SimdCaps {
     #[inline(always)]
     pub fn has_avx512_vnni(self) -> bool {
         self.avx512f && self.avx512vnni
+    }
+
+    /// True if AMX is available at the CPUID level (`amx_tile && amx_int8`).
+    ///
+    /// Note: CPUID presence does **not** guarantee OS enablement. The full
+    /// OS-level check (XCR0 bits 17+18, prctl ARCH_REQ_XCOMP_PERM) lives in
+    /// `simd_amx::amx_available()`. This method is a lightweight CPUID-only
+    /// probe suitable for capability reporting and coarse dispatch decisions.
+    #[inline(always)]
+    pub fn has_amx(self) -> bool {
+        self.amx_tile && self.amx_int8
+    }
+
+    /// True if AVX-512 BF16 is available (`VCVTNE2PS2BF16` / `VDPBF16PS`).
+    /// Present on Cooper Lake, Sapphire Rapids, Zen 4.
+    #[inline(always)]
+    pub fn has_avx512_bf16(self) -> bool {
+        self.avx512bf16
+    }
+
+    /// True if AVX-VNNI-INT8 (256-bit `VPDPBSSD`/`VPDPBUUD`) is available.
+    /// Present on Arrow Lake, Lunar Lake, NUC 14 (Meteor Lake-H).
+    /// This is the non-AVX-512 VNNI path — does NOT require `avx512f`.
+    #[inline(always)]
+    pub fn has_avxvnniint8(self) -> bool {
+        self.avxvnniint8
     }
 
     // ── ARM convenience methods ──
@@ -298,6 +362,12 @@ mod tests {
         let _ = caps.avx2;
         let _ = caps.avx512f;
         let _ = caps.neon;
+        // New AMX / BF16 / VNNI fields must also be accessible without panic.
+        let _ = caps.amx_tile;
+        let _ = caps.amx_int8;
+        let _ = caps.amx_bf16;
+        let _ = caps.avx512bf16;
+        let _ = caps.avxvnniint8;
     }
 
     #[test]
@@ -333,6 +403,58 @@ mod tests {
         let _ = caps.has_dotprod();
         let _ = caps.has_fp16();
         let _ = caps.has_crypto();
+    }
+
+    #[test]
+    fn new_amx_bf16_vnni_convenience_methods_do_not_panic() {
+        let caps = simd_caps();
+        let amx = caps.has_amx();
+        let bf16 = caps.has_avx512_bf16();
+        let vnni = caps.has_avxvnniint8();
+        // Semantic invariants: has_amx() requires both tile and int8.
+        assert_eq!(amx, caps.amx_tile && caps.amx_int8);
+        // has_avx512_bf16() mirrors the raw field.
+        assert_eq!(bf16, caps.avx512bf16);
+        // has_avxvnniint8() mirrors the raw field.
+        assert_eq!(vnni, caps.avxvnniint8);
+    }
+
+    #[test]
+    fn amx_fields_false_on_non_x86() {
+        // On non-x86_64, all AMX and BF16 fields must be false because
+        // the detect() fallback / aarch64 branch sets them to false.
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let caps = simd_caps();
+            assert!(!caps.amx_tile);
+            assert!(!caps.amx_int8);
+            assert!(!caps.amx_bf16);
+            assert!(!caps.avx512bf16);
+            assert!(!caps.avxvnniint8);
+            assert!(!caps.has_amx());
+            assert!(!caps.has_avx512_bf16());
+            assert!(!caps.has_avxvnniint8());
+        }
+        // On x86_64 we can only check that the call doesn't panic; the
+        // actual values depend on the hardware running the test.
+        #[cfg(target_arch = "x86_64")]
+        {
+            let caps = simd_caps();
+            let _ = caps.has_amx();
+            let _ = caps.has_avx512_bf16();
+            let _ = caps.has_avxvnniint8();
+        }
+    }
+
+    #[test]
+    fn simd_caps_deterministic_new_fields() {
+        let a = simd_caps();
+        let b = simd_caps();
+        assert_eq!(a.amx_tile, b.amx_tile);
+        assert_eq!(a.amx_int8, b.amx_int8);
+        assert_eq!(a.amx_bf16, b.amx_bf16);
+        assert_eq!(a.avx512bf16, b.avx512bf16);
+        assert_eq!(a.avxvnniint8, b.avxvnniint8);
     }
 
     #[test]
