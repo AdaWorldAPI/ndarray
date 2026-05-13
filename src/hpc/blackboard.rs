@@ -461,8 +461,8 @@ mod tests {
     #[test]
     fn test_alloc_get_f32() {
         let mut bb = Blackboard::new();
-        bb.alloc_f32("x", 3.14);
-        assert_eq!(bb.get_f32("x"), Some(&3.14));
+        bb.alloc_f32("x", 2.5);
+        assert_eq!(bb.get_f32("x"), Some(&2.5));
         assert_eq!(bb.get_f32("y"), None);
     }
 
