@@ -971,3 +971,210 @@ shim.
 
 **Tests:** 4 new tests (plus existing 4 updated), all 8 pass, 0 warnings.
 **Test command:** `rustup run 1.94.1 cargo test --features rayon --lib hpc::simd_caps`
+
+## 2026-05-13T10:00 — agent #11 audit-cosmetic (sonnet)
+
+**Files:** `src/hpc/byte_scan.rs`, `src/hpc/palette_codec.rs`, `src/hpc/aabb.rs`
+**Verdict:** All three files confirmed COSMETIC-SIMD (with one PARTIAL-REAL exception). No file is clean.
+
+---
+
+### Cosmetic-SIMD Enumeration Table
+
+| File | Line | Function | `#[target_feature]` | `_mm*` intrinsics? | Body has polyfill calls? | Classification |
+|------|------|----------|---------------------|--------------------|--------------------------|----------------|
+| `byte_scan.rs` | 22 | `byte_find_all_avx2` | `avx2` | NO | NO — scalar `haystack[i+j] == needle` loops | COSMETIC |
+| `byte_scan.rs` | 86 | `byte_count_avx2` | `avx2` | NO | NO — scalar `haystack[i+j] == needle` loops | COSMETIC |
+| `byte_scan.rs` | 52 | `byte_find_all_avx512` | `avx512bw` | NO (`_mm*` absent) | YES — uses `U8x64::splat`, `U8x64::from_slice`, `U8x64::cmpeq_mask` | REAL (polyfill-backed) |
+| `byte_scan.rs` | 115 | `byte_count_avx512` | `avx512bw` | NO (`_mm*` absent) | YES — uses `U8x64::splat`, `U8x64::from_slice`, `U8x64::cmpeq_mask`, `.count_ones()` | REAL (polyfill-backed) |
+| `palette_codec.rs` | 303 | `unpack_generic_avx512` | `avx512f` | NO | NO — scalar nested loop (`word >> bit_offset & mask_val`) | COSMETIC |
+| `palette_codec.rs` | 335 | `pack_generic_avx512` | `avx512f` | NO | NO — scalar for loop, verbatim copy of `pack_indices` | COSMETIC |
+| `palette_codec.rs` | 353 | `unpack_4bit_avx2` | `avx2` | NO | NO — scalar nibble-split loop over `bytes[i..i+32]` | COSMETIC |
+| `palette_codec.rs` | 501 | `bedrock_reorder_xzy_avx512` | `avx512f` | NO | NO — scalar triple-nested loop with `get_unchecked` | COSMETIC |
+| `aabb.rs` | 241 | `aabb_intersect_batch_sse41` | `sse4.1` | NO | NO — scalar per-candidate `if` chain, identical to `aabb_intersect_batch_scalar` | COSMETIC |
+| `aabb.rs` | 174 | `aabb_intersect_batch_avx512` | `avx512f` | NO | YES — uses `F32x16::from_array`, `F32x16::splat`, `F32x16::simd_le`, `F32x16::simd_ge`, `F32Mask16.0 &` | REAL (polyfill-backed) |
+| `aabb.rs` | 329 | `ray_aabb_slab_test_avx512` | `avx512f` | NO | YES — uses `F32x16::splat`, arithmetic ops, `simd_min`, `simd_max`, `simd_le`, `simd_ge`, `to_array` | REAL (polyfill-backed) |
+| `aabb.rs` | 464 | `aabb_expand_batch_sse2` | `sse2` | NO | NO — scalar per-AABB field update, identical to `aabb_expand_batch_scalar` | COSMETIC |
+
+**Summary: 8 COSMETIC, 4 REAL (polyfill-backed, no raw `_mm*`)**
+
+---
+
+### AUTOVEC CHECK (empirical, via `rustc 1.94.1 --emit asm`)
+
+Built a minimal replica of each cosmetic function with `#[no_mangle] extern "C"` to prevent dead-code elimination. Assembly analyzed for `ymm*`/`zmm*`/`xmm*`/`vp*`/`vcmp*` instructions:
+
+**`byte_find_all_avx2` (avx2 hint, scalar 32-byte loop):**
+Assembly: pure scalar integer ops (`cmpb`, `jne`, `movb`, `incq`). Zero YMM/XMM registers. LLVM did NOT autovectorize the append-to-Vec loop. **COSMETIC — not autovec'd.**
+
+**`aabb_intersect_batch_sse41` (sse4.1 hint, scalar per-candidate chain):**
+Assembly: `movss`/`ucomiss`/`jb`/`setae` — scalar FP comparisons and branches. Zero packed SSE4.1 instructions (`blendvps`, `cmpps` absent). **COSMETIC — not autovec'd.**
+
+**`pack_generic_avx512` (avx512f hint, scalar bit-packing loop):**
+Assembly: contains `vmovups %zmm0` for the memset/zeroing prelude (LLVM auto-vectorized the zero-init with AVX-512 store), but the main bit-packing loop is scalar shift+OR. The `%zmm0` instruction is from `vec![0u64; n_words]` zero-fill, not the index-packing loop body. **Zeroing autovec'd; bit-pack loop COSMETIC.**
+
+**`aabb_expand_batch_sse2` (sse2 hint, scalar per-AABB update):**
+Assembly: uses `movups`/`subps`/`addps`/`shufps` on `%xmm` registers — **REAL-AUTOVEC.** LLVM vectorized the 6-float struct update into XMM-register arithmetic. The SSE2 feature hint IS doing useful work here: without it, LLVM would not be permitted to use `addps`/`subps` on this loop. **Mark as REAL-AUTOVEC.**
+
+---
+
+### Replacement Plan (Cosmetic Functions Only)
+
+#### `byte_scan.rs` — `byte_find_all_avx2` (line 22) and `byte_count_avx2` (line 86)
+
+**Problem:** `#[target_feature(enable = "avx2")]` on pure scalar 32-byte loop.
+**No `U8x32` exists** in `crate::simd` (confirmed: searched entire `src/`; zero results).
+**Correct polyfill replacement:** None available at AVX2 tier. Two options:
+1. **Delete** both functions and fall through to scalar path (honest: no speedup anyway).
+2. **Add `U8x32` to `simd_avx2.rs`** with `splat`, `from_slice`, `cmpeq_mask → u32` methods, then replace scalar loops with `U8x32::splat(needle)` + `cmpeq_mask` + `trailing_zeros` bitmask scatter.
+
+**Polyfill gap:** `U8x32::cmpeq_mask` does **not exist** in `simd_avx2.rs`. The file contains zero `U8x*` types. The AVX2 tier must add this type before any real replacement is feasible.
+
+**Methods needed in `simd_avx2.rs`:**
+- `U8x32::splat(v: u8) -> U8x32`
+- `U8x32::from_slice(s: &[u8]) -> U8x32`
+- `U8x32::cmpeq_mask(self, other: U8x32) -> u32` — maps to `_mm256_cmpeq_epi8` + `_mm256_movemask_epi8`
+
+#### `palette_codec.rs` — `unpack_generic_avx512` (line 303) and `pack_generic_avx512` (line 335)
+
+**Problem:** Both are verbatim scalar copies of `unpack_indices`/`pack_indices` wearing `avx512f` decoration.
+**Real replacement requires:** gather/scatter ops — `U8x64` scatter via `U16x32` widening + `U16x32::shr_epi16` + `pack_saturate_u8`. No single polyfill maps cleanly to variable-width bit unpacking.
+**Honest replacement plan:** Delete both functions. Document `pack_indices`/`unpack_indices` as the canonical path. Add a `// NOTE: real SIMD unpack requires shr_epi16+pack_saturate_u8 per bit-width; not yet implemented.` comment in `pack_indices_simd` / `unpack_indices_simd`.
+
+**Polyfill gap:** `U16x32::shr_epi16(shift: u32)` exists (line ~1244 in simd_avx512.rs region), but **scalar fallback in `simd.rs`** lacks it. The AVX-512 path can be implemented; a scalar polyfill for `simd.rs::scalar` module would need:
+- `U16x32::shr_epi16(self, shift: u32) -> U16x32` (scalar: element-wise `>> shift`)
+
+#### `palette_codec.rs` — `unpack_4bit_avx2` (line 353)
+
+**Problem:** Nibble-split loop over 32-byte chunks, zero `_mm256_*` intrinsics.
+**Correct polyfill:** Real 4-bit unpack uses `U8x32::unpacklo_epi8` + `U8x32::and` + `U8x32::srli_epi16`. Neither `unpacklo_epi8` nor `srli_epi16` exists on the AVX2 tier.
+**Methods needed in `simd_avx2.rs`:**
+- `U8x32::unpacklo_epi8(self, other: U8x32) -> U8x32` (maps to `_mm256_unpacklo_epi8`)
+- `U8x32::unpackhi_epi8(self, other: U8x32) -> U8x32` (maps to `_mm256_unpackhi_epi8`)
+- `U8x32::srli_epi16(self, imm: i32) -> U8x32` (maps to `_mm256_srli_epi16`)
+- Or equivalently: `U8x32::and(self, mask: U8x32) -> U8x32` (maps to `_mm256_and_si256`)
+
+#### `palette_codec.rs` — `bedrock_reorder_xzy_avx512` (line 501)
+
+**Problem:** Scalar triple-loop permutation using `get_unchecked`, zero SIMD.
+**Correct polyfill:** Real AVX-512 version would use `U16x32::gather` with computed indices. No gather primitive exists in `crate::simd` for `u16`.
+**Honest replacement plan:** Delete the function; route `bedrock_reorder_xzy` directly to the scalar path. Add comment: `// AVX-512 gather on u16 requires widening to u32; not yet in polyfill.`
+**Methods needed (if implemented):**
+- `U32x16::gather_u16(base: *const u16, vindex: U32x16) -> U32x16` — not present; would wrap `_mm512_i32gather_epi32` with 2-byte scale.
+
+#### `aabb.rs` — `aabb_intersect_batch_sse41` (line 241)
+
+**Problem:** Scalar per-candidate loop, AUTOVEC confirmed: zero SSE4.1 instructions emitted.
+**The `aabb_expand_batch_sse2` function IS REAL-AUTOVEC** (SSE2 feature hint causes `addps`/`subps` emission); SSE4.1 hint on the intersection function does NOT produce `blendvps` or `cmpps`.
+**Correct polyfill:** Use `F32x4` (SSE2-width) comparison. No `F32x4` type exists in `crate::simd`. Alternatively, use `F32x8` (AVX2) for 2-candidate-at-once processing, or simply rename to `aabb_intersect_batch_scalar_hint` and document the annotation as a scheduling hint only.
+
+**Methods needed in `simd_avx2.rs` (for real SSE4.1 replacement):**
+- `F32x4::from_array([f32; 4]) -> F32x4` — type does not exist
+- OR accept that 1-candidate-at-a-time is scalar-only and rename the function honestly.
+
+---
+
+### Polyfill Methods Needed in `simd_avx2.rs` (and scalar fallback)
+
+To make the above replacements fully feasible, these methods must be added:
+
+| Method | Type | Wraps (AVX2) | Scalar fallback |
+|--------|------|--------------|-----------------|
+| `U8x32::splat(v: u8)` | `simd_avx2.rs` | `_mm256_set1_epi8` | element-wise fill |
+| `U8x32::from_slice(s: &[u8])` | `simd_avx2.rs` | `_mm256_loadu_si256` | copy 32 bytes |
+| `U8x32::cmpeq_mask(self, other: U8x32) -> u32` | `simd_avx2.rs` | `_mm256_cmpeq_epi8` + `_mm256_movemask_epi8` | `element-wise == as bitmask` |
+| `U8x32::unpacklo_epi8(self, other: U8x32)` | `simd_avx2.rs` | `_mm256_unpacklo_epi8` | interleave lo halves |
+| `U8x32::unpackhi_epi8(self, other: U8x32)` | `simd_avx2.rs` | `_mm256_unpackhi_epi8` | interleave hi halves |
+| `U8x32::and(self, mask: U8x32)` | `simd_avx2.rs` | `_mm256_and_si256` | element-wise `&` |
+| `U8x32::srli_epi16(self, imm: i32)` | `simd_avx2.rs` | `_mm256_srli_epi16` | element-wise `>> imm` |
+| `U16x32::shr_epi16(self, shift: u32)` | scalar in `simd.rs` | already in `simd_avx512.rs:~1275` | element-wise `>> shift` |
+
+The `U8x32` type itself (the 256-bit byte vector) is entirely absent from `simd_avx2.rs` — all 7 methods above require first creating the type. This is the foundational gap for the AVX2-tier byte scan and nibble unpack paths.
+
+---
+
+### Key Finding: `aabb_expand_batch_sse2` is REAL-AUTOVEC
+
+This function was previously listed as cosmetic by earlier agents. ASM confirms otherwise: the SSE2 feature annotation on the `[f32; 3] min/max subtract+add` loop causes LLVM to emit `movups`/`subps`/`addps`/`shufps` on XMM registers. Without the annotation, the same code compiles to scalar. This one function in `aabb.rs` is a legitimate use of `#[target_feature]` as an LLVM autovectorization hint. Do not remove it.
+
+
+## 2026-05-13T19:35 — agent #10 audit-color (sonnet) [backfilled by main]
+
+**Files:** bevy_pbr/atmosphere/{resources,environment}.rs +
+light_probe/generate.rs + ssao/mod.rs + bevy_image/{image,ktx2}.rs
+**Verdict:** **0 of 10 sites worth converting.** All NOT-WORTH.
+
+Root causes:
+1. All atmosphere / light-probe / SSAO f16 textures are GPU-only — CPU only
+   sets the wgpu `TextureFormat` descriptor. GPU compute shaders fill them.
+2. `Image::convert` does NOT support `Rgba16Float` as a target (returns
+   `None` at image.rs:1550). No bulk f32→f16 path exists today.
+3. `set_color_at` / `get_color_at` are single-pixel-per-call APIs. Only
+   caller is `bevy_sprite/picking_backend.rs` (1 px per pointer event).
+4. KTX2 copies half-float bytes verbatim — no decode loop.
+
+The "500-20000× BF16 batch" claim from ndarray's `f32_to_bf16_batch_rne`
+docs is real but unreachable in Bevy as-shipped. The Bevy CPU never
+touches f16/bf16 data in bulk.
+
+**Latent opportunity (not in codebase today):** if `Image::convert` were
+extended to support `Rgba16Float` as a destination, a bulk
+Rgba8Unorm → Rgba16Float path would touch W·H·4 f32→f16 values (33M at
+4K) — genuine `cast_f32_to_f16_batch` candidate. Would have to ship the
+Image::convert extension AND the SIMD path together.
+
+
+## 2026-05-13T19:45 — agent #5 plugin-tests (sonnet) [backfilled by main]
+
+**Files:** `bevy/examples/ndarray_graph_plugin_tests.rs` (308 lines) +
+Cargo.toml `[[example]]` entry
+**Status:** ALL 5 TESTS PASS (dual mode: `cargo run` exits nonzero on
+failure, `cargo test --example` also works)
+
+Tests:
+1. plugin_initializes_global_renderer_resource — `GraphRenderer` resource
+   present after plugin build; `GLOBAL_RENDERER.tick_count() == 0`
+2. startup_seeds_nodes_and_edges — front.len=2, edges.len=1 after first
+   app.update()
+3. tick_advances_position_via_integrate_simd — position 10.0 → 10.016666
+   (= 1.0 * DT_60 + 10.0, exact). Confirms F32x16::mul_add polyfill ran
+4. compose_neo4j_emits_pixels_to_framebuffer — 106 non-zero bytes in
+   128×128 buffer (threshold=50)
+5. polyfill_runtime_tier_matches_expectation — confirms avx512f=true
+   AND avx2=true on Sapphire Rapids; PREFERRED_F32_LANES=8 (the smoke
+   test's catch — compile-time AVX2 path on AVX-512 hardware)
+
+**Duplication risk:** test file defines `NdarrayGraphPlugin` + `GraphRenderer`
+INLINE because agent #5 ran in parallel with agent #1 and couldn't import.
+Main thread will consolidate after fleet completion: either (a) test file
+imports from agent #1's plugin file, or (b) move the plugin types into a
+shared `examples/ndarray_graph_lib.rs` module that both import.
+
+
+## 2026-05-13T19:55 — agent #8 audit-skin (sonnet) [backfilled by main]
+
+**File:** `bevy_pbr/src/render/skin.rs` (515 lines)
+**Verdict:** **NOT-WORTH**
+
+Bevy's skinning is GPU-side WGSL. `skin.rs` is a CPU staging step that
+computes one final `Mat4` per joint and writes it to a wgpu buffer for
+upload. Four candidate hot paths:
+
+1. `extract_joints_for_skin` (L399-413) — per-frame joint matrix update.
+   ECS change-detection gate at L406 → irregular skip pattern. Can't
+   batch for GEMM. M=N=K=4 GEMM is overhead-dominated anyway.
+2. `add_skin` (L452-474) — initial population on visibility change.
+   Contiguous loop, no skip — the ONLY uninterrupted math path. But
+   fires ~0 times/sec in stable scenes. Cold path.
+3. `prepare_skins` (L176-244) — pure DMA via `bytemuck::must_cast_slice`.
+   No arithmetic.
+4. Per-vertex weighted blend — **not in this file**. GPU-side WGSL.
+
+Numbers: MAX_JOINTS=256, full-rig scalar cost ~16 µs/mesh/frame. AVX-512
+at 8× would save 14 µs/mesh/frame. GPU skinning noise floor is 0.5-2 ms.
+SIMD savings disappear below GPU baseline.
+
+**ndarray API surface needed: NONE.** Skin is not a SIMD-polyfill
+integration candidate. The performance levers are GPU shader
+optimization + wgpu buffer bandwidth — outside ndarray's scope.
+
