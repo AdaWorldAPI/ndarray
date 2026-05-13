@@ -8,6 +8,11 @@
 #[cfg(feature = "std")]
 use std::sync::LazyLock;
 
+// On i686 / wasm32 / etc. only the `Scalar` variant is constructed —
+// `detect_tier()`'s feature-detection blocks are `target_arch = "x86_64"`
+// or `"aarch64"` gated, both false on i686. Without `dead_code` allowance
+// the `-D warnings` build fails with `variants ... are never constructed`.
+#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Debug)]
 #[repr(u8)]
 enum Tier {
