@@ -48,22 +48,14 @@ export RUSTFLAGS="-Zrandomize-layout"
 # Miri target doesn't enable AVX/AVX2/AVX-512/NEON target features.
 #
 # The `nightly-simd` feature ships a parallel module `crate::simd_nightly`
-# (the 30-type `core::simd` polyfill) which IS Miri-checkable, but the
-# default `crate::simd::*` dispatch is NOT routed through it — that's a
-# deliberate decision noted in `src/simd.rs:212`. Consumer modules that
-# import `crate::simd::F32x16` (most of `hpc::*`) therefore go through
-# intrinsics and abort under Miri.
-#
-# Until the polyfill expands to full type-parity (5/30 today) AND
-# `crate::simd::*` gains a `cfg(miri)` dispatch through it, we constrain
-# this sweep to:
-#   * `simd_nightly::tests::*`  — the polyfill itself, full coverage.
-#   * `hpc::byte_scan::*`       — already exercises scalar fallback paths
-#                                  through `simd_caps()` cfg(miri) bypass.
-#   * everything else ndarray ships that does NOT pull `_mm*` intrinsics.
-#
-# `--no-fail-fast` so a single regression doesn't mask the rest. CI
-# nextest profile `default-miri` already configures isolated retry-on-flake.
+# (the 24-type `core::simd` polyfill, at full parity with the 24 types
+# defined across `simd_avx2.rs` + `simd_avx512.rs` — landed in PR #146)
+# which IS Miri-checkable. But the default `crate::simd::*` dispatch is
+# NOT routed through it; consumer modules that import `crate::simd::F32x16`
+# (most of `hpc::*` + the `simd::tests::*` suite) go through intrinsics.
+# The polyfill is no longer the bottleneck — the missing piece is a
+# `cfg(miri)` switch in `src/simd.rs` that re-exports from `simd_nightly`
+# instead of `simd_avx*` under Miri.
 cargo +nightly miri nextest run -v \
     --no-fail-fast \
     -p ndarray -p ndarray-rand \
