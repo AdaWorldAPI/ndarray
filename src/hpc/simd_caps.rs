@@ -100,8 +100,41 @@ pub fn simd_caps() -> SimdCaps {
 }
 
 impl SimdCaps {
+    /// Miri-only: CPUID inline asm is unsupported by Miri (it can't simulate
+    /// CPU feature detection). Return an all-scalar capability set so any
+    /// test reaching this LazyLock under Miri exercises the scalar fallback
+    /// paths instead of aborting on the `__cpuid_count` call. Scoped to
+    /// `cfg(miri)` — production builds and stable CI use the real detection
+    /// below.
+    #[cfg(miri)]
+    fn detect() -> Self {
+        Self {
+            avx2: false,
+            avx512f: false,
+            avx512bw: false,
+            avx512vl: false,
+            avx512vpopcntdq: false,
+            sse41: false,
+            sse2: false,
+            fma: false,
+            avx512vnni: false,
+            avx512vbmi: false,
+            amx_tile: false,
+            amx_int8: false,
+            amx_bf16: false,
+            avx512bf16: false,
+            avxvnniint8: false,
+            neon: false,
+            asimd_dotprod: false,
+            fp16: false,
+            aes: false,
+            sha2: false,
+            crc32: false,
+        }
+    }
+
     /// Detect CPU capabilities at runtime.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", not(miri)))]
     fn detect() -> Self {
         // `__cpuid_count` is safe on x86_64 (Rust 1.87+): CPUID is always
         // available on x86_64 (guaranteed by the ABI) and has no side effects
@@ -140,7 +173,7 @@ impl SimdCaps {
     /// AArch64: detect NEON sub-features via `is_aarch64_feature_detected!`.
     /// NEON itself is mandatory (always true). The sub-features distinguish
     /// Pi Zero 2 W / Pi 3 (A53) from Pi 4 (A72) from Pi 5 (A76).
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(target_arch = "aarch64", not(miri)))]
     fn detect() -> Self {
         Self {
             // x86 fields: all false on ARM
