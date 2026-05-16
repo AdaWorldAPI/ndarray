@@ -150,6 +150,27 @@ jobs:
       - name: Test native + approx
         run: cargo nextest run -p ndarray --features native,approx
 
+  hpc-stream-parallel:
+    # D-CSV-17 (sprint-13 W-I4): rayon par_* variants for hpc::stream.
+    # This job co-ships with the par_* implementation so the rayon feature
+    # gate is always exercised alongside the code it guards — prevents
+    # silent-dead-code drift (spec §0 + worker-template-v2 §5 CI ownership).
+    runs-on: ubuntu-latest
+    name: hpc-stream-parallel/rayon
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - name: cargo check (no rayon — scalar path unchanged)
+        run: cargo check -p ndarray
+      - name: cargo check --features rayon
+        run: cargo check -p ndarray --features rayon
+      - name: par_* stream tests (--features rayon, hpc::stream filter)
+        run: cargo nextest run -p ndarray --features rayon -E 'test(hpc::stream)'
+      - name: clippy --features rayon
+        run: cargo clippy -p ndarray --features rayon --lib -- -D warnings
+
   blas-msrv:
     runs-on: ubuntu-latest
     name: blas-msrv
@@ -247,6 +268,7 @@ jobs:
       - nostd
       - tests
       - native-backend
+      - hpc-stream-parallel
       - miri
       - cross_test
       - cargo-careful

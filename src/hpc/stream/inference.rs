@@ -3,7 +3,8 @@
 //! over the inference-mantissa lane of the EdgeColumn SoA. Used by the
 //! integer-SIMD MUL evaluation hot path (D-CSV-8 sprint-12 SIMD vec).
 //!
-//! Pure iterator scaffold; `par_inference_stream` rayon variant is sprint-13+.
+//! Pure iterator scaffold; `par_inference_stream` rayon variant wired in
+//! sprint-13 (D-CSV-17) behind `#[cfg(feature = "rayon")]`.
 
 // Local mirror of CausalEdge64 shape (bit-compatible with causal_edge::CausalEdge64).
 // No cross-crate import: ndarray is the producer; causal-edge is the consumer.
@@ -113,6 +114,35 @@ impl<'a> ExactSizeIterator for InferenceStream<'a> {
     }
 }
 
+// ─── Rayon-parallel variant (D-CSV-17, sprint-13) ─────────────────────────────
+
+#[cfg(feature = "rayon")]
+use rayon::prelude::*;
+
+/// Rayon-parallel forward-iterator over `&[InferenceRow]`.
+///
+/// Mirrors `par_qualia_stream` semantics. Returns `impl IndexedParallelIterator`
+/// so callers retain `enumerate()`, `zip()`, and order-preserving `collect()`.
+///
+/// For `InferenceRow` (8 B/row, `repr(C, align(8))`), 8 rows fill one 64-byte
+/// cache line; callers folding into ordered structures should call
+/// `.with_min_len(8)` to align chunks (OQ-CSV-8 fixed chunk for InferenceRow).
+///
+/// Particularly useful for the integer-SIMD MUL evaluation hot path (D-CSV-8):
+/// folding the inference mantissa lane across millions of EdgeColumn rows
+/// benefits from work-stealing on multi-core hosts.
+///
+/// # Determinism
+///
+/// See §6 of pr-sprint-13-rayon-streams.md. Pattern A (order-insensitive folds
+/// like `.sum()`, `.count()`) and Pattern B (`collect()`) are safe.
+/// Pattern C (non-commutative accumulators) requires per-callsite analysis.
+#[cfg(feature = "rayon")]
+#[inline]
+pub fn par_inference_stream(rows: &[InferenceRow]) -> impl IndexedParallelIterator<Item = (usize, &InferenceRow)> {
+    rows.par_iter().enumerate()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,5 +245,83 @@ mod tests {
         let first = stream.next().unwrap();
         assert_eq!(first.0, 0);
         assert_eq!(first.1 .0, 10);
+    }
+}
+
+// ─── Rayon par_* tests (D-CSV-17) ─────────────────────────────────────────────
+
+#[cfg(all(test, feature = "rayon"))]
+mod par_tests {
+    use super::{par_inference_stream, InferenceRow, InferenceStream};
+    use rayon::prelude::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// T-P-I-1: par_inference_stream yields all N items.
+    #[test]
+    fn test_par_inference_yields_all() {
+        let rows: Vec<InferenceRow> = (0u64..1024).map(InferenceRow).collect();
+        let count = par_inference_stream(&rows).count();
+        assert_eq!(count, 1024);
+    }
+
+    /// T-P-I-2: par_inference_stream on empty slice yields zero items.
+    #[test]
+    fn test_par_inference_empty() {
+        let rows: Vec<InferenceRow> = vec![];
+        let count = par_inference_stream(&rows).count();
+        assert_eq!(count, 0);
+    }
+
+    /// T-P-I-3: par_iter result equals serial iter result (as sorted sets).
+    #[test]
+    fn test_par_inference_matches_serial() {
+        let rows: Vec<InferenceRow> = (0u64..256).map(InferenceRow).collect();
+        let mut par: Vec<u64> = par_inference_stream(&rows)
+            .map(|(i, r)| (i as u64) ^ r.0)
+            .collect();
+        let mut ser: Vec<u64> = InferenceStream::new(&rows)
+            .map(|(i, r)| (i as u64) ^ r.0)
+            .collect();
+        par.sort_unstable();
+        ser.sort_unstable();
+        assert_eq!(par, ser);
+    }
+
+    /// T-P-I-4: filter on inference_mantissa() — sign-extension behaves
+    /// identically under parallel access.
+    ///
+    /// 256 rows with mantissa varying 0..16 cyclically via bits 46-49:
+    ///   - raw values 0..7 → mantissa 0..7 (non-negative): 128 rows
+    ///   - raw values 8..15 → mantissa -8..-1 (negative): 128 rows
+    #[test]
+    fn test_par_inference_filter_mantissa() {
+        let rows: Vec<InferenceRow> = (0u64..256).map(|i| InferenceRow((i & 0xF) << 46)).collect();
+        let neg = par_inference_stream(&rows)
+            .filter(|(_, r)| r.inference_mantissa() < 0)
+            .count();
+        assert_eq!(neg, 128);
+    }
+
+    /// T-P-I-5: with_min_len(8) knob compiles and yields all items.
+    /// 8 rows × 8 B = 64 B = one cache line (OQ-CSV-8 fixed chunk for InferenceRow).
+    #[test]
+    fn test_par_inference_min_len() {
+        let rows: Vec<InferenceRow> = (0u64..1024).map(InferenceRow).collect();
+        let count = par_inference_stream(&rows).with_min_len(8).count();
+        assert_eq!(count, 1024);
+    }
+
+    /// T-P-I-6: thread-safety — InferenceRow is Send + Sync; verified by
+    /// mutating an AtomicUsize from the parallel for_each closure.
+    #[test]
+    fn test_par_inference_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<InferenceRow>();
+        let rows: Vec<InferenceRow> = (0u64..1024).map(InferenceRow).collect();
+        let counter = AtomicUsize::new(0);
+        par_inference_stream(&rows).for_each(|_| {
+            counter.fetch_add(1, Ordering::Relaxed);
+        });
+        assert_eq!(counter.load(Ordering::Relaxed), 1024);
     }
 }

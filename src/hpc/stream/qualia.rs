@@ -4,8 +4,8 @@
 //! QualiaColumn SoA layout introduced by D-CSV-5b.
 //!
 //! Yields `(row_index, &QualiaI4Row)` tuples. Pure iterator scaffold; the
-//! `par_qualia_stream` rayon-parallel variant is sprint-13+ once rayon is
-//! wired into the ndarray feature gate.
+//! `par_qualia_stream` rayon-parallel variant is wired in sprint-13 (D-CSV-17)
+//! behind `#[cfg(feature = "rayon")]`.
 
 // NOTE: do NOT import lance-graph-contract here (would create circular dep
 // since contract is *consumer* of ndarray). Define a minimal local mirror
@@ -108,6 +108,50 @@ impl<'a> ExactSizeIterator for QualiaStream<'a> {
     }
 }
 
+// ─── Rayon-parallel variant (D-CSV-17, sprint-13) ─────────────────────────────
+
+#[cfg(feature = "rayon")]
+use rayon::prelude::*;
+
+/// Rayon-parallel forward-iterator over a borrowed `&[QualiaI4Row]` slice.
+///
+/// Yields `(row_index, &QualiaI4Row)` tuples. Unlike the scalar
+/// `QualiaStream`, iteration order is **not** guaranteed to be ascending
+/// by index; rayon's work-stealing scheduler may process chunks
+/// out-of-order. See §6 of pr-sprint-13-rayon-streams.md for the
+/// determinism contract callers must respect.
+///
+/// Returns `impl IndexedParallelIterator` (not bare `ParallelIterator`) so
+/// callers can use `enumerate()`, `zip()`, and `collect()` with guaranteed
+/// index-order preservation (rayon's `IndexedParallelIterator::collect` is
+/// contract-guaranteed to preserve original order).
+///
+/// # Chunk-size note
+///
+/// `QualiaI4Row` is 8 bytes (`repr(C, align(8))`), so 8 rows fit one 64-byte
+/// cache line. For folds into ordered structures, call `.with_min_len(8)` to
+/// align chunks to cache-line boundaries (see OQ-CSV-8).
+///
+/// # Example
+///
+/// ```
+/// # #[cfg(feature = "rayon")] {
+/// use ndarray::hpc::stream::qualia::{QualiaI4Row, par_qualia_stream};
+/// use rayon::prelude::*;
+///
+/// let rows: Vec<QualiaI4Row> = (0u64..1024).map(QualiaI4Row).collect();
+/// let total_nonzero: usize = par_qualia_stream(&rows)
+///     .filter(|(_, r)| r.0 != 0)
+///     .count();
+/// assert_eq!(total_nonzero, 1023); // QualiaI4Row(0) is the lone zero
+/// # }
+/// ```
+#[cfg(feature = "rayon")]
+#[inline]
+pub fn par_qualia_stream(rows: &[QualiaI4Row]) -> impl IndexedParallelIterator<Item = (usize, &QualiaI4Row)> {
+    rows.par_iter().enumerate()
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -197,5 +241,81 @@ mod tests {
         }
         assert_eq!(stream.next(), None);
         assert_eq!(ExactSizeIterator::len(&stream), 0);
+    }
+}
+
+// ─── Rayon par_* tests (D-CSV-17) ─────────────────────────────────────────────
+
+#[cfg(all(test, feature = "rayon"))]
+mod par_tests {
+    use super::{par_qualia_stream, QualiaI4Row, QualiaStream};
+    use rayon::prelude::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// T-P-Q-1: par_qualia_stream yields all N items.
+    #[test]
+    fn test_par_qualia_yields_all() {
+        let rows: Vec<QualiaI4Row> = (0u64..1024).map(QualiaI4Row).collect();
+        let count = par_qualia_stream(&rows).count();
+        assert_eq!(count, 1024);
+    }
+
+    /// T-P-Q-2: par_qualia_stream on empty slice yields zero items.
+    #[test]
+    fn test_par_qualia_empty() {
+        let rows: Vec<QualiaI4Row> = vec![];
+        let count = par_qualia_stream(&rows).count();
+        assert_eq!(count, 0);
+    }
+
+    /// T-P-Q-3: par_iter result equals serial iter result (as sorted sets).
+    /// Both iterators produce the same (index XOR value) pairs; sorting
+    /// makes the comparison order-independent.
+    #[test]
+    fn test_par_qualia_matches_serial() {
+        let rows: Vec<QualiaI4Row> = (0u64..256).map(QualiaI4Row).collect();
+        let mut par: Vec<u64> = par_qualia_stream(&rows)
+            .map(|(i, r)| (i as u64) ^ r.0)
+            .collect();
+        let mut ser: Vec<u64> = QualiaStream::new(&rows)
+            .map(|(i, r)| (i as u64) ^ r.0)
+            .collect();
+        par.sort_unstable();
+        ser.sort_unstable();
+        assert_eq!(par, ser);
+    }
+
+    /// T-P-Q-4: par_iter with filter is correct (count of even-valued rows).
+    #[test]
+    fn test_par_qualia_with_filter() {
+        let rows: Vec<QualiaI4Row> = (0u64..512).map(QualiaI4Row).collect();
+        let count_even = par_qualia_stream(&rows)
+            .filter(|(_, r)| r.0 % 2 == 0)
+            .count();
+        // Values 0, 2, 4, ..., 510 → 256 even values.
+        assert_eq!(count_even, 256);
+    }
+
+    /// T-P-Q-5: with_min_len(8) knob compiles and yields all items.
+    /// 8 rows × 8 B = 64 B = one cache line (OQ-CSV-8 fixed chunk for QualiaI4).
+    #[test]
+    fn test_par_qualia_min_len() {
+        let rows: Vec<QualiaI4Row> = (0u64..1024).map(QualiaI4Row).collect();
+        let count = par_qualia_stream(&rows).with_min_len(8).count();
+        assert_eq!(count, 1024);
+    }
+
+    /// T-P-Q-6: thread-safety — QualiaI4Row is Send + Sync; verified by
+    /// mutating an AtomicUsize from the parallel for_each closure.
+    #[test]
+    fn test_par_qualia_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<QualiaI4Row>();
+        let rows: Vec<QualiaI4Row> = (0u64..1024).map(QualiaI4Row).collect();
+        let counter = AtomicUsize::new(0);
+        par_qualia_stream(&rows).for_each(|_| {
+            counter.fetch_add(1, Ordering::Relaxed);
+        });
+        assert_eq!(counter.load(Ordering::Relaxed), 1024);
     }
 }
