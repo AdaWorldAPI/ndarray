@@ -1753,8 +1753,8 @@ pub use crate::hpc::heel_f64x8::cosine_f32_to_f64_simd;
 // Elementwise slice ops — polyfill-dispatched (F32x16/F64x8 chunks + scalar tail).
 #[cfg(feature = "std")]
 pub use crate::simd_ops::{
-    add_f32, add_f32_inplace, add_f64, add_f64_inplace, add_scalar_f32, div_f32, div_f32_inplace, mul_f32,
-    mul_f32_inplace, mul_f64, scale_f32, scale_f32_inplace, sub_f32, sub_f32_inplace,
+    add_f32, add_f32_inplace, add_f64, add_f64_inplace, add_scalar_f32, div_f32, div_f32_inplace, max_f32, min_f32,
+    mul_f32, mul_f32_inplace, mul_f64, pow_f32, scale_f32, scale_f32_inplace, sub_f32, sub_f32_inplace,
 };
 
 // ============================================================================
