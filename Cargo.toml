@@ -69,6 +69,7 @@ fractal = { path = "crates/fractal", default-features = false, optional = true }
 
 serde = { version = "1.0", optional = true, default-features = false, features = ["alloc"] }
 rawpointer = { version = "0.2" }
+zip = { version = "0.6", default-features = false, features = ["deflate"], optional = true }
 
 
 # Cranelift JIT (optional, behind "jit-native" feature)
@@ -182,6 +183,9 @@ jit-native = ["jitson", "dep:cranelift-codegen", "dep:cranelift-jit", "dep:crane
 native = ["std"]
 intel-mkl = ["std"]
 openblas = ["std"]
+
+# NPZ (zip-of-npy) reader/writer — needs the `zip` crate.
+npz = ["dep:zip"]
 
 # no_std polyfill for `static LazyLock` in `src/simd.rs` (sprint A12).
 # Pulls in `portable-atomic` with the `critical-section` impl plus the
