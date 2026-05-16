@@ -4,7 +4,8 @@
 //! the splat field for the D-CSV-12 splat op fleet.
 //!
 //! Each row = one Gaussian splat (mean, σ², energy). Pure iterator
-//! scaffold; `par_splat_stream` rayon variant is sprint-13+.
+//! scaffold; `par_splat_field_stream` rayon variant wired in sprint-13
+//! (D-CSV-17) behind `#[cfg(feature = "rayon")]`.
 
 // NOTE: SplatField is defined locally here — do NOT import lance-graph-contract
 // (would create a circular dep; ndarray is a producer, contract is a consumer).
@@ -14,7 +15,7 @@
 ///
 /// Layout: `repr(C, align(16))` — 4 × 4-byte fields = exactly 16 bytes.
 /// `align(16)` matches the SSE/NEON minimum and is verified by
-/// `test_splat_field_size_16b`.
+/// `test_splat_field_size_16b`. Four rows fit one 64-byte cache line.
 #[repr(C, align(16))]
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub struct SplatField {
@@ -121,6 +122,36 @@ impl<'a> ExactSizeIterator for SplatFieldStream<'a> {
     }
 }
 
+// ─── Rayon-parallel variant (D-CSV-17, sprint-13) ─────────────────────────────
+
+#[cfg(feature = "rayon")]
+use rayon::prelude::*;
+
+/// Rayon-parallel forward-iterator over `&[SplatField]`.
+///
+/// Yields `(row_index, &SplatField)` tuples. Returns `impl IndexedParallelIterator`
+/// so callers retain `enumerate()`, `zip()`, and order-preserving `collect()`.
+///
+/// `SplatField` is 16 bytes (`repr(C, align(16))`), so 4 rows fit one 64-byte
+/// cache line. Callers folding into ordered structures should call
+/// `.with_min_len(4)` for cache-line-aligned chunking (OQ-CSV-8 fixed chunk for
+/// SplatField).
+///
+/// Used by the D-CSV-12 splat op fleet for parallel evaluation of
+/// `splat_gaussian`, `score_hole_closure`, `replay_coherence`, and
+/// `emit_if_epiphany` across the entire splat field.
+///
+/// # Determinism
+///
+/// See §6 of pr-sprint-13-rayon-streams.md. Order is NOT guaranteed ascending;
+/// use `.with_min_len(rows.len())` to coerce serial execution for bit-exact
+/// reproducibility when the downstream accumulator is non-commutative.
+#[cfg(feature = "rayon")]
+#[inline]
+pub fn par_splat_field_stream(rows: &[SplatField]) -> impl IndexedParallelIterator<Item = (usize, &SplatField)> {
+    rows.par_iter().enumerate()
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -222,5 +253,97 @@ mod tests {
         let (idx, splat) = first.unwrap();
         assert_eq!(idx, 0);
         assert_eq!(splat.mean, 10);
+    }
+}
+
+// ─── Rayon par_* tests (D-CSV-17) ─────────────────────────────────────────────
+
+#[cfg(all(test, feature = "rayon"))]
+mod par_tests {
+    use super::{par_splat_field_stream, SplatField, SplatFieldStream};
+    use rayon::prelude::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn make_splat(mean: u32, variance: f32, energy: f32, generation: u32) -> SplatField {
+        SplatField {
+            mean,
+            variance,
+            energy,
+            generation,
+        }
+    }
+
+    /// T-P-S-1: par_splat_field_stream yields all N items.
+    #[test]
+    fn test_par_splat_yields_all() {
+        let rows: Vec<SplatField> = (0u32..1024).map(|i| make_splat(i, 1.0, 0.1, 0)).collect();
+        let count = par_splat_field_stream(&rows).count();
+        assert_eq!(count, 1024);
+    }
+
+    /// T-P-S-2: par_splat_field_stream on empty slice yields zero items.
+    #[test]
+    fn test_par_splat_empty() {
+        let rows: Vec<SplatField> = vec![];
+        let count = par_splat_field_stream(&rows).count();
+        assert_eq!(count, 0);
+    }
+
+    /// T-P-S-3: par_iter result equals serial iter result (as sorted sets).
+    #[test]
+    fn test_par_splat_matches_serial() {
+        let rows: Vec<SplatField> = (0u32..256)
+            .map(|i| make_splat(i, 1.0, i as f32 / 256.0, 0))
+            .collect();
+        // Use (index, mean) tuples — mean is unique per row, so sort gives canonical order.
+        let mut par: Vec<(usize, u32)> = par_splat_field_stream(&rows)
+            .map(|(i, s)| (i, s.mean))
+            .collect();
+        let mut ser: Vec<(usize, u32)> = SplatFieldStream::new(&rows)
+            .map(|(i, s)| (i, s.mean))
+            .collect();
+        par.sort_unstable();
+        ser.sort_unstable();
+        assert_eq!(par, ser);
+    }
+
+    /// T-P-S-4: filter on energy field — parallel equivalent of
+    /// SplatFieldStream::filter_energy_above.
+    ///
+    /// 256 rows with energy = i/256.0; energies > 0.5 occur for i in 129..256 → 127 items.
+    #[test]
+    fn test_par_splat_filter_energy() {
+        let rows: Vec<SplatField> = (0u32..256)
+            .map(|i| make_splat(i, 1.0, (i as f32) / 256.0, 0))
+            .collect();
+        let above = par_splat_field_stream(&rows)
+            .filter(|(_, s)| s.energy > 0.5)
+            .count();
+        // i=128 → 128/256=0.5 (NOT > 0.5); i=129 → 129/256≈0.504 (> 0.5).
+        // So i ∈ 129..256 → 127 items.
+        assert_eq!(above, 127);
+    }
+
+    /// T-P-S-5: with_min_len(4) — cache-line alignment knob.
+    /// 4 rows × 16 B = 64 B = one cache line (OQ-CSV-8 fixed chunk for SplatField).
+    #[test]
+    fn test_par_splat_min_len() {
+        let rows: Vec<SplatField> = (0u32..1024).map(|i| make_splat(i, 1.0, 0.1, 0)).collect();
+        let count = par_splat_field_stream(&rows).with_min_len(4).count();
+        assert_eq!(count, 1024);
+    }
+
+    /// T-P-S-6: thread-safety — SplatField is Send + Sync; verified by
+    /// mutating an AtomicUsize from the parallel for_each closure.
+    #[test]
+    fn test_par_splat_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<SplatField>();
+        let rows: Vec<SplatField> = (0u32..1024).map(|i| make_splat(i, 1.0, 0.1, 0)).collect();
+        let counter = AtomicUsize::new(0);
+        par_splat_field_stream(&rows).for_each(|_| {
+            counter.fetch_add(1, Ordering::Relaxed);
+        });
+        assert_eq!(counter.load(Ordering::Relaxed), 1024);
     }
 }
