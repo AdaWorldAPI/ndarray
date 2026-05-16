@@ -11,6 +11,35 @@
 
 ---
 
+## Dispatch Model (the ground truth)
+
+All SIMD in this repo resolves via **compile-time `cfg(target_feature)` routing**:
+
+```
+.cargo/config.toml pins target-cpu=sapphirerapids
+    → cfg(target_feature = "avx512f") = TRUE at compile time
+    → simd.rs re-exports resolve DIRECTLY to simd_avx512.rs types
+    → zero runtime detection, zero branching, zero LazyLock in hot path
+
+Consumer writes: crate::simd::U64x8
+simd.rs routes:  pub use crate::simd_avx512::U64x8;  // compile-time, no match
+```
+
+The `LazyLock<Tier>` in `simd.rs` exists for the `std` path but is **dead code**
+when target features are pinned — the compiler const-folds `detect_tier()` and
+the `cfg` gates resolve the re-exports statically.
+
+**On aarch64**: NEON is mandatory. `cfg(target_arch = "aarch64")` routes to
+`simd_neon.rs`. 256-bit types are 2×128-bit paired dispatch (e.g. `F32x16` =
+4×`float32x4_t`). No runtime detection needed — NEON is always there.
+
+**simd_avx2.rs**: Dead code on x86-64-v4. Only reached when
+`cfg(not(target_feature = "avx512f"))` — i.e., when someone builds without the
+target-cpu pin (CI fallback, cross-compile). Never add new methods to it for
+AVX-512 targets; it's a waste.
+
+---
+
 ## Wave 0 — Conventions & Foundations (3 days)
 
 Unlocks everything else. No code changes to hot paths. Pure contract + tooling.
@@ -46,13 +75,14 @@ The lance-graph `simd-savant` agent runs PRE-MERGE against each PR.
 ### Per-primitive implementation contract
 
 Every PR MUST:
-1. **Three backends**: AVX-512, NEON, scalar. Missing scalar = P0 reject.
+1. **Implement on the backing type in `simd_avx512.rs`** (the only live file on x86-64-v4). NEON impl goes in `simd_neon.rs`. Scalar fallback in the `scalar` module inside `simd.rs`.
 2. **Edge-case semantics documented** in doc-comment (`i8::MIN`, empty slices, OOB indices).
-3. **Parity test**: all backends produce identical output on randomized corpus including edge cases.
+3. **Parity test**: all cfg-routed backends produce identical output on randomized corpus including edge cases.
 4. **Bench against scalar**: record AVX-512/NEON speedup ratios in PR body.
 5. **`// SAFETY:` on every `unsafe` block**.
-6. **No new `is_x86_feature_detected!`** outside `simd_caps.rs`.
-7. **Consumer site cited** in PR description.
+6. **No `is_x86_feature_detected!` anywhere** — dispatch is at `cfg(target_feature)` in `simd.rs` re-exports, not per-call runtime checks.
+7. **No `#[target_feature(enable = ...)]` on functions** — the cargo target-cpu pin handles this globally.
+8. **Consumer site cited** in PR description.
 
 ### W1.1 — I8x16::from_i4_packed_u64 (nibble unpack + sign extend)
 
@@ -110,7 +140,18 @@ impl U16x8 {
 pub fn palette_lookup_u8x8(idx_v: U16x8, lut: &[u8]) -> U8x8;
 ```
 
-**AVX2**: `_mm256_i32gather_epi32` with index widening + downcast.
+**Palette-256 is the dominant use case** — every index fits in u8, table is always
+256 or 512 bytes. No bounds risk at palette-256 widths. The gather_u16 API must
+handle arbitrary tables too, but palette-256 should be the fast path (no OOB
+possible when table.len() == 256 and indices are u8-sourced).
+
+**Codex P2 fix (gather_u16 OOB)**: `_mm256_i32gather_epi32` reads 4 bytes per slot
+from a `&[u16]` table — overreads 2 bytes at `table[len-1]`. For palette-256 this
+is harmless (256 × 2 = 512 bytes, 4-byte read at index 255 reads bytes 510-513,
+which is within a 512-byte aligned allocation + padding). For arbitrary tables,
+use scalar fallback or pad the table allocation.
+
+**AVX-512**: `_mm512_i32gather_epi32` with index widening + mask to u16.
 **NEON / Scalar**: loop `(0..8).map(|i| table[indices.lane(i)])`.
 
 ### W1.4 — Prefetch hints (cross-arch)
@@ -134,12 +175,13 @@ impl U64x8 {
     /// XOR + lane-wise popcount + horizontal sum. Optimized for Hamming distance.
     pub fn xor_popcount(self, other: Self) -> u64;
 }
-impl U64x4 { pub fn popcnt(self) -> Self; }  // AVX2 parity
+impl U64x4 { pub fn popcnt(self) -> Self; }  // NEON/scalar parity
 ```
 
-**AVX-512 VPOPCNTDQ**: `_mm512_popcnt_epi64` directly (feature `avx512vpopcntdq`).
-**AVX-512 without VPOPCNTDQ**: Mula's algorithm via `VPSHUFB` + `VPSADBW` per-byte LUT.
-**NEON**: `vcntq_u8` → `vpaddlq_u8` cascade to sum within each u64.
+**AVX-512 VPOPCNTDQ**: `_mm512_popcnt_epi64` directly (feature `avx512vpopcntdq` —
+available on sapphirerapids, enabled by the target-cpu pin).
+**NEON popcount per-u64**: `vcntq_u8` → `vpaddlq_u8` → `vpaddlq_u16` → `vpaddlq_u32`
+(NOT `vaddvq_u8` which merges ALL lanes to a single scalar — Codex P2 fix).
 **Scalar**: `u64::count_ones()` fused loop.
 
 ### W1.5+ — Deferred primitives (gated on sigker certification)
@@ -170,7 +212,7 @@ Wave 1 primitives become the first consumers of these macros (retrofit optional)
 | ID | Item | Source | Effort | What It Produces |
 |----|------|--------|--------|------------------|
 | W2.1 | **Dtype-parity macro** (`reductions_for!`) | R3.1 | 1d | One line = 7 reductions for a dtype. Cuts 700→150 lines. |
-| W2.2 | **Per-arch dispatch macro** (`simd_dispatch!`) | R3.2 | 4h | Eliminates dispatch skeleton copy-paste. |
+| W2.2 | **Per-arch impl macro** (`simd_impl!`) | R3.2 | 4h | Generates the struct + methods for a type in both simd_avx512.rs and simd_neon.rs from one body. |
 | W2.3 | **Reduction kernel template** (`reduce_simd()`) | R3.3 | 4h | Generic chunk-loop; sum/max/nrm2 become 5-line callers. |
 | W2.4 | **Dual-form fusion** (`kernel_simd_dual!`) | R3.4 | 1d | One body → `_into`, Vec, `_ptr`, all arch variants. |
 
@@ -219,9 +261,16 @@ From REFACTOR_HPC_INTEGRATION.md Tier 3. Core ndarray operations silently accele
 
 | ID | Item | Source | Effort | Impact |
 |----|------|--------|--------|--------|
-| W5.1 | **Unified SIMD detection** (merge simd_caps + simd_dispatch into core) | Tier 3.2 | 4h | Deletes 877 lines of duplication |
+| W5.1 | **Delete duplicate detection code** (simd_caps + simd_dispatch → dead code under cfg pin) | Tier 3.2 | 4h | Deletes 877 lines that are unreachable when target-cpu is pinned |
 | W5.2 | **Core sum/mean → SIMD dispatch** | Tier 3.1 | 4h | 16x faster `.sum()` on contiguous f32/f64 |
 | W5.3 | **SIMD axis reductions** (sum_axis with SIMD lanes) | Tier 6.1 | 1d | ML training hot path |
+
+**Note on W5.1**: With `target-cpu=sapphirerapids` in `.cargo/config.toml`, the
+`cfg(target_feature = "avx512f")` branch in `simd.rs` is the only live path.
+`hpc/simd_caps.rs` (515 lines) and `hpc/simd_dispatch.rs` (362 lines) exist for
+a multi-binary world that doesn't apply when the target is pinned. These can be
+deleted or feature-gated behind `cfg(not(target_feature = "avx512f"))` for CI
+fallback builds.
 
 **Gate**: `cargo bench` shows measurable improvement on contiguous arrays.
 Non-contiguous arrays unchanged (fallback to generic fold).
@@ -299,14 +348,14 @@ Wave 0 (conventions)
   │       ├──→ Wave 6.7 (QualiaColumns uses I8x16::from_i4_packed from W1.1)
   │       └──→ Wave 8.4 (primitive parity benches)
   │
-  ├──→ Wave 2 (codegen macros)
+  ├���─→ Wave 2 (codegen macros)
   │       │
   │       └──→ Wave 5 (backend wiring uses macros)
   │
   ├──→ Wave 3 (type bridges)
   │       │
   │       ├──→ Wave 4 (extension traits need bridges)
-  │       ├──→ Wave 5 (backend dispatch needs BlasFloat for BF16)
+  │       ├���─→ Wave 5 (backend dispatch needs BlasFloat for BF16)
   │       └──→ Wave 6 (SoA needs Fingerprint↔Array, Arrow views)
   │
   ├──→ Wave 7 (namespace) — independent of 1-6
@@ -320,7 +369,7 @@ Wave 0 (conventions)
 
 **For lance-graph (P0 consumer)**: 0 → 1 = **6 days**. Consumer migration PRs unblocked.
 
-**For full release**: 0 → 1 → 3 → 5 → 6 → 8 → 9 = **18 days** serial.
+**For full release**: 0 → 1 → 3 → 5 → 6 �� 8 → 9 = **18 days** serial.
 With parallelism (1∥2, 3∥4, 6∥7, 8∥backlog): **~12 working days**.
 
 ---
@@ -333,7 +382,7 @@ The 5 SIMD primitives aren't isolated additions — they're load-bearing for lat
 |-----------|----------------------------------|--------------------------|
 | `I8x16::from_i4_packed_u64` | `mul.rs::i4_eval::batch` (5 batch fns) | **W6.7 QualiaColumns** — unpack i4 qualia from packed storage without scalar loop |
 | `I8x16::saturating_abs` | Direction-B fix, ValleyOfDespair classifier | **W4.2 Quantize trait** — safe abs in quantization error metrics |
-| `U16x8::gather_u16` | `bgz17/simd.rs` palette lookup | **W6.6 BF16FieldDatabase** — gather exponent fields from lookup table |
+| `U16x8::gather_u16` | `bgz17/simd.rs` palette lookup | **W6.6 BF16FieldDatabase** �� gather exponent fields from lookup table |
 | `prefetch_read_t0/t1/t2` | `bgz17/prefetch.rs` tile prefetch | **W6.2 k0_columnar_simd** — prefetch next column chunk during K0 scan |
 | `U64x8::popcnt` + `xor_popcount` | `holograph/hamming.rs` + `blasgraph/types.rs` | **W6.2-W6.5 entire SoA cascade** — columnar XOR+popcount is THE operation |
 
@@ -351,12 +400,11 @@ slices, losing the typed-wrapper discipline and duplicating dispatch logic.
 | `I8x16::from_i4_packed_u64()` for qualia | **Wave 1.1** (SIMD primitives) |
 | `prefetch_read_t0()` for column prefetch | **Wave 1.4** (SIMD primitives) |
 | F-order Array2<u64> database | **Wave 3** (type bridges — Fingerprint converts to Array) |
-| Dispatch macro for k0_columnar_simd | **Wave 2** (codegen macros) |
+| Impl macro for k0_columnar_simd | **Wave 2** (codegen macros) |
 | `_into` form for columnar kernels | **Wave 0** (signature convention) |
 | Extension trait: `database.cascade_soa(&query, &gate)` | **Wave 4** (HdcOps trait extended) |
 | BF16FieldDatabase uses Quantize trait | **Wave 4** (Quantize extension) |
 | Arrow columns → direct scan | **Wave 3** (Arrow view factories) |
-| Unified SIMD detection for dispatch | **Wave 5** (backend wiring) |
 | Benchmark harness to prove 4-8x | **Wave 8** (bench infrastructure) |
 
 ---
@@ -437,5 +485,7 @@ that applies recursively across the entire surface:
 4. **Don't couple SoA with module restructure** — they're independent; merge separately
 5. **Don't break downstream in one shot** — deprecation shims for one release minimum
 6. **Don't ship W1a primitives without parity tests** — the codex P2 i8::MIN divergence on PR #398 happened because no such test existed
-7. **Don't add `is_x86_feature_detected!` outside simd_caps.rs** — dispatch through the singleton
+7. **Don't use `is_x86_feature_detected!` or `#[target_feature(enable=...)]`** — cfg(target_feature) at the re-export level handles dispatch; per-function annotations and per-call runtime checks are wrong
 8. **Don't implement W1.5+ (deferred primitives) until sigker certification** — they're gated
+9. **Don't add methods to simd_avx2.rs for AVX-512 targets** — it's dead code on x86-64-v4, never reached via cfg routing
+10. **Don't use rayon work-stealing** if the type-system integration (Wave 3-4) is the global lever — typed SIMD dispatch across the full surface eliminates the slicing problem that rayon would paper over

@@ -36,14 +36,14 @@ The refactoring creates **bidirectional bridges** without removing the raw layer
 │  Array<f32, Ix2>, ArrayView, Zip, Broadcasting      │
 └───────────────┬──────────────────────▲──────────────┘
                 │                      │
-          .as_slice()          backend dispatch
-                │                      │
+          .as_slice()       cfg(target_feature) routing
+                │              (compile-time, zero-cost)
                 ▼                      │
 ┌─────────────────────────────────────────────────────┐
 │  hpc/ bridge layer (NEW)                            │
 │  Extension traits on ArrayBase<S, D>                │
 │  From/Into impls for domain types                   │
-│  Core reductions route to SIMD backends             │
+│  Core reductions call typed SIMD wrappers           │
 └───────────────┬──────────────────────▲──────────────┘
                 │                      │
           delegates to          implements
@@ -51,10 +51,16 @@ The refactoring creates **bidirectional bridges** without removing the raw layer
                 ▼                      │
 ┌─────────────────────────────────────────────────────┐
 │  hpc/ raw compute (unchanged)                       │
-│  &[u8], &[u64], Fingerprint<N>, SIMD dispatch       │
+│  &[u8], &[u64], Fingerprint<N>, typed SIMD          │
 │  K0/K1/K2, BF16 GEMM, VNNI, VML                    │
+│  Uses crate::simd::* → resolves to simd_avx512.rs  │
 └─────────────────────────────────────────────────────┘
 ```
+
+**Dispatch model**: `crate::simd::U64x8` resolves at compile time via
+`cfg(target_feature = "avx512f")` in `src/simd.rs` to `simd_avx512::U64x8`.
+No runtime detection, no match, no branching. The target-cpu pin in
+`.cargo/config.toml` makes the cfg gate TRUE at compile time.
 
 ---
 
@@ -608,44 +614,37 @@ faster. Zero API change for users.
 
 ---
 
-#### 3.2 Unify SIMD Detection (Delete Duplicates)
+#### 3.2 Delete Dead SIMD Detection Code
 
-**Files to merge**: `src/hpc/simd_dispatch.rs` (362 lines), `src/hpc/simd_caps.rs` (515 lines)
-**Into**: `src/simd.rs` (the existing core SIMD module)
+**Files**: `src/hpc/simd_dispatch.rs` (362 lines), `src/hpc/simd_caps.rs` (515 lines)
 
-**Current state**: Three overlapping detection systems:
-1. `src/simd.rs` → `LazyLock<Tier>` — detects AVX-512/AVX2/NEON
-2. `src/hpc/simd_caps.rs` → `CpuCaps` struct — detects same capabilities
-3. `src/hpc/simd_dispatch.rs` → `SimdDispatch` — another LazyLock with function pointers
+**Current state**: Three overlapping detection systems exist:
+1. `src/simd.rs` → `LazyLock<Tier>` + `cfg(target_feature)` re-exports
+2. `src/hpc/simd_caps.rs` → `CpuCaps` struct with runtime detection
+3. `src/hpc/simd_dispatch.rs` → `SimdDispatch` with function pointers
+
+**Reality with target-cpu pinned**: When `.cargo/config.toml` pins
+`target-cpu=sapphirerapids`, all `cfg(target_feature = "avx512f")` gates resolve
+TRUE at compile time. `simd.rs` re-exports route directly to `simd_avx512.rs`.
+The `LazyLock<Tier>` is dead code (const-folded away). The CpuCaps struct and
+SimdDispatch function pointers are completely unreachable.
 
 **Transform**:
 
-```rust
-// 1. In src/simd.rs, export the unified detection:
-pub static CPU_CAPS: LazyLock<CpuCaps> = LazyLock::new(|| detect_cpu_caps());
-
-pub struct CpuCaps {
-    pub tier: Tier,  // existing
-    pub avx512f: bool,
-    pub avx512bw: bool,
-    pub avx512vpopcntdq: bool,
-    pub avx512vnni: bool,
-    pub avx2: bool,
-    pub fma: bool,
-    pub popcnt: bool,
-    // ARM
-    pub neon: bool,
-    pub sve: bool,
-}
-
-// 2. In src/hpc/simd_dispatch.rs, replace with:
-pub use crate::simd::CPU_CAPS;
-// Keep function-pointer dispatch but source caps from unified singleton
-
-// 3. Delete src/hpc/simd_caps.rs (or make it a thin re-export)
+```
+1. Delete src/hpc/simd_caps.rs (515 lines — all dead under cfg pin)
+2. Delete src/hpc/simd_dispatch.rs (362 lines — all dead under cfg pin)
+3. Leave src/simd.rs as-is (its cfg gates ARE the dispatch mechanism)
 ```
 
-**Result**: One CPUID check, one atomic, one struct — shared by core and all hpc modules.
+If CI fallback (no target-cpu pin) is needed, gate these behind:
+```rust
+#[cfg(not(target_feature = "avx512f"))]
+mod simd_caps;  // only compiles when features aren't pinned
+```
+
+**Result**: -877 lines of dead code. The dispatch mechanism is `cfg(target_feature)`
+in `simd.rs` — no runtime anything.
 
 ---
 
@@ -913,8 +912,8 @@ Phase B (2 weeks) — Extension Traits:
   2.5 SimdMath trait (VML)           (standalone)
 
 Phase C (2 weeks) — Backend Wiring:
-  3.1 Core sum/mean → SIMD dispatch  (depends on 3.2)
-  3.2 Unified SIMD detection         (standalone, delete duplicates)
+  3.1 Core sum/mean → typed SIMD     (standalone — calls crate::simd::F32x16 directly)
+  3.2 Delete dead detection code     (standalone, -877 lines unreachable under cfg pin)
   3.3 INT8 Matmul via trait          (depends on 1.3 pattern)
 
 Phase D (1 week) — View Factories:
