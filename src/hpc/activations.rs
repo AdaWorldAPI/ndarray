@@ -232,7 +232,7 @@ pub enum SoftmaxAxisError {
 /// # Example
 ///
 /// ```
-/// use ndarray::{Array, IxDyn, Axis};
+/// use ndarray::{Array, IxDyn};
 /// use ndarray::hpc::activations::softmax_axis_f32;
 ///
 /// let x = Array::<f32, _>::from_shape_vec(
