@@ -128,12 +128,7 @@ mod tests {
     /// Stream over N rows must yield exactly N items.
     #[test]
     fn test_stream_yields_all_rows() {
-        let rows = vec![
-            QualiaI4Row(0xAA),
-            QualiaI4Row(0xBB),
-            QualiaI4Row(0xCC),
-            QualiaI4Row(0xDD),
-        ];
+        let rows = vec![QualiaI4Row(0xAA), QualiaI4Row(0xBB), QualiaI4Row(0xCC), QualiaI4Row(0xDD)];
         let stream = QualiaStream::new(&rows);
         let collected: Vec<(usize, &QualiaI4Row)> = stream.collect();
         assert_eq!(collected.len(), rows.len());

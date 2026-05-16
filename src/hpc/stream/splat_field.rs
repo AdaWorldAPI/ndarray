@@ -87,10 +87,7 @@ impl<'a> SplatFieldStream<'a> {
     ///
     /// Consumes `self` (the `SplatFieldStream` is itself an `Iterator`) and
     /// returns a lazy `impl Iterator` — no allocation.
-    pub fn filter_energy_above(
-        self,
-        threshold: f32,
-    ) -> impl Iterator<Item = (usize, &'a SplatField)> {
+    pub fn filter_energy_above(self, threshold: f32) -> impl Iterator<Item = (usize, &'a SplatField)> {
         self.filter(move |(_, s)| s.energy > threshold)
     }
 }
@@ -132,7 +129,12 @@ mod tests {
     use std::mem;
 
     fn make_splat(mean: u32, variance: f32, energy: f32, generation: u32) -> SplatField {
-        SplatField { mean, variance, energy, generation }
+        SplatField {
+            mean,
+            variance,
+            energy,
+            generation,
+        }
     }
 
     /// Empty slice → stream yields nothing immediately.
@@ -149,11 +151,7 @@ mod tests {
     /// Stream over N rows must yield exactly N items with matching indices.
     #[test]
     fn test_splat_stream_yields_all() {
-        let rows = vec![
-            make_splat(0, 1.0, 0.1, 1),
-            make_splat(1, 2.0, 0.5, 2),
-            make_splat(2, 0.5, 2.0, 3),
-        ];
+        let rows = vec![make_splat(0, 1.0, 0.1, 1), make_splat(1, 2.0, 0.5, 2), make_splat(2, 0.5, 2.0, 3)];
         let stream = SplatFieldStream::new(&rows);
         let collected: Vec<(usize, &SplatField)> = stream.collect();
         assert_eq!(collected.len(), 3);
@@ -183,16 +181,8 @@ mod tests {
     /// and field packing (4 × 4-byte fields with no hidden padding).
     #[test]
     fn test_splat_field_size_16b() {
-        assert_eq!(
-            mem::size_of::<SplatField>(),
-            16,
-            "SplatField must be exactly 16 bytes (4 × 4B fields, align(16))"
-        );
-        assert_eq!(
-            mem::align_of::<SplatField>(),
-            16,
-            "SplatField alignment must be 16"
-        );
+        assert_eq!(mem::size_of::<SplatField>(), 16, "SplatField must be exactly 16 bytes (4 × 4B fields, align(16))");
+        assert_eq!(mem::align_of::<SplatField>(), 16, "SplatField alignment must be 16");
     }
 
     /// `remaining()` must decrement by 1 with each `next()` call.
@@ -219,11 +209,7 @@ mod tests {
     /// After `reset()`, the stream replays all rows from index 0.
     #[test]
     fn test_reset_restarts() {
-        let rows = vec![
-            make_splat(10, 1.0, 0.3, 1),
-            make_splat(20, 2.0, 0.6, 2),
-            make_splat(30, 3.0, 0.9, 3),
-        ];
+        let rows = vec![make_splat(10, 1.0, 0.3, 1), make_splat(20, 2.0, 0.6, 2), make_splat(30, 3.0, 0.9, 3)];
         let mut stream = SplatFieldStream::new(&rows);
         // Consume everything
         while stream.next().is_some() {}

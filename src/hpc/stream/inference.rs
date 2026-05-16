@@ -129,11 +129,7 @@ mod tests {
 
     #[test]
     fn test_inference_stream_yields_all() {
-        let rows = vec![
-            InferenceRow(0),
-            InferenceRow(1),
-            InferenceRow(2),
-        ];
+        let rows = vec![InferenceRow(0), InferenceRow(1), InferenceRow(2)];
         let stream = InferenceStream::new(&rows);
         let collected: Vec<_> = stream.collect();
         assert_eq!(collected.len(), 3);
@@ -218,6 +214,6 @@ mod tests {
         assert_eq!(stream.remaining(), 2);
         let first = stream.next().unwrap();
         assert_eq!(first.0, 0);
-        assert_eq!(first.1.0, 10);
+        assert_eq!(first.1 .0, 10);
     }
 }
