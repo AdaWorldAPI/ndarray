@@ -35,7 +35,7 @@ pub struct SplatField {
 /// # Example
 ///
 /// ```
-/// use crate::hpc::stream::splat_field::{SplatField, SplatFieldStream};
+/// use ndarray::hpc::stream::splat_field::{SplatField, SplatFieldStream};
 ///
 /// let rows = vec![
 ///     SplatField { mean: 0, variance: 1.0, energy: 0.5, generation: 1 },

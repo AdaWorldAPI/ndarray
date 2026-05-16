@@ -26,7 +26,7 @@ pub struct QualiaI4Row(pub u64);
 /// # Example
 ///
 /// ```
-/// use crate::hpc::stream::qualia::{QualiaI4Row, QualiaStream};
+/// use ndarray::hpc::stream::qualia::{QualiaI4Row, QualiaStream};
 ///
 /// let rows = vec![QualiaI4Row(1), QualiaI4Row(2), QualiaI4Row(3)];
 /// let mut stream = QualiaStream::new(&rows);
