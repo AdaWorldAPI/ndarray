@@ -1,7 +1,7 @@
 #![cfg(feature = "rayon")]
 
 #[cfg(feature = "approx")]
-use itertools::{assert_equal, cloned, enumerate};
+use itertools::enumerate;
 use ndarray::parallel::prelude::*;
 use ndarray::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -82,5 +82,5 @@ fn test_par_azip9() {
         *a = b + c + d + e + f + g + h + i;
     });
     let x = Array::from_shape_fn(a.dim(), |j| (j * 255) as i32);
-    assert_equal(cloned(&a), x);
+    assert_eq!(a, x);
 }
