@@ -35,6 +35,12 @@ pub mod fft;
 pub mod vml;
 pub mod packed;
 
+// Work-steal sprint (WS-1/2/5): new modules registered up-front so parallel
+// workers can land independently without racing on this merge zone.
+pub mod dot_half;
+pub mod quantized_dot;
+pub mod npz_io;
+
 // Cognitive layer types (migrated from rustynum-core)
 #[allow(missing_docs)]
 pub mod fingerprint;
