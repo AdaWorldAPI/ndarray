@@ -52,12 +52,14 @@ libc = { version = "0.2.82", optional = true }
 
 matrixmultiply = { version = "0.3.2", default-features = false, features=["cgemm"] }
 
-# blake3 — gated behind `hpc-extras` (integrity hashing in
+# blake3 — gated on `std` (integrity hashing in
 # plane/seal/merkle_tree/vsa/spo_bundle/crystal_encoder/compression_curves/
-# deepnsm). Optional + opt-in because the transitive dep `constant_time_eq`
-# does not declare `#![no_std]`, so unconditionally including blake3 breaks
-# the `thumbv6m-none-eabi --no-default-features` nostd build with
-# `error[E0463]: can't find crate for std`.
+# deepnsm/renderer). Optional + tied to `std` because the transitive dep
+# `constant_time_eq` does not declare `#![no_std]`, so unconditionally
+# including blake3 breaks the `thumbv6m-none-eabi --no-default-features`
+# nostd build with `error[E0463]: can't find crate for std`. Downstream
+# consumers (burn-ndarray, candle, tract, ort) that enable `std` get
+# blake3 automatically; no_std builds opt out by dropping `std`.
 blake3 = { version = "1", optional = true }
 
 # p64 + fractal — specialized convergence / manifold math. Gated behind
@@ -144,7 +146,7 @@ blas = ["dep:cblas-sys", "dep:libc"]
 
 serde = ["dep:serde"]
 
-std = ["num-traits/std", "matrixmultiply/std"]
+std = ["num-traits/std", "matrixmultiply/std", "dep:blake3"]
 rayon = ["dep:rayon", "std"]
 
 # Portable-SIMD backend (NIGHTLY ONLY). Routes `crate::simd::*` types
@@ -165,7 +167,7 @@ nightly-simd = ["std"]
 # These pull in a non-trivial dependency tree; downstream crates such as
 # burn-ndarray that only need the core array layer can disable this with
 # `default-features = false` (and re-enable `std` explicitly if needed).
-hpc-extras = ["std", "dep:p64", "dep:fractal", "fractal/std", "dep:blake3"]
+hpc-extras = ["std", "dep:p64", "dep:fractal", "fractal/std"]
 
 matrixmultiply-threading = ["matrixmultiply/threading"]
 
