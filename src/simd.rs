@@ -205,12 +205,19 @@ pub const PREFERRED_I16_LANES: usize = 16;
 
 // Note on the `nightly-simd` feature: it adds the `crate::simd_nightly`
 // module (a portable-simd backend wrapping `core::simd`) but does NOT
-// replace the intrinsics dispatch below. Full type-parity coverage
-// would require the nightly module to define ~30 types; the current
-// draft covers 5 (F32x16, F64x8, U8x64, U32x16, F32Mask16). Consumers
-// who want miri-runnable SIMD code import from `simd_nightly`
-// explicitly (e.g. `use ndarray::simd_nightly::F32x16`). The main
-// polyfill via `crate::simd::F32x16` continues to use intrinsics.
+// replace the intrinsics dispatch below. The polyfill ships full
+// type-parity with production (PR #146): 24 types covering F32x8/16,
+// F64x4/8, BF16x8/16, F16x16, I8x32/64, I16x16/32, I32x16, I64x8,
+// U8x32/64, U16x32, U32x8/16, U64x4/8, plus the F32/F64 mask types —
+// matches the 24 types defined in `simd_avx2.rs` + `simd_avx512.rs`.
+// Consumers who want miri-runnable SIMD code import from `simd_nightly`
+// explicitly today (e.g. `use ndarray::simd_nightly::F32x16`).
+//
+// The remaining work for Miri-clean coverage of `hpc::*` is wiring this
+// file's `pub use crate::simd_{avx512,avx2,neon}::*` re-exports to
+// route through `simd_nightly` under `cfg(miri)`. Once that lands,
+// every `use crate::simd::F32x16` call site becomes miri-checkable
+// without source changes. The polyfill itself is no longer the bottleneck.
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 pub use crate::simd_avx512::{

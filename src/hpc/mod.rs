@@ -236,6 +236,11 @@ pub mod framebuffer;
 /// Transcoded from Opus CELT for the HHTL cascade → waveform pipeline.
 pub mod audio;
 
+/// Vertical streaming structs for the EdgeColumn SoA (D-CSV-11b, sprint-12).
+/// Per cognitive-substrate-convergence-v1.md §5 L-20.
+#[allow(missing_docs)]
+pub mod stream;
+
 #[cfg(all(test, feature = "hpc-extras"))]
 mod e2e_tests {
     //! End-to-end pipeline test: Fingerprint → Node → Seal → Cascade → CLAM → Causality → BNN
