@@ -28,6 +28,7 @@ This project uses specialized agents in `.claude/agents/`. Follow these rules:
 - Every `unsafe` block needs a `// SAFETY:` comment.
 - All public APIs need `///` doc comments with examples.
 - `cargo clippy -- -D warnings` must pass.
+- **All new public `pub fn` in `src/simd_*.rs` follows the W1a consumer contract** at `.claude/knowledge/vertical-simd-consumer-contract.md` — struct methods on typed wrappers, closure-parameterized batch primitives, all three backends (AVX*/NEON/scalar) implemented, parity test mandatory, saturating/overflow semantics documented. The Ada stack (lance-graph + downstream) enforces "all SIMD from `ndarray::simd`" via its `simd-savant` agent; missing primitives in ndarray force consumer-side raw-intrinsic violations, so additions here are gating the consumer-side sweep. **VPABSB does NOT saturate `i8::MIN`** — see § "VPABSB correction" in the contract doc before implementing `saturating_abs` or any abs primitive.
 
 ## Compaction Preservation
 When summarizing this conversation, preserve:
