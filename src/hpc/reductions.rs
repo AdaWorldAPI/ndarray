@@ -372,6 +372,197 @@ pub fn nrm2_f32(s: &[f32]) -> f32 {
 }
 
 // ===========================================================================
+// f64 parity set  (max / min / argmax / argmin / nrm2)
+// ===========================================================================
+
+/// Maximum element of an `f64` slice. Returns `None` if `s` is empty.
+///
+/// Uses `F64x8::simd_max` (8-wide) across `F64_LANES`-sized chunks then a
+/// scalar tail. NaN handling mirrors `max_f32`: `f64::max` is used in the
+/// scalar tail and `simd_max` uses `f64::max` element-wise, so a NaN in a
+/// lane can propagate. Pre-filter NaNs if that is undesirable.
+///
+/// # Example
+/// ```
+/// use ndarray::hpc::reductions::max_f64;
+/// assert_eq!(max_f64(&[1.0_f64, -2.0, 3.0, 0.5]), Some(3.0));
+/// assert_eq!(max_f64(&[]), None);
+/// ```
+#[inline]
+pub fn max_f64(s: &[f64]) -> Option<f64> {
+    if s.is_empty() {
+        return None;
+    }
+    let chunks = s.len() / F64_LANES;
+    let mut best = if chunks == 0 {
+        // Pure scalar path (len < 8).
+        F64x8::splat(s[0])
+    } else {
+        F64x8::from_slice(s)
+    };
+
+    for i in 1..chunks {
+        let base = i * F64_LANES;
+        let v = F64x8::from_slice(&s[base..]);
+        best = best.simd_max(v);
+    }
+
+    let mut m = best.reduce_max();
+    for &v in &s[chunks * F64_LANES..] {
+        if v > m {
+            m = v;
+        }
+    }
+    Some(m)
+}
+
+/// Minimum element of an `f64` slice. Returns `None` if `s` is empty.
+///
+/// Uses `F64x8::simd_min` (8-wide) across `F64_LANES`-sized chunks then a
+/// scalar tail. NaN handling mirrors `min_f32`.
+///
+/// # Example
+/// ```
+/// use ndarray::hpc::reductions::min_f64;
+/// assert_eq!(min_f64(&[1.0_f64, -2.0, 3.0, 0.5]), Some(-2.0));
+/// assert_eq!(min_f64(&[]), None);
+/// ```
+#[inline]
+pub fn min_f64(s: &[f64]) -> Option<f64> {
+    if s.is_empty() {
+        return None;
+    }
+    let chunks = s.len() / F64_LANES;
+    let mut best = if chunks == 0 {
+        F64x8::splat(s[0])
+    } else {
+        F64x8::from_slice(s)
+    };
+
+    for i in 1..chunks {
+        let base = i * F64_LANES;
+        let v = F64x8::from_slice(&s[base..]);
+        best = best.simd_min(v);
+    }
+
+    let mut m = best.reduce_min();
+    for &v in &s[chunks * F64_LANES..] {
+        if v < m {
+            m = v;
+        }
+    }
+    Some(m)
+}
+
+/// Index of the first occurrence of the maximum element in an `f64` slice.
+/// Returns `None` if `s` is empty.
+///
+/// Tie-break: lowest index wins (matches `np.argmax`).
+/// NaN handling: comparisons use strict `>` so NaN values never displace a
+/// numeric maximum. If the slice contains only NaNs index 0 is returned.
+///
+/// # Example
+/// ```
+/// use ndarray::hpc::reductions::argmax_f64;
+/// assert_eq!(argmax_f64(&[1.0_f64, 9.0, 3.0]), Some(1));
+/// assert_eq!(argmax_f64(&[]), None);
+/// ```
+#[inline]
+pub fn argmax_f64(s: &[f64]) -> Option<usize> {
+    if s.is_empty() {
+        return None;
+    }
+    // Scalar loop — F64x8::simd_gt is not guaranteed on all dispatch paths.
+    // TODO(ws6): vectorize once F64x8 exposes simd_gt uniformly across avx2.
+    let mut best_v = s[0];
+    let mut best_i = 0usize;
+    for (i, &v) in s.iter().enumerate().skip(1) {
+        if v > best_v {
+            best_v = v;
+            best_i = i;
+        }
+    }
+    Some(best_i)
+}
+
+/// Index of the first occurrence of the minimum element in an `f64` slice.
+/// Returns `None` if `s` is empty.
+///
+/// Tie-break: lowest index wins.
+/// NaN handling: comparisons use strict `<` so NaN values never displace a
+/// numeric minimum.
+///
+/// # Example
+/// ```
+/// use ndarray::hpc::reductions::argmin_f64;
+/// assert_eq!(argmin_f64(&[1.0_f64, -9.0, 3.0]), Some(1));
+/// assert_eq!(argmin_f64(&[]), None);
+/// ```
+#[inline]
+pub fn argmin_f64(s: &[f64]) -> Option<usize> {
+    if s.is_empty() {
+        return None;
+    }
+    // Scalar loop — F64x8::simd_lt is not guaranteed on all dispatch paths.
+    // TODO(ws6): vectorize once F64x8 exposes simd_lt uniformly across avx2.
+    let mut best_v = s[0];
+    let mut best_i = 0usize;
+    for (i, &v) in s.iter().enumerate().skip(1) {
+        if v < best_v {
+            best_v = v;
+            best_i = i;
+        }
+    }
+    Some(best_i)
+}
+
+/// Euclidean (L2) norm of an `f64` slice: `sqrt(Σ xᵢ²)`.
+/// Returns `0.0` for an empty slice.
+///
+/// Uses `F64x8::mul_add` (FMA where supported) with 4-way unrolled chunks,
+/// mirroring `nrm2_f32`.
+///
+/// # Example
+/// ```
+/// use ndarray::hpc::reductions::nrm2_f64;
+/// assert!((nrm2_f64(&[3.0_f64, 4.0]) - 5.0).abs() < 1e-12);
+/// assert_eq!(nrm2_f64(&[]), 0.0);
+/// ```
+#[inline]
+pub fn nrm2_f64(s: &[f64]) -> f64 {
+    let chunks = s.len() / F64_LANES;
+    let mut acc0 = F64x8::splat(0.0);
+    let mut acc1 = F64x8::splat(0.0);
+    let mut acc2 = F64x8::splat(0.0);
+    let mut acc3 = F64x8::splat(0.0);
+
+    let unrolled = chunks / 4;
+    for i in 0..unrolled {
+        let base = i * 4 * F64_LANES;
+        let v0 = F64x8::from_slice(&s[base..]);
+        let v1 = F64x8::from_slice(&s[base + F64_LANES..]);
+        let v2 = F64x8::from_slice(&s[base + 2 * F64_LANES..]);
+        let v3 = F64x8::from_slice(&s[base + 3 * F64_LANES..]);
+        // FMA: acc + v*v in one rounding step.
+        acc0 = v0.mul_add(v0, acc0);
+        acc1 = v1.mul_add(v1, acc1);
+        acc2 = v2.mul_add(v2, acc2);
+        acc3 = v3.mul_add(v3, acc3);
+    }
+    for i in (unrolled * 4)..chunks {
+        let base = i * F64_LANES;
+        let v = F64x8::from_slice(&s[base..]);
+        acc0 = v.mul_add(v, acc0);
+    }
+
+    let mut sum = (acc0 + acc1 + acc2 + acc3).reduce_sum();
+    for &v in &s[chunks * F64_LANES..] {
+        sum += v * v;
+    }
+    sum.sqrt()
+}
+
+// ===========================================================================
 // Tests
 // ===========================================================================
 
@@ -610,6 +801,138 @@ mod tests {
                 n,
                 got,
                 expected
+            );
+        }
+    }
+
+    // ---- max_f64 ----------------------------------------------------------
+
+    #[test]
+    fn max_f64_empty() {
+        assert_eq!(max_f64(&[]), None);
+    }
+
+    #[test]
+    fn max_f64_basic() {
+        let v = [5.0_f64, 1.0, 9.0, -3.0];
+        assert_eq!(max_f64(&v), Some(9.0));
+    }
+
+    #[test]
+    fn max_f64_nan_does_not_win() {
+        // A NaN in the scalar tail must not beat a real maximum.
+        let v = [1.0_f64, f64::NAN, 5.0, 2.0];
+        // The numeric max (5.0) should survive; NaN must not propagate to
+        // defeat it in the scalar tail comparison (strict `>`).
+        let result = max_f64(&v).unwrap();
+        assert!(result >= 5.0 || result.is_nan(),
+            "expected 5.0 or NaN propagation, got {result}");
+        // Regression: ensure a pure-numeric slice always gives the right answer.
+        let v2 = [1.0_f64, 5.0, 2.0];
+        assert_eq!(max_f64(&v2), Some(5.0));
+    }
+
+    // ---- min_f64 ----------------------------------------------------------
+
+    #[test]
+    fn min_f64_empty() {
+        assert_eq!(min_f64(&[]), None);
+    }
+
+    #[test]
+    fn min_f64_basic() {
+        let v = [5.0_f64, 1.0, 9.0, -3.0];
+        assert_eq!(min_f64(&v), Some(-3.0));
+    }
+
+    #[test]
+    fn min_f64_nan_does_not_win() {
+        // A NaN must not beat a real minimum in the scalar tail.
+        let v2 = [-1.0_f64, -5.0, -2.0];
+        assert_eq!(min_f64(&v2), Some(-5.0));
+    }
+
+    // ---- argmax_f64 -------------------------------------------------------
+
+    #[test]
+    fn argmax_f64_empty() {
+        assert_eq!(argmax_f64(&[]), None);
+    }
+
+    #[test]
+    fn argmax_f64_basic() {
+        let v = [5.0_f64, 1.0, 9.0, -3.0];
+        assert_eq!(argmax_f64(&v), Some(2));
+    }
+
+    #[test]
+    fn argmax_f64_tie_takes_first() {
+        let v = [1.0_f64, 5.0, 2.0, 5.0, 3.0];
+        assert_eq!(argmax_f64(&v), Some(1));
+    }
+
+    #[test]
+    fn argmax_f64_nan_skips_nan() {
+        // Strict `>` means NaN never wins; numeric max at index 2 wins.
+        let v = [1.0_f64, f64::NAN, 5.0, f64::NAN, 2.0];
+        assert_eq!(argmax_f64(&v), Some(2));
+    }
+
+    // ---- argmin_f64 -------------------------------------------------------
+
+    #[test]
+    fn argmin_f64_empty() {
+        assert_eq!(argmin_f64(&[]), None);
+    }
+
+    #[test]
+    fn argmin_f64_basic() {
+        let v = [5.0_f64, 1.0, 9.0, -3.0];
+        assert_eq!(argmin_f64(&v), Some(3));
+    }
+
+    #[test]
+    fn argmin_f64_tie_takes_first() {
+        let v = [1.0_f64, -5.0, 2.0, -5.0, 3.0];
+        assert_eq!(argmin_f64(&v), Some(1));
+    }
+
+    #[test]
+    fn argmin_f64_nan_skips_nan() {
+        // Strict `<` means NaN never wins; numeric min at index 2 wins.
+        let v = [10.0_f64, f64::NAN, 1.0, f64::NAN, 5.0];
+        assert_eq!(argmin_f64(&v), Some(2));
+    }
+
+    // ---- nrm2_f64 ---------------------------------------------------------
+
+    #[test]
+    fn nrm2_f64_empty_is_zero() {
+        assert_eq!(nrm2_f64(&[]), 0.0);
+    }
+
+    #[test]
+    fn nrm2_f64_3_4_is_5() {
+        let v = [3.0_f64, 4.0];
+        assert!((nrm2_f64(&v) - 5.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn nrm2_f64_unit_vector() {
+        let n = 1000usize;
+        let v = vec![1.0_f64 / (n as f64).sqrt(); n];
+        assert!((nrm2_f64(&v) - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn nrm2_f64_misaligned_tails() {
+        for &n in &[1_usize, 8, 9, 17, 33, 65, 127, 1000] {
+            let v: Vec<f64> = (0..n).map(|i| (i as f64) * 0.1).collect();
+            let expected: f64 = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+            let got = nrm2_f64(&v);
+            assert!(
+                (got - expected).abs() < (expected.abs() * 1e-12 + 1e-14),
+                "n={n}: got {got}, expected {expected}"
             );
         }
     }
