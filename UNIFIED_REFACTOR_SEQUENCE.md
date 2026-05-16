@@ -11,32 +11,15 @@
 
 ---
 
-## Dispatch Model (the ground truth)
+## Known constraints (from prior sessions)
 
-All SIMD in this repo resolves via **compile-time `cfg(target_feature)` routing**:
-
-```
-.cargo/config.toml pins target-cpu=sapphirerapids
-    → cfg(target_feature = "avx512f") = TRUE at compile time
-    → simd.rs re-exports resolve DIRECTLY to simd_avx512.rs types
-    → zero runtime detection, zero branching, zero LazyLock in hot path
-
-Consumer writes: crate::simd::U64x8
-simd.rs routes:  pub use crate::simd_avx512::U64x8;  // compile-time, no match
-```
-
-The `LazyLock<Tier>` in `simd.rs` exists for the `std` path but is **dead code**
-when target features are pinned — the compiler const-folds `detect_tier()` and
-the `cfg` gates resolve the re-exports statically.
-
-**On aarch64**: NEON is mandatory. `cfg(target_arch = "aarch64")` routes to
-`simd_neon.rs`. 256-bit types are 2×128-bit paired dispatch (e.g. `F32x16` =
-4×`float32x4_t`). No runtime detection needed — NEON is always there.
-
-**simd_avx2.rs**: Dead code on x86-64-v4. Only reached when
-`cfg(not(target_feature = "avx512f"))` — i.e., when someone builds without the
-target-cpu pin (CI fallback, cross-compile). Never add new methods to it for
-AVX-512 targets; it's a waste.
+- Dispatch resolves at compile time via `cfg(target_feature)` in `simd.rs`. No per-call runtime checks.
+- `simd_avx2.rs` is dead on x86-64-v4. Don't add to it.
+- NEON does 256-bit as 2×128-bit paired.
+- VPABSB does NOT saturate i8::MIN.
+- Palette-256 is the dominant gather use case.
+- Rayon work-stealing is not the lever if typed SIMD integration is the global lever.
+- The `hpc/simd_caps.rs` and `hpc/simd_dispatch.rs` files are dead code under the pin — 877 lines to delete.
 
 ---
 
@@ -75,14 +58,13 @@ The lance-graph `simd-savant` agent runs PRE-MERGE against each PR.
 ### Per-primitive implementation contract
 
 Every PR MUST:
-1. **Implement on the backing type in `simd_avx512.rs`** (the only live file on x86-64-v4). NEON impl goes in `simd_neon.rs`. Scalar fallback in the `scalar` module inside `simd.rs`.
-2. **Edge-case semantics documented** in doc-comment (`i8::MIN`, empty slices, OOB indices).
-3. **Parity test**: all cfg-routed backends produce identical output on randomized corpus including edge cases.
-4. **Bench against scalar**: record AVX-512/NEON speedup ratios in PR body.
+1. **Impl in `simd_avx512.rs`** + **`simd_neon.rs`** + scalar fallback.
+2. **Edge-case semantics documented** (`i8::MIN`, empty slices, OOB indices).
+3. **Parity test**: all backends produce identical output on randomized corpus.
+4. **Bench against scalar**: speedup ratios in PR body.
 5. **`// SAFETY:` on every `unsafe` block**.
-6. **No `is_x86_feature_detected!` anywhere** — dispatch is at `cfg(target_feature)` in `simd.rs` re-exports, not per-call runtime checks.
-7. **No `#[target_feature(enable = ...)]` on functions** — the cargo target-cpu pin handles this globally.
-8. **Consumer site cited** in PR description.
+6. **No `is_x86_feature_detected!`**. No `#[target_feature(enable=...)]`.
+7. **Consumer site cited** in PR description.
 
 ### W1.1 — I8x16::from_i4_packed_u64 (nibble unpack + sign extend)
 
@@ -484,8 +466,5 @@ that applies recursively across the entire surface:
 3. **Don't gate SoA behind a feature flag** — it's the default hot path, not optional
 4. **Don't couple SoA with module restructure** — they're independent; merge separately
 5. **Don't break downstream in one shot** — deprecation shims for one release minimum
-6. **Don't ship W1a primitives without parity tests** — the codex P2 i8::MIN divergence on PR #398 happened because no such test existed
-7. **Don't use `is_x86_feature_detected!` or `#[target_feature(enable=...)]`** — cfg(target_feature) at the re-export level handles dispatch; per-function annotations and per-call runtime checks are wrong
-8. **Don't implement W1.5+ (deferred primitives) until sigker certification** — they're gated
-9. **Don't add methods to simd_avx2.rs for AVX-512 targets** — it's dead code on x86-64-v4, never reached via cfg routing
-10. **Don't use rayon work-stealing** if the type-system integration (Wave 3-4) is the global lever — typed SIMD dispatch across the full surface eliminates the slicing problem that rayon would paper over
+6. **Don't ship W1a primitives without parity tests** — the codex P2 i8::MIN divergence happened because no test existed
+7. **Don't implement W1.5+ (deferred primitives) until sigker certification** — they're gated
