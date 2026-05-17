@@ -10,17 +10,15 @@ it does not replace any pre-existing `.claude/` content in this repo.
 .claude/EN/
 ├── README.md                                    ← this file
 ├── CLAUDE-AGENT-PATTERN.md                      ← agnostic agent cheat-sheet
-│                                                  + Reading-Depth-Ladder
-│                                                  + Lie-Detector (LD-1..5)
+│                                                  + Reading-Depth-Ladder (§3)
+│                                                  + Lie-Detector LD-1..5 (§4)
 ├── knowledge/
 │   ├── autoattended-multi-agent-pattern.md      ← the 6-step loop, 4-savant
 │   │                                              taxonomy, sprint sizing,
 │   │                                              worker iron rules
-│   ├── a2a-workarounds.md                       ← file-blackboard, branch
-│   │                                              pub/sub, role-teleportation,
-│   │                                              structured handover
-│   ├── reading-depth-ladder.md                  ← anti-skim primitive
-│   └── lie-detector.md                          ← shallowness detection
+│   └── a2a-workarounds.md                       ← file-blackboard, branch
+│                                                  pub/sub, role-teleportation,
+│                                                  structured handover
 └── agents/
     ├── README.md                                ← agent ensemble index
     ├── worker-template.md                       ← slot-based worker brief
