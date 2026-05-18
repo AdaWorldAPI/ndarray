@@ -181,6 +181,20 @@ impl GaussianBatch {
     /// Uses `crate::simd::F32x16` to SIMD-batch the quat→rotation
     /// cross products and the Σ = R · diag(s²) · Rᵀ product.
     /// Output is AoS `[Spd3; 16]`.
+    ///
+    /// # Precondition on padded lanes
+    ///
+    /// The bound is on `capacity`, NOT `len`, so the SIMD pad allows
+    /// any 16-aligned block read at the cost of correctness for slots
+    /// `>= len`. Padded slots have `scale = [0, 0, 0]` and
+    /// `quat = [0, 0, 0, 0]` (degenerate zero-norm quaternion), which
+    /// the closed-form Σ = R · diag(s²) · Rᵀ collapses to the zero
+    /// matrix — **non-SPD** and unsafe to feed into a downstream
+    /// inverse / sandwich. Callers walking the batch in 16-wide
+    /// chunks (e.g. PR 3's `project_batch`) must mask the trailing
+    /// `(capacity - len)` lanes of the final chunk before consuming
+    /// `out`. The `valid` mask carried by `ProjectedBatch` (PR 3) is
+    /// the canonical place for that bookkeeping.
     pub fn covariance_x16(&self, start: usize, out: &mut [Spd3; 16]) {
         assert!(
             start + 16 <= self.capacity,
@@ -473,5 +487,116 @@ mod tests {
         assert_eq!(g.quat,    [1.0, 0.0, 0.0, 0.0]);
         assert_eq!(g.opacity, 1.0);
         assert_eq!(g.sh,      [0.0; SH_COEFFS_PER_GAUSSIAN]);
+    }
+
+    // ── Test 9 — covariance_x16 with start > 0 (PP-13 PR2 P1 promoted) ─────
+    //
+    // The existing covariance_x16_matches_scalar_loop test fires with
+    // start=0. An off-by-one in the SoA slice arithmetic
+    // (`self.quat_w[start..start+16]`) would still pass start=0 since
+    // any constant offset of 0 collapses to identity. Walk a non-zero
+    // start so each input index `start + k` differs from lane index `k`.
+    #[test]
+    fn covariance_x16_with_nonzero_start_matches_scalar() {
+        let mut state = 0xACE0_C0DEu32;
+        let mut batch = GaussianBatch::with_capacity(48);
+        for _ in 0..32 {
+            batch.push(sample_gaussian3d(&mut state));
+        }
+        let start = 16; // walk past the first SIMD block
+        let mut out_simd = [Spd3::ZERO; 16];
+        batch.covariance_x16(start, &mut out_simd);
+        for k in 0..16 {
+            let scalar = batch.covariance(start + k);
+            // 1e-4 absolute matches PR 1's sandwich_x16 tolerance; the
+            // SoA-transpose-then-recombine pipeline accumulates the
+            // same evaluation-order noise.
+            assert!(
+                approx_spd3(out_simd[k], scalar, 1e-4),
+                "lane k={k} (index {}): simd={:?}, scalar={:?}",
+                start + k, out_simd[k], scalar,
+            );
+        }
+    }
+
+    // ── Test 10 — SH round-trip through SoA (PP-13 PR2 P1 promoted) ─────────
+    //
+    // Verifies the bridge between `push` (writes the 48-float SH block
+    // at `self.sh[i*48..]`) and `sh::sh_eval_deg3` (reads at the same
+    // offset). If `SH_COEFFS_PER_GAUSSIAN` were misdefined, or `push`'s
+    // SH copy used the wrong base, the resulting RGB would silently
+    // drift from the analytical expectation. Uses Test 8 from sh.rs's
+    // suite as the analytical reference (basis k=0 → SH_C0 + 0.5).
+    #[test]
+    fn push_then_sh_eval_round_trips_through_soa() {
+        use super::super::sh::sh_eval_deg3;
+        let mut g = Gaussian3D::unit();
+        // Non-zero SH coefficient for channel R, basis k=0 (Y_00 — the
+        // direction-invariant DC term). Channels G/B all-zero → 0.5.
+        g.sh[0] = 1.0;
+        // Also set a coefficient at the LAST slot to verify the full
+        // 48-float span survives the SoA copy.
+        g.sh[47] = 0.5;
+        let mut batch = GaussianBatch::with_capacity(16);
+        // Push 5 unit gaussians first, then ours at index 5, so the SoA
+        // offset arithmetic isn't trivial.
+        for _ in 0..5 {
+            batch.push(Gaussian3D::unit());
+        }
+        batch.push(g);
+        // Pull the SH slice for gaussian 5 directly out of the batch and
+        // run sh_eval at d=(0,0,1) (where Y_00 dominates).
+        let base = 5 * SH_COEFFS_PER_GAUSSIAN;
+        let sh_slice = &batch.sh[base..base + SH_COEFFS_PER_GAUSSIAN];
+        // Sanity-check the SoA contents: indices 0 and 47 survived; the
+        // 46 in between are zero (this is also a fence-post check on
+        // the push SH-copy bounds).
+        assert!(
+            (sh_slice[0] - 1.0).abs() < 1e-7,
+            "SoA sh[0] for gaussian 5 = {}, expected 1.0", sh_slice[0]
+        );
+        assert!(
+            (sh_slice[47] - 0.5).abs() < 1e-7,
+            "SoA sh[47] for gaussian 5 = {}, expected 0.5", sh_slice[47]
+        );
+        for k in 1..47 {
+            assert!(
+                sh_slice[k].abs() < 1e-7,
+                "SoA sh[{k}] for gaussian 5 = {}, expected 0", sh_slice[k]
+            );
+        }
+        // And the round-trip evaluation must reflect that DC coefficient.
+        let rgb = sh_eval_deg3(sh_slice, [0.0, 0.0, 1.0]);
+        // sh.rs SH_C0 ≈ 0.282; with the +0.5 Inria offset → 0.782.
+        assert!(
+            (rgb[0] - 0.7820948).abs() < 1e-5,
+            "R channel via SoA: got {}, want ≈ {} (SH_C0 + 0.5)", rgb[0], 0.7820948
+        );
+        // G channel = 0.5 (all-zero coeffs).
+        // B channel: sh[47] = 0.5 is the *last* B coefficient (basis k=15
+        // = Y_3,3 = -SH_C3[6] · x(x²-3y²)). At d=(0,0,1) x=0 so this
+        // basis vanishes → B = 0.5.
+        assert!(
+            (rgb[1] - 0.5).abs() < 1e-6,
+            "G channel: got {}, want 0.5", rgb[1]
+        );
+        assert!(
+            (rgb[2] - 0.5).abs() < 1e-6,
+            "B channel (sh[47] basis vanishes at d=(0,0,1)): got {}, want 0.5", rgb[2]
+        );
+    }
+
+    // ── Helpers ─────────────────────────────────────────────────────────────
+
+    /// Build a random Gaussian3D — reuses Worker C's existing `rng_*`
+    /// helpers so the test module stays single-sourced.
+    fn sample_gaussian3d(state: &mut u32) -> Gaussian3D {
+        Gaussian3D {
+            mean: [rng_f32(state), rng_f32(state), rng_f32(state)],
+            scale: rng_scale(state),
+            quat: rng_quat(state),
+            opacity: rng_f32(state),
+            sh: [0.0; SH_COEFFS_PER_GAUSSIAN],
+        }
     }
 }

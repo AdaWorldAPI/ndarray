@@ -455,4 +455,78 @@ mod tests {
             "SH_C0 normalization: 4π·SH_C0² = {val}, expected ≈1.0"
         );
     }
+
+    // ── Test 8 — analytical ground truth at d=(0,0,1) ─────────────────────
+    //
+    // PP-13 PR 2 finding (promoted per the "biggest residual risk" rule
+    // from PR 1): Tests 1-7 all compare scalar vs SIMD or check
+    // degenerate inputs. A wrong SH constant (sign flip or magnitude
+    // error) would affect scalar AND SIMD identically and pass every
+    // other test. This test pins individual basis-function outputs to
+    // analytical ground truth values at a known direction, so any
+    // constant regression triggers immediately.
+    //
+    // At d = (0, 0, 1): x=0, y=0, z=1. Most cross-product basis terms
+    // vanish; the non-zero ones are exactly:
+    //   k = 0  (Y_00)                          : SH_C0
+    //   k = 2  (Y_10  = SH_C1 · z)             : SH_C1
+    //   k = 6  (Y_20  = SH_C2[2] · (2z² − x² − y²))  : SH_C2[2] · 2
+    //   k = 12 (Y_30  = SH_C3[3] · z(2z² − 3x² − 3y²)) : SH_C3[3] · 2
+    // All other 12 basis functions evaluate to zero.
+    #[test]
+    fn sh_eval_analytical_ground_truth_at_positive_z() {
+        let d = [0.0f32, 0.0, 1.0];
+        let expected_basis = [
+            (0usize, SH_C0),
+            (2, SH_C1),
+            (6, SH_C2[2] * 2.0),
+            (12, SH_C3[3] * 2.0),
+        ];
+
+        for &(k, expected_basis_val) in &expected_basis {
+            // Single non-zero coefficient on channel R (lane k), value 1.0.
+            // Channels G and B all-zero → should return exactly 0.5.
+            let mut sh = [0.0f32; SH_COEFFS_PER_GAUSSIAN];
+            sh[k] = 1.0;
+            let rgb = sh_eval_deg3(&sh, d);
+
+            let expected_r = (expected_basis_val + 0.5).clamp(0.0, 1.0);
+            assert!(
+                (rgb[0] - expected_r).abs() < 1e-5,
+                "basis k={k}: expected R = clamp({expected_basis_val} + 0.5) = {expected_r}, got {}",
+                rgb[0]
+            );
+            assert!(
+                (rgb[1] - 0.5).abs() < 1e-6,
+                "basis k={k}: G should be 0.5 (no coeffs), got {}",
+                rgb[1]
+            );
+            assert!(
+                (rgb[2] - 0.5).abs() < 1e-6,
+                "basis k={k}: B should be 0.5 (no coeffs), got {}",
+                rgb[2]
+            );
+        }
+
+        // Negative case: every basis function that SHOULD evaluate to
+        // zero at this direction (all the y- and x-bearing terms).
+        let zero_basis_indices = [1usize, 3, 4, 5, 7, 8, 9, 10, 11, 13, 14, 15];
+        for &k in &zero_basis_indices {
+            let mut sh = [0.0f32; SH_COEFFS_PER_GAUSSIAN];
+            sh[k] = 1.0;
+            let rgb = sh_eval_deg3(&sh, d);
+            assert!(
+                (rgb[0] - 0.5).abs() < 1e-6,
+                "basis k={k}: should vanish at d=(0,0,1), got R = {}",
+                rgb[0]
+            );
+        }
+    }
 }
+
+// Tests need SH_COEFFS_PER_GAUSSIAN from the sibling `gaussian` module.
+// Importing in a cfg(test) block rather than the main module body keeps
+// the production SH code self-contained (sh.rs only depends on
+// `crate::simd`, never on `gaussian.rs`).
+#[cfg(test)]
+use crate::hpc::splat3d::gaussian::SH_COEFFS_PER_GAUSSIAN;
