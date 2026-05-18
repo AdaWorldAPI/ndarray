@@ -133,6 +133,24 @@ worker layer (per the unique-file write rule, §5.1).
 
 ## §4 The 4 Savant Slots
 
+### §4.0 Mindsets (not roles)
+
+Each savant is a **mindset** — a way of thinking, not a checklist
+operator. The verdict vocabulary in §4.1 is the *output*; the
+mindset in this section is the *input* the savant's system prompt
+should activate.
+
+| Savant | Mindset persona | Frame they read through | Failure they exist to catch |
+|---|---|---|---|
+| **PP-13 brutally-honest-tester** | The implementation principal who has shipped + on-called for ten years | "what would break in production at 3 a.m. that the author talked themselves out of seeing?" | Self-deception in implementation-quality claims |
+| **PP-14 convergence-architect** | The creative-design / R&D principal exploring divergent possibilities | "what could this become that we aren't seeing? what latent shared shape is being duplicated?" | Premature convergence and missed cross-slice synergies |
+| **PP-15 baton-handoff-auditor** | The DTO / interface architect — the person who lives in the gaps between components | "do these contracts actually line up at the seams? whose hand goes on the baton next?" | Cross-boundary drift; silent contract-shape mismatches |
+| **PP-16 preflight-drift-auditor** | The principal system architect with full system-state in their head | "does the plan still match the system as it actually is right now, or did main move while we were planning?" | Stale plans against a moving main; dropped requirements |
+
+The system prompt for each savant SHOULD begin with the mindset
+sentence, not with the verdict checklist. The checklist is a
+backstop; the mindset is the lens.
+
 ### §4.1 Slot table
 
 | Savant | Phase | Owns | Verdict vocabulary |
@@ -659,6 +677,396 @@ When a worker cannot proceed it writes ONE entry to
 `OUT-OF-SCOPE` requests (worker wants to refactor outside bundle, add
 new feature) are rejected: meta writes `REJECTED: <reason>` and
 closes.
+
+---
+
+## §14 Two-Protocol Operating Modes
+
+> Added 2026-05-18 — design work and implementation work have
+> different gates and benefit from different topologies.
+
+### §14.1 Two protocols, one loop family
+
+| Protocol | Phase | Artifact produced | Goal-gate criterion |
+|---|---|---|---|
+| **Protocol B** | Design | Specs, RFCs, plans, INVARIANT amendments, agent cards | Doc-coherence + scope-completeness across N docs jointly |
+| **Protocol A** | Implementation | Code, parity tests, ledger rows, PRs | Tier-1 toolchain green + spec contract satisfied |
+
+Both protocols use the same 4-savant council (PP-13/14/15/16) and
+the same meta-agent. They differ in (1) what counts as a goal-gate
+pass, (2) the topology of the savant pass (sequential vs cooperative
+council per §15), and (3) the artifact the preflight produces.
+
+### §14.2 Protocol B — Design loop
+
+```
+1. Draft        → human or LLM authors N documents on a design branch
+2. Joint review → savants COOPERATE on the N docs as a coherent set (§15)
+3. Correct      → orchestrator applies cross-doc fixes from the joint review
+4. Re-review    → goto step 2 until CONVERGE (§15.5) or human override
+5. Land         → docs merge to main; Protocol A may begin
+```
+
+Goal-gate criteria (Protocol B):
+
+| Check | Owner | Pass condition |
+|---|---|---|
+| Doc-coherence | PP-15 baton-handoff-auditor | No cross-doc schema/term drift (e.g. `status.json` in spec A matches consumer in spec B) |
+| Scope-completeness | PP-16 preflight-drift-auditor | Every requirement in the source brief is addressed in at least one doc |
+| Convergence opportunity | PP-14 convergence-architect | No latent shared concept duplicated across docs without a shared section |
+| Conformance checklist | PP-13 brutally-honest-tester | Every doc has a Definition-of-Done section with checkable items |
+
+PP-13 in Protocol B does NOT run the language toolchain (no code to
+compile). It validates that the docs ARE the kind of thing a PP-13
+can later compile/test against.
+
+### §14.3 Protocol A — Implementation loop
+
+The 6-step wave loop of §3.1 with one addition: **preflight produces
+a commented-out, compile-error-only Rust skeleton** (§14.4) before
+worker fan-out. Workers fill bodies into the skeleton instead of
+writing into empty files.
+
+```
+1. Plan       → orchestrator partitions work into N bundles
+2. Preflight  → PP-16 produces SKELETON (§14.4) + verdict
+2a. Council   → savants COOPERATE on SKELETON (§15) — fast, cheap
+3. Sprint     → N parallel worker agents fill bodies into skeleton
+4. Council    → savants COOPERATE on FILLED code (or sequential per §15.6 for big diffs)
+5. Fix P0s    → orchestrator applies fixes + verifies tier-1 gates
+6. Commit+PR  → orchestrator (atomic consolidation per §3.4)
+7. Repeat     → orchestrator plans the next wave
+```
+
+### §14.4 The commented-out Rust skeleton (Protocol A preflight artifact)
+
+PP-16 in Protocol A produces both (a) its verdict (SPAWN-CLEAR /
+CAUTION / BLOCKED per §4.6) AND (b) a runnable-but-stubbed Rust
+skeleton at the path declared in `skeleton_output_path` (a new node
+attribute on each worker, see §14.6).
+
+#### §14.4.1 Canonical Rust skeleton format
+
+| Element | Skeleton form |
+|---|---|
+| Function body | `todo!("SOURCE: <relative-path>:<line-start>-<line-end>")` |
+| Trait impl | declare the impl block with every method body as `todo!("SOURCE: ...")` |
+| Struct | declare all fields; `Default::default()` impl as `todo!("SOURCE: ...")` if construction is non-trivial |
+| Enum | declare variants; no body needed |
+| Module | `pub mod x;` with stub `mod.rs` containing `// SKELETON: <one-line summary> — SOURCE: <path>` |
+| `unsafe` block | `unsafe { todo!("UNSAFE-SOURCE: <path>:<lines> — // SAFETY: <reason from spec>") }` — SAFETY rationale required because PP-13 will demand it later |
+| Async function | same as function; body `todo!("SOURCE: ...")` |
+| Macro | declare with empty body `() => { todo!("SOURCE: ...") }` |
+
+#### §14.4.2 Token choice: `todo!` over `unimplemented!`
+
+- `todo!("SOURCE: ...")` — preferred. Signals intent "this is to be
+  done", panics with source-location at runtime if hit, compiler
+  accepts it as any type.
+- `unimplemented!()` — reserved for "correct API surface but never
+  implemented in this crate" (rare; not a skeleton placeholder).
+- `unreachable!()` — reserved for "statically impossible branch";
+  not a skeleton primitive.
+
+#### §14.4.3 Skeleton compile invariant
+
+The skeleton MUST compile with `cargo check --workspace` green. It
+MUST NOT pass `cargo test` or `cargo run` (the `todo!()` panics).
+This is the diagnostic signature of a well-formed skeleton.
+
+| Rule | Description | Severity |
+|---|---|---|
+| `WAVE-018 skeleton-compiles` | `cargo check --workspace` MUST be green on the skeleton emitted by PP-16. | ERROR |
+| `WAVE-019 skeleton-source-annotated` | Every `todo!()` MUST carry a `"SOURCE: <path>:<lines>"` or `"UNSAFE-SOURCE: ..."` argument. | ERROR |
+| `WAVE-020 skeleton-no-runtime` | The skeleton MUST NOT pass `cargo test` or `cargo run` — a green test on a skeleton means the test is a tautology. | ERROR |
+
+#### §14.4.4 Per-language equivalents (for non-Rust repos)
+
+| Language | Skeleton form |
+|---|---|
+| Rust | `todo!("SOURCE: ...")` (canonical) |
+| Python | `raise NotImplementedError("SOURCE: <path>:<lines>")` with docstring stub |
+| TypeScript | `throw new Error("TODO — SOURCE: <path>:<lines>")` |
+| Go | `panic("TODO — SOURCE: <path>:<lines>")` |
+
+Rust is canonical because the language's `todo!()` macro is
+purpose-built for this exact use case.
+
+### §14.5 Protocol A vs Protocol B at the savant layer
+
+| Savant | Protocol B (design) | Protocol A (implementation) |
+|---|---|---|
+| PP-13 | Verifies docs have DoD sections; no compile gate. | Tier-1 toolchain + AP1..AP9 on filled code (§4.4). |
+| PP-14 | Surfaces convergence opportunities across docs. | Surfaces convergence opportunities across slices (helper-hoist). |
+| PP-15 | Cross-doc schema/term drift. | Cross-bundle DTO drift on filled code (BAP1..BAP10, §4.5). |
+| PP-16 | Validates plan-vs-source brief: every requirement landed in some doc. | Validates plan-vs-main (PD1..PD10, §4.6) + EMITS SKELETON (§14.4). |
+
+### §14.6 Mode switch is explicit
+
+The orchestrator declares which protocol is active in the sprint
+header:
+
+```yaml
+sprint:
+  id: SPRINT-17-attractor-fold-in
+  protocol: B
+  default_fidelity: full
+  inputs:
+    docs:
+      - .claude/ATT/autoattended-orchestrator-spec.md
+      - .claude/ATT/anti-skim-agent-spec.md
+      - .claude/ATT/agent-coordination-mcp-spec.md
+  goal_gate: savant_council_converge
+```
+
+```yaml
+sprint:
+  id: SPRINT-18-attractor-implementation
+  protocol: A
+  default_fidelity: compact
+  preflight:
+    skeleton_output_root: src/attractor/
+    skeleton_compiles_check: cargo check --workspace
+  workers:
+    - agent_id: A1
+      bundle_name: orchestrator-runner
+      skeleton_output_path: src/attractor/orchestrator/mod.rs
+      ...
+```
+
+| Rule | Description | Severity |
+|---|---|---|
+| `WAVE-021 protocol-declared` | Every sprint header MUST declare `protocol: A` or `protocol: B`. | ERROR |
+| `WAVE-022 protocol-coherence` | Protocol-B sprints MUST NOT declare `workers[].owned_files` of file extensions other than `.md` / `.yaml` / `.dot`. Protocol-A sprints MUST declare `preflight.skeleton_output_root`. | ERROR |
+
+---
+
+## §15 Cooperative Savant Council
+
+> The 4 savants **cooperate** — they do not run as independent
+> fan-out branches whose verdicts get bag-of-words-aggregated. They
+> read a shared scratchpad, file findings, cross-refer to each other,
+> iterate, and emerge with a SINGLE joint verdict.
+
+### §15.1 Why cooperative, not independent-parallel
+
+Independent-parallel review (4 savants → 4 verdicts → super-verdict
+aggregation) has two failure modes:
+
+1. **Lockstep drift.** All 4 savants miss the same cross-cutting
+   issue because they each looked at the artifact through their own
+   axis without seeing the others' angle.
+2. **Duplicate findings.** Each savant independently flags the same
+   issue from a different angle; the orchestrator wastes a round
+   deduplicating.
+
+Cooperation fixes both: savants see each other's findings as they
+land and either (a) cross-refer ("PP-15 already flagged this; my
+angle is …") or (b) suppress duplicates ("PP-13 already covered
+this from a stronger angle — withdrawn").
+
+### §15.2 The shared scratchpad
+
+```
+.claude/board/savant-council-<topic>/
+├── ROUND-0-ARTIFACT.md            (snapshot of what's under review)
+├── ROUND-1-PP-13.md               (PP-13's round-1 findings)
+├── ROUND-1-PP-14.md               (PP-14's round-1 findings)
+├── ROUND-1-PP-15.md               (PP-15's round-1 findings)
+├── ROUND-1-PP-16.md               (PP-16's round-1 findings)
+├── ROUND-2-PP-13.md               (PP-13's round-2 — sees all of round 1)
+├── ...
+└── COUNCIL-VERDICT.md             (final joint document)
+```
+
+Append-only per §7.1 of `agent-coordination-mcp-spec.md`. Each
+savant writes its file at the end of its round; reads ALL other
+files at the start of its next round.
+
+### §15.3 The cooperation loop
+
+```
+Round R+1 (per savant):
+  1. Read every ROUND-R-*.md (the others' findings from the previous round)
+  2. Read ROUND-R-<self>.md (your own findings from the previous round)
+  3. For each finding by another savant:
+       a. Cross-refer if it intersects your axis ("noted — my AP3 finding
+          relates: <one-line>")
+       b. Withdraw any of your own findings that the other savant covered
+          from a stronger angle
+       c. Suppress duplicates with `STATUS: superseded-by(PP-X round-R)`
+  4. Append your new findings (axis-tagged) to ROUND-(R+1)-<self>.md
+  5. Mark with `ROUND-COMPLETE` sentinel when you have no new findings
+```
+
+A round ends when ALL 4 savants have either (a) added new findings
+in this round OR (b) emitted `ROUND-COMPLETE` (no new findings + no
+unaddressed cross-refers from peers).
+
+### §15.4 Convergence + termination
+
+| Condition | Outcome |
+|---|---|
+| All 4 savants emit `ROUND-COMPLETE` in the same round | **CONVERGE** — proceed to §15.5 verdict synthesis |
+| Round-count exceeds `max_rounds` (default 3) | **STALL** — orchestrator or human arbitrates |
+| Any savant emits an unrecoverable BLOCK in any round (e.g. PP-16=SPAWN-BLOCKED with no clear remediation) | **BLOCK** — abort the council; return to step 1 of the protocol |
+
+### §15.5 The joint verdict (`COUNCIL-VERDICT.md`)
+
+After CONVERGE, the meta-agent (or a designated chairman savant —
+default PP-16 in Protocol A, PP-15 in Protocol B) reads ALL
+ROUND-*.md files and synthesizes a single `COUNCIL-VERDICT.md`:
+
+```yaml
+council_verdict:
+  topic: <topic>
+  protocol: A | B
+  rounds_run: N
+  super_verdict: CONVERGE | SPLIT | BLOCK
+
+  per_savant_final:
+    PP-13:
+      verdict: LAND | HOLD | REJECT
+      findings_kept: N
+      findings_withdrawn: M
+    PP-14: { ... }
+    PP-15: { ... }
+    PP-16: { ... }
+
+  consolidated_p0_findings:
+    - finding_id: F1
+      raised_by: PP-13 (round 1)
+      cross_referred_by: [PP-15 round 1, PP-16 round 2]
+      summary: <one paragraph>
+      remediation: <one paragraph>
+
+  consolidated_p1_findings: [ ... ]
+
+  next_action: proceed | arbitrate | retry_preflight | block
+```
+
+The super-verdict is derived from the per-savant finals:
+
+| Super-verdict | Trigger |
+|---|---|
+| **CONVERGE** | All 4 savants pass (PP-13=LAND ∧ PP-14∈{OPPORTUNITY-NOW,WORTH-EXPLORING,DROP} ∧ PP-15=CLEAN ∧ PP-16=SPAWN-CLEAR), AND no P0 findings remain after deduplication. |
+| **SPLIT** | Mixed verdicts that are neither all-pass nor block-on-any. Orchestrator or human arbitrates. |
+| **BLOCK** | Any of: PP-13=REJECT ∨ PP-15=CATCH-CRITICAL ∨ PP-16=SPAWN-BLOCKED ∨ remaining P0 findings ≥ 1. |
+
+### §15.6 Council DOT topology
+
+```dot
+digraph savant_council {
+  rankdir=LR;
+  start    [shape=Mdiamond];
+  artifact [shape=note, label="docs (B) OR skeleton (A) OR filled-code (A)"];
+
+  round_R  [shape=component,
+            label="round R: 4 savants read shared scratchpad,
+                   append findings, cross-refer, withdraw duplicates"];
+
+  pp13 [shape=box]; pp14 [shape=box]; pp15 [shape=box]; pp16 [shape=box];
+
+  round_check [shape=diamond,
+               label="all 4 savants ROUND-COMPLETE?"];
+  bump_round  [shape=parallelogram, label="R := R+1"];
+
+  chairman    [shape=box, label="chairman savant synthesizes COUNCIL-VERDICT.md"];
+  verdict     [shape=tripleoctagon, label="super-verdict: CONVERGE / SPLIT / BLOCK"];
+  exit        [shape=Msquare];
+
+  start    -> artifact;
+  artifact -> round_R;
+  round_R  -> pp13;
+  round_R  -> pp14;
+  round_R  -> pp15;
+  round_R  -> pp16;
+  pp13     -> round_check;
+  pp14     -> round_check;
+  pp15     -> round_check;
+  pp16     -> round_check;
+  round_check -> bump_round [label="no: a savant has new findings"];
+  bump_round  -> round_R;
+  round_check -> chairman   [label="yes: CONVERGE / STALL / BLOCK"];
+  chairman    -> verdict;
+  verdict     -> exit;
+}
+```
+
+### §15.7 When to fall back to sequential (no council)
+
+Three rules of thumb:
+
+1. **Filled-code review with diff > 500 lines:** sequential PP-13 →
+   PP-15 → PP-16 (per §4 chain). Each savant sees a smaller diff
+   after the orchestrator applies the previous savant's P0 fixes.
+2. **Token-budget constrained run:** sequential. Council pays for
+   `4 × rounds × artifact-size` reads; sequential pays for
+   `1 × artifact + 3 × diff-only` reads.
+3. **First time using a new spec set:** sequential. Let one savant
+   shake out the obvious issues before the others read it.
+
+Otherwise: council by default.
+
+### §15.8 Configuration
+
+```yaml
+council:
+  max_rounds: 3
+  chairman:
+    protocol_A: PP-16
+    protocol_B: PP-15
+  scratchpad_root: .claude/board/savant-council
+  cooperation_protocol: cross-refer-and-withdraw     # see §15.3
+  duplicate_suppression: superseded-by-stronger-angle
+```
+
+### §15.9 Validation rules
+
+| Rule | Description | Severity |
+|---|---|---|
+| `WAVE-023 council-legality` | Council mode is declared only when artifact is one of {docs, skeleton, small-diff filled-code}. | ERROR |
+| `WAVE-024 council-rounds-bounded` | `max_rounds` MUST be set; default 3; hard cap 7. | ERROR |
+| `WAVE-025 scratchpad-append-only` | The `.claude/board/savant-council-<topic>/` directory MUST be append-only per `agent-coordination-mcp-spec.md` §7.1. | ERROR |
+| `WAVE-026 cross-refer-recorded` | When a savant withdraws or supersedes a peer's finding, the action MUST be recorded with `STATUS: superseded-by(PP-X round-R)` for traceability. | ERROR |
+| `WAVE-027 chairman-declared` | The `chairman` savant for the synthesis pass MUST be declared in the sprint config; default per §15.8. | ERROR |
+| `WAVE-028 stall-arbitration` | A STALL outcome (max_rounds reached without CONVERGE) MUST be followed by an arbitration step (orchestrator or human). | ERROR |
+| `WAVE-029 split-arbitration` | A SPLIT super-verdict MUST be followed by an arbitration step before fan-out resumes. | ERROR |
+
+### §15.10 Example: this very kit
+
+A worked example. To fold the §14 / §15 additions into the three
+`.claude/ATT/*.md` specs, a Protocol B council would:
+
+```
+Round 1:
+  PP-13: "spec A §11 'Context Fidelity' lacks a DoD subsection"
+  PP-14: "spec A §15 'cooperative council' duplicates spec C §3.1 'three-layer model'
+          — opportunity for shared concept"
+  PP-15: "spec A §14.4 'skeleton' references todo!() macro;
+          spec B §6 'tool-call loop detection' does not — no contradiction, just an axis"
+  PP-16: "scope-completeness pass — every requirement from the source brief
+          (Protocol A/B + cooperation + Rust skeleton) landed in spec A;
+          spec B + spec C do not need changes"
+
+Round 2:
+  PP-13: ROUND-COMPLETE (no new findings; PP-14's opportunity is non-blocking)
+  PP-14: "spec A §15 cooperation should reference spec C §3.2 'file blackboard'
+          since the scratchpad uses that primitive — cross-ref added"
+  PP-15: "withdrawn: my round-1 finding is covered by PP-14 round-2's cross-ref"
+  PP-16: ROUND-COMPLETE
+
+Round 3:
+  All 4: ROUND-COMPLETE
+
+CONVERGE — chairman PP-15 synthesizes COUNCIL-VERDICT.md
+super_verdict: CONVERGE
+consolidated_p0_findings: []
+consolidated_p1_findings:
+  - F1: "spec A §11 add 'Definition of Done' subsection (PP-13 round 1)"
+  - F2: "spec A §15 cross-reference spec C §3.2 (PP-14 round 2, PP-15 round 2)"
+next_action: proceed
+```
 
 ---
 

@@ -36,6 +36,62 @@ Both modes implement the same three-layer model (§3) with the same
 schemas (§6). The native server is a thin serde layer over the
 workaround's wire format.
 
+### §1.3 The universal wire format: `tee -a [bug/proposal]`
+
+The same markdown blob serves **three purposes simultaneously**:
+
+| Purpose | Reader | Mutability |
+|---|---|---|
+| **MCP orchestration message** | the orchestrator (and any subscribed session via `subscribe_pr_activity`) | append-only |
+| **A2A wire format** | sibling agents (worker → worker, worker → meta, savant → savant) | append-only |
+| **Log format (audit + replay)** | any future session reading git history | immutable once committed |
+
+One write, three uses. This is by design: it means the same code
+that posts an entry to the file-blackboard (Layer 1) ALSO emits the
+log line ALSO becomes a cross-session-readable orchestration message
+the moment it lands on a coordination PR's branch.
+
+The blob's shape is **always a typed envelope + a body**:
+
+```
+## YYYY-MM-DDTHH:MM — KIND[severity]: one-line headline (author, branch)
+
+**Author:** <agent-id | session-id>
+**Kind:** BUG | PROPOSAL | HANDOVER | FINDING | DECISION | RFC | STATUS
+**Severity:** P0 | P1 | INFO       (optional; defaults to INFO)
+**Refs:** <commit-sha> | <PR-#> | <handover-id>
+**Proof-of-read:**
+- file=<path> sha256=<...> lines=<N> depth=<D>
+- file=<path> sha256=<...> lines=<N> depth=<D>
+
+---
+
+<body — free-form markdown, but `## ` sub-headings preferred over prose>
+```
+
+The `tee -a` envelope is the wire; the body is the payload. Routers
+(orchestrator, meta-agent, MCP server) dispatch by `Kind` and
+`Severity`; readers grep by `Author` + `Refs`; auditors replay by
+the immutable git-log order.
+
+### §1.4 Tables over prose (NLSpec discipline)
+
+Implementations SHOULD prefer tabular content over prose for every
+catalog (anti-patterns, validation rules, verdict vocabularies,
+configuration defaults, parity matrices). Rationale:
+
+| Property | Table | Prose |
+|---|---|---|
+| Machine-parseable | yes | no |
+| Forces consistency (all rows have the same columns) | yes | no |
+| Compressible (each row is a fact) | yes | no |
+| Diffs cleanly in PRs | yes | partial |
+| Resists hedging language | yes (cell width caps qualifiers) | no |
+| Suitable for English narrative | no | yes |
+
+Use prose for: section overviews, rationale paragraphs, conflict
+explanations. Use tables for: everything else.
+
 ### §1.3 What this spec is NOT
 
 - Not a workflow engine. Wave / sprint structure is in
@@ -539,6 +595,148 @@ If the task is...
 - truly independent and parallel → use standard `Agent()` spawns; no coordination layer needed.
 - a single one-shot question → use `Agent()` with sub-agent_type=Explore; no `AGENT_LOG.md` write.
 - a security-sensitive review → use Layer-0 Teleportation on the main thread; do NOT spawn a separate Agent() that might be compromised by an untrusted source it reads.
+
+---
+
+## §13 Cooperative-Savant Scratchpad Bus
+
+> Added 2026-05-18. The transport layer for the Cooperative Savant
+> Council defined in `autoattended-orchestrator-spec.md` §15.
+
+### §13.1 What the scratchpad bus is
+
+A purpose-shaped extension of the Layer-1 File Blackboard (§3.2)
+used specifically for the savant council's iterative cooperation.
+Same wire format (`tee -a` markdown), same append-only governance
+(§7), one new directory convention:
+
+```
+.claude/board/savant-council-<topic>/
+├── ROUND-0-ARTIFACT.md                  snapshot of artifact under review
+├── ROUND-<N>-<savant>.md                one file per (round, savant)
+└── COUNCIL-VERDICT.md                   chairman's synthesis after CONVERGE
+```
+
+Topic naming: `savant-council-<sprint-id>` (e.g.
+`savant-council-SPRINT-17-attractor-fold-in/`).
+
+### §13.2 Per-savant file schema
+
+```markdown
+# ROUND-{N} {savant_id} — {topic}
+
+**Round:** N
+**Savant:** PP-13 | PP-14 | PP-15 | PP-16
+**Read at round start:** [list of peer files read this round]
+**Status:** IN-PROGRESS | ROUND-COMPLETE
+
+## New findings (this round)
+
+### F{round}-{savant}-{N}: {one-line headline}
+**Axis:** AP1..AP9 | BAP1..BAP10 | PD1..PD10 | EP1..EP8
+**Severity:** P0 | P1
+**File:** <path>:<line>
+**Detail:** <one paragraph>
+**Remediation:** <one paragraph>
+
+## Cross-references to peers' findings
+
+- F{R}-PP-X-N: NOTED — my angle: <one-line>
+- F{R}-PP-Y-N: SUPERSEDED-BY my F{R+1}-{self}-M
+
+## Withdrawals (my prior findings I am retracting)
+
+- F{R-1}-{self}-N: WITHDRAWN — covered by PP-X round R from a stronger angle
+```
+
+### §13.3 Reading-and-writing protocol
+
+Each savant in each round:
+
+1. **Read** ALL `ROUND-(R-1)-*.md` files (peer findings from previous
+   round) plus its own `ROUND-(R-1)-<self>.md` if any.
+2. **Decide** cross-refs, withdrawals, new findings.
+3. **Write** `ROUND-R-<self>.md` in one `tee -a` call (no
+   partial writes — savants share a directory and partial
+   writes confuse peers' next round).
+4. **Emit** `Status: ROUND-COMPLETE` if no new findings AND no
+   un-addressed cross-refers from peers.
+
+### §13.4 Chairman synthesis
+
+After CONVERGE (all four savants `ROUND-COMPLETE` in the same
+round) the chairman savant (declared in sprint config; default
+PP-16 for Protocol A, PP-15 for Protocol B) reads ALL ROUND-*.md
+files in lexical order and writes a single `COUNCIL-VERDICT.md`
+matching the schema in `autoattended-orchestrator-spec.md` §15.5.
+
+The chairman:
+- MUST cite every kept finding with its raised-by + cross-referrals.
+- MUST consolidate duplicates that survived the cooperation rounds
+  (rare — most should withdraw themselves, but races can leave a
+  pair that needs one merged into the other).
+- MUST NOT add findings of its own that did not appear in any
+  `ROUND-*.md` (the chairman is a synthesizer, not a fifth voice).
+- MUST set `super_verdict` per §15.5 rules.
+
+### §13.5 Concurrency contract
+
+Savants may run on separate sessions; the scratchpad bus is the
+synchronization point.
+
+- **Round boundary** is implicit: a savant starts round R only after
+  it has read all four `ROUND-(R-1)-*.md` files (including its own).
+- **Last-writer-wins** is acceptable for the per-savant per-round
+  file since each (savant, round) pair has exactly one writer by
+  construction. If a savant writes twice in the same round (e.g. a
+  retry after a tool-call loop), the second write replaces the first.
+- **Round skipping** is forbidden: a savant MUST NOT write
+  `ROUND-(R+2)` until `ROUND-(R+1)` exists for it.
+
+### §13.6 Decision matrix update
+
+Extends §4 with one new row:
+
+| Need | Workaround | Native MCP equivalent | Cost |
+|---|---|---|---|
+| Cooperative multi-agent review with iterative cross-refer + withdraw | Layer-1 File Blackboard scoped to `savant-council-<topic>/` directory (§13) | `post_council_finding` + `read_council_round` + `subscribe_council_round` | Medium: `tee -a` per round + git commit per round |
+
+### §13.7 Native MCP endpoints (sketch)
+
+```yaml
+endpoint: post_council_finding
+params:
+  topic: string                          # e.g. "SPRINT-17-attractor-fold-in"
+  round: integer
+  savant: enum (PP-13 | PP-14 | PP-15 | PP-16)
+  payload: FindingsFile                  # matches §13.2 schema
+returns:
+  file_id: string
+
+endpoint: read_council_round
+params:
+  topic: string
+  round: integer
+returns:
+  findings_by_savant: map[savant -> FindingsFile]
+  complete_savants: list[savant]         # those that emitted ROUND-COMPLETE
+
+endpoint: subscribe_council_round
+params:
+  topic: string
+streams:
+  event_kinds: [ findings_appended, savant_round_complete, council_converged, council_stalled, council_blocked ]
+```
+
+### §13.8 Validation rules
+
+| Rule | Description | Severity |
+|---|---|---|
+| `COORD-001 directory-naming` | Council scratchpad MUST live at `.claude/board/savant-council-<topic>/`. | ERROR |
+| `COORD-002 file-naming` | Per-savant files MUST be named `ROUND-<N>-PP-<NN>.md`. | ERROR |
+| `COORD-003 append-only` | The scratchpad directory inherits the append-only governance of §7. | ERROR |
+| `COORD-004 chairman-no-new-findings` | The chairman's `COUNCIL-VERDICT.md` MUST NOT introduce findings absent from any `ROUND-*.md`. | ERROR |
+| `COORD-005 round-monotonic` | Each savant MUST write `ROUND-(R+1)` only after `ROUND-R-<self>.md` exists. | ERROR |
 
 ---
 

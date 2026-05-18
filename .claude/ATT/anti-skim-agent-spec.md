@@ -440,4 +440,82 @@ work.
 
 ---
 
+## §13 Skeleton-Fill Contract (Protocol A)
+
+> Added 2026-05-18. Applies to workers operating in
+> `autoattended-orchestrator-spec.md` Protocol A (implementation),
+> where PP-16's preflight has produced a commented-out Rust
+> skeleton (per §14.4 of the orchestrator spec).
+
+### §13.1 What the worker receives
+
+Three inputs:
+
+1. The skeleton file(s) at `skeleton_output_path` containing
+   `todo!("SOURCE: <path>:<lines>")` macros at every body site.
+2. The original spec / reference-source files referenced in each
+   `SOURCE:` annotation.
+3. A SHA-256 of both the skeleton AND each referenced source file,
+   pinned by PP-16 at preflight time.
+
+### §13.2 Worker's obligations
+
+For every `todo!("SOURCE: <path>:<lines>")` the worker fills:
+
+1. **Read the source range** at the declared depth (§3.3); default
+   for ports is `full`.
+2. **Record proof-of-read** for the source file at the declared
+   line range (§7.1).
+3. **Replace `todo!(...)` with the body**, preserving the surrounding
+   signature exactly. The signature came from PP-16; the worker
+   does not change it without an Iron-Rule-amending RFC.
+4. **Quote the source line range in the commit message body** (per
+   `autoattended-orchestrator-spec.md` §5.6).
+5. **Confirm the skeleton's SHA-256 against the pinned value** at
+   start of work. If the skeleton has drifted (e.g. a sibling worker
+   touched it), the worker MUST STOP and file an `EXTERNAL_DEPENDENCY`
+   blocker in `META/REQUESTS-FROM-AGENTS.md`.
+
+### §13.3 Forbidden in skeleton-fill mode
+
+- Changing a signature provided by the skeleton (RFC required).
+- Adding a `todo!()` that did NOT come from the skeleton (would
+  bypass PP-16's source-annotation discipline).
+- Removing a `// SAFETY:` comment from an `unsafe` block (PP-13
+  will reject; PP-16 wrote it for a reason).
+- Filling bodies in a file outside `skeleton_output_path` (§5.1
+  unique-file write discipline).
+
+### §13.4 Reading depth required
+
+| Source kind | Minimum depth |
+|---|---|
+| `SOURCE: <reference-source>:<lines>` (the function being ported) | `full` for the named line range |
+| `UNSAFE-SOURCE: <reference-source>:<lines>` | `thorough` for the named range AND the function's callers |
+| The skeleton file itself | `read` (to confirm the surrounding signature you're filling into) |
+| `META/INVARIANTS.md` | `thorough` (per §3.3) |
+
+### §13.5 Validation rules
+
+| Rule | Description | Severity |
+|---|---|---|
+| `FILL-001 source-range-read` | Every `todo!("SOURCE: P:L-M")` the worker fills MUST appear in the worker's proof-of-read with `file=P, lines covering L-M, depth=full`. | ERROR |
+| `FILL-002 skeleton-sha-pin` | Worker MUST verify the skeleton's SHA-256 against the value PP-16 pinned, at start of work. Drift → STOP + `EXTERNAL_DEPENDENCY`. | ERROR |
+| `FILL-003 signature-preserved` | Worker MUST NOT change a signature provided by the skeleton without a merged RFC. Diff inspection by PP-15 enforces. | ERROR |
+| `FILL-004 unsafe-safety-preserved` | `// SAFETY:` comments on `unsafe` blocks from the skeleton MUST survive into the filled body. PP-13 enforces. | ERROR |
+| `FILL-005 no-new-todo` | Worker MUST NOT introduce new `todo!()` calls; every `todo!()` in the filled file MUST trace back to a skeleton entry. | ERROR |
+
+### §13.6 Definition of Done (skeleton-fill)
+
+- [ ] Every `todo!()` in the assigned skeleton file(s) is replaced.
+- [ ] No new `todo!()` introduced (FILL-005).
+- [ ] Skeleton SHA matched at start; final SHA different (FILL-002).
+- [ ] Proof-of-read covers every `SOURCE:` annotation (FILL-001).
+- [ ] All signatures preserved (FILL-003).
+- [ ] All `// SAFETY:` comments preserved (FILL-004).
+- [ ] Tier-1 toolchain green on filled file (§8.1).
+- [ ] Status file written per `autoattended-orchestrator-spec.md` §9.1.
+
+---
+
 *End of `anti-skim-agent-spec.md`.*
