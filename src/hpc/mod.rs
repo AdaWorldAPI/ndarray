@@ -257,6 +257,11 @@ pub mod stream;
 #[cfg(feature = "linalg")]
 pub mod linalg;
 
+/// Pillar probe certification module: shared splitmix64 RNG, PillarReport, SPD helpers,
+/// and per-pillar prove() probes (Pillar-6 through Pillar-11). PR-X11 B8.
+#[cfg(feature = "pillar")]
+pub mod pillar;
+
 /// OGIT ontology bridge — RDF 1.1 Turtle lexer + parser (OGIT subset).
 /// Gated behind `ogit_bridge` feature flag; zero external deps.
 #[cfg(feature = "ogit_bridge")]
