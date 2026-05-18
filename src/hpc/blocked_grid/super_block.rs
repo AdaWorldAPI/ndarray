@@ -295,26 +295,26 @@ impl<'a, T, const BR: usize, const BC: usize, const N: usize> GridSuperBlockMut<
                 let abs_col_origin = col_origin_abs + local_bc * BC;
 
                 let start = local_br * BR * padded_cols + abs_col_origin;
-                let end = if BR == 0 {
-                    start
-                } else {
-                    start + (BR - 1) * padded_cols + BC
-                };
-                let end = end.min(data_len);
+                let raw_len = if BR == 0 { 0 } else { (BR - 1) * padded_cols + BC };
+                let block_data_len = raw_len.min(data_len.saturating_sub(start));
 
-                // SAFETY: Each (local_br, local_bc) pair accesses a
-                // non-overlapping sub-region of the super-block's data buffer.
-                // Base blocks within the N×N super-block occupy disjoint
-                // row ranges (local_br selects which BR-row group) and disjoint
-                // column positions within each row (local_bc selects which BC
-                // column group).  The iterator yields them one at a time, so
-                // the caller cannot hold two simultaneous mutable borrows to
-                // the same data.  `data_ptr` is valid for `data_len` elements
-                // — guaranteed by `TierBlockIterMut` which derives it from the
-                // grid's `Vec<T>`.
-                let slice = unsafe { std::slice::from_raw_parts_mut(data_ptr.add(start), end - start) };
-
-                GridBlockMut::from_raw(slice, abs_block_row, abs_block_col, abs_row_origin, abs_col_origin, padded_cols)
+                // SAFETY: data_ptr was issued by TierBlockIterMut from a
+                // unique `&'a mut BlockedGrid` borrow; data_len elements from
+                // data_ptr are within the grid's allocation. (start,
+                // block_data_len) stays within those bounds. We pass the raw
+                // pointer (not a materialized slice) to GridBlockMut::from_raw
+                // because the strided footprint of adjacent column-blocks
+                // overlaps in memory — GridBlockMut's aliasing invariant
+                // ensures `&mut [T]` is only ever materialized per-row via
+                // `row_mut`, where each block's column range [col_origin,
+                // col_origin+BC) is disjoint from siblings.
+                let block_data = unsafe { data_ptr.add(start) };
+                unsafe {
+                    GridBlockMut::from_raw(
+                        block_data, block_data_len, abs_block_row, abs_block_col, abs_row_origin, abs_col_origin,
+                        padded_cols,
+                    )
+                }
             })
         })
     }
@@ -804,11 +804,9 @@ mod tests {
             // Write via base_blocks_mut: set first cell of first base block.
             for mut blk in sb.base_blocks_mut() {
                 if blk.block_row() == sr * 2 && blk.block_col() == sc * 2 {
-                    // Use base_blocks_mut raw data — access via data_mut()
-                    let d = blk.data_mut();
-                    if !d.is_empty() {
-                        d[0] = sentinel;
-                    }
+                    // Materialize one row slice (sound — see GridBlockMut
+                    // aliasing invariant); write cell 0.
+                    blk.row_mut(0)[0] = sentinel;
                     break;
                 }
             }

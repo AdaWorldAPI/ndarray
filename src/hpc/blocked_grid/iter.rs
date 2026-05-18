@@ -305,9 +305,29 @@ impl<'a, T, const BR: usize, const BC: usize> GridBlockMut<'a, T, BR, BC> {
     /// ```
     pub fn row_mut(&mut self, r: usize) -> &mut [T] {
         debug_assert!(r < BR, "row {} out of block range {}", r, BR);
-        let stride = self.padded_cols();
+        let stride = self.padded_cols_stride();
         let start = r * stride;
-        &mut self.data_mut()[start..start + BC]
+        debug_assert!(
+            start + BC <= self.data_len(),
+            "row materialization {} extends past data_len {}",
+            start + BC,
+            self.data_len()
+        );
+        let ptr = self.data_ptr();
+        // SAFETY: This is the SOLE materialization site for a `&mut [T]` over
+        // a `GridBlockMut`'s storage. The slice has length BC and starts at
+        // `(row_origin + r, col_origin)`, covering exactly one logical row of
+        // the block (cells `[col_origin, col_origin + BC)`). This range is
+        // **disjoint** from any other live `GridBlockMut`'s row materialization
+        // because:
+        //   - Adjacent column-block rows (same physical grid row, different
+        //     block_col) have non-overlapping `[col_origin, col_origin + BC)`
+        //     intervals.
+        //   - Adjacent row-block rows (different block_row) target different
+        //     physical grid rows entirely.
+        // The bounds check above confirms `start + BC <= data_len`, ensuring
+        // the pointer arithmetic stays within the parent grid's allocation.
+        unsafe { std::slice::from_raw_parts_mut(ptr.add(start), BC) }
     }
 }
 

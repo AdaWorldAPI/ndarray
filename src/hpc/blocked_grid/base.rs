@@ -448,18 +448,53 @@ impl<'a, T, const BR: usize, const BC: usize> GridBlock<'a, T, BR, BC> {
 /// assert_eq!(blk.block_row(), 0);
 /// assert_eq!(blk.block_col(), 0);
 /// ```
+/// Mutable view of a `BR × BC` base block.
+///
+/// # Aliasing invariant
+///
+/// `GridBlockMut` stores a raw `*mut T` pointer + `data_len` rather than a
+/// `&'a mut [T]` slice. The strided layout of base blocks means adjacent
+/// column blocks share rows that interleave in memory (block (r, c) and
+/// block (r, c+1) on the same block-row overlap by `(BR-1)*padded_cols + BC -
+/// BC = (BR-1)*padded_cols` cells if represented as a single strided slice).
+/// A strided `&mut [T]` would be unsound when two such blocks coexist (as
+/// `BaseBlockIterMut` allows when callers `.next()` multiple times before
+/// dropping prior items).
+///
+/// Soundness is preserved by **never materializing a `&mut [T]` over the
+/// strided footprint**. Cell access goes through [`row_mut`] which produces
+/// `&mut [T]` of length BC only — exactly one logical row of the block.
+/// Across blocks, row materializations target disjoint cell ranges (each
+/// block owns its own `[col_origin, col_origin + BC)` column range on the
+/// shared physical rows), so no two simultaneous `&mut [T]` ever alias.
+///
+/// [`row_mut`]: GridBlockMut::row_mut
 pub struct GridBlockMut<'a, T, const BR: usize, const BC: usize> {
     block_row: usize,
     block_col: usize,
     row_origin: usize,
     col_origin: usize,
     padded_cols: usize,
-    /// Points to the element at `(row_origin, col_origin)` in the parent grid's
-    /// flat storage. Length is `BR * padded_cols` minus the trailing gap
-    /// (covers the last block row up to the final cell).
-    data: &'a mut [T],
+    /// Raw pointer to cell `(row_origin, col_origin)` in the parent grid's
+    /// flat storage. See the type-level aliasing invariant — `data` is
+    /// **never** converted to a `&mut [T]` that covers the strided footprint.
+    data: *mut T,
+    /// Number of elements addressable from `data`. Equals
+    /// `(BR - 1) * padded_cols + BC` for non-zero BR (or 0 if BR is 0),
+    /// clamped to the parent grid's remaining storage. Used for bounds
+    /// checking; the slice is never materialized at this full length.
+    data_len: usize,
     _marker: PhantomData<&'a mut T>,
 }
+
+// SAFETY: `GridBlockMut` holds a raw pointer that the issuing iterator
+// (`BaseBlockIterMut` or `GridSuperBlockMut::base_blocks_mut`) creates from a
+// single `&'a mut BlockedGrid` borrow. The aliasing invariant documented on
+// the struct guarantees that simultaneously-live `GridBlockMut`s never
+// materialize overlapping `&mut [T]` slices, so cross-thread Send/Sync are
+// safe under T: Send / T: Sync.
+unsafe impl<'a, T: Send, const BR: usize, const BC: usize> Send for GridBlockMut<'a, T, BR, BC> {}
+unsafe impl<'a, T: Sync, const BR: usize, const BC: usize> Sync for GridBlockMut<'a, T, BR, BC> {}
 
 impl<'a, T, const BR: usize, const BC: usize> GridBlockMut<'a, T, BR, BC> {
     /// Construct a `GridBlockMut` from a mutable grid reference and block coordinates.
@@ -475,21 +510,26 @@ impl<'a, T, const BR: usize, const BC: usize> GridBlockMut<'a, T, BR, BC> {
     pub fn from_grid(grid: &'a mut BlockedGrid<T, BR, BC>, block_row: usize, block_col: usize) -> Self {
         let row_origin = block_row * BR;
         let col_origin = block_col * BC;
-        let start = row_origin * grid.padded_cols + col_origin;
-        let end = if BR == 0 {
-            start
-        } else {
-            start + (BR - 1) * grid.padded_cols + BC
-        };
-        let end = end.min(grid.data.len());
         let padded_cols = grid.padded_cols;
+        let start = row_origin * padded_cols + col_origin;
+        let raw_len = if BR == 0 { 0 } else { (BR - 1) * padded_cols + BC };
+        let data_len = raw_len.min(grid.data.len().saturating_sub(start));
+        // SAFETY: `start` is within `grid.data.len()` because the iterator
+        // (or direct caller) gates `(block_row, block_col)` to valid block
+        // coordinates. `data_len` is clamped to the remaining storage. The
+        // raw pointer is offset from a unique `&'a mut BlockedGrid` borrow;
+        // although adjacent column-block raw pointers cover overlapping
+        // strided regions, the struct's aliasing invariant (see GridBlockMut
+        // doc) ensures no `&mut [T]` is ever materialized over the overlap.
+        let data = unsafe { grid.data.as_mut_ptr().add(start) };
         Self {
             block_row,
             block_col,
             row_origin,
             col_origin,
             padded_cols,
-            data: &mut grid.data[start..end],
+            data,
+            data_len,
             _marker: PhantomData,
         }
     }
@@ -542,30 +582,47 @@ impl<'a, T, const BR: usize, const BC: usize> GridBlockMut<'a, T, BR, BC> {
         self.col_origin
     }
 
-    /// Access internal mutable data slice (intra-crate seam used by `iter.rs`
-    /// / `compute.rs`). `pub(crate)` — not exposed downstream since callers
-    /// should go through `GridBlockMut::row_mut`, which enforces the BR
-    /// bound.
-    pub(crate) fn data_mut(&mut self) -> &mut [T] {
+    /// Raw data pointer (intra-crate seam used by `iter.rs::row_mut`). Returns
+    /// a `*mut T` that callers MUST NOT convert to a wide `&mut [T]` covering
+    /// the block's strided footprint — see the type-level aliasing invariant.
+    /// The only sound use is `unsafe { slice::from_raw_parts_mut(ptr.add(r *
+    /// padded_cols_stride()), BC) }` for `r < BR`, which `row_mut` performs.
+    pub(crate) fn data_ptr(&mut self) -> *mut T {
         self.data
     }
 
-    /// Access padded_cols stride (intra-crate seam — see `data_mut` note).
-    /// NOTE: Named `padded_cols` (not `padded_cols_stride` as on `GridBlock`)
-    /// for back-compat with `iter.rs`'s `row_mut` impl. Naming consistency is
-    /// queued as PR-X3.1 housekeeping.
-    pub(crate) fn padded_cols(&self) -> usize {
+    /// Number of elements addressable from `data_ptr` (intra-crate seam used
+    /// for debug-build bounds checks in `row_mut`).
+    pub(crate) fn data_len(&self) -> usize {
+        self.data_len
+    }
+
+    /// Access padded_cols stride (intra-crate seam — see `data_ptr` note).
+    /// NOTE: Named `padded_cols_stride` to match `GridBlock`. The
+    /// previous `padded_cols` name is gone (Q-X3.1 housekeeping resolved
+    /// in this commit).
+    pub(crate) fn padded_cols_stride(&self) -> usize {
         self.padded_cols
     }
 
     /// Construct a `GridBlockMut` directly from raw components.
     ///
-    /// Used by super_block.rs (worker A3) to construct mutable base-block views
-    /// inside a super-block without needing `T: Copy`.  The caller is responsible
-    /// for ensuring that `data` is a valid exclusive sub-slice of the parent
-    /// grid's flat storage with the correct `padded_cols` stride.
-    pub(super) fn from_raw(
-        data: &'a mut [T], block_row: usize, block_col: usize, row_origin: usize, col_origin: usize, padded_cols: usize,
+    /// Used by super_block.rs (worker A3) to construct mutable base-block
+    /// views inside a super-block without needing `T: Copy`.
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee that:
+    /// - `data` points to a valid element in the parent grid's flat storage
+    /// - `data_len` is the number of elements addressable from `data` (equal to
+    ///   `(BR - 1) * padded_cols + BC` for non-zero BR, clamped to the remaining
+    ///   storage)
+    /// - `data` and `data_len` together cover the strided footprint of one
+    ///   `BR × BC` block; no other live `GridBlockMut` will materialize an
+    ///   overlapping `&mut [T]` over the same physical cells
+    pub(super) unsafe fn from_raw(
+        data: *mut T, data_len: usize, block_row: usize, block_col: usize, row_origin: usize, col_origin: usize,
+        padded_cols: usize,
     ) -> Self {
         Self {
             block_row,
@@ -574,6 +631,7 @@ impl<'a, T, const BR: usize, const BC: usize> GridBlockMut<'a, T, BR, BC> {
             col_origin,
             padded_cols,
             data,
+            data_len,
             _marker: PhantomData,
         }
     }
