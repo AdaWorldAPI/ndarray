@@ -405,6 +405,23 @@ impl<'a, T, const BR: usize, const BC: usize> GridBlock<'a, T, BR, BC> {
         self.col_origin
     }
 
+    /// Access internal data slice.
+    ///
+    /// Used by compute.rs (worker A4) to implement `row()` / `rows()` on
+    /// `GridBlock` without re-opening base.rs.
+    #[doc(hidden)]
+    pub fn data_slice(&self) -> &[T] {
+        self.data
+    }
+
+    /// Access padded_cols stride.
+    ///
+    /// Used by compute.rs (worker A4) to implement `row()` on `GridBlock`.
+    #[doc(hidden)]
+    pub fn padded_cols_stride(&self) -> usize {
+        self.padded_cols
+    }
+
     /// Construct a `GridBlock` directly from raw components.
     ///
     /// Used by super_block.rs (worker A3) to construct base-block views inside
