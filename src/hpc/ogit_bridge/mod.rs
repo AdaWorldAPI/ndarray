@@ -12,6 +12,8 @@
 //!
 //! # Modules
 //! - [`turtle_parser`] — RDF 1.1 Turtle lexer + parser (OGIT subset)
+//! - [`schema`] — [`OntologySchema`], [`EntityClass`], [`FamilyBitmap`],
+//!   [`Property`] — in-memory schema built from triples
 //!
 //! # Performance target
 //! Parse 26 TTL files (~700-900 lines, ~700 triples each) in < 50 ms total
@@ -21,3 +23,6 @@
 #![allow(missing_docs)]
 
 pub mod turtle_parser;
+pub mod schema;
+
+pub use schema::{EntityClass, FamilyBitmap, OntologySchema, Property, SchemaError};

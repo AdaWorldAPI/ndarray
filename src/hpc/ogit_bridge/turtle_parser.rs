@@ -163,9 +163,15 @@ impl<'a> TurtleLexer<'a> {
                 self.advance(1);
                 if let Some(esc) = self.peek() {
                     match esc {
-                        b'u' => { self.advance(5); } // \uXXXX
-                        b'U' => { self.advance(9); } // \UXXXXXXXX
-                        _ => { self.advance(1); }
+                        b'u' => {
+                            self.advance(5);
+                        } // \uXXXX
+                        b'U' => {
+                            self.advance(9);
+                        } // \UXXXXXXXX
+                        _ => {
+                            self.advance(1);
+                        }
                     }
                     continue;
                 }
@@ -222,8 +228,7 @@ impl<'a> TurtleLexer<'a> {
 
     /// After the closing quote, consume optional `^^<datatype>` or `@lang`.
     fn lex_literal_suffix(
-        &mut self,
-        value: &'a str,
+        &mut self, value: &'a str,
     ) -> Result<(&'a str, Option<&'a str>, Option<&'a str>), TurtleError> {
         match self.peek() {
             Some(b'^') if self.remaining().starts_with("^^") => {
@@ -263,7 +268,7 @@ impl<'a> TurtleLexer<'a> {
             return Err(TurtleError::Syntax(self.pos, "expected ':' in prefixed name"));
         }
         self.advance(1); // consume ':'
-        // Local part: may include most characters except whitespace and terminators
+                         // Local part: may include most characters except whitespace and terminators
         self.advance_while(|b| {
             !matches!(b, b' ' | b'\t' | b'\r' | b'\n' | b'.' | b';' | b',' | b'[' | b']' | b'(' | b')')
         });
@@ -372,24 +377,19 @@ impl<'a> TurtleLexer<'a> {
             Some(b) if b.is_ascii_alphabetic() || b == b'_' => {
                 // Prefixed name: prefix:local  OR  keyword `a`
                 let start = self.pos;
-                self.advance_while(|b| {
-                    b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.')
-                });
+                self.advance_while(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'));
                 // Check for colon → prefixed name
                 if self.peek() == Some(b':') {
                     self.advance(1); // consume ':'
                     self.advance_while(|b| {
-                        !matches!(
-                            b,
-                            b' ' | b'\t' | b'\r' | b'\n' | b';' | b',' | b'[' | b']'
-                                | b'(' | b')'
-                        ) && !(b == b'.' && {
-                            // A trailing dot that is not followed by another
-                            // dot-continued character is a statement terminator,
-                            // not part of the local name.  We stop here so the
-                            // dot becomes its own Dot token.
-                            false // handled by advance_while stopping at '.'
-                        })
+                        !matches!(b, b' ' | b'\t' | b'\r' | b'\n' | b';' | b',' | b'[' | b']' | b'(' | b')')
+                            && !(b == b'.' && {
+                                // A trailing dot that is not followed by another
+                                // dot-continued character is a statement terminator,
+                                // not part of the local name.  We stop here so the
+                                // dot becomes its own Dot token.
+                                false // handled by advance_while stopping at '.'
+                            })
                     });
                     // Trim any trailing dots from the local part
                     while self.pos > start && self.src.as_bytes()[self.pos - 1] == b'.' {
@@ -415,9 +415,7 @@ impl<'a> TurtleLexer<'a> {
                     }
                 }
             }
-            Some(_) => {
-                Err(TurtleError::Syntax(self.pos, "unexpected character"))
-            }
+            Some(_) => Err(TurtleError::Syntax(self.pos, "unexpected character")),
         }
     }
 }
@@ -588,7 +586,11 @@ impl<'a> TurtleParser<'a> {
                 let resolved = self.resolve_iri(raw)?;
                 Ok(TripleNode::Iri(resolved))
             }
-            TurtleToken::Literal { value, datatype, lang: _ } => {
+            TurtleToken::Literal {
+                value,
+                datatype,
+                lang: _,
+            } => {
                 // In subject/predicate position literals are unusual but allowed;
                 // we normalise to Literal regardless.
                 let dt = match datatype {
@@ -597,10 +599,7 @@ impl<'a> TurtleParser<'a> {
                 };
                 Ok(TripleNode::Literal { value, datatype: dt })
             }
-            _ => Err(TurtleError::Syntax(
-                self.lexer.offset(),
-                "expected IRI or literal as subject",
-            )),
+            _ => Err(TurtleError::Syntax(self.lexer.offset(), "expected IRI or literal as subject")),
         }
     }
 
@@ -628,9 +627,7 @@ impl<'a> TurtleParser<'a> {
 
     /// Parse `predicate objectList ( ';' predicate objectList )* '.'`
     fn parse_predicate_object_list(
-        &mut self,
-        subject: &TripleNode<'a>,
-        out: &mut Vec<Triple<'a>>,
+        &mut self, subject: &TripleNode<'a>, out: &mut Vec<Triple<'a>>,
     ) -> Result<(), TurtleError> {
         loop {
             // Predicate
@@ -674,22 +671,19 @@ impl<'a> TurtleParser<'a> {
                                     continue;
                                 }
                                 None => break,
-                                _ => return Err(TurtleError::Syntax(
-                                    self.lexer.offset(),
-                                    "expected '.' or ';' after object list",
-                                )),
+                                _ => {
+                                    return Err(TurtleError::Syntax(
+                                        self.lexer.offset(),
+                                        "expected '.' or ';' after object list",
+                                    ))
+                                }
                             }
                         }
                         None => break,
                     }
                 }
                 None => break, // EOF — tolerate missing trailing dot
-                _ => {
-                    return Err(TurtleError::Syntax(
-                        self.lexer.offset(),
-                        "expected '.' or ';' after object list",
-                    ))
-                }
+                _ => return Err(TurtleError::Syntax(self.lexer.offset(), "expected '.' or ';' after object list")),
             }
         }
         Ok(())
@@ -697,10 +691,7 @@ impl<'a> TurtleParser<'a> {
 
     /// Parse `object ( ',' object )*`
     fn parse_object_list(
-        &mut self,
-        subject: &TripleNode<'a>,
-        predicate: &TripleNode<'a>,
-        out: &mut Vec<Triple<'a>>,
+        &mut self, subject: &TripleNode<'a>, predicate: &TripleNode<'a>, out: &mut Vec<Triple<'a>>,
     ) -> Result<(), TurtleError> {
         loop {
             let obj_tok = match self.next()? {
