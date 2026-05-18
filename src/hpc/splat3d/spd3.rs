@@ -130,7 +130,15 @@ impl Spd3 {
     /// Caller is responsible for ensuring the result is SPD.
     #[inline]
     pub const fn new(a11: f32, a12: f32, a13: f32, a22: f32, a23: f32, a33: f32) -> Self {
-        Self { a11, a12, a13, a22, a23, a33, _pad: [0; 8] }
+        Self {
+            a11,
+            a12,
+            a13,
+            a22,
+            a23,
+            a33,
+            _pad: [0; 8],
+        }
     }
 
     /// Construct from a row-major 3×3 array. Symmetry is enforced by
@@ -144,11 +152,7 @@ impl Spd3 {
     /// Expand to a row-major 3×3 array (lower triangle mirrored).
     #[inline]
     pub fn to_rows(&self) -> [[f32; 3]; 3] {
-        [
-            [self.a11, self.a12, self.a13],
-            [self.a12, self.a22, self.a23],
-            [self.a13, self.a23, self.a33],
-        ]
+        [[self.a11, self.a12, self.a13], [self.a12, self.a22, self.a23], [self.a13, self.a23, self.a33]]
     }
 
     /// Trace = a11 + a22 + a33 (sum of eigenvalues).
@@ -171,10 +175,16 @@ impl Spd3 {
     /// `a11·(a22·a33 − a23²) − a12·(a12·a33 − a13·a23) + a13·(a12·a23 − a13·a22)`.
     #[inline]
     pub fn det(&self) -> f32 {
-        let Self { a11, a12, a13, a22, a23, a33, .. } = *self;
-        a11 * (a22 * a33 - a23 * a23)
-            - a12 * (a12 * a33 - a13 * a23)
-            + a13 * (a12 * a23 - a13 * a22)
+        let Self {
+            a11,
+            a12,
+            a13,
+            a22,
+            a23,
+            a33,
+            ..
+        } = *self;
+        a11 * (a22 * a33 - a23 * a23) - a12 * (a12 * a33 - a13 * a23) + a13 * (a12 * a23 - a13 * a22)
     }
 
     /// Exact SPD predicate: all leading principal minors positive AND the
@@ -230,7 +240,15 @@ impl Spd3 {
     ///   of the 2D eigenspace; the recovery routine fills them via
     ///   Gram-Schmidt against the unique third eigenvector.
     pub fn eig(&self) -> (f32, f32, f32, [[f32; 3]; 3]) {
-        let Self { a11, a12, a13, a22, a23, a33, .. } = *self;
+        let Self {
+            a11,
+            a12,
+            a13,
+            a22,
+            a23,
+            a33,
+            ..
+        } = *self;
 
         let p1 = a12 * a12 + a13 * a13 + a23 * a23;
 
@@ -263,9 +281,7 @@ impl Spd3 {
         let b33 = d33 * inv_p;
 
         // r = det(B) / 2 ∈ [−1, 1] (modulo f32 drift; clamp before acos).
-        let det_b = b11 * (b22 * b33 - b23 * b23)
-            - b12 * (b12 * b33 - b13 * b23)
-            + b13 * (b12 * b23 - b13 * b22);
+        let det_b = b11 * (b22 * b33 - b23 * b23) - b12 * (b12 * b33 - b13 * b23) + b13 * (b12 * b23 - b13 * b22);
         let r = (det_b * 0.5).clamp(-1.0, 1.0);
 
         let phi = r.acos() / 3.0;
@@ -357,9 +373,15 @@ impl Spd3 {
         let s0 = scale[0] * scale[0];
         let s1 = scale[1] * scale[1];
         let s2 = scale[2] * scale[2];
-        let m00 = r00 * s0; let m01 = r01 * s1; let m02 = r02 * s2;
-        let m10 = r10 * s0; let m11 = r11 * s1; let m12 = r12 * s2;
-        let m20 = r20 * s0; let m21 = r21 * s1; let m22 = r22 * s2;
+        let m00 = r00 * s0;
+        let m01 = r01 * s1;
+        let m02 = r02 * s2;
+        let m10 = r10 * s0;
+        let m11 = r11 * s1;
+        let m12 = r12 * s2;
+        let m20 = r20 * s0;
+        let m21 = r21 * s1;
+        let m22 = r22 * s2;
 
         // Σ = M · Rᵀ, upper triangle only (M · Rᵀ is symmetric here
         // because the diag(s²) factor makes the product symmetric).
@@ -416,9 +438,15 @@ fn sort3_desc(a: f32, b: f32, c: f32) -> (f32, f32, f32) {
 #[inline]
 fn reconstruct_symm(v: &[[f32; 3]; 3], d1: f32, d2: f32, d3: f32) -> Spd3 {
     // M = V · diag(d): scale column k by dₖ.
-    let m00 = v[0][0] * d1; let m01 = v[1][0] * d2; let m02 = v[2][0] * d3;
-    let m10 = v[0][1] * d1; let m11 = v[1][1] * d2; let m12 = v[2][1] * d3;
-    let m20 = v[0][2] * d1; let m21 = v[1][2] * d2; let m22 = v[2][2] * d3;
+    let m00 = v[0][0] * d1;
+    let m01 = v[1][0] * d2;
+    let m02 = v[2][0] * d3;
+    let m10 = v[0][1] * d1;
+    let m11 = v[1][1] * d2;
+    let m12 = v[2][1] * d3;
+    let m20 = v[0][2] * d1;
+    let m21 = v[1][2] * d2;
+    let m22 = v[2][2] * d3;
     // Σ = M · Vᵀ — V column k becomes Vᵀ row k.
     let a11 = m00 * v[0][0] + m01 * v[1][0] + m02 * v[2][0];
     let a12 = m00 * v[0][1] + m01 * v[1][1] + m02 * v[2][1];
@@ -531,11 +559,7 @@ fn null_space_vec(s: &Spd3, lam: f32) -> Option<[f32; 3]> {
 
 #[inline]
 fn cross3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
+    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
 }
 
 /// Find a unit vector orthogonal to all currently-filled eigenvectors.
@@ -587,11 +611,7 @@ fn normalize3(v: [f32; 3]) -> [f32; 3] {
 fn orthonormalize_columns(v: &mut [[f32; 3]; 3]) {
     v[0] = normalize3(v[0]);
     let d10 = v[1][0] * v[0][0] + v[1][1] * v[0][1] + v[1][2] * v[0][2];
-    v[1] = normalize3([
-        v[1][0] - d10 * v[0][0],
-        v[1][1] - d10 * v[0][1],
-        v[1][2] - d10 * v[0][2],
-    ]);
+    v[1] = normalize3([v[1][0] - d10 * v[0][0], v[1][1] - d10 * v[0][1], v[1][2] - d10 * v[0][2]]);
     let d20 = v[2][0] * v[0][0] + v[2][1] * v[0][1] + v[2][2] * v[0][2];
     let d21 = v[2][0] * v[1][0] + v[2][1] * v[1][1] + v[2][2] * v[1][2];
     v[2] = normalize3([
@@ -639,14 +659,7 @@ pub fn sandwich(m: &Spd3, n: &Spd3) -> Spd3 {
     let r21 = p20 * m.a12 + p21 * m.a22 + p22 * m.a23;
     let r22 = p20 * m.a13 + p21 * m.a23 + p22 * m.a33;
 
-    Spd3::new(
-        r00,
-        0.5 * (r01a + r10),
-        0.5 * (r02a + r20),
-        r11,
-        0.5 * (r12a + r21),
-        r22,
-    )
+    Spd3::new(r00, 0.5 * (r01a + r10), 0.5 * (r02a + r20), r11, 0.5 * (r12a + r21), r22)
 }
 
 /// 16-wide SIMD batch of `sandwich` via `crate::simd::F32x16`.
@@ -674,10 +687,18 @@ pub fn sandwich_x16(m: &[Spd3; 16], n: &[Spd3; 16], out: &mut [Spd3; 16]) {
     let mut n_a23 = [0.0f32; 16];
     let mut n_a33 = [0.0f32; 16];
     for k in 0..16 {
-        m_a11[k] = m[k].a11; m_a12[k] = m[k].a12; m_a13[k] = m[k].a13;
-        m_a22[k] = m[k].a22; m_a23[k] = m[k].a23; m_a33[k] = m[k].a33;
-        n_a11[k] = n[k].a11; n_a12[k] = n[k].a12; n_a13[k] = n[k].a13;
-        n_a22[k] = n[k].a22; n_a23[k] = n[k].a23; n_a33[k] = n[k].a33;
+        m_a11[k] = m[k].a11;
+        m_a12[k] = m[k].a12;
+        m_a13[k] = m[k].a13;
+        m_a22[k] = m[k].a22;
+        m_a23[k] = m[k].a23;
+        m_a33[k] = m[k].a33;
+        n_a11[k] = n[k].a11;
+        n_a12[k] = n[k].a12;
+        n_a13[k] = n[k].a13;
+        n_a22[k] = n[k].a22;
+        n_a23[k] = n[k].a23;
+        n_a33[k] = n[k].a33;
     }
 
     let m11 = F32x16::from_slice(&m_a11);
@@ -773,11 +794,7 @@ mod tests {
 
     fn sample_spd3(state: &mut u32) -> Spd3 {
         // Random rotation × random positive scales.
-        let s = [
-            0.2 + 1.8 * rng_uniform(state),
-            0.2 + 1.8 * rng_uniform(state),
-            0.2 + 1.8 * rng_uniform(state),
-        ];
+        let s = [0.2 + 1.8 * rng_uniform(state), 0.2 + 1.8 * rng_uniform(state), 0.2 + 1.8 * rng_uniform(state)];
         let mut q = [
             -1.0 + 2.0 * rng_uniform(state),
             -1.0 + 2.0 * rng_uniform(state),
@@ -927,10 +944,7 @@ mod tests {
         for trial in 0..50 {
             let s = sample_spd3(&mut state);
             let round = s.sqrt().pow(2.0);
-            assert!(
-                approx_spd3(round, s, 5e-4),
-                "trial {trial}: sqrt(Σ)².powf(2.0) = {round:?}, orig = {s:?}"
-            );
+            assert!(approx_spd3(round, s, 5e-4), "trial {trial}: sqrt(Σ)².powf(2.0) = {round:?}, orig = {s:?}");
         }
     }
 
@@ -964,10 +978,12 @@ mod tests {
         let s = theta.sin();
         // Axis: (1, 1, 1)/√3 — unit vector with all three components.
         let inv_r3 = 1.0 / 3.0f32.sqrt();
-        let q = [(theta / 2.0).cos(),
-                 inv_r3 * (theta / 2.0).sin(),
-                 inv_r3 * (theta / 2.0).sin(),
-                 inv_r3 * (theta / 2.0).sin()];
+        let q = [
+            (theta / 2.0).cos(),
+            inv_r3 * (theta / 2.0).sin(),
+            inv_r3 * (theta / 2.0).sin(),
+            inv_r3 * (theta / 2.0).sin(),
+        ];
         let sigma = Spd3::from_scale_quat([2.0f32.sqrt(), 2.0f32.sqrt(), 1.0], q);
         // Eigenvalues are scale², i.e. (2, 2, 1) regardless of rotation.
         let (l1, l2, l3, v) = sigma.eig();
@@ -994,10 +1010,7 @@ mod tests {
             let root = s.sqrt();
             let squared = sandwich(&root, &Spd3::I);
             // Sandwich of symmetric root with identity: root · I · root = root².
-            assert!(
-                approx_spd3(squared, s, 5e-4),
-                "trial {trial} failed: sqrt²={squared:?}, orig={s:?}"
-            );
+            assert!(approx_spd3(squared, s, 5e-4), "trial {trial} failed: sqrt²={squared:?}, orig={s:?}");
         }
     }
 
@@ -1038,10 +1051,7 @@ mod tests {
             let m = sample_spd3(&mut state);
             let n = sample_spd3(&mut state);
             let r = sandwich(&m.sqrt(), &n);
-            assert!(
-                r.is_spd(1e-6),
-                "trial {trial}: sandwich(sqrt(M), N) produced non-SPD {r:?} from M={m:?}, N={n:?}"
-            );
+            assert!(r.is_spd(1e-6), "trial {trial}: sandwich(sqrt(M), N) produced non-SPD {r:?} from M={m:?}, N={n:?}");
         }
     }
 
@@ -1062,12 +1072,7 @@ mod tests {
             // slightly different rounding; 1e-3 absolute is generous
             // and well within the variance the rasterizer downstream
             // can absorb (covariance entries are ~1, 1e-3 ≈ 0.1%).
-            assert!(
-                approx_spd3(out_simd[k], scalar, 1e-3),
-                "lane {k}: simd={:?} scalar={:?}",
-                out_simd[k],
-                scalar
-            );
+            assert!(approx_spd3(out_simd[k], scalar, 1e-3), "lane {k}: simd={:?} scalar={:?}", out_simd[k], scalar);
         }
     }
 
@@ -1092,12 +1097,7 @@ mod tests {
             // Relative tolerance — eigenvalues can be ~2.0 each, so the
             // product is ~8, and 1e-3 relative = 8e-3 absolute.
             let scale = det.abs().max(prod.abs()).max(1.0);
-            assert!(
-                approx(det, prod, 5e-3 * scale),
-                "det={det} prod_eigs={prod} (l1={l1} l2={l2} l3={l3})"
-            );
+            assert!(approx(det, prod, 5e-3 * scale), "det={det} prod_eigs={prod} (l1={l1} l2={l2} l3={l3})");
         }
     }
 }
-
-

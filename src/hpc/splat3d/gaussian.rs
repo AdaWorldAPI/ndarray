@@ -17,8 +17,8 @@
 //! `Spd3::from_scale_quat` lane-by-lane. See that function for the
 //! derivation of the rotation matrix and the Σ upper-triangle.
 
-use crate::simd::{F32x16, PREFERRED_F32_LANES};
 use super::spd3::Spd3;
+use crate::simd::{F32x16, PREFERRED_F32_LANES};
 
 // ════════════════════════════════════════════════════════════════════════════
 // Constants
@@ -118,18 +118,18 @@ impl GaussianBatch {
         Self {
             len: 0,
             capacity,
-            mean_x:  vec![0.0; capacity],
-            mean_y:  vec![0.0; capacity],
-            mean_z:  vec![0.0; capacity],
+            mean_x: vec![0.0; capacity],
+            mean_y: vec![0.0; capacity],
+            mean_z: vec![0.0; capacity],
             scale_x: vec![0.0; capacity],
             scale_y: vec![0.0; capacity],
             scale_z: vec![0.0; capacity],
-            quat_w:  vec![0.0; capacity],
-            quat_x:  vec![0.0; capacity],
-            quat_y:  vec![0.0; capacity],
-            quat_z:  vec![0.0; capacity],
+            quat_w: vec![0.0; capacity],
+            quat_x: vec![0.0; capacity],
+            quat_y: vec![0.0; capacity],
+            quat_z: vec![0.0; capacity],
             opacity: vec![0.0; capacity],
-            sh:      vec![0.0; SH_COEFFS_PER_GAUSSIAN * capacity],
+            sh: vec![0.0; SH_COEFFS_PER_GAUSSIAN * capacity],
         }
     }
 
@@ -142,26 +142,21 @@ impl GaussianBatch {
     /// Push one gaussian into the next slot. Panics if `len == capacity`.
     /// Callers in tight loops should use `with_capacity` to pre-size.
     pub fn push(&mut self, g: Gaussian3D) {
-        assert!(
-            self.len < self.capacity,
-            "GaussianBatch::push: len == capacity ({})",
-            self.capacity
-        );
+        assert!(self.len < self.capacity, "GaussianBatch::push: len == capacity ({})", self.capacity);
         let i = self.len;
-        self.mean_x[i]  = g.mean[0];
-        self.mean_y[i]  = g.mean[1];
-        self.mean_z[i]  = g.mean[2];
+        self.mean_x[i] = g.mean[0];
+        self.mean_y[i] = g.mean[1];
+        self.mean_z[i] = g.mean[2];
         self.scale_x[i] = g.scale[0];
         self.scale_y[i] = g.scale[1];
         self.scale_z[i] = g.scale[2];
-        self.quat_w[i]  = g.quat[0];
-        self.quat_x[i]  = g.quat[1];
-        self.quat_y[i]  = g.quat[2];
-        self.quat_z[i]  = g.quat[3];
+        self.quat_w[i] = g.quat[0];
+        self.quat_x[i] = g.quat[1];
+        self.quat_y[i] = g.quat[2];
+        self.quat_z[i] = g.quat[3];
         self.opacity[i] = g.opacity;
         let sh_base = i * SH_COEFFS_PER_GAUSSIAN;
-        self.sh[sh_base..sh_base + SH_COEFFS_PER_GAUSSIAN]
-            .copy_from_slice(&g.sh);
+        self.sh[sh_base..sh_base + SH_COEFFS_PER_GAUSSIAN].copy_from_slice(&g.sh);
         self.len += 1;
     }
 
@@ -170,7 +165,7 @@ impl GaussianBatch {
     pub fn covariance(&self, i: usize) -> Spd3 {
         assert!(i < self.len, "covariance: index {i} >= len {}", self.len);
         let scale = [self.scale_x[i], self.scale_y[i], self.scale_z[i]];
-        let quat  = [self.quat_w[i],  self.quat_x[i],  self.quat_y[i],  self.quat_z[i]];
+        let quat = [self.quat_w[i], self.quat_x[i], self.quat_y[i], self.quat_z[i]];
         Spd3::from_scale_quat(scale, quat)
     }
 
@@ -196,11 +191,7 @@ impl GaussianBatch {
     /// `out`. The `valid` mask carried by `ProjectedBatch` (PR 3) is
     /// the canonical place for that bookkeeping.
     pub fn covariance_x16(&self, start: usize, out: &mut [Spd3; 16]) {
-        assert!(
-            start + 16 <= self.capacity,
-            "covariance_x16: start ({start}) + 16 > capacity ({})",
-            self.capacity
-        );
+        assert!(start + 16 <= self.capacity, "covariance_x16: start ({start}) + 16 > capacity ({})", self.capacity);
 
         // ── 1. Load 7 SoA channels into F32x16 lanes ────────────────────
         let qw = F32x16::from_slice(&self.quat_w[start..start + 16]);
@@ -245,9 +236,15 @@ impl GaussianBatch {
         let s2 = sz * sz;
 
         // ── 4. M = R · diag(s²): scale column k by sₖ² ─────────────────
-        let m00 = r00 * s0; let m01 = r01 * s1; let m02 = r02 * s2;
-        let m10 = r10 * s0; let m11 = r11 * s1; let m12 = r12 * s2;
-        let m20 = r20 * s0; let m21 = r21 * s1; let m22 = r22 * s2;
+        let m00 = r00 * s0;
+        let m01 = r01 * s1;
+        let m02 = r02 * s2;
+        let m10 = r10 * s0;
+        let m11 = r11 * s1;
+        let m12 = r12 * s2;
+        let m20 = r20 * s0;
+        let m21 = r21 * s1;
+        let m22 = r22 * s2;
 
         // ── 5. Σ = M · Rᵀ — upper triangle ──────────────────────────────
         let a11 = m00 * r00 + m01 * r01 + m02 * r02;
@@ -271,10 +268,7 @@ impl GaussianBatch {
         a23.copy_to_slice(&mut buf_a23);
         a33.copy_to_slice(&mut buf_a33);
         for k in 0..16 {
-            out[k] = Spd3::new(
-                buf_a11[k], buf_a12[k], buf_a13[k],
-                buf_a22[k], buf_a23[k], buf_a33[k],
-            );
+            out[k] = Spd3::new(buf_a11[k], buf_a12[k], buf_a13[k], buf_a22[k], buf_a23[k], buf_a33[k]);
         }
     }
 }
@@ -320,17 +314,15 @@ mod tests {
             -1.0 + 2.0 * rng_f32(state),
             -1.0 + 2.0 * rng_f32(state),
         ];
-        let n = (q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]).sqrt();
-        for v in &mut q { *v /= n; }
+        let n = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+        for v in &mut q {
+            *v /= n;
+        }
         q
     }
 
     fn rng_scale(state: &mut u32) -> [f32; 3] {
-        [
-            0.2 + 1.8 * rng_f32(state),
-            0.2 + 1.8 * rng_f32(state),
-            0.2 + 1.8 * rng_f32(state),
-        ]
+        [0.2 + 1.8 * rng_f32(state), 0.2 + 1.8 * rng_f32(state), 0.2 + 1.8 * rng_f32(state)]
     }
 
     // ── Test 1 ──────────────────────────────────────────────────────────────
@@ -342,16 +334,16 @@ mod tests {
             let expected = pad_to_lanes(n.max(1), PREFERRED_F32_LANES);
             assert_eq!(b.capacity, expected, "n={n}: capacity mismatch");
             assert_eq!(b.len, 0);
-            assert_eq!(b.mean_x.len(),  expected, "n={n}: mean_x len");
-            assert_eq!(b.mean_y.len(),  expected, "n={n}: mean_y len");
-            assert_eq!(b.mean_z.len(),  expected, "n={n}: mean_z len");
+            assert_eq!(b.mean_x.len(), expected, "n={n}: mean_x len");
+            assert_eq!(b.mean_y.len(), expected, "n={n}: mean_y len");
+            assert_eq!(b.mean_z.len(), expected, "n={n}: mean_z len");
             assert_eq!(b.scale_x.len(), expected, "n={n}: scale_x len");
             assert_eq!(b.scale_y.len(), expected, "n={n}: scale_y len");
             assert_eq!(b.scale_z.len(), expected, "n={n}: scale_z len");
-            assert_eq!(b.quat_w.len(),  expected, "n={n}: quat_w len");
-            assert_eq!(b.quat_x.len(),  expected, "n={n}: quat_x len");
-            assert_eq!(b.quat_y.len(),  expected, "n={n}: quat_y len");
-            assert_eq!(b.quat_z.len(),  expected, "n={n}: quat_z len");
+            assert_eq!(b.quat_w.len(), expected, "n={n}: quat_w len");
+            assert_eq!(b.quat_x.len(), expected, "n={n}: quat_x len");
+            assert_eq!(b.quat_y.len(), expected, "n={n}: quat_y len");
+            assert_eq!(b.quat_z.len(), expected, "n={n}: quat_z len");
             assert_eq!(b.opacity.len(), expected, "n={n}: opacity len");
             assert_eq!(b.sh.len(), SH_COEFFS_PER_GAUSSIAN * expected, "n={n}: sh len");
         }
@@ -404,16 +396,16 @@ mod tests {
         let mut b = GaussianBatch::with_capacity(1);
         let mut g = Gaussian3D::unit();
         g.scale = [2.0, 1.5, 0.8];
-        g.quat  = [1.0, 0.0, 0.0, 0.0]; // identity rotation
+        g.quat = [1.0, 0.0, 0.0, 0.0]; // identity rotation
         b.push(g);
         let cov = b.covariance(0);
         // Σ = diag(s²) = diag(4.0, 2.25, 0.64)
-        assert!(approx(cov.a11, 4.0,  1e-6), "a11={}", cov.a11);
+        assert!(approx(cov.a11, 4.0, 1e-6), "a11={}", cov.a11);
         assert!(approx(cov.a22, 2.25, 1e-6), "a22={}", cov.a22);
         assert!(approx(cov.a33, 0.64, 1e-6), "a33={}", cov.a33);
-        assert!(approx(cov.a12, 0.0,  1e-6), "a12={}", cov.a12);
-        assert!(approx(cov.a13, 0.0,  1e-6), "a13={}", cov.a13);
-        assert!(approx(cov.a23, 0.0,  1e-6), "a23={}", cov.a23);
+        assert!(approx(cov.a12, 0.0, 1e-6), "a12={}", cov.a12);
+        assert!(approx(cov.a13, 0.0, 1e-6), "a13={}", cov.a13);
+        assert!(approx(cov.a23, 0.0, 1e-6), "a23={}", cov.a23);
     }
 
     // ── Test 5 ──────────────────────────────────────────────────────────────
@@ -423,18 +415,15 @@ mod tests {
         // 90° about Y: quat = (cos 45°, 0, sin 45°, 0)
         let h = (0.5f32).sqrt();
         let scale = [2.0f32, 1.5, 0.8];
-        let quat  = [h, 0.0, h, 0.0];
+        let quat = [h, 0.0, h, 0.0];
         let mut b = GaussianBatch::with_capacity(1);
         let mut g = Gaussian3D::unit();
         g.scale = scale;
-        g.quat  = quat;
+        g.quat = quat;
         b.push(g);
-        let got      = b.covariance(0);
+        let got = b.covariance(0);
         let expected = Spd3::from_scale_quat(scale, quat);
-        assert!(
-            approx_spd3(got, expected, 1e-5),
-            "got={got:?} expected={expected:?}"
-        );
+        assert!(approx_spd3(got, expected, 1e-5), "got={got:?} expected={expected:?}");
     }
 
     // ── Test 6 ──────────────────────────────────────────────────────────────
@@ -446,19 +435,14 @@ mod tests {
         for _ in 0..16 {
             let mut g = Gaussian3D::unit();
             g.scale = rng_scale(&mut state);
-            g.quat  = rng_quat(&mut state);
+            g.quat = rng_quat(&mut state);
             b.push(g);
         }
         let mut simd_out = [Spd3::ZERO; 16];
         b.covariance_x16(0, &mut simd_out);
         for i in 0..16 {
             let scalar = b.covariance(i);
-            assert!(
-                approx_spd3(simd_out[i], scalar, 1e-4),
-                "lane {i}: simd={:?} scalar={:?}",
-                simd_out[i],
-                scalar,
-            );
+            assert!(approx_spd3(simd_out[i], scalar, 1e-4), "lane {i}: simd={:?} scalar={:?}", simd_out[i], scalar,);
         }
     }
 
@@ -482,11 +466,11 @@ mod tests {
     #[test]
     fn gaussian3d_unit_constructor() {
         let g = Gaussian3D::unit();
-        assert_eq!(g.mean,    [0.0, 0.0, 0.0]);
-        assert_eq!(g.scale,   [1.0, 1.0, 1.0]);
-        assert_eq!(g.quat,    [1.0, 0.0, 0.0, 0.0]);
+        assert_eq!(g.mean, [0.0, 0.0, 0.0]);
+        assert_eq!(g.scale, [1.0, 1.0, 1.0]);
+        assert_eq!(g.quat, [1.0, 0.0, 0.0, 0.0]);
         assert_eq!(g.opacity, 1.0);
-        assert_eq!(g.sh,      [0.0; SH_COEFFS_PER_GAUSSIAN]);
+        assert_eq!(g.sh, [0.0; SH_COEFFS_PER_GAUSSIAN]);
     }
 
     // ── Test 9 — covariance_x16 with start > 0 (PP-13 PR2 P1 promoted) ─────
@@ -514,7 +498,9 @@ mod tests {
             assert!(
                 approx_spd3(out_simd[k], scalar, 1e-4),
                 "lane k={k} (index {}): simd={:?}, scalar={:?}",
-                start + k, out_simd[k], scalar,
+                start + k,
+                out_simd[k],
+                scalar,
             );
         }
     }
@@ -551,38 +537,29 @@ mod tests {
         // Sanity-check the SoA contents: indices 0 and 47 survived; the
         // 46 in between are zero (this is also a fence-post check on
         // the push SH-copy bounds).
-        assert!(
-            (sh_slice[0] - 1.0).abs() < 1e-7,
-            "SoA sh[0] for gaussian 5 = {}, expected 1.0", sh_slice[0]
-        );
-        assert!(
-            (sh_slice[47] - 0.5).abs() < 1e-7,
-            "SoA sh[47] for gaussian 5 = {}, expected 0.5", sh_slice[47]
-        );
+        assert!((sh_slice[0] - 1.0).abs() < 1e-7, "SoA sh[0] for gaussian 5 = {}, expected 1.0", sh_slice[0]);
+        assert!((sh_slice[47] - 0.5).abs() < 1e-7, "SoA sh[47] for gaussian 5 = {}, expected 0.5", sh_slice[47]);
         for k in 1..47 {
-            assert!(
-                sh_slice[k].abs() < 1e-7,
-                "SoA sh[{k}] for gaussian 5 = {}, expected 0", sh_slice[k]
-            );
+            assert!(sh_slice[k].abs() < 1e-7, "SoA sh[{k}] for gaussian 5 = {}, expected 0", sh_slice[k]);
         }
         // And the round-trip evaluation must reflect that DC coefficient.
         let rgb = sh_eval_deg3(sh_slice, [0.0, 0.0, 1.0]);
         // sh.rs SH_C0 ≈ 0.282; with the +0.5 Inria offset → 0.782.
         assert!(
             (rgb[0] - 0.7820948).abs() < 1e-5,
-            "R channel via SoA: got {}, want ≈ {} (SH_C0 + 0.5)", rgb[0], 0.7820948
+            "R channel via SoA: got {}, want ≈ {} (SH_C0 + 0.5)",
+            rgb[0],
+            0.7820948
         );
         // G channel = 0.5 (all-zero coeffs).
         // B channel: sh[47] = 0.5 is the *last* B coefficient (basis k=15
         // = Y_3,3 = -SH_C3[6] · x(x²-3y²)). At d=(0,0,1) x=0 so this
         // basis vanishes → B = 0.5.
-        assert!(
-            (rgb[1] - 0.5).abs() < 1e-6,
-            "G channel: got {}, want 0.5", rgb[1]
-        );
+        assert!((rgb[1] - 0.5).abs() < 1e-6, "G channel: got {}, want 0.5", rgb[1]);
         assert!(
             (rgb[2] - 0.5).abs() < 1e-6,
-            "B channel (sh[47] basis vanishes at d=(0,0,1)): got {}, want 0.5", rgb[2]
+            "B channel (sh[47] basis vanishes at d=(0,0,1)): got {}, want 0.5",
+            rgb[2]
         );
     }
 

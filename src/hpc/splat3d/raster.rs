@@ -69,14 +69,8 @@ fn mask_and(a: F32Mask16, b: F32Mask16) -> F32Mask16 {
 /// - `width`, `height`: image dimensions in pixels.
 /// - `background`: clear color composited under the residual transmittance.
 pub fn rasterize_tile(
-    tile_x: u32,
-    tile_y: u32,
-    binning: &TileBinning,
-    projected: &ProjectedBatch,
-    framebuffer: &mut [f32],
-    width: u32,
-    height: u32,
-    background: [f32; 3],
+    tile_x: u32, tile_y: u32, binning: &TileBinning, projected: &ProjectedBatch, framebuffer: &mut [f32], width: u32,
+    height: u32, background: [f32; 3],
 ) {
     let tile_instances = binning.tile_instances(tile_x, tile_y);
 
@@ -148,10 +142,7 @@ pub fn rasterize_tile(
             // 2D Mahalanobis distance squared (negated for the exponent).
             let dx = gx - px;
             let dy = gy - py;
-            let power = F32x16::splat(-0.5)
-                * (ca * dx * dx
-                    + F32x16::splat(2.0) * cb_ * dx * dy
-                    + cc * dy * dy);
+            let power = F32x16::splat(-0.5) * (ca * dx * dx + F32x16::splat(2.0) * cb_ * dx * dy + cc * dy * dy);
 
             // exp(power) is the gaussian density at each pixel.
             let alpha_pre = op * simd_exp_f32(power);
@@ -220,11 +211,7 @@ pub fn rasterize_tile(
 /// - `width`, `height`: image dimensions in pixels.
 /// - `background`: clear color composited under residual transmittance.
 pub fn rasterize_frame(
-    binning: &TileBinning,
-    projected: &ProjectedBatch,
-    framebuffer: &mut [f32],
-    width: u32,
-    height: u32,
+    binning: &TileBinning, projected: &ProjectedBatch, framebuffer: &mut [f32], width: u32, height: u32,
     background: [f32; 3],
 ) {
     for ty in 0..binning.tile_rows {
@@ -253,17 +240,13 @@ mod tests {
     ///               radius, color_r, color_g, color_b, opacity, depth)`
     #[allow(clippy::type_complexity)]
     fn make_test_scene(
-        width: u32,
-        height: u32,
-        gaussians: &[(f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32)],
+        width: u32, height: u32, gaussians: &[(f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32)],
     ) -> (ProjectedBatch, TileBinning, Camera) {
         let n = gaussians.len();
         let mut projected = ProjectedBatch::with_capacity(n.max(1));
         projected.len = n;
 
-        for (i, &(sx, sy, ca, cb, cc, rad, cr, cg, cbv, op, dep)) in
-            gaussians.iter().enumerate()
-        {
+        for (i, &(sx, sy, ca, cb, cc, rad, cr, cg, cbv, op, dep)) in gaussians.iter().enumerate() {
             projected.screen_x[i] = sx;
             projected.screen_y[i] = sy;
             projected.conic_a[i] = ca;
@@ -379,7 +362,7 @@ mod tests {
         let w = 32u32;
         let h = 32u32;
         let bg = [1.0_f32, 1.0, 1.0]; // white background
-        // 50 fully opaque black gaussians at center (8,8), increasing depth.
+                                      // 50 fully opaque black gaussians at center (8,8), increasing depth.
         let mut gaussians = Vec::new();
         for i in 0..50usize {
             gaussians.push((
@@ -392,7 +375,7 @@ mod tests {
                 0.0f32, // black color
                 0.0,
                 0.0,
-                0.99f32, // high opacity
+                0.99f32,        // high opacity
                 (i + 1) as f32, // increasing depth
             ));
         }
@@ -532,11 +515,11 @@ mod tests {
         let w = 16u32;
         let h = 16u32;
         let bg = [1.0_f32, 0.0, 0.0]; // red background
-        // Gaussian at (8,8) with low opacity=0.1, white color.
-        // At center: alpha = min(0.99, 0.1 * exp(0)) = 0.1
-        // C = 1.0 * 0.1 * [1,1,1] = [0.1, 0.1, 0.1]
-        // T = 0.9
-        // Final: [0.1, 0.1, 0.1] + 0.9 * [1, 0, 0] = [1.0, 0.1, 0.1]
+                                      // Gaussian at (8,8) with low opacity=0.1, white color.
+                                      // At center: alpha = min(0.99, 0.1 * exp(0)) = 0.1
+                                      // C = 1.0 * 0.1 * [1,1,1] = [0.1, 0.1, 0.1]
+                                      // T = 0.9
+                                      // Final: [0.1, 0.1, 0.1] + 0.9 * [1, 0, 0] = [1.0, 0.1, 0.1]
         let gaussians = [(8.0f32, 8.0, 100.0, 0.0, 100.0, 2.0, 1.0, 1.0, 1.0, 0.1, 1.0)];
         let (projected, binning, _) = make_test_scene(w, h, &gaussians);
         let mut fb = vec![0.0f32; (3 * w * h) as usize];
@@ -570,21 +553,9 @@ mod tests {
         for y in 80..96u32 {
             for x in 80..96u32 {
                 let p = get_pixel(&fb, x, y, w);
-                assert!(
-                    (p[0] - bg[0]).abs() < 1e-6,
-                    "Tile(5,5) pixel ({x},{y}) R should be bg, got {}",
-                    p[0]
-                );
-                assert!(
-                    (p[1] - bg[1]).abs() < 1e-6,
-                    "Tile(5,5) pixel ({x},{y}) G should be bg, got {}",
-                    p[1]
-                );
-                assert!(
-                    (p[2] - bg[2]).abs() < 1e-6,
-                    "Tile(5,5) pixel ({x},{y}) B should be bg, got {}",
-                    p[2]
-                );
+                assert!((p[0] - bg[0]).abs() < 1e-6, "Tile(5,5) pixel ({x},{y}) R should be bg, got {}", p[0]);
+                assert!((p[1] - bg[1]).abs() < 1e-6, "Tile(5,5) pixel ({x},{y}) G should be bg, got {}", p[1]);
+                assert!((p[2] - bg[2]).abs() < 1e-6, "Tile(5,5) pixel ({x},{y}) B should be bg, got {}", p[2]);
             }
         }
     }
@@ -607,8 +578,8 @@ mod tests {
         // Front: opaque red at depth 1. Back: opaque blue at depth 2.
         // Both at screen center of a 32×32 image (tile (0,0) or (1,1)
         // — pick (0,0) by centering at (8, 8) inside the 16×16 tile).
-        let front = (8.0, 8.0, 100.0, 0.0, 100.0, 1.0,  1.0, 0.0, 0.0, 1.0, 1.0);
-        let back  = (8.0, 8.0, 100.0, 0.0, 100.0, 1.0,  0.0, 0.0, 1.0, 1.0, 2.0);
+        let front = (8.0, 8.0, 100.0, 0.0, 100.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0);
+        let back = (8.0, 8.0, 100.0, 0.0, 100.0, 1.0, 0.0, 0.0, 1.0, 1.0, 2.0);
         let (projected, binning, _cam) = make_test_scene(32, 32, &[front, back]);
 
         let bg = [0.5, 0.5, 0.5];
@@ -638,11 +609,7 @@ mod tests {
              — clamp at 0.99 may have been removed or retuned",
             p[2]
         );
-        assert!(
-            p[0] > 0.98,
-            "R channel should be ~0.99 (front gaussian dominant), got {}",
-            p[0]
-        );
+        assert!(p[0] > 0.98, "R channel should be ~0.99 (front gaussian dominant), got {}", p[0]);
     }
 
     // ── Test 12 — spatially separated gaussians in the same tile ────────────
@@ -662,8 +629,8 @@ mod tests {
         //   front (depth 1): red at (4, 4)
         //   back  (depth 2): blue at (12, 12)
         // Tight conic (a=c=100) makes each visible only at ±~0.3 pixels.
-        let front = (4.0,  4.0,  100.0, 0.0, 100.0, 1.0, 1.0, 0.0, 0.0, 0.95, 1.0);
-        let back  = (12.0, 12.0, 100.0, 0.0, 100.0, 1.0, 0.0, 0.0, 1.0, 0.95, 2.0);
+        let front = (4.0, 4.0, 100.0, 0.0, 100.0, 1.0, 1.0, 0.0, 0.0, 0.95, 1.0);
+        let back = (12.0, 12.0, 100.0, 0.0, 100.0, 1.0, 0.0, 0.0, 1.0, 0.95, 2.0);
         let (projected, binning, _) = make_test_scene(16, 16, &[front, back]);
         let bg = [0.0, 0.0, 0.0];
         let mut fb = vec![0.0; (16 * 16 * 3) as usize];
@@ -709,10 +676,10 @@ mod tests {
             for x in 0..16 {
                 let p = get_pixel(&fb, x, y, 16);
                 assert!(
-                    (p[0] - bg[0]).abs() < 1e-6
-                        && (p[1] - bg[1]).abs() < 1e-6
-                        && (p[2] - bg[2]).abs() < 1e-6,
-                    "pixel ({x}, {y}) = {:?}, expected bg = {:?}", p, bg
+                    (p[0] - bg[0]).abs() < 1e-6 && (p[1] - bg[1]).abs() < 1e-6 && (p[2] - bg[2]).abs() < 1e-6,
+                    "pixel ({x}, {y}) = {:?}, expected bg = {:?}",
+                    p,
+                    bg
                 );
             }
         }
@@ -728,7 +695,8 @@ mod tests {
         let p = get_pixel(&fb2, 8, 16, 16);
         assert!(
             p[0] > 0.9 && p[1] > 0.9 && p[2] > 0.9,
-            "pixel (8, 16) on bottom row should be near-white, got {:?}", p
+            "pixel (8, 16) on bottom row should be near-white, got {:?}",
+            p
         );
     }
 }

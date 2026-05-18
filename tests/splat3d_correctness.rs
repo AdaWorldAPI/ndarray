@@ -14,9 +14,7 @@
 
 #![cfg(feature = "splat3d")]
 
-use ndarray::hpc::splat3d::{
-    Camera, Gaussian3D, SplatFrame, SplatRenderer, SH_COEFFS_PER_GAUSSIAN,
-};
+use ndarray::hpc::splat3d::{Camera, Gaussian3D, SplatFrame, SplatRenderer, SH_COEFFS_PER_GAUSSIAN};
 
 /// Build a deterministic 1000-gaussian scene laid out as a 10×10×10
 /// cubic grid spanning world coordinates `[-2, 2]³`. Each gaussian:
@@ -48,9 +46,9 @@ fn build_synthetic_cube_scene(frame: &mut SplatFrame) {
                 //   Pre-divide by SH_C0 ≈ 0.282 so the output (which is
                 //   SH_C0 · sh[0] + 0.5) lands at the intended color.
                 let sh_c0: f32 = 0.28209479177387814;
-                sh[0]      = (ix as f32) / (n - 1) as f32 / sh_c0;
-                sh[16]     = (iy as f32) / (n - 1) as f32 / sh_c0;
-                sh[32]     = (iz as f32) / (n - 1) as f32 / sh_c0;
+                sh[0] = (ix as f32) / (n - 1) as f32 / sh_c0;
+                sh[16] = (iy as f32) / (n - 1) as f32 / sh_c0;
+                sh[32] = (iz as f32) / (n - 1) as f32 / sh_c0;
                 // Add a tiny jitter to the SH coefficients beyond the DC
                 // term so the eval path exercises the higher-degree
                 // basis functions (regression for PR 2's SH math).
@@ -76,12 +74,7 @@ fn camera_looking_down_z(cx: f32, cy: f32, cz: f32, width: u32, height: u32) -> 
     // coordinates. View matrix is identity rotation + (-cx, -cy, -cz)
     // translation. So a world point at (cx + dx, cy + dy, cz + dz)
     // ends up at camera-frame (dx, dy, dz).
-    let view = [
-        [1.0, 0.0, 0.0, -cx],
-        [0.0, 1.0, 0.0, -cy],
-        [0.0, 0.0, 1.0, -cz],
-        [0.0, 0.0, 0.0, 1.0],
-    ];
+    let view = [[1.0, 0.0, 0.0, -cx], [0.0, 1.0, 0.0, -cy], [0.0, 0.0, 1.0, -cz], [0.0, 0.0, 0.0, 1.0]];
     let fx = (width.max(height)) as f32;
     Camera {
         view,
@@ -126,10 +119,7 @@ fn end_to_end_synthetic_cube_renders_without_panic() {
         .chunks_exact(3)
         .filter(|p| p[0] > 0.01 || p[1] > 0.01 || p[2] > 0.01)
         .count();
-    assert!(
-        lit_pixels > 100,
-        "expected > 100 lit pixels from a 1000-gaussian cube scene, got {lit_pixels}"
-    );
+    assert!(lit_pixels > 100, "expected > 100 lit pixels from a 1000-gaussian cube scene, got {lit_pixels}");
 
     // The image should NOT be all-white either (which would indicate a
     // total saturation bug or an early-out failure).
@@ -195,10 +185,7 @@ fn end_to_end_camera_translation_changes_render() {
         .zip(fb_b.iter())
         .map(|(a, b)| (a - b).powi(2))
         .sum();
-    assert!(
-        ssd > 1.0,
-        "expected non-trivial SSD between two camera positions, got {ssd}"
-    );
+    assert!(ssd > 1.0, "expected non-trivial SSD between two camera positions, got {ssd}");
 }
 
 #[test]
@@ -210,11 +197,11 @@ fn end_to_end_empty_scene_yields_pure_background() {
 
     for (i, chunk) in frame.framebuffer.chunks_exact(3).enumerate() {
         assert!(
-            (chunk[0] - bg[0]).abs() < 1e-6
-                && (chunk[1] - bg[1]).abs() < 1e-6
-                && (chunk[2] - bg[2]).abs() < 1e-6,
+            (chunk[0] - bg[0]).abs() < 1e-6 && (chunk[1] - bg[1]).abs() < 1e-6 && (chunk[2] - bg[2]).abs() < 1e-6,
             "pixel {i}: expected bg = {bg:?}, got [{}, {}, {}]",
-            chunk[0], chunk[1], chunk[2]
+            chunk[0],
+            chunk[1],
+            chunk[2]
         );
     }
 }
@@ -233,10 +220,7 @@ fn end_to_end_three_consecutive_ticks_preserve_invariants() {
         assert_eq!(frame.frame_id, tick_n);
         // No NaN in the framebuffer.
         for (i, &px) in frame.framebuffer.iter().enumerate() {
-            assert!(
-                px.is_finite(),
-                "non-finite pixel at index {i} after tick {tick_n}: {px}"
-            );
+            assert!(px.is_finite(), "non-finite pixel at index {i} after tick {tick_n}: {px}");
         }
     }
 }

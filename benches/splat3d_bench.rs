@@ -96,10 +96,6 @@ fn bench_spd3_from_scale_quat(c: &mut Criterion) {
 }
 
 criterion_group!(
-    spd3,
-    bench_spd3_sandwich_scalar_loop,
-    bench_spd3_sandwich_simd_x16,
-    bench_spd3_eig,
-    bench_spd3_from_scale_quat,
+    spd3, bench_spd3_sandwich_scalar_loop, bench_spd3_sandwich_simd_x16, bench_spd3_eig, bench_spd3_from_scale_quat,
 );
 criterion_main!(spd3);

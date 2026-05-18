@@ -113,8 +113,7 @@ impl TileBinning {
             if projected.valid[i] == 0 {
                 continue;
             }
-            let (tx_min, tx_max, ty_min, ty_max) =
-                tile_aabb(projected, i, tile_cols, tile_rows);
+            let (tx_min, tx_max, ty_min, ty_max) = tile_aabb(projected, i, tile_cols, tile_rows);
             let w = tx_max.saturating_sub(tx_min) as usize;
             let h = ty_max.saturating_sub(ty_min) as usize;
             total += w * h;
@@ -138,8 +137,7 @@ impl TileBinning {
                 projected.depth[i]
             );
             let depth_bits = projected.depth[i].to_bits();
-            let (tx_min, tx_max, ty_min, ty_max) =
-                tile_aabb(projected, i, tile_cols, tile_rows);
+            let (tx_min, tx_max, ty_min, ty_max) = tile_aabb(projected, i, tile_cols, tile_rows);
             for ty in ty_min..ty_max {
                 for tx in tx_min..tx_max {
                     instances.push(TileInstance {
@@ -153,9 +151,7 @@ impl TileBinning {
         }
 
         // ── Sort by packed u64 key: tile_id major, depth ascending ────────
-        instances.sort_unstable_by_key(|inst| {
-            ((inst.tile_id as u64) << 32) | (inst.depth_bits as u64)
-        });
+        instances.sort_unstable_by_key(|inst| ((inst.tile_id as u64) << 32) | (inst.depth_bits as u64));
 
         // ── Build prefix-sum offset table ─────────────────────────────────
         let mut tile_offsets: Vec<u32> = vec![0u32; n_tiles + 1];
@@ -217,15 +213,10 @@ impl TileBinning {
 /// entirely outside the grid, `tx_max <= tx_min` or `ty_max <= ty_min`
 /// (caller checks with `saturating_sub` → 0 width/height → no tiles emitted).
 #[inline]
-fn tile_aabb(
-    projected: &ProjectedBatch,
-    i: usize,
-    tile_cols: u32,
-    tile_rows: u32,
-) -> (u32, u32, u32, u32) {
+fn tile_aabb(projected: &ProjectedBatch, i: usize, tile_cols: u32, tile_rows: u32) -> (u32, u32, u32, u32) {
     let cx = projected.screen_x[i];
     let cy = projected.screen_y[i];
-    let r  = projected.radius[i];
+    let r = projected.radius[i];
 
     // Pixel-space extent, then convert to tile coordinates.
     let px_min = cx - r;
@@ -267,25 +258,22 @@ fn tile_aabb(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::project::{Camera, ProjectedBatch};
+    use super::*;
 
     /// Build a minimal `ProjectedBatch` from a list of
     /// `(screen_x, screen_y, radius, depth)` tuples, all valid.
     /// The optional `valid_flags` vec overrides the default (all 1).
-    fn make_projected(
-        gaussians: &[(f32, f32, f32, f32)],
-        valid_flags: Option<&[u8]>,
-    ) -> ProjectedBatch {
+    fn make_projected(gaussians: &[(f32, f32, f32, f32)], valid_flags: Option<&[u8]>) -> ProjectedBatch {
         let n = gaussians.len();
         let mut p = ProjectedBatch::with_capacity(n.max(1));
         p.len = n;
         for (i, &(sx, sy, r, d)) in gaussians.iter().enumerate() {
             p.screen_x[i] = sx;
             p.screen_y[i] = sy;
-            p.radius[i]   = r;
-            p.depth[i]    = d;
-            p.valid[i]    = valid_flags.map(|f| f[i]).unwrap_or(1);
+            p.radius[i] = r;
+            p.depth[i] = d;
+            p.valid[i] = valid_flags.map(|f| f[i]).unwrap_or(1);
         }
         p
     }
@@ -305,8 +293,8 @@ mod tests {
         let projected = ProjectedBatch::with_capacity(1); // empty (len=0)
         let binning = TileBinning::from_projected(&projected, &camera);
 
-        assert_eq!(binning.tile_cols, 120);  // ceil(1920/16)
-        assert_eq!(binning.tile_rows, 68);   // ceil(1080/16)
+        assert_eq!(binning.tile_cols, 120); // ceil(1920/16)
+        assert_eq!(binning.tile_rows, 68); // ceil(1080/16)
         assert_eq!(binning.instances.len(), 0);
         assert_eq!(binning.tile_offsets.len(), 120 * 68 + 1);
         assert!(binning.tile_offsets.iter().all(|&o| o == 0));
@@ -321,17 +309,15 @@ mod tests {
         let projected = make_projected(&[(8.0, 8.0, 4.0, 1.0)], None);
         let binning = TileBinning::from_projected(&projected, &camera);
 
-        assert_eq!(binning.tile_instances(0, 0).len(), 1,
-            "tile (0,0) should have 1 instance");
+        assert_eq!(binning.tile_instances(0, 0).len(), 1, "tile (0,0) should have 1 instance");
 
         // All other tiles must be empty.
         for ty in 0..binning.tile_rows {
             for tx in 0..binning.tile_cols {
-                if tx == 0 && ty == 0 { continue; }
-                assert_eq!(
-                    binning.tile_instances(tx, ty).len(), 0,
-                    "tile ({tx},{ty}) should be empty"
-                );
+                if tx == 0 && ty == 0 {
+                    continue;
+                }
+                assert_eq!(binning.tile_instances(tx, ty).len(), 0, "tile ({tx},{ty}) should be empty");
             }
         }
     }
@@ -362,21 +348,25 @@ mod tests {
         // tx_min=floor(206/16)=12, tx_max=ceil(306/16)=ceil(19.125)=20
         // 8 tiles wide, 8 tiles tall → 64 total
         let expected_count = 8 * 8_usize; // 64
-        assert_eq!(binning.instances.len(), expected_count,
-            "expected {expected_count} instances for 50-radius gaussian");
+        assert_eq!(
+            binning.instances.len(),
+            expected_count,
+            "expected {expected_count} instances for 50-radius gaussian"
+        );
 
         // Build set of covered tiles from instances
         use std::collections::HashSet;
         let tile_cols = binning.tile_cols;
-        let covered: HashSet<(u32, u32)> = binning.instances.iter()
+        let covered: HashSet<(u32, u32)> = binning
+            .instances
+            .iter()
             .map(|inst| (inst.tile_id % tile_cols, inst.tile_id / tile_cols))
             .collect();
 
         // All tiles in [12..20) × [12..20) must be covered
         for ty in 12u32..20 {
             for tx in 12u32..20 {
-                assert!(covered.contains(&(tx, ty)),
-                    "tile ({tx},{ty}) should be covered");
+                assert!(covered.contains(&(tx, ty)), "tile ({tx},{ty}) should be covered");
             }
         }
         assert_eq!(covered.len(), expected_count);
@@ -391,9 +381,9 @@ mod tests {
         let camera = Camera::identity_at_origin(512, 512);
         let projected = make_projected(
             &[
-                (88.0, 88.0, 4.0, 3.0),  // gaussian 0, depth 3
-                (88.0, 88.0, 4.0, 1.0),  // gaussian 1, depth 1
-                (88.0, 88.0, 4.0, 2.0),  // gaussian 2, depth 2
+                (88.0, 88.0, 4.0, 3.0), // gaussian 0, depth 3
+                (88.0, 88.0, 4.0, 1.0), // gaussian 1, depth 1
+                (88.0, 88.0, 4.0, 2.0), // gaussian 2, depth 2
             ],
             None,
         );
@@ -423,8 +413,7 @@ mod tests {
         let tile_55 = 5 * binning.tile_cols + 5;
         assert_eq!(binning.tile_offsets[0], 0);
         assert_eq!(
-            binning.tile_offsets[0],
-            binning.tile_offsets[tile_55 as usize],
+            binning.tile_offsets[0], binning.tile_offsets[tile_55 as usize],
             "no instances should land before tile (5,5)"
         );
     }
@@ -437,16 +426,18 @@ mod tests {
         // gaussian 0: valid=0 (culled), gaussian 1: valid=1
         let projected = make_projected(
             &[
-                (88.0, 88.0, 4.0, 1.0),  // gaussian 0 — will be culled
-                (88.0, 88.0, 4.0, 2.0),  // gaussian 1 — valid
+                (88.0, 88.0, 4.0, 1.0), // gaussian 0 — will be culled
+                (88.0, 88.0, 4.0, 2.0), // gaussian 1 — valid
             ],
             Some(&[0, 1]),
         );
         let binning = TileBinning::from_projected(&projected, &camera);
 
         // Only gaussian_id=1 should appear
-        assert!(binning.instances.iter().all(|inst| inst.gaussian_id == 1),
-            "only gaussian 1 (valid) should be in the instances");
+        assert!(
+            binning.instances.iter().all(|inst| inst.gaussian_id == 1),
+            "only gaussian 1 (valid) should be in the instances"
+        );
 
         // At least 1 instance emitted for gaussian 1
         let count_g1 = binning.instances.len();
@@ -468,16 +459,14 @@ mod tests {
 
         // ceil(100/16) = ceil(6.25) = 7
         let expected = 7 * 7_usize;
-        assert_eq!(binning.instances.len(), expected,
-            "clamped AABB should give 7×7=49 tiles");
+        assert_eq!(binning.instances.len(), expected, "clamped AABB should give 7×7=49 tiles");
 
         // All instances should have tile coordinates in [0..7)×[0..7)
         let tile_cols = binning.tile_cols;
         for inst in &binning.instances {
             let tx = inst.tile_id % tile_cols;
             let ty = inst.tile_id / tile_cols;
-            assert!(tx < 7 && ty < 7,
-                "tile ({tx},{ty}) is outside expected [0..7)×[0..7)");
+            assert!(tx < 7 && ty < 7, "tile ({tx},{ty}) is outside expected [0..7)×[0..7)");
         }
     }
 
@@ -491,8 +480,7 @@ mod tests {
         let projected = make_projected(&[(1000.0, 1000.0, 50.0, 1.0)], None);
         let binning = TileBinning::from_projected(&projected, &camera);
 
-        assert_eq!(binning.instances.len(), 0,
-            "off-screen gaussian should produce zero instances");
+        assert_eq!(binning.instances.len(), 0, "off-screen gaussian should produce zero instances");
     }
 
     // ── Test 10 ──────────────────────────────────────────────────────────────
@@ -519,16 +507,15 @@ mod tests {
             assert!(
                 binning.tile_offsets[t] <= binning.tile_offsets[t + 1],
                 "tile_offsets[{t}]={} > tile_offsets[{}]={}",
-                binning.tile_offsets[t], t + 1, binning.tile_offsets[t + 1]
+                binning.tile_offsets[t],
+                t + 1,
+                binning.tile_offsets[t + 1]
             );
         }
 
         // All offsets ≤ instances.len()
         let inst_len = binning.instances.len() as u32;
-        assert!(
-            binning.tile_offsets.iter().all(|&o| o <= inst_len),
-            "some offset exceeds instances.len()"
-        );
+        assert!(binning.tile_offsets.iter().all(|&o| o <= inst_len), "some offset exceeds instances.len()");
     }
 
     // ── Test 11 — exact-tile-boundary edge case (PP-13 PR4 P0 promoted) ────
@@ -556,7 +543,8 @@ mod tests {
         let projected = make_projected(&[(88.0, 88.0, 8.0, 1.0)], None);
         let binning = TileBinning::from_projected(&projected, &camera);
         assert_eq!(
-            binning.instances.len(), 4,
+            binning.instances.len(),
+            4,
             "exact-boundary gaussian: expected 4 instances (tiles {{5,6}}²), got {}",
             binning.instances.len()
         );
@@ -566,7 +554,8 @@ mod tests {
         assert_eq!(binning.tile_instances(5, 6).len(), 1, "tile (5,6) missing");
         assert_eq!(binning.tile_instances(6, 5).len(), 1, "tile (6,5) missing");
         assert_eq!(
-            binning.tile_instances(6, 6).len(), 1,
+            binning.tile_instances(6, 6).len(),
+            1,
             "tile (6,6) MISSING — the regression PP-13 caught: \
              px_max = 6·16 = 96, ceil(96/16) = 6 (under-count by one tile)"
         );
@@ -602,7 +591,10 @@ mod tests {
         let projected = make_projected(&gaussians, None);
         let binning = TileBinning::from_projected(&projected, &camera);
         let n_tiles = (binning.tile_cols * binning.tile_rows) as usize;
-        let sentinel = *binning.tile_offsets.last().expect("offsets always have sentinel");
+        let sentinel = *binning
+            .tile_offsets
+            .last()
+            .expect("offsets always have sentinel");
         let actual_count = binning.instances.len() as u32;
         assert_eq!(
             sentinel, actual_count,

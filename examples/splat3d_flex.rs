@@ -35,9 +35,7 @@
 
 #![cfg(feature = "splat3d")]
 
-use ndarray::hpc::splat3d::{
-    read_ply, Camera, Gaussian3D, SplatFrame, SH_COEFFS_PER_GAUSSIAN,
-};
+use ndarray::hpc::splat3d::{read_ply, Camera, Gaussian3D, SplatFrame, SH_COEFFS_PER_GAUSSIAN};
 use std::env;
 use std::fs::{create_dir_all, File};
 use std::io::{BufReader, BufWriter, Write};
@@ -68,13 +66,21 @@ impl Args {
                 "--width" => width = argv.next().and_then(|s| s.parse().ok()).unwrap_or(width),
                 "--height" => height = argv.next().and_then(|s| s.parse().ok()).unwrap_or(height),
                 "-h" | "--help" => {
-                    eprintln!("Usage: splat3d_flex [--scene PATH.ply] [--frames N] [--out DIR] [--width W] [--height H]");
+                    eprintln!(
+                        "Usage: splat3d_flex [--scene PATH.ply] [--frames N] [--out DIR] [--width W] [--height H]"
+                    );
                     std::process::exit(0);
                 }
                 other => eprintln!("warning: unrecognized arg `{other}` (ignored)"),
             }
         }
-        Args { scene, frames, out, width, height }
+        Args {
+            scene,
+            frames,
+            out,
+            width,
+            height,
+        }
     }
 }
 
@@ -212,10 +218,7 @@ fn main() {
         f
     };
 
-    eprintln!(
-        "Rendering {} frames at {}×{} into {} …",
-        args.frames, args.width, args.height, args.out.display()
-    );
+    eprintln!("Rendering {} frames at {}×{} into {} …", args.frames, args.width, args.height, args.out.display());
     let path = bake_circular_camera_path(args.width, args.height, args.frames);
     let mut times_ms: Vec<f64> = Vec::with_capacity(args.frames);
 

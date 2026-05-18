@@ -11,9 +11,9 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::hpc::splat3d::gaussian::GaussianBatch;
-use crate::hpc::splat3d::project::{Camera, ProjectedBatch, project_batch};
-use crate::hpc::splat3d::tile::TileBinning;
+use crate::hpc::splat3d::project::{project_batch, Camera, ProjectedBatch};
 use crate::hpc::splat3d::raster::rasterize_frame;
+use crate::hpc::splat3d::tile::TileBinning;
 
 // ════════════════════════════════════════════════════════════════════════════
 // SplatFrame — one frame's full state
@@ -84,14 +84,7 @@ impl SplatFrame {
         self.binning = TileBinning::from_projected(&self.projected, camera);
 
         // 3. Rasterize: depth-sorted alpha-blend into framebuffer
-        rasterize_frame(
-            &self.binning,
-            &self.projected,
-            &mut self.framebuffer,
-            self.width,
-            self.height,
-            background,
-        );
+        rasterize_frame(&self.binning, &self.projected, &mut self.framebuffer, self.width, self.height, background);
 
         // 4. Advance frame counter
         self.frame_id += 1;
@@ -101,25 +94,38 @@ impl SplatFrame {
     pub fn byte_footprint(&self) -> usize {
         // GaussianBatch: 11 f32 vecs × capacity + SH vec
         let g = &self.gaussians;
-        let gaussian_bytes = (
-            g.mean_x.len() + g.mean_y.len() + g.mean_z.len()
-            + g.scale_x.len() + g.scale_y.len() + g.scale_z.len()
-            + g.quat_w.len() + g.quat_x.len() + g.quat_y.len() + g.quat_z.len()
-            + g.opacity.len()
-        ) * 4 + g.sh.len() * 4;
+        let gaussian_bytes = (g.mean_x.len()
+            + g.mean_y.len()
+            + g.mean_z.len()
+            + g.scale_x.len()
+            + g.scale_y.len()
+            + g.scale_z.len()
+            + g.quat_w.len()
+            + g.quat_x.len()
+            + g.quat_y.len()
+            + g.quat_z.len()
+            + g.opacity.len())
+            * 4
+            + g.sh.len() * 4;
 
         // ProjectedBatch: 10 f32 vecs × capacity + 1 u8 vec
         let p = &self.projected;
-        let projected_bytes = (
-            p.screen_x.len() + p.screen_y.len() + p.depth.len()
-            + p.conic_a.len() + p.conic_b.len() + p.conic_c.len()
-            + p.radius.len() + p.color_r.len() + p.color_g.len()
-            + p.color_b.len() + p.opacity.len()
-        ) * 4 + p.valid.len();
+        let projected_bytes = (p.screen_x.len()
+            + p.screen_y.len()
+            + p.depth.len()
+            + p.conic_a.len()
+            + p.conic_b.len()
+            + p.conic_c.len()
+            + p.radius.len()
+            + p.color_r.len()
+            + p.color_g.len()
+            + p.color_b.len()
+            + p.opacity.len())
+            * 4
+            + p.valid.len();
 
         // TileBinning
-        let binning_bytes = self.binning.instances.len() * 16
-            + self.binning.tile_offsets.len() * 4;
+        let binning_bytes = self.binning.instances.len() * 16 + self.binning.tile_offsets.len() * 4;
 
         // Framebuffer
         let fb_bytes = self.framebuffer.len() * 4;
@@ -241,8 +247,7 @@ mod tests {
         assert_eq!(frame.width, 64);
         assert_eq!(frame.height, 48);
         assert_eq!(frame.framebuffer.len(), 3 * 64 * 48);
-        assert!(frame.gaussians.capacity >= 100,
-            "capacity {} < 100", frame.gaussians.capacity);
+        assert!(frame.gaussians.capacity >= 100, "capacity {} < 100", frame.gaussians.capacity);
         assert_eq!(frame.frame_id, 0);
     }
 
@@ -255,8 +260,10 @@ mod tests {
         frame.tick(&camera, [0.0, 0.0, 0.0]);
         assert_eq!(frame.frame_id, 1);
         // With zero gaussians, framebuffer must be all-black (background = black)
-        assert!(frame.framebuffer.iter().all(|&v| v == 0.0),
-            "framebuffer should be all black with zero gaussians and black background");
+        assert!(
+            frame.framebuffer.iter().all(|&v| v == 0.0),
+            "framebuffer should be all black with zero gaussians and black background"
+        );
     }
 
     // ── Test 3 ───────────────────────────────────────────────────────────────
@@ -275,7 +282,7 @@ mod tests {
         // SH DC contribution: color = 0.5 + 0.282_095 * sh_dc
         // To get color > background (0.0), we need a positive DC.
         // Use a large positive value so the clamped output is clearly > 0.
-        g.sh[0]  = 3.0; // R channel DC
+        g.sh[0] = 3.0; // R channel DC
         g.sh[16] = 3.0; // G channel DC
         g.sh[32] = 3.0; // B channel DC
         g.scale = [0.5, 0.5, 0.5]; // Visible screen-space radius
@@ -288,8 +295,7 @@ mod tests {
         let cy = 32usize;
         let idx = (cy * 64 + cx) * 3;
         let r = frame.framebuffer[idx];
-        assert!(r > 0.0,
-            "center pixel R={r} should be > 0 after rendering a bright gaussian");
+        assert!(r > 0.0, "center pixel R={r} should be > 0 after rendering a bright gaussian");
     }
 
     // ── Test 4 ───────────────────────────────────────────────────────────────
@@ -368,8 +374,7 @@ mod tests {
     #[test]
     fn splat_frame_byte_footprint_nonzero() {
         let frame = SplatFrame::with_capacity(64, 32, 32);
-        assert!(frame.byte_footprint() > 0,
-            "byte_footprint should be > 0 for a non-empty frame");
+        assert!(frame.byte_footprint() > 0, "byte_footprint should be > 0 for a non-empty frame");
     }
 
     // ── Test 10 ──────────────────────────────────────────────────────────────
@@ -401,9 +406,6 @@ mod tests {
 
         r.tick(&camera, [0.0, 0.0, 0.0]);
 
-        assert_ne!(
-            ptr_before_tick1, ptr_before_tick2,
-            "two ticks must render to different physical frame buffers"
-        );
+        assert_ne!(ptr_before_tick1, ptr_before_tick2, "two ticks must render to different physical frame buffers");
     }
 }

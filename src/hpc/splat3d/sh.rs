@@ -46,22 +46,22 @@ const SH_C1: f32 = 0.4886025119029199;
 
 /// Degree-2 normalization constants (5 terms).
 const SH_C2: [f32; 5] = [
-    1.0925484305920792,   // √(15/π)/2
-    -1.0925484305920792,  // -√(15/π)/2
-    0.31539156525252005,  // √(5/π)/4
-    -1.0925484305920792,  // -√(15/π)/2
-    0.5462742152960396,   // √(15/π)/4
+    1.0925484305920792,  // √(15/π)/2
+    -1.0925484305920792, // -√(15/π)/2
+    0.31539156525252005, // √(5/π)/4
+    -1.0925484305920792, // -√(15/π)/2
+    0.5462742152960396,  // √(15/π)/4
 ];
 
 /// Degree-3 normalization constants (7 terms).
 const SH_C3: [f32; 7] = [
-    -0.5900435899266435,  // -√(35/(2π))/4
-    2.890611442640554,    // √(105/π)/2
-    -0.4570457994644658,  // -√(21/(2π))/4
-    0.3731763325901154,   // √(7/π)/4
-    -0.4570457994644658,  // -√(21/(2π))/4
-    1.445305721320277,    // √(105/π)/4
-    -0.5900435899266435,  // -√(35/(2π))/4
+    -0.5900435899266435, // -√(35/(2π))/4
+    2.890611442640554,   // √(105/π)/2
+    -0.4570457994644658, // -√(21/(2π))/4
+    0.3731763325901154,  // √(7/π)/4
+    -0.4570457994644658, // -√(21/(2π))/4
+    1.445305721320277,   // √(105/π)/4
+    -0.5900435899266435, // -√(35/(2π))/4
 ];
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -95,13 +95,13 @@ pub fn sh_eval_deg3(sh: &[f32], d: [f32; 3]) -> [f32; 3] {
     let yz = y * z;
 
     // Degree-3 polynomial terms.
-    let p3_neg3 = y * (3.0 * xx - yy);   // Y_3-3
-    let p3_neg2 = xy * z;                  // Y_3-2
+    let p3_neg3 = y * (3.0 * xx - yy); // Y_3-3
+    let p3_neg2 = xy * z; // Y_3-2
     let p3_neg1 = y * (4.0 * zz - xx - yy); // Y_3-1
-    let p3_0    = z * (2.0 * zz - 3.0 * xx - 3.0 * yy); // Y_30
+    let p3_0 = z * (2.0 * zz - 3.0 * xx - 3.0 * yy); // Y_30
     let p3_pos1 = x * (4.0 * zz - xx - yy); // Y_31
-    let p3_pos2 = z * (xx - yy);           // Y_32
-    let p3_pos3 = x * (xx - 3.0 * yy);    // Y_33
+    let p3_pos2 = z * (xx - yy); // Y_32
+    let p3_pos3 = x * (xx - 3.0 * yy); // Y_33
 
     let mut rgb = [0.0f32; 3];
 
@@ -160,11 +160,7 @@ pub fn sh_eval_deg3(sh: &[f32], d: [f32; 3]) -> [f32; 3] {
 /// simultaneously. On AVX-512 each inner iteration is a single `vfmadd`
 /// instruction operating on all 16 lanes.
 #[inline]
-pub fn sh_eval_deg3_x16(
-    sh_block: &[f32],
-    dirs: &[[f32; 3]; 16],
-    out: &mut [[f32; 3]; 16],
-) {
+pub fn sh_eval_deg3_x16(sh_block: &[f32], dirs: &[[f32; 3]; 16], out: &mut [[f32; 3]; 16]) {
     debug_assert!(sh_block.len() >= 16 * 48, "sh_block must have at least 768 elements");
 
     // Step 1: Evaluate the 16 basis values for each of the 16 gaussians.
@@ -180,16 +176,16 @@ pub fn sh_eval_deg3_x16(
         let xz = x * z;
         let yz = y * z;
 
-        basis[0][g]  = SH_C0;
-        basis[1][g]  = -SH_C1 * y;
-        basis[2][g]  =  SH_C1 * z;
-        basis[3][g]  = -SH_C1 * x;
-        basis[4][g]  = SH_C2[0] * xy;
-        basis[5][g]  = SH_C2[1] * yz;
-        basis[6][g]  = SH_C2[2] * (2.0 * zz - xx - yy);
-        basis[7][g]  = SH_C2[3] * xz;
-        basis[8][g]  = SH_C2[4] * (xx - yy);
-        basis[9][g]  = SH_C3[0] * (y * (3.0 * xx - yy));
+        basis[0][g] = SH_C0;
+        basis[1][g] = -SH_C1 * y;
+        basis[2][g] = SH_C1 * z;
+        basis[3][g] = -SH_C1 * x;
+        basis[4][g] = SH_C2[0] * xy;
+        basis[5][g] = SH_C2[1] * yz;
+        basis[6][g] = SH_C2[2] * (2.0 * zz - xx - yy);
+        basis[7][g] = SH_C2[3] * xz;
+        basis[8][g] = SH_C2[4] * (xx - yy);
+        basis[9][g] = SH_C3[0] * (y * (3.0 * xx - yy));
         basis[10][g] = SH_C3[1] * (xy * z);
         basis[11][g] = SH_C3[2] * (y * (4.0 * zz - xx - yy));
         basis[12][g] = SH_C3[3] * (z * (2.0 * zz - 3.0 * xx - 3.0 * yy));
@@ -202,8 +198,8 @@ pub fn sh_eval_deg3_x16(
     // acc_c[lane g] = sum_k( basis[k][g] * sh_block[g*48 + c*16 + k] )
     let zero = F32x16::splat(0.0);
     let half = F32x16::splat(0.5);
-    let lo   = F32x16::splat(0.0);
-    let hi   = F32x16::splat(1.0);
+    let lo = F32x16::splat(0.0);
+    let hi = F32x16::splat(1.0);
 
     for c in 0..3 {
         let mut acc = zero;
@@ -267,22 +263,13 @@ mod tests {
             let rgb1 = sh_eval_deg3(&sh, d1);
             let rgb2 = sh_eval_deg3(&sh, d2);
 
-            assert!(
-                (rgb1[c] - expected).abs() < EPS,
-                "channel {c} dir1: got {}, expected {expected}", rgb1[c]
-            );
-            assert!(
-                (rgb2[c] - expected).abs() < EPS,
-                "channel {c} dir2: got {}, expected {expected}", rgb2[c]
-            );
+            assert!((rgb1[c] - expected).abs() < EPS, "channel {c} dir1: got {}, expected {expected}", rgb1[c]);
+            assert!((rgb2[c] - expected).abs() < EPS, "channel {c} dir2: got {}, expected {expected}", rgb2[c]);
 
             // Other channels should be clamped to 0.5 (zero coefficients).
             for other_c in 0..3 {
                 if other_c != c {
-                    assert!(
-                        (rgb1[other_c] - 0.5).abs() < EPS,
-                        "channel {other_c} should be 0.5 when c={c}"
-                    );
+                    assert!((rgb1[other_c] - 0.5).abs() < EPS, "channel {other_c} should be 0.5 when c={c}");
                 }
             }
         }
@@ -301,10 +288,7 @@ mod tests {
         for d in dirs {
             let rgb = sh_eval_deg3(&sh, d);
             for c in 0..3 {
-                assert!(
-                    (rgb[c] - 0.5).abs() < EPS,
-                    "zero coeffs at dir {d:?}: channel {c} = {}, expected 0.5", rgb[c]
-                );
+                assert!((rgb[c] - 0.5).abs() < EPS, "zero coeffs at dir {d:?}: channel {c} = {}, expected 0.5", rgb[c]);
             }
         }
     }
@@ -321,22 +305,13 @@ mod tests {
         let rgb_z = sh_eval_deg3(&sh, [0.0, 0.0, 1.0]);
         let rgb_y = sh_eval_deg3(&sh, [0.0, 1.0, 0.0]);
 
-        assert!(
-            (rgb_z[0] - 0.5).abs() < EPS,
-            "at (0,0,1): expected 0.5, got {}", rgb_z[0]
-        );
+        assert!((rgb_z[0] - 0.5).abs() < EPS, "at (0,0,1): expected 0.5, got {}", rgb_z[0]);
 
         let expected_y = (0.5 + (-SH_C1)).clamp(0.0, 1.0);
-        assert!(
-            (rgb_y[0] - expected_y).abs() < EPS,
-            "at (0,1,0): expected {expected_y}, got {}", rgb_y[0]
-        );
+        assert!((rgb_y[0] - expected_y).abs() < EPS, "at (0,1,0): expected {expected_y}, got {}", rgb_y[0]);
 
         // The two outputs should differ.
-        assert!(
-            (rgb_z[0] - rgb_y[0]).abs() > 1e-4,
-            "outputs should differ between directions"
-        );
+        assert!((rgb_z[0] - rgb_y[0]).abs() > 1e-4, "outputs should differ between directions");
     }
 
     // ── Test 4 ────────────────────────────────────────────────────────────
@@ -405,7 +380,8 @@ mod tests {
                 assert!(
                     delta < 5e-5,
                     "gaussian {g} channel {c}: SIMD={} scalar={} delta={delta}",
-                    out_simd[g][c], rgb_scalar[c]
+                    out_simd[g][c],
+                    rgb_scalar[c]
                 );
             }
         }
@@ -416,10 +392,10 @@ mod tests {
     fn sh_eval_x16_with_all_same_input_is_constant() {
         // All 16 gaussians have identical SH and identical direction.
         let mut sh_single = make_zero_sh();
-        sh_single[0]  = 0.3;   // R s[0]
-        sh_single[16] = 0.1;   // G s[0]
-        sh_single[32] = -0.2;  // B s[0]
-        sh_single[1]  = 0.5;   // R s[1]
+        sh_single[0] = 0.3; // R s[0]
+        sh_single[16] = 0.1; // G s[0]
+        sh_single[32] = -0.2; // B s[0]
+        sh_single[1] = 0.5; // R s[1]
 
         let mut sh_block = [0.0f32; 768];
         for g in 0..16 {
@@ -437,7 +413,9 @@ mod tests {
             for c in 0..3 {
                 assert!(
                     (out[g][c] - first[c]).abs() < 1e-6,
-                    "gaussian {g} channel {c}: {}, expected {}", out[g][c], first[c]
+                    "gaussian {g} channel {c}: {}, expected {}",
+                    out[g][c],
+                    first[c]
                 );
             }
         }
@@ -450,10 +428,7 @@ mod tests {
         // Y_00 = SH_C0 (constant), ∫ dΩ = 4π.
         // So SH_C0² * 4π ≈ 1.
         let val = 4.0 * std::f32::consts::PI * SH_C0 * SH_C0;
-        assert!(
-            (val - 1.0).abs() < 1e-6,
-            "SH_C0 normalization: 4π·SH_C0² = {val}, expected ≈1.0"
-        );
+        assert!((val - 1.0).abs() < 1e-6, "SH_C0 normalization: 4π·SH_C0² = {val}, expected ≈1.0");
     }
 
     // ── Test 8 — analytical ground truth at d=(0,0,1) ─────────────────────
@@ -476,12 +451,7 @@ mod tests {
     #[test]
     fn sh_eval_analytical_ground_truth_at_positive_z() {
         let d = [0.0f32, 0.0, 1.0];
-        let expected_basis = [
-            (0usize, SH_C0),
-            (2, SH_C1),
-            (6, SH_C2[2] * 2.0),
-            (12, SH_C3[3] * 2.0),
-        ];
+        let expected_basis = [(0usize, SH_C0), (2, SH_C1), (6, SH_C2[2] * 2.0), (12, SH_C3[3] * 2.0)];
 
         for &(k, expected_basis_val) in &expected_basis {
             // Single non-zero coefficient on channel R (lane k), value 1.0.
@@ -496,16 +466,8 @@ mod tests {
                 "basis k={k}: expected R = clamp({expected_basis_val} + 0.5) = {expected_r}, got {}",
                 rgb[0]
             );
-            assert!(
-                (rgb[1] - 0.5).abs() < 1e-6,
-                "basis k={k}: G should be 0.5 (no coeffs), got {}",
-                rgb[1]
-            );
-            assert!(
-                (rgb[2] - 0.5).abs() < 1e-6,
-                "basis k={k}: B should be 0.5 (no coeffs), got {}",
-                rgb[2]
-            );
+            assert!((rgb[1] - 0.5).abs() < 1e-6, "basis k={k}: G should be 0.5 (no coeffs), got {}", rgb[1]);
+            assert!((rgb[2] - 0.5).abs() < 1e-6, "basis k={k}: B should be 0.5 (no coeffs), got {}", rgb[2]);
         }
 
         // Negative case: every basis function that SHOULD evaluate to
@@ -515,11 +477,7 @@ mod tests {
             let mut sh = [0.0f32; SH_COEFFS_PER_GAUSSIAN];
             sh[k] = 1.0;
             let rgb = sh_eval_deg3(&sh, d);
-            assert!(
-                (rgb[0] - 0.5).abs() < 1e-6,
-                "basis k={k}: should vanish at d=(0,0,1), got R = {}",
-                rgb[0]
-            );
+            assert!((rgb[0] - 0.5).abs() < 1e-6, "basis k={k}: should vanish at d=(0,0,1), got R = {}", rgb[0]);
         }
     }
 }

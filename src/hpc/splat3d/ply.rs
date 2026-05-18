@@ -50,9 +50,7 @@
 
 use std::io::{BufRead, BufReader, Read};
 
-use crate::hpc::splat3d::gaussian::{
-    GaussianBatch, SH_COEFFS_PER_CHANNEL, SH_COEFFS_PER_GAUSSIAN,
-};
+use crate::hpc::splat3d::gaussian::{GaussianBatch, SH_COEFFS_PER_CHANNEL, SH_COEFFS_PER_GAUSSIAN};
 
 /// Errors the PLY reader can return.
 #[derive(Debug)]
@@ -129,9 +127,7 @@ pub fn read_ply<R: Read>(reader: R) -> Result<GaussianBatch, PlyError> {
         line.clear();
         let n = buf.read_line(&mut line)?;
         if n == 0 {
-            return Err(PlyError::BadElement(
-                "header ended without end_header".to_string(),
-            ));
+            return Err(PlyError::BadElement("header ended without end_header".to_string()));
         }
         let trimmed = line.trim();
         if trimmed == "end_header" {
@@ -175,9 +171,7 @@ pub fn read_ply<R: Read>(reader: R) -> Result<GaussianBatch, PlyError> {
     }
     for (actual, exp) in properties.iter().zip(expected.iter()) {
         if actual != exp {
-            return Err(PlyError::UnexpectedProperty(format!(
-                "expected `{exp}`, got `{actual}`"
-            )));
+            return Err(PlyError::UnexpectedProperty(format!("expected `{exp}`, got `{actual}`")));
         }
     }
 
@@ -205,7 +199,8 @@ pub fn read_ply<R: Read>(reader: R) -> Result<GaussianBatch, PlyError> {
             ))
         })?;
     let mut bytes = vec![0u8; body_bytes];
-    buf.read_exact(&mut bytes).map_err(|_| PlyError::Truncated)?;
+    buf.read_exact(&mut bytes)
+        .map_err(|_| PlyError::Truncated)?;
 
     // Convert into a GaussianBatch with activations applied.
     let mut batch = GaussianBatch::with_capacity(n_vertices);
@@ -243,17 +238,10 @@ pub fn read_ply<R: Read>(reader: R) -> Result<GaussianBatch, PlyError> {
         let opacity_logit = read_f32(54);
         let opacity = 1.0 / (1.0 + (-opacity_logit).exp());
         // scale_0..2 at offsets 55, 56, 57 (log-space).
-        let scale = [
-            read_f32(55).exp(),
-            read_f32(56).exp(),
-            read_f32(57).exp(),
-        ];
+        let scale = [read_f32(55).exp(), read_f32(56).exp(), read_f32(57).exp()];
         // rot_0..3 at offsets 58, 59, 60, 61 (w, x, y, z; normalize).
         let mut quat = [read_f32(58), read_f32(59), read_f32(60), read_f32(61)];
-        let qn = (quat[0] * quat[0]
-            + quat[1] * quat[1]
-            + quat[2] * quat[2]
-            + quat[3] * quat[3])
+        let qn = (quat[0] * quat[0] + quat[1] * quat[1] + quat[2] * quat[2] + quat[3] * quat[3])
             .sqrt()
             .max(1e-12);
         for q in &mut quat {
@@ -348,11 +336,12 @@ mod tests {
         );
         // Quat normalization: components are (0.58, 0.59, 0.60, 0.61)
         // norm = sqrt(0.58² + 0.59² + 0.60² + 0.61²) ≈ 1.190
-        let qn = (0.58_f32.powi(2) + 0.59_f32.powi(2) + 0.60_f32.powi(2) + 0.61_f32.powi(2))
-            .sqrt();
+        let qn = (0.58_f32.powi(2) + 0.59_f32.powi(2) + 0.60_f32.powi(2) + 0.61_f32.powi(2)).sqrt();
         assert!(
             (batch.quat_w[0] - 0.58 / qn).abs() < 1e-5,
-            "quat_w[0] = {}, expected {}", batch.quat_w[0], 0.58 / qn
+            "quat_w[0] = {}, expected {}",
+            batch.quat_w[0],
+            0.58 / qn
         );
     }
 
@@ -402,10 +391,7 @@ mod tests {
 
         match read_ply(Cursor::new(header.into_bytes())) {
             Err(PlyError::BadElement(msg)) => {
-                assert!(
-                    msg.contains("overflows"),
-                    "expected overflow message, got: {msg}"
-                );
+                assert!(msg.contains("overflows"), "expected overflow message, got: {msg}");
             }
             Ok(_) => panic!("expected BadElement on overflow, got Ok(batch)"),
             Err(e) => panic!("expected BadElement on overflow, got {e:?}"),
