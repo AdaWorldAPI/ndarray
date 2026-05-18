@@ -82,3 +82,6 @@ pub use rope::RopeCache;
 
 pub mod attention;
 pub use attention::{attention_f32, flash_attention_f32, AttentionConfig};
+
+pub mod hilbert;
+pub use hilbert::{hilbert3d_decode, hilbert3d_encode};
