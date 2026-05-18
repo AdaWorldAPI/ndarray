@@ -808,6 +808,7 @@ The minimal surface delivering ≥80% of the framework's value at
 | §15.6 | 4-savant council for P0 review on consolidation sprints | High-leverage audit; runs on Opus, once per sprint. |
 | §4.1 LD-1 | Sentinel tokens | ~50 LoC ceremony per brief; catches the trivial "agent didn't read the brief" case. |
 | §6 | Prompt-level tool-call-loop instruction (best-effort, see §16.4) | Catches in-LLM oscillation when the worker honors the instruction. |
+| §17 | PR-Lifecycle + Auto-Resolve (worker creates PR, subscribes to CI/review events, classifies each event silent-fix / ask-user / skip) | A worker's "done" is PR merged or PR closed, not branch pushed. Without §17 the framework stops at push and the human owns the CI loop. |
 
 ### §16.2 Tier-B — adopt for savants / high-stakes only
 
@@ -866,6 +867,210 @@ items that produced field-tested catches:
 
 Goal: spec line-count drops 30-50% by v0.2 while preserving the
 patterns that caught real bugs.
+
+---
+
+## §17 PR-Lifecycle + Auto-Resolve
+
+> Workers do not stop at "branch pushed." A worker's done condition
+> is **PR merged** OR **PR closed by orchestrator/human as FAIL** —
+> the lifecycle extends through CI iteration and review-comment
+> resolution. This section specifies what happens between the
+> worker's first push and one of those terminal states.
+>
+> **Tier:** Tier-A per §16.1 for any sprint that opens PRs.
+> **Transport:** `mcp__github__create_pull_request` +
+> `mcp__github__subscribe_pr_activity` + `git push` for fixes; events
+> arrive as `<github-webhook-activity>` envelopes (see
+> `agent-coordination-mcp-spec.md` §3.3).
+
+### §17.1 The extended worker lifecycle
+
+```
+READ → WRITE → TEST → COMMIT → PR → SUBSCRIBE → [AUTO-RESOLVE LOOP] → MERGE | FAIL
+                                                  ↑                ↓
+                                                  │  event arrival
+                                                  │  classify (§17.4)
+                                                  │  silent-fix | ask-user | skip
+                                                  └  if silent-fix: push commit
+```
+
+Steps 1-4 are the existing §13.2 work pattern. Steps 5-7 are new.
+MERGE / FAIL are terminal — worker writes its final `status.json`
+and calls `mcp__github__unsubscribe_pr_activity`.
+
+### §17.2 PR creation (step 5)
+
+After first push, the worker calls:
+
+```
+mcp__github__create_pull_request(
+  owner=<repo_owner>,
+  repo=<repo_name>,
+  head=<worker_branch>,                    # e.g. claude/wave-12-A4
+  base=<sprint_base>,                       # from sprint header
+  title="<bundle_name>: <verb> <files> (WT-NN)",
+  body="""\
+## Bundle ownership
+{{ownership_table}}
+
+## Status
+{{status_json_excerpt}}
+
+## Proof-of-read
+{{proof_of_read_summary}}
+
+## Sentinel
+{{sentinel_token}}
+""",
+  draft=<true|false>,                       # per sprint header
+  labels=["sprint-<id>", "bundle-<name>"]
+)
+```
+
+The PR body MUST contain the sentinel token verbatim. The
+orchestrator can grep open PRs for sentinel presence as a fast LD-1
+check (per `PR-007`).
+
+### §17.3 Subscription (step 6)
+
+Within 60 seconds of PR creation, the worker MUST call:
+
+```
+mcp__github__subscribe_pr_activity(owner, repo, pullNumber)
+```
+
+The worker then enters an event-driven idle state. Events arrive
+as `<github-webhook-activity>` envelopes containing CI run
+completions, review comments, PR state changes (merged/closed),
+and label changes.
+
+### §17.4 The three-option event-handling decision tree
+
+For each event, the worker MUST classify into one of three options
+(this matches the CCA2A handling protocol from the governing prompt
+template):
+
+| Option | When | Action |
+|---|---|---|
+| **1. Silent fix** | Confidence high; fix in-scope of worker's bundle; fix does not contradict spec / INVARIANTS | Read failing CI logs / review comment fully (§3 depth ladder, §14.5 minimum phase for log files: `read` + `phase=evaluation`); make the fix; push commit; update `status.json`; continue idle for next event. Reply on PR ONLY if the fix resolves a specific review question. |
+| **2. Ask user (file PROPOSAL)** | Ambiguity (CA1 / CA3 trigger); cross-bundle implications; spec-vs-comment contradiction; reviewer asks "should X be Y or Z?" | Append `Kind=PROPOSAL` entry to `AGENT_LOG.md` (`agent-coordination-mcp-spec.md` §1.3) with the question; idle until orchestrator/user answers via `ANSWERS-TO-AGENTS.md`. Do NOT push speculative fixes. |
+| **3. Skip silently** | Duplicate event; stale CI; "LGTM" / approval; bot comment (Dependabot et al); event addressed in a prior iteration | Record the classification on `AGENT_LOG.md` (`Kind=DECISION`, body: `skip-silent: <reason>`); continue idle. Do NOT reply on the PR. |
+
+### §17.5 Event taxonomy + default classification
+
+| Event class | Specific signal | Default option | Confidence required |
+|---|---|---|---|
+| CI lint failure | rustfmt / clippy single-line | silent fix | high |
+| CI typecheck failure | single error, in-bundle | silent fix | high |
+| CI typecheck failure | error in shared zone | ask-user (cross-bundle) | n/a |
+| CI test failure | regression in own bundle; root cause identifiable from log | silent fix | medium |
+| CI test failure | regression elsewhere | ask-user | n/a |
+| CI build-time-out | first occurrence | skip-silent (re-CI); if recurring → ask-user | n/a |
+| CI dependency-resolve failure | new transitive dep, missing crate, version conflict | ask-user (`EXTERNAL_DEPENDENCY` blocker) | n/a |
+| CI OOM | first occurrence | ask-user (orchestrator allocates memory) | n/a |
+| Review comment "could you also X" | X is in-bundle | silent fix | medium |
+| Review comment "should this be X or Y?" | ambiguity | ask-user (`AMBIGUITY` blocker) | n/a |
+| Review comment "blocking — need RFC" | spec-vs-impl mismatch | ask-user (`SPEC_SOURCE_MISMATCH` blocker) | n/a |
+| Review comment "LGTM" / approval | terminal-success-adjacent | skip-silent | n/a |
+| Bot comment (Dependabot, codecov, sonarcloud, …) | informational | skip-silent | n/a |
+| @-mention to specific human user | belongs to a human | skip-silent (do not reply) | n/a |
+| PR merged | terminal | write `outcome=SUCCESS`, unsubscribe, exit | n/a |
+| PR closed without merge | terminal (orchestrator/human FAIL'd it) | write `outcome=FAIL`, unsubscribe, exit | n/a |
+
+### §17.6 Budget + termination
+
+| Limit | Default | When breached |
+|---|---|---|
+| Max auto-fix iterations per PR | 5 | Worker emits `outcome=FAIL`, body: `auto-resolve-budget-exhausted`; orchestrator decides next |
+| Max wall-clock per PR | 24 h (project-configurable) | Same as above |
+| Per-iteration token cost cap | per §16 model-stylesheet | Escalate to Opus only if stylesheet allows |
+| Consecutive `skip-silent` events | 20 | Worker writes a `STATUS` entry noting the silence and re-subscribes (the PR is in a quiet state) |
+
+### §17.7 Cognitive anti-patterns extend to auto-resolve
+
+Every CA1..CA4 from §15 applies to each auto-resolve iteration, not
+just the initial implementation. Validation rules CA-001..CA-004
+apply unchanged. PR-005 below extends the cross-bundle rule.
+
+| Anti-pattern | Auto-resolve-specific shape |
+|---|---|
+| CA1 cognitive dissonance | Worker reads a review comment that contradicts INVARIANTS and "just fixes per the comment" without filing `SPEC_SOURCE_MISMATCH`. |
+| CA2 Dunning-Kruger overconfidence | Worker pushes an auto-fix without `proof_of_read` on the failing log; claims `internalize` of the failure without LD evidence. |
+| CA3 Kahneman/Tversky easy-path | Worker pattern-matches "CI red → push the same fix as last time" without reading the actual failure. |
+| CA4 eager amok | Worker pushes a fix before reading the full CI log; commits before completing §17.4 classification. |
+
+### §17.8 Wire-format integration
+
+Every auto-resolve action emits an entry on `AGENT_LOG.md` per
+`agent-coordination-mcp-spec.md` §1.3:
+
+```markdown
+## 2026-05-19T08:14 — DECISION[INFO]: A4 silent-fix clippy::redundant_clone (sonnet, claude/wave-12-A4)
+
+**Author:** A4
+**Kind:** DECISION
+**Severity:** INFO
+**Refs:** PR-#427 commit-fa00b1c
+**Proof-of-read:**
+- file=ci/clippy-log.txt sha256=8e1a... lines=47 depth=full
+- file=src/customer/master.rs sha256=4c0b... lines=312 depth=read
+
+---
+
+Clippy flagged a `Vec.clone()` on line 187. Reviewed the call site;
+the clone was leftover from a prior refactor. Replaced with `&borrow`.
+Commit fa00b1c pushed. Awaiting re-CI.
+```
+
+Auto-resolve actions are first-class on the wire format — the
+orchestrator and any subscribed sibling session see them in real
+time.
+
+### §17.9 Validation rules
+
+| Rule | Description | Severity |
+|---|---|---|
+| `PR-001 worker-created-PR` | Within 30 minutes of first push, the worker MUST have created a PR via `mcp__github__create_pull_request`. | ERROR |
+| `PR-002 subscription-active` | Within 60 seconds of PR creation, the worker MUST have called `mcp__github__subscribe_pr_activity`. | ERROR |
+| `PR-003 max-iterations` | Auto-resolve MUST NOT exceed §17.6 budget without escalation. Budget exhaustion ⇒ `outcome=FAIL`, reason `auto-resolve-budget-exhausted`. | ERROR |
+| `PR-004 cognitive-hygiene-extends` | CA-001..CA-004 (§15.5) apply unchanged to every auto-resolve iteration, not just initial implementation. | ERROR |
+| `PR-005 cross-bundle-fix-forbidden` | A worker MUST NOT push commits that touch files outside its bundle, even during auto-resolve. Cross-bundle failures escalate via `AGENT_LOG.md` `Kind=PROPOSAL`. | ERROR |
+| `PR-006 event-classification-recorded` | Each event the worker receives MUST be classified per §17.4 and the classification appended to `AGENT_LOG.md` (`Kind=DECISION`). | ERROR |
+| `PR-007 sentinel-in-pr-body` | The PR body MUST contain the worker's sentinel token verbatim. | ERROR |
+| `PR-008 unsubscribe-on-terminal` | On PR merge or close, the worker MUST call `mcp__github__unsubscribe_pr_activity` before writing its terminal `status.json`. | ERROR |
+| `PR-009 no-reply-on-skip` | A `skip-silent` classification MUST NOT produce a reply on the PR (avoid PR-noise pollution from agents). | WARNING |
+
+### §17.10 Definition of Done (auto-resolve)
+
+A worker passes the auto-resolve gate when ALL of:
+
+- [ ] Created a PR (`PR-001`).
+- [ ] Subscribed within 60s (`PR-002`).
+- [ ] Each event classified per §17.4 and recorded on `AGENT_LOG.md` (`PR-006`).
+- [ ] No cross-bundle fix commits (`PR-005`).
+- [ ] CA-001..CA-004 clean on every iteration (`PR-004`).
+- [ ] Sentinel token in PR body (`PR-007`).
+- [ ] Auto-resolve budget not exceeded without escalation (`PR-003`).
+- [ ] Unsubscribed and wrote terminal `status.json` (`PR-008`).
+- [ ] Terminal outcome is `SUCCESS` (PR merged) OR `FAIL` (PR closed without merge OR budget exhausted) OR `RETRY` (worker filed a blocker and is waiting for orchestrator answer).
+
+### §17.11 Adoption-tier placement + overrides
+
+This section is **Tier-A** (mandatory) per §16.1 for any sprint
+that opens PRs. Two project overrides are possible (Tier-C):
+
+| Setting | Default | Override scenario | Override value |
+|---|---|---|---|
+| Per-worker PR creation (§17.2) | Each worker opens its own PR | Project prefers a single orchestrator-consolidation PR per wave (per `autoattended-orchestrator-spec.md` §3.4) | `pr_ownership: orchestrator-consolidation` in `INVARIANTS.md` |
+| Subscription transport (§17.3) | `mcp__github__subscribe_pr_activity` native MCP | Environment without GitHub MCP (offline, rate-limited, non-GitHub host) | `pr_event_transport: polling` (60 s interval via `mcp__github__pull_request_read`) |
+
+Tier-D honest caveat: `subscribe_pr_activity` requires network +
+GitHub API rate budget (5000 req/h authenticated). For 12-agent
+fan-outs running long auto-resolve loops, monitor rate-limit
+consumption; the orchestrator MAY consolidate subscriptions onto
+itself (one subscription per PR with the orchestrator re-broadcasting
+events to interested workers) to amortize the API budget.
 
 ---
 
