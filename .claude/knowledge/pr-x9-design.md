@@ -29,7 +29,23 @@ If you arrive after a token reset / new session / handover:
    - Skip-mode (δ=0) cells stored as 1 bit in a bitmap
    - Merge-mode cells inherit δ from a neighbor (2-bit direction code)
    - L4 view materializes 10-50 MB instead of 2 GB (200× memory reduction)
-4. **OGIT-rs dependency**: this PR depends on `crate::ogit::cam::*` for the codebook + the OGIT semantic-schema basin lookup (heel/hip/twig/leaf inheritance). Check OGIT-rs API stability before sprint kickoff — open question Q1 below.
+4. **OGIT dependency** (CORRECTED 2026-05-18 per https://github.com/AdaWorldAPI/OGIT):
+   OGIT is the **Turtle (TTL) ontology specification**, NOT a Rust crate. It defines
+   namespaces (NTO/Healthcare, NTO/WorkOrder, NTO/Network, etc.) where each entity
+   is a TTL file with `rdfs:Class subClassOf ogit:Entity`, `ogit:scope`, `ogit:parent`,
+   mandatory/optional/indexed property lists, and `ogit:allowed [ ogit:relates /
+   ogit:belongs ]` relation declarations.
+   The **Rust consumer is `lance-graph/crates/lance-graph-ontology/`** (already exists,
+   provides `OntologyRegistry` + per-namespace bridges like `MedcareBridge` —
+   see OGIT `.claude/AGENT_LOG.md` 2026-05-07 entry for the working pattern that
+   bootstrapped Healthcare's 14-entity / 690-triple namespace).
+   So PR-X9's actual dependency chain is:
+     `ndarray` → `lance-graph-ontology` (via `OntologyRegistry` + new `CognitiveBridge`)
+     → OGIT TTL files (loaded at startup or build-time).
+   Q1 below covers the 3-repo coordination required. The runtime data structure
+   (`CamCodebook` + `OgitSchema`) is materialized once at startup from the bridge's
+   hydrate path — NOT a per-query lookup over RDF — so hot-path basin lookup stays
+   O(1) over an in-memory index, not O(triple-store-query).
 5. **The unification**: lazy basin-relative storage IS x265's coding-tree-unit recursion (CTU/CU/PU/TU + skip/merge/intra/inter modes) applied to a semantic substrate instead of pixel substrate. x265 averages ~4 bits per pixel on HD video despite 8-12 bits raw; this PR targets ~2-8 bits per CausalEdge64 despite 64 bits raw — same ratio, same mechanism, different content.
 6. **PR-X5 (queued)**: typed SIMD register-banks. PR-X9 must keep PR-X5's `Fn(StackedU64x8<N>) -> ...` closure boundary identical — materialization happens AT the SIMD-load site (`view.gather_u64x8(row, col)`), not before.
 
@@ -54,8 +70,17 @@ The trick is precisely what GPU shaders and video codecs already do: don't mater
 ┌─────────────────────────────────────────────────────────────────────┐
 │ Layer 1: Immutable substrate (materialized ONCE, shared system-wide) │
 │  - CamCodebook:           4096 BasinAtom × 64 B = 256 KB             │
-│  - OgitSchema:            heel/hip/twig/leaf inheritance DAG         │
-│                           O(1) basin → family / family → basins      │
+│                           Materialized at startup from the OGIT       │
+│                           Cognitive namespace via lance-graph-        │
+│                           ontology's CognitiveBridge hydrate path     │
+│                           (mirrors MedcareBridge per                  │
+│                           OGIT/.claude/AGENT_LOG.md 2026-05-07).      │
+│  - OgitSchema:            heel/hip/twig/leaf inheritance DAG          │
+│                           Built from OGIT entities'                   │
+│                           rdfs:subClassOf chains within the           │
+│                           Cognitive namespace. O(1) basin → family    │
+│                           / family → basins via flat-indexed maps     │
+│                           (NOT a runtime SPARQL query).               │
 │  - PerTierCovariance:     4 SPD matrices = ~96 bytes                 │
 │  - BasinFamilyBitmaps:    one 4096-bit bitmap per family (~hundreds  │
 │                           of families × 512 B = small)                │
@@ -374,12 +399,58 @@ All five must pass green.
 - `.claude/knowledge/vertical-simd-consumer-contract.md` — W1a layering (binding)
 - `.claude/rules/data-flow.md` — Rule #3 (binding)
 - `src/hpc/blocked_grid/*` — PR-X3 substrate (used as both dense reference and `GridStorage` impl)
-- OGIT-rs `crate::cam::*` — basin codebook + OGIT schema lookup (DEPENDENCY — see Q1)
+- **AdaWorldAPI/OGIT** (https://github.com/AdaWorldAPI/OGIT) — Turtle ontology
+  spec; PR-X9 hydrates the Cognitive namespace into `CamCodebook` + `OgitSchema`
+  at startup. See OGIT `.claude/AGENT_LOG.md` 2026-05-07 entry for the
+  bootstrap pattern (Healthcare namespace, 14 entities, 690 triples) PR-X9's
+  Cognitive namespace mirrors.
+- **AdaWorldAPI/lance-graph** `crates/lance-graph-ontology/` — the Rust consumer
+  of OGIT. Provides `OntologyRegistry::namespace_id` + per-namespace `*Bridge`
+  pattern (e.g. `MedcareBridge`). PR-X9's `CognitiveBridge` is a sibling to
+  `MedcareBridge`. See Q1 for the 3-repo coordination plan.
 - x265 source for reference: x265's `Mode::set*` family, `analyseLayout()` quad-tree split, RDO loop in `analyse.cpp`
 
 ## Open questions (for the plan-review savant)
 
-1. **OGIT-rs API stability** — does `crate::ogit::cam::*` expose the `CamCodebook` + `OgitSchema` + family-bitmap APIs we need? If not, PR-X9 blocks on an OGIT-rs preparatory PR. Coordinator: verify before sprint kickoff. If OGIT-rs API is in flux, lean toward (a) fold-into-X4 with embedded codebook stub, defer real OGIT integration to PR-X9.1.
+1. **3-repo coordination: OGIT + lance-graph-ontology + ndarray** —
+   OGIT is the Turtle ontology spec (https://github.com/AdaWorldAPI/OGIT). Rust
+   consumption already exists via `lance-graph/crates/lance-graph-ontology/` with
+   the `OntologyRegistry` + per-namespace `*Bridge` pattern. PR-X9 needs:
+
+   **Prerequisite A** (OGIT repo): a `Cognitive` namespace under `NTO/Cognitive/`
+   defining the basin atoms (heel/hip/twig/leaf entities, CausalEdge64 carriers,
+   tier-covariance literals). ~14-30 TTL entity files following the
+   `NTO/WorkOrder/entities/Position.ttl v4 baseline` style. Mirrors the
+   2026-05-07 Healthcare bootstrap (846 lines, 14 entities, 690 triples).
+   Probably its own small PR against OGIT; ~1 sprint session.
+
+   **Prerequisite B** (lance-graph repo): a `CognitiveBridge` sibling to
+   `MedcareBridge` in `lance-graph-ontology/src/bridges/`, plus the
+   namespace registration in `OntologyRegistry::namespace_id`. ~1 sprint
+   session.
+
+   **PR-X9 (this repo)** then consumes `lance-graph-ontology` and hydrates the
+   `CamCodebook` + `OgitSchema` once at startup.
+
+   The 3-repo dependency means PR-X9 cannot start until A and B land. Options:
+   - **Sequential**: ship OGIT/Cognitive → ship lance-graph CognitiveBridge →
+     ship PR-X9. Clean but slow (3 sprints).
+   - **Parallel with stubs**: PR-X9 ships a `CognitiveBridge` stub trait in
+     ndarray itself; OGIT/Cognitive + lance-graph CognitiveBridge ship in
+     parallel; the wire-up happens in a final integration PR. Faster but more
+     coordination overhead.
+   - **Embedded TTL bundle**: ndarray ships the OGIT Cognitive TTL files
+     directly as a build-time embedded resource + a tiny TTL parser. Bypasses
+     the lance-graph hop entirely. Simplest for v1 but duplicates the
+     hydrate path — savant should rule on whether this violates the
+     "single source of truth" intent of OGIT + lance-graph-ontology.
+
+   Lean: **embedded TTL bundle for v1** (no inter-repo blocker), document
+   the migration path to lance-graph-ontology integration as PR-X9.1.
+
+   Coordinator: verify OGIT repo's NTO/Cognitive/ status before sprint kickoff.
+   If Cognitive namespace doesn't exist, bootstrap it FIRST (mirroring the
+   Healthcare pattern in the AGENT_LOG).
 
 2. **PR-X4 fold-in vs sibling PR-X9** — savant rules on the trade-off:
    - **(a) Fold into PR-X4**: single sprint, basin-relative from day one, but PR-X4 worker count balloons from 5 to ~10 and risks scope creep
@@ -422,5 +493,15 @@ If you're picking up after a token reset:
 3. Read `pr-x3-cognitive-grid-design.md` — the dense substrate `LazyBlockedGrid` parallels.
 4. The conversation context that led to this doc: after PR #158 (PR-X3) merged on 2026-05-18, the user observed that the cognitive cascade L1-L4 propagation (64→256→4096→16384) should be zero-copy via basin-relative storage rather than materializing dense grids. The mechanism is precisely x265's coding-tree-unit recursion + skip/merge/intra/inter modes, applied to a semantic codebook substrate (OGIT-rs CAM) instead of a pixel substrate. The "ergonomics grow beyond information-theoretic compression bounds" claim is real: it's amortization across reuse, not violation of Shannon. The codebook is paid once and rides cheap for every subsequent query — same trick as GPU shaders not buffering all spacetime outcomes, same trick as x265 not storing every frame.
 5. Check `git log --oneline -10` on the PR-X9 branch and on `master`.
-6. The OGIT-rs dependency is real and is the first blocker — verify before sprint kickoff.
+6. **The OGIT dependency is a 3-repo coordination, not a missing crate.** OGIT is the
+   Turtle ontology at https://github.com/AdaWorldAPI/OGIT. The Rust consumer pattern
+   already exists at `lance-graph/crates/lance-graph-ontology/` with `OntologyRegistry`
+   + per-namespace `*Bridge`. The blockers (in order):
+   (a) OGIT repo needs an `NTO/Cognitive/` namespace bootstrap (mirroring Healthcare
+       2026-05-07, ~14 TTL files defining basin atoms);
+   (b) lance-graph repo needs a `CognitiveBridge` sibling to `MedcareBridge`;
+   (c) THEN PR-X9 wires the hydrate path in ndarray.
+   For v1, leaning toward an **embedded TTL bundle** in ndarray that bypasses
+   lance-graph (simpler), with migration to the proper bridge path as PR-X9.1.
+   Savant rules in Q1.
 7. The dense storage `BlockedGrid<T>` (PR-X3) stays in the codebase as both the parity-test reference and the `GridStorage<T>` trivial impl. PR-X9 doesn't deprecate PR-X3; it joins it via the trait.
