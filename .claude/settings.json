@@ -2,11 +2,11 @@
   "permissions": {
     "allow": [
       "mcp__github__*",
-      "Read(**)",
-      "Write(**)",
-      "Edit(**)",
-      "MultiEdit(**)",
-      "NotebookEdit(**)",
+      "Read({**})",
+      "Write({**})",
+      "Edit({**})",
+      "MultiEdit({**})",
+      "NotebookEdit({**})",
       "Bash(git *)",
       "Bash(ls *)",
       "Bash(ls)",
