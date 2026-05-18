@@ -47,7 +47,8 @@
 /// chunk slice and the absolute index of the chunk's first element.
 ///
 /// The last chunk may be shorter than `chunk_size` when `chunk_size` does
-/// not divide `items.len()`.
+/// not divide `items.len()`. A `chunk_size` of `usize::MAX` yields the
+/// entire slice as a single chunk.
 ///
 /// # Panics
 /// Panics if `chunk_size == 0` (`chunks_mut(0)` would otherwise return an
@@ -80,7 +81,8 @@ where
 /// Read-only sibling of [`bulk_apply`]. Applies `f` to consecutive immutable
 /// chunks of `items`, passing the absolute starting index of each chunk.
 ///
-/// The last chunk may be shorter than `chunk_size`.
+/// The last chunk may be shorter than `chunk_size`. A `chunk_size` of
+/// `usize::MAX` yields the entire slice as a single chunk.
 ///
 /// # Panics
 /// Panics if `chunk_size == 0`.
