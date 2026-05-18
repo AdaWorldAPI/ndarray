@@ -1132,28 +1132,17 @@ pub fn eig_sym_n<const N: usize>(a: &MatN<N>) -> (Vec<f32>, MatN<N>) {
         }
         return (vec![l1, l2, l3], out_v);
     }
-    if N == 4 {
-        let m4 = [
-            [a[0][0], a[0][1], a[0][2], a[0][3]],
-            [a[1][0], a[1][1], a[1][2], a[1][3]],
-            [a[2][0], a[2][1], a[2][2], a[2][3]],
-            [a[3][0], a[3][1], a[3][2], a[3][3]],
-        ];
-        let s4 = Spd4::from_rows(m4);
-        let (l1, l2, l3, l4, v4) = eig_sym_4(&s4);
-        let mut out_v: MatN<N> = [[0.0; N]; N];
-        for c in 0..4 {
-            for r in 0..4 {
-                out_v[c][r] = v4[c][r];
-            }
-        }
-        return (vec![l1, l2, l3, l4], out_v);
-    }
-    if N <= 64 {
-        eig_sym_jacobi::<N>(a, 50, 1e-6)
-    } else {
-        eig_sym_qr::<N>(a, 300, 1e-6)
-    }
+    // N=4: route to Jacobi (eig_sym_4 Ferrari closed-form fails for non-diagonal
+    // symmetric inputs with nonzero quartic q term — codex review #159 P1).
+    // TODO(fix-pillar-4-ferrari): re-derive Ferrari path with residual check, OR
+    // route the Spd4 fast path through Jacobi unconditionally.
+    // N>64: route to Jacobi instead of broken eig_sym_qr (off-diagonal update
+    // drops similarity-transform terms — codex review #159 P1). Jacobi is
+    // O(N⁴) so this is slower than implicit-shift QR at large N; acceptable
+    // until eig_sym_qr is rewritten with full bulge chase.
+    // TODO(fix-eig-qr-bulge-chase): implement implicit-shift QR with full
+    // similarity-transform tracking before re-enabling the N>64 route.
+    eig_sym_jacobi::<N>(a, 200, 1e-6)
 }
 
 // ============================================================================
