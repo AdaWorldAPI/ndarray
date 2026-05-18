@@ -182,7 +182,29 @@ pub fn read_ply<R: Read>(reader: R) -> Result<GaussianBatch, PlyError> {
     }
 
     // Read the binary body — n_vertices × 62 f32 little-endian.
-    let mut bytes = vec![0u8; n_vertices * PROPERTIES_PER_VERTEX * 4];
+    //
+    // External-reviewer bug class: malformed / fuzzed headers can
+    // advertise a vertex count large enough that
+    // `n_vertices * PROPERTIES_PER_VERTEX * 4` overflows usize:
+    //   - debug: panics on the unchecked mul.
+    //   - release: wraps to a small number, allocates a too-small
+    //     buffer, `read_exact` returns Ok, the per-vertex loop then
+    //     indexes far past the buffer end (panic OR — worse — silent
+    //     corruption if the wrap happens to land at a valid index).
+    //
+    // Gate the size up-front with checked_mul. Any overflow becomes a
+    // `PlyError::BadElement` — fuzzer-safe, no allocation attempted.
+    let body_bytes = n_vertices
+        .checked_mul(PROPERTIES_PER_VERTEX)
+        .and_then(|n| n.checked_mul(4))
+        .ok_or_else(|| {
+            PlyError::BadElement(format!(
+                "vertex count {n_vertices} × {PROPERTIES_PER_VERTEX} props × 4 bytes \
+                 overflows usize on this target ({} bits)",
+                usize::BITS
+            ))
+        })?;
+    let mut bytes = vec![0u8; body_bytes];
     buf.read_exact(&mut bytes).map_err(|_| PlyError::Truncated)?;
 
     // Convert into a GaussianBatch with activations applied.
@@ -347,6 +369,46 @@ mod tests {
             Err(PlyError::UnexpectedProperty(_)) => {}
             Ok(_) => panic!("expected UnexpectedProperty, got Ok(batch)"),
             Err(e) => panic!("expected UnexpectedProperty, got {e:?}"),
+        }
+    }
+
+    // External-reviewer bug class: a fuzzed / malformed header that
+    // advertises a vertex count larger than `usize::MAX / (62 * 4)`
+    // overflows the pre-allocation size computation. Pre-fix:
+    //   - debug build panics on the unchecked `*`
+    //   - release build wraps to a small number, allocates a too-small
+    //     buffer, then `read_exact` succeeds with zero bytes, and the
+    //     per-vertex loop indexes past the buffer end → crash or
+    //     silent corruption.
+    // Post-fix: `checked_mul` chain returns `PlyError::BadElement`
+    // BEFORE any allocation is attempted.
+    #[test]
+    fn rejects_overflowing_vertex_count() {
+        // Smallest count that overflows: usize::MAX / (62*4) + 1.
+        let max_safe = usize::MAX / (PROPERTIES_PER_VERTEX * 4);
+        let overflow_count = max_safe.checked_add(1).expect("max_safe + 1 fits in usize");
+
+        // Build the header (no body needed — overflow check fires BEFORE
+        // the read_exact, which is the whole point: no allocation, no
+        // I/O attempt against a multi-exabyte advertised body).
+        let mut header = String::new();
+        header.push_str("ply\n");
+        header.push_str("format binary_little_endian 1.0\n");
+        header.push_str(&format!("element vertex {overflow_count}\n"));
+        for p in &expected_properties() {
+            header.push_str(&format!("property float {p}\n"));
+        }
+        header.push_str("end_header\n");
+
+        match read_ply(Cursor::new(header.into_bytes())) {
+            Err(PlyError::BadElement(msg)) => {
+                assert!(
+                    msg.contains("overflows"),
+                    "expected overflow message, got: {msg}"
+                );
+            }
+            Ok(_) => panic!("expected BadElement on overflow, got Ok(batch)"),
+            Err(e) => panic!("expected BadElement on overflow, got {e:?}"),
         }
     }
 }
