@@ -25,5 +25,7 @@
 pub mod embedded;
 pub mod turtle_parser;
 pub mod schema;
+pub mod cognitive_bridge;
 
 pub use schema::{EntityClass, FamilyBitmap, OntologySchema, Property, SchemaError};
+pub use cognitive_bridge::{BasinAtom, CamCodebook, CognitiveBridge, OgitError};
