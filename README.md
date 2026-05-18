@@ -208,6 +208,23 @@ cargo test
 - Optional: gcc-aarch64-linux-gnu for Pi cross-compilation
 - Optional: Intel MKL or OpenBLAS (feature-gated)
 
+### Transitive dependencies of the `std` feature
+
+Enabling the `std` feature (the default) pulls in **`blake3`** as a hard
+transitive dependency. The cognitive substrate modules under `hpc/` —
+`plane`, `seal`, `merkle_tree`, `vsa`, `spo_bundle`, `crystal_encoder`,
+`compression_curves`, `deepnsm` — import `blake3` directly for integrity
+hashing and XOF expansion, and there is no separate feature to enable it.
+This was previously gated behind `hpc-extras`, which caused recurring
+"missing blake3" build errors for consumers (e.g. `burn-ndarray`) that
+selected `default-features = false, features = ["std"]` to shed the
+`p64` / `fractal` dependency tree. Pinning blake3 to `std` removes that
+footgun: any `std`-enabled build automatically gets blake3.
+
+Consumers building `default-features = false` (no `std`, e.g. the
+`thumbv6m-none-eabi` nostd target) skip both the `hpc` module and the
+blake3 dep, so the nostd link is unaffected.
+
 ## Ecosystem
 
 This fork is the hardware foundation for a larger architecture:
