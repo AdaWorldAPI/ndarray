@@ -331,10 +331,7 @@ impl<'a, T, const BR: usize, const BC: usize> GridBlock<'a, T, BR, BC> {
     /// assert_eq!(blk.row_origin(), 4);
     /// assert_eq!(blk.col_origin(), 4);
     /// ```
-    pub fn from_grid(grid: &'a BlockedGrid<T, BR, BC>, block_row: usize, block_col: usize) -> Self
-    where
-        T: Copy,
-    {
+    pub fn from_grid(grid: &'a BlockedGrid<T, BR, BC>, block_row: usize, block_col: usize) -> Self {
         let row_origin = block_row * BR;
         let col_origin = block_col * BC;
         let start = row_origin * grid.padded_cols + col_origin;
@@ -405,20 +402,16 @@ impl<'a, T, const BR: usize, const BC: usize> GridBlock<'a, T, BR, BC> {
         self.col_origin
     }
 
-    /// Access internal data slice.
-    ///
-    /// Used by compute.rs (worker A4) to implement `row()` / `rows()` on
-    /// `GridBlock` without re-opening base.rs.
-    #[doc(hidden)]
-    pub fn data_slice(&self) -> &[T] {
+    /// Access internal data slice (intra-crate seam used by `compute.rs` /
+    /// `iter.rs` / `super_block.rs`). `pub(crate)` — not exposed downstream
+    /// since callers should go through `GridBlock::row` / `row_mut`, which
+    /// enforce the BR/BC bounds.
+    pub(crate) fn data_slice(&self) -> &[T] {
         self.data
     }
 
-    /// Access padded_cols stride.
-    ///
-    /// Used by compute.rs (worker A4) to implement `row()` on `GridBlock`.
-    #[doc(hidden)]
-    pub fn padded_cols_stride(&self) -> usize {
+    /// Access padded_cols stride (intra-crate seam — see `data_slice` note).
+    pub(crate) fn padded_cols_stride(&self) -> usize {
         self.padded_cols
     }
 
@@ -479,10 +472,7 @@ impl<'a, T, const BR: usize, const BC: usize> GridBlockMut<'a, T, BR, BC> {
     /// assert_eq!(blk.block_row(), 1);
     /// assert_eq!(blk.row_origin(), 4);
     /// ```
-    pub fn from_grid(grid: &'a mut BlockedGrid<T, BR, BC>, block_row: usize, block_col: usize) -> Self
-    where
-        T: Copy,
-    {
+    pub fn from_grid(grid: &'a mut BlockedGrid<T, BR, BC>, block_row: usize, block_col: usize) -> Self {
         let row_origin = block_row * BR;
         let col_origin = block_col * BC;
         let start = row_origin * grid.padded_cols + col_origin;
@@ -552,15 +542,19 @@ impl<'a, T, const BR: usize, const BC: usize> GridBlockMut<'a, T, BR, BC> {
         self.col_origin
     }
 
-    /// Access internal data slice (for use by future iterator workers).
-    #[doc(hidden)]
-    pub fn data_mut(&mut self) -> &mut [T] {
+    /// Access internal mutable data slice (intra-crate seam used by `iter.rs`
+    /// / `compute.rs`). `pub(crate)` — not exposed downstream since callers
+    /// should go through `GridBlockMut::row_mut`, which enforces the BR
+    /// bound.
+    pub(crate) fn data_mut(&mut self) -> &mut [T] {
         self.data
     }
 
-    /// Access padded_cols stride (for use by future iterator workers).
-    #[doc(hidden)]
-    pub fn padded_cols(&self) -> usize {
+    /// Access padded_cols stride (intra-crate seam — see `data_mut` note).
+    /// NOTE: Named `padded_cols` (not `padded_cols_stride` as on `GridBlock`)
+    /// for back-compat with `iter.rs`'s `row_mut` impl. Naming consistency is
+    /// queued as PR-X3.1 housekeeping.
+    pub(crate) fn padded_cols(&self) -> usize {
         self.padded_cols
     }
 

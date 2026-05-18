@@ -52,7 +52,7 @@ pub struct BaseBlockIter<'a, T, const BR: usize, const BC: usize> {
     n_block_cols: usize,
 }
 
-impl<'a, T: Copy, const BR: usize, const BC: usize> Iterator for BaseBlockIter<'a, T, BR, BC> {
+impl<'a, T, const BR: usize, const BC: usize> Iterator for BaseBlockIter<'a, T, BR, BC> {
     type Item = GridBlock<'a, T, BR, BC>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -84,7 +84,7 @@ impl<'a, T: Copy, const BR: usize, const BC: usize> Iterator for BaseBlockIter<'
     }
 }
 
-impl<'a, T: Copy, const BR: usize, const BC: usize> ExactSizeIterator for BaseBlockIter<'a, T, BR, BC> {}
+impl<'a, T, const BR: usize, const BC: usize> ExactSizeIterator for BaseBlockIter<'a, T, BR, BC> {}
 
 // ============================================================
 // BaseBlockIterMut — mutable row-major iterator
@@ -141,7 +141,7 @@ pub struct BaseBlockIterMut<'a, T, const BR: usize, const BC: usize> {
 unsafe impl<'a, T: Send, const BR: usize, const BC: usize> Send for BaseBlockIterMut<'a, T, BR, BC> {}
 unsafe impl<'a, T: Sync, const BR: usize, const BC: usize> Sync for BaseBlockIterMut<'a, T, BR, BC> {}
 
-impl<'a, T: Copy, const BR: usize, const BC: usize> Iterator for BaseBlockIterMut<'a, T, BR, BC> {
+impl<'a, T, const BR: usize, const BC: usize> Iterator for BaseBlockIterMut<'a, T, BR, BC> {
     type Item = GridBlockMut<'a, T, BR, BC>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -184,13 +184,13 @@ impl<'a, T: Copy, const BR: usize, const BC: usize> Iterator for BaseBlockIterMu
     }
 }
 
-impl<'a, T: Copy, const BR: usize, const BC: usize> ExactSizeIterator for BaseBlockIterMut<'a, T, BR, BC> {}
+impl<'a, T, const BR: usize, const BC: usize> ExactSizeIterator for BaseBlockIterMut<'a, T, BR, BC> {}
 
 // ============================================================
 // BlockedGrid methods: blocks_base / blocks_base_mut
 // ============================================================
 
-impl<T: Copy, const BR: usize, const BC: usize> BlockedGrid<T, BR, BC> {
+impl<T, const BR: usize, const BC: usize> BlockedGrid<T, BR, BC> {
     /// Iterator over BR×BC base blocks, yielding one [`GridBlock`] per
     /// `(block_row, block_col)` pair in row-major order.
     ///

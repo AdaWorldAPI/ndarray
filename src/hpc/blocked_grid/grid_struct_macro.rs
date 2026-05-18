@@ -12,11 +12,19 @@
 //! # Tier coverage (v1)
 //!
 //! **v1 emits L1 methods only.** L2/L3/L4 alias methods on the generated
-//! struct are deferred to a follow-up PR. The reserved field names below
-//! include L2-L4 identifiers so future emission won't break callers. Callers
-//! that need L2/L3/L4 can access individual fields and call `.blocks_l2()` /
-//! `.map_l2()` / `.bulk_apply_l2()` directly on each
-//! `BlockedGrid<FieldT, 64, 64>` field.
+//! struct are deferred to **PR-X3.1** (TODO(PR-X3.1): emit lockstep L2/L3/L4
+//! block view types `{Name}L{2,3,4}Block` and the corresponding `map_l*` /
+//! `bulk_apply_l*` methods). The reserved field names below include L2-L4
+//! identifiers so the future emission cannot break callers.
+//!
+//! **Per-field workaround warning.** Callers who need lockstep L2/L3/L4
+//! behavior in the meantime can access individual fields and call
+//! `.blocks_l2()` / `.map_l2()` / `.bulk_apply_l2()` directly on each
+//! `BlockedGrid<FieldT, 64, 64>` field — but be aware that per-field calls
+//! are NOT lockstep across fields. If you write per-field loops outside the
+//! macro-generated struct, those call sites will not auto-migrate when PR-X3.1
+//! lands. Prefer to gate L2-using code on PR-X3.1 if the lockstep guarantee
+//! matters.
 //!
 //! # Reserved field names
 //!
