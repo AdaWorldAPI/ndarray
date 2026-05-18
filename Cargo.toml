@@ -38,6 +38,10 @@ test = true
 name = "ocr_benchmark"
 required-features = ["std"]
 
+[[example]]
+name = "splat3d_flex"
+required-features = ["splat3d"]
+
 [dependencies]
 num-integer = { workspace = true }
 num-traits = { workspace = true }

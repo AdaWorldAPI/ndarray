@@ -96,6 +96,7 @@ pub mod project;
 pub mod tile;
 pub mod raster;
 pub mod frame;
+pub mod ply;
 
 pub use spd3::{sandwich, sandwich_x16, Spd3};
 pub use gaussian::{GaussianBatch, Gaussian3D, SH_DEGREE, SH_COEFFS_PER_CHANNEL, SH_COEFFS_PER_GAUSSIAN};
@@ -104,3 +105,4 @@ pub use project::{Camera, ProjectedBatch, project_batch};
 pub use tile::{TileBinning, TileInstance, TILE_SIZE};
 pub use raster::{rasterize_tile, rasterize_frame, T_SATURATION_EPS};
 pub use frame::{SplatFrame, SplatRenderer};
+pub use ply::{read_ply, PlyError};
