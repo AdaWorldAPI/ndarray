@@ -17,7 +17,26 @@
 //! Both shapes are SIMD-friendly storage layouts: each field is a
 //! contiguous `Vec<T>`, so per-field SIMD loops iterate one `Vec`.
 //!
-//! # Layering
+//! # Element-type scope (this PR)
+//!
+//! The macro and `SoaVec` are generic over `T`. The closure-based
+//! conversion helpers ([`aos_to_soa`], [`soa_to_aos`]) are currently
+//! **hardwired to `f32` output** (`SoaVec<f32, N>`). Downstream consumers
+//! with `i8` / `u8` / `u16` / `bf16` SoA fields (palette indices,
+//! quantized embeddings, BF16 mantissa bytes) must write their own
+//! extract loop today; the public surface for generic-T conversion is
+//! a follow-up. The macro itself supports any field type.
+//!
+//! # Layering — why `hpc::soa` and not `simd_ops`
+//!
+//! `crate::simd_ops` is the SIMD-dispatch glue layer (every fn there
+//! dispatches through `F32x16` / `F64x8`). Per the W1a consumer contract
+//! at `.claude/knowledge/vertical-simd-consumer-contract.md`, free-function
+//! shapes like `fn aos_to_soa(&[T], extract) -> SoaVec<f32, N>` belong
+//! at the `crate::hpc` level, co-located with the data types they
+//! convert between. Putting pure-scalar helpers in `simd_ops` would
+//! contradict that module's charter and the W1a litmus that rejects
+//! "generic-library free functions" from the SIMD layer.
 //!
 //! This module is **scalar only**. It contains no `#[target_feature]`
 //! attributes, no `cfg(target_feature = ...)` gates, no per-arch imports.
@@ -25,8 +44,7 @@
 //! SIMD swap: the dispatcher inside any conversion entry can grow per-arch
 //! arms internally (delegating to `simd_avx512.rs` / `simd_neon.rs` for
 //! gather / scatter intrinsics) without changing the user-visible
-//! signature. See `.claude/knowledge/vertical-simd-consumer-contract.md`
-//! for the binding layering rule.
+//! signature.
 //!
 //! # Out of scope — distance metrics
 //!

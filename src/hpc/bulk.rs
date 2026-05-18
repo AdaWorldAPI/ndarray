@@ -290,11 +290,11 @@ mod tests {
 
     // ----- integration with aos_to_soa -----
     //
-    // TODO: enable once W3+W5+W6 land — depends on
-    // `crate::hpc::soa::{aos_to_soa, SoaVec::field}` from Worker A. The
-    // soa module is not yet registered on this branch's base. When
-    // Worker A's commit lands, drop the `#[cfg(any())]` gate.
-    #[cfg(any())]
+    // hpc::soa and hpc::bulk co-merge in PR #156, so the worker-isolation
+    // deferral is no longer needed. This test exercises the canonical
+    // compose pattern: a `bulk_apply` outer chunk loop with `aos_to_soa`
+    // staging inside the closure (SoA-stage-then-process pattern that a
+    // SIMD consumer would use per-tile).
     #[test]
     fn bulk_apply_composes_with_aos_to_soa() {
         use crate::hpc::soa::aos_to_soa;
