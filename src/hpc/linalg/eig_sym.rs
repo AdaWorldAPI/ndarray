@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 //! Symmetric eigendecomposition — closed-form fast paths and iterative fallbacks.
 //!
 //! # Routing guide
