@@ -90,5 +90,7 @@
 //! shared math claim is the contract these kernels must honor.
 
 pub mod spd3;
+pub mod gaussian;
 
 pub use spd3::{sandwich, sandwich_x16, Spd3};
+pub use gaussian::{GaussianBatch, Gaussian3D, SH_DEGREE, SH_COEFFS_PER_CHANNEL, SH_COEFFS_PER_GAUSSIAN};
