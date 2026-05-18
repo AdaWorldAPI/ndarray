@@ -177,8 +177,20 @@ impl Spd3 {
             + a13 * (a12 * a23 - a13 * a22)
     }
 
-    /// Cheap SPD predicate: all leading principal minors positive,
-    /// determinant > eps. Sylvester's criterion at f32 precision.
+    /// Exact SPD predicate: all leading principal minors positive AND the
+    /// smallest eigenvalue > `eps`. Sylvester's criterion catches the
+    /// cheap rejection cases; a full Smith-1961 eigendecomp on the
+    /// remaining "looks-SPD" inputs eliminates the float-roundoff corner
+    /// where Sylvester passes but the smallest eigenvalue is a tiny
+    /// negative number.
+    ///
+    /// # Complexity
+    ///
+    /// O(1), but the constant is dominated by [`Spd3::eig`] (`acos`, two
+    /// `cos`, a `sqrt`, plus the eigenvector recovery). Cheap relative
+    /// to a `sandwich`; expensive relative to a plain matrix add. Do
+    /// NOT call in a per-pixel inner loop — use a unit-test or
+    /// post-condition gate.
     pub fn is_spd(&self, eps: f32) -> bool {
         if self.a11 <= eps {
             return false;
@@ -422,6 +434,17 @@ fn reconstruct_symm(v: &[[f32; 3]; 3], d1: f32, d2: f32, d3: f32) -> Spd3 {
 /// null-space vector; we pick the row pair with the largest cross
 /// product to maximize numerical conditioning. Degenerate eigenvalues
 /// fall back to Gram-Schmidt against eigenvectors already recovered.
+///
+/// The "duplicate eigenvalue" trap: when λᵢ = λⱼ, two independent
+/// calls to `null_space_vec` return the SAME unit vector — the
+/// preferred direction picked by the cross-product tiebreak — so the
+/// eigvec matrix ends up rank-deficient and a downstream Gram-Schmidt
+/// degenerates one column to noise. We detect that case after the
+/// first pass by checking column pairs for near-parallelism and
+/// demoting the later column to the Gram-Schmidt-complement path,
+/// which fills it with a unit vector orthogonal to the already-found
+/// eigenvectors — any such vector spans the degenerate eigenspace
+/// equally well, so the reconstruction Σ = V·diag(λ)·Vᵀ is invariant.
 fn recover_eigvecs(s: &Spd3, l1: f32, l2: f32, l3: f32) -> [[f32; 3]; 3] {
     let mut v = [[0.0f32; 3]; 3];
     let mut filled = [false; 3];
@@ -436,9 +459,30 @@ fn recover_eigvecs(s: &Spd3, l1: f32, l2: f32, l3: f32) -> [[f32; 3]; 3] {
         }
     }
 
-    // Second pass: for any eigenvalue whose recovery failed (degenerate
-    // eigenspace), fill via Gram-Schmidt against the eigenvectors
-    // already in hand.
+    // Duplicate-detection pass: if two filled columns are nearly
+    // parallel (|cos θ| > 0.99 ≈ 8°), the later one is a duplicate of
+    // the earlier — almost certainly the result of two equal
+    // eigenvalues hitting the same cross-product tiebreak. Re-mark
+    // the later as unfilled so the next pass fills it via
+    // Gram-Schmidt complement.
+    for i in 0..3 {
+        if !filled[i] {
+            continue;
+        }
+        for j in (i + 1)..3 {
+            if !filled[j] {
+                continue;
+            }
+            let dot = v[i][0] * v[j][0] + v[i][1] * v[j][1] + v[i][2] * v[j][2];
+            if dot.abs() > 0.99 {
+                filled[j] = false;
+            }
+        }
+    }
+
+    // Second pass: for any eigenvalue whose recovery failed
+    // (degenerate eigenspace or duplicate eigenvector), fill via
+    // Gram-Schmidt against the eigenvectors already in hand.
     for k in 0..3 {
         if filled[k] {
             continue;
@@ -796,6 +840,149 @@ mod tests {
         assert!(approx(s.a12, 0.0, 1e-6));
         assert!(approx(s.a13, 0.0, 1e-6));
         assert!(approx(s.a23, 0.0, 1e-6));
+    }
+
+    #[test]
+    fn from_scale_quat_90deg_y_rotation_permutes_axes() {
+        // A 90° rotation about +Y sends ê_x → −ê_z and ê_z → +ê_x.
+        // R · diag(a, b, c) · Rᵀ therefore swaps the (1,1) and (3,3)
+        // entries (in 1-indexed terms: a₁₁ ↔ a₃₃, a₂₂ unchanged) with
+        // all off-diagonals zero. This is the analytical ground-truth
+        // test PP-13 called out as the largest residual-risk gap: a
+        // sign flip in any of the `wx`/`wy`/`wz` cross terms of the
+        // quaternion-to-rotation formula would pass every other test
+        // in this module but fail here.
+        //
+        // quat(90° about Y) = (cos(45°), 0, sin(45°), 0).
+        let h = (0.5f32).sqrt();
+        let s = Spd3::from_scale_quat([2.0, 1.5, 0.8], [h, 0.0, h, 0.0]);
+        // scales² = [4.0, 2.25, 0.64]. After R_y(90°) the diag becomes
+        // diag(scales[2]², scales[1]², scales[0]²) = diag(0.64, 2.25, 4.0).
+        assert!(approx(s.a11, 0.64, 1e-5), "a11 = {} (want 0.64)", s.a11);
+        assert!(approx(s.a22, 2.25, 1e-5), "a22 = {} (want 2.25)", s.a22);
+        assert!(approx(s.a33, 4.0, 1e-5), "a33 = {} (want 4.0)", s.a33);
+        assert!(approx(s.a12, 0.0, 1e-5), "a12 = {} (want 0)", s.a12);
+        assert!(approx(s.a13, 0.0, 1e-5), "a13 = {} (want 0)", s.a13);
+        assert!(approx(s.a23, 0.0, 1e-5), "a23 = {} (want 0)", s.a23);
+    }
+
+    #[test]
+    fn from_scale_quat_90deg_x_rotation_permutes_axes() {
+        // A 90° rotation about +X sends ê_y → +ê_z and ê_z → −ê_y.
+        // diag(a, b, c) → diag(a, c, b). Different cross-term family
+        // than the Y-rotation test, so a sign error in `wx` (which
+        // doesn't appear in the Y-axis formula) shows up here.
+        let h = (0.5f32).sqrt();
+        let s = Spd3::from_scale_quat([2.0, 1.5, 0.8], [h, h, 0.0, 0.0]);
+        // scales² = [4.0, 2.25, 0.64] → after R_x(90°): diag(4.0, 0.64, 2.25).
+        assert!(approx(s.a11, 4.0, 1e-5), "a11 = {}", s.a11);
+        assert!(approx(s.a22, 0.64, 1e-5), "a22 = {}", s.a22);
+        assert!(approx(s.a33, 2.25, 1e-5), "a33 = {}", s.a33);
+        assert!(approx(s.a12, 0.0, 1e-5));
+        assert!(approx(s.a13, 0.0, 1e-5));
+        assert!(approx(s.a23, 0.0, 1e-5));
+    }
+
+    #[test]
+    fn from_scale_quat_90deg_z_rotation_permutes_axes() {
+        // A 90° rotation about +Z sends ê_x → +ê_y and ê_y → −ê_x.
+        // diag(a, b, c) → diag(b, a, c). Exercises the `wz` cross term.
+        let h = (0.5f32).sqrt();
+        let s = Spd3::from_scale_quat([2.0, 1.5, 0.8], [h, 0.0, 0.0, h]);
+        // scales² = [4.0, 2.25, 0.64] → after R_z(90°): diag(2.25, 4.0, 0.64).
+        assert!(approx(s.a11, 2.25, 1e-5), "a11 = {}", s.a11);
+        assert!(approx(s.a22, 4.0, 1e-5), "a22 = {}", s.a22);
+        assert!(approx(s.a33, 0.64, 1e-5), "a33 = {}", s.a33);
+        assert!(approx(s.a12, 0.0, 1e-5));
+        assert!(approx(s.a13, 0.0, 1e-5));
+        assert!(approx(s.a23, 0.0, 1e-5));
+    }
+
+    #[test]
+    fn is_spd_rejects_non_spd() {
+        // Negative-diagonal-entry case: fails the first leading minor.
+        let neg = Spd3::new(-1.0, 0.0, 0.0, 1.0, 0.0, 1.0);
+        assert!(!neg.is_spd(1e-6));
+
+        // 2×2 leading minor negative (a11·a22 < a12²): passes a11 > 0,
+        // fails the 2×2 minor.
+        let bad2 = Spd3::new(1.0, 2.0, 0.0, 1.0, 0.0, 1.0);
+        assert!(!bad2.is_spd(1e-6));
+
+        // det < 0 case: passes both leading minors but the full det
+        // gates this out.
+        let bad3 = Spd3::new(1.0, 0.0, 0.0, 1.0, 0.0, -1.0);
+        assert!(!bad3.is_spd(1e-6));
+
+        // Zero matrix — degenerate but not SPD (eigenvalues all 0).
+        assert!(!Spd3::ZERO.is_spd(1e-6));
+    }
+
+    #[test]
+    fn pow_two_inverts_sqrt() {
+        // sqrt(Σ).pow(2.0) ≈ Σ — composes the spectral lift in both
+        // directions. Tests the pow(t) general path (not just the
+        // sqrt shim) for a non-trivial t exponent.
+        let mut state = 0x5A5A5A5Au32;
+        for trial in 0..50 {
+            let s = sample_spd3(&mut state);
+            let round = s.sqrt().pow(2.0);
+            assert!(
+                approx_spd3(round, s, 5e-4),
+                "trial {trial}: sqrt(Σ)².powf(2.0) = {round:?}, orig = {s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn log_spd_diagonal_matches_log_of_eigenvalues() {
+        // For diagonal SPD, log(Σ) is the diagonal log per entry.
+        // Hits the diagonal fast-path in eig() and directly verifies
+        // the spectral reconstruction formula without depending on
+        // the eigenvector-recovery code.
+        let d = Spd3::new(2.0, 0.0, 0.0, std::f32::consts::E, 0.0, 4.0);
+        let l = d.log_spd();
+        assert!(approx(l.a11, (2.0f32).ln(), 1e-5));
+        assert!(approx(l.a22, 1.0, 1e-5));
+        assert!(approx(l.a33, (4.0f32).ln(), 1e-5));
+        assert!(approx(l.a12, 0.0, 1e-5));
+        assert!(approx(l.a13, 0.0, 1e-5));
+        assert!(approx(l.a23, 0.0, 1e-5));
+    }
+
+    #[test]
+    fn eig_degenerate_eigenspace_via_rotated_diag() {
+        // diag(2, 2, 1) rotated 30° about an arbitrary axis. Has
+        // eigenvalues (2, 2, 1) — a 2D degenerate eigenspace for λ=2.
+        // The cross-product null-space recovery returns the same vector
+        // for both λ=2 calls; the `gram_schmidt_complement` fallback
+        // path fills the second 2-eigenvector. Without this test the
+        // fallback path (recover_eigvecs → !filled[k] branch) is
+        // entirely uncovered.
+        let theta = 0.5236f32; // 30°
+        let c = theta.cos();
+        let s = theta.sin();
+        // Axis: (1, 1, 1)/√3 — unit vector with all three components.
+        let inv_r3 = 1.0 / 3.0f32.sqrt();
+        let q = [(theta / 2.0).cos(),
+                 inv_r3 * (theta / 2.0).sin(),
+                 inv_r3 * (theta / 2.0).sin(),
+                 inv_r3 * (theta / 2.0).sin()];
+        let sigma = Spd3::from_scale_quat([2.0f32.sqrt(), 2.0f32.sqrt(), 1.0], q);
+        // Eigenvalues are scale², i.e. (2, 2, 1) regardless of rotation.
+        let (l1, l2, l3, v) = sigma.eig();
+        assert!(approx(l1, 2.0, 1e-4), "l1 = {l1}");
+        assert!(approx(l2, 2.0, 1e-4), "l2 = {l2}");
+        assert!(approx(l3, 1.0, 1e-4), "l3 = {l3}");
+        // Reconstruction must still recover Σ exactly modulo float noise
+        // — that's the invariant the eigvec recovery has to preserve
+        // even when the eigenspace is degenerate.
+        let reconstructed = reconstruct_symm(&v, l1, l2, l3);
+        let _ = (c, s); // silence unused (kept for the comment context)
+        assert!(
+            approx_spd3(reconstructed, sigma, 5e-4),
+            "degenerate-eigenspace reconstruction failed: got {reconstructed:?}, want {sigma:?}"
+        );
     }
 
     #[test]
