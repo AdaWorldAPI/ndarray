@@ -43,7 +43,7 @@ pub mod prove_runner;
 pub mod ewa_sandwich_2d;
 
 /// Pillar-7: 3D EWA sandwich certification probe (B2).
-// pub mod ewa_sandwich_3d;
+pub mod ewa_sandwich_3d;
 
 /// Pillar-7.5: Koestenberger PSD path certification probe (B3).
 pub mod koestenberger;
