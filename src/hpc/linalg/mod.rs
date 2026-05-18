@@ -40,3 +40,6 @@
 
 mod matrix;
 pub use matrix::{Mat2, Mat3, Mat4, MatN, Spd2, Spd3};
+
+pub mod quat;
+pub use quat::{quat_mul_x16, Quat};
