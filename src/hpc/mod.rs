@@ -438,3 +438,7 @@ mod e2e_tests {
     }
 }
 pub mod vnni_gemm;
+
+/// Symmetric eigendecomposition — closed-form (N=2,3,4), Jacobi (N∈[5,64]), QR (N>64).
+#[allow(missing_docs)]
+pub mod linalg;
