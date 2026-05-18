@@ -61,3 +61,5 @@ pub use norm::{group_norm_f32, layer_norm_f32, rms_norm_f32};
 
 pub mod activations_ext;
 pub use activations_ext::{gelu_f32, gelu_tanh_f32, mish_f32, silu_f32, swish_f32};
+
+pub mod conv;
