@@ -126,6 +126,17 @@ impl TileBinning {
             if projected.valid[i] == 0 {
                 continue;
             }
+            // The IEEE-754 positive-f32 → u32 sort trick requires
+            // `depth > 0`. PR 3's near cull guarantees this for any
+            // `valid == 1` slot; the debug_assert catches a caller
+            // that violates the precondition (which would silently
+            // produce wrong sort order in release builds).
+            debug_assert!(
+                projected.depth[i] > 0.0 && projected.depth[i].is_finite(),
+                "tile binning requires positive finite depth for valid gaussians \
+                 (got {} at slot {i}); PR 3's near cull must filter these out",
+                projected.depth[i]
+            );
             let depth_bits = projected.depth[i].to_bits();
             let (tx_min, tx_max, ty_min, ty_max) =
                 tile_aabb(projected, i, tile_cols, tile_rows);
@@ -168,10 +179,19 @@ impl TileBinning {
         }
     }
 
-    /// Return the sorted slice of instances for tile `(tile_x, tile_y)`.
+    /// Return the sorted slice of instances for tile `(tile_x, tile_y)`,
+    /// in front-to-back depth order (the contract PR 5's rasterizer
+    /// alpha-blend expects).
     ///
-    /// Returns an empty slice if the tile has no visible gaussians or if
-    /// the tile coordinates are out of range.
+    /// # Returns
+    ///
+    /// - **Empty slice** if the tile contains no visible gaussians.
+    /// - **Empty slice** for out-of-range coordinates
+    ///   (`tile_x >= tile_cols` or `tile_y >= tile_rows`). Silent —
+    ///   no panic, no `Result`. Callers iterating the full grid in
+    ///   nested loops with their own bounds don't pay a branch cost.
+    ///   PR 5's per-tile driver iterates `0..tile_rows × 0..tile_cols`
+    ///   so the out-of-range path is defensive only.
     pub fn tile_instances(&self, tile_x: u32, tile_y: u32) -> &[TileInstance] {
         if tile_x >= self.tile_cols || tile_y >= self.tile_rows {
             return &[];
@@ -213,12 +233,23 @@ fn tile_aabb(
     let py_min = cy - r;
     let py_max = cy + r;
 
-    // Tile coordinates: floor(px / TILE_SIZE) and ceil(px / TILE_SIZE).
+    // Tile coordinates: lowest tile is `floor(px_min / ts)`. Highest
+    // tile is `floor(px_max / ts)`; the exclusive upper bound is then
+    // `floor(px_max / ts) + 1`.
+    //
+    // The naive `ceil(px_max / ts)` would under-count by ONE TILE when
+    // `px_max` is an exact multiple of `TILE_SIZE` (so `ceil == floor`).
+    // Example: cx=88, r=8 → px_max=96. ceil(96/16) = 6, range [_, 6).
+    // But pixel 96 sits in tile 6 (floor(96/16) = 6), so tile 6 must
+    // be in the binning — under the ceil formula it is missed,
+    // producing a one-pixel rendering seam on every gaussian whose
+    // 3σ edge lands on a tile boundary (PP-13 PR 4 P0 finding).
+    // Using `floor + 1` is monotonic and includes the boundary tile.
     let ts = TILE_SIZE as f32;
     let tx_min_f = (px_min / ts).floor();
-    let tx_max_f = (px_max / ts).ceil();
+    let tx_max_f = (px_max / ts).floor() + 1.0;
     let ty_min_f = (py_min / ts).floor();
-    let ty_max_f = (py_max / ts).ceil();
+    let ty_max_f = (py_max / ts).floor() + 1.0;
 
     // Clamp to valid tile range [0, tile_cols] / [0, tile_rows].
     // Using saturating cast: negative floats → 0 (via max 0.0 before cast).
@@ -497,6 +528,86 @@ mod tests {
         assert!(
             binning.tile_offsets.iter().all(|&o| o <= inst_len),
             "some offset exceeds instances.len()"
+        );
+    }
+
+    // ── Test 11 — exact-tile-boundary edge case (PP-13 PR4 P0 promoted) ────
+    //
+    // When the 3σ pixel extent `px_max = cx + r` is an EXACT multiple
+    // of TILE_SIZE, the old `ceil(px_max/16)` formula under-counted
+    // by one tile: a gaussian whose right edge lands at pixel 96.0
+    // sits in tile 6 (floor(96/16) = 6), but ceil gave the exclusive
+    // upper bound as 6 → tile 6 was missed in the binning → PR 5
+    // would render a one-pixel seam along the tile boundary for
+    // every gaussian that happens to hit this case.
+    //
+    // The `floor + 1` fix is monotonic across the boundary AND
+    // backwards-compatible with the existing tests (which all use
+    // non-multiple-of-16 px_max values). This test pins the corner
+    // case explicitly so a future "optimization" doesn't regress.
+    #[test]
+    fn gaussian_edge_on_exact_tile_boundary_includes_the_boundary_tile() {
+        // cx = 88, r = 8 → px range [80.0, 96.0]. px_min = 80 = 5·16,
+        // px_max = 96 = 6·16. Tile range:
+        //   tx_min = floor(80/16) = 5
+        //   tx_max = floor(96/16) + 1 = 7  (exclusive)
+        // Covered tiles: {5, 6}. Two tiles per axis, so 2×2 = 4 instances.
+        let camera = Camera::identity_at_origin(512, 512);
+        let projected = make_projected(&[(88.0, 88.0, 8.0, 1.0)], None);
+        let binning = TileBinning::from_projected(&projected, &camera);
+        assert_eq!(
+            binning.instances.len(), 4,
+            "exact-boundary gaussian: expected 4 instances (tiles {{5,6}}²), got {}",
+            binning.instances.len()
+        );
+        // Tile 5 (left-of-boundary) AND tile 6 (right-of-boundary) must
+        // both be covered. Pre-fix, tile 6 was missing.
+        assert_eq!(binning.tile_instances(5, 5).len(), 1, "tile (5,5) missing");
+        assert_eq!(binning.tile_instances(5, 6).len(), 1, "tile (5,6) missing");
+        assert_eq!(binning.tile_instances(6, 5).len(), 1, "tile (6,5) missing");
+        assert_eq!(
+            binning.tile_instances(6, 6).len(), 1,
+            "tile (6,6) MISSING — the regression PP-13 caught: \
+             px_max = 6·16 = 96, ceil(96/16) = 6 (under-count by one tile)"
+        );
+    }
+
+    // ── Test 12 — sub-TILE_SIZE image (PP-13 P1: sub-tile grid coverage) ───
+    //
+    // For an image smaller than TILE_SIZE, the grid is exactly 1×1.
+    // Ceil-div math: tile_cols = ceil(8/16) = 1.
+    #[test]
+    fn sub_tile_size_image_has_single_tile_grid() {
+        let camera = Camera::identity_at_origin(8, 8);
+        let projected = make_projected(&[(4.0, 4.0, 2.0, 1.0)], None);
+        let binning = TileBinning::from_projected(&projected, &camera);
+        assert_eq!(binning.tile_cols, 1, "tile_cols for 8px image");
+        assert_eq!(binning.tile_rows, 1, "tile_rows for 8px image");
+        assert_eq!(binning.tile_offsets.len(), 2, "1 tile + sentinel");
+        assert_eq!(binning.instances.len(), 1, "single gaussian → 1 instance");
+        assert_eq!(binning.tile_instances(0, 0).len(), 1);
+    }
+
+    // ── Test 13 — tile_offsets sentinel invariant (PP-13 P1 promoted) ──────
+    //
+    // `tile_offsets[n_tiles] == instances.len()`. PR 5 relies on this
+    // as the closing bracket so every tile's slice is uniformly
+    // `instances[offsets[t]..offsets[t+1]]` without bounds branching.
+    #[test]
+    fn tile_offsets_sentinel_equals_instances_len() {
+        let camera = Camera::identity_at_origin(256, 256);
+        let gaussians: Vec<(f32, f32, f32, f32)> = (0..20)
+            .map(|i| ((i as f32) * 11.0 + 5.0, (i as f32) * 9.0 + 7.0, 8.0, i as f32 + 1.0))
+            .collect();
+        let projected = make_projected(&gaussians, None);
+        let binning = TileBinning::from_projected(&projected, &camera);
+        let n_tiles = (binning.tile_cols * binning.tile_rows) as usize;
+        let sentinel = *binning.tile_offsets.last().expect("offsets always have sentinel");
+        let actual_count = binning.instances.len() as u32;
+        assert_eq!(
+            sentinel, actual_count,
+            "sentinel offsets[{}] = {sentinel}, instances.len() = {actual_count} — mismatch breaks the PR 5 slice bracket invariant",
+            n_tiles,
         );
     }
 }
