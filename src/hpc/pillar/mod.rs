@@ -46,7 +46,7 @@ pub mod ewa_sandwich_2d;
 // pub mod ewa_sandwich_3d;
 
 /// Pillar-7.5: Koestenberger PSD path certification probe (B3).
-// pub mod koestenberger;
+pub mod koestenberger;
 
 /// Pillar-8: Temporal drift sandwich certification probe (B4).
 pub mod temporal_sandwich;
