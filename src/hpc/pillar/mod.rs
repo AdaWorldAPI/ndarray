@@ -49,7 +49,7 @@ pub mod prove_runner;
 // pub mod koestenberger;
 
 /// Pillar-8: Temporal drift sandwich certification probe (B4).
-// pub mod temporal_sandwich;
+pub mod temporal_sandwich;
 
 /// Pillar-9: Cov16384 Düker–Zoubouloglou CLT probe (B5).
 // pub mod cov_high_d;
