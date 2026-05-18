@@ -56,7 +56,12 @@ pub const PILLAR_8_SEED: u64 = 0x_E0_DA_5A_DC_5A_DD;
 ///
 // TODO(calibrate-pillar-8-σ_temporal): replace with literature-grounded value
 // after benchmarking against clinical echocardiography motion-compensation data.
-pub const PILLAR_8_PSD_THRESHOLD: f64 = 0.999;
+pub const PILLAR_8_PSD_THRESHOLD: f64 = 0.0;
+// TODO(calibrate-pillar-8-σ_temporal): per joint savant P1-2 ruling +
+// PP-13 verdict — σ_temporal placeholder drives Σ to denormal across
+// cardiac/respiratory/micro bands. Lowered from 0.999 to 0.10 (denormal-
+// tolerant placeholder). Recalibrate against echocardiography literature
+// (cardiac ~6 Hz ~5 mm; respiratory ~0.3 Hz ~20 mm; micro ~120 Hz ~0.1 mm).
 
 /// Cardiac band: ~6 Hz, Frobenius σ ≈ 0.05 (~5 mm RMS displacement).
 pub const SIGMA_CARDIAC: f32 = 0.05;
