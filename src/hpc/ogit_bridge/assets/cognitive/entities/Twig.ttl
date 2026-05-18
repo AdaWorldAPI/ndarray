@@ -1,0 +1,37 @@
+@prefix ogit:           <http://www.purl.org/ogit/> .
+@prefix ogit.Cognitive: <http://www.purl.org/ogit/Cognitive/> .
+@prefix rdf:            <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:           <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:            <http://www.w3.org/2001/XMLSchema#> .
+@prefix dcterms:        <http://purl.org/dc/terms/> .
+
+ogit.Cognitive:Twig a rdfs:Class ;
+    rdfs:subClassOf ogit.Cognitive:Hip ;
+    rdfs:label "Twig" ;
+    rdfs:comment "A specific cognitive operation within a Hip. Twigs represent individual inference rule templates or cognitive micro-operators. Target branching factor is 16 Twigs per Hip." ;
+    ogit:scope "NTO" ;
+    ogit:parent ogit:Node ;
+    dcterms:source "AdaWorldAPI/ndarray/.claude/knowledge/pr-x9-design.md:layer-1-substrate" ;
+    ogit:mandatory (
+        ogit.Cognitive:hipParent
+        ogit.Cognitive:twigIdx
+    ) ;
+    ogit:optional (
+        ogit:description
+    ) ;
+    ogit:allowed [
+        ogit:belongs ogit.Cognitive:Hip
+    ] .
+
+ogit.Cognitive:hipParent a rdf:Property ;
+    rdfs:label "hipParent" ;
+    rdfs:comment "Foreign-key reference to the Hip that owns this Twig. Enables O(1) parent-pointer lookup in PR-X9's flat-indexed schema tables." ;
+    rdfs:domain ogit.Cognitive:Twig ;
+    rdfs:range ogit.Cognitive:Hip ;
+    ogit:type "xsd:string" .
+
+ogit.Cognitive:twigIdx a rdf:Property ;
+    rdfs:label "twigIdx" ;
+    rdfs:comment "Zero-based compact index of this Twig within its parent Hip. Range: 0-255 (xsd:byte)." ;
+    rdfs:domain ogit.Cognitive:Twig ;
+    ogit:type "xsd:byte" .

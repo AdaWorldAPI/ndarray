@@ -1,0 +1,39 @@
+@prefix ogit:           <http://www.purl.org/ogit/> .
+@prefix ogit.Cognitive: <http://www.purl.org/ogit/Cognitive/> .
+@prefix rdf:            <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:           <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:            <http://www.w3.org/2001/XMLSchema#> .
+@prefix dcterms:        <http://purl.org/dc/terms/> .
+
+ogit.Cognitive:SplatCovariance a rdfs:Class ;
+    rdfs:subClassOf ogit:Entity ;
+    rdfs:label "SplatCovariance" ;
+    rdfs:comment "Anisotropic per-tier covariance encoding for Gaussian splat cascade primitives. Supports three variants: isotropic (1 scalar), diagonal (D scalars), and Cholesky lower-triangular (D*(D+1)/2 scalars). The params field is variant-dependent and stored as base64-encoded binary for compact representation." ;
+    ogit:scope "NTO" ;
+    ogit:parent ogit:Node ;
+    dcterms:source "AdaWorldAPI/ndarray/.claude/knowledge/pr-x9-design.md:layer-1-substrate" ;
+    ogit:mandatory (
+        ogit.Cognitive:variant
+        ogit.Cognitive:params
+    ) ;
+    ogit:optional (
+        ogit.Cognitive:dim
+    ) .
+
+ogit.Cognitive:variant a rdf:Property ;
+    rdfs:label "variant" ;
+    rdfs:comment "Covariance encoding variant. Allowed values: 'isotropic' (single scalar sigma^2), 'diagonal' (D independent variances), 'cholesky' (lower-triangular Cholesky factor L such that Sigma = L L^T). Determines the layout of the params field." ;
+    rdfs:domain ogit.Cognitive:SplatCovariance ;
+    ogit:type "xsd:string" .
+
+ogit.Cognitive:params a rdf:Property ;
+    rdfs:label "params" ;
+    rdfs:comment "Covariance parameters as base64-encoded binary. Layout: isotropic = 1 × f32 (4 bytes); diagonal = D × f32 (4D bytes); cholesky = D*(D+1)/2 × f32 lower-triangle row-major. Dimension D from the dim field (default 3 for 3D splats)." ;
+    rdfs:domain ogit.Cognitive:SplatCovariance ;
+    ogit:type "xsd:base64Binary" .
+
+ogit.Cognitive:dim a rdf:Property ;
+    rdfs:label "dim" ;
+    rdfs:comment "Dimensionality of the covariance (2-4, xsd:byte). Defaults to 3 for 3D Gaussian splat cascades. Controls the size of the params binary blob." ;
+    rdfs:domain ogit.Cognitive:SplatCovariance ;
+    ogit:type "xsd:byte" .

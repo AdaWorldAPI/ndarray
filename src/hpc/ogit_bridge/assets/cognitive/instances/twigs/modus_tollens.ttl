@@ -1,0 +1,13 @@
+@prefix ogit:           <http://www.purl.org/ogit/> .
+@prefix ogit.Cognitive: <http://www.purl.org/ogit/Cognitive/> .
+@prefix rdf:            <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:           <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:            <http://www.w3.org/2001/XMLSchema#> .
+@prefix dcterms:        <http://purl.org/dc/terms/> .
+
+ogit.Cognitive:twig-modus-tollens a ogit.Cognitive:Twig ;
+    ogit:name "modus_tollens" ;
+    ogit.Cognitive:hipParent "ogit.Cognitive:hip-deduction" ;
+    ogit.Cognitive:twigIdx "1"^^xsd:byte ;
+    ogit:description "Twig under deduction: modus tollens inference template (not-B, A->B |- not-A). Covers classical MT, contrapositional reasoning, and NARS-weighted MT truth functions with negation handling." ;
+    dcterms:source "AdaWorldAPI/ndarray/.claude/knowledge/pr-x9-design.md:layer-1-substrate" .
