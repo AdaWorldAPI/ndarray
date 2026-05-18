@@ -252,6 +252,11 @@ pub mod audio;
 #[allow(missing_docs)]
 pub mod stream;
 
+/// Middle-layer linalg: `MatN` carrier + `Mat2/3/4` aliases + `Spd2/Spd3` SPD-cone (PR-X10 A1).
+/// Foundation for A2-A12 (Quat, inverse, eig_sym, SVD, polar, mat_exp, SH, conv, batched, RoPE, attention, loss).
+#[cfg(feature = "linalg")]
+pub mod linalg;
+
 #[cfg(all(test, feature = "hpc-extras"))]
 mod e2e_tests {
     //! End-to-end pipeline test: Fingerprint → Node → Seal → Cascade → CLAM → Causality → BNN
