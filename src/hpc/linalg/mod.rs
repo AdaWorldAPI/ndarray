@@ -52,3 +52,9 @@ pub mod eig_sym;
 
 pub mod inverse;
 pub use inverse::{invert_affine_4x4, invert_mat3, invert_mat4, invert_mat_n};
+
+pub mod rope;
+pub use rope::RopeCache;
+
+pub mod attention;
+pub use attention::{attention_f32, flash_attention_f32, AttentionConfig};
