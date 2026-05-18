@@ -1,0 +1,13 @@
+@prefix ogit:           <http://www.purl.org/ogit/> .
+@prefix ogit.Cognitive: <http://www.purl.org/ogit/Cognitive/> .
+@prefix rdf:            <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:           <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:            <http://www.w3.org/2001/XMLSchema#> .
+@prefix dcterms:        <http://purl.org/dc/terms/> .
+
+ogit.Cognitive:hip-episodic a ogit.Cognitive:Hip ;
+    ogit:name "episodic" ;
+    ogit.Cognitive:heelParent "ogit.Cognitive:heel-memory" ;
+    ogit.Cognitive:hipIdx "0"^^xsd:byte ;
+    ogit:description "Hip under memory: time-indexed episodic recall operations. Covers event sequence retrieval, temporal context binding, and recency-weighted episodic evidence accumulation." ;
+    dcterms:source "AdaWorldAPI/ndarray/.claude/knowledge/pr-x9-design.md:layer-1-substrate" .

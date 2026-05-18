@@ -1,0 +1,13 @@
+@prefix ogit:           <http://www.purl.org/ogit/> .
+@prefix ogit.Cognitive: <http://www.purl.org/ogit/Cognitive/> .
+@prefix rdf:            <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:           <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:            <http://www.w3.org/2001/XMLSchema#> .
+@prefix dcterms:        <http://purl.org/dc/terms/> .
+
+ogit.Cognitive:hip-deduction a ogit.Cognitive:Hip ;
+    ogit:name "deduction" ;
+    ogit.Cognitive:heelParent "ogit.Cognitive:heel-reasoning" ;
+    ogit.Cognitive:hipIdx "0"^^xsd:byte ;
+    ogit:description "Hip under reasoning: classical and probabilistic deductive operations. Covers modus ponens, modus tollens, syllogism chains, and NARS-weighted deductive truth functions." ;
+    dcterms:source "AdaWorldAPI/ndarray/.claude/knowledge/pr-x9-design.md:layer-1-substrate" .

@@ -1,0 +1,44 @@
+@prefix ogit:           <http://www.purl.org/ogit/> .
+@prefix ogit.Cognitive: <http://www.purl.org/ogit/Cognitive/> .
+@prefix rdf:            <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:           <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:            <http://www.w3.org/2001/XMLSchema#> .
+@prefix dcterms:        <http://purl.org/dc/terms/> .
+
+ogit.Cognitive:Leaf a rdfs:Class ;
+    rdfs:subClassOf ogit.Cognitive:Twig ;
+    rdfs:label "Leaf" ;
+    rdfs:comment "Concrete basin atom — the actual CAM codebook entry at the base of the 4-level hierarchy (Heel > Hip > Twig > Leaf). A Leaf carries a basinSignature (canonical CausalEdge64) that identifies its position in the 4096-entry codebook. Target branching factor is 16 Leaves per Twig." ;
+    ogit:scope "NTO" ;
+    ogit:parent ogit:Node ;
+    dcterms:source "AdaWorldAPI/ndarray/.claude/knowledge/pr-x9-design.md:layer-1-substrate" ;
+    ogit:mandatory (
+        ogit.Cognitive:twigParent
+        ogit.Cognitive:leafIdx
+        ogit.Cognitive:basinSignature
+    ) ;
+    ogit:optional (
+        ogit:description
+    ) ;
+    ogit:allowed [
+        ogit:belongs ogit.Cognitive:Twig
+    ] .
+
+ogit.Cognitive:twigParent a rdf:Property ;
+    rdfs:label "twigParent" ;
+    rdfs:comment "Foreign-key reference to the Twig that owns this Leaf. Enables O(1) parent-pointer lookup in PR-X9's flat-indexed schema tables." ;
+    rdfs:domain ogit.Cognitive:Leaf ;
+    rdfs:range ogit.Cognitive:Twig ;
+    ogit:type "xsd:string" .
+
+ogit.Cognitive:leafIdx a rdf:Property ;
+    rdfs:label "leafIdx" ;
+    rdfs:comment "Zero-based compact index of this Leaf within its parent Twig. Range: 0-255 (xsd:byte)." ;
+    rdfs:domain ogit.Cognitive:Leaf ;
+    ogit:type "xsd:byte" .
+
+ogit.Cognitive:basinSignature a rdf:Property ;
+    rdfs:label "basinSignature" ;
+    rdfs:comment "Representative CausalEdge64 for this basin (the codebook atom's canonical truth state). Stored as xsd:long (signed 64-bit); the u64 bit pattern is preserved — consumers must treat the high bit as data, not a sign. See PR-Z1 design doc open question 2." ;
+    rdfs:domain ogit.Cognitive:Leaf ;
+    ogit:type "xsd:long" .

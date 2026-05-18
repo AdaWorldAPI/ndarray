@@ -1,0 +1,37 @@
+@prefix ogit:           <http://www.purl.org/ogit/> .
+@prefix ogit.Cognitive: <http://www.purl.org/ogit/Cognitive/> .
+@prefix rdf:            <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:           <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:            <http://www.w3.org/2001/XMLSchema#> .
+@prefix dcterms:        <http://purl.org/dc/terms/> .
+
+ogit.Cognitive:Hip a rdfs:Class ;
+    rdfs:subClassOf ogit.Cognitive:Heel ;
+    rdfs:label "Hip" ;
+    rdfs:comment "Sub-family branch within a Heel. A Hip groups related cognitive operations under one Heel. Target branching factor is 16 Hips per Heel, giving the second level of the 4-level hierarchy." ;
+    ogit:scope "NTO" ;
+    ogit:parent ogit:Node ;
+    dcterms:source "AdaWorldAPI/ndarray/.claude/knowledge/pr-x9-design.md:layer-1-substrate" ;
+    ogit:mandatory (
+        ogit.Cognitive:heelParent
+        ogit.Cognitive:hipIdx
+    ) ;
+    ogit:optional (
+        ogit:description
+    ) ;
+    ogit:allowed [
+        ogit:belongs ogit.Cognitive:Heel
+    ] .
+
+ogit.Cognitive:heelParent a rdf:Property ;
+    rdfs:label "heelParent" ;
+    rdfs:comment "Foreign-key reference to the Heel that owns this Hip. Enables O(1) parent-pointer lookup in PR-X9's flat-indexed schema tables." ;
+    rdfs:domain ogit.Cognitive:Hip ;
+    rdfs:range ogit.Cognitive:Heel ;
+    ogit:type "xsd:string" .
+
+ogit.Cognitive:hipIdx a rdf:Property ;
+    rdfs:label "hipIdx" ;
+    rdfs:comment "Zero-based compact index of this Hip within its parent Heel. Range: 0-255 (xsd:byte)." ;
+    rdfs:domain ogit.Cognitive:Hip ;
+    ogit:type "xsd:byte" .
