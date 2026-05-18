@@ -161,6 +161,11 @@ harness = false
 name = "zip"
 harness = false
 
+[[bench]]
+name = "splat3d_bench"
+harness = false
+required-features = ["splat3d"]
+
 [features]
 default = ["std", "hpc-extras"]
 
@@ -210,6 +215,16 @@ jit-native = ["jitson", "dep:cranelift-codegen", "dep:cranelift-jit", "dep:crane
 native = ["std"]
 intel-mkl = ["std"]
 openblas = ["std"]
+
+# splat3d: CPU-SIMD 3D Gaussian Splatting forward renderer
+# (`src/hpc/splat3d/*`). Pure SIMD, no GPU, no wgpu, reuses the
+# existing `crate::simd` polyfill (F32x16 via AVX-512 / AVX2 / NEON
+# / scalar dispatch). Gated because the module pulls in the Smith-1961
+# 3×3 SPD eigendecomp + EWA-sandwich projection kernels; downstream
+# consumers (medvol, lance-graph-render) opt in. f32 hot path; the
+# Pillar-7 probe certifying the math sibling lives in
+# `lance-graph/crates/jc/src/ewa_sandwich_3d.rs`.
+splat3d = ["std"]
 
 # no_std polyfill for `static LazyLock` in `src/simd.rs` (sprint A12).
 # Pulls in `portable-atomic` with the `critical-section` impl plus the
