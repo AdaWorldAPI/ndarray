@@ -1070,4 +1070,162 @@ next_action: proceed
 
 ---
 
+## §16 Model Stylesheet + Mid-Task Switching
+
+> Added 2026-05-18. Maps to `attractor-spec.md` §8 `model_stylesheet`
+> (CSS-like selectors), adds our mid-task Opus↔Sonnet switching
+> triggered by our stuck-protocol blockers and council-round counts.
+
+### §16.1 Why have a stylesheet at all
+
+| Phase / role | Cognitive load | Reasonable default |
+|---|---|---|
+| Plan authoring | high (architecture, cross-cutting) | **opus** + `reasoning=high` |
+| Plan review (meta-agent) | high (judgment, taste) | **opus** + `reasoning=high` |
+| PP-14 convergence-architect | high (creative-design exploration) | **opus** + `reasoning=high` |
+| PP-16 preflight-drift-auditor | medium (git + grep against plan) | **sonnet** (escalate on drift > 100 lines) |
+| PP-15 baton-handoff-auditor | medium (interface diffing) | **sonnet** |
+| PP-13 brutally-honest-tester | medium (toolchain runner + AP1..AP9) | **sonnet** |
+| Worker (skeleton-fill) | medium (mechanical fill of typed surface) | **sonnet** |
+| Worker (greenfield code) | high (design + impl) | **opus** |
+| Council round (per savant) | medium (review iteration) | **sonnet** |
+| Chairman synthesis | high (cross-finding consolidation) | **opus** |
+| Inbox drain (meta-agent) | low (typed-blocker routing) | **sonnet** (escalate on `BEHAVIOUR_QUESTION`) |
+
+Static per-role defaults are step 1. Mid-task switching (§16.3) is
+step 2.
+
+### §16.2 Stylesheet syntax (attractor §8 compatible)
+
+```yaml
+model_stylesheet:
+  # CSS-like rules. First matching rule wins (per attractor §8).
+  rules:
+    - selector: "node[kind=plan]"
+      props: { model: opus, reasoning_effort: high }
+    - selector: "node[kind=meta_review]"
+      props: { model: opus, reasoning_effort: high }
+    - selector: "node[kind=savant][role=PP-14]"
+      props: { model: opus, reasoning_effort: high }
+    - selector: "node[kind=savant][phase=POST-IMPL]"
+      props: { model: sonnet }
+    - selector: "node[kind=savant][phase=PRE-SPAWN]"
+      props: { model: sonnet }
+    - selector: "node[kind=council_chairman]"
+      props: { model: opus }
+    - selector: "node[kind=worker][mode=skeleton-fill]"
+      props: { model: sonnet }
+    - selector: "node[kind=worker][mode=greenfield]"
+      props: { model: opus }
+    - selector: "*"
+      props: { model: sonnet }                # final fallback
+```
+
+Selectors compose with `[attr=value]` pairs (attractor §8.2). The
+fallback `*` rule is mandatory; absence is `WAVE-030` ERROR.
+
+### §16.3 Mid-task escalation triggers
+
+A worker (or savant) does NOT switch its own model — it writes a
+typed signal to its `status.json` and the **orchestrator re-spawns**
+with the requested model. Self-switching would break LD-1 sentinel
+continuity.
+
+| Trigger condition | Action | Escalate from → to |
+|---|---|---|
+| `outcome=RETRY` AND `notes contains "escalate-model:opus"` | re-spawn same agent_id with opus | sonnet → opus |
+| Tool-call loop detected in council, `rounds >= 3` without CONVERGE | re-spawn the looping savant with opus + `reasoning=high` | sonnet → opus |
+| Worker filed `MISSING_INVARIANT` blocker AND meta-agent answer is structural | re-spawn worker with opus | sonnet → opus |
+| Worker filed `SPEC_SOURCE_MISMATCH` AND meta wrote an RFC | re-spawn worker with opus after RFC merge | sonnet → opus |
+| Proof-of-read covers > 10 files | escalate at next re-spawn | sonnet → opus |
+| `unsafe` block in skeleton-fill | escalate at next re-spawn | sonnet → opus |
+| PP-16 drift surface > 100 lines | escalate the next preflight pass | sonnet → opus |
+| PP-13 anti-pattern density > 3 per 100 lines of diff | escalate PP-13 for re-review pass | sonnet → opus |
+
+### §16.4 Mid-task de-escalation triggers
+
+The opposite direction — orchestrator can drop a re-spawn down from
+opus to sonnet when the work turned out simpler than the stylesheet
+default predicted:
+
+| Trigger condition | Action | De-escalate from → to |
+|---|---|---|
+| Plan turned out to be a 2-bundle wave (not 12) | next round's worker default | opus → sonnet |
+| Council CONVERGED in round 1 with zero P0 + ≤2 P1 | chairman synthesis | opus → sonnet |
+| `outcome=SUCCESS` + tier-1 green + diff < 50 lines | next-wave default for this bundle | opus → sonnet |
+| Meta-agent's inbox-drain answered only `AMBIGUITY` blockers in last 10 entries | next inbox drain | opus → sonnet |
+
+### §16.5 Wire format for switching
+
+The signal flows on the universal wire format
+(`agent-coordination-mcp-spec.md §1.3`):
+
+```markdown
+## 2026-05-18T14:22 — PROPOSAL[P1]: escalate-model A4 → opus (sonnet, claude/wave-12)
+
+**Author:** A4
+**Kind:** PROPOSAL
+**Severity:** P1
+**Refs:** status.json#A4 wave-12
+**Reason:** tool-call-loop:length=2:rounds=3 on customer.master sea-orm UPSERT
+
+---
+
+Requested: model=opus, reasoning_effort=high.
+Suggested rationale: this is a stuck-protocol AMBIGUITY-class issue
+(sea-orm vs Python idempotent UPSERT semantics) — judgment-heavy.
+```
+
+Orchestrator routes by `Kind=PROPOSAL` + `Severity=P1` + body
+contains `escalate-model:`. Re-spawn happens in the next wave step.
+
+### §16.6 Cost-aware ceiling
+
+The stylesheet MUST declare a per-wave **escalation budget**:
+
+```yaml
+model_stylesheet:
+  budget:
+    max_opus_workers_per_wave: 3            # default 3
+    max_opus_savant_rounds_per_council: 2   # default 2
+    warn_if_exceeds: 0.8
+```
+
+If a wave's pending escalations would exceed the budget, the
+orchestrator MUST either (a) serialize escalations across waves or
+(b) ask the human via `wait.human` (attractor §6) before
+escalating.
+
+### §16.7 Validation rules
+
+| Rule | Description | Severity |
+|---|---|---|
+| `WAVE-030 stylesheet-fallback` | `model_stylesheet.rules` MUST end with a `*` fallback. | ERROR |
+| `WAVE-031 no-self-switching` | Workers / savants MUST NOT switch their own model mid-call. Use the `PROPOSAL`-wire signal (§16.5). | ERROR |
+| `WAVE-032 sentinel-on-respawn` | Re-spawn under escalation MUST issue a NEW sentinel token (the previous worker's identity is closed). | ERROR |
+| `WAVE-033 escalation-budget` | The wave's escalation total MUST NOT exceed `model_stylesheet.budget` without explicit human override. | WARNING |
+| `WAVE-034 escalation-trace` | Every escalation re-spawn MUST leave a `PROPOSAL` entry on the wire format (§16.5) so the audit log shows when + why. | ERROR |
+| `WAVE-035 de-escalation-gate` | De-escalation MUST be triggered only by §16.4 conditions; arbitrary downgrades are forbidden (cost-saving optimism). | ERROR |
+
+### §16.8 Worked example: a wave that escalates then de-escalates
+
+```
+T+0  plan committed             opus       (per §16.1 default for plan)
+T+1  PP-16 preflight runs       sonnet     (drift < 100 lines, default)
+T+1  PP-16 emits skeleton       sonnet     (still PP-16)
+T+2  council round 1            sonnet x4  (all savants default)
+T+2  council CONVERGE           opus       (chairman synthesis default)
+T+3  workers spawn (12 × A1..A12) sonnet   (skeleton-fill default)
+T+4  A4 hits sea-orm AMBIGUITY  → PROPOSAL: escalate A4
+T+4  meta-agent writes RFC      opus       (meta default)
+T+5  A4 re-spawn                opus       (escalated, new sentinel)
+T+6  A4 returns SUCCESS         —          (kept opus through this wave)
+T+7  fan-in + tier-1 green      —
+T+8  next wave plans A4 again   opus       (sticky escalation for one wave)
+T+9  A4 returns SUCCESS again   —
+T+10 wave 3 plans A4            sonnet     (DE-ESCALATE per §16.4: 2 successes + diff < 50)
+```
+
+---
+
 *End of `autoattended-orchestrator-spec.md`.*
