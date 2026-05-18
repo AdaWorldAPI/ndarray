@@ -52,7 +52,7 @@ pub mod koestenberger;
 pub mod temporal_sandwich;
 
 /// Pillar-9: Cov16384 Düker–Zoubouloglou CLT probe (B5).
-// pub mod cov_high_d;
+pub mod cov_high_d;
 
 /// Pillar-10: Pflug–Pichler nested Wasserstein distance (B6).
 pub mod pflug;
