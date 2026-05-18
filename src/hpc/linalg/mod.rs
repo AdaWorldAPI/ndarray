@@ -40,3 +40,6 @@
 
 mod matrix;
 pub use matrix::{Mat2, Mat3, Mat4, MatN, Spd2, Spd3};
+
+pub mod inverse;
+pub use inverse::{invert_affine_4x4, invert_mat3, invert_mat4, invert_mat_n};
