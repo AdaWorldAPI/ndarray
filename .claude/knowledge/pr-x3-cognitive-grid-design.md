@@ -664,9 +664,28 @@ Workers MUST NOT add any distance-aware API to this PR. Module headers reference
 > sequentially 5-10 sonnet agents + 1 Koordinator
 > plan → review → correct → sprint → review code → fix P0 → commit → repeat
 
+### Per-worker file scoping (binding)
+
+PR-X3 splits the implementation across one file per sprint worker. Each worker writes ONLY to their assigned file plus inline `#[cfg(test)] mod tests`. The coordinator owns `mod.rs` and refactors it across the sprint.
+
+| Worker | Owns file | Public items |
+|---|---|---|
+| A1 | `src/hpc/blocked_grid/base.rs` | `BlockedGrid<T, BR, BC>` struct + `GridBlock` + `GridBlockMut` + all accessors (`new`, `new_with_pad`, `idx`, `get`, `set`, `as_padded_slice*`, `block_dims`, `rows`/`cols`/`padded_rows`/`padded_cols`) |
+| A2 | `src/hpc/blocked_grid/iter.rs` | `BaseBlockIter`, `BaseBlockIterMut`, `blocks_base`, `blocks_base_mut` (added as `impl` on `BlockedGrid` from `super::base`) |
+| A3 | `src/hpc/blocked_grid/super_block.rs` | `GridSuperBlock`, `GridSuperBlockMut`, `TierBlockIter`, `blocks_tier::<N>` |
+| A4 | `src/hpc/blocked_grid/compute.rs` | `map_base`, `map_tier`, `bulk_apply_base`, `bulk_apply_tier` (with data-flow Rule #3 docstring on each `&mut self` method) |
+| A5 | `src/hpc/blocked_grid/aliases.rs` | `ShaderMantissaGrid`, `AmxBf16Grid`, `AmxInt8Grid`, `StripF32Stack2`, `StripF32Stack4`, `SquareF64Stack8`, `HalfSquareU64` type aliases + L1/L2/L3/L4 alias impls on `BlockedGrid<T, 64, 64>` |
+| A6 | adds inline doctests + integration tests across existing files (coordinator approves the touch list before spawn) | none new — test density only |
+| B | `src/hpc/blocked_grid/grid_struct_macro.rs` | `blocked_grid_struct!` macro + macro-generated struct iterator types |
+| (coord) | `src/hpc/blocked_grid/mod.rs` | submodule declarations + `pub use` re-exports — workers do NOT touch this file |
+
+Workers MUST NOT modify a file outside their assigned scope. The coordinator updates `mod.rs` re-exports after each worker lands. This file-per-worker discipline enables **safe parallel spawns** — workers writing to different files cannot collide on the merge.
+
 ### The agent sequence for PR-X3
 
-Each agent runs **sequentially**, with coordinator review between phases. All workers use **Sonnet** (not Opus — coordinator is Opus). All workers operate in isolated worktrees via `isolation: "worktree"`.
+Each agent runs **sequentially** for type-dependency reasons (A2 needs A1's `BlockedGrid`; A3 needs A2's iterators; etc.) UNLESS the coordinator pre-lands the file-split scaffolding — in that case A2-A5 can spawn in parallel because each writes against the committed design spec rather than against the previous worker's live output.
+
+All workers use **Sonnet** (not Opus — coordinator is Opus). All workers operate in isolated worktrees via `isolation: "worktree"`.
 
 | # | Phase | Agent role | Scope | Coordinator action between this and next |
 |---|---|---|---|---|
