@@ -339,11 +339,7 @@ fn vstrunc_slice(x: &[f32], out: &mut [f32]) {
 /// order (any axis order — C, F, or arbitrary, as long as strides walk the
 /// underlying buffer sequentially). Returns `true` if dispatched.
 #[inline]
-fn dispatch_unary_contig<T, D, F>(
-    x: ArrayView<'_, T, D>,
-    out: &mut ArrayViewMut<'_, T, D>,
-    f: F,
-) -> bool
+fn dispatch_unary_contig<T, D, F>(x: ArrayView<'_, T, D>, out: &mut ArrayViewMut<'_, T, D>, f: F) -> bool
 where
     D: Dimension,
     F: FnOnce(&[T], &mut [T]),
@@ -365,10 +361,7 @@ where
 
 #[inline]
 fn dispatch_binary_contig<T, D, F>(
-    a: ArrayView<'_, T, D>,
-    b: ArrayView<'_, T, D>,
-    out: &mut ArrayViewMut<'_, T, D>,
-    f: F,
+    a: ArrayView<'_, T, D>, b: ArrayView<'_, T, D>, out: &mut ArrayViewMut<'_, T, D>, f: F,
 ) -> bool
 where
     D: Dimension,
@@ -523,11 +516,7 @@ pub fn vdabs<D: Dimension>(x: ArrayView<'_, f64, D>, mut out: ArrayViewMut<'_, f
 /// vsadd(a.view(), b.view(), out.view_mut());
 /// assert_eq!(out.as_slice().unwrap(), &[11.0, 22.0, 33.0]);
 /// ```
-pub fn vsadd<D: Dimension>(
-    a: ArrayView<'_, f32, D>,
-    b: ArrayView<'_, f32, D>,
-    mut out: ArrayViewMut<'_, f32, D>,
-) {
+pub fn vsadd<D: Dimension>(a: ArrayView<'_, f32, D>, b: ArrayView<'_, f32, D>, mut out: ArrayViewMut<'_, f32, D>) {
     assert_eq!(a.shape(), b.shape(), "vsadd: a/b shape mismatch");
     assert_eq!(a.shape(), out.shape(), "vsadd: a/out shape mismatch");
     if dispatch_binary_contig(a.view(), b.view(), &mut out, vsadd_slice) {
@@ -544,11 +533,7 @@ pub fn vsadd<D: Dimension>(
 ///
 /// # Panics
 /// Panics if `a`, `b`, `out` do not all have the same shape.
-pub fn vsmul<D: Dimension>(
-    a: ArrayView<'_, f32, D>,
-    b: ArrayView<'_, f32, D>,
-    mut out: ArrayViewMut<'_, f32, D>,
-) {
+pub fn vsmul<D: Dimension>(a: ArrayView<'_, f32, D>, b: ArrayView<'_, f32, D>, mut out: ArrayViewMut<'_, f32, D>) {
     assert_eq!(a.shape(), b.shape(), "vsmul: a/b shape mismatch");
     assert_eq!(a.shape(), out.shape(), "vsmul: a/out shape mismatch");
     if dispatch_binary_contig(a.view(), b.view(), &mut out, vsmul_slice) {
@@ -565,11 +550,7 @@ pub fn vsmul<D: Dimension>(
 ///
 /// # Panics
 /// Panics if `a`, `b`, `out` do not all have the same shape.
-pub fn vsdiv<D: Dimension>(
-    a: ArrayView<'_, f32, D>,
-    b: ArrayView<'_, f32, D>,
-    mut out: ArrayViewMut<'_, f32, D>,
-) {
+pub fn vsdiv<D: Dimension>(a: ArrayView<'_, f32, D>, b: ArrayView<'_, f32, D>, mut out: ArrayViewMut<'_, f32, D>) {
     assert_eq!(a.shape(), b.shape(), "vsdiv: a/b shape mismatch");
     assert_eq!(a.shape(), out.shape(), "vsdiv: a/out shape mismatch");
     if dispatch_binary_contig(a.view(), b.view(), &mut out, vsdiv_slice) {
@@ -616,11 +597,7 @@ pub fn vscos<D: Dimension>(x: ArrayView<'_, f32, D>, mut out: ArrayViewMut<'_, f
 ///
 /// # Panics
 /// Panics if `a`, `b`, `out` do not all have the same shape.
-pub fn vspow<D: Dimension>(
-    a: ArrayView<'_, f32, D>,
-    b: ArrayView<'_, f32, D>,
-    mut out: ArrayViewMut<'_, f32, D>,
-) {
+pub fn vspow<D: Dimension>(a: ArrayView<'_, f32, D>, b: ArrayView<'_, f32, D>, mut out: ArrayViewMut<'_, f32, D>) {
     assert_eq!(a.shape(), b.shape(), "vspow: a/b shape mismatch");
     assert_eq!(a.shape(), out.shape(), "vspow: a/out shape mismatch");
     if dispatch_binary_contig(a.view(), b.view(), &mut out, vspow_slice) {

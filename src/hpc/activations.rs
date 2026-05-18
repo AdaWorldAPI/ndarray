@@ -92,17 +92,8 @@ where
 /// assert!((out[0] - 0.5).abs() < 1e-6);
 /// ```
 pub fn sigmoid_f32<D: Dimension>(x: ArrayView<f32, D>, mut out: ArrayViewMut<f32, D>) {
-    assert_eq!(
-        x.shape(),
-        out.shape(),
-        "sigmoid_f32: shape mismatch (x={:?} out={:?})",
-        x.shape(),
-        out.shape()
-    );
-    if let (Some(xs), Some(os)) = (
-        x.as_slice_memory_order(),
-        out.as_slice_memory_order_mut(),
-    ) {
+    assert_eq!(x.shape(), out.shape(), "sigmoid_f32: shape mismatch (x={:?} out={:?})", x.shape(), out.shape());
+    if let (Some(xs), Some(os)) = (x.as_slice_memory_order(), out.as_slice_memory_order_mut()) {
         sigmoid_f32_slice(xs, os);
         return;
     }
@@ -162,13 +153,7 @@ fn sigmoid_f32_slice(x: &[f32], out: &mut [f32]) {
 /// assert!((sum - 1.0).abs() < 1e-3);
 /// ```
 pub fn softmax_f32(x: ArrayView1<f32>, mut out: ArrayViewMut1<f32>) {
-    assert_eq!(
-        x.len(),
-        out.len(),
-        "softmax_f32: length mismatch (x={} out={})",
-        x.len(),
-        out.len()
-    );
+    assert_eq!(x.len(), out.len(), "softmax_f32: length mismatch (x={} out={})", x.len(), out.len());
     if x.is_empty() {
         return;
     }
@@ -270,13 +255,7 @@ fn softmax_f32_scalar(x: ArrayView1<f32>, mut out: ArrayViewMut1<f32>) {
 /// assert!(out.iter().all(|&v| v <= 0.0));
 /// ```
 pub fn log_softmax_f32(x: ArrayView1<f32>, mut out: ArrayViewMut1<f32>) {
-    assert_eq!(
-        x.len(),
-        out.len(),
-        "log_softmax_f32: length mismatch (x={} out={})",
-        x.len(),
-        out.len()
-    );
+    assert_eq!(x.len(), out.len(), "log_softmax_f32: length mismatch (x={} out={})", x.len(), out.len());
     if x.is_empty() {
         return;
     }
@@ -465,11 +444,7 @@ mod tests {
         let mut out = Array1::<f32>::zeros(16);
         softmax_f32(x.view(), out.view_mut());
         for &v in out.iter() {
-            assert!(
-                (v - 1.0 / 16.0).abs() < 1e-3,
-                "uniform softmax should be 1/16, got {}",
-                v
-            );
+            assert!((v - 1.0 / 16.0).abs() < 1e-3, "uniform softmax should be 1/16, got {}", v);
         }
     }
 
