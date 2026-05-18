@@ -285,6 +285,15 @@ impl<'a, T, const BR: usize, const BC: usize> GridBlockMut<'a, T, BR, BC> {
     /// # Panics
     /// Panics in debug builds if `r >= BR`.
     ///
+    /// # Data-flow rule
+    /// Direct row mutation is a **write-back** operation per
+    /// `.claude/rules/data-flow.md` Rule #3 ("No `&mut self` during
+    /// computation. Ever."). The closure body that calls `row_mut` must be
+    /// performing gated write-back only (single-target XOR, BUNDLE majority
+    /// merge, scratch-buffer fill). For COMPUTE paths use
+    /// [`BlockedGrid::map_base`] which returns a fresh grid and never
+    /// mutates `self`.
+    ///
     /// # Example
     /// ```
     /// use ndarray::hpc::blocked_grid::{BlockedGrid, GridBlockMut};
