@@ -308,12 +308,7 @@ pub fn invert_affine_4x4(view: &Mat4) -> Mat4 {
     let nty = -(r01 * tx + r11 * ty + r21 * tz);
     let ntz = -(r02 * tx + r12 * ty + r22 * tz);
 
-    Mat4::from_array([
-        [r00, r10, r20, ntx],
-        [r01, r11, r21, nty],
-        [r02, r12, r22, ntz],
-        [0.0, 0.0, 0.0, 1.0],
-    ])
+    Mat4::from_array([[r00, r10, r20, ntx], [r01, r11, r21, nty], [r02, r12, r22, ntz], [0.0, 0.0, 0.0, 1.0]])
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -366,11 +361,7 @@ mod tests {
     #[test]
     fn invert_mat3_singular_returns_none() {
         // Rows 1 and 2 are identical → rank-deficient.
-        let singular = Mat3::from_array([
-            [1.0, 2.0, 3.0],
-            [4.0, 5.0, 6.0],
-            [4.0, 5.0, 6.0],
-        ]);
+        let singular = Mat3::from_array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [4.0, 5.0, 6.0]]);
         assert_eq!(invert_mat3(&singular), None);
     }
 
@@ -407,10 +398,7 @@ mod tests {
             let m = Mat3::from_array(*arr);
             let inv = invert_mat3(&m).unwrap_or_else(|| panic!("Matrix {idx} should be invertible"));
             let product = matmul(&m, &inv);
-            assert!(
-                mat_approx_eq(&product, &identity, 1e-5),
-                "M * inv(M) ≠ I for matrix {idx}: product = {product:?}"
-            );
+            assert!(mat_approx_eq(&product, &identity, 1e-5), "M * inv(M) ≠ I for matrix {idx}: product = {product:?}");
         }
     }
 
@@ -496,31 +484,20 @@ mod tests {
 
     #[test]
     fn invert_mat3_agrees_with_invert_mat_n() {
-        let m = Mat3::from_array([
-            [2.0, 1.0, 0.0],
-            [1.0, 3.0, 1.0],
-            [0.0, 1.0, 4.0],
-        ]);
+        let m = Mat3::from_array([[2.0, 1.0, 0.0], [1.0, 3.0, 1.0], [0.0, 1.0, 4.0]]);
 
         let closed = invert_mat3(&m).expect("should be invertible");
         let lu = invert_mat_n(&m).expect("should be invertible (LU)");
 
-        assert!(
-            mat_approx_eq(&closed, &lu, 1e-5),
-            "closed-form and LU disagree: closed = {closed:?}, lu = {lu:?}"
-        );
+        assert!(mat_approx_eq(&closed, &lu, 1e-5), "closed-form and LU disagree: closed = {closed:?}, lu = {lu:?}");
     }
 
     // ── Cross-check: invert_mat4 vs invert_mat_n ─────────────────────────
 
     #[test]
     fn invert_mat4_agrees_with_invert_mat_n() {
-        let m = Mat4::from_array([
-            [4.0, 3.0, 2.0, 1.0],
-            [3.0, 4.0, 3.0, 2.0],
-            [2.0, 3.0, 4.0, 3.0],
-            [1.0, 2.0, 3.0, 4.0],
-        ]);
+        let m =
+            Mat4::from_array([[4.0, 3.0, 2.0, 1.0], [3.0, 4.0, 3.0, 2.0], [2.0, 3.0, 4.0, 3.0], [1.0, 2.0, 3.0, 4.0]]);
 
         let closed = invert_mat4(&m).expect("should be invertible");
         let lu = invert_mat_n(&m).expect("should be invertible (LU)");

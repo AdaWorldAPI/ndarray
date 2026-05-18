@@ -52,3 +52,6 @@ pub mod eig_sym;
 
 pub mod inverse;
 pub use inverse::{invert_affine_4x4, invert_mat3, invert_mat4, invert_mat_n};
+
+pub mod svd;
+pub use svd::{svd, svd_one_sided, Svd};

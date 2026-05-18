@@ -61,9 +61,15 @@ pub struct Spd2 {
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Spd4 {
-    pub a11: f32, pub a12: f32, pub a13: f32, pub a14: f32,
-    pub a22: f32, pub a23: f32, pub a24: f32,
-    pub a33: f32, pub a34: f32,
+    pub a11: f32,
+    pub a12: f32,
+    pub a13: f32,
+    pub a14: f32,
+    pub a22: f32,
+    pub a23: f32,
+    pub a24: f32,
+    pub a33: f32,
+    pub a34: f32,
     pub a44: f32,
 }
 
@@ -71,9 +77,15 @@ impl Spd4 {
     /// 4×4 identity.
     pub const fn identity() -> Self {
         Self {
-            a11: 1.0, a12: 0.0, a13: 0.0, a14: 0.0,
-            a22: 1.0, a23: 0.0, a24: 0.0,
-            a33: 1.0, a34: 0.0,
+            a11: 1.0,
+            a12: 0.0,
+            a13: 0.0,
+            a14: 0.0,
+            a22: 1.0,
+            a23: 0.0,
+            a24: 0.0,
+            a33: 1.0,
+            a34: 0.0,
             a44: 1.0,
         }
     }
@@ -81,9 +93,15 @@ impl Spd4 {
     /// Construct from a row-major 4×4 array (upper triangle only; lower is ignored).
     pub fn from_rows(m: [[f32; 4]; 4]) -> Self {
         Self {
-            a11: m[0][0], a12: m[0][1], a13: m[0][2], a14: m[0][3],
-            a22: m[1][1], a23: m[1][2], a24: m[1][3],
-            a33: m[2][2], a34: m[2][3],
+            a11: m[0][0],
+            a12: m[0][1],
+            a13: m[0][2],
+            a14: m[0][3],
+            a22: m[1][1],
+            a23: m[1][2],
+            a24: m[1][3],
+            a33: m[2][2],
+            a34: m[2][3],
             a44: m[3][3],
         }
     }
@@ -114,7 +132,11 @@ pub type MatN<const N: usize> = [[f32; N]; N];
 
 #[inline]
 fn sort2_desc(a: f32, b: f32) -> (f32, f32) {
-    if a >= b { (a, b) } else { (b, a) }
+    if a >= b {
+        (a, b)
+    } else {
+        (b, a)
+    }
 }
 
 #[inline]
@@ -130,7 +152,11 @@ fn sort4_desc(mut vals: [f32; 4]) -> [f32; 4] {
     // Sorting network for 4 elements (optimal 5-comparator net).
     macro_rules! cswap {
         ($a:expr, $b:expr) => {
-            if $a < $b { let t = $a; $a = $b; $b = t; }
+            if $a < $b {
+                let t = $a;
+                $a = $b;
+                $b = t;
+            }
         };
     }
     cswap!(vals[0], vals[1]);
@@ -163,11 +189,7 @@ fn normalize3(v: [f32; 3]) -> [f32; 3] {
 
 #[inline]
 fn cross3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
+    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
 }
 
 fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
@@ -175,11 +197,11 @@ fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
 }
 
 fn normalize4(v: [f32; 4]) -> [f32; 4] {
-    let n = (v[0]*v[0] + v[1]*v[1] + v[2]*v[2] + v[3]*v[3]).sqrt();
+    let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2] + v[3] * v[3]).sqrt();
     if n < f32::EPSILON {
         [1.0, 0.0, 0.0, 0.0]
     } else {
-        [v[0]/n, v[1]/n, v[2]/n, v[3]/n]
+        [v[0] / n, v[1] / n, v[2] / n, v[3] / n]
     }
 }
 
@@ -192,13 +214,13 @@ fn orthonormalize_2cols(v: &mut [[f32; 2]; 2]) {
 fn orthonormalize_3cols(v: &mut [[f32; 3]; 3]) {
     v[0] = normalize3(v[0]);
     let d10 = dot3(v[1], v[0]);
-    v[1] = normalize3([v[1][0] - d10*v[0][0], v[1][1] - d10*v[0][1], v[1][2] - d10*v[0][2]]);
+    v[1] = normalize3([v[1][0] - d10 * v[0][0], v[1][1] - d10 * v[0][1], v[1][2] - d10 * v[0][2]]);
     let d20 = dot3(v[2], v[0]);
     let d21 = dot3(v[2], v[1]);
     v[2] = normalize3([
-        v[2][0] - d20*v[0][0] - d21*v[1][0],
-        v[2][1] - d20*v[0][1] - d21*v[1][1],
-        v[2][2] - d20*v[0][2] - d21*v[1][2],
+        v[2][0] - d20 * v[0][0] - d21 * v[1][0],
+        v[2][1] - d20 * v[0][1] - d21 * v[1][1],
+        v[2][2] - d20 * v[0][2] - d21 * v[1][2],
     ]);
 }
 
@@ -271,8 +293,11 @@ pub fn eig_sym_2(a: &Spd2) -> (f32, f32, [[f32; 2]; 2]) {
 /// assert!((l3 - 1.0).abs() < 1e-5);
 /// ```
 pub fn eig_sym_3(m: &[[f32; 3]; 3]) -> (f32, f32, f32, [[f32; 3]; 3]) {
-    let a11 = m[0][0]; let a12 = m[0][1]; let a13 = m[0][2];
-    let a22 = m[1][1]; let a23 = m[1][2];
+    let a11 = m[0][0];
+    let a12 = m[0][1];
+    let a13 = m[0][2];
+    let a22 = m[1][1];
+    let a23 = m[1][2];
     let a33 = m[2][2];
 
     let p1 = a12 * a12 + a13 * a13 + a23 * a23;
@@ -288,14 +313,18 @@ pub fn eig_sym_3(m: &[[f32; 3]; 3]) -> (f32, f32, f32, [[f32; 3]; 3]) {
     let d11 = a11 - q;
     let d22 = a22 - q;
     let d33 = a33 - q;
-    let p2 = d11*d11 + d22*d22 + d33*d33 + 2.0*p1;
+    let p2 = d11 * d11 + d22 * d22 + d33 * d33 + 2.0 * p1;
     let p = (p2 / 6.0).sqrt();
     let inv_p = 1.0 / p;
 
-    let b11 = d11 * inv_p; let b12 = a12 * inv_p; let b13 = a13 * inv_p;
-    let b22 = d22 * inv_p; let b23 = a23 * inv_p; let b33 = d33 * inv_p;
+    let b11 = d11 * inv_p;
+    let b12 = a12 * inv_p;
+    let b13 = a13 * inv_p;
+    let b22 = d22 * inv_p;
+    let b23 = a23 * inv_p;
+    let b33 = d33 * inv_p;
 
-    let det_b = b11*(b22*b33 - b23*b23) - b12*(b12*b33 - b13*b23) + b13*(b12*b23 - b13*b22);
+    let det_b = b11 * (b22 * b33 - b23 * b23) - b12 * (b12 * b33 - b13 * b23) + b13 * (b12 * b23 - b13 * b22);
     let r = (det_b * 0.5).clamp(-1.0, 1.0);
 
     let phi = r.acos() / 3.0;
@@ -314,11 +343,22 @@ pub fn eig_sym_3(m: &[[f32; 3]; 3]) -> (f32, f32, f32, [[f32; 3]; 3]) {
 
 fn diag_sorted_3(a: f32, b: f32, c: f32) -> (f32, f32, f32, [[f32; 3]; 3]) {
     let (mut vals, mut idx) = ([a, b, c], [0usize, 1, 2]);
-    if vals[1] > vals[0] { vals.swap(0, 1); idx.swap(0, 1); }
-    if vals[2] > vals[1] { vals.swap(1, 2); idx.swap(1, 2); }
-    if vals[1] > vals[0] { vals.swap(0, 1); idx.swap(0, 1); }
+    if vals[1] > vals[0] {
+        vals.swap(0, 1);
+        idx.swap(0, 1);
+    }
+    if vals[2] > vals[1] {
+        vals.swap(1, 2);
+        idx.swap(1, 2);
+    }
+    if vals[1] > vals[0] {
+        vals.swap(0, 1);
+        idx.swap(0, 1);
+    }
     let mut v = [[0.0f32; 3]; 3];
-    for c in 0..3 { v[c][idx[c]] = 1.0; }
+    for c in 0..3 {
+        v[c][idx[c]] = 1.0;
+    }
     (vals[0], vals[1], vals[2], v)
 }
 
@@ -333,18 +373,25 @@ fn null_space_vec_3(a11: f32, a12: f32, a13: f32, a22: f32, a23: f32, a33: f32, 
     let mut best_norm_sq = 0.0f32;
     for (ra, rb) in [(r0, r1), (r0, r2), (r1, r2)] {
         let c = cross3(ra, rb);
-        let n = c[0]*c[0] + c[1]*c[1] + c[2]*c[2];
-        if n > best_norm_sq { best_norm_sq = n; best = c; }
+        let n = c[0] * c[0] + c[1] * c[1] + c[2] * c[2];
+        if n > best_norm_sq {
+            best_norm_sq = n;
+            best = c;
+        }
     }
-    if best_norm_sq <= eps_sq { return None; }
+    if best_norm_sq <= eps_sq {
+        return None;
+    }
     let inv = 1.0 / best_norm_sq.sqrt();
-    Some([best[0]*inv, best[1]*inv, best[2]*inv])
+    Some([best[0] * inv, best[1] * inv, best[2] * inv])
 }
 
 fn gram_schmidt_complement_3(v: &[[f32; 3]; 3], filled: &[bool; 3], skip: usize) -> [f32; 3] {
     let mut basis = Vec::with_capacity(2);
     for k in 0..3 {
-        if k != skip && filled[k] { basis.push(v[k]); }
+        if k != skip && filled[k] {
+            basis.push(v[k]);
+        }
     }
     match basis.len() {
         0 => [1.0, 0.0, 0.0],
@@ -357,8 +404,8 @@ fn gram_schmidt_complement_3(v: &[[f32; 3]; 3], filled: &[bool; 3], skip: usize)
             } else {
                 [0.0, 0.0, 1.0]
             };
-            let dot = seed[0]*b[0] + seed[1]*b[1] + seed[2]*b[2];
-            normalize3([seed[0] - dot*b[0], seed[1] - dot*b[1], seed[2] - dot*b[2]])
+            let dot = seed[0] * b[0] + seed[1] * b[1] + seed[2] * b[2];
+            normalize3([seed[0] - dot * b[0], seed[1] - dot * b[1], seed[2] - dot * b[2]])
         }
         2 => normalize3(cross3(basis[0], basis[1])),
         _ => unreachable!(),
@@ -379,11 +426,17 @@ fn recover_eigvecs_3(packed: &[f32; 6], l1: f32, l2: f32, l3: f32) -> [[f32; 3];
 
     // Duplicate detection: near-parallel → refill via Gram-Schmidt.
     for i in 0..3 {
-        if !filled[i] { continue; }
-        for j in (i+1)..3 {
-            if !filled[j] { continue; }
-            let dot = v[i][0]*v[j][0] + v[i][1]*v[j][1] + v[i][2]*v[j][2];
-            if dot.abs() > 0.99 { filled[j] = false; }
+        if !filled[i] {
+            continue;
+        }
+        for j in (i + 1)..3 {
+            if !filled[j] {
+                continue;
+            }
+            let dot = v[i][0] * v[j][0] + v[i][1] * v[j][1] + v[i][2] * v[j][2];
+            if dot.abs() > 0.99 {
+                filled[j] = false;
+            }
         }
     }
 
@@ -430,10 +483,10 @@ pub fn eig_sym_4(a: &Spd4) -> (f32, f32, f32, f32, [[f32; 4]; 4]) {
 
     // Build the shifted matrix B = A - shift·I; its eigenvalues are λ - shift.
     let b = [
-        [m[0][0]-shift, m[0][1], m[0][2], m[0][3]],
-        [m[1][0], m[1][1]-shift, m[1][2], m[1][3]],
-        [m[2][0], m[2][1], m[2][2]-shift, m[2][3]],
-        [m[3][0], m[3][1], m[3][2], m[3][3]-shift],
+        [m[0][0] - shift, m[0][1], m[0][2], m[0][3]],
+        [m[1][0], m[1][1] - shift, m[1][2], m[1][3]],
+        [m[2][0], m[2][1], m[2][2] - shift, m[2][3]],
+        [m[3][0], m[3][1], m[3][2], m[3][3] - shift],
     ];
 
     // Characteristic poly of B: t⁴ + 0·t³ + p·t² + q·t + r = 0
@@ -495,33 +548,16 @@ fn sym4_char_poly_r(b: &[[f32; 4]; 4]) -> f32 {
 
 fn det4(m: &[[f32; 4]; 4]) -> f32 {
     // Cofactor expansion along first row.
-    let c00 = det3([
-        [m[1][1], m[1][2], m[1][3]],
-        [m[2][1], m[2][2], m[2][3]],
-        [m[3][1], m[3][2], m[3][3]],
-    ]);
-    let c01 = det3([
-        [m[1][0], m[1][2], m[1][3]],
-        [m[2][0], m[2][2], m[2][3]],
-        [m[3][0], m[3][2], m[3][3]],
-    ]);
-    let c02 = det3([
-        [m[1][0], m[1][1], m[1][3]],
-        [m[2][0], m[2][1], m[2][3]],
-        [m[3][0], m[3][1], m[3][3]],
-    ]);
-    let c03 = det3([
-        [m[1][0], m[1][1], m[1][2]],
-        [m[2][0], m[2][1], m[2][2]],
-        [m[3][0], m[3][1], m[3][2]],
-    ]);
-    m[0][0]*c00 - m[0][1]*c01 + m[0][2]*c02 - m[0][3]*c03
+    let c00 = det3([[m[1][1], m[1][2], m[1][3]], [m[2][1], m[2][2], m[2][3]], [m[3][1], m[3][2], m[3][3]]]);
+    let c01 = det3([[m[1][0], m[1][2], m[1][3]], [m[2][0], m[2][2], m[2][3]], [m[3][0], m[3][2], m[3][3]]]);
+    let c02 = det3([[m[1][0], m[1][1], m[1][3]], [m[2][0], m[2][1], m[2][3]], [m[3][0], m[3][1], m[3][3]]]);
+    let c03 = det3([[m[1][0], m[1][1], m[1][2]], [m[2][0], m[2][1], m[2][2]], [m[3][0], m[3][1], m[3][2]]]);
+    m[0][0] * c00 - m[0][1] * c01 + m[0][2] * c02 - m[0][3] * c03
 }
 
 fn det3(m: [[f32; 3]; 3]) -> f32 {
-    m[0][0]*(m[1][1]*m[2][2] - m[1][2]*m[2][1])
-    - m[0][1]*(m[1][0]*m[2][2] - m[1][2]*m[2][0])
-    + m[0][2]*(m[1][0]*m[2][1] - m[1][1]*m[2][0])
+    m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+        + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
 }
 
 /// Solve the depressed quartic t⁴ + p·t² + q·t + r = 0 using Ferrari's method.
@@ -558,12 +594,16 @@ fn ferrari_roots(p: f32, q: f32, r: f32) -> [f32; 4] {
     let half_p = p * 0.5;
     let q_term = if sq > 1e-9 { q * 0.5 * inv_sq } else { 0.0 };
 
-    let a1 = 1.0; let b1 = sq;  let c1 = half_p + y - q_term;
-    let a2 = 1.0; let b2 = -sq; let c2 = half_p + y + q_term;
+    let a1 = 1.0;
+    let b1 = sq;
+    let c1 = half_p + y - q_term;
+    let a2 = 1.0;
+    let b2 = -sq;
+    let c2 = half_p + y + q_term;
 
     let solve_quad = |a: f32, b: f32, c: f32| -> [f32; 2] {
-        let disc = (b*b - 4.0*a*c).max(0.0).sqrt();
-        [(-b + disc) / (2.0*a), (-b - disc) / (2.0*a)]
+        let disc = (b * b - 4.0 * a * c).max(0.0).sqrt();
+        [(-b + disc) / (2.0 * a), (-b - disc) / (2.0 * a)]
     };
 
     let r1 = solve_quad(a1, b1, c1);
@@ -624,11 +664,17 @@ fn recover_eigvecs_4(m: &[[f32; 4]; 4], eigs: [f32; 4]) -> [[f32; 4]; 4] {
 
     // Duplicate detection
     for i in 0..4 {
-        if !filled[i] { continue; }
-        for j in (i+1)..4 {
-            if !filled[j] { continue; }
+        if !filled[i] {
+            continue;
+        }
+        for j in (i + 1)..4 {
+            if !filled[j] {
+                continue;
+            }
             let dot: f32 = v[i].iter().zip(v[j].iter()).map(|(a, b)| a * b).sum();
-            if dot.abs() > 0.99 { filled[j] = false; }
+            if dot.abs() > 0.99 {
+                filled[j] = false;
+            }
         }
     }
 
@@ -660,7 +706,7 @@ fn null_space_vec_4(m: &[[f32; 4]; 4], lam: f32) -> Option<[f32; 4]> {
 
     // For a rank-3 system in R^4, the null vector lies in the span of cofactor
     // vectors built from each triple of rows. Try all 4 triples.
-    let triples: [[usize; 3]; 4] = [[0,1,2],[0,1,3],[0,2,3],[1,2,3]];
+    let triples: [[usize; 3]; 4] = [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]];
     for triple in &triples {
         let [i, j, k] = *triple;
         let candidate = cofactor_null_vec_4(&a[i], &a[j], &a[k]);
@@ -671,7 +717,9 @@ fn null_space_vec_4(m: &[[f32; 4]; 4], lam: f32) -> Option<[f32; 4]> {
         }
     }
 
-    if best_norm_sq <= eps { return None; }
+    if best_norm_sq <= eps {
+        return None;
+    }
     Some(normalize4(best))
 }
 
@@ -693,22 +741,37 @@ fn cofactor_null_vec_4(r0: &[f32; 4], r1: &[f32; 4], r2: &[f32; 4]) -> [f32; 4] 
 }
 
 fn gram_schmidt_complement_4(v: &[[f32; 4]; 4], filled: &[bool; 4], skip: usize) -> [f32; 4] {
-    let basis: Vec<[f32; 4]> = (0..4).filter(|&k| k != skip && filled[k]).map(|k| v[k]).collect();
+    let basis: Vec<[f32; 4]> = (0..4)
+        .filter(|&k| k != skip && filled[k])
+        .map(|k| v[k])
+        .collect();
     // Pick canonical axis least-parallel to basis vectors.
     let candidates = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
     let mut best_seed = candidates[0];
     let mut best_min_dot = f32::MAX;
     for cand in &candidates {
-        let max_dot: f32 = basis.iter().map(|b| {
-            b.iter().zip(cand.iter()).map(|(x, y)| x * y).sum::<f32>().abs()
-        }).fold(0.0f32, f32::max);
-        if max_dot < best_min_dot { best_min_dot = max_dot; best_seed = *cand; }
+        let max_dot: f32 = basis
+            .iter()
+            .map(|b| {
+                b.iter()
+                    .zip(cand.iter())
+                    .map(|(x, y)| x * y)
+                    .sum::<f32>()
+                    .abs()
+            })
+            .fold(0.0f32, f32::max);
+        if max_dot < best_min_dot {
+            best_min_dot = max_dot;
+            best_seed = *cand;
+        }
     }
     // Project out existing basis vectors.
     let mut result = best_seed;
     for b in &basis {
         let dot: f32 = result.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-        for i in 0..4 { result[i] -= dot * b[i]; }
+        for i in 0..4 {
+            result[i] -= dot * b[i];
+        }
     }
     normalize4(result)
 }
@@ -718,9 +781,11 @@ fn orthonormalize_4cols(v: &mut [[f32; 4]; 4]) {
         // Normalize col.
         v[col] = normalize4(v[col]);
         // Subtract projection onto previous columns.
-        for prev in (col+1)..4 {
+        for prev in (col + 1)..4 {
             let dot: f32 = v[prev].iter().zip(v[col].iter()).map(|(a, b)| a * b).sum();
-            for i in 0..4 { v[prev][i] -= dot * v[col][i]; }
+            for i in 0..4 {
+                v[prev][i] -= dot * v[col][i];
+            }
         }
     }
 }
@@ -758,22 +823,28 @@ pub fn eig_sym_jacobi<const N: usize>(a: &MatN<N>, max_sweeps: u32, eps: f32) ->
     let mut d = *a;
     // Accumulate eigenvectors: start with identity.
     let mut v: MatN<N> = [[0.0; N]; N];
-    for i in 0..N { v[i][i] = 1.0; }
+    for i in 0..N {
+        v[i][i] = 1.0;
+    }
 
     for _sweep in 0..max_sweeps {
         // Check off-diagonal Frobenius norm.
         let mut off = 0.0f32;
         for i in 0..N {
-            for j in (i+1)..N {
+            for j in (i + 1)..N {
                 off += d[i][j] * d[i][j];
             }
         }
-        if off <= eps * eps { break; }
+        if off <= eps * eps {
+            break;
+        }
 
         // One sweep: all off-diagonal pairs.
         for p in 0..N {
-            for q in (p+1)..N {
-                if d[p][q].abs() < 1e-20 { continue; }
+            for q in (p + 1)..N {
+                if d[p][q].abs() < 1e-20 {
+                    continue;
+                }
                 // Jacobi rotation angle.
                 let theta = (d[q][q] - d[p][p]) / (2.0 * d[p][q]);
                 let t = if theta >= 0.0 {
@@ -794,7 +865,9 @@ pub fn eig_sym_jacobi<const N: usize>(a: &MatN<N>, max_sweeps: u32, eps: f32) ->
 
                 // Update remaining rows/columns.
                 for r in 0..N {
-                    if r == p || r == q { continue; }
+                    if r == p || r == q {
+                        continue;
+                    }
                     let drp = d[r][p];
                     let drq = d[r][q];
                     d[r][p] = drp - s * (drq + tau * drp);
@@ -870,51 +943,62 @@ pub fn eig_sym_qr<const N: usize>(a: &MatN<N>, max_iters: u32, eps: f32) -> (Vec
     while end > 1 && iters < max_iters {
         iters += 1;
         // Check for small off-diagonal at end.
-        while end > 1 && off[end-2].abs() <= eps * (diag[end-2].abs() + diag[end-1].abs()) {
+        while end > 1 && off[end - 2].abs() <= eps * (diag[end - 2].abs() + diag[end - 1].abs()) {
             end -= 1;
         }
-        if end <= 1 { break; }
+        if end <= 1 {
+            break;
+        }
 
         // Wilkinson shift: eigenvalue of bottom 2×2 closest to diag[end-1].
-        let d = (diag[end-2] - diag[end-1]) * 0.5;
-        let shift = diag[end-1] - off[end-2] * off[end-2] / (d + d.signum() * (d*d + off[end-2]*off[end-2]).sqrt());
+        let d = (diag[end - 2] - diag[end - 1]) * 0.5;
+        let shift = diag[end - 1]
+            - off[end - 2] * off[end - 2] / (d + d.signum() * (d * d + off[end - 2] * off[end - 2]).sqrt());
 
         // Implicit QR step.
         let mut x = diag[0] - shift;
         let mut z = off[0];
 
-        for k in 0..(end-1) {
-            let r = (x*x + z*z).sqrt();
+        for k in 0..(end - 1) {
+            let r = (x * x + z * z).sqrt();
             let c = if r > 1e-15 { x / r } else { 1.0 };
             let s = if r > 1e-15 { z / r } else { 0.0 };
 
             // Apply Givens rotation G(k, k+1) from left and right.
-            let dk  = diag[k];
-            let dk1 = diag[k+1];
-            let ok  = if k > 0 { off[k-1] } else { 0.0 };
+            let dk = diag[k];
+            let dk1 = diag[k + 1];
+            let ok = if k > 0 { off[k - 1] } else { 0.0 };
             let ok1 = off[k];
-            let ok2 = if k+2 < n { off[k+1] } else { 0.0 };
+            let ok2 = if k + 2 < n { off[k + 1] } else { 0.0 };
 
-            diag[k]   = c*c*dk + 2.0*c*s*ok1 + s*s*dk1;
-            diag[k+1] = s*s*dk - 2.0*c*s*ok1 + c*c*dk1;
-            off[k]    = c*s*(dk1 - dk) + (c*c - s*s)*ok1;
-            if k > 0  { off[k-1] = c*ok - s*ok2.max(0.0).copysign(1.0)*0.0 + c*ok - s*off[k-1]; }
+            diag[k] = c * c * dk + 2.0 * c * s * ok1 + s * s * dk1;
+            diag[k + 1] = s * s * dk - 2.0 * c * s * ok1 + c * c * dk1;
+            off[k] = c * s * (dk1 - dk) + (c * c - s * s) * ok1;
+            if k > 0 {
+                off[k - 1] = c * ok - s * ok2.max(0.0).copysign(1.0) * 0.0 + c * ok - s * off[k - 1];
+            }
             // Simplified: update off[k-1] and off[k+1].
-            if k > 0 { off[k-1] = c * ok; } // approximate; full update follows
-            if k+2 < n { off[k+1] = s * ok2; } // propagate bulge
+            if k > 0 {
+                off[k - 1] = c * ok;
+            } // approximate; full update follows
+            if k + 2 < n {
+                off[k + 1] = s * ok2;
+            } // propagate bulge
 
             // Accumulate in Q.
             for r in 0..n {
-                let qrk  = q[r][k];
-                let qrk1 = q[r][k+1];
-                q[r][k]   = c*qrk + s*qrk1;
-                q[r][k+1] = -s*qrk + c*qrk1;
+                let qrk = q[r][k];
+                let qrk1 = q[r][k + 1];
+                q[r][k] = c * qrk + s * qrk1;
+                q[r][k + 1] = -s * qrk + c * qrk1;
             }
 
-            if k+2 < n {
+            if k + 2 < n {
                 x = off[k];
-                z = s * off[k+1]; // but off[k+1] is already updated — recompute chase
-                if k+2 < end - 1 { z = s * (if k+2 < n { off[k+1] } else { 0.0 }); }
+                z = s * off[k + 1]; // but off[k+1] is already updated — recompute chase
+                if k + 2 < end - 1 {
+                    z = s * (if k + 2 < n { off[k + 1] } else { 0.0 });
+                }
             }
         }
     }
@@ -938,43 +1022,57 @@ pub fn eig_sym_qr<const N: usize>(a: &MatN<N>, max_iters: u32, eps: f32) -> (Vec
 fn householder_tridiag<const N: usize>(a: &MatN<N>) -> (Vec<f32>, Vec<f32>, Vec<Vec<f32>>) {
     let n = N;
     let mut d: Vec<Vec<f32>> = a.iter().map(|row| row.to_vec()).collect();
-    let mut q: Vec<Vec<f32>> = (0..n).map(|i| {
-        let mut row = vec![0.0f32; n];
-        row[i] = 1.0;
-        row
-    }).collect();
+    let mut q: Vec<Vec<f32>> = (0..n)
+        .map(|i| {
+            let mut row = vec![0.0f32; n];
+            row[i] = 1.0;
+            row
+        })
+        .collect();
 
     for k in 0..(n.saturating_sub(2)) {
         // Build Householder vector from column k below row k.
-        let mut x: Vec<f32> = (k+1..n).map(|i| d[i][k]).collect();
-        let norm: f32 = x.iter().map(|xi| xi*xi).sum::<f32>().sqrt();
-        if norm < 1e-14 { continue; }
+        let mut x: Vec<f32> = (k + 1..n).map(|i| d[i][k]).collect();
+        let norm: f32 = x.iter().map(|xi| xi * xi).sum::<f32>().sqrt();
+        if norm < 1e-14 {
+            continue;
+        }
         x[0] += x[0].signum() * norm;
-        let norm2: f32 = x.iter().map(|xi| xi*xi).sum::<f32>().sqrt();
-        if norm2 < 1e-14 { continue; }
-        for xi in x.iter_mut() { *xi /= norm2; }
+        let norm2: f32 = x.iter().map(|xi| xi * xi).sum::<f32>().sqrt();
+        if norm2 < 1e-14 {
+            continue;
+        }
+        for xi in x.iter_mut() {
+            *xi /= norm2;
+        }
 
         // Reflect: D ← H·D·H, Q ← Q·H, where H = I - 2·v·vᵀ.
         // Apply H from left: D ← (I - 2vvᵀ)·D
         let m = n - k - 1;
         for i in 0..n {
-            let dot: f32 = (0..m).map(|j| x[j] * d[k+1+j][i]).sum();
-            for j in 0..m { d[k+1+j][i] -= 2.0 * x[j] * dot; }
+            let dot: f32 = (0..m).map(|j| x[j] * d[k + 1 + j][i]).sum();
+            for j in 0..m {
+                d[k + 1 + j][i] -= 2.0 * x[j] * dot;
+            }
         }
         // Apply H from right: D ← D·(I - 2vvᵀ)
         for i in 0..n {
-            let dot: f32 = (0..m).map(|j| x[j] * d[i][k+1+j]).sum();
-            for j in 0..m { d[i][k+1+j] -= 2.0 * x[j] * dot; }
+            let dot: f32 = (0..m).map(|j| x[j] * d[i][k + 1 + j]).sum();
+            for j in 0..m {
+                d[i][k + 1 + j] -= 2.0 * x[j] * dot;
+            }
         }
         // Accumulate in Q: Q ← Q·(I - 2vvᵀ)
         for i in 0..n {
-            let dot: f32 = (0..m).map(|j| x[j] * q[i][k+1+j]).sum();
-            for j in 0..m { q[i][k+1+j] -= 2.0 * x[j] * dot; }
+            let dot: f32 = (0..m).map(|j| x[j] * q[i][k + 1 + j]).sum();
+            for j in 0..m {
+                q[i][k + 1 + j] -= 2.0 * x[j] * dot;
+            }
         }
     }
 
     let diag: Vec<f32> = (0..n).map(|i| d[i][i]).collect();
-    let off: Vec<f32> = (0..n.saturating_sub(1)).map(|i| d[i][i+1]).collect();
+    let off: Vec<f32> = (0..n.saturating_sub(1)).map(|i| d[i][i + 1]).collect();
     (diag, off, q)
 }
 
@@ -1009,32 +1107,46 @@ pub fn eig_sym_n<const N: usize>(a: &MatN<N>) -> (Vec<f32>, MatN<N>) {
     // For N ∈ {2, 3, 4}: extract values from the generic array, call closed-form,
     // and write results back — no unsafe needed.
     if N == 2 {
-        let s = Spd2 { a11: a[0][0], a12: a[0][1], a22: a[1][1] };
+        let s = Spd2 {
+            a11: a[0][0],
+            a12: a[0][1],
+            a22: a[1][1],
+        };
         let (l1, l2, v2) = eig_sym_2(&s);
         let mut out_v: MatN<N> = [[0.0; N]; N];
         // Write the 2×2 eigenvector columns back into the N×N output.
-        out_v[0][0] = v2[0][0]; out_v[0][1] = v2[0][1];
-        out_v[1][0] = v2[1][0]; out_v[1][1] = v2[1][1];
+        out_v[0][0] = v2[0][0];
+        out_v[0][1] = v2[0][1];
+        out_v[1][0] = v2[1][0];
+        out_v[1][1] = v2[1][1];
         return (vec![l1, l2], out_v);
     }
     if N == 3 {
-        let m3 = [[a[0][0], a[0][1], a[0][2]],
-                  [a[1][0], a[1][1], a[1][2]],
-                  [a[2][0], a[2][1], a[2][2]]];
+        let m3 = [[a[0][0], a[0][1], a[0][2]], [a[1][0], a[1][1], a[1][2]], [a[2][0], a[2][1], a[2][2]]];
         let (l1, l2, l3, v3) = eig_sym_3(&m3);
         let mut out_v: MatN<N> = [[0.0; N]; N];
-        for c in 0..3 { for r in 0..3 { out_v[c][r] = v3[c][r]; } }
+        for c in 0..3 {
+            for r in 0..3 {
+                out_v[c][r] = v3[c][r];
+            }
+        }
         return (vec![l1, l2, l3], out_v);
     }
     if N == 4 {
-        let m4 = [[a[0][0], a[0][1], a[0][2], a[0][3]],
-                  [a[1][0], a[1][1], a[1][2], a[1][3]],
-                  [a[2][0], a[2][1], a[2][2], a[2][3]],
-                  [a[3][0], a[3][1], a[3][2], a[3][3]]];
+        let m4 = [
+            [a[0][0], a[0][1], a[0][2], a[0][3]],
+            [a[1][0], a[1][1], a[1][2], a[1][3]],
+            [a[2][0], a[2][1], a[2][2], a[2][3]],
+            [a[3][0], a[3][1], a[3][2], a[3][3]],
+        ];
         let s4 = Spd4::from_rows(m4);
         let (l1, l2, l3, l4, v4) = eig_sym_4(&s4);
         let mut out_v: MatN<N> = [[0.0; N]; N];
-        for c in 0..4 { for r in 0..4 { out_v[c][r] = v4[c][r]; } }
+        for c in 0..4 {
+            for r in 0..4 {
+                out_v[c][r] = v4[c][r];
+            }
+        }
         return (vec![l1, l2, l3, l4], out_v);
     }
     if N <= 64 {
@@ -1056,7 +1168,9 @@ mod tests {
 
     // ── utilities ────────────────────────────────────────────────────────────
 
-    fn approx(a: f32, b: f32, tol: f32) -> bool { (a - b).abs() <= tol }
+    fn approx(a: f32, b: f32, tol: f32) -> bool {
+        (a - b).abs() <= tol
+    }
 
     fn rng(state: &mut u32) -> f32 {
         *state ^= *state << 13;
@@ -1068,9 +1182,11 @@ mod tests {
     fn rand_symm_n<const N: usize>(state: &mut u32, scale: f32) -> MatN<N> {
         // A = D + R + Rᵀ where D is diagonal positive, R is random.
         let mut a: MatN<N> = [[0.0; N]; N];
-        for i in 0..N { a[i][i] = 0.5 + scale * rng(state); }
         for i in 0..N {
-            for j in (i+1)..N {
+            a[i][i] = 0.5 + scale * rng(state);
+        }
+        for i in 0..N {
+            for j in (i + 1)..N {
                 let v = (2.0 * rng(state) - 1.0) * scale * 0.3;
                 a[i][j] = v;
                 a[j][i] = v;
@@ -1083,23 +1199,27 @@ mod tests {
     fn rayleigh<const N: usize>(a: &MatN<N>, v: &[f32; N]) -> f32 {
         let mut av = [0.0f32; N];
         for i in 0..N {
-            for j in 0..N { av[i] += a[i][j] * v[j]; }
+            for j in 0..N {
+                av[i] += a[i][j] * v[j];
+            }
         }
         let num: f32 = v.iter().zip(av.iter()).map(|(x, y)| x * y).sum();
         let den: f32 = v.iter().map(|x| x * x).sum();
-        if den < 1e-12 { return 0.0; }
+        if den < 1e-12 {
+            return 0.0;
+        }
         num / den
     }
 
     #[cfg(feature = "splat3d")]
     fn sample_spd3(state: &mut u32) -> Spd3 {
         let s = [0.2 + 1.8 * rng(state), 0.2 + 1.8 * rng(state), 0.2 + 1.8 * rng(state)];
-        let mut q = [
-            -1.0 + 2.0 * rng(state), -1.0 + 2.0 * rng(state),
-            -1.0 + 2.0 * rng(state), -1.0 + 2.0 * rng(state),
-        ];
-        let n = (q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]).sqrt();
-        for v in &mut q { *v /= n; }
+        let mut q =
+            [-1.0 + 2.0 * rng(state), -1.0 + 2.0 * rng(state), -1.0 + 2.0 * rng(state), -1.0 + 2.0 * rng(state)];
+        let n = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+        for v in &mut q {
+            *v /= n;
+        }
         Spd3::from_scale_quat(s, q)
     }
 
@@ -1135,7 +1255,10 @@ mod tests {
             let (ref_l1, ref_l2, ref_l3, ref_v) = spd.eig();
             let m = spd.to_rows();
             let (l1, l2, l3, v) = eig_sym_3(&m);
-            let e = (l1 - ref_l1).abs().max((l2 - ref_l2).abs()).max((l3 - ref_l3).abs());
+            let e = (l1 - ref_l1)
+                .abs()
+                .max((l2 - ref_l2).abs())
+                .max((l3 - ref_l3).abs());
             // Eigenvectors can differ by sign; check |dot| ≈ 1 for each pair.
             for c in 0..3 {
                 let dot: f32 = (0..3).map(|r| v[c][r] * ref_v[c][r]).sum::<f32>().abs();
@@ -1161,7 +1284,7 @@ mod tests {
         }
         // Eigenvalues descending.
         for i in 0..7 {
-            assert!(eigs[i] >= eigs[i+1] - 1e-5, "not descending at {i}: {} < {}", eigs[i], eigs[i+1]);
+            assert!(eigs[i] >= eigs[i + 1] - 1e-5, "not descending at {i}: {} < {}", eigs[i], eigs[i + 1]);
         }
     }
 
@@ -1171,7 +1294,9 @@ mod tests {
     fn qr_convergence_128() {
         // Use a diagonal matrix so eigenvalues are trivially known.
         let mut eye128: MatN<128> = [[0.0; 128]; 128];
-        for i in 0..128 { eye128[i][i] = (i + 1) as f32; }
+        for i in 0..128 {
+            eye128[i][i] = (i + 1) as f32;
+        }
         let (eigs, _vecs) = eig_sym_qr::<128>(&eye128, 200, 1e-5);
         assert_eq!(eigs.len(), 128);
         // Sorted descending: largest is 128.
