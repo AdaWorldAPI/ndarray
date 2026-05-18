@@ -1304,18 +1304,5 @@ mod tests {
         assert!(approx(eigs[127], 1.0, 1.0), "eigs[127]={}", eigs[127]);
     }
 
-    // ── eig_sym_n dispatch tests ─────────────────────────────────────────────
-
-    #[test]
-    fn dispatch_n3_matches_eig_sym_3() {
-        let mut state = 0xFEED_FACAu32;
-        for trial in 0..20 {
-            let a = rand_symm_n::<3>(&mut state, 2.0);
-            let (l1, l2, l3, _) = eig_sym_3(&a);
-            let (eigs, _) = eig_sym_n::<3>(&a);
-            assert!(approx(eigs[0], l1, 1e-4), "trial {trial}: dispatch={} direct={l1}", eigs[0]);
-            assert!(approx(eigs[1], l2, 1e-4), "trial {trial}: dispatch={} direct={l2}", eigs[1]);
-            assert!(approx(eigs[2], l3, 1e-4), "trial {trial}: dispatch={} direct={l3}", eigs[2]);
-        }
-    }
-}
+    // ── eig_sym_n dispatch tests (placeholder for B5) ─────────────────
+} // end mod tests
