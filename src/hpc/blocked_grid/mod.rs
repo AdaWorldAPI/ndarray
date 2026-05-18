@@ -25,5 +25,5 @@ mod aliases;
 
 pub use base::{BlockedGrid, GridBlock, GridBlockMut};
 pub use iter::{BaseBlockIter, BaseBlockIterMut};
-// pub use super_block::{GridSuperBlock, GridSuperBlockMut, TierBlockIter};  // worker A3 fills
+pub use super_block::{GridSuperBlock, GridSuperBlockMut, TierBlockIter, TierBlockIterMut};
 // (compute/aliases have no re-exports — they add impls on existing types)
