@@ -52,3 +52,12 @@ pub mod eig_sym;
 
 pub mod inverse;
 pub use inverse::{invert_affine_4x4, invert_mat3, invert_mat4, invert_mat_n};
+
+pub mod batched;
+pub use batched::{batched_gemm_4d_f32, batched_gemm_f32};
+
+pub mod norm;
+pub use norm::{group_norm_f32, layer_norm_f32, rms_norm_f32};
+
+pub mod activations_ext;
+pub use activations_ext::{gelu_f32, gelu_tanh_f32, mish_f32, silu_f32, swish_f32};
