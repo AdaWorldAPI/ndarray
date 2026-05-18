@@ -1,191 +1,198 @@
-# PR-X11 — jc consolidation: pillar probes → `ndarray::hpc::pillar::*`
+# PR-X11 — jc consolidation → `ndarray::hpc::pillar::*`
 
-> READ BY: savant-architect, jc-architect, l3-strategist, cascade-architect,
-> truth-architect, sentinel-qa.
+> READ BY: every agent that touches Pillar probes or jc math
+> (savant-architect, jc-architect, cascade-architect, truth-architect,
+> sentinel-qa, vector-synthesis, product-engineer).
 >
-> Status: design v1 — drafted 2026-05-18 in the master-consolidation arc.
+> Status: design v1 — drafted 2026-05-18.
 >
-> **Depends on**: PR-X10 (linalg-core) landed.
-> **Subsumes**: 3-way Spd2/Spd3 duplication in `lance-graph/crates/jc/`.
+> Parent: `pr-master-consolidation.md` — the strategic frame.
+> Foundation: `pr-x10-linalg-core-design.md` — provides the canonical Spd2/Spd3
+> that pillar probes consume.
 
-## Why
+## Why PR-X11 exists
 
-Today `lance-graph/crates/jc/` has **four** copies of nearly the same math:
-- `ewa_sandwich.rs`     — Spd2 + Pillar-6 probe (2D EWA-sandwich)
-- `ewa_sandwich_3d.rs`  — Spd3 + Pillar-7 probe (3D EWA-sandwich, twin of splat3d's Spd3)
-- `koestenberger.rs`    — Spd3 again (different probe, same math)
-- `pflug.rs`            — Wasserstein-1 inline (Pillar-10)
+`lance-graph/crates/jc/` ships pillar certification probes for the SPD-cascade math.
+Three of them duplicate Spd2/Spd3 internally:
+- `jc/src/ewa_sandwich.rs`     (Pillar-6, 2D EWA sandwich)
+- `jc/src/ewa_sandwich_3d.rs`  (Pillar-7, 3D EWA sandwich — duplicate of splat3d's Spd3)
+- `jc/src/koestenberger.rs`    (third Spd3 copy)
 
-Plus three pillar probes are *missing* primitives entirely:
-- Pillar-8 (temporal sandwich) — designed but not built
-- Pillar-9 (Cov16384, Düker-Zoubouloglou CLT in ℝ^16384) — hand-rolled f64 scalar
-- Pillar-11 (signature transform, Hambly-Lyons) — designed but not built
+Plus Wasserstein-1 inline in `jc/src/pflug.rs` (Pillar-10), and pending Pillar-8
+(temporal sandwich), Pillar-9 (Cov16384 high-D CLT), Pillar-11 (signature transform)
+that don't exist yet because the math primitives haven't been factored.
 
-**Old invariant** (jc zero-dep on ndarray) blocked consolidation. **PR-X10 ships
-`ndarray::hpc::linalg::*` with Spd2/Spd3 as the canonical surface; new
-invariant 12** (per `pr-master-consolidation.md`) replaces zero-dep with
-"certification = determinism + inspectability".
+The jc original design said "zero-dep on ndarray for self-certification."
+That was sound when jc was 2 files. With 4-way Spd2/Spd3 duplication, 3-way
+drift risk on log_spd / sandwich / pow, and 3 more pillars queued behind
+missing primitives, the consolidation cost exceeds the certification benefit.
 
-PR-X11 moves the math + probes into `ndarray::hpc::pillar::*`. jc becomes a
-thin probe-runner.
+**Invariant 12** (from master consolidation): *Certification is about
+determinism and inspectability, not repo separation.* PR-X11 moves the math
+into `ndarray::hpc::pillar::*` and re-affirms certification via SEED-anchored
+probes + git-tracked impls + committed bench results.
 
-## Module layout — `crate::hpc::pillar::*`
+## What PR-X11 ships
 
 ```
 src/hpc/pillar/
-├── mod.rs                    — pub surface + feature gate
-├── ewa_sandwich_2d.rs        — A1: Pillar-6 (Spd2 EWA, 2D)
-├── ewa_sandwich_3d.rs        — A2: Pillar-7 (Spd3 EWA, 3D — twin of splat3d::Spd3)
-├── temporal_sandwich.rs      — A3: Pillar-8 (Σ_{t+1} = M·Σ_t·Mᵀ with M = sqrt(σ_temporal))
-├── cov_high_d.rs             — A4: Pillar-9 (Cov16384 / Cov<N> carrier for high-D CLT)
-├── pflug_nested.rs           — A5: Pillar-10 (nested-distance probe; consumes linalg::wasserstein)
-├── signature.rs              — A6: Pillar-11 (signature transform, Hambly-Lyons)
-├── koestenberger.rs          — A2 also (consolidated under Pillar-7 since same math)
-└── tests/                    — parity gates vs jc's existing probe output (bit-exact required)
+├── mod.rs              — pub surface; submodule decls + re-exports
+├── ewa_sandwich_2d.rs  — Pillar-6: 2D EWA sandwich + prove() probe
+├── ewa_sandwich_3d.rs  — Pillar-7: 3D EWA sandwich + prove() probe
+├── koestenberger.rs    — Pillar-7.5: Koestenberger PSD path
+├── temporal_sandwich.rs— Pillar-8: temporal drift sandwich + prove()
+├── cov_high_d.rs       — Pillar-9: Cov16384 Düker-Zoubouloglou CLT
+├── pflug.rs            — Pillar-10: Pflug-Pichler nested distance
+├── signature.rs        — Pillar-11: Hambly-Lyons signature transform
+└── prove_runner.rs     — shared probe harness (splitmix64 RNG, SEED constants)
 ```
 
-Plus `linalg::wasserstein` (added to PR-X10 scope or as PR-X10.1 follow-on):
-- Sinkhorn-Knopp algorithm (entropic regularization, O(N²/ε) per iter)
-- Hungarian algorithm (exact assignment, O(N³))
-- Both consumable by Pillar-10 AND cognitive substrate's optimal-transport ops.
+Each `*.rs` exports:
+- The pillar's typed wrapper (`PillarSeven`, `PillarTen`, ...) — concrete carrier per invariant 8
+- The `prove()` certification probe with documented SEED + PASS criteria
+- The math kernel as `pub` functions consuming `ndarray::hpc::linalg::Spd{2,3,N}` from PR-X10
 
-## API surface
+## Migration path for jc consumers
 
-Each pillar module ships:
-1. **A canonical math primitive** consumed by ndarray + downstream
-2. **A `prove_pillar_N()` probe function** that runs the certification with a documented SEED
-3. **A `PASS_CRITERIA` const block** with thresholds (PSD rate, log-norm concentration, etc.)
-
-Example (Pillar-7, the twin of splat3d's Spd3):
+After PR-X10 ships `linalg::Spd3` (with Smith-1961 closed-form), PR-X11 lands
+`pillar::ewa_sandwich_3d` which consumes it. The OLD `jc::ewa_sandwich_3d`
+gets a 1-cycle deprecation:
 
 ```rust
-//! Pillar 7: Σ-Push-Forward as EWA-Sandwich on symmetric 3×3 SPD covariances.
-//!
-//! Math reference: Smith 1961, "Eigenvalues of a symmetric 3×3 matrix".
-//!
-//! # Probe SEED
-//! `0x_EDA_5A_DC_5A_DD`
-//!
-//! # PASS criteria
-//! - PSD preservation rate ≥ 0.999 across 1000 paths × 10 hops
-//! - log-norm Frobenius concentration consistent with KS Theorem 1 form
-
-pub use crate::hpc::linalg::Spd3;     // canonical type from linalg-core
-pub use crate::hpc::linalg::sandwich; // canonical sandwich op
-
-pub const PILLAR_7_SEED: u64 = 0x_EDA_5A_DC_5A_DD;
-pub const PILLAR_7_PSD_THRESHOLD: f64 = 0.999;
-pub const PILLAR_7_LOGNORM_CONCENTRATION_MAX: f64 = ...;
-
-pub struct Pillar7Report {
-    pub psd_rate: f64,
-    pub lognorm_concentration: f64,
-    pub n_paths: u32,
-    pub n_hops: u32,
-    pub passed: bool,
-}
-
-pub fn prove_pillar_7() -> Pillar7Report {
-    let mut rng = splitmix64::seeded(PILLAR_7_SEED);
-    let mut psd_ok = 0;
-    let mut lognorm_acc = ...;
-    for _path in 0..1000 {
-        let mut sigma = Spd3::I;
-        for _hop in 0..10 {
-            let step = random_contractive_spd3(&mut rng, sigma_step_frobenius=0.2);
-            sigma = sandwich(&step.sqrt(), &sigma);
-            if sigma.is_spd(1e-7) { psd_ok += 1; }
-            lognorm_acc += sigma.log_spd().frobenius_sq();
-        }
-    }
-    let report = Pillar7Report { ... };
-    report
-}
-```
-
-## Worker decomposition — 6 workers (one per pillar)
-
-| Worker | File | Scope | LoC |
-|---|---|---|---|
-| A1 | `ewa_sandwich_2d.rs` | Pillar-6 probe + `Spd2` re-export from `linalg::Spd2`; bit-exact parity with `jc::ewa_sandwich.prove()` | ~250 |
-| A2 | `ewa_sandwich_3d.rs` + `koestenberger.rs` | Pillar-7 probe + both koestenberger variant + Spd3 re-export from `linalg::Spd3`; bit-exact parity with jc's two existing probes | ~350 |
-| A3 | `temporal_sandwich.rs` | Pillar-8 probe (NEW — not in jc); σ_temporal stratified across cardiac/respiratory/micro; SEED `0x_E0_DA_5A_DC_5A_DD` | ~300 |
-| A4 | `cov_high_d.rs` | Pillar-9 probe + `Cov<N>` const-generic carrier (sandwich, log, Frobenius for high-D); replaces jc's hand-rolled f64 scalar; promotes to `linalg::F32x16` SIMD | ~400 |
-| A5 | `pflug_nested.rs` + `linalg::wasserstein` | Pillar-10 probe + Sinkhorn-Knopp + Hungarian primitives (added to linalg-core); bit-exact parity with `jc::pflug.prove()` | ~500 |
-| A6 | `signature.rs` | Pillar-11 probe (NEW) — signature transform (Hambly-Lyons); supports rough-path lifting | ~350 |
-
-**Parallelism**: all 6 workers spawn AFTER PR-X10 lands. No worker-to-worker dependencies (each pillar is independent; the linalg primitives they consume are all in PR-X10's foundation). **Maximum 6-way parallel sprint, ~1 week.**
-
-## jc deprecation path
-
-PR-X11 ships the consolidated `ndarray::hpc::pillar::*`. The companion deprecation commit on `lance-graph/crates/jc/`:
-
-```rust
-// lance-graph/crates/jc/src/ewa_sandwich.rs
+// In jc/src/ewa_sandwich_3d.rs after PR-X11:
 #[deprecated(
     since = "0.X",
-    note = "Math moved to ndarray::hpc::pillar::ewa_sandwich_2d. \
-            jc retains the probe-runner pattern; the math primitives \
-            live in ndarray's consolidated linalg-core (PR-X10) + \
-            pillar (PR-X11) modules."
+    note = "moved to ndarray::hpc::pillar::ewa_sandwich_3d; this stub forwards calls",
 )]
-pub use ndarray::hpc::pillar::ewa_sandwich_2d::*;
+pub use ndarray::hpc::pillar::ewa_sandwich_3d::*;
 ```
 
-One cycle of `#[deprecated]`. Cycle N+1: remove the shim. Cycle N+2: jc becomes a thin orchestrator that imports `ndarray::hpc::pillar::*` directly.
+For 1 release cycle, jc's old paths work via re-export. Cycle N+2 removes
+the re-export files entirely. Existing downstream consumers (`AdaWorldAPI/spear`,
+`AdaWorldAPI/q2`, `AdaWorldAPI/woa-rs`) get a deprecation warning + 1 cycle
+to migrate imports. No breaking change in cycle N.
 
-**jc's `prove_pillarN.rs` examples stay** — they're the probe-runner UI; they just call `ndarray::hpc::pillar::prove_pillar_N()` instead of the inline math.
+## Worker decomposition (6 workers + coord + savants)
 
-## Parity gates (the bit-exact requirement)
+Per-pillar one worker. Pillars are independent (no cross-pillar dependencies
+within PR-X11), so all 6 spawn in PARALLEL after the coordinator scaffolds
+`pillar/mod.rs`.
 
-Each pillar's NEW probe in `ndarray::hpc::pillar::*` MUST produce **bit-exact** output (same SEED, same iteration count, same threshold values) as the corresponding OLD probe in `lance-graph/crates/jc/`. Two-test pattern:
+| # | Worker | File | LoC | Depends on |
+|---|---|---|---|---|
+| 0 | coord | `pillar/mod.rs` (scaffold) | 30 | PR-X10 `linalg::*` |
+| 1 | **B1** | `pillar/ewa_sandwich_2d.rs` (Pillar-6) | ~250 | `linalg::Spd2` |
+| 2 | **B2** | `pillar/ewa_sandwich_3d.rs` (Pillar-7) | ~280 | `linalg::Spd3` |
+| 3 | **B3** | `pillar/koestenberger.rs` (Pillar-7.5) | ~200 | `linalg::Spd3` |
+| 4 | **B4** | `pillar/temporal_sandwich.rs` (Pillar-8) | ~300 | `linalg::Spd3` + σ_temporal literature |
+| 5 | **B5** | `pillar/cov_high_d.rs` (Pillar-9) | ~350 | `linalg::eig_sym_n` |
+| 6 | **B6** | `pillar/pflug.rs` (Pillar-10) | ~400 | `linalg::wasserstein` (also PR-X10) |
+| 7 | **B7** | `pillar/signature.rs` (Pillar-11) | ~350 | `linalg::linalg` (Lie group ops) |
+| 8 | **B8** | `pillar/prove_runner.rs` (shared harness) | ~150 | none — pure infra |
 
-```rust
-#[test]
-fn pillar_7_parity_with_jc() {
-    let ndarray_report = ndarray::hpc::pillar::prove_pillar_7();
-    let jc_report      = jc::ewa_sandwich_3d::prove();
-    assert_eq!(ndarray_report.psd_rate, jc_report.psd_rate);
-    assert_eq!(ndarray_report.lognorm_concentration, jc_report.lognorm_concentration);
-    assert!(ndarray_report.passed);
-}
-```
+Workers B1–B8 spawn in parallel after coord lands `mod.rs`. **6 in the parallel
+fan-out + 2 (coord + harness) sequential = 8-worker shape**.
 
-If the ndarray probe diverges from jc's, the consolidation is wrong (likely numerical drift from a different f32/f64 reduction order). Worker MUST fix before merge.
+Phase 2 Protocol A: preflight Rust skeleton authored by coord, reviewed by
+6 specialist savants (data-flow, layering, distance-typing, SAFETY-claim,
+naming-collision, test-coverage). All pillars get reviewed in one savant fan-out.
+
+## Pillar PASS gates (carry-over from jc, refined)
+
+Each `prove()` probe has a deterministic SEED and explicit PASS criteria:
+
+| Pillar | SEED | Paths × hops | PASS criteria |
+|---|---|---|---|
+| Pillar-6 (2D EWA) | `0x_DA_5A_DC_5A_DD` | 1000 × 10 | PSD rate ≥ 0.999, log-norm Frobenius KS Thm 1 |
+| Pillar-7 (3D EWA) | `0x_EDA_5A_DC_5A_DD` | 1000 × 10 | PSD rate ≥ 0.999, same |
+| Pillar-7.5 (Koestenberger) | `0x_KE_5A_DC_5A_DD` | 1000 × 10 | path-1 vs path-2 max abs error ≤ 1e-5 |
+| Pillar-8 (temporal) | `0x_E0_DA_5A_DC_5A_DD` | 1000 × 30 × 3 bands | PSD rate ≥ 0.999 across cardiac / respiratory / micro |
+| Pillar-9 (Cov16384) | `0x_C0_DA_DA_5A_DC` | 100 × 50 | Düker-Zoubouloglou CLT rate ≥ 0.95 |
+| Pillar-10 (Pflug) | `0x_F1_5A_DC_5A_DD` | 1000 × 5 | nested-distance ≤ tight Pflug-Pichler bound |
+| Pillar-11 (signature) | `0x_516_DC_5A_DD` | 1000 × Lévy paths | Hambly-Lyons sigker convergence |
+
+All probes use `splat_runner`'s shared splitmix64 RNG (`prove_runner::seed_rng(seed)`).
+All probes commit `RESULTS.md` lines per run (hardware + commit SHA + PASS/FAIL +
+metric values). Auditors can re-run against an independent reference
+(numpy / scipy / R) to cross-certify.
+
+## Architectural invariants (carry-over)
+
+Invariants 1-11 from PR-X3 / PR-X4 / PR-X10. Plus:
+
+**12. Certification is about determinism + inspectability, not repo separation.**
+(Replaces old jc zero-dep rule.)
+
+**13. Every pillar probe's prove() is `cargo run --release -p ndarray --example prove_pillar_N`
+and is part of the CI matrix.** No `#[ignore]` on probes. Slow probes (Pillar-8
+with 90k samples) marked `#[cfg(feature = "slow-tests")]` but still runnable on demand.
+
+## Tests required
+
+Per pillar:
+- `prove()` runs to PASS within budget
+- Math kernel matches scalar reference within stated epsilon (typically 1e-5 for f32, 1e-12 for f64 paths)
+- Round-trip identity: e.g., `Σ → sqrt → squared ≈ Σ` for Pillar-6/7
+- Boundary cases: identity matrix, diagonal, near-degenerate
+
+Cross-pillar:
+- Pillar-7's Spd3 IS splat3d's Spd3 IS `linalg::Spd3` (single type) — verify via type-id check
+- Pillar-8's temporal sandwich matches Pillar-7's spatial sandwich on identity step-Σ
+- Pillar-10's nested distance reduces to Wasserstein-1 on degenerate (single-time-step) case
+
+## Out of scope
+
+- jc's actual deprecation removal (1-cycle after PR-X11) — separate housekeeping PR
+- New pillars beyond 6-11 — pillar 1-5 stay as design ideas, not coded yet
+- AriGraph / NARS-engine orchestration in lance-graph — those stay in lance-graph,
+  consume `ndarray::hpc::pillar` for math verification
 
 ## Verification commands
 
 ```bash
-cargo check -p ndarray --features std,pillar
-cargo test -p ndarray --features std,pillar hpc::pillar
-cargo run --release -p ndarray --features pillar --example prove_pillar_7
-cargo run --release -p ndarray --features pillar --example prove_pillar_8
-cargo run --release -p ndarray --features pillar --example prove_pillar_10
-
-# Parity gate (cross-crate):
-cargo test -p jc --test parity_with_ndarray_pillar
+cargo check -p ndarray --no-default-features --features std,linalg,pillar
+cargo test  -p ndarray --lib --no-default-features --features std,linalg,pillar hpc::pillar
+cargo run --release -p ndarray --features pillar --example prove_pillar_6  # PASS
+cargo run --release -p ndarray --features pillar --example prove_pillar_7  # PASS
+cargo run --release -p ndarray --features pillar --example prove_pillar_8  # PASS (cardiac+respiratory+micro)
+cargo run --release -p ndarray --features pillar --example prove_pillar_9  # PASS
+cargo run --release -p ndarray --features pillar --example prove_pillar_10 # PASS
+cargo run --release -p ndarray --features pillar --example prove_pillar_11 # PASS
+cargo fmt --all -- --check
+cargo clippy -p ndarray --features pillar -- -D warnings
 ```
-
-All five must pass.
 
 ## Open questions (joint savant ruling)
 
-1. **Wasserstein in `linalg` or `pillar`?** Lean: **linalg::wasserstein** (it's a primitive, not a probe; consumed by Pillar-10 AND cognitive optimal-transport). The PILLAR-10 PROBE lives in `pillar::pflug_nested`.
+1. **Pillar-8 σ_temporal literature values** — cardiac (~6 Hz, ~5 mm), respiratory
+   (~0.3 Hz, ~20 mm), micro (~120 Hz, ~0.1 mm) — these are the splat4d cascade
+   prompt's estimates. Need echocardiography + respiratory-physiology numbers
+   before sprint kickoff. Auto-resolve: use the prompt's defaults, mark as
+   "TODO calibrate against literature" with a tracking issue.
 
-2. **Cov16384 const-generic Cov<N>?** Lean: **yes** — same math at any N. The `N=16384` case is Pillar-9's stress test; `N=64` is a more practical default for cognitive substrate use.
+2. **Pillar-9 N choice** — 16384 (matches BindSpace) vs 4096 (matches CAM codebook) vs
+   variable. Lean: **16384** (BindSpace alignment); 4096 case is a degenerate special
+   of the 16384 probe.
 
-3. **Signature transform v1 scope: degree 4 or full?** Lean: **degree 4** in v1 (sufficient for Hambly-Lyons probe + rough-path use cases); higher degrees as PR-X11.1 follow-on.
+3. **Pillar-11 signature transform algorithm** — depth-3 (cheap, ~30 ops) vs
+   depth-5 (more discriminative, ~300 ops). Lean: **depth-3 for v1**, depth-5
+   as opt-in via const generic `<const D: usize>`.
 
-4. **Deprecation cycle length: 1 or 2 cycles?** Lean: **1 cycle** of `#[deprecated]` shim; jc's downstream consumer surface is small (the AdaWorldAPI internal stack only).
+4. **jc deprecation cycle** — 0 / 1 / 2. Lean: **1 cycle** (per master plan).
 
-5. **Do we backport Spd3 SIMD batching (sandwich_x16) to Pillar-7's probe?** Lean: **yes** — the probe runs 10k sandwich ops; AVX-512 batched = 10× speedup.
+5. **Pillar 1-5 future work** — defer entirely or pre-stage interfaces?
+   Lean: **defer**, no stubs.
 
-6. **Does jc-X1 (consolidation) ship in the same PR as jc's deprecation shim?** Lean: **yes** — one atomic PR ensures jc consumers never see broken state.
+6. **Pillar parallelism: all 6 spawn after coord, or pillar 8/9 hold for σ_temporal/N decisions?**
+   Lean: **all 6 spawn** with documented defaults (auto-resolved as above);
+   calibration is a follow-on.
 
 ## Done criteria
 
-- All 6 pillar workers complete with parity gates green
-- jc deprecation shim in place; 1-cycle countdown begins
-- 4 new probes (Pillar-8 temporal, Pillar-9 high-D, Pillar-11 signature, plus consolidated Pillar-6/7/10) all PASS their criteria
-- Codex P0 audit passes (especially the SAFETY-claim gate on Cov<N> SIMD primitives)
-- P2 savant SHIP verdict
+- All 6 pillars implemented in `src/hpc/pillar/*.rs`
+- All `prove_pillar_N` examples PASS
+- jc's 4 math files marked `#[deprecated]` with re-export to new location
+- Cross-pillar parity tests green
+- Codex P0 audit: 0 P0
+- P2 savant: SHIP
+- `RESULTS.md` committed with bench numbers per pillar on Zen4 + Sapphire Rapids
