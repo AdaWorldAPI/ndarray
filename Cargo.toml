@@ -52,12 +52,38 @@ libc = { version = "0.2.82", optional = true }
 
 matrixmultiply = { version = "0.3.2", default-features = false, features=["cgemm"] }
 
-# blake3 — gated behind `hpc-extras` (integrity hashing in
-# plane/seal/merkle_tree/vsa/spo_bundle/crystal_encoder/compression_curves/
-# deepnsm). Optional + opt-in because the transitive dep `constant_time_eq`
-# does not declare `#![no_std]`, so unconditionally including blake3 breaks
-# the `thumbv6m-none-eabi --no-default-features` nostd build with
-# `error[E0463]: can't find crate for std`.
+# =====================================================================
+# blake3 — DEPENDENCY OF `std` FEATURE (NOT `hpc-extras`). READ BEFORE
+# TOUCHING.
+# =====================================================================
+#
+# blake3 is required by the cognitive substrate modules — plane, seal,
+# merkle_tree, vsa, spo_bundle, crystal_encoder, compression_curves,
+# deepnsm — which all live under `pub mod hpc;` (itself gated on
+# `feature = "std"` in lib.rs). Those modules `use blake3;` directly
+# and unconditionally; there is no #[cfg] dance inside them.
+#
+# Pinning blake3 to the `std` feature (rather than `hpc-extras`) means:
+#   * ANY consumer that enables `std` automatically gets blake3, with
+#     ZERO additional feature wiring. This is the default. Cargo's
+#     transitive feature resolution does the rest.
+#   * Consumers selecting `default-features = false, features = ["std"]`
+#     (e.g. burn-ndarray, which disables hpc-extras to shed p64/fractal)
+#     STILL get blake3 — no more "missing blake3" build errors that
+#     used to require chasing down hpc-extras.
+#   * Consumers selecting `default-features = false` (no std at all,
+#     e.g. the `thumbv6m-none-eabi` CI matrix entry) do NOT pull blake3
+#     and therefore do not pull `constant_time_eq`, whose lack of
+#     `#![no_std]` declaration would otherwise fail the nostd link with
+#     `error[E0463]: can't find crate for std`.
+#
+# If you find yourself wanting to make blake3 unconditional (drop the
+# `optional = true`), check first: does it still pass
+# `cargo rustc -p ndarray --target=thumbv6m-none-eabi
+#  --no-default-features --features portable-atomic-critical-section`?
+# If not, leave the `optional = true` + `std`-feature pinning in place.
+#
+# =====================================================================
 blake3 = { version = "1", optional = true }
 
 # p64 + fractal — specialized convergence / manifold math. Gated behind
@@ -144,7 +170,7 @@ blas = ["dep:cblas-sys", "dep:libc"]
 
 serde = ["dep:serde"]
 
-std = ["num-traits/std", "matrixmultiply/std"]
+std = ["num-traits/std", "matrixmultiply/std", "dep:blake3"]
 rayon = ["dep:rayon", "std"]
 
 # Portable-SIMD backend (NIGHTLY ONLY). Routes `crate::simd::*` types
@@ -161,11 +187,15 @@ rayon = ["dep:rayon", "std"]
 # cfg-dispatch in `simd.rs` remains the production path.
 nightly-simd = ["std"]
 
-# HPC extras: blake3 hashing, p64 palette/NARS bridge, fractal manifold.
+# HPC extras: p64 palette/NARS bridge + fractal manifold.
+# (blake3 was previously listed here; it is now part of `std` directly
+# because the cognitive substrate modules under hpc/ that import blake3
+# are themselves `std`-gated. See the blake3 comment in [dependencies].)
 # These pull in a non-trivial dependency tree; downstream crates such as
 # burn-ndarray that only need the core array layer can disable this with
-# `default-features = false` (and re-enable `std` explicitly if needed).
-hpc-extras = ["std", "dep:p64", "dep:fractal", "fractal/std", "dep:blake3"]
+# `default-features = false` (and re-enable `std` explicitly if needed —
+# blake3 will come along with `std`).
+hpc-extras = ["std", "dep:p64", "dep:fractal", "fractal/std"]
 
 matrixmultiply-threading = ["matrixmultiply/threading"]
 

@@ -297,6 +297,17 @@ pub mod backend;
 /// cam_pq, reductions, blas_level*, amx_matmul, vnni_gemm) compile without
 /// extra deps. Cognitive/research modules (p64_bridge, crystal_encoder,
 /// deepnsm, etc.) are gated behind `hpc-extras` inside `hpc/mod.rs`.
+///
+/// ## blake3 transitive dep
+///
+/// Enabling `std` (the default) automatically pulls `blake3`, which the
+/// cognitive substrate modules (`plane`, `seal`, `merkle_tree`, `vsa`,
+/// `spo_bundle`, `crystal_encoder`, `compression_curves`, `deepnsm`)
+/// import directly and unconditionally. There is no separate feature
+/// to enable; `std` is enough. Consumers building `default-features = false`
+/// without `std` (e.g. the `thumbv6m-none-eabi` nostd target) skip both
+/// the `hpc` module and the blake3 dep. See the `blake3` comment block
+/// in `Cargo.toml` for the rationale.
 #[cfg(feature = "std")]
 #[allow(clippy::all, unused_imports, unused_variables, unused_mut, dead_code)]
 pub mod hpc;
