@@ -106,7 +106,7 @@ Each `prove()` probe has a deterministic SEED and explicit PASS criteria:
 | Pillar-6 (2D EWA) | `0x_DA_5A_DC_5A_DD` | 1000 × 10 | PSD rate ≥ 0.999, log-norm Frobenius KS Thm 1 |
 | Pillar-7 (3D EWA) | `0x_EDA_5A_DC_5A_DD` | 1000 × 10 | PSD rate ≥ 0.999, same |
 | Pillar-7.5 (Koestenberger) | `0x_KE_5A_DC_5A_DD` | 1000 × 10 | path-1 vs path-2 max abs error ≤ 1e-5 |
-| Pillar-8 (temporal) | `0x_E0_DA_5A_DC_5A_DD` | 1000 × 30 × 3 bands | PSD rate ≥ 0.999 across cardiac / respiratory / micro |
+| Pillar-8 (temporal) | `0x_E0_DA_5A_DC_5A_DD` | 1000 × 30 × 3 bands | PSD rate ≥ `PILLAR_8_PSD_THRESHOLD` — **placeholder per joint savant P1-2**: `pub const PILLAR_8_PSD_THRESHOLD: f64 = 0.999; // TODO(calibrate-from-echocardiography): cardiac ~6 Hz/~5 mm, respiratory ~0.3 Hz/~20 mm, micro ~120 Hz/~0.1 mm`. Gate is documented-arbitrary, not silently arbitrary. |
 | Pillar-9 (Cov16384) | `0x_C0_DA_DA_5A_DC` | 100 × 50 | Düker-Zoubouloglou CLT rate ≥ 0.95 |
 | Pillar-10 (Pflug) | `0x_F1_5A_DC_5A_DD` | 1000 × 5 | nested-distance ≤ tight Pflug-Pichler bound |
 | Pillar-11 (signature) | `0x_516_DC_5A_DD` | 1000 × Lévy paths | Hambly-Lyons sigker convergence |

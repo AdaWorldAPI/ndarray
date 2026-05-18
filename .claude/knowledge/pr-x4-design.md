@@ -343,8 +343,11 @@ Same sequential 5-10 Sonnet + 1 Opus coordinator pattern as PR-X3. Per-worker fi
 ### File layout
 
 ```
-src/hpc/splat3d/v2/        (NEW directory — kept side-by-side with existing splat3d files
-                            until raster.rs migrates; final rename in cleanup commit)
+src/hpc/splat3d/v2/        (INTERIM worktree path during migration; the public
+                            module path is `crate::hpc::splat4d::*` from day one via
+                            `mod.rs` re-export per joint savant P1-3. After
+                            splat3d::raster.rs migrates, the v2/ directory is renamed
+                            to `splat4d/` and the re-export becomes direct.)
 ├── mod.rs                  — coordinator: submodule decls + re-exports
 ├── tile.rs                 — A1: TileInstance + TileBinning<BR, BC> struct + accessors
 ├── bin.rs                  — A2: from_projected_l1 + from_projected_cascade impls

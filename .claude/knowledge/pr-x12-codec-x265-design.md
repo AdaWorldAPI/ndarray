@@ -62,8 +62,19 @@ pub struct Ctu {
 
 #[repr(u8)]
 pub enum CtuPartition {
-    Leaf(LeafCu),                // 64×64, 32×32, 16×16, or 8×8 CU
-    Split([Box<CtuPartition>; 4]), // 4 sub-quadrants
+    Leaf(LeafCu),
+    /// Stack-arena pattern. Per PR-X10 invariant 1 (zero-cost on hot path,
+    /// no `Box<dyn>`), the quad-tree is allocated once per CTU into a
+    /// fixed-capacity arena instead of heap-allocating each split node.
+    /// Quad-tree depth ≤ 3 (64→32→16→8) → ≤ 85 nodes total.
+    Split([u16; 4]), // indices into the CTU's pre-allocated arena
+}
+
+/// Pre-allocated arena holding all CU nodes for one CTU. Capacity 85
+/// (1+4+16+64). Stack-allocated via `tinyvec::ArrayVec` OR a flat
+/// `Vec<CtuPartition>` indexed by `u16`. No heap allocation per split.
+pub struct CtuArena {
+    nodes: tinyvec::ArrayVec<[CtuPartition; 85]>,
 }
 
 pub struct LeafCu {
@@ -138,6 +149,16 @@ pub struct RansEncoder {
 }
 
 impl RansEncoder {
+    /// # Data-flow rule
+    ///
+    /// `RansEncoder` is a streaming byte-stream BUILDER per
+    /// `.claude/rules/data-flow.md` Rule #3's builder/constructor exemption.
+    /// `encode_symbol` accumulates into `self.output`; no shared data is
+    /// mutated during computation. Caller holds the encoder exclusively per
+    /// encoding session. This is NOT a compute path — for COMPUTE (e.g.
+    /// LazyBlockedGrid encoding via PR-X9's `map_l1`-style path) the
+    /// encoder is constructed fresh per encoding session and consumed via
+    /// `finish() -> Vec<u8>`.
     pub fn encode_symbol(&mut self, symbol: CellMode) {
         let (cum_freq, freq) = self.freq_table.cum_and_freq(symbol as usize);
         let q = self.state / freq as u32;
@@ -180,7 +201,7 @@ Worst case (incoherent / random): 95% delta + 5% escape → ~4 bytes/cell, **sti
 | A7 | `ans.rs` | rANS encoder/decoder + adaptive freq table | ~300 | A2 |
 | A8 | `stream.rs` | Byte-stream pack/unpack + header + frame markers | ~250 | A7 |
 
-**Sprint composition**: A1 sequential (foundation), then A2-A7 parallel (different files, A6 depends on A2-A5 but workers run concurrently with stub bodies until prerequisites land), then A8 sequential after A7. **~2 weeks** sprint duration with the 12-agent cadence.
+**Sprint composition** (per joint savant P1-4 ruling): A1 sequential (foundation), then **A2-A5 parallel** (CellMode + predict + transform + quantize — independent files, no inter-worker deps), then **A6+A7 parallel** (RDO + rANS — both depend on A2-A5 outputs), then A8 sequential (stream pack/unpack — depends on A7). True max effective parallelism: **4-way** (A2-A5). ~2 weeks sprint duration with the 12-agent cadence; 4 of those slots are used at peak.
 
 ## Verification commands
 

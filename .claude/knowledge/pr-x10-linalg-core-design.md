@@ -387,7 +387,7 @@ Three definitions today across `ewa_sandwich.rs`, `ewa_sandwich_3d.rs`, `koesten
 - **(a)** `jc` keeps its private `hadamard` module (architectural invariant: jc is zero-dep on ndarray). The hadamard module is the consolidated copy; the three sites all use it.
 - **(b)** Relax the zero-dep rule for the SPD primitives only — depend on `ndarray::hpc::linalg::{Spd2, Spd3}`. Simpler but couples jc to ndarray.
 
-**Lean: (a)** — keep jc self-certifying. PR-X10's `linalg::matrix` module's API surface is the reference jc's hadamard mirrors.
+**Ruling per joint savant P1-1**: invariant 12 governs — master ruling is **path (b)** for the PR-X11 consolidation (jc's math moves into `ndarray::hpc::pillar::*`). PR-X10 doesn't decide this; it ships the canonical ndarray-side surface that PR-X11 then consumes.
 
 ### `Cov16384` carrier for Pillar 8 (Düker-Zoubouloglou CLT on AR(1) in ℝ^16384)
 
@@ -465,7 +465,7 @@ This is a LARGE sprint. Per the user's "12 agents + 1 coordinator" cadence:
 | 12 | **A9 — Batched gemm + Norms + Activations** | 1 | `linalg/batched.rs`, `linalg/norm.rs`, `linalg/activations_ext.rs` | ~550 |
 | 13 | **A10 — RoPE + Attention (incl. flash-attention)** | 1 | `linalg/rope.rs`, `linalg/attention.rs` | ~600 |
 | 14 | **A11 — Cross-entropy + softmax-backward** | 1 | `linalg/loss.rs` | ~250 |
-| 15 | **A12 — Tier-3 catalog (RNG dists, vml special fns, FFT extensions, sparse, banded)** | 1 | `hpc/rng.rs`, `hpc/vml.rs`, `hpc/fft.rs`, `linalg/sparse.rs`, `linalg/banded.rs` | ~600 |
+| 15 | **A12 — Tier-3 catalog + Hilbert-3D (MANDATORY per joint savant scope-cut)** | 1 | `linalg/hilbert.rs` (NEW — Butz/Skilling 3D Hilbert curve encode/decode, ~200 LoC; used by splat4d::cascade::CascadeAddr::from_position) + Tier-3 OPTIONAL: `hpc/rng.rs`, `hpc/vml.rs`, `hpc/fft.rs`, `linalg/sparse.rs`, `linalg/banded.rs` (ship only if Tier 1+2 finish in 2-week window) | ~200 LoC mandatory + ~600 optional |
 | 16 | Codex P0 audit | 1 savant | — | — |
 | 17 | Coordinator fix P0s | coordinator | — | — |
 | 18 | P2 savant pre-merge | 1 savant | — | — |
