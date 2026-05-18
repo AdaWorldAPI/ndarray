@@ -481,8 +481,8 @@ An implementation is conformant if it satisfies ALL of:
       (§3.4); zero N-mini-commit anti-pattern detected.
 - [ ] Chunking discipline enforced: files > 150 lines written via
       `tee -a` (§5.5).
-- [ ] Context Fidelity ladder (§11) is implemented with precedence
-      edge > node > graph > default and the §11.2 token budgets
+- [ ] Context Fidelity ladder (§11A) is implemented with precedence
+      edge > node > graph > default and the §11A.2 token budgets
       treated as guidance (hard cap is `worker.max_brief_tokens`).
 - [ ] `fidelity=truncate` does NOT exempt a worker from the
       `anti-skim-agent-spec.md` §3.3 reading-depth ladder.
@@ -505,13 +505,13 @@ An implementation is conformant if it satisfies ALL of:
 
 ---
 
-## §11 Context Fidelity
+## §11A Context Fidelity
 
 > **Adopted from `attractor-spec.md` §5.4.** This is the one pickup
 > that requires its own section because it changes how briefs are
 > rendered to workers.
 
-### §11.1 Why fidelity matters
+### §11A.1 Why fidelity matters
 
 A 12-worker wave runs the orchestrator's brief through each worker.
 If every worker inherits the full orchestrator context, a wave's
@@ -521,7 +521,7 @@ which is wasteful when bundles are small and well-scoped.
 Fidelity modes let the orchestrator dial how much of its context
 each worker inherits, per-edge / per-node / per-graph.
 
-### §11.2 Four modes + token budgets
+### §11A.2 Four modes + token budgets
 
 | Mode | Token budget (approx.) | When to use |
 |---|---|---|
@@ -534,7 +534,7 @@ each worker inherits, per-edge / per-node / per-graph.
 These budgets are guidance, not hard caps; the hard cap is
 `worker.max_brief_tokens` (default 8000, configurable per §8).
 
-### §11.3 Precedence ladder
+### §11A.3 Precedence ladder
 
 Per attractor §5.4, fidelity is resolved with edge > node > graph >
 default:
@@ -547,7 +547,7 @@ worker.fidelity =
  || "compact"                                                 # built-in default
 ```
 
-### §11.4 Interaction with proof-of-read
+### §11A.4 Interaction with proof-of-read
 
 Fidelity controls what the **orchestrator** passes to the worker. It
 does NOT control what the **worker** reads from disk. A worker on
@@ -565,14 +565,14 @@ In particular:
   summary is NOT a substitute for the read (the same rule that makes
   a compaction summary not a substitute for the JOURNAL file).
 
-### §11.5 Validation rule
+### §11A.5 Validation rule
 
 | Rule | Description | Severity |
 |---|---|---|
 | `WAVE-016 fidelity-budget` | If a worker node declares `fidelity=truncate` AND `tier_1_gates` are required, the orchestrator MUST verify the worker's brief still includes the §6.2 required attributes. | ERROR |
 | `WAVE-017 fidelity-precedence` | The §11.3 precedence is observed; conflicting declarations resolve in the order edge > node > graph > default. | WARNING |
 
-### §11.6 Worked example
+### §11A.6 Worked example
 
 A wave-12 sprint with mixed bundle sizes:
 

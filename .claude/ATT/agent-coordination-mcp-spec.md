@@ -92,7 +92,7 @@ configuration defaults, parity matrices). Rationale:
 Use prose for: section overviews, rationale paragraphs, conflict
 explanations. Use tables for: everything else.
 
-### §1.3 What this spec is NOT
+### §1.5 What this spec is NOT
 
 - Not a workflow engine. Wave / sprint structure is in
   [`autoattended-orchestrator-spec.md`](./autoattended-orchestrator-spec.md).
