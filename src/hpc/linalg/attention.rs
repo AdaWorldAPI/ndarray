@@ -98,15 +98,13 @@ pub struct AttentionConfig {
 /// }
 /// ```
 pub fn attention_f32(
-    q: &[f32],
-    k: &[f32],
-    v: &[f32],
-    out: &mut [f32],
-    config: &AttentionConfig,
-    batch: usize,
-    seq: usize,
+    q: &[f32], k: &[f32], v: &[f32], out: &mut [f32], config: &AttentionConfig, batch: usize, seq: usize,
 ) {
-    let AttentionConfig { num_heads, head_dim, causal_mask } = *config;
+    let AttentionConfig {
+        num_heads,
+        head_dim,
+        causal_mask,
+    } = *config;
     let token_stride = num_heads * head_dim;
     let total = batch * seq * token_stride;
     assert_eq!(q.len(), total, "q length mismatch");
@@ -117,7 +115,7 @@ pub fn attention_f32(
     let scale = 1.0_f32 / (head_dim as f32).sqrt();
 
     // Temporary buffers per (batch, head) pass — seq×seq scores and softmax.
-    let mut scores  = vec![0.0_f32; seq * seq];
+    let mut scores = vec![0.0_f32; seq * seq];
     let mut attn_buf = vec![0.0_f32; seq * seq];
 
     for b in 0..batch {
@@ -135,8 +133,7 @@ pub fn attention_f32(
                         .map(|(a, bv)| a * bv)
                         .sum();
                     let s = dot * scale;
-                    scores[i * seq + j] =
-                        if causal_mask && j > i { f32::NEG_INFINITY } else { s };
+                    scores[i * seq + j] = if causal_mask && j > i { f32::NEG_INFINITY } else { s };
                 }
             }
 
@@ -219,17 +216,15 @@ pub fn attention_f32(
 /// }
 /// ```
 pub fn flash_attention_f32(
-    q: &[f32],
-    k: &[f32],
-    v: &[f32],
-    out: &mut [f32],
-    config: &AttentionConfig,
-    batch: usize,
-    seq: usize,
+    q: &[f32], k: &[f32], v: &[f32], out: &mut [f32], config: &AttentionConfig, batch: usize, seq: usize,
     block_size: usize,
 ) {
     assert!(block_size >= 1, "block_size must be >= 1");
-    let AttentionConfig { num_heads, head_dim, causal_mask } = *config;
+    let AttentionConfig {
+        num_heads,
+        head_dim,
+        causal_mask,
+    } = *config;
     let token_stride = num_heads * head_dim;
     let total = batch * seq * token_stride;
     assert_eq!(q.len(), total, "q length mismatch");
@@ -255,8 +250,8 @@ pub fn flash_attention_f32(
                 //   m[i]   = running maximum (initialised to −∞)
                 //   l[i]   = running sum of exp(s − m[i])
                 //   acc[i] = unnormalised output accumulator (head_dim values)
-                let mut m   = vec![f32::NEG_INFINITY; qi_len];
-                let mut l   = vec![0.0_f32; qi_len];
+                let mut m = vec![f32::NEG_INFINITY; qi_len];
+                let mut l = vec![0.0_f32; qi_len];
                 let mut acc = vec![0.0_f32; qi_len * head_dim];
 
                 // Iterate over key/value blocks.
@@ -270,24 +265,21 @@ pub fn flash_attention_f32(
                     // -----------------------------------------------------------
                     for qi in 0..qi_len {
                         let global_qi = qi_start + qi;
-                        let q_base =
-                            (b * seq * num_heads + global_qi * num_heads + h) * head_dim;
+                        let q_base = (b * seq * num_heads + global_qi * num_heads + h) * head_dim;
                         for kj in 0..kj_len {
                             let global_kj = kj_start + kj;
-                            let k_base =
-                                (b * seq * num_heads + global_kj * num_heads + h) * head_dim;
+                            let k_base = (b * seq * num_heads + global_kj * num_heads + h) * head_dim;
                             let dot: f32 = q[q_base..q_base + head_dim]
                                 .iter()
                                 .zip(k[k_base..k_base + head_dim].iter())
                                 .map(|(a, bv)| a * bv)
                                 .sum();
                             let s = dot * scale;
-                            score_tile[qi * block_size + kj] =
-                                if causal_mask && global_kj > global_qi {
-                                    f32::NEG_INFINITY
-                                } else {
-                                    s
-                                };
+                            score_tile[qi * block_size + kj] = if causal_mask && global_kj > global_qi {
+                                f32::NEG_INFINITY
+                            } else {
+                                s
+                            };
                         }
                     }
 
@@ -321,8 +313,7 @@ pub fn flash_attention_f32(
                             }
                             let e = (s - m_new).exp();
                             l_new += e;
-                            let v_base =
-                                (b * seq * num_heads + global_kj * num_heads + h) * head_dim;
+                            let v_base = (b * seq * num_heads + global_kj * num_heads + h) * head_dim;
                             for d in 0..head_dim {
                                 acc[acc_base + d] += e * v[v_base + d];
                             }
@@ -340,8 +331,7 @@ pub fn flash_attention_f32(
                 // -----------------------------------------------------------
                 for qi in 0..qi_len {
                     let global_qi = qi_start + qi;
-                    let out_base =
-                        (b * seq * num_heads + global_qi * num_heads + h) * head_dim;
+                    let out_base = (b * seq * num_heads + global_qi * num_heads + h) * head_dim;
                     let acc_base = qi * head_dim;
                     let l_val = l[qi].max(1e-30);
                     for d in 0..head_dim {
@@ -364,7 +354,10 @@ mod tests {
     use super::*;
 
     fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
-        a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).fold(0.0_f32, f32::max)
+        a.iter()
+            .zip(b.iter())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0_f32, f32::max)
     }
 
     // -------------------------------------------------------------------------
@@ -396,13 +389,14 @@ mod tests {
         let q = v.clone(); // same as V — all rows identical within each head
         let k = v.clone();
         let mut out = vec![0.0_f32; b * s * h * d];
-        let cfg = AttentionConfig { num_heads: h, head_dim: d, causal_mask: false };
+        let cfg = AttentionConfig {
+            num_heads: h,
+            head_dim: d,
+            causal_mask: false,
+        };
         attention_f32(&q, &k, &v, &mut out, &cfg, b, s);
         // With uniform weights and identical V rows, output = V exactly.
-        assert!(
-            max_abs_diff(&out, &v) < 1e-5,
-            "naive identity failed: max_err={}", max_abs_diff(&out, &v)
-        );
+        assert!(max_abs_diff(&out, &v) < 1e-5, "naive identity failed: max_err={}", max_abs_diff(&out, &v));
     }
 
     #[test]
@@ -416,12 +410,13 @@ mod tests {
         let q = v.clone();
         let k = v.clone();
         let mut out = vec![0.0_f32; b * s * h * d];
-        let cfg = AttentionConfig { num_heads: h, head_dim: d, causal_mask: false };
+        let cfg = AttentionConfig {
+            num_heads: h,
+            head_dim: d,
+            causal_mask: false,
+        };
         flash_attention_f32(&q, &k, &v, &mut out, &cfg, b, s, 4);
-        assert!(
-            max_abs_diff(&out, &v) < 1e-5,
-            "flash identity failed: max_err={}", max_abs_diff(&out, &v)
-        );
+        assert!(max_abs_diff(&out, &v) < 1e-5, "flash identity failed: max_err={}", max_abs_diff(&out, &v));
     }
 
     // -------------------------------------------------------------------------
@@ -440,15 +435,16 @@ mod tests {
             v[(j * h + 0) * d + 0] = (j + 1) as f32;
         }
         let mut out = vec![0.0_f32; b * s * h * d];
-        let cfg = AttentionConfig { num_heads: h, head_dim: d, causal_mask: true };
+        let cfg = AttentionConfig {
+            num_heads: h,
+            head_dim: d,
+            causal_mask: true,
+        };
         attention_f32(&q, &k, &v, &mut out, &cfg, b, s);
         for i in 0..s {
             let expected = (1..=(i + 1)).map(|x| x as f32).sum::<f32>() / (i + 1) as f32;
             let actual = out[(i * h + 0) * d + 0];
-            assert!(
-                (actual - expected).abs() < 1e-4,
-                "naive causal: token {i} expected {expected:.4} got {actual:.4}"
-            );
+            assert!((actual - expected).abs() < 1e-4, "naive causal: token {i} expected {expected:.4} got {actual:.4}");
         }
     }
 
@@ -462,15 +458,16 @@ mod tests {
             v[(j * h + 0) * d + 0] = (j + 1) as f32;
         }
         let mut out = vec![0.0_f32; b * s * h * d];
-        let cfg = AttentionConfig { num_heads: h, head_dim: d, causal_mask: true };
+        let cfg = AttentionConfig {
+            num_heads: h,
+            head_dim: d,
+            causal_mask: true,
+        };
         flash_attention_f32(&q, &k, &v, &mut out, &cfg, b, s, 3);
         for i in 0..s {
             let expected = (1..=(i + 1)).map(|x| x as f32).sum::<f32>() / (i + 1) as f32;
             let actual = out[(i * h + 0) * d + 0];
-            assert!(
-                (actual - expected).abs() < 1e-4,
-                "flash causal: token {i} expected {expected:.4} got {actual:.4}"
-            );
+            assert!((actual - expected).abs() < 1e-4, "flash causal: token {i} expected {expected:.4} got {actual:.4}");
         }
     }
 
@@ -484,7 +481,9 @@ mod tests {
         let total = b * s * h * d;
         let mut seed = 42u64;
         let mut next = || -> f32 {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((seed >> 33) as f32) / (u32::MAX as f32) * 2.0 - 1.0
         };
         let q: Vec<f32> = (0..total).map(|_| next()).collect();
@@ -494,10 +493,33 @@ mod tests {
         let mut out_naive = vec![0.0_f32; total];
         let mut out_flash = vec![0.0_f32; total];
 
-        attention_f32(&q, &k, &v, &mut out_naive,
-            &AttentionConfig { num_heads: h, head_dim: d, causal_mask: false }, b, s);
-        flash_attention_f32(&q, &k, &v, &mut out_flash,
-            &AttentionConfig { num_heads: h, head_dim: d, causal_mask: false }, b, s, 4);
+        attention_f32(
+            &q,
+            &k,
+            &v,
+            &mut out_naive,
+            &AttentionConfig {
+                num_heads: h,
+                head_dim: d,
+                causal_mask: false,
+            },
+            b,
+            s,
+        );
+        flash_attention_f32(
+            &q,
+            &k,
+            &v,
+            &mut out_flash,
+            &AttentionConfig {
+                num_heads: h,
+                head_dim: d,
+                causal_mask: false,
+            },
+            b,
+            s,
+            4,
+        );
 
         let err = max_abs_diff(&out_naive, &out_flash);
         assert!(err < 1e-5, "naive vs flash parity > 1e-5: max_err={err}");
@@ -509,7 +531,9 @@ mod tests {
         let total = b * s * h * d;
         let mut seed = 99u64;
         let mut next = || -> f32 {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((seed >> 33) as f32) / (u32::MAX as f32) * 2.0 - 1.0
         };
         let q: Vec<f32> = (0..total).map(|_| next()).collect();
@@ -519,10 +543,33 @@ mod tests {
         let mut out_naive = vec![0.0_f32; total];
         let mut out_flash = vec![0.0_f32; total];
 
-        attention_f32(&q, &k, &v, &mut out_naive,
-            &AttentionConfig { num_heads: h, head_dim: d, causal_mask: true }, b, s);
-        flash_attention_f32(&q, &k, &v, &mut out_flash,
-            &AttentionConfig { num_heads: h, head_dim: d, causal_mask: true }, b, s, 4);
+        attention_f32(
+            &q,
+            &k,
+            &v,
+            &mut out_naive,
+            &AttentionConfig {
+                num_heads: h,
+                head_dim: d,
+                causal_mask: true,
+            },
+            b,
+            s,
+        );
+        flash_attention_f32(
+            &q,
+            &k,
+            &v,
+            &mut out_flash,
+            &AttentionConfig {
+                num_heads: h,
+                head_dim: d,
+                causal_mask: true,
+            },
+            b,
+            s,
+            4,
+        );
 
         let err = max_abs_diff(&out_naive, &out_flash);
         assert!(err < 1e-5, "causal naive vs flash parity > 1e-5: max_err={err}");

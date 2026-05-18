@@ -30,8 +30,8 @@
 //! the dual-path verification approach used in echocardiographic strain analysis.)
 
 use crate::hpc::linalg::eig_sym::eig_sym_3;
-use crate::hpc::pillar::prove_runner::{PillarReport, SplitMix64, random_contractive_spd3};
 use crate::hpc::linalg::Spd3;
+use crate::hpc::pillar::prove_runner::{random_contractive_spd3, PillarReport, SplitMix64};
 use crate::hpc::splat3d::spd3::sandwich;
 
 // ── Probe constants ────────────────────────────────────────────────────────────
@@ -412,10 +412,7 @@ mod tests {
             if err > worst {
                 worst = err;
             }
-            assert!(
-                err <= PILLAR_7_5_MAX_ABS_ERROR,
-                "trial {trial}: err={err} > {PILLAR_7_5_MAX_ABS_ERROR}"
-            );
+            assert!(err <= PILLAR_7_5_MAX_ABS_ERROR, "trial {trial}: err={err} > {PILLAR_7_5_MAX_ABS_ERROR}");
         }
         // Sanity: at least some non-trivial error (not all zeros).
         // This catches degenerate probes that return zeros for both paths.
@@ -431,8 +428,7 @@ mod tests {
         assert!(
             report.passed,
             "Pillar-7.5 FAILED: max_err={} (threshold={})",
-            report.lognorm_concentration,
-            PILLAR_7_5_MAX_ABS_ERROR
+            report.lognorm_concentration, PILLAR_7_5_MAX_ABS_ERROR
         );
     }
 

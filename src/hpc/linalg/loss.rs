@@ -152,12 +152,7 @@ pub fn cross_entropy_with_logits_f32(logits: &[f32], target: u32) -> f32 {
 /// let single  = cross_entropy_with_logits_f32(&logits[..3], 0);
 /// assert!((batched - single).abs() < 1e-5);
 /// ```
-pub fn cross_entropy_with_logits_batched_f32(
-    logits: &[f32],
-    targets: &[u32],
-    batch: usize,
-    vocab: usize,
-) -> f32 {
+pub fn cross_entropy_with_logits_batched_f32(logits: &[f32], targets: &[u32], batch: usize, vocab: usize) -> f32 {
     assert!(batch > 0, "cross_entropy_with_logits_batched_f32: batch must be > 0");
     assert!(vocab > 0, "cross_entropy_with_logits_batched_f32: vocab must be > 0");
     assert_eq!(
@@ -178,10 +173,7 @@ pub fn cross_entropy_with_logits_batched_f32(
     let sum = kahan_sum((0..batch).map(|b| {
         let row = &logits[b * vocab..(b + 1) * vocab];
         let t = targets[b] as usize;
-        assert!(
-            t < vocab,
-            "cross_entropy_with_logits_batched_f32: targets[{b}]={t} out of range [0, {vocab})"
-        );
+        assert!(t < vocab, "cross_entropy_with_logits_batched_f32: targets[{b}]={t} out of range [0, {vocab})");
         let (_, lse) = log_sum_exp_row(row);
         lse - row[t]
     }));
@@ -241,13 +233,7 @@ pub fn cross_entropy_with_logits_batched_f32(
 /// let sum: f32 = grad.iter().sum();
 /// assert!(sum.abs() < 1e-5, "grad sum should be ~0, got {sum}");
 /// ```
-pub fn softmax_xent_backward_f32(
-    logits: &[f32],
-    targets: &[u32],
-    grad_out: &mut [f32],
-    batch: usize,
-    vocab: usize,
-) {
+pub fn softmax_xent_backward_f32(logits: &[f32], targets: &[u32], grad_out: &mut [f32], batch: usize, vocab: usize) {
     assert!(batch > 0, "softmax_xent_backward_f32: batch must be > 0");
     assert!(vocab > 0, "softmax_xent_backward_f32: vocab must be > 0");
     assert_eq!(
@@ -278,10 +264,7 @@ pub fn softmax_xent_backward_f32(
         let row_start = b * vocab;
         let row = &logits[row_start..row_start + vocab];
         let t = targets[b] as usize;
-        assert!(
-            t < vocab,
-            "softmax_xent_backward_f32: targets[{b}]={t} out of range [0, {vocab})"
-        );
+        assert!(t < vocab, "softmax_xent_backward_f32: targets[{b}]={t} out of range [0, {vocab})");
 
         // Find max for numerical stability.
         let max_val = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
@@ -326,10 +309,7 @@ mod tests {
     fn test_xent_correct_prediction_near_zero() {
         // softmax([10,0,0]) ≈ [1,0,0]; -log(1) ≈ 0
         let loss = cross_entropy_with_logits_f32(&[10.0_f32, 0.0, 0.0], 0);
-        assert!(
-            loss < 1e-4,
-            "near-zero loss for confident correct pred, got {loss}"
-        );
+        assert!(loss < 1e-4, "near-zero loss for confident correct pred, got {loss}");
     }
 
     /// One-hot target pointing to the wrong class → large loss (~10).
@@ -337,10 +317,7 @@ mod tests {
     fn test_xent_wrong_prediction_large_loss() {
         // softmax([10,0,0]) ≈ [1,0,0]; -log(softmax[1]) ≈ 10
         let loss = cross_entropy_with_logits_f32(&[10.0_f32, 0.0, 0.0], 1);
-        assert!(
-            loss > 9.9,
-            "large loss expected for wrong prediction, got {loss}"
-        );
+        assert!(loss > 9.9, "large loss expected for wrong prediction, got {loss}");
     }
 
     /// Uniform logits → loss equals ln(vocab).
@@ -350,10 +327,7 @@ mod tests {
         let logits = vec![0.0_f32; vocab];
         let loss = cross_entropy_with_logits_f32(&logits, 0);
         let expected = (vocab as f32).ln();
-        assert!(
-            (loss - expected).abs() < 1e-5,
-            "uniform logits loss={loss}, expected ln({vocab})={expected}"
-        );
+        assert!((loss - expected).abs() < 1e-5, "uniform logits loss={loss}, expected ln({vocab})={expected}");
     }
 
     /// Numerically large logits do not produce NaN or Inf.
@@ -375,26 +349,22 @@ mod tests {
         let targets = [0_u32, 0];
         let batched = cross_entropy_with_logits_batched_f32(&logits, &targets, 2, 3);
         let single = cross_entropy_with_logits_f32(&row, 0);
-        assert!(
-            (batched - single).abs() < 1e-5,
-            "batched={batched} should equal single={single}"
-        );
+        assert!((batched - single).abs() < 1e-5, "batched={batched} should equal single={single}");
     }
 
     /// Batched mean is the arithmetic mean of individual losses.
     #[test]
     fn test_batched_is_mean() {
-        let logits = [1.0_f32, 2.0, 3.0,   // sample 0
-                      3.0_f32, 2.0, 1.0];  // sample 1
+        let logits = [
+            1.0_f32, 2.0, 3.0, // sample 0
+            3.0_f32, 2.0, 1.0,
+        ]; // sample 1
         let targets = [2_u32, 0];
         let batched = cross_entropy_with_logits_batched_f32(&logits, &targets, 2, 3);
         let l0 = cross_entropy_with_logits_f32(&logits[..3], 2);
         let l1 = cross_entropy_with_logits_f32(&logits[3..], 0);
         let mean = (l0 + l1) / 2.0;
-        assert!(
-            (batched - mean).abs() < 1e-5,
-            "batched={batched} expected mean={mean}"
-        );
+        assert!((batched - mean).abs() < 1e-5, "batched={batched} expected mean={mean}");
     }
 
     // ── Gate 3: backward gradient sign ──────────────────────────────────────
@@ -407,11 +377,7 @@ mod tests {
         let mut grad = [0.0_f32; 3];
         softmax_xent_backward_f32(&logits, &targets, &mut grad, 1, 3);
 
-        assert!(
-            grad[2] < 0.0,
-            "grad at target index should be negative (softmax - 1), got {}",
-            grad[2]
-        );
+        assert!(grad[2] < 0.0, "grad at target index should be negative (softmax - 1), got {}", grad[2]);
         assert!(
             grad[0] > 0.0 && grad[1] > 0.0,
             "grad at non-target indices should be positive, got [{}, {}]",
@@ -428,10 +394,7 @@ mod tests {
         let mut grad = [0.0_f32; 4];
         softmax_xent_backward_f32(&logits, &targets, &mut grad, 1, 4);
         let sum: f32 = grad.iter().sum();
-        assert!(
-            sum.abs() < 1e-6,
-            "grad should sum to 0 (Σ softmax = 1, Σ one_hot = 1), got {sum}"
-        );
+        assert!(sum.abs() < 1e-6, "grad should sum to 0 (Σ softmax = 1, Σ one_hot = 1), got {sum}");
     }
 
     // ── Gate 4: backward approximates finite-difference gradient ────────────
@@ -457,11 +420,7 @@ mod tests {
             let f_plus = cross_entropy_with_logits_f32(&l_plus, target);
             let f_minus = cross_entropy_with_logits_f32(&l_minus, target);
             let fd = (f_plus - f_minus) / (2.0 * eps);
-            assert!(
-                (grad[i] - fd).abs() < 5e-4,
-                "finite-diff check failed at i={i}: analytical={}, fd={fd}",
-                grad[i]
-            );
+            assert!((grad[i] - fd).abs() < 5e-4, "finite-diff check failed at i={i}: analytical={}, fd={fd}", grad[i]);
         }
     }
 
@@ -484,11 +443,7 @@ mod tests {
         // (both are scaled by 1/batch, so batch=2 gives half the magnitude)
         for i in 0..3 {
             let expected = grad_single[i] * 0.5; // batch=2 halves each
-            assert!(
-                (grad_batch[i] - expected).abs() < 1e-6,
-                "batch grad[{i}]={} expected {expected}",
-                grad_batch[i]
-            );
+            assert!((grad_batch[i] - expected).abs() < 1e-6, "batch grad[{i}]={} expected {expected}", grad_batch[i]);
             assert!(
                 (grad_batch[3 + i] - expected).abs() < 1e-6,
                 "batch grad[{}]={} expected {expected}",
@@ -502,8 +457,8 @@ mod tests {
     #[test]
     fn test_batched_backward_different_targets() {
         let logits = [
-            2.0_f32, 1.0, 0.0,  // sample 0, target 0
-            0.0_f32, 1.0, 2.0,  // sample 1, target 2
+            2.0_f32, 1.0, 0.0, // sample 0, target 0
+            0.0_f32, 1.0, 2.0, // sample 1, target 2
         ];
         let targets = [0_u32, 2];
         let mut grad = [0.0_f32; 6];

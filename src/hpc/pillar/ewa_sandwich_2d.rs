@@ -42,9 +42,7 @@
 //! `PILLAR_6_SEED = 0x_DA_5A_DC_5A_DD`
 
 use crate::hpc::linalg::Spd2;
-use crate::hpc::pillar::prove_runner::{
-    assert_psd_rate, random_contractive_spd2, PillarReport, SplitMix64,
-};
+use crate::hpc::pillar::prove_runner::{assert_psd_rate, random_contractive_spd2, PillarReport, SplitMix64};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -313,12 +311,7 @@ mod tests {
     fn prove_pillar_6_passes() {
         let report = prove_pillar_6();
         report.print();
-        assert!(
-            report.passed,
-            "Pillar-6 FAIL: psd_rate={:.6} threshold={}",
-            report.psd_rate,
-            PILLAR_6_PSD_THRESHOLD
-        );
+        assert!(report.passed, "Pillar-6 FAIL: psd_rate={:.6} threshold={}", report.psd_rate, PILLAR_6_PSD_THRESHOLD);
     }
 
     #[test]

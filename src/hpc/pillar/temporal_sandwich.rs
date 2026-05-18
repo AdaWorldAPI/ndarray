@@ -216,8 +216,7 @@ pub fn is_spd_3x3(m: &[[f32; 3]; 3]) -> bool {
         return false;
     }
     // Full 3×3 determinant (cofactor expansion along row 0)
-    let det3 =
-        m00 * (m11 * m22 - m12 * m12) - m01 * (m01 * m22 - m12 * m02) + m02 * (m01 * m12 - m11 * m02);
+    let det3 = m00 * (m11 * m22 - m12 * m12) - m01 * (m01 * m22 - m12 * m02) + m02 * (m01 * m12 - m11 * m02);
     det3 > 0.0
 }
 
@@ -254,11 +253,7 @@ pub fn prove_pillar_8_band(band: MotionBand) -> PillarReport {
 
     for _ in 0..N_PATHS {
         // Initial Σ₀: identity matrix (unambiguously SPD)
-        let mut sigma: [[f32; 3]; 3] = [
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0],
-        ];
+        let mut sigma: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
         for _ in 0..N_SUBSTEPS {
             // Draw a random SPD multiplier M_t with the band's Frobenius norm.
@@ -461,12 +456,7 @@ mod tests {
         let reports = prove_pillar_8();
         for r in &reports {
             r.print();
-            assert!(
-                r.passed,
-                "Pillar-8 band FAIL: pillar_id={} psd_rate={:.6}",
-                r.pillar_id,
-                r.psd_rate
-            );
+            assert!(r.passed, "Pillar-8 band FAIL: pillar_id={} psd_rate={:.6}", r.pillar_id, r.psd_rate);
         }
     }
 

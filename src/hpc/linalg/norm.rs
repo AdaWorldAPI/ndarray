@@ -54,7 +54,7 @@
 pub fn layer_norm_f32(x: &mut [f32], gamma: &[f32], beta: &[f32], eps: f32) {
     let d = x.len();
     assert_eq!(gamma.len(), d, "layer_norm_f32: gamma length mismatch");
-    assert_eq!(beta.len(),  d, "layer_norm_f32: beta length mismatch");
+    assert_eq!(beta.len(), d, "layer_norm_f32: beta length mismatch");
 
     // Mean
     let mean: f32 = x.iter().sum::<f32>() / d as f32;
@@ -142,18 +142,15 @@ pub fn rms_norm_f32(x: &mut [f32], gamma: &[f32], eps: f32) {
 /// ```
 pub fn group_norm_f32(x: &mut [f32], gamma: &[f32], beta: &[f32], groups: usize, eps: f32) {
     let d = x.len();
-    assert!(
-        d % groups == 0,
-        "group_norm_f32: x.len() ({d}) not divisible by groups ({groups})"
-    );
+    assert!(d % groups == 0, "group_norm_f32: x.len() ({d}) not divisible by groups ({groups})");
     assert_eq!(gamma.len(), d, "group_norm_f32: gamma length mismatch");
-    assert_eq!(beta.len(),  d, "group_norm_f32: beta length mismatch");
+    assert_eq!(beta.len(), d, "group_norm_f32: beta length mismatch");
 
     let g_size = d / groups;
 
     for g in 0..groups {
         let start = g * g_size;
-        let end   = start + g_size;
+        let end = start + g_size;
         let chunk = &mut x[start..end];
 
         // Mean
@@ -182,8 +179,8 @@ mod tests {
     #[test]
     fn rms_norm_ones_returns_ones() {
         // RMS([1,1,1,1]) = 1  →  output = gamma * 1 / 1 = gamma
-        let mut x     = vec![1.0f32; 4];
-        let     gamma = vec![1.0f32; 4];
+        let mut x = vec![1.0f32; 4];
+        let gamma = vec![1.0f32; 4];
         rms_norm_f32(&mut x, &gamma, 1e-8);
         for &v in &x {
             assert!((v - 1.0).abs() < 1e-5, "expected 1.0, got {v}");
@@ -193,8 +190,8 @@ mod tests {
     #[test]
     fn rms_norm_formula_correctness() {
         // Verify: x_i / sqrt(mean(x^2) + eps) * gamma
-        let mut x     = vec![1.0f32, 2.0, 3.0, 4.0];
-        let     gamma = vec![2.0f32; 4];
+        let mut x = vec![1.0f32, 2.0, 3.0, 4.0];
+        let gamma = vec![2.0f32; 4];
         let eps = 0.0f32;
         rms_norm_f32(&mut x, &gamma, eps);
         // mean(x^2) of [1,2,3,4] = 30/4 = 7.5; rms = sqrt(7.5)
@@ -207,13 +204,13 @@ mod tests {
 
     #[test]
     fn layer_norm_zero_mean_unit_var() {
-        let mut x     = vec![2.0f32, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0];
-        let     gamma = vec![1.0f32; 8];
-        let     beta  = vec![0.0f32; 8];
+        let mut x = vec![2.0f32, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0];
+        let gamma = vec![1.0f32; 8];
+        let beta = vec![0.0f32; 8];
         layer_norm_f32(&mut x, &gamma, &beta, 1e-10);
 
         let mean: f32 = x.iter().sum::<f32>() / x.len() as f32;
-        let var:  f32 = x.iter().map(|&v| (v - mean) * (v - mean)).sum::<f32>() / x.len() as f32;
+        let var: f32 = x.iter().map(|&v| (v - mean) * (v - mean)).sum::<f32>() / x.len() as f32;
 
         assert!(mean.abs() < 1e-5, "mean should be 0, got {mean}");
         assert!((var - 1.0).abs() < 1e-4, "var should be 1, got {var}");
@@ -222,9 +219,9 @@ mod tests {
     #[test]
     fn group_norm_two_groups() {
         // 4 channels, 2 groups → LayerNorm applied to [1,3] and [7,9] separately.
-        let mut x     = vec![1.0f32, 3.0, 7.0, 9.0];
-        let     gamma = vec![1.0f32; 4];
-        let     beta  = vec![0.0f32; 4];
+        let mut x = vec![1.0f32, 3.0, 7.0, 9.0];
+        let gamma = vec![1.0f32; 4];
+        let beta = vec![0.0f32; 4];
         group_norm_f32(&mut x, &gamma, &beta, 2, 1e-10);
 
         // Group 0: mean=2, var=1 → [-1, 1]

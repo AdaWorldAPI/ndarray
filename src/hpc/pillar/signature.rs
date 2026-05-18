@@ -90,10 +90,7 @@ pub const SIG_D2_DEG3_LEN: usize = 15;
 /// ```
 pub fn signature_d2_deg3(path: &[f32], n_points: usize) -> [f32; SIG_D2_DEG3_LEN] {
     assert!(n_points >= 2, "signature_d2_deg3: need at least 2 points");
-    assert!(
-        path.len() >= n_points * 2,
-        "signature_d2_deg3: path buffer too short"
-    );
+    assert!(path.len() >= n_points * 2, "signature_d2_deg3: path buffer too short");
 
     // Running signature state, accumulated over segments via Chen's identity.
     // Layout: [s0, s1x, s1y, s2xx, s2xy, s2yx, s2yy,
@@ -161,10 +158,7 @@ pub fn signature_d2_deg3(path: &[f32], n_points: usize) -> [f32; SIG_D2_DEG3_LEN
     }
     s0 = 1.0;
 
-    [
-        s0, s1x, s1y, s2xx, s2xy, s2yx, s2yy, s3xxx, s3xxy, s3xyx, s3xyy, s3yxx, s3yxy,
-        s3yyx, s3yyy,
-    ]
+    [s0, s1x, s1y, s2xx, s2xy, s2yx, s2yy, s3xxx, s3xxy, s3xyx, s3xyy, s3yxx, s3yxy, s3yyx, s3yyy]
 }
 
 // ── Hambly–Lyons sig-kernel ────────────────────────────────────────────────────
@@ -266,8 +260,7 @@ pub fn prove_pillar_11() -> PillarReport {
     let mut rng = SplitMix64::new(PILLAR_11_SEED);
 
     // ── Generate signatures for all paths ────────────────────────────────────
-    let mut sigs: alloc::vec::Vec<[f32; SIG_D2_DEG3_LEN]> =
-        alloc::vec::Vec::with_capacity(N_PATHS);
+    let mut sigs: alloc::vec::Vec<[f32; SIG_D2_DEG3_LEN]> = alloc::vec::Vec::with_capacity(N_PATHS);
 
     for _ in 0..N_PATHS {
         let path = brownian_path_d2(&mut rng, N_STEPS);
@@ -417,18 +410,12 @@ mod tests {
         // S² components (indices 3..7): scaled by λ²
         let lam2 = lambda * lambda;
         for k in 3..7 {
-            assert!(
-                (sig2[k] - lam2 * sig1[k]).abs() < 1e-4,
-                "s2 index {k} scaling by λ²"
-            );
+            assert!((sig2[k] - lam2 * sig1[k]).abs() < 1e-4, "s2 index {k} scaling by λ²");
         }
         // S³ components (indices 7..15): scaled by λ³
         let lam3 = lam2 * lambda;
         for k in 7..15 {
-            assert!(
-                (sig2[k] - lam3 * sig1[k]).abs() < 1e-4,
-                "s3 index {k} scaling by λ³"
-            );
+            assert!((sig2[k] - lam3 * sig1[k]).abs() < 1e-4, "s3 index {k} scaling by λ³");
         }
     }
 
@@ -454,12 +441,7 @@ mod tests {
         let kpq = sigker_hl(&sp, &sq);
         let kpp = sigker_hl(&sp, &sp);
         let kqq = sigker_hl(&sq, &sq);
-        assert!(
-            kpq * kpq <= kpp * kqq * 1.001,
-            "Cauchy–Schwarz: kpq²={} kpp·kqq={}",
-            kpq * kpq,
-            kpp * kqq
-        );
+        assert!(kpq * kpq <= kpp * kqq * 1.001, "Cauchy–Schwarz: kpq²={} kpp·kqq={}", kpq * kpq, kpp * kqq);
     }
 
     // ── brownian_path_d2 ─────────────────────────────────────────────────────
@@ -515,9 +497,6 @@ mod tests {
         let r2 = prove_pillar_11();
         assert_eq!(r1.passed, r2.passed);
         assert_eq!(r1.psd_rate.to_bits(), r2.psd_rate.to_bits());
-        assert_eq!(
-            r1.lognorm_concentration.to_bits(),
-            r2.lognorm_concentration.to_bits()
-        );
+        assert_eq!(r1.lognorm_concentration.to_bits(), r2.lognorm_concentration.to_bits());
     }
 }

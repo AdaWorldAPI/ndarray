@@ -370,8 +370,7 @@ mod tests {
     /// Test 1: load_embedded succeeds without panic.
     #[test]
     fn load_embedded_succeeds() {
-        let bridge = CognitiveBridge::load_embedded()
-            .expect("load_embedded must not fail on valid embedded TTL");
+        let bridge = CognitiveBridge::load_embedded().expect("load_embedded must not fail on valid embedded TTL");
         // Basic sanity: codebook must be non-empty
         assert!(!bridge.codebook.is_empty(), "codebook must have at least one atom");
     }

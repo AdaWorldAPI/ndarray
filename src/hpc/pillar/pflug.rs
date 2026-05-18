@@ -96,12 +96,7 @@ fn pairwise_l1(u: &[f32], v: &[f32]) -> Vec<f32> {
 ///
 /// For this probe we approximate with a single-level transport (Sinkhorn)
 /// applied at each stage, accumulating costs forward in time.
-fn nested_distance_single_level(
-    rng_p: &mut SplitMix64,
-    rng_q: &mut SplitMix64,
-    n_paths: usize,
-    n_hops: usize,
-) -> f32 {
+fn nested_distance_single_level(rng_p: &mut SplitMix64, rng_q: &mut SplitMix64, n_paths: usize, n_hops: usize) -> f32 {
     let dt = 1.0_f32 / n_hops as f32;
     let p_weight = 1.0_f32 / n_paths as f32;
 
@@ -123,16 +118,8 @@ fn nested_distance_single_level(
         let cost = pairwise_l1(&states_p, &states_q);
 
         // Sinkhorn transport plan.
-        let plan = sinkhorn_knopp_f32(
-            &cost,
-            n_paths,
-            n_paths,
-            &marginals_p,
-            &marginals_q,
-            EPSILON,
-            MAX_ITERS,
-            TOLERANCE,
-        );
+        let plan =
+            sinkhorn_knopp_f32(&cost, n_paths, n_paths, &marginals_p, &marginals_q, EPSILON, MAX_ITERS, TOLERANCE);
 
         // W1 distance at this stage.
         let w1 = wasserstein_1_f32(&cost, &plan, n_paths, n_paths);

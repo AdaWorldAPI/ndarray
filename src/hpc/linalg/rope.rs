@@ -87,7 +87,12 @@ impl RopeCache {
             }
         }
 
-        Self { cos_table, sin_table, head_dim, max_seq_len }
+        Self {
+            cos_table,
+            sin_table,
+            head_dim,
+            max_seq_len,
+        }
     }
 
     /// Apply RoPE in-place to query and key tensors.
@@ -123,13 +128,7 @@ impl RopeCache {
     /// cache.apply_qk_f32(&mut q, &mut k, &positions, 1, 4, 2);
     /// ```
     pub fn apply_qk_f32(
-        &self,
-        q: &mut [f32],
-        k: &mut [f32],
-        positions: &[u32],
-        batch: usize,
-        seq: usize,
-        heads: usize,
+        &self, q: &mut [f32], k: &mut [f32], positions: &[u32], batch: usize, seq: usize, heads: usize,
     ) {
         let half = self.head_dim / 2;
         let expected_qk = batch * seq * heads * self.head_dim;
@@ -166,7 +165,7 @@ fn rotate_pairs(x: &mut [f32], cos: &[f32], sin: &[f32]) {
     for i in 0..half {
         let x0 = x[2 * i];
         let x1 = x[2 * i + 1];
-        x[2 * i]     = x0 * cos[i] - x1 * sin[i];
+        x[2 * i] = x0 * cos[i] - x1 * sin[i];
         x[2 * i + 1] = x0 * sin[i] + x1 * cos[i];
     }
 }
@@ -181,7 +180,10 @@ mod tests {
 
     // Helper: L∞ distance between two slices.
     fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
-        a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).fold(0.0_f32, f32::max)
+        a.iter()
+            .zip(b.iter())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0_f32, f32::max)
     }
 
     /// Applying RoPE at position 0 must be the identity transformation
@@ -256,12 +258,9 @@ mod tests {
         // batch=1, seq=2, heads=2, head_dim=4
         let mut q = vec![
             // s=0, h=0
-            1.0_f32, 2.0, 3.0, 4.0,
-            // s=0, h=1
-            5.0, 6.0, 7.0, 8.0,
-            // s=1, h=0
-            0.5, -0.5, 1.5, -1.5,
-            // s=1, h=1
+            1.0_f32, 2.0, 3.0, 4.0, // s=0, h=1
+            5.0, 6.0, 7.0, 8.0, // s=1, h=0
+            0.5, -0.5, 1.5, -1.5, // s=1, h=1
             2.5, -2.5, 3.5, -3.5,
         ];
         let mut k = q.clone();
@@ -270,13 +269,7 @@ mod tests {
 
         // The two heads at the same sequence position must receive the same rotation.
         // Verify by extracting rotation at pos=0: expect identity.
-        assert!(
-            (q[0] - 1.0).abs() < 1e-6 && (q[1] - 2.0).abs() < 1e-6,
-            "position-0 head-0 mismatch: {:?}", &q[..4]
-        );
-        assert!(
-            (q[4] - 5.0).abs() < 1e-6 && (q[5] - 6.0).abs() < 1e-6,
-            "position-0 head-1 mismatch: {:?}", &q[4..8]
-        );
+        assert!((q[0] - 1.0).abs() < 1e-6 && (q[1] - 2.0).abs() < 1e-6, "position-0 head-0 mismatch: {:?}", &q[..4]);
+        assert!((q[4] - 5.0).abs() < 1e-6 && (q[5] - 6.0).abs() < 1e-6, "position-0 head-1 mismatch: {:?}", &q[4..8]);
     }
 }

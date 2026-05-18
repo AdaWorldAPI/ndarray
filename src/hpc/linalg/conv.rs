@@ -63,12 +63,7 @@ pub fn conv1d_f32(input: &[f32], kernel: &[f32], stride: usize, padding: usize, 
     assert!(stride >= 1, "stride must be >= 1");
     assert!(klen >= 1, "kernel must be non-empty");
     let out_len = (in_len + 2 * padding).saturating_sub(klen) / stride + 1;
-    assert_eq!(
-        out.len(),
-        out_len,
-        "conv1d_f32: out has wrong length (expected {out_len}, got {})",
-        out.len()
-    );
+    assert_eq!(out.len(), out_len, "conv1d_f32: out has wrong length (expected {out_len}, got {})", out.len());
 
     for o in 0..out_len {
         let mut acc = 0.0_f32;
@@ -121,13 +116,8 @@ fn out_spatial(in_size: usize, k: usize, stride: usize, pad: usize) -> usize {
 /// for v in &out { assert!((*v - 9.0).abs() < 1e-5); }
 /// ```
 pub fn conv2d_f32(
-    input: &[f32],
-    in_shape: (usize, usize, usize),
-    kernel: &[f32],
-    kernel_shape: (usize, usize, usize, usize),
-    stride: (usize, usize),
-    padding: (usize, usize),
-    out: &mut [f32],
+    input: &[f32], in_shape: (usize, usize, usize), kernel: &[f32], kernel_shape: (usize, usize, usize, usize),
+    stride: (usize, usize), padding: (usize, usize), out: &mut [f32],
 ) {
     let (cin, in_h, in_w) = in_shape;
     let (cout, _cin_k, kh, kw) = kernel_shape;
@@ -139,11 +129,7 @@ pub fn conv2d_f32(
     let out_h = out_spatial(in_h, kh, sh, ph);
     let out_w = out_spatial(in_w, kw, sw, pw);
 
-    assert_eq!(
-        out.len(),
-        cout * out_h * out_w,
-        "conv2d_f32: out buffer length mismatch"
-    );
+    assert_eq!(out.len(), cout * out_h * out_w, "conv2d_f32: out buffer length mismatch");
 
     // Kernel element k[oc, ic, ky, kx] at flat index:
     //   oc*(cin*kh*kw) + ic*(kh*kw) + ky*kw + kx
@@ -200,13 +186,8 @@ pub fn conv2d_f32(
 /// for v in &out { assert!((*v - 9.0).abs() < 1e-5); }
 /// ```
 pub fn conv2d_3x3_f32(
-    input: &[f32],
-    in_shape: (usize, usize, usize),
-    kernel: &[f32],
-    kernel_shape: (usize, usize, usize, usize),
-    stride: (usize, usize),
-    padding: (usize, usize),
-    out: &mut [f32],
+    input: &[f32], in_shape: (usize, usize, usize), kernel: &[f32], kernel_shape: (usize, usize, usize, usize),
+    stride: (usize, usize), padding: (usize, usize), out: &mut [f32],
 ) {
     let (cin, in_h, in_w) = in_shape;
     let (cout, _cin_k, kh, kw) = kernel_shape;
@@ -283,13 +264,8 @@ pub fn conv2d_3x3_f32(
 /// for v in &out { assert!((*v - 25.0).abs() < 1e-4); }
 /// ```
 pub fn conv2d_5x5_f32(
-    input: &[f32],
-    in_shape: (usize, usize, usize),
-    kernel: &[f32],
-    kernel_shape: (usize, usize, usize, usize),
-    stride: (usize, usize),
-    padding: (usize, usize),
-    out: &mut [f32],
+    input: &[f32], in_shape: (usize, usize, usize), kernel: &[f32], kernel_shape: (usize, usize, usize, usize),
+    stride: (usize, usize), padding: (usize, usize), out: &mut [f32],
 ) {
     let (cin, in_h, in_w) = in_shape;
     let (cout, _cin_k, kh, kw) = kernel_shape;
@@ -390,13 +366,8 @@ pub fn conv2d_5x5_f32(
 /// for v in &out { assert!((*v - 9.0).abs() < 1e-5); }
 /// ```
 pub fn conv2d_im2col_f32(
-    input: &[f32],
-    in_shape: (usize, usize, usize),
-    kernel: &[f32],
-    kernel_shape: (usize, usize, usize, usize),
-    stride: (usize, usize),
-    padding: (usize, usize),
-    out: &mut [f32],
+    input: &[f32], in_shape: (usize, usize, usize), kernel: &[f32], kernel_shape: (usize, usize, usize, usize),
+    stride: (usize, usize), padding: (usize, usize), out: &mut [f32],
 ) {
     let (cin, in_h, in_w) = in_shape;
     let (cout, _cin_k, kh, kw) = kernel_shape;
@@ -447,19 +418,7 @@ pub fn conv2d_im2col_f32(
     if cout == 0 || n_patches == 0 || patch_len == 0 {
         return;
     }
-    gemm_f32(
-        cout,
-        n_patches,
-        patch_len,
-        1.0,
-        kernel,
-        patch_len,
-        &col,
-        n_patches,
-        0.0,
-        out,
-        n_patches,
-    );
+    gemm_f32(cout, n_patches, patch_len, 1.0, kernel, patch_len, &col, n_patches, 0.0, out, n_patches);
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -517,35 +476,18 @@ mod tests {
 
         // Deterministic fill using index mod 7
         let input: Vec<f32> = (0..n_input).map(|i| (i % 7) as f32 * 0.5).collect();
-        let kernel: Vec<f32> = (0..n_kernel).map(|i| ((i + 1) % 5) as f32 * 0.3 - 0.3).collect();
+        let kernel: Vec<f32> = (0..n_kernel)
+            .map(|i| ((i + 1) % 5) as f32 * 0.3 - 0.3)
+            .collect();
 
         let mut out_direct = vec![0.0_f32; n_out];
         let mut out_im2col = vec![0.0_f32; n_out];
 
-        conv2d_3x3_f32(
-            &input,
-            (cin, in_h, in_w),
-            &kernel,
-            (cout, cin, kh, kw),
-            (1, 1),
-            (0, 0),
-            &mut out_direct,
-        );
-        conv2d_im2col_f32(
-            &input,
-            (cin, in_h, in_w),
-            &kernel,
-            (cout, cin, kh, kw),
-            (1, 1),
-            (0, 0),
-            &mut out_im2col,
-        );
+        conv2d_3x3_f32(&input, (cin, in_h, in_w), &kernel, (cout, cin, kh, kw), (1, 1), (0, 0), &mut out_direct);
+        conv2d_im2col_f32(&input, (cin, in_h, in_w), &kernel, (cout, cin, kh, kw), (1, 1), (0, 0), &mut out_im2col);
 
         for (i, (a, b)) in out_direct.iter().zip(out_im2col.iter()).enumerate() {
-            assert!(
-                (a - b).abs() < EPS,
-                "mismatch at index {i}: direct={a} im2col={b}"
-            );
+            assert!((a - b).abs() < EPS, "mismatch at index {i}: direct={a} im2col={b}");
         }
     }
 
@@ -567,15 +509,7 @@ mod tests {
         let input = vec![1.0_f32; in_h * in_w];
         let kernel = vec![1.0_f32; kh * kw]; // all-ones → each out = 9.0
         let mut out = vec![0.0_f32; out_h * out_w];
-        conv2d_f32(
-            &input,
-            (1, in_h, in_w),
-            &kernel,
-            (1, 1, kh, kw),
-            stride,
-            padding,
-            &mut out,
-        );
+        conv2d_f32(&input, (1, in_h, in_w), &kernel, (1, 1, kh, kw), stride, padding, &mut out);
         for v in &out {
             assert!((v - 9.0).abs() < EPS, "v={v}");
         }
@@ -594,15 +528,7 @@ mod tests {
         let input = vec![2.0_f32; in_h * in_w]; // constant 2.0 input
         let kernel = vec![1.0_f32; 9]; // all-ones 3×3
         let mut out = vec![0.0_f32; out_h * out_w];
-        conv2d_3x3_f32(
-            &input,
-            (1, in_h, in_w),
-            &kernel,
-            (1, 1, 3, 3),
-            (1, 1),
-            (1, 1),
-            &mut out,
-        );
+        conv2d_3x3_f32(&input, (1, in_h, in_w), &kernel, (1, 1, 3, 3), (1, 1), (1, 1), &mut out);
         // Interior pixels sum 9 neighbours × 2.0 = 18.0
         let interior = out[1 * out_w + 1]; // oh=1, ow=1
         assert!((interior - 18.0).abs() < EPS, "interior={interior}");

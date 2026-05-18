@@ -102,7 +102,9 @@ impl<const N: usize> CovHighD<N> {
     /// Construct a zero N×N matrix.
     fn zero() -> Self {
         let size = N * (N + 1) / 2;
-        Self { lt: vec![0.0_f32; size] }
+        Self {
+            lt: vec![0.0_f32; size],
+        }
     }
 
     // ── Math operations ───────────────────────────────────────────────────────
@@ -215,7 +217,10 @@ impl<const N: usize> CovHighD<N> {
         // Apply log to eigenvalues, reconstruct: result = V * diag(log λ) * Vᵀ
         // vecs[c][r] = r-th component of eigenvector c (column-major columns).
         // result[i][j] = Σ_c  vecs[c][i] * log(λ_c) * vecs[c][j]
-        let log_eigs: Vec<f32> = eigs.iter().map(|&e| e.max(f32::MIN_POSITIVE).ln()).collect();
+        let log_eigs: Vec<f32> = eigs
+            .iter()
+            .map(|&e| e.max(f32::MIN_POSITIVE).ln())
+            .collect();
 
         let mut out = Self::zero();
         for i in 0..N {
@@ -376,7 +381,7 @@ pub fn prove_pillar_9() -> PillarReport {
         seed: PILLAR_9_SEED,
         n_paths: N_PATHS,
         n_hops: N_HOPS,
-        psd_rate: clt_rate,          // repurposed: stores CLT convergence rate
+        psd_rate: clt_rate, // repurposed: stores CLT convergence rate
         lognorm_concentration: clt_rate,
         passed,
     }
@@ -394,11 +399,7 @@ mod tests {
     fn identity_frobenius_sq_equals_n() {
         // ‖I_N‖_F² = N (N diagonal 1s, all others 0)
         let id = CovHighD::<8>::identity();
-        assert!(
-            (id.frobenius_sq() - 8.0_f32).abs() < 1e-5,
-            "frobenius_sq={:.6}",
-            id.frobenius_sq()
-        );
+        assert!((id.frobenius_sq() - 8.0_f32).abs() < 1e-5, "frobenius_sq={:.6}", id.frobenius_sq());
     }
 
     #[test]
@@ -417,10 +418,7 @@ mod tests {
             for j in 0..=i {
                 let v = r.lt[CovHighD::<4>::idx(i, j)];
                 let expected = if i == j { 1.0_f32 } else { 0.0_f32 };
-                assert!(
-                    (v - expected).abs() < 1e-4,
-                    "r[{i}][{j}] = {v:.6} expected {expected:.6}"
-                );
+                assert!((v - expected).abs() < 1e-4, "r[{i}][{j}] = {v:.6} expected {expected:.6}");
             }
         }
     }
@@ -448,10 +446,7 @@ mod tests {
         let id = CovHighD::<8>::identity();
         let log_id = id.log_spd();
         let frob_sq = log_id.frobenius_sq();
-        assert!(
-            frob_sq < 1e-6,
-            "log(I) Frobenius² = {frob_sq:.2e} not near 0"
-        );
+        assert!(frob_sq < 1e-6, "log(I) Frobenius² = {frob_sq:.2e} not near 0");
     }
 
     #[test]
@@ -467,10 +462,7 @@ mod tests {
         for i in 0..4_usize {
             let got = log_sigma.lt[CovHighD::<4>::idx(i, i)];
             let want = diag_vals[i];
-            assert!(
-                (got - want).abs() < 1e-4,
-                "log_spd diagonal[{i}]: got={got:.6} want={want:.6}"
-            );
+            assert!((got - want).abs() < 1e-4, "log_spd diagonal[{i}]: got={got:.6} want={want:.6}");
             // Off-diagonal should stay near 0
             for j in 0..i {
                 let off = log_sigma.lt[CovHighD::<4>::idx(i, j)];
@@ -487,10 +479,7 @@ mod tests {
         for _ in 0..20 {
             let m = random_spd_n::<8>(&mut rng, sigma_target);
             let frob = m.frobenius_sq().sqrt();
-            assert!(
-                (frob - sigma_target).abs() < sigma_target * 0.005,
-                "Frobenius={frob:.6} target={sigma_target}"
-            );
+            assert!((frob - sigma_target).abs() < sigma_target * 0.005, "Frobenius={frob:.6} target={sigma_target}");
         }
     }
 
@@ -498,10 +487,6 @@ mod tests {
     fn prove_pillar_9_passes() {
         let report = prove_pillar_9();
         report.print();
-        assert!(
-            report.passed,
-            "Pillar-9 CLT rate {:.4} below threshold {PILLAR_9_CLT_THRESHOLD}",
-            report.psd_rate
-        );
+        assert!(report.passed, "Pillar-9 CLT rate {:.4} below threshold {PILLAR_9_CLT_THRESHOLD}", report.psd_rate);
     }
 }

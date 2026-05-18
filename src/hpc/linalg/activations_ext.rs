@@ -193,7 +193,7 @@ fn erf_f32(x: f32) -> f32 {
     let sign = if x < 0.0 { -1.0f32 } else { 1.0f32 };
     let x = x.abs();
 
-    const P:  f32 = 0.327_591_1;
+    const P: f32 = 0.327_591_1;
     const A1: f32 = 0.254_829_592;
     const A2: f32 = -0.284_496_736;
     const A3: f32 = 1.421_413_741;
@@ -236,10 +236,7 @@ mod tests {
 
         for (&xi, &si) in inputs.iter().zip(v.iter()) {
             let expected = xi / (1.0 + (-xi).exp());
-            assert!(
-                (si - expected).abs() < 1e-5,
-                "SiLU({xi}) expected {expected}, got {si}"
-            );
+            assert!((si - expected).abs() < 1e-5, "SiLU({xi}) expected {expected}, got {si}");
         }
     }
 
@@ -254,10 +251,7 @@ mod tests {
         swish_f32(&mut swish_out, 1.0);
 
         for (s, w) in silu_out.iter().zip(swish_out.iter()) {
-            assert!(
-                (s - w).abs() < 1e-5,
-                "swish(β=1) != silu: {w} vs {s}"
-            );
+            assert!((s - w).abs() < 1e-5, "swish(β=1) != silu: {w} vs {s}");
         }
     }
 

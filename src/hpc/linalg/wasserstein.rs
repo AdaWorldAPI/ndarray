@@ -33,14 +33,7 @@
 ///
 /// Panics if `cost.len() != m * n`, `a.len() != m`, or `b.len() != n`.
 pub fn sinkhorn_knopp_f32(
-    cost: &[f32],
-    m: usize,
-    n: usize,
-    a: &[f32],
-    b: &[f32],
-    epsilon: f32,
-    max_iters: u32,
-    tolerance: f32,
+    cost: &[f32], m: usize, n: usize, a: &[f32], b: &[f32], epsilon: f32, max_iters: u32, tolerance: f32,
 ) -> Vec<f32> {
     assert_eq!(cost.len(), m * n, "cost length must equal m * n");
     assert_eq!(a.len(), m, "a length must equal m");
@@ -122,13 +115,17 @@ pub fn hungarian_f32(cost: &[f32], m: usize) -> Vec<u32> {
     // Step 1: subtract row minima.
     for i in 0..m {
         let row_min = (0..m).map(|j| c[i * m + j]).fold(f64::INFINITY, f64::min);
-        for j in 0..m { c[i * m + j] -= row_min; }
+        for j in 0..m {
+            c[i * m + j] -= row_min;
+        }
     }
 
     // Step 2: subtract column minima.
     for j in 0..m {
         let col_min = (0..m).map(|i| c[i * m + j]).fold(f64::INFINITY, f64::min);
-        for i in 0..m { c[i * m + j] -= col_min; }
+        for i in 0..m {
+            c[i * m + j] -= col_min;
+        }
     }
 
     // Munkres main loop.
@@ -136,7 +133,7 @@ pub fn hungarian_f32(cost: &[f32], m: usize) -> Vec<u32> {
     let mut col_cover = vec![false; m];
     // starred[i*m+j] = 1 → starred zero; primed[i*m+j] = 1 → primed zero.
     let mut starred = vec![false; m * m];
-    let mut primed  = vec![false; m * m];
+    let mut primed = vec![false; m * m];
 
     const EPS: f64 = 1e-9;
 
@@ -163,7 +160,9 @@ pub fn hungarian_f32(cost: &[f32], m: usize) -> Vec<u32> {
 
     // Main loop: steps 4–6.
     'outer: loop {
-        if count_covered(&col_cover) == m { break; }
+        if count_covered(&col_cover) == m {
+            break;
+        }
 
         // Step 4: find an uncovered zero and prime it.
         'step4: loop {
@@ -171,7 +170,9 @@ pub fn hungarian_f32(cost: &[f32], m: usize) -> Vec<u32> {
             let mut found_row = None;
             let mut found_col = None;
             'find: for i in 0..m {
-                if row_cover[i] { continue; }
+                if row_cover[i] {
+                    continue;
+                }
                 for j in 0..m {
                     if c[i * m + j] < EPS && !col_cover[j] {
                         found_row = Some(i);
@@ -188,7 +189,9 @@ pub fn hungarian_f32(cost: &[f32], m: usize) -> Vec<u32> {
                     let min_val = {
                         let mut mv = f64::INFINITY;
                         for i in 0..m {
-                            if row_cover[i] { continue; }
+                            if row_cover[i] {
+                                continue;
+                            }
                             for j in 0..m {
                                 if !col_cover[j] && c[i * m + j] < mv {
                                     mv = c[i * m + j];
@@ -199,8 +202,12 @@ pub fn hungarian_f32(cost: &[f32], m: usize) -> Vec<u32> {
                     };
                     for i in 0..m {
                         for j in 0..m {
-                            if row_cover[i]  { c[i * m + j] += min_val; }
-                            if !col_cover[j] { c[i * m + j] -= min_val; }
+                            if row_cover[i] {
+                                c[i * m + j] += min_val;
+                            }
+                            if !col_cover[j] {
+                                c[i * m + j] -= min_val;
+                            }
                         }
                     }
                     continue 'step4;
@@ -368,7 +375,9 @@ mod tests {
         let asgn = hungarian_f32(&cost, 3);
         // Verify feasibility: each column assigned exactly once.
         let mut cols = vec![false; 3];
-        for &j in &asgn { cols[j as usize] = true; }
+        for &j in &asgn {
+            cols[j as usize] = true;
+        }
         assert!(cols.iter().all(|&x| x), "not a permutation: {asgn:?}");
         // Verify optimality by checking total cost equals 7.
         let total: f32 = (0..3).map(|i| cost[i * 3 + asgn[i] as usize]).sum();

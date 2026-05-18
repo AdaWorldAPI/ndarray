@@ -35,9 +35,7 @@
 //! requires `#[cfg(feature = "splat3d")]`.
 
 use crate::hpc::linalg::eig_sym::eig_sym_3;
-use crate::hpc::pillar::prove_runner::{
-    assert_psd_rate, random_contractive_spd3, PillarReport, SplitMix64,
-};
+use crate::hpc::pillar::prove_runner::{assert_psd_rate, random_contractive_spd3, PillarReport, SplitMix64};
 use crate::hpc::splat3d::spd3::{sandwich, Spd3};
 
 // ── Public constants ──────────────────────────────────────────────────────────
@@ -227,7 +225,8 @@ mod tests {
         assert!(
             report.psd_rate >= PILLAR_7_PSD_THRESHOLD,
             "psd_rate={:.6} below threshold={:.6}",
-            report.psd_rate, PILLAR_7_PSD_THRESHOLD
+            report.psd_rate,
+            PILLAR_7_PSD_THRESHOLD
         );
     }
 
@@ -272,11 +271,7 @@ mod tests {
             let sigma_raw = random_contractive_spd3(&mut rng, 1.0);
             let sigma = array_to_spd3(sigma_raw);
             let result = ewa_sandwich_3d(&m, &sigma);
-            assert!(
-                is_psd_eig(&result),
-                "trial {trial}: sandwich output not SPD: {:?}",
-                result
-            );
+            assert!(is_psd_eig(&result), "trial {trial}: sandwich output not SPD: {:?}", result);
         }
     }
 
@@ -306,7 +301,10 @@ mod tests {
             let rows = spd.to_rows();
             let (l1, l2, l3, _v) = eig_sym_3(&rows);
 
-            let err = (l1 - ref_l1).abs().max((l2 - ref_l2).abs()).max((l3 - ref_l3).abs());
+            let err = (l1 - ref_l1)
+                .abs()
+                .max((l2 - ref_l2).abs())
+                .max((l3 - ref_l3).abs());
             max_err = max_err.max(err);
 
             assert!(
@@ -317,10 +315,7 @@ mod tests {
             );
         }
         // Global summary so the log shows the worst-case error.
-        assert!(
-            max_err < 1e-5,
-            "Smith-1961 parity gate: max_err = {max_err:.2e} over 100 trials (want < 1e-5)"
-        );
+        assert!(max_err < 1e-5, "Smith-1961 parity gate: max_err = {max_err:.2e} over 100 trials (want < 1e-5)");
     }
 
     // ── array_to_spd3 correctly reads the upper triangle ─────────────────────

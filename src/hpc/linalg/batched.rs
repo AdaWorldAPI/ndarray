@@ -58,15 +58,7 @@ use crate::backend::BlasFloat;
 /// assert!((out[0] - 3.0).abs() < 1e-5);
 /// ```
 pub fn batched_gemm_f32(
-    x: &[f32],
-    y: &[f32],
-    out: &mut [f32],
-    batch: usize,
-    m: usize,
-    k: usize,
-    n: usize,
-    alpha: f32,
-    beta: f32,
+    x: &[f32], y: &[f32], out: &mut [f32], batch: usize, m: usize, k: usize, n: usize, alpha: f32, beta: f32,
 ) {
     let x_stride = m * k;
     let y_stride = k * n;
@@ -130,36 +122,19 @@ pub fn batched_gemm_f32(
 /// assert!((out[1] - 53.0).abs() < 1e-5);
 /// ```
 pub fn batched_gemm_4d_f32(
-    x: &[f32],
-    y: &[f32],
-    out: &mut [f32],
-    batch: usize,
-    heads: usize,
-    m: usize,
-    k: usize,
-    n: usize,
-    alpha: f32,
+    x: &[f32], y: &[f32], out: &mut [f32], batch: usize, heads: usize, m: usize, k: usize, n: usize, alpha: f32,
     beta: f32,
 ) {
-    let x_head  = m * k;
-    let y_head  = k * n;
-    let o_head  = m * n;
+    let x_head = m * k;
+    let y_head = k * n;
+    let o_head = m * n;
     let x_batch = heads * x_head;
     let y_batch = heads * y_head;
     let o_batch = heads * o_head;
 
-    assert!(
-        x.len() >= batch * x_batch,
-        "batched_gemm_4d_f32: x too short"
-    );
-    assert!(
-        y.len() >= batch * y_batch,
-        "batched_gemm_4d_f32: y too short"
-    );
-    assert!(
-        out.len() >= batch * o_batch,
-        "batched_gemm_4d_f32: out too short"
-    );
+    assert!(x.len() >= batch * x_batch, "batched_gemm_4d_f32: x too short");
+    assert!(y.len() >= batch * y_batch, "batched_gemm_4d_f32: y too short");
+    assert!(out.len() >= batch * o_batch, "batched_gemm_4d_f32: out too short");
 
     for b in 0..batch {
         for h in 0..heads {
@@ -228,7 +203,9 @@ mod tests {
         // 2 batches, 2 heads, (2×3)·(3×2) = (2×2)
         let (batch, heads, m, k, n) = (2, 2, 2, 3, 2);
         let x: Vec<f32> = (0..batch * heads * m * k).map(|i| i as f32 + 1.0).collect();
-        let y: Vec<f32> = (0..batch * heads * k * n).map(|i| (i as f32 * 0.3) + 0.2).collect();
+        let y: Vec<f32> = (0..batch * heads * k * n)
+            .map(|i| (i as f32 * 0.3) + 0.2)
+            .collect();
         let mut out4d = vec![0f32; batch * heads * m * n];
 
         batched_gemm_4d_f32(&x, &y, &mut out4d, batch, heads, m, k, n, 1.0, 0.0);
