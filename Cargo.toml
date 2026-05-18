@@ -228,6 +228,10 @@ openblas = ["std"]
 # linalg: middle-layer MatN carrier + Mat2/3/4 + Spd2/Spd3 SPD-cone (PR-X10 A1)
 linalg = []
 
+# pillar: Pillar-6 through Pillar-11 SPD-cascade certification probes (PR-X11).
+# Depends on linalg for Spd2/Spd3 types consumed by B1-B7 pillar workers.
+pillar = ["linalg"]
+
 # ogit_bridge: zero-dep RDF 1.1 Turtle parser for the OGIT ontology TTL files.
 # Provides TurtleLexer, TurtleParser, Triple, TripleNode, TurtleError.
 # No external dependencies — pure-Rust, no unsafe.
