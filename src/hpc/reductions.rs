@@ -1,9 +1,11 @@
 //! SIMD-accelerated reduction dispatcher.
 //!
-//! Provides slice-level reduction kernels that close the parity gap with
-//! burn's hot reduction paths (softmax norms, argmax/argmin scans, L2
-//! distance). Each function picks the best 16-lane (`F32x16` /
-//! `F32Mask16`) implementation at compile time:
+//! Provides ArrayView-first reduction kernels that close the parity gap
+//! with burn's hot reduction paths (softmax norms, argmax/argmin scans,
+//! L2 distance). Each function picks the best 16-lane (`F32x16` /
+//! `F32Mask16`) implementation at compile time on the contiguous fast
+//! path; non-contiguous inputs fall back to a stride-aware iterator
+//! traversal:
 //!
 //! - On `target_feature = "avx512f"` builds, F32x16 maps to native
 //!   `__m512` and reductions use `_mm512_reduce_*` plus
@@ -13,10 +15,20 @@
 //! - On non-x86 builds, scalar fallback types in `simd.rs` preserve the
 //!   API and produce identical numerical results modulo associativity.
 //!
-//! # Empty-slice convention
+//! # ArrayView signatures
+//!
+//! Generic-D reductions (`sum_*`, `mean_*`, `max_*`, `min_*`, `nrm2_*`)
+//! accept any `ArrayView<T, D>`. They use `as_slice_memory_order()` to
+//! reach the SIMD primitive on contiguous inputs and fall back to
+//! stride-aware `.iter()` on the cold path. `argmax_f32` / `argmin_f32`
+//! are 1-D only (`ArrayView1<f32>`) because they return a flat index
+//! whose semantics are only meaningful for 1-D inputs; use
+//! `Axis::index_along` patterns for N-D argmax.
+//!
+//! # Empty convention
 //!
 //! Unbounded reductions (`max`, `min`, `argmax`, `argmin`, `mean`) return
-//! [`Option`] — they have no defined value on an empty slice. Sums and
+//! [`Option`] — they have no defined value on an empty input. Sums and
 //! norms have a well-defined zero element and return `0.0`.
 //!
 //! # Numerical notes
@@ -33,6 +45,7 @@
 //!   the lowest index, matching numpy's `np.argmax`.
 
 use crate::simd::{F32x16, F64x8, U32x16};
+use crate::{ArrayView, ArrayView1, Dimension};
 
 const F32_LANES: usize = 16;
 const F64_LANES: usize = 8;
@@ -41,9 +54,28 @@ const F64_LANES: usize = 8;
 // Sum reductions
 // ===========================================================================
 
-/// Sum of all elements. Returns `0.0` for an empty slice.
+/// Sum of an `f32` array. Returns `0.0` for an empty input.
+///
+/// Hot path (contiguous memory): SIMD-tiered dispatch via `F32x16` lanes
+/// with a 4-way unroll. Cold path (strided): stride-aware iterator fold.
+///
+/// # Example
+/// ```
+/// use ndarray::{arr1, hpc::reductions::sum_f32};
+/// let x = arr1(&[1.0_f32, 2.0, 3.0, 4.0]);
+/// assert_eq!(sum_f32(x.view()), 10.0);
+/// ```
 #[inline]
-pub fn sum_f32(s: &[f32]) -> f32 {
+pub fn sum_f32<D: Dimension>(x: ArrayView<f32, D>) -> f32 {
+    if let Some(s) = x.as_slice_memory_order() {
+        return sum_f32_slice(s);
+    }
+    x.iter().copied().sum()
+}
+
+/// SIMD-tiered slice sum for `f32`. Internal hot-path primitive.
+#[inline]
+fn sum_f32_slice(s: &[f32]) -> f32 {
     let chunks = s.len() / F32_LANES;
     let mut acc0 = F32x16::splat(0.0);
     let mut acc1 = F32x16::splat(0.0);
@@ -70,9 +102,28 @@ pub fn sum_f32(s: &[f32]) -> f32 {
     sum
 }
 
-/// Sum of all elements as `f64`. Returns `0.0` for an empty slice.
+/// Sum of an `f64` array. Returns `0.0` for an empty input.
+///
+/// Hot path (contiguous memory): SIMD-tiered dispatch via `F64x8` lanes
+/// with a 4-way unroll. Cold path (strided): stride-aware iterator fold.
+///
+/// # Example
+/// ```
+/// use ndarray::{arr1, hpc::reductions::sum_f64};
+/// let x = arr1(&[1.0_f64, 2.0, 3.0, 4.0]);
+/// assert_eq!(sum_f64(x.view()), 10.0);
+/// ```
 #[inline]
-pub fn sum_f64(s: &[f64]) -> f64 {
+pub fn sum_f64<D: Dimension>(x: ArrayView<f64, D>) -> f64 {
+    if let Some(s) = x.as_slice_memory_order() {
+        return sum_f64_slice(s);
+    }
+    x.iter().copied().sum()
+}
+
+/// SIMD-tiered slice sum for `f64`. Internal hot-path primitive.
+#[inline]
+fn sum_f64_slice(s: &[f64]) -> f64 {
     let chunks = s.len() / F64_LANES;
     let mut acc0 = F64x8::splat(0.0);
     let mut acc1 = F64x8::splat(0.0);
@@ -99,41 +150,71 @@ pub fn sum_f64(s: &[f64]) -> f64 {
     sum
 }
 
-/// Arithmetic mean of all elements. Returns `None` for an empty slice.
+/// Arithmetic mean of all elements. Returns `None` for an empty input.
+///
+/// # Example
+/// ```
+/// use ndarray::{arr1, hpc::reductions::mean_f32};
+/// let x = arr1(&[1.0_f32, 2.0, 3.0, 4.0]);
+/// assert_eq!(mean_f32(x.view()), Some(2.5));
+/// ```
 #[inline]
-pub fn mean_f32(s: &[f32]) -> Option<f32> {
-    if s.is_empty() {
-        None
-    } else {
-        Some(sum_f32(s) / s.len() as f32)
+pub fn mean_f32<D: Dimension>(x: ArrayView<f32, D>) -> Option<f32> {
+    if x.is_empty() {
+        return None;
     }
+    let n = x.len();
+    Some(sum_f32(x) / n as f32)
 }
 
-/// Arithmetic mean of all elements as `f64`. Returns `None` for an empty slice.
+/// Arithmetic mean of all elements as `f64`. Returns `None` for an empty input.
+///
+/// # Example
+/// ```
+/// use ndarray::{arr1, hpc::reductions::mean_f64};
+/// let x = arr1(&[1.0_f64, 2.0, 3.0, 4.0]);
+/// assert_eq!(mean_f64(x.view()), Some(2.5));
+/// ```
 #[inline]
-pub fn mean_f64(s: &[f64]) -> Option<f64> {
-    if s.is_empty() {
-        None
-    } else {
-        Some(sum_f64(s) / s.len() as f64)
+pub fn mean_f64<D: Dimension>(x: ArrayView<f64, D>) -> Option<f64> {
+    if x.is_empty() {
+        return None;
     }
+    let n = x.len();
+    Some(sum_f64(x) / n as f64)
 }
 
 // ===========================================================================
 // Min / Max
 // ===========================================================================
 
-/// Maximum element. Returns `None` if `s` is empty.
+/// Maximum element. Returns `None` if `x` is empty.
 ///
 /// NaN inputs follow IEEE-754: any NaN propagates through `simd_max` so a
 /// NaN in the SIMD lanes can become the lane-best. The horizontal
 /// `reduce_max` then yields NaN. Caller should pre-filter NaNs if that is
 /// undesirable.
+///
+/// # Example
+/// ```
+/// use ndarray::{arr1, hpc::reductions::max_f32};
+/// let x = arr1(&[5.0_f32, 1.0, 9.0, -3.0]);
+/// assert_eq!(max_f32(x.view()), Some(9.0));
+/// ```
 #[inline]
-pub fn max_f32(s: &[f32]) -> Option<f32> {
-    if s.is_empty() {
+pub fn max_f32<D: Dimension>(x: ArrayView<f32, D>) -> Option<f32> {
+    if x.is_empty() {
         return None;
     }
+    if let Some(s) = x.as_slice_memory_order() {
+        return Some(max_f32_slice(s));
+    }
+    x.iter().copied().reduce(f32::max)
+}
+
+/// SIMD-tiered slice max for `f32`. Internal hot-path primitive.
+#[inline]
+fn max_f32_slice(s: &[f32]) -> f32 {
     let chunks = s.len() / F32_LANES;
     let mut best = if chunks == 0 {
         // Pure scalar path (len < 16).
@@ -154,15 +235,31 @@ pub fn max_f32(s: &[f32]) -> Option<f32> {
             m = v;
         }
     }
-    Some(m)
+    m
 }
 
-/// Minimum element. Returns `None` if `s` is empty.
+/// Minimum element. Returns `None` if `x` is empty.
+///
+/// # Example
+/// ```
+/// use ndarray::{arr1, hpc::reductions::min_f32};
+/// let x = arr1(&[5.0_f32, 1.0, 9.0, -3.0]);
+/// assert_eq!(min_f32(x.view()), Some(-3.0));
+/// ```
 #[inline]
-pub fn min_f32(s: &[f32]) -> Option<f32> {
-    if s.is_empty() {
+pub fn min_f32<D: Dimension>(x: ArrayView<f32, D>) -> Option<f32> {
+    if x.is_empty() {
         return None;
     }
+    if let Some(s) = x.as_slice_memory_order() {
+        return Some(min_f32_slice(s));
+    }
+    x.iter().copied().reduce(f32::min)
+}
+
+/// SIMD-tiered slice min for `f32`. Internal hot-path primitive.
+#[inline]
+fn min_f32_slice(s: &[f32]) -> f32 {
     let chunks = s.len() / F32_LANES;
     let mut best = if chunks == 0 {
         F32x16::splat(s[0])
@@ -182,7 +279,7 @@ pub fn min_f32(s: &[f32]) -> Option<f32> {
             m = v;
         }
     }
-    Some(m)
+    m
 }
 
 // ===========================================================================
@@ -198,15 +295,51 @@ fn lane_index_seed() -> U32x16 {
 
 /// Index of the first occurrence of the maximum element, `None` if empty.
 ///
+/// 1-D only — argmax over an N-D input returns a flat index whose
+/// semantics depend on memory order; callers wanting an N-D argmax should
+/// build it from per-axis reductions explicitly.
+///
+/// Hot path (contiguous): SIMD lane-tracked scan. Cold path (strided):
+/// scalar `enumerate().reduce()` over `.iter()` so the returned index is
+/// the logical index in the view, not the memory-order index.
+///
 /// Tie-break: lowest index wins (matches numpy `np.argmax`).
 /// NaN handling: comparisons use strict greater-than, so NaN values never
-/// displace a numeric maximum. If the slice contains only NaNs the returned
+/// displace a numeric maximum. If the input contains only NaNs the returned
 /// index is the first index (0).
+///
+/// # Example
+/// ```
+/// use ndarray::{arr1, hpc::reductions::argmax_f32};
+/// let x = arr1(&[5.0_f32, 1.0, 9.0, -3.0]);
+/// assert_eq!(argmax_f32(x.view()), Some(2));
+/// ```
 #[inline]
-pub fn argmax_f32(s: &[f32]) -> Option<usize> {
-    if s.is_empty() {
+pub fn argmax_f32(x: ArrayView1<f32>) -> Option<usize> {
+    if x.is_empty() {
         return None;
     }
+    if let Some(s) = x.as_slice() {
+        return Some(argmax_f32_slice(s));
+    }
+    // Cold path: strided 1-D view. The logical index equals the iteration
+    // index because `.iter()` walks in axis order for a 1-D view.
+    let mut best_v = f32::NEG_INFINITY;
+    let mut best_i = 0_usize;
+    for (i, &v) in x.iter().enumerate() {
+        if v > best_v {
+            best_v = v;
+            best_i = i;
+        }
+    }
+    // If all values are NaN (or the only value is NaN), the strict-gt
+    // check above never fires; return index 0 to match the SIMD path.
+    Some(best_i)
+}
+
+/// SIMD-tiered slice argmax for `f32`. Internal hot-path primitive.
+#[inline]
+fn argmax_f32_slice(s: &[f32]) -> usize {
     let chunks = s.len() / F32_LANES;
 
     // Initialise lane-best to NEG_INFINITY (any finite element wins).
@@ -267,19 +400,45 @@ pub fn argmax_f32(s: &[f32]) -> Option<usize> {
         }
     }
 
-    Some(best_i)
+    best_i
 }
 
 /// Index of the first occurrence of the minimum element, `None` if empty.
 ///
+/// 1-D only — see [`argmax_f32`] for the rationale.
+///
 /// Tie-break: lowest index wins.
 /// NaN handling: comparisons use strict less-than, so NaN values never
 /// displace a numeric minimum.
+///
+/// # Example
+/// ```
+/// use ndarray::{arr1, hpc::reductions::argmin_f32};
+/// let x = arr1(&[5.0_f32, 1.0, 9.0, -3.0]);
+/// assert_eq!(argmin_f32(x.view()), Some(3));
+/// ```
 #[inline]
-pub fn argmin_f32(s: &[f32]) -> Option<usize> {
-    if s.is_empty() {
+pub fn argmin_f32(x: ArrayView1<f32>) -> Option<usize> {
+    if x.is_empty() {
         return None;
     }
+    if let Some(s) = x.as_slice() {
+        return Some(argmin_f32_slice(s));
+    }
+    let mut best_v = f32::INFINITY;
+    let mut best_i = 0_usize;
+    for (i, &v) in x.iter().enumerate() {
+        if v < best_v {
+            best_v = v;
+            best_i = i;
+        }
+    }
+    Some(best_i)
+}
+
+/// SIMD-tiered slice argmin for `f32`. Internal hot-path primitive.
+#[inline]
+fn argmin_f32_slice(s: &[f32]) -> usize {
     let chunks = s.len() / F32_LANES;
 
     let mut best_vals = F32x16::splat(f32::INFINITY);
@@ -327,18 +486,37 @@ pub fn argmin_f32(s: &[f32]) -> Option<usize> {
         }
     }
 
-    Some(best_i)
+    best_i
 }
 
 // ===========================================================================
 // L2 norm (BLAS L1 nrm2)
 // ===========================================================================
 
-/// Euclidean (L2) norm: `sqrt(sum(x^2))`. Returns `0.0` for empty slice.
+/// Euclidean (L2) norm: `sqrt(sum(x^2))`. Returns `0.0` for an empty input.
 ///
-/// Uses fused multiply-add for the squared accumulate where supported.
+/// Uses fused multiply-add for the squared accumulate where supported on
+/// the contiguous fast path; the cold-path stride fallback uses scalar
+/// `x*x` accumulation.
+///
+/// # Example
+/// ```
+/// use ndarray::{arr1, hpc::reductions::nrm2_f32};
+/// let x = arr1(&[3.0_f32, 4.0]);
+/// assert!((nrm2_f32(x.view()) - 5.0).abs() < 1e-6);
+/// ```
 #[inline]
-pub fn nrm2_f32(s: &[f32]) -> f32 {
+pub fn nrm2_f32<D: Dimension>(x: ArrayView<f32, D>) -> f32 {
+    if let Some(s) = x.as_slice_memory_order() {
+        return nrm2_f32_slice(s);
+    }
+    let sumsq: f32 = x.iter().map(|&v| v * v).sum();
+    sumsq.sqrt()
+}
+
+/// SIMD-tiered slice nrm2 for `f32`. Internal hot-path primitive.
+#[inline]
+fn nrm2_f32_slice(s: &[f32]) -> f32 {
     let chunks = s.len() / F32_LANES;
     let mut acc0 = F32x16::splat(0.0);
     let mut acc1 = F32x16::splat(0.0);
@@ -378,35 +556,35 @@ pub fn nrm2_f32(s: &[f32]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{arr1, arr2, s, Array1};
 
     // ---- sum_f32 ----------------------------------------------------------
 
     #[test]
     fn sum_f32_empty_is_zero() {
-        assert_eq!(sum_f32(&[]), 0.0);
+        let v: Array1<f32> = Array1::zeros(0);
+        assert_eq!(sum_f32(v.view()), 0.0);
     }
 
     #[test]
-    fn sum_f32_small_scalar_only() {
-        let v = [1.0_f32, 2.0, 3.0, 4.0, 5.0];
-        assert!((sum_f32(&v) - 15.0).abs() < 1e-6);
+    fn sum_f32_small_scalar_only_contig() {
+        let v = arr1(&[1.0_f32, 2.0, 3.0, 4.0, 5.0]);
+        assert!((sum_f32(v.view()) - 15.0).abs() < 1e-6);
     }
 
     #[test]
-    fn sum_f32_thousand_ones() {
-        let v = vec![1.0_f32; 1000];
-        // 1000 ones — SIMD lane-summation gives much smaller error than
-        // naive scalar accumulation.
-        assert!((sum_f32(&v) - 1000.0).abs() < 1e-3);
+    fn sum_f32_thousand_ones_contig() {
+        let v: Array1<f32> = Array1::from_elem(1000, 1.0);
+        assert!((sum_f32(v.view()) - 1000.0).abs() < 1e-3);
     }
 
     #[test]
-    fn sum_f32_misaligned_tails() {
+    fn sum_f32_misaligned_tails_contig() {
         // Lengths 17, 33, 65 — exercise SIMD body + scalar tail boundary.
         for &n in &[17_usize, 33, 65, 127, 1000] {
-            let v: Vec<f32> = (0..n).map(|i| i as f32).collect();
+            let v: Array1<f32> = (0..n).map(|i| i as f32).collect();
             let expected: f32 = (0..n).map(|i| i as f32).sum();
-            let got = sum_f32(&v);
+            let got = sum_f32(v.view());
             assert!(
                 (got - expected).abs() < (expected.abs() * 1e-5 + 1e-3),
                 "n={}: got {}, expected {}",
@@ -418,71 +596,154 @@ mod tests {
     }
 
     #[test]
-    fn sum_f64_basic() {
-        let v = vec![0.5_f64; 100];
-        assert!((sum_f64(&v) - 50.0).abs() < 1e-12);
+    fn sum_f32_strided_cold_path() {
+        // Slice with step 2 → non-contiguous, cold-path fold.
+        let full = arr1(&[1.0_f32, 99.0, 2.0, 99.0, 3.0, 99.0]);
+        let strided = full.slice(s![..;2]); // [1.0, 2.0, 3.0]
+        assert_eq!(sum_f32(strided), 6.0);
     }
 
-    // ---- mean_f32 ---------------------------------------------------------
+    #[test]
+    fn sum_f32_2d_generic_d() {
+        let m = arr2(&[[1.0_f32, 2.0], [3.0_f32, 4.0]]);
+        assert_eq!(sum_f32(m.view()), 10.0);
+    }
 
     #[test]
-    fn mean_f32_basic() {
-        let v = [1.0_f32, 2.0, 3.0, 4.0];
-        let m = mean_f32(&v).expect("non-empty");
+    fn sum_f64_basic_contig() {
+        let v: Array1<f64> = Array1::from_elem(100, 0.5);
+        assert!((sum_f64(v.view()) - 50.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn sum_f64_strided_cold_path() {
+        let full = arr1(&[1.0_f64, 99.0, 2.0, 99.0, 3.0]);
+        let strided = full.slice(s![..;2]);
+        assert_eq!(sum_f64(strided), 6.0);
+    }
+
+    #[test]
+    fn sum_f64_2d_generic_d() {
+        let m = arr2(&[[1.0_f64, 2.0], [3.0_f64, 4.0]]);
+        assert_eq!(sum_f64(m.view()), 10.0);
+    }
+
+    // ---- mean_f32 / mean_f64 ---------------------------------------------
+
+    #[test]
+    fn mean_f32_basic_contig() {
+        let v = arr1(&[1.0_f32, 2.0, 3.0, 4.0]);
+        let m = mean_f32(v.view()).expect("non-empty");
         assert!((m - 2.5).abs() < 1e-6);
     }
 
     #[test]
     fn mean_f32_empty_is_none() {
-        assert_eq!(mean_f32(&[]), None);
+        let v: Array1<f32> = Array1::zeros(0);
+        assert_eq!(mean_f32(v.view()), None);
+    }
+
+    #[test]
+    fn mean_f32_strided_cold_path() {
+        let full = arr1(&[1.0_f32, 99.0, 2.0, 99.0, 3.0]);
+        let strided = full.slice(s![..;2]); // [1.0, 2.0, 3.0]
+        assert_eq!(mean_f32(strided), Some(2.0));
+    }
+
+    #[test]
+    fn mean_f32_2d_generic_d() {
+        let m = arr2(&[[1.0_f32, 2.0], [3.0_f32, 4.0]]);
+        assert_eq!(mean_f32(m.view()), Some(2.5));
     }
 
     #[test]
     fn mean_f64_empty_is_none() {
-        assert_eq!(mean_f64(&[]), None);
+        let v: Array1<f64> = Array1::zeros(0);
+        assert_eq!(mean_f64(v.view()), None);
+    }
+
+    #[test]
+    fn mean_f64_strided_cold_path() {
+        let full = arr1(&[1.0_f64, 99.0, 2.0, 99.0, 3.0]);
+        let strided = full.slice(s![..;2]);
+        assert_eq!(mean_f64(strided), Some(2.0));
+    }
+
+    #[test]
+    fn mean_f64_2d_generic_d() {
+        let m = arr2(&[[2.0_f64, 4.0], [6.0_f64, 8.0]]);
+        assert_eq!(mean_f64(m.view()), Some(5.0));
     }
 
     // ---- max_f32 / min_f32 ------------------------------------------------
 
     #[test]
     fn max_f32_empty() {
-        assert_eq!(max_f32(&[]), None);
+        let v: Array1<f32> = Array1::zeros(0);
+        assert_eq!(max_f32(v.view()), None);
     }
 
     #[test]
-    fn max_f32_basic() {
-        let v = [5.0_f32, 1.0, 9.0, -3.0];
-        assert_eq!(max_f32(&v), Some(9.0));
+    fn max_f32_basic_contig() {
+        let v = arr1(&[5.0_f32, 1.0, 9.0, -3.0]);
+        assert_eq!(max_f32(v.view()), Some(9.0));
     }
 
     #[test]
-    fn max_f32_long() {
-        let mut v: Vec<f32> = (0..1000).map(|i| (i as f32) * 0.5).collect();
+    fn max_f32_long_contig() {
+        let mut v: Array1<f32> = (0..1000).map(|i| (i as f32) * 0.5).collect();
         v[765] = 5000.0;
-        assert_eq!(max_f32(&v), Some(5000.0));
+        assert_eq!(max_f32(v.view()), Some(5000.0));
     }
 
     #[test]
-    fn min_f32_basic() {
-        let v = [5.0_f32, 1.0, 9.0, -3.0];
-        assert_eq!(min_f32(&v), Some(-3.0));
+    fn max_f32_strided_cold_path() {
+        let full = arr1(&[5.0_f32, -100.0, 1.0, -100.0, 9.0, -100.0, -3.0]);
+        let strided = full.slice(s![..;2]); // [5.0, 1.0, 9.0, -3.0]
+        assert_eq!(max_f32(strided), Some(9.0));
+    }
+
+    #[test]
+    fn max_f32_2d_generic_d() {
+        let m = arr2(&[[5.0_f32, 1.0], [9.0_f32, -3.0]]);
+        assert_eq!(max_f32(m.view()), Some(9.0));
+    }
+
+    #[test]
+    fn min_f32_basic_contig() {
+        let v = arr1(&[5.0_f32, 1.0, 9.0, -3.0]);
+        assert_eq!(min_f32(v.view()), Some(-3.0));
     }
 
     #[test]
     fn min_f32_empty() {
-        assert_eq!(min_f32(&[]), None);
+        let v: Array1<f32> = Array1::zeros(0);
+        assert_eq!(min_f32(v.view()), None);
     }
 
     #[test]
-    fn max_min_misaligned() {
+    fn min_f32_strided_cold_path() {
+        let full = arr1(&[5.0_f32, 100.0, 1.0, 100.0, 9.0, 100.0, -3.0]);
+        let strided = full.slice(s![..;2]); // [5.0, 1.0, 9.0, -3.0]
+        assert_eq!(min_f32(strided), Some(-3.0));
+    }
+
+    #[test]
+    fn min_f32_2d_generic_d() {
+        let m = arr2(&[[5.0_f32, 1.0], [9.0_f32, -3.0]]);
+        assert_eq!(min_f32(m.view()), Some(-3.0));
+    }
+
+    #[test]
+    fn max_min_misaligned_contig() {
         for &n in &[1_usize, 7, 16, 17, 31, 33, 64, 65, 127, 256, 1023] {
-            let v: Vec<f32> = (0..n)
+            let v: Array1<f32> = (0..n)
                 .map(|i| ((i as i32) - (n as i32) / 2) as f32)
                 .collect();
             let expected_max = v.iter().copied().fold(f32::NEG_INFINITY, f32::max);
             let expected_min = v.iter().copied().fold(f32::INFINITY, f32::min);
-            assert_eq!(max_f32(&v), Some(expected_max), "max_f32 n={}", n);
-            assert_eq!(min_f32(&v), Some(expected_min), "min_f32 n={}", n);
+            assert_eq!(max_f32(v.view()), Some(expected_max), "max_f32 n={}", n);
+            assert_eq!(min_f32(v.view()), Some(expected_min), "min_f32 n={}", n);
         }
     }
 
@@ -490,78 +751,93 @@ mod tests {
 
     #[test]
     fn argmax_f32_empty() {
-        assert_eq!(argmax_f32(&[]), None);
+        let v: Array1<f32> = Array1::zeros(0);
+        assert_eq!(argmax_f32(v.view()), None);
     }
 
     #[test]
-    fn argmax_f32_basic() {
-        let v = [5.0_f32, 1.0, 9.0, -3.0];
-        assert_eq!(argmax_f32(&v), Some(2));
+    fn argmax_f32_basic_contig() {
+        let v = arr1(&[5.0_f32, 1.0, 9.0, -3.0]);
+        assert_eq!(argmax_f32(v.view()), Some(2));
     }
 
     #[test]
-    fn argmin_f32_basic() {
-        let v = [5.0_f32, 1.0, 9.0, -3.0];
-        assert_eq!(argmin_f32(&v), Some(3));
+    fn argmax_f32_strided_cold_path() {
+        // After step-2 slicing the logical view is [5.0, 1.0, 9.0, -3.0]
+        // and the argmax should be the LOGICAL index 2 (the 9.0), NOT the
+        // underlying memory-order index 4.
+        let full = arr1(&[5.0_f32, 99.0, 1.0, 99.0, 9.0, 99.0, -3.0]);
+        let strided = full.slice(s![..;2]);
+        assert_eq!(argmax_f32(strided), Some(2));
+    }
+
+    #[test]
+    fn argmin_f32_basic_contig() {
+        let v = arr1(&[5.0_f32, 1.0, 9.0, -3.0]);
+        assert_eq!(argmin_f32(v.view()), Some(3));
+    }
+
+    #[test]
+    fn argmin_f32_strided_cold_path() {
+        let full = arr1(&[5.0_f32, -99.0, 1.0, -99.0, 9.0, -99.0, -3.0]);
+        let strided = full.slice(s![..;2]); // [5.0, 1.0, 9.0, -3.0]
+        assert_eq!(argmin_f32(strided), Some(3));
     }
 
     #[test]
     fn argmin_f32_empty() {
-        assert_eq!(argmin_f32(&[]), None);
+        let v: Array1<f32> = Array1::zeros(0);
+        assert_eq!(argmin_f32(v.view()), None);
     }
 
     #[test]
-    fn argmax_f32_misaligned_tail() {
+    fn argmax_f32_misaligned_tail_contig() {
         // Place the maximum at a position straddling the SIMD/tail boundary.
         for &(n, peak) in
             &[(17_usize, 16), (17, 0), (17, 8), (33, 32), (33, 17), (65, 64), (65, 32), (127, 100), (1000, 999)]
         {
-            let mut v: Vec<f32> = vec![0.0; n];
+            let mut v: Array1<f32> = Array1::zeros(n);
             v[peak] = 1.0;
-            assert_eq!(argmax_f32(&v), Some(peak), "n={}, peak={}", n, peak);
+            assert_eq!(argmax_f32(v.view()), Some(peak), "n={}, peak={}", n, peak);
         }
     }
 
     #[test]
-    fn argmax_f32_tie_takes_first() {
-        // Two equal maxima; argmax returns the lower index.
-        let v = [1.0_f32, 5.0, 2.0, 5.0, 3.0];
-        assert_eq!(argmax_f32(&v), Some(1));
+    fn argmax_f32_tie_takes_first_contig() {
+        let v = arr1(&[1.0_f32, 5.0, 2.0, 5.0, 3.0]);
+        assert_eq!(argmax_f32(v.view()), Some(1));
     }
 
     #[test]
-    fn argmax_f32_tie_across_chunks() {
-        // Two equal maxima 17 elements apart (different SIMD chunks).
-        let mut v = vec![0.0_f32; 50];
+    fn argmax_f32_tie_across_chunks_contig() {
+        let mut v: Array1<f32> = Array1::zeros(50);
         v[3] = 7.0;
-        v[20] = 7.0; // Same value, second chunk.
-        assert_eq!(argmax_f32(&v), Some(3));
+        v[20] = 7.0;
+        assert_eq!(argmax_f32(v.view()), Some(3));
     }
 
     #[test]
-    fn argmax_f32_with_nan_skips_nan() {
-        // Strict-greater-than means NaN never wins.  Highest non-NaN wins.
-        let v = [1.0_f32, f32::NAN, 5.0, f32::NAN, 2.0];
-        assert_eq!(argmax_f32(&v), Some(2));
+    fn argmax_f32_with_nan_skips_nan_contig() {
+        let v = arr1(&[1.0_f32, f32::NAN, 5.0, f32::NAN, 2.0]);
+        assert_eq!(argmax_f32(v.view()), Some(2));
     }
 
     #[test]
-    fn argmin_f32_with_nan_skips_nan() {
-        let v = [10.0_f32, f32::NAN, 1.0, f32::NAN, 5.0];
-        assert_eq!(argmin_f32(&v), Some(2));
+    fn argmin_f32_with_nan_skips_nan_contig() {
+        let v = arr1(&[10.0_f32, f32::NAN, 1.0, f32::NAN, 5.0]);
+        assert_eq!(argmin_f32(v.view()), Some(2));
     }
 
     #[test]
-    fn argmax_f32_negative_values() {
-        let v = [-5.0_f32, -1.0, -9.0, -3.0];
-        assert_eq!(argmax_f32(&v), Some(1));
+    fn argmax_f32_negative_values_contig() {
+        let v = arr1(&[-5.0_f32, -1.0, -9.0, -3.0]);
+        assert_eq!(argmax_f32(v.view()), Some(1));
     }
 
     #[test]
-    fn argmax_f32_long_random() {
-        // Cross-validate against scalar reference for a long array.
+    fn argmax_f32_long_random_contig() {
         let n = 2049;
-        let v: Vec<f32> = (0..n)
+        let v: Array1<f32> = (0..n)
             .map(|i| {
                 let x = (i as i64).wrapping_mul(0x9E37_79B9_7F4A_7C15_u64 as i64);
                 f32::from_bits((x as u32) & 0x7FFF_FFFF) // non-NaN positive
@@ -575,35 +851,35 @@ mod tests {
                 best_i = i;
             }
         }
-        assert_eq!(argmax_f32(&v), Some(best_i));
+        assert_eq!(argmax_f32(v.view()), Some(best_i));
     }
 
     // ---- nrm2_f32 ---------------------------------------------------------
 
     #[test]
     fn nrm2_f32_empty_is_zero() {
-        assert_eq!(nrm2_f32(&[]), 0.0);
+        let v: Array1<f32> = Array1::zeros(0);
+        assert_eq!(nrm2_f32(v.view()), 0.0);
     }
 
     #[test]
-    fn nrm2_f32_3_4_is_5() {
-        let v = [3.0_f32, 4.0];
-        assert!((nrm2_f32(&v) - 5.0).abs() < 1e-6);
+    fn nrm2_f32_3_4_is_5_contig() {
+        let v = arr1(&[3.0_f32, 4.0]);
+        assert!((nrm2_f32(v.view()) - 5.0).abs() < 1e-6);
     }
 
     #[test]
-    fn nrm2_f32_unit_vector() {
-        let v = vec![1.0_f32 / (1000.0_f32).sqrt(); 1000];
-        assert!((nrm2_f32(&v) - 1.0).abs() < 1e-3);
+    fn nrm2_f32_unit_vector_contig() {
+        let v: Array1<f32> = Array1::from_elem(1000, 1.0_f32 / (1000.0_f32).sqrt());
+        assert!((nrm2_f32(v.view()) - 1.0).abs() < 1e-3);
     }
 
     #[test]
-    fn nrm2_f32_misaligned_tails() {
+    fn nrm2_f32_misaligned_tails_contig() {
         for &n in &[1_usize, 16, 17, 33, 65, 127, 1000] {
-            let v: Vec<f32> = (0..n).map(|i| (i as f32) * 0.1).collect();
+            let v: Array1<f32> = (0..n).map(|i| (i as f32) * 0.1).collect();
             let expected: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-            let got = nrm2_f32(&v);
-            // FMA path differs slightly from scalar; allow a tiny relative tolerance.
+            let got = nrm2_f32(v.view());
             assert!(
                 (got - expected).abs() < (expected.abs() * 1e-4 + 1e-4),
                 "n={}: got {}, expected {}",
@@ -612,5 +888,18 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn nrm2_f32_strided_cold_path() {
+        let full = arr1(&[3.0_f32, 99.0, 4.0]);
+        let strided = full.slice(s![..;2]); // [3.0, 4.0]
+        assert!((nrm2_f32(strided) - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn nrm2_f32_2d_generic_d() {
+        let m = arr2(&[[3.0_f32, 0.0], [0.0_f32, 4.0]]);
+        assert!((nrm2_f32(m.view()) - 5.0).abs() < 1e-6);
     }
 }

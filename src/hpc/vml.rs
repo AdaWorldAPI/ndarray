@@ -1,15 +1,35 @@
 //! VML: Vectorized Math Library.
 //!
-//! Element-wise transcendental and arithmetic operations on slices.
-//! SIMD-accelerated via `F32x16` compat types where possible.
-//! Pure Rust implementations; MKL-accelerated versions behind `intel-mkl` feature gate.
+//! Element-wise transcendental and arithmetic operations over [`ArrayView`] /
+//! [`ArrayViewMut`] inputs. SIMD-accelerated via `F32x16` / `F64x8` compat
+//! types on the contiguous fast path; stride-aware [`Zip`] fallback on the
+//! cold path.
+//!
+//! Each `pub fn` is generic over dimension `D: Dimension`, so callers can
+//! pass 1-D, 2-D, or N-D views interchangeably. When all inputs share a
+//! contiguous memory order, the kernel forwards a flat slice to the SIMD
+//! primitive layer (`src/simd_*.rs`); otherwise it falls back to a
+//! `Zip::from(...).for_each(...)` walk that respects strides.
+//!
+//! # Bridge pattern (W2-2a, see `.claude/knowledge/w2-arrayview-migration.md`)
+//!
+//! - Public surface: ArrayView / ArrayViewMut (kernel layer).
+//! - Private `*_slice` helpers: typed-lane SIMD over flat `&[T]` / `&mut [T]`
+//!   (primitive layer — kept slice-based on purpose, packed data has no
+//!   shape).
+//! - Pure Rust implementations; MKL-accelerated versions behind `intel-mkl`
+//!   feature gate.
 
 use crate::simd::{simd_exp_f32, simd_ln_f32, F32x16, F64x8};
+use crate::{ArrayView, ArrayViewMut, Dimension, Zip};
 
-/// Element-wise exp: out[i] = exp(x[i])
-///
-/// Processes 16 elements at a time via SIMD polynomial approximation.
-pub fn vsexp(x: &[f32], out: &mut [f32]) {
+// ===========================================================================
+// Private slice-based SIMD primitives (preserved from the pre-W2-2a impls).
+// These stay slice-based on purpose: SIMD primitives consume flat packed
+// data and the typed lanes (`F32x16`, `F64x8`) take `&[T]`.
+// ===========================================================================
+
+fn vsexp_slice(x: &[f32], out: &mut [f32]) {
     let n = x.len().min(out.len());
     let (x, out) = (&x[..n], &mut out[..n]);
     for (x_chunk, out_chunk) in x.chunks_exact(16).zip(out.chunks_exact_mut(16)) {
@@ -21,20 +41,13 @@ pub fn vsexp(x: &[f32], out: &mut [f32]) {
     }
 }
 
-/// Element-wise exp (f64).
-///
-/// Scalar loop — no SIMD polynomial for f64 exp yet.
-/// F64x8 load/store still enables autovectorization on some targets.
-pub fn vdexp(x: &[f64], out: &mut [f64]) {
+fn vdexp_slice(x: &[f64], out: &mut [f64]) {
     for (o, &v) in out.iter_mut().zip(x.iter()) {
         *o = v.exp();
     }
 }
 
-/// Element-wise natural log: out[i] = ln(x[i])
-///
-/// SIMD-accelerated via `simd_ln_f32` (16 lanes per iteration).
-pub fn vsln(x: &[f32], out: &mut [f32]) {
+fn vsln_slice(x: &[f32], out: &mut [f32]) {
     let n = x.len().min(out.len());
     let (x, out) = (&x[..n], &mut out[..n]);
     for (x_chunk, out_chunk) in x.chunks_exact(16).zip(out.chunks_exact_mut(16)) {
@@ -46,17 +59,13 @@ pub fn vsln(x: &[f32], out: &mut [f32]) {
     }
 }
 
-/// Element-wise natural log (f64).
-pub fn vdln(x: &[f64], out: &mut [f64]) {
+fn vdln_slice(x: &[f64], out: &mut [f64]) {
     for (o, &v) in out.iter_mut().zip(x.iter()) {
         *o = v.ln();
     }
 }
 
-/// Element-wise sqrt: out[i] = sqrt(x[i])
-///
-/// SIMD-accelerated via F32x16::sqrt().
-pub fn vssqrt(x: &[f32], out: &mut [f32]) {
+fn vssqrt_slice(x: &[f32], out: &mut [f32]) {
     let n = x.len().min(out.len());
     let (x, out) = (&x[..n], &mut out[..n]);
     for (x_chunk, out_chunk) in x.chunks_exact(16).zip(out.chunks_exact_mut(16)) {
@@ -68,10 +77,7 @@ pub fn vssqrt(x: &[f32], out: &mut [f32]) {
     }
 }
 
-/// Element-wise sqrt (f64).
-///
-/// SIMD-accelerated via `F64x8::sqrt()` (8 lanes per iteration).
-pub fn vdsqrt(x: &[f64], out: &mut [f64]) {
+fn vdsqrt_slice(x: &[f64], out: &mut [f64]) {
     let n = x.len().min(out.len());
     let (x, out) = (&x[..n], &mut out[..n]);
     for (x_chunk, out_chunk) in x.chunks_exact(8).zip(out.chunks_exact_mut(8)) {
@@ -83,10 +89,7 @@ pub fn vdsqrt(x: &[f64], out: &mut [f64]) {
     }
 }
 
-/// Element-wise abs: out[i] = |x[i]|
-///
-/// SIMD-accelerated via F32x16::abs().
-pub fn vsabs(x: &[f32], out: &mut [f32]) {
+fn vsabs_slice(x: &[f32], out: &mut [f32]) {
     let n = x.len().min(out.len());
     let (x, out) = (&x[..n], &mut out[..n]);
     for (x_chunk, out_chunk) in x.chunks_exact(16).zip(out.chunks_exact_mut(16)) {
@@ -98,10 +101,7 @@ pub fn vsabs(x: &[f32], out: &mut [f32]) {
     }
 }
 
-/// Element-wise abs (f64).
-///
-/// SIMD-accelerated via `F64x8::abs()` (8 lanes per iteration).
-pub fn vdabs(x: &[f64], out: &mut [f64]) {
+fn vdabs_slice(x: &[f64], out: &mut [f64]) {
     let n = x.len().min(out.len());
     let (x, out) = (&x[..n], &mut out[..n]);
     for (x_chunk, out_chunk) in x.chunks_exact(8).zip(out.chunks_exact_mut(8)) {
@@ -113,10 +113,7 @@ pub fn vdabs(x: &[f64], out: &mut [f64]) {
     }
 }
 
-/// Element-wise add: out[i] = a[i] + b[i]
-///
-/// SIMD-accelerated via F32x16 operator overload.
-pub fn vsadd(a: &[f32], b: &[f32], out: &mut [f32]) {
+fn vsadd_slice(a: &[f32], b: &[f32], out: &mut [f32]) {
     let n = a.len().min(b.len()).min(out.len());
     let (a, b, out) = (&a[..n], &b[..n], &mut out[..n]);
     for ((a_chunk, b_chunk), out_chunk) in a
@@ -136,10 +133,7 @@ pub fn vsadd(a: &[f32], b: &[f32], out: &mut [f32]) {
     }
 }
 
-/// Element-wise mul: out[i] = a[i] * b[i]
-///
-/// SIMD-accelerated via F32x16 operator overload.
-pub fn vsmul(a: &[f32], b: &[f32], out: &mut [f32]) {
+fn vsmul_slice(a: &[f32], b: &[f32], out: &mut [f32]) {
     let n = a.len().min(b.len()).min(out.len());
     let (a, b, out) = (&a[..n], &b[..n], &mut out[..n]);
     for ((a_chunk, b_chunk), out_chunk) in a
@@ -159,10 +153,7 @@ pub fn vsmul(a: &[f32], b: &[f32], out: &mut [f32]) {
     }
 }
 
-/// Element-wise div: out[i] = a[i] / b[i]
-///
-/// SIMD-accelerated via F32x16 operator overload.
-pub fn vsdiv(a: &[f32], b: &[f32], out: &mut [f32]) {
+fn vsdiv_slice(a: &[f32], b: &[f32], out: &mut [f32]) {
     let n = a.len().min(b.len()).min(out.len());
     let (a, b, out) = (&a[..n], &b[..n], &mut out[..n]);
     for ((a_chunk, b_chunk), out_chunk) in a
@@ -182,12 +173,7 @@ pub fn vsdiv(a: &[f32], b: &[f32], out: &mut [f32]) {
     }
 }
 
-/// Element-wise sin: out[i] = sin(x[i])
-///
-/// SIMD-batched: loads 16 floats via F32x16, applies scalar sin per lane,
-/// stores back. Amortizes load/store overhead; a true SIMD sin polynomial
-/// can replace the inner loop later.
-pub fn vssin(x: &[f32], out: &mut [f32]) {
+fn vssin_slice(x: &[f32], out: &mut [f32]) {
     let n = x.len().min(out.len());
     let (x, out) = (&x[..n], &mut out[..n]);
     for (x_chunk, out_chunk) in x.chunks_exact(16).zip(out.chunks_exact_mut(16)) {
@@ -205,10 +191,7 @@ pub fn vssin(x: &[f32], out: &mut [f32]) {
     }
 }
 
-/// Element-wise cos: out[i] = cos(x[i])
-///
-/// SIMD-batched: loads 16 floats via F32x16, applies scalar cos per lane.
-pub fn vscos(x: &[f32], out: &mut [f32]) {
+fn vscos_slice(x: &[f32], out: &mut [f32]) {
     let n = x.len().min(out.len());
     let (x, out) = (&x[..n], &mut out[..n]);
     for (x_chunk, out_chunk) in x.chunks_exact(16).zip(out.chunks_exact_mut(16)) {
@@ -226,15 +209,7 @@ pub fn vscos(x: &[f32], out: &mut [f32]) {
     }
 }
 
-/// Element-wise pow: out[i] = a[i] ^ b[i]
-///
-/// Uses SIMD exp+ln: `a^b = exp(b * ln(a))`. The `simd_ln_f32` and
-/// `simd_exp_f32` kernels provide 16-wide vectorization.
-///
-/// **Domain restriction**: the SIMD path requires `a[i] > 0`. Negative bases
-/// produce NaN (since `ln(negative)` is undefined), unlike scalar `powf` which
-/// handles some negative-base cases. The scalar tail (len < 16) uses `powf`.
-pub fn vspow(a: &[f32], b: &[f32], out: &mut [f32]) {
+fn vspow_slice(a: &[f32], b: &[f32], out: &mut [f32]) {
     let n = a.len().min(b.len()).min(out.len());
     let (a, b, out) = (&a[..n], &b[..n], &mut out[..n]);
     for ((a_chunk, b_chunk), out_chunk) in a
@@ -257,11 +232,7 @@ pub fn vspow(a: &[f32], b: &[f32], out: &mut [f32]) {
     }
 }
 
-/// Element-wise tanh: out[i] = tanh(x[i])
-///
-/// Uses the identity: tanh(x) = 2·sigmoid(2x) - 1
-/// which reuses our SIMD sigmoid (F32x16 polynomial).
-pub fn vstanh(x: &[f32], out: &mut [f32]) {
+fn vstanh_slice(x: &[f32], out: &mut [f32]) {
     let n = x.len().min(out.len());
     let chunks = n / 16;
     let two = F32x16::splat(2.0);
@@ -283,10 +254,7 @@ pub fn vstanh(x: &[f32], out: &mut [f32]) {
     }
 }
 
-/// Element-wise floor: out[i] = floor(x[i])
-///
-/// Uses F32x16 hardware VRNDSCALEPS (AVX-512) or equivalent.
-pub fn vsfloor(x: &[f32], out: &mut [f32]) {
+fn vsfloor_slice(x: &[f32], out: &mut [f32]) {
     let n = x.len().min(out.len());
     let chunks = n / 16;
     for i in 0..chunks {
@@ -299,8 +267,7 @@ pub fn vsfloor(x: &[f32], out: &mut [f32]) {
     }
 }
 
-/// Element-wise ceil: out[i] = ceil(x[i])
-pub fn vsceil(x: &[f32], out: &mut [f32]) {
+fn vsceil_slice(x: &[f32], out: &mut [f32]) {
     let n = x.len().min(out.len());
     let chunks = n / 16;
     for i in 0..chunks {
@@ -317,8 +284,7 @@ pub fn vsceil(x: &[f32], out: &mut [f32]) {
     }
 }
 
-/// Element-wise round (ties to even): out[i] = round(x[i])
-pub fn vsround(x: &[f32], out: &mut [f32]) {
+fn vsround_slice(x: &[f32], out: &mut [f32]) {
     let n = x.len().min(out.len());
     let chunks = n / 16;
     for i in 0..chunks {
@@ -331,8 +297,7 @@ pub fn vsround(x: &[f32], out: &mut [f32]) {
     }
 }
 
-/// Element-wise negate: out[i] = -x[i]
-pub fn vsneg(x: &[f32], out: &mut [f32]) {
+fn vsneg_slice(x: &[f32], out: &mut [f32]) {
     let n = x.len().min(out.len());
     let chunks = n / 16;
     let zero = F32x16::splat(0.0);
@@ -346,21 +311,14 @@ pub fn vsneg(x: &[f32], out: &mut [f32]) {
     }
 }
 
-/// Element-wise trunc: out[i] = trunc(x[i]) (round toward zero)
-pub fn vstrunc(x: &[f32], out: &mut [f32]) {
+fn vstrunc_slice(x: &[f32], out: &mut [f32]) {
     let n = x.len().min(out.len());
-    // trunc = sign(x) * floor(abs(x))
     let chunks = n / 16;
     for i in 0..chunks {
         let off = i * 16;
         let v = F32x16::from_slice(&x[off..off + 16]);
         let abs_v = v.abs();
         let floored = abs_v.floor();
-        // Restore sign: if original was negative, negate the result
-        // Use: trunc(x) = floor(x) if x >= 0, ceil(x) if x < 0
-        // Simpler: just floor(abs(x)) * sign(x)
-        // We can do sign via: x / abs(x), but that's NaN for 0.
-        // Instead: if x >= 0, result = floor(abs(x)), else -floor(abs(x))
         let zero = F32x16::splat(0.0);
         let mask = v.simd_lt(zero); // true where x < 0
         let pos_result = floored;
@@ -373,2171 +331,888 @@ pub fn vstrunc(x: &[f32], out: &mut [f32]) {
     }
 }
 
+// ===========================================================================
+// Internal helpers for the contiguous fast path.
+// ===========================================================================
+
+/// Run the SIMD slice primitive when every view shares a contiguous memory
+/// order (any axis order — C, F, or arbitrary, as long as strides walk the
+/// underlying buffer sequentially). Returns `true` if dispatched.
+#[inline]
+fn dispatch_unary_contig<T, D, F>(x: ArrayView<'_, T, D>, out: &mut ArrayViewMut<'_, T, D>, f: F) -> bool
+where
+    D: Dimension,
+    F: FnOnce(&[T], &mut [T]),
+{
+    if x.strides() != out.strides() {
+        return false;
+    }
+    let xs = match x.as_slice_memory_order() {
+        Some(s) => s,
+        None => return false,
+    };
+    let os = match out.as_slice_memory_order_mut() {
+        Some(s) => s,
+        None => return false,
+    };
+    f(xs, os);
+    true
+}
+
+#[inline]
+fn dispatch_binary_contig<T, D, F>(
+    a: ArrayView<'_, T, D>, b: ArrayView<'_, T, D>, out: &mut ArrayViewMut<'_, T, D>, f: F,
+) -> bool
+where
+    D: Dimension,
+    F: FnOnce(&[T], &[T], &mut [T]),
+{
+    if a.strides() != b.strides() || a.strides() != out.strides() {
+        return false;
+    }
+    let as_ = match a.as_slice_memory_order() {
+        Some(s) => s,
+        None => return false,
+    };
+    let bs_ = match b.as_slice_memory_order() {
+        Some(s) => s,
+        None => return false,
+    };
+    let os_ = match out.as_slice_memory_order_mut() {
+        Some(s) => s,
+        None => return false,
+    };
+    f(as_, bs_, os_);
+    true
+}
+
+// ===========================================================================
+// Public ArrayView-first API (W2-2a). 16 unary + 4 binary.
+// ===========================================================================
+
+/// Element-wise `exp`: `out[i] = x[i].exp()`.
+///
+/// Hot path (all inputs contiguous, same memory order) dispatches to the
+/// F32x16 SIMD polynomial via `simd_exp_f32`. Cold path uses a stride-aware
+/// `Zip` walk.
+///
+/// # Panics
+/// Panics if `x` and `out` shapes differ.
+///
+/// # Example
+/// ```
+/// use ndarray::{arr1, hpc::vml::vsexp};
+/// let x = arr1(&[0.0_f32, 1.0]);
+/// let mut out = arr1(&[0.0_f32; 2]);
+/// vsexp(x.view(), out.view_mut());
+/// assert!((out[0] - 1.0).abs() < 1e-5);
+/// ```
+pub fn vsexp<D: Dimension>(x: ArrayView<'_, f32, D>, mut out: ArrayViewMut<'_, f32, D>) {
+    assert_eq!(x.shape(), out.shape(), "vsexp: x/out shape mismatch");
+    if dispatch_unary_contig(x.view(), &mut out, vsexp_slice) {
+        return;
+    }
+    Zip::from(&mut out).and(&x).for_each(|o, &v| *o = v.exp());
+}
+
+/// Element-wise `exp` (f64). Scalar loop — no SIMD polynomial for f64 exp yet.
+///
+/// # Panics
+/// Panics if `x` and `out` shapes differ.
+pub fn vdexp<D: Dimension>(x: ArrayView<'_, f64, D>, mut out: ArrayViewMut<'_, f64, D>) {
+    assert_eq!(x.shape(), out.shape(), "vdexp: x/out shape mismatch");
+    if dispatch_unary_contig(x.view(), &mut out, vdexp_slice) {
+        return;
+    }
+    Zip::from(&mut out).and(&x).for_each(|o, &v| *o = v.exp());
+}
+
+/// Element-wise natural log: `out[i] = x[i].ln()`.
+///
+/// Hot path uses the F32x16 SIMD `simd_ln_f32` polynomial.
+///
+/// # Panics
+/// Panics if `x` and `out` shapes differ.
+pub fn vsln<D: Dimension>(x: ArrayView<'_, f32, D>, mut out: ArrayViewMut<'_, f32, D>) {
+    assert_eq!(x.shape(), out.shape(), "vsln: x/out shape mismatch");
+    if dispatch_unary_contig(x.view(), &mut out, vsln_slice) {
+        return;
+    }
+    Zip::from(&mut out).and(&x).for_each(|o, &v| *o = v.ln());
+}
+
+/// Element-wise natural log (f64). Scalar loop.
+///
+/// # Panics
+/// Panics if `x` and `out` shapes differ.
+pub fn vdln<D: Dimension>(x: ArrayView<'_, f64, D>, mut out: ArrayViewMut<'_, f64, D>) {
+    assert_eq!(x.shape(), out.shape(), "vdln: x/out shape mismatch");
+    if dispatch_unary_contig(x.view(), &mut out, vdln_slice) {
+        return;
+    }
+    Zip::from(&mut out).and(&x).for_each(|o, &v| *o = v.ln());
+}
+
+/// Element-wise `sqrt`. Hot path uses `F32x16::sqrt()` (16-wide).
+///
+/// # Panics
+/// Panics if `x` and `out` shapes differ.
+pub fn vssqrt<D: Dimension>(x: ArrayView<'_, f32, D>, mut out: ArrayViewMut<'_, f32, D>) {
+    assert_eq!(x.shape(), out.shape(), "vssqrt: x/out shape mismatch");
+    if dispatch_unary_contig(x.view(), &mut out, vssqrt_slice) {
+        return;
+    }
+    Zip::from(&mut out).and(&x).for_each(|o, &v| *o = v.sqrt());
+}
+
+/// Element-wise `sqrt` (f64). Hot path uses `F64x8::sqrt()` (8-wide).
+///
+/// # Panics
+/// Panics if `x` and `out` shapes differ.
+pub fn vdsqrt<D: Dimension>(x: ArrayView<'_, f64, D>, mut out: ArrayViewMut<'_, f64, D>) {
+    assert_eq!(x.shape(), out.shape(), "vdsqrt: x/out shape mismatch");
+    if dispatch_unary_contig(x.view(), &mut out, vdsqrt_slice) {
+        return;
+    }
+    Zip::from(&mut out).and(&x).for_each(|o, &v| *o = v.sqrt());
+}
+
+/// Element-wise `abs`. Hot path uses `F32x16::abs()`.
+///
+/// # Panics
+/// Panics if `x` and `out` shapes differ.
+pub fn vsabs<D: Dimension>(x: ArrayView<'_, f32, D>, mut out: ArrayViewMut<'_, f32, D>) {
+    assert_eq!(x.shape(), out.shape(), "vsabs: x/out shape mismatch");
+    if dispatch_unary_contig(x.view(), &mut out, vsabs_slice) {
+        return;
+    }
+    Zip::from(&mut out).and(&x).for_each(|o, &v| *o = v.abs());
+}
+
+/// Element-wise `abs` (f64). Hot path uses `F64x8::abs()`.
+///
+/// # Panics
+/// Panics if `x` and `out` shapes differ.
+pub fn vdabs<D: Dimension>(x: ArrayView<'_, f64, D>, mut out: ArrayViewMut<'_, f64, D>) {
+    assert_eq!(x.shape(), out.shape(), "vdabs: x/out shape mismatch");
+    if dispatch_unary_contig(x.view(), &mut out, vdabs_slice) {
+        return;
+    }
+    Zip::from(&mut out).and(&x).for_each(|o, &v| *o = v.abs());
+}
+
+/// Element-wise add: `out[i] = a[i] + b[i]`. Hot path uses F32x16 operator
+/// overload (16 elements per iteration).
+///
+/// # Panics
+/// Panics if `a`, `b`, `out` do not all have the same shape.
+///
+/// # Example
+/// ```
+/// use ndarray::{arr1, hpc::vml::vsadd};
+/// let a = arr1(&[1.0_f32, 2.0, 3.0]);
+/// let b = arr1(&[10.0_f32, 20.0, 30.0]);
+/// let mut out = arr1(&[0.0_f32; 3]);
+/// vsadd(a.view(), b.view(), out.view_mut());
+/// assert_eq!(out.as_slice().unwrap(), &[11.0, 22.0, 33.0]);
+/// ```
+pub fn vsadd<D: Dimension>(a: ArrayView<'_, f32, D>, b: ArrayView<'_, f32, D>, mut out: ArrayViewMut<'_, f32, D>) {
+    assert_eq!(a.shape(), b.shape(), "vsadd: a/b shape mismatch");
+    assert_eq!(a.shape(), out.shape(), "vsadd: a/out shape mismatch");
+    if dispatch_binary_contig(a.view(), b.view(), &mut out, vsadd_slice) {
+        return;
+    }
+    Zip::from(&mut out)
+        .and(&a)
+        .and(&b)
+        .for_each(|o, &x, &y| *o = x + y);
+}
+
+/// Element-wise mul: `out[i] = a[i] * b[i]`. Hot path uses F32x16 operator
+/// overload.
+///
+/// # Panics
+/// Panics if `a`, `b`, `out` do not all have the same shape.
+pub fn vsmul<D: Dimension>(a: ArrayView<'_, f32, D>, b: ArrayView<'_, f32, D>, mut out: ArrayViewMut<'_, f32, D>) {
+    assert_eq!(a.shape(), b.shape(), "vsmul: a/b shape mismatch");
+    assert_eq!(a.shape(), out.shape(), "vsmul: a/out shape mismatch");
+    if dispatch_binary_contig(a.view(), b.view(), &mut out, vsmul_slice) {
+        return;
+    }
+    Zip::from(&mut out)
+        .and(&a)
+        .and(&b)
+        .for_each(|o, &x, &y| *o = x * y);
+}
+
+/// Element-wise div: `out[i] = a[i] / b[i]`. Hot path uses F32x16 operator
+/// overload.
+///
+/// # Panics
+/// Panics if `a`, `b`, `out` do not all have the same shape.
+pub fn vsdiv<D: Dimension>(a: ArrayView<'_, f32, D>, b: ArrayView<'_, f32, D>, mut out: ArrayViewMut<'_, f32, D>) {
+    assert_eq!(a.shape(), b.shape(), "vsdiv: a/b shape mismatch");
+    assert_eq!(a.shape(), out.shape(), "vsdiv: a/out shape mismatch");
+    if dispatch_binary_contig(a.view(), b.view(), &mut out, vsdiv_slice) {
+        return;
+    }
+    Zip::from(&mut out)
+        .and(&a)
+        .and(&b)
+        .for_each(|o, &x, &y| *o = x / y);
+}
+
+/// Element-wise `sin`. Hot path loads 16 lanes at a time, applies scalar
+/// `f32::sin` per lane, stores back; amortizes load/store overhead.
+///
+/// # Panics
+/// Panics if `x` and `out` shapes differ.
+pub fn vssin<D: Dimension>(x: ArrayView<'_, f32, D>, mut out: ArrayViewMut<'_, f32, D>) {
+    assert_eq!(x.shape(), out.shape(), "vssin: x/out shape mismatch");
+    if dispatch_unary_contig(x.view(), &mut out, vssin_slice) {
+        return;
+    }
+    Zip::from(&mut out).and(&x).for_each(|o, &v| *o = v.sin());
+}
+
+/// Element-wise `cos`. Hot path loads 16 lanes at a time, applies scalar
+/// `f32::cos` per lane.
+///
+/// # Panics
+/// Panics if `x` and `out` shapes differ.
+pub fn vscos<D: Dimension>(x: ArrayView<'_, f32, D>, mut out: ArrayViewMut<'_, f32, D>) {
+    assert_eq!(x.shape(), out.shape(), "vscos: x/out shape mismatch");
+    if dispatch_unary_contig(x.view(), &mut out, vscos_slice) {
+        return;
+    }
+    Zip::from(&mut out).and(&x).for_each(|o, &v| *o = v.cos());
+}
+
+/// Element-wise `pow`: `out[i] = a[i] ^ b[i]`, via `exp(b * ln(a))`.
+///
+/// **Domain restriction**: the SIMD path requires `a[i] > 0`. Negative bases
+/// produce NaN (since `ln(negative)` is undefined), unlike scalar `powf`
+/// which handles some negative-base cases. The scalar tail (len < 16) and
+/// the cold path use `powf` and therefore handle negative bases.
+///
+/// # Panics
+/// Panics if `a`, `b`, `out` do not all have the same shape.
+pub fn vspow<D: Dimension>(a: ArrayView<'_, f32, D>, b: ArrayView<'_, f32, D>, mut out: ArrayViewMut<'_, f32, D>) {
+    assert_eq!(a.shape(), b.shape(), "vspow: a/b shape mismatch");
+    assert_eq!(a.shape(), out.shape(), "vspow: a/out shape mismatch");
+    if dispatch_binary_contig(a.view(), b.view(), &mut out, vspow_slice) {
+        return;
+    }
+    Zip::from(&mut out)
+        .and(&a)
+        .and(&b)
+        .for_each(|o, &x, &y| *o = x.powf(y));
+}
+
+/// Element-wise `tanh` via the identity `tanh(x) = 2·sigmoid(2x) − 1`. Hot
+/// path reuses the F32x16 sigmoid built from `simd_exp_f32`.
+///
+/// # Panics
+/// Panics if `x` and `out` shapes differ.
+pub fn vstanh<D: Dimension>(x: ArrayView<'_, f32, D>, mut out: ArrayViewMut<'_, f32, D>) {
+    assert_eq!(x.shape(), out.shape(), "vstanh: x/out shape mismatch");
+    if dispatch_unary_contig(x.view(), &mut out, vstanh_slice) {
+        return;
+    }
+    Zip::from(&mut out).and(&x).for_each(|o, &v| *o = v.tanh());
+}
+
+/// Element-wise `floor`. Hot path uses `F32x16::floor()` (VRNDSCALEPS on
+/// AVX-512).
+///
+/// # Panics
+/// Panics if `x` and `out` shapes differ.
+pub fn vsfloor<D: Dimension>(x: ArrayView<'_, f32, D>, mut out: ArrayViewMut<'_, f32, D>) {
+    assert_eq!(x.shape(), out.shape(), "vsfloor: x/out shape mismatch");
+    if dispatch_unary_contig(x.view(), &mut out, vsfloor_slice) {
+        return;
+    }
+    Zip::from(&mut out).and(&x).for_each(|o, &v| *o = v.floor());
+}
+
+/// Element-wise `ceil`. Hot path uses `-floor(-x)` on `F32x16`.
+///
+/// # Panics
+/// Panics if `x` and `out` shapes differ.
+pub fn vsceil<D: Dimension>(x: ArrayView<'_, f32, D>, mut out: ArrayViewMut<'_, f32, D>) {
+    assert_eq!(x.shape(), out.shape(), "vsceil: x/out shape mismatch");
+    if dispatch_unary_contig(x.view(), &mut out, vsceil_slice) {
+        return;
+    }
+    Zip::from(&mut out).and(&x).for_each(|o, &v| *o = v.ceil());
+}
+
+/// Element-wise round (ties to even). Hot path uses `F32x16::round()`.
+///
+/// # Panics
+/// Panics if `x` and `out` shapes differ.
+pub fn vsround<D: Dimension>(x: ArrayView<'_, f32, D>, mut out: ArrayViewMut<'_, f32, D>) {
+    assert_eq!(x.shape(), out.shape(), "vsround: x/out shape mismatch");
+    if dispatch_unary_contig(x.view(), &mut out, vsround_slice) {
+        return;
+    }
+    Zip::from(&mut out)
+        .and(&x)
+        .for_each(|o, &v| *o = v.round_ties_even());
+}
+
+/// Element-wise negate: `out[i] = -x[i]`.
+///
+/// # Panics
+/// Panics if `x` and `out` shapes differ.
+pub fn vsneg<D: Dimension>(x: ArrayView<'_, f32, D>, mut out: ArrayViewMut<'_, f32, D>) {
+    assert_eq!(x.shape(), out.shape(), "vsneg: x/out shape mismatch");
+    if dispatch_unary_contig(x.view(), &mut out, vsneg_slice) {
+        return;
+    }
+    Zip::from(&mut out).and(&x).for_each(|o, &v| *o = -v);
+}
+
+/// Element-wise `trunc` (round toward zero).
+///
+/// # Panics
+/// Panics if `x` and `out` shapes differ.
+pub fn vstrunc<D: Dimension>(x: ArrayView<'_, f32, D>, mut out: ArrayViewMut<'_, f32, D>) {
+    assert_eq!(x.shape(), out.shape(), "vstrunc: x/out shape mismatch");
+    if dispatch_unary_contig(x.view(), &mut out, vstrunc_slice) {
+        return;
+    }
+    Zip::from(&mut out).and(&x).for_each(|o, &v| *o = v.trunc());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{arr1, arr2, s, Array1, Array2};
+
+    // -----------------------------------------------------------------------
+    // vsexp
+    // -----------------------------------------------------------------------
 
     #[test]
-    fn test_vsexp() {
-        let x = [0.0f32, 1.0, 2.0];
-        let mut out = [0.0f32; 3];
-        vsexp(&x, &mut out);
+    fn test_vsexp_contig() {
+        let x = arr1(&[0.0f32, 1.0, 2.0]);
+        let mut out = Array1::<f32>::zeros(3);
+        vsexp(x.view(), out.view_mut());
+        assert!((out[0] - 1.0).abs() < 1e-5);
+        assert!((out[1] - std::f32::consts::E).abs() < 1e-5);
+        assert!((out[2] - (2.0_f32).exp()).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_vsexp_strided() {
+        let full = arr1(&[0.0f32, 9.0, 1.0, 9.0, 2.0, 9.0]);
+        let strided = full.slice(s![..;2]);
+        let mut out = Array1::<f32>::zeros(3);
+        vsexp(strided, out.view_mut());
         assert!((out[0] - 1.0).abs() < 1e-5);
         assert!((out[1] - std::f32::consts::E).abs() < 1e-5);
     }
 
     #[test]
-    fn test_vsln() {
-        let x = [1.0f32, std::f32::consts::E];
-        let mut out = [0.0f32; 2];
-        vsln(&x, &mut out);
-        assert!((out[0]).abs() < 1e-5);
-        assert!((out[1] - 1.0).abs() < 1e-5);
+    fn test_vsexp_2d() {
+        let x = arr2(&[[0.0f32, 1.0], [2.0, 3.0]]);
+        let mut out = Array2::<f32>::zeros((2, 2));
+        vsexp(x.view(), out.view_mut());
+        for ((r, c), &v) in out.indexed_iter() {
+            assert!((v - x[[r, c]].exp()).abs() < 1e-4);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // vdexp
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_vdexp_contig() {
+        let x = arr1(&[0.0f64, 1.0, 2.0]);
+        let mut out = Array1::<f64>::zeros(3);
+        vdexp(x.view(), out.view_mut());
+        for i in 0..3 {
+            assert!((out[i] - x[i].exp()).abs() < 1e-10);
+        }
     }
 
     #[test]
-    fn test_vssqrt() {
-        let x = [4.0f32, 9.0, 16.0];
-        let mut out = [0.0f32; 3];
-        vssqrt(&x, &mut out);
-        assert!((out[0] - 2.0).abs() < 1e-5);
-        assert!((out[1] - 3.0).abs() < 1e-5);
-        assert!((out[2] - 4.0).abs() < 1e-5);
+    fn test_vdexp_strided() {
+        let full = arr1(&[0.0f64, 99.0, 1.0, 99.0, 2.0, 99.0]);
+        let strided = full.slice(s![..;2]);
+        let mut out = Array1::<f64>::zeros(3);
+        vdexp(strided, out.view_mut());
+        assert!((out[0] - 1.0).abs() < 1e-10);
     }
 
-    #[test]
-    fn test_vsadd() {
-        let a = [1.0f32, 2.0, 3.0];
-        let b = [4.0f32, 5.0, 6.0];
-        let mut out = [0.0f32; 3];
-        vsadd(&a, &b, &mut out);
-        assert_eq!(out, [5.0, 7.0, 9.0]);
-    }
+    // -----------------------------------------------------------------------
+    // vsln
+    // -----------------------------------------------------------------------
 
     #[test]
-    fn test_vssin() {
-        let x = [0.0f32, core::f32::consts::FRAC_PI_2];
-        let mut out = [0.0f32; 2];
-        vssin(&x, &mut out);
+    fn test_vsln_contig() {
+        let x = arr1(&[1.0f32, std::f32::consts::E]);
+        let mut out = Array1::<f32>::zeros(2);
+        vsln(x.view(), out.view_mut());
         assert!(out[0].abs() < 1e-5);
         assert!((out[1] - 1.0).abs() < 1e-5);
     }
 
     #[test]
-    fn test_vsln_simd() {
-        // Exercise the SIMD path (>= 16 elements)
-        let mut x = [0.0f32; 20];
-        for i in 0..20 {
-            x[i] = (i + 1) as f32;
-        }
-        let mut out = [0.0f32; 20];
-        vsln(&x, &mut out);
+    fn test_vsln_simd_path() {
+        // exercise the >=16 SIMD path
+        let x: Array1<f32> = (1..=20).map(|i| i as f32).collect();
+        let mut out = Array1::<f32>::zeros(20);
+        vsln(x.view(), out.view_mut());
         for i in 0..20 {
             assert!((out[i] - ((i + 1) as f32).ln()).abs() < 1e-5, "mismatch at {i}");
         }
     }
 
     #[test]
-    fn test_vdsqrt_simd() {
-        let mut x = [0.0f64; 12];
-        for i in 0..12 {
-            x[i] = ((i + 1) * (i + 1)) as f64;
+    fn test_vsln_strided() {
+        let full: Array1<f32> = (0..32).map(|i| (i + 1) as f32).collect();
+        let strided = full.slice(s![..;2]); // 16 elements, non-contig
+        let mut out = Array1::<f32>::zeros(16);
+        vsln(strided.view(), out.view_mut());
+        for i in 0..16 {
+            let expected = ((2 * i + 1) as f32).ln();
+            assert!((out[i] - expected).abs() < 1e-5, "mismatch at {i}");
         }
-        let mut out = [0.0f64; 12];
-        vdsqrt(&x, &mut out);
+    }
+
+    // -----------------------------------------------------------------------
+    // vdln
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_vdln_contig() {
+        let x = arr1(&[1.0f64, std::f64::consts::E]);
+        let mut out = Array1::<f64>::zeros(2);
+        vdln(x.view(), out.view_mut());
+        assert!(out[0].abs() < 1e-10);
+        assert!((out[1] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_vdln_strided() {
+        let full = arr1(&[1.0f64, 0.0, std::f64::consts::E, 0.0]);
+        let strided = full.slice(s![..;2]);
+        let mut out = Array1::<f64>::zeros(2);
+        vdln(strided, out.view_mut());
+        assert!((out[1] - 1.0).abs() < 1e-10);
+    }
+
+    // -----------------------------------------------------------------------
+    // vssqrt
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_vssqrt_contig() {
+        let x = arr1(&[4.0f32, 9.0, 16.0]);
+        let mut out = Array1::<f32>::zeros(3);
+        vssqrt(x.view(), out.view_mut());
+        assert!((out[0] - 2.0).abs() < 1e-5);
+        assert!((out[1] - 3.0).abs() < 1e-5);
+        assert!((out[2] - 4.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_vssqrt_strided() {
+        let full = arr1(&[4.0f32, 0.0, 9.0, 0.0, 16.0, 0.0]);
+        let strided = full.slice(s![..;2]);
+        let mut out = Array1::<f32>::zeros(3);
+        vssqrt(strided, out.view_mut());
+        assert!((out[1] - 3.0).abs() < 1e-5);
+    }
+
+    // -----------------------------------------------------------------------
+    // vdsqrt
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_vdsqrt_simd() {
+        let x: Array1<f64> = (1..=12).map(|i| (i * i) as f64).collect();
+        let mut out = Array1::<f64>::zeros(12);
+        vdsqrt(x.view(), out.view_mut());
         for i in 0..12 {
             assert!((out[i] - (i + 1) as f64).abs() < 1e-10, "mismatch at {i}");
         }
     }
 
     #[test]
+    fn test_vdsqrt_strided() {
+        let full: Array1<f64> = (0..16).map(|i| (i + 1) as f64).collect();
+        let strided = full.slice(s![..;2]); // 8 elements
+        let mut out = Array1::<f64>::zeros(8);
+        vdsqrt(strided, out.view_mut());
+        for i in 0..8 {
+            let expected = ((2 * i + 1) as f64).sqrt();
+            assert!((out[i] - expected).abs() < 1e-10);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // vsabs
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_vsabs_contig() {
+        let x = arr1(&[-1.0f32, 2.0, -3.0]);
+        let mut out = Array1::<f32>::zeros(3);
+        vsabs(x.view(), out.view_mut());
+        assert_eq!(out.as_slice().unwrap(), &[1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn test_vsabs_strided_2d() {
+        let m = arr2(&[[-1.0f32, 2.0], [3.0, -4.0]]);
+        let mut out = Array2::<f32>::zeros((2, 2));
+        vsabs(m.view(), out.view_mut());
+        for ((r, c), &v) in out.indexed_iter() {
+            assert_eq!(v, m[[r, c]].abs());
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // vdabs
+    // -----------------------------------------------------------------------
+
+    #[test]
     fn test_vdabs_simd() {
-        let x: Vec<f64> = (-5..5).map(|i| i as f64).collect();
-        let mut out = vec![0.0f64; 10];
-        vdabs(&x, &mut out);
+        let x: Array1<f64> = (-5..5).map(|i| i as f64).collect();
+        let mut out = Array1::<f64>::zeros(10);
+        vdabs(x.view(), out.view_mut());
         for i in 0..10 {
             assert_eq!(out[i], (x[i]).abs());
         }
     }
 
     #[test]
-    fn test_vscos() {
-        let x = [0.0f32, core::f32::consts::PI];
-        let mut out = [0.0f32; 2];
-        vscos(&x, &mut out);
+    fn test_vdabs_strided() {
+        let full: Array1<f64> = (-10..10).map(|i| i as f64).collect();
+        let strided = full.slice(s![..;2]);
+        let mut out = Array1::<f64>::zeros(10);
+        vdabs(strided.view(), out.view_mut());
+        for i in 0..10 {
+            assert_eq!(out[i], strided[i].abs());
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // vsadd
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_vsadd_contig() {
+        let a = arr1(&[1.0f32, 2.0, 3.0]);
+        let b = arr1(&[4.0f32, 5.0, 6.0]);
+        let mut out = Array1::<f32>::zeros(3);
+        vsadd(a.view(), b.view(), out.view_mut());
+        assert_eq!(out.as_slice().unwrap(), &[5.0, 7.0, 9.0]);
+    }
+
+    #[test]
+    fn test_vsadd_strided() {
+        let a_full = arr1(&[1.0f32, 0.0, 2.0, 0.0, 3.0, 0.0]);
+        let b_full = arr1(&[4.0f32, 0.0, 5.0, 0.0, 6.0, 0.0]);
+        let a = a_full.slice(s![..;2]);
+        let b = b_full.slice(s![..;2]);
+        let mut out = Array1::<f32>::zeros(3);
+        vsadd(a, b, out.view_mut());
+        assert_eq!(out.as_slice().unwrap(), &[5.0, 7.0, 9.0]);
+    }
+
+    #[test]
+    fn test_vsadd_2d() {
+        let a = arr2(&[[1.0f32, 2.0], [3.0, 4.0]]);
+        let b = arr2(&[[10.0f32, 20.0], [30.0, 40.0]]);
+        let mut out = Array2::<f32>::zeros((2, 2));
+        vsadd(a.view(), b.view(), out.view_mut());
+        assert_eq!(out[[0, 0]], 11.0);
+        assert_eq!(out[[1, 1]], 44.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "shape mismatch")]
+    fn test_vsadd_panics_on_shape_mismatch() {
+        let a = arr1(&[1.0f32, 2.0]);
+        let b = arr1(&[1.0f32, 2.0, 3.0]);
+        let mut out = Array1::<f32>::zeros(2);
+        vsadd(a.view(), b.view(), out.view_mut());
+    }
+
+    // -----------------------------------------------------------------------
+    // vsmul
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_vsmul_contig() {
+        let a = arr1(&[1.0f32, 2.0, 3.0]);
+        let b = arr1(&[4.0f32, 5.0, 6.0]);
+        let mut out = Array1::<f32>::zeros(3);
+        vsmul(a.view(), b.view(), out.view_mut());
+        assert_eq!(out.as_slice().unwrap(), &[4.0, 10.0, 18.0]);
+    }
+
+    #[test]
+    fn test_vsmul_strided() {
+        let a_full = arr1(&[2.0f32, 0.0, 3.0, 0.0]);
+        let b_full = arr1(&[5.0f32, 0.0, 7.0, 0.0]);
+        let a = a_full.slice(s![..;2]);
+        let b = b_full.slice(s![..;2]);
+        let mut out = Array1::<f32>::zeros(2);
+        vsmul(a, b, out.view_mut());
+        assert_eq!(out[0], 10.0);
+        assert_eq!(out[1], 21.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "shape mismatch")]
+    fn test_vsmul_panics_on_shape_mismatch() {
+        let a = arr1(&[1.0f32, 2.0]);
+        let b = arr1(&[1.0f32]);
+        let mut out = Array1::<f32>::zeros(2);
+        vsmul(a.view(), b.view(), out.view_mut());
+    }
+
+    // -----------------------------------------------------------------------
+    // vsdiv
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_vsdiv_contig() {
+        let a = arr1(&[10.0f32, 20.0, 30.0]);
+        let b = arr1(&[2.0f32, 4.0, 5.0]);
+        let mut out = Array1::<f32>::zeros(3);
+        vsdiv(a.view(), b.view(), out.view_mut());
+        assert_eq!(out.as_slice().unwrap(), &[5.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn test_vsdiv_strided() {
+        let a_full = arr1(&[10.0f32, 0.0, 20.0, 0.0]);
+        let b_full = arr1(&[2.0f32, 0.0, 4.0, 0.0]);
+        let a = a_full.slice(s![..;2]);
+        let b = b_full.slice(s![..;2]);
+        let mut out = Array1::<f32>::zeros(2);
+        vsdiv(a, b, out.view_mut());
+        assert_eq!(out[0], 5.0);
+        assert_eq!(out[1], 5.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "shape mismatch")]
+    fn test_vsdiv_panics_on_shape_mismatch() {
+        let a = arr1(&[1.0f32, 2.0, 3.0]);
+        let b = arr1(&[1.0f32, 2.0]);
+        let mut out = Array1::<f32>::zeros(3);
+        vsdiv(a.view(), b.view(), out.view_mut());
+    }
+
+    // -----------------------------------------------------------------------
+    // vssin / vscos
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_vssin_contig() {
+        let x = arr1(&[0.0f32, core::f32::consts::FRAC_PI_2]);
+        let mut out = Array1::<f32>::zeros(2);
+        vssin(x.view(), out.view_mut());
+        assert!(out[0].abs() < 1e-5);
+        assert!((out[1] - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_vssin_simd_batch() {
+        let x: Array1<f32> = (0..32).map(|i| (i as f32) * 0.1).collect();
+        let mut out = Array1::<f32>::zeros(32);
+        vssin(x.view(), out.view_mut());
+        for i in 0..32 {
+            assert!((out[i] - x[i].sin()).abs() < 1e-5, "mismatch at {i}");
+        }
+    }
+
+    #[test]
+    fn test_vssin_strided() {
+        let full: Array1<f32> = (0..64).map(|i| (i as f32) * 0.05).collect();
+        let strided = full.slice(s![..;2]);
+        let mut out = Array1::<f32>::zeros(32);
+        vssin(strided.view(), out.view_mut());
+        for i in 0..32 {
+            assert!((out[i] - strided[i].sin()).abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn test_vscos_contig() {
+        let x = arr1(&[0.0f32, core::f32::consts::PI]);
+        let mut out = Array1::<f32>::zeros(2);
+        vscos(x.view(), out.view_mut());
         assert!((out[0] - 1.0).abs() < 1e-5);
         assert!((out[1] + 1.0).abs() < 1e-5);
     }
 
     #[test]
-    fn test_vspow_simd() {
-        // Test a^b = exp(b*ln(a)) for known values
-        let a = [2.0f32, 3.0, 4.0];
-        let b = [3.0f32, 2.0, 0.5];
-        let mut out = [0.0f32; 3];
-        vspow(&a, &b, &mut out);
+    fn test_vscos_strided() {
+        let full: Array1<f32> = (0..40).map(|i| (i as f32) * 0.1).collect();
+        let strided = full.slice(s![..;2]);
+        let mut out = Array1::<f32>::zeros(20);
+        vscos(strided.view(), out.view_mut());
+        for i in 0..20 {
+            assert!((out[i] - strided[i].cos()).abs() < 1e-5);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // vspow
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_vspow_contig() {
+        let a = arr1(&[2.0f32, 3.0, 4.0]);
+        let b = arr1(&[3.0f32, 2.0, 0.5]);
+        let mut out = Array1::<f32>::zeros(3);
+        vspow(a.view(), b.view(), out.view_mut());
         assert!((out[0] - 8.0).abs() < 1e-3, "2^3 = {}", out[0]);
         assert!((out[1] - 9.0).abs() < 1e-3, "3^2 = {}", out[1]);
         assert!((out[2] - 2.0).abs() < 1e-3, "4^0.5 = {}", out[2]);
     }
 
     #[test]
-    fn test_vssin_simd_batch() {
-        // Exercise SIMD path with 32 elements
-        let mut x = [0.0f32; 32];
-        for i in 0..32 {
-            x[i] = (i as f32) * 0.1;
-        }
-        let mut out = [0.0f32; 32];
-        vssin(&x, &mut out);
-        for i in 0..32 {
-            assert!((out[i] - x[i].sin()).abs() < 1e-5, "mismatch at {i}");
+    fn test_vspow_strided() {
+        let a_full = arr1(&[2.0f32, 0.0, 3.0, 0.0]);
+        let b_full = arr1(&[3.0f32, 0.0, 2.0, 0.0]);
+        let a = a_full.slice(s![..;2]);
+        let b = b_full.slice(s![..;2]);
+        let mut out = Array1::<f32>::zeros(2);
+        vspow(a, b, out.view_mut());
+        assert!((out[0] - 8.0).abs() < 1e-3);
+        assert!((out[1] - 9.0).abs() < 1e-3);
+    }
+
+    #[test]
+    #[should_panic(expected = "shape mismatch")]
+    fn test_vspow_panics_on_shape_mismatch() {
+        let a = arr1(&[1.0f32, 2.0]);
+        let b = arr1(&[1.0f32, 2.0, 3.0]);
+        let mut out = Array1::<f32>::zeros(2);
+        vspow(a.view(), b.view(), out.view_mut());
+    }
+
+    // -----------------------------------------------------------------------
+    // vstanh
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_vstanh_contig() {
+        let x = arr1(&[0.0f32, 1.0, -1.0]);
+        let mut out = Array1::<f32>::zeros(3);
+        vstanh(x.view(), out.view_mut());
+        assert!(out[0].abs() < 1e-5);
+        assert!((out[1] - 1.0f32.tanh()).abs() < 1e-4);
+        assert!((out[2] - (-1.0f32).tanh()).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_vstanh_strided() {
+        let full: Array1<f32> = (0..32).map(|i| (i as f32) * 0.1 - 1.5).collect();
+        let strided = full.slice(s![..;2]);
+        let mut out = Array1::<f32>::zeros(16);
+        vstanh(strided.view(), out.view_mut());
+        for i in 0..16 {
+            assert!((out[i] - strided[i].tanh()).abs() < 1e-4);
         }
     }
+
+    // -----------------------------------------------------------------------
+    // vsfloor / vsceil / vsround / vsneg / vstrunc
+    // -----------------------------------------------------------------------
+
     #[test]
-    fn test_f64_golden_step_hydration_cost() {
-        use std::f64::consts;
-        // Rust 1.94: std::f64::consts::PHI and GAMMA are stable.
-        const PHI: f64 = std::f64::consts::GOLDEN_RATIO;
-
-        // Simulate: 4096D f64 vector → Base17-style projection → hydration back
-        let d = 4096usize;
-        let base_dim = 17usize;
-        let golden_step = 11usize;
-
-        // Generate "weight" data (deterministic, mimics Gaussian distribution)
-        let weights: Vec<f64> = (0..d)
-            .map(|i| (i as f64 * 0.7 + 13.0).sin() * 2.5)
-            .collect();
-
-        // ── ENCODING: f64[4096] → f64[17] (golden-step projection) ──
-        let encode_start = std::time::Instant::now();
-        let n_octaves = (d + base_dim - 1) / base_dim;
-        let mut sum = [0.0f64; 17];
-        let mut count = [0u32; 17];
-        for octave in 0..n_octaves {
-            for bi in 0..base_dim {
-                let dim = octave * base_dim + ((bi * golden_step) % base_dim);
-                if dim < d {
-                    sum[bi] += weights[dim];
-                    count[bi] += 1;
-                }
-            }
-        }
-        let mut coefficients_f64 = [0.0f64; 17];
-        for i in 0..base_dim {
-            if count[i] > 0 {
-                coefficients_f64[i] = sum[i] / count[i] as f64;
-            }
-        }
-        let encode_time = encode_start.elapsed();
-
-        // ── QUANTIZE: f64[17] → i16[17] (what Base17 stores) ──
-        let fp_scale = 1000.0;
-        let coefficients_i16: Vec<i16> = coefficients_f64
-            .iter()
-            .map(|&v| (v * fp_scale).round().clamp(-32768.0, 32767.0) as i16)
-            .collect();
-
-        // ── HYDRATION: i16[17] → f64[4096] (reconstruct from golden-step basis) ──
-        let hydrate_start = std::time::Instant::now();
-        let mut reconstructed = vec![0.0f64; d];
-        for octave in 0..n_octaves {
-            for bi in 0..base_dim {
-                let dim = octave * base_dim + ((bi * golden_step) % base_dim);
-                if dim < d {
-                    reconstructed[dim] = coefficients_i16[bi] as f64 / fp_scale;
-                }
-            }
-        }
-        let hydrate_time = hydrate_start.elapsed();
-
-        // ── MEASURE: reconstruction quality ──
-        let mut sum_sq_err = 0.0f64;
-        let mut sum_sq_orig = 0.0f64;
-        for i in 0..d {
-            let err = weights[i] - reconstructed[i];
-            sum_sq_err += err * err;
-            sum_sq_orig += weights[i] * weights[i];
-        }
-        let relative_error = (sum_sq_err / sum_sq_orig).sqrt();
-
-        // ── REPORT ──
-        eprintln!("=== F64 Golden-Step Hydration Cost ===");
-        eprintln!("  Input:       f64[{}] = {} bytes", d, d * 8);
-        eprintln!("  Encoded:     i16[17] = 34 bytes");
-        eprintln!("  Compression: {}×", (d * 8) / 34);
-        eprintln!("  Encode time: {:?}", encode_time);
-        eprintln!("  Hydrate time: {:?}", hydrate_time);
-        eprintln!("  Relative error: {:.6}", relative_error);
-        eprintln!("  Reconstruction quality: {:.4}%", (1.0 - relative_error) * 100.0);
-
-        // The surface area cost IS just the encode + hydrate.
-        // The middle (i16 distance, SimilarityTable lookup) is O(1) regardless.
-        // For f64 tensors: the ONLY extra cost vs f32 tensors is the
-        // f64→f64 accumulation in the projection (instead of f32→f64).
-        // That's ~0 extra cost because the projection already uses f64 sums.
-
-        // Generous timing bounds: 10ms allows for debug builds, loaded CI, cold caches.
-        // The operation is ~10μs on fast hardware but can spike under contention.
-        assert!(encode_time.as_millis() < 10, "encoding took {:?}, expected < 10ms", encode_time);
-        assert!(hydrate_time.as_millis() < 10, "hydration took {:?}, expected < 10ms", hydrate_time);
+    fn test_vsfloor_contig() {
+        let x = arr1(&[1.7f32, -1.2, 0.5]);
+        let mut out = Array1::<f32>::zeros(3);
+        vsfloor(x.view(), out.view_mut());
+        assert_eq!(out.as_slice().unwrap(), &[1.0, -2.0, 0.0]);
     }
+
     #[test]
-    fn test_golden_step_vs_random_projection_rho() {
-        // Compare: golden-step 17D projection vs random 17D projection
-        // on synthetic weight-like data (approximate Gaussian).
-        // Measures Spearman ρ of pairwise distances.
-
-        let d = 256; // weight vector dimension (small for test speed)
-        let n = 50; // number of vectors to compare
-        let base_dim = 17;
-        let golden_step = 11;
-
-        // Generate weight-like vectors (deterministic, Gaussian-ish)
-        let vectors: Vec<Vec<f64>> = (0..n)
-            .map(|i| {
-                (0..d)
-                    .map(|j| ((i * 97 + j * 31) as f64 * 0.001).sin() * 2.0)
-                    .collect()
-            })
-            .collect();
-
-        // Ground truth: pairwise L2 distances in full d-D space
-        let mut gt_distances = Vec::new();
-        for i in 0..n {
-            for j in (i + 1)..n {
-                let dist: f64 = vectors[i]
-                    .iter()
-                    .zip(&vectors[j])
-                    .map(|(a, b)| (a - b) * (a - b))
-                    .sum::<f64>()
-                    .sqrt();
-                gt_distances.push(dist);
-            }
-        }
-
-        // Golden-step projection: project each vector to 17D
-        let golden_projected: Vec<Vec<f64>> = vectors
-            .iter()
-            .map(|v| {
-                let n_octaves = (d + base_dim - 1) / base_dim;
-                let mut sum = vec![0.0f64; base_dim];
-                let mut count = vec![0u32; base_dim];
-                for octave in 0..n_octaves {
-                    for bi in 0..base_dim {
-                        let dim = octave * base_dim + ((bi * golden_step) % base_dim);
-                        if dim < d {
-                            sum[bi] += v[dim];
-                            count[bi] += 1;
-                        }
-                    }
-                }
-                sum.iter()
-                    .zip(&count)
-                    .map(|(&s, &c)| if c > 0 { s / c as f64 } else { 0.0 })
-                    .collect()
-            })
-            .collect();
-
-        // Random projection: use a deterministic "random" 17×d matrix
-        let random_matrix: Vec<Vec<f64>> = (0..base_dim)
-            .map(|i| {
-                (0..d)
-                    .map(|j| ((i * 7919 + j * 104729) as f64 * 0.00001).sin())
-                    .collect()
-            })
-            .collect();
-
-        let random_projected: Vec<Vec<f64>> = vectors
-            .iter()
-            .map(|v| {
-                random_matrix
-                    .iter()
-                    .map(|row| row.iter().zip(v).map(|(r, x)| r * x).sum::<f64>())
-                    .collect()
-            })
-            .collect();
-
-        // Compute pairwise distances in both projected spaces
-        let golden_distances: Vec<f64> = {
-            let mut dists = Vec::new();
-            for i in 0..n {
-                for j in (i + 1)..n {
-                    let dist: f64 = golden_projected[i]
-                        .iter()
-                        .zip(&golden_projected[j])
-                        .map(|(a, b)| (a - b) * (a - b))
-                        .sum::<f64>()
-                        .sqrt();
-                    dists.push(dist);
-                }
-            }
-            dists
-        };
-
-        let random_distances: Vec<f64> = {
-            let mut dists = Vec::new();
-            for i in 0..n {
-                for j in (i + 1)..n {
-                    let dist: f64 = random_projected[i]
-                        .iter()
-                        .zip(&random_projected[j])
-                        .map(|(a, b)| (a - b) * (a - b))
-                        .sum::<f64>()
-                        .sqrt();
-                    dists.push(dist);
-                }
-            }
-            dists
-        };
-
-        // Compute Spearman ρ: rank correlation between GT and projected distances
-        fn spearman_rho(a: &[f64], b: &[f64]) -> f64 {
-            let n = a.len();
-            let rank_a = ranks(a);
-            let rank_b = ranks(b);
-            let mean_a: f64 = rank_a.iter().sum::<f64>() / n as f64;
-            let mean_b: f64 = rank_b.iter().sum::<f64>() / n as f64;
-            let mut cov = 0.0f64;
-            let mut var_a = 0.0f64;
-            let mut var_b = 0.0f64;
-            for i in 0..n {
-                let da = rank_a[i] - mean_a;
-                let db = rank_b[i] - mean_b;
-                cov += da * db;
-                var_a += da * da;
-                var_b += db * db;
-            }
-            if var_a < 1e-10 || var_b < 1e-10 {
-                return 0.0;
-            }
-            cov / (var_a * var_b).sqrt()
-        }
-
-        fn ranks(values: &[f64]) -> Vec<f64> {
-            let mut indexed: Vec<(usize, f64)> = values.iter().copied().enumerate().collect();
-            indexed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-            let mut result = vec![0.0; values.len()];
-            for (rank, (idx, _)) in indexed.into_iter().enumerate() {
-                result[idx] = rank as f64;
-            }
-            result
-        }
-
-        let rho_golden = spearman_rho(&gt_distances, &golden_distances);
-        let rho_random = spearman_rho(&gt_distances, &random_distances);
-
-        eprintln!("=== Projection Quality (Spearman ρ) ===");
-        eprintln!("  Golden-step 17D: ρ = {:.4}", rho_golden);
-        eprintln!("  Random 17D:      ρ = {:.4}", rho_random);
-        eprintln!("  Δ (golden - random): {:.4}", rho_golden - rho_random);
-
-        // Both should preserve SOME ranking (ρ > 0)
-        assert!(rho_golden > 0.0, "golden-step ρ should be positive");
-        assert!(rho_random > 0.0, "random ρ should be positive");
-        // The interesting question: is golden better than random?
-        // We don't assert this — we just measure it.
-        // If Δ ≈ 0 → golden step is the 52°N problem.
-        // If Δ > 0.05 → golden step captures real structure.
+    fn test_vsfloor_strided() {
+        let full = arr1(&[1.7f32, 0.0, -1.2, 0.0, 0.5, 0.0]);
+        let strided = full.slice(s![..;2]);
+        let mut out = Array1::<f32>::zeros(3);
+        vsfloor(strided, out.view_mut());
+        assert_eq!(out.as_slice().unwrap(), &[1.0, -2.0, 0.0]);
     }
+
     #[test]
-    #[ignore] // Requires /tmp/tiny_imagenet_200.json (run with --include-ignored)
-    fn test_bgz17_on_tiny_imagenet() {
-        // Load real image feature vectors from tiny-imagenet (binary format).
-        // Generate with: python3 script that saves [d:u32][n:u32][f32 × d × n]
-        let bytes = match std::fs::read("/tmp/tiny_imagenet_200.bin") {
-            Ok(b) => b,
-            Err(_) => {
-                eprintln!("SKIP: /tmp/tiny_imagenet_200.bin not found");
-                return;
-            }
-        };
-
-        let d = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
-        let n = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
-
-        let mut vectors: Vec<Vec<f64>> = Vec::with_capacity(n);
-        let float_data = &bytes[8..];
-        for i in 0..n {
-            let v: Vec<f64> = (0..d)
-                .map(|j| {
-                    let off = (i * d + j) * 4;
-                    f32::from_le_bytes([float_data[off], float_data[off + 1], float_data[off + 2], float_data[off + 3]])
-                        as f64
-                })
-                .collect();
-            vectors.push(v);
-        }
-
-        let n = vectors.len();
-        eprintln!("Loaded {} vectors of dim {} from tiny-imagenet", n, d);
-        assert!(n >= 50, "Need at least 50 vectors");
-
-        // Use first 100 for speed
-        let n = n.min(100);
-        let vectors = &vectors[..n];
-
-        let base_dim = 17;
-        let golden_step = 11;
-
-        // Ground truth: pairwise L2 distances
-        let mut gt_distances = Vec::new();
-        for i in 0..n {
-            for j in (i + 1)..n {
-                let dist: f64 = vectors[i]
-                    .iter()
-                    .zip(&vectors[j])
-                    .map(|(a, b)| (a - b) * (a - b))
-                    .sum::<f64>()
-                    .sqrt();
-                gt_distances.push(dist);
-            }
-        }
-
-        // Golden-step projection
-        let golden_projected: Vec<Vec<f64>> = vectors
-            .iter()
-            .map(|v| {
-                let n_octaves = (d + base_dim - 1) / base_dim;
-                let mut sum = vec![0.0f64; base_dim];
-                let mut count = vec![0u32; base_dim];
-                for octave in 0..n_octaves {
-                    for bi in 0..base_dim {
-                        let dim = octave * base_dim + ((bi * golden_step) % base_dim);
-                        if dim < d {
-                            sum[bi] += v[dim];
-                            count[bi] += 1;
-                        }
-                    }
-                }
-                sum.iter()
-                    .zip(&count)
-                    .map(|(&s, &c)| if c > 0 { s / c as f64 } else { 0.0 })
-                    .collect()
-            })
-            .collect();
-
-        // Random projection
-        let random_matrix: Vec<Vec<f64>> = (0..base_dim)
-            .map(|i| {
-                (0..d)
-                    .map(|j| ((i * 7919 + j * 104729) as f64 * 0.00001).sin())
-                    .collect()
-            })
-            .collect();
-        let random_projected: Vec<Vec<f64>> = vectors
-            .iter()
-            .map(|v| {
-                random_matrix
-                    .iter()
-                    .map(|row| row.iter().zip(v).map(|(r, x)| r * x).sum::<f64>())
-                    .collect()
-            })
-            .collect();
-
-        // Simple mean projection (average every 17 consecutive dims)
-        let mean_projected: Vec<Vec<f64>> = vectors
-            .iter()
-            .map(|v| {
-                (0..base_dim)
-                    .map(|bi| {
-                        let chunk: Vec<f64> = (bi..d).step_by(base_dim).map(|i| v[i]).collect();
-                        if chunk.is_empty() {
-                            0.0
-                        } else {
-                            chunk.iter().sum::<f64>() / chunk.len() as f64
-                        }
-                    })
-                    .collect()
-            })
-            .collect();
-
-        // Compute projected distances
-        fn pairwise_l2(proj: &[Vec<f64>]) -> Vec<f64> {
-            let n = proj.len();
-            let mut dists = Vec::new();
-            for i in 0..n {
-                for j in (i + 1)..n {
-                    let d: f64 = proj[i]
-                        .iter()
-                        .zip(&proj[j])
-                        .map(|(a, b)| (a - b) * (a - b))
-                        .sum::<f64>()
-                        .sqrt();
-                    dists.push(d);
-                }
-            }
-            dists
-        }
-
-        let golden_dists = pairwise_l2(&golden_projected);
-        let random_dists = pairwise_l2(&random_projected);
-        let mean_dists = pairwise_l2(&mean_projected);
-
-        // Spearman ρ
-        fn spearman(a: &[f64], b: &[f64]) -> f64 {
-            fn ranks(v: &[f64]) -> Vec<f64> {
-                let mut idx: Vec<(usize, f64)> = v.iter().copied().enumerate().collect();
-                idx.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-                let mut r = vec![0.0; v.len()];
-                for (rank, (i, _)) in idx.into_iter().enumerate() {
-                    r[i] = rank as f64;
-                }
-                r
-            }
-            let ra = ranks(a);
-            let rb = ranks(b);
-            let n = a.len() as f64;
-            let ma: f64 = ra.iter().sum::<f64>() / n;
-            let mb: f64 = rb.iter().sum::<f64>() / n;
-            let (mut cov, mut va, mut vb) = (0.0, 0.0, 0.0);
-            for i in 0..a.len() {
-                let (da, db) = (ra[i] - ma, rb[i] - mb);
-                cov += da * db;
-                va += da * da;
-                vb += db * db;
-            }
-            if va < 1e-10 || vb < 1e-10 {
-                0.0
-            } else {
-                cov / (va * vb).sqrt()
-            }
-        }
-
-        let rho_golden = spearman(&gt_distances, &golden_dists);
-        let rho_random = spearman(&gt_distances, &random_dists);
-        let rho_mean = spearman(&gt_distances, &mean_dists);
-
-        eprintln!("=== bgz17 on Tiny ImageNet (real pixel data) ===");
-        eprintln!("  Golden-step 17D: ρ = {:.4}", rho_golden);
-        eprintln!("  Random 17D:      ρ = {:.4}", rho_random);
-        eprintln!("  Mean-stride 17D: ρ = {:.4}", rho_mean);
-        eprintln!("  Δ golden-random: {:.4}", rho_golden - rho_random);
-        eprintln!("  Δ golden-mean:   {:.4}", rho_golden - rho_mean);
-        eprintln!();
-        if (rho_golden - rho_random).abs() < 0.02 {
-            eprintln!("  VERDICT: Golden-step ≈ random on pixel data (52°N problem)");
-            eprintln!("  bgz17's value is NOT in the projection axes");
-            eprintln!("  bgz17's value IS in the distance table + cascade infrastructure");
-        } else if rho_golden > rho_random + 0.02 {
-            eprintln!("  VERDICT: Golden-step > random! The Fibonacci structure captures something.");
-        } else {
-            eprintln!("  VERDICT: Random > golden-step. Golden-step is WORSE for this data.");
-        }
-
-        // Basic sanity: golden-step should preserve reasonable ranking
-        assert!(rho_golden > 0.3, "golden ρ too low: {}", rho_golden);
-        // Random projection CAN be very low on structured data — that's expected
-        assert!(rho_random > -0.5, "random ρ impossibly low: {}", rho_random);
+    fn test_vsceil_contig() {
+        let x = arr1(&[1.2f32, -1.7, 0.5]);
+        let mut out = Array1::<f32>::zeros(3);
+        vsceil(x.view(), out.view_mut());
+        assert_eq!(out.as_slice().unwrap(), &[2.0, -1.0, 1.0]);
     }
+
     #[test]
-    #[ignore]
-    fn test_photography_grid_vs_golden_step() {
-        // Compare: 1/3 grid line sampling vs golden-step on tiny-imagenet
-        let bytes = match std::fs::read("/tmp/tiny_imagenet_200.bin") {
-            Ok(b) => b,
-            Err(_) => {
-                eprintln!("SKIP: /tmp/tiny_imagenet_200.bin not found");
-                return;
-            }
-        };
-
-        let d = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize; // 12288
-        let n_total = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
-        let float_data = &bytes[8..];
-
-        // Load vectors as 64×64×3 images
-        let img_w = 64usize;
-        let img_h = 64usize;
-        let channels = 3usize;
-        let n = n_total.min(100);
-
-        let mut vectors: Vec<Vec<f64>> = Vec::with_capacity(n);
-        for i in 0..n {
-            let v: Vec<f64> = (0..d)
-                .map(|j| {
-                    let off = (i * d + j) * 4;
-                    f32::from_le_bytes([float_data[off], float_data[off + 1], float_data[off + 2], float_data[off + 3]])
-                        as f64
-                })
-                .collect();
-            vectors.push(v);
-        }
-
-        // Helper: extract pixel at (row, col, channel) from flat vector
-        let pixel = |v: &[f64], r: usize, c: usize, ch: usize| -> f64 { v[r * img_w * channels + c * channels + ch] };
-
-        // ── Projection 1: Golden-step 17D (baseline) ──
-        let base_dim = 17;
-        let golden_step = 11;
-        let golden_proj: Vec<Vec<f64>> = vectors
-            .iter()
-            .map(|v| {
-                let n_octaves = (d + base_dim - 1) / base_dim;
-                let mut sum = vec![0.0f64; base_dim];
-                let mut count = vec![0u32; base_dim];
-                for octave in 0..n_octaves {
-                    for bi in 0..base_dim {
-                        let dim = octave * base_dim + ((bi * golden_step) % base_dim);
-                        if dim < d {
-                            sum[bi] += v[dim];
-                            count[bi] += 1;
-                        }
-                    }
-                }
-                sum.iter()
-                    .zip(&count)
-                    .map(|(&s, &c)| if c > 0 { s / c as f64 } else { 0.0 })
-                    .collect()
-            })
-            .collect();
-
-        // ── Projection 2: 1/3 + 2/3 grid lines (4 lines × 64 × 3 = 768D) ──
-        let grid_lines_proj: Vec<Vec<f64>> = vectors
-            .iter()
-            .map(|v| {
-                let mut features = Vec::with_capacity(768);
-                // Horizontal lines at row 1/3 and 2/3
-                let r1 = img_h / 3; // row 21
-                let r2 = 2 * img_h / 3; // row 43
-                for &r in &[r1, r2] {
-                    for c in 0..img_w {
-                        for ch in 0..channels {
-                            features.push(pixel(v, r, c, ch));
-                        }
-                    }
-                }
-                // Vertical lines at col 1/3 and 2/3
-                let c1 = img_w / 3;
-                let c2 = 2 * img_w / 3;
-                for &c in &[c1, c2] {
-                    for r in 0..img_h {
-                        for ch in 0..channels {
-                            features.push(pixel(v, r, c, ch));
-                        }
-                    }
-                }
-                features
-            })
-            .collect();
-
-        // ── Projection 3: 1/2 + 1/3 + 2/3 grid (6 lines × 64 × 3 = 1152D) ──
-        let full_grid_proj: Vec<Vec<f64>> = vectors
-            .iter()
-            .map(|v| {
-                let mut features = Vec::with_capacity(1152);
-                // Horizontal: 1/3, 1/2, 2/3
-                for &r in &[img_h / 3, img_h / 2, 2 * img_h / 3] {
-                    for c in 0..img_w {
-                        for ch in 0..channels {
-                            features.push(pixel(v, r, c, ch));
-                        }
-                    }
-                }
-                // Vertical: 1/3, 1/2, 2/3
-                for &c in &[img_w / 3, img_w / 2, 2 * img_w / 3] {
-                    for r in 0..img_h {
-                        for ch in 0..channels {
-                            features.push(pixel(v, r, c, ch));
-                        }
-                    }
-                }
-                features
-            })
-            .collect();
-
-        // ── Projection 4: 4 intersection points only (4 × 3 = 12D) ──
-        let intersections_proj: Vec<Vec<f64>> = vectors
-            .iter()
-            .map(|v| {
-                let mut features = Vec::with_capacity(12);
-                for &r in &[img_h / 3, 2 * img_h / 3] {
-                    for &c in &[img_w / 3, 2 * img_w / 3] {
-                        for ch in 0..channels {
-                            features.push(pixel(v, r, c, ch));
-                        }
-                    }
-                }
-                features
-            })
-            .collect();
-
-        // ── Ground truth pairwise distances ──
-        let mut gt_dists = Vec::new();
-        for i in 0..n {
-            for j in (i + 1)..n {
-                let d: f64 = vectors[i]
-                    .iter()
-                    .zip(&vectors[j])
-                    .map(|(a, b)| (a - b) * (a - b))
-                    .sum::<f64>()
-                    .sqrt();
-                gt_dists.push(d);
-            }
-        }
-
-        fn pairwise_l2(proj: &[Vec<f64>]) -> Vec<f64> {
-            let n = proj.len();
-            let mut d = Vec::new();
-            for i in 0..n {
-                for j in (i + 1)..n {
-                    let dist: f64 = proj[i]
-                        .iter()
-                        .zip(&proj[j])
-                        .map(|(a, b)| (a - b) * (a - b))
-                        .sum::<f64>()
-                        .sqrt();
-                    d.push(dist);
-                }
-            }
-            d
-        }
-
-        fn spearman(a: &[f64], b: &[f64]) -> f64 {
-            fn ranks(v: &[f64]) -> Vec<f64> {
-                let mut idx: Vec<(usize, f64)> = v.iter().copied().enumerate().collect();
-                idx.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-                let mut r = vec![0.0; v.len()];
-                for (rank, (i, _)) in idx.into_iter().enumerate() {
-                    r[i] = rank as f64;
-                }
-                r
-            }
-            let (ra, rb) = (ranks(a), ranks(b));
-            let n = a.len() as f64;
-            let (ma, mb) = (ra.iter().sum::<f64>() / n, rb.iter().sum::<f64>() / n);
-            let (mut cov, mut va, mut vb) = (0.0, 0.0, 0.0);
-            for i in 0..a.len() {
-                let (da, db) = (ra[i] - ma, rb[i] - mb);
-                cov += da * db;
-                va += da * da;
-                vb += db * db;
-            }
-            if va < 1e-10 || vb < 1e-10 {
-                0.0
-            } else {
-                cov / (va * vb).sqrt()
-            }
-        }
-
-        let rho_golden = spearman(&gt_dists, &pairwise_l2(&golden_proj));
-        let rho_grid4 = spearman(&gt_dists, &pairwise_l2(&grid_lines_proj));
-        let rho_grid6 = spearman(&gt_dists, &pairwise_l2(&full_grid_proj));
-        let rho_intersect = spearman(&gt_dists, &pairwise_l2(&intersections_proj));
-
-        eprintln!("=== Photography Grid vs Golden-Step on Tiny ImageNet ===");
-        eprintln!("  Golden-step 17D:        ρ = {:.4}  (34 bytes)", rho_golden);
-        eprintln!("  4 intersections 12D:    ρ = {:.4}  (24 bytes)", rho_intersect);
-        eprintln!("  4 grid lines 768D:      ρ = {:.4}  (1,536 bytes)", rho_grid4);
-        eprintln!("  6 grid lines 1152D:     ρ = {:.4}  (2,304 bytes)", rho_grid6);
-        eprintln!();
-        eprintln!("  Bytes vs ρ efficiency:");
-        eprintln!("  Golden:  {:.4} ρ / 34 bytes  = {:.4} ρ/byte", rho_golden, rho_golden / 34.0);
-        eprintln!("  4-grid:  {:.4} ρ / 1536 bytes = {:.6} ρ/byte", rho_grid4, rho_grid4 / 1536.0);
-        eprintln!("  6-grid:  {:.4} ρ / 2304 bytes = {:.6} ρ/byte", rho_grid6, rho_grid6 / 2304.0);
-        eprintln!("  Points:  {:.4} ρ / 24 bytes  = {:.4} ρ/byte", rho_intersect, rho_intersect / 24.0);
-
-        assert!(rho_golden > 0.3);
-        assert!(rho_grid4 > rho_golden, "grid lines should beat golden-step on raw pixels");
+    fn test_vsceil_strided() {
+        let full = arr1(&[1.2f32, 0.0, -1.7, 0.0, 0.5, 0.0]);
+        let strided = full.slice(s![..;2]);
+        let mut out = Array1::<f32>::zeros(3);
+        vsceil(strided, out.view_mut());
+        assert_eq!(out.as_slice().unwrap(), &[2.0, -1.0, 1.0]);
     }
+
     #[test]
-    #[ignore]
-    fn test_heel_hip_archetype_bundling() {
-        // Build HEEL (class) and HIP (within-class) archetypes from tiny-imagenet.
-        // Test: can we identify which class an image belongs to via bundle similarity?
-        let bytes = match std::fs::read("/tmp/tiny_imagenet_labeled.bin") {
-            Ok(b) => b,
-            Err(_) => {
-                eprintln!("SKIP: /tmp/tiny_imagenet_labeled.bin not found");
-                return;
-            }
-        };
-
-        let n = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
-        let d = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
-        let n_classes = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
-
-        // Read labels
-        let mut labels = Vec::with_capacity(n);
-        for i in 0..n {
-            let off = 12 + i * 4;
-            labels.push(u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]) as usize);
-        }
-
-        // Read pixel vectors
-        let pixel_start = 12 + n * 4;
-        let mut vectors: Vec<Vec<f64>> = Vec::with_capacity(n);
-        for i in 0..n {
-            let v: Vec<f64> = (0..d)
-                .map(|j| {
-                    let off = pixel_start + (i * d + j) * 4;
-                    f32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]) as f64
-                })
-                .collect();
-            vectors.push(v);
-        }
-
-        eprintln!("Loaded {} images, {} classes, {}D", n, n_classes, d);
-
-        // ── Extract grid-line features (1/3 + 2/3, 768D per image) ──
-        let img_w = 64usize;
-        let img_h = 64usize;
-        let ch = 3usize;
-        let pixel = |v: &[f64], r: usize, c: usize, channel: usize| -> f64 { v[r * img_w * ch + c * ch + channel] };
-
-        let features: Vec<Vec<f64>> = vectors
-            .iter()
-            .map(|v| {
-                let mut f = Vec::with_capacity(768);
-                for &r in &[img_h / 3, 2 * img_h / 3] {
-                    for c in 0..img_w {
-                        for channel in 0..ch {
-                            f.push(pixel(v, r, c, channel));
-                        }
-                    }
-                }
-                for &c in &[img_w / 3, 2 * img_w / 3] {
-                    for r in 0..img_h {
-                        for channel in 0..ch {
-                            f.push(pixel(v, r, c, channel));
-                        }
-                    }
-                }
-                f
-            })
-            .collect();
-
-        let feat_d = features[0].len();
-
-        // ── Build HEEL archetypes: mean feature vector per class ──
-        let mut heel_archetypes: Vec<Vec<f64>> = vec![vec![0.0; feat_d]; n_classes];
-        let mut class_counts = vec![0usize; n_classes];
-        for (i, &label) in labels.iter().enumerate() {
-            for j in 0..feat_d {
-                heel_archetypes[label][j] += features[i][j];
-            }
-            class_counts[label] += 1;
-        }
-        for c in 0..n_classes {
-            if class_counts[c] > 0 {
-                for j in 0..feat_d {
-                    heel_archetypes[c][j] /= class_counts[c] as f64;
-                }
-            }
-        }
-
-        // ── Test: classify each image by nearest HEEL archetype ──
-        let mut correct = 0usize;
-        let mut total = 0usize;
-        for (i, &true_label) in labels.iter().enumerate() {
-            let mut best_class = 0;
-            let mut best_dist = f64::MAX;
-            for c in 0..n_classes {
-                if class_counts[c] == 0 {
-                    continue;
-                }
-                let dist: f64 = features[i]
-                    .iter()
-                    .zip(&heel_archetypes[c])
-                    .map(|(a, b)| (a - b) * (a - b))
-                    .sum::<f64>()
-                    .sqrt();
-                if dist < best_dist {
-                    best_dist = dist;
-                    best_class = c;
-                }
-            }
-            if best_class == true_label {
-                correct += 1;
-            }
-            total += 1;
-        }
-        let accuracy = correct as f64 / total as f64;
-
-        // ── Test: classify via golden-step compressed archetypes (34 bytes each) ──
-        let base_dim = 17;
-        let golden_step = 11;
-
-        let compress = |v: &[f64]| -> Vec<f64> {
-            let fd = v.len();
-            let n_oct = (fd + base_dim - 1) / base_dim;
-            let mut sum = vec![0.0f64; base_dim];
-            let mut cnt = vec![0u32; base_dim];
-            for oct in 0..n_oct {
-                for bi in 0..base_dim {
-                    let dim = oct * base_dim + ((bi * golden_step) % base_dim);
-                    if dim < fd {
-                        sum[bi] += v[dim];
-                        cnt[bi] += 1;
-                    }
-                }
-            }
-            sum.iter()
-                .zip(&cnt)
-                .map(|(&s, &c)| if c > 0 { s / c as f64 } else { 0.0 })
-                .collect()
-        };
-
-        let compressed_archetypes: Vec<Vec<f64>> = heel_archetypes.iter().map(|a| compress(a)).collect();
-        let compressed_features: Vec<Vec<f64>> = features.iter().map(|f| compress(f)).collect();
-
-        let mut correct_compressed = 0usize;
-        for (i, &true_label) in labels.iter().enumerate() {
-            let mut best_class = 0;
-            let mut best_dist = f64::MAX;
-            for c in 0..n_classes {
-                if class_counts[c] == 0 {
-                    continue;
-                }
-                let dist: f64 = compressed_features[i]
-                    .iter()
-                    .zip(&compressed_archetypes[c])
-                    .map(|(a, b)| (a - b) * (a - b))
-                    .sum::<f64>()
-                    .sqrt();
-                if dist < best_dist {
-                    best_dist = dist;
-                    best_class = c;
-                }
-            }
-            if best_class == true_label {
-                correct_compressed += 1;
-            }
-        }
-        let accuracy_compressed = correct_compressed as f64 / total as f64;
-
-        // ── CHAODA: find outliers (images far from ALL archetypes) ──
-        let mut max_distances: Vec<(usize, f64)> = Vec::new();
-        for (i, _) in labels.iter().enumerate() {
-            let mut min_dist = f64::MAX;
-            for c in 0..n_classes {
-                if class_counts[c] == 0 {
-                    continue;
-                }
-                let dist: f64 = features[i]
-                    .iter()
-                    .zip(&heel_archetypes[c])
-                    .map(|(a, b)| (a - b) * (a - b))
-                    .sum::<f64>()
-                    .sqrt();
-                if dist < min_dist {
-                    min_dist = dist;
-                }
-            }
-            max_distances.push((i, min_dist));
-        }
-        max_distances.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-        let outlier_count = max_distances.iter().take(10).count();
-
-        eprintln!("=== HEEL Archetype Classification (Tiny ImageNet) ===");
-        eprintln!("  Classes: {}, Images: {}", n_classes, total);
-        eprintln!("  Grid-line features (768D):");
-        eprintln!("    HEEL accuracy:           {:.1}% ({}/{})", accuracy * 100.0, correct, total);
-        eprintln!("  Golden-step compressed (17D = 34 bytes):");
-        eprintln!(
-            "    Compressed accuracy:     {:.1}% ({}/{})",
-            accuracy_compressed * 100.0,
-            correct_compressed,
-            total
-        );
-        eprintln!("  Accuracy loss from compression: {:.1}%", (accuracy - accuracy_compressed) * 100.0);
-        eprintln!("  Top-10 outliers (CHAODA candidates):");
-        for (idx, dist) in max_distances.iter().take(5) {
-            eprintln!("    image {} (class {}): dist={:.4}", idx, labels[*idx], dist);
-        }
-        eprintln!("  Random baseline (1/{}): {:.1}%", n_classes, 100.0 / n_classes as f64);
-
-        assert!(accuracy > 1.0 / n_classes as f64, "should beat random");
-        assert!(accuracy_compressed > 1.0 / n_classes as f64, "compressed should beat random too");
+    fn test_vsround_contig() {
+        let x = arr1(&[1.4f32, 1.6, -1.4, -1.6]);
+        let mut out = Array1::<f32>::zeros(4);
+        vsround(x.view(), out.view_mut());
+        assert_eq!(out.as_slice().unwrap(), &[1.0, 2.0, -1.0, -2.0]);
     }
+
     #[test]
-    #[ignore]
-    fn test_hip_multi_object_detection() {
-        // HIP bundles for multi-object detection:
-        // Given an image, detect if it contains features of MULTIPLE classes
-        // by unbinding one class archetype and checking residual against others.
-        //
-        // Bird/fence scenario: if unbind(image, bird) correlates with fence → both present.
-
-        let bytes = match std::fs::read("/tmp/tiny_imagenet_labeled.bin") {
-            Ok(b) => b,
-            Err(_) => {
-                eprintln!("SKIP: /tmp/tiny_imagenet_labeled.bin not found");
-                return;
-            }
-        };
-
-        let n = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
-        let d = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
-        let n_classes = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
-
-        let mut labels = Vec::with_capacity(n);
-        for i in 0..n {
-            let off = 12 + i * 4;
-            labels.push(u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]) as usize);
-        }
-
-        let pixel_start = 12 + n * 4;
-        let img_w = 64usize;
-        let img_h = 64usize;
-        let ch = 3usize;
-
-        // Extract grid-line features (768D)
-        let features: Vec<Vec<f64>> = (0..n)
-            .map(|i| {
-                let v_start = pixel_start + i * d * 4;
-                let pixel = |r: usize, c: usize, channel: usize| -> f64 {
-                    let off = v_start + (r * img_w * ch + c * ch + channel) * 4;
-                    f32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]) as f64
-                };
-                let mut f = Vec::with_capacity(768);
-                for &r in &[img_h / 3, 2 * img_h / 3] {
-                    for c in 0..img_w {
-                        for channel in 0..ch {
-                            f.push(pixel(r, c, channel));
-                        }
-                    }
-                }
-                for &c in &[img_w / 3, 2 * img_w / 3] {
-                    for r in 0..img_h {
-                        for channel in 0..ch {
-                            f.push(pixel(r, c, channel));
-                        }
-                    }
-                }
-                f
-            })
-            .collect();
-
-        let feat_d = features[0].len();
-
-        // ── Build HEEL archetypes per class ──
-        let mut archetypes: Vec<Vec<f64>> = vec![vec![0.0; feat_d]; n_classes];
-        let mut counts = vec![0usize; n_classes];
-        for (i, &label) in labels.iter().enumerate() {
-            for j in 0..feat_d {
-                archetypes[label][j] += features[i][j];
-            }
-            counts[label] += 1;
-        }
-        for c in 0..n_classes {
-            if counts[c] > 0 {
-                for j in 0..feat_d {
-                    archetypes[c][j] /= counts[c] as f64;
-                }
-            }
-        }
-
-        // ── Cosine similarity helper ──
-        let cosine = |a: &[f64], b: &[f64]| -> f64 {
-            let dot: f64 = a.iter().zip(b).map(|(x, y)| x * y).sum();
-            let mag_a: f64 = a.iter().map(|x| x * x).sum::<f64>().sqrt();
-            let mag_b: f64 = b.iter().map(|x| x * x).sum::<f64>().sqrt();
-            if mag_a < 1e-10 || mag_b < 1e-10 {
-                0.0
-            } else {
-                dot / (mag_a * mag_b)
-            }
-        };
-
-        // ── HIP: within-class variance (how spread is each class?) ──
-        let mut hip_variance = vec![0.0f64; n_classes];
-        for (i, &label) in labels.iter().enumerate() {
-            let dist: f64 = features[i]
-                .iter()
-                .zip(&archetypes[label])
-                .map(|(a, b)| (a - b) * (a - b))
-                .sum::<f64>()
-                .sqrt();
-            hip_variance[label] += dist;
-        }
-        for c in 0..n_classes {
-            if counts[c] > 0 {
-                hip_variance[c] /= counts[c] as f64;
-            }
-        }
-
-        // ── Multi-object simulation: "subtract" one class, check residual ──
-        // For each image, compute: residual = image_features - nearest_archetype
-        // Then check: does the residual correlate with ANY other archetype?
-        // High correlation → multi-object (or class confusion at the boundary)
-
-        let mut multi_object_candidates = Vec::new();
-        for (i, &true_label) in labels.iter().enumerate() {
-            // Subtract the true class archetype (simulates "removing" the primary object)
-            let residual: Vec<f64> = features[i]
-                .iter()
-                .zip(&archetypes[true_label])
-                .map(|(a, b)| a - b)
-                .collect();
-
-            // Check residual against all OTHER class archetypes
-            let mut best_other_class = 0;
-            let mut best_other_sim = f64::NEG_INFINITY;
-            for c in 0..n_classes {
-                if c == true_label || counts[c] == 0 {
-                    continue;
-                }
-                let sim = cosine(&residual, &archetypes[c]);
-                if sim > best_other_sim {
-                    best_other_sim = sim;
-                    best_other_class = c;
-                }
-            }
-
-            if best_other_sim > 0.3 {
-                multi_object_candidates.push((i, true_label, best_other_class, best_other_sim));
-            }
-        }
-
-        // ── BRANCH: intersection features between class pairs ──
-        // For the top multi-object candidates, the residual IS the intersection
-        // features — what's left after removing the primary class IS the secondary class.
-        let mut pair_counts: std::collections::HashMap<(usize, usize), usize> = std::collections::HashMap::new();
-        for &(_, primary, secondary, _) in &multi_object_candidates {
-            let key = if primary < secondary {
-                (primary, secondary)
-            } else {
-                (secondary, primary)
-            };
-            *pair_counts.entry(key).or_insert(0) += 1;
-        }
-
-        // ── CHAODA: outliers are images that don't fit ANY archetype well ──
-        // (far from primary AND residual doesn't match secondary)
-        let mut outliers = Vec::new();
-        for (i, &true_label) in labels.iter().enumerate() {
-            let primary_dist: f64 = features[i]
-                .iter()
-                .zip(&archetypes[true_label])
-                .map(|(a, b)| (a - b) * (a - b))
-                .sum::<f64>()
-                .sqrt();
-
-            // If far from own class AND not detected as multi-object
-            let is_multi = multi_object_candidates
-                .iter()
-                .any(|&(idx, _, _, _)| idx == i);
-            if primary_dist > hip_variance[true_label] * 2.0 && !is_multi {
-                outliers.push((i, true_label, primary_dist));
-            }
-        }
-
-        eprintln!("=== HIP Multi-Object Detection ===");
-        eprintln!("  Images: {}, Classes: {}", n, n_classes);
-        eprintln!("  Multi-object candidates (residual sim > 0.3): {}", multi_object_candidates.len());
-        eprintln!("  Top class-pair intersections (BRANCH traversals):");
-        let mut pairs: Vec<_> = pair_counts.iter().collect();
-        pairs.sort_by(|a, b| b.1.cmp(a.1));
-        for ((c1, c2), count) in pairs.iter().take(5) {
-            eprintln!("    class {} × class {}: {} images share features", c1, c2, count);
-        }
-        eprintln!("  CHAODA outliers (far from all archetypes): {}", outliers.len());
-        for (idx, label, dist) in outliers.iter().take(3) {
-            eprintln!(
-                "    image {} (class {}): dist={:.3} (>{:.3} threshold)",
-                idx,
-                label,
-                dist,
-                hip_variance[*label] * 2.0
-            );
-        }
-        eprintln!("  Per-class HIP spread (intra-class variance):");
-        for c in 0..n_classes {
-            if counts[c] > 0 {
-                eprintln!("    class {}: variance={:.3}, count={}", c, hip_variance[c], counts[c]);
-            }
-        }
-
-        assert!(multi_object_candidates.len() > 0, "should find some multi-object candidates");
+    fn test_vsround_strided() {
+        let full = arr1(&[1.4f32, 0.0, 1.6, 0.0, -1.4, 0.0, -1.6, 0.0]);
+        let strided = full.slice(s![..;2]);
+        let mut out = Array1::<f32>::zeros(4);
+        vsround(strided, out.view_mut());
+        assert_eq!(out.as_slice().unwrap(), &[1.0, 2.0, -1.0, -2.0]);
     }
+
     #[test]
-    #[ignore]
-    fn test_centroid_focus_classification() {
-        // Centroid-focused classification:
-        // 1. Find energy centroid around each 1/3 intersection
-        // 2. Extract detailed patch at centroid
-        // 3. Classify patch → more precise than whole-image archetype
-
-        let bytes = match std::fs::read("/tmp/tiny_imagenet_labeled.bin") {
-            Ok(b) => b,
-            Err(_) => {
-                eprintln!("SKIP: /tmp/tiny_imagenet_labeled.bin not found");
-                return;
-            }
-        };
-
-        let n = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
-        let d = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
-        let n_classes = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
-
-        let mut labels = Vec::with_capacity(n);
-        for i in 0..n {
-            let off = 12 + i * 4;
-            labels.push(u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]) as usize);
-        }
-
-        let pixel_start = 12 + n * 4;
-        let img_w = 64usize;
-        let img_h = 64usize;
-        let ch = 3usize;
-
-        // ── Helper: read pixel from binary ──
-        let pixel = |img_idx: usize, r: usize, c: usize, channel: usize| -> f64 {
-            let off = pixel_start + (img_idx * d + r * img_w * ch + c * ch + channel) * 4;
-            f32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]) as f64
-        };
-
-        // ── Helper: luminance at (r,c) ──
-        let luma = |img_idx: usize, r: usize, c: usize| -> f64 {
-            0.299 * pixel(img_idx, r, c, 0) + 0.587 * pixel(img_idx, r, c, 1) + 0.114 * pixel(img_idx, r, c, 2)
-        };
-
-        // ── Step 1: For each image, find energy centroid around each 1/3 intersection ──
-        let patch_radius = 8usize; // 16×16 patch around each intersection
-        let intersections = [
-            (img_h / 3, img_w / 3),
-            (img_h / 3, 2 * img_w / 3),
-            (2 * img_h / 3, img_w / 3),
-            (2 * img_h / 3, 2 * img_w / 3),
-        ];
-
-        struct FocusPoint {
-            centroid_r: f64,
-            centroid_c: f64,
-            energy: f64,
-        }
-
-        let n_use = n.min(200);
-
-        // For each image, find the highest-energy intersection and its centroid
-        let mut focus_features: Vec<Vec<f64>> = Vec::with_capacity(n_use);
-
-        for img_idx in 0..n_use {
-            let mut best_focus = FocusPoint {
-                centroid_r: 32.0,
-                centroid_c: 32.0,
-                energy: 0.0,
-            };
-
-            for &(ir, ic) in &intersections {
-                // Compute energy centroid within patch
-                let mut total_energy = 0.0f64;
-                let mut weighted_r = 0.0f64;
-                let mut weighted_c = 0.0f64;
-
-                let r_min = ir.saturating_sub(patch_radius);
-                let r_max = (ir + patch_radius).min(img_h);
-                let c_min = ic.saturating_sub(patch_radius);
-                let c_max = (ic + patch_radius).min(img_w);
-
-                for r in r_min..r_max {
-                    for c in c_min..c_max {
-                        let e = luma(img_idx, r, c);
-                        // Use gradient magnitude as energy (edges = objects)
-                        let grad = if r > 0 && r < img_h - 1 && c > 0 && c < img_w - 1 {
-                            let dx = luma(img_idx, r, c + 1) - luma(img_idx, r, c - 1);
-                            let dy = luma(img_idx, r + 1, c) - luma(img_idx, r - 1, c);
-                            (dx * dx + dy * dy).sqrt()
-                        } else {
-                            0.0
-                        };
-                        total_energy += grad;
-                        weighted_r += r as f64 * grad;
-                        weighted_c += c as f64 * grad;
-                    }
-                }
-
-                if total_energy > best_focus.energy {
-                    best_focus = FocusPoint {
-                        centroid_r: if total_energy > 0.0 {
-                            weighted_r / total_energy
-                        } else {
-                            ir as f64
-                        },
-                        centroid_c: if total_energy > 0.0 {
-                            weighted_c / total_energy
-                        } else {
-                            ic as f64
-                        },
-                        energy: total_energy,
-                    };
-                }
-            }
-
-            // ── Step 2: Extract detailed patch at centroid (12×12 = 144 pixels × 3ch = 432D) ──
-            let focus_radius = 6usize;
-            let cr = best_focus.centroid_r.round() as usize;
-            let cc = best_focus.centroid_c.round() as usize;
-            let r_min = cr.saturating_sub(focus_radius);
-            let r_max = (cr + focus_radius).min(img_h);
-            let c_min = cc.saturating_sub(focus_radius);
-            let c_max = (cc + focus_radius).min(img_w);
-
-            let mut patch_features = Vec::with_capacity(432);
-            for r in r_min..r_max {
-                for c in c_min..c_max {
-                    for channel in 0..ch {
-                        patch_features.push(pixel(img_idx, r, c, channel));
-                    }
-                }
-            }
-            // Pad to fixed size if patch was clipped by image boundary
-            patch_features.resize(432, 0.0);
-            focus_features.push(patch_features);
-        }
-
-        let feat_d = 432;
-
-        // ── Step 3: Build archetypes from centroid patches ──
-        let mut focus_archetypes: Vec<Vec<f64>> = vec![vec![0.0; feat_d]; n_classes];
-        let mut counts = vec![0usize; n_classes];
-        for (i, &label) in labels[..n_use].iter().enumerate() {
-            for j in 0..feat_d {
-                focus_archetypes[label][j] += focus_features[i][j];
-            }
-            counts[label] += 1;
-        }
-        for c in 0..n_classes {
-            if counts[c] > 0 {
-                for j in 0..feat_d {
-                    focus_archetypes[c][j] /= counts[c] as f64;
-                }
-            }
-        }
-
-        // ── Step 4: Classify by nearest centroid-patch archetype ──
-        let mut correct_focus = 0usize;
-        for (i, &true_label) in labels[..n_use].iter().enumerate() {
-            let mut best_class = 0;
-            let mut best_dist = f64::MAX;
-            for c in 0..n_classes {
-                if counts[c] == 0 {
-                    continue;
-                }
-                let dist: f64 = focus_features[i]
-                    .iter()
-                    .zip(&focus_archetypes[c])
-                    .map(|(a, b)| (a - b) * (a - b))
-                    .sum::<f64>()
-                    .sqrt();
-                if dist < best_dist {
-                    best_dist = dist;
-                    best_class = c;
-                }
-            }
-            if best_class == true_label {
-                correct_focus += 1;
-            }
-        }
-        let accuracy_focus = correct_focus as f64 / n_use as f64;
-
-        // ── Step 5: Compress centroid patches via golden-step ──
-        let base_dim = 17;
-        let golden_step = 11;
-        let compress = |v: &[f64]| -> Vec<f64> {
-            let fd = v.len();
-            let n_oct = (fd + base_dim - 1) / base_dim;
-            let mut sum = vec![0.0f64; base_dim];
-            let mut cnt = vec![0u32; base_dim];
-            for oct in 0..n_oct {
-                for bi in 0..base_dim {
-                    let dim = oct * base_dim + ((bi * golden_step) % base_dim);
-                    if dim < fd {
-                        sum[bi] += v[dim];
-                        cnt[bi] += 1;
-                    }
-                }
-            }
-            sum.iter()
-                .zip(&cnt)
-                .map(|(&s, &c)| if c > 0 { s / c as f64 } else { 0.0 })
-                .collect()
-        };
-
-        let compressed_arch: Vec<Vec<f64>> = focus_archetypes.iter().map(|a| compress(a)).collect();
-        let compressed_feat: Vec<Vec<f64>> = focus_features.iter().map(|f| compress(f)).collect();
-
-        let mut correct_compressed = 0usize;
-        for (i, &true_label) in labels[..n_use].iter().enumerate() {
-            let mut best_class = 0;
-            let mut best_dist = f64::MAX;
-            for c in 0..n_classes {
-                if counts[c] == 0 {
-                    continue;
-                }
-                let dist: f64 = compressed_feat[i]
-                    .iter()
-                    .zip(&compressed_arch[c])
-                    .map(|(a, b)| (a - b) * (a - b))
-                    .sum::<f64>()
-                    .sqrt();
-                if dist < best_dist {
-                    best_dist = dist;
-                    best_class = c;
-                }
-            }
-            if best_class == true_label {
-                correct_compressed += 1;
-            }
-        }
-        let accuracy_compressed = correct_compressed as f64 / n_use as f64;
-
-        eprintln!("=== Centroid-Focus Classification ===");
-        eprintln!("  Images: {}, Classes: {}", n_use, n_classes);
-        eprintln!();
-        eprintln!("  Centroid patch 432D:     {:.1}% ({}/{})", accuracy_focus * 100.0, correct_focus, n_use);
-        eprintln!("  Compressed 17D (34B):    {:.1}% ({}/{})", accuracy_compressed * 100.0, correct_compressed, n_use);
-        eprintln!("  Random baseline:         {:.1}%", 100.0 / n_classes as f64);
-        eprintln!();
-        eprintln!("  Compare to grid-line approaches:");
-        eprintln!("    Grid 768D:     29.8%  (1536 bytes)");
-        eprintln!("    Grid→17D:      14.2%  (34 bytes)");
-        eprintln!("    Focus 432D:    {:.1}%  (864 bytes) ← centroid sweet spot", accuracy_focus * 100.0);
-        eprintln!("    Focus→17D:     {:.1}%  (34 bytes) ← compressed focus", accuracy_compressed * 100.0);
-
-        assert!(accuracy_focus > 1.0 / n_classes as f64, "should beat random");
+    fn test_vsneg_contig() {
+        let x = arr1(&[1.0f32, -2.0, 3.5]);
+        let mut out = Array1::<f32>::zeros(3);
+        vsneg(x.view(), out.view_mut());
+        assert_eq!(out.as_slice().unwrap(), &[-1.0, 2.0, -3.5]);
     }
+
     #[test]
-    #[ignore]
-    fn test_multi_scan_nars_revision() {
-        // Multiple scan strategies with NARS evidence revision.
-        // Each scan is independent evidence. Revision increases confidence.
-        // Stop when confidence > threshold (elevation cascade).
-
-        let bytes = match std::fs::read("/tmp/tiny_imagenet_labeled.bin") {
-            Ok(b) => b,
-            Err(_) => {
-                eprintln!("SKIP: /tmp/tiny_imagenet_labeled.bin not found");
-                return;
-            }
-        };
-
-        let n = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
-        let d = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
-        let n_classes = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
-        let mut labels = Vec::with_capacity(n);
-        for i in 0..n {
-            let off = 12 + i * 4;
-            labels.push(u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]) as usize);
-        }
-        let pixel_start = 12 + n * 4;
-        let img_w = 64usize;
-        let img_h = 64usize;
-        let ch = 3usize;
-        let n_use = n.min(200);
-
-        let pixel = |img: usize, r: usize, c: usize, channel: usize| -> f64 {
-            let off = pixel_start + (img * d + r * img_w * ch + c * ch + channel) * 4;
-            f32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]) as f64
-        };
-        let luma = |img: usize, r: usize, c: usize| -> f64 {
-            0.299 * pixel(img, r, c, 0) + 0.587 * pixel(img, r, c, 1) + 0.114 * pixel(img, r, c, 2)
-        };
-
-        // ── NARS revision ──
-        fn nars_revision(f1: f64, c1: f64, f2: f64, c2: f64) -> (f64, f64) {
-            let w1 = c1 / (1.0 - c1 + 1e-9);
-            let w2 = c2 / (1.0 - c2 + 1e-9);
-            let w = w1 + w2;
-            let f = (w1 * f1 + w2 * f2) / (w + 1e-9);
-            let c = w / (w + 1.0);
-            (f.clamp(0.0, 1.0), c.clamp(0.0, 0.999))
-        }
-
-        // ── Scan strategy: extract features from a region ──
-        fn extract_patch(
-            pixel_fn: &dyn Fn(usize, usize, usize) -> f64, r_center: usize, c_center: usize, radius: usize,
-            img_h: usize, img_w: usize, ch: usize,
-        ) -> Vec<f64> {
-            let mut f = Vec::new();
-            let r0 = r_center.saturating_sub(radius);
-            let r1 = (r_center + radius).min(img_h);
-            let c0 = c_center.saturating_sub(radius);
-            let c1 = (c_center + radius).min(img_w);
-            for r in r0..r1 {
-                for c in c0..c1 {
-                    for channel in 0..ch {
-                        f.push(pixel_fn(r, c, channel));
-                    }
-                }
-            }
-            f
-        }
-
-        // ── Build archetypes for each scan strategy ──
-        // Strategy 1: NW intersection (1/3, 1/3), 8×8 patch
-        // Strategy 2: NE intersection (1/3, 2/3), 8×8 patch
-        // Strategy 3: SW intersection (2/3, 1/3), 8×8 patch
-        // Strategy 4: SE intersection (2/3, 2/3), 8×8 patch
-        // Strategy 5: center crop, 12×12 patch
-        // Strategy 6: horizontal midline
-        // Strategy 7: vertical midline
-
-        struct ScanStrategy {
-            name: &'static str,
-            extract: Box<dyn Fn(usize) -> Vec<f64>>,
-        }
-
-        // Build per-class archetypes for each strategy, then score
-        let intersections = [
-            ("NW patch", img_h / 3, img_w / 3, 4usize),
-            ("NE patch", img_h / 3, 2 * img_w / 3, 4),
-            ("SW patch", 2 * img_h / 3, img_w / 3, 4),
-            ("SE patch", 2 * img_h / 3, 2 * img_w / 3, 4),
-            ("Center", img_h / 2, img_w / 2, 6),
-        ];
-
-        // For each strategy, build archetypes and classify
-        let mut strategy_scores: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n_use]; // per-image: [(class, similarity)]
-
-        for &(name, cr, cc, radius) in &intersections {
-            // Extract features for all images
-            let features: Vec<Vec<f64>> = (0..n_use)
-                .map(|img| {
-                    let p = |r: usize, c: usize, channel: usize| pixel(img, r, c, channel);
-                    extract_patch(&p, cr, cc, radius, img_h, img_w, ch)
-                })
-                .collect();
-
-            if features[0].is_empty() {
-                continue;
-            }
-            let fd = features[0].len();
-
-            // Build archetypes
-            let mut arch = vec![vec![0.0; fd]; n_classes];
-            let mut cnt = vec![0usize; n_classes];
-            for (i, &l) in labels[..n_use].iter().enumerate() {
-                for j in 0..fd {
-                    arch[l][j] += features[i][j];
-                }
-                cnt[l] += 1;
-            }
-            for c in 0..n_classes {
-                if cnt[c] > 0 {
-                    for j in 0..fd {
-                        arch[c][j] /= cnt[c] as f64;
-                    }
-                }
-            }
-
-            // Score each image
-            for i in 0..n_use {
-                let mut best_c = 0;
-                let mut best_sim = f64::NEG_INFINITY;
-                for c in 0..n_classes {
-                    if cnt[c] == 0 {
-                        continue;
-                    }
-                    let dist: f64 = features[i]
-                        .iter()
-                        .zip(&arch[c])
-                        .map(|(a, b)| (a - b) * (a - b))
-                        .sum::<f64>()
-                        .sqrt();
-                    let sim = 1.0 / (1.0 + dist); // convert distance to similarity
-                    if sim > best_sim {
-                        best_sim = sim;
-                        best_c = c;
-                    }
-                }
-                strategy_scores[i].push((best_c, best_sim));
-            }
-        }
-
-        // ── Multi-scan NARS revision: combine all strategy votes ──
-        let mut correct_single = vec![0usize; intersections.len()]; // per-strategy accuracy
-        let mut correct_revised = 0usize;
-
-        for i in 0..n_use {
-            let true_label = labels[i];
-
-            // Single strategy accuracies
-            for (s, &(pred_class, _)) in strategy_scores[i].iter().enumerate() {
-                if pred_class == true_label {
-                    correct_single[s] += 1;
-                }
-            }
-
-            // NARS revision: accumulate weighted evidence across all strategies.
-            // Each scan contributes its similarity as evidence weight for the class it detected.
-            // Confidence grows with number of agreeing scans (NARS: more evidence = more confident).
-            let mut class_evidence: Vec<f64> = vec![0.0; n_classes]; // total similarity weight
-            let mut class_votes: Vec<u32> = vec![0; n_classes]; // vote count
-
-            for &(pred_class, similarity) in &strategy_scores[i] {
-                class_evidence[pred_class] += similarity;
-                class_votes[pred_class] += 1;
-            }
-
-            // Pick class with highest accumulated evidence.
-            // NARS interpretation: frequency = avg similarity, confidence = vote proportion.
-            let total_scans = strategy_scores[i].len() as f64;
-            let mut best_c = 0;
-            let mut best_score = f64::NEG_INFINITY;
-            for c in 0..n_classes {
-                if class_votes[c] == 0 {
-                    continue;
-                }
-                let avg_sim = class_evidence[c] / class_votes[c] as f64;
-                let vote_frac = class_votes[c] as f64 / total_scans;
-                // Combined: how similar (frequency) × how many agree (confidence)
-                let score = avg_sim * vote_frac;
-                if score > best_score {
-                    best_score = score;
-                    best_c = c;
-                }
-            }
-            if best_c == true_label {
-                correct_revised += 1;
-            }
-        }
-
-        let revised_accuracy = correct_revised as f64 / n_use as f64;
-
-        eprintln!("=== Multi-Scan NARS Revision ===");
-        eprintln!("  {} images, {} classes, {} scan strategies", n_use, n_classes, intersections.len());
-        eprintln!();
-        eprintln!("  Per-strategy accuracy:");
-        for (s, &(name, _, _, _)) in intersections.iter().enumerate() {
-            let acc = correct_single[s] as f64 / n_use as f64;
-            eprintln!("    {}: {:.1}% ({}/{})", name, acc * 100.0, correct_single[s], n_use);
-        }
-        eprintln!();
-        eprintln!(
-            "  NARS-revised (all strategies combined): {:.1}% ({}/{})",
-            revised_accuracy * 100.0,
-            correct_revised,
-            n_use
-        );
-        eprintln!("  Random baseline: {:.1}%", 100.0 / n_classes as f64);
-        eprintln!();
-        let best_single = correct_single.iter().max().unwrap();
-        let best_single_acc = *best_single as f64 / n_use as f64;
-        let improvement = revised_accuracy - best_single_acc;
-        eprintln!("  Improvement over best single scan: {:.1}%", improvement * 100.0);
-        eprintln!("  This is NARS evidence accumulation — each scan adds confidence.");
-
-        assert!(
-            revised_accuracy > best_single_acc,
-            "NARS revision should improve over best single: {:.1}% vs {:.1}%",
-            revised_accuracy * 100.0,
-            best_single_acc * 100.0
-        );
+    fn test_vsneg_strided_2d() {
+        let m = arr2(&[[1.0f32, -2.0], [-3.0, 4.0]]);
+        let mut out = Array2::<f32>::zeros((2, 2));
+        vsneg(m.view(), out.view_mut());
+        assert_eq!(out[[0, 0]], -1.0);
+        assert_eq!(out[[1, 1]], -4.0);
     }
+
     #[test]
-    #[ignore]
-    fn test_hotspot_8x8_grid_bundling() {
-        // 8×8 grid of 8×8 cells. For each 1/3 intersection, find the 4 hottest
-        // neighboring cells (by gradient energy), bundle their features.
-
-        let bytes = match std::fs::read("/tmp/tiny_imagenet_labeled.bin") {
-            Ok(b) => b,
-            Err(_) => {
-                eprintln!("SKIP: /tmp/tiny_imagenet_labeled.bin not found");
-                return;
-            }
-        };
-
-        let n = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
-        let d = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
-        let n_classes = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
-        let mut labels = Vec::with_capacity(n);
-        for i in 0..n {
-            let off = 12 + i * 4;
-            labels.push(u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]) as usize);
-        }
-        let pixel_start = 12 + n * 4;
-        let img_w = 64usize;
-        let img_h = 64usize;
-        let ch = 3usize;
-        let n_use = n.min(200);
-
-        let pixel = |img: usize, r: usize, c: usize, channel: usize| -> f64 {
-            let off = pixel_start + (img * d + r * img_w * ch + c * ch + channel) * 4;
-            f32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]) as f64
-        };
-        let luma = |img: usize, r: usize, c: usize| -> f64 {
-            0.299 * pixel(img, r, c, 0) + 0.587 * pixel(img, r, c, 1) + 0.114 * pixel(img, r, c, 2)
-        };
-
-        let cell_size = 8usize; // 8×8 cells
-        let grid_w = img_w / cell_size; // 8 cells wide
-        let grid_h = img_h / cell_size; // 8 cells tall
-        let cell_feat_d = cell_size * cell_size * ch; // 192 features per cell
-
-        // 1/3 intersections in cell coordinates
-        let intersections_cell = [
-            (grid_h / 3, grid_w / 3),         // ~(2,2)
-            (grid_h / 3, 2 * grid_w / 3),     // ~(2,5)
-            (2 * grid_h / 3, grid_w / 3),     // ~(5,2)
-            (2 * grid_h / 3, 2 * grid_w / 3), // ~(5,5)
-        ];
-
-        // For each image: for each intersection, find 4 hottest neighboring cells, bundle
-        let mut features: Vec<Vec<f64>> = Vec::with_capacity(n_use);
-
-        for img in 0..n_use {
-            let mut img_features = Vec::new();
-
-            // Compute gradient energy for each cell
-            let mut cell_energy = vec![vec![0.0f64; grid_w]; grid_h];
-            for gr in 0..grid_h {
-                for gc in 0..grid_w {
-                    let mut energy = 0.0f64;
-                    let r0 = gr * cell_size;
-                    let c0 = gc * cell_size;
-                    for r in r0..(r0 + cell_size) {
-                        for c in c0..(c0 + cell_size) {
-                            if r > 0 && r < img_h - 1 && c > 0 && c < img_w - 1 {
-                                let dx = luma(img, r, c + 1) - luma(img, r, c.saturating_sub(1));
-                                let dy = luma(img, r + 1, c) - luma(img, r.saturating_sub(1), c);
-                                energy += (dx * dx + dy * dy).sqrt();
-                            }
-                        }
-                    }
-                    cell_energy[gr][gc] = energy;
-                }
-            }
-
-            // For each intersection, get 4 hottest neighboring cells (2×2 around intersection)
-            for &(ir, ic) in &intersections_cell {
-                // Candidate cells: the 4 cells around the intersection point
-                let mut candidates: Vec<(usize, usize, f64)> = Vec::new();
-                for dr in 0..2usize {
-                    for dc in 0..2usize {
-                        let gr = (ir + dr).min(grid_h - 1);
-                        let gc = (ic + dc).min(grid_w - 1);
-                        candidates.push((gr, gc, cell_energy[gr][gc]));
-                    }
-                }
-                // Sort by energy (hottest first) — but we take all 4 for bundling
-                candidates.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
-
-                // Bundle: average the 4 cell feature vectors (majority vote analog for f64)
-                let mut bundle = vec![0.0f64; cell_feat_d];
-                for &(gr, gc, _) in &candidates {
-                    let r0 = gr * cell_size;
-                    let c0 = gc * cell_size;
-                    let mut idx = 0;
-                    for r in r0..(r0 + cell_size) {
-                        for c in c0..(c0 + cell_size) {
-                            for channel in 0..ch {
-                                bundle[idx] += pixel(img, r, c, channel);
-                                idx += 1;
-                            }
-                        }
-                    }
-                }
-                // Normalize bundle (mean of 4 cells)
-                for v in bundle.iter_mut() {
-                    *v /= 4.0;
-                }
-                img_features.extend_from_slice(&bundle);
-            }
-
-            features.push(img_features);
-        }
-
-        let feat_d = features[0].len(); // 4 intersections × 192 = 768
-
-        // Build archetypes and classify
-        let mut archetypes = vec![vec![0.0; feat_d]; n_classes];
-        let mut counts = vec![0usize; n_classes];
-        for (i, &l) in labels[..n_use].iter().enumerate() {
-            for j in 0..feat_d {
-                archetypes[l][j] += features[i][j];
-            }
-            counts[l] += 1;
-        }
-        for c in 0..n_classes {
-            if counts[c] > 0 {
-                for j in 0..feat_d {
-                    archetypes[c][j] /= counts[c] as f64;
-                }
-            }
-        }
-
-        let mut correct = 0usize;
-        for (i, &true_label) in labels[..n_use].iter().enumerate() {
-            let mut best_c = 0;
-            let mut best_d = f64::MAX;
-            for c in 0..n_classes {
-                if counts[c] == 0 {
-                    continue;
-                }
-                let dist: f64 = features[i]
-                    .iter()
-                    .zip(&archetypes[c])
-                    .map(|(a, b)| (a - b) * (a - b))
-                    .sum::<f64>()
-                    .sqrt();
-                if dist < best_d {
-                    best_d = dist;
-                    best_c = c;
-                }
-            }
-            if best_c == true_label {
-                correct += 1;
-            }
-        }
-        let accuracy = correct as f64 / n_use as f64;
-
-        // Also: golden-step compressed
-        let base_dim = 17;
-        let golden_step = 11;
-        let compress = |v: &[f64]| -> Vec<f64> {
-            let fd = v.len();
-            let n_oct = (fd + base_dim - 1) / base_dim;
-            let mut sum = vec![0.0f64; base_dim];
-            let mut cnt = vec![0u32; base_dim];
-            for oct in 0..n_oct {
-                for bi in 0..base_dim {
-                    let dim = oct * base_dim + ((bi * golden_step) % base_dim);
-                    if dim < fd {
-                        sum[bi] += v[dim];
-                        cnt[bi] += 1;
-                    }
-                }
-            }
-            sum.iter()
-                .zip(&cnt)
-                .map(|(&s, &c)| if c > 0 { s / c as f64 } else { 0.0 })
-                .collect()
-        };
-        let c_arch: Vec<Vec<f64>> = archetypes.iter().map(|a| compress(a)).collect();
-        let c_feat: Vec<Vec<f64>> = features.iter().map(|f| compress(f)).collect();
-        let mut correct_c = 0;
-        for (i, &tl) in labels[..n_use].iter().enumerate() {
-            let mut best_c = 0;
-            let mut best_d = f64::MAX;
-            for c in 0..n_classes {
-                if counts[c] == 0 {
-                    continue;
-                }
-                let dist: f64 = c_feat[i]
-                    .iter()
-                    .zip(&c_arch[c])
-                    .map(|(a, b)| (a - b) * (a - b))
-                    .sum::<f64>()
-                    .sqrt();
-                if dist < best_d {
-                    best_d = dist;
-                    best_c = c;
-                }
-            }
-            if best_c == tl {
-                correct_c += 1;
-            }
-        }
-        let acc_c = correct_c as f64 / n_use as f64;
-
-        eprintln!("=== 8×8 Grid Hotspot Bundling ===");
-        eprintln!("  {} images, {} classes", n_use, n_classes);
-        eprintln!("  Cell size: {}×{}, Grid: {}×{}", cell_size, cell_size, grid_w, grid_h);
-        eprintln!("  Features: 4 intersections × 4 hot cells bundled × {}D = {}D", cell_feat_d, feat_d);
-        eprintln!();
-        eprintln!("  Hotspot bundle 768D:     {:.1}% ({}/{})", accuracy * 100.0, correct, n_use);
-        eprintln!("  Compressed 17D (34B):    {:.1}% ({}/{})", acc_c * 100.0, correct_c, n_use);
-        eprintln!("  Random baseline:         {:.1}%", 100.0 / n_classes as f64);
-        eprintln!();
-        eprintln!("  Compare all 768D approaches:");
-        eprintln!("    Grid lines:            29.8%  (4 full scan lines)");
-        eprintln!("    Hotspot bundles:       {:.1}%  (4×4 hot cells at 1/3 points)", accuracy * 100.0);
-        eprintln!("    Centroid focus (432D): 50.5%  (single best intersection patch)");
-
-        assert!(accuracy > 1.0 / n_classes as f64, "should beat random");
+    fn test_vstrunc_contig() {
+        let x = arr1(&[1.9f32, -1.9, 0.5, -0.5]);
+        let mut out = Array1::<f32>::zeros(4);
+        vstrunc(x.view(), out.view_mut());
+        assert_eq!(out.as_slice().unwrap(), &[1.0, -1.0, 0.0, 0.0]);
     }
+
     #[test]
-    #[ignore]
-    fn test_resonate_focus_through_stack() {
-        // Take centroid focus patch → resonate through HEEL→HIP→BRANCH→LEAF.
-        // At each level, measure: accuracy, bytes, ρ preservation.
-        // This IS the full tensor codec cascade on real image data.
-
-        let bytes = match std::fs::read("/tmp/tiny_imagenet_labeled.bin") {
-            Ok(b) => b,
-            Err(_) => {
-                eprintln!("SKIP: /tmp/tiny_imagenet_labeled.bin not found");
-                return;
-            }
-        };
-
-        let n = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
-        let d = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
-        let n_classes = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
-        let mut labels = Vec::with_capacity(n);
-        for i in 0..n {
-            let off = 12 + i * 4;
-            labels.push(u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]) as usize);
-        }
-        let pixel_start = 12 + n * 4;
-        let img_w = 64usize;
-        let img_h = 64usize;
-        let ch = 3usize;
-        let n_use = n.min(200);
-
-        let pixel = |img: usize, r: usize, c: usize, channel: usize| -> f64 {
-            let off = pixel_start + (img * d + r * img_w * ch + c * ch + channel) * 4;
-            f32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]) as f64
-        };
-        let luma = |img: usize, r: usize, c: usize| -> f64 {
-            0.299 * pixel(img, r, c, 0) + 0.587 * pixel(img, r, c, 1) + 0.114 * pixel(img, r, c, 2)
-        };
-
-        // ── LEAF: full centroid focus patch (432D, highest resolution) ──
-        let focus_radius = 6usize;
-        let intersections = [
-            (img_h / 3, img_w / 3),
-            (img_h / 3, 2 * img_w / 3),
-            (2 * img_h / 3, img_w / 3),
-            (2 * img_h / 3, 2 * img_w / 3),
-        ];
-
-        let leaf_features: Vec<Vec<f64>> = (0..n_use)
-            .map(|img| {
-                // Find highest-energy intersection
-                let mut best_r = img_h / 2;
-                let mut best_c = img_w / 2;
-                let mut best_energy = 0.0f64;
-                for &(ir, ic) in &intersections {
-                    let mut energy = 0.0;
-                    let r0 = ir.saturating_sub(8);
-                    let r1 = (ir + 8).min(img_h);
-                    let c0 = ic.saturating_sub(8);
-                    let c1 = (ic + 8).min(img_w);
-                    for r in r0..r1 {
-                        for c in c0..c1 {
-                            if r > 0 && r < img_h - 1 && c > 0 && c < img_w - 1 {
-                                let dx = luma(img, r, c + 1) - luma(img, r, c.saturating_sub(1));
-                                let dy = luma(img, r + 1, c) - luma(img, r.saturating_sub(1), c);
-                                energy += (dx * dx + dy * dy).sqrt();
-                            }
-                        }
-                    }
-                    if energy > best_energy {
-                        best_energy = energy;
-                        best_r = ir;
-                        best_c = ic;
-                    }
-                }
-                // Extract patch
-                let mut f = Vec::with_capacity(432);
-                let r0 = best_r.saturating_sub(focus_radius);
-                let r1 = (best_r + focus_radius).min(img_h);
-                let c0 = best_c.saturating_sub(focus_radius);
-                let c1 = (best_c + focus_radius).min(img_w);
-                for r in r0..r1 {
-                    for c in c0..c1 {
-                        for channel in 0..ch {
-                            f.push(pixel(img, r, c, channel));
-                        }
-                    }
-                }
-                f.resize(432, 0.0);
-                f
-            })
-            .collect();
-
-        // ── BRANCH: golden-step compress (432D → 17D = 34 bytes) ──
-        let base_dim = 17;
-        let golden_step = 11;
-        let compress17 = |v: &[f64]| -> Vec<f64> {
-            let fd = v.len();
-            let n_oct = (fd + base_dim - 1) / base_dim;
-            let mut sum = vec![0.0f64; base_dim];
-            let mut cnt = vec![0u32; base_dim];
-            for oct in 0..n_oct {
-                for bi in 0..base_dim {
-                    let dim = oct * base_dim + ((bi * golden_step) % base_dim);
-                    if dim < fd {
-                        sum[bi] += v[dim];
-                        cnt[bi] += 1;
-                    }
-                }
-            }
-            sum.iter()
-                .zip(&cnt)
-                .map(|(&s, &c)| if c > 0 { s / c as f64 } else { 0.0 })
-                .collect()
-        };
-        let branch_features: Vec<Vec<f64>> = leaf_features.iter().map(|f| compress17(f)).collect();
-
-        // ── HIP: quantize to i16 (17D × 2 bytes = 34 bytes, same size but integer) ──
-        let hip_features: Vec<Vec<f64>> = branch_features
-            .iter()
-            .map(|f| {
-                f.iter()
-                    .map(|&v| ((v * 1000.0).round().clamp(-32768.0, 32767.0) as i16) as f64 / 1000.0)
-                    .collect()
-            })
-            .collect();
-
-        // ── HEEL: scent byte — reduce to single energy + top category vote ──
-        // Scent = which of the 17 dimensions has highest absolute value
-        let heel_features: Vec<Vec<f64>> = branch_features
-            .iter()
-            .map(|f| {
-                let max_dim = f
-                    .iter()
-                    .enumerate()
-                    .max_by(|a, b| a.1.abs().partial_cmp(&b.1.abs()).unwrap())
-                    .map(|(i, _)| i)
-                    .unwrap_or(0);
-                let energy: f64 = f.iter().map(|v| v * v).sum::<f64>().sqrt();
-                // 2D scent: dominant dimension + energy level
-                vec![max_dim as f64, energy]
-            })
-            .collect();
-
-        // ── Classify at each level ──
-        fn classify(features: &[Vec<f64>], labels: &[usize], n_classes: usize) -> (f64, usize) {
-            let n = features.len();
-            let fd = features[0].len();
-            let mut arch = vec![vec![0.0; fd]; n_classes];
-            let mut cnt = vec![0usize; n_classes];
-            for (i, &l) in labels.iter().enumerate() {
-                for j in 0..fd {
-                    arch[l][j] += features[i][j];
-                }
-                cnt[l] += 1;
-            }
-            for c in 0..n_classes {
-                if cnt[c] > 0 {
-                    for j in 0..fd {
-                        arch[c][j] /= cnt[c] as f64;
-                    }
-                }
-            }
-            let mut correct = 0;
-            for (i, &tl) in labels.iter().enumerate() {
-                let mut best_c = 0;
-                let mut best_d = f64::MAX;
-                for c in 0..n_classes {
-                    if cnt[c] == 0 {
-                        continue;
-                    }
-                    let dist: f64 = features[i]
-                        .iter()
-                        .zip(&arch[c])
-                        .map(|(a, b)| (a - b) * (a - b))
-                        .sum::<f64>()
-                        .sqrt();
-                    if dist < best_d {
-                        best_d = dist;
-                        best_c = c;
-                    }
-                }
-                if best_c == tl {
-                    correct += 1;
-                }
-            }
-            (correct as f64 / n as f64, correct)
-        }
-
-        // ── Compute ρ: how well does each level preserve pairwise distances? ──
-        fn pairwise_dists(feats: &[Vec<f64>]) -> Vec<f64> {
-            let n = feats.len().min(50); // limit for speed
-            let mut d = Vec::new();
-            for i in 0..n {
-                for j in (i + 1)..n {
-                    let dist: f64 = feats[i]
-                        .iter()
-                        .zip(&feats[j])
-                        .map(|(a, b)| (a - b) * (a - b))
-                        .sum::<f64>()
-                        .sqrt();
-                    d.push(dist);
-                }
-            }
-            d
-        }
-        fn spearman(a: &[f64], b: &[f64]) -> f64 {
-            fn ranks(v: &[f64]) -> Vec<f64> {
-                let mut idx: Vec<(usize, f64)> = v.iter().copied().enumerate().collect();
-                idx.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-                let mut r = vec![0.0; v.len()];
-                for (rank, (i, _)) in idx.into_iter().enumerate() {
-                    r[i] = rank as f64;
-                }
-                r
-            }
-            let (ra, rb) = (ranks(a), ranks(b));
-            let n = a.len() as f64;
-            let (ma, mb) = (ra.iter().sum::<f64>() / n, rb.iter().sum::<f64>() / n);
-            let (mut cov, mut va, mut vb) = (0.0, 0.0, 0.0);
-            for i in 0..a.len() {
-                let (da, db) = (ra[i] - ma, rb[i] - mb);
-                cov += da * db;
-                va += da * da;
-                vb += db * db;
-            }
-            if va < 1e-10 || vb < 1e-10 {
-                0.0
-            } else {
-                cov / (va * vb).sqrt()
-            }
-        }
-
-        let leaf_dists = pairwise_dists(&leaf_features);
-        let rho_branch = spearman(&leaf_dists, &pairwise_dists(&branch_features));
-        let rho_hip = spearman(&leaf_dists, &pairwise_dists(&hip_features));
-        let rho_heel = spearman(&leaf_dists, &pairwise_dists(&heel_features));
-
-        let (acc_leaf, cor_leaf) = classify(&leaf_features, &labels[..n_use], n_classes);
-        let (acc_branch, cor_branch) = classify(&branch_features, &labels[..n_use], n_classes);
-        let (acc_hip, cor_hip) = classify(&hip_features, &labels[..n_use], n_classes);
-        let (acc_heel, cor_heel) = classify(&heel_features, &labels[..n_use], n_classes);
-
-        eprintln!("=== Resonate Focus Object Through Full Stack ===");
-        eprintln!("  {} images, {} classes", n_use, n_classes);
-        eprintln!();
-        eprintln!("  Level      Dims    Bytes   Accuracy    ρ vs LEAF    ρ/byte");
-        eprintln!("  ─────────  ─────   ─────   ─────────   ─────────    ──────");
-        eprintln!(
-            "  LEAF       432D    864B    {:.1}% ({}/{})  1.0000       {:.6}",
-            acc_leaf * 100.0,
-            cor_leaf,
-            n_use,
-            1.0 / 864.0
-        );
-        eprintln!(
-            "  BRANCH     17D     34B     {:.1}% ({}/{})  {:.4}       {:.6}",
-            acc_branch * 100.0,
-            cor_branch,
-            n_use,
-            rho_branch,
-            rho_branch / 34.0
-        );
-        eprintln!(
-            "  HIP        17D     34B     {:.1}% ({}/{})  {:.4}       {:.6}",
-            acc_hip * 100.0,
-            cor_hip,
-            n_use,
-            rho_hip,
-            rho_hip / 34.0
-        );
-        eprintln!(
-            "  HEEL       2D      2B      {:.1}% ({}/{})  {:.4}       {:.6}",
-            acc_heel * 100.0,
-            cor_heel,
-            n_use,
-            rho_heel,
-            rho_heel / 2.0
-        );
-        eprintln!("  Random     —       0B      {:.1}%", 100.0 / n_classes as f64);
-        eprintln!();
-        eprintln!("  Cascade rejection simulation:");
-        eprintln!(
-            "  HEEL rejects:   {:.0}% of wrong classes (scent screening)",
-            (1.0 - 1.0 / n_classes as f64) * (1.0 - acc_heel) * 100.0
-        );
-        eprintln!("  After HEEL→HIP: {:.0}% remaining need full BRANCH check", (1.0 - acc_hip) * 100.0);
-
-        assert!(acc_leaf > acc_branch, "LEAF should beat BRANCH");
-        assert!(acc_branch >= acc_heel, "BRANCH should beat or match HEEL");
-        assert!(rho_branch > rho_heel, "BRANCH ρ should exceed HEEL ρ");
+    fn test_vstrunc_strided() {
+        let full = arr1(&[1.9f32, 0.0, -1.9, 0.0, 0.5, 0.0, -0.5, 0.0]);
+        let strided = full.slice(s![..;2]);
+        let mut out = Array1::<f32>::zeros(4);
+        vstrunc(strided, out.view_mut());
+        assert_eq!(out.as_slice().unwrap(), &[1.0, -1.0, 0.0, 0.0]);
     }
 }
