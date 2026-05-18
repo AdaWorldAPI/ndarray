@@ -43,6 +43,8 @@ pub mod plane;
 #[allow(missing_docs)]
 pub mod seal;
 #[allow(missing_docs)]
+pub mod soa;
+#[allow(missing_docs)]
 pub mod node;
 #[allow(missing_docs)]
 pub mod cascade;
