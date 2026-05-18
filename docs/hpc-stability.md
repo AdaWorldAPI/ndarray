@@ -1,5 +1,17 @@
 # HPC API Stability Commitment — AdaWorldAPI/ndarray Fork
 
+> **2026-05-18 wave-2 update**: `l1_f64_simd`, `l2_f64_simd`, and
+> `linf_f64_simd` were initially marked as "aspirational reserved names"
+> in this doc because they were absent from the source at wave-1 time
+> (per `docs/hpc-api-inventory.md`). Wave-2 commit `71cdbd4`
+> ("feat(hpc): materialise l1_f64_simd, l2_f64_simd, linf_f64_simd in
+> heel_f64x8") materialised all three with the exact signatures this doc
+> promised, matching `cosine_f64_simd`'s F64x8-chunk + scalar-tail
+> pattern. 15/15 `heel_f64x8` tests pass. The "Stable public surface"
+> table below now describes REAL APIs — not promises. Reading order:
+> the freeze commitment is now load-bearing, not aspirational.
+
+
 **Status:** DRAFT — first published 2026-05-18
 **Branch at time of publication:** `claude/lance-surrealdb-analysis-LXmug`
 **Applies to crate:** `ndarray` v0.17.x (AdaWorldAPI fork of rust-ndarray/ndarray)
