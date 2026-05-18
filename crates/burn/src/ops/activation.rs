@@ -27,7 +27,9 @@ where
             if view.is_standard_layout() {
                 if let Some(input) = view.as_slice() {
                     let mut output = alloc::vec![0.0f32; input.len()];
-                    ndarray::hpc::activations::sigmoid_f32(input, &mut output);
+                    let in_view = ndarray::ArrayView::from(input);
+                    let out_view = ndarray::ArrayViewMut::from(&mut output[..]);
+                    ndarray::hpc::activations::sigmoid_f32(in_view, out_view);
                     let shape: alloc::vec::Vec<usize> = view.shape().to_vec();
                     let array = ndarray::Array::from_shape_vec(ndarray::IxDyn(&shape), output)
                         .expect("sigmoid output shape mismatch");
