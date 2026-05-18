@@ -35,8 +35,9 @@
 //! requires `#[cfg(feature = "splat3d")]`.
 
 use crate::hpc::linalg::eig_sym::eig_sym_3;
+use crate::hpc::linalg::Spd3;
 use crate::hpc::pillar::prove_runner::{assert_psd_rate, random_contractive_spd3, PillarReport, SplitMix64};
-use crate::hpc::splat3d::spd3::{sandwich, Spd3};
+use crate::hpc::splat3d::spd3::sandwich;
 
 // ── Public constants ──────────────────────────────────────────────────────────
 

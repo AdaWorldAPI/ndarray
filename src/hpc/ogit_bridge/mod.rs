@@ -29,3 +29,6 @@ pub mod cognitive_bridge;
 
 pub use cognitive_bridge::{BasinAtom, CamCodebook, CognitiveBridge, OgitError};
 pub use schema::{EntityClass, FamilyBitmap, OntologySchema, Property, SchemaError};
+
+/// Alias for PR-X9 design doc compatibility (which references OgitSchema).
+pub type OgitSchema = schema::OntologySchema;
