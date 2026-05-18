@@ -85,3 +85,6 @@ pub use attention::{attention_f32, flash_attention_f32, AttentionConfig};
 
 pub mod wasserstein;
 pub use wasserstein::{hungarian_f32, sinkhorn_knopp_f32, wasserstein_1_f32};
+
+pub mod hilbert;
+pub use hilbert::{hilbert3d_decode, hilbert3d_encode};
