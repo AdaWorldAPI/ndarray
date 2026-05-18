@@ -225,6 +225,9 @@ native = ["std"]
 intel-mkl = ["std"]
 openblas = ["std"]
 
+# linalg: middle-layer MatN carrier + Mat2/3/4 + Spd2/Spd3 SPD-cone (PR-X10 A1)
+linalg = []
+
 # splat3d: CPU-SIMD 3D Gaussian Splatting forward renderer
 # (`src/hpc/splat3d/*`). Pure SIMD, no GPU, no wgpu, reuses the
 # existing `crate::simd` polyfill (F32x16 via AVX-512 / AVX2 / NEON
