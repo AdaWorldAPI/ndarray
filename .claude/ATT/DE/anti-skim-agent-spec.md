@@ -529,4 +529,247 @@ Für jedes `todo!("SOURCE: <path>:<lines>")`, das der Worker füllt:
 
 ---
 
+## §14 Reading-Phasen (orthogonal zu Depth)
+
+> Die Reading-Depth-Ladder in §3 sagt **wie viel** einer Datei du
+> abdeckst. Die Reading-Phasen in dieser Section sagen **was du
+> tust** mit dem, was du abgedeckt hast. Beides braucht's, damit ein
+> Read als complete zählt.
+
+### §14.1 Die vier Phasen
+
+| # | Phase | Frage, die sie beantwortet | Output den der Worker produzieren können MUSS |
+|---|---|---|---|
+| 1 | **Survey** | „Was ist in dieser Datei? Welche Form hat sie?" | Section-Liste mit Zeilennummern; File-Shape (N Sections, K LOC, Language); Top-Level-Headline. |
+| 2 | **Evaluation** | „Was davon matters für meine Aufgabe?" | Eine Relevanz-Map: welche Sections / Line-Ranges sind relevant fürs aktuelle Bundle, priorisiert P0 / P1 / unused. |
+| 3 | **Kritische Findings** | „Was ist falsch, fehlt, widerspricht sich, ist gedriftet?" | Eine typisierte Finding-Liste (Severity P0 / P1) — Iron-Rule-Verletzungen, Spec-vs-Source-Drift, fehlende Sections, Anchors die nicht mehr resolven, tote Referenzen. |
+| 4 | **Internalize** | „Kann ich darauf handeln ohne nochmal zu lesen?" | LD-3 bestehen (3-Section-Namens-Challenge), LD-4 (Negative-Knowledge), LD-5 (Line-Range-Quote). Kann faithful paraphrasieren; kann beantworten „was steht NICHT in dieser Datei?". |
+
+Phasen-Reihenfolge ist typisch **Survey → Evaluation → Kritische
+Findings → Internalize**, aber Findings tauchen oft WÄHREND
+Internalize auf (der Akt des Internalizens enthüllt Widersprüche).
+Ein vollständiges Reading erreicht alle vier; ein partial Reading
+stoppt früher und MUSS das deklarieren.
+
+### §14.2 Phase × Depth-Matrix
+
+| Depth | Survey | Evaluation | Kritische Findings | Internalize |
+|---|:-:|:-:|:-:|:-:|
+| `grep` (anti) | partial | nein | nein | nein |
+| `sed-partial` / `head-only` (anti) | partial | partial | nein | nein |
+| `skim` | ja | partial | partial (nur per-Section) | nein |
+| `read` | ja | ja | partial | partial |
+| `thorough` | ja | ja | **ja** | **ja** |
+| `troubleshooting` | ja | ja | ja (fokussiert auf den Bug) | ja (fokussiert) |
+| `fan-out` | ja (per-File flach) | ja | ja | partial (per File) |
+| `truncated:head-N` / `truncated:tail-N` | partial | partial | nein | nein |
+
+Nur `thorough` und `troubleshooting` (innerhalb des fokussierten
+Scopes) erreichen die volle Ladder. `fan-out` erreicht Internalize
+*per-File*, aber der Inventur-Output ist die Synthese — der Worker
+MUSS jede File im Inventar als noch-`thorough`-bedürftig behandeln
+bevor er auf sie handelt.
+
+### §14.3 Phasen-Outputs in der status.json des Workers
+
+Das `proof_of_read`-Schema (§7.1) wird um ein `phase_reached`-Feld
+erweitert, das die höchste completed-Phase pro File benennt:
+
+```json
+{
+  "file": "META/INVARIANTS.md",
+  "sha256": "fa39a3...",
+  "lines": 412,
+  "depth": "thorough",
+  "phase_reached": "internalize",
+  "phases_evidence": {
+    "survey": "9 Sections; INVARIANTS-kanonische Struktur erkannt",
+    "evaluation": "§BBB + §UPSERT-PATTERN sind load-bearing für dieses Bundle",
+    "critical_findings": "§UPSERT-PATTERN Zeile 187 widerspricht der customer.ttl ogit:CustomerWriter mandatory-attributes (filed REQUESTS-FROM-AGENTS.md#A4-2026-05-18T14:22)",
+    "internalize": "kann LD-3/4/5 literal beantworten"
+  }
+}
+```
+
+Die `phases_evidence`-Map ist OPTIONAL wenn `phase_reached=survey`
+(kein Evidence über die Section-Liste hinaus required), WIRD aber
+required bei `phase_reached >= evaluation`, weil diese Phase
+Judgment claimt.
+
+### §14.4 Mapping Lie-Detector-Tests auf Phasen
+
+Jeder LD-1..LD-5-Test (§4.1) probt eine spezifische Phase. Der
+Meta-Agent SOLLTE den Spot-Check über die vier Phasen rotieren,
+damit Workers nicht gamen können, welche Phase zu faken ist.
+
+| Test | Probt Phase | Was eine passing Answer beweist |
+|---|---|---|
+| LD-1 Sentinel-Token | **Survey** des Briefs | Der Worker hat den Brief tatsächlich in den Context geladen. |
+| LD-2 Proof-of-Read mit SHA | **Survey** der File | Der Worker accessed die File am deklarierten Content. |
+| LD-3 3-Sections-Namens-Challenge | **Survey + Evaluation** | Der Worker kann Struktur lokalisieren UND wählte welche Sections zu beachten. |
+| LD-4 Negative-Knowledge-Test | **Internalize** | Der Worker hat ein faithful Mental-Model gebaut — kann beantworten „was steht NICHT in dieser Datei" ohne zu halluzinieren. |
+| LD-5 Line-Range-Quote | **Internalize + Kritische Findings** | Der Worker kann verbatim recallen UND Drift zwischen Recall und Source detektieren. |
+
+Ein Worker, der `phase_reached=internalize` deklariert, MUSS LD-3,
+LD-4 UND LD-5 bestehen können. Spot-Check-Failure bei einer
+geclaimten Phase ⇒ Phase-Claim wird abgelehnt und der Proof-of-Read
+wird auto-downgraded auf die höchste nachweisbar bestandene Phase.
+
+### §14.5 Per-File-Required-Phase nach File-Art
+
+Unterschiedliche File-Arten BENÖTIGEN unterschiedliche Minimum-
+Phasen. Das Worker-Brief MUSS die Per-File-Phase-Requirements
+zusammen mit den Depth-Requirements deklarieren:
+
+| File-Art | Minimum-Depth | Minimum-Phase |
+|---|---|---|
+| `META/INVARIANTS.md` | `thorough` | **internalize** |
+| `CLAUDE.md` / `BOOT.md` / RFCs | `thorough` | **internalize** |
+| Memory-Files (`CONTEXT.md` / `JOURNAL.md` / `TODO.md`) | `thorough` | **internalize** |
+| Spec-Files fürs Bundle (z. B. TTL, OpenAPI, JSON-Schema) | `full` (read) | **internalize** |
+| Reference-Source für Ports | `full` | **internalize** |
+| Skeleton-Files die der Worker füllt | `read` | **evaluation** |
+| Sibling-Bundle-Files (read-only Context) | `skim` | **evaluation** |
+| Files referenziert für allgemeine Orientation | `skim` | **survey** |
+| Files referenziert nur für Symbol-Lookup | `grep` | **survey** |
+
+Wenn ein Worker bei einer Phase unter dem Required stoppt, zählt
+der Read NICHT als complete — selbst wenn die Depth ausreichend
+war. Beide Achsen müssen die Bar klären.
+
+### §14.6 Kritische-Findings-Eskalation
+
+Findings produziert in Phase 3 (Kritische Findings) werden nach
+Severity geroutet:
+
+| Finding-Severity | Filed wo | Worker-Aktion |
+|---|---|---|
+| P0 — Iron-Rule-Verletzung im Input, Spec-vs-Source-Widerspruch, gebrochener Anchor der das Bundle betrifft | `META/REQUESTS-FROM-AGENTS.md` mit Blocker-Typ aus §5.1; Worker idled | STOP Arbeit; nicht zum Commit weitergehen |
+| P1 — kleinere Inkonsistenz, tote Referenz außerhalb des Bundle-Scopes, Typo, stale Comment | `Altlasten.md` / `TECH_DEBT.md`-Zeile mit der Bundle-ID des Workers | Arbeit fortsetzen; der Orchestrator triaged später |
+| INFO — Observation die das Bundle nicht betrifft | Notes-Feld in `status.json`; nirgendwo sonst filed | Arbeit fortsetzen |
+
+Ein Worker der internalized, aber NICHT ein P0-Finding escaliert
+ist in Verletzung: Missing-Escalation ist selbst ein P0-Finding,
+das PP-13 catchen wird (Anti-Pattern AP1 — „silent Fallback der
+Errors schluckt" — generalisiert hier als „silent Skim der
+Findings schluckt").
+
+### §14.7 Validierungs-Regeln
+
+| Regel | Beschreibung | Severity |
+|---|---|---|
+| `PHASE-001 phase-declared` | Jeder `proof_of_read`-Eintrag MUSS ein `phase_reached`-Feld enthalten. Absent ⇒ behandelt als `phase_reached=survey` (der schwächste Claim). | ERROR |
+| `PHASE-002 phase-monotonic-with-depth` | Ein `phase_reached`-Claim MUSS konsistent mit der §14.2-Matrix sein. Z. B. `depth=grep` + `phase_reached=internalize` ist invalid. | ERROR |
+| `PHASE-003 phase-evidence-required` | Wenn `phase_reached >= evaluation`, MUSS die `phases_evidence`-Map vorhanden sein mit non-empty Entries für jede geclaimte Phase. | ERROR |
+| `PHASE-004 file-kind-phase-bar` | Wenn das Worker-Brief eine Minimum-Phase per §14.5 für eine File deklariert, MUSS der `phase_reached` des Workers für diese File ≥ dem deklarierten Minimum sein. | ERROR |
+| `PHASE-005 critical-findings-routed` | P0-Findings produziert während Phase 3 MÜSSEN nach `META/REQUESTS-FROM-AGENTS.md` filed sein BEVOR der Worker irgendwelchen Code commited, der vom betroffenen Input abhängt. | ERROR |
+| `PHASE-006 internalize-passes-LD-3-4-5` | Ein Claim von `phase_reached=internalize` MUSS Spot-Checks von LD-3, LD-4 und LD-5 in Rotation überleben. Failure ⇒ Auto-Downgrade auf höchst-bestandene Phase. | ERROR |
+
+### §14.8 Definition von Fertig (Per-File-Read)
+
+Ein Read einer einzelnen File ist complete wenn ALLE:
+
+- [ ] Depth aus §3 auf dem deklarierten Level.
+- [ ] Phase aus §14.1 erreicht das required Minimum per §14.5.
+- [ ] `proof_of_read`-Eintrag enthält `sha256`, `lines`, `depth`,
+      `phase_reached` und `phases_evidence` für `evaluation+`.
+- [ ] Jedes P0-kritische-Finding ist filed bevor der Worker commited.
+- [ ] LD-3 / LD-4 / LD-5-Spot-Checks bestanden wenn
+      `phase_reached=internalize` geclaimt ist.
+
+---
+
+## §15 Kognitive Anti-Patterns (CA1..CA4)
+
+> Wo AP1..AP9 (§9) **Output**-Probleme fangen — der Code selbst sieht
+> falsch aus — fangen CA1..CA4 **Cognition**-Probleme — die Art wie
+> der Worker zum Output gekommen ist, ist falsch. CA-Findings tauchen
+> oft zur gleichen Zeit auf wie AP-Findings; die Unterscheidung ist:
+> CA-Fixes brauchen Process-Change (Re-Read, Re-Think, Re-Spawn),
+> während AP-Fixes manchmal in-place editiert werden können.
+>
+> Die kognitiven Anti-Patterns sind joint owned: der Meta-Agent spotted
+> sie beim PR-Review via Lie-Detector (§4); PP-13 spotted sie beim
+> Code-Review durch Korrelation von Commit-Timestamps mit
+> Proof-of-Read-Timestamps.
+
+### §15.1 Die vier kognitiven Anti-Patterns
+
+| # | Name | Wie es aussieht | Detection-Signature | Counter-Pattern | Severity |
+|---|---|---|---|---|---|
+| **CA1** | **Cognitive Dissonance** | Worker sieht einen Widerspruch zwischen zwei autoritativen Sources (Spec vs. Reference-Source, INVARIANT vs. Comment, TTL vs. Code) und löst durch Hand-Waving oder Picken eines ohne Investigation. Die Dissonance wird übermalt statt eskaliert. | Output enthält Phrasen wie „I went with", „I chose", „I preferred Y because it feels right / is already there / compiles", ohne entsprechenden `SPEC_SOURCE_MISMATCH`-Eintrag in `META/REQUESTS-FROM-AGENTS.md`. | File `SPEC_SOURCE_MISMATCH` (§5.1) und idle bis der Meta-Agent ein RFC schreibt. Niemals Dissonance unilateral auflösen. | **P0** |
+| **CA2** | **Dunning-Kruger Overconfidence** | Worker claimt confident Knowledge in einem Bereich, wo seine tatsächliche Depth shallow ist. Der Agent weiß nicht, was er nicht weiß, also ist sein Sense of Certainty un-kalibriert. Der Output liest sich definitiv, wo der Read dünn war. | Ein `phase_reached=internalize`-Claim (§14), der LD-3 / LD-4 / LD-5-Spot-Checks failt. Eine spezifische numerische Behauptung („62 Lehren", „die Signatur hat 3 Argumente") ohne entsprechenden `proof_of_read`-SHA. Confident Paraphrase, wo die Source eigentlich etwas anderes sagt. | Auto-Downgrade des Phase-Claims auf die höchst-bestandene Phase (per `PHASE-006`). Re-Read mit der proper Depth + Phase. Wenn der Worker weiter übersteuert, route ihn zu einem kleineren Bundle. | **P0** |
+| **CA3** | **Kahneman/Tversky Easy-Path (System-1-Short-Circuit)** | Worker pattern-matched Surface-Features des Inputs — „File sieht aus wie ein CRUD-Handler, also muss es ein CRUD-Handler sein" — ohne den System-2-Check zu fahren (Read den tatsächlichen Function-Body, vergleich gegen die Spec). Easy-Path ist am schnellsten wenn Surface die Reality matched, aber verheerend wenn nicht. | Die erste Reply ist plausibel-correct-klingend, aber der Proof-of-Read ist `depth=grep` oder `depth=sed-partial`. Output beschreibt Struktur in generischen Termen („standard Route-Handler", „typische Migration") statt spezifischen Termen („die Function auf Zeilen 47-91 dispatched auf req.path"). | Force System-2: verlange LD-2 (SHA + Line-Count) und LD-5 (Line-Range-Quote) bevor irgendein structural Claim akzeptiert wird. Reading-Depth MUSS mindestens `read` sein; Phase MUSS mindestens `evaluation` sein, bevor irgendein Output, der einen structural Claim macht. | **P0** |
+| **CA4** | **Eager Amok** | Worker fängt an Code zu schreiben (oder zu committen, oder zu pushen), bevor die required Reading- + Planning-Phasen complete sind. Enthusiasm rennt der Disziplin voraus. Die Arbeit *sieht* produktiv aus — es gibt einen Diff — aber sie ist auf incomplete Understanding gebaut. | Der erste Code-Write-Timestamp ist vor den `proof_of_read`-SHA-Pin-Timestamps für eine oder mehrere required Files (§14.5). `status.json` zeigt Commits, die landen, während `phase_reached` noch `survey` oder `evaluation` auf Files ist, die bei `internalize` sein sollten. Worker-Narrative springt von Brief-Read zu First-Commit ohne sichtbaren Thinking-Step. | STOP und verlange complete Proof-of-Read für ALLE Files an ihrer required §14.5-Minimum-Phase BEVOR irgendein Commit. Die Iron Rule gilt, egal wie „obvious" die Implementation scheint. | **P0** |
+
+### §15.2 Warum alle vier P0 sind
+
+Jedes von CA1..CA4 produziert Output, der *aussieht* als wäre er
+richtig. AP1..AP9 produzieren Output, der falsch aussieht (ein
+`unwrap_or_default()` ist sichtbar; ein fehlender Parity-Test ist
+sichtbar). Kognitive Anti-Patterns produzieren Output, dessen
+Correctness komplett auf dem unverifierbaren Claim ruht, dass der
+Worker gelesen + verstanden + gedacht hat, bevor er schrieb. Sie
+sind P0 weil sie den Trust-Contract brechen, auf den der Meta-Agent
+sich verlässt, wenn er Diffs reviewed ohne den Read des Workers zu
+wiederholen.
+
+### §15.3 Joint Ownership: wer fängt was
+
+| Anti-Pattern | Catch-Site | Detection-Methode |
+|---|---|---|
+| CA1 Cognitive Dissonance | Meta-Agent (PR-Review) + PP-15 (Cross-Source-Diff) | Grep PR-Commit-Messages nach „I went with" / „I chose" / „preferred" gegen Spec-vs-Source-Mismatch; check `REQUESTS-FROM-AGENTS.md` für Abwesenheit des entsprechenden Blockers. |
+| CA2 Dunning-Kruger Overconfidence | Meta-Agent (Lie-Detector-Spot-Check) | Rotate LD-3 / LD-4 / LD-5 auf einem Worker pro Wave; cross-check `phase_reached`-Claims gegen tatsächliches Passing. |
+| CA3 Kahneman/Tversky Easy-Path | Meta-Agent (Proof-of-Read-Inspection) + PP-13 (Output-vs-Source-Diff) | Worker-Output liest sich als Paraphrase statt Quote; SHA fehlt; Reading-Depth deklariert inkonsistent mit Output-Claims. |
+| CA4 Eager Amok | PP-13 (Commit-Timestamp-Audit) + Meta-Agent (status.json-Ordering-Check) | Commit-Timestamps sind vor den `proof_of_read`-SHA-Pin-Timestamps; `phase_reached` war unter dem required Minimum beim First-Commit. |
+
+### §15.4 Counter-Patterns: wie ein gesunder Worker sich verhält
+
+| Anti-Pattern | Healthy-Alternative |
+|---|---|
+| CA1 | „Ich habe bemerkt, die Spec sagt X aber der existierende Code tut Y. Ich file `SPEC_SOURCE_MISMATCH`. Idle." |
+| CA2 | „Ich bin confident über §3 von INVARIANTS.md (depth=thorough, phase=internalize). Ich bin uncertain über §6 (depth=skim, phase=survey). Ich vertiefe §6 bevor ich darüber etwas behaupte." |
+| CA3 | „Bevor ich diese File-Struktur beschreibe: hier ist `proof_of_read: { file=X, sha256=..., depth=read, phase_reached=evaluation }`. Die Struktur ist: [spezifische Section-Namen mit Zeilennummern]." |
+| CA4 | „Reading-Phase complete auf allen 4 required Files. Kritische Findings filed (Zero P0). Status: `phase_reached=internalize` auf allen Files. JETZT beginne ich den ersten Commit." |
+
+### §15.5 Validierungs-Regeln
+
+| Regel | Beschreibung | Severity |
+|---|---|---|
+| `CA-001 dissonance-escalation` | Wenn der Output eines Workers Spec-vs-Source-Divergenz erwähnt, MUSS `META/REQUESTS-FROM-AGENTS.md` einen entsprechenden `SPEC_SOURCE_MISMATCH`-Blocker-Eintrag enthalten. Abwesenheit ⇒ CA1 P0-Finding. | ERROR |
+| `CA-002 confidence-calibration` | Ein `phase_reached=internalize`-Claim, der LD-3 / LD-4 / LD-5-Spot-Check failt ⇒ CA2 P0; Phase-Claim auto-downgraded. | ERROR |
+| `CA-003 system-2-required-before-structural-claim` | Jeder structural Claim über den Content einer File (Function-Count, Section-Namen, Signature-Shapes) MUSS preceded sein von einem `proof_of_read`-Eintrag mit `depth >= read` UND `phase_reached >= evaluation`. Sonst CA3 P0. | ERROR |
+| `CA-004 read-before-write-ordering` | `status.json` MUSS zeigen, dass alle required-Minimum `proof_of_read`-Einträge timestamped sind BEVOR dem First-Code-Commit-Timestamp für Files an der §14.5-required-Minimum-Phase. Sonst CA4 P0. | ERROR |
+
+### §15.6 Mindset-Level-Relation zu den vier Savants
+
+Die vier Savants in `autoattended-orchestrator-spec.md` §4.0 haben
+jeweils eine *kognitive* Posture, die einer spezifischen CA
+widersteht:
+
+| Savant | Mindset | Widersteht primär |
+|---|---|---|
+| PP-13 brutally-honest-tester | „was würde in Production um 3 Uhr morgens brechen, was der Author sich weggeredet hat?" | CA1 (Sich-Wegreden IST Cognitive Dissonance) + CA4 (Production bricht nicht wegen Enthusiasmus) |
+| PP-14 convergence-architect | „was könnte das werden, das wir nicht sehen?" | CA3 (Easy-Path schließt Possibilities premature) |
+| PP-15 baton-handoff-auditor | „lining sich diese Contracts an den Nähten wirklich auf?" | CA1 (Dissonance versteckt sich oft an Handoffs) |
+| PP-16 preflight-drift-auditor | „matched der Plan immer noch das System wie es jetzt gerade ist?" | CA2 (Overconfidence in einen Plan der von der Reality gedriftet ist) |
+
+Der volle 4-Savant-Pass ist jointly ein Antibody gegen alle vier
+kognitiven Anti-Patterns. Eine Wave, die nur einen Savant fährt,
+catched nur die CAs, denen der Mindset dieses Savants widersteht;
+eine Wave, die das Cooperative Council fährt (Orchestrator-Spec
+§15), catched alle vier.
+
+### §15.7 Definition von Fertig (Kognitive Hygiene)
+
+Ein Worker besteht das Kognitive-Hygiene-Gate wenn ALLE:
+
+- [ ] `CA-001` clean: jede Spec-vs-Source-Erwähnung ist matched mit einem filed `SPEC_SOURCE_MISMATCH`-Blocker.
+- [ ] `CA-002` clean: jeder `phase_reached=internalize`-Claim überlebt LD-3/4/5-Spot-Checks.
+- [ ] `CA-003` clean: jeder structural Claim ist backed durch ausreichenden `proof_of_read`.
+- [ ] `CA-004` clean: Read-Timestamps sind vor Commit-Timestamps für alle required-Minimum-Files.
+- [ ] Worker hat nicht `I went with` / `I chose` / `I preferred` ausgegeben ohne associated Blocker-Filing.
+
+---
+
 *Ende der Datei anti-skim-agent-spec.md.*

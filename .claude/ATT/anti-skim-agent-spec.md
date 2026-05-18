@@ -518,4 +518,238 @@ For every `todo!("SOURCE: <path>:<lines>")` the worker fills:
 
 ---
 
+## §14 Reading Phases (orthogonal to depth)
+
+> The Reading-Depth Ladder in §3 says **how much** of a file you cover.
+> The Reading Phases in this section say **what you do** with what you
+> covered. Both are required for a read to count as complete.
+
+### §14.1 The four phases
+
+| # | Phase | Question it answers | Output the worker MUST be able to produce |
+|---|---|---|---|
+| 1 | **Survey** | "What is in this file? What is its shape?" | Section list with line numbers; file shape (N sections, K loc, language); top-level headline. |
+| 2 | **Evaluation** | "What of this matters for my task?" | A relevance map: which sections / line ranges are relevant to the current bundle, prioritized P0 / P1 / unused. |
+| 3 | **Critical findings** | "What is wrong, missing, contradictory, drifted?" | A typed finding list (severity P0 / P1) — Iron-Rule violations, spec-vs-source drift, missing sections, anchors that no longer resolve, dead references. |
+| 4 | **Internalize** | "Can I act on this without re-reading?" | Pass LD-3 (3-section name challenge), LD-4 (negative-knowledge), LD-5 (line-range quote). Can paraphrase faithfully; can answer "what is NOT in this file?". |
+
+Phase ordering is typically **Survey → Evaluation → Critical findings →
+Internalize**, but findings often surface DURING internalize (the act of
+internalizing exposes contradictions). A complete reading reaches all
+four; a partial reading stops earlier and MUST declare so.
+
+### §14.2 Phase × depth matrix
+
+| Depth | Survey | Evaluation | Critical findings | Internalize |
+|---|:-:|:-:|:-:|:-:|
+| `grep` (anti) | partial | no | no | no |
+| `sed-partial` / `head-only` (anti) | partial | partial | no | no |
+| `skim` | yes | partial | partial (per-section only) | no |
+| `read` | yes | yes | partial | partial |
+| `thorough` | yes | yes | **yes** | **yes** |
+| `troubleshooting` | yes | yes | yes (focused on the bug) | yes (focused) |
+| `fan-out` | yes (per-file shallow) | yes | yes | partial (per file) |
+| `truncated:head-N` / `truncated:tail-N` | partial | partial | no | no |
+
+Only `thorough` and `troubleshooting` (within its focused scope) achieve
+the full ladder. `fan-out` achieves internalize *per-file* but the
+inventory output is the synthesis — the worker MUST treat each file in
+the inventory as needing its own `thorough` pass before acting on it.
+
+### §14.3 Phase outputs in the worker's status.json
+
+The `proof_of_read` schema (§7.1) is extended with a `phase_reached`
+field naming the highest phase completed for each file:
+
+```json
+{
+  "file": "META/INVARIANTS.md",
+  "sha256": "fa39a3...",
+  "lines": 412,
+  "depth": "thorough",
+  "phase_reached": "internalize",
+  "phases_evidence": {
+    "survey": "9 sections; INVARIANTS canonical structure recognized",
+    "evaluation": "§BBB + §UPSERT-PATTERN are load-bearing for this bundle",
+    "critical_findings": "§UPSERT-PATTERN line 187 contradicts the customer.ttl ogit:CustomerWriter mandatory-attributes (filed REQUESTS-FROM-AGENTS.md#A4-2026-05-18T14:22)",
+    "internalize": "can answer LD-3/4/5 verbatim"
+  }
+}
+```
+
+The `phases_evidence` map is OPTIONAL when `phase_reached=survey`
+(no evidence beyond the section list is required) but BECOMES required
+at `phase_reached >= evaluation` because that phase claims judgment.
+
+### §14.4 Mapping Lie-Detector tests to phases
+
+Each LD-1..LD-5 test (§4.1) probes a specific phase. The meta-agent
+SHOULD rotate the spot-check across the four phases so workers cannot
+game which phase to fake.
+
+| Test | Probes phase | What a passing answer proves |
+|---|---|---|
+| LD-1 Sentinel-Token | **Survey** of the brief | The worker actually loaded the brief into context. |
+| LD-2 Proof-of-Read with SHA | **Survey** of the file | The worker accessed the file at the declared content. |
+| LD-3 3-Sections Name Challenge | **Survey + Evaluation** | The worker can locate structure AND chose which sections to attend to. |
+| LD-4 Negative-Knowledge Test | **Internalize** | The worker built a faithful mental model — can answer "what is NOT in this file" without hallucinating. |
+| LD-5 Line-Range Quote | **Internalize + Critical findings** | The worker can recall verbatim AND detect drift between recall and source. |
+
+A worker declaring `phase_reached=internalize` MUST be able to pass
+LD-3, LD-4, **and** LD-5. Spot-check failure at a claimed phase ⇒
+phase claim is rejected and the proof-of-read is auto-downgraded to
+the highest demonstrably-passed phase.
+
+### §14.5 Per-file required phase by file kind
+
+Different file kinds REQUIRE different minimum phases. The worker
+brief MUST declare per-file phase requirements alongside depth
+requirements:
+
+| File kind | Minimum depth | Minimum phase |
+|---|---|---|
+| `META/INVARIANTS.md` | `thorough` | **internalize** |
+| `CLAUDE.md` / `BOOT.md` / RFCs | `thorough` | **internalize** |
+| Memory files (`CONTEXT.md` / `JOURNAL.md` / `TODO.md`) | `thorough` | **internalize** |
+| Spec files for the bundle (e.g. TTL, OpenAPI, JSON-schema) | `full` (read) | **internalize** |
+| Reference-source for ports | `full` | **internalize** |
+| Skeleton files the worker fills | `read` | **evaluation** |
+| Sibling-bundle files (read-only context) | `skim` | **evaluation** |
+| Files referenced for general orientation | `skim` | **survey** |
+| Files referenced for symbol lookup only | `grep` | **survey** |
+
+When a worker stops at a phase lower than required, the read DOES
+NOT count as complete — even if the depth was sufficient. Both axes
+must clear the bar.
+
+### §14.6 Critical findings escalation
+
+Findings produced in phase 3 (Critical findings) are routed by
+severity:
+
+| Finding severity | Filed where | Worker action |
+|---|---|---|
+| P0 — Iron-Rule violation in input, spec-vs-source contradiction, broken anchor that affects the bundle | `META/REQUESTS-FROM-AGENTS.md` with blocker type from §5.1; worker idles | STOP work; do not proceed to commit |
+| P1 — minor inconsistency, dead reference outside bundle scope, typo, stale comment | `Altlasten.md` / `TECH_DEBT.md` row with the worker's bundle id | Continue work; the orchestrator triages later |
+| INFO — observation that does not affect the bundle | Notes field in `status.json`; not filed elsewhere | Continue work |
+
+A worker that internalizes but does NOT escalate a P0 finding is in
+violation: missing-escalation is itself a P0 finding that PP-13
+will catch (anti-pattern AP1 — "silent fallback that swallows
+errors" — generalizes here as "silent skim that swallows findings").
+
+### §14.7 Validation rules
+
+| Rule | Description | Severity |
+|---|---|---|
+| `PHASE-001 phase-declared` | Every `proof_of_read` entry MUST include a `phase_reached` field. Absent ⇒ treated as `phase_reached=survey` (the weakest claim). | ERROR |
+| `PHASE-002 phase-monotonic-with-depth` | A `phase_reached` claim MUST be consistent with the §14.2 matrix. E.g. `depth=grep` + `phase_reached=internalize` is invalid. | ERROR |
+| `PHASE-003 phase-evidence-required` | When `phase_reached >= evaluation`, the `phases_evidence` map MUST be present with non-empty entries for each phase claimed. | ERROR |
+| `PHASE-004 file-kind-phase-bar` | When the worker brief declares a minimum phase per §14.5 for a file, the worker's `phase_reached` for that file MUST be ≥ the declared minimum. | ERROR |
+| `PHASE-005 critical-findings-routed` | P0 findings produced during phase 3 MUST be filed to `META/REQUESTS-FROM-AGENTS.md` BEFORE the worker commits any code that depends on the affected input. | ERROR |
+| `PHASE-006 internalize-passes-LD-3-4-5` | A claim of `phase_reached=internalize` MUST survive spot-checks of LD-3, LD-4, and LD-5 on rotation. Failure ⇒ auto-downgrade to highest-passed phase. | ERROR |
+
+### §14.8 Definition of Done (per-file read)
+
+A read of a single file is complete when ALL of:
+
+- [ ] Depth from §3 is at the declared level.
+- [ ] Phase from §14.1 reaches the required minimum per §14.5.
+- [ ] `proof_of_read` entry includes `sha256`, `lines`, `depth`,
+      `phase_reached`, and `phases_evidence` for `evaluation+`.
+- [ ] Any P0 critical finding is filed before the worker commits.
+- [ ] LD-3 / LD-4 / LD-5 spot-checks pass if `phase_reached=internalize`
+      is claimed.
+
+---
+
+## §15 Cognitive Anti-Patterns (CA1..CA4)
+
+> Where AP1..AP9 (§9) catch **output** problems — the code itself
+> looks wrong — CA1..CA4 catch **cognition** problems — the way the
+> worker arrived at the output is wrong. CA findings often surface
+> at the same time as AP findings; the distinction is that CA fixes
+> require process change (re-read, re-think, re-spawn) while AP
+> fixes can sometimes be edited in place.
+>
+> The cognitive anti-patterns are jointly owned: the meta-agent
+> spots them during PR review via the Lie-Detector (§4); PP-13
+> spots them during code review by correlating commit timestamps
+> with proof-of-read timestamps.
+
+### §15.1 The four cognitive anti-patterns
+
+| # | Name | What it looks like | Detection signature | Counter-pattern | Severity |
+|---|---|---|---|---|---|
+| **CA1** | **Cognitive dissonance** | Worker sees a contradiction between two authoritative sources (spec vs reference source, INVARIANT vs comment, TTL vs code) and resolves by hand-waving or picking one without investigation. The dissonance gets papered over instead of escalated. | Output contains phrases like "I went with", "I chose", "I preferred Y because it feels right / is already there / compiles", with no corresponding `SPEC_SOURCE_MISMATCH` entry in `META/REQUESTS-FROM-AGENTS.md`. | File `SPEC_SOURCE_MISMATCH` (§5.1) and idle until the meta-agent writes an RFC. Never resolve dissonance unilaterally. | **P0** |
+| **CA2** | **Dunning-Kruger overconfidence** | Worker confidently claims knowledge in an area where its actual depth is shallow. The agent doesn't know what it doesn't know, so its sense of certainty is un-calibrated. The output reads as definite where the read was thin. | A `phase_reached=internalize` claim (§14) that fails LD-3 / LD-4 / LD-5 spot-checks. A specific numerical claim ("62 lessons", "the signature has 3 arguments") with no corresponding `proof_of_read` SHA. Confident paraphrase where the source actually says something else. | Auto-downgrade the phase claim to the highest demonstrably-passed phase (per `PHASE-006`). Re-read at the proper depth + phase. If the worker keeps overshooting, route them to a smaller bundle. | **P0** |
+| **CA3** | **Kahneman/Tversky easy-path (System-1 short-circuit)** | Worker pattern-matches surface features of the input — "file looks like a CRUD handler, so it must be a CRUD handler" — without running the System-2 check (read the actual function body, compare against the spec). Easy-path is fastest when surface matches reality, but devastating when it doesn't. | The first reply is plausibly-correct-sounding but the proof-of-read is `depth=grep` or `depth=sed-partial`. Output describes structure in generic terms ("standard route handler", "typical migration") rather than specific terms ("the function on lines 47-91 dispatches on req.path"). | Force System-2: require LD-2 (SHA + line count) and LD-5 (line-range quote) before accepting any structural claim. Reading depth MUST be at least `read`; phase MUST be at least `evaluation` before any output that makes a structural claim. | **P0** |
+| **CA4** | **Eager amok** | Worker starts writing code (or commits, or pushes) before completing the required reading + planning phases. Enthusiasm runs ahead of discipline. The work *looks* productive — there's a diff — but it's built on incomplete understanding. | First code-write timestamp predates the `proof_of_read` SHA-pin timestamps for one or more required files (§14.5). `status.json` shows commits landing while `phase_reached` is still `survey` or `evaluation` on files that should be at `internalize`. Worker's narrative jumps from brief-read to first-commit with no visible thinking step. | STOP and require complete proof-of-read for ALL files at their required §14.5 minimum phase BEFORE any commit. The Iron Rule applies regardless of how "obvious" the implementation seems. | **P0** |
+
+### §15.2 Why all four are P0
+
+Each of CA1..CA4 produces output that *looks* right. AP1..AP9 produce
+output that looks wrong (a `unwrap_or_default()` is visible; a missing
+parity test is visible). Cognitive anti-patterns produce output whose
+correctness depends entirely on the unverifiable claim that the
+worker read + understood + thought before writing. They are P0
+because they break the trust contract the meta-agent depends on when
+reviewing diffs without re-doing the worker's read.
+
+### §15.3 Joint ownership: who catches what
+
+| Anti-pattern | Catch site | Detection method |
+|---|---|---|
+| CA1 cognitive dissonance | Meta-agent (PR review) + PP-15 (cross-source diff) | Grep PR commit messages for "I went with" / "I chose" / "preferred" against spec-vs-source mismatch; check `REQUESTS-FROM-AGENTS.md` for absence of corresponding blocker. |
+| CA2 Dunning-Kruger overconfidence | Meta-agent (Lie-Detector spot-check) | Rotate LD-3 / LD-4 / LD-5 on one worker per wave; cross-check `phase_reached` claims against actual passing. |
+| CA3 Kahneman/Tversky easy-path | Meta-agent (proof-of-read inspection) + PP-13 (output-vs-source diff) | Worker output reads as paraphrase rather than quote; SHA missing; reading depth declared inconsistent with output claims. |
+| CA4 eager amok | PP-13 (commit-timestamp audit) + Meta-agent (status.json ordering check) | Commit timestamps predate the `proof_of_read` SHA-pin timestamps; `phase_reached` was below the required minimum at first commit. |
+
+### §15.4 Counter-patterns: how a healthy worker behaves
+
+| Anti-pattern | Healthy alternative |
+|---|---|
+| CA1 | "I noticed the spec says X but the existing code does Y. Filing `SPEC_SOURCE_MISMATCH`. Idling." |
+| CA2 | "I am confident about §3 of INVARIANTS.md (depth=thorough, phase=internalize). I am uncertain about §6 (depth=skim, phase=survey). I will deepen §6 before claiming anything about it." |
+| CA3 | "Before describing this file's structure, here is `proof_of_read: { file=X, sha256=..., depth=read, phase_reached=evaluation }`. The structure is: [specific section names with line numbers]." |
+| CA4 | "Reading phase complete on all 4 required files. Filing critical findings (zero P0). Status: `phase_reached=internalize` on all files. NOW beginning the first commit." |
+
+### §15.5 Validation rules
+
+| Rule | Description | Severity |
+|---|---|---|
+| `CA-001 dissonance-escalation` | When a worker's output mentions spec-vs-source divergence, `META/REQUESTS-FROM-AGENTS.md` MUST contain a corresponding `SPEC_SOURCE_MISMATCH` blocker entry. Absence ⇒ CA1 P0 finding. | ERROR |
+| `CA-002 confidence-calibration` | A `phase_reached=internalize` claim that fails LD-3 / LD-4 / LD-5 spot-check ⇒ CA2 P0; phase claim auto-downgraded. | ERROR |
+| `CA-003 system-2-required-before-structural-claim` | Any structural claim about a file's content (function count, section names, signature shapes) MUST be preceded by a `proof_of_read` entry with `depth >= read` AND `phase_reached >= evaluation`. Otherwise CA3 P0. | ERROR |
+| `CA-004 read-before-write-ordering` | `status.json` MUST show all required-minimum `proof_of_read` entries timestamped BEFORE the first code-commit timestamp for files at the §14.5-required minimum phase. Otherwise CA4 P0. | ERROR |
+
+### §15.6 Mindset-level relation to the four savants
+
+The four savants in `autoattended-orchestrator-spec.md` §4.0 each
+have a *cognitive* posture that resists a specific CA:
+
+| Savant | Mindset | Primarily resists |
+|---|---|---|
+| PP-13 brutally-honest-tester | "what would break in production at 3 a.m. that the author talked themselves out of seeing?" | CA1 (talking-yourself-out-of-seeing IS cognitive dissonance) + CA4 (production doesn't break because of enthusiasm) |
+| PP-14 convergence-architect | "what could this become that we aren't seeing?" | CA3 (easy-path closes possibilities prematurely) |
+| PP-15 baton-handoff-auditor | "do these contracts actually line up at the seams?" | CA1 (dissonance often hides at handoffs) |
+| PP-16 preflight-drift-auditor | "does the plan still match the system as it actually is?" | CA2 (overconfidence in a plan that has drifted from reality) |
+
+The full 4-savant pass is jointly an antibody against all four
+cognitive anti-patterns. A wave that runs only one savant catches
+only the CAs that savant's mindset resists; a wave that runs the
+cooperative council (orchestrator spec §15) catches all four.
+
+### §15.7 Definition of Done (cognitive-hygiene)
+
+A worker passes the cognitive-hygiene gate when ALL of:
+
+- [ ] `CA-001` clean: every spec-vs-source mention is matched by a filed `SPEC_SOURCE_MISMATCH` blocker.
+- [ ] `CA-002` clean: every `phase_reached=internalize` claim survives LD-3/4/5 spot-checks.
+- [ ] `CA-003` clean: every structural claim is backed by a sufficient `proof_of_read`.
+- [ ] `CA-004` clean: read timestamps precede commit timestamps for all required-minimum files.
+- [ ] Worker did not output `I went with` / `I chose` / `I preferred` without an associated blocker filing.
+
+---
+
 *End of `anti-skim-agent-spec.md`.*
