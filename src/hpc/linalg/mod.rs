@@ -63,3 +63,9 @@ pub mod activations_ext;
 pub use activations_ext::{gelu_f32, gelu_tanh_f32, mish_f32, silu_f32, swish_f32};
 
 pub mod conv;
+
+pub mod polar;
+pub use polar::polar;
+
+pub mod matfn;
+pub use matfn::{mat_exp, mat_exp_spd, mat_log, mat_log_spd};
