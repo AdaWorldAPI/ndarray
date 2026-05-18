@@ -1,0 +1,13 @@
+@prefix ogit:           <http://www.purl.org/ogit/> .
+@prefix ogit.Cognitive: <http://www.purl.org/ogit/Cognitive/> .
+@prefix rdf:            <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:           <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:            <http://www.w3.org/2001/XMLSchema#> .
+@prefix dcterms:        <http://purl.org/dc/terms/> .
+
+ogit.Cognitive:twig-single-evidence-abduce a ogit.Cognitive:Twig ;
+    ogit:name "single_evidence_abduce" ;
+    ogit.Cognitive:hipParent "ogit.Cognitive:hip-abduction" ;
+    ogit.Cognitive:twigIdx "0"^^xsd:byte ;
+    ogit:description "Twig under abduction: single-evidence abductive inference template (B, A->B |- A). Covers warm (high-confidence) and cool (low-confidence) abductive variants parameterised by the NARS k-horizon constant." ;
+    dcterms:source "AdaWorldAPI/ndarray/.claude/knowledge/pr-x9-design.md:layer-1-substrate" .

@@ -20,4 +20,5 @@
 
 #![allow(missing_docs)]
 
+pub mod embedded;
 pub mod turtle_parser;

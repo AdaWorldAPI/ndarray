@@ -1,0 +1,14 @@
+@prefix ogit:           <http://www.purl.org/ogit/> .
+@prefix ogit.Cognitive: <http://www.purl.org/ogit/Cognitive/> .
+@prefix rdf:            <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:           <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:            <http://www.w3.org/2001/XMLSchema#> .
+@prefix dcterms:        <http://purl.org/dc/terms/> .
+
+ogit.Cognitive:leaf-classical-mp a ogit.Cognitive:Leaf ;
+    ogit:name "classical_mp" ;
+    ogit.Cognitive:twigParent "ogit.Cognitive:twig-modus-ponens" ;
+    ogit.Cognitive:leafIdx "0"^^xsd:byte ;
+    ogit.Cognitive:basinSignature "7234025378941772800"^^xsd:long ;
+    ogit:description "Leaf (basin atom) under modus_ponens: classical modus ponens at maximum-confidence truth state. basinSignature encodes frequency=1.0, confidence=0.99 in CausalEdge64 canonical form." ;
+    dcterms:source "AdaWorldAPI/ndarray/.claude/knowledge/pr-x9-design.md:layer-1-substrate" .

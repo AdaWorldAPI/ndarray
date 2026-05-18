@@ -1,0 +1,43 @@
+@prefix ogit:           <http://www.purl.org/ogit/> .
+@prefix ogit.Cognitive: <http://www.purl.org/ogit/Cognitive/> .
+@prefix rdf:            <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:           <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:            <http://www.w3.org/2001/XMLSchema#> .
+@prefix dcterms:        <http://purl.org/dc/terms/> .
+
+ogit.Cognitive:CognitiveTier a rdfs:Class ;
+    rdfs:subClassOf ogit:Entity ;
+    rdfs:label "CognitiveTier" ;
+    rdfs:comment "L1-L4 tier metadata for the LazyBlockedGrid (PR-X9). Each tier represents one level of block granularity in the cognitive spatial hierarchy: L1=micro (64 cells), L2=meso (256 cells), L3=macro (4096 cells), L4=global (16384 cells). The areaBranch is uniformly 16 across all tiers." ;
+    ogit:scope "NTO" ;
+    ogit:parent ogit:Node ;
+    dcterms:source "AdaWorldAPI/ndarray/.claude/knowledge/pr-x9-design.md:layer-1-substrate" ;
+    ogit:mandatory (
+        ogit.Cognitive:tierIdx
+        ogit.Cognitive:blockDim
+        ogit.Cognitive:areaBranch
+    ) ;
+    ogit:optional (
+        ogit:description
+    ) ;
+    ogit:allowed [
+        ogit:relates ogit.Cognitive:SplatCovariance
+    ] .
+
+ogit.Cognitive:tierIdx a rdf:Property ;
+    rdfs:label "tierIdx" ;
+    rdfs:comment "Tier level index (1-4, xsd:byte). L1=1 (finest grain, 64-cell blocks), L2=2 (256-cell meso blocks), L3=3 (4096-cell macro blocks), L4=4 (16384-cell global blocks)." ;
+    rdfs:domain ogit.Cognitive:CognitiveTier ;
+    ogit:type "xsd:byte" .
+
+ogit.Cognitive:blockDim a rdf:Property ;
+    rdfs:label "blockDim" ;
+    rdfs:comment "Number of cells in one block at this tier. Values: L1=64, L2=256, L3=4096, L4=16384. Used by PR-X9's LazyBlockedGrid to size the codec mode selection window." ;
+    rdfs:domain ogit.Cognitive:CognitiveTier ;
+    ogit:type "xsd:int" .
+
+ogit.Cognitive:areaBranch a rdf:Property ;
+    rdfs:label "areaBranch" ;
+    rdfs:comment "Area branching factor at this tier (always 16 for all tiers in v1). Encodes the 4^2 grid subdivision: each parent block fans out to 16 child blocks. Matches the cognitie hierarchy 4-wide branching (Heel→Hip→Twig→Leaf each 16-wide)." ;
+    rdfs:domain ogit.Cognitive:CognitiveTier ;
+    ogit:type "xsd:byte" .

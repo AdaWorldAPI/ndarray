@@ -1,0 +1,14 @@
+@prefix ogit:           <http://www.purl.org/ogit/> .
+@prefix ogit.Cognitive: <http://www.purl.org/ogit/Cognitive/> .
+@prefix rdf:            <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:           <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:            <http://www.w3.org/2001/XMLSchema#> .
+@prefix dcterms:        <http://purl.org/dc/terms/> .
+
+ogit.Cognitive:leaf-single-evidence-warm a ogit.Cognitive:Leaf ;
+    ogit:name "single_evidence_warm" ;
+    ogit.Cognitive:twigParent "ogit.Cognitive:twig-single-evidence-abduce" ;
+    ogit.Cognitive:leafIdx "0"^^xsd:byte ;
+    ogit.Cognitive:basinSignature "5476377146882523136"^^xsd:long ;
+    ogit:description "Leaf (basin atom) under single_evidence_abduce: high-confidence abductive variant. basinSignature encodes frequency=0.8, confidence=0.75 in CausalEdge64 canonical form — warm abduction where evidence strongly supports the hypothesis." ;
+    dcterms:source "AdaWorldAPI/ndarray/.claude/knowledge/pr-x9-design.md:layer-1-substrate" .

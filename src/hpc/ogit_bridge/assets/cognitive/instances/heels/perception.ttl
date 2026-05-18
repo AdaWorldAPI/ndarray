@@ -1,0 +1,12 @@
+@prefix ogit:           <http://www.purl.org/ogit/> .
+@prefix ogit.Cognitive: <http://www.purl.org/ogit/Cognitive/> .
+@prefix rdf:            <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:           <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:            <http://www.w3.org/2001/XMLSchema#> .
+@prefix dcterms:        <http://purl.org/dc/terms/> .
+
+ogit.Cognitive:heel-perception a ogit.Cognitive:Heel ;
+    ogit:name "perception" ;
+    ogit.Cognitive:heelIdx "1"^^xsd:byte ;
+    ogit:description "Cognitive family for sensory and input-processing cognitive primitives. Covers feature detection, signal integration, multi-modal fusion, and bottom-up attention operations." ;
+    dcterms:source "AdaWorldAPI/ndarray/.claude/knowledge/pr-x9-design.md:layer-1-substrate" .

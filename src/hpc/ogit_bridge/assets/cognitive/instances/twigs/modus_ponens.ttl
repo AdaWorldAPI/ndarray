@@ -1,0 +1,13 @@
+@prefix ogit:           <http://www.purl.org/ogit/> .
+@prefix ogit.Cognitive: <http://www.purl.org/ogit/Cognitive/> .
+@prefix rdf:            <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:           <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:            <http://www.w3.org/2001/XMLSchema#> .
+@prefix dcterms:        <http://purl.org/dc/terms/> .
+
+ogit.Cognitive:twig-modus-ponens a ogit.Cognitive:Twig ;
+    ogit:name "modus_ponens" ;
+    ogit.Cognitive:hipParent "ogit.Cognitive:hip-deduction" ;
+    ogit.Cognitive:twigIdx "0"^^xsd:byte ;
+    ogit:description "Twig under deduction: modus ponens inference template (A, A->B |- B). Covers classical MP, NARS-weighted MP with truth-function f_ded, and confidence-attenuated MP for uncertain premises." ;
+    dcterms:source "AdaWorldAPI/ndarray/.claude/knowledge/pr-x9-design.md:layer-1-substrate" .

@@ -1,0 +1,12 @@
+@prefix ogit:           <http://www.purl.org/ogit/> .
+@prefix ogit.Cognitive: <http://www.purl.org/ogit/Cognitive/> .
+@prefix rdf:            <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:           <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:            <http://www.w3.org/2001/XMLSchema#> .
+@prefix dcterms:        <http://purl.org/dc/terms/> .
+
+ogit.Cognitive:heel-resonance a ogit.Cognitive:Heel ;
+    ogit:name "resonance" ;
+    ogit.Cognitive:heelIdx "3"^^xsd:byte ;
+    ogit:description "Cognitive family for field-resonance and cascade primitives, primarily NARS-style truth revision and choice rules. Covers belief revision, preference ordering, and self-reinforcing cascade dynamics." ;
+    dcterms:source "AdaWorldAPI/ndarray/.claude/knowledge/pr-x9-design.md:layer-1-substrate" .

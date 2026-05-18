@@ -1,0 +1,13 @@
+@prefix ogit:           <http://www.purl.org/ogit/> .
+@prefix ogit.Cognitive: <http://www.purl.org/ogit/Cognitive/> .
+@prefix rdf:            <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:           <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:            <http://www.w3.org/2001/XMLSchema#> .
+@prefix dcterms:        <http://purl.org/dc/terms/> .
+
+ogit.Cognitive:hip-abduction a ogit.Cognitive:Hip ;
+    ogit:name "abduction" ;
+    ogit.Cognitive:heelParent "ogit.Cognitive:heel-reasoning" ;
+    ogit.Cognitive:hipIdx "1"^^xsd:byte ;
+    ogit:description "Hip under reasoning: best-explanation inference operations. Covers single-evidence abduction, multi-evidence hypothesis ranking, and NARS abductive truth functions (warm/cool confidence variants)." ;
+    dcterms:source "AdaWorldAPI/ndarray/.claude/knowledge/pr-x9-design.md:layer-1-substrate" .
