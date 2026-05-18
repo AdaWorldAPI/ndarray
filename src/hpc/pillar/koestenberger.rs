@@ -31,7 +31,8 @@
 
 use crate::hpc::linalg::eig_sym::eig_sym_3;
 use crate::hpc::pillar::prove_runner::{PillarReport, SplitMix64, random_contractive_spd3};
-use crate::hpc::splat3d::spd3::{sandwich, Spd3};
+use crate::hpc::linalg::Spd3;
+use crate::hpc::splat3d::spd3::sandwich;
 
 // ── Probe constants ────────────────────────────────────────────────────────────
 
