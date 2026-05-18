@@ -93,11 +93,19 @@ where
 /// ```
 pub fn sigmoid_f32<D: Dimension>(x: ArrayView<f32, D>, mut out: ArrayViewMut<f32, D>) {
     assert_eq!(x.shape(), out.shape(), "sigmoid_f32: shape mismatch (x={:?} out={:?})", x.shape(), out.shape());
-    if let (Some(xs), Some(os)) = (x.as_slice_memory_order(), out.as_slice_memory_order_mut()) {
-        sigmoid_f32_slice(xs, os);
-        return;
+    // HOT PATH guard: input + output must share strides AND each be contiguous
+    // in their own memory order. Without the strides-equality check a C-order
+    // input + F-order output (same shape, both individually contiguous) would
+    // both succeed at `as_slice_memory_order` but with mismatched logical
+    // indexing — writing the wrong sigmoid value into each output coordinate.
+    // Matches the dispatch_unary_contig guard in `hpc/vml.rs`.
+    if x.strides() == out.strides() {
+        if let (Some(xs), Some(os)) = (x.as_slice_memory_order(), out.as_slice_memory_order_mut()) {
+            sigmoid_f32_slice(xs, os);
+            return;
+        }
     }
-    // Cold path: non-contiguous views (sliced/transposed) — stride-aware scalar.
+    // Cold path: non-contiguous views OR mismatched memory orders — stride-aware scalar.
     Zip::from(&mut out)
         .and(x)
         .for_each(|o, &v| *o = 1.0 / (1.0 + (-v).exp()));
@@ -404,6 +412,33 @@ mod tests {
         for &v in out.iter() {
             assert!((v - 0.5).abs() < 1e-6, "sigmoid(0) strided = {}", v);
         }
+    }
+
+    #[test]
+    fn test_sigmoid_f32_c_in_f_out_mismatched_strides() {
+        // Regression for Codex PR #154 finding: same-shaped contig views with
+        // different memory orders (C-order input + F-order output) both pass
+        // `as_slice_memory_order` but with mismatched logical indexing. Without
+        // the strides-equality guard, the flat SIMD primitive writes sigmoid
+        // values into the wrong output coordinates. The fix re-routes such
+        // cases to the stride-aware Zip cold path.
+        use crate::{Array, Array2, ShapeBuilder};
+        let x: Array2<f32> = arr2(&[[0.0_f32, 100.0], [-100.0, 0.0]]); // C-order
+                                                                       // F-order output of the same shape, both individually contiguous,
+                                                                       // but `x.strides() != out.strides()`.
+        let mut out: Array2<f32> = Array::zeros((2, 2).f());
+        assert!(x.as_slice_memory_order().is_some());
+        assert!(out.as_slice_memory_order().is_some());
+        assert_ne!(x.strides(), out.strides(), "test setup: strides must differ");
+
+        sigmoid_f32(x.view(), out.view_mut());
+
+        // Logical coordinates must carry the right sigmoid values regardless
+        // of the underlying memory order.
+        assert!((out[[0, 0]] - 0.5).abs() < 1e-6, "sigmoid(0) at [0,0] = {}", out[[0, 0]]);
+        assert!((out[[0, 1]] - 1.0).abs() < 1e-4, "sigmoid(100) at [0,1] = {}", out[[0, 1]]);
+        assert!((out[[1, 0]] - 0.0).abs() < 1e-4, "sigmoid(-100) at [1,0] = {}", out[[1, 0]]);
+        assert!((out[[1, 1]] - 0.5).abs() < 1e-6, "sigmoid(0) at [1,1] = {}", out[[1, 1]]);
     }
 
     #[test]
