@@ -438,3 +438,4 @@ mod e2e_tests {
     }
 }
 pub mod vnni_gemm;
+pub mod blocked_grid;
