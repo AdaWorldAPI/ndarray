@@ -52,3 +52,9 @@ pub mod eig_sym;
 
 pub mod inverse;
 pub use inverse::{invert_affine_4x4, invert_mat3, invert_mat4, invert_mat_n};
+
+pub mod polar;
+pub use polar::polar;
+
+pub mod matfn;
+pub use matfn::{mat_exp, mat_exp_spd, mat_log, mat_log_spd};
