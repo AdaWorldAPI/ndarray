@@ -29,6 +29,13 @@
 use super::gaussian::{GaussianBatch, SH_COEFFS_PER_GAUSSIAN};
 use super::sh::sh_eval_deg3;
 use super::spd3::Spd3;
+// NB: `F32x16` is brought into scope per-function (see the
+// `project_chunk_x16_body!` macro below). On x86_64 the AVX-512-gated wrapper
+// imports `crate::simd_avx512::F32x16` (native `__m512`); the runtime fallback
+// uses `crate::simd::F32x16` (which resolves to whichever module-level cfg
+// picked — typically the AVX2 polyfill in the "one binary, all ISAs" build).
+// On non-x86 targets the module-level type is the only one available.
+#[allow(unused_imports)]
 use crate::simd::F32x16;
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -315,11 +322,62 @@ impl Chunk16 {
 /// `start` is the original batch offset (used to write into `out` and mask
 /// against `gaussians.len`). `count` is how many of the 16 lanes are active
 /// (lanes `count..16` are zero-padded and forced `valid = 0`).
+///
+/// # SIMD dispatch
+///
+/// On x86_64 this is a thin runtime dispatcher: if AVX-512F is present
+/// (Sapphire Rapids / Zen 4+), the AVX-512-gated `project_chunk_x16_avx512`
+/// runs with native `__m512` ops; on AVX2-only CPUs (GitHub CI, older
+/// hardware) the polyfill fallback runs. The body lives once in the
+/// `project_chunk_x16_body!` macro, instantiated twice with different
+/// `F32x16` paths so `cfg(target_feature)`-resolved imports in `simd.rs`
+/// (which are module-scoped, not function-scoped on stable 1.95) don't
+/// trap us in the avx2 polyfill on a "one binary, all ISAs" build. See
+/// `.cargo/config.toml` for the dispatch architecture.
+#[inline]
 fn project_chunk_x16(
     chunk: &Chunk16, gaussians_len: usize, start: usize, count: usize, camera: &Camera, out: &mut ProjectedBatch,
 ) {
-    // ── 1. Load SoA mean lanes ───────────────────────────────────────────
-    let mx = F32x16::from_slice(&chunk.mean_x);
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx512f") {
+            // SAFETY: AVX-512F detected at runtime; calling the gated impl
+            // is sound — its `#[target_feature]` body only emits AVX-512
+            // instructions, which the CPU now provably supports.
+            unsafe {
+                project_chunk_x16_avx512(chunk, gaussians_len, start, count, camera, out);
+            }
+            return;
+        }
+    }
+    project_chunk_x16_fallback(chunk, gaussians_len, start, count, camera, out);
+}
+
+/// Shared body of `project_chunk_x16` as a macro. The macro is instantiated
+/// twice — once inside an AVX-512-gated wrapper (with `F32x16` resolved to
+/// `crate::simd_avx512::F32x16`, the native `__m512`) and once in the
+/// fallback path (with `crate::simd::F32x16`). All operations used inside
+/// the body are part of the shared SIMD API surface that both polyfills
+/// implement (verified in `src/simd_avx2.rs` line 510+ vs.
+/// `src/simd_avx512.rs` line 73+).
+///
+/// `macro_rules!` is hygienic — we must thread the wrapper-function
+/// parameters in as explicit macro arguments (`$chunk` etc.) so the body
+/// can reference them. The `F32x16` path token IS resolved at expansion
+/// site, so the function-scoped `use crate::simd_avx512::F32x16;` in the
+/// AVX-512 wrapper drives type resolution there as intended.
+macro_rules! project_chunk_x16_body {
+    ($chunk:ident, $gaussians_len:ident, $start:ident, $count:ident, $camera:ident, $out:ident) => {{
+        // Re-bind macro args to local names so the body reads naturally.
+        let chunk: &Chunk16 = $chunk;
+        let gaussians_len: usize = $gaussians_len;
+        let start: usize = $start;
+        let count: usize = $count;
+        let camera: &Camera = $camera;
+        let out: &mut ProjectedBatch = $out;
+
+        // ── 1. Load SoA mean lanes ───────────────────────────────────────────
+        let mx = F32x16::from_slice(&chunk.mean_x);
     let my = F32x16::from_slice(&chunk.mean_y);
     let mz = F32x16::from_slice(&chunk.mean_z);
 
@@ -614,6 +672,36 @@ fn project_chunk_x16(
         out.opacity[idx] = chunk.opacity[k];
         out.valid[idx] = 1;
     }
+    }};
+}
+
+/// AVX-512-gated specialization: native `__m512` ops via `simd_avx512::F32x16`.
+///
+/// # Safety
+/// The caller must guarantee AVX-512F is available at runtime. The dispatch
+/// in `project_chunk_x16` performs `is_x86_feature_detected!("avx512f")`
+/// before invocation.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+#[inline(never)]
+unsafe fn project_chunk_x16_avx512(
+    chunk: &Chunk16, gaussians_len: usize, start: usize, count: usize, camera: &Camera, out: &mut ProjectedBatch,
+) {
+    // SAFETY (body): `#[target_feature(enable = "avx512f")]` plus the
+    // function-scoped `use crate::simd_avx512::F32x16` make every F32x16
+    // operation in the macro body resolve to native `__m512` intrinsics.
+    use crate::simd_avx512::F32x16;
+    project_chunk_x16_body!(chunk, gaussians_len, start, count, camera, out);
+}
+
+/// Fallback specialization: uses whatever `crate::simd::F32x16` resolves to
+/// at module-cfg time — typically the AVX2 polyfill (`(__m256, __m256)`) in
+/// the "one binary, all ISAs" build, or the scalar fallback off-x86.
+#[inline]
+fn project_chunk_x16_fallback(
+    chunk: &Chunk16, gaussians_len: usize, start: usize, count: usize, camera: &Camera, out: &mut ProjectedBatch,
+) {
+    project_chunk_x16_body!(chunk, gaussians_len, start, count, camera, out);
 }
 
 // ════════════════════════════════════════════════════════════════════════════

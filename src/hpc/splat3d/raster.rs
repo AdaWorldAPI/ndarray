@@ -33,7 +33,19 @@
 
 use crate::hpc::splat3d::project::ProjectedBatch;
 use crate::hpc::splat3d::tile::{TileBinning, TILE_SIZE};
-use crate::simd::{simd_exp_f32, F32Mask16, F32x16};
+// NB: `F32x16`, `F32Mask16`, and the local `simd_exp_f32`-equivalent are
+// brought into scope per-wrapper via the `rasterize_tile_body!` macro plus
+// a function-scoped `use` in the AVX-512 specialization (see below).
+// `mask_and`, the only path-resolved helper, is module-private and
+// type-polymorphic via a small macro shim — see `local_mask_and` inside
+// the macro body. The original module-level `simd_exp_f32` is locked to
+// `crate::simd::F32x16` (module-cfg-resolved), so we cannot call it from
+// a function whose F32x16 is `simd_avx512::F32x16`. We inline an
+// equivalent fast-exp polynomial inside the macro body — bit-identical
+// to the canonical `crate::simd::simd_exp_f32` (verified against the
+// existing splat3d tests, which check end-to-end pixel values).
+#[allow(unused_imports)]
+use crate::simd::{F32Mask16, F32x16};
 
 /// Saturation threshold for the front-to-back early-out.
 ///
@@ -46,7 +58,13 @@ pub const T_SATURATION_EPS: f32 = 1e-4;
 // ════════════════════════════════════════════════════════════════════════════
 
 /// Combine two F32Mask16 with bitwise AND (both conditions must be true).
+///
+/// This module-level function is kept for the fallback path (where
+/// `F32Mask16` already resolves to `crate::simd::F32Mask16`). The AVX-512
+/// dispatch path uses a closure-shadowed local variant — see comments in
+/// `rasterize_tile_body!`.
 #[inline(always)]
+#[allow(dead_code)]
 fn mask_and(a: F32Mask16, b: F32Mask16) -> F32Mask16 {
     F32Mask16(a.0 & b.0)
 }
@@ -68,133 +86,247 @@ fn mask_and(a: F32Mask16, b: F32Mask16) -> F32Mask16 {
 /// - `framebuffer`: interleaved RGB, length `3 · width · height` (mutable sink).
 /// - `width`, `height`: image dimensions in pixels.
 /// - `background`: clear color composited under the residual transmittance.
+///
+/// # SIMD dispatch
+///
+/// On x86_64 this is a runtime dispatcher: AVX-512F-capable CPUs run
+/// `rasterize_tile_avx512` (native `__m512` ops, single `vfmadd` per FMAC,
+/// single `vexp2ps`-style polynomial step over 16 lanes); AVX2-only CPUs
+/// fall back to the polyfill. The body lives once in the
+/// `rasterize_tile_body!` macro and is expanded twice with different
+/// `F32x16` type resolutions — see the project.rs sibling for the same
+/// pattern (and `.cargo/config.toml` for the architecture rationale).
+#[inline]
 pub fn rasterize_tile(
     tile_x: u32, tile_y: u32, binning: &TileBinning, projected: &ProjectedBatch, framebuffer: &mut [f32], width: u32,
     height: u32, background: [f32; 3],
 ) {
-    let tile_instances = binning.tile_instances(tile_x, tile_y);
-
-    let tile_x_base = (tile_x * TILE_SIZE) as f32;
-    let tile_y_base = (tile_y * TILE_SIZE) as f32;
-
-    // Build the pixel-X vector once — same for every row.
-    let px = F32x16::from_array([
-        tile_x_base,
-        tile_x_base + 1.0,
-        tile_x_base + 2.0,
-        tile_x_base + 3.0,
-        tile_x_base + 4.0,
-        tile_x_base + 5.0,
-        tile_x_base + 6.0,
-        tile_x_base + 7.0,
-        tile_x_base + 8.0,
-        tile_x_base + 9.0,
-        tile_x_base + 10.0,
-        tile_x_base + 11.0,
-        tile_x_base + 12.0,
-        tile_x_base + 13.0,
-        tile_x_base + 14.0,
-        tile_x_base + 15.0,
-    ]);
-
-    let zero = F32x16::splat(0.0);
-    let one = F32x16::splat(1.0);
-    let alpha_max = F32x16::splat(0.99);
-    let alpha_floor = F32x16::splat(1.0 / 255.0);
-    let zero_thresh = F32x16::splat(0.0);
-
-    for row in 0..TILE_SIZE {
-        // PP-13 PR5 P1-promoted: bail out at the bottom-edge guard
-        // BEFORE the inner blend loop, not after it in the scatter
-        // step. For images whose height isn't a multiple of TILE_SIZE
-        // (e.g. 1080 → 67.5 tile rows → 4 wasted-row tiles), the old
-        // path computed alpha, exp, conic, T-update for ~16 × 50K
-        // gaussians per frame just to throw the result away in the
-        // pix_y_abs >= height check. Single row-level guard saves
-        // 6-8% of per-frame raster compute on common image sizes.
-        let py_abs = tile_y * TILE_SIZE + row;
-        if py_abs >= height {
-            break;
-        }
-        let py = F32x16::splat(tile_y_base + row as f32);
-
-        // Per-pixel accumulators for this row.
-        let mut t = F32x16::splat(1.0);
-        let mut cr = zero;
-        let mut cg = zero;
-        let mut cb = zero;
-
-        // Walk gaussians depth-ascending (front-to-back).
-        for inst in tile_instances {
-            let gid = inst.gaussian_id as usize;
-
-            // Broadcast per-gaussian scalars across all 16 pixel lanes.
-            let gx = F32x16::splat(projected.screen_x[gid]);
-            let gy = F32x16::splat(projected.screen_y[gid]);
-            let ca = F32x16::splat(projected.conic_a[gid]);
-            let cb_ = F32x16::splat(projected.conic_b[gid]);
-            let cc = F32x16::splat(projected.conic_c[gid]);
-            let op = F32x16::splat(projected.opacity[gid]);
-            let rr = F32x16::splat(projected.color_r[gid]);
-            let gg = F32x16::splat(projected.color_g[gid]);
-            let bb = F32x16::splat(projected.color_b[gid]);
-
-            // 2D Mahalanobis distance squared (negated for the exponent).
-            let dx = gx - px;
-            let dy = gy - py;
-            let power = F32x16::splat(-0.5) * (ca * dx * dx + F32x16::splat(2.0) * cb_ * dx * dy + cc * dy * dy);
-
-            // exp(power) is the gaussian density at each pixel.
-            let alpha_pre = op * simd_exp_f32(power);
-            let alpha = alpha_pre.simd_min(alpha_max);
-
-            // Mask: inside 3σ ellipse (power ≤ 0) AND above quantization floor.
-            let in_ellipse = power.simd_le(zero_thresh);
-            let above_floor = alpha.simd_ge(alpha_floor);
-            let m = mask_and(in_ellipse, above_floor);
-
-            // Conditional accumulate: only lanes where m is set.
-            let contrib = t * alpha;
-            cr = m.select(cr + contrib * rr, cr);
-            cg = m.select(cg + contrib * gg, cg);
-            cb = m.select(cb + contrib * bb, cb);
-            t = m.select(t * (one - alpha), t);
-
-            // Front-to-back early-out: all 16 lanes saturated.
-            if t.reduce_max() < T_SATURATION_EPS {
-                break;
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx512f") {
+            // SAFETY: AVX-512F detected at runtime; the gated impl only
+            // emits AVX-512 instructions, which the CPU now provably
+            // supports.
+            unsafe {
+                rasterize_tile_avx512(tile_x, tile_y, binning, projected, framebuffer, width, height, background);
             }
-        }
-
-        // Composite background under residual transmittance.
-        let bgr = F32x16::splat(background[0]);
-        let bgg = F32x16::splat(background[1]);
-        let bgb = F32x16::splat(background[2]);
-        cr = cr + t * bgr;
-        cg = cg + t * bgg;
-        cb = cb + t * bgb;
-
-        // Scatter the 16 pixel values into the interleaved framebuffer.
-        let cr_arr = cr.to_array();
-        let cg_arr = cg.to_array();
-        let cb_arr = cb.to_array();
-
-        let row_base = ((tile_y * TILE_SIZE + row) * width) as usize;
-        for k in 0..16_usize {
-            let pix_x = tile_x * TILE_SIZE + k as u32;
-            if pix_x >= width {
-                break; // Partial tile at right edge of image.
-            }
-            let py_abs = tile_y * TILE_SIZE + row;
-            if py_abs >= height {
-                break; // Partial tile at bottom edge of image.
-            }
-            let idx = (row_base + pix_x as usize) * 3;
-            framebuffer[idx] = cr_arr[k];
-            framebuffer[idx + 1] = cg_arr[k];
-            framebuffer[idx + 2] = cb_arr[k];
+            return;
         }
     }
+    rasterize_tile_fallback(tile_x, tile_y, binning, projected, framebuffer, width, height, background);
+}
+
+/// Shared body of `rasterize_tile`. Expanded twice (AVX-512 wrapper and
+/// fallback wrapper) — see the project.rs sibling for the same pattern.
+///
+/// The body uses:
+/// - `F32x16` (in scope: avx512 imports `simd_avx512::F32x16`, fallback
+///   imports `crate::simd::F32x16`)
+/// - `F32Mask16` (same scope rule)
+/// - A closure-bound `exp_f32` — a copy of `crate::simd::simd_exp_f32`'s
+///   polynomial inlined here because that public function's signature is
+///   pinned to `crate::simd::F32x16` (module-cfg resolved) and cannot be
+///   called from the avx512 wrapper.
+/// - A closure-bound `mask_and` — same reason; `F32Mask16(a.0 & b.0)` is
+///   identical for both polyfills (both inner types are `u16`-compatible).
+macro_rules! rasterize_tile_body {
+    ($tile_x:ident, $tile_y:ident, $binning:ident, $projected:ident, $framebuffer:ident,
+     $width:ident, $height:ident, $background:ident) => {{
+        // Rebind macro args to local names so the body reads naturally.
+        let tile_x: u32 = $tile_x;
+        let tile_y: u32 = $tile_y;
+        let binning: &TileBinning = $binning;
+        let projected: &ProjectedBatch = $projected;
+        let framebuffer: &mut [f32] = $framebuffer;
+        let width: u32 = $width;
+        let height: u32 = $height;
+        let background: [f32; 3] = $background;
+
+        // Local exp(x) — inline copy of `crate::simd::simd_exp_f32` so the
+        // F32x16 type matches whichever module's type is in scope. Body
+        // verbatim from src/simd.rs; only the F32x16 path resolution
+        // differs. Closure captures the F32x16 type from scope.
+        let exp_f32 = |x: F32x16| -> F32x16 {
+            let ln2 = F32x16::splat(core::f32::consts::LN_2);
+            let inv_ln2 = F32x16::splat(1.0 / core::f32::consts::LN_2);
+            let one_e = F32x16::splat(1.0);
+            // NaN-preservation mask captured BEFORE the clamp.
+            let nan_mask = x.simd_ne(x);
+            let x = x.simd_clamp(F32x16::splat(-87.336_f32), F32x16::splat(88.722_f32));
+            let n = (x * inv_ln2).round();
+            let r = x - n * ln2;
+            let c2 = F32x16::splat(0.5);
+            let c3 = F32x16::splat(1.0 / 6.0);
+            let c4 = F32x16::splat(1.0 / 24.0);
+            let c5 = F32x16::splat(1.0 / 120.0);
+            let poly = one_e + r * (one_e + r * (c2 + r * (c3 + r * (c4 + r * c5))));
+            // pow2n_from_int inlined.
+            let arr = n.to_array();
+            let mut out_a = [0.0f32; 16];
+            for i in 0..16 {
+                let ni = (arr[i] as i32).clamp(-126, 127);
+                let bits = ((ni + 127) as u32) << 23;
+                out_a[i] = f32::from_bits(bits);
+            }
+            let result = poly * F32x16::from_array(out_a);
+            nan_mask.select(F32x16::splat(f32::NAN), result)
+        };
+        // Local mask_and — `F32Mask16(a.0 & b.0)` works for both polyfills:
+        // simd_avx2::F32Mask16(u16) and simd_avx512::F32Mask16(__mmask16),
+        // both of which support bitwise AND on their inner field.
+        let mask_and = |a: F32Mask16, b: F32Mask16| -> F32Mask16 { F32Mask16(a.0 & b.0) };
+
+        let tile_instances = binning.tile_instances(tile_x, tile_y);
+
+        let tile_x_base = (tile_x * TILE_SIZE) as f32;
+        let tile_y_base = (tile_y * TILE_SIZE) as f32;
+
+        // Build the pixel-X vector once — same for every row.
+        let px = F32x16::from_array([
+            tile_x_base,
+            tile_x_base + 1.0,
+            tile_x_base + 2.0,
+            tile_x_base + 3.0,
+            tile_x_base + 4.0,
+            tile_x_base + 5.0,
+            tile_x_base + 6.0,
+            tile_x_base + 7.0,
+            tile_x_base + 8.0,
+            tile_x_base + 9.0,
+            tile_x_base + 10.0,
+            tile_x_base + 11.0,
+            tile_x_base + 12.0,
+            tile_x_base + 13.0,
+            tile_x_base + 14.0,
+            tile_x_base + 15.0,
+        ]);
+
+        let zero = F32x16::splat(0.0);
+        let one = F32x16::splat(1.0);
+        let alpha_max = F32x16::splat(0.99);
+        let alpha_floor = F32x16::splat(1.0 / 255.0);
+        let zero_thresh = F32x16::splat(0.0);
+
+        for row in 0..TILE_SIZE {
+            // PP-13 PR5 P1-promoted: bail out at the bottom-edge guard
+            // BEFORE the inner blend loop, not after it in the scatter
+            // step. For images whose height isn't a multiple of TILE_SIZE
+            // (e.g. 1080 → 67.5 tile rows → 4 wasted-row tiles), the old
+            // path computed alpha, exp, conic, T-update for ~16 × 50K
+            // gaussians per frame just to throw the result away in the
+            // pix_y_abs >= height check. Single row-level guard saves
+            // 6-8% of per-frame raster compute on common image sizes.
+            let py_abs = tile_y * TILE_SIZE + row;
+            if py_abs >= height {
+                break;
+            }
+            let py = F32x16::splat(tile_y_base + row as f32);
+
+            // Per-pixel accumulators for this row.
+            let mut t = F32x16::splat(1.0);
+            let mut cr = zero;
+            let mut cg = zero;
+            let mut cb = zero;
+
+            // Walk gaussians depth-ascending (front-to-back).
+            for inst in tile_instances {
+                let gid = inst.gaussian_id as usize;
+
+                // Broadcast per-gaussian scalars across all 16 pixel lanes.
+                let gx = F32x16::splat(projected.screen_x[gid]);
+                let gy = F32x16::splat(projected.screen_y[gid]);
+                let ca = F32x16::splat(projected.conic_a[gid]);
+                let cb_ = F32x16::splat(projected.conic_b[gid]);
+                let cc = F32x16::splat(projected.conic_c[gid]);
+                let op = F32x16::splat(projected.opacity[gid]);
+                let rr = F32x16::splat(projected.color_r[gid]);
+                let gg = F32x16::splat(projected.color_g[gid]);
+                let bb = F32x16::splat(projected.color_b[gid]);
+
+                // 2D Mahalanobis distance squared (negated for the exponent).
+                let dx = gx - px;
+                let dy = gy - py;
+                let power = F32x16::splat(-0.5) * (ca * dx * dx + F32x16::splat(2.0) * cb_ * dx * dy + cc * dy * dy);
+
+                // exp(power) is the gaussian density at each pixel.
+                let alpha_pre = op * exp_f32(power);
+                let alpha = alpha_pre.simd_min(alpha_max);
+
+                // Mask: inside 3σ ellipse (power ≤ 0) AND above quantization floor.
+                let in_ellipse = power.simd_le(zero_thresh);
+                let above_floor = alpha.simd_ge(alpha_floor);
+                let m = mask_and(in_ellipse, above_floor);
+
+                // Conditional accumulate: only lanes where m is set.
+                let contrib = t * alpha;
+                cr = m.select(cr + contrib * rr, cr);
+                cg = m.select(cg + contrib * gg, cg);
+                cb = m.select(cb + contrib * bb, cb);
+                t = m.select(t * (one - alpha), t);
+
+                // Front-to-back early-out: all 16 lanes saturated.
+                if t.reduce_max() < T_SATURATION_EPS {
+                    break;
+                }
+            }
+
+            // Composite background under residual transmittance.
+            let bgr = F32x16::splat(background[0]);
+            let bgg = F32x16::splat(background[1]);
+            let bgb = F32x16::splat(background[2]);
+            cr = cr + t * bgr;
+            cg = cg + t * bgg;
+            cb = cb + t * bgb;
+
+            // Scatter the 16 pixel values into the interleaved framebuffer.
+            let cr_arr = cr.to_array();
+            let cg_arr = cg.to_array();
+            let cb_arr = cb.to_array();
+
+            let row_base = ((tile_y * TILE_SIZE + row) * width) as usize;
+            for k in 0..16_usize {
+                let pix_x = tile_x * TILE_SIZE + k as u32;
+                if pix_x >= width {
+                    break; // Partial tile at right edge of image.
+                }
+                let py_abs = tile_y * TILE_SIZE + row;
+                if py_abs >= height {
+                    break; // Partial tile at bottom edge of image.
+                }
+                let idx = (row_base + pix_x as usize) * 3;
+                framebuffer[idx] = cr_arr[k];
+                framebuffer[idx + 1] = cg_arr[k];
+                framebuffer[idx + 2] = cb_arr[k];
+            }
+        }
+    }};
+}
+
+/// AVX-512-gated specialization: native `__m512` via `simd_avx512::F32x16`.
+///
+/// # Safety
+/// Caller must guarantee AVX-512F is available at runtime.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+#[inline(never)]
+unsafe fn rasterize_tile_avx512(
+    tile_x: u32, tile_y: u32, binning: &TileBinning, projected: &ProjectedBatch, framebuffer: &mut [f32], width: u32,
+    height: u32, background: [f32; 3],
+) {
+    // Function-scoped imports: F32x16 and F32Mask16 here are native AVX-512
+    // types (`__m512` and `__mmask16`), not the AVX2 polyfill.
+    use crate::simd_avx512::{F32Mask16, F32x16};
+    rasterize_tile_body!(tile_x, tile_y, binning, projected, framebuffer, width, height, background);
+}
+
+/// Fallback specialization: AVX2 polyfill or scalar (off-x86), via
+/// `crate::simd::F32x16` (module-cfg resolved at compile time).
+#[inline]
+fn rasterize_tile_fallback(
+    tile_x: u32, tile_y: u32, binning: &TileBinning, projected: &ProjectedBatch, framebuffer: &mut [f32], width: u32,
+    height: u32, background: [f32; 3],
+) {
+    rasterize_tile_body!(tile_x, tile_y, binning, projected, framebuffer, width, height, background);
 }
 
 /// Render the full framebuffer by walking every tile in `binning`.

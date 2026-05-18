@@ -80,10 +80,34 @@ const SH_C3: [f32; 7] = [
 ///
 /// # Panics
 /// In debug builds, panics if `sh.len() < 48`.
+///
+/// # SIMD dispatch
+///
+/// On x86_64 with AVX-512F, the hot variant (`#[target_feature(enable = "avx512f")]`)
+/// lets LLVM auto-vectorize the per-channel dot-product into native `__m512`
+/// fused-multiply-add instructions (the body is a fixed 16-coefficient
+/// polynomial — a textbook auto-vectorization target). On AVX2-only CPUs
+/// the fallback path is the same scalar body, which LLVM still typically
+/// vectorizes to AVX2 `__m256` ops.
 #[inline]
 pub fn sh_eval_deg3(sh: &[f32], d: [f32; 3]) -> [f32; 3] {
     debug_assert!(sh.len() >= 48, "sh slice must have at least 48 elements");
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx512f") {
+            // SAFETY: AVX-512F detected at runtime.
+            return unsafe { sh_eval_deg3_avx512(sh, d) };
+        }
+    }
+    sh_eval_deg3_fallback(sh, d)
+}
 
+/// Shared body of `sh_eval_deg3`. Inlined into both target-feature variants.
+///
+/// Identical math in both paths — only the `#[target_feature]` attribute on
+/// the caller wrapper changes which instruction set LLVM is allowed to emit.
+#[inline(always)]
+fn sh_eval_deg3_impl(sh: &[f32], d: [f32; 3]) -> [f32; 3] {
     let [x, y, z] = d;
 
     // Precompute frequently-used products.
@@ -139,6 +163,25 @@ pub fn sh_eval_deg3(sh: &[f32], d: [f32; 3]) -> [f32; 3] {
     }
 
     rgb
+}
+
+/// AVX-512-gated specialization. Body is shared via `sh_eval_deg3_impl`,
+/// which `#[inline(always)]`s into this function — the `#[target_feature]`
+/// attribute lets LLVM emit AVX-512 instructions for the polynomial.
+///
+/// # Safety
+/// The caller must guarantee AVX-512F is available at runtime.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+#[inline(never)]
+unsafe fn sh_eval_deg3_avx512(sh: &[f32], d: [f32; 3]) -> [f32; 3] {
+    sh_eval_deg3_impl(sh, d)
+}
+
+/// Fallback specialization: same body, default codegen (AVX2 polyfill or scalar).
+#[inline]
+fn sh_eval_deg3_fallback(sh: &[f32], d: [f32; 3]) -> [f32; 3] {
+    sh_eval_deg3_impl(sh, d)
 }
 
 // ════════════════════════════════════════════════════════════════════════════
