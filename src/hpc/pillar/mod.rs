@@ -40,7 +40,7 @@ pub mod prove_runner;
 //   - The math kernel as `pub` functions consuming `linalg::Spd{2,3,N}`
 
 /// Pillar-6: 2D EWA sandwich certification probe (B1).
-// pub mod ewa_sandwich_2d;
+pub mod ewa_sandwich_2d;
 
 /// Pillar-7: 3D EWA sandwich certification probe (B2).
 // pub mod ewa_sandwich_3d;
