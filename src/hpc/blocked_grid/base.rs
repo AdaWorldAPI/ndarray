@@ -181,44 +181,10 @@ impl<T, const BR: usize, const BC: usize> BlockedGrid<T, BR, BC> {
 }
 
 // ============================================================
-// Cell accessors (T: Copy)
+// Slice accessors (no T bound required)
 // ============================================================
 
-impl<T: Copy, const BR: usize, const BC: usize> BlockedGrid<T, BR, BC> {
-    /// Read the cell at logical `(row, col)`.
-    ///
-    /// # Example
-    /// ```
-    /// use ndarray::hpc::blocked_grid::BlockedGrid;
-    /// let mut g = BlockedGrid::<u64>::new(100, 100);
-    /// g.set(50, 50, 0xCAFE);
-    /// assert_eq!(g.get(50, 50), 0xCAFE);
-    /// ```
-    pub fn get(&self, row: usize, col: usize) -> T {
-        self.data[self.idx(row, col)]
-    }
-
-    /// Write `v` to the cell at logical `(row, col)`.
-    ///
-    /// # Data-flow rule
-    /// This is a **write-back** operation per `.claude/rules/data-flow.md`
-    /// Rule #3. Use this only for constructing or filling a grid before
-    /// computation. For per-block transformation use `map_base` (PRIMARY
-    /// compute path — worker A4) which returns a new grid and does not mutate
-    /// the input.
-    ///
-    /// # Example
-    /// ```
-    /// use ndarray::hpc::blocked_grid::BlockedGrid;
-    /// let mut g = BlockedGrid::<u64>::new(10, 10);
-    /// g.set(3, 7, 42);
-    /// assert_eq!(g.get(3, 7), 42);
-    /// ```
-    pub fn set(&mut self, row: usize, col: usize, v: T) {
-        let i = self.idx(row, col);
-        self.data[i] = v;
-    }
-
+impl<T, const BR: usize, const BC: usize> BlockedGrid<T, BR, BC> {
     /// Borrow the full padded storage as a flat slice. Useful for SIMD-stage
     /// closures that walk the storage as a 1-D vector at the BR×BC base tier.
     ///
@@ -274,6 +240,46 @@ impl<T: Copy, const BR: usize, const BC: usize> BlockedGrid<T, BR, BC> {
     /// ```
     pub fn as_padded_slice_mut(&mut self) -> &mut [T] {
         &mut self.data
+    }
+}
+
+// ============================================================
+// Cell accessors (T: Copy)
+// ============================================================
+
+impl<T: Copy, const BR: usize, const BC: usize> BlockedGrid<T, BR, BC> {
+    /// Read the cell at logical `(row, col)`.
+    ///
+    /// # Example
+    /// ```
+    /// use ndarray::hpc::blocked_grid::BlockedGrid;
+    /// let mut g = BlockedGrid::<u64>::new(100, 100);
+    /// g.set(50, 50, 0xCAFE);
+    /// assert_eq!(g.get(50, 50), 0xCAFE);
+    /// ```
+    pub fn get(&self, row: usize, col: usize) -> T {
+        self.data[self.idx(row, col)]
+    }
+
+    /// Write `v` to the cell at logical `(row, col)`.
+    ///
+    /// # Data-flow rule
+    /// This is a **write-back** operation per `.claude/rules/data-flow.md`
+    /// Rule #3. Use this only for constructing or filling a grid before
+    /// computation. For per-block transformation use `map_base` (PRIMARY
+    /// compute path — worker A4) which returns a new grid and does not mutate
+    /// the input.
+    ///
+    /// # Example
+    /// ```
+    /// use ndarray::hpc::blocked_grid::BlockedGrid;
+    /// let mut g = BlockedGrid::<u64>::new(10, 10);
+    /// g.set(3, 7, 42);
+    /// assert_eq!(g.get(3, 7), 42);
+    /// ```
+    pub fn set(&mut self, row: usize, col: usize, v: T) {
+        let i = self.idx(row, col);
+        self.data[i] = v;
     }
 }
 
@@ -398,6 +404,26 @@ impl<'a, T, const BR: usize, const BC: usize> GridBlock<'a, T, BR, BC> {
     pub fn col_origin(&self) -> usize {
         self.col_origin
     }
+
+    /// Construct a `GridBlock` directly from raw components.
+    ///
+    /// Used by super_block.rs (worker A3) to construct base-block views inside
+    /// a super-block without needing `T: Copy`.  The caller is responsible for
+    /// ensuring that `data` is a valid sub-slice of the parent grid's flat
+    /// storage with the correct `padded_cols` stride.
+    pub(super) fn from_raw(
+        data: &'a [T], block_row: usize, block_col: usize, row_origin: usize, col_origin: usize, padded_cols: usize,
+    ) -> Self {
+        Self {
+            block_row,
+            block_col,
+            row_origin,
+            col_origin,
+            padded_cols,
+            data,
+            _marker: PhantomData,
+        }
+    }
 }
 
 /// Mutable base-block window into a [`BlockedGrid`].
@@ -519,6 +545,26 @@ impl<'a, T, const BR: usize, const BC: usize> GridBlockMut<'a, T, BR, BC> {
     #[doc(hidden)]
     pub fn padded_cols(&self) -> usize {
         self.padded_cols
+    }
+
+    /// Construct a `GridBlockMut` directly from raw components.
+    ///
+    /// Used by super_block.rs (worker A3) to construct mutable base-block views
+    /// inside a super-block without needing `T: Copy`.  The caller is responsible
+    /// for ensuring that `data` is a valid exclusive sub-slice of the parent
+    /// grid's flat storage with the correct `padded_cols` stride.
+    pub(super) fn from_raw(
+        data: &'a mut [T], block_row: usize, block_col: usize, row_origin: usize, col_origin: usize, padded_cols: usize,
+    ) -> Self {
+        Self {
+            block_row,
+            block_col,
+            row_origin,
+            col_origin,
+            padded_cols,
+            data,
+            _marker: PhantomData,
+        }
     }
 }
 
