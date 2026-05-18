@@ -3,6 +3,12 @@
     "allow": [
       "mcp__github__*",
       "Read({**})",
+      "Bash(bash **)",
+      "Bash(touch **)",
+      "NotebookEdit({**})",
+      "MultiEdit({**})",
+      "Write({**})",
+      "Edit({**})",
       "Write(src/{**})",
       "Write(crates/{**})",
       "Write(.claude/knowledge/{**})",
