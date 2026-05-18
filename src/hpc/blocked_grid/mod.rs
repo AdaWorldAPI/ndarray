@@ -70,6 +70,7 @@ mod iter;
 mod super_block;
 mod compute;
 mod aliases;
+pub mod grid_struct_macro;
 #[cfg(test)]
 mod tests;
 
@@ -77,6 +78,7 @@ pub use aliases::{
     AmxBf16Grid, AmxInt8Grid, HalfSquareU64, ShaderMantissaGrid, SquareF64Stack8, StripF32Stack2, StripF32Stack4,
 };
 pub use base::{BlockedGrid, GridBlock, GridBlockMut};
+pub use grid_struct_macro::FieldGridRef;
 pub use iter::{BaseBlockIter, BaseBlockIterMut};
 pub use super_block::{GridSuperBlock, GridSuperBlockMut, TierBlockIter, TierBlockIterMut};
 // (compute has no re-exports — only adds impls on existing types)

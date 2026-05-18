@@ -957,6 +957,7 @@ dependencies = [
  "num-integer",
  "num-traits",
  "p64",
+ "paste",
  "portable-atomic",
  "portable-atomic-util",
  "quickcheck",

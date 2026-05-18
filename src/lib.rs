@@ -312,6 +312,13 @@ pub mod backend;
 #[allow(clippy::all, unused_imports, unused_variables, unused_mut, dead_code)]
 pub mod hpc;
 
+// Re-export `paste` so that `blocked_grid_struct!` expansions in external crates
+// can reference it as `$crate::paste::paste!`.  `#[doc(hidden)]` keeps it out of
+// the public API docs.
+#[doc(hidden)]
+#[cfg(feature = "std")]
+pub use paste;
+
 pub use crate::zip::{FoldWhile, IntoNdProducer, NdProducer, Zip};
 
 pub use crate::layout::Layout;
