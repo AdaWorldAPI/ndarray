@@ -248,114 +248,6 @@ fn sandwich_2x3(j: &[[f32; 3]; 2], sigma_cam: &Spd3) -> (f32, f32, f32) {
 // Scalar single-gaussian kernel (used internally and for tests)
 // ════════════════════════════════════════════════════════════════════════════
 
-/// Project a single gaussian (index `i` in `gaussians`) into `out` at slot `i`.
-/// Sets `out.valid[i]` to 1 on success, 0 on cull.
-///
-/// # Safety invariant
-/// `i < gaussians.capacity` and `i < out.capacity`. Caller responsible.
-#[inline]
-fn project_one_scalar_inner(
-    gaussians: &GaussianBatch,
-    i: usize,
-    camera: &Camera,
-    out: &mut ProjectedBatch,
-    count_as_valid: bool,
-) {
-    out.valid[i] = 0;
-
-    let mx = gaussians.mean_x[i];
-    let my = gaussians.mean_y[i];
-    let mz = gaussians.mean_z[i];
-
-    // Step 1: μ_cam = V · (mx, my, mz, 1)ᵀ
-    let v = &camera.view;
-    let cam_x = v[0][0]*mx + v[0][1]*my + v[0][2]*mz + v[0][3];
-    let cam_y = v[1][0]*mx + v[1][1]*my + v[1][2]*mz + v[1][3];
-    let cam_z = v[2][0]*mx + v[2][1]*my + v[2][2]*mz + v[2][3];
-
-    // Depth clip.
-    if cam_z < camera.near || cam_z > camera.far {
-        return;
-    }
-
-    // Step 2: perspective projection.
-    let z_inv = 1.0 / cam_z;
-    let sx = camera.fx * cam_x * z_inv + camera.cx;
-    let sy = camera.fy * cam_y * z_inv + camera.cy;
-
-    // Step 3: Perspective Jacobian J ∈ ℝ^{2×3}.
-    let z_inv2 = z_inv * z_inv;
-    let j: [[f32; 3]; 2] = [
-        [ camera.fx * z_inv, 0.0, -camera.fx * cam_x * z_inv2 ],
-        [ 0.0, camera.fy * z_inv, -camera.fy * cam_y * z_inv2 ],
-    ];
-
-    // Step 4: Σ_cam = W · Σ_world · Wᵀ   (W = upper-left 3×3 of view matrix)
-    let w: [[f32; 3]; 3] = [
-        [v[0][0], v[0][1], v[0][2]],
-        [v[1][0], v[1][1], v[1][2]],
-        [v[2][0], v[2][1], v[2][2]],
-    ];
-    let sigma_world = Spd3::from_scale_quat(
-        [gaussians.scale_x[i], gaussians.scale_y[i], gaussians.scale_z[i]],
-        [gaussians.quat_w[i],  gaussians.quat_x[i],  gaussians.quat_y[i], gaussians.quat_z[i]],
-    );
-    let sigma_cam = sandwich_3x3_asym(&w, &sigma_world);
-
-    // Step 5: Σ_img = J · Σ_cam · Jᵀ
-    let (mut sig_a, mut sig_b, mut sig_c) = sandwich_2x3(&j, &sigma_cam);
-
-    // Step 6: ½-pixel anti-aliasing dilation.
-    sig_a += 0.3;
-    sig_c += 0.3;
-
-    // Step 7: 2D conic = inv(Σ_img).
-    let det = sig_a * sig_c - sig_b * sig_b;
-    if det <= 1e-12 {
-        return;
-    }
-    let inv_det = 1.0 / det;
-    let conic_a =  inv_det * sig_c;
-    let conic_b = -inv_det * sig_b;
-    let conic_c =  inv_det * sig_a;
-
-    // Step 8: 3σ screen-space radius.
-    let mid = 0.5 * (sig_a + sig_c);
-    let d_disc = mid * mid - det;
-    let lambda_max = mid + (d_disc.max(0.0)).sqrt();
-    let radius = 3.0 * lambda_max.sqrt();
-
-    // On-screen AABB cull.
-    let w_f = camera.width as f32;
-    let h_f = camera.height as f32;
-    if sx + radius < 0.0 || sx - radius >= w_f { return; }
-    if sy + radius < 0.0 || sy - radius >= h_f { return; }
-
-    // Step 9: View direction → SH eval → RGB.
-    let dx = mx - camera.position[0];
-    let dy = my - camera.position[1];
-    let dz = mz - camera.position[2];
-    let len_inv = 1.0 / (dx*dx + dy*dy + dz*dz).sqrt().max(1e-12);
-    let dir = [dx * len_inv, dy * len_inv, dz * len_inv];
-
-    let sh_base = i * SH_COEFFS_PER_GAUSSIAN;
-    let sh_slice = &gaussians.sh[sh_base..sh_base + SH_COEFFS_PER_GAUSSIAN];
-    let [r, g, b] = sh_eval_deg3(sh_slice, dir);
-
-    // Write output.
-    out.screen_x[i] = sx;
-    out.screen_y[i] = sy;
-    out.depth[i]    = cam_z;
-    out.conic_a[i]  = conic_a;
-    out.conic_b[i]  = conic_b;
-    out.conic_c[i]  = conic_c;
-    out.radius[i]   = radius;
-    out.color_r[i]  = r;
-    out.color_g[i]  = g;
-    out.color_b[i]  = b;
-    out.opacity[i]  = gaussians.opacity[i];
-    out.valid[i]    = if count_as_valid { 1 } else { 0 };
-}
 
 // ════════════════════════════════════════════════════════════════════════════
 // SIMD inner loop: 16 gaussians per step
@@ -1012,6 +904,156 @@ mod tests {
         assert_eq!(out.len, 0, "clear should set len=0");
         for (i, &v) in out.valid.iter().enumerate() {
             assert_eq!(v, 0, "valid[{i}] should be 0 after clear");
+        }
+    }
+
+    // ── Test 11 — analytical ground truth for W·Σ·Wᵀ with non-identity W ───
+    //
+    // PP-13 PR 3 P0.1 (promoted): Tests 2–10 all use `Camera::identity_at_origin`,
+    // which has W=I₃ in the upper-left 3×3 of the view matrix. The W·Σ·Wᵀ
+    // sandwich is therefore trivially Σ for every test — a sign error in
+    // the SIMD `sc12/sc13/sc23` accumulators (the asymmetric 3×3 cross
+    // terms in `project_chunk_x16`) would produce wrong projected ellipses
+    // for any rotated camera while passing all other tests.
+    //
+    // Setup: 90° rotation about +Y in the view matrix, gaussian at world
+    // (-5, 0, 0) so its camera-frame position is R_y(90°)·(-5,0,0)ᵀ = (0,0,5)
+    // — i.e. directly in front of the camera at depth 5. Σ_world =
+    // diag(4, 1, 0.25) from scale = [2, 1, 0.5] with identity quat.
+    //
+    // Analytical Σ_cam = R_y(90°) · diag(4, 1, 0.25) · R_y(90°)ᵀ
+    //                  = diag(0.25, 1, 4)
+    // (axes permuted by the rotation — the X-scale of Σ_world ends up on
+    // the Z-axis of Σ_cam and vice versa).
+    //
+    // J at μ_cam=(0,0,5):
+    //   J = [[fx/5,  0,  0],
+    //        [ 0,  fy/5, 0]]
+    //   (the -fx·x/z² and -fy·y/z² terms vanish because cam_x = cam_y = 0)
+    //
+    // J · Σ_cam · Jᵀ = diag((fx/5)²·0.25, (fy/5)²·1)
+    //                = [(fx²/100, 0), (0, fy²/25)]
+    //
+    // With fx = fy = 512: Σ_img = [(2621.44, 0), (0, 10485.76)] pre-dilation.
+    // Add 0.3 to each diagonal: Σ_img = [(2621.74, 0), (0, 10486.06)].
+    //
+    // Conic = inv(Σ_img):
+    //   det = 2621.74 · 10486.06 ≈ 2.749e7
+    //   conic_a =  10486.06 / det ≈ 3.81e-4
+    //   conic_b = 0
+    //   conic_c =  2621.74  / det ≈ 9.54e-5
+    //
+    // A transpose error in the SIMD sandwich (e.g. swapping `t00*w10s` for
+    // `t10*w00s`) would produce wrong sig_a/sig_c values that this test
+    // would fail.
+    #[test]
+    fn project_non_identity_view_rotation_matches_analytical() {
+        // R_y(90°): [[cos, 0, sin], [0, 1, 0], [-sin, 0, cos]] with cos=0, sin=1.
+        let view = [
+            [0.0,  0.0, 1.0, 0.0],
+            [0.0,  1.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0, 0.0],
+            [0.0,  0.0, 0.0, 1.0],
+        ];
+        let fx = 512.0_f32;
+        let fy = 512.0_f32;
+        let cx = 256.0_f32;
+        let cy = 256.0_f32;
+        let cam = Camera {
+            view,
+            fx, fy, cx, cy,
+            near: 0.01, far: 1000.0,
+            width: 512, height: 512,
+            position: [0.0, 0.0, 0.0],
+        };
+        // Gaussian at world (-5, 0, 0) — camera-frame position (0, 0, 5).
+        // scale = [2, 1, 0.5] → Σ_world = diag(4, 1, 0.25).
+        let gaussians = single_gaussian([-5.0, 0.0, 0.0], [2.0, 1.0, 0.5], None);
+        let mut out = ProjectedBatch::with_capacity(gaussians.capacity);
+        project_batch(&gaussians, &cam, &mut out);
+        assert_eq!(out.valid[0], 1, "should be visible after 90° Y rotation");
+
+        // Screen center (μ_cam_xy = 0).
+        assert!(
+            (out.screen_x[0] - cx).abs() < 1e-3,
+            "screen_x = {}, expected cx = {cx}", out.screen_x[0]
+        );
+        assert!(
+            (out.screen_y[0] - cy).abs() < 1e-3,
+            "screen_y = {}, expected cy = {cy}", out.screen_y[0]
+        );
+        // Depth = camera-frame z = 5.
+        assert!(
+            (out.depth[0] - 5.0).abs() < 1e-4,
+            "depth = {}, expected 5.0", out.depth[0]
+        );
+
+        // Σ_img after AA dilation: [[fx²·0.25/25 + 0.3, 0], [0, fy²·1/25 + 0.3]].
+        // Note: J at z=5 ⇒ (fx/5)²·0.25 = fx²/100, and (fy/5)²·1 = fy²/25.
+        let sig_a_expected = fx * fx / 100.0 + 0.3;
+        let sig_c_expected = fy * fy / 25.0  + 0.3;
+        let det = sig_a_expected * sig_c_expected;
+        let conic_a_expected =  sig_c_expected / det;
+        let conic_b_expected = 0.0;
+        let conic_c_expected =  sig_a_expected / det;
+
+        // Relative tolerance 1e-3 — the SIMD path through three matrix
+        // products (W·Σ, ·Wᵀ, J·Σ_cam·Jᵀ) accumulates ~1e-4 absolute.
+        assert!(
+            (out.conic_a[0] - conic_a_expected).abs() < 1e-6,
+            "conic_a = {}, expected {conic_a_expected}", out.conic_a[0]
+        );
+        assert!(
+            (out.conic_b[0] - conic_b_expected).abs() < 1e-6,
+            "conic_b = {}, expected {conic_b_expected} (Σ_cam is axis-aligned → b=0)",
+            out.conic_b[0]
+        );
+        assert!(
+            (out.conic_c[0] - conic_c_expected).abs() < 1e-6,
+            "conic_c = {}, expected {conic_c_expected}", out.conic_c[0]
+        );
+
+        // Radius = 3 · sqrt(λ_max(Σ_img)). λ_max = max(sig_a, sig_c) since
+        // off-diagonal is 0. sig_c is the larger.
+        let radius_expected = 3.0 * sig_c_expected.sqrt();
+        assert!(
+            (out.radius[0] - radius_expected).abs() < 1e-3,
+            "radius = {}, expected {radius_expected}", out.radius[0]
+        );
+    }
+
+    // ── Test 12 — partial-chunk lane masking (PP-13 PR 3 P1 promoted) ──────
+    //
+    // Confirms the `k >= count || idx >= gaussians.len` lane guard in
+    // `project_chunk_x16` correctly marks trailing padded lanes as
+    // invalid when `gaussians.len` is not a multiple of 16.
+    #[test]
+    fn project_partial_chunk_masks_padded_lanes() {
+        for n in [1usize, 7, 15, 17, 23, 31] {
+            let mut batch = GaussianBatch::with_capacity(n);
+            for _ in 0..n {
+                batch.push(Gaussian3D {
+                    mean: [0.0, 0.0, 1.0],
+                    scale: [0.1, 0.1, 0.1],
+                    quat: [1.0, 0.0, 0.0, 0.0],
+                    opacity: 0.5,
+                    sh: [0.0; SH_COEFFS_PER_GAUSSIAN],
+                });
+            }
+            let cam = Camera::identity_at_origin(512, 512);
+            let mut out = ProjectedBatch::with_capacity(batch.capacity);
+            project_batch(&batch, &cam, &mut out);
+            // First `n` should be valid; remaining `capacity - n` must
+            // all be `valid=0`.
+            for i in 0..n {
+                assert_eq!(out.valid[i], 1, "n={n}: slot {i} (< len) should be valid");
+            }
+            for i in n..out.capacity {
+                assert_eq!(
+                    out.valid[i], 0,
+                    "n={n}: padded slot {i} (>= len) must be invalid"
+                );
+            }
         }
     }
 }
