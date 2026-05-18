@@ -26,7 +26,26 @@ Four glue crates close the gap:
 
 **This repo owns no glue crate.** It owns the **shared low-level numeric substrate** that the other three depend on — SIMD distance kernels (cosine, L1, L2, Linf), `F64x8` polyfills, `heel_f64x8` helpers, `hpc-extras` feature.
 
-Its contribution to the integration is **API stability**: every kernel signature this repo exposes is a load-bearing contract for two downstream consumers (surrealdb's `idx/trees/vector.rs` + lance-graph's cognitive crates).
+### Integration principle: additive contract shape (this repo IS the canonical case)
+
+**This repo is the load-bearing example of the contract-shape discipline.** Every symbol this repo exposes is consumed by surrealdb-core (`idx/trees/vector.rs`) and lance-graph cognitive crates (`bgz-tensor`, `holograph`, `deepnsm`, `causal-edge`). One signature change breaks the entire stack. The discipline:
+
+1. **Existing stable APIs never change signature.** Period. If a hypothetical improvement requires a different signature, the new signature ships as a new function next to the old one. The old function stays forever or for a 5+-version deprecation runway, whichever is longer.
+2. **New kernels are added as new functions in new or existing modules.** Adding `F32x16` doesn't touch `F64x8`. Adding `hamming_u8_simd` doesn't touch `cosine_f64_simd`.
+3. **Internal SIMD backends (AVX2/AVX-512/NEON paths) are not public surface.** They can change without notice. Only the public entry points are load-bearing.
+4. **The `[patch.crates-io]` block in surrealdb's root Cargo.toml is the diamond-dep guard.** This repo's existence + that patch line is what makes downstream `ort` (ONNX runtime) link the same `ndarray` as surrealdb-core. Breaking the patch contract breaks ONNX interop.
+
+**Per-repo enforcement**: every Sprint item below is read as "add this; don't change what's there."
+
+### Contracts (existing + new)
+
+| Contract | Owner repo | Status today | This plan adds |
+|---|---|---|---|
+| `ndarray::hpc::F64x8` + `heel_f64x8::*` | **this repo** | 0.17 fork, stable per §5 below | **unchanged — only new kernels (e.g. `F32x16`, int8, Hamming) added in new symbols** |
+| `[patch.crates-io] ndarray = ...` in surrealdb root Cargo.toml | surrealdb | active (diamond-dep guard) | not touched |
+| `lance-graph-contract` (for cognitive shader / IR vocabulary) | lance-graph | 0.1.x → 0.2.0 additive | not touched by us |
+| surrealdb `MvccSource` / `CfStream` | surrealdb | new additive traits | not touched by us |
+| sea-orm `EntityActor` / `SelectArrowExt` | sea-orm | new additive trait/derive | not touched by us |
 
 ---
 
@@ -133,20 +152,22 @@ From surrealdb root `Cargo.toml:100-101`:
 
 ---
 
-## 5. API stability commitment
+## 5. API stability commitment (this repo's contract)
 
-This repo doesn't own a glue *crate* — but it owns the **API contract that the SIMD layer of three downstream repos depends on**.
+This repo doesn't own a glue *crate* — it owns the **API contract that the SIMD layer of three downstream repos depends on**. The commitment is absolute:
 
-### Stable public surface (no break without major bump)
+### Stable public surface (no break without major bump, none planned)
 
-| Symbol | Surface |
+| Symbol | Kind |
 |---|---|
-| `ndarray::hpc::F64x8` | type, layout, lane count (8) |
-| `ndarray::hpc::heel_f64x8::cosine_f64_simd(a, b) -> f64` | signature |
-| `ndarray::hpc::heel_f64x8::l1_f64_simd(a, b) -> f64` | signature |
-| `ndarray::hpc::heel_f64x8::l2_f64_simd(a, b) -> f64` | signature |
-| `ndarray::hpc::heel_f64x8::linf_f64_simd(a, b) -> f64` | signature |
-| feature `hpc-extras` | name + what it enables |
+| `ndarray::hpc::F64x8` | type — layout, lane count (8) frozen |
+| `ndarray::hpc::heel_f64x8::cosine_f64_simd(a, b) -> f64` | signature frozen |
+| `ndarray::hpc::heel_f64x8::l1_f64_simd(a, b) -> f64` | signature frozen |
+| `ndarray::hpc::heel_f64x8::l2_f64_simd(a, b) -> f64` | signature frozen |
+| `ndarray::hpc::heel_f64x8::linf_f64_simd(a, b) -> f64` | signature frozen |
+| feature `hpc-extras` | name + what it enables frozen |
+
+**"Frozen" means**: no signature change, no rename, no semantic drift. If we want to refine — e.g., a fused multiply-add variant of cosine — we add `cosine_f64_simd_fma(a, b) -> f64` as a NEW function. Both coexist forever (or 5+ versions, whichever is longer).
 
 ### Internal / unstable
 
@@ -157,33 +178,36 @@ This repo doesn't own a glue *crate* — but it owns the **API contract that the
 ### Doc commitment
 
 - Each stable function gets a doc-test
-- Cross-arch behaviour documented in `docs/hpc-stability.md` (to be created — Sprint 0)
-- A CI matrix runs the doc-tests on x86_64-AVX2, x86_64-AVX-512, aarch64-NEON, and a scalar-fallback target
+- Cross-arch behaviour documented in `docs/hpc-stability.md` (Sprint 0)
+- A CI matrix runs the doc-tests on x86_64-AVX2, x86_64-AVX-512, aarch64-NEON, and scalar-fallback
 
 ---
 
 ## 6. Sprint sequence (this repo)
 
+All work is **additive** — new symbols in new or existing modules; no existing symbol changes signature.
+
 ### Sprint 0 — API freeze + doc (1 week)
-- Mark stable APIs with `#[stable]`-style doc tag (custom attribute or doc comment convention)
-- Write `docs/hpc-stability.md` listing the commitment
+- Mark stable APIs with `#[stable]`-style doc tag (custom attribute or doc-comment convention)
+- Write `docs/hpc-stability.md` listing the commitment from §5
 - Add CI cross-arch doc-test matrix
 - Cross-link from this plan
 
 ### Sprint 1 — `bgz-tensor` direct coupling (1 week)
-- `bgz-tensor` (lance-graph crate) takes a direct dep on this fork, not via lance-graph workspace transitively
-- Ensures bgz-tensor users always get the SIMD kernels regardless of feature flag composition
+- `bgz-tensor` (lance-graph crate) takes a direct dep on this fork (additive: new dep line, no existing dep changes)
+- Ensures `bgz-tensor` users always get the SIMD kernels regardless of feature-flag composition
 - Coordinate with lance-graph plan §4
 
 ### Sprint 2 — `lance-index` 0.17 readiness (timing depends on upstream)
 - Watch upstream `lance-index` for the 0.17 bump
 - Have a forked `lance-index` 0.17 ready to slot in if upstream delays
-- Once available, extend the `[patch.crates-io]` block in surrealdb to cover both 0.16 (if still needed) and 0.17
+- Once available, extend the surrealdb `[patch.crates-io]` block to cover both 0.16 (if still needed) and 0.17
+- This is purely additive on this repo's side (we add no symbols; we are the target of the patch)
 
-### Sprint 3 — additional kernels as needed (ad-hoc)
-- Add `F32x16` polyfill if cognitive shaders migrate to f32 for memory pressure
-- Add quantised int8 distance kernels for embedding compression (if requested by `bgz-tensor` or `holograph`)
-- Add Hamming distance kernel for binary embeddings (if requested by `bge-m3`-style consumers)
+### Sprint 3 — additional kernels as needed (ad-hoc; all additive)
+- Add `F32x16` polyfill if cognitive shaders migrate to f32 (NEW type, F64x8 unchanged)
+- Add quantised int8 distance kernels for embedding compression (NEW module `heel_i8x32::*`)
+- Add Hamming distance kernel for binary embeddings (NEW function `heel_u8x32::hamming_u8_simd`)
 
 ---
 
@@ -231,7 +255,7 @@ impl BgzTensor<f64> {
         Zip::from(&mut out.data)
             .and(&other.data)
             .for_each(|a, &b| *a *= b);
-        // F64x8-chunked path for large tensors handled by ndarray's Zip internals.
+        // F64x8-chunked path handled by ndarray's Zip internals for large tensors.
         out
     }
 }
@@ -253,13 +277,28 @@ Without this patch:
 
 With this patch, both link the same crate. **This fork's stability is the diamond-dep fix.**
 
+### Example 5 — New kernel landing as a new symbol (additive)
+
+Hypothetical: a fused multiply-add cosine variant lands. Old + new coexist:
+
+```rust
+// crates/ndarray/src/hpc/heel_f64x8.rs — new function, existing unchanged
+pub fn cosine_f64_simd(a: &[f64], b: &[f64]) -> f64 { /* existing */ }
+
+/// FMA variant. Lower latency on AVX-512 + AVX2-FMA hosts.
+/// Numerically identical within f64::EPSILON * len.
+pub fn cosine_f64_simd_fma(a: &[f64], b: &[f64]) -> f64 { /* new */ }
+```
+
+Consumers pick. Nothing breaks.
+
 ---
 
 ## 8. What this plan asks of the other repos
 
 Nothing structural — only that consumers stay on the stable surface (§5) and report breakage promptly. Specifically:
 
-- **surrealdb**: `idx/trees/vector.rs` should only use `ndarray::hpc::*` items listed in §5. Anything else is a non-stable detail and may break.
+- **surrealdb**: `idx/trees/vector.rs` should only use `ndarray::hpc::*` items listed in §5. Anything else is a non-stable detail and may break without notice.
 - **lance-graph**: cognitive crates should use `heel_f64x8` distance kernels; if a kernel is missing (e.g. Hamming), file an issue here rather than implementing locally.
 - **sea-orm**: no direct dep on this fork; touches it only transitively if a consumer uses sea-orm-arrow with `f64` Arrow columns.
 
@@ -267,10 +306,11 @@ Nothing structural — only that consumers stay on the stable surface (§5) and 
 
 ## 9. Open questions
 
-1. **`F32x16` priority** — is a cognitive shader consumer planning to move to f32? If yes, add to Sprint 3. If no, defer.
-2. **Quantised int8 distance kernels** — when do cognitive shaders move to int8 embeddings? Trigger Sprint 3 item when concrete consumer surfaces.
-3. **WASM target** — surrealdb has a WASM build path. Does it need `vector-hpc`? Today no; the scalar fallback path covers it. Confirm with surrealdb plan.
-4. **Numeric tolerance documentation** — what's the precision guarantee vs scalar reference? Currently "within `f64::EPSILON * len`"; doc-test it in Sprint 0.
+1. **`F32x16` priority** — is a cognitive shader consumer planning to move to f32? If yes, Sprint 3 fast-track. If no, defer.
+2. **Quantised int8 distance kernels** — trigger Sprint 3 item when a concrete consumer surfaces.
+3. **WASM target** — surrealdb has a WASM build path. Does it need `vector-hpc`? Today the scalar fallback covers it. Confirm with surrealdb plan.
+4. **Numeric tolerance documentation** — currently "within `f64::EPSILON * len`"; doc-test it in Sprint 0.
+5. **`#[stable]` attribute convention** — use Rust nightly `#[stable]` (not available on stable) or a doc-comment convention? Probably the latter for portability; revisit when nightly `#[stable]` stabilises.
 
 ---
 
@@ -282,3 +322,4 @@ Nothing structural — only that consumers stay on the stable surface (§5) and 
 - **Glue #4** (cognitive-shader-actor): `AdaWorldAPI/lance-graph:.claude/plans/integration-plan.md` §6
 - **Cognitive crate consumers** (the load-bearing reason this fork exists): `AdaWorldAPI/lance-graph:.claude/plans/integration-plan.md` §3 + §4
 - **surrealdb's `vector-hpc` feature**: `AdaWorldAPI/surrealdb:.claude/plans/integration-plan.md` §4 (`core/Cargo.toml:71-77`)
+- **`lance-projection` sibling** (analytic view of cognitive crate outputs): `AdaWorldAPI/surrealdb:.claude/plans/integration-plan.md` §6
