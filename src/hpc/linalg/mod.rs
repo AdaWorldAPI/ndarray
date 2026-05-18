@@ -71,3 +71,5 @@ pub use polar::polar;
 
 pub mod matfn;
 pub use matfn::{mat_exp, mat_exp_spd, mat_log, mat_log_spd};
+
+pub mod loss;
