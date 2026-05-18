@@ -72,10 +72,10 @@ pub struct BasinAtom {
     pub thinking: [u8; 16],
     /// INT4×16 packed qualia vector (8 bytes).
     pub qualia: [u8; 8],
-    /// Vocabulary index.
-    pub vocab: u16,
     /// Minimum acceptable confidence for this basin.
     pub confidence_floor: f32,
+    /// Vocabulary index.
+    pub vocab: u16,
     _pad: [u8; 2],
 }
 
@@ -88,8 +88,8 @@ impl BasinAtom {
             edge: 0,
             thinking: [0u8; 16],
             qualia: [0u8; 8],
-            vocab: 0,
             confidence_floor: 0.0,
+            vocab: 0,
             _pad: [0u8; 2],
         }
     }
@@ -210,7 +210,7 @@ struct LeafBuilder<'a> {
 ///
 /// A leaf individual is any subject `S` for which there exists a triple
 /// `S rdf:type <...Leaf>`.
-fn build_codebook<'a>(triples: &[Triple<'a>]) -> CamCodebook {
+fn build_codebook<'a>(triples: &'a [Triple<'a>]) -> CamCodebook {
     use std::collections::HashMap;
 
     let mut builders: HashMap<&'a str, LeafBuilder<'a>> = HashMap::new();
