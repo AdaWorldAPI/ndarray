@@ -51,6 +51,8 @@ pub use quat::{quat_mul_x16, Quat};
 pub mod eig_sym;
 
 pub mod inverse;
+
+pub mod sh;
 pub use inverse::{invert_affine_4x4, invert_mat3, invert_mat4, invert_mat_n};
 
 pub mod batched;
