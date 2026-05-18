@@ -130,10 +130,26 @@ impl<T, const N: usize> SoaVec<T, N> {
     pub fn is_empty(&self) -> bool { self.len() == 0 }
 
     /// Borrow field `i` as a slice. Panics if `i >= N`.
+    ///
+    /// For known-at-compile-time indices, prefer [`field_n`](Self::field_n)
+    /// to elide the bounds check.
     pub fn field(&self, i: usize) -> &[T] { &self.fields[i] }
+
+    /// Compile-time-checked field accessor. Use when the index is a literal.
+    /// `field_n::<2>()` is free of runtime bounds checking.
+    pub fn field_n<const I: usize>(&self) -> &[T] {
+        const { assert!(I < N, "SoaVec::field_n: I out of bounds for N"); }
+        &self.fields[I]
+    }
 
     /// Mutably borrow field `i` as a slice. Panics if `i >= N`.
     pub fn field_mut(&mut self, i: usize) -> &mut [T] { &mut self.fields[i] }
+
+    /// Compile-time-checked mutable field accessor.
+    pub fn field_n_mut<const I: usize>(&mut self) -> &mut [T] {
+        const { assert!(I < N, "SoaVec::field_n_mut: I out of bounds for N"); }
+        &mut self.fields[I]
+    }
 
     /// Borrow all fields at once as an array of slices.
     pub fn all_fields(&self) -> [&[T]; N] {
@@ -261,14 +277,14 @@ macro_rules! soa_struct {
 - `soa_struct!` macro with `pub` / private fields
 - `soa_struct!` debug-assert fires on field-length-mismatch (use a custom block to corrupt, then call len, assert panic)
 
-### W5 + W6 — additions to `src/simd_ops.rs`
+### W5 + W6 — additions to `src/hpc/soa.rs`
 
-These two functions are pure-scalar, generic-over-N-via-const-generics, added to the existing `simd_ops.rs`. They reference `crate::hpc::soa::SoaVec` for the W3 type.
+**Plan-review correction (P0-1):** these helpers were originally specced into `src/simd_ops.rs`, but that module's charter (`simd_ops.rs:1`) is "Slice-level elementwise ops built on the polyfill SIMD types" — every existing fn dispatches through `F32x16`/`F64x8`. Pure-scalar helpers in that module would violate the W1a consumer contract ("ndarray's SIMD surface is shaped to fit exactly what the Ada stack vertically needs — not a generic library", `vertical-simd-consumer-contract.md:31`). The free-function `aos_to_soa(&[T], extract)` shape is exactly the kind the W1a litmus rejects.
+
+**Decision: helpers live in `src/hpc/soa.rs`, co-located with `SoaVec`.** When a future bench-justified SIMD wave lands, the dispatcher inside the entry grows internal per-tier arms (calling per-arch impls under `simd_*.rs` for the gather/scatter intrinsics). The public API at `ndarray::hpc::soa::aos_to_soa` stays stable forever.
 
 ```rust
-//! Add at the end of src/simd_ops.rs:
-
-use crate::hpc::soa::SoaVec;
+//! Add at the bottom of src/hpc/soa.rs (same file as SoaVec):
 
 /// Deinterleave an AoS slice into a `SoaVec` by extracting `N` field values
 /// per item via the user-supplied `extract` closure.
@@ -277,9 +293,16 @@ use crate::hpc::soa::SoaVec;
 /// (VPGATHERDD on AVX-512, LD3/LD4 on NEON) for stride-known dense layouts;
 /// the public API is forward-compatible.
 ///
+/// `T` need not be `Copy`; only the extracted `[f32; N]` row is materialized.
+///
+/// # Inference
+/// If the const-generic `N` fails to infer from the closure return type, annotate:
+/// `aos_to_soa::<_, 3, _>(&aos, |it| [it.a, it.b, it.c])`
+/// or  `aos_to_soa(&aos, |it| -> [f32; 3] { [it.a, it.b, it.c] })`.
+///
 /// # Example
 /// ```
-/// use ndarray::simd_ops::aos_to_soa;
+/// use ndarray::hpc::soa::aos_to_soa;
 /// struct Item { a: f32, b: f32, c: f32 }
 /// let aos = vec![Item { a: 1.0, b: 2.0, c: 3.0 }, Item { a: 4.0, b: 5.0, c: 6.0 }];
 /// let soa = aos_to_soa::<_, 3, _>(&aos, |it| [it.a, it.b, it.c]);
@@ -306,7 +329,7 @@ where
 ///
 /// # Example
 /// ```
-/// use ndarray::simd_ops::{aos_to_soa, soa_to_aos};
+/// use ndarray::hpc::soa::{aos_to_soa, soa_to_aos};
 /// struct Item { a: f32, b: f32, c: f32 }
 /// let aos = vec![Item { a: 1.0, b: 2.0, c: 3.0 }, Item { a: 4.0, b: 5.0, c: 6.0 }];
 /// let soa = aos_to_soa::<_, 3, _>(&aos, |it| [it.a, it.b, it.c]);
@@ -416,6 +439,32 @@ where
 - `bulk_scan` same coverage
 - `bulk_apply` composed with `aos_to_soa` inside the closure (integration smoke test)
 
+## Reserved field names (do not collide)
+
+The `soa_struct!` macro generates inherent methods on the struct. Fields named identically to these methods will cause cryptic compile errors (the macro deliberately does NOT alias around them — choose different field names):
+
+| Reserved name | Reason |
+|---|---|
+| `new` | macro generates `pub fn new()` |
+| `with_capacity` | macro generates `pub fn with_capacity(cap)` |
+| `len` | macro generates `pub fn len(&self)` |
+| `is_empty` | macro generates `pub fn is_empty(&self)` |
+| `clear` | macro generates `pub fn clear(&mut self)` |
+| `push` | macro generates `pub fn push(...)` |
+| `default` | macro implements `Default` trait |
+
+If you need a `len` field semantically (e.g., a per-row count), name it `count`, `n`, or `row_len`.
+
+## Invariant ownership (macro fields are `pub` by design)
+
+The macro respects user-specified visibility per field (`pub means_x: f32` stays `pub`; private stays private). Fields stay `pub` (or whatever the user wrote) intentionally:
+
+1. The SoA layout's entire ergonomic win is direct `&[T]` access for SIMD-style loops; hiding fields behind getters defeats the purpose.
+2. The existing hand-rolled SoA pattern in `splat3d/gaussian.rs` uses `pub` fields — staying consistent.
+3. The macro's generated `len()` carries a `debug_assert!` that catches field-length-mismatch during development.
+
+**Caller-owned invariant rule:** if you mutate fields directly (e.g., `batch.means_x.truncate(5)` to shrink one field), you OWN the field-length invariant until you restore it. `len()` will `debug_assert!` in dev builds; release builds will return the length of field 0 and downstream code may misbehave. Push and clear are the safe mutation paths.
+
 ## Module registration
 
 Both new files need to be registered in `src/hpc/mod.rs`. Worker writing each new file is responsible for the corresponding `pub mod` line:
@@ -426,28 +475,76 @@ pub mod bulk;
 pub mod soa;
 ```
 
-Plus the macro re-export at crate root in `src/lib.rs` — the macro is already `#[macro_export]` which puts it at the crate root, so `ndarray::soa_struct!` works. No manual re-export needed.
+The macro is already `#[macro_export]` which puts it at the crate root, so `ndarray::soa_struct!` works. **Do NOT** add a manual `pub use crate::hpc::soa::soa_struct;` re-export in `lib.rs` — `#[macro_export]` already does this, and a manual re-export will fail to compile (macro and item namespaces collide).
+
+## Worker sprint plan (post plan-review)
+
+Two workers in parallel, each isolated worktree:
+
+| Worker | Files | Scope |
+|---|---|---|
+| **Worker A — SoA combined** | `src/hpc/soa.rs` (new), `src/hpc/mod.rs` (add `pub mod soa;`) | W3 + W5 + W6: `SoaVec<T,N>` + `soa_struct!` macro + `aos_to_soa` + `soa_to_aos`. Single file, single commit. |
+| **Worker B — bulk** | `src/hpc/bulk.rs` (new), `src/hpc/mod.rs` (add `pub mod bulk;`) | W4: `bulk_apply` + `bulk_scan`. Single file, single commit. |
+
+Worker A and Worker B can both edit `src/hpc/mod.rs` (one line each, different lines — merge clean). Otherwise non-overlapping.
+
+After both commit, codex audit reviews the combined diff for:
+- Zero `#[target_feature]` attributes added
+- Zero `use crate::simd_avx512::*` / `simd_avx2::*` / `simd_neon::*` imports
+- Zero `cfg(target_feature = …)` gates
+- Zero raw `_mm*_*` / `vld*_*` / `_pdep_*` intrinsics
+- All public fns have working `///` doc-examples
+- Tests cover all spec'd cases
 
 ## What workers commit per file
 
 1. Implement the spec above exactly. No deviation in API.
 2. Add inline tests covering the cases listed under §"Tests" for the file.
-3. Add the `pub mod` registration in `src/hpc/mod.rs` (W3 worker for `soa`, W4 worker for `bulk`; W5+W6 worker doesn't add a new module).
+3. Add the `pub mod` registration in `src/hpc/mod.rs`.
 4. Run from worktree root:
    - `cargo check -p ndarray --no-default-features --features std`
-   - `cargo test -p ndarray --lib --no-default-features --features std hpc::soa hpc::bulk simd_ops`
-   - `cargo test --doc -p ndarray --no-default-features --features std hpc::soa hpc::bulk simd_ops::aos_to_soa simd_ops::soa_to_aos`
+   - `cargo test -p ndarray --lib --no-default-features --features std hpc::soa hpc::bulk` (worker scopes its `--test` filter)
+   - `cargo test --doc -p ndarray --no-default-features --features std hpc::soa hpc::bulk`
+   - `cargo fmt --all --check`
+   - `cargo clippy --no-default-features --features std -- -D warnings`
    - All green before commit.
-5. Commit message: `feat(hpc/{soa|bulk}): add SoA container + macro (W3)` / `feat(simd_ops): add aos_to_soa + soa_to_aos helpers (W5+W6)` / `feat(hpc/bulk): add bulk_apply + bulk_scan (W4)`.
+5. Commit message format:
+   - Worker A: `feat(hpc/soa): add SoaVec + soa_struct! macro + aos_to_soa + soa_to_aos (W3+W5+W6)`
+   - Worker B: `feat(hpc/bulk): add bulk_apply + bulk_scan (W4)`
 
-The post-sprint codex audit will verify:
-- Zero `#[target_feature]` attributes added in W3/W4/W5/W6 files
-- Zero `use crate::simd_avx512::*` / `simd_avx2::*` / `simd_neon::*` imports
-- Zero `cfg(target_feature = …)` gates
-- Zero raw `_mm*_*` / `vld*_*` / `_pdep_*` intrinsics
-- All public fns have working `///` doc-examples
-- Tests cover both `Some` and `None`-equivalent boundary cases per fn
+## Out of scope — distance metrics
+
+This sprint is layout helpers only. **Workers MUST NOT** extend `SoaVec`, the macro, `aos_to_soa`/`soa_to_aos`, or `bulk_apply` toward distance computation. Specifically:
+
+- No `fn bulk_distance<T>(...)` umbrella API
+- No `enum DistanceMetric { Palette256, Hamming, Base17, … }`
+- No `Box<dyn Distance>` trait object
+- No generic `fn distance<T>(a: &T, b: &T) -> f32`
+- No collapsing palette-256 distance and HDR popcount early-exit into one helper
+
+Distance metrics in this codebase are **typed** — each metric is its own named fn with its own output type, and conversions between metrics are explicit. See `/home/user/ndarray/.claude/knowledge/cognitive-distance-typing.md` for the binding rule and the canonical worst-case roundtrip anti-pattern (palette-256 → Fisher-z → "cosine" → hamming → popcount → palette-256). The W3-W6 helpers stay generic over `T` and never bake in any metric.
 
 ## W7 explicit deferral
 
-W7 (cognitive bulk ops on `&[Plane]` / `&[VSA]`) is **NOT** in this wave. Reason: actual hot paths in the cognitive layer aren't known without bench harness data, and the SIMD wins require per-arch gather/scatter primitives that are separate design work. W7 revisits after a bench harness ships and a measured hot path identifies the first cognitive bulk op worth accelerating.
+W7 (cognitive bulk ops on `&[Plane]` / `&[VSA]` / `&[Fingerprint256]` / `&[PaletteIdx]`) is **NOT** in this wave. Two reasons:
+
+1. **No bench data.** Actual hot paths in the cognitive layer aren't measured. The SIMD wins require per-arch gather/scatter primitives whose design should follow bench evidence, not imagination.
+2. **Typed distance scope.** W7's bulk primitives must respect the per-metric typing rule (see `cognitive-distance-typing.md`). Each metric — palette-256 distance, HDR popcount early-exit, Base17 L1, BF16 mantissa direct transform — gets its own named bulk fn with its own output type. Designing those entries without a measured hot-path-vs-target-metric pairing risks shipping a generic API that erases the typing.
+
+When W7 revisits, the typed-bulk primitives will be (representative shape, not exhaustive):
+```rust
+pub fn bulk_hdr_popcount_early_exit(
+    query: &Fingerprint256, db: &[Fingerprint256], threshold: u16,
+) -> Vec<Option<HammingDistance>>;
+
+pub fn bulk_palette256_distance(
+    query: PaletteIdx, db: &[PaletteIdx],
+    buckets: &Buckets, offset: EulerGammaOffset,
+) -> Vec<PaletteDistance>;
+
+pub fn bulk_palette256_bf16_mantissa_transform(
+    palettes: &[PaletteIdx], offset: EulerGammaOffset, mantissa: BF16MantissaCtx,
+) -> Vec<PaletteIdx>;
+```
+
+These MAY internally use `SoaVec` + `bulk_apply` from W3/W4 for layout staging. They MUST NOT collapse into a `bulk_distance<T>` umbrella.
