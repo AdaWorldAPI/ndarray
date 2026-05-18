@@ -152,11 +152,11 @@ PR-X4's `compose_l1` / `compose_cascade` currently return `BlockedGrid<T>` direc
 /// `BlockedGrid<T>` (PR-X3) and the lazy `LazyBlockedGrid<T>` (PR-X9).
 ///
 /// Callers that don't care about storage shape parameterize over `S: GridStorage<T>`.
-pub trait GridStorage<T: Copy> {
-    /// Block dimensions (compile-time const) — must match between caller
-    /// expectation and the underlying grid.
-    const BR: usize;
-    const BC: usize;
+pub trait GridStorage<T: Copy, const BR: usize, const BC: usize> {
+    // Block dimensions (BR, BC) are type-param const generics on the trait
+    // itself per joint savant P1-5 — generic const expressions
+    // ({ Self::BR }) require nightly Rust; type-param const generics work
+    // on stable 1.94 per CLAUDE.md.
 
     /// Logical extent (runtime).
     fn rows(&self) -> usize;
@@ -178,7 +178,7 @@ pub trait GridStorage<T: Copy> {
 
     /// Iterate base blocks (read-only). Returns an iterator yielding lightweight
     /// `BlockView<T>` handles. Materialization is per-block on demand.
-    type BaseBlockIter<'a>: Iterator<Item = BlockView<'a, T, { Self::BR }, { Self::BC }>>
+    type BaseBlockIter<'a>: Iterator<Item = BlockView<'a, T, BR, BC>>
     where
         Self: 'a;
     fn blocks_base(&self) -> Self::BaseBlockIter<'_>;
@@ -186,11 +186,11 @@ pub trait GridStorage<T: Copy> {
     /// Materialize the entire grid as a dense `BlockedGrid<T>` — escape hatch
     /// for tests, debugging, and dense-vs-lazy parity gates. Linear in cell
     /// count; never call on hot paths.
-    fn materialize_dense(&self) -> BlockedGrid<T, { Self::BR }, { Self::BC }>;
+    fn materialize_dense(&self) -> BlockedGrid<T, BR, BC>;
 }
 
-impl<T, const BR, const BC> GridStorage<T> for BlockedGrid<T, BR, BC> { /* trivial: existing API */ }
-impl<T, const BR, const BC> GridStorage<T> for LazyBlockedGrid<T, BR, BC> { /* basin lookup */ }
+impl<T: Copy, const BR: usize, const BC: usize> GridStorage<T, BR, BC> for BlockedGrid<T, BR, BC> { /* trivial: existing API */ }
+impl<T: Copy, const BR: usize, const BC: usize> GridStorage<T, BR, BC> for LazyBlockedGrid<T, BR, BC> { /* basin lookup */ }
 ```
 
 PR-X4's `SplatPyramid<T, BR, BC>` becomes `SplatPyramid<T, S: GridStorage<T>, BR, BC>` where the storage shape is plug-replaceable. Production code picks `LazyBlockedGrid<T>`; tests pick `BlockedGrid<T>` for parity verification.
@@ -368,7 +368,7 @@ src/hpc/lazy_grid/    — NEW directory
 | 5 | Worker A2 (codebook.rs) | `CamCodebook` + `BasinAtom` + OGIT schema bridge | OGIT-rs API (see Q1) |
 | 6 | Worker A3 (sparse.rs) | `SparseGrid<BR, BC>` + 2-bit mode + escape vector | A1 |
 | 7 | Worker A4 (lazy.rs) | `LazyBlockedGrid` + `GridStorage` impl + `gather_u64x8` | A1, A2, A3 |
-| 8 | Worker A5 (encode.rs) | `encode_from_dense` + RDO loop + mode picker | A4 |
+| 8 | Worker A5 (encode.rs) | `encode_from_dense` — uses `ndarray::hpc::codec::{CellMode, MergeDir, rdo_cell, RdoConfig}` from PR-X12 (joint savant P0-4 ruling); LazyBlockedGrid encoder logic only, no mode-picker re-impl | A4 + PR-X12 |
 | 9 | Worker A6 (tests.rs) | Parity gate vs dense, property tests, memory-budget | A5 |
 | 10 | Codex P0 audit (with SAFETY-claim gate per PR-X3.1 backlog) | codex agent | A1-A6 combined |
 | 11 | Coordinator fix P0s | coordinator | audit verdict |

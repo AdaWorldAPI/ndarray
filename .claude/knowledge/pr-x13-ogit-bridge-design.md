@@ -24,7 +24,7 @@ The master consolidation picks **(c)** because it:
 - Removes inter-repo blockers (1 sprint instead of 3)
 - Removes the lance-graph-ontology dependency entirely
 - Makes the cognitive-shader stack self-contained in ndarray
-- Costs ~150 KB of TTL files baked into the binary via `include_bytes!`
+- Costs ~150 KB of TTL files baked into the binary via `include_str!`
 - Bardioc REST client integration (for live schema queries) becomes a separate optional follow-on, not a blocker
 
 PR-X13 ships the **embedded-TTL bridge** + ships **the OGIT Cognitive namespace TTL itself** (the PR-Z1 bootstrap content) as build-time-embedded data.
@@ -141,7 +141,7 @@ pub struct CognitiveBridge {
 impl CognitiveBridge {
     /// Load the Cognitive namespace from the embedded TTL bundle.
     pub fn load_embedded() -> Result<Self, OgitError> {
-        let ttls = embedded::cognitive_ttls();   // include_bytes! at compile time
+        let ttls = embedded::cognitive_ttls();   // include_str! at compile time
         let triples = TurtleParser::parse_all(&ttls)?;
         let schema = OntologySchema::from_triples(&triples)?;
         let codebook = CamCodebook::from_leaf_instances(&schema)?;
@@ -177,7 +177,7 @@ impl CognitiveBridge {
 | A1 | `turtle_parser.rs` | Turtle lexer + parser (subset of RDF 1.1 Turtle); ~250 LoC | ~300 |
 | A2 | `schema.rs` | `OntologySchema` + `EntityClass` + `FamilyBitmap`; build from triples | ~350 |
 | A3 | `cognitive_bridge.rs` | `CognitiveBridge` + `CamCodebook` integration + O(1) family lookup | ~250 |
-| A4 | `assets/cognitive/*.ttl` + `embedded.rs` | The 26 TTL files (mirror PR-Z1's spec) + `include_bytes!` wiring | ~50 LoC + 900 lines TTL |
+| A4 | `assets/cognitive/*.ttl` + `embedded.rs` | The 26 TTL files (mirror PR-Z1's spec) + `include_str!` wiring | ~50 LoC + 900 lines TTL |
 
 **Sprint composition**: all 4 spawn in parallel. A2 + A3 depend on A1's parser output type, but they can develop against the same parser interface stubbed in advance.
 
@@ -223,7 +223,7 @@ Bardioc REST client integration could ship later as `ndarray::hpc::ogit_bridge::
 
 ## Open questions (joint savant ruling)
 
-1. **TTL files embedded via `include_bytes!` or `include_str!`?** Lean: **`include_str!`** (TTL is UTF-8 text; `include_str!` lets us format-check at compile time).
+1. **TTL files: include_str! confirmed (per P0-3 verdict).** Lean: **`include_str!`** (TTL is UTF-8 text; `include_str!` lets us format-check at compile time).
 
 2. **Schema rebuild on startup OR serialize an in-memory binary blob?** Lean: **rebuild on startup** for v1 — 50 ms parse + build is fine; binary blob optimization (msgpack or rkyv) is PR-X13.1.
 
@@ -244,7 +244,7 @@ Bardioc REST client integration could ship later as `ndarray::hpc::ogit_bridge::
 - rdflib parity gate green (same triple count, same triples)
 - `CognitiveBridge::load_embedded()` completes in < 50 ms on Zen4
 - `CognitiveBridge::nearest_basin()` finds the correct basin on ≥ 99.5% of synthetic test cases (the 0.5% are ambiguous-family cases that go to escape mode in PR-X9)
-- Codex P0 audit (especially SAFETY-claim on `include_bytes!` byte handling + UTF-8 boundary correctness)
+- Codex P0 audit (especially SAFETY-claim on `include_str!` string literal boundary correctness — include_str! validates UTF-8 at compile time)
 - P2 savant SHIP verdict
 
 ## Deprecation path
