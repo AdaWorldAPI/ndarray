@@ -98,6 +98,11 @@ fractal = { path = "crates/fractal", default-features = false, optional = true }
 serde = { version = "1.0", optional = true, default-features = false, features = ["alloc"] }
 rawpointer = { version = "0.2" }
 
+# paste — identifier concatenation in macro_rules! expansions.
+# Required by `blocked_grid_struct!` to generate {Name}L1Block / {Name}L1BlockMut
+# view types. Already present in the workspace lockfile (via crates/burn).
+paste = "1"
+
 
 # Cranelift JIT (optional, behind "jit-native" feature)
 # For AVX-512 VPOPCNTDQ/VNNI/VPTERNLOG/BITALG support, use the patched fork:
