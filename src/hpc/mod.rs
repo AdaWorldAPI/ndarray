@@ -72,6 +72,7 @@ pub mod styles;
 pub mod nars;
 #[allow(missing_docs)]
 pub mod blackboard;
+pub mod bulk;
 #[allow(missing_docs)]
 pub mod bnn;
 #[allow(missing_docs)]
