@@ -58,7 +58,7 @@ pub mod prove_runner;
 // pub mod pflug;
 
 /// Pillar-11: Hambly–Lyons iterated-integrals signature transform (B7).
-// pub mod signature;
+pub mod signature;
 
 // Re-export the core harness types at the `pillar::` surface so B1–B7 can write
 // `use crate::hpc::pillar::{SplitMix64, PillarReport, ...};`
