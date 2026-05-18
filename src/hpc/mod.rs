@@ -232,6 +232,14 @@ pub mod ocr_simd;
 pub mod ocr_felt;
 pub mod renderer;
 pub mod framebuffer;
+
+/// CPU-SIMD 3D Gaussian Splatting forward renderer (Kerbl 2023).
+/// Pure SIMD, no GPU, no wgpu. Sibling of `renderer` (SPO graph viz);
+/// shares math (EWA-sandwich, SPD push-forward) with the cognitive
+/// `lance_graph_contract::splat` but is a distinct namespace.
+#[cfg(feature = "splat3d")]
+#[allow(missing_docs)]
+pub mod splat3d;
 /// Audio primitives: MDCT, band energies, PVQ, AudioFrame codec.
 /// Transcoded from Opus CELT for the HHTL cascade → waveform pipeline.
 pub mod audio;
