@@ -115,6 +115,12 @@ Cheap to expensive:
 | LD-4 | **Negative-Knowledge Test** | "Does file X say anything about topic Y?" — where Y is NOT in the file | "no, not contained" | hallucinates plausible-sounding content about Y |
 | LD-5 | **Line-Range Quote** | "Quote lines N–M from file X verbatim" | exact quote OR "range does not exist (file only K lines)" | paraphrases, deviates, or refuses without reason |
 
+> **Adoption note.** LD-3 / LD-4 / LD-5 are SHOULD-USE on savants
+> every wave, MAY-USE on workers selectively — typically when
+> `phase_reached=internalize` is claimed or the output looks
+> overconfident. Per-worker-per-wave rotation is overkill for
+> routine 200-LoC bundles. See §16 Adoption Tiers.
+
 ### §4.2 Trigger heuristic
 
 | Worker answer pattern | Lie-Detector |
@@ -234,6 +240,16 @@ This rule is also enforced by PP-13 brutally-honest-tester as
 anti-pattern AP9 (tool-call-loop). PP-13's post-hoc detection
 applies if the in-loop detector failed.
 
+> **Implementation note (honest caveat).** The current Claude Code
+> `Agent()` tool does NOT expose a self-interrupt API. The §6.1
+> detector lives only as a prompt-level instruction; workers cannot
+> actually terminate themselves via the tool API — they can only
+> emit `outcome=RETRY` after they notice the loop. This catches
+> in-LLM oscillation; it does NOT catch OS-level hangs (e.g.
+> `cargo build` stuck on a network resolver). For OS-level hangs,
+> the orchestrator MUST wrap each spawn in a wall-clock timeout.
+> See §16.4.
+
 ---
 
 ## §7 Proof-of-Read Schema
@@ -293,6 +309,13 @@ into the `status.json` `sentinel_token` field. Mismatch = FAIL.
 ### §8.1 Tier 1 (every PR — mandatory)
 
 Owned by PP-13 brutally-honest-tester. Per-language adapter:
+
+> **Adoption note.** By default, Tier-1 is **coordinator-side** —
+> PP-13 runs the full toolchain once on the consolidated diff. Per-
+> worker Tier-1 is expensive at 12-agent fan-out (e.g. ~1 GB Rust
+> `target/` per worker). Projects MAY push Tier-1 to per-worker
+> (smaller workspaces, faster feedback) by setting
+> `tier_1_runner: per-worker` in `INVARIANTS.md`. See §16.3.
 
 | Purpose | Rust | Python | TypeScript | Go |
 |---|---|---|---|---|
@@ -365,9 +388,12 @@ An implementation is conformant if it satisfies ALL of:
       `notes=tool-call-loop:...`.
 - [ ] On stuck, the worker uses one of the five §5.1 blocker types
       and attaches proof-of-read for every referenced file.
-- [ ] The meta-agent / supervisor spot-checks ONE of LD-1..LD-5 per
-      worker per wave (rotating, so workers cannot game which test
-      to fake).
+- [ ] The meta-agent / supervisor spot-checks ONE of LD-1..LD-5
+      on every **savant** per wave (rotating, so the test cannot
+      be gamed). On routine **workers**, LD-1 (sentinel) is
+      mandatory; LD-3 / LD-4 / LD-5 are conditional — applied when
+      `phase_reached=internalize` is claimed OR the output looks
+      overconfident. See §16.
 - [ ] Drift signals (§4.3) are scanned for every worker before the
       goal-gate verdict.
 - [ ] PP-13 runs the §8.1 Tier-1 toolchain for the worker's
@@ -749,6 +775,97 @@ A worker passes the cognitive-hygiene gate when ALL of:
 - [ ] `CA-003` clean: every structural claim is backed by a sufficient `proof_of_read`.
 - [ ] `CA-004` clean: read timestamps precede commit timestamps for all required-minimum files.
 - [ ] Worker did not output `I went with` / `I chose` / `I preferred` without an associated blocker filing.
+
+---
+
+## §16 Adoption Tiers (project-specific)
+
+> Specs ship a maximalist surface so every reasonable use-case is
+> covered. Real projects adopt subsets. This section names what a
+> project SHOULD adopt on day one (Tier-A), what's worth the cost
+> only at high stakes (Tier-B), what's project-overrideable
+> (Tier-C), and what has honest known limits (Tier-D).
+>
+> **Origin:** field-test feedback from a 12-agent Rust fan-out
+> (sprints PR-X4 cascade / PR-X10..13 consolidation / PR-X12 codec)
+> where ~1 GB per-worker `target/` dirs made universal per-worker
+> Tier-1 toolchain prohibitively expensive, and where the
+> `Agent()` API's missing self-interrupt forced the §6.1 detector
+> to be prompt-level only.
+
+### §16.1 Tier-A — adopt on day one (minimum viable)
+
+The minimal surface delivering ≥80% of the framework's value at
+≤20% of the ceremony.
+
+| § | What | Why mandatory |
+|---|---|---|
+| §3 | Reading-Depth Ladder per file | Single most important anti-skim primitive. |
+| §5 | 5 typed stuck blockers (`AMBIGUITY` / `MISSING_INVARIANT` / `SPEC_SOURCE_MISMATCH` / `BEHAVIOUR_QUESTION` / `EXTERNAL_DEPENDENCY`) | Replaces vague "report under 200 words" with crisp typed routing. |
+| §7 | `proof_of_read` schema in `status.json` | `{file, sha256, lines, depth, phase_reached}`. Trivial overhead; big audit win. |
+| §14 | Reading Phases per file + §14.5 per-file-kind minimum | Catches "agent confidently asserts file content without reading" — the most common silent-skim failure. |
+| §15 | CA1..CA4 cognitive anti-pattern framing | The lens a savant audit already uses; cheap to adopt. |
+| §15.6 | 4-savant council for P0 review on consolidation sprints | High-leverage audit; runs on Opus, once per sprint. |
+| §4.1 LD-1 | Sentinel tokens | ~50 LoC ceremony per brief; catches the trivial "agent didn't read the brief" case. |
+| §6 | Prompt-level tool-call-loop instruction (best-effort, see §16.4) | Catches in-LLM oscillation when the worker honors the instruction. |
+
+### §16.2 Tier-B — adopt for savants / high-stakes only
+
+Reserve for review agents (PP-13/14/15/16) and high-stakes worker
+spawns. Skip for routine 200-LoC skeleton-fills.
+
+| § | What | When to adopt |
+|---|---|---|
+| §4.1 LD-3 / LD-4 / LD-5 | 3-section challenge / negative-knowledge / line-range quote | On savants **every wave**. On routine workers **only when** `phase_reached=internalize` is claimed OR the output looks overconfident. Not as routine per-worker per-wave rotation. |
+| §13 Skeleton-Fill (Protocol A) | `todo!("SOURCE:")` markers force read-before-fill | High-stakes ports (Python→Rust transcode, x265→Rust codec) where source fidelity matters. Skip for greenfield prose features. |
+| Full §10 / §13.6 / §14.8 / §15.7 DoD checklists | Per-PR DoD verification | Per-sprint, not per-PR, until v0.2 prune. See §16.6. |
+
+### §16.3 Tier-C — project-overrideable defaults
+
+Defaults this spec recommends but which real projects often override.
+The override SHOULD be documented in the project's `INVARIANTS.md`.
+
+| § | Default | Override scenario | Project's typical choice |
+|---|---|---|---|
+| §8.1 Tier-1 toolchain | Coordinator-side (PP-13 runs once on consolidated diff) | Small workspace where per-worker compile is fast | `tier_1_runner: per-worker` |
+| §4.1 LD-3/4/5 rotation | Spot-check only on savants + overconfident workers | Project wants per-worker per-wave rotation | `lie_detector_rotation: per-worker-per-wave` |
+| §13 Skeleton-Fill | Opt-in per sprint via `preflight.skeleton: enabled` | Greenfield code with no SOURCE to reference | `preflight.skeleton: disabled` (default for greenfield) |
+| §14.5 per-file-kind minimum phase | INVARIANTS.md / spec / reference = internalize | Project's INVARIANTS lives elsewhere or doesn't exist | Project-defined `file_kind_phase_map` in `INVARIANTS.md` |
+
+### §16.4 Tier-D — known-limited (honest caveats)
+
+| § | Caveat |
+|---|---|
+| §6.1 in-loop tool-call detection | The current Claude Code `Agent()` tool does NOT expose an interrupt API. The detector lives only as a prompt-level instruction. Catches in-LLM oscillation; does NOT catch OS-level hangs. Wrap each spawn in a wall-clock timeout at the orchestrator layer for OS hangs. |
+| §8.1 per-worker Tier-1 | On Rust workspaces with ~1 GB per-worker `target/` dirs, per-worker Tier-1 at 12-agent fan-out is disk-prohibitive. Use the §16.3 coordinator-side override. |
+| §4.1 LD-1 sentinel tokens | Slight per-brief ceremony (~50 LoC). Project MAY template the token at orchestrator level rather than per-worker brief to amortize the cost. |
+| Spec line-count at v0.1.0 DRAFT | This spec is intentionally maximalist for the first revision. Plan a v0.2 prune of the four DoD checklists (§10 / §13.6 / §14.8 / §15.7) once one real sprint has run with the framework — keep only items that caught field bugs. |
+
+### §16.5 Sprint-by-sprint adoption worked example
+
+A 12-agent Rust fan-out doing cascade + codec + consolidation:
+
+| Sprint | Tier-A adopted | Tier-B adopted | Tier-C overrides |
+|---|---|---|---|
+| PR-X4 splat cascade (12 workers, internal refactor) | full | LD-1 sentinel only; skip LD-3/4/5 on routine workers | `tier_1_runner: coordinator` |
+| PR-X12 codec (Rust port of x265 reference) | full | full §13 Skeleton-Fill (high-stakes source-fidelity port); LD-3/4/5 on consolidation worker | `tier_1_runner: coordinator` |
+| PR-X10+11+13 consolidation review (savant pass) | n/a (review pass) | full §15.6 four-savant council on Opus | n/a |
+
+### §16.6 v0.2 prune targets (slim once field-tested)
+
+After one full sprint with this spec, slim the following sections to
+items that produced field-tested catches:
+
+| Section | Current items | Slim target |
+|---|---:|---|
+| §10 Definition of Done | 13 | keep ~5 that catch real bugs |
+| §13.6 Skeleton-Fill DoD | 7 | keep ~3 |
+| §14.8 per-file-read DoD | 5 | keep ~3 |
+| §15.7 cognitive-hygiene DoD | 5 | keep ~3 |
+| §8.1 / §8.2 / §8.3 Tier tables | full per-language matrix | slim to entries actually run in the field |
+
+Goal: spec line-count drops 30-50% by v0.2 while preserving the
+patterns that caught real bugs.
 
 ---
 

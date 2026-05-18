@@ -121,6 +121,12 @@ Billig zu teuer:
 | LD-4 | **Negative-Knowledge-Test** | „Steht in File X etwas zu Thema Y?" — wobei Y NICHT drin ist | „nein, nicht enthalten" | halluziniert plausibel klingenden Inhalt zu Y |
 | LD-5 | **Line-Range-Quote** | „Quote Zeilen N-M aus File X verbatim" | exakter Quote ODER „Range existiert nicht (File nur K Zeilen)" | paraphrasiert, weicht ab, oder verweigert ohne Grund |
 
+> **Adoption-Note.** LD-3 / LD-4 / LD-5 sind SHOULD-USE auf Savants
+> jede Wave, MAY-USE auf Workers selektiv — typisch wenn
+> `phase_reached=internalize` geclaimt wird oder der Output
+> overconfident wirkt. Per-Worker-per-Wave-Rotation ist Overkill
+> für routinemäßige 200-LoC-Bundles. Siehe §16 Adoption-Tiers.
+
 ### §4.2 Trigger-Heuristik
 
 | Worker-Antwort-Pattern | Lie-Detector |
@@ -243,6 +249,16 @@ Diese Regel wird auch von PP-13 brutally-honest-tester als
 Anti-Pattern AP9 (tool-call-loop) durchgesetzt. PP-13s Post-hoc-
 Detection greift, wenn der In-Loop-Detector versagt hat.
 
+> **Implementations-Note (ehrlicher Caveat).** Das aktuelle Claude
+> Code `Agent()`-Tool exponiert KEINE Self-Interrupt-API. Der
+> §6.1-Detector lebt nur als prompt-level Instruction; Workers
+> können sich nicht tatsächlich via Tool-API terminieren — sie
+> können nur `outcome=RETRY` emittieren nachdem sie den Loop
+> bemerken. Das fängt In-LLM-Oszillation; es fängt NICHT OS-Level-
+> Hangs (z. B. `cargo build` stuck auf einem Netzwerk-Resolver).
+> Für OS-Level-Hangs MUSS der Orchestrator jeden Spawn in einen
+> Wall-Clock-Timeout wrappen. Siehe §16.4.
+
 ---
 
 ## §7 Proof-of-Read-Schema
@@ -305,6 +321,14 @@ FAIL.
 ### §8.1 Tier 1 (jeder PR — verpflichtend)
 
 Owned by PP-13 brutally-honest-tester. Per-Language-Adapter:
+
+> **Adoption-Note.** Default ist Tier-1 **coordinator-side** — PP-13
+> fährt die volle Toolchain einmal auf dem konsolidierten Diff.
+> Per-Worker-Tier-1 ist teuer bei 12-Agent-Fan-out (z. B. ~1 GB
+> Rust-`target/` pro Worker). Projekte DÜRFEN Tier-1 auf
+> per-worker pushen (kleinere Workspaces, schnellerer Feedback)
+> durch Setzen von `tier_1_runner: per-worker` in `INVARIANTS.md`.
+> Siehe §16.3.
 
 | Zweck | Rust | Python | TypeScript | Go |
 |---|---|---|---|---|
@@ -378,8 +402,11 @@ Eine Implementierung ist konform, wenn sie ALLE erfüllt:
 - [ ] Bei Stuck nutzt der Worker einen der fünf §5.1-Blocker-Typen
       und hängt Proof-of-Read für jede referenzierte Datei an.
 - [ ] Der Meta-Agent / Supervisor stichprobenartig EINEN von LD-1..LD-5
-      pro Worker pro Wave (rotierend, sodass Workers nicht gamen
-      können, welcher Test gefaked wird).
+      auf jedem **Savant** pro Wave (rotierend, sodass der Test nicht
+      gamed werden kann). Auf routinemäßigen **Workers** ist LD-1
+      (Sentinel) Pflicht; LD-3 / LD-4 / LD-5 sind konditional — angewendet
+      wenn `phase_reached=internalize` geclaimt wird ODER der Output
+      overconfident wirkt. Siehe §16.
 - [ ] Drift-Signale (§4.3) werden für jeden Worker vor dem
       Goal-Gate-Verdict gescannt.
 - [ ] PP-13 fährt die §8.1-Tier-1-Toolchain für die Sprache des
@@ -769,6 +796,99 @@ Ein Worker besteht das Kognitive-Hygiene-Gate wenn ALLE:
 - [ ] `CA-003` clean: jeder structural Claim ist backed durch ausreichenden `proof_of_read`.
 - [ ] `CA-004` clean: Read-Timestamps sind vor Commit-Timestamps für alle required-Minimum-Files.
 - [ ] Worker hat nicht `I went with` / `I chose` / `I preferred` ausgegeben ohne associated Blocker-Filing.
+
+---
+
+## §16 Adoption-Tiers (Projekt-spezifisch)
+
+> Specs shippen eine maximalistische Surface, damit jeder
+> vernünftige Use-Case gecovered ist. Reale Projekte adopten
+> Subsets. Diese Section benennt, was ein Projekt am Tag eins
+> adopten SOLLTE (Tier-A), was den Cost nur bei High-Stakes wert
+> ist (Tier-B), was Projekt-überschreibbar ist (Tier-C) und was
+> ehrlich bekannte Limits hat (Tier-D).
+>
+> **Ursprung:** Field-Test-Feedback aus einem 12-Agent-Rust-Fan-out
+> (Sprints PR-X4 cascade / PR-X10..13 consolidation / PR-X12 codec)
+> wo ~1 GB Per-Worker-`target/`-Dirs Universal-Per-Worker-Tier-1-
+> Toolchain prohibitiv teuer machten, und wo die fehlende
+> Self-Interrupt der `Agent()`-API den §6.1-Detector zu prompt-level
+> only zwang.
+
+### §16.1 Tier-A — am Tag eins adopten (minimum viable)
+
+Die minimale Surface, die ≥80% des Werts des Frameworks bei ≤20%
+des Ceremony liefert.
+
+| § | Was | Warum Pflicht |
+|---|---|---|
+| §3 | Reading-Depth-Ladder per File | Wichtigste Anti-Skim-Primitive. |
+| §5 | 5 typisierte Stuck-Blocker (`AMBIGUITY` / `MISSING_INVARIANT` / `SPEC_SOURCE_MISMATCH` / `BEHAVIOUR_QUESTION` / `EXTERNAL_DEPENDENCY`) | Ersetzt vages „report under 200 words" mit crispem typisiertem Routing. |
+| §7 | `proof_of_read`-Schema in `status.json` | `{file, sha256, lines, depth, phase_reached}`. Trivialer Overhead; großer Audit-Win. |
+| §14 | Reading-Phasen per File + §14.5-Per-File-Kind-Minimum | Fängt „Agent claimt confident File-Content ohne zu lesen" — der häufigste Silent-Skim-Failure. |
+| §15 | CA1..CA4 kognitive-Anti-Pattern-Framing | Die Linse, durch die ein Savant-Audit schon schaut; billig zu adopten. |
+| §15.6 | 4-Savant-Council für P0-Review auf Consolidation-Sprints | High-Leverage-Audit; läuft auf Opus, einmal pro Sprint. |
+| §4.1 LD-1 | Sentinel-Tokens | ~50 LoC Ceremony pro Brief; fängt den trivialen „Agent hat das Brief nicht gelesen"-Fall. |
+| §6 | Prompt-level Tool-Call-Loop-Instruction (best-effort, siehe §16.4) | Fängt In-LLM-Oszillation, wenn der Worker die Instruction honored. |
+
+### §16.2 Tier-B — adopten nur für Savants / High-Stakes
+
+Reserviere für Review-Agents (PP-13/14/15/16) und High-Stakes-Worker-
+Spawns. Skip für routinemäßige 200-LoC-Skeleton-Fills.
+
+| § | Was | Wann adopten |
+|---|---|---|
+| §4.1 LD-3 / LD-4 / LD-5 | 3-Section-Challenge / Negative-Knowledge / Line-Range-Quote | Auf Savants **jede Wave**. Auf routinemäßigen Workers **nur wenn** `phase_reached=internalize` geclaimt wird ODER der Output overconfident wirkt. Nicht als routinemäßige Per-Worker-per-Wave-Rotation. |
+| §13 Skeleton-Fill (Protokoll A) | `todo!("SOURCE:")`-Marker erzwingen Read-Before-Fill | High-Stakes-Ports (Python→Rust-Transcode, x265→Rust-Codec) wo Source-Fidelity matters. Skip für Greenfield-Prose-Features. |
+| Volle §10 / §13.6 / §14.8 / §15.7 DoD-Checklisten | Per-PR-DoD-Verifikation | Per-Sprint, nicht per-PR, bis v0.2-Prune. Siehe §16.6. |
+
+### §16.3 Tier-C — Projekt-überschreibbare Defaults
+
+Defaults, die diese Spec empfiehlt, aber die reale Projekte oft
+überschreiben. Der Override SOLLTE in `INVARIANTS.md` des Projekts
+dokumentiert sein.
+
+| § | Default | Override-Scenario | Typische Projekt-Wahl |
+|---|---|---|---|
+| §8.1 Tier-1-Toolchain | Coordinator-side (PP-13 fährt einmal auf konsolidiertem Diff) | Kleiner Workspace wo Per-Worker-Compile schnell ist | `tier_1_runner: per-worker` |
+| §4.1 LD-3/4/5-Rotation | Spot-Check nur auf Savants + overconfident Workers | Projekt will Per-Worker-per-Wave-Rotation | `lie_detector_rotation: per-worker-per-wave` |
+| §13 Skeleton-Fill | Opt-in pro Sprint via `preflight.skeleton: enabled` | Greenfield-Code ohne SOURCE-Referenz | `preflight.skeleton: disabled` (Default für Greenfield) |
+| §14.5 Per-File-Kind-Minimum-Phase | INVARIANTS.md / Spec / Reference = internalize | Projekts INVARIANTS lebt woanders oder existiert nicht | Projekt-definiertes `file_kind_phase_map` in `INVARIANTS.md` |
+
+### §16.4 Tier-D — known-limited (ehrliche Caveats)
+
+| § | Caveat |
+|---|---|
+| §6.1 In-Loop-Tool-Call-Detection | Das aktuelle Claude Code `Agent()`-Tool exponiert KEINE Interrupt-API. Der Detector lebt nur als prompt-level Instruction. Fängt In-LLM-Oszillation; fängt NICHT OS-Level-Hangs. Wrap jeden Spawn in einen Wall-Clock-Timeout auf der Orchestrator-Schicht für OS-Hangs. |
+| §8.1 Per-Worker-Tier-1 | Auf Rust-Workspaces mit ~1 GB Per-Worker-`target/`-Dirs ist Per-Worker-Tier-1 bei 12-Agent-Fan-out disk-prohibitiv. Nutze den §16.3-Coordinator-side-Override. |
+| §4.1 LD-1-Sentinel-Tokens | Slight Per-Brief-Ceremony (~50 LoC). Projekt DARF das Token auf Orchestrator-Level templaten statt per-worker Brief, um den Cost zu amortisieren. |
+| Spec-Line-Count bei v0.1.0 DRAFT | Diese Spec ist intentional maximalistisch für die erste Revision. Plan einen v0.2-Prune der vier DoD-Checklisten (§10 / §13.6 / §14.8 / §15.7) nachdem ein realer Sprint mit dem Framework gelaufen ist — behalte nur Items, die Field-Bugs gefangen haben. |
+
+### §16.5 Sprint-by-Sprint-Adoption Worked-Example
+
+Ein 12-Agent-Rust-Fan-out mit Cascade + Codec + Consolidation:
+
+| Sprint | Tier-A adopted | Tier-B adopted | Tier-C Overrides |
+|---|---|---|---|
+| PR-X4 Splat-Cascade (12 Workers, interne Refactor) | full | LD-1-Sentinel only; skip LD-3/4/5 auf routinemäßigen Workers | `tier_1_runner: coordinator` |
+| PR-X12 Codec (Rust-Port von x265-Reference) | full | volle §13-Skeleton-Fill (High-Stakes-Source-Fidelity-Port); LD-3/4/5 auf Consolidation-Worker | `tier_1_runner: coordinator` |
+| PR-X10+11+13 Consolidation-Review (Savant-Pass) | n/a (Review-Pass) | volles §15.6-Vier-Savant-Council auf Opus | n/a |
+
+### §16.6 v0.2-Prune-Targets (slim wenn field-tested)
+
+Nach einem vollen Sprint mit dieser Spec, slim die folgenden Sections
+auf Items, die field-tested Catches produziert haben:
+
+| Section | Aktuelle Items | Slim-Target |
+|---|---:|---|
+| §10 Definition von Fertig | 13 | behalte ~5, die echte Bugs fangen |
+| §13.6 Skeleton-Fill-DoD | 7 | behalte ~3 |
+| §14.8 Per-File-Read-DoD | 5 | behalte ~3 |
+| §15.7 Kognitive-Hygiene-DoD | 5 | behalte ~3 |
+| §8.1 / §8.2 / §8.3 Tier-Tabellen | volle Per-Language-Matrix | slim auf Entries, die tatsächlich im Field laufen |
+
+Ziel: Spec-Line-Count fällt 30-50% bei v0.2, während die Patterns
+erhalten bleiben, die echte Bugs gefangen haben.
 
 ---
 
