@@ -55,7 +55,7 @@ pub mod temporal_sandwich;
 // pub mod cov_high_d;
 
 /// Pillar-10: Pflug–Pichler nested Wasserstein distance (B6).
-// pub mod pflug;
+pub mod pflug;
 
 /// Pillar-11: Hambly–Lyons iterated-integrals signature transform (B7).
 // pub mod signature;
