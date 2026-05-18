@@ -40,3 +40,6 @@
 
 mod matrix;
 pub use matrix::{Mat2, Mat3, Mat4, MatN, Spd2, Spd3};
+
+pub mod hilbert;
+pub use hilbert::{hilbert3d_decode, hilbert3d_encode};
