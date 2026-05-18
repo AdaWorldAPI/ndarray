@@ -302,12 +302,52 @@ Before the joint plan-review savant, do ONE 30-min math workshop that:
 
 After that workshop, the joint savant has a clean math surface to rule on. Without it, the savant will surface these as open questions per design doc and slow the sprint.
 
+## Shopping-list addendum (2026-05-18 cross-cutting gap analysis)
+
+Beyond the cognitive-shader-stack-specific gaps above, a broader inventory
+identifies the **shared-linalg-below-LAPACK** gap as the highest-leverage
+non-cognitive sprint in the queue. Three downstream stacks all hand-roll
+math that should live in one canonical module:
+
+- **splat3d** ships its own `Spd3` (Smith-1961, shipped PR #153)
+- **lance-graph jc** has **three** separate Spd2/Spd3 copies (`ewa_sandwich.rs`,
+  `ewa_sandwich_3d.rs`, `koestenberger.rs`)
+- **`hpc::{gpt2, openchat, stable_diffusion}`** inline RMSNorm, SiLU, RoPE,
+  attention because there's no canonical fn
+
+Consolidating into one `crate::hpc::linalg::*` unblocks three sprints
+simultaneously. **See `.claude/knowledge/pr-x10-linalg-core-design.md`** —
+the consolidating sprint (12-worker max-fan-out, A1 MatN as the only chain
+dependency, ~5 weeks sequential or ~2 weeks parallel).
+
+The PR-X10 shopping list (Tier 1 blocks splat3d training; Tier 2 blocks
+the inference modules; Tier 3 nice-to-have):
+
+| Tier | Primitives |
+|---|---|
+| **T1** | MatN const-generic carrier · Quat algebra (mul, conjugate, slerp, from_axis_angle) · 3×3/4×4 inverse · symmetric eig N≥4 (Jacobi + QR) · SVD (Golub-Reinsch + one-sided Jacobi) · polar decomposition · mat_exp / mat_log (Padé + s&s) · SH deg 4–7 · splat3d backward API freeze |
+| **T2** | Conv1D / Conv2D · batched gemm · LayerNorm / RMSNorm / GroupNorm · GELU / SiLU / Swish / Mish · RoPE · fused attention (naive + flash) · cross-entropy + softmax-backward |
+| **T3** | SIMD RNG distributions (Gaussian / exp / beta) · special fns (erf / gamma / beta / Bessel) · einsum · Bluestein FFT · irfft · DCT-II/IV + Daubechies wavelets · sparse GEMM · tridiagonal / banded solvers |
+
+The **jc consolidation** is a follow-on (`jc-X1..X4`):
+- Consolidate the three Spd2/Spd3 copies into a private `jc::hadamard` (keeps jc zero-dep on ndarray; mirrors PR-X10's canonical surface)
+- `Cov16384` carrier for Pillar 8 (Düker-Zoubouloglou CLT in ℝ^16384)
+- Wasserstein-1 / nested distance solver (Sinkhorn-Knopp + Hungarian) for Pillar 10
+- Signature transform for Pillar 11 (Hambly-Lyons)
+- SPD-cone ops: log-Euclidean mean, affine-invariant Riemannian (Karcher/Fréchet), Bures-Wasserstein geodesic
+- Manifold log/exp maps: SO(n), Grassmannian, Stiefel (unblocks Pillar 2 Cartan-Kuranishi)
+
+PR-X10 ships the ndarray-side canonical surface; jc agents pick up the
+consolidation against it. PR-X10 is **independent** of PR-X4 / PR-X9 / PR-Z1
+(no file overlap), can ship concurrently from a separate branch.
+
 ## Cross-references
 
 - `/root/.claude/uploads/.../7b0ea082-splat3d_sprint_prompt.md` — splat3d sprint (shipped as ndarray PR #153, 2026-05-18)
-- `/root/.claude/uploads/.../cdcb7d3d-splat4d_cascade_sprint.md` — splat4d cascade sprint (proposed, supersededby skeleton-anchored)
+- `/root/.claude/uploads/.../cdcb7d3d-splat4d_cascade_sprint.md` — splat4d cascade sprint (proposed, superseded by skeleton-anchored)
 - `/root/.claude/uploads/.../7071b77a-splat4d_skeleton_anchored_sprint.md` — splat4d skeleton-anchored sprint (current proposal)
 - `.claude/knowledge/pr-x3-cognitive-grid-design.md` — BlockedGrid substrate, shipped
 - `.claude/knowledge/pr-x4-design.md` — Gaussian splat cascade onto BlockedGrid
 - `.claude/knowledge/pr-x9-design.md` — lazy basin-codebook storage
 - `.claude/knowledge/pr-z1-ogit-cognitive-bootstrap.md` — OGIT Cognitive namespace bootstrap
+- `.claude/knowledge/pr-x10-linalg-core-design.md` — **the consolidating linalg sprint** that unblocks splat3d training + inference modules + jc Pillars simultaneously
