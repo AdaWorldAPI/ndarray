@@ -73,3 +73,6 @@ pub mod matfn;
 pub use matfn::{mat_exp, mat_exp_spd, mat_log, mat_log_spd};
 
 pub mod loss;
+
+pub mod svd;
+pub use svd::{svd, svd_one_sided, Svd};
