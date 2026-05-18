@@ -76,3 +76,9 @@ pub mod loss;
 
 pub mod svd;
 pub use svd::{svd, svd_one_sided, Svd};
+
+pub mod rope;
+pub use rope::RopeCache;
+
+pub mod attention;
+pub use attention::{attention_f32, flash_attention_f32, AttentionConfig};
