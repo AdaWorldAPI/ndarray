@@ -23,7 +23,10 @@ mod super_block;
 mod compute;
 mod aliases;
 
+pub use aliases::{
+    AmxBf16Grid, AmxInt8Grid, HalfSquareU64, ShaderMantissaGrid, SquareF64Stack8, StripF32Stack2, StripF32Stack4,
+};
 pub use base::{BlockedGrid, GridBlock, GridBlockMut};
 pub use iter::{BaseBlockIter, BaseBlockIterMut};
 pub use super_block::{GridSuperBlock, GridSuperBlockMut, TierBlockIter, TierBlockIterMut};
-// (compute/aliases have no re-exports — they add impls on existing types)
+// (compute has no re-exports — only adds impls on existing types)
