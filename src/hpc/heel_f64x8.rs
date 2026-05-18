@@ -343,11 +343,7 @@ mod l1_l2_linf_tests {
         let a = vec![0.0f64, 0.0, 5.0, 0.0];
         let b = vec![0.0f64, 0.0, 0.0, 0.0];
         let result = linf_f64_simd(&a, &b);
-        assert!(
-            (result - 5.0).abs() < f64::EPSILON,
-            "L∞ should be 5.0, got {}",
-            result
-        );
+        assert!((result - 5.0).abs() < f64::EPSILON, "L∞ should be 5.0, got {}", result);
     }
 }
 
