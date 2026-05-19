@@ -42,6 +42,7 @@ src/hpc/linalg/
 ├── svd.rs                — Golub-Reinsch + one-sided Jacobi SVD
 ├── polar.rs              — A = U·P decomposition (built on SVD)
 ├── matfn.rs              — mat_exp + mat_log (Padé + scaling-and-squaring)
+├── distance.rs           — L1 / L2 / L∞ over f64x8 lanes (absorbed from PR #160 heel_f64x8)
 ├── quat.rs               — Quat carrier + algebra (mul, conjugate, slerp, from_axis_angle, to_mat)
 ├── sh.rs                 — extended SH (deg 0..=7) — supersedes splat3d/sh.rs deg-3 only
 ├── conv.rs               — Conv1D + Conv2D (im2col + gemm path, direct path for small kernels)
@@ -168,6 +169,26 @@ pub fn mat_log_spd<const N: usize>(a: &MatN<N>) -> MatN<N> { ... } // via eigend
 Higham's scaling-and-squaring Padé(13/13) for general matrices (3 × ε_machine accurate). SPD specialization via eigendecomp + scalar exp/log is faster (~3× for small N) and preserves SPD-cone membership exactly.
 
 **Precision class: EXACT** for SPD path (via `eig_sym` + scalar `vml::exp_f32`/`vml::ln_f32`); **VERIFY** for general path (Padé approximant order vs scaling depth trade-off).
+
+### Distance kernels — `linalg::distance`
+
+```rust
+pub fn l1_f64_simd(a: &[f64], b: &[f64]) -> f64 { ... }     // Σ |a_i − b_i|
+pub fn l2_f64_simd(a: &[f64], b: &[f64]) -> f64 { ... }     // √Σ (a_i − b_i)²
+pub fn linf_f64_simd(a: &[f64], b: &[f64]) -> f64 { ... }   // max |a_i − b_i|
+```
+
+Lane-parallel over `F64x8` with horizontal reduce at the tail. Absorbs the
+`heel_f64x8::l1/l2/linf` kernels from PR #160 (lance-graph) — the code is
+correct, the framing was wrong (it was filed as "Sprint 0a of a four-repo
+integration arc"; the right home is here, alongside polar / matfn in the
+linalg core). Bench parity vs the PR #160 implementation is part of the A6
+acceptance gate, not a separate worker.
+
+**Precision class: EXACT** for L1 and L∞ (no rounding beyond the underlying
+subtract + abs). **VERIFY** for L2 (the final `sqrt` is one ULP; the sum is
+order-of-summation dependent — A6 uses pairwise reduce for determinism, same
+shape as `blas_level1::nrm2`).
 
 ### Higher-degree SH — `linalg::sh`
 
@@ -459,7 +480,7 @@ This is a LARGE sprint. Per the user's "12 agents + 1 coordinator" cadence:
 | 6 | **A3 — Matrix inverse (3×3, 4×4, general)** | 1 | `linalg/inverse.rs` | ~300 |
 | 7 | **A4 — Symmetric eig (Jacobi + QR)** | 1 | `linalg/eig_sym.rs` | ~450 |
 | 8 | **A5 — SVD (Golub-Reinsch + one-sided Jacobi)** | 1 | `linalg/svd.rs` | ~500 |
-| 9 | **A6 — Polar + mat_exp + mat_log** | 1 | `linalg/polar.rs`, `linalg/matfn.rs` | ~400 |
+| 9 | **A6 — Polar + mat_exp + mat_log + distance** | 1 | `linalg/polar.rs`, `linalg/matfn.rs`, `linalg/distance.rs` (absorbs PR #160 `heel_f64x8::l1/l2/linf`) | ~500 |
 | 10 | **A7 — SH deg 0..=7** | 1 | `linalg/sh.rs` (supersedes `splat3d/sh.rs`) | ~400 |
 | 11 | **A8 — Conv1D + Conv2D** | 1 | `linalg/conv.rs` | ~450 |
 | 12 | **A9 — Batched gemm + Norms + Activations** | 1 | `linalg/batched.rs`, `linalg/norm.rs`, `linalg/activations_ext.rs` | ~550 |
