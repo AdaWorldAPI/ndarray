@@ -1,0 +1,33 @@
+# Railway deployment configuration for splat4d-railway-smoke (A6 worker).
+#
+# Railway reads this file to determine build and deploy settings.
+# Companion to the Dockerfile in the same directory.
+#
+# Cross-references:
+#   - Dockerfile — multi-stage build (Rust 1.95 builder + debian:12-slim runtime)
+#   - src/main.rs — axum server; reads $PORT env var
+#   - hhtl-pr-x4-splat-cascade-pre-sprint-prompt.md § "What ships in A6"
+
+[build]
+# Use the Dockerfile in this directory (crates/splat4d-railway-smoke/).
+builder = "dockerfile"
+dockerfilePath = "crates/splat4d-railway-smoke/Dockerfile"
+
+# Build context is the repo root so Cargo can resolve workspace deps.
+# (Railway sets the Docker build context to the repo root by default.)
+
+[deploy]
+# Railway injects $PORT automatically; main.rs reads it with a fallback to 8080.
+# No explicit startCommand needed — ENTRYPOINT in Dockerfile handles it.
+
+# Health-check path for Railway's HTTP probe.
+healthcheckPath = "/healthz"
+healthcheckTimeout = 30
+
+# Restart policy: always restart on crash (covers transient OOM on hobby tier).
+restartPolicyType = "always"
+
+# TODO(A6-env): add Railway environment variables if needed:
+#   [deploy.env]
+#   RUST_LOG = "info"
+#   FEATURES = "splat4d-nars-compose"   # uncomment for SG4 test deploy
