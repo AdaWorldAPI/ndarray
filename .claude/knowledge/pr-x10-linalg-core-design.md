@@ -516,7 +516,7 @@ Plus parity gates:
 
 3. **f64 path?**: splat3d is f32-only. Inference modules are f32. Pillar probes use f64 internally for concentration math. Does `linalg-core` ship f32 AND f64? Lean: **f32 primary** (matches the rest of `hpc::*`), add `_f64` variants only on demand. Savant: rule on whether to pre-ship f64 for the Pillar consumers.
 
-4. **`jc` consolidation path (a) vs (b)**: keep jc zero-dep on ndarray (path a) or relax for SPD only (path b)? Architectural call. Lean: **(a)** preserves the self-certifying property. Coordinator: confirm with jc-architect before committing.
+4. **`jc` consolidation path (a) vs (b)**: ~~keep jc zero-dep (path a) or relax for SPD only (path b)?~~ **RESOLVED by joint savant P1-1 + invariant 12 (master ruling): path (b) — jc's math consolidates into `ndarray::hpc::pillar::*`. PR-X10 does not decide this; it ships the canonical ndarray-side surface that PR-X11 then consumes.** See §"PR-X11 consumption pattern" L390 above.
 
 5. **Flash-attention as v1 or v2?**: flash-attention is ~3× the implementation complexity of naive attention. v1 ships naive only; v2 adds flash. OR v1 ships both. Lean: **v1 ships both** — the inference modules need flash for any sequence longer than ~512 tokens. Cost: ~250 extra LoC on A10.
 

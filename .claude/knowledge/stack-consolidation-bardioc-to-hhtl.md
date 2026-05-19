@@ -328,5 +328,7 @@ heritage is what made it possible.
 - `bardioc-weekend-rebuild-prompt.md` — migration baseline prompt (build the old stack honest)
 - `ndarray-simd-trojan-horse-prompt.md` — inject ndarray::simd into ClickHouse + Tantivy (path A)
 - `databend-ndarray-simd-prompt.md` — adopt Databend + ndarray::simd as ClickHouse successor (path C, recommended)
+- `hhtl-canary-inhabitance-plan.md` — Phase 2 entry condition: names the NARS-revision canary + correctness/performance/inhabitance gates
+- `hhtl-substrate-execution-prompt.md` — Phase 2 Protocol A execution prompt (8 weeks, 6 sprints, 44 workers; per-sprint kickoff blocks for W1-W8)
 - `.claude/rules/data-flow.md` — Rule #3 source
 - lance-graph PR #404 — four-repo demo (architectural target; merge reverted via PR #405 in 2026-05-19 cross-repo rollback — intent preserved as next-cycle target, code attempt withdrawn)
