@@ -243,6 +243,78 @@ Honesty roster — things that genuinely don't fit and need separate stories:
   the typed-surface contract from zone 1 means schema changes ripple through
   Rust types. Migration discipline TBD.
 
+## Four-tier picture: HHTL only has to win the cognitive layer
+
+The synthesis that compresses the whole consolidation arc to one diagram.
+Bardioc had four CPU-heavy specialty layers. **Three of them already have
+Rust-native successors that aren't HHTL.** HHTL only has to win at the
+cognitive layer it was designed for.
+
+| Tier | Workload shape | Bardioc layer | Rust-native successor | Acceleration |
+|---|---|---|---|---|
+| **Cognitive** (hot path, sub-µs) | project-and-lookup, cascade routing | (no Bardioc analog — application code) | **HHTL** = TiKV + SurrealDB + Ractor + ndarray + lance-graph | ndarray::simd (native), HHTL projection (2 orders of magnitude vs scan) |
+| **Analytic** (cold path, ms) | scan-and-aggregate, OLAP, ad-hoc SQL | ClickHouse | **Databend** (Arrow + DataFusion + Tokio, MIT, ClickHouse-shape) | ndarray::simd injection (filter / aggregate / hash kernels) |
+| **Search** (full-text) | inverted index, BM25, ngram, faceting | Elasticsearch / Lucene | **Tantivy** (under SurrealDB FTS, also via Quickwit) | ndarray::simd injection (bitpack decode / BM25 / skip-list intersection) |
+| **Graph** (traversal) | BFS/DFS, edge-label filter, frontier expansion | JanusGraph | **lance-graph native** (typed surfaces over TiKV ranges) | ndarray::simd (frontier bitsets), no JNI |
+
+This is the load-bearing reframe for the migration argument:
+
+- **HHTL is genuinely new IP** — nothing exists like it; the cognitive layer
+  is where the architecture earns its keep.
+- **The other three are inheritances** — Databend / Tantivy / lance-graph are
+  pre-existing Rust-native engines that already do what their Bardioc
+  counterparts did, just in Rust with Tokio and Arrow.
+- **ndarray::simd is the common SIMD substrate across all four tiers** —
+  injection target for Databend + Tantivy (the trojan-horse prompts);
+  native for HHTL + lance-graph (the hot-path cognitive substrate).
+
+Migration scope shrinks proportionally. The total work is:
+1. Build HHTL (PR-X4 + PR-X9, the genuinely new piece).
+2. Adopt Databend, Tantivy, lance-graph (existing, just integrate).
+3. Inject ndarray::simd into Databend + Tantivy (trojan horse prompts,
+   1–2 engineer-weeks per target).
+4. Cutover from Bardioc one workload at a time (read-only mirror → dual
+   write → primary-flip → decommission, the existing migration plan).
+
+**No transcode of ClickHouse, ES, or JanusGraph is required, ever.**
+
+## Why we don't transcode ClickHouse (cheap escape hatches)
+
+A full ClickHouse transcode is one of the hardest software undertakings in
+modern infrastructure: ~1.2M LOC C++ core, ~150 vendored libraries, ~1000
+hand-tuned aggregation/scalar functions, decades of SIMD/cache/JIT
+optimization. Realistic cost: **5–10 engineer-years**. Reference points:
+TiKV's Rust rewrite took ~5 years with the original team; Servo's
+C++→Rust port took ~10 years and ended partial; the Postgres→CockroachDB
+conceptual port is still incomplete after a decade.
+
+Three cheaper escape hatches, in order of cost:
+
+| Approach | Cost | Outcome |
+|---|---|---|
+| **A. FFI inject ndarray::simd into ClickHouse** (trojan horse prompt) | 1–2 engineer-weeks | ClickHouse stays C++, hot kernels are Rust; legacy stack faster, Bardioc cutover urgency reduced |
+| **B. Transcode only the vectorized executor** (~50–100k LOC) | 1–2 engineer-years | Hybrid C++ shell + Rust executor core; deep IP investment, narrow scope |
+| **C. Adopt Databend + ndarray::simd injection** (databend prompt) | 0 transcode | Rust-native, ClickHouse-shape, MIT licensed, already maintained, rides upstream |
+
+**Recommended: C.** Databend already covers ClickHouse-shape workloads in
+Rust on Arrow + DataFusion + Tokio. ndarray::simd injection earns the
+"hand-tuned" performance parity. Combined cost is engineer-weeks, not
+engineer-years, with zero transcode debt.
+
+A is also valuable in parallel — it accelerates Bardioc during the cutover
+window and creates upstream contribution opportunities. B is rarely worth
+it; only justified if you need ClickHouse-storage-format wire-compatibility
+in a Rust-native engine, which the cognitive stack does not.
+
+The C# ecosystem analog (asked separately): RavenDB is the closest
+single-binary-vendor-everything analog to ClickHouse in .NET, with
+EventStoreDB second. Neither is performance-competitive with ClickHouse on
+OLAP scan, but they share the operational philosophy. Notable because the
+ClickHouse design pattern (full vendoring + native compilation +
+obsessive SIMD/cache tuning + willingness to patch upstream) is rare —
+ClickHouse may be the only OSS database that does all four. Yandex
+heritage is what made it possible.
+
 ## References
 
 - `pr-master-consolidation.md` — sprint plan, 10-submodule layout
@@ -253,6 +325,8 @@ Honesty roster — things that genuinely don't fit and need separate stories:
 - `pr-x11-jc-consolidation-design.md` — numerical certification (cascade ops)
 - `pr-x12-codec-x265-design.md` — compressed leaf storage
 - `pr-x13-ogit-bridge-design.md` — OGIT TTL bundle (ontology grounding)
-- `bardioc-weekend-rebuild-prompt.md` — migration baseline prompt
+- `bardioc-weekend-rebuild-prompt.md` — migration baseline prompt (build the old stack honest)
+- `ndarray-simd-trojan-horse-prompt.md` — inject ndarray::simd into ClickHouse + Tantivy (path A)
+- `databend-ndarray-simd-prompt.md` — adopt Databend + ndarray::simd as ClickHouse successor (path C, recommended)
 - `.claude/rules/data-flow.md` — Rule #3 source
-- lance-graph PR #404 — four-repo demo (architectural target)
+- lance-graph PR #404 — four-repo demo (architectural target; merge reverted via PR #405 in 2026-05-19 cross-repo rollback — intent preserved as next-cycle target, code attempt withdrawn)
