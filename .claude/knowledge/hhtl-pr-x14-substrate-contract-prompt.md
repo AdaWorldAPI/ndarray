@@ -21,7 +21,7 @@ access today. Four distinct patterns coexist; none share a substrate carrier.
 crate as its consumer-facing surface, or each consumer rebuilds the same
 bridge.**
 
-### Pattern 1 — `Box<[u64]>` flat owned buffers (BindSpace, SIMD-hottest reader)
+### Pattern 1 — flat owned buffers (3× `Box<[u64]>` + 1× `Box<[f32]>`, BindSpace, SIMD-hottest reader)
 
 `cognitive-shader-driver/src/bindspace.rs`:36-44 (verbatim):
 
@@ -416,7 +416,7 @@ PR-X14′ adds a `column/` module set to the existing `lance-graph-contract`
 crate (preserving its zero-dep invariant) and a new sibling
 `lance-graph-contract-bridge` crate that bridges Lance datasets + Arrow
 RecordBatches into `MultiLaneColumn`. Four current duplicate column-access
-patterns (BindSpace `Box<[u64]>`, lance-graph query `HashMap<String,
+patterns (BindSpace `Box<[u64]>` + `Box<[f32]>`, lance-graph query `HashMap<String,
 RecordBatch>`, planner `Morsel` placeholder enum, `lance::Dataset.scan()`
 rolled per feature) collapse to one. SQL path + lance-graph's datafusion
 deps are deliberately untouched. The plan-review savant chooses path α

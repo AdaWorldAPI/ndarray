@@ -69,14 +69,14 @@ Sapphire Rapids 8-core box, AVX-512 enabled (`target-cpu=x86-64-v4`):
 ### Correctness gates (binary)
 
 1. **Revision output matches scalar reference**:
-   - `Fingerprint` (u64) bit-exact match against `src/hpc/nars.rs::revise`
+   - `Fingerprint` (u64) bit-exact match against the scalar `nars::revise_belief` reference (wrapped at the `hpc::cognitive::nars::revise` engine surface by PR-X9)
    - `TruthValue` (f, c) within ULP ≤ 4 of scalar reference
    - 10,000 randomly-seeded revisions, zero divergences allowed
 2. **Cascade routing is deterministic**:
    - Same `(Base17, position)` → same `CascadeAddr` across runs
    - Same `CascadeAddr` → same basin entry (warm cache or cold-materialized)
    - Bit-exact reproducibility across 100 runs
-3. **No `&mut self` during compute** (compile-time enforcement):
+3. **No `&mut self` during compute** (compile-time enforcement, **PR-X9 deliverable, W6-W7**):
    - `ndarray::hpc::cognitive::*` engines have `revise(&self, ...) -> Result`
    - Only Ractor handlers carry `&mut self` and only for commit, never compute
    - Clippy lint `clippy::needless_pass_by_ref_mut` clean

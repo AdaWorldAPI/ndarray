@@ -303,6 +303,14 @@ the Rust type-system layer.
    PR-X10 A6 in W2). Do not implement distance primitives in
    `crate::simd_soa::*`.
 
+   > **Availability note (2026-05-19)**: `crate::hpc::linalg::distance::*`
+   > is the PR-X10 A6 deliverable — it lands when PR-X10 spawns at W1-W2.
+   > As of master `25bcafb9` the kernels live nowhere: PR #160's
+   > `heel_f64x8::{l1, l2, linf}` was reverted (`d3863721`), and A6 is the
+   > canonical re-home. Until A6 merges, any GridLake worker triggered
+   > before W2 must stub `linalg::distance` rather than reintroduce the
+   > kernels locally.
+
 2. **Do NOT introduce a new SIMD type.** All lane types are
    `crate::simd::*` re-exports. If GridLake's iterators need a lane
    width that doesn't exist (unlikely — `crate::simd` covers

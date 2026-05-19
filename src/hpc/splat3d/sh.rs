@@ -1,5 +1,11 @@
 //! Degree-3 real spherical harmonics evaluator for 3D Gaussian Splatting.
 //!
+//! **Note**: PR-X10 A8 introduces `crate::hpc::linalg::sh` as the canonical
+//! degree-0..7 SH surface for the wider stack. This `splat3d::sh` module
+//! ships deg-3 only and remains the primary call site for the 3D Gaussian
+//! Splat raster path; cross-module callers should prefer `linalg::sh` once
+//! PR-X10 A8 merges.
+//!
 //! # Mathematical claim
 //!
 //! Given a unit view direction `d = (x, y, z)` and 16 SH coefficients per
