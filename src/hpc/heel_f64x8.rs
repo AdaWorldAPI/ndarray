@@ -192,6 +192,161 @@ pub fn cosine_f32_to_f64_simd(a: &[f32], b: &[f32]) -> f64 {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Stable distance kernels — L1, L2, L∞ — PP-15 / integration plan §5
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// L1 (Manhattan) distance between two equal-length f64 slices.
+///
+/// Returns Σ |a[i] - b[i]|. Numerically: scalar reduction, no
+/// catastrophic cancellation. SIMD-accelerated via F64x8 chunks.
+///
+/// # Stability
+///
+/// Public stable surface per `docs/hpc-stability.md`. Signature is
+/// frozen: no rename, no semantic drift.
+///
+/// # Panics (debug only)
+///
+/// Panics in debug builds if `a.len() != b.len()`.
+pub fn l1_f64_simd(a: &[f64], b: &[f64]) -> f64 {
+    debug_assert_eq!(a.len(), b.len());
+    let n = a.len().min(b.len());
+    let chunks = n / 8;
+    let remainder = n % 8;
+
+    let mut acc = F64x8::splat(0.0);
+    for i in 0..chunks {
+        let va = F64x8::from_slice(&a[i * 8..]);
+        let vb = F64x8::from_slice(&b[i * 8..]);
+        let diff = va - vb;
+        acc = acc + diff.abs(); // acc += |a - b| lane-wise
+    }
+    let mut sum = acc.reduce_sum();
+
+    // Scalar remainder
+    let offset = chunks * 8;
+    for i in 0..remainder {
+        sum += (a[offset + i] - b[offset + i]).abs();
+    }
+    sum
+}
+
+/// L2 (Euclidean) distance between two equal-length f64 slices.
+///
+/// Returns sqrt(Σ (a[i] - b[i])^2). SIMD-accelerated via F64x8 FMA chunks.
+///
+/// # Stability
+///
+/// Public stable surface per `docs/hpc-stability.md`. Signature is
+/// frozen: no rename, no semantic drift.
+///
+/// # Panics (debug only)
+///
+/// Panics in debug builds if `a.len() != b.len()`.
+pub fn l2_f64_simd(a: &[f64], b: &[f64]) -> f64 {
+    debug_assert_eq!(a.len(), b.len());
+    let n = a.len().min(b.len());
+    let chunks = n / 8;
+    let remainder = n % 8;
+
+    let mut acc = F64x8::splat(0.0);
+    for i in 0..chunks {
+        let va = F64x8::from_slice(&a[i * 8..]);
+        let vb = F64x8::from_slice(&b[i * 8..]);
+        let diff = va - vb;
+        acc = diff.mul_add(diff, acc); // acc = diff*diff + acc (FMA)
+    }
+    let mut sum = acc.reduce_sum();
+
+    // Scalar remainder
+    let offset = chunks * 8;
+    for i in 0..remainder {
+        let d = a[offset + i] - b[offset + i];
+        sum += d * d;
+    }
+    sum.sqrt()
+}
+
+/// L_infinity (Chebyshev) distance between two equal-length f64 slices.
+///
+/// Returns max_i |a[i] - b[i]|. SIMD-accelerated via F64x8 lane-wise max.
+///
+/// # Stability
+///
+/// Public stable surface per `docs/hpc-stability.md`. Signature is
+/// frozen: no rename, no semantic drift.
+///
+/// # Panics (debug only)
+///
+/// Panics in debug builds if `a.len() != b.len()`.
+pub fn linf_f64_simd(a: &[f64], b: &[f64]) -> f64 {
+    debug_assert_eq!(a.len(), b.len());
+    let n = a.len().min(b.len());
+    let chunks = n / 8;
+    let remainder = n % 8;
+
+    let mut max_acc = F64x8::splat(0.0);
+    for i in 0..chunks {
+        let va = F64x8::from_slice(&a[i * 8..]);
+        let vb = F64x8::from_slice(&b[i * 8..]);
+        let diff = (va - vb).abs(); // |a - b| lane-wise
+        max_acc = max_acc.simd_max(diff); // running lane-wise max
+    }
+    let mut max_val = max_acc.reduce_max();
+
+    // Scalar remainder
+    let offset = chunks * 8;
+    for i in 0..remainder {
+        let d = (a[offset + i] - b[offset + i]).abs();
+        if d > max_val {
+            max_val = d;
+        }
+    }
+    max_val
+}
+
+#[cfg(test)]
+mod l1_l2_linf_tests {
+    use super::*;
+
+    #[test]
+    fn l1_zero_for_equal_inputs() {
+        let a = vec![1.0f64; 8];
+        let b = vec![1.0f64; 8];
+        let result = l1_f64_simd(&a, &b);
+        assert_eq!(result, 0.0, "L1 of identical vectors must be 0.0, got {}", result);
+    }
+
+    #[test]
+    fn l2_matches_scalar_reference() {
+        let a: Vec<f64> = (0..100).map(|i| (i as f64 * 0.1).sin()).collect();
+        let b: Vec<f64> = (0..100).map(|i| (i as f64 * 0.1).cos()).collect();
+
+        let simd_l2 = l2_f64_simd(&a, &b);
+
+        // Scalar reference
+        let scalar_sum: f64 = a.iter().zip(&b).map(|(x, y)| (x - y) * (x - y)).sum();
+        let scalar_l2 = scalar_sum.sqrt();
+
+        assert!(
+            (simd_l2 - scalar_l2).abs() < 100.0 * f64::EPSILON,
+            "SIMD L2 {:.15} vs scalar L2 {:.15}, diff = {:.3e}",
+            simd_l2,
+            scalar_l2,
+            (simd_l2 - scalar_l2).abs()
+        );
+    }
+
+    #[test]
+    fn linf_picks_the_largest_gap() {
+        let a = vec![0.0f64, 0.0, 5.0, 0.0];
+        let b = vec![0.0f64, 0.0, 0.0, 0.0];
+        let result = linf_f64_simd(&a, &b);
+        assert!((result - 5.0).abs() < f64::EPSILON, "L∞ should be 5.0, got {}", result);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
