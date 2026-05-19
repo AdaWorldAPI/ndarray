@@ -1,0 +1,39 @@
+@prefix ogit:           <http://www.purl.org/ogit/> .
+@prefix ogit.Cognitive: <http://www.purl.org/ogit/Cognitive/> .
+@prefix rdf:            <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:           <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:            <http://www.w3.org/2001/XMLSchema#> .
+@prefix dcterms:        <http://purl.org/dc/terms/> .
+
+ogit.Cognitive:Heel a rdfs:Class ;
+    rdfs:subClassOf ogit:Entity ;
+    rdfs:label "Heel" ;
+    rdfs:comment "Abstract root of the cognitive family hierarchy. A Heel anchors one top-level cognitive family (e.g., reasoning, perception, memory, resonance). All Hip, Twig, and Leaf instances belong to exactly one Heel." ;
+    ogit:scope "NTO" ;
+    ogit:parent ogit:Node ;
+    dcterms:source "AdaWorldAPI/ndarray/.claude/knowledge/pr-x9-design.md:layer-1-substrate" ;
+    ogit:mandatory (
+        ogit:name
+        ogit.Cognitive:heelIdx
+    ) ;
+    ogit:optional (
+        ogit:description
+    ) .
+
+ogit.Cognitive:heelIdx a rdf:Property ;
+    rdfs:label "heelIdx" ;
+    rdfs:comment "Zero-based compact index of this Heel within the Cognitive namespace. Range: 0-255 (xsd:byte). Used by PR-X9 flat-indexed parent-pointer tables." ;
+    rdfs:domain ogit.Cognitive:Heel ;
+    ogit:type "xsd:byte" .
+
+ogit.Cognitive:name a rdf:Property ;
+    rdfs:label "name" ;
+    rdfs:comment "Human-readable canonical name of this Heel (e.g., 'reasoning', 'perception')." ;
+    rdfs:domain ogit.Cognitive:Heel ;
+    ogit:type "xsd:string" .
+
+ogit.Cognitive:description a rdf:Property ;
+    rdfs:label "description" ;
+    rdfs:comment "Optional prose description of this Heel's cognitive role." ;
+    rdfs:domain ogit.Cognitive:Heel ;
+    ogit:type "xsd:string" .

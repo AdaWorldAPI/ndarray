@@ -1,0 +1,56 @@
+@prefix ogit:           <http://www.purl.org/ogit/> .
+@prefix ogit.Cognitive: <http://www.purl.org/ogit/Cognitive/> .
+@prefix rdf:            <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:           <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:            <http://www.w3.org/2001/XMLSchema#> .
+@prefix dcterms:        <http://purl.org/dc/terms/> .
+
+ogit.Cognitive:CognitiveCell a rdfs:Class ;
+    rdfs:subClassOf ogit:Entity ;
+    rdfs:label "CognitiveCell" ;
+    rdfs:comment "Typed cell-state carrier for the cognitive shader stack. Holds the full state of one cognitive computation cell: a 64-bit causal edge mantissa, a 32-dim INT4 thinking vector, a 16-dim INT4 qualia vector, a CAM codebook vocabulary index, and an optional NARS confidence projection scalar." ;
+    ogit:scope "NTO" ;
+    ogit:parent ogit:Node ;
+    dcterms:source "AdaWorldAPI/ndarray/.claude/knowledge/pr-x9-design.md:layer-1-substrate" ;
+    ogit:mandatory (
+        ogit.Cognitive:edge
+        ogit.Cognitive:thinking
+        ogit.Cognitive:qualia
+        ogit.Cognitive:vocab
+    ) ;
+    ogit:optional (
+        ogit.Cognitive:confidence
+    ) ;
+    ogit:allowed [
+        ogit:relates ogit.Cognitive:Leaf
+    ] .
+
+ogit.Cognitive:edge a rdf:Property ;
+    rdfs:label "edge" ;
+    rdfs:comment "CausalEdge64 mantissa — the 64-bit packed truth state of this cell. Maps to Rust u64. The bit layout encodes frequency, confidence, and evidence channels per the CausalEdge64 protocol (see causal_diff.rs)." ;
+    rdfs:domain ogit.Cognitive:CognitiveCell ;
+    ogit:type "xsd:long" .
+
+ogit.Cognitive:thinking a rdf:Property ;
+    rdfs:label "thinking" ;
+    rdfs:comment "32-dimensional INT4 thinking vector stored as base64-encoded binary (16 bytes: 32 × 4-bit nibbles, little-endian packing). Encodes the intermediate reasoning state for this cell in the cognitive shader." ;
+    rdfs:domain ogit.Cognitive:CognitiveCell ;
+    ogit:type "xsd:base64Binary" .
+
+ogit.Cognitive:qualia a rdf:Property ;
+    rdfs:label "qualia" ;
+    rdfs:comment "16-dimensional INT4 qualia vector stored as base64-encoded binary (8 bytes: 16 × 4-bit nibbles, little-endian packing). Encodes the phenomenal/associative state for this cell." ;
+    rdfs:domain ogit.Cognitive:CognitiveCell ;
+    ogit:type "xsd:base64Binary" .
+
+ogit.Cognitive:vocab a rdf:Property ;
+    rdfs:label "vocab" ;
+    rdfs:comment "CAM codebook vocabulary index (u16, 0-4095). Identifies the Leaf (basin atom) this cell currently maps to in the 4096-entry CognitiveCell codebook." ;
+    rdfs:domain ogit.Cognitive:CognitiveCell ;
+    ogit:type "xsd:int" .
+
+ogit.Cognitive:confidence a rdf:Property ;
+    rdfs:label "confidence" ;
+    rdfs:comment "Optional NARS truth-function confidence projection scalar (f32, range 0.0-1.0). Represents the w/(w+k) confidence after NARS revision, where k is the NARS evidence horizon constant." ;
+    rdfs:domain ogit.Cognitive:CognitiveCell ;
+    ogit:type "xsd:double" .

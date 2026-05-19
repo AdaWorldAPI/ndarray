@@ -1,0 +1,13 @@
+@prefix ogit:           <http://www.purl.org/ogit/> .
+@prefix ogit.Cognitive: <http://www.purl.org/ogit/Cognitive/> .
+@prefix rdf:            <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:           <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:            <http://www.w3.org/2001/XMLSchema#> .
+@prefix dcterms:        <http://purl.org/dc/terms/> .
+
+ogit.Cognitive:hip-semantic a ogit.Cognitive:Hip ;
+    ogit:name "semantic" ;
+    ogit.Cognitive:heelParent "ogit.Cognitive:heel-memory" ;
+    ogit.Cognitive:hipIdx "1"^^xsd:byte ;
+    ogit:description "Hip under memory: typed entity semantic recall operations. Covers concept activation, category membership lookup, inheritance-chain traversal, and semantic similarity retrieval." ;
+    dcterms:source "AdaWorldAPI/ndarray/.claude/knowledge/pr-x9-design.md:layer-1-substrate" .

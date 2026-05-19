@@ -252,6 +252,22 @@ pub mod audio;
 #[allow(missing_docs)]
 pub mod stream;
 
+/// Middle-layer linalg: `MatN` carrier + `Mat2/3/4` aliases + `Spd2/Spd3` SPD-cone (PR-X10 A1).
+/// Foundation for A2-A12 (Quat, inverse, eig_sym, SVD, polar, mat_exp, SH, conv, batched, RoPE, attention, loss).
+#[cfg(feature = "linalg")]
+pub mod linalg;
+
+/// Pillar probe certification module: shared splitmix64 RNG, PillarReport, SPD helpers,
+/// and per-pillar prove() probes (Pillar-6 through Pillar-11). PR-X11 B8.
+#[cfg(feature = "pillar")]
+pub mod pillar;
+
+/// OGIT ontology bridge — RDF 1.1 Turtle lexer + parser (OGIT subset).
+/// Gated behind `ogit_bridge` feature flag; zero external deps.
+#[cfg(feature = "ogit_bridge")]
+#[allow(missing_docs)]
+pub mod ogit_bridge;
+
 #[cfg(all(test, feature = "hpc-extras"))]
 mod e2e_tests {
     //! End-to-end pipeline test: Fingerprint → Node → Seal → Cascade → CLAM → Causality → BNN
