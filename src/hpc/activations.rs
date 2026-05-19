@@ -441,6 +441,43 @@ mod tests {
         assert!((out[[1, 1]] - 0.5).abs() < 1e-6, "sigmoid(0) at [1,1] = {}", out[[1, 1]]);
     }
 
+    // Symmetric companion to `test_sigmoid_f32_c_in_f_out_mismatched_strides`:
+    // F-order INPUT + C-order OUTPUT. The upstream test only covers the
+    // C-in-F-out direction; if a future refactor accidentally guards only
+    // the asymmetric case where x is C-order (e.g. `if x.is_standard_layout()
+    // != out.is_standard_layout()`), the C→F test would still pass while
+    // F→C silently regressed. Pinning both directions keeps the
+    // strides-equality guard symmetric.
+    #[test]
+    fn test_sigmoid_f32_f_in_c_out_mismatched_strides() {
+        use crate::{Array, Array2, ShapeBuilder};
+        // Build an F-order input via `from_shape_vec` with the `.f()` shape
+        // builder. Logical contents [[0, 100], [-100, 0]] same as the C-order
+        // test — column-major buffer is [0, -100, 100, 0].
+        let x: Array2<f32> =
+            Array2::from_shape_vec((2, 2).f(), vec![0.0_f32, -100.0, 100.0, 0.0]).expect("F-order shape_vec");
+        assert!(!x.is_standard_layout(), "x should be F-order");
+        // Sanity-check the logical layout independent of memory order.
+        assert!((x[[0, 0]] - 0.0).abs() < 1e-7);
+        assert!((x[[0, 1]] - 100.0).abs() < 1e-7);
+        assert!((x[[1, 0]] - (-100.0)).abs() < 1e-7);
+        assert!((x[[1, 1]] - 0.0).abs() < 1e-7);
+
+        // C-order output (the default for `Array::zeros((r, c))`).
+        let mut out: Array2<f32> = Array::zeros((2, 2));
+        assert!(out.is_standard_layout(), "out should be C-order");
+        assert_ne!(x.strides(), out.strides(), "test setup: strides must differ");
+
+        sigmoid_f32(x.view(), out.view_mut());
+
+        // Logical coordinates must carry the right sigmoid values regardless
+        // of memory order direction.
+        assert!((out[[0, 0]] - 0.5).abs() < 1e-6, "sigmoid(0) at [0,0] = {}", out[[0, 0]]);
+        assert!((out[[0, 1]] - 1.0).abs() < 1e-4, "sigmoid(100) at [0,1] = {}", out[[0, 1]]);
+        assert!((out[[1, 0]] - 0.0).abs() < 1e-4, "sigmoid(-100) at [1,0] = {}", out[[1, 0]]);
+        assert!((out[[1, 1]] - 0.5).abs() < 1e-6, "sigmoid(0) at [1,1] = {}", out[[1, 1]]);
+    }
+
     #[test]
     fn test_sigmoid_f32_2d() {
         // Generic-D verification: 2-D contiguous input works
