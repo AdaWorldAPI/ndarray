@@ -341,6 +341,84 @@ PR-X10 ships the ndarray-side canonical surface; jc agents pick up the
 consolidation against it. PR-X10 is **independent** of PR-X4 / PR-X9 / PR-Z1
 (no file overlap), can ship concurrently from a separate branch.
 
+## Shopping-list addendum (2026-05-19 substrate-pair update)
+
+The 2026-05-18 entry above (PR-X10 + jc consolidation) is the **arithmetic**
+substrate. A 2026-05-19 cross-cutting design session identified the
+**storage-and-contract** substrate as the missing companion piece. Two
+pre-sprint prompts capture it:
+
+- `.claude/knowledge/hhtl-gridlake-pre-sprint-prompt.md` — **PR-X1 + PR-X2**
+  (GridLake carrier: `MultiLaneColumn` + `#[derive(SoA)]` proc-macro)
+- `.claude/knowledge/hhtl-pr-x14-substrate-contract-prompt.md` — **PR-X14′**
+  (`lance-graph-contract::column` module set + new
+  `lance-graph-contract-bridge` sibling crate)
+
+### Cost-of-ownership framework adopted this session
+
+Cost-of-ownership is calculated only by **how many cluttered parts a choice
+replaces**. By that metric the substrate-pair is the highest-leverage move
+in the Phase-2 arc:
+
+| Adoption | Cluttered parts replaced |
+|---|---|
+| PR-X1 + PR-X2 (GridLake carrier) | **5 implicit per-consumer column-buffer copies** (Databend, Tantivy, lance-graph, sea-orm, SurrealDB each maintain their own) collapse to one |
+| PR-X14′ (contract + bridge) | **4 duplicate column-access patterns** (BindSpace `Box<[u64]>`, lance-graph query `HashMap<String, RecordBatch>`, planner `Morsel` placeholder enum, `lance::Dataset.scan()` rolled per feature) collapse to one |
+| Databend (future, when integrated through the contract) | ClickHouse (1 JVM/C++ service decommissioned) |
+| Tantivy (future, when integrated through the contract) | Elasticsearch + Lucene (1 JVM service decommissioned) |
+| lance-graph + ndarray-over-TiKV (existing) | JanusGraph + TinkerPop/Gremlin (2 JVM services decommissioned) |
+
+### Decisions that pinned the scope
+
+Three architectural decisions narrowed the prompt's scope from earlier
+proposals in the session:
+
+1. **Skip SQL for now**. All SQL-frontend work (sea-orm column contract,
+   sqlparser-rs standalone, PostgREST front, the Phase-3 "fusion parser"
+   sprint) is deferred. The lance-graph SQL path keeps its `RecordBatch +
+   DataFusion::SessionContext` pipeline unchanged.
+
+2. **Don't evict datafusion**. `lance-graph/Cargo.toml`:35-39 has hard deps
+   on `datafusion = "52"` + four sibling `datafusion-*` crates; lance-graph
+   upstream depends on them. PR-X14′ does NOT touch these — the datafusion
+   1400-module tail stays contained inside the lance-graph crate.
+
+3. **Use storage format as-is**. PR-X14′ reads `lance::Dataset` and
+   `arrow::RecordBatch` as-is; it does NOT define Arrow extension types,
+   NOT register custom Lance encoders, NOT modify schemas in place.
+
+### Decisions superseded
+
+- ❌ Earlier-session proposal: PR-X14 evicts datafusion from lance-graph and
+  builds a parsendes Fusionskraftwerk at 240ns/parse. **Superseded** —
+  lance-graph upstream dep makes eviction out of scope; the planner IR +
+  Cypher nom parser + NSM/FSM parser already exist and PR-X14′ is the
+  consolidation, not a fusion-parser sprint.
+- ❌ Earlier-session proposal: two new top-level crates `gridlake-contract`
+  + `gridlake-bridge`. **Superseded** — `lance-graph-contract` already
+  exists with 10+ workspace consumers and is the right home for the column
+  module; only a sibling bridge crate is genuinely new.
+
+### Two Q-markers carried forward (plan-review savant decides at preflight)
+
+- **Q-NEW-1** (from GridLake prompt): GridLake at W2.5 prerequisite slot
+  vs absorbed into PR-X10 as A13/A14
+- **Q-NEW-2** (from PR-X14′ prompt): PR-X14′ concurrent with GridLake at
+  W2.5 (path α, 10 workers) vs sequential at W3 (path β, 4 workers + 0.5
+  week schedule extension)
+
+### Forbidden constraints (preserved from the prompts)
+
+- PR-X14′ must NOT add `arrow`, `arrow-schema`, `arrow-array`, `lance`,
+  `lancedb`, or `datafusion` to `lance-graph-contract`'s Cargo.toml —
+  preserves the lib.rs:1 zero-dependency invariant
+- PR-X14′ must NOT touch `lance-graph/src/sql_query.rs`,
+  `lance-graph/src/sql_catalog.rs`, or `lance-graph/Cargo.toml`'s
+  datafusion deps — these are deliberately out of scope per decision (2)
+  above
+- ndarray crate receives zero changes from PR-X14′ — the substrate-pair is
+  consumer-side only
+
 ## Cross-references
 
 - `/root/.claude/uploads/.../7b0ea082-splat3d_sprint_prompt.md` — splat3d sprint (shipped as ndarray PR #153, 2026-05-18)
@@ -351,3 +429,5 @@ consolidation against it. PR-X10 is **independent** of PR-X4 / PR-X9 / PR-Z1
 - `.claude/knowledge/pr-x9-design.md` — lazy basin-codebook storage
 - `.claude/knowledge/pr-z1-ogit-cognitive-bootstrap.md` — OGIT Cognitive namespace bootstrap
 - `.claude/knowledge/pr-x10-linalg-core-design.md` — **the consolidating linalg sprint** that unblocks splat3d training + inference modules + jc Pillars simultaneously
+- `.claude/knowledge/hhtl-gridlake-pre-sprint-prompt.md` — **PR-X1 + PR-X2** GridLake carrier (`MultiLaneColumn` + `#[derive(SoA)]`); 2026-05-19 session output, branch `claude/gridlake-pre-sprint-prompt`
+- `.claude/knowledge/hhtl-pr-x14-substrate-contract-prompt.md` — **PR-X14′** `lance-graph-contract::column` module + `lance-graph-contract-bridge` sibling crate; 2026-05-19 session output, same branch
