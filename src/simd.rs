@@ -1717,6 +1717,14 @@ pub use crate::hpc::fft::{wht_f32, wht_f32_new};
 pub use crate::hpc::fingerprint::{
     vector_config, Fingerprint, Fingerprint1K, Fingerprint2K, Fingerprint64K, VectorConfig, VectorWidth,
 };
+
+// PR-X1 — multi-lane typed column carrier + const-size slice window helpers.
+// The W1a consumer contract requires all SIMD-staged primitives to surface
+// through `crate::simd::*`; without these re-exports the cognitive-shader
+// stack reaches for `crate::hpc::column::*` directly, breaking the contract.
+pub use crate::hpc::column::MultiLaneColumn;
+pub use crate::hpc::array_window::{array_window, array_window_checked};
+
 pub use crate::hpc::quantized::{
     dequantize_i2_to_f32, dequantize_i4_to_f32, dequantize_i8_to_f32, quantize_f32_to_i2, quantize_f32_to_i4,
     quantize_f32_to_i8, QuantParams,

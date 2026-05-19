@@ -8,14 +8,19 @@
 //!
 //! # Layering
 //!
-//! Lives in `hpc::array_window`, re-exported from `crate::simd::*` per the
-//! W1a consumer contract at
-//! `.claude/knowledge/vertical-simd-consumer-contract.md`.
+//! Lives in `hpc::array_window`; the `crate::simd::*` re-export lands in the
+//! PR-X1 re-export sweep (see `.claude/knowledge/pr-x1-design.md` § 4).
+//! Doctests therefore use the canonical `ndarray::hpc::array_window` path
+//! until the sweep ships.
 //!
 //! # Design reference
 //!
-//! `.claude/knowledge/pr-x1-design.md` § "3. `array_window`" — verbatim API
-//! surface; this file is the commented-out final form for the PR-X1 sprint.
+//! `.claude/knowledge/pr-x1-design.md` § "3. `array_window`". This module
+//! ships the **iterator-shape** variant (whole-buffer walk yielding all
+//! const-size windows). The design doc sketches a singular-window form
+//! (`array_window(slice, offset) -> &[T; N]`); the maintainer-blessed final
+//! shape is the iterator form here, which composes directly with SIMD-staged
+//! consumer loops and avoids per-call panic surface in tight inner loops.
 
 /// Walk `data` as a sequence of non-overlapping const-size windows.
 ///
@@ -29,7 +34,7 @@
 /// # Examples
 ///
 /// ```
-/// use ndarray::simd::array_window;
+/// use ndarray::hpc::array_window::array_window;
 /// let data: Vec<u8> = (0..16).collect();
 /// let windows: Vec<&[u8; 4]> = array_window::<u8, 4>(&data).collect();
 /// assert_eq!(windows.len(), 4);
@@ -40,18 +45,15 @@
 /// # Examples — tail discarded
 ///
 /// ```
-/// use ndarray::simd::array_window;
+/// use ndarray::hpc::array_window::array_window;
 /// let data: Vec<u8> = (0..7).collect();
 /// let windows: Vec<&[u8; 4]> = array_window::<u8, 4>(&data).collect();
 /// // 7 / 4 = 1 window; the trailing 3 items are dropped.
 /// assert_eq!(windows.len(), 1);
 /// ```
 #[inline]
-pub fn array_window<T, const N: usize>(_data: &[T]) -> impl Iterator<Item = &[T; N]> + '_ {
-    // Skeleton: `data.as_chunks::<N>().0.iter()` once that API stabilises,
-    // or a manual chunks loop yielding `<&[T] as TryInto<&[T; N]>>::try_into`.
-    // Implementation lands in the uncomment sprint.
-    core::iter::empty::<&[T; N]>()
+pub fn array_window<T, const N: usize>(data: &[T]) -> impl Iterator<Item = &[T; N]> + '_ {
+    data.as_chunks::<N>().0.iter()
 }
 
 /// Walk `data` as `&[T; N]` windows, returning `Err(())` if `data.len()`
@@ -64,7 +66,7 @@ pub fn array_window<T, const N: usize>(_data: &[T]) -> impl Iterator<Item = &[T;
 /// # Examples
 ///
 /// ```
-/// use ndarray::simd::array_window_checked;
+/// use ndarray::hpc::array_window::array_window_checked;
 /// let data: Vec<u8> = (0..16).collect();
 /// let it = array_window_checked::<u8, 4>(&data).expect("16 is a multiple of 4");
 /// assert_eq!(it.count(), 4);
@@ -93,30 +95,45 @@ mod tests {
     /// 16-element buffer yields four 4-wide windows.
     #[test]
     fn array_window_4_over_16() {
-        unimplemented!("PR-X1 test: collect into Vec<&[u8;4]>; assert windows.len() == 4 and contents match 0..16")
+        let data: Vec<u8> = (0u8..16).collect();
+        let windows: Vec<&[u8; 4]> = array_window::<u8, 4>(&data).collect();
+        assert_eq!(windows.len(), 4);
+        assert_eq!(windows[0], &[0, 1, 2, 3]);
+        assert_eq!(windows[1], &[4, 5, 6, 7]);
+        assert_eq!(windows[2], &[8, 9, 10, 11]);
+        assert_eq!(windows[3], &[12, 13, 14, 15]);
     }
 
     /// Tail items are silently discarded by `array_window`.
     #[test]
     fn array_window_drops_tail() {
-        unimplemented!("PR-X1 test: 7-element buffer over N=4 → 1 window; trailing 3 items dropped")
+        let data: Vec<u8> = (0u8..7).collect();
+        let windows: Vec<&[u8; 4]> = array_window::<u8, 4>(&data).collect();
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0], &[0, 1, 2, 3]);
     }
 
     /// Mismatched length surfaces as Err in the checked variant.
     #[test]
     fn array_window_checked_rejects_mismatch() {
-        unimplemented!("PR-X1 test: assert!(array_window_checked::<u8,4>(&[0u8;7]).is_err())")
+        assert!(array_window_checked::<u8, 4>(&[0u8; 7]).is_err());
+        assert!(array_window_checked::<u8, 4>(&[0u8; 5]).is_err());
+        assert!(array_window_checked::<u8, 4>(&[0u8; 1]).is_err());
     }
 
     /// Aligned length succeeds in the checked variant.
     #[test]
     fn array_window_checked_accepts_aligned() {
-        unimplemented!("PR-X1 test: array_window_checked::<u8,4>(&[0u8;16]) returns Ok iterator yielding 4 windows")
+        let data = [0u8; 16];
+        let it = array_window_checked::<u8, 4>(&data).expect("16 is a multiple of 4");
+        assert_eq!(it.count(), 4);
     }
 
     /// Empty buffer yields zero windows (not an error in either variant).
     #[test]
     fn array_window_empty_buffer() {
-        unimplemented!("PR-X1 test: array_window::<u8,4>(&[]).count() == 0; array_window_checked is Ok (0 % 4 == 0)")
+        assert_eq!(array_window::<u8, 4>(&[]).count(), 0);
+        let it = array_window_checked::<u8, 4>(&[]).expect("0 % 4 == 0, should be Ok");
+        assert_eq!(it.count(), 0);
     }
 }
