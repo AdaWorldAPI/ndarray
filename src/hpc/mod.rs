@@ -38,6 +38,11 @@ pub mod packed;
 // Cognitive layer types (migrated from rustynum-core)
 #[allow(missing_docs)]
 pub mod fingerprint;
+
+// PR-X1 — multi-lane typed column substrate + const-size array windows.
+// Re-exported from crate::simd::* per the W1a consumer contract.
+pub mod column;
+pub mod array_window;
 #[allow(missing_docs)]
 pub mod plane;
 #[allow(missing_docs)]

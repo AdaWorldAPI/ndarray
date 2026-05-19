@@ -623,3 +623,51 @@ mod tests {
         assert_eq!(bytes_ptr, words_ptr, "as_bytes must be zero-copy");
     }
 }
+
+// ============================================================================
+// PR-X1 — N==8 register-width view (carved-out draft, body lands in uncomment sprint)
+// ============================================================================
+
+impl Fingerprint<8> {
+    /// Typed `&[u8; 64]` view over the fingerprint's backing bytes (PR-X1).
+    ///
+    /// Available only on `Fingerprint<8>` — 8 × `u64` = 64 bytes = one AVX-512
+    /// `U8x64` register width. Returns the exact `&[u8; 64]` reference without
+    /// copying; feed it into `crate::simd::U8x64::from_array(*win)` or
+    /// `U8x64::from_slice(win)` for register-level byte ops.
+    ///
+    /// For other `N` widths, use [`Fingerprint::chunks_u8x64`] which yields
+    /// 64-byte chunks without the compile-time length guarantee.
+    ///
+    /// # Design reference
+    ///
+    /// `.claude/knowledge/pr-x1-design.md` § "2. `Fingerprint::as_u8x64`" —
+    /// verbatim API. This is the carved-out final form for the PR-X1 sprint;
+    /// the body lands in the uncomment sprint (pointer reinterpret of
+    /// `self.words.as_ptr() as *const [u8; 64]`, justified by the
+    /// `#[repr(C)]` + 8-`u64` = 64-byte layout invariant).
+    ///
+    /// # Safety contract
+    ///
+    /// The body will require an `unsafe` block to reinterpret
+    /// `&[u64; 8]` as `&[u8; 64]`. The `// SAFETY:` comment must cite:
+    /// - `Fingerprint<N>` is `#[repr(C)]` with a single field `words: [u64; N]`
+    /// - For `N == 8`, `size_of::<[u64; 8]>() == 64 == size_of::<[u8; 64]>()`
+    /// - `[u64; 8]` alignment ≥ `[u8; 64]` alignment (8 ≥ 1)
+    /// - The lifetime of the returned reference is bounded by `&self`
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use ndarray::hpc::fingerprint::Fingerprint;
+    /// let fp: Fingerprint<8> = Fingerprint::zero();
+    /// let window: &[u8; 64] = fp.as_u8x64();
+    /// assert_eq!(window.len(), 64);
+    /// assert!(window.iter().all(|&b| b == 0));
+    /// ```
+    #[inline]
+    pub fn as_u8x64(&self) -> &[u8; 64] {
+        // Body: PR-X1 uncomment sprint — pointer reinterpret with SAFETY comment.
+        unimplemented!("PR-X1: as_u8x64 — &[u64; 8] -> &[u8; 64] reinterpret (see Safety contract)")
+    }
+}
