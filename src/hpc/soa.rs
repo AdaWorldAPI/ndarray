@@ -323,8 +323,48 @@ impl<'a, T, const N: usize> Iterator for SoaChunks<'a, T, N> {
 /// assert_eq!(b.means_y.as_slice(), &[2.0, 5.0]);
 /// assert_eq!(b.means_z.as_slice(), &[3.0, 6.0]);
 /// ```
+///
+/// # Example — `#[soa(pad_to_lanes = N)]` field attribute (PR-X2 Worker B)
+///
+/// Tag a field with `#[soa(pad_to_lanes = N)]` to make `push` pad the
+/// underlying `Vec` up to the next multiple of `N` (filling with
+/// `Default::default()`). SIMD-staged kernels then walk the field with
+/// one uniform N-lane loop — no tail-case branch.
+///
+/// `len()` returns the **logical** row count (unchanged by padding);
+/// `self.<field>.len()` returns the **physical** Vec length. The difference
+/// is the lane-alignment tail.
+///
+/// ```
+/// use ndarray::soa_struct;
+///
+/// soa_struct! {
+///     pub struct Cells {
+///         #[soa(pad_to_lanes = 8)]
+///         pub palette: u8,
+///         pub label: u32,           // unpadded
+///     }
+/// }
+///
+/// let mut c = Cells::new();
+/// c.push(7, 100);
+/// assert_eq!(c.len(), 1);           // logical: 1 row
+/// assert_eq!(c.palette.len(), 8);   // physical: rounded up to lane 8
+/// assert_eq!(c.label.len(), 1);     // unpadded: physical == logical
+/// assert_eq!(c.palette[0], 7);
+/// assert_eq!(c.palette[1..8], [0u8; 7]); // padded tail is Default::default()
+/// ```
 #[macro_export]
 macro_rules! soa_struct {
+    // ───────────────────────────────────────────────────────────────────
+    // Arm 1 — unpadded (no `#[soa(...)]` attribute on any field).
+    // This is byte-for-byte the pre-PR-X2 emit: no `_logical_len` field,
+    // `len()` reads from field lengths under `debug_assert`. Existing
+    // callers (struct-literal construction, exhaustive patterns) are
+    // unaffected. macro_rules! tries this arm first; if any field has
+    // a `#[soa(pad_to_lanes = N)]` attribute the pattern fails to match
+    // and arm 2 is tried.
+    // ───────────────────────────────────────────────────────────────────
     (
         $(#[$meta:meta])*
         $vis:vis struct $name:ident {
@@ -376,6 +416,125 @@ macro_rules! soa_struct {
             fn default() -> Self { Self::new() }
         }
     };
+
+    // ───────────────────────────────────────────────────────────────────
+    // Arm 2 — padded (at least one field has `#[soa(pad_to_lanes = N)]`).
+    // Adds a `#[doc(hidden)] _logical_len: usize` field so `len()` can
+    // return the semantic row count independent of lane-tail padding.
+    // Reached only when arm 1's no-attribute pattern fails to match —
+    // existing callers without padding never see this struct shape.
+    // ───────────────────────────────────────────────────────────────────
+    (
+        $(#[$meta:meta])*
+        $vis:vis struct $name:ident {
+            $(
+                $(#[soa(pad_to_lanes = $pad:literal)])?
+                $field_vis:vis $field:ident : $ty:ty
+            ),* $(,)?
+        }
+    ) => {
+        $(#[$meta])*
+        $vis struct $name {
+            $($field_vis $field: ::std::vec::Vec<$ty>,)*
+            /// Shared logical row count across all fields. Padded fields may
+            /// have `self.<field>.len() > _logical_len` after `push`.
+            /// Updated by `push` / `clear`; treat as private.
+            ///
+            /// Only present on padded structs (at least one field has
+            /// `#[soa(pad_to_lanes = N)]`); unpadded structs keep the
+            /// pre-PR-X2 all-public shape.
+            #[doc(hidden)]
+            _logical_len: usize,
+        }
+
+        impl $name {
+            /// Construct an empty instance.
+            pub fn new() -> Self {
+                Self {
+                    $($field: ::std::vec::Vec::new(),)*
+                    _logical_len: 0,
+                }
+            }
+
+            /// Construct with each field pre-allocated to `cap`.
+            ///
+            /// Padded fields per `#[soa(pad_to_lanes = N)]` get
+            /// `cap` worth of physical capacity, not `cap.div_ceil(N) * N` —
+            /// the lane padding happens lazily inside `push` so the up-front
+            /// reservation is a hint, not a hard size guarantee.
+            pub fn with_capacity(cap: usize) -> Self {
+                Self {
+                    $($field: ::std::vec::Vec::with_capacity(cap),)*
+                    _logical_len: 0,
+                }
+            }
+
+            /// Append one row across all fields.
+            ///
+            /// For fields tagged `#[soa(pad_to_lanes = N)]`, the underlying
+            /// `Vec` is padded with `<$ty as Default>::default()` up to the
+            /// next multiple of `N` before the new value is written. Padded
+            /// elements occupy slots `[_logical_len + 1 .. padded_len)` and
+            /// are guaranteed to compare equal to `Default::default()`.
+            #[allow(clippy::too_many_arguments)]
+            pub fn push(&mut self, $($field: $ty),*) {
+                let logical = self._logical_len;
+                $(
+                    $crate::soa_struct!(@push_field
+                        self, $field, $field, $ty, logical
+                        $(, pad = $pad)?
+                    );
+                )*
+                self._logical_len = logical + 1;
+            }
+
+            /// Logical row count (shared across all fields).
+            ///
+            /// For padded fields this may be **less than** `self.<field>.len()`;
+            /// the difference is the lane-alignment tail. Use `len()` for the
+            /// semantic count, `self.<field>.len()` for the physical Vec length.
+            pub fn len(&self) -> usize {
+                self._logical_len
+            }
+
+            /// Returns `true` if there are zero logical rows.
+            pub fn is_empty(&self) -> bool { self._logical_len == 0 }
+
+            /// Clear all fields. Capacity is retained; logical length resets to 0.
+            ///
+            /// Padded fields' physical `Vec`s are cleared along with the
+            /// unpadded ones — re-pushing into a cleared struct rebuilds the
+            /// padding from scratch.
+            pub fn clear(&mut self) {
+                $(self.$field.clear();)*
+                self._logical_len = 0;
+            }
+        }
+
+        impl ::std::default::Default for $name {
+            fn default() -> Self { Self::new() }
+        }
+    };
+
+    // Internal — padded field push: grow Vec to the next multiple of $pad
+    // with Default::default() before writing the new value at `logical`.
+    (@push_field $self:ident, $vec:ident, $val:ident, $ty:ty, $logical:ident, pad = $pad:literal) => {{
+        const _: () = {
+            // Compile-time guard: pad_to_lanes = 0 is nonsensical.
+            assert!($pad > 0, "soa_struct! #[soa(pad_to_lanes = N)] requires N > 0");
+        };
+        let needed = ($logical + 1).div_ceil($pad) * $pad;
+        while $self.$vec.len() < needed {
+            $self.$vec.push(<$ty as ::std::default::Default>::default());
+        }
+        $self.$vec[$logical] = $val;
+    }};
+
+    // Internal — plain (unpadded) field push inside a padded struct
+    // (mixed cadence: some fields padded, others not).
+    (@push_field $self:ident, $vec:ident, $val:ident, $ty:ty, $logical:ident) => {{
+        $self.$vec.push($val);
+    }};
 }
 
 /// Deinterleave an AoS slice into a [`SoaVec<U, N>`] by extracting `N`
@@ -791,7 +950,9 @@ mod tests {
     #[test]
     fn macro_public_visibility_passthrough() {
         // Soa3 has `pub` fields; verify the field is accessible
-        // (compilation alone proves visibility).
+        // (compilation alone proves visibility). Soa3 is unpadded → uses
+        // arm 1 of the macro → fields drive `len()` directly, so pushing
+        // into individual fields still gives the right count.
         let mut s = Soa3::new();
         s.x.push(1.0);
         s.y.push(2.0);
@@ -992,6 +1153,128 @@ mod tests {
 
         let back: Vec<Bf16Pair> = soa_to_aos(&soa, |[lo, hi]| Bf16Pair { lo, hi });
         assert_eq!(back, aos);
+    }
+
+    // ------------------------------------------------------------------
+    // PR-X2 Worker B — `#[soa(pad_to_lanes = N)]` field attribute
+    // ------------------------------------------------------------------
+
+    soa_struct! {
+        /// 3-field SoA with two padded fields at different lane widths and
+        /// one unpadded field. Exercises the mixed-cadence macro arm.
+        pub struct PadMixed {
+            #[soa(pad_to_lanes = 8)]
+            pub palette: u8,
+            #[soa(pad_to_lanes = 16)]
+            pub depth: u16,
+            pub label: u32,
+        }
+    }
+
+    /// Single push into a `pad_to_lanes = 8` field rounds the physical Vec
+    /// up to 8 elements; logical len is 1.
+    #[test]
+    fn pad_to_lanes_single_push_grows_to_lane() {
+        let mut s = PadMixed::new();
+        s.push(7u8, 0x1234u16, 99u32);
+        assert_eq!(s.len(), 1, "logical len = 1");
+        assert_eq!(s.palette.len(), 8, "palette padded to lane 8");
+        assert_eq!(s.depth.len(), 16, "depth padded to lane 16");
+        assert_eq!(s.label.len(), 1, "label unpadded — physical = logical");
+        assert_eq!(s.palette[0], 7);
+        assert_eq!(s.depth[0], 0x1234);
+        assert_eq!(s.label[0], 99);
+        // Padded tail is Default::default().
+        for &b in &s.palette[1..8] {
+            assert_eq!(b, 0u8);
+        }
+        for &d in &s.depth[1..16] {
+            assert_eq!(d, 0u16);
+        }
+    }
+
+    /// Crossing a lane boundary on a padded field grows the Vec by another N.
+    #[test]
+    fn pad_to_lanes_crosses_lane_boundary() {
+        let mut s = PadMixed::new();
+        for i in 0..9u8 {
+            s.push(i, i as u16, i as u32);
+        }
+        assert_eq!(s.len(), 9);
+        // palette: 9 pushes → next multiple of 8 is 16
+        assert_eq!(s.palette.len(), 16);
+        // depth: 9 pushes → still inside lane 16
+        assert_eq!(s.depth.len(), 16);
+        // label: unpadded
+        assert_eq!(s.label.len(), 9);
+        // first 9 slots carry user values
+        for i in 0..9 {
+            assert_eq!(s.palette[i], i as u8);
+            assert_eq!(s.depth[i], i as u16);
+            assert_eq!(s.label[i], i as u32);
+        }
+        // tail is default-zeroed
+        for &b in &s.palette[9..16] {
+            assert_eq!(b, 0u8);
+        }
+    }
+
+    /// `clear()` resets logical_len and clears physical Vecs.
+    #[test]
+    fn pad_to_lanes_clear_resets_both() {
+        let mut s = PadMixed::new();
+        s.push(1, 2, 3);
+        s.push(4, 5, 6);
+        assert_eq!(s.len(), 2);
+        s.clear();
+        assert_eq!(s.len(), 0);
+        assert!(s.is_empty());
+        assert_eq!(s.palette.len(), 0);
+        assert_eq!(s.depth.len(), 0);
+        assert_eq!(s.label.len(), 0);
+        // Reuse after clear works — padding rebuilds from scratch.
+        s.push(99, 0xFFFF, 7);
+        assert_eq!(s.len(), 1);
+        assert_eq!(s.palette.len(), 8);
+        assert_eq!(s.depth.len(), 16);
+    }
+
+    soa_struct! {
+        /// All-padded variant — every field gets the same lane width.
+        pub struct PadUniform {
+            #[soa(pad_to_lanes = 4)]
+            pub a: i32,
+            #[soa(pad_to_lanes = 4)]
+            pub b: i32,
+        }
+    }
+
+    /// All-padded struct: every field grows in sync with the lane cadence.
+    #[test]
+    fn pad_to_lanes_uniform_cadence() {
+        let mut s = PadUniform::new();
+        s.push(10, 20);
+        s.push(30, 40);
+        s.push(50, 60);
+        assert_eq!(s.len(), 3);
+        // 3 pushes → next multiple of 4 is 4
+        assert_eq!(s.a.len(), 4);
+        assert_eq!(s.b.len(), 4);
+        assert_eq!(s.a[0..3], [10, 30, 50]);
+        assert_eq!(s.b[0..3], [20, 40, 60]);
+        assert_eq!(s.a[3], 0);
+        assert_eq!(s.b[3], 0);
+    }
+
+    /// `with_capacity` initialises an empty padded struct correctly.
+    #[test]
+    fn pad_to_lanes_with_capacity_empty() {
+        let s = PadMixed::with_capacity(64);
+        assert_eq!(s.len(), 0);
+        assert!(s.is_empty());
+        assert_eq!(s.palette.len(), 0);
+        assert_eq!(s.depth.len(), 0);
+        assert_eq!(s.label.len(), 0);
     }
 
     /// Inference-only entry: caller relies on closure return-type ascription,
