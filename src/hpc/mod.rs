@@ -249,6 +249,13 @@ pub mod framebuffer;
 #[cfg(feature = "splat3d")]
 #[allow(missing_docs)]
 pub mod splat3d;
+
+/// PR-X12 A1 — cognitive-cell codec (x265-shaped mode taxonomy over
+/// BlockedGrid CTUs). Gated by `feature = "codec"`. A1 ships only the
+/// CTU carrier + quad-tree partition; A2-A8 (mode tags, predict,
+/// transform, quantise, RDO, rANS, stream) land in follow-up sprints.
+#[cfg(feature = "codec")]
+pub mod codec;
 /// Audio primitives: MDCT, band energies, PVQ, AudioFrame codec.
 /// Transcoded from Opus CELT for the HHTL cascade → waveform pipeline.
 pub mod audio;

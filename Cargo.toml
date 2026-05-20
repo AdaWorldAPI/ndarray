@@ -247,6 +247,11 @@ ogit_bridge = []
 # `lance-graph/crates/jc/src/ewa_sandwich_3d.rs`.
 splat3d = ["std"]
 
+# PR-X12 cognitive codec — x265-shaped skip/merge/delta/escape mode classes
+# over BlockedGrid CTUs. A1 (this crate) ships only the CTU carrier +
+# quad-tree partition; the entropy coder + RDO loop land in later workers.
+codec = ["std"]
+
 # no_std polyfill for `static LazyLock` in `src/simd.rs` (sprint A12).
 # Pulls in `portable-atomic` with the `critical-section` impl plus the
 # `critical-section` runtime so we can build a once-cell-style cache for
