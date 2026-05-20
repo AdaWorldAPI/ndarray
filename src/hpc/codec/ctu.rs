@@ -301,9 +301,12 @@ impl Ctu {
     ///
     /// # Panics
     ///
-    /// Panics if `tier == 0`. The cascade tiers are 1-indexed (L1..L4).
+    /// Panics if `tier` is outside `1..=4`. The cascade tiers are 1-indexed
+    /// L1..L4; values ≥ 5 are rejected because they would let invalid tier
+    /// metadata enter the codec state (P2 codex review on PR #170 line 306).
     pub fn new_skip(block_row: u16, block_col: u16, tier: u8, basin_idx: u16) -> Self {
-        let tier = NonZeroU16::new(tier as u16).expect("Ctu::new_skip: tier must be 1..=4");
+        assert!((1..=4).contains(&tier), "Ctu::new_skip: tier must be in 1..=4 (got {tier})");
+        let tier = NonZeroU16::new(tier as u16).expect("post-assert tier > 0");
         let mut arena = CtuArena::new();
         arena.push(CtuPartition::Leaf(LeafCu::skip(basin_idx)));
         Self {
@@ -315,6 +318,33 @@ impl Ctu {
         }
     }
 
+    /// Walk the arena from root to find the depth at which `target` lives.
+    ///
+    /// Returns `None` if `target` is not reachable from `NodeIdx::ROOT`
+    /// (e.g. orphaned by a prior `merge` — see the GC note on `merge`).
+    /// Used by `split` to enforce `MAX_SPLIT_DEPTH` against the actual
+    /// tree state rather than a caller-supplied claim (P2 codex review
+    /// on PR #170 line 333).
+    ///
+    /// Complexity: O(N) where N ≤ [`MAX_QUAD_TREE_NODES`] = 85.
+    pub fn depth_of(&self, target: NodeIdx) -> Option<u8> {
+        if target == NodeIdx::ROOT {
+            return Some(0);
+        }
+        let mut frontier: Vec<(NodeIdx, u8)> = vec![(NodeIdx::ROOT, 0)];
+        while let Some((node, d)) = frontier.pop() {
+            if let CtuPartition::Split(children) = self.arena.get(node) {
+                for &c in children {
+                    if c == target {
+                        return Some(d + 1);
+                    }
+                    frontier.push((c, d + 1));
+                }
+            }
+        }
+        None
+    }
+
     /// Split the leaf at `node_idx` into four child leaves, all inheriting
     /// the parent's basin (and `Skip` mode by default).
     ///
@@ -322,11 +352,17 @@ impl Ctu {
     ///
     /// # Depth limit
     ///
-    /// Splits past [`MAX_SPLIT_DEPTH`] return [`MaxSplitDepthReached`].
-    /// The current_depth argument is the caller's claim about how deep
-    /// `node_idx` already is; pass `0` when splitting the root and
-    /// increment for each recursion level.
-    pub fn split(&mut self, node_idx: NodeIdx, current_depth: u8) -> Result<[NodeIdx; 4], SplitError> {
+    /// The depth of `node_idx` is computed from the tree itself via
+    /// [`Self::depth_of`], not from caller input — passing a stale claim
+    /// can no longer trigger the arena overflow `assert!` (P2 codex
+    /// review on PR #170 line 333). Splits past [`MAX_SPLIT_DEPTH`]
+    /// return [`SplitError::MaxSplitDepthReached`]; targets unreachable
+    /// from `NodeIdx::ROOT` (e.g. orphaned post-merge) return
+    /// [`SplitError::NodeNotReachable`].
+    pub fn split(&mut self, node_idx: NodeIdx) -> Result<[NodeIdx; 4], SplitError> {
+        let current_depth = self
+            .depth_of(node_idx)
+            .ok_or(SplitError::NodeNotReachable)?;
         if current_depth >= MAX_SPLIT_DEPTH {
             return Err(SplitError::MaxSplitDepthReached(MaxSplitDepthReached {
                 depth: current_depth,
@@ -365,12 +401,19 @@ impl Ctu {
     }
 
     /// Merge a 4-way split back into a single leaf, IF all four children
-    /// are themselves leaves with identical `mode` and `basin_idx`.
+    /// are themselves leaves with **identical `LeafCu` payloads** (same
+    /// `mode`, `basin_idx`, **and** per-mode payload — `delta`,
+    /// `merge_dir`, or `escape_idx` as appropriate).
     ///
-    /// The merged leaf takes the basin and (typically `Skip`) mode of the
-    /// children. Heterogeneous children (different modes / basins) are
-    /// rejected with [`MergeError::ChildrenDiverge`]; non-leaf children
-    /// are rejected with [`MergeError::ChildNotLeaf`].
+    /// The merged leaf takes the (now-unique) `LeafCu` of the children.
+    /// Heterogeneous children (any field differs) are rejected with
+    /// [`MergeError::ChildrenDiverge`]; non-leaf children are rejected
+    /// with [`MergeError::ChildNotLeaf`].
+    ///
+    /// The full-payload equality is the P1 codex fix on PR #170 line
+    /// 393: the prior implementation compared only `mode` + `basin_idx`,
+    /// which silently dropped per-mode payload when the four children
+    /// carried different `delta` / `merge_dir` / `escape_idx` values.
     ///
     /// Note: this method does NOT compact the arena — the child nodes
     /// remain allocated and orphaned. A full GC pass (out of scope for
@@ -389,7 +432,11 @@ impl Ctu {
             match merged {
                 None => merged = Some(leaf),
                 Some(prev) => {
-                    if prev.mode != leaf.mode || prev.basin_idx != leaf.basin_idx {
+                    // Full LeafCu equality (mode + basin_idx + per-mode
+                    // payload). `PartialEq` on LeafCu compares every
+                    // field; any divergence in delta / merge_dir /
+                    // escape_idx therefore surfaces as ChildrenDiverge.
+                    if prev != leaf {
                         return Err(MergeError::ChildrenDiverge);
                     }
                 }
@@ -414,6 +461,10 @@ pub enum SplitError {
     /// The target node was already a 4-way split, not a leaf. Splits
     /// only operate on leaves; recurse into the children to split deeper.
     NotALeaf,
+    /// The target node is not reachable from `NodeIdx::ROOT` (e.g. an
+    /// orphaned node left behind by a prior `merge`). Returned by
+    /// [`Ctu::split`] when [`Ctu::depth_of`] can't locate the target.
+    NodeNotReachable,
     /// The split would push the quad-tree past [`MAX_SPLIT_DEPTH`].
     MaxSplitDepthReached(MaxSplitDepthReached),
 }
@@ -474,7 +525,7 @@ mod tests {
     #[test]
     fn split_root_yields_four_children() {
         let mut ctu = Ctu::new_skip(0, 0, 1, 7);
-        let children = ctu.split(NodeIdx::ROOT, 0).expect("split should succeed");
+        let children = ctu.split(NodeIdx::ROOT).expect("split should succeed");
         assert_eq!(children.len(), 4);
         assert_eq!(ctu.split_depth, 1);
         assert_eq!(ctu.arena.len(), 5); // root + 4 children
@@ -496,8 +547,15 @@ mod tests {
 
     #[test]
     fn split_at_max_depth_rejects() {
+        // Navigate the tree down to a depth-3 leaf, then try to split it.
+        // Depth is computed from the tree (P2 codex fix), so callers can't
+        // bypass the cap with a stale depth claim.
         let mut ctu = Ctu::new_skip(0, 0, 1, 0);
-        let err = ctu.split(NodeIdx::ROOT, MAX_SPLIT_DEPTH).unwrap_err();
+        let l1 = ctu.split(NodeIdx::ROOT).unwrap()[0];
+        let l2 = ctu.split(l1).unwrap()[0];
+        let l3 = ctu.split(l2).unwrap()[0];
+        assert_eq!(ctu.depth_of(l3), Some(3));
+        let err = ctu.split(l3).unwrap_err();
         match err {
             SplitError::MaxSplitDepthReached(info) => {
                 assert_eq!(info.depth, MAX_SPLIT_DEPTH);
@@ -505,23 +563,36 @@ mod tests {
             }
             _ => panic!("expected MaxSplitDepthReached, got {err:?}"),
         }
-        // Arena untouched
-        assert_eq!(ctu.arena.len(), 1);
-        assert_eq!(ctu.split_depth, 0);
+        assert_eq!(ctu.split_depth, MAX_SPLIT_DEPTH);
+    }
+
+    #[test]
+    fn split_unreachable_node_rejects() {
+        // A node still inside the arena but not reachable from root (e.g.
+        // orphaned post-merge) yields NodeNotReachable instead of panicking
+        // on the arena overflow. P2 codex fix.
+        let mut ctu = Ctu::new_skip(0, 0, 1, 0);
+        let children = ctu.split(NodeIdx::ROOT).unwrap();
+        // Merge collapses root back to a leaf — the four child entries
+        // remain in the arena but are no longer linked from root.
+        ctu.merge(NodeIdx::ROOT).unwrap();
+        let orphan = children[0];
+        let err = ctu.split(orphan).unwrap_err();
+        assert_eq!(err, SplitError::NodeNotReachable);
     }
 
     #[test]
     fn split_already_split_node_rejects() {
         let mut ctu = Ctu::new_skip(0, 0, 1, 0);
-        ctu.split(NodeIdx::ROOT, 0).unwrap();
-        let err = ctu.split(NodeIdx::ROOT, 0).unwrap_err();
+        ctu.split(NodeIdx::ROOT).unwrap();
+        let err = ctu.split(NodeIdx::ROOT).unwrap_err();
         assert_eq!(err, SplitError::NotALeaf);
     }
 
     #[test]
     fn merge_homogeneous_children_collapses() {
         let mut ctu = Ctu::new_skip(0, 0, 1, 13);
-        ctu.split(NodeIdx::ROOT, 0).unwrap();
+        ctu.split(NodeIdx::ROOT).unwrap();
         ctu.merge(NodeIdx::ROOT).expect("homogeneous merge ok");
         match ctu.arena.get(NodeIdx::ROOT) {
             CtuPartition::Leaf(leaf) => {
@@ -535,7 +606,7 @@ mod tests {
     #[test]
     fn merge_heterogeneous_children_rejects() {
         let mut ctu = Ctu::new_skip(0, 0, 1, 5);
-        let children = ctu.split(NodeIdx::ROOT, 0).unwrap();
+        let children = ctu.split(NodeIdx::ROOT).unwrap();
         // Swap one child to a different mode
         *ctu.arena.get_mut(children[2]) = CtuPartition::Leaf(LeafCu::delta(5, 7));
         let err = ctu.merge(NodeIdx::ROOT).unwrap_err();
@@ -545,9 +616,9 @@ mod tests {
     #[test]
     fn merge_split_child_rejects() {
         let mut ctu = Ctu::new_skip(0, 0, 1, 0);
-        let children = ctu.split(NodeIdx::ROOT, 0).unwrap();
+        let children = ctu.split(NodeIdx::ROOT).unwrap();
         // Re-split one of the children
-        ctu.split(children[0], 1).unwrap();
+        ctu.split(children[0]).unwrap();
         let err = ctu.merge(NodeIdx::ROOT).unwrap_err();
         assert_eq!(err, MergeError::ChildNotLeaf);
     }
@@ -585,23 +656,96 @@ mod tests {
     #[test]
     fn arena_capacity_bound_85() {
         // Fully split to depth 3 and verify total node count = 85.
+        // depth 0 → 1 node; +4 = 5 (d1); +16 = 21 (d2); +64 = 85 (d3).
+        // depth_of is consulted internally per split, so this exercises
+        // both the depth-cap check and the arena cap together.
         let mut ctu = Ctu::new_skip(0, 0, 1, 0);
-        // depth 0 → 1 node
-        // depth 1 → +4 = 5
-        // depth 2 → +16 = 21
-        // depth 3 → +64 = 85
-        fn recursive_split(ctu: &mut Ctu, node: NodeIdx, depth: u8) {
-            if depth >= MAX_SPLIT_DEPTH {
+        fn recursive_split(ctu: &mut Ctu, node: NodeIdx) {
+            let d = ctu.depth_of(node).expect("reachable");
+            if d >= MAX_SPLIT_DEPTH {
                 return;
             }
-            let children = ctu.split(node, depth).expect("split ok");
+            let children = ctu.split(node).expect("split ok");
             for &c in &children {
-                recursive_split(ctu, c, depth + 1);
+                recursive_split(ctu, c);
             }
         }
-        recursive_split(&mut ctu, NodeIdx::ROOT, 0);
+        recursive_split(&mut ctu, NodeIdx::ROOT);
         assert_eq!(ctu.arena.len(), MAX_QUAD_TREE_NODES);
         assert_eq!(ctu.split_depth, MAX_SPLIT_DEPTH);
+    }
+
+    #[test]
+    #[should_panic(expected = "tier must be in 1..=4")]
+    fn new_skip_rejects_tier_5() {
+        // P2 codex fix: tier > 4 panics at construction instead of
+        // silently entering the codec state. Pinning the message text
+        // ensures the assert remains explicit.
+        let _ = Ctu::new_skip(0, 0, 5, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "tier must be in 1..=4")]
+    fn new_skip_rejects_tier_0() {
+        let _ = Ctu::new_skip(0, 0, 0, 0);
+    }
+
+    #[test]
+    fn merge_diverging_delta_payloads_rejects() {
+        // P1 codex fix: prior implementation compared only mode +
+        // basin_idx. Now Delta children with different δ values are
+        // rejected; the previously-silent payload loss is gone.
+        let mut ctu = Ctu::new_skip(0, 0, 1, 9);
+        let children = ctu.split(NodeIdx::ROOT).unwrap();
+        // Same mode (Delta) and basin_idx, but different δ values.
+        *ctu.arena.get_mut(children[0]) = CtuPartition::Leaf(LeafCu::delta(9, 0x11));
+        *ctu.arena.get_mut(children[1]) = CtuPartition::Leaf(LeafCu::delta(9, 0x22));
+        *ctu.arena.get_mut(children[2]) = CtuPartition::Leaf(LeafCu::delta(9, 0x33));
+        *ctu.arena.get_mut(children[3]) = CtuPartition::Leaf(LeafCu::delta(9, 0x44));
+        let err = ctu.merge(NodeIdx::ROOT).unwrap_err();
+        assert_eq!(err, MergeError::ChildrenDiverge);
+    }
+
+    #[test]
+    fn merge_diverging_merge_dirs_rejects() {
+        let mut ctu = Ctu::new_skip(0, 0, 1, 5);
+        let children = ctu.split(NodeIdx::ROOT).unwrap();
+        *ctu.arena.get_mut(children[0]) = CtuPartition::Leaf(LeafCu::merge(5, MergeDir::North));
+        *ctu.arena.get_mut(children[1]) = CtuPartition::Leaf(LeafCu::merge(5, MergeDir::East));
+        *ctu.arena.get_mut(children[2]) = CtuPartition::Leaf(LeafCu::merge(5, MergeDir::West));
+        *ctu.arena.get_mut(children[3]) = CtuPartition::Leaf(LeafCu::merge(5, MergeDir::South));
+        assert_eq!(ctu.merge(NodeIdx::ROOT).unwrap_err(), MergeError::ChildrenDiverge);
+    }
+
+    #[test]
+    fn merge_diverging_escape_idx_rejects() {
+        let mut ctu = Ctu::new_skip(0, 0, 1, 1);
+        let children = ctu.split(NodeIdx::ROOT).unwrap();
+        *ctu.arena.get_mut(children[0]) = CtuPartition::Leaf(LeafCu::escape(1, 100));
+        *ctu.arena.get_mut(children[1]) = CtuPartition::Leaf(LeafCu::escape(1, 101));
+        *ctu.arena.get_mut(children[2]) = CtuPartition::Leaf(LeafCu::escape(1, 102));
+        *ctu.arena.get_mut(children[3]) = CtuPartition::Leaf(LeafCu::escape(1, 103));
+        assert_eq!(ctu.merge(NodeIdx::ROOT).unwrap_err(), MergeError::ChildrenDiverge);
+    }
+
+    #[test]
+    fn merge_identical_delta_payloads_collapses() {
+        // Symmetric to the divergence tests above: identical Delta
+        // children DO merge, preserving the unified payload.
+        let mut ctu = Ctu::new_skip(0, 0, 1, 3);
+        let children = ctu.split(NodeIdx::ROOT).unwrap();
+        for &c in &children {
+            *ctu.arena.get_mut(c) = CtuPartition::Leaf(LeafCu::delta(3, 0x77));
+        }
+        ctu.merge(NodeIdx::ROOT).expect("identical-delta merge ok");
+        match ctu.arena.get(NodeIdx::ROOT) {
+            CtuPartition::Leaf(leaf) => {
+                assert_eq!(leaf.mode, CellMode::Delta);
+                assert_eq!(leaf.basin_idx, 3);
+                assert_eq!(leaf.delta, Some(0x77));
+            }
+            CtuPartition::Split(_) => panic!("should be merged"),
+        }
     }
 
     #[test]
