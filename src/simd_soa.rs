@@ -1,22 +1,22 @@
-//! SoA-shaped SIMD substrate primitives (PR-X1).
+//! SoA-shaped SIMD substrate carriers (PR-X1).
 //!
 //! Lives at the crate root under `crate::simd_soa::*` and is re-exported
 //! through `crate::simd::*` per the W1a consumer contract. This is the
-//! canonical home for SoA-of-bytes / multi-lane column carriers and the
-//! const-size chunk-walking helpers that SIMD-staged inner loops use.
+//! canonical home for SoA-of-bytes / multi-lane column carriers.
+//!
+//! Generic slice / chunk helpers (`array_chunks`, `array_chunks_checked`)
+//! live in `crate::simd_ops` — they're operations, not carriers.
 //!
 //! # What lives here
 //!
 //! - [`MultiLaneColumn`] — `Arc<[u8]>` carrier with typed-width chunk iters
-//! - [`array_chunks`] / [`array_chunks_checked`] — generic const-size
-//!   non-overlapping `&[T] → impl Iterator<Item = &[T; N]>` helpers
 //!
 //! # Layering
 //!
 //! This module is **layout-only**. No `#[target_feature]`, no per-arch
 //! imports, no raw intrinsics. The SIMD register load happens inside the
 //! consumer's loop using `crate::simd::F32x16::from_array` etc. The
-//! `simd.rs` dispatcher re-exports these primitives via `pub use
+//! `simd.rs` dispatcher re-exports these carriers via `pub use
 //! crate::simd_soa::{…};` so consumers always go through
 //! `use ndarray::simd::*;`.
 //!
@@ -25,13 +25,9 @@
 //! These types are layout-only. No distance-aware API. See
 //! `.claude/knowledge/cognitive-distance-typing.md` (no-umbrella rule).
 //!
-//! # Design references
+//! # Design reference
 //!
-//! - `.claude/knowledge/pr-x1-design.md` § "1. `MultiLaneColumn`"
-//! - `.claude/knowledge/pr-x1-design.md` § "3. `array_window`" (the
-//!   singular-window sketch superseded by the iterator form here; the
-//!   name landed as `array_chunks` to avoid collision with std's
-//!   nightly overlapping `slice::array_windows`).
+//! `.claude/knowledge/pr-x1-design.md` § "1. `MultiLaneColumn`".
 
 use std::sync::Arc;
 
@@ -175,77 +171,6 @@ impl MultiLaneColumn {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// array_chunks — generic non-overlapping const-size chunk helpers
-// ════════════════════════════════════════════════════════════════════
-//
-// Naming: `array_chunks` (NOT `array_windows`) because:
-// - `std::slice::array_windows::<N>()` (nightly) is the **overlapping**
-//   variant, already referenced in src/simd.rs comments.
-// - These helpers are the **non-overlapping** variant, matching
-//   `std::slice::ArrayChunks` / stable `slice::as_chunks`.
-
-/// Walk `data` as a sequence of non-overlapping const-size windows.
-///
-/// Returns an iterator over `&[T; N]` references into `data`. The tail
-/// (`data.len() % N` items) is discarded; use [`array_chunks_checked`] to
-/// fail-fast when the length is not a multiple of `N`.
-///
-/// Zero-cost: this is a thin wrapper around [`slice::as_chunks`] that pins
-/// the chunk size at the call site for type inference.
-///
-/// # Examples
-///
-/// ```
-/// use ndarray::simd::array_chunks;
-/// let data: Vec<u8> = (0..16).collect();
-/// let windows: Vec<&[u8; 4]> = array_chunks::<u8, 4>(&data).collect();
-/// assert_eq!(windows.len(), 4);
-/// assert_eq!(windows[0], &[0, 1, 2, 3]);
-/// assert_eq!(windows[3], &[12, 13, 14, 15]);
-/// ```
-///
-/// # Examples — tail discarded
-///
-/// ```
-/// use ndarray::simd::array_chunks;
-/// let data: Vec<u8> = (0..7).collect();
-/// let windows: Vec<&[u8; 4]> = array_chunks::<u8, 4>(&data).collect();
-/// assert_eq!(windows.len(), 1);
-/// ```
-#[inline]
-pub fn array_chunks<T, const N: usize>(data: &[T]) -> impl Iterator<Item = &[T; N]> + '_ {
-    data.as_chunks::<N>().0.iter()
-}
-
-/// Walk `data` as `&[T; N]` windows, returning `Err(())` if `data.len()`
-/// is not a multiple of `N`.
-///
-/// Strict variant of [`array_chunks`]: the consumer asserts up front that
-/// the buffer is lane-aligned and wants the error surfaced rather than
-/// silently truncating.
-///
-/// # Examples
-///
-/// ```
-/// use ndarray::simd::array_chunks_checked;
-/// let data: Vec<u8> = (0..16).collect();
-/// let it = array_chunks_checked::<u8, 4>(&data).expect("16 is a multiple of 4");
-/// assert_eq!(it.count(), 4);
-///
-/// let bad: Vec<u8> = (0..7).collect();
-/// assert!(array_chunks_checked::<u8, 4>(&bad).is_err());
-/// ```
-#[inline]
-pub fn array_chunks_checked<T, const N: usize>(
-    data: &[T],
-) -> Result<impl Iterator<Item = &[T; N]> + '_, ()> {
-    if data.len() % N != 0 {
-        return Err(());
-    }
-    Ok(array_chunks::<T, N>(data))
-}
-
-// ════════════════════════════════════════════════════════════════════
 // Tests
 // ════════════════════════════════════════════════════════════════════
 
@@ -351,47 +276,5 @@ mod tests {
     fn multilane_column_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<MultiLaneColumn>();
-    }
-
-    // ---- array_chunks ----
-
-    #[test]
-    fn array_chunks_4_over_16() {
-        let data: Vec<u8> = (0u8..16).collect();
-        let windows: Vec<&[u8; 4]> = array_chunks::<u8, 4>(&data).collect();
-        assert_eq!(windows.len(), 4);
-        assert_eq!(windows[0], &[0, 1, 2, 3]);
-        assert_eq!(windows[1], &[4, 5, 6, 7]);
-        assert_eq!(windows[2], &[8, 9, 10, 11]);
-        assert_eq!(windows[3], &[12, 13, 14, 15]);
-    }
-
-    #[test]
-    fn array_chunks_drops_tail() {
-        let data: Vec<u8> = (0u8..7).collect();
-        let windows: Vec<&[u8; 4]> = array_chunks::<u8, 4>(&data).collect();
-        assert_eq!(windows.len(), 1);
-        assert_eq!(windows[0], &[0, 1, 2, 3]);
-    }
-
-    #[test]
-    fn array_chunks_checked_rejects_mismatch() {
-        assert!(array_chunks_checked::<u8, 4>(&[0u8; 7]).is_err());
-        assert!(array_chunks_checked::<u8, 4>(&[0u8; 5]).is_err());
-        assert!(array_chunks_checked::<u8, 4>(&[0u8; 1]).is_err());
-    }
-
-    #[test]
-    fn array_chunks_checked_accepts_aligned() {
-        let data = [0u8; 16];
-        let it = array_chunks_checked::<u8, 4>(&data).expect("16 is a multiple of 4");
-        assert_eq!(it.count(), 4);
-    }
-
-    #[test]
-    fn array_chunks_empty_buffer() {
-        assert_eq!(array_chunks::<u8, 4>(&[]).count(), 0);
-        let it = array_chunks_checked::<u8, 4>(&[]).expect("0 % 4 == 0, should be Ok");
-        assert_eq!(it.count(), 0);
     }
 }
