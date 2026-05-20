@@ -2256,6 +2256,14 @@ pub type i16x32 = I16x32;
 #[allow(non_camel_case_types)]
 pub type i16x16 = I16x16;
 
+// 256-bit int lanes — added 2026-05-20 missing-lanes sweep. These types
+// don't have native `__m256i` wrappers in this module yet; re-exported
+// from `simd_avx2.rs` (where they live as scalar-storage polyfills via
+// the `avx2_int_type!` macro) so the v4 dispatch arm in `simd.rs` can
+// surface them through `crate::simd::*` with the same names the v3 arm
+// uses. Native AVX2 `__m256i` upgrades for these are TD-SIMD-3.
+pub use crate::simd_avx2::{i32x8, i64x4, u16x16, u32x8, u64x4, I32x8, I64x4, U16x16, U32x8, U64x4};
+
 // ============================================================================
 // BF16 conversion wrappers — AVX-512 BF16 hardware instructions
 // ============================================================================

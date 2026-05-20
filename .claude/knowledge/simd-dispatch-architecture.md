@@ -150,19 +150,19 @@ tracked as TD-SIMD-3.)
 | `U8x64` | ✅ `__m512i` | 🟠 `[u8; 64]` polyfill | ❌ | 🔵 | ✅ |
 | `U8x32` | ✅ `__m256i` | ✅ `__m256i` | ❌ | 🔵 | ✅ |
 | `U16x32` | ✅ `__m512i` | 🟠 `[u16; 32]` polyfill | ❌ | 🔵 | ✅ |
-| `U16x16` | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `U16x16` | 🟠 (via `simd_avx2`) | 🟠 `[u16; 16]` polyfill | ❌ | 🔵 `core::simd::u16x16` | 🟠 |
 | `U32x16` | ✅ `__m512i` | 🟠 `[u32; 16]` polyfill | ❌ | 🔵 | ✅ |
-| `U32x8` | ❌ | ❌ | ❌ | 🔵 `core::simd::u32x8` | ❌ |
+| `U32x8` | 🟠 (via `simd_avx2`) | 🟠 `[u32; 8]` polyfill | ❌ | 🔵 `core::simd::u32x8` | 🟠 |
 | `U64x8` | ✅ `__m512i` | 🟠 `[u64; 8]` polyfill | ❌ | 🔵 | ✅ |
-| `U64x4` | ❌ | ❌ | ❌ | 🔵 `core::simd::u64x4` | ❌ |
+| `U64x4` | 🟠 (via `simd_avx2`) | 🟠 `[u64; 4]` polyfill | ❌ | 🔵 `core::simd::u64x4` | 🟠 |
 | `I8x32` | ✅ `__m256i` | ✅ `__m256i` (in `simd_avx512`) | ❌ | 🔵 | ✅ |
 | `I8x64` | ✅ `__m512i` | 🟠 `[i8; 64]` polyfill | ❌ | 🔵 | ✅ |
 | `I16x16` | ✅ `__m256i` | ✅ `__m256i` (in `simd_avx512`) | ❌ | 🔵 | ✅ |
 | `I16x32` | ✅ `__m512i` | 🟠 `[i16; 32]` polyfill | ❌ | 🔵 | ✅ |
 | `I32x16` | ✅ `__m512i` | 🟠 `[i32; 16]` polyfill | ❌ | 🔵 | ✅ |
-| `I32x8` | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `I32x8` | 🟠 (via `simd_avx2`) | 🟠 `[i32; 8]` polyfill | ❌ | 🔵 `core::simd::i32x8` | 🟠 |
 | `I64x8` | ✅ `__m512i` | 🟠 `[i64; 8]` polyfill | ❌ | 🔵 | ✅ |
-| `I64x4` | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `I64x4` | 🟠 (via `simd_avx2`) | 🟠 `[i64; 4]` polyfill | ❌ | 🔵 `core::simd::i64x4` | 🟠 |
 | `BF16x8` | ✅ `__m128bh` | ❌ | ❌ | 🔵 | ✅ |
 | `BF16x16` | ✅ `__m256bh` | ❌ | ❌ | 🔵 | ✅ |
 | `F16x16` | ❌ | 🟠 `[u16; 16]` polyfill (`simd_half`) | 🟠 `[u16; 16]` polyfill (`simd_half`) | 🔵 | ✅ |

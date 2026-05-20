@@ -532,6 +532,16 @@ impl_int_type!(I8x32, i8, 32, 0i8);
 impl_int_type!(I16x32, i16, 32, 0i16);
 impl_int_type!(I16x16, i16, 16, 0i16);
 
+// 256-bit int lanes — scalar polyfills filling the gap surfaced by the
+// 2026-05-20 matrix audit. Mirror the additions in `src/simd_avx2.rs`
+// (via the `avx2_int_type!` macro) so consumers on every backend reach
+// the same type names through `crate::simd::*`.
+impl_int_type!(U16x16, u16, 16, 0u16);
+impl_int_type!(U32x8, u32, 8, 0u32);
+impl_int_type!(U64x4, u64, 4, 0u64);
+impl_int_type!(I32x8, i32, 8, 0i32);
+impl_int_type!(I64x4, i64, 4, 0i64);
+
 // I8x64 / I8x32 / I16x32 / I16x16 — AVX-512BW-style methods (scalar shape)
 impl I8x64 {
     #[inline(always)]
@@ -1284,3 +1294,15 @@ pub type i8x32 = I8x32;
 pub type i16x32 = I16x32;
 #[allow(non_camel_case_types)]
 pub type i16x16 = I16x16;
+// Lowercase aliases for the 256-bit polyfills added in the 2026-05-20
+// missing-lanes sweep.
+#[allow(non_camel_case_types)]
+pub type u16x16 = U16x16;
+#[allow(non_camel_case_types)]
+pub type u32x8 = U32x8;
+#[allow(non_camel_case_types)]
+pub type u64x4 = U64x4;
+#[allow(non_camel_case_types)]
+pub type i32x8 = I32x8;
+#[allow(non_camel_case_types)]
+pub type i64x4 = I64x4;
