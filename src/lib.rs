@@ -266,6 +266,24 @@ pub mod simd_amx;
 #[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
 pub mod simd_neon;
 
+// NEON tier scaffolds — Phase 3 of the SIMD integration plan
+// (.claude/knowledge/simd-dispatch-architecture.md § 6).
+//
+// Each file documents the silicon, the runtime + compile-time detection
+// path, and stubs out the F16 / BF16 wrappers with intrinsic maps for
+// future implementation. Current state: scaffolds only — the actual
+// NEON code still lives in `simd_neon.rs::aarch64_simd` and gets
+// migrated tier-by-tier as the Phase 3 sprints land.
+#[cfg(all(target_arch = "aarch64", feature = "std"))]
+#[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
+pub mod simd_neon_baseline;
+#[cfg(all(target_arch = "aarch64", feature = "std"))]
+#[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
+pub mod simd_neon_dotprod;
+#[cfg(all(target_arch = "aarch64", feature = "std"))]
+#[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
+pub mod simd_neon_bf16;
+
 #[cfg(feature = "std")]
 #[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
 pub mod simd_wasm;
