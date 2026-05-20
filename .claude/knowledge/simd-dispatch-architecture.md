@@ -57,8 +57,13 @@ that exactly one arm matches. The order below is the source-of-truth
 ranking the compiler walks:
 
 ```rust
-// 1. Explicit portable-SIMD polyfill (nightly + opt-in feature)
-#[cfg(all(feature = "nightly-simd", any(target_arch = "x86_64", target_arch = "aarch64")))]
+// 1. Explicit portable-SIMD polyfill (nightly + opt-in feature).
+//    No `target_arch` constraint — `core::simd` is portable, so this
+//    arm is the one true backend on wasm32 / riscv / any other target
+//    as soon as `nightly-simd` is on. Keeping it unconditional on
+//    `feature = "nightly-simd"` is what makes the `not(feature =
+//    "nightly-simd")` exclusion on every other arm sound.
+#[cfg(feature = "nightly-simd")]
 pub use crate::simd_nightly::{F32x16, F64x8, U8x32, U8x64, U16x32, U32x16, U64x8, I8x32, I8x64, I16x16, I16x32, I32x16, I64x8, F32Mask16, F64Mask8, BF16x16, BF16x8};
 
 // 2. AVX-512 (target_feature = "avx512f"; set by `v4` and `native` configs on AVX-512 hosts)
@@ -73,8 +78,14 @@ pub use crate::simd_avx2::{...};
 #[cfg(all(target_arch = "aarch64", not(feature = "nightly-simd")))]
 pub use crate::simd_neon::aarch64_simd::{...};
 
-// 5. Scalar fallback (everything else: wasm32, riscv, x86_64 without AVX2, etc.)
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", feature = "nightly-simd")))]
+// 5. Scalar fallback (everything else: wasm32, riscv, x86_64 without
+//    AVX2, etc.). The predicate is the negation of arms 1-4 so that
+//    *exactly one* arm matches on every (target, feature) pair.
+#[cfg(not(any(
+    feature = "nightly-simd",
+    all(target_arch = "x86_64", target_feature = "avx2"),
+    target_arch = "aarch64",
+)))]
 pub use scalar::{...};
 ```
 
@@ -137,7 +148,7 @@ scalar polyfill via `core::simd`, ❌ missing, ⛔ N/A for this arch.
 | `I16x32` | ✅ `__m512i` | ❌ | ❌ | 🔵 | ✅ |
 | `I32x16` | ✅ `__m512i` | ❌ | ❌ | 🔵 | ✅ |
 | `I64x8` | ✅ `__m512i` | ❌ | ❌ | 🔵 | ✅ |
-| `BF16x8` | ✅ `__m128bh` | ❌ | ❌ | ❌ | ✅ |
+| `BF16x8` | ✅ `__m128bh` | ❌ | ❌ | 🔵 | ✅ |
 | `BF16x16` | ✅ `__m256bh` | ❌ | ❌ | 🔵 | ✅ |
 | `F16x16` | ❌ | 🟡 `F16Scaler` (scalar) | ❌ | 🔵 | ✅ |
 | `F32Mask16` | ✅ `__mmask16` | ✅ `u16` bitmask | ✅ `u16` bitmask | 🔵 | ✅ |
