@@ -1,35 +1,43 @@
-//! Multi-lane typed column view over a shared byte backing store (PR-X1).
+//! SoA-shaped SIMD substrate primitives (PR-X1).
 //!
-//! [`MultiLaneColumn`] wraps one `Arc<[u8]>` backing buffer and provides
-//! zero-copy typed lane views at different SIMD widths. Consumers pick the
-//! lane width per operation; the backing store is never copied.
+//! Lives at the crate root under `crate::simd_soa::*` and is re-exported
+//! through `crate::simd::*` per the W1a consumer contract. This is the
+//! canonical home for SoA-of-bytes / multi-lane column carriers and the
+//! const-size chunk-walking helpers that SIMD-staged inner loops use.
 //!
-//! This module is **layout-only**. No `#[target_feature]`, no per-arch
-//! imports, no raw intrinsics. The SIMD register load happens inside the
-//! consumer's loop using `crate::simd::F32x16::from_array` etc.
+//! # What lives here
+//!
+//! - [`MultiLaneColumn`] — `Arc<[u8]>` carrier with typed-width chunk iters
+//! - [`array_chunks`] / [`array_chunks_checked`] — generic const-size
+//!   non-overlapping `&[T] → impl Iterator<Item = &[T; N]>` helpers
 //!
 //! # Layering
 //!
-//! Lives in `hpc::column`; the `crate::simd::*` re-export lands in the PR-X1
-//! re-export sweep (see `.claude/knowledge/pr-x1-design.md` § 4). Doctests in
-//! this file therefore use the canonical `ndarray::hpc::column` path until
-//! the sweep ships.
+//! This module is **layout-only**. No `#[target_feature]`, no per-arch
+//! imports, no raw intrinsics. The SIMD register load happens inside the
+//! consumer's loop using `crate::simd::F32x16::from_array` etc. The
+//! `simd.rs` dispatcher re-exports these primitives via `pub use
+//! crate::simd_soa::{…};` so consumers always go through
+//! `use ndarray::simd::*;`.
 //!
 //! # Distance typing
 //!
-//! This type is layout-only. No distance-aware API. See
+//! These types are layout-only. No distance-aware API. See
 //! `.claude/knowledge/cognitive-distance-typing.md` (no-umbrella rule).
 //!
-//! # Design reference
+//! # Design references
 //!
-//! `.claude/knowledge/pr-x1-design.md` § "1. `MultiLaneColumn`". The
-//! `iter_*_bytes` family deliberately returns `&[u8; 64]` "shape" iterators
-//! (the consumer applies the typed reinterpret at the call site) — this is
-//! the maintainer-blessed deviation from the design doc's typed-iterator
-//! sketch, centralising the one allowed `unsafe` cast at the consumer rather
-//! than per-iterator here.
+//! - `.claude/knowledge/pr-x1-design.md` § "1. `MultiLaneColumn`"
+//! - `.claude/knowledge/pr-x1-design.md` § "3. `array_window`" (the
+//!   singular-window sketch superseded by the iterator form here; the
+//!   name landed as `array_chunks` to avoid collision with std's
+//!   nightly overlapping `slice::array_windows`).
 
 use std::sync::Arc;
+
+// ════════════════════════════════════════════════════════════════════
+// MultiLaneColumn — Arc<[u8]> carrier with typed lane-width chunk iters
+// ════════════════════════════════════════════════════════════════════
 
 /// Multi-lane (N-wide) typed column view over a shared `Arc<[u8]>` buffer.
 ///
@@ -45,7 +53,7 @@ use std::sync::Arc;
 /// # Examples
 ///
 /// ```
-/// use ndarray::hpc::column::MultiLaneColumn;
+/// use ndarray::simd::MultiLaneColumn;
 /// use std::sync::Arc;
 ///
 /// let data: Arc<[u8]> = Arc::from(vec![0u8; 128]);
@@ -70,7 +78,7 @@ impl MultiLaneColumn {
     /// # Examples
     ///
     /// ```
-    /// use ndarray::hpc::column::MultiLaneColumn;
+    /// use ndarray::simd::MultiLaneColumn;
     /// use std::sync::Arc;
     ///
     /// let ok: Arc<[u8]> = Arc::from(vec![1u8; 64]);
@@ -132,7 +140,7 @@ impl MultiLaneColumn {
     /// # Examples
     ///
     /// ```
-    /// use ndarray::hpc::column::MultiLaneColumn;
+    /// use ndarray::simd::MultiLaneColumn;
     /// use std::sync::Arc;
     ///
     /// let data: Arc<[u8]> = Arc::from((0u8..128).collect::<Vec<_>>());
@@ -166,15 +174,87 @@ impl MultiLaneColumn {
     }
 }
 
-// ============================================================================
-// Tests — commented-out final form
-// ============================================================================
+// ════════════════════════════════════════════════════════════════════
+// array_chunks — generic non-overlapping const-size chunk helpers
+// ════════════════════════════════════════════════════════════════════
+//
+// Naming: `array_chunks` (NOT `array_windows`) because:
+// - `std::slice::array_windows::<N>()` (nightly) is the **overlapping**
+//   variant, already referenced in src/simd.rs comments.
+// - These helpers are the **non-overlapping** variant, matching
+//   `std::slice::ArrayChunks` / stable `slice::as_chunks`.
+
+/// Walk `data` as a sequence of non-overlapping const-size windows.
+///
+/// Returns an iterator over `&[T; N]` references into `data`. The tail
+/// (`data.len() % N` items) is discarded; use [`array_chunks_checked`] to
+/// fail-fast when the length is not a multiple of `N`.
+///
+/// Zero-cost: this is a thin wrapper around [`slice::as_chunks`] that pins
+/// the chunk size at the call site for type inference.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::array_chunks;
+/// let data: Vec<u8> = (0..16).collect();
+/// let windows: Vec<&[u8; 4]> = array_chunks::<u8, 4>(&data).collect();
+/// assert_eq!(windows.len(), 4);
+/// assert_eq!(windows[0], &[0, 1, 2, 3]);
+/// assert_eq!(windows[3], &[12, 13, 14, 15]);
+/// ```
+///
+/// # Examples — tail discarded
+///
+/// ```
+/// use ndarray::simd::array_chunks;
+/// let data: Vec<u8> = (0..7).collect();
+/// let windows: Vec<&[u8; 4]> = array_chunks::<u8, 4>(&data).collect();
+/// assert_eq!(windows.len(), 1);
+/// ```
+#[inline]
+pub fn array_chunks<T, const N: usize>(data: &[T]) -> impl Iterator<Item = &[T; N]> + '_ {
+    data.as_chunks::<N>().0.iter()
+}
+
+/// Walk `data` as `&[T; N]` windows, returning `Err(())` if `data.len()`
+/// is not a multiple of `N`.
+///
+/// Strict variant of [`array_chunks`]: the consumer asserts up front that
+/// the buffer is lane-aligned and wants the error surfaced rather than
+/// silently truncating.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::array_chunks_checked;
+/// let data: Vec<u8> = (0..16).collect();
+/// let it = array_chunks_checked::<u8, 4>(&data).expect("16 is a multiple of 4");
+/// assert_eq!(it.count(), 4);
+///
+/// let bad: Vec<u8> = (0..7).collect();
+/// assert!(array_chunks_checked::<u8, 4>(&bad).is_err());
+/// ```
+#[inline]
+pub fn array_chunks_checked<T, const N: usize>(
+    data: &[T],
+) -> Result<impl Iterator<Item = &[T; N]> + '_, ()> {
+    if data.len() % N != 0 {
+        return Err(());
+    }
+    Ok(array_chunks::<T, N>(data))
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Tests
+// ════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Construction with a 64-byte buffer succeeds; len_bytes round-trips.
+    // ---- MultiLaneColumn ----
+
     #[test]
     fn new_64byte_buffer_succeeds() {
         let col = MultiLaneColumn::new(Arc::from(vec![0u8; 64])).unwrap();
@@ -185,7 +265,6 @@ mod tests {
         assert_eq!(col.len_u64x8(), 1);
     }
 
-    /// Construction with a non-multiple-of-64 buffer returns Err.
     #[test]
     fn new_non_multiple_of_64_errors() {
         assert!(MultiLaneColumn::new(Arc::from(vec![0u8; 100])).is_err());
@@ -193,7 +272,6 @@ mod tests {
         assert!(MultiLaneColumn::new(Arc::from(vec![0u8; 65])).is_err());
     }
 
-    /// Empty buffer is accepted; is_empty == true; iterators yield 0 windows.
     #[test]
     fn empty_buffer_yields_zero_windows() {
         let col = MultiLaneColumn::new(Arc::from(vec![0u8; 0])).unwrap();
@@ -205,7 +283,6 @@ mod tests {
         assert_eq!(col.iter_u64x8_bytes().count(), 0);
     }
 
-    /// Two-chunk buffer yields exactly 2 windows of 64 bytes each.
     #[test]
     fn iter_u8x64_two_chunks() {
         let mut v = vec![0u8; 128];
@@ -221,13 +298,10 @@ mod tests {
         assert_eq!(windows[1][63], 127u8);
     }
 
-    /// Clone shares the same backing Arc (no copy).
     #[test]
     fn clone_shares_backing() {
         let col = MultiLaneColumn::new(Arc::from(vec![0u8; 64])).unwrap();
         let col2 = col.clone();
-        // Both columns reference the same underlying allocation: pointer equality
-        // is the observable contract without accessing private Arc internals.
         assert_eq!(
             col.as_bytes().as_ptr(),
             col2.as_bytes().as_ptr(),
@@ -235,8 +309,6 @@ mod tests {
         );
     }
 
-    /// Bytes-shape iterators all yield the same chunk count and content as
-    /// `iter_u8x64` — they are pure aliasing views, not separate buffers.
     #[test]
     fn bytes_shape_iterators_alias_u8x64() {
         let v: Vec<u8> = (0u8..192).collect();
@@ -252,8 +324,6 @@ mod tests {
         assert_eq!(f64_wins.len(), 3);
         assert_eq!(u64_wins.len(), 3);
 
-        // Each shape iterator yields references into the same backing bytes:
-        // pointer equality across the four iterators on every chunk.
         for i in 0..3 {
             assert_eq!(u8_wins[i].as_ptr(), f32_wins[i].as_ptr());
             assert_eq!(u8_wins[i].as_ptr(), f64_wins[i].as_ptr());
@@ -263,7 +333,6 @@ mod tests {
         }
     }
 
-    /// `as_bytes()` returns the full backing slice and aliases the Arc storage.
     #[test]
     fn as_bytes_returns_full_backing_slice() {
         let v: Vec<u8> = (0u8..64).collect();
@@ -278,12 +347,51 @@ mod tests {
         }
     }
 
-    /// Static assertion: `MultiLaneColumn` is `Send + Sync`, so it can cross
-    /// thread boundaries — required for cognitive-shader-stack multi-consumer
-    /// access patterns.
     #[test]
     fn multilane_column_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<MultiLaneColumn>();
+    }
+
+    // ---- array_chunks ----
+
+    #[test]
+    fn array_chunks_4_over_16() {
+        let data: Vec<u8> = (0u8..16).collect();
+        let windows: Vec<&[u8; 4]> = array_chunks::<u8, 4>(&data).collect();
+        assert_eq!(windows.len(), 4);
+        assert_eq!(windows[0], &[0, 1, 2, 3]);
+        assert_eq!(windows[1], &[4, 5, 6, 7]);
+        assert_eq!(windows[2], &[8, 9, 10, 11]);
+        assert_eq!(windows[3], &[12, 13, 14, 15]);
+    }
+
+    #[test]
+    fn array_chunks_drops_tail() {
+        let data: Vec<u8> = (0u8..7).collect();
+        let windows: Vec<&[u8; 4]> = array_chunks::<u8, 4>(&data).collect();
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0], &[0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn array_chunks_checked_rejects_mismatch() {
+        assert!(array_chunks_checked::<u8, 4>(&[0u8; 7]).is_err());
+        assert!(array_chunks_checked::<u8, 4>(&[0u8; 5]).is_err());
+        assert!(array_chunks_checked::<u8, 4>(&[0u8; 1]).is_err());
+    }
+
+    #[test]
+    fn array_chunks_checked_accepts_aligned() {
+        let data = [0u8; 16];
+        let it = array_chunks_checked::<u8, 4>(&data).expect("16 is a multiple of 4");
+        assert_eq!(it.count(), 4);
+    }
+
+    #[test]
+    fn array_chunks_empty_buffer() {
+        assert_eq!(array_chunks::<u8, 4>(&[]).count(), 0);
+        let it = array_chunks_checked::<u8, 4>(&[]).expect("0 % 4 == 0, should be Ok");
+        assert_eq!(it.count(), 0);
     }
 }
