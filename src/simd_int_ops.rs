@@ -78,6 +78,65 @@ pub fn dot_i16(a: &[i16], b: &[i16]) -> i64 {
 }
 
 // ────────────────────────────────────────────────────────────────────────
+// gemm_u8_i8 — agnostic u8 × i8 → i32 matrix multiply
+// ────────────────────────────────────────────────────────────────────────
+
+/// `C = A · B` where `A` is `M × K` `u8`, `B` is `K × N` `i8`, `C` is `M × N`
+/// `i32` (row-major, overwritten — not accumulated).
+///
+/// Agnostic consumer surface. Resolves at **compile time** to one kernel
+/// per the active `target_feature` set; consumers never branch on CPU
+/// capability and the chosen kernel is fully inlined at the call site.
+///
+/// Build matrix (additive, filled in as paths land):
+///
+/// | `target_feature`             | Kernel                                         |
+/// |------------------------------|------------------------------------------------|
+/// | `amx-int8` *(planned)*       | AMX `TDPBUSD` 16×16 tile (Sapphire/Granite)    |
+/// | `avxvnniint8` *(planned)*    | `VPDPBSSD` ymm (Arrow Lake / Granite Rapids)   |
+/// | `avx512vnni`                 | `VPDPBUSD` zmm (Cascade Lake → Zen 4 / SPR)    |
+/// | `neon,dotprod` *(planned)*   | NEON `SDOT` (A76+ / Apple M-series)            |
+/// | *(none)*                     | Scalar reference [`hpc::quantized::int8_gemm_i32`] |
+///
+/// The default `x86-64-v3` build (no VNNI) lands in the scalar arm —
+/// identical result to calling [`crate::hpc::quantized::int8_gemm_i32`]
+/// directly. To pick up VNNI, build with
+/// `--config .cargo/config-avx512.toml` (sets `target-cpu=x86-64-v4`,
+/// which enables `avx512vnni` on Cascade Lake or newer).
+///
+/// # Panics
+///
+/// Panics if the slice lengths are inconsistent with the given dimensions.
+#[inline]
+pub fn gemm_u8_i8(a: &[u8], b: &[i8], c: &mut [i32], m: usize, n: usize, k: usize) {
+    assert!(a.len() >= m * k, "gemm_u8_i8: a.len()={} < m*k={}", a.len(), m * k);
+    assert!(b.len() >= k * n, "gemm_u8_i8: b.len()={} < k*n={}", b.len(), k * n);
+    assert!(c.len() >= m * n, "gemm_u8_i8: c.len()={} < m*n={}", c.len(), m * n);
+
+    // Compile-time dispatch chain. Exactly one arm survives per build;
+    // the others are stripped by `#[cfg]` so the compiler emits a direct
+    // call to the chosen kernel with no runtime branch.
+
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512vnni"))]
+    {
+        // SAFETY: `target_feature = "avx512vnni"` at this site guarantees
+        // AVX-512F + VNNI + BW (the kernel's `#[target_feature(enable)]`
+        // set). The dispatcher is the safety invariant the kernel relies on.
+        unsafe { crate::hpc::vnni_gemm::int8_gemm_vnni_avx512(a, b, c, m, n, k) };
+        return;
+    }
+
+    // Fallback: scalar reference kernel. Always correct; same result the
+    // VNNI / AMX / SDOT paths produce when they land. Targets without an
+    // INT8 dot-product instruction (x86-64-v3 baseline, ARMv8.0 without
+    // dotprod, wasm32, riscv) reach this arm at compile time.
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512vnni")))]
+    {
+        crate::hpc::quantized::int8_gemm_i32(a, b, c, m, n, k);
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────
 // min_i8 / max_i8 — horizontal reduction
 // ────────────────────────────────────────────────────────────────────────
 
@@ -366,5 +425,80 @@ mod tests {
         let s: [i8; 0] = [];
         assert_eq!(min_i8(&s), i8::MAX);
         assert_eq!(max_i8(&s), i8::MIN);
+    }
+
+    // ── gemm_u8_i8 ────────────────────────────────────────────────────────
+
+    /// Independent scalar reference used to validate `gemm_u8_i8` against
+    /// the active compile-time dispatch arm (scalar or VNNI), without
+    /// going through `hpc::quantized::int8_gemm_i32` (which IS the scalar
+    /// arm — comparing against it on a v3 build would be tautological).
+    fn ref_gemm_u8_i8(a: &[u8], b: &[i8], m: usize, n: usize, k: usize) -> Vec<i32> {
+        let mut c = vec![0i32; m * n];
+        for i in 0..m {
+            for p in 0..k {
+                let av = a[i * k + p] as i32;
+                for j in 0..n {
+                    c[i * n + j] += av * b[p * n + j] as i32;
+                }
+            }
+        }
+        c
+    }
+
+    #[test]
+    fn gemm_u8_i8_4x4_identity() {
+        let m = 4;
+        let n = 4;
+        let k = 4;
+        let a: Vec<u8> = (1..=16).collect();
+        let b: Vec<i8> = vec![1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+        let expected = ref_gemm_u8_i8(&a, &b, m, n, k);
+        let mut c = vec![99i32; m * n];
+        gemm_u8_i8(&a, &b, &mut c, m, n, k);
+        assert_eq!(c, expected);
+    }
+
+    #[test]
+    fn gemm_u8_i8_rectangular_3x5x8() {
+        let m = 3;
+        let n = 5;
+        let k = 8;
+        let a: Vec<u8> = (0..m * k).map(|i| (i % 200) as u8).collect();
+        let b: Vec<i8> = (0..k * n).map(|i| (i % 100) as i8 - 50).collect();
+        let expected = ref_gemm_u8_i8(&a, &b, m, n, k);
+        let mut c = vec![0i32; m * n];
+        gemm_u8_i8(&a, &b, &mut c, m, n, k);
+        assert_eq!(c, expected);
+    }
+
+    #[test]
+    fn gemm_u8_i8_17x17_tail() {
+        // Exercises the VNNI tail-masking path on AVX-512 builds and the
+        // scalar fallback on v3 builds. Same expected output either way.
+        let m = 17;
+        let n = 17;
+        let k = 17;
+        let a: Vec<u8> = (0..m * k).map(|i| ((i * 7 + 3) % 256) as u8).collect();
+        let b: Vec<i8> = (0..k * n).map(|i| ((i * 11 + 5) % 256) as u8 as i8).collect();
+        let expected = ref_gemm_u8_i8(&a, &b, m, n, k);
+        let mut c = vec![0i32; m * n];
+        gemm_u8_i8(&a, &b, &mut c, m, n, k);
+        assert_eq!(c, expected);
+    }
+
+    #[test]
+    fn gemm_u8_i8_extreme_values() {
+        // u8 = 255, i8 alternating ±127 stresses i32 accumulation across
+        // the AVX-512 tail path and the scalar reference.
+        let m = 4;
+        let n = 4;
+        let k = 8;
+        let a = vec![255u8; m * k];
+        let b: Vec<i8> = (0..k * n).map(|i| if i % 2 == 0 { 127i8 } else { -128i8 }).collect();
+        let expected = ref_gemm_u8_i8(&a, &b, m, n, k);
+        let mut c = vec![0i32; m * n];
+        gemm_u8_i8(&a, &b, &mut c, m, n, k);
+        assert_eq!(c, expected);
     }
 }

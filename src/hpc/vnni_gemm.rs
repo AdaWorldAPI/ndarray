@@ -89,9 +89,20 @@ pub fn has_vnni() -> bool {
 ///     B[p+2,j+L], B[p+3,j+L]].
 ///   - We pre-pack B into VNNI layout: b_packed[p/4][j..j+16] where each i32
 ///     contains 4 bytes from consecutive rows.
+/// AVX-512 VNNI INT8 GEMM kernel — `pub(crate)` so the agnostic
+/// `simd_int_ops::gemm_u8_i8` surface can call it directly under a
+/// compile-time `target_feature = "avx512vnni"` gate, bypassing the
+/// per-call caps branch in [`int8_gemm_vnni`]. See § "compile-time
+/// dispatch table" in `.claude/knowledge/td-simd-integration-plan.md`.
+///
+/// # Safety
+///
+/// Caller must guarantee the CPU supports AVX-512F + AVX-512VNNI +
+/// AVX-512BW. Compile-time gating via `#[cfg(target_feature = …)]` at
+/// the call site is the standard contract.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f,avx512vnni,avx512bw")]
-unsafe fn int8_gemm_vnni_avx512(a: &[u8], b: &[i8], c: &mut [i32], m: usize, n: usize, k: usize) {
+pub(crate) unsafe fn int8_gemm_vnni_avx512(a: &[u8], b: &[i8], c: &mut [i32], m: usize, n: usize, k: usize) {
     use core::arch::x86_64::*;
 
     // Zero output
