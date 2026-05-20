@@ -198,10 +198,17 @@ pub const PREFERRED_I16_LANES: usize = 16;
 // x86_64: re-export based on tier
 // ============================================================================
 
-// Compile-time AVX-512 dispatch via target_feature.
-// With target-cpu=x86-64-v4 (.cargo/config.toml), avx512f is enabled
-// at compile time → all types use native __m512/__m512d/__m512i.
-// The 256-bit types (F32x8, F64x4) also live in simd_avx512 (__m256).
+// Compile-time SIMD dispatch via target_feature. The cargo config
+// chosen at build (.cargo/config.toml = v3 default / config-avx512.toml
+// = v4 / config-native.toml = native) sets the `target_feature` flags
+// that select exactly one arm below.
+//   * v3 / GitHub-CI default → `target_feature = "avx2"` only →
+//     simd_avx2 backend (F32x16 = two-half (f32x8, f32x8), int wrappers
+//     are scalar polyfills via the `avx2_int_type!` macro).
+//   * v4 (or native on AVX-512 host) → `target_feature = "avx512f"` →
+//     simd_avx512 backend with native __m512 / __m512d / __m512i.
+//   * aarch64 → simd_neon backend.
+//   * everything else (wasm32, riscv, etc.) → scalar fallback.
 
 // Note on the `nightly-simd` feature: it adds the `crate::simd_nightly`
 // module (a portable-simd backend wrapping `core::simd`) but does NOT
@@ -272,6 +279,17 @@ pub use crate::simd_avx512::{f32_to_bf16_batch_rne, f32_to_bf16_scalar_rne};
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512bf16"))]
 pub use crate::simd_avx512::{BF16x16, BF16x8};
 
+// AVX2 baseline arm — selected by the `x86-64-v3` cargo default. The
+// predicate is `not(avx512f)` rather than `avx2 + not(avx512f)`: the
+// inner intrinsics in `simd_avx2.rs` use per-function `#[target_feature
+// (enable = "avx,avx2,fma")]` annotations, so the OPERATIONS gate
+// themselves at the symbol level even when the consumer build target
+// is x86-64 baseline. The struct-field types (`__m256` / `__m256i`)
+// are core::arch declarations and don't require AVX/AVX2 at the type
+// level — only execution does. Keeps GitHub CI green (it runs with
+// `RUSTFLAGS="-D warnings"` env, which overrides our v3 config.toml,
+// landing on x86-64 baseline → the previous tighter `avx2` predicate
+// left no matching arm).
 #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
 pub use crate::simd_avx512::{f32x8, f64x4, i16x16, i8x32, F32x8, F64x4, I16x16, I8x32};
 

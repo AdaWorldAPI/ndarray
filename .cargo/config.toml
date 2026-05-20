@@ -1,4 +1,26 @@
 [build]
-# No global target-cpu. Each kernel uses #[target_feature(enable = "avx512f")]
-# per-function, with LazyLock runtime detection. One binary, all ISAs.
-# Railway (AVX-512) and GitHub CI (AVX2) use the same binary.
+# Default cargo config — x86-64-v3 (AVX2) baseline. Portable across all
+# x86_64 silicon shipping since ~2013 (Haswell+). This is what GitHub CI
+# runs against and what `cargo build` produces for general distribution.
+#
+# Why v3 and not "no target-cpu":
+#   `src/simd_avx2.rs` composes `F32x16` as two `__m256` halves (AVX
+#   intrinsics), and the `simd_avx2_*` op funcs use `__m256i` (AVX2).
+#   Without a global v3 baseline, rustc compiles to x86-64 generic (SSE2)
+#   and those intrinsics emit instructions the CPU never executes →
+#   SIGILL at run time, exactly the PR #170 CI failure mode.
+#
+# AVX-512 builds: use `--config .cargo/config-avx512.toml` (or
+# `CARGO_BUILD_RUSTFLAGS='-Ctarget-cpu=x86-64-v4'`). The simd.rs dispatch
+# arms key off `target_feature = "avx512f"`; under v4 they pick the
+# `simd_avx512` backend (native `__m512` / `__m512d` / `__m512i`).
+#
+# Build-machine-tuned binaries: use `--config .cargo/config-native.toml`
+# (`target-cpu = "native"`); rustc resolves the host CPUID at compile.
+#
+# Runtime LazyLock dispatch (one release binary, heterogeneous deployment
+# silicon) is a fifth opt-in mode — see § 7.1 of
+# .claude/knowledge/simd-dispatch-architecture.md. Reserved for the
+# release-binary distribution path; never the dev / CI default.
+[target.'cfg(target_arch = "x86_64")']
+rustflags = ["-Ctarget-cpu=x86-64-v3"]
