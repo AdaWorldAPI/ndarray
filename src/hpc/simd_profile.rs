@@ -86,22 +86,34 @@ impl SimdProfile {
         #[cfg(target_arch = "x86_64")]
         {
             let caps = simd_caps();
+            // Risk #3 from the integration plan ("Detection robustness
+            // across hypervisors"): CPUID may report AMX-TILE while the
+            // OS has not enabled the tile XSAVE state. In that case AMX
+            // instructions SIGILL despite the CPUID bit being set.
+            // `simd_amx::amx_available()` runs the full 4-step gate
+            // (CPUID + OSXSAVE + XCR0 bits 17/18 + arch_prctl
+            // XCOMP_PERM). Demote to the no-AMX dispatch branch when
+            // the OS check fails — typically resolves as Zen4Avx512 on
+            // SPR-class CPUID with locked-down hypervisor XSAVE state.
+            let amx_usable = caps.amx_tile && crate::simd_amx::amx_available();
             // GraniteRapids: AMX-FP16 (CPUID 7,1 EAX bit 21). Must be
             // checked first because GNR is a strict superset of SPR.
-            if caps.has_amx_fp16() {
+            if amx_usable && caps.amx_fp16 {
                 return SimdProfile::GraniteRapids;
             }
             // SapphireRapids / EmeraldRapids: AMX-TILE + AMX-BF16 +
             // AVX-512-FP16. EmeraldRapids has identical ISA — same variant.
-            if caps.amx_tile && caps.amx_bf16 && caps.avx512fp16 {
+            if amx_usable && caps.amx_bf16 && caps.avx512fp16 {
                 return SimdProfile::SapphireRapids;
             }
-            // Zen4 / Zen5: AVX-512 + VBMI + BF16 + FP16, but no AMX.
+            // Zen4 / Zen5: AVX-512 + VBMI + BF16 + FP16, but no usable
+            // AMX. The `!amx_usable` guard also catches OS-demoted SPR
+            // silicon so it resolves here instead of as SapphireRapids.
             if caps.avx512f
                 && caps.avx512vbmi
                 && caps.avx512bf16
                 && caps.avx512fp16
-                && !caps.amx_tile
+                && !amx_usable
             {
                 return SimdProfile::Zen4Avx512;
             }

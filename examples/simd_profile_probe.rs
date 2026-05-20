@@ -49,6 +49,27 @@ fn main() {
     print_caps(&caps);
     println!();
 
+    // ── AMX OS-state probe (Risk #3 from integration plan) ────────
+    // SimdCaps reports raw CPUID. SimdProfile::detect() additionally
+    // consults `simd_amx::amx_available()` which gates on
+    // OSXSAVE + XCR0[17,18] + arch_prctl(XCOMP_PERM). If CPUID says
+    // AMX-TILE but the OS/hypervisor doesn't enable the XSAVE state,
+    // dispatch demotes from SPR/GNR to Zen4Avx512 (AVX-512 BF16 path
+    // instead of AMX tiles). Surfacing the gap here lets a reviewer
+    // see when CPUID-vs-OS disagree without reading source.
+    #[cfg(target_arch = "x86_64")]
+    {
+        let cpuid_says_amx = caps.amx_tile && caps.amx_int8;
+        let os_allows_amx = ndarray::simd_amx::amx_available();
+        println!("AMX gating (CPUID vs OS):");
+        println!("  CPUID amx_tile+amx_int8: {}", cpuid_says_amx);
+        println!("  OS XSAVE/prctl gate:     {}", os_allows_amx);
+        if cpuid_says_amx && !os_allows_amx {
+            println!("  → CPUID-reported AMX is OS-DEMOTED — dispatch falls back to AVX-512 path");
+        }
+        println!();
+    }
+
     // ── ARM-specific sub-profile (heuristic; deployment-pragmatic) ──
     let arm = caps.arm_profile();
     if !matches!(arm, ArmProfile::NotArm) {
