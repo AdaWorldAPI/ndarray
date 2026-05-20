@@ -128,8 +128,18 @@ chooses the source; the cargo config chooses how `simd.rs` chooses.
 
 ## 4. Parity matrix — typed lane primitives per backend
 
-Legend: ✅ native, 🟡 composed wrapper (two-half / four-quarter), 🔵
-scalar polyfill via `core::simd`, ❌ missing, ⛔ N/A for this arch.
+Legend: ✅ native, 🟡 composed wrapper (two-half / four-quarter), 🟠
+scalar polyfill (struct exists with full API but storage is `[$elem;
+$lanes]` — no SIMD execution), 🔵 portable-SIMD polyfill via
+`core::simd`, ❌ missing, ⛔ N/A for this arch.
+
+(Reality check 2026-05-20: many AVX2 int rows previously marked ❌ are
+actually 🟠 — `simd_avx2.rs` ships them via the `avx2_int_type!` macro
+as scalar-storage structs that match the AVX-512 API surface. The
+arithmetic is plain Rust under the hood; only the FLOAT wrappers in
+this column are true two-half SIMD composites. Filling in real AVX2
+vectorization for the int wrappers is its own piece of tech debt
+tracked as TD-SIMD-3.)
 
 | Lane type | `simd_avx512` (v4) | `simd_avx2` (v3) | `simd_neon` (aarch64) | `simd_nightly` | `scalar` |
 |---|---|---|---|---|---|
@@ -137,17 +147,17 @@ scalar polyfill via `core::simd`, ❌ missing, ⛔ N/A for this arch.
 | `F32x8` | ✅ `__m256` | ❌ | ⛔ | 🔵 | ✅ |
 | `F64x8` | ✅ `__m512d` | 🟡 `(f64x4, f64x4)` | 🟡 `[float64x2_t; 4]` | 🔵 | ✅ |
 | `F64x4` | ✅ `__m256d` | ❌ | ⛔ | 🔵 | ✅ |
-| `U8x64` | ✅ `__m512i` | ❌ | ❌ | 🔵 | ✅ |
+| `U8x64` | ✅ `__m512i` | 🟠 `[u8; 64]` polyfill | ❌ | 🔵 | ✅ |
 | `U8x32` | ✅ `__m256i` | ✅ `__m256i` | ❌ | 🔵 | ✅ |
-| `U16x32` | ✅ `__m512i` | ❌ | ❌ | 🔵 | ✅ |
-| `U32x16` | ✅ `__m512i` | ❌ | ❌ | 🔵 | ✅ |
-| `U64x8` | ✅ `__m512i` | ❌ | ❌ | 🔵 | ✅ |
-| `I8x32` | ✅ `__m256i` | ❌ | ❌ | 🔵 | ✅ |
-| `I8x64` | ✅ `__m512i` | ❌ | ❌ | 🔵 | ✅ |
-| `I16x16` | ✅ `__m256i` | ❌ | ❌ | 🔵 | ✅ |
-| `I16x32` | ✅ `__m512i` | ❌ | ❌ | 🔵 | ✅ |
-| `I32x16` | ✅ `__m512i` | ❌ | ❌ | 🔵 | ✅ |
-| `I64x8` | ✅ `__m512i` | ❌ | ❌ | 🔵 | ✅ |
+| `U16x32` | ✅ `__m512i` | 🟠 `[u16; 32]` polyfill | ❌ | 🔵 | ✅ |
+| `U32x16` | ✅ `__m512i` | 🟠 `[u32; 16]` polyfill | ❌ | 🔵 | ✅ |
+| `U64x8` | ✅ `__m512i` | 🟠 `[u64; 8]` polyfill | ❌ | 🔵 | ✅ |
+| `I8x32` | ✅ `__m256i` | ✅ `__m256i` (in `simd_avx512`) | ❌ | 🔵 | ✅ |
+| `I8x64` | ✅ `__m512i` | 🟠 `[i8; 64]` polyfill | ❌ | 🔵 | ✅ |
+| `I16x16` | ✅ `__m256i` | ✅ `__m256i` (in `simd_avx512`) | ❌ | 🔵 | ✅ |
+| `I16x32` | ✅ `__m512i` | 🟠 `[i16; 32]` polyfill | ❌ | 🔵 | ✅ |
+| `I32x16` | ✅ `__m512i` | 🟠 `[i32; 16]` polyfill | ❌ | 🔵 | ✅ |
+| `I64x8` | ✅ `__m512i` | 🟠 `[i64; 8]` polyfill | ❌ | 🔵 | ✅ |
 | `BF16x8` | ✅ `__m128bh` | ❌ | ❌ | 🔵 | ✅ |
 | `BF16x16` | ✅ `__m256bh` | ❌ | ❌ | 🔵 | ✅ |
 | `F16x16` | ❌ | 🟡 `F16Scaler` (scalar) | ❌ | 🔵 | ✅ |
