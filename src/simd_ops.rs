@@ -337,6 +337,13 @@ pub fn array_chunks<T, const N: usize>(data: &[T]) -> impl Iterator<Item = &[T; 
 /// the buffer is lane-aligned and wants the error surfaced rather than
 /// silently truncating.
 ///
+/// # Edge case — `N == 0`
+///
+/// Returns `Err(())` when `N == 0`. The underlying `slice::as_chunks::<0>`
+/// would panic on a zero divisor; the strict-fallible contract here folds
+/// that into the existing error path so callers never see an unexpected
+/// panic on the checked surface.
+///
 /// # Examples
 ///
 /// ```
@@ -347,11 +354,19 @@ pub fn array_chunks<T, const N: usize>(data: &[T]) -> impl Iterator<Item = &[T; 
 ///
 /// let bad: Vec<u8> = (0..7).collect();
 /// assert!(array_chunks_checked::<u8, 4>(&bad).is_err());
+///
+/// // N == 0 surfaces as Err rather than panicking.
+/// assert!(array_chunks_checked::<u8, 0>(&[0u8; 8]).is_err());
 /// ```
 #[inline]
 pub fn array_chunks_checked<T, const N: usize>(
     data: &[T],
 ) -> Result<impl Iterator<Item = &[T; N]> + '_, ()> {
+    if N == 0 {
+        // `data.len() % 0` would panic; the strict-fallible contract
+        // folds N==0 into Err. See P2 review on PR #167.
+        return Err(());
+    }
     if data.len() % N != 0 {
         return Err(());
     }
@@ -400,5 +415,14 @@ mod array_chunks_tests {
         assert_eq!(array_chunks::<u8, 4>(&[]).count(), 0);
         let it = array_chunks_checked::<u8, 4>(&[]).expect("0 % 4 == 0, should be Ok");
         assert_eq!(it.count(), 0);
+    }
+
+    #[test]
+    fn array_chunks_checked_rejects_zero_n() {
+        // P2 review fix on PR #167: N == 0 must surface as Err, not panic
+        // via `data.len() % 0`.
+        assert!(array_chunks_checked::<u8, 0>(&[]).is_err());
+        assert!(array_chunks_checked::<u8, 0>(&[0u8; 8]).is_err());
+        assert!(array_chunks_checked::<u32, 0>(&[1u32, 2, 3]).is_err());
     }
 }

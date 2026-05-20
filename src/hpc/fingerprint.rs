@@ -650,6 +650,19 @@ impl Fingerprint<8> {
     /// For other `N` widths, use [`Fingerprint::chunks_u8x64`] which yields
     /// 64-byte chunks without the compile-time length guarantee.
     ///
+    /// # Endianness contract — little-endian only
+    ///
+    /// Gated to `#[cfg(target_endian = "little")]` so the returned byte view
+    /// matches the project-wide little-endian word convention used by
+    /// [`Fingerprint::to_bytes`] / [`Fingerprint::from_bytes`]
+    /// (both use `u64::to_le_bytes` / `u64::from_le_bytes`).
+    /// On a big-endian target the raw memory layout of `[u64; 8]` would put
+    /// the high byte first, contradicting the LE contract and breaking
+    /// cross-platform SIMD consumers. The `.cargo/config.toml` pins
+    /// `target-cpu=x86-64-v4`, so all supported targets (x86_64 + aarch64)
+    /// are little-endian; the cfg gate makes the LE assumption explicit
+    /// rather than implicit. See P2 review on PR #167.
+    ///
     /// # Design reference
     ///
     /// `.claude/knowledge/pr-x1-design.md` § "2. `Fingerprint::as_u8x64`".
@@ -679,6 +692,7 @@ impl Fingerprint<8> {
     /// assert_eq!(view[7], 0x01);
     /// assert_eq!(view[8], 0x00); // word[1] is zero
     /// ```
+    #[cfg(target_endian = "little")]
     #[inline]
     pub fn as_u8x64(&self) -> &[u8; 64] {
         // SAFETY:
@@ -696,11 +710,14 @@ impl Fingerprint<8> {
         // 5. The returned reference borrows from `&self`, so its lifetime cannot
         //    outlive `self`, satisfying the borrow-checker lifetime rule and
         //    preventing dangling references.
+        // 6. The `#[cfg(target_endian = "little")]` gate guarantees the byte
+        //    order matches the project-wide LE convention (P2 review fix #167).
         unsafe { &*(self.words.as_ptr() as *const [u8; 64]) }
     }
 }
 
 #[cfg(test)]
+#[cfg(target_endian = "little")]
 mod pr_x1_as_u8x64_tests {
     use super::*;
 
