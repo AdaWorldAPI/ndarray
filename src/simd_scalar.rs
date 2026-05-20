@@ -18,8 +18,8 @@
 
 use core::fmt;
 use core::ops::{
-    Add, AddAssign, BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Div, DivAssign, Mul, MulAssign, Neg,
-    Not, Shl, Shr, Sub, SubAssign,
+    Add, AddAssign, BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Div, DivAssign, Mul, MulAssign,
+    Neg, Not, Shl, Shr, Sub, SubAssign,
 };
 
 // ── Macros for scalar fallback boilerplate ────────────────────────
