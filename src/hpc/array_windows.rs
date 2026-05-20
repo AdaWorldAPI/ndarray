@@ -6,21 +6,35 @@
 //! (fine but undiscoverable) or rolls a raw slice index without the
 //! compile-time bounds check.
 //!
+//! # Semantics — non-overlapping (NOT std `array_windows`)
+//!
+//! Despite the plural name, this is the **non-overlapping** chunk variant —
+//! consecutive windows do not share elements. The name follows std's
+//! plural iterator-type convention ([`std::slice::ArrayWindows`]), but the
+//! semantics match [`std::slice::ArrayChunks`] / `slice::as_chunks`.
+//!
+//! For an 8-element input walked at `N = 4`:
+//! - `array_windows` (this module): yields `[0..4]`, `[4..8]` — **2 windows**.
+//! - `std::slice::array_windows` (overlapping): would yield 5 windows.
+//!
+//! Non-overlapping is the correct shape for SIMD-staged inner loops where
+//! each lane-register load consumes its N elements before advancing by N.
+//!
 //! # Layering
 //!
-//! Lives in `hpc::array_windows`; the `crate::simd::*` re-export lands in the
-//! PR-X1 re-export sweep (see `.claude/knowledge/pr-x1-design.md` § 4).
-//! Doctests therefore use the canonical `ndarray::hpc::array_windows` path
-//! until the sweep ships.
+//! Lives in `hpc::array_windows`, re-exported from `crate::simd::*` per the
+//! W1a consumer contract at
+//! `.claude/knowledge/vertical-simd-consumer-contract.md`.
 //!
 //! # Design reference
 //!
-//! `.claude/knowledge/pr-x1-design.md` § "3. `array_windows`". This module
+//! `.claude/knowledge/pr-x1-design.md` § "3. `array_window`". This module
 //! ships the **iterator-shape** variant (whole-buffer walk yielding all
-//! const-size windows). The design doc sketches a singular-window form
-//! (`array_windows(slice, offset) -> &[T; N]`); the maintainer-blessed final
-//! shape is the iterator form here, which composes directly with SIMD-staged
-//! consumer loops and avoids per-call panic surface in tight inner loops.
+//! const-size windows); the design doc's singular-window sketch
+//! (`array_window(slice, offset) -> &[T; N]`) was superseded by the
+//! iterator form here, which composes directly with SIMD-staged consumer
+//! loops and avoids per-call panic surface in tight inner loops. The name
+//! was pluralised to match the std iterator-type convention.
 
 /// Walk `data` as a sequence of non-overlapping const-size windows.
 ///
