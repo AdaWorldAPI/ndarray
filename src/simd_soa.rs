@@ -31,6 +31,64 @@
 
 use std::sync::Arc;
 
+// Typed lane primitives — dispatched through `crate::simd::*`, which
+// re-exports the right backend (AVX-512 / NEON / scalar) per `cfg`. Per
+// the W1a layering rule, `simd_soa.rs` MUST go through `crate::simd::`
+// rather than dipping into `simd_avx512` / `simd_neon` / `scalar` directly.
+use crate::simd::{F32x16, F64x8, U64x8, U8x64};
+
+// Endian-correct `&[u8; 4]` → `f32` / `&[u8; 8]` → `f64`/`u64` helpers.
+// `f32::from_le_bytes` is intrinsically optimised to a single load on
+// little-endian targets (x86_64, aarch64, wasm32), so this scalar
+// `from_fn` loop compiles to the same instruction stream as a
+// `bytemuck::cast`-style reinterpret — without requiring a new workspace
+// dep and without the alignment risk of pointer-casting `Arc<[u8]>`
+// (which is only `u8`-aligned in stable Rust).
+#[inline(always)]
+fn f32x16_from_chunk(chunk: &[u8; 64]) -> F32x16 {
+    let arr: [f32; 16] = core::array::from_fn(|i| {
+        let off = i * 4;
+        f32::from_le_bytes([chunk[off], chunk[off + 1], chunk[off + 2], chunk[off + 3]])
+    });
+    F32x16::from_array(arr)
+}
+
+#[inline(always)]
+fn f64x8_from_chunk(chunk: &[u8; 64]) -> F64x8 {
+    let arr: [f64; 8] = core::array::from_fn(|i| {
+        let off = i * 8;
+        f64::from_le_bytes([
+            chunk[off],
+            chunk[off + 1],
+            chunk[off + 2],
+            chunk[off + 3],
+            chunk[off + 4],
+            chunk[off + 5],
+            chunk[off + 6],
+            chunk[off + 7],
+        ])
+    });
+    F64x8::from_array(arr)
+}
+
+#[inline(always)]
+fn u64x8_from_chunk(chunk: &[u8; 64]) -> U64x8 {
+    let arr: [u64; 8] = core::array::from_fn(|i| {
+        let off = i * 8;
+        u64::from_le_bytes([
+            chunk[off],
+            chunk[off + 1],
+            chunk[off + 2],
+            chunk[off + 3],
+            chunk[off + 4],
+            chunk[off + 5],
+            chunk[off + 6],
+            chunk[off + 7],
+        ])
+    });
+    U64x8::from_array(arr)
+}
+
 // ════════════════════════════════════════════════════════════════════
 // MultiLaneColumn — Arc<[u8]> carrier with typed lane-width chunk iters
 // ════════════════════════════════════════════════════════════════════
@@ -125,48 +183,52 @@ impl MultiLaneColumn {
         &self.data
     }
 
-    /// Iterate the column as contiguous `&[u8; 64]` windows (`U8x64` shape).
+    /// Iterate the column as typed [`U8x64`] values dispatched via
+    /// `crate::simd::*` (AVX-512 / NEON / scalar per `cfg`).
     ///
-    /// Each window is exactly 64 bytes — one AVX-512 `U8x64` register load.
-    /// Zero-copy: each window is a reference into the backing store.
-    ///
-    /// Feed each window into `U8x64::from_array(*win)` or
-    /// `crate::simd::U8x64::from_slice(win)` inside the consumer's loop.
+    /// Each yielded value is one register-width load over a 64-byte chunk
+    /// of the backing store. The construction is zero-cost on every backend:
+    /// `U8x64::from_array(*chunk)` is a single move on AVX-512, a paired
+    /// LD2 on NEON, and a memcpy on the scalar fallback.
     ///
     /// # Examples
     ///
     /// ```
-    /// use ndarray::simd::MultiLaneColumn;
+    /// use ndarray::simd::{MultiLaneColumn, U8x64};
     /// use std::sync::Arc;
     ///
     /// let data: Arc<[u8]> = Arc::from((0u8..128).collect::<Vec<_>>());
     /// let col = MultiLaneColumn::new(data).unwrap();
-    /// let windows: Vec<&[u8; 64]> = col.iter_u8x64().collect();
-    /// assert_eq!(windows.len(), 2);
-    /// assert_eq!(windows[0][0], 0u8);
-    /// assert_eq!(windows[1][0], 64u8);
+    /// let lanes: Vec<U8x64> = col.iter_u8x64().collect();
+    /// assert_eq!(lanes.len(), 2);
+    /// assert_eq!(lanes[0].to_array()[0], 0u8);
+    /// assert_eq!(lanes[1].to_array()[0], 64u8);
     /// ```
-    pub fn iter_u8x64(&self) -> impl Iterator<Item = &[u8; 64]> + '_ {
-        self.data.as_chunks::<64>().0.iter()
+    pub fn iter_u8x64(&self) -> impl Iterator<Item = U8x64> + '_ {
+        self.data.as_chunks::<64>().0.iter().map(|chunk| U8x64::from_array(*chunk))
     }
 
-    /// Iterate the column as `&[u8; 64]` windows reinterpreted as `[f32; 16]`-shape.
+    /// Iterate the column as typed [`F32x16`] values dispatched via
+    /// `crate::simd::*` (AVX-512 / NEON / scalar per `cfg`).
     ///
-    /// The bytes are NOT converted — same memory, different lane width.
-    /// Consumer is responsible for using `F32x16::from_array(bytemuck::cast(*win))`
-    /// or equivalent typed reinterpretation.
-    pub fn iter_f32x16_bytes(&self) -> impl Iterator<Item = &[u8; 64]> + '_ {
-        self.data.as_chunks::<64>().0.iter()
+    /// Bytes are decoded little-endian. On LE targets (x86_64, aarch64,
+    /// wasm32) the `f32::from_le_bytes` loop optimises to a register-width
+    /// load equivalent to a `bytemuck::cast`-style reinterpret, without the
+    /// alignment risk of pointer-casting `Arc<[u8]>` (which is `u8`-aligned).
+    pub fn iter_f32x16(&self) -> impl Iterator<Item = F32x16> + '_ {
+        self.data.as_chunks::<64>().0.iter().map(f32x16_from_chunk)
     }
 
-    /// Iterate the column as `&[u8; 64]` windows reinterpreted as `[f64; 8]`-shape.
-    pub fn iter_f64x8_bytes(&self) -> impl Iterator<Item = &[u8; 64]> + '_ {
-        self.data.as_chunks::<64>().0.iter()
+    /// Iterate the column as typed [`F64x8`] values dispatched via
+    /// `crate::simd::*`.
+    pub fn iter_f64x8(&self) -> impl Iterator<Item = F64x8> + '_ {
+        self.data.as_chunks::<64>().0.iter().map(f64x8_from_chunk)
     }
 
-    /// Iterate the column as `&[u8; 64]` windows reinterpreted as `[u64; 8]`-shape.
-    pub fn iter_u64x8_bytes(&self) -> impl Iterator<Item = &[u8; 64]> + '_ {
-        self.data.as_chunks::<64>().0.iter()
+    /// Iterate the column as typed [`U64x8`] values dispatched via
+    /// `crate::simd::*`.
+    pub fn iter_u64x8(&self) -> impl Iterator<Item = U64x8> + '_ {
+        self.data.as_chunks::<64>().0.iter().map(u64x8_from_chunk)
     }
 }
 
@@ -198,14 +260,14 @@ mod tests {
     }
 
     #[test]
-    fn empty_buffer_yields_zero_windows() {
+    fn empty_buffer_yields_zero_lanes() {
         let col = MultiLaneColumn::new(Arc::from(vec![0u8; 0])).unwrap();
         assert!(col.is_empty());
         assert_eq!(col.len_bytes(), 0);
         assert_eq!(col.iter_u8x64().count(), 0);
-        assert_eq!(col.iter_f32x16_bytes().count(), 0);
-        assert_eq!(col.iter_f64x8_bytes().count(), 0);
-        assert_eq!(col.iter_u64x8_bytes().count(), 0);
+        assert_eq!(col.iter_f32x16().count(), 0);
+        assert_eq!(col.iter_f64x8().count(), 0);
+        assert_eq!(col.iter_u64x8().count(), 0);
     }
 
     #[test]
@@ -215,12 +277,14 @@ mod tests {
             v[i] = i as u8;
         }
         let col = MultiLaneColumn::new(Arc::from(v)).unwrap();
-        let windows: Vec<&[u8; 64]> = col.iter_u8x64().collect();
-        assert_eq!(windows.len(), 2);
-        assert_eq!(windows[0][0], 0u8);
-        assert_eq!(windows[0][63], 63u8);
-        assert_eq!(windows[1][0], 64u8);
-        assert_eq!(windows[1][63], 127u8);
+        let lanes: Vec<U8x64> = col.iter_u8x64().collect();
+        assert_eq!(lanes.len(), 2);
+        let a0 = lanes[0].to_array();
+        let a1 = lanes[1].to_array();
+        assert_eq!(a0[0], 0u8);
+        assert_eq!(a0[63], 63u8);
+        assert_eq!(a1[0], 64u8);
+        assert_eq!(a1[63], 127u8);
     }
 
     #[test]
@@ -235,27 +299,51 @@ mod tests {
     }
 
     #[test]
-    fn bytes_shape_iterators_alias_u8x64() {
+    fn iter_f32x16_le_round_trip() {
+        // Build a buffer of 16 f32 values laid out little-endian, then
+        // verify iter_f32x16 reads them back in order.
+        let src: [f32; 16] = core::array::from_fn(|i| i as f32 * 0.25 - 1.0);
+        let mut bytes = vec![0u8; 64];
+        for (i, &v) in src.iter().enumerate() {
+            bytes[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        let col = MultiLaneColumn::new(Arc::from(bytes)).unwrap();
+        let lane = col.iter_f32x16().next().expect("one lane");
+        assert_eq!(lane.to_array(), src);
+    }
+
+    #[test]
+    fn iter_f64x8_le_round_trip() {
+        let src: [f64; 8] = core::array::from_fn(|i| (i as f64).sin());
+        let mut bytes = vec![0u8; 64];
+        for (i, &v) in src.iter().enumerate() {
+            bytes[i * 8..i * 8 + 8].copy_from_slice(&v.to_le_bytes());
+        }
+        let col = MultiLaneColumn::new(Arc::from(bytes)).unwrap();
+        let lane = col.iter_f64x8().next().expect("one lane");
+        assert_eq!(lane.to_array(), src);
+    }
+
+    #[test]
+    fn iter_u64x8_le_round_trip() {
+        let src: [u64; 8] = core::array::from_fn(|i| (i as u64 + 1) * 0x0123_4567_89AB_CDEF);
+        let mut bytes = vec![0u8; 64];
+        for (i, &v) in src.iter().enumerate() {
+            bytes[i * 8..i * 8 + 8].copy_from_slice(&v.to_le_bytes());
+        }
+        let col = MultiLaneColumn::new(Arc::from(bytes)).unwrap();
+        let lane = col.iter_u64x8().next().expect("one lane");
+        assert_eq!(lane.to_array(), src);
+    }
+
+    #[test]
+    fn typed_iters_yield_three_lanes_over_192_bytes() {
         let v: Vec<u8> = (0u8..192).collect();
         let col = MultiLaneColumn::new(Arc::from(v)).unwrap();
-
-        let u8_wins: Vec<&[u8; 64]> = col.iter_u8x64().collect();
-        let f32_wins: Vec<&[u8; 64]> = col.iter_f32x16_bytes().collect();
-        let f64_wins: Vec<&[u8; 64]> = col.iter_f64x8_bytes().collect();
-        let u64_wins: Vec<&[u8; 64]> = col.iter_u64x8_bytes().collect();
-
-        assert_eq!(u8_wins.len(), 3);
-        assert_eq!(f32_wins.len(), 3);
-        assert_eq!(f64_wins.len(), 3);
-        assert_eq!(u64_wins.len(), 3);
-
-        for i in 0..3 {
-            assert_eq!(u8_wins[i].as_ptr(), f32_wins[i].as_ptr());
-            assert_eq!(u8_wins[i].as_ptr(), f64_wins[i].as_ptr());
-            assert_eq!(u8_wins[i].as_ptr(), u64_wins[i].as_ptr());
-            assert_eq!(u8_wins[i][0], (i as u8) * 64);
-            assert_eq!(u8_wins[i][63], (i as u8) * 64 + 63);
-        }
+        assert_eq!(col.iter_u8x64().count(), 3);
+        assert_eq!(col.iter_f32x16().count(), 3);
+        assert_eq!(col.iter_f64x8().count(), 3);
+        assert_eq!(col.iter_u64x8().count(), 3);
     }
 
     #[test]
