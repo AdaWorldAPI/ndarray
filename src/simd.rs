@@ -134,12 +134,12 @@ fn tier() -> Tier {
 // function uses as_chunks::<16>() + as_chunks::<8>() for SIMD widths.
 
 // ============================================================================
-// Preferred SIMD lane widths — compile-time constants for array_windows
+// Preferred SIMD lane widths — compile-time constants for array_windowss
 // ============================================================================
 //
-// Consumer code uses these to select array_windows size at compile time:
+// Consumer code uses these to select array_windowss size at compile time:
 //
-//   for window in data.array_windows::<{crate::simd::PREFERRED_F64_LANES}>() {
+//   for window in data.array_windowss::<{crate::simd::PREFERRED_F64_LANES}>() {
 //       let v = F64x8::from_array(*window);   // AVX-512: native 8-wide
 //       // or
 //       let v = F64x4::from_array(*window);   // AVX2: native 4-wide
@@ -1723,7 +1723,7 @@ pub use crate::hpc::fingerprint::{
 // through `crate::simd::*`; without these re-exports the cognitive-shader
 // stack reaches for `crate::hpc::column::*` directly, breaking the contract.
 pub use crate::hpc::column::MultiLaneColumn;
-pub use crate::hpc::array_window::{array_window, array_window_checked};
+pub use crate::hpc::array_windows::{array_windows, array_windows_checked};
 
 pub use crate::hpc::quantized::{
     dequantize_i2_to_f32, dequantize_i4_to_f32, dequantize_i8_to_f32, quantize_f32_to_i2, quantize_f32_to_i4,
