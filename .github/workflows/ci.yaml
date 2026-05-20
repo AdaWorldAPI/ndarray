@@ -211,6 +211,35 @@ jobs:
       - name: cargo check (v4 / AVX-512 + hpc-extras)
         run: cargo check --target=x86_64-unknown-linux-gnu -p ndarray --features approx,serde,rayon,hpc-extras
 
+  nightly-simd-polyfill:
+    # TD-SIMD-9 from .claude/knowledge/simd-dispatch-architecture.md.
+    # Exercises the `feature = "nightly-simd"` dispatch arm in
+    # `src/simd.rs` (added in Phase 2 / PR #173) so the portable
+    # `core::simd::*` backend doesn't bit-rot between PRs.
+    #
+    # Why nightly: `src/simd_nightly/*` uses `#![feature(portable_simd)]`
+    # which only compiles on nightly rustc. The stable `cargo check`
+    # paths in tests/clippy never reach this arm.
+    #
+    # `cargo check` rather than full build/test — pure type/borrow/cfg
+    # verification. Catches arm shadowing bugs and the kind of API-break
+    # codex flagged on PR #173 (lowercase aliases dropped).
+    #
+    # Runs only on merge_group + push (not every PR) to keep nightly
+    # toolchain pulls out of the per-PR critical path. Mirrors the
+    # `miri` job's gating strategy.
+    if: github.event_name == 'merge_group' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    name: nightly-simd-polyfill
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check (nightly + nightly-simd feature)
+        run: cargo check -p ndarray --features approx,serde,rayon,nightly-simd
+      - name: cargo check (nightly + nightly-simd + hpc-extras)
+        run: cargo check -p ndarray --features approx,serde,rayon,nightly-simd,hpc-extras
+
   blas-msrv:
     runs-on: ubuntu-latest
     name: blas-msrv
@@ -310,6 +339,7 @@ jobs:
       - native-backend
       - hpc-stream-parallel
       - tier4-avx512-check
+      - nightly-simd-polyfill
       - miri
       - cross_test
       - cargo-careful
