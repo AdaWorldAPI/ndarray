@@ -19,30 +19,162 @@
 
 /// Element-wise `dst[i] += src[i]` (wrapping i8 add).
 ///
-/// Panics if `dst.len() != src.len()`.
+/// Dispatches to the widest available SIMD lane:
+///
+/// | Backend    | Lane    | Per-iteration intrinsic |
+/// |------------|---------|-------------------------|
+/// | x86_64     | `I8x64` | `_mm512_add_epi8` zmm (AVX-512-BW) / 2× `_mm256_add_epi8` ymm (AVX2 polyfill of `I8x64`) |
+/// | aarch64    | `I8x16` | `vaddq_s8` × N                                |
+/// | other      | scalar  | `i8::wrapping_add` lane-by-lane               |
+///
+/// Wrapping arithmetic. Panics if `dst.len() != src.len()`.
 #[inline]
 pub fn add_i8(dst: &mut [i8], src: &[i8]) {
     assert_eq!(dst.len(), src.len(), "add_i8: length mismatch");
-    for i in 0..dst.len() {
-        dst[i] = dst[i].wrapping_add(src[i]);
+    let n = dst.len();
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        use crate::simd::I8x64;
+        const L: usize = 64;
+        let chunks = n / L;
+        for c in 0..chunks {
+            let off = c * L;
+            let d = I8x64::from_slice(&dst[off..]);
+            let s = I8x64::from_slice(&src[off..]);
+            let arr = (d + s).to_array();
+            dst[off..off + L].copy_from_slice(&arr);
+        }
+        for i in (chunks * L)..n {
+            dst[i] = dst[i].wrapping_add(src[i]);
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::simd_neon::I8x16;
+        const L: usize = 16;
+        let chunks = n / L;
+        for c in 0..chunks {
+            let off = c * L;
+            let d = I8x16::from_slice(&dst[off..]);
+            let s = I8x16::from_slice(&src[off..]);
+            let arr = d.add(s).to_array();
+            dst[off..off + L].copy_from_slice(&arr);
+        }
+        for i in (chunks * L)..n {
+            dst[i] = dst[i].wrapping_add(src[i]);
+        }
+    }
+
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        for i in 0..n {
+            dst[i] = dst[i].wrapping_add(src[i]);
+        }
     }
 }
 
 /// Element-wise `dst[i] -= src[i]` (wrapping i8 sub).
+///
+/// Dispatches the same way as [`add_i8`] (zmm AVX-512-BW / ymm AVX2 /
+/// 128-bit NEON / scalar) using the polyfilled lane's `Sub`
+/// implementation.
 #[inline]
 pub fn sub_i8(dst: &mut [i8], src: &[i8]) {
     assert_eq!(dst.len(), src.len(), "sub_i8: length mismatch");
-    for i in 0..dst.len() {
-        dst[i] = dst[i].wrapping_sub(src[i]);
+    let n = dst.len();
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        use crate::simd::I8x64;
+        const L: usize = 64;
+        let chunks = n / L;
+        for c in 0..chunks {
+            let off = c * L;
+            let d = I8x64::from_slice(&dst[off..]);
+            let s = I8x64::from_slice(&src[off..]);
+            let arr = (d - s).to_array();
+            dst[off..off + L].copy_from_slice(&arr);
+        }
+        for i in (chunks * L)..n {
+            dst[i] = dst[i].wrapping_sub(src[i]);
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::simd_neon::I8x16;
+        const L: usize = 16;
+        let chunks = n / L;
+        for c in 0..chunks {
+            let off = c * L;
+            let d = I8x16::from_slice(&dst[off..]);
+            let s = I8x16::from_slice(&src[off..]);
+            let arr = d.sub(s).to_array();
+            dst[off..off + L].copy_from_slice(&arr);
+        }
+        for i in (chunks * L)..n {
+            dst[i] = dst[i].wrapping_sub(src[i]);
+        }
+    }
+
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        for i in 0..n {
+            dst[i] = dst[i].wrapping_sub(src[i]);
+        }
     }
 }
 
 /// Element-wise `dst[i] += src[i]` (wrapping i16 add).
+///
+/// Dispatches to `I16x32` (AVX-512-BW `_mm512_add_epi16`) on x86_64,
+/// `I16x8` (`vaddq_s16`) on aarch64, scalar otherwise.
 #[inline]
 pub fn add_i16(dst: &mut [i16], src: &[i16]) {
     assert_eq!(dst.len(), src.len(), "add_i16: length mismatch");
-    for i in 0..dst.len() {
-        dst[i] = dst[i].wrapping_add(src[i]);
+    let n = dst.len();
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        use crate::simd::I16x32;
+        const L: usize = 32;
+        let chunks = n / L;
+        for c in 0..chunks {
+            let off = c * L;
+            let d = I16x32::from_slice(&dst[off..]);
+            let s = I16x32::from_slice(&src[off..]);
+            let arr = (d + s).to_array();
+            dst[off..off + L].copy_from_slice(&arr);
+        }
+        for i in (chunks * L)..n {
+            dst[i] = dst[i].wrapping_add(src[i]);
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::simd_neon::I16x8;
+        const L: usize = 8;
+        let chunks = n / L;
+        for c in 0..chunks {
+            let off = c * L;
+            let d = I16x8::from_slice(&dst[off..]);
+            let s = I16x8::from_slice(&src[off..]);
+            let arr = d.add(s).to_array();
+            dst[off..off + L].copy_from_slice(&arr);
+        }
+        for i in (chunks * L)..n {
+            dst[i] = dst[i].wrapping_add(src[i]);
+        }
+    }
+
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        for i in 0..n {
+            dst[i] = dst[i].wrapping_add(src[i]);
+        }
     }
 }
 
