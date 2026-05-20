@@ -198,10 +198,17 @@ pub const PREFERRED_I16_LANES: usize = 16;
 // x86_64: re-export based on tier
 // ============================================================================
 
-// Compile-time AVX-512 dispatch via target_feature.
-// With target-cpu=x86-64-v4 (.cargo/config.toml), avx512f is enabled
-// at compile time → all types use native __m512/__m512d/__m512i.
-// The 256-bit types (F32x8, F64x4) also live in simd_avx512 (__m256).
+// Compile-time SIMD dispatch via target_feature. The cargo config
+// chosen at build (.cargo/config.toml = v3 default / config-avx512.toml
+// = v4 / config-native.toml = native) sets the `target_feature` flags
+// that select exactly one arm below.
+//   * v3 / GitHub-CI default → `target_feature = "avx2"` only →
+//     simd_avx2 backend (F32x16 = two-half (f32x8, f32x8), int wrappers
+//     are scalar polyfills via the `avx2_int_type!` macro).
+//   * v4 (or native on AVX-512 host) → `target_feature = "avx512f"` →
+//     simd_avx512 backend with native __m512 / __m512d / __m512i.
+//   * aarch64 → simd_neon backend.
+//   * everything else (wasm32, riscv, etc.) → scalar fallback.
 
 // Note on the `nightly-simd` feature: it adds the `crate::simd_nightly`
 // module (a portable-simd backend wrapping `core::simd`) but does NOT
@@ -272,10 +279,16 @@ pub use crate::simd_avx512::{f32_to_bf16_batch_rne, f32_to_bf16_scalar_rne};
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512bf16"))]
 pub use crate::simd_avx512::{BF16x16, BF16x8};
 
-#[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+// AVX2 baseline arm — selected by the `x86-64-v3` cargo default. Requires
+// `target_feature = "avx2"` explicitly: building x86_64-without-AVX2 (the
+// generic `x86-64` baseline = SSE2) would otherwise pick this arm and
+// then SIGILL on the `__m256` / `__m256i` intrinsics inside the wrappers.
+// Whoever wants no-AVX2 must pick the scalar fallback path (currently
+// non-x86 only — see TD-SIMD-7 in the architecture doc).
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2", not(target_feature = "avx512f")))]
 pub use crate::simd_avx512::{f32x8, f64x4, i16x16, i8x32, F32x8, F64x4, I16x16, I8x32};
 
-#[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2", not(target_feature = "avx512f")))]
 pub use crate::simd_avx2::{
     f32x16, f64x8, i16x32, i32x16, i64x8, i8x64, u32x16, u64x8, u8x64, F32Mask16, F32x16, F64Mask8, F64x8, I16x32,
     I32x16, I64x8, I8x64, U16x32, U32x16, U64x8, U8x64,

@@ -1,0 +1,16 @@
+[build]
+# Explicit AVX-512 config — `x86-64-v4`. Use with:
+#   cargo --config .cargo/config-avx512.toml build
+#   cargo --config .cargo/config-avx512.toml test
+#
+# Compiles `target_feature = "avx512f"` on, so `src/simd.rs` selects the
+# `simd_avx512` backend with native `__m512` / `__m512d` / `__m512i`
+# storage. Required for the Sapphire Rapids / Granite Rapids hot paths
+# (`f32_to_bf16_batch_rne`, the AVX-512BF16 BF16 lanes, the AMX tiles).
+#
+# Binary produced here will SIGILL on AVX2-only silicon — only use on
+# hosts that report `avx512f` in `/proc/cpuinfo`. For shipping a single
+# release artifact that adapts at process start, see the LazyLock runtime
+# dispatch path in § 7.1 of the architecture doc instead.
+[target.'cfg(target_arch = "x86_64")']
+rustflags = ["-Ctarget-cpu=x86-64-v4"]
