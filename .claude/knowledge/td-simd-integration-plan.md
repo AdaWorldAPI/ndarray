@@ -65,10 +65,15 @@ pub enum SimdProfile {
     /// ARMv8.2-A: A76 (Pi 5), Apple M-series, Snapdragon 8 Gen 2+.
     /// NEON + dotprod + fp16 + bf16+ (BFMMLA/BFDOT).
     A76DotProd,
-    /// ARMv8.0 with 2× NEON pipelines: A72 (Pi 4).
-    A72Fast,
-    /// ARMv8.0 single pipeline: A53 (Pi 3 / Pi Zero 2 W).
-    A53Baseline,
+    /// ARMv8.0 fallback: A72 (Pi 4), A53 (Pi 3 / Pi Zero 2 W), any other
+    /// ARMv8.0 part. The two cannot be distinguished by HWCAP/CPUID alone
+    /// — they expose identical ISA flags (NEON + AES + SHA2 + CRC32, no
+    /// dotprod). The difference is microarchitectural (dual vs single
+    /// NEON pipeline width). Distinguishing requires reading
+    /// /proc/cpuinfo `CPU part` (0xd03 = A53, 0xd08 = A72). Future
+    /// improvement: split into A72Fast/A53Baseline once that lookup is
+    /// wired. For now, dispatch table is identical for both.
+    Armv8Neon,
 
     // ── Fallback ──
     /// Anything else: wasm32, riscv, x86 baseline, unknown aarch64.
@@ -121,10 +126,17 @@ impl SimdProfile {
             if caps.asimd_dotprod && caps.fp16 {
                 return SimdProfile::A76DotProd;
             }
-            if caps.neon && caps.aes /* heuristic for A72 vs A53 */ {
-                return SimdProfile::A72Fast;
-            }
-            return SimdProfile::A53Baseline;
+            // A72 and A53 expose the same ISA flags (NEON + AES + SHA2 + CRC32,
+            // no dotprod/fp16/bf16). They cannot be distinguished by
+            // `is_aarch64_feature_detected!` alone — the difference is dual vs
+            // single NEON pipeline width, a microarchitectural property not
+            // reported by CPUID/HWCAP. Distinguishing requires reading
+            // /proc/cpuinfo `CPU part` (0xd03 = A53, 0xd08 = A72) or doing a
+            // microbenchmark probe. Until then, collapse both into a single
+            // ARMv8.0 profile — the dispatch tables would be identical at the
+            // ISA level (same NEON instructions); the only difference would
+            // be tile/block sizes tuned to dual vs single pipeline.
+            return SimdProfile::Armv8Neon;
         }
         SimdProfile::Scalar
     }
@@ -155,8 +167,12 @@ pub struct GemmDispatch {
 // One table per silicon profile. Compile-time const, lives in .rodata.
 
 static SPR_GEMM: GemmDispatch = GemmDispatch {
-    bf16_gemm: amx_bf16_tile_gemm,    // TDPBF16PS, 256 mul-adds/instr
-    int8_gemm: amx_int8_tile_gemm,    // TDPBUSD, 256 mul-adds/instr
+    // TDPBF16PS: 16×16 output tile, K=32 per pass → 16·16·32 = 8192 mul-adds/instr
+    // (per `src/hpc/amx_matmul.rs:15` and `bf16_tile_gemm.rs:155-157`).
+    bf16_gemm: amx_bf16_tile_gemm,
+    // TDPBUSD: 16×16 output tile, K=64 per pass → 16·16·64 = 16384 mul-adds/instr
+    // (per `src/hpc/amx_matmul.rs:15`).
+    int8_gemm: amx_int8_tile_gemm,
     f32_gemv: avx512_f32x16_gemv,     // shared with all AVX-512 profiles
 };
 static ICX_GEMM: GemmDispatch = GemmDispatch {
@@ -224,8 +240,7 @@ pub fn gemm_dispatch() -> &'static GemmDispatch {
             SimdProfile::ArrowLake => &ARROW_GEMM,
             SimdProfile::HaswellAvx2 => &HSW_GEMM,
             SimdProfile::A76DotProd => &A76_GEMM,
-            SimdProfile::A72Fast => &A72_GEMM,
-            SimdProfile::A53Baseline => &A53_GEMM,
+            SimdProfile::Armv8Neon => &ARMV8_NEON_GEMM,
             SimdProfile::Scalar => &SCALAR_GEMM,
         }
     });
@@ -402,7 +417,7 @@ For each named primitive, the silicon-by-silicon route after all 4 phases land:
 | IceLakeSp, CascadeLake, SkylakeX | F32x16 mul_add over decoded BF16 rows (`hpc/bf16_tile_gemm.rs::fallback_path`) |
 | ArrowLake, HaswellAvx2 | F32x8 mul_add over decoded BF16 rows (new) |
 | A76DotProd | NEON BFMMLA via asm-byte (new in Phase 2 TD-T10) |
-| A72Fast, A53Baseline | NEON F32x4 mul_add over decoded BF16 (new) |
+| Armv8Neon | NEON F32x4 mul_add over decoded BF16 (new) |
 | Scalar | Scalar triple loop (current `quantized.rs:444`) — kept as the reference |
 
 ### `int8_gemm_i32` (u8 × i8 → i32 matmul)
@@ -415,7 +430,7 @@ For each named primitive, the silicon-by-silicon route after all 4 phases land:
 | ArrowLake | `_mm256_dpbusd_epi32` (existing `vnni2_dot_u8_i8` at `simd_amx.rs:203`) |
 | HaswellAvx2 | Scalar i32 accumulate (no VNNI pre-Cascade Lake) |
 | A76DotProd | NEON SDOT (`vdotq_s32`, existing in `simd_neon.rs`) |
-| A72Fast, A53Baseline | NEON int16x8 widen + multiply-accumulate |
+| Armv8Neon | NEON int16x8 widen + multiply-accumulate |
 
 ### `gemv_f32` (BLAS-2 matrix-vector)
 
