@@ -220,8 +220,9 @@ pub const PREFERRED_I16_LANES: usize = 16;
 // as soon as `nightly-simd` is on.
 #[cfg(feature = "nightly-simd")]
 pub use crate::simd_nightly::{
-    BF16x16, BF16x8, F16x16, F32Mask16, F32Mask8, F32x16, F32x8, F64Mask4, F64Mask8, F64x4, F64x8, I16x16, I16x32,
-    I32x16, I64x8, I8x32, I8x64, U16x32, U32x16, U32x8, U64x4, U64x8, U8x32, U8x64,
+    f32x16, f32x8, f64x4, f64x8, i16x16, i16x32, i32x16, i64x8, i8x32, i8x64, u16x32, u32x16, u32x8, u64x4, u64x8,
+    u8x32, u8x64, BF16x16, BF16x8, F16x16, F32Mask16, F32Mask8, F32x16, F32x8, F64Mask4, F64Mask8, F64x4, F64x8,
+    I16x16, I16x32, I32x16, I64x8, I8x32, I8x64, U16x32, U32x16, U32x8, U64x4, U64x8, U8x32, U8x64,
 };
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f", not(feature = "nightly-simd")))]
@@ -288,10 +289,18 @@ pub use crate::simd_avx512::{BF16x16, BF16x8};
 // `RUSTFLAGS="-D warnings"` env, which overrides our v3 config.toml,
 // landing on x86-64 baseline → the previous tighter `avx2` predicate
 // left no matching arm).
-#[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f"), not(feature = "nightly-simd")))]
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx512f"),
+    not(feature = "nightly-simd")
+))]
 pub use crate::simd_avx512::{f32x8, f64x4, i16x16, i8x32, F32x8, F64x4, I16x16, I8x32};
 
-#[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f"), not(feature = "nightly-simd")))]
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx512f"),
+    not(feature = "nightly-simd")
+))]
 pub use crate::simd_avx2::{
     f32x16, f64x8, i16x32, i32x16, i64x8, i8x64, u32x16, u64x8, u8x64, F32Mask16, F32x16, F64Mask8, F64x8, I16x32,
     I32x16, I64x8, I8x64, U16x32, U32x16, U64x8, U8x64,
@@ -1593,7 +1602,11 @@ pub use scalar::{
 };
 
 // Other non-x86 targets (wasm, riscv, etc.): full scalar fallback.
-#[cfg(all(not(target_arch = "x86_64"), not(target_arch = "aarch64"), not(feature = "nightly-simd")))]
+#[cfg(all(
+    not(target_arch = "x86_64"),
+    not(target_arch = "aarch64"),
+    not(feature = "nightly-simd")
+))]
 pub use scalar::{
     f32x16, f32x8, f64x4, f64x8, i16x16, i16x32, i32x16, i64x8, i8x32, i8x64, u32x16, u64x8, u8x64, F32Mask16, F32x16,
     F32x8, F64Mask8, F64x4, F64x8, I16x16, I16x32, I32x16, I64x8, I8x32, I8x64, U16x32, U32x16, U64x8, U8x64,
