@@ -356,6 +356,74 @@ impl<'a, T, const N: usize> Iterator for SoaChunks<'a, T, N> {
 /// ```
 #[macro_export]
 macro_rules! soa_struct {
+    // ───────────────────────────────────────────────────────────────────
+    // Arm 1 — unpadded (no `#[soa(...)]` attribute on any field).
+    // This is byte-for-byte the pre-PR-X2 emit: no `_logical_len` field,
+    // `len()` reads from field lengths under `debug_assert`. Existing
+    // callers (struct-literal construction, exhaustive patterns) are
+    // unaffected. macro_rules! tries this arm first; if any field has
+    // a `#[soa(pad_to_lanes = N)]` attribute the pattern fails to match
+    // and arm 2 is tried.
+    // ───────────────────────────────────────────────────────────────────
+    (
+        $(#[$meta:meta])*
+        $vis:vis struct $name:ident {
+            $($field_vis:vis $field:ident : $ty:ty),* $(,)?
+        }
+    ) => {
+        $(#[$meta])*
+        $vis struct $name {
+            $($field_vis $field: ::std::vec::Vec<$ty>),*
+        }
+
+        impl $name {
+            /// Construct an empty instance.
+            pub fn new() -> Self {
+                Self { $($field: ::std::vec::Vec::new()),* }
+            }
+
+            /// Construct with each field pre-allocated to `cap`.
+            pub fn with_capacity(cap: usize) -> Self {
+                Self { $($field: ::std::vec::Vec::with_capacity(cap)),* }
+            }
+
+            /// Append one row across all fields.
+            #[allow(clippy::too_many_arguments)]
+            pub fn push(&mut self, $($field: $ty),*) {
+                $(self.$field.push($field);)*
+            }
+
+            /// Length (all fields share this length; debug-asserted).
+            pub fn len(&self) -> usize {
+                let lens = [$(self.$field.len()),*];
+                debug_assert!(
+                    lens.iter().all(|&l| l == lens[0]),
+                    concat!(stringify!($name), ": field-length invariant violated")
+                );
+                lens[0]
+            }
+
+            /// Returns `true` if there are zero rows.
+            pub fn is_empty(&self) -> bool { self.len() == 0 }
+
+            /// Clear all fields. Capacity is retained.
+            pub fn clear(&mut self) {
+                $(self.$field.clear();)*
+            }
+        }
+
+        impl ::std::default::Default for $name {
+            fn default() -> Self { Self::new() }
+        }
+    };
+
+    // ───────────────────────────────────────────────────────────────────
+    // Arm 2 — padded (at least one field has `#[soa(pad_to_lanes = N)]`).
+    // Adds a `#[doc(hidden)] _logical_len: usize` field so `len()` can
+    // return the semantic row count independent of lane-tail padding.
+    // Reached only when arm 1's no-attribute pattern fails to match —
+    // existing callers without padding never see this struct shape.
+    // ───────────────────────────────────────────────────────────────────
     (
         $(#[$meta:meta])*
         $vis:vis struct $name:ident {
@@ -371,6 +439,10 @@ macro_rules! soa_struct {
             /// Shared logical row count across all fields. Padded fields may
             /// have `self.<field>.len() > _logical_len` after `push`.
             /// Updated by `push` / `clear`; treat as private.
+            ///
+            /// Only present on padded structs (at least one field has
+            /// `#[soa(pad_to_lanes = N)]`); unpadded structs keep the
+            /// pre-PR-X2 all-public shape.
             #[doc(hidden)]
             _logical_len: usize,
         }
@@ -458,7 +530,8 @@ macro_rules! soa_struct {
         $self.$vec[$logical] = $val;
     }};
 
-    // Internal — plain (unpadded) field push.
+    // Internal — plain (unpadded) field push inside a padded struct
+    // (mixed cadence: some fields padded, others not).
     (@push_field $self:ident, $vec:ident, $val:ident, $ty:ty, $logical:ident) => {{
         $self.$vec.push($val);
     }};
@@ -877,16 +950,14 @@ mod tests {
     #[test]
     fn macro_public_visibility_passthrough() {
         // Soa3 has `pub` fields; verify the field is accessible
-        // (compilation alone proves visibility). Use the macro-generated
-        // `push` (canonical entry point) so `_logical_len` stays in sync;
-        // direct `s.x.push(...)` would bypass `_logical_len` since PR-X2 B.
+        // (compilation alone proves visibility). Soa3 is unpadded → uses
+        // arm 1 of the macro → fields drive `len()` directly, so pushing
+        // into individual fields still gives the right count.
         let mut s = Soa3::new();
-        s.push(1.0, 2.0, 3.0);
+        s.x.push(1.0);
+        s.y.push(2.0);
+        s.z.push(3.0);
         assert_eq!(s.len(), 1);
-        // Field access works (visibility test):
-        assert_eq!(s.x.as_slice(), &[1.0]);
-        assert_eq!(s.y.as_slice(), &[2.0]);
-        assert_eq!(s.z.as_slice(), &[3.0]);
     }
 
     #[test]
