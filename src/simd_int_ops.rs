@@ -530,4 +530,67 @@ mod tests {
         gemm_u8_i8(&a, &b, &mut c, m, n, k);
         assert_eq!(c, expected);
     }
+
+    /// Sanity-check timing harness — run with:
+    ///   cargo test --release simd_int_ops::tests::bench_gemm_u8_i8_vs_scalar \
+    ///       -- --ignored --nocapture
+    ///
+    /// Re-run under each cfg arm to confirm the kernel actually beats the
+    /// scalar reference (the question the user raised: "if AVX2 ends up
+    /// slower than scalar GEMM something isn't done right"):
+    ///   # scalar arm (default v3)
+    ///   cargo test --release ...
+    ///   # avxvnni ymm arm
+    ///   RUSTFLAGS='-Ctarget-cpu=alderlake' cargo test --release ...
+    ///   # avx512vnni zmm arm
+    ///   cargo --config .cargo/config-avx512.toml test --release ...
+    #[test]
+    #[ignore]
+    fn bench_gemm_u8_i8_vs_scalar() {
+        use std::time::Instant;
+
+        let sizes = [(64usize, 64, 64), (128, 128, 128), (256, 256, 256), (512, 512, 512)];
+
+        for (m, n, k) in sizes {
+            let a: Vec<u8> = (0..m * k).map(|i| (i % 251) as u8).collect();
+            let b: Vec<i8> = (0..k * n).map(|i| ((i % 127) as i8).wrapping_sub(63)).collect();
+            let mut c_simd = vec![0i32; m * n];
+            let mut c_scalar = vec![0i32; m * n];
+
+            // Warm-up — first call also resolves any one-time setup.
+            for _ in 0..2 {
+                gemm_u8_i8(&a, &b, &mut c_simd, m, n, k);
+            }
+            for _ in 0..2 {
+                crate::hpc::quantized::int8_gemm_i32(&a, &b, &mut c_scalar, m, n, k);
+            }
+
+            // Iterations scale down with size to keep total time reasonable.
+            let iters = match m {
+                0..=64 => 50,
+                65..=128 => 10,
+                129..=256 => 3,
+                _ => 1,
+            };
+
+            let t0 = Instant::now();
+            for _ in 0..iters {
+                gemm_u8_i8(&a, &b, &mut c_simd, m, n, k);
+            }
+            let dt_simd = t0.elapsed() / iters;
+
+            let t0 = Instant::now();
+            for _ in 0..iters {
+                crate::hpc::quantized::int8_gemm_i32(&a, &b, &mut c_scalar, m, n, k);
+            }
+            let dt_scalar = t0.elapsed() / iters;
+
+            assert_eq!(c_simd, c_scalar, "perf bench failed correctness at {m}x{n}x{k}");
+            let speedup = dt_scalar.as_nanos() as f64 / dt_simd.as_nanos() as f64;
+            println!(
+                "gemm_u8_i8 {m:>3}x{n:>3}x{k:>3}: simd={:>10.3?}  scalar={:>10.3?}  speedup={speedup:>6.2}x",
+                dt_simd, dt_scalar,
+            );
+        }
+    }
 }
