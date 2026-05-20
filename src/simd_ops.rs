@@ -359,15 +359,14 @@ pub fn array_chunks<T, const N: usize>(data: &[T]) -> impl Iterator<Item = &[T; 
 /// assert!(array_chunks_checked::<u8, 0>(&[0u8; 8]).is_err());
 /// ```
 #[inline]
-pub fn array_chunks_checked<T, const N: usize>(
-    data: &[T],
-) -> Result<impl Iterator<Item = &[T; N]> + '_, ()> {
+#[allow(clippy::result_unit_err)] // matches PR-X1 design § 3 `Result<_, ()>` contract; no error variants needed
+pub fn array_chunks_checked<T, const N: usize>(data: &[T]) -> Result<impl Iterator<Item = &[T; N]> + '_, ()> {
     if N == 0 {
         // `data.len() % 0` would panic; the strict-fallible contract
         // folds N==0 into Err. See P2 review on PR #167.
         return Err(());
     }
-    if data.len() % N != 0 {
+    if !data.len().is_multiple_of(N) {
         return Err(());
     }
     Ok(array_chunks::<T, N>(data))

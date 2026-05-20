@@ -742,16 +742,8 @@ mod pr_x1_as_u8x64_tests {
     /// Words land little-endian: low byte of `word[0]` is at byte offset 0.
     #[test]
     fn as_u8x64_little_endian_round_trip() {
-        let fp: Fingerprint<8> = Fingerprint::from_words([
-            0x0102030405060708u64,
-            0x1112131415161718u64,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-        ]);
+        let fp: Fingerprint<8> =
+            Fingerprint::from_words([0x0102030405060708u64, 0x1112131415161718u64, 0, 0, 0, 0, 0, 0]);
         let view = fp.as_u8x64();
         // word[0] = 0x0102030405060708 → bytes 0..8 = [08 07 06 05 04 03 02 01]
         assert_eq!(view[0], 0x08);

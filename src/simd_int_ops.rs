@@ -338,7 +338,7 @@ mod tests {
 
     #[test]
     fn min_max_i8_basic() {
-        let s: Vec<i8> = (0..100).map(|i| (i as i32 - 50) as i8).collect();
+        let s: Vec<i8> = (0..100_i32).map(|i| (i - 50) as i8).collect();
         // Range -50..=49.
         assert_eq!(min_i8(&s), -50);
         assert_eq!(max_i8(&s), 49);

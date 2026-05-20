@@ -8,7 +8,7 @@ use cblas_sys::{c_double_complex, c_float_complex, CBLAS_LAYOUT, CBLAS_TRANSPOSE
 
 thread_local! {
     /// This counter is incremented every time a gemm function is called
-    pub static CALL_COUNT: RefCell<usize> = RefCell::new(0);
+    pub static CALL_COUNT: RefCell<usize> = const { RefCell::new(0) };
 }
 
 #[rustfmt::skip]

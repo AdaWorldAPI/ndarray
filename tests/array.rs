@@ -1188,8 +1188,7 @@ fn owned_array_with_stride() {
 
 #[test]
 fn owned_array_discontiguous() {
-    use std::iter::repeat;
-    let v: Vec<_> = (0..12).flat_map(|x| repeat(x).take(2)).collect();
+    let v: Vec<_> = (0..12).flat_map(|x| std::iter::repeat_n(x, 2)).collect();
     let dim = (3, 2, 2);
     let strides = (8, 4, 2);
 

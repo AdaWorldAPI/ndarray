@@ -141,8 +141,9 @@ impl MultiLaneColumn {
     /// let bad: Arc<[u8]> = Arc::from(vec![0u8; 100]);
     /// assert!(MultiLaneColumn::new(bad).is_err());
     /// ```
+    #[allow(clippy::result_unit_err)] // matches PR-X1 design § 1 `Result<Self, ()>` contract
     pub fn new(data: Arc<[u8]>) -> Result<Self, ()> {
-        if data.len() % 64 != 0 {
+        if !data.len().is_multiple_of(64) {
             return Err(());
         }
         Ok(Self { data })
@@ -205,7 +206,11 @@ impl MultiLaneColumn {
     /// assert_eq!(lanes[1].to_array()[0], 64u8);
     /// ```
     pub fn iter_u8x64(&self) -> impl Iterator<Item = U8x64> + '_ {
-        self.data.as_chunks::<64>().0.iter().map(|chunk| U8x64::from_array(*chunk))
+        self.data
+            .as_chunks::<64>()
+            .0
+            .iter()
+            .map(|chunk| U8x64::from_array(*chunk))
     }
 
     /// Iterate the column as typed [`F32x16`] values dispatched via
