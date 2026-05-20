@@ -225,16 +225,198 @@ impl SimdProfile {
     }
 }
 
+// ────────────────────────────────────────────────────────────────────
+// Phase 3 T3.2 — compile-time pinning via `cpu-*` cargo features.
+//
+// When any `cpu-<codename>` feature is set, `PINNED_PROFILE` is `Some(_)`
+// and `simd_profile()` folds to the const at compile time — no LazyLock
+// initialisation, no branch, no atomics. Without any feature set,
+// behaviour matches the original runtime LazyLock detection.
+//
+// Mutual exclusion: at most ONE cpu-* feature may be enabled. The
+// `_PIN_COUNT` const assert below fires at compile time if more than
+// one is active, mirroring integration-plan risk #1 ("if a user sets
+// cpu-spr AND has runtime detection on Zen 4, the binary SIGILLs").
+// ────────────────────────────────────────────────────────────────────
+
+const _PIN_COUNT: u32 = 0
+    + cfg!(feature = "cpu-gnr") as u32
+    + cfg!(feature = "cpu-spr") as u32
+    + cfg!(feature = "cpu-zen4") as u32
+    + cfg!(feature = "cpu-cpl") as u32
+    + cfg!(feature = "cpu-tigerlake") as u32
+    + cfg!(feature = "cpu-icx") as u32
+    + cfg!(feature = "cpu-clx") as u32
+    + cfg!(feature = "cpu-skx") as u32
+    + cfg!(feature = "cpu-arrowlake") as u32
+    + cfg!(feature = "cpu-haswell") as u32
+    + cfg!(feature = "cpu-a76") as u32
+    + cfg!(feature = "cpu-a72") as u32
+    + cfg!(feature = "cpu-a53") as u32;
+
+const _: () = assert!(
+    _PIN_COUNT <= 1,
+    "cpu-* cargo features are mutually exclusive: enable at most one (cpu-gnr, cpu-spr, cpu-zen4, cpu-cpl, cpu-tigerlake, cpu-icx, cpu-clx, cpu-skx, cpu-arrowlake, cpu-haswell, cpu-a76, cpu-a72, cpu-a53)"
+);
+
+/// The compile-time pinned profile, or `None` when runtime detection is in
+/// effect. `Some(_)` exactly when one of the `cpu-*` cargo features is
+/// enabled; mutually exclusive features are enforced by the `_PIN_COUNT`
+/// const assert above.
+///
+/// Consumers wanting branch-free dispatch on pinned builds can match on
+/// this const directly — the optimiser folds `Some(SimdProfile::X)` into
+/// the call site and the `None`-arm runtime path is eliminated. Returned
+/// from a `const fn` so call sites in const contexts (e.g. `const` array
+/// initialisers for dispatch tables) work as well.
+pub const fn pinned_profile() -> Option<SimdProfile> {
+    #[cfg(feature = "cpu-gnr")]
+    {
+        return Some(SimdProfile::GraniteRapids);
+    }
+    #[cfg(feature = "cpu-spr")]
+    {
+        return Some(SimdProfile::SapphireRapids);
+    }
+    #[cfg(feature = "cpu-zen4")]
+    {
+        return Some(SimdProfile::Zen4Avx512);
+    }
+    #[cfg(feature = "cpu-cpl")]
+    {
+        return Some(SimdProfile::CooperLake);
+    }
+    #[cfg(feature = "cpu-tigerlake")]
+    {
+        return Some(SimdProfile::TigerLakeU);
+    }
+    #[cfg(feature = "cpu-icx")]
+    {
+        return Some(SimdProfile::IceLakeSp);
+    }
+    #[cfg(feature = "cpu-clx")]
+    {
+        return Some(SimdProfile::CascadeLake);
+    }
+    #[cfg(feature = "cpu-skx")]
+    {
+        return Some(SimdProfile::SkylakeX);
+    }
+    #[cfg(feature = "cpu-arrowlake")]
+    {
+        return Some(SimdProfile::ArrowLake);
+    }
+    #[cfg(feature = "cpu-haswell")]
+    {
+        return Some(SimdProfile::HaswellAvx2);
+    }
+    #[cfg(feature = "cpu-a76")]
+    {
+        return Some(SimdProfile::A76DotProd);
+    }
+    #[cfg(feature = "cpu-a72")]
+    {
+        return Some(SimdProfile::A72Fast);
+    }
+    #[cfg(feature = "cpu-a53")]
+    {
+        return Some(SimdProfile::A53Baseline);
+    }
+    #[allow(unreachable_code)]
+    None
+}
+
+/// `true` when a `cpu-*` cargo feature has pinned the profile at compile
+/// time, `false` when runtime detection is in use. Equivalent to
+/// `pinned_profile().is_some()` but spelled out for grep-ability.
+pub const fn is_pinned() -> bool {
+    pinned_profile().is_some()
+}
+
+// The LazyLock only exists when no cpu-* feature is set. With pinning,
+// linking the LazyLock would defeat the purpose — we want every code
+// path that touches `simd_profile()` to fold to a const.
+#[cfg(not(any(
+    feature = "cpu-gnr",
+    feature = "cpu-spr",
+    feature = "cpu-zen4",
+    feature = "cpu-cpl",
+    feature = "cpu-tigerlake",
+    feature = "cpu-icx",
+    feature = "cpu-clx",
+    feature = "cpu-skx",
+    feature = "cpu-arrowlake",
+    feature = "cpu-haswell",
+    feature = "cpu-a76",
+    feature = "cpu-a72",
+    feature = "cpu-a53",
+)))]
 static PROFILE: LazyLock<SimdProfile> = LazyLock::new(SimdProfile::detect);
 
-/// Get the resolved silicon profile, detected once at first access.
+/// Get the resolved silicon profile.
 ///
-/// All subsequent calls are a single pointer deref to a `Copy` enum —
-/// no atomics, no branching. Pair with `*Dispatch` static tables to make
-/// per-call dispatch a single indirect call after monomorphisation.
+/// **Default (no `cpu-*` feature):** detected once at first access via
+/// `LazyLock`; subsequent calls are a single pointer deref to a `Copy`
+/// enum — no atomics, no branching.
+///
+/// **Pinned (one `cpu-*` feature set):** returns the pinned const
+/// directly. The compiler folds this call into the matching variant at
+/// every call site; the LazyLock is not linked into the binary.
+///
+/// Pair with `*Dispatch` static tables to make per-call dispatch a single
+/// indirect call after monomorphisation (runtime path) or to fold to a
+/// direct call (pinned path).
+#[cfg(not(any(
+    feature = "cpu-gnr",
+    feature = "cpu-spr",
+    feature = "cpu-zen4",
+    feature = "cpu-cpl",
+    feature = "cpu-tigerlake",
+    feature = "cpu-icx",
+    feature = "cpu-clx",
+    feature = "cpu-skx",
+    feature = "cpu-arrowlake",
+    feature = "cpu-haswell",
+    feature = "cpu-a76",
+    feature = "cpu-a72",
+    feature = "cpu-a53",
+)))]
 #[inline(always)]
 pub fn simd_profile() -> SimdProfile {
     *PROFILE
+}
+
+/// Get the resolved silicon profile (pinned variant).
+///
+/// A `cpu-*` cargo feature is active: this returns the pinned constant
+/// directly, foldable at every call site. The runtime LazyLock is not
+/// linked into the binary. See the documentation on the runtime variant
+/// for the call-site contract.
+#[cfg(any(
+    feature = "cpu-gnr",
+    feature = "cpu-spr",
+    feature = "cpu-zen4",
+    feature = "cpu-cpl",
+    feature = "cpu-tigerlake",
+    feature = "cpu-icx",
+    feature = "cpu-clx",
+    feature = "cpu-skx",
+    feature = "cpu-arrowlake",
+    feature = "cpu-haswell",
+    feature = "cpu-a76",
+    feature = "cpu-a72",
+    feature = "cpu-a53",
+))]
+#[inline(always)]
+pub const fn simd_profile() -> SimdProfile {
+    // SAFETY of the unwrap: the cfg gate above guarantees at least one
+    // cpu-* feature is set, and `pinned_profile()` returns Some(_) under
+    // any of those gates. Const-evaluable since the inner cfg cascade is
+    // resolved at compile time.
+    match pinned_profile() {
+        Some(p) => p,
+        None => SimdProfile::Scalar, // unreachable; const fn can't panic cleanly
+    }
 }
 
 #[cfg(test)]
@@ -273,6 +455,11 @@ mod tests {
 
     #[test]
     fn x86_target_lands_inside_x86_family() {
+        // Pinning overrides hardware detection — the test only describes
+        // the default (runtime-detection) path.
+        if is_pinned() {
+            return;
+        }
         #[cfg(target_arch = "x86_64")]
         {
             let p = simd_profile();
@@ -290,10 +477,51 @@ mod tests {
 
     #[test]
     fn aarch64_target_lands_inside_aarch64_family() {
+        if is_pinned() {
+            return;
+        }
         #[cfg(target_arch = "aarch64")]
         {
             let p = simd_profile();
             assert!(p.is_aarch64(), "aarch64 silicon resolved as {:?}", p);
+        }
+    }
+
+    #[test]
+    fn pinning_default_is_off() {
+        // The default build (no cpu-* feature) must NOT be pinned, so
+        // downstream consumers don't get surprised by compile-time
+        // dispatch they didn't opt into.
+        #[cfg(not(any(
+            feature = "cpu-gnr",
+            feature = "cpu-spr",
+            feature = "cpu-zen4",
+            feature = "cpu-cpl",
+            feature = "cpu-tigerlake",
+            feature = "cpu-icx",
+            feature = "cpu-clx",
+            feature = "cpu-skx",
+            feature = "cpu-arrowlake",
+            feature = "cpu-haswell",
+            feature = "cpu-a76",
+            feature = "cpu-a72",
+            feature = "cpu-a53",
+        )))]
+        {
+            assert!(!is_pinned());
+            assert_eq!(pinned_profile(), None);
+        }
+    }
+
+    #[test]
+    fn pinning_consistency() {
+        // When pinning is in effect, simd_profile() must equal the
+        // pinned const — hardware detection is bypassed entirely.
+        if let Some(pinned) = pinned_profile() {
+            assert!(is_pinned());
+            assert_eq!(simd_profile(), pinned);
+        } else {
+            assert!(!is_pinned());
         }
     }
 

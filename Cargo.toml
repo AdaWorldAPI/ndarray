@@ -273,6 +273,36 @@ splat3d = ["std"]
 # quad-tree partition; the entropy coder + RDO loop land in later workers.
 codec = ["std"]
 
+# ── Phase 3 T3.2: compile-time SimdProfile pinning ───────────────────
+#
+# Each cpu-<codename> feature, when enabled, makes
+# `crate::simd::simd_profile()` fold to a const at compile time and
+# bypass the runtime LazyLock detection. Pair with the matching
+# `-Ctarget-cpu=<llvm-name>` in `.cargo/config.toml` (or `RUSTFLAGS`)
+# for full effect — the cargo feature picks the *dispatch* variant,
+# while `-Ctarget-cpu` picks the *codegen* variant. Both together
+# produce a binary that is specialised to one silicon family.
+#
+# Features are MUTUALLY EXCLUSIVE — enable at most one. A compile-time
+# assert in `src/hpc/simd_profile.rs` enforces this. Multiple
+# pinning features active = build error.
+#
+# Codename → SimdProfile variant mapping (see
+# `.claude/knowledge/td-simd-cpu-dispatch-matrix.md`):
+cpu-gnr = []          # GraniteRapids        — target-cpu=graniterapids
+cpu-spr = []          # SapphireRapids       — target-cpu=sapphirerapids
+cpu-zen4 = []         # Zen4Avx512           — target-cpu=znver4 (or znver5)
+cpu-cpl = []          # CooperLake           — target-cpu=cooperlake
+cpu-tigerlake = []    # TigerLakeU           — target-cpu=tigerlake
+cpu-icx = []          # IceLakeSp            — target-cpu=icelake-server
+cpu-clx = []          # CascadeLake          — target-cpu=cascadelake
+cpu-skx = []          # SkylakeX             — target-cpu=skylake-avx512
+cpu-arrowlake = []    # ArrowLake            — target-cpu=arrowlake
+cpu-haswell = []      # HaswellAvx2          — target-cpu=haswell (or znver3)
+cpu-a76 = []          # A76DotProd           — target-cpu=cortex-a76
+cpu-a72 = []          # A72Fast              — target-cpu=cortex-a72
+cpu-a53 = []          # A53Baseline          — target-cpu=cortex-a53
+
 # no_std polyfill for `static LazyLock` in `src/simd.rs` (sprint A12).
 # Pulls in `portable-atomic` with the `critical-section` impl plus the
 # `critical-section` runtime so we can build a once-cell-style cache for
