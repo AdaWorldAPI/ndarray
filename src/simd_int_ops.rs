@@ -90,19 +90,29 @@ pub fn dot_i16(a: &[i16], b: &[i16]) -> i64 {
 ///
 /// Build matrix (additive, filled in as paths land):
 ///
-/// | `target_feature`             | Kernel                                         |
-/// |------------------------------|------------------------------------------------|
-/// | `amx-int8` *(planned)*       | AMX `TDPBUSD` 16×16 tile (Sapphire/Granite)    |
-/// | `avxvnniint8` *(planned)*    | `VPDPBSSD` ymm (Arrow Lake / Granite Rapids)   |
-/// | `avx512vnni`                 | `VPDPBUSD` zmm (Cascade Lake → Zen 4 / SPR)    |
-/// | `neon,dotprod` *(planned)*   | NEON `SDOT` (A76+ / Apple M-series)            |
-/// | *(none)*                     | Scalar reference [`hpc::quantized::int8_gemm_i32`] |
+/// | `target_feature`           | Kernel                                                |
+/// |----------------------------|-------------------------------------------------------|
+/// | `amx-int8` *(planned)*     | AMX `TDPBUSD` 16×16 tile (Sapphire / Granite Rapids)  |
+/// | `avx512vnni`               | `VPDPBUSD` zmm — 16 i32 lanes (CLX → Zen 4 / SPR)     |
+/// | `avxvnni`                  | `VPDPBUSD` ymm — 8 i32 lanes (Alder/Arrow Lake, Zen 4)|
+/// | `neon,dotprod` *(planned)* | NEON `SDOT` (A76+ / Apple M-series)                   |
+/// | *(none)*                   | Scalar reference [`hpc::quantized::int8_gemm_i32`]    |
 ///
-/// The default `x86-64-v3` build (no VNNI) lands in the scalar arm —
-/// identical result to calling [`crate::hpc::quantized::int8_gemm_i32`]
-/// directly. To pick up VNNI, build with
-/// `--config .cargo/config-avx512.toml` (sets `target-cpu=x86-64-v4`,
-/// which enables `avx512vnni` on Cascade Lake or newer).
+/// Arm precedence is widest-vector-first: when several `target_feature`
+/// flags are set simultaneously (e.g. Sapphire Rapids enables `avx512vnni`
+/// AND `avxvnni`), the highest-bandwidth arm wins via `#[cfg]` ordering.
+///
+/// Build configs:
+///
+/// * Default `x86-64-v3` (no VNNI) → scalar arm. Same result as calling
+///   [`crate::hpc::quantized::int8_gemm_i32`] directly.
+/// * `--config .cargo/config-avx512.toml` (= Sapphire Rapids, includes
+///   VNNI + BF16 + FP16 + AMX) → the `avx512vnni` zmm arm. The future
+///   `amx-int8` arm, once landed, will preempt this on the same config.
+/// * `-Ctarget-cpu=cascadelake` / `znver4` → also lands in the
+///   `avx512vnni` zmm arm (no AMX, no BF16).
+/// * `RUSTFLAGS='-Ctarget-feature=+avxvnni'` on an AVX2 baseline →
+///   the `avxvnni` ymm arm (Arrow Lake / Alder Lake without AVX-512).
 ///
 /// # Panics
 ///
@@ -126,11 +136,30 @@ pub fn gemm_u8_i8(a: &[u8], b: &[i8], c: &mut [i32], m: usize, n: usize, k: usiz
         return;
     }
 
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avxvnni",
+        not(target_feature = "avx512vnni"),
+    ))]
+    {
+        // SAFETY: `target_feature = "avxvnni"` at this site guarantees
+        // AVX + AVX2 + AVX-VNNI (the kernel's `#[target_feature(enable)]`
+        // set). Arm only fires when AVX-512 VNNI is *not* present —
+        // Alder Lake / Arrow Lake without AVX-512, or Zen 4 builds that
+        // pinned a ymm-only target. The dispatcher is the safety invariant.
+        unsafe { crate::hpc::vnni_gemm::int8_gemm_avxvnni_ymm(a, b, c, m, n, k) };
+        return;
+    }
+
     // Fallback: scalar reference kernel. Always correct; same result the
     // VNNI / AMX / SDOT paths produce when they land. Targets without an
-    // INT8 dot-product instruction (x86-64-v3 baseline, ARMv8.0 without
-    // dotprod, wasm32, riscv) reach this arm at compile time.
-    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512vnni")))]
+    // INT8 dot-product instruction (x86-64-v3 baseline without AVX-VNNI,
+    // ARMv8.0 without dotprod, wasm32, riscv) reach this arm at compile
+    // time.
+    #[cfg(not(any(
+        all(target_arch = "x86_64", target_feature = "avx512vnni"),
+        all(target_arch = "x86_64", target_feature = "avxvnni"),
+    )))]
     {
         crate::hpc::quantized::int8_gemm_i32(a, b, c, m, n, k);
     }
