@@ -171,6 +171,38 @@ jobs:
       - name: clippy --features rayon
         run: cargo clippy -p ndarray --features rayon --lib -- -D warnings
 
+  tier4-avx512-check:
+    # Phase 6 of the SIMD integration plan (.claude/knowledge/
+    # simd-dispatch-architecture.md). Exercises the AVX-512 dispatch
+    # arm (`#[cfg(target_feature = "avx512f")]` in `src/simd.rs`) so it
+    # doesn't bit-rot under the v3-default cargo config.
+    #
+    # `cargo check` rather than `cargo test`: GH-hosted `ubuntu-latest`
+    # runners may not have AVX-512 silicon (intermittent across SKUs),
+    # so a v4-baked binary would SIGILL at run time. `check` compiles
+    # the AVX-512 code path through the type checker + borrow checker
+    # + monomorphization without producing a runnable artifact —
+    # catches type mismatches and dispatch-arm holes that the v3
+    # default never touches.
+    #
+    # The job-level `RUSTFLAGS` env overrides the global
+    # `RUSTFLAGS="-D warnings"` set at the top of this file so the v4
+    # target-cpu actually applies. Without the override, `.cargo/
+    # config-avx512.toml`'s rustflags would be ignored (env wins over
+    # config file in cargo's precedence).
+    runs-on: ubuntu-latest
+    name: tier4-avx512-check
+    env:
+      RUSTFLAGS: "-D warnings -Ctarget-cpu=x86-64-v4"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check (v4 / AVX-512 dispatch arm)
+        run: cargo check -p ndarray --features approx,serde,rayon
+      - name: cargo check (v4 / AVX-512 + hpc-extras)
+        run: cargo check -p ndarray --features approx,serde,rayon,hpc-extras
+
   blas-msrv:
     runs-on: ubuntu-latest
     name: blas-msrv
@@ -269,6 +301,7 @@ jobs:
       - tests
       - native-backend
       - hpc-stream-parallel
+      - tier4-avx512-check
       - miri
       - cross_test
       - cargo-careful
