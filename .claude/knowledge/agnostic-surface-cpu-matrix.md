@@ -1,459 +1,478 @@
-# Agnostic SIMD Surface — Per-CPU Resolution Matrix
+# Agnostic SIMD Surface — Per-CPU Resolution Matrix + Integration Plan
 
-> **Companion to:** `td-simd-tier-audit.md` (debt inventory),
-> `td-simd-integration-plan.md` (`SimdProfile` architecture),
-> `td-simd-cpu-dispatch-matrix.md` (per-CPU feature table).
->
-> **This document is the cross-tab.** For every public symbol on the
-> agnostic surface (`crate::simd::*`, `crate::simd_int_ops::*`,
-> `crate::simd_half::*`, `crate::simd_soa::*`), it lists which kernel
-> the compile-time `#[cfg]` chain (or polyfilled type) resolves to on
-> each CPU profile, **plus** the shape-ingress status (does the
-> surface take `ArrayView<N>` or does it drop to a flat `&[T]` and
-> require the caller to pass `(m, n, k)` separately).
->
-> Authored 2026-05-20. Update whenever a surface is added, a kernel
-> arm is wired, or a CPU profile is added.
+> **Companion to:** `td-simd-cpu-dispatch-matrix.md` (CPU feature presence),
+> `td-simd-tier-audit.md` (debt inventory), `td-simd-integration-plan.md`
+> (`SimdProfile` architecture). This doc is the **cross-tab**: every public
+> primitive in `crate::simd::*` × every CPU profile we target, showing the
+> kernel that actually runs on that silicon. Gaps drive the integration plan.
 
-## Goals
+## CPU profile columns (abbreviations)
 
-1. **One look-up table** for "what runs where". When debugging a perf
-   surprise, find the row, find the CPU column, see what kernel
-   actually ran.
-2. **Gap map.** Every cell that is not `✅ live` is an integration
-   target. Phase ordering in the integration plan section is derived
-   directly from the gap counts per profile.
-3. **Shape-debt inventory.** Every surface that takes `&[T] +
-   (dims…)` is debt against the consumer-facing API: it forces
-   `.as_slice().unwrap()` (panics on non-contiguous views) and loses
-   the type-level shape guarantee that `ArrayView2`/`ArrayViewMut2`
-   provides. Tagged per surface; addressed in the integration plan.
+Same set as `td-simd-cpu-dispatch-matrix.md` § "Master matrix — x86_64" and
+§ "aarch64 profiles", with two-letter codes for table width:
 
-## Legend
+| Code | Profile (Cargo cpu / SimdProfile)       | Generation         | Critical features              |
+|------|-----------------------------------------|--------------------|--------------------------------|
+| SKX  | `skylake-avx512` / `SkylakeX`           | Intel 2017         | AVX-512F+BW+DQ+CD+VL           |
+| CLX  | `cascadelake` / `CascadeLake`           | Intel 2019         | + AVX-512 VNNI                 |
+| CPL  | `cooperlake` / `CooperLake`             | Intel 2020         | + AVX-512 BF16 (no VBMI)       |
+| ICX  | `icelake-server` / `IceLakeSp`          | Intel 2021         | + VBMI, no BF16                |
+| SPR  | `sapphirerapids` / `SapphireRapids`     | Intel 2023         | + BF16+FP16+VBMI+AMX-INT8+BF16 |
+| GNR  | `graniterapids-d` / `GraniteRapids`     | Intel 2024         | + AMX-FP16                     |
+| Z4   | `znver4` / `Zen4Avx512`                 | AMD 2022           | AVX-512 + VNNI+BF16+VBMI       |
+| Z5   | `znver5` / `Zen4Avx512` (same dispatch) | AMD 2024           | same as Z4 + minor uarch       |
+| ARL  | `arrowlake` / `ArrowLake`               | Intel 2024         | AVX2+FMA + AVX-VNNI+VNNI-INT8  |
+| HSW  | `x86-64-v3` / `HaswellAvx2`             | Intel 2013→2021    | AVX2+FMA (no VNNI/AVX-512)     |
+| A76  | `cortex-a76` / `A76DotProd`             | ARMv8.2 (Pi 5, M1) | NEON+dotprod+bf16+fp16         |
+| A72  | `cortex-a72` / `A72Fast`                | ARMv8.0 (Pi 4)     | NEON only (no dotprod)         |
+| A53  | `cortex-a53` / `A53Baseline`            | ARMv8.0 (Pi 3/Z2W) | NEON, lower IPC                |
+| SCA  | scalar fallback                         | wasm32/riscv/i686  | no SIMD                        |
 
-Per cell in the kernel matrix:
+Cell legend:
 
-| Marker | Meaning |
-|---|---|
-| ✅ `kernel-name` | Compile-time `#[cfg]` arm is live and tested in the codebase. |
-| ⏳ `kernel-name` | Planned arm — kernel exists OR is straightforward to write; consumer surface or dispatch chain not yet wired. |
-| 🟡 *polyfill-transparent* | Surface routes through a polyfilled type (`F32x16`, etc.); the CPU-specific intrinsic lives one layer down. The polyfilled type's row in § A is the authoritative answer. |
-| ⚠️ `scalar` | Falls to scalar on this profile even though hardware support exists (debt). |
-| — | Profile cannot run this op (e.g. AMX op on a non-AMX CPU). |
-| n/a | Op type does not apply to this lane width / architecture. |
-
-Per cell in the **shape-ingress** column:
-
-| Marker | Meaning |
-|---|---|
-| 📐 `ArrayView` | Function accepts `ArrayView<N>` / `ArrayViewMut<N>` directly. Shape preserved through the call; strided / non-contiguous inputs handled at the boundary. |
-| 🔪 `&[T] + dims` | Function takes flat slice + explicit `(m,n,k)` or implicit length. Loses shape. Caller must call `.as_slice().unwrap()` (panics on non-contiguous arrays) and re-wrap the output. **Debt.** |
-| 🔪 `&[T]` | Function takes flat slice only (no dims — implicit single-axis). Acceptable for `add_f32`/`mul_f32`/etc. where the op is dimension-independent. **Tolerated**, not debt. |
-| 🔪 `&mut [T] += &[T]` | In-place slice op. Single-axis, no shape information needed. Tolerated. |
-
-## CPU profile columns
-
-The matrix uses these abbreviated columns (see
-`td-simd-cpu-dispatch-matrix.md` for the canonical feature table):
-
-| Abbr | Codename | Key feature delta |
-|---|---|---|
-| **SKX** | Skylake-X / -SP / -W | AVX-512F (no VNNI, no BF16, no AMX) |
-| **CLX** | Cascade Lake | + AVX-512 VNNI |
-| **CPL** | Cooper Lake | + AVX-512 BF16 (no VBMI, no AMX) |
-| **ICX** | Ice Lake-SP | + VBMI / VBMI2 / VPOPCNTDQ / BITALG / GFNI / VAES (no BF16) |
-| **SPR** | Sapphire Rapids / Emerald Rapids | + AVX-512 BF16 + FP16 + AMX (TILE / INT8 / BF16) + AVX-VNNI |
-| **GNR** | Granite Rapids | + AMX-FP16 (CPUID leaf 7.1 EAX bit 21) |
-| **Zn4** | Zen 4 (Genoa, Ryzen 7000) | AVX-512 + VNNI + BF16 + FP16 (no AMX) |
-| **Zn5** | Zen 5 | same ISA as Zen 4 |
-| **ARL** | Arrow Lake / Lunar Lake / Meteor Lake-H | AVX-VNNI + AVX-VNNI-INT8 + AVX-IFMA + AVX-NE-CONVERT (no AVX-512) |
-| **HSW** | Haswell ⇢ Coffee Lake | AVX2 + FMA only |
-| **A76** | A76+ / Apple M / Snapdragon 8G1+ | NEON + dotprod (+ bf16/fp16 on ARMv8.2+) |
-| **A72** | A72 / A53-with-crypto | NEON + AES (no dotprod) |
-| **A53** | A53 without crypto / minimal aarch64 | NEON baseline |
-| **SCA** | wasm32 / riscv / x86 baseline / unknown | Scalar |
+- ✅ `kernel-name`  — wired today, exercises the indicated kernel/intrinsic
+- ⏳ `kernel-name`  — kernel exists but **not** dispatched here yet (debt)
+- 🟦 `kernel-name`  — planned, no kernel exists yet (new code needed)
+- 🟡 polyfill-pass — the call delegates to the polyfilled SIMD *type*; that
+   type's per-CPU lowering does the work (transparent dispatch — entry on
+   table A)
+- ✗ scalar        — falls back to a triple-loop scalar reference
+- —               — N/A on this profile
 
 ---
 
 ## A. Polyfilled SIMD types — backing storage per CPU
 
-Source: `src/simd.rs`, `simd_avx512.rs`, `simd_avx2.rs`, `simd_neon.rs`,
-`simd_scalar.rs`, `simd_half.rs`. The polyfilled types are the **agnostic
-substrate** — every consumer-facing op above ultimately lowers through them.
+The polyfilled types in `crate::simd::*` ARE the CPU DTO surface (per the
+session's "polyfill is everything" rule). Consumers write `F32x16`, the
+type chooses native storage at compile time. Storage selection is driven
+by `target_feature` cfg gates in `src/simd.rs` (lines 221-366).
 
-Cells show the **backing storage / register kind** the type compiles to on each
-profile. Method-level intrinsic selection (e.g. `add` → `_mm512_add_ps` vs
-`vaddq_f32`) follows the storage.
+### Float vectors
 
-| Type | SKX | CLX | CPL | ICX | SPR | GNR | Zn4 | Zn5 | ARL | HSW | A76 | A72 | A53 | SCA |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `F32x16` | `__m512` | `__m512` | `__m512` | `__m512` | `__m512` | `__m512` | `__m512` | `__m512` | 2× `__m256` | 2× `__m256` | 4× `float32x4_t` | 4× `float32x4_t` | 4× `float32x4_t` | `[f32; 16]` |
-| `F32x8` | `__m256` | `__m256` | `__m256` | `__m256` | `__m256` | `__m256` | `__m256` | `__m256` | `__m256` | `__m256` | 2× `float32x4_t` | 2× `float32x4_t` | 2× `float32x4_t` | `[f32; 8]` |
-| `F64x8` | `__m512d` | `__m512d` | `__m512d` | `__m512d` | `__m512d` | `__m512d` | `__m512d` | `__m512d` | 2× `__m256d` | 2× `__m256d` | 4× `float64x2_t` | 4× `float64x2_t` | 4× `float64x2_t` | `[f64; 8]` |
-| `F64x4` | `__m256d` | `__m256d` | `__m256d` | `__m256d` | `__m256d` | `__m256d` | `__m256d` | `__m256d` | `__m256d` | `__m256d` | 2× `float64x2_t` | 2× `float64x2_t` | 2× `float64x2_t` | `[f64; 4]` |
-| `I8x64` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | 2× `__m256i` | 2× `__m256i` | 4× `int8x16_t` (sca polyfill) | scalar | scalar | `[i8; 64]` |
-| `I8x32` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | 2× `int8x16_t` (sca polyfill) | scalar | scalar | `[i8; 32]` |
-| `U8x64` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | 2× `__m256i` | 2× `__m256i` | 4× `uint8x16_t` (sca polyfill) | scalar | scalar | `[u8; 64]` |
-| `U8x32` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | 2× `uint8x16_t` (sca polyfill) | scalar | scalar | `[u8; 32]` |
-| `I16x32` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | 2× `__m256i` | 2× `__m256i` | scalar | scalar | scalar | `[i16; 32]` |
-| `I16x16` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | scalar | scalar | scalar | `[i16; 16]` |
-| `I32x16` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | 2× `__m256i` | 2× `__m256i` | scalar | scalar | scalar | `[i32; 16]` |
-| `I32x8` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | scalar | scalar | scalar | `[i32; 8]` |
-| `I64x8` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | 2× `__m256i` | 2× `__m256i` | scalar | scalar | scalar | `[i64; 8]` |
-| `I64x4` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | scalar | scalar | scalar | `[i64; 4]` |
-| `U16x32` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | 2× `__m256i` | 2× `__m256i` | scalar | scalar | scalar | `[u16; 32]` |
-| `U16x16` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | scalar | scalar | scalar | `[u16; 16]` |
-| `U32x16` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | 2× `__m256i` | 2× `__m256i` | scalar | scalar | scalar | `[u32; 16]` |
-| `U32x8` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | scalar | scalar | scalar | `[u32; 8]` |
-| `U64x8` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | `__m512i` | 2× `__m256i` | 2× `__m256i` | scalar | scalar | scalar | `[u64; 8]` |
-| `U64x4` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | `__m256i` | scalar | scalar | scalar | `[u64; 4]` |
-| `BF16x16` | ⚠️ `[u16; 16]` scalar | ⚠️ `[u16; 16]` scalar | ✅ `__m256bh` (AVX-512BF16) | ⚠️ `[u16; 16]` scalar | ✅ `__m256bh` (AVX-512BF16) | ✅ `__m256bh` | ✅ `__m256bh` | ✅ `__m256bh` | ⚠️ `[u16; 16]` scalar | ⚠️ `[u16; 16]` scalar | ⚠️ `[u16; 16]` scalar (NEON `bfloat16x8_t` paired — see TD-T10) | ⚠️ scalar | ⚠️ scalar | `[u16; 16]` |
-| `BF16x8` | n/a | n/a | ✅ `__m128bh` (avx512bf16) | n/a | ✅ `__m128bh` | ✅ `__m128bh` | ✅ `__m128bh` | ✅ `__m128bh` | n/a | n/a | n/a | n/a | n/a | n/a |
-| `F16x16` | ⚠️ `[u16; 16]` scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar (would be `__m256h` via avx512fp16; see TD-T11) | ⚠️ scalar (same) | ⚠️ scalar (same) | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar (NEON `float16x8_t` paired — see TD-T11) | ⚠️ scalar | ⚠️ scalar | `[u16; 16]` |
-| `F32Mask16` | `__mmask16` | `__mmask16` | `__mmask16` | `__mmask16` | `__mmask16` | `__mmask16` | `__mmask16` | `__mmask16` | 2× ymm bitmask | 2× ymm bitmask | NEON bitmask polyfill | scalar | scalar | `[bool; 16]` |
-| `F32Mask8` | `__mmask8` | `__mmask8` | `__mmask8` | `__mmask8` | `__mmask8` | `__mmask8` | `__mmask8` | `__mmask8` | ymm bitmask | ymm bitmask | NEON bitmask | scalar | scalar | `[bool; 8]` |
-| `F64Mask8` | `__mmask8` | `__mmask8` | `__mmask8` | `__mmask8` | `__mmask8` | `__mmask8` | `__mmask8` | `__mmask8` | 2× ymm bitmask | 2× ymm bitmask | NEON bitmask | scalar | scalar | `[bool; 8]` |
-| `F64Mask4` | `__mmask8` | `__mmask8` | `__mmask8` | `__mmask8` | `__mmask8` | `__mmask8` | `__mmask8` | `__mmask8` | ymm bitmask | ymm bitmask | NEON bitmask | scalar | scalar | `[bool; 4]` |
+| Type     | SKX        | CLX        | CPL        | ICX        | SPR        | GNR        | Z4         | Z5         | ARL        | HSW        | A76        | A72        | A53        | SCA        |
+|----------|------------|------------|------------|------------|------------|------------|------------|------------|------------|------------|------------|------------|------------|------------|
+| `F32x16` | `__m512`   | `__m512`   | `__m512`   | `__m512`   | `__m512`   | `__m512`   | `__m512`   | `__m512`   | 2×`__m256` | 2×`__m256` | 4×`float32x4_t` (paired-load) | 4×`float32x4_t` | 4×`float32x4_t` | `[f32;16]` |
+| `F32x8`  | `__m256`   | `__m256`   | `__m256`   | `__m256`   | `__m256`   | `__m256`   | `__m256`   | `__m256`   | `__m256`   | `__m256`   | 2×`float32x4_t` | 2×`float32x4_t` | 2×`float32x4_t` | `[f32;8]`  |
+| `F64x8`  | `__m512d`  | `__m512d`  | `__m512d`  | `__m512d`  | `__m512d`  | `__m512d`  | `__m512d`  | `__m512d`  | 2×`__m256d`| 2×`__m256d`| 4×`float64x2_t` | 4×`float64x2_t` | 4×`float64x2_t` | `[f64;8]`  |
+| `F64x4`  | `__m256d`  | `__m256d`  | `__m256d`  | `__m256d`  | `__m256d`  | `__m256d`  | `__m256d`  | `__m256d`  | `__m256d`  | `__m256d`  | 2×`float64x2_t` | 2×`float64x2_t` | 2×`float64x2_t` | `[f64;4]`  |
 
-**Notes**
+### Half-precision vectors
 
-- `⚠️ [u16; 16] scalar` for `BF16x16` / `F16x16` is the TD-SIMD-8 honesty
-  finding: storage is a plain `[u16; 16]`, every op upcasts to f32, computes
-  lane-by-lane, downcasts back. The hardware instructions (`vcvtneps2pbh` /
-  `_mm256_cvtph_ps` / NEON `bfcvt` / `vcvt_f16_f32`) exist on the listed
-  silicon but are not wired into the polyfilled type. Wired path on `BF16x16`
-  for CPL / SPR / Zen4 routes through `__m256bh` via `simd_avx512.rs`; F16x16
-  is uniformly scalar (no profile yet has hardware-backed storage).
-- Integer-lane scalar fallbacks on aarch64 (`I16x32`, `I32x*`, `I64x*`,
-  `U16x*`, `U32x*`, `U64x*`) are TD-T21 — NEON has 128-bit `int{16,32,64}x*_t`
-  quartets that would back these, but the dispatch currently selects the
-  scalar polyfill from `simd_scalar.rs`. Float lanes (`F32x16`, `F64x8`) are
-  wired to real NEON via `simd_neon::aarch64_simd` per the agent-A7 work.
-- On HSW / ARL (no AVX-512), the 16-wide x86 types decompose into two ymm
-  halves via the `simd_avx2.rs` macros. Hot operations (`add`, `mul`, FMA via
-  `mul_add`) issue paired ymm instructions; this is **not** a regression vs
-  AVX-512 in arithmetic throughput per cycle, only in lane count per
-  instruction.
+| Type      | SKX | CLX | CPL                      | ICX | SPR                      | GNR                      | Z4                       | Z5                       | ARL | HSW | A76         | A72 | A53 | SCA |
+|-----------|-----|-----|--------------------------|-----|--------------------------|--------------------------|--------------------------|--------------------------|-----|-----|-------------|-----|-----|-----|
+| `BF16x16` (avx512bf16) | — | — | `__m256bh` (`simd_avx512`) | — | `__m256bh` | `__m256bh` | `__m256bh` | `__m256bh` | — | — | — | — | — | — |
+| `BF16x16` (portable)   | `[u16;16]` | `[u16;16]` | (uses native) | `[u16;16]` | (uses native) | (uses native) | (uses native) | (uses native) | `[u16;16]` | `[u16;16]` | `[u16;16]` 🚨 | `[u16;16]` | `[u16;16]` | `[u16;16]` |
+| `BF16x8` (avx512bf16) | — | — | `__m128bh` | — | `__m128bh` | `__m128bh` | `__m128bh` | `__m128bh` | — | — | — | — | — | — |
+| `F16x16`              | `[u16;16]` 🚨 | `[u16;16]` 🚨 | `[u16;16]` 🚨 | `[u16;16]` 🚨 | `[u16;16]` 🚨 | `[u16;16]` 🚨 | `[u16;16]` 🚨 | `[u16;16]` 🚨 | `[u16;16]` 🚨 | `[u16;16]` 🚨 | `[u16;16]` 🚨 (has fp16 HW!) | `[u16;16]` | `[u16;16]` | `[u16;16]` |
 
----
+🚨 = scalar polyfill where hardware exists — see TD-SIMD-8 in
+`simd-dispatch-architecture.md` and § F gaps below.
 
-## B. Method-level kernel selection (F32x16 / F64x8 hot methods)
+### Integer vectors (lane widths matching the audit's "missing lanes" sweep PR #179)
 
-For the polyfilled-type methods where CPU divergence matters (FMA vs
-mul-then-add, hardware min/max vs select, masked reductions, etc.). Less-hot
-methods (`splat`, `from_array`, `to_array`, `copy_to_slice`, `simd_eq` etc.)
-follow the storage row above without per-CPU specialization.
+Storage shape per CPU. "AVX-512" means native `__m512i`; "2×AVX2" means
+two `__m256i` halves; "4×NEON" means four 128-bit NEON registers (e.g.
+`int8x16x4_t`); "scalar" means `[T; N]` array, no SIMD register.
 
-| Method | SKX..GNR / Zn4..Zn5 (AVX-512) | ARL / HSW (AVX2 + FMA) | A76..A53 (NEON) | SCA |
-|---|---|---|---|---|
-| `F32x16::mul_add(b, c)` | `vfmadd231ps zmm` | 2× `_mm256_fmadd_ps` | 4× `vfmaq_f32` | scalar `f32::mul_add` (FMA inst if host has FMA, else two-step) |
-| `F32x16::reduce_sum()` | `vextractf64x4` + `vaddps` tree | ymm `vhaddps` cascade | `vaddvq_f32` paired | naive `iter().sum()` |
-| `F32x16::reduce_min()` | `_mm512_reduce_min_ps` (helper) | ymm `vminps` tree | `vminvq_f32` paired | `iter().fold(INF, min)` |
-| `F32x16::simd_min(b)` | `vminps zmm` | `vminps ymm` × 2 | `vminq_f32` × 4 | scalar `min` |
-| `F32x16::simd_clamp(lo, hi)` | `vminps`+`vmaxps zmm` | ymm pair | NEON pair | scalar pair |
-| `F32x16::simd_lt(b)` → mask | `vcmpltps` → `__mmask16` | `vcmpltps ymm` → bitmask | `vcltq_f32` → NEON bitmask | `[bool; 16]` |
-| `mask.select(a, b)` | `vpblendmps zmm{k}` masked move | `vblendvps ymm` | `vbslq_f32` | scalar `if-else` |
-| `F64x8::mul_add(b, c)` | `vfmadd231pd zmm` | 2× `_mm256_fmadd_pd` | 4× `vfmaq_f64` | scalar `f64::mul_add` |
+| Type     | SKX        | CLX | CPL | ICX | SPR | GNR | Z4  | Z5  | ARL        | HSW        | A76        | A72        | A53        | SCA        |
+|----------|------------|-----|-----|-----|-----|-----|-----|-----|------------|------------|------------|------------|------------|------------|
+| `I8x64`  | `__m512i`  | ←   | ←   | ←   | ←   | ←   | ←   | ←   | 2×`__m256i`| 2×`__m256i`| 4×`int8x16_t`  | ←  | ←  | `[i8;64]`  |
+| `I8x32`  | `__m256i`  | ←   | ←   | ←   | ←   | ←   | ←   | ←   | `__m256i`  | `__m256i`  | 2×`int8x16_t`  | ←  | ←  | `[i8;32]`  |
+| `U8x64`  | `__m512i`  | ←   | ←   | ←   | ←   | ←   | ←   | ←   | 2×`__m256i`| 2×`__m256i`| 4×`uint8x16_t` | ←  | ←  | `[u8;64]`  |
+| `U8x32`  | `__m256i`  | ←   | ←   | ←   | ←   | ←   | ←   | ←   | `__m256i`  | `__m256i`  | 2×`uint8x16_t` | ←  | ←  | `[u8;32]`  |
+| `I16x32` | `__m512i`  | ←   | ←   | ←   | ←   | ←   | ←   | ←   | 2×`__m256i`| 2×`__m256i`| 4×`int16x8_t`  | ←  | ←  | `[i16;32]` |
+| `I16x16` | `__m256i`  | ←   | ←   | ←   | ←   | ←   | ←   | ←   | `__m256i`  | `__m256i`  | 2×`int16x8_t`  | ←  | ←  | `[i16;16]` |
+| `U16x32` | `__m512i`  | ←   | ←   | ←   | ←   | ←   | ←   | ←   | 2×`__m256i`⏳| 2×`__m256i`⏳| 4×`uint16x8_t`  | ←  | ←  | `[u16;32]` |
+| `U16x16` | `__m256i`  | ←   | ←   | ←   | ←   | ←   | ←   | ←   | `__m256i`  | `__m256i`  | 2×`uint16x8_t` | ←  | ←  | `[u16;16]` |
+| `I32x16` | `__m512i`  | ←   | ←   | ←   | ←   | ←   | ←   | ←   | 2×`__m256i`| 2×`__m256i`| 4×`int32x4_t`  | ←  | ←  | `[i32;16]` |
+| `I32x8`  | `__m256i`  | ←   | ←   | ←   | ←   | ←   | ←   | ←   | `__m256i`  | `__m256i`  | 2×`int32x4_t`  | ←  | ←  | `[i32;8]`  |
+| `U32x16` | `__m512i`  | ←   | ←   | ←   | ←   | ←   | ←   | ←   | 2×`__m256i`⏳| 2×`__m256i`⏳| 4×`uint32x4_t` | ←  | ←  | `[u32;16]` |
+| `U32x8`  | `__m256i`  | ←   | ←   | ←   | ←   | ←   | ←   | ←   | `__m256i`⏳ | `__m256i`⏳ | 2×`uint32x4_t` | ←  | ←  | `[u32;8]`  |
+| `I64x8`  | `__m512i`  | ←   | ←   | ←   | ←   | ←   | ←   | ←   | 2×`__m256i`| 2×`__m256i`| 4×`int64x2_t`  | ←  | ←  | `[i64;8]`  |
+| `I64x4`  | `__m256i`  | ←   | ←   | ←   | ←   | ←   | ←   | ←   | `__m256i`  | `__m256i`  | 2×`int64x2_t`  | ←  | ←  | `[i64;4]`  |
+| `U64x8`  | `__m512i`  | ←   | ←   | ←   | ←   | ←   | ←   | ←   | 2×`__m256i`| 2×`__m256i`| 4×`uint64x2_t` | ←  | ←  | `[u64;8]`  |
+| `U64x4`  | `__m256i`  | ←   | ←   | ←   | ←   | ←   | ←   | ←   | `__m256i`  | `__m256i`  | 2×`uint64x2_t` | ←  | ←  | `[u64;4]`  |
 
-**FMA semantics note.** `mul_add` on every backend, including scalar, lowers
-to a single-rounding FMA when the CPU has FMA — on HSW+ that's `vfmadd231ps`;
-on A53 that's `vfmaq_f32` (NEON FMA is mandatory in ARMv8.0). Only on a
-host without FMA (pre-Haswell x86, pre-NEON aarch64 — neither in our matrix)
-does `f32::mul_add` fall back to a two-step. **`add_mul_f32` is therefore
-single-rounding everywhere in our supported profile set.**
+⏳ = TD-T22 polyfill audit — the 256-bit `U16x16/U16x32/U32x8/U32x16`
+inner ops may currently use scalar storage under `#[target_feature]` rather
+than real `__m256i` intrinsics. Needs verification (see § J integration plan).
+
+### Mask vectors
+
+| Type      | SKX/CLX/CPL/ICX/SPR/GNR/Z4/Z5 | HSW/ARL | A76/A72/A53 | SCA |
+|-----------|-------------------------------|---------|-------------|-----|
+| `F32Mask16` | `__mmask16` (1 bit per lane) | `__m256i` (two-half mask) | 4×`uint32x4_t` (lane-mask) | `[bool;16]` |
+| `F32Mask8`  | `__mmask8`  | `__m256i` (one-half mask) | 2×`uint32x4_t` | `[bool;8]`  |
+| `F64Mask8`  | `__mmask8`  | `__m256i` (two-half mask) | 4×`uint64x2_t` | `[bool;8]`  |
+| `F64Mask4`  | `__mmask8`  | `__m256i` (one-half mask) | 2×`uint64x2_t` | `[bool;4]`  |
+
+### Critical type-method per-CPU lowerings (where it matters)
+
+Most methods (add, sub, mul, div, simd_lt, etc.) just delegate to the
+storage's native op. The non-obvious lowerings:
+
+| Method                  | SKX        | CLX        | CPL        | ICX        | SPR        | GNR        | Z4 | Z5 | ARL        | HSW        | A76        | A72        | A53        | SCA              |
+|-------------------------|------------|------------|------------|------------|------------|------------|----|----|------------|------------|------------|------------|------------|------------------|
+| `F32x16::mul_add`       | `vfmadd231ps zmm` | ← | ← | ← | ← | ← | ← | ← | 2×`vfmadd231ps ymm` (FMA3) | 2×`vfmadd231ps ymm` | 4×`vfmaq_f32` | 4×`vfmaq_f32` | 4×`vfmaq_f32` | `f32::mul_add`   |
+| `F64x8::mul_add`        | `vfmadd231pd zmm` | ← | ← | ← | ← | ← | ← | ← | 2×`vfmadd231pd ymm` | 2×`vfmadd231pd ymm` | 4×`vfmaq_f64` | 4×`vfmaq_f64` | 4×`vfmaq_f64` | `f64::mul_add`   |
+| `F32x16::simd_min/max`  | `vminps/vmaxps zmm` | ← | ← | ← | ← | ← | ← | ← | 2×`vminps/vmaxps ymm` | 2×`vminps/vmaxps ymm` | 4×`vminq/vmaxq_f32` | ← | ← | scalar loop      |
+| `F32x16::reduce_sum`    | `vaddps` + `_mm512_reduce_add_ps` ladder | ← | ← | ← | ← | ← | ← | ← | ymm reduce ladder | ymm reduce ladder | NEON paired-add ladder | ← | ← | iter sum         |
+| `simd_exp_f32`          | Remez poly (F32x16) | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | (lib expects F32x16 from polyfill — currently no scalar override; scalar reduces lane-by-lane) |
+| `simd_ln_f32`           | scalar `f32::ln` per lane 🚨 | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← (TD-T18 in audit — no SIMD path on any backend) |
 
 ---
 
-## C. Float slice ops — `simd_ops`
+## B. `simd_ops` — float slice ops
 
-All ops route through the polyfilled type (column 🟡 in CPU cells —
-the per-CPU kernel selection is the row in § A / § B). The
-**shape-ingress** column captures whether the function takes
-`ArrayView` (good) or flat `&[T]` (debt).
+All `simd_ops` slice functions are written **once** against the
+polyfilled types (`F32x16`, `F64x8`) and inherit their per-CPU lowering.
+The 🟡 cells indicate "transparent polyfill dispatch — see table A".
 
-| Function | Shape ingress | Polyfill path | Status |
-|---|---|---|---|
-| `add_f32(a, b)` → `Vec<f32>` | 🔪 `&[f32]` (tolerated, 1D op) | 🟡 `F32x16::add` | ✅ live |
-| `sub_f32`, `mul_f32`, `div_f32` | 🔪 `&[f32]` | 🟡 `F32x16::{sub,mul,div}` | ✅ live |
-| `add_f32_inplace`, `sub_f32_inplace`, `mul_f32_inplace`, `div_f32_inplace` | 🔪 `&mut [f32] += &[f32]` (tolerated) | 🟡 same | ✅ live |
-| `scale_f32(a, scalar)` | 🔪 `&[f32]` + `f32` | 🟡 `F32x16::splat` + `mul` | ✅ live |
-| `add_scalar_f32(a, scalar)` | 🔪 `&[f32]` + `f32` | 🟡 `F32x16::splat` + `add` | ✅ live |
-| `scale_f32_inplace(a, scalar)` | 🔪 `&mut [f32]` + `f32` | 🟡 same | ✅ live |
-| **`add_mul_f32(acc, a, b)` ✨ new** | 🔪 `&mut [f32], &[f32], &[f32]` | 🟡 `F32x16::mul_add` | ✅ live (PR `0a46e7f`) |
-| `add_f64`, `mul_f64`, `add_f64_inplace` | 🔪 `&[f64]` | 🟡 `F64x8::{add,mul}` | ✅ live |
-| **`add_mul_f64(acc, a, b)` ✨ new** | 🔪 `&mut [f64], &[f64], &[f64]` | 🟡 `F64x8::mul_add` | ✅ live (PR `0a46e7f`) |
-| `array_chunks::<T, N>` | 🔪 `&[T]` → iter `&[T; N]` (helper) | n/a — slicing primitive | ✅ live |
-| `array_chunks_checked::<T, N>` | 🔪 `&[T]` → `Result<iter, ()>` | n/a | ✅ live |
-| **`array_windows::<T, N>` ✨ new** | 🔪 `&[T]` → iter `&[T; N]` overlapping | n/a — slicing primitive | ✅ live (PR `0a46e7f`) |
-| **`array_windows_checked::<T, N>` ✨ new** | 🔪 `&[T]` → `Result<iter, ()>` | n/a | ✅ live (PR `0a46e7f`) |
+| Function             | SKX–GNR/Z4/Z5/ARL/HSW   | A76/A72/A53           | SCA               | Notes |
+|----------------------|-------------------------|-----------------------|-------------------|-------|
+| `add_f32`            | 🟡 F32x16 + scalar tail | 🟡                    | 🟡 + scalar tail  | binary_f32 helper |
+| `sub_f32`            | 🟡                      | 🟡                    | 🟡                |       |
+| `mul_f32`            | 🟡                      | 🟡                    | 🟡                |       |
+| `div_f32`            | 🟡                      | 🟡                    | 🟡                |       |
+| `add_f32_inplace`    | 🟡                      | 🟡                    | 🟡                | inplace_f32 helper |
+| `sub_f32_inplace`    | 🟡                      | 🟡                    | 🟡                |       |
+| `mul_f32_inplace`    | 🟡                      | 🟡                    | 🟡                |       |
+| `div_f32_inplace`    | 🟡                      | 🟡                    | 🟡                |       |
+| `scale_f32`          | 🟡                      | 🟡                    | 🟡                | F32x16::mul broadcast |
+| `add_scalar_f32`     | 🟡                      | 🟡                    | 🟡                | F32x16::add broadcast |
+| `scale_f32_inplace`  | 🟡                      | 🟡                    | 🟡                |       |
+| **`add_mul_f32`** ✅ | 🟡 F32x16::mul_add + scalar tail (f32::mul_add) | 🟡 | 🟡 | NEW (this session) — FMA into accumulator |
+| `add_f64`            | 🟡 F64x8 + scalar tail  | 🟡                    | 🟡                | binary_f64 helper |
+| `mul_f64`            | 🟡                      | 🟡                    | 🟡                |       |
+| `add_f64_inplace`    | 🟡                      | 🟡                    | 🟡                |       |
+| **`add_mul_f64`** ✅ | 🟡 F64x8::mul_add + scalar tail (f64::mul_add)  | 🟡 | 🟡 | NEW (this session) |
+| `array_chunks`       | uniform — `slice::as_chunks` (stable) | uniform | uniform | const-size **non-overlapping** |
+| `array_chunks_checked` | uniform                | uniform               | uniform           |       |
+| **`array_windows`** ✅  | uniform — index-based iter | uniform              | uniform           | NEW (this session) — const-size **overlapping** |
+| **`array_windows_checked`** ✅ | uniform           | uniform               | uniform           | NEW (this session) |
 
-**Surface debt.** None of these need `ArrayView` — they're slice-shaped
-in name (e.g. `add_f32` on two parallel buffers), single-axis, and
-shape would add no information. **Tolerated**, not debt.
-
----
-
-## D. Integer slice ops — `simd_int_ops`
-
-| Function | Shape ingress | SKX | CLX | CPL | ICX | SPR | GNR | Zn4 | Zn5 | ARL | HSW | A76 | A72 | A53 | SCA |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `add_i8(dst, src)` | 🔪 `&mut [i8] += &[i8]` | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | scalar |
-| `sub_i8(dst, src)` | 🔪 `&mut [i8]` | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | scalar |
-| `add_i16(dst, src)` | 🔪 `&mut [i16]` | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | scalar |
-| `dot_i8(a, b) -> i32` | 🔪 `&[i8], &[i8]` | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | scalar |
-| `dot_i16(a, b) -> i64` | 🔪 `&[i16], &[i16]` | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | scalar |
-| `min_i8(s) -> i8` | 🔪 `&[i8]` | 🟡 `I8x64::min` | 🟡 | 🟡 | 🟡 | 🟡 | 🟡 | 🟡 | 🟡 | 🟡 `I8x32::min` ×2 | 🟡 ×2 | 🟡 `I8x16::min` ×4 | ⚠️ scalar | ⚠️ scalar | scalar |
-| `max_i8(s) -> i8` | 🔪 `&[i8]` | 🟡 `I8x64::max` | 🟡 | 🟡 | 🟡 | 🟡 | 🟡 | 🟡 | 🟡 | 🟡 ×2 | 🟡 ×2 | 🟡 `I8x16::max` ×4 | ⚠️ scalar | ⚠️ scalar | scalar |
-| **`gemm_u8_i8(a, b, c, m, n, k)` ✨ new** | 🔪 `&[u8], &[i8], &mut [i32] + (m,n,k)` ⚠️ **debt** | ⚠️ scalar | ✅ `int8_gemm_vnni_avx512` | ✅ same | ✅ same | ✅ same | ✅ same | ✅ same | ✅ same | ✅ `int8_gemm_avxvnni_ymm` | ⚠️ scalar | ⏳ `neon_sdot_int8_gemm` | ⚠️ scalar | ⚠️ scalar | scalar |
-
-**Surface debt.** `gemm_u8_i8` flags 🔪 debt: caller must pass `(m,n,k)`
-separately and the result `&mut [i32]` is interpreted as `[m, n]`
-row-major by convention. Lifting to `ArrayView2<u8>, ArrayView2<i8>,
-ArrayViewMut2<i32>` would: (a) carry shape through the signature, (b)
-accept strided inputs without `.as_slice().unwrap()` panics, (c) match
-the `hpc::amx_matmul::matmul_*` family's shape (which already does the
-right thing). Targeted in Phase 1 of the integration plan below.
-
-The integer-elementwise ops (`add_i8`, `sub_i8`, `dot_i8`, `dot_i16`,
-`add_i16`) are CPU-uniform scalar today — they pre-date the integer
-polyfill types being widened (I8x64, I16x32, I32x16 etc. now exist).
-Lifting them to the polyfilled types would mirror what `min_i8` /
-`max_i8` already do and pick up the integer SIMD throughput for free.
+**Gap:** none — every `simd_ops` surface ride on the polyfill primitives.
+Floats are the well-served path. Any speedup at this layer requires the
+polyfilled types themselves to expose a faster primitive (e.g. a `dpbusd`
+op on `I32x16`, see § J integration plan Phase 4).
 
 ---
 
-## E. Half-precision ops — `simd_half`
+## C. `simd_int_ops` — integer slice ops
 
-| Function | Shape ingress | SKX | CLX | CPL | ICX | SPR | GNR | Zn4 | Zn5 | ARL | HSW | A76 | A72 | A53 | SCA |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `BF16x16::{add,sub,mul,fma}` | n/a (method) | ⚠️ scalar | ⚠️ scalar | 🟡 `__m256bh` ops via avx512bf16 | ⚠️ scalar | 🟡 `__m256bh` | 🟡 `__m256bh` | 🟡 `__m256bh` | 🟡 `__m256bh` | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar (NEON BFDOT/BFMMLA — TD-T10) | ⚠️ scalar | ⚠️ scalar | scalar |
-| `F16x16::{add,sub,mul,fma}` | n/a (method) | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar (avx512fp16 — TD-SIMD-8) | ⚠️ scalar (same) | ⚠️ scalar (same) | ⚠️ scalar | ⚠️ scalar (F16C upcast — TD-SIMD-8) | ⚠️ scalar (F16C upcast) | ⚠️ scalar (NEON fp16 — TD-T11) | ⚠️ scalar | ⚠️ scalar | scalar |
-| `BF16x16::to_f32x16()` | n/a | ⚠️ scalar | ⚠️ scalar | ✅ `vcvtne2ps2bf16` inverse via shift | ⚠️ scalar | ✅ same | ✅ same | ✅ same | ✅ same | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | scalar |
-| `F16x16::to_f32x16()` | n/a | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar (avx512fp16 `vcvtph2ps`) | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar (F16C `_mm256_cvtph_ps`) | ⚠️ scalar (F16C) | ⚠️ scalar (NEON `vcvt_f32_f16`) | ⚠️ scalar | ⚠️ scalar | scalar |
-| `add_bf16_inplace` | 🔪 `&mut [BF16] += &[BF16]` | ⚠️ scalar | ⚠️ scalar | ✅ `BF16x16::add` (`__m256bh`) | ⚠️ scalar | ✅ same | ✅ same | ✅ same | ✅ same | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | scalar |
-| `mul_bf16_inplace` | 🔪 `&mut [BF16]` | ⚠️ scalar | ⚠️ scalar | ✅ `BF16x16::mul` | ⚠️ scalar | ✅ | ✅ | ✅ | ✅ | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | scalar |
-| `add_f16_inplace` | 🔪 `&mut [F16] += &[F16]` | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | scalar |
-| `mul_f16_inplace` | 🔪 `&mut [F16]` | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | scalar |
-| `cast_bf16_to_f32_batch` | 🔪 `&[BF16], &mut [f32]` | ⚠️ scalar | ⚠️ scalar | ✅ `BF16x16::to_f32x16` | ⚠️ scalar | ✅ | ✅ | ✅ | ✅ | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | scalar |
-| `cast_f16_to_f32_batch` | 🔪 `&[F16], &mut [f32]` | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | scalar |
-| `cast_f32_to_bf16_batch` | 🔪 `&[f32], &mut [BF16]` | ⚠️ scalar (truncate) | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | scalar |
-| `cast_f32_to_f16_batch` | 🔪 `&[f32], &mut [F16]` | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | ⚠️ scalar | scalar |
+| Function           | SKX        | CLX        | CPL        | ICX        | SPR        | GNR        | Z4         | Z5         | ARL        | HSW        | A76        | A72        | A53        | SCA |
+|--------------------|------------|------------|------------|------------|------------|------------|------------|------------|------------|------------|------------|------------|------------|-----|
+| `add_i8`           | ✗ scalar 🚨 | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ✗ scalar |
+| `sub_i8`           | ✗ scalar 🚨 | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ✗ |
+| `add_i16`          | ✗ scalar 🚨 | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ✗ |
+| `dot_i8`           | ✗ scalar 🚨 | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ✗ |
+| `dot_i16`          | ✗ scalar 🚨 | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ✗ |
+| `min_i8`           | ✅ `vpminsb zmm` via I8x64 | ← | ← | ← | ← | ← | ← | ← | ✅ `vpminsb ymm` via I8x32 polyfill of I8x64 | ← | ✅ `vminq_s8` via I8x16 | ← | ← | ✗ scalar loop |
+| `max_i8`           | ✅ `vpmaxsb zmm` via I8x64 | ← | ← | ← | ← | ← | ← | ← | ✅ `vpmaxsb ymm` | ← | ✅ `vmaxq_s8`        | ← | ← | ✗ |
+| **`gemm_u8_i8`** ✅ | ✗ scalar (no VNNI) | ✅ `vpdpbusd zmm` (CLX+) | ← | ← | ← | ← | ← | ← | ✅ `vpdpbusd ymm` (avxvnni) | ✗ scalar | 🟦 `sdot+128-bias` (planned) | ✗ scalar | ✗ scalar | ✗ scalar |
+| `gemm_u8_i8` AMX preempt | — | — | — | — | 🟦 `tdpbusd` 16×16 tile (planned) | 🟦 `tdpbusd` | — | — | — | — | — | — | — | — |
 
-**Coverage gap.** Of the 12 `simd_half` slice surfaces, only 4
-(`add_bf16_inplace`, `mul_bf16_inplace`, `cast_bf16_to_f32_batch`, plus
-indirect via `BF16x16` methods) light up on CPL / SPR / GNR / Zen4 /
-Zen5 — the rest are uniformly scalar across every profile. F16 has
-**zero** SIMD wiring. The hardware exists (avx512fp16 on SPR+/Zen4+,
-F16C on every AVX2 chip, NEON `+fp16` on A76+) — none of it is
-plumbed. Tracked as TD-SIMD-8 in the audit.
-
-**Surface debt.** Same shape as § C — single-axis, tolerated.
+🚨 = scalar where SIMD exists. Each of these has 16-wide `I8x64::add` etc.
+already in the polyfill but the slice ops don't reach for them. Trivial fix
+once we decide to land an int-slice-ops sweep — see § J Phase 1b.
 
 ---
 
-## F. Batch converters + transcendentals — re-exported through `crate::simd::*`
+## D. `simd_half` — BF16 / F16 ops
 
-| Function | Shape ingress | Source | SKX | CLX | CPL | ICX | SPR | GNR | Zn4 | Zn5 | ARL | HSW | A76 | A72 | A53 | SCA |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `bf16_to_f32_batch` | 🔪 `&[u16], &mut [f32]` | `simd_avx512.rs` | ✅ AVX-512F shift-extract | ✅ same | ✅ avx512bf16 native | ✅ AVX-512F | ✅ avx512bf16 | ✅ same | ✅ avx512bf16 | ✅ same | ✅ AVX2 `_mm256_cvtepu16_epi32` + shift | ✅ same | ✅ NEON `vshlq_n` | ✅ same | ✅ same | scalar |
-| `f32_to_bf16_batch` | 🔪 `&[f32], &mut [u16]` | `simd_avx512.rs` | ✅ AVX-512F truncate | ✅ same | ✅ avx512bf16 `vcvtne2ps2bf16` | ✅ AVX-512F truncate | ✅ avx512bf16 | ✅ same | ✅ avx512bf16 | ✅ same | ✅ AVX2 truncate (no rne) | ✅ same | ✅ NEON `vshrn` truncate | ✅ same | ✅ same | scalar truncate |
-| `f32_to_bf16_batch_rne` | 🔪 `&[f32], &mut [u16]` | `simd_avx512.rs` | ✅ AVX-512F RNE polyfill | ✅ same | ✅ avx512bf16 (hardware RNE) | ✅ AVX-512F | ✅ avx512bf16 hw RNE | ✅ same | ✅ avx512bf16 hw RNE | ✅ same | ⚠️ AVX2 RNE polyfill | ⚠️ same | ⏳ NEON RNE polyfill | ⏳ same | ⏳ same | scalar RNE |
-| `simd_exp_f32(F32x16)` | n/a (typed) | `simd.rs` | 🟡 polyfill Remez | 🟡 | 🟡 | 🟡 | 🟡 | 🟡 | 🟡 | 🟡 | 🟡 | 🟡 | 🟡 | 🟡 | 🟡 | scalar Remez |
-| `simd_ln_f32(F32x16)` | n/a (typed) | `simd.rs` | ⚠️ scalar `f32::ln` (TD-T18) | ⚠️ same | ⚠️ same | ⚠️ same | ⚠️ same | ⚠️ same | ⚠️ same | ⚠️ same | ⚠️ same | ⚠️ same | ⚠️ same | ⚠️ same | ⚠️ same | scalar |
+The half-precision surface is **uniformly scalar** today: every op upcasts
+to f32 lane-by-lane, computes, downcasts back via round-to-nearest-even.
+This is TD-SIMD-8 in the audit — hardware paths exist on every CPU class
+but only one (`BF16x16` on avx512bf16) is wired.
 
-**Coverage gap.** `simd_ln_f32` is openly admitted scalar (TD-T18 in
-the audit). The `_rne` round-to-nearest-even path is hardware-direct
-only on AVX-512-BF16 silicon; everywhere else it's a polyfill that
-matches semantics but not throughput.
+| Function                  | SKX        | CLX        | CPL        | ICX        | SPR        | GNR        | Z4         | Z5         | ARL        | HSW        | A76        | A72        | A53        | SCA |
+|---------------------------|------------|------------|------------|------------|------------|------------|------------|------------|------------|------------|------------|------------|------------|-----|
+| `BF16x16::from_slice`     | uniform — `[u16;16]` load | ← | ← | ← | ← (native `__m256bh` swap-in) | ← | ← (native) | ← (native) | ← | ← | ← | ← | ← | ← |
+| `BF16x16::add/sub/mul`    | 🚨 scalar f32 upcast | ← | ⏳ `vdpbf16ps`-able via F32x16 mul | ← | ⏳ ditto + AMX-BF16 tile | ← | ⏳ | ⏳ | 🚨 scalar | 🚨 scalar | 🚨 scalar (BFMLALB-able) | 🚨 scalar | 🚨 scalar | 🚨 scalar |
+| `BF16x16::fma`            | 🚨 scalar f32 mul_add | ← | ⏳ `vdpbf16ps zmm` | ← | ⏳ AMX-BF16 / VDPBF16PS | ← | ⏳ VDPBF16PS | ⏳ | 🚨 scalar | 🚨 scalar | 🚨 scalar (BFMMLA-able) | 🚨 | 🚨 | 🚨 |
+| `BF16x16::to_f32x16`      | 🚨 scalar bit-shift | ← | ⏳ `vcvtne2ps2bf16` reverse | ← | ⏳ | ⏳ | ⏳ | ⏳ | 🚨 scalar | 🚨 | 🚨 (BFCVTN-able) | 🚨 | 🚨 | 🚨 |
+| `F16x16::add/sub/mul`     | 🚨 scalar | ← | ← | ← | ⏳ `vmulph zmm` (avx512fp16) | ← | ⏳ avx512fp16 | ⏳ | 🚨 | 🚨 | 🚨 (FMLA `v.8h`) | 🚨 | 🚨 | 🚨 |
+| `F16x16::fma`             | 🚨 scalar mul_add | ← | ← | ← | ⏳ `vfmadd231ph zmm` | ← | ⏳ | ⏳ | 🚨 | 🚨 | 🚨 (FMLA `v.8h`) | 🚨 | 🚨 | 🚨 |
+| `F16x16::to_f32x16`       | 🚨 scalar | ← | ← | ← | ← (could use F16C `vcvtph_ps` for ymm halves on every x86 from Ivy Bridge — TD-SIMD-8 misses this on ALL profiles) | ← | ← | ← | 🚨 | 🚨 (F16C wired-able) | 🚨 (`vcvt_f32_f16`) | 🚨 | 🚨 | 🚨 |
+| `add_bf16_inplace`        | 🟡 BF16x16 + scalar tail (inherits whatever BF16x16::add does) | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← |
+| `mul_bf16_inplace`        | 🟡 BF16x16 | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← |
+| `add_f16_inplace`         | 🟡 F16x16  | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← |
+| `mul_f16_inplace`         | 🟡 F16x16  | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← |
+| `cast_bf16_to_f32_batch`  | 🟡 BF16x16::to_f32x16 + tail | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← |
+| `cast_f16_to_f32_batch`   | 🟡 F16x16::to_f32x16  | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← |
+| `cast_f32_to_bf16_batch`  | ✗ scalar per-element 🚨 | ← | ⏳ should call `f32_to_bf16_batch_rne` (already exists for AVX-512) | ← | ⏳ AMX-BF16 / `vcvtne2ps2bf16` | ← | ⏳ | ⏳ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| `cast_f32_to_f16_batch`   | ✗ scalar per-element 🚨 | ← | ← | ← | ⏳ `vcvtps2phx zmm` (avx512fp16) | ← | ⏳ | ⏳ | ✗ (F16C wired-able) | ✗ (F16C) | ✗ (`vcvt_f16_f32`) | ✗ | ✗ | ✗ |
 
----
-
-## G. SoA carriers — `simd_soa`
-
-`MultiLaneColumn` is layout-only — every method (`iter_u8x64`,
-`iter_f32x16`, `iter_f64x8`, `iter_u64x8`) is uniform across CPUs by
-construction: it yields polyfilled-type instances and the per-CPU
-intrinsic selection lives one layer down (§ A).
-
-| Function | Shape ingress | All CPU profiles | Status |
-|---|---|---|---|
-| `MultiLaneColumn::new(Arc<[u8]>)` | 🔪 `Arc<[u8]>` (single-axis byte view) | uniform — 64-byte alignment check + `Arc` clone | ✅ live |
-| `iter_u8x64()` | n/a | 🟡 `U8x64::from_array` per chunk (§ A) | ✅ live |
-| `iter_f32x16()` | n/a | 🟡 LE-decode → `F32x16::from_array` | ✅ live |
-| `iter_f64x8()` | n/a | 🟡 LE-decode → `F64x8::from_array` | ✅ live |
-| `iter_u64x8()` | n/a | 🟡 LE-decode → `U64x8::from_array` | ✅ live |
-
-**Surface debt.** None. SoA is fundamentally a byte-shaped surface —
-the polyfilled type yields are where shape would re-enter, and that's
-the consumer's responsibility.
+**Gap, severe.** F16/BF16 is the AI/ML hot path and the entire surface is
+scalar-equivalent on every CPU. Even where F16C has been stable since 2012
+(Ivy Bridge) the dispatch doesn't reach for it. Phases F1–F3 in the
+integration plan below.
 
 ---
 
-## H. HPC surfaces with shape-preserving entry — reference shape
+## E. Batch converters + transcendentals (`crate::simd::*` direct)
 
-These are **already correct** — they take `ArrayView` / `ArrayViewMut`
-and the agnostic int8 / bf16 GEMM surfaces should match this shape.
+These don't go through the polyfilled types — they're standalone
+functions in `src/simd.rs` and `src/simd_avx512.rs`.
 
-| Function | Signature | Source |
-|---|---|---|
-| `hpc::amx_matmul::matmul_bf16_to_f32` | `(ArrayView2<BF16>, ArrayView2<BF16>, ArrayViewMut2<f32>) -> Result<(), MatmulError>` | 📐 ArrayView |
-| `hpc::amx_matmul::matmul_f32` | `(ArrayView2<f32>, ArrayView2<f32>, ArrayViewMut2<f32>) -> Result<()>` | 📐 ArrayView |
-| `hpc::amx_matmul::matmul_i8_to_i32` | `(ArrayView2<i8>, ArrayView2<i8>, ArrayViewMut2<i32>) -> Result<()>` | 📐 ArrayView |
-| `ndarray::linalg::general_mat_mul` | `(α, &ArrayBase, &ArrayBase, β, &mut ArrayBase)` | 📐 ArrayView (BLAS-3 GEMM) |
-| `ndarray::linalg::general_mat_vec_mul` | `(α, &ArrayBase, &ArrayBase, β, &mut ArrayBase)` | 📐 ArrayView (BLAS-2 GEMV) |
-
-The shape-debt fix for `simd_int_ops::gemm_u8_i8` is to mirror
-`hpc::amx_matmul::matmul_i8_to_i32`'s signature exactly: `(ArrayView2<u8>,
-ArrayView2<i8>, ArrayViewMut2<i32>) -> Result<(), MatmulError>`. Internally
-the function still drops to flat slices to feed the VNNI kernel, but the
-boundary preserves shape and the caller no longer needs `.as_slice().unwrap()`.
+| Function                          | SKX        | CLX        | CPL        | ICX        | SPR        | GNR        | Z4         | Z5         | ARL        | HSW        | A76        | A72        | A53        | SCA |
+|-----------------------------------|------------|------------|------------|------------|------------|------------|------------|------------|------------|------------|------------|------------|------------|-----|
+| `bf16_to_f32_batch`               | ✅ scalar batch via `<< 16` cast | ← | ✅ same | ← | ✅ same | ← | ✅ | ✅ | ✅ | ✅ | ✅ (NEON-batchable, currently scalar) | ✅ | ✅ | ✅ |
+| `bf16_to_f32_scalar`              | uniform — scalar reference | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← |
+| `f32_to_bf16_batch`               | ✅ scalar truncate (no rounding) | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← |
+| `f32_to_bf16_scalar`              | uniform — scalar reference | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← |
+| **`f32_to_bf16_batch_rne`**       | ✅ AVX-512-F bit-fiddle (no avx512bf16 dep!) 500–20000× faster than scalar; byte-exact vs `_mm512_cvtneps_pbh` | ← | ← | ← | ← | ← | ← | ← | ✗ scalar 🚨 (uses AVX-512-F-only ops on byte loads — could be lifted to AVX2 in principle) | ✗ scalar 🚨 | ✗ scalar 🚨 | ✗ scalar | ✗ scalar | ✗ scalar |
+| `f32_to_bf16_scalar_rne`          | uniform — reference impl, must NOT be in hot loops | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← |
+| `simd_exp_f32`                    | ✅ Remez poly via F32x16 | ← | ← | ← | ← | ← | ← | ← | ✅ (lower lane count via F32x16 polyfill of two ymm) | ✅ same | ✅ | ✅ | ✅ | ✗ scalar |
+| `simd_ln_f32`                     | ✗ scalar `f32::ln` per lane on ALL profiles 🚨 | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← | ← |
 
 ---
 
-## I. Cross-cutting gap counts
+## F. `simd_soa` — SoA carriers (`MultiLaneColumn`)
 
-Aggregating the matrix:
+Layout-only. Every method is uniform across CPUs — the per-CPU dispatch
+lives inside the polyfilled types returned by `iter_u8x64` / `iter_f32x16`
+/ `iter_f64x8` / `iter_u64x8`. See table A.
 
-| CPU profile | Cells live (✅) | Cells planned (⏳) | Cells scalar-debt (⚠️) | Coverage % (of cells that have a hardware path) |
-|---|---|---|---|---|
-| **SKX** | 6 ops × 0 SIMD-int → ~30 ⚠️ | 0 ⏳ | many | ~40 % |
-| **CLX** | + VNNI int8 GEMM | — | many | ~50 % |
-| **CPL** | + BF16 lanes (BF16x16 ops, batch converts) | — | F16 + int-i8/i16 ops still scalar | ~65 % |
-| **ICX** | + VBMI / VPOPCNTDQ (currently unused by surfaces) | VBMI byte-permute consumers | F16 scalar; int-i8/i16 scalar | ~50 % |
-| **SPR** | + AMX (currently unused) + BF16 hw RNE + FP16 (unused) | AMX-INT8 tile arm for `gemm_u8_i8`; AVX-512 FP16 for F16x16 | F16 scalar, int-i8/i16 scalar | ~60 % |
-| **GNR** | + AMX-FP16 (caps detection missing) | AMX-FP16 (CPUID 7.1 EAX:21 detection) | same as SPR | ~60 % |
-| **Zn4 / Zn5** | + BF16 lanes + AVX-VNNI | — | no AMX (architectural), F16 scalar | ~65 % |
-| **ARL** | + AVX-VNNI ymm for `gemm_u8_i8` | F16 via F16C; AVX-VNNI-INT8 for s×s gemm (separate surface) | F16 scalar, int-i8/i16 scalar | ~30 % |
-| **HSW** | F32x16/F64x8 paired-ymm baseline | AVX2 int8/i16 SIMD via `I8x32` / `I16x16` | i8/i16 scalar surfaces; no INT8 dot product | ~20 % |
-| **A76** | F32x16/F64x8 NEON-paired (verified) | NEON SDOT for `gemm_u8_i8`; NEON BFDOT/BFMMLA for BF16x16 ops (TD-T10); NEON fp16 for F16x16 (TD-T11); aarch64 int polyfills (TD-T21) | most ops scalar | ~15 % |
-| **A72** | F32x16/F64x8 NEON-paired | aarch64 int polyfills (TD-T21) for I8x32/I16x16/etc. | most ops scalar; no SDOT | ~10 % |
-| **A53** | F32x16/F64x8 NEON-paired | same as A72 | same | ~10 % |
-| **SCA** | uniform scalar (correct floor) | — | n/a | 100 % (by definition) |
+| Method                | Behavior across all CPUs                                            |
+|-----------------------|---------------------------------------------------------------------|
+| `MultiLaneColumn::new`| `Arc<[u8]>` carrier validation (multiple-of-64 byte buffer)         |
+| `len_*` / `is_empty`  | u64 arithmetic on `Arc.len()`                                       |
+| `iter_u8x64`          | `as_chunks::<64>` + `U8x64::from_array` (delegates to polyfill)     |
+| `iter_f32x16`         | `as_chunks::<64>` + per-chunk `f32::from_le_bytes` × 16 + `from_array` |
+| `iter_f64x8`          | `as_chunks::<64>` + per-chunk `f64::from_le_bytes` × 8 + `from_array`  |
+| `iter_u64x8`          | `as_chunks::<64>` + per-chunk `u64::from_le_bytes` × 8 + `from_array`  |
+| `as_bytes`            | Arc-aliased `&[u8]` view                                            |
 
-**Surface debt count** (functions taking `&[T] + (dims…)` that
-*should* take `ArrayView`):
-
-| Surface | Current | Target | Debt |
-|---|---|---|---|
-| `simd_int_ops::gemm_u8_i8` | 🔪 `&[u8], &[i8], &mut [i32], m, n, k` | 📐 `ArrayView2, ArrayView2, ArrayViewMut2` | **yes** |
-| Future `simd_int_ops::gemm_bf16_to_f32` | (planned) | 📐 `ArrayView2<BF16>, ArrayView2<BF16>, ArrayViewMut2<f32>` | design-in |
-| Future `simd_int_ops::gemv_f32` | (planned) | 📐 `(α, ArrayView2<f32>, ArrayView1<f32>, β, ArrayViewMut1<f32>)` | design-in |
-| Future `simd_int_ops::syrk_f32` | (planned) | 📐 same shape | design-in |
-
-Slice-shaped 1D ops (`add_f32`, `dot_i8`, `add_bf16_inplace`, etc.) are
-**not** debt — single-axis, slice signature is correct.
+**Gap:** none at this layer — gaps in the polyfilled types propagate
+transparently, gain from filling them is automatic.
 
 ---
 
-## J. Integration plan
+## G. Cognitive / HPC re-exports surfaced through `crate::simd::*`
 
-Phasing derived directly from the gap counts and shape-debt list above.
-Each phase is one PR-sized landing; landings are additive (no caller-side
-changes between phases).
+These are re-exports of functions that themselves use `crate::simd::*` —
+their per-CPU resolution is the polyfill's, but they're listed here for
+inventory completeness since they appear in the public `crate::simd::*` API.
 
-### Phase 0 — Shape-debt fix for `gemm_u8_i8` (1 PR, ~1h)
-
-Promote the agnostic surface to `ArrayView2 / ArrayViewMut2` (the
-shape-preserving signature). Internal dispatch chain unchanged (cfg
-arms still pick AVX-512 VNNI / AVX-VNNI / scalar); the entry-point
-boundary now mirrors `hpc::amx_matmul::matmul_i8_to_i32` exactly.
-
-* Rename old `gemm_u8_i8(&[u8], &[i8], &mut [i32], m, n, k)` →
-  `gemm_u8_i8_slices(...)` and keep as a `pub(crate)` internal that the
-  ArrayView surface lowers into.
-* New public `gemm_u8_i8(ArrayView2<u8>, ArrayView2<i8>, ArrayViewMut2<i32>)
-  -> Result<(), MatmulError>` — checks shapes, packs to contiguous if
-  strided, calls the slice form.
-* Update the ignored timing harness to use the ArrayView signature.
-
-### Phase 1 — Wire the existing-but-unwired hardware paths (3 PRs, ~6h total)
-
-Each PR adds one `#[cfg]` arm to the `gemm_u8_i8` dispatch chain. The
-kernel exists; only routing needs to land.
-
-* **1a · NEON SDOT arm** — `int8_gemm_neon_sdot` kernel using
-  `vdotq_s32` on A76 / A78 / Apple M. Calls `vdotq_s32` over 4-wide i32
-  accumulators with the +128 bias trick on the u8 LHS (since SDOT is
-  s×s). Cfg gate: `target_arch = "aarch64", target_feature = "dotprod"`.
-* **1b · AMX-INT8 arm** — wires the existing `tile_dpbusd` primitive
-  from `simd_amx.rs` and `bf16_tile_gemm.rs` into a `int8_gemm_amx_tile`
-  kernel. Cfg gate: `target_arch = "x86_64", target_feature = "amx-int8"`.
-  Lights up on SPR / GNR builds with `--config .cargo/config-avx512.toml`
-  (which now sets `-Ctarget-cpu=sapphirerapids`).
-* **1c · AVX-VNNI-INT8 symmetric arm** — new surface
-  `gemm_i8_i8(ArrayView2<i8>, ArrayView2<i8>, ArrayViewMut2<i32>)` for
-  the signed×signed case, using `VPDPBSSD` on ARL / GNR. Separate
-  function (different element-type signature than `gemm_u8_i8`).
-
-### Phase 2 — Lift integer-elementwise surfaces to the polyfilled types (2 PRs, ~4h)
-
-The integer-elementwise ops (`add_i8`, `sub_i8`, `add_i16`, `dot_i8`,
-`dot_i16`) are uniformly scalar today — predate `I8x64` / `I8x32` /
-`I16x32` / `I16x16` becoming polyfilled. Lift each to use the typed
-SIMD lanes; `min_i8` / `max_i8` already do this and are the template.
-
-* **2a · `add_i8` / `sub_i8` / `add_i16` via `I8x64` / `I16x32` chunks.**
-* **2b · `dot_i8` / `dot_i16` via VPDPBUSD / VPDPWSSD on x86 (VNNI gate)
-  + NEON `vdotq_s32` on aarch64.** Falls back to widening + horizontal
-  add on AVX-512F-only / pre-dotprod NEON.
-
-### Phase 3 — TD-SIMD-8: BF16x16 / F16x16 hardware-backing (3 PRs, ~12h)
-
-Currently the entire half-precision surface is scalar polyfill on every
-CPU. The intrinsics exist on most profiles.
-
-* **3a · BF16x16 native on CPL / SPR / GNR / Zn4 / Zn5.** Already
-  partially wired through `simd_avx512` re-exports when
-  `target_feature = "avx512bf16"`; verify and extend ops (`add`, `sub`,
-  `mul`, `fma`, `to_f32x16`) to use the `__m256bh` ops.
-* **3b · F16x16 native on SPR / GNR / Zn4 / Zn5 (avx512fp16) and on
-  ARL / HSW / Zen 1+ (F16C upcast).** Separate paths because
-  avx512fp16 is true native 16-wide; F16C is upcast-to-f32-do-op-downcast
-  via `_mm256_cvtph_ps` / `_mm256_cvtps_ph`.
-* **3c · NEON BF16 + FP16 on A76+ (TD-T10 + TD-T11).** Real
-  `bfloat16x8_t` / `float16x8_t` backing storage; ops via BFDOT /
-  BFMMLA / `vfmaq_f16` / `vcvt_f32_f16`.
-
-### Phase 4 — Wire the remaining hardware (4 PRs, parallelizable)
-
-* **4a · aarch64 integer polyfill — TD-T21.** Replace scalar fallbacks
-  for `I8x32`, `I16x16`, `I32x8`, `U16x16`, `U32x8`, `U64x4` etc. with
-  real 128-bit NEON `intNx_t` quartets on aarch64. Currently `simd.rs`
-  re-exports these from `scalar::*` on aarch64.
-* **4b · `simd_ln_f32` Remez polynomial (TD-T18).** Mirror
-  `simd_exp_f32`'s structure — currently `simd_ln_f32` is a scalar loop
-  inside an `F32x16`-shaped wrapper.
-* **4c · `cast_f32_to_bf16_batch_rne` for non-AVX-512BF16 silicon.**
-  Currently the RNE path uses an AVX-512F polyfill (verified
-  byte-exact). Extend to AVX2 (via `__m256` rounding) and NEON (via
-  `vshrn_n_u32`).
-* **4d · AMX-FP16 detection.** Add CPUID leaf 7.1 EAX:21 to
-  `simd_caps.rs::detect()` so GNR's AMX-FP16 lights up. Currently
-  `caps.amx_fp16` doesn't exist as a field, blocking the FP16 AMX arm
-  even though SPR-class CPUID detection is in place.
-
-### Phase 5 — Sweep remaining shape-debt on new surfaces (rolling)
-
-Every new agnostic surface lands with `ArrayView` ingress from day one
-(BLAS-2 GEMV, GER, SYRK, TRSM; BLAS-3 SYMM, TRMM; LAPACK; etc.). Phase
-0's `gemm_u8_i8` lift is the template.
+| Symbol                                                          | Behavior across CPUs |
+|-----------------------------------------------------------------|---------------------|
+| `Fingerprint{,1K,2K,64K}`, `VectorConfig`, `VectorWidth`        | 🟡 polyfill-pass (uses F32x16 / U64x8 internally) |
+| `hamming_distance_raw`, `popcount_raw`                          | TD-T-? — needs audit. AVX-512 VPOPCNTDQ wiring partially landed. |
+| `wht_f32`, `wht_f32_new`                                        | 🟡 polyfill-pass (uses F32x16) |
+| `CollapseGate`                                                  | 🟡 polyfill-pass |
+| `kmeans`, `squared_l2`                                          | 🟡 polyfill-pass (uses F32x16) |
+| `cosine_f32_to_f64_simd` (heel_f64x8)                           | 🟡 polyfill-pass (uses F64x8 + F32x16) |
+| `quantize_f32_to_{i2,i4,i8}`, `dequantize_{i2,i4,i8}_to_f32`    | TD-? — needs audit. Likely scalar today. |
+| `QuantParams`                                                   | data carrier, no per-CPU divergence |
+| `MultiLaneColumn`                                               | covered in § F |
+| `array_chunks` / `array_windows`                                | covered in § B |
+| `add_f32` / … / `add_mul_f32` / `add_mul_f64`                   | covered in § B |
+| `add_bf16_inplace`, `cast_*_batch`, `BF16x16`, `F16x16`         | covered in § D |
 
 ---
 
-## Verification checklist before marking a cell ✅
+## H. Currently-MISSING agnostic surfaces (mentioned in integration plans but not yet present)
 
-When promoting a cell from ⏳/⚠️ to ✅:
+Things we know we want but haven't built yet — sourced from the audit
++ integration plan + dispatch matrix companions.
 
-1. The kernel exists at `src/...` and has a `#[target_feature(enable = ...)]`
-   annotation that matches the cfg-gate selecting it.
-2. The agnostic surface's cfg chain routes to that kernel under the
-   profile's `target_feature` set.
-3. Correctness verified: parity-test against the scalar arm produces
-   byte-equal results on at least three input shapes (small / mid / tail).
-4. Performance verified: timing-harness shows the kernel beats the
-   scalar reference at representative sizes. (The sanity check from
-   PR `0134916` showed `gemm_u8_i8` AVX-VNNI ymm = 1.77×–5.88× over
-   scalar, AVX-512 VNNI zmm = 3.11×–8.04×.)
-5. Doc-comment on the surface function's build matrix updated (the
-   table inside the rustdoc of `gemm_u8_i8` is the pattern).
-6. This document's cell flipped from ⏳/⚠️ to ✅ in the same PR.
+| Symbol                                  | Purpose                                              | Currently |
+|-----------------------------------------|------------------------------------------------------|-----------|
+| `simd_int_ops::gemm_i8` (s8 × s8 → i32) | True symmetric VNNI2 surface (Arrow Lake / GNR `vpdpbssd`) | ✗ missing |
+| `simd_int_ops::gemm_u8`  (u8 × u8 → u32) | Symmetric unsigned VNNI2 (`vpdpbuud`)                | ✗ missing |
+| `simd_int_ops::dot4_u8_i8` (vector op)  | The polyfilled dot-4 primitive on `I32x{8,16}`       | ✗ missing |
+| `simd_ops::axpy_f32` (scalar α)         | BLAS-1 `y += α * x` (different from `add_mul_f32`'s vector β) | ✗ missing |
+| `simd_ops::dot_f32`                     | BLAS-1 f32 dot product                               | ✗ missing |
+| `simd_ops::nrm2_f32`, `asum_f32`        | BLAS-1 vector norms                                  | ✗ missing |
+| `simd_ops::gemv_f32`                    | BLAS-2 matrix-vector (currently TD-T7 scalar)        | ✗ missing |
+| `simd_ops::gemm_f32`                    | BLAS-3 (currently uses `matrixmultiply` workspace)   | ✗ deferred — `matrixmultiply` is the production path |
+| `simd_int_ops::dot_i32` / `dot_i32_i64` | INT32 dot, INT16×INT16→INT32 via VPDPWSSD            | ✗ missing |
+| `SimdProfile` enum + `simd_profile()`   | Phase 3 dispatch foundation per integration plan      | ✗ missing |
+| `cpu-spr` / `cpu-zen4` / etc. features  | Compile-time pin cargo features (integration plan)    | ✗ missing |
+
+---
+
+## I. Cross-cutting infrastructure status
+
+| Item                                            | Status        |
+|-------------------------------------------------|---------------|
+| **`.cargo/config.toml`** default `x86-64-v3`   | ✅ (CI baseline) |
+| **`.cargo/config-avx512.toml`** = `sapphirerapids` | ✅ (this session) |
+| **`.cargo/config-native.toml`** = `native`     | ✅ already in tree |
+| **`.cargo/config-apple-m2.toml`**              | ✅ in tree    |
+| **`.cargo/config-pi5.toml`** (A76+)            | ✅ in tree    |
+| **`.cargo/config-graviton.toml`** (A72/A76 AWS)| ✅ in tree    |
+| Cargo features `cpu-spr` / `cpu-icx` / `cpu-zen4` / etc. | ✗ missing (Phase 3) |
+| Cargo feature `runtime-dispatch` (LazyLock-once table) | ✗ missing (Phase 3) |
+| `SimdProfile` enum                              | ✗ missing (Phase 3) |
+| GitHub CI matrix (default v3, nightly-simd, avx512, aarch64) | ✅ partial — verified per CI doc |
+| Bench harness for `gemm_u8_i8`                  | ✅ this session (ignored test) |
+| Bench harness for BF16 / F16 ops                | ✗ missing    |
+| Bench harness for `simd_ops` slice ops          | ✗ missing    |
+
+---
+
+## J. INTEGRATION PLAN
+
+Filling the matrix in deliberate phases. Each item is one PR-sized unit.
+
+### Phase 0 — Already landed (this session)
+
+- ✅ `simd_int_ops::gemm_u8_i8` agnostic surface with `avx512vnni` / `avxvnni` / scalar arms (compile-time cfg chain).
+- ✅ `int8_gemm_avxvnni_ymm` kernel (VEX `vpdpbusd` ymm).
+- ✅ `int8_gemm_vnni_avx512` promoted to `pub(crate)` for direct dispatcher call.
+- ✅ `.cargo/config-avx512.toml` → `sapphirerapids` (was bare v4 without VNNI).
+- ✅ `simd_ops::array_windows` + `array_windows_checked` (overlapping const-size).
+- ✅ `simd_ops::add_mul_f32` + `add_mul_f64` (slice-level FMA, polyfill-routed).
+- ✅ "Foundation primitives — do not remove" doc-callout in `simd_ops.rs`.
+- ✅ Bench harness (`bench_gemm_u8_i8_vs_scalar`, `#[ignore]`'d).
+
+### Phase 1 — Wire what already exists (highest ROI per audit)
+
+P0 — closes 7 of 22 audit findings. From `td-simd-integration-plan.md` Phase 1, refined with this matrix's findings:
+
+| Task    | Surface affected                | Change | Effort |
+|---------|--------------------------------|--------|--------|
+| TD-T1   | `hpc::amx_matmul::matmul_bf16_to_f32` | Route AMX arm through `bf16_tile_gemm_16x16` instead of scalar `bf16_gemm_f32` | 1h |
+| TD-T2   | `hpc::amx_matmul::matmul_f32`  | AMX arm: convert to BF16, call tile kernel — drop duplicate scalar call | 30m |
+| TD-T3   | `hpc::amx_matmul::matmul_i8_to_i32` | AMX arm wires `tile_dpbusd`; non-AMX arm uses `int8_gemm_vnni` instead of scalar | 1.5h |
+| TD-T4   | `hpc::quantized::bf16_gemm_f32` | Rewrite using `F32x16::mul_add` over decoded BF16 rows | 3h |
+| TD-T6   | `backend::native::avx2::{scal,nrm2,asum}_f32/f64` | Replace scalar delegations with real `_mm256_*` intrinsics | 2h |
+| TD-T7   | `backend::native::gemv_f32/f64` | Wire through `dispatch!` macro to AVX-512/AVX2 row-dot kernels | 2h |
+
+**Plus from this matrix (new):**
+
+| Task    | Surface affected               | Change | Effort |
+|---------|--------------------------------|--------|--------|
+| MX-T1   | `simd_int_ops::{add_i8, sub_i8, add_i16, dot_i8, dot_i16}` | Lift from scalar to polyfilled `I8x{32,64}` / `I16x{16,32}` ops. They already exist as types on every backend; just route the slice ops through them. | 3h |
+| MX-T2   | `simd::cast_f32_to_bf16_batch` | Currently scalar — route to existing `f32_to_bf16_batch_rne` (AVX-512-F-only; works on every AVX-512 CPU) when available, scalar otherwise. | 30m |
+| MX-T3   | `simd::cast_f32_to_f16_batch`  | Add F16C (`vcvtps2ph`) fast path — stable since 2012 Ivy Bridge — currently scalar on every x86 profile. | 2h |
+
+**Phase 1 total: ~15–18h.** Closes all 7 CRITICAL audit findings plus the
+three new "low-hanging integer/cast" wins surfaced here.
+
+### Phase 2 — aarch64 fills (Pi 5 / Apple M-series silicon ceiling)
+
+From `td-simd-integration-plan.md` Phase 2, restated:
+
+| Task    | Surface | Change | Effort |
+|---------|---------|--------|--------|
+| TD-T10  | `simd_neon_bf16::BF16x{8,16}Stub` → real `bfloat16x8_t` pairs, BFDOT via asm-byte, BFMMLA wiring | Live BF16 NEON arithmetic | 4h |
+| TD-T11  | `simd_neon_dotprod::F16x16Stub` → real `float16x8_t` pair via asm-byte FMLA `v.8h` | Live FP16 NEON arithmetic | 4h |
+| TD-T21  | `simd::*` aarch64 integer re-exports (currently scalar polyfill from `simd_scalar::*`) → real NEON quartets | Live integer NEON for I32x8, U8x64 etc. | 8h |
+| TD-T8   | `hpc::simd_dispatch` aarch64 dispatch — currently `Self::scalar()` → real NEON wrappers | byte_find_all_neon, byte_count_neon, … | 6h |
+| MX-T4   | `simd_int_ops::gemm_u8_i8` NEON arm | New `int8_gemm_sdot_neon` kernel using `vdotq_s32` + +128-bias for u8×i8 | 4h |
+
+**Phase 2 total: ~26h.** Requires aarch64 CI runner / cross-compile verification (Pi 5 or Apple M-series).
+
+### Phase 3 — `SimdProfile` dispatch foundation
+
+From `td-simd-integration-plan.md` Phase 3 — unchanged:
+
+| Task    | Surface | Change | Effort |
+|---------|---------|--------|--------|
+| T3.1   | `src/hpc/simd_profile.rs` (new) | `SimdProfile` enum + `detect()` per dispatch matrix | 3h |
+| T3.2   | `Cargo.toml` features + `.cargo/config-{profile}.toml` per silicon profile | `cpu-spr`, `cpu-icx`, …, mutually exclusive | 4h |
+| T3.3   | `src/hpc/gemm_dispatch.rs` (new) | First `*Dispatch` table — `bf16_gemm`, `int8_gemm`, `f32_gemv` | 4h |
+| T3.4   | `src/hpc/blas1_dispatch.rs` (new) | `Blas1Dispatch` for dot/axpy/scal/nrm2/asum f32/f64 | 3h |
+| T3.5   | `backend::native::dispatch!` | Migrate from local `Tier` to `simd_profile()` | 2h |
+| T3.6   | `simd::tier()` | Alias to `simd_profile().coarse()` (preserve callers) | 2h |
+| T3.7   | `hpc::simd_dispatch::detect()` | Migrate to `simd_profile()`; add Avx512f-only, AvxVnniInt8, IceLakeSp dispatches | 3h |
+| MX-T5  | `simd_int_ops::gemm_u8_i8` | Migrate cfg chain to `GemmDispatch.int8_gemm` pointer (both compile-time pin and LazyLock-once modes) | 2h |
+
+**Phase 3 total: ~23h.** Provides the framework for Phase 4 and removes
+the three duplicate Tier enums (TD-T12/T13/T14).
+
+### Phase 4 — Intra-bucket SIMD fills (parallelizable)
+
+Each task is one PR. Restated from `td-simd-integration-plan.md` Phase 4
+with priority rebalanced based on this matrix:
+
+| Task    | Profile unlocking it     | Surface that gets faster | Effort |
+|---------|--------------------------|--------------------------|--------|
+| MX-F1 (HOT) | SPR/GNR/CPL/Z4/Z5 | `BF16x16::add/sub/mul/fma` via `vdpbf16ps`-style F32x16 mul_add (drop scalar f32 round-trip) | 4h |
+| MX-F2 (HOT) | All x86 (F16C stable since 2012) | `F16x16::to_f32x16` + `add/sub/mul/fma` via `vcvtph_ps`/`vcvtps_ph` round-trip + F32x16 ops | 4h |
+| MX-F3 (HOT) | A76 + (arm fp16) | `F16x16` arm with FMLA `v.8h` asm-byte | 3h |
+| MX-F4   | SPR/GNR (avx512fp16)     | Native `F16x{8,16}` `__m{256,512}h` storage on Sapphire+/Granite (skips F32 round-trip)| 6h |
+| MX-F5   | All AVX-512F             | `simd_ln_f32` Remez polynomial (currently scalar everywhere) | 3h |
+| MX-F6   | All AVX-512BW            | `nibble_unpack`, `nibble_above_threshold` 2× width — TD-T16 | 2h |
+| MX-F7   | HSW                      | `nibble_unpack_avx2` real `_mm256_*` (TD-T17) | 2h |
+| MX-F8   | All AVX-512F             | `distance::squared_distances_f32` 16-wide L2 (TD-T19) | 2h |
+| MX-F9   | All AVX-512F             | `spatial_hash::batch_sq_dist` 16-wide (TD-T20) | 2h |
+| MX-F10  | IceLakeSp+/SPR/GNR/Z4/Z5 | VPOPCNTDQ paths — Hamming/popcount audit | 4h |
+| MX-F11  | IceLakeSp+/SPR/GNR/Z4/Z5 | VBMI byte-permute audit beyond `simd_avx512.rs:695` | 4h |
+| MX-F12  | IceLakeSp+/Z4/Z5         | GFNI bitmatrix multiply audit | 6h |
+| MX-F13  | ARL/GNR                  | `simd_int_ops::gemm_i8` (s8×s8 → i32) via `vpdpbssd` ymm/zmm — NEW agnostic surface | 4h |
+| MX-F14  | ARL/GNR/A76(+usdot)      | `simd_int_ops::gemm_u8` (u8×u8 → u32) via `vpdpbuud` / NEON `udot` | 4h |
+| MX-F15  | SPR/GNR (amx-int8)       | AMX arm of `simd_int_ops::gemm_u8_i8` — `tile_dpbusd` 16×16 (the kernel exists in `bf16_tile_gemm.rs`-shape, needs INT8 sibling) | 6h |
+| MX-F16  | GNR (amx-fp16)           | AMX-FP16 `tdpfp16ps` — gated on CPUID.07H.1H:EAX[21], needs SimdCaps extension | 4h |
+
+**Phase 4 total: ~60h, parallelizable.** Every task is gated on Phase 3's
+`SimdProfile` infrastructure but otherwise independent. Land in any order.
+
+### Phase 5 — BLAS-graph GEMM kernel polish (the JIT-parity zone)
+
+The kernels that the user's earlier session brought to within "a few %" of
+a Cranelift-JIT inner loop, via `array_chunks` + `array_windows` + the
+polyfilled `mul_add` + `add_mul_*`. Once Phases 1–4 land, this phase
+verifies that no per-CPU regression has crept in vs the historical baseline:
+
+| Task    | Surface | Action | Effort |
+|---------|---------|--------|--------|
+| MX-P1   | `gemm_u8_i8` bench | Land the `#[ignore]` bench from Phase 0 as a published `benches/int8_gemm.rs` criterion bench so CI can detect regressions per arm | 2h |
+| MX-P2   | `gemm_u8_i8` AMX path | Verify AMX kernel reaches ≥ 2× of avx512vnni zmm on SPR (audit's expected 256:64 mul-add ratio) | 2h |
+| MX-P3   | `add_mul_f32` bench | Add as `benches/blas1.rs` — compare to scalar reference and to `f32::mul_add` per-element loop. Floor: SIMD ≥ 4× scalar at length ≥ 256 on each arm | 2h |
+| MX-P4   | `bgz17_bridge` GEMM | Re-bench against JIT path (now retired). Confirm the original within-a-few-% gap still holds with the post-Phase-4 polyfill | 4h |
+| MX-P5   | NO_REMOVE doc audit  | Walk `simd_ops.rs`, `simd_int_ops.rs`, `simd_half.rs`, `simd_soa.rs`. Confirm every helper that bench-shows ≥ 1.5× over scalar has a "Foundation primitive — do not remove" call-out with the bench number cited inline | 1h |
+
+**Phase 5 total: ~11h.**
+
+### Phase 6 — Future / out-of-current-scope
+
+| Item                           | Why deferred |
+|--------------------------------|--------------|
+| `gemm_f32` BLAS-3              | `matrixmultiply` workspace dep handles this — wrapping it is API design, not SIMD work |
+| GPU offload                    | Out of scope per CLAUDE.md "HPC Rust transformation" charter |
+| Cranelift-JIT GEMM revival     | Dropped after the BLAS-graph polyfill reached parity — only reconsider if Phase 5 shows > 5% gap |
+| `wasm32` SIMD128 backend       | `core::simd` via `nightly-simd` covers it; no per-target intrinsic wiring planned |
+| RISC-V Vector extension       | `core::simd` ditto                                                                |
+| Multi-core threading           | `matrixmultiply-threading` feature exists; deeper threading is a separate phase |
+
+---
+
+## K. How to read this doc
+
+1. **Picking the cfg config for a deployment:** find your CPU profile column.
+   Cells with ✅ on that column are wired. Cells with ⏳ are the speedups
+   that landed kernels but didn't wire (low-hanging gains).
+2. **Adding a new agnostic surface:** copy the `simd_int_ops::gemm_u8_i8`
+   pattern — compile-time `#[cfg(target_feature)]` chain on `simd_int_ops`
+   (the entry point), kernels in `hpc::vnni_gemm` / `hpc::neon_dotprod_gemm`
+   / etc., scalar fallback as the universal arm.
+3. **Verifying a per-CPU lowering is correct:** run the matching
+   `bench_*_vs_scalar` ignored test under `RUSTFLAGS='-Ctarget-cpu=$CPU'`
+   — the runner must have the silicon to execute the emitted instructions
+   (Sapphire Rapids covers everything down to and including A76's intrinsic
+   semantics; aarch64 needs a separate runner).
+4. **Spotting matrix drift:** when adding a new public symbol to
+   `crate::simd::*`, this table must grow a row. Reviewers should reject
+   PRs that add a public symbol without a corresponding matrix entry.
+
+## L. Provenance
+
+- CPU feature presence: sourced from `td-simd-cpu-dispatch-matrix.md`.
+- Audit findings (TD-T*): sourced from `td-simd-tier-audit.md`.
+- Phase 1–4 effort estimates: cross-referenced with
+  `td-simd-integration-plan.md`; new MX-T* / MX-F* items estimated in this
+  doc.
+- Polyfilled type backing: read directly from `src/simd.rs` lines 197–366
+  (cfg-gated re-exports per `target_feature`), `src/simd_avx512.rs`
+  re-exports at 2260, `src/simd_avx2.rs` (256-bit polyfills), `src/simd_neon.rs`
+  paired-load wrappers, `src/simd_scalar.rs` arrays.
+- Surface function inventory: read directly from
+  `src/simd_ops.rs`, `src/simd_int_ops.rs`, `src/simd_half.rs`,
+  `src/simd_soa.rs`, `src/simd.rs` re-exports.
+- No grep / tail / head sampling — every entry traceable to a full-file
+  Read per the workspace rule.
