@@ -163,9 +163,9 @@ op on `I32x16`, see § J integration plan Phase 4).
 
 | Function           | SKX        | CLX        | CPL        | ICX        | SPR        | GNR        | Z4         | Z5         | ARL        | HSW        | A76        | A72        | A53        | SCA |
 |--------------------|------------|------------|------------|------------|------------|------------|------------|------------|------------|------------|------------|------------|------------|-----|
-| `add_i8`           | ✗ scalar 🚨 | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ✗ scalar |
-| `sub_i8`           | ✗ scalar 🚨 | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ✗ |
-| `add_i16`          | ✗ scalar 🚨 | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ✗ |
+| `add_i8` ✅ MX-T1a | ✅ `_mm512_add_epi8` via `I8x64` | ← | ← | ← | ← | ← | ← | ← | ✅ `_mm256_add_epi8` ×2 via `I8x64` polyfill | ← | ✅ `vaddq_s8` via `I8x16` | ← | ← | ✅ scalar wrapping_add |
+| `sub_i8` ✅ MX-T1a | ✅ `_mm512_sub_epi8`         | ← | ← | ← | ← | ← | ← | ← | ✅ `_mm256_sub_epi8` ×2          | ← | ✅ `vsubq_s8`            | ← | ← | ✅ scalar wrapping_sub |
+| `add_i16` ✅ MX-T1a| ✅ `_mm512_add_epi16` via `I16x32` | ← | ← | ← | ← | ← | ← | ← | ✅ `_mm256_add_epi16` via `I16x32` polyfill | ← | ✅ `vaddq_s16` via `I16x8` | ← | ← | ✅ scalar wrapping_add |
 | `dot_i8`           | ✗ scalar 🚨 | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ✗ |
 | `dot_i16`          | ✗ scalar 🚨 | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ←         | ✗ |
 | `min_i8`           | ✅ `vpminsb zmm` via I8x64 | ← | ← | ← | ← | ← | ← | ← | ✅ `vpminsb ymm` via I8x32 polyfill of I8x64 | ← | ✅ `vminq_s8` via I8x16 | ← | ← | ✗ scalar loop |
@@ -328,6 +328,76 @@ Filling the matrix in deliberate phases. Each item is one PR-sized unit.
 - ✅ `simd_ops::add_mul_f32` + `add_mul_f64` (slice-level FMA, polyfill-routed).
 - ✅ "Foundation primitives — do not remove" doc-callout in `simd_ops.rs`.
 - ✅ Bench harness (`bench_gemm_u8_i8_vs_scalar`, `#[ignore]`'d).
+- ✅ MX-T1a — `add_i8` / `sub_i8` / `add_i16` lifted from scalar to polyfilled
+  `I8x64` / `I8x16` / `I16x32` / `I16x8` (matrix § C cells flipped).
+
+### Design rule for AMX / F16 / FP16 paths: inline asm-byte encoding
+
+> **Hard constraint for Phases 1b (AMX-INT8), 3b (AVX-512-FP16),
+> 3c (NEON BF16+FP16), 4d (AMX-FP16):** every instruction that lacks
+> stable Rust intrinsics on the project's pinned 1.95 stable toolchain
+> MUST be emitted via raw-`.byte`-string inline asm, matching the
+> pattern already proven in `src/simd_amx.rs` (lines 16-19 of its
+> module docs). Rationale:
+>
+> 1. **AMX intrinsics are nightly-only** (Rust issue #126622). The
+>    project pins Rust 1.95 stable per `CLAUDE.md` line 9. The
+>    existing `simd_amx.rs` lifts AMX onto stable today via
+>    `asm!(".byte 0xc4, 0xe2, 0x7b, 0x49, 0xc0", options(nostack, nomem))`
+>    for TILEZERO and equivalent encodings for TDPBUSD / TDPBF16PS.
+> 2. **AVX-512-FP16 intrinsics** (`_mm512_add_ph`, `_mm512_fmadd_ph`,
+>    `vcvtph2ps`/`vcvtps2ph` zmm forms) — historically have had
+>    stabilization churn. Asm-byte encoding skips the version dance.
+> 3. **NEON FP16** (FMLA `v.8h`, BFDOT, BFMMLA, USDOT) — likewise
+>    nightly-gated for several Rust releases. The existing
+>    `simd_neon_bf16.rs` and `simd_neon_dotprod.rs` stub files (TD-T10
+>    / TD-T11) are placeholders meant to be filled with asm-byte
+>    encodings per the same pattern.
+>
+> Concrete recipe:
+>
+> ```rust
+> #[cfg(target_arch = "x86_64")]
+> #[target_feature(enable = "amx-tile,amx-int8")]
+> unsafe fn tdpbusd_t0_t1_t2() {
+>     // TDPBUSD tmm0, tmm1, tmm2 — opcode VEX C4 E2 73 5E C1
+>     // 5E = TDPBUSD, prefix bits = unsigned-by-signed selector
+>     // C1 = ModR/M (tmm0 dest, tmm1 src1, tmm2 src2 via /r encoding)
+>     // The byte sequence is the canonical VEX form documented in
+>     // Intel SDM Vol. 2D § TDPBUSD; verify with `objdump -d` of a
+>     // gas-assembled stub the first time it lands.
+>     core::arch::asm!(
+>         ".byte 0xc4, 0xe2, 0x73, 0x5e, 0xc1",
+>         options(nostack, nomem)
+>     );
+> }
+> ```
+>
+> Same pattern for NEON F16:
+>
+> ```rust
+> #[cfg(target_arch = "aarch64")]
+> #[target_feature(enable = "neon,fp16")]
+> unsafe fn fmla_v8h(_acc: &mut float16x8_t, _a: float16x8_t, _b: float16x8_t) {
+>     // FMLA v0.8h, v1.8h, v2.8h — encoding 0x0e40_cc20 | (Rd << 0) | (Rn << 5) | (Rm << 16)
+>     // Same byte-encoded pattern as simd_amx.rs uses for AMX on x86.
+>     core::arch::asm!(
+>         ".inst 0x0e42cc20",   // FMLA v0.8h, v1.8h, v2.8h
+>         options(nostack, nomem)
+>     );
+> }
+> ```
+>
+> **Verification harness:** each newly-encoded instruction lands with an
+> `objdump -d` check in the doc-comment showing the gas-disassembly
+> matches the intended mnemonic. The first such verification in this
+> project is recorded in `simd_amx.rs:16-19` ("verified working" line).
+>
+> **What this rule does NOT apply to:** instructions with already-stable
+> intrinsics on Rust 1.95 — `_mm512_dpbusd_epi32` (avx512vnni),
+> `_mm256_dpbusd_avx_epi32` (avxvnni), `_mm256_cvtph_ps` (F16C),
+> `_mm512_cvtne2ps2bf16` (avx512bf16). Those continue to use the
+> intrinsics directly per the existing `simd_avx512.rs` patterns.
 
 ### Phase 1 — Wire what already exists (highest ROI per audit)
 
