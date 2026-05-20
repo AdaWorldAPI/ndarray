@@ -30,7 +30,7 @@
 //!     .map(|i| Item { a: i as f32, b: (i * 2) as f32, c: (i * 3) as f32 })
 //!     .collect();
 //! bulk_apply(&mut items, 16, |chunk, _start| {
-//!     let soa = aos_to_soa::<_, 3, _>(chunk, |it| [it.a, it.b, it.c]);
+//!     let soa = aos_to_soa::<_, _, 3, _>(chunk, |it| [it.a, it.b, it.c]);
 //!     // ... per-field SIMD-style loops over soa.field(0), soa.field(1), ...
 //!     let _ = soa;
 //! });
@@ -315,7 +315,7 @@ mod tests {
 
         let mut chunk_count = 0;
         bulk_apply(&mut items, 16, |chunk, start_idx| {
-            let soa = aos_to_soa::<_, 3, _>(chunk, |it| [it.a, it.b, it.c]);
+            let soa = aos_to_soa::<_, _, 3, _>(chunk, |it| [it.a, it.b, it.c]);
             assert_eq!(soa.len(), chunk.len());
             // First row of the chunk corresponds to absolute index start_idx.
             assert_eq!(soa.field(0)[0], start_idx as f32);
