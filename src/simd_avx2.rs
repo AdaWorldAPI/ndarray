@@ -2562,6 +2562,17 @@ pub fn f16_kahan_dot(a: &[u16], b: &[u16]) -> f32 {
 ///
 /// Analyzes the input range, computes scale that maps |max| → 1.0,
 /// then uses that scale for all encode/decode operations.
+///
+/// # NOT a SIMD type
+///
+/// This is a *scaling utility* — it normalizes value ranges before
+/// f32 → f16 conversion so the dynamic range maps cleanly into f16's
+/// `[-65504, 65504]` window. The SIMD f16 wrapper is `simd_half::F16x16`
+/// (also a scalar polyfill on stable — see TD-SIMD-8 in
+/// `.claude/knowledge/simd-dispatch-architecture.md`). Earlier versions
+/// of the architecture doc's parity matrix mistakenly listed
+/// `F16Scaler` in the `F16x16` row's AVX2 column; the two are
+/// unrelated.
 #[derive(Debug, Clone, Copy)]
 pub struct F16Scaler {
     /// Multiply by this before f32→f16 (shifts into sweet spot)

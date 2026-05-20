@@ -144,31 +144,73 @@ tracked as TD-SIMD-3.)
 | Lane type | `simd_avx512` (v4) | `simd_avx2` (v3) | `simd_neon` (aarch64) | `simd_nightly` | `scalar` |
 |---|---|---|---|---|---|
 | `F32x16` | ✅ `__m512` | 🟡 `(f32x8, f32x8)` | 🟡 `[float32x4_t; 4]` | 🔵 `core::simd::f32x16` | ✅ `[f32; 16]` |
-| `F32x8` | ✅ `__m256` | ❌ | ⛔ | 🔵 | ✅ |
+| `F32x8` | ✅ `__m256` | ✅ `__m256` (in `simd_avx512`) | ⛔ | 🔵 | ✅ |
 | `F64x8` | ✅ `__m512d` | 🟡 `(f64x4, f64x4)` | 🟡 `[float64x2_t; 4]` | 🔵 | ✅ |
-| `F64x4` | ✅ `__m256d` | ❌ | ⛔ | 🔵 | ✅ |
+| `F64x4` | ✅ `__m256d` | ✅ `__m256d` (in `simd_avx512`) | ⛔ | 🔵 | ✅ |
 | `U8x64` | ✅ `__m512i` | 🟠 `[u8; 64]` polyfill | ❌ | 🔵 | ✅ |
 | `U8x32` | ✅ `__m256i` | ✅ `__m256i` | ❌ | 🔵 | ✅ |
 | `U16x32` | ✅ `__m512i` | 🟠 `[u16; 32]` polyfill | ❌ | 🔵 | ✅ |
+| `U16x16` | ❌ | ❌ | ❌ | ❌ | ❌ |
 | `U32x16` | ✅ `__m512i` | 🟠 `[u32; 16]` polyfill | ❌ | 🔵 | ✅ |
+| `U32x8` | ❌ | ❌ | ❌ | 🔵 `core::simd::u32x8` | ❌ |
 | `U64x8` | ✅ `__m512i` | 🟠 `[u64; 8]` polyfill | ❌ | 🔵 | ✅ |
+| `U64x4` | ❌ | ❌ | ❌ | 🔵 `core::simd::u64x4` | ❌ |
 | `I8x32` | ✅ `__m256i` | ✅ `__m256i` (in `simd_avx512`) | ❌ | 🔵 | ✅ |
 | `I8x64` | ✅ `__m512i` | 🟠 `[i8; 64]` polyfill | ❌ | 🔵 | ✅ |
 | `I16x16` | ✅ `__m256i` | ✅ `__m256i` (in `simd_avx512`) | ❌ | 🔵 | ✅ |
 | `I16x32` | ✅ `__m512i` | 🟠 `[i16; 32]` polyfill | ❌ | 🔵 | ✅ |
 | `I32x16` | ✅ `__m512i` | 🟠 `[i32; 16]` polyfill | ❌ | 🔵 | ✅ |
+| `I32x8` | ❌ | ❌ | ❌ | ❌ | ❌ |
 | `I64x8` | ✅ `__m512i` | 🟠 `[i64; 8]` polyfill | ❌ | 🔵 | ✅ |
+| `I64x4` | ❌ | ❌ | ❌ | ❌ | ❌ |
 | `BF16x8` | ✅ `__m128bh` | ❌ | ❌ | 🔵 | ✅ |
 | `BF16x16` | ✅ `__m256bh` | ❌ | ❌ | 🔵 | ✅ |
-| `F16x16` | ❌ | 🟡 `F16Scaler` (scalar) | ❌ | 🔵 | ✅ |
+| `F16x16` | ❌ | 🟠 `[u16; 16]` polyfill (`simd_half`) | 🟠 `[u16; 16]` polyfill (`simd_half`) | 🔵 | ✅ |
 | `F32Mask16` | ✅ `__mmask16` | ✅ `u16` bitmask | ✅ `u16` bitmask | 🔵 | ✅ |
+| `F32Mask8` | ❌ exposed (avail via `__mmask8`) | ❌ exposed (avail in `simd_scalar` as `F32Mask8Scalar`) | ❌ exposed | 🔵 | ✅ via `F32Mask8Scalar` |
 | `F64Mask8` | ✅ `__mmask8` | ✅ `u8` bitmask | ✅ `u8` bitmask | 🔵 | ✅ |
+| `F64Mask4` | ❌ exposed (avail via `__mmask8`) | ❌ exposed (avail in `simd_scalar` as `F64Mask4Scalar`) | ❌ exposed | 🔵 | ✅ via `F64Mask4Scalar` |
 
-**Aarch64-native narrower types** (only useful directly when the
-consumer wants 128-bit shapes): `I8x16`, `I16x8`, `U8x16`, `U16x8`,
-`U32x4`, `U64x2`, `I32x4`, `I64x2`. These are not in the cross-arch
-parity surface — consumers requesting 256-bit / 512-bit shapes go
-through the composed wrappers.
+### Sub-byte lanes (not a SIMD wrapper anywhere)
+
+**`I4` / `U4`** — 4-bit (nibble) lanes used by INT4 quantized inference
+(GGUF Q4_0 / Q4_K, GPTQ, AWQ). No first-class wrapper exists or is
+planned. Consumers pack 2× nibbles per byte and operate through
+`U8x64` with `shr_epi16` + `& 0x0F` masks; the same trick gives them
+the 128- and 64-byte shapes via the existing AVX-512 / AVX2 / NEON
+paths. If a first-class `I4x128` were ever wanted, AVX-512 VBMI2's
+`VPCOMPRESSB` + `VPEXPANDB` and AVX-512 IFMA's `VPMADD52` give the
+hardware story; on aarch64 there's no native nibble support and the
+shr+mask trick stays. Tracked as TD-SIMD-11 if a consumer files for it.
+
+### Aarch64-native narrower types
+
+Only useful directly when the consumer wants 128-bit shapes:
+`I8x16`, `I16x8`, `U8x16`, `U16x8`, `U32x4`, `U64x2`, `I32x4`, `I64x2`.
+These are not in the cross-arch parity surface — consumers requesting
+256-bit / 512-bit shapes go through the composed wrappers.
+
+### Gaps surfaced 2026-05-20
+
+- **`F32x8` / `F64x4` are universal on x86**, even on the v3 / AVX2 path
+  — they share the `__m256` / `__m256d` declarations exposed by
+  `simd_avx512.rs` (AVX, not AVX-512; works on every host with AVX
+  support, i.e. Sandy Bridge+). The previous matrix marked them `❌`
+  in the v3 column — corrected above.
+- **`U32x8` / `U64x4`** exist only in `simd_nightly` (via `core::simd`).
+  No native or polyfill wrapper on x86 or aarch64. Add to `simd_avx512`
+  + `simd_scalar` if a consumer needs them at 256-bit width.
+- **`I32x8` / `I64x4` / `U16x16`** missing across every backend (incl.
+  nightly). Theoretical 256-bit shapes that no consumer has reached for
+  yet; add to backlog if needed.
+- **`F32Mask8` / `F64Mask4`** are declared in `simd_scalar` as
+  `F32Mask8Scalar` / `F64Mask4Scalar` (the rename came from a duplicate-
+  decl conflict on i686 — see `src/simd_scalar.rs:340-345`). Not
+  surfaced through `crate::simd::*`. If consumers want these mask
+  widths, expose them and unify the name (drop the `Scalar` suffix on
+  AVX-512 where `__mmask8` natively maps to F64Mask8 already; the
+  256-bit f64 lane width needs a 4-bit mask which `__mmask8` can hold
+  but isn't yet typed as `F64Mask4`).
 
 ### Read of the matrix
 
@@ -199,7 +241,7 @@ Ranked by P0 (blocks current CI / consumers) → P3 (nice-to-have).
 | **TD-SIMD-5** | **P1** | Scalar fallback inline in `simd.rs` (`pub(crate) mod scalar`) makes symmetry hard — every other backend is its own file. | inspection | Promote to `src/simd_scalar.rs`; `simd.rs` becomes pure dispatch. ~mechanical refactor. |
 | **TD-SIMD-6** | **P2** | No `runtime-dispatch` feature / `simd_runtime` module exists yet. Release-binary distribution to heterogeneous silicon requires recompile per target today. | `grep -r "LazyLock<CpuCaps>"` only matches reporting code in `simd.rs:52-55` | New module wiring per-op trampolines from the compiled-in backends. ~300 LoC + one new cargo feature. |
 | **TD-SIMD-7** | **P2** | Compile-time arms in `simd.rs:153-194` are duplicated four times (one per type group: F32x16, F64x8, U8x32, BF16x16). Adding a new lane requires copy-pasting four `#[cfg(...)]` arms. | inspection | Single source-of-truth macro emitting the arms. ~one macro_rules!, 50 LoC. |
-| **TD-SIMD-8** | **P2** | `F16Scaler` in `simd_avx2.rs:2566` is a scalar implementation masquerading as a SIMD type. Consumers using `F16x16` on v3 get scalar perf without warning. | grep `F16Scaler` | Either gate `F16x16` behind `target_feature = "f16c"` or rename / document the scalar nature. ~20 LoC + docs. |
+| **TD-SIMD-8** | **P2** | `F16x16` in `src/simd_half.rs:123` is a scalar `[u16; 16]` polyfill — every arithmetic op upcasts to f32, computes, downcasts. Consumers using `crate::simd::F16x16` get scalar perf even on AVX-512 hardware with `vcvtph2ps` / `vcvtps2ph`. (`F16Scaler` in `simd_avx2.rs:2566` is unrelated — it's a *scaling context* for range-normalizing values before f16 encoding, not the F16x16 SIMD type.) | inspection of `src/simd_half.rs:115-150` | (a) Replace the `[u16; 16]` storage with `__m256i` + `_mm256_cvtph_ps` / `_mm256_cvtps_ph` under `target_feature = "f16c"` (Sapphire Rapids+, all Skylake AVX-512). (b) Add an `F16x16Scalar` alias and route consumers explicitly. (c) Add a doc-warning at the type level pointing at the architecture doc. ~80 LoC. |
 | **TD-SIMD-9** | **P3** | No CI matrix entry for the `nightly-simd` polyfill path. | `.github/workflows/ci.yaml` | Add a `nightly-simd-polyfill` job that builds with `--features nightly-simd` on nightly rustc. ~20 LoC YAML. |
 | **TD-SIMD-10** | **P3** | No CI matrix entry for `.cargo/config-avx512.toml`. AVX-512 deployment path silently bit-rots between PRs. | `.github/workflows/ci.yaml` | Add an `avx-512-explicit` job using a runner with AVX-512 silicon. ~20 LoC YAML; runner availability TBD. |
 

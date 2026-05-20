@@ -118,7 +118,28 @@ impl BF16x16 {
 
 /// 16 × F16 (IEEE 754 binary16) packed into a scalar array.
 ///
-/// All arithmetic operates via f32 upcast → op → F16 downcast (round-to-nearest-even).
+/// # Scalar-perf disclosure (TD-SIMD-8)
+///
+/// **This is a scalar polyfill, not a SIMD type.** Storage is plain
+/// `[u16; 16]` (no `__m256i` / `__m256bh` / `float16x8_t`). Every
+/// arithmetic op upcasts to f32, computes lane-by-lane, downcasts back
+/// to f16 with round-to-nearest-even — same path on every backend
+/// (AVX-512, AVX2, NEON, scalar). Consumers in hot loops should NOT
+/// reach for `crate::simd::F16x16` expecting SIMD throughput.
+///
+/// The hardware-native paths exist on x86 via `_mm256_cvtph_ps` /
+/// `_mm256_cvtps_ph` (F16C; Ivy Bridge+) and on aarch64 via
+/// `vfmaq_f16` (ARMv8.2-A `+fp16`; Pi 5, Apple, modern Snapdragons).
+/// Wiring those into `F16x16` is tracked as TD-SIMD-8 in
+/// `.claude/knowledge/simd-dispatch-architecture.md`. Until then, hot
+/// loops on f16 should use `core::simd::f16x16` under the `nightly-simd`
+/// feature (real `core::simd::*` codegen) or stay in f32 and convert
+/// at storage boundaries.
+///
+/// Not to be confused with `simd_avx2::F16Scaler` — that's a *scaling
+/// context* for range-normalizing values before f16 encoding (so the
+/// dynamic range maps to f16's `[-65504, 65504]` window without
+/// clipping), not a SIMD lane type.
 #[derive(Clone, Copy, Debug)]
 pub struct F16x16([u16; 16]);
 
