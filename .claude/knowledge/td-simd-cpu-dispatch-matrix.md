@@ -169,12 +169,13 @@ ARK equivalents: Ryzen 9 9950X, EPYC 9755 (Turin), Threadripper 9980X.
 
 ## Master matrix — aarch64
 
-Rows ordered by SoC tier (Pi family naming as canonical). A53 and A72 are listed as separate documented silicon (they have distinct microarchitecture — single vs dual NEON pipeline), but **the runtime `SimdProfile` collapses both into one variant `Armv8Neon`** because HWCAP/CPUID alone cannot distinguish them. Splitting them requires reading `/proc/cpuinfo` `CPU part` field (0xd03 = A53, 0xd08 = A72) — deferred until benchmarks demand it.
+Rows ordered by SoC tier (Pi family naming as canonical). **The existing detection helper `ArmProfile::arm_profile()` at `src/hpc/simd_caps.rs:317-336` already implements this dispatch and is the canonical reference.** It admits in its own comments that A72 silicon and A53-with-crypto silicon cannot be distinguished by HWCAP alone, and pragmatically maps both to `A72Fast` since the dispatch tables would be identical at the ISA level (both are ARMv8.0+crypto with no dotprod). The `A53Baseline` variant catches the rare case of NEON-without-crypto (QEMU, minimal aarch64 builds).
 
 | CPU silicon | Runtime profile | NEON | dotprod | fp16 | bf16+ (BFMMLA/BFDOT) | i8mm (SMMLA/UMMLA) | crypto (aes+sha2) | crc32 | sve | sve2 |
 |---|---|---|---|---|---|---|---|---|---|---|
-| **Cortex-A53** (Pi Zero 2W, Pi 3) | `Armv8Neon` | DOC | ✗ | ✗ | ✗ | ✗ | DOC | DOC | ✗ | ✗ |
-| **Cortex-A72** (Pi 4, Orange Pi 4) | `Armv8Neon` | DOC | ✗ | ✗ | ✗ | ✗ | DOC | DOC | ✗ | ✗ |
+| **Cortex-A53 + crypto** (Pi 3, Pi Zero 2W) | `A72Fast` (heuristic) | DOC | ✗ | ✗ | ✗ | ✗ | DOC | DOC | ✗ | ✗ |
+| **Cortex-A53 no crypto** (QEMU, minimal) | `A53Baseline` | DOC | ✗ | ✗ | ✗ | ✗ | ✗ | DOC | ✗ | ✗ |
+| **Cortex-A72** (Pi 4, Orange Pi 4) | `A72Fast` | DOC | ✗ | ✗ | ✗ | ✗ | DOC | DOC | ✗ | ✗ |
 | **Cortex-A76+** (Pi 5, Orange Pi 5, Apple M1+) | `A76DotProd` | DOC | DOC | DOC | DOC | DOC | DOC | DOC | ✗ | ✗ |
 
 Apple M-series add SVE/SVE2 from M4 onwards; not yet in scope for this matrix.
