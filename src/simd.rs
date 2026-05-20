@@ -210,23 +210,22 @@ pub const PREFERRED_I16_LANES: usize = 16;
 //   * aarch64 → simd_neon backend.
 //   * everything else (wasm32, riscv, etc.) → scalar fallback.
 
-// Note on the `nightly-simd` feature: it adds the `crate::simd_nightly`
-// module (a portable-simd backend wrapping `core::simd`) but does NOT
-// replace the intrinsics dispatch below. The polyfill ships full
-// type-parity with production (PR #146): 24 types covering F32x8/16,
-// F64x4/8, BF16x8/16, F16x16, I8x32/64, I16x16/32, I32x16, I64x8,
-// U8x32/64, U16x32, U32x8/16, U64x4/8, plus the F32/F64 mask types —
-// matches the 24 types defined in `simd_avx2.rs` + `simd_avx512.rs`.
-// Consumers who want miri-runnable SIMD code import from `simd_nightly`
-// explicitly today (e.g. `use ndarray::simd_nightly::F32x16`).
-//
-// The remaining work for Miri-clean coverage of `hpc::*` is wiring this
-// file's `pub use crate::simd_{avx512,avx2,neon}::*` re-exports to
-// route through `simd_nightly` under `cfg(miri)`. Once that lands,
-// every `use crate::simd::F32x16` call site becomes miri-checkable
-// without source changes. The polyfill itself is no longer the bottleneck.
+// Nightly-simd dispatch — when `feature = "nightly-simd"` is on, the
+// `crate::simd_nightly` portable backend (wrapping `core::simd::*`)
+// REPLACES the intrinsics arms below. This is a compile-time-dispatch
+// choice: opt in via `cargo +nightly --features nightly-simd ...` and
+// the same `use crate::simd::F32x16` call sites become miri-runnable.
+// No target_arch constraint — `core::simd` is portable, so this arm
+// is the one true backend on wasm32 / riscv / aarch64 / x86_64 alike
+// as soon as `nightly-simd` is on.
+#[cfg(feature = "nightly-simd")]
+pub use crate::simd_nightly::{
+    f32x16, f32x8, f64x4, f64x8, i16x16, i16x32, i32x16, i64x8, i8x32, i8x64, u16x32, u32x16, u32x8, u64x4, u64x8,
+    u8x32, u8x64, BF16x16, BF16x8, F16x16, F32Mask16, F32Mask8, F32x16, F32x8, F64Mask4, F64Mask8, F64x4, F64x8,
+    I16x16, I16x32, I32x16, I64x8, I8x32, I8x64, U16x32, U32x16, U32x8, U64x4, U64x8, U8x32, U8x64,
+};
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", not(feature = "nightly-simd")))]
 pub use crate::simd_avx512::{
     f32x16,
     f32x8,
@@ -276,7 +275,7 @@ pub use crate::simd_avx512::{bf16_to_f32_batch, bf16_to_f32_scalar, f32_to_bf16_
 #[cfg(target_arch = "x86_64")]
 pub use crate::simd_avx512::{f32_to_bf16_batch_rne, f32_to_bf16_scalar_rne};
 // BF16 SIMD types only available when avx512bf16 is enabled at compile time
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512bf16"))]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512bf16", not(feature = "nightly-simd")))]
 pub use crate::simd_avx512::{BF16x16, BF16x8};
 
 // AVX2 baseline arm — selected by the `x86-64-v3` cargo default. The
@@ -290,10 +289,18 @@ pub use crate::simd_avx512::{BF16x16, BF16x8};
 // `RUSTFLAGS="-D warnings"` env, which overrides our v3 config.toml,
 // landing on x86-64 baseline → the previous tighter `avx2` predicate
 // left no matching arm).
-#[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx512f"),
+    not(feature = "nightly-simd")
+))]
 pub use crate::simd_avx512::{f32x8, f64x4, i16x16, i8x32, F32x8, F64x4, I16x16, I8x32};
 
-#[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx512f"),
+    not(feature = "nightly-simd")
+))]
 pub use crate::simd_avx2::{
     f32x16, f64x8, i16x32, i32x16, i64x8, i8x64, u32x16, u64x8, u8x64, F32Mask16, F32x16, F64Mask8, F64x8, I16x32,
     I32x16, I64x8, I8x64, U16x32, U32x16, U64x8, U8x64,
@@ -304,14 +311,14 @@ pub use crate::simd_avx2::{
 // AVX2 ops, and on AVX-512 builds it's the half-register companion to
 // U8x64. Lives in simd_avx2.rs (single source of truth) and is re-exported
 // from both tier branches.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", not(feature = "nightly-simd")))]
 pub use crate::simd_avx2::{u8x32, U8x32};
 
 // ============================================================================
 // Non-x86: scalar fallback types with identical API
 // ============================================================================
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(all(not(target_arch = "x86_64"), not(feature = "nightly-simd")))]
 pub(crate) mod scalar {
     use core::fmt;
     use core::ops::{
@@ -1587,15 +1594,19 @@ pub(crate) mod scalar {
 // in simd_neon::aarch64_simd (verified 2026-04-30, agent A7 — burn parity item 9).
 // Integer + 256-bit float types still come from the scalar fallback; they're
 // not on the critical path for f32 BLAS-1 / VML kernels.
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", not(feature = "nightly-simd")))]
 pub use crate::simd_neon::aarch64_simd::{f32x16, f64x8, F32Mask16, F32x16, F64Mask8, F64x8};
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", not(feature = "nightly-simd")))]
 pub use scalar::{
     f32x8, f64x4, i32x16, i64x8, u32x16, u64x8, u8x64, F32x8, F64x4, I32x16, I64x8, U16x32, U32x16, U64x8, U8x64,
 };
 
 // Other non-x86 targets (wasm, riscv, etc.): full scalar fallback.
-#[cfg(all(not(target_arch = "x86_64"), not(target_arch = "aarch64")))]
+#[cfg(all(
+    not(target_arch = "x86_64"),
+    not(target_arch = "aarch64"),
+    not(feature = "nightly-simd")
+))]
 pub use scalar::{
     f32x16, f32x8, f64x4, f64x8, i16x16, i16x32, i32x16, i64x8, i8x32, i8x64, u32x16, u64x8, u8x64, F32Mask16, F32x16,
     F32x8, F64Mask8, F64x4, F64x8, I16x16, I16x32, I32x16, I64x8, I8x32, I8x64, U16x32, U32x16, U64x8, U8x64,
