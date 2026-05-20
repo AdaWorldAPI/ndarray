@@ -1725,7 +1725,7 @@ mod tests {
         use super::sparse256::*;
 
         // 256 leaves with known radii and distances
-        let mut leaves: Vec<LeafCluster> = (0..256)
+        let leaves: Vec<LeafCluster> = (0..256)
             .map(|i| LeafCluster {
                 id: i as u8,
                 radius: 10, // uniform radius
@@ -1763,8 +1763,6 @@ mod tests {
 
     #[test]
     fn spmv_256_basic() {
-        use super::sparse256::*;
-
         let heels = make_test_heels();
         let palette = heels.expand();
 
@@ -1807,7 +1805,7 @@ mod tests {
 
         let mut scores = [0.0f32; 256];
         let score_fn = |row: u8, col: u8| -> f32 { 1.0 - (row as f32 - col as f32).abs() / 256.0 };
-        let computed = hhtl_cascade_search(&palette, 0, &mut scores, &score_fn);
+        let computed = hhtl_cascade_search(&palette, 0, &mut scores, score_fn);
 
         eprintln!("HHTL cascade: computed {} of 256 scores", computed);
 
@@ -1815,7 +1813,7 @@ mod tests {
         assert_eq!(computed, 4, "Should only compute active block entries");
 
         // Row 128 → block_row = 128/32*8 + (128/4)%8 = 4*8 + 0 = 32
-        let computed2 = hhtl_cascade_search(&palette, 128, &mut scores, &score_fn);
+        let computed2 = hhtl_cascade_search(&palette, 128, &mut scores, score_fn);
         assert_eq!(computed2, 4);
     }
 

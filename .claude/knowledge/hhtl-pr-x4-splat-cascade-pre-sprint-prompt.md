@@ -235,7 +235,7 @@ the level-4 fix is the only blocker. **PR-X4 must NOT re-introduce its
 own Hilbert-3D encode** — wait for the A12b fix, then consume
 `linalg::hilbert::hilbert3d_encode`.
 
-## Schedule slot — W4-W5 (5 workers), no new Q-marker
+## Schedule slot — W4-W5 (6 workers), no new Q-marker
 
 The 8-week schedule from `hhtl-substrate-execution-prompt.md`:76-91
 already places PR-X4 at W4-W5 alongside PR-X12 (codec, 8 workers):
@@ -245,7 +245,7 @@ already places PR-X4 at W4-W5 alongside PR-X12 (codec, 8 workers):
 | W1-W2 | PR-X10 (linalg-core foundation) | 12 |
 | **W2.5/W3** | **PR-X1 + PR-X2 (GridLake) + PR-X14′ (contract)** ← Q-NEW-1/Q-NEW-2 pending | 4-10 depending on cell |
 | W3 | PR-X11 (jc consolidation) + PR-X13 (OGIT bridge) | 6 + 4 |
-| **W4-W5** | **PR-X12 (codec, 8) + PR-X4 (splat cascade, 5)** | **13** |
+| **W4-W5** | **PR-X12 (codec, 8) + PR-X4 (splat cascade, 6)** | **14** |
 | W6-W7 | PR-X9 (basin-codebook) | 6 |
 | W8 | Integration + canary | 3 |
 
@@ -266,7 +266,7 @@ If GridLake + X14′ slip past W3 (e.g., Cell A-β extension), PR-X4
 starts late by the same margin. **No schedule extension owed by
 PR-X4 itself.**
 
-## Worker spawn shape (5 workers)
+## Worker spawn shape (6 workers)
 
 ```
 A1: TileInstance v2 + BlockedGrid<SplatBinList, 1, 1> refactor (chain dep)
@@ -279,14 +279,25 @@ A1: TileInstance v2 + BlockedGrid<SplatBinList, 1, 1> refactor (chain dep)
     │
     ├──→ A4: G2 INT4×32 packed dot (3 backends + parity test)
     │
-    └──→ A5: G3 NARS truth-revision kernel + G4 fast_exp_x16
-              precision audit (combined; A5 verdict determines if
-              precise_exp_x16 follow-up needed)
+    ├──→ A5: G3 NARS truth-revision kernel + G4 fast_exp_x16
+    │         precision audit (combined; A5 verdict determines if
+    │         precise_exp_x16 follow-up needed)
+    │
+    └──→ A6: Railway smoke deployment — splat4d::cascade::frame_pipeline
+              wired to HLS over a minimal axum/warp service, Prom metrics
+              endpoint, FPS + jitter histogram surfaced in the player UI.
+              Depends on A1 + A5 only (no cross-deps to A2/A3/A4) so the
+              banal smoke test can ship even if A12b's L4 Hilbert fix
+              slips past W3 — A6 exercises L1-L3 cascade and the
+              composition closure, which is enough to falsify a latency
+              regression.
 ```
 
-A1 is the only chain dep. A2-A5 are parallel after A1 lands.
+A1 is the only chain dep. A2-A6 are parallel after A1 lands.
 A2 has an additional gate dep on PR-X10 A12b's L4 fix landing on
-master (not just PR-X10 W2 completion).
+master (not just PR-X10 W2 completion). A6 has an additional dep on
+A5's composition closure being callable from the pipeline (needed for
+SG4); the alpha-only branch of A6 can ship without A5.
 
 ## Done criteria
 
@@ -343,6 +354,60 @@ The sprint is done when ALL of the following hold:
    union currently green on master) still passes after the refactor.
    `cargo clippy -- -D warnings` clean.
 
+7. **Smoke gates pass on Railway** (see § "Smoke acceptance gates"):
+   SG1 ≥ 60 fps median, SG2 ≤ 20 ms p95, SG3 zero stutter events
+   over 10 minutes, SG4 same envelope under the `splat4d-nars-compose`
+   feature flag. A6 must be deployed and metrics scraped before the
+   sprint closes.
+
+## Smoke acceptance gates — Railway-hosted video player
+
+The cascade ships not just as a refactor but as a service: a small
+Railway-deployed binary that streams a video through the splat4d
+pipeline. **Banality is the test.** If the cascade can stream a 1080p
+video on a Railway hobby tier without stuttering, every bundle is
+honoring its latency contract under sustained load — and any cliff
+that hides on a workstation surfaces in the deployment envelope.
+
+### Why this beats synthetic benchmarks (PSNR, throughput-only)
+
+- **PSNR is a number; stuttering is a sensation.** A dropped frame is
+  unfalsifiable: you either see it or you don't. PSNR averages across
+  frames and hides lane-traffic spikes — exactly the pathology bundle
+  contracts are designed to prevent.
+- **Railway adds the deployment envelope for free.** Hobby-tier CPU
+  caps, real network egress, container memory limits. Anything that
+  hides on a workstation surfaces here.
+- **60 fps × 10 minutes = 36,000 frames each inside a 16.6 ms budget.**
+  No batch averaging, no "we'll catch up." The harshest possible test
+  of per-bundle latency dressed up as the most boring deliverable.
+
+### What ships in A6
+
+- **Service**: minimal Railway-deployed binary (axum or warp), HTML5
+  player + FPS counter + jitter histogram in the UI
+- **Server path**: video frames flow through
+  `splat4d::cascade::frame_pipeline` — decode → B-Interleave-Transpose
+  → cascade L1..L4 (L1-L3 only if A12b slipped) → B-Compose (alpha) →
+  emit
+- **Client**: stock `<video>` element over HLS, no special player
+- **Metrics**: median FPS, p95 frame time, stutter events (count of
+  inter-frame gaps > 33 ms), exposed on a Prom endpoint
+
+### Gates
+
+| Gate | Target | What it proves |
+|---|---|---|
+| **SG1: median FPS** | ≥ 60 fps for a 1080p H.264 input, 10-minute Big Buck Bunny | Steady-state throughput; the cascade isn't dropping behind |
+| **SG2: p95 frame time** | ≤ 20 ms | No bundle is silently decomposing into its constituent ops |
+| **SG3: stutter count** | 0 events > 33 ms over 10 minutes | Every bundle honors its latency contract under sustained load |
+| **SG4: closure swap** | Same SG1-SG3 envelope with `splat4d-nars-compose` feature on | NARS-revision path has the same latency class as alpha, as designed |
+
+SG4 is conditional on G3 (the NARS truth-revision kernel) being
+ULP-correct against the scalar reference; an SG4 failure with G3
+passing is evidence that the NARS B-Compose kernel has a worse latency
+class than alpha and must be re-staged before the W7 closure swap.
+
 ## Forbidden constraints
 
 Five invariants the sprint MUST NOT violate:
@@ -353,11 +418,29 @@ Five invariants the sprint MUST NOT violate:
    worker stubs the L4 path (returns `Err(NotReadyL4)`) and ships L1-L3
    addressing only.
 
-2. **No `crate::simd::*` extension from inside PR-X4**. Any new SIMD
-   primitive (e.g., a missing lane width for G2 INT4×32) must be
-   proposed against `vertical-simd-consumer-contract.md` and land in
-   ndarray's `src/simd_*.rs` before PR-X4 consumes it. PR-X4 must not
-   reach for raw `std::arch::*` intrinsics.
+2. **PR-X4 consumes — and must not extend — the following SIMD bundles
+   from `ndarray::simd`.** Each bundle is a fused multi-op transaction
+   with its own latency budget; reaching past a bundle into raw
+   `std::arch::*` intrinsics, or proposing new lane primitives without
+   going through `vertical-simd-consumer-contract.md`, breaks the
+   contract and re-introduces the bespoke-binner pathology v1 is
+   leaving behind.
+
+   | Bundle | Composition | Cognitive role |
+   |---|---|---|
+   | **B-Splat** | `splat_f32x16`, `splat_i32x16` | Broadcast a Gaussian center / NARS truth-value across the 16 tile lanes of a single L_k cell. The identity of a single belief across its support. |
+   | **B-Gather-FMA** | `gather_idx_f32x16` ∘ `fmadd_f32x16` | Pick up the 16 neighbouring Gaussians of a tile and fuse-multiply-add their contributions in one shot. Evidence-aggregation across siblings. |
+   | **B-Pack-Dot** | `pack_int4x32` ∘ `dot_i4x32_to_i32` ∘ `dequant_f32` | The INT4×32 packed dot of A4. SH-coefficient evaluation, NARS confidence × frequency products. Three backends (AVX-512 VNNI, NEON UDOT, scalar) with parity tests. |
+   | **B-Cascade-Permute** | `shuffle_lanes_4x4` ∘ `transpose_16x16` | Cross-tier rotation L_k → L_{k+1}. The 4×4 stride identity made executable — without this bundle the cascade is just a hierarchy of independent grids. |
+   | **B-Compose** | `hreduce_sum_f32x16` for alpha; `revise_truth_f32x16` for NARS | Closure-swappable horizontal reduction. The `splat4d-nars-compose` feature gate selects which kernel binds; same lane width, same latency class, different algebra. |
+   | **B-Interleave-Transpose** | `interleave_f32x16` ∘ `transpose_inplace` | Row-major splat3d ↔ lane-major splat4d. Boundary primitive between v1 binner and v2 cascade. |
+
+   The forbidden thing is reaching past a bundle into its internal lane
+   primitives — that breaks the latency contract that the A6 Railway
+   smoke gates (SG2 p95 ≤ 20 ms, SG3 zero stutter) are designed to
+   falsify. Missing bundles get proposed against
+   `vertical-simd-consumer-contract.md` and land in `src/simd_*.rs`
+   before PR-X4 consumes them; PR-X4 itself never adds a primitive.
 
 3. **No write to lance-graph upstream**. PR-X4 lives entirely in
    ndarray (`src/hpc/splat3d_v2/`, `src/hpc/splat4d/`). It consumes
@@ -427,12 +510,16 @@ Five invariants the sprint MUST NOT violate:
 PR-X4 promotes splat3d from "bespoke 16×16 tile binner" to "typed
 multi-resolution cognitive evolution operator" with the
 (4×4)×(4×4)×(4×4)×(4×4) tier scheme as its load-bearing structural
-identity. Slots at W4-W5 (5 workers). Consumes GridLake +
+identity. Slots at W4-W5 (6 workers). Consumes GridLake +
 `lance-graph-contract::column` + PR-X10 A6/A8/A12b + PR-X11 jc Spd3.
-Gates on PR-X10 A12b's L4 Hilbert-3D P0-4 fix (`hilbert3d_encode([15,15,15], 4)
-→ 2925, expected 4095`). Ships four splat gaps (G1 deg-3 SH inquiry-
-direction, G2 INT4×32 packed dot, G3 NARS truth-revision kernel,
-G4 fast_exp_x16 precision audit). Alpha-compositing stays default;
-NARS-revision composition gated behind `splat4d-nars-compose` feature
-flag until W7 closure swap. CTU-mode encoder is PR-X9's deliverable,
-not PR-X4's.
+Consumes (and does not extend) six SIMD bundles from `ndarray::simd`:
+B-Splat, B-Gather-FMA, B-Pack-Dot, B-Cascade-Permute, B-Compose,
+B-Interleave-Transpose. Gates on PR-X10 A12b's L4 Hilbert-3D P0-4 fix
+(`hilbert3d_encode([15,15,15], 4) → 2925, expected 4095`). Ships four
+splat gaps (G1 deg-3 SH inquiry-direction, G2 INT4×32 packed dot, G3
+NARS truth-revision kernel, G4 fast_exp_x16 precision audit) and four
+Railway smoke gates (SG1 ≥ 60 fps, SG2 p95 ≤ 20 ms, SG3 zero stutter,
+SG4 same envelope under NARS feature flag). Alpha-compositing stays
+default; NARS-revision composition gated behind `splat4d-nars-compose`
+feature flag until W7 closure swap. CTU-mode encoder is PR-X9's
+deliverable, not PR-X4's.

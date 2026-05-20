@@ -139,10 +139,10 @@ fn dot_product() {
     for i in 1..max {
         let a1 = a.slice(s![i..]);
         let b1 = b.slice(s![i..]);
-        assert_abs_diff_eq!(a1.dot(&b1), reference_dot(&a1, &b1), epsilon = 1e-5);
+        assert_abs_diff_eq!(a1.dot(&b1), reference_dot(a1, b1), epsilon = 1e-5);
         let a2 = a.slice(s![..-i]);
         let b2 = b.slice(s![i..]);
-        assert_abs_diff_eq!(a2.dot(&b2), reference_dot(&a2, &b2), epsilon = 1e-5);
+        assert_abs_diff_eq!(a2.dot(&b2), reference_dot(a2, b2), epsilon = 1e-5);
     }
 
     assert_abs_diff_eq!(a.dot(&b), dot as f32, epsilon = 1e-5);

@@ -38,6 +38,12 @@ pub mod packed;
 // Cognitive layer types (migrated from rustynum-core)
 #[allow(missing_docs)]
 pub mod fingerprint;
+
+// PR-X1 primitives (MultiLaneColumn, array_chunks) live at the crate root
+// in `crate::simd_soa` + `crate::simd_ops` and are re-exported via
+// `crate::simd::*`. They are intentionally NOT under `hpc::*` — SIMD
+// substrate goes through the `simd_{type}.rs` family per the W1a layering
+// rule (carriers in simd_soa, slicing/ops in simd_ops).
 #[allow(missing_docs)]
 pub mod plane;
 #[allow(missing_docs)]

@@ -159,7 +159,10 @@ fn move_into_0dim() {
             let a = a.slice_move(s![2, 2]);
 
             assert_eq!(a.ndim(), 0);
-            let mut b = Array::uninit(a.dim());
+            let mut b = {
+                let _: () = a.dim();
+                Array::uninit(())
+            };
             a.move_into_uninit(b.view_mut());
             let b = unsafe { b.assume_init() };
 

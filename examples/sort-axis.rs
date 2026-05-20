@@ -18,6 +18,7 @@ pub struct Permutation {
 
 impl Permutation {
     /// Checks if the permutation is correct
+    #[allow(clippy::result_unit_err)]
     pub fn from_indices(v: Vec<usize>) -> Result<Self, ()> {
         let perm = Permutation { indices: v };
         if perm.correct() {

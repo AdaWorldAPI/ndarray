@@ -270,6 +270,14 @@ pub mod simd_neon;
 #[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
 pub mod simd_wasm;
 
+// PR-X1 — SoA-shaped SIMD substrate primitives (`MultiLaneColumn`,
+// `array_chunks`). Layout-only; the SIMD register load happens in the
+// consumer's loop using `crate::simd::F32x16::from_array` etc. Re-exported
+// through `crate::simd::*` per the W1a consumer contract.
+#[cfg(feature = "std")]
+#[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
+pub mod simd_soa;
+
 /// Slice-level integer SIMD ops (i8/i16) — `add_i8`, `dot_i8`, `min_i8`, …
 #[cfg(feature = "std")]
 #[allow(missing_docs)]

@@ -17,7 +17,18 @@ use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, N
 ///
 /// The XOR group structure makes this the natural type for holographic
 /// delta layers: ground truth is `&self`, writers own their delta as `&mut`.
+///
+/// # Memory layout
+///
+/// `#[repr(C)]` pins the layout so that `Fingerprint<N>` is exactly one
+/// contiguous `[u64; N]` with no padding and no field reordering. This is a
+/// hard precondition for the zero-copy reinterprets in [`Fingerprint::as_bytes`]
+/// and [`Fingerprint::as_u8x64`] (the latter requires that a pointer to
+/// `self.words` is the same as a pointer to `*self`, which `#[repr(C)]` on a
+/// single-field struct guarantees explicitly rather than relying on the
+/// Rust-reference single-field-struct layout rule).
 #[derive(Clone, PartialEq, Eq)]
+#[repr(C)]
 pub struct Fingerprint<const N: usize> {
     pub words: [u64; N],
 }
@@ -621,5 +632,144 @@ mod tests {
         let bytes_ptr = fp.as_bytes().as_ptr();
         let words_ptr = fp.words.as_ptr() as *const u8;
         assert_eq!(bytes_ptr, words_ptr, "as_bytes must be zero-copy");
+    }
+}
+
+// ============================================================================
+// PR-X1 — N==8 register-width view (carved-out draft, body lands in uncomment sprint)
+// ============================================================================
+
+impl Fingerprint<8> {
+    /// Typed `&[u8; 64]` view over the fingerprint's backing bytes (PR-X1).
+    ///
+    /// Available only on `Fingerprint<8>` — 8 × `u64` = 64 bytes = one AVX-512
+    /// `U8x64` register width. Returns the exact `&[u8; 64]` reference without
+    /// copying; feed it into `crate::simd::U8x64::from_array(*win)` or
+    /// `U8x64::from_slice(win)` for register-level byte ops.
+    ///
+    /// For other `N` widths, use [`Fingerprint::chunks_u8x64`] which yields
+    /// 64-byte chunks without the compile-time length guarantee.
+    ///
+    /// # Endianness contract — little-endian only
+    ///
+    /// Gated to `#[cfg(target_endian = "little")]` so the returned byte view
+    /// matches the project-wide little-endian word convention used by
+    /// [`Fingerprint::to_bytes`] / [`Fingerprint::from_bytes`]
+    /// (both use `u64::to_le_bytes` / `u64::from_le_bytes`).
+    /// On a big-endian target the raw memory layout of `[u64; 8]` would put
+    /// the high byte first, contradicting the LE contract and breaking
+    /// cross-platform SIMD consumers. The `.cargo/config.toml` pins
+    /// `target-cpu=x86-64-v4`, so all supported targets (x86_64 + aarch64)
+    /// are little-endian; the cfg gate makes the LE assumption explicit
+    /// rather than implicit. See P2 review on PR #167.
+    ///
+    /// # Design reference
+    ///
+    /// `.claude/knowledge/pr-x1-design.md` § "2. `Fingerprint::as_u8x64`".
+    /// Body: pointer reinterpret of `self.words.as_ptr() as *const [u8; 64]`,
+    /// justified by the `#[repr(C)]` + 8-`u64` = 64-byte layout invariant.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::hpc::fingerprint::Fingerprint;
+    /// let fp: Fingerprint<8> = Fingerprint::zero();
+    /// let window: &[u8; 64] = fp.as_u8x64();
+    /// assert_eq!(window.len(), 64);
+    /// assert!(window.iter().all(|&b| b == 0));
+    /// ```
+    ///
+    /// # Examples — little-endian word layout
+    ///
+    /// ```
+    /// use ndarray::hpc::fingerprint::Fingerprint;
+    /// let fp: Fingerprint<8> = Fingerprint::from_words([
+    ///     0x0102030405060708u64, 0, 0, 0, 0, 0, 0, 0,
+    /// ]);
+    /// let view = fp.as_u8x64();
+    /// // Words are stored little-endian; word[0] low byte = 0x08.
+    /// assert_eq!(view[0], 0x08);
+    /// assert_eq!(view[7], 0x01);
+    /// assert_eq!(view[8], 0x00); // word[1] is zero
+    /// ```
+    #[cfg(target_endian = "little")]
+    #[inline]
+    pub fn as_u8x64(&self) -> &[u8; 64] {
+        // SAFETY:
+        // 1. `Fingerprint<N>` is `#[repr(C)]` with a single field `words: [u64; N]`,
+        //    so `self.words.as_ptr()` points at the first byte of `*self` and the
+        //    struct has no trailing padding or field reordering.
+        // 2. For `N == 8`, `size_of::<[u64; 8]>() == 64 == size_of::<[u8; 64]>()`,
+        //    so the reinterpret covers exactly the same 64 bytes — no out-of-bounds
+        //    read, no truncation.
+        // 3. `[u64; 8]` has alignment 8; `[u8; 64]` has alignment 1. The source
+        //    alignment is strictly greater than the destination alignment, so the
+        //    `*const [u8; 64]` is validly aligned for its pointee type.
+        // 4. `u8` has no invalid bit patterns; any byte pattern in the `u64` words
+        //    is a valid `u8` byte, so dereferencing the cast pointer is sound.
+        // 5. The returned reference borrows from `&self`, so its lifetime cannot
+        //    outlive `self`, satisfying the borrow-checker lifetime rule and
+        //    preventing dangling references.
+        // 6. The `#[cfg(target_endian = "little")]` gate guarantees the byte
+        //    order matches the project-wide LE convention (P2 review fix #167).
+        unsafe { &*(self.words.as_ptr() as *const [u8; 64]) }
+    }
+}
+
+#[cfg(test)]
+#[cfg(target_endian = "little")]
+mod pr_x1_as_u8x64_tests {
+    use super::*;
+
+    /// `as_u8x64` on `zero()` returns 64 zero bytes.
+    #[test]
+    fn as_u8x64_zero_all_zero() {
+        let fp: Fingerprint<8> = Fingerprint::zero();
+        let view = fp.as_u8x64();
+        assert_eq!(view.len(), 64);
+        assert!(view.iter().all(|&b| b == 0));
+    }
+
+    /// `as_u8x64` on `ones()` returns 64 `0xFF` bytes.
+    #[test]
+    fn as_u8x64_ones_all_ff() {
+        let fp: Fingerprint<8> = Fingerprint::ones();
+        let view = fp.as_u8x64();
+        assert_eq!(view.len(), 64);
+        assert!(view.iter().all(|&b| b == 0xFF));
+    }
+
+    /// Words land little-endian: low byte of `word[0]` is at byte offset 0.
+    #[test]
+    fn as_u8x64_little_endian_round_trip() {
+        let fp: Fingerprint<8> =
+            Fingerprint::from_words([0x0102030405060708u64, 0x1112131415161718u64, 0, 0, 0, 0, 0, 0]);
+        let view = fp.as_u8x64();
+        // word[0] = 0x0102030405060708 → bytes 0..8 = [08 07 06 05 04 03 02 01]
+        assert_eq!(view[0], 0x08);
+        assert_eq!(view[1], 0x07);
+        assert_eq!(view[7], 0x01);
+        // word[1] = 0x1112131415161718 → bytes 8..16 = [18 17 16 15 14 13 12 11]
+        assert_eq!(view[8], 0x18);
+        assert_eq!(view[15], 0x11);
+        // Remaining words are zero.
+        assert!(view[16..].iter().all(|&b| b == 0));
+    }
+
+    /// `as_u8x64` does not allocate: the returned pointer equals the
+    /// underlying `words` pointer cast to `*const u8`.
+    #[test]
+    fn as_u8x64_zero_copy_pointer_equality() {
+        let fp: Fingerprint<8> = Fingerprint::zero();
+        let view_ptr = fp.as_u8x64().as_ptr();
+        let words_ptr = fp.words.as_ptr() as *const u8;
+        assert_eq!(view_ptr, words_ptr, "as_u8x64 must be zero-copy");
+    }
+
+    /// Size in bytes matches the AVX-512 U8x64 register width.
+    #[test]
+    fn fingerprint8_is_exactly_64_bytes() {
+        assert_eq!(core::mem::size_of::<Fingerprint<8>>(), 64);
+        assert_eq!(Fingerprint::<8>::BYTES, 64);
     }
 }
