@@ -185,23 +185,31 @@ jobs:
     # catches type mismatches and dispatch-arm holes that the v3
     # default never touches.
     #
-    # The job-level `RUSTFLAGS` env overrides the global
-    # `RUSTFLAGS="-D warnings"` set at the top of this file so the v4
-    # target-cpu actually applies. Without the override, `.cargo/
-    # config-avx512.toml`'s rustflags would be ignored (env wins over
-    # config file in cargo's precedence).
+    # # Why `CARGO_TARGET_<triple>_RUSTFLAGS` instead of plain `RUSTFLAGS`:
+    #
+    # The first iteration used `env: RUSTFLAGS: "-Ctarget-cpu=x86-64-v4"`
+    # and failed in ~23 s — RUSTFLAGS env applies to BOTH the target
+    # compilation AND host build scripts (`build.rs` artifacts that
+    # cargo runs natively). On a GH runner without AVX-512 silicon,
+    # those v4-baked build scripts SIGILL during the dep build.
+    #
+    # `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS` is documented to
+    # apply only when cargo is producing artifacts for that triple, NOT
+    # to host build scripts. Combined with explicit `--target` (so cargo
+    # distinguishes host from target even when they're the same triple),
+    # this gives us "v4 for our crate, baseline for build scripts."
     runs-on: ubuntu-latest
     name: tier4-avx512-check
     env:
-      RUSTFLAGS: "-D warnings -Ctarget-cpu=x86-64-v4"
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings -Ctarget-cpu=x86-64-v4"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: cargo check (v4 / AVX-512 dispatch arm)
-        run: cargo check -p ndarray --features approx,serde,rayon
+        run: cargo check --target=x86_64-unknown-linux-gnu -p ndarray --features approx,serde,rayon
       - name: cargo check (v4 / AVX-512 + hpc-extras)
-        run: cargo check -p ndarray --features approx,serde,rayon,hpc-extras
+        run: cargo check --target=x86_64-unknown-linux-gnu -p ndarray --features approx,serde,rayon,hpc-extras
 
   blas-msrv:
     runs-on: ubuntu-latest
