@@ -1,0 +1,15 @@
+[build]
+# Raspberry Pi 5 (BCM2712, Cortex-A76) — ARMv8.2-A with dotprod + fp16.
+# Use with:
+#   cargo --config .cargo/config-pi5.toml build --target=aarch64-unknown-linux-gnu
+#
+# Targets the dotprod/fp16 tier — see `src/simd_neon_dotprod.rs` for the
+# silicon table, runtime detection, and stub map. Also works on:
+#   - Orange Pi 5 (Rockchip RK3588, Cortex-A76)
+#   - Anything reporting `Features: ... asimddp asimdhp ...` in
+#     /proc/cpuinfo without `bf16`.
+#
+# For Apple M2+ / Snapdragon X / Graviton 4, use config-apple-m2.toml
+# (BF16 tier — see src/simd_neon_bf16.rs).
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["-Ctarget-cpu=cortex-a76", "-Ctarget-feature=+dotprod,+fp16"]

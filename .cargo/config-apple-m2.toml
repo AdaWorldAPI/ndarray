@@ -1,0 +1,20 @@
+[build]
+# Apple M2 / M3 / M4 — ARMv8.6-A+ with BF16, dotprod, fp16, i8mm.
+# Use with:
+#   cargo --config .cargo/config-apple-m2.toml build --target=aarch64-apple-darwin
+#
+# Targets the BF16 tier — see `src/simd_neon_bf16.rs` for the silicon
+# table, runtime detection (`sysctl hw.optional.arm.FEAT_BF16`), the
+# BFMMLA / BFDOT intrinsic family, and the asm-byte fallback path that
+# stable Rust 1.95 must use until `vbfdotq_f32` stabilizes (issue
+# #117222).
+#
+# Also works on:
+#   - Apple M3 (target-cpu=apple-m3) — same ARMv8.6-A baseline
+#   - Apple M4 — adds SVE2, can override with -Ctarget-cpu=apple-m4
+#   - Snapdragon X Elite / X Plus on macOS-like targets (use cortex-x4)
+#
+# DOES NOT target Apple M1 — M1 is ARMv8.5-A and lacks BF16. M1 should
+# use the dotprod tier (config-pi5.toml-shaped, target-cpu=apple-m1).
+[target.aarch64-apple-darwin]
+rustflags = ["-Ctarget-cpu=apple-m2", "-Ctarget-feature=+bf16,+dotprod,+fp16,+i8mm"]
