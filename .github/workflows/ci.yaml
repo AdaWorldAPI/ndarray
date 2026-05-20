@@ -171,6 +171,46 @@ jobs:
       - name: clippy --features rayon
         run: cargo clippy -p ndarray --features rayon --lib -- -D warnings
 
+  tier4-avx512-check:
+    # Phase 6 of the SIMD integration plan (.claude/knowledge/
+    # simd-dispatch-architecture.md). Exercises the AVX-512 dispatch
+    # arm (`#[cfg(target_feature = "avx512f")]` in `src/simd.rs`) so it
+    # doesn't bit-rot under the v3-default cargo config.
+    #
+    # `cargo check` rather than `cargo test`: GH-hosted `ubuntu-latest`
+    # runners may not have AVX-512 silicon (intermittent across SKUs),
+    # so a v4-baked binary would SIGILL at run time. `check` compiles
+    # the AVX-512 code path through the type checker + borrow checker
+    # + monomorphization without producing a runnable artifact —
+    # catches type mismatches and dispatch-arm holes that the v3
+    # default never touches.
+    #
+    # # Why `CARGO_TARGET_<triple>_RUSTFLAGS` instead of plain `RUSTFLAGS`:
+    #
+    # The first iteration used `env: RUSTFLAGS: "-Ctarget-cpu=x86-64-v4"`
+    # and failed in ~23 s — RUSTFLAGS env applies to BOTH the target
+    # compilation AND host build scripts (`build.rs` artifacts that
+    # cargo runs natively). On a GH runner without AVX-512 silicon,
+    # those v4-baked build scripts SIGILL during the dep build.
+    #
+    # `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS` is documented to
+    # apply only when cargo is producing artifacts for that triple, NOT
+    # to host build scripts. Combined with explicit `--target` (so cargo
+    # distinguishes host from target even when they're the same triple),
+    # this gives us "v4 for our crate, baseline for build scripts."
+    runs-on: ubuntu-latest
+    name: tier4-avx512-check
+    env:
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings -Ctarget-cpu=x86-64-v4"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check (v4 / AVX-512 dispatch arm)
+        run: cargo check --target=x86_64-unknown-linux-gnu -p ndarray --features approx,serde,rayon
+      - name: cargo check (v4 / AVX-512 + hpc-extras)
+        run: cargo check --target=x86_64-unknown-linux-gnu -p ndarray --features approx,serde,rayon,hpc-extras
+
   blas-msrv:
     runs-on: ubuntu-latest
     name: blas-msrv
@@ -269,6 +309,7 @@ jobs:
       - tests
       - native-backend
       - hpc-stream-parallel
+      - tier4-avx512-check
       - miri
       - cross_test
       - cargo-careful
