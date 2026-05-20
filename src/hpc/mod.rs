@@ -17,6 +17,9 @@
 pub mod simd_caps;
 // LazyLock frozen SIMD dispatch — function pointers selected once at startup
 pub mod simd_dispatch;
+// Silicon-grained profile (Sapphire Rapids vs Zen 4 vs Ice Lake-SP, etc.) —
+// implements the dispatch matrix from `.claude/knowledge/td-simd-cpu-dispatch-matrix.md`
+pub mod simd_profile;
 
 pub mod blas_level1;
 pub mod blas_level2;

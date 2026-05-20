@@ -71,6 +71,21 @@ pub struct SimdCaps {
     /// (`is_x86_feature_detected!("avxvnniint8")`).
     /// Present on Arrow Lake, Lunar Lake, NUC 14 (Meteor Lake-H).
     pub avxvnniint8: bool,
+    /// AVX-512 FP16 arithmetic (CPUID.07H.0H:EDX bit 23).
+    /// Native `__m512h` operations (`_mm512_*_ph`). Distinguishes Sapphire
+    /// Rapids / Granite Rapids / Zen 4+ from earlier AVX-512 silicon.
+    /// Required by the matrix doc to discriminate SPR (yes) from CLX (no).
+    pub avx512fp16: bool,
+    /// AVX-512 VP2INTERSECT (CPUID.07H.0H:EDX bit 8). Present only on
+    /// Tiger Lake mobile silicon; absent from Ice Lake-SP and every later
+    /// server part. Sole discriminator between `TigerLakeU` and
+    /// `IceLakeSp` profiles, which otherwise share an identical feature set.
+    pub avx512vp2intersect: bool,
+    /// AMX-FP16 (CPUID.07H.1H:EAX bit 21). `TDPFP16PS` FP16 tile dot
+    /// product, present on Granite Rapids only. Sole discriminator between
+    /// `SapphireRapids` and `GraniteRapids` profiles. Lives at CPUID leaf
+    /// 7,1, not leaf 7,0 — separate cpuid_count call required.
+    pub amx_fp16: bool,
 
     // ── aarch64 (ARM) ──
     /// NEON 128-bit SIMD (mandatory on aarch64, always true).
@@ -124,6 +139,9 @@ impl SimdCaps {
             amx_bf16: false,
             avx512bf16: false,
             avxvnniint8: false,
+            avx512fp16: false,
+            avx512vp2intersect: false,
+            amx_fp16: false,
             neon: false,
             asimd_dotprod: false,
             fp16: false,
@@ -139,10 +157,24 @@ impl SimdCaps {
         // `__cpuid_count` is safe on x86_64 (Rust 1.87+): CPUID is always
         // available on x86_64 (guaranteed by the ABI) and has no side effects
         // beyond reading CPU registers.
-        let cpuid7 = core::arch::x86_64::__cpuid_count(7, 0);
-        let amx_tile = (cpuid7.edx >> 24) & 1 == 1;
-        let amx_int8 = (cpuid7.edx >> 25) & 1 == 1;
-        let amx_bf16 = (cpuid7.edx >> 22) & 1 == 1;
+        let cpuid7_0 = core::arch::x86_64::__cpuid_count(7, 0);
+        let amx_tile = (cpuid7_0.edx >> 24) & 1 == 1;
+        let amx_int8 = (cpuid7_0.edx >> 25) & 1 == 1;
+        let amx_bf16 = (cpuid7_0.edx >> 22) & 1 == 1;
+        let avx512fp16 = (cpuid7_0.edx >> 23) & 1 == 1;
+        let avx512vp2intersect = (cpuid7_0.edx >> 8) & 1 == 1;
+
+        // Leaf 7,1 EAX bit 21 = AMX-FP16. Per the dispatch matrix this is
+        // the sole discriminator between Granite Rapids and Sapphire Rapids.
+        // Leaf 7,1 only exists when leaf 7,0 EAX (max subleaf) >= 1; on
+        // older silicon this returns zero, which is the correct answer.
+        let leaf7_max_sub = cpuid7_0.eax;
+        let amx_fp16 = if leaf7_max_sub >= 1 {
+            let cpuid7_1 = core::arch::x86_64::__cpuid_count(7, 1);
+            (cpuid7_1.eax >> 21) & 1 == 1
+        } else {
+            false
+        };
 
         Self {
             avx2: is_x86_feature_detected!("avx2"),
@@ -160,6 +192,9 @@ impl SimdCaps {
             amx_bf16,
             avx512bf16: is_x86_feature_detected!("avx512bf16"),
             avxvnniint8: is_x86_feature_detected!("avxvnniint8"),
+            avx512fp16,
+            avx512vp2intersect,
+            amx_fp16,
             // ARM fields: all false on x86
             neon: false,
             asimd_dotprod: false,
@@ -192,6 +227,9 @@ impl SimdCaps {
             amx_bf16: false,
             avx512bf16: false,
             avxvnniint8: false,
+            avx512fp16: false,
+            avx512vp2intersect: false,
+            amx_fp16: false,
             // ARM fields: runtime detection
             neon: true, // mandatory on aarch64
             asimd_dotprod: std::arch::is_aarch64_feature_detected!("dotprod"),
@@ -221,6 +259,9 @@ impl SimdCaps {
             amx_bf16: false,
             avx512bf16: false,
             avxvnniint8: false,
+            avx512fp16: false,
+            avx512vp2intersect: false,
+            amx_fp16: false,
             neon: false,
             asimd_dotprod: false,
             fp16: false,
@@ -273,6 +314,20 @@ impl SimdCaps {
     #[inline(always)]
     pub fn has_avxvnniint8(self) -> bool {
         self.avxvnniint8
+    }
+
+    /// True if AVX-512 FP16 (`__m512h`) is available. Required to
+    /// discriminate `SapphireRapids` from `CascadeLake`-class profiles.
+    #[inline(always)]
+    pub fn has_avx512_fp16(self) -> bool {
+        self.avx512fp16
+    }
+
+    /// True if AMX-FP16 (`TDPFP16PS`) is available. Only Granite Rapids
+    /// silicon advertises this bit; sole discriminator between GNR and SPR.
+    #[inline(always)]
+    pub fn has_amx_fp16(self) -> bool {
+        self.amx_fp16 && self.amx_tile
     }
 
     // ── ARM convenience methods ──
@@ -408,6 +463,42 @@ mod tests {
         let _ = caps.amx_bf16;
         let _ = caps.avx512bf16;
         let _ = caps.avxvnniint8;
+        // PR-#181 follow-up fields (matrix doc lines 240, 247-248).
+        let _ = caps.avx512fp16;
+        let _ = caps.avx512vp2intersect;
+        let _ = caps.amx_fp16;
+    }
+
+    #[test]
+    fn fp16_fields_consistent_on_non_x86() {
+        // Non-x86 targets must never report x86 AMX/AVX-512 FP16 capabilities.
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let caps = simd_caps();
+            assert!(!caps.avx512fp16);
+            assert!(!caps.avx512vp2intersect);
+            assert!(!caps.amx_fp16);
+            assert!(!caps.has_avx512_fp16());
+            assert!(!caps.has_amx_fp16());
+        }
+    }
+
+    #[test]
+    fn has_amx_fp16_requires_amx_tile() {
+        // Even if `amx_fp16` were spuriously true without `amx_tile`,
+        // the convenience method must require both bits. Matches
+        // simd_amx.rs::amx_available()'s defense-in-depth pattern.
+        let synthetic = SimdCaps {
+            avx2: false, avx512f: false, avx512bw: false, avx512vl: false,
+            avx512vpopcntdq: false, sse41: false, sse2: false, fma: false,
+            avx512vnni: false, avx512vbmi: false,
+            amx_tile: false, amx_int8: false, amx_bf16: false,
+            avx512bf16: false, avxvnniint8: false,
+            avx512fp16: false, avx512vp2intersect: false, amx_fp16: true,
+            neon: false, asimd_dotprod: false, fp16: false,
+            aes: false, sha2: false, crc32: false,
+        };
+        assert!(!synthetic.has_amx_fp16(), "amx_fp16 without amx_tile must report false");
     }
 
     #[test]

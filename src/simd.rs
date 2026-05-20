@@ -133,6 +133,22 @@ fn tier() -> Tier {
 // The check is cheap (reads a cached cpuid result) and the batch
 // function uses as_chunks::<16>() + as_chunks::<8>() for SIMD widths.
 
+// ────────────────────────────────────────────────────────────────────
+// Silicon-grained profile re-export.
+//
+// `Tier` above is the legacy coarse enum (Avx512/Avx2/Neon/Scalar) used
+// by the F32x16 / F64x8 dispatch in this module. `SimdProfile` is the
+// fine-grained successor that names individual silicon generations
+// (SapphireRapids, Zen4Avx512, IceLakeSp, A76DotProd, …) so consumers
+// can route to the best primitive on each CPU. Both ship side-by-side
+// during the Phase 3 integration; callers migrate on their own cadence.
+//
+// Public surface lives in `crate::simd::*` per the cognitive-shader
+// foundation contract (`cognitive-shader-foundation.md` § "Public Surface").
+// ────────────────────────────────────────────────────────────────────
+#[cfg(feature = "std")]
+pub use crate::hpc::simd_profile::{simd_profile, SimdProfile};
+
 // ============================================================================
 // Preferred SIMD lane widths — compile-time constants for array_windows
 // ============================================================================
