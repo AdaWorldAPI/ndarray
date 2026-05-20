@@ -65,9 +65,19 @@ pub enum SimdProfile {
     /// ARMv8.2-A: A76 (Pi 5), Apple M-series, Snapdragon 8 Gen 2+.
     /// NEON + dotprod + fp16 + bf16+ (BFMMLA/BFDOT).
     A76DotProd,
-    /// ARMv8.0 with 2× NEON pipelines: A72 (Pi 4).
+    /// ARMv8.0 with crypto extension: Pi 4 (A72), Pi 3 (A53-with-crypto),
+    /// Pi Zero 2 W (A53-with-crypto), Orange Pi 4. Cannot distinguish
+    /// A53-with-crypto from A72 by HWCAP — both expose neon + aes + sha2 +
+    /// crc32 with no dotprod. Dispatch table is identical at the ISA level
+    /// (same NEON instructions). Existing `ArmProfile::arm_profile()` in
+    /// `src/hpc/simd_caps.rs:317-336` calls this `A72Fast` and admits the
+    /// heuristic ("we report A72-tier since most deployments target Pi 4")
+    /// — adopt that naming for consistency.
     A72Fast,
-    /// ARMv8.0 single pipeline: A53 (Pi 3 / Pi Zero 2 W).
+    /// ARMv8.0 without crypto: rare in the wild (QEMU, minimal aarch64
+    /// builds without `+aes`). Existing `ArmProfile::A53Baseline` catches
+    /// this case; preserved for that purpose. Real A53 silicon (Pi 3, Pi
+    /// Zero 2 W) usually has crypto and resolves as `A72Fast` above.
     A53Baseline,
 
     // ── Fallback ──
@@ -117,14 +127,22 @@ impl SimdProfile {
         }
         #[cfg(target_arch = "aarch64")]
         {
-            let caps = simd_caps();
-            if caps.asimd_dotprod && caps.fp16 {
-                return SimdProfile::A76DotProd;
-            }
-            if caps.neon && caps.aes /* heuristic for A72 vs A53 */ {
-                return SimdProfile::A72Fast;
-            }
-            return SimdProfile::A53Baseline;
+            // Reuse the existing `ArmProfile::arm_profile()` heuristic from
+            // `src/hpc/simd_caps.rs:317-336`. It already encodes the right
+            // decisions and has been in tree since the SBC support landed:
+            //   asimd_dotprod present  → A76DotProd (Pi 5 / A76+)
+            //   aes present (no dotprod) → A72Fast   (Pi 4 / Pi 3 / Pi Zero 2W)
+            //   no aes                 → A53Baseline (QEMU / minimal aarch64)
+            // The A72Fast branch catches A53-with-crypto silicon (Pi 3) and
+            // A72 silicon (Pi 4) alike — they share the ARMv8.0+crypto ISA
+            // and the dispatch tables would be identical. See arm_profile
+            // doc comments for the deployment-pragmatic reasoning.
+            return match simd_caps().arm_profile() {
+                ArmProfile::A76DotProd  => SimdProfile::A76DotProd,
+                ArmProfile::A72Fast     => SimdProfile::A72Fast,
+                ArmProfile::A53Baseline => SimdProfile::A53Baseline,
+                ArmProfile::NotArm      => SimdProfile::Scalar,
+            };
         }
         SimdProfile::Scalar
     }
@@ -155,8 +173,12 @@ pub struct GemmDispatch {
 // One table per silicon profile. Compile-time const, lives in .rodata.
 
 static SPR_GEMM: GemmDispatch = GemmDispatch {
-    bf16_gemm: amx_bf16_tile_gemm,    // TDPBF16PS, 256 mul-adds/instr
-    int8_gemm: amx_int8_tile_gemm,    // TDPBUSD, 256 mul-adds/instr
+    // TDPBF16PS: 16×16 output tile, K=32 per pass → 16·16·32 = 8192 mul-adds/instr
+    // (per `src/hpc/amx_matmul.rs:15` and `bf16_tile_gemm.rs:155-157`).
+    bf16_gemm: amx_bf16_tile_gemm,
+    // TDPBUSD: 16×16 output tile, K=64 per pass → 16·16·64 = 16384 mul-adds/instr
+    // (per `src/hpc/amx_matmul.rs:15`).
+    int8_gemm: amx_int8_tile_gemm,
     f32_gemv: avx512_f32x16_gemv,     // shared with all AVX-512 profiles
 };
 static ICX_GEMM: GemmDispatch = GemmDispatch {
@@ -402,7 +424,7 @@ For each named primitive, the silicon-by-silicon route after all 4 phases land:
 | IceLakeSp, CascadeLake, SkylakeX | F32x16 mul_add over decoded BF16 rows (`hpc/bf16_tile_gemm.rs::fallback_path`) |
 | ArrowLake, HaswellAvx2 | F32x8 mul_add over decoded BF16 rows (new) |
 | A76DotProd | NEON BFMMLA via asm-byte (new in Phase 2 TD-T10) |
-| A72Fast, A53Baseline | NEON F32x4 mul_add over decoded BF16 (new) |
+| A72Fast, A53Baseline | NEON F32x4 mul_add over decoded BF16 (new) — same kernel, separate table entries for symmetry with `ArmProfile` |
 | Scalar | Scalar triple loop (current `quantized.rs:444`) — kept as the reference |
 
 ### `int8_gemm_i32` (u8 × i8 → i32 matmul)
@@ -415,7 +437,7 @@ For each named primitive, the silicon-by-silicon route after all 4 phases land:
 | ArrowLake | `_mm256_dpbusd_epi32` (existing `vnni2_dot_u8_i8` at `simd_amx.rs:203`) |
 | HaswellAvx2 | Scalar i32 accumulate (no VNNI pre-Cascade Lake) |
 | A76DotProd | NEON SDOT (`vdotq_s32`, existing in `simd_neon.rs`) |
-| A72Fast, A53Baseline | NEON int16x8 widen + multiply-accumulate |
+| A72Fast, A53Baseline | NEON int16x8 widen + multiply-accumulate — same kernel for both ARMv8.0 tiers |
 
 ### `gemv_f32` (BLAS-2 matrix-vector)
 
