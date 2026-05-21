@@ -297,8 +297,15 @@ fn write_contig<A: Copy>(view: &mut ArrayViewMut2<'_, A>, src: &[A]) {
 
 /// Matrix multiply BF16 × BF16 → f32: `out = lhs · rhs`.
 ///
-/// Uses AMX `TDPBF16PS` (256 mul-adds per instruction) when available,
-/// otherwise falls back to [`bf16_gemm_f32`].
+/// On AMX hardware (Sapphire Rapids+, Granite Rapids), 16×16-aligned tiles
+/// dispatch to [`crate::hpc::bf16_tile_gemm::bf16_tile_gemm_16x16`] which
+/// emits `TDPBF16PS` via the asm-byte path in `simd_amx.rs` — 256
+/// BF16×BF16 multiply-accumulates per instruction (16×16×32 = 8 192 FLOPs)
+/// into f32 accumulator tiles. M/N/K tail blocks (when any dim isn't
+/// 16/16/32-aligned) fall through to the validated scalar
+/// [`crate::hpc::quantized::bf16_gemm_f32`] reference.
+///
+/// On non-AMX hosts the entire matmul goes through `bf16_gemm_f32`.
 ///
 /// `out` must be row-contiguous (column stride = 1); inputs may be strided.
 pub fn matmul_bf16_to_f32(
@@ -310,18 +317,43 @@ pub fn matmul_bf16_to_f32(
     let b = pack_contig(&rhs);
     let mut c = vec![0.0f32; m * n];
 
-    // AMX path: a tiled 16×16 kernel exists in `bf16_tile_gemm` for sizes that
-    // fit cleanly. For any leftover tail (or hosts without AMX), defer to the
-    // scalar `bf16_gemm_f32`. The tile kernel itself is maintained alongside
-    // the low-level primitives at the top of this file; the public surface
-    // intentionally goes through the validated scalar path so we always
-    // produce a numerically-stable f32 result.
-    if amx_available() {
-        // Future: AMX-tiled fast path. Today we route through the same
-        // f32 reference kernel; correctness is identical regardless of
-        // hardware. The `amx_available()` branch is preserved so callers
-        // can be sure the AMX detection runs.
-        bf16_gemm_f32(&a, &b, &mut c, m, n, k, 1.0, 0.0);
+    // AMX TDPBF16PS tile path: requires m, n multiples of 16 and k a
+    // multiple of 32 (the tile shape `bf16_tile_gemm_16x16` enforces).
+    // For mis-aligned shapes fall back to scalar — Phase-4 work will
+    // add mixed-tile / tail handling.
+    if amx_available() && m % 16 == 0 && n % 16 == 0 && k % 32 == 0 {
+        // SAFETY: BF16 is `#[repr(transparent)] struct BF16(pub u16)`
+        // (per `hpc::quantized::BF16`). Reinterpreting `&[BF16]` as
+        // `&[u16]` is bit-pattern preserving.
+        let a_u16: &[u16] = unsafe { core::slice::from_raw_parts(a.as_ptr() as *const u16, a.len()) };
+
+        // B is packed row-major K × N; the 16×16 tile kernel wants a
+        // K × 16 contiguous sub-block. Extract per (j_tile) into a
+        // scratch buffer once and reuse across i_tile.
+        let mut b_tile = vec![0u16; k * 16];
+        let mut tile_c = vec![0.0f32; 256];
+
+        for j_tile in (0..n).step_by(16) {
+            // Pack b[0..k, j_tile..j_tile+16] into row-major 16-wide K-rows.
+            for kk in 0..k {
+                let row = kk * n + j_tile;
+                for jj in 0..16 {
+                    b_tile[kk * 16 + jj] = b[row + jj].0;
+                }
+            }
+            for i_tile in (0..m).step_by(16) {
+                // A_tile = a[i_tile..i_tile+16, 0..k] — already contiguous
+                // since `a` is packed row-major M × K.
+                let a_tile = &a_u16[i_tile * k..(i_tile + 16) * k];
+                tile_c.fill(0.0);
+                crate::hpc::bf16_tile_gemm::bf16_tile_gemm_16x16(a_tile, &b_tile, &mut tile_c, k);
+                // Write tile_c (16 × 16, row-major) into c (M × N, row-major).
+                for ii in 0..16 {
+                    let dst_off = (i_tile + ii) * n + j_tile;
+                    c[dst_off..dst_off + 16].copy_from_slice(&tile_c[ii * 16..(ii + 1) * 16]);
+                }
+            }
+        }
     } else {
         bf16_gemm_f32(&a, &b, &mut c, m, n, k, 1.0, 0.0);
     }
