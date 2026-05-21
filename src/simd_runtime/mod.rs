@@ -84,6 +84,7 @@ compile_error!(
 
 pub mod add_mul;
 pub mod casts;
+pub mod cpu_ops;
 pub mod matmul;
 pub mod vnni_dot;
 
@@ -91,5 +92,6 @@ pub mod vnni_dot;
 // consumers can `use crate::simd_runtime::*` and get every op flat.
 pub use add_mul::{add_mul_f32, add_mul_f64};
 pub use casts::{bf16_to_f32_batch, cast_f16_to_f32_batch, cast_f32_to_f16_batch, f32_to_bf16_batch_rne};
+pub use cpu_ops::{cpu_ops, cpu_ops_for_cpu, cpu_ops_for_tier, CpuOps};
 pub use matmul::{gemm_u8_i8, matmul_bf16_to_f32, matmul_f32, matmul_i8_to_i32};
 pub use vnni_dot::vnni_dot_u8_i8;

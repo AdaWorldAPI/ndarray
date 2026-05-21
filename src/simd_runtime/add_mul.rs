@@ -228,6 +228,51 @@ unsafe fn add_mul_f64_scalar(acc: &mut [f64], a: &[f64], b: &[f64]) {
     }
 }
 
+// ────────────────────────────────────────────────────────────────────────
+// CpuOps DTO entry points — pub(super) wrappers for cpu_ops.rs to
+// reference the tier-specific kernels by name in static const decls.
+// Each one has the safety invariant guaranteed by the cpu_ops()
+// LazyLock that installed the parent &'static CpuOps.
+// ────────────────────────────────────────────────────────────────────────
+
+#[cfg(target_arch = "x86_64")]
+pub(super) unsafe fn add_mul_f32_avx512_safe(acc: &mut [f32], a: &[f32], b: &[f32]) {
+    add_mul_f32_avx512(acc, a, b)
+}
+
+#[cfg(target_arch = "x86_64")]
+pub(super) unsafe fn add_mul_f64_avx512_safe(acc: &mut [f64], a: &[f64], b: &[f64]) {
+    add_mul_f64_avx512(acc, a, b)
+}
+
+#[cfg(target_arch = "x86_64")]
+pub(super) unsafe fn add_mul_f32_avx2_fma_safe(acc: &mut [f32], a: &[f32], b: &[f32]) {
+    add_mul_f32_avx2_fma(acc, a, b)
+}
+
+#[cfg(target_arch = "x86_64")]
+pub(super) unsafe fn add_mul_f64_avx2_fma_safe(acc: &mut [f64], a: &[f64], b: &[f64]) {
+    add_mul_f64_avx2_fma(acc, a, b)
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(super) unsafe fn add_mul_f32_neon_safe(acc: &mut [f32], a: &[f32], b: &[f32]) {
+    add_mul_f32_neon(acc, a, b)
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(super) unsafe fn add_mul_f64_neon_safe(acc: &mut [f64], a: &[f64], b: &[f64]) {
+    add_mul_f64_neon(acc, a, b)
+}
+
+pub(super) unsafe fn add_mul_f32_scalar_safe(acc: &mut [f32], a: &[f32], b: &[f32]) {
+    add_mul_f32_scalar(acc, a, b)
+}
+
+pub(super) unsafe fn add_mul_f64_scalar_safe(acc: &mut [f64], a: &[f64], b: &[f64]) {
+    add_mul_f64_scalar(acc, a, b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
