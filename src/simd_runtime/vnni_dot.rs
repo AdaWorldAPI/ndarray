@@ -125,6 +125,28 @@ unsafe fn vnni_dot_u8_i8_scalar_safe_wrapper(a: &[u8], b: &[i8]) -> i32 {
     crate::simd_amx::vnni_dot_u8_i8_scalar(a, b)
 }
 
+// ────────────────────────────────────────────────────────────────────────
+// CpuOps DTO entry points — same fn ptrs as above but exposed
+// pub(super) so cpu_ops.rs can reference them by name in static decls.
+// ────────────────────────────────────────────────────────────────────────
+
+#[cfg(target_arch = "x86_64")]
+pub(super) unsafe fn vnni_dot_u8_i8_avx512_with_tail_safe(a: &[u8], b: &[i8]) -> i32 {
+    // SAFETY: the static CpuOps that references this is only installed
+    // when avx512f + avx512vnni were verified by cpu_ops()'s LazyLock.
+    vnni_dot_u8_i8_avx512_with_tail(a, b)
+}
+
+#[cfg(target_arch = "x86_64")]
+pub(super) unsafe fn vnni2_dot_u8_i8_safe(a: &[u8], b: &[i8]) -> i32 {
+    // SAFETY: dispatch closure verified avx2 + avxvnniint8.
+    vnni2_dot_u8_i8_safe_wrapper(a, b)
+}
+
+pub(super) unsafe fn vnni_dot_u8_i8_scalar_wrapper(a: &[u8], b: &[i8]) -> i32 {
+    vnni_dot_u8_i8_scalar_safe_wrapper(a, b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

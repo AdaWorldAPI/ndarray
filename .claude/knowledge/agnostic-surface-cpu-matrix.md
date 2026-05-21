@@ -23,7 +23,7 @@ Same set as `td-simd-cpu-dispatch-matrix.md` § "Master matrix — x86_64" and
 | Z5   | `znver5` / `Zen4Avx512` (same dispatch) | AMD 2024           | same as Z4 + minor uarch       |
 | ARL  | `arrowlake` / `ArrowLake`               | Intel 2024         | AVX2+FMA + AVX-VNNI+VNNI-INT8  |
 | HSW  | `x86-64-v3` / `HaswellAvx2`             | Intel 2013→2021    | AVX2+FMA (no VNNI/AVX-512)     |
-| A76  | `cortex-a76` / `A76DotProd`             | ARMv8.2 (Pi 5, M1) | NEON+dotprod+bf16+fp16         |
+| A76  | `cortex-a76` / `A76DotProd`             | ARMv8.2 (Pi 5)     | NEON+dotprod+fp16 (no bf16 / i8mm — those are V8.6+, see § M) |
 | A72  | `cortex-a72` / `A72Fast`                | ARMv8.0 (Pi 4)     | NEON only (no dotprod)         |
 | A53  | `cortex-a53` / `A53Baseline`            | ARMv8.0 (Pi 3/Z2W) | NEON, lower IPC                |
 | SCA  | scalar fallback                         | wasm32/riscv/i686  | no SIMD                        |
@@ -529,6 +529,76 @@ verifies that no per-CPU regression has crept in vs the historical baseline:
 4. **Spotting matrix drift:** when adding a new public symbol to
    `crate::simd::*`, this table must grow a row. Reviewers should reject
    PRs that add a public symbol without a corresponding matrix entry.
+
+## M. AArch64 ground-truth core enumeration (GCC source)
+
+The matrix above uses three aarch64 columns (A53 / A72 / A76) that
+each cover a *dispatch tier* — multiple physical cores share the same
+SIMD primitive set. The authoritative per-core feature membership is
+in GCC's `gcc/config/aarch64/aarch64-cores.def`, scraped 2026-05-21:
+
+| Core | GCC arch | Explicit feature flags |
+|---|---|---|
+| **A53/A72/A76 tier** (baseline NEON, optional dotprod+fp16, NO bf16) | | |
+| `cortex-a53` | V8-A | `(CRC)` |
+| `cortex-a72` | V8-A | `(CRC)` |
+| `cortex-a76` | V8.2-A | `F16, RCPC, DOTPROD` |
+| `cortex-a78` | V8.2-A | `F16, RCPC, DOTPROD, SSBS, PROFILE` |
+| `cortex-x1`  | V8.2-A | `F16, RCPC, DOTPROD, SSBS, PROFILE` |
+| `neoverse-n1`| V8.2-A | `F16, RCPC, DOTPROD, PROFILE` |
+| `apple-m1`   | V8.5-A | `()` — V8.5 baseline includes F16+dotprod, NO bf16/i8mm |
+| **V8.6-A tier** (BF16 + I8MM via baseline) | | |
+| `apple-m2`   | V8.6-A | `()` — V8.6 baseline → bf16, i8mm, sve, sve2 |
+| `apple-m3`   | V8.6-A | same |
+| `oryon-1`    | V8.6-A | `CRYPTO, SM4, SHA3, F16` (Snapdragon X Elite/Plus) |
+| `ampere1`    | V8.6-A | `F16, RNG, AES, SHA3` |
+| `ampere1a`   | V8.6-A | `F16, RNG, AES, SHA3, SM4, MEMTAG` |
+| **V8.7-A tier** (baseline + LS64 + MOPS) | | |
+| `apple-m4`   | V8.7-A | `()` |
+| `ampere1b`   | V8.7-A | `F16, RNG, AES, SHA3, SM4, MEMTAG, CSSC` |
+| **V9.0-A tier** (SVE2 baseline + explicit bf16/i8mm) | | |
+| `cortex-a510`| V9-A | `SVE2_BITPERM, MEMTAG, I8MM, BF16` |
+| `cortex-a710`| V9-A | `SVE2_BITPERM, MEMTAG, I8MM, BF16` |
+| `cortex-a715`| V9-A | `SVE2_BITPERM, MEMTAG, I8MM, BF16` |
+| `cortex-x2`  | V9-A | `SVE2_BITPERM, MEMTAG, I8MM, BF16` |
+| `cortex-x3`  | V9-A | `SVE2_BITPERM, MEMTAG, I8MM, BF16` |
+| `neoverse-n2`| V9-A | `I8MM, BF16, SVE2_BITPERM, RNG, MEMTAG, PROFILE` |
+| `neoverse-v2`| V9-A | `I8MM, BF16, SVE2_BITPERM, RNG, MEMTAG, PROFILE` (Graviton 4) |
+| `grace`      | V9-A | `I8MM, BF16, SVE2_BITPERM, SVE2_AES, SVE2_SHA3, SVE2_SM4, PROFILE` |
+| **V8.4-A SVE tier** (Graviton 3's odd one) | | |
+| `neoverse-v1`| V8.4-A | `SVE, I8MM, BF16, PROFILE, SSBS, RNG` |
+| **V9.2-A tier** (V9 + V8.7 features) | | |
+| `cortex-a520`| V9.2-A | `SVE2_BITPERM, MEMTAG` |
+| `cortex-a720`| V9.2-A | `SVE2_BITPERM, MEMTAG, PROFILE` |
+| `cortex-a725`| V9.2-A | `SVE2_BITPERM, MEMTAG, PROFILE` |
+| `cortex-x4`  | V9.2-A | `SVE2_BITPERM, MEMTAG, PROFILE` |
+| `cortex-x925`| V9.2-A | `SVE2_BITPERM, MEMTAG, PROFILE` |
+| `neoverse-n3`| V9.2-A | `SVE2_BITPERM, RNG, MEMTAG, PROFILE` |
+| `neoverse-v3`| V9.2-A | `SVE2_BITPERM, RNG, LS64, MEMTAG, PROFILE` |
+
+**Dispatch tier mapping (which matrix column each core lands in):**
+
+| Tier (matrix col.) | Cores |
+|---|---|
+| A53 | `cortex-a53`, older V8.0-A |
+| A72 | `cortex-a72`, V8.0-A + CRC |
+| A76 (V8.2 with dotprod+fp16, NO bf16/i8mm) | `cortex-a76`, `cortex-a78`, `cortex-x1`, `neoverse-n1`, `apple-m1` |
+| **(new tier — V8.6+/V9 with bf16+i8mm)** | `apple-m2`+, `oryon-1` (Snapdragon X), `cortex-a510`+, `neoverse-n2`/`v2`/`grace`, `ampere1`+ |
+| **(new tier — V8.4-A + SVE + bf16+i8mm)** | `neoverse-v1` (Graviton 3 — only V8.4-A core with explicit SVE+bf16+i8mm) |
+
+The matrix's three aarch64 columns cover the bottom of the dispatch
+ladder. The bf16/i8mm tier (which would carry NEON BFMMLA / BFDOT /
+USDOT / FMLA.8h) needs its own column in a future revision — when the
+NEON BF16 asm-byte arm lands (Phase 3b in § J), every V8.6+ core
+listed above gets covered by the same dispatch arm.
+
+**Source provenance:** scraped from
+`https://raw.githubusercontent.com/gcc-mirror/gcc/master/gcc/config/aarch64/aarch64-cores.def`
+(GCC trunk, 2026-05-21). The `AARCH64_CORE(...)` macro emits the
+canonical name → arch → feature-string mapping; GCC's
+`(define_insn ...)` patterns in `aarch64-simd.md` give the bit
+encodings for the asm-byte rule (`.inst 0xXXXXXXXX`) that Phase 3b
+will use for BFMMLA / BFDOT / FMLA.8h / USDOT.
 
 ## L. Provenance
 
