@@ -232,6 +232,58 @@ fn fallback_path(a_u8: &[u8], b_i8: &[i8], c: &mut [i32], k: usize) {
 }
 
 // ═════════════════════════════════════════════════════════════════════
+// AMX tiled helper — arbitrary 16/16/64-aligned M × N × K via 16×16 tile loop
+// ═════════════════════════════════════════════════════════════════════
+
+/// `u8 × i8 → i32` GEMM using AMX `TDPBUSD` for arbitrary M × N × K
+/// shapes that satisfy `m % 16 == 0 && n % 16 == 0 && k % 64 == 0`.
+///
+/// Tile-decomposes the M × N output into 16×16 blocks and calls
+/// [`int8_tile_gemm_16x16`] per (i_tile, j_tile). B sub-block extracted
+/// into K × 16 scratch once per j-tile, reused across all M i-tiles —
+/// amortizes the column gather cost.
+///
+/// **Overwrite semantics**: `c` is written, not accumulated. Caller
+/// does NOT need to zero `c` beforehand. (The underlying
+/// `int8_tile_gemm_16x16` accumulates into its tile buffer, but we
+/// zero the tile buffer before each call so the per-tile write to `c`
+/// is pure overwrite.)
+///
+/// # Panics
+/// Debug-asserts AMX availability and the 16/16/64 shape constraints.
+/// Production builds rely on the caller's runtime check
+/// (`crate::hpc::amx_matmul::amx_available()`).
+pub fn int8_gemm_amx_tiled(a_u8: &[u8], b_i8: &[i8], c: &mut [i32], m: usize, n: usize, k: usize) {
+    debug_assert!(crate::hpc::amx_matmul::amx_available());
+    debug_assert_eq!(m % 16, 0, "int8_gemm_amx_tiled: M must be multiple of 16");
+    debug_assert_eq!(n % 16, 0, "int8_gemm_amx_tiled: N must be multiple of 16");
+    debug_assert_eq!(k % 64, 0, "int8_gemm_amx_tiled: K must be multiple of 64");
+
+    let mut b_tile = vec![0i8; k * 16];
+    let mut tile_c = vec![0i32; 256];
+
+    for j_tile in (0..n).step_by(16) {
+        // Pack B[0..k, j_tile..j_tile+16] into 16-wide K-rows (contiguous
+        // memory for int8_tile_gemm_16x16's input shape).
+        for kk in 0..k {
+            let row = kk * n + j_tile;
+            b_tile[kk * 16..(kk + 1) * 16]
+                .copy_from_slice(unsafe { core::slice::from_raw_parts(b_i8.as_ptr().add(row), 16) });
+        }
+        for i_tile in (0..m).step_by(16) {
+            let a_tile = &a_u8[i_tile * k..(i_tile + 16) * k];
+            tile_c.fill(0);
+            int8_tile_gemm_16x16(a_tile, &b_tile, &mut tile_c, k);
+            // Write tile_c (16 × 16, row-major) into c (M × N, row-major).
+            for ii in 0..16 {
+                let dst_off = (i_tile + ii) * n + j_tile;
+                c[dst_off..dst_off + 16].copy_from_slice(&tile_c[ii * 16..(ii + 1) * 16]);
+            }
+        }
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════
 // Tests
 // ═════════════════════════════════════════════════════════════════════
 
