@@ -243,29 +243,42 @@ pub fn cpu_ops_for_tier(name: &str) -> Option<&'static CpuOps> {
     }
 }
 
-/// Lookup by GCC CPU codename (e.g. `"sapphirerapids"`,
-/// `"neoverse-v2"`, `"apple-m2"`). Maps the canonical GCC name to the
-/// dispatch tier the CPU lands in, sourced from the scrape recorded
-/// in the matrix doc § M.
+/// Lookup a [`CpuOps`] by GCC CPU codename (e.g. `"sapphirerapids"`,
+/// `"neoverse-v2"`, `"apple-m2"`) on the **current build host**.
 ///
-/// Used for "what would this CPU pick?" introspection without
-/// touching CPUID on the running host — e.g. cross-compilation
-/// reports, deployment-planning tools, integration tests that want
-/// to assert tier selection for a named target without running on
-/// that silicon.
+/// Returns `Some(&'static CpuOps)` only when the named CPU's tier is
+/// reachable from the current `target_arch` (e.g. an x86_64 CPU name
+/// on an x86_64 build, an aarch64 CPU name on an aarch64 build).
+/// Cross-arch lookups — e.g. `cpu_ops_for_cpu("apple-m2")` on an
+/// x86_64 build — return `None` because the underlying NEON kernel
+/// fn pointers are compiled out and there is no honest `CpuOps` to
+/// return.
+///
+/// For pure introspection ("what tier would this CPU pick?", with no
+/// intent to call kernels), use [`cpu_tier_for_cpu`] instead — it is
+/// `cfg`-free and works on any build host.
 ///
 /// Returns `None` for unknown CPU names. Only modern (V8.2-A+ on
 /// aarch64, AVX-512+ or AVX-VNNI+ on x86_64) names are mapped — older
 /// silicon falls through to `cpu_ops_for_tier("scalar")` by
 /// convention if you really need it.
 pub fn cpu_ops_for_cpu(name: &str) -> Option<&'static CpuOps> {
-    cpu_ops_for_tier(cpu_to_tier(name)?)
+    cpu_ops_for_tier(cpu_tier_for_cpu(name)?)
 }
 
-/// Maps a GCC CPU codename to the [`CpuOps`] tier it lands in. Data
-/// from the scrape recorded in `.claude/knowledge/agnostic-surface-cpu-matrix.md`
-/// § M (aarch64) plus the GCC i386 cpu definitions for x86_64.
-fn cpu_to_tier(cpu: &str) -> Option<&'static str> {
+/// Lookup the dispatch tier name (e.g. `"amx_int8"`, `"avx512vnni"`,
+/// `"neon"`) for a GCC CPU codename. Data from the scrape recorded
+/// in `.claude/knowledge/agnostic-surface-cpu-matrix.md` § M
+/// (aarch64) plus the GCC i386 cpu definitions for x86_64.
+///
+/// `cfg`-free — works on any build host regardless of `target_arch`.
+/// This is the right entry point for cross-target introspection:
+/// deployment-planning tools, cross-compilation reports, integration
+/// tests that assert "apple-m2 lands at the neon tier" without
+/// actually building for that silicon.
+///
+/// Returns `None` for unknown CPU names.
+pub fn cpu_tier_for_cpu(cpu: &str) -> Option<&'static str> {
     Some(match cpu {
         // x86_64 — AMX-INT8 hosts
         "sapphirerapids" | "graniterapids" | "graniterapids-d" | "emeraldrapids" => "amx_int8",
@@ -336,24 +349,41 @@ mod tests {
     }
 
     #[test]
-    fn cpu_ops_for_cpu_data_driven_lookup() {
-        // Spot-check the GCC-scraped mapping (matrix doc § M).
-        assert_eq!(cpu_to_tier("sapphirerapids"), Some("amx_int8"));
-        assert_eq!(cpu_to_tier("graniterapids"), Some("amx_int8"));
-        assert_eq!(cpu_to_tier("cascadelake"), Some("avx512vnni"));
-        assert_eq!(cpu_to_tier("znver4"), Some("avx512vnni"));
-        assert_eq!(cpu_to_tier("znver5"), Some("avx512vnni"));
-        assert_eq!(cpu_to_tier("alderlake"), Some("avxvnni"));
-        assert_eq!(cpu_to_tier("arrowlake"), Some("avxvnni"));
-        assert_eq!(cpu_to_tier("haswell"), Some("avx2_fma"));
-        assert_eq!(cpu_to_tier("znver3"), Some("avx2_fma"));
+    fn cpu_tier_for_cpu_data_driven_lookup() {
+        // Spot-check the GCC-scraped mapping (matrix doc § M). This
+        // function is cfg-free — every assertion must hold on every
+        // build host, regardless of target_arch.
+        assert_eq!(cpu_tier_for_cpu("sapphirerapids"), Some("amx_int8"));
+        assert_eq!(cpu_tier_for_cpu("graniterapids"), Some("amx_int8"));
+        assert_eq!(cpu_tier_for_cpu("cascadelake"), Some("avx512vnni"));
+        assert_eq!(cpu_tier_for_cpu("znver4"), Some("avx512vnni"));
+        assert_eq!(cpu_tier_for_cpu("znver5"), Some("avx512vnni"));
+        assert_eq!(cpu_tier_for_cpu("alderlake"), Some("avxvnni"));
+        assert_eq!(cpu_tier_for_cpu("arrowlake"), Some("avxvnni"));
+        assert_eq!(cpu_tier_for_cpu("haswell"), Some("avx2_fma"));
+        assert_eq!(cpu_tier_for_cpu("znver3"), Some("avx2_fma"));
 
-        assert_eq!(cpu_to_tier("apple-m2"), Some("neon"));
-        assert_eq!(cpu_to_tier("neoverse-v2"), Some("neon"));
-        assert_eq!(cpu_to_tier("oryon-1"), Some("neon"));
-        assert_eq!(cpu_to_tier("grace"), Some("neon"));
+        assert_eq!(cpu_tier_for_cpu("apple-m2"), Some("neon"));
+        assert_eq!(cpu_tier_for_cpu("neoverse-v2"), Some("neon"));
+        assert_eq!(cpu_tier_for_cpu("oryon-1"), Some("neon"));
+        assert_eq!(cpu_tier_for_cpu("grace"), Some("neon"));
 
-        assert_eq!(cpu_to_tier("totally-fake-cpu"), None);
+        assert_eq!(cpu_tier_for_cpu("totally-fake-cpu"), None);
+    }
+
+    /// Regression for the cross-arch-introspection bug Codex flagged
+    /// on PR #187: `cpu_tier_for_cpu` MUST return the same Some-string
+    /// regardless of the build host. Previously, ARM CPU names like
+    /// `"apple-m2"` would fall to `None` on an x86_64 build because the
+    /// lookup piped through the cfg-gated `cpu_ops_for_tier`.
+    #[test]
+    fn cpu_tier_for_cpu_is_cross_arch() {
+        // These four must resolve on EVERY build host (x86_64, aarch64,
+        // wasm, etc.) — no cfg gating on this surface.
+        assert_eq!(cpu_tier_for_cpu("apple-m2"), Some("neon"));
+        assert_eq!(cpu_tier_for_cpu("sapphirerapids"), Some("amx_int8"));
+        assert_eq!(cpu_tier_for_cpu("neoverse-v2"), Some("neon"));
+        assert_eq!(cpu_tier_for_cpu("alderlake"), Some("avxvnni"));
     }
 
     #[test]
