@@ -464,11 +464,7 @@ mod tests {
         let mut max_abs_err: f32 = 0.0;
 
         for _ in 0..N {
-            let s = [
-                sample_scale_axis(&mut rng),
-                sample_scale_axis(&mut rng),
-                sample_scale_axis(&mut rng),
-            ];
+            let s = [sample_scale_axis(&mut rng), sample_scale_axis(&mut rng), sample_scale_axis(&mut rng)];
             let q = sample_unit_quaternion(&mut rng);
 
             let pillar = covariance_from_scale_quat(s, q);

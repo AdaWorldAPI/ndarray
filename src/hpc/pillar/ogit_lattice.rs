@@ -502,10 +502,7 @@ mod tests {
         );
         src.push_str(&format!("{} a rdfs:Class .\n", names[0]));
         for k in 1..N {
-            src.push_str(&format!(
-                "{} a rdfs:Class ; rdfs:subClassOf {} .\n",
-                names[k], names[parent[k]]
-            ));
+            src.push_str(&format!("{} a rdfs:Class ; rdfs:subClassOf {} .\n", names[k], names[parent[k]]));
         }
         let triples = TurtleParser::parse(&src).unwrap();
         let schema = OntologySchema::from_triples(&triples).unwrap();
