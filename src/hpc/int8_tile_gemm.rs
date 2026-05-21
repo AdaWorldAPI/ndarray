@@ -216,6 +216,97 @@ pub unsafe fn int8_gemm_vpdpbusd_zmm(a_u8: &[u8], b_i8: &[i8], c: &mut [i32], m:
 }
 
 // ═════════════════════════════════════════════════════════════════════
+// VPDPBUSD-ymm AVX-VNNI tier (Arrow Lake / Meteor Lake U / Alder Lake)
+// ═════════════════════════════════════════════════════════════════════
+
+/// AVX-VNNI ymm `u8 × i8 → i32` GEMM kernel for arbitrary M × N × K.
+///
+/// One `_mm256_dpbusd_avx_epi32` instruction: 8 i32 accumulator lanes,
+/// each receiving the sum of 4 `u8 × i8` products = **32 MACs per
+/// instruction**. Half the throughput-per-instruction of the
+/// `_mm512_dpbusd_epi32` zmm version (which does 64 MACs); fires on
+/// Arrow Lake / Meteor Lake U / Alder Lake silicon that has AVX-VNNI
+/// but NOT AVX-512.
+///
+/// Same B pre-packing scheme as the zmm version (quad-interleaved per
+/// 8-wide j-block), same K-tail and N-tail handling, just narrower.
+/// Mirrors the `vnni2_dot_u8_i8` shape in `simd_amx.rs` but as a
+/// matrix-product instead of single-row dot.
+///
+/// Output behavior: overwrites `c` (does NOT accumulate). Caller's
+/// responsibility to zero `c` first if needed.
+///
+/// # Safety
+/// Caller must have feature-detected `avxvnni + avx2` at runtime.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avxvnni,avx2")]
+pub unsafe fn int8_gemm_vpdpbusd_ymm(a_u8: &[u8], b_i8: &[i8], c: &mut [i32], m: usize, n: usize, k: usize) {
+    use core::arch::x86_64::{
+        __m256i, _mm256_dpbusd_avx_epi32, _mm256_loadu_si256, _mm256_set1_epi32, _mm256_setzero_si256,
+        _mm256_storeu_si256,
+    };
+
+    let k_quads = k / 4;
+    let k_tail = k % 4;
+
+    // Pre-pack scratch: 8 i32 lanes per k_quad (vs 16 in the zmm
+    // version). Same per-lane layout: each i32 holds 4 consecutive
+    // B K-bytes for output column j+lane.
+    let mut b_col_quads = vec![0i32; k_quads.max(1) * 8];
+    let mut out_buf = [0i32; 8];
+
+    for j_base in (0..n).step_by(8) {
+        let j_count = 8.min(n - j_base);
+
+        for k_quad in 0..k_quads {
+            let row0 = 4 * k_quad * n;
+            let row1 = (4 * k_quad + 1) * n;
+            let row2 = (4 * k_quad + 2) * n;
+            let row3 = (4 * k_quad + 3) * n;
+            for jj in 0..j_count {
+                let b0 = b_i8[row0 + j_base + jj] as u8 as u32;
+                let b1 = b_i8[row1 + j_base + jj] as u8 as u32;
+                let b2 = b_i8[row2 + j_base + jj] as u8 as u32;
+                let b3 = b_i8[row3 + j_base + jj] as u8 as u32;
+                b_col_quads[k_quad * 8 + jj] = (b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)) as i32;
+            }
+            for jj in j_count..8 {
+                b_col_quads[k_quad * 8 + jj] = 0;
+            }
+        }
+
+        for i in 0..m {
+            let mut acc = _mm256_setzero_si256();
+            let a_row_off = i * k;
+            for k_quad in 0..k_quads {
+                let a0 = a_u8[a_row_off + 4 * k_quad] as u32;
+                let a1 = a_u8[a_row_off + 4 * k_quad + 1] as u32;
+                let a2 = a_u8[a_row_off + 4 * k_quad + 2] as u32;
+                let a3 = a_u8[a_row_off + 4 * k_quad + 3] as u32;
+                let packed_a = a0 | (a1 << 8) | (a2 << 16) | (a3 << 24);
+                let a_v = _mm256_set1_epi32(packed_a as i32);
+                let b_v = _mm256_loadu_si256(b_col_quads.as_ptr().add(k_quad * 8) as *const __m256i);
+                acc = _mm256_dpbusd_avx_epi32(acc, a_v, b_v);
+            }
+            _mm256_storeu_si256(out_buf.as_mut_ptr() as *mut __m256i, acc);
+
+            if k_tail > 0 {
+                for kk in (k_quads * 4)..k {
+                    let a_val = a_u8[a_row_off + kk] as i32;
+                    let tail_row = kk * n;
+                    for jj in 0..j_count {
+                        out_buf[jj] += a_val * b_i8[tail_row + j_base + jj] as i32;
+                    }
+                }
+            }
+
+            let dst_off = i * n + j_base;
+            c[dst_off..dst_off + j_count].copy_from_slice(&out_buf[..j_count]);
+        }
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════
 // Scalar fallback (i32 reference)
 // ═════════════════════════════════════════════════════════════════════
 
@@ -419,6 +510,45 @@ mod tests {
             // SAFETY: avx512vnni confirmed at the top of the test.
             unsafe { int8_gemm_vpdpbusd_zmm(&a, &b, &mut got, m, n, k) };
             assert_eq!(got, expected, "VPDPBUSD-zmm mismatch at (M={}, N={}, K={})", m, n, k);
+        }
+    }
+
+    /// Direct test for the VPDPBUSD-ymm arm (AVX-VNNI tier of
+    /// `matmul_i8_to_i32`). Same shape / bit-exactness contract as
+    /// the zmm version's test, just on the narrower 8-wide kernel.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn vpdpbusd_ymm_matches_scalar() {
+        if !std::is_x86_feature_detected!("avxvnni") {
+            eprintln!("avxvnni not detected; skipping");
+            return;
+        }
+
+        fn ref_gemm(a: &[u8], b: &[i8], m: usize, n: usize, k: usize) -> Vec<i32> {
+            let mut c = vec![0i32; m * n];
+            for i in 0..m {
+                for kk in 0..k {
+                    let av = a[i * k + kk] as i32;
+                    for j in 0..n {
+                        c[i * n + j] += av * b[kk * n + j] as i32;
+                    }
+                }
+            }
+            c
+        }
+
+        // Sweep shapes spanning 8-aligned, K-tail (k % 4), N-tail
+        // (n % 8), and small shapes to exercise every code path.
+        for (m, n, k) in [(16, 8, 64), (3, 5, 7), (17, 33, 100), (1, 17, 12), (8, 8, 4)] {
+            let a: Vec<u8> = (0..m * k).map(|i| ((i * 31 + 7) % 256) as u8).collect();
+            let b: Vec<i8> = (0..k * n)
+                .map(|i| ((i * 17 + 3) % 256) as u8 as i8)
+                .collect();
+            let expected = ref_gemm(&a, &b, m, n, k);
+            let mut got = vec![0i32; m * n];
+            // SAFETY: avxvnni confirmed at the top of the test.
+            unsafe { int8_gemm_vpdpbusd_ymm(&a, &b, &mut got, m, n, k) };
+            assert_eq!(got, expected, "VPDPBUSD-ymm mismatch at (M={}, N={}, K={})", m, n, k);
         }
     }
 

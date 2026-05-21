@@ -621,9 +621,19 @@ pub fn matmul_i8_to_i32(
             crate::hpc::int8_tile_gemm::int8_gemm_vpdpbusd_zmm(&a_u8, &b_i8, &mut c, m, n, k);
         }
         subtract_i8_to_u8_bias(&mut c, &b_i8, m, n, k);
+    } else if cfg!(target_arch = "x86_64") && std::is_x86_feature_detected!("avxvnni") {
+        // Tier 3 — AVX-VNNI ymm VPDPBUSD: 32 MACs per instruction.
+        // Arrow Lake, Meteor Lake U, Alder Lake silicon that has
+        // AVX-VNNI but dropped AVX-512. Same sign-shift bias trick.
+        let a_u8: Vec<u8> = a_i8.iter().map(|&v| (v as i32 + 128) as u8).collect();
+        // SAFETY: runtime feature-detected avxvnni above.
+        unsafe {
+            crate::hpc::int8_tile_gemm::int8_gemm_vpdpbusd_ymm(&a_u8, &b_i8, &mut c, m, n, k);
+        }
+        subtract_i8_to_u8_bias(&mut c, &b_i8, m, n, k);
     } else {
-        // Tier 3 — Scalar i8×i8 → i32 reference for non-x86 hosts,
-        // pre-AVX-512 silicon, or shapes that don't satisfy either of
+        // Tier 4 — Scalar i8×i8 → i32 reference for non-x86 hosts,
+        // pre-AVX-VNNI silicon, or shapes that don't satisfy any of
         // the SIMD tiers' alignment requirements.
         for i in 0..m {
             for p in 0..k {
