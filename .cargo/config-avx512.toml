@@ -1,16 +1,50 @@
 [build]
-# Explicit AVX-512 config — `x86-64-v4`. Use with:
+# Explicit AVX-512 config — Sapphire Rapids baseline. Use with:
 #   cargo --config .cargo/config-avx512.toml build
 #   cargo --config .cargo/config-avx512.toml test
 #
-# Compiles `target_feature = "avx512f"` on, so `src/simd.rs` selects the
-# `simd_avx512` backend with native `__m512` / `__m512d` / `__m512i`
-# storage. Required for the Sapphire Rapids / Granite Rapids hot paths
-# (`f32_to_bf16_batch_rne`, the AVX-512BF16 BF16 lanes, the AMX tiles).
+# `-Ctarget-cpu=sapphirerapids` enables, in addition to the
+# `x86-64-v4` AVX-512 baseline (F + BW + CD + DQ + VL):
 #
-# Binary produced here will SIGILL on AVX2-only silicon — only use on
-# hosts that report `avx512f` in `/proc/cpuinfo`. For shipping a single
-# release artifact that adapts at process start, see the LazyLock runtime
-# dispatch path in § 7.1 of the architecture doc instead.
+#   - AVX-512 VNNI       (VPDPBUSD u8×i8 → i32)
+#   - AVX-512 BF16       (VDPBF16PS, VCVTNE2PS2BF16)
+#   - AVX-512 FP16       (16-wide native FP16 arithmetic)
+#   - AVX-512 VBMI / VBMI2 (byte permute)
+#   - AVX-512 IFMA, BITALG, VPOPCNTDQ, GFNI, VAES, VPCLMUL
+#   - AVX-VNNI           (ymm VPDPBUSD on Alder/Sapphire client)
+#   - AMX-TILE + AMX-INT8 + AMX-BF16 (16×16×k tile kernels)
+#
+# Effect on the agnostic surfaces in `src/simd_*ops.rs`:
+#
+#   - `simd_int_ops::gemm_u8_i8` resolves to the AVX-512 VNNI `VPDPBUSD`
+#     zmm kernel (`hpc::vnni_gemm::int8_gemm_vnni_avx512`). When the
+#     planned `amx-int8` arm lands, it will preempt this one and route
+#     to `TDPBUSD` instead — same source, no caller changes.
+#   - BF16 / FP16 lane ops in `src/simd_avx512.rs` light up.
+#   - `simd_amx::*` tile primitives are usable without further gating.
+#
+# Pure `x86-64-v4` is NOT used here — Skylake-X is the only AVX-512 CPU
+# without VNNI and the project's design pins VNNI as the lowest common
+# denominator above the scalar reference. SKX users either build with
+# `-Ctarget-cpu=x86-64-v4` explicitly (and accept the scalar arm for
+# `gemm_u8_i8`) or run a runtime-LazyLock dispatch binary.
+#
+# Binary produced here will SIGILL on CPUs that lack any of the
+# enabled feature sets — i.e. anything pre-Sapphire-Rapids on x86_64:
+#
+#   - Cooper Lake / Cascade Lake / Ice Lake-SP    (no BF16+FP16+AMX)
+#   - Skylake-X / Skylake-SP / Skylake-W          (no VNNI either)
+#   - Zen 4 / Zen 5                               (no AMX)
+#   - Alder Lake / Arrow Lake                     (no AVX-512 at all)
+#   - Haswell ⇢ Coffee Lake                       (AVX2 only)
+#
+# Only deploy artifacts built with this config to hosts that report
+# `amx_int8 amx_bf16 avx512_bf16 avx512_fp16 avx512_vnni` in
+# `/proc/cpuinfo`. For Cascade Lake → Ice Lake-SP → Zen 4 silicon
+# (AVX-512 + VNNI but no AMX/BF16/FP16), build with
+# `-Ctarget-cpu=cascadelake` or `-Ctarget-cpu=znver4` instead. For
+# shipping a single release artifact that adapts at process start,
+# see the LazyLock runtime dispatch path in § 7.1 of the architecture
+# doc instead.
 [target.'cfg(target_arch = "x86_64")']
-rustflags = ["-Ctarget-cpu=x86-64-v4"]
+rustflags = ["-Ctarget-cpu=sapphirerapids"]

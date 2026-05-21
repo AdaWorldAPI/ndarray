@@ -503,7 +503,14 @@ pub use crate::hpc::fingerprint::{
 // PR-X1 — SoA carrier + const-size slice helpers, dispatched from their
 // respective `simd_{type}.rs` modules. The W1a consumer contract forbids
 // reaching past `crate::simd::*` into the implementation modules directly.
-pub use crate::simd_ops::{array_chunks, array_chunks_checked};
+//
+// `array_chunks` (non-overlapping) and `array_windows` (overlapping) are
+// the stable-Rust foundation primitives for SIMD-staged kernels — together
+// with `add_mul_f32` / `add_mul_f64` below, they reach within a few %
+// of a Cranelift-JIT'd inner loop on the BLAS-graph GEMM path and are
+// the reason the JIT-native option was deemed unnecessary. See the
+// "Foundation primitives — do not remove" notice in `src/simd_ops.rs`.
+pub use crate::simd_ops::{array_chunks, array_chunks_checked, array_windows, array_windows_checked};
 pub use crate::simd_soa::MultiLaneColumn;
 
 pub use crate::hpc::quantized::{
@@ -542,8 +549,8 @@ pub use crate::hpc::heel_f64x8::cosine_f32_to_f64_simd;
 // Elementwise slice ops — polyfill-dispatched (F32x16/F64x8 chunks + scalar tail).
 #[cfg(feature = "std")]
 pub use crate::simd_ops::{
-    add_f32, add_f32_inplace, add_f64, add_f64_inplace, add_scalar_f32, div_f32, div_f32_inplace, mul_f32,
-    mul_f32_inplace, mul_f64, scale_f32, scale_f32_inplace, sub_f32, sub_f32_inplace,
+    add_f32, add_f32_inplace, add_f64, add_f64_inplace, add_mul_f32, add_mul_f64, add_scalar_f32, div_f32,
+    div_f32_inplace, mul_f32, mul_f32_inplace, mul_f64, scale_f32, scale_f32_inplace, sub_f32, sub_f32_inplace,
 };
 
 // ============================================================================
