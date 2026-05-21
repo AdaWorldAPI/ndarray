@@ -276,28 +276,78 @@ pub mod simd_caps;
 /// Graduated from `crate::hpc::bitwise::*` (substrate-tier; uses
 /// `crate::simd::U64x8` polyfill internally). Back-compat re-export in
 /// `crate::hpc::*` preserves existing import paths.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::bitwise::{hamming_distance_raw, popcount_raw};
+/// let a = [0xFFu8; 16];
+/// let b = [0x00u8; 16];
+/// assert_eq!(hamming_distance_raw(&a, &b), 128);
+/// assert_eq!(popcount_raw(&a), 128);
+/// ```
 #[cfg(feature = "std")]
 pub mod bitwise;
 
 /// F64x8 HEEL distance kernels — 8-plane weighted Hamming, f64 SIMD
 /// dot / cosine / sum-of-squares. Graduated from `crate::hpc::heel_f64x8::*`.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::heel_f64x8::{cosine_f64_simd, dot_f64_simd};
+/// let a = vec![1.0_f64; 32];
+/// let b = vec![1.0_f64; 32];
+/// assert!((cosine_f64_simd(&a, &b) - 1.0).abs() < 1e-10);
+/// assert!((dot_f64_simd(&a, &b) - 32.0).abs() < 1e-10);
+/// ```
 #[cfg(feature = "std")]
 pub mod heel_f64x8;
 
 /// Batch distance computations — spatial 3D-point queries +
 /// slice-shape L1 / L2 / L∞ (PR-X10 A6). Graduated from
 /// `crate::hpc::distance::*`.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::distance::{l1_f64_simd, l2_f64_simd, linf_f64_simd};
+/// let a = vec![3.0_f64, 0.0];
+/// let b = vec![0.0_f64, 4.0];
+/// assert!((l1_f64_simd(&a, &b) - 7.0).abs() < 1e-12);
+/// assert!((l2_f64_simd(&a, &b) - 5.0).abs() < 1e-12);
+/// assert!((linf_f64_simd(&a, &b) - 4.0).abs() < 1e-12);
+/// ```
 #[cfg(feature = "std")]
 pub mod distance;
 
 /// SIMD-accelerated byte-scan utilities — needle search, delimiter
 /// finding, parallel byte comparison. Graduated from
 /// `crate::hpc::byte_scan::*`.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::byte_scan::byte_find_all;
+/// let haystack = b"hello world, hello rust";
+/// let hits = byte_find_all(haystack, b'l');
+/// assert_eq!(hits, vec![2, 3, 9, 15, 16]);
+/// ```
 #[cfg(feature = "std")]
 pub mod byte_scan;
 
 /// SIMD-accelerated spatial hash — bucketing, candidate gather, hash
 /// collision detection. Graduated from `crate::hpc::spatial_hash::*`.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::spatial_hash::SpatialHash;
+/// let mut grid = SpatialHash::new(1.0);
+/// grid.insert(0, 0.0, 0.0, 0.0);
+/// grid.insert(1, 10.0, 10.0, 10.0);
+/// assert_eq!(grid.len(), 2);
+/// ```
 #[cfg(feature = "std")]
 pub mod spatial_hash;
 
