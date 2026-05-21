@@ -255,9 +255,31 @@ pub fn gemm_u8_i8(a: &[u8], b: &[i8], c: &mut [i32], m: usize, n: usize, k: usiz
     assert!(b.len() >= k * n, "gemm_u8_i8: b.len()={} < k*n={}", b.len(), k * n);
     assert!(c.len() >= m * n, "gemm_u8_i8: c.len()={} < m*n={}", c.len(), m * n);
 
-    // Compile-time dispatch chain. Exactly one arm survives per build;
-    // the others are stripped by `#[cfg]` so the compiler emits a direct
-    // call to the chosen kernel with no runtime branch.
+    // Tier 0 — runtime AMX check. AMX is a different feature class than
+    // the rest of the dispatch chain: it requires CPUID + XCR0 + a Linux
+    // `prctl(ARCH_REQ_XCOMP_PERM, 18)` to be granted, none of which fit
+    // a `target_feature` compile-time gate. The check is one CPUID +
+    // one XGETBV + one prctl (idempotent, cached after first call). On
+    // aligned shapes (16/16/64) this dispatches to TDPBUSD via the
+    // shared `int8_gemm_amx_tiled` helper — 16 384 MACs per instruction
+    // vs VPDPBUSD-zmm's 64. Since `gemm_u8_i8` is u8×i8 natively (no
+    // sign-shift bias needed), the AMX path is a direct call with no
+    // bias correction — simpler than `matmul_i8_to_i32`'s i8×i8 path.
+    #[cfg(target_arch = "x86_64")]
+    {
+        if crate::hpc::amx_matmul::amx_available()
+            && m.is_multiple_of(16)
+            && n.is_multiple_of(16)
+            && k.is_multiple_of(64)
+        {
+            crate::hpc::int8_tile_gemm::int8_gemm_amx_tiled(a, b, c, m, n, k);
+            return;
+        }
+    }
+
+    // Compile-time dispatch chain (tiers 1-3). Exactly one arm survives
+    // per build; the others are stripped by `#[cfg]` so the compiler
+    // emits a direct call to the chosen kernel with no runtime branch.
 
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512vnni"))]
     {
@@ -730,5 +752,26 @@ mod tests {
                 dt_simd, dt_scalar,
             );
         }
+    }
+
+    /// Exercises the AMX dispatch tier added on top of `gemm_u8_i8`'s
+    /// compile-time cascade. On AMX-enabled silicon (Sapphire Rapids+
+    /// with the right OS prctl), 16/16/64-aligned shapes go through
+    /// TDPBUSD via `int8_gemm_amx_tiled`. Anywhere else this falls back
+    /// to the compile-time cascade — the assertion still holds because
+    /// the scalar reference is exact integer arithmetic.
+    #[test]
+    fn gemm_u8_i8_amx_aligned_32x32x128() {
+        let m = 32; // 2 × 16-wide M-tiles
+        let n = 32; // 2 × 16-wide N-tiles
+        let k = 128; // 2 × 64-wide K-blocks per tile
+        let a: Vec<u8> = (0..m * k).map(|i| ((i * 13 + 7) % 256) as u8).collect();
+        let b: Vec<i8> = (0..k * n)
+            .map(|i| ((i * 19 + 11) % 256) as u8 as i8)
+            .collect();
+        let expected = ref_gemm_u8_i8(&a, &b, m, n, k);
+        let mut c = vec![0i32; m * n];
+        gemm_u8_i8(&a, &b, &mut c, m, n, k);
+        assert_eq!(c, expected, "gemm_u8_i8 AMX path mismatch");
     }
 }

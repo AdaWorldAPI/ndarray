@@ -201,6 +201,27 @@ rayon = ["dep:rayon", "std"]
 # cfg-dispatch in `simd.rs` remains the production path.
 nightly-simd = ["std"]
 
+# Runtime SIMD dispatch — release-binary distribution path. Compiles all
+# x86_64 backends into one artifact and selects per-op kernels via
+# `LazyLock<fn>` trampolines that read `simd_caps()` on first call. The
+# `crate::simd_runtime::*` module becomes reachable under this feature;
+# the existing compile-time `crate::simd::*` / `crate::simd_ops::*`
+# cascade is unchanged (additive). Use case: shipping one binary that
+# adapts across heterogeneous deployment silicon (AVX-512 server +
+# AVX2-only laptop) from the same artifact.
+#
+# Mutually exclusive with `nightly-simd` (the portable-SIMD polyfill
+# replaces the architecture-specific intrinsics that the runtime
+# trampolines select between; they can't coexist coherently).
+#
+# Per-call overhead: ~2-3 ns indirect-call through a static fn pointer
+# (LazyLock fires once at first call, every subsequent call is a
+# pointer deref). Invisible against any SIMD op's actual work.
+#
+# See `.claude/knowledge/simd-dispatch-architecture.md` § 7.1 / Phase 5
+# for the design rationale.
+runtime-dispatch = ["std"]
+
 # HPC extras: p64 palette/NARS bridge + fractal manifold.
 # (blake3 was previously listed here; it is now part of `std` directly
 # because the cognitive substrate modules under hpc/ that import blake3

@@ -606,28 +606,10 @@ pub fn matmul_i8_to_i32(
 
     if amx_available() && m % 16 == 0 && n % 16 == 0 && k % 64 == 0 {
         // Tier 1 — AMX TDPBUSD tile path: shift LHS i8 → u8 (+128),
-        // tile-GEMM via int8_tile_gemm_16x16, subtract bias.
+        // delegate to the shared int8_gemm_amx_tiled helper, subtract
+        // the sign-shift bias.
         let a_u8: Vec<u8> = a_i8.iter().map(|&v| (v as i32 + 128) as u8).collect();
-
-        let mut b_tile = vec![0i8; k * 16];
-        let mut tile_c = vec![0i32; 256];
-
-        for j_tile in (0..n).step_by(16) {
-            for kk in 0..k {
-                let row = kk * n + j_tile;
-                b_tile[kk * 16..(kk + 1) * 16]
-                    .copy_from_slice(unsafe { core::slice::from_raw_parts(b_i8.as_ptr().add(row), 16) });
-            }
-            for i_tile in (0..m).step_by(16) {
-                let a_tile = &a_u8[i_tile * k..(i_tile + 16) * k];
-                tile_c.fill(0);
-                crate::hpc::int8_tile_gemm::int8_tile_gemm_16x16(a_tile, &b_tile, &mut tile_c, k);
-                for ii in 0..16 {
-                    let dst_off = (i_tile + ii) * n + j_tile;
-                    c[dst_off..dst_off + 16].copy_from_slice(&tile_c[ii * 16..(ii + 1) * 16]);
-                }
-            }
-        }
+        crate::hpc::int8_tile_gemm::int8_gemm_amx_tiled(&a_u8, &b_i8, &mut c, m, n, k);
         subtract_i8_to_u8_bias(&mut c, &b_i8, m, n, k);
     } else if cfg!(target_arch = "x86_64") && std::is_x86_feature_detected!("avx512vnni") {
         // Tier 2 — AVX-512 VPDPBUSD zmm: 64 MACs per instruction, no
@@ -639,9 +621,19 @@ pub fn matmul_i8_to_i32(
             crate::hpc::int8_tile_gemm::int8_gemm_vpdpbusd_zmm(&a_u8, &b_i8, &mut c, m, n, k);
         }
         subtract_i8_to_u8_bias(&mut c, &b_i8, m, n, k);
+    } else if cfg!(target_arch = "x86_64") && std::is_x86_feature_detected!("avxvnni") {
+        // Tier 3 — AVX-VNNI ymm VPDPBUSD: 32 MACs per instruction.
+        // Arrow Lake, Meteor Lake U, Alder Lake silicon that has
+        // AVX-VNNI but dropped AVX-512. Same sign-shift bias trick.
+        let a_u8: Vec<u8> = a_i8.iter().map(|&v| (v as i32 + 128) as u8).collect();
+        // SAFETY: runtime feature-detected avxvnni above.
+        unsafe {
+            crate::hpc::int8_tile_gemm::int8_gemm_vpdpbusd_ymm(&a_u8, &b_i8, &mut c, m, n, k);
+        }
+        subtract_i8_to_u8_bias(&mut c, &b_i8, m, n, k);
     } else {
-        // Tier 3 — Scalar i8×i8 → i32 reference for non-x86 hosts,
-        // pre-AVX-512 silicon, or shapes that don't satisfy either of
+        // Tier 4 — Scalar i8×i8 → i32 reference for non-x86 hosts,
+        // pre-AVX-VNNI silicon, or shapes that don't satisfy any of
         // the SIMD tiers' alignment requirements.
         for i in 0..m {
             for p in 0..k {
