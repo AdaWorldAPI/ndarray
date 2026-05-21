@@ -180,7 +180,15 @@ pub fn cpu_ops() -> &'static CpuOps {
 
         #[cfg(target_arch = "x86_64")]
         {
-            if _caps.amx_int8 {
+            // AMX tier selection: CPUID-reports-AMX is necessary but
+            // not sufficient. A hypervisor may mask XCR0 bits 17/18
+            // (the tile XSAVE state) or the OS may not have honoured
+            // `arch_prctl(XCOMP_PERM, 18)` on Linux 5.19+. In either
+            // case AMX instructions SIGILL despite the CPUID bit
+            // being set. `simd_amx::amx_available()` runs the full
+            // four-step gate (CPUID + OSXSAVE + XCR0 + arch_prctl);
+            // demote to the AVX-512 path when the OS-check fails.
+            if _caps.amx_int8 && crate::simd_amx::amx_available() {
                 return &CPU_OPS_AMX_INT8;
             }
             if _caps.avx512f && _caps.avx512vnni {
