@@ -448,4 +448,96 @@ mod tests {
         assert!((r1.psd_rate - r2.psd_rate).abs() < 1e-12);
         assert!((r1.lognorm_concentration - r2.lognorm_concentration).abs() < 1e-12);
     }
+
+    /// Drift-detection: the pillar's `bundle_step` independently re-derives
+    /// the bit-mixing bundle operator. The production code path at
+    /// `crate::hpc::dn_tree::bundle_into` (PR #189, exposed `pub(crate)`)
+    /// is the substrate the pillar is defending. This test runs both on
+    /// seed-aligned SplitMix64 RNGs and asserts the first 16 u64 words of
+    /// production's `GraphHV.channels[0]` agree bit-exactly with the
+    /// pillar's `[u64; WORDS]` output.
+    ///
+    /// # Why this is a bit-exact (not ε-tolerant) check
+    ///
+    /// Per the substrate's bit-exactness contract (W1a + the data-flow
+    /// rules), bundling is a *gated XOR* (Bernoulli-mixture per bit) —
+    /// the mask draws come from `SplitMix64` which is bit-deterministic.
+    /// Both pillar's `probability_mask` and production's
+    /// `make_probability_mask` consume the same number of `next_u64()`
+    /// draws at lr=0.25 (n=ceil(-log2(0.25))=2 per word), so the masks
+    /// for the first `WORDS` words align exactly across the two
+    /// functions. The remaining 240 words of channel 0 (and channels 1/2)
+    /// consume extra RNG draws on the production side; those don't affect
+    /// the first WORDS=16 words because each word is independent.
+    ///
+    /// # Why not lr=0.5
+    ///
+    /// Production's `make_probability_mask(0.5)` has a latent
+    /// infinite-recursion bug: `p >= 0.5` recurses with `1.0 - 0.5 = 0.5`
+    /// forever. Pillar's `probability_mask` uses `p > 0.5` (strict) and
+    /// falls through to the AND-cascade at p=0.5. Real production usage
+    /// (DNConfig default lr=0.03, boost up to ~30 → effective_lr~0.9)
+    /// never hits 0.5 exactly, so the bug is dormant. This drift-check
+    /// uses lr=0.25 where both implementations agree; the lr=0.5 case
+    /// is recorded as a follow-up.
+    #[test]
+    fn pillar_13_matches_production_bundle_into() {
+        use crate::hpc::cam_index::GraphHV;
+        use crate::hpc::dn_tree::{bundle_into, SplitMix64 as DnSplitMix64};
+
+        const N_TRIALS: u32 = 16;
+        const TEST_LR: f64 = 0.25;
+
+        // Both SplitMix64 implementations use identical algorithm (same
+        // multiplier constants 0x9E3779B97F4A7C15, 0xBF58476D1CE4E5B9,
+        // 0x94D049BB133111EB and same shift sequence), so identical seeds
+        // → identical sequences. Both functions consume the same number
+        // of next_u64() draws per word at p=0.25 (n=ceil(-log2(0.25))=2),
+        // so the mask sequences align bit-exactly across the first WORDS
+        // positions of each call.
+        //
+        // The RNGs MUST be re-seeded per trial because production's
+        // bundle_into consumes 48× more RNG draws per call (3 channels ×
+        // 256 words × 2 draws = 1536) than pillar's bundle_step (16 words
+        // × 2 draws = 32). Without re-seeding, post-trial-0 RNG states
+        // diverge.
+
+        for trial in 0..N_TRIALS {
+            // Per-trial seed for both bundling RNGs (must be the same so
+            // masks align). Inputs come from a separate stream so the
+            // bundling RNG state isn't disturbed by input generation.
+            let trial_seed = PILLAR_13_SEED.wrapping_add(trial as u64);
+            let mut rng_pillar = SplitMix64::new(trial_seed);
+            let mut rng_prod = DnSplitMix64::new(trial_seed);
+
+            let mut rng_inputs = SplitMix64::new(trial_seed.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            let x = random_bits(&mut rng_inputs);
+            let y = random_bits(&mut rng_inputs);
+
+            // Pillar side: WORDS=16 u64 mixing
+            let out_pillar = bundle_step(&x, &y, TEST_LR as f32, &mut rng_pillar);
+
+            // Production side: pack x/y into channel 0 of a GraphHV,
+            // zero the rest. Pillar's `bundle(x, y, lr)` is "keep x where
+            // mask=0, take y where mask=1"; production's `bundle_into`
+            // contract is the same with `current` ↔ x and `hv` ↔ y
+            // (per src/hpc/dn_tree.rs line 125). boost=1.0 means
+            // effective_lr = lr * 1.0 = TEST_LR (matching pillar).
+            let mut hv_x = GraphHV::zero();
+            let mut hv_y = GraphHV::zero();
+            hv_x.channels[0].words[..WORDS].copy_from_slice(&x);
+            hv_y.channels[0].words[..WORDS].copy_from_slice(&y);
+            let hv_out = bundle_into(&hv_x, &hv_y, TEST_LR, 1.0, &mut rng_prod);
+
+            // Compare first WORDS=16 u64 words bit-exactly
+            for w in 0..WORDS {
+                assert_eq!(
+                    out_pillar[w], hv_out.channels[0].words[w],
+                    "Pillar/bundle_into drift at trial {trial} word {w}: \
+                     pillar=0x{:016x} prod=0x{:016x}",
+                    out_pillar[w], hv_out.channels[0].words[w]
+                );
+            }
+        }
+    }
 }
