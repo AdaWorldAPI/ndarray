@@ -616,10 +616,7 @@ mod tests {
             sha2: false,
             crc32: false,
         };
-        assert!(
-            !synthetic.has_amx_fp16(),
-            "amx_fp16 without amx_tile must report false"
-        );
+        assert!(!synthetic.has_amx_fp16(), "amx_fp16 without amx_tile must report false");
     }
 
     /// On non-x86 builds the x86 capability bits MUST all read false —
