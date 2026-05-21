@@ -486,7 +486,12 @@ mod tests {
         use crate::hpc::dn_tree::{bundle_into, SplitMix64 as DnSplitMix64};
 
         const N_TRIALS: u32 = 16;
-        const TEST_LR: f64 = 0.25;
+        // Was 0.25 to avoid the latent p=0.5 infinite-recursion bug in
+        // production's make_probability_mask; that bug is fixed in the
+        // same commit/PR that updates this constant. lr=0.5 now matches
+        // Pillar 13's canonical mid-range learning rate and exercises
+        // the previously-broken branch.
+        const TEST_LR: f64 = 0.5;
 
         // Both SplitMix64 implementations use identical algorithm (same
         // multiplier constants 0x9E3779B97F4A7C15, 0xBF58476D1CE4E5B9,
