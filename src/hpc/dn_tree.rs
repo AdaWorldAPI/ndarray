@@ -580,10 +580,7 @@ mod tests {
         let mean = total as f64 / N as f64;
         // σ per word = sqrt(64 * 0.5 * 0.5) = 4; mean's SE = 4 / √N = 0.125.
         // Tolerance 2.0 ≈ 16 SEs — comfortable margin against flakes.
-        assert!(
-            (mean - 32.0).abs() < 2.0,
-            "make_probability_mask(0.5) mean popcount {mean:.4} not near 32"
-        );
+        assert!((mean - 32.0).abs() < 2.0, "make_probability_mask(0.5) mean popcount {mean:.4} not near 32");
     }
 
     #[test]

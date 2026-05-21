@@ -684,24 +684,29 @@ impl OntologySchema {
         // linear chain via `EntityClass.parent` alone — correct for
         // single-inheritance schemas but missed ancestors reachable
         // only through `EntityClass.extra_parents` (OWL multi-inheritance,
-        // common in FMA / ChEBI). MAX_VISITS bounds total work for any
-        // cycle that slipped past upstream antisymmetry checks.
-        const MAX_VISITS: usize = 4096;
+        // common in FMA / ChEBI).
+        //
+        // # Termination
+        //
+        // `visited` is a monotonically-growing `HashSet<&str>` keyed by
+        // IRI; each parent IRI enters the set at most once. Frontier
+        // pushes are gated on `visited.insert(...)`, so every IRI is
+        // pushed at most once across the entire walk. Total work is
+        // therefore O(unique IRIs reachable from descendant) — finite
+        // by the schema's finiteness, regardless of branching factor
+        // or depth. No explicit visit cap is needed; previous codex P2
+        // pointed out that a hard cap would produce false-negatives on
+        // large biomedical ontologies (FMA: 75k classes; ChEBI: 200k+).
         let mut frontier: Vec<&str> = vec![descendant];
         let mut visited: std::collections::HashSet<&str> = std::collections::HashSet::new();
         visited.insert(descendant);
-        let mut visits = 0usize;
         while let Some(current) = frontier.pop() {
-            visits += 1;
-            if visits > MAX_VISITS {
-                return false;
-            }
             let entity = match self.entities.get(current) {
                 Some(e) => e,
-                // Walk hit an unknown IRI mid-chain — that subtree of the
-                // closure terminates here. Continue exploring siblings
-                // rather than aborting, since other parents may yet reach
-                // `ancestor`.
+                // Walk hit an unknown IRI mid-chain — that subtree of
+                // the closure terminates here. Continue exploring
+                // siblings rather than aborting, since other parents
+                // may yet reach `ancestor`.
                 None => continue,
             };
             for parent in entity.parents() {
