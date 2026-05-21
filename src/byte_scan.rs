@@ -35,9 +35,9 @@ pub(crate) mod simd_impl {
             i += 32;
         }
         // Scalar tail
-        for j in i..n {
-            if haystack[j] == needle {
-                result.push(j);
+        for (offset, &byte) in haystack[i..n].iter().enumerate() {
+            if byte == needle {
+                result.push(i + offset);
             }
         }
         result
@@ -68,9 +68,9 @@ pub(crate) mod simd_impl {
             i += 64;
         }
         // Scalar tail
-        for j in i..n {
-            if haystack[j] == needle {
-                result.push(j);
+        for (offset, &byte) in haystack[i..n].iter().enumerate() {
+            if byte == needle {
+                result.push(i + offset);
             }
         }
         result
@@ -98,8 +98,8 @@ pub(crate) mod simd_impl {
             }
             i += 32;
         }
-        for j in i..n {
-            if haystack[j] == needle {
+        for &byte in &haystack[i..n] {
+            if byte == needle {
                 total += 1;
             }
         }
@@ -126,8 +126,8 @@ pub(crate) mod simd_impl {
             total += mask.count_ones() as usize;
             i += 64;
         }
-        for j in i..n {
-            if haystack[j] == needle {
+        for &byte in &haystack[i..n] {
+            if byte == needle {
                 total += 1;
             }
         }

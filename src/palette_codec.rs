@@ -56,7 +56,7 @@ pub fn pack_indices(indices: &[u8], bits_per_index: usize) -> Vec<u64> {
     assert!(bits_per_index > 0 && bits_per_index <= 8, "bits_per_index must be 1..=8");
 
     let indices_per_word = 64 / bits_per_index;
-    let n_words = (indices.len() + indices_per_word - 1) / indices_per_word;
+    let n_words = indices.len().div_ceil(indices_per_word);
     let mut packed = vec![0u64; n_words];
     let mask = (1u64 << bits_per_index) - 1;
 
@@ -110,7 +110,7 @@ pub fn pack_indices_bytes(indices: &[u8], bits_per_index: usize) -> Vec<u8> {
 ///
 /// Inverse of [`pack_indices_bytes`].
 pub fn unpack_indices_bytes(packed: &[u8], bits_per_index: usize, count: usize) -> Vec<u8> {
-    let n_words = (packed.len() + 7) / 8;
+    let n_words = packed.len().div_ceil(8);
     let mut words = Vec::with_capacity(n_words);
     for chunk in packed.chunks(8) {
         let mut buf = [0u8; 8];
@@ -145,7 +145,7 @@ pub fn transcode(packed: &[u64], old_bits: usize, new_bits: usize, count: usize)
 
     let old_per_word = 64 / old_bits;
     let new_per_word = 64 / new_bits;
-    let n_new_words = (count + new_per_word - 1) / new_per_word;
+    let n_new_words = count.div_ceil(new_per_word);
     let old_mask = (1u64 << old_bits) - 1;
     let new_mask = (1u64 << new_bits) - 1;
 
@@ -309,8 +309,7 @@ unsafe fn unpack_generic_avx512(packed: &[u64], bits_per_index: usize, count: us
     let mut result = Vec::with_capacity(count);
     let mut emitted = 0usize;
 
-    for word_idx in 0..packed.len() {
-        let word = packed[word_idx];
+    for &word in packed {
         for slot in 0..indices_per_word {
             if emitted >= count {
                 return result;
@@ -336,7 +335,7 @@ unsafe fn unpack_generic_avx512(packed: &[u64], bits_per_index: usize, count: us
 unsafe fn pack_generic_avx512(indices: &[u8], bits_per_index: usize) -> Vec<u64> {
     assert!(bits_per_index > 0 && bits_per_index <= 8);
     let indices_per_word = 64 / bits_per_index;
-    let n_words = (indices.len() + indices_per_word - 1) / indices_per_word;
+    let n_words = indices.len().div_ceil(indices_per_word);
     let mask = (1u64 << bits_per_index) - 1;
     let mut packed = vec![0u64; n_words];
 

@@ -272,6 +272,143 @@ pub mod simd_amx;
 #[cfg(feature = "std")]
 pub mod simd_caps;
 
+/// Bitwise SIMD primitives — popcount, Hamming distance over byte slices.
+/// Graduated from `crate::hpc::bitwise::*` (substrate-tier; uses
+/// `crate::simd::U64x8` polyfill internally). Back-compat re-export in
+/// `crate::hpc::*` preserves existing import paths.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::bitwise::{hamming_distance_raw, popcount_raw};
+/// let a = [0xFFu8; 16];
+/// let b = [0x00u8; 16];
+/// assert_eq!(hamming_distance_raw(&a, &b), 128);
+/// assert_eq!(popcount_raw(&a), 128);
+/// ```
+#[cfg(feature = "std")]
+pub mod bitwise;
+
+/// F64x8 HEEL distance kernels — 8-plane weighted Hamming, f64 SIMD
+/// dot / cosine / sum-of-squares. Graduated from `crate::hpc::heel_f64x8::*`.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::heel_f64x8::{cosine_f64_simd, dot_f64_simd};
+/// let a = vec![1.0_f64; 32];
+/// let b = vec![1.0_f64; 32];
+/// assert!((cosine_f64_simd(&a, &b) - 1.0).abs() < 1e-10);
+/// assert!((dot_f64_simd(&a, &b) - 32.0).abs() < 1e-10);
+/// ```
+#[cfg(feature = "std")]
+pub mod heel_f64x8;
+
+/// Batch distance computations — spatial 3D-point queries +
+/// slice-shape L1 / L2 / L∞ (PR-X10 A6). Graduated from
+/// `crate::hpc::distance::*`.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::distance::{l1_f64_simd, l2_f64_simd, linf_f64_simd};
+/// let a = vec![3.0_f64, 0.0];
+/// let b = vec![0.0_f64, 4.0];
+/// assert!((l1_f64_simd(&a, &b) - 7.0).abs() < 1e-12);
+/// assert!((l2_f64_simd(&a, &b) - 5.0).abs() < 1e-12);
+/// assert!((linf_f64_simd(&a, &b) - 4.0).abs() < 1e-12);
+/// ```
+#[cfg(feature = "std")]
+pub mod distance;
+
+/// SIMD-accelerated byte-scan utilities — needle search, delimiter
+/// finding, parallel byte comparison. Graduated from
+/// `crate::hpc::byte_scan::*`.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::byte_scan::byte_find_all;
+/// let haystack = b"hello world, hello rust";
+/// let hits = byte_find_all(haystack, b'l');
+/// assert_eq!(hits, vec![2, 3, 9, 15, 16]);
+/// ```
+#[cfg(feature = "std")]
+pub mod byte_scan;
+
+/// SIMD-accelerated spatial hash — bucketing, candidate gather, hash
+/// collision detection. Graduated from `crate::hpc::spatial_hash::*`.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::spatial_hash::SpatialHash;
+/// let mut grid = SpatialHash::new(1.0);
+/// grid.insert(0, 0.0, 0.0, 0.0);
+/// grid.insert(1, 10.0, 10.0, 10.0);
+/// assert_eq!(grid.len(), 2);
+/// ```
+#[cfg(feature = "std")]
+pub mod spatial_hash;
+
+/// Axis-aligned bounding box batch operations — SIMD-accelerated
+/// intersection, expansion, distance queries. Graduated from
+/// `crate::hpc::aabb::*`.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::aabb::Aabb;
+/// let a = Aabb::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+/// let b = Aabb::new([0.5, 0.5, 0.5], [1.5, 1.5, 1.5]);
+/// assert!(a.intersects(&b));
+/// ```
+#[cfg(feature = "std")]
+pub mod aabb;
+
+/// Nibble batch operations for 4-bit packed data (light levels, palettes).
+/// Graduated from `crate::hpc::nibble::*`.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::nibble::nibble_unpack;
+/// let unpacked = nibble_unpack(&[0x3A], 2);
+/// assert_eq!(unpacked, vec![0xA, 0x3]);
+/// ```
+#[cfg(feature = "std")]
+pub mod nibble;
+
+/// Variable-width palette index codec (Minecraft-style bit packing).
+/// Packs/unpacks palette indices (0–255) into 1–8 bit widths.
+/// Graduated from `crate::hpc::palette_codec::*`.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::palette_codec::bits_for_palette_size;
+/// assert_eq!(bits_for_palette_size(2), 1);
+/// assert_eq!(bits_for_palette_size(16), 4);
+/// assert_eq!(bits_for_palette_size(256), 8);
+/// ```
+#[cfg(feature = "std")]
+pub mod palette_codec;
+
+/// Block property mask — compiled bitset queries on block state bits.
+/// AVX-512 VPTERNLOGD tests 3 conditions in 1 cycle. Graduated from
+/// `crate::hpc::property_mask::*`.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::property_mask::PropertyMask;
+/// let mask = PropertyMask::new().require_bit(0).forbid_bit(3);
+/// assert!(mask.test(0b0000_0001));    // bit 0 set, bit 3 clear → match
+/// assert!(!mask.test(0b0000_1001));   // bit 3 set → no match
+/// ```
+#[cfg(feature = "std")]
+pub mod property_mask;
+
 #[cfg(feature = "std")]
 #[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
 pub mod simd_neon;

@@ -331,18 +331,19 @@ pub(crate) unsafe fn batch_sq_dist_avx2(query: [f32; 3], candidates: &[[f32; 3]]
 
         // Compare: d2 <= radius_sq (scalar array comparison — no F32x8 cmp polyfill)
         let d2_arr = d2.to_array();
-        for lane in 0..8 {
-            if d2_arr[lane] <= radius_sq {
-                result.push((base + lane, d2_arr[lane]));
+        for (lane, &d2_lane) in d2_arr.iter().enumerate() {
+            if d2_lane <= radius_sq {
+                result.push((base + lane, d2_lane));
             }
         }
     }
 
     // Scalar tail
-    for i in (chunks * 8)..candidates.len() {
-        let d2 = sq_dist_f32(query, candidates[i]);
+    let tail_start = chunks * 8;
+    for (offset, &cand) in candidates[tail_start..].iter().enumerate() {
+        let d2 = sq_dist_f32(query, cand);
         if d2 <= radius_sq {
-            result.push((i, d2));
+            result.push((tail_start + offset, d2));
         }
     }
 

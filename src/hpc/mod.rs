@@ -27,7 +27,8 @@ pub mod reductions;
 pub mod statistics;
 pub mod activations;
 pub mod hdc;
-pub mod bitwise;
+// Bitwise SIMD primitives — graduated to crate root. Back-compat re-export.
+pub use crate::bitwise;
 pub mod projection;
 pub mod cogrecord;
 pub mod graph;
@@ -56,8 +57,8 @@ pub mod soa;
 pub mod node;
 #[allow(missing_docs)]
 pub mod cascade;
-#[allow(missing_docs)]
-pub mod heel_f64x8;
+// HEEL F64x8 distance kernels — graduated to crate root. Back-compat re-export.
+pub use crate::heel_f64x8;
 // AMX is an x86_64-only ISA (Intel Sapphire Rapids+); both modules use
 // `asm!` with `rcx`/`rax` register names that don't exist on other
 // architectures (rejected at parse time on s390x / aarch64 / wasm32).
@@ -169,22 +170,21 @@ pub mod parallel_search;
 // ZeckF64 progressive edge encoding + batch/top-k
 pub mod zeck;
 
-// SIMD-accelerated spatial / byte-scan / hash utilities
-pub mod distance;
-pub mod byte_scan;
-pub mod spatial_hash;
+// SIMD-accelerated spatial / byte-scan / hash utilities — graduated to crate root.
+// Back-compat re-exports for existing `use ndarray::hpc::{distance,byte_scan,spatial_hash}::*`.
+pub use crate::byte_scan;
+pub use crate::distance;
+pub use crate::spatial_hash;
 
-// Variable-width palette index codec (Minecraft-style bit packing)
-#[allow(missing_docs)]
-pub mod palette_codec;
+// Variable-width palette index codec — graduated to crate root.
+// Back-compat re-export for existing `use ndarray::hpc::palette_codec::*`.
+pub use crate::palette_codec;
 
-// SIMD-accelerated HPC modules (block properties, nibble light data, AABB collision)
-#[allow(missing_docs)]
-pub mod property_mask;
-#[allow(missing_docs)]
-pub mod nibble;
-#[allow(missing_docs)]
-pub mod aabb;
+// SIMD-accelerated HPC modules (block properties, nibble light data, AABB
+// collision) — all three graduated to crate root. Back-compat re-exports.
+pub use crate::aabb;
+pub use crate::nibble;
+pub use crate::property_mask;
 
 // Holographic phase-space operations (ported from rustynum-holo)
 #[allow(missing_docs)]

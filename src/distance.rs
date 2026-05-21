@@ -96,10 +96,10 @@ pub(crate) mod simd_impl {
         }
 
         // Scalar tail
-        for j in i..n {
-            let dx = query[0] - points[j][0];
-            let dy = query[1] - points[j][1];
-            let dz = query[2] - points[j][2];
+        for p in &points[i..n] {
+            let dx = query[0] - p[0];
+            let dy = query[1] - p[1];
+            let dz = query[2] - p[2];
             out.push(dx * dx + dy * dy + dz * dz);
         }
     }
@@ -211,7 +211,7 @@ pub fn l1_f64_simd(a: &[f64], b: &[f64]) -> f64 {
     for i in 0..chunks {
         let va = F64x8::from_slice(&a[i * 8..]);
         let vb = F64x8::from_slice(&b[i * 8..]);
-        acc = acc + (va - vb).abs();
+        acc += (va - vb).abs();
     }
     let mut sum = acc.reduce_sum();
     let offset = chunks * 8;

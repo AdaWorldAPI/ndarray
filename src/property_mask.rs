@@ -90,7 +90,7 @@ impl PropertyMask {
     /// The returned vector has `ceil(states.len() / 64)` entries.
     pub fn test_section(&self, states: &[u64]) -> Vec<u64> {
         let n = states.len();
-        let result_len = (n + 63) / 64;
+        let result_len = n.div_ceil(64);
         let mut result = vec![0u64; result_len];
 
         #[cfg(target_arch = "x86_64")]
@@ -233,8 +233,8 @@ impl PropertyMask {
         }
 
         // Scalar tail
-        for i in (chunks * 8)..states.len() {
-            if self.test(states[i]) {
+        for &state in &states[chunks * 8..] {
+            if self.test(state) {
                 total += 1;
             }
         }
@@ -376,8 +376,7 @@ unsafe fn count_section_multi_avx512(masks: &[PropertyMask], states: &[u64]) -> 
     }
 
     // Scalar tail
-    for i in (chunks * 8)..states.len() {
-        let state = states[i];
+    for &state in &states[chunks * 8..] {
         for (m_idx, mask) in masks.iter().enumerate() {
             if mask.test(state) {
                 counts[m_idx] += 1;

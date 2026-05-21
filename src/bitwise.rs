@@ -107,7 +107,7 @@ unsafe fn hamming_avx512bw(a: &[u8], b: &[u8]) -> u64 {
         let hi = xor.shr_epi16(4) & low_mask;
         let popcnt_lo = lookup.shuffle_bytes(lo);
         let popcnt_hi = lookup.shuffle_bytes(hi);
-        acc = acc + (popcnt_lo + popcnt_hi);
+        acc += popcnt_lo + popcnt_hi;
 
         i += 64;
         inner_count += 1;
@@ -152,7 +152,7 @@ unsafe fn popcount_avx512bw(a: &[u8]) -> u64 {
         let hi = va.shr_epi16(4) & low_mask;
         let popcnt_lo = lookup.shuffle_bytes(lo);
         let popcnt_hi = lookup.shuffle_bytes(hi);
-        acc = acc + (popcnt_lo + popcnt_hi);
+        acc += popcnt_lo + popcnt_hi;
 
         i += 64;
         inner_count += 1;
