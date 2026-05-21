@@ -630,6 +630,17 @@ impl OntologySchema {
             return true;
         }
 
+        // Per the documented contract, unknown IRIs are an ancestor ONLY
+        // in the reflexive case. `from_triples` accepts `rdfs:subClassOf`
+        // targets without requiring them to be declared classes, so an
+        // `EntityClass.parent` can legally point at an IRI that's not in
+        // `self.entities`. Without this guard a malformed/partial schema
+        // could make `is_ancestor("missing:Class", "ogit:Leaf")` succeed
+        // (codex P2 on PR #189).
+        if !self.entities.contains_key(ancestor) {
+            return false;
+        }
+
         // Walk the parent chain from descendant upward, looking for ancestor.
         // Defensive depth cap — see method docstring.
         const MAX_DEPTH: usize = 64;
@@ -903,6 +914,34 @@ mod tests {
         // returns true (covered by `is_ancestor_reflexive`).
         assert!(!schema.is_ancestor("ogit:Heel", "ogit:Unknown"));
         assert!(!schema.is_ancestor("ogit:Hip", "ogit:DefinitelyNotInSchema"));
+    }
+
+    /// Codex P2 regression on PR #189: a class whose `rdfs:subClassOf`
+    /// edge points at an IRI not declared as a class must NOT satisfy
+    /// `is_ancestor(unknown_parent, child)`. Only the reflexive case
+    /// `is_ancestor(unknown, unknown)` should return true.
+    #[test]
+    fn is_ancestor_unknown_ancestor_returns_false_when_non_reflexive() {
+        // ogit:Leaf claims subClassOf ogit:Phantom, but ogit:Phantom is
+        // never `a rdfs:Class` — TurtleParser/from_triples accepts this
+        // (rdfs allows undeclared subClassOf targets).
+        let src = "\
+            @prefix ogit: <http://www.purl.org/ogit/> .\n\
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\
+            ogit:Leaf a rdfs:Class ; rdfs:subClassOf ogit:Phantom .";
+        let triples = TurtleParser::parse(src).unwrap();
+        let schema = OntologySchema::from_triples(&triples).unwrap();
+
+        // The reflexive case still holds — defined on the full IRI space.
+        assert!(schema.is_ancestor("ogit:Phantom", "ogit:Phantom"));
+
+        // But non-reflexive lookups against the undeclared ancestor MUST
+        // return false, regardless of any entity's parent field pointing
+        // at it.
+        assert!(
+            !schema.is_ancestor("ogit:Phantom", "ogit:Leaf"),
+            "is_ancestor must reject ancestors not declared as rdfs:Class"
+        );
     }
 
     #[test]
