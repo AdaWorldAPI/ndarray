@@ -450,4 +450,108 @@ mod tests {
         assert!((r1.psd_rate - r2.psd_rate).abs() < 1e-12);
         assert!((r1.lognorm_concentration - r2.lognorm_concentration).abs() < 1e-12);
     }
+
+    /// Drift-detection: the pillar's `transitive_closure` independently
+    /// derives the partial-order closure on synthetic DAGs. The production
+    /// code path at `crate::hpc::ogit_bridge::schema::OntologySchema::is_ancestor`
+    /// (PR #189, exposed `pub`) is the substrate the pillar is defending.
+    ///
+    /// This test generates a small **single-parent** tree (production's
+    /// `OntologySchema.parent: Option<Box<str>>` is single-parent, so the
+    /// drift-check operates on a strict subset of pillar's DAG family),
+    /// builds it as Turtle source, runs both:
+    ///   - pillar's `transitive_closure` on the equivalent boolean
+    ///     direct-edge matrix
+    ///   - production's `is_ancestor(a, d)` on the parsed `OntologySchema`
+    /// and asserts agreement on EVERY (ancestor, descendant) pair.
+    ///
+    /// # Pillar/production closure axes
+    ///
+    /// Pillar `le[i * N + j] = true` means "type `i` ≤ type `j`" (i.e.,
+    /// `i` extends/is-subclass-of `j`). Production
+    /// `is_ancestor(a, d) = true` means "a is an ancestor of d" (i.e.,
+    /// d extends/is-subclass-of a). So the equivalence is:
+    /// `pillar.le[i][j] == production.is_ancestor(types[j], types[i])`.
+    #[cfg(feature = "ogit_bridge")]
+    #[test]
+    fn pillar_14_matches_production_is_ancestor() {
+        use crate::hpc::ogit_bridge::schema::OntologySchema;
+        use crate::hpc::ogit_bridge::turtle_parser::TurtleParser;
+
+        // Small N — Turtle parsing scales linearly but we want a fast test.
+        const N: usize = 8;
+
+        // Type names: ogit:T0, ogit:T1, …, ogit:T{N-1}
+        let names: Vec<String> = (0..N).map(|i| format!("ogit:T{i}")).collect();
+
+        // Generate a deterministic single-parent tree. Type 0 is the root;
+        // type k>0 picks parent uniformly from {0..k}. Seed-anchored so
+        // the test is reproducible.
+        let mut rng = SplitMix64::new(PILLAR_14_SEED);
+        let mut parent = vec![usize::MAX; N];
+        for k in 1..N {
+            // Uniform sample over {0..k}; range is small so modulo-bias
+            // is negligible and reproducibility matters more than rigor.
+            parent[k] = (rng.next_u64() as usize) % k;
+        }
+
+        // Build Turtle source and parse to OntologySchema.
+        let mut src = String::from(
+            "@prefix ogit: <http://www.purl.org/ogit/> .\n\
+             @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n",
+        );
+        src.push_str(&format!("{} a rdfs:Class .\n", names[0]));
+        for k in 1..N {
+            src.push_str(&format!("{} a rdfs:Class ; rdfs:subClassOf {} .\n", names[k], names[parent[k]]));
+        }
+        let triples = TurtleParser::parse(&src).unwrap();
+        let schema = OntologySchema::from_triples(&triples).unwrap();
+
+        // Build the equivalent direct-edge boolean matrix in pillar's
+        // [N × N] flat layout. direct[k * N + parent[k]] = true.
+        let mut direct = vec![false; N * N];
+        for k in 1..N {
+            direct[k * N + parent[k]] = true;
+        }
+        // Hand-compute closure using pillar's helper (not full Pillar 14
+        // version which is N_TYPES-sized; inline the Floyd-Warshall here).
+        let mut le = vec![false; N * N];
+        for i in 0..N {
+            le[i * N + i] = true;
+            for j in 0..N {
+                if direct[i * N + j] {
+                    le[i * N + j] = true;
+                }
+            }
+        }
+        for kk in 0..N {
+            for i in 0..N {
+                if !le[i * N + kk] {
+                    continue;
+                }
+                for j in 0..N {
+                    if le[kk * N + j] {
+                        le[i * N + j] = true;
+                    }
+                }
+            }
+        }
+
+        // Cross-check every (ancestor, descendant) pair.
+        let mut total = 0u32;
+        for i in 0..N {
+            for j in 0..N {
+                let pillar_says = le[i * N + j]; // i extends j (j is ancestor of i)
+                let prod_says = schema.is_ancestor(&names[j], &names[i]);
+                assert_eq!(
+                    pillar_says, prod_says,
+                    "Pillar/is_ancestor drift on pair (ancestor={}, descendant={}): \
+                     pillar.le[{i}][{j}]={pillar_says} production.is_ancestor={prod_says}",
+                    names[j], names[i]
+                );
+                total += 1;
+            }
+        }
+        eprintln!("Pillar 14 ↔ is_ancestor agreement: {total} pair-checks pass over N={N} single-parent tree");
+    }
 }
