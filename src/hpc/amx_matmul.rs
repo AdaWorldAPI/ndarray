@@ -586,20 +586,14 @@ pub fn matmul_i8_to_i32(
     let mut c = vec![0i32; m * n];
 
     if amx_available() && m % 16 == 0 && n % 16 == 0 && k % 64 == 0 {
-        // AMX TDPBUSD path: shift LHS i8 → u8 via (+128), tile-GEMM into
-        // i32, subtract bias 128·colsum(B). The tile kernel zeroes its
-        // internal accumulator (TILEZERO + TDPBUSD accumulate); we need
-        // fresh per-tile output here so we tile manually over M/N and
-        // call int8_tile_gemm_16x16 per (i, j) block.
+        // Tier 1 — AMX TDPBUSD tile path: shift LHS i8 → u8 (+128),
+        // tile-GEMM via int8_tile_gemm_16x16, subtract bias.
         let a_u8: Vec<u8> = a_i8.iter().map(|&v| (v as i32 + 128) as u8).collect();
 
-        // B sub-block extraction per j-tile (B is row-major K × N; the
-        // tile kernel wants K × 16 contiguous). Reused across i-tiles.
         let mut b_tile = vec![0i8; k * 16];
         let mut tile_c = vec![0i32; 256];
 
         for j_tile in (0..n).step_by(16) {
-            // Pack B[0..k, j_tile..j_tile+16] into 16-wide K-rows.
             for kk in 0..k {
                 let row = kk * n + j_tile;
                 b_tile[kk * 16..(kk + 1) * 16]
@@ -609,29 +603,27 @@ pub fn matmul_i8_to_i32(
                 let a_tile = &a_u8[i_tile * k..(i_tile + 16) * k];
                 tile_c.fill(0);
                 crate::hpc::int8_tile_gemm::int8_tile_gemm_16x16(a_tile, &b_tile, &mut tile_c, k);
-                // Write tile_c (16 × 16) into c at (i_tile, j_tile).
                 for ii in 0..16 {
                     let dst_off = (i_tile + ii) * n + j_tile;
                     c[dst_off..dst_off + 16].copy_from_slice(&tile_c[ii * 16..(ii + 1) * 16]);
                 }
             }
         }
-
-        // Subtract bias: c[i, j] -= 128 · colsum(B[:, j]).
-        let mut colsum = vec![0i32; n];
-        for p in 0..k {
-            for j in 0..n {
-                colsum[j] += b_i8[p * n + j] as i32;
-            }
+        subtract_i8_to_u8_bias(&mut c, &b_i8, m, n, k);
+    } else if cfg!(target_arch = "x86_64") && std::is_x86_feature_detected!("avx512vnni") {
+        // Tier 2 — AVX-512 VPDPBUSD zmm: 64 MACs per instruction, no
+        // shape-alignment requirement (M/N/K all handled via per-block
+        // trim and scalar K-tail). Same sign-shift bias trick as AMX.
+        let a_u8: Vec<u8> = a_i8.iter().map(|&v| (v as i32 + 128) as u8).collect();
+        // SAFETY: runtime feature-detected avx512vnni above.
+        unsafe {
+            crate::hpc::int8_tile_gemm::int8_gemm_vpdpbusd_zmm(&a_u8, &b_i8, &mut c, m, n, k);
         }
-        for i in 0..m {
-            for j in 0..n {
-                c[i * n + j] -= 128 * colsum[j];
-            }
-        }
+        subtract_i8_to_u8_bias(&mut c, &b_i8, m, n, k);
     } else {
-        // Scalar i8×i8 → i32 reference — used for non-AMX hosts and for
-        // shapes that don't fit the 16/16/64 tile alignment.
+        // Tier 3 — Scalar i8×i8 → i32 reference for non-x86 hosts,
+        // pre-AVX-512 silicon, or shapes that don't satisfy either of
+        // the SIMD tiers' alignment requirements.
         for i in 0..m {
             for p in 0..k {
                 let av = a_i8[i * k + p] as i32;
@@ -651,6 +643,27 @@ pub fn matmul_i8_to_i32(
         }
     }
     Ok(())
+}
+
+/// Subtract `128 · colsum(B[:, j])` from each `c[i, j]` lane.
+///
+/// Used by both the AMX and AVX-512-VNNI arms of `matmul_i8_to_i32`
+/// to undo the LHS sign-shift bias (A_i8 → A_u8 via +128 means
+/// `A_u8 · B = (A_i8 + 128) · B = A_i8 · B + 128 · sum_k B[k, j]`).
+/// Pure integer arithmetic, no rounding — the public result is
+/// bit-identical to the scalar i8 × i8 → i32 reference.
+fn subtract_i8_to_u8_bias(c: &mut [i32], b_i8: &[i8], m: usize, n: usize, k: usize) {
+    let mut colsum = vec![0i32; n];
+    for p in 0..k {
+        for j in 0..n {
+            colsum[j] += b_i8[p * n + j] as i32;
+        }
+    }
+    for i in 0..m {
+        for j in 0..n {
+            c[i * n + j] -= 128 * colsum[j];
+        }
+    }
 }
 
 #[cfg(test)]
