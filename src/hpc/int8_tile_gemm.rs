@@ -341,10 +341,22 @@ fn fallback_path(a_u8: &[u8], b_i8: &[i8], c: &mut [i32], k: usize) {
 /// is pure overwrite.)
 ///
 /// # Panics
-/// Debug-asserts AMX availability and the 16/16/64 shape constraints.
-/// Production builds rely on the caller's runtime check
-/// (`crate::hpc::amx_matmul::amx_available()`).
+/// Panics if `a_u8`, `b_i8`, or `c` are too small for the requested
+/// `(m, n, k)`, mirroring the boundary contract from `gemm_u8_i8`. Also
+/// panics in debug builds when AMX isn't OS-enabled or when the shape
+/// alignment constraints aren't met (production builds skip those for
+/// performance — callers must runtime-check
+/// `crate::hpc::amx_matmul::amx_available()` and the 16/16/64
+/// alignment themselves).
 pub fn int8_gemm_amx_tiled(a_u8: &[u8], b_i8: &[i8], c: &mut [i32], m: usize, n: usize, k: usize) {
+    // Length assertions (codex P1 from PR #185 — the function reads
+    // `b_i8` via a 16-wide window per (kk, j_tile) iteration and a_u8
+    // via a 16-row slice per i_tile, so mismatched shapes would
+    // trigger out-of-bounds reads without these gates).
+    assert!(a_u8.len() >= m * k, "int8_gemm_amx_tiled: a_u8.len()={} < m*k={}", a_u8.len(), m * k);
+    assert!(b_i8.len() >= k * n, "int8_gemm_amx_tiled: b_i8.len()={} < k*n={}", b_i8.len(), k * n);
+    assert!(c.len() >= m * n, "int8_gemm_amx_tiled: c.len()={} < m*n={}", c.len(), m * n);
+
     debug_assert!(crate::hpc::amx_matmul::amx_available());
     debug_assert_eq!(m % 16, 0, "int8_gemm_amx_tiled: M must be multiple of 16");
     debug_assert_eq!(n % 16, 0, "int8_gemm_amx_tiled: N must be multiple of 16");
@@ -354,12 +366,13 @@ pub fn int8_gemm_amx_tiled(a_u8: &[u8], b_i8: &[i8], c: &mut [i32], m: usize, n:
     let mut tile_c = vec![0i32; 256];
 
     for j_tile in (0..n).step_by(16) {
-        // Pack B[0..k, j_tile..j_tile+16] into 16-wide K-rows (contiguous
-        // memory for int8_tile_gemm_16x16's input shape).
+        // Pack B[0..k, j_tile..j_tile+16] into 16-wide K-rows
+        // (contiguous memory for int8_tile_gemm_16x16's input shape).
+        // Safe slicing — the row..row+16 range is bounded by
+        // `b_i8.len() >= k * n` asserted at function entry.
         for kk in 0..k {
             let row = kk * n + j_tile;
-            b_tile[kk * 16..(kk + 1) * 16]
-                .copy_from_slice(unsafe { core::slice::from_raw_parts(b_i8.as_ptr().add(row), 16) });
+            b_tile[kk * 16..(kk + 1) * 16].copy_from_slice(&b_i8[row..row + 16]);
         }
         for i_tile in (0..m).step_by(16) {
             let a_tile = &a_u8[i_tile * k..(i_tile + 16) * k];
@@ -511,6 +524,26 @@ mod tests {
             unsafe { int8_gemm_vpdpbusd_zmm(&a, &b, &mut got, m, n, k) };
             assert_eq!(got, expected, "VPDPBUSD-zmm mismatch at (M={}, N={}, K={})", m, n, k);
         }
+    }
+
+    /// Codex P1 regression on PR #185: `int8_gemm_amx_tiled` is a
+    /// safe public function — mismatched (m, n, k) vs slice lengths
+    /// must panic at the function boundary, not trigger UB inside
+    /// the unsafe slice/pointer arithmetic in the inner loop. This
+    /// test passes deliberately-undersized buffers and expects a
+    /// panic (which `#[should_panic]` catches).
+    #[test]
+    #[should_panic(expected = "b_i8.len()")]
+    fn amx_tiled_panics_on_undersized_b() {
+        let m = 16;
+        let n = 32;
+        let k = 64;
+        let a = vec![0u8; m * k];
+        let b = vec![0i8; k * (n - 16)]; // half a j_tile short of what's claimed
+        let mut c = vec![0i32; m * n];
+        // Even on non-AMX hosts the assertion fires before reaching
+        // the (debug-asserted) amx_available() check.
+        int8_gemm_amx_tiled(&a, &b, &mut c, m, n, k);
     }
 
     /// Direct test for the VPDPBUSD-ymm arm (AVX-VNNI tier of
