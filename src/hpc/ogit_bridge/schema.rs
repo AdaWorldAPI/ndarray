@@ -84,8 +84,19 @@ pub struct EntityClass {
     pub iri: Box<str>,
     /// Human-readable label (`rdfs:label`); empty string when absent.
     pub label: Box<str>,
-    /// Parent class IRI (`rdfs:subClassOf`); `None` for root classes.
+    /// First-observed parent class IRI (`rdfs:subClassOf`); `None` for
+    /// root classes. OWL allows a class to declare multiple
+    /// `rdfs:subClassOf` targets (multi-inheritance); the second and
+    /// later parents land in [`Self::extra_parents`]. Consumers wanting
+    /// the full parent set should iterate via [`Self::parents`].
     pub parent: Option<Box<str>>,
+    /// Additional parent IRIs beyond the first. Empty for single-parent
+    /// classes (the common case in RDFS-style ontologies); non-empty when
+    /// the source declares multi-inheritance (common in OWL biomedical
+    /// ontologies — FMA, ChEBI, etc.). Order is source order of the
+    /// surplus `rdfs:subClassOf` triples; the first parent stays in
+    /// [`Self::parent`].
+    pub extra_parents: Vec<Box<str>>,
     /// Properties declared with `ogit:mandatory`.
     pub mandatory: Vec<Property>,
     /// Properties declared with `ogit:optional`.
@@ -99,11 +110,27 @@ pub struct EntityClass {
 }
 
 impl EntityClass {
+    /// Iterator over every parent class IRI declared on this entity —
+    /// the first-observed [`Self::parent`] (if present) followed by
+    /// every IRI in [`Self::extra_parents`]. Empty when the class is
+    /// a root.
+    ///
+    /// Use this in preference to reading `.parent` directly when the
+    /// caller's logic should cover multi-inheritance — e.g. transitive
+    /// closure walks like [`OntologySchema::is_ancestor`].
+    pub fn parents(&self) -> impl Iterator<Item = &str> {
+        self.parent
+            .as_deref()
+            .into_iter()
+            .chain(self.extra_parents.iter().map(|s| s.as_ref()))
+    }
+
     fn new(iri: Box<str>) -> Self {
         EntityClass {
             iri,
             label: "".into(),
             parent: None,
+            extra_parents: Vec::new(),
             mandatory: Vec::new(),
             optional: Vec::new(),
             indexed: Vec::new(),
@@ -365,7 +392,19 @@ impl OntologySchema {
                 RDFS_SUB_CLASS_OF => {
                     if let Some(parent_iri) = node_iri(&triple.object) {
                         if let Some(cls) = entities.get_mut(subject_iri) {
-                            cls.parent = Some(parent_iri.into());
+                            // First parent → `parent`; subsequent
+                            // parents → `extra_parents` (multi-inheritance
+                            // as permitted by OWL; common in biomedical
+                            // ontologies like FMA / ChEBI). The previous
+                            // behaviour silently overwrote — the second
+                            // declared parent won, the first was discarded.
+                            if cls.parent.is_none() {
+                                cls.parent = Some(parent_iri.into());
+                            } else if cls.parent.as_deref() != Some(parent_iri)
+                                && !cls.extra_parents.iter().any(|p| p.as_ref() == parent_iri)
+                            {
+                                cls.extra_parents.push(parent_iri.into());
+                            }
                         }
                     }
                 }
@@ -641,26 +680,39 @@ impl OntologySchema {
             return false;
         }
 
-        // Walk the parent chain from descendant upward, looking for ancestor.
-        // Defensive depth cap — see method docstring.
-        const MAX_DEPTH: usize = 64;
-        let mut current: &str = descendant;
-        for _ in 0..MAX_DEPTH {
+        // BFS over the multi-parent DAG. The previous version walked a
+        // linear chain via `EntityClass.parent` alone — correct for
+        // single-inheritance schemas but missed ancestors reachable
+        // only through `EntityClass.extra_parents` (OWL multi-inheritance,
+        // common in FMA / ChEBI). MAX_VISITS bounds total work for any
+        // cycle that slipped past upstream antisymmetry checks.
+        const MAX_VISITS: usize = 4096;
+        let mut frontier: Vec<&str> = vec![descendant];
+        let mut visited: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        visited.insert(descendant);
+        let mut visits = 0usize;
+        while let Some(current) = frontier.pop() {
+            visits += 1;
+            if visits > MAX_VISITS {
+                return false;
+            }
             let entity = match self.entities.get(current) {
                 Some(e) => e,
-                None => return false, // descendant unknown — no chain to walk
+                // Walk hit an unknown IRI mid-chain — that subtree of the
+                // closure terminates here. Continue exploring siblings
+                // rather than aborting, since other parents may yet reach
+                // `ancestor`.
+                None => continue,
             };
-            let parent = match entity.parent.as_deref() {
-                Some(p) => p,
-                None => return false, // reached root without finding ancestor
-            };
-            if parent == ancestor {
-                return true;
+            for parent in entity.parents() {
+                if parent == ancestor {
+                    return true;
+                }
+                if visited.insert(parent) {
+                    frontier.push(parent);
+                }
             }
-            current = parent;
         }
-        // Exceeded depth cap — treat as not-an-ancestor (defensive; this
-        // path should be unreachable on a well-formed schema).
         false
     }
 }
@@ -959,5 +1011,85 @@ mod tests {
         // Across disjoint chains: neither direction holds.
         assert!(!schema.is_ancestor("ogit:Heel", "ogit:OtherHip"));
         assert!(!schema.is_ancestor("ogit:OtherHeel", "ogit:Hip"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Multi-inheritance — OWL biomedical-ontology shape (FMA, ChEBI, etc.)
+    // -----------------------------------------------------------------------
+
+    /// A class declaring two `rdfs:subClassOf` triples must reach both
+    /// ancestors through `is_ancestor`. The previous single-parent
+    /// implementation silently picked one and discarded the other.
+    #[test]
+    fn is_ancestor_multi_parent_direct() {
+        // Hand mimics an OWL fragment: ogit:Hybrid is both a kind of
+        // ogit:Animal AND a kind of ogit:Mineral.
+        let src = "\
+            @prefix ogit: <http://www.purl.org/ogit/> .\n\
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\
+            ogit:Animal a rdfs:Class .\n\
+            ogit:Mineral a rdfs:Class .\n\
+            ogit:Hybrid a rdfs:Class ; rdfs:subClassOf ogit:Animal ; rdfs:subClassOf ogit:Mineral .";
+        let triples = TurtleParser::parse(src).unwrap();
+        let schema = OntologySchema::from_triples(&triples).unwrap();
+        // Both parents must be reachable from the hybrid.
+        assert!(schema.is_ancestor("ogit:Animal", "ogit:Hybrid"));
+        assert!(schema.is_ancestor("ogit:Mineral", "ogit:Hybrid"));
+        // Reverse direction still false (antisymmetry).
+        assert!(!schema.is_ancestor("ogit:Hybrid", "ogit:Animal"));
+        assert!(!schema.is_ancestor("ogit:Hybrid", "ogit:Mineral"));
+    }
+
+    /// Multi-parent transitivity: an ancestor reachable only through
+    /// the SECOND parent of a multi-inheritance class must still be
+    /// found. This is the case the previous linear-walk implementation
+    /// silently missed.
+    #[test]
+    fn is_ancestor_multi_parent_transitive_through_second_parent() {
+        // Two disjoint chains converge at ogit:Hybrid:
+        //   ogit:Root1 ← ogit:Mid1 ← ogit:Hybrid (via "first" parent)
+        //   ogit:Root2 ← ogit:Mid2 ← ogit:Hybrid (via "second" parent)
+        let src = "\
+            @prefix ogit: <http://www.purl.org/ogit/> .\n\
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\
+            ogit:Root1 a rdfs:Class .\n\
+            ogit:Mid1  a rdfs:Class ; rdfs:subClassOf ogit:Root1 .\n\
+            ogit:Root2 a rdfs:Class .\n\
+            ogit:Mid2  a rdfs:Class ; rdfs:subClassOf ogit:Root2 .\n\
+            ogit:Hybrid a rdfs:Class ; rdfs:subClassOf ogit:Mid1 ; rdfs:subClassOf ogit:Mid2 .";
+        let triples = TurtleParser::parse(src).unwrap();
+        let schema = OntologySchema::from_triples(&triples).unwrap();
+        // Reachable through first parent chain.
+        assert!(schema.is_ancestor("ogit:Root1", "ogit:Hybrid"));
+        assert!(schema.is_ancestor("ogit:Mid1", "ogit:Hybrid"));
+        // Reachable through second parent chain — the case the
+        // previous implementation missed.
+        assert!(schema.is_ancestor("ogit:Root2", "ogit:Hybrid"));
+        assert!(schema.is_ancestor("ogit:Mid2", "ogit:Hybrid"));
+    }
+
+    /// The `parents()` iterator must surface both `parent` and every
+    /// `extra_parents` IRI in source order.
+    #[test]
+    fn entity_class_parents_iterator_yields_all() {
+        let src = "\
+            @prefix ogit: <http://www.purl.org/ogit/> .\n\
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\
+            ogit:A a rdfs:Class .\n\
+            ogit:B a rdfs:Class .\n\
+            ogit:C a rdfs:Class .\n\
+            ogit:X a rdfs:Class ; rdfs:subClassOf ogit:A ; rdfs:subClassOf ogit:B ; rdfs:subClassOf ogit:C .";
+        let triples = TurtleParser::parse(src).unwrap();
+        let schema = OntologySchema::from_triples(&triples).unwrap();
+        let x = schema.entities.get("ogit:X").expect("ogit:X declared");
+        let parents: Vec<&str> = x.parents().collect();
+        assert_eq!(parents.len(), 3, "expected 3 parents, got {parents:?}");
+        // First parent populates `parent`; the rest go to extra_parents.
+        // Source-order is preserved within extra_parents but the "first"
+        // parent depends on triple processing order, so just check set.
+        let parent_set: std::collections::HashSet<&str> = parents.iter().copied().collect();
+        assert!(parent_set.contains("ogit:A"));
+        assert!(parent_set.contains("ogit:B"));
+        assert!(parent_set.contains("ogit:C"));
     }
 }
