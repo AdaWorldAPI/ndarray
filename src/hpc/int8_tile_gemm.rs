@@ -144,7 +144,7 @@ mod tests {
         // Deterministic pseudo-random inputs covering the u8 / i8 ranges.
         let a: Vec<u8> = (0..16 * k).map(|i| ((i * 7 + 3) % 256) as u8).collect();
         let b: Vec<i8> = (0..k * 16)
-            .map(|i| (((i * 11 + 5) % 256) as u8 as i8))
+            .map(|i| ((i * 11 + 5) % 256) as u8 as i8)
             .collect();
 
         let mut c_ref = vec![0i32; 256];
