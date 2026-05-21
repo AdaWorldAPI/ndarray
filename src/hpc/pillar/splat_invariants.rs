@@ -276,11 +276,7 @@ pub fn prove_pillar_12() -> PillarReport {
     let mut max_rel_err = 0.0_f32;
 
     for _ in 0..N_SPLATS {
-        let s = [
-            sample_scale_axis(&mut rng),
-            sample_scale_axis(&mut rng),
-            sample_scale_axis(&mut rng),
-        ];
+        let s = [sample_scale_axis(&mut rng), sample_scale_axis(&mut rng), sample_scale_axis(&mut rng)];
         let q = sample_unit_quaternion(&mut rng);
         let sigma = covariance_from_scale_quat(s, q);
 

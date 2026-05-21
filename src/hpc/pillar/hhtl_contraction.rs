@@ -397,10 +397,7 @@ mod tests {
             total += probability_mask(0.5, &mut rng).count_ones();
         }
         let mean = total as f64 / n as f64;
-        assert!(
-            (mean - 32.0).abs() < 0.8,
-            "p=0.5 mask: mean popcount {mean:.4} not near 32"
-        );
+        assert!((mean - 32.0).abs() < 0.8, "p=0.5 mask: mean popcount {mean:.4} not near 32");
     }
 
     #[test]

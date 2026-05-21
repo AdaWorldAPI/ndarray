@@ -357,10 +357,7 @@ mod tests {
         let direct = generate_schema(&mut rng);
         for i in 0..N_TYPES {
             for j in i..N_TYPES {
-                assert!(
-                    !direct[i * N_TYPES + j],
-                    "non-acyclic edge: direct[{i}][{j}] should be false (j >= i)"
-                );
+                assert!(!direct[i * N_TYPES + j], "non-acyclic edge: direct[{i}][{j}] should be false (j >= i)");
             }
         }
     }
@@ -401,10 +398,7 @@ mod tests {
                 }
                 for v in 0..N_TYPES {
                     if le[u * N_TYPES + v] {
-                        assert!(
-                            le[t * N_TYPES + v],
-                            "transitivity broken: {t}≤{u}≤{v} but ¬({t}≤{v})"
-                        );
+                        assert!(le[t * N_TYPES + v], "transitivity broken: {t}≤{u}≤{v} but ¬({t}≤{v})");
                     }
                 }
             }
@@ -421,10 +415,7 @@ mod tests {
             for u in (t + 1)..N_TYPES {
                 let tu = le[t * N_TYPES + u];
                 let ut = le[u * N_TYPES + t];
-                assert!(
-                    !(tu && ut),
-                    "antisymmetry broken at pair ({t}, {u}): both directions hold"
-                );
+                assert!(!(tu && ut), "antisymmetry broken at pair ({t}, {u}): both directions hold");
             }
         }
     }
