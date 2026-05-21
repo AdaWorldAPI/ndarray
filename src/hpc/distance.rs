@@ -493,13 +493,7 @@ mod tests {
             let b = random_vec_f64(0xB220_C1A0, n);
             let simd = l1_f64_simd(&a, &b);
             let scalar: f64 = a.iter().zip(&b).map(|(x, y)| (x - y).abs()).sum();
-            assert!(
-                approx_eq_f64_tol(simd, scalar, 1e-11),
-                "n={} simd={:.15} scalar={:.15}",
-                n,
-                simd,
-                scalar
-            );
+            assert!(approx_eq_f64_tol(simd, scalar, 1e-11), "n={} simd={:.15} scalar={:.15}", n, simd, scalar);
         }
     }
 
@@ -537,14 +531,7 @@ mod tests {
             // Sqrt is 1 ULP; cross-chunk summation order differs by chunks
             // of 8 vs sequential — allow generous relative tolerance.
             let rel = (simd - scalar).abs() / scalar.max(1e-12);
-            assert!(
-                rel < 1e-10,
-                "n={} simd={:.15} scalar={:.15} rel={:.2e}",
-                n,
-                simd,
-                scalar,
-                rel
-            );
+            assert!(rel < 1e-10, "n={} simd={:.15} scalar={:.15} rel={:.2e}", n, simd, scalar, rel);
         }
     }
 
@@ -586,13 +573,7 @@ mod tests {
                 .zip(&b)
                 .map(|(x, y)| (x - y).abs())
                 .fold(0.0_f64, f64::max);
-            assert!(
-                approx_eq_f64_tol(simd, scalar, 1e-15),
-                "n={} simd={:.15} scalar={:.15}",
-                n,
-                simd,
-                scalar
-            );
+            assert!(approx_eq_f64_tol(simd, scalar, 1e-15), "n={} simd={:.15} scalar={:.15}", n, simd, scalar);
         }
     }
 
