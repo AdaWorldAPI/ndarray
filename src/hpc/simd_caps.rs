@@ -71,6 +71,24 @@ pub struct SimdCaps {
     /// (`is_x86_feature_detected!("avxvnniint8")`).
     /// Present on Arrow Lake, Lunar Lake, NUC 14 (Meteor Lake-H).
     pub avxvnniint8: bool,
+    /// AVX-512 FP16 arithmetic (CPUID.07H.0H:EDX bit 23). Native
+    /// `__m512h` operations (`_mm512_*_ph`). Present on Sapphire Rapids,
+    /// Granite Rapids, Zen 4+. Bit is exposed for downstream substrate
+    /// kernels and dispatch ladders; no consumer-facing dispatch axis
+    /// is built on top of it.
+    pub avx512fp16: bool,
+    /// AVX-512 VP2INTERSECT (CPUID.07H.0H:EDX bit 8). Present only on
+    /// Tiger Lake mobile silicon; absent from Ice Lake-SP and every
+    /// later server part. Useful for future intersection-heavy
+    /// primitives (set ops on bitmaps); exposed for completeness.
+    pub avx512vp2intersect: bool,
+    /// AMX-FP16 (CPUID.07H.1H:EAX bit 21). `TDPFP16PS` FP16 tile dot
+    /// product, present on Granite Rapids only. Lives at CPUID leaf
+    /// 7,1 (subleaf 1), not leaf 7,0 — separate `__cpuid_count(7, 1)`
+    /// call required. The leaf 7,1 read is gated on leaf 7,0's EAX
+    /// max-subleaf field being ≥ 1; on older silicon that field is 0
+    /// and we never query leaf 7,1.
+    pub amx_fp16: bool,
 
     // ── aarch64 (ARM) ──
     /// NEON 128-bit SIMD (mandatory on aarch64, always true).
@@ -124,6 +142,9 @@ impl SimdCaps {
             amx_bf16: false,
             avx512bf16: false,
             avxvnniint8: false,
+            avx512fp16: false,
+            avx512vp2intersect: false,
+            amx_fp16: false,
             neon: false,
             asimd_dotprod: false,
             fp16: false,
@@ -143,6 +164,18 @@ impl SimdCaps {
         let amx_tile = (cpuid7.edx >> 24) & 1 == 1;
         let amx_int8 = (cpuid7.edx >> 25) & 1 == 1;
         let amx_bf16 = (cpuid7.edx >> 22) & 1 == 1;
+        let avx512fp16 = (cpuid7.edx >> 23) & 1 == 1;
+        let avx512vp2intersect = (cpuid7.edx >> 8) & 1 == 1;
+
+        // Leaf 7,1 EAX bit 21 = AMX-FP16. Leaf 7,1 only exists when
+        // leaf 7,0 EAX (max-subleaf) is at least 1; on older silicon
+        // this returns 0 and the answer is correctly false.
+        let amx_fp16 = if cpuid7.eax >= 1 {
+            let cpuid7_1 = core::arch::x86_64::__cpuid_count(7, 1);
+            (cpuid7_1.eax >> 21) & 1 == 1
+        } else {
+            false
+        };
 
         Self {
             avx2: is_x86_feature_detected!("avx2"),
@@ -160,6 +193,9 @@ impl SimdCaps {
             amx_bf16,
             avx512bf16: is_x86_feature_detected!("avx512bf16"),
             avxvnniint8: is_x86_feature_detected!("avxvnniint8"),
+            avx512fp16,
+            avx512vp2intersect,
+            amx_fp16,
             // ARM fields: all false on x86
             neon: false,
             asimd_dotprod: false,
@@ -192,6 +228,9 @@ impl SimdCaps {
             amx_bf16: false,
             avx512bf16: false,
             avxvnniint8: false,
+            avx512fp16: false,
+            avx512vp2intersect: false,
+            amx_fp16: false,
             // ARM fields: runtime detection
             neon: true, // mandatory on aarch64
             asimd_dotprod: std::arch::is_aarch64_feature_detected!("dotprod"),
@@ -221,6 +260,9 @@ impl SimdCaps {
             amx_bf16: false,
             avx512bf16: false,
             avxvnniint8: false,
+            avx512fp16: false,
+            avx512vp2intersect: false,
+            amx_fp16: false,
             neon: false,
             asimd_dotprod: false,
             fp16: false,
@@ -273,6 +315,23 @@ impl SimdCaps {
     #[inline(always)]
     pub fn has_avxvnniint8(self) -> bool {
         self.avxvnniint8
+    }
+
+    /// True if AVX-512 FP16 (`__m512h`) is available. Distinguishes
+    /// SapphireRapids-class silicon (and Zen 4+) from the CascadeLake /
+    /// IceLakeSp / SkylakeX baseline that lacks native `__m512h` math.
+    #[inline(always)]
+    pub fn has_avx512_fp16(self) -> bool {
+        self.avx512fp16
+    }
+
+    /// True if AMX-FP16 (`TDPFP16PS`) is available. Only Granite Rapids
+    /// advertises this bit. Requires both the CPUID 7,1 bit AND
+    /// AMX-TILE (defense-in-depth: a CPU advertising AMX-FP16 without
+    /// AMX-TILE is contradictory but the check stays cheap).
+    #[inline(always)]
+    pub fn has_amx_fp16(self) -> bool {
+        self.amx_fp16 && self.amx_tile
     }
 
     // ── ARM convenience methods ──
@@ -510,5 +569,70 @@ mod tests {
         // On aarch64, should be one of the ARM profiles
         #[cfg(target_arch = "aarch64")]
         assert_ne!(profile, ArmProfile::NotArm);
+    }
+
+    /// New CPUID 7,0 EDX bits and the CPUID 7,1 leaf read must surface
+    /// without crashing on every host. Field values are host-dependent;
+    /// we just exercise the readers and the convenience methods.
+    #[test]
+    fn cpuid_extended_bits_smoke() {
+        let caps = simd_caps();
+        let _ = caps.avx512fp16;
+        let _ = caps.avx512vp2intersect;
+        let _ = caps.amx_fp16;
+        let _ = caps.has_avx512_fp16();
+        let _ = caps.has_amx_fp16();
+    }
+
+    /// `has_amx_fp16()` defense-in-depth: even if `amx_fp16` were
+    /// spuriously true without `amx_tile`, the convenience method must
+    /// require both. Matches the pattern used by `has_amx_bf16` in
+    /// `simd_amx::amx_available()`.
+    #[test]
+    fn has_amx_fp16_requires_amx_tile() {
+        let synthetic = SimdCaps {
+            avx2: false,
+            avx512f: false,
+            avx512bw: false,
+            avx512vl: false,
+            avx512vpopcntdq: false,
+            sse41: false,
+            sse2: false,
+            fma: false,
+            avx512vnni: false,
+            avx512vbmi: false,
+            amx_tile: false,
+            amx_int8: false,
+            amx_bf16: false,
+            avx512bf16: false,
+            avxvnniint8: false,
+            avx512fp16: false,
+            avx512vp2intersect: false,
+            amx_fp16: true,
+            neon: false,
+            asimd_dotprod: false,
+            fp16: false,
+            aes: false,
+            sha2: false,
+            crc32: false,
+        };
+        assert!(
+            !synthetic.has_amx_fp16(),
+            "amx_fp16 without amx_tile must report false"
+        );
+    }
+
+    /// On non-x86 builds the x86 capability bits MUST all read false —
+    /// the platform-specific zero-defaults must not regress when new
+    /// fields are added to `SimdCaps`.
+    #[cfg(not(target_arch = "x86_64"))]
+    #[test]
+    fn x86_extended_bits_are_false_on_non_x86() {
+        let caps = simd_caps();
+        assert!(!caps.avx512fp16);
+        assert!(!caps.avx512vp2intersect);
+        assert!(!caps.amx_fp16);
+        assert!(!caps.has_avx512_fp16());
+        assert!(!caps.has_amx_fp16());
     }
 }
