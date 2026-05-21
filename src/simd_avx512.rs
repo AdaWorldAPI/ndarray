@@ -2405,11 +2405,57 @@ pub fn bf16_to_f32_batch(input: &[u16], output: &mut [f32]) {
             }
             return;
         }
+        // Middle tier: pure AVX-512F bit-shift (Skylake-X, Cascade Lake,
+        // Ice Lake-SP — all AVX-512F CPUs without the bf16 extension).
+        // BF16 → f32 is lossless: BF16 IS the upper 16 bits of f32, so
+        // `(bf16_u16 as u32) << 16` reinterpreted as f32 IS the exact
+        // value. Vectorized: one _mm512_cvtepu16_epi32 zero-extends 16
+        // u16 → 16 u32, one _mm512_slli_epi32::<16> shifts each lane left
+        // by 16, _mm512_castsi512_ps reinterprets the i32 bit pattern as
+        // f32. Three AVX-512F instructions per 16-lane chunk vs 16
+        // scalar shifts in the fallback below.
+        if is_x86_feature_detected!("avx512f") {
+            // SAFETY: feature detection confirmed avx512f.
+            unsafe {
+                convert_bf16_to_f32_avx512f(input, output);
+            }
+            return;
+        }
     }
 
     // Scalar fallback (all platforms, all CPUs)
     for (src, dst) in input.iter().copied().zip(output.iter_mut()) {
         *dst = bf16_to_f32_scalar(src);
+    }
+}
+
+/// Pure-AVX-512F BF16 → f32 conversion. Bit-exact against
+/// `bf16_to_f32_scalar` on every input — BF16 is `f32_bits >> 16`, so
+/// the inverse `(bf16 as u32) << 16` reconstructed as f32 is exact.
+///
+/// 16-lane main loop via `_mm512_cvtepu16_epi32` (zero-extend) +
+/// `_mm512_slli_epi32::<16>` (shift up) + `_mm512_castsi512_ps`
+/// (bit-cast). Scalar tail for the last `n % 16` lanes.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+unsafe fn convert_bf16_to_f32_avx512f(input: &[u16], output: &mut [f32]) {
+    let n = input.len();
+    let mut i = 0usize;
+
+    // Main 16-wide loop.
+    while i + 16 <= n {
+        let raw256 = _mm256_loadu_si256(input.as_ptr().add(i) as *const __m256i);
+        let extended = _mm512_cvtepu16_epi32(raw256);
+        let shifted = _mm512_slli_epi32::<16>(extended);
+        let as_f32 = _mm512_castsi512_ps(shifted);
+        _mm512_storeu_ps(output.as_mut_ptr().add(i), as_f32);
+        i += 16;
+    }
+
+    // Scalar tail (0..15 remaining lanes).
+    while i < n {
+        *output.get_unchecked_mut(i) = bf16_to_f32_scalar(*input.get_unchecked(i));
+        i += 1;
     }
 }
 
@@ -2704,6 +2750,55 @@ mod bf16_tests {
             // Allow ±1 ULP: hardware uses round-to-nearest-even, scalar uses truncation
             let diff = (output[i] as i32 - expected as i32).unsigned_abs();
             assert!(diff <= 1, "mismatch at index {}: {} → {} vs {}, diff={}", i, v, output[i], expected, diff);
+        }
+    }
+
+    /// Direct test for the AVX-512F bit-shift BF16 → f32 arm, exercising
+    /// the path the dispatcher would skip when avx512bf16 is available.
+    /// Verifies bit-exact parity against the scalar reference across a
+    /// pathological corpus (subnormal, NaN, Inf, sign ±0, every exponent
+    /// boundary) and a 16-aligned-plus-tail length.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn batch_bf16_to_f32_avx512f_matches_scalar() {
+        if !is_x86_feature_detected!("avx512f") {
+            eprintln!("avx512f not detected on this host; skipping");
+            return;
+        }
+        // Build a corpus: every bf16 value of interest. The dispatcher's
+        // 16-wide loop is what matters most; pick a non-aligned total so
+        // we also exercise the scalar tail.
+        let mut input: Vec<u16> = Vec::new();
+        // Sign × exponent × representative mantissa sweep
+        for sign in [0u16, 0x8000] {
+            for exp in 0..256u16 {
+                for &mant in &[0u16, 1, 0x40, 0x7F] {
+                    input.push(sign | (exp << 7) | mant);
+                }
+            }
+        }
+        // Add 5 bytes of tail to land on a non-16-aligned length.
+        input.extend_from_slice(&[0x3F80, 0xBF80, 0x4000, 0xC000, 0x7F80]);
+
+        let mut output = vec![0.0f32; input.len()];
+        // SAFETY: avx512f confirmed above.
+        unsafe { convert_bf16_to_f32_avx512f(&input, &mut output) };
+
+        for (i, &bf16) in input.iter().enumerate() {
+            let expected = bf16_to_f32_scalar(bf16);
+            // BF16 → f32 is lossless: bits must be byte-equal (incl. NaN
+            // payloads).
+            assert_eq!(
+                output[i].to_bits(),
+                expected.to_bits(),
+                "mismatch at index {} (bf16=0x{:04x}): got {} (0x{:08x}) vs {} (0x{:08x})",
+                i,
+                bf16,
+                output[i],
+                output[i].to_bits(),
+                expected,
+                expected.to_bits()
+            );
         }
     }
 
