@@ -66,6 +66,10 @@ pub mod heel_f64x8;
 pub mod amx_matmul;
 #[cfg(target_arch = "x86_64")]
 pub mod bf16_tile_gemm;
+/// INT8 (`u8 × i8 → i32`) tile GEMM via AMX `TDPBUSD` — mirror of
+/// `bf16_tile_gemm` for the integer operand family.
+#[cfg(target_arch = "x86_64")]
+pub mod int8_tile_gemm;
 #[allow(missing_docs)]
 pub mod bf16_truth;
 #[allow(missing_docs)]
