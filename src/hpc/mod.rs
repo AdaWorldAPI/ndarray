@@ -13,8 +13,10 @@
 //! - FFT (forward, inverse, real-to-complex)
 //! - VML (vectorized math library)
 
-// SIMD capability singleton — detect once, all modules share
-pub mod simd_caps;
+// SIMD capability singleton — graduated to crate root (it never depended
+// on anything else in `hpc/`); re-exported here for back-compat with
+// existing `crate::hpc::simd_caps::*` imports across the workspace.
+pub use crate::simd_caps;
 // LazyLock frozen SIMD dispatch — function pointers selected once at startup
 pub mod simd_dispatch;
 

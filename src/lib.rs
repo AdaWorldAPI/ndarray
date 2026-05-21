@@ -262,6 +262,16 @@ pub mod simd_nightly;
 #[cfg(target_arch = "x86_64")]
 pub mod simd_amx;
 
+/// SIMD capability detection (CPUID on x86_64, runtime feature detection
+/// on aarch64). One `LazyLock<SimdCaps>` detected at first access; every
+/// substrate dispatch site is one pointer deref. Graduated from
+/// `crate::hpc::simd_caps::*` in this same migration; the old path stays
+/// available as a `pub use` re-export inside `crate::hpc::*` for
+/// back-compat. Uses `std::sync::LazyLock`, hence the `std` gate (a
+/// `core::sync::LazyLock` follow-up could lift it).
+#[cfg(feature = "std")]
+pub mod simd_caps;
+
 #[cfg(feature = "std")]
 #[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
 pub mod simd_neon;

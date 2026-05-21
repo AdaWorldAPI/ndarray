@@ -132,8 +132,15 @@ pub(crate) fn bundle_into(current: &GraphHV, hv: &GraphHV, lr: f64, boost: f64, 
 /// Create a u64 bitmask where each bit is independently 1 with probability ~`p`.
 ///
 /// Uses cascaded AND of random words to achieve the target probability:
-/// - p >= 0.5 → OR of inverse masks
-/// - p < 0.5 → AND cascade
+/// - p > 0.5  → invert the (1-p) mask
+/// - p <= 0.5 → AND cascade
+///
+/// At exactly `p = 0.5` the AND-cascade branch executes a single
+/// `rng.next_u64()` (n = ceil(-log2(0.5)) = 1) — each bit is then
+/// IID Bernoulli(0.5). Note the **strict** comparison here: an earlier
+/// version used `p >= 0.5`, which recursed with `1.0 - 0.5 = 0.5`
+/// infinitely. The Pillar-13 drift-check (`hpc::pillar::hhtl_contraction`)
+/// already uses the strict comparison and is the canonical reference.
 fn make_probability_mask(p: f64, rng: &mut SplitMix64) -> u64 {
     if p >= 1.0 {
         return u64::MAX;
@@ -142,13 +149,14 @@ fn make_probability_mask(p: f64, rng: &mut SplitMix64) -> u64 {
         return 0;
     }
 
-    if p >= 0.5 {
-        // p >= 0.5: use OR approach — each AND of randoms gives ~0.25, NOT gives ~0.75, etc.
-        // Simpler: just AND enough randoms to get (1-p) kill rate, then NOT.
+    if p > 0.5 {
+        // p > 0.5: invert the (1-p) mask. Strict > 0.5 so p == 0.5
+        // falls through to the AND-cascade and produces a single
+        // Bernoulli(0.5) word in one rng draw.
         return !make_probability_mask(1.0 - p, rng);
     }
 
-    // p < 0.5: AND cascade. Each AND halves the probability.
+    // p <= 0.5: AND cascade. Each AND halves the probability.
     // We need n ANDs where 0.5^n ≈ p, so n = -log2(p).
     let n = (-p.log2()).ceil() as u32;
     let mut mask = rng.next_u64();
@@ -541,6 +549,38 @@ mod tests {
 
     fn make_rng() -> SplitMix64 {
         SplitMix64::new(42)
+    }
+
+    /// Regression: at p = 0.5 exactly, the previous `p >= 0.5` branch
+    /// recursed with `1.0 - 0.5 = 0.5` infinitely. The strict `p > 0.5`
+    /// fix routes p=0.5 to the AND-cascade (n=1, one rng draw) which
+    /// produces a Bernoulli(0.5) mask in O(1) time.
+    #[test]
+    fn make_probability_mask_at_half_terminates() {
+        let mut rng = make_rng();
+        // If this stack-overflows, the recursion fix has regressed.
+        let mask = make_probability_mask(0.5, &mut rng);
+        // Bernoulli(0.5) over 64 bits — popcount should be near 32, but
+        // any value 0..=64 is valid for a single draw. The test's
+        // load-bearing assertion is that the call returns.
+        assert!(mask <= u64::MAX);
+    }
+
+    /// Empirical Bernoulli(0.5) check: average popcount over N=1024
+    /// independent masks must land near 32 (the true mean) within a
+    /// generous tolerance.
+    #[test]
+    fn make_probability_mask_at_half_is_bernoulli_half() {
+        let mut rng = make_rng();
+        const N: u32 = 1024;
+        let mut total: u64 = 0;
+        for _ in 0..N {
+            total += make_probability_mask(0.5, &mut rng).count_ones() as u64;
+        }
+        let mean = total as f64 / N as f64;
+        // σ per word = sqrt(64 * 0.5 * 0.5) = 4; mean's SE = 4 / √N = 0.125.
+        // Tolerance 2.0 ≈ 16 SEs — comfortable margin against flakes.
+        assert!((mean - 32.0).abs() < 2.0, "make_probability_mask(0.5) mean popcount {mean:.4} not near 32");
     }
 
     #[test]

@@ -3,6 +3,23 @@
 //! SIMD-accelerated squared-distance, radius filtering, and K-nearest-neighbor
 //! searches over contiguous point slices. All operations work on borrowed slices
 //! with no internal copies. Scalar fallback is provided for non-x86 targets.
+//!
+//! # Slice-shape geometric distance (PR-X10 A6)
+//!
+//! For arbitrary-length f64 slices (non-3D-point shape), use:
+//!
+//! - [`l1_f64_simd`]  — Manhattan: `Σ |a_i − b_i|`
+//! - [`l2_f64_simd`]  — Euclidean: `√Σ (a_i − b_i)²`
+//! - [`linf_f64_simd`] — Chebyshev: `max |a_i − b_i|`
+//!
+//! These use the `F64x8` polyfill (no `target_feature`, no `unsafe`),
+//! matching the [`crate::hpc::heel_f64x8::cosine_f64_simd`] idiom: F64x8
+//! chunks with FMA / SIMD-max accumulator + scalar remainder. They are
+//! the salvaged kernels from the rolled-back PR #160 cross-repo arc
+//! (lance-graph `heel_f64x8::{l1, l2, linf}_f64_simd`), re-landed here
+//! per the linalg-core design's A6 worker scope and the
+//! `crate::hpc::linalg/mod.rs` hard boundary ("No distance metrics —
+//! those live in `crate::hpc::distance`").
 
 // ---------------------------------------------------------------------------
 // Scalar helpers
@@ -166,6 +183,108 @@ pub fn knn_f64(query: [f64; 3], points: &[[f64; 3]], k: usize) -> (Vec<usize>, V
 }
 
 // ---------------------------------------------------------------------------
+// Slice-shape geometric distance — PR-X10 A6
+// ---------------------------------------------------------------------------
+//
+// Polyfilled F64x8 chunked path with scalar remainder; no `target_feature`,
+// no `unsafe` — the polyfill in `crate::simd::F64x8` owns runtime feature
+// dispatch (AVX-512 native zmm / AVX2 2×ymm / scalar [f64; 8]).
+//
+// All three kernels read `min(a.len(), b.len())` elements. Empty inputs
+// return 0.0.
+
+use crate::simd::F64x8;
+
+/// L1 (Manhattan) distance between two f64 slices: `Σ |a_i − b_i|`.
+///
+/// EXACT precision class — the per-lane `(a - b).abs()` introduces no
+/// rounding beyond the standard subtract, and the reduce-sum order is
+/// lane-tree within each F64x8 chunk + sequential across chunks (matches
+/// the [`crate::hpc::heel_f64x8::cosine_f64_simd`] order so callers can
+/// reason about determinism the same way).
+///
+/// Reads `min(a.len(), b.len())` elements. Returns 0.0 for empty inputs.
+pub fn l1_f64_simd(a: &[f64], b: &[f64]) -> f64 {
+    let n = a.len().min(b.len());
+    let chunks = n / 8;
+    let mut acc = F64x8::splat(0.0);
+    for i in 0..chunks {
+        let va = F64x8::from_slice(&a[i * 8..]);
+        let vb = F64x8::from_slice(&b[i * 8..]);
+        acc = acc + (va - vb).abs();
+    }
+    let mut sum = acc.reduce_sum();
+    let offset = chunks * 8;
+    for i in 0..(n - offset) {
+        sum += (a[offset + i] - b[offset + i]).abs();
+    }
+    sum
+}
+
+/// L2 (Euclidean) distance between two f64 slices: `√Σ (a_i − b_i)²`.
+///
+/// VERIFY precision class — the final `sqrt` is one ULP; the sum is
+/// lane-tree within each F64x8 + sequential across chunks (same order
+/// pattern as L1). Determinism across runs holds for fixed slice
+/// length and fixed chunking. For full order-independence use a
+/// pairwise-reduce variant (see `blas_level1::nrm2`).
+///
+/// Reads `min(a.len(), b.len())` elements. Returns 0.0 for empty inputs.
+pub fn l2_f64_simd(a: &[f64], b: &[f64]) -> f64 {
+    let n = a.len().min(b.len());
+    let chunks = n / 8;
+    let mut acc = F64x8::splat(0.0);
+    for i in 0..chunks {
+        let va = F64x8::from_slice(&a[i * 8..]);
+        let vb = F64x8::from_slice(&b[i * 8..]);
+        let d = va - vb;
+        acc = d.mul_add(d, acc); // acc += d*d (single FMA per chunk)
+    }
+    let mut sum_sq = acc.reduce_sum();
+    let offset = chunks * 8;
+    for i in 0..(n - offset) {
+        let d = a[offset + i] - b[offset + i];
+        sum_sq += d * d;
+    }
+    sum_sq.sqrt()
+}
+
+/// L∞ (Chebyshev) distance between two f64 slices: `max |a_i − b_i|`.
+///
+/// EXACT precision class — `(a - b).abs()` and `max` introduce no
+/// rounding; the result is determined by the inputs alone (order-
+/// independent across chunks since `max` is associative and commutative
+/// under IEEE-754 for non-NaN inputs).
+///
+/// Reads `min(a.len(), b.len())` elements. Returns 0.0 for empty inputs.
+///
+/// # NaN handling
+///
+/// IEEE-754 `_mm512_max_pd` returns the second operand when either input
+/// is NaN; callers passing NaN-tainted slices may observe non-deterministic
+/// max across runs (an upstream constraint, not a kernel bug). Audit
+/// upstream for NaN before relying on this kernel on production data.
+pub fn linf_f64_simd(a: &[f64], b: &[f64]) -> f64 {
+    let n = a.len().min(b.len());
+    let chunks = n / 8;
+    let mut max_v = F64x8::splat(0.0);
+    for i in 0..chunks {
+        let va = F64x8::from_slice(&a[i * 8..]);
+        let vb = F64x8::from_slice(&b[i * 8..]);
+        max_v = max_v.simd_max((va - vb).abs());
+    }
+    let mut max_d = max_v.reduce_max();
+    let offset = chunks * 8;
+    for i in 0..(n - offset) {
+        let d = (a[offset + i] - b[offset + i]).abs();
+        if d > max_d {
+            max_d = d;
+        }
+    }
+    max_d
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -314,5 +433,160 @@ mod tests {
         let points = vec![query];
         let result = squared_distances_f32(query, &points);
         assert!(approx_eq_f32(result[0], 0.0));
+    }
+
+    // -- PR-X10 A6 slice-shape L1 / L2 / L∞ --
+
+    fn approx_eq_f64_tol(a: f64, b: f64, tol: f64) -> bool {
+        (a - b).abs() < tol
+    }
+
+    /// Deterministic SplitMix64 — matches the pillar harness so the
+    /// corpus is reproducible across runs and across machines.
+    fn splitmix(state: &mut u64) -> u64 {
+        *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = *state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    fn random_vec_f64(seed: u64, n: usize) -> Vec<f64> {
+        let mut s = seed;
+        (0..n)
+            .map(|_| {
+                let bits = splitmix(&mut s) >> 11;
+                (bits as f64) / (1u64 << 53) as f64 * 2.0 - 1.0 // uniform in [-1, 1)
+            })
+            .collect()
+    }
+
+    // -- L1 boundary + parity --
+
+    #[test]
+    fn l1_f64_simd_self_zero() {
+        let a = random_vec_f64(0xC1A0, 200);
+        assert_eq!(l1_f64_simd(&a, &a), 0.0);
+    }
+
+    #[test]
+    fn l1_f64_simd_empty_is_zero() {
+        let a: Vec<f64> = vec![];
+        let b: Vec<f64> = vec![];
+        assert_eq!(l1_f64_simd(&a, &b), 0.0);
+    }
+
+    #[test]
+    fn l1_f64_simd_uniform_diff() {
+        let a = vec![3.0f64; 17];
+        let b = vec![1.0f64; 17];
+        // 17 * |3 - 1| = 34
+        assert!(approx_eq_f64_tol(l1_f64_simd(&a, &b), 34.0, 1e-12));
+    }
+
+    #[test]
+    fn l1_f64_simd_matches_scalar() {
+        // 200 elements covers chunked path (25 chunks of 8) + remainder of 0;
+        // 199 covers chunked + remainder of 7.
+        for &n in &[1usize, 7, 8, 15, 16, 17, 64, 199, 200, 1024] {
+            let a = random_vec_f64(0xA110_C1A0, n);
+            let b = random_vec_f64(0xB220_C1A0, n);
+            let simd = l1_f64_simd(&a, &b);
+            let scalar: f64 = a.iter().zip(&b).map(|(x, y)| (x - y).abs()).sum();
+            assert!(approx_eq_f64_tol(simd, scalar, 1e-11), "n={} simd={:.15} scalar={:.15}", n, simd, scalar);
+        }
+    }
+
+    // -- L2 boundary + parity --
+
+    #[test]
+    fn l2_f64_simd_self_zero() {
+        let a = random_vec_f64(0xC2A0, 200);
+        assert_eq!(l2_f64_simd(&a, &a), 0.0);
+    }
+
+    #[test]
+    fn l2_f64_simd_empty_is_zero() {
+        let a: Vec<f64> = vec![];
+        let b: Vec<f64> = vec![];
+        assert_eq!(l2_f64_simd(&a, &b), 0.0);
+    }
+
+    #[test]
+    fn l2_f64_simd_pythagoras() {
+        // (3, 0, …) vs (0, 4, …): √(9 + 16) = 5
+        let a = vec![3.0f64, 0.0];
+        let b = vec![0.0f64, 4.0];
+        assert!(approx_eq_f64_tol(l2_f64_simd(&a, &b), 5.0, 1e-12));
+    }
+
+    #[test]
+    fn l2_f64_simd_matches_scalar() {
+        for &n in &[1usize, 7, 8, 15, 16, 17, 64, 199, 200, 1024] {
+            let a = random_vec_f64(0xA110_C2A0, n);
+            let b = random_vec_f64(0xB220_C2A0, n);
+            let simd = l2_f64_simd(&a, &b);
+            let sum_sq: f64 = a.iter().zip(&b).map(|(x, y)| (x - y).powi(2)).sum();
+            let scalar = sum_sq.sqrt();
+            // Sqrt is 1 ULP; cross-chunk summation order differs by chunks
+            // of 8 vs sequential — allow generous relative tolerance.
+            let rel = (simd - scalar).abs() / scalar.max(1e-12);
+            assert!(rel < 1e-10, "n={} simd={:.15} scalar={:.15} rel={:.2e}", n, simd, scalar, rel);
+        }
+    }
+
+    // -- L∞ boundary + parity --
+
+    #[test]
+    fn linf_f64_simd_self_zero() {
+        let a = random_vec_f64(0xC1FF, 200);
+        assert_eq!(linf_f64_simd(&a, &a), 0.0);
+    }
+
+    #[test]
+    fn linf_f64_simd_empty_is_zero() {
+        let a: Vec<f64> = vec![];
+        let b: Vec<f64> = vec![];
+        assert_eq!(linf_f64_simd(&a, &b), 0.0);
+    }
+
+    #[test]
+    fn linf_f64_simd_picks_max_in_chunk() {
+        // Max difference must land inside a chunked path (index 5 < 8) and
+        // also outside (index 13 > 8) to exercise both halves.
+        let mut a = vec![0.0f64; 16];
+        let mut b = vec![0.0f64; 16];
+        a[5] = 0.5;
+        a[13] = -0.7; // |Δ| = 0.7 — should win
+        b[2] = 0.1;
+        assert!(approx_eq_f64_tol(linf_f64_simd(&a, &b), 0.7, 1e-12));
+    }
+
+    #[test]
+    fn linf_f64_simd_matches_scalar() {
+        for &n in &[1usize, 7, 8, 15, 16, 17, 64, 199, 200, 1024] {
+            let a = random_vec_f64(0xA110_C1FF, n);
+            let b = random_vec_f64(0xB220_C1FF, n);
+            let simd = linf_f64_simd(&a, &b);
+            let scalar: f64 = a
+                .iter()
+                .zip(&b)
+                .map(|(x, y)| (x - y).abs())
+                .fold(0.0_f64, f64::max);
+            assert!(approx_eq_f64_tol(simd, scalar, 1e-15), "n={} simd={:.15} scalar={:.15}", n, simd, scalar);
+        }
+    }
+
+    /// Mismatched-length slices: must use the shorter length, no panic.
+    #[test]
+    fn slice_distances_mismatched_length_uses_min() {
+        let a = vec![1.0f64; 17];
+        let b = vec![2.0f64; 10];
+        // L1 over min=10: 10 * |1 - 2| = 10
+        assert!(approx_eq_f64_tol(l1_f64_simd(&a, &b), 10.0, 1e-12));
+        // L2 over min=10: √(10 * 1) = √10
+        assert!(approx_eq_f64_tol(l2_f64_simd(&a, &b), 10f64.sqrt(), 1e-12));
+        // L∞ = 1
+        assert!(approx_eq_f64_tol(linf_f64_simd(&a, &b), 1.0, 1e-12));
     }
 }
