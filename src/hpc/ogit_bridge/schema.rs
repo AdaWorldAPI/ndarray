@@ -586,6 +586,83 @@ impl OntologySchema {
             leaf_count,
         })
     }
+
+    /// Returns `true` iff `descendant` is reachable from `ancestor` by
+    /// walking the `rdfs:subClassOf` chain encoded in
+    /// [`EntityClass::parent`]. The relation is *reflexive*: every class
+    /// is its own ancestor (including unknown IRIs — which return `true`
+    /// only for the reflexive case `ancestor == descendant`).
+    ///
+    /// # Complexity
+    ///
+    /// O(depth) — walks at most `MAX_DEPTH = 64` parent links before
+    /// returning `false`, defensively guarding against any cycle that
+    /// might have slipped past the partial-order check upstream. Pillar-14
+    /// asserts the closure is antisymmetric on synthetic DAGs; this
+    /// method's cycle guard is the runtime backstop for that assertion.
+    ///
+    /// # Use case
+    ///
+    /// The Pillar-14 drift-check test in `crate::hpc::pillar::ogit_lattice`
+    /// uses this method to verify the loaded ontology's closure satisfies
+    /// the same three partial-order axioms the synthetic-DAG probe
+    /// certifies. Beyond that, it is the natural query for any
+    /// type-gated cascade step: "may activation propagate from a tile of
+    /// type `descendant` to a tile of type `ancestor`?"
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Reflexive
+    /// assert!(schema.is_ancestor("ogit:Heel", "ogit:Heel"));
+    /// // Transitive via the subClassOf chain
+    /// assert!(schema.is_ancestor("ogit:Heel", "ogit:SomeLeaf"));
+    /// // No relation
+    /// assert!(!schema.is_ancestor("ogit:Leaf", "ogit:Heel"));
+    /// // Unknown descendant — only reflexive case returns true
+    /// assert!(!schema.is_ancestor("ogit:Heel", "ogit:Unknown"));
+    /// ```
+    pub fn is_ancestor(&self, ancestor: &str, descendant: &str) -> bool {
+        // Reflexive case — handles both the "X is its own ancestor"
+        // identity and the unknown-class case (where neither IRI is in
+        // the schema but they are equal).
+        if ancestor == descendant {
+            return true;
+        }
+
+        // Per the documented contract, unknown IRIs are an ancestor ONLY
+        // in the reflexive case. `from_triples` accepts `rdfs:subClassOf`
+        // targets without requiring them to be declared classes, so an
+        // `EntityClass.parent` can legally point at an IRI that's not in
+        // `self.entities`. Without this guard a malformed/partial schema
+        // could make `is_ancestor("missing:Class", "ogit:Leaf")` succeed
+        // (codex P2 on PR #189).
+        if !self.entities.contains_key(ancestor) {
+            return false;
+        }
+
+        // Walk the parent chain from descendant upward, looking for ancestor.
+        // Defensive depth cap — see method docstring.
+        const MAX_DEPTH: usize = 64;
+        let mut current: &str = descendant;
+        for _ in 0..MAX_DEPTH {
+            let entity = match self.entities.get(current) {
+                Some(e) => e,
+                None => return false, // descendant unknown — no chain to walk
+            };
+            let parent = match entity.parent.as_deref() {
+                Some(p) => p,
+                None => return false, // reached root without finding ancestor
+            };
+            if parent == ancestor {
+                return true;
+            }
+            current = parent;
+        }
+        // Exceeded depth cap — treat as not-an-ancestor (defensive; this
+        // path should be unreachable on a well-formed schema).
+        false
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -774,5 +851,113 @@ mod tests {
         assert_eq!(family.bitmap.len(), 2);
         // Both bits must be set
         assert!(family.bitmap.iter().all(|&b| b), "all leaf bits must be set");
+    }
+
+    // -----------------------------------------------------------------------
+    // is_ancestor — partial-order axiom queries on the loaded closure
+    // -----------------------------------------------------------------------
+
+    fn build_chain_schema() -> OntologySchema {
+        // Build a four-tier chain: Heel ← Hip ← Twig ← Leaf.
+        let src = "\
+            @prefix ogit: <http://www.purl.org/ogit/> .\n\
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\
+            ogit:Heel a rdfs:Class .\n\
+            ogit:Hip  a rdfs:Class ; rdfs:subClassOf ogit:Heel .\n\
+            ogit:Twig a rdfs:Class ; rdfs:subClassOf ogit:Hip .\n\
+            ogit:Leaf a rdfs:Class ; rdfs:subClassOf ogit:Twig .";
+        let triples = TurtleParser::parse(src).unwrap();
+        OntologySchema::from_triples(&triples).unwrap()
+    }
+
+    #[test]
+    fn is_ancestor_reflexive() {
+        let schema = build_chain_schema();
+        assert!(schema.is_ancestor("ogit:Heel", "ogit:Heel"));
+        assert!(schema.is_ancestor("ogit:Hip", "ogit:Hip"));
+        assert!(schema.is_ancestor("ogit:Leaf", "ogit:Leaf"));
+        // Reflexivity must hold even for IRIs that aren't in the schema —
+        // the relation is conceptually defined on the full IRI space.
+        assert!(schema.is_ancestor("ogit:Unknown", "ogit:Unknown"));
+    }
+
+    #[test]
+    fn is_ancestor_direct_parent() {
+        let schema = build_chain_schema();
+        assert!(schema.is_ancestor("ogit:Heel", "ogit:Hip"));
+        assert!(schema.is_ancestor("ogit:Hip", "ogit:Twig"));
+        assert!(schema.is_ancestor("ogit:Twig", "ogit:Leaf"));
+    }
+
+    #[test]
+    fn is_ancestor_transitive_through_chain() {
+        let schema = build_chain_schema();
+        // Heel ← Hip ← Twig ← Leaf — transitivity at every depth.
+        assert!(schema.is_ancestor("ogit:Heel", "ogit:Twig"));
+        assert!(schema.is_ancestor("ogit:Heel", "ogit:Leaf"));
+        assert!(schema.is_ancestor("ogit:Hip", "ogit:Leaf"));
+    }
+
+    #[test]
+    fn is_ancestor_antisymmetric() {
+        let schema = build_chain_schema();
+        // Reverse direction must NOT hold (except reflexive cases).
+        assert!(!schema.is_ancestor("ogit:Leaf", "ogit:Heel"));
+        assert!(!schema.is_ancestor("ogit:Twig", "ogit:Hip"));
+        assert!(!schema.is_ancestor("ogit:Hip", "ogit:Heel"));
+    }
+
+    #[test]
+    fn is_ancestor_unknown_descendant_returns_false() {
+        let schema = build_chain_schema();
+        // Unknown descendant — no chain to walk. Only reflexive case
+        // returns true (covered by `is_ancestor_reflexive`).
+        assert!(!schema.is_ancestor("ogit:Heel", "ogit:Unknown"));
+        assert!(!schema.is_ancestor("ogit:Hip", "ogit:DefinitelyNotInSchema"));
+    }
+
+    /// Codex P2 regression on PR #189: a class whose `rdfs:subClassOf`
+    /// edge points at an IRI not declared as a class must NOT satisfy
+    /// `is_ancestor(unknown_parent, child)`. Only the reflexive case
+    /// `is_ancestor(unknown, unknown)` should return true.
+    #[test]
+    fn is_ancestor_unknown_ancestor_returns_false_when_non_reflexive() {
+        // ogit:Leaf claims subClassOf ogit:Phantom, but ogit:Phantom is
+        // never `a rdfs:Class` — TurtleParser/from_triples accepts this
+        // (rdfs allows undeclared subClassOf targets).
+        let src = "\
+            @prefix ogit: <http://www.purl.org/ogit/> .\n\
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\
+            ogit:Leaf a rdfs:Class ; rdfs:subClassOf ogit:Phantom .";
+        let triples = TurtleParser::parse(src).unwrap();
+        let schema = OntologySchema::from_triples(&triples).unwrap();
+
+        // The reflexive case still holds — defined on the full IRI space.
+        assert!(schema.is_ancestor("ogit:Phantom", "ogit:Phantom"));
+
+        // But non-reflexive lookups against the undeclared ancestor MUST
+        // return false, regardless of any entity's parent field pointing
+        // at it.
+        assert!(
+            !schema.is_ancestor("ogit:Phantom", "ogit:Leaf"),
+            "is_ancestor must reject ancestors not declared as rdfs:Class"
+        );
+    }
+
+    #[test]
+    fn is_ancestor_unrelated_classes() {
+        // Two disjoint chains — Heel/Hip and OtherHeel/OtherHip.
+        let src = "\
+            @prefix ogit: <http://www.purl.org/ogit/> .\n\
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\
+            ogit:Heel a rdfs:Class .\n\
+            ogit:Hip  a rdfs:Class ; rdfs:subClassOf ogit:Heel .\n\
+            ogit:OtherHeel a rdfs:Class .\n\
+            ogit:OtherHip  a rdfs:Class ; rdfs:subClassOf ogit:OtherHeel .";
+        let triples = TurtleParser::parse(src).unwrap();
+        let schema = OntologySchema::from_triples(&triples).unwrap();
+        // Across disjoint chains: neither direction holds.
+        assert!(!schema.is_ancestor("ogit:Heel", "ogit:OtherHip"));
+        assert!(!schema.is_ancestor("ogit:OtherHeel", "ogit:Hip"));
     }
 }

@@ -105,7 +105,14 @@ fn is_zero(hv: &GraphHV) -> bool {
 /// For each bit position, the existing summary bit is kept with probability
 /// `1 - lr * boost`, and replaced by the input bit with probability `lr * boost`.
 /// This is implemented per-word using a stochastic mask.
-fn bundle_into(current: &GraphHV, hv: &GraphHV, lr: f64, boost: f64, rng: &mut SplitMix64) -> GraphHV {
+///
+/// # Visibility
+///
+/// Exposed as `pub(crate)` so the Pillar-13 drift-check test in
+/// `crate::hpc::pillar::hhtl_contraction` can run the production bundle
+/// against its independently-derived Bernoulli-mixture reference. The
+/// function is not part of the public API and may change without notice.
+pub(crate) fn bundle_into(current: &GraphHV, hv: &GraphHV, lr: f64, boost: f64, rng: &mut SplitMix64) -> GraphHV {
     let effective_lr = (lr * boost).min(1.0);
     let mut result = current.clone();
 
