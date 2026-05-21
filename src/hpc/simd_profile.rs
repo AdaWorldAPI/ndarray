@@ -271,6 +271,44 @@ const _: () = assert!(
     "cpu-* cargo features are mutually exclusive: enable at most one (cpu-gnr, cpu-spr, cpu-zen4, cpu-cpl, cpu-tigerlake, cpu-icx, cpu-clx, cpu-skx, cpu-arrowlake, cpu-haswell, cpu-a76, cpu-a72, cpu-a53)"
 );
 
+// ────────────────────────────────────────────────────────────────────
+// target_arch guards (codex P2 closure).
+//
+// Each `cpu-<codename>` pin is only valid on its native silicon
+// family. Without these guards `--features cpu-a76` on an x86_64
+// build would silently route `simd_profile()` to `A76DotProd`,
+// breaking the `is_x86()` / `is_aarch64()` partitioning and routing
+// callers into the wrong dispatch family. Fail fast at compile time
+// instead.
+// ────────────────────────────────────────────────────────────────────
+
+#[cfg(all(
+    not(target_arch = "x86_64"),
+    any(
+        feature = "cpu-gnr",
+        feature = "cpu-spr",
+        feature = "cpu-zen4",
+        feature = "cpu-cpl",
+        feature = "cpu-tigerlake",
+        feature = "cpu-icx",
+        feature = "cpu-clx",
+        feature = "cpu-skx",
+        feature = "cpu-arrowlake",
+        feature = "cpu-haswell",
+    )
+))]
+compile_error!(
+    "x86 cpu-* pinning features (cpu-gnr, cpu-spr, cpu-zen4, cpu-cpl, cpu-tigerlake, cpu-icx, cpu-clx, cpu-skx, cpu-arrowlake, cpu-haswell) require target_arch = \"x86_64\""
+);
+
+#[cfg(all(
+    not(target_arch = "aarch64"),
+    any(feature = "cpu-a76", feature = "cpu-a72", feature = "cpu-a53",)
+))]
+compile_error!(
+    "ARM cpu-* pinning features (cpu-a76, cpu-a72, cpu-a53) require target_arch = \"aarch64\""
+);
+
 /// The compile-time pinned profile, or `None` when runtime detection is in
 /// effect. `Some(_)` exactly when one of the `cpu-*` cargo features is
 /// enabled; mutually exclusive features are enforced by the `_PIN_COUNT`
