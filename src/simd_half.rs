@@ -426,12 +426,27 @@ pub fn cast_f32_to_f16_batch(src: &[f32], dst: &mut [F16]) {
 /// reference per IEEE 754 binary16 → binary32 spec** (lossless widening,
 /// no rounding possible).
 ///
+/// # MXCSR preservation
+/// `_mm256_cvtph_ps` may raise `#I` (Invalid: SNaN input) or `#D`
+/// (Denormal) — setting bits in MXCSR that the scalar bit-fiddle
+/// reference [`F16::to_f32`] does not touch. To preserve the scalar
+/// path's contract of "no observable FP control/status side effects,"
+/// the MXCSR is saved before the SIMD region and restored after. Net
+/// effect: callers see no MXCSR change vs. the scalar path. (See
+/// codex review on PR #183.)
+///
 /// # Safety
 /// Caller must have feature-detected `f16c` + `avx` at runtime.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "f16c,avx")]
 unsafe fn cast_f16_to_f32_batch_f16c(src: &[u16], dst: &mut [f32]) {
+    use core::arch::asm;
     use core::arch::x86_64::{__m128i, _mm256_cvtph_ps, _mm256_storeu_ps, _mm_loadu_si128};
+    let mut saved_mxcsr: u32 = 0;
+    // SAFETY: STMXCSR writes the 32-bit MXCSR control/status register
+    // to the provided memory location; available on any SSE host
+    // (baseline x86_64).
+    asm!("stmxcsr [{ptr}]", ptr = in(reg) &mut saved_mxcsr, options(nostack));
     let n = src.len().min(dst.len());
     let chunks = n / 8;
     for c in 0..chunks {
@@ -444,6 +459,11 @@ unsafe fn cast_f16_to_f32_batch_f16c(src: &[u16], dst: &mut [f32]) {
     for i in (chunks * 8)..n {
         dst[i] = F16(src[i]).to_f32();
     }
+    // SAFETY: LDMXCSR reads the value we saved at the top — preserves
+    // every bit of the original MXCSR (rounding mode, exception masks,
+    // flush-to-zero etc.), clearing any exception flags the SIMD path
+    // may have set.
+    asm!("ldmxcsr [{ptr}]", ptr = in(reg) &saved_mxcsr, options(nostack, readonly));
 }
 
 /// F16C-vectorized f32 → F16 batch with IEEE 754 RNE rounding.
@@ -452,17 +472,35 @@ unsafe fn cast_f16_to_f32_batch_f16c(src: &[u16], dst: &mut [f32]) {
 /// one xmm store). The const `IMM8 = 0` selects
 /// `_MM_FROUND_TO_NEAREST_INT` — round-to-nearest-even, matches the
 /// scalar reference [`F16::from_f32_rounded`] bit-for-bit on every
-/// input. (Intel's `IMM8` for this intrinsic is 3 bits wide so the
-/// `_MM_FROUND_NO_EXC` flag is not selectable here; exceptions are
-/// raised but we ignore them — they don't affect the produced bit
-/// pattern.)
+/// input.
+///
+/// # IMM8 encoding limit
+/// `_mm256_cvtps_ph`'s `IMM8` is 3 bits wide (`static_assert_uimm_bits!
+/// (IMM8, 3)` in the Rust stdarch wrapper). Valid values are `0..=3`
+/// (the four rounding modes — RNE, down, up, truncate). Bits 2-3 of
+/// the underlying VCVTPS2PH IMM8 encoding are "reserved" and "select
+/// MXCSR.RM" per Intel SDM — NOT `_MM_FROUND_NO_EXC`, which is an
+/// AVX-512 convention (`_mm512_cvtps_ph` accepts `NO_EXC`, F16C does
+/// not). Exception suppression is handled at the MXCSR level (below).
+///
+/// # MXCSR preservation
+/// `_mm256_cvtps_ph` may raise `#O` (Overflow), `#U` (Underflow),
+/// `#P` (Precision), `#I` (Invalid for SNaN), `#D` (Denormal). The
+/// scalar reference [`F16::from_f32_rounded`] is pure bit
+/// manipulation and never touches MXCSR. We save/restore MXCSR around
+/// the SIMD region so callers see no observable control/status side
+/// effects regardless of input data. (See codex review on PR #183.)
 ///
 /// # Safety
 /// Caller must have feature-detected `f16c` + `avx` at runtime.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "f16c,avx")]
 unsafe fn cast_f32_to_f16_batch_f16c(src: &[f32], dst: &mut [u16]) {
+    use core::arch::asm;
     use core::arch::x86_64::{__m128i, _mm256_cvtps_ph, _mm256_loadu_ps, _mm_storeu_si128};
+    let mut saved_mxcsr: u32 = 0;
+    // SAFETY: STMXCSR writes the 32-bit MXCSR; baseline SSE op.
+    asm!("stmxcsr [{ptr}]", ptr = in(reg) &mut saved_mxcsr, options(nostack));
     let n = src.len().min(dst.len());
     let chunks = n / 8;
     for c in 0..chunks {
@@ -475,6 +513,8 @@ unsafe fn cast_f32_to_f16_batch_f16c(src: &[f32], dst: &mut [u16]) {
     for i in (chunks * 8)..n {
         dst[i] = F16::from_f32_rounded(src[i]).0;
     }
+    // SAFETY: LDMXCSR restores the saved value bit-for-bit.
+    asm!("ldmxcsr [{ptr}]", ptr = in(reg) &saved_mxcsr, options(nostack, readonly));
 }
 
 // ============================================================================
@@ -852,5 +892,82 @@ mod tests {
         for i in 0..n {
             assert_eq!(dst[i], expected[i], "mul_f16_inplace mismatch at {}", i);
         }
+    }
+
+    /// Codex PR #183 P2: F16C `_mm256_cvtps_ph` may raise FP exceptions
+    /// (#O on overflow, #U on underflow, #P on precision loss, #I on
+    /// SNaN, #D on denormal input) which set bits in MXCSR. The scalar
+    /// path is pure bit manipulation and never touches MXCSR. The fix:
+    /// `cast_f32_to_f16_batch_f16c` saves MXCSR via STMXCSR before the
+    /// SIMD region and restores it via LDMXCSR after. This test feeds
+    /// inputs that should trigger every exception bit and asserts
+    /// MXCSR is byte-identical before vs. after the call.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn f16c_cast_preserves_mxcsr() {
+        if !std::is_x86_feature_detected!("f16c") {
+            eprintln!("f16c not detected; skipping");
+            return;
+        }
+        use core::arch::asm;
+
+        // Inputs designed to trigger #O / #U / #P / #I / #D in F16C
+        // downcast:
+        //   - 1e30, -1e30  : overflow (out of F16 range ±65504) → #O
+        //   - 1e-30        : underflow / denormal → #U, #D, #P
+        //   - 1.0/3.0      : precision loss → #P
+        //   - f32::NAN     : invalid (if it's an sNaN representation) → #I
+        let inputs: Vec<f32> = vec![
+            1e30,
+            -1e30,
+            1e-30,
+            1.0 / 3.0,
+            f32::NAN,
+            f32::INFINITY,
+            0.0,
+            1.0,
+            // Pad to 8 lanes so the SIMD chunk loop fires once with no tail.
+        ];
+        assert_eq!(inputs.len(), 8);
+        let mut out = vec![F16::ZERO; 8];
+
+        // Snapshot MXCSR before.
+        let mut mxcsr_before: u32 = 0;
+        unsafe {
+            asm!("stmxcsr [{ptr}]", ptr = in(reg) &mut mxcsr_before, options(nostack));
+        }
+
+        cast_f32_to_f16_batch(&inputs, &mut out);
+
+        // Snapshot MXCSR after.
+        let mut mxcsr_after: u32 = 0;
+        unsafe {
+            asm!("stmxcsr [{ptr}]", ptr = in(reg) &mut mxcsr_after, options(nostack));
+        }
+
+        assert_eq!(
+            mxcsr_before, mxcsr_after,
+            "cast_f32_to_f16_batch must not modify MXCSR (got 0x{:08x} before, 0x{:08x} after)",
+            mxcsr_before, mxcsr_after
+        );
+
+        // Same check for the upcast direction (`_mm256_cvtph_ps` can raise
+        // #I/#D on SNaN/denormal F16 input).
+        let f16_inputs: Vec<F16> = (0..8).map(|i| F16(0x7C01 + i as u16)).collect(); // SNaN-ish
+        let mut f32_out = vec![0.0f32; 8];
+
+        unsafe {
+            asm!("stmxcsr [{ptr}]", ptr = in(reg) &mut mxcsr_before, options(nostack));
+        }
+        cast_f16_to_f32_batch(&f16_inputs, &mut f32_out);
+        unsafe {
+            asm!("stmxcsr [{ptr}]", ptr = in(reg) &mut mxcsr_after, options(nostack));
+        }
+
+        assert_eq!(
+            mxcsr_before, mxcsr_after,
+            "cast_f16_to_f32_batch must not modify MXCSR (got 0x{:08x} before, 0x{:08x} after)",
+            mxcsr_before, mxcsr_after
+        );
     }
 }
