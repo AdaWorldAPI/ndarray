@@ -351,18 +351,31 @@ pub fn cast_bf16_to_f32_batch(src: &[BF16], dst: &mut [f32]) {
 
 /// Batch convert F16 → f32.
 ///
-/// Uses F16x16 for chunks of 16, scalar tail for remainder.
+/// On x86_64 with F16C (every CPU from Ivy Bridge 2013 / Piledriver 2012
+/// onward), dispatches to `_mm256_cvtph_ps` — one hardware instruction
+/// converts 8 F16 lanes to 8 F32 lanes, IEEE-754 exact. The scalar
+/// fallback uses the bit-fiddle [`F16::to_f32`] which is also IEEE-754
+/// exact, just slower.
 pub fn cast_f16_to_f32_batch(src: &[F16], dst: &mut [f32]) {
     let n = src.len().min(dst.len());
-    let chunks = n / 16;
-    for c in 0..chunks {
-        let off = c * 16;
-        let v = F16x16::from_slice(&src[off..]);
-        let f = v.to_f32x16();
-        dst[off..off + 16].copy_from_slice(&f);
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::is_x86_feature_detected!("f16c") && std::is_x86_feature_detected!("avx") {
+            // SAFETY: `F16` is `#[repr(transparent)] struct F16(pub u16)`
+            // (per `hpc::quantized::F16`). Slice reinterpretation is
+            // bit-pattern preserving. Runtime feature detection above
+            // confirms F16C + AVX before calling the target-feature fn.
+            let src_u16: &[u16] = unsafe { core::slice::from_raw_parts(src.as_ptr() as *const u16, src.len()) };
+            unsafe {
+                cast_f16_to_f32_batch_f16c(&src_u16[..n], &mut dst[..n]);
+            }
+            return;
+        }
     }
-    // Scalar tail
-    for i in (chunks * 16)..n {
+
+    // Scalar fallback (non-x86_64 or pre-F16C silicon).
+    for i in 0..n {
         dst[i] = src[i].to_f32();
     }
 }
@@ -376,10 +389,91 @@ pub fn cast_f32_to_bf16_batch(src: &[f32], dst: &mut [BF16]) {
 }
 
 /// Batch convert f32 → F16 (round-to-nearest-even).
+///
+/// On x86_64 with F16C, dispatches to `_mm256_cvtps_ph::<8>` (RNE,
+/// no exceptions) — one hardware instruction converts 8 F32 lanes to
+/// 8 F16 lanes with IEEE 754 round-to-nearest-even. Scalar fallback
+/// uses [`F16::from_f32_rounded`] which matches the IEEE 754 RNE rule
+/// bit-for-bit on every input (including subnormal / NaN / Inf).
 pub fn cast_f32_to_f16_batch(src: &[f32], dst: &mut [F16]) {
     let n = src.len().min(dst.len());
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::is_x86_feature_detected!("f16c") && std::is_x86_feature_detected!("avx") {
+            // SAFETY: same as cast_f16_to_f32_batch — `F16` is
+            // repr(transparent) over u16; runtime feature gate ensures
+            // F16C is present.
+            let dst_u16: &mut [u16] =
+                unsafe { core::slice::from_raw_parts_mut(dst.as_mut_ptr() as *mut u16, dst.len()) };
+            unsafe {
+                cast_f32_to_f16_batch_f16c(&src[..n], &mut dst_u16[..n]);
+            }
+            return;
+        }
+    }
+
     for i in 0..n {
         dst[i] = F16::from_f32_rounded(src[i]);
+    }
+}
+
+/// F16C-vectorized F16 → f32 batch.
+///
+/// 8 F16 lanes per `_mm256_cvtph_ps` instruction (one xmm load + one
+/// ymm store). Scalar tail handles the remaining `n % 8` lanes via the
+/// bit-fiddle reference. **F16C result is bit-identical to the scalar
+/// reference per IEEE 754 binary16 → binary32 spec** (lossless widening,
+/// no rounding possible).
+///
+/// # Safety
+/// Caller must have feature-detected `f16c` + `avx` at runtime.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "f16c,avx")]
+unsafe fn cast_f16_to_f32_batch_f16c(src: &[u16], dst: &mut [f32]) {
+    use core::arch::x86_64::{__m128i, _mm256_cvtph_ps, _mm256_storeu_ps, _mm_loadu_si128};
+    let n = src.len().min(dst.len());
+    let chunks = n / 8;
+    for c in 0..chunks {
+        let off = c * 8;
+        let h = _mm_loadu_si128(src.as_ptr().add(off) as *const __m128i);
+        let f = _mm256_cvtph_ps(h);
+        _mm256_storeu_ps(dst.as_mut_ptr().add(off), f);
+    }
+    // Scalar tail (0..7 remaining lanes).
+    for i in (chunks * 8)..n {
+        dst[i] = F16(src[i]).to_f32();
+    }
+}
+
+/// F16C-vectorized f32 → F16 batch with IEEE 754 RNE rounding.
+///
+/// 8 F32 lanes per `_mm256_cvtps_ph::<0>` instruction (one ymm load +
+/// one xmm store). The const `IMM8 = 0` selects
+/// `_MM_FROUND_TO_NEAREST_INT` — round-to-nearest-even, matches the
+/// scalar reference [`F16::from_f32_rounded`] bit-for-bit on every
+/// input. (Intel's `IMM8` for this intrinsic is 3 bits wide so the
+/// `_MM_FROUND_NO_EXC` flag is not selectable here; exceptions are
+/// raised but we ignore them — they don't affect the produced bit
+/// pattern.)
+///
+/// # Safety
+/// Caller must have feature-detected `f16c` + `avx` at runtime.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "f16c,avx")]
+unsafe fn cast_f32_to_f16_batch_f16c(src: &[f32], dst: &mut [u16]) {
+    use core::arch::x86_64::{__m128i, _mm256_cvtps_ph, _mm256_loadu_ps, _mm_storeu_si128};
+    let n = src.len().min(dst.len());
+    let chunks = n / 8;
+    for c in 0..chunks {
+        let off = c * 8;
+        let f = _mm256_loadu_ps(src.as_ptr().add(off));
+        let h = _mm256_cvtps_ph::<0>(f);
+        _mm_storeu_si128(dst.as_mut_ptr().add(off) as *mut __m128i, h);
+    }
+    // Scalar tail.
+    for i in (chunks * 8)..n {
+        dst[i] = F16::from_f32_rounded(src[i]).0;
     }
 }
 
