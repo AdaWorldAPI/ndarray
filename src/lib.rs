@@ -313,6 +313,15 @@ pub mod simd_ops;
 #[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
 pub mod simd_half;
 
+/// Runtime SIMD dispatch — release-binary distribution path.
+///
+/// Gated under `--features runtime-dispatch`. Mutually exclusive with
+/// `nightly-simd` (the cfg in `simd_runtime/mod.rs` enforces this with
+/// a `compile_error!`). See `.claude/knowledge/simd-dispatch-architecture.md`
+/// § 7.1 / Phase 5 for the design.
+#[cfg(feature = "runtime-dispatch")]
+pub mod simd_runtime;
+
 /// Pluggable linear algebra backends (native SIMD, MKL, OpenBLAS).
 #[cfg(feature = "std")]
 pub mod backend;
