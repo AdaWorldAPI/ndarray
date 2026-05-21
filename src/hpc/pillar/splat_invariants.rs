@@ -437,4 +437,56 @@ mod tests {
         assert!((r1.psd_rate - r2.psd_rate).abs() < 1e-12);
         assert!((r1.lognorm_concentration - r2.lognorm_concentration).abs() < 1e-12);
     }
+
+    /// Drift-detection: the pillar's `covariance_from_scale_quat`
+    /// independently re-derives `Σ = R(q) · diag(s²) · R(q)ᵀ`. The
+    /// production code path at `crate::hpc::splat3d::spd3::Spd3::from_scale_quat`
+    /// is the substrate the pillar is *defending*. This test runs both
+    /// on the same SplitMix64-seeded sample of 256 `(scale, quat)` pairs
+    /// and asserts agreement to within `1e-5` per upper-triangle entry.
+    ///
+    /// Any divergence ≥ ε indicates one of two failure modes:
+    ///   (a) production drifted from the canonical quaternion-rotation
+    ///       formula (the pillar definition wins by design — fix the
+    ///       production code), or
+    ///   (b) the pillar itself drifted (audit `covariance_from_scale_quat`
+    ///       against Kerbl 2023 Eq. 3 before changing).
+    ///
+    /// This is the *coupling* the per-pillar docstring promises:
+    /// production and pillar share no code, but they share a CI gate
+    /// that compares them point-for-point.
+    #[test]
+    fn pillar_12_matches_production_spd3_from_scale_quat() {
+        use crate::hpc::splat3d::spd3::Spd3;
+
+        const N: u32 = 256;
+        let mut rng = SplitMix64::new(PILLAR_12_SEED);
+        let mut max_abs_err: f32 = 0.0;
+
+        for _ in 0..N {
+            let s = [
+                sample_scale_axis(&mut rng),
+                sample_scale_axis(&mut rng),
+                sample_scale_axis(&mut rng),
+            ];
+            let q = sample_unit_quaternion(&mut rng);
+
+            let pillar = covariance_from_scale_quat(s, q);
+            let prod = Spd3::from_scale_quat(s, q);
+            let prod_ut = [prod.a11, prod.a12, prod.a13, prod.a22, prod.a23, prod.a33];
+
+            for (i, (&p, &pr)) in pillar.iter().zip(prod_ut.iter()).enumerate() {
+                let err = (p - pr).abs();
+                if err > max_abs_err {
+                    max_abs_err = err;
+                }
+                assert!(
+                    err < 1e-5,
+                    "Pillar/Spd3 drift at lane {i}: pillar={p:.7} prod={pr:.7} err={err:.2e} s={s:?} quat={q:?}"
+                );
+            }
+        }
+
+        eprintln!("Pillar 12 ↔ Spd3::from_scale_quat agreement: max_abs_err={max_abs_err:.3e} over {N} pairs");
+    }
 }
