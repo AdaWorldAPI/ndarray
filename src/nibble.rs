@@ -21,7 +21,7 @@
 /// assert_eq!(nibble_unpack(packed, 2), vec![0xA, 0x3]);
 /// ```
 pub fn nibble_unpack(packed: &[u8], count: usize) -> Vec<u8> {
-    assert!(packed.len() >= (count + 1) / 2, "packed buffer too small");
+    assert!(packed.len() >= count.div_ceil(2), "packed buffer too small");
 
     let mut out = Vec::with_capacity(count);
 
@@ -105,7 +105,7 @@ pub(crate) unsafe fn nibble_unpack_avx2(packed: &[u8], count: usize, out: &mut V
 /// assert_eq!(packed, vec![0x3A]);
 /// ```
 pub fn nibble_pack(values: &[u8]) -> Vec<u8> {
-    let out_len = (values.len() + 1) / 2;
+    let out_len = values.len().div_ceil(2);
     let mut out = vec![0u8; out_len];
 
     for (i, &v) in values.iter().enumerate() {
@@ -175,10 +175,10 @@ unsafe fn nibble_sub_clamp_avx2(packed: &mut [u8], delta: u8) {
         let mut data = [0u8; 32];
         data.copy_from_slice(&packed[offset..offset + 32]);
 
-        for j in 0..32 {
-            let lo = (data[j] & 0x0F).saturating_sub(delta);
-            let hi = ((data[j] >> 4) & 0x0F).saturating_sub(delta);
-            data[j] = lo | (hi << 4);
+        for byte in &mut data {
+            let lo = (*byte & 0x0F).saturating_sub(delta);
+            let hi = ((*byte >> 4) & 0x0F).saturating_sub(delta);
+            *byte = lo | (hi << 4);
         }
 
         packed[offset..offset + 32].copy_from_slice(&data);
@@ -263,9 +263,9 @@ pub(crate) unsafe fn nibble_above_threshold_avx2(packed: &[u8], threshold: u8) -
         let base_byte = c * 32;
         let chunk = &packed[base_byte..base_byte + 32];
 
-        for j in 0..32 {
-            let lo = chunk[j] & 0x0F;
-            let hi = (chunk[j] >> 4) & 0x0F;
+        for (j, &b) in chunk.iter().enumerate() {
+            let lo = b & 0x0F;
+            let hi = (b >> 4) & 0x0F;
             if lo > threshold {
                 result.push((base_byte + j) * 2);
             }
@@ -277,9 +277,9 @@ pub(crate) unsafe fn nibble_above_threshold_avx2(packed: &[u8], threshold: u8) -
 
     // Scalar tail
     let tail_start = chunks * 32;
-    for byte_idx in tail_start..packed.len() {
-        let lo = packed[byte_idx] & 0x0F;
-        let hi = packed[byte_idx] >> 4;
+    for (byte_idx, &b) in packed.iter().enumerate().skip(tail_start) {
+        let lo = b & 0x0F;
+        let hi = b >> 4;
         if lo > threshold {
             result.push(byte_idx * 2);
         }

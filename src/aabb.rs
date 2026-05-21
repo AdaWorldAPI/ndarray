@@ -17,7 +17,9 @@
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(C)]
 pub struct Aabb {
+    /// Minimum corner of the bounding box (x, y, z).
     pub min: [f32; 3],
+    /// Maximum corner of the bounding box (x, y, z).
     pub max: [f32; 3],
 }
 
@@ -97,7 +99,10 @@ impl Aabb {
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(C)]
 pub struct Ray {
+    /// Ray origin point (x, y, z).
     pub origin: [f32; 3],
+    /// Per-axis reciprocal of the ray direction (1 / dx, 1 / dy, 1 / dz);
+    /// `inf` is valid (encodes a zero-component direction, slab test skips it).
     pub inv_dir: [f32; 3],
 }
 
@@ -122,8 +127,7 @@ impl Ray {
 #[inline]
 fn sq_dist_point_aabb(point: [f32; 3], aabb: &Aabb) -> f32 {
     let mut dist_sq = 0.0f32;
-    for axis in 0..3 {
-        let v = point[axis];
+    for (axis, &v) in point.iter().enumerate() {
         if v < aabb.min[axis] {
             let d = aabb.min[axis] - v;
             dist_sq += d * d;
@@ -230,8 +234,8 @@ unsafe fn aabb_intersect_batch_avx512(query: &Aabb, candidates: &[Aabb]) -> Vec<
     }
 
     // Scalar tail
-    for i in (chunks * 16)..candidates.len() {
-        result.push(query.intersects(&candidates[i]));
+    for cand in &candidates[chunks * 16..] {
+        result.push(query.intersects(cand));
     }
 
     result
@@ -403,16 +407,15 @@ unsafe fn ray_aabb_slab_test_avx512(ray: &Ray, aabbs: &[Aabb]) -> (Vec<bool>, Ve
         let t_enter_clamped = t_enter.simd_max(zero);
         let t_arr = t_enter_clamped.to_array();
 
-        for i in 0..16 {
+        for (i, &t) in t_arr.iter().enumerate() {
             let hit = (hit_mask >> i) & 1 != 0;
             hits.push(hit);
-            t_values.push(if hit { t_arr[i] } else { f32::MAX });
+            t_values.push(if hit { t } else { f32::MAX });
         }
     }
 
     // Scalar tail for remainder
-    for i in (chunks * 16)..aabbs.len() {
-        let aabb = &aabbs[i];
+    for aabb in &aabbs[chunks * 16..] {
         let mut t_enter = f32::NEG_INFINITY;
         let mut t_exit = f32::INFINITY;
 

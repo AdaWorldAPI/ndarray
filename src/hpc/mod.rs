@@ -176,17 +176,15 @@ pub use crate::byte_scan;
 pub use crate::distance;
 pub use crate::spatial_hash;
 
-// Variable-width palette index codec (Minecraft-style bit packing)
-#[allow(missing_docs)]
-pub mod palette_codec;
+// Variable-width palette index codec — graduated to crate root.
+// Back-compat re-export for existing `use ndarray::hpc::palette_codec::*`.
+pub use crate::palette_codec;
 
-// SIMD-accelerated HPC modules (block properties, nibble light data, AABB collision)
-#[allow(missing_docs)]
-pub mod property_mask;
-#[allow(missing_docs)]
-pub mod nibble;
-#[allow(missing_docs)]
-pub mod aabb;
+// SIMD-accelerated HPC modules (block properties, nibble light data, AABB
+// collision) — all three graduated to crate root. Back-compat re-exports.
+pub use crate::aabb;
+pub use crate::nibble;
+pub use crate::property_mask;
 
 // Holographic phase-space operations (ported from rustynum-holo)
 #[allow(missing_docs)]

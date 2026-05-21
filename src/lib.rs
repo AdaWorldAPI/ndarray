@@ -351,6 +351,64 @@ pub mod byte_scan;
 #[cfg(feature = "std")]
 pub mod spatial_hash;
 
+/// Axis-aligned bounding box batch operations — SIMD-accelerated
+/// intersection, expansion, distance queries. Graduated from
+/// `crate::hpc::aabb::*`.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::aabb::Aabb;
+/// let a = Aabb::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+/// let b = Aabb::new([0.5, 0.5, 0.5], [1.5, 1.5, 1.5]);
+/// assert!(a.intersects(&b));
+/// ```
+#[cfg(feature = "std")]
+pub mod aabb;
+
+/// Nibble batch operations for 4-bit packed data (light levels, palettes).
+/// Graduated from `crate::hpc::nibble::*`.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::nibble::nibble_unpack;
+/// let unpacked = nibble_unpack(&[0x3A], 2);
+/// assert_eq!(unpacked, vec![0xA, 0x3]);
+/// ```
+#[cfg(feature = "std")]
+pub mod nibble;
+
+/// Variable-width palette index codec (Minecraft-style bit packing).
+/// Packs/unpacks palette indices (0–255) into 1–8 bit widths.
+/// Graduated from `crate::hpc::palette_codec::*`.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::palette_codec::bits_for_palette_size;
+/// assert_eq!(bits_for_palette_size(2), 1);
+/// assert_eq!(bits_for_palette_size(16), 4);
+/// assert_eq!(bits_for_palette_size(256), 8);
+/// ```
+#[cfg(feature = "std")]
+pub mod palette_codec;
+
+/// Block property mask — compiled bitset queries on block state bits.
+/// AVX-512 VPTERNLOGD tests 3 conditions in 1 cycle. Graduated from
+/// `crate::hpc::property_mask::*`.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::property_mask::PropertyMask;
+/// let mask = PropertyMask::new().require_bit(0).forbid_bit(3);
+/// assert!(mask.test(0b0000_0001));    // bit 0 set, bit 3 clear → match
+/// assert!(!mask.test(0b0000_1001));   // bit 3 set → no match
+/// ```
+#[cfg(feature = "std")]
+pub mod property_mask;
+
 #[cfg(feature = "std")]
 #[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
 pub mod simd_neon;

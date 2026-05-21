@@ -28,6 +28,60 @@
 ## Entries (append below; newest first)
 
 
+## 2026-05-21T16:00 — substrate-graduation batch 3 (opus 4.7)
+
+**Branch:** `claude/continue-ndarray-x0Oaw`
+**Continues:** PR #194 batch of 5 (`bitwise`/`heel_f64x8`/`distance`/`byte_scan`/`spatial_hash`) + #193 (`simd_caps`).
+**Verdict:** SHIP — `cargo check`, `cargo clippy --features approx,serde,rayon -- -D warnings`, doctest suite (15 graduated-module doctests pass), and unit tests (104 lib tests pass) all green.
+
+**Modules graduated (4):**
+
+| Module | Old path | New path | Internal hpc/ deps? |
+|---|---|---|---|
+| `aabb`           | `src/hpc/aabb.rs`           | `src/aabb.rs`           | None — only `super::simd_caps` (now resolves via crate root) |
+| `nibble`         | `src/hpc/nibble.rs`         | `src/nibble.rs`         | None — only `super::simd_caps` |
+| `palette_codec`  | `src/hpc/palette_codec.rs`  | `src/palette_codec.rs`  | None — pure logic |
+| `property_mask`  | `src/hpc/property_mask.rs`  | `src/property_mask.rs`  | None — only `super::simd_caps` |
+
+**Why these four, why now (criteria carried over from #194 wrap-up):**
+1. No internal `hpc/` dependencies. All four only reach into `crate::simd::*` (the polyfill surface) and `super::simd_caps` (itself at crate root post-#192).
+2. Already polyfill-clean — no raw-intrinsic refactor required before the move.
+3. Single in-tree downstream caller (`hpc::framebuffer` imports `palette_codec`) → the `pub use crate::palette_codec;` back-compat shim in `hpc/mod.rs` keeps that resolution working zero-touch.
+
+**Changes:**
+- `git mv src/hpc/{aabb,nibble,palette_codec,property_mask}.rs src/`
+- Added `pub mod {aabb, nibble, palette_codec, property_mask};` to `src/lib.rs` (with `# Example` rustdoc blocks per CLAUDE.md hard rule "all public APIs need /// doc comments with examples").
+- Replaced the four `pub mod` declarations in `src/hpc/mod.rs` with `pub use crate::{aabb, nibble, palette_codec, property_mask};` back-compat re-exports.
+
+**Lint follow-ups (graduated modules lose the `#![allow(clippy::all, …)]` umbrella that `hpc/mod.rs` carries):**
+
+17 clippy errors surfaced under `-D warnings`. All fixed at the canonical Rust idiom rather than re-applying the umbrella, per the #194 cleanup precedent (417131bc):
+
+- **`manual_div_ceil` (6 sites)**: `(n + d - 1) / d` → `n.div_ceil(d)` in `nibble.rs` (×2), `palette_codec.rs` (×3), `property_mask.rs` (×1).
+- **`needless_range_loop` (10 sites)**: `for i in start..vec.len() { vec[i] }` → `for x in &vec[start..]` or `for (i, &x) in iter().enumerate()` depending on whether the index is used. Sites in `aabb.rs` (×4), `nibble.rs` (×3), `palette_codec.rs` (×1), `property_mask.rs` (×2).
+- **`missing_docs` (4 sites)**: Added field doc comments on `pub struct Aabb { min, max }` and `pub struct Ray { origin, inv_dir }` — these were previously caught by the `hpc/mod.rs` umbrella's `#![allow(missing_docs)]`.
+
+**Doctest fix:** Initial `bits_for_palette_size(1) → 1` in the `lib.rs` `# Example` block was wrong — the actual impl returns 0 for `palette_size <= 1` (trivial-palette special case; the bits/indices table in `palette_codec.rs`'s module docstring overpromises). Changed example to `bits_for_palette_size(2) → 1`.
+
+**Verification:**
+
+```
+cargo check --lib                                              → clean
+cargo clippy --lib -- -D warnings                              → clean
+cargo clippy --lib --features rayon -- -D warnings             → clean
+cargo clippy --features approx,serde,rayon -- -D warnings      → clean
+cargo test --doc (filtered: graduated modules)                 → 15 doctests pass
+cargo test --lib aabb::tests nibble::tests palette_codec::tests property_mask::tests → 104 unit tests pass
+```
+
+**No back-compat break:** every existing `use ndarray::hpc::{aabb, nibble, palette_codec, property_mask}::*` continues to resolve via the `pub use crate::*` shims in `hpc/mod.rs`. Verified via `cargo check` of the full workspace — `framebuffer.rs:29` (the one in-tree downstream consumer of `palette_codec`) compiles unchanged.
+
+**Remaining hpc/ inventory after this batch:** ~55 → ~51 modules at crate root path `crate::hpc::*`. Next-batch candidates (still low-hanging by the same criteria) — to be audited in a separate pass before move: `framebuffer` (depends on `palette_codec` shim, otherwise pure crate-root), `ocr_simd`/`ocr_felt` (need dep audit), `audio` (depends on `crate::simd`).
+
+**Commit:** TBD (pending push).
+
+---
+
 ## 2026-05-13T00:00 — agent #3 polyfill-ops (sonnet)
 
 **File:** `src/simd_ops.rs` (288 lines)
