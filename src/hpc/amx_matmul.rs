@@ -94,13 +94,32 @@ pub unsafe fn tile_release() {
 
 /// Load tile from memory.
 ///
+/// Encoding: `TILELOADD tmmN, [rcx + rax]` is VEX `C4 E2 7B 4B /r` with
+/// a SIB byte selecting `[rcx + rax]`. The ModR/M `/r` field encodes the
+/// destination tile via `reg = N` (3-bit tile index). Per-tile bytes:
+///
+///   tmm0:  C4 E2 7B 4B **04** 08
+///   tmm1:  C4 E2 7B 4B **0C** 08
+///   tmm2:  C4 E2 7B 4B **14** 08
+///
+/// `04 | (N << 3)` gives the ModR/M byte; the `08` SIB is the same
+/// across tiles. tmm0 was added when codex flagged the accumulator-
+/// preservation bug on PR #184 (`tile_zero(0)` + `tile_store(0, c)`
+/// discarded any pre-existing C values — the fix is `tile_load(0, c)`
+/// instead of `tile_zero(0)` so TDPBUSD/TDPBF16PS truly accumulate as
+/// the documented `C += A·B` semantics promise).
+///
 /// # Safety
 /// Pointer must be valid, stride must match tile config.
 #[inline]
 pub unsafe fn tile_load(tile: u8, ptr: *const u8, stride: usize) {
     match tile {
-        // TILELOADD tmm0, [ptr + stride*row]
-        // Encoding: VEX.128.F2.0F38.W0 4B /r with memory operand
+        0 => asm!(
+            ".byte 0xc4, 0xe2, 0x7b, 0x4b, 0x04, 0x08",
+            in("rcx") ptr,
+            in("rax") stride,
+            options(nostack),
+        ),
         1 => asm!(
             ".byte 0xc4, 0xe2, 0x7b, 0x4b, 0x0c, 0x08",
             in("rcx") ptr,

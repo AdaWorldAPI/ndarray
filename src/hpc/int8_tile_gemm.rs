@@ -68,6 +68,11 @@ pub fn int8_tile_gemm_16x16(a_u8: &[u8], b_i8: &[i8], c: &mut [i32], k: usize) {
 // ═════════════════════════════════════════════════════════════════════
 
 /// AMX tile GEMM. B must be pre-VNNI-packed (see `vnni_pack_i8`).
+/// **Accumulates** into the caller's `c` buffer — matches the
+/// documented `C += A·B` semantics. The C tile (tmm0) is preloaded
+/// from `c` before the TDPBUSD loop so any pre-existing values are
+/// preserved.
+///
 /// # Safety
 /// Caller must have verified `amx_available() == true`.
 #[inline]
@@ -77,7 +82,11 @@ unsafe fn amx_path(a_u8: &[u8], b_vnni: &[i8], c: &mut [i32], k: usize) {
     // byte — same 64-byte row width either way).
     let cfg = TileConfig::for_dpbusd(64);
     tile_loadconfig(&cfg);
-    tile_zero(0);
+    // Preload C accumulator from caller's buffer so TDPBUSD truly
+    // accumulates into the existing values (fixes codex P1 from PR
+    // #184 — the prior `tile_zero(0)` discarded pre-existing C values
+    // even though the docs promise `C += A·B`).
+    tile_load(0, c.as_ptr() as *const u8, 64);
 
     // Accumulate over K/64 tile blocks. Each TDPBUSD consumes 64
     // K-elements per A row × 4 K-elements per inner-product = 256 MACs
@@ -272,6 +281,28 @@ mod tests {
         int8_tile_gemm_16x16(&a, &b, &mut c, k);
         for v in c.iter() {
             assert_eq!(*v, 0, "zero × zero must be 0");
+        }
+    }
+
+    /// Codex P1 regression on PR #184: `int8_tile_gemm_16x16` is
+    /// documented as `C += A·B`, but the AMX path used to `tile_zero(0)`
+    /// then `tile_store(0, c)`, **overwriting** `c` on AMX hosts (the
+    /// scalar fallback correctly accumulated). This test pre-loads C
+    /// with a known marker, runs A·B=0 (B is all zeros so the product
+    /// is zero), and asserts the marker is preserved — would fail on
+    /// the pre-fix AMX path because the tile_store would zero everything.
+    #[test]
+    fn amx_path_preserves_c_accumulator() {
+        let k = 64;
+        let a = vec![1u8; 16 * k];
+        let b = vec![0i8; k * 16]; // product is exactly 0
+                                   // Pre-load C with a non-zero marker pattern.
+        let mut c: Vec<i32> = (0..256).map(|i| i as i32 * 7 - 100).collect();
+        let snapshot = c.clone();
+        int8_tile_gemm_16x16(&a, &b, &mut c, k);
+        // After: c[i] += 0 → c[i] unchanged from snapshot.
+        for i in 0..256 {
+            assert_eq!(c[i], snapshot[i], "accumulator marker clobbered at {}: {} → {}", i, snapshot[i], c[i]);
         }
     }
 
