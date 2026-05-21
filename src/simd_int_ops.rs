@@ -641,7 +641,9 @@ mod tests {
         let n = 17;
         let k = 17;
         let a: Vec<u8> = (0..m * k).map(|i| ((i * 7 + 3) % 256) as u8).collect();
-        let b: Vec<i8> = (0..k * n).map(|i| ((i * 11 + 5) % 256) as u8 as i8).collect();
+        let b: Vec<i8> = (0..k * n)
+            .map(|i| ((i * 11 + 5) % 256) as u8 as i8)
+            .collect();
         let expected = ref_gemm_u8_i8(&a, &b, m, n, k);
         let mut c = vec![0i32; m * n];
         gemm_u8_i8(&a, &b, &mut c, m, n, k);
@@ -656,7 +658,9 @@ mod tests {
         let n = 4;
         let k = 8;
         let a = vec![255u8; m * k];
-        let b: Vec<i8> = (0..k * n).map(|i| if i % 2 == 0 { 127i8 } else { -128i8 }).collect();
+        let b: Vec<i8> = (0..k * n)
+            .map(|i| if i % 2 == 0 { 127i8 } else { -128i8 })
+            .collect();
         let expected = ref_gemm_u8_i8(&a, &b, m, n, k);
         let mut c = vec![0i32; m * n];
         gemm_u8_i8(&a, &b, &mut c, m, n, k);
@@ -685,7 +689,9 @@ mod tests {
 
         for (m, n, k) in sizes {
             let a: Vec<u8> = (0..m * k).map(|i| (i % 251) as u8).collect();
-            let b: Vec<i8> = (0..k * n).map(|i| ((i % 127) as i8).wrapping_sub(63)).collect();
+            let b: Vec<i8> = (0..k * n)
+                .map(|i| ((i % 127) as i8).wrapping_sub(63))
+                .collect();
             let mut c_simd = vec![0i32; m * n];
             let mut c_scalar = vec![0i32; m * n];
 

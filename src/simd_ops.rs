@@ -505,7 +505,11 @@ pub fn array_chunks_checked<T, const N: usize>(data: &[T]) -> Result<impl Iterat
 pub fn array_windows<T, const N: usize>(data: &[T]) -> impl Iterator<Item = &[T; N]> + '_ {
     // Index-based iteration sidesteps `slice::windows(0)`'s panic — when
     // N == 0 the count below evaluates to 0 and the iterator is empty.
-    let count = if N == 0 || data.len() < N { 0 } else { data.len() - N + 1 };
+    let count = if N == 0 || data.len() < N {
+        0
+    } else {
+        data.len() - N + 1
+    };
     (0..count).map(move |i| {
         // `&data[i..i + N]` is exactly N elements by construction (bounds
         // checked once when `count` was computed). `try_into` always
@@ -679,11 +683,19 @@ mod add_mul_tests {
     use super::*;
 
     fn ref_add_mul_f32(acc: &[f32], a: &[f32], b: &[f32]) -> Vec<f32> {
-        acc.iter().zip(a).zip(b).map(|((&c, &x), &y)| x.mul_add(y, c)).collect()
+        acc.iter()
+            .zip(a)
+            .zip(b)
+            .map(|((&c, &x), &y)| x.mul_add(y, c))
+            .collect()
     }
 
     fn ref_add_mul_f64(acc: &[f64], a: &[f64], b: &[f64]) -> Vec<f64> {
-        acc.iter().zip(a).zip(b).map(|((&c, &x), &y)| x.mul_add(y, c)).collect()
+        acc.iter()
+            .zip(a)
+            .zip(b)
+            .map(|((&c, &x), &y)| x.mul_add(y, c))
+            .collect()
     }
 
     #[test]
