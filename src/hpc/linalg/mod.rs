@@ -40,7 +40,8 @@
 //!
 //! - **No SIMD primitives** — use `crate::simd::{F32x16, …}` directly.
 //! - **No `#[target_feature]` annotations** — those live in `simd_avx512.rs`.
-//! - **No distance metrics** — those live in `crate::hpc::distance`.
+//! - **No distance metrics** — those live in `crate::distance` (graduated
+//!   from `crate::hpc::distance`; back-compat re-export in `crate::hpc::*`).
 
 mod matrix;
 pub use matrix::{Mat2, Mat3, Mat4, MatN, Spd2, Spd3};

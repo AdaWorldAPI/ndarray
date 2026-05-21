@@ -272,6 +272,35 @@ pub mod simd_amx;
 #[cfg(feature = "std")]
 pub mod simd_caps;
 
+/// Bitwise SIMD primitives — popcount, Hamming distance over byte slices.
+/// Graduated from `crate::hpc::bitwise::*` (substrate-tier; uses
+/// `crate::simd::U64x8` polyfill internally). Back-compat re-export in
+/// `crate::hpc::*` preserves existing import paths.
+#[cfg(feature = "std")]
+pub mod bitwise;
+
+/// F64x8 HEEL distance kernels — 8-plane weighted Hamming, f64 SIMD
+/// dot / cosine / sum-of-squares. Graduated from `crate::hpc::heel_f64x8::*`.
+#[cfg(feature = "std")]
+pub mod heel_f64x8;
+
+/// Batch distance computations — spatial 3D-point queries +
+/// slice-shape L1 / L2 / L∞ (PR-X10 A6). Graduated from
+/// `crate::hpc::distance::*`.
+#[cfg(feature = "std")]
+pub mod distance;
+
+/// SIMD-accelerated byte-scan utilities — needle search, delimiter
+/// finding, parallel byte comparison. Graduated from
+/// `crate::hpc::byte_scan::*`.
+#[cfg(feature = "std")]
+pub mod byte_scan;
+
+/// SIMD-accelerated spatial hash — bucketing, candidate gather, hash
+/// collision detection. Graduated from `crate::hpc::spatial_hash::*`.
+#[cfg(feature = "std")]
+pub mod spatial_hash;
+
 #[cfg(feature = "std")]
 #[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
 pub mod simd_neon;
