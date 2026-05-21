@@ -317,10 +317,29 @@ pub fn matmul_bf16_to_f32(
     let b = pack_contig(&rhs);
     let mut c = vec![0.0f32; m * n];
 
-    // AMX TDPBF16PS tile path: requires m, n multiples of 16 and k a
-    // multiple of 32 (the tile shape `bf16_tile_gemm_16x16` enforces).
-    // For mis-aligned shapes fall back to scalar — Phase-4 work will
-    // add mixed-tile / tail handling.
+    bf16_gemm_with_amx(&a, &b, &mut c, m, n, k);
+
+    write_contig(&mut out, &c);
+    Ok(())
+}
+
+/// BF16 × BF16 → f32 GEMM with AMX `TDPBF16PS` tile path when available.
+///
+/// Inputs are packed row-major (`a` is M × K, `b` is K × N). Output `c`
+/// is M × N row-major and is overwritten (not accumulated).
+///
+/// Aligned shapes (M, N multiples of 16 and K a multiple of 32) dispatch
+/// through the 16×16 tile kernel in
+/// [`crate::hpc::bf16_tile_gemm::bf16_tile_gemm_16x16`] which emits
+/// `TDPBF16PS` via the asm-byte path in
+/// [`crate::simd_amx::tile_dpbf16ps`] — 8 192 BF16×BF16 multiply-
+/// accumulates per instruction (16×16×32 = 256 MAC outer-product
+/// matmul tile) into f32 accumulator registers, single-rounded.
+///
+/// Mis-aligned shapes (or non-AMX hosts) fall back to the validated
+/// scalar [`bf16_gemm_f32`] reference. Phase-4 work will land mixed
+/// AMX tile + scalar tail dispatch for arbitrary shapes.
+fn bf16_gemm_with_amx(a: &[BF16], b: &[BF16], c: &mut [f32], m: usize, n: usize, k: usize) {
     if amx_available() && m % 16 == 0 && n % 16 == 0 && k % 32 == 0 {
         // SAFETY: BF16 is `#[repr(transparent)] struct BF16(pub u16)`
         // (per `hpc::quantized::BF16`). Reinterpreting `&[BF16]` as
@@ -355,11 +374,8 @@ pub fn matmul_bf16_to_f32(
             }
         }
     } else {
-        bf16_gemm_f32(&a, &b, &mut c, m, n, k, 1.0, 0.0);
+        bf16_gemm_f32(a, b, c, m, n, k, 1.0, 0.0);
     }
-
-    write_contig(&mut out, &c);
-    Ok(())
 }
 
 // ── f32 → f32 (BF16 compute on AMX) ────────────────────────────────────────
@@ -381,10 +397,13 @@ pub fn matmul_f32(
     let mut c = vec![0.0f32; m * n];
 
     if amx_available() {
-        // AMX path: down-cast to BF16, run BF16 GEMM, accumulate in f32.
+        // AMX path: down-cast to BF16 (RNE, ~1 ULP at BF16 mantissa
+        // precision), then dispatch through the shared BF16 helper
+        // which picks `TDPBF16PS` tile kernel for 16/16/32-aligned
+        // shapes and the scalar `bf16_gemm_f32` reference otherwise.
         let a_bf16: Vec<BF16> = a_f32.iter().map(|&v| BF16::from_f32_rounded(v)).collect();
         let b_bf16: Vec<BF16> = b_f32.iter().map(|&v| BF16::from_f32_rounded(v)).collect();
-        bf16_gemm_f32(&a_bf16, &b_bf16, &mut c, m, n, k, 1.0, 0.0);
+        bf16_gemm_with_amx(&a_bf16, &b_bf16, &mut c, m, n, k);
     } else {
         // Pure f32 reference path.
         for i in 0..m {
