@@ -24,8 +24,11 @@ were raised in review:
   (R-5 through R-7 restorations)
 - **§6** — three pieces of detail from session B the merge underrepresented
   (R-8 through R-10 restorations)
-- **§7** — three commitments missing from both originals and from the
-  merge (R-11 through R-13 new specs)
+- **§7** — five commitments missing from both originals and from the
+  merge: R-11 through R-13 (latency, flush granularity, federated
+  codebook) plus R-14 (formal correctness via `jc` pillars) and R-15
+  (`SignatureBasis<DEPTH>` as fifth Plan G lane), the latter two
+  surfaced post-merge by the substrate-binding docs
 
 Then five integration pieces that make the resolutions actionable:
 
@@ -36,9 +39,10 @@ Then five integration pieces that make the resolutions actionable:
 - **§11** — end-state + trajectory (think it from the end)
 - **§12** — compaction-preservation contract
 
-Citation IDs: `R-1` through `R-13` for resolutions. Canon IDs (`M:E-*`,
-`A:E-*`, `B:E-*`, `M:H-*`, `M:T-*`) remain stable; this doc adds, does
-not renumber.
+Citation IDs: `R-1` through `R-15` for resolutions (R-14, R-15
+appended post-merge from the substrate-binding doc; numbering remains
+append-only). Canon IDs (`M:E-*`, `A:E-*`, `B:E-*`, `M:H-*`, `M:T-*`)
+remain stable; this doc adds, does not renumber.
 
 Sister docs (read order):
 
@@ -543,6 +547,14 @@ ships tropical-GEMM kernels. No new code in ndarray; cross-repo dep
 from ndarray-codec → lance-graph::blasgraph (after Plan H extraction,
 this is dep-allowed because ndarray-codec is a sibling, not the bottom).
 
+**Actual kernel home (current).** The tropical-GEMM kernel lives today
+at `lance-graph::bgz17::scalar_sparse::tropical_spmv` — NOT in an
+abstract `blasgraph` namespace. The codec's tropical-GEMM call is
+`bgz17::scalar_sparse::tropical_spmv(edge_weights, dag)`. The
+`lance-graph::blasgraph` name above is the eventual abstraction layer
+(post-Plan-H extraction); until that lands, ndarray-codec depends on
+bgz17 directly. Cite the symbol, not the namespace, when wiring A6.
+
 **Plan A6 RDO (1 week) ships this.** The λ-RDO knob (per A:§10.3) and
 the tropical-GEMM partition solver are the same kernel: λ scales the
 edge weights, the relaxation computes the optimal mode tree.
@@ -935,7 +947,132 @@ empirically; v3 (research-grade) tries Option C.
 R-4 gradient threshold (8× compression at <0.5% loss delta). At that
 point, Plan F v1 escalates to Option B in a follow-up PR.
 
+**Implementation primitives (current substrate, no new code required):**
+
+| Concern | Crate / module |
+|---------|----------------|
+| Codebook training (k-means + CAM-PQ) | `ndarray::hpc::cam_pq::CamCodebook` (`train_geometric` / `train_semantic` / `train_hybrid`) |
+| Deployed encoding format (per-shard) | `lance-graph::bgz-tensor::Codebook4096` and the `bgz-hhtl-d` shared-palette variant |
+| Online plastic updates (`SharedClusterWide`) | `ndarray::hpc::dn_tree` (quaternary plastic memory, partial-Hamming descent) |
+| Integrity proof for distributed updates | `ndarray::hpc::merkle_tree` (Blake3-48-bit, 1 KB root, `xor_diff` panCAKES compression) |
+| Gossip protocol (cluster-wide) | `q2` (external — implements the wire protocol) |
+
+The four policy modes (`LocalEphemeral` / `SharedClusterWide` /
+`SharedRegional` / `PretrainedStatic`) compose these primitives
+differently; the codec body exposes a `CodebookHandle` trait, and the
+primitives plug in via that trait. **PR-X12 contributes the wire format
++ trait + Option A; the primitives above already exist.**
+
 **Cite as R-13 in Plan F PR description.**
+
+---
+
+### R-14 — Formal correctness via `lance-graph::jc` pillars
+
+**Problem.** Canon and resolutions describe the codec's empirical
+behaviour (R-4 thresholds, R-11 latency) but never name the formal
+correctness proofs the substrate already carries. Without a citation,
+"the codec is correct" is unverifiable; with citations, the codec
+inherits machine-checked guarantees from existing crates.
+
+**Resolution.** Pin both pillars and what each proves.
+
+**Two formal proofs in `lance-graph::jc`:**
+
+- **Quantization correctness (Pillar 10, Pflug-Pichler):**
+  nested-distance Lipschitz on Sigma DN-trees. Proves that CAM-PQ tree
+  quantization preserves the FreeEnergy functional within a Lipschitz
+  factor Lε. **This is the proof PR-X12 cites for "wire-format
+  quantization is faithful."** Implementation: `jc::pflug` (active in
+  default build, zero-dep).
+- **Path-signature correctness (Pillar 11, Hambly-Lyons):**
+  signature uniqueness on tree-quotient. Proves that any path of
+  bounded variation is uniquely determined by its truncated signature
+  up to tree-like equivalence (Annals of Mathematics 171(1):109–167,
+  arXiv:math/0507536). **This is the proof PR-X12 cites for the
+  `SignatureBasis<DEPTH>` lane (R-15).** Implementation:
+  `jc::hambly_lyons` (active under `--features hambly-lyons`, since
+  PR #348 landed on 2026-05-07).
+
+**What the codec inherits.** Both pillars exist; the codec cites them
+and does not reprove. R-4's "Quality floor" rows for video / KV /
+gradient inherit Pillar 10's Lipschitz bound automatically. R-15's
+signature-lane gates on Pillar 11.
+
+**Status.**
+
+- Pillar 10: active in default zero-dep build.
+- Pillar 11: active under `--features hambly-lyons`; passes its probe
+  (forward < 1e-9, converse > 0.05, discrimination ratio ≥ 1e6 over
+  N=100 random pairs in d=3 at depth-2).
+- Production-scale benchmarking + PR #350 (`signature_kernel_pde`
+  Goursat-PDE math correction) remain open — see Gap G-4 in
+  `pr-x12-cam-pq-sigker-dn-tree-substrate-bindings.md`. Pillar 11's
+  probe deliberately uses `signature_truncated` (tensor-algebra path),
+  not the buggy PDE form.
+
+**Falsifies if.** Pillar 10 ever flips state (a regression in the
+Pflug-Pichler proof bound) — Plan G's video / KV / gradient quality
+floors lose their formal underwriting and become empirical-only.
+
+**Cite as R-14 in any PR claiming "codec output is faithful to
+input" or wiring `SignatureBasis` (R-15).**
+
+---
+
+### R-15 — `SignatureBasis<const DEPTH: usize>` as `Basis<f32>` impl
+
+**Problem.** R-1 commits the `Basis<T>` shape; the canon lists three
+concrete impls (`DctIIBasis<N>` for video, `EwaSplatBasis` for 3DGS,
+`ShSpectralBasis<L>` for splat SH). No `Basis<T>` impl targets
+*streams* — audio waveforms, time-series, gesture/handwriting paths.
+Plan G has only four lanes; path-structured signals are unaddressed.
+
+**Resolution.** Commit `SignatureBasis<const DEPTH: usize>: Basis<f32>`
+as the fifth concrete impl, wrapping the path-signature kernel from
+the external `lance-graph::sigker` crate.
+
+```rust
+// Concrete impl, lives in ndarray::hpc::signature (new module, ~1 wk)
+impl<const DEPTH: usize> Basis<f32> for SignatureBasis<DEPTH> {
+    fn dim(&self) -> usize { /* truncated tensor-algebra dim at DEPTH */ }
+    fn apply(&self, path: &[f32], signature: &mut [f32]) {
+        // iterated-integral truncation against sigker::signature_truncated
+    }
+    fn invert(&self, _sig: &[f32], _path: &mut [f32]) {
+        // signature → path is many-to-one (tree-quotient); document as N/A
+        unimplemented!("signature inversion is N/A — path unique only up to \
+                        tree-like equivalence per R-14 / Pillar 11")
+    }
+}
+```
+
+**Why `signature_truncated` and not `signature_kernel_pde`.** The
+PDE form in sigker ships a known math bug (PR #350: Goursat-PDE form
+diverges from the true kernel `I₀(2·√⟨u, v⟩)` at moderate inner
+products). The tensor-algebra path (`signature_truncated`) is correct
+today and is what jc Pillar 11 cites. R-15 wraps the truncated path;
+the PDE form becomes available after PR #350 lands.
+
+**Plan G gets a fifth lane.** "Stream signal" mode:
+
+- Input: audio waveform / time-series / gesture stream
+- Codec: `SignatureBasis<DEPTH=3>` truncates path signature, residuals
+  go through standard rANS via the four-mode taxonomy
+- Quality floor: signature-uniqueness preservation per Pillar 11
+- Compression target: ~10× over raw f32 path samples (estimate;
+  calibrate during Plan G)
+
+**Falsifies if.** `SignatureBasis<DEPTH=3>` plus rANS fails to
+reconstruct the path within ε under Pillar 11's discrimination ratio.
+At that point, raise DEPTH or fall back to per-block DCT-II for the
+stream lane.
+
+**Cost.** ~1 week wrapper around `sigker::signature_truncated` +
+basis-trait plumbing + Plan G fifth-lane wiring.
+
+**Cite as R-15 in any PR adding a stream-signal codec lane or
+wiring `SignatureBasis`.**
 
 ---
 
@@ -1108,6 +1245,9 @@ that decides whether each holy-grail claim is demonstrated.
 | R-11 (4K 60fps SIMD-batched) | this doc | Plan G video latency assert | Per-CTU encode time | ≤210 ns/CTU on Sapphire Rapids |
 | R-12 (per-CTU flush) | this doc | A8 frame-header parse + decode | First-CTU latency | First CTU decodable before frame complete |
 | R-13 (Option A per-shard) | this doc | Plan F on BERT-glue | 8× compression + accuracy | Holds; else escalate to Option B |
+| R-14 (Pillar 10 active) | this doc | `cargo test -p jc` (default features) | Pflug-Pichler Lipschitz bound | Pillar 10 probe green |
+| R-14 (Pillar 11 active) | this doc | `cargo test -p jc --features hambly-lyons` | Signature uniqueness probe | forward < 1e-9, converse > 0.05, ratio ≥ 1e6 |
+| R-15 (SignatureBasis lane) | this doc | Plan G stream-signal lane | path reconstruction under Pillar 11 | ε within discrimination ratio of Pillar 11 |
 
 **Every row of this matrix is a test.** Plan G's bench harness binary
 emits a JSON report containing the actual measurement for each row;
@@ -1234,7 +1374,7 @@ When this doc is summarised across context windows, preserve at minimum:
 
 1. **The five "merged well" items** from §3 (M:E-A / M:E-D / M:E-G /
    M:E-I / M:E-F) — these are the canon's load-bearing synthesis.
-2. **The thirteen resolutions** R-1 through R-13 with their summary
+2. **The fifteen resolutions** R-1 through R-15 with their summary
    commitments:
    - R-1: `LinearReduce<Basis>` two-trait shape
    - R-2: bit 15 universal, bit 14 consumer-typed
@@ -1242,13 +1382,19 @@ When this doc is summarised across context windows, preserve at minimum:
    - R-4: 4 threshold pairs (video, splat, kv, grad)
    - R-5: DCT crossover ~64 blocks
    - R-6: SSD via VNNI ≥30× over SAD
-   - R-7: tropical-GEMM partition O(4^d) → O(d²)
+   - R-7: tropical-GEMM partition O(4^d) → O(d²) via
+     `bgz17::scalar_sparse::tropical_spmv`
    - R-8: Plan G is confidence gate
    - R-9: topology-FREE codec layer
    - R-10: ~4 bits/Gaussian near target, ~1 bit stretch
    - R-11: 210 ns/CTU SIMD-batched encode
    - R-12: per-CTU flush default; per-bucket Plan F
-   - R-13: Option A (per-shard codebook) for Plan F v1
+   - R-13: Option A (per-shard codebook) for Plan F v1; primitives are
+     `cam_pq` + `bgz-hhtl-d` + `dn_tree` + `merkle_tree`
+   - R-14: formal correctness via `jc::pflug` (Pillar 10) +
+     `jc::hambly_lyons` (Pillar 11, feature-gated)
+   - R-15: `SignatureBasis<DEPTH>: Basis<f32>` as fifth Plan G lane
+     (stream signal)
 3. **The trajectory** from §2 — Phase 0 → A7 → parallelise → Phase 2
 4. **The five-category architecture** including `ndarray-codec`
 5. **The four traits** as the canonical contracts:
@@ -1258,7 +1404,7 @@ When this doc is summarised across context windows, preserve at minimum:
 7. **The falsifiability matrix in §9** — every claim has a test;
    not every claim will pass; that's the design
 
-**Citation IDs in this doc** (R-1 .. R-13) are stable. Canon IDs
+**Citation IDs in this doc** (R-1 .. R-15) are stable. Canon IDs
 (M:E-*, M:H-*, M:H-NEW-*, M:T-*, A:E-*, A:H-*, A:T-*, B:E-*, B:HG-*,
 B:D-*) remain stable per canon's §10. Append, never renumber.
 
