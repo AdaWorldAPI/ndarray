@@ -8,6 +8,12 @@
 > **Depends on**: PR-X10 (linalg-core), PR-X3 BlockedGrid (shipped).
 > **Used by**: PR-X9 (basin-codebook lazy storage) — the codec encodes
 > cognitive cells into skip/merge/delta/escape modes.
+>
+> **See also**: `pr-x12-cross-domain-synergies.md` — the architectural
+> claim that the primitives in this design doc *also* serve 3DGS
+> coefficient compression, transformer attention sparsification, and
+> distributed-SGD gradient streaming. Holy grail outcomes, integration
+> plans, and honest debt catalogue live there.
 
 ## Why
 
