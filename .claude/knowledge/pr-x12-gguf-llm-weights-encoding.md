@@ -131,7 +131,7 @@ Crucially, the residual is **rANS-coded with a Gaussian-tail prior** (R-10). GGU
 
 For weights that are too extreme to fit any basin (the activation outliers that LLM.int8() and SmoothQuant fight over), encode as Escape + raw f16 value. ~3-5% of weights per layer, but they carry disproportionate information.
 
-The PR-X12 wire format already supports Escape as the lossy-fallback path (with the codec body warning per M:T new items). For LLM weights, Escape *must be lossless* — no truncation of outliers. This is an additional R-N candidate.
+The PR-X12 wire format already supports Escape as the lossy-fallback path (with the codec body warning per M:T new items). For LLM weights, Escape *must be lossless* — no truncation of outliers. This is an additional R-N candidate; see §10 falsifier **F-4** for the wire-format mechanism (rANS bypass channel in the A8 framing layer) and the HEVC-escape-coefficient precedent.
 
 ---
 
@@ -266,7 +266,9 @@ Per GEMM operation (e.g., compute attn_q @ x for batch):
 
 The CTU bitstream is read forward-only (rANS is a streaming codec) and the decoded weights live in L1/L2 cache just long enough to be GEMM'd. **No full-tensor dequantize buffer needed.** For a 4096 × 4096 attention projection, the dequantize buffer would be 32 MB (f16); PR-X12 streams in ~3-4 MB of bitstream, decodes to ~64 KB cache-resident windows, GEMMs each window, drops it.
 
-**Memory savings:** on a memory-constrained edge device (8 GB RAM), this turns "loads 4 GB model + needs 1 GB dequant scratch" into "loads 3 GB model + needs 64 KB scratch." A 7B model at PR-X12 is genuinely runnable on a phone-class device, where GGUF Q4 is borderline.
+**Memory savings (weights only):** on a memory-constrained edge device (8 GB RAM), this turns "loads 4 GB model + needs 1 GB dequant scratch" into "loads 3 GB model + needs 64 KB scratch."
+
+**Phone-class caveat — weights are not the only memory load.** The KV cache scales with context length and is independent of weight compression: for a 7B model at 8K context, KV cache is ~2 GB in fp16 / ~1 GB in int8, and grows linearly with context. PR-X12 weight compression alone takes a 7B from "borderline" to "easier" on phone-class hardware, but **the KV cache lane (Plan D, M:H-3, R-4) is the second lever** that has to compress for full phone-class viability at non-trivial context. Both lanes are needed; this lens only addresses the weights side.
 
 **Latency:** the streaming decode happens in the same loop body as the GEMM accumulate. On a modern arch with VNNI + AMX, the decode cost (~5-10 cycles per cell, branchless via R-1's lookup-table pattern) is hidden by GEMM latency. **Estimated overhead: < 5% versus pre-dequantized GEMM.**
 
@@ -345,7 +347,7 @@ Concrete implications:
 
 4. **Do** keep R-13's federated codebook policy. The LLM use case is the strongest motivation: per-model codebooks are 13 MB; without R-13, a hard-coded codebook would not work for arbitrary LLMs.
 
-5. **Reserve** an `EncodingDomain::LLMWeights` discriminant in the codec metadata header (separate from the 16-bit per-CTU header). The codec body doesn't read this — it just stamps the file with a domain tag so decoders know which basin codebook to load.
+5. **Reserve** the *enum-discriminant slot* for `EncodingDomain::LLMWeights` in the codec metadata header *now*, even though the actual LLM-lane decoder lands post-PR-X12 (per implication #2). The header reserves a fixed-size domain-tag field (separate from the 16-bit per-CTU header); the LLMWeights value of that field stays unimplemented in PR-X12, but the slot is forward-compatibility-locked so a future PR can add the variant without a wire-format break. The codec body doesn't read this — it stamps the file with a domain tag so decoders know which basin codebook to load.
 
 6. **Bench against AWQ at parity perplexity, not just Q4_K_M.** Q4_K_M is a conservative baseline; AWQ + GPTQ are the actual state of the art. If PR-X12 can match AWQ at smaller storage, the case is strong; if not, ship at "drop-in GGUF replacement" framing only.
 

@@ -303,7 +303,7 @@ This is the doc-level value of PR-X12: bgz code + PR-X12 docs = a complete archi
 
 ## 5. Gaps — what doesn't exist yet
 
-### 5.1 `jd-nd` — the missing ndarray-side proof crate
+### 5.1 `jd-nd` — the missing ndarray-side proof crate (Gap **G-1**)
 
 The Explore search confirmed: `jd-nd` does not exist in `/home/user/ndarray/`. The math-proof infrastructure on the ndarray side lives ad-hoc inside `src/hpc/` modules (`deepnsm.rs`, `jina/runtime.rs`) as TODO comments.
 
@@ -335,7 +335,7 @@ ndarray/crates/jd-nd/
 
 **Why now:** R-11's latency CI needs a *correctness* twin. Latency that's fast but wrong is the worst outcome. jd-nd is the structural place for those proofs.
 
-### 5.2 Cronbach / ICC research crate
+### 5.2 Cronbach / ICC research crate (Gap **G-2**)
 
 `lance-graph/crates/lance-graph-codec-research/` exists per the Explore agent's report, **but its scope is FFT (rustfft) variants**, not Cronbach's α / ICC / encoding-reliability psychometrics.
 

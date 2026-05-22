@@ -1,15 +1,15 @@
 # PR-X12 — WoA Orchestration & Multi-Arch Dispatch Lens
 
 > Date: 2026-05-22
-> Status: **perspective doc** — examines how the orchestration crates (`woa-rs`, `woa`, `q2`, `surrealdb`, `MedCare-rs`, `smb-office-rs`) consume the PR-X12 substrate, and how PR-X12's per-arch dispatch decisions (R-4, R-5, R-11) generalise to the entire HPC stack.
+> Status: **perspective doc** — examines how the orchestration crates (`woa-rs`, `woa`, `q2`, `surrealdb`, `MedCare-rs`, `smb-office-rs`) consume the PR-X12 substrate, and how PR-X12's per-arch polyfill decisions (R-4, R-5, R-11) generalise to the entire HPC stack.
 >
-> Premise: PR-X12 is not just a codec project. It's the **per-arch dispatch contract** that every consumer above `ndarray` will inherit. The codec is the first non-trivial test of whether that contract holds.
+> Premise: PR-X12 is not just a codec project. It's the **per-arch polyfill contract** that every consumer above `ndarray` will inherit. The codec is the first non-trivial test of whether that contract holds.
 
 ---
 
 ## 0. Thesis
 
-**Every consumer crate dispatches kernels across {Intel SPR, AMD Zen 4-5, ARM Graviton 3-4, Apple Silicon, NVIDIA Hopper-Blackwell} via the same `ndarray::hpc` capability traits.** PR-X12's per-arch DCT crossover (R-5) and latency assertion (R-11) aren't codec-specific — they're the canonical shape of how any consumer crate gates fast-paths. If the codec's per-arch story is wrong, the entire HPC consumer ecosystem inherits the bug.
+**Every consumer crate calls the same `ndarray::simd::*` / `ndarray::hpc::*` polyfill surface, regardless of which arch the binary was built for.** The polyfill is a per-arch swap underneath, selected by `cfg(target_feature = ...)` at compile time (per §3 and the W1a contract). PR-X12's per-arch DCT crossover (R-5) and latency assertion (R-11) aren't codec-specific — they're the canonical shape of how any consumer crate's per-arch story bottoms out at the polyfill. If the codec's per-arch story is wrong, the entire HPC consumer ecosystem inherits the bug.
 
 ---
 
@@ -23,18 +23,18 @@ In a real deployment, a `woa-rs` agent processing a request might:
 4. Update node-local cache (`surrealdb`)
 5. Emit response stream (codec again)
 
-Steps 1, 2, 3, 5 all hit the `ndarray::hpc` BLAS layer. Each step has a per-arch fast-path: SPR uses AMX, Zen 4 uses VNNI+AVX-512, Graviton 3 uses SVE2, Apple uses NEON/AMX, Hopper uses tensor cores. **None of the consumer crates know which fast-path is active.** They call `blas_level2::batched_gemm` and the substrate dispatches.
+Steps 1, 2, 3, 5 all bottom out at `ndarray::simd::*` and `ndarray::hpc::*`. Each is a polyfill consumer — they call e.g. `blas_level2::batched_gemm` and get whatever backend the binary was compiled with. **None of the consumer crates know which backend is active**, and they MUST NOT: backend-specific symbols (AMX bytecode, AVX-512 asm, NEON intrinsics, SVE2 predicates) live exclusively inside `src/simd_<arch>.rs` and never reach a consumer's source. The fleet ships per-arch binaries (§3.2); each binary embeds one backend file via cfg.
 
-This is what makes PR-X12's R-4 / R-11 architecture-conditional bench gates *substrate policy*, not codec policy. R-4 says "Plan G clears at most on 1 of: SPR / Zen 4 / Graviton 3 / Apple M-class," and R-11 adds latency assertions. That same gate structure applies to:
+This is what makes PR-X12's R-4 / R-11 architecture-conditional bench gates *substrate policy*, not codec policy. R-4 says "Plan G clears on each of: SPR / Zen 4 / Graviton 3 / Apple M-class" (per-arch CI matrix), and R-11 adds per-arch latency assertions. That same gate structure applies to:
 
-- `burn` model serving (forward pass per arch)
-- `candle` quantized inference (q4/q8 per arch)
-- `lance-graph::blasgraph` graph queries (tropical-GEMM per arch)
-- `surrealdb` HNSW search (vector dist per arch)
-- `MedCare-rs` DICOM transform (DCT + wavelet per arch)
-- `smb-office-rs` OCR + layout (conv + attention per arch)
+- `burn` model serving (forward pass: same Rust, per-arch binary)
+- `candle` quantized inference (q4/q8: same Rust, per-arch binary)
+- `lance-graph::blasgraph` graph queries (tropical-GEMM: same Rust, per-arch binary)
+- `surrealdb` HNSW search (vector dist: same Rust, per-arch binary)
+- `MedCare-rs` DICOM transform (DCT + wavelet: same Rust, per-arch binary)
+- `smb-office-rs` OCR + layout (conv + attention: same Rust, per-arch binary)
 
-Every one of these inherits the dispatch contract. PR-X12 is the first to make it visible.
+Every one of these inherits the polyfill contract: identical consumer-facing Rust, one cfg-selected backend per build. PR-X12 is the first to make the parity-test obligation visible.
 
 ---
 
@@ -53,105 +53,121 @@ Every one of these inherits the dispatch contract. PR-X12 is the first to make i
 │   surrealdb, MedCare-rs, smb-office-rs             │
 │   (Each: ~1-5K LoC of generic code + traits)       │
 └────────────────────┬───────────────────────────────┘
-                     │ capability traits, target_feature
+                     │ same Rust API on every arch
                      ▼
 ┌────────────────────────────────────────────────────┐
-│ ndarray::hpc (the dispatch substrate)              │
+│ ndarray::hpc + ndarray::simd (polyfill substrate)  │
 │   blas_level{1,2,3}, fft, cam_pq, activations,     │
 │   simd_int_ops, bf16_tile_gemm                     │
 │   (~15K LoC; PR-X12 ratchets at this layer)        │
 └────────────────────┬───────────────────────────────┘
-                     │ per-arch SIMD intrinsics
+                     │ cfg(target_feature = …) picks ONE
                      ▼
 ┌────────────────────────────────────────────────────┐
-│ Hardware: SPR / Zen / Graviton / Apple / Hopper    │
-└────────────────────────────────────────────────────┘
+│ Backend file (one per binary):                     │
+│   simd_avx512.rs  →  asm/intrinsics + AMX bytecode │
+│   simd_neon.rs    →  NEON / SVE2 intrinsics        │
+│   simd_scalar.rs  →  portable fallback             │
+└────────────────────┬───────────────────────────────┘
+                     ▼
+        Hardware: SPR / Zen / Graviton / Apple
 ```
 
-**WoA never touches `target_feature` directly.** Its job is async scheduling, transport (Q2 over QUIC), persistence (surrealdb), and policy. The SIMD dispatch happens one layer below, in the consumer crates calling `ndarray::hpc`.
+**WoA never touches `target_feature` directly.** Its job is async task scheduling, transport (Q2 over QUIC), persistence (surrealdb), and policy. Per-arch SIMD code lives exclusively inside the backend file (`simd_<arch>.rs`); the polyfill above swaps which file is compiled in via cfg.
 
-This separation is what makes R-3's LoC envelope (≤1500 LoC codec body) tractable. The codec crate doesn't dispatch — it calls the substrate. WoA doesn't dispatch — it calls the codec, which calls the substrate. Per-arch code lives once, in `ndarray::hpc`.
+This separation is what makes R-3's LoC envelope (≤1500 LoC codec body) tractable. The codec crate doesn't choose a backend — it calls the polyfill. WoA doesn't choose a backend — it calls the codec, which calls the polyfill. Per-arch code lives once, inside `src/simd_<arch>.rs`, behind the polyfill surface.
 
 ---
 
-## 3. Per-arch dispatch as a substrate property
+## 3. Per-arch substrate via compile-time polyfill
 
-The PR-X12 substrate (per merged canon §M:E-G, §M:E-H, R-4, R-5, R-11) implements per-arch dispatch via three mechanisms:
+The PR-X12 substrate follows the project's W1a consumer contract (see `CLAUDE.md` and `.claude/knowledge/vertical-simd-consumer-contract.md`): **all dispatch is polyfill**. The stack has three layers, and only the bottom one is allowed to know about specific architectures:
 
-### 3.1 Compile-time `target_feature`
-
-```rust
-// In ndarray::hpc::blas_level2::batched_gemm:
-
-#[cfg(target_arch = "x86_64")]
-mod x86_dispatch {
-    #[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
-    pub unsafe fn batched_gemm_vnni(...) { /* VNNI path */ }
-
-    #[target_feature(enable = "amx-tile,amx-int8,amx-bf16")]
-    pub unsafe fn batched_gemm_amx(...) { /* AMX path */ }
-}
-
-#[cfg(target_arch = "aarch64")]
-mod arm_dispatch {
-    #[target_feature(enable = "sve2")]
-    pub unsafe fn batched_gemm_sve2(...) { /* SVE2 path */ }
-
-    #[target_feature(enable = "neon,fp16")]
-    pub unsafe fn batched_gemm_neon_fp16(...) { /* Apple Silicon */ }
-}
+```text
+┌────────────────────────────────────────────────────────────┐
+│ Consumers — codec encode/decode bodies, downstream crates  │
+│   (ndarray-codec, burn, candle, lance-graph, surrealdb,    │
+│    MedCare-rs, smb-office-rs, q2, WoA scheduler)           │
+│   Call ndarray::simd::* directly. Never name a backend.    │
+└────────────────────────┬───────────────────────────────────┘
+                         │ identical signatures everywhere
+                         ▼
+┌────────────────────────────────────────────────────────────┐
+│ Polyfill surface — src/simd.rs                             │
+│   cfg(target_feature = ...) re-exports exactly ONE backend │
+│   to compile in. Same fn names, same types, every arch.    │
+└────────────────────────┬───────────────────────────────────┘
+                         │ cfg substitutes one file
+                         ▼
+┌────────────────────────────────────────────────────────────┐
+│ Backend — simd_avx512.rs / simd_neon.rs / simd_scalar.rs   │
+│   This is where AMX bytecode, AVX-512 asm/intrinsics,      │
+│   NEON loads, SVE2 predicates LIVE. Implementation detail. │
+│   Consumers above never reach in here.                     │
+└────────────────────────────────────────────────────────────┘
 ```
 
-### 3.2 Runtime feature detection (cached at process start)
+There is **no runtime CPU detection, no `HwCaps`/`CpuCaps` branching, no `if has_avx512 else …` dispatch, and no `unsafe { runtime_branch }` chain.** The target CPU is fixed at build time via `.cargo/config.toml` (`target-cpu=x86-64-v4` makes AVX-512 mandatory on x86_64) or via the target triple for non-x86 builds. One build, one backend file compiled in, one path.
+
+### 3.1 The polyfill primitive: cfg-selected per-arch files
+
+The pattern already shipping in `src/simd*.rs` (per `CLAUDE.md` Repository Structure):
 
 ```rust
-// In ndarray::hpc::capability:
-pub static CAP: OnceLock<HwCaps> = OnceLock::new();
+// src/simd.rs — consumer-facing surface, re-exports a single backend
+#[cfg(target_feature = "avx512f")]
+pub use crate::simd_avx512::*;
 
-pub struct HwCaps {
-    pub has_amx: bool,
-    pub has_vnni: bool,
-    pub has_sve2: bool,
-    pub has_neon_fp16: bool,
-    pub l1_cache_size: usize,
-    pub vec_width_bits: u16,
-    // ... more as new features land
-}
+#[cfg(all(not(target_feature = "avx512f"), target_arch = "aarch64"))]
+pub use crate::simd_neon::*;
 
-pub fn batched_gemm(input: ...) {
-    let caps = CAP.get().unwrap();
-    if caps.has_amx { unsafe { batched_gemm_amx(input) } }
-    else if caps.has_vnni { unsafe { batched_gemm_vnni(input) } }
-    else if caps.has_sve2 { unsafe { batched_gemm_sve2(input) } }
-    // ...
-    else { batched_gemm_scalar(input) }
-}
+#[cfg(not(any(target_feature = "avx512f", target_arch = "aarch64")))]
+pub use crate::simd_scalar::*;
 ```
 
-### 3.3 Per-arch tunable crossover (R-5 generalised)
+Each backend file implements the same public functions with identical signatures; **the actual AMX bytecode / AVX-512 asm / NEON intrinsics / SVE2 predicates are contained inside those files** and never escape. The W1a contract requires all three backends + a parity test before any new primitive lands.
 
-Some operations have a "small N: scalar, large N: SIMD" crossover that varies per arch:
+**The codec body is a consumer of this polyfill.** When `ndarray-codec` writes encoding code — Skip/Merge/Delta/Escape mode selection, basin lookups, tropical-GEMM RDO, rANS state-machine ticks, EWA splat composition — it calls `ndarray::simd::*` exactly the way `burn` / `candle` / `lance-graph` do. **The codec does not know it is on AMX.** It does not reach for `simd_avx512::*` directly, does not name a backend symbol, does not branch on architecture. The cfg at the polyfill layer picks the right backend at build time; the encoder is identical Rust across all architectures.
+
+**Escape hatch (rare).** A very small number of hot inner loops may need to drop below the polyfill into a backend-specific intrinsic for performance reasons that the polyfill surface genuinely cannot express. When that happens: the violation lives inside `src/simd_<arch>.rs` (where backend-specific code is already at home), is `cfg`-gated to that arch, is parity-tested against the other backends' equivalent, and gets a `// SAFETY:` + agent audit per `CLAUDE.md`'s sentinel-qa rule. **It is the exception, not the model.** No consumer crate — codec body included — is ever the right place for it.
+
+### 3.2 Build-time CPU selection (not runtime detection)
+
+Target CPU is decided once, at build time:
+
+| Mechanism | Source | Effect |
+|---|---|---|
+| `.cargo/config.toml` `target-cpu=x86-64-v4` | repo policy | AVX-512 mandatory on x86_64 (per `CLAUDE.md`) |
+| `--target aarch64-apple-darwin` | CI / fleet build matrix | NEON-fp16 backend compiles in |
+| `--target aarch64-unknown-linux-gnu` + SVE2 target-feature | Graviton build | SVE2 backend compiles in |
+
+The WoA fleet ships **per-arch binaries**, not a fat binary that probes. Q2 distributes the right binary to each node based on the node's already-known architecture (declared at registration time, not detected per request). Cross-arch determinism (§6 below) is enforced because each binary embeds exactly one backend and the W1a parity test gates every primitive at the substrate layer.
+
+### 3.3 Per-arch tunable crossover (R-5)
+
+Some operations (DCT-II vs GEMM, basin-lookup width, etc.) have a "small N: scalar path, large N: SIMD path" crossover whose break-even N varies per backend. The crossover lives in the **same polyfill** as the SIMD primitives: a `cfg(target_feature = ...)`-selected `const`.
 
 ```rust
-const DCT_BATCH_CROSSOVER: usize = match Arch::CURRENT {
-    Arch::SapphireRapids => 64,   // AMX wins above this
-    Arch::IceLakeServer => 32,    // AVX-512 narrower; lower crossover
-    Arch::Zen4 => 96,             // Zen's AVX-512 emulation widens crossover
-    Arch::AppleM3 => 256,         // NEON's narrower; only worth at large N
-    Arch::GravitonV3 => 128,      // SVE2 mid-range
-    Arch::Generic => usize::MAX,  // Always scalar fallback
-};
+// src/hpc/dct_crossover.rs — one const per backend file, cfg-selected
+//
+//   simd_avx512.rs:                pub const DCT_BATCH_CROSSOVER: usize = 64;
+//   simd_neon.rs (Apple Silicon):  pub const DCT_BATCH_CROSSOVER: usize = 256;
+//   simd_scalar.rs:                pub const DCT_BATCH_CROSSOVER: usize = usize::MAX;
 
 pub fn dct_apply<const N: usize>(input: &[i16], output: &mut [i16]) {
     if N >= DCT_BATCH_CROSSOVER {
-        unsafe { dct_gemm_path(input, output) }
+        dct_gemm_path(input, output)      // calls into ndarray::simd::*
     } else {
-        dct_butterfly_path(input, output)
+        dct_butterfly_path(input, output) // also calls into ndarray::simd::*
     }
 }
 ```
 
-R-5 commits these crossovers as **bench-tunable constants**, not hand-guessed numbers. Plan G's codec-bench includes a calibration sub-target that emits the right `const` values per arch via build script.
+The integer `DCT_BATCH_CROSSOVER` comes from one of two places:
+1. **Hand-tuned default**: a known-good number per backend, checked into the backend file.
+2. **Plan G calibration override**: `build.rs` may consult `CARGO_CFG_TARGET_FEATURE` + a pre-recorded calibration artifact from `codec-bench` and emit a refined const into `OUT_DIR`, included by the backend file. This is still compile-time selection — the build script never probes the host CPU, only reads Cargo's target-config env vars.
+
+Either way the constant is **fixed in the compiled binary**. R-5 commits these crossovers as bench-tunable but compile-time-fixed; the `cfg(target_feature)`-selected backend file is the single source of truth.
 
 ---
 
@@ -173,7 +189,7 @@ PR-X12 (R-11) commits a budget on `T_codec`:
 | Tropical-GEMM RDO | ≤ 50 µs per CTU on SPR | derived from R-7 cost analysis |
 | Basis::apply (DCT) | ≤ 2 µs per 32×32 block on SPR | derived from R-5 |
 
-**WoA's contract:** if any of these are violated on a supported arch, the consumer can either accept the slowdown or refuse to schedule the request. WoA has visibility into per-arch dispatch quality via the substrate's metrics endpoint:
+**WoA's contract:** if any of these are violated on a supported arch, the consumer can either accept the slowdown or refuse to schedule the request. WoA has visibility into per-arch polyfill performance (which backend was compiled into the binary it's running, plus stage-latency telemetry) via the substrate's metrics endpoint:
 
 ```rust
 ndarray::hpc::metrics::stage_latency_p99(stage: StageId) -> Duration;
@@ -228,7 +244,7 @@ This is a model for many features that look "out of scope" for PR-X12 but actual
 
 - Federated codebook → swap pointer to handle (R-13)
 - 3DGS scene anchor → add SceneAnchor header_kind (x266 doc)
-- GPU offload → add `Reducer::dispatch_target() -> DispatchTarget` (Plan E adjacent)
+- GPU offload → add a `Reducer::backend_target() -> BackendTarget` hook to let consumers opt into a GPU polyfill at compile time (Plan E adjacent; still cfg-selected, not runtime-branched)
 - Speculative decode → add `Frame::is_speculative()` bit in header reserved field
 
 None of these are PR-X12 scope. All of them require ≤50 LoC of "anchor" in PR-X12. The discipline of M:H-NEW-2 + R-3's LoC envelope is what makes future anchoring possible without forking the codec.
@@ -290,7 +306,7 @@ Quick tour of what each crate inherits from PR-X12 substrate decisions:
 
 ### 8.1 `burn` (model training/inference)
 
-Uses `blas_level3::gemm` for matrix multiply, `activations` for nonlinearities, `cam_pq` for KV cache compression. Per-arch dispatch via the same target_feature paths. Will benefit directly from PR-X12's R-4 / R-11 latency-assertion infrastructure when it lands (burn has wanted this for ~14 months).
+Uses `blas_level3::gemm` for matrix multiply, `activations` for nonlinearities, `cam_pq` for KV cache compression. Per-arch polyfill via the same `cfg(target_feature)` mechanism — `burn` itself never names a backend. Will benefit directly from PR-X12's R-4 / R-11 latency-assertion infrastructure when it lands (burn has wanted this for ~14 months).
 
 ### 8.2 `candle` (quantized inference)
 
@@ -323,7 +339,7 @@ Owns the federation policy (R-13), the codec version negotiation, and the per-ar
 In light of the above, the irreducible commitments PR-X12 must keep for the consumer ecosystem:
 
 1. **Substrate API stability** — `blas_level2::batched_gemm`, `cam_pq::kmeans`, `fft::dct_apply`, `activations::conv2d` keep their signatures across PR-X12 changes. Additions OK, breaks not OK.
-2. **Per-arch dispatch transparency** — consumers continue calling capability-trait methods; the substrate continues choosing the right SIMD path.
+2. **Per-arch polyfill transparency** — consumers continue calling the `ndarray::simd::*` / `ndarray::hpc::*` surface unchanged across arches; cfg at the polyfill layer selects exactly one backend at build time. Consumers never name a backend symbol.
 3. **`Reducer<T>` ordered-sum guarantee** — any consumer using `OrderedKahanReducer` (or similar) continues to get bit-exact cross-arch reductions.
 4. **Latency-assertion CI infrastructure** — R-11's framework is consumer-callable for their own benches; not codec-private.
 5. **Codebook handle indirection** (R-13) — the codec ships with the handle pattern, consumers can swap codebooks without forking.
