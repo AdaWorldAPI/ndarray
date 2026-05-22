@@ -9,7 +9,7 @@
 
 ## 0. Thesis in one paragraph
 
-`cam_pq` is the **codebook trainer** that produces the palettes consumed by `bgz17::palette` and `bgz-tensor::HhtlCascade` — a FAISS-style 6×8 Product Quantizer with 6-byte fingerprints (HEEL / BRANCH / TWIG_A / TWIG_B / LEAF / GAMMA semantic bytes), implementing k-means in three modes (geometric / semantic / hybrid). `SigKer` is the **formal-proof bedrock** for the codec's wire-format uniqueness claim — Chen-Lyons path signatures, Hambly-Lyons 2010 uniqueness theorem (arXiv:2010.[ID]), Salvi 2020 PDE solver (arXiv:2006.14794), Cuchiero-Schmocker-Teichmann 2021 randomized-signature universality. `dn_tree` and `merkle_tree` are the **online-update and integrity substrate** for the federated-codebook policy (R-13) — quaternary plastic memory + 8-Kbit Blake3 proof tree, both already in `ndarray::hpc::` but not yet wired into the codec. The PR-X12 codec body is ~1500 LoC sitting on top of an ~25 KLoC substrate that already exists.
+`cam_pq` is the **codebook trainer** that produces the palettes consumed by `bgz17::palette` and `bgz-tensor::HhtlCascade` — a FAISS-style 6×8 Product Quantizer with 6-byte fingerprints (HEEL / BRANCH / TWIG_A / TWIG_B / LEAF / GAMMA semantic bytes), implementing k-means in three modes (geometric / semantic / hybrid). `SigKer` is the **formal-proof bedrock** for the codec's path-signature uniqueness claim — Chen-Lyons path signatures, Hambly-Lyons 2010 uniqueness theorem (Annals of Mathematics 171(1):109–167), Salvi 2020 PDE solver (arXiv:2006.14794), Cuchiero-Schmocker-Teichmann 2021 randomized-signature universality. **Note:** `sigker::signature_kernel_pde` ships a known math bug in the Goursat-PDE form (diverges from the true `I₀(2·√⟨u, v⟩)` at moderate inner products — see PR #350); production-ready path is `signature_truncated` (tensor-algebra) which is what jc Pillar 11 uses for its certification. `dn_tree` and `merkle_tree` are the **online-update and integrity substrate** for the federated-codebook policy (R-13) — quaternary plastic memory + 8-Kbit Blake3 proof tree, both already in `ndarray::hpc::` but not yet wired into the codec. The PR-X12 codec body is ~1500 LoC sitting on top of an ~25 KLoC substrate that already exists.
 
 ---
 
@@ -37,9 +37,10 @@ pub struct DistanceTables { /* 6 × 256 = 6 KB, L1-resident */ }
 pub struct PackedDatabase { /* stroke-aligned 1B / 2B / 6B storage */ }
 
 pub fn kmeans(data: &[f32], k: usize, dim: usize, iterations: usize) -> Vec<f32>;
-pub fn train_geometric(...) -> CamCodebook;   // Lloyd's algorithm per subspace
-pub fn train_semantic(...)  -> CamCodebook;   // CLAM archetype clustering
-pub fn train_hybrid(...)    -> CamCodebook;   // geometric init + semantic fine-tune
+pub fn train_geometric(...) -> CamCodebook;   // Lloyd's k-means per subspace, farthest-first init
+pub fn train_semantic(...)  -> CamCodebook;   // geometric init + label-guided push/pull on centroids
+                                              // (jaccard similarity on label sets, NOT CLAM archetypes)
+pub fn train_hybrid(...)    -> CamCodebook;   // train_semantic with default alpha=0.1
 pub fn squared_l2(a: &[f32], b: &[f32]) -> f32;
 ```
 
@@ -141,11 +142,15 @@ pub struct CodecRouteSigker { /* lance-graph codec routing integration */ }
 
 **Location:** `lance-graph/crates/jc/src/hambly_lyons.rs`
 
-**Feature gate:** `jc/Cargo.toml` includes `hambly-lyons = ["sigker"]`. Activating the feature pulls sigker as a dep.
+**Feature gate:** `jc/Cargo.toml` includes `hambly-lyons = ["dep:sigker"]`. Default JC build is zero-dep (Pillar 11 reports `DEFERRED`); `cargo build --features hambly-lyons` pulls in `sigker` and **fully activates the probe**.
 
-**Pillar 11 proves:** for any two source streams X, Y with truncated bgz-encoded representations B(X), B(Y) up to depth N, if B(X) = B(Y) then X = Y up to tree-like path equivalence.
+**Pillar 11 proves** (Hambly-Lyons 2010 Theorem 4): for paths X, Y of bounded variation in ℝ^d, S(X) = S(Y) ⟺ X and Y are equal modulo tree-like equivalence (the smallest equivalence relation identifying any sub-path with its concatenated reverse).
 
-**Status:** **DEFERRED** per Explore agent's read of jc source. Pillar 11 has the proof binding but production benchmarking at full carrier widths is incomplete.
+**The probe** runs against `sigker::signature_truncated` (the tensor-algebra path), N=100 random pairs in d=3 at depth-2. **It deliberately avoids `signature_kernel_pde`** because that kernel ships a known math bug (PR #350: Goursat-PDE form diverges from the true signature kernel `I₀(2·√⟨u, v⟩)` at moderate inner products). The certification is independent of the PDE-form fix.
+
+**Status:** **ACTIVE under `--features hambly-lyons`** (activated 2026-05-07 once sigker landed in the workspace via PR #348). The "DEFERRED" reading is only the default-build fallback — under the feature gate, the probe executes and passes (forward < 1e-9, converse > 0.05, discrimination ratio ≥ 1e6).
+
+**What Pillar 11 actually certifies:** `sigker`'s **Index-regime classification** — that two paths with equal truncated signatures are equal up to tree-quotient. It does **NOT** directly certify `bgz` wire-format quantization. The bgz / CAM-PQ correctness proof is **Pillar 10 (Pflug-Pichler)**, which proves nested-distance Lipschitz on Sigma DN-trees — "CAM-PQ tree quantization preserves FreeEnergy within Lε."
 
 ### 2.4 PR-X12 mapping
 
@@ -171,11 +176,11 @@ impl<const DEPTH: usize> Basis<f32> for SignatureBasis<DEPTH> {
 
 This is the **third Basis<T> impl** (after DCT-II and EWA splat) and the first that targets *streams* rather than 2D arrays. The trait surface holds.
 
-#### 2.4.2 `signature_kernel_pde` IS the streaming-decode pattern
+#### 2.4.2 Goursat-style streaming kernel IS the streaming-decode pattern
 
 Per the Salvi 2020 paper (arXiv:2006.14794): the signature kernel can be computed via a Goursat PDE in O(T₁ · T₂ · d) time **without materializing the signature itself**. This is exactly the engineering pattern PR-X12's streaming-decode-during-GEMM uses (the GGUF lens §7) — compute the result without materializing the dequantized tensor.
 
-The connection is structural, not just analogical: PR-X12's stream-decode pass *is* a 1D Goursat-style sweep over the bitstream that accumulates results without materializing intermediate state. The math literature for this pattern is mature (Salvi 2020 has citations going back 10+ years) and ships in sigker.
+**Caveat:** the current `sigker::signature_kernel_pde` ships a known math bug (PR #350: the Goursat-PDE form diverges from the true kernel `I₀(2·√⟨u, v⟩)` at moderate inner products). The corrected form is queued; until then, production code should use `sigker::signature_truncated` (the tensor-algebra path) or `linear_path_kernel_closed_form` for the linear-path special case. The *engineering pattern* (1D sweep over a bitstream that accumulates results without materializing intermediates) is correct and re-usable by PR-X12 regardless of which kernel implementation lands.
 
 #### 2.4.3 Randomized signature universality = "4 modes cover any source"
 
@@ -189,7 +194,7 @@ This is the **R-14 candidate** flagged in `pr-x12-bgz-jc-substrate-synergies.md`
 
 ### 2.5 Two gaps in the sigker integration
 
-**G-4: Pillar 11 is DEFERRED.** Unblock it. The math is published, the implementation exists, the bench harness needs production-scale validation. **Cost:** 1-2 weeks of bench + verification work, blocking R-14 formal-correctness commitment.
+**G-4: PR #350 (signature_kernel_pde correction) + Pillar 11 production benchmarking.** Pillar 11 itself is *active* under the feature gate and passes its probe (forward < 1e-9, converse > 0.05, discrimination ratio ≥ 1e6 over N=100 pairs in d=3). What's *deferred* is (a) the corrected Goursat-PDE form that fixes `signature_kernel_pde`'s divergence at moderate inner products, and (b) production-scale benchmarking at full carrier widths (the d=3, depth-2 probe is correctness-only, not performance). **Cost:** 1-2 weeks of bench + PR #350 landing, blocking R-14's formal-correctness commitment at production scale.
 
 **G-5: No SignatureBasis<DEPTH> impl in `ndarray::hpc::`.** The trait shape exists (Basis<T> in M:E-A / R-1) but no concrete signature impl. **Proposal:** add `SignatureBasis<const DEPTH: usize>: Basis<f32>` as a third concrete impl alongside `DctIIBasis<N>` and `EwaSplatBasis`. Implementation is mostly a wrapper around `sigker::signature_kernel_pde`. **Cost:** ~1 week, modest LoC.
 
@@ -221,11 +226,13 @@ This unlocks: **path-structured codec lanes** in Plan G (audio waveforms, time-s
 
 **Algorithm:** 8-Kbit Merkle tree built from CogRecord regions as a compressed searchable proxy. Properties:
 
-- **Hash:** Blake3 truncated to 48 bits (6 bytes per hash — same width as cam_pq's CamFingerprint)
-- **Layout:** 8 branches × 8 leaves = 64 leaves, padded to 1 KB for SIMD alignment
-- **Change detection:** `StaunenType` enum {Wisdom, ContentChanged, NarsChanged, ...} — 8 change types
+- **Hash:** Blake3 truncated to 48 bits (`MerkleRoot = [u8; 6]` — same byte width as cam_pq's `CamFingerprint = [u8; NUM_SUBSPACES]` where NUM_SUBSPACES = 6, though the semantic content differs: one is hash bytes, the other is centroid indices)
+- **Layout:** 8 branches × 8 leaves-per-branch = 64 leaves, packed into 128 × u64 = 1 KB (8 Kbit) padded buffer for SIMD alignment. Semantic content is 48 + 384 + 3072 = 3504 bits; the rest is zero-padding.
+- **Branch indices** (per `BRANCH_REGIONS` constant): 0=identity, 1=nars, 2=edges, 3=rl, 4=bloom, 5=qualia, 6=adjacency, 7=content
+- **Change detection:** `StaunenType` enum with 6 explicit variants — `Wisdom` (no change), `ContentChanged` (branch 7 only), `NarsChanged` (branch 1 only), `EdgesChanged` (branch 2 only), `QualiaChanged` (branch 5 only), `MultipleChanges(Vec<u8>)` (catch-all carrying the list of differing branch indices). Note: branches 0/3/4/6 don't get their own single-change variant; they fall into `MultipleChanges` even when only one of them differs.
+- **`xor_diff`:** panCAKES compression — XOR two Merkle trees' bits arrays, rebuild root/branches/leaves. The XOR-diff is what gossip transmits.
 
-**Memory layout matches cam_pq's distance-table** (both 6 KB-class structures, L1-resident). Same engineering pattern, different application.
+Both `MerkleTree::hamming` and `MerkleTree::diff_sparsity` are SIMD-accelerated (via `hamming_distance_raw` over the 1 KB byte view). The tree is hashable in O(n) where n is the CogRecord size, and the 1 KB output is L1-cache-resident.
 
 ### 3.3 PR-X12 mapping
 
@@ -239,16 +246,13 @@ R-13 commits the codec to a swappable codebook handle with four policy modes. `S
 
 **Cost:** ~2-3 weeks to wire dn_tree into the codec's codebook handle. Modest LoC (the trait exists), but design work to choose the right plastic-decay parameters.
 
-#### 3.3.2 dn_tree's 4-way fanout matches PR-X12's 4-mode taxonomy
+#### 3.3.2 dn_tree's 4-way fanout — structural suggestiveness, not literal mode-stats
 
-The dn_tree's *quaternary* (4-children-per-node) structure is structurally identical to the Skip/Merge/Delta/Escape discriminant. **Each dn_tree node naturally holds per-mode statistics:**
+**Correction from earlier framing:** dn_tree's quaternary structure is NOT a literal "Skip/Merge/Delta/Escape per child" container. Looking at the source (`DNTree::split_node`, `DNTree::select_child`): the 4 children are **equal-width quadrants of the prototype-index range** (`[lo, lo+q), [lo+q, lo+2q), [lo+2q, lo+3q), [lo+3q, hi)` where `q = (hi - lo) / 4`). The fanout is a *spatial partition*, not a *mode discriminant*.
 
-- Child 0: Skip-frequency at this level
-- Child 1: Merge-frequency
-- Child 2: Delta-frequency
-- Child 3: Escape-frequency
+What's structurally suggestive is that **a 4-mode discriminant could be layered on top** of dn_tree's existing infrastructure: each prototype slot could carry per-mode counts (Skip/Merge/Delta/Escape) bundled into the existing `GraphHV` summaries via the same plastic-bundling primitive (`bundle_into`). The 4-children fanout doesn't impose this — it permits it.
 
-This makes dn_tree the natural data structure for **mode-distribution drift detection**. If a codec instance is seeing 95% Skip on the training distribution and drops to 60% Skip on a new input, dn_tree's recursive structure catches that drift early and signals "codebook stale, federated update needed."
+For **mode-distribution drift detection**, the practical wiring is: add per-mode access counters to `DNNode` (cheap, 4×u32 = 16 bytes per node), and use `DNTree::traverse` to find leaves whose mode-distribution diverges most from the prior. If a codec instance is seeing 95% Skip on the training distribution and drops to 60% Skip on a new input, the divergence is detectable via the existing `partial_similarity` mechanism over the per-mode counts. **dn_tree as a substrate works for this; the 4-fanout matching the 4 modes is a structural coincidence, not a load-bearing identity.**
 
 This is one of the things M:H-NEW-1's "Plan G falsifiability test" should measure but currently doesn't. dn_tree gives us the data structure to do so.
 
@@ -277,12 +281,13 @@ Updating the inventory from `pr-x12-bgz-jc-substrate-synergies.md` §7 with the 
 | PR-X12 abstract concept | Concrete implementation |
 |---|---|
 | Skip/Merge/Delta/Escape | `bgz17` 4-layer cascade (Scent/Palette/ZeckBF17/Full) |
-| 4096-entry basin codebook | `bgz-hhtl-d` HHTL 16×16×16 lattice, trained by **`cam_pq`** |
+| 4096-entry basin codebook | `bgz-tensor::Codebook4096` (literal 4096-entry type), trained by **`cam_pq`**. `bgz-hhtl-d` is a *different* basin-codebook strategy (4-basin × 16-HIP × 256-TWIG = 16,384-cell address space over a shared 256-entry palette) — not the canonical 4096 |
 | `CurveOrder<const N>` | `highheelbgz` spiral addressing |
 | `LinearReduce<T> + Basis<T>` | `bgz-tensor` AttentionSemiring + ComposeTable + DistanceTable; **`sigker::SignatureBasis`** (proposed) |
 | Tropical-GEMM (R-7) | `bgz17::scalar_sparse::tropical_spmv` |
 | Federated codebook (R-13) | `bgz-hhtl-d` shared-palette + **`cam_pq::CamCodebook`** + **`dn_tree`** (online update) + **`merkle_tree`** (integrity) |
-| Formal correctness | `jc` Pillar 11 (Hambly-Lyons) via **`sigker`** |
+| Formal correctness — codec quantization | `jc` **Pillar 10 (Pflug-Pichler)** — nested-distance Lipschitz on Sigma DN-trees, certifies CAM-PQ tree quantization preserves FreeEnergy within Lε |
+| Formal correctness — path-signature lane | `jc` **Pillar 11 (Hambly-Lyons)** via **`sigker`** — certifies Index-regime classification (sigker only, not bgz) |
 | Activation-aware RDO | **`cam_pq::train_semantic`** (exists, unused) |
 
 **Eight primitives, six already implemented, three under-wired.** What PR-X12 ships is the *wire format + per-arch dispatch contract + cross-domain story* that knits them into one codec.
@@ -324,7 +329,11 @@ Recommended edits to `pr-x12-canon-resolutions-delta.md`:
 
 **R-14 (new)** — formal-correctness commitment:
 
-> R-14: the codec's wire-format determinism and bit-exact cross-arch reproduction are formally proven in `lance-graph/crates/jc/` Pillar 11 (Hambly-Lyons signature uniqueness) backed by `lance-graph/crates/sigker/` (Chen-Lyons signatures + Salvi 2020 PDE solver + CST 2021 randomized-signature universality). The codec cites the proof; does not reprove. **Status: blocked on Pillar 11 production benchmarking — see Gap G-4.**
+> R-14: the codec's correctness has two formal proofs in `lance-graph/crates/jc/`:
+> - **Quantization correctness (Pillar 10, Pflug-Pichler):** nested-distance Lipschitz on Sigma DN-trees — proves CAM-PQ tree quantization preserves FreeEnergy within Lε. This is the proof PR-X12 cites for "wire-format quantization is faithful."
+> - **Path-signature correctness (Pillar 11, Hambly-Lyons):** signature uniqueness on tree-quotient — proves any path is uniquely determined by its truncated signature up to tree-like equivalence. Active under `--features hambly-lyons` (since 2026-05-07, PR #348). This is the proof PR-X12 cites for the `SignatureBasis<DEPTH>` lane (R-15).
+>
+> Both pillars exist; the codec cites them and does not reprove. **Status: Pillar 10 active; Pillar 11 active under feature gate. Production-scale benchmarking + PR #350 (signature_kernel_pde math correction) — see Gap G-4.**
 
 **R-7 path correction** — the kernel home:
 
@@ -373,7 +382,8 @@ This doc (#4) and the bgz/jc doc (#3) are the ones that ground PR-X12 in working
   - `/home/user/ndarray/src/hpc/merkle_tree.rs` — Blake3-48-bit Merkle
   - `/home/user/lance-graph/crates/sigker/` — Chen-Lyons signatures
   - `/home/user/lance-graph/crates/sigker/src/` — `signature_kernel_pde`, `RandomizedSignature`, `CodecRouteSigker`
-  - `/home/user/lance-graph/crates/jc/src/hambly_lyons.rs` — Pillar 11 (DEFERRED)
+  - `/home/user/lance-graph/crates/jc/src/hambly_lyons.rs` — Pillar 11 (active under `--features hambly-lyons`; DEFERRED only in default zero-dep build)
+  - `/home/user/lance-graph/crates/jc/src/pflug.rs` — Pillar 10 (nested-distance Lipschitz on Sigma DN-trees, certifies CAM-PQ)
   - `/home/user/lance-graph/crates/bgz-tensor/src/adaptive_codec.rs` — cam_pq imports
 - **arXiv anchors for sigker:**
   - **2006.14794** (Salvi-Cass-Foster-Lyons-Lemercier 2020) — Goursat PDE for signature kernel

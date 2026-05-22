@@ -81,13 +81,30 @@ Shared palette: 480 tensors → 26 palette groups (5.4 MB metadata vs 57 MB if u
 
 ### 1.5 `lance-graph/crates/jc/` — Jirak-Cartan
 
-Five-pillar proof-in-code for binary-Hamming causal field computation. Standalone, zero-external-deps crate (feature-gated optional workspace-sibling deps). Implements formal proofs for:
+**12-pillar proof-in-code** for binary-Hamming causal field computation. The Cargo.toml description still says "five-pillar" (stale from the initial design), but `jc::run_all_pillars()` actually runs **12 pillars**: 1, 3, 4, 5, 5b, 7, 8, 9, 9b, 10, 11 (with 2 deferred pending coupled-revival-track activation, and 4 activated 2026-05-07 once `EULER_GAMMA` + `GOLDEN_RATIO` stabilized in Rust 1.94 `std::f64::consts`).
 
-- Causal-edge bit propagation
-- Hambly-Lyons signature uniqueness (Pillar 11, gated via `hambly-lyons` feature pulling `sigker`)
-- Graph-traversal invariants (OSINT, EWA bridge, LPA label propagation, Louvain modularity, Jaccard / Adamic-Adar)
+Standalone, zero-external-deps in default build (`cargo build`). The optional `hambly-lyons` feature pulls in the `sigker` workspace sibling and **activates Pillar 11**; under default features Pillar 11 reports `DEFERRED` instead of running.
 
-**This is the formal-verification harness** for the bgz family. The 0.992 ρ correlation of ZeckBF17 isn't an empirical observation — it's a *theorem* with a machine-checkable proof in jc.
+**The pillars relevant to PR-X12:**
+
+| Pillar | Theorem | Certifies |
+|---|---|---|
+| 1 (E-SUBSTRATE-1) | bundle associativity @ d=10000 | VSA Chapman-Kolmogorov / Markov semigroup |
+| 5 (Jirak) | Berry-Esseen under weak dependence @ d=16384 | noise floor for ICC / Spearman ρ claims |
+| 5b (Pearl 2³) | three-plane vs bundled mask accuracy @ d=16384 | task-level downstream of pillar 5 |
+| 9 (EWA-Sandwich) | Σ-push-forward along multi-hop edge paths | covariance propagation in graph traversal |
+| 9b (EWA-Sandwich 3D) | Σ-push-forward on 3×3 SPD covariances | **certifies `ndarray::hpc::splat3d`** |
+| **10 (Pflug-Pichler)** | nested-distance Lipschitz on Sigma DN-trees | **certifies CAM-PQ tree quantization preserves FreeEnergy within Lε** |
+| **11 (Hambly-Lyons)** | signature uniqueness on tree-quotient | **certifies sigker's Index-regime classification** |
+
+**Pillar 10 is the formal certification of CAM-PQ / bgz quantization correctness** — not Pillar 11. Pillar 11 certifies `sigker` specifically.
+
+**Pillar 11 probe** (when active): uses `sigker::signature_truncated` (tensor-algebra path) — *not* `signature_kernel_pde`, which has a known math bug (PR #350: the Goursat-PDE form diverges from the true signature kernel `I₀(2·√⟨u, v⟩)` at moderate inner products). The probe runs `N=100` random pairs in d=3 at depth-2, asserting:
+- Forward (out-and-back `[p₀, p₁, p₀]`): `‖S − S_identity‖ < 1e-9`
+- Converse (triangle `[p₀, p₁, p₂, p₀]`): `‖S − S_identity‖ > 0.05`
+- Discrimination ratio ≥ 1e6
+
+The full examples directory has 10 runnable proofs (not 9): `prove_it`, `sigma_probe`, `probe_p1`, `osint_edge_traversal`, `splat_to_ewa_bridge`, `splat_triangle_count`, `splat_lpa_label_propagation`, `splat_louvain_modularity`, `splat_jaccard_adamic_adar`, `splat_perturbationslernen`.
 
 ---
 
@@ -112,18 +129,32 @@ This is the load-bearing identification. PR-X12's 4-mode taxonomy is the same 4-
 
 **PR-X12's contribution above bgz17:** wire format for **streaming** sources (video frames, 3DGS, audio) where the source has to be encoded into a byte stream, not just searched. bgz17 is search-oriented (CAKES nearest-neighbour); PR-X12 is stream-oriented (rANS-coded byte sequence). Both use the same 4-mode grammar.
 
-### 2.2 4096-entry basin codebook ≡ HHTL 16×16×16 lattice
+### 2.2 4096-entry basin codebook ≡ bgz-tensor `Codebook4096`
 
 PR-X12's claim (M:E-D, R-13): 4096-entry basin codebook per encoder, swappable, federated.
 
-**bgz-hhtl-d's actual implementation:**
+**The literal 4096 lives in `bgz-tensor::codebook4096::Codebook4096`** — `bgz-tensor/src/lib.rs` exports `Codebook4096` and `CodebookIndex` as first-class types. This IS the 4096-entry codebook PR-X12 cites. Not derived; named.
 
-- Ba (basin / HEEL): 4 ways → tensor role discriminant (QK / V / Gate / FFN)
-- HIP: 16 ways → family within basin
-- TWIG: 256 ways → centroid index in shared palette
-- **Total cells: 4 × 16 × 256 = 16,384 — but the four basins are role-specific**, so per-role it's 16 × 256 = **4096**
+**bgz-hhtl-d encodes a DIFFERENT structure** — clarification of an earlier misreading:
 
-**This is the exact 4096 from PR-X12 §M:E-D.** The HHTL ontology (`Heel > Hip > Twig > Leaf`) IS the basin codebook structure, with `16 Hips × 16 Twigs × 16 Leaves` = 4096 leaves per Heel.
+```text
+Slot D bit layout (u16):
+  bits 15..14 = HEEL basin       (2 bits, 4 states: QK/V/Gate/FFN)
+  bits 13..10 = HIP family       (4 bits, 16 families per basin)
+  bits  9..2  = TWIG centroid    (8 bits, 256 centroids in shared palette)
+  bit      1  = BRANCH polarity  (sign of dominant residual dim)
+  bit      0  = reserved
+
+→ 4 × 16 × 256 = 16,384 addressable cells per role-group
+```
+
+But these aren't 16,384 distinct centroids — TWIG is a flat 0..255 index into a **256-entry palette shared across all rows of the role group**, and HIP families are built **post-hoc** from the palette via `build_hip_families` (4-level recursive farthest-pair binary split → 16 families). The 26 palette groups Qwen3-TTS-1.7B ships with give 26 × 256 = **6,656 distinct centroids total across the whole model**.
+
+So **two different 4096s in bgz-tensor**:
+- `Codebook4096` — literally 4096 entries, the direct correspondence to R-13
+- bgz-hhtl-d's 4 × 16 = 64 (basin × HIP) per role × 256 (TWIG) — produces a 16,384-cell address space, *not* 4096
+
+PR-X12 R-13 should reference `Codebook4096` directly; bgz-hhtl-d is a *different* basin-codebook strategy at a different working set size. Both live in the same crate.
 
 ### 2.3 `CurveOrder<const N>` trait ≡ highheelbgz spiral addressing
 
