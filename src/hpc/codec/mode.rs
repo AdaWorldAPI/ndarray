@@ -59,23 +59,41 @@ use super::ctu::{CellMode, LeafCu, MergeDir};
 // Header pack / unpack (16-bit)
 // ════════════════════════════════════════════════════════════════════
 
-/// Maximum encodable `basin_idx`. Stored in the lower 12 bits of the
-/// header; values >= this constant overflow the header field.
+/// Maximum encodable real `basin_idx`. Equal to `(1 << 12) - 2 = 4094`
+/// so that the all-ones 12-bit pattern (`0xFFF = 4095`) is reserved as
+/// the [`BASIN_NONE`] sentinel — without that reservation, basin 4095
+/// would round-trip ambiguously with "no basin assigned".
 ///
-/// ```
-/// use ndarray::hpc::codec::MAX_BASIN_IDX;
-/// assert_eq!(MAX_BASIN_IDX, (1 << 12) - 1);
-/// ```
-pub const MAX_BASIN_IDX: u16 = (1 << 12) - 1; // 4095
-
-/// Tag inside the per-frame basin codebook for "no basin assigned"
-/// (encoder-side sentinel during mode decision).
+/// The on-wire 12-bit field still holds any value `0..=0xFFF`; only the
+/// encoder's *valid-basin* range is restricted to `0..=MAX_BASIN_IDX`.
+/// [`BASIN_NONE`] is encodable in the header field too (when an encoder
+/// emits a "no basin" record), but it must never appear as a real basin
+/// codebook index.
 ///
 /// ```
 /// use ndarray::hpc::codec::{BASIN_NONE, MAX_BASIN_IDX};
-/// assert_eq!(BASIN_NONE, MAX_BASIN_IDX);
+/// assert_eq!(MAX_BASIN_IDX, (1 << 12) - 2);
+/// assert_eq!(MAX_BASIN_IDX, 4094);
+/// assert!(MAX_BASIN_IDX < BASIN_NONE);
 /// ```
-pub const BASIN_NONE: u16 = MAX_BASIN_IDX;
+pub const MAX_BASIN_IDX: u16 = (1 << 12) - 2; // 4094
+
+/// Tag inside the per-frame basin codebook for "no basin assigned"
+/// (encoder-side sentinel during mode decision). Equal to `0xFFF`
+/// (the all-ones 12-bit pattern) so it sits one slot above the highest
+/// real basin index ([`MAX_BASIN_IDX`]).
+///
+/// ```
+/// use ndarray::hpc::codec::{BASIN_NONE, MAX_BASIN_IDX};
+/// assert_eq!(BASIN_NONE, 4095);
+/// assert_eq!(BASIN_NONE, MAX_BASIN_IDX + 1);
+/// ```
+pub const BASIN_NONE: u16 = (1 << 12) - 1;
+
+/// Private: 12-bit mask for the basin field of the packed header.
+/// Independent of [`MAX_BASIN_IDX`] so that [`BASIN_NONE`] (which sits
+/// in the 12-bit field but is not a real basin) still round-trips.
+const BASIN_FIELD_MASK: u16 = 0x0FFF;
 
 /// Pack `(mode, basin_idx)` into a 16-bit header.
 ///
@@ -91,7 +109,7 @@ pub const BASIN_NONE: u16 = MAX_BASIN_IDX;
 #[inline]
 pub fn pack_header(mode: CellMode, basin_idx: u16) -> u16 {
     let mode_bits = (mode as u16) & 0b11;
-    let basin_bits = basin_idx & MAX_BASIN_IDX;
+    let basin_bits = basin_idx & BASIN_FIELD_MASK;
     (mode_bits << 12) | basin_bits
 }
 
@@ -108,7 +126,7 @@ pub fn pack_header(mode: CellMode, basin_idx: u16) -> u16 {
 #[inline]
 pub fn unpack_header(packed: u16) -> (CellMode, u16) {
     let mode_bits = ((packed >> 12) & 0b11) as u8;
-    let basin_idx = packed & MAX_BASIN_IDX;
+    let basin_idx = packed & BASIN_FIELD_MASK;
     let mode = match mode_bits {
         0b00 => CellMode::Skip,
         0b01 => CellMode::Merge,
@@ -165,9 +183,15 @@ pub fn unpack_merge_dir(byte: u8) -> MergeDir {
 /// worst case) — callers iterating CTUs typically pre-allocate
 /// `6 * cell_count` and trim afterwards.
 ///
-/// Returns `None` if `out.len() < packed_byte_len(leaf.mode)` (insufficient
-/// capacity for the *mode's* width — Skip needs 2, Merge/Delta need 3,
-/// Escape needs 6).
+/// Returns `None` in two cases:
+/// - `out.len() < packed_byte_len(leaf.mode)` (insufficient capacity for
+///   the *mode's* width — Skip needs 2, Merge/Delta need 3, Escape needs 6).
+/// - `leaf` is structurally malformed for its mode: `Merge` without a
+///   `merge_dir`, `Delta` without a `delta`, or `Escape` without an
+///   `escape_idx`. The `LeafCu::merge` / `delta` / `escape` constructors
+///   enforce these invariants; only struct-literal callers bypassing the
+///   constructors can hit this case. Pack is therefore bijective on the
+///   well-formed `LeafCu` subset.
 ///
 /// Format:
 /// - Bytes 0-1: header (`pack_header(mode, basin_idx)`, LE)
@@ -191,22 +215,24 @@ pub fn pack_leaf(leaf: &LeafCu, out: &mut [u8]) -> Option<usize> {
     }
     let header = pack_header(leaf.mode, leaf.basin_idx);
     out[..2].copy_from_slice(&header.to_le_bytes());
+    // Per-mode tail. `?` rejects malformed `LeafCu`s (e.g. a hand-built
+    // `LeafCu { mode: Merge, merge_dir: None, .. }`) with `None` rather
+    // than silently rewriting them into a different valid leaf. The
+    // `LeafCu::merge/delta/escape` constructors enforce the invariants;
+    // only struct-literal callers bypassing those constructors hit
+    // these short-circuits.
     let tail_len = match leaf.mode {
         CellMode::Skip => 0,
         CellMode::Merge => {
-            // Caller guarantees `merge_dir.is_some()` for `Merge` mode
-            // (LeafCu::merge constructor enforces this). Fall back to
-            // North if the invariant is violated, to keep encoder
-            // robustness — the decoder will still produce a valid leaf.
-            out[2] = pack_merge_dir(leaf.merge_dir.unwrap_or(MergeDir::North));
+            out[2] = pack_merge_dir(leaf.merge_dir?);
             1
         }
         CellMode::Delta => {
-            out[2] = leaf.delta.unwrap_or(0);
+            out[2] = leaf.delta?;
             1
         }
         CellMode::Escape => {
-            let idx = leaf.escape_idx.unwrap_or(0);
+            let idx = leaf.escape_idx?;
             out[2..6].copy_from_slice(&idx.to_le_bytes());
             4
         }
@@ -370,6 +396,72 @@ mod tests {
         let leaf = LeafCu::escape(100, 0xDEAD_BEEF);
         let mut buf = [0u8; 5]; // 1 short of Escape's worst case
         assert!(pack_leaf(&leaf, &mut buf).is_none());
+    }
+
+    #[test]
+    fn leaf_pack_rejects_malformed_merge_without_dir() {
+        // Bypass `LeafCu::merge` constructor and hand-build a leaf with
+        // mode = Merge but merge_dir = None. The previous unwrap_or(North)
+        // behavior would silently coerce this into a valid leaf — now we
+        // reject with None instead.
+        let malformed = LeafCu {
+            mode: CellMode::Merge,
+            basin_idx: 10,
+            delta: None,
+            merge_dir: None,
+            escape_idx: None,
+        };
+        let mut buf = [0u8; 6];
+        assert!(pack_leaf(&malformed, &mut buf).is_none());
+    }
+
+    #[test]
+    fn leaf_pack_rejects_malformed_delta_without_value() {
+        let malformed = LeafCu {
+            mode: CellMode::Delta,
+            basin_idx: 10,
+            delta: None,
+            merge_dir: None,
+            escape_idx: None,
+        };
+        let mut buf = [0u8; 6];
+        assert!(pack_leaf(&malformed, &mut buf).is_none());
+    }
+
+    #[test]
+    fn leaf_pack_rejects_malformed_escape_without_idx() {
+        let malformed = LeafCu {
+            mode: CellMode::Escape,
+            basin_idx: 10,
+            delta: None,
+            merge_dir: None,
+            escape_idx: None,
+        };
+        let mut buf = [0u8; 6];
+        assert!(pack_leaf(&malformed, &mut buf).is_none());
+    }
+
+    #[test]
+    fn basin_none_distinct_from_max_basin_idx() {
+        // Regression for the BASIN_NONE/MAX_BASIN_IDX collision: the
+        // sentinel must sit one slot above the highest real basin so
+        // basin 4094 is unambiguously "a real basin" and 4095 is
+        // unambiguously "no basin assigned".
+        assert_eq!(MAX_BASIN_IDX, 4094);
+        assert_eq!(BASIN_NONE, 4095);
+        assert!(MAX_BASIN_IDX < BASIN_NONE);
+    }
+
+    #[test]
+    fn header_round_trips_max_basin_idx_and_basin_none_distinctly() {
+        // Both values fit in the 12-bit field; the encoder treats them
+        // as different. (Decoders that route on BASIN_NONE need to
+        // compare against the sentinel explicitly.)
+        let real = pack_header(CellMode::Skip, MAX_BASIN_IDX);
+        let none = pack_header(CellMode::Skip, BASIN_NONE);
+        assert_ne!(real, none);
+        assert_eq!(unpack_header(real), (CellMode::Skip, MAX_BASIN_IDX));
+        assert_eq!(unpack_header(none), (CellMode::Skip, BASIN_NONE));
     }
 
     #[test]
