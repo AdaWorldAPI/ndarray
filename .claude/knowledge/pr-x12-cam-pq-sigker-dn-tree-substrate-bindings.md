@@ -308,12 +308,14 @@ Updating the inventory from `pr-x12-bgz-jc-substrate-synergies.md` §7 with the 
 
 **Total estimated gap-closing work: 8-12 weeks** across the seven items, all incremental on existing infrastructure. None of them require new research; all are wiring existing primitives into the codec.
 
-Two prior gaps from the earlier doc remain:
+Two prior gaps from the earlier doc remain (their canonical IDs are owned by `pr-x12-bgz-jc-substrate-synergies.md` §5; cross-referenced here):
 
-| Gap (prior) | Component | Cost |
+| Gap (cross-ref) | Component | Cost |
 |---|---|---|
-| **G-8** | `jd-nd` crate does not exist (ndarray-side proof crate) | 2-3 weeks skeleton + ongoing |
-| **G-9** | Cronbach/ICC encoding-reliability research crate not implemented | 1-2 weeks skeleton + 2-3 weeks PoC |
+| **bgz-jc G-1** (§5.1) | `jd-nd` crate does not exist (ndarray-side proof crate) | 2-3 weeks skeleton + ongoing |
+| **bgz-jc G-2** (§5.2) | Cronbach/ICC encoding-reliability research crate not implemented | 1-2 weeks skeleton + 2-3 weeks PoC |
+
+The G-1..G-7 IDs in §5 of *this* doc are local to the cam-pq / sigker / dn_tree binding; bgz-jc's G-1 / G-2 are a separate namespace owned by that doc. When citing cross-doc, prefix with the source (e.g., "bgz-jc G-1" vs "cam-pq G-1") to avoid the collision the previous G-8 / G-9 labelling implied.
 
 **Grand total: ~11-17 weeks** of substrate-binding + gap-closing work, parallel-able. PR-X12 codec body (~1500 LoC per R-3) is independent of this and can ship sooner.
 

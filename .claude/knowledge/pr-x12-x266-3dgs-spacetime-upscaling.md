@@ -268,12 +268,14 @@ Nothing in this doc is in PR-X12 scope. What it requires from PR-X12:
 
 | Requirement | Source | Status |
 |---|---|---|
-| `Basis<T>` trait with parametric `apply` | R-1, M:E-A | landed in concept; implementation in Plan A4 |
+| `Basis<T>` trait with parametric `apply` | R-1, M:E-A | **canon-fixed** (R-1 trait shape committed); **implementation** scheduled in Plan A4 |
 | EWA splat rasterizer as `Basis<f16>` impl | Plan E | scheduled |
-| Codec body decoupled from specific basis | M:H-NEW-2 LoC envelope | enforced via R-3 audit |
-| Header byte stable across basis swaps | R-2, M:E-J bits 0-1 | landed |
+| Codec body decoupled from specific basis | M:H-NEW-2 LoC envelope | enforced via R-3 audit rule (doc commitment; CI check pending) |
+| Header byte stable across basis swaps | R-2, M:E-J bits 0-1 | **canon-fixed** (R-2 commits bits 0-1 = `header_kind`); wire-format implementation in Plan A8 |
 | Plan G video lane validates per-arch latency | R-4, R-11 | scheduled |
-| Federated codebook policy for scene anchors | R-13 | landed |
+| Federated codebook policy for scene anchors | R-13 | **canon-fixed** (R-13 commits Option A: per-shard codebook for Plan F v1); implementation in Plan F |
+
+**"Canon-fixed"** = the resolution doc commits the design; **"scheduled"** = the implementation has a named plan card. None of the above have shipping code today.
 
 The path to x266-like capability is:
 

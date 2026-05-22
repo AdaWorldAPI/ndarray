@@ -130,17 +130,29 @@ pub fn batched_gemm(input: ...) {
 
 ### 3.3 Per-arch tunable crossover (R-5 generalised)
 
-Some operations have a "small N: scalar, large N: SIMD" crossover that varies per arch:
+Some operations have a "small N: scalar, large N: SIMD" crossover that varies per arch. The snippet below is **pseudocode** — Rust's stable const-eval does not let `match` discriminate over a runtime-detected `Arch::CURRENT` value at `const` context. The real mechanism is a `build.rs` script that resolves the target arch at *compile time* (via `target_arch` / `target_feature` cfgs + a feature-detection probe) and emits the chosen integer as a generated `const` in `OUT_DIR`:
 
 ```rust
-const DCT_BATCH_CROSSOVER: usize = match Arch::CURRENT {
-    Arch::SapphireRapids => 64,   // AMX wins above this
-    Arch::IceLakeServer => 32,    // AVX-512 narrower; lower crossover
-    Arch::Zen4 => 96,             // Zen's AVX-512 emulation widens crossover
-    Arch::AppleM3 => 256,         // NEON's narrower; only worth at large N
-    Arch::GravitonV3 => 128,      // SVE2 mid-range
-    Arch::Generic => usize::MAX,  // Always scalar fallback
-};
+// Shape of the per-arch table (lives in a build-script-generated file
+// included via include!(concat!(env!("OUT_DIR"), "/arch_crossovers.rs"))):
+//
+//   pub const DCT_BATCH_CROSSOVER: usize = 64;  // emitted by build.rs
+//                                                // for Sapphire Rapids
+//
+// The build script's decision matrix:
+//   Sapphire Rapids (target_feature = "avx512f,amx-bf16")  → 64
+//   Ice Lake / Skylake-X (avx512f only)                    → 32
+//   Zen 4 (avx512f, no AMX)                                → 96
+//   Apple Silicon (target_arch = "aarch64" + NEON)         → 256
+//   Graviton 3 (aarch64 + SVE2)                            → 128
+//   Generic / no SIMD                                       → usize::MAX
+//
+// Equivalent fallback if a future Rust stabilises const target-feature
+// detection, then this can become a runtime-stable const:
+//   const DCT_BATCH_CROSSOVER: usize = if cfg!(target_feature = "amx-bf16") { 64 }
+//                                       else if cfg!(target_feature = "avx512f") { 32 }
+//                                       else if cfg!(target_arch = "aarch64") { 128 }
+//                                       else { usize::MAX };
 
 pub fn dct_apply<const N: usize>(input: &[i16], output: &mut [i16]) {
     if N >= DCT_BATCH_CROSSOVER {
@@ -151,7 +163,7 @@ pub fn dct_apply<const N: usize>(input: &[i16], output: &mut [i16]) {
 }
 ```
 
-R-5 commits these crossovers as **bench-tunable constants**, not hand-guessed numbers. Plan G's codec-bench includes a calibration sub-target that emits the right `const` values per arch via build script.
+R-5 commits these crossovers as **bench-tunable constants** emitted by Plan G's codec-bench calibration sub-target into the per-arch `OUT_DIR` file — not hand-guessed numbers, not a runtime `match` on a synthetic `Arch` enum. The build script is the single source of truth for which integer compiles in.
 
 ---
 
