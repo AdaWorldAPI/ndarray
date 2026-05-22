@@ -59,6 +59,24 @@ use super::ctu::{CellMode, LeafCu, MergeDir};
 // Header pack / unpack (16-bit)
 // ════════════════════════════════════════════════════════════════════
 
+// ── Design invariant ────────────────────────────────────────────────
+//
+// The 12-bit basin field addresses exactly one of 4096 real Leaves
+// (HHTL ontology, see `src/hpc/ogit_bridge/assets/cognitive/entities/Leaf.ttl`:
+// 16 Hips × 16 Twigs × 16 Leaves per Heel, every Leaf carries a real
+// `basinSignature`). Do NOT reserve a value as a "no basin" /
+// "not yet decided" sentinel.
+//
+// Rationale: that's authoring-time uncertainty (encoder mid-decision)
+// leaking into wire-format ontological state. Keep optionality in the
+// type, not in a magic value:
+//
+//   - encoder scratch state → `Option<u16>` (Some = committed, None = TBD)
+//   - persisted / wire-format → plain `u16`, every value real
+//
+// The doubt must collapse to Some(basin) before the leaf is packed.
+// Once a leaf reaches the wire it has a basin, period.
+
 /// Maximum encodable `basin_idx`. Equal to `(1 << 12) - 1 = 4095`,
 /// the full 12-bit range.
 ///
