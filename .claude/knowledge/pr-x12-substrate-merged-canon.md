@@ -3,8 +3,8 @@
 > Date: 2026-05-22  
 > Status: **MERGED CANON** — synthesises two parallel sessions' findings into one doc  
 > Supersedes (for new content; keep originals for archeology):  
->   - `pr-x12-codec-cognitive-substrate-mapping.md` (session A: opus 4.7 main thread, this branch)  
->   - `pr-x12-cross-domain-synergies.md` (session B: parallel thread, PR #195 branch, commit `01c77ccc`)  
+> - `pr-x12-codec-cognitive-substrate-mapping.md` (session A: opus 4.7 main thread, this branch)
+> - `pr-x12-cross-domain-synergies.md` (session B: parallel thread, merged via PR #195, commit `01c77ccc`)
 > Sister doc: `pr-x12-codec-x265-design.md` (the mechanical spec, untouched)
 
 ---
@@ -162,7 +162,7 @@ A's T-16/T-17 (cross-repo dep direction problem) + B's D-STACK-6/D-STACK-12 (Lan
 The resolution is **already implicit** in the merged claim: after PR-X12 stabilises, extract `crate::hpc::codec::*` into a sibling crate `ndarray-codec`. Both `ndarray` and `lance-graph` then depend on it. The codec lives at the dep-bottom layer not as "ndarray hardware" but as **its own architectural category**.
 
 → Action: add a **fifth category** to the architecture rule in CLAUDE.md:
-```
+```text
 - ndarray = hardware (SIMD, Palette, Base17, SpoDistanceMatrices, read_bgz7_file)
 - ndarray-codec = compression substrate (Ctu, LeafCu, predict_intra, rANS) ← NEW
 - lance-graph = thinking (NarsTruth, NarsEngine, TripleModel, AutocompleteCache)
@@ -300,7 +300,7 @@ Merge of A's H-1..H-7 + B's HG1..HG6 + two new M:H-* claims that emerge from the
 
 **M:H-NEW-1** — The same Rust binary consumes (4K video frames | 1M-Gaussian 3DGS scene | 7B-LLM gradient stream | attention KV cache) and emits a compressed Lance column. One CLI. One codec. Four loads. **This is the falsifiability test** — build it (Plan G, the bench harness), prove HG1/H-7 by demonstration, not by argument.
 
-**M:H-NEW-2** — `trait PredictiveSignal` + `trait LinearReduce<Basis>` + `trait CurveOrder<const N: usize>` factor the codec into three plug-points (per M:E-E + M:E-A + M:E-B). The codec body is `<150 LoC of generic glue. Domain consumers ship `<200 LoC` of trait impls. **Total stack for all four industries: ~2 KLoC.** Compared to ~50 KLoC per-domain implementations elsewhere. The 25× code-density delta IS the architectural payoff that justifies the eight sub-cards.
+**M:H-NEW-2** — `trait PredictiveSignal` + `trait LinearReduce<Basis>` + `trait CurveOrder<const N: usize>` factor the codec into three plug-points (per M:E-E + M:E-A + M:E-B). The codec body is `<150 LoC of generic glue. Domain consumers ship `<200 LoC` of trait impls. **Total stack for all four industries: ~2 KLoC.** Compared to ~50 KLoC per-domain implementations elsewhere. The 25× code-density delta is the architectural payoff that justifies the eight sub-cards.
 
 ---
 
@@ -408,7 +408,7 @@ Replaces both A:§10 and B:§5 plan lists. Critical path resolved per M:E-F.
 
 ## 6. Sequencing diagram
 
-```
+```text
               ┌──────────────────────────────────────┐
               │   Plan G (multi-domain bench)        │
               │   2 weeks — UNFALSIFIABILITY GATE    │

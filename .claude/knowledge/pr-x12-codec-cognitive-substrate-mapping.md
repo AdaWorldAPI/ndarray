@@ -53,7 +53,7 @@ bit  15 14 13 12 11 10 9 8 7 6 5 4 3 2 1 0
 
 Two bits = four modes. Not more, not fewer. The four modes form a **strict cost lattice**:
 
-```
+```text
 Skip   (2 bytes total) ⊂  free
 Merge  (3 bytes)       ⊂  borrow from neighbour
 Delta  (3 bytes)       ⊂  store quantized perturbation
@@ -77,7 +77,7 @@ Monotone cost ordering is what lets `predict_intra` use a "first-fit cheapest" d
 
 ### 3.1 Spatial hierarchy (HEVC's original use)
 
-```
+```text
 depth 0 (64×64 CTU)   ↔ one BlockedGrid L1 block (`ctu.rs:236`)
 depth 1 (32×32 split) ↔ one CU at split-level 1
 depth 2 (16×16 split) ↔ ...
@@ -88,7 +88,7 @@ depth 3 (8×8 leaf)    ↔ leaf CU (smallest cognitively-meaningful unit)
 
 ### 3.2 Attention hierarchy (rediscovery as transformer)
 
-```
+```text
 depth 0 ↔ one attention layer
 depth 1 ↔ one attention head (32×32 = 1024 attention slots)
 depth 2 ↔ one multi-query-attention group (4 heads sharing KV)
@@ -101,7 +101,7 @@ Mistral / Llama4 sliding-window attention is **exactly depth-3 leaf processing**
 
 ### 3.3 Gradient-update hierarchy (the optimizer mapping)
 
-```
+```text
 depth 0 ↔ "should this parameter tensor be touched this step?"
 depth 1 ↔ "which block of this tensor needs update?"
 depth 2 ↔ "which row of that block?"
@@ -122,7 +122,7 @@ This is **what DeepSpeed-ZeRO does informally** with `bf16_compress`, `int8_comp
 
 ### 4.1 The 12-bit basin = 4096-entry vocabulary
 
-`MAX_BASIN_IDX = (1 << 12) - 1 = 4095` (`mode.rs:71`). Each `LeafCu` carries a 12-bit index into the per-frame basin codebook. For:
+`MAX_BASIN_IDX = (1 << 12) - 2 = 4094` (`mode.rs:79`), with `BASIN_NONE = 4095` reserved as the absent-basin sentinel — the 12-bit header field encodes `0..=4094` for real basins plus `4095` for "no basin assigned". Each `LeafCu` carries a 12-bit index into the per-frame basin codebook. For:
 
 - **Video**: 4096 palette entries per GOP — orders of magnitude more than HEVC SCC's 64-entry cap
 - **Splats**: 4096 splat archetypes (colour clusters × scale clusters × view-direction clusters) — covers a non-toy scene
@@ -145,9 +145,9 @@ The SCC team had to cap palette at 64 entries rebuilt per-CTU because that was t
 
 **Holy grail claim H-1**: PR-X12 + cam_pq gives you the screen-content video codec HEVC SCC was trying to be in 2013 — without retrofitting, just by composing existing modules. Cite this when somebody asks "why is the basin field 12 bits and not 8 like HEVC SCC".
 
-### 4.3 BASIN_NONE sentinel collision (PR #195 open issue)
+### 4.3 BASIN_NONE sentinel collision (resolved in PR #195)
 
-`BASIN_NONE = MAX_BASIN_IDX = 4095` (`mode.rs:79`) — basin 4095 is ambiguous on the wire (real basin vs "no basin" sentinel). Fix in PR #195: `MAX_BASIN_IDX = 4094`, `BASIN_NONE = 4095`. Costs one codebook entry (irrelevant for k-means usage). Flagged by CodeRabbit, not yet pushed. **Tracked in §12 below.**
+Original bug: `BASIN_NONE = MAX_BASIN_IDX = 4095` (pre-fix `mode.rs`) — basin 4095 was ambiguous on the wire (real basin vs "no basin" sentinel). Shipped fix in PR #195 (commit `24232985`): `MAX_BASIN_IDX = (1 << 12) - 2 = 4094`, `BASIN_NONE = 4095` reserved. Costs one codebook entry (irrelevant for k-means usage). Originally flagged by CodeRabbit; merged.
 
 ---
 
@@ -300,11 +300,11 @@ The mappings above are dense but specific. The holy grail claims are general and
 - ✅ Escape allocator collision (P1) → `Option<&mut u32>` cursor
 - ✅ NESW/NEWS doc mismatch (P1) → explicit slot table
 
-**Still open on PR #195**:
-- 🟡 `BASIN_NONE == MAX_BASIN_IDX == 4095` ambiguity → shrink MAX_BASIN_IDX to 4094
-- 🟡 `pack_leaf` `unwrap_or` fallbacks → switch to `?` operator (non-bijective serialisation)
+**Resolved in PR #195 follow-up (commit `24232985`)**:
+- ✅ `BASIN_NONE == MAX_BASIN_IDX == 4095` ambiguity → `MAX_BASIN_IDX = 4094`, `BASIN_NONE = 4095` reserved
+- ✅ `pack_leaf` `unwrap_or` fallbacks → switched to `?` operator (bijective serialisation; 3 regression tests added)
 
-Track in §12 below.
+Both originally listed in §12 below; entries updated.
 
 ### 10.2 PR-X12 A4 — transform
 
@@ -451,8 +451,8 @@ Track in §12 below.
 - None currently.
 
 **Severity P1** (fix before next-sub-card):
-- *T-1*: `BASIN_NONE == MAX_BASIN_IDX` collision (`mode.rs:79`). Fix: `MAX_BASIN_IDX = 4094, BASIN_NONE = 4095`. Costs 1 codebook entry. **Flagged by CodeRabbit on PR #195, not yet merged.**
-- *T-2*: `pack_leaf` `unwrap_or` fallbacks (`mode.rs:194-210`). Make encode bijective: `leaf.merge_dir?` etc. Malformed `LeafCu` should be a None return, not a silent rewrite. **Flagged by CodeRabbit on PR #195, not yet merged.**
+- ~~*T-1*: `BASIN_NONE == MAX_BASIN_IDX` collision (`mode.rs:79`).~~ **RESOLVED** via PR #195 commit `24232985`: `MAX_BASIN_IDX = 4094, BASIN_NONE = 4095`. Costs 1 codebook entry.
+- ~~*T-2*: `pack_leaf` `unwrap_or` fallbacks (`mode.rs:194-210`).~~ **RESOLVED** via PR #195 commit `24232985`: switched to `?` operator; 3 regression tests added (`leaf_pack_rejects_malformed_{merge,delta,escape}_without_*`).
 
 **Severity P2** (fix in follow-up):
 - *T-3*: A3-intra currently scans NEWS without RDO; replace with λ-weighted RDO when A6 lands. Today's first-fit policy is the right default for λ=0 but suboptimal for typical λ.
