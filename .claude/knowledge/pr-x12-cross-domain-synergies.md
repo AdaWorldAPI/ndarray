@@ -10,6 +10,23 @@
 > Companion to `.claude/knowledge/pr-x12-codec-x265-design.md` (the
 > mechanical design). This doc captures the **why-it-generalizes**
 > that the design doc deliberately scopes out.
+>
+> **Post-merge resolutions (2026-05-22):** the load-bearing claims below
+> are now numbered in `pr-x12-canon-resolutions-delta.md`:
+> - §E1 (topology-free `MergeDir`) → **R-9** (4-way alphabet stays canonical;
+>   wider topologies layered, not swapped — `Topology` trait deferred)
+> - §HG2 (sub-1-bit-per-Gaussian) → **R-10** (sub-1-bit-per-token via
+>   Gaussian-tail rANS where source supports it; falsified by Plan G entropy bench)
+> - §E9 (splat3d × codec = same pipeline) → **R-1** (`LinearReduce<T>` +
+>   `Basis<T>` trait surface; codec body never imports a specific basis impl)
+> - §Plan A (A7 rANS critical) → **R-3** (codec-body LoC envelope ≤ 1500,
+>   A7 must fit) + **R-4** (Plan G arch-conditional bench gates the claim)
+>
+> Perspective lenses landed 2026-05-22:
+> `pr-x12-x265-blasgraph-gemm.md` · `pr-x12-x266-3dgs-spacetime-upscaling.md`
+> · `pr-x12-woa-multiarch-orchestration.md` · `pr-x12-anti-neural-lookup-inversion.md`
+> · `pr-x12-gguf-llm-weights-encoding.md` (the fifth load — static LLM weight tensors)
+> · **`pr-x12-bgz-jc-substrate-synergies.md`** (PR-X12 grounded: bgz17/bgz-tensor/bgz-hhtl-d/jc already implement most of the substrate)
 
 ## TL;DR
 
@@ -186,6 +203,8 @@ literature snapshot I'm working from; **claim** is the right word, not
 
 ### E1. **`MergeDir` is a topology, not a direction.**
 
+> [Resolved post-merge as **R-9**: the 4-way alphabet *stays* canonical on the wire — `{N, E, W, S}` discriminant is pinned for HEVC compatibility. Wider topologies (6-way 3D, 8-way diagonal-aware) layer *above* the codec via a `Topology<Mode>` trait, but the wire format does not extend. See `pr-x12-canon-resolutions-delta.md` §R-9 for the rationale: extending the wire alphabet to 6/8 ways would invalidate HEVC's 2-bit `header_kind` field and break the goal of being decodable by spec-conformant HEVC tooling.]
+
 `{North, East, West, South}` happens to be a 2D Cartesian raster
 mental model. The codec doesn't care. The discriminant alphabet just
 needs to be a 4-way categorical over "which of 4 neighbours did I
@@ -270,6 +289,8 @@ codec is the parameter-efficient fine-tuning representation.
 The user's "Pertuberationslernen" instinct lands here.
 
 ### E9. **The `splat3d` PRs 1-7 (May sprint) and the `codec` PRs are the SAME pipeline shifted 90°.**
+
+> [Formalised post-merge as **R-1**: the unified pipeline lives in `ndarray::hpc::LinearReduce<T>`, decomposing into `Basis<T>` (basis-as-data; DCT, EWA splat, wavelet, k-means prototype all are `Basis<T>` impls) and `Reducer<T>` (the reduction: rANS-encode, alpha-composite, sum-reduce, softmax). The codec body dispatches via the trait and *never imports a specific basis impl* — this is what makes the "same pipeline shifted 90°" claim mechanically real.]
 
 The splat3d forward pipeline is: project → tile-bin → mode-decide
 (which Gaussian contributes at which pixel) → alpha-composite. The
@@ -467,6 +488,8 @@ Marketing line: *"x265 was a codec for one signal. PR-X12 is a
 codec for the manifold of predictable codebook-coded signals."*
 
 ### HG2. **Sub-1-bit-per-Gaussian 3DGS compression.**
+
+> [Committed post-merge as **R-10**: sub-1-bit-per-token where the source distribution supports it (heavy-tailed residual after basin lookup). The mechanism is basin codebook (12-bit fingerprint → 4096 entries) + Gaussian-tail rANS, both already in scope. Falsifier: Plan G entropy bench at < 1.0 bit-per-token on the held-out Bbb/3DGS test corpus. See R-10 in the delta doc and `pr-x12-anti-neural-lookup-inversion.md` §3.1 for why this lookup-table substrate hits the Shannon bound within ε ≤ 0.2 dB.]
 
 Stock 3DGS: ~250 bytes/Gaussian raw, ~50 bytes after PLY-trim.
 PR-X12 mode-coded + A7 rANS: ~3-8 bits/Gaussian for the dominant
