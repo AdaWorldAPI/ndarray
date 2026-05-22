@@ -28,6 +28,79 @@
 ## Entries (append below; newest first)
 
 
+## 2026-05-22T18:00 — PR-X12 cross-stack architecture session (opus 4.7)
+
+**Branch:** `claude/continue-ndarray-x0Oaw`
+**Triggered by:** PR #195 review (A2 mode bit-pack + A3-intra prediction kernel)
+**Verdict:** SHIP — survives-compaction architecture doc landed.
+
+**Output:** `.claude/knowledge/pr-x12-codec-cognitive-substrate-mapping.md` (~900 lines)
+— cross-stack mapping (x265 ↔ Gaussian splat ↔ cognitive shaders ↔ blasgraph/MKL ↔ gradient optimisation) — companion to the as-shipped `pr-x12-codec-x265-design.md`, generalising the codec spec across the rest of the stack.
+
+**Structure (citable by section number):**
+- §0 — the big claim (PR-X12 is the gradient-quantisation substrate GenAI training has been missing for two years)
+- §1 — four-axis mapping table (x265 / splat / cognitive / gradient)
+- §2-§7 — deep mappings (mode taxonomy, CTU quad-tree, palette/basin codebook, transform basis, rANS, λ-RDO)
+- §8 — 15 numbered epiphanies (E-1..E-15)
+- §9 — 7 holy grail claims (H-1..H-7)
+- §10 — integration plan per sub-card (A4/A6/A7/A8) + 3 new PRs (splat, cognitive, gradient consumers)
+- §11 — exploration paths ranked by confidence (15 entries across high/medium/speculative/watch)
+- §12 — technical debt inventory (codec-side, ndarray substrate, lance-graph cognitive, cross-repo, PR #195 specific) — 23 numbered items T-1..T-23
+- §13 — 6 blasgraph/MKL synergies the HEVC team couldn't reach in 2013
+- §14 — cross-references (design docs, rules, code paths)
+- §15 — how to use this doc (read order per use case)
+
+**Key epiphanies (citation form):**
+- **E-1**: Skip/Merge/Delta/Escape IS ZeRO's compression policy (with Merge = LoRA-group sharing that ZeRO doesn't have)
+- **E-2**: CTU quad-tree IS Mistral's sliding-window attention hierarchy
+- **E-3**: K-means at frame rate is the HEVC SCC unlock — 2013-era hardware couldn't, our stack can
+- **E-4**: Transform basis IS the optimiser's preconditioner (DCT-II ↔ Adam ↔ KFAC ↔ learned conv all share `Δ' = B·Δ`)
+- **E-5**: rANS + k-means = Shannon-optimal lossless gradient compression
+- **E-6**: λ-RDO is the universal training objective (same `λ·D + R` across codec, ZeRO, splat, attention)
+- **E-7..E-11**: 5 blasgraph/MKL synergies x265 couldn't reach (block-matched ME via i8gemm, batched DCT, partition tree as tropical-GEMM, CABAC replacement with tiny transformer, deblocking as learned conv)
+- **E-12..E-15**: invariants pinned (wire codes = enum discriminants; basin codebook IS rANS frequency table; PR-X12 is the cross-domain unification PR; reserved header bits 14-15 are the inter-tier link)
+
+**Key holy grail claims (load-bearing):**
+- **H-1**: PR-X12 + cam_pq is HEVC SCC done right with 4096-entry codebook at 60 fps
+- **H-2**: The transform IS the optimiser (most underrated mapping)
+- **H-3**: CTU quad-tree is the universal hierarchical-attention substrate
+- **H-4**: rANS + k-means achieves Shannon-optimal lossless gradient compression
+- **H-5**: PR-X12 generalises ZeRO (Merge is the bucket ZeRO doesn't have)
+- **H-6**: 64×64 CTU is the right unit for both 4K video and 7B LLMs (convergent evolution)
+- **H-7**: The codec is the substrate; everything else is a renaming
+
+**Technical debt inventory (citable as T-N):**
+- T-1, T-2: PR #195 open CodeRabbit findings (BASIN_NONE collision + unwrap_or non-bijection)
+- T-3..T-9: codec-side P2/P3 (A3 first-fit vs RDO, lossy fallback signalling, inter-tier readiness)
+- T-10..T-15: ndarray substrate (HPC graduation incomplete, no `Transform` trait yet, NEON tile-GEMM stub, no Result-returning encode API)
+- T-16..T-19: lance-graph cognitive layer (cross-repo dep direction, tropical-GEMM not wired, GridLake A2 derive missing)
+- T-20..T-23: cross-repo coordination (branch-name aliasing, convergence-v1 cross-ref, causal-edge v2 metadata, architecture boundary note for A6)
+
+**Integration plan (per sub-card):**
+- A4 transform → 1 week, ship `Transform` trait + DCT-II + Identity, batched dispatch to bf16_tile_gemm at ≥64 blocks
+- A6 RDO → 1 week, λ-weighted Lagrangian, replaces predict_intra first-fit when λ>0
+- A7 rANS → 1.5 weeks, per-frame frequency from shared k-means pass
+- A8 stream → 1 week, wire-format spec including ZeRO-compatible framing
+- A3-inter → 0.5 weeks (extends Merge to 5-candidate via 3-bit MergeDir; uses reserved header bits 14-15)
+- New PR splat consumer → 0.5 weeks after A4+A6
+- New PR cognitive consumer → 1 week after A4+A6+A7
+- New PR gradient compression (burn/candle) → 2 weeks cross-repo
+
+**No code changes this session** — pure architecture doc.
+
+**Verification:**
+- `cargo check --lib` → clean (no code touched)
+- Doc cross-references confirmed against actual file paths + line numbers
+- `pr-x12-codec-x265-design.md` cross-reference preserved
+- Pinned 23 technical debt items with severity gradient (P0/P1/P2/P3)
+
+**Why this doc is load-bearing:**
+PR-X12 sits at the intersection of four industries that each treat their own corner as the central knob (HEVC RDO, ZeRO bucket choice, splat sparsity reg, attention pruning). Without explicit naming of the unification, downstream agents will rediscover each corner independently and reimplement what the codec already provides. This doc names the unification + pins the citation numbering so future PR descriptions can reference "H-2" or "E-9" by stable identifier.
+
+**Commit:** TBD (pending push).
+
+---
+
 ## 2026-05-21T16:00 — substrate-graduation batch 3 (opus 4.7)
 
 **Branch:** `claude/continue-ndarray-x0Oaw`

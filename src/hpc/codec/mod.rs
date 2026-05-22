@@ -32,7 +32,7 @@ pub mod predict;
 pub use ctu::{CellMode, MergeDir, MAX_QUAD_TREE_NODES, MAX_SPLIT_DEPTH};
 pub use ctu::{Ctu, CtuArena, CtuPartition, LeafCu, MaxSplitDepthReached, MergeError, NodeIdx};
 pub use mode::{
-    pack_header, pack_leaf, pack_merge_dir, packed_byte_len, unpack_header, unpack_leaf, unpack_merge_dir, BASIN_NONE,
+    pack_header, pack_leaf, pack_merge_dir, packed_byte_len, unpack_header, unpack_leaf, unpack_merge_dir,
     MAX_BASIN_IDX,
 };
-pub use predict::{is_no_basin, predict_intra, IntraConfig, IntraContext};
+pub use predict::{predict_intra, IntraConfig, IntraContext};

@@ -59,40 +59,41 @@ use super::ctu::{CellMode, LeafCu, MergeDir};
 // Header pack / unpack (16-bit)
 // ════════════════════════════════════════════════════════════════════
 
-/// Maximum encodable real `basin_idx`. Equal to `(1 << 12) - 2 = 4094`
-/// so that the all-ones 12-bit pattern (`0xFFF = 4095`) is reserved as
-/// the [`BASIN_NONE`] sentinel — without that reservation, basin 4095
-/// would round-trip ambiguously with "no basin assigned".
-///
-/// The on-wire 12-bit field still holds any value `0..=0xFFF`; only the
-/// encoder's *valid-basin* range is restricted to `0..=MAX_BASIN_IDX`.
-/// [`BASIN_NONE`] is encodable in the header field too (when an encoder
-/// emits a "no basin" record), but it must never appear as a real basin
-/// codebook index.
-///
-/// ```
-/// use ndarray::hpc::codec::{BASIN_NONE, MAX_BASIN_IDX};
-/// assert_eq!(MAX_BASIN_IDX, (1 << 12) - 2);
-/// assert_eq!(MAX_BASIN_IDX, 4094);
-/// assert!(MAX_BASIN_IDX < BASIN_NONE);
-/// ```
-pub const MAX_BASIN_IDX: u16 = (1 << 12) - 2; // 4094
+// ── Design invariant ────────────────────────────────────────────────
+//
+// The 12-bit basin field addresses exactly one of 4096 real Leaves
+// (HHTL ontology, see `src/hpc/ogit_bridge/assets/cognitive/entities/Leaf.ttl`:
+// 16 Hips × 16 Twigs × 16 Leaves per Heel, every Leaf carries a real
+// `basinSignature`). Do NOT reserve a value as a "no basin" /
+// "not yet decided" sentinel.
+//
+// Rationale: that's authoring-time uncertainty (encoder mid-decision)
+// leaking into wire-format ontological state. Keep optionality in the
+// type, not in a magic value:
+//
+//   - encoder scratch state → `Option<u16>` (Some = committed, None = TBD)
+//   - persisted / wire-format → plain `u16`, every value real
+//
+// The doubt must collapse to Some(basin) before the leaf is packed.
+// Once a leaf reaches the wire it has a basin, period.
 
-/// Tag inside the per-frame basin codebook for "no basin assigned"
-/// (encoder-side sentinel during mode decision). Equal to `0xFFF`
-/// (the all-ones 12-bit pattern) so it sits one slot above the highest
-/// real basin index ([`MAX_BASIN_IDX`]).
+/// Maximum encodable `basin_idx`. Equal to `(1 << 12) - 1 = 4095`,
+/// the full 12-bit range.
+///
+/// The codebook follows the HHTL ontology (`Heel > Hip > Twig > Leaf`,
+/// see the entity TTLs under `src/hpc/ogit_bridge/assets/cognitive/entities/`):
+/// `16 Hips × 16 Twigs × 16 Leaves = 4096 Leaves per Heel`. Every value
+/// `0..=MAX_BASIN_IDX` addresses one Leaf, each carrying a real
+/// `basinSignature`.
 ///
 /// ```
-/// use ndarray::hpc::codec::{BASIN_NONE, MAX_BASIN_IDX};
-/// assert_eq!(BASIN_NONE, 4095);
-/// assert_eq!(BASIN_NONE, MAX_BASIN_IDX + 1);
+/// use ndarray::hpc::codec::MAX_BASIN_IDX;
+/// assert_eq!(MAX_BASIN_IDX, (1 << 12) - 1);
+/// assert_eq!(MAX_BASIN_IDX, 4095);
 /// ```
-pub const BASIN_NONE: u16 = (1 << 12) - 1;
+pub const MAX_BASIN_IDX: u16 = (1 << 12) - 1; // 4095
 
 /// Private: 12-bit mask for the basin field of the packed header.
-/// Independent of [`MAX_BASIN_IDX`] so that [`BASIN_NONE`] (which sits
-/// in the 12-bit field but is not a real basin) still round-trips.
 const BASIN_FIELD_MASK: u16 = 0x0FFF;
 
 /// Pack `(mode, basin_idx)` into a 16-bit header.
@@ -442,26 +443,18 @@ mod tests {
     }
 
     #[test]
-    fn basin_none_distinct_from_max_basin_idx() {
-        // Regression for the BASIN_NONE/MAX_BASIN_IDX collision: the
-        // sentinel must sit one slot above the highest real basin so
-        // basin 4094 is unambiguously "a real basin" and 4095 is
-        // unambiguously "no basin assigned".
-        assert_eq!(MAX_BASIN_IDX, 4094);
-        assert_eq!(BASIN_NONE, 4095);
-        assert!(MAX_BASIN_IDX < BASIN_NONE);
+    fn max_basin_idx_fills_full_12bit_range() {
+        // 16 Hips × 16 Twigs × 16 Leaves = 4096 Leaves per Heel
+        // (HHTL ontology, see Leaf.ttl). Every value 0..=MAX_BASIN_IDX
+        // addresses one Leaf.
+        assert_eq!(MAX_BASIN_IDX, (1 << 12) - 1);
+        assert_eq!(MAX_BASIN_IDX, 4095);
     }
 
     #[test]
-    fn header_round_trips_max_basin_idx_and_basin_none_distinctly() {
-        // Both values fit in the 12-bit field; the encoder treats them
-        // as different. (Decoders that route on BASIN_NONE need to
-        // compare against the sentinel explicitly.)
-        let real = pack_header(CellMode::Skip, MAX_BASIN_IDX);
-        let none = pack_header(CellMode::Skip, BASIN_NONE);
-        assert_ne!(real, none);
-        assert_eq!(unpack_header(real), (CellMode::Skip, MAX_BASIN_IDX));
-        assert_eq!(unpack_header(none), (CellMode::Skip, BASIN_NONE));
+    fn header_round_trips_max_basin_idx() {
+        let h = pack_header(CellMode::Skip, MAX_BASIN_IDX);
+        assert_eq!(unpack_header(h), (CellMode::Skip, MAX_BASIN_IDX));
     }
 
     #[test]
