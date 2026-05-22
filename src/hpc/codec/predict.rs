@@ -87,6 +87,17 @@ use super::mode::BASIN_NONE;
 /// - `neighbours`: NESW (in [`MergeDir`] discriminant order) optional
 ///   neighbour leaves. `None` for boundary cells; the Merge candidate
 ///   scan skips `None` entries.
+///
+/// ```
+/// use ndarray::hpc::codec::{IntraContext, LeafCu};
+/// let north = LeafCu::delta(5, 17);
+/// let ctx = IntraContext {
+///     basin_idx: 5,
+///     delta_i32: 17,
+///     neighbours: [Some(&north), None, None, None],
+/// };
+/// assert_eq!(ctx.basin_idx, 5);
+/// ```
 #[derive(Debug, Clone, Copy)]
 pub struct IntraContext<'a> {
     /// Pre-resolved basin index (12-bit max).
@@ -102,6 +113,14 @@ pub struct IntraContext<'a> {
 ///
 /// Today a single field; the field exists so the API can grow
 /// (Merge tolerance, RDO knobs in A6) without a signature break.
+///
+/// ```
+/// use ndarray::hpc::codec::IntraConfig;
+/// let default_cfg = IntraConfig::default();
+/// assert!(default_cfg.escape_next_idx.is_none());
+/// let allocated = IntraConfig { escape_next_idx: Some(42) };
+/// assert_eq!(allocated.escape_next_idx, Some(42));
+/// ```
 #[derive(Debug, Clone, Copy)]
 pub struct IntraConfig {
     /// Future allocator for the encoder's escape vector — returns the
@@ -139,7 +158,7 @@ impl Default for IntraConfig {
 ///
 /// ```
 /// use ndarray::hpc::codec::predict::{predict_intra, IntraContext, IntraConfig};
-/// use ndarray::hpc::codec::{CellMode, LeafCu};
+/// use ndarray::hpc::codec::CellMode;
 /// let ctx = IntraContext {
 ///     basin_idx: 42,
 ///     delta_i32: 0,
@@ -170,6 +189,14 @@ pub fn predict_intra(ctx: &IntraContext, cfg: &IntraConfig) -> LeafCu {
         return LeafCu::skip(ctx.basin_idx);
     }
 
+    // i8-fit gates both Merge and Delta. Out-of-range δ must skip
+    // Merge entirely — wrapping `200_i32 as u8` aliases to `0xC8`,
+    // which could spuriously match a neighbour whose byte equals
+    // `0xC8` (i8 = -56), producing a leaf the decoder reconstructs as
+    // -56 instead of 200.
+    let fits_i8 = (-128..=127).contains(&ctx.delta_i32);
+    let our_delta_u8 = ctx.delta_i32 as u8; // wrapping cast matches A2 pack
+
     // ── 2. Merge ─────────────────────────────────────────────────────
     //
     // A neighbour is a Merge candidate iff:
@@ -186,20 +213,21 @@ pub fn predict_intra(ctx: &IntraContext, cfg: &IntraConfig) -> LeafCu {
     // Multiple matches all collapse to the same coded leaf, so the
     // first-hit policy is order-deterministic without affecting
     // bitstream length.
-    let our_delta_u8 = ctx.delta_i32 as u8; // wrapping cast matches A2 pack
-    for (i, nb_slot) in ctx.neighbours.iter().enumerate() {
-        let Some(nb) = nb_slot else { continue };
-        if nb.mode != CellMode::Delta {
-            continue;
+    if fits_i8 {
+        for (i, nb_slot) in ctx.neighbours.iter().enumerate() {
+            let Some(nb) = nb_slot else { continue };
+            if nb.mode != CellMode::Delta {
+                continue;
+            }
+            if nb.basin_idx != ctx.basin_idx {
+                continue;
+            }
+            if nb.delta != Some(our_delta_u8) {
+                continue;
+            }
+            let dir = merge_dir_from_index(i);
+            return LeafCu::merge(ctx.basin_idx, dir);
         }
-        if nb.basin_idx != ctx.basin_idx {
-            continue;
-        }
-        if nb.delta != Some(our_delta_u8) {
-            continue;
-        }
-        let dir = merge_dir_from_index(i);
-        return LeafCu::merge(ctx.basin_idx, dir);
     }
 
     // ── 3. Delta ─────────────────────────────────────────────────────
@@ -208,7 +236,7 @@ pub fn predict_intra(ctx: &IntraContext, cfg: &IntraConfig) -> LeafCu {
     // the encoder's reconstruction must read the byte back as i8 to
     // recover the sign. This matches how `LeafCu::delta` stores it and
     // how `super::mode::pack_leaf` writes it.
-    if (-128..=127).contains(&ctx.delta_i32) {
+    if fits_i8 {
         return LeafCu::delta(ctx.basin_idx, our_delta_u8);
     }
 
@@ -244,6 +272,12 @@ fn merge_dir_from_index(i: usize) -> MergeDir {
 /// is the "no basin" marker. Encoders that compute basins lazily can
 /// short-circuit Skip/Merge/Delta and emit Escape directly when this
 /// fires.
+///
+/// ```
+/// use ndarray::hpc::codec::{is_no_basin, BASIN_NONE};
+/// assert!(is_no_basin(BASIN_NONE));
+/// assert!(!is_no_basin(0));
+/// ```
 #[inline]
 pub fn is_no_basin(basin_idx: u16) -> bool {
     basin_idx == BASIN_NONE
@@ -393,5 +427,53 @@ mod tests {
         assert!(is_no_basin(BASIN_NONE));
         assert!(!is_no_basin(0));
         assert!(!is_no_basin(100));
+    }
+
+    #[test]
+    fn overflow_delta_does_not_alias_to_merge() {
+        // Regression for the wrapping-cast Merge alias bug:
+        // δ = 200 (overflows i8) must NOT match a neighbour whose
+        // u8 byte equals (200 as u8) = 0xC8 (= -56 in i8). The
+        // encoder must take the Escape path (or, here, the lossy
+        // clamp fallback because no allocator is wired).
+        let nb_alias = LeafCu::delta(100, 0xC8);
+        let neighbours = [Some(&nb_alias), None, None, None];
+        let leaf = predict_intra(&ctx_with_neighbours(100, 200, neighbours), &IntraConfig::default());
+        assert_ne!(leaf.mode, CellMode::Merge, "overflow δ must not Merge");
+        // With no allocator the encoder clamps to +127 (lossy Delta).
+        assert_eq!(leaf.mode, CellMode::Delta);
+        assert_eq!(leaf.delta, Some(127));
+    }
+
+    #[test]
+    fn overflow_delta_with_allocator_takes_escape() {
+        let nb_alias = LeafCu::delta(100, 0xC8);
+        let neighbours = [Some(&nb_alias), None, None, None];
+        let cfg = IntraConfig {
+            escape_next_idx: Some(7),
+        };
+        let leaf = predict_intra(&ctx_with_neighbours(100, 200, neighbours), &cfg);
+        assert_eq!(leaf.mode, CellMode::Escape);
+        assert_eq!(leaf.escape_idx, Some(7));
+    }
+
+    #[test]
+    fn pack_leaf_accepts_mode_sized_buffers() {
+        // Regression for the P2 6-byte-minimum bug: Skip should pack
+        // into a 2-byte buffer, Merge/Delta into a 3-byte buffer.
+        use super::super::mode::{pack_leaf, packed_byte_len};
+        let skip = LeafCu::skip(10);
+        let mut buf2 = [0u8; 2];
+        assert_eq!(pack_leaf(&skip, &mut buf2), Some(2));
+        assert_eq!(packed_byte_len(CellMode::Skip), 2);
+
+        let delta = LeafCu::delta(10, 7);
+        let mut buf3 = [0u8; 3];
+        assert_eq!(pack_leaf(&delta, &mut buf3), Some(3));
+
+        // Escape still needs 6 bytes; a 3-byte buffer is rejected.
+        let esc = LeafCu::escape(10, 99);
+        let mut buf3b = [0u8; 3];
+        assert_eq!(pack_leaf(&esc, &mut buf3b), None);
     }
 }

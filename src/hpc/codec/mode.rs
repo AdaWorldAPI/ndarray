@@ -57,10 +57,20 @@ use super::ctu::{CellMode, LeafCu, MergeDir};
 
 /// Maximum encodable `basin_idx`. Stored in the lower 12 bits of the
 /// header; values >= this constant overflow the header field.
+///
+/// ```
+/// use ndarray::hpc::codec::MAX_BASIN_IDX;
+/// assert_eq!(MAX_BASIN_IDX, (1 << 12) - 1);
+/// ```
 pub const MAX_BASIN_IDX: u16 = (1 << 12) - 1; // 4095
 
 /// Tag inside the per-frame basin codebook for "no basin assigned"
 /// (encoder-side sentinel during mode decision).
+///
+/// ```
+/// use ndarray::hpc::codec::{BASIN_NONE, MAX_BASIN_IDX};
+/// assert_eq!(BASIN_NONE, MAX_BASIN_IDX);
+/// ```
 pub const BASIN_NONE: u16 = MAX_BASIN_IDX;
 
 /// Pack `(mode, basin_idx)` into a 16-bit header.
@@ -85,6 +95,12 @@ pub fn pack_header(mode: CellMode, basin_idx: u16) -> u16 {
 ///
 /// The 2-bit mode field always decodes (all 4 variants are valid).
 /// `basin_idx` is the 12-bit lower field, exactly as packed.
+///
+/// ```
+/// use ndarray::hpc::codec::{pack_header, unpack_header, CellMode};
+/// let h = pack_header(CellMode::Escape, 7);
+/// assert_eq!(unpack_header(h), (CellMode::Escape, 7));
+/// ```
 #[inline]
 pub fn unpack_header(packed: u16) -> (CellMode, u16) {
     let mode_bits = ((packed >> 12) & 0b11) as u8;
@@ -103,6 +119,11 @@ pub fn unpack_header(packed: u16) -> (CellMode, u16) {
 // ════════════════════════════════════════════════════════════════════
 
 /// Pack a [`MergeDir`] into the lower 2 bits of a `u8`.
+///
+/// ```
+/// use ndarray::hpc::codec::{pack_merge_dir, MergeDir};
+/// assert_eq!(pack_merge_dir(MergeDir::East), 1);
+/// ```
 #[inline]
 pub fn pack_merge_dir(dir: MergeDir) -> u8 {
     dir as u8
@@ -112,6 +133,13 @@ pub fn pack_merge_dir(dir: MergeDir) -> u8 {
 ///
 /// All four 2-bit values map to a valid `MergeDir`; bits 2-7 are
 /// ignored.
+///
+/// ```
+/// use ndarray::hpc::codec::{pack_merge_dir, unpack_merge_dir, MergeDir};
+/// for d in [MergeDir::North, MergeDir::East, MergeDir::West, MergeDir::South] {
+///     assert_eq!(unpack_merge_dir(pack_merge_dir(d)), d);
+/// }
+/// ```
 #[inline]
 pub fn unpack_merge_dir(byte: u8) -> MergeDir {
     match byte & 0b11 {
@@ -133,7 +161,9 @@ pub fn unpack_merge_dir(byte: u8) -> MergeDir {
 /// worst case) — callers iterating CTUs typically pre-allocate
 /// `6 * cell_count` and trim afterwards.
 ///
-/// Returns `None` if `out.len() < 6` (insufficient capacity).
+/// Returns `None` if `out.len() < packed_byte_len(leaf.mode)` (insufficient
+/// capacity for the *mode's* width — Skip needs 2, Merge/Delta need 3,
+/// Escape needs 6).
 ///
 /// Format:
 /// - Bytes 0-1: header (`pack_header(mode, basin_idx)`, LE)
@@ -151,7 +181,8 @@ pub fn unpack_merge_dir(byte: u8) -> MergeDir {
 /// assert_eq!(consumed, 3);
 /// ```
 pub fn pack_leaf(leaf: &LeafCu, out: &mut [u8]) -> Option<usize> {
-    if out.len() < 6 {
+    let required = packed_byte_len(leaf.mode);
+    if out.len() < required {
         return None;
     }
     let header = pack_header(leaf.mode, leaf.basin_idx);
@@ -184,6 +215,16 @@ pub fn pack_leaf(leaf: &LeafCu, out: &mut [u8]) -> Option<usize> {
 ///
 /// Returns `None` if the buffer is shorter than the per-mode width
 /// (2 for Skip, 3 for Merge/Delta, 6 for Escape).
+///
+/// ```
+/// use ndarray::hpc::codec::{pack_leaf, unpack_leaf, LeafCu, MergeDir};
+/// let leaf = LeafCu::merge(7, MergeDir::West);
+/// let mut buf = [0u8; 3];
+/// pack_leaf(&leaf, &mut buf).unwrap();
+/// let (decoded, n) = unpack_leaf(&buf).unwrap();
+/// assert_eq!(decoded, leaf);
+/// assert_eq!(n, 3);
+/// ```
 pub fn unpack_leaf(buf: &[u8]) -> Option<(LeafCu, usize)> {
     if buf.len() < 2 {
         return None;
@@ -217,6 +258,14 @@ pub fn unpack_leaf(buf: &[u8]) -> Option<(LeafCu, usize)> {
 
 /// Byte cost of packing a leaf in this mode. Useful for pre-sizing
 /// a buffer without packing first.
+///
+/// ```
+/// use ndarray::hpc::codec::{packed_byte_len, CellMode};
+/// assert_eq!(packed_byte_len(CellMode::Skip), 2);
+/// assert_eq!(packed_byte_len(CellMode::Merge), 3);
+/// assert_eq!(packed_byte_len(CellMode::Delta), 3);
+/// assert_eq!(packed_byte_len(CellMode::Escape), 6);
+/// ```
 #[inline]
 pub const fn packed_byte_len(mode: CellMode) -> usize {
     match mode {
