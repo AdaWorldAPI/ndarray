@@ -122,7 +122,7 @@ This is **what DeepSpeed-ZeRO does informally** with `bf16_compress`, `int8_comp
 
 ### 4.1 The 12-bit basin = 4096-entry vocabulary
 
-`MAX_BASIN_IDX = (1 << 12) - 2 = 4094` (`mode.rs:79`), with `BASIN_NONE = 4095` reserved as the absent-basin sentinel — the 12-bit header field encodes `0..=4094` for real basins plus `4095` for "no basin assigned". Each `LeafCu` carries a 12-bit index into the per-frame basin codebook. For:
+`MAX_BASIN_IDX = (1 << 12) - 1 = 4095` (`mode.rs:79`). The full 12-bit range addresses 4096 real basins — every `LeafCu` carries an index into a fully-populated per-Heel codebook. No slot is reserved as a sentinel: the HHTL ontology (`Heel > Hip > Twig > Leaf`, see `src/hpc/ogit_bridge/assets/cognitive/entities/Leaf.ttl`) defines the codebook as `16 Hips × 16 Twigs × 16 Leaves = 4096 Leaves per Heel`, every Leaf carrying a real `basinSignature`. Authoring-time uncertainty ("not yet decided") stays in the encoder's `Option<u16>` scratch state and never leaks onto the wire. For:
 
 - **Video**: 4096 palette entries per GOP — orders of magnitude more than HEVC SCC's 64-entry cap
 - **Splats**: 4096 splat archetypes (colour clusters × scale clusters × view-direction clusters) — covers a non-toy scene
@@ -145,9 +145,16 @@ The SCC team had to cap palette at 64 entries rebuilt per-CTU because that was t
 
 **Holy grail claim H-1**: PR-X12 + cam_pq gives you the screen-content video codec HEVC SCC was trying to be in 2013 — without retrofitting, just by composing existing modules. Cite this when somebody asks "why is the basin field 12 bits and not 8 like HEVC SCC".
 
-### 4.3 BASIN_NONE sentinel collision (resolved in PR #195)
+### 4.3 BASIN_NONE — the sentinel that shouldn't have existed
 
-Original bug: `BASIN_NONE = MAX_BASIN_IDX = 4095` (pre-fix `mode.rs`) — basin 4095 was ambiguous on the wire (real basin vs "no basin" sentinel). Shipped fix in PR #195 (commit `24232985`): `MAX_BASIN_IDX = (1 << 12) - 2 = 4094`, `BASIN_NONE = 4095` reserved. Costs one codebook entry (irrelevant for k-means usage). Originally flagged by CodeRabbit; merged.
+Arc summary (for archeology):
+
+- **Original state** (PR #195 first push): `BASIN_NONE = MAX_BASIN_IDX = 4095` — same value used both as "max valid basin" and "no basin assigned" sentinel. Ambiguous on the wire. CodeRabbit flagged.
+- **First fix** (PR #195 follow-up commit `24232985`): shrunk `MAX_BASIN_IDX` to 4094, kept `BASIN_NONE = 4095` distinct. Resolved the ambiguity but sacrificed one codebook entry and propagated the sentinel into the wire format.
+- **Reference check**: the HHTL ontology (`Leaf.ttl`) requires 4096 real Leaves per Heel, every Leaf a real basin. The sentinel itself was the wrong design, not just its value.
+- **Final fix**: `BASIN_NONE` and `is_no_basin` deleted entirely; `MAX_BASIN_IDX` restored to `(1 << 12) - 1 = 4095`. Authoring-time "not yet decided" uncertainty stays as an `Option<u16>` in encoder scratch state and is resolved before any leaf reaches the wire. The wire format only ever sees committed basins.
+
+**The deeper read**: `BASIN_NONE` was authoring-time epistemic uncertainty (encoder mid-decision) smuggled into wire-format ontological uncertainty (cell exists but has no basin) — a category error. Rust's idiom would have surfaced this as `Option<u16>` in the encoder's transient state and `u16` on the persistent record. The sentinel value bypassed that hygiene by hiding optionality inside a magic `u16` value. The cleanup restores the two-types-for-two-lifecycles separation.
 
 ---
 
@@ -300,9 +307,9 @@ The mappings above are dense but specific. The holy grail claims are general and
 - ✅ Escape allocator collision (P1) → `Option<&mut u32>` cursor
 - ✅ NESW/NEWS doc mismatch (P1) → explicit slot table
 
-**Resolved in PR #195 follow-up (commit `24232985`)**:
-- ✅ `BASIN_NONE == MAX_BASIN_IDX == 4095` ambiguity → `MAX_BASIN_IDX = 4094`, `BASIN_NONE = 4095` reserved
-- ✅ `pack_leaf` `unwrap_or` fallbacks → switched to `?` operator (bijective serialisation; 3 regression tests added)
+**Resolved across PR #195 + follow-up**:
+- ✅ `pack_leaf` `unwrap_or` fallbacks (PR #195 commit `24232985`) → switched to `?` operator (bijective serialisation; 3 regression tests added)
+- ✅ `BASIN_NONE` sentinel removed entirely (follow-up to PR #195): `MAX_BASIN_IDX = 4095` restores full 4096-entry HHTL codebook; authoring-time uncertainty lives in encoder `Option<u16>` scratch, not the wire format. See §4.3 for the arc.
 
 Both originally listed in §12 below; entries updated.
 
@@ -451,7 +458,7 @@ Both originally listed in §12 below; entries updated.
 - None currently.
 
 **Severity P1** (fix before next-sub-card):
-- ~~*T-1*: `BASIN_NONE == MAX_BASIN_IDX` collision (`mode.rs:79`).~~ **RESOLVED** via PR #195 commit `24232985`: `MAX_BASIN_IDX = 4094, BASIN_NONE = 4095`. Costs 1 codebook entry.
+- ~~*T-1*: `BASIN_NONE == MAX_BASIN_IDX` collision.~~ **RESOLVED** via two-step landing: PR #195 commit `24232985` shrunk `MAX_BASIN_IDX` to 4094 with `BASIN_NONE = 4095` as a distinct sentinel; the follow-up cleanup deleted `BASIN_NONE` and `is_no_basin` entirely and restored `MAX_BASIN_IDX = 4095`. Reference: the HHTL ontology (`Leaf.ttl`) defines 4096 real Leaves per Heel — no slot reserved for absence. See §4.3.
 - ~~*T-2*: `pack_leaf` `unwrap_or` fallbacks (`mode.rs:194-210`).~~ **RESOLVED** via PR #195 commit `24232985`: switched to `?` operator; 3 regression tests added (`leaf_pack_rejects_malformed_{merge,delta,escape}_without_*`).
 
 **Severity P2** (fix in follow-up):

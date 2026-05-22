@@ -58,7 +58,6 @@
 //!   reference + reconstruction parity test pin the math.
 
 use super::ctu::{CellMode, LeafCu, MergeDir};
-use super::mode::BASIN_NONE;
 
 // ════════════════════════════════════════════════════════════════════
 // Inputs to the encoder mode decision
@@ -293,21 +292,6 @@ fn merge_dir_from_index(i: usize) -> MergeDir {
     }
 }
 
-/// Sanity-check sentinel: returns `true` iff the resolved basin index
-/// is the "no basin" marker. Encoders that compute basins lazily can
-/// short-circuit Skip/Merge/Delta and emit Escape directly when this
-/// fires.
-///
-/// ```
-/// use ndarray::hpc::codec::{is_no_basin, BASIN_NONE};
-/// assert!(is_no_basin(BASIN_NONE));
-/// assert!(!is_no_basin(0));
-/// ```
-#[inline]
-pub fn is_no_basin(basin_idx: u16) -> bool {
-    basin_idx == BASIN_NONE
-}
-
 // ════════════════════════════════════════════════════════════════════
 // Tests
 // ════════════════════════════════════════════════════════════════════
@@ -476,13 +460,6 @@ mod tests {
         let (decoded, consumed) = unpack_leaf(&buf).unwrap();
         assert_eq!(n, consumed);
         assert_eq!(decoded, leaf);
-    }
-
-    #[test]
-    fn is_no_basin_sentinel_round_trip() {
-        assert!(is_no_basin(BASIN_NONE));
-        assert!(!is_no_basin(0));
-        assert!(!is_no_basin(100));
     }
 
     #[test]
