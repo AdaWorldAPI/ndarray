@@ -60,15 +60,13 @@ use super::ctu::{CellMode, LeafCu, MergeDir};
 // ════════════════════════════════════════════════════════════════════
 
 /// Maximum encodable `basin_idx`. Equal to `(1 << 12) - 1 = 4095`,
-/// the full 12-bit range. Every value `0..=MAX_BASIN_IDX` addresses a
-/// real basin in the per-Heel codebook — there is no reserved sentinel.
+/// the full 12-bit range.
 ///
-/// The HHTL ontology (`Heel > Hip > Twig > Leaf`, see the entity TTLs
-/// under `src/hpc/ogit_bridge/assets/cognitive/entities/`) defines the
-/// codebook as `16 Hips × 16 Twigs × 16 Leaves = 4096 Leaves per Heel`,
-/// every Leaf carrying a real `basinSignature`. Absence is not a state:
-/// authoring-time "not yet decided" lives in the encoder's `Option<u16>`
-/// scratch state, never on the wire.
+/// The codebook follows the HHTL ontology (`Heel > Hip > Twig > Leaf`,
+/// see the entity TTLs under `src/hpc/ogit_bridge/assets/cognitive/entities/`):
+/// `16 Hips × 16 Twigs × 16 Leaves = 4096 Leaves per Heel`. Every value
+/// `0..=MAX_BASIN_IDX` addresses one Leaf, each carrying a real
+/// `basinSignature`.
 ///
 /// ```
 /// use ndarray::hpc::codec::MAX_BASIN_IDX;
@@ -428,9 +426,9 @@ mod tests {
 
     #[test]
     fn max_basin_idx_fills_full_12bit_range() {
-        // The codec follows the HHTL ontology: 16 × 16 × 16 = 4096 Leaves
-        // per Heel, every value `0..=MAX_BASIN_IDX` is a real basin. No
-        // sentinel slot is reserved.
+        // 16 Hips × 16 Twigs × 16 Leaves = 4096 Leaves per Heel
+        // (HHTL ontology, see Leaf.ttl). Every value 0..=MAX_BASIN_IDX
+        // addresses one Leaf.
         assert_eq!(MAX_BASIN_IDX, (1 << 12) - 1);
         assert_eq!(MAX_BASIN_IDX, 4095);
     }
