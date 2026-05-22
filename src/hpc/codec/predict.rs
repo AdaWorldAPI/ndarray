@@ -84,9 +84,17 @@ use super::mode::BASIN_NONE;
 ///   to decide between Delta (fits in i8) and Escape (overflows).
 ///   `i32` width avoids overflow when the caller computes
 ///   `cell_value - basin_value` for two u8 inputs.
-/// - `neighbours`: NESW (in [`MergeDir`] discriminant order) optional
-///   neighbour leaves. `None` for boundary cells; the Merge candidate
-///   scan skips `None` entries.
+/// - `neighbours`: NEWS (in [`MergeDir`] discriminant order:
+///   `North=0, East=1, West=2, South=3`) optional neighbour leaves.
+///   `None` for boundary cells; the Merge candidate scan skips `None`
+///   entries.
+///
+/// ```text
+///   slot 0 → MergeDir::North   (discr 0)
+///   slot 1 → MergeDir::East    (discr 1)
+///   slot 2 → MergeDir::West    (discr 2)
+///   slot 3 → MergeDir::South   (discr 3)
+/// ```
 ///
 /// ```
 /// use ndarray::hpc::codec::{IntraContext, LeafCu};
@@ -105,41 +113,27 @@ pub struct IntraContext<'a> {
     /// Signed delta from basin → cell, in the basin's u8 quantisation
     /// space.
     pub delta_i32: i32,
-    /// NESW neighbour leaves, indexed by [`MergeDir`] discriminant.
+    /// NEWS neighbour leaves, indexed by [`MergeDir`] discriminant
+    /// (`North=0, East=1, West=2, South=3`).
     pub neighbours: [Option<&'a LeafCu>; 4],
 }
 
 /// Configuration for the intra-prediction decision.
 ///
-/// Today a single field; the field exists so the API can grow
-/// (Merge tolerance, RDO knobs in A6) without a signature break.
+/// Reserved for future expansion (Merge tolerance, RDO knobs in A6).
+/// Empty today; constructed via [`Default`] so additions don't break
+/// callers.
 ///
 /// ```
 /// use ndarray::hpc::codec::IntraConfig;
-/// let default_cfg = IntraConfig::default();
-/// assert!(default_cfg.escape_next_idx.is_none());
-/// let allocated = IntraConfig { escape_next_idx: Some(42) };
-/// assert_eq!(allocated.escape_next_idx, Some(42));
+/// let cfg = IntraConfig::default();
+/// // No tunables yet — call sites stay future-compatible.
+/// let _ = cfg;
 /// ```
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct IntraConfig {
-    /// Future allocator for the encoder's escape vector — returns the
-    /// next index to write. `None` disables Escape mode (the encoder
-    /// will fall back to Delta-with-truncation, which **loses
-    /// precision** but never panics; callers wanting lossless coding
-    /// must provide a real allocator).
-    ///
-    /// Stateless API today: encoder calls `escape_next_idx` once per
-    /// Escape decision. The caller is responsible for actually
-    /// appending the u64 cell value into the escape vector at the
-    /// returned index — this kernel doesn't see the cell value.
-    pub escape_next_idx: Option<u32>,
-}
-
-impl Default for IntraConfig {
-    fn default() -> Self {
-        Self { escape_next_idx: None }
-    }
+    // Reserved. Future fields land here without breaking the signature.
+    _reserved: (),
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -151,6 +145,14 @@ impl Default for IntraConfig {
 ///
 /// See the module docs for the decision tree (Skip → Merge → Delta →
 /// Escape) and the rationale (monotone wire cost).
+///
+/// `escape_next` is a write-cursor into the caller's per-frame escape
+/// vector. When the decision falls through to Escape, the kernel reads
+/// the cursor, emits a leaf referencing that idx, and post-increments
+/// the cursor so subsequent cells in the same batch get fresh,
+/// non-colliding idxs. Pass `None` to disable lossless Escape — the
+/// kernel then clamps `δ` to i8 range and emits a `Delta` leaf whose
+/// reconstruction is **not bit-exact** (caller must accept the loss).
 ///
 /// # Examples
 ///
@@ -164,7 +166,7 @@ impl Default for IntraConfig {
 ///     delta_i32: 0,
 ///     neighbours: [None; 4],
 /// };
-/// let leaf = predict_intra(&ctx, &IntraConfig::default());
+/// let leaf = predict_intra(&ctx, &IntraConfig::default(), None);
 /// assert_eq!(leaf.mode, CellMode::Skip);
 /// assert_eq!(leaf.basin_idx, 42);
 /// ```
@@ -179,11 +181,26 @@ impl Default for IntraConfig {
 ///     delta_i32: 17,
 ///     neighbours: [None; 4],
 /// };
-/// let leaf = predict_intra(&ctx, &IntraConfig::default());
+/// let leaf = predict_intra(&ctx, &IntraConfig::default(), None);
 /// assert_eq!(leaf.mode, CellMode::Delta);
 /// assert_eq!(leaf.delta, Some(17));
 /// ```
-pub fn predict_intra(ctx: &IntraContext, cfg: &IntraConfig) -> LeafCu {
+///
+/// Escape with an allocator — repeated calls bump the cursor:
+///
+/// ```
+/// use ndarray::hpc::codec::predict::{predict_intra, IntraContext, IntraConfig};
+/// use ndarray::hpc::codec::CellMode;
+/// let mut next = 7u32;
+/// let ctx = IntraContext { basin_idx: 1, delta_i32: 1000, neighbours: [None; 4] };
+/// let a = predict_intra(&ctx, &IntraConfig::default(), Some(&mut next));
+/// let b = predict_intra(&ctx, &IntraConfig::default(), Some(&mut next));
+/// assert_eq!(a.escape_idx, Some(7));
+/// assert_eq!(b.escape_idx, Some(8));
+/// assert_eq!(next, 9);
+/// assert_eq!(a.mode, CellMode::Escape);
+/// ```
+pub fn predict_intra(ctx: &IntraContext, _cfg: &IntraConfig, escape_next: Option<&mut u32>) -> LeafCu {
     // ── 1. Skip ──────────────────────────────────────────────────────
     if ctx.delta_i32 == 0 {
         return LeafCu::skip(ctx.basin_idx);
@@ -209,7 +226,8 @@ pub fn predict_intra(ctx: &IntraContext, cfg: &IntraConfig) -> LeafCu {
     //       wrapping cast; matches the A2 pack format where Delta
     //       stores a raw u8 byte without a sign bit)
     //
-    // We scan NESW in discriminant order and pick the first match.
+    // We scan NEWS in discriminant order (N=0, E=1, W=2, S=3) and
+    // pick the first match.
     // Multiple matches all collapse to the same coded leaf, so the
     // first-hit policy is order-deterministic without affecting
     // bitstream length.
@@ -242,16 +260,23 @@ pub fn predict_intra(ctx: &IntraContext, cfg: &IntraConfig) -> LeafCu {
 
     // ── 4. Escape ────────────────────────────────────────────────────
     //
-    // |δ| doesn't fit in i8. Caller must own the per-frame escape
-    // vector and provide the next-write index; we return a leaf that
-    // references it. If the caller didn't provide an allocator, we
-    // fall back to a saturated Delta (lossy but never panicking) so
-    // a misconfigured encoder still produces a valid bytestream.
-    match cfg.escape_next_idx {
-        Some(idx) => LeafCu::escape(ctx.basin_idx, idx),
+    // |δ| doesn't fit in i8. The cursor `escape_next` is a write-pointer
+    // into the caller's per-frame escape vector; we read it, emit a
+    // leaf referencing that idx, and post-increment so subsequent
+    // overflow cells in the batch don't collide on the same vector
+    // slot. If the caller didn't provide an allocator, we fall back to
+    // a saturated Delta (lossy: reconstruction is NOT bit-exact, but
+    // never panicking) so a misconfigured encoder still produces a
+    // valid bytestream. The lossy leaf's `mode` is `CellMode::Delta`
+    // even though its semantic value overflowed i8 — by contract the
+    // caller has acknowledged the precision loss.
+    match escape_next {
+        Some(next) => {
+            let idx = *next;
+            *next = next.wrapping_add(1);
+            LeafCu::escape(ctx.basin_idx, idx)
+        }
         None => {
-            // Lossy fallback: clamp to i8 range. Caller is responsible
-            // for noticing that the reconstruction won't be bit-exact.
             let clamped = ctx.delta_i32.clamp(-128, 127) as u8;
             LeafCu::delta(ctx.basin_idx, clamped)
         }
@@ -301,7 +326,7 @@ mod tests {
 
     #[test]
     fn skip_when_delta_is_zero() {
-        let leaf = predict_intra(&ctx_with_neighbours(100, 0, [None; 4]), &IntraConfig::default());
+        let leaf = predict_intra(&ctx_with_neighbours(100, 0, [None; 4]), &IntraConfig::default(), None);
         assert_eq!(leaf, LeafCu::skip(100));
     }
 
@@ -310,14 +335,14 @@ mod tests {
         // δ=0 trumps everything else, even a perfect Merge candidate.
         let nb = LeafCu::delta(100, 0);
         let neighbours = [Some(&nb), None, None, None];
-        let leaf = predict_intra(&ctx_with_neighbours(100, 0, neighbours), &IntraConfig::default());
+        let leaf = predict_intra(&ctx_with_neighbours(100, 0, neighbours), &IntraConfig::default(), None);
         assert_eq!(leaf.mode, CellMode::Skip);
     }
 
     #[test]
     fn delta_in_i8_range() {
         for d in [-128i32, -1, 1, 127] {
-            let leaf = predict_intra(&ctx_with_neighbours(100, d, [None; 4]), &IntraConfig::default());
+            let leaf = predict_intra(&ctx_with_neighbours(100, d, [None; 4]), &IntraConfig::default(), None);
             assert_eq!(leaf.mode, CellMode::Delta);
             assert_eq!(leaf.delta, Some(d as u8));
         }
@@ -328,7 +353,7 @@ mod tests {
         // Northern neighbour: Delta-mode, same basin, same δ as us.
         let nb_north = LeafCu::delta(100, 17);
         let neighbours = [Some(&nb_north), None, None, None];
-        let leaf = predict_intra(&ctx_with_neighbours(100, 17, neighbours), &IntraConfig::default());
+        let leaf = predict_intra(&ctx_with_neighbours(100, 17, neighbours), &IntraConfig::default(), None);
         assert_eq!(leaf.mode, CellMode::Merge);
         assert_eq!(leaf.merge_dir, Some(MergeDir::North));
         assert_eq!(leaf.basin_idx, 100);
@@ -340,7 +365,7 @@ mod tests {
         // reference frame). Falls through to Delta.
         let nb_north = LeafCu::delta(99, 17);
         let neighbours = [Some(&nb_north), None, None, None];
-        let leaf = predict_intra(&ctx_with_neighbours(100, 17, neighbours), &IntraConfig::default());
+        let leaf = predict_intra(&ctx_with_neighbours(100, 17, neighbours), &IntraConfig::default(), None);
         assert_eq!(leaf.mode, CellMode::Delta);
     }
 
@@ -351,17 +376,33 @@ mod tests {
         let nb_merge = LeafCu::merge(100, MergeDir::North);
         let nb_esc = LeafCu::escape(100, 0);
         let neighbours = [Some(&nb_skip), Some(&nb_merge), None, Some(&nb_esc)];
-        let leaf = predict_intra(&ctx_with_neighbours(100, 17, neighbours), &IntraConfig::default());
+        let leaf = predict_intra(&ctx_with_neighbours(100, 17, neighbours), &IntraConfig::default(), None);
         assert_eq!(leaf.mode, CellMode::Delta);
     }
 
     #[test]
-    fn merge_picks_first_hit_in_nesw_order() {
+    fn merge_picks_first_hit_in_news_order() {
         // Both N and E qualify; encoder must pick N (lower index).
         let nb_match = LeafCu::delta(100, 17);
         let neighbours = [Some(&nb_match), Some(&nb_match), None, None];
-        let leaf = predict_intra(&ctx_with_neighbours(100, 17, neighbours), &IntraConfig::default());
+        let leaf = predict_intra(&ctx_with_neighbours(100, 17, neighbours), &IntraConfig::default(), None);
         assert_eq!(leaf.merge_dir, Some(MergeDir::North));
+    }
+
+    #[test]
+    fn merge_slot_2_maps_to_west_and_slot_3_to_south() {
+        // Slot-3 South coverage gap noted in review. Verify the
+        // discriminant order (N=0, E=1, W=2, S=3) is reflected at
+        // the merge_dir output, not just NEWS-by-convention.
+        let nb = LeafCu::delta(100, 17);
+
+        let only_west = [None, None, Some(&nb), None];
+        let leaf_w = predict_intra(&ctx_with_neighbours(100, 17, only_west), &IntraConfig::default(), None);
+        assert_eq!(leaf_w.merge_dir, Some(MergeDir::West));
+
+        let only_south = [None, None, None, Some(&nb)];
+        let leaf_s = predict_intra(&ctx_with_neighbours(100, 17, only_south), &IntraConfig::default(), None);
+        assert_eq!(leaf_s.merge_dir, Some(MergeDir::South));
     }
 
     #[test]
@@ -371,20 +412,35 @@ mod tests {
         // saturating.
         let nb_match = LeafCu::delta(100, (-17_i32) as u8);
         let neighbours = [None, Some(&nb_match), None, None];
-        let leaf = predict_intra(&ctx_with_neighbours(100, -17, neighbours), &IntraConfig::default());
+        let leaf = predict_intra(&ctx_with_neighbours(100, -17, neighbours), &IntraConfig::default(), None);
         assert_eq!(leaf.mode, CellMode::Merge);
         assert_eq!(leaf.merge_dir, Some(MergeDir::East));
     }
 
     #[test]
     fn escape_when_delta_overflows_i8_and_allocator_present() {
-        let cfg = IntraConfig {
-            escape_next_idx: Some(42),
-        };
-        let leaf = predict_intra(&ctx_with_neighbours(100, 1000, [None; 4]), &cfg);
+        let mut next = 42u32;
+        let leaf = predict_intra(&ctx_with_neighbours(100, 1000, [None; 4]), &IntraConfig::default(), Some(&mut next));
         assert_eq!(leaf.mode, CellMode::Escape);
         assert_eq!(leaf.escape_idx, Some(42));
         assert_eq!(leaf.basin_idx, 100);
+        // Cursor advanced so the next Escape gets a fresh idx.
+        assert_eq!(next, 43);
+    }
+
+    #[test]
+    fn escape_allocator_advances_across_batched_calls() {
+        // Regression: two consecutive Escape decisions must not
+        // collide on the same vector slot. With a `&mut u32` cursor
+        // the kernel post-increments, so cell A sees idx N and
+        // cell B sees idx N+1.
+        let mut next = 5u32;
+        let a = predict_intra(&ctx_with_neighbours(7, 999, [None; 4]), &IntraConfig::default(), Some(&mut next));
+        let b = predict_intra(&ctx_with_neighbours(7, -999, [None; 4]), &IntraConfig::default(), Some(&mut next));
+        assert_eq!(a.escape_idx, Some(5));
+        assert_eq!(b.escape_idx, Some(6));
+        assert_eq!(next, 7);
+        assert_ne!(a.escape_idx, b.escape_idx);
     }
 
     #[test]
@@ -392,14 +448,14 @@ mod tests {
         // Without an escape_next_idx, the encoder clamps to i8 range.
         // The result is a valid LeafCu but the reconstruction won't
         // be bit-exact.
-        let leaf = predict_intra(&ctx_with_neighbours(100, 1000, [None; 4]), &IntraConfig::default());
+        let leaf = predict_intra(&ctx_with_neighbours(100, 1000, [None; 4]), &IntraConfig::default(), None);
         assert_eq!(leaf.mode, CellMode::Delta);
         assert_eq!(leaf.delta, Some(127));
     }
 
     #[test]
     fn escape_lossy_fallback_negative_overflow() {
-        let leaf = predict_intra(&ctx_with_neighbours(100, -1000, [None; 4]), &IntraConfig::default());
+        let leaf = predict_intra(&ctx_with_neighbours(100, -1000, [None; 4]), &IntraConfig::default(), None);
         assert_eq!(leaf.mode, CellMode::Delta);
         assert_eq!(leaf.delta, Some((-128_i32) as u8));
     }
@@ -412,7 +468,7 @@ mod tests {
         use super::super::mode::{pack_leaf, unpack_leaf};
         let nb = LeafCu::delta(100, 17);
         let neighbours = [None, Some(&nb), None, None];
-        let leaf = predict_intra(&ctx_with_neighbours(100, 17, neighbours), &IntraConfig::default());
+        let leaf = predict_intra(&ctx_with_neighbours(100, 17, neighbours), &IntraConfig::default(), None);
         assert_eq!(leaf.mode, CellMode::Merge);
 
         let mut buf = [0u8; 6];
@@ -438,7 +494,7 @@ mod tests {
         // clamp fallback because no allocator is wired).
         let nb_alias = LeafCu::delta(100, 0xC8);
         let neighbours = [Some(&nb_alias), None, None, None];
-        let leaf = predict_intra(&ctx_with_neighbours(100, 200, neighbours), &IntraConfig::default());
+        let leaf = predict_intra(&ctx_with_neighbours(100, 200, neighbours), &IntraConfig::default(), None);
         assert_ne!(leaf.mode, CellMode::Merge, "overflow δ must not Merge");
         // With no allocator the encoder clamps to +127 (lossy Delta).
         assert_eq!(leaf.mode, CellMode::Delta);
@@ -449,12 +505,11 @@ mod tests {
     fn overflow_delta_with_allocator_takes_escape() {
         let nb_alias = LeafCu::delta(100, 0xC8);
         let neighbours = [Some(&nb_alias), None, None, None];
-        let cfg = IntraConfig {
-            escape_next_idx: Some(7),
-        };
-        let leaf = predict_intra(&ctx_with_neighbours(100, 200, neighbours), &cfg);
+        let mut next = 7u32;
+        let leaf = predict_intra(&ctx_with_neighbours(100, 200, neighbours), &IntraConfig::default(), Some(&mut next));
         assert_eq!(leaf.mode, CellMode::Escape);
         assert_eq!(leaf.escape_idx, Some(7));
+        assert_eq!(next, 8);
     }
 
     #[test]

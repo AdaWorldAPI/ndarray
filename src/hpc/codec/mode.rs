@@ -13,28 +13,32 @@
 //! decoder can route on a single `u16` load:
 //!
 //! ```text
-//!     MSB                                                    LSB
-//!     ┌──┬──┬──────────────────────────────┐
-//!     │M0│M1│         basin_idx (12)        │   ← 16-bit header
-//!     └──┴──┴──────────────────────────────┘
-//!     │  │  └─ basin_idx is the only payload field always present
-//!     └──┴──── 2-bit mode discriminant (CellMode::as_u8())
-//!     (top 2 bits)
+//!     bit  15 14 13 12 11 10 9 8 7 6 5 4 3 2 1 0
+//!         ┌──┬──┬──┬──┬──────────────────────┐
+//!         │ 0│ 0│M1│M0│      basin_idx (12)  │   ← 16-bit header
+//!         └──┴──┴──┴──┴──────────────────────┘
+//!         │  │  │  │  └────────────────────── basin_idx (bits 0..=11)
+//!         │  │  └──┴────────────────────────── 2-bit mode (bits 12..=13)
+//!         └──┴──────────────────────────────── reserved high bits 14,15
 //! ```
 //!
-//! The remaining 2 bits at the top of the second byte are reserved for
-//! the encoder's future `merge_dir` overlap when the mode is `Merge`;
-//! a separate `pack_mode_dir` helper keeps `Merge`'s direction in a
-//! single byte alongside `Skip`/`Delta`/`Escape`'s mode tag.
+//! Bits 14-15 are reserved at zero; the impl is
+//! `(mode_bits << 12) | basin_bits`, so mode lives at bits 12-13 and
+//! basin at bits 0-11. A future encoder can repurpose bits 14-15
+//! (e.g., for a per-leaf `merge_dir` overlap) without disturbing
+//! existing decoders that mask bits 14-15 off.
 //!
 //! # Per-mode tail width
 //!
 //! | Mode   | Header | Tail bytes               | Total |
 //! |--------|--------|--------------------------|-------|
-//! | Skip   | 2      | 0                        | 2     |
-//! | Merge  | 2      | 1 (`MergeDir` 2-bit)     | 3     |
-//! | Delta  | 2      | 1 (`u8` perturbation)    | 3     |
-//! | Escape | 2      | 4 (`u32` escape_idx, LE) | 6     |
+//! | Skip   | 2      | 0                            | 2     |
+//! | Merge  | 2      | 1 (low 2 bits = `MergeDir`)  | 3     |
+//! | Delta  | 2      | 1 (`u8` perturbation)        | 3     |
+//! | Escape | 2      | 4 (`u32` escape_idx, LE)     | 6     |
+//!
+//! The Merge tail is a full byte even though only its low 2 bits carry
+//! `MergeDir` — high 6 bits are reserved and masked off on read.
 //!
 //! The compact pack writes header (LE) then the per-mode tail. The
 //! `escape_idx` width is the worst case; a future A7 rANS pass can
