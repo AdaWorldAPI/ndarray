@@ -74,97 +74,65 @@ This separation is what makes R-3's LoC envelope (≤1500 LoC codec body) tracta
 
 ---
 
-## 3. Per-arch dispatch as a substrate property
+## 3. Per-arch substrate via compile-time polyfill
 
-The PR-X12 substrate (per merged canon §M:E-G, §M:E-H, R-4, R-5, R-11) implements per-arch dispatch via three mechanisms:
+The PR-X12 substrate follows the project's W1a consumer contract (see `CLAUDE.md` and `.claude/knowledge/vertical-simd-consumer-contract.md`): **all dispatch is polyfill**. Per arch we ship a separate backend file with the same public surface, and `cfg(target_feature = ...)` selects exactly one to compile in. There is **no runtime CPU detection, no `HwCaps`/`CpuCaps` branching, no `if has_avx512 else …` dispatch, and no `unsafe { runtime_branch }` chain.** The target CPU is fixed at build time via `.cargo/config.toml` (`target-cpu=x86-64-v4` makes AVX-512 mandatory on x86_64) or via the target triple for non-x86 builds. One build, one path.
 
-### 3.1 Compile-time `target_feature`
+### 3.1 The polyfill primitive: cfg-selected per-arch files
+
+The pattern is the same one already shipping in `src/simd*.rs` (per `CLAUDE.md` Repository Structure):
 
 ```rust
-// In ndarray::hpc::blas_level2::batched_gemm:
+// src/simd.rs — consumer-facing surface, re-exports a single backend
+#[cfg(target_feature = "avx512f")]
+pub use crate::simd_avx512::*;
 
-#[cfg(target_arch = "x86_64")]
-mod x86_dispatch {
-    #[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
-    pub unsafe fn batched_gemm_vnni(...) { /* VNNI path */ }
+#[cfg(all(not(target_feature = "avx512f"), target_arch = "aarch64"))]
+pub use crate::simd_neon::*;
 
-    #[target_feature(enable = "amx-tile,amx-int8,amx-bf16")]
-    pub unsafe fn batched_gemm_amx(...) { /* AMX path */ }
-}
-
-#[cfg(target_arch = "aarch64")]
-mod arm_dispatch {
-    #[target_feature(enable = "sve2")]
-    pub unsafe fn batched_gemm_sve2(...) { /* SVE2 path */ }
-
-    #[target_feature(enable = "neon,fp16")]
-    pub unsafe fn batched_gemm_neon_fp16(...) { /* Apple Silicon */ }
-}
+#[cfg(not(any(target_feature = "avx512f", target_arch = "aarch64")))]
+pub use crate::simd_scalar::*;
 ```
 
-### 3.2 Runtime feature detection (cached at process start)
+Each backend file (`simd_avx512.rs`, `simd_neon.rs`, `simd_scalar.rs`) implements the same public functions with identical signatures. The W1a contract requires **all three backends + a parity test** before any new primitive lands. The codec body (`ndarray-codec`, see R-3) and downstream consumers (burn / candle / lance-graph / surrealdb / WoA fleet) call `ndarray::simd::*` directly — they never see or reason about which backend is active. The cfg substitutes one file at the use-site; consumer code is identical across architectures.
+
+### 3.2 Build-time CPU selection (not runtime detection)
+
+Target CPU is decided once, at build time:
+
+| Mechanism | Source | Effect |
+|---|---|---|
+| `.cargo/config.toml` `target-cpu=x86-64-v4` | repo policy | AVX-512 mandatory on x86_64 (per `CLAUDE.md`) |
+| `--target aarch64-apple-darwin` | CI / fleet build matrix | NEON-fp16 backend compiles in |
+| `--target aarch64-unknown-linux-gnu` + SVE2 target-feature | Graviton build | SVE2 backend compiles in |
+
+The WoA fleet ships **per-arch binaries**, not a fat binary that probes. Q2 distributes the right binary to each node based on the node's already-known architecture (declared at registration time, not detected per request). Cross-arch determinism (§6 below) is enforced because each binary embeds exactly one backend and the W1a parity test gates every primitive at the substrate layer.
+
+### 3.3 Per-arch tunable crossover (R-5)
+
+Some operations (DCT-II vs GEMM, basin-lookup width, etc.) have a "small N: scalar path, large N: SIMD path" crossover whose break-even N varies per backend. The crossover lives in the **same polyfill** as the SIMD primitives: a `cfg(target_feature = ...)`-selected `const`.
 
 ```rust
-// In ndarray::hpc::capability:
-pub static CAP: OnceLock<HwCaps> = OnceLock::new();
-
-pub struct HwCaps {
-    pub has_amx: bool,
-    pub has_vnni: bool,
-    pub has_sve2: bool,
-    pub has_neon_fp16: bool,
-    pub l1_cache_size: usize,
-    pub vec_width_bits: u16,
-    // ... more as new features land
-}
-
-pub fn batched_gemm(input: ...) {
-    let caps = CAP.get().unwrap();
-    if caps.has_amx { unsafe { batched_gemm_amx(input) } }
-    else if caps.has_vnni { unsafe { batched_gemm_vnni(input) } }
-    else if caps.has_sve2 { unsafe { batched_gemm_sve2(input) } }
-    // ...
-    else { batched_gemm_scalar(input) }
-}
-```
-
-### 3.3 Per-arch tunable crossover (R-5 generalised)
-
-Some operations have a "small N: scalar, large N: SIMD" crossover that varies per arch. The snippet below is **pseudocode** — Rust's stable const-eval does not let `match` discriminate over a runtime-detected `Arch::CURRENT` value at `const` context. The real mechanism is a `build.rs` script that resolves the target from compile-time metadata Cargo exposes to build scripts — `CARGO_CFG_TARGET_ARCH`, `CARGO_CFG_TARGET_FEATURE`, the target triple, and any pre-recorded calibration artifact — and emits the chosen integer as a generated `const` in `OUT_DIR`. **Critically, do NOT probe the host CPU inside `build.rs`**: under cross-compilation Cargo runs `build.rs` on the *host* machine, so any runtime feature-detection there reflects the build machine and not the target. Cargo's docs are explicit: use `CARGO_CFG_*` env vars (which correctly reflect the target) rather than `cfg!`/`#[cfg]` checks (which reflect the host the script runs on).
-
-```rust
-// Shape of the per-arch table (lives in a build-script-generated file
-// included via include!(concat!(env!("OUT_DIR"), "/arch_crossovers.rs"))):
+// src/hpc/dct_crossover.rs — one const per backend file, cfg-selected
 //
-//   pub const DCT_BATCH_CROSSOVER: usize = 64;  // emitted by build.rs
-//                                                // for Sapphire Rapids
-//
-// The build script's decision matrix, driven entirely by Cargo's
-// target-config env vars (no host CPU probing):
-//   CARGO_CFG_TARGET_FEATURE contains "amx-bf16"          → 64
-//   CARGO_CFG_TARGET_FEATURE contains "avx512f"           → 32 (skylake-x/ice lake)
-//   CARGO_CFG_TARGET_FEATURE contains "avx512f", Zen-tuned target-cpu → 96
-//   CARGO_CFG_TARGET_ARCH == "aarch64" + NEON-only        → 256
-//   CARGO_CFG_TARGET_ARCH == "aarch64" + SVE2             → 128
-//   else                                                   → usize::MAX
-//
-// Equivalent in-crate fallback shape using cfg! (still target-resolved,
-// since cfg! in normal (non-build-script) code uses target cfgs):
-//   const DCT_BATCH_CROSSOVER: usize = if cfg!(target_feature = "amx-bf16") { 64 }
-//                                       else if cfg!(target_feature = "avx512f") { 32 }
-//                                       else if cfg!(target_arch = "aarch64") { 128 }
-//                                       else { usize::MAX };
+//   simd_avx512.rs:                pub const DCT_BATCH_CROSSOVER: usize = 64;
+//   simd_neon.rs (Apple Silicon):  pub const DCT_BATCH_CROSSOVER: usize = 256;
+//   simd_scalar.rs:                pub const DCT_BATCH_CROSSOVER: usize = usize::MAX;
 
 pub fn dct_apply<const N: usize>(input: &[i16], output: &mut [i16]) {
     if N >= DCT_BATCH_CROSSOVER {
-        unsafe { dct_gemm_path(input, output) }
+        dct_gemm_path(input, output)      // calls into ndarray::simd::*
     } else {
-        dct_butterfly_path(input, output)
+        dct_butterfly_path(input, output) // also calls into ndarray::simd::*
     }
 }
 ```
 
-R-5 commits these crossovers as **bench-tunable constants** emitted by Plan G's codec-bench calibration sub-target into the per-arch `OUT_DIR` file — not hand-guessed numbers, not a runtime `match` on a synthetic `Arch` enum, and never via host CPU probing under cross-compilation. The build script (driven by `CARGO_CFG_TARGET_*`) is the single source of truth for which integer compiles in.
+The integer `DCT_BATCH_CROSSOVER` comes from one of two places:
+1. **Hand-tuned default**: a known-good number per backend, checked into the backend file.
+2. **Plan G calibration override**: `build.rs` may consult `CARGO_CFG_TARGET_FEATURE` + a pre-recorded calibration artifact from `codec-bench` and emit a refined const into `OUT_DIR`, included by the backend file. This is still compile-time selection — the build script never probes the host CPU, only reads Cargo's target-config env vars.
+
+Either way the constant is **fixed in the compiled binary**. R-5 commits these crossovers as bench-tunable but compile-time-fixed; the `cfg(target_feature)`-selected backend file is the single source of truth.
 
 ---
 
