@@ -1247,7 +1247,7 @@ that decides whether each holy-grail claim is demonstrated.
 | R-13 (Option A per-shard) | this doc | Plan F on BERT-glue | 8× compression + accuracy | Holds; else escalate to Option B |
 | R-14 (Pillar 10 active) | this doc | `cargo test -p jc` (default features) | Pflug-Pichler Lipschitz bound | Pillar 10 probe green |
 | R-14 (Pillar 11 active) | this doc | `cargo test -p jc --features hambly-lyons` | Signature uniqueness probe | forward < 1e-9, converse > 0.05, ratio ≥ 1e6 |
-| R-15 (SignatureBasis lane) | this doc | Plan G stream-signal lane | path reconstruction under Pillar 11 | ε within discrimination ratio of Pillar 11 |
+| R-15 (SignatureBasis lane) | this doc | Plan G stream-signal lane | signature-space discrimination under Pillar 11 (forward-only — path inversion is N/A per R-15) | forward < 1e-9, converse > 0.05, ratio ≥ 1e6 (or agreed DEPTH-specific floor) |
 
 **Every row of this matrix is a test.** Plan G's bench harness binary
 emits a JSON report containing the actual measurement for each row;

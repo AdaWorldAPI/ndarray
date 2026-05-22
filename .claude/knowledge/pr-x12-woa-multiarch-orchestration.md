@@ -130,7 +130,7 @@ pub fn batched_gemm(input: ...) {
 
 ### 3.3 Per-arch tunable crossover (R-5 generalised)
 
-Some operations have a "small N: scalar, large N: SIMD" crossover that varies per arch. The snippet below is **pseudocode** — Rust's stable const-eval does not let `match` discriminate over a runtime-detected `Arch::CURRENT` value at `const` context. The real mechanism is a `build.rs` script that resolves the target arch at *compile time* (via `target_arch` / `target_feature` cfgs + a feature-detection probe) and emits the chosen integer as a generated `const` in `OUT_DIR`:
+Some operations have a "small N: scalar, large N: SIMD" crossover that varies per arch. The snippet below is **pseudocode** — Rust's stable const-eval does not let `match` discriminate over a runtime-detected `Arch::CURRENT` value at `const` context. The real mechanism is a `build.rs` script that resolves the target from compile-time metadata Cargo exposes to build scripts — `CARGO_CFG_TARGET_ARCH`, `CARGO_CFG_TARGET_FEATURE`, the target triple, and any pre-recorded calibration artifact — and emits the chosen integer as a generated `const` in `OUT_DIR`. **Critically, do NOT probe the host CPU inside `build.rs`**: under cross-compilation Cargo runs `build.rs` on the *host* machine, so any runtime feature-detection there reflects the build machine and not the target. Cargo's docs are explicit: use `CARGO_CFG_*` env vars (which correctly reflect the target) rather than `cfg!`/`#[cfg]` checks (which reflect the host the script runs on).
 
 ```rust
 // Shape of the per-arch table (lives in a build-script-generated file
@@ -139,16 +139,17 @@ Some operations have a "small N: scalar, large N: SIMD" crossover that varies pe
 //   pub const DCT_BATCH_CROSSOVER: usize = 64;  // emitted by build.rs
 //                                                // for Sapphire Rapids
 //
-// The build script's decision matrix:
-//   Sapphire Rapids (target_feature = "avx512f,amx-bf16")  → 64
-//   Ice Lake / Skylake-X (avx512f only)                    → 32
-//   Zen 4 (avx512f, no AMX)                                → 96
-//   Apple Silicon (target_arch = "aarch64" + NEON)         → 256
-//   Graviton 3 (aarch64 + SVE2)                            → 128
-//   Generic / no SIMD                                       → usize::MAX
+// The build script's decision matrix, driven entirely by Cargo's
+// target-config env vars (no host CPU probing):
+//   CARGO_CFG_TARGET_FEATURE contains "amx-bf16"          → 64
+//   CARGO_CFG_TARGET_FEATURE contains "avx512f"           → 32 (skylake-x/ice lake)
+//   CARGO_CFG_TARGET_FEATURE contains "avx512f", Zen-tuned target-cpu → 96
+//   CARGO_CFG_TARGET_ARCH == "aarch64" + NEON-only        → 256
+//   CARGO_CFG_TARGET_ARCH == "aarch64" + SVE2             → 128
+//   else                                                   → usize::MAX
 //
-// Equivalent fallback if a future Rust stabilises const target-feature
-// detection, then this can become a runtime-stable const:
+// Equivalent in-crate fallback shape using cfg! (still target-resolved,
+// since cfg! in normal (non-build-script) code uses target cfgs):
 //   const DCT_BATCH_CROSSOVER: usize = if cfg!(target_feature = "amx-bf16") { 64 }
 //                                       else if cfg!(target_feature = "avx512f") { 32 }
 //                                       else if cfg!(target_arch = "aarch64") { 128 }
@@ -163,7 +164,7 @@ pub fn dct_apply<const N: usize>(input: &[i16], output: &mut [i16]) {
 }
 ```
 
-R-5 commits these crossovers as **bench-tunable constants** emitted by Plan G's codec-bench calibration sub-target into the per-arch `OUT_DIR` file — not hand-guessed numbers, not a runtime `match` on a synthetic `Arch` enum. The build script is the single source of truth for which integer compiles in.
+R-5 commits these crossovers as **bench-tunable constants** emitted by Plan G's codec-bench calibration sub-target into the per-arch `OUT_DIR` file — not hand-guessed numbers, not a runtime `match` on a synthetic `Arch` enum, and never via host CPU probing under cross-compilation. The build script (driven by `CARGO_CFG_TARGET_*`) is the single source of truth for which integer compiles in.
 
 ---
 
