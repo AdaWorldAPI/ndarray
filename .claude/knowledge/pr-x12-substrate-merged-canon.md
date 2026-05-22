@@ -278,7 +278,18 @@ pub trait PredictiveSignal {
 
 ### M:E-J — The reserved header bits 14-15 carry causal-edge metadata for free
 
-> [Formalised post-merge as **R-2**: 16-bit header bit layout pinned — bits 0-1 = `header_kind`, bits 2-13 = `basin_index`, bits 14-15 = `leaf_size ∈ {8,16,32,64}` (which subsumes M:E-G's `Ctu<const N>`). The causal-tier reading below remains valid but is now the *interpretation*, not the on-wire layout — see R-2 and R-8.]
+> [Formalised post-merge as **R-2**: 16-bit header bit layout pinned —
+> bits 0-1 = `header_kind`, bits 2-13 = `basin_index`,
+> **bit 15 = UNIVERSAL "has inter-tier reference"** (identical across
+> all four consumers; A3-inter cross-tier link),
+> **bit 14 = CONSUMER-TYPED via the frame header's `ConsumerProfile`
+> tag** (cognitive: Pearl-rung high bit; video: reserved=0;
+> splat: LOD-cascade-source flag; gradient: worker-shard parity).
+> Leaf size (8/16/32/64) is encoded structurally via M:E-G's
+> `Ctu<const N>` at the type level, NOT in header bits 14-15. The
+> causal-tier reading below is the historical motivation for bit 14;
+> R-2 generalises it to the four-consumer demux. See
+> `pr-x12-substrate-canon-resolutions.md` §R-2.]
 
 A's E-15 (reserved bits 14-15 are inter-tier link) + A's T-22 (causal-edge v2 mantissa: Intervention=+6, Counterfactual=-6):
 

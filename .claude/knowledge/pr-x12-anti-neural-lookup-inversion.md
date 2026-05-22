@@ -234,7 +234,7 @@ For these use cases, the right architecture is a **layered codec**:
 1. **Base layer:** PR-X12 frozen-lookup codec for the bits-actually-transmitted
 2. **Enhancement layer:** NN generative refinement at the decoder (optional, off by default)
 
-The base layer guarantees fidelity bounded by Shannon. The enhancement layer provides perceptual hallucination when the user opts in. PR-X12's wire format reserves a single bit (M:E-J bit 14 currently used for leaf_size; one of the reserved bits in future revisions) for the "enhancement layer available" flag.
+The base layer guarantees fidelity bounded by Shannon. The enhancement layer provides perceptual hallucination when the user opts in. PR-X12's wire format reserves a single bit in the **frame header** (alongside `ConsumerProfile` and `FlushUnit` per R-2 / R-12) for the "enhancement layer available" flag — not in the per-leaf 16-bit header, whose bit 14 is already claimed by R-2's consumer-typed demux and whose bit 15 is the universal inter-tier reference.
 
 This is also the right architecture for high-stakes content (legal, medical, scientific): always run the base layer, never run the enhancement layer. Determinism preserved.
 

@@ -17,7 +17,7 @@
 
 ### 1.1 What it is
 
-**Location:** `/home/user/ndarray/src/hpc/cam_pq.rs`
+**Location:** `src/hpc/cam_pq.rs` (this repo)
 
 **Algorithm:** Content-Addressable Memory (CAM) + Product Quantization (PQ). Unifies FAISS PQ6×8 (48-bit fingerprints, 6 subspaces × 256 centroids each) with CLAM 48-bit archetypes into a single codec.
 
@@ -108,7 +108,7 @@ The codebook implementation is `cam_pq::CamCodebook`. The four policy variants c
 
 ### 2.1 What it is
 
-**Location:** `/home/user/lance-graph/crates/sigker/`
+**Location:** `crates/sigker/` in the external `adaworldapi/lance-graph` repo (not in this `ndarray` repo)
 
 **Algorithm:** Path-signature representations for sequential / path-structured data. Implements Chen-Lyons signatures S(X) = (1, ∫dX, ∫∫dX⊗dX, …) up to depth N, with shuffle-product algebra and proven uniqueness.
 
@@ -134,7 +134,7 @@ pub struct CodecRouteSigker { /* lance-graph codec routing integration */ }
 |---|---|---|
 | Chen, "Iterated integrals and exponential homomorphisms" | 1957 | Original signature construction |
 | Lyons, "Differential equations driven by rough signals" | 1998 | Rough path theory, signature universal approximator |
-| Hambly-Lyons, "Uniqueness for the signature of a path of bounded variation" | 2010 | **Theorem 4: signatures uniquely determine paths up to tree-like equivalence** |
+| Hambly-Lyons, "Uniqueness for the signature of a path of bounded variation" (**arXiv:math/0507536**, Annals of Mathematics 171(1):109–167) | 2010 | **Theorem 4: signatures uniquely determine paths up to tree-like equivalence** |
 | Salvi-Cass-Foster-Lyons-Lemercier | 2020 | **arXiv:2006.14794** — Goursat-PDE solver for signature kernel, O(T₁·T₂·d), no signature materialization |
 | Cuchiero-Schmocker-Teichmann | 2021 | **Randomized signature universality**: any continuous path-functional ≈ linear combo of randomized-signature coordinates |
 
@@ -206,7 +206,7 @@ This unlocks: **path-structured codec lanes** in Plan G (audio waveforms, time-s
 
 ### 3.1 dn_tree — quaternary plastic memory
 
-**Location:** `/home/user/ndarray/src/hpc/dn_tree.rs`
+**Location:** `src/hpc/dn_tree.rs` (this repo)
 
 **Algorithm:** Quaternary hierarchical bitmap summary tree for plastic graph traversal. Adapted from "On Demand Memory Specialization for Distributed Graph Processing" (2013). Properties:
 
@@ -222,7 +222,7 @@ This unlocks: **path-structured codec lanes** in Plan G (audio waveforms, time-s
 
 ### 3.2 merkle_tree — integrity proof for CogRecord regions
 
-**Location:** `/home/user/ndarray/src/hpc/merkle_tree.rs`
+**Location:** `src/hpc/merkle_tree.rs` (this repo)
 
 **Algorithm:** 8-Kbit Merkle tree built from CogRecord regions as a compressed searchable proxy. Properties:
 
@@ -376,15 +376,16 @@ This doc (#4) and the bgz/jc doc (#3) are the ones that ground PR-X12 in working
 - **GGUF lens (activation-aware RDO claim):** `pr-x12-gguf-llm-weights-encoding.md` §5 — supported by G-1 closure
 - **Anti-neural lens (lookup-table cost analysis):** `pr-x12-anti-neural-lookup-inversion.md` §3 — supported by G-4 + G-5 closure
 - **Multi-arch lens (determinism + integrity):** `pr-x12-woa-multiarch-orchestration.md` §6 — supported by G-4 + G-7 closure
-- **Source code references:**
-  - `/home/user/ndarray/src/hpc/cam_pq.rs` — the codebook trainer
-  - `/home/user/ndarray/src/hpc/dn_tree.rs` — quaternary plastic memory
-  - `/home/user/ndarray/src/hpc/merkle_tree.rs` — Blake3-48-bit Merkle
-  - `/home/user/lance-graph/crates/sigker/` — Chen-Lyons signatures
-  - `/home/user/lance-graph/crates/sigker/src/` — `signature_kernel_pde`, `RandomizedSignature`, `CodecRouteSigker`
-  - `/home/user/lance-graph/crates/jc/src/hambly_lyons.rs` — Pillar 11 (active under `--features hambly-lyons`; DEFERRED only in default zero-dep build)
-  - `/home/user/lance-graph/crates/jc/src/pflug.rs` — Pillar 10 (nested-distance Lipschitz on Sigma DN-trees, certifies CAM-PQ)
-  - `/home/user/lance-graph/crates/bgz-tensor/src/adaptive_codec.rs` — cam_pq imports
+- **Source code references (in this repo `adaworldapi/ndarray`):**
+  - `src/hpc/cam_pq.rs` — the codebook trainer
+  - `src/hpc/dn_tree.rs` — quaternary plastic memory
+  - `src/hpc/merkle_tree.rs` — Blake3-48-bit Merkle
+- **Source code references (external repo `adaworldapi/lance-graph`):**
+  - `crates/sigker/` — Chen-Lyons signatures
+  - `crates/sigker/src/` — `signature_kernel_pde`, `RandomizedSignature`, `CodecRouteSigker`
+  - `crates/jc/src/hambly_lyons.rs` — Pillar 11 (active under `--features hambly-lyons`; DEFERRED only in default zero-dep build)
+  - `crates/jc/src/pflug.rs` — Pillar 10 (nested-distance Lipschitz on Sigma DN-trees, certifies CAM-PQ)
+  - `crates/bgz-tensor/src/adaptive_codec.rs` — cam_pq imports
 - **arXiv anchors for sigker:**
   - **2006.14794** (Salvi-Cass-Foster-Lyons-Lemercier 2020) — Goursat PDE for signature kernel
   - Hambly-Lyons 2010 — signature uniqueness theorem

@@ -767,11 +767,17 @@ to the budget.
 ```text
 4K = 3840 × 2160 = 8.3 M pixels
 60 fps = 16.67 ms/frame
-At 64×64 CTU: 132,710 CTUs/frame
-Per-CTU budget: 16.67 / 132710 = 125 ns/CTU
+At 8×8 leaf granularity (HEVC's smallest CU; the unit at which the
+encoder's inner-loop work is paid):
+                              132,710 leaves/frame
+                              (= 2,040 CTUs/frame at 64×64, × ~64
+                               leaves/CTU at maximum split depth;
+                               130,560 from clean 3840·2160/64, with
+                               ~1.6 % bias for chroma alignment)
+Per-leaf budget: 16.67 ms / 132,710 = 125 ns/leaf
 ```
 
-**Encoder per-CTU breakdown (scalar reference, current):**
+**Encoder per-leaf breakdown (scalar reference, current):**
 
 | Stage | Scalar cost | SIMD-batched target |
 |-------|-------------|---------------------|
@@ -781,12 +787,12 @@ Per-CTU budget: 16.67 / 132710 = 125 ns/CTU
 | transform (A4, 8×8 DCT-II butterfly) | ~30 ns | ~30 ns |
 | quantize (i8 round) | ~5 ns | ~5 ns |
 | rANS encode (A7) | ~40 ns | ~40 ns |
-| **Total per-CTU** | **~960 ns** | **~210 ns** |
+| **Total per-leaf** | **~960 ns** | **~210 ns** |
 
-**At scalar reference (960 ns/CTU): 4K @ 60 fps requires 132710 ×
+**At scalar reference (960 ns/leaf): 4K @ 60 fps requires 132,710 ×
 960 ns = 127 ms/frame. Misses 60 fps by 7.6×.**
 
-**At SIMD-batched (210 ns/CTU): 132710 × 210 ns = 28 ms/frame. Misses
+**At SIMD-batched (210 ns/leaf): 132,710 × 210 ns = 28 ms/frame. Misses
 60 fps by 1.7×; needs further work but in the same order of magnitude.**
 
 **To hit 60 fps 4K real-time** requires the SIMD-batched-encode path
@@ -797,8 +803,8 @@ reference only.
 **Implication for Plan G.** The `--mode video` threshold (R-4)
 includes a latency assertion: total encode time for the Big Buck Bunny
 1080p clip must complete within (clip duration × 0.5). At 1080p that's
-33,825 CTUs/frame × 210 ns × 30 fps = ~213 ms/sec, well within budget.
-4K is the stretch target.
+~32,400 leaves/frame × 210 ns × 30 fps = ~204 ms/sec, well within
+budget. 4K is the stretch target.
 
 **Cite as R-11 in any encoder-path PR description; the latency
 budget is the gate that determines whether SIMD-batched encode is P0
@@ -813,13 +819,14 @@ Different answers make Plan A8 substantially different shapes.
 
 **Resolution.** Commit per-CTU as the default; per-bucket for Plan F.
 
-**Per-CTU flush (committed default):**
+**Per-CTU flush (committed default; CTU = 64×64 cells, so 4096 cells/CTU,
+2,040 CTUs/frame at 4K and ~510 CTUs/frame at 1080p):**
 
 ```text
 Buffer size:   ~12 KB per CTU
                  = 4096 cells × avg 3 bytes (mode-distribution per R-10)
-Flush rate:    ~80,000 flushes/sec at 4K 60 fps  (132710 CTU/frame × 60)
-               ~30,000 flushes/sec at 1080p 60 fps
+Flush rate:    ~122,400 flushes/sec at 4K 60 fps  (2,040 CTUs/frame × 60)
+               ~30,600 flushes/sec at 1080p 60 fps (510 CTUs/frame × 60)
 Latency:       sub-ms per CTU; consumer can start decoding the first
                CTU before encoder finishes the frame
 ```

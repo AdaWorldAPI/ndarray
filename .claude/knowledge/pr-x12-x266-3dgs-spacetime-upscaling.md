@@ -163,7 +163,13 @@ Building on M:E-J's 16-bit header layout (header_kind ∈ {Skip, Merge, Delta, E
 HEVC-compatible PR-X12 header (16 bits, R-2):
     bits 0-1:   header_kind {Skip, Merge, Delta, Escape}
     bits 2-13:  basin_index (12 bits, M:E-J)
-    bits 14-15: leaf_size ∈ {8, 16, 32, 64}
+    bit  14:    CONSUMER-TYPED (semantic per frame-header `ConsumerProfile`;
+                cognitive: Pearl-rung high bit; video: reserved=0;
+                splat: LOD-cascade-source flag; gradient: worker-shard parity)
+    bit  15:    UNIVERSAL "has inter-tier reference" (A3-inter); identical
+                across all four consumers
+    NOTE: leaf-size (8/16/32/64) is encoded structurally via `Ctu<const N>`
+    (M:E-G) at the type level, not via header bits.
 
 x266 extension (NOT in PR-X12 scope, future):
     bits 0-1:   header_kind, now 4 variants
@@ -214,16 +220,17 @@ PR-X12 + 3DGS anchor (single anchor for the clip):
 → HEVC wins by ~25% for native (1080p, 30 fps) playback.
 
 BUT for 4K @ 60 fps playback:
-    HEVC: re-encode at 4K/60fps target = 4 × 4 × 6.25 = 100 MB
-            (or super-res upscaling at decode = 6.25 MB + neural inference)
+    HEVC: re-encode at 4K/60fps target = 4 (res) × 2 (fps) × 6.25 = 50 MB
+            (4× pixel scaling × 2× framerate scaling × 6.25 MB native bitrate;
+             or super-res upscaling at decode = 6.25 MB + neural inference)
     PR-X12 + 3DGS: same 8.3 MB
             decoder rasterizes at (4K, 60 fps); the math is in the scene
 
-→ PR-X12 wins by 12× for high-resolution playback,
+→ PR-X12 wins by ~6× for high-resolution playback,
    AND playback is deterministic (no neural model versioning).
 ```
 
-**Where the crossover sits:** PR-X12 + 3DGS becomes a win when the playback target (W × H × fps) exceeds the encode target by ~3×. At 1× (native), HEVC is a hair cheaper. At 12× (4K@60 from 1080p@24), PR-X12 dominates.
+**Where the crossover sits:** PR-X12 + 3DGS becomes a win when the playback target (W × H × fps) exceeds the encode target by ~1.3× (the point at which HEVC's re-encoded size crosses the fixed 8.3 MB PR-X12 budget). At 1× (native), HEVC is a hair cheaper. At 8× pixel-bandwidth (4K@60 from 1080p@30), PR-X12 dominates by ~6×.
 
 This matches the intuition that **3DGS is a scene model**, not a frame model — its compression ratio improves with resolution, while HEVC's degrades.
 
