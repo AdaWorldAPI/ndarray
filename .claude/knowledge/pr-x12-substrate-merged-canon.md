@@ -13,6 +13,24 @@
 
 Two independent sessions reached the same architectural claim — *PR-X12 is the universal predictive-coder substrate that subsumes four industries* — through different routes. Each session surfaced angles the other missed. This doc is the **canonical fusion**, designed to be the single doc a fresh agent reads to inherit the entire claim.
 
+> **Post-merge resolutions index** (2026-05-22): the claims and tensions in this doc were further formalised into 13 numbered resolutions R-1..R-13. See `pr-x12-canon-resolutions-delta.md` for the canonical list. Cross-section pointers inline below:
+>
+> - §M:E-A (Mode-decide + reduce pipeline kernel) → **R-1** (`LinearReduce<T>` + `Basis<T>` trait split)
+> - §M:E-G (`Ctu<const N>`) and §M:E-J (header bits 14-15) → **R-2** (16-bit header layout pinned), **R-8** (Plan G arch-conditional gate)
+> - §M:E-H (D-STACK-13 bench harness as P0) → **R-4** (codec-bench in Plan G), **R-11** (latency assertions per arch)
+> - §M:H-NEW-2 (codec body LoC envelope ≤ 1500) → **R-3** (LoC audit rule, scope-fence definition)
+> - §M:H-6 (sub-1-bit basin + Gaussian-tail rANS) → **R-10** (commitment to sub-1-bit-per-token where source supports it)
+> - §M:E-D (codec breaks ndarray ↔ lance-graph cycle) → **R-7** (tropical-GEMM lives in lance-graph, called from codec — dep direction allowed)
+>
+> Perspective companions written 2026-05-22:
+> - `pr-x12-x265-blasgraph-gemm.md` — every codec inner loop as a GEMM
+> - `pr-x12-x266-3dgs-spacetime-upscaling.md` — Basis<T> + EWA splat → free space-time codec upscaling
+> - `pr-x12-woa-multiarch-orchestration.md` — how WoA / q2 / consumer crates inherit the substrate's per-arch dispatch
+> - `pr-x12-anti-neural-lookup-inversion.md` — lookup tables as frozen 1-layer NNs; the codec is the anti-neural codec
+> - `pr-x12-gguf-llm-weights-encoding.md` — the fifth load: GGUF attention/FFN tensors as Skip/Merge/Delta/Escape
+> - `pr-x12-bgz-jc-substrate-synergies.md` — **CRITICAL**: the PR-X12 substrate is *already implemented* in `lance-graph/crates/{bgz17,highheelbgz,bgz-tensor}`, formally proven in `lance-graph/crates/jc`. Skip/Merge/Delta/Escape ≡ Scent/Palette/ZeckBF17/Full. 4096-entry basin ≡ HHTL 16×16×16 lattice. bgz-hhtl-d ships LLM weight encoding at 343:1 on Qwen3-TTS-1.7B today. Two gaps identified: `jd-nd` (ndarray-side proof crate) and Cronbach/ICC encoding-reliability research crate.
+> - `pr-x12-cam-pq-sigker-dn-tree-substrate-bindings.md` — **substrate bindings**: cam_pq trains all bgz palettes (CAM bytes map onto HHTL bits 1:1); sigker provides Chen-Lyons signature uniqueness (arXiv:2006.14794, Hambly-Lyons 2010, CST 2021) as the formal-correctness bedrock cited by jc Pillar 11 (DEFERRED); dn_tree + merkle_tree are the online-update + integrity substrate for R-13 SharedClusterWide. **Seven new gaps catalogued (G-1..G-7), ~11-17 weeks of wiring** to fully bind. R-14 (formal correctness) + R-15 (signature basis) candidates surfaced.
+
 The merge is not a re-statement. **It is the new epiphanies that emerge only when both halves sit side by side.** They get their own §3.
 
 ### Identity-preservation rules
@@ -121,6 +139,8 @@ This claim survives only because both docs independently converged on it from di
 These are the insights that emerge **only when both docs sit next to each other**. None appear in either original. Cite as `M:E-A` through `M:E-J`.
 
 ### M:E-A — Mode-decide + reduce IS the universal pipeline kernel
+
+> [Formalised post-merge as **R-1**: `LinearReduce<T>` decomposes into `Basis<T>` (basis-as-data) + `Reducer<T>` (reduction operator). See `pr-x12-canon-resolutions-delta.md` §R-1.]
 
 A's E-4 (transform IS optimizer preconditioner) + B's E9 (splat3d × codec = same pipeline shifted 90°) combined:
 
@@ -258,6 +278,19 @@ pub trait PredictiveSignal {
 
 ### M:E-J — The reserved header bits 14-15 carry causal-edge metadata for free
 
+> [Formalised post-merge as **R-2**: 16-bit header bit layout pinned —
+> bits 0-1 = `header_kind`, bits 2-13 = `basin_index`,
+> **bit 15 = UNIVERSAL "has inter-tier reference"** (identical across
+> all four consumers; A3-inter cross-tier link),
+> **bit 14 = CONSUMER-TYPED via the frame header's `ConsumerProfile`
+> tag** (cognitive: Pearl-rung high bit; video: reserved=0;
+> splat: LOD-cascade-source flag; gradient: worker-shard parity).
+> Leaf size (8/16/32/64) is encoded structurally via M:E-G's
+> `Ctu<const N>` at the type level, NOT in header bits 14-15. The
+> causal-tier reading below is the historical motivation for bit 14;
+> R-2 generalises it to the four-consumer demux. See
+> `pr-x12-substrate-canon-resolutions.md` §R-2.]
+
 A's E-15 (reserved bits 14-15 are inter-tier link) + A's T-22 (causal-edge v2 mantissa: Intervention=+6, Counterfactual=-6):
 
 Two reserved bits = 4 states. The natural 4-state encoding for cognitive content:
@@ -290,6 +323,8 @@ Merge of A's H-1..H-7 + B's HG1..HG6 + two new M:H-* claims that emerge from the
 
 **M:H-6** *(from B:HG2 alone)* — Sub-1-bit-per-Gaussian 3DGS compression. 30-60× over current state-of-the-art PLY-trim. A 1M-Gaussian scene = ~500 KB, streamable as video. **Most economically valuable single claim** — directly attacks the bandwidth bottleneck for cloud-rendered 3D content.
 
+> [Formalised post-merge as **R-10**: PR-X12 commits to sub-1-bit-per-token via Gaussian-tail rANS where the source distribution supports it (basin codebook + heavy-tailed residual). See `pr-x12-canon-resolutions-delta.md` §R-10 for the falsification path (Plan G entropy bench).]
+
 **M:H-7** *(merge of A:H-1 + B:HG5)* — Lance column substrate identity becomes ground truth. `SpoDistanceMatrices` at 611M lookups/sec serves as universal palette codebook lookup across all four loads. ndarray = hardware, ndarray-codec = compression substrate (new, per M:E-D), lance-graph = thinking, causal-edge = protocol, p64 = convergence. Five-category architecture.
 
 **M:H-8** *(from A:H-6 alone)* — 64×64 CTU is the right unit for both 4K video luma blocks and 7B-parameter LLM head dim × 16 heads. Convergent evolution from two unrelated industries arriving at the same arithmetic block size.
@@ -301,6 +336,8 @@ Merge of A's H-1..H-7 + B's HG1..HG6 + two new M:H-* claims that emerge from the
 **M:H-NEW-1** — The same Rust binary consumes (4K video frames | 1M-Gaussian 3DGS scene | 7B-LLM gradient stream | attention KV cache) and emits a compressed Lance column. One CLI. One codec. Four loads. **This is the falsifiability test** — build it (Plan G, the bench harness), prove HG1/H-7 by demonstration, not by argument.
 
 **M:H-NEW-2** — `trait PredictiveSignal` + `trait LinearReduce<Basis>` + `trait CurveOrder<const N: usize>` factor the codec into three plug-points (per M:E-E + M:E-A + M:E-B). The codec body is `<150 LoC of generic glue. Domain consumers ship `<200 LoC` of trait impls. **Total stack for all four industries: ~2 KLoC.** Compared to ~50 KLoC per-domain implementations elsewhere. The 25× code-density delta is the architectural payoff that justifies the eight sub-cards.
+
+> [Formalised post-merge as **R-3**: the LoC envelope is `≤ 1500 lines of generic codec body` (revised upward from `<150` for realism after counting glue), enforced via an explicit scope-fence audit rule in CI. The substrate (`ndarray::hpc::blas_level2` etc.) is excluded from the budget. See `pr-x12-canon-resolutions-delta.md` §R-3 for the exact audit definition.]
 
 ---
 

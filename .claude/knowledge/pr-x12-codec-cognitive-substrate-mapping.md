@@ -5,6 +5,16 @@
 > Scope: ndarray codec ↔ Gaussian splat ↔ cognitive shaders ↔ blasgraph/MKL ↔ gradient optimization  
 > Status: **survives compaction** — load-bearing claim mapping + integration plan + debt inventory  
 > Companion to: `pr-x12-codec-x265-design.md` (the as-shipped HEVC-analog spec) — this doc is the *generalisation* of that spec across the rest of the stack
+>
+> **Post-merge formalisation (2026-05-22):** the bench / cost / dep-direction claims below have been numbered and pinned in `pr-x12-canon-resolutions-delta.md`:
+> - §4.1 (4096-entry basin codebook) → **R-10** (sub-1-bit commitment), **R-13** (federated codebook policy)
+> - §5.3 (DCT-II / GEMM crossover) → **R-5** (per-arch crossover constants, bench-tuned)
+> - §13.1 (block-matched ME → batched i8 GEMM) → **R-6** (ME via SSD identity, VNNI path)
+> - §13.3 (CTU partition as tropical-GEMM) → **R-7** (kernel home in `lance-graph::blasgraph`, dep direction allowed)
+> - Plan G (bench harness) → **R-4** (architecture-conditional gate), **R-11** (latency assertions per stage)
+>
+> Perspective lenses written 2026-05-22 (sibling docs):
+> `pr-x12-x265-blasgraph-gemm.md` · `pr-x12-x266-3dgs-spacetime-upscaling.md` · `pr-x12-woa-multiarch-orchestration.md` · `pr-x12-anti-neural-lookup-inversion.md` · `pr-x12-gguf-llm-weights-encoding.md` · **`pr-x12-bgz-jc-substrate-synergies.md`** (grounds PR-X12 in already-implemented `bgz17`/`bgz-tensor`/`bgz-hhtl-d`/`jc` crates)
 
 ---
 
@@ -120,6 +130,8 @@ This is **what DeepSpeed-ZeRO does informally** with `bf16_compress`, `int8_comp
 
 ## 4. Palette / basin codebook — what HEVC SCC tried and missed
 
+> [Codebook lifecycle pinned post-merge as **R-13**: the codec exposes the basin codebook as a swappable handle (LocalEphemeral | SharedClusterWide | SharedRegional | PretrainedStatic). The 4096-entry capacity claim below is unchanged; what's new is that the codebook is *not baked* into the codec — orchestration (q2 / woa-rs) picks the right one per request.]
+
 ### 4.1 The 12-bit basin = 4096-entry vocabulary
 
 `MAX_BASIN_IDX = (1 << 12) - 1 = 4095` (`mode.rs:79`). The full 12-bit range addresses 4096 real basins — every `LeafCu` carries an index into a fully-populated per-Heel codebook. No slot is reserved as a sentinel: the HHTL ontology (`Heel > Hip > Twig > Leaf`, see `src/hpc/ogit_bridge/assets/cognitive/entities/Leaf.ttl`) defines the codebook as `16 Hips × 16 Twigs × 16 Leaves = 4096 Leaves per Heel`, every Leaf carrying a real `basinSignature`. Authoring-time uncertainty ("not yet decided") stays in the encoder's `Option<u16>` scratch state and never leaks onto the wire. For:
@@ -170,6 +182,8 @@ In the gradient-compression interpretation, the transform basis IS the optimizer
 This is **the most underrated** of the four mappings. Optimizer research treats preconditioner choice as the central knob; codec research treats transform basis as the central knob; nobody has noticed they're the same knob.
 
 ### 5.3 The DCT-II / GEMM tradeoff (for downstream batched encode)
+
+> [Resolved post-merge as **R-5**: per-arch crossover constants, calibrated by Plan G's `codec-bench`. Concrete defaults landed in canon-resolutions-delta §R-5 — SPR=64, ICX=32, Zen4=96, Apple M=256, Graviton=128. See `pr-x12-x265-blasgraph-gemm.md` §2.2 for the full GEMM-form derivation.]
 
 Single 32×32 DCT-II via butterflies: ~80 ops. Same via GEMM (`C = A @ DCT_BASIS`): ~32K ops. **Per-block, butterfly wins by 400×**. But:
 
@@ -496,6 +510,8 @@ Six places where blasgraph + MKL change the algorithmic complexity, not just con
 
 ### 13.1 Block-matched ME → batched i8gemm (E-7)
 
+> [Pinned as **R-6**: SSD-via-GEMM identity is the canonical ME path; the API lives at `ndarray::hpc::blas_level2::batched_ssd_search`. The 50× win is reproduced in the GEMM-lens companion doc; the bench is asserted by Plan G video lane (R-4).]
+
 Classical ME: SAD over 32×32 window. Reformulate as SSD via `||A||² - 2A·B + ||B||²` — middle term is a GEMM. AVX-512 VNNI `i8gemm_i32` does a whole CTU's motion candidates in one call. **~50× over hand-tuned NEON/AVX2 SAD.**
 
 ### 13.2 Batched DCT-II via MKL sgemm (E-7-variant)
@@ -503,6 +519,8 @@ Classical ME: SAD over 32×32 window. Reformulate as SSD via `||A||² - 2A·B + 
 Per-block butterfly wins for single 32×32. Per-frame batched `C = A_batch @ DCT_BASIS` wins for ≥ 64 blocks via AMX tile fusion. Trades latency for throughput. A4 should ship both.
 
 ### 13.3 CTU partition mode-decision as tropical-GEMM (E-8)
+
+> [Pinned as **R-7**: tropical-GEMM kernel lives in `lance-graph::blasgraph::tropical_gemm`; the codec calls into it. The `ndarray-codec → lance-graph` dep direction was confirmed *allowed* post-merge (both are sibling crates above `ndarray::hpc` and below `woa-rs`). See R-7 in the delta doc for the dep-graph audit.]
 
 x265 spends ~30% CPU on recursive partition RDO. Reformulate: each partition is a node in an 85-node DAG, edges = split/merge transitions, weights = ΔRDO. Optimal partition = shortest path. blasgraph's tropical-semiring GEMM (`D ← min(D, D + W)`) solves all partitions in **one batched matrix-relax**. `O(4^d)` → `O(d²)` per CTU.
 
