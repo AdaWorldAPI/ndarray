@@ -12,12 +12,25 @@
 > standard, **the divergence is the correction list** below — ground truth
 > wins every time.
 
-## Evidence model (from PR #200 Tier-4, = "inspiration ≠ authority")
+## Evidence model — three levels (the auditor is not exempt)
 
-| Tier | What | May be cited as evidence? |
+| Level | What | Authority |
 |---|---|---|
-| **Evidence** | source files · W1a contracts · ratified standards · the merged `.claude/PR-X12-docs-audit.md` (#200) | yes |
-| **Inspiration** | the `.claude/plans/` corpus · the `pr-x12-*` perspective docs · the R-1..R-15 series (forward-conditional, audit-flagged) | **no** |
+| **L0 — terminal** | source code · passing tests · ratified standards | ground truth |
+| **L1 — verifiable claims-about-source** | the merged #200 audit · **this triage** | falsifiable vs L0; must be spot-checked, never inherited |
+| **L2 — inspiration** | the `.claude/plans/` corpus · `pr-x12-*` perspective docs · R-1..R-15 (forward-conditional) | not evidence |
+
+**#200 sits at L1, not L0** — it is a Claude-authored doc; its value is that its
+claims point at *checkable symbols*, not that it is "an audit." So it was itself
+spot-checked: the five load-bearing rows this triage's correction-list rests on
+(`spmv_min_plus`-not-`tropical_spmv`; sigker-PDE-not-buggy; no `batched_ssd_search`;
+no `tropical_gemm`; blasgraph-bit-exact / bgz17-lossy) were verified first-party
+against source this session — **all CONFIRMED**, only cosmetic defects in #200
+(`spmv_min_plus` at line 99 not 98; "8 methods" is 9). #200's own §6 self-flagged
+**un-verified** items (18 of 20 blasgraph files; `hambly_lyons` probe numerics;
+the `predict.rs` assertion; the 343:1 compression ratios; PR #348/#350 GitHub
+state) remain the residual trust boundary — **not to be elevated past L1 until
+checked.**
 
 ## Ground-truth anchors (verified this session, whole-file)
 
