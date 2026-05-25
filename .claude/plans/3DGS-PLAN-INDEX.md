@@ -13,13 +13,34 @@ This directory contains the ndarray-side implementation plans for the 3DGS geosp
 - HHTL / HEEL-HIP-TWIG-LEAF selection primitives callable by `lance-graph`.
 - Benchmarks, golden vectors, reproducibility, and failure gates.
 
+## Markdown convention
+
+Program-related material should use fenced Markdown blocks so Claude Code, GitHub review, and future handovers can parse it cleanly.
+
+Use fences for:
+
+```text
+crate/module layouts
+commands
+Cargo feature sets
+Rust DTO sketches
+schema sketches
+endpoint lists
+call-flow diagrams
+file paths when shown as groups
+```
+
+Use inline code only for short identifiers such as `ndarray::hpc::splat3d` or `TileId`.
+
 ## Plans
 
-1. `3DGS-SIMD-forward-renderer-plan.md`
-2. `3DGS-error-certification-pillars-plan.md`
-3. `3DGS-columnar-splat-codec-plan.md`
-4. `3DGS-HHTL-CPU-cascade-plan.md`
-5. `3DGS-validation-benchmark-plan.md`
+```text
+3DGS-SIMD-forward-renderer-plan.md
+3DGS-error-certification-pillars-plan.md
+3DGS-columnar-splat-codec-plan.md
+3DGS-HHTL-CPU-cascade-plan.md
+3DGS-validation-benchmark-plan.md
+```
 
 ## Cross-repo boundary
 
