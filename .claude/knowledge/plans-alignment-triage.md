@@ -79,6 +79,11 @@ Sourced from PR #200 (`PR-X12-docs-audit.md`) + first-party reads:
    LOD tile-tree only — *not* the directional lane.
 9. GS payload = a glTF carrying the `KHR_gaussian_splatting` extension, not a
    peer `ContentKind::GaussianSplat3d`. SPZ = interop tier; PR-X12 = internal.
+10. **Naming: the family prefix is `3dgs-*`; `ada-*` is deprecated.** The 3D
+    Tiles reader proposed as `ada-3dtiles` (PR #2) is renamed **`3dgs-tiles`**
+    before it commits; the plan docs that reference `ada-3dtiles`
+    (`3DGS-Cesium-feature-mapping`, `3DGS-3D-Tiles-runtime`) need the same
+    rename. Geo's lance-graph lane.
 
 ## Supersedes-note — this thread's own in-conversation errors
 
@@ -195,7 +200,7 @@ alpha-blend that ndarray already has.
 ## Forward program (7 PRs, 3 sessions — this doc is PR #1)
 
 ```
-W1 (independent):  #1 triage [Gov] · #2 ada-3dtiles [Geo] · #3 EWA-SYRK bench [Kernel]
+W1 (independent):  #1 triage [Gov] · #2 `3dgs-tiles` reader (NOT ada-*) [Geo] · #3 EWA-SYRK bench [Kernel]
 W2 (spine):        #4 pr-x12 fixes+archive [Geo] / evidence-policy [Gov] ── #5 canon specs (ASG·BGZ17·C/HLOD) [Gov]
 W3 (impl):         #6 ErrorCertificate [Kernel] · #7 ASG lobe+recovery-gate [Kernel]   (both trail #5)
 ```
