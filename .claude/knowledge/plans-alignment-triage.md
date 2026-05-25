@@ -83,7 +83,9 @@ Sourced from PR #200 (`PR-X12-docs-audit.md`) + first-party reads:
     Tiles reader proposed as `ada-3dtiles` (PR #2) is renamed **`3dgs-tiles`**
     before it commits; the plan docs that reference `ada-3dtiles`
     (`3DGS-Cesium-feature-mapping`, `3DGS-3D-Tiles-runtime`) need the same
-    rename. Geo's lance-graph lane.
+    rename. Geo's lance-graph lane. The EWA-SYRK bench (PR #3, Kernel) is named
+    **`3dgs-ewa-syrk`** under the same convention. Pinned W1 names:
+    `3dgs-tiles`, `3dgs-ewa-syrk`.
 
 ## Supersedes-note — this thread's own in-conversation errors
 
@@ -200,7 +202,7 @@ alpha-blend that ndarray already has.
 ## Forward program (7 PRs, 3 sessions — this doc is PR #1)
 
 ```
-W1 (independent):  #1 triage [Gov] · #2 `3dgs-tiles` reader (NOT ada-*) [Geo] · #3 EWA-SYRK bench [Kernel]
+W1 (independent):  #1 triage [Gov] · #2 `3dgs-tiles` reader (NOT ada-*) [Geo] · #3 `3dgs-ewa-syrk` bench [Kernel]
 W2 (spine):        #4 pr-x12 fixes+archive [Geo] / evidence-policy [Gov] ── #5 canon specs (ASG·BGZ17·C/HLOD) [Gov]
 W3 (impl):         #6 ErrorCertificate [Kernel] · #7 ASG lobe+recovery-gate [Kernel]   (both trail #5)
 ```
