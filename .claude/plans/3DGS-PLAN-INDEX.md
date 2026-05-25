@@ -11,6 +11,7 @@ This directory contains the ndarray-side implementation plans for the 3DGS geosp
 - Pillar-certified error probes under `src/hpc/pillar`.
 - Columnar splat payload formats and quantization carriers.
 - HHTL / HEEL-HIP-TWIG-LEAF selection primitives callable by `lance-graph`.
+- 4x4 cognitive-shader SoA carriers and lift/extract invariants.
 - Benchmarks, golden vectors, reproducibility, and failure gates.
 
 ## Markdown convention
@@ -40,6 +41,7 @@ Use inline code only for short identifiers such as `ndarray::hpc::splat3d` or `T
 3DGS-columnar-splat-codec-plan.md
 3DGS-HHTL-CPU-cascade-plan.md
 3DGS-validation-benchmark-plan.md
+3DGS-4x4-cognitive-shader-SoA-plan.md
 ```
 
 ## Cross-repo boundary
@@ -54,6 +56,16 @@ lance-graph camera/tile decision request
 ndarray HHTL/SIMD/certification kernels
         ->
 certified tile/splat decision report
+```
+
+For 4x4 fanout, the intended interface is:
+
+```text
+lance-graph raw-field / cognitive-shader block request
+        ->
+ndarray Mat4 / Sym4 / Block4 SoA kernels
+        ->
+certified block decision report
 ```
 
 Central principle: renderer decisions should be fast, inspectable, and mathematically auditable.
