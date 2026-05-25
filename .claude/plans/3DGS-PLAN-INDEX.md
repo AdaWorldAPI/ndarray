@@ -8,6 +8,7 @@ This directory contains the ndarray-side implementation plans for the 3DGS geosp
 
 - CPU-SIMD 3D Gaussian Splatting forward renderer.
 - SPD covariance construction and EWA projection math.
+- EWA/SYRK/BLAS/MKL backend dispatch for large-batch covariance projection.
 - Pillar-certified error probes under `src/hpc/pillar`.
 - Columnar splat payload formats and quantization carriers.
 - HHTL / HEEL-HIP-TWIG-LEAF selection primitives callable by `lance-graph`.
@@ -42,11 +43,12 @@ Use inline code only for short identifiers such as `ndarray::hpc::splat3d` or `T
 3DGS-HHTL-CPU-cascade-plan.md
 3DGS-validation-benchmark-plan.md
 3DGS-4x4-cognitive-shader-SoA-plan.md
+3DGS-EWA-SYRK-BLAS-MKL-crosspollination-plan.md
 ```
 
 ## Cross-repo boundary
 
-`ndarray` should not own 3D Tiles, Cesium compatibility, ArcGIS service ingestion, graph query planning, or tile serving. Those live in `lance-graph`.
+`ndarray` should not own 3D Tiles, Cesium compatibility, ArcGIS service ingestion, graph query planning, SplatShaderBlas orchestration, or tile serving. Those live in `lance-graph`.
 
 The intended interface is:
 
@@ -66,6 +68,16 @@ lance-graph raw-field / cognitive-shader block request
 ndarray Mat4 / Sym4 / Block4 SoA kernels
         ->
 certified block decision report
+```
+
+For BLAS-backed EWA projection, the intended interface is:
+
+```text
+lance-graph 3DGS block schedule
+        ->
+ndarray EWA/SYRK/BLAS backend selection
+        ->
+batched covariance projection report
 ```
 
 Central principle: renderer decisions should be fast, inspectable, and mathematically auditable.
