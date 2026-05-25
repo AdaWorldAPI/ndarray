@@ -21,6 +21,12 @@
 
 ## Ground-truth anchors (verified this session, whole-file)
 
+> All ndarray anchors are independently confirmed real by the merged **#200
+> audit §1** (`.claude/PR-X12-docs-audit.md`, in this branch's tree). This
+> branch was synced to current `master` so every cited path resolves in-tree —
+> the branch was originally cut from a pre-`pillar/` master point, which is why
+> an earlier review saw the pillar files as absent.
+
 - **code (ndarray):** `src/hpc/splat3d/{spd3,project,raster,sh,tile,gaussian}.rs`,
   `src/hpc/pillar/{ewa_sandwich_2d,ewa_sandwich_3d,splat_invariants}.rs`,
   `src/hpc/cam_pq.rs` (847 lines), `src/hpc/bgz17_bridge.rs`
