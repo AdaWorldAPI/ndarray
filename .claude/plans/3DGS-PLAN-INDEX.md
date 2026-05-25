@@ -8,6 +8,7 @@ This directory contains the ndarray-side implementation plans for the 3DGS geosp
 
 - CPU-SIMD 3D Gaussian Splatting forward renderer.
 - SPD covariance construction and EWA projection math.
+- Render-depth, visibility, and occlusion-certification kernels.
 - EWA/SYRK/BLAS/MKL backend dispatch for large-batch covariance projection.
 - Domain-neutral certified field-kernel substrate pieces when repeated by multiple consumers.
 - PR-X12 tensor-container expansion kernels and benchmark hooks where they touch decode-during-GEMM.
@@ -47,6 +48,7 @@ Use inline code only for short identifiers such as `ndarray::hpc::splat3d` or `T
 3DGS-4x4-cognitive-shader-SoA-plan.md
 3DGS-EWA-SYRK-BLAS-MKL-crosspollination-plan.md
 3DGS-certified-field-kernel-substrate-plan.md
+3DGS-render-depth-certification-plan.md
 ```
 
 ## PR-X12 tensor-container capstone
@@ -71,7 +73,7 @@ decode-during-GEMM and HHTL traversal
 
 ## Cross-repo boundary
 
-`ndarray` should not own 3D Tiles, Cesium compatibility, ArcGIS service ingestion, graph query planning, SplatShaderBlas orchestration, datalake semantics, domain adapters, or tile serving. Those live in `lance-graph`.
+`ndarray` should not own 3D Tiles, Cesium compatibility, ArcGIS service ingestion, Blender scene semantics, graph query planning, SplatShaderBlas orchestration, datalake semantics, domain adapters, or tile serving. Those live in `lance-graph`.
 
 The intended interface is:
 
@@ -81,6 +83,16 @@ lance-graph camera/tile decision request
 ndarray HHTL/SIMD/certification kernels
         ->
 certified tile/splat decision report
+```
+
+For render-depth certification, the intended interface is:
+
+```text
+lance-graph scene / mesh / splat candidate request
+        ->
+ndarray depth interval / visibility / occlusion kernels
+        ->
+render-depth certificate summary
 ```
 
 For 4x4 fanout, the intended interface is:
@@ -123,4 +135,4 @@ ndarray PR-X12 block decode / codebook / GEMM-adjacent kernels
 cache-resident decode-during-GEMM report
 ```
 
-Central principle: renderer, codec, and field-kernel decisions should be fast, inspectable, and mathematically auditable.
+Central principle: renderer, codec, depth, and field-kernel decisions should be fast, inspectable, and mathematically auditable.
