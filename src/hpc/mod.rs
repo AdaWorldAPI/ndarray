@@ -37,6 +37,9 @@ pub mod lapack;
 pub mod fft;
 pub mod vml;
 pub mod packed;
+// PhiSpiral256 — golden-spiral leaf-location codec (orthogonal location lane,
+// sibling to CAM_PQ meaning / PolarQuant magnitude).
+pub mod phi_spiral;
 
 // Cognitive layer types (migrated from rustynum-core)
 #[allow(missing_docs)]
