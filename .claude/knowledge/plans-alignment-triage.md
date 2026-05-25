@@ -111,12 +111,12 @@ Recorded for honesty; the inventory below supersedes them:
 | 3DGS-certified-query-render | lance-graph | ✓ | auditable skip/refine/hydrate |
 | 3DGS-integration-wiring | lance-graph | ✓ | the lance-graph↔ndarray boundary |
 | 3DGS-Cesium-feature-mapping | lance-graph | ✓ | 3D Tiles spec (gold-standard transfer) |
-| 3DGS-SIMD-forward-renderer | ndarray | ◑ | real `splat3d/{project,raster,sh}` |
+| 3DGS-SIMD-forward-renderer | ndarray | ✓ | real `splat3d/{project,raster,sh}` (Kernel whole-read) |
 | 3DGS-columnar-splat-codec | ndarray | ◑ | f16 carrier + `splat3d` block views |
-| 3DGS-error-certification-pillars | ndarray | ◑ | real Pillar-6/7/12 |
+| 3DGS-error-certification-pillars | ndarray | ✓ | real Pillar-6/7/12 (Kernel whole-read `pillar/` dir) |
 | 3DGS-validation-benchmark | ndarray | ◑ | real renderer/codec/pillar paths |
 | 3DGS-HHTL-CPU-cascade | ndarray | ◑ | `hpc::{cascade,clam,cam_pq}` |
-| 3DGS-EWA-SYRK-BLAS-MKL | ndarray | ◑ | `spd3::sandwich` + Pillar-7; **backend gated behind bench (PR-3)** |
+| 3DGS-EWA-SYRK-BLAS-MKL | ndarray | ✓ | `spd3::sandwich` + Pillar-7. Idea USE-NOW; **actionable half (MKL/BLAS backend) may DOWNGRADE after PR-3 measures — likely a 3×3 pessimization** (`project.rs` already 16-wide SoA over tiny matrices) |
 | cam-pq-production-wiring | lance-graph | ◑ | real `cam_pq` (self-corrects 1300×→128×) · **UNOWNED cross-repo pick-up** |
 | codec-sweep-via-lab-infra | lance-graph | ◑ | real `cognitive-shader-driver`; honest negative controls |
 | categorical-algebraic-inference | lance-graph | ◑ | real grammar/VSA surface (categorical framing = labeled conjecture) |
@@ -143,6 +143,7 @@ Recorded for honesty; the inventory below supersedes them:
 | unified-ogit-architecture | lance-graph | anatomy north-star wires FMA + splat pillars |
 | thought-cycle-soa-awareness | lance-graph | ⚠ redefines `CausalEdge64` — collides with v3 canon; reconcile first |
 | 3DGS-4x4-cognitive-shader-integration | lance-graph | geospatial slice buildable; cross-domain lanes not |
+| 3DGS-certified-field-kernel-substrate | ndarray | whole-read ✓ (Kernel+Geo): self-fences ("don't abstract until 2 consumers exist"); grounded on real EWA/SPD/Block4/pillar; PR-6 + the 4×4 row land under it. Sessions split GROUND-FIRST/KEEP-EPIPHANY — graded KEEP-EPIPHANY on the self-gate |
 
 ## Hop 2/3 — GROUND-FIRST (needs an experiment/fixture before build)
 
@@ -150,7 +151,7 @@ Recorded for honesty; the inventory below supersedes them:
 |---|---|---|
 | 3DGS-4x4-cognitive-shader-SoA | ndarray | `(4×4)⁴` fanout speculative |
 | PhiSpiral256-SoA-cross-system | lance-graph | core lane markdown-only; needs the kernel |
-| 2026-05-06-splat-osint-ingestion | lance-graph | real EWA/jc spine; markdown-only SPLAT-1 types |
+| 2026-05-06-splat-osint-ingestion | lance-graph | **CORRECTED mis-grade:** SPLAT-1 types are **SHIPPED** in `lance-graph-contract::splat` (`CamPlaneSplat`/`SplatPlaneSet`/`CamSplatCertificate`/`AwarenessPlane16K`/`witness_to_splat`, verified first-party). Ingestion wiring not built → stays GROUND-FIRST. **PR-7 (ASG-leaf) must EXTEND these, not reinvent.** |
 | 3DGS-Blender-transcode-crosspollination | lance-graph | real bridges, speculative mappings |
 | 3DGS-SplatShaderBlas-BLASGraph | lance-graph | **plan inverts blasgraph/bgz17 (see correction #1); blasgraph is canonical** |
 | 3DGS-domain-adapter-strategy | lance-graph | trait stays plan-level until 2 adapters exist |
@@ -160,7 +161,7 @@ Recorded for honesty; the inventory below supersedes them:
 | 3DGS-ultrasound-SaMD | lance-graph | no in-repo fixture; SaMD trajectory |
 | lance-graph-rdf-fma-snomed | lance-graph | grounds the ontology bridge; itself ontology ingest |
 | sprint-5-through-9-roadmap | lance-graph | only Sprint 7/9 touch splat/EWA/jc; rest compliance |
-| 3DGS-render-depth-certification | ndarray | point-cloud fallback per KHR · *pending whole-read* |
+| 3DGS-render-depth-certification | ndarray | whole-read ✓ (Kernel+Geo): grounded spec for PR-6 `ErrorCertificate` (separated error terms `E_camera+E_quant+E_covariance+E_overlap+E_sort+E_lod+E_sampling` + Cesium SSE + KHR point-cloud fallback); DTO not built |
 
 ## Hop 3 — ARCHIVE (superseded / fabrication-heavy)
 
@@ -205,11 +206,14 @@ measurement; likely a 3×3 pessimization) · PR-X12 tensor capstone build
 
 ## Scope boundary — not whole-read this pass
 
-Honest boundary so the next session knows where to pick up:
-`3DGS-certified-field-kernel-substrate` and `3DGS-render-depth-certification`
-(ndarray, chat-added) were not in the 7-agent whole-read batches; their rows
-above are provisional. The `pr-x12-*` perspective docs are graded by PR #200,
-not re-read here.
+Both `3DGS-render-depth-certification` and `3DGS-certified-field-kernel-substrate`
+are now whole-read (Kernel + Geo, this review round) and graded above — the
+provisional flag is **cleared**. The `2026-05-06-splat-osint-ingestion` row was
+**corrected** (SPLAT-1 types are shipped in `lance-graph-contract::splat`, not
+markdown-only). The `pr-x12-*` perspective docs are graded by PR #200, not
+re-read here. Residual unverified (per #200 §6, held at L1, not elevated): the
+18-of-20 blasgraph files, `hambly_lyons` probe numerics, the 343:1 ratios, and
+PR #348/#350 GitHub state.
 
 ## Convergence — comment surface
 
