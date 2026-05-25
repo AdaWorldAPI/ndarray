@@ -12,7 +12,7 @@
 //!   CAM_PQ       removes the meaning direction      → residual ⊥ meaning
 //!   PolarQuant   projects onto magnitude/similarity → LOSES the perpendicular location
 //!   PhiSpiral256 addresses that orthogonal location → recovers what PolarQuant discarded
-//!   BGZ17        golden offset/stride schedule      → remembers how to recover it
+//!   BGZ17        phase: golden/coprime cyclic step  → ≈ Quintenzirkel (circle of fifths)
 //! ```
 //!
 //! PhiSpiral256 is **orthogonal to PolarQuant**: PolarQuant carries the
@@ -20,29 +20,42 @@
 //! carries exactly that thrown-away position. It is *not* a meaning lane
 //! (that is CAM_PQ) and *not* a magnitude lane (that is PolarQuant).
 //!
-//! # Design trajectory: phase-centric splat encoding (the goal)
+//! # Two axes: BGZ17 phase × Poincaré clustering
+//!
+//! The golden spiral decomposes into exactly two independent axes, which
+//! correspond to two distinct lanes — PhiSpiral256 does not replace either,
+//! it *carries* both:
+//!
+//! - **Angle = BGZ17 phase.** BGZ17 *is* a phase encoding — a golden /
+//!   coprime cyclic step akin to the **Quintenzirkel** (circle of fifths),
+//!   where a coprime interval visits every position in a maximally-spread
+//!   order. The golden angle `θ_k = 2π·frac(k/φ)` is the continuous limit
+//!   of that step (the most-irrational rotation), so the spiral's **angle
+//!   is the BGZ17 phase**. BGZ17's own coprime step is `GOLDEN_STEP = 11`
+//!   over `BASE_DIM = 17` (verified in `hpc::bgz17_bridge`: the table
+//!   `(i·11) mod 17` visits all 17 positions); the atom's two 2-bit `bgz`
+//!   fields are plan-inspired placeholders, **not** those constants.
+//! - **Radius + spread = Poincaré clustering.** Poincaré is its own thing:
+//!   **spatial location clustering** on the hyperbolic radial chart (see
+//!   [`SpiralChart::Poincare`]) — a hemispheric chart around the parent
+//!   anchor rather than a flat plane. This is the axis the cluster lives on.
+//!
+//! # Design trajectory: splat, not point (the goal)
 //!
 //! This module currently implements the **anchor layer**: a 256-point
 //! golden-spiral codebook with nearest-anchor lookup. The intended end
-//! state is bigger, and the anchor layer is the substrate it sits on:
+//! state, on the Poincaré (clustering) axis, is bigger:
 //!
-//! - **Phase-centric, not offset/stride.** BGZ17 addresses location by a
-//!   recoverable offset/stride *sampling schedule* over Base17. PhiSpiral256
-//!   instead makes the golden-angle **phase** itself the address — the
-//!   `spiral_id` is a quantized phase on the disk, not a sample index.
-//! - **A splat, not a point.** A leaf does not address one anchor; it
-//!   addresses a **Gaussian splat** — an anchor (phase) plus a 2D spread
-//!   (covariance) — so it encodes *spatial clustering* of the orthogonal
-//!   residual, not a single location. This is the same object the graphics
-//!   renderer already produces: the 2D conic `Σ_img` in
-//!   `hpc::splat3d::project` and the SPD covariance in `hpc::splat3d::spd3`
-//!   *are* the splat spread. PhiSpiral256's location splat reuses that math.
-//! - **Hemispheric / Poincaré-flavored.** The placement is the
-//!   Poincaré-disk golden step (see [`SpiralChart::Poincare`]), i.e. a
-//!   hemispheric chart around the parent anchor rather than a flat plane.
-//! - **Maybe magnitude.** The splat may also carry a weight/opacity
-//!   (spatial magnitude), making the leaf a weighted cluster rather than a
-//!   bare location. Left as a forward extension, not yet encoded.
+//! - **A Gaussian splat, not a point.** A leaf addresses a **cluster** —
+//!   an anchor plus a 2D spread (covariance) — encoding *spatial location
+//!   clustering* of the orthogonal residual, not a single location. This is
+//!   the same object the graphics renderer already produces: the 2D conic
+//!   `Σ_img` in `hpc::splat3d::project` and the SPD covariance in
+//!   `hpc::splat3d::spd3` *are* the splat spread. The location splat reuses
+//!   that math.
+//! - **Maybe spatial magnitude.** The splat may also carry a weight /
+//!   opacity, making the leaf a weighted cluster. Forward extension, not
+//!   yet encoded.
 //!
 //! So the trajectory is: anchor codebook (here) → splat = anchor + 2D
 //! covariance (reuse `splat3d` Spd/conic) → optional magnitude. The point
@@ -87,10 +100,12 @@
 //!
 //! # Precision ladder (location)
 //!
-//! BGZ17 is the *coarse* recoverable-sampling skeleton — Base17 (17 levels),
-//! with a golden offset family in ≈17..27 and a stride family in `{2, 4}`.
-//! When precise location is needed, the residual is addressed at higher
-//! resolution than Base17:
+//! BGZ17 is the *coarse* recoverable-sampling skeleton — Base17 with
+//! `BASE_DIM = 17` and `GOLDEN_STEP = 11` (verified in `hpc::bgz17_bridge`;
+//! the coprime golden step `(i·11) mod 17` visits all 17 positions),
+//! reducing a 16384-bit plane to a **lossy** `[i16; 17]` by golden-step
+//! octave averaging. When precise location is needed, the residual is
+//! addressed at higher resolution than Base17:
 //!
 //! ```text
 //!   BGZ17 / Base17    17 levels   coarse recoverable sampling skeleton
@@ -310,14 +325,18 @@ impl PhiSpiral256 {
 /// ```text
 ///   bits  0..=7   phi_spiral_id   (location address, 0..255)
 ///   bits  8..=11  mag4            (magnitude band, 0..15)
-///   bits 12..=13  offset family   (index into BGZ17 offsets ≈17..27, 0..3)
-///   bits 14..=15  stride family   (index into BGZ17 strides {2, 4}, 0..3)
+///   bits 12..=13  bgz family lo   (plan-inspired 2-bit carrier, 0..3)
+///   bits 14..=15  bgz family hi   (plan-inspired 2-bit carrier, 0..3)
 /// ```
 ///
-/// The offset/stride fields are *family indices*, not the BGZ17 values
-/// themselves: BGZ17 operates on Base17 with a golden offset in ≈17..27 and
-/// a stride of 2 or 4. The 2-bit index selects which family the leaf used;
-/// the family→value table is a caller/BGZ17 concern.
+/// The two `bgz` fields are **plan-inspired placeholders**, not grounded
+/// BGZ17 parameters. The real BGZ17 (`hpc::bgz17_bridge`) is Base17 with
+/// `BASE_DIM = 17` and `GOLDEN_STEP = 11` (the coprime golden-step table
+/// `(i·11) mod 17` visits all positions — a Quintenzirkel-like phase),
+/// reducing a 16384-bit plane to a lossy `[i16; 17]` by golden-step octave
+/// averaging. These 4 bits do not encode those constants; a real BGZ17
+/// binding is a follow-up, not specified here. (The earlier "offset 17..27 /
+/// stride 2,4" annotation was an unverified chat description — corrected.)
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(transparent)]
 pub struct PhiSpiralLeafAtom16(pub u16);
