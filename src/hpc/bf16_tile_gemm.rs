@@ -60,6 +60,13 @@ pub fn bf16_tile_gemm_16x16(a_bf16: &[u16], b_bf16: &[u16], c: &mut [f32], k: us
 // ═════════════════════════════════════════════════════════════════════
 
 /// AMX tile GEMM. B must be pre-VNNI-packed (see `vnni_pack_bf16`).
+/// **Accumulates** into the caller's `c` buffer — matches the
+/// documented `C += A·B` semantics. The C tile (tmm0) is preloaded
+/// from `c` before the TDPBF16PS loop so any pre-existing values are
+/// preserved. (Same accumulator-preservation fix the int8 sibling
+/// got after codex P1 on PR #184: prior `tile_zero(0)` discarded
+/// pre-existing C values even though docs promised accumulation.)
+///
 /// # Safety
 /// Caller must have verified `amx_available() == true`.
 #[inline]
@@ -67,7 +74,9 @@ unsafe fn amx_path(a_bf16: &[u16], b_vnni: &[u16], c: &mut [f32], k: usize) {
     // Tile config: shapes at K_bytes=64 match BF16 K=32 case
     let cfg = TileConfig::for_dpbusd(64);
     tile_loadconfig(&cfg);
-    tile_zero(0);
+    // Preload C accumulator from caller's buffer (was tile_zero(0)
+    // pre-fix — see method-level note above).
+    tile_load(0, c.as_ptr() as *const u8, 64);
 
     // Accumulate over K/32 tile blocks
     let k_blocks = k / 32;

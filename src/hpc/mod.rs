@@ -13,8 +13,10 @@
 //! - FFT (forward, inverse, real-to-complex)
 //! - VML (vectorized math library)
 
-// SIMD capability singleton — detect once, all modules share
-pub mod simd_caps;
+// SIMD capability singleton — graduated to crate root (it never depended
+// on anything else in `hpc/`); re-exported here for back-compat with
+// existing `crate::hpc::simd_caps::*` imports across the workspace.
+pub use crate::simd_caps;
 // LazyLock frozen SIMD dispatch — function pointers selected once at startup
 pub mod simd_dispatch;
 
@@ -25,7 +27,8 @@ pub mod reductions;
 pub mod statistics;
 pub mod activations;
 pub mod hdc;
-pub mod bitwise;
+// Bitwise SIMD primitives — graduated to crate root. Back-compat re-export.
+pub use crate::bitwise;
 pub mod projection;
 pub mod cogrecord;
 pub mod graph;
@@ -38,16 +41,24 @@ pub mod packed;
 // Cognitive layer types (migrated from rustynum-core)
 #[allow(missing_docs)]
 pub mod fingerprint;
+
+// PR-X1 primitives (MultiLaneColumn, array_chunks) live at the crate root
+// in `crate::simd_soa` + `crate::simd_ops` and are re-exported via
+// `crate::simd::*`. They are intentionally NOT under `hpc::*` — SIMD
+// substrate goes through the `simd_{type}.rs` family per the W1a layering
+// rule (carriers in simd_soa, slicing/ops in simd_ops).
 #[allow(missing_docs)]
 pub mod plane;
 #[allow(missing_docs)]
 pub mod seal;
 #[allow(missing_docs)]
+pub mod soa;
+#[allow(missing_docs)]
 pub mod node;
 #[allow(missing_docs)]
 pub mod cascade;
-#[allow(missing_docs)]
-pub mod heel_f64x8;
+// HEEL F64x8 distance kernels — graduated to crate root. Back-compat re-export.
+pub use crate::heel_f64x8;
 // AMX is an x86_64-only ISA (Intel Sapphire Rapids+); both modules use
 // `asm!` with `rcx`/`rax` register names that don't exist on other
 // architectures (rejected at parse time on s390x / aarch64 / wasm32).
@@ -58,6 +69,10 @@ pub mod heel_f64x8;
 pub mod amx_matmul;
 #[cfg(target_arch = "x86_64")]
 pub mod bf16_tile_gemm;
+/// INT8 (`u8 × i8 → i32`) tile GEMM via AMX `TDPBUSD` — mirror of
+/// `bf16_tile_gemm` for the integer operand family.
+#[cfg(target_arch = "x86_64")]
+pub mod int8_tile_gemm;
 #[allow(missing_docs)]
 pub mod bf16_truth;
 #[allow(missing_docs)]
@@ -70,6 +85,7 @@ pub mod styles;
 pub mod nars;
 #[allow(missing_docs)]
 pub mod blackboard;
+pub mod bulk;
 #[allow(missing_docs)]
 pub mod bnn;
 #[allow(missing_docs)]
@@ -154,22 +170,21 @@ pub mod parallel_search;
 // ZeckF64 progressive edge encoding + batch/top-k
 pub mod zeck;
 
-// SIMD-accelerated spatial / byte-scan / hash utilities
-pub mod distance;
-pub mod byte_scan;
-pub mod spatial_hash;
+// SIMD-accelerated spatial / byte-scan / hash utilities — graduated to crate root.
+// Back-compat re-exports for existing `use ndarray::hpc::{distance,byte_scan,spatial_hash}::*`.
+pub use crate::byte_scan;
+pub use crate::distance;
+pub use crate::spatial_hash;
 
-// Variable-width palette index codec (Minecraft-style bit packing)
-#[allow(missing_docs)]
-pub mod palette_codec;
+// Variable-width palette index codec — graduated to crate root.
+// Back-compat re-export for existing `use ndarray::hpc::palette_codec::*`.
+pub use crate::palette_codec;
 
-// SIMD-accelerated HPC modules (block properties, nibble light data, AABB collision)
-#[allow(missing_docs)]
-pub mod property_mask;
-#[allow(missing_docs)]
-pub mod nibble;
-#[allow(missing_docs)]
-pub mod aabb;
+// SIMD-accelerated HPC modules (block properties, nibble light data, AABB
+// collision) — all three graduated to crate root. Back-compat re-exports.
+pub use crate::aabb;
+pub use crate::nibble;
+pub use crate::property_mask;
 
 // Holographic phase-space operations (ported from rustynum-holo)
 #[allow(missing_docs)]
@@ -240,6 +255,13 @@ pub mod framebuffer;
 #[cfg(feature = "splat3d")]
 #[allow(missing_docs)]
 pub mod splat3d;
+
+/// PR-X12 A1 — cognitive-cell codec (x265-shaped mode taxonomy over
+/// BlockedGrid CTUs). Gated by `feature = "codec"`. A1 ships only the
+/// CTU carrier + quad-tree partition; A2-A8 (mode tags, predict,
+/// transform, quantise, RDO, rANS, stream) land in follow-up sprints.
+#[cfg(feature = "codec")]
+pub mod codec;
 /// Audio primitives: MDCT, band energies, PVQ, AudioFrame codec.
 /// Transcoded from Opus CELT for the HHTL cascade → waveform pipeline.
 pub mod audio;
@@ -248,6 +270,22 @@ pub mod audio;
 /// Per cognitive-substrate-convergence-v1.md §5 L-20.
 #[allow(missing_docs)]
 pub mod stream;
+
+/// Middle-layer linalg: `MatN` carrier + `Mat2/3/4` aliases + `Spd2/Spd3` SPD-cone (PR-X10 A1).
+/// Foundation for A2-A12 (Quat, inverse, eig_sym, SVD, polar, mat_exp, SH, conv, batched, RoPE, attention, loss).
+#[cfg(feature = "linalg")]
+pub mod linalg;
+
+/// Pillar probe certification module: shared splitmix64 RNG, PillarReport, SPD helpers,
+/// and per-pillar prove() probes (Pillar-6 through Pillar-11). PR-X11 B8.
+#[cfg(feature = "pillar")]
+pub mod pillar;
+
+/// OGIT ontology bridge — RDF 1.1 Turtle lexer + parser (OGIT subset).
+/// Gated behind `ogit_bridge` feature flag; zero external deps.
+#[cfg(feature = "ogit_bridge")]
+#[allow(missing_docs)]
+pub mod ogit_bridge;
 
 #[cfg(all(test, feature = "hpc-extras"))]
 mod e2e_tests {
@@ -435,3 +473,4 @@ mod e2e_tests {
     }
 }
 pub mod vnni_gemm;
+pub mod blocked_grid;

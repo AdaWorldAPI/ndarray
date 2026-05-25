@@ -98,6 +98,11 @@ fractal = { path = "crates/fractal", default-features = false, optional = true }
 serde = { version = "1.0", optional = true, default-features = false, features = ["alloc"] }
 rawpointer = { version = "0.2" }
 
+# paste — identifier concatenation in macro_rules! expansions.
+# Required by `blocked_grid_struct!` to generate {Name}L1Block / {Name}L1BlockMut
+# view types. Already present in the workspace lockfile (via crates/burn).
+paste = "1"
+
 
 # Cranelift JIT (optional, behind "jit-native" feature)
 # For AVX-512 VPOPCNTDQ/VNNI/VPTERNLOG/BITALG support, use the patched fork:
@@ -196,6 +201,27 @@ rayon = ["dep:rayon", "std"]
 # cfg-dispatch in `simd.rs` remains the production path.
 nightly-simd = ["std"]
 
+# Runtime SIMD dispatch — release-binary distribution path. Compiles all
+# x86_64 backends into one artifact and selects per-op kernels via
+# `LazyLock<fn>` trampolines that read `simd_caps()` on first call. The
+# `crate::simd_runtime::*` module becomes reachable under this feature;
+# the existing compile-time `crate::simd::*` / `crate::simd_ops::*`
+# cascade is unchanged (additive). Use case: shipping one binary that
+# adapts across heterogeneous deployment silicon (AVX-512 server +
+# AVX2-only laptop) from the same artifact.
+#
+# Mutually exclusive with `nightly-simd` (the portable-SIMD polyfill
+# replaces the architecture-specific intrinsics that the runtime
+# trampolines select between; they can't coexist coherently).
+#
+# Per-call overhead: ~2-3 ns indirect-call through a static fn pointer
+# (LazyLock fires once at first call, every subsequent call is a
+# pointer deref). Invisible against any SIMD op's actual work.
+#
+# See `.claude/knowledge/simd-dispatch-architecture.md` § 7.1 / Phase 5
+# for the design rationale.
+runtime-dispatch = ["std"]
+
 # HPC extras: p64 palette/NARS bridge + fractal manifold.
 # (blake3 was previously listed here; it is now part of `std` directly
 # because the cognitive substrate modules under hpc/ that import blake3
@@ -220,6 +246,18 @@ native = ["std"]
 intel-mkl = ["std"]
 openblas = ["std"]
 
+# linalg: middle-layer MatN carrier + Mat2/3/4 + Spd2/Spd3 SPD-cone (PR-X10 A1)
+linalg = []
+
+# pillar: Pillar-6 through Pillar-11 SPD-cascade certification probes (PR-X11).
+# Depends on linalg for Spd2/Spd3 types consumed by B1-B7 pillar workers.
+pillar = ["linalg", "splat3d"]
+
+# ogit_bridge: zero-dep RDF 1.1 Turtle parser for the OGIT ontology TTL files.
+# Provides TurtleLexer, TurtleParser, Triple, TripleNode, TurtleError.
+# No external dependencies — pure-Rust, no unsafe.
+ogit_bridge = []
+
 # splat3d: CPU-SIMD 3D Gaussian Splatting forward renderer
 # (`src/hpc/splat3d/*`). Pure SIMD, no GPU, no wgpu, reuses the
 # existing `crate::simd` polyfill (F32x16 via AVX-512 / AVX2 / NEON
@@ -229,6 +267,11 @@ openblas = ["std"]
 # Pillar-7 probe certifying the math sibling lives in
 # `lance-graph/crates/jc/src/ewa_sandwich_3d.rs`.
 splat3d = ["std"]
+
+# PR-X12 cognitive codec — x265-shaped skip/merge/delta/escape mode classes
+# over BlockedGrid CTUs. A1 (this crate) ships only the CTU carrier +
+# quad-tree partition; the entropy coder + RDO loop land in later workers.
+codec = ["std"]
 
 # no_std polyfill for `static LazyLock` in `src/simd.rs` (sprint A12).
 # Pulls in `portable-atomic` with the `critical-section` impl plus the

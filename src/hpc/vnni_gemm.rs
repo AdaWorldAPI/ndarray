@@ -89,9 +89,20 @@ pub fn has_vnni() -> bool {
 ///     B[p+2,j+L], B[p+3,j+L]].
 ///   - We pre-pack B into VNNI layout: b_packed[p/4][j..j+16] where each i32
 ///     contains 4 bytes from consecutive rows.
+/// AVX-512 VNNI INT8 GEMM kernel — `pub(crate)` so the agnostic
+/// `simd_int_ops::gemm_u8_i8` surface can call it directly under a
+/// compile-time `target_feature = "avx512vnni"` gate, bypassing the
+/// per-call caps branch in [`int8_gemm_vnni`]. See § "compile-time
+/// dispatch table" in `.claude/knowledge/td-simd-integration-plan.md`.
+///
+/// # Safety
+///
+/// Caller must guarantee the CPU supports AVX-512F + AVX-512VNNI +
+/// AVX-512BW. Compile-time gating via `#[cfg(target_feature = …)]` at
+/// the call site is the standard contract.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f,avx512vnni,avx512bw")]
-unsafe fn int8_gemm_vnni_avx512(a: &[u8], b: &[i8], c: &mut [i32], m: usize, n: usize, k: usize) {
+pub(crate) unsafe fn int8_gemm_vnni_avx512(a: &[u8], b: &[i8], c: &mut [i32], m: usize, n: usize, k: usize) {
     use core::arch::x86_64::*;
 
     // Zero output
@@ -187,6 +198,95 @@ unsafe fn int8_gemm_vnni_avx512(a: &[u8], b: &[i8], c: &mut [i32], m: usize, n: 
 
             // Masked store
             _mm512_mask_storeu_epi32(c.as_mut_ptr().add(i * n + j) as *mut i32, kmask, acc);
+        }
+    }
+}
+
+// ── AVX-VNNI (ymm) inner kernel ──────────────────────────────────────────
+
+/// AVX-VNNI (256-bit ymm) INT8 GEMM kernel.
+///
+/// VEX-encoded `VPDPBUSD` over 8-wide i32 accumulators, for Alder Lake /
+/// Arrow Lake / Zen 4 / Sapphire Rapids (whenever the dispatcher resolves
+/// to AVX2 + AVX-VNNI without selecting the AVX-512 zmm path). Half the
+/// lane count of [`int8_gemm_vnni_avx512`], and the VEX encoding has no
+/// masked load/store, so the column tail (`n % 8 != 0`) runs scalar.
+///
+/// `pub(crate)` so [`crate::simd_int_ops::gemm_u8_i8`] can target it
+/// directly under a compile-time `target_feature = "avxvnni"` gate.
+///
+/// # Safety
+///
+/// Caller must guarantee the CPU supports AVX + AVX2 + AVX-VNNI.
+/// Compile-time gating via `#[cfg(target_feature = "avxvnni")]` at the
+/// call site is the standard contract.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx,avx2,avxvnni")]
+pub(crate) unsafe fn int8_gemm_avxvnni_ymm(a: &[u8], b: &[i8], c: &mut [i32], m: usize, n: usize, k: usize) {
+    use core::arch::x86_64::*;
+
+    // Zero output
+    for v in c.iter_mut() {
+        *v = 0;
+    }
+
+    // Pre-pack B into VNNI layout: groups of 4 rows, each i32 lane holds
+    // [b[p+0,j], b[p+1,j], b[p+2,j], b[p+3,j]] as 4 bytes.
+    let k_groups = (k + 3) / 4;
+    let mut b_packed = vec![0i32; k_groups * n];
+
+    for pg in 0..k_groups {
+        let p_base = pg * 4;
+        for j in 0..n {
+            let mut bytes = [0u8; 4];
+            for q in 0..4 {
+                let p = p_base + q;
+                if p < k {
+                    bytes[q] = b[p * n + j] as u8;
+                }
+            }
+            b_packed[pg * n + j] = i32::from_le_bytes(bytes);
+        }
+    }
+
+    // Main GEMM loop — 8 i32 columns per ymm register.
+    for i in 0..m {
+        let mut j = 0;
+        while j + 8 <= n {
+            let mut acc = _mm256_setzero_si256();
+
+            for pg in 0..k_groups {
+                let p_base = pg * 4;
+
+                let mut a_bytes = [0u8; 4];
+                for q in 0..4 {
+                    let p = p_base + q;
+                    if p < k {
+                        a_bytes[q] = a[i * k + p];
+                    }
+                }
+                let a_val = u32::from_le_bytes(a_bytes) as i32;
+                let a_broadcast = _mm256_set1_epi32(a_val);
+
+                let b_ptr = b_packed.as_ptr().add(pg * n + j);
+                let b_vec = _mm256_loadu_si256(b_ptr as *const __m256i);
+
+                // VEX-encoded VPDPBUSD: acc += dot4(a_broadcast, b_vec) per lane.
+                acc = _mm256_dpbusd_avx_epi32(acc, a_broadcast, b_vec);
+            }
+
+            _mm256_storeu_si256(c.as_mut_ptr().add(i * n + j) as *mut __m256i, acc);
+            j += 8;
+        }
+
+        // Scalar tail for `n - j < 8` columns — no masked ymm VPDPBUSD on VEX.
+        while j < n {
+            let mut sum = 0i32;
+            for p in 0..k {
+                sum += (a[i * k + p] as i32) * (b[p * n + j] as i32);
+            }
+            c[i * n + j] = sum;
+            j += 1;
         }
     }
 }

@@ -94,13 +94,32 @@ pub unsafe fn tile_release() {
 
 /// Load tile from memory.
 ///
+/// Encoding: `TILELOADD tmmN, [rcx + rax]` is VEX `C4 E2 7B 4B /r` with
+/// a SIB byte selecting `[rcx + rax]`. The ModR/M `/r` field encodes the
+/// destination tile via `reg = N` (3-bit tile index). Per-tile bytes:
+///
+///   tmm0:  C4 E2 7B 4B **04** 08
+///   tmm1:  C4 E2 7B 4B **0C** 08
+///   tmm2:  C4 E2 7B 4B **14** 08
+///
+/// `04 | (N << 3)` gives the ModR/M byte; the `08` SIB is the same
+/// across tiles. tmm0 was added when codex flagged the accumulator-
+/// preservation bug on PR #184 (`tile_zero(0)` + `tile_store(0, c)`
+/// discarded any pre-existing C values — the fix is `tile_load(0, c)`
+/// instead of `tile_zero(0)` so TDPBUSD/TDPBF16PS truly accumulate as
+/// the documented `C += A·B` semantics promise).
+///
 /// # Safety
 /// Pointer must be valid, stride must match tile config.
 #[inline]
 pub unsafe fn tile_load(tile: u8, ptr: *const u8, stride: usize) {
     match tile {
-        // TILELOADD tmm0, [ptr + stride*row]
-        // Encoding: VEX.128.F2.0F38.W0 4B /r with memory operand
+        0 => asm!(
+            ".byte 0xc4, 0xe2, 0x7b, 0x4b, 0x04, 0x08",
+            in("rcx") ptr,
+            in("rax") stride,
+            options(nostack),
+        ),
         1 => asm!(
             ".byte 0xc4, 0xe2, 0x7b, 0x4b, 0x0c, 0x08",
             in("rcx") ptr,
@@ -193,6 +212,32 @@ pub fn vnni_pack_bf16(src: &[u16], dst: &mut [u16], k: usize, n: usize) {
     }
 }
 
+/// Pack B[K, N] i8 row-major into K/4 × (N*4) VNNI quads for `TDPBUSD`.
+///
+/// Output layout required by `TDPBUSD` tile 2 (16 rows × 64 bytes):
+///   dst[kb*N*4 + j*4 + p] = src[(4*kb + p) * N + j]
+///
+/// For N=16 (AMX tile width), each output "row" holds 16 i8 quads = 64
+/// bytes (matches the 64-byte tile row width). K must be a multiple of
+/// 4. The same layout is used for `u8` operands (just bit-cast through
+/// — VNNI doesn't care about sign at the packing layer; sign
+/// interpretation happens inside TDPBUSD which treats A as u8 and B
+/// as i8 for the multiply).
+#[inline]
+pub fn vnni_pack_i8(src: &[i8], dst: &mut [i8], k: usize, n: usize) {
+    debug_assert_eq!(src.len(), k * n);
+    debug_assert_eq!(dst.len(), k * n);
+    debug_assert_eq!(k % 4, 0, "K must be multiple of 4 for VNNI INT8 quads");
+    for kb in 0..(k / 4) {
+        let dst_row = kb * n * 4;
+        for j in 0..n {
+            for p in 0..4 {
+                dst[dst_row + j * 4 + p] = src[(4 * kb + p) * n + j];
+            }
+        }
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Public ndarray-typed matmul API (sprint A4 / Burn parity item 6)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -207,7 +252,7 @@ pub fn vnni_pack_bf16(src: &[u16], dst: &mut [u16], k: usize, n: usize) {
 // strided (e.g. `view.slice(s![.., ..;2])`). Strided inputs are repacked
 // into contiguous staging buffers before the kernel runs.
 
-use crate::hpc::quantized::{bf16_gemm_f32, int8_gemm_i32, BF16};
+use crate::hpc::quantized::{bf16_gemm_f32, BF16};
 use crate::{ArrayView2, ArrayViewMut2};
 
 /// Errors returned by the public AMX matmul API.
@@ -297,8 +342,15 @@ fn write_contig<A: Copy>(view: &mut ArrayViewMut2<'_, A>, src: &[A]) {
 
 /// Matrix multiply BF16 × BF16 → f32: `out = lhs · rhs`.
 ///
-/// Uses AMX `TDPBF16PS` (256 mul-adds per instruction) when available,
-/// otherwise falls back to [`bf16_gemm_f32`].
+/// On AMX hardware (Sapphire Rapids+, Granite Rapids), 16×16-aligned tiles
+/// dispatch to [`crate::hpc::bf16_tile_gemm::bf16_tile_gemm_16x16`] which
+/// emits `TDPBF16PS` via the asm-byte path in `simd_amx.rs` — 256
+/// BF16×BF16 multiply-accumulates per instruction (16×16×32 = 8 192 FLOPs)
+/// into f32 accumulator tiles. M/N/K tail blocks (when any dim isn't
+/// 16/16/32-aligned) fall through to the validated scalar
+/// [`crate::hpc::quantized::bf16_gemm_f32`] reference.
+///
+/// On non-AMX hosts the entire matmul goes through `bf16_gemm_f32`.
 ///
 /// `out` must be row-contiguous (column stride = 1); inputs may be strided.
 pub fn matmul_bf16_to_f32(
@@ -310,24 +362,178 @@ pub fn matmul_bf16_to_f32(
     let b = pack_contig(&rhs);
     let mut c = vec![0.0f32; m * n];
 
-    // AMX path: a tiled 16×16 kernel exists in `bf16_tile_gemm` for sizes that
-    // fit cleanly. For any leftover tail (or hosts without AMX), defer to the
-    // scalar `bf16_gemm_f32`. The tile kernel itself is maintained alongside
-    // the low-level primitives at the top of this file; the public surface
-    // intentionally goes through the validated scalar path so we always
-    // produce a numerically-stable f32 result.
-    if amx_available() {
-        // Future: AMX-tiled fast path. Today we route through the same
-        // f32 reference kernel; correctness is identical regardless of
-        // hardware. The `amx_available()` branch is preserved so callers
-        // can be sure the AMX detection runs.
-        bf16_gemm_f32(&a, &b, &mut c, m, n, k, 1.0, 0.0);
-    } else {
-        bf16_gemm_f32(&a, &b, &mut c, m, n, k, 1.0, 0.0);
-    }
+    bf16_gemm_dispatch(&a, &b, &mut c, m, n, k);
 
     write_contig(&mut out, &c);
     Ok(())
+}
+
+/// BF16 × BF16 → f32 GEMM with three-tier dispatch (AMX → VDPBF16PS → scalar).
+///
+/// Inputs are packed row-major (`a` is M × K, `b` is K × N). Output `c`
+/// is M × N row-major and is overwritten (not accumulated).
+///
+/// Tier selection:
+///
+/// 1. **AMX `TDPBF16PS`** (Sapphire Rapids+, Granite Rapids) when
+///    `amx_available()` is true AND shapes are 16/16/32-aligned.
+///    Dispatches through
+///    [`crate::hpc::bf16_tile_gemm::bf16_tile_gemm_16x16`] →
+///    `simd_amx::tile_dpbf16ps` via asm-byte (`TDPBF16PS` intrinsic is
+///    nightly-only on Rust 1.95). 8 192 BF16×BF16 multiplies + 256 f32
+///    accumulates per instruction.
+/// 2. **`VDPBF16PS`** (Cooper Lake, Cascade Lake AVX-512BF16, Zen 4+)
+///    when `is_x86_feature_detected!("avx512bf16")` is true. The
+///    intrinsic `_mm512_dpbf16_ps` is stable on Rust 1.95 (no asm-byte
+///    needed). Per instruction: 32 BF16×BF16 multiplies + 16 f32
+///    accumulates, single-rounded. Handles arbitrary shapes — M / N
+///    tails fall through the per-iteration j-block trimming; K-tail
+///    (odd K) is handled with a final scalar pair.
+/// 3. **Scalar reference** [`bf16_gemm_f32`] for hosts without either
+///    extension or for shapes the AMX arm rejects.
+///
+/// The per-tier dispatch table comes from PR #180's BF16 GEMM column.
+fn bf16_gemm_dispatch(a: &[BF16], b: &[BF16], c: &mut [f32], m: usize, n: usize, k: usize) {
+    if amx_available() && m % 16 == 0 && n % 16 == 0 && k % 32 == 0 {
+        // SAFETY: BF16 is `#[repr(transparent)] struct BF16(pub u16)`
+        // (per `hpc::quantized::BF16`). Reinterpreting `&[BF16]` as
+        // `&[u16]` is bit-pattern preserving.
+        let a_u16: &[u16] = unsafe { core::slice::from_raw_parts(a.as_ptr() as *const u16, a.len()) };
+
+        // B is packed row-major K × N; the 16×16 tile kernel wants a
+        // K × 16 contiguous sub-block. Extract per (j_tile) into a
+        // scratch buffer once and reuse across i_tile.
+        let mut b_tile = vec![0u16; k * 16];
+        let mut tile_c = vec![0.0f32; 256];
+
+        for j_tile in (0..n).step_by(16) {
+            // Pack b[0..k, j_tile..j_tile+16] into row-major 16-wide K-rows.
+            for kk in 0..k {
+                let row = kk * n + j_tile;
+                for jj in 0..16 {
+                    b_tile[kk * 16 + jj] = b[row + jj].0;
+                }
+            }
+            for i_tile in (0..m).step_by(16) {
+                // A_tile = a[i_tile..i_tile+16, 0..k] — already contiguous
+                // since `a` is packed row-major M × K.
+                let a_tile = &a_u16[i_tile * k..(i_tile + 16) * k];
+                tile_c.fill(0.0);
+                crate::hpc::bf16_tile_gemm::bf16_tile_gemm_16x16(a_tile, &b_tile, &mut tile_c, k);
+                // Write tile_c (16 × 16, row-major) into c (M × N, row-major).
+                for ii in 0..16 {
+                    let dst_off = (i_tile + ii) * n + j_tile;
+                    c[dst_off..dst_off + 16].copy_from_slice(&tile_c[ii * 16..(ii + 1) * 16]);
+                }
+            }
+        }
+        return;
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::is_x86_feature_detected!("avx512bf16") {
+            // SAFETY: feature-detected at runtime; the kernel is
+            // `#[target_feature(enable = "avx512bf16,avx512f")]`.
+            unsafe {
+                bf16_gemm_vdpbf16ps(a, b, c, m, n, k);
+            }
+            return;
+        }
+    }
+
+    bf16_gemm_f32(a, b, c, m, n, k, 1.0, 0.0);
+}
+
+/// AVX-512BF16 BF16 GEMM using `_mm512_dpbf16_ps` (`VDPBF16PS`).
+///
+/// One VDPBF16PS instruction: 16 f32 accumulator lanes each receive
+/// `acc[j] += a.bf16[2j] * b.bf16[2j] + a.bf16[2j+1] * b.bf16[2j+1]`,
+/// single-rounded. The kernel maps the 16 output lanes to a row of 16
+/// j-columns of C[i, ·], with one i row processed at a time and a K-pair
+/// inner loop accumulating into the same 16 f32 lanes across iterations.
+///
+/// B-column packing: VDPBF16PS wants the 32 B BF16s per call laid out
+/// as 16 lane-pairs (lane j contains `B[2k_pair, j_base+j]` followed by
+/// `B[2k_pair+1, j_base+j]`, packed into one u32). We pre-pack B for
+/// the current j-block into `b_col_pairs[k_pair * 16 + j] = u32` once
+/// per j_block and reuse across all i — amortizes the gather cost.
+///
+/// K-tail (when K is odd) is handled with a final scalar BF16 multiply
+/// per output cell; N-tail (when the j-block has < 16 valid columns)
+/// is handled by trimming the store after the VDPBF16PS chain.
+///
+/// # Safety
+/// Caller must have feature-detected `avx512bf16` at runtime.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512bf16,avx512f")]
+unsafe fn bf16_gemm_vdpbf16ps(a: &[BF16], b: &[BF16], c: &mut [f32], m: usize, n: usize, k: usize) {
+    use core::arch::x86_64::{
+        __m512bh, __m512i, _mm512_dpbf16_ps, _mm512_loadu_si512, _mm512_set1_epi32, _mm512_setzero_ps, _mm512_storeu_ps,
+    };
+
+    let k_pairs = k / 2;
+    let k_tail = k % 2;
+
+    // SAFETY: BF16 is repr(transparent) over u16.
+    let a_u16: &[u16] = core::slice::from_raw_parts(a.as_ptr() as *const u16, a.len());
+    let b_u16: &[u16] = core::slice::from_raw_parts(b.as_ptr() as *const u16, b.len());
+
+    // Pre-pack scratch: 16 u32 lanes per k_pair, holding (b_lo | b_hi << 16).
+    let mut b_col_pairs = vec![0u32; k_pairs.max(1) * 16];
+    // Scratch for the 16-wide store + N-tail trim.
+    let mut out_buf = [0.0f32; 16];
+
+    for j_base in (0..n).step_by(16) {
+        let j_count = 16.min(n - j_base);
+
+        // Pack B columns [j_base..j_base+j_count] in pair-interleaved layout.
+        // For lanes j >= j_count (the N-tail of this j_block), pad with 0 —
+        // they're not stored back, but the VDPBF16PS still touches them.
+        for k_pair in 0..k_pairs {
+            let row_lo = 2 * k_pair * n;
+            let row_hi = (2 * k_pair + 1) * n;
+            for jj in 0..j_count {
+                let b_lo = b_u16[row_lo + j_base + jj] as u32;
+                let b_hi = b_u16[row_hi + j_base + jj] as u32;
+                b_col_pairs[k_pair * 16 + jj] = (b_hi << 16) | b_lo;
+            }
+            for jj in j_count..16 {
+                b_col_pairs[k_pair * 16 + jj] = 0;
+            }
+        }
+
+        for i in 0..m {
+            let mut acc = _mm512_setzero_ps();
+            let a_row_off = i * k;
+            for k_pair in 0..k_pairs {
+                // Broadcast A[i, 2k_pair..2k_pair+2] as the (BF16 lo, BF16 hi)
+                // pair across all 16 lanes.
+                let a_lo = a_u16[a_row_off + 2 * k_pair] as u32;
+                let a_hi = a_u16[a_row_off + 2 * k_pair + 1] as u32;
+                let pair = (a_hi << 16) | a_lo;
+                let a_bh: __m512bh = core::mem::transmute(_mm512_set1_epi32(pair as i32));
+                let b_bh: __m512bh =
+                    core::mem::transmute(_mm512_loadu_si512(b_col_pairs.as_ptr().add(k_pair * 16) as *const __m512i));
+                acc = _mm512_dpbf16_ps(acc, a_bh, b_bh);
+            }
+            _mm512_storeu_ps(out_buf.as_mut_ptr(), acc);
+
+            // K-tail: one extra scalar BF16 multiply for k = k_pairs*2.
+            if k_tail == 1 {
+                let a_last_f32 = BF16(a_u16[a_row_off + k - 1]).to_f32();
+                let tail_row = (k - 1) * n;
+                for jj in 0..j_count {
+                    let b_last_f32 = BF16(b_u16[tail_row + j_base + jj]).to_f32();
+                    out_buf[jj] += a_last_f32 * b_last_f32;
+                }
+            }
+
+            // Store the j_count valid lanes (drops N-tail padding lanes).
+            let dst_off = i * n + j_base;
+            c[dst_off..dst_off + j_count].copy_from_slice(&out_buf[..j_count]);
+        }
+    }
 }
 
 // ── f32 → f32 (BF16 compute on AMX) ────────────────────────────────────────
@@ -349,10 +555,13 @@ pub fn matmul_f32(
     let mut c = vec![0.0f32; m * n];
 
     if amx_available() {
-        // AMX path: down-cast to BF16, run BF16 GEMM, accumulate in f32.
+        // AMX path: down-cast to BF16 (RNE, ~1 ULP at BF16 mantissa
+        // precision), then dispatch through the shared BF16 helper
+        // which picks `TDPBF16PS` tile kernel for 16/16/32-aligned
+        // shapes and the scalar `bf16_gemm_f32` reference otherwise.
         let a_bf16: Vec<BF16> = a_f32.iter().map(|&v| BF16::from_f32_rounded(v)).collect();
         let b_bf16: Vec<BF16> = b_f32.iter().map(|&v| BF16::from_f32_rounded(v)).collect();
-        bf16_gemm_f32(&a_bf16, &b_bf16, &mut c, m, n, k, 1.0, 0.0);
+        bf16_gemm_dispatch(&a_bf16, &b_bf16, &mut c, m, n, k);
     } else {
         // Pure f32 reference path.
         for i in 0..m {
@@ -373,14 +582,17 @@ pub fn matmul_f32(
 
 /// Matrix multiply i8 × i8 → i32: `out = lhs · rhs`.
 ///
-/// On AMX hosts uses `TDPBUSD` (256 MACs/instr); otherwise falls back to
-/// the scalar `int8_gemm_i32`.
+/// On AMX hosts with 16/16/64-aligned shapes uses `TDPBUSD` via the
+/// 16×16 tile kernel in [`crate::hpc::int8_tile_gemm::int8_tile_gemm_16x16`]
+/// — 16 384 MACs per instruction. Mis-aligned shapes (or non-AMX hosts)
+/// fall back to the scalar i8×i8 → i32 reference.
 ///
-/// Note: `TDPBUSD` natively expects unsigned-by-signed (u8 × i8). For the
-/// signed-by-signed surface required here, the LHS is shifted into the
-/// unsigned domain and the bias subtracted from the accumulator (only on
-/// the AMX path; the scalar path operates directly in i8). The public
-/// result is identical.
+/// Note: `TDPBUSD` natively expects unsigned-by-signed (u8 × i8). For
+/// the signed-by-signed surface required here, the LHS is shifted into
+/// the unsigned domain (i8 + 128 → u8) and the bias `128 · sum(B[:, j]
+/// over k)` is subtracted from the accumulator. The public result is
+/// bit-identical to the scalar reference because all arithmetic stays
+/// in i32 (no float rounding).
 ///
 /// `out` must be row-contiguous; inputs may be strided.
 pub fn matmul_i8_to_i32(
@@ -392,26 +604,37 @@ pub fn matmul_i8_to_i32(
     let b_i8 = pack_contig(&rhs);
     let mut c = vec![0i32; m * n];
 
-    if amx_available() {
-        // AMX TDPBUSD path: shift LHS i8 → u8 via (+128) and subtract the
-        // bias 128·sum(B[:, j] over k) afterwards. This keeps numerics exact.
+    if amx_available() && m % 16 == 0 && n % 16 == 0 && k % 64 == 0 {
+        // Tier 1 — AMX TDPBUSD tile path: shift LHS i8 → u8 (+128),
+        // delegate to the shared int8_gemm_amx_tiled helper, subtract
+        // the sign-shift bias.
         let a_u8: Vec<u8> = a_i8.iter().map(|&v| (v as i32 + 128) as u8).collect();
-
-        // Compute C' = A_u8 · B_i8 in i32, then subtract 128 · colsum(B).
-        int8_gemm_i32(&a_u8, &b_i8, &mut c, m, n, k);
-        let mut colsum = vec![0i32; n];
-        for p in 0..k {
-            for j in 0..n {
-                colsum[j] += b_i8[p * n + j] as i32;
-            }
+        crate::hpc::int8_tile_gemm::int8_gemm_amx_tiled(&a_u8, &b_i8, &mut c, m, n, k);
+        subtract_i8_to_u8_bias(&mut c, &b_i8, m, n, k);
+    } else if cfg!(target_arch = "x86_64") && std::is_x86_feature_detected!("avx512vnni") {
+        // Tier 2 — AVX-512 VPDPBUSD zmm: 64 MACs per instruction, no
+        // shape-alignment requirement (M/N/K all handled via per-block
+        // trim and scalar K-tail). Same sign-shift bias trick as AMX.
+        let a_u8: Vec<u8> = a_i8.iter().map(|&v| (v as i32 + 128) as u8).collect();
+        // SAFETY: runtime feature-detected avx512vnni above.
+        unsafe {
+            crate::hpc::int8_tile_gemm::int8_gemm_vpdpbusd_zmm(&a_u8, &b_i8, &mut c, m, n, k);
         }
-        for i in 0..m {
-            for j in 0..n {
-                c[i * n + j] -= 128 * colsum[j];
-            }
+        subtract_i8_to_u8_bias(&mut c, &b_i8, m, n, k);
+    } else if cfg!(target_arch = "x86_64") && std::is_x86_feature_detected!("avxvnni") {
+        // Tier 3 — AVX-VNNI ymm VPDPBUSD: 32 MACs per instruction.
+        // Arrow Lake, Meteor Lake U, Alder Lake silicon that has
+        // AVX-VNNI but dropped AVX-512. Same sign-shift bias trick.
+        let a_u8: Vec<u8> = a_i8.iter().map(|&v| (v as i32 + 128) as u8).collect();
+        // SAFETY: runtime feature-detected avxvnni above.
+        unsafe {
+            crate::hpc::int8_tile_gemm::int8_gemm_vpdpbusd_ymm(&a_u8, &b_i8, &mut c, m, n, k);
         }
+        subtract_i8_to_u8_bias(&mut c, &b_i8, m, n, k);
     } else {
-        // Scalar i8×i8 → i32 reference.
+        // Tier 4 — Scalar i8×i8 → i32 reference for non-x86 hosts,
+        // pre-AVX-VNNI silicon, or shapes that don't satisfy any of
+        // the SIMD tiers' alignment requirements.
         for i in 0..m {
             for p in 0..k {
                 let av = a_i8[i * k + p] as i32;
@@ -431,6 +654,27 @@ pub fn matmul_i8_to_i32(
         }
     }
     Ok(())
+}
+
+/// Subtract `128 · colsum(B[:, j])` from each `c[i, j]` lane.
+///
+/// Used by both the AMX and AVX-512-VNNI arms of `matmul_i8_to_i32`
+/// to undo the LHS sign-shift bias (A_i8 → A_u8 via +128 means
+/// `A_u8 · B = (A_i8 + 128) · B = A_i8 · B + 128 · sum_k B[k, j]`).
+/// Pure integer arithmetic, no rounding — the public result is
+/// bit-identical to the scalar i8 × i8 → i32 reference.
+fn subtract_i8_to_u8_bias(c: &mut [i32], b_i8: &[i8], m: usize, n: usize, k: usize) {
+    let mut colsum = vec![0i32; n];
+    for p in 0..k {
+        for j in 0..n {
+            colsum[j] += b_i8[p * n + j] as i32;
+        }
+    }
+    for i in 0..m {
+        for j in 0..n {
+            c[i * n + j] -= 128 * colsum[j];
+        }
+    }
 }
 
 #[cfg(test)]

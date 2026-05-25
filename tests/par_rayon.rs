@@ -6,7 +6,7 @@ use ndarray::prelude::*;
 const M: usize = 1024 * 10;
 const N: usize = 100;
 const CHUNK_SIZE: usize = 100;
-const N_CHUNKS: usize = (M + CHUNK_SIZE - 1) / CHUNK_SIZE;
+const N_CHUNKS: usize = M.div_ceil(CHUNK_SIZE);
 
 #[test]
 fn test_axis_iter() {

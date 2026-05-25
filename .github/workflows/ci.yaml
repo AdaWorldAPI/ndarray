@@ -171,6 +171,75 @@ jobs:
       - name: clippy --features rayon
         run: cargo clippy -p ndarray --features rayon --lib -- -D warnings
 
+  tier4-avx512-check:
+    # Phase 6 of the SIMD integration plan (.claude/knowledge/
+    # simd-dispatch-architecture.md). Exercises the AVX-512 dispatch
+    # arm (`#[cfg(target_feature = "avx512f")]` in `src/simd.rs`) so it
+    # doesn't bit-rot under the v3-default cargo config.
+    #
+    # `cargo check` rather than `cargo test`: GH-hosted `ubuntu-latest`
+    # runners may not have AVX-512 silicon (intermittent across SKUs),
+    # so a v4-baked binary would SIGILL at run time. `check` compiles
+    # the AVX-512 code path through the type checker + borrow checker
+    # + monomorphization without producing a runnable artifact —
+    # catches type mismatches and dispatch-arm holes that the v3
+    # default never touches.
+    #
+    # # Why `CARGO_TARGET_<triple>_RUSTFLAGS` instead of plain `RUSTFLAGS`:
+    #
+    # The first iteration used `env: RUSTFLAGS: "-Ctarget-cpu=x86-64-v4"`
+    # and failed in ~23 s — RUSTFLAGS env applies to BOTH the target
+    # compilation AND host build scripts (`build.rs` artifacts that
+    # cargo runs natively). On a GH runner without AVX-512 silicon,
+    # those v4-baked build scripts SIGILL during the dep build.
+    #
+    # `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS` is documented to
+    # apply only when cargo is producing artifacts for that triple, NOT
+    # to host build scripts. Combined with explicit `--target` (so cargo
+    # distinguishes host from target even when they're the same triple),
+    # this gives us "v4 for our crate, baseline for build scripts."
+    runs-on: ubuntu-latest
+    name: tier4-avx512-check
+    env:
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings -Ctarget-cpu=x86-64-v4"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check (v4 / AVX-512 dispatch arm)
+        run: cargo check --target=x86_64-unknown-linux-gnu -p ndarray --features approx,serde,rayon
+      - name: cargo check (v4 / AVX-512 + hpc-extras)
+        run: cargo check --target=x86_64-unknown-linux-gnu -p ndarray --features approx,serde,rayon,hpc-extras
+
+  nightly-simd-polyfill:
+    # TD-SIMD-9 from .claude/knowledge/simd-dispatch-architecture.md.
+    # Exercises the `feature = "nightly-simd"` dispatch arm in
+    # `src/simd.rs` (added in Phase 2 / PR #173) so the portable
+    # `core::simd::*` backend doesn't bit-rot between PRs.
+    #
+    # Why nightly: `src/simd_nightly/*` uses `#![feature(portable_simd)]`
+    # which only compiles on nightly rustc. The stable `cargo check`
+    # paths in tests/clippy never reach this arm.
+    #
+    # `cargo check` rather than full build/test — pure type/borrow/cfg
+    # verification. Catches arm shadowing bugs and the kind of API-break
+    # codex flagged on PR #173 (lowercase aliases dropped).
+    #
+    # Runs only on merge_group + push (not every PR) to keep nightly
+    # toolchain pulls out of the per-PR critical path. Mirrors the
+    # `miri` job's gating strategy.
+    if: github.event_name == 'merge_group' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    name: nightly-simd-polyfill
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check (nightly + nightly-simd feature)
+        run: cargo check -p ndarray --features approx,serde,rayon,nightly-simd
+      - name: cargo check (nightly + nightly-simd + hpc-extras)
+        run: cargo check -p ndarray --features approx,serde,rayon,nightly-simd,hpc-extras
+
   blas-msrv:
     runs-on: ubuntu-latest
     name: blas-msrv
@@ -269,6 +338,8 @@ jobs:
       - tests
       - native-backend
       - hpc-stream-parallel
+      - tier4-avx512-check
+      - nightly-simd-polyfill
       - miri
       - cross_test
       - cargo-careful

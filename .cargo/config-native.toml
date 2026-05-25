@@ -1,0 +1,13 @@
+[build]
+# Native build config — `target-cpu = "native"`. Use with:
+#   cargo --config .cargo/config-native.toml build
+#   cargo --config .cargo/config-native.toml test
+#
+# rustc resolves the build host's CPUID at invocation and enables every
+# `target_feature` the host CPU advertises. `simd.rs` then picks the
+# matching backend (typically `simd_avx512` on modern dev machines).
+#
+# Produces a binary tuned for the developer's exact silicon. The result
+# is NOT portable: do not distribute artifacts built with this config.
+[target.'cfg(target_arch = "x86_64")']
+rustflags = ["-Ctarget-cpu=native"]

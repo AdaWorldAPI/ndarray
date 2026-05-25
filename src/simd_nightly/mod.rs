@@ -39,7 +39,54 @@ pub use f16_types::F16x16;
 pub use f32_types::{F32x16, F32x8};
 pub use f64_types::{F64x4, F64x8};
 pub use i8_types::{I8x32, I8x64};
-pub use i_word_types::{I16x16, I16x32, I32x16, I64x8};
+pub use i_word_types::{I16x16, I16x32, I32x16, I32x8, I64x4, I64x8};
 pub use masks::{F32Mask16, F32Mask8, F64Mask4, F64Mask8};
 pub use u8_types::{U8x32, U8x64};
-pub use u_word_types::{U16x32, U32x16, U32x8, U64x4, U64x8};
+pub use u_word_types::{U16x16, U16x32, U32x16, U32x8, U64x4, U64x8};
+
+// Lowercase aliases — match the std::simd convention used by
+// `simd_avx2.rs`, `simd_avx512.rs`, and the scalar fallback in
+// `simd_scalar.rs`. Consumer docs and downstream code import names like
+// `crate::simd::f32x16`; without these aliases, enabling `nightly-simd`
+// would silently break those imports (codex P1 on PR #173).
+#[allow(non_camel_case_types)]
+pub type f32x16 = F32x16;
+#[allow(non_camel_case_types)]
+pub type f32x8 = F32x8;
+#[allow(non_camel_case_types)]
+pub type f64x8 = F64x8;
+#[allow(non_camel_case_types)]
+pub type f64x4 = F64x4;
+#[allow(non_camel_case_types)]
+pub type u8x64 = U8x64;
+#[allow(non_camel_case_types)]
+pub type u8x32 = U8x32;
+#[allow(non_camel_case_types)]
+pub type u16x32 = U16x32;
+#[allow(non_camel_case_types)]
+pub type u32x16 = U32x16;
+#[allow(non_camel_case_types)]
+pub type u32x8 = U32x8;
+#[allow(non_camel_case_types)]
+pub type u64x8 = U64x8;
+#[allow(non_camel_case_types)]
+pub type u64x4 = U64x4;
+#[allow(non_camel_case_types)]
+pub type i8x64 = I8x64;
+#[allow(non_camel_case_types)]
+pub type i8x32 = I8x32;
+#[allow(non_camel_case_types)]
+pub type i16x32 = I16x32;
+#[allow(non_camel_case_types)]
+pub type i16x16 = I16x16;
+#[allow(non_camel_case_types)]
+pub type i32x16 = I32x16;
+#[allow(non_camel_case_types)]
+pub type i64x8 = I64x8;
+// 256-bit aliases for the missing-lanes sweep (2026-05-20).
+#[allow(non_camel_case_types)]
+pub type u16x16 = U16x16;
+#[allow(non_camel_case_types)]
+pub type i32x8 = I32x8;
+#[allow(non_camel_case_types)]
+pub type i64x4 = I64x4;

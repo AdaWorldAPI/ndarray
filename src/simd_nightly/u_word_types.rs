@@ -3,7 +3,7 @@
 
 use core::simd::cmp::{SimdOrd, SimdPartialEq, SimdPartialOrd};
 use core::simd::num::SimdUint;
-use core::simd::{u16x32, u32x16, u32x8, u64x4, u64x8};
+use core::simd::{u16x16, u16x32, u32x16, u32x8, u64x4, u64x8};
 
 // ════════════════════════════════════════════════════════════════════
 // U64x8 — 8-lane u64
@@ -472,6 +472,90 @@ impl U16x32 {
 }
 
 impl Default for U16x32 {
+    #[inline(always)]
+    fn default() -> Self {
+        Self::splat(0)
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// U16x16 — 16-lane u16 (256-bit, added 2026-05-20 missing-lanes sweep)
+// ════════════════════════════════════════════════════════════════════
+
+/// 16-lane `u16` SIMD vector backed by `core::simd::u16x16`.
+///
+/// API mirrors `simd_avx512::U16x32` at half-width. Miri-executable.
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[repr(transparent)]
+pub struct U16x16(pub u16x16);
+
+impl U16x16 {
+    pub const LANES: usize = 16;
+
+    #[inline(always)]
+    pub fn splat(v: u16) -> Self {
+        Self(u16x16::splat(v))
+    }
+
+    #[inline(always)]
+    pub fn from_slice(s: &[u16]) -> Self {
+        assert!(s.len() >= 16, "U16x16::from_slice needs >=16 elements");
+        Self(u16x16::from_slice(s))
+    }
+
+    #[inline(always)]
+    pub fn from_array(arr: [u16; 16]) -> Self {
+        Self(u16x16::from_array(arr))
+    }
+
+    #[inline(always)]
+    pub fn to_array(self) -> [u16; 16] {
+        self.0.to_array()
+    }
+
+    #[inline(always)]
+    pub fn copy_to_slice(self, s: &mut [u16]) {
+        assert!(s.len() >= 16, "U16x16::copy_to_slice needs >=16 elements");
+        self.0.copy_to_slice(s);
+    }
+
+    #[inline(always)]
+    pub fn reduce_sum(self) -> u16 {
+        self.0.reduce_sum()
+    }
+
+    #[inline(always)]
+    pub fn reduce_min(self) -> u16 {
+        self.0.reduce_min()
+    }
+
+    #[inline(always)]
+    pub fn reduce_max(self) -> u16 {
+        self.0.reduce_max()
+    }
+
+    #[inline(always)]
+    pub fn simd_min(self, other: Self) -> Self {
+        Self(self.0.simd_min(other.0))
+    }
+
+    #[inline(always)]
+    pub fn simd_max(self, other: Self) -> Self {
+        Self(self.0.simd_max(other.0))
+    }
+
+    #[inline(always)]
+    pub fn cmpeq_mask(self, other: Self) -> u16 {
+        self.0.simd_eq(other.0).to_bitmask() as u16
+    }
+
+    #[inline(always)]
+    pub fn cmpgt_mask(self, other: Self) -> u16 {
+        self.0.simd_gt(other.0).to_bitmask() as u16
+    }
+}
+
+impl Default for U16x16 {
     #[inline(always)]
     fn default() -> Self {
         Self::splat(0)

@@ -34,26 +34,30 @@ use libm::erf;
 
 /// Try to accelerate a unary f32 operation via ndarray's hpc::vml (F32x16 SIMD).
 ///
-/// VML signature: `fn(input: &[f32], output: &mut [f32])`.
-/// Uses crate::simd::F32x16 internally. Consumer never sees hardware details.
+/// VML signature (post W2-2a): generic over dimension, takes
+/// `ArrayView<f32, D> / ArrayViewMut<f32, D>`. We pass the dyn-D views from
+/// the burn tensor directly; ndarray's vml routes to the F32x16 SIMD
+/// primitive on the contiguous hot path and falls back to a stride-aware
+/// `Zip` on the cold path. Consumer never sees hardware details.
 #[cfg(feature = "simd")]
 fn try_vml_unary(
     tensor: NdArrayTensor,
-    vml_fn: fn(&[f32], &mut [f32]),
+    vml_fn: fn(ndarray::ArrayView<'_, f32, ndarray::IxDyn>, ndarray::ArrayViewMut<'_, f32, ndarray::IxDyn>),
 ) -> Result<NdArrayTensor, NdArrayTensor> {
     if let NdArrayTensor::F32(storage) = tensor {
         let shared = storage.into_shared();
         if shared.is_standard_layout() {
-            if let Some(input) = shared.as_slice() {
-                let mut output = vec![0.0f32; input.len()];
-                vml_fn(input, &mut output);
-                let shape = shared.shape().to_vec();
-                let array = ndarray::Array::from_shape_vec(ndarray::IxDyn(&shape), output)
-                    .expect("vml output shape mismatch");
-                return Ok(NdArrayTensor::F32(
-                    crate::NdArrayStorage::Owned(array.into_shared()),
-                ));
-            }
+            let shape = shared.shape().to_vec();
+            let len = shared.len();
+            let mut output = ndarray::Array::from_shape_vec(
+                ndarray::IxDyn(&shape),
+                vec![0.0f32; len],
+            )
+            .expect("vml output shape mismatch");
+            vml_fn(shared.view(), output.view_mut());
+            return Ok(NdArrayTensor::F32(
+                crate::NdArrayStorage::Owned(output.into_shared()),
+            ));
         }
         return Err(NdArrayTensor::F32(crate::NdArrayStorage::Owned(shared)));
     }

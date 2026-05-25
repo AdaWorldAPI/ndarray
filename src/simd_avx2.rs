@@ -1542,6 +1542,19 @@ avx2_int_type!(U16x32, u16, 32, 0u16);
 avx2_int_type!(U32x16, u32, 16, 0u32);
 avx2_int_type!(U64x8, u64, 8, 0u64);
 
+// 256-bit int lanes — scalar polyfills filling the gap surfaced by the
+// 2026-05-20 matrix audit. None of these had wrappers anywhere except
+// for `U32x8` / `U64x4` in `simd_nightly`. Adding `U16x16`, `U32x8`,
+// `U64x4`, `I32x8`, `I64x4` here mirrors the existing 512-bit polyfill
+// pattern (`[$elem; $lanes]` storage, align 64). Native AVX2 `__m256i`
+// upgrades for these are TD-SIMD-3 (the same fold-into-real-SIMD task
+// already tracked for the 512-bit polyfills above).
+avx2_int_type!(U16x16, u16, 16, 0u16);
+avx2_int_type!(U32x8, u32, 8, 0u32);
+avx2_int_type!(U64x4, u64, 4, 0u64);
+avx2_int_type!(I32x8, i32, 8, 0i32);
+avx2_int_type!(I64x4, i64, 4, 0i64);
+
 // Extra methods for U16x32 (widen/narrow, shift, multiply) — AVX2 scalar fallback.
 impl U16x32 {
     #[inline(always)]
@@ -2266,6 +2279,19 @@ pub type i8x64 = I8x64;
 #[allow(non_camel_case_types)]
 pub type i16x32 = I16x32;
 
+// Lowercase aliases for the 256-bit polyfills added in the 2026-05-20
+// missing-lanes sweep.
+#[allow(non_camel_case_types)]
+pub type u16x16 = U16x16;
+#[allow(non_camel_case_types)]
+pub type u32x8 = U32x8;
+#[allow(non_camel_case_types)]
+pub type u64x4 = U64x4;
+#[allow(non_camel_case_types)]
+pub type i32x8 = I32x8;
+#[allow(non_camel_case_types)]
+pub type i64x4 = I64x4;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2562,6 +2588,17 @@ pub fn f16_kahan_dot(a: &[u16], b: &[u16]) -> f32 {
 ///
 /// Analyzes the input range, computes scale that maps |max| → 1.0,
 /// then uses that scale for all encode/decode operations.
+///
+/// # NOT a SIMD type
+///
+/// This is a *scaling utility* — it normalizes value ranges before
+/// f32 → f16 conversion so the dynamic range maps cleanly into f16's
+/// `[-65504, 65504]` window. The SIMD f16 wrapper is `simd_half::F16x16`
+/// (also a scalar polyfill on stable — see TD-SIMD-8 in
+/// `.claude/knowledge/simd-dispatch-architecture.md`). Earlier versions
+/// of the architecture doc's parity matrix mistakenly listed
+/// `F16Scaler` in the `F16x16` row's AVX2 column; the two are
+/// unrelated.
 #[derive(Debug, Clone, Copy)]
 pub struct F16Scaler {
     /// Multiply by this before f32→f16 (shifts into sweet spot)

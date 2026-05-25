@@ -14,9 +14,9 @@ fn main() {
     eprintln!("  OCR Benchmark: ndarray SIMD vs tesseract");
     eprintln!("═══════════════════════════════════════════════════════════\n");
 
-    let pages = vec!["/tmp/ocr_bench/page-01.raw", "/tmp/ocr_bench/page-02.raw", "/tmp/ocr_bench/page-03.raw"];
+    let pages = ["/tmp/ocr_bench/page-01.raw", "/tmp/ocr_bench/page-02.raw", "/tmp/ocr_bench/page-03.raw"];
 
-    let png_pages = vec!["/tmp/ocr_bench/page-01.png", "/tmp/ocr_bench/page-02.png", "/tmp/ocr_bench/page-03.png"];
+    let png_pages = ["/tmp/ocr_bench/page-01.png", "/tmp/ocr_bench/page-02.png", "/tmp/ocr_bench/page-03.png"];
 
     // ── ndarray SIMD preprocessing ────────────────────────────────────
     eprintln!("=== ndarray SIMD preprocessing ===\n");
@@ -104,7 +104,7 @@ fn main() {
     for (i, path) in png_pages.iter().enumerate() {
         let t0 = Instant::now();
         let output = std::process::Command::new("tesseract")
-            .args([path.as_ref(), "stdout", "-l", "eng", "--psm", "1"])
+            .args([path, "stdout", "-l", "eng", "--psm", "1"])
             .output();
         let elapsed = t0.elapsed();
         tess_total += elapsed;

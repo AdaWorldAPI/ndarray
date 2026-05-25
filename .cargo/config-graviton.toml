@@ -1,0 +1,19 @@
+[build]
+# AWS Graviton 3 / 3E / 4 (Neoverse V1 / V2) — ARMv8.4-A+ with BF16
+# (V1: optional, V2: mandatory) + SVE / SVE2.
+# Use with:
+#   cargo --config .cargo/config-graviton.toml build --target=aarch64-unknown-linux-gnu
+#
+# Targets the BF16 tier — see `src/simd_neon_bf16.rs`. Graviton 3 (V1)
+# also adds SVE 256-bit; Graviton 4 (V2) adds SVE2 + BFMMLA + i8mm.
+#
+# Also works on:
+#   - Cortex-X3 / X4 / X925 generic Linux servers
+#   - Ampere Altra (V1-class — same baseline)
+#   - NVIDIA Grace (V2 — same as Graviton 4)
+#
+# For ARMv9 cores with SVE2 you may want a separate config-sve2.toml
+# later that adds `+sve2` and routes through a future
+# `src/simd_neon_sve2.rs` (not in Phase 3 scope).
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["-Ctarget-cpu=neoverse-v2", "-Ctarget-feature=+bf16,+dotprod,+fp16,+i8mm"]

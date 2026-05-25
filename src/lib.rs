@@ -262,13 +262,186 @@ pub mod simd_nightly;
 #[cfg(target_arch = "x86_64")]
 pub mod simd_amx;
 
+/// SIMD capability detection (CPUID on x86_64, runtime feature detection
+/// on aarch64). One `LazyLock<SimdCaps>` detected at first access; every
+/// substrate dispatch site is one pointer deref. Graduated from
+/// `crate::hpc::simd_caps::*` in this same migration; the old path stays
+/// available as a `pub use` re-export inside `crate::hpc::*` for
+/// back-compat. Uses `std::sync::LazyLock`, hence the `std` gate (a
+/// `core::sync::LazyLock` follow-up could lift it).
+#[cfg(feature = "std")]
+pub mod simd_caps;
+
+/// Bitwise SIMD primitives — popcount, Hamming distance over byte slices.
+/// Graduated from `crate::hpc::bitwise::*` (substrate-tier; uses
+/// `crate::simd::U64x8` polyfill internally). Back-compat re-export in
+/// `crate::hpc::*` preserves existing import paths.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::bitwise::{hamming_distance_raw, popcount_raw};
+/// let a = [0xFFu8; 16];
+/// let b = [0x00u8; 16];
+/// assert_eq!(hamming_distance_raw(&a, &b), 128);
+/// assert_eq!(popcount_raw(&a), 128);
+/// ```
+#[cfg(feature = "std")]
+pub mod bitwise;
+
+/// F64x8 HEEL distance kernels — 8-plane weighted Hamming, f64 SIMD
+/// dot / cosine / sum-of-squares. Graduated from `crate::hpc::heel_f64x8::*`.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::heel_f64x8::{cosine_f64_simd, dot_f64_simd};
+/// let a = vec![1.0_f64; 32];
+/// let b = vec![1.0_f64; 32];
+/// assert!((cosine_f64_simd(&a, &b) - 1.0).abs() < 1e-10);
+/// assert!((dot_f64_simd(&a, &b) - 32.0).abs() < 1e-10);
+/// ```
+#[cfg(feature = "std")]
+pub mod heel_f64x8;
+
+/// Batch distance computations — spatial 3D-point queries +
+/// slice-shape L1 / L2 / L∞ (PR-X10 A6). Graduated from
+/// `crate::hpc::distance::*`.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::distance::{l1_f64_simd, l2_f64_simd, linf_f64_simd};
+/// let a = vec![3.0_f64, 0.0];
+/// let b = vec![0.0_f64, 4.0];
+/// assert!((l1_f64_simd(&a, &b) - 7.0).abs() < 1e-12);
+/// assert!((l2_f64_simd(&a, &b) - 5.0).abs() < 1e-12);
+/// assert!((linf_f64_simd(&a, &b) - 4.0).abs() < 1e-12);
+/// ```
+#[cfg(feature = "std")]
+pub mod distance;
+
+/// SIMD-accelerated byte-scan utilities — needle search, delimiter
+/// finding, parallel byte comparison. Graduated from
+/// `crate::hpc::byte_scan::*`.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::byte_scan::byte_find_all;
+/// let haystack = b"hello world, hello rust";
+/// let hits = byte_find_all(haystack, b'l');
+/// assert_eq!(hits, vec![2, 3, 9, 15, 16]);
+/// ```
+#[cfg(feature = "std")]
+pub mod byte_scan;
+
+/// SIMD-accelerated spatial hash — bucketing, candidate gather, hash
+/// collision detection. Graduated from `crate::hpc::spatial_hash::*`.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::spatial_hash::SpatialHash;
+/// let mut grid = SpatialHash::new(1.0);
+/// grid.insert(0, 0.0, 0.0, 0.0);
+/// grid.insert(1, 10.0, 10.0, 10.0);
+/// assert_eq!(grid.len(), 2);
+/// ```
+#[cfg(feature = "std")]
+pub mod spatial_hash;
+
+/// Axis-aligned bounding box batch operations — SIMD-accelerated
+/// intersection, expansion, distance queries. Graduated from
+/// `crate::hpc::aabb::*`.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::aabb::Aabb;
+/// let a = Aabb::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+/// let b = Aabb::new([0.5, 0.5, 0.5], [1.5, 1.5, 1.5]);
+/// assert!(a.intersects(&b));
+/// ```
+#[cfg(feature = "std")]
+pub mod aabb;
+
+/// Nibble batch operations for 4-bit packed data (light levels, palettes).
+/// Graduated from `crate::hpc::nibble::*`.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::nibble::nibble_unpack;
+/// let unpacked = nibble_unpack(&[0x3A], 2);
+/// assert_eq!(unpacked, vec![0xA, 0x3]);
+/// ```
+#[cfg(feature = "std")]
+pub mod nibble;
+
+/// Variable-width palette index codec (Minecraft-style bit packing).
+/// Packs/unpacks palette indices (0–255) into 1–8 bit widths.
+/// Graduated from `crate::hpc::palette_codec::*`.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::palette_codec::bits_for_palette_size;
+/// assert_eq!(bits_for_palette_size(2), 1);
+/// assert_eq!(bits_for_palette_size(16), 4);
+/// assert_eq!(bits_for_palette_size(256), 8);
+/// ```
+#[cfg(feature = "std")]
+pub mod palette_codec;
+
+/// Block property mask — compiled bitset queries on block state bits.
+/// AVX-512 VPTERNLOGD tests 3 conditions in 1 cycle. Graduated from
+/// `crate::hpc::property_mask::*`.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::property_mask::PropertyMask;
+/// let mask = PropertyMask::new().require_bit(0).forbid_bit(3);
+/// assert!(mask.test(0b0000_0001));    // bit 0 set, bit 3 clear → match
+/// assert!(!mask.test(0b0000_1001));   // bit 3 set → no match
+/// ```
+#[cfg(feature = "std")]
+pub mod property_mask;
+
 #[cfg(feature = "std")]
 #[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
 pub mod simd_neon;
 
+// NEON tier scaffolds — Phase 3 of the SIMD integration plan
+// (.claude/knowledge/simd-dispatch-architecture.md § 6).
+//
+// Each file documents the silicon, the runtime + compile-time detection
+// path, and stubs out the F16 / BF16 wrappers with intrinsic maps for
+// future implementation. Current state: scaffolds only — the actual
+// NEON code still lives in `simd_neon.rs::aarch64_simd` and gets
+// migrated tier-by-tier as the Phase 3 sprints land.
+#[cfg(all(target_arch = "aarch64", feature = "std"))]
+#[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
+pub mod simd_neon_baseline;
+#[cfg(all(target_arch = "aarch64", feature = "std"))]
+#[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
+pub mod simd_neon_dotprod;
+#[cfg(all(target_arch = "aarch64", feature = "std"))]
+#[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
+pub mod simd_neon_bf16;
+
 #[cfg(feature = "std")]
 #[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
 pub mod simd_wasm;
+
+// PR-X1 — SoA-shaped SIMD substrate primitives (`MultiLaneColumn`,
+// `array_chunks`). Layout-only; the SIMD register load happens in the
+// consumer's loop using `crate::simd::F32x16::from_array` etc. Re-exported
+// through `crate::simd::*` per the W1a consumer contract.
+#[cfg(feature = "std")]
+#[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
+pub mod simd_soa;
 
 /// Slice-level integer SIMD ops (i8/i16) — `add_i8`, `dot_i8`, `min_i8`, …
 #[cfg(feature = "std")]
@@ -286,6 +459,15 @@ pub mod simd_ops;
 #[cfg(feature = "std")]
 #[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
 pub mod simd_half;
+
+/// Runtime SIMD dispatch — release-binary distribution path.
+///
+/// Gated under `--features runtime-dispatch`. Mutually exclusive with
+/// `nightly-simd` (the cfg in `simd_runtime/mod.rs` enforces this with
+/// a `compile_error!`). See `.claude/knowledge/simd-dispatch-architecture.md`
+/// § 7.1 / Phase 5 for the design.
+#[cfg(feature = "runtime-dispatch")]
+pub mod simd_runtime;
 
 /// Pluggable linear algebra backends (native SIMD, MKL, OpenBLAS).
 #[cfg(feature = "std")]
@@ -311,6 +493,13 @@ pub mod backend;
 #[cfg(feature = "std")]
 #[allow(clippy::all, unused_imports, unused_variables, unused_mut, dead_code)]
 pub mod hpc;
+
+// Re-export `paste` so that `blocked_grid_struct!` expansions in external crates
+// can reference it as `$crate::paste::paste!`.  `#[doc(hidden)]` keeps it out of
+// the public API docs.
+#[doc(hidden)]
+#[cfg(feature = "std")]
+pub use paste;
 
 pub use crate::zip::{FoldWhile, IntoNdProducer, NdProducer, Zip};
 

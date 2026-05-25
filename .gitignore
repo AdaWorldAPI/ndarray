@@ -7,3 +7,9 @@ target/
 
 # Apple details
 **/.DS_Store
+
+# Claude Code: agent isolation worktrees (temporary, per-agent)
+.claude/worktrees/
+
+# Claude Code: per-user permission overrides (survives branch switches)
+.claude/settings.local.json

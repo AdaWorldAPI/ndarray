@@ -19,30 +19,162 @@
 
 /// Element-wise `dst[i] += src[i]` (wrapping i8 add).
 ///
-/// Panics if `dst.len() != src.len()`.
+/// Dispatches to the widest available SIMD lane:
+///
+/// | Backend    | Lane    | Per-iteration intrinsic |
+/// |------------|---------|-------------------------|
+/// | x86_64     | `I8x64` | `_mm512_add_epi8` zmm (AVX-512-BW) / 2× `_mm256_add_epi8` ymm (AVX2 polyfill of `I8x64`) |
+/// | aarch64    | `I8x16` | `vaddq_s8` × N                                |
+/// | other      | scalar  | `i8::wrapping_add` lane-by-lane               |
+///
+/// Wrapping arithmetic. Panics if `dst.len() != src.len()`.
 #[inline]
 pub fn add_i8(dst: &mut [i8], src: &[i8]) {
     assert_eq!(dst.len(), src.len(), "add_i8: length mismatch");
-    for i in 0..dst.len() {
-        dst[i] = dst[i].wrapping_add(src[i]);
+    let n = dst.len();
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        use crate::simd::I8x64;
+        const L: usize = 64;
+        let chunks = n / L;
+        for c in 0..chunks {
+            let off = c * L;
+            let d = I8x64::from_slice(&dst[off..]);
+            let s = I8x64::from_slice(&src[off..]);
+            let arr = (d + s).to_array();
+            dst[off..off + L].copy_from_slice(&arr);
+        }
+        for i in (chunks * L)..n {
+            dst[i] = dst[i].wrapping_add(src[i]);
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::simd_neon::I8x16;
+        const L: usize = 16;
+        let chunks = n / L;
+        for c in 0..chunks {
+            let off = c * L;
+            let d = I8x16::from_slice(&dst[off..]);
+            let s = I8x16::from_slice(&src[off..]);
+            let arr = d.add(s).to_array();
+            dst[off..off + L].copy_from_slice(&arr);
+        }
+        for i in (chunks * L)..n {
+            dst[i] = dst[i].wrapping_add(src[i]);
+        }
+    }
+
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        for i in 0..n {
+            dst[i] = dst[i].wrapping_add(src[i]);
+        }
     }
 }
 
 /// Element-wise `dst[i] -= src[i]` (wrapping i8 sub).
+///
+/// Dispatches the same way as [`add_i8`] (zmm AVX-512-BW / ymm AVX2 /
+/// 128-bit NEON / scalar) using the polyfilled lane's `Sub`
+/// implementation.
 #[inline]
 pub fn sub_i8(dst: &mut [i8], src: &[i8]) {
     assert_eq!(dst.len(), src.len(), "sub_i8: length mismatch");
-    for i in 0..dst.len() {
-        dst[i] = dst[i].wrapping_sub(src[i]);
+    let n = dst.len();
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        use crate::simd::I8x64;
+        const L: usize = 64;
+        let chunks = n / L;
+        for c in 0..chunks {
+            let off = c * L;
+            let d = I8x64::from_slice(&dst[off..]);
+            let s = I8x64::from_slice(&src[off..]);
+            let arr = (d - s).to_array();
+            dst[off..off + L].copy_from_slice(&arr);
+        }
+        for i in (chunks * L)..n {
+            dst[i] = dst[i].wrapping_sub(src[i]);
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::simd_neon::I8x16;
+        const L: usize = 16;
+        let chunks = n / L;
+        for c in 0..chunks {
+            let off = c * L;
+            let d = I8x16::from_slice(&dst[off..]);
+            let s = I8x16::from_slice(&src[off..]);
+            let arr = d.sub(s).to_array();
+            dst[off..off + L].copy_from_slice(&arr);
+        }
+        for i in (chunks * L)..n {
+            dst[i] = dst[i].wrapping_sub(src[i]);
+        }
+    }
+
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        for i in 0..n {
+            dst[i] = dst[i].wrapping_sub(src[i]);
+        }
     }
 }
 
 /// Element-wise `dst[i] += src[i]` (wrapping i16 add).
+///
+/// Dispatches to `I16x32` (AVX-512-BW `_mm512_add_epi16`) on x86_64,
+/// `I16x8` (`vaddq_s16`) on aarch64, scalar otherwise.
 #[inline]
 pub fn add_i16(dst: &mut [i16], src: &[i16]) {
     assert_eq!(dst.len(), src.len(), "add_i16: length mismatch");
-    for i in 0..dst.len() {
-        dst[i] = dst[i].wrapping_add(src[i]);
+    let n = dst.len();
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        use crate::simd::I16x32;
+        const L: usize = 32;
+        let chunks = n / L;
+        for c in 0..chunks {
+            let off = c * L;
+            let d = I16x32::from_slice(&dst[off..]);
+            let s = I16x32::from_slice(&src[off..]);
+            let arr = (d + s).to_array();
+            dst[off..off + L].copy_from_slice(&arr);
+        }
+        for i in (chunks * L)..n {
+            dst[i] = dst[i].wrapping_add(src[i]);
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::simd_neon::I16x8;
+        const L: usize = 8;
+        let chunks = n / L;
+        for c in 0..chunks {
+            let off = c * L;
+            let d = I16x8::from_slice(&dst[off..]);
+            let s = I16x8::from_slice(&src[off..]);
+            let arr = d.add(s).to_array();
+            dst[off..off + L].copy_from_slice(&arr);
+        }
+        for i in (chunks * L)..n {
+            dst[i] = dst[i].wrapping_add(src[i]);
+        }
+    }
+
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        for i in 0..n {
+            dst[i] = dst[i].wrapping_add(src[i]);
+        }
     }
 }
 
@@ -75,6 +207,116 @@ pub fn dot_i16(a: &[i16], b: &[i16]) -> i64 {
         acc = acc.wrapping_add((a[i] as i64) * (b[i] as i64));
     }
     acc
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// gemm_u8_i8 — agnostic u8 × i8 → i32 matrix multiply
+// ────────────────────────────────────────────────────────────────────────
+
+/// `C = A · B` where `A` is `M × K` `u8`, `B` is `K × N` `i8`, `C` is `M × N`
+/// `i32` (row-major, overwritten — not accumulated).
+///
+/// Agnostic consumer surface. Resolves at **compile time** to one kernel
+/// per the active `target_feature` set; consumers never branch on CPU
+/// capability and the chosen kernel is fully inlined at the call site.
+///
+/// Build matrix (additive, filled in as paths land):
+///
+/// | `target_feature`           | Kernel                                                |
+/// |----------------------------|-------------------------------------------------------|
+/// | `amx-int8` *(planned)*     | AMX `TDPBUSD` 16×16 tile (Sapphire / Granite Rapids)  |
+/// | `avx512vnni`               | `VPDPBUSD` zmm — 16 i32 lanes (CLX → Zen 4 / SPR)     |
+/// | `avxvnni`                  | `VPDPBUSD` ymm — 8 i32 lanes (Alder/Arrow Lake, Zen 4)|
+/// | `neon,dotprod` *(planned)* | NEON `SDOT` (A76+ / Apple M-series)                   |
+/// | *(none)*                   | Scalar reference [`hpc::quantized::int8_gemm_i32`]    |
+///
+/// Arm precedence is widest-vector-first: when several `target_feature`
+/// flags are set simultaneously (e.g. Sapphire Rapids enables `avx512vnni`
+/// AND `avxvnni`), the highest-bandwidth arm wins via `#[cfg]` ordering.
+///
+/// Build configs:
+///
+/// * Default `x86-64-v3` (no VNNI) → scalar arm. Same result as calling
+///   [`crate::hpc::quantized::int8_gemm_i32`] directly.
+/// * `--config .cargo/config-avx512.toml` (= Sapphire Rapids, includes
+///   VNNI + BF16 + FP16 + AMX) → the `avx512vnni` zmm arm. The future
+///   `amx-int8` arm, once landed, will preempt this on the same config.
+/// * `-Ctarget-cpu=cascadelake` / `znver4` → also lands in the
+///   `avx512vnni` zmm arm (no AMX, no BF16).
+/// * `RUSTFLAGS='-Ctarget-feature=+avxvnni'` on an AVX2 baseline →
+///   the `avxvnni` ymm arm (Arrow Lake / Alder Lake without AVX-512).
+///
+/// # Panics
+///
+/// Panics if the slice lengths are inconsistent with the given dimensions.
+#[inline]
+pub fn gemm_u8_i8(a: &[u8], b: &[i8], c: &mut [i32], m: usize, n: usize, k: usize) {
+    assert!(a.len() >= m * k, "gemm_u8_i8: a.len()={} < m*k={}", a.len(), m * k);
+    assert!(b.len() >= k * n, "gemm_u8_i8: b.len()={} < k*n={}", b.len(), k * n);
+    assert!(c.len() >= m * n, "gemm_u8_i8: c.len()={} < m*n={}", c.len(), m * n);
+
+    // Tier 0 — runtime AMX check. AMX is a different feature class than
+    // the rest of the dispatch chain: it requires CPUID + XCR0 + a Linux
+    // `prctl(ARCH_REQ_XCOMP_PERM, 18)` to be granted, none of which fit
+    // a `target_feature` compile-time gate. The check is one CPUID +
+    // one XGETBV + one prctl (idempotent, cached after first call). On
+    // aligned shapes (16/16/64) this dispatches to TDPBUSD via the
+    // shared `int8_gemm_amx_tiled` helper — 16 384 MACs per instruction
+    // vs VPDPBUSD-zmm's 64. Since `gemm_u8_i8` is u8×i8 natively (no
+    // sign-shift bias needed), the AMX path is a direct call with no
+    // bias correction — simpler than `matmul_i8_to_i32`'s i8×i8 path.
+    #[cfg(target_arch = "x86_64")]
+    {
+        if crate::hpc::amx_matmul::amx_available()
+            && m.is_multiple_of(16)
+            && n.is_multiple_of(16)
+            && k.is_multiple_of(64)
+        {
+            crate::hpc::int8_tile_gemm::int8_gemm_amx_tiled(a, b, c, m, n, k);
+            return;
+        }
+    }
+
+    // Compile-time dispatch chain (tiers 1-3). Exactly one arm survives
+    // per build; the others are stripped by `#[cfg]` so the compiler
+    // emits a direct call to the chosen kernel with no runtime branch.
+
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512vnni"))]
+    {
+        // SAFETY: `target_feature = "avx512vnni"` at this site guarantees
+        // AVX-512F + VNNI + BW (the kernel's `#[target_feature(enable)]`
+        // set). The dispatcher is the safety invariant the kernel relies on.
+        unsafe { crate::hpc::vnni_gemm::int8_gemm_vnni_avx512(a, b, c, m, n, k) };
+        return;
+    }
+
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avxvnni",
+        not(target_feature = "avx512vnni"),
+    ))]
+    {
+        // SAFETY: `target_feature = "avxvnni"` at this site guarantees
+        // AVX + AVX2 + AVX-VNNI (the kernel's `#[target_feature(enable)]`
+        // set). Arm only fires when AVX-512 VNNI is *not* present —
+        // Alder Lake / Arrow Lake without AVX-512, or Zen 4 builds that
+        // pinned a ymm-only target. The dispatcher is the safety invariant.
+        unsafe { crate::hpc::vnni_gemm::int8_gemm_avxvnni_ymm(a, b, c, m, n, k) };
+        return;
+    }
+
+    // Fallback: scalar reference kernel. Always correct; same result the
+    // VNNI / AMX / SDOT paths produce when they land. Targets without an
+    // INT8 dot-product instruction (x86-64-v3 baseline without AVX-VNNI,
+    // ARMv8.0 without dotprod, wasm32, riscv) reach this arm at compile
+    // time.
+    #[cfg(not(any(
+        all(target_arch = "x86_64", target_feature = "avx512vnni"),
+        all(target_arch = "x86_64", target_feature = "avxvnni"),
+    )))]
+    {
+        crate::hpc::quantized::int8_gemm_i32(a, b, c, m, n, k);
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -338,7 +580,7 @@ mod tests {
 
     #[test]
     fn min_max_i8_basic() {
-        let s: Vec<i8> = (0..100).map(|i| (i as i32 - 50) as i8).collect();
+        let s: Vec<i8> = (0..100_i32).map(|i| (i - 50) as i8).collect();
         // Range -50..=49.
         assert_eq!(min_i8(&s), -50);
         assert_eq!(max_i8(&s), 49);
@@ -366,5 +608,170 @@ mod tests {
         let s: [i8; 0] = [];
         assert_eq!(min_i8(&s), i8::MAX);
         assert_eq!(max_i8(&s), i8::MIN);
+    }
+
+    // ── gemm_u8_i8 ────────────────────────────────────────────────────────
+
+    /// Independent scalar reference used to validate `gemm_u8_i8` against
+    /// the active compile-time dispatch arm (scalar or VNNI), without
+    /// going through `hpc::quantized::int8_gemm_i32` (which IS the scalar
+    /// arm — comparing against it on a v3 build would be tautological).
+    fn ref_gemm_u8_i8(a: &[u8], b: &[i8], m: usize, n: usize, k: usize) -> Vec<i32> {
+        let mut c = vec![0i32; m * n];
+        for i in 0..m {
+            for p in 0..k {
+                let av = a[i * k + p] as i32;
+                for j in 0..n {
+                    c[i * n + j] += av * b[p * n + j] as i32;
+                }
+            }
+        }
+        c
+    }
+
+    #[test]
+    fn gemm_u8_i8_4x4_identity() {
+        let m = 4;
+        let n = 4;
+        let k = 4;
+        let a: Vec<u8> = (1..=16).collect();
+        let b: Vec<i8> = vec![1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+        let expected = ref_gemm_u8_i8(&a, &b, m, n, k);
+        let mut c = vec![99i32; m * n];
+        gemm_u8_i8(&a, &b, &mut c, m, n, k);
+        assert_eq!(c, expected);
+    }
+
+    #[test]
+    fn gemm_u8_i8_rectangular_3x5x8() {
+        let m = 3;
+        let n = 5;
+        let k = 8;
+        let a: Vec<u8> = (0..m * k).map(|i| (i % 200) as u8).collect();
+        let b: Vec<i8> = (0..k * n).map(|i| (i % 100) as i8 - 50).collect();
+        let expected = ref_gemm_u8_i8(&a, &b, m, n, k);
+        let mut c = vec![0i32; m * n];
+        gemm_u8_i8(&a, &b, &mut c, m, n, k);
+        assert_eq!(c, expected);
+    }
+
+    #[test]
+    fn gemm_u8_i8_17x17_tail() {
+        // Exercises the VNNI tail-masking path on AVX-512 builds and the
+        // scalar fallback on v3 builds. Same expected output either way.
+        let m = 17;
+        let n = 17;
+        let k = 17;
+        let a: Vec<u8> = (0..m * k).map(|i| ((i * 7 + 3) % 256) as u8).collect();
+        let b: Vec<i8> = (0..k * n)
+            .map(|i| ((i * 11 + 5) % 256) as u8 as i8)
+            .collect();
+        let expected = ref_gemm_u8_i8(&a, &b, m, n, k);
+        let mut c = vec![0i32; m * n];
+        gemm_u8_i8(&a, &b, &mut c, m, n, k);
+        assert_eq!(c, expected);
+    }
+
+    #[test]
+    fn gemm_u8_i8_extreme_values() {
+        // u8 = 255, i8 alternating ±127 stresses i32 accumulation across
+        // the AVX-512 tail path and the scalar reference.
+        let m = 4;
+        let n = 4;
+        let k = 8;
+        let a = vec![255u8; m * k];
+        let b: Vec<i8> = (0..k * n)
+            .map(|i| if i % 2 == 0 { 127i8 } else { -128i8 })
+            .collect();
+        let expected = ref_gemm_u8_i8(&a, &b, m, n, k);
+        let mut c = vec![0i32; m * n];
+        gemm_u8_i8(&a, &b, &mut c, m, n, k);
+        assert_eq!(c, expected);
+    }
+
+    /// Sanity-check timing harness — run with:
+    ///   cargo test --release simd_int_ops::tests::bench_gemm_u8_i8_vs_scalar \
+    ///       -- --ignored --nocapture
+    ///
+    /// Re-run under each cfg arm to confirm the kernel actually beats the
+    /// scalar reference (the question the user raised: "if AVX2 ends up
+    /// slower than scalar GEMM something isn't done right"):
+    ///   # scalar arm (default v3)
+    ///   cargo test --release ...
+    ///   # avxvnni ymm arm
+    ///   RUSTFLAGS='-Ctarget-cpu=alderlake' cargo test --release ...
+    ///   # avx512vnni zmm arm
+    ///   cargo --config .cargo/config-avx512.toml test --release ...
+    #[test]
+    #[ignore]
+    fn bench_gemm_u8_i8_vs_scalar() {
+        use std::time::Instant;
+
+        let sizes = [(64usize, 64, 64), (128, 128, 128), (256, 256, 256), (512, 512, 512)];
+
+        for (m, n, k) in sizes {
+            let a: Vec<u8> = (0..m * k).map(|i| (i % 251) as u8).collect();
+            let b: Vec<i8> = (0..k * n)
+                .map(|i| ((i % 127) as i8).wrapping_sub(63))
+                .collect();
+            let mut c_simd = vec![0i32; m * n];
+            let mut c_scalar = vec![0i32; m * n];
+
+            // Warm-up — first call also resolves any one-time setup.
+            for _ in 0..2 {
+                gemm_u8_i8(&a, &b, &mut c_simd, m, n, k);
+            }
+            for _ in 0..2 {
+                crate::hpc::quantized::int8_gemm_i32(&a, &b, &mut c_scalar, m, n, k);
+            }
+
+            // Iterations scale down with size to keep total time reasonable.
+            let iters = match m {
+                0..=64 => 50,
+                65..=128 => 10,
+                129..=256 => 3,
+                _ => 1,
+            };
+
+            let t0 = Instant::now();
+            for _ in 0..iters {
+                gemm_u8_i8(&a, &b, &mut c_simd, m, n, k);
+            }
+            let dt_simd = t0.elapsed() / iters;
+
+            let t0 = Instant::now();
+            for _ in 0..iters {
+                crate::hpc::quantized::int8_gemm_i32(&a, &b, &mut c_scalar, m, n, k);
+            }
+            let dt_scalar = t0.elapsed() / iters;
+
+            assert_eq!(c_simd, c_scalar, "perf bench failed correctness at {m}x{n}x{k}");
+            let speedup = dt_scalar.as_nanos() as f64 / dt_simd.as_nanos() as f64;
+            println!(
+                "gemm_u8_i8 {m:>3}x{n:>3}x{k:>3}: simd={:>10.3?}  scalar={:>10.3?}  speedup={speedup:>6.2}x",
+                dt_simd, dt_scalar,
+            );
+        }
+    }
+
+    /// Exercises the AMX dispatch tier added on top of `gemm_u8_i8`'s
+    /// compile-time cascade. On AMX-enabled silicon (Sapphire Rapids+
+    /// with the right OS prctl), 16/16/64-aligned shapes go through
+    /// TDPBUSD via `int8_gemm_amx_tiled`. Anywhere else this falls back
+    /// to the compile-time cascade — the assertion still holds because
+    /// the scalar reference is exact integer arithmetic.
+    #[test]
+    fn gemm_u8_i8_amx_aligned_32x32x128() {
+        let m = 32; // 2 × 16-wide M-tiles
+        let n = 32; // 2 × 16-wide N-tiles
+        let k = 128; // 2 × 64-wide K-blocks per tile
+        let a: Vec<u8> = (0..m * k).map(|i| ((i * 13 + 7) % 256) as u8).collect();
+        let b: Vec<i8> = (0..k * n)
+            .map(|i| ((i * 19 + 11) % 256) as u8 as i8)
+            .collect();
+        let expected = ref_gemm_u8_i8(&a, &b, m, n, k);
+        let mut c = vec![0i32; m * n];
+        gemm_u8_i8(&a, &b, &mut c, m, n, k);
+        assert_eq!(c, expected, "gemm_u8_i8 AMX path mismatch");
     }
 }
