@@ -1,0 +1,21 @@
+[package]
+name = "cesium"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "OPTIONAL Cesium/ArcGIS reference + parity oracle — NOT a production dependency. Reverse-engineers 3D Tiles / KHR_gaussian_splatting / ArcGIS-PBF into ndarray CAM SoA for parity diffing against splat3d. Dev/reference only; relocates to lance-graph/crates/cesium when flawless."
+
+# Workspace member via `crates/*`, deliberately NOT in `default-members` →
+# optional/dev by construction (a member, never a default build target).
+# RULE 3: no serde, no json crates. Prefer ArcGIS PBF (binary) over f=json.
+# JSON, if unavoidable at the cold import boundary, never reaches the hotpath.
+
+[dependencies]
+# Wired when modules go live (see src/lib.rs). The skeleton is dependency-free
+# so it compiles trivially and CI stays green.
+# ndarray = { workspace = true }            # splat3d::GaussianBatch CAM SoA target + cam_pq
+# prost / quick-protobuf = ...              # ArcGIS PBF decode (binary, no-JSON) — module `arcgis_pbf`
+
+[features]
+default = []
+# oracle = []   # gates module `oracle` (reference-render diff harness) once a real reference renderer is wired
