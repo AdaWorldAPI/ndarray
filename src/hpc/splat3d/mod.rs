@@ -97,7 +97,12 @@ pub mod tile;
 pub mod raster;
 pub mod frame;
 pub mod ply;
+pub mod depth_cert;
 
+pub use depth_cert::{
+    camera_depth_variance, certify_batch_scalar, certify_depth_scalar, screen_space_error, DepthCertParams,
+    RenderDepthCertificate,
+};
 pub use frame::{SplatFrame, SplatRenderer};
 pub use gaussian::{Gaussian3D, GaussianBatch, SH_COEFFS_PER_CHANNEL, SH_COEFFS_PER_GAUSSIAN, SH_DEGREE};
 pub use ply::{read_ply, PlyError};
