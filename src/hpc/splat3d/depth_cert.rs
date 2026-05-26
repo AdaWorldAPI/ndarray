@@ -51,8 +51,10 @@
 //! path (P2) consumes [`super::project::ProjectedBatch`] and must match this
 //! reference within tolerance.
 
-use super::project::ProjectedBatch;
+use super::gaussian::GaussianBatch;
+use super::project::{Camera, ProjectedBatch};
 use super::spd3::Spd3;
+use crate::simd::F32x16;
 
 /// Cesium / OGC 3D Tiles screen-space error for a feature of world-space
 /// extent `geometric_error` seen at camera-space `distance`, lifted from
@@ -239,18 +241,7 @@ pub fn certify_batch_scalar(
     out.reserve(batch.len);
     for i in 0..batch.len {
         if batch.valid[i] == 0 {
-            out.push(RenderDepthCertificate {
-                min_depth: 0.0,
-                max_depth: 0.0,
-                depth_variance: 0.0,
-                projected_radius_px: 0.0,
-                occlusion_confidence: 0.0,
-                ordering_uncertainty: 0.0,
-                quantization_depth_error: 0.0,
-                covariance_depth_error: 0.0,
-                total_depth_error: 0.0,
-                passed: false,
-            });
+            out.push(ZERO_CERT);
             continue;
         }
         let cov_zz = depth_var.get(i).copied().unwrap_or(0.0);
@@ -258,12 +249,232 @@ pub fn certify_batch_scalar(
     }
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// P2 — SIMD batch kernels (consume `crate::simd::F32x16`; no dispatch changes)
+// ════════════════════════════════════════════════════════════════════════════
+
+/// SIMD chunk width — 16 lanes regardless of native tier, mirroring
+/// `project::project_chunk_x16`.
+const CHUNK: usize = 16;
+
+/// Stage one logical 16-wide window of a SoA `f32` column into a padded
+/// `[f32; 16]`; lanes beyond `len` are left zero.
+#[inline]
+fn stage16(col: &[f32], start: usize, len: usize) -> [f32; 16] {
+    let mut buf = [0.0f32; 16];
+    let end = (start + CHUNK).min(len);
+    for (k, slot) in buf.iter_mut().enumerate().take(end - start) {
+        *slot = col[start + k];
+    }
+    buf
+}
+
+/// SIMD (16-wide) camera-space depth variance `Σ_cam[2][2]` for every gaussian,
+/// written into `out[0..gaussians.len]`. Vectorized analogue of
+/// [`camera_depth_variance`]; uses the same quaternion→rotation→`W·Σ·Wᵀ`
+/// convention as `project::project_chunk_x16` (so it matches that kernel's
+/// covariance spine within the same tolerance).
+///
+/// Does not allocate; `out` must have length ≥ `gaussians.len`.
+pub fn camera_depth_variance_batch(gaussians: &GaussianBatch, camera: &Camera, out: &mut [f32]) {
+    let len = gaussians.len;
+    assert!(out.len() >= len, "camera_depth_variance_batch: out.len() {} < gaussians.len {len}", out.len());
+    if len == 0 {
+        return;
+    }
+    let v = &camera.view;
+    let w20 = F32x16::splat(v[2][0]);
+    let w21 = F32x16::splat(v[2][1]);
+    let w22 = F32x16::splat(v[2][2]);
+    let one = F32x16::splat(1.0);
+    let two = F32x16::splat(2.0);
+    let zero = F32x16::splat(0.0);
+
+    let mut start = 0;
+    while start < len {
+        let qw = F32x16::from_slice(&stage16(&gaussians.quat_w, start, len));
+        let qx = F32x16::from_slice(&stage16(&gaussians.quat_x, start, len));
+        let qy = F32x16::from_slice(&stage16(&gaussians.quat_y, start, len));
+        let qz = F32x16::from_slice(&stage16(&gaussians.quat_z, start, len));
+        let scx = F32x16::from_slice(&stage16(&gaussians.scale_x, start, len));
+        let scy = F32x16::from_slice(&stage16(&gaussians.scale_y, start, len));
+        let scz = F32x16::from_slice(&stage16(&gaussians.scale_z, start, len));
+
+        // Quaternion → rotation matrix (mirrors project_chunk_x16).
+        let xx = qx * qx;
+        let yy = qy * qy;
+        let zz = qz * qz;
+        let xy = qx * qy;
+        let xz = qx * qz;
+        let yz = qy * qz;
+        let wx = qw * qx;
+        let wy = qw * qy;
+        let wz = qw * qz;
+        let r00 = one - two * (yy + zz);
+        let r01 = two * (xy - wz);
+        let r02 = two * (xz + wy);
+        let r10 = two * (xy + wz);
+        let r11 = one - two * (xx + zz);
+        let r12 = two * (yz - wx);
+        let r20 = two * (xz - wy);
+        let r21 = two * (yz + wx);
+        let r22 = one - two * (xx + yy);
+
+        // M = R · diag(scale²); Σ_world upper triangle = M · Rᵀ.
+        let s0 = scx * scx;
+        let s1 = scy * scy;
+        let s2 = scz * scz;
+        let m00 = r00 * s0;
+        let m01 = r01 * s1;
+        let m02 = r02 * s2;
+        let m10 = r10 * s0;
+        let m11 = r11 * s1;
+        let m12 = r12 * s2;
+        let m20 = r20 * s0;
+        let m21 = r21 * s1;
+        let m22 = r22 * s2;
+        let sw11 = m00 * r00 + m01 * r01 + m02 * r02;
+        let sw12 = m00 * r10 + m01 * r11 + m02 * r12;
+        let sw13 = m00 * r20 + m01 * r21 + m02 * r22;
+        let sw22 = m10 * r10 + m11 * r11 + m12 * r12;
+        let sw23 = m10 * r20 + m11 * r21 + m12 * r22;
+        let sw33 = m20 * r20 + m21 * r21 + m22 * r22;
+
+        // Σ_cam[2][2] = w2 · Σ_world · w2ᵀ (w2 = third view row).
+        let cov = w20 * w20 * sw11
+            + w21 * w21 * sw22
+            + w22 * w22 * sw33
+            + two * (w20 * w21 * sw12 + w20 * w22 * sw13 + w21 * w22 * sw23);
+
+        let mut arr = [0.0f32; 16];
+        cov.simd_max(zero).copy_to_slice(&mut arr);
+        let end = (start + CHUNK).min(len);
+        out[start..end].copy_from_slice(&arr[..end - start]);
+        start += CHUNK;
+    }
+}
+
+/// SIMD (16-wide) certificate reduction over a projected batch — the
+/// vectorized twin of [`certify_batch_scalar`]. The element-wise interval
+/// math (`σ_z`, `k·σ_z`, total, min/max depth) runs through `F32x16`; the two
+/// branchy fields (ordering/occlusion) are finished per lane, mirroring the
+/// SIMD-bulk / scalar-writeback split used by `project::project_chunk_x16`.
+///
+/// `depth_var[i]` is `Σ_cam[2][2]` for splat `i` (from
+/// [`camera_depth_variance_batch`]). Culled slots get a zeroed,
+/// `passed = false` certificate. Does not panic on malformed input.
+pub fn certify_batch_simd(
+    batch: &ProjectedBatch, depth_var: &[f32], params: &DepthCertParams, out: &mut Vec<RenderDepthCertificate>,
+) {
+    out.clear();
+    let len = batch.len;
+    if len == 0 {
+        return;
+    }
+    out.reserve(len);
+
+    // All caller budgets are batch constants → one broadcast.
+    let const_terms = params.camera_transform_error
+        + params.quantization_depth_error
+        + params.splat_support_overlap_error
+        + 0.5 * params.sort_bucket_width
+        + params.lod_substitution_error
+        + params.sampling_discrepancy;
+    let const_v = F32x16::splat(const_terms);
+    let k = F32x16::splat(params.k_sigma);
+    let zero = F32x16::splat(0.0);
+
+    let mut start = 0;
+    while start < len {
+        let depth_v = F32x16::from_slice(&stage16(&batch.depth, start, len));
+        let radius_v = F32x16::from_slice(&stage16(&batch.radius, start, len));
+        let var_v = F32x16::from_slice(&stage16(depth_var, start, len)).simd_max(zero);
+
+        let sigma = var_v.sqrt();
+        let cov_err = k * sigma;
+        let total = const_v + cov_err;
+        let min_d = (depth_v - cov_err).simd_max(zero);
+        let max_d = depth_v + cov_err;
+
+        let mut var_a = [0.0f32; 16];
+        let mut cov_a = [0.0f32; 16];
+        let mut tot_a = [0.0f32; 16];
+        let mut min_a = [0.0f32; 16];
+        let mut max_a = [0.0f32; 16];
+        let mut rad_a = [0.0f32; 16];
+        var_v.copy_to_slice(&mut var_a);
+        cov_err.copy_to_slice(&mut cov_a);
+        total.copy_to_slice(&mut tot_a);
+        min_d.copy_to_slice(&mut min_a);
+        max_d.copy_to_slice(&mut max_a);
+        radius_v.copy_to_slice(&mut rad_a);
+
+        let end = (start + CHUNK).min(len);
+        for k in 0..(end - start) {
+            let idx = start + k;
+            if batch.valid[idx] == 0 {
+                out.push(ZERO_CERT);
+                continue;
+            }
+            let cov_e = cov_a[k];
+            let ordering_uncertainty = if params.sort_bucket_width > 0.0 {
+                (2.0 * cov_e / params.sort_bucket_width).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let occlusion_confidence = if params.splat_support_overlap_error > 0.0 {
+                (1.0 - params.splat_support_overlap_error / cov_e.max(1e-6)).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            let total_depth_error = tot_a[k];
+            out.push(RenderDepthCertificate {
+                min_depth: min_a[k],
+                max_depth: max_a[k],
+                depth_variance: var_a[k],
+                projected_radius_px: rad_a[k],
+                occlusion_confidence,
+                ordering_uncertainty,
+                quantization_depth_error: params.quantization_depth_error,
+                covariance_depth_error: cov_e,
+                total_depth_error,
+                passed: total_depth_error.is_finite() && total_depth_error <= params.max_total_depth_error,
+            });
+        }
+        start += CHUNK;
+    }
+}
+
+/// Zeroed certificate for culled slots (shared by scalar + SIMD batch paths).
+const ZERO_CERT: RenderDepthCertificate = RenderDepthCertificate {
+    min_depth: 0.0,
+    max_depth: 0.0,
+    depth_variance: 0.0,
+    projected_radius_px: 0.0,
+    occlusion_confidence: 0.0,
+    ordering_uncertainty: 0.0,
+    quantization_depth_error: 0.0,
+    covariance_depth_error: 0.0,
+    total_depth_error: 0.0,
+    passed: false,
+};
+
 #[cfg(test)]
 mod tests {
+    use super::super::gaussian::{Gaussian3D, GaussianBatch};
+    use super::super::project::{project_batch, Camera, ProjectedBatch};
     use super::*;
 
     fn approx(a: f32, b: f32, tol: f32) -> bool {
         (a - b).abs() <= tol
+    }
+
+    /// xorshift32 → [0,1), deterministic test data.
+    fn rng(s: &mut u32) -> f32 {
+        *s ^= *s << 13;
+        *s ^= *s >> 17;
+        *s ^= *s << 5;
+        (*s as f32) / (u32::MAX as f32)
     }
 
     const IDENTITY_VIEW: [[f32; 4]; 4] =
@@ -404,5 +615,101 @@ mod tests {
         let c1 = certify_depth_scalar(10.0, 0.25, 5.0, &overlap);
         assert!(approx(c1.occlusion_confidence, 0.5, 1e-5), "got {}", c1.occlusion_confidence);
         assert!((0.0..=1.0).contains(&c1.occlusion_confidence));
+    }
+
+    // ── P2: SIMD batch parity (validation plan Tier 2) ────────────────────────
+
+    #[test]
+    fn depth_variance_batch_matches_scalar_reference() {
+        // Varied scales + normalized non-identity quaternions under a rotated
+        // view — exercises the full quat→R→W·Σ·Wᵀ depth spine in SIMD.
+        let mut batch = GaussianBatch::with_capacity(40);
+        let mut st = 0x1234_5678u32;
+        for _ in 0..40 {
+            let mut g = Gaussian3D::unit();
+            g.mean = [0.0, 0.0, 2.0];
+            g.scale = [0.1 + rng(&mut st) * 1.5, 0.1 + rng(&mut st) * 1.5, 0.1 + rng(&mut st) * 1.5];
+            let q = [rng(&mut st) * 2.0 - 1.0, rng(&mut st) * 2.0 - 1.0, rng(&mut st) * 2.0 - 1.0, rng(&mut st) * 2.0 - 1.0];
+            let n = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt().max(1e-6);
+            g.quat = [q[0] / n, q[1] / n, q[2] / n, q[3] / n];
+            g.opacity = 1.0;
+            batch.push(g);
+        }
+        // 90° about +Y so the look-axis is non-trivial.
+        let view = [[0.0, 0.0, 1.0, 0.0], [0.0, 1.0, 0.0, 0.0], [-1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
+        let cam = Camera {
+            view, fx: 512.0, fy: 512.0, cx: 256.0, cy: 256.0, near: 0.01, far: 1000.0,
+            width: 512, height: 512, position: [0.0, 0.0, 0.0],
+        };
+        let mut got = vec![0.0f32; batch.len];
+        camera_depth_variance_batch(&batch, &cam, &mut got);
+        for i in 0..batch.len {
+            let want = camera_depth_variance(
+                [batch.scale_x[i], batch.scale_y[i], batch.scale_z[i]],
+                [batch.quat_w[i], batch.quat_x[i], batch.quat_y[i], batch.quat_z[i]],
+                &view,
+            );
+            // Same tolerance project.rs uses for SIMD-vs-Spd3 covariance.
+            assert!((got[i] - want).abs() <= 1e-3 * (1.0 + want.abs()), "i={i} simd={} scalar={want}", got[i]);
+        }
+    }
+
+    #[test]
+    fn certify_batch_simd_matches_scalar_end_to_end() {
+        // Mix of visible, behind-camera, and off-screen splats so both the
+        // certified and the culled (ZERO_CERT) paths are exercised.
+        let mut batch = GaussianBatch::with_capacity(50);
+        let mut st = 0xC0FF_EE11u32;
+        for i in 0..50 {
+            let mut g = Gaussian3D::unit();
+            let z = if i % 7 == 0 { -1.0 } else { 1.0 + rng(&mut st) * 6.0 };
+            let x = if i % 11 == 0 { 9000.0 } else { rng(&mut st) * 2.0 - 1.0 };
+            g.mean = [x, rng(&mut st) * 2.0 - 1.0, z];
+            g.scale = [0.1 + rng(&mut st) * 0.8, 0.1 + rng(&mut st) * 0.8, 0.1 + rng(&mut st) * 0.8];
+            g.quat = [1.0, 0.0, 0.0, 0.0];
+            g.opacity = rng(&mut st);
+            batch.push(g);
+        }
+        let cam = Camera::identity_at_origin(256, 256);
+        let mut proj = ProjectedBatch::with_capacity(batch.capacity);
+        project_batch(&batch, &cam, &mut proj);
+
+        let mut dv = vec![0.0f32; batch.len];
+        camera_depth_variance_batch(&batch, &cam, &mut dv);
+
+        let params = DepthCertParams {
+            k_sigma: 2.0,
+            quantization_depth_error: 0.05,
+            splat_support_overlap_error: 0.2,
+            sort_bucket_width: 1.0,
+            sampling_discrepancy: 0.01,
+            max_total_depth_error: 3.0,
+            ..Default::default()
+        };
+        let mut want = Vec::new();
+        let mut got = Vec::new();
+        certify_batch_scalar(&proj, &dv, &params, &mut want);
+        certify_batch_simd(&proj, &dv, &params, &mut got);
+
+        assert_eq!(want.len(), got.len(), "certificate count mismatch");
+        assert_eq!(want.len(), batch.len);
+        let mut culled = 0;
+        for i in 0..want.len() {
+            let (w, g) = (want[i], got[i]);
+            assert_eq!(w.passed, g.passed, "i={i} passed");
+            assert!(approx(w.min_depth, g.min_depth, 1e-4), "i={i} min_depth {} vs {}", w.min_depth, g.min_depth);
+            assert!(approx(w.max_depth, g.max_depth, 1e-4), "i={i} max_depth");
+            assert!(approx(w.depth_variance, g.depth_variance, 1e-4), "i={i} depth_variance");
+            assert!(approx(w.projected_radius_px, g.projected_radius_px, 1e-4), "i={i} radius");
+            assert!(approx(w.occlusion_confidence, g.occlusion_confidence, 1e-5), "i={i} occlusion");
+            assert!(approx(w.ordering_uncertainty, g.ordering_uncertainty, 1e-5), "i={i} ordering");
+            assert!(approx(w.covariance_depth_error, g.covariance_depth_error, 1e-4), "i={i} cov_err");
+            assert!(approx(w.total_depth_error, g.total_depth_error, 1e-4), "i={i} total");
+            if proj.valid[i] == 0 {
+                culled += 1;
+                assert_eq!(g, ZERO_CERT, "i={i} culled slot must be ZERO_CERT");
+            }
+        }
+        assert!(culled > 0, "test should exercise at least one culled slot");
     }
 }
