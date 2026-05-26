@@ -30,20 +30,32 @@
 //! `raster::rasterize_tile` then performs a **front-to-back alpha-blend** with
 //! early-out at `T < T_SATURATION_EPS = 1e-4`.
 //!
-//! External renderers (CesiumJS, three-gaussian-splatting) often use
-//! **back-to-front** (painter's-algorithm) order instead.  When two or more
+//! The reference renderers (brush, Inria `diff-gaussian-rasterization`) may
+//! sort **back-to-front** (painter's-algorithm) instead.  When two or more
 //! Gaussians have nearly equal depth, floating-point accumulation order is
 //! reversed between the two approaches, producing per-pixel colour differences
 //! of order `O(alpha²)`.  For high-opacity scenes this can be several dB of
 //! PSNR.  Any SSIM/PSNR delta unexplained by numerical noise should be
 //! investigated for sort-order as the primary suspect.
 //!
-//! # Real Cesium / cesium-native FFI — DEFERRED
+//! # Reference renderer — same binary, NO FFI
 //!
-//! Running a real CesiumJS or cesium-native render requires a browser/Node
-//! context or C++ FFI.  That is out of scope for this crate; the interface
-//! below is a placeholder.  Do NOT attempt to wire it without a full
-//! `unsafe` audit by `sentinel-qa`.
+//! There is **no Cesium/cesium-native FFI** and there never will be.  The
+//! oracle's "reference" is one of the existing in-scope 3DGS renderers wired
+//! as an ordinary workspace dependency in the **same binary** (A-to-Z, no
+//! `extern "C"`, no browser/Node, no C++ ABI):
+//!
+//! - **`brush`** (`AdaWorldAPI/brush`, Rust + `wgpu`) — runnable in-binary on
+//!   CPU/any-GPU with no CUDA toolchain; the default reference path.
+//! - **Inria `gaussian-splatting`** + **`diff-gaussian-rasterization`**
+//!   (`AdaWorldAPI/*`, CUDA) — the ground-truth rasterizer when a CUDA device
+//!   is present; same binary, linked as a normal Rust crate, not via FFI.
+//!
+//! All three speak our CAM SoA (`splat3d::gaussian::GaussianBatch`) at the
+//! boundary, so the oracle compares like-for-like: load → render(ours) vs
+//! render(reference) → SSIM/PSNR.  None of these is a foreign binary; the
+//! wiring is `[dependencies]` + a direct call, gated by `cfg`/feature, once
+//! `ndarray` is re-enabled in `Cargo.toml`.
 //!
 //! # Implementation status
 //!
@@ -75,9 +87,10 @@ pub enum OracleError {
     DimensionMismatch { ref_len: usize, candidate_len: usize },
     /// The render pipeline returned an empty framebuffer (width or height = 0).
     EmptyFramebuffer,
-    // DEFERRED: CesiumNativeFfi — wiring real cesium-native requires C++ FFI
-    // and a sentinel-qa unsafe audit; placeholder variant reserved.
-    // CesiumNativeFfi(String),
+    // DEFERRED: ReferenceRender(String) — reserved for failures from the
+    // in-binary reference renderer (brush / Inria), wired as a workspace
+    // dependency once `ndarray` is re-enabled in Cargo.toml. NOT an FFI path.
+    // ReferenceRender(String),
 }
 
 impl std::fmt::Display for OracleError {
@@ -156,7 +169,7 @@ impl ParityMetrics {
     /// ```
     pub fn compute(reference: &[f32], candidate: &[f32]) -> Result<Self, OracleError> {
         let n = reference.len();
-        if n == 0 || candidate.len() == 0 {
+        if n == 0 || candidate.is_empty() {
             return Err(OracleError::EmptyFramebuffer);
         }
         if n != candidate.len() {
@@ -319,20 +332,41 @@ impl ParityMetrics {
 // }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DEFERRED: Real Cesium / cesium-native FFI
+// DEFERRED: in-binary reference renderer (brush / Inria) — NO FFI
 // ─────────────────────────────────────────────────────────────────────────────
 
-// DEFERRED: Running a real CesiumJS render requires a browser/Node context
-// (Electron or Puppeteer) and is out of scope for this crate.
+// The cross-renderer reference is an existing in-scope 3DGS renderer wired as
+// an ordinary workspace dependency in the SAME binary — no `extern "C"`, no
+// `#[link]`, no browser/Node, no foreign ABI. It consumes the same CAM SoA
+// `GaussianBatch` we feed `splat3d`, renders to the same interleaved-RGB
+// framebuffer layout, and we diff the two with `ParityMetrics::compute`.
 //
-// DEFERRED: Running cesium-native requires C++ FFI via `unsafe extern "C"`.
-// Placeholder stub — do NOT implement without sentinel-qa unsafe audit:
+// DEFERRED until `ndarray` (and the chosen reference crate) are re-enabled in
+// Cargo.toml and the module passes Opus + CodeRabbit review:
 //
-// #[link(name = "cesium_native")]
-// extern "C" {
-//     // UNVERIFIED: cesium-native does not expose a stable C ABI as of 2024-Q3.
-//     // fn cesium_render_ply(path: *const u8, path_len: usize,
-//     //                      out_rgb: *mut f32, width: u32, height: u32) -> i32;
+// // Default reference: brush (Rust + wgpu, runnable without CUDA).
+// // UNVERIFIED: brush's public render entry point + camera/SoA adapter shape;
+// // confirm against AdaWorldAPI/brush before wiring.
+// fn render_reference_brush(
+//     batch: &GaussianBatch,
+//     camera: &Camera,
+//     background: [f32; 3],
+// ) -> Result<Vec<f32>, OracleError> {
+//     // brush::render(...) → Vec<f32> interleaved RGB, len = 3·W·H
+//     todo!("wire brush as same-binary workspace dep")
+// }
+//
+// // Ground truth (when a CUDA device is present): Inria gaussian-splatting /
+// // diff-gaussian-rasterization, linked as a normal Rust crate (NOT FFI),
+// // gated behind a `cuda` cfg/feature.
+// // UNVERIFIED: the Rust-facing entry point exposed by the Inria crates.
+// #[cfg(feature = "cuda")]
+// fn render_reference_inria(
+//     batch: &GaussianBatch,
+//     camera: &Camera,
+//     background: [f32; 3],
+// ) -> Result<Vec<f32>, OracleError> {
+//     todo!("wire diff-gaussian-rasterization as same-binary workspace dep")
 // }
 
 // ─────────────────────────────────────────────────────────────────────────────
