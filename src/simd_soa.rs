@@ -37,6 +37,18 @@ use std::sync::Arc;
 // rather than dipping into `simd_avx512` / `simd_neon` / `scalar` directly.
 use crate::simd::{F32x16, F64x8, U64x8, U8x64};
 
+// The SoA layout descriptor. `SoaColumns` binds one of these to a shared
+// backing buffer; the descriptor stays the single source of truth in
+// `crate::hpc::soa` and is composed here without modification.
+use crate::hpc::soa::SoaContainerHeader;
+
+// `CausalEdge64` is a `#[repr(transparent)]` newtype over `u64`. The
+// baked-in edge-column accessor below reinterprets a `u64`-stride column's
+// little-endian cells as `CausalEdge64` — a pure layout reinterpret (no
+// distance / semantic operation), consistent with this module's
+// layout-only rule.
+use crate::hpc::causal_diff::CausalEdge64;
+
 // Endian-correct `&[u8; 4]` → `f32` / `&[u8; 8]` → `f64`/`u64` helpers.
 // `f32::from_le_bytes` is intrinsically optimised to a single load on
 // little-endian targets (x86_64, aarch64, wasm32), so this scalar
@@ -238,6 +250,203 @@ impl MultiLaneColumn {
 }
 
 // ════════════════════════════════════════════════════════════════════
+// SoaColumns — N-field SoA carrier over one shared backing (MailboxSoA shape)
+// ════════════════════════════════════════════════════════════════════
+
+/// Multi-column SoA lane carrier — the "richer MailboxSoA shape".
+///
+/// Binds a [`SoaContainerHeader<N>`] descriptor to a single shared
+/// `Arc<[u8]>` backing and exposes **per-field, zero-copy** typed-lane
+/// iterators (the same lane shapes [`MultiLaneColumn`] offers, one set per
+/// field) plus a baked-in [`CausalEdge64`] edge-column accessor.
+///
+/// The `N` columns are the OGIT *custom fields* (embedding codebooks / role
+/// catalogues / qualia / meta / edge). Which columns are "in focus" for a
+/// given sweep is **not** decided here — that masking is the attention
+/// layer's job (the sparse-rename / `AttentionMask` register file that reads
+/// these columns). This carrier is layout-only: it lays the columns out and
+/// hands back typed lanes; it does not compute distance, attention, or
+/// semantics.
+///
+/// [`MultiLaneColumn`] is OGIT-inherited and frozen (additive-only); this is
+/// the additive multi-column sibling that *composes* the descriptor rather
+/// than modifying either type.
+///
+/// # Invariant
+///
+/// Each field column spans `row_capacity * elem_stride[i]` bytes, which MUST
+/// be a multiple of 64 (the AVX-512 register / cache-line width) so per-field
+/// lane iteration covers the column with no partial tail. Because the header
+/// packs columns contiguously from offset 0, this single invariant also makes
+/// every `field_offsets[i]` 64-byte aligned. [`SoaColumns::new`] returns
+/// `Err` otherwise.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::SoaColumns;
+/// use ndarray::hpc::soa::SoaContainerHeader;
+/// use std::sync::Arc;
+///
+/// // 2 fields, 16 rows: field 0 = 16×4 = 64 B (f32 lane), field 1 = 16×8
+/// // = 128 B (u64 / CausalEdge64 lane). Both 64-multiples.
+/// let hdr: SoaContainerHeader<2> = SoaContainerHeader::new(16, [4, 8]);
+/// let data: Arc<[u8]> = Arc::from(vec![0u8; hdr.backing_buffer_bytes()]);
+/// let cols = SoaColumns::new(hdr, data).unwrap();
+/// assert_eq!(cols.field_count(), 2);
+/// assert_eq!(cols.iter_field_f32x16(0).count(), 1);   // 64 B / 64 = 1 lane
+/// assert_eq!(cols.iter_field_causaledge64(1).count(), 16); // 128 B / 8 = 16 edges
+/// ```
+#[derive(Clone)]
+pub struct SoaColumns<const N: usize> {
+    header: SoaContainerHeader<N>,
+    data: Arc<[u8]>,
+}
+
+impl<const N: usize> SoaColumns<N> {
+    /// Bind a header to a shared backing buffer.
+    ///
+    /// Returns `Err` if the header fails [`SoaContainerHeader::validate`],
+    /// the backing is shorter than
+    /// [`backing_buffer_bytes()`](SoaContainerHeader::backing_buffer_bytes),
+    /// or any field column (`row_capacity * elem_stride[i]`) is not a
+    /// multiple of 64.
+    pub fn new(header: SoaContainerHeader<N>, data: Arc<[u8]>) -> Result<Self, &'static str> {
+        header.validate()?;
+        if data.len() < header.backing_buffer_bytes() {
+            return Err("SoaColumns: backing buffer shorter than header.backing_buffer_bytes()");
+        }
+        for i in 0..N {
+            let col_bytes = (header.row_capacity as usize) * (header.elem_stride[i] as usize);
+            if !col_bytes.is_multiple_of(64) {
+                return Err("SoaColumns: field column (row_capacity * elem_stride[i]) is not a multiple of 64");
+            }
+        }
+        Ok(Self { header, data })
+    }
+
+    /// The bound layout descriptor.
+    pub fn header(&self) -> &SoaContainerHeader<N> {
+        &self.header
+    }
+
+    /// Number of fields (columns) — always `N`.
+    pub fn field_count(&self) -> usize {
+        N
+    }
+
+    /// Current logical row count (from the header; `≤ row_capacity`).
+    pub fn row_count(&self) -> u32 {
+        self.header.row_count
+    }
+
+    /// Maximum row capacity (the per-column byte extent is `row_capacity *
+    /// elem_stride[field]`).
+    pub fn row_capacity(&self) -> u32 {
+        self.header.row_capacity
+    }
+
+    /// The full backing buffer as bytes (aliases the `Arc`, never copies).
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.data
+    }
+
+    /// Byte range `[start, end)` of field `field`'s column in the backing.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `field >= N`.
+    pub fn column_byte_range(&self, field: usize) -> (usize, usize) {
+        assert!(field < N, "SoaColumns: field {field} out of range (N={N})");
+        let start = self.header.field_offsets[field] as usize;
+        let len = (self.header.row_capacity as usize) * (self.header.elem_stride[field] as usize);
+        (start, start + len)
+    }
+
+    /// Field `field`'s column as a byte slice (aliases the `Arc`, never copies).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `field >= N`.
+    #[inline]
+    fn column_bytes(&self, field: usize) -> &[u8] {
+        let (start, end) = self.column_byte_range(field);
+        &self.data[start..end]
+    }
+
+    /// Iterate field `field` as [`U8x64`] lanes (dispatched via `crate::simd::*`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `field >= N`.
+    pub fn iter_field_u8x64(&self, field: usize) -> impl Iterator<Item = U8x64> + '_ {
+        self.column_bytes(field)
+            .as_chunks::<64>()
+            .0
+            .iter()
+            .map(|chunk| U8x64::from_array(*chunk))
+    }
+
+    /// Iterate field `field` as [`F32x16`] lanes (little-endian decode).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `field >= N`.
+    pub fn iter_field_f32x16(&self, field: usize) -> impl Iterator<Item = F32x16> + '_ {
+        self.column_bytes(field)
+            .as_chunks::<64>()
+            .0
+            .iter()
+            .map(f32x16_from_chunk)
+    }
+
+    /// Iterate field `field` as [`F64x8`] lanes (little-endian decode).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `field >= N`.
+    pub fn iter_field_f64x8(&self, field: usize) -> impl Iterator<Item = F64x8> + '_ {
+        self.column_bytes(field)
+            .as_chunks::<64>()
+            .0
+            .iter()
+            .map(f64x8_from_chunk)
+    }
+
+    /// Iterate field `field` as [`U64x8`] lanes (little-endian decode).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `field >= N`.
+    pub fn iter_field_u64x8(&self, field: usize) -> impl Iterator<Item = U64x8> + '_ {
+        self.column_bytes(field)
+            .as_chunks::<64>()
+            .0
+            .iter()
+            .map(u64x8_from_chunk)
+    }
+
+    /// Iterate the **baked-in edge column**: field `field`'s little-endian
+    /// `u64` cells reinterpreted as [`CausalEdge64`] (one per 8 bytes).
+    ///
+    /// Intended for a `u64`-stride field (`elem_stride[field] == 8`) — the
+    /// MailboxSoA `EdgeColumn`. The reinterpret is pure layout (`CausalEdge64`
+    /// is `#[repr(transparent)]` over `u64`); no edge semantics are computed
+    /// here.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `field >= N`.
+    pub fn iter_field_causaledge64(&self, field: usize) -> impl Iterator<Item = CausalEdge64> + '_ {
+        self.column_bytes(field)
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|cell| CausalEdge64(u64::from_le_bytes(*cell)))
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
 // Tests
 // ════════════════════════════════════════════════════════════════════
 
@@ -369,5 +578,114 @@ mod tests {
     fn multilane_column_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<MultiLaneColumn>();
+    }
+
+    // ---- SoaColumns ----
+
+    use crate::hpc::soa::SoaContainerHeader;
+
+    // Helper: a valid 2-field header (field 0 = 16×4 = 64 B f32 column,
+    // field 1 = 16×8 = 128 B u64/CausalEdge64 column; both 64-multiples).
+    fn valid_hdr_2() -> SoaContainerHeader<2> {
+        SoaContainerHeader::new(16, [4, 8])
+    }
+
+    #[test]
+    fn soa_columns_new_valid() {
+        let hdr = valid_hdr_2();
+        let data: Arc<[u8]> = Arc::from(vec![0u8; hdr.backing_buffer_bytes()]);
+        let cols = SoaColumns::new(hdr, data).unwrap();
+        assert_eq!(cols.field_count(), 2);
+        assert_eq!(cols.row_capacity(), 16);
+        assert_eq!(cols.row_count(), 0);
+    }
+
+    #[test]
+    fn soa_columns_rejects_non_64_multiple_column() {
+        // 10 rows × 4 bytes = 40 bytes — not a multiple of 64.
+        let hdr: SoaContainerHeader<1> = SoaContainerHeader::new(10, [4]);
+        let data: Arc<[u8]> = Arc::from(vec![0u8; hdr.backing_buffer_bytes()]);
+        assert!(SoaColumns::new(hdr, data).is_err());
+    }
+
+    #[test]
+    fn soa_columns_rejects_short_backing() {
+        let hdr = valid_hdr_2();
+        // One byte short of the required backing.
+        let data: Arc<[u8]> = Arc::from(vec![0u8; hdr.backing_buffer_bytes() - 1]);
+        assert!(SoaColumns::new(hdr, data).is_err());
+    }
+
+    #[test]
+    fn soa_columns_column_byte_range() {
+        let hdr = valid_hdr_2();
+        let data: Arc<[u8]> = Arc::from(vec![0u8; hdr.backing_buffer_bytes()]);
+        let cols = SoaColumns::new(hdr, data).unwrap();
+        assert_eq!(cols.column_byte_range(0), (0, 64));
+        assert_eq!(cols.column_byte_range(1), (64, 192));
+    }
+
+    #[test]
+    #[should_panic(expected = "out of range")]
+    fn soa_columns_field_oob_panics() {
+        let hdr = valid_hdr_2();
+        let data: Arc<[u8]> = Arc::from(vec![0u8; hdr.backing_buffer_bytes()]);
+        let cols = SoaColumns::new(hdr, data).unwrap();
+        let _ = cols.column_byte_range(2);
+    }
+
+    #[test]
+    fn soa_columns_iter_f32x16_field_round_trip() {
+        let hdr = valid_hdr_2();
+        let mut bytes = vec![0u8; hdr.backing_buffer_bytes()];
+        // Field 0 occupies bytes [0, 64) = 16 f32 LE.
+        let src: [f32; 16] = core::array::from_fn(|i| i as f32 * 0.5 - 2.0);
+        for (i, &v) in src.iter().enumerate() {
+            bytes[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        let cols = SoaColumns::new(hdr, Arc::from(bytes)).unwrap();
+        let lane = cols.iter_field_f32x16(0).next().expect("one f32 lane");
+        assert_eq!(lane.to_array(), src);
+        assert_eq!(cols.iter_field_f32x16(0).count(), 1);
+    }
+
+    #[test]
+    fn soa_columns_iter_causaledge64_field_round_trip() {
+        let hdr = valid_hdr_2();
+        let mut bytes = vec![0u8; hdr.backing_buffer_bytes()];
+        // Field 1 (the edge column) occupies bytes [64, 192) = 16 u64 LE.
+        let (start, _end) = (64usize, 192usize);
+        let src: [u64; 16] = core::array::from_fn(|i| (i as u64 + 1).wrapping_mul(0x0123_4567_89AB_CDEF));
+        for (i, &v) in src.iter().enumerate() {
+            bytes[start + i * 8..start + i * 8 + 8].copy_from_slice(&v.to_le_bytes());
+        }
+        let cols = SoaColumns::new(hdr, Arc::from(bytes)).unwrap();
+        let edges: Vec<CausalEdge64> = cols.iter_field_causaledge64(1).collect();
+        assert_eq!(edges.len(), 16);
+        for (i, &v) in src.iter().enumerate() {
+            assert_eq!(edges[i], CausalEdge64(v));
+        }
+    }
+
+    #[test]
+    fn soa_columns_clone_is_o1_indivisible_carry() {
+        // The core SoA property: a whole cycle's column block (CausalEdge64
+        // + all other fields) carries to the next cycle in O(1) — clone is an
+        // Arc refcount bump sharing the same backing, never a byte copy.
+        let hdr = valid_hdr_2();
+        let data: Arc<[u8]> = Arc::from(vec![7u8; hdr.backing_buffer_bytes()]);
+        let cycle_n = SoaColumns::new(hdr, data).unwrap();
+        let cycle_next = cycle_n.clone();
+        assert_eq!(
+            cycle_n.as_bytes().as_ptr(),
+            cycle_next.as_bytes().as_ptr(),
+            "clone must carry the same Arc backing to the next cycle, not copy"
+        );
+    }
+
+    #[test]
+    fn soa_columns_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<SoaColumns<4>>();
     }
 }

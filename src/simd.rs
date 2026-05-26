@@ -535,7 +535,7 @@ pub use crate::hpc::fingerprint::{
 // the reason the JIT-native option was deemed unnecessary. See the
 // "Foundation primitives — do not remove" notice in `src/simd_ops.rs`.
 pub use crate::simd_ops::{array_chunks, array_chunks_checked, array_windows, array_windows_checked};
-pub use crate::simd_soa::MultiLaneColumn;
+pub use crate::simd_soa::{MultiLaneColumn, SoaColumns};
 
 pub use crate::hpc::quantized::{
     dequantize_i2_to_f32, dequantize_i4_to_f32, dequantize_i8_to_f32, quantize_f32_to_i2, quantize_f32_to_i4,
