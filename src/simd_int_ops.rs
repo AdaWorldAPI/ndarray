@@ -754,6 +754,173 @@ mod tests {
         }
     }
 
+    // ── W1a parity tests ────────────────────────────────────────────────────
+    //
+    // These tests exercise the correctness of the 5 W1a primitives on the
+    // current compilation backend.  Because the dispatch is compile-time
+    // only, each test runs against exactly one backend per build.  The
+    // fixed corpus includes all required edge-case values from the consumer
+    // contract (i8::MIN, i8::MAX, 0, all-bits-set u64, OOB index edge).
+
+    /// W1a-#1 + #2: I8x16 from_i4_packed_u64 + lane_i8 + saturating_abs
+    #[test]
+    fn w1a_i8x16_from_i4_packed_u64_basic() {
+        use crate::simd::I8x16;
+        // All nibbles 0 → all lanes 0
+        let z = I8x16::from_i4_packed_u64(0);
+        assert!(z.to_array().iter().all(|&x| x == 0), "all-zero packed");
+
+        // All nibbles 0xf → all lanes -1
+        let neg = I8x16::from_i4_packed_u64(u64::MAX);
+        assert!(neg.to_array().iter().all(|&x| x == -1), "all-0xf packed → -1");
+
+        // Nibble 0x8 = minimum i4 → lane value -8
+        let min4 = I8x16::from_i4_packed_u64(0x8888_8888_8888_8888);
+        assert!(min4.to_array().iter().all(|&x| x == -8), "nibble 0x8 → -8");
+
+        // Nibble 0x7 = maximum positive i4 → lane value +7
+        let max4 = I8x16::from_i4_packed_u64(0x7777_7777_7777_7777);
+        assert!(max4.to_array().iter().all(|&x| x == 7), "nibble 0x7 → 7");
+
+        // lane_i8 extractors: nibbles are LSB-first and sign-extended.
+        // packed = 0x...0021 → lane0 = nibble 0x1 = 1, lane1 = nibble 0x2 = 2.
+        let low = I8x16::from_i4_packed_u64(0x0000_0000_0000_0021);
+        assert_eq!(low.lane_i8::<0>(), 1);
+        assert_eq!(low.lane_i8::<1>(), 2);
+        // Sign bit: nibble 0x8 in lane0 sign-extends to -8.
+        let signbit = I8x16::from_i4_packed_u64(0x0000_0000_0000_0008);
+        assert_eq!(signbit.lane_i8::<0>(), -8);
+    }
+
+    /// W1a-#2: saturating_abs — binding contract test (i8::MIN → i8::MAX)
+    #[test]
+    fn w1a_saturating_abs_i8_min_matches_across_backends() {
+        use crate::simd::{I8x16, I8x32};
+
+        // I8x16
+        let input16 = I8x16::splat(i8::MIN);
+        let result16 = input16.saturating_abs();
+        let arr16 = result16.to_array();
+        for (lane, &v) in arr16.iter().enumerate() {
+            assert_eq!(v, i8::MAX, "I8x16 lane {} saturating_abs(i8::MIN) should be i8::MAX", lane);
+        }
+
+        // I8x32
+        let input32 = I8x32::splat(i8::MIN);
+        let result32 = input32.saturating_abs();
+        let arr32 = result32.to_array();
+        for (lane, &v) in arr32.iter().enumerate() {
+            assert_eq!(v, i8::MAX, "I8x32 lane {} saturating_abs(i8::MIN) should be i8::MAX", lane);
+        }
+
+        // Corpus: 0, 1, -1, i8::MAX, i8::MIN
+        let corpus: &[i8] = &[0, 1, -1, i8::MAX, i8::MIN, 42, -42, 127, -127, -128, 64, -64];
+        for &val in corpus {
+            // Scalar reference
+            let expected = val.saturating_abs();
+
+            let v16 = I8x16::splat(val).saturating_abs().lane_i8::<0>();
+            assert_eq!(v16, expected, "I8x16 saturating_abs({}) mismatch", val);
+
+            let mut arr32 = [0i8; 32];
+            arr32[0] = val;
+            let v32 = I8x32::from_array(arr32).saturating_abs().to_array()[0];
+            assert_eq!(v32, expected, "I8x32 saturating_abs({}) mismatch", val);
+        }
+    }
+
+    /// W1a-#3: gather_u16 + palette_lookup_u8x8
+    #[test]
+    fn w1a_gather_u16_basic() {
+        use crate::simd::{palette_lookup_u8x8, U16x8};
+
+        let table: Vec<u16> = (0..256).map(|x| x as u16 * 10).collect();
+        let idx = U16x8::from_array([0, 1, 2, 3, 100, 200, 255, 50]);
+        let result = U16x8::gather_u16(idx, &table);
+        let expected = [0u16, 10, 20, 30, 1000, 2000, 2550, 500];
+        assert_eq!(result.to_array(), expected, "gather_u16 basic");
+
+        // All-same index
+        let same_idx = U16x8::splat(5);
+        let r2 = U16x8::gather_u16(same_idx, &table);
+        assert!(r2.to_array().iter().all(|&v| v == 50), "gather_u16 all-same idx");
+
+        // palette_lookup_u8x8
+        let lut: Vec<u8> = (0..256).map(|x| x as u8).collect();
+        let pidx = U16x8::from_array([0, 1, 127, 128, 254, 255, 10, 20]);
+        let pr = palette_lookup_u8x8(pidx, &lut);
+        assert_eq!(pr.to_array(), [0u8, 1, 127, 128, 254, 255, 10, 20], "palette_lookup_u8x8");
+    }
+
+    /// W1a-#4: prefetch — just verify they don't panic (they're hints)
+    #[test]
+    fn w1a_prefetch_no_panic() {
+        use crate::simd::{prefetch_read_t0, prefetch_read_t1, prefetch_read_t2};
+        let data = [0u8; 64];
+        let ptr = data.as_ptr();
+        // Valid pointer — must not panic
+        prefetch_read_t0(ptr);
+        prefetch_read_t1(ptr);
+        prefetch_read_t2(ptr);
+        // Null pointer — must not panic (prefetch is a hint, not a load)
+        prefetch_read_t0(core::ptr::null());
+        prefetch_read_t1(core::ptr::null());
+        prefetch_read_t2(core::ptr::null());
+    }
+
+    /// W1a-#5: U64x8::popcnt / xor_popcount + U64x4::popcnt
+    #[test]
+    fn w1a_u64_popcnt_basic() {
+        use crate::simd::{U64x4, U64x8};
+
+        // U64x8
+        let all_ones = U64x8::splat(u64::MAX);
+        let p8 = all_ones.popcnt();
+        assert!(p8.to_array().iter().all(|&x| x == 64), "U64x8::popcnt(MAX) == 64 per lane");
+
+        let all_zero = U64x8::splat(0);
+        let pz8 = all_zero.popcnt();
+        assert!(pz8.to_array().iter().all(|&x| x == 0), "U64x8::popcnt(0) == 0 per lane");
+
+        // xor_popcount: MAX ^ 0 = MAX, 64 bits × 8 lanes = 512
+        assert_eq!(all_ones.xor_popcount(all_zero), 512, "xor_popcount(MAX,0) == 512");
+        assert_eq!(all_ones.xor_popcount(all_ones), 0, "xor_popcount(x,x) == 0");
+
+        // Known values
+        let v = U64x8::from_array([1, 2, 3, 4, 5, 6, 7, 8]);
+        let pv = v.popcnt().to_array();
+        assert_eq!(pv, [1, 1, 2, 1, 2, 2, 3, 1], "U64x8::popcnt known values");
+
+        // U64x4
+        let v4 = U64x4::from_array([u64::MAX, 0, 1, !1u64]);
+        let pv4 = v4.popcnt().to_array();
+        assert_eq!(pv4, [64, 0, 1, 63], "U64x4::popcnt known values");
+    }
+
+    /// W1a-#1: batch_packed_i4_16 smoke test
+    #[test]
+    fn w1a_batch_packed_i4_16_smoke() {
+        use crate::simd::batch_packed_i4_16;
+
+        let packed = vec![0u64; 4];
+        let aux = vec![0i8; 4];
+        let mut out = vec![0i8; 4];
+        batch_packed_i4_16(&packed, &aux, &mut out, |lanes, a| {
+            lanes.lane_i8::<0>().wrapping_add(a)
+        });
+        assert!(out.iter().all(|&v| v == 0), "batch_packed_i4_16 all-zero");
+
+        // Non-zero nibbles
+        let packed2 = vec![0x1111_1111_1111_1111u64; 2];
+        let aux2 = vec![10i8; 2];
+        let mut out2 = vec![0i8; 2];
+        batch_packed_i4_16(&packed2, &aux2, &mut out2, |lanes, a| {
+            lanes.lane_i8::<0>().wrapping_add(a)
+        });
+        // nibble 0x1 → lane 0 = +1; +10 = 11
+        assert!(out2.iter().all(|&v| v == 11), "batch_packed_i4_16 nibble=1+aux=10");
+    }
+
     /// Exercises the AMX dispatch tier added on top of `gemm_u8_i8`'s
     /// compile-time cascade. On AMX-enabled silicon (Sapphire Rapids+
     /// with the right OS prctl), 16/16/64-aligned shapes go through
