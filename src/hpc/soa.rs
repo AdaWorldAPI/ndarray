@@ -323,7 +323,9 @@ impl<const N: usize> SoaContainerHeader<N> {
     /// ```
     #[inline]
     pub fn push_rows(&mut self, n: u32) {
-        let new_count = self.row_count.checked_add(n)
+        let new_count = self
+            .row_count
+            .checked_add(n)
             .expect("SoaContainerHeader::push_rows: row_count overflow");
         assert!(
             new_count <= self.row_capacity,
@@ -432,12 +434,7 @@ impl<const N: usize> SoaContainerHeader<N> {
     #[inline]
     pub fn as_bytes(&self) -> &[u8] {
         // SAFETY: see doc-comment rationale above.
-        unsafe {
-            core::slice::from_raw_parts(
-                self as *const Self as *const u8,
-                core::mem::size_of::<Self>(),
-            )
-        }
+        unsafe { core::slice::from_raw_parts(self as *const Self as *const u8, core::mem::size_of::<Self>()) }
     }
 
     /// Reconstruct a header from a byte slice (little-endian).
@@ -497,10 +494,7 @@ const _: () = {
     );
 
     // Struct-level alignment must be 8 (from `align(8)`).
-    assert!(
-        core::mem::align_of::<SoaContainerHeader<2>>() == 8,
-        "SoaContainerHeader must have alignment 8"
-    );
+    assert!(core::mem::align_of::<SoaContainerHeader<2>>() == 8, "SoaContainerHeader must have alignment 8");
 };
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
@@ -535,15 +529,19 @@ mod container_tests {
     // ── Helpers ─────────────────────────────────────────────────────────
 
     fn read_u32_le(bytes: &[u8], offset: usize) -> u32 {
-        u32::from_le_bytes([
-            bytes[offset], bytes[offset+1], bytes[offset+2], bytes[offset+3],
-        ])
+        u32::from_le_bytes([bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3]])
     }
 
     fn read_u64_le(bytes: &[u8], offset: usize) -> u64 {
         u64::from_le_bytes([
-            bytes[offset],   bytes[offset+1], bytes[offset+2], bytes[offset+3],
-            bytes[offset+4], bytes[offset+5], bytes[offset+6], bytes[offset+7],
+            bytes[offset],
+            bytes[offset + 1],
+            bytes[offset + 2],
+            bytes[offset + 3],
+            bytes[offset + 4],
+            bytes[offset + 5],
+            bytes[offset + 6],
+            bytes[offset + 7],
         ])
     }
 
@@ -573,16 +571,16 @@ mod container_tests {
         let bytes = hdr.as_bytes();
         assert_eq!(bytes.len(), 48, "header should be 48 bytes for N=2");
 
-        assert_eq!(&bytes[0..4], b"SoAC",       "magic");
-        assert_eq!(bytes[4],     1,              "version");
-        assert_eq!(bytes[5],     2,              "field_count");
-        assert_eq!(&bytes[6..8], &[0u8, 0],     "_pad");
-        assert_eq!(read_u32_le(bytes,  8), 0,   "row_count");
-        assert_eq!(read_u32_le(bytes, 12), 4,   "row_capacity");
-        assert_eq!(read_u64_le(bytes, 16), 4,   "elem_stride[0]");
-        assert_eq!(read_u64_le(bytes, 24), 8,   "elem_stride[1]");
-        assert_eq!(read_u64_le(bytes, 32), 0,   "field_offsets[0]");
-        assert_eq!(read_u64_le(bytes, 40), 16,  "field_offsets[1]");
+        assert_eq!(&bytes[0..4], b"SoAC", "magic");
+        assert_eq!(bytes[4], 1, "version");
+        assert_eq!(bytes[5], 2, "field_count");
+        assert_eq!(&bytes[6..8], &[0u8, 0], "_pad");
+        assert_eq!(read_u32_le(bytes, 8), 0, "row_count");
+        assert_eq!(read_u32_le(bytes, 12), 4, "row_capacity");
+        assert_eq!(read_u64_le(bytes, 16), 4, "elem_stride[0]");
+        assert_eq!(read_u64_le(bytes, 24), 8, "elem_stride[1]");
+        assert_eq!(read_u64_le(bytes, 32), 0, "field_offsets[0]");
+        assert_eq!(read_u64_le(bytes, 40), 16, "field_offsets[1]");
     }
 
     // ── Roundtrip: as_bytes → from_bytes ────────────────────────────────
@@ -591,8 +589,7 @@ mod container_tests {
     fn as_bytes_from_bytes_roundtrip_n2() {
         let orig: SoaContainerHeader<2> = SoaContainerHeader::new(4, [4, 8]);
         let bytes = orig.as_bytes();
-        let recovered = SoaContainerHeader::<2>::from_bytes(bytes)
-            .expect("from_bytes must succeed for a valid header");
+        let recovered = SoaContainerHeader::<2>::from_bytes(bytes).expect("from_bytes must succeed for a valid header");
         assert_eq!(orig, recovered, "roundtrip must be lossless");
     }
 
@@ -603,18 +600,14 @@ mod container_tests {
         let mut orig: SoaContainerHeader<3> = SoaContainerHeader::new(8, [4, 4, 4]);
         orig.push_rows(3);
         let bytes = orig.as_bytes();
-        let recovered = SoaContainerHeader::<3>::from_bytes(bytes)
-            .expect("from_bytes must succeed");
+        let recovered = SoaContainerHeader::<3>::from_bytes(bytes).expect("from_bytes must succeed");
         assert_eq!(orig, recovered, "N=3 (odd) roundtrip must be lossless");
     }
 
     #[test]
     fn from_bytes_returns_none_for_short_slice() {
         let short = [0u8; 4];
-        assert!(
-            SoaContainerHeader::<2>::from_bytes(&short).is_none(),
-            "too-short slice must return None"
-        );
+        assert!(SoaContainerHeader::<2>::from_bytes(&short).is_none(), "too-short slice must return None");
     }
 
     // ── validate ────────────────────────────────────────────────────────
@@ -749,10 +742,7 @@ mod container_tests {
         for i in 0..5u32 {
             soa.push([i as f32, (i * 2) as f32, (i * 3) as f32]);
         }
-        let mut hdr: SoaContainerHeader<3> = SoaContainerHeader::new(
-            soa.len() as u32,
-            [4, 4, 4],
-        );
+        let mut hdr: SoaContainerHeader<3> = SoaContainerHeader::new(soa.len() as u32, [4, 4, 4]);
         hdr.push_rows(soa.len() as u32);
         assert_eq!(hdr.row_count, 5);
         assert!(hdr.is_full());
