@@ -66,6 +66,735 @@
 
 use core::array;
 
+// ============================================================================
+// SoaContainerHeader — pointer-free, #[repr(C)], on-wire SoA descriptor
+// (task 02 — soa_container_type)
+// ============================================================================
+//
+// This block is prepended before SoaVec so that the const assertions resolve
+// during `cargo check` even if the rest of the file is not compiled.
+
+/// Magic tag embedded in every [`SoaContainerHeader`] so that a byte-slice
+/// reader can confirm it is looking at a valid SoA container header before
+/// interpreting the rest of the fields.
+///
+/// Value: ASCII `b"SoAC"` encoded as a little-endian `u32`.
+/// `u32::from_le_bytes(*b"SoAC")` = 0x43_41_6F_53.
+pub const SOA_CONTAINER_MAGIC: u32 = u32::from_le_bytes(*b"SoAC");
+
+/// Wire-format version identifier for [`SoaContainerHeader`].
+///
+/// Increment when ANY field is added, removed, or reordered in
+/// `SoaContainerHeader`. Downstream readers MUST reject headers whose
+/// `version` does not match this constant.
+///
+/// Current value: `1`.
+pub const SOA_CONTAINER_VERSION: u8 = 1;
+
+/// Pointer-free, `#[repr(C, align(8))]`, little-endian SoA container header.
+///
+/// # Purpose
+///
+/// `SoaContainerHeader<N>` is the **single on-wire layout** for an N-field
+/// SoA batch.  It describes a flat, caller-owned backing buffer (a `&[u8]`
+/// or `Vec<u8>`) that holds all N field arrays end-to-end.  The header
+/// itself contains **no pointers** — only byte offsets and element counts —
+/// so it is safe to copy across processes, memory-map from disk, or
+/// serialise into a Lance column without pointer fixup.
+///
+/// # Invariants (enforced by the API)
+///
+/// 1. **`row_count ≤ row_capacity`** — always.  `push_rows` increments
+///    `row_count`; it is the only safe write path for `row_count`.
+/// 2. **Append-only** — `row_count` never decreases.  There is no `pop` or
+///    `clear` on the header; those operations live on the owning buffer layer
+///    (task-03).
+/// 3. **`field_offsets[i]` is aligned to 8 bytes**.  The constructor
+///    enforces this; `as_bytes` / `from_bytes` and `validate` rely on it.
+/// 4. **Each field occupies exactly `row_capacity * elem_stride[i]` bytes**
+///    starting at `field_offsets[i]`.  No overlap; constructor verifies.
+///
+/// # `bytemuck::Pod` compatibility
+///
+/// The type contains no pointers, no `Option`, no enums, and no
+/// uninitialised padding in the nominal even-N case.  It is designed to be
+/// safely interpreted as a `Pod` type.  Until `bytemuck` is added as a
+/// workspace dependency (blocker — see module-level BLOCKERS comment),
+/// [`as_bytes`](Self::as_bytes) / [`from_bytes`](Self::from_bytes) provide
+/// equivalent functionality via explicit `unsafe` casts with matching
+/// SAFETY comments.
+///
+/// # Layout (N = 2, for concreteness)
+///
+/// ```text
+/// offset  size   field
+///  0       4     magic           (u32 LE = b"SoAC")
+///  4       1     version         (u8)
+///  5       1     field_count     (u8, = N)
+///  6       2     _pad            ([u8; 2], always 0x0000)
+///  8       4     row_count       (u32 LE)
+/// 12       4     row_capacity    (u32 LE)
+/// 16       4*N   elem_stride     ([u32; N] LE)
+/// 16+4*N  [0-4]  (implicit pad when N is odd, see BLOCKERS)
+/// ...      8*N   field_offsets   ([u64; N] LE)
+/// ```
+///
+/// # Example
+///
+/// ```
+/// use ndarray::hpc::soa::SoaContainerHeader;
+///
+/// let hdr: SoaContainerHeader<3> = SoaContainerHeader::new(8, [4, 4, 4]);
+/// assert_eq!(hdr.row_capacity, 8);
+/// assert_eq!(hdr.row_count, 0);
+/// assert_eq!(hdr.field_count, 3);
+/// assert_eq!(hdr.backing_buffer_bytes(), 3 * 8 * 4); // 96 bytes
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C, align(8))]
+pub struct SoaContainerHeader<const N: usize> {
+    /// `SOA_CONTAINER_MAGIC` (`u32::from_le_bytes(*b"SoAC")`).
+    ///
+    /// Written at construction; verified by [`validate`](Self::validate).
+    /// Readers that find a different value MUST reject the header.
+    pub magic: u32,
+
+    /// Layout version — must equal `SOA_CONTAINER_VERSION`.
+    ///
+    /// Bumped whenever the fixed-offset fields above `elem_stride` change.
+    /// Consumers MUST reject headers with `version != SOA_CONTAINER_VERSION`.
+    pub version: u8,
+
+    /// Number of fields described by this header.
+    ///
+    /// Always equals the const-generic `N`.  Stored explicitly so a
+    /// runtime reader without the type parameter can detect field-count
+    /// mismatches before attempting to index `elem_stride` or `field_offsets`.
+    ///
+    /// Invariant: `field_count == N as u8`.
+    pub field_count: u8,
+
+    /// Reserved padding bytes — MUST be `[0, 0]`.
+    ///
+    /// Ensures `row_count` starts at a 4-byte-aligned offset (byte 8)
+    /// regardless of any implicit padding `magic/version/field_count`
+    /// might otherwise introduce.  Future versions may assign meaning to
+    /// these bytes; readers SHOULD ignore them rather than rejecting on
+    /// non-zero values.
+    pub _pad: [u8; 2],
+
+    /// Current logical row count.
+    ///
+    /// Starts at `0`; incremented by [`push_rows`](Self::push_rows).
+    /// MUST NOT exceed `row_capacity`.  Never decremented (append-only).
+    pub row_count: u32,
+
+    /// Maximum row capacity.
+    ///
+    /// Fixed at construction.  The backing buffer MUST be at least
+    /// [`backing_buffer_bytes()`](Self::backing_buffer_bytes) bytes long.
+    pub row_capacity: u32,
+
+    /// Element stride per field, in bytes.
+    ///
+    /// `elem_stride[i]` is `size_of::<ElementType_i>()`.  For `f32` fields
+    /// this is `4`; for `u64` fields it is `8`.
+    ///
+    /// Combined with `row_capacity`, determines the byte range of field `i`
+    /// in the backing buffer:
+    ///   `[field_offsets[i], field_offsets[i] + row_capacity * elem_stride[i])`.
+    pub elem_stride: [u32; N],
+
+    /// Byte offsets of each field array within the flat backing buffer.
+    ///
+    /// Invariants:
+    /// - `field_offsets[i] % 8 == 0` (8-byte aligned).
+    /// - Ranges `[field_offsets[i], field_offsets[i] + row_capacity *
+    ///   elem_stride[i])` are non-overlapping and monotonically increasing.
+    /// - `field_offsets[N-1] + row_capacity * elem_stride[N-1] ≤ buffer.len()`.
+    ///
+    /// Encoded as `u64` to support backing buffers larger than 4 GiB.
+    pub field_offsets: [u64; N],
+}
+
+impl<const N: usize> SoaContainerHeader<N> {
+    /// Construct a new header with `row_count = 0`.
+    ///
+    /// Field byte-ranges are packed contiguously in field-index order.
+    /// Each field's byte range is rounded up to an 8-byte boundary so that
+    /// all `field_offsets[i]` satisfy the alignment invariant.
+    ///
+    /// # Parameters
+    ///
+    /// - `row_capacity` — maximum number of rows the backing buffer will hold.
+    /// - `elem_stride` — `elem_stride[i]` is `size_of::<ElementType_i>()`.
+    ///
+    /// # Panics
+    ///
+    /// - If `N > 255` (field_count would overflow `u8`).
+    /// - If any `elem_stride[i] == 0` (degenerate zero-stride field).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ndarray::hpc::soa::SoaContainerHeader;
+    /// let hdr: SoaContainerHeader<2> = SoaContainerHeader::new(4, [4, 8]);
+    /// assert_eq!(hdr.field_offsets[0], 0);
+    /// // field 0: 4 rows × 4 bytes = 16 bytes, padded to 8-byte boundary → 16
+    /// assert_eq!(hdr.field_offsets[1], 16);
+    /// assert_eq!(hdr.backing_buffer_bytes(), 16 + 32); // field 1: 4 × 8 = 32
+    /// ```
+    pub fn new(row_capacity: u32, elem_stride: [u32; N]) -> Self {
+        assert!(N <= 255, "SoaContainerHeader: N={N} exceeds u8::MAX (255)");
+        for (i, &s) in elem_stride.iter().enumerate() {
+            assert!(s > 0, "SoaContainerHeader: elem_stride[{i}] == 0 (degenerate)");
+        }
+
+        // Compute field_offsets: pack contiguously, each array padded to 8 bytes.
+        let mut field_offsets = [0u64; N];
+        let mut cursor: u64 = 0;
+        for i in 0..N {
+            field_offsets[i] = cursor;
+            let field_bytes = (row_capacity as u64) * (elem_stride[i] as u64);
+            // Round up to the next 8-byte boundary.
+            cursor += (field_bytes + 7) & !7;
+        }
+
+        Self {
+            magic: SOA_CONTAINER_MAGIC,
+            version: SOA_CONTAINER_VERSION,
+            field_count: N as u8,
+            _pad: [0u8; 2],
+            row_count: 0,
+            row_capacity,
+            elem_stride,
+            field_offsets,
+        }
+    }
+
+    /// Total size in bytes of the flat backing buffer described by this header.
+    ///
+    /// Equals the padded end of the last field array.  The caller must
+    /// allocate at least this many bytes before writing element data.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ndarray::hpc::soa::SoaContainerHeader;
+    /// let hdr: SoaContainerHeader<3> = SoaContainerHeader::new(8, [4, 4, 4]);
+    /// // Each field: 8 × 4 = 32 bytes, already 8-byte aligned.
+    /// assert_eq!(hdr.backing_buffer_bytes(), 3 * 32);
+    /// ```
+    #[inline]
+    pub fn backing_buffer_bytes(&self) -> usize {
+        if N == 0 {
+            return 0;
+        }
+        let last = N - 1;
+        let field_bytes = (self.row_capacity as u64) * (self.elem_stride[last] as u64);
+        let end = self.field_offsets[last] + ((field_bytes + 7) & !7);
+        end as usize
+    }
+
+    /// Increment `row_count` by `n`, enforcing the append-only invariant.
+    ///
+    /// This is the ONLY intended write path for `row_count`.  Direct
+    /// mutation of `pub row_count` is permitted but breaks the append-only
+    /// invariant.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `row_count + n > row_capacity`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ndarray::hpc::soa::SoaContainerHeader;
+    /// let mut hdr: SoaContainerHeader<2> = SoaContainerHeader::new(4, [4, 4]);
+    /// hdr.push_rows(2);
+    /// assert_eq!(hdr.row_count, 2);
+    /// ```
+    #[inline]
+    pub fn push_rows(&mut self, n: u32) {
+        let new_count = self.row_count.checked_add(n)
+            .expect("SoaContainerHeader::push_rows: row_count overflow");
+        assert!(
+            new_count <= self.row_capacity,
+            "SoaContainerHeader::push_rows: row_count ({new_count}) would exceed row_capacity ({})",
+            self.row_capacity,
+        );
+        self.row_count = new_count;
+    }
+
+    /// Return `true` if `row_count == row_capacity`.
+    ///
+    /// When full, no more rows can be appended without reallocating.
+    #[inline]
+    pub fn is_full(&self) -> bool {
+        self.row_count >= self.row_capacity
+    }
+
+    /// Return `true` if `row_count == 0`.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.row_count == 0
+    }
+
+    /// Validate all structural invariants of this header.
+    ///
+    /// Returns `Ok(())` if the header is well-formed, or `Err(&'static str)`
+    /// with a human-readable description of the first violation found.
+    ///
+    /// Checks (in order):
+    /// 1. `magic == SOA_CONTAINER_MAGIC`
+    /// 2. `version == SOA_CONTAINER_VERSION`
+    /// 3. `field_count == N`
+    /// 4. `_pad == [0, 0]`
+    /// 5. `row_count <= row_capacity`
+    /// 6. All `elem_stride[i] > 0`
+    /// 7. `field_offsets[i] % 8 == 0` for all `i`
+    /// 8. Field byte-ranges are monotonically non-overlapping
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ndarray::hpc::soa::SoaContainerHeader;
+    /// let hdr: SoaContainerHeader<2> = SoaContainerHeader::new(4, [4, 4]);
+    /// assert!(hdr.validate().is_ok());
+    /// ```
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.magic != SOA_CONTAINER_MAGIC {
+            return Err("SoaContainerHeader: magic mismatch");
+        }
+        if self.version != SOA_CONTAINER_VERSION {
+            return Err("SoaContainerHeader: version mismatch");
+        }
+        if self.field_count as usize != N {
+            return Err("SoaContainerHeader: field_count != N");
+        }
+        if self._pad != [0u8; 2] {
+            return Err("SoaContainerHeader: _pad is non-zero (corrupt header)");
+        }
+        if self.row_count > self.row_capacity {
+            return Err("SoaContainerHeader: row_count > row_capacity");
+        }
+        for i in 0..N {
+            if self.elem_stride[i] == 0 {
+                return Err("SoaContainerHeader: elem_stride[i] == 0");
+            }
+        }
+        for i in 0..N {
+            if self.field_offsets[i] % 8 != 0 {
+                return Err("SoaContainerHeader: field_offsets[i] not 8-byte aligned");
+            }
+        }
+        // Monotonicity / non-overlap check.
+        let mut prev_end: u64 = 0;
+        for i in 0..N {
+            if self.field_offsets[i] < prev_end {
+                return Err("SoaContainerHeader: field_offsets overlap or are out of order");
+            }
+            let field_bytes = (self.row_capacity as u64) * (self.elem_stride[i] as u64);
+            prev_end = self.field_offsets[i] + ((field_bytes + 7) & !7);
+        }
+        Ok(())
+    }
+
+    /// Reinterpret the header as a byte slice.
+    ///
+    /// The returned slice has length `size_of::<SoaContainerHeader<N>>()`.
+    /// All named-field bytes carry defined values; implicit padding bytes
+    /// between `elem_stride` and `field_offsets` (present when `N` is odd)
+    /// are zero-initialised by the `Self { .. }` constructor literal.
+    ///
+    /// This is a stand-in for `bytemuck::bytes_of(&self)` until `bytemuck`
+    /// is added as a workspace dependency (see BLOCKERS).
+    ///
+    /// Only available on little-endian targets (the on-wire format is LE).
+    ///
+    /// # Safety rationale
+    ///
+    /// 1. `SoaContainerHeader<N>` is `#[repr(C, align(8))]`; all fields are
+    ///    scalar primitive integers with well-defined LE byte representations.
+    /// 2. `#[repr(C)]` guarantees field order and no surprise reordering.
+    /// 3. `u8` has no invalid bit patterns; any byte of the struct is a
+    ///    valid `u8`.
+    /// 4. The returned reference borrows from `&self`, so it cannot outlive
+    ///    `self` — no dangling reference.
+    #[cfg(target_endian = "little")]
+    #[inline]
+    pub fn as_bytes(&self) -> &[u8] {
+        // SAFETY: see doc-comment rationale above.
+        unsafe {
+            core::slice::from_raw_parts(
+                self as *const Self as *const u8,
+                core::mem::size_of::<Self>(),
+            )
+        }
+    }
+
+    /// Reconstruct a header from a byte slice (little-endian).
+    ///
+    /// Returns `None` if `src.len() < size_of::<Self>()`.  Callers MUST
+    /// follow up with [`validate`](Self::validate) to verify semantic
+    /// invariants before using any fields.
+    ///
+    /// This is a stand-in for `bytemuck::from_bytes` until `bytemuck` is
+    /// added as a workspace dependency (see BLOCKERS).
+    ///
+    /// # Safety rationale
+    ///
+    /// Constructing a value of a primitive-only struct from arbitrary bytes is
+    /// safe because no field has validity constraints beyond its bit width (no
+    /// enums, no references, no `NonZero*`).  Semantic constraints are checked
+    /// by `validate`.  Implicit padding bytes (odd-N case) are read but never
+    /// interpreted as named fields, so they cannot trigger undefined behaviour.
+    #[cfg(target_endian = "little")]
+    #[inline]
+    pub fn from_bytes(src: &[u8]) -> Option<Self> {
+        let expected = core::mem::size_of::<Self>();
+        if src.len() < expected {
+            return None;
+        }
+        // SAFETY: see doc-comment rationale above.
+        Some(unsafe { core::ptr::read_unaligned(src.as_ptr() as *const Self) })
+    }
+}
+
+// ─── Compile-time layout assertions ─────────────────────────────────────────
+//
+// These `const {}` blocks fire during `cargo check` (not just `cargo test`),
+// serving as regression guards against accidental layout changes.
+
+const _: () = {
+    // SoaContainerHeader<0>: only the 16-byte fixed-offset prefix.
+    // magic(4) + version(1) + field_count(1) + _pad(2) + row_count(4) +
+    // row_capacity(4) = 16 bytes.  No elem_stride or field_offsets arrays.
+    assert!(
+        core::mem::size_of::<SoaContainerHeader<0>>() == 16,
+        "SoaContainerHeader<0> must be exactly 16 bytes (fixed-offset prefix)"
+    );
+
+    // SoaContainerHeader<1>:
+    //   fixed prefix (16) + elem_stride [u32;1] (4) + implicit pad (4, to align u64)
+    //   + field_offsets [u64;1] (8) = 32 bytes.
+    assert!(
+        core::mem::size_of::<SoaContainerHeader<1>>() == 32,
+        "SoaContainerHeader<1> must be 32 bytes"
+    );
+
+    // SoaContainerHeader<2>:
+    //   fixed prefix (16) + elem_stride [u32;2] (8, already 8-aligned, no pad)
+    //   + field_offsets [u64;2] (16) = 40 bytes.
+    assert!(
+        core::mem::size_of::<SoaContainerHeader<2>>() == 40,
+        "SoaContainerHeader<2> must be 40 bytes"
+    );
+
+    // Struct-level alignment must be 8 (from `align(8)`).
+    assert!(
+        core::mem::align_of::<SoaContainerHeader<2>>() == 8,
+        "SoaContainerHeader must have alignment 8"
+    );
+};
+
+// ─── Tests ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+#[cfg(target_endian = "little")]
+mod container_tests {
+    use super::*;
+
+    // ── Layout / size guards (duplicated from const block for test feedback) ─
+
+    #[test]
+    fn size_of_n0_is_16() {
+        assert_eq!(core::mem::size_of::<SoaContainerHeader<0>>(), 16);
+    }
+
+    #[test]
+    fn size_of_n1_is_32() {
+        assert_eq!(core::mem::size_of::<SoaContainerHeader<1>>(), 32);
+    }
+
+    #[test]
+    fn size_of_n2_is_40() {
+        assert_eq!(core::mem::size_of::<SoaContainerHeader<2>>(), 40);
+    }
+
+    #[test]
+    fn align_of_is_8() {
+        assert_eq!(core::mem::align_of::<SoaContainerHeader<2>>(), 8);
+    }
+
+    // ── Helpers ─────────────────────────────────────────────────────────
+
+    fn read_u32_le(bytes: &[u8], offset: usize) -> u32 {
+        u32::from_le_bytes([
+            bytes[offset], bytes[offset+1], bytes[offset+2], bytes[offset+3],
+        ])
+    }
+
+    fn read_u64_le(bytes: &[u8], offset: usize) -> u64 {
+        u64::from_le_bytes([
+            bytes[offset],   bytes[offset+1], bytes[offset+2], bytes[offset+3],
+            bytes[offset+4], bytes[offset+5], bytes[offset+6], bytes[offset+7],
+        ])
+    }
+
+    // ── Golden-byte test ─────────────────────────────────────────────────
+    //
+    // Exact LE byte assertion for a known N=2 header.
+    // Any layout refactor that changes a field offset breaks this test.
+    //
+    // Fixture: SoaContainerHeader<2>::new(4, [4, 8])
+    //   Bytes  0.. 4  magic          = b"SoAC"
+    //   Byte   4      version        = 1
+    //   Byte   5      field_count    = 2
+    //   Bytes  6.. 8  _pad           = [0, 0]
+    //   Bytes  8..12  row_count      = 0
+    //   Bytes 12..16  row_capacity   = 4
+    //   Bytes 16..20  elem_stride[0] = 4
+    //   Bytes 20..24  elem_stride[1] = 8
+    //   Bytes 24..32  field_offsets[0] = 0    (field 0 starts at 0)
+    //   Bytes 32..40  field_offsets[1] = 16   (4 rows × 4 = 16, 8-aligned)
+    //
+    // N=2 → elem_stride is 8 bytes total (already 8-byte aligned) → NO
+    // implicit padding inserted between elem_stride and field_offsets.
+
+    #[test]
+    fn golden_bytes_n2_capacity4_strides_4_8() {
+        let hdr: SoaContainerHeader<2> = SoaContainerHeader::new(4, [4, 8]);
+        let bytes = hdr.as_bytes();
+        assert_eq!(bytes.len(), 40, "header should be 40 bytes for N=2");
+
+        assert_eq!(&bytes[0..4], b"SoAC",       "magic");
+        assert_eq!(bytes[4],     1,              "version");
+        assert_eq!(bytes[5],     2,              "field_count");
+        assert_eq!(&bytes[6..8], &[0u8, 0],     "_pad");
+        assert_eq!(read_u32_le(bytes,  8), 0,   "row_count");
+        assert_eq!(read_u32_le(bytes, 12), 4,   "row_capacity");
+        assert_eq!(read_u32_le(bytes, 16), 4,   "elem_stride[0]");
+        assert_eq!(read_u32_le(bytes, 20), 8,   "elem_stride[1]");
+        assert_eq!(read_u64_le(bytes, 24), 0,   "field_offsets[0]");
+        assert_eq!(read_u64_le(bytes, 32), 16,  "field_offsets[1]");
+    }
+
+    // ── Roundtrip: as_bytes → from_bytes ────────────────────────────────
+
+    #[test]
+    fn as_bytes_from_bytes_roundtrip_n2() {
+        let orig: SoaContainerHeader<2> = SoaContainerHeader::new(4, [4, 8]);
+        let bytes = orig.as_bytes();
+        let recovered = SoaContainerHeader::<2>::from_bytes(bytes)
+            .expect("from_bytes must succeed for a valid header");
+        assert_eq!(orig, recovered, "roundtrip must be lossless");
+    }
+
+    #[test]
+    fn as_bytes_from_bytes_roundtrip_n3_odd_n() {
+        // N=3 is ODD → implicit padding between elem_stride and field_offsets.
+        // Constructor zero-initialises it; roundtrip must still be lossless.
+        let mut orig: SoaContainerHeader<3> = SoaContainerHeader::new(8, [4, 4, 4]);
+        orig.push_rows(3);
+        let bytes = orig.as_bytes();
+        let recovered = SoaContainerHeader::<3>::from_bytes(bytes)
+            .expect("from_bytes must succeed");
+        assert_eq!(orig, recovered, "N=3 (odd) roundtrip must be lossless");
+    }
+
+    #[test]
+    fn from_bytes_returns_none_for_short_slice() {
+        let short = [0u8; 4];
+        assert!(
+            SoaContainerHeader::<2>::from_bytes(&short).is_none(),
+            "too-short slice must return None"
+        );
+    }
+
+    // ── validate ────────────────────────────────────────────────────────
+
+    #[test]
+    fn validate_fresh_header_ok() {
+        let hdr: SoaContainerHeader<2> = SoaContainerHeader::new(4, [4, 4]);
+        assert!(hdr.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_bad_magic_fails() {
+        let mut hdr: SoaContainerHeader<2> = SoaContainerHeader::new(4, [4, 4]);
+        hdr.magic = 0xDEAD_BEEF;
+        assert!(hdr.validate().is_err());
+    }
+
+    #[test]
+    fn validate_bad_version_fails() {
+        let mut hdr: SoaContainerHeader<2> = SoaContainerHeader::new(4, [4, 4]);
+        hdr.version = 99;
+        assert!(hdr.validate().is_err());
+    }
+
+    #[test]
+    fn validate_row_count_exceeds_capacity_fails() {
+        let mut hdr: SoaContainerHeader<2> = SoaContainerHeader::new(4, [4, 4]);
+        hdr.row_count = 5; // manually corrupted
+        assert!(hdr.validate().is_err());
+    }
+
+    #[test]
+    fn validate_non_zero_pad_fails() {
+        let mut hdr: SoaContainerHeader<2> = SoaContainerHeader::new(4, [4, 4]);
+        hdr._pad = [1, 0];
+        assert!(hdr.validate().is_err());
+    }
+
+    #[test]
+    fn validate_misaligned_offset_fails() {
+        let mut hdr: SoaContainerHeader<2> = SoaContainerHeader::new(4, [4, 4]);
+        hdr.field_offsets[1] += 1; // 17 is not 8-byte aligned
+        assert!(hdr.validate().is_err());
+    }
+
+    // ── push_rows / append-only semantics ────────────────────────────────
+
+    #[test]
+    fn push_rows_increments_row_count() {
+        let mut hdr: SoaContainerHeader<2> = SoaContainerHeader::new(10, [4, 4]);
+        assert_eq!(hdr.row_count, 0);
+        hdr.push_rows(3);
+        assert_eq!(hdr.row_count, 3);
+        hdr.push_rows(7);
+        assert_eq!(hdr.row_count, 10);
+        assert!(hdr.is_full());
+    }
+
+    #[test]
+    #[should_panic(expected = "would exceed row_capacity")]
+    fn push_rows_over_capacity_panics() {
+        let mut hdr: SoaContainerHeader<2> = SoaContainerHeader::new(4, [4, 4]);
+        hdr.push_rows(5); // capacity is 4 → panics
+    }
+
+    #[test]
+    fn is_empty_and_is_full() {
+        let mut hdr: SoaContainerHeader<1> = SoaContainerHeader::new(2, [4]);
+        assert!(hdr.is_empty());
+        assert!(!hdr.is_full());
+        hdr.push_rows(1);
+        assert!(!hdr.is_empty());
+        assert!(!hdr.is_full());
+        hdr.push_rows(1);
+        assert!(!hdr.is_empty());
+        assert!(hdr.is_full());
+    }
+
+    // ── backing_buffer_bytes ─────────────────────────────────────────────
+
+    #[test]
+    fn backing_buffer_bytes_n3_f32_capacity8() {
+        // Each field: 8 × 4 = 32 bytes, 8-byte aligned.
+        let hdr: SoaContainerHeader<3> = SoaContainerHeader::new(8, [4, 4, 4]);
+        assert_eq!(hdr.backing_buffer_bytes(), 3 * 32);
+    }
+
+    #[test]
+    fn backing_buffer_bytes_n2_mixed_strides() {
+        let hdr: SoaContainerHeader<2> = SoaContainerHeader::new(4, [4, 8]);
+        // field 0: 4×4 = 16 bytes; field 1: 4×8 = 32 bytes.
+        assert_eq!(hdr.field_offsets[0], 0);
+        assert_eq!(hdr.field_offsets[1], 16);
+        assert_eq!(hdr.backing_buffer_bytes(), 16 + 32);
+    }
+
+    #[test]
+    fn backing_buffer_bytes_non_power_of_two_stride() {
+        // elem_stride = 3 bytes (hypothetical packed u24).
+        // 4 rows × 3 = 12 bytes → padded to 16 (next 8-byte boundary).
+        let hdr: SoaContainerHeader<1> = SoaContainerHeader::new(4, [3]);
+        assert_eq!(hdr.backing_buffer_bytes(), 16);
+    }
+
+    // ── field_offsets layout ─────────────────────────────────────────────
+
+    #[test]
+    fn field_offsets_contiguous_f32_n4() {
+        // 4 f32 fields, 16 rows each. Each field: 16 × 4 = 64 bytes, 8-aligned.
+        let hdr: SoaContainerHeader<4> = SoaContainerHeader::new(16, [4, 4, 4, 4]);
+        assert_eq!(hdr.field_offsets[0], 0);
+        assert_eq!(hdr.field_offsets[1], 64);
+        assert_eq!(hdr.field_offsets[2], 128);
+        assert_eq!(hdr.field_offsets[3], 192);
+    }
+
+    #[test]
+    fn field_offsets_odd_element_count_alignment() {
+        // 3 rows × 4 bytes = 12 bytes → rounds up to 16 (next 8-byte multiple).
+        let hdr: SoaContainerHeader<2> = SoaContainerHeader::new(3, [4, 4]);
+        assert_eq!(hdr.field_offsets[0], 0);
+        assert_eq!(hdr.field_offsets[1], 16, "3×4=12 bytes padded to 16");
+    }
+
+    // ── SoaVec interop: len matches push_rows ─────────────────────────────
+
+    #[test]
+    fn soa_vec_len_matches_push_rows() {
+        // Build a SoaVec<f32, 3> with 5 rows, then commit its row count
+        // to a SoaContainerHeader.
+        let mut soa: SoaVec<f32, 3> = SoaVec::new();
+        for i in 0..5u32 {
+            soa.push([i as f32, (i * 2) as f32, (i * 3) as f32]);
+        }
+        let mut hdr: SoaContainerHeader<3> = SoaContainerHeader::new(
+            soa.len() as u32,
+            [4, 4, 4],
+        );
+        hdr.push_rows(soa.len() as u32);
+        assert_eq!(hdr.row_count, 5);
+        assert!(hdr.is_full());
+        assert!(hdr.validate().is_ok());
+    }
+}
+
+// ─── BLOCKERS FOR OPUS ───────────────────────────────────────────────────────
+//
+// The following items MUST be resolved before this draft can be considered
+// production-ready.  They are listed here (not in a README) so Opus sees them
+// during the central compile pass.
+//
+// BLOCKER-1: bytemuck dependency absent.
+//   `bytemuck` is not in `Cargo.toml`.  The spec requires `bytemuck::Pod`.
+//   The `as_bytes` / `from_bytes` helpers above are semantically equivalent to
+//   `bytemuck::bytes_of` / `bytemuck::from_bytes` but do NOT derive `Pod` or
+//   `Zeroable`.  Opus must either:
+//     (a) Add `bytemuck = { version = "1", features = ["derive"] }` to
+//         `[dependencies]` and `unsafe impl bytemuck::Pod for
+//         SoaContainerHeader<N>` (with `Zeroable`), OR
+//     (b) Document that the manual impls are the bytemuck-equivalent and the
+//         spec's Pod requirement is satisfied by contract.
+//
+// BLOCKER-2: Implicit padding for odd N.
+//   When N is odd, `#[repr(C)]` inserts 4 bytes of implicit padding between
+//   `elem_stride: [u32; N]` and `field_offsets: [u64; N]` to satisfy u64's
+//   8-byte alignment.  `bytemuck::derive(Pod)` rejects structs with any
+//   implicit padding.  Opus must choose:
+//     (a) Restrict N to even values via `const { assert!(N % 2 == 0) }` in
+//         `new`, OR
+//     (b) Add an explicit `_pad2: [u8; 4]` field (not ergonomic with const
+//         generics — would need a wrapper), OR
+//     (c) Accept that bytemuck Pod derivation is unavailable for odd-N headers
+//         and document the limitation.
+//
+// BLOCKER-3: `SoaContainer` type alias.
+//   The spec refers to the type as "the SoA container type".  A short alias
+//   `pub type SoaContainer<const N: usize> = SoaContainerHeader<N>` is
+//   available but has been left as a decision for Opus: using the full
+//   `SoaContainerHeader<N>` name everywhere is unambiguous; the alias saves
+//   keystrokes but adds an indirection in docs.
+
+// ============================================================================
+// SoaVec — below this line is the original PR-X2 SoaVec / soa_struct! code
+// ============================================================================
+
 /// SoA container generic over field type `T` and field count `N`.
 ///
 /// Internally: `[Vec<T>; N]`. All `N` fields are guaranteed to have the
