@@ -175,6 +175,11 @@ name = "splat3d_bench"
 harness = false
 required-features = ["splat3d"]
 
+[[bench]]
+name = "ewa_syrk_crossover"
+harness = false
+required-features = ["splat3d"]
+
 [features]
 default = ["std", "hpc-extras"]
 

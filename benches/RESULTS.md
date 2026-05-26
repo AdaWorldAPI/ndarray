@@ -123,3 +123,59 @@ The demo binary `examples/splat3d_flex.rs` and integration test
 Full-pipeline frame-time numbers (p50/p95/p99) await a Inria bicycle
 scene download — left as a follow-up for the dedicated benchmarking
 session against real-world data.
+
+## EWA-SYRK crossover — kill-or-justify the BLAS-backend premise
+
+Bench: `benches/ewa_syrk_crossover.rs`. Tests whether the
+`3DGS-EWA-SYRK-BLAS-MKL` plan's premise — "projection is a BLAS workload
+in disguise → route the covariance sandwich through an MKL/OpenBLAS/AMX
+backend" — holds for the **3×3** EWA sandwich `Σ' = M·Σ·Mᵀ`.
+
+### Hardware / build
+
+Container, default features, `.cargo/config.toml` `target-cpu=x86-64-v3`
+(AVX2 baseline); `sandwich_x16`'s per-function `#[target_feature(avx512f)]`
++ LazyLock runtime dispatch selects AVX-512 on this host. No RUSTFLAGS.
+
+```bash
+cargo bench --features splat3d --bench ewa_syrk_crossover
+```
+
+### `M·N·Mᵀ` sandwich — three kernel shapes (Melem/s, higher = better)
+
+| N | scalar | `simd_x16` | `gemm_shape` (BLAS-shape) |
+|---|---|---|---|
+| 1 024 | 88.9 | **179.4** | 90.5 |
+| 100 000 | 84.1 | **170.0** | 85.6 |
+| 1 000 000 | 85.6 | **164.5** | 86.8 |
+
+`gemm_shape` = two dense 3×3 matmuls per element (the shape a per-matrix
+BLAS call imposes), **in-process, no FFI**.
+
+### `project_batch` end-to-end (Melem/s)
+
+| N | throughput |
+|---|---|
+| 1 024 | 21.7 |
+| 100 000 | ~19.2 |
+
+(full pipeline incl. scalar SH eval; the sandwich is a fraction of this.)
+
+### Verdict — BLAS backend NOT justified at 3×3
+
+- `gemm_shape` is statistically identical to `scalar` and **~2× slower than
+  the shipped `simd_x16`** at every size 1k→1M. **No crossover**; the gap is
+  flat, not closing with batch size.
+- `gemm_shape` carries **no FFI** — a real `cblas`/MKL call adds marshalling
+  + dispatch on top, so it can only be worse. There is no efficient CPU
+  batched-3×3 SYRK (that pattern is a GPU one).
+- ⇒ The EWA-SYRK *backend* (native/MKL/OpenBLAS/AMX dispatch for the
+  covariance sandwich) is a **pessimization** at 3×3/2×3: fused SoA SIMD
+  already wins. The plan row is **idea-only** — the sandwich *is*
+  SYRK-shaped (true) but the actionable backend is killed by measurement.
+- Corroborates PR-3's predicted "1.5-2× SIMD-vs-scalar": `simd_x16` is ~2×
+  over scalar at large N (transpose amortised, unlike the transpose-bound
+  N=16 PR-1 microbench).
+- Steelman left open: `W·Σ·Wᵀ` has a *shared* `W` across gaussians → a
+  batched shared-`W` GEMM is the one form that could differ; benched as a
+  follow-up. Per-gaussian `J·Σ·Jᵀ` does not batch that way.
