@@ -445,6 +445,59 @@ pub fn certify_batch_simd(
     }
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// P4 — Blender/CAD mesh-depth anchor (render-depth plan § "Blender/CAD relevance")
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Alignment report between an exact mesh/CAD depth and a 3DGS splat's
+/// certified depth interval. Realizes the plan's claim: *"CAD mesh says the
+/// wall is here; the 3DGS scan says the visual surface is here; the
+/// certificate reports whether the visual skin aligns within tolerance."*
+///
+/// `#[repr(C)]` for `lance-graph` ingestion.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MeshAlignment {
+    /// Exact mesh/CAD depth (camera-space), the anchor.
+    pub mesh_depth: f32,
+    /// 3DGS splat centre depth (camera-space).
+    pub splat_depth: f32,
+    /// `splat_depth - mesh_depth` (signed).
+    pub depth_delta: f32,
+    /// Mesh depth lies inside the certified `[min_depth, max_depth]` interval.
+    pub within_interval: bool,
+    /// `|depth_delta| ≤ tolerance`.
+    pub within_tolerance: bool,
+    /// `|depth_delta|` in units of the interval half-width (k·σ_z) — "how many
+    /// sigmas the visual skin is off the CAD surface".
+    pub normalized_error: f32,
+    /// Overall: aligned if the mesh is inside the interval or within tolerance.
+    pub aligned: bool,
+}
+
+/// Compare an exact mesh depth against a splat's certified depth interval.
+///
+/// `mesh_depth` and `splat_depth` are camera-space depths; `cert` is the
+/// splat's [`RenderDepthCertificate`]; `tolerance` is the world-space depth
+/// slack the caller accepts for "the scan skin sits on the CAD surface".
+pub fn mesh_alignment(
+    mesh_depth: f32, splat_depth: f32, cert: &RenderDepthCertificate, tolerance: f32,
+) -> MeshAlignment {
+    let depth_delta = splat_depth - mesh_depth;
+    let within_interval = mesh_depth >= cert.min_depth && mesh_depth <= cert.max_depth;
+    let within_tolerance = depth_delta.abs() <= tolerance;
+    let normalized_error = depth_delta.abs() / cert.covariance_depth_error.max(1e-6);
+    MeshAlignment {
+        mesh_depth,
+        splat_depth,
+        depth_delta,
+        within_interval,
+        within_tolerance,
+        normalized_error,
+        aligned: within_interval || within_tolerance,
+    }
+}
+
 /// Zeroed certificate for culled slots (shared by scalar + SIMD batch paths).
 const ZERO_CERT: RenderDepthCertificate = RenderDepthCertificate {
     min_depth: 0.0,
@@ -711,5 +764,73 @@ mod tests {
             }
         }
         assert!(culled > 0, "test should exercise at least one culled slot");
+    }
+
+    // ── P4: mesh-anchor alignment + first demo ────────────────────────────────
+
+    #[test]
+    fn mesh_alignment_within_interval_is_aligned() {
+        // depth=10, cov_zz=0.25, k=2 → interval [9, 11].
+        let params = DepthCertParams { k_sigma: 2.0, ..Default::default() };
+        let cert = certify_depth_scalar(10.0, 0.25, 5.0, &params);
+        let a = mesh_alignment(10.0, 10.0, &cert, 0.01);
+        assert!(a.within_interval && a.aligned, "{a:?}");
+        assert!(approx(a.normalized_error, 0.0, 1e-6));
+        assert!(approx(a.depth_delta, 0.0, 1e-6));
+    }
+
+    #[test]
+    fn mesh_alignment_outside_interval_but_within_tolerance_is_aligned() {
+        let params = DepthCertParams { k_sigma: 2.0, ..Default::default() };
+        let cert = certify_depth_scalar(10.0, 0.25, 5.0, &params); // [9, 11]
+        // mesh at 8.5 is outside [9,11] but a generous 2.0 tolerance accepts it.
+        let a = mesh_alignment(8.5, 10.0, &cert, 2.0);
+        assert!(!a.within_interval);
+        assert!(a.within_tolerance);
+        assert!(a.aligned);
+    }
+
+    #[test]
+    fn mesh_alignment_far_is_not_aligned_and_many_sigma() {
+        let params = DepthCertParams { k_sigma: 2.0, ..Default::default() };
+        let cert = certify_depth_scalar(10.0, 0.25, 5.0, &params); // half-width 1.0
+        let a = mesh_alignment(11.5, 10.0, &cert, 0.01);
+        assert!(!a.aligned && !a.within_interval && !a.within_tolerance, "{a:?}");
+        assert!(approx(a.normalized_error, 1.5, 1e-5), "1.5σ off, got {}", a.normalized_error);
+    }
+
+    /// Plan § "First demo": one camera, one mesh plane, one splat block near it
+    /// → project → certify depth interval → report alignment / pass-fail.
+    #[test]
+    fn first_demo_mesh_plane_splat_alignment() {
+        let cam = Camera::identity_at_origin(256, 256);
+        let mesh_depth = 5.0; // CAD plane at camera-space z = 5
+
+        // One splat sitting on the plane.
+        let mut batch = GaussianBatch::with_capacity(1);
+        let mut g = Gaussian3D::unit();
+        g.mean = [0.0, 0.0, 5.0];
+        g.scale = [0.2, 0.2, 0.2];
+        g.quat = [1.0, 0.0, 0.0, 0.0];
+        g.opacity = 1.0;
+        batch.push(g);
+
+        let mut proj = ProjectedBatch::with_capacity(batch.capacity);
+        project_batch(&batch, &cam, &mut proj);
+        assert_eq!(proj.valid[0], 1, "demo splat must be visible");
+
+        let mut dv = vec![0.0f32; batch.len];
+        camera_depth_variance_batch(&batch, &cam, &mut dv);
+        let params = DepthCertParams { k_sigma: 3.0, ..Default::default() };
+        let cert = certify_depth_scalar(proj.depth[0], dv[0], proj.radius[0], &params);
+
+        // Scan skin sits on the CAD plane → aligned, mesh inside interval.
+        let on = mesh_alignment(mesh_depth, proj.depth[0], &cert, 0.05);
+        assert!(on.aligned && on.within_interval, "splat on plane should align: {on:?}");
+
+        // CAD wall 15 units behind the scan surface → not aligned, many σ off.
+        let off = mesh_alignment(20.0, proj.depth[0], &cert, 0.05);
+        assert!(!off.aligned && !off.within_interval, "distant mesh must not align: {off:?}");
+        assert!(off.normalized_error > 1.0, "should be many σ off, got {}", off.normalized_error);
     }
 }
