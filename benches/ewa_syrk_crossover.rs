@@ -38,7 +38,9 @@
 //! gaussian, so `J·Σ·Jᵀ` does not batch that way.
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use ndarray::hpc::splat3d::{project_batch, sandwich, sandwich_x16, Camera, Gaussian3D, GaussianBatch, ProjectedBatch, Spd3};
+use ndarray::hpc::splat3d::{
+    project_batch, sandwich, sandwich_x16, Camera, Gaussian3D, GaussianBatch, ProjectedBatch, Spd3,
+};
 
 const SIZES: [usize; 3] = [1_024, 100_000, 1_000_000];
 
@@ -70,7 +72,9 @@ fn build_spd_pairs(n: usize) -> (Vec<Spd3>, Vec<Spd3>) {
 }
 
 fn normalize_quat(q: &mut [f32; 4]) {
-    let n = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt().max(1e-12);
+    let n = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3])
+        .sqrt()
+        .max(1e-12);
     for v in q.iter_mut() {
         *v /= n;
     }
@@ -96,7 +100,14 @@ fn sandwich_gemm_shape(m: &Spd3, n: &Spd3) -> Spd3 {
             r[i][j] = t[i][0] * a[j][0] + t[i][1] * a[j][1] + t[i][2] * a[j][2];
         }
     }
-    Spd3::new(r[0][0], 0.5 * (r[0][1] + r[1][0]), 0.5 * (r[0][2] + r[2][0]), r[1][1], 0.5 * (r[1][2] + r[2][1]), r[2][2])
+    Spd3::new(
+        r[0][0],
+        0.5 * (r[0][1] + r[1][0]),
+        0.5 * (r[0][2] + r[2][0]),
+        r[1][1],
+        0.5 * (r[1][2] + r[2][1]),
+        r[2][2],
+    )
 }
 
 fn build_gaussians(n: usize) -> GaussianBatch {

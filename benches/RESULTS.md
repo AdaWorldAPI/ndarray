@@ -139,7 +139,7 @@ project's deployment tier `x86-64-v4`** (AVX-512 native — `F32x16` is a
 single `__m512`), via the documented override:
 
 ```bash
-RUSTFLAGS="-Ctarget-cpu=x86-64-v4" \
+RUSTFLAGS="-C target-cpu=x86-64-v4" \
   cargo bench --features splat3d --bench ewa_syrk_crossover
 ```
 
