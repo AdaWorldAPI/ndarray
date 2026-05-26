@@ -241,7 +241,7 @@ pub fn certify_batch_scalar(
     out.reserve(batch.len);
     for i in 0..batch.len {
         if batch.valid[i] == 0 {
-            out.push(ZERO_CERT);
+            out.push(RenderDepthCertificate::ZERO);
             continue;
         }
         let cov_zz = depth_var.get(i).copied().unwrap_or(0.0);
@@ -264,7 +264,10 @@ fn stage16(col: &[f32], start: usize, len: usize) -> [f32; 16] {
     let mut buf = [0.0f32; 16];
     let end = (start + CHUNK).min(len);
     for (k, slot) in buf.iter_mut().enumerate().take(end - start) {
-        *slot = col[start + k];
+        // Bounds-safe: a short `col` (e.g. a depth_var shorter than batch.len)
+        // reads 0.0, matching certify_batch_scalar's `.get().unwrap_or(0.0)` —
+        // the SIMD path must not panic on a mismatched buffer.
+        *slot = col.get(start + k).copied().unwrap_or(0.0);
     }
     buf
 }
@@ -413,7 +416,7 @@ pub fn certify_batch_simd(
         for k in 0..(end - start) {
             let idx = start + k;
             if batch.valid[idx] == 0 {
-                out.push(ZERO_CERT);
+                out.push(RenderDepthCertificate::ZERO);
                 continue;
             }
             let cov_e = cov_a[k];
@@ -498,19 +501,23 @@ pub fn mesh_alignment(
     }
 }
 
-/// Zeroed certificate for culled slots (shared by scalar + SIMD batch paths).
-const ZERO_CERT: RenderDepthCertificate = RenderDepthCertificate {
-    min_depth: 0.0,
-    max_depth: 0.0,
-    depth_variance: 0.0,
-    projected_radius_px: 0.0,
-    occlusion_confidence: 0.0,
-    ordering_uncertainty: 0.0,
-    quantization_depth_error: 0.0,
-    covariance_depth_error: 0.0,
-    total_depth_error: 0.0,
-    passed: false,
-};
+impl RenderDepthCertificate {
+    /// Zeroed, **failed** certificate for culled (batch) or HEEL-rejected
+    /// (cascade) slots. `passed = false` so a rejected/culled block can never
+    /// be misread as certified.
+    pub const ZERO: Self = Self {
+        min_depth: 0.0,
+        max_depth: 0.0,
+        depth_variance: 0.0,
+        projected_radius_px: 0.0,
+        occlusion_confidence: 0.0,
+        ordering_uncertainty: 0.0,
+        quantization_depth_error: 0.0,
+        covariance_depth_error: 0.0,
+        total_depth_error: 0.0,
+        passed: false,
+    };
+}
 
 #[cfg(test)]
 mod tests {
@@ -807,10 +814,41 @@ mod tests {
             assert!(approx(w.total_depth_error, g.total_depth_error, 1e-4), "i={i} total");
             if proj.valid[i] == 0 {
                 culled += 1;
-                assert_eq!(g, ZERO_CERT, "i={i} culled slot must be ZERO_CERT");
+                assert_eq!(g, RenderDepthCertificate::ZERO, "i={i} culled slot must be ZERO_CERT");
             }
         }
         assert!(culled > 0, "test should exercise at least one culled slot");
+    }
+
+    #[test]
+    fn certify_batch_simd_short_depth_var_does_not_panic() {
+        // Codex regression: a depth_var shorter than batch.len must not panic
+        // in the SIMD path — it reads 0.0 for missing lanes, matching the
+        // scalar path's `.get().unwrap_or(0.0)`.
+        let mut batch = GaussianBatch::with_capacity(20);
+        for i in 0..20 {
+            let mut g = Gaussian3D::unit();
+            g.mean = [0.0, 0.0, 1.0 + i as f32 * 0.1];
+            g.scale = [0.1, 0.1, 0.1];
+            g.quat = [1.0, 0.0, 0.0, 0.0];
+            g.opacity = 1.0;
+            batch.push(g);
+        }
+        let cam = Camera::identity_at_origin(256, 256);
+        let mut proj = ProjectedBatch::with_capacity(batch.capacity);
+        project_batch(&batch, &cam, &mut proj);
+        let params = DepthCertParams::default();
+        let short: Vec<f32> = Vec::new(); // deliberately too short (0 < batch.len)
+        let mut simd = Vec::new();
+        let mut scalar = Vec::new();
+        certify_batch_simd(&proj, &short, &params, &mut simd);
+        certify_batch_scalar(&proj, &short, &params, &mut scalar);
+        assert_eq!(simd.len(), scalar.len());
+        for (s, c) in simd.iter().zip(scalar.iter()) {
+            assert_eq!(s.passed, c.passed);
+            assert!(approx(s.depth_variance, c.depth_variance, 1e-6));
+            assert!(approx(s.total_depth_error, c.total_depth_error, 1e-4));
+        }
     }
 
     // ── P4: mesh-anchor alignment + first demo ────────────────────────────────
