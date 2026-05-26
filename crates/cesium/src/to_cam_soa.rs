@@ -76,11 +76,28 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Outcome of [`convert_to_cam_soa`] (stub — real fields gated behind ndarray).
-#[derive(Debug)]
 ///
 /// When the ndarray dep is live, `batch` becomes
 /// `splat3d::gaussian::GaussianBatch` and `cam_fingerprints` becomes
 /// `Vec<cam_pq::CamFingerprint>`.
+///
+/// # Examples
+///
+/// ```
+/// use cesium::to_cam_soa::{convert_to_cam_soa, CamSoaResult};
+///
+/// let result: CamSoaResult = convert_to_cam_soa(
+///     1,
+///     &[0.0, 0.0, 0.0],
+///     &[0.0, 0.0, 0.0, 1.0],
+///     &[1.0, 1.0, 1.0],
+///     &[0.5],
+///     None,
+/// )
+/// .unwrap();
+/// assert_eq!(result.splat_count, 1);
+/// ```
+#[derive(Debug)]
 pub struct CamSoaResult {
     /// Number of Gaussian splats converted.
     pub splat_count: usize,
@@ -93,10 +110,48 @@ pub struct CamSoaResult {
 }
 
 /// Errors emitted by the conversion bridge.
+///
+/// # Examples
+///
+/// ```
+/// use cesium::to_cam_soa::{convert_to_cam_soa, ToCamSoaError};
+///
+/// // Empty splat count → EmptySplats
+/// let err = convert_to_cam_soa(0, &[], &[], &[], &[], None).unwrap_err();
+/// assert_eq!(err, ToCamSoaError::EmptySplats);
+///
+/// // Wrong position buffer length → BufferLengthMismatch
+/// let err = convert_to_cam_soa(
+///     1,
+///     &[0.0],           // too short: expected 3 (= 1*3)
+///     &[0.0, 0.0, 0.0, 1.0],
+///     &[1.0, 1.0, 1.0],
+///     &[0.5],
+///     None,
+/// )
+/// .unwrap_err();
+/// assert!(matches!(
+///     err,
+///     ToCamSoaError::BufferLengthMismatch { field: "position", expected: 3, actual: 1 }
+/// ));
+/// ```
 #[derive(Debug, PartialEq, Eq)]
 pub enum ToCamSoaError {
     /// The source splat count is zero — nothing to convert.
     EmptySplats,
+    /// A per-splat input buffer has the wrong length.
+    ///
+    /// `expected` is `splat_count * stride` (e.g. 3 for position/scale, 4 for
+    /// rotation, 1 for opacity).  `actual` is `slice.len()`.
+    BufferLengthMismatch {
+        /// Name of the offending field (`"position"`, `"rotation_xyzw"`,
+        /// `"scale"`, or `"opacity"`).
+        field: &'static str,
+        /// Expected length (`splat_count * per-splat stride`).
+        expected: usize,
+        /// Actual length of the slice that was passed in.
+        actual: usize,
+    },
     /// SH coefficient array length is inconsistent with `splat_count * sh_stride`.
     ShLengthMismatch {
         splat_count: usize,
@@ -111,6 +166,11 @@ impl core::fmt::Display for ToCamSoaError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::EmptySplats => write!(f, "to_cam_soa: source splat count is zero"),
+            Self::BufferLengthMismatch {
+                field,
+                expected,
+                actual,
+            } => write!(f, "to_cam_soa: buffer `{field}` length {actual} != expected {expected}",),
             Self::ShLengthMismatch {
                 splat_count,
                 sh_len,
@@ -138,25 +198,80 @@ impl core::fmt::Display for ToCamSoaError {
 ///
 /// # Arguments
 /// - `splat_count` — number of splats in the source arrays (for validation).
-/// - `_position` — flat f32 slice, layout `[x0,y0,z0, x1,y1,z1, ...]`.
-/// - `_rotation_xyzw` — flat f32 slice, layout `[x0,y0,z0,w0, x1,...]`.
+/// - `position` — flat f32 slice, layout `[x0,y0,z0, x1,y1,z1, ...]`; must have length `splat_count * 3`.
+/// - `rotation_xyzw` — flat f32 slice, layout `[x0,y0,z0,w0, x1,...]`; must have length `splat_count * 4`.
 ///   **Note:** glTF stores (x,y,z,w); the bridge reorders to GaussianBatch's (w,x,y,z).
-/// - `_scale` — flat f32 slice, layout `[sx0,sy0,sz0, ...]`.
-/// - `_opacity` — flat f32 slice, one value per splat.
-/// - `_sh_coefficients` — optional flat f32 slice; `None` means no SH.
-///   Layout per splat: `[k=0 rgb, k=1 rgb, ..., k=15 rgb]` (48 f32 for degree-3).
+/// - `scale` — flat f32 slice, layout `[sx0,sy0,sz0, ...]`; must have length `splat_count * 3`.
+/// - `opacity` — flat f32 slice, one value per splat; must have length `splat_count`.
+/// - `sh_coefficients` — optional flat f32 slice; `None` means no SH.
+///   Layout per splat: `[k=0 rgb, k=1 rgb, ..., k=15 rgb]` (48 f32 for degree-3);
+///   when `Some`, must have length `splat_count * 48`.
 ///
 /// # Returns
 /// `Ok(CamSoaResult)` on success; `Err(ToCamSoaError)` on validation failure.
+///
+/// # Errors
+/// - [`ToCamSoaError::EmptySplats`] — `splat_count == 0`.
+/// - [`ToCamSoaError::BufferLengthMismatch`] — any per-splat buffer has the wrong length.
+/// - [`ToCamSoaError::ShLengthMismatch`] — `sh_coefficients` is `Some` but has the wrong length.
+///
+/// # Examples
+///
+/// ```
+/// use cesium::to_cam_soa::{convert_to_cam_soa, ToCamSoaError};
+///
+/// // Happy path: one splat, all buffers correctly sized.
+/// let result = convert_to_cam_soa(
+///     1,
+///     &[0.0, 0.0, 0.0],          // position: 1*3 = 3 elements
+///     &[0.0, 0.0, 0.0, 1.0],     // rotation_xyzw: 1*4 = 4 elements (identity quat)
+///     &[1.0, 1.0, 1.0],          // scale: 1*3 = 3 elements
+///     &[0.5],                     // opacity: 1 element
+///     None,
+/// )
+/// .unwrap();
+/// assert_eq!(result.splat_count, 1);
+///
+/// // Error path: position buffer too short.
+/// let err = convert_to_cam_soa(
+///     2,
+///     &[0.0, 0.0, 0.0],          // wrong: expected 6 (= 2*3)
+///     &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+///     &[1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+///     &[0.5, 0.5],
+///     None,
+/// )
+/// .unwrap_err();
+/// assert!(matches!(
+///     err,
+///     ToCamSoaError::BufferLengthMismatch { field: "position", expected: 6, actual: 3 }
+/// ));
+/// ```
 pub fn convert_to_cam_soa(
-    splat_count: usize, _position: &[f32], _rotation_xyzw: &[f32], _scale: &[f32], _opacity: &[f32],
-    _sh_coefficients: Option<&[f32]>,
+    splat_count: usize, position: &[f32], rotation_xyzw: &[f32], scale: &[f32], opacity: &[f32],
+    sh_coefficients: Option<&[f32]>,
 ) -> Result<CamSoaResult, ToCamSoaError> {
     if splat_count == 0 {
         return Err(ToCamSoaError::EmptySplats);
     }
+    // Validate all per-splat buffer lengths before proceeding.
+    let checks: &[(&'static str, usize, usize)] = &[
+        ("position", splat_count * 3, position.len()),
+        ("rotation_xyzw", splat_count * 4, rotation_xyzw.len()),
+        ("scale", splat_count * 3, scale.len()),
+        ("opacity", splat_count, opacity.len()),
+    ];
+    for &(field, expected, actual) in checks {
+        if actual != expected {
+            return Err(ToCamSoaError::BufferLengthMismatch {
+                field,
+                expected,
+                actual,
+            });
+        }
+    }
     // Validate SH length when present.
-    if let Some(sh) = _sh_coefficients {
+    if let Some(sh) = sh_coefficients {
         const SH_STRIDE: usize = 48; // 3 channels × 16 basis functions
         let expected = splat_count * SH_STRIDE;
         if sh.len() != expected {

@@ -49,6 +49,20 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// SSIM / PSNR pair for a parity gate.
+///
+/// # Examples
+///
+/// ```
+/// use cesium::fixtures::Thresholds;
+///
+/// let t = Thresholds::SYNTHETIC_TIGHT;
+/// assert_eq!(t.min_ssim, 0.99);
+/// assert_eq!(t.min_psnr_db, 40.0);
+///
+/// // Thresholds are ordered: SMOKE < INRIA < SYNTHETIC
+/// assert!(Thresholds::SMOKE_TEST.min_ssim < Thresholds::INRIA_PLY_NOMINAL.min_ssim);
+/// assert!(Thresholds::INRIA_PLY_NOMINAL.min_ssim < Thresholds::SYNTHETIC_TIGHT.min_ssim);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Thresholds {
     /// Minimum acceptable SSIM in `[0, 1]`.
@@ -88,6 +102,18 @@ impl Thresholds {
 /// A `Fixture` names a scene and records its provenance.  It does NOT hold the
 /// actual scene data (too large for in-memory constants); the oracle pipeline
 /// loads data from disk at test time.
+///
+/// # Examples
+///
+/// ```
+/// use cesium::fixtures::scenes;
+///
+/// let f = scenes::SYNTHETIC_UNIT.clone();
+/// assert_eq!(f.id, "synthetic_unit");
+/// assert_eq!(f.expected_gaussian_count, Some(4));
+/// assert_eq!(f.width, 64);
+/// assert_eq!(f.height, 64);
+/// ```
 #[derive(Debug, Clone)]
 pub struct Fixture {
     /// Short identifier used in test output (e.g. `"settlement_dev"`).
@@ -161,6 +187,16 @@ pub mod scenes {
 /// Use [`ParityGate::check`] to evaluate a [`crate::oracle::ParityMetrics`]
 /// against the gate.  The gate reports pass/fail but does not panic — the
 /// caller decides whether a failed gate is a CI hard failure.
+///
+/// # Examples
+///
+/// ```
+/// use cesium::fixtures::gates;
+///
+/// let gate = gates::synthetic_unit_tight();
+/// assert_eq!(gate.fixture.id, "synthetic_unit");
+/// assert_eq!(gate.thresholds.min_ssim, 0.99);
+/// ```
 #[derive(Debug, Clone)]
 pub struct ParityGate {
     /// The scene this gate applies to.
@@ -170,6 +206,21 @@ pub struct ParityGate {
 }
 
 /// Result of evaluating a parity gate.
+///
+/// # Examples
+///
+/// ```
+/// use cesium::fixtures::{gates, GateResult};
+/// use cesium::oracle::ParityMetrics;
+///
+/// let fb: Vec<f32> = vec![0.5, 0.3, 0.8, 0.1, 0.9, 0.2];
+/// let metrics = ParityMetrics::compute(&fb, &fb).unwrap();
+/// let gate = gates::settlement_dev_smoke();
+/// let result: GateResult = gate.check(&metrics);
+/// assert!(result.passed);
+/// assert!(result.ssim_margin >= 0.0);
+/// assert!(result.psnr_margin_db.is_infinite());
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct GateResult {
     /// Whether the gate passed.
@@ -186,6 +237,28 @@ pub struct GateResult {
 
 impl ParityGate {
     /// Evaluate the gate against observed metrics.
+    ///
+    /// Returns a [`GateResult`] with `passed = true` when both `ssim` and
+    /// `psnr` meet the gate's [`Thresholds`].  Identical buffers produce
+    /// SSIM = 1.0 and infinite PSNR, which always passes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cesium::fixtures::gates;
+    /// use cesium::oracle::ParityMetrics;
+    ///
+    /// // Two identical small framebuffers (3 pixels × RGB = 9 samples).
+    /// let fb: Vec<f32> = vec![0.2, 0.5, 0.8, 0.1, 0.4, 0.9, 0.3, 0.6, 0.7];
+    /// let metrics = ParityMetrics::compute(&fb, &fb).unwrap();
+    ///
+    /// // Identical buffers → SSIM 1.0, infinite PSNR → passes even the tight gate.
+    /// let gate = cesium::fixtures::gates::synthetic_unit_tight();
+    /// let result = gate.check(&metrics);
+    /// assert!(result.passed);
+    /// assert_eq!(result.ssim, 1.0);
+    /// assert!(result.psnr.is_infinite());
+    /// ```
     pub fn check(&self, metrics: &crate::oracle::ParityMetrics) -> GateResult {
         let ssim_margin = metrics.ssim - self.thresholds.min_ssim;
         let psnr_margin_db = if metrics.psnr.is_infinite() {
@@ -209,6 +282,19 @@ pub mod gates {
     use super::{scenes, ParityGate, Thresholds};
 
     /// Smoke test gate for the settlement_dev scene.
+    ///
+    /// Uses [`Thresholds::SMOKE_TEST`] (SSIM ≥ 0.80, PSNR ≥ 20 dB).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cesium::fixtures::gates;
+    ///
+    /// let gate = gates::settlement_dev_smoke();
+    /// assert_eq!(gate.fixture.id, "settlement_dev");
+    /// assert_eq!(gate.thresholds.min_ssim, 0.80);
+    /// assert_eq!(gate.thresholds.min_psnr_db, 20.0);
+    /// ```
     pub fn settlement_dev_smoke() -> ParityGate {
         ParityGate {
             fixture: scenes::SETTLEMENT_DEV.clone(),
@@ -217,6 +303,19 @@ pub mod gates {
     }
 
     /// Nominal gate for the settlement_dev scene (accounts for sort-order risk).
+    ///
+    /// Uses [`Thresholds::INRIA_PLY_NOMINAL`] (SSIM ≥ 0.95, PSNR ≥ 30 dB).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cesium::fixtures::gates;
+    ///
+    /// let gate = gates::settlement_dev_nominal();
+    /// assert_eq!(gate.fixture.id, "settlement_dev");
+    /// assert_eq!(gate.thresholds.min_ssim, 0.95);
+    /// assert_eq!(gate.thresholds.min_psnr_db, 30.0);
+    /// ```
     pub fn settlement_dev_nominal() -> ParityGate {
         ParityGate {
             fixture: scenes::SETTLEMENT_DEV.clone(),
@@ -225,6 +324,27 @@ pub mod gates {
     }
 
     /// Tight gate for the synthetic unit scene.
+    ///
+    /// Uses [`Thresholds::SYNTHETIC_TIGHT`] (SSIM ≥ 0.99, PSNR ≥ 40 dB).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cesium::fixtures::gates;
+    /// use cesium::oracle::ParityMetrics;
+    ///
+    /// // Identical framebuffers → SSIM 1.0, infinite PSNR → passes the tight gate.
+    /// let fb: Vec<f32> = vec![0.2, 0.5, 0.8, 0.1, 0.4, 0.9, 0.3, 0.6, 0.7];
+    /// let metrics = ParityMetrics::compute(&fb, &fb).unwrap();
+    ///
+    /// let gate = gates::synthetic_unit_tight();
+    /// assert_eq!(gate.fixture.id, "synthetic_unit");
+    /// assert_eq!(gate.thresholds.min_ssim, 0.99);
+    /// assert_eq!(gate.thresholds.min_psnr_db, 40.0);
+    ///
+    /// let result = gate.check(&metrics);
+    /// assert!(result.passed);
+    /// ```
     pub fn synthetic_unit_tight() -> ParityGate {
         ParityGate {
             fixture: scenes::SYNTHETIC_UNIT.clone(),

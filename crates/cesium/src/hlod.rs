@@ -50,7 +50,27 @@
 // Compilable stub types (std-only)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Maximum recursion depth for [`traverse_tile`].
+///
+/// 3D-Tiles tile trees are typically very shallow (< 20 levels in practice).
+/// This cap prevents infinite loops on cyclic child-index graphs produced by
+/// malformed or adversarial input.
+const MAX_HLOD_DEPTH: usize = 64;
+
 /// Tile refinement strategy (OGC 3D Tiles 1.1 §7.5).
+///
+/// # Examples
+///
+/// ```
+/// use cesium::hlod::Refine;
+///
+/// let r = Refine::Replace;
+/// assert_ne!(r, Refine::Add);
+///
+/// // Refine is Copy — can be used after a move.
+/// let r2 = r;
+/// assert_eq!(r, r2);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refine {
     /// Children ADD to parent — parent is always rendered when visible.
@@ -64,6 +84,22 @@ pub enum Refine {
 /// In a live implementation this would reference the `tileset.json` content
 /// and bounding-volume structures; here all geometry is reduced to the minimum
 /// information needed for traversal decisions.
+///
+/// # Examples
+///
+/// ```
+/// use cesium::hlod::{HlodTile, Refine};
+///
+/// let tile = HlodTile {
+///     geometric_error: 100.0,
+///     bounding_sphere_center: [0.0, 0.0, 0.0],
+///     bounding_sphere_radius: 10.0,
+///     refine: Refine::Replace,
+///     content_uri: Some("root.glb".into()),
+///     children: vec![],
+/// };
+/// assert!(tile.is_leaf());
+/// ```
 #[derive(Clone, Debug)]
 pub struct HlodTile {
     /// Tile's `geometricError` from `tileset.json` (world units).
@@ -83,6 +119,25 @@ pub struct HlodTile {
 
 impl HlodTile {
     /// True if this tile has no children (it is a leaf by structure).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cesium::hlod::{HlodTile, Refine};
+    ///
+    /// let leaf = HlodTile {
+    ///     geometric_error: 0.0,
+    ///     bounding_sphere_center: [1.0, 2.0, 3.0],
+    ///     bounding_sphere_radius: 5.0,
+    ///     refine: Refine::Replace,
+    ///     content_uri: Some("leaf.glb".into()),
+    ///     children: vec![],
+    /// };
+    /// assert!(leaf.is_leaf());
+    ///
+    /// let parent = HlodTile { children: vec![1], ..leaf.clone() };
+    /// assert!(!parent.is_leaf());
+    /// ```
     pub fn is_leaf(&self) -> bool {
         self.children.is_empty()
     }
@@ -90,6 +145,28 @@ impl HlodTile {
     /// Approximate distance from `camera` to the bounding-sphere surface.
     ///
     /// Returns 0.0 if the camera is inside the sphere.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cesium::hlod::{HlodTile, Refine};
+    ///
+    /// let tile = HlodTile {
+    ///     geometric_error: 0.0,
+    ///     bounding_sphere_center: [0.0, 0.0, 0.0],
+    ///     bounding_sphere_radius: 1.0,
+    ///     refine: Refine::Replace,
+    ///     content_uri: None,
+    ///     children: vec![],
+    /// };
+    ///
+    /// // Camera on the surface — distance is 0.
+    /// assert_eq!(tile.distance_to_camera([1.0, 0.0, 0.0]), 0.0);
+    ///
+    /// // Camera 5 units away from centre, radius 1 → surface distance = 4.
+    /// let d = tile.distance_to_camera([5.0, 0.0, 0.0]);
+    /// assert!((d - 4.0).abs() < 1e-5);
+    /// ```
     pub fn distance_to_camera(&self, camera: [f32; 3]) -> f32 {
         let dx = camera[0] - self.bounding_sphere_center[0];
         let dy = camera[1] - self.bounding_sphere_center[1];
@@ -100,6 +177,34 @@ impl HlodTile {
 }
 
 /// A flat HLOD tile tree (arena-allocated for cache-friendly traversal).
+///
+/// # Arena layout and root invariant
+///
+/// Tiles are stored in a plain `Vec` and referenced by index.  **Index 0 is
+/// the root by construction.**  [`push`](HlodTree::push) returns the arena
+/// index of each newly inserted tile; callers MUST push the root tile first
+/// (before any child tiles) so that the root occupies index 0.  Violating
+/// this invariant causes [`traverse_hlod`] to start at the wrong tile.
+///
+/// # Examples
+///
+/// ```
+/// use cesium::hlod::{HlodTile, HlodTree, Refine};
+///
+/// let mut tree = HlodTree::new();
+///
+/// // Push the root first — it gets index 0.
+/// let root_idx = tree.push(HlodTile {
+///     geometric_error: 50.0,
+///     bounding_sphere_center: [0.0, 0.0, 0.0],
+///     bounding_sphere_radius: 20.0,
+///     refine: Refine::Replace,
+///     content_uri: Some("root.glb".into()),
+///     children: vec![],   // no children yet
+/// });
+/// assert_eq!(root_idx, 0);
+/// assert_eq!(tree.tiles.len(), 1);
+/// ```
 #[derive(Clone, Debug, Default)]
 pub struct HlodTree {
     /// All tiles in the tree.  Root is at index 0.
@@ -108,11 +213,40 @@ pub struct HlodTree {
 
 impl HlodTree {
     /// Construct an empty tree.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cesium::hlod::HlodTree;
+    ///
+    /// let tree = HlodTree::new();
+    /// assert!(tree.tiles.is_empty());
+    /// ```
     pub fn new() -> Self {
         Self { tiles: Vec::new() }
     }
 
     /// Push a tile and return its index.
+    ///
+    /// **Callers must push the root tile first** (index 0) before any child
+    /// tiles; see the [`HlodTree`] type documentation for the root invariant.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cesium::hlod::{HlodTile, HlodTree, Refine};
+    ///
+    /// let mut tree = HlodTree::new();
+    /// let idx = tree.push(HlodTile {
+    ///     geometric_error: 0.0,
+    ///     bounding_sphere_center: [0.0, 0.0, 0.0],
+    ///     bounding_sphere_radius: 1.0,
+    ///     refine: Refine::Replace,
+    ///     content_uri: Some("leaf.glb".into()),
+    ///     children: vec![],
+    /// });
+    /// assert_eq!(idx, 0);
+    /// ```
     pub fn push(&mut self, tile: HlodTile) -> usize {
         let idx = self.tiles.len();
         self.tiles.push(tile);
@@ -121,6 +255,17 @@ impl HlodTree {
 }
 
 /// Result of one HLOD traversal: the set of content URIs to render.
+///
+/// # Examples
+///
+/// ```
+/// use cesium::hlod::TraversalResult;
+///
+/// let mut r = TraversalResult::default();
+/// assert!(r.render_list.is_empty());
+/// r.render_list.push("tile.glb".into());
+/// assert_eq!(r.render_list.len(), 1);
+/// ```
 #[derive(Clone, Debug, Default)]
 pub struct TraversalResult {
     /// Content URIs of tiles selected for rendering (no duplicates guaranteed
@@ -138,6 +283,21 @@ pub struct TraversalResult {
 /// **Stub.** The real recursive body is `//`-commented below; this entry point
 /// delegates to the stub shim so callers and tests compile.
 ///
+/// # Root invariant
+///
+/// Traversal always starts at index 0, which is the root **by construction**.
+/// Callers must build the tree by pushing the root tile first (index 0); see
+/// [`HlodTree`] for the full invariant.  If `tree.tiles` is empty this
+/// function returns an empty [`TraversalResult`] immediately.
+///
+/// # Defensive safety
+///
+/// `traverse_tile` skips any child index that is out of range for the current
+/// `tiles` slice (silent ignore — scaffold behaviour).  It also caps recursion
+/// at [`MAX_HLOD_DEPTH`] (64) to prevent infinite loops on cyclic child-index
+/// graphs produced by malformed input.  These guards do not affect well-formed
+/// trees.
+///
 /// # Arguments
 /// - `tree` — the HLOD tile tree (root at index 0).
 /// - `camera` — world-space camera position.
@@ -147,19 +307,74 @@ pub struct TraversalResult {
 ///
 /// # Returns
 /// [`TraversalResult`] containing the render list.
+///
+/// # Examples
+///
+/// ```
+/// use cesium::hlod::{HlodTile, HlodTree, Refine, traverse_hlod};
+/// use cesium::sse::SseFrustum;
+///
+/// // Build a tiny two-tile tree: root (Replace) → one leaf child.
+/// let mut tree = HlodTree::new();
+///
+/// // Push root first (index 0).
+/// let _root = tree.push(HlodTile {
+///     geometric_error: 100.0,
+///     bounding_sphere_center: [0.0, 0.0, 0.0],
+///     bounding_sphere_radius: 10.0,
+///     refine: Refine::Replace,
+///     content_uri: Some("root.glb".into()),
+///     children: vec![1],
+/// });
+/// // Push child (index 1).
+/// let _child = tree.push(HlodTile {
+///     geometric_error: 0.0,
+///     bounding_sphere_center: [0.0, 0.0, 0.0],
+///     bounding_sphere_radius: 1.0,
+///     refine: Refine::Replace,
+///     content_uri: Some("child.glb".into()),
+///     children: vec![],
+/// });
+///
+/// let denom = SseFrustum {
+///     viewport_height_px: 1080.0,
+///     fovy_rad: std::f32::consts::FRAC_PI_3,
+/// }
+/// .sse_denominator();
+///
+/// // Camera very far away → root SSE tiny → root accepted, no child.
+/// let result = traverse_hlod(&tree, [0.0, 0.0, 1_000_000.0], denom, 16.0);
+/// assert!(result.render_list.contains(&"root.glb".to_string()));
+/// assert!(!result.render_list.contains(&"child.glb".to_string()));
+///
+/// // Camera at origin → root SSE enormous → Replace refines to child.
+/// let result2 = traverse_hlod(&tree, [0.0, 0.0, 0.0], denom, 16.0);
+/// assert!(!result2.render_list.contains(&"root.glb".to_string()));
+/// assert!(result2.render_list.contains(&"child.glb".to_string()));
+/// ```
 pub fn traverse_hlod(tree: &HlodTree, camera: [f32; 3], sse_denominator: f32, maximum_sse: f32) -> TraversalResult {
     let mut result = TraversalResult::default();
     if tree.tiles.is_empty() {
         return result;
     }
-    traverse_tile(tree, 0, camera, sse_denominator, maximum_sse, &mut result);
+    traverse_tile(tree, 0, camera, sse_denominator, maximum_sse, &mut result, 0);
     result
 }
 
 /// Recursive inner traversal (live stub — ADD/REPLACE logic is real).
+///
+/// `depth` tracks the current recursion depth.  When `depth >= MAX_HLOD_DEPTH`
+/// the function returns immediately, preventing infinite loops on cyclic input.
+/// Any child index that is out of range for `tree.tiles` is silently skipped.
 fn traverse_tile(
-    tree: &HlodTree, idx: usize, camera: [f32; 3], sse_denominator: f32, maximum_sse: f32, result: &mut TraversalResult,
+    tree: &HlodTree, idx: usize, camera: [f32; 3], sse_denominator: f32, maximum_sse: f32,
+    result: &mut TraversalResult, depth: usize,
 ) {
+    // Depth guard — prevents infinite recursion on cyclic child-index graphs.
+    if depth >= MAX_HLOD_DEPTH {
+        return;
+    }
+
     let tile = &tree.tiles[idx];
     let distance = tile.distance_to_camera(camera);
     let sse = crate::sse::sse_for_tile(tile.geometric_error, distance, sse_denominator);
@@ -172,7 +387,11 @@ fn traverse_tile(
                 // Clone children indices to avoid borrow conflict on `tree`.
                 let children: Vec<usize> = tile.children.clone();
                 for &child_idx in &children {
-                    traverse_tile(tree, child_idx, camera, sse_denominator, maximum_sse, result);
+                    // Bounds guard — skip out-of-range indices silently.
+                    if child_idx >= tree.tiles.len() {
+                        continue;
+                    }
+                    traverse_tile(tree, child_idx, camera, sse_denominator, maximum_sse, result, depth + 1);
                 }
             } else {
                 // REPLACE + SSE satisfied (or leaf) → render this tile.
@@ -190,7 +409,11 @@ fn traverse_tile(
                 // ADD + must refine → also recurse into children.
                 let children: Vec<usize> = tile.children.clone();
                 for &child_idx in &children {
-                    traverse_tile(tree, child_idx, camera, sse_denominator, maximum_sse, result);
+                    // Bounds guard — skip out-of-range indices silently.
+                    if child_idx >= tree.tiles.len() {
+                        continue;
+                    }
+                    traverse_tile(tree, child_idx, camera, sse_denominator, maximum_sse, result, depth + 1);
                 }
             }
         }
@@ -395,5 +618,48 @@ mod tests {
         let r = Refine::Add;
         let r2 = r; // Copy
         assert_eq!(r, r2);
+    }
+
+    #[test]
+    fn out_of_range_child_index_is_skipped() {
+        // Root references a child index (99) that does not exist.
+        let mut tree = HlodTree::new();
+        tree.push(HlodTile {
+            geometric_error: 10_000.0,
+            bounding_sphere_center: [0.0, 0.0, 0.0],
+            bounding_sphere_radius: 10.0,
+            refine: Refine::Replace,
+            content_uri: Some("root.glb".into()),
+            children: vec![99], // out of range
+        });
+        // Must not panic; render list is empty (REPLACE + refine, but no valid child).
+        let r = traverse_hlod(&tree, [0.0, 0.0, 0.0], default_frustum(), 16.0);
+        assert!(r.render_list.is_empty());
+    }
+
+    #[test]
+    fn depth_guard_prevents_cycle_infinite_loop() {
+        // Tile 0 points to tile 1 which points back to tile 0 — a cycle.
+        let mut tree = HlodTree::new();
+        tree.push(HlodTile {
+            geometric_error: 10_000.0,
+            bounding_sphere_center: [0.0, 0.0, 0.0],
+            bounding_sphere_radius: 10.0,
+            refine: Refine::Add,
+            content_uri: None,
+            children: vec![1],
+        });
+        tree.push(HlodTile {
+            geometric_error: 10_000.0,
+            bounding_sphere_center: [0.0, 0.0, 0.0],
+            bounding_sphere_radius: 10.0,
+            refine: Refine::Add,
+            content_uri: None,
+            children: vec![0], // cycle back to root
+        });
+        // Must terminate (depth guard fires at MAX_HLOD_DEPTH).
+        let r = traverse_hlod(&tree, [0.0, 0.0, 0.0], default_frustum(), 16.0);
+        // Both tiles have no content_uri — render list empty, but no panic/hang.
+        let _ = r;
     }
 }

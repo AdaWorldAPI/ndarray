@@ -40,6 +40,21 @@
 /// The hot-path helper [`SseFrustum::sse_denominator`] pre-computes
 /// `2 * tan(fovy/2)` once per frame so the per-tile call is a
 /// multiply-divide only.
+///
+/// # Examples
+/// ```
+/// use cesium::sse::{SseFrustum, sse_for_tile, tile_meets_sse};
+///
+/// let frustum = SseFrustum {
+///     viewport_height_px: 1080.0,
+///     fovy_rad: std::f32::consts::FRAC_PI_3,
+/// };
+/// let denom = frustum.sse_denominator();          // ≈ 935.307
+/// let sse   = sse_for_tile(20.0, 500.0, denom);  // ≈ 37.41 px
+/// assert!((sse - 37.412).abs() < 0.1);
+/// assert!(tile_meets_sse(1.0, 1000.0, denom, 16.0));  // tiny error — accepted
+/// assert!(!tile_meets_sse(10_000.0, 1.0, denom, 16.0)); // huge error — rejected
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SseFrustum {
     /// Render target height in pixels.
@@ -53,6 +68,19 @@ impl SseFrustum {
     ///
     /// Cache this value for the duration of a frame; call [`sse_for_tile`] with
     /// the result to avoid recomputing `tan` per tile.
+    ///
+    /// # Examples
+    /// ```
+    /// use cesium::sse::SseFrustum;
+    ///
+    /// let frustum = SseFrustum {
+    ///     viewport_height_px: 1080.0,
+    ///     fovy_rad: std::f32::consts::FRAC_PI_3,
+    /// };
+    /// let denom = frustum.sse_denominator();
+    /// // 1080 / (2 * tan(π/6)) ≈ 935.307
+    /// assert!((denom - 935.307).abs() < 0.1);
+    /// ```
     #[inline]
     pub fn sse_denominator(self) -> f32 {
         // 2 * tan(fovy / 2)  — the angular subtension of the viewport
@@ -84,6 +112,21 @@ impl SseFrustum {
 /// sse = geometricError * (viewportHeight / (distance * 2 * tan(fovy/2)))
 ///     = geometricError * sse_denominator / distance
 /// ```
+///
+/// # Examples
+/// ```
+/// use cesium::sse::{SseFrustum, sse_for_tile};
+///
+/// let frustum = SseFrustum {
+///     viewport_height_px: 1080.0,
+///     fovy_rad: std::f32::consts::FRAC_PI_3,
+/// };
+/// let denom = frustum.sse_denominator();          // ≈ 935.307
+/// let sse   = sse_for_tile(20.0, 500.0, denom);  // 20 * 935.307 / 500 ≈ 37.41
+/// assert!((sse - 37.412).abs() < 0.1);
+/// // zero geometric error → zero SSE regardless of distance
+/// assert_eq!(sse_for_tile(0.0, 500.0, denom), 0.0);
+/// ```
 #[inline]
 pub fn sse_for_tile(geometric_error: f32, distance: f32, sse_denominator: f32) -> f32 {
     // Clamp distance to avoid division by zero; UNVERIFIED: Cesium's exact
@@ -95,6 +138,21 @@ pub fn sse_for_tile(geometric_error: f32, distance: f32, sse_denominator: f32) -
 /// Returns `true` when the tile meets the LOD acceptance criterion.
 ///
 /// Equivalent to `sse_for_tile(...) <= maximum_sse`.
+///
+/// # Examples
+/// ```
+/// use cesium::sse::{SseFrustum, tile_meets_sse};
+///
+/// let frustum = SseFrustum {
+///     viewport_height_px: 1080.0,
+///     fovy_rad: std::f32::consts::FRAC_PI_3,
+/// };
+/// let denom = frustum.sse_denominator();
+/// // small geometric error far away — SSE ≈ 0.935 px ≤ 16.0 → accepted
+/// assert!(tile_meets_sse(1.0, 1000.0, denom, 16.0));
+/// // large geometric error up close — SSE enormous → rejected
+/// assert!(!tile_meets_sse(10_000.0, 1.0, denom, 16.0));
+/// ```
 #[inline]
 pub fn tile_meets_sse(geometric_error: f32, distance: f32, sse_denominator: f32, maximum_sse: f32) -> bool {
     sse_for_tile(geometric_error, distance, sse_denominator) <= maximum_sse

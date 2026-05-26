@@ -44,6 +44,22 @@
 /// Flat interleaved XYZ: `[x0, y0, z0, x1, y1, z1, …]`, length `3 * count`.
 /// Suitable for upload as a KHR_gaussian_splatting point-primitive `POSITION`
 /// accessor (component type `FLOAT`, count = `point_count`).
+///
+/// # Invariant
+///
+/// The safe constructor [`PointCloud::new`] guarantees `xyz.len() == 3 *
+/// point_count`.  The public fields are kept for backwards-compatible literal
+/// construction, but callers are strongly encouraged to use `new` to avoid
+/// silent desync between `xyz` and `point_count`.
+///
+/// # Examples
+///
+/// ```
+/// let pc = cesium::point_fallback::PointCloud::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+/// assert_eq!(pc.point_count, 2);
+/// assert_eq!(pc.position(0), [1.0, 2.0, 3.0]);
+/// assert!(pc.try_position(5).is_none());
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct PointCloud {
     /// Flat XYZ buffer: length `3 * point_count`.
@@ -53,16 +69,93 @@ pub struct PointCloud {
 }
 
 impl PointCloud {
+    /// Construct a [`PointCloud`] from a flat XYZ buffer, deriving
+    /// `point_count` as `xyz.len() / 3`.
+    ///
+    /// This is the preferred constructor because it guarantees the internal
+    /// invariant `xyz.len() == 3 * point_count` by construction.  If `xyz`
+    /// has 1 or 2 trailing floats that do not form a complete triplet they are
+    /// ignored by integer division (e.g. 7 floats → `point_count = 2`, the
+    /// 7th float is kept in the buffer but unreachable through `position` /
+    /// `try_position`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let pc = cesium::point_fallback::PointCloud::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    /// assert_eq!(pc.point_count, 2);
+    /// assert_eq!(pc.xyz.len(), 6);
+    ///
+    /// // Stray trailing float is ignored by integer division.
+    /// let pc2 = cesium::point_fallback::PointCloud::new(vec![1.0, 2.0, 3.0, 4.0]);
+    /// assert_eq!(pc2.point_count, 1);
+    /// ```
+    pub fn new(xyz: Vec<f32>) -> Self {
+        let point_count = xyz.len() / 3;
+        Self { xyz, point_count }
+    }
+
     /// Return the position of point `i` as `[x, y, z]`.
     ///
-    /// Panics if `i >= point_count`.
+    /// # Panics
+    ///
+    /// Panics if `i >= point_count` or if `xyz` has been manually desynced
+    /// from `point_count` so that the required floats are missing.  Use
+    /// [`PointCloud::try_position`] for a non-panicking alternative, and
+    /// [`PointCloud::new`] to construct values that cannot desync.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let pc = cesium::point_fallback::PointCloud::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    /// assert_eq!(pc.position(0), [1.0, 2.0, 3.0]);
+    /// assert_eq!(pc.position(1), [4.0, 5.0, 6.0]);
+    /// ```
+    ///
+    /// ```should_panic
+    /// let pc = cesium::point_fallback::PointCloud::new(vec![1.0, 2.0, 3.0]);
+    /// let _ = pc.position(1); // index out of range — panics
+    /// ```
     pub fn position(&self, i: usize) -> [f32; 3] {
-        assert!(i < self.point_count, "PointCloud::position: index {i} >= point_count {}", self.point_count);
+        self.try_position(i)
+            .expect("PointCloud::position: index out of range or xyz/point_count desynced")
+    }
+
+    /// Return the position of point `i` as `Some([x, y, z])`, or `None` if
+    /// `i` is out of range or the struct has been manually desynced so that
+    /// the required floats are absent from `xyz`.
+    ///
+    /// This is the non-panicking counterpart to [`PointCloud::position`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let pc = cesium::point_fallback::PointCloud::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    /// assert_eq!(pc.try_position(0), Some([1.0, 2.0, 3.0]));
+    /// assert_eq!(pc.try_position(1), Some([4.0, 5.0, 6.0]));
+    /// assert!(pc.try_position(2).is_none());
+    /// assert!(pc.try_position(5).is_none());
+    /// ```
+    pub fn try_position(&self, i: usize) -> Option<[f32; 3]> {
+        if i >= self.point_count {
+            return None;
+        }
         let base = i * 3;
-        [self.xyz[base], self.xyz[base + 1], self.xyz[base + 2]]
+        if base + 2 >= self.xyz.len() {
+            return None;
+        }
+        Some([self.xyz[base], self.xyz[base + 1], self.xyz[base + 2]])
     }
 
     /// Byte length of the XYZ buffer (for KHR accessor `byteLength`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let pc = cesium::point_fallback::PointCloud::new(vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0]);
+    /// // 2 points × 3 floats × 4 bytes = 24
+    /// assert_eq!(pc.byte_length(), 24);
+    /// ```
     pub fn byte_length(&self) -> usize {
         self.xyz.len() * 4
     }

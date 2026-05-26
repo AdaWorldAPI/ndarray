@@ -77,6 +77,19 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Errors the oracle can return.
+///
+/// # Examples
+///
+/// ```
+/// use cesium::oracle::OracleError;
+///
+/// let e = OracleError::DimensionMismatch { ref_len: 12, candidate_len: 9 };
+/// assert!(format!("{e}").contains("12"));
+/// assert!(format!("{e}").contains("9"));
+///
+/// let e2 = OracleError::EmptyFramebuffer;
+/// assert!(format!("{e2}").contains("empty"));
+/// ```
 #[derive(Debug)]
 pub enum OracleError {
     /// I/O error reading a reference file.
@@ -136,6 +149,17 @@ impl From<std::io::Error> for OracleError {
 /// See module-level doc.  Any SSIM < 0.98 or PSNR < 35 dB for a scene with
 /// depth-ordered overlapping Gaussians should be attributed to sort-order
 /// divergence before tuning thresholds.
+///
+/// # Examples
+///
+/// ```
+/// use cesium::oracle::ParityMetrics;
+///
+/// // Construct metrics directly to inspect fields.
+/// let m = ParityMetrics { ssim: 0.97, psnr: 38.5, mse: 0.00014, sample_count: 48 };
+/// assert!(m.ssim > 0.95);
+/// assert!(m.psnr.is_finite());
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParityMetrics {
     /// SSIM in `[−1, 1]`.  1.0 = identical.
@@ -166,6 +190,28 @@ impl ParityMetrics {
     ///       / ((mu_r² + mu_c² + C1)(var_r + var_c + C2))
     /// MSE   = mean((ref[i] - cand[i])²)
     /// PSNR  = 10·log10(1.0 / MSE)   (MAX=1.0)
+    /// ```
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// fn main() -> Result<(), cesium::oracle::OracleError> {
+    ///     use cesium::oracle::ParityMetrics;
+    ///
+    ///     // Identical buffers → PSNR = ∞, SSIM = 1.0.
+    ///     let fb = vec![0.5f32, 0.3, 0.8, 0.1, 0.9, 0.2];
+    ///     let m = ParityMetrics::compute(&fb, &fb)?;
+    ///     assert!(m.psnr.is_infinite());
+    ///     assert!((m.ssim - 1.0).abs() < 1e-5);
+    ///
+    ///     // Non-equal buffers → finite PSNR.
+    ///     let ref_fb  = vec![1.0f32; 6];
+    ///     let cand_fb = vec![0.0f32; 6];
+    ///     let m2 = ParityMetrics::compute(&ref_fb, &cand_fb)?;
+    ///     assert!(m2.psnr.is_finite());
+    ///
+    ///     Ok(())
+    /// }
     /// ```
     pub fn compute(reference: &[f32], candidate: &[f32]) -> Result<Self, OracleError> {
         let n = reference.len();
@@ -229,6 +275,25 @@ impl ParityMetrics {
     ///
     /// The oracle measures parity — it does not assert it.  Callers in
     /// [`crate::fixtures`] decide whether to gate on these results.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// fn main() -> Result<(), cesium::oracle::OracleError> {
+    ///     use cesium::oracle::ParityMetrics;
+    ///
+    ///     // Identical buffers pass any reasonable threshold.
+    ///     let fb = vec![0.5f32, 0.3, 0.8, 0.1, 0.9, 0.2];
+    ///     let m = ParityMetrics::compute(&fb, &fb)?;
+    ///     assert!(m.passes(0.99, 40.0));
+    ///
+    ///     // Significantly different buffers fail a tight threshold.
+    ///     let m2 = ParityMetrics::compute(&vec![1.0f32; 6], &vec![0.0f32; 6])?;
+    ///     assert!(!m2.passes(0.99, 40.0));
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn passes(&self, min_ssim: f32, min_psnr_db: f32) -> bool {
         self.ssim >= min_ssim && (self.psnr >= min_psnr_db || self.psnr.is_infinite())
     }
