@@ -133,33 +133,37 @@ backend" — holds for the **3×3** EWA sandwich `Σ' = M·Σ·Mᵀ`.
 
 ### Hardware / build
 
-Container, default features, `.cargo/config.toml` `target-cpu=x86-64-v3`
-(AVX2 baseline); `sandwich_x16`'s per-function `#[target_feature(avx512f)]`
-+ LazyLock runtime dispatch selects AVX-512 on this host. No RUSTFLAGS.
+Container, AVX-512F+BW+VL. The committed `.cargo/config.toml` pins
+`target-cpu=x86-64-v3` (for GitHub/CI portability); **benches are run at the
+project's deployment tier `x86-64-v4`** (AVX-512 native — `F32x16` is a
+single `__m512`), via the documented override:
 
 ```bash
-cargo bench --features splat3d --bench ewa_syrk_crossover
+RUSTFLAGS="-Ctarget-cpu=x86-64-v4" \
+  cargo bench --features splat3d --bench ewa_syrk_crossover
 ```
 
-### `M·N·Mᵀ` sandwich — three kernel shapes (Melem/s, higher = better)
+### `M·N·Mᵀ` sandwich — three kernel shapes (Melem/s, higher = better) @ v4
 
 | N | scalar | `simd_x16` | `gemm_shape` (BLAS-shape) |
 |---|---|---|---|
-| 1 024 | 88.9 | **179.4** | 90.5 |
-| 100 000 | 84.1 | **170.0** | 85.6 |
-| 1 000 000 | 85.6 | **164.5** | 86.8 |
+| 1 024 | 85.2 | **175.2** | 90.1 |
+| 100 000 | 76.3 | **169.6** | 85.4 |
+| 1 000 000 | 81.9 | **172.0** | 87.1 |
 
 `gemm_shape` = two dense 3×3 matmuls per element (the shape a per-matrix
-BLAS call imposes), **in-process, no FFI**.
+BLAS call imposes), **in-process, no FFI**. The v3 baseline is within ~5% of
+these v4 numbers for this transpose-bound 6-field kernel — the verdict is
+tier-robust.
 
-### `project_batch` end-to-end (Melem/s)
+### `project_batch` end-to-end @ v4
 
 | N | throughput |
 |---|---|
-| 1 024 | 21.7 |
-| 100 000 | ~19.2 |
+| 1 024 | 12.1 Melem/s (84 µs) |
 
-(full pipeline incl. scalar SH eval; the sandwich is a fraction of this.)
+(full pipeline incl. scalar `sh_eval_deg3` per visible gaussian — SH eval
+dominates; the covariance sandwich is a small fraction of this.)
 
 ### Verdict — BLAS backend NOT justified at 3×3
 
