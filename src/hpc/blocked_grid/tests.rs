@@ -7,7 +7,7 @@
 //! Test groups
 //! -----------
 //! 1. W4 bulk_apply composition  — map_l1 composes with `hpc::bulk::bulk_apply`
-//!    and `bulk_scan` over per-row slices inside the closure.
+//!    and `bulk_for_each` over per-row slices inside the closure.
 //! 2. L1→L2 cascade              — 256×256 ShaderMantissaGrid map_l1 populates
 //!    cell-by-cell, then map_l2 aggregates per super-block.
 //! 3. Half-square AMX INT8       — AmxInt8Grid::new(32, 128), blocks_base coords.
@@ -22,24 +22,24 @@ use crate::hpc::blocked_grid::{
 };
 
 // ============================================================
-// 1. W4 bulk_apply / bulk_scan composition
+// 1. W4 bulk_apply / bulk_for_each composition
 //
 // Demonstrates that PR-X3's map_l1 composes with the W4 primitives:
 //   - outer loop = map_l1 (one closure per 64×64 base block)
-//   - inner loop = bulk_apply / bulk_scan over each row slice in the block
+//   - inner loop = bulk_apply / bulk_for_each over each row slice in the block
 //
 // This proves the two design layers nest without either re-implementing the
 // other's chunking logic.
 // ============================================================
 
-/// map_l1 closure using bulk_scan to read each row and compute a per-row sum,
-/// storing it into the first cell of the corresponding output row.
+/// map_l1 closure using bulk_for_each to read each row and compute a per-row
+/// sum, storing it into the first cell of the corresponding output row.
 ///
-/// Demonstrates: bulk_scan(row_slice, chunk_size, closure) correctly
+/// Demonstrates: bulk_for_each(row_slice, chunk_size, closure) correctly
 /// accumulates the sum; no re-implemented chunking inside map_l1.
 #[test]
-fn w4_bulk_scan_inside_map_l1_row_sum() {
-    use crate::hpc::bulk::bulk_scan;
+fn w4_bulk_for_each_inside_map_l1_row_sum() {
+    use crate::hpc::bulk::bulk_for_each;
 
     // Build a 64×64 grid filled with known values.
     let mut g = BlockedGrid::<u64>::new(64, 64);
@@ -50,13 +50,13 @@ fn w4_bulk_scan_inside_map_l1_row_sum() {
         }
     }
 
-    // map_l1: for each block row, use bulk_scan to compute the row sum and
+    // map_l1: for each block row, use bulk_for_each to compute the row sum and
     // store it in the first cell of the output row.
     let out = g.map_l1::<u64, _>(|inp, outp| {
         for r in 0..64 {
             let row = inp.row(r);
             let mut row_sum = 0u64;
-            bulk_scan(row, 16, |chunk, _start| {
+            bulk_for_each(row, 16, |chunk, _start| {
                 row_sum += chunk.iter().sum::<u64>();
             });
             outp.row_mut(r)[0] = row_sum;

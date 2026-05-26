@@ -5,7 +5,8 @@
 //! (chunk_size matched to L1 working-set) or when staging chunks to SoA for
 //! SIMD processing inside the closure.
 //!
-//! [`bulk_scan`] is the read-only sibling for non-mutating traversal.
+//! [`bulk_for_each`] is the read-only sibling for non-mutating traversal.
+//! [`bulk_scan`] is a deprecated alias for [`bulk_for_each`].
 //!
 //! Both helpers are scalar wrappers — no `#[target_feature]`, no per-arch
 //! dispatch. They are user-level code per the layering rule in
@@ -30,7 +31,7 @@
 //!     .map(|i| Item { a: i as f32, b: (i * 2) as f32, c: (i * 3) as f32 })
 //!     .collect();
 //! bulk_apply(&mut items, 16, |chunk, _start| {
-//!     let soa = aos_to_soa::<_, _, 3, _>(chunk, |it| [it.a, it.b, it.c]);
+//!     let soa = aos_to_soa::<_, f32, 3, _>(chunk, |it| [it.a, it.b, it.c]);
 //!     // ... per-field SIMD-style loops over soa.field(0), soa.field(1), ...
 //!     let _ = soa;
 //! });
@@ -65,6 +66,7 @@
 /// });
 /// assert_eq!(v, vec![0, 10, 20, 30, 40, 50, 60, 70, 80, 90]);
 /// ```
+#[inline]
 pub fn bulk_apply<T, F>(items: &mut [T], chunk_size: usize, mut f: F)
 where
     F: FnMut(&mut [T], usize),
@@ -89,25 +91,52 @@ where
 ///
 /// # Example
 /// ```
-/// use ndarray::hpc::bulk::bulk_scan;
+/// use ndarray::hpc::bulk::bulk_for_each;
 /// let v: Vec<i32> = (0..10).collect();
 /// let mut sum = 0i32;
-/// bulk_scan(&v, 4, |chunk, _start| {
+/// bulk_for_each(&v, 4, |chunk, _start| {
 ///     sum += chunk.iter().sum::<i32>();
 /// });
 /// assert_eq!(sum, 45);
 /// ```
-pub fn bulk_scan<T, F>(items: &[T], chunk_size: usize, mut f: F)
+#[inline]
+pub fn bulk_for_each<T, F>(items: &[T], chunk_size: usize, mut f: F)
 where
     F: FnMut(&[T], usize),
 {
-    assert!(chunk_size > 0, "bulk_scan: chunk_size must be > 0");
+    assert!(chunk_size > 0, "bulk_for_each: chunk_size must be > 0");
     let mut start = 0;
     for chunk in items.chunks(chunk_size) {
         let n = chunk.len();
         f(chunk, start);
         start += n;
     }
+}
+
+/// Deprecated alias for [`bulk_for_each`].
+///
+/// Use [`bulk_for_each`] instead. This alias exists only to avoid breaking
+/// callers from before the rename and will be removed in a future release.
+///
+/// # Example
+/// ```
+/// #[allow(deprecated)]
+/// use ndarray::hpc::bulk::bulk_scan;
+/// let v: Vec<i32> = (0..10).collect();
+/// let mut sum = 0i32;
+/// #[allow(deprecated)]
+/// bulk_scan(&v, 4, |chunk, _start| {
+///     sum += chunk.iter().sum::<i32>();
+/// });
+/// assert_eq!(sum, 45);
+/// ```
+#[deprecated(note = "renamed to `bulk_for_each`")]
+#[inline]
+pub fn bulk_scan<T, F>(items: &[T], chunk_size: usize, f: F)
+where
+    F: FnMut(&[T], usize),
+{
+    bulk_for_each(items, chunk_size, f)
 }
 
 #[cfg(test)]
@@ -206,33 +235,33 @@ mod tests {
         assert_eq!(count, 0);
     }
 
-    // ----- bulk_scan -----
+    // ----- bulk_for_each -----
 
     #[test]
-    fn bulk_scan_chunk_size_divides_len() {
+    fn bulk_for_each_chunk_size_divides_len() {
         let v: Vec<i32> = (0..10).collect();
         let mut sizes = Vec::new();
-        bulk_scan(&v, 5, |chunk, _start| {
+        bulk_for_each(&v, 5, |chunk, _start| {
             sizes.push(chunk.len());
         });
         assert_eq!(sizes, vec![5, 5]);
     }
 
     #[test]
-    fn bulk_scan_chunk_size_does_not_divide_len() {
+    fn bulk_for_each_chunk_size_does_not_divide_len() {
         let v: Vec<i32> = (0..10).collect();
         let mut sizes = Vec::new();
-        bulk_scan(&v, 3, |chunk, _start| {
+        bulk_for_each(&v, 3, |chunk, _start| {
             sizes.push(chunk.len());
         });
         assert_eq!(sizes, vec![3, 3, 3, 1]);
     }
 
     #[test]
-    fn bulk_scan_chunk_size_greater_than_len() {
+    fn bulk_for_each_chunk_size_greater_than_len() {
         let v: Vec<i32> = (0..10).collect();
         let mut sizes = Vec::new();
-        bulk_scan(&v, 100, |chunk, start| {
+        bulk_for_each(&v, 100, |chunk, start| {
             assert_eq!(start, 0);
             sizes.push(chunk.len());
         });
@@ -240,17 +269,60 @@ mod tests {
     }
 
     #[test]
-    fn bulk_scan_start_indices_3_3_3_1() {
+    fn bulk_for_each_start_indices_3_3_3_1() {
         let v: Vec<i32> = (0..10).collect();
         let mut start_indices: Vec<usize> = Vec::new();
-        bulk_scan(&v, 3, |_chunk, start| {
+        bulk_for_each(&v, 3, |_chunk, start| {
             start_indices.push(start);
         });
         assert_eq!(start_indices, vec![0, 3, 6, 9]);
     }
 
     #[test]
-    fn bulk_scan_sums_chunks() {
+    fn bulk_for_each_sums_chunks() {
+        let v: Vec<i32> = (0..10).collect();
+        let mut sum = 0i32;
+        bulk_for_each(&v, 4, |chunk, _start| {
+            sum += chunk.iter().sum::<i32>();
+        });
+        assert_eq!(sum, 45);
+    }
+
+    #[test]
+    #[should_panic(expected = "chunk_size must be > 0")]
+    fn bulk_for_each_panics_on_zero_chunk_size() {
+        let v: Vec<i32> = (0..4).collect();
+        bulk_for_each(&v, 0, |_, _| {});
+    }
+
+    #[test]
+    fn bulk_for_each_chunk_size_usize_max_single_chunk() {
+        let v: Vec<i32> = (0..4).collect();
+        let mut count = 0;
+        bulk_for_each(&v, usize::MAX, |chunk, start| {
+            count += 1;
+            assert_eq!(start, 0);
+            assert_eq!(chunk.len(), 4);
+        });
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn bulk_for_each_empty_slice() {
+        let v: Vec<i32> = Vec::new();
+        let mut count = 0;
+        bulk_for_each(&v, 4, |_, _| {
+            count += 1;
+        });
+        assert_eq!(count, 0);
+    }
+
+    // ----- bulk_scan (deprecated alias) -----
+    // These tests verify the alias still compiles and delegates correctly.
+
+    #[test]
+    #[allow(deprecated)]
+    fn bulk_scan_deprecated_alias_still_works() {
         let v: Vec<i32> = (0..10).collect();
         let mut sum = 0i32;
         bulk_scan(&v, 4, |chunk, _start| {
@@ -260,32 +332,11 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     #[should_panic(expected = "chunk_size must be > 0")]
-    fn bulk_scan_panics_on_zero_chunk_size() {
+    fn bulk_scan_deprecated_alias_panics_on_zero_chunk_size() {
         let v: Vec<i32> = (0..4).collect();
         bulk_scan(&v, 0, |_, _| {});
-    }
-
-    #[test]
-    fn bulk_scan_chunk_size_usize_max_single_chunk() {
-        let v: Vec<i32> = (0..4).collect();
-        let mut count = 0;
-        bulk_scan(&v, usize::MAX, |chunk, start| {
-            count += 1;
-            assert_eq!(start, 0);
-            assert_eq!(chunk.len(), 4);
-        });
-        assert_eq!(count, 1);
-    }
-
-    #[test]
-    fn bulk_scan_empty_slice() {
-        let v: Vec<i32> = Vec::new();
-        let mut count = 0;
-        bulk_scan(&v, 4, |_, _| {
-            count += 1;
-        });
-        assert_eq!(count, 0);
     }
 
     // ----- integration with aos_to_soa -----
