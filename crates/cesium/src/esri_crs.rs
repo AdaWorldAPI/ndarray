@@ -166,12 +166,7 @@ pub struct EsriCrs;
 /// //     EsriCrs { wkid, latest_wkid, vcs_wkid, latest_vcs_wkid }
 /// // }
 /// ```
-pub fn from_pbf_spatial_ref(
-    _wkid: u32,
-    _latest_wkid: u32,
-    _vcs_wkid: u32,
-    _latest_vcs_wkid: u32,
-) -> EsriCrs {
+pub fn from_pbf_spatial_ref(_wkid: u32, _latest_wkid: u32, _vcs_wkid: u32, _latest_vcs_wkid: u32) -> EsriCrs {
     unimplemented!("scaffold only")
 }
 
