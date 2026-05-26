@@ -295,7 +295,7 @@ impl ParityMetrics {
     /// }
     /// ```
     pub fn passes(&self, min_ssim: f32, min_psnr_db: f32) -> bool {
-        self.ssim >= min_ssim && (self.psnr >= min_psnr_db || self.psnr.is_infinite())
+        self.ssim >= min_ssim && (self.psnr >= min_psnr_db || self.psnr == f32::INFINITY)
     }
 }
 
