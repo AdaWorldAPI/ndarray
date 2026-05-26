@@ -2406,11 +2406,22 @@ impl I8x16 {
     /// ```
     #[inline(always)]
     pub fn saturating_abs(self) -> Self {
-        let mut o = [0i8; 16];
-        for i in 0..16 {
-            o[i] = self.0[i].saturating_abs();
+        // SAFETY: `_mm_abs_epi8` (SSSE3) and `_mm_min_epu8` (SSE2) are available
+        // on every x86_64 build this file compiles for — the workspace pins
+        // `x86-64-v3`, which includes SSSE3. The unaligned load/store match the
+        // `[i8; 16]` storage. VPABSB returns 0x80 for `i8::MIN` (the bit pattern
+        // of +128, which does not fit in i8); VPMINUB then clamps 0x80 (= 128
+        // unsigned) down to 0x7f (= 127 = `i8::MAX`), producing the saturating
+        // result bare VPABSB cannot — per the consumer contract's VPABSB
+        // correction. All 16 lanes are saturated branchlessly.
+        use core::arch::x86_64::*;
+        unsafe {
+            let v = _mm_loadu_si128(self.0.as_ptr() as *const __m128i);
+            let clamped = _mm_min_epu8(_mm_abs_epi8(v), _mm_set1_epi8(0x7f_u8 as i8));
+            let mut o = [0i8; 16];
+            _mm_storeu_si128(o.as_mut_ptr() as *mut __m128i, clamped);
+            Self(o)
         }
-        Self(o)
     }
 }
 
@@ -4493,5 +4504,64 @@ mod int_simd_tests {
         assert_eq!(I8x32::LANES, 32);
         assert_eq!(I16x32::LANES, 32);
         assert_eq!(I16x16::LANES, 16);
+    }
+
+    // ── W1a primitive tests (binding per the consumer contract) ──────────────
+
+    /// Binding: `saturating_abs(i8::MIN) == i8::MAX` for every lane (the VPABSB
+    /// correction — bare VPABSB would return i8::MIN).
+    #[test]
+    fn w1a_saturating_abs_i8x16_min_saturates_to_max() {
+        let r = I8x16::splat(i8::MIN).saturating_abs().to_array();
+        assert!(r.iter().all(|&x| x == i8::MAX), "got {r:?}");
+    }
+
+    #[test]
+    fn w1a_saturating_abs_i8x16_matches_scalar_reference() {
+        let corpus: [i8; 16] = [i8::MIN, -128, -127, -1, 0, 1, 7, 8, 64, 126, i8::MAX, -64, -2, 2, 100, -100];
+        let got = I8x16::from_array(corpus).saturating_abs().to_array();
+        let mut want = [0i8; 16];
+        for i in 0..16 {
+            want[i] = corpus[i].saturating_abs();
+        }
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn w1a_saturating_abs_i8x32_min_saturates_to_max() {
+        let r = I8x32::splat(i8::MIN).saturating_abs().to_array();
+        assert!(r.iter().all(|&x| x == i8::MAX), "got {r:?}");
+    }
+
+    #[test]
+    fn w1a_from_i4_packed_u64_sign_extends() {
+        // 0x0 → 0, 0xf → -1, 0x8 → -8, 0x7 → 7
+        assert_eq!(I8x16::from_i4_packed_u64(0).lane_i8::<0>(), 0);
+        assert_eq!(I8x16::from_i4_packed_u64(u64::MAX).lane_i8::<0>(), -1);
+        assert_eq!(I8x16::from_i4_packed_u64(0x8888_8888_8888_8888).lane_i8::<3>(), -8);
+        assert_eq!(I8x16::from_i4_packed_u64(0x7777_7777_7777_7777).lane_i8::<5>(), 7);
+        // Mixed: low nibble 0x3 → 3, next nibble 0xC → -4.
+        let mixed = I8x16::from_i4_packed_u64(0xC3);
+        assert_eq!(mixed.lane_i8::<0>(), 3);
+        assert_eq!(mixed.lane_i8::<1>(), -4);
+    }
+
+    #[test]
+    fn w1a_u64x8_popcnt_and_xor_popcount() {
+        let ones = U64x8::splat(u64::MAX);
+        assert!(ones.popcnt().to_array().iter().all(|&x| x == 64));
+        assert!(U64x8::splat(0).popcnt().to_array().iter().all(|&x| x == 0));
+        // Hamming: all-bits-different → 64 × 8 = 512; same → 0.
+        assert_eq!(U64x8::splat(u64::MAX).xor_popcount(U64x8::splat(0)), 512);
+        let v = U64x8::splat(0xdead_beef_cafe_babe);
+        assert_eq!(v.xor_popcount(v), 0);
+    }
+
+    #[test]
+    fn w1a_gather_u16_in_bounds() {
+        let table = [10u16, 20, 30, 40, 50, 60, 70, 80];
+        let idx = U16x8::from_array([0, 2, 4, 6, 1, 3, 5, 7]);
+        let got = U16x8::gather_u16(idx, &table).to_array();
+        assert_eq!(got, [10, 30, 50, 70, 20, 40, 60, 80]);
     }
 }
