@@ -20,11 +20,25 @@ things, and nothing else:
 Using-ArcGIS vs reinventing-and-reverse-engineering is a completely different
 animal. We are the latter, never the former.
 
+**Optional grounding pillar (modesty clause).** We keep *one* optional,
+feature-gated `cesium` **reference** crate — never in the production hotpath,
+never a runtime dependency — whose only job is to run the real Cesium/ArcGIS
+path and emit reference output we diff against. This is the *runnable* form of
+the legacy pillar: it keeps "we're at parity / better" honest by **measuring**
+against a live oracle instead of asserting it from a capability matrix. It is
+the institutional humility against reinvention-hubris — the same "measure,
+don't assert" discipline we apply everywhere, turned on our own reinvention
+claim. It reads their JSON because it *is* the reference path; that's fine —
+it's dev/reference, walled off from production, so rule 3 still holds.
+
 ## Hard rules
 
-1. **Single crate family: `3dgs-*`.** No `cesium-*`, no `ada-*` (deprecated).
-   Naming is `3dgs-<role>` (`3dgs-tiles`, `3dgs-ewa-syrk`, future `3dgs-render`,
-   `3dgs-codec`, …).
+1. **Single production crate family: `3dgs-*`.** No `cesium-*` *production*
+   family, no `ada-*` (deprecated). Naming is `3dgs-<role>` (`3dgs-tiles`,
+   `3dgs-ewa-syrk`, future `3dgs-render`, `3dgs-codec`, …). **One exception:** a
+   single *optional, feature-gated* `cesium` **reference** crate — the runnable
+   legacy pillar / parity oracle (see Posture's modesty clause), never in the
+   production hotpath, never a runtime dependency.
 
 2. **CAM SoA is the mandatory representation.** CAM SoA =
    - **content-addressable** — addressed by `cam_pq` (CAM-PQ) codebook index, not by position;
@@ -56,7 +70,8 @@ animal. We are the latter, never the former.
 
 5. **Rethink clause.** Our CAM SoA is canonical. An external format is
    reconsidered **only** on falsifiable proof it is strictly better — not by
-   default, not for interop convenience.
+   default, not for interop convenience. The optional `cesium` reference crate
+   (Posture / rule 1 exception) is the instrument that *produces* that proof.
 
 6. **Creation gate.** A crate exists **only with ≥1 real consumer** (≥2 for a
    generic abstraction — the `certified-field-kernel-substrate` self-fence).
@@ -72,6 +87,7 @@ this session carry a description; the rest are the catalogue checklist below.
 |---|---|---|---|---|---|
 | `3dgs-tiles` | lance-graph | `3dgs-*` | planned | 3D Tiles reader. **Reverse-engineers** KHR_gaussian_splatting glTF + ESRI_crs → CAM SoA (donkey-bridge, transitional); JSON read-once at the cold boundary only | Geo |
 | `3dgs-ewa-syrk` | ndarray (`benches/`) | `3dgs-*` | planned | EWA-SYRK crossover bench (`project_batch` vs cblas-batched sandwich) | Kernel |
+| `cesium` (reference) | tbd | **optional/dev** | planned | runnable **legacy pillar / parity oracle** — runs the real Cesium/ArcGIS path, emits reference output to diff against. Feature-gated, never hotpath, never a runtime dep. The grounding + modesty instrument | tbd |
 | `splat3d` (module) | ndarray `src/hpc/` | — (pre-conv.) | shipped | CPU-SIMD forward renderer (`spd3`/`project`/`raster`/`sh`/`tile`/`gaussian`) | — |
 | `cam_pq` (module) | ndarray `src/hpc/` | — | shipped | 6×256 CAM-PQ codebook — the **CAM** in CAM SoA | — |
 | `simd_soa` (module) | ndarray `src/` | — | shipped | `MultiLaneColumn` lane carrier — the **SoA** in CAM SoA | — |
