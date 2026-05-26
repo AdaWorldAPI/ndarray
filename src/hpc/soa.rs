@@ -84,6 +84,7 @@ use core::array;
 /// assert_eq!(soa.field(1), &[2.0, 5.0]);
 /// assert_eq!(soa.field(2), &[3.0, 6.0]);
 /// ```
+#[derive(Clone, Debug)]
 pub struct SoaVec<T, const N: usize> {
     fields: [Vec<T>; N],
 }
@@ -246,6 +247,33 @@ impl<T, const N: usize> SoaVec<T, N> {
     }
 }
 
+impl<T: Copy, const N: usize> SoaVec<T, N> {
+    /// Iterate over individual rows, yielding each as `[T; N]` (one value
+    /// per field, reconstructed from the parallel field arrays).
+    ///
+    /// Requires `T: Copy` so each field element can be copied out without
+    /// cloning; the borrow on `self` lasts only as long as the iterator.
+    /// For non-`Copy` types, use [`chunks`](Self::chunks) with `chunk_len = 1`
+    /// and index into the single-element slices.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ndarray::hpc::soa::SoaVec;
+    /// let mut soa: SoaVec<f32, 3> = SoaVec::new();
+    /// soa.push([1.0, 2.0, 3.0]);
+    /// soa.push([4.0, 5.0, 6.0]);
+    ///
+    /// let rows: Vec<[f32; 3]> = soa.iter_rows().collect();
+    /// assert_eq!(rows[0], [1.0, 2.0, 3.0]);
+    /// assert_eq!(rows[1], [4.0, 5.0, 6.0]);
+    /// ```
+    #[inline]
+    pub fn iter_rows(&self) -> SoaRowIter<'_, T, N> {
+        SoaRowIter { soa: self, cursor: 0 }
+    }
+}
+
 impl<T, const N: usize> Default for SoaVec<T, N> {
     fn default() -> Self {
         Self::new()
@@ -273,6 +301,37 @@ impl<'a, T, const N: usize> Iterator for SoaChunks<'a, T, N> {
         Some(chunk)
     }
 }
+
+/// Iterator yielded by [`SoaVec::iter_rows`].
+///
+/// Each call to [`next`](Iterator::next) copies one row (`[T; N]`) out of
+/// the parallel field arrays. Requires `T: Copy`.
+pub struct SoaRowIter<'a, T, const N: usize> {
+    soa: &'a SoaVec<T, N>,
+    cursor: usize,
+}
+
+impl<'a, T: Copy, const N: usize> Iterator for SoaRowIter<'a, T, N> {
+    type Item = [T; N];
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.cursor >= self.soa.len() {
+            return None;
+        }
+        let row: [T; N] = array::from_fn(|i| self.soa.fields[i][self.cursor]);
+        self.cursor += 1;
+        Some(row)
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.soa.len().saturating_sub(self.cursor);
+        (remaining, Some(remaining))
+    }
+}
+
+impl<T: Copy, const N: usize> ExactSizeIterator for SoaRowIter<'_, T, N> {}
 
 /// Generate a named-field SoA struct from a struct-like declaration.
 ///
@@ -603,6 +662,7 @@ macro_rules! soa_struct {
 /// assert_eq!(soa.field(0), &[7u8, 3]);
 /// assert_eq!(soa.field(1), &[255u8, 128]);
 /// ```
+#[inline]
 pub fn aos_to_soa<T, U, const N: usize, F>(aos: &[T], extract: F) -> SoaVec<U, N>
 where
     F: Fn(&T) -> [U; N],
@@ -651,6 +711,7 @@ where
 /// assert_eq!(back[0], Pair { lo: 0x1234, hi: 0xABCD });
 /// assert_eq!(back[1], Pair { lo: 0x5678, hi: 0xEF01 });
 /// ```
+#[inline]
 pub fn soa_to_aos<T, U, const N: usize, F>(soa: &SoaVec<U, N>, build: F) -> Vec<T>
 where
     F: Fn([U; N]) -> T,
@@ -854,6 +915,68 @@ mod tests {
         let soa: SoaVec<u32, 2> = SoaVec::new();
         let chunks: Vec<[&[u32]; 2]> = soa.chunks(4).collect();
         assert!(chunks.is_empty());
+    }
+
+    // -------------------------------------------------------------------
+    // SoaVec::iter_rows
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn soa_vec_iter_rows_basic() {
+        let mut soa: SoaVec<f32, 3> = SoaVec::new();
+        soa.push([1.0, 2.0, 3.0]);
+        soa.push([4.0, 5.0, 6.0]);
+        soa.push([7.0, 8.0, 9.0]);
+        let rows: Vec<[f32; 3]> = soa.iter_rows().collect();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0], [1.0, 2.0, 3.0]);
+        assert_eq!(rows[1], [4.0, 5.0, 6.0]);
+        assert_eq!(rows[2], [7.0, 8.0, 9.0]);
+    }
+
+    #[test]
+    fn soa_vec_iter_rows_empty_yields_nothing() {
+        let soa: SoaVec<u32, 2> = SoaVec::new();
+        let rows: Vec<[u32; 2]> = soa.iter_rows().collect();
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn soa_vec_iter_rows_single_field() {
+        let mut soa: SoaVec<i32, 1> = SoaVec::new();
+        soa.push([10]);
+        soa.push([20]);
+        let rows: Vec<[i32; 1]> = soa.iter_rows().collect();
+        assert_eq!(rows, [[10], [20]]);
+    }
+
+    #[test]
+    fn soa_vec_iter_rows_size_hint() {
+        let mut soa: SoaVec<u8, 2> = SoaVec::new();
+        soa.push([1, 2]);
+        soa.push([3, 4]);
+        soa.push([5, 6]);
+        let mut it = soa.iter_rows();
+        assert_eq!(it.size_hint(), (3, Some(3)));
+        let _ = it.next();
+        assert_eq!(it.size_hint(), (2, Some(2)));
+        let _ = it.next();
+        let _ = it.next();
+        assert_eq!(it.size_hint(), (0, Some(0)));
+        assert!(it.next().is_none());
+    }
+
+    #[test]
+    fn soa_vec_iter_rows_matches_push_order() {
+        // Cross-check iter_rows against field() to ensure column order is preserved.
+        let mut soa: SoaVec<u32, 4> = SoaVec::new();
+        for i in 0..5u32 {
+            soa.push([i, i * 10, i * 100, i * 1000]);
+        }
+        for (row_idx, row) in soa.iter_rows().enumerate() {
+            let i = row_idx as u32;
+            assert_eq!(row, [i, i * 10, i * 100, i * 1000]);
+        }
     }
 
     // -------------------------------------------------------------------

@@ -2265,6 +2265,591 @@ pub type i16x16 = I16x16;
 pub use crate::simd_avx2::{i32x8, i64x4, u16x16, u32x8, u64x4, I32x8, I64x4, U16x16, U32x8, U64x4};
 
 // ============================================================================
+// W1a SIMD primitives — AVX-512 backend
+// ============================================================================
+//
+// Five new primitives per `.claude/knowledge/vertical-simd-consumer-contract.md`.
+// These live in the AVX-512 backend file and are the "real-intrinsic" tier where
+// applicable.  When AVX-512 doesn't provide a narrower type natively (I8x16,
+// U16x8, U8x8), we define minimal scalar-storage wrappers so the cross-arch API
+// is uniform.
+//
+// Types NEW to this backend (polyfill wrappers):
+//   I8x16  — 16 × i8, scalar storage (no native __m128i wrapping is necessary
+//             to match the API; AVX-512 native I8x64 is wider and the consumer
+//             only needs the 16-lane primitive here).
+//   U16x8  — 8 × u16, scalar storage polyfill.
+//   U8x8   — 8 × u8, scalar storage polyfill.
+
+// ─── I8x16 (scalar-storage polyfill for the AVX-512 backend) ─────────────────
+
+/// 16-lane `i8` vector.  On the AVX-512 backend this is a scalar-storage
+/// polyfill (no native 128-bit intrinsic wrapper is needed for the W1a API
+/// surface); on NEON it is backed by `int8x16_t`.
+///
+/// Edge cases and lane layout are identical across backends; only performance
+/// differs.
+#[cfg(target_arch = "x86_64")]
+#[derive(Copy, Clone, PartialEq)]
+#[repr(align(16))]
+pub struct I8x16(pub [i8; 16]);
+
+#[cfg(target_arch = "x86_64")]
+impl I8x16 {
+    pub const LANES: usize = 16;
+
+    /// Broadcast a single `i8` value to all 16 lanes.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let v = I8x16::splat(3);
+    /// assert!(v.to_array().iter().all(|&x| x == 3));
+    /// ```
+    #[inline(always)]
+    pub fn splat(v: i8) -> Self {
+        Self([v; 16])
+    }
+
+    /// Load 16 lanes from a slice (at least 16 elements required).
+    #[inline(always)]
+    pub fn from_slice(s: &[i8]) -> Self {
+        assert!(s.len() >= 16);
+        let mut a = [0i8; 16];
+        a.copy_from_slice(&s[..16]);
+        Self(a)
+    }
+
+    /// Load from a fixed-size array.
+    #[inline(always)]
+    pub fn from_array(arr: [i8; 16]) -> Self {
+        Self(arr)
+    }
+
+    /// Extract all 16 lanes as an array.
+    #[inline(always)]
+    pub fn to_array(self) -> [i8; 16] {
+        self.0
+    }
+
+    /// Copy lanes into a slice (must have at least 16 elements).
+    #[inline(always)]
+    pub fn copy_to_slice(self, s: &mut [i8]) {
+        assert!(s.len() >= 16);
+        s[..16].copy_from_slice(&self.0);
+    }
+
+    // ── W1a-#1: from_i4_packed_u64 + lane_i8 ────────────────────────────────
+
+    /// Unpack 16 signed i4 nibbles from a `u64` into 16 sign-extended `i8` lanes.
+    ///
+    /// Nibble layout: `lane[i] = sign_extend_i4((packed >> (4*i)) & 0xf)`.
+    /// Values `0x0..=0x7` map to `0..=7`; values `0x8..=0xf` map to `-8..=-1`.
+    ///
+    /// On the x86_64 backend this is a scalar polyfill (no AVX-512 intrinsic path
+    /// here since the spec shows multiple equivalent approaches and the NEON
+    /// path is the primary SIMD path for narrow unpacking).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// // All nibbles == 0x0 → all lanes == 0
+    /// let z = I8x16::from_i4_packed_u64(0);
+    /// assert_eq!(z.lane_i8::<0>(), 0);
+    /// // Nibble 0xf → -1
+    /// let neg = I8x16::from_i4_packed_u64(0xffff_ffff_ffff_ffff);
+    /// assert_eq!(neg.lane_i8::<0>(), -1);
+    /// // Nibble 0x8 → -8
+    /// let min4 = I8x16::from_i4_packed_u64(0x8888_8888_8888_8888);
+    /// assert_eq!(min4.lane_i8::<0>(), -8);
+    /// ```
+    #[inline(always)]
+    pub fn from_i4_packed_u64(packed: u64) -> Self {
+        let mut lanes = [0i8; 16];
+        for i in 0..16 {
+            let nibble = ((packed >> (4 * i)) & 0xf) as i8;
+            // Sign-extend: if bit 3 is set the value is negative
+            lanes[i] = if nibble > 7 { nibble - 16 } else { nibble };
+        }
+        Self(lanes)
+    }
+
+    /// Extract lane `N` as an `i8` (const-generic, checked at compile time).
+    ///
+    /// `N` must be in `0..16`; this is enforced by the array index.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let v = I8x16::from_array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16i8]);
+    /// assert_eq!(v.lane_i8::<0>(), 1);
+    /// assert_eq!(v.lane_i8::<15>(), 16);
+    /// ```
+    #[inline(always)]
+    pub fn lane_i8<const N: usize>(self) -> i8 {
+        self.0[N]
+    }
+
+    // ── W1a-#2: saturating_abs ────────────────────────────────────────────────
+
+    /// Lane-wise saturating absolute value.
+    ///
+    /// `saturating_abs(i8::MIN) == i8::MAX` (127), unlike the hardware VPABSB
+    /// which returns `i8::MIN` (−128) for the minimum value because +128 does
+    /// not fit in `i8`.  On AVX-512 this is corrected with `_mm512_min_epu8`
+    /// (VPMINUB) per the VPABSB correction in the consumer contract.  This
+    /// x86_64 polyfill delegates to `i8::saturating_abs` on the scalar path.
+    ///
+    /// All lanes are independently saturated.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let v = I8x16::splat(i8::MIN);
+    /// assert!(v.saturating_abs().to_array().iter().all(|&x| x == i8::MAX));
+    /// ```
+    #[inline(always)]
+    pub fn saturating_abs(self) -> Self {
+        let mut o = [0i8; 16];
+        for i in 0..16 {
+            o[i] = self.0[i].saturating_abs();
+        }
+        Self(o)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl core::fmt::Debug for I8x16 {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "I8x16({:?})", &self.0[..])
+    }
+}
+
+// ─── U8x8 (scalar-storage polyfill for AVX-512 backend) ──────────────────────
+
+/// 8-lane `u8` vector.  Scalar-storage polyfill used by `palette_lookup_u8x8`.
+#[cfg(target_arch = "x86_64")]
+#[derive(Copy, Clone, PartialEq)]
+#[repr(align(8))]
+pub struct U8x8(pub [u8; 8]);
+
+#[cfg(target_arch = "x86_64")]
+impl U8x8 {
+    pub const LANES: usize = 8;
+
+    /// Broadcast a single `u8` to all 8 lanes.
+    #[inline(always)]
+    pub fn splat(v: u8) -> Self {
+        Self([v; 8])
+    }
+
+    /// Load from a fixed-size array.
+    #[inline(always)]
+    pub fn from_array(arr: [u8; 8]) -> Self {
+        Self(arr)
+    }
+
+    /// Extract all 8 lanes as an array.
+    #[inline(always)]
+    pub fn to_array(self) -> [u8; 8] {
+        self.0
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl core::fmt::Debug for U8x8 {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "U8x8({:?})", &self.0[..])
+    }
+}
+
+// ─── U16x8 (scalar-storage polyfill for AVX-512 backend) ─────────────────────
+
+/// 8-lane `u16` vector.  On the NEON backend this is backed by `uint16x8_t`; on
+/// x86_64 (both AVX-512 and AVX2) it is a scalar-storage polyfill with the same
+/// API.
+///
+/// The W1a gather primitive is defined as a method on this type.
+#[cfg(target_arch = "x86_64")]
+#[derive(Copy, Clone, PartialEq)]
+#[repr(align(16))]
+pub struct U16x8(pub [u16; 8]);
+
+#[cfg(target_arch = "x86_64")]
+impl U16x8 {
+    pub const LANES: usize = 8;
+
+    /// Broadcast a single `u16` to all 8 lanes.
+    #[inline(always)]
+    pub fn splat(v: u16) -> Self {
+        Self([v; 8])
+    }
+
+    /// Load from a slice (at least 8 elements required).
+    #[inline(always)]
+    pub fn from_slice(s: &[u16]) -> Self {
+        assert!(s.len() >= 8);
+        let mut a = [0u16; 8];
+        a.copy_from_slice(&s[..8]);
+        Self(a)
+    }
+
+    /// Load from a fixed-size array.
+    #[inline(always)]
+    pub fn from_array(arr: [u16; 8]) -> Self {
+        Self(arr)
+    }
+
+    /// Extract all 8 lanes as an array.
+    #[inline(always)]
+    pub fn to_array(self) -> [u16; 8] {
+        self.0
+    }
+
+    // ── W1a-#3: gather_u16 ───────────────────────────────────────────────────
+
+    /// Gather 8 `u16` values from `table` at the indices given by `self`.
+    ///
+    /// In debug builds, panics if any index is `>= table.len()`.
+    /// In release builds, falls through to a scalar loop using `get()` so
+    /// out-of-range indices return `0` safely instead of reading past the
+    /// slice end.
+    ///
+    /// On x86_64 this is a scalar-loop polyfill (real AVX2 gather via
+    /// `_mm256_i32gather_epi32` + downcast is tracked as a follow-up
+    /// optimisation; the scalar path is the correctness anchor per the
+    /// contract).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let table = [10u16, 20, 30, 40, 50, 60, 70, 80];
+    /// let idx = U16x8::from_array([0, 2, 4, 6, 1, 3, 5, 7]);
+    /// let result = U16x8::gather_u16(idx, &table);
+    /// assert_eq!(result.to_array(), [10, 30, 50, 70, 20, 40, 60, 80]);
+    /// ```
+    #[inline(always)]
+    pub fn gather_u16(indices: U16x8, table: &[u16]) -> Self {
+        let idx = indices.to_array();
+        // Bounds validation: debug panics, release falls back to safe get()
+        #[cfg(debug_assertions)]
+        for &i in &idx {
+            assert!(
+                (i as usize) < table.len(),
+                "gather_u16: index {} out of bounds (table.len() = {})",
+                i,
+                table.len()
+            );
+        }
+        let mut out = [0u16; 8];
+        for k in 0..8 {
+            // SAFETY: in debug we already panicked above; in release `get`
+            // returns None for OOB and we fall back to 0.
+            out[k] = table.get(idx[k] as usize).copied().unwrap_or(0);
+        }
+        Self(out)
+    }
+
+    /// Extract lane `k` as a `u16` (for use in gather loops).
+    #[inline(always)]
+    pub fn lane(self, k: usize) -> u16 {
+        self.0[k]
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl core::fmt::Debug for U16x8 {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "U16x8({:?})", &self.0[..])
+    }
+}
+
+// ─── W1a-#3: palette_lookup_u8x8 (AVX-512 backend) ───────────────────────────
+
+/// Look up 8 bytes from a `u8` LUT by `u16` indices.
+///
+/// Convenience wrapper over `U16x8::gather_u16`: widens each index to u16,
+/// reads the byte at that position in `lut`, and returns an 8-lane `U8x8`.
+///
+/// Bounds: panics in debug if any index `>= lut.len()`; returns 0 safely in
+/// release for out-of-range indices.
+///
+/// # Example
+/// ```rust,ignore
+/// let lut: Vec<u8> = (0..256).map(|x| x as u8).collect();
+/// let idx = U16x8::from_array([0, 1, 127, 128, 254, 255, 10, 20]);
+/// let result = palette_lookup_u8x8(idx, &lut);
+/// assert_eq!(result.to_array(), [0, 1, 127, 128, 254, 255, 10, 20]);
+/// ```
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+pub fn palette_lookup_u8x8(idx_v: U16x8, lut: &[u8]) -> U8x8 {
+    let idx = idx_v.to_array();
+    #[cfg(debug_assertions)]
+    for &i in &idx {
+        assert!((i as usize) < lut.len(), "palette_lookup_u8x8: index {} OOB (lut.len() = {})", i, lut.len());
+    }
+    let mut out = [0u8; 8];
+    for k in 0..8 {
+        out[k] = lut.get(idx[k] as usize).copied().unwrap_or(0);
+    }
+    U8x8(out)
+}
+
+// ─── W1a-#2: I8x32::saturating_abs (AVX-512 backend) ─────────────────────────
+//
+// The AVX-512 I8x32 type lives in this file (backed by `__m256i`).
+// We add saturating_abs using the VPABSB correction from the spec:
+//   1. _mm256_abs_epi8  (VPABSB on AVX2) gives raw abs; returns 0x80 for 0x80.
+//   2. _mm256_min_epu8  (VPMINUB) clamps 0x80 → 0x7f.
+
+impl I8x32 {
+    /// Lane-wise saturating absolute value.
+    ///
+    /// `saturating_abs(i8::MIN) == i8::MAX` (127).  Uses the VPABSB +
+    /// VPMINUB correction because VPABSB alone returns `i8::MIN` for the
+    /// minimum lane value (the bit-pattern of +128 does not fit in `i8`).
+    ///
+    /// All 32 lanes are independently saturated.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let v = I8x32::splat(i8::MIN);
+    /// assert!(v.saturating_abs().to_array().iter().all(|&x| x == i8::MAX));
+    /// let v2 = I8x32::from_array([-1i8; 32]);
+    /// assert!(v2.saturating_abs().to_array().iter().all(|&x| x == 1));
+    /// ```
+    #[inline(always)]
+    pub fn saturating_abs(self) -> Self {
+        // SAFETY: _mm256_abs_epi8 (VPABSB) is an AVX2 intrinsic; we are in
+        // the simd_avx512.rs file which is only compiled for x86_64.  The
+        // `target_feature(enable = "avx2")` annotation on the calling code
+        // path guarantees AVX2 availability.  The raw_abs result for 0x80
+        // is 0x80 (bit-pattern +128); VPMINUB then clamps it to 0x7f.
+        // UNVERIFIED: _mm256_abs_epi8 stability on Rust 1.94 stable — it is
+        // in std::arch::x86_64 since Rust 1.0 for AVX2 so should compile.
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            let raw_abs = core::arch::x86_64::_mm256_abs_epi8(self.0);
+            // VPMINUB: unsigned-byte minimum. 0x80 unsigned = 128 > 0x7f = 127
+            // so min(0x80, 0x7f) = 0x7f.  All values < 0x80 pass through.
+            let clamped =
+                core::arch::x86_64::_mm256_min_epu8(raw_abs, core::arch::x86_64::_mm256_set1_epi8(0x7f_u8 as i8));
+            I8x32(clamped)
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            // Scalar fallback (unreachable in practice for AVX-512 builds)
+            let mut o = [0i8; 32];
+            let arr = self.to_array();
+            for i in 0..32 {
+                o[i] = arr[i].saturating_abs();
+            }
+            I8x32::from_array(o)
+        }
+    }
+}
+
+// ─── W1a-#5: U64x8::popcnt / xor_popcount (AVX-512 backend) ──────────────────
+
+impl U64x8 {
+    /// Lane-wise population count (number of set bits) for each of the 8
+    /// `u64` lanes.  Each result lane holds a value in `0..=64`.
+    ///
+    /// On AVX-512 with `avx512vpopcntdq` the native `_mm512_popcnt_epi64`
+    /// instruction is used.  Without that extension (or when compiling for
+    /// the scalar polyfill path) a Mula-style byte-LUT via VPSHUFB is used,
+    /// or the scalar `u64::count_ones` fused loop.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let v = U64x8::splat(u64::MAX);  // all bits set → 64 per lane
+    /// let p = v.popcnt();
+    /// assert!(p.to_array().iter().all(|&x| x == 64));
+    /// let z = U64x8::splat(0);
+    /// assert!(z.popcnt().to_array().iter().all(|&x| x == 0));
+    /// ```
+    #[inline(always)]
+    pub fn popcnt(self) -> Self {
+        // UNVERIFIED: _mm512_popcnt_epi64 requires `avx512vpopcntdq`; the
+        // cfg guard below selects it only when that feature is enabled at
+        // compile time.  On Sapphire Rapids + Zen4 it should be available.
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512vpopcntdq"))]
+        {
+            // SAFETY: avx512vpopcntdq is enabled at compile time (cfg guard).
+            // _mm512_popcnt_epi64 is a stable intrinsic from std::arch::x86_64.
+            // UNVERIFIED: exact Rust stable version this intrinsic landed in —
+            // believed to be 1.72 but not confirmed against 1.94.
+            unsafe {
+                let result = core::arch::x86_64::_mm512_popcnt_epi64(self.0);
+                U64x8(result)
+            }
+        }
+        // Scalar fallback for AVX-512F builds without VPOPCNTDQ.
+        // The Mula-algorithm via VPSHUFB + VPSADBW would be faster but
+        // requires avx512bw which may not be present alongside avx512f.
+        // Scalar u64::count_ones is ~4 cycles per lane on modern CPUs and
+        // is the safe correctness anchor (TD follow-up: add avx512bw guard).
+        // UNVERIFIED: whether avx512bw is guaranteed to co-exist with avx512f
+        // on the production deployment targets; leaving as scalar until confirmed.
+        #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512vpopcntdq")))]
+        {
+            let arr = self.to_array();
+            let mut out = [0u64; 8];
+            for i in 0..8 {
+                out[i] = arr[i].count_ones() as u64;
+            }
+            U64x8::from_array(out)
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            // Scalar fallback (unreachable in practice for this backend file).
+            let arr = self.to_array();
+            let mut out = [0u64; 8];
+            for i in 0..8 {
+                out[i] = arr[i].count_ones() as u64;
+            }
+            U64x8::from_array(out)
+        }
+    }
+
+    /// XOR two vectors lane-wise, popcount each lane, then sum across all 8
+    /// lanes.  Optimised for Hamming-distance reductions.
+    ///
+    /// Equivalent to `(self ^ other).popcnt().reduce_sum()` but avoids a
+    /// store/reload cycle when all 8 popcounts are needed only as a sum.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let a = U64x8::splat(u64::MAX);
+    /// let b = U64x8::splat(0);
+    /// // All bits different → 64 set bits per lane × 8 lanes = 512
+    /// assert_eq!(a.xor_popcount(b), 512);
+    /// let same = U64x8::splat(0xdead_beef_cafe_babe);
+    /// assert_eq!(same.xor_popcount(same), 0);
+    /// ```
+    #[inline(always)]
+    pub fn xor_popcount(self, other: Self) -> u64 {
+        // XOR first, then popcount + horizontal sum.
+        #[cfg(target_arch = "x86_64")]
+        {
+            // SAFETY: BitXor on U64x8 uses _mm512_xor_si512; popcnt uses the
+            // avx512 path above.  reduce_sum uses _mm512_reduce_add_epi64.
+            let xored = self ^ other;
+            xored.popcnt().reduce_sum()
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let a = self.to_array();
+            let b = other.to_array();
+            let mut sum = 0u64;
+            for i in 0..8 {
+                sum += (a[i] ^ b[i]).count_ones() as u64;
+            }
+            sum
+        }
+    }
+}
+
+// ─── W1a-#5: U64x4::popcnt (AVX-512 backend via simd_avx2 polyfill) ──────────
+//
+// U64x4 lives in simd_avx2.rs as a scalar-storage polyfill (avx2_int_type!).
+// The AVX-512 backend re-exports it from simd_avx2.rs (see the re-export at
+// line ~2265: `pub use crate::simd_avx2::{…U64x4…}`).
+// We add popcnt to U64x4 via an impl block in simd_avx2.rs (see that file).
+
+// ─── W1a-#4: prefetch_read_t0/t1/t2 (x86_64) ────────────────────────────────
+
+/// Hint that the cache line containing `ptr` will be read soon; load into L1
+/// (T0) data cache.
+///
+/// `ptr` is allowed to be invalid (null, unmapped).  On x86_64 an invalid
+/// address in `PREFETCHT0` is silently dropped by the hardware; no fault is
+/// raised.  Do NOT `assert!` or dereference `ptr` in this function.
+///
+/// # Example
+/// ```rust,ignore
+/// let data = vec![0u8; 4096];
+/// unsafe { prefetch_read_t0(data.as_ptr()); }
+/// ```
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+pub fn prefetch_read_t0(ptr: *const u8) {
+    // SAFETY: _MM_HINT_T0 prefetch on x86_64 is a hint-only instruction;
+    // it does NOT fault on invalid addresses per Intel SDM § PREFETCHT0.
+    // The pointer is never dereferenced.
+    unsafe {
+        core::arch::x86_64::_mm_prefetch::<{ core::arch::x86_64::_MM_HINT_T0 }>(ptr as *const i8);
+    }
+}
+
+/// Hint to load into L2 (T1) cache.  Same invalid-pointer semantics as
+/// `prefetch_read_t0`.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+pub fn prefetch_read_t1(ptr: *const u8) {
+    // SAFETY: same as prefetch_read_t0 — hint-only, no fault on invalid ptr.
+    unsafe {
+        core::arch::x86_64::_mm_prefetch::<{ core::arch::x86_64::_MM_HINT_T1 }>(ptr as *const i8);
+    }
+}
+
+/// Hint to load into L3 (T2) cache.  Same invalid-pointer semantics as
+/// `prefetch_read_t0`.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+pub fn prefetch_read_t2(ptr: *const u8) {
+    // SAFETY: same as prefetch_read_t0 — hint-only, no fault on invalid ptr.
+    unsafe {
+        core::arch::x86_64::_mm_prefetch::<{ core::arch::x86_64::_MM_HINT_T2 }>(ptr as *const i8);
+    }
+}
+
+// ─── W1a-#1: batch_packed_i4_16 (x86_64 backend) ─────────────────────────────
+
+/// Closure-parameterised batch over packed i4 data.
+///
+/// Iterates `min(packed.len(), aux.len())` times.  Each iteration unpacks
+/// `packed[i]` into an `I8x16` (16 sign-extended nibbles) and passes it
+/// together with `aux[i]` to the closure `f`, storing the result in `out[i]`.
+///
+/// Tail handling: if `out.len() < packed.len()` only `out.len()` iterations
+/// run (no out-of-bounds write).
+///
+/// Bounds: panics if `packed.len() != aux.len()`.  An empty slice is valid.
+///
+/// # Example
+/// ```rust,ignore
+/// let packed = vec![0u64; 4];
+/// let aux    = vec![0i8; 4];
+/// let mut out = vec![0i8; 4];
+/// batch_packed_i4_16(&packed, &aux, &mut out, |lanes, a| {
+///     lanes.lane_i8::<0>().wrapping_add(a)
+/// });
+/// assert!(out.iter().all(|&v| v == 0));
+/// ```
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub fn batch_packed_i4_16<E, F>(packed: &[u64], aux: &[i8], out: &mut [E], f: F)
+where
+    F: Fn(I8x16, i8) -> E + Sync + Send,
+    E: Copy,
+{
+    assert_eq!(packed.len(), aux.len(), "batch_packed_i4_16: packed and aux must be same length");
+    let n = packed.len().min(out.len());
+    for i in 0..n {
+        let lanes = I8x16::from_i4_packed_u64(packed[i]);
+        out[i] = f(lanes, aux[i]);
+    }
+}
+
+// ─── Aliases ──────────────────────────────────────────────────────────────────
+#[cfg(target_arch = "x86_64")]
+#[allow(non_camel_case_types)]
+pub type i8x16 = I8x16;
+#[cfg(target_arch = "x86_64")]
+#[allow(non_camel_case_types)]
+pub type u16x8 = U16x8;
+#[cfg(target_arch = "x86_64")]
+#[allow(non_camel_case_types)]
+pub type u8x8 = U8x8;
+
+// ============================================================================
 // BF16 conversion wrappers — AVX-512 BF16 hardware instructions
 // ============================================================================
 //

@@ -1267,6 +1267,387 @@ impl Mul for U32x16 {
     }
 }
 
+// ============================================================================
+// W1a SIMD primitives — scalar backend
+// ============================================================================
+//
+// The scalar backend is the correctness anchor for all W1a primitives.
+// All implementations here are pure safe Rust with no intrinsics.
+
+// ── W1a-#1: I8x16 + lane_i8 + from_i4_packed_u64 (scalar) ──────────────────
+
+/// 16-lane `i8` vector — scalar fallback for non-NEON, non-x86_64 targets.
+///
+/// On x86_64 this type comes from `simd_avx512.rs`; on aarch64 from
+/// `simd_neon.rs`.  This scalar version covers wasm32, riscv, and any other
+/// target that falls through to the scalar dispatch arm.
+#[derive(Copy, Clone, PartialEq)]
+#[repr(align(16))]
+pub struct I8x16(pub [i8; 16]);
+
+impl I8x16 {
+    pub const LANES: usize = 16;
+
+    /// Broadcast a single `i8` value to all 16 lanes.
+    #[inline(always)]
+    pub fn splat(v: i8) -> Self {
+        Self([v; 16])
+    }
+
+    /// Load from a slice (at least 16 elements required).
+    #[inline(always)]
+    pub fn from_slice(s: &[i8]) -> Self {
+        assert!(s.len() >= 16);
+        let mut a = [0i8; 16];
+        a.copy_from_slice(&s[..16]);
+        Self(a)
+    }
+
+    /// Load from a fixed-size array.
+    #[inline(always)]
+    pub fn from_array(arr: [i8; 16]) -> Self {
+        Self(arr)
+    }
+
+    /// Extract all 16 lanes as an array.
+    #[inline(always)]
+    pub fn to_array(self) -> [i8; 16] {
+        self.0
+    }
+
+    /// Copy lanes into a slice (must have at least 16 elements).
+    #[inline(always)]
+    pub fn copy_to_slice(self, s: &mut [i8]) {
+        assert!(s.len() >= 16);
+        s[..16].copy_from_slice(&self.0);
+    }
+
+    /// Unpack 16 signed i4 nibbles from a `u64` into 16 sign-extended `i8` lanes.
+    ///
+    /// Nibble layout: `lane[i] = sign_extend_i4((packed >> (4*i)) & 0xf)`.
+    /// Values `0x0..=0x7` → `0..=7`; values `0x8..=0xf` → `-8..=-1`.
+    ///
+    /// Edge cases:
+    /// - `from_i4_packed_u64(0)` → all lanes `0`.
+    /// - All nibbles `0xf` → all lanes `-1`.
+    /// - Nibble `0x8` → lane value `-8` (minimum i4 value).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let z = I8x16::from_i4_packed_u64(0);
+    /// assert!(z.to_array().iter().all(|&x| x == 0));
+    /// let neg = I8x16::from_i4_packed_u64(u64::MAX);
+    /// assert!(neg.to_array().iter().all(|&x| x == -1));
+    /// ```
+    #[inline(always)]
+    pub fn from_i4_packed_u64(packed: u64) -> Self {
+        let mut lanes = [0i8; 16];
+        for i in 0..16 {
+            let nibble = ((packed >> (4 * i)) & 0xf) as i8;
+            lanes[i] = if nibble > 7 { nibble - 16 } else { nibble };
+        }
+        Self(lanes)
+    }
+
+    /// Extract lane `N` as an `i8`.  `N` must be in `0..16`.
+    #[inline(always)]
+    pub fn lane_i8<const N: usize>(self) -> i8 {
+        self.0[N]
+    }
+
+    /// Lane-wise saturating absolute value.
+    ///
+    /// `saturating_abs(i8::MIN) == i8::MAX` (127).  Uses `i8::saturating_abs`.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let v = I8x16::splat(i8::MIN);
+    /// assert!(v.saturating_abs().to_array().iter().all(|&x| x == i8::MAX));
+    /// ```
+    #[inline(always)]
+    pub fn saturating_abs(self) -> Self {
+        let mut o = [0i8; 16];
+        for i in 0..16 {
+            o[i] = self.0[i].saturating_abs();
+        }
+        Self(o)
+    }
+}
+
+impl core::fmt::Debug for I8x16 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "I8x16({:?})", &self.0[..])
+    }
+}
+
+// ── W1a-#2: I8x32::saturating_abs (scalar) ───────────────────────────────────
+
+impl I8x32 {
+    /// Lane-wise saturating absolute value.
+    ///
+    /// `saturating_abs(i8::MIN) == i8::MAX`.  All 32 lanes via `i8::saturating_abs`.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let v = I8x32::splat(i8::MIN);
+    /// assert!(v.saturating_abs().to_array().iter().all(|&x| x == i8::MAX));
+    /// ```
+    #[inline(always)]
+    pub fn saturating_abs(self) -> Self {
+        let mut o = [0i8; 32];
+        for i in 0..32 {
+            o[i] = self.0[i].saturating_abs();
+        }
+        Self(o)
+    }
+}
+
+// ── W1a-#3: U16x8 / U8x8 / palette_lookup_u8x8 (scalar) ─────────────────────
+
+/// 8-lane `u16` vector — scalar fallback.
+///
+/// On aarch64 this type is backed by `uint16x8_t`; on x86_64 it is a scalar-
+/// storage polyfill in `simd_avx512.rs`.  This version covers all other targets.
+#[derive(Copy, Clone, PartialEq)]
+#[repr(align(16))]
+pub struct U16x8(pub [u16; 8]);
+
+impl U16x8 {
+    pub const LANES: usize = 8;
+
+    /// Broadcast a single `u16` to all 8 lanes.
+    #[inline(always)]
+    pub fn splat(v: u16) -> Self {
+        Self([v; 8])
+    }
+
+    /// Load from a slice (at least 8 elements required).
+    #[inline(always)]
+    pub fn from_slice(s: &[u16]) -> Self {
+        assert!(s.len() >= 8);
+        let mut a = [0u16; 8];
+        a.copy_from_slice(&s[..8]);
+        Self(a)
+    }
+
+    /// Load from a fixed-size array.
+    #[inline(always)]
+    pub fn from_array(arr: [u16; 8]) -> Self {
+        Self(arr)
+    }
+
+    /// Extract all 8 lanes as an array.
+    #[inline(always)]
+    pub fn to_array(self) -> [u16; 8] {
+        self.0
+    }
+
+    /// Gather 8 `u16` values from `table` at the indices in `self`.
+    ///
+    /// In debug panics if any index `>= table.len()`.  In release, OOB
+    /// indices return 0 safely.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let table = [10u16, 20, 30, 40, 50, 60, 70, 80];
+    /// let idx = U16x8::from_array([0, 2, 4, 6, 1, 3, 5, 7]);
+    /// let r = U16x8::gather_u16(idx, &table);
+    /// assert_eq!(r.to_array(), [10, 30, 50, 70, 20, 40, 60, 80]);
+    /// ```
+    #[inline(always)]
+    pub fn gather_u16(indices: U16x8, table: &[u16]) -> Self {
+        let idx = indices.to_array();
+        #[cfg(debug_assertions)]
+        for &i in &idx {
+            assert!((i as usize) < table.len(), "gather_u16: index {} OOB (len={})", i, table.len());
+        }
+        let mut out = [0u16; 8];
+        for k in 0..8 {
+            out[k] = table.get(idx[k] as usize).copied().unwrap_or(0);
+        }
+        Self(out)
+    }
+
+    /// Extract lane `k` as a `u16`.
+    #[inline(always)]
+    pub fn lane(self, k: usize) -> u16 {
+        self.0[k]
+    }
+}
+
+impl fmt::Debug for U16x8 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "U16x8({:?})", &self.0[..])
+    }
+}
+
+/// 8-lane `u8` vector — scalar fallback.  Used as the return type of
+/// `palette_lookup_u8x8`.
+#[derive(Copy, Clone, PartialEq)]
+#[repr(align(8))]
+pub struct U8x8(pub [u8; 8]);
+
+impl U8x8 {
+    pub const LANES: usize = 8;
+
+    /// Broadcast a single `u8` to all 8 lanes.
+    #[inline(always)]
+    pub fn splat(v: u8) -> Self {
+        Self([v; 8])
+    }
+
+    /// Load from a fixed-size array.
+    #[inline(always)]
+    pub fn from_array(arr: [u8; 8]) -> Self {
+        Self(arr)
+    }
+
+    /// Extract all 8 lanes as an array.
+    #[inline(always)]
+    pub fn to_array(self) -> [u8; 8] {
+        self.0
+    }
+}
+
+impl fmt::Debug for U8x8 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "U8x8({:?})", &self.0[..])
+    }
+}
+
+/// Look up 8 bytes from a `u8` LUT by `u16` indices (scalar fallback).
+///
+/// Panics in debug on OOB; returns 0 safely in release.
+#[inline(always)]
+pub fn palette_lookup_u8x8(idx_v: U16x8, lut: &[u8]) -> U8x8 {
+    let idx = idx_v.to_array();
+    #[cfg(debug_assertions)]
+    for &i in &idx {
+        assert!((i as usize) < lut.len(), "palette_lookup_u8x8: index {} OOB (len={})", i, lut.len());
+    }
+    let mut out = [0u8; 8];
+    for k in 0..8 {
+        out[k] = lut.get(idx[k] as usize).copied().unwrap_or(0);
+    }
+    U8x8(out)
+}
+
+// ── W1a-#4: prefetch_read_t0/t1/t2 (scalar / other arch) ────────────────────
+
+/// Hint that `ptr` will be read soon (scalar / unknown-arch no-op).
+///
+/// On `x86_64` the real implementation in `simd_avx512.rs` emits `PREFETCHT0`.
+/// On `aarch64` the real implementation in `simd_neon.rs` emits `prfm`.
+/// On all other targets (wasm, riscv, …) this is a deliberate no-op because
+/// the prefetch contract is a hint — silent no-op is correct per the spec.
+///
+/// `ptr` may be invalid; it is never dereferenced.
+#[inline(always)]
+pub fn prefetch_read_t0(_ptr: *const u8) {
+    // no-op on unknown/scalar targets
+}
+
+/// Hint to load into L2 (T1) cache (scalar / unknown-arch no-op).
+#[inline(always)]
+pub fn prefetch_read_t1(_ptr: *const u8) {
+    // no-op on unknown/scalar targets
+}
+
+/// Hint to load into L3 (T2) cache (scalar / unknown-arch no-op).
+#[inline(always)]
+pub fn prefetch_read_t2(_ptr: *const u8) {
+    // no-op on unknown/scalar targets
+}
+
+// ── W1a-#5: U64x8::popcnt / xor_popcount + U64x4::popcnt (scalar) ───────────
+
+impl U64x8 {
+    /// Lane-wise population count (scalar).  Each lane → set-bit count (0..=64).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let v = U64x8::splat(u64::MAX);
+    /// assert!(v.popcnt().to_array().iter().all(|&x| x == 64));
+    /// let z = U64x8::splat(0);
+    /// assert!(z.popcnt().to_array().iter().all(|&x| x == 0));
+    /// ```
+    #[inline(always)]
+    pub fn popcnt(self) -> Self {
+        let mut out = [0u64; 8];
+        for i in 0..8 {
+            out[i] = self.0[i].count_ones() as u64;
+        }
+        Self(out)
+    }
+
+    /// XOR two vectors lane-wise, popcount each lane, sum all 8 lanes.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let a = U64x8::splat(u64::MAX);
+    /// let b = U64x8::splat(0);
+    /// assert_eq!(a.xor_popcount(b), 512); // 64 bits × 8 lanes
+    /// assert_eq!(a.xor_popcount(a), 0);   // same inputs → Hamming distance 0
+    /// ```
+    #[inline(always)]
+    pub fn xor_popcount(self, other: Self) -> u64 {
+        let mut sum = 0u64;
+        for i in 0..8 {
+            sum += (self.0[i] ^ other.0[i]).count_ones() as u64;
+        }
+        sum
+    }
+}
+
+impl U64x4 {
+    /// Lane-wise population count (scalar).  Each lane → set-bit count (0..=64).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let v = U64x4::from_array([u64::MAX, 0, 1, !1]);
+    /// assert_eq!(v.popcnt().to_array(), [64, 0, 1, 63]);
+    /// ```
+    #[inline(always)]
+    pub fn popcnt(self) -> Self {
+        let mut out = [0u64; 4];
+        for i in 0..4 {
+            out[i] = self.0[i].count_ones() as u64;
+        }
+        Self(out)
+    }
+}
+
+// ── W1a-#1: batch_packed_i4_16 (scalar backend) ──────────────────────────────
+
+/// Closure-parameterised batch over packed i4 data (scalar backend).
+///
+/// Iterates `min(packed.len(), aux.len(), out.len())` times.  Each iteration
+/// unpacks `packed[i]` into an `I8x16` (16 sign-extended nibbles) and passes
+/// it together with `aux[i]` to `f`, storing the result in `out[i]`.
+///
+/// Panics if `packed.len() != aux.len()`.
+#[inline]
+pub fn batch_packed_i4_16<E, F>(packed: &[u64], aux: &[i8], out: &mut [E], f: F)
+where
+    F: Fn(I8x16, i8) -> E + Sync + Send,
+    E: Copy,
+{
+    assert_eq!(packed.len(), aux.len(), "batch_packed_i4_16: packed and aux must be same length");
+    let n = packed.len().min(out.len());
+    for i in 0..n {
+        let lanes = I8x16::from_i4_packed_u64(packed[i]);
+        out[i] = f(lanes, aux[i]);
+    }
+}
+
+// ── Lowercase aliases ─────────────────────────────────────────────────────────
+#[allow(non_camel_case_types)]
+pub type i8x16 = I8x16;
+#[allow(non_camel_case_types)]
+pub type u16x8 = U16x8;
+#[allow(non_camel_case_types)]
+pub type u8x8 = U8x8;
+
 // Lowercase aliases
 #[allow(non_camel_case_types)]
 pub type f32x16 = F32x16;

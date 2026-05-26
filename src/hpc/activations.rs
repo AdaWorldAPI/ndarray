@@ -4,7 +4,7 @@
 
 use crate::imp_prelude::*;
 use crate::simd::{simd_exp_f32, F32x16};
-use crate::{ArrayView, ArrayView1, ArrayViewMut, ArrayViewMut1, Dimension, Zip};
+use crate::{ArrayView, ArrayView1, ArrayView2, ArrayViewMut, ArrayViewMut1, ArrayViewMut2, Axis, Dimension, Zip};
 use num_traits::Float;
 
 /// Neural network activation functions.
@@ -334,6 +334,125 @@ fn log_softmax_f32_scalar(x: ArrayView1<f32>, mut out: ArrayViewMut1<f32>) {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// Axis-aware 2-D variants
+//
+// These operate on a 2-D `ArrayView2<f32>` and apply the corresponding
+// 1-D kernel along each lane parallel to the chosen `Axis`. They reuse
+// the existing per-lane SIMD primitives (`softmax_f32` / `log_softmax_f32`)
+// so the SIMD fast path fires for each contiguous lane.
+//
+// Iteration uses `lanes(axis)` / `lanes_mut(axis)` — NOT `axis_iter` —
+// per the W2 migration contract (see `.claude/knowledge/
+// w2-arrayview-migration.md` § "Axis-aware reduction"). `lanes(Axis(k))`
+// yields 1-D lanes ALONG axis k; `axis_iter(Axis(k))` slices perpendicular
+// to axis k and is the wrong primitive here.
+// ═══════════════════════════════════════════════════════════════════
+
+/// Axis-aware softmax over a 2-D `f32` matrix: each lane along `axis`
+/// is normalized independently.
+///
+/// `out[i, j] = exp(x[i,j] - max_lane) / Σ exp(x[i,:] - max_lane)` for
+/// `axis = Axis(1)` (normalize each row); for `axis = Axis(0)` each
+/// column is normalized instead.
+///
+/// Numerically stable: max-shift is applied per lane before exponentiation.
+/// The SIMD fast path (via `softmax_f32`) fires when the individual lane is
+/// contiguous in memory (typically true for axis 1 on a C-order matrix and
+/// axis 0 on an F-order matrix).
+///
+/// # Panics
+/// - Panics if `axis.index() >= 2` (out-of-bounds axis for a 2-D array).
+/// - Panics if `x.shape() != out.shape()`.
+///
+/// # Edge cases
+/// - An empty matrix (either dimension is 0) returns immediately.
+/// - A lane of length 0 is unreachable given the shape consistency check.
+/// - A single-element lane produces `out = 1.0`.
+///
+/// # Example
+/// ```
+/// use ndarray::{arr2, Array2, Axis};
+/// use ndarray::hpc::activations::softmax_axis_f32;
+///
+/// // 2×3 matrix, normalize each row (axis 1)
+/// let x = arr2(&[[1.0_f32, 2.0, 3.0],
+///                [0.0_f32, 0.0, 0.0]]);
+/// let mut out = Array2::<f32>::zeros((2, 3));
+/// softmax_axis_f32(x.view(), out.view_mut(), Axis(1));
+///
+/// // each row sums to 1.0
+/// assert!((out.row(0).sum() - 1.0_f32).abs() < 1e-5);
+/// assert!((out.row(1).sum() - 1.0_f32).abs() < 1e-5);
+/// // uniform inputs → equal probabilities
+/// assert!((out[[1, 0]] - 1.0 / 3.0).abs() < 1e-5);
+/// ```
+pub fn softmax_axis_f32(x: ArrayView2<f32>, mut out: ArrayViewMut2<f32>, axis: Axis) {
+    assert!(axis.index() < 2, "softmax_axis_f32: axis {} is out of bounds for a 2-D array", axis.index());
+    assert_eq!(x.shape(), out.shape(), "softmax_axis_f32: shape mismatch (x={:?} out={:?})", x.shape(), out.shape());
+    // `lanes(axis)` yields 1-D views ALONG `axis`; `lanes_mut(axis)` yields
+    // the corresponding mutable 1-D views of `out`. Zipping them visits every
+    // lane exactly once.
+    for (lane_in, lane_out) in x.lanes(axis).into_iter().zip(out.lanes_mut(axis)) {
+        softmax_f32(lane_in, lane_out);
+    }
+}
+
+/// Axis-aware log-softmax over a 2-D `f32` matrix: each lane along `axis`
+/// is independently normalized in log-space.
+///
+/// `out[i, j] = (x[i,j] - max_lane) - ln(Σ exp(x[i,:] - max_lane))` for
+/// `axis = Axis(1)` (per-row log-softmax); for `axis = Axis(0)` each
+/// column is processed instead.
+///
+/// Numerically stable: max-shift is applied per lane before exponentiation.
+/// All output values are ≤ 0, and `exp(out).sum_axis(axis)` ≈ 1.0 for each
+/// lane (modulo floating-point rounding).
+///
+/// The SIMD fast path fires when the individual lane is contiguous in memory
+/// (typically true for axis 1 on a C-order matrix).
+///
+/// # Panics
+/// - Panics if `axis.index() >= 2` (out-of-bounds axis for a 2-D array).
+/// - Panics if `x.shape() != out.shape()`.
+///
+/// # Edge cases
+/// - An empty matrix (either dimension is 0) returns immediately.
+/// - A single-element lane produces `out = 0.0` (log of 1.0).
+///
+/// # Example
+/// ```
+/// use ndarray::{arr2, Array2, Axis};
+/// use ndarray::hpc::activations::log_softmax_axis_f32;
+///
+/// // 2×3 matrix, log-softmax along rows (axis 1)
+/// let x = arr2(&[[1.0_f32, 2.0, 3.0],
+///                [0.0_f32, 0.0, 0.0]]);
+/// let mut out = Array2::<f32>::zeros((2, 3));
+/// log_softmax_axis_f32(x.view(), out.view_mut(), Axis(1));
+///
+/// // all outputs must be ≤ 0
+/// assert!(out.iter().all(|&v| v <= 0.0));
+/// // uniform row: all log-softmax values equal ln(1/3)
+/// let expected = (1.0_f32 / 3.0).ln();
+/// assert!((out[[1, 0]] - expected).abs() < 1e-5);
+/// assert!((out[[1, 1]] - expected).abs() < 1e-5);
+/// assert!((out[[1, 2]] - expected).abs() < 1e-5);
+/// ```
+pub fn log_softmax_axis_f32(x: ArrayView2<f32>, mut out: ArrayViewMut2<f32>, axis: Axis) {
+    assert!(axis.index() < 2, "log_softmax_axis_f32: axis {} is out of bounds for a 2-D array", axis.index());
+    assert_eq!(
+        x.shape(),
+        out.shape(),
+        "log_softmax_axis_f32: shape mismatch (x={:?} out={:?})",
+        x.shape(),
+        out.shape()
+    );
+    for (lane_in, lane_out) in x.lanes(axis).into_iter().zip(out.lanes_mut(axis)) {
+        log_softmax_f32(lane_in, lane_out);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -589,5 +708,162 @@ mod tests {
         let x = Array1::<f32>::zeros(4);
         let mut out = Array1::<f32>::zeros(5);
         log_softmax_f32(x.view(), out.view_mut());
+    }
+
+    // ── softmax_axis_f32 ────────────────────────────────────────────
+
+    #[test]
+    fn test_softmax_axis1_rows_sum_to_one() {
+        // Hand-computed: 2×3, normalize rows (axis 1)
+        // Row 0: [1, 2, 3] → exp-shifted by 3 → [e^-2, e^-1, 1] → normalize
+        let x = arr2(&[[1.0_f32, 2.0, 3.0], [4.0_f32, 4.0, 4.0]]);
+        let mut out = Array2::<f32>::zeros((2, 3));
+        softmax_axis_f32(x.view(), out.view_mut(), Axis(1));
+
+        // Each row sums to 1.0
+        assert!((out.row(0).sum() - 1.0).abs() < 1e-5, "row 0 sum = {}", out.row(0).sum());
+        assert!((out.row(1).sum() - 1.0).abs() < 1e-5, "row 1 sum = {}", out.row(1).sum());
+
+        // Uniform row → equal probabilities
+        assert!((out[[1, 0]] - 1.0 / 3.0).abs() < 1e-5, "uniform: out[1,0] = {}", out[[1, 0]]);
+        assert!((out[[1, 1]] - 1.0 / 3.0).abs() < 1e-5, "uniform: out[1,1] = {}", out[[1, 1]]);
+        assert!((out[[1, 2]] - 1.0 / 3.0).abs() < 1e-5, "uniform: out[1,2] = {}", out[[1, 2]]);
+
+        // Monotone row → monotone output
+        assert!(out[[0, 0]] < out[[0, 1]] && out[[0, 1]] < out[[0, 2]]);
+    }
+
+    #[test]
+    fn test_softmax_axis0_cols_sum_to_one() {
+        // Normalize columns (axis 0): 2×3 matrix
+        // Col 0: [1, 4], Col 1: [2, 4], Col 2: [3, 4]
+        let x = arr2(&[[1.0_f32, 2.0, 3.0], [4.0_f32, 4.0, 4.0]]);
+        let mut out = Array2::<f32>::zeros((2, 3));
+        softmax_axis_f32(x.view(), out.view_mut(), Axis(0));
+
+        // Each column sums to 1.0
+        for j in 0..3 {
+            let col_sum: f32 = out.column(j).sum();
+            assert!((col_sum - 1.0).abs() < 1e-5, "col {} sum = {}", j, col_sum);
+        }
+        // All outputs are non-negative
+        assert!(out.iter().all(|&v| v >= 0.0));
+    }
+
+    #[test]
+    fn test_softmax_axis1_correctness_hand_computed() {
+        // 1×4: softmax_axis_f32 with axis 1 must match softmax_f32 on the single row
+        let x = arr2(&[[0.0_f32, 1.0, 2.0, 3.0]]);
+        let mut out_axis = Array2::<f32>::zeros((1, 4));
+        softmax_axis_f32(x.view(), out_axis.view_mut(), Axis(1));
+
+        let row = arr1(&[0.0_f32, 1.0, 2.0, 3.0]);
+        let mut out_1d = Array1::<f32>::zeros(4);
+        softmax_f32(row.view(), out_1d.view_mut());
+
+        for j in 0..4 {
+            assert!(
+                (out_axis[[0, j]] - out_1d[j]).abs() < 1e-6,
+                "j={}: axis={} vs 1d={}",
+                j,
+                out_axis[[0, j]],
+                out_1d[j]
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "out of bounds")]
+    fn test_softmax_axis_oob_panics() {
+        let x = arr2(&[[1.0_f32, 2.0], [3.0_f32, 4.0]]);
+        let mut out = Array2::<f32>::zeros((2, 2));
+        softmax_axis_f32(x.view(), out.view_mut(), Axis(2));
+    }
+
+    #[test]
+    #[should_panic(expected = "shape mismatch")]
+    fn test_softmax_axis_shape_mismatch_panics() {
+        let x = arr2(&[[1.0_f32, 2.0, 3.0], [4.0_f32, 5.0, 6.0]]);
+        let mut out = Array2::<f32>::zeros((2, 2));
+        softmax_axis_f32(x.view(), out.view_mut(), Axis(1));
+    }
+
+    // ── log_softmax_axis_f32 ────────────────────────────────────────
+
+    #[test]
+    fn test_log_softmax_axis1_all_nonpositive() {
+        let x = arr2(&[[1.0_f32, 2.0, 3.0], [4.0_f32, 4.0, 4.0]]);
+        let mut out = Array2::<f32>::zeros((2, 3));
+        log_softmax_axis_f32(x.view(), out.view_mut(), Axis(1));
+
+        assert!(out.iter().all(|&v| v <= 0.0), "log-softmax outputs must be ≤ 0");
+    }
+
+    #[test]
+    fn test_log_softmax_axis1_uniform_row() {
+        // Uniform row [0,0,0]: log-softmax = ln(1/3) for each element
+        let x = arr2(&[[0.0_f32, 0.0, 0.0], [1.0_f32, 2.0, 3.0]]);
+        let mut out = Array2::<f32>::zeros((2, 3));
+        log_softmax_axis_f32(x.view(), out.view_mut(), Axis(1));
+
+        let expected = (1.0_f32 / 3.0).ln();
+        for j in 0..3 {
+            assert!((out[[0, j]] - expected).abs() < 1e-5, "out[0,{}] = {} expected {}", j, out[[0, j]], expected);
+        }
+    }
+
+    #[test]
+    fn test_log_softmax_axis0_cols_nonpositive() {
+        // Normalize columns (axis 0)
+        let x = arr2(&[[1.0_f32, 0.0, 3.0], [2.0_f32, 0.0, 1.0]]);
+        let mut out = Array2::<f32>::zeros((2, 3));
+        log_softmax_axis_f32(x.view(), out.view_mut(), Axis(0));
+
+        assert!(out.iter().all(|&v| v <= 0.0), "log-softmax outputs must be ≤ 0");
+        // exp(out) along axis 0 must sum to ~1 per column
+        for j in 0..3 {
+            let exp_sum: f32 = out.column(j).mapv(f32::exp).sum();
+            assert!((exp_sum - 1.0).abs() < 1e-5, "col {} exp-sum = {}", j, exp_sum);
+        }
+    }
+
+    #[test]
+    fn test_log_softmax_axis1_consistency_with_log_softmax_f32() {
+        // log_softmax_axis_f32 on each row must match log_softmax_f32 applied directly
+        let x = arr2(&[[2.0_f32, 1.0, 0.1, -1.0], [0.5_f32, 0.5, 0.5, 0.5]]);
+        let mut out_axis = Array2::<f32>::zeros((2, 4));
+        log_softmax_axis_f32(x.view(), out_axis.view_mut(), Axis(1));
+
+        for i in 0..2 {
+            let row = x.row(i).to_owned();
+            let mut out_1d = Array1::<f32>::zeros(4);
+            log_softmax_f32(row.view(), out_1d.view_mut());
+            for j in 0..4 {
+                assert!(
+                    (out_axis[[i, j]] - out_1d[j]).abs() < 1e-5,
+                    "row={} j={}: axis={} vs 1d={}",
+                    i,
+                    j,
+                    out_axis[[i, j]],
+                    out_1d[j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "out of bounds")]
+    fn test_log_softmax_axis_oob_panics() {
+        let x = arr2(&[[1.0_f32, 2.0], [3.0_f32, 4.0]]);
+        let mut out = Array2::<f32>::zeros((2, 2));
+        log_softmax_axis_f32(x.view(), out.view_mut(), Axis(3));
+    }
+
+    #[test]
+    #[should_panic(expected = "shape mismatch")]
+    fn test_log_softmax_axis_shape_mismatch_panics() {
+        let x = arr2(&[[1.0_f32, 2.0, 3.0], [4.0_f32, 5.0_f32, 6.0_f32]]);
+        let mut out = Array2::<f32>::zeros((3, 2));
+        log_softmax_axis_f32(x.view(), out.view_mut(), Axis(1));
     }
 }

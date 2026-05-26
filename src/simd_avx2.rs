@@ -1555,6 +1555,90 @@ avx2_int_type!(U64x4, u64, 4, 0u64);
 avx2_int_type!(I32x8, i32, 8, 0i32);
 avx2_int_type!(I64x4, i64, 4, 0i64);
 
+// ── W1a SIMD primitives — AVX2 polyfill backend ──────────────────────────────
+//
+// The AVX2 backend uses scalar-storage polyfills for the integer types.
+// For each W1a primitive we add impl blocks to the relevant polyfill types.
+
+// ── W1a-#1: I8x16 / batch_packed_i4_16 (AVX2 polyfill) ─────────────────────
+// I8x16 is defined in simd_avx512.rs and re-exported on x86_64 (both v3/v4).
+// The batch function and gather/prefetch live in simd_avx512.rs for x86_64.
+// No additional type definitions needed in this file.
+
+// ── W1a-#2: I8x32::saturating_abs (AVX2 scalar polyfill) ───────────────────
+// The AVX2 tier uses the scalar polyfill I8x32 from simd_avx512.rs (backed by
+// __m256i on AVX2).  saturating_abs is already added to I8x32 in simd_avx512.rs.
+
+// ── W1a-#3: U16x8 / palette_lookup_u8x8 (AVX2 polyfill) ────────────────────
+// U16x8 is defined in simd_avx512.rs (scalar polyfill) for x86_64.
+
+// ── W1a-#5: U64x4::popcnt (AVX2 scalar polyfill) ────────────────────────────
+impl U64x4 {
+    /// Lane-wise population count.  Each `u64` lane → the count of set bits
+    /// (0..=64) returned in the same lane position.
+    ///
+    /// On the AVX2 polyfill backend this is a scalar fused loop using
+    /// `u64::count_ones`.  On AVX-512 with `avx512vpopcntdq` available a
+    /// separate `U64x8` method uses the hardware instruction.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let v = U64x4::from_array([u64::MAX, 0, 1, !1]);
+    /// let p = v.popcnt();
+    /// assert_eq!(p.to_array(), [64, 0, 1, 63]);
+    /// ```
+    #[inline(always)]
+    pub fn popcnt(self) -> Self {
+        let mut out = [0u64; 4];
+        for i in 0..4 {
+            out[i] = self.0[i].count_ones() as u64;
+        }
+        Self(out)
+    }
+}
+
+// ── W1a-#5: U64x8::popcnt / xor_popcount (AVX2 scalar polyfill) ─────────────
+// The avx2_int_type! macro generated U64x8 as a scalar polyfill in this file.
+// We add popcnt + xor_popcount to match the API surface of the AVX-512 backend.
+impl U64x8 {
+    /// Lane-wise population count (scalar polyfill — same API as AVX-512 backend).
+    ///
+    /// On the AVX2 polyfill backend this is a scalar fused loop.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let v = U64x8::splat(u64::MAX);
+    /// assert!(v.popcnt().to_array().iter().all(|&x| x == 64));
+    /// ```
+    #[inline(always)]
+    pub fn popcnt(self) -> Self {
+        let mut out = [0u64; 8];
+        for i in 0..8 {
+            out[i] = self.0[i].count_ones() as u64;
+        }
+        Self(out)
+    }
+
+    /// XOR two vectors lane-wise, popcount each lane, then sum across all 8 lanes.
+    ///
+    /// Scalar polyfill — same semantics as the AVX-512 backend.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let a = U64x8::splat(u64::MAX);
+    /// let b = U64x8::splat(0);
+    /// assert_eq!(a.xor_popcount(b), 512); // 64 bits × 8 lanes
+    /// ```
+    #[inline(always)]
+    pub fn xor_popcount(self, other: Self) -> u64 {
+        let mut sum = 0u64;
+        for i in 0..8 {
+            sum += (self.0[i] ^ other.0[i]).count_ones() as u64;
+        }
+        sum
+    }
+}
+
 // Extra methods for U16x32 (widen/narrow, shift, multiply) — AVX2 scalar fallback.
 impl U16x32 {
     #[inline(always)]

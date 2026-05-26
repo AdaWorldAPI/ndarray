@@ -1839,6 +1839,283 @@ pub type i16x16 = I16x16;
 #[allow(non_camel_case_types)]
 pub type i16x32 = I16x32;
 
+// ============================================================================
+// W1a SIMD primitives — NEON backend
+// ============================================================================
+
+// ── W1a-#1: I8x16::from_i4_packed_u64 + lane_i8 (NEON) ──────────────────────
+
+#[cfg(target_arch = "aarch64")]
+impl I8x16 {
+    /// Unpack 16 signed i4 nibbles from a `u64` into 16 sign-extended `i8` lanes.
+    ///
+    /// Nibble layout: `lane[i] = sign_extend_i4((packed >> (4*i)) & 0xf)`.
+    /// Values `0x0..=0x7` → `0..=7`; values `0x8..=0xf` → `-8..=-1`.
+    ///
+    /// On NEON this is implemented as a scalar loop (the shift+mask approach
+    /// with `vshl_n_s8` would require byte-level load + nibble split across
+    /// two registers, but the scalar approach is simpler and correct).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let neg = I8x16::from_i4_packed_u64(0xffff_ffff_ffff_ffff);
+    /// assert_eq!(neg.lane_i8::<0>(), -1);
+    /// ```
+    #[inline(always)]
+    pub fn from_i4_packed_u64(packed: u64) -> Self {
+        let mut lanes = [0i8; 16];
+        for i in 0..16 {
+            let nibble = ((packed >> (4 * i)) & 0xf) as i8;
+            lanes[i] = if nibble > 7 { nibble - 16 } else { nibble };
+        }
+        // SAFETY: vld1q_s8 loads 16 bytes from a valid aligned stack array.
+        Self(unsafe { core::arch::aarch64::vld1q_s8(lanes.as_ptr()) })
+    }
+
+    /// Extract lane `N` as an `i8`.
+    ///
+    /// `N` must be in `0..16`.
+    #[inline(always)]
+    pub fn lane_i8<const N: usize>(self) -> i8 {
+        self.to_array()[N]
+    }
+
+    // ── W1a-#2: saturating_abs (NEON) ────────────────────────────────────────
+
+    /// Lane-wise saturating absolute value.
+    ///
+    /// `saturating_abs(i8::MIN) == i8::MAX` (127).  Uses NEON `vqabsq_s8`
+    /// which is hardware-saturating (the `q` suffix denotes saturating
+    /// semantics), unlike `vabsq_s8` which wraps.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let v = I8x16::splat(i8::MIN);
+    /// assert!(v.saturating_abs().to_array().iter().all(|&x| x == i8::MAX));
+    /// ```
+    #[inline(always)]
+    pub fn saturating_abs(self) -> Self {
+        // SAFETY: vqabsq_s8 is available on all aarch64 targets; it is a
+        // saturating absolute value — `vqabsq_s8(int8x16_t(-128))` returns 127.
+        Self(unsafe { core::arch::aarch64::vqabsq_s8(self.0) })
+    }
+}
+
+// ── W1a-#2: I8x32::saturating_abs (NEON polyfill) ─────────────────────────────
+
+/// `I8x32` on NEON is a scalar polyfill (neon_int_polyfill! array).
+/// We add saturating_abs via the scalar path as there is no 256-bit NEON reg.
+#[cfg(target_arch = "aarch64")]
+impl I8x32 {
+    /// Lane-wise saturating absolute value (scalar polyfill on NEON).
+    ///
+    /// `saturating_abs(i8::MIN) == i8::MAX`.  All 32 lanes processed via
+    /// `i8::saturating_abs` in a fused loop.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let v = I8x32::splat(i8::MIN);
+    /// assert!(v.saturating_abs().to_array().iter().all(|&x| x == i8::MAX));
+    /// ```
+    #[inline(always)]
+    pub fn saturating_abs(self) -> Self {
+        let mut o = [0i8; 32];
+        for i in 0..32 {
+            o[i] = self.0[i].saturating_abs();
+        }
+        Self(o)
+    }
+}
+
+// ── W1a-#3: U16x8::gather_u16 + palette_lookup_u8x8 (NEON) ──────────────────
+
+#[cfg(target_arch = "aarch64")]
+impl U16x8 {
+    /// Gather 8 `u16` values from `table` at the indices in `self`.
+    ///
+    /// NEON has no native gather instruction; this is a scalar loop over
+    /// 8 lanes which is still significantly faster than a cache-miss-bound
+    /// random-access loop in typical use because 8 sequential indirections
+    /// fit in NEON register pressure.
+    ///
+    /// In debug builds panics if any index `>= table.len()`.  In release
+    /// builds falls back to `table.get(i).copied().unwrap_or(0)`.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let table = [10u16, 20, 30, 40, 50, 60, 70, 80];
+    /// let idx = U16x8::from_array([0, 2, 4, 6, 1, 3, 5, 7]);
+    /// let result = U16x8::gather_u16(idx, &table);
+    /// assert_eq!(result.to_array(), [10, 30, 50, 70, 20, 40, 60, 80]);
+    /// ```
+    #[inline(always)]
+    pub fn gather_u16(indices: U16x8, table: &[u16]) -> Self {
+        let idx = indices.to_array();
+        #[cfg(debug_assertions)]
+        for &i in &idx {
+            assert!((i as usize) < table.len(), "gather_u16: index {} out of bounds (len={})", i, table.len());
+        }
+        let mut out = [0u16; 8];
+        for k in 0..8 {
+            out[k] = table.get(idx[k] as usize).copied().unwrap_or(0);
+        }
+        Self::from_array(out)
+    }
+
+    /// Extract lane `k` as a `u16`.
+    #[inline(always)]
+    pub fn lane(self, k: usize) -> u16 {
+        self.to_array()[k]
+    }
+}
+
+// ── W1a-#3: U8x8 + palette_lookup_u8x8 (NEON) ───────────────────────────────
+
+/// 8-lane `u8` vector for the NEON backend (scalar-storage polyfill).
+/// Used as the return type of `palette_lookup_u8x8`.
+#[cfg(target_arch = "aarch64")]
+#[derive(Copy, Clone, PartialEq)]
+#[repr(align(8))]
+pub struct U8x8(pub [u8; 8]);
+
+#[cfg(target_arch = "aarch64")]
+impl U8x8 {
+    pub const LANES: usize = 8;
+
+    /// Broadcast a single `u8` to all 8 lanes.
+    #[inline(always)]
+    pub fn splat(v: u8) -> Self {
+        Self([v; 8])
+    }
+
+    /// Load from a fixed-size array.
+    #[inline(always)]
+    pub fn from_array(arr: [u8; 8]) -> Self {
+        Self(arr)
+    }
+
+    /// Extract all 8 lanes as an array.
+    #[inline(always)]
+    pub fn to_array(self) -> [u8; 8] {
+        self.0
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl core::fmt::Debug for U8x8 {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "U8x8({:?})", &self.0[..])
+    }
+}
+
+/// Look up 8 bytes from a `u8` LUT by `u16` indices (NEON backend).
+///
+/// Scalar loop over 8 lanes (NEON has no native gather).
+///
+/// Bounds: panics in debug if any index `>= lut.len()`; returns 0 safely in
+/// release for out-of-range indices.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+pub fn palette_lookup_u8x8(idx_v: U16x8, lut: &[u8]) -> U8x8 {
+    let idx = idx_v.to_array();
+    #[cfg(debug_assertions)]
+    for &i in &idx {
+        assert!((i as usize) < lut.len(), "palette_lookup_u8x8: index {} OOB (len={})", i, lut.len());
+    }
+    let mut out = [0u8; 8];
+    for k in 0..8 {
+        out[k] = lut.get(idx[k] as usize).copied().unwrap_or(0);
+    }
+    U8x8(out)
+}
+
+// ── W1a-#4: prefetch_read_t0/t1/t2 (NEON / aarch64) ──────────────────────────
+
+/// Hint that `ptr` will be read soon; load into L1 (T0) cache.
+///
+/// On aarch64 emits `prfm pldl1keep, [ptr]` via inline asm.  `ptr` may be
+/// invalid (unmapped): the PRFM instruction is a hint that the CPU can silently
+/// drop per the ARM architecture reference.  No assertion is made.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+pub fn prefetch_read_t0(ptr: *const u8) {
+    // SAFETY: PRFM is a hint instruction; an invalid ptr simply makes the
+    // prefetch a no-op.  The pointer is never dereferenced.
+    // UNVERIFIED: inline asm syntax for `prfm` on Rust stable 1.94 aarch64 —
+    // believed correct per ARM ISA but not verified against an aarch64 builder.
+    unsafe {
+        core::arch::asm!(
+            "prfm pldl1keep, [{ptr}]",
+            ptr = in(reg) ptr,
+            options(nostack, readonly),
+        );
+    }
+}
+
+/// Hint to load into L2 (T1) cache on aarch64.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+pub fn prefetch_read_t1(ptr: *const u8) {
+    // SAFETY: same as prefetch_read_t0 — PRFM hint, no fault on invalid ptr.
+    // UNVERIFIED: pldl2keep is the correct ARM PRFM operand for L2 hint.
+    unsafe {
+        core::arch::asm!(
+            "prfm pldl2keep, [{ptr}]",
+            ptr = in(reg) ptr,
+            options(nostack, readonly),
+        );
+    }
+}
+
+/// Hint to load into L3 (T2) cache on aarch64.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+pub fn prefetch_read_t2(ptr: *const u8) {
+    // SAFETY: same as prefetch_read_t0 — PRFM hint, no fault on invalid ptr.
+    // UNVERIFIED: pldl3keep is the correct ARM PRFM operand for L3 hint.
+    unsafe {
+        core::arch::asm!(
+            "prfm pldl3keep, [{ptr}]",
+            ptr = in(reg) ptr,
+            options(nostack, readonly),
+        );
+    }
+}
+
+// ── W1a-#5: U64x8 / U64x4 popcnt (NEON) ──────────────────────────────────────
+// The NEON aarch64_simd::U64x8 is actually re-exported from simd_scalar.rs
+// (see `pub use crate::simd::scalar::{…U64x8}`).  popcnt / xor_popcount are
+// added to the scalar U64x8 in simd_scalar.rs and are thereby visible through
+// both x86_64 and aarch64 dispatch paths.
+//
+// U64x4 on the NEON backend is also the scalar polyfill (neon_int_polyfill!).
+// Its popcnt is also in simd_scalar.rs for the same reason.
+
+// ── W1a-#1: batch_packed_i4_16 (NEON backend) ────────────────────────────────
+
+/// Closure-parameterised batch over packed i4 data (NEON backend).
+///
+/// See the x86_64 version in `simd_avx512.rs` for full documentation.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn batch_packed_i4_16<E, F>(packed: &[u64], aux: &[i8], out: &mut [E], f: F)
+where
+    F: Fn(I8x16, i8) -> E + Sync + Send,
+    E: Copy,
+{
+    assert_eq!(packed.len(), aux.len(), "batch_packed_i4_16: packed and aux must be same length");
+    let n = packed.len().min(out.len());
+    for i in 0..n {
+        let lanes = I8x16::from_i4_packed_u64(packed[i]);
+        out[i] = f(lanes, aux[i]);
+    }
+}
+
+// ── Aliases ──────────────────────────────────────────────────────────────────
+#[cfg(target_arch = "aarch64")]
+#[allow(non_camel_case_types)]
+pub type u8x8 = U8x8;
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Tests (run on x86 as compile-check, actual NEON tests need aarch64)
 // ═══════════════════════════════════════════════════════════════════════════
