@@ -150,6 +150,14 @@ fn sum_f64_slice(s: &[f64]) -> f64 {
     sum
 }
 
+// NOTE: `sum_axis_f32(x: ArrayView2<f32>, axis: Axis) -> Array1<f32>` is NOT
+// added here. ndarray's built-in `ArrayBase::sum_axis(axis)` already covers
+// this operation correctly for all layouts, and no consumer in this codebase
+// routes per-row SIMD sums through this module. Adding a wrapper here would
+// duplicate ndarray core with no net benefit; use `matrix.sum_axis(Axis(1))`
+// directly. Revisit if profiling shows ndarray's generic path is a bottleneck
+// for a specific contiguous-C-order hot path.
+
 /// Arithmetic mean of all elements. Returns `None` for an empty input.
 ///
 /// # Example
