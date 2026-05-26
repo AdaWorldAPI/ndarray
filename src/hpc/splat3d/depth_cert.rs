@@ -583,7 +583,10 @@ mod tests {
     #[test]
     fn certificate_depth_interval_is_z_plus_minus_k_sigma() {
         // cov_zz = 0.25 → σ_z = 0.5; k=2 → half-width = 1.0; depth=10.
-        let params = DepthCertParams { k_sigma: 2.0, ..Default::default() };
+        let params = DepthCertParams {
+            k_sigma: 2.0,
+            ..Default::default()
+        };
         let c = certify_depth_scalar(10.0, 0.25, 7.0, &params);
         assert!(approx(c.depth_variance, 0.25, 1e-6));
         assert!(approx(c.covariance_depth_error, 1.0, 1e-6), "cov err={}", c.covariance_depth_error);
@@ -596,7 +599,10 @@ mod tests {
     #[test]
     fn certificate_min_depth_clamped_non_negative() {
         // depth 0.5, half-width 1.0 → raw min = -0.5, clamped to 0.
-        let params = DepthCertParams { k_sigma: 2.0, ..Default::default() };
+        let params = DepthCertParams {
+            k_sigma: 2.0,
+            ..Default::default()
+        };
         let c = certify_depth_scalar(0.5, 0.25, 1.0, &params);
         assert_eq!(c.min_depth, 0.0, "min_depth must clamp to 0");
     }
@@ -605,11 +611,11 @@ mod tests {
     fn certificate_total_is_sum_of_separate_terms() {
         // Distinct values per term so a wiring mistake is visible.
         let params = DepthCertParams {
-            k_sigma: 2.0,                       // σ_z=0.5 → cov term = 1.0
+            k_sigma: 2.0, // σ_z=0.5 → cov term = 1.0
             camera_transform_error: 0.1,
             quantization_depth_error: 0.2,
             splat_support_overlap_error: 0.4,
-            sort_bucket_width: 0.6,             // → 0.3
+            sort_bucket_width: 0.6, // → 0.3
             lod_substitution_error: 0.8,
             sampling_discrepancy: 1.6,
             max_total_depth_error: f32::INFINITY,
@@ -623,7 +629,11 @@ mod tests {
 
     #[test]
     fn certificate_pass_fail_tracks_threshold() {
-        let mut params = DepthCertParams { k_sigma: 2.0, max_total_depth_error: 0.5, ..Default::default() };
+        let mut params = DepthCertParams {
+            k_sigma: 2.0,
+            max_total_depth_error: 0.5,
+            ..Default::default()
+        };
         // cov term alone = 1.0 > 0.5 → fail.
         assert!(!certify_depth_scalar(10.0, 0.25, 5.0, &params).passed);
         // Loosen the threshold → pass.
@@ -633,7 +643,10 @@ mod tests {
 
     #[test]
     fn certificate_non_finite_fails() {
-        let params = DepthCertParams { camera_transform_error: f32::INFINITY, ..Default::default() };
+        let params = DepthCertParams {
+            camera_transform_error: f32::INFINITY,
+            ..Default::default()
+        };
         let c = certify_depth_scalar(10.0, 0.25, 5.0, &params);
         assert!(!c.passed, "non-finite total must not pass");
         assert!(!c.total_depth_error.is_finite());
@@ -642,8 +655,16 @@ mod tests {
     #[test]
     fn ordering_uncertainty_scales_inverse_with_bucket() {
         // half-width = 1.0 → full interval = 2.0.
-        let wide = DepthCertParams { k_sigma: 2.0, sort_bucket_width: 8.0, ..Default::default() };
-        let narrow = DepthCertParams { k_sigma: 2.0, sort_bucket_width: 4.0, ..Default::default() };
+        let wide = DepthCertParams {
+            k_sigma: 2.0,
+            sort_bucket_width: 8.0,
+            ..Default::default()
+        };
+        let narrow = DepthCertParams {
+            k_sigma: 2.0,
+            sort_bucket_width: 4.0,
+            ..Default::default()
+        };
         let cw = certify_depth_scalar(10.0, 0.25, 5.0, &wide);
         let cn = certify_depth_scalar(10.0, 0.25, 5.0, &narrow);
         assert!(approx(cw.ordering_uncertainty, 0.25, 1e-6), "wide={}", cw.ordering_uncertainty);
@@ -652,19 +673,30 @@ mod tests {
 
     #[test]
     fn ordering_uncertainty_saturates_at_one() {
-        let p = DepthCertParams { k_sigma: 2.0, sort_bucket_width: 0.1, ..Default::default() };
+        let p = DepthCertParams {
+            k_sigma: 2.0,
+            sort_bucket_width: 0.1,
+            ..Default::default()
+        };
         let c = certify_depth_scalar(10.0, 0.25, 5.0, &p);
         assert!(approx(c.ordering_uncertainty, 1.0, 1e-6), "should clamp to 1, got {}", c.ordering_uncertainty);
     }
 
     #[test]
     fn occlusion_confidence_high_without_overlap_drops_with_overlap() {
-        let isolated = DepthCertParams { k_sigma: 2.0, ..Default::default() };
+        let isolated = DepthCertParams {
+            k_sigma: 2.0,
+            ..Default::default()
+        };
         let c0 = certify_depth_scalar(10.0, 0.25, 5.0, &isolated);
         assert!(approx(c0.occlusion_confidence, 1.0, 1e-6), "isolated splat should be fully confident");
 
         // overlap = half the depth-spread half-width (1.0) → confidence 0.5.
-        let overlap = DepthCertParams { k_sigma: 2.0, splat_support_overlap_error: 0.5, ..Default::default() };
+        let overlap = DepthCertParams {
+            k_sigma: 2.0,
+            splat_support_overlap_error: 0.5,
+            ..Default::default()
+        };
         let c1 = certify_depth_scalar(10.0, 0.25, 5.0, &overlap);
         assert!(approx(c1.occlusion_confidence, 0.5, 1e-5), "got {}", c1.occlusion_confidence);
         assert!((0.0..=1.0).contains(&c1.occlusion_confidence));
@@ -682,8 +714,15 @@ mod tests {
             let mut g = Gaussian3D::unit();
             g.mean = [0.0, 0.0, 2.0];
             g.scale = [0.1 + rng(&mut st) * 1.5, 0.1 + rng(&mut st) * 1.5, 0.1 + rng(&mut st) * 1.5];
-            let q = [rng(&mut st) * 2.0 - 1.0, rng(&mut st) * 2.0 - 1.0, rng(&mut st) * 2.0 - 1.0, rng(&mut st) * 2.0 - 1.0];
-            let n = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt().max(1e-6);
+            let q = [
+                rng(&mut st) * 2.0 - 1.0,
+                rng(&mut st) * 2.0 - 1.0,
+                rng(&mut st) * 2.0 - 1.0,
+                rng(&mut st) * 2.0 - 1.0,
+            ];
+            let n = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3])
+                .sqrt()
+                .max(1e-6);
             g.quat = [q[0] / n, q[1] / n, q[2] / n, q[3] / n];
             g.opacity = 1.0;
             batch.push(g);
@@ -691,8 +730,16 @@ mod tests {
         // 90° about +Y so the look-axis is non-trivial.
         let view = [[0.0, 0.0, 1.0, 0.0], [0.0, 1.0, 0.0, 0.0], [-1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
         let cam = Camera {
-            view, fx: 512.0, fy: 512.0, cx: 256.0, cy: 256.0, near: 0.01, far: 1000.0,
-            width: 512, height: 512, position: [0.0, 0.0, 0.0],
+            view,
+            fx: 512.0,
+            fy: 512.0,
+            cx: 256.0,
+            cy: 256.0,
+            near: 0.01,
+            far: 1000.0,
+            width: 512,
+            height: 512,
+            position: [0.0, 0.0, 0.0],
         };
         let mut got = vec![0.0f32; batch.len];
         camera_depth_variance_batch(&batch, &cam, &mut got);
@@ -771,7 +818,10 @@ mod tests {
     #[test]
     fn mesh_alignment_within_interval_is_aligned() {
         // depth=10, cov_zz=0.25, k=2 → interval [9, 11].
-        let params = DepthCertParams { k_sigma: 2.0, ..Default::default() };
+        let params = DepthCertParams {
+            k_sigma: 2.0,
+            ..Default::default()
+        };
         let cert = certify_depth_scalar(10.0, 0.25, 5.0, &params);
         let a = mesh_alignment(10.0, 10.0, &cert, 0.01);
         assert!(a.within_interval && a.aligned, "{a:?}");
@@ -781,9 +831,12 @@ mod tests {
 
     #[test]
     fn mesh_alignment_outside_interval_but_within_tolerance_is_aligned() {
-        let params = DepthCertParams { k_sigma: 2.0, ..Default::default() };
+        let params = DepthCertParams {
+            k_sigma: 2.0,
+            ..Default::default()
+        };
         let cert = certify_depth_scalar(10.0, 0.25, 5.0, &params); // [9, 11]
-        // mesh at 8.5 is outside [9,11] but a generous 2.0 tolerance accepts it.
+                                                                   // mesh at 8.5 is outside [9,11] but a generous 2.0 tolerance accepts it.
         let a = mesh_alignment(8.5, 10.0, &cert, 2.0);
         assert!(!a.within_interval);
         assert!(a.within_tolerance);
@@ -792,7 +845,10 @@ mod tests {
 
     #[test]
     fn mesh_alignment_far_is_not_aligned_and_many_sigma() {
-        let params = DepthCertParams { k_sigma: 2.0, ..Default::default() };
+        let params = DepthCertParams {
+            k_sigma: 2.0,
+            ..Default::default()
+        };
         let cert = certify_depth_scalar(10.0, 0.25, 5.0, &params); // half-width 1.0
         let a = mesh_alignment(11.5, 10.0, &cert, 0.01);
         assert!(!a.aligned && !a.within_interval && !a.within_tolerance, "{a:?}");
@@ -821,7 +877,10 @@ mod tests {
 
         let mut dv = vec![0.0f32; batch.len];
         camera_depth_variance_batch(&batch, &cam, &mut dv);
-        let params = DepthCertParams { k_sigma: 3.0, ..Default::default() };
+        let params = DepthCertParams {
+            k_sigma: 3.0,
+            ..Default::default()
+        };
         let cert = certify_depth_scalar(proj.depth[0], dv[0], proj.radius[0], &params);
 
         // Scan skin sits on the CAD plane → aligned, mesh inside interval.

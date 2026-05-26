@@ -134,7 +134,9 @@ pub fn heel_reject_scalar(camera: &Camera, block: &BlockBounds) -> bool {
 }
 
 /// Run the full HEEL→HIP→TWIG→LEAF cascade for one block (scalar reference).
-pub fn cascade_block(camera: &Camera, block: &BlockBounds, budget: &DepthCascadeBudget, index: usize) -> BlockDepthDecision {
+pub fn cascade_block(
+    camera: &Camera, block: &BlockBounds, budget: &DepthCascadeBudget, index: usize,
+) -> BlockDepthDecision {
     // ── HEEL ─────────────────────────────────────────────────────────────
     if heel_reject_scalar(camera, block) {
         return BlockDepthDecision {
@@ -214,14 +216,8 @@ pub fn heel_reject_mask(camera: &Camera, blocks: &[BlockBounds], out: &mut [u8])
         return;
     }
     let v = &camera.view;
-    let row = |r: usize| {
-        (
-            F32x16::splat(v[r][0]),
-            F32x16::splat(v[r][1]),
-            F32x16::splat(v[r][2]),
-            F32x16::splat(v[r][3]),
-        )
-    };
+    let row =
+        |r: usize| (F32x16::splat(v[r][0]), F32x16::splat(v[r][1]), F32x16::splat(v[r][2]), F32x16::splat(v[r][3]));
     let (v00, v01, v02, v03) = row(0);
     let (v10, v11, v12, v13) = row(1);
     let (v20, v21, v22, v23) = row(2);
@@ -300,7 +296,10 @@ mod tests {
     #[test]
     fn heel_rejects_behind_near_plane() {
         let c = cam();
-        let b = BlockBounds { center: [0.0, 0.0, -5.0], radius: 1.0 };
+        let b = BlockBounds {
+            center: [0.0, 0.0, -5.0],
+            radius: 1.0,
+        };
         assert!(heel_reject_scalar(&c, &b));
         let d = cascade_block(&c, &b, &DepthCascadeBudget::default(), 0);
         assert_eq!(d.action, HhtlAction::Reject);
@@ -310,7 +309,10 @@ mod tests {
     #[test]
     fn heel_rejects_off_screen() {
         let c = cam();
-        let b = BlockBounds { center: [1000.0, 0.0, 1.0], radius: 0.01 };
+        let b = BlockBounds {
+            center: [1000.0, 0.0, 1.0],
+            radius: 0.01,
+        };
         assert!(heel_reject_scalar(&c, &b));
         let d = cascade_block(&c, &b, &DepthCascadeBudget::default(), 7);
         assert_eq!(d.action, HhtlAction::Reject);
@@ -321,8 +323,14 @@ mod tests {
     fn small_distant_block_kept_coarse() {
         let c = cam();
         // tiny block far away → low SSE, passing certificate → KeepCoarse.
-        let b = BlockBounds { center: [0.0, 0.0, 200.0], radius: 0.05 };
-        let budget = DepthCascadeBudget { max_error_px: 16.0, ..Default::default() };
+        let b = BlockBounds {
+            center: [0.0, 0.0, 200.0],
+            radius: 0.05,
+        };
+        let budget = DepthCascadeBudget {
+            max_error_px: 16.0,
+            ..Default::default()
+        };
         let d = cascade_block(&c, &b, &budget, 0);
         assert_eq!(d.action, HhtlAction::KeepCoarse, "sse={} cert.passed={}", d.priority, d.certificate.passed);
         assert_eq!(d.tier_reached, HhtlTier::Hip);
@@ -333,8 +341,15 @@ mod tests {
     fn large_near_block_projected_exact() {
         let c = cam();
         // big block up close → huge SSE → ProjectExact.
-        let b = BlockBounds { center: [0.0, 0.0, 2.0], radius: 1.5 };
-        let budget = DepthCascadeBudget { max_error_px: 16.0, max_projected_radius_px: 1e9, ..Default::default() };
+        let b = BlockBounds {
+            center: [0.0, 0.0, 2.0],
+            radius: 1.5,
+        };
+        let budget = DepthCascadeBudget {
+            max_error_px: 16.0,
+            max_projected_radius_px: 1e9,
+            ..Default::default()
+        };
         let d = cascade_block(&c, &b, &budget, 0);
         assert_eq!(d.action, HhtlAction::ProjectExact, "sse={}", d.priority);
         assert_eq!(d.tier_reached, HhtlTier::Leaf);
@@ -344,9 +359,16 @@ mod tests {
     #[test]
     fn oversized_footprint_forces_project_exact() {
         let c = cam();
-        let b = BlockBounds { center: [0.0, 0.0, 100.0], radius: 0.02 };
+        let b = BlockBounds {
+            center: [0.0, 0.0, 100.0],
+            radius: 0.02,
+        };
         // Force the footprint gate by setting a tiny max projected radius.
-        let budget = DepthCascadeBudget { max_error_px: 1e9, max_projected_radius_px: 0.0, ..Default::default() };
+        let budget = DepthCascadeBudget {
+            max_error_px: 1e9,
+            max_projected_radius_px: 0.0,
+            ..Default::default()
+        };
         let d = cascade_block(&c, &b, &budget, 0);
         assert_eq!(d.action, HhtlAction::ProjectExact);
         assert_eq!(d.tier_reached, HhtlTier::Leaf);
@@ -355,7 +377,10 @@ mod tests {
     #[test]
     fn failing_depth_certificate_forces_refine() {
         let c = cam();
-        let b = BlockBounds { center: [0.0, 0.0, 5.0], radius: 1.0 };
+        let b = BlockBounds {
+            center: [0.0, 0.0, 5.0],
+            radius: 1.0,
+        };
         // Tiny depth-error budget → certificate fails → Refine at TWIG.
         let mut budget = DepthCascadeBudget::default();
         budget.cert_params.max_total_depth_error = 1e-6;
@@ -368,9 +393,16 @@ mod tests {
     #[test]
     fn low_confidence_forces_refine() {
         let c = cam();
-        let b = BlockBounds { center: [0.0, 0.0, 50.0], radius: 0.1 };
+        let b = BlockBounds {
+            center: [0.0, 0.0, 50.0],
+            radius: 0.1,
+        };
         // Large neighbour overlap → low occlusion confidence; demand high.
-        let mut budget = DepthCascadeBudget { max_error_px: 1e9, min_confidence: 0.9, ..Default::default() };
+        let mut budget = DepthCascadeBudget {
+            max_error_px: 1e9,
+            min_confidence: 0.9,
+            ..Default::default()
+        };
         budget.cert_params.splat_support_overlap_error = 100.0;
         let d = cascade_block(&c, &b, &budget, 0);
         assert_eq!(d.action, HhtlAction::Refine);
@@ -397,7 +429,10 @@ mod tests {
                 _ => 1.0 + rng(&mut st) * 10.0,
             };
             let x = if i % 5 == 0 { 5000.0 } else { rng(&mut st) * 4.0 - 2.0 };
-            blocks.push(BlockBounds { center: [x, rng(&mut st) * 4.0 - 2.0, z], radius: 0.1 + rng(&mut st) });
+            blocks.push(BlockBounds {
+                center: [x, rng(&mut st) * 4.0 - 2.0, z],
+                radius: 0.1 + rng(&mut st),
+            });
         }
         let mut mask = vec![0u8; blocks.len()];
         heel_reject_mask(&c, &blocks, &mut mask);
@@ -410,7 +445,10 @@ mod tests {
     fn cascade_blocks_driver_lengths() {
         let c = cam();
         let blocks: Vec<_> = (0..20)
-            .map(|i| BlockBounds { center: [0.0, 0.0, 2.0 + i as f32], radius: 0.2 })
+            .map(|i| BlockBounds {
+                center: [0.0, 0.0, 2.0 + i as f32],
+                radius: 0.2,
+            })
             .collect();
         let mut out = Vec::new();
         cascade_blocks(&c, &blocks, &DepthCascadeBudget::default(), &mut out);

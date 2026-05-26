@@ -105,8 +105,8 @@ pub use depth_cascade::{
     DepthCascadeBudget, HhtlAction, HhtlTier,
 };
 pub use depth_cert::{
-    camera_depth_variance, camera_depth_variance_batch, certify_batch_scalar, certify_batch_simd,
-    certify_depth_scalar, screen_space_error, DepthCertParams, RenderDepthCertificate,
+    camera_depth_variance, camera_depth_variance_batch, certify_batch_scalar, certify_batch_simd, certify_depth_scalar,
+    screen_space_error, DepthCertParams, RenderDepthCertificate,
 };
 pub use frame::{SplatFrame, SplatRenderer};
 pub use gaussian::{Gaussian3D, GaussianBatch, SH_COEFFS_PER_CHANNEL, SH_COEFFS_PER_GAUSSIAN, SH_DEGREE};
