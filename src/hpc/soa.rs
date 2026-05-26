@@ -116,13 +116,13 @@ pub const SOA_CONTAINER_VERSION: u8 = 1;
 ///
 /// # `bytemuck::Pod` compatibility
 ///
-/// The type contains no pointers, no `Option`, no enums, and no
-/// uninitialised padding in the nominal even-N case.  It is designed to be
-/// safely interpreted as a `Pod` type.  Until `bytemuck` is added as a
-/// workspace dependency (blocker — see module-level BLOCKERS comment),
+/// `elem_stride` and `field_offsets` are both `[u64; N]`, so the type is
+/// **padding-free for every `N`** (a 16-byte fixed prefix + two `[u64; N]`
+/// arrays) — no pointers, no `Option`, no enums, no uninitialised bytes.
 /// [`as_bytes`](Self::as_bytes) / [`from_bytes`](Self::from_bytes) provide
-/// equivalent functionality via explicit `unsafe` casts with matching
-/// SAFETY comments.
+/// `bytemuck`-style access via explicit `unsafe` casts with SAFETY comments;
+/// a `Pod`/`Zeroable` impl can be added by the task-03 codec crate (which is
+/// where `bytemuck` is pulled, for `cast_slice` on the backing buffer).
 ///
 /// # Layout (N = 2, for concreteness)
 ///
@@ -134,10 +134,10 @@ pub const SOA_CONTAINER_VERSION: u8 = 1;
 ///  6       2     _pad            ([u8; 2], always 0x0000)
 ///  8       4     row_count       (u32 LE)
 /// 12       4     row_capacity    (u32 LE)
-/// 16       4*N   elem_stride     ([u32; N] LE)
-/// 16+4*N  [0-4]  (implicit pad when N is odd, see BLOCKERS)
-/// ...      8*N   field_offsets   ([u64; N] LE)
+/// 16       8*N   elem_stride     ([u64; N] LE)
+/// 16+8*N   8*N   field_offsets   ([u64; N] LE)
 /// ```
+/// Total size = `16 + 16*N` bytes — padding-free for every `N`.
 ///
 /// # Example
 ///
@@ -203,7 +203,14 @@ pub struct SoaContainerHeader<const N: usize> {
     /// Combined with `row_capacity`, determines the byte range of field `i`
     /// in the backing buffer:
     ///   `[field_offsets[i], field_offsets[i] + row_capacity * elem_stride[i])`.
-    pub elem_stride: [u32; N],
+    ///
+    /// Stored as `u64` (not `u32`) so the struct is **padding-free for every
+    /// `N`**: a 16-byte fixed prefix followed by two `[u64; N]` arrays. This
+    /// removes the implicit odd-N padding that would otherwise make
+    /// [`as_bytes`](Self::as_bytes) read uninitialised bytes, and keeps the
+    /// type `bytemuck::Pod`-compatible should a consumer (task-03 codec) add
+    /// the impl.
+    pub elem_stride: [u64; N],
 
     /// Byte offsets of each field array within the flat backing buffer.
     ///
@@ -244,7 +251,7 @@ impl<const N: usize> SoaContainerHeader<N> {
     /// assert_eq!(hdr.field_offsets[1], 16);
     /// assert_eq!(hdr.backing_buffer_bytes(), 16 + 32); // field 1: 4 × 8 = 32
     /// ```
-    pub fn new(row_capacity: u32, elem_stride: [u32; N]) -> Self {
+    pub fn new(row_capacity: u32, elem_stride: [u64; N]) -> Self {
         assert!(N <= 255, "SoaContainerHeader: N={N} exceeds u8::MAX (255)");
         for (i, &s) in elem_stride.iter().enumerate() {
             assert!(s > 0, "SoaContainerHeader: elem_stride[{i}] == 0 (degenerate)");
@@ -255,7 +262,7 @@ impl<const N: usize> SoaContainerHeader<N> {
         let mut cursor: u64 = 0;
         for i in 0..N {
             field_offsets[i] = cursor;
-            let field_bytes = (row_capacity as u64) * (elem_stride[i] as u64);
+            let field_bytes = (row_capacity as u64) * elem_stride[i];
             // Round up to the next 8-byte boundary.
             cursor += (field_bytes + 7) & !7;
         }
@@ -291,7 +298,7 @@ impl<const N: usize> SoaContainerHeader<N> {
             return 0;
         }
         let last = N - 1;
-        let field_bytes = (self.row_capacity as u64) * (self.elem_stride[last] as u64);
+        let field_bytes = (self.row_capacity as u64) * self.elem_stride[last];
         let end = self.field_offsets[last] + ((field_bytes + 7) & !7);
         end as usize
     }
@@ -394,7 +401,7 @@ impl<const N: usize> SoaContainerHeader<N> {
             if self.field_offsets[i] < prev_end {
                 return Err("SoaContainerHeader: field_offsets overlap or are out of order");
             }
-            let field_bytes = (self.row_capacity as u64) * (self.elem_stride[i] as u64);
+            let field_bytes = (self.row_capacity as u64) * self.elem_stride[i];
             prev_end = self.field_offsets[i] + ((field_bytes + 7) & !7);
         }
         Ok(())
@@ -402,13 +409,13 @@ impl<const N: usize> SoaContainerHeader<N> {
 
     /// Reinterpret the header as a byte slice.
     ///
-    /// The returned slice has length `size_of::<SoaContainerHeader<N>>()`.
-    /// All named-field bytes carry defined values; implicit padding bytes
-    /// between `elem_stride` and `field_offsets` (present when `N` is odd)
-    /// are zero-initialised by the `Self { .. }` constructor literal.
+    /// The returned slice has length `size_of::<SoaContainerHeader<N>>()` =
+    /// `16 + 16*N`. The type is padding-free for every `N` (both `elem_stride`
+    /// and `field_offsets` are `[u64; N]`), so every byte carries a defined
+    /// value — there is no uninitialised padding to read.
     ///
-    /// This is a stand-in for `bytemuck::bytes_of(&self)` until `bytemuck`
-    /// is added as a workspace dependency (see BLOCKERS).
+    /// This is a stand-in for `bytemuck::bytes_of(&self)` (bytemuck is pulled
+    /// by the task-03 codec crate, not by ndarray itself).
     ///
     /// Only available on little-endian targets (the on-wire format is LE).
     ///
@@ -447,8 +454,8 @@ impl<const N: usize> SoaContainerHeader<N> {
     /// Constructing a value of a primitive-only struct from arbitrary bytes is
     /// safe because no field has validity constraints beyond its bit width (no
     /// enums, no references, no `NonZero*`).  Semantic constraints are checked
-    /// by `validate`.  Implicit padding bytes (odd-N case) are read but never
-    /// interpreted as named fields, so they cannot trigger undefined behaviour.
+    /// by `validate`.  The struct is padding-free for every `N`, so there are
+    /// no uninitialised bytes involved.
     #[cfg(target_endian = "little")]
     #[inline]
     pub fn from_bytes(src: &[u8]) -> Option<Self> {
@@ -467,28 +474,26 @@ impl<const N: usize> SoaContainerHeader<N> {
 // serving as regression guards against accidental layout changes.
 
 const _: () = {
-    // SoaContainerHeader<0>: only the 16-byte fixed-offset prefix.
-    // magic(4) + version(1) + field_count(1) + _pad(2) + row_count(4) +
-    // row_capacity(4) = 16 bytes.  No elem_stride or field_offsets arrays.
+    // SoaContainerHeader<N> is **padding-free for every N**: a 16-byte fixed
+    // prefix — magic(4) + version(1) + field_count(1) + _pad(2) + row_count(4)
+    // + row_capacity(4) — followed by two `[u64; N]` arrays. Total = 16 + 16*N.
+
+    // N=0: fixed prefix only.
     assert!(
         core::mem::size_of::<SoaContainerHeader<0>>() == 16,
         "SoaContainerHeader<0> must be exactly 16 bytes (fixed-offset prefix)"
     );
 
-    // SoaContainerHeader<1>:
-    //   fixed prefix (16) + elem_stride [u32;1] (4) + implicit pad (4, to align u64)
-    //   + field_offsets [u64;1] (8) = 32 bytes.
+    // N=1: 16 + elem_stride[u64;1] (8) + field_offsets[u64;1] (8) = 32.
     assert!(
         core::mem::size_of::<SoaContainerHeader<1>>() == 32,
-        "SoaContainerHeader<1> must be 32 bytes"
+        "SoaContainerHeader<1> must be 32 bytes (16 + 16*1)"
     );
 
-    // SoaContainerHeader<2>:
-    //   fixed prefix (16) + elem_stride [u32;2] (8, already 8-aligned, no pad)
-    //   + field_offsets [u64;2] (16) = 40 bytes.
+    // N=2: 16 + [u64;2] (16) + [u64;2] (16) = 48. No padding for any N.
     assert!(
-        core::mem::size_of::<SoaContainerHeader<2>>() == 40,
-        "SoaContainerHeader<2> must be 40 bytes"
+        core::mem::size_of::<SoaContainerHeader<2>>() == 48,
+        "SoaContainerHeader<2> must be 48 bytes (16 + 16*2)"
     );
 
     // Struct-level alignment must be 8 (from `align(8)`).
@@ -518,8 +523,8 @@ mod container_tests {
     }
 
     #[test]
-    fn size_of_n2_is_40() {
-        assert_eq!(core::mem::size_of::<SoaContainerHeader<2>>(), 40);
+    fn size_of_n2_is_48() {
+        assert_eq!(core::mem::size_of::<SoaContainerHeader<2>>(), 48);
     }
 
     #[test]
@@ -547,26 +552,26 @@ mod container_tests {
     // Exact LE byte assertion for a known N=2 header.
     // Any layout refactor that changes a field offset breaks this test.
     //
-    // Fixture: SoaContainerHeader<2>::new(4, [4, 8])
-    //   Bytes  0.. 4  magic          = b"SoAC"
-    //   Byte   4      version        = 1
-    //   Byte   5      field_count    = 2
-    //   Bytes  6.. 8  _pad           = [0, 0]
-    //   Bytes  8..12  row_count      = 0
-    //   Bytes 12..16  row_capacity   = 4
-    //   Bytes 16..20  elem_stride[0] = 4
-    //   Bytes 20..24  elem_stride[1] = 8
-    //   Bytes 24..32  field_offsets[0] = 0    (field 0 starts at 0)
-    //   Bytes 32..40  field_offsets[1] = 16   (4 rows × 4 = 16, 8-aligned)
+    // Fixture: SoaContainerHeader<2>::new(4, [4, 8])  → 48 bytes (16 + 16*2)
+    //   Bytes  0.. 4  magic            = b"SoAC"
+    //   Byte   4      version          = 1
+    //   Byte   5      field_count      = 2
+    //   Bytes  6.. 8  _pad             = [0, 0]
+    //   Bytes  8..12  row_count        = 0
+    //   Bytes 12..16  row_capacity     = 4
+    //   Bytes 16..24  elem_stride[0]   = 4   (u64 LE)
+    //   Bytes 24..32  elem_stride[1]   = 8   (u64 LE)
+    //   Bytes 32..40  field_offsets[0] = 0   (u64 LE)
+    //   Bytes 40..48  field_offsets[1] = 16  (4 rows × 4 = 16, 8-aligned)
     //
-    // N=2 → elem_stride is 8 bytes total (already 8-byte aligned) → NO
-    // implicit padding inserted between elem_stride and field_offsets.
+    // elem_stride is [u64; N] → the struct is padding-free for every N, so
+    // there is never implicit padding between elem_stride and field_offsets.
 
     #[test]
     fn golden_bytes_n2_capacity4_strides_4_8() {
         let hdr: SoaContainerHeader<2> = SoaContainerHeader::new(4, [4, 8]);
         let bytes = hdr.as_bytes();
-        assert_eq!(bytes.len(), 40, "header should be 40 bytes for N=2");
+        assert_eq!(bytes.len(), 48, "header should be 48 bytes for N=2");
 
         assert_eq!(&bytes[0..4], b"SoAC",       "magic");
         assert_eq!(bytes[4],     1,              "version");
@@ -574,10 +579,10 @@ mod container_tests {
         assert_eq!(&bytes[6..8], &[0u8, 0],     "_pad");
         assert_eq!(read_u32_le(bytes,  8), 0,   "row_count");
         assert_eq!(read_u32_le(bytes, 12), 4,   "row_capacity");
-        assert_eq!(read_u32_le(bytes, 16), 4,   "elem_stride[0]");
-        assert_eq!(read_u32_le(bytes, 20), 8,   "elem_stride[1]");
-        assert_eq!(read_u64_le(bytes, 24), 0,   "field_offsets[0]");
-        assert_eq!(read_u64_le(bytes, 32), 16,  "field_offsets[1]");
+        assert_eq!(read_u64_le(bytes, 16), 4,   "elem_stride[0]");
+        assert_eq!(read_u64_le(bytes, 24), 8,   "elem_stride[1]");
+        assert_eq!(read_u64_le(bytes, 32), 0,   "field_offsets[0]");
+        assert_eq!(read_u64_le(bytes, 40), 16,  "field_offsets[1]");
     }
 
     // ── Roundtrip: as_bytes → from_bytes ────────────────────────────────
@@ -593,8 +598,8 @@ mod container_tests {
 
     #[test]
     fn as_bytes_from_bytes_roundtrip_n3_odd_n() {
-        // N=3 is ODD → implicit padding between elem_stride and field_offsets.
-        // Constructor zero-initialises it; roundtrip must still be lossless.
+        // N=3 (odd): with elem_stride as [u64; N] the struct is padding-free,
+        // so the roundtrip is lossless with no reliance on padding init.
         let mut orig: SoaContainerHeader<3> = SoaContainerHeader::new(8, [4, 4, 4]);
         orig.push_rows(3);
         let bytes = orig.as_bytes();
