@@ -905,18 +905,14 @@ mod tests {
         let packed = vec![0u64; 4];
         let aux = vec![0i8; 4];
         let mut out = vec![0i8; 4];
-        batch_packed_i4_16(&packed, &aux, &mut out, |lanes, a| {
-            lanes.lane_i8::<0>().wrapping_add(a)
-        });
+        batch_packed_i4_16(&packed, &aux, &mut out, |lanes, a| lanes.lane_i8::<0>().wrapping_add(a));
         assert!(out.iter().all(|&v| v == 0), "batch_packed_i4_16 all-zero");
 
         // Non-zero nibbles
         let packed2 = vec![0x1111_1111_1111_1111u64; 2];
         let aux2 = vec![10i8; 2];
         let mut out2 = vec![0i8; 2];
-        batch_packed_i4_16(&packed2, &aux2, &mut out2, |lanes, a| {
-            lanes.lane_i8::<0>().wrapping_add(a)
-        });
+        batch_packed_i4_16(&packed2, &aux2, &mut out2, |lanes, a| lanes.lane_i8::<0>().wrapping_add(a));
         // nibble 0x1 → lane 0 = +1; +10 = 11
         assert!(out2.iter().all(|&v| v == 11), "batch_packed_i4_16 nibble=1+aux=10");
     }

@@ -388,18 +388,8 @@ fn log_softmax_f32_scalar(x: ArrayView1<f32>, mut out: ArrayViewMut1<f32>) {
 /// assert!((out[[1, 0]] - 1.0 / 3.0).abs() < 1e-5);
 /// ```
 pub fn softmax_axis_f32(x: ArrayView2<f32>, mut out: ArrayViewMut2<f32>, axis: Axis) {
-    assert!(
-        axis.index() < 2,
-        "softmax_axis_f32: axis {} is out of bounds for a 2-D array",
-        axis.index()
-    );
-    assert_eq!(
-        x.shape(),
-        out.shape(),
-        "softmax_axis_f32: shape mismatch (x={:?} out={:?})",
-        x.shape(),
-        out.shape()
-    );
+    assert!(axis.index() < 2, "softmax_axis_f32: axis {} is out of bounds for a 2-D array", axis.index());
+    assert_eq!(x.shape(), out.shape(), "softmax_axis_f32: shape mismatch (x={:?} out={:?})", x.shape(), out.shape());
     // `lanes(axis)` yields 1-D views ALONG `axis`; `lanes_mut(axis)` yields
     // the corresponding mutable 1-D views of `out`. Zipping them visits every
     // lane exactly once.
@@ -450,11 +440,7 @@ pub fn softmax_axis_f32(x: ArrayView2<f32>, mut out: ArrayViewMut2<f32>, axis: A
 /// assert!((out[[1, 2]] - expected).abs() < 1e-5);
 /// ```
 pub fn log_softmax_axis_f32(x: ArrayView2<f32>, mut out: ArrayViewMut2<f32>, axis: Axis) {
-    assert!(
-        axis.index() < 2,
-        "log_softmax_axis_f32: axis {} is out of bounds for a 2-D array",
-        axis.index()
-    );
+    assert!(axis.index() < 2, "log_softmax_axis_f32: axis {} is out of bounds for a 2-D array", axis.index());
     assert_eq!(
         x.shape(),
         out.shape(),
@@ -776,7 +762,13 @@ mod tests {
         softmax_f32(row.view(), out_1d.view_mut());
 
         for j in 0..4 {
-            assert!((out_axis[[0, j]] - out_1d[j]).abs() < 1e-6, "j={}: axis={} vs 1d={}", j, out_axis[[0, j]], out_1d[j]);
+            assert!(
+                (out_axis[[0, j]] - out_1d[j]).abs() < 1e-6,
+                "j={}: axis={} vs 1d={}",
+                j,
+                out_axis[[0, j]],
+                out_1d[j]
+            );
         }
     }
 
@@ -850,7 +842,10 @@ mod tests {
                 assert!(
                     (out_axis[[i, j]] - out_1d[j]).abs() < 1e-5,
                     "row={} j={}: axis={} vs 1d={}",
-                    i, j, out_axis[[i, j]], out_1d[j]
+                    i,
+                    j,
+                    out_axis[[i, j]],
+                    out_1d[j]
                 );
             }
         }

@@ -1395,7 +1395,9 @@ impl I8x32 {
     #[inline(always)]
     pub fn saturating_abs(self) -> Self {
         let mut o = [0i8; 32];
-        for i in 0..32 { o[i] = self.0[i].saturating_abs(); }
+        for i in 0..32 {
+            o[i] = self.0[i].saturating_abs();
+        }
         Self(o)
     }
 }
@@ -1572,7 +1574,9 @@ impl U64x8 {
     #[inline(always)]
     pub fn popcnt(self) -> Self {
         let mut out = [0u64; 8];
-        for i in 0..8 { out[i] = self.0[i].count_ones() as u64; }
+        for i in 0..8 {
+            out[i] = self.0[i].count_ones() as u64;
+        }
         Self(out)
     }
 
@@ -1588,7 +1592,9 @@ impl U64x8 {
     #[inline(always)]
     pub fn xor_popcount(self, other: Self) -> u64 {
         let mut sum = 0u64;
-        for i in 0..8 { sum += (self.0[i] ^ other.0[i]).count_ones() as u64; }
+        for i in 0..8 {
+            sum += (self.0[i] ^ other.0[i]).count_ones() as u64;
+        }
         sum
     }
 }
@@ -1604,7 +1610,9 @@ impl U64x4 {
     #[inline(always)]
     pub fn popcnt(self) -> Self {
         let mut out = [0u64; 4];
-        for i in 0..4 { out[i] = self.0[i].count_ones() as u64; }
+        for i in 0..4 {
+            out[i] = self.0[i].count_ones() as u64;
+        }
         Self(out)
     }
 }

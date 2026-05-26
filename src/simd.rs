@@ -252,8 +252,8 @@ pub use crate::simd_avx512::{
     u32x8,
     u64x4,
     u64x8,
-    u8x8,
     u8x64,
+    u8x8,
     F32Mask16,
     // 512-bit (native AVX-512, __m512/__m512d/__m512i)
     F32x16,

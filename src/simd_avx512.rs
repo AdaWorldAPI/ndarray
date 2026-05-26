@@ -2529,7 +2529,12 @@ impl U16x8 {
         // Bounds validation: debug panics, release falls back to safe get()
         #[cfg(debug_assertions)]
         for &i in &idx {
-            assert!((i as usize) < table.len(), "gather_u16: index {} out of bounds (table.len() = {})", i, table.len());
+            assert!(
+                (i as usize) < table.len(),
+                "gather_u16: index {} out of bounds (table.len() = {})",
+                i,
+                table.len()
+            );
         }
         let mut out = [0u16; 8];
         for k in 0..8 {
@@ -2623,10 +2628,8 @@ impl I8x32 {
             let raw_abs = core::arch::x86_64::_mm256_abs_epi8(self.0);
             // VPMINUB: unsigned-byte minimum. 0x80 unsigned = 128 > 0x7f = 127
             // so min(0x80, 0x7f) = 0x7f.  All values < 0x80 pass through.
-            let clamped = core::arch::x86_64::_mm256_min_epu8(
-                raw_abs,
-                core::arch::x86_64::_mm256_set1_epi8(0x7f_u8 as i8),
-            );
+            let clamped =
+                core::arch::x86_64::_mm256_min_epu8(raw_abs, core::arch::x86_64::_mm256_set1_epi8(0x7f_u8 as i8));
             I8x32(clamped)
         }
         #[cfg(not(target_arch = "x86_64"))]
@@ -2688,7 +2691,9 @@ impl U64x8 {
         {
             let arr = self.to_array();
             let mut out = [0u64; 8];
-            for i in 0..8 { out[i] = arr[i].count_ones() as u64; }
+            for i in 0..8 {
+                out[i] = arr[i].count_ones() as u64;
+            }
             U64x8::from_array(out)
         }
         #[cfg(not(target_arch = "x86_64"))]
@@ -2696,7 +2701,9 @@ impl U64x8 {
             // Scalar fallback (unreachable in practice for this backend file).
             let arr = self.to_array();
             let mut out = [0u64; 8];
-            for i in 0..8 { out[i] = arr[i].count_ones() as u64; }
+            for i in 0..8 {
+                out[i] = arr[i].count_ones() as u64;
+            }
             U64x8::from_array(out)
         }
     }
@@ -2731,7 +2738,9 @@ impl U64x8 {
             let a = self.to_array();
             let b = other.to_array();
             let mut sum = 0u64;
-            for i in 0..8 { sum += (a[i] ^ b[i]).count_ones() as u64; }
+            for i in 0..8 {
+                sum += (a[i] ^ b[i]).count_ones() as u64;
+            }
             sum
         }
     }
