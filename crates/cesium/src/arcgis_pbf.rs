@@ -340,7 +340,7 @@ pub struct PbfFeatureCollection;
 /// // }
 /// ```
 pub fn decode_pbf(_bytes: &[u8]) -> Result<PbfFeatureCollection, PbfError> {
-    unimplemented!("scaffold only — wire prost dep + uncomment after Opus review")
+    Err(PbfError::NotImplemented("scaffold only — not yet implemented"))
 }
 
 /// Zigzag-decode + delta-accumulate a packed sint64 coordinate sequence from a
@@ -367,7 +367,7 @@ pub fn decode_pbf(_bytes: &[u8]) -> Result<PbfFeatureCollection, PbfError> {
 /// - `hasZ = true`:  stride 3, layout `[x0,y0,z0, x1,y1,z1, …]`
 ///
 /// Dequantise with [`PbfTransform`] before passing to `to_cam_soa`.
-pub fn decode_delta_coords(_raw: &[u64], _has_z: bool) -> Vec<i64> {
+pub(crate) fn decode_delta_coords(_raw: &[u64], _has_z: bool) -> Vec<i64> {
     unimplemented!("scaffold only")
 }
 
@@ -390,7 +390,21 @@ pub fn decode_delta_coords(_raw: &[u64], _has_z: bool) -> Vec<i64> {
 /// //     DegenerateTransform,
 /// // }
 /// ```
-pub struct PbfError;
+#[derive(Debug)]
+pub enum PbfError {
+    /// Function is a scaffold stub and has not been implemented yet.
+    NotImplemented(&'static str),
+}
+
+impl std::fmt::Display for PbfError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PbfError::NotImplemented(msg) => write!(f, "not implemented: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for PbfError {}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Internal helpers — commented stubs

@@ -283,7 +283,7 @@ pub struct SpzGaussianCloud;
 /// // }
 /// ```
 pub fn decode_spz(_bytes: &[u8]) -> Result<SpzGaussianCloud, SpzError> {
-    unimplemented!("scaffold only — wire zstd dep + uncomment after Opus review")
+    Err(SpzError::NotImplemented("scaffold only — not yet implemented"))
 }
 
 /// Decode stream 0: 24-bit fixed-point positions → f32 world coordinates.
@@ -307,7 +307,7 @@ pub fn decode_spz(_bytes: &[u8]) -> Result<SpzGaussianCloud, SpzError> {
 /// //     Ok(out)
 /// // }
 /// ```
-pub fn decode_positions(_stream: &[u8], _num_points: usize, _fractional_bits: u8) -> Vec<f32> {
+pub(crate) fn decode_positions(_stream: &[u8], _num_points: usize, _fractional_bits: u8) -> Vec<f32> {
     unimplemented!("scaffold only")
 }
 
@@ -323,7 +323,7 @@ pub fn decode_positions(_stream: &[u8], _num_points: usize, _fractional_bits: u8
 /// //     }).collect())
 /// // }
 /// ```
-pub fn decode_alphas(_stream: &[u8]) -> Vec<f32> {
+pub(crate) fn decode_alphas(_stream: &[u8]) -> Vec<f32> {
     unimplemented!("scaffold only")
 }
 
@@ -338,7 +338,7 @@ pub fn decode_alphas(_stream: &[u8]) -> Vec<f32> {
 /// //     }).collect())
 /// // }
 /// ```
-pub fn decode_colors(_stream: &[u8]) -> Vec<f32> {
+pub(crate) fn decode_colors(_stream: &[u8]) -> Vec<f32> {
     unimplemented!("scaffold only")
 }
 
@@ -351,7 +351,7 @@ pub fn decode_colors(_stream: &[u8]) -> Vec<f32> {
 /// //     Ok(stream.iter().map(|&s| s as f32 / 16.0 - 10.0).collect())
 /// // }
 /// ```
-pub fn decode_scales(_stream: &[u8]) -> Vec<f32> {
+pub(crate) fn decode_scales(_stream: &[u8]) -> Vec<f32> {
     unimplemented!("scaffold only")
 }
 
@@ -387,7 +387,7 @@ pub fn decode_scales(_stream: &[u8]) -> Vec<f32> {
 /// //     }
 /// // }
 /// ```
-pub fn decode_rotations(_stream: &[u8], _version: u32, _num_points: usize) -> Vec<f32> {
+pub(crate) fn decode_rotations(_stream: &[u8], _version: u32, _num_points: usize) -> Vec<f32> {
     unimplemented!("scaffold only")
 }
 
@@ -405,7 +405,7 @@ pub fn decode_rotations(_stream: &[u8], _version: u32, _num_points: usize) -> Ve
 /// //     Ok(stream.iter().map(|&v| (v as f32 - 128.0) / 128.0).collect())
 /// // }
 /// ```
-pub fn decode_sh_rest(_stream: &[u8], _sh_degree: u8, _num_points: usize) -> Vec<f32> {
+pub(crate) fn decode_sh_rest(_stream: &[u8], _sh_degree: u8, _num_points: usize) -> Vec<f32> {
     unimplemented!("scaffold only")
 }
 
@@ -430,7 +430,21 @@ pub fn decode_sh_rest(_stream: &[u8], _sh_degree: u8, _num_points: usize) -> Vec
 /// //     StreamSizeMismatch { stream: usize, expected: usize, actual: usize },
 /// // }
 /// ```
-pub struct SpzError;
+#[derive(Debug)]
+pub enum SpzError {
+    /// Function is a scaffold stub and has not been implemented yet.
+    NotImplemented(&'static str),
+}
+
+impl std::fmt::Display for SpzError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SpzError::NotImplemented(msg) => write!(f, "not implemented: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for SpzError {}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Internal helpers — commented stubs

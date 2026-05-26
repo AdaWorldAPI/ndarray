@@ -166,7 +166,7 @@ pub struct EsriCrs;
 /// //     EsriCrs { wkid, latest_wkid, vcs_wkid, latest_vcs_wkid }
 /// // }
 /// ```
-pub fn from_pbf_spatial_ref(_wkid: u32, _latest_wkid: u32, _vcs_wkid: u32, _latest_vcs_wkid: u32) -> EsriCrs {
+pub(crate) fn from_pbf_spatial_ref(_wkid: u32, _latest_wkid: u32, _vcs_wkid: u32, _latest_vcs_wkid: u32) -> EsriCrs {
     unimplemented!("scaffold only")
 }
 
@@ -194,7 +194,7 @@ pub fn from_pbf_spatial_ref(_wkid: u32, _latest_wkid: u32, _vcs_wkid: u32, _late
 // the PBF proto (proto uses "lastestWkid" — sic — vs JSON uses "latestWkid").
 // Confirm against an actual tileset.json produced by ArcGIS Pro before wiring.
 pub fn from_json_value(_v: &()) -> Result<EsriCrs, CrsError> {
-    unimplemented!("scaffold only — JSON parse wired at cold boundary; do not call from hotpath")
+    Err(CrsError::NotImplemented("scaffold only — not yet implemented"))
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -268,7 +268,7 @@ pub struct EnuCoord;
 /// // }
 /// ```
 pub fn reproject_to_wgs84(_crs: &EsriCrs, _coords: &[f64]) -> Result<Vec<Wgs84Coord>, CrsError> {
-    unimplemented!("scaffold only")
+    Err(CrsError::NotImplemented("scaffold only — not yet implemented"))
 }
 
 /// Closed-form inverse Web Mercator: (x_m, y_m) → (lon_deg, lat_deg).
@@ -282,7 +282,7 @@ pub fn reproject_to_wgs84(_crs: &EsriCrs, _coords: &[f64]) -> Result<Vec<Wgs84Co
 /// //     (lon.to_degrees(), lat.to_degrees())
 /// // }
 /// ```
-pub fn inverse_mercator(_x: f64, _y: f64) -> (f64, f64) {
+pub(crate) fn inverse_mercator(_x: f64, _y: f64) -> (f64, f64) {
     unimplemented!("scaffold only")
 }
 
@@ -316,7 +316,7 @@ pub fn inverse_mercator(_x: f64, _y: f64) -> (f64, f64) {
 /// //      (n*(1.0-e2) + h_m)*lat.sin()]
 /// // }
 /// ```
-pub fn rebase_to_local_enu(_coords: &[Wgs84Coord], _origin: &Wgs84Coord) -> Vec<EnuCoord> {
+pub(crate) fn rebase_to_local_enu(_coords: &[Wgs84Coord], _origin: &Wgs84Coord) -> Vec<EnuCoord> {
     unimplemented!("scaffold only")
 }
 
@@ -341,4 +341,18 @@ pub fn rebase_to_local_enu(_coords: &[Wgs84Coord], _origin: &Wgs84Coord) -> Vec<
 /// //     VerticalCrsRequired(u32),
 /// // }
 /// ```
-pub struct CrsError;
+#[derive(Debug)]
+pub enum CrsError {
+    /// Function is a scaffold stub and has not been implemented yet.
+    NotImplemented(&'static str),
+}
+
+impl std::fmt::Display for CrsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CrsError::NotImplemented(msg) => write!(f, "not implemented: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for CrsError {}

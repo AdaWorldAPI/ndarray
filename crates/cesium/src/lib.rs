@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! # cesium — optional Cesium / ArcGIS reference + parity oracle
 //!
 //! **NOT a production dependency.** This crate is the *runnable legacy pillar*
