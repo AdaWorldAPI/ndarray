@@ -229,6 +229,7 @@ pub use crate::simd_nightly::{
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f", not(feature = "nightly-simd")))]
 pub use crate::simd_avx512::{
     batch_packed_i4_16,
+    batch_packed_i4_32,
     f32x16,
     f32x8,
     f64x4,
@@ -319,8 +320,8 @@ pub use crate::simd_avx512::{BF16x16, BF16x8};
     not(feature = "nightly-simd")
 ))]
 pub use crate::simd_avx512::{
-    batch_packed_i4_16, f32x8, f64x4, i16x16, i8x16, i8x32, palette_lookup_u8x8, prefetch_read_t0, prefetch_read_t1,
-    prefetch_read_t2, u16x8, u8x8, F32x8, F64x4, I16x16, I8x16, I8x32, U16x8, U8x8,
+    batch_packed_i4_16, batch_packed_i4_32, f32x8, f64x4, i16x16, i8x16, i8x32, palette_lookup_u8x8, prefetch_read_t0,
+    prefetch_read_t1, prefetch_read_t2, u16x8, u8x8, F32x8, F64x4, I16x16, I8x16, I8x32, U16x8, U8x8,
 };
 
 #[cfg(all(
@@ -364,8 +365,8 @@ pub use crate::simd_neon::aarch64_simd::{f32x16, f64x8, F32Mask16, F32x16, F64Ma
 // W1a NEON-native types + free functions
 #[cfg(all(target_arch = "aarch64", not(feature = "nightly-simd")))]
 pub use crate::simd_neon::{
-    batch_packed_i4_16, i8x16, i8x32, palette_lookup_u8x8, prefetch_read_t0, prefetch_read_t1, prefetch_read_t2, u8x8,
-    I8x16, I8x32, U8x8,
+    batch_packed_i4_16, batch_packed_i4_32, i8x16, i8x32, palette_lookup_u8x8, prefetch_read_t0, prefetch_read_t1,
+    prefetch_read_t2, u8x8, I8x16, I8x32, U8x8,
 };
 // U16x8 on aarch64 comes from simd_neon (backed by uint16x8_t)
 #[cfg(all(target_arch = "aarch64", not(feature = "nightly-simd")))]
@@ -383,10 +384,10 @@ pub use scalar::{
     not(feature = "nightly-simd")
 ))]
 pub use scalar::{
-    batch_packed_i4_16, f32x16, f32x8, f64x4, f64x8, i16x16, i16x32, i32x16, i32x8, i64x4, i64x8, i8x16, i8x32, i8x64,
-    palette_lookup_u8x8, prefetch_read_t0, prefetch_read_t1, prefetch_read_t2, u16x16, u16x8, u32x16, u32x8, u64x4,
-    u64x8, u8x64, u8x8, F32Mask16, F32x16, F32x8, F64Mask8, F64x4, F64x8, I16x16, I16x32, I32x16, I32x8, I64x4, I64x8,
-    I8x16, I8x32, I8x64, U16x16, U16x32, U16x8, U32x16, U32x8, U64x4, U64x8, U8x64, U8x8,
+    batch_packed_i4_16, batch_packed_i4_32, f32x16, f32x8, f64x4, f64x8, i16x16, i16x32, i32x16, i32x8, i64x4, i64x8,
+    i8x16, i8x32, i8x64, palette_lookup_u8x8, prefetch_read_t0, prefetch_read_t1, prefetch_read_t2, u16x16, u16x8,
+    u32x16, u32x8, u64x4, u64x8, u8x64, u8x8, F32Mask16, F32x16, F32x8, F64Mask8, F64x4, F64x8, I16x16, I16x32, I32x16,
+    I32x8, I64x4, I64x8, I8x16, I8x32, I8x64, U16x16, U16x32, U16x8, U32x16, U32x8, U64x4, U64x8, U8x64, U8x8,
 };
 
 // Scalar BF16 conversion — always available on all platforms

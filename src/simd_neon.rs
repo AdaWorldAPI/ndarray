@@ -1907,6 +1907,20 @@ impl I8x16 {
 /// We add saturating_abs via the scalar path as there is no 256-bit NEON reg.
 #[cfg(target_arch = "aarch64")]
 impl I8x32 {
+    /// Unpack 32 signed 4-bit nibbles (`u128`, little-endian) into 32 `i8`
+    /// lanes (two's-complement, range −8..+7). NEON has no 256-bit register,
+    /// so `I8x32` is the scalar-polyfill array; the low 16 lanes match
+    /// `I8x16::from_i4_packed_u64` of the low 64 bits (the i4-16 atom).
+    #[inline(always)]
+    pub fn from_i4_packed_u128(packed: u128) -> Self {
+        let mut lanes = [0i8; 32];
+        for i in 0..32 {
+            let nibble = ((packed >> (4 * i)) & 0xf) as i8;
+            lanes[i] = if nibble > 7 { nibble - 16 } else { nibble };
+        }
+        Self(lanes)
+    }
+
     /// Lane-wise saturating absolute value (scalar polyfill on NEON).
     ///
     /// `saturating_abs(i8::MIN) == i8::MAX`.  All 32 lanes processed via
@@ -2107,6 +2121,23 @@ where
     let n = packed.len().min(out.len());
     for i in 0..n {
         let lanes = I8x16::from_i4_packed_u64(packed[i]);
+        out[i] = f(lanes, aux[i]);
+    }
+}
+
+/// Closure-parameterised batch over packed i4-32 data (NEON backend).
+/// See the x86_64 version in `simd_avx512.rs` for full documentation.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn batch_packed_i4_32<E, F>(packed: &[u128], aux: &[i8], out: &mut [E], f: F)
+where
+    F: Fn(I8x32, i8) -> E + Sync + Send,
+    E: Copy,
+{
+    assert_eq!(packed.len(), aux.len(), "batch_packed_i4_32: packed and aux must be same length");
+    let n = packed.len().min(out.len());
+    for i in 0..n {
+        let lanes = I8x32::from_i4_packed_u128(packed[i]);
         out[i] = f(lanes, aux[i]);
     }
 }

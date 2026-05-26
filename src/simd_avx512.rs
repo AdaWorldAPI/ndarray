@@ -1662,6 +1662,37 @@ impl I8x32 {
         Self(unsafe { _mm256_loadu_si256(arr.as_ptr() as *const __m256i) })
     }
 
+    /// Unpack 32 signed 4-bit nibbles (`u128`, little-endian nibble order)
+    /// into 32 `i8` lanes via two's-complement sign extension.
+    ///
+    /// This is the i4-32 carrier (e.g. an `i4_32D` thinking-style fingerprint).
+    /// Its low 64 bits are the i4-16 atom served by `I8x16::from_i4_packed_u64`,
+    /// so the low 16 lanes of `from_i4_packed_u128(x)` equal
+    /// `I8x16::from_i4_packed_u64(x as u64)` by construction (parity test in
+    /// `simd_int_ops`).
+    ///
+    /// Nibble `n` maps to `n` for `0..=7` and `n - 16` for `8..=15` (range
+    /// −8..+7, two's complement). Any bipolar/biased reinterpretation
+    /// (−7..+8, etc.) is a consumer-side semantic layer, not part of this
+    /// neutral unpack.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let z = I8x32::from_i4_packed_u128(0);
+    /// assert!(z.to_array().iter().all(|&x| x == 0));
+    /// let neg = I8x32::from_i4_packed_u128(u128::MAX);
+    /// assert!(neg.to_array().iter().all(|&x| x == -1));
+    /// ```
+    #[inline(always)]
+    pub fn from_i4_packed_u128(packed: u128) -> Self {
+        let mut lanes = [0i8; 32];
+        for i in 0..32 {
+            let nibble = ((packed >> (4 * i)) & 0xf) as i8;
+            lanes[i] = if nibble > 7 { nibble - 16 } else { nibble };
+        }
+        Self::from_array(lanes)
+    }
+
     #[inline(always)]
     pub fn to_array(self) -> [i8; 32] {
         let mut arr = [0i8; 32];
@@ -2845,6 +2876,27 @@ where
     let n = packed.len().min(out.len());
     for i in 0..n {
         let lanes = I8x16::from_i4_packed_u64(packed[i]);
+        out[i] = f(lanes, aux[i]);
+    }
+}
+
+/// Closure-parameterised batch over packed i4-32 data (x86_64; serves both
+/// the AVX-512 and AVX2 tiers). One carrier width up from `batch_packed_i4_16`:
+/// each `u128` unpacks to an `I8x32` of 32 signed lanes via
+/// `I8x32::from_i4_packed_u128`.
+///
+/// Panics if `packed.len() != aux.len()`.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub fn batch_packed_i4_32<E, F>(packed: &[u128], aux: &[i8], out: &mut [E], f: F)
+where
+    F: Fn(I8x32, i8) -> E + Sync + Send,
+    E: Copy,
+{
+    assert_eq!(packed.len(), aux.len(), "batch_packed_i4_32: packed and aux must be same length");
+    let n = packed.len().min(out.len());
+    for i in 0..n {
+        let lanes = I8x32::from_i4_packed_u128(packed[i]);
         out[i] = f(lanes, aux[i]);
     }
 }

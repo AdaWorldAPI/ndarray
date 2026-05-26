@@ -917,6 +917,55 @@ mod tests {
         assert!(out2.iter().all(|&v| v == 11), "batch_packed_i4_16 nibble=1+aux=10");
     }
 
+    /// i4-32 unpack: basic known values (two's-complement −8..+7).
+    #[test]
+    fn i8x32_from_i4_packed_u128_basic() {
+        use crate::simd::I8x32;
+        let z = I8x32::from_i4_packed_u128(0);
+        assert!(z.to_array().iter().all(|&x| x == 0), "all-zero nibbles → 0");
+        let neg = I8x32::from_i4_packed_u128(u128::MAX);
+        assert!(neg.to_array().iter().all(|&x| x == -1), "all-0xf nibbles → -1");
+        let min4 = I8x32::from_i4_packed_u128(0x8888_8888_8888_8888_8888_8888_8888_8888u128);
+        assert!(min4.to_array().iter().all(|&x| x == -8), "0x8 → -8 (most-negative i4)");
+        let max4 = I8x32::from_i4_packed_u128(0x7777_7777_7777_7777_7777_7777_7777_7777u128);
+        assert!(max4.to_array().iter().all(|&x| x == 7), "0x7 → +7 (most-positive i4)");
+    }
+
+    /// i4-32 parity: low 16 lanes == i4-16 of the low u64 (the atom), high 16
+    /// lanes == i4-16 of the high u64. Guarantees `from_i4_packed_u128`
+    /// composes the existing `from_i4_packed_u64` atom.
+    #[test]
+    fn i8x32_from_i4_packed_u128_matches_two_u64_halves() {
+        use crate::simd::{I8x16, I8x32};
+        let lo = 0x0123_4567_89AB_CDEFu64;
+        let hi = 0xFEDC_BA98_7654_3210u64;
+        let packed = (lo as u128) | ((hi as u128) << 64);
+        let wide = I8x32::from_i4_packed_u128(packed).to_array();
+        let lo16 = I8x16::from_i4_packed_u64(lo).to_array();
+        let hi16 = I8x16::from_i4_packed_u64(hi).to_array();
+        assert_eq!(&wide[..16], &lo16[..], "low 16 lanes == i4-16 of low u64 (atom parity)");
+        assert_eq!(&wide[16..], &hi16[..], "high 16 lanes == i4-16 of high u64");
+    }
+
+    /// batch_packed_i4_32 smoke test (mirrors the i4-16 smoke test).
+    #[test]
+    fn batch_packed_i4_32_smoke() {
+        use crate::simd::batch_packed_i4_32;
+
+        let packed = vec![0u128; 4];
+        let aux = vec![0i8; 4];
+        let mut out = vec![0i8; 4];
+        batch_packed_i4_32(&packed, &aux, &mut out, |lanes, a| lanes.to_array()[0].wrapping_add(a));
+        assert!(out.iter().all(|&v| v == 0), "batch_packed_i4_32 all-zero");
+
+        let packed2 = vec![0x1111_1111_1111_1111_1111_1111_1111_1111u128; 2];
+        let aux2 = vec![10i8; 2];
+        let mut out2 = vec![0i8; 2];
+        batch_packed_i4_32(&packed2, &aux2, &mut out2, |lanes, a| lanes.to_array()[0].wrapping_add(a));
+        // nibble 0x1 → lane 0 = +1; +10 = 11
+        assert!(out2.iter().all(|&v| v == 11), "batch_packed_i4_32 nibble=1+aux=10");
+    }
+
     /// Exercises the AMX dispatch tier added on top of `gemm_u8_i8`'s
     /// compile-time cascade. On AMX-enabled silicon (Sapphire Rapids+
     /// with the right OS prctl), 16/16/64-aligned shapes go through
