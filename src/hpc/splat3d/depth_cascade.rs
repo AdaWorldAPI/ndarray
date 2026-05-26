@@ -146,7 +146,7 @@ pub fn cascade_block(
             priority: 0.0,
             estimated_error_px: 0.0,
             projected_radius_px: 0.0,
-            certificate: super::depth_cert::certify_depth_scalar(0.0, 0.0, 0.0, &budget.cert_params),
+            certificate: RenderDepthCertificate::ZERO,
         };
     }
 
@@ -304,6 +304,10 @@ mod tests {
         let d = cascade_block(&c, &b, &DepthCascadeBudget::default(), 0);
         assert_eq!(d.action, HhtlAction::Reject);
         assert_eq!(d.tier_reached, HhtlTier::Heel);
+        // A HEEL-rejected block must carry a failed (zeroed) certificate, never
+        // a passing one (Codex regression).
+        assert!(!d.certificate.passed, "rejected block must not be certified");
+        assert_eq!(d.certificate.covariance_depth_error, 0.0);
     }
 
     #[test]
