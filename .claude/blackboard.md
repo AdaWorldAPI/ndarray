@@ -34,8 +34,10 @@
 ## Consolidation-sprint debt (PR-X program; ground-truthed `ls src/hpc/` 2026-05-27)
 > Shipped-state vs `pr-master-consolidation.md`. Landed: ✅ **PR-X10** `linalg/`,
 > ✅ **PR-X11** `pillar/`, ✅ **PR-X13** `ogit_bridge/`, ✅ **PR-X3** `blocked_grid/`.
-- **PR-X12 codec ⚠️ PARTIAL** — `src/hpc/codec/` has `ctu/mode/predict/mod` only;
-  **RDO + ANS entropy stages missing**. Doc-canon merged (#198/#205), kernel half-built.
+- **PR-X12 codec ⚠️ v1 NEAR-COMPLETE** — `ctu/mode/predict` + now **`rdo` (A6, λ-RDO,
+  integer fixed-point λ_q8 — no float) + `ans` (A7, static-table rANS over the 4-symbol
+  mode alphabet, bit-exact round-trip)**. Remaining: `transform` (A4, deferred to v2 per
+  design Q2) + `stream` (A8, framing over `ans`). 81 lib + 20 doctests green, clippy clean.
 - **PR-X4 splat4d ❌ OUTSTANDING** — no `src/hpc/splat4d/`. Unbuilt.
 - **PR-X9 cognitive ❌ OUTSTANDING** — no `src/hpc/cognitive/`. Unbuilt; must **consume**
   `lance-graph-contract::splat::CamPlaneSplat` (q8), never redefine it (contract is sacred).
