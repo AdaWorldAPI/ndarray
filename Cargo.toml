@@ -282,6 +282,13 @@ splat4d = ["std"]
 # quad-tree partition; the entropy coder + RDO loop land in later workers.
 codec = ["std"]
 
+# cognitive: PR-X9 — lazy basin-relative grid storage. A LazyBlockedGrid
+# stores each CausalEdge64 cell as (basin_idx, mode) relative to the shared
+# CamCodebook (hydrated from the embedded OGIT Cognitive TTL via ogit_bridge),
+# with a lossless XOR-relative skip/merge/delta/escape encoding reusing the
+# codec mode taxonomy. GridStorage<BR,BC> abstracts dense vs lazy storage.
+cognitive = ["std", "codec", "ogit_bridge"]
+
 # no_std polyfill for `static LazyLock` in `src/simd.rs` (sprint A12).
 # Pulls in `portable-atomic` with the `critical-section` impl plus the
 # `critical-section` runtime so we can build a once-cell-style cache for

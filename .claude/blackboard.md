@@ -42,8 +42,14 @@
   `Splat<D>` (D∈{2,3}, stable `[f32;6]` Cholesky), multi-tier `TileBinning`,
   `compose_l1`/`compose_cascade`→`SplatPyramid`. f32 graphics lane. 28 lib + 6 doctests,
   clippy clean. Remaining (X4.1): `splat3d` From/Into + raster parity, D≥4.
-- **PR-X9 cognitive ❌ OUTSTANDING** — no `src/hpc/cognitive/`. Unbuilt; must **consume**
-  `lance-graph-contract::splat::CamPlaneSplat` (q8), never redefine it (contract is sacred).
+- **PR-X9 cognitive ✅ v1 BUILT** — `src/hpc/cognitive/` (`storage`/`sparse`/`lazy`):
+  `GridStorage<BR,BC>` trait (dense + lazy), `SparseGrid` (2-bit-packed modes), and
+  `LazyBlockedGrid` with **lossless XOR-relative** skip/merge/delta/escape encode/decode.
+  Consumes `ogit_bridge::CamCodebook` (embedded-TTL hydrate, PR-X13) — the q8 `CamPlaneSplat`
+  contract lives downstream in `lance-graph-contract` (NOT an ndarray dep), so nothing forked.
+  Reuses codec `CellMode`/`MergeDir` taxonomy (lossy arithmetic `rdo_select` N/A — XOR-Hamming
+  metric). 16 lib tests, clippy clean. Remaining (X9.1): NARS-revise (W7), 2-bit-tight L4
+  budget, generic-T storage, codebook learning.
 
 ## Merged / closed this epoch
 - ✅ #201 triage · #205 `3dgs-tiles` (cesium tileset) · #206 + #208 render-depth cert.

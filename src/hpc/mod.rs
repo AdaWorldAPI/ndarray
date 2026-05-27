@@ -270,6 +270,14 @@ pub mod splat4d;
 /// transform, quantise, RDO, rANS, stream) land in follow-up sprints.
 #[cfg(feature = "codec")]
 pub mod codec;
+
+/// PR-X9 — lazy basin-relative grid storage (`LazyBlockedGrid`). Stores
+/// each CausalEdge64 cell as `(basin_idx, mode)` relative to the shared
+/// `ogit_bridge::CamCodebook`, using a lossless XOR-relative
+/// skip/merge/delta/escape encoding (the codec mode taxonomy). Gated by
+/// `feature = "cognitive"` (pulls in `codec` + `ogit_bridge`).
+#[cfg(feature = "cognitive")]
+pub mod cognitive;
 /// Audio primitives: MDCT, band energies, PVQ, AudioFrame codec.
 /// Transcoded from Opus CELT for the HHTL cascade → waveform pipeline.
 pub mod audio;
