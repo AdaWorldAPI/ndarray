@@ -1,4 +1,47 @@
+# Current epoch (2026-05-26) — splat / palette / pillar / 3DGS
+
+> **Read this first.** The "Polyglot Notebook" architecture below is a
+> separate/older program, not the current epoch.
+
+## Evidence model (binding — from PR #200)
+- **L0** = source · passing tests · ratified standards (ground truth).
+- **L1** = `.claude/PR-X12-docs-audit.md` (#200) + `.claude/knowledge/plans-alignment-triage.md` — claims-about-source; **spot-check, never inherit**.
+- **L2** = `.claude/plans/*` + `pr-x12-*` perspective docs = **inspiration, NOT evidence**.
+- **Whole-file reads only** — no `grep`/`sed`/`head`/`tail` (`ls` to locate).
+- Build/bench locally at `target-cpu=x86-64-v4`; committed `.cargo/config.toml` stays **v3** (GitHub/CI).
+
+## Settled architecture (grounded this epoch, whole-read)
+- **Cognitive similarity/cosine = Palette256 + Fisher-z**, integer: `hpc::cam_pq`
+  squared-L2 ADC (u8 codebook indices) gated by θ = `distance::similarity_z` (atanh).
+  Validated 10k×10k @ θ≈cos-0.90. **No float MAC in the distance kernel.**
+- The cognitive **"splat"** = `lance-graph-contract::splat::CamPlaneSplat` (q8) →
+  `AwarenessPlane16K` (16 384-bit OR deposition). **Sibling of, not the same as,** the
+  graphics `splat3d` EWA renderer (per `splat3d/mod.rs`).
+- EWA float-Σ sandwich (`splat3d::spd3`, Pillar 6/7) = uncertainty propagation +
+  certification, **not** similarity. Pillar suite (6–17) certifies the substrate;
+  **Pflug-10 certifies the CAM-PQ palette**.
+- Typed distance (`cognitive-distance-typing.md`): one named fn per metric, newtype
+  outputs, **no `fn distance<T>` umbrella**, conversions explicit. `palette→fisher→
+  cosine→hamming` roundtrip is the named anti-pattern.
+
+## Outstanding (per triage + #200)
+- **#4** pr-x12 doc-fixes + evidence-policy + archive fabrication-heavy plans (Geo/Gov).
+- **#5** ASG-leaf canon spec (Gov) — prerequisite for #7.
+- **#7** ASG-leaf impl (Kernel) — must **extend `CamPlaneSplat`**, not reinvent; trails #5.
+- `cam-pq-production-wiring` (UNOWNED, lance-graph) — route `cam_pq` through `CamCodecContract`.
+- `UNUSED_INVENTORY_1.95` A1–A9 dead-code (phantom `SimdTier::{Sse2,WasmSimd128}`, stale 1.64 imports).
+
+## Merged / closed this epoch
+- ✅ #201 triage · #205 `3dgs-tiles` (cesium tileset) · #206 + #208 render-depth cert.
+- ❌ #207 EWA-SYRK bench **closed** (wrong regime — category error).
+- 🗑 `phi_spiral.rs` abandoned (float, wrong manifold). Net new usable code this
+  session = 0 (see `board/EPIPHANIES.md` grounding-discipline entry).
+
+---
+
 # Polyglot Notebook — Single Binary Architecture
+
+> Separate/older program — NOT the current epoch (see top of file).
 
 ## The Binary
 
