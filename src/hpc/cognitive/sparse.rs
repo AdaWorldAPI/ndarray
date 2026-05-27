@@ -94,8 +94,9 @@ pub struct SparseGrid {
     /// Per-cell auxiliary byte: the δ byte for `Delta`, the `MergeDir`
     /// discriminant for `Merge`, `0` otherwise.
     aux: Vec<u8>,
-    /// Full `u64` value for `Escape` cells, keyed by cell index.
-    escape: HashMap<u32, u64>,
+    /// Full `u64` value for `Escape` cells, keyed by `usize` cell index
+    /// (not `u32` — a u32 key would collide for grids with > 2³² cells).
+    escape: HashMap<usize, u64>,
 }
 
 impl SparseGrid {
@@ -145,7 +146,7 @@ impl SparseGrid {
     /// Escape value of cell `ci`, if it is an `Escape` cell.
     #[inline]
     pub fn escape(&self, ci: usize) -> Option<u64> {
-        self.escape.get(&(ci as u32)).copied()
+        self.escape.get(&ci).copied()
     }
 
     /// Set cell `ci` to `Skip` with the given basin.
@@ -174,7 +175,7 @@ impl SparseGrid {
         self.basin_idx[ci] = basin;
         self.modes.set(ci, CellMode::Escape as u8);
         self.aux[ci] = 0;
-        self.escape.insert(ci as u32, value);
+        self.escape.insert(ci, value);
     }
 
     /// Approximate heap footprint in bytes (the columns + escape map).
@@ -183,7 +184,7 @@ impl SparseGrid {
         self.basin_idx.len() * core::mem::size_of::<u16>()
             + self.modes.byte_len()
             + self.aux.len()
-            + self.escape.len() * (core::mem::size_of::<u32>() + core::mem::size_of::<u64>())
+            + self.escape.len() * (core::mem::size_of::<usize>() + core::mem::size_of::<u64>())
     }
 
     /// Number of `Escape` cells (for tests / diagnostics).

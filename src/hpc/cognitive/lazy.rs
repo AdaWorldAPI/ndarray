@@ -49,6 +49,9 @@ fn nearest_basin(codebook: &CamCodebook, value: u64) -> Option<u16> {
     if atoms.is_empty() {
         return None;
     }
+    // basin_idx is u16; the codebook is capped at 4096 atoms (CamCodebook::
+    // MAX_ATOMS), so `best_idx as u16` below cannot truncate.
+    debug_assert!(atoms.len() <= u16::MAX as usize + 1, "codebook exceeds u16 basin-index range");
     let mut best_idx = 0usize;
     let mut best_dist = value ^ atoms[0].edge;
     for (i, atom) in atoms.iter().enumerate().skip(1) {
@@ -159,9 +162,15 @@ impl<'a, const BR: usize, const BC: usize> LazyBlockedGrid<'a, BR, BC> {
                 // basin edge equals `edge`; XOR with its δ byte recovers
                 // the value. Backward-only dirs ⇒ the neighbour is already
                 // reconstructable.
-                let nb = match self.sparse.aux(ci) {
-                    x if x == MergeDir::North as u8 => ci - self.cols,
-                    _ => ci - 1, // West
+                // The encoder only ever emits North or West (backward-only).
+                // Assert that invariant; treat any other code as West so a
+                // corrupt tag can't silently pick a wrong direction unnoticed
+                // in debug builds.
+                let nb = if self.sparse.aux(ci) == MergeDir::North as u8 {
+                    ci - self.cols
+                } else {
+                    debug_assert_eq!(self.sparse.aux(ci), MergeDir::West as u8, "Merge dir must be North or West");
+                    ci - 1
                 };
                 edge ^ self.sparse.aux(nb) as u64
             }
