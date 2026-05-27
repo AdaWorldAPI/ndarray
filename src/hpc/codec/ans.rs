@@ -351,6 +351,13 @@ pub fn decode_modes(stream: &[u8]) -> Option<Vec<CellMode>> {
         *slot = u16::from_le_bytes([lo, hi]);
     }
     let table = RansFreqTable::from_freqs(freq)?;
+    // A non-empty stream needs a non-empty model. An all-zero freq table is
+    // only valid for n == 0 (the empty stream); with n > 0 it cannot encode
+    // any symbol, so reject rather than letting `rans_decode` fabricate
+    // Escape tags from the empty (freq-0) table on a corrupt input.
+    if n > 0 && freq.iter().all(|&f| f == 0) {
+        return None;
+    }
     let payload = &stream[HEADER_LEN..];
     if n > 0 && payload.len() < 4 {
         return None;
@@ -485,6 +492,17 @@ mod tests {
             payload_bits,
             symbols.len()
         );
+    }
+
+    #[test]
+    fn decode_rejects_nonempty_count_with_empty_freq_table() {
+        // Codex P2: header claims n > 0 but the stored freq table is all-zero
+        // (an "empty model"). `from_freqs` accepts an all-zero table for the
+        // n == 0 case, so the n > 0 guard must reject here rather than let
+        // rans_decode fabricate Escape tags from the freq-0 table.
+        let mut stream = vec![0u8; HEADER_LEN + 8];
+        stream[0] = 5; // n = 5, but all four u16 freqs stay 0
+        assert!(decode_modes(&stream).is_none());
     }
 
     #[test]
