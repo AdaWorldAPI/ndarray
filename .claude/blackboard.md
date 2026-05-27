@@ -31,6 +31,15 @@
 - `cam-pq-production-wiring` (UNOWNED, lance-graph) — route `cam_pq` through `CamCodecContract`.
 - `UNUSED_INVENTORY_1.95` A1–A9 dead-code (phantom `SimdTier::{Sse2,WasmSimd128}`, stale 1.64 imports).
 
+## Consolidation-sprint debt (PR-X program; ground-truthed `ls src/hpc/` 2026-05-27)
+> Shipped-state vs `pr-master-consolidation.md`. Landed: ✅ **PR-X10** `linalg/`,
+> ✅ **PR-X11** `pillar/`, ✅ **PR-X13** `ogit_bridge/`, ✅ **PR-X3** `blocked_grid/`.
+- **PR-X12 codec ⚠️ PARTIAL** — `src/hpc/codec/` has `ctu/mode/predict/mod` only;
+  **RDO + ANS entropy stages missing**. Doc-canon merged (#198/#205), kernel half-built.
+- **PR-X4 splat4d ❌ OUTSTANDING** — no `src/hpc/splat4d/`. Unbuilt.
+- **PR-X9 cognitive ❌ OUTSTANDING** — no `src/hpc/cognitive/`. Unbuilt; must **consume**
+  `lance-graph-contract::splat::CamPlaneSplat` (q8), never redefine it (contract is sacred).
+
 ## Merged / closed this epoch
 - ✅ #201 triage · #205 `3dgs-tiles` (cesium tileset) · #206 + #208 render-depth cert.
 - ❌ #207 EWA-SYRK bench **closed** (wrong regime — category error).
