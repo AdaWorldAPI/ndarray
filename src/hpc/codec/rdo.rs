@@ -381,11 +381,10 @@ mod tests {
 
     #[test]
     fn merge_chosen_when_neighbour_matches_and_lambda_rewards_it() {
-        // Northern neighbour is Delta(basin=7, δ=20). True δ = 20 → Merge
-        // reconstructs exactly (distortion 0) at 3 bytes, beating Delta's
-        // 3 bytes only on the tie-break? Both 3 bytes, both distortion 0.
-        // Merge is scored after Skip; Skip here has distortion 20 so loses
-        // at lossless λ. Merge (scored before Delta) wins the 3-byte tie.
+        // Northern neighbour is Delta(basin=7, δ=20). True δ = 20, so both
+        // Merge and Delta reconstruct exactly (distortion 0) at 3 bytes —
+        // an exact cost tie. Skip (2 bytes) has distortion 20 and loses at
+        // lossless λ. Merge is scored before Delta, so it wins the tie.
         let nb = LeafCu::delta(7, 20);
         let neighbours = [Some(&nb), None, None, None];
         let choice = rdo_select(&ctx(7, 20, neighbours), &RdoConfig::LOSSLESS, None);
