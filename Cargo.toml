@@ -268,6 +268,15 @@ ogit_bridge = []
 # `lance-graph/crates/jc/src/ewa_sandwich_3d.rs`.
 splat3d = ["std"]
 
+# splat4d: PR-X4 — generalizes the bespoke splat3d 16×16 tile binner onto
+# the BlockedGrid L1–L4 cascade (the cognitive-spacetime evolution kernel).
+# Pure layout + scheduling: zero per-arch intrinsics, SIMD lives inside the
+# consumer's compose closure (W1a). v1 ships Splat<D> (D∈{2,3}), multi-tier
+# TileBinning, and compose_l1/compose_cascade → SplatPyramid. f32 graphics
+# lane (sibling of splat3d), NOT the cognitive distance kernel. The splat3d
+# From/Into bridge + raster parity land in X4.1.
+splat4d = ["std"]
+
 # PR-X12 cognitive codec — x265-shaped skip/merge/delta/escape mode classes
 # over BlockedGrid CTUs. A1 (this crate) ships only the CTU carrier +
 # quad-tree partition; the entropy coder + RDO loop land in later workers.

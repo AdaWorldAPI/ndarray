@@ -256,6 +256,14 @@ pub mod framebuffer;
 #[allow(missing_docs)]
 pub mod splat3d;
 
+/// PR-X4 — Gaussian splat L1–L4 cascade onto `BlockedGrid` (the
+/// cognitive-spacetime evolution kernel). Generalizes the bespoke
+/// `splat3d` 16×16 tile binner onto the const-generic `BlockedGrid`
+/// tier hierarchy. Gated by `feature = "splat4d"`. Pure layout +
+/// scheduling — SIMD lives inside the consumer's compose closure.
+#[cfg(feature = "splat4d")]
+pub mod splat4d;
+
 /// PR-X12 A1 — cognitive-cell codec (x265-shaped mode taxonomy over
 /// BlockedGrid CTUs). Gated by `feature = "codec"`. A1 ships only the
 /// CTU carrier + quad-tree partition; A2-A8 (mode tags, predict,

@@ -38,7 +38,10 @@
   integer fixed-point λ_q8 — no float) + `ans` (A7, static-table rANS over the 4-symbol
   mode alphabet, bit-exact round-trip)**. Remaining: `transform` (A4, deferred to v2 per
   design Q2) + `stream` (A8, framing over `ans`). 81 lib + 20 doctests green, clippy clean.
-- **PR-X4 splat4d ❌ OUTSTANDING** — no `src/hpc/splat4d/`. Unbuilt.
+- **PR-X4 splat4d ✅ v1 BUILT** — `src/hpc/splat4d/` (`splat`/`tile`/`bin`/`compose`):
+  `Splat<D>` (D∈{2,3}, stable `[f32;6]` Cholesky), multi-tier `TileBinning`,
+  `compose_l1`/`compose_cascade`→`SplatPyramid`. f32 graphics lane. 28 lib + 6 doctests,
+  clippy clean. Remaining (X4.1): `splat3d` From/Into + raster parity, D≥4.
 - **PR-X9 cognitive ❌ OUTSTANDING** — no `src/hpc/cognitive/`. Unbuilt; must **consume**
   `lance-graph-contract::splat::CamPlaneSplat` (q8), never redefine it (contract is sacred).
 
