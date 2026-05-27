@@ -87,6 +87,16 @@ impl<const BR: usize, const BC: usize> TileBinning<BR, BC> {
                 };
                 let (tr_lo, tr_hi) = (r_lo / pitch_r, r_hi / pitch_r);
                 let (tc_lo, tc_hi) = (c_lo / pitch_c, c_hi / pitch_c);
+                // Tile indices are stored as u16 on TileInstance. The cap is
+                // ~u16::MAX tiles/side = fb side > 65535·BR (≈ 4.19M cells for
+                // BR=64) — orders of magnitude past any allocatable grid and
+                // far past the L4 = 16384 cognitive-cascade extent. The
+                // debug_assert makes the invariant explicit rather than letting
+                // an `as u16` silently wrap into the wrong bin.
+                debug_assert!(
+                    tr_hi <= u16::MAX as u32 && tc_hi <= u16::MAX as u32,
+                    "splat4d: tile index exceeds u16 (framebuffer too large for the binner)"
+                );
                 for br in tr_lo..=tr_hi {
                     for bc in tc_lo..=tc_hi {
                         instances.push(TileInstance {

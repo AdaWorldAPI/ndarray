@@ -167,10 +167,15 @@ impl<const D: usize> SplatCovariance<D> {
             SplatCovariance::Isotropic { sigma2 } => *sigma2,
             SplatCovariance::Diagonal { diag } => diag[axis],
             SplatCovariance::Cholesky { lt } => {
+                // `.get(..).unwrap_or(0.0)` keeps this panic-free even if a
+                // caller bypasses the `cholesky()` D≤3 guard by constructing
+                // the (pub) variant directly with `D > MAX_SPLAT_DIM` — the
+                // out-of-budget triangle entries read as 0. For the supported
+                // D ≤ 3 every index is < LT_LEN_MAX, so this is exact.
                 let mut v = 0.0f32;
                 let mut j = 0;
                 while j <= axis {
-                    let l = lt[lt_index(axis, j)];
+                    let l = lt.get(lt_index(axis, j)).copied().unwrap_or(0.0);
                     v += l * l;
                     j += 1;
                 }
@@ -307,6 +312,16 @@ mod tests {
         let (mn, mx) = s.aabb_3sigma();
         assert_eq!(mn, [97.0, 47.0]); // 3σ = 3
         assert_eq!(mx, [103.0, 53.0]);
+    }
+
+    #[test]
+    fn cholesky_extent_is_panic_free_when_variant_bypasses_d_guard() {
+        // P2 hardening: the Cholesky variant is pub, so a caller can build
+        // SplatCovariance::<4>::Cholesky directly (skipping cholesky()'s D≤3
+        // const guard). sigma3_extent on an out-of-budget axis must NOT panic
+        // — out-of-range triangle entries read as 0 via `.get`.
+        let cov = SplatCovariance::<4>::Cholesky { lt: [1.0; LT_LEN_MAX] };
+        let _ = cov.sigma3_extent(3); // lt_index(3,3)=9 > 5 → no panic
     }
 
     #[test]
