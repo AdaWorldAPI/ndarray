@@ -12,9 +12,14 @@
 //! - [`mode`] — A2: bit-pack / unpack helpers for the on-wire 16-bit
 //!   header + per-mode tail (Skip/Merge/Delta/Escape).
 //! - [`predict`] — A3-intra: encoder-side mode-decision kernel that
-//!   picks the cheapest `LeafCu` from a cell + NESW neighbours.
-//! - `transform`, `quantize`, `rdo`, `ans`, `stream` — A4-A8, queued as
-//!   follow-up sprints.
+//!   picks the cheapest `LeafCu` from a cell + NESW neighbours (hard
+//!   decision tree).
+//! - [`rdo`] — A6: λ-rate-distortion mode selection — the soft,
+//!   cost-weighted generalization of [`predict`] (integer fixed-point λ).
+//! - [`ans`] — A7: rANS entropy coder over the 4-symbol mode alphabet.
+//! - `transform` (A4, deferred to v2 per design Q2 — 1-D DCT doesn't
+//!   help an 8-bit scalar residual) and `stream` (A8, byte-stream
+//!   framing over [`ans`]) remain as follow-ups.
 //!
 //! # Feature gate
 //!
@@ -25,10 +30,13 @@
 //!
 //! `.claude/knowledge/pr-x12-codec-x265-design.md` — master design doc.
 
+pub mod ans;
 pub mod ctu;
 pub mod mode;
 pub mod predict;
+pub mod rdo;
 
+pub use ans::{decode_modes, encode_modes, RansFreqTable, RANS_BYTE_L, RANS_M, RANS_SCALE_BITS};
 pub use ctu::{CellMode, MergeDir, MAX_QUAD_TREE_NODES, MAX_SPLIT_DEPTH};
 pub use ctu::{Ctu, CtuArena, CtuPartition, LeafCu, MaxSplitDepthReached, MergeError, NodeIdx};
 pub use mode::{
@@ -36,3 +44,4 @@ pub use mode::{
     MAX_BASIN_IDX,
 };
 pub use predict::{predict_intra, IntraConfig, IntraContext};
+pub use rdo::{rdo_select, RdoChoice, RdoConfig, RdoContext};
