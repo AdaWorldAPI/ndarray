@@ -48,16 +48,18 @@ pub fn batched_cholesky_3x3(
 );
 
 pub fn batched_mahalanobis(
-    query_xyz: &[f32],        // M × 3 query points
-    mu_xyz: &[f32],           // N × 3 Gaussian centroids
-    sigma_packed: &[f32],     // N × 6 packed Σ
-    out_dist_sq: &mut [f32],  // M × N output (squared Mahalanobis)
+    query_xyz: &[f32],            // M × 3 query points
+    mu_xyz: &[f32],               // N × 3 Gaussian centroids
+    sigma_packed: &[f32],         // N × 6 packed Σ
+    cholesky_scratch: &mut [f32], // N × 6 — caller-provided packed-L scratch (24 MiB @ N=1M); function MUST NOT allocate (see §4.2)
+    out_dist_sq: &mut [f32],      // M × N output (squared Mahalanobis)
 );
 
 pub fn batched_opacity_blend(
-    sorted_amplitudes: &[f32], // N (front-to-back along view ray)
-    opacity_lut: &[u8; 256],   // amplitude → opacity LUT
-    out_alpha: &mut [u8],      // composited alpha per pixel
+    sorted_amplitudes: &[f32],    // flat; all rays' samples concatenated (front-to-back per ray)
+    ray_offsets: &[u32],          // length = n_rays + 1 (CSR-style); ray r's range is [ray_offsets[r]..ray_offsets[r+1]) (see §4.3)
+    opacity_lut: &[u8; 256],      // amplitude → opacity LUT
+    out_alpha: &mut [u8],         // length = n_rays — composited alpha per ray
 );
 
 pub fn batched_sh_eval_l3(
@@ -194,11 +196,15 @@ L₂₂ = √(Σ₂₂ - L₂₀² - L₂₁²)
 /// - Degenerate Σ (Cholesky NaN) yields f32::INFINITY (sortable; never NaN).
 /// - SIMD-batched 16×16 on AVX-512, 4×4 on NEON.
 pub fn batched_mahalanobis(
-    query_xyz: &[f32], mu_xyz: &[f32], sigma_packed: &[f32], out_dist_sq: &mut [f32],
+    query_xyz: &[f32],            // length 3*M
+    mu_xyz: &[f32],               // length 3*N
+    sigma_packed: &[f32],         // length 6*N (upper-triangle Σ per Gaussian)
+    cholesky_scratch: &mut [f32], // length 6*N (caller-provided; holds packed L per Gaussian)
+    out_dist_sq: &mut [f32],      // length M*N (row-major)
 );
 ```
 
-**Implementation note:** internally calls `batched_cholesky_3x3` once on `sigma_packed`, caches L (heap-free via stack or caller-provided scratch), then triangular-solve + squared norm per (m, n) pair.
+**Implementation note:** internally calls `batched_cholesky_3x3` on `sigma_packed` once per call, writing packed L into `cholesky_scratch` (caller-provided; zero-allocation contract). The caller sizes the buffer as `6 * N * size_of::<f32>()` — for `N = 1_000_000` Gaussians this is **24 MiB**, which is not stack-feasible; callers must allocate it once at engine init and re-use across frames (matches the `splat-fit` / registration loop pattern). For small `N` (e.g. `N ≤ 8192`) callers MAY pass a stack-resident buffer. The function MUST NOT allocate internally.
 
 **Tests:**
 - Reference comparison against scipy `scipy.spatial.distance.mahalanobis` on random points + Σ.
@@ -226,14 +232,26 @@ pub fn batched_mahalanobis(
 /// - Composition: α_new = α_old + (1 - α_old) · α_i.
 /// - Internal accumulator: u16 with saturation; truncate to u8 at end.
 pub fn batched_opacity_blend(
-    sorted_amplitudes: &[f32], opacity_lut: &[u8; 256], out_alpha: &mut [u8],
+    sorted_amplitudes: &[f32],    // flat; contains all rays' samples concatenated
+    ray_offsets: &[u32],          // length = n_rays + 1 (CSR-style); ray r's range is [ray_offsets[r]..ray_offsets[r+1])
+    opacity_lut: &[u8; 256],
+    out_alpha: &mut [u8],         // length = n_rays
 );
 ```
 
+**Per-ray segmentation contract.** A renderer composites N independent view rays per frame; each ray has its own front-to-back-sorted Gaussian sequence. `ray_offsets` is a CSR-style prefix-sum (length `n_rays + 1`) so ray `r`'s amplitudes are `sorted_amplitudes[ray_offsets[r] as usize..ray_offsets[r+1] as usize]` and `out_alpha[r]` is its composited alpha. Constraints:
+- `ray_offsets[0] == 0` and `ray_offsets[n_rays] == sorted_amplitudes.len() as u32` (assert-on-debug).
+- A ray with `ray_offsets[r] == ray_offsets[r+1]` (empty) yields `out_alpha[r] = 0`.
+- Per-frame amplitude quantization (the 256-bucket LUT input) is computed by the caller from the per-frame max amplitude; `opacity_lut` is a frame-global constant for that pass.
+
+**Implementation note:** the SIMD inner loop processes one ray's range as a contiguous front-to-back sweep; rays are independent (no cross-ray data dependence) so the outer ray loop is trivially parallelizable.
+
 **Tests:**
-- Reference comparison against scalar reference for known sequences.
+- Reference comparison against scalar reference for known sequences (single-ray + multi-ray).
 - Saturation at full opacity (sequence of high-amplitude Gaussians → α = 255).
-- Empty sequence → α = 0.
+- Empty ray (`ray_offsets[r] == ray_offsets[r+1]`) → α = 0.
+- Multi-ray independence (concatenated rays produce same per-ray output as separate single-ray calls).
+- `ray_offsets` invariant violations (debug assert on `ray_offsets[0] != 0` or `ray_offsets[last] != amplitudes.len()`).
 - SIMD parity.
 
 ### 4.4 `batched_sh_eval_l3`
