@@ -48,6 +48,7 @@ pub mod tileset;
 pub mod implicit_tiling;
 pub mod khr_gs;
 pub mod arcgis_pbf;
+pub mod osm_pbf;
 pub mod spz;
 pub mod esri_crs;
 pub mod to_cam_soa;
