@@ -48,16 +48,18 @@ pub fn batched_cholesky_3x3(
 );
 
 pub fn batched_mahalanobis(
-    query_xyz: &[f32],        // M × 3 query points
-    mu_xyz: &[f32],           // N × 3 Gaussian centroids
-    sigma_packed: &[f32],     // N × 6 packed Σ
-    out_dist_sq: &mut [f32],  // M × N output (squared Mahalanobis)
+    query_xyz: &[f32],            // M × 3 query points
+    mu_xyz: &[f32],               // N × 3 Gaussian centroids
+    sigma_packed: &[f32],         // N × 6 packed Σ
+    cholesky_scratch: &mut [f32], // N × 6 — caller-provided packed-L scratch (24 MiB @ N=1M); function MUST NOT allocate (see §4.2)
+    out_dist_sq: &mut [f32],      // M × N output (squared Mahalanobis)
 );
 
 pub fn batched_opacity_blend(
-    sorted_amplitudes: &[f32], // N (front-to-back along view ray)
-    opacity_lut: &[u8; 256],   // amplitude → opacity LUT
-    out_alpha: &mut [u8],      // composited alpha per pixel
+    sorted_amplitudes: &[f32],    // flat; all rays' samples concatenated (front-to-back per ray)
+    ray_offsets: &[u32],          // length = n_rays + 1 (CSR-style); ray r's range is [ray_offsets[r]..ray_offsets[r+1]) (see §4.3)
+    opacity_lut: &[u8; 256],      // amplitude → opacity LUT
+    out_alpha: &mut [u8],         // length = n_rays — composited alpha per ray
 );
 
 pub fn batched_sh_eval_l3(
