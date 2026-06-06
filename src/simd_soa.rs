@@ -28,6 +28,23 @@
 //! # Design reference
 //!
 //! `.claude/knowledge/pr-x1-design.md` § "1. `MultiLaneColumn`".
+//!
+//! # Role in the two-level SoA contract (do not restate downstream)
+//!
+//! [`MultiLaneColumn`] IS the **column-level little-endian contract** for the
+//! Ada stack. It is deliberately standalone: any pure-SIMD consumer uses it
+//! with no lance coupling. The complementary **envelope-level** contract
+//! (column ordering, row stride, `cycle` version stamp, layout version — "this
+//! snapshot is a self-describing LE packet at cycle N") lives in
+//! `lance_graph_contract::soa_envelope::SoaEnvelope`, expressed in byte
+//! geometry only so it never forces an ndarray dependency on contract
+//! consumers.
+//!
+//! The boundary is fixed: **ndarray owns the column contract; lance-graph owns
+//! the envelope contract; neither restates the other; lance-graph binds them**
+//! by carving each envelope column per its `ColumnDescriptor` and wrapping it
+//! in a `MultiLaneColumn`. Do NOT add a lance-graph dependency here, and do
+//! NOT mirror `SoaEnvelope` into ndarray.
 
 use std::sync::Arc;
 
