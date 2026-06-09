@@ -515,8 +515,11 @@ mod tests {
         let sh_stride = 48_usize; // SH_COEFFS_PER_GAUSSIAN
         let i = 0_usize;
         // For k=0, ch=0 (R DC term):
-        let gs_idx = 0 * 3 + 0; // k=0, ch=0
-        let batch_idx = i * sh_stride + 0 * 16 + 0; // ch=0, k=0
+        // Use named indices so the formula reads as gs[k*3+ch] / sh[i*48+ch*16+k]
+        // rather than literal `0*3` / `0*16` ops (which trip clippy::erasing_op).
+        let (k, ch) = (0_usize, 0_usize);
+        let gs_idx = k * 3 + ch;
+        let batch_idx = i * sh_stride + ch * 16 + k;
         assert_eq!(gs_idx, 0);
         assert_eq!(batch_idx, 0);
         // For k=15, ch=2 (B last basis):
