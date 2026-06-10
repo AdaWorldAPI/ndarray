@@ -99,12 +99,48 @@ NodeGuid (128b) ──route()──► ShapeId ──consumer registry──► 
 - Grid stack points that already exist (L0): `hpc/blocked_grid/{compute,
   super_block,aliases}.rs`, `hpc/splat3d/depth_cascade.rs`,
   `hpc/pillar/hhtl_contraction.rs`.
-- **Stacked-pyramid perturbation (CONJECTURE):** pyramid levels are
-  *generated, not stored* — `level(L) = perturb(level(L-1)) + residual(L)`,
-  residuals living in the value plane; the KEY's tier nibbles select L.
-  This is the immaterialized-cascade doctrine (OGAR D-IMMAT) landing on
-  `blocked_grid`. **PROBE-PYR-1:** reconstruct a level-L tile from parent +
-  residual **byte-exact**; corrupt-residual must fail loudly.
+- **Stacked-pyramid perturbation = DETERMINISTIC PHASE (operator-pinned
+  2026-06-10; CONJECTURE as code):** pyramid levels are *generated, not
+  stored*, and the perturbation decomposes into four terms of which
+  **three are already in the key**:
+
+  ```
+  perturb(addr, L) = M[addr @ coarse] · P( phase(addr, L) )  at  loc(addr)
+
+  exponent  = level L            → the KEY's tier nibbles (>>2)  — 0 bits stored
+  location  = sub-tile placement → implied mantissa (√u/golden)  — 0 bits stored
+  phase     = deterministic recurrence from the address          — 0 bits stored
+  magnitude = the envelope M     → THE ONLY STORED BITS
+              (palette-quantized, coarser granularity than the phase varies)
+  ```
+
+  Phase is *convention, not data* — the decoder regenerates it bit-exact
+  from the address, so synthesis is **lossless by construction** and
+  stored cost scales with **magnitude smoothness, not perturbation
+  bandwidth** (a 256×256 tile with a smooth envelope stores a 16×16
+  magnitude plane — 256× cheaper than a full residual). DLSS/Halton-
+  jitter logic made exact — and **helix already ships the split**
+  ("HHTL = deterministic PLACE; helix = orthogonal RESIDUE"):
+  `HemispherePoint::lift` (√u) = the location mantissa; **`CurveRuler`
+  stride-4-over-17 = the deterministic phase walk** (coprime → full
+  permutation; integer → cross-platform bit-exact); `RollingFloor` =
+  the magnitude quantizer.
+
+  **Fences (no theater):** (a) NOT lossless for arbitrary residuals —
+  the unaligned remainder overflows to the next level or full-residual
+  escalation, **decided per tile by the quorum certificate (§5)**,
+  never assumed; (b) **D-QUANTGATE:** in quantized layers the phase
+  generator MUST be the coprime-integer walk — float φ-recurrence
+  drifts across platforms and loses aperiodicity under quantization;
+  golden recurrence is build-time muscle-memory only. The deterministic
+  phase doubles as the **anti-moiré dither** (aperiodic by coprimality).
+
+  **PROBE-PYR-1:** the full-residual escalation tier reconstructs
+  byte-exact; corrupt-residual fails loudly. **PROBE-PHASE-1:** phase
+  regeneration bit-exact across AVX-512/NEON/scalar and across
+  platforms (integer walk only). **PROBE-PERT-RHO:** magnitude-only
+  encoding meets the ρ anchors on a representative tile corpus; the
+  measured escalation rate is reported, not hidden.
 
 ## 5. The φ-quorum — so Morton cheapness never becomes eigenvalue theater
 
