@@ -142,6 +142,70 @@ NodeGuid (128b) ──route()──► ShapeId ──consumer registry──► 
   encoding meets the ρ anchors on a representative tile corpus; the
   measured escalation rate is reported, not hidden.
 
+### 4b. Bipolar phase = signed bits = Walsh-Hadamard on VSA (CONJECTURE)
+
+When §4's deterministic phase is **signed (±1)** — one bit per
+(addr, level) — the pyramid is the Walsh-Hadamard transform of the
+address tree carried on the workspace's bipolar VSA algebra
+(`Vsa16kF32` is already bipolar ±1 in role-key slices). Cascade:
+
+```
+cell(addr) = ⊕_L  sign(addr, L) ·_VSA  M(addr, L)
+                  │                    │
+                  XOR (vsa_bind)       SUM+THRESHOLD (vsa_bundle)
+                  one shift+xor SIMD   Markov-respecting
+```
+
+**Receipts shipped:** bipolar carrier `Vsa16kF32` (lance-graph-contract
+`crystal/fingerprint.rs`); `vsa_bind` (multiply ±1 = XOR of sign bits)
++ `vsa_bundle` (sum + threshold) = the iron-rule algebra; bit-exact
+integer phase walk = helix `CurveRuler` stride-4-over-17
+(D-QUANTGATE-compliant); Markov guarantee = `I-SUBSTRATE-MARKOV`
+(bundle ≡ Chapman-Kolmogorov).
+
+**Quantum-shaped properties, all DETERMINISTIC:**
+- **Superposition** — cells hold many bundled contributions; unbinding
+  with a role key (XOR with key's sign pattern) extracts one.
+- **Heisenberg-shaped bound** — `I-VSA-IDENTITIES` Test 1:
+  N ≤ √d/4 ≈ 32 distinct readouts per cell before SNR collapses. This
+  IS the substrate's uncertainty principle; classical bound, real wall.
+- **Resonance field** — a region's "value" = inner product of its
+  address-signature with the magnitude pyramid (Walsh-resonance, not
+  Fourier).
+- **Roundtrip bit-exact** — phase generated not stored; Walsh-Hadamard
+  self-inverse up to scale.
+
+**TWO-ALGEBRA RULE (load-bearing, do not violate):**
+- **Sign side = XOR** (one SIMD op; allowed for single-target deltas per
+  `data-flow.md` rule "single target: gated XOR").
+- **Magnitude side = `vsa_bundle`** (sum + threshold) — **NEVER** raw XOR
+  on magnitudes; `MergeMode::Xor` breaks Markov per `I-SUBSTRATE-MARKOV`.
+- Two operators, two algebras, one pyramid. PP-13 P1-1
+  ("raw-XOR-u64 ordering as 'nearest'") is the named anti-pattern that
+  confuses them.
+
+**Honest fences (no theater):**
+1. "Quantum-like" is the BUNDLING ALGEBRA, not measurement randomness.
+   No headline drift to "quantum substrate"; we shipped Walsh-Hadamard +
+   VSA-bipolar — the win IS bit-exactness, not probabilism.
+2. Bipolar = 1-bit phase. Multi-bit phases stack above only when
+   measured to be needed.
+3. Parseval-preservation requires the bundle. Raw-XOR-only =
+   permutation algebra = no L2 conservation = no "top gaussian preserved".
+
+**Probes (new):**
+- **PROBE-WHP-1 (Parseval):** for random ±1 sign-fields,
+  `Σ|cell|² = Σ|M_L|²` within a Jirak-derived noise floor (never
+  optimism).
+- **PROBE-WHP-2 (roundtrip):** encode→decode→encode is byte-identical
+  across AVX-512/NEON/scalar.
+- **PROBE-WHP-3 (unbind):** binding then unbinding with a role-key
+  recovers the bound element with measured margin; fails cleanly past
+  N > √d/4 (the Heisenberg bound made explicit).
+- **PROBE-WHP-4 (two-algebra guard):** explicit failing test asserting
+  raw-XOR on magnitudes breaks Chapman-Kolmogorov consistency; guards
+  against future `MergeMode::Xor` drift.
+
 ## 5. The φ-quorum — so Morton cheapness never becomes eigenvalue theater
 
 **Eigenvalue theater, defined by this repo's own casebook**
