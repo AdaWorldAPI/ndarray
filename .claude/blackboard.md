@@ -3,6 +3,22 @@
 > **Read this first.** The "Polyglot Notebook" architecture below is a
 > separate/older program, not the current epoch.
 
+## 2026-06-10 — DECISION: GUID prefix→shape routing crystallized (docs-only)
+
+The operator-pinned canonical GUID (`OGAR/CLAUDE.md`: hex dash-groups =
+`classid(8)-HEEL(4)-HIP(4)-TWIG(4)-[basin·leaf+id]`; 3×4 tiers, `>> 2`)
+now has its ndarray-side contract at
+`.claude/knowledge/guid-prefix-shape-routing.md`: ndarray = MECHANISM
+(layout-only `PrefixShapeTable`, opaque `ShapeId(u16)`, longest-prefix,
+L1/L2-resident, no distance API — no-umbrella honored), consumer =
+POLICY (lance-graph registers the table). GridLake continuation: key
+selects grid family + pyramid level; value stays one byte-store
+(column-substrate identity). φ-quorum anti-eigenvalue-theater contract
+pinned with the PP-13 casebook as failure catalog; probes named
+(ROUTE-1, QUORUM-1, PHI-1, PYR-1, CODEBOOK-44; HILBERT-L4 = existing
+P0-4 blocker for any L4 cascade claim). CONJECTURE until coded — no
+.rs touched in this commit.
+
 ## Evidence model (binding — from PR #200)
 - **L0** = source · passing tests · ratified standards (ground truth).
 - **L1** = `.claude/PR-X12-docs-audit.md` (#200) + `.claude/knowledge/plans-alignment-triage.md` — claims-about-source; **spot-check, never inherit**.
