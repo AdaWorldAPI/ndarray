@@ -134,3 +134,18 @@ This is mostly Cargo.toml workspace wiring + API surface.
 [DECISION] Cypher executes locally via lance-graph semiring by default
 [DECISION] Remote DB connections (Neo4j, FalkorDB) via native Bolt client
 [DECISION] vis.js graph rendering served as static assets by the binary
+
+## 2026-06-10 — MTPPS Markov tile-pyramid substrate plan
+[DECISION] Markov tile stacked pyramid lands as COMPOSITION, not green-field:
+BlockedGrid L1-L4 (PR-X3) + simd_soa carriers (PR-X1) + simd_amx + cascade.rs
++ renderer/framebuffer ARE ~70% of the substrate. Key alignment: AmxBf16Grid =
+BlockedGrid<u16,16,16> means the 16x16 Markov transition tile IS the AMX
+hardware tile shape (TDPBF16PS, zero layout adaptation).
+[DECISION] Two gaps -> two deliverables: D-MTP-1 src/simd_shader.rs (W1a
+contract; tile_frontier_route / tile_pyramid_predict / tile_residual_code /
+tile_perturb_paint) + D-MTP-2 crates/mtpps sibling crate (TilePyramidSoA;
+encode()/render()/traverse() = one walk, three sinks). D-MTP-3 = x266-style
+predict+residual probe (pattern only, NOT H.266 bitstream).
+[DECISION] ndarray = hardware rule preserved: Markov transition tables are
+opaque DATA; semantics stay in lance-graph.
+Plan: .claude/plans/mtpps-markov-tile-pyramid-substrate-v1.md
