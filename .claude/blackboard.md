@@ -149,3 +149,16 @@ predict+residual probe (pattern only, NOT H.266 bitstream).
 [DECISION] ndarray = hardware rule preserved: Markov transition tables are
 opaque DATA; semantics stay in lance-graph.
 Plan: .claude/plans/mtpps-markov-tile-pyramid-substrate-v1.md
+
+## 2026-06-10 — CORRECTION to MTPPS entry above (reasoning-gap audit)
+[CORRECTION] "TDPBF16PS, zero layout adaptation" was an overclaim: TDPBF16PS
+takes K=32 BF16 operands with B in VNNI pair-interleaved layout; 16x16 u16 is a
+half-width tile. Honest form: ONE build-time repack (amortized), zero per-query
+adaptation; shape identity holds at the 16x16 f32 accumulator.
+[CORRECTION] cascade.rs is HDR *search* cascade (precedent), NOT the Markov
+transition-table router — the router is D-MTP-1 work, not existing inventory.
+[CORRECTION] tile_frontier_route returns raw scores only; RouteAction
+(Skip/Attend/Compose/Escalate) thresholds arrive as W1a closure params —
+routing policy stays upstream (ndarray=hardware preserved).
+[ADDED] OQ-MTP-4: BlockedGrid is 2-D; quadtree native, octree volumes deferred
+(z-slice / BlockedGrid3 / project-at-paint — decide on demand).

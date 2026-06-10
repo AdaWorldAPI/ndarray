@@ -26,17 +26,22 @@
 | **SoA envelope** | `src/simd_soa.rs` (PR-X1) — `MultiLaneColumn` carriers, layout-only, re-exported via `crate::simd::*` per W1a; PLUS `blocked_grid_struct!` SoA-of-grids macro (worker B) | simd_soa.rs, grid_struct_macro.rs |
 | **AMX acceleration** | `src/simd_amx.rs` — AMX-TILE/INT8/BF16 **hardware-confirmed via inline asm on stable Rust 1.94** (TDPBF16PS, TDPBUSD; 256 MACs/instr); `hpc/amx_matmul.rs`, `bf16_tile_gemm.rs`, `int8_tile_gemm.rs`, `vnni_gemm.rs` | simd_amx.rs header |
 | **Grid↔AMX shape unity** | `AmxBf16Grid = BlockedGrid<u16, 16, 16>`, `AmxInt8Grid = BlockedGrid<u8, 16, 64>` — **the AMX tile IS a grid tier alias already** | blocked_grid/aliases.rs:92,109 |
-| **Markov cascade** | `src/hpc/cascade.rs` — 3-stroke HDR adaptive cascade (Hamming NN + precision tiers VNNI/BF16/DeltaXor) | cascade.rs header |
+| **Cascade precedent (search, NOT routing)** | `src/hpc/cascade.rs` — 3-stroke HDR adaptive cascade (Hamming NN + precision tiers VNNI/BF16/DeltaXor). Precedent for tiered skip-machinery; the Markov *transition-table router* itself does NOT exist yet — it is the core of D-MTP-1, not inventory | cascade.rs header |
 | **Render sink** | `src/hpc/renderer.rs` — double-buffer SIMD renderer (front/back `RenderFrame`, atomic swap, F32x16 FMA; AVX-512/AVX2/**AMX**/NEON/scalar tiers; explicitly "Neo4j-style visual rendering") + `src/hpc/framebuffer.rs` — palette-indexed framebuffer ("ndarray IS the graphics card"; 4-bit nibble wire format, tier-adaptive palette) | renderer.rs, framebuffer.rs headers |
 | **Tile streaming envelope** | `crates/cesium/` — `implicit_tiling.rs`, `hlod.rs`, `sse.rs`, `tileset.rs`, `khr_gs.rs`, `spz.rs`, `to_cam_soa.rs`, `osm_pbf.rs` | crate listing |
 | **Splat SIMD math (queued)** | D-SPLAT-2 five primitives (`batched_cholesky_3x3`, `batched_mahalanobis`, `batched_opacity_blend`, `batched_sh_eval_l3`, `batched_se3_transform`) per `splat-native-ultrasound-simd-substrate-v1.md` | ndarray plans |
 
 **The headline finding:** the "optimized SoA envelope of a stacked grid pyramid"
 is not hypothetical — `BlockedGrid` L1–L4 + `blocked_grid_struct!` + `simd_soa`
-carriers ARE that envelope. And the deepest alignment is free: **a 16×16 Markov
-transition tile is byte-identical in shape to an AMX hardware tile**, so the
-cascade's `frontier × transition` step maps onto `TDPBF16PS` (BF16 tiles) /
-`TDPBUSD` (u8×i8 tiles) with zero layout adaptation.
+carriers ARE that envelope. And the AMX alignment is strong, with one honest
+caveat: a 16×16 u16 grid block (512 B = 16 rows × 32 B) loads directly as a
+**half-width AMX tile** (max tile is 16 rows × 64 B), and `TDPBF16PS` computes a
+16×16 f32 accumulator from **K=32** BF16 operands with the B operand in
+**VNNI pair-interleaved layout**. So the transition table needs **one build-time
+repack** (row-pairing into VNNI order, amortized across all queries) — after
+which the hot path runs with zero per-query adaptation. "Same shape" is true at
+the accumulator (16×16 f32 out); the operand layout is a documented repack, not
+free.
 
 ## 2. What's missing (the two real gaps)
 
@@ -60,11 +65,16 @@ AMX is an *additional* fast path behind `simd_caps()`, never the only path.
 
 Four kernels (names indicative):
 
-- `tile_frontier_route` — frontier vector × 16×16 transition tile → child
-  scores + `RouteAction` (Skip/Attend/Compose/Escalate). Hot path: gather +
-  table-lookup + popcount; AMX `TDPBF16PS` on BF16 transition tiles when
-  available (the `AmxBf16Grid` shape, zero adaptation). This is the **Markov**
-  step.
+- `tile_frontier_route` — frontier vector × 16×16 transition tile → **raw
+  child scores only**. The Skip/Attend/Compose/Escalate decision is NOT made
+  here: thresholds/policy arrive as **closure parameters** (the W1a
+  closure-parameterized-primitive pattern), so the `RouteAction` semantics stay
+  upstream where they live today (`bgz-tensor::hhtl_cache` owns the enum).
+  Scores are hardware; routing policy is thinking — the ndarray=hardware rule
+  holds. Hot path: gather + table-lookup + popcount; AMX `TDPBF16PS` on
+  VNNI-repacked BF16 transition tiles when available (one build-time repack,
+  §1). This is the **Markov** step — Markov in the plain first-order sense
+  (level-(k+1) routing depends only on the level-k frontier and the table).
 - `tile_pyramid_predict` — upsample tier-k block → tier-(k+1) prediction
   (bilinear/nearest per payload). This is the **x266-style intra-pyramid
   prediction** step: predict the finer level from the coarser, so only
@@ -124,7 +134,12 @@ geo/graph/splat — through one walk); encode→decode→render round-trip;
 The example IS the probe (workspace convention). Run predict+residual coding
 over a synthetic pyramid (then a real OSM tile when D-OSM-2 lands) and report:
 
-- **ρ-vs-reference ≥ 0.99** (ADR-024 contract) for the palette-coded residual.
+- **Reconstruction-error budget** for the residual codec path — a per-primitive
+  error bound (max + p95, payload-appropriate units), NOT rank correlation.
+  ρ measures ordering fidelity of palette *distances*; codec fidelity is
+  reconstruction error. Both are reported, each gating its own claim:
+- **ρ-vs-reference ≥ 0.99** (ADR-024 contract) — only where the palette is used
+  as a *distance surrogate* (similarity/routing), not as the codec-fidelity gate.
 - **bits/primitive vs flat encoding** — the pyramid-prediction win must be
   measured, not asserted (truth-architect is mandatory reviewer per Hard Rule:
   no performance claims without bench).
@@ -175,6 +190,14 @@ the inline-asm path stays clean; otherwise it follows.
 - **OQ-MTP-3:** does `tile_perturb_paint` write into `hpc::framebuffer`
   (palette-indexed, wire-ready) or `hpc::renderer` (RenderFrame double-buffer)?
   (Recommend: framebuffer for encode-parity — paint and code share the palette.)
+- **OQ-MTP-4:** `BlockedGrid` is **2-D** by design (PR-X3 header). Quadtree
+  pyramids (maps, images, screen-space) are native. Octree *volumes* (3-D splat
+  fields, the `ok:` implicit-tiling variant) are NOT directly covered — options:
+  (a) z-sliced stack of 2-D grids per level (cheap, anisotropic), (b) a future
+  `BlockedGrid3<T, BR, BC, BD>` (real work, own plan), (c) project-to-2-D at
+  paint time and keep volumes upstream. v1 scopes to quadtree; the octree
+  decision is deferred until a volumetric consumer demands it. Do NOT claim the
+  2-D grid "is" the 3-D pyramid.
 
 ---
 
