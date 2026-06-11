@@ -238,10 +238,17 @@ exist):**
    PSD/eigen/Σ-propagation routes through `hpc/pillar/*` + `linalg/eig_sym`
    with **relative** tolerances (P0-1 lesson) and **measured** thresholds
    (P0-2); a placeholder threshold must not gate (P0-3).
-4. **Hierarchy claims need their level test.** No L-deep cascade-addressing
-   claim ships while its round-trip at that level is red — **PROBE-HILBERT-L4
-   is currently the named blocker** (P0-4: `hilbert3d_encode([15,15,15],4)`
-   returns 2925, expected 4095; do not export to consumers until green).
+4. **Hierarchy claims need their level test — and HILBERT-L4 is
+   VERIFIED GREEN (2026-06-10, run first-hand):** 13/13 tests pass
+   including `level4_all_indices_unique` (**bijective onto [0,4096)**
+   — exactly what cascade addressing needs) and
+   `level4_curve_is_connected` (adjacent indices Manhattan-dist 1).
+   **PP-13 P0-4's expectation (`encode([15,15,15],4) == 4095`) was an
+   ORIENTATION assumption, not the contract** — under the shipped
+   orientation the curve ends at a different corner; 2925 is a valid
+   endpoint. The blocker framing is retired (Codex catch on #215); the
+   exhaustive L4 suite stays as the **standing gate** — any future
+   table change must keep it green before L-deep addressing claims.
 
 **PROBE-QUORUM-1 (pass/fail):** on a sampled workload, quorum-accepted
 answers re-checked against full-plane recompute satisfy ρ ≥ the measured
