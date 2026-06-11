@@ -191,13 +191,22 @@ the inline-asm path stays clean; otherwise it follows.
   (palette-indexed, wire-ready) or `hpc::renderer` (RenderFrame double-buffer)?
   (Recommend: framebuffer for encode-parity — paint and code share the palette.)
 - **OQ-MTP-4:** `BlockedGrid` is **2-D** by design (PR-X3 header). Quadtree
-  pyramids (maps, images, screen-space) are native. Octree *volumes* (3-D splat
-  fields, the `ok:` implicit-tiling variant) are NOT directly covered — options:
-  (a) z-sliced stack of 2-D grids per level (cheap, anisotropic), (b) a future
-  `BlockedGrid3<T, BR, BC, BD>` (real work, own plan), (c) project-to-2-D at
-  paint time and keep volumes upstream. v1 scopes to quadtree; the octree
-  decision is deferred until a volumetric consumer demands it. Do NOT claim the
-  2-D grid "is" the 3-D pyramid.
+  pyramids (maps, images, screen-space) are native. The 3-D *addressing* is **not
+  a blocker** — `hilbert3d_encode` is **verified green** (#215, 2026-06-10:
+  13/13 tests, `level4_all_indices_unique` bijective onto [0,4096), the exact
+  property cascade addressing needs; the earlier `encode([15,15,15],4)==4095`
+  "red" was a wrong *orientation expectation*, not an encoder bug — 2925 is a
+  valid endpoint). So a 3-D address space exists and is tested; the remaining gap
+  is only the *storage container*. Octree *volume storage* (3-D splat fields,
+  the `ok:` implicit-tiling variant) is NOT yet covered by `BlockedGrid` —
+  options: (a) z-sliced stack of 2-D grids per level (cheap, anisotropic),
+  (b) a future `BlockedGrid3<T, BR, BC, BD>` (real work, own plan),
+  (c) project-to-2-D at paint time and keep volumes upstream. v1 scopes storage
+  to quadtree; the octree-storage decision is deferred until a volumetric
+  consumer demands it. The L4 Hilbert suite is a **standing regression gate**
+  (any table change must keep it green before L-deep addressing claims), no
+  longer a blocker. Do NOT claim the 2-D grid "is" the 3-D pyramid — but DO note
+  the 3-D address math is already sound.
 
 ---
 

@@ -162,3 +162,14 @@ transition-table router — the router is D-MTP-1 work, not existing inventory.
 routing policy stays upstream (ndarray=hardware preserved).
 [ADDED] OQ-MTP-4: BlockedGrid is 2-D; quadtree native, octree volumes deferred
 (z-slice / BlockedGrid3 / project-at-paint — decide on demand).
+
+## 2026-06-11 — MTPPS OQ-MTP-4 destale (HILBERT-L4 retired green)
+[CORRECTION] HILBERT-L4 is GREEN, not a blocker (#215, 44d104d7): 13/13 tests,
+level4_all_indices_unique bijective onto [0,4096). The "red" P0-4 expectation
+encode([15,15,15],4)==4095 was a wrong ORIENTATION assumption, not an encoder
+bug — 2925 is a valid endpoint. So 3-D ADDRESSING is sound+tested; the only
+octree gap left is the 2-D BlockedGrid STORAGE container. OQ-MTP-4 updated:
+addressing not-blocked, storage deferred, L4 suite is a standing regression gate.
+[META] Textbook spine-vs-flesh: the red probe pattern-matched "encoder broken"
+(flesh) but the cause was a wrong test expectation (assumption attacking spine);
+"fixing" the encoder to return 4095 would have broken a correct bijective curve.
