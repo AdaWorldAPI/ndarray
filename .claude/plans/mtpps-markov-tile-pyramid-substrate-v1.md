@@ -213,3 +213,27 @@ the inline-asm path stays clean; otherwise it follows.
 _End of plan v1. Companion: `cesium/docs/GENERIC_RENDERER_CORNERSTONE.md` (MTPPS
 definition), `3DGS-SIMD-forward-renderer-plan.md`, `3DGS-HHTL-CPU-cascade-plan.md`,
 `3DGS-columnar-splat-codec-plan.md`, `splat-native-ultrasound-simd-substrate-v1.md`._
+
+---
+
+## 7. Canon convergence (anti-fork — this plan does NOT originate these)
+
+This plan reached, independently, findings the **GUID canon** (`OGAR/CLAUDE.md`,
+merged) states authoritatively. They are the **same insight under one id**, not
+two — cited here so the search surface doesn't divide:
+
+- MTPPS `tile_perturb_paint` ≡ canon **deterministic phase** (exponent,
+  location, phase, magnitude; only the magnitude envelope stored; helix
+  `CurveRuler` is the bit-exact integer phase walk).
+- MTPPS Markov cascade ≡ canon **bipolar Walsh-Hadamard / TWO-ALGEBRA RULE**
+  (sign = XOR `vsa_bind`; magnitude = `vsa_bundle`, NEVER `MergeMode::Xor`).
+  Reached independently here ⇒ corroboration; the canon statement governs. The
+  permanent CI guard is canon **WHP-4** (raw-XOR-on-magnitude must fail
+  Chapman-Kolmogorov) — cite it, do not invent a new guard.
+- `AmxBf16Grid = BlockedGrid<u16,16,16>` ≡ canon transition-tile-as-AMX-tile,
+  with the §1 caveat (one build-time VNNI repack; identity holds at the 16×16
+  f32 accumulator, not the operands).
+- HILBERT-L4: **verified green** by the canon session (#215, `44d104d7`) — see
+  OQ-MTP-4; addressing is sound, only 2-D storage remains deferred.
+
+Cross-session record: `lance-graph/.claude/handovers/2026-06-11-0220-medcare-splat-to-guid-canon-altitude-gate.md`.
