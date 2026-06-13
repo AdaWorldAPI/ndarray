@@ -1668,9 +1668,7 @@ impl U16x16 {
     #[inline(always)]
     pub fn to_f32x8_lo(self) -> crate::simd_avx512::F32x8 {
         // SAFETY: AVX2 baseline.
-        crate::simd_avx512::F32x8(unsafe {
-            _mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(_mm256_castsi256_si128(self.0)))
-        })
+        crate::simd_avx512::F32x8(unsafe { _mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(_mm256_castsi256_si128(self.0))) })
     }
 
     /// Zero-extend the high 8 × u16 lanes to f32 (sibling of `to_f32x8_lo`).
