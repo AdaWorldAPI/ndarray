@@ -1549,7 +1549,195 @@ avx2_int_type!(U64x8, u64, 8, 0u64);
 // pattern (`[$elem; $lanes]` storage, align 64). Native AVX2 `__m256i`
 // upgrades for these are TD-SIMD-3 (the same fold-into-real-SIMD task
 // already tracked for the 512-bit polyfills above).
-avx2_int_type!(U16x16, u16, 16, 0u16);
+// ── U16x16 — native AVX2 `__m256i` (16 × u16) ───────────────────────────────
+// TD-T22 / TD-SIMD-3 lowering: previously `avx2_int_type!(U16x16, ...)` — a
+// scalar `[u16; 16]` polyfill. Now a real `__m256i` wrapper so the PQ4-ADC
+// FastScan u16 accumulate (turbovec's AVX2 search kernel) runs on hardware.
+// Method set mirrors the native `U16x32` in `simd_avx512.rs:1200`, narrowed to
+// 256-bit `_mm256_*_epi16`. A 256-bit register is valid on both AVX2 and
+// AVX-512 hosts, so both `simd.rs` dispatch arms re-export this one native type
+// (replacing the scalar polyfill that the v4 arm pulled via `simd_avx512`).
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct U16x16(pub __m256i);
+
+impl U16x16 {
+    pub const LANES: usize = 16;
+
+    #[inline(always)]
+    pub fn splat(v: u16) -> Self {
+        Self(unsafe { _mm256_set1_epi16(v as i16) })
+    }
+
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self(unsafe { _mm256_setzero_si256() })
+    }
+
+    #[inline(always)]
+    pub fn from_slice(s: &[u16]) -> Self {
+        assert!(s.len() >= 16);
+        // SAFETY: 16 × u16 = 32 bytes = one __m256i. Unaligned load.
+        Self(unsafe { _mm256_loadu_si256(s.as_ptr() as *const __m256i) })
+    }
+
+    #[inline(always)]
+    pub fn from_array(arr: [u16; 16]) -> Self {
+        Self(unsafe { _mm256_loadu_si256(arr.as_ptr() as *const __m256i) })
+    }
+
+    #[inline(always)]
+    pub fn to_array(self) -> [u16; 16] {
+        let mut arr = [0u16; 16];
+        // SAFETY: store 32 bytes into 16 × u16.
+        unsafe { _mm256_storeu_si256(arr.as_mut_ptr() as *mut __m256i, self.0) };
+        arr
+    }
+
+    #[inline(always)]
+    pub fn copy_to_slice(self, s: &mut [u16]) {
+        assert!(s.len() >= 16);
+        unsafe { _mm256_storeu_si256(s.as_mut_ptr() as *mut __m256i, self.0) };
+    }
+
+    /// Logical right shift each 16-bit lane by `imm` (matches `U16x32::shr`).
+    #[inline(always)]
+    pub fn shr(self, imm: u32) -> Self {
+        Self(unsafe {
+            match imm {
+                1 => _mm256_srli_epi16(self.0, 1),
+                2 => _mm256_srli_epi16(self.0, 2),
+                4 => _mm256_srli_epi16(self.0, 4),
+                8 => _mm256_srli_epi16(self.0, 8),
+                _ => _mm256_setzero_si256(),
+            }
+        })
+    }
+
+    /// Logical left shift each 16-bit lane by `imm` (matches `U16x32::shl`).
+    #[inline(always)]
+    pub fn shl(self, imm: u32) -> Self {
+        Self(unsafe {
+            match imm {
+                1 => _mm256_slli_epi16(self.0, 1),
+                2 => _mm256_slli_epi16(self.0, 2),
+                4 => _mm256_slli_epi16(self.0, 4),
+                8 => _mm256_slli_epi16(self.0, 8),
+                _ => _mm256_setzero_si256(),
+            }
+        })
+    }
+
+    /// Multiply, keep low 16 bits (wrapping) — `_mm256_mullo_epi16`.
+    #[inline(always)]
+    pub fn mullo(self, other: Self) -> Self {
+        Self(unsafe { _mm256_mullo_epi16(self.0, other.0) })
+    }
+
+    /// Horizontal sum of all 16 lanes (widened to u32, no wrap).
+    #[inline(always)]
+    pub fn reduce_sum(self) -> u32 {
+        self.to_array().iter().map(|&v| v as u32).sum()
+    }
+}
+
+impl Default for U16x16 {
+    #[inline(always)]
+    fn default() -> Self {
+        Self::zero()
+    }
+}
+
+impl Add for U16x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn add(self, rhs: Self) -> Self {
+        Self(unsafe { _mm256_add_epi16(self.0, rhs.0) })
+    }
+}
+impl Sub for U16x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn sub(self, rhs: Self) -> Self {
+        Self(unsafe { _mm256_sub_epi16(self.0, rhs.0) })
+    }
+}
+impl Mul for U16x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn mul(self, rhs: Self) -> Self {
+        Self(unsafe { _mm256_mullo_epi16(self.0, rhs.0) })
+    }
+}
+impl AddAssign for U16x16 {
+    #[inline(always)]
+    fn add_assign(&mut self, rhs: Self) {
+        self.0 = unsafe { _mm256_add_epi16(self.0, rhs.0) };
+    }
+}
+impl SubAssign for U16x16 {
+    #[inline(always)]
+    fn sub_assign(&mut self, rhs: Self) {
+        self.0 = unsafe { _mm256_sub_epi16(self.0, rhs.0) };
+    }
+}
+impl BitAnd for U16x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitand(self, rhs: Self) -> Self {
+        Self(unsafe { _mm256_and_si256(self.0, rhs.0) })
+    }
+}
+impl BitOr for U16x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitor(self, rhs: Self) -> Self {
+        Self(unsafe { _mm256_or_si256(self.0, rhs.0) })
+    }
+}
+impl BitXor for U16x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitxor(self, rhs: Self) -> Self {
+        Self(unsafe { _mm256_xor_si256(self.0, rhs.0) })
+    }
+}
+impl BitAndAssign for U16x16 {
+    #[inline(always)]
+    fn bitand_assign(&mut self, rhs: Self) {
+        self.0 = unsafe { _mm256_and_si256(self.0, rhs.0) };
+    }
+}
+impl BitOrAssign for U16x16 {
+    #[inline(always)]
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 = unsafe { _mm256_or_si256(self.0, rhs.0) };
+    }
+}
+impl BitXorAssign for U16x16 {
+    #[inline(always)]
+    fn bitxor_assign(&mut self, rhs: Self) {
+        self.0 = unsafe { _mm256_xor_si256(self.0, rhs.0) };
+    }
+}
+impl Not for U16x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn not(self) -> Self {
+        Self(unsafe { _mm256_xor_si256(self.0, _mm256_set1_epi16(-1)) })
+    }
+}
+impl fmt::Debug for U16x16 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "U16x16({:?})", self.to_array())
+    }
+}
+impl PartialEq for U16x16 {
+    fn eq(&self, other: &Self) -> bool {
+        self.to_array() == other.to_array()
+    }
+}
+
 avx2_int_type!(U32x8, u32, 8, 0u32);
 avx2_int_type!(U64x4, u64, 4, 0u64);
 avx2_int_type!(I32x8, i32, 8, 0i32);
