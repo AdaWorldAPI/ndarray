@@ -570,6 +570,16 @@ pub use crate::hpc::cam_pq::{kmeans, squared_l2};
 
 pub use crate::hpc::heel_f64x8::cosine_f32_to_f64_simd;
 
+// Dispatched integer matmul — the polyfill entry for batched int8 scoring.
+// `matmul_i8_to_i32` runtime-selects AMX `TDPBUSD` tiles (byte-asm, 16384
+// MAC/instr, Sapphire Rapids+) → AVX-512 VPDPBUSD → AVX-VNNI → scalar, and
+// is bit-identical across tiers. Surfaced here so a consumer reaches the
+// whole AMX ladder through the canonical `ndarray::simd::*` import (W1a)
+// without dipping into `crate::hpc::amx_matmul` directly. `amx_available()`
+// exposes the runtime tier check for reporting.
+#[cfg(feature = "std")]
+pub use crate::hpc::amx_matmul::{amx_available, matmul_i8_to_i32};
+
 // Elementwise slice ops — polyfill-dispatched (F32x16/F64x8 chunks + scalar tail).
 #[cfg(feature = "std")]
 pub use crate::simd_ops::{
