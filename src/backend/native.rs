@@ -266,15 +266,58 @@ pub fn gemm_f64(
 }
 
 // ─── GEMV dispatch ───────────────────────────────────────────────
+//
+// GEMV (`y = alpha·A·x + beta·y`, row-major) is a stack of row dot
+// products: `y[i] = alpha · dot(A[i, ·], x) + beta · y[i]`. On the
+// SIMD tiers we route each row through the already-dispatched,
+// parity-tested `dot_f32` / `dot_f64` (FMA + two-accumulator reduce)
+// instead of the scalar 1-wide fold. Each A row is contiguous in
+// row-major (col stride = 1), so the contiguous `dot_*` loads apply
+// directly; only the leading `n` of each `lda`-wide row are columns.
+//
+// The Scalar tier keeps calling `scalar::gemv_*` verbatim so a
+// scalar-only build stays byte-identical to the prior reference. The
+// AVX2/AVX-512 tiers carry the same 1-2 ULP reduction-order drift the
+// rest of this module's SIMD BLAS-1 kernels already document (see the
+// `nrm2` note above and the ULP-tolerant `td_t6_*` parity tests) —
+// well within the BLAS tolerance GEMV consumers use.
 
-/// GEMV: y = alpha * A * x + beta * y (f32)
+/// GEMV: y = alpha * A * x + beta * y (f32, row-major).
+///
+/// SIMD tiers compute each row via [`dot_f32`]; the scalar tier uses
+/// the byte-stable [`scalar::gemv_f32`] reference.
 pub fn gemv_f32(m: usize, n: usize, alpha: f32, a: &[f32], lda: usize, x: &[f32], beta: f32, y: &mut [f32]) {
-    scalar::gemv_f32(m, n, alpha, a, lda, x, beta, y);
+    match tier() {
+        Tier::Scalar => scalar::gemv_f32(m, n, alpha, a, lda, x, beta, y),
+        // Avx512 + Avx2: per-row SIMD dot product. `dot_f32` itself
+        // dispatches to the active tier's kernel and is parity-tested.
+        _ => {
+            let xn = &x[..n];
+            for i in 0..m {
+                let row = &a[i * lda..i * lda + n];
+                let sum = dot_f32(row, xn);
+                y[i] = alpha * sum + beta * y[i];
+            }
+        }
+    }
 }
 
-/// GEMV: y = alpha * A * x + beta * y (f64)
+/// GEMV: y = alpha * A * x + beta * y (f64, row-major).
+///
+/// SIMD tiers compute each row via [`dot_f64`]; the scalar tier uses
+/// the byte-stable [`scalar::gemv_f64`] reference.
 pub fn gemv_f64(m: usize, n: usize, alpha: f64, a: &[f64], lda: usize, x: &[f64], beta: f64, y: &mut [f64]) {
-    scalar::gemv_f64(m, n, alpha, a, lda, x, beta, y);
+    match tier() {
+        Tier::Scalar => scalar::gemv_f64(m, n, alpha, a, lda, x, beta, y),
+        _ => {
+            let xn = &x[..n];
+            for i in 0..m {
+                let row = &a[i * lda..i * lda + n];
+                let sum = dot_f64(row, xn);
+                y[i] = alpha * sum + beta * y[i];
+            }
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════

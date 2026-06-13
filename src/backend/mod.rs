@@ -169,15 +169,26 @@ pub fn cblas_dgemm(
 
 /// INT8 GEMM: C = A × B where A is u8, B is i8, C is i32.
 ///
-/// Dispatch: AMX TDPBUSD → VNNI VPDPBUSD → scalar.
+/// Dispatch: AMX `TDPBUSD` → AVX-512 VNNI `VPDPBUSD` (zmm) → AVX-VNNI
+/// `VPDPBUSD` (ymm) → scalar, via [`crate::simd_int_ops::gemm_u8_i8`].
 /// Same signature across all paths.
+///
+/// Routing note: this surface is **u8 × i8 → i32** (the VNNI-native
+/// unsigned-by-signed form). The 4-tier dispatcher that matches this
+/// exact signedness is `gemm_u8_i8`; its scalar fallback is the same
+/// [`crate::hpc::quantized::int8_gemm_i32`] reference the previous
+/// 2-tier `vnni_gemm::int8_gemm_vnni` used, so results are
+/// bit-equivalent. (The ArrayView-based `amx_matmul::matmul_i8_to_i32`
+/// is **i8 × i8** and would reinterpret A's bytes ≥ 128 as negative —
+/// not bit-equivalent here — so it is intentionally NOT used.)
 #[inline]
 #[allow(clippy::needless_return)]
 pub fn gemm_i8(a: &[u8], b: &[i8], c: &mut [i32], m: usize, n: usize, k: usize) {
-    // VNNI path (Ice Lake, Sapphire Rapids, Zen 4) — includes AMX fallback
+    // AMX → VNNI-zmm → VNNI-ymm → scalar (Ice Lake / Sapphire Rapids /
+    // Granite Rapids / Zen 4 / Arrow Lake all covered by one call).
     #[cfg(feature = "std")]
     {
-        crate::hpc::vnni_gemm::int8_gemm_vnni(a, b, c, m, n, k);
+        crate::simd_int_ops::gemm_u8_i8(a, b, c, m, n, k);
         return;
     }
     #[cfg(not(feature = "std"))]
@@ -189,22 +200,39 @@ pub fn gemm_i8(a: &[u8], b: &[i8], c: &mut [i32], m: usize, n: usize, k: usize) 
 
 /// BF16 GEMM: C (f32) = A (BF16) × B (BF16), with f32 accumulation.
 ///
-/// Dispatch: AMX TDPBF16PS → scalar tiled bf16_gemm_f32.
+/// Dispatch: AMX `TDPBF16PS` → AVX-512 `VDPBF16PS` → scalar tiled
+/// `bf16_gemm_f32`, via [`crate::hpc::amx_matmul::matmul_bf16_to_f32`].
 /// Input: raw u16 slices representing BF16 values (same layout as
-/// `ndarray::hpc::quantized::BF16`).
+/// `ndarray::hpc::quantized::BF16`). `C` is overwritten (beta = 0,
+/// alpha = 1), bit-equivalent to the scalar reference on hosts without
+/// AMX / AVX-512BF16.
 #[inline]
 #[allow(clippy::needless_return)]
 pub fn gemm_bf16(a: &[u16], b: &[u16], c: &mut [f32], m: usize, n: usize, k: usize) {
     // Reinterpret u16 slices as BF16 slices (repr(transparent))
     #[cfg(feature = "std")]
     {
+        use crate::{ArrayView2, ArrayViewMut2};
+
         let a_bf16: &[crate::hpc::quantized::BF16] = unsafe {
-            // SAFETY: BF16 is #[repr(transparent)] over u16
+            // SAFETY: BF16 is #[repr(transparent)] over u16, so the bit
+            // pattern of every element is preserved by this reinterpret.
             core::slice::from_raw_parts(a.as_ptr() as *const crate::hpc::quantized::BF16, a.len())
         };
         let b_bf16: &[crate::hpc::quantized::BF16] =
+            // SAFETY: same repr(transparent) invariant as `a_bf16` above.
             unsafe { core::slice::from_raw_parts(b.as_ptr() as *const crate::hpc::quantized::BF16, b.len()) };
-        crate::hpc::quantized::bf16_gemm_f32(a_bf16, b_bf16, c, m, n, k, 1.0, 0.0);
+
+        // Wrap the raw row-major slices as 2-D views. The AMX dispatcher
+        // is ArrayView2-based; mirror the call shape used by
+        // `simd_runtime::matmul::matmul_bf16_to_f32` (lhs:(M,K), rhs:(K,N),
+        // out:(M,N), row-major contiguous). Slice to the exact element
+        // count so an over-long input slice does not fail the shape check
+        // (the old scalar path only required `len >= m*k`).
+        let lhs = ArrayView2::from_shape((m, k), &a_bf16[..m * k]).expect("gemm_bf16: A shape (m,k) vs slice len");
+        let rhs = ArrayView2::from_shape((k, n), &b_bf16[..k * n]).expect("gemm_bf16: B shape (k,n) vs slice len");
+        let out = ArrayViewMut2::from_shape((m, n), &mut c[..m * n]).expect("gemm_bf16: C shape (m,n) vs slice len");
+        crate::hpc::amx_matmul::matmul_bf16_to_f32(lhs, rhs, out).expect("gemm_bf16: matmul shape contract");
         return;
     }
     #[cfg(not(feature = "std"))]
