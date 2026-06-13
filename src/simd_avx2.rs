@@ -2107,6 +2107,20 @@ impl U8x32 {
         Self(unsafe { _mm256_loadu_si256(s.as_ptr() as *const __m256i) })
     }
 
+    /// Unaligned load 32 bytes from a raw pointer — NO bounds check. The
+    /// zero-overhead hot-loop load: `from_slice`'s `assert!` plus the caller's
+    /// slice-index bounds check both vanish, which in a tight scan (one load per
+    /// code/LUT group — e.g. a 4-bit-PQ ADC FastScan inner loop) is a measurable
+    /// tax vs a bare `_mm256_loadu_si256`. Use only where the index is already
+    /// proven in range.
+    ///
+    /// # Safety
+    /// `ptr` must point to at least 32 readable bytes.
+    #[inline(always)]
+    pub unsafe fn from_ptr(ptr: *const u8) -> Self {
+        Self(_mm256_loadu_si256(ptr as *const __m256i))
+    }
+
     /// Load 32 bytes from a fixed-size array.
     #[inline(always)]
     pub fn from_array(arr: [u8; 32]) -> Self {
