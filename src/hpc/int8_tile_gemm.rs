@@ -95,14 +95,21 @@ unsafe fn amx_path(a_u8: &[u8], b_vnni: &[i8], c: &mut [i32], k: usize) {
     let a_stride = k; // bytes per A row (u8 = 1 byte each)
     let b_stride = 64usize; // VNNI: 16 columns × 4 bytes per row
 
+    // Operand placement (verified empirically on Emerald Rapids — see the
+    // `tile_dpbusd` doc): the AMX operand convention is the mirror of the
+    // naive SDM reading. The plain M×K operand goes in tmm2 (ModRM.rm) and is
+    // treated UNSIGNED; the VNNI K×N operand goes in tmm1 (VEX.vvvv) and is
+    // treated SIGNED. TDPBUSD then computes
+    //   dst[m][n] = Σ_k a_u8(rm, unsigned)[m][k] · b_i8(vvvv, signed)[k][n]
+    // — exactly the u8 × i8 this kernel promises.
     for kb in 0..k_blocks {
         let a_ptr = a_u8.as_ptr().add(kb * 64);
         // B sits in VNNI layout: K/4 outer rows × 64 bytes. Each
         // 64-K-element block spans 16 outer rows × 64 bytes = 1024
         // bytes.
         let b_ptr = b_vnni.as_ptr().add(kb * 16 * 64) as *const u8;
-        tile_load(1, a_ptr, a_stride);
-        tile_load(2, b_ptr, b_stride);
+        tile_load(1, b_ptr, b_stride); // B (VNNI) → tmm1 (vvvv, signed)
+        tile_load(2, a_ptr, a_stride); // A (plain) → tmm2 (rm, unsigned)
         tile_dpbusd();
     }
 

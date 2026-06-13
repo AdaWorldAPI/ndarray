@@ -83,11 +83,16 @@ unsafe fn amx_path(a_bf16: &[u16], b_vnni: &[u16], c: &mut [f32], k: usize) {
     let a_stride = (k * 2) as usize; // full A row stride in bytes (bf16 = 2B)
     let b_stride = 64usize; // VNNI row stride in bytes
 
+    // Operand placement (verified empirically — see `tile_dpbusd` doc): the
+    // AMX convention is dst[m][n] = Σ_k rm[m][k] · vvvv[k][n], with rm =
+    // ModRM (tmm2) = plain M×K and vvvv (tmm1) = VNNI K×N. So B (VNNI) → tmm1
+    // and A (plain) → tmm2. (bf16 has no signed/unsigned split, so the
+    // single TDPBF16PS variant suffices once the operands are placed right.)
     for kb in 0..k_blocks {
         let a_ptr = a_bf16.as_ptr().add(kb * 32) as *const u8;
         let b_ptr = b_vnni.as_ptr().add(kb * 16 * 32) as *const u8;
-        tile_load(1, a_ptr, a_stride);
-        tile_load(2, b_ptr, b_stride);
+        tile_load(1, b_ptr, b_stride); // B (VNNI) → tmm1 (vvvv)
+        tile_load(2, a_ptr, a_stride); // A (plain) → tmm2 (rm)
         tile_dpbf16ps();
     }
 

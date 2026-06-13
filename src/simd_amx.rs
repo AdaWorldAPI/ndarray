@@ -73,24 +73,29 @@ pub fn amx_available() -> bool {
     }
 
     // Step 4: Request XCOMP_PERM for TILEDATA.
-    // Linux kernel 5.19+: processes must call prctl(ARCH_REQ_XCOMP_PERM, 18)
-    // to request permission for TILEDATA (XFEATURE 18) before using AMX.
-    // Without this, LDTILECFG will SIGILL even if XCR0 bits are set.
-    // The prctl either succeeds (0) or fails (-1) — idempotent, safe to call
-    // multiple times.
+    // Linux kernel 5.16+: processes must call arch_prctl(ARCH_REQ_XCOMP_PERM,
+    // 18) to request permission for TILEDATA (XFEATURE 18) before using AMX.
+    // Without this, the first AMX tile op faults (XFD #NM → SIGILL) even when
+    // XCR0 bits are set. The request either succeeds (0) or fails (-errno) —
+    // idempotent, safe to call multiple times.
+    //
+    // IMPORTANT: ARCH_REQ_XCOMP_PERM (0x1023) is an *arch_prctl* operation
+    // (syscall 158), NOT regular prctl (157). Issuing it on syscall 157 makes
+    // the kernel reject option 0x1023 with -EINVAL, which silently disabled
+    // AMX on EVERY capable host (steps 1-3 pass, step 4 always failed).
     #[cfg(target_os = "linux")]
     {
-        const SYS_PRCTL: i64 = 157; // x86_64 syscall number for prctl
+        const SYS_ARCH_PRCTL: i64 = 158; // x86_64 syscall number for arch_prctl
         const ARCH_REQ_XCOMP_PERM: i64 = 0x1023;
         const XFEATURE_XTILEDATA: i64 = 18;
-        // SAFETY: syscall(prctl, ARCH_REQ_XCOMP_PERM, 18) is a simple permission
-        // request. It either grants tile permission (returns 0) or fails (returns
-        // -errno). No side effects on failure. Idempotent.
+        // SAFETY: arch_prctl(ARCH_REQ_XCOMP_PERM, 18) is a simple permission
+        // request. It either grants tile permission (returns 0) or fails
+        // (returns -errno). No side effects on failure. Idempotent.
         let ret: i64;
         unsafe {
             core::arch::asm!(
                 "syscall",
-                inlateout("rax") SYS_PRCTL => ret,
+                inlateout("rax") SYS_ARCH_PRCTL => ret,
                 in("rdi") ARCH_REQ_XCOMP_PERM,
                 in("rsi") XFEATURE_XTILEDATA,
                 in("rdx") 0i64,

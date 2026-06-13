@@ -38,12 +38,7 @@ fn bench(m: usize, k: usize, n: usize, reps: usize, scalar_reps: usize) {
     let dispatched = c.clone();
     let t = Instant::now();
     for _ in 0..reps {
-        matmul_i8_to_i32(
-            av,
-            bv,
-            ArrayViewMut2::from_shape((m, n), &mut c[..]).unwrap(),
-        )
-        .unwrap();
+        matmul_i8_to_i32(av, bv, ArrayViewMut2::from_shape((m, n), &mut c[..]).unwrap()).unwrap();
     }
     let ns = t.elapsed().as_nanos() as f64 / reps as f64;
 
