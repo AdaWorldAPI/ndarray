@@ -1357,6 +1357,18 @@ impl F32x8 {
         // consumer's runtime dispatch / `#[target_feature(enable = "fma")]`.
         Self(unsafe { _mm256_fmadd_ps(self.0, a.0, b.0) })
     }
+
+    /// Lane-wise `self > other` as an 8-bit mask: bit `i` set iff
+    /// `self[i] > other[i]` (ordered, non-signaling). `_mm256_cmp_ps::<_CMP_GT_OQ>`
+    /// + `_mm256_movemask_ps`. The FastScan heap threshold-prune uses it to skip
+    /// an 8-lane score chunk that holds no candidate above the current heap-min
+    /// in a single instruction — the SIMD early-out the scalar `>hmin` scan loses.
+    #[inline(always)]
+    pub fn cmp_gt_mask(self, other: Self) -> u32 {
+        // SAFETY: AVX `vcmpps` + `vmovmskps`; available wherever this 256-bit
+        // float type is (x86-64-v2+).
+        unsafe { _mm256_movemask_ps(_mm256_cmp_ps::<_CMP_GT_OQ>(self.0, other.0)) as u32 }
+    }
 }
 
 // ============================================================================
