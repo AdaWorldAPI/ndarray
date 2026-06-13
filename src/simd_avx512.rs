@@ -1344,6 +1344,21 @@ impl PartialEq for U16x32 {
     }
 }
 
+// F32x8 fused multiply-add (256-bit __m256). `self.mul_add(a, b) = self*a + b`
+// in a single rounding step via `_mm256_fmadd_ps` (FMA3). The 8-wide companion
+// to the existing `F32x16::mul_add`; consumed by the PQ4-ADC FastScan flush
+// (turbovec's AVX2 kernel) where the per-query `fa = v_scale*partial + fa`
+// reduction needs an 8-wide FMA.
+impl F32x8 {
+    /// Fused multiply-add: `self * a + b`, single rounding (`_mm256_fmadd_ps`).
+    #[inline(always)]
+    pub fn mul_add(self, a: Self, b: Self) -> Self {
+        // SAFETY: FMA3 intrinsic; reached only on FMA-capable targets via the
+        // consumer's runtime dispatch / `#[target_feature(enable = "fma")]`.
+        Self(unsafe { _mm256_fmadd_ps(self.0, a.0, b.0) })
+    }
+}
+
 // ============================================================================
 // U32x16 — 16 × u32 in one AVX-512 register (__m512i)
 // Used primarily for bit manipulation in transcendental functions (vml.rs).
