@@ -1639,6 +1639,48 @@ impl U16x16 {
     pub fn reduce_sum(self) -> u32 {
         self.to_array().iter().map(|&v| v as u32).sum()
     }
+
+    // ── FastScan flush-epilogue helpers (PQ4-ADC u16→f32 cross-lane combine) ──
+
+    /// Cross-128-bit-lane permute (`_mm256_permute2x128_si256`). `IMM` selects
+    /// which 128-bit halves of `self`/`other` land in each output half. Used
+    /// (with `IMM=0x21`) by the FastScan SUB-trick to bring the two blocks'
+    /// partial sums into add-alignment.
+    #[inline(always)]
+    pub fn permute2x128<const IMM: i32>(self, other: Self) -> Self {
+        // SAFETY: AVX2 baseline.
+        Self(unsafe { _mm256_permute2x128_si256::<IMM>(self.0, other.0) })
+    }
+
+    /// Blend 32-bit dwords from `self`/`other` per the `IMM` mask
+    /// (`_mm256_blend_epi32`). Companion to `permute2x128` in the FastScan
+    /// lane combine (with `IMM=0xF0`).
+    #[inline(always)]
+    pub fn blend_epi32<const IMM: i32>(self, other: Self) -> Self {
+        // SAFETY: AVX2 baseline.
+        Self(unsafe { _mm256_blend_epi32::<IMM>(self.0, other.0) })
+    }
+
+    /// Zero-extend the low 8 × u16 lanes to f32 (`_mm256_cvtepu16_epi32` then
+    /// `_mm256_cvtepi32_ps`). The PQ4-ADC accumulators are ≤ `FLUSH_EVERY·127`
+    /// so they fit exactly in f32; this is the lossless u16→f32 step before the
+    /// per-query `scale·partial` FMA.
+    #[inline(always)]
+    pub fn to_f32x8_lo(self) -> crate::simd_avx512::F32x8 {
+        // SAFETY: AVX2 baseline.
+        crate::simd_avx512::F32x8(unsafe {
+            _mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(_mm256_castsi256_si128(self.0)))
+        })
+    }
+
+    /// Zero-extend the high 8 × u16 lanes to f32 (sibling of `to_f32x8_lo`).
+    #[inline(always)]
+    pub fn to_f32x8_hi(self) -> crate::simd_avx512::F32x8 {
+        // SAFETY: AVX2 baseline.
+        crate::simd_avx512::F32x8(unsafe {
+            _mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(_mm256_extracti128_si256::<1>(self.0)))
+        })
+    }
 }
 
 impl Default for U16x16 {
@@ -2291,6 +2333,15 @@ impl U8x32 {
         Self::from_array([
             0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4, 0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
         ])
+    }
+
+    /// Reinterpret the 32 bytes as 16 × u16 (zero-cost bitcast — same `__m256i`).
+    /// The PQ4-ADC FastScan accumulates `shuffle_bytes` LUT results (u8 lanes,
+    /// each ≤ 127) into a `U16x16` accumulator via `_mm256_add_epi16`; this is
+    /// the bridge from the gather result to the 16-bit accumulator.
+    #[inline(always)]
+    pub fn as_u16x16(self) -> U16x16 {
+        U16x16(self.0)
     }
 }
 
