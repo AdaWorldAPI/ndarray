@@ -229,11 +229,22 @@ kernel is bandwidth-bound, so 4-core scaling is sublinear — 2048³ → 237.5 G
 (~1.4×) — and it REGRESSES small/medium (thread + B-prepack overhead), so it's
 gated to `m·n·k ≥ 2e9`. Many-core servers gain more.
 
-Dispatch (in `int8_gemm_amx_tiled`): huge + rayon → `_par`; else m,n≥32 → `_rb`
-(2×2); else `_serial` (16×16); m or n < 32 strips fall to the 16×16 path inside
-`_rb`. Remaining headroom: **rayon-over-rb** (parallelize the rb row-panels
-instead of the 16×16 kernel — should beat both, ~270+ GMAC/s projected) and
-full BLIS Mc/Nc/Kc cache blocking for very large K.
+Dispatch (in `int8_gemm_amx_tiled`): huge + rayon → `_par` (16×16, shared
+pre-packed B); else m,n≥32 → `_rb` (2×2); else `_serial` (16×16); m or n < 32
+strips fall to the 16×16 path inside `_rb`.
+
+**Remaining headroom (with a caution).** "rayon-over-rb" — fanning the rb
+row-panels across the pool instead of the 16×16 kernel — is the obvious combine,
+BUT a first attempt (each rayon task calls `_rb` on a 64-row band) was REVERTED:
+it ran SLOWER than rb-single (155 vs 197 GMAC/s at 2048³ — each task re-VNNI-packs
+B, an O(K·N) duplicate ×num_tasks) AND `correct=false` appeared at 1024³/2048³
+while 256³/512³ stayed correct (an AMX-tiles-under-rayon-at-scale issue not yet
+diagnosed — single-thread `_rb` is bit-exact at every size, so it's specific to
+the threaded 8-tile path). Do NOT reship that shape without (a) a SHARED pre-pack
+of B (as `_par` 16×16 already does) and (b) a probe that reproduces the
+large-size correctness failure under rayon and explains it. The safe wins are
+banked: rb-single (197) is the default, 16×16-rayon (237) the huge case. The
+bigger lever is full BLIS Mc/Nc/Kc cache blocking.
 
 ---
 
