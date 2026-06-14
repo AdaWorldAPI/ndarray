@@ -232,7 +232,13 @@ pub struct FidelityReport {
 }
 
 impl FidelityReport {
-    /// Compute every coefficient for `(truth, estimate)` (equal-length samples).
+    /// Compute every coefficient for `(truth, estimate)`.
+    ///
+    /// Mismatched lengths are a caller error and yield a **degenerate** report
+    /// (all coefficients `0.0`, `rel_l2 = 1.0`) rather than silently truncating to
+    /// the shorter prefix — consistent with the module's return-degenerate (never
+    /// panic, never hide) convention, so a dropped tail cannot masquerade as high
+    /// fidelity.
     ///
     /// # Examples
     /// ```
@@ -242,10 +248,27 @@ impl FidelityReport {
     /// let r = FidelityReport::compute(&truth, &est);
     /// assert!(r.pearson > 0.99 && r.spearman > 0.99);
     /// assert!(r.rel_l2 < 0.1);
+    /// // Mismatched lengths → degenerate (does NOT truncate-then-score):
+    /// let bad = FidelityReport::compute(&[1.0, 2.0, 100.0], &[1.0, 2.0]);
+    /// assert_eq!(bad.pearson, 0.0);
+    /// assert_eq!(bad.rel_l2, 1.0);
     /// ```
     pub fn compute(truth: &[f64], estimate: &[f64]) -> Self {
-        let n = truth.len().min(estimate.len());
-        let (t, e) = (&truth[..n], &estimate[..n]);
+        // Length mismatch is a caller bug: return a degenerate (all-zero,
+        // max-error) report rather than truncating to the shorter prefix, which
+        // could hide a dropped tail behind a falsely-high score.
+        if truth.len() != estimate.len() {
+            return FidelityReport {
+                pearson: 0.0,
+                spearman: 0.0,
+                icc: 0.0,
+                cronbach: 0.0,
+                rel_l2: 1.0,
+                cosine: 0.0,
+            };
+        }
+        let n = truth.len();
+        let (t, e) = (truth, estimate);
         let mut se = 0.0;
         let mut st = 0.0;
         let mut dot = 0.0;

@@ -130,6 +130,14 @@ impl Codebook {
 
     /// Index of the nearest centroid to `v` (scalar; identical result to the
     /// AMX `matmul_i8_to_i32` assignment path). Panics if `v.len() != dim`.
+    ///
+    /// # Examples
+    /// ```
+    /// use ndarray::hpc::edge_codec::Codebook;
+    /// let data = [0.0, 0.0, 9.0, 9.0]; // 2 points × dim 2
+    /// let cb = Codebook::train(&data, 2, 2, 2, 5, 1);
+    /// assert!(cb.assign(&[9.0, 9.0]) < cb.k as u32);
+    /// ```
     #[inline]
     pub fn assign(&self, v: &[f32]) -> u32 {
         assert_eq!(v.len(), self.dim);
@@ -146,6 +154,14 @@ impl Codebook {
     }
 
     /// Borrow centroid `c` as a slice.
+    ///
+    /// # Examples
+    /// ```
+    /// use ndarray::hpc::edge_codec::Codebook;
+    /// let data = [0.0, 0.0, 9.0, 9.0];
+    /// let cb = Codebook::train(&data, 2, 2, 2, 5, 1);
+    /// assert_eq!(cb.centroid(0).len(), 2);
+    /// ```
     #[inline]
     pub fn centroid(&self, c: usize) -> &[f32] {
         &self.centroids[c * self.dim..(c + 1) * self.dim]
@@ -245,6 +261,15 @@ impl CoarseResidueCodec {
     }
 
     /// Encode one vector to coarse index + packed residue nibbles.
+    ///
+    /// # Examples
+    /// ```
+    /// use ndarray::hpc::edge_codec::CoarseResidueCodec;
+    /// let data: Vec<f32> = (0..8 * 4).map(|i| (i % 5) as f32 - 2.0).collect();
+    /// let codec = CoarseResidueCodec::fit(&data, 8, 4, 4, 6, 1);
+    /// let code = codec.encode(&data[0..4]);
+    /// assert_eq!(code.residue.len(), 2); // dim/2 packed bytes
+    /// ```
     pub fn encode(&self, v: &[f32]) -> CoarseResidueCode {
         let dim = self.cb.dim;
         let index = self.cb.assign(v);
@@ -261,9 +286,20 @@ impl CoarseResidueCodec {
         }
     }
 
-    /// Reconstruct `centroid + dequantized residue`.
+    /// Reconstruct `centroid + dequantized residue`. Panics if `code.residue` is
+    /// not the expected `dim/2` packed bytes (guards malformed decode input).
+    ///
+    /// # Examples
+    /// ```
+    /// use ndarray::hpc::edge_codec::CoarseResidueCodec;
+    /// let data: Vec<f32> = (0..8 * 4).map(|i| (i % 5) as f32 - 2.0).collect();
+    /// let codec = CoarseResidueCodec::fit(&data, 8, 4, 4, 6, 1);
+    /// let v = codec.reconstruct(&codec.encode(&data[0..4]));
+    /// assert_eq!(v.len(), 4);
+    /// ```
     pub fn reconstruct(&self, code: &CoarseResidueCode) -> Vec<f32> {
         let dim = self.cb.dim;
+        assert_eq!(code.residue.len(), dim / 2, "residue must be dim/2 packed bytes");
         let c = self.cb.centroid(code.index as usize);
         let res = unpack_nibbles_signed(&code.residue, dim);
         (0..dim)
@@ -320,6 +356,14 @@ impl ProductQuantizer {
     }
 
     /// Encode one vector to `m/2` packed nibble bytes (16 bytes when `m = 32`).
+    ///
+    /// # Examples
+    /// ```
+    /// use ndarray::hpc::edge_codec::ProductQuantizer;
+    /// let data: Vec<f32> = (0..32 * 8).map(|i| ((i * 7 % 11) as f32) - 5.0).collect();
+    /// let pq = ProductQuantizer::fit(&data, 32, 8, 4, 6, 1);
+    /// assert_eq!(pq.encode(&data[0..8]).len(), 2); // m/2 bytes
+    /// ```
     pub fn encode(&self, v: &[f32]) -> Vec<u8> {
         let codes: Vec<i8> = (0..self.m)
             .map(|s| {
@@ -334,8 +378,19 @@ impl ProductQuantizer {
             .collect()
     }
 
-    /// Reconstruct by concatenating the selected sub-centroids.
+    /// Reconstruct by concatenating the selected sub-centroids. Panics if `code`
+    /// is not the expected `m/2` packed bytes (guards malformed decode input).
+    ///
+    /// # Examples
+    /// ```
+    /// use ndarray::hpc::edge_codec::ProductQuantizer;
+    /// let data: Vec<f32> = (0..32 * 8).map(|i| ((i * 7 % 11) as f32) - 5.0).collect();
+    /// let pq = ProductQuantizer::fit(&data, 32, 8, 4, 6, 1);
+    /// let v = pq.reconstruct(&pq.encode(&data[0..8]));
+    /// assert_eq!(v.len(), 8);
+    /// ```
     pub fn reconstruct(&self, code: &[u8]) -> Vec<f32> {
+        assert_eq!(code.len(), self.m / 2, "code must be m/2 packed bytes");
         let mut out = vec![0.0f32; self.m * self.sub_dim];
         for s in 0..self.m {
             let byte = code[s / 2];
