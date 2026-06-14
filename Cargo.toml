@@ -69,6 +69,10 @@ required-features = ["std"]
 name = "edge_residue_probe"
 required-features = ["std"]
 
+[[example]]
+name = "edge_codec_compare"
+required-features = ["std"]
+
 [dependencies]
 num-integer = { workspace = true }
 num-traits = { workspace = true }
