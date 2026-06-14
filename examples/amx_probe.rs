@@ -101,13 +101,21 @@ fn test_matmul_f32(m: usize, n: usize, k: usize) {
         ArrayViewMut2::from_shape((m, n), &mut got[..]).unwrap(),
     )
     .unwrap();
-    let mut max_rel = 0.0f32;
+    // True relative metric: L2 relative error ‖got−exp‖ / ‖exp‖ (robust to
+    // small individual outputs — the previous `|e|.max(1.0)` denominator turned
+    // every |e|<1 cell into an absolute-error test) plus the max absolute error.
+    let mut sq_err = 0.0f64;
+    let mut sq_ref = 0.0f64;
+    let mut max_abs = 0.0f32;
     for (g, e) in got.iter().zip(&exp) {
-        let denom = e.abs().max(1.0);
-        max_rel = max_rel.max((g - e).abs() / denom);
+        let d = g - e;
+        sq_err += (d as f64) * (d as f64);
+        sq_ref += (*e as f64) * (*e as f64);
+        max_abs = max_abs.max(d.abs());
     }
-    let verdict = if max_rel < 0.05 { "CORRECT" } else { "WRONG  " };
-    println!("  matmul_f32  {m:>4}x{k:>4}x{n:>4}  {verdict}  max_rel_err = {max_rel:.4}");
+    let rel_l2 = (sq_err.sqrt() / sq_ref.sqrt().max(1e-12)) as f32;
+    let verdict = if rel_l2 < 0.02 { "CORRECT" } else { "WRONG  " };
+    println!("  matmul_f32  {m:>4}x{k:>4}x{n:>4}  {verdict}  rel-L2 {rel_l2:.4}  max-abs {max_abs:.4}");
 }
 
 fn main() {

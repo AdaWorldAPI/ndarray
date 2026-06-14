@@ -119,13 +119,17 @@ fn main() {
 
     println!("\n[2] Fisher-z percentile rank as a no-cosine normalised key:");
     // A deterministic spread of cosine similarities in (−1, 1).
-    let mut sims: Vec<f64> = (0..1000).map(|i| -0.999 + 1.998 * (i as f64 + 0.5) / 1000.0).collect();
+    let mut sims: Vec<f64> = (0..1000)
+        .map(|i| -0.999 + 1.998 * (i as f64 + 0.5) / 1000.0)
+        .collect();
     // Percentile rank of fisher_z(s). Both fisher_z and ranking are monotone in s,
     // so the rank order must equal the cosine order — verify (Spearman == 1).
     let mut idx: Vec<usize> = (0..sims.len()).collect();
     idx.sort_by(|&a, &b| fisher_z(sims[a]).partial_cmp(&fisher_z(sims[b])).unwrap());
     let inversions = idx.windows(2).filter(|w| sims[w[0]] > sims[w[1]]).count();
-    println!("    rank-order vs cosine-order inversions: {inversions} (0 ⇒ ordering fully preserved, no cosine needed)");
+    println!(
+        "    rank-order vs cosine-order inversions: {inversions} (0 ⇒ ordering fully preserved, no cosine needed)"
+    );
 
     // Rim-stretch: resolution (Δz per unit Δs) near the rim vs the centre.
     sims.sort_by(|a, b| a.partial_cmp(b).unwrap());

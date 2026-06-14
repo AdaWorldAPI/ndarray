@@ -63,13 +63,16 @@ impl TileConfig {
         cfg.data[16] = 64; // colsb[0] low (u16 @ 16); high byte @17 stays 0
         cfg.data[48] = 16; // rows[0]      (u8  @ 48)
 
-        // Tile 1 (A): 16 rows × kb colbytes (u8 left operand).
-        cfg.data[18] = kb as u8; // colsb[1] low (u16 @ 18); high byte @19 stays 0
-        cfg.data[49] = 16; // rows[1]            (u8  @ 49)
+        // Tile 1 (B, VNNI K×N → VEX.vvvv): kb/4 rows × 64 colbytes. The kernel
+        // loads the VNNI operand into tmm1, so tile 1 must carry the VNNI shape.
+        // (Was the plain 16×kb shape — equal to this only at kb=64; backwards
+        // for kb<64, which would mis-shape a tail kernel / external caller.)
+        cfg.data[18] = 64; // colsb[1] low (u16 @ 18); high byte @19 stays 0
+        cfg.data[49] = (kb / 4) as u8; // rows[1] (u8 @ 49)
 
-        // Tile 2 (B): kb/4 rows × 64 colbytes (VNNI-packed right operand).
-        cfg.data[20] = 64; // colsb[2] low (u16 @ 20); high byte @21 stays 0
-        cfg.data[50] = (kb / 4) as u8; // rows[2] (u8 @ 50)
+        // Tile 2 (A, plain M×K → ModRM.rm): 16 rows × kb colbytes.
+        cfg.data[20] = kb as u8; // colsb[2] low (u16 @ 20); high byte @21 stays 0
+        cfg.data[50] = 16; // rows[2] (u8 @ 50)
 
         cfg
     }
@@ -80,6 +83,17 @@ impl TileConfig {
     /// (vvvv/signed). Every tile is 16×64 so one config serves all roles. Same
     /// XTILECFG layout as [`Self::for_dpbusd`]: colsb[t] u16 @ 16+2t, rows[t]
     /// u8 @ 48+t.
+    ///
+    /// # Examples
+    /// ```ignore
+    /// use ndarray::hpc::amx_matmul::{tile_loadconfig, tile_release, TileConfig};
+    /// // SAFETY: requires AMX (gate on `amx_available()`); all 8 tiles are 16×64.
+    /// unsafe {
+    ///     tile_loadconfig(&TileConfig::for_dpbusd_8());
+    ///     // load A→tmm4/tmm5, B-VNNI→tmm6/tmm7, zero tmm0-3, then tile_dpbusd_2x2()
+    ///     tile_release();
+    /// }
+    /// ```
     pub fn for_dpbusd_8() -> Self {
         let mut cfg = TileConfig { data: [0u8; 64] };
         cfg.data[0] = 1; // palette 1
@@ -290,6 +304,21 @@ pub unsafe fn tile_dpbusd() {
 ///   C00 dst0 rm4 vvvv6 → C4 E2 49 5E C4   C01 dst1 rm4 vvvv7 → C4 E2 41 5E CC
 ///   C10 dst2 rm5 vvvv6 → C4 E2 49 5E D5   C11 dst3 rm5 vvvv7 → C4 E2 41 5E DD
 /// All eight operand tiles (0/1/2/3 dst, 4/5 A, 6/7 B) are distinct → no #UD.
+///
+/// # Examples
+/// ```ignore
+/// use ndarray::hpc::amx_matmul::*;
+/// // SAFETY: requires AMX; full 32×32 register-blocked tile contract.
+/// unsafe {
+///     tile_loadconfig(&TileConfig::for_dpbusd_8());
+///     tile_zero(0); tile_zero(1); tile_zero(2); tile_zero(3); // C accumulators
+///     tile_load(4, a0_ptr, k); tile_load(5, a1_ptr, k);       // A rows (rm)
+///     tile_load(6, b0_vnni, 64); tile_load(7, b1_vnni, 64);   // B cols (vvvv)
+///     tile_dpbusd_2x2();                                       // 4 TDPBUSDs
+///     tile_store(0, c00, n * 4); /* … tmm1/2/3 → other quadrants … */
+///     tile_release();
+/// }
+/// ```
 ///
 /// # Safety
 /// Tiles 0-7 configured (`TileConfig::for_dpbusd_8`) and 4/5/6/7 loaded.
@@ -842,11 +871,14 @@ mod tests {
             return;
         }
         unsafe {
-            // Minimal config: just tile 0, 1 row × 4 bytes
+            // Minimal valid tile 0: 1 row × 4 colbytes, using the CORRECTED
+            // XTILECFG offsets (colsb[t] u16 @ 16+2t, rows[t] u8 @ 48+t). The
+            // old code wrote data[16]=1/data[48]=4 which under the fixed layout
+            // means colsb=1/rows=4 — still valid, but mislabeled; now explicit.
             let mut cfg = TileConfig { data: [0u8; 64] };
             cfg.data[0] = 1; // palette 1
-            cfg.data[16] = 1; // tile 0: 1 row
-            cfg.data[48] = 4; // tile 0: 4 colbytes
+            cfg.data[16] = 4; // colsb[0] = 4 bytes  (u16 @ 16)
+            cfg.data[48] = 1; // rows[0]  = 1 row    (u8  @ 48)
 
             tile_loadconfig(&cfg);
             // TILEZERO tmm0

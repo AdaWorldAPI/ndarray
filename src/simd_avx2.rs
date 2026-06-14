@@ -1603,29 +1603,18 @@ impl U16x16 {
     /// Logical right shift each 16-bit lane by `imm` (matches `U16x32::shr`).
     #[inline(always)]
     pub fn shr(self, imm: u32) -> Self {
-        Self(unsafe {
-            match imm {
-                1 => _mm256_srli_epi16(self.0, 1),
-                2 => _mm256_srli_epi16(self.0, 2),
-                4 => _mm256_srli_epi16(self.0, 4),
-                8 => _mm256_srli_epi16(self.0, 8),
-                _ => _mm256_setzero_si256(),
-            }
-        })
+        // SAFETY: AVX2 baseline; `_mm256_srl_epi16` takes a runtime lane count
+        // from the low 64 bits of an xmm, so every shift amount works (the
+        // earlier `match {1,2,4,8}` returned zero for all other amounts).
+        Self(unsafe { _mm256_srl_epi16(self.0, _mm_cvtsi32_si128(imm as i32)) })
     }
 
     /// Logical left shift each 16-bit lane by `imm` (matches `U16x32::shl`).
     #[inline(always)]
     pub fn shl(self, imm: u32) -> Self {
-        Self(unsafe {
-            match imm {
-                1 => _mm256_slli_epi16(self.0, 1),
-                2 => _mm256_slli_epi16(self.0, 2),
-                4 => _mm256_slli_epi16(self.0, 4),
-                8 => _mm256_slli_epi16(self.0, 8),
-                _ => _mm256_setzero_si256(),
-            }
-        })
+        // SAFETY: AVX2 baseline; `_mm256_sll_epi16` takes a runtime lane count
+        // (same fix as `shr` — the `match {1,2,4,8}` zeroed all other amounts).
+        Self(unsafe { _mm256_sll_epi16(self.0, _mm_cvtsi32_si128(imm as i32)) })
     }
 
     /// Multiply, keep low 16 bits (wrapping) — `_mm256_mullo_epi16`.

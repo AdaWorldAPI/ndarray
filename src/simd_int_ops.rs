@@ -277,32 +277,27 @@ pub fn gemm_u8_i8(a: &[u8], b: &[i8], c: &mut [i32], m: usize, n: usize, k: usiz
         }
     }
 
-    // Compile-time dispatch chain (tiers 1-3). Exactly one arm survives
-    // per build; the others are stripped by `#[cfg]` so the compiler
-    // emits a direct call to the chosen kernel with no runtime branch.
-
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx512vnni"))]
+    // RUNTIME VNNI dispatch (tiers 1-2, after the AMX check above). This MUST
+    // be runtime `is_x86_feature_detected!`, NOT compile-time
+    // `#[cfg(target_feature)]`: the default x86-64-v3 build has neither
+    // avx512vnni nor avxvnni as a *compile* feature, so a cfg chain would strip
+    // both arms and fall through to scalar even on Ice Lake / Sapphire Rapids /
+    // Zen 4 silicon that supports VNNI at runtime (the regression codex flagged
+    // on PR #217). Runtime detection keeps the VNNI kernels reachable on the
+    // baseline build, matching the pre-consolidation `simd_caps()` behaviour.
+    #[cfg(target_arch = "x86_64")]
     {
-        // SAFETY: `target_feature = "avx512vnni"` at this site guarantees
-        // AVX-512F + VNNI + BW (the kernel's `#[target_feature(enable)]`
-        // set). The dispatcher is the safety invariant the kernel relies on.
-        unsafe { crate::hpc::vnni_gemm::int8_gemm_vnni_avx512(a, b, c, m, n, k) };
-        return;
-    }
-
-    #[cfg(all(
-        target_arch = "x86_64",
-        target_feature = "avxvnni",
-        not(target_feature = "avx512vnni"),
-    ))]
-    {
-        // SAFETY: `target_feature = "avxvnni"` at this site guarantees
-        // AVX + AVX2 + AVX-VNNI (the kernel's `#[target_feature(enable)]`
-        // set). Arm only fires when AVX-512 VNNI is *not* present —
-        // Alder Lake / Arrow Lake without AVX-512, or Zen 4 builds that
-        // pinned a ymm-only target. The dispatcher is the safety invariant.
-        unsafe { crate::hpc::vnni_gemm::int8_gemm_avxvnni_ymm(a, b, c, m, n, k) };
-        return;
+        if std::is_x86_feature_detected!("avx512vnni") {
+            // SAFETY: avx512vnni detected ⇒ AVX-512F + VNNI + BW present, the
+            // kernel's `#[target_feature(enable)]` set.
+            unsafe { crate::hpc::vnni_gemm::int8_gemm_vnni_avx512(a, b, c, m, n, k) };
+            return;
+        }
+        if std::is_x86_feature_detected!("avxvnni") {
+            // SAFETY: avxvnni detected ⇒ AVX + AVX2 + AVX-VNNI present.
+            unsafe { crate::hpc::vnni_gemm::int8_gemm_avxvnni_ymm(a, b, c, m, n, k) };
+            return;
+        }
     }
 
     // Fallback: scalar reference kernel. Always correct; same result the

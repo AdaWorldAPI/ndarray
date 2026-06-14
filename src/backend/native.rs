@@ -287,6 +287,9 @@ pub fn gemm_f64(
 /// SIMD tiers compute each row via [`dot_f32`]; the scalar tier uses
 /// the byte-stable [`scalar::gemv_f32`] reference.
 pub fn gemv_f32(m: usize, n: usize, alpha: f32, a: &[f32], lda: usize, x: &[f32], beta: f32, y: &mut [f32]) {
+    if m == 0 {
+        return; // no rows ⇒ no-op; must not slice `x[..n]` (scalar ref returns too)
+    }
     match tier() {
         Tier::Scalar => scalar::gemv_f32(m, n, alpha, a, lda, x, beta, y),
         // Avx512 + Avx2: per-row SIMD dot product. `dot_f32` itself
@@ -307,6 +310,9 @@ pub fn gemv_f32(m: usize, n: usize, alpha: f32, a: &[f32], lda: usize, x: &[f32]
 /// SIMD tiers compute each row via [`dot_f64`]; the scalar tier uses
 /// the byte-stable [`scalar::gemv_f64`] reference.
 pub fn gemv_f64(m: usize, n: usize, alpha: f64, a: &[f64], lda: usize, x: &[f64], beta: f64, y: &mut [f64]) {
+    if m == 0 {
+        return; // no rows ⇒ no-op; must not slice `x[..n]` (scalar ref returns too)
+    }
     match tier() {
         Tier::Scalar => scalar::gemv_f64(m, n, alpha, a, lda, x, beta, y),
         _ => {

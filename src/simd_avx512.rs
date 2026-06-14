@@ -1351,6 +1351,14 @@ impl PartialEq for U16x32 {
 // reduction needs an 8-wide FMA.
 impl F32x8 {
     /// Fused multiply-add: `self * a + b`, single rounding (`_mm256_fmadd_ps`).
+    ///
+    /// # Examples
+    /// ```ignore
+    /// let a = F32x8::splat(0.5);
+    /// let b = F32x8::splat(2.0);
+    /// let c = F32x8::splat(1.0);
+    /// assert_eq!(a.mul_add(b, c).to_array(), [2.0; 8]); // 0.5*2.0 + 1.0
+    /// ```
     #[inline(always)]
     pub fn mul_add(self, a: Self, b: Self) -> Self {
         // SAFETY: FMA3 intrinsic; reached only on FMA-capable targets via the
@@ -1363,6 +1371,14 @@ impl F32x8 {
     /// + `_mm256_movemask_ps`. The FastScan heap threshold-prune uses it to skip
     /// an 8-lane score chunk that holds no candidate above the current heap-min
     /// in a single instruction — the SIMD early-out the scalar `>hmin` scan loses.
+    ///
+    /// # Examples
+    /// ```ignore
+    /// let a = F32x8::from_array([3.0, 0.0, 5.0, 0.0, 3.0, 0.0, 5.0, 0.0]);
+    /// let b = F32x8::splat(1.0);
+    /// // lanes 0,2,4,6 are > 1.0 ⇒ bits 0,2,4,6 set = 0b0101_0101 = 0x55.
+    /// assert_eq!(a.cmp_gt_mask(b), 0x55);
+    /// ```
     #[inline(always)]
     pub fn cmp_gt_mask(self, other: Self) -> u32 {
         // SAFETY: AVX `vcmpps` + `vmovmskps`; available wherever this 256-bit

@@ -37,11 +37,20 @@ fn splitmix(s: &mut u64) -> f32 {
 fn quantize_i8(x: &[f32]) -> (Vec<i8>, f32) {
     let amax = x.iter().fold(0.0f32, |a, &v| a.max(v.abs())).max(1e-12);
     let scale = 127.0 / amax;
-    (x.iter().map(|&v| (v * scale).round().clamp(-127.0, 127.0) as i8).collect(), scale)
+    (
+        x.iter()
+            .map(|&v| (v * scale).round().clamp(-127.0, 127.0) as i8)
+            .collect(),
+        scale,
+    )
 }
 
 fn l2(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b).map(|(x, y)| (x - y) * (x - y)).sum::<f32>().sqrt()
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| (x - y) * (x - y))
+        .sum::<f32>()
+        .sqrt()
 }
 
 fn run(n: usize, d: usize, k: usize, noise: f32) {
@@ -78,7 +87,9 @@ fn run(n: usize, d: usize, k: usize, noise: f32) {
     let amx_ns = t0.elapsed().as_nanos() as f64;
 
     // ||c_j||² in the i8 domain (same scale as v) for the argmin.
-    let cnorm: Vec<i32> = (0..k).map(|c| (0..d).map(|j| (cb_i8[c * d + j] as i32).pow(2)).sum()).collect();
+    let cnorm: Vec<i32> = (0..k)
+        .map(|c| (0..d).map(|j| (cb_i8[c * d + j] as i32).pow(2)).sum())
+        .collect();
     // idx[i] = argmax_j (2·G[i][j] − ||c_j||²)  ≡  argmin_j ||v_i − c_j||².
     let mut idx = vec![0u32; n];
     for i in 0..n {

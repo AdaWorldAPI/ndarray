@@ -27,6 +27,7 @@ fn ref_32(a: &[u8], b: &[i8], k: usize) -> Vec<i32> {
 
 /// 32×32 = A(32×k u8) · B(k×32 i8) via the 2×2 register-blocked AMX kernel.
 fn rb_32(a: &[u8], b: &[i8], k: usize) -> Vec<i32> {
+    assert_eq!(k % 64, 0, "rb_32: K must be a multiple of 64 (TDPBUSD tile depth)");
     // Pack the two 16-wide B column bands into VNNI quads.
     let mut b0 = vec![0i8; k * 16];
     let mut b1 = vec![0i8; k * 16];
