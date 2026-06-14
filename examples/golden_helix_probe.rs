@@ -26,6 +26,8 @@
 //!
 //!   cargo run --release --example golden_helix_probe
 
+// √5 to full f64 precision; the literal is intentionally exact (π(3−√5)).
+#[allow(clippy::excessive_precision)]
 const GAMMA: f64 = std::f64::consts::PI * (3.0 - 2.2360679774997896); // π(3−√5), golden angle
 
 /// Golden-spiral hemisphere unit vectors (the helix node directions).

@@ -69,6 +69,46 @@ required-features = ["std"]
 name = "edge_residue_probe"
 required-features = ["std"]
 
+[[example]]
+name = "edge_codec_compare"
+required-features = ["std"]
+
+[[example]]
+name = "entropy_ladder_probe"
+required-features = ["std"]
+
+[[example]]
+name = "instrument_mtmm_probe"
+required-features = ["std"]
+
+[[example]]
+name = "cakes_grail_probe"
+required-features = ["std"]
+
+[[example]]
+name = "helix_orthogonality_probe"
+required-features = ["std"]
+
+[[example]]
+name = "helix_bitdepth_probe"
+required-features = ["std"]
+
+[[example]]
+name = "morton_perturbation_probe"
+required-features = ["std"]
+
+[[example]]
+name = "rolling_floor_probe"
+required-features = ["std"]
+
+[[example]]
+name = "codec_overlap_probe"
+required-features = ["std"]
+
+[[example]]
+name = "campq_cascade_probe"
+required-features = ["std"]
+
 [dependencies]
 num-integer = { workspace = true }
 num-traits = { workspace = true }

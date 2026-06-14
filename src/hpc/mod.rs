@@ -25,6 +25,10 @@ pub mod blas_level2;
 pub mod blas_level3;
 pub mod reductions;
 pub mod statistics;
+/// Reliability & validity statistics: Pearson r, Spearman ρ, Cronbach α, ICC.
+pub mod reliability;
+/// Entropy ladder: Staunen↔Wisdom coordinate over NARS truth + Pearl-2³ SPO.
+pub mod entropy_ladder;
 pub mod activations;
 pub mod hdc;
 // Bitwise SIMD primitives — graduated to crate root. Back-compat re-export.
@@ -73,6 +77,9 @@ pub mod bf16_tile_gemm;
 /// `bf16_tile_gemm` for the integer operand family.
 #[cfg(target_arch = "x86_64")]
 pub mod int8_tile_gemm;
+/// Edge-codec flavors (coarse / coarse+residue / PQ-32×4) for the canonical
+/// node edge block — selectable per class, measured via `reliability`.
+pub mod edge_codec;
 #[allow(missing_docs)]
 pub mod bf16_truth;
 #[allow(missing_docs)]
