@@ -31,7 +31,7 @@ survivors (fidelity, +bytes).**
 | relation + truth | CausalEdge64 (3×8 SPO + 2³ + f/c) | relational triple | SPO = 3× CAM-PQ palette + Pearl mask; entropy ρ=−0.78 reliability proxy | — |
 | reliability / entropy | entropy_class → CausalEdge64 spare [63:61] | Staunen↔Wisdom scalar | nars_entropy validated as reliability proxy | — |
 | value refinement | edge_codec CoarseResidue / turbovec | per-item residue | ICC 0.97–0.99, 14× error cut (vs coarse-only) | fidelity |
-| time / recurrence | EpisodicWitness64 | temporal | **NOT PROBED — white patch** | — |
+| time / recurrence | EpisodicWitness64 (= EdgeRef pointer) | temporal / meta | witness=3B pointer, meta DERIVED on resolve (ICC 0.97 vs ground truth); reliability ⊥ causality (r²=0.15) | — |
 
 Bit budgets are the same order (≈6 bytes each) but the **domains differ** — the
 6-byte coincidence is why "one vector" is tempting and wrong.
@@ -66,11 +66,23 @@ Per Correction-6 (`bf16-hhtl-terrain.md`) + I-VSA-IDENTITIES:
 `helix_orthogonality_probe`, `helix_bitdepth_probe`, `morton_perturbation_probe`,
 `rolling_floor_probe`, `codec_overlap_probe`, `campq_cascade_probe`. Each settles a
 claim with a number; two found shipped bugs (Cascade Welford-inert; the bgz17 OOB
-gather, fixed).
+gather, fixed). Temporal facet: lance-graph `meta_awareness_probe` (in
+`lance-graph-arm-discovery`, `--features ndarray-simd`) reuses `reliability` +
+`entropy_ladder` on the REAL Aerial+ extractor — witness-as-pointer, meta derived.
 
 ## White patches on the map (unbuilt / unmeasured — be honest)
 
-1. **EpisodicWitness64 / temporal facet** — referenced, never probed. Biggest gap.
+1. **EpisodicWitness64 / temporal facet** — ~~referenced, never probed. Biggest gap.~~
+   **PARTIALLY CLOSED** (lance-graph `meta_awareness_probe`, on the REAL Aerial+
+   extractor + ndarray `entropy_ladder`/`reliability`): the witness is a 3-byte
+   `EdgeRef` pointer; reliability + causal meta are DERIVED on resolve, never stored
+   (cold-resolve identity holds → packed-meta is pure redundancy, ~160 KB at 32k).
+   Measured: entropy is a reliability proxy on real ARM-derived (f,c) (Spearman ρ=+0.55,
+   ICC=+0.96 vs ground-truth conditionals); reliability ⊥ causality (Pearson r=−0.39,
+   r²=0.15 — the top Granger driver sits at HIGH entropy, so neither axis subsumes the
+   other). STILL OPEN: wiring the resolve path through the real `temporal.rs::granger_effect`
+   over `[u64; WORDS]` FingerprintColumns (the probe inlines a scalar 1-bit reduction);
+   and the EpisodicEdges64 MRU-demotion tier.
 2. **End-to-end compose** — cascade-prune × residue-refine measured *separately*,
    never together as one `coarse→prune→refine` pipeline.
 3. **`cam_pq_cascade_search`** — probe-proven lossless, NOT wired into real `cam_pq.rs`.
