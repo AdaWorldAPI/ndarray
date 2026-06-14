@@ -4,6 +4,7 @@
 //!
 //!   RUSTFLAGS="-C target-cpu=native" cargo run --release --example amx_probe
 
+use ndarray::hpc::amx_matmul::matmul_f32;
 use ndarray::hpc::int8_tile_gemm::int8_tile_gemm_16x16;
 use ndarray::simd::{amx_available, matmul_i8_to_i32};
 use ndarray::{ArrayView2, ArrayViewMut2};
@@ -78,10 +79,47 @@ fn test_matmul(m: usize, n: usize, k: usize) {
     }
 }
 
+/// matmul_f32 routes through the BF16 TDPBF16PS tile path on AMX hosts, so we
+/// check against an f32 scalar reference with a relative tolerance (BF16 has
+/// ~8 mantissa bits → a few ×1e-2 relative error on accumulated sums is fine).
+fn test_matmul_f32(m: usize, n: usize, k: usize) {
+    let a: Vec<f32> = (0..m * k).map(|i| ((i % 13) as f32 - 6.0) * 0.1).collect();
+    let b: Vec<f32> = (0..k * n).map(|i| ((i % 7) as f32 - 3.0) * 0.2).collect();
+    let mut exp = vec![0.0f32; m * n];
+    for i in 0..m {
+        for kk in 0..k {
+            let av = a[i * k + kk];
+            for j in 0..n {
+                exp[i * n + j] += av * b[kk * n + j];
+            }
+        }
+    }
+    let mut got = vec![0.0f32; m * n];
+    matmul_f32(
+        ArrayView2::from_shape((m, k), &a[..]).unwrap(),
+        ArrayView2::from_shape((k, n), &b[..]).unwrap(),
+        ArrayViewMut2::from_shape((m, n), &mut got[..]).unwrap(),
+    )
+    .unwrap();
+    let mut max_rel = 0.0f32;
+    for (g, e) in got.iter().zip(&exp) {
+        let denom = e.abs().max(1.0);
+        max_rel = max_rel.max((g - e).abs() / denom);
+    }
+    let verdict = if max_rel < 0.05 { "CORRECT" } else { "WRONG  " };
+    println!("  matmul_f32  {m:>4}x{k:>4}x{n:>4}  {verdict}  max_rel_err = {max_rel:.4}");
+}
+
 fn main() {
     println!("amx_available() = {}\n", amx_available());
 
-    println!("== int8_tile_gemm_16x16 (raw u8×i8 tile kernel) ==");
+    println!("== matmul_f32 (BF16 TDPBF16PS tile path, ~1% BF16 tolerance) ==");
+    test_matmul_f32(16, 16, 32);
+    test_matmul_f32(32, 32, 64);
+    test_matmul_f32(64, 48, 128);
+    test_matmul_f32(128, 128, 256);
+
+    println!("\n== int8_tile_gemm_16x16 (raw u8×i8 tile kernel) ==");
     test_tile_16(64);
     test_tile_16(128);
     test_tile_16(256);
