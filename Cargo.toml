@@ -101,6 +101,10 @@ required-features = ["std"]
 name = "rolling_floor_probe"
 required-features = ["std"]
 
+[[example]]
+name = "codec_overlap_probe"
+required-features = ["std"]
+
 [dependencies]
 num-integer = { workspace = true }
 num-traits = { workspace = true }
