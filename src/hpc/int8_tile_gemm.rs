@@ -369,19 +369,41 @@ pub fn int8_gemm_amx_tiled(a_u8: &[u8], b_i8: &[i8], c: &mut [i32], m: usize, n:
     debug_assert_eq!(n % 16, 0, "int8_gemm_amx_tiled: N must be multiple of 16");
     debug_assert_eq!(k % 64, 0, "int8_gemm_amx_tiled: K must be multiple of 64");
 
+    // With `rayon`, fan the M/16 row-tiles across the pool — but only for LARGE
+    // GEMMs. This AMX kernel is memory-bandwidth-bound, so on a few-core host the
+    // cores contend for bandwidth and row-tile parallelism scales sublinearly
+    // (~1.4× at 2048³ on 4 cores); below ~2 GMAC the thread-dispatch + shared
+    // B-prepack overhead actually REGRESSES it (measured: 512³ 125→73 GMAC/s).
+    // The threshold keeps the fast serial path for small/medium shapes and only
+    // parallelizes where it nets a win (and where many-core servers gain most).
+    // The per-tile kernel is byte-for-byte the validated serial one, so
+    // correctness is unchanged. (AMX permission is process-wide; the tile CONFIG
+    // is per-thread CPU state, so each worker runs its own LDTILECFG — see
+    // `int8_gemm_amx_tiled_par`.)
+    #[cfg(feature = "rayon")]
+    {
+        let work = (m as u64).saturating_mul(n as u64).saturating_mul(k as u64);
+        if m >= 32 && work >= 2_000_000_000 {
+            int8_gemm_amx_tiled_par(a_u8, b_i8, c, m, n, k);
+            return;
+        }
+    }
+    int8_gemm_amx_tiled_serial(a_u8, b_i8, c, m, n, k);
+}
+
+/// Single-thread AMX int8 tiled GEMM — the validated core kernel. LDTILECFG and
+/// the per-band VNNI pack are hoisted out of the M/16 × N/16 tile loops (1
+/// LDTILECFG total, not one per 16×16 tile); the 16×16 result tile is
+/// TILESTOREd straight into its strided slot in `c` (row pitch n·4 bytes).
+fn int8_gemm_amx_tiled_serial(a_u8: &[u8], b_i8: &[i8], c: &mut [i32], m: usize, n: usize, k: usize) {
     let mut b_tile = vec![0i8; k * 16]; // one column band of B (row-major K×16)
     let mut b_vnni = vec![0i8; k * 16]; // its VNNI-quad packing, reused across i-tiles
     let k_blocks = k / 64;
 
-    // SAFETY: callers runtime-check `amx_available()` (debug-asserted above), so
-    // AMX is OS-enabled and the tile ops are legal. The tile config is loaded
-    // once up front and released once at the end; every tile_load/tile_store
-    // stays inside the a_u8 / b_vnni / c bounds asserted above (16×64-byte
-    // tiles, K processed in 64-wide blocks; the strided store row pitch is
-    // n·4 bytes = the full-matrix row pitch). Crucially LDTILECFG — a
-    // serializing instruction — and the per-band VNNI pack are hoisted OUT of
-    // the M/16 × N/16 tile loops (they used to run once per 16×16 tile), which
-    // is the dominant speed-up: 1 LDTILECFG instead of (M/16)·(N/16).
+    // SAFETY: caller asserted `amx_available()` + 16/16/64 alignment + slice
+    // bounds. The tile config is loaded once and released once; every
+    // tile_load/tile_store stays inside the a_u8 / b_vnni / c bounds (16×64-byte
+    // tiles, K in 64-wide blocks, strided store row pitch n·4 bytes).
     unsafe {
         let cfg = TileConfig::for_dpbusd(64);
         tile_loadconfig(&cfg);
@@ -413,6 +435,67 @@ pub fn int8_gemm_amx_tiled(a_u8: &[u8], b_i8: &[i8], c: &mut [i32], m: usize, n:
 
         tile_release();
     }
+}
+
+/// Rayon-parallel AMX int8 tiled GEMM. B is VNNI-packed ONCE into a shared,
+/// read-only buffer (all N/16 column bands), then the M/16 row-tiles are fanned
+/// across the rayon pool — one task per 16-row block of `c`. Each worker runs
+/// the same validated tile sequence as the serial path.
+#[cfg(feature = "rayon")]
+fn int8_gemm_amx_tiled_par(a_u8: &[u8], b_i8: &[i8], c: &mut [i32], m: usize, n: usize, k: usize) {
+    use rayon::prelude::*;
+
+    let n_jtiles = n / 16;
+    let k_blocks = k / 64;
+    let band = k * 16; // bytes per VNNI-packed column band
+
+    // Pre-pack every B column band into one shared VNNI buffer (read-only in the
+    // parallel region). O(K·N) — cheap vs the O(M·N·K) GEMM.
+    let mut b_vnni_all = vec![0i8; n_jtiles * band];
+    {
+        let mut b_tile = vec![0i8; band];
+        for jt in 0..n_jtiles {
+            let j_tile = jt * 16;
+            for kk in 0..k {
+                let row = kk * n + j_tile;
+                b_tile[kk * 16..(kk + 1) * 16].copy_from_slice(&b_i8[row..row + 16]);
+            }
+            vnni_pack_i8(&b_tile, &mut b_vnni_all[jt * band..(jt + 1) * band], k, 16);
+        }
+    }
+
+    // One task per 16-row block of C. `c[..m*n]` guarantees exactly m/16 chunks.
+    c[..m * n]
+        .par_chunks_mut(16 * n)
+        .enumerate()
+        .for_each(|(it, c_rows)| {
+            let i_tile = it * 16;
+            let a_tile = &a_u8[i_tile * k..(i_tile + 16) * k];
+            // SAFETY: AMX permission is process-wide (arch_prctl granted once via the
+            // `amx_available()` LazyLock the caller already triggered) and inherited
+            // by every thread; the tile CONFIG is per-thread CPU state, so this
+            // worker loads its own config and releases it. `b_vnni_all` is read-only
+            // and shared; `c_rows` is this task's exclusive 16-row slice. All
+            // loads/stores stay within bounds (a_tile is 16×k; the strided store row
+            // pitch is n·4 bytes within this 16-row chunk).
+            unsafe {
+                let cfg = TileConfig::for_dpbusd(64);
+                tile_loadconfig(&cfg);
+                for jt in 0..n_jtiles {
+                    let j_tile = jt * 16;
+                    let b_vnni = &b_vnni_all[jt * band..(jt + 1) * band];
+                    tile_zero(0);
+                    for kb in 0..k_blocks {
+                        tile_load(1, b_vnni.as_ptr().add(kb * 16 * 64) as *const u8, 64);
+                        tile_load(2, a_tile.as_ptr().add(kb * 64), k);
+                        tile_dpbusd();
+                    }
+                    let c_ptr = c_rows.as_mut_ptr().add(j_tile) as *mut u8;
+                    tile_store(0, c_ptr, n * 4);
+                }
+                tile_release();
+            }
+        });
 }
 
 // ═════════════════════════════════════════════════════════════════════
