@@ -369,28 +369,49 @@ pub fn int8_gemm_amx_tiled(a_u8: &[u8], b_i8: &[i8], c: &mut [i32], m: usize, n:
     debug_assert_eq!(n % 16, 0, "int8_gemm_amx_tiled: N must be multiple of 16");
     debug_assert_eq!(k % 64, 0, "int8_gemm_amx_tiled: K must be multiple of 64");
 
-    let mut b_tile = vec![0i8; k * 16];
-    let mut tile_c = vec![0i32; 256];
+    let mut b_tile = vec![0i8; k * 16]; // one column band of B (row-major K×16)
+    let mut b_vnni = vec![0i8; k * 16]; // its VNNI-quad packing, reused across i-tiles
+    let k_blocks = k / 64;
 
-    for j_tile in (0..n).step_by(16) {
-        // Pack B[0..k, j_tile..j_tile+16] into 16-wide K-rows
-        // (contiguous memory for int8_tile_gemm_16x16's input shape).
-        // Safe slicing — the row..row+16 range is bounded by
-        // `b_i8.len() >= k * n` asserted at function entry.
-        for kk in 0..k {
-            let row = kk * n + j_tile;
-            b_tile[kk * 16..(kk + 1) * 16].copy_from_slice(&b_i8[row..row + 16]);
-        }
-        for i_tile in (0..m).step_by(16) {
-            let a_tile = &a_u8[i_tile * k..(i_tile + 16) * k];
-            tile_c.fill(0);
-            int8_tile_gemm_16x16(a_tile, &b_tile, &mut tile_c, k);
-            // Write tile_c (16 × 16, row-major) into c (M × N, row-major).
-            for ii in 0..16 {
-                let dst_off = (i_tile + ii) * n + j_tile;
-                c[dst_off..dst_off + 16].copy_from_slice(&tile_c[ii * 16..(ii + 1) * 16]);
+    // SAFETY: callers runtime-check `amx_available()` (debug-asserted above), so
+    // AMX is OS-enabled and the tile ops are legal. The tile config is loaded
+    // once up front and released once at the end; every tile_load/tile_store
+    // stays inside the a_u8 / b_vnni / c bounds asserted above (16×64-byte
+    // tiles, K processed in 64-wide blocks; the strided store row pitch is
+    // n·4 bytes = the full-matrix row pitch). Crucially LDTILECFG — a
+    // serializing instruction — and the per-band VNNI pack are hoisted OUT of
+    // the M/16 × N/16 tile loops (they used to run once per 16×16 tile), which
+    // is the dominant speed-up: 1 LDTILECFG instead of (M/16)·(N/16).
+    unsafe {
+        let cfg = TileConfig::for_dpbusd(64);
+        tile_loadconfig(&cfg);
+
+        for j_tile in (0..n).step_by(16) {
+            // Pack B[:, j_tile..+16] (row-major K×16) then VNNI-quad it ONCE
+            // per column band; reused across all M/16 row tiles below.
+            for kk in 0..k {
+                let row = kk * n + j_tile;
+                b_tile[kk * 16..(kk + 1) * 16].copy_from_slice(&b_i8[row..row + 16]);
+            }
+            vnni_pack_i8(&b_tile, &mut b_vnni, k, 16);
+
+            for i_tile in (0..m).step_by(16) {
+                let a_tile = &a_u8[i_tile * k..(i_tile + 16) * k];
+                tile_zero(0); // C tile = 0 (this driver overwrites, not accumulates)
+                for kb in 0..k_blocks {
+                    // B(VNNI K×N) → tmm1 (vvvv, signed); A(plain M×K) → tmm2 (rm, unsigned).
+                    tile_load(1, b_vnni.as_ptr().add(kb * 16 * 64) as *const u8, 64);
+                    tile_load(2, a_tile.as_ptr().add(kb * 64), k);
+                    tile_dpbusd();
+                }
+                // Store tmm0 (16×16 i32) straight into the strided C location —
+                // row pitch n·4 bytes — with no scratch buffer or copy loop.
+                let c_ptr = c.as_mut_ptr().add(i_tile * n + j_tile) as *mut u8;
+                tile_store(0, c_ptr, n * 4);
             }
         }
+
+        tile_release();
     }
 }
 
