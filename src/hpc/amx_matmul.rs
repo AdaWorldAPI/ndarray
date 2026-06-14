@@ -73,6 +73,22 @@ impl TileConfig {
 
         cfg
     }
+
+    /// Configure all EIGHT tiles (tmm0-7) as 16 rows × 64 colbytes, for the 2×2
+    /// register-blocked int8 kernel: tmm0-3 = the four C accumulators, tmm4-5 =
+    /// two plain A row-blocks (rm/unsigned), tmm6-7 = two VNNI B col-blocks
+    /// (vvvv/signed). Every tile is 16×64 so one config serves all roles. Same
+    /// XTILECFG layout as [`Self::for_dpbusd`]: colsb[t] u16 @ 16+2t, rows[t]
+    /// u8 @ 48+t.
+    pub fn for_dpbusd_8() -> Self {
+        let mut cfg = TileConfig { data: [0u8; 64] };
+        cfg.data[0] = 1; // palette 1
+        for t in 0..8 {
+            cfg.data[16 + 2 * t] = 64; // colsb[t] = 64 (low byte; high stays 0)
+            cfg.data[48 + t] = 16; // rows[t] = 16
+        }
+        cfg
+    }
 }
 
 /// Load tile configuration via inline asm.
@@ -156,21 +172,71 @@ pub unsafe fn tile_load(tile: u8, ptr: *const u8, stride: usize) {
             in("rax") stride,
             options(nostack),
         ),
+        // ModRM = 0x04 | (tile << 3); SIB 0x01 unchanged. tmm3-7 added for the
+        // 2×2 register-blocked kernel (4 C accumulators + 2 A + 2 B tiles).
+        3 => asm!(
+            ".byte 0xc4, 0xe2, 0x7b, 0x4b, 0x1c, 0x01",
+            in("rcx") ptr,
+            in("rax") stride,
+            options(nostack),
+        ),
+        4 => asm!(
+            ".byte 0xc4, 0xe2, 0x7b, 0x4b, 0x24, 0x01",
+            in("rcx") ptr,
+            in("rax") stride,
+            options(nostack),
+        ),
+        5 => asm!(
+            ".byte 0xc4, 0xe2, 0x7b, 0x4b, 0x2c, 0x01",
+            in("rcx") ptr,
+            in("rax") stride,
+            options(nostack),
+        ),
+        6 => asm!(
+            ".byte 0xc4, 0xe2, 0x7b, 0x4b, 0x34, 0x01",
+            in("rcx") ptr,
+            in("rax") stride,
+            options(nostack),
+        ),
+        7 => asm!(
+            ".byte 0xc4, 0xe2, 0x7b, 0x4b, 0x3c, 0x01",
+            in("rcx") ptr,
+            in("rax") stride,
+            options(nostack),
+        ),
         _ => {}
     }
 }
 
-/// Store tile to memory.
+/// Store tile to memory. ModRM = 0x04 | (tile << 3); SIB 0x01 = base=rcx (ptr),
+/// index=rax (stride), scale=1. tmm0-3 are the four C accumulators of the 2×2
+/// register-blocked kernel.
 ///
 /// # Safety
 /// Pointer must be valid and writable, stride must match.
 #[inline]
 pub unsafe fn tile_store(tile: u8, ptr: *mut u8, stride: usize) {
     match tile {
-        // TILESTORED [rcx + rax*row], tmm0 — SIB 0x01 = base=rcx (ptr),
-        // index=rax (stride), scale=1. (Was 0x08 with base/index swapped.)
         0 => asm!(
             ".byte 0xc4, 0xe2, 0x7a, 0x4b, 0x04, 0x01",
+            in("rcx") ptr,
+            in("rax") stride,
+            options(nostack),
+        ),
+        1 => asm!(
+            ".byte 0xc4, 0xe2, 0x7a, 0x4b, 0x0c, 0x01",
+            in("rcx") ptr,
+            in("rax") stride,
+            options(nostack),
+        ),
+        2 => asm!(
+            ".byte 0xc4, 0xe2, 0x7a, 0x4b, 0x14, 0x01",
+            in("rcx") ptr,
+            in("rax") stride,
+            options(nostack),
+        ),
+        3 => asm!(
+            ".byte 0xc4, 0xe2, 0x7a, 0x4b, 0x1c, 0x01",
             in("rcx") ptr,
             in("rax") stride,
             options(nostack),
@@ -207,6 +273,35 @@ pub unsafe fn tile_store(tile: u8, ptr: *mut u8, stride: usize) {
 #[inline]
 pub unsafe fn tile_dpbusd() {
     asm!(".byte 0xc4, 0xe2, 0x71, 0x5e, 0xc2", options(nostack, nomem));
+}
+
+/// 2×2 register-blocked TDPBUSD — four accumulations in one call:
+/// ```text
+///   C00(tmm0) += A0(tmm4) ⊗ B0(tmm6)    C01(tmm1) += A0(tmm4) ⊗ B1(tmm7)
+///   C10(tmm2) += A1(tmm5) ⊗ B0(tmm6)    C11(tmm3) += A1(tmm5) ⊗ B1(tmm7)
+/// ```
+/// Same operand convention as [`tile_dpbusd`]: the plain M×K operand is rm
+/// (A, unsigned), the VNNI K×N operand is vvvv (B, signed). Reusing the two A
+/// and two B tile loads across four products halves the load bytes per MAC —
+/// the lever for this memory-bandwidth-bound kernel.
+///
+/// Encodings (VEX `C4 E2 <byte2> 5E <modrm>`, byte2 = ((~vvvv & 0xF)<<3)|0x01,
+/// modrm = 0xC0 | dst<<3 | rm):
+///   C00 dst0 rm4 vvvv6 → C4 E2 49 5E C4   C01 dst1 rm4 vvvv7 → C4 E2 41 5E CC
+///   C10 dst2 rm5 vvvv6 → C4 E2 49 5E D5   C11 dst3 rm5 vvvv7 → C4 E2 41 5E DD
+/// All eight operand tiles (0/1/2/3 dst, 4/5 A, 6/7 B) are distinct → no #UD.
+///
+/// # Safety
+/// Tiles 0-7 configured (`TileConfig::for_dpbusd_8`) and 4/5/6/7 loaded.
+#[inline]
+pub unsafe fn tile_dpbusd_2x2() {
+    asm!(
+        ".byte 0xc4, 0xe2, 0x49, 0x5e, 0xc4", // C00 = A0·B0
+        ".byte 0xc4, 0xe2, 0x41, 0x5e, 0xcc", // C01 = A0·B1
+        ".byte 0xc4, 0xe2, 0x49, 0x5e, 0xd5", // C10 = A1·B0
+        ".byte 0xc4, 0xe2, 0x41, 0x5e, 0xdd", // C11 = A1·B1
+        options(nostack, nomem)
+    );
 }
 
 /// TDPBF16PS: C += A(bf16) × B(bf16_vnni) → f32.

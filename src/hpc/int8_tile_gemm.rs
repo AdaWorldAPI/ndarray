@@ -24,8 +24,8 @@
 //! supports natively.
 
 use crate::hpc::amx_matmul::{
-    amx_available, tile_dpbusd, tile_load, tile_loadconfig, tile_release, tile_store, tile_zero, vnni_pack_i8,
-    TileConfig,
+    amx_available, tile_dpbusd, tile_dpbusd_2x2, tile_load, tile_loadconfig, tile_release, tile_store, tile_zero,
+    vnni_pack_i8, TileConfig,
 };
 
 // ═════════════════════════════════════════════════════════════════════
@@ -388,6 +388,12 @@ pub fn int8_gemm_amx_tiled(a_u8: &[u8], b_i8: &[i8], c: &mut [i32], m: usize, n:
             return;
         }
     }
+    // 2×2 register blocking halves the load bytes/MAC — the right lever for this
+    // bandwidth-bound kernel — whenever there is at least one full 32×32 block.
+    if m >= 32 && n >= 32 {
+        int8_gemm_amx_tiled_rb(a_u8, b_i8, c, m, n, k);
+        return;
+    }
     int8_gemm_amx_tiled_serial(a_u8, b_i8, c, m, n, k);
 }
 
@@ -496,6 +502,122 @@ fn int8_gemm_amx_tiled_par(a_u8: &[u8], b_i8: &[i8], c: &mut [i32], m: usize, n:
                 tile_release();
             }
         });
+}
+
+/// 2×2 register-blocked AMX int8 GEMM (single thread). Tiles the M×N output
+/// into 32×32 blocks computed with [`tile_dpbusd_2x2`] — four C accumulators
+/// (tmm0-3) fed by two A row-tiles (tmm4-5) and two B col-tiles (tmm6-7), so
+/// each A/B tile load serves TWO products (half the tile loads per MAC).
+///
+/// Loop order is BLIS-style for cache behaviour: OUTER over 32-col panels —
+/// pack just that panel's two B bands (≈2·K·16 bytes, kept L2-resident) and
+/// reuse them across every row-block — INNER over 32-row blocks. This halves
+/// the tile loads (register reuse) AND halves A's DRAM re-reads vs the 16×16
+/// kernel (32-col panels ⇒ half as many full-A sweeps). The earlier version
+/// pre-packed ALL of B (≈4 MB at 2048²) and thrashed cache, regressing large
+/// shapes — this packs only the live panel. 16-wide M/N remainders (m or n ≡
+/// 16 mod 32) finish on the validated 16×16 path. Overwrites `c`.
+fn int8_gemm_amx_tiled_rb(a_u8: &[u8], b_i8: &[i8], c: &mut [i32], m: usize, n: usize, k: usize) {
+    let band = k * 16; // bytes per VNNI-packed 16-col band
+    let k_blocks = k / 64;
+    let m32 = (m / 32) * 32; // rows covered by full 32-row blocks
+    let n32 = (n / 32) * 32; // cols covered by full 32-col blocks
+    let pitch = n * 4; // C row pitch in bytes
+
+    // The live panel's two B bands + a gather scratch. Packed once per panel,
+    // reused across all row-blocks (hot in L2).
+    let mut b0 = vec![0i8; band];
+    let mut b1 = vec![0i8; band];
+    let mut t = vec![0i8; band];
+
+    // SAFETY: caller asserted amx_available + 16/16/64 alignment + slice bounds.
+    // Eight tiles are configured (for_dpbusd_8); every tile_load/tile_store is a
+    // 16×64 tile within the a_u8 / b0 / b1 / c allocations; all stores use the
+    // full-matrix row pitch n·4. b0/b1 raw pointers stay valid across the inner
+    // loops (the bands are repacked only at the top of the next panel).
+    unsafe {
+        tile_loadconfig(&TileConfig::for_dpbusd_8());
+
+        // ── Full 32-col panels ──
+        let mut j2 = 0;
+        while j2 < n32 {
+            // Pack this panel's two 16-col B bands once; reused across all i2.
+            for kk in 0..k {
+                t[kk * 16..(kk + 1) * 16].copy_from_slice(&b_i8[kk * n + j2..kk * n + j2 + 16]);
+            }
+            vnni_pack_i8(&t, &mut b0, k, 16);
+            for kk in 0..k {
+                t[kk * 16..(kk + 1) * 16].copy_from_slice(&b_i8[kk * n + j2 + 16..kk * n + j2 + 32]);
+            }
+            vnni_pack_i8(&t, &mut b1, k, 16);
+            let b0p = b0.as_ptr() as *const u8;
+            let b1p = b1.as_ptr() as *const u8;
+
+            // 32×32 register-blocked blocks down the rows.
+            let mut i2 = 0;
+            while i2 < m32 {
+                let a0 = a_u8.as_ptr().add(i2 * k);
+                let a1 = a_u8.as_ptr().add((i2 + 16) * k);
+                tile_zero(0);
+                tile_zero(1);
+                tile_zero(2);
+                tile_zero(3);
+                for kb in 0..k_blocks {
+                    tile_load(4, a0.add(kb * 64), k);
+                    tile_load(5, a1.add(kb * 64), k);
+                    tile_load(6, b0p.add(kb * 16 * 64), 64);
+                    tile_load(7, b1p.add(kb * 16 * 64), 64);
+                    tile_dpbusd_2x2();
+                }
+                let cp = c.as_mut_ptr();
+                tile_store(0, cp.add(i2 * n + j2) as *mut u8, pitch);
+                tile_store(1, cp.add(i2 * n + j2 + 16) as *mut u8, pitch);
+                tile_store(2, cp.add((i2 + 16) * n + j2) as *mut u8, pitch);
+                tile_store(3, cp.add((i2 + 16) * n + j2 + 16) as *mut u8, pitch);
+                i2 += 32;
+            }
+
+            // Bottom strip for THIS panel: rows [m32..m) × cols [j2..j2+32),
+            // two 16×16 tiles reusing the already-packed b0 / b1.
+            if m32 < m {
+                let ap = a_u8.as_ptr().add(m32 * k);
+                for (off, bv) in [(0usize, b0p), (16usize, b1p)] {
+                    tile_zero(0);
+                    for kb in 0..k_blocks {
+                        tile_load(1, bv.add(kb * 16 * 64), 64);
+                        tile_load(2, ap.add(kb * 64), k);
+                        tile_dpbusd();
+                    }
+                    tile_store(0, c.as_mut_ptr().add(m32 * n + j2 + off) as *mut u8, pitch);
+                }
+            }
+            j2 += 32;
+        }
+
+        // ── Right strip: cols [n32..n) (one 16-band), ALL rows (covers the
+        // bottom-right corner too). ──
+        if n32 < n {
+            for kk in 0..k {
+                t[kk * 16..(kk + 1) * 16].copy_from_slice(&b_i8[kk * n + n32..kk * n + n32 + 16]);
+            }
+            vnni_pack_i8(&t, &mut b0, k, 16);
+            let bvp = b0.as_ptr() as *const u8;
+            let mut i = 0;
+            while i < m {
+                let ap = a_u8.as_ptr().add(i * k);
+                tile_zero(0);
+                for kb in 0..k_blocks {
+                    tile_load(1, bvp.add(kb * 16 * 64), 64);
+                    tile_load(2, ap.add(kb * 64), k);
+                    tile_dpbusd();
+                }
+                tile_store(0, c.as_mut_ptr().add(i * n + n32) as *mut u8, pitch);
+                i += 16;
+            }
+        }
+
+        tile_release();
+    }
 }
 
 // ═════════════════════════════════════════════════════════════════════

@@ -204,9 +204,36 @@ B **on every tile** (256 `LDTILECFG`s for a 256² output). The fast driver:
 3. `TILEZERO` the C accumulator and `TILESTORED` the 16×16 result **straight
    into its strided slot** in C (row pitch n·4 bytes) — no scratch + copy.
 
-Result: **14.8 → 169.7 GMAC/s** (11.5×), still correct=true. Remaining
-headroom: 2×2 register blocking (4 C tiles amortize A/B loads) and rayon over
-row tiles.
+Result: **14.8 → 169.7 GMAC/s** (11.5×), still correct=true.
+
+**Then 2×2 register blocking** (`int8_gemm_amx_tiled_rb` + `tile_dpbusd_2x2`):
+4 C accumulators (tmm0-3) fed by 2 A tiles (tmm4-5) + 2 B tiles (tmm6-7), so
+each A/B tile load serves TWO products — half the tile loads per MAC, the right
+lever for this **memory-bandwidth-bound** kernel. The loop order matters: a
+first cut pre-packed ALL of B (~4 MB at 2048²) and thrashed cache, *regressing*
+large shapes (1024³ 156→125). The BLIS-style fix — OUTER over 32-col panels,
+pack only that panel's 2 B bands (L2-resident) and reuse across all row-blocks,
+INNER over 32-row blocks — also halves A's DRAM re-reads (32-col vs 16-col
+panels). Single-thread result, all correct=true:
+
+```
+        serial    rb(2×2)
+256³    65.7      80.8  (+23%)
+512³   124.9     132.0  (+6%)
+1024³  155.9     170.2  (+9%)
+2048³  169.7     197.7  (+16%)   ← 395 GOP/s
+```
+
+**Rayon over row-tiles** (`int8_gemm_amx_tiled_par`, `feature = "rayon"`): this
+kernel is bandwidth-bound, so 4-core scaling is sublinear — 2048³ → 237.5 GMAC/s
+(~1.4×) — and it REGRESSES small/medium (thread + B-prepack overhead), so it's
+gated to `m·n·k ≥ 2e9`. Many-core servers gain more.
+
+Dispatch (in `int8_gemm_amx_tiled`): huge + rayon → `_par`; else m,n≥32 → `_rb`
+(2×2); else `_serial` (16×16); m or n < 32 strips fall to the 16×16 path inside
+`_rb`. Remaining headroom: **rayon-over-rb** (parallelize the rb row-panels
+instead of the 16×16 kernel — should beat both, ~270+ GMAC/s projected) and
+full BLIS Mc/Nc/Kc cache blocking for very large K.
 
 ---
 

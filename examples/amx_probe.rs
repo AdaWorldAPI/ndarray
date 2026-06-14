@@ -131,7 +131,9 @@ fn main() {
     test_matmul(16, 16, 128);
     test_matmul(32, 16, 64);
     test_matmul(16, 32, 64);
-    test_matmul(32, 32, 128);
-    test_matmul(64, 48, 192);
+    test_matmul(32, 32, 128); // exactly one 2×2 register block
+    test_matmul(64, 48, 192); // full blocks + right strip (n ≡ 16 mod 32)
+    test_matmul(48, 48, 128); // full block + BOTH strips + corner (m,n ≡ 16 mod 32)
+    test_matmul(96, 80, 128); // 3×2 full blocks + both strips
     test_matmul(256, 256, 256);
 }
