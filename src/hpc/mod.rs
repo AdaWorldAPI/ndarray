@@ -27,6 +27,8 @@ pub mod reductions;
 pub mod statistics;
 /// Reliability & validity statistics: Pearson r, Spearman ρ, Cronbach α, ICC.
 pub mod reliability;
+/// Entropy ladder: Staunen↔Wisdom coordinate over NARS truth + Pearl-2³ SPO.
+pub mod entropy_ladder;
 pub mod activations;
 pub mod hdc;
 // Bitwise SIMD primitives — graduated to crate root. Back-compat re-export.

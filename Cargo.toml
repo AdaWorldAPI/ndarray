@@ -73,6 +73,10 @@ required-features = ["std"]
 name = "edge_codec_compare"
 required-features = ["std"]
 
+[[example]]
+name = "entropy_ladder_probe"
+required-features = ["std"]
+
 [dependencies]
 num-integer = { workspace = true }
 num-traits = { workspace = true }
