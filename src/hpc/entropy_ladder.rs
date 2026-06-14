@@ -23,6 +23,15 @@
 //! Validation: [`nars_entropy`] is a *reliability proxy* — it anti-correlates
 //! with an edge's empirical prediction accuracy (see the module tests and the
 //! `entropy_ladder_probe` example), grounded via [`crate::hpc::reliability`].
+//!
+//! ## Layering (PR #218 review — operator decision 2026-06-14)
+//! This module carries cognition vocabulary (Staunen/Wisdom, SPO rungs) but has
+//! NO dependency on the thinking/protocol crates: it is pure functions on
+//! `(u8, f64)` + plain enums (`decompose_spo` takes raw palette indices, never a
+//! `CausalEdge64`). It is VALIDATED here during the instrument phase, beside the
+//! existing `hpc::nars` (NarsTruth) and `hpc::causal_diff` (CausalEdge64).
+//! **Planned migration to the lance-graph thinking layer once the ladder
+//! stabilizes** — tracked via the open coderabbit layering thread on PR #218.
 
 /// Staunen↔Wisdom entropy of a NARS truth value `(f, c)`, in `[0, 1]`.
 ///
