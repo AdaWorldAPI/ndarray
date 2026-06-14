@@ -105,6 +105,10 @@ required-features = ["std"]
 name = "codec_overlap_probe"
 required-features = ["std"]
 
+[[example]]
+name = "campq_cascade_probe"
+required-features = ["std"]
+
 [dependencies]
 num-integer = { workspace = true }
 num-traits = { workspace = true }
