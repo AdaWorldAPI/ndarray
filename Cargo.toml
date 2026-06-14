@@ -81,6 +81,10 @@ required-features = ["std"]
 name = "instrument_mtmm_probe"
 required-features = ["std"]
 
+[[example]]
+name = "cakes_grail_probe"
+required-features = ["std"]
+
 [dependencies]
 num-integer = { workspace = true }
 num-traits = { workspace = true }
