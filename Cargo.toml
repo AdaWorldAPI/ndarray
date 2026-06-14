@@ -61,6 +61,10 @@ required-features = ["std"]
 name = "morton_cascade_probe"
 required-features = ["std"]
 
+[[example]]
+name = "golden_helix_probe"
+required-features = ["std"]
+
 [dependencies]
 num-integer = { workspace = true }
 num-traits = { workspace = true }
