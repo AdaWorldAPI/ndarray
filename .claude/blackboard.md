@@ -134,3 +134,50 @@ This is mostly Cargo.toml workspace wiring + API surface.
 [DECISION] Cypher executes locally via lance-graph semiring by default
 [DECISION] Remote DB connections (Neo4j, FalkorDB) via native Bolt client
 [DECISION] vis.js graph rendering served as static assets by the binary
+
+## Architecture Decisions
+
+### 2026-06-13 — GEMM-dispatch routing fixes (savant-architect)
+Branch `claude/wonderful-hawking-lodtql`. Three public GEMM entry points
+were not routing to the accelerated kernels.
+
+- **`backend::gemm_bf16` (src/backend/mod.rs)** — ALREADY FIXED in the
+  working tree this session. Now routes to
+  `hpc::amx_matmul::matmul_bf16_to_f32` (AMX `TDPBF16PS` → AVX-512
+  `VDPBF16PS` → scalar). Slice→ArrayView2 wrapping mirrors the call shape
+  in `simd_runtime::matmul`; inputs sliced to exact `m*k`/`k*n`/`m*n`.
+  Bit-equivalent on non-AMX/non-AVX512BF16 hosts because the dispatcher's
+  scalar fallback is the same `quantized::bf16_gemm_f32(a,b,c,m,n,k,1.0,0.0)`
+  the old direct call used (alpha=1, beta=0 preserved).
+- **`backend::gemm_i8` (src/backend/mod.rs)** — ALREADY FIXED in the
+  working tree this session. Routes to `simd_int_ops::gemm_u8_i8`
+  (4-tier: AMX `TDPBUSD` → VNNI-zmm → AVX-VNNI-ymm → scalar).
+  [DECISION] Deliberately NOT routed to `amx_matmul::matmul_i8_to_i32` as
+  the literal task text asked: `gemm_i8` is **u8×i8→i32**, but
+  `matmul_i8_to_i32` is **i8×i8→i32** and would reinterpret A-bytes ≥128
+  as negative — NOT bit-equivalent. `gemm_u8_i8`'s scalar fallback is the
+  same `quantized::int8_gemm_i32` the old `vnni_gemm::int8_gemm_vnni`
+  used → bit-identical on scalar hosts; VNNI-zmm arm calls the same
+  `int8_gemm_vnni_avx512` kernel as before. All tiers integer-exact.
+- **`native::gemv_f32` / `gemv_f64` (src/backend/native.rs)** — FIXED
+  THIS TURN (was calling `scalar::gemv_*` unconditionally). Now matches
+  on `tier()`: Scalar tier → unchanged `scalar::gemv_*` (byte-identical);
+  Avx2/Avx512 tiers → per-row `dot_f32`/`dot_f64` (the existing
+  dispatched, parity-tested SIMD dot). GEMV = stack of row dots; each A
+  row is row-major-contiguous so contiguous `dot_*` loads apply. Leading
+  `n` of each `lda`-wide row taken via `&a[i*lda..i*lda+n]`; no new bounds
+  requirement vs scalar ref. SIMD tiers carry the module's documented
+  1-2 ULP reduce-order drift (within BLAS tol; `test_gemv_f32` uses 1e-5,
+  no byte-exact consumer asserts gemv).
+
+[UNSAFE-AUDIT] gemv fix added **zero** new `unsafe` — it reuses the
+already-audited `dot_*` kernels. No new sentinel-qa surface from this turn.
+The two mod.rs fixes contain `unsafe` repr(transparent) slice reinterprets
+(BF16/u16) that were landed earlier this session and warrant the standard
+sentinel-qa pass if not already covered.
+
+[LOOSE END] Repo references modules that exist on disk but the Glob/Grep
+index was transiently stale this session (returned empty for
+`simd_int_ops.rs`, `vnni_gemm.rs`, `bf16_gemm_f32`); Bash ground-truth
+confirmed all present. Orchestrator should `cargo fmt`/`clippy`/`test`
+centrally (edits were edit-only, no compile performed here).

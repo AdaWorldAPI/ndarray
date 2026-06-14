@@ -29,28 +29,78 @@ pub struct TileConfig {
 }
 
 impl TileConfig {
-    /// Configure for TDPBUSD: C[16×16 i32] += A[16×k u8] × B[k×16 i8].
+    /// Configure all three tiles for the int8/bf16 16×16 tile GEMM. Every tile
+    /// is 16 rows × 64 colbytes; the shapes are identical so the same config
+    /// serves C, the plain M×K operand, and the VNNI K×N operand. *Which*
+    /// operand lands in *which* tile is decided by the kernel — see
+    /// [`tile_dpbusd`] for the empirically-verified placement (VNNI K×N → tmm1,
+    /// plain M×K → tmm2, result → tmm0).
     ///
-    /// Tiles:
-    ///   tmm0 = C (result): 16 rows × 64 bytes (16×16 i32)
-    ///   tmm1 = A (left):   16 rows × 64 bytes (16×64 u8)
-    ///   tmm2 = B (right):  16 rows × 64 bytes (transposed: 64×16 → 16×64)
+    /// Tiles (shapes):
+    ///   tmm0 = C (result):     16 rows × 64 bytes (16×16 i32)
+    ///   tmm1 = VNNI K×N (vvvv): kb/4 rows × 64 bytes
+    ///   tmm2 = plain M×K (rm):  16 rows × kb bytes
     pub fn for_dpbusd(k_bytes: u16) -> Self {
         let mut cfg = TileConfig { data: [0u8; 64] };
         cfg.data[0] = 1; // palette 1
+                         // byte 1 = start_row = 0; bytes 2-15 reserved = 0 (already zeroed).
 
-        // Tile 0 (C): 16 rows × 64 bytes (16 × i32 per row = 64 bytes)
-        cfg.data[16] = 16;
-        cfg.data[48] = 64;
+        // XTILECFG layout (Intel SDM, LDTILECFG memory operand):
+        //   colsb[t] : u16 at offset 16 + 2*t   (bytes per tile row, ≤ 64)
+        //   rows[t]  : u8  at offset 48 + t      (rows per tile,       ≤ 16)
+        //
+        // The previous version had these two regions SWAPPED — it wrote the
+        // row counts into the colsb region (offsets 16/17/18) and the column
+        // widths into the rows region (offsets 48/50/52). That produced
+        // colsb[0] = 0x1010 = 4112 and rows[0] = 64, both out of range, so
+        // LDTILECFG #GP-faulted (delivered as SIGSEGV) the instant the AMX
+        // path actually executed. (It never had — every AMX test early-returns
+        // when `amx_available()` is false, which it always was until the
+        // arch_prctl syscall-number fix in `simd_amx.rs`.)
+        let kb = k_bytes.min(64); // colsb ≤ 64 ⇒ each u16 high byte stays 0
 
-        // Tile 1 (A): 16 rows × k_bytes (capped at 64)
-        cfg.data[17] = 16;
-        cfg.data[50] = k_bytes.min(64) as u8;
+        // Tile 0 (C): 16 rows × 64 colbytes (16 × i32 per row = 64 bytes).
+        cfg.data[16] = 64; // colsb[0] low (u16 @ 16); high byte @17 stays 0
+        cfg.data[48] = 16; // rows[0]      (u8  @ 48)
 
-        // Tile 2 (B): k_bytes/4 rows × 64 bytes (transposed layout)
-        cfg.data[18] = (k_bytes.min(64) / 4) as u8;
-        cfg.data[52] = 64;
+        // Tile 1 (B, VNNI K×N → VEX.vvvv): kb/4 rows × 64 colbytes. The kernel
+        // loads the VNNI operand into tmm1, so tile 1 must carry the VNNI shape.
+        // (Was the plain 16×kb shape — equal to this only at kb=64; backwards
+        // for kb<64, which would mis-shape a tail kernel / external caller.)
+        cfg.data[18] = 64; // colsb[1] low (u16 @ 18); high byte @19 stays 0
+        cfg.data[49] = (kb / 4) as u8; // rows[1] (u8 @ 49)
 
+        // Tile 2 (A, plain M×K → ModRM.rm): 16 rows × kb colbytes.
+        cfg.data[20] = kb as u8; // colsb[2] low (u16 @ 20); high byte @21 stays 0
+        cfg.data[50] = 16; // rows[2] (u8 @ 50)
+
+        cfg
+    }
+
+    /// Configure all EIGHT tiles (tmm0-7) as 16 rows × 64 colbytes, for the 2×2
+    /// register-blocked int8 kernel: tmm0-3 = the four C accumulators, tmm4-5 =
+    /// two plain A row-blocks (rm/unsigned), tmm6-7 = two VNNI B col-blocks
+    /// (vvvv/signed). Every tile is 16×64 so one config serves all roles. Same
+    /// XTILECFG layout as [`Self::for_dpbusd`]: colsb[t] u16 @ 16+2t, rows[t]
+    /// u8 @ 48+t.
+    ///
+    /// # Examples
+    /// ```ignore
+    /// use ndarray::hpc::amx_matmul::{tile_loadconfig, tile_release, TileConfig};
+    /// // SAFETY: requires AMX (gate on `amx_available()`); all 8 tiles are 16×64.
+    /// unsafe {
+    ///     tile_loadconfig(&TileConfig::for_dpbusd_8());
+    ///     // load A→tmm4/tmm5, B-VNNI→tmm6/tmm7, zero tmm0-3, then tile_dpbusd_2x2()
+    ///     tile_release();
+    /// }
+    /// ```
+    pub fn for_dpbusd_8() -> Self {
+        let mut cfg = TileConfig { data: [0u8; 64] };
+        cfg.data[0] = 1; // palette 1
+        for t in 0..8 {
+            cfg.data[16 + 2 * t] = 64; // colsb[t] = 64 (low byte; high stays 0)
+            cfg.data[48 + t] = 16; // rows[t] = 16
+        }
         cfg
     }
 }
@@ -94,16 +144,20 @@ pub unsafe fn tile_release() {
 
 /// Load tile from memory.
 ///
-/// Encoding: `TILELOADD tmmN, [rcx + rax]` is VEX `C4 E2 7B 4B /r` with
-/// a SIB byte selecting `[rcx + rax]`. The ModR/M `/r` field encodes the
+/// Encoding: `TILELOADD tmmN, [rcx + rax]` is VEX `C4 E2 7B 4B /r` with a
+/// SIB byte selecting base = `rcx` (the data pointer) and index = `rax`
+/// (the row stride in bytes, scale 1). The ModR/M `/r` field encodes the
 /// destination tile via `reg = N` (3-bit tile index). Per-tile bytes:
 ///
-///   tmm0:  C4 E2 7B 4B **04** 08
-///   tmm1:  C4 E2 7B 4B **0C** 08
-///   tmm2:  C4 E2 7B 4B **14** 08
+///   tmm0:  C4 E2 7B 4B **04** 01
+///   tmm1:  C4 E2 7B 4B **0C** 01
+///   tmm2:  C4 E2 7B 4B **14** 01
 ///
-/// `04 | (N << 3)` gives the ModR/M byte; the `08` SIB is the same
-/// across tiles. tmm0 was added when codex flagged the accumulator-
+/// `04 | (N << 3)` gives the ModR/M byte; SIB `01` = (scale=1, index=rax,
+/// base=rcx) is the same across tiles. The previous SIB `08` had base and
+/// index swapped (base=rax, index=rcx), so the tile engine dereferenced the
+/// *stride value* (~64) as the start address and SIGSEGV'd the moment the
+/// AMX path went live. tmm0 was added when codex flagged the accumulator-
 /// preservation bug on PR #184 (`tile_zero(0)` + `tile_store(0, c)`
 /// discarded any pre-existing C values — the fix is `tile_load(0, c)`
 /// instead of `tile_zero(0)` so TDPBUSD/TDPBF16PS truly accumulate as
@@ -115,19 +169,51 @@ pub unsafe fn tile_release() {
 pub unsafe fn tile_load(tile: u8, ptr: *const u8, stride: usize) {
     match tile {
         0 => asm!(
-            ".byte 0xc4, 0xe2, 0x7b, 0x4b, 0x04, 0x08",
+            ".byte 0xc4, 0xe2, 0x7b, 0x4b, 0x04, 0x01",
             in("rcx") ptr,
             in("rax") stride,
             options(nostack),
         ),
         1 => asm!(
-            ".byte 0xc4, 0xe2, 0x7b, 0x4b, 0x0c, 0x08",
+            ".byte 0xc4, 0xe2, 0x7b, 0x4b, 0x0c, 0x01",
             in("rcx") ptr,
             in("rax") stride,
             options(nostack),
         ),
         2 => asm!(
-            ".byte 0xc4, 0xe2, 0x7b, 0x4b, 0x14, 0x08",
+            ".byte 0xc4, 0xe2, 0x7b, 0x4b, 0x14, 0x01",
+            in("rcx") ptr,
+            in("rax") stride,
+            options(nostack),
+        ),
+        // ModRM = 0x04 | (tile << 3); SIB 0x01 unchanged. tmm3-7 added for the
+        // 2×2 register-blocked kernel (4 C accumulators + 2 A + 2 B tiles).
+        3 => asm!(
+            ".byte 0xc4, 0xe2, 0x7b, 0x4b, 0x1c, 0x01",
+            in("rcx") ptr,
+            in("rax") stride,
+            options(nostack),
+        ),
+        4 => asm!(
+            ".byte 0xc4, 0xe2, 0x7b, 0x4b, 0x24, 0x01",
+            in("rcx") ptr,
+            in("rax") stride,
+            options(nostack),
+        ),
+        5 => asm!(
+            ".byte 0xc4, 0xe2, 0x7b, 0x4b, 0x2c, 0x01",
+            in("rcx") ptr,
+            in("rax") stride,
+            options(nostack),
+        ),
+        6 => asm!(
+            ".byte 0xc4, 0xe2, 0x7b, 0x4b, 0x34, 0x01",
+            in("rcx") ptr,
+            in("rax") stride,
+            options(nostack),
+        ),
+        7 => asm!(
+            ".byte 0xc4, 0xe2, 0x7b, 0x4b, 0x3c, 0x01",
             in("rcx") ptr,
             in("rax") stride,
             options(nostack),
@@ -136,16 +222,35 @@ pub unsafe fn tile_load(tile: u8, ptr: *const u8, stride: usize) {
     }
 }
 
-/// Store tile to memory.
+/// Store tile to memory. ModRM = 0x04 | (tile << 3); SIB 0x01 = base=rcx (ptr),
+/// index=rax (stride), scale=1. tmm0-3 are the four C accumulators of the 2×2
+/// register-blocked kernel.
 ///
 /// # Safety
 /// Pointer must be valid and writable, stride must match.
 #[inline]
 pub unsafe fn tile_store(tile: u8, ptr: *mut u8, stride: usize) {
     match tile {
-        // TILESTORED [ptr + stride*row], tmm0
         0 => asm!(
-            ".byte 0xc4, 0xe2, 0x7a, 0x4b, 0x04, 0x08",
+            ".byte 0xc4, 0xe2, 0x7a, 0x4b, 0x04, 0x01",
+            in("rcx") ptr,
+            in("rax") stride,
+            options(nostack),
+        ),
+        1 => asm!(
+            ".byte 0xc4, 0xe2, 0x7a, 0x4b, 0x0c, 0x01",
+            in("rcx") ptr,
+            in("rax") stride,
+            options(nostack),
+        ),
+        2 => asm!(
+            ".byte 0xc4, 0xe2, 0x7a, 0x4b, 0x14, 0x01",
+            in("rcx") ptr,
+            in("rax") stride,
+            options(nostack),
+        ),
+        3 => asm!(
+            ".byte 0xc4, 0xe2, 0x7a, 0x4b, 0x1c, 0x01",
             in("rcx") ptr,
             in("rax") stride,
             options(nostack),
@@ -154,18 +259,78 @@ pub unsafe fn tile_store(tile: u8, ptr: *mut u8, stride: usize) {
     }
 }
 
-/// TDPBUSD: C += A(u8) × B(i8) → i32.
-/// tmm0 += tmm1 × tmm2.
+/// TDPBUSD: C(i32, tmm0) += unsigned ⊗ signed → i32. 16×16 output, 64 products
+/// per element = 16384 MACs in ONE instruction.
 ///
-/// 16×16 output, 64 products per element = 16384 MACs in ONE instruction.
+/// **Empirical operand convention** (measured on Emerald Rapids — the naive
+/// SDM reading is mirrored on BOTH axes, so do not infer roles from the
+/// mnemonic):
+///   * INDEX: `dst[m][n] = Σ_k tmm2(ModRM.rm)[m][k] · tmm1(VEX.vvvv)[k][n]`.
+///     The plain **M×K** operand goes in **tmm2**; the VNNI-packed **K×N**
+///     operand goes in **tmm1** (the opposite of what the SDM operand order
+///     suggests).
+///   * SIGN: **tmm2 (rm) is the UNSIGNED operand, tmm1 (vvvv) is SIGNED.**
+///     Verified by sweeping all four `TDPB**D` opcodes against sign-sensitive
+///     constant inputs — only `0x71` gives rm=unsigned, vvvv=signed.
+///
+/// So `int8_tile_gemm::amx_path` loads `A(u8) → tmm2` and `B_vnni(i8) → tmm1`.
+///
+/// Encoding: VEX.128.66.0F38.W0 5E /r. byte2 `0x71` = W0.vvvv=1110(tmm1).L0.
+/// pp=01(66); ModRM `0xC2` = mod=11, reg=000 (tmm0 dst), rm=010 (tmm2). The
+/// three tile operands MUST be distinct (tmm0/tmm1/tmm2 are). Two earlier
+/// bugs in this file: byte2 `0x73` (F2 = signed×signed, wrong sign variant)
+/// and ModRM `0xC1` (rm=tmm1, aliasing the two sources → same-tile #UD, the
+/// first SIGILL the live AMX path hit).
 ///
 /// # Safety
-/// Tiles must be loaded with valid data.
+/// Tiles must be loaded with valid data and AMX OS-enabled (`amx_available()`).
 #[inline]
 pub unsafe fn tile_dpbusd() {
-    // TDPBUSD tmm0, tmm1, tmm2
-    // VEX.128.F2.0F38.W0 5E C8+reg
-    asm!(".byte 0xc4, 0xe2, 0x73, 0x5e, 0xc1", options(nostack, nomem));
+    asm!(".byte 0xc4, 0xe2, 0x71, 0x5e, 0xc2", options(nostack, nomem));
+}
+
+/// 2×2 register-blocked TDPBUSD — four accumulations in one call:
+/// ```text
+///   C00(tmm0) += A0(tmm4) ⊗ B0(tmm6)    C01(tmm1) += A0(tmm4) ⊗ B1(tmm7)
+///   C10(tmm2) += A1(tmm5) ⊗ B0(tmm6)    C11(tmm3) += A1(tmm5) ⊗ B1(tmm7)
+/// ```
+/// Same operand convention as [`tile_dpbusd`]: the plain M×K operand is rm
+/// (A, unsigned), the VNNI K×N operand is vvvv (B, signed). Reusing the two A
+/// and two B tile loads across four products halves the load bytes per MAC —
+/// the lever for this memory-bandwidth-bound kernel.
+///
+/// Encodings (VEX `C4 E2 <byte2> 5E <modrm>`, byte2 = ((~vvvv & 0xF)<<3)|0x01,
+/// modrm = 0xC0 | dst<<3 | rm):
+///   C00 dst0 rm4 vvvv6 → C4 E2 49 5E C4   C01 dst1 rm4 vvvv7 → C4 E2 41 5E CC
+///   C10 dst2 rm5 vvvv6 → C4 E2 49 5E D5   C11 dst3 rm5 vvvv7 → C4 E2 41 5E DD
+/// All eight operand tiles (0/1/2/3 dst, 4/5 A, 6/7 B) are distinct → no #UD.
+///
+/// # Examples
+/// ```ignore
+/// use ndarray::hpc::amx_matmul::*;
+/// // SAFETY: requires AMX; full 32×32 register-blocked tile contract.
+/// unsafe {
+///     tile_loadconfig(&TileConfig::for_dpbusd_8());
+///     tile_zero(0); tile_zero(1); tile_zero(2); tile_zero(3); // C accumulators
+///     tile_load(4, a0_ptr, k); tile_load(5, a1_ptr, k);       // A rows (rm)
+///     tile_load(6, b0_vnni, 64); tile_load(7, b1_vnni, 64);   // B cols (vvvv)
+///     tile_dpbusd_2x2();                                       // 4 TDPBUSDs
+///     tile_store(0, c00, n * 4); /* … tmm1/2/3 → other quadrants … */
+///     tile_release();
+/// }
+/// ```
+///
+/// # Safety
+/// Tiles 0-7 configured (`TileConfig::for_dpbusd_8`) and 4/5/6/7 loaded.
+#[inline]
+pub unsafe fn tile_dpbusd_2x2() {
+    asm!(
+        ".byte 0xc4, 0xe2, 0x49, 0x5e, 0xc4", // C00 = A0·B0
+        ".byte 0xc4, 0xe2, 0x41, 0x5e, 0xcc", // C01 = A0·B1
+        ".byte 0xc4, 0xe2, 0x49, 0x5e, 0xd5", // C10 = A1·B0
+        ".byte 0xc4, 0xe2, 0x41, 0x5e, 0xdd", // C11 = A1·B1
+        options(nostack, nomem)
+    );
 }
 
 /// TDPBF16PS: C += A(bf16) × B(bf16_vnni) → f32.
@@ -174,9 +339,13 @@ pub unsafe fn tile_dpbusd() {
 /// 16×16 output accumulator (f32), 32 bf16 values per A row × 32 bf16 values
 /// per B row in VNNI layout = 512 mul-adds in one instruction.
 ///
-/// Encoding (analogous to TDPBUSD, pp field flips F2→F3, opcode 5E→5C):
-///   TDPBUSD  tmm0, tmm1, tmm2 → C4 E2 73 5E C1
-///   TDPBF16PS tmm0, tmm1, tmm2 → C4 E2 72 5C C1
+/// Encoding (analogous to TDPBUSD: opcode 5E→5C, pp 66→F3):
+///   TDPBUSD   tmm0, tmm1, tmm2 → C4 E2 71 5E C2
+///   TDPBF16PS tmm0, tmm1, tmm2 → C4 E2 72 5C C2
+/// ModRM 0xC2 = mod=11, reg=000 (tmm0 dst), rm=010 (tmm2 src2); VEX.vvvv =
+/// tmm1 (src1). The three tile operands MUST be distinct — the prior ModRM
+/// 0xC1 set rm=tmm1, making src1==src2 → same-tile #UD (SIGILL) once the AMX
+/// path actually executed.
 ///
 /// Tile shapes at K=32, M=N=16 (identical to TDPBUSD max at K_bytes=64):
 ///   tmm0 (C): 16×16 f32   (16 rows × 64 bytes)
@@ -188,7 +357,7 @@ pub unsafe fn tile_dpbusd() {
 /// and loaded with valid data; AMX must be OS-enabled (check `amx_available()`).
 #[inline]
 pub unsafe fn tile_dpbf16ps() {
-    asm!(".byte 0xc4, 0xe2, 0x72, 0x5c, 0xc1", options(nostack, nomem));
+    asm!(".byte 0xc4, 0xe2, 0x72, 0x5c, 0xc2", options(nostack, nomem));
 }
 
 /// Pack B[K, N] bf16 row-major into K/2 × (N*2) VNNI pairs (in-place target).
@@ -684,9 +853,15 @@ mod tests {
     #[test]
     fn test_tile_config_creation() {
         let cfg = TileConfig::for_dpbusd(64);
-        assert_eq!(cfg.data[0], 1); // palette
-        assert_eq!(cfg.data[16], 16); // tile 0 rows
-        assert_eq!(cfg.data[48], 64); // tile 0 colbytes
+        assert_eq!(cfg.data[0], 1, "palette 1");
+        // Intel SDM XTILECFG: colsb[t] is u16 @ 16+2t, rows[t] is u8 @ 48+t.
+        // All three tiles are 16 rows × 64 colbytes at k_bytes = 64.
+        assert_eq!(u16::from_le_bytes([cfg.data[16], cfg.data[17]]), 64, "tile0 colsb");
+        assert_eq!(cfg.data[48], 16, "tile0 rows");
+        assert_eq!(u16::from_le_bytes([cfg.data[18], cfg.data[19]]), 64, "tile1 colsb");
+        assert_eq!(cfg.data[49], 16, "tile1 rows");
+        assert_eq!(u16::from_le_bytes([cfg.data[20], cfg.data[21]]), 64, "tile2 colsb");
+        assert_eq!(cfg.data[50], 16, "tile2 rows (k_bytes/4)");
     }
 
     #[test]
@@ -696,11 +871,14 @@ mod tests {
             return;
         }
         unsafe {
-            // Minimal config: just tile 0, 1 row × 4 bytes
+            // Minimal valid tile 0: 1 row × 4 colbytes, using the CORRECTED
+            // XTILECFG offsets (colsb[t] u16 @ 16+2t, rows[t] u8 @ 48+t). The
+            // old code wrote data[16]=1/data[48]=4 which under the fixed layout
+            // means colsb=1/rows=4 — still valid, but mislabeled; now explicit.
             let mut cfg = TileConfig { data: [0u8; 64] };
             cfg.data[0] = 1; // palette 1
-            cfg.data[16] = 1; // tile 0: 1 row
-            cfg.data[48] = 4; // tile 0: 4 colbytes
+            cfg.data[16] = 4; // colsb[0] = 4 bytes  (u16 @ 16)
+            cfg.data[48] = 1; // rows[0]  = 1 row    (u8  @ 48)
 
             tile_loadconfig(&cfg);
             // TILEZERO tmm0

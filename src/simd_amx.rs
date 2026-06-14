@@ -1,51 +1,148 @@
-//! AMX (Advanced Matrix Extensions) — confirmed working via inline asm on stable Rust 1.94.
+//! AMX (Advanced Matrix Extensions) — tile matrix multiply on stable Rust 1.94
+//! via inline `asm!` byte-encodings (the `_tile_*` intrinsics are nightly-only,
+//! rust-lang/rust#126622).
 //!
-//! AMX provides hardware tile matrix multiplication:
-//!   TDPBUSD: 16×16 tile of u8×i8 → i32 = 256 MACs per instruction
-//!   TDPBF16PS: 16×16 tile of BF16×BF16 → f32
+//!   TDPBUSD   : 16×16 × K=64 tile, u8×i8 → i32 = 16 384 MACs / instruction
+//!   TDPBF16PS : 16×16 × K=32 tile, bf16×bf16 → f32
 //!
-//! Status: HARDWARE CONFIRMED + OS ENABLED + INLINE ASM TESTED
-//!   AMX-TILE: ✓  (LDTILECFG, TILEZERO, TILERELEASE all work)
-//!   AMX-INT8: ✓  (TDPBUSD available)
-//!   AMX-BF16: ✓  (TDPBF16PS available)
-//!   Kernel:   6.18.5 (XCR0 bits 17+18 set)
+//! Status (2026-06-14, VERIFIED BY EXECUTION on Emerald Rapids, kernel 6.18.5):
+//! detection + every tile op + both GEMM kernels run and are correctness-checked
+//! by `examples/amx_probe` (int8 bit-exact, bf16 within tolerance). int8 GEMM
+//! 2048³ = 169.7 GMAC/s, 600× scalar, single thread.
 //!
-//! Rust intrinsics: NIGHTLY ONLY (issue #126622)
-//! Inline asm:      STABLE (works on Rust 1.94, tested)
+//! ⚠ HISTORY — this header used to claim "INLINE ASM TESTED ✓ all work". It was
+//! NOT. Every AMX test early-returns `if !amx_available() { return; }`, and
+//! detection returned false on every host (the arch_prctl syscall-number bug),
+//! so the tile asm had never executed. That hid FIVE bugs: arch_prctl 157→158;
+//! TILECFG rows/colsb swapped; TILELOADD/TILESTORED SIB base/index swapped;
+//! TDPBUSD/TDPBF16PS ModRM same-tile #UD; and the mirrored operand index/sign
+//! convention. All fixed + documented 2026-06-14. Lesson: a test behind an
+//! `amx_available()` guard that is false is a SKIPPED test, not a passing one.
 //!
-//! Inline asm encoding (verified working):
-//!   LDTILECFG:   asm!("ldtilecfg [{}]", in(reg) ptr, options(nostack))
-//!   TILEZERO t0: asm!(".byte 0xc4, 0xe2, 0x7b, 0x49, 0xc0", options(nostack, nomem))
-//!   TILERELEASE: asm!(".byte 0xc4, 0xe2, 0x78, 0x49, 0xc0", options(nostack, nomem))
+//! Canonical reference: `.claude/knowledge/amx-enablement-and-kernel.md`
+//! Troubleshooting playbook: `.claude/AMX_GOTCHAS.md`   Agent: `amx-savant`
 //!
-//! ThinkingEngine tiers:
-//!   AMX:    256 MACs/instr  ~44 μs/cycle   (via inline asm, stable)
-//!   VNNI:    64 MACs/instr  ~175 μs/cycle  (stable intrinsics)
-//!   F32x16:  16 MACs/instr  ~400 μs/cycle  (stable)
-//!   F64x8:    8 MACs/instr  ~700 μs/cycle  (stable)
-//!
-//! Codebook distance table build: AMX reduces 24-48h → ~1:20h.
+//! Dispatch tiers (MACs/instruction): AMX 16 384 → avx512vnni 64 →
+//! avxvnniint8 32 → scalar 1.
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Detection (stable — just CPUID, no AMX instructions)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Check if AMX hardware is present AND OS-enabled.
+/// Intel server CPU generation, detected from CPUID.01H model bits. Lets a run
+/// report which silicon it landed on and reason about AMX: SPR / EMR / GNR
+/// expose AMX-TILE; Sierra Forest (E-core) does NOT.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CpuModel {
+    /// Sapphire Rapids — family 6, model 0x8F. AMX-TILE / INT8 / BF16.
+    SapphireRapids,
+    /// Emerald Rapids — family 6, model 0xCF. AMX-TILE / INT8 / BF16.
+    EmeraldRapids,
+    /// Granite Rapids — family 6, model 0xAD / 0xAE. AMX + AMX-FP16.
+    GraniteRapids,
+    /// Sierra Forest — family 6, model 0xAF. E-core, NO AMX.
+    SierraForest,
+    /// Any other x86_64 (older Intel, AMD, CPUID-masked hypervisor, …).
+    OtherX86,
+    /// Non-x86_64 build.
+    NonX86,
+}
+
+impl CpuModel {
+    /// Whether this generation is expected to expose AMX-TILE. A `true` here
+    /// while [`amx_available`] is `false` points at OS / hypervisor enablement
+    /// (XCR0 / arch_prctl), NOT the silicon — see `.claude/AMX_GOTCHAS.md`.
+    pub fn has_amx(self) -> bool {
+        matches!(self, CpuModel::SapphireRapids | CpuModel::EmeraldRapids | CpuModel::GraniteRapids)
+    }
+
+    /// Short human label for reports / logs.
+    pub fn label(self) -> &'static str {
+        match self {
+            CpuModel::SapphireRapids => "Sapphire Rapids",
+            CpuModel::EmeraldRapids => "Emerald Rapids",
+            CpuModel::GraniteRapids => "Granite Rapids",
+            CpuModel::SierraForest => "Sierra Forest (no AMX)",
+            CpuModel::OtherX86 => "other x86_64",
+            CpuModel::NonX86 => "non-x86_64",
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn detect_cpu_model() -> CpuModel {
+    // Only classify GenuineIntel by model number — AMD reuses the family/model
+    // space differently. Vendor string is CPUID.0 EBX/EDX/ECX = "GenuineIntel".
+    let v0 = core::arch::x86_64::__cpuid(0);
+    let is_intel = v0.ebx == 0x756e_6547 && v0.edx == 0x4965_6e69 && v0.ecx == 0x6c65_746e;
+    if !is_intel {
+        return CpuModel::OtherX86;
+    }
+    let eax = core::arch::x86_64::__cpuid(1).eax;
+    let base_family = (eax >> 8) & 0xf;
+    let base_model = (eax >> 4) & 0xf;
+    let ext_model = (eax >> 16) & 0xf;
+    // Intel display-model rule: ext_model is folded in for family 0x6 and 0xF.
+    let model = if base_family == 0x6 || base_family == 0xf {
+        (ext_model << 4) | base_model
+    } else {
+        base_model
+    };
+    match (base_family, model) {
+        (0x6, 0x8f) => CpuModel::SapphireRapids,
+        (0x6, 0xcf) => CpuModel::EmeraldRapids,
+        (0x6, 0xad) | (0x6, 0xae) => CpuModel::GraniteRapids,
+        (0x6, 0xaf) => CpuModel::SierraForest,
+        _ => CpuModel::OtherX86,
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+static CPU_MODEL: std::sync::LazyLock<CpuModel> = std::sync::LazyLock::new(detect_cpu_model);
+
+/// The detected Intel CPU generation, cached. `CpuModel::NonX86` off x86_64.
+#[cfg(target_arch = "x86_64")]
+pub fn cpu_model() -> CpuModel {
+    *CPU_MODEL
+}
+
+/// The detected Intel CPU generation (always `NonX86` on this target).
+#[cfg(not(target_arch = "x86_64"))]
+pub fn cpu_model() -> CpuModel {
+    CpuModel::NonX86
+}
+
+/// AMX availability, computed ONCE and cached. The four detection gates are all
+/// non-blocking — CPUID, XGETBV, and one idempotent `arch_prctl`: no I/O, no
+/// lock contention, no spin — so the `LazyLock` init cannot stall, and every
+/// later call is a plain cached load. The `arch_prctl` permission request is
+/// process-wide and inherited by all threads (present and future), so issuing
+/// it exactly once here is correct even under a multi-threaded (rayon) consumer.
+#[cfg(target_arch = "x86_64")]
+static AMX_AVAILABLE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(detect_amx);
+
+/// Check if AMX is present, OS-enabled, AND this process holds XTILEDATA
+/// permission. Cached after the first call (see the `AMX_AVAILABLE` static).
 ///
-/// Two checks required:
-///   1. CPUID.07H.0H:EDX bits 24 (AMX-TILE) + 25 (AMX-INT8) = CPU supports it
-///   2. XCR0 bits 17 (TILECFG) + 18 (TILEDATA) = OS has enabled tile state
-///
-/// The XCR0 check is critical: even if CPUID reports AMX, the hypervisor
-/// may not have enabled the XSTATE for tiles. Without OS enablement,
-/// LDTILECFG will SIGILL.
-///
-/// Previous bug: used CPUID leaf 0xD (reports what CPU supports for XSAVE)
-/// instead of _xgetbv(0) (reports what OS actually enabled). The old check
-/// could return true on a hypervisor that advertises AMX in CPUID but
-/// hasn't set XCR0 bits 17+18.
+/// Four gates, in order — any miss ⇒ `false`:
+///   1. CPUID.07H.0H:EDX bits 24 (AMX-TILE) + 25 (AMX-INT8): silicon supports it.
+///   2. CPUID.01H:ECX bit 27 (OSXSAVE): OS turned on XSAVE.
+///   3. XGETBV(0) bits 17 (TILECFG) + 18 (TILEDATA): OS enabled tile XSTATE.
+///      Read the *live* XCR0, NOT CPUID leaf 0xD — leaf 0xD reports what the CPU
+///      *could* support, and a hypervisor may advertise AMX yet leave XCR0 clear.
+///   4. arch_prctl(ARCH_REQ_XCOMP_PERM, XTILEDATA): this process requests the
+///      dynamically-enabled tile feature (Linux 5.16+). Without it the first
+///      tile op faults (XFD #NM). 0x1023 is an *arch_prctl* op (syscall 158),
+///      NOT prctl (157) — that one-digit mix-up returns -EINVAL and silently
+///      disabled AMX on every capable host.
 #[cfg(target_arch = "x86_64")]
 pub fn amx_available() -> bool {
+    *AMX_AVAILABLE
+}
+
+/// The actual four-gate detection, run once behind the `AMX_AVAILABLE` static.
+#[cfg(target_arch = "x86_64")]
+fn detect_amx() -> bool {
     // Step 1: CPU supports AMX-TILE + AMX-INT8?
     let cpuid = core::arch::x86_64::__cpuid_count(7, 0);
     let amx_tile = (cpuid.edx >> 24) & 1;
@@ -73,24 +170,29 @@ pub fn amx_available() -> bool {
     }
 
     // Step 4: Request XCOMP_PERM for TILEDATA.
-    // Linux kernel 5.19+: processes must call prctl(ARCH_REQ_XCOMP_PERM, 18)
-    // to request permission for TILEDATA (XFEATURE 18) before using AMX.
-    // Without this, LDTILECFG will SIGILL even if XCR0 bits are set.
-    // The prctl either succeeds (0) or fails (-1) — idempotent, safe to call
-    // multiple times.
+    // Linux kernel 5.16+: processes must call arch_prctl(ARCH_REQ_XCOMP_PERM,
+    // 18) to request permission for TILEDATA (XFEATURE 18) before using AMX.
+    // Without this, the first AMX tile op faults (XFD #NM → SIGILL) even when
+    // XCR0 bits are set. The request either succeeds (0) or fails (-errno) —
+    // idempotent, safe to call multiple times.
+    //
+    // IMPORTANT: ARCH_REQ_XCOMP_PERM (0x1023) is an *arch_prctl* operation
+    // (syscall 158), NOT regular prctl (157). Issuing it on syscall 157 makes
+    // the kernel reject option 0x1023 with -EINVAL, which silently disabled
+    // AMX on EVERY capable host (steps 1-3 pass, step 4 always failed).
     #[cfg(target_os = "linux")]
     {
-        const SYS_PRCTL: i64 = 157; // x86_64 syscall number for prctl
+        const SYS_ARCH_PRCTL: i64 = 158; // x86_64 syscall number for arch_prctl
         const ARCH_REQ_XCOMP_PERM: i64 = 0x1023;
         const XFEATURE_XTILEDATA: i64 = 18;
-        // SAFETY: syscall(prctl, ARCH_REQ_XCOMP_PERM, 18) is a simple permission
-        // request. It either grants tile permission (returns 0) or fails (returns
-        // -errno). No side effects on failure. Idempotent.
+        // SAFETY: arch_prctl(ARCH_REQ_XCOMP_PERM, 18) is a simple permission
+        // request. It either grants tile permission (returns 0) or fails
+        // (returns -errno). No side effects on failure. Idempotent.
         let ret: i64;
         unsafe {
             core::arch::asm!(
                 "syscall",
-                inlateout("rax") SYS_PRCTL => ret,
+                inlateout("rax") SYS_ARCH_PRCTL => ret,
                 in("rdi") ARCH_REQ_XCOMP_PERM,
                 in("rsi") XFEATURE_XTILEDATA,
                 in("rdx") 0i64,
@@ -114,7 +216,9 @@ pub fn amx_available() -> bool {
     false
 }
 
-/// AMX capability report.
+/// AMX capability report: detected CPU model + CPUID feature bits + the cached
+/// `amx_available()` verdict. If `model.has_amx()` is true but `available` is
+/// false, the gap is OS / hypervisor enablement (XCR0 / arch_prctl), not silicon.
 pub fn amx_report() -> String {
     #[cfg(target_arch = "x86_64")]
     {
@@ -122,11 +226,20 @@ pub fn amx_report() -> String {
         let tile = (cpuid.edx >> 24) & 1 == 1;
         let int8 = (cpuid.edx >> 25) & 1 == 1;
         let bf16 = (cpuid.edx >> 22) & 1 == 1;
-        format!("AMX: TILE={} INT8={} BF16={} available={}", tile, int8, bf16, amx_available())
+        let model = cpu_model();
+        format!(
+            "AMX [{} expects_amx={}]: TILE={} INT8={} BF16={} available={}",
+            model.label(),
+            model.has_amx(),
+            tile,
+            int8,
+            bf16,
+            amx_available()
+        )
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
-        "AMX: not x86_64".to_string()
+        format!("AMX [{}]: not x86_64", cpu_model().label())
     }
 }
 

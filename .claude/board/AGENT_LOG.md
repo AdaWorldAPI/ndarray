@@ -27,6 +27,35 @@
 
 ## Entries (append below; newest first)
 
+### 2026-06-14 — amx-savant (Opus, main thread) — AMX enabled + made bug-free + documented
+- **Branch:** `claude/wonderful-hawking-lodtql`. **Commits:** e6bb26a (enablement
+  + 4 kernel bugs), 777eff7 (perf 11.5×), 9dd6519 (bf16 probe), + this doc/
+  detection commit.
+- **What ran:** `examples/amx_probe` (instruction bisector + correctness across
+  shapes — int8 bit-exact, bf16 rel-err ~0.004) and `examples/amx_gemm_bench`
+  (throughput + independent `correct=` check). Lib unit-test target is
+  pre-broken (`src/tri.rs` type-inference, unrelated), so examples are the gate.
+- **Findings:** AMX was dark on EVERY capable host via a 1-digit bug —
+  `ARCH_REQ_XCOMP_PERM` issued on `prctl` (157) instead of `arch_prctl` (158).
+  Once enabled, 4 more ISA/encoding bugs surfaced (TILECFG rows/colsb swap;
+  TILELOADD SIB base/index swap; TDPBUSD ModRM same-tile #UD; mirrored
+  operand index+sign convention — verified by a 4-opcode sign sweep). SPR vs
+  EMR is NOT the cause: the bugs are ISA-level and were latent on Sapphire
+  Rapids too (the SPR-era `AMX_GOTCHAS.md` literally shipped 3 of them); they
+  never fired because detection never returned true. EMR was just the first
+  host to actually execute the tile path.
+- **Added:** cached `LazyLock` detection + `CpuModel` (SPR/EMR/GNR/Sierra
+  Forest) in `src/simd_amx.rs`, re-exported via `ndarray::simd::{cpu_model,
+  CpuModel, amx_report}`; `examples/amx_probe.rs` (validator/bisector);
+  `.claude/knowledge/amx-enablement-and-kernel.md` (canonical ref);
+  `.claude/agents/amx-savant.md` (this agent); rewrote `.claude/AMX_GOTCHAS.md`
+  (corrected the 3 bugs it shipped, added the fault-signature playbook).
+- **Outcome:** int8 GEMM 2048³ = 169.7 GMAC/s (339 GOP/s), 600× scalar; bf16
+  path correct. `amx_report()` → "AMX [Emerald Rapids expects_amx=true]:
+  TILE=true INT8=true BF16=true available=true".
+- **Loose ends:** further AMX perf (2×2 register blocking + rayon); blasgraph
+  Hamming dedup in lance-graph (blocked on missing `protoc`).
+
 
 ## 2026-05-22T18:00 — PR-X12 cross-stack architecture session (opus 4.7)
 

@@ -1549,7 +1549,224 @@ avx2_int_type!(U64x8, u64, 8, 0u64);
 // pattern (`[$elem; $lanes]` storage, align 64). Native AVX2 `__m256i`
 // upgrades for these are TD-SIMD-3 (the same fold-into-real-SIMD task
 // already tracked for the 512-bit polyfills above).
-avx2_int_type!(U16x16, u16, 16, 0u16);
+// ── U16x16 — native AVX2 `__m256i` (16 × u16) ───────────────────────────────
+// TD-T22 / TD-SIMD-3 lowering: previously `avx2_int_type!(U16x16, ...)` — a
+// scalar `[u16; 16]` polyfill. Now a real `__m256i` wrapper so the PQ4-ADC
+// FastScan u16 accumulate (turbovec's AVX2 search kernel) runs on hardware.
+// Method set mirrors the native `U16x32` in `simd_avx512.rs:1200`, narrowed to
+// 256-bit `_mm256_*_epi16`. A 256-bit register is valid on both AVX2 and
+// AVX-512 hosts, so both `simd.rs` dispatch arms re-export this one native type
+// (replacing the scalar polyfill that the v4 arm pulled via `simd_avx512`).
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct U16x16(pub __m256i);
+
+impl U16x16 {
+    pub const LANES: usize = 16;
+
+    #[inline(always)]
+    pub fn splat(v: u16) -> Self {
+        Self(unsafe { _mm256_set1_epi16(v as i16) })
+    }
+
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self(unsafe { _mm256_setzero_si256() })
+    }
+
+    #[inline(always)]
+    pub fn from_slice(s: &[u16]) -> Self {
+        assert!(s.len() >= 16);
+        // SAFETY: 16 × u16 = 32 bytes = one __m256i. Unaligned load.
+        Self(unsafe { _mm256_loadu_si256(s.as_ptr() as *const __m256i) })
+    }
+
+    #[inline(always)]
+    pub fn from_array(arr: [u16; 16]) -> Self {
+        Self(unsafe { _mm256_loadu_si256(arr.as_ptr() as *const __m256i) })
+    }
+
+    #[inline(always)]
+    pub fn to_array(self) -> [u16; 16] {
+        let mut arr = [0u16; 16];
+        // SAFETY: store 32 bytes into 16 × u16.
+        unsafe { _mm256_storeu_si256(arr.as_mut_ptr() as *mut __m256i, self.0) };
+        arr
+    }
+
+    #[inline(always)]
+    pub fn copy_to_slice(self, s: &mut [u16]) {
+        assert!(s.len() >= 16);
+        unsafe { _mm256_storeu_si256(s.as_mut_ptr() as *mut __m256i, self.0) };
+    }
+
+    /// Logical right shift each 16-bit lane by `imm` (matches `U16x32::shr`).
+    #[inline(always)]
+    pub fn shr(self, imm: u32) -> Self {
+        // SAFETY: AVX2 baseline; `_mm256_srl_epi16` takes a runtime lane count
+        // from the low 64 bits of an xmm, so every shift amount works (the
+        // earlier `match {1,2,4,8}` returned zero for all other amounts).
+        Self(unsafe { _mm256_srl_epi16(self.0, _mm_cvtsi32_si128(imm as i32)) })
+    }
+
+    /// Logical left shift each 16-bit lane by `imm` (matches `U16x32::shl`).
+    #[inline(always)]
+    pub fn shl(self, imm: u32) -> Self {
+        // SAFETY: AVX2 baseline; `_mm256_sll_epi16` takes a runtime lane count
+        // (same fix as `shr` — the `match {1,2,4,8}` zeroed all other amounts).
+        Self(unsafe { _mm256_sll_epi16(self.0, _mm_cvtsi32_si128(imm as i32)) })
+    }
+
+    /// Multiply, keep low 16 bits (wrapping) — `_mm256_mullo_epi16`.
+    #[inline(always)]
+    pub fn mullo(self, other: Self) -> Self {
+        Self(unsafe { _mm256_mullo_epi16(self.0, other.0) })
+    }
+
+    /// Horizontal sum of all 16 lanes (widened to u32, no wrap).
+    #[inline(always)]
+    pub fn reduce_sum(self) -> u32 {
+        self.to_array().iter().map(|&v| v as u32).sum()
+    }
+
+    // ── FastScan flush-epilogue helpers (PQ4-ADC u16→f32 cross-lane combine) ──
+
+    /// Cross-128-bit-lane permute (`_mm256_permute2x128_si256`). `IMM` selects
+    /// which 128-bit halves of `self`/`other` land in each output half. Used
+    /// (with `IMM=0x21`) by the FastScan SUB-trick to bring the two blocks'
+    /// partial sums into add-alignment.
+    #[inline(always)]
+    pub fn permute2x128<const IMM: i32>(self, other: Self) -> Self {
+        // SAFETY: AVX2 baseline.
+        Self(unsafe { _mm256_permute2x128_si256::<IMM>(self.0, other.0) })
+    }
+
+    /// Blend 32-bit dwords from `self`/`other` per the `IMM` mask
+    /// (`_mm256_blend_epi32`). Companion to `permute2x128` in the FastScan
+    /// lane combine (with `IMM=0xF0`).
+    #[inline(always)]
+    pub fn blend_epi32<const IMM: i32>(self, other: Self) -> Self {
+        // SAFETY: AVX2 baseline.
+        Self(unsafe { _mm256_blend_epi32::<IMM>(self.0, other.0) })
+    }
+
+    /// Zero-extend the low 8 × u16 lanes to f32 (`_mm256_cvtepu16_epi32` then
+    /// `_mm256_cvtepi32_ps`). The PQ4-ADC accumulators are ≤ `FLUSH_EVERY·127`
+    /// so they fit exactly in f32; this is the lossless u16→f32 step before the
+    /// per-query `scale·partial` FMA.
+    #[inline(always)]
+    pub fn to_f32x8_lo(self) -> crate::simd_avx512::F32x8 {
+        // SAFETY: AVX2 baseline.
+        crate::simd_avx512::F32x8(unsafe { _mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(_mm256_castsi256_si128(self.0))) })
+    }
+
+    /// Zero-extend the high 8 × u16 lanes to f32 (sibling of `to_f32x8_lo`).
+    #[inline(always)]
+    pub fn to_f32x8_hi(self) -> crate::simd_avx512::F32x8 {
+        // SAFETY: AVX2 baseline.
+        crate::simd_avx512::F32x8(unsafe {
+            _mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(_mm256_extracti128_si256::<1>(self.0)))
+        })
+    }
+}
+
+impl Default for U16x16 {
+    #[inline(always)]
+    fn default() -> Self {
+        Self::zero()
+    }
+}
+
+impl Add for U16x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn add(self, rhs: Self) -> Self {
+        Self(unsafe { _mm256_add_epi16(self.0, rhs.0) })
+    }
+}
+impl Sub for U16x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn sub(self, rhs: Self) -> Self {
+        Self(unsafe { _mm256_sub_epi16(self.0, rhs.0) })
+    }
+}
+impl Mul for U16x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn mul(self, rhs: Self) -> Self {
+        Self(unsafe { _mm256_mullo_epi16(self.0, rhs.0) })
+    }
+}
+impl AddAssign for U16x16 {
+    #[inline(always)]
+    fn add_assign(&mut self, rhs: Self) {
+        self.0 = unsafe { _mm256_add_epi16(self.0, rhs.0) };
+    }
+}
+impl SubAssign for U16x16 {
+    #[inline(always)]
+    fn sub_assign(&mut self, rhs: Self) {
+        self.0 = unsafe { _mm256_sub_epi16(self.0, rhs.0) };
+    }
+}
+impl BitAnd for U16x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitand(self, rhs: Self) -> Self {
+        Self(unsafe { _mm256_and_si256(self.0, rhs.0) })
+    }
+}
+impl BitOr for U16x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitor(self, rhs: Self) -> Self {
+        Self(unsafe { _mm256_or_si256(self.0, rhs.0) })
+    }
+}
+impl BitXor for U16x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitxor(self, rhs: Self) -> Self {
+        Self(unsafe { _mm256_xor_si256(self.0, rhs.0) })
+    }
+}
+impl BitAndAssign for U16x16 {
+    #[inline(always)]
+    fn bitand_assign(&mut self, rhs: Self) {
+        self.0 = unsafe { _mm256_and_si256(self.0, rhs.0) };
+    }
+}
+impl BitOrAssign for U16x16 {
+    #[inline(always)]
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 = unsafe { _mm256_or_si256(self.0, rhs.0) };
+    }
+}
+impl BitXorAssign for U16x16 {
+    #[inline(always)]
+    fn bitxor_assign(&mut self, rhs: Self) {
+        self.0 = unsafe { _mm256_xor_si256(self.0, rhs.0) };
+    }
+}
+impl Not for U16x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn not(self) -> Self {
+        Self(unsafe { _mm256_xor_si256(self.0, _mm256_set1_epi16(-1)) })
+    }
+}
+impl fmt::Debug for U16x16 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "U16x16({:?})", self.to_array())
+    }
+}
+impl PartialEq for U16x16 {
+    fn eq(&self, other: &Self) -> bool {
+        self.to_array() == other.to_array()
+    }
+}
+
 avx2_int_type!(U32x8, u32, 8, 0u32);
 avx2_int_type!(U64x4, u64, 4, 0u64);
 avx2_int_type!(I32x8, i32, 8, 0i32);
@@ -1877,6 +2094,20 @@ impl U8x32 {
         Self(unsafe { _mm256_loadu_si256(s.as_ptr() as *const __m256i) })
     }
 
+    /// Unaligned load 32 bytes from a raw pointer — NO bounds check. The
+    /// zero-overhead hot-loop load: `from_slice`'s `assert!` plus the caller's
+    /// slice-index bounds check both vanish, which in a tight scan (one load per
+    /// code/LUT group — e.g. a 4-bit-PQ ADC FastScan inner loop) is a measurable
+    /// tax vs a bare `_mm256_loadu_si256`. Use only where the index is already
+    /// proven in range.
+    ///
+    /// # Safety
+    /// `ptr` must point to at least 32 readable bytes.
+    #[inline(always)]
+    pub unsafe fn from_ptr(ptr: *const u8) -> Self {
+        Self(_mm256_loadu_si256(ptr as *const __m256i))
+    }
+
     /// Load 32 bytes from a fixed-size array.
     #[inline(always)]
     pub fn from_array(arr: [u8; 32]) -> Self {
@@ -2103,6 +2334,15 @@ impl U8x32 {
         Self::from_array([
             0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4, 0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
         ])
+    }
+
+    /// Reinterpret the 32 bytes as 16 × u16 (zero-cost bitcast — same `__m256i`).
+    /// The PQ4-ADC FastScan accumulates `shuffle_bytes` LUT results (u8 lanes,
+    /// each ≤ 127) into a `U16x16` accumulator via `_mm256_add_epi16`; this is
+    /// the bridge from the gather result to the 16-bit accumulator.
+    #[inline(always)]
+    pub fn as_u16x16(self) -> U16x16 {
+        U16x16(self.0)
     }
 }
 

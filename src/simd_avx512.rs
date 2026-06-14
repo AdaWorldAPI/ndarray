@@ -1344,6 +1344,49 @@ impl PartialEq for U16x32 {
     }
 }
 
+// F32x8 fused multiply-add (256-bit __m256). `self.mul_add(a, b) = self*a + b`
+// in a single rounding step via `_mm256_fmadd_ps` (FMA3). The 8-wide companion
+// to the existing `F32x16::mul_add`; consumed by the PQ4-ADC FastScan flush
+// (turbovec's AVX2 kernel) where the per-query `fa = v_scale*partial + fa`
+// reduction needs an 8-wide FMA.
+impl F32x8 {
+    /// Fused multiply-add: `self * a + b`, single rounding (`_mm256_fmadd_ps`).
+    ///
+    /// # Examples
+    /// ```ignore
+    /// let a = F32x8::splat(0.5);
+    /// let b = F32x8::splat(2.0);
+    /// let c = F32x8::splat(1.0);
+    /// assert_eq!(a.mul_add(b, c).to_array(), [2.0; 8]); // 0.5*2.0 + 1.0
+    /// ```
+    #[inline(always)]
+    pub fn mul_add(self, a: Self, b: Self) -> Self {
+        // SAFETY: FMA3 intrinsic; reached only on FMA-capable targets via the
+        // consumer's runtime dispatch / `#[target_feature(enable = "fma")]`.
+        Self(unsafe { _mm256_fmadd_ps(self.0, a.0, b.0) })
+    }
+
+    /// Lane-wise `self > other` as an 8-bit mask: bit `i` set iff
+    /// `self[i] > other[i]` (ordered, non-signaling). `_mm256_cmp_ps::<_CMP_GT_OQ>`
+    /// + `_mm256_movemask_ps`. The FastScan heap threshold-prune uses it to skip
+    /// an 8-lane score chunk that holds no candidate above the current heap-min
+    /// in a single instruction — the SIMD early-out the scalar `>hmin` scan loses.
+    ///
+    /// # Examples
+    /// ```ignore
+    /// let a = F32x8::from_array([3.0, 0.0, 5.0, 0.0, 3.0, 0.0, 5.0, 0.0]);
+    /// let b = F32x8::splat(1.0);
+    /// // lanes 0,2,4,6 are > 1.0 ⇒ bits 0,2,4,6 set = 0b0101_0101 = 0x55.
+    /// assert_eq!(a.cmp_gt_mask(b), 0x55);
+    /// ```
+    #[inline(always)]
+    pub fn cmp_gt_mask(self, other: Self) -> u32 {
+        // SAFETY: AVX `vcmpps` + `vmovmskps`; available wherever this 256-bit
+        // float type is (x86-64-v2+).
+        unsafe { _mm256_movemask_ps(_mm256_cmp_ps::<_CMP_GT_OQ>(self.0, other.0)) as u32 }
+    }
+}
+
 // ============================================================================
 // U32x16 — 16 × u32 in one AVX-512 register (__m512i)
 // Used primarily for bit manipulation in transcendental functions (vml.rs).
