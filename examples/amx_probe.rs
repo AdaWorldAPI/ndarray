@@ -6,7 +6,7 @@
 
 use ndarray::hpc::amx_matmul::matmul_f32;
 use ndarray::hpc::int8_tile_gemm::int8_tile_gemm_16x16;
-use ndarray::simd::{amx_available, matmul_i8_to_i32};
+use ndarray::simd::{amx_available, amx_report, cpu_model, matmul_i8_to_i32};
 use ndarray::{ArrayView2, ArrayViewMut2};
 
 fn ref_u8_i8_16(a: &[u8], b: &[i8], k: usize) -> Vec<i32> {
@@ -111,6 +111,8 @@ fn test_matmul_f32(m: usize, n: usize, k: usize) {
 }
 
 fn main() {
+    println!("{}", amx_report());
+    println!("cpu_model() = {:?}  has_amx() = {}", cpu_model(), cpu_model().has_amx());
     println!("amx_available() = {}\n", amx_available());
 
     println!("== matmul_f32 (BF16 TDPBF16PS tile path, ~1% BF16 tolerance) ==");

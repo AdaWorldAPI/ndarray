@@ -1,237 +1,249 @@
-# AMX Gotchas — Resolved on Stable Rust 1.94
+# AMX Gotchas — Troubleshooting Playbook (Stable Rust 1.94)
 
-> Updated: 2026-04-03
-> CPU: Sapphire Rapids (AMX-TILE + AMX-INT8 + AMX-BF16 confirmed)
-> Kernel: 6.18.5 (XCR0 bits 17+18 enabled)
+> Updated: 2026-06-14 (corrected — the 2026-04-03 version shipped three of the
+> bugs below: syscall 157, `TDPBUSD = …73…C1`, and the swapped TILECFG layout).
+> Canonical reference: `.claude/knowledge/amx-enablement-and-kernel.md`.
+> Owning agent: `.claude/agents/amx-savant.md`.
+> Verified on: Emerald Rapids (CPUID model 0xCF), kernel 6.18.5. The fixes are
+> ISA-level and apply equally to Sapphire Rapids (0x8F) and Granite Rapids.
 
----
-
-## Status
-
-AMX works on **stable Rust 1.94** via `asm!()`. No nightly needed.
-
-```
-LDTILECFG:   ✓  (load tile configuration)
-TILEZERO:    ✓  (zero a tile register)
-TILERELEASE: ✓  (release tiles)
-TDPBUSD:     ✓  (u8×i8 tile dot product, 256 MACs/instruction)
-```
+This file is the *how-to-debug* companion. Each gotcha lists its **fault
+signature** so you can map a crash to a cause without a debugger. The
+instruction-bisector that produced these is `examples/amx_probe.rs` — run it
+FIRST (it prints a flushed line before each tile op, so the last line names the
+faulting instruction, then it checks correctness across shapes).
 
 ---
 
-## Gotcha 1: Rust intrinsics are NIGHTLY ONLY
+## Status (verified by actual execution, not by a skipped test)
+
+```
+LDTILECFG    ✓   TILEZERO ✓   TILELOADD ✓   TILESTORED ✓   TILERELEASE ✓
+TDPBUSD      ✓   (u8×i8 → i32, bit-exact vs scalar)
+TDPBF16PS    ✓   (bf16×bf16 → f32, within BF16 tolerance)
+amx_available() = true on Emerald Rapids (cached LazyLock)
+int8 2048³ = 169.7 GMAC/s, 600× scalar, single-thread
+```
+
+> ⚠ The previous "✓" marks were never executed: every AMX test early-returns
+> `if !amx_available() { return; }`, and detection always returned false
+> (Gotcha 4). Treat any "tile asm tested" claim as UNVERIFIED until you confirm
+> `amx_available()` was `true` when the test ran. See Gotcha 9.
+
+---
+
+## Fault-signature → cause (the fast index)
+
+| You see… | Almost certainly… | Go to |
+|---|---|---|
+| `amx_available()==false` on a Xeon you *know* has AMX | arch_prctl syscall number | Gotcha 4 |
+| SIGSEGV at the very first tile op (`LDTILECFG`) | TILECFG rows/colsb swapped, or not 64B-aligned | Gotcha 6, 2 |
+| SIGSEGV at `TILELOADD`/`TILESTORED` | SIB base/index swapped (stride deref'd as ptr) | Gotcha 10 |
+| SIGILL at `TDPBUSD`/`TDPBF16PS` | ModRM aliases two tile operands (same-tile #UD) | Gotcha 11 |
+| runs fine, `correct=false` | operand index/sign convention mirrored | Gotcha 12 |
+| compile error `unstable x86_amx_intrinsics` | used nightly intrinsics | Gotcha 1, 8 |
+| compile error `rbx is used internally by LLVM` | inline-asm CPUID | Gotcha 3 |
+
+---
+
+## Gotcha 1: Rust `_tile_*` intrinsics are NIGHTLY ONLY
 
 ```rust
-// This DOES NOT compile on stable:
 use std::arch::x86_64::_tile_loadconfig;  // error: unstable feature x86_amx_intrinsics
 ```
-
-**Fix**: Use `asm!()` (stable since Rust 1.59):
-```rust
-asm!("ldtilecfg [{}]", in(reg) config.data.as_ptr(), options(nostack));
-```
-
-Tracking issue: https://github.com/rust-lang/rust/issues/126622
+**Fix**: inline `asm!` (stable since 1.59). LDTILECFG works as a mnemonic; the
+tile ops need raw `.byte` (Gotcha 5). Tracking: rust-lang/rust#126622.
 
 ---
 
 ## Gotcha 2: Tile config MUST be 64-byte aligned
 
 ```rust
-// This SEGFAULTS:
-let config = [0u8; 64];  // stack-allocated, no alignment guarantee
-
-// This WORKS:
 #[repr(C, align(64))]
 struct TileConfig { data: [u8; 64] }
-let config = TileConfig { data: [0u8; 64] };
 ```
-
-LDTILECFG reads 64 bytes from the pointer. If not 64-byte aligned,
-the CPU raises #GP (general protection fault) → SIGSEGV.
+LDTILECFG reads 64 bytes; an unaligned pointer raises `#GP` → SIGSEGV.
 
 ---
 
-## Gotcha 3: rbx is LLVM-reserved
+## Gotcha 3: `rbx` is LLVM-reserved — don't inline-asm CPUID
 
-```rust
-// This DOES NOT compile:
-asm!("cpuid", out("ebx") ebx, ...);  // error: rbx is used internally by LLVM
-
-// This WORKS:
-let result = core::arch::x86_64::__cpuid_count(7, 0);  // stable, handles rbx internally
-```
-
-For CPUID leaf 7 (AMX detection): use `__cpuid_count()`, not inline asm.
+Use `core::arch::x86_64::__cpuid_count(7, 0)` (stable, handles rbx). Inline
+`asm!("cpuid", out("ebx") …)` fails to compile.
 
 ---
 
-## Gotcha 4: OS must enable AMX via XSETBV + process must request permission
+## Gotcha 4: enablement needs `arch_prctl` — syscall **158**, not `prctl` 157  ⚑ THE BIG ONE
 
-AMX tiles are large (8 KB of state). Two levels of OS enablement required:
+AMX `XTILEDATA` is a *dynamically-enabled* XSTATE feature (Linux 5.16+). A
+process must request permission before any tile op or the first one faults
+(XFD `#NM`):
 
-1. **Kernel enables tile state in XCR0** (bits 17+18). Linux 5.19+ does this.
-2. **Process requests XCOMP_PERM** via `prctl(ARCH_REQ_XCOMP_PERM, 18)`.
-   Without this, LDTILECFG will SIGILL even if XCR0 bits are set.
-
-**Detection (stable)**:
-```rust
-// Step 1: CPUID — does CPU support AMX?
-let cpuid = core::arch::x86_64::__cpuid_count(7, 0);
-let amx_tile = (cpuid.edx >> 24) & 1;
-let amx_int8 = (cpuid.edx >> 25) & 1;
-
-// Step 2: OSXSAVE — does OS support XSAVE?
-let cpuid_01 = core::arch::x86_64::__cpuid(1);
-let osxsave = (cpuid_01.ecx >> 27) & 1;
-
-// Step 3: _xgetbv(0) — did OS ACTUALLY enable tile state?
-// ⚠ Do NOT use __cpuid_count(0xD, 0) — that reports what CPU SUPPORTS,
-//   not what the OS ENABLED. _xgetbv(0) reads the actual XCR0 register.
-let xcr0: u64 = unsafe { core::arch::x86_64::_xgetbv(0) };
-let tilecfg  = (xcr0 >> 17) & 1;  // bit 17 = XTILECFG
-let tiledata = (xcr0 >> 18) & 1;  // bit 18 = XTILEDATA
-
-// Step 4: prctl — request tile permission for this process
-// SYS_prctl = 157, ARCH_REQ_XCOMP_PERM = 0x1023, XFEATURE_XTILEDATA = 18
-// Returns 0 on success, -errno on failure. Idempotent.
+```
+arch_prctl(ARCH_REQ_XCOMP_PERM /*0x1023*/, XFEATURE_XTILEDATA /*18*/)
 ```
 
-**Previous bug**: `__cpuid_count(0xD, 0)` reports XSAVE state component bitmap
-(what the CPU *supports*), NOT the actual XCR0 value (what the OS *enabled*).
-On hypervisors that advertise AMX in CPUID but don't enable tile state,
-the old check returned `true` → SIGILL on LDTILECFG.
+`ARCH_REQ_XCOMP_PERM` is an **arch_prctl** op → **syscall 158**. Issuing it on
+**prctl (157)** returns `-EINVAL`, so detection's gate 4 always failed and
+`amx_available()` returned `false` on EVERY AMX host. **This file's previous
+version literally documented `SYS_prctl = 157`** — that is where the bug came
+from. Always 158.
+
+Fault signature: `amx_available()==false` while `cpu_model().has_amx()==true`.
 
 ---
 
-## Gotcha 5: TILEZERO/TILERELEASE need manual byte encoding
+## Gotcha 5: tile ops need raw byte encoding (LDTILECFG is the exception)
 
-The Rust assembler on some toolchains doesn't know AMX mnemonics.
-Use raw instruction bytes:
+See the authoritative table in the knowledge doc. The correct sequences:
 
 ```rust
-// TILEZERO tmm0
-asm!(".byte 0xc4, 0xe2, 0x7b, 0x49, 0xc0", options(nostack, nomem));
-
-// TILEZERO tmm1
-asm!(".byte 0xc4, 0xe2, 0x7b, 0x49, 0xc8", options(nostack, nomem));
-
-// TILEZERO tmm2
-asm!(".byte 0xc4, 0xe2, 0x7b, 0x49, 0xd0", options(nostack, nomem));
-
-// TILEZERO tmm3
-asm!(".byte 0xc4, 0xe2, 0x7b, 0x49, 0xd8", options(nostack, nomem));
-
+// TILEZERO tmm0 / tmm1 / tmm2 / tmm3
+asm!(".byte 0xc4,0xe2,0x7b,0x49,0xc0", options(nostack,nomem)); // tmm0
+asm!(".byte 0xc4,0xe2,0x7b,0x49,0xc8", options(nostack,nomem)); // tmm1
+asm!(".byte 0xc4,0xe2,0x7b,0x49,0xd0", options(nostack,nomem)); // tmm2
 // TILERELEASE
-asm!(".byte 0xc4, 0xe2, 0x78, 0x49, 0xc0", options(nostack, nomem));
-
-// TDPBUSD tmm0, tmm1, tmm2 (C += A × B)
-asm!(".byte 0xc4, 0xe2, 0x73, 0x5e, 0xc1", options(nostack, nomem));
+asm!(".byte 0xc4,0xe2,0x78,0x49,0xc0", options(nostack,nomem));
+// TILELOADD tmmN,[rcx+rax]  (SIB 0x01 = base=rcx,index=rax)
+asm!(".byte 0xc4,0xe2,0x7b,0x4b,0x04,0x01", in("rcx") ptr, in("rax") stride, options(nostack)); // tmm0
+// TILESTORED [rcx+rax],tmm0
+asm!(".byte 0xc4,0xe2,0x7a,0x4b,0x04,0x01", in("rcx") ptr, in("rax") stride, options(nostack));
+// TDPBUSD  tmm0,tmm1,tmm2   (u8 in rm/tmm2, i8 in vvvv/tmm1 — see Gotcha 12)
+asm!(".byte 0xc4,0xe2,0x71,0x5e,0xc2", options(nostack,nomem));
+// TDPBF16PS tmm0,tmm1,tmm2
+asm!(".byte 0xc4,0xe2,0x72,0x5c,0xc2", options(nostack,nomem));
 ```
 
-Note: LDTILECFG works as a mnemonic:
+> ✗ The previous version listed `TDPBUSD … 0x73 … 0xc1` — `0x73` is TDPBSSD
+> (wrong sign variant) and `0xc1` aliases tmm1 with itself (Gotcha 11).
+
+---
+
+## Gotcha 6: TILECFG field layout — colsb and rows are NOT where you'd guess  ⚑
+
+Correct XTILECFG (Intel SDM):
+
+```
+byte 0      palette (=1)
+byte 1      start_row (=0)
+bytes 2-15  reserved (0)
+bytes 16-47 colsb[t] : 16 × u16   →  colsb[t] at offset 16 + 2*t   (≤ 64)
+bytes 48-63 rows[t]  : 16 × u8    →  rows[t]  at offset 48 + t      (≤ 16)
+```
+
+The previous version said "rows 16-23, colbytes 48-63" — **swapped**. With the
+swap you get `colsb[0]=0x1010=4112` and `rows[0]=64`, both out of range, so
+**LDTILECFG `#GP`-faults → SIGSEGV** the instant the AMX path runs. For the
+16×16 int8/bf16 tile, every tile is 16 rows × 64 colbytes.
+
+Fault signature: SIGSEGV at the first `LDTILECFG`.
+
+---
+
+## Gotcha 7: TILEZERO/LDTILECFG with palette=0 SEGFAULTs
+
+Always `cfg.data[0] = 1`. Start from a minimal valid tile (1 row × 4 colbytes:
+`data[16]=4; data[48]=1`) to confirm the config path before scaling to 16×64.
+
+---
+
+## Gotcha 8: `is_x86_feature_detected!("amx-tile")` is NIGHTLY ONLY
+
+Use `__cpuid_count(7,0).edx` bits 24 (TILE) + 25 (INT8), then XGETBV(0) bits
+17/18, then the arch_prctl (Gotcha 4). All stable. See `simd_amx::detect_amx`.
+
+---
+
+## Gotcha 9: "tests pass" can mean "tests skipped"
+
+Every AMX test guards with `if !amx_available() { return; }`. While detection
+was broken (Gotcha 4), 100% of them early-returned green without running a
+single tile instruction. **A skipped test is not a passing test.** Validate AMX
+with `examples/amx_probe` (unconditional) on real AMX silicon, and require a
+`correct=`/parity assertion, not just "didn't crash."
+
+---
+
+## Gotcha 10: TILELOADD/TILESTORED SIB byte — base vs index
+
+`TILELOADD tmm,[rcx+rax]` with regs bound `in("rcx") ptr, in("rax") stride`
+needs SIB `0x01` = (scale=1, index=rax, base=rcx). The previous code used SIB
+`0x08` = (index=rcx, base=rax), i.e. base/index swapped, so the tile engine
+used the **stride value (~64) as the start address** → SIGSEGV. For TILELOADD
+the *base* register is the data pointer and the *index* register is the row
+stride in bytes.
+
+Fault signature: SIGSEGV at the first `TILELOADD`.
+
+---
+
+## Gotcha 11: the three tile operands MUST be distinct registers
+
+`TDPBUSD`/`TDPBF16PS` raise `#UD` (→ SIGILL) if any two of (dst, src1, src2)
+name the same tile. ModRM `0xC1` = rm=tmm1, and `VEX.vvvv` was also tmm1 →
+src1==src2 → same-tile `#UD`. Use ModRM `0xC2` (dst=tmm0, vvvv=tmm1, rm=tmm2).
+
+Fault signature: SIGILL at the first `TDPBUSD`/`TDPBF16PS`, AFTER LDTILECFG and
+the loads succeed.
+
+---
+
+## Gotcha 12: the operand index/sign convention is mirrored from the SDM  ⚑
+
+Measured on EMR (selector probe + 4-opcode sign sweep — see the knowledge doc):
+
+- `dst[m][n] = Σ_k tmm2(ModRM.rm)[m][k] · tmm1(VEX.vvvv)[k][n]` — plain **M×K**
+  goes in **tmm2/rm**, VNNI **K×N** goes in **tmm1/vvvv** (mirror of the naive
+  SDM operand order).
+- For `TDPBUSD` (0x71): **rm = unsigned, vvvv = signed**.
+
+So the kernel loads `A(u8)→tmm2`, `B_vnni(i8)→tmm1`. Get this wrong and it
+runs cleanly but every value is wrong (often a suspiciously *clean* wrong, like
+`total/16` for constant inputs — that uniformity is the tell). Isolate it with
+the selector probe (`A[0][s]=1` → `C[0][:]` should equal `B[s][:]`).
+
+Fault signature: no crash, `correct=false`.
+
+---
+
+## Gotcha 13: cache detection in a `LazyLock` (don't re-syscall per call)
+
+`amx_available()` runs CPUID + XGETBV + arch_prctl. Calling it per matmul is
+wasteful (and the arch_prctl, though idempotent, is a syscall). Cache it:
+
 ```rust
-asm!("ldtilecfg [{}]", in(reg) ptr, options(nostack));
+static AMX_AVAILABLE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(detect_amx);
+pub fn amx_available() -> bool { *AMX_AVAILABLE }
 ```
+
+All four gates are non-blocking (no I/O, no lock, no spin) so the init can't
+stall. The arch_prctl grant is process-wide + inherited by all threads, so
+once is correct even under rayon. `cpu_model()` is cached the same way.
 
 ---
 
-## Gotcha 6: Tile config field layout is not obvious
-
-The 64-byte tile config structure:
-```
-Byte  0:     palette (must be 1)
-Bytes 1-15:  reserved (zero)
-Bytes 16-23: rows per tile (tile 0 at byte 16, tile 1 at byte 17, ...)
-Bytes 24-47: reserved (zero)
-Bytes 48-63: colbytes per tile (tile 0 at [48..49] as u16 LE, tile 1 at [50..51], ...)
-```
-
-For TDPBUSD (u8×i8 → i32):
-- Tile 0 (C result): rows=16, colbytes=64 (16 × i32 = 64 bytes per row)
-- Tile 1 (A input):  rows=16, colbytes=64 (16 × 64 u8)
-- Tile 2 (B input):  rows=16, colbytes=64 (transposed for column access)
-
-**IMPORTANT**: colbytes is a u16 at byte offset 48+2*tile_id (little-endian).
-For values ≤ 64, only the low byte matters.
-
----
-
-## Gotcha 7: TILEZERO with wrong config = SEGFAULT
-
-If you configure tile 0 as 16 rows × 64 colbytes but then TILEZERO tmm0,
-it works. But if the config doesn't match what the hardware expects (e.g.,
-palette=0 or all zeros), TILEZERO will SEGFAULT.
-
-**Fix**: Always start with the minimal working config:
-```rust
-cfg.data[0] = 1;      // palette 1 (MUST be 1, not 0)
-cfg.data[16] = 1;     // at least 1 row
-cfg.data[48] = 4;     // at least 4 colbytes (1 × i32)
-```
-
-Then expand to full 16×64 after verifying the minimal config works.
-
----
-
-## Gotcha 8: is_x86_feature_detected!("amx-tile") is NIGHTLY ONLY
-
-```rust
-// DOES NOT compile on stable:
-is_x86_feature_detected!("amx-tile")  // error: unstable x86_amx_intrinsics
-
-// WORKS on stable:
-fn amx_available() -> bool {
-    let cpuid = core::arch::x86_64::__cpuid_count(7, 0);
-    let amx_tile = (cpuid.edx >> 24) & 1;
-    let amx_int8 = (cpuid.edx >> 25) & 1;
-    amx_tile == 1 && amx_int8 == 1
-}
-```
-
-Use `__cpuid_count` (stable) for detection, not `is_x86_feature_detected!`.
-
----
-
-## Hardware Tiers (this session)
+## Hardware tiers
 
 ```
-Tier   Feature         MACs/instr  Detection (stable)                CPU
-────   ───────         ──────────  ──────────────────                ───
-3      AMX             256         __cpuid_count(7,0).edx bit 24     Sapphire Rapids+
-2      avx512vnni      64          is_x86_feature_detected!          Cascade Lake+, Zen 4+
-1      avxvnniint8     32          is_x86_feature_detected!          Arrow Lake (NUC 14)
-0      scalar          1           always                            any
+Tier  Feature      MACs/instr  Detect (stable)                   CPU
+3     AMX-TILE     16384       __cpuid_count(7,0).edx bit24+25   SPR / EMR / GNR (NOT Sierra Forest)
+2     avx512vnni   64          is_x86_feature_detected!          Cascade Lake+, Zen 4+
+1     avxvnniint8  32          is_x86_feature_detected!          Arrow / Meteor Lake
+0     scalar       1           always                            any
 ```
 
-Also detectable but not yet kernelized:
-- `avxvnniint16`: i16×i16 dot product (VPDPWSSD)
-- `amx-bf16`: TDPBF16PS (BF16 tile matmul, for calibration)
+`cpu_model()` returns `SierraForest` for model 0xAF — E-core silicon with NO
+AMX, so `has_amx()` is false there even though it's a recent Xeon.
 
 ---
 
 ## Files
 
 ```
-ndarray/src/simd_amx.rs          — AMX detection + VNNI/VNNI2 kernels + quantize
-ndarray/src/hpc/amx_matmul.rs    — AMX tile ops via inline asm (TDPBUSD)
-ndarray/crates/burn/src/ops/matmul.rs — 4-tier dispatch in distance table builder
-```
-
----
-
-## What AMX Enables
-
-```
-Distance table build (4096² = 16M dot products):
-  AMX:       ~20 min  (all models combined)
-  avx512vnni: ~1:20h
-  avxvnniint8: ~2:40h (NUC 14)
-  scalar:    ~24-48h
-
-ThinkingEngine MatVec (per cycle):
-  AMX:       ~44 μs   (L1 table fits in 4 tile registers)
-  avx512vnni: ~175 μs
-  avxvnniint8: ~350 μs
-  scalar:    ~5 ms
+src/simd_amx.rs                 — detection (CPUID+XGETBV+arch_prctl), CpuModel, LazyLock
+src/hpc/amx_matmul.rs           — tile primitives + TileConfig + public matmul_{i8_to_i32,bf16_to_f32,f32}
+src/hpc/int8_tile_gemm.rs       — fast int8 driver (LDTILECFG hoisted) + 16×16 kernel
+src/hpc/bf16_tile_gemm.rs       — bf16 sibling
+examples/amx_probe.rs           — instruction bisector + correctness validator (run FIRST)
+examples/amx_gemm_bench.rs      — throughput + independent correctness check
 ```
