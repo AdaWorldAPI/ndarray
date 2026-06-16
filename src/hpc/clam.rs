@@ -2590,15 +2590,15 @@ mod tests {
     /// here. PROBE-CHAODA-1000G therefore needs the multi-method ensemble (or an
     /// augmented signal) before it can pass — not just genomic fixtures.
     ///
-    /// This test locks the *robust* invariants — valid range, bit-exact
-    /// determinism, correct polarity (outliers ≥ cluster mean), better-than-
-    /// chance lower bound — with wide tolerance: the AUC may drift anywhere in
-    /// [0.5, 0.85) without breaking. The one tripwire is `auc < 0.85`: it does
-    /// not assert the measured 0.62, but it does fail by design if a future
-    /// change (e.g. a multi-method CHAODA ensemble) lifts the single-method
-    /// signal to the probe bar — forcing whoever does that to update the
-    /// PROBE-CHAODA-1000G FINDING in lance-graph rather than letting the
-    /// cross-repo claim silently rot.
+    /// This test asserts only *lower-bound*, forward-compatible invariants —
+    /// valid range, bit-exact determinism, correct polarity (outliers ≥ cluster
+    /// mean), and a better-than-chance signal (`auc > 0.5`). It deliberately does
+    /// NOT cap the AUC: a future multi-method CHAODA ensemble that lifts the
+    /// signal past the 0.85 probe bar must keep `cargo test -p ndarray` green,
+    /// never fail it. The measured AUC (≈ 0.62 today) is surfaced as an
+    /// `eprintln!` diagnostic, not enforced. When the ensemble lands and raises
+    /// it, refresh the `PROBE-CHAODA-1000G` FINDING in lance-graph — but that is
+    /// a documentation step, not a gate enforced from this library's test suite.
     #[test]
     fn test_chaoda_flags_novel_outliers_in_genetics_like_mixture() {
         let (data, outliers) = make_genetics_like_mixture();
@@ -2663,23 +2663,19 @@ mod tests {
             assert_eq!(a.score.to_bits(), b.score.to_bits(), "non-deterministic score");
         }
 
-        // Robust, forward-compatible invariants (see the doc comment for the
-        // measured AUC ≈ 0.62 finding; we deliberately do NOT assert the ceiling).
+        // Robust, forward-compatible invariants. These are LOWER bounds only:
+        // they stay green whether the signal is the current weak leaf-LFD
+        // (AUC ~ 0.62) or a future multi-method ensemble that lifts it past the
+        // 0.85 probe bar. The measured AUC is surfaced via the eprintln above as
+        // a diagnostic; we deliberately do NOT cap it (a quality improvement must
+        // never fail `cargo test -p ndarray`).
         assert!(
             mean_out >= mean_clu,
             "polarity wrong: outliers ({mean_out:.4}) below cluster mean ({mean_clu:.4})"
         );
         assert!(
             auc > 0.5,
-            "leaf-LFD anomaly signal is not better than chance (AUC={auc:.4})"
-        );
-        // Documents the gap to the PROBE-CHAODA-1000G bar without making the
-        // test brittle to a future multi-method CHAODA port that raises the AUC.
-        assert!(
-            auc < 0.85,
-            "single-method leaf-LFD unexpectedly met the >= 0.85 probe bar \
-             (AUC={auc:.4}); if a multi-method CHAODA ensemble was added, update \
-             this assertion AND the PROBE-CHAODA-1000G FINDING in lance-graph"
+            "anomaly signal is not better than chance (AUC={auc:.4})"
         );
     }
 
