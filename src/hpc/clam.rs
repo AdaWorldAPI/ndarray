@@ -1576,6 +1576,192 @@ impl ClamTree {
             .filter(|a| a.score >= threshold)
             .collect()
     }
+
+    /// Default leaf-count cap for the quadratic connected-component term of
+    /// [`ensemble_anomaly_scores`](Self::ensemble_anomaly_scores). Above this many
+    /// leaves the public API falls back to the linear path-minority signal alone.
+    pub const ENSEMBLE_GRAPH_BUDGET: usize = 4096;
+
+    /// Multi-method CHAODA anomaly ensemble — increment 1 of `D-GEN-CHAODA-ENSEMBLE`
+    /// (lance-graph `genetics-probes-v1.md`).
+    ///
+    /// The single-method [`anomaly_scores`](Self::anomaly_scores) signal scores
+    /// each point by its leaf cluster's local fractal dimension (LFD). LFD
+    /// measures *intra-leaf* geometry complexity, not *inter-leaf* isolation, so
+    /// it does not separate isolated outliers from dense clusters (measured
+    /// ROC-AUC ≈ 0.62 on a synthetic mixture; see the spike test). This method
+    /// adds isolation-sensitive CHAODA signals (Ishaq et al. 2021):
+    ///
+    /// - **parent-child path-minority ratio** (dominant; always computed;
+    ///   `O(L · depth)`): walking a leaf up to the root, the minimum
+    ///   `child_cardinality / parent_cardinality` ratio is tiny for a point that
+    ///   split off as a minority (an isolated outlier) and moderate for one that
+    ///   always stayed in the majority (a dense-cluster member). Immune to the
+    ///   leaf-fragmentation that defeats raw leaf cardinality / degree.
+    /// - **connected-component cardinality** over the leaf-overlap graph (an edge
+    ///   joins two leaves whose volumes overlap, `dist(cᵢ, cⱼ) ≤ rᵢ + rⱼ`; small
+    ///   components are anomalous): a refinement averaged in **only when the leaf
+    ///   count is within `graph_budget`**, because the overlap build is
+    ///   `O(L² · vec_len)`.
+    ///
+    /// Every point inherits its leaf's score. Raw leaf cardinality and vertex
+    /// degree are not used (measured to add only fragmentation noise); the
+    /// random-walk stationary distribution method is deferred to a later
+    /// increment. Deterministic: no randomness; built purely from shipped tree
+    /// fields + [`Self::dist`].
+    ///
+    /// This convenience wrapper uses the default
+    /// [`ENSEMBLE_GRAPH_BUDGET`](Self::ENSEMBLE_GRAPH_BUDGET), so it never runs the
+    /// quadratic overlap build on production-sized corpora — it degrades to the
+    /// linear path-minority signal above the budget. Call
+    /// [`ensemble_anomaly_scores_budgeted`](Self::ensemble_anomaly_scores_budgeted)
+    /// to choose the cap explicitly.
+    pub fn ensemble_anomaly_scores(&self, data: &[u8], vec_len: usize) -> Vec<AnomalyScore> {
+        self.ensemble_anomaly_scores_budgeted(data, vec_len, Self::ENSEMBLE_GRAPH_BUDGET)
+    }
+
+    /// See [`ensemble_anomaly_scores`](Self::ensemble_anomaly_scores). `graph_budget`
+    /// caps the leaf count above which the quadratic connected-component term is
+    /// skipped (path-minority only). `usize::MAX` always includes it; `0` forces
+    /// path-only.
+    pub fn ensemble_anomaly_scores_budgeted(
+        &self, data: &[u8], vec_len: usize, graph_budget: usize,
+    ) -> Vec<AnomalyScore> {
+        let count = data.len() / vec_len;
+
+        let leaves: Vec<usize> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.is_leaf())
+            .map(|(i, _)| i)
+            .collect();
+        let n_leaves = leaves.len();
+        if n_leaves == 0 {
+            return Vec::new();
+        }
+
+        // Parent map (the tree stores child pointers, not parent pointers).
+        let mut parent = vec![usize::MAX; self.nodes.len()];
+        for (i, n) in self.nodes.iter().enumerate() {
+            if let Some(l) = n.left {
+                parent[l] = i;
+            }
+            if let Some(r) = n.right {
+                parent[r] = i;
+            }
+        }
+
+        // Signal 1 — parent-child path-minority ratio (always; O(L · depth)).
+        let mut s_path = vec![0.0f64; n_leaves];
+        for (a, &leaf) in leaves.iter().enumerate() {
+            let mut node = leaf;
+            let mut min_ratio = 1.0f64;
+            while parent[node] != usize::MAX {
+                let p = parent[node];
+                let ratio = self.nodes[node].cardinality as f64 / (self.nodes[p].cardinality as f64).max(1.0);
+                if ratio < min_ratio {
+                    min_ratio = ratio;
+                }
+                node = p;
+            }
+            s_path[a] = 1.0 - min_ratio;
+        }
+
+        // Signal 2 — connected-component cardinality over the leaf-overlap graph.
+        // Guarded: the overlap build is O(L² · vec_len), so it is skipped above
+        // `graph_budget` and scoring falls back to path-minority alone.
+        let s_comp: Option<Vec<f64>> = if n_leaves <= graph_budget {
+            let center = |node_idx: usize| -> &[u8] {
+                let ci = self.nodes[node_idx].center_idx;
+                &data[ci * vec_len..(ci + 1) * vec_len]
+            };
+            let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n_leaves];
+            for a in 0..n_leaves {
+                let na = &self.nodes[leaves[a]];
+                let ca = center(leaves[a]);
+                for b in (a + 1)..n_leaves {
+                    let nb = &self.nodes[leaves[b]];
+                    let d = self.dist(ca, center(leaves[b]));
+                    if d <= na.radius.saturating_add(nb.radius) {
+                        adj[a].push(b);
+                        adj[b].push(a);
+                    }
+                }
+            }
+            let mut comp_of = vec![usize::MAX; n_leaves];
+            let mut comp_size: Vec<usize> = Vec::new();
+            for start in 0..n_leaves {
+                if comp_of[start] != usize::MAX {
+                    continue;
+                }
+                let cid = comp_size.len();
+                let mut stack = vec![start];
+                comp_of[start] = cid;
+                let mut size = 0usize;
+                while let Some(v) = stack.pop() {
+                    size += 1;
+                    for &w in &adj[v] {
+                        if comp_of[w] == usize::MAX {
+                            comp_of[w] = cid;
+                            stack.push(w);
+                        }
+                    }
+                }
+                comp_size.push(size);
+            }
+            let max_comp = comp_size.iter().copied().max().unwrap_or(1).max(1) as f64;
+            Some(
+                (0..n_leaves)
+                    .map(|a| 1.0 - comp_size[comp_of[a]] as f64 / max_comp)
+                    .collect(),
+            )
+        } else {
+            None
+        };
+
+        // Combine: average whichever signals are available.
+        let leaf_score: Vec<f64> = match &s_comp {
+            Some(sc) => (0..n_leaves).map(|a| (s_path[a] + sc[a]) / 2.0).collect(),
+            None => s_path,
+        };
+
+        // Project leaf scores back onto every original data point.
+        let mut out: Vec<AnomalyScore> = (0..count)
+            .map(|index| AnomalyScore {
+                index,
+                lfd: 0.0,
+                score: 0.0,
+                awareness: AwarenessState::Crystallized,
+            })
+            .collect();
+        for (a, &node_idx) in leaves.iter().enumerate() {
+            let node = &self.nodes[node_idx];
+            let start = node.offset;
+            let end = start + node.cardinality;
+            let score = leaf_score[a];
+            let awareness = if score < 0.25 {
+                AwarenessState::Crystallized
+            } else if score < 0.50 {
+                AwarenessState::Tensioned
+            } else if score < 0.75 {
+                AwarenessState::Uncertain
+            } else {
+                AwarenessState::Noise
+            };
+            for &orig_idx in &self.reordered[start..end] {
+                if orig_idx < count {
+                    out[orig_idx] = AnomalyScore {
+                        index: orig_idx,
+                        lfd: node.lfd.value,
+                        score,
+                        awareness,
+                    };
+                }
+            }
+        }
+        out
+    }
 }
 
 // ─── Tests ──────────────────────────────────────────
@@ -2497,6 +2683,257 @@ mod tests {
         for s in &scores {
             assert!(s.score >= 0.0 && s.score <= 1.0);
         }
+    }
+
+    // ── CHAODA outlier-discrimination spike (PROBE-CHAODA-1000G kernel smoke test) ──
+    //
+    // Thermometer-encode each of 5 continuous lanes into 48 bits so Hamming
+    // distance is monotone in per-lane L1 magnitude (the honest bridge from
+    // ordinal features to the Hamming-metric CLAM default). 5 lanes x 6 bytes
+    // = 30 bytes/vector.
+    const SPIKE_LANES: usize = 5;
+    const SPIKE_LEVELS: usize = 48; // 48 bits = 6 bytes per lane
+    const SPIKE_VEC_LEN: usize = SPIKE_LANES * (SPIKE_LEVELS / 8);
+
+    fn thermometer_encode(lanes: &[f64; SPIKE_LANES]) -> Vec<u8> {
+        let mut out = vec![0u8; SPIKE_VEC_LEN];
+        for (l, &v) in lanes.iter().enumerate() {
+            let q = (v.clamp(0.0, 1.0) * SPIKE_LEVELS as f64).round() as usize;
+            let base_bit = l * SPIKE_LEVELS;
+            for b in 0..q {
+                let bit = base_bit + b;
+                out[bit / 8] |= 1 << (bit % 8);
+            }
+        }
+        out
+    }
+
+    // Box-Muller standard normal from a SplitMix64 uniform stream.
+    fn next_gaussian(rng: &mut SplitMix64) -> f64 {
+        let u1 = ((rng.next_u64() >> 11) as f64 / (1u64 << 53) as f64).max(1e-12);
+        let u2 = (rng.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
+        (-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos()
+    }
+
+    /// Synthesise a 5-lane Gaussian mixture: tight "common" clusters plus
+    /// far "novel" outliers. Returns (bytes, outlier_index_set).
+    fn make_genetics_like_mixture() -> (Vec<u8>, Vec<usize>) {
+        let mut rng = SplitMix64::new(0x6E_65_74_69_63_73); // "netics"
+        let centers: [[f64; SPIKE_LANES]; 3] =
+            [[0.20, 0.25, 0.15, 0.30, 0.22], [0.50, 0.55, 0.48, 0.52, 0.50], [0.78, 0.72, 0.80, 0.75, 0.82]];
+        let sigma = 0.025;
+        let per_cluster = 40;
+        let mut data = Vec::new();
+        let mut idx = 0usize;
+        for center in &centers {
+            for _ in 0..per_cluster {
+                let mut lanes = *center;
+                for lane in lanes.iter_mut() {
+                    *lane = (*lane + sigma * next_gaussian(&mut rng)).clamp(0.0, 1.0);
+                }
+                data.extend_from_slice(&thermometer_encode(&lanes));
+                idx += 1;
+            }
+        }
+        // 8 novel outliers placed in regions far from every cluster center.
+        let outlier_lanes: [[f64; SPIKE_LANES]; 8] = [
+            [0.02, 0.97, 0.03, 0.95, 0.05],
+            [0.98, 0.02, 0.96, 0.04, 0.99],
+            [0.05, 0.05, 0.98, 0.02, 0.50],
+            [0.95, 0.95, 0.02, 0.98, 0.03],
+            [0.50, 0.02, 0.05, 0.97, 0.95],
+            [0.03, 0.50, 0.97, 0.05, 0.02],
+            [0.99, 0.50, 0.99, 0.50, 0.01],
+            [0.01, 0.99, 0.50, 0.99, 0.99],
+        ];
+        let mut outlier_indices = Vec::new();
+        for lanes in &outlier_lanes {
+            data.extend_from_slice(&thermometer_encode(lanes));
+            outlier_indices.push(idx);
+            idx += 1;
+        }
+        (data, outlier_indices)
+    }
+
+    /// Kernel smoke test for the `PROBE-CHAODA-1000G` claim (genetics-probes-v1
+    /// in AdaWorldAPI/lance-graph): *"CHAODA detects novel variants without a
+    /// trained classifier."*
+    ///
+    /// FINDING (RUN 2026-06-16): the shipped single-method leaf-LFD
+    /// `anomaly_scores` achieves only **ROC-AUC ≈ 0.62** separating deliberately
+    /// extreme outliers from tight Gaussian clusters — the *easiest* possible
+    /// case. That is well below the probe's ≥ 0.85 bar. The cause is mechanical:
+    /// leaf LFD = log₂(|B(c,r)|/|B(c,r/2)|) measures *intra-leaf* geometry
+    /// complexity, not *inter-leaf* isolation, so an isolated singleton lands in
+    /// a leaf whose LFD is comparable to a dense cluster's, and the global
+    /// min-max normalisation compresses both into the same score band. The
+    /// CHAODA ensemble of Ishaq et al. 2021 combines several graph-based signals
+    /// (relative/component cardinality, graph neighbourhood, random-walk
+    /// stationary distribution, vertex degree); only the LFD signal is shipped
+    /// here. PROBE-CHAODA-1000G therefore needs the multi-method ensemble (or an
+    /// augmented signal) before it can pass — not just genomic fixtures.
+    ///
+    /// This test asserts only *lower-bound*, forward-compatible invariants —
+    /// valid range, bit-exact determinism, correct polarity (outliers ≥ cluster
+    /// mean), and a better-than-chance signal (`auc > 0.5`). It deliberately does
+    /// NOT cap the AUC: a future multi-method CHAODA ensemble that lifts the
+    /// signal past the 0.85 probe bar must keep `cargo test -p ndarray` green,
+    /// never fail it. The measured AUC (≈ 0.62 today) is surfaced as an
+    /// `eprintln!` diagnostic, not enforced. When the ensemble lands and raises
+    /// it, refresh the `PROBE-CHAODA-1000G` FINDING in lance-graph — but that is
+    /// a documentation step, not a gate enforced from this library's test suite.
+    #[test]
+    fn test_chaoda_flags_novel_outliers_in_genetics_like_mixture() {
+        let (data, outliers) = make_genetics_like_mixture();
+        let count = data.len() / SPIKE_VEC_LEN;
+        let tree = ClamTree::build(&data, SPIKE_VEC_LEN, 3);
+        let scores = tree.anomaly_scores(&data, SPIKE_VEC_LEN);
+        assert_eq!(scores.len(), count);
+
+        let is_outlier = |i: usize| outliers.contains(&i);
+        let (mut sum_out, mut n_out) = (0.0f64, 0usize);
+        let (mut sum_clu, mut n_clu) = (0.0f64, 0usize);
+        let (mut out_high, mut clu_high) = (0usize, 0usize); // score >= 0.5
+        for s in &scores {
+            assert!(s.score >= 0.0 && s.score <= 1.0);
+            if is_outlier(s.index) {
+                sum_out += s.score;
+                n_out += 1;
+                if s.score >= 0.5 {
+                    out_high += 1;
+                }
+            } else {
+                sum_clu += s.score;
+                n_clu += 1;
+                if s.score >= 0.5 {
+                    clu_high += 1;
+                }
+            }
+        }
+        let mean_out = sum_out / n_out as f64;
+        let mean_clu = sum_clu / n_clu as f64;
+        let frac_out_high = out_high as f64 / n_out as f64;
+        let frac_clu_high = clu_high as f64 / n_clu as f64;
+
+        // ROC-AUC via the Mann-Whitney U statistic (ties count 0.5). This is the
+        // exact number PROBE-CHAODA-1000G gates on (>= 0.85 to pass).
+        let mut u = 0.0f64;
+        for a in &scores {
+            if !is_outlier(a.index) {
+                continue;
+            }
+            for b in &scores {
+                if is_outlier(b.index) {
+                    continue;
+                }
+                if a.score > b.score {
+                    u += 1.0;
+                } else if (a.score - b.score).abs() < 1e-12 {
+                    u += 0.5;
+                }
+            }
+        }
+        let auc = u / (n_out as f64 * n_clu as f64);
+        eprintln!(
+            "[CHAODA-spike] n_clu={n_clu} n_out={n_out} mean_clu={mean_clu:.4} mean_out={mean_out:.4} \
+             frac_clu>=0.5={frac_clu_high:.3} frac_out>=0.5={frac_out_high:.3} ROC_AUC={auc:.4}"
+        );
+
+        // Determinism: rebuild + rescore must be bit-identical (no-randomness invariant).
+        let tree2 = ClamTree::build(&data, SPIKE_VEC_LEN, 3);
+        let scores2 = tree2.anomaly_scores(&data, SPIKE_VEC_LEN);
+        for (a, b) in scores.iter().zip(scores2.iter()) {
+            assert_eq!(a.score.to_bits(), b.score.to_bits(), "non-deterministic score");
+        }
+
+        // Robust, forward-compatible invariants. These are LOWER bounds only:
+        // they stay green whether the signal is the current weak leaf-LFD
+        // (AUC ~ 0.62) or a future multi-method ensemble that lifts it past the
+        // 0.85 probe bar. The measured AUC is surfaced via the eprintln above as
+        // a diagnostic; we deliberately do NOT cap it (a quality improvement must
+        // never fail `cargo test -p ndarray`).
+        assert!(mean_out >= mean_clu, "polarity wrong: outliers ({mean_out:.4}) below cluster mean ({mean_clu:.4})");
+        assert!(auc > 0.5, "anomaly signal is not better than chance (AUC={auc:.4})");
+    }
+
+    /// ROC-AUC via the Mann-Whitney U statistic (ties count 0.5); positive class
+    /// = `is_pos(index)`.
+    fn roc_auc(scores: &[AnomalyScore], is_pos: impl Fn(usize) -> bool) -> f64 {
+        let (mut u, mut n_pos) = (0.0f64, 0usize);
+        for a in scores {
+            if !is_pos(a.index) {
+                continue;
+            }
+            n_pos += 1;
+            for b in scores {
+                if is_pos(b.index) {
+                    continue;
+                }
+                if a.score > b.score {
+                    u += 1.0;
+                } else if (a.score - b.score).abs() < 1e-12 {
+                    u += 0.5;
+                }
+            }
+        }
+        let n_neg = scores.len() - n_pos;
+        if n_pos == 0 || n_neg == 0 {
+            return 0.5;
+        }
+        u / (n_pos as f64 * n_neg as f64)
+    }
+
+    /// `D-GEN-CHAODA-ENSEMBLE` increment 1: the isolation-sensitive ensemble must
+    /// materially out-discriminate the single-method leaf-LFD baseline on the same
+    /// synthetic mixture the spike measured at AUC ≈ 0.62. This is a NEW capability
+    /// (not a future improvement), so a lower-bound gate is appropriate here.
+    #[test]
+    fn test_chaoda_ensemble_beats_single_lfd_on_genetics_like_mixture() {
+        let (data, outliers) = make_genetics_like_mixture();
+        let tree = ClamTree::build(&data, SPIKE_VEC_LEN, 3);
+        let is_out = |i: usize| outliers.contains(&i);
+
+        let lfd = tree.anomaly_scores(&data, SPIKE_VEC_LEN);
+        let ens = tree.ensemble_anomaly_scores(&data, SPIKE_VEC_LEN);
+        // Path-minority only (graph_budget = 0 forces the linear fallback that the
+        // public API uses above ENSEMBLE_GRAPH_BUDGET) — grounds the claim that the
+        // dominant signal survives without the quadratic component term.
+        let path_only = tree.ensemble_anomaly_scores_budgeted(&data, SPIKE_VEC_LEN, 0);
+        assert_eq!(ens.len(), lfd.len());
+        for s in &ens {
+            assert!(s.score >= 0.0 && s.score <= 1.0, "ensemble score out of range");
+        }
+
+        let auc_lfd = roc_auc(&lfd, is_out);
+        let auc_ens = roc_auc(&ens, is_out);
+        let auc_path = roc_auc(&path_only, is_out);
+        eprintln!(
+            "[CHAODA-ensemble] AUC single-LFD={auc_lfd:.4} path-only={auc_path:.4} ensemble={auc_ens:.4} lift={:.4}",
+            auc_ens - auc_lfd
+        );
+
+        // The linear path-only fallback (used at scale) must itself clear the bar,
+        // otherwise the budget guard would silently degrade production accuracy.
+        assert!(
+            auc_path >= 0.85,
+            "path-only fallback AUC {auc_path:.4} below 0.85 — the budget guard would degrade large corpora"
+        );
+
+        // Determinism: the ensemble graph is built purely from shipped tree
+        // fields, so a rebuild must reproduce bit-identical scores.
+        let tree2 = ClamTree::build(&data, SPIKE_VEC_LEN, 3);
+        let ens2 = tree2.ensemble_anomaly_scores(&data, SPIKE_VEC_LEN);
+        for (a, b) in ens.iter().zip(ens2.iter()) {
+            assert_eq!(a.score.to_bits(), b.score.to_bits(), "non-deterministic ensemble score");
+        }
+
+        // The whole point: the ensemble lifts discrimination well past the weak
+        // single-LFD signal. These are lower bounds (a better ensemble keeps them green).
+        assert!(
+            auc_ens > auc_lfd + 0.15,
+            "ensemble (AUC={auc_ens:.4}) did not materially beat single-LFD (AUC={auc_lfd:.4})"
+        );
+        assert!(auc_ens >= 0.85, "ensemble AUC {auc_ens:.4} did not clear the PROBE-CHAODA-1000G bar of 0.85");
     }
 
     // ── rho_nn_candidates tests ──────────────────────────────────
