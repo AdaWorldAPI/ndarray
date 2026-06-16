@@ -1577,6 +1577,11 @@ impl ClamTree {
             .collect()
     }
 
+    /// Default leaf-count cap for the quadratic connected-component term of
+    /// [`ensemble_anomaly_scores`](Self::ensemble_anomaly_scores). Above this many
+    /// leaves the public API falls back to the linear path-minority signal alone.
+    pub const ENSEMBLE_GRAPH_BUDGET: usize = 4096;
+
     /// Multi-method CHAODA anomaly ensemble — increment 1 of `D-GEN-CHAODA-ENSEMBLE`
     /// (lance-graph `genetics-probes-v1.md`).
     ///
@@ -1585,24 +1590,45 @@ impl ClamTree {
     /// measures *intra-leaf* geometry complexity, not *inter-leaf* isolation, so
     /// it does not separate isolated outliers from dense clusters (measured
     /// ROC-AUC ≈ 0.62 on a synthetic mixture; see the spike test). This method
-    /// adds the **isolation-sensitive** subset of the CHAODA ensemble (Ishaq et
-    /// al. 2021), computed over the **leaf-cluster overlap graph** — clusters are
-    /// vertices, and an edge joins two leaves whose volumes overlap
-    /// (`dist(centerᵢ, centerⱼ) ≤ rᵢ + rⱼ`):
+    /// adds isolation-sensitive CHAODA signals (Ishaq et al. 2021):
     ///
-    /// - **relative cardinality** — `1 − |C|/max|C|`: small clusters are anomalous.
-    /// - **vertex degree** — `1 − deg/max deg`: low-degree (isolated) leaves are anomalous.
-    /// - **component cardinality** — `1 − |comp|/max|comp|`: small connected components are anomalous.
+    /// - **parent-child path-minority ratio** (dominant; always computed;
+    ///   `O(L · depth)`): walking a leaf up to the root, the minimum
+    ///   `child_cardinality / parent_cardinality` ratio is tiny for a point that
+    ///   split off as a minority (an isolated outlier) and moderate for one that
+    ///   always stayed in the majority (a dense-cluster member). Immune to the
+    ///   leaf-fragmentation that defeats raw leaf cardinality / degree.
+    /// - **connected-component cardinality** over the leaf-overlap graph (an edge
+    ///   joins two leaves whose volumes overlap, `dist(cᵢ, cⱼ) ≤ rᵢ + rⱼ`; small
+    ///   components are anomalous): a refinement averaged in **only when the leaf
+    ///   count is within `graph_budget`**, because the overlap build is
+    ///   `O(L² · vec_len)`.
     ///
-    /// The three per-method scores (each already in `[0, 1]`) are averaged into
-    /// the ensemble score; every point inherits its leaf's ensemble score. The
-    /// remaining CHAODA methods (parent-child cardinality ratio, random-walk
-    /// stationary distribution) are deferred to a later increment. Deterministic:
-    /// no randomness, graph built purely from shipped tree fields + [`Self::dist`].
+    /// Every point inherits its leaf's score. Raw leaf cardinality and vertex
+    /// degree are not used (measured to add only fragmentation noise); the
+    /// random-walk stationary distribution method is deferred to a later
+    /// increment. Deterministic: no randomness; built purely from shipped tree
+    /// fields + [`Self::dist`].
+    ///
+    /// This convenience wrapper uses the default
+    /// [`ENSEMBLE_GRAPH_BUDGET`](Self::ENSEMBLE_GRAPH_BUDGET), so it never runs the
+    /// quadratic overlap build on production-sized corpora — it degrades to the
+    /// linear path-minority signal above the budget. Call
+    /// [`ensemble_anomaly_scores_budgeted`](Self::ensemble_anomaly_scores_budgeted)
+    /// to choose the cap explicitly.
     pub fn ensemble_anomaly_scores(&self, data: &[u8], vec_len: usize) -> Vec<AnomalyScore> {
+        self.ensemble_anomaly_scores_budgeted(data, vec_len, Self::ENSEMBLE_GRAPH_BUDGET)
+    }
+
+    /// See [`ensemble_anomaly_scores`](Self::ensemble_anomaly_scores). `graph_budget`
+    /// caps the leaf count above which the quadratic connected-component term is
+    /// skipped (path-minority only). `usize::MAX` always includes it; `0` forces
+    /// path-only.
+    pub fn ensemble_anomaly_scores_budgeted(
+        &self, data: &[u8], vec_len: usize, graph_budget: usize,
+    ) -> Vec<AnomalyScore> {
         let count = data.len() / vec_len;
 
-        // Leaf clusters become the graph vertices.
         let leaves: Vec<usize> = self
             .nodes
             .iter()
@@ -1611,52 +1637,8 @@ impl ClamTree {
             .map(|(i, _)| i)
             .collect();
         let n_leaves = leaves.len();
-
         if n_leaves == 0 {
             return Vec::new();
-        }
-
-        let center = |node_idx: usize| -> &[u8] {
-            let ci = self.nodes[node_idx].center_idx;
-            &data[ci * vec_len..(ci + 1) * vec_len]
-        };
-
-        // Overlap-graph adjacency: edge iff the two leaf volumes intersect.
-        let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n_leaves];
-        for a in 0..n_leaves {
-            let na = &self.nodes[leaves[a]];
-            let ca = center(leaves[a]);
-            for b in (a + 1)..n_leaves {
-                let nb = &self.nodes[leaves[b]];
-                let d = self.dist(ca, center(leaves[b]));
-                if d <= na.radius.saturating_add(nb.radius) {
-                    adj[a].push(b);
-                    adj[b].push(a);
-                }
-            }
-        }
-
-        // Connected components over the overlap graph (iterative BFS).
-        let mut comp_of = vec![usize::MAX; n_leaves];
-        let mut comp_size: Vec<usize> = Vec::new();
-        for start in 0..n_leaves {
-            if comp_of[start] != usize::MAX {
-                continue;
-            }
-            let cid = comp_size.len();
-            let mut stack = vec![start];
-            comp_of[start] = cid;
-            let mut size = 0usize;
-            while let Some(v) = stack.pop() {
-                size += 1;
-                for &w in &adj[v] {
-                    if comp_of[w] == usize::MAX {
-                        comp_of[w] = cid;
-                        stack.push(w);
-                    }
-                }
-            }
-            comp_size.push(size);
         }
 
         // Parent map (the tree stores child pointers, not parent pointers).
@@ -1670,38 +1652,79 @@ impl ClamTree {
             }
         }
 
-        // Per-method normalisers.
-        let max_comp = comp_size.iter().copied().max().unwrap_or(1).max(1) as f64;
-
-        // Per-leaf ensemble score. The dominant signal is the **parent-child
-        // path-minority ratio**: walking a leaf up to the root, the minimum
-        // child/parent cardinality ratio is tiny for a point that split off as a
-        // minority (an isolated outlier), and moderate for a point that always
-        // stayed in the majority (a dense-cluster member). This is immune to the
-        // leaf-fragmentation that defeats raw leaf cardinality/degree. It is
-        // averaged with the connected-component size (small components are
-        // anomalous); leaf degree and raw leaf cardinality are dropped — measured
-        // to add only fragmentation noise.
-        let mut leaf_score = vec![0.0f64; n_leaves];
-        for a in 0..n_leaves {
-            // path-minority
-            let mut node = leaves[a];
+        // Signal 1 — parent-child path-minority ratio (always; O(L · depth)).
+        let mut s_path = vec![0.0f64; n_leaves];
+        for (a, &leaf) in leaves.iter().enumerate() {
+            let mut node = leaf;
             let mut min_ratio = 1.0f64;
             while parent[node] != usize::MAX {
                 let p = parent[node];
-                let ratio = self.nodes[node].cardinality as f64
-                    / (self.nodes[p].cardinality as f64).max(1.0);
+                let ratio = self.nodes[node].cardinality as f64 / (self.nodes[p].cardinality as f64).max(1.0);
                 if ratio < min_ratio {
                     min_ratio = ratio;
                 }
                 node = p;
             }
-            let s_path = 1.0 - min_ratio;
-            // component cardinality
-            let comp = comp_size[comp_of[a]] as f64;
-            let s_comp = 1.0 - comp / max_comp;
-            leaf_score[a] = (s_path + s_comp) / 2.0;
+            s_path[a] = 1.0 - min_ratio;
         }
+
+        // Signal 2 — connected-component cardinality over the leaf-overlap graph.
+        // Guarded: the overlap build is O(L² · vec_len), so it is skipped above
+        // `graph_budget` and scoring falls back to path-minority alone.
+        let s_comp: Option<Vec<f64>> = if n_leaves <= graph_budget {
+            let center = |node_idx: usize| -> &[u8] {
+                let ci = self.nodes[node_idx].center_idx;
+                &data[ci * vec_len..(ci + 1) * vec_len]
+            };
+            let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n_leaves];
+            for a in 0..n_leaves {
+                let na = &self.nodes[leaves[a]];
+                let ca = center(leaves[a]);
+                for b in (a + 1)..n_leaves {
+                    let nb = &self.nodes[leaves[b]];
+                    let d = self.dist(ca, center(leaves[b]));
+                    if d <= na.radius.saturating_add(nb.radius) {
+                        adj[a].push(b);
+                        adj[b].push(a);
+                    }
+                }
+            }
+            let mut comp_of = vec![usize::MAX; n_leaves];
+            let mut comp_size: Vec<usize> = Vec::new();
+            for start in 0..n_leaves {
+                if comp_of[start] != usize::MAX {
+                    continue;
+                }
+                let cid = comp_size.len();
+                let mut stack = vec![start];
+                comp_of[start] = cid;
+                let mut size = 0usize;
+                while let Some(v) = stack.pop() {
+                    size += 1;
+                    for &w in &adj[v] {
+                        if comp_of[w] == usize::MAX {
+                            comp_of[w] = cid;
+                            stack.push(w);
+                        }
+                    }
+                }
+                comp_size.push(size);
+            }
+            let max_comp = comp_size.iter().copied().max().unwrap_or(1).max(1) as f64;
+            Some(
+                (0..n_leaves)
+                    .map(|a| 1.0 - comp_size[comp_of[a]] as f64 / max_comp)
+                    .collect(),
+            )
+        } else {
+            None
+        };
+
+        // Combine: average whichever signals are available.
+        let leaf_score: Vec<f64> = match &s_comp {
+            Some(sc) => (0..n_leaves).map(|a| (s_path[a] + sc[a]) / 2.0).collect(),
+            None => s_path,
+        };
 
         // Project leaf scores back onto every original data point.
         let mut out: Vec<AnomalyScore> = (0..count)
@@ -1716,18 +1739,18 @@ impl ClamTree {
             let node = &self.nodes[node_idx];
             let start = node.offset;
             let end = start + node.cardinality;
+            let score = leaf_score[a];
+            let awareness = if score < 0.25 {
+                AwarenessState::Crystallized
+            } else if score < 0.50 {
+                AwarenessState::Tensioned
+            } else if score < 0.75 {
+                AwarenessState::Uncertain
+            } else {
+                AwarenessState::Noise
+            };
             for &orig_idx in &self.reordered[start..end] {
                 if orig_idx < count {
-                    let score = leaf_score[a];
-                    let awareness = if score < 0.25 {
-                        AwarenessState::Crystallized
-                    } else if score < 0.50 {
-                        AwarenessState::Tensioned
-                    } else if score < 0.75 {
-                        AwarenessState::Uncertain
-                    } else {
-                        AwarenessState::Noise
-                    };
                     out[orig_idx] = AnomalyScore {
                         index: orig_idx,
                         lfd: node.lfd.value,
@@ -2872,6 +2895,10 @@ mod tests {
 
         let lfd = tree.anomaly_scores(&data, SPIKE_VEC_LEN);
         let ens = tree.ensemble_anomaly_scores(&data, SPIKE_VEC_LEN);
+        // Path-minority only (graph_budget = 0 forces the linear fallback that the
+        // public API uses above ENSEMBLE_GRAPH_BUDGET) — grounds the claim that the
+        // dominant signal survives without the quadratic component term.
+        let path_only = tree.ensemble_anomaly_scores_budgeted(&data, SPIKE_VEC_LEN, 0);
         assert_eq!(ens.len(), lfd.len());
         for s in &ens {
             assert!(s.score >= 0.0 && s.score <= 1.0, "ensemble score out of range");
@@ -2879,7 +2906,18 @@ mod tests {
 
         let auc_lfd = roc_auc(&lfd, is_out);
         let auc_ens = roc_auc(&ens, is_out);
-        eprintln!("[CHAODA-ensemble] AUC single-LFD={auc_lfd:.4} ensemble={auc_ens:.4} lift={:.4}", auc_ens - auc_lfd);
+        let auc_path = roc_auc(&path_only, is_out);
+        eprintln!(
+            "[CHAODA-ensemble] AUC single-LFD={auc_lfd:.4} path-only={auc_path:.4} ensemble={auc_ens:.4} lift={:.4}",
+            auc_ens - auc_lfd
+        );
+
+        // The linear path-only fallback (used at scale) must itself clear the bar,
+        // otherwise the budget guard would silently degrade production accuracy.
+        assert!(
+            auc_path >= 0.85,
+            "path-only fallback AUC {auc_path:.4} below 0.85 — the budget guard would degrade large corpora"
+        );
 
         // Determinism: the ensemble graph is built purely from shipped tree
         // fields, so a rebuild must reproduce bit-identical scores.
@@ -2895,10 +2933,7 @@ mod tests {
             auc_ens > auc_lfd + 0.15,
             "ensemble (AUC={auc_ens:.4}) did not materially beat single-LFD (AUC={auc_lfd:.4})"
         );
-        assert!(
-            auc_ens >= 0.85,
-            "ensemble AUC {auc_ens:.4} did not clear the PROBE-CHAODA-1000G bar of 0.85"
-        );
+        assert!(auc_ens >= 0.85, "ensemble AUC {auc_ens:.4} did not clear the PROBE-CHAODA-1000G bar of 0.85");
     }
 
     // ── rho_nn_candidates tests ──────────────────────────────────
