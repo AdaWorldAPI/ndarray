@@ -1576,6 +1576,169 @@ impl ClamTree {
             .filter(|a| a.score >= threshold)
             .collect()
     }
+
+    /// Multi-method CHAODA anomaly ensemble — increment 1 of `D-GEN-CHAODA-ENSEMBLE`
+    /// (lance-graph `genetics-probes-v1.md`).
+    ///
+    /// The single-method [`anomaly_scores`](Self::anomaly_scores) signal scores
+    /// each point by its leaf cluster's local fractal dimension (LFD). LFD
+    /// measures *intra-leaf* geometry complexity, not *inter-leaf* isolation, so
+    /// it does not separate isolated outliers from dense clusters (measured
+    /// ROC-AUC ≈ 0.62 on a synthetic mixture; see the spike test). This method
+    /// adds the **isolation-sensitive** subset of the CHAODA ensemble (Ishaq et
+    /// al. 2021), computed over the **leaf-cluster overlap graph** — clusters are
+    /// vertices, and an edge joins two leaves whose volumes overlap
+    /// (`dist(centerᵢ, centerⱼ) ≤ rᵢ + rⱼ`):
+    ///
+    /// - **relative cardinality** — `1 − |C|/max|C|`: small clusters are anomalous.
+    /// - **vertex degree** — `1 − deg/max deg`: low-degree (isolated) leaves are anomalous.
+    /// - **component cardinality** — `1 − |comp|/max|comp|`: small connected components are anomalous.
+    ///
+    /// The three per-method scores (each already in `[0, 1]`) are averaged into
+    /// the ensemble score; every point inherits its leaf's ensemble score. The
+    /// remaining CHAODA methods (parent-child cardinality ratio, random-walk
+    /// stationary distribution) are deferred to a later increment. Deterministic:
+    /// no randomness, graph built purely from shipped tree fields + [`Self::dist`].
+    pub fn ensemble_anomaly_scores(&self, data: &[u8], vec_len: usize) -> Vec<AnomalyScore> {
+        let count = data.len() / vec_len;
+
+        // Leaf clusters become the graph vertices.
+        let leaves: Vec<usize> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.is_leaf())
+            .map(|(i, _)| i)
+            .collect();
+        let n_leaves = leaves.len();
+
+        if n_leaves == 0 {
+            return Vec::new();
+        }
+
+        let center = |node_idx: usize| -> &[u8] {
+            let ci = self.nodes[node_idx].center_idx;
+            &data[ci * vec_len..(ci + 1) * vec_len]
+        };
+
+        // Overlap-graph adjacency: edge iff the two leaf volumes intersect.
+        let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n_leaves];
+        for a in 0..n_leaves {
+            let na = &self.nodes[leaves[a]];
+            let ca = center(leaves[a]);
+            for b in (a + 1)..n_leaves {
+                let nb = &self.nodes[leaves[b]];
+                let d = self.dist(ca, center(leaves[b]));
+                if d <= na.radius.saturating_add(nb.radius) {
+                    adj[a].push(b);
+                    adj[b].push(a);
+                }
+            }
+        }
+
+        // Connected components over the overlap graph (iterative BFS).
+        let mut comp_of = vec![usize::MAX; n_leaves];
+        let mut comp_size: Vec<usize> = Vec::new();
+        for start in 0..n_leaves {
+            if comp_of[start] != usize::MAX {
+                continue;
+            }
+            let cid = comp_size.len();
+            let mut stack = vec![start];
+            comp_of[start] = cid;
+            let mut size = 0usize;
+            while let Some(v) = stack.pop() {
+                size += 1;
+                for &w in &adj[v] {
+                    if comp_of[w] == usize::MAX {
+                        comp_of[w] = cid;
+                        stack.push(w);
+                    }
+                }
+            }
+            comp_size.push(size);
+        }
+
+        // Parent map (the tree stores child pointers, not parent pointers).
+        let mut parent = vec![usize::MAX; self.nodes.len()];
+        for (i, n) in self.nodes.iter().enumerate() {
+            if let Some(l) = n.left {
+                parent[l] = i;
+            }
+            if let Some(r) = n.right {
+                parent[r] = i;
+            }
+        }
+
+        // Per-method normalisers.
+        let max_comp = comp_size.iter().copied().max().unwrap_or(1).max(1) as f64;
+
+        // Per-leaf ensemble score. The dominant signal is the **parent-child
+        // path-minority ratio**: walking a leaf up to the root, the minimum
+        // child/parent cardinality ratio is tiny for a point that split off as a
+        // minority (an isolated outlier), and moderate for a point that always
+        // stayed in the majority (a dense-cluster member). This is immune to the
+        // leaf-fragmentation that defeats raw leaf cardinality/degree. It is
+        // averaged with the connected-component size (small components are
+        // anomalous); leaf degree and raw leaf cardinality are dropped — measured
+        // to add only fragmentation noise.
+        let mut leaf_score = vec![0.0f64; n_leaves];
+        for a in 0..n_leaves {
+            // path-minority
+            let mut node = leaves[a];
+            let mut min_ratio = 1.0f64;
+            while parent[node] != usize::MAX {
+                let p = parent[node];
+                let ratio = self.nodes[node].cardinality as f64
+                    / (self.nodes[p].cardinality as f64).max(1.0);
+                if ratio < min_ratio {
+                    min_ratio = ratio;
+                }
+                node = p;
+            }
+            let s_path = 1.0 - min_ratio;
+            // component cardinality
+            let comp = comp_size[comp_of[a]] as f64;
+            let s_comp = 1.0 - comp / max_comp;
+            leaf_score[a] = (s_path + s_comp) / 2.0;
+        }
+
+        // Project leaf scores back onto every original data point.
+        let mut out: Vec<AnomalyScore> = (0..count)
+            .map(|index| AnomalyScore {
+                index,
+                lfd: 0.0,
+                score: 0.0,
+                awareness: AwarenessState::Crystallized,
+            })
+            .collect();
+        for (a, &node_idx) in leaves.iter().enumerate() {
+            let node = &self.nodes[node_idx];
+            let start = node.offset;
+            let end = start + node.cardinality;
+            for &orig_idx in &self.reordered[start..end] {
+                if orig_idx < count {
+                    let score = leaf_score[a];
+                    let awareness = if score < 0.25 {
+                        AwarenessState::Crystallized
+                    } else if score < 0.50 {
+                        AwarenessState::Tensioned
+                    } else if score < 0.75 {
+                        AwarenessState::Uncertain
+                    } else {
+                        AwarenessState::Noise
+                    };
+                    out[orig_idx] = AnomalyScore {
+                        index: orig_idx,
+                        lfd: node.lfd.value,
+                        score,
+                        awareness,
+                    };
+                }
+            }
+        }
+        out
+    }
 }
 
 // ─── Tests ──────────────────────────────────────────
@@ -2668,6 +2831,74 @@ mod tests {
         // never fail `cargo test -p ndarray`).
         assert!(mean_out >= mean_clu, "polarity wrong: outliers ({mean_out:.4}) below cluster mean ({mean_clu:.4})");
         assert!(auc > 0.5, "anomaly signal is not better than chance (AUC={auc:.4})");
+    }
+
+    /// ROC-AUC via the Mann-Whitney U statistic (ties count 0.5); positive class
+    /// = `is_pos(index)`.
+    fn roc_auc(scores: &[AnomalyScore], is_pos: impl Fn(usize) -> bool) -> f64 {
+        let (mut u, mut n_pos) = (0.0f64, 0usize);
+        for a in scores {
+            if !is_pos(a.index) {
+                continue;
+            }
+            n_pos += 1;
+            for b in scores {
+                if is_pos(b.index) {
+                    continue;
+                }
+                if a.score > b.score {
+                    u += 1.0;
+                } else if (a.score - b.score).abs() < 1e-12 {
+                    u += 0.5;
+                }
+            }
+        }
+        let n_neg = scores.len() - n_pos;
+        if n_pos == 0 || n_neg == 0 {
+            return 0.5;
+        }
+        u / (n_pos as f64 * n_neg as f64)
+    }
+
+    /// `D-GEN-CHAODA-ENSEMBLE` increment 1: the isolation-sensitive ensemble must
+    /// materially out-discriminate the single-method leaf-LFD baseline on the same
+    /// synthetic mixture the spike measured at AUC ≈ 0.62. This is a NEW capability
+    /// (not a future improvement), so a lower-bound gate is appropriate here.
+    #[test]
+    fn test_chaoda_ensemble_beats_single_lfd_on_genetics_like_mixture() {
+        let (data, outliers) = make_genetics_like_mixture();
+        let tree = ClamTree::build(&data, SPIKE_VEC_LEN, 3);
+        let is_out = |i: usize| outliers.contains(&i);
+
+        let lfd = tree.anomaly_scores(&data, SPIKE_VEC_LEN);
+        let ens = tree.ensemble_anomaly_scores(&data, SPIKE_VEC_LEN);
+        assert_eq!(ens.len(), lfd.len());
+        for s in &ens {
+            assert!(s.score >= 0.0 && s.score <= 1.0, "ensemble score out of range");
+        }
+
+        let auc_lfd = roc_auc(&lfd, is_out);
+        let auc_ens = roc_auc(&ens, is_out);
+        eprintln!("[CHAODA-ensemble] AUC single-LFD={auc_lfd:.4} ensemble={auc_ens:.4} lift={:.4}", auc_ens - auc_lfd);
+
+        // Determinism: the ensemble graph is built purely from shipped tree
+        // fields, so a rebuild must reproduce bit-identical scores.
+        let tree2 = ClamTree::build(&data, SPIKE_VEC_LEN, 3);
+        let ens2 = tree2.ensemble_anomaly_scores(&data, SPIKE_VEC_LEN);
+        for (a, b) in ens.iter().zip(ens2.iter()) {
+            assert_eq!(a.score.to_bits(), b.score.to_bits(), "non-deterministic ensemble score");
+        }
+
+        // The whole point: the ensemble lifts discrimination well past the weak
+        // single-LFD signal. These are lower bounds (a better ensemble keeps them green).
+        assert!(
+            auc_ens > auc_lfd + 0.15,
+            "ensemble (AUC={auc_ens:.4}) did not materially beat single-LFD (AUC={auc_lfd:.4})"
+        );
+        assert!(
+            auc_ens >= 0.85,
+            "ensemble AUC {auc_ens:.4} did not clear the PROBE-CHAODA-1000G bar of 0.85"
+        );
     }
 
     // ── rho_nn_candidates tests ──────────────────────────────────
