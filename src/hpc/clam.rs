@@ -2499,6 +2499,190 @@ mod tests {
         }
     }
 
+    // ── CHAODA outlier-discrimination spike (PROBE-CHAODA-1000G kernel smoke test) ──
+    //
+    // Thermometer-encode each of 5 continuous lanes into 48 bits so Hamming
+    // distance is monotone in per-lane L1 magnitude (the honest bridge from
+    // ordinal features to the Hamming-metric CLAM default). 5 lanes x 6 bytes
+    // = 30 bytes/vector.
+    const SPIKE_LANES: usize = 5;
+    const SPIKE_LEVELS: usize = 48; // 48 bits = 6 bytes per lane
+    const SPIKE_VEC_LEN: usize = SPIKE_LANES * (SPIKE_LEVELS / 8);
+
+    fn thermometer_encode(lanes: &[f64; SPIKE_LANES]) -> Vec<u8> {
+        let mut out = vec![0u8; SPIKE_VEC_LEN];
+        for (l, &v) in lanes.iter().enumerate() {
+            let q = (v.clamp(0.0, 1.0) * SPIKE_LEVELS as f64).round() as usize;
+            let base_bit = l * SPIKE_LEVELS;
+            for b in 0..q {
+                let bit = base_bit + b;
+                out[bit / 8] |= 1 << (bit % 8);
+            }
+        }
+        out
+    }
+
+    // Box-Muller standard normal from a SplitMix64 uniform stream.
+    fn next_gaussian(rng: &mut SplitMix64) -> f64 {
+        let u1 = ((rng.next_u64() >> 11) as f64 / (1u64 << 53) as f64).max(1e-12);
+        let u2 = (rng.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
+        (-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos()
+    }
+
+    /// Synthesise a 5-lane Gaussian mixture: tight "common" clusters plus
+    /// far "novel" outliers. Returns (bytes, outlier_index_set).
+    fn make_genetics_like_mixture() -> (Vec<u8>, Vec<usize>) {
+        let mut rng = SplitMix64::new(0x6E_65_74_69_63_73); // "netics"
+        let centers: [[f64; SPIKE_LANES]; 3] = [
+            [0.20, 0.25, 0.15, 0.30, 0.22],
+            [0.50, 0.55, 0.48, 0.52, 0.50],
+            [0.78, 0.72, 0.80, 0.75, 0.82],
+        ];
+        let sigma = 0.025;
+        let per_cluster = 40;
+        let mut data = Vec::new();
+        let mut idx = 0usize;
+        for center in &centers {
+            for _ in 0..per_cluster {
+                let mut lanes = *center;
+                for lane in lanes.iter_mut() {
+                    *lane = (*lane + sigma * next_gaussian(&mut rng)).clamp(0.0, 1.0);
+                }
+                data.extend_from_slice(&thermometer_encode(&lanes));
+                idx += 1;
+            }
+        }
+        // 8 novel outliers placed in regions far from every cluster center.
+        let outlier_lanes: [[f64; SPIKE_LANES]; 8] = [
+            [0.02, 0.97, 0.03, 0.95, 0.05],
+            [0.98, 0.02, 0.96, 0.04, 0.99],
+            [0.05, 0.05, 0.98, 0.02, 0.50],
+            [0.95, 0.95, 0.02, 0.98, 0.03],
+            [0.50, 0.02, 0.05, 0.97, 0.95],
+            [0.03, 0.50, 0.97, 0.05, 0.02],
+            [0.99, 0.50, 0.99, 0.50, 0.01],
+            [0.01, 0.99, 0.50, 0.99, 0.99],
+        ];
+        let mut outlier_indices = Vec::new();
+        for lanes in &outlier_lanes {
+            data.extend_from_slice(&thermometer_encode(lanes));
+            outlier_indices.push(idx);
+            idx += 1;
+        }
+        (data, outlier_indices)
+    }
+
+    /// Kernel smoke test for the `PROBE-CHAODA-1000G` claim (genetics-probes-v1
+    /// in AdaWorldAPI/lance-graph): *"CHAODA detects novel variants without a
+    /// trained classifier."*
+    ///
+    /// FINDING (RUN 2026-06-16): the shipped single-method leaf-LFD
+    /// `anomaly_scores` achieves only **ROC-AUC ≈ 0.62** separating deliberately
+    /// extreme outliers from tight Gaussian clusters — the *easiest* possible
+    /// case. That is well below the probe's ≥ 0.85 bar. The cause is mechanical:
+    /// leaf LFD = log₂(|B(c,r)|/|B(c,r/2)|) measures *intra-leaf* geometry
+    /// complexity, not *inter-leaf* isolation, so an isolated singleton lands in
+    /// a leaf whose LFD is comparable to a dense cluster's, and the global
+    /// min-max normalisation compresses both into the same score band. The
+    /// CHAODA ensemble of Ishaq et al. 2021 combines several graph-based signals
+    /// (relative/component cardinality, graph neighbourhood, random-walk
+    /// stationary distribution, vertex degree); only the LFD signal is shipped
+    /// here. PROBE-CHAODA-1000G therefore needs the multi-method ensemble (or an
+    /// augmented signal) before it can pass — not just genomic fixtures.
+    ///
+    /// This test locks the *robust* invariants — valid range, bit-exact
+    /// determinism, correct polarity (outliers ≥ cluster mean), better-than-
+    /// chance lower bound — with wide tolerance: the AUC may drift anywhere in
+    /// [0.5, 0.85) without breaking. The one tripwire is `auc < 0.85`: it does
+    /// not assert the measured 0.62, but it does fail by design if a future
+    /// change (e.g. a multi-method CHAODA ensemble) lifts the single-method
+    /// signal to the probe bar — forcing whoever does that to update the
+    /// PROBE-CHAODA-1000G FINDING in lance-graph rather than letting the
+    /// cross-repo claim silently rot.
+    #[test]
+    fn test_chaoda_flags_novel_outliers_in_genetics_like_mixture() {
+        let (data, outliers) = make_genetics_like_mixture();
+        let count = data.len() / SPIKE_VEC_LEN;
+        let tree = ClamTree::build(&data, SPIKE_VEC_LEN, 3);
+        let scores = tree.anomaly_scores(&data, SPIKE_VEC_LEN);
+        assert_eq!(scores.len(), count);
+
+        let is_outlier = |i: usize| outliers.contains(&i);
+        let (mut sum_out, mut n_out) = (0.0f64, 0usize);
+        let (mut sum_clu, mut n_clu) = (0.0f64, 0usize);
+        let (mut out_high, mut clu_high) = (0usize, 0usize); // score >= 0.5
+        for s in &scores {
+            assert!(s.score >= 0.0 && s.score <= 1.0);
+            if is_outlier(s.index) {
+                sum_out += s.score;
+                n_out += 1;
+                if s.score >= 0.5 {
+                    out_high += 1;
+                }
+            } else {
+                sum_clu += s.score;
+                n_clu += 1;
+                if s.score >= 0.5 {
+                    clu_high += 1;
+                }
+            }
+        }
+        let mean_out = sum_out / n_out as f64;
+        let mean_clu = sum_clu / n_clu as f64;
+        let frac_out_high = out_high as f64 / n_out as f64;
+        let frac_clu_high = clu_high as f64 / n_clu as f64;
+
+        // ROC-AUC via the Mann-Whitney U statistic (ties count 0.5). This is the
+        // exact number PROBE-CHAODA-1000G gates on (>= 0.85 to pass).
+        let mut u = 0.0f64;
+        for a in &scores {
+            if !is_outlier(a.index) {
+                continue;
+            }
+            for b in &scores {
+                if is_outlier(b.index) {
+                    continue;
+                }
+                if a.score > b.score {
+                    u += 1.0;
+                } else if (a.score - b.score).abs() < 1e-12 {
+                    u += 0.5;
+                }
+            }
+        }
+        let auc = u / (n_out as f64 * n_clu as f64);
+        eprintln!(
+            "[CHAODA-spike] n_clu={n_clu} n_out={n_out} mean_clu={mean_clu:.4} mean_out={mean_out:.4} \
+             frac_clu>=0.5={frac_clu_high:.3} frac_out>=0.5={frac_out_high:.3} ROC_AUC={auc:.4}"
+        );
+
+        // Determinism: rebuild + rescore must be bit-identical (no-randomness invariant).
+        let tree2 = ClamTree::build(&data, SPIKE_VEC_LEN, 3);
+        let scores2 = tree2.anomaly_scores(&data, SPIKE_VEC_LEN);
+        for (a, b) in scores.iter().zip(scores2.iter()) {
+            assert_eq!(a.score.to_bits(), b.score.to_bits(), "non-deterministic score");
+        }
+
+        // Robust, forward-compatible invariants (see the doc comment for the
+        // measured AUC ≈ 0.62 finding; we deliberately do NOT assert the ceiling).
+        assert!(
+            mean_out >= mean_clu,
+            "polarity wrong: outliers ({mean_out:.4}) below cluster mean ({mean_clu:.4})"
+        );
+        assert!(
+            auc > 0.5,
+            "leaf-LFD anomaly signal is not better than chance (AUC={auc:.4})"
+        );
+        // Documents the gap to the PROBE-CHAODA-1000G bar without making the
+        // test brittle to a future multi-method CHAODA port that raises the AUC.
+        assert!(
+            auc < 0.85,
+            "single-method leaf-LFD unexpectedly met the >= 0.85 probe bar \
+             (AUC={auc:.4}); if a multi-method CHAODA ensemble was added, update \
+             this assertion AND the PROBE-CHAODA-1000G FINDING in lance-graph"
+        );
+    }
+
     // ── rho_nn_candidates tests ──────────────────────────────────
 
     #[test]
