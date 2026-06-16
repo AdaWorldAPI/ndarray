@@ -2533,11 +2533,8 @@ mod tests {
     /// far "novel" outliers. Returns (bytes, outlier_index_set).
     fn make_genetics_like_mixture() -> (Vec<u8>, Vec<usize>) {
         let mut rng = SplitMix64::new(0x6E_65_74_69_63_73); // "netics"
-        let centers: [[f64; SPIKE_LANES]; 3] = [
-            [0.20, 0.25, 0.15, 0.30, 0.22],
-            [0.50, 0.55, 0.48, 0.52, 0.50],
-            [0.78, 0.72, 0.80, 0.75, 0.82],
-        ];
+        let centers: [[f64; SPIKE_LANES]; 3] =
+            [[0.20, 0.25, 0.15, 0.30, 0.22], [0.50, 0.55, 0.48, 0.52, 0.50], [0.78, 0.72, 0.80, 0.75, 0.82]];
         let sigma = 0.025;
         let per_cluster = 40;
         let mut data = Vec::new();
@@ -2669,14 +2666,8 @@ mod tests {
         // 0.85 probe bar. The measured AUC is surfaced via the eprintln above as
         // a diagnostic; we deliberately do NOT cap it (a quality improvement must
         // never fail `cargo test -p ndarray`).
-        assert!(
-            mean_out >= mean_clu,
-            "polarity wrong: outliers ({mean_out:.4}) below cluster mean ({mean_clu:.4})"
-        );
-        assert!(
-            auc > 0.5,
-            "anomaly signal is not better than chance (AUC={auc:.4})"
-        );
+        assert!(mean_out >= mean_clu, "polarity wrong: outliers ({mean_out:.4}) below cluster mean ({mean_clu:.4})");
+        assert!(auc > 0.5, "anomaly signal is not better than chance (AUC={auc:.4})");
     }
 
     // ── rho_nn_candidates tests ──────────────────────────────────
