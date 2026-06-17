@@ -20,8 +20,10 @@ FlowState(challenge,skill)` (Csikszentmihalyi) ≡ Friston model-vs-surprise
   (Berry-Esseen wrong under CAM-PQ weak dependence); ramp is an honest proxy
   pending Jirak calibration, **not** a claimed bound.
 - `ForkAction {Commit, DescendDeeper, ForkBasin, ForkDomain}` + `fork_decision`
-  — bands challenge−skill exactly like the shipped `mul::flow_state_from`
-  (Anxiety >0.2, Flow |δ|<0.15, Boredom <-0.2); HHTL depth decides descend-vs-
+  — bands challenge−skill on the shipped `mul::flow_state_from` boundaries
+  (Anxiety δ>0.2, Boredom δ<-0.2; the matched middle |δ|≤0.2, which
+  flow_state_from splits into Flow/Transition, collapses to one in-domain
+  branch here); HHTL depth decides descend-vs-
   fork. `ForkDomain` (mint a new classid = the Friston model-switch) requires
   BOTH leaf depth AND challenge≫skill — the "strong enough AT THE LEAF" invariant.
 

@@ -250,7 +250,11 @@ pub fn entropy_class(h: f64) -> u8 {
 #[inline]
 pub fn residue_surprise(residue_mag: f64, noise_floor: f64, sigma_k: f64) -> f64 {
     let nf = noise_floor.max(f64::MIN_POSITIVE);
-    let span = (sigma_k.max(f64::MIN_POSITIVE)) * nf;
+    // Guard the span AFTER the multiply: `MIN_POSITIVE * MIN_POSITIVE` underflows to
+    // 0.0, so a degenerate (zero/negative) calibration would make `excess / span`
+    // evaluate `0.0 / 0.0 = NaN` and defeat the `fork_decision` bands. Floor the
+    // product itself so the result is always finite and in `[0, 1]`.
+    let span = (sigma_k.max(f64::MIN_POSITIVE) * nf).max(f64::MIN_POSITIVE);
     let excess = (residue_mag - nf).max(0.0);
     (excess / span).clamp(0.0, 1.0)
 }
@@ -278,17 +282,21 @@ pub enum ForkAction {
 
 /// The fork decision. `challenge = residue_surprise(residue_mag, noise_floor,
 /// sigma_k)`; `in_domain_skill ∈ [0,1]` is the codebook's remaining resolving
-/// capacity. The challenge↔skill delta is banded exactly like the shipped
-/// `flow_state_from` (Anxiety `>0.2`, Flow `|δ|<0.15`, Boredom `<-0.2`), then the
-/// HHTL depth decides descend-vs-fork:
+/// capacity. The challenge↔skill delta `δ` is banded on the shipped
+/// `flow_state_from` boundaries — **Anxiety `δ>0.2`** and **Boredom `δ<-0.2`** —
+/// then HHTL depth decides descend-vs-fork. The matched middle (`-0.2 ≤ δ ≤ 0.2`,
+/// which `flow_state_from` further splits into Flow `|δ|<0.15` and Transition) is
+/// uniformly "resolvable in-domain" here, so this ladder collapses Flow+Transition
+/// into one branch — the Flow/Transition distinction does not change the action.
 ///
-/// * **Boredom** → [`ForkAction::Commit`].
-/// * **Anxiety, depth < max** → [`ForkAction::DescendDeeper`] (apply skill at a finer
-///   tier before declaring the residue irreducible — the fork is a *leaf* condition).
-/// * **Anxiety, depth == max** → [`ForkAction::ForkDomain`] (the orthogonal leaf
-///   residue is strong enough: free energy forks into a new domain).
-/// * **Flow/Transition** → [`ForkAction::DescendDeeper`] while `depth < max`, else
-///   [`ForkAction::ForkBasin`].
+/// * **Boredom** (`δ<-0.2`) → [`ForkAction::Commit`].
+/// * **Anxiety** (`δ>0.2`), `depth < max` → [`ForkAction::DescendDeeper`] (apply skill
+///   at a finer tier before declaring the residue irreducible — fork is a *leaf*
+///   condition).
+/// * **Anxiety** (`δ>0.2`), `depth == max` → [`ForkAction::ForkDomain`] (the orthogonal
+///   leaf residue is strong enough: free energy forks into a new domain).
+/// * **Flow/Transition** (`|δ|≤0.2`) → [`ForkAction::DescendDeeper`] while
+///   `depth < max`, else [`ForkAction::ForkBasin`].
 ///
 /// # Examples
 /// ```
@@ -403,6 +411,21 @@ mod tests {
         assert!((residue_surprise(10.0, 0.004, 6.0) - 1.0).abs() < 1e-9);
         // Monotone in residue magnitude.
         assert!(residue_surprise(0.01, 0.004, 6.0) < residue_surprise(0.02, 0.004, 6.0));
+    }
+
+    #[test]
+    fn residue_surprise_degenerate_calibration_is_finite() {
+        // Codex #221: zero/negative calibration must not yield NaN (MIN_POSITIVE²
+        // underflows to 0.0 → the span guard must run AFTER the multiply). Every
+        // result stays finite and in [0, 1], so fork_decision's bands stay valid.
+        for &(mag, nf, k) in &[(0.0, 0.0, 0.0), (0.5, 0.0, 0.0), (0.0, -1.0, -1.0), (1.0, 0.0, 6.0), (0.0, 0.004, 0.0)]
+        {
+            let s = residue_surprise(mag, nf, k);
+            assert!(s.is_finite() && (0.0..=1.0).contains(&s), "got {s} for ({mag},{nf},{k})");
+        }
+        // And the downstream decision still lands in a real band (not the NaN path).
+        let a = fork_decision(0.0, 0.5, 3, 3, 0.0, 0.0);
+        assert!(matches!(a, ForkAction::Commit | ForkAction::ForkBasin | ForkAction::DescendDeeper));
     }
 
     #[test]
