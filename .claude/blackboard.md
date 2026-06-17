@@ -3,6 +3,45 @@
 > **Read this first.** The "Polyglot Notebook" architecture below is a
 > separate/older program, not the current epoch.
 
+## 2026-06-17 — DECISION: HHTL fork ladder coded in `hpc::entropy_ladder` (CONJECTURE)
+
+Reified the operator's standing idea — *if the orthogonal (helix/CAM-PQ)
+leaf residue is strong enough, free energy forks into another domain
+(HHTL shift = new exploration)* — as pure functions beside the existing
+entropy/quadrant code. Unifies four vocabularies as one 2-axis structure:
+`entropy_ladder::Quadrant(entropy,energy)` ≡ `lance-graph-contract::mul::
+FlowState(challenge,skill)` (Csikszentmihalyi) ≡ Friston model-vs-surprise
+≡ Staunen↔Wisdom.
+
+- `residue_surprise(mag, noise_floor, sigma_k) → [0,1]` — orthogonal residue
+  magnitude (prediction error the in-domain centroid codebook fails to
+  explain) → challenge axis. Below floor = quantization (≈0); linear ramp
+  over `sigma_k·noise_floor`. Threshold provenance per `I-NOISE-FLOOR-JIRAK`
+  (Berry-Esseen wrong under CAM-PQ weak dependence); ramp is an honest proxy
+  pending Jirak calibration, **not** a claimed bound.
+- `ForkAction {Commit, DescendDeeper, ForkBasin, ForkDomain}` + `fork_decision`
+  — bands challenge−skill on the shipped `mul::flow_state_from` boundaries
+  (Anxiety δ>0.2, Boredom δ<-0.2; the matched middle |δ|≤0.2, which
+  flow_state_from splits into Flow/Transition, collapses to one in-domain
+  branch here); HHTL depth decides descend-vs-
+  fork. `ForkDomain` (mint a new classid = the Friston model-switch) requires
+  BOTH leaf depth AND challenge≫skill — the "strong enough AT THE LEAF" invariant.
+
+Layering kept honest: the `FlowState` *assessment* stays in lance-graph
+(thinking); the fork *math* lives here in ndarray (substrate, where residue +
+energy physically are) — per the Architecture Rule. Pure fns + one enum, no
+struct/layer, composes with `Quadrant`. 5 lib + 2 doctests, clippy clean.
+Branch `claude/jirak-math-theorems-harvest-rfii13`.
+
+**Loose ends (CONJECTURE → gated):** (a) feed the *real* `edge_codec::
+CoarseResidue` magnitude from the live codec into `fork_decision` (currently
+caller-supplied); (b) `ForkDomain` vs `ForkBasin` should be arbitrated by
+residue *orthogonality* (⊥ all in-domain centroids = genuinely new), not the
+depth+delta proxy; (c) Jirak-derived σ threshold to replace the `sigma_k`
+proxy. This driver-side wire merges with lance-graph `materialize`'s
+`ThoughtCtx::from_live` step (same call-site).
+
+
 ## 2026-06-10 — DECISION: GUID prefix→shape routing crystallized (docs-only)
 
 The operator-pinned canonical GUID (`OGAR/CLAUDE.md`: hex dash-groups =

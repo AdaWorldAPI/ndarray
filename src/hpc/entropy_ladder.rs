@@ -210,6 +210,134 @@ pub fn entropy_class(h: f64) -> u8 {
     ((h * 4.0) as u8).min(3)
 }
 
+// ── HHTL fork ladder — orthogonal leaf residue → Friston domain fork ──────────
+//
+// The unification (board canon): the entropy×energy `Quadrant`, Csikszentmihalyi's
+// flow channel (`lance_graph_contract::mul::FlowState`), Friston free-energy
+// minimization, and the Staunen↔Wisdom ladder are ONE 2-axis structure. The
+// CHALLENGE axis is surprise = the magnitude of the orthogonal helix/CAM-PQ leaf
+// residue the current domain's centroid codebook fails to explain; the SKILL axis
+// is the in-domain codebook's remaining resolving capacity. The fork rule is the
+// "anxiety escape": when challenge ≫ skill *at leaf depth*, the model cannot
+// minimize free energy in-domain, so it switches the model — mint a new classid
+// domain (an HHTL shift into a new exploration). This is the reduction-to-practice
+// of "if the orthogonal leaf residue is strong enough, free energy forks into
+// another domain."
+
+/// Map an orthogonal-residue magnitude to the surprise/challenge axis `[0, 1]`,
+/// relative to the substrate noise floor.
+///
+/// The helix/CAM-PQ leaf residue is the component left after the assigned centroid
+/// (the "place") is subtracted — geometrically orthogonal to that centroid, so its
+/// magnitude is the prediction error the current domain fails to explain. Below the
+/// noise floor it is mere quantization (≈0 surprise); the excess scales linearly to
+/// saturation over `sigma_k · noise_floor`.
+///
+/// **Threshold provenance (`I-NOISE-FLOOR-JIRAK`):** `noise_floor` should be the
+/// Berry-Esseen/Jirak weak-dependence bound (CAM-PQ contamination makes classic IID
+/// Berry-Esseen wrong), and `sigma_k` the σ-multiple deemed "genuinely new". The
+/// linear ramp here is an honest proxy pending a Jirak-derived calibration, not a
+/// claimed bound.
+///
+/// # Examples
+/// ```
+/// use ndarray::hpc::entropy_ladder::residue_surprise;
+/// assert!(residue_surprise(0.001, 0.004, 6.0) < 1e-12); // below floor → no surprise
+/// assert!((residue_surprise(1.0, 0.004, 6.0) - 1.0).abs() < 1e-12); // saturated
+/// let mid = residue_surprise(0.016, 0.004, 6.0); // excess 0.012 over span 0.024
+/// assert!((mid - 0.5).abs() < 1e-9);
+/// ```
+#[inline]
+pub fn residue_surprise(residue_mag: f64, noise_floor: f64, sigma_k: f64) -> f64 {
+    let nf = noise_floor.max(f64::MIN_POSITIVE);
+    // Guard the span AFTER the multiply: `MIN_POSITIVE * MIN_POSITIVE` underflows to
+    // 0.0, so a degenerate (zero/negative) calibration would make `excess / span`
+    // evaluate `0.0 / 0.0 = NaN` and defeat the `fork_decision` bands. Floor the
+    // product itself so the result is always finite and in `[0, 1]`.
+    let span = (sigma_k.max(f64::MIN_POSITIVE) * nf).max(f64::MIN_POSITIVE);
+    let excess = (residue_mag - nf).max(0.0);
+    (excess / span).clamp(0.0, 1.0)
+}
+
+/// What to do with a leaf residue, governed by the Csikszentmihalyi flow channel
+/// (challenge = residue surprise, skill = in-domain codebook capacity). Mirrors
+/// `lance_graph_contract::mul::FlowState`, projected onto the HHTL cascade.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum ForkAction {
+    /// **Boredom** — challenge ≪ skill: the domain over-explains. Commit (and the
+    /// caller may coarsen the address).
+    Commit = 0,
+    /// **Flow/Transition with depth remaining** — challenge ≈ skill: the codebook can
+    /// still reach the point; descend HEEL→HIP→TWIG→LEAF one tier.
+    DescendDeeper = 1,
+    /// **Flow/Transition at leaf depth** — resolvable, but no finer tier remains: a
+    /// sibling basin within the SAME classid codebook.
+    ForkBasin = 2,
+    /// **Anxiety at leaf depth** — challenge ≫ skill and irreducible in-domain: mint a
+    /// NEW classid domain (HHTL shift = new exploration). Friston: switch the
+    /// generative model when free energy can't be minimized within it.
+    ForkDomain = 3,
+}
+
+/// The fork decision. `challenge = residue_surprise(residue_mag, noise_floor,
+/// sigma_k)`; `in_domain_skill ∈ [0,1]` is the codebook's remaining resolving
+/// capacity. The challenge↔skill delta `δ` is banded on the shipped
+/// `flow_state_from` boundaries — **Anxiety `δ>0.2`** and **Boredom `δ<-0.2`** —
+/// then HHTL depth decides descend-vs-fork. The matched middle (`-0.2 ≤ δ ≤ 0.2`,
+/// which `flow_state_from` further splits into Flow `|δ|<0.15` and Transition) is
+/// uniformly "resolvable in-domain" here, so this ladder collapses Flow+Transition
+/// into one branch — the Flow/Transition distinction does not change the action.
+///
+/// * **Boredom** (`δ<-0.2`) → [`ForkAction::Commit`].
+/// * **Anxiety** (`δ>0.2`), `depth < max` → [`ForkAction::DescendDeeper`] (apply skill
+///   at a finer tier before declaring the residue irreducible — fork is a *leaf*
+///   condition).
+/// * **Anxiety** (`δ>0.2`), `depth == max` → [`ForkAction::ForkDomain`] (the orthogonal
+///   leaf residue is strong enough: free energy forks into a new domain).
+/// * **Flow/Transition** (`|δ|≤0.2`) → [`ForkAction::DescendDeeper`] while
+///   `depth < max`, else [`ForkAction::ForkBasin`].
+///
+/// # Examples
+/// ```
+/// use ndarray::hpc::entropy_ladder::{fork_decision, ForkAction};
+/// // Huge residue, low in-domain skill, already at the leaf → fork to a new domain.
+/// let a = fork_decision(1.0, 0.1, 3, 3, 0.004, 6.0);
+/// assert_eq!(a, ForkAction::ForkDomain);
+/// // Same surprise but a coarse tier remains → descend first, don't fork yet.
+/// assert_eq!(fork_decision(1.0, 0.1, 1, 3, 0.004, 6.0), ForkAction::DescendDeeper);
+/// // Tiny residue → the domain over-explains → commit.
+/// assert_eq!(fork_decision(0.002, 0.5, 3, 3, 0.004, 6.0), ForkAction::Commit);
+/// ```
+pub fn fork_decision(
+    residue_mag: f64, in_domain_skill: f64, depth: u8, max_depth: u8, noise_floor: f64, sigma_k: f64,
+) -> ForkAction {
+    let challenge = residue_surprise(residue_mag, noise_floor, sigma_k);
+    let skill = in_domain_skill.clamp(0.0, 1.0);
+    let delta = challenge - skill;
+    let at_leaf = depth >= max_depth;
+    if delta < -0.2 {
+        // Boredom — skill over-covers the challenge.
+        ForkAction::Commit
+    } else if delta > 0.2 {
+        // Anxiety — challenge exceeds skill. Fork only once the residue is a *leaf*
+        // residue; otherwise a finer tier may still resolve it.
+        if at_leaf {
+            ForkAction::ForkDomain
+        } else {
+            ForkAction::DescendDeeper
+        }
+    } else {
+        // Flow / Transition — matched. Resolve in-domain: descend if we can, else a
+        // sibling basin in the same codebook.
+        if at_leaf {
+            ForkAction::ForkBasin
+        } else {
+            ForkAction::DescendDeeper
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -269,6 +397,80 @@ mod tests {
         assert_eq!(entropy_class(0.3), 1);
         assert_eq!(entropy_class(0.6), 2);
         assert_eq!(entropy_class(0.99), 3);
+    }
+
+    #[test]
+    fn residue_surprise_floor_ramp_saturation() {
+        // Below the noise floor → quantization only → zero surprise.
+        assert!(residue_surprise(0.003, 0.004, 6.0) < 1e-12);
+        assert!(residue_surprise(0.004, 0.004, 6.0) < 1e-12);
+        // Linear ramp: excess / (sigma_k · nf). nf=0.004, span=0.024.
+        assert!((residue_surprise(0.016, 0.004, 6.0) - 0.5).abs() < 1e-9);
+        // Saturates at 1.
+        assert!((residue_surprise(0.028, 0.004, 6.0) - 1.0).abs() < 1e-9);
+        assert!((residue_surprise(10.0, 0.004, 6.0) - 1.0).abs() < 1e-9);
+        // Monotone in residue magnitude.
+        assert!(residue_surprise(0.01, 0.004, 6.0) < residue_surprise(0.02, 0.004, 6.0));
+    }
+
+    #[test]
+    fn residue_surprise_degenerate_calibration_is_finite() {
+        // Codex #221: zero/negative calibration must not yield NaN (MIN_POSITIVE²
+        // underflows to 0.0 → the span guard must run AFTER the multiply). Every
+        // result stays finite and in [0, 1], so fork_decision's bands stay valid.
+        for &(mag, nf, k) in &[(0.0, 0.0, 0.0), (0.5, 0.0, 0.0), (0.0, -1.0, -1.0), (1.0, 0.0, 6.0), (0.0, 0.004, 0.0)]
+        {
+            let s = residue_surprise(mag, nf, k);
+            assert!(s.is_finite() && (0.0..=1.0).contains(&s), "got {s} for ({mag},{nf},{k})");
+        }
+        // And the downstream decision still lands in a real band (not the NaN path).
+        let a = fork_decision(0.0, 0.5, 3, 3, 0.0, 0.0);
+        assert!(matches!(a, ForkAction::Commit | ForkAction::ForkBasin | ForkAction::DescendDeeper));
+    }
+
+    #[test]
+    fn fork_ladder_four_actions() {
+        let (nf, k) = (0.004, 6.0);
+        // Boredom: tiny residue, ample skill → commit.
+        assert_eq!(fork_decision(0.002, 0.6, 3, 3, nf, k), ForkAction::Commit);
+        // Anxiety at leaf: strong orthogonal leaf residue, low skill → fork domain.
+        assert_eq!(fork_decision(1.0, 0.1, 3, 3, nf, k), ForkAction::ForkDomain);
+        // Anxiety but a coarse tier remains → descend before forking (leaf condition).
+        assert_eq!(fork_decision(1.0, 0.1, 1, 3, nf, k), ForkAction::DescendDeeper);
+        // Flow at leaf (challenge ≈ skill): resolvable in-domain → sibling basin.
+        // challenge=0.5 (residue 0.016), skill=0.5 → delta 0 → Flow.
+        assert_eq!(fork_decision(0.016, 0.5, 3, 3, nf, k), ForkAction::ForkBasin);
+        // Flow with depth remaining → descend.
+        assert_eq!(fork_decision(0.016, 0.5, 0, 3, nf, k), ForkAction::DescendDeeper);
+    }
+
+    #[test]
+    fn fork_domain_only_when_residue_is_strong_at_leaf() {
+        let (nf, k) = (0.004, 6.0);
+        // The operator's invariant: ForkDomain requires BOTH (a) leaf depth AND
+        // (b) a residue strong enough that challenge ≫ skill. Weaken either and the
+        // domain must NOT fork.
+        assert_eq!(fork_decision(1.0, 0.1, 3, 3, nf, k), ForkAction::ForkDomain);
+        // (a) not at leaf → descend, never fork.
+        assert_ne!(fork_decision(1.0, 0.1, 2, 3, nf, k), ForkAction::ForkDomain);
+        // (b) skill matches the (saturated) challenge → Flow, not Anxiety → basin.
+        assert_ne!(fork_decision(1.0, 0.9, 3, 3, nf, k), ForkAction::ForkDomain);
+    }
+
+    #[test]
+    fn fork_anxiety_aligns_with_high_surprise_quadrant() {
+        // Cross-check the unification: an Anxiety/ForkDomain residue is high-challenge,
+        // so on the entropy×energy plane (challenge as entropy) it lands in the
+        // high-entropy half (Staunen at low energy / Confusion at high energy) — never
+        // Boredom/Wisdom. This ties ForkAction to the shipped Quadrant.
+        let challenge = residue_surprise(1.0, 0.004, 6.0); // saturated → 1.0
+        assert!(challenge >= 0.5);
+        assert_eq!(Quadrant::classify(challenge, 0.1), Quadrant::Staunen);
+        assert_eq!(Quadrant::classify(challenge, 0.9), Quadrant::Confusion);
+        // And a Boredom/Commit residue is low-challenge → low-entropy half.
+        let calm = residue_surprise(0.002, 0.004, 6.0); // 0.0
+        assert_eq!(Quadrant::classify(calm, 0.1), Quadrant::Boredom);
+        assert_eq!(Quadrant::classify(calm, 0.9), Quadrant::Wisdom);
     }
 
     /// Validation: entropy is a reliability proxy. Build a population of edges
