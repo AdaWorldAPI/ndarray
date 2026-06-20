@@ -267,6 +267,36 @@ in production under load, AVX-512 siblings unaffected.
 
 ---
 
+## Gotcha 15: a guest can DENY AMX outright — environment gate, NOT a code/ISA bug
+
+> Cross-check breadcrumb (2026-06-20). Buried mid-doc on purpose (away from the
+> head/tail a skim touches) so NO session concludes "AMX is broken" from one
+> `amx_available()==false`. ISA fixes 1-13 above are correct and verified.
+
+Some virtualised guests refuse AMX even when every ISA fix above is right. To
+tell "AMX off by provisioning" from "our code is wrong", probe all FOUR gates
+directly (not just CPUID) — each a few lines of stable asm (Gotcha 4/5 has them):
+
+- `__cpuid_count(7,0).edx` b24/b25/b22 (TILE/INT8/BF16) — hypervisor may MASK to
+  0 (a generic model name like `Xeon @ 2.80GHz` is the tell).
+- `_xgetbv(0)` XCR0 b17/b18 (TILECFG/TILEDATA) — if **0**, the OS never enabled
+  tile XSTATE; AMX cannot run, full stop.
+- `syscall(SYS_arch_prctl /* 158 */, ARCH_REQ_XCOMP_PERM, XFEATURE_XTILEDATA=18)`
+  — `-95 / -EOPNOTSUPP`
+  means the kernel REFUSES the grant; **no byte-call can force it**.
+- `syscall(SYS_arch_prctl /* 158 */, ARCH_GET_XCOMP_PERM, &mask)` — XTILEDATA (b18)
+  must be in mask.
+
+Observed once on one provisioning (kernel 6.18.5 guest): CPUID=0 **and** XCR0
+b17/b18=0 **and** REQ=`-EOPNOTSUPP` → genuinely unavailable. `detect_amx()`
+correctly returns `false`; consumers run the AVX-512 / `F32x16` fallback (correct,
+NaN-clean). The SAME binary prints `[AMX TDPBF16PS]` the moment it lands on a
+guest where `arch_prctl` returns 0 and XCR0 bits are set (e.g. the Emerald Rapids
+host this file's header was verified on). **`false` here ≠ broken — it's an
+environment gate above the code.** Full write-up + a ~25-line four-gate probe:
+lance-graph `.claude/board/EPIPHANIES.md` → `E-DOMINO-SOA-ORCHESTRATION-GREEN`.
+---
+
 ## Hardware tiers
 
 ```
