@@ -579,6 +579,12 @@ pub use crate::hpc::heel_f64x8::cosine_f32_to_f64_simd;
 // exposes the runtime tier check for reporting.
 #[cfg(feature = "std")]
 pub use crate::hpc::amx_matmul::{amx_available, matmul_i8_to_i32};
+// BF16 16×16 tile GEMM — AMX `TDPBF16PS` when `amx_available()`, `F32x16` FMA
+// fallback otherwise. Same W1a rule: reach it via `ndarray::simd::*`, never
+// `crate::hpc` directly (the one-time `arch_prctl(158)` XTILEDATA grant is gated
+// inside `amx_available()`, which this dispatcher calls before any tile op).
+#[cfg(feature = "std")]
+pub use crate::hpc::bf16_tile_gemm::bf16_tile_gemm_16x16;
 // CPU-generation detection (cached): SPR / EMR / GNR / Sierra Forest. Lets a
 // consumer report which silicon a run landed on and distinguish "no AMX
 // silicon" from "AMX present but not OS-enabled" — both surface via `amx_report`.
