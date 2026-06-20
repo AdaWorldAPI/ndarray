@@ -587,8 +587,9 @@ pub use crate::simd_amx::{amx_report, cpu_model, CpuModel};
 // Elementwise slice ops — polyfill-dispatched (F32x16/F64x8 chunks + scalar tail).
 #[cfg(feature = "std")]
 pub use crate::simd_ops::{
-    add_f32, add_f32_inplace, add_f64, add_f64_inplace, add_mul_f32, add_mul_f64, add_scalar_f32, div_f32,
-    div_f32_inplace, mul_f32, mul_f32_inplace, mul_f64, scale_f32, scale_f32_inplace, sub_f32, sub_f32_inplace,
+    add_f32, add_f32_inplace, add_f64, add_f64_inplace, add_mul_f32, add_mul_f64, add_scalar_f32, bf16_tile_gemm_16x16,
+    div_f32, div_f32_inplace, mul_f32, mul_f32_inplace, mul_f64, scale_f32, scale_f32_inplace, sub_f32,
+    sub_f32_inplace,
 };
 
 // ============================================================================
