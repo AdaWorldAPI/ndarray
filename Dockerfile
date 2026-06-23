@@ -34,6 +34,16 @@ COPY crates/ crates/
 COPY src/ src/
 COPY ndarray-rand/src/ ndarray-rand/src/
 
+# Cargo.toml (root) and ndarray-rand/Cargo.toml (a workspace member) declare
+# explicit [[example]]/[[bench]] targets. Cargo validates that every declared
+# target's source file exists while parsing the manifest — even for a lib-only
+# build — so these dirs must be in the context or `cargo build` fails at parse
+# with "can't find <name> example/bench". They are NOT compiled here (the default
+# build skips examples/benches), so this only adds source bytes, not build time.
+COPY examples/ examples/
+COPY benches/ benches/
+COPY ndarray-rand/benches/ ndarray-rand/benches/
+
 # Default target: x86-64-v3 (AVX2) — runs on GitHub CI and most servers.
 # Use Dockerfile.avx512 for x86-64-v4 (AVX-512). ndarray's simd.rs polyfill
 # detects AVX-512 at runtime via LazyLock<Tier> even when compiled for v3;

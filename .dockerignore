@@ -4,6 +4,10 @@ target/
 *.md
 !README*.md
 .github/
-benches/
-examples/
 scripts/
+# NB: benches/ and examples/ are intentionally NOT ignored. Cargo.toml declares
+# explicit [[bench]] and [[example]] targets, and cargo validates that every
+# declared target's source file exists when it parses the manifest — even for a
+# lib-only build. Excluding these dirs makes `cargo build` fail at manifest
+# parse with "can't find <name> example/bench". They are not compiled by the
+# default build, so the cost of shipping them in the context is just their size.
