@@ -96,6 +96,7 @@ pub mod project;
 pub mod tile;
 pub mod raster;
 pub mod frame;
+pub mod helix_orient;
 pub mod ply;
 pub mod depth_cert;
 pub mod depth_cascade;
