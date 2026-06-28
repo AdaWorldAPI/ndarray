@@ -156,9 +156,15 @@ pub fn quat_from_normal(n: [f32; 3]) -> [f32; 4] {
 /// Round-trip angular error in degrees (test/diagnostic helper).
 pub fn angle_error_deg(normal: [f32; 3], levels: usize) -> f64 {
     let d = decode(&encode(normal, levels)[..levels.clamp(1, 3)]);
-    let dd = (f64::from(normal[0]) * f64::from(d[0])
-        + f64::from(normal[1]) * f64::from(d[1])
-        + f64::from(normal[2]) * f64::from(d[2]))
+    // `encode` accepts non-unit input, but the angular error is cos⁻¹ of the dot of
+    // two UNIT directions. `decode` already returns a unit vector; normalize `normal`
+    // too, else a scaled input (e.g. [2,0,0]) clamps to 1.0 → reports 0°, and short
+    // vectors report inflated errors — making the diagnostic meaningless.
+    let nm = (f64::from(normal[0]).powi(2) + f64::from(normal[1]).powi(2) + f64::from(normal[2]).powi(2)).sqrt();
+    let inv = if nm > 0.0 { 1.0 / nm } else { 0.0 };
+    let dd = (f64::from(normal[0]) * inv * f64::from(d[0])
+        + f64::from(normal[1]) * inv * f64::from(d[1])
+        + f64::from(normal[2]) * inv * f64::from(d[2]))
     .clamp(-1.0, 1.0);
     dd.acos().to_degrees()
 }
