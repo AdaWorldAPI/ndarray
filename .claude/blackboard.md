@@ -3,6 +3,85 @@
 > **Read this first.** The "Polyglot Notebook" architecture below is a
 > separate/older program, not the current epoch.
 
+## 2026-06-28 — WASM SIMD128 backend filled in (`src/simd_wasm.rs`)
+
+Replaced the commented-out scaffolding in `src/simd_wasm.rs` with a real
+`core::arch::wasm32` SIMD128 backend, mirroring `simd_neon::aarch64_simd`'s
+proven split (native v128 for the float/byte hot path, scalar fallback for
+the long tail). Branch `claude/ndarray-wasm-scalar-zr9n46`.
+
+**`src/simd_wasm.rs::wasm32_simd`** (gated `#[cfg(all(target_arch="wasm32",
+target_feature="simd128"))]`):
+- `F32x16` / `F64x8` as `[v128;4]` + `F32Mask16` / `F64Mask8` — full API
+  parity with the scalar macro (splat/from_slice/from_array/to_array/
+  copy_to_slice/reduce_{sum,min,max}/abs/sqrt/round/floor/mul_add/
+  simd_{min,max,clamp,lt,le,gt,ge,eq,ne}/to_bits/from_bits/cast_i32 +
+  Add/Sub/Mul/Div/*Assign/Neg/Debug/PartialEq/Default + Mask::select).
+- `I8x16` (one `v128`) = UNION of the scalar + NEON method sets
+  (add/sub/min/max/cmp_gt + from_i4_packed_u64/lane_i8/saturating_abs)
+  so consumers are portable across every backend.
+- Free hot-kernels (v128 counterparts to the NEON kernels):
+  `dot_f32x4_wasm`, `popcount_u8x16_wasm`, `hamming_u8x16_wasm`,
+  `hamming_u8x64_wasm` (Fingerprint<256> distance via `i8x16_popcnt`),
+  `base17_l1_wasm`, `codebook_gather_f32x4_wasm`, `bf16_to_f32_batch_wasm`.
+- `mul_add`: `f32x4_relaxed_madd` under `+relaxed-simd`, else mul+add
+  (base simd128 has no FMA). `round()` = `f32x4_nearest` (ties-even, =NEON).
+  NaN in simd_min/max follows IEEE (NaN-propagating, =NEON); the existing
+  `simd_exp_f32` NaN save/restore already absorbs this. All documented.
+
+**Dispatch (`src/simd.rs`):** new `target_arch="wasm32" + target_feature=
+"simd128"` arm re-exports the 8 native names from `wasm32_simd` and the
+remainder from `scalar`; the "Other non-x86" arm now excludes that case
+(wasm-without-simd128 + riscv etc. stay full-scalar). Added wasm32
+`PREFERRED_*_LANES` arms (F32=4/F64=2/U64=2/I16=8, 128-bit widths) and a
+`.cargo/config-wasm.toml` (`-Ctarget-feature=+simd128`).
+
+**Unblocked the wasm build (pre-existing x86 leaks, not SIMD-scaffolding):**
+the crate did NOT compile for wasm at all — `src/simd.rs` re-exported the
+x86-only `amx_matmul` / `simd_amx` modules unconditionally, and
+`backend::gemm_bf16` called `amx_matmul::matmul_bf16_to_f32` directly.
+Gated both re-exports to `#[cfg(target_arch="x86_64")]`; split `gemm_bf16`
+into the IDENTICAL x86 AMX path + a non-x86 branch routing through the
+portable `hpc::quantized::bf16_gemm_f32(.., 1.0, 0.0)` (the same scalar
+reference the AMX dispatcher itself falls back to → bit-equivalent). x86
+behavior is untouched by construction (the original block now lives under
+`cfg(target_arch="x86_64")`).
+
+[VERIFICATION] (1) `cargo build -p ndarray --lib` for wasm32 **+simd128**
+(native) AND **without** simd128 (scalar) AND **--no-default-features**
+(no_std) AND x86_64 default — all green. (2) A standalone faithful copy of
+`wasm32_simd` built to wasm32+simd128 and run under **node**: 51 numeric
+checks (incl. exact mask bit-patterns, saturating_abs(i8::MIN)=127,
+Hamming=512, Base17 vs scalar incl. a pathological |a-b|=60000 overflow
+case, bf16 shift) all PASS. (3) x86 regression: 217 SIMD tests + 85
+backend/bf16 tests pass; `clippy -p ndarray --lib -- -D warnings` clean;
+`fmt --check` clean. Harness: `/tmp/.../scratchpad/wasmverify`.
+
+[ADVERSARIAL REVIEW] Ran a 3-angle Opus review (cfg-gating / intrinsic-
+semantics / x86-regression). x86-regression = PASS (x86 path byte-identical;
+non-x86 bf16 fallback bit-equivalent). Two findings resolved: (P0 cfg-gating
+"no_std arm break") = **false positive** — `pub mod simd` is itself
+`#[cfg(feature="std")]` (lib.rs:239), so the native wasm arm is transitively
+std-gated; `--no-default-features` wasm build is clean (empirically
+confirmed). (P1 base17 i16 wrap) = **real, fixed** — `base17_l1_wasm` now
+sign-extends i16→i32 via `i32x4_extend_{low,high}_i16x8` BEFORE the subtract,
+so `|a-b|` is computed in i32 and matches the scalar reference for the full
+i16 range (the prior i16-domain abs-diff, like NEON's `vabdq_s16`, wrapped at
+|a-b|>i16::MAX). Doc nits (mul_add ULP wording, reduce_sum order, Tier-enum
+comment) also tightened.
+
+[NOTE] The stale top-of-CLAUDE.md "Build currently fails (exit 101)" no
+longer reproduces — x86 lib builds clean this turn.
+
+[LOOSE END] Full-crate (workspace) wasm build still blocked by `getrandom
+0.3` (via `ndarray-rand`/`numeric-tests`, members that depend ON ndarray)
+needing the `wasm_js` backend — orthogonal to this work; `-p ndarray --lib`
+is the correct wasm surface and it is green. `bf16_to_f32_batch_wasm` is
+provided + tested but NOT wired into the `bf16_to_f32_batch` dispatch (left
+scalar to keep the BF16 path untouched); wire it if a wasm BF16 hot path
+appears. Native U8x64/I32x16/U64x8 stay scalar on wasm (same as NEON keeps
+them scalar) — the free Hamming/Base17 kernels cover those hot paths.
+
 ## 2026-06-17 — DECISION: HHTL fork ladder coded in `hpc::entropy_ladder` (CONJECTURE)
 
 Reified the operator's standing idea — *if the orthogonal (helix/CAM-PQ)
