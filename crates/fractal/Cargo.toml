@@ -2,7 +2,7 @@
 name = "fractal"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.94"
+rust-version = "1.95"
 description = "7+1 phyllotactic SIMD manifold with Euler-gamma singularity correction"
 license = "MIT OR Apache-2.0"
 

@@ -2,7 +2,7 @@
 name = "p64"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.94"
+rust-version = "1.95"
 description = "Palette64: 64×64 BNN attention matrix from 8 phyllotactic HEEL planes"
 license = "MIT OR Apache-2.0"
 

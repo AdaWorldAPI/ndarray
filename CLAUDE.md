@@ -6,7 +6,7 @@
 - **What**: High-performance linear algebra with pluggable BLAS backends (Native SIMD, MKL, OpenBLAS)
 - **Source**: `adaworldapi/rustynum` — reference GEMM, SIMD, and FFI implementations
 - **Target**: This repo — ndarray fork enhanced with HPC backends
-- **Rust**: 1.94 Stable only. No nightly features.
+- **Rust**: 1.95 Stable only. No nightly features.
 
 ## Agent Protocol
 This project uses specialized agents in `.claude/agents/`. Follow these rules:
