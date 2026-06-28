@@ -12,6 +12,11 @@ use std::sync::LazyLock;
 // `detect_tier()`'s feature-detection blocks are `target_arch = "x86_64"`
 // or `"aarch64"` gated, both false on i686. Without `dead_code` allowance
 // the `-D warnings` build fails with `variants ... are never constructed`.
+// Note: this `Tier` enum is *runtime* dispatch only. On `wasm32 +
+// target_feature = "simd128"` the SIMD *types* are NOT scalar — they come
+// from the compile-time `simd_wasm::wasm32_simd` v128 backend (re-exported
+// below); `detect_tier()` simply has no wasm arm, so the runtime tier stays
+// `Scalar`.
 #[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Debug)]
 #[repr(u8)]
@@ -156,7 +161,9 @@ pub const PREFERRED_F64_LANES: usize = 8;
 pub const PREFERRED_F64_LANES: usize = 4;
 #[cfg(target_arch = "aarch64")]
 pub const PREFERRED_F64_LANES: usize = 2; // NEON: float64x2_t = 2 × f64
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(target_arch = "wasm32")]
+pub const PREFERRED_F64_LANES: usize = 2; // WASM SIMD128: f64x2 = 2 × f64
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "wasm32")))]
 pub const PREFERRED_F64_LANES: usize = 4; // scalar fallback: same as AVX2 shape
 
 /// Preferred f32 SIMD width.
@@ -167,7 +174,9 @@ pub const PREFERRED_F32_LANES: usize = 16;
 pub const PREFERRED_F32_LANES: usize = 8;
 #[cfg(target_arch = "aarch64")]
 pub const PREFERRED_F32_LANES: usize = 4; // NEON: float32x4_t = 4 × f32
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(target_arch = "wasm32")]
+pub const PREFERRED_F32_LANES: usize = 4; // WASM SIMD128: f32x4 = 4 × f32
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "wasm32")))]
 pub const PREFERRED_F32_LANES: usize = 8;
 
 /// Preferred u64 SIMD width.
@@ -178,7 +187,9 @@ pub const PREFERRED_U64_LANES: usize = 8;
 pub const PREFERRED_U64_LANES: usize = 4;
 #[cfg(target_arch = "aarch64")]
 pub const PREFERRED_U64_LANES: usize = 2; // NEON: uint64x2_t
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(target_arch = "wasm32")]
+pub const PREFERRED_U64_LANES: usize = 2; // WASM SIMD128: i64x2 = 2 × u64
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "wasm32")))]
 pub const PREFERRED_U64_LANES: usize = 4;
 
 /// Preferred i16 SIMD width (for Base17 L1 on i16[17]).
@@ -191,7 +202,9 @@ pub const PREFERRED_I16_LANES: usize = 32;
 pub const PREFERRED_I16_LANES: usize = 16;
 #[cfg(target_arch = "aarch64")]
 pub const PREFERRED_I16_LANES: usize = 8; // NEON: int16x8_t
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(target_arch = "wasm32")]
+pub const PREFERRED_I16_LANES: usize = 8; // WASM SIMD128: i16x8 = 8 × i16
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "wasm32")))]
 pub const PREFERRED_I16_LANES: usize = 16;
 
 // ============================================================================
@@ -376,10 +389,28 @@ pub use scalar::{
     I64x4, I64x8, U16x16, U16x32, U32x16, U32x8, U64x4, U64x8, U8x64,
 };
 
-// Other non-x86 targets (wasm, riscv, etc.): full scalar fallback.
+// wasm32 + simd128: the native v128 float hot path (F32x16 / F64x8 + masks)
+// and native I8x16 come from `simd_wasm::wasm32_simd`; the long-tail integer
+// and 256-bit-shaped types come from the scalar fallback. Same split
+// `simd_neon` uses on aarch64 (native float kernels, scalar for the rest).
+// The `wasm32_simd` module only exists under `target_feature = "simd128"`,
+// so this arm is gated identically.
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128", not(feature = "nightly-simd")))]
+pub use crate::simd_wasm::wasm32_simd::{f32x16, f64x8, i8x16, F32Mask16, F32x16, F64Mask8, F64x8, I8x16};
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128", not(feature = "nightly-simd")))]
+pub use scalar::{
+    batch_packed_i4_16, f32x8, f64x4, i16x16, i16x32, i32x16, i32x8, i64x4, i64x8, i8x32, i8x64, palette_lookup_u8x8,
+    prefetch_read_t0, prefetch_read_t1, prefetch_read_t2, u16x16, u16x8, u32x16, u32x8, u64x4, u64x8, u8x64, u8x8,
+    F32x8, F64x4, I16x16, I16x32, I32x16, I32x8, I64x4, I64x8, I8x32, I8x64, U16x16, U16x32, U16x8, U32x16, U32x8,
+    U64x4, U64x8, U8x64, U8x8,
+};
+
+// Other non-x86 targets — wasm32 without simd128, riscv, etc.: full scalar
+// fallback. Excludes the wasm32+simd128 case handled by the native arm above.
 #[cfg(all(
     not(target_arch = "x86_64"),
     not(target_arch = "aarch64"),
+    not(all(target_arch = "wasm32", target_feature = "simd128")),
     not(feature = "nightly-simd")
 ))]
 pub use scalar::{
@@ -577,11 +608,16 @@ pub use crate::hpc::heel_f64x8::cosine_f32_to_f64_simd;
 // whole AMX ladder through the canonical `ndarray::simd::*` import (W1a)
 // without dipping into `crate::hpc::amx_matmul` directly. `amx_available()`
 // exposes the runtime tier check for reporting.
-#[cfg(feature = "std")]
+// AMX is x86_64-only (the `amx_matmul` / `simd_amx` modules are
+// `#[cfg(target_arch = "x86_64")]`), so these re-exports are arch-gated.
+// Off x86 the cross-platform entry points are `backend::gemm_i8` /
+// `backend::gemm_bf16` (portable scalar / NEON / wasm-SIMD paths).
+#[cfg(all(feature = "std", target_arch = "x86_64"))]
 pub use crate::hpc::amx_matmul::{amx_available, matmul_i8_to_i32};
 // CPU-generation detection (cached): SPR / EMR / GNR / Sierra Forest. Lets a
 // consumer report which silicon a run landed on and distinguish "no AMX
 // silicon" from "AMX present but not OS-enabled" — both surface via `amx_report`.
+#[cfg(target_arch = "x86_64")]
 pub use crate::simd_amx::{amx_report, cpu_model, CpuModel};
 
 // Elementwise slice ops — polyfill-dispatched (F32x16/F64x8 chunks + scalar tail).
