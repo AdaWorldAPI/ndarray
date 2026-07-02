@@ -36,7 +36,7 @@ band query prune 90.2%. All 413 stations EXACT on both paths; PASS.
 Also EXACT at 100M rows (idle). **"Is BF16 precise enough?" — measured:**
 the naive bf16-RNE row through the same tile gives max per-station
 |Δmean| = 0.0123 tenths (0.0012 °C, N≈24k/station — quantization bias
-averages out); single readings off by ≤ 4 tenths (bf16 ulp at
+averages out); single readings off by ≤ 2 tenths (half-ulp of bf16 at
 |t|∈[512,1024)). Verdict: bf16-direct fine for means, hi/lo split (free —
 spare A rows) required for min/max + exactness certification.
 

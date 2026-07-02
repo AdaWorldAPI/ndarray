@@ -530,7 +530,7 @@ fn main() {
     );
     println!(
         "  bf16-direct row (no hi/lo split): max |Δmean| = {:.4} tenths = {:.5} °C \
-         (single reading off by ≤ 4 tenths: bf16 ulp at |t| ∈ [512, 1024))",
+         (single reading off by ≤ 2 tenths: half-ulp of bf16 at |t| ∈ [512, 1024), certified in jc)",
         max_mean_err_t,
         max_mean_err_t / 10.0
     );
