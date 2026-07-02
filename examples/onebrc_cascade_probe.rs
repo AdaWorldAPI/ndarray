@@ -67,7 +67,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use ndarray::simd::{amx_available, bf16_tile_gemm_16x16_amx, F64x8, MultiLaneColumn};
+use ndarray::simd::{bf16_tile_gemm_16x16_packed, bf16_tile_gemm_tier, F64x8, MultiLaneColumn, PackedBf16B};
 
 // ── Deterministic RNG (same SplitMix64 as jc / hpc::pillar) ─────────────────
 
@@ -294,12 +294,12 @@ fn bf16_rne(v: f32) -> u16 {
 /// per-morsel cost is O(rows), not O(rows × groups) — the same L1-resident
 /// hot-set discipline as the scatter path.
 struct GemmGroupBy {
-    a: Vec<u16>,             // 16 × GEMM_K, rows 0 and 4-15 pre-set
-    b_blocks: Vec<Vec<u16>>, // N_GROUPS × (GEMM_K × 16)
-    c: Vec<f32>,             // 16 × 16 output tile
-    sum_t: Vec<i64>,         // per-station Σ (tenths), drained exactly
-    cnt: Vec<u64>,           // per-station n
-    sum_bf16: Vec<f64>,      // per-station Σ of bf16-rounded temps (row 3)
+    a: Vec<u16>,                // 16 × GEMM_K, rows 0 and 4-15 pre-set
+    b_blocks: Vec<PackedBf16B>, // N_GROUPS × VNNI-packed (GEMM_K × 16)
+    c: Vec<f32>,                // 16 × 16 output tile
+    sum_t: Vec<i64>,            // per-station Σ (tenths), drained exactly
+    cnt: Vec<u64>,              // per-station n
+    sum_bf16: Vec<f64>,         // per-station Σ of bf16-rounded temps (row 3)
 }
 
 impl GemmGroupBy {
@@ -308,7 +308,7 @@ impl GemmGroupBy {
         a[..GEMM_K].fill(BF16_ONE); // row 0 = ones → counts
         GemmGroupBy {
             a,
-            b_blocks: vec![vec![0u16; GEMM_K * 16]; N_GROUPS],
+            b_blocks: (0..N_GROUPS).map(|_| PackedBf16B::zeroed(GEMM_K)).collect(),
             c: vec![0.0f32; 256],
             sum_t: vec![0i64; N_STATIONS],
             cnt: vec![0u64; N_STATIONS],
@@ -318,8 +318,10 @@ impl GemmGroupBy {
 
     fn fold_sub_morsel(&mut self, rows: &[(u16, i16)]) {
         debug_assert!(rows.len() <= GEMM_K);
-        // Stage A rows 1-2 (hi/lo split) and the one-hot B entries. Rows of a
-        // partial sub-morsel beyond `rows.len()` keep stale A values — their B
+        // Stage A rows 1-2 (hi/lo split) and the one-hot B entries — written
+        // DIRECTLY in VNNI layout via `PackedBf16B::vnni_index`, so the tile
+        // tiers never pack (and never allocate) per call. Rows of a partial
+        // sub-morsel beyond `rows.len()` keep stale A values — their B
         // indicator is never set, so they contribute exact zeros.
         for (r, &(sid, temp)) in rows.iter().enumerate() {
             let hi = (temp as i32 / 256) * 256;
@@ -328,12 +330,12 @@ impl GemmGroupBy {
             self.a[2 * GEMM_K + r] = bf16_exact(lo as f32);
             self.a[3 * GEMM_K + r] = bf16_rne(temp as f32);
             let (g, j) = (sid as usize / 16, sid as usize % 16);
-            self.b_blocks[g][r * 16 + j] = BF16_ONE;
+            self.b_blocks[g].data_mut()[PackedBf16B::vnni_index(r, j)] = BF16_ONE;
         }
 
         for g in 0..N_GROUPS {
             self.c.fill(0.0); // gemm ACCUMULATES; each group starts clean
-            bf16_tile_gemm_16x16_amx(&self.a, &self.b_blocks[g], &mut self.c, GEMM_K);
+            bf16_tile_gemm_16x16_packed(&self.a, &self.b_blocks[g], &mut self.c);
             for j in 0..16 {
                 let s = g * 16 + j;
                 if s >= N_STATIONS {
@@ -351,7 +353,7 @@ impl GemmGroupBy {
         // Clear-by-undo: reset exactly the B entries this sub-morsel set.
         for (r, &(sid, _)) in rows.iter().enumerate() {
             let (g, j) = (sid as usize / 16, sid as usize % 16);
-            self.b_blocks[g][r * 16 + j] = 0;
+            self.b_blocks[g].data_mut()[PackedBf16B::vnni_index(r, j)] = 0;
         }
     }
 }
@@ -510,11 +512,7 @@ fn main() {
 
     // 6. Report (PillarReport style: deterministic seed, measured vs expected).
     let pass = scatter_mism == 0 && gemm_mism == 0 && root_ok && query_ok;
-    let tier = if amx_available() {
-        "AMX TDPBF16PS"
-    } else {
-        "AVX-512 F32x16 FMA fallback"
-    };
+    let tier = bf16_tile_gemm_tier();
     println!("  seed=0x{SEED:X}  stations={N_STATIONS}  rows={rows}");
     println!(
         "  morton scatter (min,max,Σ,n): {}/{} exact → {}",

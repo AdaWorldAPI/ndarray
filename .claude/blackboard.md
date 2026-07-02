@@ -3,6 +3,42 @@
 > **Read this first.** The "Polyglot Notebook" architecture below is a
 > separate/older program, not the current epoch.
 
+## 2026-07-02 (later) — bf16 tile GEMM: VDPBF16PS middle tier + PackedBf16B (loose end closed)
+
+Closed the [LOOSE END] from the 1BRC entry below. `hpc/bf16_tile_gemm.rs`
+is now a three-tier ladder — **AMX TDPBF16PS → AVX-512 VDPBF16PS →
+decode+FMA polyfill** — with the polyfill kernel (`simd_ops.rs`) untouched:
+
+- **VDPBF16PS tier** (`avx512bf16_path`, private): bf16 pairs multiplied
+  natively per zmm (no bf16→f32 decode), f32 lane accumulators, SAME VNNI
+  operand layout as the AMX tile → one packed buffer serves both tile
+  tiers. `_mm512_dpbf16_ps` verified stable on Rust 1.94. Runtime
+  `is_x86_feature_detected!("avx512bf16")` (EMR box has it).
+- **`PackedBf16B`** + **`bf16_tile_gemm_16x16_packed`**: VNNI pack (and
+  its per-call allocation) hoisted out of hot loops; `vnni_index(row,col)
+  = (row/2)·32 + 2·col + (row&1)` supports staging B DIRECTLY in VNNI
+  layout (zero pack cost — the right shape for one-hot/sparse staging).
+- **`bf16_tile_gemm_tier()`**: names the tier that will run (Gotcha 9
+  reporting). Re-exports via `ndarray::simd::*` (W1a surface).
+- **Exactness boundary preserved (operator condition):** bit-exact across
+  ALL tiers for bf16-exact integer operands with accumulation < 2^24 —
+  asserted with `assert_eq!` in the new parity tests (vnni_index vs
+  vnni_pack_bf16; packed==unpacked==i64 reference; VDPBF16PS exact +
+  tolerance-parity vs polyfill on floats; accumulate semantics). Gotcha-14
+  contention parity test included as `#[ignore]` (fails on oversubscribed
+  VMs BY DESIGN; run `--ignored` on dedicated silicon).
+
+[MEASURED] onebrc probe GEMM leg with direct-VNNI staging: **3.6 → 21.3
+Mrows/s (5.9×), 23.7 → 141.9 GMAC/s** (single thread — near the 169.7
+GMAC/s int8 AMX anchor in AMX_GOTCHAS). 413/413 stations still EXACT;
+8/8 lib tests + 2 doctests green; clippy/fmt clean.
+
+[NOTE] Dispatch-behavior change signed off by operator: the row-major
+entry `bf16_tile_gemm_16x16` now routes avx512bf16-without-AMX hosts
+through VDPBF16PS instead of decode+FMA (bit-exact within the integer
+boundary; BF16-precision-class accumulation-order differences on general
+floats, same as any tier change).
+
 ## 2026-07-02 — 1BRC-on-substrate probe (`examples/onebrc_cascade_probe.rs`)
 
 1BRC workload (min/mean/max per station) restated on the substrate, as a
