@@ -3,6 +3,66 @@
 > **Read this first.** The "Polyglot Notebook" architecture below is a
 > separate/older program, not the current epoch.
 
+## 2026-07-02 — 1BRC-on-substrate probe (`examples/onebrc_cascade_probe.rs`)
+
+1BRC workload (min/mean/max per station) restated on the substrate, as a
+sibling of `morton_cascade_probe`. Branch `claude/1brc-lance-graph-xfx5tu`.
+Three paths certified bit-for-bit against a scalar integer reference
+(413 stations, integer tenths → exact in f32/f64 by construction):
+
+- **Morton scatter**: stations minted as cells on a 64×64 Morton grid
+  (4×4 tile = one F32x16), morsel-batched (64K rows) scatter into
+  L1-resident SoA accumulators, (min,max,Σ,n) monoid fold.
+- **AMX BF16 tile-GEMM group-by**: (Σ,n) as `C += A[16×K]·B[K×16]` via
+  the NEW `ndarray::simd::bf16_tile_gemm_16x16_amx` re-export (W1a: the
+  AMX-dispatching hpc wrapper surfaced through the canonical polyfill,
+  same pattern as `matmul_i8_to_i32`; the `_amx` suffix disambiguates
+  from the pure-FMA `simd::bf16_tile_gemm_16x16`) — B = per-row one-hot
+  station indicator (26 column-blocks of 16), A rows = {1, hi(t), lo(t),
+  bf16-RNE(t)} with the exactness split `hi=(t/256)·256, lo=t−hi` (both
+  bf16-exact; f32 tile accumulation exact for K=4096). Clear-by-undo
+  keeps B staging O(rows). AMX **actually ran** (amx_available()==true
+  printed per Gotcha 9 discipline; EMR-class Xeon, kernel 6.18.5).
+- **Aggregate pyramid** over the tile grid: hierarchical (min,mean,max)
+  per tile/region/root in the same pass + band-prune queries
+  (Belichtungsmesser on the MIN channel).
+
+[MEASURED] 10M rows, 4-core Xeon EMR VM, single thread:
+reference 453 Mrows/s | morton scatter 443 Mrows/s (**substrate tax ≈ 2%**)
+| tile-GEMM 3.6 Mrows/s = 23.7 GMAC/s (dense one-hot indicator = the
+honest price of group-by-as-matmul; per-call `vnni_pack_bf16` alloc in
+`bf16_tile_gemm_16x16` is a visible overhead) | pyramid fold 0.02 ms |
+band query prune 90.2%. All 413 stations EXACT on both paths; PASS.
+Also EXACT at 100M rows (idle). **"Is BF16 precise enough?" — measured:**
+the naive bf16-RNE row through the same tile gives max per-station
+|Δmean| = 0.0123 tenths (0.0012 °C, N≈24k/station — quantization bias
+averages out); single readings off by ≤ 4 tenths (bf16 ulp at
+|t|∈[512,1024)). Verdict: bf16-direct fine for means, hi/lo split (free —
+spare A rows) required for min/max + exactness certification.
+
+[FINDING → **Gotcha 14**, `.claude/AMX_GOTCHAS.md`] On this oversubscribed
+VM, **AMX tile state silently corrupts under host CPU contention**: idle
+= 413/413 exact at 100M rows; with 4 busy-loop competitors = 89-152/413
+(whole rows lost, no fault); guest-side core pinning does NOT mitigate
+(124/413); AVX-512 scatter path in the same run stays exact → isolated
+to TMM state; suspected host-vCPU-switch XTILEDATA loss. Consequences
+written into the gotcha: never certify AMX numerics on shared VMs; parity
+tests must also run under deliberate load (Gotcha 9 extension); short
+tile residency = harm reduction only.
+
+[CROSS-REPO] Algebraic certification (partition/regroup invariance of the
+monoid fold, bf16 hi/lo decomposition exactness) lands as a diagnostic
+probe in `lance-graph/crates/jc` (`onebrc_agg`) — kernels here, proof
+there, per the architecture rule (ndarray = hardware, jc = proof).
+
+[LOOSE END] AMX has no min/max tile op → min/max stay on the scatter
+path by construction. `bf16_tile_gemm_16x16` allocates + VNNI-packs B on
+every call — a pre-packed-B variant would lift the GEMM leg
+substantially; file under W1-adjacent if the group-by-as-GEMM shape
+recurs. Text-ingest leg (SWAR/SIMD parse of the 13 GB file) deliberately
+NOT probed here — separate probe if pursued (would exercise
+`byte_scan.rs`).
+
 ## 2026-06-28 — WASM SIMD128 backend filled in (`src/simd_wasm.rs`)
 
 Replaced the commented-out scaffolding in `src/simd_wasm.rs` with a real
