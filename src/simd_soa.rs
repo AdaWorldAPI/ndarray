@@ -35,7 +35,7 @@ use std::sync::Arc;
 // re-exports the right backend (AVX-512 / NEON / scalar) per `cfg`. Per
 // the W1a layering rule, `simd_soa.rs` MUST go through `crate::simd::`
 // rather than dipping into `simd_avx512` / `simd_neon` / `scalar` directly.
-use crate::simd::{F32x16, F64x8, U64x8, U8x64};
+use crate::simd::{F32x16, F64x8, I32x16, I64x8, U64x8, U8x64};
 
 // Endian-correct `&[u8; 4]` → `f32` / `&[u8; 8]` → `f64`/`u64` helpers.
 // `f32::from_le_bytes` is intrinsically optimised to a single load on
@@ -87,6 +87,33 @@ fn u64x8_from_chunk(chunk: &[u8; 64]) -> U64x8 {
         ])
     });
     U64x8::from_array(arr)
+}
+
+#[inline(always)]
+fn i32x16_from_chunk(chunk: &[u8; 64]) -> I32x16 {
+    let arr: [i32; 16] = core::array::from_fn(|i| {
+        let off = i * 4;
+        i32::from_le_bytes([chunk[off], chunk[off + 1], chunk[off + 2], chunk[off + 3]])
+    });
+    I32x16::from_array(arr)
+}
+
+#[inline(always)]
+fn i64x8_from_chunk(chunk: &[u8; 64]) -> I64x8 {
+    let arr: [i64; 8] = core::array::from_fn(|i| {
+        let off = i * 8;
+        i64::from_le_bytes([
+            chunk[off],
+            chunk[off + 1],
+            chunk[off + 2],
+            chunk[off + 3],
+            chunk[off + 4],
+            chunk[off + 5],
+            chunk[off + 6],
+            chunk[off + 7],
+        ])
+    });
+    I64x8::from_array(arr)
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -179,6 +206,16 @@ impl MultiLaneColumn {
         self.data.len() / 64
     }
 
+    /// Number of `I32x16`-shaped (16 × i32 = 64-byte) chunks.
+    pub fn len_i32x16(&self) -> usize {
+        self.data.len() / 64
+    }
+
+    /// Number of `I64x8`-shaped (8 × i64 = 64-byte) chunks.
+    pub fn len_i64x8(&self) -> usize {
+        self.data.len() / 64
+    }
+
     /// View the backing store as a raw byte slice.
     pub fn as_bytes(&self) -> &[u8] {
         &self.data
@@ -235,6 +272,27 @@ impl MultiLaneColumn {
     pub fn iter_u64x8(&self) -> impl Iterator<Item = U64x8> + '_ {
         self.data.as_chunks::<64>().0.iter().map(u64x8_from_chunk)
     }
+
+    /// Iterate the column as typed [`I32x16`] values dispatched via
+    /// `crate::simd::*`.
+    ///
+    /// Bytes are decoded little-endian (`i32::from_le_bytes`), the signed
+    /// sibling of [`iter_f32x16`](Self::iter_f32x16) — the lane width the
+    /// gridlake batch SoA needs for integer min/max/sum tile columns (the
+    /// consumer that could previously only view f32 min/max columns).
+    pub fn iter_i32x16(&self) -> impl Iterator<Item = I32x16> + '_ {
+        self.data.as_chunks::<64>().0.iter().map(i32x16_from_chunk)
+    }
+
+    /// Iterate the column as typed [`I64x8`] values dispatched via
+    /// `crate::simd::*`.
+    ///
+    /// Bytes are decoded little-endian (`i64::from_le_bytes`), the signed
+    /// sibling of [`iter_u64x8`](Self::iter_u64x8) — the lane width for
+    /// 64-bit integer accumulator columns (running sums).
+    pub fn iter_i64x8(&self) -> impl Iterator<Item = I64x8> + '_ {
+        self.data.as_chunks::<64>().0.iter().map(i64x8_from_chunk)
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -255,6 +313,8 @@ mod tests {
         assert_eq!(col.len_f32x16(), 1);
         assert_eq!(col.len_f64x8(), 1);
         assert_eq!(col.len_u64x8(), 1);
+        assert_eq!(col.len_i32x16(), 1);
+        assert_eq!(col.len_i64x8(), 1);
     }
 
     #[test]
@@ -273,6 +333,8 @@ mod tests {
         assert_eq!(col.iter_f32x16().count(), 0);
         assert_eq!(col.iter_f64x8().count(), 0);
         assert_eq!(col.iter_u64x8().count(), 0);
+        assert_eq!(col.iter_i32x16().count(), 0);
+        assert_eq!(col.iter_i64x8().count(), 0);
     }
 
     #[test]
@@ -342,6 +404,32 @@ mod tests {
     }
 
     #[test]
+    fn iter_i32x16_le_round_trip() {
+        // Signed values incl. negatives, to prove sign-extension is
+        // preserved by the LE decode (the point of the i32 lane).
+        let src: [i32; 16] = core::array::from_fn(|i| (i as i32 - 8) * 0x0011_2233);
+        let mut bytes = vec![0u8; 64];
+        for (i, &v) in src.iter().enumerate() {
+            bytes[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        let col = MultiLaneColumn::new(Arc::from(bytes)).unwrap();
+        let lane = col.iter_i32x16().next().expect("one lane");
+        assert_eq!(lane.to_array(), src);
+    }
+
+    #[test]
+    fn iter_i64x8_le_round_trip() {
+        let src: [i64; 8] = core::array::from_fn(|i| (i as i64 - 4) * 0x0123_4567_89AB_CDEF);
+        let mut bytes = vec![0u8; 64];
+        for (i, &v) in src.iter().enumerate() {
+            bytes[i * 8..i * 8 + 8].copy_from_slice(&v.to_le_bytes());
+        }
+        let col = MultiLaneColumn::new(Arc::from(bytes)).unwrap();
+        let lane = col.iter_i64x8().next().expect("one lane");
+        assert_eq!(lane.to_array(), src);
+    }
+
+    #[test]
     fn typed_iters_yield_three_lanes_over_192_bytes() {
         let v: Vec<u8> = (0u8..192).collect();
         let col = MultiLaneColumn::new(Arc::from(v)).unwrap();
@@ -349,6 +437,8 @@ mod tests {
         assert_eq!(col.iter_f32x16().count(), 3);
         assert_eq!(col.iter_f64x8().count(), 3);
         assert_eq!(col.iter_u64x8().count(), 3);
+        assert_eq!(col.iter_i32x16().count(), 3);
+        assert_eq!(col.iter_i64x8().count(), 3);
     }
 
     #[test]
