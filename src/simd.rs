@@ -614,6 +614,20 @@ pub use crate::hpc::heel_f64x8::cosine_f32_to_f64_simd;
 // `backend::gemm_bf16` (portable scalar / NEON / wasm-SIMD paths).
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
 pub use crate::hpc::amx_matmul::{amx_available, matmul_i8_to_i32};
+// Tile-dispatching sibling of the polyfill `bf16_tile_gemm_16x16` below:
+// AMX TDPBF16PS → AVX-512 VDPBF16PS → the same FMA polyfill kernel, selected
+// at runtime. Same W1a rationale as `matmul_i8_to_i32` — consumers reach the
+// tile ladder through `ndarray::simd::*`; the `_amx` suffix keeps the
+// pure-polyfill kernel and the tile-dispatching wrapper distinguishable at
+// the call site. `bf16_tile_gemm_16x16_packed` + `PackedBf16B` hoist the
+// VNNI pack (and its allocation) out of hot loops — `PackedBf16B::vnni_index`
+// additionally supports staging B directly in VNNI layout (zero pack cost).
+// `bf16_tile_gemm_tier()` names the tier that will run, for Gotcha-9-style
+// run reports.
+#[cfg(all(feature = "std", target_arch = "x86_64"))]
+pub use crate::hpc::bf16_tile_gemm::{
+    bf16_tile_gemm_16x16 as bf16_tile_gemm_16x16_amx, bf16_tile_gemm_16x16_packed, bf16_tile_gemm_tier, PackedBf16B,
+};
 // CPU-generation detection (cached): SPR / EMR / GNR / Sierra Forest. Lets a
 // consumer report which silicon a run landed on and distinguish "no AMX
 // silicon" from "AMX present but not OS-enabled" — both surface via `amx_report`.

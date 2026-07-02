@@ -61,6 +61,12 @@ required-features = ["std"]
 name = "morton_cascade_probe"
 required-features = ["std"]
 
+# 1BRC-on-substrate probe: Morton group-by + AMX BF16 tile-GEMM mean path
+# (imports `ndarray::simd` + `ndarray::hpc`, both std-gated).
+[[example]]
+name = "onebrc_cascade_probe"
+required-features = ["std"]
+
 [[example]]
 name = "golden_helix_probe"
 required-features = ["std"]
