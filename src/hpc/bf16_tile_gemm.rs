@@ -153,6 +153,42 @@ impl PackedBf16B {
     pub fn data_mut(&mut self) -> &mut [u16] {
         &mut self.data
     }
+
+    // ── Little-endian byte contract ─────────────────────────────────────
+    //
+    // The persistence/mailbox face of the buffer (the lance-graph
+    // SoaEnvelope discipline: envelope bytes are LE from creation to
+    // tombstone). This module is `cfg(target_arch = "x86_64")`, an LE-only
+    // ISA, so the native `u16` lanes ARE the LE bytes — the view below is
+    // a zero-cost reinterpret, and the contract costs nothing to state
+    // explicitly. The read side decodes with `u16::from_le_bytes`, which
+    // is endian-correct anywhere and compiles to a plain copy here.
+
+    /// The buffer as **little-endian** bytes — `2·k·16` bytes, each bf16
+    /// lane low-byte-first. Zero-copy on this (LE-only) architecture. This
+    /// is the face a batch writer hands to columnar storage; pair with
+    /// [`Self::from_le_bytes`] to round-trip.
+    pub fn as_le_bytes(&self) -> &[u8] {
+        // SAFETY: `&[u16]` → `&[u8]` reinterpret is always valid (alignment
+        // requirement shrinks from 2 to 1; length doubles within the same
+        // allocation). Byte order is LE by construction: x86_64 is
+        // little-endian and this module is x86_64-only.
+        unsafe { core::slice::from_raw_parts(self.data.as_ptr() as *const u8, self.data.len() * 2) }
+    }
+
+    /// Rebuild from **little-endian** bytes (the inverse of
+    /// [`Self::as_le_bytes`]). `bytes.len()` must be `2·k·16` and `k` a
+    /// multiple of 32. Endian-correct on any architecture; compiles to a
+    /// straight copy on LE targets.
+    pub fn from_le_bytes(bytes: &[u8], k: usize) -> Self {
+        assert_eq!(k % 32, 0, "K must be multiple of 32");
+        assert_eq!(bytes.len(), 2 * k * 16, "expected 2·K·16 LE bytes");
+        let data = bytes
+            .chunks_exact(2)
+            .map(|p| u16::from_le_bytes([p[0], p[1]]))
+            .collect();
+        PackedBf16B { data, k }
+    }
 }
 
 /// `C[16, 16] += A[16, K] × B[K, 16]` with B pre-packed — the hot-loop
@@ -448,6 +484,30 @@ mod tests {
         bf16_tile_gemm_16x16_packed(&a, &packed, &mut c_packed);
         assert_eq!(c_unpacked, c_ref, "unpacked tier [{}] not exact", bf16_tile_gemm_tier());
         assert_eq!(c_packed, c_ref, "packed tier [{}] not exact", bf16_tile_gemm_tier());
+    }
+
+    #[test]
+    fn le_byte_view_roundtrips_and_is_truly_le() {
+        let k = 64;
+        let (_, b, _) = integer_case(k);
+        let packed = PackedBf16B::pack(&b, k);
+
+        // Contract: byte 2i is the LOW byte of lane i (little-endian),
+        // independent of how the platform happens to lay out u16.
+        let bytes = packed.as_le_bytes();
+        assert_eq!(bytes.len(), 2 * k * 16);
+        for (i, &lane) in packed.data().iter().enumerate() {
+            assert_eq!([bytes[2 * i], bytes[2 * i + 1]], lane.to_le_bytes(), "lane {i} not LE in byte view");
+        }
+
+        // Round-trip: bytes → PackedBf16B → identical lanes AND identical
+        // GEMM result (the envelope face and the compute face agree).
+        let rebuilt = PackedBf16B::from_le_bytes(bytes, k);
+        assert_eq!(rebuilt.data(), packed.data());
+        let (a, _, c_ref) = integer_case(k);
+        let mut c = vec![0.0f32; 256];
+        bf16_tile_gemm_16x16_packed(&a, &rebuilt, &mut c);
+        assert_eq!(c, c_ref, "GEMM over LE-roundtripped buffer not exact");
     }
 
     #[test]

@@ -39,6 +39,18 @@ through VDPBF16PS instead of decode+FMA (bit-exact within the integer
 boundary; BF16-precision-class accumulation-order differences on general
 floats, same as any tier change).
 
+[ADDED, same day] **LE byte contract on `PackedBf16B`** (operator "Go" —
+first brick of the SoA-Morton batch-writer / write-hiding design):
+`as_le_bytes()` (zero-cost reinterpret; LE by construction — the module
+is x86_64-only) + `from_le_bytes()` (endian-correct anywhere, plain copy
+on LE). This is the persistence/mailbox face per lance-graph's
+SoaEnvelope discipline (envelope bytes LE from creation to tombstone).
+Test `le_byte_view_roundtrips_and_is_truly_le` asserts byte 2i = low
+byte of lane i AND that a GEMM over the roundtripped buffer stays
+bit-exact. 9/9 lib tests green. Next bricks (lance-graph side): batch
+writer flushing tile buffers as envelope tenants; write-hiding = stage
+morsel N+1's VNNI writes while morsel N's tiles compute.
+
 ## 2026-07-02 — 1BRC-on-substrate probe (`examples/onebrc_cascade_probe.rs`)
 
 1BRC workload (min/mean/max per station) restated on the substrate, as a
