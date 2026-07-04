@@ -80,6 +80,10 @@ name = "edge_codec_compare"
 required-features = ["std"]
 
 [[example]]
+name = "codec_mode_histogram"
+required-features = ["codec"]
+
+[[example]]
 name = "entropy_ladder_probe"
 required-features = ["std"]
 
