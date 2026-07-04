@@ -1,0 +1,5 @@
+# Additive edits to the [[example]] list collide constantly across topic
+# branches. The built-in union merge driver keeps both sides of a conflict
+# hunk, auto-resolving append-only lists. (Distinct dependency-line edits are
+# caught by CI, not silently merged wrong.)
+Cargo.toml merge=union
