@@ -92,6 +92,10 @@ name = "residue_upscale"
 required-features = ["codec"]
 
 [[example]]
+name = "motion_transform_noop"
+required-features = ["codec"]
+
+[[example]]
 name = "entropy_ladder_probe"
 required-features = ["std"]
 
