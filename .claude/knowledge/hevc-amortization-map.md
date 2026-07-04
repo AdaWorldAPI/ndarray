@@ -3,10 +3,12 @@
 > READ BY: cognitive-architect, savant-architect, amx-savant, truth-architect,
 > l3-strategist, product-engineer
 >
-> Status ledger. Every row is tagged **[MEASURED #PR]** / **[MECHANISM —
-> unmeasured, probe named]** / **[DOESN'T FIT]**. No unmarked conjecture.
-> Companion to `.claude/knowledge/pr-x12-codec-cognitive-substrate-mapping.md`
-> (the E-7/H-7 plan this measures against).
+> Status ledger. Every row is tagged **[MEASURED #PR]** (probe run) /
+> **[SHIPPED]** (code exists + tested, not yet wired into the codec pipeline) /
+> **[MECHANISM — unmeasured, probe named]** / **[PARTIAL]** / **[DOESN'T FIT]**.
+> No unmarked conjecture. Companion to
+> `.claude/knowledge/pr-x12-codec-cognitive-substrate-mapping.md` (the E-7/H-7
+> plan this measures against).
 
 ## The thesis (operator, 2026-07-04)
 
@@ -49,20 +51,32 @@ matching the DCT within 2%. Same ±1 sign butterfly, two names.
 | **Reference-sample smoothing / covariance** | Gaussian/covariance projection = the EWA sandwich | **[MEASURED #233]** — `sandwich_x16` shape @ 0.4% |
 | **CTU quad-tree partition** (64→32→16→8) | Morton/HHTL tier cascade = the address pyramid | **[MECHANISM — shipped]** `hpc::cascade`, blasgraph HHTL; codec `Ctu` quad-tree. Routing-parity probe unmeasured |
 | **Deblocking + SAO** (in-loop filters) | conditional edge filter + offset LUT — clip/branch-heavy, *not pure GEMM* | **[PARTIAL — AMX masking]** the operator's "AMX masking": the filter is a masked tile op (predicated add), SAO is a gather-LUT. Fits with masking, not plain GEMM. Unmeasured |
-| **Entropy — substrate-native** (palettise, don't arithmetic-code) | small alphabet (≤256 basin/centroid indices) → **variable-width SIMD palette pack** (VPSHUFB, 16 idx/cycle) | **[SHIPPED]** `ndarray::palette_codec` (Pumpkin/Minecraft port, 28 tests): `pack_indices_simd`/`unpack_indices_simd` bit-exact all 1–8 bit widths; `transcode` = per-block bit-width adaptivity; `nibble` (4-bit) + `byte_scan` (NBT) complete the byte layer. Fully parallel — NO serial stage |
-| **CABAC entropy** (context-adaptive binary arithmetic — `.265` compat only) | serial, bit-level, data-dependent arithmetic coding | **[DOESN'T FIT — but the substrate doesn't need it]** CABAC is a serial dependency chain, not a GEMM; AMX/tiles do not help. It is required ONLY to decode an *existing* `.265` bitstream (the M2 serial front-end). A substrate-**native** codec replaces it with the SIMD palette-pack row above (the codec already quantises to a small palette), so the native encode+decode pipeline is fully parallel end to end: `gather + tile op + palette-pack`. The boundary is `.265`-compat, not the substrate's own entropy needs. |
+| **Entropy — palette-pack module** (parallel, small-alphabet) | small alphabet (≤256 basin/centroid indices) → **variable-width SIMD palette pack** (VPSHUFB, 16 idx/cycle) | **[SHIPPED module / PROPOSED codec wiring]** `ndarray::palette_codec` (Pumpkin/Minecraft port, 28 tests): `pack_indices_simd`/`unpack_indices_simd` bit-exact all 1–8 widths; `transcode` = per-block bit-width; `nibble`+`byte_scan` complete the byte layer. **Not yet wired as the codec's entropy stage** — the shipped codec (`hpc::codec::ans`) currently does static per-block rANS over the 4 `CellMode` tags. Using palette-index packing *as* the codec's entropy layer is the proposed change. |
+| **CABAC entropy** (context-adaptive binary arithmetic — `.265` compat only) | serial, bit-level, data-dependent arithmetic coding | **[DOESN'T FIT — and the substrate can route around it]** CABAC is a serial dependency chain, not a GEMM; AMX/tiles do not help. It is required ONLY to decode an *existing* `.265` bitstream (the M2 serial front-end). The substrate quantises to a small palette, so its entropy need is met by the SIMD-parallel palette-pack row above (SHIPPED module; PROPOSED as the codec's stage) — with, at most, a light static-rANS pass over the packed indices for the last few %. So "route around CABAC" = replace context-adaptive arithmetic coding with parallel palette-pack (+ optional non-adaptive rANS), NOT "zero entropy coding." The boundary is `.265`-compat, not the substrate's own entropy needs. |
 
 ## What amortizes, precisely
 
 - **Build once, reuse per block.** The transform basis (WHT ±1 sign matrix), the
   interpolation taps, the Morton pyramid, the palette/centroid codebooks, and the
   golden-spiral place template are **deterministic** — computed once, never
-  stored per-block (helix principle). Every block pays only: a gather + 1–2 tile
-  ops + a residue magnitude. The 64×64 gridlake = 4×4 = **16 tile ops**.
-- **One kernel, many stages.** ME, inverse transform, intra prediction, sub-pel,
-  and covariance all route through `bf16_tile_gemm_16x16`. The substrate is the
-  zero-FP cognitive shader (gather + tile ops), so "the codec IS the substrate"
-  holds down to the instruction (`TDPBF16PS`).
+  stored per-block (helix principle). The 64×64 gridlake = 4×4 = 16 tile positions.
+- **BUT: dispatch at the R-5 batch crossover — the tile path is NOT unconditional.**
+  Per the companion plan's **R-5** rule (`pr-x12-codec-cognitive-substrate-mapping.md`
+  §2.2; `pr-x12-substrate-canon-resolutions.md` §R-5): a single 32×32 DCT via
+  butterflies is ~80 ops vs ~32K for the GEMM form — **per-block, butterflies win
+  by ~400×**. The BF16 tile GEMM only wins **above** the batch crossover, where
+  hardware fusion amortises across many blocks. Crossover is per-arch:
+  **SPR = 64, ICX = 32, Zen4 = 96, Apple M = 256, Graviton = 128** blocks. So the
+  amortized dispatch is: **per-CTU / low-latency / small-batch → per-block WHT
+  butterflies; per-frame / large-batch (N ≥ crossover) → batched BF16 tile GEMM.**
+  A ledger that read "every block pays a tile op" would mis-route small-CTU work
+  onto the tile path and invalidate the measurement — ship both, dispatch on N.
+- **One kernel family, many stages.** ME, inverse transform, intra prediction,
+  sub-pel, and covariance are all the same *algebra* (`M·X` / `Xᵀ·X` / `Mᵀ·Σ·M`),
+  realised as **butterflies below the crossover, `bf16_tile_gemm_16x16` above it**.
+  The substrate is the zero-FP cognitive shader (gather + tile/butterfly ops), so
+  "the codec IS the substrate" holds down to the instruction (`TDPBF16PS` in the
+  batched regime).
 - **The transform mostly vanishes.** Per #232, good motion whitens the residual
   and the transform's advantage → 1 (a no-op); where it survives it is a
   multiply-free WHT. So the amortized codec spends tile ops on prediction, not on
@@ -74,15 +88,19 @@ matching the DCT within 2%. Same ±1 sign butterfly, two names.
    (de)coding is inherently serial arithmetic coding; the tile substrate does not
    amortize it, and a real `.265` decoder still needs it (the M2 serial
    front-end). BUT the substrate does not *need* CABAC: it quantises to a small
-   palette (≤256 basin/centroid indices), so its native entropy layer is
+   palette (≤256 basin/centroid indices), so its entropy need can be met by
    **variable-width SIMD palette packing** (`ndarray::palette_codec`, the
    Pumpkin/Minecraft port — `unpack_indices_simd`, VPSHUFB, 16 idx/cycle,
-   `transcode` for per-block bit-width). A substrate-native encode+decode is then
-   fully parallel end to end — `gather + tile op + palette-pack`, no serial stage.
-   The boundary is therefore `.265` *compatibility*, not the substrate's own
-   entropy needs. (Palette packing is a rate/parallelism trade vs an optimal
-   arithmetic coder — cheaper and parallel, near-optimal when the palette is
-   well-chosen; a light rANS pass on the packed indices recovers the rest.)
+   `transcode` for per-block bit-width). This module is **shipped + tested** but
+   **not yet wired as the codec's entropy stage** (the shipped codec uses
+   `hpc::codec::ans` static rANS over the 4 `CellMode` tags) — the wiring is the
+   proposed change. The point stands: a substrate-native pipeline has **no
+   context-adaptive serial stage** — `gather + tile op + palette-pack` — with, at
+   most, a *non-adaptive* static-rANS pass over the packed indices (order-0,
+   interleavable, not a CABAC-style dependency chain). The boundary is `.265`
+   *compatibility*, not the substrate's own entropy needs. (Palette packing is a
+   rate/parallelism trade vs an optimal arithmetic coder — near-optimal when the
+   palette is well-chosen.)
 2. **The golden-spiral is for directional/sparse data, not dense scalars.** Per
    #231 (measured negative), coding a *dense scalar* residual with sparse
    golden-spiral anchors loses to local DPCM; the golden-spiral / helix codec
