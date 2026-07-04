@@ -258,12 +258,12 @@ fn main() {
     println!("  {W}×{H} field, {A} anchors (grid {NAX}×{NAY} stride {STRIDE} == spiral {A}), K={KIDW} IDW");
     println!("  bytes = order-0 Shannon entropy H₀ (what an ideal rANS coder spends)\n");
     println!(
-        "  {:<14} {:>9} {:>9} {:>11} {:>11}   {:>7} {:>7}",
-        "field", "dense H₀", "paeth", "grid a+res", "spiral a+res", "grid×", "spiral×"
+        "  {:<14} {:>9} {:>9} {:>11} {:>11}   {:>9} {:>9}",
+        "field", "dense H₀", "paeth", "grid a+res", "spiral a+res", "grid/paeth", "spiral/paeth"
     );
     println!(
-        "  {:<14} {:>9} {:>9} {:>11} {:>11}   {:>7} {:>7}",
-        "", "(no model)", "(local)", "(global)", "(global)", "/paeth", "/paeth"
+        "  {:<14} {:>9} {:>9} {:>11} {:>11}   {:>9} {:>9}",
+        "", "(no model)", "(local)", "(global)", "(global)", "(>1=lose)", "(>1=lose)"
     );
 
     let names = ["very-smooth", "weather-like", "mid-freq", "noise"];
@@ -280,16 +280,18 @@ fn main() {
         let sr = residue(&f, &sp);
         let spiral_total = entropy_bytes(&sav) + entropy_bytes(&sr);
 
-        // the honest comparison is vs the LOCAL predictor (paeth), not the no-model dense.
+        // the honest comparison is vs the LOCAL predictor (paeth), not the no-model
+        // dense. Ratio = byte cost RELATIVE to paeth: > 1 means the global upscaler
+        // costs MORE than local DPCM (a loss), < 1 means it beats paeth.
         println!(
-            "  {:<14} {:>9.0} {:>9.0} {:>11.0} {:>11.0}   {:>6.2}× {:>6.2}×",
+            "  {:<14} {:>9.0} {:>9.0} {:>11.0} {:>11.0}   {:>8.2}× {:>8.2}×",
             name,
             dense,
             paeth,
             grid_total,
             spiral_total,
-            paeth / grid_total,
-            paeth / spiral_total,
+            grid_total / paeth,
+            spiral_total / paeth,
         );
     }
 
@@ -313,10 +315,11 @@ fn main() {
          \x20 predictor, which stores ZERO anchors):\n\
          \x20 • Global sparse-anchor upscaling DOES decorrelate — grid a+res (3648) ≪ the\n\
          \x20   no-model order-0 dense (14807). The anatomy 2000→4M mechanism is real.\n\
-         \x20 • BUT for a DENSE SCALAR luma residual it LOSES to local DPCM (grid 0.70×,\n\
-         \x20   spiral 0.38× of paeth on very-smooth): a cheap causal local predictor\n\
-         \x20   beats it, because the 256 anchor VALUES cost real bits and a sparse grid\n\
-         \x20   can't model structure finer than its stride. For scalar-dense residuals\n\
+         \x20 • BUT for a DENSE SCALAR luma residual it LOSES to local DPCM: grid costs\n\
+         \x20   1.42×, spiral 2.64× of paeth's bytes on very-smooth (ratio > 1 = a loss).\n\
+         \x20   A cheap causal local predictor beats it, because the 256 anchor VALUES\n\
+         \x20   cost real bits and a sparse grid can't model structure finer than its\n\
+         \x20   stride. For scalar-dense residuals\n\
          \x20   the analogy is RHYME, not a winning transfer — use DPCM / transform.\n\
          \x20 • grid > spiral here (bilinear is a better scalar interpolant than\n\
          \x20   scattered IDW). The golden-spiral's win is NOT scalar fields.\n\
