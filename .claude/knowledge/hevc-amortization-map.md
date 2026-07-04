@@ -29,6 +29,7 @@ HEVC kernels.
 | **address (bit shift)** | integer motion / tile position / CTU quad-tree = pure addressing, zero arithmetic (`VPGATHERDD`) | `hpc::cascade` (Morton), blasgraph `heel_hip_twig_leaf` / `clam_neighborhood` (lance-graph) |
 | **couple (tile op)** | a 16×16 BF16 GEMM `C = A·B` = one `TDPBF16PS` — every linear field coupling / transform / covariance projection | `hpc::bf16_tile_gemm::bf16_tile_gemm_16x16`, `hpc::splat3d::spd3::sandwich_x16` |
 | **code (place/residue)** | deterministic pyramid PLACE (free) + coded RESIDUE magnitude; the perturbation phase IS the Walsh–Hadamard sign transform of the address tree | `hpc::splat3d::helix_orient`, `crates/helix` (lance-graph), OGAR `guid-prefix-shape-routing.md §4b` |
+| **entropy (palette pack)** | small-alphabet indices → variable-width SIMD bit-pack (VPSHUFB, 16 idx/cycle) — the parallel entropy layer that replaces serial CABAC | `ndarray::palette_codec` / `nibble` / `byte_scan` (Pumpkin/Minecraft port; 28+23+18 tests) |
 
 The perturbation-shader cascade and the codec transform are **the same object**:
 OGAR canon states "the perturbation pyramid becomes the Walsh–Hadamard transform
@@ -48,7 +49,8 @@ matching the DCT within 2%. Same ±1 sign butterfly, two names.
 | **Reference-sample smoothing / covariance** | Gaussian/covariance projection = the EWA sandwich | **[MEASURED #233]** — `sandwich_x16` shape @ 0.4% |
 | **CTU quad-tree partition** (64→32→16→8) | Morton/HHTL tier cascade = the address pyramid | **[MECHANISM — shipped]** `hpc::cascade`, blasgraph HHTL; codec `Ctu` quad-tree. Routing-parity probe unmeasured |
 | **Deblocking + SAO** (in-loop filters) | conditional edge filter + offset LUT — clip/branch-heavy, *not pure GEMM* | **[PARTIAL — AMX masking]** the operator's "AMX masking": the filter is a masked tile op (predicated add), SAO is a gather-LUT. Fits with masking, not plain GEMM. Unmeasured |
-| **CABAC entropy** (context-adaptive binary arithmetic) | serial, bit-level, data-dependent arithmetic coding | **[DOESN'T FIT]** — a serial dependency chain, not a GEMM. AMX/tiles do not help. This is the M2 front-end and stays a separate serial layer. The honest boundary of the thesis. |
+| **Entropy — substrate-native** (palettise, don't arithmetic-code) | small alphabet (≤256 basin/centroid indices) → **variable-width SIMD palette pack** (VPSHUFB, 16 idx/cycle) | **[SHIPPED]** `ndarray::palette_codec` (Pumpkin/Minecraft port, 28 tests): `pack_indices_simd`/`unpack_indices_simd` bit-exact all 1–8 bit widths; `transcode` = per-block bit-width adaptivity; `nibble` (4-bit) + `byte_scan` (NBT) complete the byte layer. Fully parallel — NO serial stage |
+| **CABAC entropy** (context-adaptive binary arithmetic — `.265` compat only) | serial, bit-level, data-dependent arithmetic coding | **[DOESN'T FIT — but the substrate doesn't need it]** CABAC is a serial dependency chain, not a GEMM; AMX/tiles do not help. It is required ONLY to decode an *existing* `.265` bitstream (the M2 serial front-end). A substrate-**native** codec replaces it with the SIMD palette-pack row above (the codec already quantises to a small palette), so the native encode+decode pipeline is fully parallel end to end: `gather + tile op + palette-pack`. The boundary is `.265`-compat, not the substrate's own entropy needs. |
 
 ## What amortizes, precisely
 
@@ -68,10 +70,19 @@ matching the DCT within 2%. Same ±1 sign butterfly, two names.
 
 ## The two honest boundaries
 
-1. **CABAC is not a GEMM.** Entropy (de)coding is inherently serial arithmetic
-   coding — the one HEVC stage the tile substrate does not amortize. A real
-   `.265` decoder needs it (M2). The thesis amortizes the **DSP**, not the
-   **entropy layer**.
+1. **CABAC is not a GEMM — but the substrate routes around it.** CABAC entropy
+   (de)coding is inherently serial arithmetic coding; the tile substrate does not
+   amortize it, and a real `.265` decoder still needs it (the M2 serial
+   front-end). BUT the substrate does not *need* CABAC: it quantises to a small
+   palette (≤256 basin/centroid indices), so its native entropy layer is
+   **variable-width SIMD palette packing** (`ndarray::palette_codec`, the
+   Pumpkin/Minecraft port — `unpack_indices_simd`, VPSHUFB, 16 idx/cycle,
+   `transcode` for per-block bit-width). A substrate-native encode+decode is then
+   fully parallel end to end — `gather + tile op + palette-pack`, no serial stage.
+   The boundary is therefore `.265` *compatibility*, not the substrate's own
+   entropy needs. (Palette packing is a rate/parallelism trade vs an optimal
+   arithmetic coder — cheaper and parallel, near-optimal when the palette is
+   well-chosen; a light rANS pass on the packed indices recovers the rest.)
 2. **The golden-spiral is for directional/sparse data, not dense scalars.** Per
    #231 (measured negative), coding a *dense scalar* residual with sparse
    golden-spiral anchors loses to local DPCM; the golden-spiral / helix codec
@@ -97,5 +108,6 @@ matching the DCT within 2%. Same ±1 sign butterfly, two names.
 PRs #230 (ME=GEMM, MC bit-exact), #231 (residue upscaling — measured negative for
 dense scalar), #232 (transform no-op × WHT), #233 (field coupling = AMX tile op,
 on real `TDPBF16PS`). Shipped: `hpc::bf16_tile_gemm`, `hpc::splat3d::spd3`,
-`hpc::cascade`, `hpc::codec`; lance-graph blasgraph HHTL; OGAR perturbation
-pyramid = WHT.
+`hpc::cascade`, `hpc::codec`; the Pumpkin/Minecraft entropy layer
+`palette_codec` / `nibble` / `byte_scan` (69 tests); lance-graph blasgraph HHTL;
+OGAR perturbation pyramid = WHT.
