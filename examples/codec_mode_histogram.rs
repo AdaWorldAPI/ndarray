@@ -125,9 +125,8 @@ fn main() {
     let mut b = vec![0i64; N];
     for y in 0..H {
         for x in 0..W {
-            let f = 480.0
-                + 400.0 * (x as f64 * 0.018).sin() * (y as f64 * 0.018).cos()
-                + 60.0 * (x as f64 * 0.09).sin();
+            let f =
+                480.0 + 400.0 * (x as f64 * 0.018).sin() * (y as f64 * 0.018).cos() + 60.0 * (x as f64 * 0.09).sin();
             b[y * W + x] = f.round().clamp(0.0, 1023.0) as i64;
         }
     }
