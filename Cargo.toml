@@ -84,6 +84,10 @@ name = "codec_mode_histogram"
 required-features = ["codec"]
 
 [[example]]
+name = "mc_via_shader"
+required-features = ["codec"]
+
+[[example]]
 name = "entropy_ladder_probe"
 required-features = ["std"]
 
