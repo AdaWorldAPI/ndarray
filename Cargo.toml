@@ -88,6 +88,10 @@ name = "mc_via_shader"
 required-features = ["codec"]
 
 [[example]]
+name = "residue_upscale"
+required-features = ["codec"]
+
+[[example]]
 name = "entropy_ladder_probe"
 required-features = ["std"]
 
