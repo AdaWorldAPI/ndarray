@@ -96,6 +96,10 @@ name = "motion_transform_noop"
 required-features = ["codec"]
 
 [[example]]
+name = "gridlake_field_tile"
+required-features = ["std"]
+
+[[example]]
 name = "entropy_ladder_probe"
 required-features = ["std"]
 
