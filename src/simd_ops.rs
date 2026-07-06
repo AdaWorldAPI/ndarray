@@ -890,10 +890,11 @@ mod add_mul_tests {
 /// The crate-native f64 GEMM: a TILE=64-blocked loop nest with the
 /// innermost j-run vectorized on the dispatched [`F64x8`] (AVX-512 /
 /// AVX2 / NEON / WASM-SIMD128 / scalar — one source, every backend).
-/// Unlike `backend::native::gemm_f64`, which delegates to the external
-/// `matrixmultiply` crate, this kernel is entirely in-crate and carries
-/// a bit-exactness contract, so probes can certify other kernels
-/// against it as ground truth.
+/// Entirely in-crate with a bit-exactness contract, so probes can
+/// certify other kernels against it as ground truth — and since it IS
+/// the engine behind `backend::native::gemm_f64`, the native f64 BLAS
+/// path carries the same auditable numerics (the f32 sibling still
+/// delegates to the external `matrixmultiply` crate).
 ///
 /// # Bit-exactness contract
 ///
@@ -953,14 +954,21 @@ pub fn gemm_f64_tiled(
 /// Fast tier of [`gemm_f64_tiled`]: same tiling, same ascending-`p`
 /// per-element order, but each step is a **fused** multiply-add
 /// (`c = fma(alpha·A[i,p], B[p,j], c)` — one rounding per step via
-/// `F64x8::mul_add`: `vfmadd`/`vfmaq_f64` on x86/NEON, `f64::mul_add`
-/// on the scalar tail and polyfill backends).
+/// `F64x8::mul_add`; fused semantics on every backend, though the
+/// lowering varies: native `vfmadd` on the AVX-512 arm, `vfmaq_f64` on
+/// NEON, per-lane `f64::mul_add` on the AVX2 polyfill and the scalar
+/// tail — which can become a libm `fma()` call on targets built
+/// without the `fma` feature: correct, but slow. Prefer the reference
+/// tier, or an FMA-capable target pin, in that situation).
 ///
 /// Semantics relative to the reference tier:
-/// - **Deterministic per build**, but NOT bit-stable across backends:
-///   fusion quality differs (WASM without `relaxed-simd` has no fused
-///   vector `mul_add`, so its vector lanes match the unfused reference
-///   while the scalar tail is still fused).
+/// - **Deterministic per (build, runtime)**, but NOT bit-stable across
+///   backends: fusion differs (WASM without `relaxed-simd` has no
+///   fused vector `mul_add`, so its vector lanes match the unfused
+///   reference while the scalar tail is still fused; WASM WITH
+///   `relaxed-simd` uses `f64x2_relaxed_madd`, whose fusion is
+///   implementation-defined — the same wasm binary may round
+///   differently on different runtimes).
 /// - **Bit-identical to [`gemm_f64_tiled`]** whenever every
 ///   `a_val·b` product and running sum is exactly representable —
 ///   e.g. integer-valued data with products and accumulation inside
@@ -1316,8 +1324,9 @@ mod gemm_f64_tiled_tests {
     // ── FMA tier ──
 
     /// Integer-valued corpus: values in [-9, 9], so every a·b product
-    /// (≤ 81) and running sum (≤ 70·81·2) is exactly representable —
-    /// fused and unfused steps round identically → tiers bit-identical.
+    /// (≤ 81) and running sum (≤ k_max·81·|α| + 9 = 128·81·2 + 9 ≈ 2.1e4,
+    /// far below 2^53) is exactly representable — fused and unfused
+    /// steps round identically → tiers bit-identical.
     fn fill_int(len: usize, salt: u64) -> Vec<f64> {
         (0..len)
             .map(|i| ((mix(i as u64 ^ salt) % 19) as i64 - 9) as f64)

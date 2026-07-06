@@ -24,11 +24,22 @@ below's foundation:
    f64→f64 store/reload never rounds ⇒ per-element op sequence
    unchanged ⇒ every bit-equality test green untouched. [MEASURED]
    ref 4.6→10.0 GF, fma 4.7→10.7 GF (2.2×).
-3. **Engine swap:** `backend::native::gemm_f64` now routes to
-   `gemm_f64_tiled_fma` — the f64 GEMM behind `BlasFloat::backend_gemm`
-   / `hpc::blas_level3::blas_gemm` / batched linalg is entirely own
-   Rust; matrixmultiply remains only in gemm_f32 and upstream
-   `Array::dot` (impl_linalg.rs, untouched at ~33 GF).
+3. **Engine swap:** `backend::native::gemm_f64` now routes to the
+   crate-native tiled kernel — the f64 GEMM behind
+   `BlasFloat::backend_gemm` / `hpc::blas_level3::blas_gemm` / batched
+   linalg is entirely own Rust; matrixmultiply remains only in gemm_f32
+   and upstream `Array::dot` (impl_linalg.rs, untouched at ~33 GF).
+   **[REVISED post-verify] Engine = the UNFUSED reference tier**, not
+   fma: the verify pass surfaced a cliff — the AVX2-polyfill/scalar
+   `mul_add` lowers to a libm `fma()` call on baseline x86-64 builds
+   (consumers do NOT inherit this repo's `.cargo` target-cpu pin; CI
+   lands exactly there). The unfused tier has no libm dependence on any
+   backend, costs only ~7% vs fused on pinned builds (10.0 vs 10.7 GF),
+   and makes the backend engine bit-identical to the certification
+   reference. `gemm_f64_tiled_fma` stays public for FMA-pinned
+   consumers. New panic contract documented on `gemm_f64` (# Panics —
+   checked preconditions vs the old wrapper's silent-UB on short
+   slices; matches CBLAS xerbla behavior).
 
 [MEASURED, 3-engine, this VM (v3 compile → AVX2 arm, PREFERRED_F64_LANES=4;
 host runtime has avx512f but committed .cargo config is v3)]:
@@ -45,6 +56,18 @@ the matrixmultiply Goto recipe, own-Rust edition. Also: `gemm_f32_tiled`
 still dead in native.rs `mod scalar` (f32 sibling completion);
 avx512f compile arm untested on CI (v3 config) — the F64x8=__m512d arm
 runs only on local v4 builds.
+
+**[VERIFY OUTCOME]** 3-angle adversarial pass on the completion diff:
+numerics PASS / swap-trace PASS / docs FAIL→fixed. Substantive P1 acted
+on: baseline-x86 libm-fma cliff → engine revised to the unfused
+reference tier (see #3 REVISED above). Doc P1s fixed: two stale
+"gemm_f64 delegates to matrixmultiply" claims (simd.rs comment +
+gemm_f64_tiled rustdoc) contradicted the swap in the same diff. P2s
+fixed: fma determinism scoped to per-(build,runtime) (wasm relaxed-simd
+fusion is implementation-defined); AVX2 vfmadd naming corrected (per-
+lane f64::mul_add polyfill, fused semantics); integer-corpus bound
+comment corrected (k_max=128, ≈2.1e4). All gates re-run green after
+fixes: clippy -D warnings, 2185/2185 lib tests, 4 gemm doctests.
 
 ## 2026-07-06 (later) — `ndarray::simd::gemm_f64_tiled` surfaced (operator directive)
 

@@ -570,13 +570,15 @@ pub use crate::simd_ops::{array_chunks, array_chunks_checked, array_windows, arr
 // contract: unfused mul+add in ascending-k order per element → bit-identical
 // on every backend (AVX-512/AVX2/NEON/WASM/scalar) and, at α=1 β=0,
 // bit-identical to the naive triple-loop reference. This is the in-crate
-// ground-truth GEMM for probes/certification — `backend::native::gemm_f64`
-// delegates to the external `matrixmultiply` crate instead. The kernel is
-// alloc-free, but `pub mod simd`/`simd_ops` are std-gated in lib.rs, so
-// like every kernel here it is reachable only in `std` builds today.
+// ground-truth GEMM for probes/certification AND the engine behind
+// `backend::native::gemm_f64` (own Rust in the f64 BLAS path; the f32
+// sibling still delegates to the external `matrixmultiply` crate).
 // `gemm_f64_tiled_fma` is the fast fused tier (same tiling/order, one
-// rounding per step) — the engine behind `backend::native::gemm_f64`;
-// the unfused reference tier stays the certification ground truth.
+// rounding per step) for consumers on FMA-pinned targets — not the
+// backend engine, because its scalar polyfill can lower to libm `fma()`
+// on baseline builds. Both kernels are alloc-free, but `pub mod
+// simd`/`simd_ops` are std-gated in lib.rs, so they are reachable only
+// in `std` builds today.
 pub use crate::simd_ops::{gemm_f64_tiled, gemm_f64_tiled_fma};
 pub use crate::simd_soa::MultiLaneColumn;
 

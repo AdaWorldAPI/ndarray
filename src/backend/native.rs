@@ -238,17 +238,30 @@ pub fn gemm_f32(
 
 /// GEMM: C = alpha * A * B + beta * C (f64, row-major).
 ///
-/// Engine: the crate-native `simd_ops::gemm_f64_tiled_fma` (F64x8-vectorized
-/// fused tier — entirely in-crate Rust, no external matmul engine). The
-/// unfused sibling `ndarray::simd::gemm_f64_tiled` is the bit-exact
-/// certification reference; this entry favors throughput. Swapped from
-/// `matrixmultiply::dgemm` — results agree to BLAS tolerance (last-ulp
-/// accumulation-order/fusion differences), not bit-for-bit.
+/// Engine: the crate-native `simd_ops::gemm_f64_tiled` (F64x8-vectorized,
+/// unfused reference tier — entirely in-crate Rust, no external matmul
+/// engine for f64; `gemm_f32` below still delegates to `matrixmultiply`).
+/// The unfused tier is chosen deliberately: it is bit-identical to the
+/// certification reference on every backend AND has no dependence on the
+/// `fma` target feature (the fused tier's scalar polyfill can lower to a
+/// libm `fma()` call on baseline x86-64 builds that don't inherit this
+/// repo's `.cargo` target-cpu pin). Consumers that pin an FMA-capable
+/// target and want the fused tier call `ndarray::simd::gemm_f64_tiled_fma`
+/// directly. Swapped from `matrixmultiply::dgemm` — results agree to BLAS
+/// tolerance (last-ulp accumulation-order differences), not bit-for-bit.
+///
+/// # Panics
+///
+/// Unlike the previous `matrixmultiply` wrapper (which accepted `lda < k`
+/// silently and was UB on short slices), this entry inherits the tiled
+/// kernel's checked preconditions: panics if `lda < k`, `ldb < n`,
+/// `ldc < n`, or a slice is shorter than `(rows − 1)·ld + cols` — matching
+/// the CBLAS backends, which reject `lda < max(1, k)` via `xerbla`.
 pub fn gemm_f64(
     m: usize, n: usize, k: usize, alpha: f64, a: &[f64], lda: usize, b: &[f64], ldb: usize, beta: f64, c: &mut [f64],
     ldc: usize,
 ) {
-    crate::simd_ops::gemm_f64_tiled_fma(m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+    crate::simd_ops::gemm_f64_tiled(m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
 }
 
 // ─── GEMV dispatch ───────────────────────────────────────────────
