@@ -48,11 +48,20 @@ std-gated in lib.rs — see reviewer note below if that changed).
 palette_codec.rs:806 needless_range_loop) — not touched here; the house
 gate (`cargo clippy -- -D warnings`, no --tests) is clean.
 
-[OBSERVED] `amx_available()` flipped true→false on this VM between runs
-two hours apart (subpel ran AMX TDPBF16PS earlier, F32x16 polyfill now;
-identical BF16-class errors either way). Host/hypervisor XTILEDATA
-enablement drift — Gotcha 9/14 adjacent; worth a note in AMX_GOTCHAS if
-observed again.
+[OBSERVED, then MEASURED] `amx_available()` flipped true→false between
+runs two hours apart (subpel ran AMX TDPBF16PS earlier, F32x16 polyfill
+later; identical BF16-class errors either way — tier ladder correct).
+**Diagnosis via `examples/amx_probe` per AMX_GOTCHAS discipline** (initial
+"enablement drift / Gotcha 14 adjacent" guess was WRONG): CPUID leaf-7
+TILE/INT8/BF16 bits all false, `cpu_model() = OtherX86`, `has_amx() =
+false` — the **silicon identity itself changed** (morning: EMR 0xCF with
+AMX). The session container was rescheduled onto non-AMX/CPUID-masked
+silicon. NOT Gotcha 4 (that signature is has_amx()==true with
+available==false) and NOT Gotcha 14 (corruption while available==true).
+Gotcha 9's always-print-the-tier discipline is what surfaced the flip.
+Consequence for remote sessions: the host under an ephemeral container
+can change mid-session — re-run `amx_probe`/`amx_report()` before any
+AMX-tier claim, never carry `amx_available()` results across runs.
 
 [LOOSE END] subpel_tap_tile findings 1-3 from the same-day review still
 queued (Gotcha-14 assert guard, PackedBf16B throughput leg, positive-
