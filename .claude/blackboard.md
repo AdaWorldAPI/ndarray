@@ -3,6 +3,208 @@
 > **Read this first.** The "Polyglot Notebook" architecture below is a
 > separate/older program, not the current epoch.
 
+## 2026-07-06 (latest) — F64 GEMM completed: FMA tier + register residency + native-engine swap
+
+Operator: "complete the F64 gemm… and pr". Three moves, all on the entry
+below's foundation:
+
+1. **`gemm_f64_tiled_fma`** — fast fused tier via const-generic
+   `gemm_f64_tiled_impl<const FMA: bool>` (monomorphized, no runtime
+   branch). Per-element ascending-p order preserved; fused step
+   `c = fma(α·a, b, c)`. Bit-identical to the reference tier on
+   integer-valued operands (products+sums < 2^53 — asserted with
+   `assert_eq!` on the full shape sweep); last-ulp-per-step differences
+   on general floats (tolerance test scaled k·ε to SUMMAND magnitude —
+   the initial result-scaled tolerance was wrong for cancellation-heavy
+   elements and failed honestly). Cross-backend caveat documented (WASM
+   without relaxed-simd has unfused vector lanes + fused scalar tail).
+2. **Register-resident C row-block** (both tiers): C block loaded into
+   `[F64x8; TILE/LANES]` accumulators + scalar tail array ONCE per
+   (kk,ii,jj,i), whole kb-loop accumulates in registers, one store.
+   f64→f64 store/reload never rounds ⇒ per-element op sequence
+   unchanged ⇒ every bit-equality test green untouched. [MEASURED]
+   ref 4.6→10.0 GF, fma 4.7→10.7 GF (2.2×).
+3. **Engine swap:** `backend::native::gemm_f64` now routes to the
+   crate-native tiled kernel — the f64 GEMM behind
+   `BlasFloat::backend_gemm` / `hpc::blas_level3::blas_gemm` / batched
+   linalg is entirely own Rust; matrixmultiply remains only in gemm_f32
+   and upstream `Array::dot` (impl_linalg.rs, untouched at ~33 GF).
+   **[REVISED post-verify] Engine = the UNFUSED reference tier**, not
+   fma: the verify pass surfaced a cliff — the AVX2-polyfill/scalar
+   `mul_add` lowers to a libm `fma()` call on baseline x86-64 builds
+   (consumers do NOT inherit this repo's `.cargo` target-cpu pin; CI
+   lands exactly there). The unfused tier has no libm dependence on any
+   backend, costs only ~7% vs fused on pinned builds (10.0 vs 10.7 GF),
+   and makes the backend engine bit-identical to the certification
+   reference. `gemm_f64_tiled_fma` stays public for FMA-pinned
+   consumers. New panic contract documented on `gemm_f64` (# Panics —
+   checked preconditions vs the old wrapper's silent-UB on short
+   slices; matches CBLAS xerbla behavior).
+
+[MEASURED, 3-engine, this VM (v3 compile → AVX2 arm, PREFERRED_F64_LANES=4;
+host runtime has avx512f but committed .cargo config is v3)]:
+256³/512³/1024³ — ref 11.2/10.0/9.6 GF | fma 11.9/10.7/10.3 GF |
+matrixmultiply 34.1/32.3/33.7 GF | max|fma−mm| ≤ 1.4e-13.
+**Own-engine gap: ~3.1×** (was 6.6× pre-restructure). Trade accepted per
+operator priority (own reverse-engineered Rust in the path, auditable
+numerics); blast radius = hpc BLAS surface only. 2185/2185 lib tests
+green WITH the swap.
+
+[LOOSE END → next rung] Closing the 3× needs a real microkernel: B-panel
+register reuse (i-tiling IR=2..4 × narrower j-block), then A/B packing —
+the matrixmultiply Goto recipe, own-Rust edition. Also: `gemm_f32_tiled`
+still dead in native.rs `mod scalar` (f32 sibling completion);
+avx512f compile arm untested on CI (v3 config) — the F64x8=__m512d arm
+runs only on local v4 builds.
+
+**[VERIFY OUTCOME]** 3-angle adversarial pass on the completion diff:
+numerics PASS / swap-trace PASS / docs FAIL→fixed. Substantive P1 acted
+on: baseline-x86 libm-fma cliff → engine revised to the unfused
+reference tier (see #3 REVISED above). Doc P1s fixed: two stale
+"gemm_f64 delegates to matrixmultiply" claims (simd.rs comment +
+gemm_f64_tiled rustdoc) contradicted the swap in the same diff. P2s
+fixed: fma determinism scoped to per-(build,runtime) (wasm relaxed-simd
+fusion is implementation-defined); AVX2 vfmadd naming corrected (per-
+lane f64::mul_add polyfill, fused semantics); integer-corpus bound
+comment corrected (k_max=128, ≈2.1e4). All gates re-run green after
+fixes: clippy -D warnings, 2185/2185 lib tests, 4 gemm doctests.
+
+## 2026-07-06 (later) — `ndarray::simd::gemm_f64_tiled` surfaced (operator directive)
+
+The crate-native tiled f64 GEMM graduated from dead code
+(`backend/native.rs` private `mod scalar`, zero callers) to the canonical
+simd surface: `src/simd_ops.rs::gemm_f64_tiled`, re-exported
+**unconditionally** in `src/simd.rs` (alloc-free; `pub mod simd` itself is
+std-gated in lib.rs — see reviewer note below if that changed).
+
+- **Bit-exactness contract (documented on the fn):** every C[i,j] gets
+  `c = c + (α·A[i,p])·B[p,j]` ascending-p, mul and add UNFUSED — the
+  `*`/`+` operators on F64x8 lower to plain mul/add intrinsics on ALL
+  five backends (AVX-512 `_mm512_mul/add_pd`, AVX2 per-half, NEON
+  `vmulq/vaddq_f64`, WASM `f64x2_mul/add`, scalar) and Rust never
+  FP-contracts explicit intrinsics → bit-identical across backends; at
+  α=1 β=0 bit-identical to the naive triple-loop reference.
+- Innermost j-loop vectorized on dispatched `F64x8` (one source, every
+  backend, per the simd_ops polyfill model); TILE=64 blocking preserved
+  verbatim from the original.
+- [MEASURED] vs naive scalar triple loop, single thread, this EMR VM:
+  128³ 2.23×, 256³ 2.54×, 512³ 6.74× (4.6 GFLOP/s), **bit-equal: true**
+  at every size (W1a bench criterion; well above the 0.5× reject line).
+- W1a compliance: parity tests = 7 new tests in
+  `simd_ops::gemm_f64_tiled_tests` (fixed-seed splitmix64 corpus, 13
+  shape sweep incl. multi-tile 70³, strided lda/ldb/ldc with
+  sentinel-padding assert, α/β semantics, β=0-over-NaN, k=0, m/n=0,
+  denormals/−0.0) — all bit-equality (`to_bits`), not tolerance. Zero
+  `unsafe`. No new feature detection. Consumer sites named: the
+  `direct_matmul` f64 ground-truth in `examples/subpel_tap_tile.rs` +
+  `examples/gridlake_field_tile.rs`, both REWIRED to it (bit-identical
+  swap — subpel prints identical numbers pre/post).
+- Free-fn shape note: matches the existing simd-surface GEMM family
+  (`bf16_tile_gemm_16x16`, `matmul_i8_to_i32`) — operator-directed, not
+  a speculative W1a-queue addition.
+- Dead code removed: `native.rs` `gemm_f64_tiled` deleted (pointer
+  comment left); `gemm_f32_tiled` stays dead in `mod scalar` pending the
+  same treatment (UNUSED_INVENTORY thread).
+- Gates: clippy `-D warnings` clean (lib + both examples), fmt clean,
+  **2182/2182 lib tests**, doctest green, `--no-default-features` build
+  green.
+
+[NOTE] `--tests` clippy surfaces 3 PRE-EXISTING test-code lints
+(property_mask.rs:426 unusual_byte_groupings, bitwise.rs:637 identity_op,
+palette_codec.rs:806 needless_range_loop) — not touched here; the house
+gate (`cargo clippy -- -D warnings`, no --tests) is clean.
+
+[OBSERVED, then MEASURED] `amx_available()` flipped true→false between
+runs two hours apart (subpel ran AMX TDPBF16PS earlier, F32x16 polyfill
+later; identical BF16-class errors either way — tier ladder correct).
+**Diagnosis via `examples/amx_probe` per AMX_GOTCHAS discipline** (initial
+"enablement drift / Gotcha 14 adjacent" guess was WRONG): CPUID leaf-7
+TILE/INT8/BF16 bits all false, `cpu_model() = OtherX86`, `has_amx() =
+false` — the **silicon identity itself changed** (morning: EMR 0xCF with
+AMX). The session container was rescheduled onto non-AMX/CPUID-masked
+silicon. NOT Gotcha 4 (that signature is has_amx()==true with
+available==false) and NOT Gotcha 14 (corruption while available==true).
+Gotcha 9's always-print-the-tier discipline is what surfaced the flip.
+Consequence for remote sessions: the host under an ephemeral container
+can change mid-session — re-run `amx_probe`/`amx_report()` before any
+AMX-tier claim, never carry `amx_available()` results across runs.
+
+[LOOSE END] subpel_tap_tile findings 1-3 from the same-day review still
+queued (Gotcha-14 assert guard, PackedBf16B throughput leg, positive-
+operand comment fix). Adversarial 3-angle verify workflow on this diff
+was in flight at commit time; findings (if any) land as follow-up.
+
+**[VERIFY OUTCOME, same day]** 3-angle adversarial review (IEEE/bit-
+exactness, W1a compliance, regression-trace): **PASS / PASS / PASS**.
+One convergent P1 fixed in the follow-up commit: the simd.rs re-export
+comment claimed no_std availability, but `pub mod simd`/`simd_ops` are
+std-gated in lib.rs — the no_std build passes because the code is
+compiled OUT (comment corrected; un-gating simd_ops for a genuinely
+no_std kernel is possible future work, not this diff). P2s folded in:
+cross-backend bit-identity scoped to non-NaN inputs (NaN payloads are
+backend-defined, WASM may canonicalize); `alpha == 0.0` non-short-
+circuit documented (0·Inf=NaN propagates, −0.0 can flip, unlike BLAS
+quick-return); Panics doc states which checks are skipped (m/n==0, k==0);
+length-extent asserts now overflow-checked (`checked_mul`); parity corpus
+widened to 70+ invocations (full 13-shape sweep × 4 α/β combos) for the
+W1a "50+" letter; free-fn-shape precedent sentence added to the doc
+(GEMM family: bf16_tile_gemm_16x16, matmul_i8_to_i32). Deferred as
+noise: x87-only i586 excess-precision footnote (tier-2, pre-SSE2).
+
+## 2026-07-06 — Review pass: health check green + 10 findings on subpel_tap_tile (#235)
+
+Review-only session (no code changes). **Health check:** `cargo fmt --check`
+clean, `cargo clippy -p ndarray --lib -- -D warnings` clean, clippy on the new
+example clean, **2175/2175 lib tests pass** (30 ignored). The stale top-of-
+CLAUDE.md "build fails (exit 101)" note again does NOT reproduce. The example
+`subpel_tap_tile` runs green end-to-end on this EMR host (tier = AMX TDPBF16PS,
+rel err 0.157% / 0.215%, asserts pass).
+
+**Findings on `examples/subpel_tap_tile.rs` (PR #235), most severe first:**
+1. Lines 208-209 hard-assert rel err < 0.05 on AMX-dispatched results with no
+   contention guard — flakes on oversubscribed VMs per Gotcha 14 (precedent:
+   `#[ignore]` gating in bf16_tile_gemm.rs:572).
+2. Throughput leg (3) times per-call allocs + f32→bf16 of BOTH operands + the
+   kernel's per-call VNNI pack of the CONSTANT H — printed 1.00 M/s measures
+   wrapper overhead, not the tile op; use `PackedBf16B` +
+   `bf16_tile_gemm_16x16_packed` (the API built for exactly this).
+3. Line 167 comment "(fits u8 and i8; positive operand)" is false (x reaches
+   ≈ −19.6 for r ≥ 11) — porting hazard toward the u8×i8 int8 path.
+4. Reuse: `mix()` is the 5th example-local splitmix64 copy (public bit-identical
+   `hpc::cam_index::SplitMix64` exists); `direct_matmul` duplicates
+   `backend::native::gemm_f64` — **[MEASURED this session] bit-exact, 0/256
+   lanes differ** vs the naive loop on the probe's exact operands (operator
+   correction: earlier "independence" refutation was wrong — the BF16 tile
+   kernel shares zero code with gemm_f64).
+5. Cleanups: Vec<f32> C + copy (kernel takes &mut [f32] — stack array works),
+   to_bf16 double-alloc, b_pad identical-index loop = prefix copy, direct_hv
+   duplicated FIR pass, padded-16→32 scaffold now copy-pasted across 2 probes
+   (suggest one public padded helper on ndarray::simd before probe #3).
+
+**Refuted during verify:** .gitattributes deletion is the deliberate,
+documented revert PR #236 (union merge mangles [[example]] blocks — no residue
+found); clippy needless_range_loop claim (empirically clean under -D warnings);
+f32 checksum absorption (print-only anti-DCE); transpose_matrix reuse (net
+loss — Vec round-trips vs 8-line stack helper).
+
+[LOOSE END] Findings 1-3 are worth a small follow-up PR (contention guard or
+warning, packed-B throughput leg, comment fix); none applied here (review-only).
+
+**[ADDENDUM, same day — operator challenge "our gemm, not the stoneage
+external":** the first bit-exactness probe compared naive-loop vs
+`backend::native::gemm_f64`, which delegates to the EXTERNAL
+`matrixmultiply::dgemm` (native.rs:249; registry dep, Cargo.toml:154). Re-ran
+against the crate's OWN scalar `gemm_f64_tiled` (native.rs:473, verbatim):
+**bit-exact too — 0/256 lanes differ** on the probe's operands AND on random
+f64 at K=64. All three (naive / own tiled / matrixmultiply) agree bit-for-bit
+on these shapes. **Structural finding the challenge surfaced:** the crate's
+entire PUBLIC f64 GEMM surface (`gemm_f64`, `BlasLevel3::blas_gemm` via
+`backend_gemm`) is external-backed, while the own-Rust `gemm_f64_tiled` sits
+dead in the private `mod scalar` with zero callers. If the policy is
+own-reverse-engineered-Rust-only, the right fix for finding #4 is to surface
+`gemm_f64_tiled` (or route the scalar tier of `backend_gemm` through it) and
+point probes at THAT — files under the UNUSED_INVENTORY dead-code thread.]**
+
 ## 2026-07-02 (later) — bf16 tile GEMM: VDPBF16PS middle tier + PackedBf16B (loose end closed)
 
 Closed the [LOOSE END] from the 1BRC entry below. `hpc/bf16_tile_gemm.rs`

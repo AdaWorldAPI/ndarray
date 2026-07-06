@@ -237,32 +237,31 @@ pub fn gemm_f32(
 }
 
 /// GEMM: C = alpha * A * B + beta * C (f64, row-major).
+///
+/// Engine: the crate-native `simd_ops::gemm_f64_tiled` (F64x8-vectorized,
+/// unfused reference tier — entirely in-crate Rust, no external matmul
+/// engine for f64; `gemm_f32` below still delegates to `matrixmultiply`).
+/// The unfused tier is chosen deliberately: it is bit-identical to the
+/// certification reference on every backend AND has no dependence on the
+/// `fma` target feature (the fused tier's scalar polyfill can lower to a
+/// libm `fma()` call on baseline x86-64 builds that don't inherit this
+/// repo's `.cargo` target-cpu pin). Consumers that pin an FMA-capable
+/// target and want the fused tier call `ndarray::simd::gemm_f64_tiled_fma`
+/// directly. Swapped from `matrixmultiply::dgemm` — results agree to BLAS
+/// tolerance (last-ulp accumulation-order differences), not bit-for-bit.
+///
+/// # Panics
+///
+/// Unlike the previous `matrixmultiply` wrapper (which accepted `lda < k`
+/// silently and was UB on short slices), this entry inherits the tiled
+/// kernel's checked preconditions: panics if `lda < k`, `ldb < n`,
+/// `ldc < n`, or a slice is shorter than `(rows − 1)·ld + cols` — matching
+/// the CBLAS backends, which reject `lda < max(1, k)` via `xerbla`.
 pub fn gemm_f64(
     m: usize, n: usize, k: usize, alpha: f64, a: &[f64], lda: usize, b: &[f64], ldb: usize, beta: f64, c: &mut [f64],
     ldc: usize,
 ) {
-    if m == 0 || n == 0 {
-        return;
-    }
-    // SAFETY: same as sgemm — valid slices, row-major strides.
-    unsafe {
-        matrixmultiply::dgemm(
-            m,
-            k,
-            n,
-            alpha,
-            a.as_ptr(),
-            lda as isize,
-            1,
-            b.as_ptr(),
-            ldb as isize,
-            1,
-            beta,
-            c.as_mut_ptr(),
-            ldc as isize,
-            1,
-        );
-    }
+    crate::simd_ops::gemm_f64_tiled(m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
 }
 
 // ─── GEMV dispatch ───────────────────────────────────────────────
@@ -468,52 +467,10 @@ mod scalar {
         }
     }
 
-    /// Tiled GEMM (f64, scalar reference)
-    #[allow(dead_code)]
-    pub fn gemm_f64_tiled(
-        m: usize, n: usize, k: usize, alpha: f64, a: &[f64], lda: usize, b: &[f64], ldb: usize, beta: f64,
-        c: &mut [f64], ldc: usize,
-    ) {
-        const TILE: usize = 64;
-
-        if beta == 0.0 {
-            for i in 0..m {
-                for j in 0..n {
-                    c[i * ldc + j] = 0.0;
-                }
-            }
-        } else if beta != 1.0 {
-            for i in 0..m {
-                for j in 0..n {
-                    c[i * ldc + j] *= beta;
-                }
-            }
-        }
-
-        let mut kk = 0;
-        while kk < k {
-            let kb = TILE.min(k - kk);
-            let mut ii = 0;
-            while ii < m {
-                let ib = TILE.min(m - ii);
-                let mut jj = 0;
-                while jj < n {
-                    let jb = TILE.min(n - jj);
-                    for i in 0..ib {
-                        for p in 0..kb {
-                            let a_val = alpha * a[(ii + i) * lda + (kk + p)];
-                            for j in 0..jb {
-                                c[(ii + i) * ldc + (jj + j)] += a_val * b[(kk + p) * ldb + (jj + j)];
-                            }
-                        }
-                    }
-                    jj += jb;
-                }
-                ii += ib;
-            }
-            kk += kb;
-        }
-    }
+    // The f64 sibling (`gemm_f64_tiled`) graduated to `src/simd_ops.rs`,
+    // public as `ndarray::simd::gemm_f64_tiled` — same tiled algorithm,
+    // innermost loop F64x8-vectorized, with a documented bit-exactness
+    // contract (unfused mul+add; bit-identical to this scalar shape).
 
     pub fn gemv_f32(m: usize, n: usize, alpha: f32, a: &[f32], lda: usize, x: &[f32], beta: f32, y: &mut [f32]) {
         for i in 0..m {
