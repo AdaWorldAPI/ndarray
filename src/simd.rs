@@ -571,8 +571,9 @@ pub use crate::simd_ops::{array_chunks, array_chunks_checked, array_windows, arr
 // on every backend (AVX-512/AVX2/NEON/WASM/scalar) and, at α=1 β=0,
 // bit-identical to the naive triple-loop reference. This is the in-crate
 // ground-truth GEMM for probes/certification — `backend::native::gemm_f64`
-// delegates to the external `matrixmultiply` crate instead. Alloc-free, so
-// available without `std` (hence outside the std-gated kernel list below).
+// delegates to the external `matrixmultiply` crate instead. The kernel is
+// alloc-free, but `pub mod simd`/`simd_ops` are std-gated in lib.rs, so
+// like every kernel here it is reachable only in `std` builds today.
 pub use crate::simd_ops::gemm_f64_tiled;
 pub use crate::simd_soa::MultiLaneColumn;
 

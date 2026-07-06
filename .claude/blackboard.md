@@ -59,6 +59,23 @@ queued (Gotcha-14 assert guard, PackedBf16B throughput leg, positive-
 operand comment fix). Adversarial 3-angle verify workflow on this diff
 was in flight at commit time; findings (if any) land as follow-up.
 
+**[VERIFY OUTCOME, same day]** 3-angle adversarial review (IEEE/bit-
+exactness, W1a compliance, regression-trace): **PASS / PASS / PASS**.
+One convergent P1 fixed in the follow-up commit: the simd.rs re-export
+comment claimed no_std availability, but `pub mod simd`/`simd_ops` are
+std-gated in lib.rs — the no_std build passes because the code is
+compiled OUT (comment corrected; un-gating simd_ops for a genuinely
+no_std kernel is possible future work, not this diff). P2s folded in:
+cross-backend bit-identity scoped to non-NaN inputs (NaN payloads are
+backend-defined, WASM may canonicalize); `alpha == 0.0` non-short-
+circuit documented (0·Inf=NaN propagates, −0.0 can flip, unlike BLAS
+quick-return); Panics doc states which checks are skipped (m/n==0, k==0);
+length-extent asserts now overflow-checked (`checked_mul`); parity corpus
+widened to 70+ invocations (full 13-shape sweep × 4 α/β combos) for the
+W1a "50+" letter; free-fn-shape precedent sentence added to the doc
+(GEMM family: bf16_tile_gemm_16x16, matmul_i8_to_i32). Deferred as
+noise: x87-only i586 excess-precision footnote (tier-2, pre-SSE2).
+
 ## 2026-07-06 — Review pass: health check green + 10 findings on subpel_tap_tile (#235)
 
 Review-only session (no code changes). **Health check:** `cargo fmt --check`

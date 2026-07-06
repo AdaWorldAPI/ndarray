@@ -902,20 +902,33 @@ mod add_mul_tests {
 /// multiply and add **unfused** (the `*`/`+` operators on the SIMD
 /// types lower to plain `mul`/`add` on every backend — never
 /// FMA-contracted). The result is therefore **bit-identical across all
-/// backends**, and for `alpha == 1.0, beta == 0.0` (the certification
-/// shape) bit-identical to the naive triple-loop reference
-/// `s = Σ_p A[i,p]·B[p,j]; C[i,j] = s`.
+/// backends for non-NaN inputs** (NaN-*ness* propagates everywhere,
+/// but NaN *payloads* are backend-defined — WASM in particular may
+/// canonicalize), and for `alpha == 1.0, beta == 0.0` (the
+/// certification shape) bit-identical to the naive triple-loop
+/// reference `s = Σ_p A[i,p]·B[p,j]; C[i,j] = s`.
 ///
 /// Edge semantics: `m == 0` or `n == 0` is a no-op (`c` untouched);
 /// `k == 0` applies only the beta pass; `beta == 0.0` overwrites `c`
 /// without reading it (BLAS convention — pre-existing NaN/Inf in `c`
 /// do not propagate); `beta == 1.0` accumulates into `c` as-is;
-/// non-finite values in `a`/`b` propagate per IEEE.
+/// non-finite values in `a`/`b` propagate per IEEE. Unlike BLAS
+/// `xGEMM`, `alpha == 0.0` does **not** short-circuit the product
+/// term: `a`/`b` are still read and `(±0.0·a)·b` terms are added, so
+/// NaN/Inf in `a`/`b` propagate into `c` (`0·Inf = NaN`) and a `-0.0`
+/// in `c` can flip to `+0.0`.
+///
+/// Free-function shape follows the simd-surface GEMM family precedent
+/// ([`bf16_tile_gemm_16x16`], `matmul_i8_to_i32`) — an 11-argument
+/// slice-level BLAS kernel has no typed-wrapper home (W1a).
 ///
 /// # Panics
 ///
 /// Panics if `lda < k`, `ldb < n`, `ldc < n`, or if `a`, `b`, or `c`
-/// is shorter than `(rows − 1)·ld + cols` for its shape.
+/// is shorter than `(rows − 1)·ld + cols` for its shape (computed
+/// overflow-checked). All checks are skipped when `m == 0 || n == 0`
+/// (the no-op path), and the `a`/`b` length checks are skipped when
+/// `k == 0` (neither is read).
 ///
 /// # Examples
 ///
@@ -940,11 +953,20 @@ pub fn gemm_f64_tiled(
     assert!(lda >= k, "lda ({lda}) must be >= k ({k})");
     assert!(ldb >= n, "ldb ({ldb}) must be >= n ({n})");
     assert!(ldc >= n, "ldc ({ldc}) must be >= n ({n})");
+    // Overflow-checked extents: a wrapping (rows−1)·ld in release would let
+    // the precondition spuriously pass and surface later as a mid-compute
+    // index panic (after the beta pass mutated `c`).
+    let extent = |rows: usize, ld: usize, cols: usize| {
+        (rows - 1)
+            .checked_mul(ld)
+            .and_then(|x| x.checked_add(cols))
+            .expect("matrix extent overflows usize")
+    };
     if k > 0 {
-        assert!(a.len() >= (m - 1) * lda + k, "a too short for m×k with lda");
-        assert!(b.len() >= (k - 1) * ldb + n, "b too short for k×n with ldb");
+        assert!(a.len() >= extent(m, lda, k), "a too short for m×k with lda");
+        assert!(b.len() >= extent(k, ldb, n), "b too short for k×n with ldb");
     }
-    assert!(c.len() >= (m - 1) * ldc + n, "c too short for m×n with ldc");
+    assert!(c.len() >= extent(m, ldc, n), "c too short for m×n with ldc");
 
     const TILE: usize = 64;
     const LANES: usize = 8; // F64x8
@@ -1108,7 +1130,10 @@ mod gemm_f64_tiled_tests {
 
     #[test]
     fn bit_exact_general_alpha_beta_preloaded_c() {
-        for &(m, n, k) in &[(16, 16, 16), (9, 17, 33), (70, 70, 70)] {
+        // Full shape sweep × 4 (alpha, beta) combos = 52 kernel invocations,
+        // + 13 in the sweep above + edge tests → 70+ corpus entries (W1a
+        // criterion 3's "50+ test inputs").
+        for &(m, n, k) in SHAPES {
             for &(alpha, beta) in &[(0.75, 2.5), (-1.25, 1.0), (2.0, -0.5), (0.0, 3.0)] {
                 let a = fill(m * k, 0x1);
                 let b = fill(k * n, 0x2);
