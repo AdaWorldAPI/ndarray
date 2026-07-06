@@ -947,6 +947,59 @@ pub fn gemm_f64_tiled(
     m: usize, n: usize, k: usize, alpha: f64, a: &[f64], lda: usize, b: &[f64], ldb: usize, beta: f64, c: &mut [f64],
     ldc: usize,
 ) {
+    gemm_f64_tiled_impl::<false>(m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+/// Fast tier of [`gemm_f64_tiled`]: same tiling, same ascending-`p`
+/// per-element order, but each step is a **fused** multiply-add
+/// (`c = fma(alpha·A[i,p], B[p,j], c)` — one rounding per step via
+/// `F64x8::mul_add`: `vfmadd`/`vfmaq_f64` on x86/NEON, `f64::mul_add`
+/// on the scalar tail and polyfill backends).
+///
+/// Semantics relative to the reference tier:
+/// - **Deterministic per build**, but NOT bit-stable across backends:
+///   fusion quality differs (WASM without `relaxed-simd` has no fused
+///   vector `mul_add`, so its vector lanes match the unfused reference
+///   while the scalar tail is still fused).
+/// - **Bit-identical to [`gemm_f64_tiled`]** whenever every
+///   `a_val·b` product and running sum is exactly representable —
+///   e.g. integer-valued data with products and accumulation inside
+///   `2^53` (asserted in tests). On general float data each step
+///   differs from the reference by at most the dropped intermediate
+///   rounding (classic FMA-vs-mul+add last-ulp effects).
+/// - Same argument contract, edge semantics, and panics as
+///   [`gemm_f64_tiled`].
+///
+/// Use the reference tier for certification/ground truth; use this
+/// tier when GEMM throughput matters.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::{gemm_f64_tiled, gemm_f64_tiled_fma};
+///
+/// let a = [1.0, 2.0, 3.0, 4.0]; // integer-valued → tiers bit-identical
+/// let b = [5.0, 6.0, 7.0, 8.0];
+/// let (mut c1, mut c2) = ([0.0f64; 4], [0.0f64; 4]);
+/// gemm_f64_tiled(2, 2, 2, 1.0, &a, 2, &b, 2, 0.0, &mut c1, 2);
+/// gemm_f64_tiled_fma(2, 2, 2, 1.0, &a, 2, &b, 2, 0.0, &mut c2, 2);
+/// assert_eq!(c1, c2);
+/// assert_eq!(c1, [19.0, 22.0, 43.0, 50.0]);
+/// ```
+#[allow(clippy::too_many_arguments)]
+pub fn gemm_f64_tiled_fma(
+    m: usize, n: usize, k: usize, alpha: f64, a: &[f64], lda: usize, b: &[f64], ldb: usize, beta: f64, c: &mut [f64],
+    ldc: usize,
+) {
+    gemm_f64_tiled_impl::<true>(m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn gemm_f64_tiled_impl<const FMA: bool>(
+    m: usize, n: usize, k: usize, alpha: f64, a: &[f64], lda: usize, b: &[f64], ldb: usize, beta: f64, c: &mut [f64],
+    ldc: usize,
+) {
     if m == 0 || n == 0 {
         return;
     }
@@ -996,24 +1049,44 @@ pub fn gemm_f64_tiled(
             let mut jj = 0;
             while jj < n {
                 let jb = TILE.min(n - jj);
+                let nvec = jb / LANES; // ≤ TILE/LANES full-lane groups
+                let ntail = jb % LANES;
                 for i in 0..ib {
+                    let c_row = (ii + i) * ldc + jj;
+                    // Register-resident C row-block: load once, accumulate the
+                    // whole kb-loop in registers, store once. f64→f64
+                    // store/reload never rounds, so this is bit-identical to
+                    // per-step write-back — same per-element op sequence, the
+                    // C-row traffic just drops from O(kb) to O(1).
+                    let mut acc = [F64x8::splat(0.0); TILE / LANES];
+                    for (v, av) in acc.iter_mut().enumerate().take(nvec) {
+                        *av = F64x8::from_slice(&c[c_row + v * LANES..]);
+                    }
+                    let mut tail = [0.0f64; LANES - 1];
+                    for (t, tv) in tail.iter_mut().enumerate().take(ntail) {
+                        *tv = c[c_row + nvec * LANES + t];
+                    }
                     for p in 0..kb {
                         let a_val = alpha * a[(ii + i) * lda + (kk + p)];
                         let va = F64x8::splat(a_val);
                         let b_row = (kk + p) * ldb + jj;
-                        let c_row = (ii + i) * ldc + jj;
-                        let mut j = 0;
-                        // Unfused `vc + va·vb` — bit-identical to the scalar tail.
-                        while j + LANES <= jb {
-                            let vb = F64x8::from_slice(&b[b_row + j..]);
-                            let vc = F64x8::from_slice(&c[c_row + j..]);
-                            (vc + va * vb).copy_to_slice(&mut c[c_row + j..]);
-                            j += LANES;
+                        // Reference tier: unfused `acc + va·vb`, bit-identical
+                        // to the scalar tail. FMA tier: fused, one rounding per
+                        // step. Monomorphized — no runtime branch.
+                        for (v, av) in acc.iter_mut().enumerate().take(nvec) {
+                            let vb = F64x8::from_slice(&b[b_row + v * LANES..]);
+                            *av = if FMA { va.mul_add(vb, *av) } else { *av + va * vb };
                         }
-                        while j < jb {
-                            c[c_row + j] += a_val * b[b_row + j];
-                            j += 1;
+                        for (t, tv) in tail.iter_mut().enumerate().take(ntail) {
+                            let bv = b[b_row + nvec * LANES + t];
+                            *tv = if FMA { a_val.mul_add(bv, *tv) } else { *tv + a_val * bv };
                         }
+                    }
+                    for (v, av) in acc.iter().enumerate().take(nvec) {
+                        av.copy_to_slice(&mut c[c_row + v * LANES..]);
+                    }
+                    for (t, tv) in tail.iter().enumerate().take(ntail) {
+                        c[c_row + nvec * LANES + t] = *tv;
                     }
                 }
                 jj += jb;
@@ -1238,5 +1311,71 @@ mod gemm_f64_tiled_tests {
         gemm_f64_tiled(m, n, k, 1.0, &a, k, &b, n, 0.0, &mut c, n);
         let c_naive = ref_naive_ijk(m, n, k, &a, k, &b, n, n);
         assert_bits_eq(&c, &c_naive, "denormals");
+    }
+
+    // ── FMA tier ──
+
+    /// Integer-valued corpus: values in [-9, 9], so every a·b product
+    /// (≤ 81) and running sum (≤ 70·81·2) is exactly representable —
+    /// fused and unfused steps round identically → tiers bit-identical.
+    fn fill_int(len: usize, salt: u64) -> Vec<f64> {
+        (0..len)
+            .map(|i| ((mix(i as u64 ^ salt) % 19) as i64 - 9) as f64)
+            .collect()
+    }
+
+    #[test]
+    fn fma_bit_identical_to_reference_on_integer_operands() {
+        for &(m, n, k) in SHAPES {
+            for &(alpha, beta) in &[(1.0, 0.0), (2.0, 1.0)] {
+                let a = fill_int(m * k, 0xF1);
+                let b = fill_int(k * n, 0xF2);
+                let c0 = fill_int(m * n, 0xF3);
+                let mut c_ref = c0.clone();
+                let mut c_fma = c0.clone();
+                super::gemm_f64_tiled(m, n, k, alpha, &a, k, &b, n, beta, &mut c_ref, n);
+                super::gemm_f64_tiled_fma(m, n, k, alpha, &a, k, &b, n, beta, &mut c_fma, n);
+                assert_bits_eq(&c_fma, &c_ref, &format!("fma int ({m},{n},{k}) α={alpha} β={beta}"));
+            }
+        }
+    }
+
+    #[test]
+    fn fma_matches_reference_within_fused_rounding_on_floats() {
+        for &(m, n, k) in SHAPES {
+            let a = fill(m * k, 0xF4);
+            let b = fill(k * n, 0xF5);
+            let mut c_ref = vec![0.0f64; m * n];
+            let mut c_fma = vec![0.0f64; m * n];
+            super::gemm_f64_tiled(m, n, k, 1.0, &a, k, &b, n, 0.0, &mut c_ref, n);
+            super::gemm_f64_tiled_fma(m, n, k, 1.0, &a, k, &b, n, 0.0, &mut c_fma, n);
+            // FMA-vs-unfused divergence scales with the SUMMAND magnitudes
+            // (each step drops one intermediate rounding relative to the
+            // running sum), not with the possibly-cancelled final value:
+            // ≤ k steps × ~2ε per step × O(1) summands for inputs in [-1,1).
+            let tol = (k as f64) * 4.0 * f64::EPSILON;
+            for (i, (f, r)) in c_fma.iter().zip(c_ref.iter()).enumerate() {
+                let tol = tol.max(1e-13 * r.abs());
+                assert!(
+                    (f - r).abs() <= tol,
+                    "fma float ({m},{n},{k}) idx {i}: fma={f:e} ref={r:e} (Δ={:e} > tol={tol:e})",
+                    (f - r).abs()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fma_edge_cases_match_reference() {
+        // k=0 beta pass, m/n=0 no-op — same paths as the reference tier.
+        let c0 = fill(24, 0xF6);
+        let mut c_ref = c0.clone();
+        let mut c_fma = c0.clone();
+        super::gemm_f64_tiled(4, 6, 0, 1.0, &[], 0, &[], 6, 2.5, &mut c_ref, 6);
+        super::gemm_f64_tiled_fma(4, 6, 0, 1.0, &[], 0, &[], 6, 2.5, &mut c_fma, 6);
+        assert_bits_eq(&c_fma, &c_ref, "fma k=0");
+        let mut c = c0.clone();
+        super::gemm_f64_tiled_fma(0, 6, 4, 1.0, &[], 4, &[1.0; 24], 6, 0.0, &mut c, 6);
+        assert_bits_eq(&c, &c0, "fma m=0 no-op");
     }
 }

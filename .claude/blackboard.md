@@ -3,6 +3,49 @@
 > **Read this first.** The "Polyglot Notebook" architecture below is a
 > separate/older program, not the current epoch.
 
+## 2026-07-06 (latest) — F64 GEMM completed: FMA tier + register residency + native-engine swap
+
+Operator: "complete the F64 gemm… and pr". Three moves, all on the entry
+below's foundation:
+
+1. **`gemm_f64_tiled_fma`** — fast fused tier via const-generic
+   `gemm_f64_tiled_impl<const FMA: bool>` (monomorphized, no runtime
+   branch). Per-element ascending-p order preserved; fused step
+   `c = fma(α·a, b, c)`. Bit-identical to the reference tier on
+   integer-valued operands (products+sums < 2^53 — asserted with
+   `assert_eq!` on the full shape sweep); last-ulp-per-step differences
+   on general floats (tolerance test scaled k·ε to SUMMAND magnitude —
+   the initial result-scaled tolerance was wrong for cancellation-heavy
+   elements and failed honestly). Cross-backend caveat documented (WASM
+   without relaxed-simd has unfused vector lanes + fused scalar tail).
+2. **Register-resident C row-block** (both tiers): C block loaded into
+   `[F64x8; TILE/LANES]` accumulators + scalar tail array ONCE per
+   (kk,ii,jj,i), whole kb-loop accumulates in registers, one store.
+   f64→f64 store/reload never rounds ⇒ per-element op sequence
+   unchanged ⇒ every bit-equality test green untouched. [MEASURED]
+   ref 4.6→10.0 GF, fma 4.7→10.7 GF (2.2×).
+3. **Engine swap:** `backend::native::gemm_f64` now routes to
+   `gemm_f64_tiled_fma` — the f64 GEMM behind `BlasFloat::backend_gemm`
+   / `hpc::blas_level3::blas_gemm` / batched linalg is entirely own
+   Rust; matrixmultiply remains only in gemm_f32 and upstream
+   `Array::dot` (impl_linalg.rs, untouched at ~33 GF).
+
+[MEASURED, 3-engine, this VM (v3 compile → AVX2 arm, PREFERRED_F64_LANES=4;
+host runtime has avx512f but committed .cargo config is v3)]:
+256³/512³/1024³ — ref 11.2/10.0/9.6 GF | fma 11.9/10.7/10.3 GF |
+matrixmultiply 34.1/32.3/33.7 GF | max|fma−mm| ≤ 1.4e-13.
+**Own-engine gap: ~3.1×** (was 6.6× pre-restructure). Trade accepted per
+operator priority (own reverse-engineered Rust in the path, auditable
+numerics); blast radius = hpc BLAS surface only. 2185/2185 lib tests
+green WITH the swap.
+
+[LOOSE END → next rung] Closing the 3× needs a real microkernel: B-panel
+register reuse (i-tiling IR=2..4 × narrower j-block), then A/B packing —
+the matrixmultiply Goto recipe, own-Rust edition. Also: `gemm_f32_tiled`
+still dead in native.rs `mod scalar` (f32 sibling completion);
+avx512f compile arm untested on CI (v3 config) — the F64x8=__m512d arm
+runs only on local v4 builds.
+
 ## 2026-07-06 (later) — `ndarray::simd::gemm_f64_tiled` surfaced (operator directive)
 
 The crate-native tiled f64 GEMM graduated from dead code

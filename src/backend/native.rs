@@ -237,32 +237,18 @@ pub fn gemm_f32(
 }
 
 /// GEMM: C = alpha * A * B + beta * C (f64, row-major).
+///
+/// Engine: the crate-native `simd_ops::gemm_f64_tiled_fma` (F64x8-vectorized
+/// fused tier — entirely in-crate Rust, no external matmul engine). The
+/// unfused sibling `ndarray::simd::gemm_f64_tiled` is the bit-exact
+/// certification reference; this entry favors throughput. Swapped from
+/// `matrixmultiply::dgemm` — results agree to BLAS tolerance (last-ulp
+/// accumulation-order/fusion differences), not bit-for-bit.
 pub fn gemm_f64(
     m: usize, n: usize, k: usize, alpha: f64, a: &[f64], lda: usize, b: &[f64], ldb: usize, beta: f64, c: &mut [f64],
     ldc: usize,
 ) {
-    if m == 0 || n == 0 {
-        return;
-    }
-    // SAFETY: same as sgemm — valid slices, row-major strides.
-    unsafe {
-        matrixmultiply::dgemm(
-            m,
-            k,
-            n,
-            alpha,
-            a.as_ptr(),
-            lda as isize,
-            1,
-            b.as_ptr(),
-            ldb as isize,
-            1,
-            beta,
-            c.as_mut_ptr(),
-            ldc as isize,
-            1,
-        );
-    }
+    crate::simd_ops::gemm_f64_tiled_fma(m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
 }
 
 // ─── GEMV dispatch ───────────────────────────────────────────────

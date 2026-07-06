@@ -574,7 +574,10 @@ pub use crate::simd_ops::{array_chunks, array_chunks_checked, array_windows, arr
 // delegates to the external `matrixmultiply` crate instead. The kernel is
 // alloc-free, but `pub mod simd`/`simd_ops` are std-gated in lib.rs, so
 // like every kernel here it is reachable only in `std` builds today.
-pub use crate::simd_ops::gemm_f64_tiled;
+// `gemm_f64_tiled_fma` is the fast fused tier (same tiling/order, one
+// rounding per step) — the engine behind `backend::native::gemm_f64`;
+// the unfused reference tier stays the certification ground truth.
+pub use crate::simd_ops::{gemm_f64_tiled, gemm_f64_tiled_fma};
 pub use crate::simd_soa::MultiLaneColumn;
 
 pub use crate::hpc::quantized::{
