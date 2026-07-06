@@ -880,3 +880,338 @@ mod add_mul_tests {
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Tiled f64 GEMM — the crate-native, bit-exact reference GEMM
+// ═══════════════════════════════════════════════════════════════════
+
+/// Tiled GEMM: `C := alpha·A·B + beta·C` (f64, row-major, leading dims).
+///
+/// The crate-native f64 GEMM: a TILE=64-blocked loop nest with the
+/// innermost j-run vectorized on the dispatched [`F64x8`] (AVX-512 /
+/// AVX2 / NEON / WASM-SIMD128 / scalar — one source, every backend).
+/// Unlike `backend::native::gemm_f64`, which delegates to the external
+/// `matrixmultiply` crate, this kernel is entirely in-crate and carries
+/// a bit-exactness contract, so probes can certify other kernels
+/// against it as ground truth.
+///
+/// # Bit-exactness contract
+///
+/// Every `C[i,j]` receives the exact IEEE op sequence
+/// `c = c + (alpha·A[i,p])·B[p,j]` in ascending-`p` order, with the
+/// multiply and add **unfused** (the `*`/`+` operators on the SIMD
+/// types lower to plain `mul`/`add` on every backend — never
+/// FMA-contracted). The result is therefore **bit-identical across all
+/// backends**, and for `alpha == 1.0, beta == 0.0` (the certification
+/// shape) bit-identical to the naive triple-loop reference
+/// `s = Σ_p A[i,p]·B[p,j]; C[i,j] = s`.
+///
+/// Edge semantics: `m == 0` or `n == 0` is a no-op (`c` untouched);
+/// `k == 0` applies only the beta pass; `beta == 0.0` overwrites `c`
+/// without reading it (BLAS convention — pre-existing NaN/Inf in `c`
+/// do not propagate); `beta == 1.0` accumulates into `c` as-is;
+/// non-finite values in `a`/`b` propagate per IEEE.
+///
+/// # Panics
+///
+/// Panics if `lda < k`, `ldb < n`, `ldc < n`, or if `a`, `b`, or `c`
+/// is shorter than `(rows − 1)·ld + cols` for its shape.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::gemm_f64_tiled;
+///
+/// let a = [1.0, 2.0, 3.0, 4.0]; // 2×2 row-major
+/// let b = [5.0, 6.0, 7.0, 8.0]; // 2×2 row-major
+/// let mut c = [0.0f64; 4];
+/// gemm_f64_tiled(2, 2, 2, 1.0, &a, 2, &b, 2, 0.0, &mut c, 2);
+/// assert_eq!(c, [19.0, 22.0, 43.0, 50.0]);
+/// ```
+// BLAS gemm argument list kept verbatim (drop-in for `backend::native::gemm_f64`).
+#[allow(clippy::too_many_arguments)]
+pub fn gemm_f64_tiled(
+    m: usize, n: usize, k: usize, alpha: f64, a: &[f64], lda: usize, b: &[f64], ldb: usize, beta: f64, c: &mut [f64],
+    ldc: usize,
+) {
+    if m == 0 || n == 0 {
+        return;
+    }
+    assert!(lda >= k, "lda ({lda}) must be >= k ({k})");
+    assert!(ldb >= n, "ldb ({ldb}) must be >= n ({n})");
+    assert!(ldc >= n, "ldc ({ldc}) must be >= n ({n})");
+    if k > 0 {
+        assert!(a.len() >= (m - 1) * lda + k, "a too short for m×k with lda");
+        assert!(b.len() >= (k - 1) * ldb + n, "b too short for k×n with ldb");
+    }
+    assert!(c.len() >= (m - 1) * ldc + n, "c too short for m×n with ldc");
+
+    const TILE: usize = 64;
+    const LANES: usize = 8; // F64x8
+
+    // Beta pass — one scalar op per element (`= 0.0` / `*= beta`), so the
+    // pass is trivially bit-identical however it is traversed.
+    if beta == 0.0 {
+        for i in 0..m {
+            for x in &mut c[i * ldc..i * ldc + n] {
+                *x = 0.0;
+            }
+        }
+    } else if beta != 1.0 {
+        for i in 0..m {
+            for x in &mut c[i * ldc..i * ldc + n] {
+                *x *= beta;
+            }
+        }
+    }
+
+    let mut kk = 0;
+    while kk < k {
+        let kb = TILE.min(k - kk);
+        let mut ii = 0;
+        while ii < m {
+            let ib = TILE.min(m - ii);
+            let mut jj = 0;
+            while jj < n {
+                let jb = TILE.min(n - jj);
+                for i in 0..ib {
+                    for p in 0..kb {
+                        let a_val = alpha * a[(ii + i) * lda + (kk + p)];
+                        let va = F64x8::splat(a_val);
+                        let b_row = (kk + p) * ldb + jj;
+                        let c_row = (ii + i) * ldc + jj;
+                        let mut j = 0;
+                        // Unfused `vc + va·vb` — bit-identical to the scalar tail.
+                        while j + LANES <= jb {
+                            let vb = F64x8::from_slice(&b[b_row + j..]);
+                            let vc = F64x8::from_slice(&c[c_row + j..]);
+                            (vc + va * vb).copy_to_slice(&mut c[c_row + j..]);
+                            j += LANES;
+                        }
+                        while j < jb {
+                            c[c_row + j] += a_val * b[b_row + j];
+                            j += 1;
+                        }
+                    }
+                }
+                jj += jb;
+            }
+            ii += ib;
+        }
+        kk += kb;
+    }
+}
+
+#[cfg(test)]
+mod gemm_f64_tiled_tests {
+    use super::gemm_f64_tiled;
+
+    /// splitmix64 finalizer → f64 in [-1, 1) with full mantissa churn.
+    fn mix(mut z: u64) -> u64 {
+        z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+    fn rnd(seed: u64) -> f64 {
+        (mix(seed) as f64 / u64::MAX as f64) * 2.0 - 1.0
+    }
+
+    /// Reference with the SAME documented op sequence: beta pass, then
+    /// `c += (alpha·a)·b` in ascending-p order. Bit-exact oracle.
+    #[allow(clippy::too_many_arguments)]
+    fn ref_gemm_ipj(
+        m: usize, n: usize, k: usize, alpha: f64, a: &[f64], lda: usize, b: &[f64], ldb: usize, beta: f64,
+        c: &mut [f64], ldc: usize,
+    ) {
+        for i in 0..m {
+            for x in &mut c[i * ldc..i * ldc + n] {
+                if beta == 0.0 {
+                    *x = 0.0;
+                } else if beta != 1.0 {
+                    *x *= beta;
+                }
+            }
+        }
+        for i in 0..m {
+            for p in 0..k {
+                let a_val = alpha * a[i * lda + p];
+                for j in 0..n {
+                    c[i * ldc + j] += a_val * b[p * ldb + j];
+                }
+            }
+        }
+    }
+
+    /// The classic naive form (local accumulator, i-j-k). Bit-identical to
+    /// the kernel for alpha=1, beta=0 — the certification shape.
+    #[allow(clippy::too_many_arguments)]
+    fn ref_naive_ijk(
+        m: usize, n: usize, k: usize, a: &[f64], lda: usize, b: &[f64], ldb: usize, ldc: usize,
+    ) -> Vec<f64> {
+        let mut c = vec![0.0f64; if m == 0 { 0 } else { (m - 1) * ldc + n }];
+        for i in 0..m {
+            for j in 0..n {
+                let mut s = 0.0f64;
+                for p in 0..k {
+                    s += a[i * lda + p] * b[p * ldb + j];
+                }
+                c[i * ldc + j] = s;
+            }
+        }
+        c
+    }
+
+    fn fill(len: usize, salt: u64) -> Vec<f64> {
+        (0..len).map(|i| rnd(i as u64 ^ salt)).collect()
+    }
+
+    fn assert_bits_eq(got: &[f64], want: &[f64], tag: &str) {
+        assert_eq!(got.len(), want.len(), "{tag}: length");
+        for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
+            assert_eq!(g.to_bits(), w.to_bits(), "{tag}: bit mismatch at {i}: got {g:e}, want {w:e}");
+        }
+    }
+
+    const SHAPES: &[(usize, usize, usize)] = &[
+        (1, 1, 1),
+        (2, 3, 4),
+        (3, 7, 5),
+        (7, 8, 9),
+        (8, 8, 8),
+        (16, 16, 16),
+        (9, 17, 33),
+        (16, 16, 64),
+        (5, 8, 128),
+        (65, 3, 65),
+        (64, 64, 64),
+        (70, 70, 70),
+        (1, 100, 1),
+    ];
+
+    #[test]
+    fn bit_exact_vs_both_references_shape_sweep() {
+        for &(m, n, k) in SHAPES {
+            let a = fill(m * k, 0xA);
+            let b = fill(k * n, 0xB);
+            let mut c = vec![0.0f64; m * n];
+            gemm_f64_tiled(m, n, k, 1.0, &a, k, &b, n, 0.0, &mut c, n);
+
+            let mut c_ref = vec![0.0f64; m * n];
+            ref_gemm_ipj(m, n, k, 1.0, &a, k, &b, n, 0.0, &mut c_ref, n);
+            assert_bits_eq(&c, &c_ref, &format!("ipj ({m},{n},{k})"));
+
+            let c_naive = ref_naive_ijk(m, n, k, &a, k, &b, n, n);
+            assert_bits_eq(&c, &c_naive, &format!("naive ({m},{n},{k})"));
+        }
+    }
+
+    #[test]
+    fn bit_exact_general_alpha_beta_preloaded_c() {
+        for &(m, n, k) in &[(16, 16, 16), (9, 17, 33), (70, 70, 70)] {
+            for &(alpha, beta) in &[(0.75, 2.5), (-1.25, 1.0), (2.0, -0.5), (0.0, 3.0)] {
+                let a = fill(m * k, 0x1);
+                let b = fill(k * n, 0x2);
+                let c0 = fill(m * n, 0x3);
+                let mut c = c0.clone();
+                gemm_f64_tiled(m, n, k, alpha, &a, k, &b, n, beta, &mut c, n);
+                let mut c_ref = c0.clone();
+                ref_gemm_ipj(m, n, k, alpha, &a, k, &b, n, beta, &mut c_ref, n);
+                assert_bits_eq(&c, &c_ref, &format!("({m},{n},{k}) α={alpha} β={beta}"));
+            }
+        }
+    }
+
+    #[test]
+    fn strided_leading_dims_padding_untouched() {
+        let (m, n, k) = (17usize, 9usize, 33usize);
+        let (lda, ldb, ldc) = (k + 5, n + 3, n + 7);
+        const SENTINEL: f64 = 12345.678;
+        let mut a = vec![SENTINEL; (m - 1) * lda + k + 4];
+        let mut b = vec![SENTINEL; (k - 1) * ldb + n + 2];
+        let mut c = vec![SENTINEL; (m - 1) * ldc + n + 6];
+        for i in 0..m {
+            for p in 0..k {
+                a[i * lda + p] = rnd((i * k + p) as u64 ^ 0x11);
+            }
+        }
+        for p in 0..k {
+            for j in 0..n {
+                b[p * ldb + j] = rnd((p * n + j) as u64 ^ 0x22);
+            }
+        }
+        for i in 0..m {
+            for j in 0..n {
+                c[i * ldc + j] = rnd((i * n + j) as u64 ^ 0x33);
+            }
+        }
+        let mut c_ref = c.clone();
+        gemm_f64_tiled(m, n, k, 1.5, &a, lda, &b, ldb, 0.5, &mut c, ldc);
+        ref_gemm_ipj(m, n, k, 1.5, &a, lda, &b, ldb, 0.5, &mut c_ref, ldc);
+        assert_bits_eq(&c, &c_ref, "strided");
+        // Row padding (columns n..ldc) must be untouched.
+        for i in 0..m - 1 {
+            for j in n..ldc {
+                assert_eq!(c[i * ldc + j], c_ref[i * ldc + j], "padding clobbered at row {i} col {j}");
+                assert_eq!(c[i * ldc + j].to_bits(), SENTINEL.to_bits(), "padding not sentinel at row {i} col {j}");
+            }
+        }
+    }
+
+    #[test]
+    fn beta_zero_overwrites_nan_c() {
+        let (m, n, k) = (8usize, 11usize, 5usize);
+        let a = fill(m * k, 0x4);
+        let b = fill(k * n, 0x5);
+        let mut c = vec![f64::NAN; m * n];
+        gemm_f64_tiled(m, n, k, 1.0, &a, k, &b, n, 0.0, &mut c, n);
+        let c_naive = ref_naive_ijk(m, n, k, &a, k, &b, n, n);
+        assert_bits_eq(&c, &c_naive, "beta=0 over NaN");
+    }
+
+    #[test]
+    fn k_zero_applies_beta_only() {
+        let (m, n) = (6usize, 10usize);
+        let c0 = fill(m * n, 0x6);
+        // beta = 0 → zeros
+        let mut c = c0.clone();
+        gemm_f64_tiled(m, n, 0, 1.0, &[], 0, &[], n, 0.0, &mut c, n);
+        assert!(c.iter().all(|x| x.to_bits() == 0.0f64.to_bits()), "beta=0, k=0 must zero c");
+        // beta = 2.5 → scaled
+        let mut c = c0.clone();
+        gemm_f64_tiled(m, n, 0, 1.0, &[], 0, &[], n, 2.5, &mut c, n);
+        for (got, want) in c.iter().zip(c0.iter()) {
+            assert_eq!(got.to_bits(), (want * 2.5).to_bits(), "beta=2.5, k=0 must scale c");
+        }
+        // beta = 1 → untouched
+        let mut c = c0.clone();
+        gemm_f64_tiled(m, n, 0, 1.0, &[], 0, &[], n, 1.0, &mut c, n);
+        assert_bits_eq(&c, &c0, "beta=1, k=0");
+    }
+
+    #[test]
+    fn m_or_n_zero_is_noop() {
+        let mut c = vec![7.5f64; 12];
+        gemm_f64_tiled(0, 4, 3, 1.0, &[], 3, &[1.0; 12], 4, 0.0, &mut c, 4);
+        gemm_f64_tiled(3, 0, 4, 1.0, &[1.0; 12], 4, &[], 1, 0.0, &mut c, 1);
+        assert!(c.iter().all(|x| x.to_bits() == 7.5f64.to_bits()), "m==0 / n==0 must not touch c");
+    }
+
+    #[test]
+    fn denormals_and_negzero_bit_exact() {
+        let (m, n, k) = (4usize, 9usize, 7usize);
+        let mut a = fill(m * k, 0x7);
+        let mut b = fill(k * n, 0x8);
+        // Inject denormals, -0.0, and tiny/huge magnitudes.
+        a[0] = 5e-324; // smallest denormal
+        a[1] = -0.0;
+        a[2] = 1e-310;
+        b[0] = -5e-324;
+        b[1] = -0.0;
+        b[2] = 1e300;
+        let mut c = vec![0.0f64; m * n];
+        gemm_f64_tiled(m, n, k, 1.0, &a, k, &b, n, 0.0, &mut c, n);
+        let c_naive = ref_naive_ijk(m, n, k, &a, k, &b, n, n);
+        assert_bits_eq(&c, &c_naive, "denormals");
+    }
+}

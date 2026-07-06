@@ -3,6 +3,62 @@
 > **Read this first.** The "Polyglot Notebook" architecture below is a
 > separate/older program, not the current epoch.
 
+## 2026-07-06 (later) — `ndarray::simd::gemm_f64_tiled` surfaced (operator directive)
+
+The crate-native tiled f64 GEMM graduated from dead code
+(`backend/native.rs` private `mod scalar`, zero callers) to the canonical
+simd surface: `src/simd_ops.rs::gemm_f64_tiled`, re-exported
+**unconditionally** in `src/simd.rs` (alloc-free; `pub mod simd` itself is
+std-gated in lib.rs — see reviewer note below if that changed).
+
+- **Bit-exactness contract (documented on the fn):** every C[i,j] gets
+  `c = c + (α·A[i,p])·B[p,j]` ascending-p, mul and add UNFUSED — the
+  `*`/`+` operators on F64x8 lower to plain mul/add intrinsics on ALL
+  five backends (AVX-512 `_mm512_mul/add_pd`, AVX2 per-half, NEON
+  `vmulq/vaddq_f64`, WASM `f64x2_mul/add`, scalar) and Rust never
+  FP-contracts explicit intrinsics → bit-identical across backends; at
+  α=1 β=0 bit-identical to the naive triple-loop reference.
+- Innermost j-loop vectorized on dispatched `F64x8` (one source, every
+  backend, per the simd_ops polyfill model); TILE=64 blocking preserved
+  verbatim from the original.
+- [MEASURED] vs naive scalar triple loop, single thread, this EMR VM:
+  128³ 2.23×, 256³ 2.54×, 512³ 6.74× (4.6 GFLOP/s), **bit-equal: true**
+  at every size (W1a bench criterion; well above the 0.5× reject line).
+- W1a compliance: parity tests = 7 new tests in
+  `simd_ops::gemm_f64_tiled_tests` (fixed-seed splitmix64 corpus, 13
+  shape sweep incl. multi-tile 70³, strided lda/ldb/ldc with
+  sentinel-padding assert, α/β semantics, β=0-over-NaN, k=0, m/n=0,
+  denormals/−0.0) — all bit-equality (`to_bits`), not tolerance. Zero
+  `unsafe`. No new feature detection. Consumer sites named: the
+  `direct_matmul` f64 ground-truth in `examples/subpel_tap_tile.rs` +
+  `examples/gridlake_field_tile.rs`, both REWIRED to it (bit-identical
+  swap — subpel prints identical numbers pre/post).
+- Free-fn shape note: matches the existing simd-surface GEMM family
+  (`bf16_tile_gemm_16x16`, `matmul_i8_to_i32`) — operator-directed, not
+  a speculative W1a-queue addition.
+- Dead code removed: `native.rs` `gemm_f64_tiled` deleted (pointer
+  comment left); `gemm_f32_tiled` stays dead in `mod scalar` pending the
+  same treatment (UNUSED_INVENTORY thread).
+- Gates: clippy `-D warnings` clean (lib + both examples), fmt clean,
+  **2182/2182 lib tests**, doctest green, `--no-default-features` build
+  green.
+
+[NOTE] `--tests` clippy surfaces 3 PRE-EXISTING test-code lints
+(property_mask.rs:426 unusual_byte_groupings, bitwise.rs:637 identity_op,
+palette_codec.rs:806 needless_range_loop) — not touched here; the house
+gate (`cargo clippy -- -D warnings`, no --tests) is clean.
+
+[OBSERVED] `amx_available()` flipped true→false on this VM between runs
+two hours apart (subpel ran AMX TDPBF16PS earlier, F32x16 polyfill now;
+identical BF16-class errors either way). Host/hypervisor XTILEDATA
+enablement drift — Gotcha 9/14 adjacent; worth a note in AMX_GOTCHAS if
+observed again.
+
+[LOOSE END] subpel_tap_tile findings 1-3 from the same-day review still
+queued (Gotcha-14 assert guard, PackedBf16B throughput leg, positive-
+operand comment fix). Adversarial 3-angle verify workflow on this diff
+was in flight at commit time; findings (if any) land as follow-up.
+
 ## 2026-07-06 — Review pass: health check green + 10 findings on subpel_tap_tile (#235)
 
 Review-only session (no code changes). **Health check:** `cargo fmt --check`

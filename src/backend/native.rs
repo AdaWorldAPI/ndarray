@@ -468,52 +468,10 @@ mod scalar {
         }
     }
 
-    /// Tiled GEMM (f64, scalar reference)
-    #[allow(dead_code)]
-    pub fn gemm_f64_tiled(
-        m: usize, n: usize, k: usize, alpha: f64, a: &[f64], lda: usize, b: &[f64], ldb: usize, beta: f64,
-        c: &mut [f64], ldc: usize,
-    ) {
-        const TILE: usize = 64;
-
-        if beta == 0.0 {
-            for i in 0..m {
-                for j in 0..n {
-                    c[i * ldc + j] = 0.0;
-                }
-            }
-        } else if beta != 1.0 {
-            for i in 0..m {
-                for j in 0..n {
-                    c[i * ldc + j] *= beta;
-                }
-            }
-        }
-
-        let mut kk = 0;
-        while kk < k {
-            let kb = TILE.min(k - kk);
-            let mut ii = 0;
-            while ii < m {
-                let ib = TILE.min(m - ii);
-                let mut jj = 0;
-                while jj < n {
-                    let jb = TILE.min(n - jj);
-                    for i in 0..ib {
-                        for p in 0..kb {
-                            let a_val = alpha * a[(ii + i) * lda + (kk + p)];
-                            for j in 0..jb {
-                                c[(ii + i) * ldc + (jj + j)] += a_val * b[(kk + p) * ldb + (jj + j)];
-                            }
-                        }
-                    }
-                    jj += jb;
-                }
-                ii += ib;
-            }
-            kk += kb;
-        }
-    }
+    // The f64 sibling (`gemm_f64_tiled`) graduated to `src/simd_ops.rs`,
+    // public as `ndarray::simd::gemm_f64_tiled` — same tiled algorithm,
+    // innermost loop F64x8-vectorized, with a documented bit-exactness
+    // contract (unfused mul+add; bit-identical to this scalar shape).
 
     pub fn gemv_f32(m: usize, n: usize, alpha: f32, a: &[f32], lda: usize, x: &[f32], beta: f32, y: &mut [f32]) {
         for i in 0..m {

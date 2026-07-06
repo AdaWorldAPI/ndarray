@@ -566,6 +566,14 @@ pub use crate::hpc::fingerprint::{
 // the reason the JIT-native option was deemed unnecessary. See the
 // "Foundation primitives — do not remove" notice in `src/simd_ops.rs`.
 pub use crate::simd_ops::{array_chunks, array_chunks_checked, array_windows, array_windows_checked};
+// Crate-native tiled f64 GEMM (`C := α·A·B + β·C`) with a bit-exactness
+// contract: unfused mul+add in ascending-k order per element → bit-identical
+// on every backend (AVX-512/AVX2/NEON/WASM/scalar) and, at α=1 β=0,
+// bit-identical to the naive triple-loop reference. This is the in-crate
+// ground-truth GEMM for probes/certification — `backend::native::gemm_f64`
+// delegates to the external `matrixmultiply` crate instead. Alloc-free, so
+// available without `std` (hence outside the std-gated kernel list below).
+pub use crate::simd_ops::gemm_f64_tiled;
 pub use crate::simd_soa::MultiLaneColumn;
 
 pub use crate::hpc::quantized::{

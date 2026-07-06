@@ -81,18 +81,14 @@ mod amx {
         out
     }
 
-    /// Direct `f64` reference GEMM `C = A·B` (16×16).
+    /// Direct `f64` reference GEMM `C = A·B` (16×16) via the crate-native
+    /// bit-exact tiled GEMM (`ndarray::simd::gemm_f64_tiled`) — bit-identical
+    /// to the naive triple loop at α=1 β=0, entirely in-crate.
     fn direct_matmul(a: &[f32; M * M], b: &[f32; M * M]) -> [f64; M * M] {
+        let af: Vec<f64> = a.iter().map(|&v| v as f64).collect();
+        let bf: Vec<f64> = b.iter().map(|&v| v as f64).collect();
         let mut c = [0.0f64; M * M];
-        for i in 0..M {
-            for j in 0..M {
-                let mut s = 0.0f64;
-                for k in 0..M {
-                    s += a[i * M + k] as f64 * b[k * M + j] as f64;
-                }
-                c[i * M + j] = s;
-            }
-        }
+        ndarray::simd::gemm_f64_tiled(M, M, M, 1.0, &af, M, &bf, M, 0.0, &mut c, M);
         c
     }
 
