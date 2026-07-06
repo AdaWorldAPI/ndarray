@@ -42,6 +42,21 @@ loss — Vec round-trips vs 8-line stack helper).
 [LOOSE END] Findings 1-3 are worth a small follow-up PR (contention guard or
 warning, packed-B throughput leg, comment fix); none applied here (review-only).
 
+**[ADDENDUM, same day — operator challenge "our gemm, not the stoneage
+external":** the first bit-exactness probe compared naive-loop vs
+`backend::native::gemm_f64`, which delegates to the EXTERNAL
+`matrixmultiply::dgemm` (native.rs:249; registry dep, Cargo.toml:154). Re-ran
+against the crate's OWN scalar `gemm_f64_tiled` (native.rs:473, verbatim):
+**bit-exact too — 0/256 lanes differ** on the probe's operands AND on random
+f64 at K=64. All three (naive / own tiled / matrixmultiply) agree bit-for-bit
+on these shapes. **Structural finding the challenge surfaced:** the crate's
+entire PUBLIC f64 GEMM surface (`gemm_f64`, `BlasLevel3::blas_gemm` via
+`backend_gemm`) is external-backed, while the own-Rust `gemm_f64_tiled` sits
+dead in the private `mod scalar` with zero callers. If the policy is
+own-reverse-engineered-Rust-only, the right fix for finding #4 is to surface
+`gemm_f64_tiled` (or route the scalar tier of `backend_gemm` through it) and
+point probes at THAT — files under the UNUSED_INVENTORY dead-code thread.]**
+
 ## 2026-07-02 (later) — bf16 tile GEMM: VDPBF16PS middle tier + PackedBf16B (loose end closed)
 
 Closed the [LOOSE END] from the 1BRC entry below. `hpc/bf16_tile_gemm.rs`
