@@ -3,6 +3,45 @@
 > **Read this first.** The "Polyglot Notebook" architecture below is a
 > separate/older program, not the current epoch.
 
+## 2026-07-06 — Review pass: health check green + 10 findings on subpel_tap_tile (#235)
+
+Review-only session (no code changes). **Health check:** `cargo fmt --check`
+clean, `cargo clippy -p ndarray --lib -- -D warnings` clean, clippy on the new
+example clean, **2175/2175 lib tests pass** (30 ignored). The stale top-of-
+CLAUDE.md "build fails (exit 101)" note again does NOT reproduce. The example
+`subpel_tap_tile` runs green end-to-end on this EMR host (tier = AMX TDPBF16PS,
+rel err 0.157% / 0.215%, asserts pass).
+
+**Findings on `examples/subpel_tap_tile.rs` (PR #235), most severe first:**
+1. Lines 208-209 hard-assert rel err < 0.05 on AMX-dispatched results with no
+   contention guard — flakes on oversubscribed VMs per Gotcha 14 (precedent:
+   `#[ignore]` gating in bf16_tile_gemm.rs:572).
+2. Throughput leg (3) times per-call allocs + f32→bf16 of BOTH operands + the
+   kernel's per-call VNNI pack of the CONSTANT H — printed 1.00 M/s measures
+   wrapper overhead, not the tile op; use `PackedBf16B` +
+   `bf16_tile_gemm_16x16_packed` (the API built for exactly this).
+3. Line 167 comment "(fits u8 and i8; positive operand)" is false (x reaches
+   ≈ −19.6 for r ≥ 11) — porting hazard toward the u8×i8 int8 path.
+4. Reuse: `mix()` is the 5th example-local splitmix64 copy (public bit-identical
+   `hpc::cam_index::SplitMix64` exists); `direct_matmul` duplicates
+   `backend::native::gemm_f64` — **[MEASURED this session] bit-exact, 0/256
+   lanes differ** vs the naive loop on the probe's exact operands (operator
+   correction: earlier "independence" refutation was wrong — the BF16 tile
+   kernel shares zero code with gemm_f64).
+5. Cleanups: Vec<f32> C + copy (kernel takes &mut [f32] — stack array works),
+   to_bf16 double-alloc, b_pad identical-index loop = prefix copy, direct_hv
+   duplicated FIR pass, padded-16→32 scaffold now copy-pasted across 2 probes
+   (suggest one public padded helper on ndarray::simd before probe #3).
+
+**Refuted during verify:** .gitattributes deletion is the deliberate,
+documented revert PR #236 (union merge mangles [[example]] blocks — no residue
+found); clippy needless_range_loop claim (empirically clean under -D warnings);
+f32 checksum absorption (print-only anti-DCE); transpose_matrix reuse (net
+loss — Vec round-trips vs 8-line stack helper).
+
+[LOOSE END] Findings 1-3 are worth a small follow-up PR (contention guard or
+warning, packed-B throughput leg, comment fix); none applied here (review-only).
+
 ## 2026-07-02 (later) — bf16 tile GEMM: VDPBF16PS middle tier + PackedBf16B (loose end closed)
 
 Closed the [LOOSE END] from the 1BRC entry below. `hpc/bf16_tile_gemm.rs`
