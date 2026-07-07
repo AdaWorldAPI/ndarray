@@ -614,6 +614,24 @@ pub use crate::hpc::heel_f64x8::cosine_f32_to_f64_simd;
 // `backend::gemm_bf16` (portable scalar / NEON / wasm-SIMD paths).
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
 pub use crate::hpc::amx_matmul::{amx_available, matmul_i8_to_i32};
+// Runtime-dispatch trampolines (`simd_runtime`, feature = "runtime-dispatch")
+// surfaced through the canonical `ndarray::simd::*` namespace — the W1a
+// consumer invariant is "all SIMD from `ndarray::simd`", so consumers that
+// were importing `ndarray::simd_runtime::{matmul_*, gemm_u8_i8, ...}`
+// directly (e.g. the tesseract-rs recognizer's int8 GEMM) can now stay on
+// the one polyfill import path. These are thin `#[inline(always)]` aliases
+// of the SAME underlying tier ladders (`hpc::amx_matmul`, `simd_int_ops`),
+// so switching import paths is bit-identical by construction.
+#[cfg(feature = "runtime-dispatch")]
+pub use crate::simd_runtime::{gemm_u8_i8, matmul_bf16_to_f32, matmul_f32, vnni_dot_u8_i8};
+// `matmul_i8_to_i32` already has its canonical `simd::` name on
+// x86_64 + std (the `hpc::amx_matmul` re-export above — the identical
+// function `simd_runtime::matmul_i8_to_i32` wraps). Off x86_64 the name
+// only exists via the runtime-dispatch trampoline, re-exported here so the
+// import path is arch-uniform; the cfg keeps the two aliases from
+// colliding when both features hold on x86_64.
+#[cfg(all(feature = "runtime-dispatch", not(target_arch = "x86_64")))]
+pub use crate::simd_runtime::matmul_i8_to_i32;
 // Tile-dispatching sibling of the polyfill `bf16_tile_gemm_16x16` below:
 // AMX TDPBF16PS → AVX-512 VDPBF16PS → the same FMA polyfill kernel, selected
 // at runtime. Same W1a rationale as `matmul_i8_to_i32` — consumers reach the
