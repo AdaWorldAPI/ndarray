@@ -21,8 +21,8 @@ ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
-    sh -s -- -y --default-toolchain 1.94.0 --profile minimal \
-    && rustc --version | grep -q "1.94.0"
+    sh -s -- -y --default-toolchain 1.95.0 --profile minimal \
+    && rustc --version | grep -q "1.95.0"
 
 WORKDIR /app
 
@@ -51,4 +51,4 @@ RUN cargo test --release --lib -- hpc:: 2>&1 && echo "=== AVX-512 HPC TESTS OK =
 
 FROM debian:bookworm-slim
 COPY --from=builder /app/target/release/libndarray.rlib /usr/local/lib/
-CMD ["echo", "ndarray AVX-512 build verified — Rust 1.94.0, target-cpu=x86-64-v4"]
+CMD ["echo", "ndarray AVX-512 build verified — Rust 1.95.0, target-cpu=x86-64-v4"]

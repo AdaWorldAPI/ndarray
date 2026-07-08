@@ -1,6 +1,6 @@
 # ndarray — Railway compile-test image (AVX2 default)
 # Verifies the HPC module builds cleanly (default + jit-native features)
-# Requires Rust 1.94.0 (LazyLock, simd_caps, modern std APIs)
+# Requires Rust 1.95.0 (LazyLock, simd_caps, modern std APIs; pinned in rust-toolchain.toml)
 #
 # CPU detection & SIMD dispatch documentation: see Dockerfile.md
 # AVX-512 pinned variant: see Dockerfile.avx512
@@ -15,13 +15,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates gcc libc6-dev pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Rust 1.94.0 via rustup
+# Install Rust 1.95.0 via rustup (matches rust-toolchain.toml)
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
-    sh -s -- -y --default-toolchain 1.94.0 --profile minimal \
-    && rustc --version | grep -q "1.94.0"
+    sh -s -- -y --default-toolchain 1.95.0 --profile minimal \
+    && rustc --version | grep -q "1.95.0"
 
 WORKDIR /app
 
@@ -63,4 +63,4 @@ RUN cargo test --release --lib -- hpc:: 2>&1 && echo "=== HPC TESTS OK ==="
 # Minimal runtime image — just proves it compiled
 FROM debian:bookworm-slim
 COPY --from=builder /app/target/release/libndarray.rlib /usr/local/lib/
-CMD ["echo", "ndarray build verified — Rust 1.94.0"]
+CMD ["echo", "ndarray build verified — Rust 1.95.0"]
