@@ -549,6 +549,11 @@ pub fn simd_ln_f32(x: F32x16) -> F32x16 {
 // (F32x16, I8x32, etc.) but NOT the domain-specific functions below.
 
 pub use crate::hpc::bitwise::{hamming_distance_raw, popcount_raw};
+// Namespaced form so consumers can `use ndarray::simd::bitwise` and reach the
+// SIMD-dispatched bitwise ops through the polyfill façade, rather than reaching
+// into `crate::hpc::*` directly (W1a consumer contract: all SIMD from
+// `ndarray::simd`).
+pub use crate::hpc::bitwise;
 pub use crate::hpc::bnn_cross_plane::CollapseGate;
 pub use crate::hpc::fft::{wht_f32, wht_f32_new};
 pub use crate::hpc::fingerprint::{
