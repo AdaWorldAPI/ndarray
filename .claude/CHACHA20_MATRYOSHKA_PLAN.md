@@ -1,0 +1,106 @@
+# ChaCha20 SIMD via the `U32x16` ARX lane — matryoshka usage + open work
+
+> Handoff doc. What this branch shipped, what's deferred, and the **matryoshka**
+> plan for *using* the `U32x16` lane to accelerate ChaCha20 without owning any
+> crypto algorithm. Operator-ratified design (2026-07-11 session).
+
+## The doctrine (why this shape)
+
+- **RustCrypto owns the algorithm; ndarray owns the SIMD.** We do NOT hand-roll
+  ChaCha20/Poly1305/the XChaCha20-Poly1305 AEAD. Rolling your own AEAD (HChaCha20
+  + Poly1305 + framing) is the footgun; it is forbidden.
+- The `encryption` crate (`crates/encryption`, RustCrypto wrappers) stays
+  **unchanged**. See its `aead.rs` module doc for why the AEAD is not re-wired.
+- The only crypto-algorithm SIMD we accelerate is the **ChaCha20 keystream ARX
+  core**, and even that is done by feeding RustCrypto's *own* backend a new
+  SIMD lane — never by re-implementing the cipher.
+
+## DONE on this branch (the lane is ready)
+
+`ndarray::simd::U32x16` now carries the full ARX triple — `Add` + `BitXor` +
+`rotate_left` — on every tier, so a ChaCha20 backend can ride it:
+
+| tier | `U32x16` backing | `rotate_left` | verified |
+|---|---|---|---|
+| avx512 (server) | `__m512i` | `_mm512_rolv_epi32` (VPROLVD) | executed, parity-green |
+| wasm128 (browser) | `[U32x4; 4]` (`v128`) | `v128_or(u32x4_shl, u32x4_shr)` | full-lib wasm build + **node parity** |
+| avx2 | `[u32; 16]` polyfill (native 2×`__m256i` = deferred TD-SIMD-3) | `u32::rotate_left` loop | compiles; == reference |
+| scalar / nightly | `[u32; 16]` / `core::simd` | `u32::rotate_left` / shift-or | completeness tier + reference |
+
+CI: `wasm_simd` job (`.github/workflows/ci.yaml` + `scripts/wasm-parity.sh` +
+`crates/wasm-simd-parity/`) builds the real `ndarray::simd` wasm types and runs a
+lane-by-lane parity selfcheck under **node** — the standing guard for the wasm
+tier (invisible to the x86 `cargo test`). Extend its per-lane blocks as lanes land.
+
+The stand-alone `src/simd_crypto.rs` (`chacha20_block`/`chacha20_keystream`,
+scalar+AVX-512+wasm128, RustCrypto-parity-proven) is the *interim* primitive; the
+matryoshka below **supersedes it** (RustCrypto supplies the rounds, so the
+from-scratch cipher retires once the fork lands).
+
+## DEFERRED — TO-DO (next session)
+
+1. **Native neon `U32x16 = [U32x4; 4]`.** `simd_neon.rs` has native
+   `U32x4(uint32x4_t)` with add/sub/min/max; add `bitxor` (`veorq_u32`) +
+   `rotate_left` (shift-or via `vshlq_u32` with variable count vectors, `n%32`
+   guard), then compose `U32x16([U32x4; 4])` with `impl Add`/`impl BitXor`/
+   `rotate_left` (fan over 4 lanes, mirror the wasm shape in `simd_wasm.rs`), fix
+   `F32x16::to_bits/from_bits` to `from_array`/`to_array`, and swap the `simd.rs`
+   aarch64 arm's scalar `U32x16` re-export for the native one.
+2. **aarch64 cross parity CI.** Generalize `wasm-simd-parity` into a shared
+   `simd-parity` harness (or add a sibling) run under **qemu** via `cross` in a
+   new `neon_simd` CI job — same selfcheck, closing NEON's identical x86-suite
+   blind spot (its `F32x16`/`I8x16` are unverified in CI today too).
+3. **avx2 native `U32x16`** (2×`__m256i`) — the TD-SIMD-3 lowering; optional, the
+   scalar polyfill is correct meanwhile.
+
+## The MATRYOSHKA — how the lane gets USED (the finalization)
+
+Goal: ChaCha20 (and thus the whole `encryption` AEAD stack) accelerated on
+server (AVX-512) + browser (wasm128), with **essentially zero owned crypto code**
+and a **one-file** delta over RustCrypto that is trivial to re-sync on security
+updates.
+
+**Structure (nesting):**
+
+```
+RustCrypto chacha20  (rounds / constants / counter / StreamBackend / TESTS — VERBATIM, vetted)
+   └─ one backend's round body expressed over → ndarray::simd::U32x16  (Add / BitXor / rotate_left — generic, NOT crypto)
+                                                   └─ dispatched by ndarray's polyfill → avx512 / wasm128 / neon / scalar
+```
+
+**Steps:**
+
+1. **Fork `chacha20`** (the RustCrypto stream-cipher crate; `AdaWorldAPI/chacha20`,
+   or vendor). Its backends live in `src/backends/{soft,sse2,avx2,neon}.rs`, each a
+   `struct Backend<R>` impl of `StreamBackend` with `gen_ks_block` /
+   `gen_par_ks_blocks`. **Clone `avx2.rs` once**; keep soft/sse2/avx2/neon
+   untouched.
+2. **Rewire the clone over `ndarray::simd::U32x16`** — the word-sliced ChaCha
+   round (`state[a] = state[a] + state[b]; state[d] = (state[d] ^ state[a]).rotate_left(16);`
+   …) written against `U32x16`, `ParBlocksSize = U16`. `ndarray` lowers it to
+   AVX-512 (server) / wasm128 (browser) / NEON / scalar automatically. The
+   carried file has **no `unsafe`, no intrinsics** — all of that lives once in
+   `ndarray::simd` (audited once; only AMX+F16 are byte-asm, neither on this path).
+3. **Dispatch:** add the generic backend to the fork's `lib.rs` selection.
+   Per the ndarray model this is **compile-time** (`cfg(target_feature)`), not
+   `is_x86_feature_detected!` — server built `x86-64-v4`, browser built `+simd128`.
+   Non-portable per-target binaries by design (SIGILL/validation-fail on a CPU
+   built-for-but-absent) — matches how the servers/browsers are actually built.
+4. **`[patch]` the fork in** (the pattern already used in MedCare-rs for
+   `encryption`): `chacha20poly1305 → encryption → ogar-encryption → consumers`
+   all accelerate **transitively**, with **zero** change to the AEAD or any
+   consumer, because the AEAD just calls `apply_keystream` which now dispatches
+   to the new backend. HChaCha20 + Poly1305 + framing stay 100% RustCrypto.
+5. **Gate bit-exact vs RustCrypto's own `soft` backend** + run its stock test
+   vectors — the same "reference + KAT, then vectorize with parity" discipline.
+6. **Retire `src/simd_crypto.rs`** — the rounds now come from RustCrypto; only
+   the `U32x16` lane (not crypto) is ours.
+
+**Maintenance win:** a RustCrypto security advisory almost never touches the ARX
+lane ops (fixes land in framing/counter/AEAD — all pristine upstream), so the
+one-file delta re-applies with ~zero conflict: bump the vendored `chacha20`,
+re-apply the one backend file, run the stock vectors + the soft parity. And if
+the backend is ever **upstreamed** (RustCrypto would plausibly take an avx512 /
+wasm128 backend), the fork evaporates → maintenance goes to zero. AMX has no
+ChaCha/Poly backend (it is a matrix engine); the upstream targets are avx512 +
+wasm128 (NEON already exists upstream).
