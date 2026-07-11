@@ -246,6 +246,13 @@ pub(crate) mod simd_avx512;
 #[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
 pub mod simd_avx2;
 
+// Crypto ARX primitives (ChaCha20 block; Poly1305 / Blake2 to follow) — the
+// hardware-acceleration layer the Ada `encryption` crate draws its hot-path
+// keystream from. Scalar reference + RFC 8439 KAT land first (arch-agnostic,
+// no cfg gate); the AVX-512 / wasm128 / NEON vectorized backends slot in behind
+// the same signature, parity-checked against the KAT (W1a contract).
+pub mod simd_crypto;
+
 // Portable-SIMD backend — nightly-only. Wraps `core::simd::*` so miri can
 // execute the polyfill paths (intrinsic-based backends are opaque to
 // miri). Gated behind `nightly-simd` feature; the file itself requires
