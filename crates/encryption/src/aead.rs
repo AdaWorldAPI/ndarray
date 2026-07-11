@@ -5,6 +5,19 @@
 //! is no counter state to persist or synchronise between a browser tab
 //! and a server. Callers normally use [`crate::envelope`], which manages
 //! nonce generation and layout; this module is the raw primitive.
+//!
+//! ## Deliberately NOT hand-composed from `ndarray::simd::chacha20_keystream`
+//!
+//! `ndarray` now ships a hardware-accelerated ChaCha20 keystream
+//! (`ndarray::simd::chacha20_keystream`, AVX-512 / wasm128, byte-parity-proven
+//! against RustCrypto). It is tempting to swap this AEAD's keystream to that
+//! primitive for speed — **do not.** XChaCha20-Poly1305 is not just a keystream:
+//! it is HChaCha20 subkey derivation + the Poly1305 one-time-key + MAC framing +
+//! the AAD/length encoding. Re-wiring only the keystream means re-implementing
+//! that authenticated composition by hand, which is exactly the "roll your own
+//! AEAD" footgun the stack forbids. The vetted RustCrypto `XChaCha20Poly1305`
+//! construction stays here. The accelerated primitive is for *raw-stream* use
+//! sites whose caller already owns a vetted MAC/framing — not this module.
 
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
