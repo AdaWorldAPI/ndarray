@@ -117,33 +117,25 @@ pub fn chacha20_state(key: &[u8; 32], counter: u32, nonce: &[u8; 12]) -> [u32; 1
 /// Fill `out` with successive ChaCha20 keystream blocks: block `b` uses block
 /// counter `counter.wrapping_add(b)`, key and nonce fixed (RFC 8439 CTR mode).
 ///
-/// This is the accelerated entry point the `encryption` AEAD hot path draws its
-/// keystream from. It runs the **AVX-512 backend in 16-block strides** when
-/// `avx512f` is detected at runtime, and the scalar [`chacha20_block`] reference
-/// for the ragged tail and on every non-x86 / non-AVX-512 target. Every backend
-/// is a drop-in for the scalar reference — see the module KAT and the
-/// `chacha20_keystream_avx512_parity` test that pins byte-for-byte equality.
+/// Accelerated entry point for the `encryption` AEAD keystream. Compile-time
+/// tier dispatch (the `ndarray::simd` model — no `is_x86_feature_detected!`):
+/// the AVX-512 16-block backend when built `+avx512f`, the wasm128 4-block
+/// backend when built `+simd128`, else the scalar [`chacha20_block`] reference,
+/// which also fills the ragged tail. Every backend is byte-parity-pinned to the
+/// scalar reference (`chacha20_keystream_dispatch_parity_scalar`).
 ///
-/// **Constant-time:** all backends are straight-line ARX (add / xor / rotate),
-/// no secret-dependent control flow or memory indexing. Backend equivalence is
-/// pinned by `chacha20_keystream_dispatch_parity_scalar` (byte-for-byte vs the
-/// scalar reference across two AVX-512 strides + a scalar tail).
+/// Constant-time: straight-line ARX (add / xor / rotate), no secret-dependent
+/// control flow or memory indexing.
 pub fn chacha20_keystream(key: &[u8; 32], counter: u32, nonce: &[u8; 12], out: &mut [[u8; 64]]) {
     let mut i = 0usize;
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
     {
-        if std::is_x86_feature_detected!("avx512f") {
-            while i + 16 <= out.len() {
-                let state = chacha20_state(key, counter.wrapping_add(i as u32), nonce);
-                // SAFETY: this arm is only reached after `is_x86_feature_detected!("avx512f")`
-                // returned true, so every AVX-512F intrinsic in `chacha20_block16_avx512`
-                // is supported on this CPU. The function reads only its `&state` argument
-                // and returns an owned array — no raw pointers escape, no aliasing.
-                let blocks = unsafe { chacha20_block16_avx512(&state) };
-                out[i..i + 16].copy_from_slice(&blocks);
-                i += 16;
-            }
+        while i + 16 <= out.len() {
+            let state = chacha20_state(key, counter.wrapping_add(i as u32), nonce);
+            let blocks = chacha20_block16_avx512(&state);
+            out[i..i + 16].copy_from_slice(&blocks);
+            i += 16;
         }
     }
 
@@ -167,82 +159,75 @@ pub fn chacha20_keystream(key: &[u8; 32], counter: u32, nonce: &[u8; 12], out: &
     }
 }
 
-/// AVX-512 backend: compute 16 consecutive ChaCha20 keystream blocks in parallel
-/// (block `l` uses `state[12].wrapping_add(l)` as its counter, all other words
-/// shared). Word-sliced ("vertical") layout — lane `l` of working vector `w`
-/// holds word `w` of block `l` — so every round is pure SIMD add/xor/rotate with
-/// no cross-lane shuffles; the only transpose is the final little-endian
-/// serialization.
-///
-/// # Safety
-/// Caller must ensure the CPU supports AVX-512F (guarded by
-/// `is_x86_feature_detected!("avx512f")` at the single call site in
-/// [`chacha20_keystream`]).
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f")]
-unsafe fn chacha20_block16_avx512(state: &[u32; 16]) -> [[u8; 64]; 16] {
+/// AVX-512 backend: 16 ChaCha20 blocks in parallel, word-sliced (lane `l` = block
+/// `l`), so each round is pure SIMD add/xor/rotate and only the final LE serialize
+/// transposes. cfg-gated to an `+avx512f` build → the intrinsics are statically
+/// available (no `#[target_feature]`, no runtime detect).
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+fn chacha20_block16_avx512(state: &[u32; 16]) -> [[u8; 64]; 16] {
     use core::arch::x86_64::*;
-
-    // One AVX-512 vertical quarter-round: same word indices as the scalar
-    // `quarter_round`, applied across all 16 blocks at once. Pure ARX.
-    macro_rules! qr512 {
-        ($v:expr, $a:expr, $b:expr, $c:expr, $d:expr) => {{
-            $v[$a] = _mm512_add_epi32($v[$a], $v[$b]);
-            $v[$d] = _mm512_rol_epi32::<16>(_mm512_xor_si512($v[$d], $v[$a]));
-            $v[$c] = _mm512_add_epi32($v[$c], $v[$d]);
-            $v[$b] = _mm512_rol_epi32::<12>(_mm512_xor_si512($v[$b], $v[$c]));
-            $v[$a] = _mm512_add_epi32($v[$a], $v[$b]);
-            $v[$d] = _mm512_rol_epi32::<8>(_mm512_xor_si512($v[$d], $v[$a]));
-            $v[$c] = _mm512_add_epi32($v[$c], $v[$d]);
-            $v[$b] = _mm512_rol_epi32::<7>(_mm512_xor_si512($v[$b], $v[$c]));
-        }};
-    }
-
-    // Build the 16 initial working vectors. Every word is broadcast identically
-    // across the 16 lanes EXCEPT the counter (word 12), which gets lane-index
-    // 0..=15 added (u32 wrapping) — the 16 consecutive block counters.
-    let lane_index = _mm512_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
-    let mut orig = [_mm512_setzero_si512(); 16];
-    for (w, o) in orig.iter_mut().enumerate() {
-        *o = _mm512_set1_epi32(state[w] as i32);
-    }
-    orig[12] = _mm512_add_epi32(_mm512_set1_epi32(state[12] as i32), lane_index);
-
-    let mut v = orig;
-    // 10 double-rounds = 20 rounds, identical schedule to the scalar reference.
-    for _ in 0..10 {
-        qr512!(v, 0, 4, 8, 12);
-        qr512!(v, 1, 5, 9, 13);
-        qr512!(v, 2, 6, 10, 14);
-        qr512!(v, 3, 7, 11, 15);
-        qr512!(v, 0, 5, 10, 15);
-        qr512!(v, 1, 6, 11, 12);
-        qr512!(v, 2, 7, 8, 13);
-        qr512!(v, 3, 4, 9, 14);
-    }
-
-    // Add the original input state back (RFC 8439 §2.3.1), then de-vectorize:
-    // `words[w][l]` = final word `w` of block `l`.
-    let mut words = [[0u32; 16]; 16];
-    for (w, dst) in words.iter_mut().enumerate() {
-        let summed = _mm512_add_epi32(v[w], orig[w]);
-        let mut tmp = [0i32; 16];
-        // SAFETY: `tmp` is a 16-element (64-byte) i32 array; `_mm512_storeu_si512`
-        // writes exactly one 512-bit (64-byte) vector, unaligned, in bounds.
-        _mm512_storeu_si512(tmp.as_mut_ptr().cast(), summed);
-        for (l, slot) in dst.iter_mut().enumerate() {
-            *slot = tmp[l] as u32;
+    // SAFETY: avx512f is statically enabled (cfg gate), so every AVX-512F
+    // intrinsic below is available; all lane indices are fixed constants.
+    unsafe {
+        // One AVX-512 vertical quarter-round: same word indices as the scalar
+        // `quarter_round`, applied across all 16 blocks at once. Pure ARX.
+        macro_rules! qr512 {
+            ($v:expr, $a:expr, $b:expr, $c:expr, $d:expr) => {{
+                $v[$a] = _mm512_add_epi32($v[$a], $v[$b]);
+                $v[$d] = _mm512_rol_epi32::<16>(_mm512_xor_si512($v[$d], $v[$a]));
+                $v[$c] = _mm512_add_epi32($v[$c], $v[$d]);
+                $v[$b] = _mm512_rol_epi32::<12>(_mm512_xor_si512($v[$b], $v[$c]));
+                $v[$a] = _mm512_add_epi32($v[$a], $v[$b]);
+                $v[$d] = _mm512_rol_epi32::<8>(_mm512_xor_si512($v[$d], $v[$a]));
+                $v[$c] = _mm512_add_epi32($v[$c], $v[$d]);
+                $v[$b] = _mm512_rol_epi32::<7>(_mm512_xor_si512($v[$b], $v[$c]));
+            }};
         }
-    }
 
-    // Serialize each block little-endian: block `l`, word `w` → bytes 4w..4w+4.
-    let mut out = [[0u8; 64]; 16];
-    for (l, block) in out.iter_mut().enumerate() {
-        for w in 0..16 {
-            block[w * 4..w * 4 + 4].copy_from_slice(&words[w][l].to_le_bytes());
+        // Build the 16 initial working vectors. Every word is broadcast identically
+        // across the 16 lanes EXCEPT the counter (word 12), which gets lane-index
+        // 0..=15 added (u32 wrapping) — the 16 consecutive block counters.
+        let lane_index = _mm512_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+        let mut orig = [_mm512_setzero_si512(); 16];
+        for (w, o) in orig.iter_mut().enumerate() {
+            *o = _mm512_set1_epi32(state[w] as i32);
         }
+        orig[12] = _mm512_add_epi32(_mm512_set1_epi32(state[12] as i32), lane_index);
+
+        let mut v = orig;
+        // 10 double-rounds = 20 rounds, identical schedule to the scalar reference.
+        for _ in 0..10 {
+            qr512!(v, 0, 4, 8, 12);
+            qr512!(v, 1, 5, 9, 13);
+            qr512!(v, 2, 6, 10, 14);
+            qr512!(v, 3, 7, 11, 15);
+            qr512!(v, 0, 5, 10, 15);
+            qr512!(v, 1, 6, 11, 12);
+            qr512!(v, 2, 7, 8, 13);
+            qr512!(v, 3, 4, 9, 14);
+        }
+
+        // Add the original input state back (RFC 8439 §2.3.1), then de-vectorize:
+        // `words[w][l]` = final word `w` of block `l`.
+        let mut words = [[0u32; 16]; 16];
+        for (w, dst) in words.iter_mut().enumerate() {
+            let summed = _mm512_add_epi32(v[w], orig[w]);
+            let mut tmp = [0i32; 16];
+            _mm512_storeu_si512(tmp.as_mut_ptr().cast(), summed);
+            for (l, slot) in dst.iter_mut().enumerate() {
+                *slot = tmp[l] as u32;
+            }
+        }
+
+        // Serialize each block little-endian: block `l`, word `w` → bytes 4w..4w+4.
+        let mut out = [[0u8; 64]; 16];
+        for (l, block) in out.iter_mut().enumerate() {
+            for w in 0..16 {
+                block[w * 4..w * 4 + 4].copy_from_slice(&words[w][l].to_le_bytes());
+            }
+        }
+        out
     }
-    out
 }
 
 /// wasm128 (browser) backend: compute 4 consecutive ChaCha20 keystream blocks in
