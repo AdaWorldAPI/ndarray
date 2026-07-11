@@ -1432,6 +1432,19 @@ impl U32x16 {
     pub fn reduce_sum(self) -> u32 {
         unsafe { _mm512_reduce_add_epi32(self.0) as u32 }
     }
+
+    /// Lane-wise left-rotate by `n` bits — the ARX rotate (matches
+    /// `u32::rotate_left`), the third ChaCha20/BLAKE-family primitive alongside
+    /// `Add` + `BitXor`. Single `VPROLVD` (AVX-512F variable rotate). The rotate
+    /// amount in ARX ciphers is a public constant, never secret, so a runtime
+    /// `n` carries no timing concern; LLVM folds a constant `n` to the immediate
+    /// `VPROLD` form.
+    #[inline(always)]
+    pub fn rotate_left(self, n: u32) -> Self {
+        // SAFETY: `_mm512_rolv_epi32` is AVX-512F; this whole module is gated to
+        // an AVX-512F build. Reads only `self`, returns an owned register.
+        Self(unsafe { _mm512_rolv_epi32(self.0, _mm512_set1_epi32(n as i32)) })
+    }
 }
 
 impl_bin_op!(U32x16, Add, add, _mm512_add_epi32);

@@ -702,6 +702,41 @@ mod tests {
         assert_eq!(v.to_array(), data);
     }
 
+    /// ARX triple parity: `U32x16`'s `Add` / `BitXor` / `rotate_left` must be
+    /// bit-identical to per-lane `u32` semantics — the ChaCha20/BLAKE primitive
+    /// set. Runs on whichever tier this build compiled (`super::*` re-exports the
+    /// dispatched `U32x16`), so it gates avx512 / avx2 / neon / wasm / scalar
+    /// alike. `rotate_left` is the newly-added op; add/xor are locked with it so
+    /// the whole quarter-round vocabulary is proven together.
+    #[test]
+    fn u32x16_arx_ops_match_scalar() {
+        let a_arr: [u32; 16] = [
+            0x0000_0000, 0xFFFF_FFFF, 0x0000_0001, 0x8000_0000, 0x1234_5678, 0x9ABC_DEF0, 0xDEAD_BEEF, 0xCAFE_BABE,
+            0x0F0F_0F0F, 0xF0F0_F0F0, 0x5555_5555, 0xAAAA_AAAA, 0x0000_00FF, 0xFF00_0000, 0x0101_0101, 0x8080_8080,
+        ];
+        let b_arr: [u32; 16] = [
+            0x9E37_79B9, 0x1111_1111, 0xDEAD_C0DE, 0x0BAD_F00D, 0x7FFF_FFFF, 0x0000_0000, 0xFFFF_FFFF, 0x1357_9BDF,
+            0x2468_ACE0, 0xFEDC_BA98, 0x0000_0010, 0x0000_001F, 0xABCD_EF01, 0x1020_4080, 0x0F0F_F0F0, 0xC0DE_CAFE,
+        ];
+        let a = U32x16::from_array(a_arr);
+        let b = U32x16::from_array(b_arr);
+
+        let add = (a + b).to_array();
+        let xor = (a ^ b).to_array();
+        for i in 0..16 {
+            assert_eq!(add[i], a_arr[i].wrapping_add(b_arr[i]), "lane {i} add");
+            assert_eq!(xor[i], a_arr[i] ^ b_arr[i], "lane {i} xor");
+        }
+
+        // The ARX rotate — ChaCha20 uses 16/12/8/7; edges included.
+        for n in [0u32, 1, 7, 8, 12, 16, 24, 31] {
+            let got = a.rotate_left(n).to_array();
+            for i in 0..16 {
+                assert_eq!(got[i], a_arr[i].rotate_left(n), "lane {i} rotate_left({n})");
+            }
+        }
+    }
+
     #[test]
     fn f32x16_add_sub_mul_div() {
         let a = F32x16::splat(6.0);

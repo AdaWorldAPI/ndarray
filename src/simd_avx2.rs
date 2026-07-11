@@ -1542,6 +1542,23 @@ avx2_int_type!(U16x32, u16, 32, 0u16);
 avx2_int_type!(U32x16, u32, 16, 0u32);
 avx2_int_type!(U64x8, u64, 8, 0u64);
 
+impl U32x16 {
+    /// Lane-wise left-rotate by `n` bits — the ARX rotate (matches
+    /// `u32::rotate_left`), completing `Add` + `BitXor` for ChaCha20/BLAKE.
+    /// This arm's `U32x16` is the `[u32; 16]` polyfill (native `2× __m256i` is
+    /// the deferred TD-SIMD-3 lowering), so the rotate is a per-lane
+    /// `u32::rotate_left` loop — bit-identical to the scalar tier and to the
+    /// native `VPROLVD` path, the shared parity reference.
+    #[inline(always)]
+    pub fn rotate_left(self, n: u32) -> Self {
+        let mut out = [0u32; 16];
+        for i in 0..16 {
+            out[i] = self.0[i].rotate_left(n);
+        }
+        Self(out)
+    }
+}
+
 // 256-bit int lanes — scalar polyfills filling the gap surfaced by the
 // 2026-05-20 matrix audit. None of these had wrappers anywhere except
 // for `U32x8` / `U64x4` in `simd_nightly`. Adding `U16x16`, `U32x8`,

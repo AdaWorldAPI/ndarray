@@ -364,6 +364,20 @@ impl U32x16 {
     pub fn cmpgt_mask(self, other: Self) -> u16 {
         self.0.simd_gt(other.0).to_bitmask() as u16
     }
+
+    /// Lane-wise left-rotate by `n` bits — the ARX rotate (matches
+    /// `u32::rotate_left`), completing `Add` + `BitXor` for ChaCha20/BLAKE.
+    /// `core::simd` has no bit-rotate, so this is the shift-or composition with
+    /// the `n % 32 == 0` guard (a `>> 32` on a `u32` lane is UB), matching
+    /// `u32::rotate_left`'s wrap-by-32 semantics.
+    #[inline(always)]
+    pub fn rotate_left(self, n: u32) -> Self {
+        let n = n % 32;
+        if n == 0 {
+            return self;
+        }
+        Self((self.0 << u32x16::splat(n)) | (self.0 >> u32x16::splat(32 - n)))
+    }
 }
 
 impl Default for U32x16 {
