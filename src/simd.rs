@@ -674,6 +674,13 @@ pub use crate::simd_ops::{
     sub_f32_inplace,
 };
 
+// ChaCha20 ARX keystream — the crypto hot path the `encryption` AEAD draws from.
+// `chacha20_block` is the scalar reference (RFC 8439 KAT); `chacha20_keystream`
+// is the runtime-dispatched accelerated fill (AVX-512 16-block strides + scalar
+// tail), byte-parity-pinned to the reference. Consumers pull from
+// `ndarray::simd::*` per the W1a contract.
+pub use crate::simd_crypto::{chacha20_block, chacha20_keystream, chacha20_state};
+
 // ============================================================================
 // Tests
 // ============================================================================
