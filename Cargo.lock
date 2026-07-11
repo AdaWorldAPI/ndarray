@@ -1157,6 +1157,7 @@ dependencies = [
  "approx",
  "blake3",
  "cblas-sys",
+ "chacha20",
  "cranelift-codegen",
  "cranelift-frontend",
  "cranelift-jit",

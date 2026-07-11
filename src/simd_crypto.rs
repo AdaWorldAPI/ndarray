@@ -29,8 +29,8 @@
 //!
 //! | Backend          | ChaCha20 block strategy                                   |
 //! |------------------|----------------------------------------------------------|
-//! | scalar (this rev)| the RFC 8439 reference double-round — the CORRECTNESS anchor |
-//! | AVX-512 (server) | 4 states in parallel across the 4 columns/diagonals (next) |
+//! | scalar           | the RFC 8439 reference double-round — the CORRECTNESS anchor |
+//! | AVX-512 (server) | 16 blocks in parallel, word-sliced `__m512i` lanes (DONE) |
 //! | wasm128 (browser)| v128 `u32x4` lanes, one state, SIMD quarter-round (next)  |
 //! | NEON (edge)      | `uint32x4_t` lanes (next)                                 |
 //!
@@ -125,7 +125,9 @@ pub fn chacha20_state(key: &[u8; 32], counter: u32, nonce: &[u8; 12]) -> [u32; 1
 /// `chacha20_keystream_avx512_parity` test that pins byte-for-byte equality.
 ///
 /// **Constant-time:** all backends are straight-line ARX (add / xor / rotate),
-/// no secret-dependent control flow or memory indexing.
+/// no secret-dependent control flow or memory indexing. Backend equivalence is
+/// pinned by `chacha20_keystream_dispatch_parity_scalar` (byte-for-byte vs the
+/// scalar reference across two AVX-512 strides + a scalar tail).
 pub fn chacha20_keystream(key: &[u8; 32], counter: u32, nonce: &[u8; 12], out: &mut [[u8; 64]]) {
     let mut i = 0usize;
 
