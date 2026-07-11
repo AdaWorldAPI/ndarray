@@ -31,7 +31,7 @@
 //! |------------------|----------------------------------------------------------|
 //! | scalar           | the RFC 8439 reference double-round — the CORRECTNESS anchor |
 //! | AVX-512 (server) | 16 blocks in parallel, word-sliced `__m512i` lanes (DONE) |
-//! | wasm128 (browser)| v128 `u32x4` lanes, one state, SIMD quarter-round (next)  |
+//! | wasm128 (browser)| 4 blocks in parallel, word-sliced `v128` u32x4 lanes (DONE) |
 //! | NEON (edge)      | `uint32x4_t` lanes (next)                                 |
 //!
 //! The scalar reference lands FIRST with the RFC 8439 §2.3.2 Known-Answer-Test:
@@ -147,7 +147,19 @@ pub fn chacha20_keystream(key: &[u8; 32], counter: u32, nonce: &[u8; 12], out: &
         }
     }
 
-    // Scalar reference: the ragged tail, and the whole slice on non-AVX-512 targets.
+    // wasm128 (browser) backend: 4-block strides. `simd128` is a compile-time
+    // feature, so this arm is present only when the module is built for it.
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    {
+        while i + 4 <= out.len() {
+            let state = chacha20_state(key, counter.wrapping_add(i as u32), nonce);
+            let blocks = chacha20_block4_wasm(&state);
+            out[i..i + 4].copy_from_slice(&blocks);
+            i += 4;
+        }
+    }
+
+    // Scalar reference: the ragged tail, and the whole slice on scalar targets.
     while i < out.len() {
         let state = chacha20_state(key, counter.wrapping_add(i as u32), nonce);
         out[i] = chacha20_block(&state);
@@ -225,6 +237,81 @@ unsafe fn chacha20_block16_avx512(state: &[u32; 16]) -> [[u8; 64]; 16] {
 
     // Serialize each block little-endian: block `l`, word `w` → bytes 4w..4w+4.
     let mut out = [[0u8; 64]; 16];
+    for (l, block) in out.iter_mut().enumerate() {
+        for w in 0..16 {
+            block[w * 4..w * 4 + 4].copy_from_slice(&words[w][l].to_le_bytes());
+        }
+    }
+    out
+}
+
+/// wasm128 (browser) backend: compute 4 consecutive ChaCha20 keystream blocks in
+/// parallel using the WebAssembly SIMD `v128` register as four `u32x4` lanes.
+/// Same word-sliced ("vertical") layout as the AVX-512 backend — lane `l` of
+/// working vector `w` holds word `w` of block `l` — so every round is a pure
+/// `u32x4` add/xor/rotate with no lane shuffles.
+///
+/// Requires the `simd128` target feature (a compile-time WASM feature, not
+/// runtime-detected). Uses **no `unsafe`**: the wasm arithmetic and
+/// lane-extraction intrinsics are safe under the enabled feature; output is read
+/// with `u32x4_extract_lane` rather than a raw `v128_store`.
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+fn chacha20_block4_wasm(state: &[u32; 16]) -> [[u8; 64]; 4] {
+    use core::arch::wasm32::*;
+
+    // Fixed-distance left-rotate of each u32 lane: `(x << n) | (x >> (32-n))`.
+    macro_rules! rotl {
+        ($x:expr, $n:expr) => {
+            v128_or(u32x4_shl($x, $n), u32x4_shr($x, 32 - $n))
+        };
+    }
+    // One vertical quarter-round across all 4 blocks. Same word indices as the
+    // scalar `quarter_round`. Pure ARX.
+    macro_rules! qr128 {
+        ($v:expr, $a:expr, $b:expr, $c:expr, $d:expr) => {{
+            $v[$a] = u32x4_add($v[$a], $v[$b]);
+            $v[$d] = rotl!(v128_xor($v[$d], $v[$a]), 16);
+            $v[$c] = u32x4_add($v[$c], $v[$d]);
+            $v[$b] = rotl!(v128_xor($v[$b], $v[$c]), 12);
+            $v[$a] = u32x4_add($v[$a], $v[$b]);
+            $v[$d] = rotl!(v128_xor($v[$d], $v[$a]), 8);
+            $v[$c] = u32x4_add($v[$c], $v[$d]);
+            $v[$b] = rotl!(v128_xor($v[$b], $v[$c]), 7);
+        }};
+    }
+
+    // Initial working vectors: every word broadcast across the 4 lanes EXCEPT the
+    // counter (word 12), which gets lane-index 0..=3 added (u32 wrapping).
+    let lane_index = u32x4(0, 1, 2, 3);
+    let mut orig = [u32x4_splat(0); 16];
+    for (w, o) in orig.iter_mut().enumerate() {
+        *o = u32x4_splat(state[w]);
+    }
+    orig[12] = u32x4_add(u32x4_splat(state[12]), lane_index);
+
+    let mut v = orig;
+    for _ in 0..10 {
+        qr128!(v, 0, 4, 8, 12);
+        qr128!(v, 1, 5, 9, 13);
+        qr128!(v, 2, 6, 10, 14);
+        qr128!(v, 3, 7, 11, 15);
+        qr128!(v, 0, 5, 10, 15);
+        qr128!(v, 1, 6, 11, 12);
+        qr128!(v, 2, 7, 8, 13);
+        qr128!(v, 3, 4, 9, 14);
+    }
+
+    // Add the original input state back, then de-vectorize via lane extraction.
+    let mut words = [[0u32; 4]; 16];
+    for (w, dst) in words.iter_mut().enumerate() {
+        let summed = u32x4_add(v[w], orig[w]);
+        dst[0] = u32x4_extract_lane::<0>(summed);
+        dst[1] = u32x4_extract_lane::<1>(summed);
+        dst[2] = u32x4_extract_lane::<2>(summed);
+        dst[3] = u32x4_extract_lane::<3>(summed);
+    }
+
+    let mut out = [[0u8; 64]; 4];
     for (l, block) in out.iter_mut().enumerate() {
         for w in 0..16 {
             block[w * 4..w * 4 + 4].copy_from_slice(&words[w][l].to_le_bytes());
@@ -325,5 +412,87 @@ mod tests {
         let mut ks = vec![[0u8; 64]; 16];
         chacha20_keystream(&key, counter, &nonce, &mut ks);
         assert_eq!(ks[0], RFC8439_KAT_BLOCK, "dispatcher block 0 must match RFC 8439 §2.3.2");
+    }
+
+    /// A native scalar mirror of `chacha20_block4_wasm`: it emulates each wasm
+    /// `v128` as a `[u32; 4]` lane array and applies the *identical* operation
+    /// sequence (word-sliced layout, counter-lane `0..=3`, the 8-quarter-round
+    /// double-round schedule, add-original, per-lane LE serialization). The wasm
+    /// intrinsics (`u32x4_add`/`v128_xor`/`u32x4_shl`/`u32x4_shr`/`u32x4_extract_lane`)
+    /// compute exactly these lane-wise u32 ops, so this validates the wasm arm's
+    /// *logic* on a target that can't run wasm; the wasm intrinsic API itself is
+    /// covered by the `wasm32-unknown-unknown` + `simd128` compile-check, and the
+    /// same word-sliced algorithm is byte-parity-proven 16-wide by the AVX-512
+    /// tests above.
+    fn chacha20_block4_wasm_logic_ref(state: &[u32; 16]) -> [[u8; 64]; 4] {
+        // Lane-wise emulations of the wasm ops.
+        let add = |a: [u32; 4], b: [u32; 4]| [0, 1, 2, 3].map(|l| a[l].wrapping_add(b[l]));
+        let xor = |a: [u32; 4], b: [u32; 4]| [0, 1, 2, 3].map(|l| a[l] ^ b[l]);
+        let rotl = |a: [u32; 4], n: u32| [0, 1, 2, 3].map(|l| a[l].rotate_left(n));
+        let splat = |x: u32| [x; 4];
+
+        macro_rules! qr {
+            ($v:expr, $a:expr, $b:expr, $c:expr, $d:expr) => {{
+                $v[$a] = add($v[$a], $v[$b]);
+                $v[$d] = rotl(xor($v[$d], $v[$a]), 16);
+                $v[$c] = add($v[$c], $v[$d]);
+                $v[$b] = rotl(xor($v[$b], $v[$c]), 12);
+                $v[$a] = add($v[$a], $v[$b]);
+                $v[$d] = rotl(xor($v[$d], $v[$a]), 8);
+                $v[$c] = add($v[$c], $v[$d]);
+                $v[$b] = rotl(xor($v[$b], $v[$c]), 7);
+            }};
+        }
+
+        let lane_index = [0u32, 1, 2, 3];
+        let mut orig = [[0u32; 4]; 16];
+        for (w, o) in orig.iter_mut().enumerate() {
+            *o = splat(state[w]);
+        }
+        orig[12] = add(splat(state[12]), lane_index);
+
+        let mut v = orig;
+        for _ in 0..10 {
+            qr!(v, 0, 4, 8, 12);
+            qr!(v, 1, 5, 9, 13);
+            qr!(v, 2, 6, 10, 14);
+            qr!(v, 3, 7, 11, 15);
+            qr!(v, 0, 5, 10, 15);
+            qr!(v, 1, 6, 11, 12);
+            qr!(v, 2, 7, 8, 13);
+            qr!(v, 3, 4, 9, 14);
+        }
+
+        let mut words = [[0u32; 4]; 16];
+        for (w, dst) in words.iter_mut().enumerate() {
+            *dst = add(v[w], orig[w]);
+        }
+        let mut out = [[0u8; 64]; 4];
+        for (l, block) in out.iter_mut().enumerate() {
+            for w in 0..16 {
+                block[w * 4..w * 4 + 4].copy_from_slice(&words[w][l].to_le_bytes());
+            }
+        }
+        out
+    }
+
+    /// The wasm arm's 4-block word-sliced logic must equal the scalar reference
+    /// for the 4 consecutive counters it covers — the native proxy for the wasm
+    /// backend's correctness (see `chacha20_block4_wasm_logic_ref`).
+    #[test]
+    fn chacha20_wasm_logic_matches_scalar() {
+        let mut key = [0u8; 32];
+        for (i, b) in key.iter_mut().enumerate() {
+            *b = (i as u8).wrapping_mul(11).wrapping_add(5);
+        }
+        let nonce: [u8; 12] = [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98];
+        let base = 0x1000_0000u32;
+
+        let state = chacha20_state(&key, base, &nonce);
+        let four = chacha20_block4_wasm_logic_ref(&state);
+        for (l, got) in four.iter().enumerate() {
+            let want = chacha20_block(&chacha20_state(&key, base + l as u32, &nonce));
+            assert_eq!(*got, want, "wasm-logic block {l} must equal the scalar reference");
+        }
     }
 }
