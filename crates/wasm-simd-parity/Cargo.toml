@@ -1,0 +1,25 @@
+# wasm-simd-parity — the run-under-node gate for the wasm SIMD tier.
+#
+# The x86 `cargo test` suite never touches `simd_wasm.rs` (it is `cfg`'d to
+# wasm32), so wasm SIMD correctness is otherwise unverified by CI. This crate
+# is a cdylib that calls the REAL `ndarray::simd` wasm types (no copy → no
+# drift) and self-checks each lane's arithmetic against scalar in-module; the
+# `.wasm` is built with `+simd128` and run under node, asserting rc == 0.
+#
+# EXCLUDED from the workspace (see root Cargo.toml `exclude`) so it has zero
+# effect on the x86 jobs; the CI `wasm_simd` job builds it via --manifest-path.
+[package]
+name = "wasm-simd-parity"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ndarray = { path = "../.." }
+
+[profile.release]
+panic = "abort"
+opt-level = "z"

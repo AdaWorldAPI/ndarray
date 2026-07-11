@@ -112,6 +112,29 @@ jobs:
           # crates that have no business existing in the nostd build.
           cargo rustc -p ndarray "--target=${{ matrix.target }}" --no-default-features --features portable-atomic-critical-section
 
+  wasm_simd:
+    # The x86 `cargo test` suite never touches `simd_wasm.rs` (it is cfg'd to
+    # wasm32), so wasm SIMD correctness is otherwise unverified. Build the real
+    # `ndarray::simd` wasm types (+simd128) via the excluded `wasm-simd-parity`
+    # cdylib and run its numeric selfcheck under node — both integration (the
+    # lib compiles for wasm32+simd128) and parity (each lane == scalar). The
+    # standing version of the one-off node check from commit 500d57e6.
+    runs-on: ubuntu-latest
+    name: wasm-simd/parity-node
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      # rust-toolchain.toml pins 1.95.0 — install the wasm target for the pinned
+      # toolchain too (dtolnay installs for `stable`, which may differ).
+      - run: rustup target add wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: wasm SIMD parity (build + node run)
+        run: ./scripts/wasm-parity.sh
+
   tests:
     runs-on: ubuntu-latest
     needs: pass-msrv
@@ -335,6 +358,7 @@ jobs:
       - clippy
       - format
       - nostd
+      - wasm_simd
       - tests
       - native-backend
       - hpc-stream-parallel

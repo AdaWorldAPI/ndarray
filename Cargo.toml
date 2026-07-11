@@ -407,7 +407,7 @@ members = [
     "ndarray-rand",
     "crates/*",
 ]
-exclude = ["crates/burn"]
+exclude = ["crates/burn", "crates/wasm-simd-parity"]
 default-members = [
     ".",
     "ndarray-rand",
