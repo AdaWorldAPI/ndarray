@@ -396,13 +396,17 @@ pub use scalar::{
 // The `wasm32_simd` module only exists under `target_feature = "simd128"`,
 // so this arm is gated identically.
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128", not(feature = "nightly-simd")))]
-pub use crate::simd_wasm::wasm32_simd::{f32x16, f64x8, i8x16, F32Mask16, F32x16, F64Mask8, F64x8, I8x16};
+pub use crate::simd_wasm::wasm32_simd::{
+    f32x16, f64x8, i8x16, u32x16, F32Mask16, F32x16, F64Mask8, F64x8, I8x16, U32x16,
+};
+// `u32x16`/`U32x16` now come from the native `wasm32_simd` arm above (the ARX
+// lane the ChaCha20 backend rides), so they are dropped from this scalar list.
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128", not(feature = "nightly-simd")))]
 pub use scalar::{
     batch_packed_i4_16, f32x8, f64x4, i16x16, i16x32, i32x16, i32x8, i64x4, i64x8, i8x32, i8x64, palette_lookup_u8x8,
-    prefetch_read_t0, prefetch_read_t1, prefetch_read_t2, u16x16, u16x8, u32x16, u32x8, u64x4, u64x8, u8x64, u8x8,
-    F32x8, F64x4, I16x16, I16x32, I32x16, I32x8, I64x4, I64x8, I8x32, I8x64, U16x16, U16x32, U16x8, U32x16, U32x8,
-    U64x4, U64x8, U8x64, U8x8,
+    prefetch_read_t0, prefetch_read_t1, prefetch_read_t2, u16x16, u16x8, u32x8, u64x4, u64x8, u8x64, u8x8, F32x8,
+    F64x4, I16x16, I16x32, I32x16, I32x8, I64x4, I64x8, I8x32, I8x64, U16x16, U16x32, U16x8, U32x8, U64x4, U64x8,
+    U8x64, U8x8,
 };
 
 // Other non-x86 targets — wasm32 without simd128, riscv, etc.: full scalar
@@ -674,6 +678,13 @@ pub use crate::simd_ops::{
     sub_f32_inplace,
 };
 
+// ChaCha20 ARX keystream — the crypto hot path the `encryption` AEAD draws from.
+// `chacha20_block` is the scalar reference (RFC 8439 KAT); `chacha20_keystream`
+// is the runtime-dispatched accelerated fill (AVX-512 16-block strides + scalar
+// tail), byte-parity-pinned to the reference. Consumers pull from
+// `ndarray::simd::*` per the W1a contract.
+pub use crate::simd_crypto::{chacha20_block, chacha20_keystream, chacha20_state};
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -693,6 +704,41 @@ mod tests {
         let data: [f32; 16] = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0];
         let v = F32x16::from_array(data);
         assert_eq!(v.to_array(), data);
+    }
+
+    /// ARX triple parity: `U32x16`'s `Add` / `BitXor` / `rotate_left` must be
+    /// bit-identical to per-lane `u32` semantics — the ChaCha20/BLAKE primitive
+    /// set. Runs on whichever tier this build compiled (`super::*` re-exports the
+    /// dispatched `U32x16`), so it gates avx512 / avx2 / neon / wasm / scalar
+    /// alike. `rotate_left` is the newly-added op; add/xor are locked with it so
+    /// the whole quarter-round vocabulary is proven together.
+    #[test]
+    fn u32x16_arx_ops_match_scalar() {
+        let a_arr: [u32; 16] = [
+            0x0000_0000, 0xFFFF_FFFF, 0x0000_0001, 0x8000_0000, 0x1234_5678, 0x9ABC_DEF0, 0xDEAD_BEEF, 0xCAFE_BABE,
+            0x0F0F_0F0F, 0xF0F0_F0F0, 0x5555_5555, 0xAAAA_AAAA, 0x0000_00FF, 0xFF00_0000, 0x0101_0101, 0x8080_8080,
+        ];
+        let b_arr: [u32; 16] = [
+            0x9E37_79B9, 0x1111_1111, 0xDEAD_C0DE, 0x0BAD_F00D, 0x7FFF_FFFF, 0x0000_0000, 0xFFFF_FFFF, 0x1357_9BDF,
+            0x2468_ACE0, 0xFEDC_BA98, 0x0000_0010, 0x0000_001F, 0xABCD_EF01, 0x1020_4080, 0x0F0F_F0F0, 0xC0DE_CAFE,
+        ];
+        let a = U32x16::from_array(a_arr);
+        let b = U32x16::from_array(b_arr);
+
+        let add = (a + b).to_array();
+        let xor = (a ^ b).to_array();
+        for i in 0..16 {
+            assert_eq!(add[i], a_arr[i].wrapping_add(b_arr[i]), "lane {i} add");
+            assert_eq!(xor[i], a_arr[i] ^ b_arr[i], "lane {i} xor");
+        }
+
+        // The ARX rotate — ChaCha20 uses 16/12/8/7; edges included.
+        for n in [0u32, 1, 7, 8, 12, 16, 24, 31] {
+            let got = a.rotate_left(n).to_array();
+            for i in 0..16 {
+                assert_eq!(got[i], a_arr[i].rotate_left(n), "lane {i} rotate_left({n})");
+            }
+        }
     }
 
     #[test]

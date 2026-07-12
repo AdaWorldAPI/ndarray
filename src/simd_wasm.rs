@@ -66,13 +66,16 @@
 pub mod wasm32_simd {
     use core::arch::wasm32::*;
     use core::fmt;
-    use core::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
+    use core::ops::{Add, AddAssign, BitXor, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
     // Long-tail integer types come from the scalar fallback — they are not on
     // the perf-critical f32/byte path this module accelerates, and reusing the
     // scalar types keeps the `to_bits` / `from_bits` / `cast_i32` return types
     // identical to every other backend (same choice `simd_neon` makes).
-    pub use crate::simd::scalar::{I32x16, U32x16, U64x8};
+    // `U32x16` is the exception: it carries the ARX vocabulary (Add/BitXor/
+    // rotate_left) the ChaCha20 lane needs, so it is native here (`[U32x4; 4]`,
+    // NEON-style) rather than the scalar fallback — see below.
+    pub use crate::simd::scalar::{I32x16, U64x8};
 
     // ════════════════════════════════════════════════════════════════════
     // F32x16 — 16 × f32 backed by 4 × v128 (f32x4 interpretation)
@@ -274,13 +277,14 @@ pub mod wasm32_simd {
             for i in 0..16 {
                 o[i] = a[i].to_bits();
             }
-            U32x16(o)
+            U32x16::from_array(o)
         }
         #[inline(always)]
         pub fn from_bits(bits: U32x16) -> Self {
+            let b = bits.to_array();
             let mut o = [0.0f32; 16];
             for i in 0..16 {
-                o[i] = f32::from_bits(bits.0[i]);
+                o[i] = f32::from_bits(b[i]);
             }
             Self::from_array(o)
         }
@@ -854,6 +858,148 @@ pub mod wasm32_simd {
     }
 
     // ════════════════════════════════════════════════════════════════════
+    // U32x4 / U32x16 — u32 ARX lanes (ChaCha20 / BLAKE), NEON-style.
+    //
+    // `U32x4` is the dispatched native unit (one `v128`, u32x4 interpretation);
+    // `U32x16` is the 16-wide polyfill `[U32x4; 4]`, fanning each op over the 4
+    // sub-lanes — the same composition `simd_neon` uses (`[U32x4; 4]`, where
+    // NEON's U32x4 wraps `uint32x4_t`). `U32x16`'s consumer API (`Add` /
+    // `BitXor` / `rotate_left`) mirrors `simd_avx512::U32x16` exactly, so one
+    // source (the ChaCha20 backend) compiles unchanged on every tier. The u32
+    // ARX ops are all safe wasm intrinsics; only the v128 load/store are unsafe.
+    // ════════════════════════════════════════════════════════════════════
+
+    /// 4×u32 in one WASM `v128` (u32x4 interpretation) — the native ARX unit.
+    #[derive(Copy, Clone)]
+    #[repr(transparent)]
+    pub struct U32x4(pub v128);
+
+    impl U32x4 {
+        pub const LANES: usize = 4;
+
+        #[inline(always)]
+        pub fn splat(v: u32) -> Self {
+            Self(u32x4_splat(v))
+        }
+
+        #[inline(always)]
+        pub fn from_array(a: [u32; 4]) -> Self {
+            // SAFETY: a `[u32; 4]` is exactly 16 bytes; one unaligned v128 load.
+            Self(unsafe { v128_load(a.as_ptr() as *const v128) })
+        }
+
+        #[inline(always)]
+        pub fn to_array(self) -> [u32; 4] {
+            let mut a = [0u32; 4];
+            // SAFETY: store writes exactly 16 bytes into the 16-byte array.
+            unsafe { v128_store(a.as_mut_ptr() as *mut v128, self.0) };
+            a
+        }
+
+        #[inline(always)]
+        pub fn add(self, o: Self) -> Self {
+            Self(u32x4_add(self.0, o.0))
+        }
+
+        #[inline(always)]
+        pub fn bitxor(self, o: Self) -> Self {
+            Self(v128_xor(self.0, o.0))
+        }
+
+        /// Lane-wise left-rotate by `n` bits — the ARX rotate (matches
+        /// `u32::rotate_left`). wasm has no rotate op, so this is the shift-or
+        /// with the `n % 32 == 0` guard (`u32x4_shr` by 32 would over-shift);
+        /// `u32x4_shl`/`u32x4_shr` already mask the count to `& 31`, so
+        /// non-zero `n` is exact. Rotate amount is a public ARX constant.
+        #[inline(always)]
+        pub fn rotate_left(self, n: u32) -> Self {
+            let n = n % 32;
+            if n == 0 {
+                return self;
+            }
+            Self(v128_or(u32x4_shl(self.0, n), u32x4_shr(self.0, 32 - n)))
+        }
+    }
+
+    /// 16×u32 as `[U32x4; 4]` — the NEON-style 16-wide polyfill. Consumer API
+    /// (`Add` / `BitXor` / `rotate_left`) matches `simd_avx512::U32x16`.
+    #[derive(Copy, Clone)]
+    #[repr(align(64))]
+    pub struct U32x16(pub [U32x4; 4]);
+
+    impl U32x16 {
+        pub const LANES: usize = 16;
+
+        #[inline(always)]
+        pub fn splat(v: u32) -> Self {
+            Self([U32x4::splat(v); 4])
+        }
+
+        #[inline(always)]
+        pub fn from_array(a: [u32; 16]) -> Self {
+            Self([
+                U32x4::from_array([a[0], a[1], a[2], a[3]]),
+                U32x4::from_array([a[4], a[5], a[6], a[7]]),
+                U32x4::from_array([a[8], a[9], a[10], a[11]]),
+                U32x4::from_array([a[12], a[13], a[14], a[15]]),
+            ])
+        }
+
+        #[inline(always)]
+        pub fn to_array(self) -> [u32; 16] {
+            let mut o = [0u32; 16];
+            for i in 0..4 {
+                o[i * 4..i * 4 + 4].copy_from_slice(&self.0[i].to_array());
+            }
+            o
+        }
+
+        /// Lane-wise left-rotate by `n` bits (ARX rotate), fanned over 4 lanes.
+        #[inline(always)]
+        pub fn rotate_left(self, n: u32) -> Self {
+            Self([
+                self.0[0].rotate_left(n),
+                self.0[1].rotate_left(n),
+                self.0[2].rotate_left(n),
+                self.0[3].rotate_left(n),
+            ])
+        }
+    }
+
+    impl Add for U32x16 {
+        type Output = Self;
+        #[inline(always)]
+        fn add(self, r: Self) -> Self {
+            Self([self.0[0].add(r.0[0]), self.0[1].add(r.0[1]), self.0[2].add(r.0[2]), self.0[3].add(r.0[3])])
+        }
+    }
+
+    impl BitXor for U32x16 {
+        type Output = Self;
+        #[inline(always)]
+        fn bitxor(self, r: Self) -> Self {
+            Self([
+                self.0[0].bitxor(r.0[0]),
+                self.0[1].bitxor(r.0[1]),
+                self.0[2].bitxor(r.0[2]),
+                self.0[3].bitxor(r.0[3]),
+            ])
+        }
+    }
+
+    impl fmt::Debug for U32x16 {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "U32x16({:?})", self.to_array())
+        }
+    }
+
+    impl PartialEq for U32x16 {
+        fn eq(&self, other: &Self) -> bool {
+            self.to_array() == other.to_array()
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════
     // Lowercase aliases (consumer-API parity with the other backends)
     // ════════════════════════════════════════════════════════════════════
 
@@ -863,6 +1009,8 @@ pub mod wasm32_simd {
     pub type f64x8 = F64x8;
     #[allow(non_camel_case_types)]
     pub type i8x16 = I8x16;
+    #[allow(non_camel_case_types)]
+    pub type u32x16 = U32x16;
 
     // ════════════════════════════════════════════════════════════════════
     // Free hot-kernel functions — v128 counterparts to the NEON kernels in

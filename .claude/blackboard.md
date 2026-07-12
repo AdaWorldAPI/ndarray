@@ -609,3 +609,24 @@ index was transiently stale this session (returned empty for
 `simd_int_ops.rs`, `vnni_gemm.rs`, `bf16_gemm_f32`); Bash ground-truth
 confirmed all present. Orchestrator should `cargo fmt`/`clippy`/`test`
 centrally (edits were edit-only, no compile performed here).
+
+---
+
+## 2026-07-11 — U32x16 ARX lane + ChaCha20 matryoshka (see .claude/CHACHA20_MATRYOSHKA_PLAN.md)
+
+**DONE:** `ndarray::simd::U32x16` full ARX triple (Add/BitXor/**rotate_left**) on
+every tier — avx512 native `_mm512_rolv_epi32`, native wasm `[U32x4;4]`, avx2/
+scalar/nightly. Node-run wasm parity CI gate (`wasm_simd` job + `scripts/wasm-parity.sh`
++ `crates/wasm-simd-parity/`, workspace-excluded, tests the real types, no drift).
+Interim `src/simd_crypto.rs` (chacha20 scalar+avx512+wasm128, RustCrypto-parity-proven)
+is superseded by the matryoshka once the fork lands.
+
+**TO-DO (deferred, token limit):**
+1. Native neon `U32x16 = [U32x4;4]` (extend `U32x4(uint32x4_t)` w/ xor+rotl, compose,
+   fix F32x16 to_bits, swap simd.rs aarch64 arm).
+2. aarch64 cross (qemu) parity CI job — generalize `wasm-simd-parity` to a shared
+   `simd-parity` harness; closes NEON's x86-suite blind spot.
+3. avx2 native `U32x16` (2×__m256i, TD-SIMD-3) — optional.
+4. **Matryoshka execution:** fork `chacha20`, clone `avx2.rs` backend → rewire over
+   `ndarray::simd::U32x16`, `[patch]` into the encryption stack (transitive accel),
+   gate vs RustCrypto `soft`, retire `simd_crypto.rs`. Full plan in the doc above.

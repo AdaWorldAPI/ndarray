@@ -1028,6 +1028,22 @@ impl Shl<Self> for U32x16 {
     }
 }
 
+impl U32x16 {
+    /// Lane-wise left-rotate by `n` bits — the ARX rotate (matches
+    /// `u32::rotate_left`). The completeness tier: a full, correct
+    /// implementation held to the same bar as the SIMD tiers, and the bit-exact
+    /// reference they are parity-checked against. Delegates to `u32::rotate_left`
+    /// per lane (`rotate_left(0)` and `rotate_left(32)` both no-op, matching std).
+    #[inline(always)]
+    pub fn rotate_left(self, n: u32) -> Self {
+        let mut out = [0u32; 16];
+        for i in 0..16 {
+            out[i] = self.0[i].rotate_left(n);
+        }
+        Self(out)
+    }
+}
+
 // Shift operators for U64x8
 impl Shr<Self> for U64x8 {
     type Output = Self;

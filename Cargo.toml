@@ -217,6 +217,11 @@ approx = { workspace = true, default-features = true }
 itertools = { workspace = true }
 ndarray-gen = { workspace = true }
 criterion = { version = "0.5", features = ["html_reports"] }
+# The vetted RustCrypto ChaCha20 stream cipher — used ONLY as the independent
+# oracle for the `chacha20_rustcrypto_parity` integration test that pins
+# `ndarray::simd::chacha20_keystream` byte-for-byte against a trusted reference.
+# Same version chacha20poly1305 0.10 pulls transitively (see Cargo.lock).
+chacha20 = "0.9"
 
 [[bench]]
 name = "append"
@@ -402,7 +407,7 @@ members = [
     "ndarray-rand",
     "crates/*",
 ]
-exclude = ["crates/burn"]
+exclude = ["crates/burn", "crates/wasm-simd-parity"]
 default-members = [
     ".",
     "ndarray-rand",
