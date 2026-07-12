@@ -399,6 +399,10 @@ unsafe fn unpack_4bit_avx2(packed: &[u64], count: usize) -> Vec<u8> {
 }
 
 /// Reinterpret &[u64] as &[u8] (little-endian safe).
+// Only reachable from the x86_64 AVX2 unpack path (`unpack_4bit_avx2`); gated to
+// match so it isn't dead code on non-x86 targets under `-D warnings` (the
+// aarch64 neon-parity + cross builds compile this file).
+#[cfg(target_arch = "x86_64")]
 fn bytemuck_cast_u64_to_u8(words: &[u64]) -> &[u8] {
     // SAFETY: u64 and u8 have compatible layouts on little-endian
     unsafe { core::slice::from_raw_parts(words.as_ptr() as *const u8, words.len() * 8) }
