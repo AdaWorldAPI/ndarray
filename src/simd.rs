@@ -383,10 +383,14 @@ pub use crate::simd_neon::{
 // U16x8 on aarch64 comes from simd_neon (backed by uint16x8_t)
 #[cfg(all(target_arch = "aarch64", not(feature = "nightly-simd")))]
 pub use crate::simd_neon::{u16x8, U16x8};
+// U32x16 (native `[U32x4; 4]`) — the ARX lane the ChaCha20 backend rides. Comes
+// from simd_neon, not the scalar fallback, so it carries Add/BitXor/rotate_left.
+#[cfg(all(target_arch = "aarch64", not(feature = "nightly-simd")))]
+pub use crate::simd_neon::{u32x16, U32x16};
 #[cfg(all(target_arch = "aarch64", not(feature = "nightly-simd")))]
 pub use scalar::{
-    f32x8, f64x4, i32x16, i32x8, i64x4, i64x8, u16x16, u32x16, u32x8, u64x4, u64x8, u8x64, F32x8, F64x4, I32x16, I32x8,
-    I64x4, I64x8, U16x16, U16x32, U32x16, U32x8, U64x4, U64x8, U8x64,
+    f32x8, f64x4, i32x16, i32x8, i64x4, i64x8, u16x16, u32x8, u64x4, u64x8, u8x64, F32x8, F64x4, I32x16, I32x8, I64x4,
+    I64x8, U16x16, U16x32, U32x8, U64x4, U64x8, U8x64,
 };
 
 // wasm32 + simd128: the native v128 float hot path (F32x16 / F64x8 + masks)

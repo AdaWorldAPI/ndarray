@@ -630,3 +630,27 @@ is superseded by the matryoshka once the fork lands.
 4. **Matryoshka execution:** fork `chacha20`, clone `avx2.rs` backend → rewire over
    `ndarray::simd::U32x16`, `[patch]` into the encryption stack (transitive accel),
    gate vs RustCrypto `soft`, retire `simd_crypto.rs`. Full plan in the doc above.
+
+---
+
+## 2026-07-12 — PR #240 CI fully green (no_std/MSRV fix chain closed)
+
+Tip `5a914c37`. All 20 checks pass; the three previously-red failures are resolved:
+
+- **261f736a** — `simd_crypto` dispatcher: `is_x86_feature_detected!` → compile-time
+  `#[cfg(all(target_arch="x86_64", target_feature="avx512f"))]` (no runtime detection;
+  the workspace SIMD-dispatch rule). Unblocked `blas-msrv` + `nostd/thumbv6m`.
+- **5a914c37** — three no_std/bare-`--no-default-features` test-build fixes:
+  - `simd_crypto` tests: `vec![[0u8;64]; n]` → fixed arrays `[[0u8;64]; 40]` / `[[0u8;64]; 16]`
+    (no `vec!` under no_std).
+  - `tests/chacha20_rustcrypto_parity.rs`: added `#![cfg(feature = "std")]` (imports
+    std-gated `ndarray::simd`; no-ops under `--no-default-features`).
+  - `src/tri.rs`: `Array2::<i32>::zeros(...)` (serde_json dep-drift added
+    `impl PartialEq<Value> for i32`, making bare `Array2::zeros` element-type ambiguous).
+
+Green jobs of note: `tests/{stable,beta,1.95.0}`, `blas-msrv`, `nostd/thumbv6m-none-eabi`,
+`clippy/1.95.0`, `format/stable`, `native-backend/stable`, `tier4-avx512-check`,
+`wasm-simd/parity-node` (new gate), `hpc-stream-parallel/rayon`, CodeRabbit.
+
+Deferred (task #30, token-limit call): native neon `U32x16=[U32x4;4]` + aarch64 cross
+parity CI + the matryoshka chacha20 fork. Plan in `.claude/CHACHA20_MATRYOSHKA_PLAN.md`.
