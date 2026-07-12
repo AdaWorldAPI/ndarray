@@ -81,21 +81,23 @@ below **superseded it** — it is now **RETIRED** (2026-07-12, see below).
   `[patch.crates-io] chacha20 = { path = "vendor/chacha20" }` pointing at a vendored
   copy of the fork, to inherit the acceleration. Documented, low-risk.
 
-## DEFERRED — TO-DO (next session)
+## DONE / DEFERRED
 
-1. **Native neon `U32x16 = [U32x4; 4]`.** `simd_neon.rs` has native
-   `U32x4(uint32x4_t)` with add/sub/min/max; add `bitxor` (`veorq_u32`) +
-   `rotate_left` (shift-or via `vshlq_u32` with variable count vectors, `n%32`
-   guard), then compose `U32x16([U32x4; 4])` with `impl Add`/`impl BitXor`/
-   `rotate_left` (fan over 4 lanes, mirror the wasm shape in `simd_wasm.rs`), fix
-   `F32x16::to_bits/from_bits` to `from_array`/`to_array`, and swap the `simd.rs`
-   aarch64 arm's scalar `U32x16` re-export for the native one.
-2. **aarch64 cross parity CI.** Generalize `wasm-simd-parity` into a shared
-   `simd-parity` harness (or add a sibling) run under **qemu** via `cross` in a
-   new `neon_simd` CI job — same selfcheck, closing NEON's identical x86-suite
-   blind spot (its `F32x16`/`I8x16` are unverified in CI today too).
-3. **avx2 native `U32x16`** (2×`__m256i`) — the TD-SIMD-3 lowering; optional, the
-   scalar polyfill is correct meanwhile.
+1. ~~**Native neon `U32x16 = [U32x4; 4]`.**~~ **DONE 2026-07-12** — `U32x4` gained
+   `bitxor`(veorq_u32) + `rotate_left`(vshlq_u32 shift-or, n%32 guard); composed
+   native `U32x16([U32x4;4])` with Add/BitXor/rotate_left; `F32x16::to_bits/
+   from_bits` → from_array/to_array; `simd.rs` aarch64 arm re-exports the native
+   lane. (+ fixed the pre-existing aarch64 stable-compile breakage.)
+2. ~~**aarch64 cross parity CI.**~~ **DONE 2026-07-12** — `crates/neon-simd-parity`
+   (excluded bin, real `ndarray::simd` aarch64 types) + `scripts/neon-parity.sh`
+   (cross-build aarch64 + run under `qemu-aarch64-static`) + CI `neon_simd`
+   (`neon-simd/parity-qemu`) job, added to the `conclusion` needs. Runtime-verifies
+   U32x16 ARX (rotate 16/12/8/7 + edges) / F32x16 / I8x16 == scalar. Twin of
+   `wasm_simd`. **Green locally under qemu.**
+3. **avx2 native `U32x16`** (2×`__m256i`) — the TD-SIMD-3 lowering; still optional,
+   the scalar polyfill is correct meanwhile.
+4. **wasm matryoshka backend + cross-repo `[patch]`** — see the SHIPPED section's
+   follow-ups above.
 
 ## The MATRYOSHKA — how the lane gets USED (the finalization)
 
