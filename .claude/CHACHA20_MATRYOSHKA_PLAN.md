@@ -71,11 +71,18 @@ below **superseded it** — it is now **RETIRED** (2026-07-12, see below).
   build** (`.cargo/config-avx512.toml` / `-Ctarget-cpu=x86-64-v4`); the default v3
   build uses RustCrypto's own avx2 backend (fast, vetted). This is correct and
   safe — the matryoshka is the *server-avx512* accelerator.
-- **wasm browser backend (next):** add a sibling `#[cfg(all(target_arch="wasm32",
-  target_feature="simd128"))]` branch selecting an `ndarray_simd` backend (same
-  `U32x16` source; the wasm arm is native `[U32x4;4]`) + a `target.'cfg(wasm32)'`
-  ndarray dep. Gated on verifying `ndarray/std` builds inside the encryption
-  `cdylib` for `wasm32-unknown-unknown`.
+- ~~**wasm browser backend.**~~ **DONE 2026-07-12** — the fork's `ndarray_simd`
+  cfg gates were widened to `any(all(x86_64, avx512f), all(wasm32, simd128))` in
+  `backends.rs` + `lib.rs::process_with_backend`, and the ndarray dep to
+  `cfg(any(x86_64, wasm32))`. The SAME `ndarray_simd.rs` source now drives the
+  AVX-512 `__m512i` lane (server) and the native wasm `[U32x4;4]` lane (browser).
+  Verified: `cargo build --manifest-path vendor/chacha20/Cargo.toml --target
+  wasm32-unknown-unknown --lib` with `+simd128` compiles ndarray-for-wasm + the
+  wasm backend clean; x86 avx512 vectors still 9/9 green after the widening. Bit-
+  exact by composition (the `ndarray_simd` source is RFC-proven on x86; the wasm
+  `U32x16` lane is node-proven by the `wasm_simd` CI job). A CI compile-guard step
+  was added to the `wasm_simd` job. A consumer building `encryption` as a wasm
+  cdylib with `+simd128` now gets the accelerated keystream transparently.
 - **cross-repo `[patch]` (next):** `[patch]` does not transit, so MedCare-rs (and
   any other consumer building `encryption` for avx512) needs its own
   `[patch.crates-io] chacha20 = { path = "vendor/chacha20" }` pointing at a vendored

@@ -134,6 +134,12 @@ jobs:
           node-version: "22"
       - name: wasm SIMD parity (build + node run)
         run: ./scripts/wasm-parity.sh
+      # Guard the wasm matryoshka: the chacha20 fork's ndarray_simd backend must
+      # keep compiling for wasm32+simd128 (it rides the same U32x16 lane the node
+      # parity step above proves bit-exact). A future ndarray::simd change that
+      # broke the wasm backend build would fail here.
+      - name: wasm matryoshka backend (chacha20 fork) compiles for wasm32+simd128
+        run: RUSTFLAGS="-C target-feature=+simd128" cargo build --manifest-path vendor/chacha20/Cargo.toml --target wasm32-unknown-unknown --lib
 
   neon_simd:
     # The x86 `cargo test` suite never touches `simd_neon.rs` (it is cfg'd to

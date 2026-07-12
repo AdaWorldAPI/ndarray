@@ -50,11 +50,12 @@ zeroize = ["cipher/zeroize"]
 [target."cfg(any(target_arch = \"x86_64\", target_arch = \"x86\"))".dependencies.cpufeatures]
 version = "0.2"
 
-# The matryoshka's one non-upstream dependency: the AVX-512 backend rides
-# `ndarray::simd::U32x16`. Scoped to x86_64 so wasm / aarch64 / other builds of
-# this crate never pull ndarray (they fall through to the upstream backends);
-# `simd` needs only ndarray's `std` feature, not the full HPC default set.
-[target."cfg(target_arch = \"x86_64\")".dependencies.ndarray]
+# The matryoshka's one non-upstream dependency: the ndarray_simd backend rides
+# `ndarray::simd::U32x16` (AVX-512 lane on x86_64, native [U32x4;4] on wasm32).
+# Scoped to x86_64 + wasm32 so aarch64 / other builds of this crate never pull
+# ndarray (they fall through to the upstream backends); `simd` needs only
+# ndarray's `std` feature, not the full HPC default set.
+[target."cfg(any(target_arch = \"x86_64\", target_arch = \"wasm32\"))".dependencies.ndarray]
 path = "../.."
 default-features = false
 features = ["std"]

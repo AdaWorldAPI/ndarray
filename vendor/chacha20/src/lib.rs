@@ -263,8 +263,12 @@ impl<R: Unsigned> StreamCipherCore for ChaChaCore<R> {
         cfg_if! {
             if #[cfg(chacha20_force_soft)] {
                 f.call(&mut backends::soft::Backend(self));
-            } else if #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))] {
-                // AdaWorldAPI matryoshka: keystream via ndarray::simd::U32x16.
+            } else if #[cfg(any(
+                all(target_arch = "x86_64", target_feature = "avx512f"),
+                all(target_arch = "wasm32", target_feature = "simd128"),
+            ))] {
+                // AdaWorldAPI matryoshka: keystream via ndarray::simd::U32x16
+                // (AVX-512 lane on x86_64, native [U32x4; 4] lane on wasm32).
                 f.call(&mut backends::ndarray_simd::Backend(self));
             } else if #[cfg(any(target_arch = "x86", target_arch = "x86_64"))] {
                 cfg_if! {
