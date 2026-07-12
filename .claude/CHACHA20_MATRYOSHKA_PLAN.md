@@ -32,10 +32,54 @@ CI: `wasm_simd` job (`.github/workflows/ci.yaml` + `scripts/wasm-parity.sh` +
 lane-by-lane parity selfcheck under **node** — the standing guard for the wasm
 tier (invisible to the x86 `cargo test`). Extend its per-lane blocks as lanes land.
 
-The stand-alone `src/simd_crypto.rs` (`chacha20_block`/`chacha20_keystream`,
-scalar+AVX-512+wasm128, RustCrypto-parity-proven) is the *interim* primitive; the
-matryoshka below **supersedes it** (RustCrypto supplies the rounds, so the
-from-scratch cipher retires once the fork lands).
+The stand-alone `src/simd_crypto.rs` was the *interim* primitive; the matryoshka
+below **superseded it** — it is now **RETIRED** (2026-07-12, see below).
+
+## ✅ SHIPPED 2026-07-12 — fork landed + `simd_crypto.rs` retired
+
+- **Native NEON `U32x16 = [U32x4; 4]`** — `U32x4` gained `bitxor`(veorq_u32) +
+  `rotate_left`(vshlq_u32 shift-or); composed `U32x16` with Add/BitXor/
+  rotate_left. aarch64 now `cargo check`-clean on stable (also fixed the
+  pre-existing `u16x8` alias + the nightly-only `vdotq_s32` breakage → stable
+  widening NEON). Every tier of the ARX lane is now native.
+- **The fork** lives at `vendor/chacha20/` (name/version kept `chacha20`/`0.9.1`,
+  excluded from the workspace, own `[workspace]` table). Upstream cipher verbatim;
+  the ONE delta is `src/backends/ndarray_simd.rs` — the transpose block16 (16
+  blocks ∥, word→16-lane vector, counter lane-index) over `ndarray::simd::U32x16`,
+  pure `+`/`^`/`rotate_left`, **no raw intrinsics, no `unsafe`**. Selected at
+  compile time under `cfg(all(x86_64, avx512f))` in `backends.rs` +
+  `lib.rs::process_with_backend` (Tokens/new/dispatch — four cfg branches). The
+  `ndarray` dep is `target.'cfg(target_arch="x86_64")'` + `default-features=false,
+  features=["std"]` so wasm/aarch64 fork builds never pull ndarray.
+- **`[patch.crates-io] chacha20 = { path = "vendor/chacha20" }`** in the ndarray
+  root `Cargo.toml` folds it under `chacha20poly1305 → encryption` transparently.
+- **Parity — triple-gated, GREEN:** the fork's own RustCrypto RFC 8439 vectors
+  (`chacha20_encryption`/`_keystream`, `xchacha20_*`, `chacha20_core`, seek) pass
+  **through `ndarray_simd`** under `-Ctarget-cpu=x86-64-v4`; `cargo test -p
+  encryption` (23 AEAD tests incl. XChaCha20-Poly1305 round-trip / bit-flip /
+  wrong-key) passes on both the default (v3→RustCrypto avx2 fallback) and avx512
+  (→`ndarray_simd`) builds.
+- **RETIRED:** deleted `src/simd_crypto.rs` + `tests/chacha20_rustcrypto_parity.rs`
+  + the `chacha20 = "0.9"` dev-dep; removed the `ndarray::simd::{chacha20_block,
+  chacha20_keystream, chacha20_state}` surface. RustCrypto owns the cipher; ndarray
+  owns only the `U32x16` lane. `aead.rs` doc updated to the transitive-acceleration
+  framing.
+
+### Reality note + remaining follow-ups
+- **The workspace default is `target-cpu=x86-64-v3` (AVX2), NOT v4** — the CLAUDE.md
+  "v4 mandatory" line is stale. So `ndarray_simd` activates only on an **avx512
+  build** (`.cargo/config-avx512.toml` / `-Ctarget-cpu=x86-64-v4`); the default v3
+  build uses RustCrypto's own avx2 backend (fast, vetted). This is correct and
+  safe — the matryoshka is the *server-avx512* accelerator.
+- **wasm browser backend (next):** add a sibling `#[cfg(all(target_arch="wasm32",
+  target_feature="simd128"))]` branch selecting an `ndarray_simd` backend (same
+  `U32x16` source; the wasm arm is native `[U32x4;4]`) + a `target.'cfg(wasm32)'`
+  ndarray dep. Gated on verifying `ndarray/std` builds inside the encryption
+  `cdylib` for `wasm32-unknown-unknown`.
+- **cross-repo `[patch]` (next):** `[patch]` does not transit, so MedCare-rs (and
+  any other consumer building `encryption` for avx512) needs its own
+  `[patch.crates-io] chacha20 = { path = "vendor/chacha20" }` pointing at a vendored
+  copy of the fork, to inherit the acceleration. Documented, low-risk.
 
 ## DEFERRED — TO-DO (next session)
 

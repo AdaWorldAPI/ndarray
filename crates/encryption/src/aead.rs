@@ -6,18 +6,18 @@
 //! and a server. Callers normally use [`crate::envelope`], which manages
 //! nonce generation and layout; this module is the raw primitive.
 //!
-//! ## Deliberately NOT hand-composed from `ndarray::simd::chacha20_keystream`
+//! ## Acceleration is transitive (the matryoshka), never hand-composed
 //!
-//! `ndarray` now ships a hardware-accelerated ChaCha20 keystream
-//! (`ndarray::simd::chacha20_keystream`, AVX-512 / wasm128, byte-parity-proven
-//! against RustCrypto). It is tempting to swap this AEAD's keystream to that
-//! primitive for speed — **do not.** XChaCha20-Poly1305 is not just a keystream:
-//! it is HChaCha20 subkey derivation + the Poly1305 one-time-key + MAC framing +
-//! the AAD/length encoding. Re-wiring only the keystream means re-implementing
-//! that authenticated composition by hand, which is exactly the "roll your own
-//! AEAD" footgun the stack forbids. The vetted RustCrypto `XChaCha20Poly1305`
-//! construction stays here. The accelerated primitive is for *raw-stream* use
-//! sites whose caller already owns a vetted MAC/framing — not this module.
+//! This AEAD stays 100% vetted RustCrypto `XChaCha20Poly1305` — HChaCha20 subkey
+//! derivation + Poly1305 one-time-key + MAC framing + AAD/length encoding — and
+//! we do **not** hand-wire a raw keystream into it (that would be the "roll your
+//! own AEAD" footgun the stack forbids). Hardware acceleration instead arrives
+//! *underneath*, transparently: the AdaWorldAPI `chacha20` fork (`vendor/chacha20/`)
+//! replaces one backend of the transitive `chacha20` dependency with a keystream
+//! double-round expressed over `ndarray::simd::U32x16` (the AVX-512 lane), folded
+//! in via `[patch.crates-io]`. So `chacha20poly1305 -> chacha20 -> ndarray::simd`
+//! accelerates on an AVX-512 build with zero change to this module, and every
+//! RustCrypto RFC 8439 test vector (incl. XChaCha20) still passes through it.
 
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
