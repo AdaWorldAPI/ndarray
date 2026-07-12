@@ -15,6 +15,10 @@
 //! ChaCha20 is ARX, so the accelerated path is constant-time by construction;
 //! this test guards *correctness*, which is the property a hand-vectorization
 //! can actually get wrong.
+//!
+//! Gated to `std`: `ndarray::simd` is `#[cfg(feature = "std")]`, so this test is
+//! a no-op in `--no-default-features` builds.
+#![cfg(feature = "std")]
 
 use chacha20::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
 use chacha20::ChaCha20;

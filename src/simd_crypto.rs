@@ -374,9 +374,10 @@ mod tests {
         }
         let nonce: [u8; 12] = [0xde, 0xad, 0xbe, 0xef, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77];
         let base = 0x0102_0304u32;
-        let n = 40;
 
-        let mut ks = vec![[0u8; 64]; n];
+        // 40 blocks: two AVX-512 strides (16 each) + an 8-block scalar tail.
+        // Fixed-size array (not `vec!`) so the test compiles under `no_std`.
+        let mut ks = [[0u8; 64]; 40];
         chacha20_keystream(&key, base, &nonce, &mut ks);
 
         for (b, got) in ks.iter().enumerate() {
@@ -394,7 +395,7 @@ mod tests {
     fn chacha20_keystream_dispatch_matches_rfc8439_kat() {
         let (key, counter, nonce) = rfc8439_kat_inputs();
         // 16 blocks forces the AVX-512 stride when available; block 0 == the KAT.
-        let mut ks = vec![[0u8; 64]; 16];
+        let mut ks = [[0u8; 64]; 16];
         chacha20_keystream(&key, counter, &nonce, &mut ks);
         assert_eq!(ks[0], RFC8439_KAT_BLOCK, "dispatcher block 0 must match RFC 8439 §2.3.2");
     }
