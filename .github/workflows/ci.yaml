@@ -134,6 +134,34 @@ jobs:
           node-version: "22"
       - name: wasm SIMD parity (build + node run)
         run: ./scripts/wasm-parity.sh
+      # Guard the wasm matryoshka: the chacha20 fork's ndarray_simd backend must
+      # keep compiling for wasm32+simd128 (it rides the same U32x16 lane the node
+      # parity step above proves bit-exact). A future ndarray::simd change that
+      # broke the wasm backend build would fail here.
+      - name: wasm matryoshka backend (chacha20 fork) compiles for wasm32+simd128
+        run: RUSTFLAGS="-C target-feature=+simd128" cargo build --manifest-path vendor/chacha20/Cargo.toml --target wasm32-unknown-unknown --lib
+
+  neon_simd:
+    # The x86 `cargo test` suite never touches `simd_neon.rs` (it is cfg'd to
+    # aarch64), so NEON SIMD correctness is otherwise unverified. Cross-build the
+    # real `ndarray::simd` aarch64 types via the excluded `neon-simd-parity` bin
+    # and run its numeric selfcheck under qemu — both integration (the lib
+    # compiles for aarch64 on stable) and parity (each lane == scalar). The
+    # aarch64 twin of the wasm_simd job above.
+    runs-on: ubuntu-latest
+    name: neon-simd/parity-qemu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+      # rust-toolchain.toml pins 1.95.0 — install the aarch64 target for the
+      # pinned toolchain too (dtolnay installs for `stable`, which may differ).
+      - run: rustup target add aarch64-unknown-linux-gnu
+      - name: install aarch64 cross toolchain + qemu-user
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu qemu-user-static
+      - name: NEON SIMD parity (cross-build + qemu run)
+        run: ./scripts/neon-parity.sh
 
   tests:
     runs-on: ubuntu-latest
@@ -359,6 +387,7 @@ jobs:
       - format
       - nostd
       - wasm_simd
+      - neon_simd
       - tests
       - native-backend
       - hpc-stream-parallel

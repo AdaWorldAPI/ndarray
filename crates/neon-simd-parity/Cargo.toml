@@ -1,0 +1,29 @@
+# neon-simd-parity — the run-under-qemu gate for the aarch64 NEON SIMD tier.
+#
+# The x86 `cargo test` suite never touches `simd_neon.rs` (it is `cfg`'d to
+# aarch64), so NEON SIMD correctness is otherwise unverified by CI — exactly the
+# blind spot `wasm-simd-parity` closes for wasm. This bin calls the REAL
+# `ndarray::simd` aarch64 types (no copy → no drift) and self-checks each lane's
+# arithmetic against scalar in-process; it is cross-built for
+# `aarch64-unknown-linux-gnu` and executed under `qemu-aarch64-static`, exiting
+# non-zero on any lane mismatch.
+#
+# EXCLUDED from the workspace (see root Cargo.toml `exclude`) so it has zero
+# effect on the x86 jobs; the CI `neon_simd` job builds it via --manifest-path.
+[package]
+name = "neon-simd-parity"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "neon-simd-parity"
+path = "src/main.rs"
+
+[dependencies]
+# `simd` needs only ndarray's `std` feature, not the full HPC default set.
+ndarray = { path = "../..", default-features = false, features = ["std"] }
+
+[profile.release]
+panic = "abort"
+opt-level = "z"

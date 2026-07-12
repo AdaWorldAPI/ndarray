@@ -630,3 +630,52 @@ is superseded by the matryoshka once the fork lands.
 4. **Matryoshka execution:** fork `chacha20`, clone `avx2.rs` backend → rewire over
    `ndarray::simd::U32x16`, `[patch]` into the encryption stack (transitive accel),
    gate vs RustCrypto `soft`, retire `simd_crypto.rs`. Full plan in the doc above.
+
+---
+
+## 2026-07-12 — PR #240 CI fully green (no_std/MSRV fix chain closed)
+
+Tip `5a914c37`. All 20 checks pass; the three previously-red failures are resolved:
+
+- **261f736a** — `simd_crypto` dispatcher: `is_x86_feature_detected!` → compile-time
+  `#[cfg(all(target_arch="x86_64", target_feature="avx512f"))]` (no runtime detection;
+  the workspace SIMD-dispatch rule). Unblocked `blas-msrv` + `nostd/thumbv6m`.
+- **5a914c37** — three no_std/bare-`--no-default-features` test-build fixes:
+  - `simd_crypto` tests: `vec![[0u8;64]; n]` → fixed arrays `[[0u8;64]; 40]` / `[[0u8;64]; 16]`
+    (no `vec!` under no_std).
+  - `tests/chacha20_rustcrypto_parity.rs`: added `#![cfg(feature = "std")]` (imports
+    std-gated `ndarray::simd`; no-ops under `--no-default-features`).
+  - `src/tri.rs`: `Array2::<i32>::zeros(...)` (serde_json dep-drift added
+    `impl PartialEq<Value> for i32`, making bare `Array2::zeros` element-type ambiguous).
+
+Green jobs of note: `tests/{stable,beta,1.95.0}`, `blas-msrv`, `nostd/thumbv6m-none-eabi`,
+`clippy/1.95.0`, `format/stable`, `native-backend/stable`, `tier4-avx512-check`,
+`wasm-simd/parity-node` (new gate), `hpc-stream-parallel/rayon`, CodeRabbit.
+
+Deferred (task #30, token-limit call): native neon `U32x16=[U32x4;4]` + aarch64 cross
+parity CI + the matryoshka chacha20 fork. Plan in `.claude/CHACHA20_MATRYOSHKA_PLAN.md`.
+
+---
+
+## 2026-07-12 — Matryoshka finalized + NEON cross-CI (deferred #30 CLOSED)
+
+- **Native NEON `U32x16 = [U32x4;4]` ARX lane** (commit 06a61bf9): bitxor/
+  rotate_left on U32x4, composed U32x16 Add/BitXor/rotate_left; also fixed the
+  pre-existing aarch64 stable-compile breakage (`u16x8` alias; nightly-only
+  `vdotq_s32` → stable widening NEON). aarch64 now `cargo check`-clean on stable.
+- **ChaCha20 matryoshka + `simd_crypto.rs` RETIRED** (commit 20dc6c3f):
+  `vendor/chacha20/` fork (name/version kept, own [workspace]); the ONE delta is
+  `backends/ndarray_simd.rs` — the transpose block16 over `ndarray::simd::U32x16`
+  (pure +/^/rotate_left, no intrinsics, no unsafe), compile-time-selected under
+  cfg(x86_64+avx512f), `[patch.crates-io]`-folded under encryption. Triple parity
+  gate GREEN (fork RFC 8439 vectors through ndarray_simd @ v4; encryption 23 AEAD
+  tests @ v3+v4). Deleted src/simd_crypto.rs + the parity test + the chacha20 dev-dep
+  + the ndarray::simd::chacha20_* surface.
+- **NEON cross parity CI**: `crates/neon-simd-parity` (excluded bin) +
+  `scripts/neon-parity.sh` (cross-build aarch64 + run under qemu-aarch64-static) +
+  CI `neon_simd` job (added to conclusion needs). Runtime-verifies U32x16 ARX /
+  F32x16 / I8x16 == scalar on real aarch64. Green locally under qemu.
+
+Follow-ups (documented in `.claude/CHACHA20_MATRYOSHKA_PLAN.md`): wasm matryoshka
+backend (simd128 branch); cross-repo `[patch]` for MedCare-rs; the workspace
+default is x86-64-v3 (avx2) so ndarray_simd activates on avx512 builds only.

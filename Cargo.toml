@@ -217,11 +217,6 @@ approx = { workspace = true, default-features = true }
 itertools = { workspace = true }
 ndarray-gen = { workspace = true }
 criterion = { version = "0.5", features = ["html_reports"] }
-# The vetted RustCrypto ChaCha20 stream cipher — used ONLY as the independent
-# oracle for the `chacha20_rustcrypto_parity` integration test that pins
-# `ndarray::simd::chacha20_keystream` byte-for-byte against a trusted reference.
-# Same version chacha20poly1305 0.10 pulls transitively (see Cargo.lock).
-chacha20 = "0.9"
 
 [[bench]]
 name = "append"
@@ -407,7 +402,7 @@ members = [
     "ndarray-rand",
     "crates/*",
 ]
-exclude = ["crates/burn", "crates/wasm-simd-parity"]
+exclude = ["crates/burn", "crates/wasm-simd-parity", "crates/neon-simd-parity", "vendor/chacha20"]
 default-members = [
     ".",
     "ndarray-rand",
@@ -449,3 +444,15 @@ tag-name = "{{version}}"
 features = ["approx", "serde", "rayon"]
 # Define the configuration attribute `docsrs`
 rustdoc-args = ["--cfg", "docsrs"]
+
+# ── ChaCha20 matryoshka (AdaWorldAPI fork) ──────────────────────────────────
+# Fold the AVX-512/ndarray::simd-accelerated `chacha20` fork over the registry
+# crate. This transitively accelerates the `encryption` crate's XChaCha20-Poly1305
+# keystream (chacha20poly1305 -> chacha20) with zero change to the AEAD, on any
+# x86_64+avx512f build (the workspace's `target-cpu=x86-64-v4`). Non-x86 builds of
+# the fork fall through to RustCrypto's own backends and never pull ndarray.
+# NOTE: a "Patch `chacha20` was not used in the crate graph" note appears on
+# scoped builds that don't pull `encryption` (e.g. `-p ndarray`); it is benign —
+# the patch is exercised by `cargo test -p encryption` and the full workspace.
+[patch.crates-io]
+chacha20 = { path = "vendor/chacha20" }

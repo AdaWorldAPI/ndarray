@@ -1,0 +1,61 @@
+# AdaWorldAPI fork of RustCrypto `chacha20` v0.9.1 (the "matryoshka").
+#
+# Verbatim upstream cipher — state schedule, counter, XChaCha, RNG, and the
+# soft/sse2/avx2/neon backends are UNTOUCHED. The only delta is one added
+# backend, `src/backends/ndarray_simd.rs`, which expresses the keystream
+# double-round over `ndarray::simd::U32x16` and is compile-time-selected on an
+# AVX-512 x86_64 build (see `src/backends.rs` + `src/lib.rs::process_with_backend`).
+#
+# The crate name/version stay `chacha20` / `0.9.1` so `[patch.crates-io]` folds
+# this over the registry crate, transitively accelerating `chacha20poly1305 ->
+# encryption -> ogar-encryption -> consumers` with zero change to any of them.
+# Re-sync on a RustCrypto advisory: bump the vendored source, re-apply the single
+# `ndarray_simd.rs` backend + the four cfg branches, re-run the vectors.
+[package]
+edition = "2021"
+rust-version = "1.95"
+name = "chacha20"
+version = "0.9.1"
+authors = ["RustCrypto Developers"]
+description = "The ChaCha20 stream cipher (RFC 8439) — AdaWorldAPI fork with an ndarray::simd::U32x16 AVX-512 backend."
+documentation = "https://docs.rs/chacha20"
+readme = "README.md"
+keywords = ["crypto", "stream-cipher", "chacha8", "chacha12", "xchacha20"]
+categories = ["cryptography", "no-std"]
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/AdaWorldAPI/ndarray"
+resolver = "1"
+
+[dependencies.cfg-if]
+version = "1"
+
+[dependencies.cipher]
+version = "0.4.4"
+
+[dev-dependencies.cipher]
+version = "0.4.4"
+features = ["dev"]
+
+[dev-dependencies.hex-literal]
+version = "0.3.3"
+
+# Standalone: this is a `[patch]` target folded into the parent workspace, not a
+# member of it (the empty table makes it its own workspace root).
+[workspace]
+
+[features]
+std = ["cipher/std"]
+zeroize = ["cipher/zeroize"]
+
+[target."cfg(any(target_arch = \"x86_64\", target_arch = \"x86\"))".dependencies.cpufeatures]
+version = "0.2"
+
+# The matryoshka's one non-upstream dependency: the ndarray_simd backend rides
+# `ndarray::simd::U32x16` (AVX-512 lane on x86_64, native [U32x4;4] on wasm32).
+# Scoped to x86_64 + wasm32 so aarch64 / other builds of this crate never pull
+# ndarray (they fall through to the upstream backends); `simd` needs only
+# ndarray's `std` feature, not the full HPC default set.
+[target."cfg(any(target_arch = \"x86_64\", target_arch = \"wasm32\"))".dependencies.ndarray]
+path = "../.."
+default-features = false
+features = ["std"]
