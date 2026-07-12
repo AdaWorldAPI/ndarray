@@ -4,14 +4,22 @@ cfg_if! {
     if #[cfg(chacha20_force_soft)] {
         pub(crate) mod soft;
     } else if #[cfg(any(
-        all(target_arch = "x86_64", target_feature = "avx512f"),
+        all(
+            target_arch = "x86_64",
+            target_feature = "avx512f",
+            not(chacha20_force_avx2),
+            not(chacha20_force_sse2),
+        ),
         all(target_arch = "wasm32", target_feature = "simd128"),
     ))] {
         // AdaWorldAPI matryoshka: the keystream double-round rides
         // `ndarray::simd::U32x16` — the polyfill lowers it to `__m512i` on an
         // AVX-512 build (server) and to the native `[U32x4; 4]` lane on a
         // wasm32+simd128 build (browser). Same source, two hardware lanes.
-        // Takes precedence over the runtime-detected AVX2/SSE2 path below.
+        // AUTO-selection only: `chacha20_force_avx2`/`_sse2` still win on x86_64
+        // (they fall through to the force subtree below) so A/B benchmarks and a
+        // rollback stay possible on v4 builds; the force cfgs are documented as
+        // ignored on non-x86, so the wasm arm is unguarded.
         pub(crate) mod ndarray_simd;
     } else if #[cfg(any(target_arch = "x86", target_arch = "x86_64"))] {
         cfg_if! {

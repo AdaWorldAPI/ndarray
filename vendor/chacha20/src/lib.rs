@@ -161,8 +161,14 @@ pub type ChaCha20 = StreamCipherCoreWrapper<ChaChaCore<U10>>;
 cfg_if! {
     if #[cfg(chacha20_force_soft)] {
         type Tokens = ();
-    } else if #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))] {
+    } else if #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx512f",
+        not(chacha20_force_avx2),
+        not(chacha20_force_sse2),
+    ))] {
         // AdaWorldAPI matryoshka backend: compile-time selected, no runtime probe.
+        // Guarded so `chacha20_force_avx2`/`_sse2` fall through to the x86 subtree.
         type Tokens = ();
     } else if #[cfg(any(target_arch = "x86", target_arch = "x86_64"))] {
         cfg_if! {
@@ -227,7 +233,12 @@ impl<R: Unsigned> KeyIvInit for ChaChaCore<R> {
         cfg_if! {
             if #[cfg(chacha20_force_soft)] {
                 let tokens = ();
-            } else if #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))] {
+            } else if #[cfg(all(
+                target_arch = "x86_64",
+                target_feature = "avx512f",
+                not(chacha20_force_avx2),
+                not(chacha20_force_sse2),
+            ))] {
                 let tokens = ();
             } else if #[cfg(any(target_arch = "x86", target_arch = "x86_64"))] {
                 cfg_if! {
@@ -264,11 +275,18 @@ impl<R: Unsigned> StreamCipherCore for ChaChaCore<R> {
             if #[cfg(chacha20_force_soft)] {
                 f.call(&mut backends::soft::Backend(self));
             } else if #[cfg(any(
-                all(target_arch = "x86_64", target_feature = "avx512f"),
+                all(
+                    target_arch = "x86_64",
+                    target_feature = "avx512f",
+                    not(chacha20_force_avx2),
+                    not(chacha20_force_sse2),
+                ),
                 all(target_arch = "wasm32", target_feature = "simd128"),
             ))] {
                 // AdaWorldAPI matryoshka: keystream via ndarray::simd::U32x16
                 // (AVX-512 lane on x86_64, native [U32x4; 4] lane on wasm32).
+                // AUTO-selection only — `chacha20_force_avx2`/`_sse2` fall through
+                // to the x86 force subtree below (rollback/A-B stays possible).
                 f.call(&mut backends::ndarray_simd::Backend(self));
             } else if #[cfg(any(target_arch = "x86", target_arch = "x86_64"))] {
                 cfg_if! {
