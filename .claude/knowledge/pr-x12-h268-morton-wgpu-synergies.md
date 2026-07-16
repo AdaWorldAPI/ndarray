@@ -249,7 +249,12 @@ Hadamard-rotated residual in a three-tier LFD split
 `Passthrough` (exact original stored — no index+residual at all), the
 next ~20% get an i8 residual, the bottom ~70% the i4+i2 cascade — index
 PLACES, residual CORRECTS, and the mold is never forced on rows it
-doesn't fit. It is the continuous-field exit
+doesn't fit. Provenance caveat: bgz-tensor predates turbovec/PolarQuant
+and helix — this records what ships, not current best practice; an
+engineering follow-up review is queued (lance-graph
+`TD-BGZ-TENSOR-PRE-LANE-REVIEW`: reconcile the i4+i2 cascade vs turbovec
+Lloyd-Max/NativeLut, Hadamard vs the PolarQuant rotation findings,
+residual coding vs helix — consume-the-lane / demarcate / retire). It is the continuous-field exit
 where a bare 256-level index terraces (e.g. elevation); categorical
 surfaces (`Signed360` normals, narrow colour) stay flat. Out-of-row like
 `Signed360`; the in-row refinement budget remains the turbovec nibble
