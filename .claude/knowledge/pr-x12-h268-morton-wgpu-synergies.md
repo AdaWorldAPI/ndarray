@@ -249,10 +249,16 @@ rows) — index PLACES, residual CORRECTS. It is the continuous-field exit
 where a bare 256-level index terraces (e.g. elevation); categorical
 surfaces (`Signed360` normals, narrow colour) stay flat. Out-of-row like
 `Signed360`; the in-row refinement budget remains the turbovec nibble
-lane. Formal anchor [S]: Hambly–Lyons 2010 signature uniqueness (a
+lane. Formal anchor: Hambly–Lyons 2010 signature uniqueness (a
 bounded-variation path is determined by its graded iterated-integral
-cascade up to tree-like equivalence) — analogy-grade until a
-ladder→signature probe exists. Canonical text: lance-graph
+cascade up to tree-like equivalence) — **already in-workspace on both
+sides** (corrected 2026-07-16): THIS repo's `src/hpc/pillar/signature.rs`
+(Pillar-11 B7 — signature transform + sig-kernel, Gram PSD check,
+1 000-Lévy-path certification probe) and lance-graph jc Pillar 11
+(`crates/jc/src/hambly_lyons.rs`, feature `hambly-lyons` → `sigker`,
+forward/converse probes on `signature_truncated`). Only the
+ladder→signature MAPPING for the residual cascade stays [S]; its probe
+builds on the existing Pillar-11 harnesses. Canonical text: lance-graph
 `le-contract.md §3` honourable-mention subsection +
 `E-PALETTE-RESIDUAL-LADDER-1`.
 
