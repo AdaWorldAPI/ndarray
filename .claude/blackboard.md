@@ -790,7 +790,7 @@ default is x86-64-v3 (avx2) so ndarray_simd activates on avx512 builds only.
 ## 2026-07-16 (4) — h268-probe-wave-v1 RESULTS (adjudicated)
 
 - **PROBE-WH-MAG → NEUTRAL; bare-tile leg CLOSED NOT-TRANSFERRING.**
-  B/A 0.929/1.411/1.869 — WHT₁₆ spreads outlier energy tile-wide,
+  B/A 0.929/1.317/1.869 — WHT₁₆ spreads outlier energy tile-wide,
   inflating the per-cell quantization floor; the row-level win needs the
   passthrough escape + centroid residual the probe deliberately omits.
   Shipped row codec untouched. PROBE-WH-MAG-2 named, deferred.

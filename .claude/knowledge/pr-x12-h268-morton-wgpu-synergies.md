@@ -120,7 +120,7 @@ probes live in lance-graph `bgz-tensor`/`jc`/`helix`):**
 
 | Probe | Verdict | Numbers | Consequence |
 |---|---|---|---|
-| PROBE-WH-MAG | NEUTRAL / bare-tile leg NOT-TRANSFERRING | B/A 0.929 / 1.411 / 1.869 (grad+spike / heavy-tail / noise) | §10 [H] leg: WH-on-bare-tiles does not transfer; shipped row codec (lance-graph E-PALETTE-RESIDUAL-LADDER-1) untouched; PROBE-WH-MAG-2 deferred |
+| PROBE-WH-MAG | NEUTRAL / bare-tile leg NOT-TRANSFERRING | B/A 0.929 / 1.317 / 1.869 (grad+spike / heavy-tail / noise) | §10 [H] leg: WH-on-bare-tiles does not transfer; shipped row codec (lance-graph E-PALETTE-RESIDUAL-LADDER-1) untouched; PROBE-WH-MAG-2 deferred |
 | PROBE-SIG-CHECKSUM | PASS (depth-2 blind-spot bound) | replay 0.0; tree-like 0.0<1e-9; non-tree 11.31>0.05 | §10 [S] leg confirmed; digest ≠ catch-all — parallel-chord displacement is signature-invisible at depth 2 |
 | PROBE-WALK-SPECTRUM | KILL of §10(g) "decorrelated" half | period-17 \|R\| 0.998/0.996/0.994; lattice max 0.875 vs PRNG 0.0205 = 42.7× | §10(g) corrected: known structure ≠ low correlation; D-QUANTGATE / bijectivity unaffected |
 
@@ -428,7 +428,7 @@ fourth-mode/anchor discussion (§8):
   automatically transfer to 16-cell tiles).
   **RESULT (2026-07-16, PROBE-WH-MAG, plan h268-probe-wave-v1):**
   NEUTRAL — bare-tile leg NOT-TRANSFERRING. B/A = 0.929 (gradient+spike)
-  / 1.411 (heavy-tailed) / 1.869 (uniform-noise) over 256 tiles/class at
+  / 1.317 (heavy-tailed) / 1.869 (uniform-noise) over 256 tiles/class at
   dim 16: misses the <0.9 PASS bar everywhere, regresses past 1.1 on two
   classes. WHT₁₆ spreads a tile's outlier energy across all 16 cells,
   inflating the per-cell quantization floor where the direct cascade
