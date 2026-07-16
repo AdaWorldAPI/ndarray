@@ -1,9 +1,13 @@
 # PR-X12 — x266 / Next-Gen Codec via 3DGS Space-Time Upscaling
 
 > **Naming + standards anchor (2026-07-16):** "x266" in this doc means the
-> **PR-X12 3DGS scene codec** — NOT H.266/VVC (finalized 2020, shipping) and
-> not H.267 (JVET's *prospective* beyond-VVC standardization effort — not yet
-> a standard; CfP running July 2026, finalization targeted ~2028). For the
+> **PR-X12 3DGS scene codec** — internal codename **H.268** (ruled
+> 2026-07-16; "x266" was a placeholder). H.268 is INTERNAL ONLY, never an
+> ITU designation: it is NOT H.266/VVC (finalized 2020, shipping) and not
+> H.267 (JVET's *prospective* beyond-VVC standardization effort — not yet
+> a standard; CfP running July 2026, finalization targeted ~2028). Codename
+> ruling + graded synergy matrix:
+> `pr-x12-h268-morton-wgpu-synergies.md`. For the
 > grounded public landscape — VVC facts, ECM, NNVC,
 > H.267 requirement + dates — read
 > `pr-x12-h266-h267-standards-landscape.md` alongside this doc, and see

@@ -82,6 +82,16 @@ NNVC v7, H.267 CfP Jul 2026 → finalize ~2028, ≥40%-over-VVC requirement) in
 ../knowledge/pr-x12-h266-h267-standards-landscape.md
 ```
 
+Codename + graded synergy matrix (2026-07-16): the former "x266" placeholder
+is internally codenamed **H.268** (INTERNAL ONLY, never an ITU designation).
+The Morton-cascade / perturbation-pyramid / wgpu-wasm feasibility matrix —
+every claim adversarially graded FEASIBLE-NOW / NEEDS-PROBE /
+OVERCLAIM-CORRECTED with receipts — lives in
+
+```text
+../knowledge/pr-x12-h268-morton-wgpu-synergies.md
+```
+
 This capstone connects:
 
 ```text

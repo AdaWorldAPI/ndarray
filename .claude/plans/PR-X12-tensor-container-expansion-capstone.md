@@ -45,6 +45,8 @@ Positioning consequences for this capstone:
 
 ```text
 - "x266" in our docs = the PR-X12 3DGS scene codec, never H.266/VVC.
+  Internal codename since 2026-07-16: H.268 (INTERNAL ONLY, never an ITU
+  designation; see pr-x12-h268-morton-wgpu-synergies.md).
 - ECM's complexity spiral is the cautionary anchor for the R-3 LoC envelope.
 - NNVC-in-the-loop vs our tables-only hot loop is the sharpest external
   differentiator; the moat is reproducibility-by-construction + governance

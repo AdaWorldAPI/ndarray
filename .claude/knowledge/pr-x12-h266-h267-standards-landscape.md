@@ -17,6 +17,12 @@
 > VVC encoder effort). Where precision matters, say **"PR-X12 3DGS scene
 > codec"** for ours and **H.266/VVC**, **ECM**, **NNVC**, **H.267** for the
 > standards-track artifacts. This doc is the reference for the latter four.
+>
+> **Codename update (2026-07-16):** the internal codename for the PR-X12
+> 3DGS scene codec is **H.268** (replacing the "x266" placeholder in prose;
+> filenames keep the historical slug). INTERNAL ONLY — never an ITU
+> designation. Ruling + graded feasibility matrix:
+> `pr-x12-h268-morton-wgpu-synergies.md`.
 
 ---
 

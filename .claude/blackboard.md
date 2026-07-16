@@ -707,3 +707,26 @@ default is x86-64-v3 (avx2) so ndarray_simd activates on avx512 builds only.
   standards-watch sections. Watch dates: Nov 2026, Jan 2027.
 - Status note: `src/hpc/codec/` now has `ans.rs` + `rdo.rs` (A7/A6 debts
   D-CODEC-2/-3 have code); still no `ndarray-codec` crate (Plan H open).
+
+---
+
+## 2026-07-16 (2) — H.268 codename + graded Morton/wgpu synergy matrix
+
+- **Codename ruling:** the "x266" placeholder (PR-X12 3DGS scene codec) is
+  internally codenamed **H.268** — INTERNAL ONLY, never an ITU designation
+  (H.267 itself is still prospective). Registered in the x266 lens header,
+  landscape doc, capstone, 3DGS plan index.
+- **NEW: `.claude/knowledge/pr-x12-h268-morton-wgpu-synergies.md`** — the
+  "industry-impractical vs realistically-achievable" matrix, every claim
+  adversarially verified (workflow wf_6c6fb99a-cb4, 15 agents, file:line
+  receipts): 1× FEASIBLE-NOW (the scoping row), 2× NEEDS-PROBE, 7×
+  OVERCLAIM-CORRECTED. Load-bearing findings: wasm SIMD128 lane IS real +
+  CI-parity-verified (simd_wasm.rs; wasm-simd/parity-node); bgz17 256×256
+  tables are texture-isomorphic (dense u16, R16Uint-ready) but zero GPU-LUT
+  code exists; ctu.rs is an ARENA tree (no Morton in codec dir) — flat
+  Morton SoA is an unimplemented refactor; D-PHASE/D-WHP are [H] with unrun
+  probes (J2 kill: dither-only); a2ui-paint wgpu = untested quad demo,
+  `webgl` feature unwired; ndarray deliberately "no GPU, no wgpu".
+- **Probe queue established:** PROBE-GPU-LUT, PROBE-MORTON-CTU,
+  PROBE-RANS-INTERLEAVE (new names), + OGAR PHASE-1/PERT-RHO/PYR-1,
+  WHP-1..4, Plan E bits/Gaussian, a2ui N2 — each with pass/kill conditions.
