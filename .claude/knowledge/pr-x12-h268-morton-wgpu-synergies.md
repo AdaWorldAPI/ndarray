@@ -114,6 +114,7 @@ any float-path GPU bit-exactness claim.
 | WHP-1..4 (+GPU arm) | two-algebra pyramid parity | per OGAR canon | magnitude side stays CPU |
 | Plan E bench | bits/Gaussian on Mip-NeRF 360 | ≤4 bits | R-10 re-derived; web-streaming claim withdrawn |
 | a2ui N2 | wgpu `webgl` feature + texture upload, wasm32-tested | render parity headless vs browser | GPU raster tier deferred; CPU raster only |
+| PROBE-SPRITE-REPLAY | x265 I/P/B grammar over HHTL-anchored splat sprites with helix motion codes (plan `x265-sprite-replay-probe-v1.md`; NOT H.268, NOT x265 bit-parity) | replay determinism CPU==wasm on sprite states; B-frame bidirectional consistency; helix quantization bound reported | object-level helix motion collapses back into a dense per-splat MV field — the sprite amortization dies as stated |
 
 **Run this wave — h268-probe-wave-v1 (2026-07-16, reviewer-adjudicated;
 probes live in lance-graph `bgz-tensor`/`jc`/`helix`):**
@@ -393,6 +394,16 @@ bytes actually stored are magnitudes. Same object, two consumers.
   by ruling; the C1 arena-tree corrective (§3 row 1: the shipped `ctu.rs`
   is a pointer arena, not Morton-flat) applies to the **codec CTU**, not
   to the L4 substrate — the two do not contradict each other.
+  **Honesty amendment (2026-07-16, post Fisher-z canon):** the
+  3-cache-line claim is fully honest only under the **analytic**
+  cosine-replacement (E-FISHERZ-CANONICAL-COSINE-REPLACEMENT-1) — a
+  materialized 256² u16 distance table is 128 KB (L2-resident on typical
+  parts, NOT L1D), so under the materialized flavour every rail read was
+  silently L2-bound and the working set was never really 3 lines. The
+  analytic codec drops table residency to the 8-byte `FamilyGamma`,
+  making the per-tile claim true as stated; similarity reads become
+  arithmetic-shaped |Δi8| (64 lanes/AVX-512 register = four tiles' worth
+  of one lane per register).
 
 **The four-role loop:** **φ PLACES → walk QUANTIZES → γ CORRECTS → F
 DECIDES.** λ-RDO (rate-distortion optimization, the codec's tile-local
@@ -440,6 +451,13 @@ fourth-mode/anchor discussion (§8):
   row-level win does not transfer to per-tile granularity, and the
   shipped row codec is untouched. Follow-up PROBE-WH-MAG-2 (WH + escape
   tier + centroid residual) deferred to a per-tile-codec consumer.
+  **Deferral-condition amendment (2026-07-16):** the codec's 2-bit mode
+  grammar (Skip/Merge/Delta/**Escape**, `mode.rs`) already IS a per-tile
+  escape tier — the tile-granular analog of `classify_rows_by_lfd`'s
+  Passthrough (and the shader-side analog is F-dispatch's
+  FailureTicket). PROBE-WH-MAG-2's natural home is therefore WH
+  re-evaluated UNDER the mode grammar (heavy-tailed tiles routed to
+  Escape before the cascade), not a wait for new machinery.
 - **[S] Signature as the replayable-trajectory checksum.** The x264
   contrast in §7 asked for a replayable, checksummable stream; the
   Hambly–Lyons signature is the canonical path digest with a uniqueness
