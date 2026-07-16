@@ -775,3 +775,12 @@ default is x86-64-v3 (avx2) so ndarray_simd activates on avx512 builds only.
   certification) + lance-graph jc Pillar 11 (`hambly_lyons.rs`, feature
   `hambly-lyons` → sigker). Only the ladder→signature MAPPING stays
   [S]; probe builds on the Pillar-11 harnesses. §8 sentence amended.
+- **§10 forward synthesis (operator):** two candidate adoptions for the
+  tile pyramid, probe-gated — [H] one WH family for both pyramid sides
+  (OGAR sign side is already WH-of-the-address-tree; bgz-tensor's
+  hadamard_rotate = same family as magnitude-side preconditioner;
+  PROBE-WH-MAG = WHT₁₆+i4/i2 vs direct on real tile magnitudes) and
+  [S] signature-as-trajectory-checksum (tree-like equivalence = the
+  digest's null space, the formal "which detours leave no comma";
+  PROBE-SIG-CHECKSUM on the Pillar-11 harnesses). Neither adds stored
+  tile fields.
