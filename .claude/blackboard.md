@@ -784,3 +784,25 @@ default is x86-64-v3 (avx2) so ndarray_simd activates on avx512 builds only.
   digest's null space, the formal "which detours leave no comma";
   PROBE-SIG-CHECKSUM on the Pillar-11 harnesses). Neither adds stored
   tile fields.
+
+---
+
+## 2026-07-16 (4) — h268-probe-wave-v1 RESULTS (adjudicated)
+
+- **PROBE-WH-MAG → NEUTRAL; bare-tile leg CLOSED NOT-TRANSFERRING.**
+  B/A 0.929/1.317/1.869 — WHT₁₆ spreads outlier energy tile-wide,
+  inflating the per-cell quantization floor; the row-level win needs the
+  passthrough escape + centroid residual the probe deliberately omits.
+  Shipped row codec untouched. PROBE-WH-MAG-2 named, deferred.
+- **PROBE-SIG-CHECKSUM → PASS** with the depth-2 bound: parallel-chord
+  interior displacement is EXACTLY signature-invisible — null space
+  exceeds tree-like equivalence; mitigate via depth 3 or paired digest.
+- **PROBE-WALK-SPECTRUM → KILL** of §10(g)'s "decorrelated by
+  construction" (walk lattice |R| 0.875 vs PRNG 0.0205 = 42.7×;
+  C(13)=−15 sidelobe, coprimality ≠ decorrelation); "known period-17
+  structure" half CONFIRMED (R(17m)=1−8m/N). D-QUANTGATE unaffected.
+- Doc updates: §10(g) corrected, §10 forward-synthesis RESULT lines,
+  §5 results sub-table. Canonical verdicts: lance-graph
+  E-H268-PROBE-WAVE-1-RESULTS + plan h268-probe-wave-v1.md Results.
+  Probes: bgz-tensor probe_wh_mag / jc sig_checksum / helix
+  walk_spectrum (all suites green).

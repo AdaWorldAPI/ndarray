@@ -115,6 +115,15 @@ any float-path GPU bit-exactness claim.
 | Plan E bench | bits/Gaussian on Mip-NeRF 360 | ≤4 bits | R-10 re-derived; web-streaming claim withdrawn |
 | a2ui N2 | wgpu `webgl` feature + texture upload, wasm32-tested | render parity headless vs browser | GPU raster tier deferred; CPU raster only |
 
+**Run this wave — h268-probe-wave-v1 (2026-07-16, reviewer-adjudicated;
+probes live in lance-graph `bgz-tensor`/`jc`/`helix`):**
+
+| Probe | Verdict | Numbers | Consequence |
+|---|---|---|---|
+| PROBE-WH-MAG | NEUTRAL / bare-tile leg NOT-TRANSFERRING | B/A 0.929 / 1.317 / 1.869 (grad+spike / heavy-tail / noise) | §10 [H] leg: WH-on-bare-tiles does not transfer; shipped row codec (lance-graph E-PALETTE-RESIDUAL-LADDER-1) untouched; PROBE-WH-MAG-2 deferred |
+| PROBE-SIG-CHECKSUM | PASS (depth-2 blind-spot bound) | replay 0.0; tree-like 0.0<1e-9; non-tree 11.31>0.05 | §10 [S] leg confirmed; digest ≠ catch-all — parallel-chord displacement is signature-invisible at depth 2 |
+| PROBE-WALK-SPECTRUM | KILL of §10(g) "decorrelated" half | period-17 \|R\| 0.998/0.996/0.994; lattice max 0.875 vs PRNG 0.0205 = 42.7× | §10(g) corrected: known structure ≠ low correlation; D-QUANTGATE / bijectivity unaffected |
+
 ## 7. Comma closure — the replayable irrational (constants correction folded in)
 
 The Pythagorean comma is the residue of a stack of pure fifths that never
@@ -351,15 +360,30 @@ bytes actually stored are magnitudes. Same object, two consumers.
   (the integer-only GPU caveat) unless a deterministic-backend probe is
   added. Within that scope, counterfactual replay stores **zero**
   exploration state.
-- **(g) Anti-confabulation = anti-moiré in concept space [H, probe-gated]**
-  — a coprime probe schedule is decorrelated from the palette lattice by
-  construction, and a *known* period-17 dependence structure is plausibly
-  friendlier to `I-NOISE-FLOOR-JIRAK`'s weak-dependence analysis than an
-  *unknown* PRNG correlation structure. The "friendlier" half is an
-  **unverified inference**: the period-17 permutation self-test proves
-  bijectivity, NOT decorrelation. Promotion to FINDING requires a measured
-  dependence probe — the walk's correlation spectrum against the palette
-  lattice vs a PRNG baseline, judged under Jirak weak-dependence rates.
+- **(g) Anti-confabulation — the "decorrelated by construction" half
+  KILLED 2026-07-16 (PROBE-WALK-SPECTRUM); the "known structure" half
+  CONFIRMED.** The coprime walk's period-permutation self-test proves
+  bijectivity and gives a KNOWN, replayable, closed-form dependence
+  structure (period-17 harmonics measured |R| = 0.998/0.996/0.994,
+  matching R(17m)=1−8m/N) — real value for auditability and conformance.
+  But it is **NOT decorrelated from the palette lattice**: the parity of
+  a full-period-17 permutation is an exact period-17 ±1 waveform, so its
+  autocorrelation at lag τ is governed by C(τ mod 17) at EVERY lag, and
+  the lattice periods land on large sidelobes — measured walk |R| max
+  0.875 at τ=64 (64 mod 17 = 13, C(13)=C(4)=−15, −15/17 ≈ −0.882) vs a
+  PRNG baseline's 0.0205, i.e. 42.7× (≫ the 3× kill bar).
+  `gcd(17,τ)=1` guarantees a full-period permutation, NOT low
+  autocorrelation. So the "anti-moiré in concept space / friendlier to
+  `I-NOISE-FLOOR-JIRAK`" inference is **struck** — strong periodic
+  autocorrelation is if anything worse for weak-dependence rates than a
+  PRNG's ≈−1/N floor. Genuine decorrelation, if ever needed, requires a
+  DESIGNED low-autocorrelation sign sequence (Legendre/quadratic-residue
+  Paley over a prime p≫17, or a maximal-length LFSR m-sequence), NOT the
+  coprime walk. **Unaffected:** the walk's bijectivity/quantization role
+  and OGAR D-QUANTGATE stay canon — the coprime walk QUANTIZES by
+  construction (bijective closure + WGSL-portable integer stride), which
+  this probe does not challenge; only the anti-moiré / lattice-
+  decorrelation consequence dies.
 - **(h) Exact phase-side unbinding** — sign is recomputable per address
   with no cleanup codebook needed; a cleanup codebook is only needed for
   magnitudes. The two-algebra rule (sign = XOR, magnitude = `vsa_bundle`,
@@ -402,6 +426,20 @@ fourth-mode/anchor discussion (§8):
   **PROBE-WH-MAG:** reconstruction error of WHT₁₆+i4/i2 vs direct i4/i2
   on real tile magnitudes (bgz-tensor's row-level win does not
   automatically transfer to 16-cell tiles).
+  **RESULT (2026-07-16, PROBE-WH-MAG, plan h268-probe-wave-v1):**
+  NEUTRAL — bare-tile leg NOT-TRANSFERRING. B/A = 0.929 (gradient+spike)
+  / 1.317 (heavy-tailed) / 1.869 (uniform-noise) over 256 tiles/class at
+  dim 16: misses the <0.9 PASS bar everywhere, regresses past 1.1 on two
+  classes. WHT₁₆ spreads a tile's outlier energy across all 16 cells,
+  inflating the per-cell quantization floor where the direct cascade
+  quantized 13-14 near-zero cells for free; WH helps only where energy
+  is pre-spread (the 0.929 smooth-gradient class) or where an outlier
+  escapes to a passthrough tier first. The bare-tile probe has neither
+  the passthrough escape nor the centroid residual the shipped row codec
+  (lance-graph E-PALETTE-RESIDUAL-LADDER-1) pairs WH with — so the
+  row-level win does not transfer to per-tile granularity, and the
+  shipped row codec is untouched. Follow-up PROBE-WH-MAG-2 (WH + escape
+  tier + centroid residual) deferred to a per-tile-codec consumer.
 - **[S] Signature as the replayable-trajectory checksum.** The x264
   contrast in §7 asked for a replayable, checksummable stream; the
   Hambly–Lyons signature is the canonical path digest with a uniqueness
@@ -414,6 +452,16 @@ fourth-mode/anchor discussion (§8):
   the Pillar-11 harness) of a temporal-stream trajectory as its digest —
   verify replay-identity, tree-like edits invisible (correctly), non-tree
   perturbations caught.
+  **RESULT (2026-07-16, PROBE-SIG-CHECKSUM, plan h268-probe-wave-v1):**
+  PASS, with a depth-2 blind-spot bound. Replay bit-exact; tree-like
+  mid-path A→B→A excursion invisible (0.0 < 1e-9); non-tree interior
+  displacement caught (11.31 > 0.05). Bound (exact identity): at DEPTH=2
+  an interior displacement PARALLEL to the neighbor chord
+  `path[i+1]−path[i−1]` is signature-invisible (the level-2 signed-area
+  term vanishes; level-1 is endpoint-invariant), so the digest's null
+  space strictly EXCEEDS tree-like equivalence — the depth-2 digest does
+  not catch ALL non-tree edits. Mitigable by depth 3 or a paired
+  independently-projected digest.
 Both stay conditional on the same ledger above; neither adds a stored
 field to the tile (the WH rotation is derivable, the signature is a
 derived digest).
