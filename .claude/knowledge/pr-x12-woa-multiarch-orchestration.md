@@ -1,5 +1,17 @@
 # PR-X12 — WoA Orchestration & Multi-Arch Dispatch Lens
 
+> ⛔ **QUARANTINED — Tier-1 audit finding (2026-05-22, tagged 2026-07-16).**
+> `.claude/PR-X12-docs-audit.md` findings #10-#16 show §3 of this doc
+> contradicts `src/simd.rs` and `.cargo/config.toml` (which pins x86-64-v3
+> with AVX-512 opt-in + a real runtime `LazyLock<Tier>` dispatcher), lists a
+> nonexistent SVE2 backend while omitting the real `simd_amx.rs`, and carries
+> fabricated cfg-crossover constants, µs latency numbers, and a `Reducer<T>` /
+> `OrderedKahanReducer` trait shape that contradicts R-1. **Do not cite this
+> doc as evidence for anything.** Pending rewrite per audit Tier-1
+> recommendation; the W1a consumer contract at
+> `vertical-simd-consumer-contract.md` is the authoritative source.
+
+
 > Date: 2026-05-22
 > Status: **perspective doc** — examines how the orchestration crates (`woa-rs`, `woa`, `q2`, `surrealdb`, `MedCare-rs`, `smb-office-rs`) consume the PR-X12 substrate, and how PR-X12's per-arch polyfill decisions (R-4, R-5, R-11) generalise to the entire HPC stack.
 >

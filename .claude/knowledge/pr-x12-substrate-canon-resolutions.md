@@ -431,6 +431,11 @@ real measurement during A4-impl pins per-arch.
 
 **Per-architecture override matrix (Plan A4-impl deliverable):**
 
+> **[UNCALIBRATED ESTIMATES]** (audit #6, marked 2026-07-16): the crossover
+> numbers below are pre-bench heuristics with no measurement source. Plan
+> A4-impl / Plan G produce the real numbers; until then these are hypotheses,
+> not commitments.
+
 | Architecture | Per-block path | Crossover N | Batched path |
 |--------------|----------------|-------------|--------------|
 | Sapphire Rapids (AMX-BF16) | Loeffler 1D + transpose | ~64 | AMX TDPBF16PS via `bf16_tile_gemm` |
@@ -495,6 +500,9 @@ in A4 or A5 ships as a `batched_ssd_search` primitive in `ndarray::hpc::
 blas_level2` that downstream consumers (video, splat scene flow) call
 into. **Not a codec-specific function** — landing in BLAS L2 keeps the
 factoring clean (codec uses the math; BLAS owns the math).
+**[PLANNED symbol — `blas_level2.rs` today exports only the 8 classical
+BLAS-L2 methods; `batched_ssd_search` does not exist yet (audit #5,
+re-verified 2026-07-16). Do not cite as an existing API.]**
 
 **Cite as R-6 in any ME-path or splat scene-flow PR description.**
 
@@ -541,19 +549,26 @@ Vs. O(4^4 × |nodes|) = O(21,760) ops for the naive recursive RDO.
 between ~4 ms and ~64 ms per frame just for partition RDO. At 60 fps,
 that's the difference between fitting and missing the latency budget.
 
-**Why this needs `lance-graph::blasgraph`:** Standard BLAS GEMM uses
-(× , +) semiring. Tropical uses (+ , min) semiring. blasgraph already
-ships tropical-GEMM kernels. No new code in ndarray; cross-repo dep
+**Why this targets `lance-graph::blasgraph`:** Standard BLAS GEMM uses
+(× , +) semiring. Tropical uses (+ , min) semiring. blasgraph is the
+**canonical, bit-exact** kernel home for semiring algebra. *(Corrected
+2026-07-16, audit #1-#3: blasgraph today exports 7 HDR semirings over
+16384-bit BitVec — XorBundle, BindFirst, HammingMin, SimilarityMax,
+Resonance, Boolean, XorField — none of which is a numerical min-plus
+over weighted f32 edges. The claim "blasgraph already ships
+tropical-GEMM kernels" was wrong; the f32 tropical-GEMM kernel is
+UNWRITTEN and lands in blasgraph when A6 wires it.)* Cross-repo dep
 from ndarray-codec → lance-graph::blasgraph (after Plan H extraction,
 this is dep-allowed because ndarray-codec is a sibling, not the bottom).
 
-**Actual kernel home (current).** The tropical-GEMM kernel lives today
-at `lance-graph::bgz17::scalar_sparse::tropical_spmv` — NOT in an
-abstract `blasgraph` namespace. The codec's tropical-GEMM call is
-`bgz17::scalar_sparse::tropical_spmv(edge_weights, dag)`. The
-`lance-graph::blasgraph` name above is the eventual abstraction layer
-(post-Plan-H extraction); until that lands, ndarray-codec depends on
-bgz17 directly. Cite the symbol, not the namespace, when wiring A6.
+**Shipped min-plus today (corrected).** The only shipped min-plus
+primitive is the method `bgz17::ScalarCsr::spmv_min_plus`
+(`fn(&self, x: &[f32]) -> Vec<f32>`, `crates/bgz17/src/scalar_sparse.rs:98`).
+The earlier citation `bgz17::scalar_sparse::tropical_spmv(edge_weights, dag)`
+named a free function that **does not exist** (audit #2). bgz17 is a lossy
+sibling encoding stack — its CSR may serve as an A6 prototype adapter, but
+substituting it for the bit-exact blasgraph canon is a soundness violation,
+not a re-targeting (audit ground-truth #5).
 
 **Plan A6 RDO (1 week) ships this.** The λ-RDO knob (per A:§10.3) and
 the tropical-GEMM partition solver are the same kernel: λ scales the
@@ -1005,11 +1020,13 @@ signature-lane gates on Pillar 11.
 - Pillar 11: active under `--features hambly-lyons`; passes its probe
   (forward < 1e-9, converse > 0.05, discrimination ratio ≥ 1e6 over
   N=100 random pairs in d=3 at depth-2).
-- Production-scale benchmarking + PR #350 (`signature_kernel_pde`
-  Goursat-PDE math correction) remain open — see Gap G-4 in
-  `pr-x12-cam-pq-sigker-dn-tree-substrate-bindings.md`. Pillar 11's
-  probe deliberately uses `signature_truncated` (tensor-algebra path),
-  not the buggy PDE form.
+- Production-scale benchmarking remains open — see Gap G-4 in
+  `pr-x12-cam-pq-sigker-dn-tree-substrate-bindings.md`. *(Corrected
+  2026-07-16, audit #9: the "PR #350 Goursat-PDE math correction"
+  claim is withdrawn — `signature_kernel_pde`'s own tests prove
+  convergence to `I_0(2·√⟨u,v⟩)` at `rel<1e-3` with O(1/N) refinement;
+  there is no known bug. Pillar 11's probe uses `signature_truncated`
+  as a design choice, not a workaround.)*
 
 **Falsifies if.** Pillar 10 ever flips state (a regression in the
 Pflug-Pichler proof bound) — Plan G's video / KV / gradient quality
@@ -1047,12 +1064,14 @@ impl<const DEPTH: usize> Basis<f32> for SignatureBasis<DEPTH> {
 }
 ```
 
-**Why `signature_truncated` and not `signature_kernel_pde`.** The
-PDE form in sigker ships a known math bug (PR #350: Goursat-PDE form
-diverges from the true kernel `I₀(2·√⟨u, v⟩)` at moderate inner
-products). The tensor-algebra path (`signature_truncated`) is correct
-today and is what jc Pillar 11 cites. R-15 wraps the truncated path;
-the PDE form becomes available after PR #350 lands.
+**Why `signature_truncated` and not `signature_kernel_pde`.** Design
+choice: the tensor-algebra path (`signature_truncated`) is what jc
+Pillar 11 cites directly, so R-15 wraps it. *(Corrected 2026-07-16,
+audit #9: the earlier "known math bug — Goursat-PDE form diverges"
+rationale was false. `sigker/src/kernel.rs`'s tests
+`pde_kernel_converges_to_closed_form_for_linear_paths` and
+`pde_and_truncated_agree_on_linear_paths_in_the_limit` pass; both
+forms compute the same kernel. Either is usable.)*
 
 **Plan G gets a fifth lane.** "Stream signal" mode:
 
@@ -1249,10 +1268,16 @@ that decides whether each holy-grail claim is demonstrated.
 | R-14 (Pillar 11 active) | this doc | `cargo test -p jc --features hambly-lyons` | Signature uniqueness probe | forward < 1e-9, converse > 0.05, ratio ≥ 1e6 |
 | R-15 (SignatureBasis lane) | this doc | Plan G stream-signal lane | signature-space discrimination under Pillar 11 (forward-only — path inversion is N/A per R-15) | forward < 1e-9, converse > 0.05, ratio ≥ 1e6 (or agreed DEPTH-specific floor) |
 
-**Every row of this matrix is a test.** Plan G's bench harness binary
-emits a JSON report containing the actual measurement for each row;
-the merge job for Phase 2 consumer PRs reads that report and gates on
-pass-fail.
+**Every row of this matrix is a test — FORWARD-CONDITIONAL.** Plan G's
+bench harness binary emits a JSON report containing the actual
+measurement for each row; the merge job for Phase 2 consumer PRs reads
+that report and gates on pass-fail.
+
+> **[Status tag, 2026-07-16 per audit #19]:** the Plan G bench-harness
+> binary does not exist yet. Every row above is a *planned* test, not a
+> passed one — this matrix is a falsification contract, never a
+> passed-tests dashboard. Rows citing "Plan G binary" as the test are
+> circular until that binary ships.
 
 ---
 
@@ -1382,8 +1407,10 @@ When this doc is summarised across context windows, preserve at minimum:
    - R-4: 4 threshold pairs (video, splat, kv, grad)
    - R-5: DCT crossover ~64 blocks
    - R-6: SSD via VNNI ≥30× over SAD
-   - R-7: tropical-GEMM partition O(4^d) → O(d²) via
-     `bgz17::scalar_sparse::tropical_spmv`
+   - R-7: tropical-GEMM partition O(4^d) → O(d²); canonical home
+     `lance-graph::blasgraph` (kernel unwritten); shipped min-plus is
+     `bgz17::ScalarCsr::spmv_min_plus` [lossy sibling, prototype only —
+     corrected 2026-07-16 per audit]
    - R-8: Plan G is confidence gate
    - R-9: topology-FREE codec layer
    - R-10: ~4 bits/Gaussian near target, ~1 bit stretch

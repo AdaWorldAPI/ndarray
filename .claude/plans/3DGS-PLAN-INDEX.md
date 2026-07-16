@@ -74,6 +74,14 @@ Fisher-z     -> optional statistical angular scorer/gate after candidate ranking
 PR-X12-tensor-container-expansion-capstone.md
 ```
 
+Public-standards anchor (2026-07-16): the x265/x266 lens line is grounded
+against the real JVET trajectory (H.266/VVC 2020, ECM ~27% over VTM,
+NNVC v7, H.267 CfP Jul 2026 → finalize ~2028, ≥40%-over-VVC requirement) in
+
+```text
+../knowledge/pr-x12-h266-h267-standards-landscape.md
+```
+
 This capstone connects:
 
 ```text

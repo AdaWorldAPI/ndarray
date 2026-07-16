@@ -1,5 +1,13 @@
 # PR-X12 — x266 / Next-Gen Codec via 3DGS Space-Time Upscaling
 
+> **Naming + standards anchor (2026-07-16):** "x266" in this doc means the
+> **PR-X12 3DGS scene codec** — NOT H.266/VVC (finalized 2020, shipping) and
+> not the real H.267 (JVET's beyond-VVC standard, CfP running July 2026,
+> target ~2028). For the grounded public landscape — VVC facts, ECM, NNVC,
+> H.267 requirement + dates — read
+> `pr-x12-h266-h267-standards-landscape.md` alongside this doc, and see
+> §12 below for the dated reality-check addendum.
+>
 > Date: 2026-05-22
 > Status: **speculative perspective doc** — explores what becomes possible when the codec substrate (PR-X12) is extended one step beyond HEVC compatibility, into territory that subsumes both AI-frame-interpolation and AI-super-resolution as codec-native deterministic operations. Companion to `pr-x12-x265-blasgraph-gemm.md`.
 >
@@ -326,5 +334,52 @@ Concretely:
 - **GEMM lens:** `pr-x12-x265-blasgraph-gemm.md`
 - **Bandwidth comparison reading list:** 3DGS (Kerbl et al. SIGGRAPH 2023), Mip-Splatting (Yu et al. 2024), 4DGS (Wu et al. 2024)
 
-_Last edit: 2026-05-22._
+---
+
+## 12. Standards reality-check addendum (2026-07-16)
+
+Written against the live JVET landscape; sources and full detail in
+`pr-x12-h266-h267-standards-landscape.md`.
+
+**What the standards world did since this doc was drafted:**
+
+- The H.267 **Call for Evidence was evaluated October 2025** (40th JVET,
+  Geneva). Best responses reached ~**30% bitrate reduction over VVC** — and
+  *every* response incorporated NN tools ("conventional-plus-neural" is the
+  emergent architecture). The final **Call for Proposals is running now
+  (July 2026)**, submissions November 2026, evaluation **January 2027**,
+  finalization targeted **2028** (deployment historically lags to ~2034+).
+- The H.267 requirement is ≥**40% bitrate reduction vs VVC Main 10 at
+  4K-and-above**, with explicit decoder-complexity/power constraints —
+  mobile vendors (Samsung at the ITU 2025 workshop) now weight decoder
+  complexity above raw bitrate.
+- ECM-16.1 sits at ~**27% BD-rate over VTM-11** (RA), up to ~40% for screen
+  content — at a complexity the industry itself calls impractical. NNVC is
+  at software v7 with NN in-loop filters worth ~9% RA each.
+
+**What this changes in this doc — and what it doesn't:**
+
+1. §1's characterization of the field **holds**: codec-native upscaling in
+   the standards track is still 2D resampling (VVC RPR); the learned
+   track (NNVC, DLSS-class) is non-deterministic in exactly the way §7
+   argues against. No CfE response ships a scene-model reference frame.
+   The 3DGS-as-`Basis<T>` bet remains unoccupied territory.
+2. §7's determinism argument is now **stronger**, not weaker: JVET putting
+   NNs into the decode loop makes "same scene, same pose, same t → same
+   pixels, forever" a differentiator no H.267 candidate can match. For
+   legal/medical/scientific video this is a moat.
+3. §8's "24-36 months from PR-X12 merge" estimate lands comfortably inside
+   the H.267 deployment gap (finalize 2028, deploy 2034+). The scene codec
+   does not race H.267; it races NN-upscaler pipelines.
+4. **F-3 update:** the "H.266/VVC <5% market share" premise remains
+   directionally true in 2026. **F-3b (new falsifier):** if the January
+   2027 CfP evaluation converges on a conventional-plus-neural design whose
+   decoder complexity mobile vendors accept, the determinism differentiator
+   weakens for consumer video (it survives for evidentiary/medical/
+   scientific recording regardless).
+5. **Watch calendar:** re-check the landscape doc after the November 2026
+   CfP submissions and the January 2027 evaluation — those two events fix
+   H.267's architecture and decide F-3b.
+
+_Last edit: 2026-07-16 (addendum §12 + naming anchor; body unchanged from 2026-05-22)._
 _Status: speculative — explores what's possible after PR-X12 lands; not in PR-X12 scope._

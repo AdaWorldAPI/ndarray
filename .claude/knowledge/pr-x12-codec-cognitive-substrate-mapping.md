@@ -183,7 +183,7 @@ This is **the most underrated** of the four mappings. Optimizer research treats 
 
 ### 5.3 The DCT-II / GEMM tradeoff (for downstream batched encode)
 
-> [Resolved post-merge as **R-5**: per-arch crossover constants, calibrated by Plan G's `codec-bench`. Concrete defaults landed in canon-resolutions-delta §R-5 — SPR=64, ICX=32, Zen4=96, Apple M=256, Graviton=128. See `pr-x12-x265-blasgraph-gemm.md` §2.2 for the full GEMM-form derivation.]
+> [Resolved post-merge as **R-5**: per-arch crossover constants, to be calibrated by Plan G's `codec-bench`. The candidate defaults in canon-resolutions-delta §R-5 (SPR≈64, ICX≈32, Zen4≈96, Apple M≈256) are **uncalibrated estimates** (audit #6, marked 2026-07-16); the previously-cited "Graviton=128" appears in no source doc and is withdrawn (audit #7 — self-fabricating cross-reference). See `pr-x12-x265-blasgraph-gemm.md` §2.2 for the GEMM-form derivation.]
 
 Single 32×32 DCT-II via butterflies: ~80 ops. Same via GEMM (`C = A @ DCT_BASIS`): ~32K ops. **Per-block, butterfly wins by 400×**. But:
 
@@ -510,7 +510,7 @@ Six places where blasgraph + MKL change the algorithmic complexity, not just con
 
 ### 13.1 Block-matched ME → batched i8gemm (E-7)
 
-> [Pinned as **R-6**: SSD-via-GEMM identity is the canonical ME path; the API lives at `ndarray::hpc::blas_level2::batched_ssd_search`. The 50× win is reproduced in the GEMM-lens companion doc; the bench is asserted by Plan G video lane (R-4).]
+> [Pinned as **R-6**: SSD-via-GEMM identity is the canonical ME path; the API is **planned** for `ndarray::hpc::blas_level2::batched_ssd_search` — the symbol does not exist yet (audit #5, re-verified 2026-07-16; `blas_level2.rs` ships only the 8 classical L2 methods). The 30-50× estimate is derived in the GEMM-lens companion doc; the bench is asserted by Plan G video lane (R-4) when it ships.]
 
 Classical ME: SAD over 32×32 window. Reformulate as SSD via `||A||² - 2A·B + ||B||²` — middle term is a GEMM. AVX-512 VNNI `i8gemm_i32` does a whole CTU's motion candidates in one call. **~50× over hand-tuned NEON/AVX2 SAD.**
 
@@ -520,7 +520,7 @@ Per-block butterfly wins for single 32×32. Per-frame batched `C = A_batch @ DCT
 
 ### 13.3 CTU partition mode-decision as tropical-GEMM (E-8)
 
-> [Pinned as **R-7**: tropical-GEMM kernel lives in `lance-graph::blasgraph::tropical_gemm`; the codec calls into it. The `ndarray-codec → lance-graph` dep direction was confirmed *allowed* post-merge (both are sibling crates above `ndarray::hpc` and below `woa-rs`). See R-7 in the delta doc for the dep-graph audit.]
+> [Pinned as **R-7**: the tropical-GEMM kernel's canonical home is `lance-graph::blasgraph` — but the symbol `blasgraph::tropical_gemm` **does not exist** (audit #3, corrected 2026-07-16; blasgraph's 7 HDR semirings are binary-Hamming over 16384-bit BitVec, no numerical min-plus). The kernel is unwritten; the only shipped min-plus is `bgz17::ScalarCsr::spmv_min_plus` (lossy sibling, prototype only). The `ndarray-codec → lance-graph` dep direction was confirmed *allowed* post-merge (both are sibling crates above `ndarray::hpc` and below `woa-rs`). See the corrected R-7 in the delta doc.]
 
 x265 spends ~30% CPU on recursive partition RDO. Reformulate: each partition is a node in an 85-node DAG, edges = split/merge transitions, weights = ΔRDO. Optimal partition = shortest path. blasgraph's tropical-semiring GEMM (`D ← min(D, D + W)`) solves all partitions in **one batched matrix-relax**. `O(4^d)` → `O(d²)` per CTU.
 

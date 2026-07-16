@@ -1,5 +1,19 @@
 # PR-X12 ↔ bgz family + jc proof crate — Substrate Synergies & Identified Gaps
 
+> ⛔ **QUARANTINED — Tier-1 audit finding (2026-05-22, tagged 2026-07-16).**
+> `.claude/PR-X12-docs-audit.md` findings #4, #17, #18: the §0 thesis
+> force-couples the **lossy** bgz17 stack to the **bit-exact** codec mode
+> taxonomy ("bgz17's 4-layer cascade IS the Skip/Merge/Delta/Escape grammar")
+> — a soundness violation, not a unification; "HHTL 16×16×16 = 4096-leaf"
+> matches no real codec (CAM-PQ is 6×256, `Codebook4096` is flat 4096,
+> `HhtlDEntry` is 4×16×256); and §2.7 misattributes jc Pillar 11's theorem
+> (path-signature uniqueness, not bgz bitstream uniqueness). §2.2 carries the
+> correct nuance — read bgz17 / highheelbgz / bgz-hhtl-d / cam_pq as
+> **siblings**, never substitutes for blasgraph. **Do not cite §0 / §2.5 /
+> §2.7 / §4 / §7-§8 as evidence.** Pending rewrite per audit Tier-1
+> recommendation.
+
+
 > Date: 2026-05-22
 > Status: **substrate grounding doc** — connects PR-X12's abstract substrate claims to the **already-implemented** crates in `lance-graph/crates/`. Companion to the five perspective lenses written 2026-05-22.
 >
