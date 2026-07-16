@@ -243,9 +243,13 @@ the arithmetic, a 256² u16 table is 128 KB, and the attribution.)
 
 **Honourable fourth mode (operational, not a footprint): index +
 residual.** bgz-tensor's `AdaptiveRow` (`adaptive_codec.rs`) keeps the
-palette centroid index as the coarse deterministic PLACE and stores only a
-Hadamard-rotated residual (i8 for outlier rows; i4+i2 cascade for regular
-rows) — index PLACES, residual CORRECTS. It is the continuous-field exit
+palette centroid index as the coarse deterministic PLACE and stores a
+Hadamard-rotated residual in a three-tier LFD split
+(`classify_rows_by_lfd`): the hardest ~top-10% LFD rows escape to
+`Passthrough` (exact original stored — no index+residual at all), the
+next ~20% get an i8 residual, the bottom ~70% the i4+i2 cascade — index
+PLACES, residual CORRECTS, and the mold is never forced on rows it
+doesn't fit. It is the continuous-field exit
 where a bare 256-level index terraces (e.g. elevation); categorical
 surfaces (`Signed360` normals, narrow colour) stay flat. Out-of-row like
 `Signed360`; the in-row refinement budget remains the turbovec nibble
