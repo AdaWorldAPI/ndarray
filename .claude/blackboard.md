@@ -730,3 +730,34 @@ default is x86-64-v3 (avx2) so ndarray_simd activates on avx512 builds only.
 - **Probe queue established:** PROBE-GPU-LUT, PROBE-MORTON-CTU,
   PROBE-RANS-INTERLEAVE (new names), + OGAR PHASE-1/PERT-RHO/PYR-1,
   WHP-1..4, Plan E bits/Gaussian, a2ui N2 — each with pass/kill conditions.
+
+---
+
+## 2026-07-16 (3) — H.268 addendum: comma closure + 96-bit carving + kernel-shape rule + replayable-tile synergies
+
+- **`pr-x12-h268-morton-wgpu-synergies.md` extended §7-§10** (old §6
+  Cross-references renumbered to §11), per
+  `.claude/plans/H268-comma-96bit-replayable-addendum-v1.md`.
+- **§7 comma closure:** Pythagorean-comma/X-Trans anti-moiré framing;
+  `CurveRuler` stride-4-over-17 as the coprime-integer surrogate.
+  D-QUANTGATE rationale restated to its three real legs (libm
+  non-portability, WGSL floats not IEEE-pinned, bijective closure) —
+  the "floats round differently" leg is explicitly withdrawn, with
+  receipts (`std::f64::consts::{GOLDEN_RATIO,EULER_GAMMA}` compile
+  bit-exact on 1.94/1.95; no `std::simd::const::*`; `gemm_f64_tiled`
+  five-backend bit-identical). φ-PLACES/walk-QUANTIZES/γ-CORRECTS
+  division of labor stated as a rule.
+- **§8 96-bit facet carving:** CAM-PQ 48b + helix `ResidueEdge` 24b +
+  turbovec 24b = 96 bit = the V3 12-byte content-blind payload identity;
+  `Signed360` (48b) is the out-of-row alternate carving; 6×256² CAM-PQ
+  (384KB) clarified as distinct from bgz17's one-table-per-palette shape.
+- **§9 kernel-shape rule:** VNNI/AMX for matmul-shaped ops, LUT/texture
+  for lookup-shaped ops — turbovec NativeLut measured **11.4×** faster
+  than the VPDPBUSD GEMM polyfill (n=20k/dim=512/4-bit, FINDING). ITU
+  claim scoped to compute kernels only (not CABAC/conformance/ECM count).
+- **§10 replayable-tile synergies:** 4×4 Morton tile as the shared
+  object between H.268 (anti-CABAC seek, seekable grain, C6-scoped
+  native tiling) and cognitive shaders (RNG-free exploration, replayable
+  thinking, anti-confabulation, cache-native 192B working set) — all
+  nine consequences stay **probe-gated** (D-MTS-1..3, PHASE-1/PERT-RHO/
+  PYR-1, WHP-1..4, L4 doc-lock); no kill condition weakened.
