@@ -120,9 +120,11 @@ any float-path GPU bit-exactness claim.
 The Pythagorean comma is the residue of a stack of pure fifths that never
 closes back onto the octave; a piano tuner's real-world dodge (equal
 temperament) trades exactness for closure. Fujifilm's X-Trans sensor
-generalizes the same move spatially: its non-repeating 6×6 pixel arrangement
-is deliberately incommensurate with common demosaic/moiré periods, so the
-anti-aliasing filter can be thinned or dropped. Both are the same design
+generalizes the same move spatially: its 6×6 colour-filter tile — repeating,
+but far less regular than Bayer's 2×2 (a larger period with a quasi-random
+arrangement inside the tile) — is deliberately less commensurate with common
+demosaic/moiré periods, so the anti-aliasing filter can be thinned or
+dropped. Both are the same design
 pattern: **a generator that does not resonate with the sampling lattice
 avoids the periodic beat pattern (the comma) that a resonant generator
 produces.**
@@ -211,26 +213,33 @@ row — it is the **out-of-row / alternate-carving variant**, selected
 instead of (not in addition to) the `ResidueEdge` + turbovec pairing when
 full-sphere signed precision is needed.
 
-**Table-family clarification (corrected 2026-07-16 post-review — do not
-conflate three distinct structures):**
-- The measured **388 KB `SpoDistanceMatrices` benchmark** (§1 above) is the
-  **palette** structure: **3 S/P/O planes × one 256×256 u16 distance table
-  (128 KB each) = 384 KB** (`palette_distance.rs:145-158` — `DistanceMatrix
-  { data: Vec<u16>, k }`, one per subject/predicate/object plane).
-- **CAM-PQ has no fixed 256×256 distance-table footprint.** Its 6-subspace
-  structure is the per-vector 48-bit **code** (the §8 lane table above);
-  its ADC distance tables are **per-query** `6 × 256` f32 = **6 KB**,
-  recomputed per query and L1-resident (`cam_pq.rs:76-84`).
-- **bgz17's palette layer** is one 256×256 u16 distance table **plus** a
-  k×k u8 compose table, per palette.
-The first and third share the "256×256 dense u16 LUT, texture-isomorphic"
-shape (§3 row 2 above); none of the three footprints should be added to or
-substituted for another. (An earlier draft of this paragraph attributed
-the 384 KB to "6 × 64 KB CAM-PQ tables" — wrong on both the arithmetic, a
-256×256 u16 table is 128 KB, and the attribution.)
-This carving is a `ClassView` projection over content-blind bytes — see
-lance-graph `le-contract.md §3` for the canonical 6×(u8:u8) / 4×(u8:u8:u8)
-/ 3×(u8:u8:u8:u8) readings the same 12-byte register supports.
+**Three flavours of 256 (table-family clarification, corrected + refined
+2026-07-16 post-review — operator framing):**
+- **CAM-PQ — 6×256² compressed to 6×256.** The latent structure is six
+  per-subspace 256×256 centroid-distance families, but the shipped path
+  never materializes them: ADC precomputes a **per-query 6×256 f32
+  row-set** = **6 KB**, L1-resident, recomputed per query
+  (`cam_pq.rs:76-84`) — the compressed, asymmetric projection of the
+  latent 6×256². (A symmetric code↔code variant would materialize the
+  full six tables; the shipped codec does not.)
+- **bgz17 — the explicit 256².** One materialized dense 256×256 u16
+  distance table per palette, **plus** a k×k u8 compose table. The
+  measured **388 KB `SpoDistanceMatrices` benchmark** (§1 above) is this
+  flavour on the three S/P/O planes: **3 × (256² u16 = 128 KB) = 384 KB**
+  (`palette_distance.rs:145-158`).
+- **V3 facet — explicit 6×256² as ADDRESS, codec-agnostic.** The 12-byte
+  content-blind payload read as `6×(u8:u8)` rails = six coordinate pairs
+  into 256×256 spaces = **96 bits of pure address**. The payload does not
+  know whose tables its rails index — **`classid → ClassView` selects
+  which codec's 256² family** (CAM-PQ subspace, bgz17 palette, helix
+  residue) interprets each rail. See lance-graph `le-contract.md §3` for
+  the canonical 6×(u8:u8) / 4×(u8:u8:u8) / 3×(u8:u8:u8:u8) readings of
+  the same register.
+The first two are table *footprints* (compressed vs materialized); the
+third is the *addressing shape* they are consumed through. None of the
+footprints should be added to or substituted for another. (An earlier
+draft attributed the 384 KB to "6 × 64 KB CAM-PQ tables" — wrong on both
+the arithmetic, a 256² u16 table is 128 KB, and the attribution.)
 
 ## 9. The kernel-shape rule (engine follows operation shape)
 
@@ -277,10 +286,15 @@ function of its address via the bijective coprime walk (§7), and the only
 bytes actually stored are magnitudes. Same object, two consumers.
 
 **H.268 consequences:**
-- **(a) Anti-CABAC random access** — no serial phase state to carry, so a
-  decoder can seek directly into a tile without replaying a bitstream
-  prefix; strengthens the C4 path once A8 (region-addressable stream
-  framing) lands.
+- **(a) Phase-side seekability (the anti-CABAC direction)** — the phase
+  generator carries no serial state, so the *phase side* of any tile is
+  reconstructible at any address with no prefix replay. This is NOT by
+  itself CABAC random access: the entropy-coded magnitudes still carry
+  CABAC's serial context chain, so bitstream-level seeking additionally
+  requires independently framed / context-reset regions — which is
+  precisely what A8 (region-addressable stream framing) provides. The
+  consequence strengthens the C4 path **only once A8 lands**; until then
+  it is phase-side seekability only.
 - **(b) Seekable grain** — unlike AV1's seeded film-grain synthesis
   (decoder must carry PRNG/seed bookkeeping), the integer walk regenerates
   identically from the address alone and survives a WGSL port per the C9
@@ -301,13 +315,21 @@ bytes actually stored are magnitudes. Same object, two consumers.
   loop (composes with `E-NOBODY-WAITS-1`).
 - **(f) Replayable thinking = auditable cognition** — combined with
   temporal-stream replayability (`E-MARKOV-TEMPORAL-STREAM-1`), a full
-  trajectory including exploration noise re-runs bit-exactly;
-  counterfactual replay therefore stores **zero** exploration state.
-- **(g) Anti-confabulation = anti-moiré in concept space** — a coprime
-  probe schedule is decorrelated from the palette lattice by construction;
-  a *known* period-17 dependence structure is friendlier to
-  `I-NOISE-FLOOR-JIRAK`'s weak-dependence analysis than an *unknown* PRNG
-  correlation structure would be.
+  trajectory including exploration noise re-runs bit-exactly **on the
+  proven CPU/wasm integer path** (the pinned-order five-backend contract);
+  float and GPU stages stay outside the bit-exactness claim per §3 row 9
+  (the integer-only GPU caveat) unless a deterministic-backend probe is
+  added. Within that scope, counterfactual replay stores **zero**
+  exploration state.
+- **(g) Anti-confabulation = anti-moiré in concept space [H, probe-gated]**
+  — a coprime probe schedule is decorrelated from the palette lattice by
+  construction, and a *known* period-17 dependence structure is plausibly
+  friendlier to `I-NOISE-FLOOR-JIRAK`'s weak-dependence analysis than an
+  *unknown* PRNG correlation structure. The "friendlier" half is an
+  **unverified inference**: the period-17 permutation self-test proves
+  bijectivity, NOT decorrelation. Promotion to FINDING requires a measured
+  dependence probe — the walk's correlation spectrum against the palette
+  lattice vs a PRNG baseline, judged under Jirak weak-dependence rates.
 - **(h) Exact phase-side unbinding** — sign is recomputable per address
   with no cleanup codebook needed; a cleanup codebook is only needed for
   magnitudes. The two-algebra rule (sign = XOR, magnitude = `vsa_bundle`,

@@ -47,14 +47,18 @@
   indexes which table).
 - Budget constraint: `Signed360` (6B) does NOT fit alongside both other
   lanes; it is the out-of-row/alternate-carving variant.
-- Table-family clarification **(CORRECTED post Opus-review — the original
-  bullet here claimed "six 256×256 CAM-PQ tables, 6×64KB=384KB", wrong on
-  arithmetic AND attribution)**: the 388KB `SpoDistanceMatrices` benchmark
-  is the **palette** structure — 3 S/P/O planes × one 256² u16 table
-  (128KB each) = 384KB (`palette_distance.rs:145-158`); CAM-PQ has NO
-  fixed 256² footprint — its ADC tables are per-query 6×256 f32 = 6KB
-  (`cam_pq.rs:76-84`); bgz17's palette layer is one 256² u16 + k×k u8
-  compose per palette.
+- Table-family clarification **(CORRECTED post Opus-review, REFINED per
+  operator — the original bullet claimed "six 256×256 CAM-PQ tables,
+  6×64KB=384KB", wrong on arithmetic AND attribution)**. Three flavours
+  of 256: (1) **CAM-PQ = 6×256² compressed to 6×256** — latent
+  per-subspace 256² families, shipped as per-query 6×256 f32 ADC rows =
+  6KB (`cam_pq.rs:76-84`), never materialized; (2) **bgz17 = the explicit
+  256²** — one materialized 256² u16 table + k×k u8 compose per palette;
+  the 388KB `SpoDistanceMatrices` benchmark is this flavour on 3 S/P/O
+  planes = 3×128KB = 384KB (`palette_distance.rs:145-158`); (3) **V3
+  facet = explicit 6×256² as ADDRESS** — 6×(u8:u8) rails = six coordinate
+  pairs into 256² spaces = 96 bits, codec-agnostic; `classid → ClassView`
+  selects which codec's 256² family interprets each rail.
 
 ### B3 — Kernel-shape rule (new §9)
 - **Match engine to operation shape:** VNNI/AMX for matmul-shaped stages
@@ -72,23 +76,33 @@
 ### B4 — Replayable-tile synergies: H.268 × cognitive shaders (new §10)
 The object: 4×4 Morton tile (2bit x ⊕ 2bit y), phase address-derived via the
 bijective walk, magnitudes the only stored content. Consequences:
-- H.268: (a) anti-CABAC random access (no serial phase state; strengthens
-  the C4 path once A8 lands); (b) seekable grain (vs AV1 seed bookkeeping;
-  integer walk survives WGSL per C9); (c) conformance = the period-
-  permutation self-test; error localizes to magnitudes; (d) parallelism:
-  16 cells = one SIMD lane group / wgpu workgroup tile — NATIVE to the
-  H.268 scene codec; HEVC-compat lane keeps 8×8/64×64 (C6 correction
-  preserved).
+- H.268: (a) phase-side seekability, the anti-CABAC *direction* (no serial
+  phase state; NOT CABAC random access by itself — entropy-coded magnitudes
+  keep CABAC's serial context chain, so bitstream-level seek additionally
+  requires A8's independently framed/context-reset regions; strengthens the
+  C4 path only once A8 lands) **[qualified post-review]**; (b) seekable
+  grain (vs AV1 seed bookkeeping; integer walk survives WGSL per C9);
+  (c) conformance = the period-permutation self-test; error localizes to
+  magnitudes; (d) parallelism: 16 cells = one SIMD lane group / wgpu
+  workgroup tile — NATIVE to the H.268 scene codec; HEVC-compat lane keeps
+  8×8/64×64 (C6 correction preserved).
 - Cognitive shaders (the bigger half): (e) RNG-free exploration — phase =
   pure function of position; deletes the last shared-mutable-state
   candidate from the thinking loop (composes with E-NOBODY-WAITS-1);
   (f) replayable thinking = auditable cognition — with temporal-stream
   replayability (E-MARKOV-TEMPORAL-STREAM-1), full trajectory incl.
-  exploration noise re-runs bit-exactly; counterfactual replay stores zero
-  exploration state; (g) anti-confabulation = anti-moiré in concept space
-  (coprime probe schedule decorrelated from the palette lattice; known
-  period-17 dependence structure is friendlier to I-NOISE-FLOOR-JIRAK than
-  unknown PRNG correlations); (h) exact phase-side unbinding (sign
+  exploration noise re-runs bit-exactly **on the proven CPU/wasm integer
+  path only** (pinned-order five-backend contract; float/GPU stages stay
+  outside the claim per the integer-only GPU caveat) **[qualified
+  post-review]**; counterfactual replay stores zero exploration state
+  within that scope; (g) anti-confabulation = anti-moiré in concept space
+  **[H, probe-gated — qualified post-review]** (coprime probe schedule
+  decorrelated from the palette lattice by construction; the claim that
+  known period-17 dependence is friendlier to I-NOISE-FLOOR-JIRAK than
+  unknown PRNG correlations is an unverified inference — the permutation
+  self-test proves bijectivity, not decorrelation; promotion needs a
+  measured correlation-spectrum probe vs a PRNG baseline under Jirak
+  rates); (h) exact phase-side unbinding (sign
   recomputable per address; cleanup codebook needed for magnitudes only;
   two-algebra rule intact); (i) the 4×4 tile = cache-native working set
   (16×2B ×6 lanes = 192B = 3 cache lines; L4 substrate is flat Morton SoA
@@ -105,7 +119,7 @@ bijective walk, magnitudes the only stored content. Consequences:
 
 | Repo | Branch (restarted from default; both prior PRs merged) | Files |
 |---|---|---|
-| ndarray | `claude/x265-x266-plans-review-h9osnl` @ origin/master | matrix doc §7-§10 + probe-queue additions; this plan file; blackboard append |
+| ndarray | `claude/x265-x266-plans-review-h9osnl` @ origin/master | matrix doc §7-§10 (no §5 probe-queue changes needed — the standing queue already carries every probe §7-§10 references); this plan file; blackboard append |
 | lance-graph | `claude/x265-x266-plans-review-h9osnl` @ origin/main | EPIPHANIES prepend (E-H268-REPLAYABLE-TILE-1); capstone pointer line; PR_ARC #697 post-merge entry + LATEST_STATE entry (board-hygiene rule) |
 
 Gates: ndarray knowledge-doc suite (117 tests) green; no affirmative stale

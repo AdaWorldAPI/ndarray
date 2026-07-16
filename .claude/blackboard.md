@@ -749,18 +749,23 @@ default is x86-64-v3 (avx2) so ndarray_simd activates on avx512 builds only.
   division of labor stated as a rule.
 - **§8 96-bit facet carving:** CAM-PQ 48b + helix `ResidueEdge` 24b +
   turbovec 24b = 96 bit = the V3 12-byte content-blind payload identity;
-  `Signed360` (48b) is the out-of-row alternate carving. Table families
-  disambiguated (post-review correction): 388KB benchmark = palette
-  `SpoDistanceMatrices` 3×(256² u16 = 128KB); CAM-PQ ADC = per-query
-  6×256 f32 = 6KB (`cam_pq.rs:76-84`), no fixed 256² footprint; bgz17 =
-  one 256² u16 + k×k u8 compose per palette.
+  `Signed360` (48b) is the out-of-row alternate carving. Three flavours
+  of 256 (post-review correction + operator refinement): CAM-PQ =
+  6×256² compressed to per-query 6×256 f32 ADC rows (6KB,
+  `cam_pq.rs:76-84`); bgz17 = the explicit materialized 256² u16 (+ k×k
+  u8 compose; 388KB benchmark = 3 S/P/O planes × 128KB); V3 facet =
+  explicit 6×256² as codec-agnostic ADDRESS (6×(u8:u8) rails = 96 bit;
+  classid→ClassView switches which codec's 256² family each rail
+  indexes).
 - **§9 kernel-shape rule:** VNNI/AMX for matmul-shaped ops, LUT/texture
   for lookup-shaped ops — turbovec NativeLut measured **11.4×** faster
   than the VPDPBUSD GEMM polyfill (n=20k/dim=512/4-bit, FINDING). ITU
   claim scoped to compute kernels only (not CABAC/conformance/ECM count).
 - **§10 replayable-tile synergies:** 4×4 Morton tile as the shared
-  object between H.268 (anti-CABAC seek, seekable grain, C6-scoped
-  native tiling) and cognitive shaders (RNG-free exploration, replayable
-  thinking, anti-confabulation, cache-native 192B working set) — all
-  nine consequences stay **probe-gated** (D-MTS-1..3, PHASE-1/PERT-RHO/
-  PYR-1, WHP-1..4, L4 doc-lock); no kill condition weakened.
+  object between H.268 (phase-side seekability — entropy-level seek
+  still A8-gated; seekable grain; C6-scoped native tiling) and cognitive
+  shaders (RNG-free exploration, replayable thinking on the CPU/wasm
+  integer path, anti-confabulation [H, needs correlation-spectrum
+  probe], cache-native 192B working set) — all nine consequences stay
+  **probe-gated** (D-MTS-1..3, PHASE-1/PERT-RHO/PYR-1, WHP-1..4, L4
+  doc-lock); no kill condition weakened.
