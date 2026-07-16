@@ -806,3 +806,24 @@ default is x86-64-v3 (avx2) so ndarray_simd activates on avx512 builds only.
   E-H268-PROBE-WAVE-1-RESULTS + plan h268-probe-wave-v1.md Results.
   Probes: bgz-tensor probe_wh_mag / jc sig_checksum / helix
   walk_spectrum (all suites green).
+
+## 2026-07-16 (5) — sprite amortization spec'd + two standing corrections
+
+- **PROBE-SPRITE-REPLAY spec'd** (plan `x265-sprite-replay-probe-v1.md`,
+  §5 row added): moving object = HHTL-anchored splat sprite + helix
+  motion code, mapped onto the x265 I/P/B grammar (I = splat set at
+  anchor; P = one helix code per sprite, replacing per-block MV search;
+  B = parametric interpolation along the helical path). Scope guards:
+  NOT H.268, NOT x265 bit-parity — GOP-grammar replay on our primitives;
+  CPU/wasm carries the bit-exactness claims, wgpu is render-grade (C9).
+  Amortizations: motion search → address arithmetic in the Morton
+  cascade; the minimal wgpu harness doubles as PROBE-GPU-LUT's missing
+  harness. KILL: helix object-motion collapsing back into a dense MV
+  field.
+- **§10(i) honesty amendment**: the 3-cache-line tile claim holds only
+  under the analytic Fisher-z canon (materialized 256² u16 = 128KB =
+  L2-resident); analytic drops table residency to 8B and makes rail
+  reads |Δi8| arithmetic (four tiles/lane per AVX-512 register).
+- **PROBE-WH-MAG-2 deferral weakened**: the Skip/Merge/Delta/Escape
+  mode grammar already IS the per-tile escape tier; WH-MAG-2 = WH under
+  the mode grammar, not a wait for new machinery.
