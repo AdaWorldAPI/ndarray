@@ -385,6 +385,39 @@ reinterpreted by this section — it names a shared object and its
 consequences *if* the probe queue passes; nothing here promotes a
 probe-gated claim to shipped.
 
+**Forward synthesis (operator, 2026-07-16 — [H/S], probe-gated, two new
+probe names):** the tile pyramid might adopt two mechanisms from the
+fourth-mode/anchor discussion (§8):
+- **[H] One Walsh–Hadamard family for BOTH pyramid sides.** OGAR canon
+  already frames the bipolar-phase pyramid's sign side as the
+  Walsh–Hadamard transform of the address tree (sign composition = XOR);
+  bgz-tensor's proven `hadamard_rotate` is the same family applied to the
+  stored-magnitude side (rotate the residual before i8/i4/i2 so outlier
+  energy spreads and cheap uniform quantizers work — the standard
+  incoherence trick). Proposal: Hadamard-rotate a 4×4 tile's 16-cell
+  magnitude vector (WHT₁₆) before nibble quantization — phase side keeps
+  address-derived WH signs, magnitude side gains the WH preconditioner;
+  the two-algebra rule is untouched (sign = XOR, magnitude = bundle; the
+  rotation is a *coding-side* preconditioner, not a merge mode).
+  **PROBE-WH-MAG:** reconstruction error of WHT₁₆+i4/i2 vs direct i4/i2
+  on real tile magnitudes (bgz-tensor's row-level win does not
+  automatically transfer to 16-cell tiles).
+- **[S] Signature as the replayable-trajectory checksum.** The x264
+  contrast in §7 asked for a replayable, checksummable stream; the
+  Hambly–Lyons signature is the canonical path digest with a uniqueness
+  theorem, and **tree-like equivalence is the checksum's exact null
+  space** — the formal version of "which detours leave no comma"
+  (backtracking excursions vanish; genuine deviations leave non-zero
+  level-2 area). Both harnesses already exist (jc Pillar 11
+  forward/converse probes; this repo's `pillar/signature.rs` B7
+  sig-kernel). **PROBE-SIG-CHECKSUM:** truncated signature (depth 2, on
+  the Pillar-11 harness) of a temporal-stream trajectory as its digest —
+  verify replay-identity, tree-like edits invisible (correctly), non-tree
+  perturbations caught.
+Both stay conditional on the same ledger above; neither adds a stored
+field to the tile (the WH rotation is derivable, the signature is a
+derived digest).
+
 ## 11. Cross-references
 
 - `pr-x12-h266-h267-standards-landscape.md` — the industry walls, sourced
