@@ -769,3 +769,9 @@ default is x86-64-v3 (avx2) so ndarray_simd activates on avx512 builds only.
   probe], cache-native 192B working set) — all nine consequences stay
   **probe-gated** (D-MTS-1..3, PHASE-1/PERT-RHO/PYR-1, WHP-1..4, L4
   doc-lock); no kill condition weakened.
+- **§8 fourth-mode follow-up (post-#243):** the Hambly–Lyons anchor is
+  in-workspace, not external — THIS repo `src/hpc/pillar/signature.rs`
+  (Pillar-11 B7: sig transform + sig-kernel, Gram PSD, 1000-Lévy-path
+  certification) + lance-graph jc Pillar 11 (`hambly_lyons.rs`, feature
+  `hambly-lyons` → sigker). Only the ladder→signature MAPPING stays
+  [S]; probe builds on the Pillar-11 harnesses. §8 sentence amended.

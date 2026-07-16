@@ -243,16 +243,31 @@ the arithmetic, a 256² u16 table is 128 KB, and the attribution.)
 
 **Honourable fourth mode (operational, not a footprint): index +
 residual.** bgz-tensor's `AdaptiveRow` (`adaptive_codec.rs`) keeps the
-palette centroid index as the coarse deterministic PLACE and stores only a
-Hadamard-rotated residual (i8 for outlier rows; i4+i2 cascade for regular
-rows) — index PLACES, residual CORRECTS. It is the continuous-field exit
+palette centroid index as the coarse deterministic PLACE and stores a
+Hadamard-rotated residual in a three-tier LFD split
+(`classify_rows_by_lfd`): the hardest ~top-10% LFD rows escape to
+`Passthrough` (exact original stored — no index+residual at all), the
+next ~20% get an i8 residual, the bottom ~70% the i4+i2 cascade — index
+PLACES, residual CORRECTS, and the mold is never forced on rows it
+doesn't fit. Provenance caveat: bgz-tensor predates turbovec/PolarQuant
+and helix — this records what ships, not current best practice; an
+engineering follow-up review is queued (lance-graph
+`TD-BGZ-TENSOR-PRE-LANE-REVIEW`: reconcile the i4+i2 cascade vs turbovec
+Lloyd-Max/NativeLut, Hadamard vs the PolarQuant rotation findings,
+residual coding vs helix — consume-the-lane / demarcate / retire). It is the continuous-field exit
 where a bare 256-level index terraces (e.g. elevation); categorical
 surfaces (`Signed360` normals, narrow colour) stay flat. Out-of-row like
 `Signed360`; the in-row refinement budget remains the turbovec nibble
-lane. Formal anchor [S]: Hambly–Lyons 2010 signature uniqueness (a
+lane. Formal anchor: Hambly–Lyons 2010 signature uniqueness (a
 bounded-variation path is determined by its graded iterated-integral
-cascade up to tree-like equivalence) — analogy-grade until a
-ladder→signature probe exists. Canonical text: lance-graph
+cascade up to tree-like equivalence) — **already in-workspace on both
+sides** (corrected 2026-07-16): THIS repo's `src/hpc/pillar/signature.rs`
+(Pillar-11 B7 — signature transform + sig-kernel, Gram PSD check,
+1 000-Lévy-path certification probe) and lance-graph jc Pillar 11
+(`crates/jc/src/hambly_lyons.rs`, feature `hambly-lyons` → `sigker`,
+forward/converse probes on `signature_truncated`). Only the
+ladder→signature MAPPING for the residual cascade stays [S]; its probe
+builds on the existing Pillar-11 harnesses. Canonical text: lance-graph
 `le-contract.md §3` honourable-mention subsection +
 `E-PALETTE-RESIDUAL-LADDER-1`.
 
