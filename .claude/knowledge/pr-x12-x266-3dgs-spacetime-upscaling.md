@@ -2,8 +2,9 @@
 
 > **Naming + standards anchor (2026-07-16):** "x266" in this doc means the
 > **PR-X12 3DGS scene codec** — NOT H.266/VVC (finalized 2020, shipping) and
-> not the real H.267 (JVET's beyond-VVC standard, CfP running July 2026,
-> target ~2028). For the grounded public landscape — VVC facts, ECM, NNVC,
+> not H.267 (JVET's *prospective* beyond-VVC standardization effort — not yet
+> a standard; CfP running July 2026, finalization targeted ~2028). For the
+> grounded public landscape — VVC facts, ECM, NNVC,
 > H.267 requirement + dates — read
 > `pr-x12-h266-h267-standards-landscape.md` alongside this doc, and see
 > §12 below for the dated reality-check addendum.
@@ -360,14 +361,22 @@ Written against the live JVET landscape; sources and full detail in
 **What this changes in this doc — and what it doesn't:**
 
 1. §1's characterization of the field **holds**: codec-native upscaling in
-   the standards track is still 2D resampling (VVC RPR); the learned
-   track (NNVC, DLSS-class) is non-deterministic in exactly the way §7
-   argues against. No CfE response ships a scene-model reference frame.
-   The 3DGS-as-`Basis<T>` bet remains unoccupied territory.
-2. §7's determinism argument is now **stronger**, not weaker: JVET putting
-   NNs into the decode loop makes "same scene, same pose, same t → same
-   pixels, forever" a differentiator no H.267 candidate can match. For
-   legal/medical/scientific video this is a moat.
+   the standards track is still 2D resampling (VVC RPR). Precision update
+   on the learned track: *standardized* NN-in-loop decode can be bit-exact
+   (JVET conformance requires fixed-point inference), so §7's contrast
+   applies unqualified only to un-standardized AI-upscaler pipelines
+   (DLSS/RIFE-class, which do drift across model versions); against NNVC
+   the argument is reproducibility-by-construction vs model-governance
+   burden. No CfE response ships a scene-model reference frame — the
+   3DGS-as-`Basis<T>` bet remains unoccupied territory.
+2. §7's argument is **sharpened, with a qualification**: closed-form EWA
+   math gives "same scene, same pose, same t → same pixels" with no model
+   artifact to pin, version, or audit — a reproducibility-and-governance
+   advantage over conventional-plus-neural H.267 candidates (whose
+   bit-exactness, where achieved, rests on model pinning and fixed-point
+   conformance discipline). For legal/medical/scientific video this
+   remains a moat, stated as governance rather than as "NN =
+   nondeterministic."
 3. §8's "24-36 months from PR-X12 merge" estimate lands comfortably inside
    the H.267 deployment gap (finalize 2028, deploy 2034+). The scene codec
    does not race H.267; it races NN-upscaler pipelines.

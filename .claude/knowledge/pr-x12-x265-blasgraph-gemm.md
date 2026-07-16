@@ -104,7 +104,7 @@ Tropical-GEMM:    O(d²) × |nodes| = 16 × 85 = ~1.4 K ops/CTU
                   ~16× speedup
 ```
 
-For 4K @ 60 fps with 132K CTUs/frame, this is the difference between **4 ms and 64 ms per frame just for partition RDO**. At 60 fps's 16.67 ms budget, naive RDO doesn't fit.
+For 4K @ 60 fps with ~2,040 CTUs/frame (corrected 2026-07-16 — the earlier "132K CTUs" was the 8×8 leaf count), this is the difference between **~2.8 ms and ~44 ms per frame just for partition RDO** at ~1 op/ns. At 60 fps's 16.67 ms budget, naive RDO doesn't fit.
 
 **Dep direction:** the tropical-GEMM kernel's canonical home is `lance-graph::blasgraph` (the bit-exact cognitive-side substrate). *(Corrected 2026-07-16, audit #3: blasgraph's shipped semirings are binary-Hamming over 16384-bit BitVec — the numerical f32 min-plus kernel is UNWRITTEN and lands there when A6 wires it; the only shipped min-plus today is `bgz17::ScalarCsr::spmv_min_plus`, a lossy-sibling prototype.)* Post-Plan-H, `ndarray-codec → lance-graph::blasgraph` is allowed because both are sibling crates above `ndarray` hardware.
 
@@ -218,7 +218,7 @@ pub fn kmeans_predict_batched(
 );
 ```
 
-**Codec layer:** ~30-50 LoC per stage to wrap the BLAS call into the predict/A6/A4 flow. **BLAS layer:** zero new lines — all four already exist or land via existing infrastructure (`bf16_tile_gemm`, `cam_pq`, `simd_int_ops`).
+**Codec layer:** ~30-50 LoC per stage to wrap the BLAS call into the predict/A6/A4 flow. **BLAS layer:** the four wrapper APIs above still require implementation — what exists today is the underlying infrastructure they compose (`bf16_tile_gemm`, `cam_pq::kmeans` + `CamCodebook::distance_batch`, `simd_int_ops`); the wrappers are thin but not written (corrected 2026-07-16 — the earlier "zero new lines, all four already exist" overstated).
 
 This is what makes R-3's ≤1500 generic-codec-LoC ceiling reachable. Most of the heavy lifting is already in `blas_level2`; the codec adds wrappers and orchestration, not new BLAS code.
 

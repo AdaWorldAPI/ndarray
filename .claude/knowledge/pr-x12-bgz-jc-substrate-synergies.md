@@ -12,8 +12,7 @@
 > **siblings**, never substitutes for blasgraph. **Do not cite §0 / §2.5 /
 > §2.7 / §4 / §7-§8 as evidence.** Pending rewrite per audit Tier-1
 > recommendation.
-
-
+>
 > Date: 2026-05-22
 > Status: **substrate grounding doc** — connects PR-X12's abstract substrate claims to the **already-implemented** crates in `lance-graph/crates/`. Companion to the five perspective lenses written 2026-05-22.
 >

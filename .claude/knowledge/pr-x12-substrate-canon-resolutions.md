@@ -545,9 +545,10 @@ blasgraph`. For d=4, |nodes|=85: O(16 × 85) = O(1360) ops per CTU.
 Vs. O(4^4 × |nodes|) = O(21,760) ops for the naive recursive RDO.
 ```
 
-**Speedup: ~16×.** For a 4K frame at ~132K CTUs, this is the difference
-between ~4 ms and ~64 ms per frame just for partition RDO. At 60 fps,
-that's the difference between fitting and missing the latency budget.
+**Speedup: ~16×.** For a 4K frame at ~2,040 CTUs (corrected 2026-07-16 —
+the earlier "~132K CTUs" was the 8×8 leaf count), this is the difference
+between ~2.8 ms and ~44 ms per frame just for partition RDO at ~1 op/ns.
+At 60 fps, that's the difference between fitting and missing the budget.
 
 **Why this targets `lance-graph::blasgraph`:** Standard BLAS GEMM uses
 (× , +) semiring. Tropical uses (+ , min) semiring. blasgraph is the
@@ -796,12 +797,13 @@ to the budget.
 60 fps = 16.67 ms/frame
 At 8×8 leaf granularity (HEVC's smallest CU; the unit at which the
 encoder's inner-loop work is paid):
-                              132,710 leaves/frame
-                              (= 2,040 CTUs/frame at 64×64, × ~64
-                               leaves/CTU at maximum split depth;
-                               130,560 from clean 3840·2160/64, with
-                               ~1.6 % bias for chroma alignment)
-Per-leaf budget: 16.67 ms / 132,710 = 125 ns/leaf
+                              129,600 leaves/frame (exact: 3840·2160/64)
+                              (padded 64×64 accounting: 60×34 = 2,040
+                               CTUs/frame → 130,560 leaves at max split)
+Per-leaf budget: 16.67 ms / 129,600 = ~129 ns/leaf
+(Corrected 2026-07-16: the earlier 132,710 figure — 130,560 plus an
+unsourced "~1.6 % chroma alignment bias" — was not numerically
+grounded; use exact 129,600 or padded 130,560.)
 ```
 
 **Encoder per-leaf breakdown (scalar reference, current):**
@@ -816,11 +818,11 @@ Per-leaf budget: 16.67 ms / 132,710 = 125 ns/leaf
 | rANS encode (A7) | ~40 ns | ~40 ns |
 | **Total per-leaf** | **~960 ns** | **~210 ns** |
 
-**At scalar reference (960 ns/leaf): 4K @ 60 fps requires 132,710 ×
-960 ns = 127 ms/frame. Misses 60 fps by 7.6×.**
+**At scalar reference (960 ns/leaf): 4K @ 60 fps requires 129,600 ×
+960 ns = 124 ms/frame. Misses 60 fps by ~7.5×.**
 
-**At SIMD-batched (210 ns/leaf): 132,710 × 210 ns = 28 ms/frame. Misses
-60 fps by 1.7×; needs further work but in the same order of magnitude.**
+**At SIMD-batched (210 ns/leaf): 129,600 × 210 ns = 27 ms/frame. Misses
+60 fps by ~1.6×; needs further work but in the same order of magnitude.**
 
 **To hit 60 fps 4K real-time** requires the SIMD-batched-encode path
 to land. **This pins B:D-CODEC-8 / A:T-7 from P2 to P1.** Plan A4-impl
@@ -1261,7 +1263,7 @@ that decides whether each holy-grail claim is demonstrated.
 | R-8 (Plan G is confidence gate) | this doc | Phase order | Plan G ships before A7 | A7 PR doesn't merge until Plan G binary green |
 | R-9 (topology-free) | this doc | grep audit | Codec body has no spatial-semantic refs | `grep -rE 'North\|East\|West\|South' src/hpc/codec/*.rs` returns only test/doc |
 | R-10 (4 bit/Gaussian floor) | this doc | Plan E bench | bits/Gaussian on Mip-NeRF 360 | ≤4 bits/Gaussian without offline codebook |
-| R-11 (4K 60fps SIMD-batched) | this doc | Plan G video latency assert | Per-CTU encode time | ≤210 ns/CTU on Sapphire Rapids |
+| R-11 (4K 60fps SIMD-batched) | this doc | Plan G video latency assert | Per-leaf encode time | ≤210 ns/leaf on Sapphire Rapids (≡ ≤13.4 µs per fully-split 64×64 CTU = 64 leaves; corrected 2026-07-16 — the earlier "≤210 ns/CTU" mislabeled the per-leaf breakdown total) |
 | R-12 (per-CTU flush) | this doc | A8 frame-header parse + decode | First-CTU latency | First CTU decodable before frame complete |
 | R-13 (Option A per-shard) | this doc | Plan F on BERT-glue | 8× compression + accuracy | Holds; else escalate to Option B |
 | R-14 (Pillar 10 active) | this doc | `cargo test -p jc` (default features) | Pflug-Pichler Lipschitz bound | Pillar 10 probe green |
@@ -1414,7 +1416,7 @@ When this doc is summarised across context windows, preserve at minimum:
    - R-8: Plan G is confidence gate
    - R-9: topology-FREE codec layer
    - R-10: ~4 bits/Gaussian near target, ~1 bit stretch
-   - R-11: 210 ns/CTU SIMD-batched encode
+   - R-11: 210 ns/leaf SIMD-batched encode (per-leaf, not per-CTU)
    - R-12: per-CTU flush default; per-bucket Plan F
    - R-13: Option A (per-shard codebook) for Plan F v1; primitives are
      `cam_pq` + `bgz-hhtl-d` + `dn_tree` + `merkle_tree`

@@ -690,7 +690,9 @@ default is x86-64-v3 (avx2) so ndarray_simd activates on avx512 builds only.
   method `ScalarCsr::spmv_min_plus`, lossy sibling); blasgraph restored as
   bit-exact canon over bgz17; per-arch DCT crossovers tagged [UNCALIBRATED];
   false `signature_kernel_pde` Goursat-bug claim withdrawn (its convergence
-  tests pass); 132,710 = leaves-at-8×8 not CTUs; §9 falsifiability matrix tagged
+  tests pass); the R-11 unit is leaves-at-8×8 not CTUs, and the count itself
+  was corrected to 129,600 exact (padded 130,560; the old 132,710 was
+  ungrounded) → ~129 ns/leaf budget; §9 falsifiability matrix tagged
   FORWARD-CONDITIONAL. Tier-1 docs (`woa-multiarch-orchestration`,
   `bgz-jc-substrate-synergies`) ⛔ QUARANTINED pending rewrite.
 - **NEW: `.claude/knowledge/pr-x12-h266-h267-standards-landscape.md`** —

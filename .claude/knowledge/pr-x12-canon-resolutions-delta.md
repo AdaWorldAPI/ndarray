@@ -159,11 +159,12 @@ Three-way pass per load: (ratio + quality + LoC). Sub-threshold on any one = blo
 |---|---|
 | 4K resolution | 3840 × 2160 = 8.3 M pixels |
 | 60 fps | 16.67 ms/frame |
-| 8×8 leaf | 132,710 leaves/frame (≈2,025 CTUs/frame at 64×64) |
-| **Per-leaf budget** | **125 ns/leaf** |
+| 8×8 leaf | 129,600 leaves/frame (exact: 3840·2160/64; padded 64×64 accounting: 2,040 CTUs → 130,560 leaves) |
+| **Per-leaf budget** | **~129 ns/leaf** (16.67 ms / 129,600) |
 
-> Corrected 2026-07-16 (audit #8): the 132,710 figure counts 8×8 **leaves**, not
-> 64×64 CTUs — substrate-canon R-11 labels it correctly; this table had mislabeled it.
+> Corrected 2026-07-16 (audit #8 + review): the unit is 8×8 **leaves**, not
+> 64×64 CTUs, and the previously-cited 132,710 count was not numerically
+> grounded (exact 8×8 accounting gives 129,600; padded 64×64 gives 130,560).
 
 Encoder per-leaf breakdown:
 
@@ -177,7 +178,7 @@ Encoder per-leaf breakdown:
 | rANS encode (A7) | ~40 ns | ~40 ns |
 | **Total** | **~960 ns** | **~210 ns** |
 
-Scalar misses 60 fps by 7.6×; SIMD-batched misses by 1.7× (same OoM). **Pins B:D-CODEC-8 / A:T-7 from P2 → P1** — A4-impl and A6 must ship SIMD-batched, not scalar-then-vectorize.
+Scalar misses 60 fps by ~7.5×; SIMD-batched misses by ~1.6× (same OoM). **Pins B:D-CODEC-8 / A:T-7 from P2 → P1** — A4-impl and A6 must ship SIMD-batched, not scalar-then-vectorize.
 
 ---
 
@@ -218,7 +219,7 @@ Tropical-semiring (+, min) formulation:
 
 **Complexity:** `O(d² × |nodes|)`. For d=4, |nodes|=85: 1360 ops/CTU vs 21,760 naive. **~16× speedup.**
 
-At 4K 132K CTUs/frame: ~4 ms vs ~64 ms just for partition RDO. At 60 fps, the difference between fitting and missing budget.
+At 4K (~2,040 CTUs/frame; corrected 2026-07-16 — "132K" was the leaf count, not CTUs): ~2.8 ms vs ~44 ms just for partition RDO at ~1 op/ns. At 60 fps, the difference between fitting and missing budget.
 
 **Dep direction:** `ndarray-codec → lance-graph::blasgraph` (tropical-GEMM kernels nominally live in blasgraph). Allowed post-Plan-H because ndarray-codec is a sibling crate, not the bottom.
 
@@ -386,7 +387,7 @@ Highlights of falsifiers — the canary tests:
 | R-1 | A7 has to subclass `LinearReduce` to make rANS work | Trait factoring wrong; A7 wastes 1.5 wks |
 | R-3 | Cumulative generic LoC > 1500 after A4-A8 | M:H-NEW-2 falsified; the abstraction grew domain-specific code |
 | R-9 | `grep -E 'North|East|West|South' src/hpc/codec/*.rs` returns production paths | Topology-free contract broken; consumer semantics leaked into codec |
-| R-11 | SIMD-batched encode > 210 ns/CTU on SPR | Plan G video threshold can't pass; 4K real-time falsified |
+| R-11 | SIMD-batched encode > 210 ns/leaf on SPR | Plan G video threshold can't pass; 4K real-time falsified |
 
 ---
 

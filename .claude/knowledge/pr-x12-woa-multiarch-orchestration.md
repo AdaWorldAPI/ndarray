@@ -10,8 +10,7 @@
 > doc as evidence for anything.** Pending rewrite per audit Tier-1
 > recommendation; the W1a consumer contract at
 > `vertical-simd-consumer-contract.md` is the authoritative source.
-
-
+>
 > Date: 2026-05-22
 > Status: **perspective doc** — examines how the orchestration crates (`woa-rs`, `woa`, `q2`, `surrealdb`, `MedCare-rs`, `smb-office-rs`) consume the PR-X12 substrate, and how PR-X12's per-arch polyfill decisions (R-4, R-5, R-11) generalise to the entire HPC stack.
 >

@@ -340,7 +340,13 @@ the audited docs"). The following recommendations were executed on branch
   **[UNCALIBRATED ESTIMATES]** in delta §6, substrate-canon R-5, GEMM lens
   §2.2; the self-fabricating "Graviton=128" withdrawn from mapping §5.3.
 - Finding #8 — "132,710 CTUs/frame" mislabel: fixed to leaves-at-8×8 in
-  delta §2.3 (budget recomputed per-leaf).
+  delta §2.3 (budget recomputed per-leaf). Review follow-up (same day):
+  the count itself was also wrong — exact 8×8 accounting at 3840×2160 is
+  **129,600** leaves (padded 64×64: 2,040 CTUs → 130,560); the audit's own
+  finding #8 had accepted 132,710 as "correct-as-leaves," which it wasn't.
+  Budget recomputed to ~129 ns/leaf; the "~132K CTUs" figures in the three
+  RDO paragraphs corrected to ~2,040 CTUs; R-11 matrix row re-unitized to
+  ≤210 ns/leaf.
 - Finding #9 — false `signature_kernel_pde` Goursat-PDE bug claim:
   withdrawn at all four sites (delta §11/§12, substrate-canon R-14/R-15).
 - Finding #19 — §9 falsifiability matrix: tagged FORWARD-CONDITIONAL

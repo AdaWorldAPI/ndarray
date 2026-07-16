@@ -92,12 +92,19 @@ now supplies evidence for both directions:
 - *For NNVC:* every single CfE response for H.267 incorporated some form of
   NN tool — the field has voted.
 - *For the inversion:* the decoder-complexity/power pushback (Samsung et
-  al.) is precisely the failure mode the anti-neural rule predicts, and the
-  determinism argument (no model-version drift, legally/scientifically
-  defensible reconstruction — x266 lens §7) is one no NN-in-loop codec can
-  make.
+  al.) is precisely the failure mode the anti-neural rule predicts. The
+  reproducibility argument needs stating precisely: a *standardized*
+  NN-in-loop codec can be bit-exact (JVET conformance requires fixed-point
+  decode), so "NN = nondeterministic" is wrong as a universal claim. The
+  PR-X12 advantage is **reproducibility-by-construction and governance**:
+  closed-form math with no model artifact to pin, version, or govern —
+  versus NN tools whose reproducibility depends on disciplined model
+  pinning and whose behavior is not analytically auditable (x266 lens §7).
+  Un-standardized AI-upscaler pipelines (DLSS-class, RIFE-class) DO drift
+  across model versions; that comparison stands unqualified.
 
-This is the sharpest external differentiator the PR-X12 line has. Keep it.
+This — stated in the qualified form above — is the sharpest external
+differentiator the PR-X12 line has. Keep it, and keep it precise.
 
 ## 4. H.267 — the process, the requirement, the dates
 

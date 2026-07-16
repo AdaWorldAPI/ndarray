@@ -522,7 +522,7 @@ Per-block butterfly wins for single 32×32. Per-frame batched `C = A_batch @ DCT
 
 > [Pinned as **R-7**: the tropical-GEMM kernel's canonical home is `lance-graph::blasgraph` — but the symbol `blasgraph::tropical_gemm` **does not exist** (audit #3, corrected 2026-07-16; blasgraph's 7 HDR semirings are binary-Hamming over 16384-bit BitVec, no numerical min-plus). The kernel is unwritten; the only shipped min-plus is `bgz17::ScalarCsr::spmv_min_plus` (lossy sibling, prototype only). The `ndarray-codec → lance-graph` dep direction was confirmed *allowed* post-merge (both are sibling crates above `ndarray::hpc` and below `woa-rs`). See the corrected R-7 in the delta doc.]
 
-x265 spends ~30% CPU on recursive partition RDO. Reformulate: each partition is a node in an 85-node DAG, edges = split/merge transitions, weights = ΔRDO. Optimal partition = shortest path. blasgraph's tropical-semiring GEMM (`D ← min(D, D + W)`) solves all partitions in **one batched matrix-relax**. `O(4^d)` → `O(d²)` per CTU.
+x265 spends ~30% CPU on recursive partition RDO. Reformulate: each partition is a node in an 85-node DAG, edges = split/merge transitions, weights = ΔRDO. Optimal partition = shortest path. A **planned** tropical-semiring GEMM in blasgraph (`D ← min(D, D + W)`; unwritten today, per the R-7 correction above) would solve all partitions in one batched matrix-relax — the `O(4^d)` → `O(d²)` reduction holds algebraically but the speedup is **conditional on the future A6 partition bench** confirming it on real edge weights.
 
 ### 13.4 CABAC context modeling → tiny transformer (E-9)
 
