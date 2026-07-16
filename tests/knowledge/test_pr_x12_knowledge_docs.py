@@ -235,7 +235,9 @@ class TestCanonResolutionsDelta(unittest.TestCase):
     Validates changes to pr-x12-canon-resolutions-delta.md:
       - Category count updated from five to six.
       - Sixth category covers R-14 and R-15.
-      - R-7 now cites the actual kernel symbol bgz17::scalar_sparse::tropical_spmv.
+      - R-7 cites the corrected kernel canon: blasgraph is the canonical home
+        (kernel unwritten); the shipped min-plus is the method
+        bgz17::ScalarCsr::spmv_min_plus (audit 2026-07-16 correction).
       - R-13 phasing pattern includes the four implementation primitives.
       - R-14 / R-15 sections added.
       - Falsifiability matrix row count updated to 24+3.
@@ -273,12 +275,28 @@ class TestCanonResolutionsDelta(unittest.TestCase):
         self.assertIn("Formal-correctness", self.content)
         self.assertIn("stream lane", self.content)
 
-    def test_r7_cites_tropical_spmv_kernel(self):
-        """R-7 entry must now cite the actual kernel symbol."""
+    def test_r7_cites_spmv_min_plus_method(self):
+        """
+        R-7 entry must cite the corrected canon (audit 2026-07-16): the
+        shipped min-plus is the METHOD bgz17::ScalarCsr::spmv_min_plus;
+        the free-function path bgz17::scalar_sparse::tropical_spmv was
+        fabricated (audit findings #1/#2) and must not be cited
+        affirmatively.
+        """
         self.assertIn(
+            "bgz17::ScalarCsr::spmv_min_plus",
+            self.content,
+            "R-7 must cite the real method bgz17::ScalarCsr::spmv_min_plus",
+        )
+        self.assertNotIn(
             "bgz17::scalar_sparse::tropical_spmv",
             self.content,
-            "R-7 must cite the actual kernel location bgz17::scalar_sparse::tropical_spmv",
+            "The fabricated free-function path must not appear in the delta doc",
+        )
+        self.assertIn(
+            "blasgraph",
+            self.content,
+            "R-7 must name blasgraph as the canonical kernel home",
         )
 
     def test_r13_primitives_table_present(self):
@@ -582,23 +600,35 @@ class TestSubstrateCanonResolutions(unittest.TestCase):
         """R-13 section must mention the CodebookHandle trait."""
         self.assertIn("CodebookHandle", self.content)
 
-    def test_tropical_spmv_actual_kernel_home_section(self):
+    def test_spmv_min_plus_shipped_kernel_section(self):
         """
-        New 'Actual kernel home (current)' section must correct the blasgraph
-        namespace to cite bgz17::scalar_sparse::tropical_spmv directly.
+        The corrected 'Shipped min-plus today' section (audit 2026-07-16,
+        findings #1-#4) must cite the real method
+        bgz17::ScalarCsr::spmv_min_plus and must NOT frame bgz17 as the
+        'Actual kernel home' — that framing inverted the canon (blasgraph
+        is canonical and bit-exact; bgz17 is a lossy sibling).
         """
-        self.assertIn(
-            "lance-graph::bgz17::scalar_sparse::tropical_spmv",
+        self.assertIn("Shipped min-plus today", self.content)
+        self.assertIn("bgz17::ScalarCsr::spmv_min_plus", self.content)
+        self.assertNotIn(
+            "Actual kernel home (current)",
             self.content,
+            "The inverted 'Actual kernel home (current)' framing must stay removed",
         )
-        self.assertIn("Actual kernel home (current)", self.content)
 
-    def test_tropical_spmv_not_only_blasgraph(self):
+    def test_blasgraph_is_canonical_not_bgz17(self):
         """
-        Doc must distinguish the current kernel home (bgz17) from the eventual
-        blasgraph abstraction.
+        Doc must present blasgraph as the CANONICAL kernel home and bgz17's
+        min-plus as a lossy sibling/prototype — never 'ndarray-codec depends
+        on bgz17 directly' as the sanctioned path (audit ground-truth #3/#5).
         """
-        self.assertIn("bgz17 directly", self.content)
+        self.assertIn("canonical", self.content)
+        self.assertIn("lossy", self.content)
+        self.assertNotIn(
+            "ndarray-codec depends on\nbgz17 directly",
+            self.content,
+            "The bgz17-as-current-home dependency framing must stay removed",
+        )
 
     def test_falsifiability_matrix_has_r14_pillar10_row(self):
         """Falsifiability matrix §9 must have an R-14 Pillar 10 row."""
@@ -938,7 +968,8 @@ class TestCrossDocumentConsistency(unittest.TestCase):
     Tests that validate consistency across multiple changed documents:
       - Gap IDs are consistently labelled and cross-referenced.
       - Resolution IDs R-14/R-15 appear in all docs that should mention them.
-      - Kernel symbol bgz17::scalar_sparse::tropical_spmv is consistent.
+      - Kernel canon is consistent: blasgraph canonical (kernel unwritten),
+        shipped min-plus = bgz17::ScalarCsr::spmv_min_plus (audit 2026-07-16).
       - Polyfill terminology replaces dispatch where updated.
     """
 
@@ -966,18 +997,27 @@ class TestCrossDocumentConsistency(unittest.TestCase):
         self.assertIn("Gap **G-2**", bgz_jc, "bgz-jc doc must define G-2")
         self.assertIn("bgz-jc G-2", cam_pq, "cam-pq doc must cross-ref as bgz-jc G-2")
 
-    def test_tropical_spmv_kernel_consistent_across_docs(self):
+    def test_min_plus_kernel_canon_consistent_across_docs(self):
         """
-        The tropical-GEMM kernel symbol must be cited consistently across
-        canon-resolutions-delta and substrate-canon-resolutions.
+        The corrected kernel canon (audit 2026-07-16) must be cited
+        consistently across canon-resolutions-delta and
+        substrate-canon-resolutions: the shipped min-plus is the method
+        bgz17::ScalarCsr::spmv_min_plus; the fabricated free-function path
+        must not be cited affirmatively in the delta doc (the substrate doc
+        retains one explicitly-negated mention as the audit trail).
         """
-        kernel = "bgz17::scalar_sparse::tropical_spmv"
+        kernel = "bgz17::ScalarCsr::spmv_min_plus"
         delta = self._read("pr-x12-canon-resolutions-delta.md")
         substrate = self._read("pr-x12-substrate-canon-resolutions.md")
 
-        self.assertIn(kernel, delta, "canon-resolutions-delta must cite tropical_spmv")
+        self.assertIn(kernel, delta, "canon-resolutions-delta must cite spmv_min_plus")
         self.assertIn(
-            kernel, substrate, "substrate-canon-resolutions must cite tropical_spmv"
+            kernel, substrate, "substrate-canon-resolutions must cite spmv_min_plus"
+        )
+        self.assertNotIn(
+            "bgz17::scalar_sparse::tropical_spmv",
+            delta,
+            "The fabricated free-function path must not appear in the delta doc",
         )
 
     def test_r14_r15_cited_in_both_canon_docs(self):

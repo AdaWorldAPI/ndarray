@@ -17,10 +17,10 @@
 
 | # | Primitive | HEVC native form | GEMM form | Where it lands |
 |---|---|---|---|---|
-| 1 | Motion estimation | SAD `Σ \|A-B\|` | SSD `\|\|A\|\|² - 2A·B + \|\|B\|\|²` → GEMV | `ndarray::hpc::blas_level2::batched_ssd_search` |
+| 1 | Motion estimation | SAD `Σ \|A-B\|` | SSD `\|\|A\|\|² - 2A·B + \|\|B\|\|²` → GEMV | `ndarray::hpc::blas_level2::batched_ssd_search` *(planned — not yet in blas_level2.rs)* |
 | 2 | Forward transform | 4×4 / 8×8 / 16×16 / 32×32 DCT-II butterflies | Batched DCT as GEMM at N≥64 | `ndarray::hpc::fft::DctIIBasis<N>` + `bf16_tile_gemm` |
 | 3 | Quantization | Scalar divide + round | Dot product against quant matrix | Inline; uses existing `simd_int_ops` |
-| 4 | Mode decision (CTU split) | Recursive RDO, `O(4^d)` | Tropical-GEMM Bellman-Ford, `O(d²)` | `lance-graph::blasgraph::tropical_gemm` |
+| 4 | Mode decision (CTU split) | Recursive RDO, `O(4^d)` | Tropical-GEMM Bellman-Ford, `O(d²)` | `lance-graph::blasgraph` *(canonical home; kernel unwritten — shipped min-plus today is only `bgz17::ScalarCsr::spmv_min_plus`, a lossy-sibling prototype)* |
 | 5 | Basin assignment (palette / k-means) | Linear scan distance comparisons | Batched Hamming/L2 dist as GEMM | `ndarray::hpc::cam_pq::kmeans` |
 | 6 | Deblocking filter | 3×3 / 5×5 per-pixel separable conv | im2col + GEMM at block size ≥ 16 | `ndarray::hpc::activations` (existing conv path) |
 | 7 | rANS state advance | u32 state machine | Symbol-frequency lookup; **not GEMM** | `ndarray-codec::ans` |
@@ -74,7 +74,7 @@ if N >= 64:  batched DCT as GEMM via DctIIBasis<N> + bf16_tile_gemm
              ~256 cycles for 64 blocks (AMX) vs ~1280 cycles butterfly
 ```
 
-Crossover (R-5) varies per arch: SPR=64, SKX/ICL=32, Zen 4=96, Apple Silicon=256.
+Crossover (R-5) varies per arch: SPR≈64, SKX/ICL≈32, Zen 4≈96, Apple Silicon≈256 — **[UNCALIBRATED ESTIMATES, no measurement source; Plan G calibrates (audit #6)]**.
 
 **The trait pattern (R-1):** `DctIIBasis<const N>` implements `Basis<i16>` — the basis is data (the cosine matrix, computed once at startup). The reduction (`A4 transform path` and `EWA splat rasterizer Plan E`) both call `basis.apply(src, dst)`. **Same basis, two consumers.**
 
@@ -104,9 +104,9 @@ Tropical-GEMM:    O(d²) × |nodes| = 16 × 85 = ~1.4 K ops/CTU
                   ~16× speedup
 ```
 
-For 4K @ 60 fps with 132K CTUs/frame, this is the difference between **4 ms and 64 ms per frame just for partition RDO**. At 60 fps's 16.67 ms budget, naive RDO doesn't fit.
+For 4K @ 60 fps with ~2,040 CTUs/frame (corrected 2026-07-16 — the earlier "132K CTUs" was the 8×8 leaf count), this is the difference between **~2.8 ms and ~44 ms per frame just for partition RDO** at ~1 op/ns. At 60 fps's 16.67 ms budget, naive RDO doesn't fit.
 
-**Dep direction:** the tropical-GEMM kernel lives in `lance-graph::blasgraph` (it's been the cognitive-side substrate for years). Post-Plan-H, `ndarray-codec → lance-graph::blasgraph` is allowed because both are sibling crates above `ndarray` hardware.
+**Dep direction:** the tropical-GEMM kernel's canonical home is `lance-graph::blasgraph` (the bit-exact cognitive-side substrate). *(Corrected 2026-07-16, audit #3: blasgraph's shipped semirings are binary-Hamming over 16384-bit BitVec — the numerical f32 min-plus kernel is UNWRITTEN and lands there when A6 wires it; the only shipped min-plus today is `bgz17::ScalarCsr::spmv_min_plus`, a lossy-sibling prototype.)* Post-Plan-H, `ndarray-codec → lance-graph::blasgraph` is allowed because both are sibling crates above `ndarray` hardware.
 
 ### 2.5 Basin assignment: k-means as batched dist + argmin
 
@@ -178,7 +178,15 @@ The HEVC spec was finalised in early 2013, against the following hardware:
 
 ## 5. What lands in `ndarray::hpc::blas_level2` (the codec's BLAS surface)
 
-The codec uses, but does not own, these four primitives:
+The codec uses, but does not own, these four primitives.
+
+> **[Status, 2026-07-16]:** all four signatures below are **target API
+> shapes**, not shipped symbols. `batched_ssd_search` / `batched_dct_ii` /
+> `tropical_partition_rdo` do not exist yet (audit #5, #3);
+> `kmeans_predict_batched` is a planned wrapper over the real
+> `cam_pq::kmeans` + `CamCodebook::distance_batch`. The paragraph after the
+> block ("zero new lines — all four already exist") overstated; the *building
+> blocks* exist (`bf16_tile_gemm`, `cam_pq`, `simd_int_ops`), the wrappers do not.
 
 ```rust
 // R-6: ME via SSD identity
@@ -210,7 +218,7 @@ pub fn kmeans_predict_batched(
 );
 ```
 
-**Codec layer:** ~30-50 LoC per stage to wrap the BLAS call into the predict/A6/A4 flow. **BLAS layer:** zero new lines — all four already exist or land via existing infrastructure (`bf16_tile_gemm`, `cam_pq`, `simd_int_ops`).
+**Codec layer:** ~30-50 LoC per stage to wrap the BLAS call into the predict/A6/A4 flow. **BLAS layer:** the four wrapper APIs above still require implementation — what exists today is the underlying infrastructure they compose (`bf16_tile_gemm`, `cam_pq::kmeans` + `CamCodebook::distance_batch`, `simd_int_ops`); the wrappers are thin but not written (corrected 2026-07-16 — the earlier "zero new lines, all four already exist" overstated).
 
 This is what makes R-3's ≤1500 generic-codec-LoC ceiling reachable. Most of the heavy lifting is already in `blas_level2`; the codec adds wrappers and orchestration, not new BLAS code.
 

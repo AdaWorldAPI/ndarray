@@ -679,3 +679,54 @@ parity CI + the matryoshka chacha20 fork. Plan in `.claude/CHACHA20_MATRYOSHKA_P
 Follow-ups (documented in `.claude/CHACHA20_MATRYOSHKA_PLAN.md`): wasm matryoshka
 backend (simd128 branch); cross-repo `[patch]` for MedCare-rs; the workspace
 default is x86-64-v3 (avx2) so ndarray_simd activates on avx512 builds only.
+
+---
+
+## 2026-07-16 — PR-X12 x265/x266 plan review: audit applied + H.267 standards grounding
+
+- **PR-X12-docs-audit corrections finally APPLIED** (they had sat unapplied
+  since 2026-05-22): fabricated symbols marked ([PLANNED] `batched_ssd_search`;
+  `blasgraph::tropical_gemm` / `bgz17::tropical_spmv` removed — real min-plus is
+  method `ScalarCsr::spmv_min_plus`, lossy sibling); blasgraph restored as
+  bit-exact canon over bgz17; per-arch DCT crossovers tagged [UNCALIBRATED];
+  false `signature_kernel_pde` Goursat-bug claim withdrawn (its convergence
+  tests pass); the R-11 unit is leaves-at-8×8 not CTUs, and the count itself
+  was corrected to 129,600 exact (padded 130,560; the old 132,710 was
+  ungrounded) → ~129 ns/leaf budget; §9 falsifiability matrix tagged
+  FORWARD-CONDITIONAL. Tier-1 docs (`woa-multiarch-orchestration`,
+  `bgz-jc-substrate-synergies`) ⛔ QUARANTINED pending rewrite.
+- **NEW: `.claude/knowledge/pr-x12-h266-h267-standards-landscape.md`** —
+  sourced public-standards anchor: H.266/VVC (2020, ~40-50% over HEVC, dec
+  1.5-2×/enc ~10×), ECM-16.1 (~27% over VTM, complexity flagged impractical),
+  NNVC v7 (NN in-loop ≈9% RA each — the antithesis of our anti-neural rule),
+  H.267 (CfP Jul 2026 → submissions Nov 2026 → evaluation Jan 2027 → finalize
+  ~2028; requirement ≥40% over VVC Main 10 at 4K+). "x266" in our docs =
+  PR-X12 3DGS scene codec, never H.266.
+- x266 lens doc got §12 reality-check addendum + F-3b falsifier
+  (conventional-plus-neural acceptance risk); capstone + 3DGS plan index got
+  standards-watch sections. Watch dates: Nov 2026, Jan 2027.
+- Status note: `src/hpc/codec/` now has `ans.rs` + `rdo.rs` (A7/A6 debts
+  D-CODEC-2/-3 have code); still no `ndarray-codec` crate (Plan H open).
+
+---
+
+## 2026-07-16 (2) — H.268 codename + graded Morton/wgpu synergy matrix
+
+- **Codename ruling:** the "x266" placeholder (PR-X12 3DGS scene codec) is
+  internally codenamed **H.268** — INTERNAL ONLY, never an ITU designation
+  (H.267 itself is still prospective). Registered in the x266 lens header,
+  landscape doc, capstone, 3DGS plan index.
+- **NEW: `.claude/knowledge/pr-x12-h268-morton-wgpu-synergies.md`** — the
+  "industry-impractical vs realistically-achievable" matrix, every claim
+  adversarially verified (workflow wf_6c6fb99a-cb4, 15 agents, file:line
+  receipts): 1× FEASIBLE-NOW (the scoping row), 2× NEEDS-PROBE, 7×
+  OVERCLAIM-CORRECTED. Load-bearing findings: wasm SIMD128 lane IS real +
+  CI-parity-verified (simd_wasm.rs; wasm-simd/parity-node); bgz17 256×256
+  tables are texture-isomorphic (dense u16, R16Uint-ready) but zero GPU-LUT
+  code exists; ctu.rs is an ARENA tree (no Morton in codec dir) — flat
+  Morton SoA is an unimplemented refactor; D-PHASE/D-WHP are [H] with unrun
+  probes (J2 kill: dither-only); a2ui-paint wgpu = untested quad demo,
+  `webgl` feature unwired; ndarray deliberately "no GPU, no wgpu".
+- **Probe queue established:** PROBE-GPU-LUT, PROBE-MORTON-CTU,
+  PROBE-RANS-INTERLEAVE (new names), + OGAR PHASE-1/PERT-RHO/PYR-1,
+  WHP-1..4, Plan E bits/Gaussian, a2ui N2 — each with pass/kill conditions.

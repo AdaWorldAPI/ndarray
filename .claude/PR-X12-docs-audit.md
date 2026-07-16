@@ -314,3 +314,58 @@ If you read nothing else of this audit:
 > verified by whole-file read.
 
 _Last edit: 2026-05-22._
+
+---
+
+## 8. Addendum — corrections applied (2026-07-16)
+
+This audit sat unapplied from 2026-05-22 to 2026-07-16 ("no edits made to
+the audited docs"). The following recommendations were executed on branch
+`claude/x265-x266-plans-review-h9osnl`:
+
+**Tier 2 targeted fixes (applied):**
+
+- Findings #1/#2/#3/#4 — R-7 inversion + fabricated symbols: corrected in
+  `pr-x12-canon-resolutions-delta.md` (§0 item 3, §3.2),
+  `pr-x12-substrate-canon-resolutions.md` (R-7, §12 item R-7),
+  `pr-x12-codec-cognitive-substrate-mapping.md` (§13.3),
+  `pr-x12-x265-blasgraph-gemm.md` (§1 table row 4, §2.4). blasgraph is
+  restored as canon; `ScalarCsr::spmv_min_plus` correctly named as the only
+  shipped min-plus (lossy sibling, prototype only); `tropical_spmv` /
+  `tropical_gemm` free-function citations removed.
+- Finding #5 — `batched_ssd_search`: marked **[PLANNED symbol]** at every
+  citation site (delta §3.1, substrate-canon R-6, mapping §13.1, GEMM lens
+  §1/§5).
+- Findings #6/#7 — per-arch DCT crossover constants: marked
+  **[UNCALIBRATED ESTIMATES]** in delta §6, substrate-canon R-5, GEMM lens
+  §2.2; the self-fabricating "Graviton=128" withdrawn from mapping §5.3.
+- Finding #8 — "132,710 CTUs/frame" mislabel: fixed to leaves-at-8×8 in
+  delta §2.3 (budget recomputed per-leaf). Review follow-up (same day):
+  the count itself was also wrong — exact 8×8 accounting at 3840×2160 is
+  **129,600** leaves (padded 64×64: 2,040 CTUs → 130,560); the audit's own
+  finding #8 had accepted 132,710 as "correct-as-leaves," which it wasn't.
+  Budget recomputed to ~129 ns/leaf; the "~132K CTUs" figures in the three
+  RDO paragraphs corrected to ~2,040 CTUs; R-11 matrix row re-unitized to
+  ≤210 ns/leaf.
+- Finding #9 — false `signature_kernel_pde` Goursat-PDE bug claim:
+  withdrawn at all four sites (delta §11/§12, substrate-canon R-14/R-15).
+- Finding #19 — §9 falsifiability matrix: tagged FORWARD-CONDITIONAL
+  (Plan G binary does not exist; rows are planned tests, not passed ones).
+
+**Tier 1 (quarantined, rewrite still owed):**
+
+- `pr-x12-woa-multiarch-orchestration.md` and
+  `pr-x12-bgz-jc-substrate-synergies.md` carry ⛔ QUARANTINED headers
+  naming the findings and forbidding citation as evidence. Full rewrites
+  per §5 Tier 1 remain open work.
+
+**Status change since audit:** `src/hpc/codec/` now also contains `ans.rs`
+(A7 rANS) and `rdo.rs` (A6 λ-RDO) — the audit-era debts D-CODEC-2 (P0) and
+D-CODEC-3 (P1) have shipped code. Still no `ndarray-codec` crate (Plan H
+unextracted).
+
+**New in the same pass:** the x265/x266 lens line is grounded against the
+public JVET trajectory in `pr-x12-h266-h267-standards-landscape.md`
+(H.266/VVC facts, ECM, NNVC, H.267 CfP-Jul-2026 → finalize-2028 timeline,
+≥40%-over-VVC requirement), with a dated §12 reality-check addendum in
+`pr-x12-x266-3dgs-spacetime-upscaling.md`.

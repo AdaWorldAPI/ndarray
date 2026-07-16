@@ -23,6 +23,38 @@ This document connects the existing perspective docs:
 .claude/knowledge/pr-x12-x266-3dgs-spacetime-upscaling.md
 .claude/knowledge/pr-x12-gguf-llm-weights-encoding.md
 .claude/knowledge/pr-x12-anti-neural-lookup-inversion.md
+.claude/knowledge/pr-x12-h266-h267-standards-landscape.md   (2026-07-16: public JVET anchor)
+```
+
+## Standards watch (added 2026-07-16)
+
+The public trajectory this capstone must track is now grounded in
+`pr-x12-h266-h267-standards-landscape.md`:
+
+```text
+H.266/VVC   finalized 2020  up to ~50% over HEVC subjective; ~31-40% objective
+            BD-rate; decoder 1.5-2x, encoder ~10x
+ECM-16.1    ~27% over VTM   the conventional H.267 track; complexity flagged impractical
+NNVC v7     NN in-loop      the learned H.267 track; ~9% RA per filter; antithesis of our anti-neural rule
+H.267       prospective standard: CfP Jul 2026 -> submissions Nov 2026 ->
+            evaluation Jan 2027 -> finalize ~2028
+            requirement: >=40% over VVC Main 10 at 4K+, decoder complexity constrained
+```
+
+Positioning consequences for this capstone:
+
+```text
+- "x266" in our docs = the PR-X12 3DGS scene codec, never H.266/VVC.
+  Internal codename since 2026-07-16: H.268 (INTERNAL ONLY, never an ITU
+  designation; see pr-x12-h268-morton-wgpu-synergies.md).
+- ECM's complexity spiral is the cautionary anchor for the R-3 LoC envelope.
+- NNVC-in-the-loop vs our tables-only hot loop is the sharpest external
+  differentiator; the moat is reproducibility-by-construction + governance
+  (closed-form math, no model artifact to pin/version/audit) for
+  legal/medical/scientific video — standardized NN decode can be bit-exact,
+  so state it as governance, not "NN = nondeterministic."
+- The H.267 40%-over-VVC requirement is the external stretch axis for Plan G.
+- Watch dates: Nov 2026 (CfP submissions), Jan 2027 (evaluation).
 ```
 
 ## Capstone thesis
