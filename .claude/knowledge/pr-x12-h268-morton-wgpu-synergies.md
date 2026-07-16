@@ -155,8 +155,9 @@ workspace actually ships on. Verified this session:
 - `std::f64::consts::GOLDEN_RATIO` and `std::f64::consts::EULER_GAMMA` exist
   and compile on the pinned 1.94/1.95 toolchain, with fixed bit patterns
   `φ = 0x3FF9E3779B97F4A8`, `γ = 0x3FE2788CFC6FB619` — not target-dependent.
-- There is **no** `std::simd::const::*` path — helix `constants.rs:17-23`
-  documents that exact (previously-assumed) API does not exist.
+- There is **no** std-SIMD const-constants path — helix `constants.rs:17-23`
+  documents that the previously-assumed `const::simd::*`-style API does not
+  exist; the canonical source is `std::f64::consts`.
 - `gemm_f64_tiled`'s five-backend contract is **unfused, bit-identical**
   across all five backends when accumulation order is pinned, and this is
   covered by the wasm parity CI — plain IEEE basic ops in a fixed order are
@@ -210,15 +211,26 @@ row — it is the **out-of-row / alternate-carving variant**, selected
 instead of (not in addition to) the `ResidueEdge` + turbovec pairing when
 full-sphere signed precision is needed.
 
-**6×256² clarification (do not conflate the two table families):** the "six
-256×256 tables" belong to **CAM-PQ** — 6 subspaces × one 256×256 u16
-distance table each = 6 × 64 KB = **384 KB**, closely matching the measured
-388 KB `SpoDistanceMatrices` benchmark footprint (§1 above). **bgz17's
-palette layer is a different, smaller shape**: one 256×256 u16 distance
-table **plus** a k×k u8 compose table, per palette — not six tables. The
-two families share the "256×256 dense LUT, texture-isomorphic" shape
-(§3 row 2 above) but are not the same object and their sizes should not be
-added together.
+**Table-family clarification (corrected 2026-07-16 post-review — do not
+conflate three distinct structures):**
+- The measured **388 KB `SpoDistanceMatrices` benchmark** (§1 above) is the
+  **palette** structure: **3 S/P/O planes × one 256×256 u16 distance table
+  (128 KB each) = 384 KB** (`palette_distance.rs:145-158` — `DistanceMatrix
+  { data: Vec<u16>, k }`, one per subject/predicate/object plane).
+- **CAM-PQ has no fixed 256×256 distance-table footprint.** Its 6-subspace
+  structure is the per-vector 48-bit **code** (the §8 lane table above);
+  its ADC distance tables are **per-query** `6 × 256` f32 = **6 KB**,
+  recomputed per query and L1-resident (`cam_pq.rs:76-84`).
+- **bgz17's palette layer** is one 256×256 u16 distance table **plus** a
+  k×k u8 compose table, per palette.
+The first and third share the "256×256 dense u16 LUT, texture-isomorphic"
+shape (§3 row 2 above); none of the three footprints should be added to or
+substituted for another. (An earlier draft of this paragraph attributed
+the 384 KB to "6 × 64 KB CAM-PQ tables" — wrong on both the arithmetic, a
+256×256 u16 table is 128 KB, and the attribution.)
+This carving is a `ClassView` projection over content-blind bytes — see
+lance-graph `le-contract.md §3` for the canonical 6×(u8:u8) / 4×(u8:u8:u8)
+/ 3×(u8:u8:u8:u8) readings the same 12-byte register supports.
 
 ## 9. The kernel-shape rule (engine follows operation shape)
 

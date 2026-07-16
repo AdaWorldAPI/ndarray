@@ -749,8 +749,11 @@ default is x86-64-v3 (avx2) so ndarray_simd activates on avx512 builds only.
   division of labor stated as a rule.
 - **§8 96-bit facet carving:** CAM-PQ 48b + helix `ResidueEdge` 24b +
   turbovec 24b = 96 bit = the V3 12-byte content-blind payload identity;
-  `Signed360` (48b) is the out-of-row alternate carving; 6×256² CAM-PQ
-  (384KB) clarified as distinct from bgz17's one-table-per-palette shape.
+  `Signed360` (48b) is the out-of-row alternate carving. Table families
+  disambiguated (post-review correction): 388KB benchmark = palette
+  `SpoDistanceMatrices` 3×(256² u16 = 128KB); CAM-PQ ADC = per-query
+  6×256 f32 = 6KB (`cam_pq.rs:76-84`), no fixed 256² footprint; bgz17 =
+  one 256² u16 + k×k u8 compose per palette.
 - **§9 kernel-shape rule:** VNNI/AMX for matmul-shaped ops, LUT/texture
   for lookup-shaped ops — turbovec NativeLut measured **11.4×** faster
   than the VPDPBUSD GEMM polyfill (n=20k/dim=512/4-bit, FINDING). ITU

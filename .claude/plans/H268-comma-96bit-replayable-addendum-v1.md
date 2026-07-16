@@ -47,9 +47,14 @@
   indexes which table).
 - Budget constraint: `Signed360` (6B) does NOT fit alongside both other
   lanes; it is the out-of-row/alternate-carving variant.
-- 6×256² clarification: the six 256×256 distance tables belong to CAM-PQ
-  (6×64KB = 384KB ≈ the 388KB SpoDistanceMatrices benchmark); bgz17's
-  palette layer is one 256² u16 + k×k u8 compose per palette.
+- Table-family clarification **(CORRECTED post Opus-review — the original
+  bullet here claimed "six 256×256 CAM-PQ tables, 6×64KB=384KB", wrong on
+  arithmetic AND attribution)**: the 388KB `SpoDistanceMatrices` benchmark
+  is the **palette** structure — 3 S/P/O planes × one 256² u16 table
+  (128KB each) = 384KB (`palette_distance.rs:145-158`); CAM-PQ has NO
+  fixed 256² footprint — its ADC tables are per-query 6×256 f32 = 6KB
+  (`cam_pq.rs:76-84`); bgz17's palette layer is one 256² u16 + k×k u8
+  compose per palette.
 
 ### B3 — Kernel-shape rule (new §9)
 - **Match engine to operation shape:** VNNI/AMX for matmul-shaped stages
