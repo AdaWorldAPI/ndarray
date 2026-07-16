@@ -115,7 +115,262 @@ any float-path GPU bit-exactness claim.
 | Plan E bench | bits/Gaussian on Mip-NeRF 360 | ≤4 bits | R-10 re-derived; web-streaming claim withdrawn |
 | a2ui N2 | wgpu `webgl` feature + texture upload, wasm32-tested | render parity headless vs browser | GPU raster tier deferred; CPU raster only |
 
-## 6. Cross-references
+## 7. Comma closure — the replayable irrational (constants correction folded in)
+
+The Pythagorean comma is the residue of a stack of pure fifths that never
+closes back onto the octave; a piano tuner's real-world dodge (equal
+temperament) trades exactness for closure. Fujifilm's X-Trans sensor
+generalizes the same move spatially: its 6×6 colour-filter tile — repeating,
+but far less regular than Bayer's 2×2 (a larger period with a quasi-random
+arrangement inside the tile) — is deliberately less commensurate with common
+demosaic/moiré periods, so the anti-aliasing filter can be thinned or
+dropped. Both are the same design
+pattern: **a generator that does not resonate with the sampling lattice
+avoids the periodic beat pattern (the comma) that a resonant generator
+produces.**
+
+This workspace's surrogate for "a generator that never resonates" is a
+**coprime-integer walk**, not an irrational number: helix `CurveRuler`'s
+stride-4-over-17 (`constants.rs`: `MODULUS = 17`, `STRIDE = 4`,
+`gcd(4, 17) = 1` → the walk visits all 17 residues before repeating — a full
+permutation, tested). The banned alternative — a naive Fibonacci-mod-17
+stepper — is rejected because it misses the residue set `{6, 7, 10, 11}`: a
+resonant generator, the comma made concrete. Base17 reuses the identical
+trick vertically (same coprime-walk discipline, orthogonal axis).
+
+**D-QUANTGATE rationale — restated, correcting an over-attribution.** The
+integer walk is canon for the quantized/GPU layer for three real reasons,
+not the single one this doc previously implied:
+
+1. **libm non-portability** — transcendental math (`sin`/`cos`/`exp`/…) is
+   not guaranteed bit-identical across libm implementations (receipt: the
+   2026-07-06 ndarray blackboard libm-fma cliff entry).
+2. **WGSL/GPU floats are not IEEE-pinned** — shader float semantics vary by
+   driver/backend (the C9 verdict, §3 row 9 above).
+3. **Bijective closure** — a quantized float-Weyl (golden-ratio) walk does
+   not *guarantee* a permutation of the quantized residue set; the coprime
+   integer walk does, by construction (`gcd(STRIDE, MODULUS) = 1`).
+
+**What is explicitly withdrawn:** the rationale "float constants round
+differently [across targets]" does NOT hold on the CPU/wasm surface this
+workspace actually ships on. Verified this session:
+- `std::f64::consts::GOLDEN_RATIO` and `std::f64::consts::EULER_GAMMA` exist
+  and compile on the pinned 1.94/1.95 toolchain, with fixed bit patterns
+  `φ = 0x3FF9E3779B97F4A8`, `γ = 0x3FE2788CFC6FB619` — not target-dependent.
+- There is **no** std-SIMD const-constants path — helix `constants.rs:17-23`
+  documents that the previously-assumed `const::simd::*`-style API does not
+  exist; the canonical source is `std::f64::consts`.
+- `gemm_f64_tiled`'s five-backend contract is **unfused, bit-identical**
+  across all five backends when accumulation order is pinned, and this is
+  covered by the wasm parity CI — plain IEEE basic ops in a fixed order are
+  NOT a source of cross-target drift on this surface.
+
+So the real fence is libm + GPU-float + bijectivity, not "floats are
+unportable" as a blanket claim.
+
+**Division of labor (already encoded in canon, now stated as a rule):**
+
+| Role | Owner | Domain |
+|---|---|---|
+| **φ PLACES** | `helix::constants` irrational f64 math | CPU/wasm-replayable placement (golden-ratio spacing) |
+| **walk QUANTIZES** | `CurveRuler` coprime integer stride | quantized/GPU/checksum layer, guaranteed bijective |
+| **γ CORRECTS** | `EULER_GAMMA`-anchored correction term | drift correction on the placed value |
+
+**Contrast with prior art:** x264's psy-optimized dither is an unspecified
+implementation detail (not part of the bitstream spec, not replayable
+across encoders); AV1's film-grain synthesis is parameterized and seeded,
+but the seed/PRNG state is bookkeeping the decoder must carry. This
+workspace's phase is **address-derived** — no seed to carry, no PRNG state,
+replayable and checksummable from the address alone. This positioning is
+**[H]** until the OGAR probes (PHASE-1, PERT-RHO, PYR-1) run; the J2
+falsification fence (dither-grade, not content-grade, until proven) is
+unchanged by this section.
+
+## 8. The 96-bit facet carving (48 CAM-PQ + 24 helix + 24 turbovec = the V3 12-byte payload)
+
+Three independently-shipped lane widths, verified this session:
+
+| Lane | Width | Shape | Source | Receipt |
+|---|---|---|---|---|
+| CAM-PQ basin code | 48 bit | 6 × 8-bit subspace codes | ndarray | `cam_pq.rs:3-12` |
+| helix `ResidueEdge` | 24 bit | unsigned hemisphere | lance-graph `helix` | `residue.rs:23-107` |
+| helix `Signed360` | 48 bit | signed full-sphere (polar-byte hemisphere partition) | lance-graph `helix` | `residue.rs:23-107` |
+| turbovec Lloyd-Max | 24 bit | 6 × 4-bit refinement nibbles | lance-graph-turbovec | `lib.rs` |
+
+**48 (CAM-PQ) + 24 (helix `ResidueEdge`) + 24 (turbovec) = 96 bit — exactly
+the V3 content-blind 12-byte payload** (`classid(4B) + 12-byte payload`,
+per the operator-locked `E-V3-FACET-4-PLUS-12` ruling). A legal carving of
+that payload: `classid(4B) + [CAM-PQ 6B basin | helix 3B residue location |
+turbovec 3B refinement nibbles]`. **`ClassView` is the carving/LUT
+selector** — which lane a given classid's ClassView routes a read through
+(CAM-PQ table, helix residue table, or turbovec codebook) is a property of
+the class, not the bytes; the 12-byte register itself stays dumb and
+content-blind, consistent with the V3 "content-blind facet" doctrine.
+
+**Budget constraint:** `Signed360` (48 bit / 6 bytes on its own) does
+**not** fit alongside both of the other two lanes inside one 96-bit/12-byte
+row — it is the **out-of-row / alternate-carving variant**, selected
+instead of (not in addition to) the `ResidueEdge` + turbovec pairing when
+full-sphere signed precision is needed.
+
+**Three flavours of 256 (table-family clarification, corrected + refined
+2026-07-16 post-review — operator framing):**
+- **CAM-PQ — 6×256² compressed to 6×256.** The latent structure is six
+  per-subspace 256×256 centroid-distance families, but the shipped path
+  never materializes them: ADC precomputes a **per-query 6×256 f32
+  row-set** = **6 KB**, L1-resident, recomputed per query
+  (`cam_pq.rs:76-84`) — the compressed, asymmetric projection of the
+  latent 6×256². (A symmetric code↔code variant would materialize the
+  full six tables; the shipped codec does not.)
+- **bgz17 — the explicit 256².** One materialized dense 256×256 u16
+  distance table per palette, **plus** a k×k u8 compose table. The
+  measured **388 KB `SpoDistanceMatrices` benchmark** (§1 above) is this
+  flavour on the three S/P/O planes: **3 × (256² u16 = 128 KB) = 384 KB**
+  (`palette_distance.rs:145-158`).
+- **V3 facet — explicit 6×256² as ADDRESS, codec-agnostic.** The 12-byte
+  content-blind payload read as `6×(u8:u8)` rails = six coordinate pairs
+  into 256×256 spaces = **96 bits of pure address**. The payload does not
+  know whose tables its rails index — **`classid → ClassView` selects
+  which codec's 256² family** (CAM-PQ subspace, bgz17 palette, helix
+  residue) interprets each rail. See lance-graph `le-contract.md §3` for
+  the canonical 6×(u8:u8) / 4×(u8:u8:u8) / 3×(u8:u8:u8:u8) readings of
+  the same register.
+The first two are table *footprints* (compressed vs materialized); the
+third is the *addressing shape* they are consumed through. None of the
+footprints should be added to or substituted for another. (An earlier
+draft attributed the 384 KB to "6 × 64 KB CAM-PQ tables" — wrong on both
+the arithmetic, a 256² u16 table is 128 KB, and the attribution.)
+
+**Honourable fourth mode (operational, not a footprint): index +
+residual.** bgz-tensor's `AdaptiveRow` (`adaptive_codec.rs`) keeps the
+palette centroid index as the coarse deterministic PLACE and stores only a
+Hadamard-rotated residual (i8 for outlier rows; i4+i2 cascade for regular
+rows) — index PLACES, residual CORRECTS. It is the continuous-field exit
+where a bare 256-level index terraces (e.g. elevation); categorical
+surfaces (`Signed360` normals, narrow colour) stay flat. Out-of-row like
+`Signed360`; the in-row refinement budget remains the turbovec nibble
+lane. Formal anchor [S]: Hambly–Lyons 2010 signature uniqueness (a
+bounded-variation path is determined by its graded iterated-integral
+cascade up to tree-like equivalence) — analogy-grade until a
+ladder→signature probe exists. Canonical text: lance-graph
+`le-contract.md §3` honourable-mention subsection +
+`E-PALETTE-RESIDUAL-LADDER-1`.
+
+## 9. The kernel-shape rule (engine follows operation shape)
+
+The rule: **match the compute engine to the shape of the operation, not to
+the platform.** Matmul-shaped stages (motion estimation / SSD, batched
+DCT, GEMM scoring) belong on VNNI/AMX tile-matmul engines; lookup-shaped
+stages (codebook gather, distance-table lookup, palette compose) belong on
+LUT engines — SIMD nibble-gather on CPU, texture fetch on GPU. Running a
+lookup-shaped stage through a matmul engine (or vice versa) is a shape
+mismatch, not merely a suboptimal choice.
+
+**Measured receipt (FINDING — it is measured, not projected):** turbovec's
+`NativeLut` path is **11.4× faster** than the VPDPBUSD GEMM polyfill it
+replaces, at n = 20,000 / dim = 512 / 4-bit quantization. AMX/VNNI
+tile-matmul accelerates exactly the operation TurboQuant's LUT path
+removed — running a lookup through a GEMM polyfill pays a real, measured
+tax.
+
+**ITU-implementability claim — scoped precisely, not generally:** the
+workspace's W1a pattern (one source, five bit-identical backends —
+AVX-512/AVX2/NEON/wasm-SIMD128/scalar) covers **any ITU codec's compute
+kernels** — the matmul-shaped and lookup-shaped arithmetic stages. It does
+**not** cover: CABAC's serial per-bit context chain (an inherently
+sequential state machine, not a kernel), conformance-suite corner cases,
+or ECM-scale tool counts (dozens of interacting coding tools, each with
+its own combinatorial interaction surface). The claim is about kernel
+portability, not codec-complexity parity.
+
+**Encode/decode asymmetry — endorsed with existing caveats:** encode-side
+work on AVX-512/VNNI (server-class, matmul-shaped: motion search, RDO)
+paired with decode-side work on wgpu/WebGL (browser-class, lookup-shaped:
+LUT/texture fetch) is a coherent split under the kernel-shape rule. This
+carries the **C5/C9 caveats already established elsewhere in this doc
+set**: the wgpu tier is roadmap, not shipped (§1 "wgpu in the workspace"
+row; a2ui-paint only, no textures/bind groups, `webgl` feature off); and
+GPU bit-exactness is only claimed for the **integer** path (§3 row 9) —
+float EWA/shading stays outside all bit-exactness claims.
+
+## 10. Replayable-tile synergies — H.268 × cognitive shaders
+
+The shared object across both domains: a **4×4 Morton tile** — 2-bit x ⊗
+2-bit y address — where the phase (sign) at every cell is a deterministic
+function of its address via the bijective coprime walk (§7), and the only
+bytes actually stored are magnitudes. Same object, two consumers.
+
+**H.268 consequences:**
+- **(a) Phase-side seekability (the anti-CABAC direction)** — the phase
+  generator carries no serial state, so the *phase side* of any tile is
+  reconstructible at any address with no prefix replay. This is NOT by
+  itself CABAC random access: the entropy-coded magnitudes still carry
+  CABAC's serial context chain, so bitstream-level seeking additionally
+  requires independently framed / context-reset regions — which is
+  precisely what A8 (region-addressable stream framing) provides. The
+  consequence strengthens the C4 path **only once A8 lands**; until then
+  it is phase-side seekability only.
+- **(b) Seekable grain** — unlike AV1's seeded film-grain synthesis
+  (decoder must carry PRNG/seed bookkeeping), the integer walk regenerates
+  identically from the address alone and survives a WGSL port per the C9
+  verdict (§3 row 9).
+- **(c) Conformance = the period-permutation self-test** — a decoder can
+  verify its own phase generator by checking the walk visits all
+  `MODULUS` residues before repeating (the same test that caught the
+  banned Fibonacci-mod-17 generator in §7); any reconstruction error
+  localizes to the stored magnitudes, never to phase.
+- **(d) Parallelism** — 16 cells map to one SIMD lane group or one wgpu
+  workgroup tile. This is **native to the H.268 scene codec** (the C6
+  correction: 4×4 is native to the 3DGS/scene codec, NOT the
+  HEVC-compatibility lane, which keeps its own 8×8/64×64 CTU/leaf sizes).
+
+**Cognitive-shader consequences (the larger half):**
+- **(e) RNG-free exploration** — phase is a pure function of position, so
+  this deletes the last shared-mutable-state candidate from the thinking
+  loop (composes with `E-NOBODY-WAITS-1`).
+- **(f) Replayable thinking = auditable cognition** — combined with
+  temporal-stream replayability (`E-MARKOV-TEMPORAL-STREAM-1`), a full
+  trajectory including exploration noise re-runs bit-exactly **on the
+  proven CPU/wasm integer path** (the pinned-order five-backend contract);
+  float and GPU stages stay outside the bit-exactness claim per §3 row 9
+  (the integer-only GPU caveat) unless a deterministic-backend probe is
+  added. Within that scope, counterfactual replay stores **zero**
+  exploration state.
+- **(g) Anti-confabulation = anti-moiré in concept space [H, probe-gated]**
+  — a coprime probe schedule is decorrelated from the palette lattice by
+  construction, and a *known* period-17 dependence structure is plausibly
+  friendlier to `I-NOISE-FLOOR-JIRAK`'s weak-dependence analysis than an
+  *unknown* PRNG correlation structure. The "friendlier" half is an
+  **unverified inference**: the period-17 permutation self-test proves
+  bijectivity, NOT decorrelation. Promotion to FINDING requires a measured
+  dependence probe — the walk's correlation spectrum against the palette
+  lattice vs a PRNG baseline, judged under Jirak weak-dependence rates.
+- **(h) Exact phase-side unbinding** — sign is recomputable per address
+  with no cleanup codebook needed; a cleanup codebook is only needed for
+  magnitudes. The two-algebra rule (sign = XOR, magnitude = `vsa_bundle`,
+  never mixed) stays intact.
+- **(i) Cache-native working set** — one 4×4 tile is 16 cells × 2 bytes ×
+  6 lanes = 192 bytes = 3 cache lines. The L4 substrate is flat Morton SoA
+  by ruling; the C1 arena-tree corrective (§3 row 1: the shipped `ctu.rs`
+  is a pointer arena, not Morton-flat) applies to the **codec CTU**, not
+  to the L4 substrate — the two do not contradict each other.
+
+**The four-role loop:** **φ PLACES → walk QUANTIZES → γ CORRECTS → F
+DECIDES.** λ-RDO (rate-distortion optimization, the codec's tile-local
+encode decision) and free-energy dispatch (the cognitive shader's
+tile-local think/commit decision) are the same tile-local decision
+procedure running over the same replayable substrate — one loop, two
+consumers.
+
+**Honesty ledger — everything above stays conditional on the standing
+probe queue:** D-MTS-1..3, PHASE-1/PERT-RHO/PYR-1 (with the J2 dither-only
+fence unchanged), WHP-1..4, and the L4 tenant assignment (doc-locked, not
+code-verified). No kill condition in §5 above is weakened or
+reinterpreted by this section — it names a shared object and its
+consequences *if* the probe queue passes; nothing here promotes a
+probe-gated claim to shipped.
+
+## 11. Cross-references
 
 - `pr-x12-h266-h267-standards-landscape.md` — the industry walls, sourced
 - `pr-x12-x266-3dgs-spacetime-upscaling.md` — the H.268 lens body (+ §12)
@@ -126,4 +381,8 @@ any float-path GPU bit-exactness claim.
   table sources; a2ui-rs `a2ui-paint` (the only wgpu in the workspace)
 
 _Last edit: 2026-07-16. Verdicts from workflow run wf_6c6fb99a-cb4 (15 agents,
-whole-file receipts; journal retained in session transcript dir)._
+whole-file receipts; journal retained in session transcript dir). §7-§10
+addendum (comma closure, 96-bit facet carving, kernel-shape rule,
+replayable-tile synergies) added 2026-07-16 per
+`.claude/plans/H268-comma-96bit-replayable-addendum-v1.md`; §6 renumbered
+to §11._
