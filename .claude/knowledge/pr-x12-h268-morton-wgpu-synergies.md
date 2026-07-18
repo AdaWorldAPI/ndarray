@@ -114,7 +114,7 @@ any float-path GPU bit-exactness claim.
 | WHP-1..4 (+GPU arm) | two-algebra pyramid parity | per OGAR canon | magnitude side stays CPU |
 | Plan E bench | bits/Gaussian on Mip-NeRF 360 | ≤4 bits | R-10 re-derived; web-streaming claim withdrawn |
 | a2ui N2 | wgpu `webgl` feature + texture upload, wasm32-tested | render parity headless vs browser | GPU raster tier deferred; CPU raster only |
-| PROBE-SPRITE-REPLAY | x265 I/P/B grammar over HHTL-anchored splat sprites with helix motion codes (plan `x265-sprite-replay-probe-v1.md`; NOT H.268, NOT x265 bit-parity) | replay determinism CPU==wasm on sprite states; B-frame bidirectional consistency; helix quantization bound reported | object-level helix motion collapses back into a dense per-splat MV field — the sprite amortization dies as stated |
+| PROBE-SPRITE-REPLAY | x265 I/P/B grammar over HHTL-anchored splat sprites with helix motion codes (plan `x265-sprite-replay-probe-v1.md`; NOT H.268, NOT x265 bit-parity) | replay determinism CPU==wasm on sprite states; B-frame bidirectional consistency; helix quantization bound reported | object-level helix motion collapses back into a dense per-splat MV field — the sprite amortization dies as stated → **VERDICT (wave 2): PASS-AT-SIGNED360 scoped / ResidueEdge-24bit insufficient; see wave-2 sub-table** |
 
 **Run this wave — h268-probe-wave-v1 (2026-07-16, reviewer-adjudicated;
 probes live in lance-graph `bgz-tensor`/`jc`/`helix`):**
@@ -124,6 +124,14 @@ probes live in lance-graph `bgz-tensor`/`jc`/`helix`):**
 | PROBE-WH-MAG | NEUTRAL / bare-tile leg NOT-TRANSFERRING | B/A 0.929 / 1.317 / 1.869 (grad+spike / heavy-tail / noise) | §10 [H] leg: WH-on-bare-tiles does not transfer; shipped row codec (lance-graph E-PALETTE-RESIDUAL-LADDER-1) untouched; PROBE-WH-MAG-2 deferred |
 | PROBE-SIG-CHECKSUM | PASS (depth-2 blind-spot bound) | replay 0.0; tree-like 0.0<1e-9; non-tree 11.31>0.05 | §10 [S] leg confirmed; digest ≠ catch-all — parallel-chord displacement is signature-invisible at depth 2 |
 | PROBE-WALK-SPECTRUM | KILL of §10(g) "decorrelated" half | period-17 \|R\| 0.998/0.996/0.994; lattice max 0.875 vs PRNG 0.0205 = 42.7× | §10(g) corrected: known structure ≠ low correlation; D-QUANTGATE / bijectivity unaffected |
+
+**Wave 2 — x265-sprite-replay + WH-MAG-2 (2026-07-16, reviewer-adjudicated;
+probes in lance-graph `helix`/`bgz-tensor`):**
+
+| Probe | Verdict | Numbers | Consequence |
+|---|---|---|---|
+| PROBE-SPRITE-REPLAY | PASS-AT-SIGNED360 (scoped) / ResidueEdge-24bit INSUFFICIENT; KILL did not fire | Signed360 mean/max 0.0; ResidueEdge mean 9.98 / max 42.4 (Pos 3.55, Neg 16.4); B bidir-delta 6.04 | One Signed360 (48-bit) code per sprite per P-frame reconstructs motion + B-frames exactly — but for helix-MANIFOLD motion (ground truth drawn from helix's own lift); proves capacity+round-trip+sign, not arbitrary-motion generality ([H], independent-GT probe named). ResidueEdge-24bit unusable: hemisphere-blind + 8-bit-rim rank-adjacency hazard → Signed360-only motion primitive |
+| PROBE-WH-MAG-2 | UPGRADES the §10 WH-magnitude [H] leg: bare NOT-TRANSFERRING → pairing TRANSFERS on structured tiles | gradient+spike escB/A 0.815 + cenB/A 0.209 (both <0.9); heavy-tailed 0.998 / 1.232; noise 1.66 / 1.66; bareB/A 0.929/1.317/1.869 reproduced; esc_frac 0.098 | WH transfers ONLY paired with passthrough-escape + centroid-residual (the shipped row codec E-PALETTE-RESIDUAL-LADDER-1) and ONLY on structured tiles; NOT bare, NOT heavy-tailed (escape masks to parity; centroid hurts), NOT noise. escB/cenB are compound (no direct+escape/direct+centroid control) — transfer is a codec-pairing property, WH's isolated margin unmeasured; centroid is class-dependent |
 
 ## 7. Comma closure — the replayable irrational (constants correction folded in)
 
@@ -458,6 +466,21 @@ fourth-mode/anchor discussion (§8):
   FailureTicket). PROBE-WH-MAG-2's natural home is therefore WH
   re-evaluated UNDER the mode grammar (heavy-tailed tiles routed to
   Escape before the cascade), not a wait for new machinery.
+  **RESULT-2 (2026-07-16, PROBE-WH-MAG-2, upgrades this leg):** run under
+  the escape+centroid pairing (the deferral-condition home named above),
+  WH TRANSFERS on structured tiles — gradient+spike escB/A **0.815** +
+  cenB/A **0.209** both clear the <0.9 bar — but NOT bare (0.929, leg-1
+  reconfirmed), NOT heavy-tailed (escB/A 0.998 = escape masks WH to
+  parity; cenB/A 1.232 = centroid hurts zero-mean+outliers), NOT noise
+  (1.66/1.66). The [H] leg is upgraded from "bare NOT-TRANSFERRING" to
+  "TRANSFERS with the shipped WH+escape+centroid pairing on STRUCTURED
+  tiles only." Caveat: escB/cenB are compound (Path A has no
+  escape/centroid sibling), so the win is a codec-pairing property — WH's
+  isolated marginal value beyond escape+centroid is unmeasured; bareB/A
+  stays the only clean WH isolation and stays NEUTRAL. Cross-ref
+  lance-graph E-X265-PROBE-WAVE-2-RESULTS,
+  `crates/bgz-tensor/src/adaptive_codec.rs` mod
+  probe_wh_mag::probe_wh_mag_2.
 - **[S] Signature as the replayable-trajectory checksum.** The x264
   contrast in §7 asked for a replayable, checksummable stream; the
   Hambly–Lyons signature is the canonical path digest with a uniqueness
