@@ -93,3 +93,43 @@ CPU/wasm decode, harness), filigree adjudication vs the pass/KILL bands,
 central gates, PR, autonomous merge (standing authority). The wgpu tier
 may land as a second commit gated on the shared harness; if it slips,
 the CPU/wasm probe stands alone.
+
+## Results (2026-07-16 — PROBE-SPRITE-REPLAY-CORE, reviewer-adjudicated)
+
+**Verdict: PASS-AT-SIGNED360 (scoped) / ResidueEdge-24bit INSUFFICIENT. The KILL band did NOT fire.**
+
+Probe: `lance-graph crates/helix/src/sprite_replay.rs` (`probe_sprite_replay_core`),
+CPU-native core only (splat3d EWA raster + wgpu tiers deferred per the scope
+guard); N=8 sprites, TOTAL=240, 6 anchors (I+5P), GOP `I B B P ...`. Deterministic
+(SplitMix64); the test asserts determinism + finiteness + counts, never a verdict.
+
+| Metric (world-unit Euclidean position error) | ResidueEdge (24-bit) | Signed360 (48-bit) |
+|---|---|---|
+| I+P anchor motion fidelity — mean / max | 9.98 / 42.43 | **0.0 / 0.0** |
+| Sign::Pos sprites — mean / max | 3.55 / 17.60 | 0.0 / 0.0 |
+| Sign::Neg sprites — mean / max | 16.41 / 42.43 | 0.0 / 0.0 |
+| B-frame bidir-delta — mean / max | 6.04 / 22.50 | 0.0 / 0.0 |
+| B-frame vs-truth — mean / max | 10.45 / 41.57 | 0.0 / 0.0 |
+
+- **KILL did not fire** (plan §4): object-level helix motion does NOT need a
+  dense per-splat residual field — one `Signed360` code per sprite per P-frame
+  reconstructs motion + parametric B-frames exactly.
+- **PASS is scoped (the load-bearing caveat).** Ground-truth motion is drawn
+  from helix's OWN `signed_lift` template, so the 0.0 Signed360 result proves
+  CAPACITY (16-bit azimuth indexes n∈0..240 trivially) + ROUND-TRIP (the
+  hand-built public-primitive inverse recovers n and sign exactly) + SIGN
+  carriage — NOT that arbitrary independently-captured object motion fits the
+  helix manifold. "P-frame = one Signed360 code" is FEASIBLE at 48-bit for
+  **helix-manifold** motion [proven]; arbitrary-motion generality stays [H],
+  gated on a follow-up probe with independent ground truth.
+- **ResidueEdge (24-bit) INSUFFICIENT — Signed360-only ruling.** Two
+  independent failures: (1) hemisphere-blind (no sign bit → Neg sprites mirror
+  wrong: mean 16.4 / max 42.4); (2) rank-adjacency hazard (8-bit `end_idx`
+  bucket; a ±1 rank error under golden-spiral ~137.5° spacing lands a distant
+  point — even Pos sprites: mean 3.55 / max 17.6). The sprite motion primitive
+  should be Signed360; ResidueEdge is a residue-edge codec, not a motion code.
+
+**Follow-up (named, deferred):** an arbitrary-independent-ground-truth motion
+probe (a captured 3-D trajectory the encoder did not generate) to promote the
+helix-manifold [proven] result toward arbitrary-motion [H]. The wgpu/wasm decode
+tiers (plan §Decode tiers b/c) remain deferred on the shared PROBE-GPU-LUT harness.
