@@ -183,3 +183,34 @@ sprite states (plan §4). PROBE-GPU-LUT recorded only a CPU-reference run + an
 adapter-skipped GPU leg — **no wasm result**. Tier (b) still requires its own
 CPU-vs-wasm parity run before it can be called un-gated; PROBE-GPU-LUT does not
 touch it.
+
+## Results (2026-07-18 — HEVC external anchor, §5 optional context, RUN + VISUAL)
+
+The plan §5 optional anchor ("run actual x265 over the CPU raster sequence;
+report bits/frame + PSNR") is now RUN — and made visual.
+
+- **Scene:** 8 gaussian sprites tracing φ-spiral (golden-angle hemisphere)
+  paths, alternating hemispheres by index parity — the sprite-replay scene
+  (NUM_SPRITES=8, TOTAL=240) rendered to pixels. 320×240, 240 frames, a faint
+  panning background so P/B-frames have global motion to track.
+- **Encoder:** x265 3.5, preset medium, `--psnr`. x265 ran its OWN I/P/B GOP
+  over our moving scene (the arc's "replay x265's GOP grammar" made literal):
+  1 I, 56 P, 183 B, up to 5 consecutive B-frames.
+- **Numbers:** raw Y4M 27,649,483 B → HEVC 47,836 B = **578×**; **1594.5
+  bits/frame** (199 B/frame); Global **PSNR 60.79 dB** (Y 47.3–49.2 by
+  slice-type; chroma neutral). Encode 296 fps.
+- **Roundtrip visual:** frames decoded back OUT of the `.265` bitstream (ffmpeg)
+  into a 5-frame motion montage + animated GIF — the sprites visibly at
+  different positions/sizes across time.
+- **Reproducer:** `lance-graph crates/helix/examples/hevc_moving_scene.rs`
+  (std-only, deterministic SplitMix64) → Y4M; `x265 --input scene.y4m --y4m
+  --preset medium --psnr -o scene.265`; `ffmpeg -i scene.265 … montage/gif`.
+
+**Reading (honest):** this is an EXTERNAL ANCHOR (plan §5, explicitly "not a
+gate"), NOT a claim about our codec. The 578× / 60.79 dB are **x265's** numbers
+on a smooth-gaussian synthetic scene that compresses easily — they anchor "what
+a stock HEVC encoder does with this content," not "our primitives beat x265."
+The arc's own sprite-replay motion coding (E-SPRITE-IPB-HELIX-1: one Signed360
+code per sprite per P-frame) is the thing being contextualized; the
+bitrate-comparison study (our object-level motion codes vs x265's per-block MV
+field on the SAME scene) is a NAMED follow-up, not done here.
