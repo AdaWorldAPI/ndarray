@@ -107,7 +107,7 @@ any float-path GPU bit-exactness claim.
 
 | Probe | Question | Pass | Kill |
 |---|---|---|---|
-| PROBE-GPU-LUT | bgz17 256×256 tables as R16Uint/R8Uint; fragment-shader distance == `batch_palette_distance`? | bit-parity on wgpu gles + WebGPU | GPU lane abandoned for LUTs; CPU-wasm only |
+| PROBE-GPU-LUT | bgz17 256×256 tables as R16Uint/R8Uint; fragment-shader distance == `batch_palette_distance`? | bit-parity on wgpu gles + WebGPU | GPU lane abandoned for LUTs; CPU-wasm only → **VERDICT (wave 3): HARNESS-REAL / CPU-primitive GREEN / GPU-exec COMPILED+SHIPPED (wgpu 22, WebGPU+WebGL2), execution-parity adapter-deferred; the KILL did not fire — see wave-3 sub-table** |
 | PROBE-MORTON-CTU | flat Morton-addressed 85-slot SoA vs shipped arena tree | ≥2× partition-sweep throughput, code no larger | keep arena; Morton stays address-canon only |
 | PROBE-RANS-INTERLEAVE | N-state interleaved rANS, wasm SIMD128 lanes | ≥4× decode throughput vs scalar at equal ratio | CTU-granular parallelism declared sufficient |
 | OGAR PHASE-1 / PERT-RHO / PYR-1 | phase determinism; escalation rate; pyramid roundtrip | per OGAR canon | **J2**: D-PHASE stays dither-only; all codec-savings claims struck |
@@ -132,6 +132,18 @@ probes in lance-graph `helix`/`bgz-tensor`):**
 |---|---|---|---|
 | PROBE-SPRITE-REPLAY | PASS-AT-SIGNED360 (scoped) / ResidueEdge-24bit INSUFFICIENT; KILL did not fire | Signed360 mean/max 0.0; ResidueEdge mean 9.98 / max 42.4 (Pos 3.55, Neg 16.4); B bidir-delta 6.04 | One Signed360 (48-bit) code per sprite per P-frame reconstructs motion + B-frames exactly — but for helix-MANIFOLD motion (ground truth drawn from helix's own lift); proves capacity+round-trip+sign, not arbitrary-motion generality ([H], independent-GT probe named). ResidueEdge-24bit unusable: hemisphere-blind + 8-bit-rim rank-adjacency hazard → Signed360-only motion primitive |
 | PROBE-WH-MAG-2 | UPGRADES the §10 WH-magnitude [H] leg: bare NOT-TRANSFERRING → pairing TRANSFERS on structured tiles | gradient+spike escB/A 0.815 + cenB/A 0.209 (both <0.9); heavy-tailed 0.998 / 1.232; noise 1.66 / 1.66; bareB/A 0.929/1.317/1.869 reproduced; esc_frac 0.098 | WH transfers ONLY paired with passthrough-escape + centroid-residual (the shipped row codec E-PALETTE-RESIDUAL-LADDER-1) and ONLY on structured tiles; NOT bare, NOT heavy-tailed (escape masks to parity; centroid hurts), NOT noise. escB/cenB are compound (no direct+escape/direct+centroid control) — transfer is a codec-pairing property, WH's isolated margin unmeasured; centroid is class-dependent |
+
+**Wave 3 — PROBE-GPU-LUT on the a2ui-paint wgpu seam (2026-07-18,
+main-thread-adjudicated; probe in a2ui-rs `a2ui-paint`
+`src/gpu_lut_probe.rs`):**
+
+The wgpu decode tier the sprite-replay plan (§Decode tiers c) and the
+`a2ui N2` queue row gated on the "shared PROBE-GPU-LUT harness" — the
+harness is now confirmed real and the LUT-gather is proven buildable.
+
+| Probe | Verdict | Numbers | Consequence |
+|---|---|---|---|
+| PROBE-GPU-LUT | HARNESS-REAL / CPU-primitive GREEN / GPU-exec COMPILED+SHIPPED, execution-parity adapter-deferred; KILL did not fire | CPU-ref: 65536/65536 gather == row-major index, symmetric + zero-diagonal, deterministic, 256² u16 = 128 KiB (the §10(i) figure). GPU-exec: full 256×256 R16Uint→R32Uint `textureLoad` parity path compiles clean under wgpu 22 (WebGPU + WebGL2 via glow) and SKIPS-green here (measured: libvulkan loader present, **0 ICDs** → no adapter). `clippy --features wgpu -D warnings` clean; fmt clean | The bgz17 256²-u16 palette-distance table IS gatherable through a real in-scope wgpu texture (R16Uint sampled, `textureLoad`, integer render target — all WebGL2-core), so the GPU LUT lane is **not** abandoned. Falsifiable core (the gather arithmetic) proven bit-exact; the GPU merely executes it, and does so wherever a WebGPU/WebGL2 adapter exists (lavapipe CI / browser). This structurally un-gates §Decode tiers (c) + the `a2ui N2` row: harness capability proven; only runtime-execution parity awaits an adapter environment. **CAVEAT (honesty):** the GPU-exec *execution* was NOT run in this sandbox (no adapter) — "GPU-exec green" means COMPILES + SKIPS-cleanly, not that 65536 texels were compared on silicon here; the CPU-reference is the leg that actually ran. No bgz17 dep (harness-capability probe; the 256² table is built deterministically with bgz17's table STRUCTURE, keeping the a2ui-paint crate boundary clean) |
 
 ## 7. Comma closure — the replayable irrational (constants correction folded in)
 

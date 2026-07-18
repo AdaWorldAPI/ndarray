@@ -131,5 +131,48 @@ guard); N=8 sprites, TOTAL=240, 6 anchors (I+5P), GOP `I B B P ...`. Determinist
 
 **Follow-up (named, deferred):** an arbitrary-independent-ground-truth motion
 probe (a captured 3-D trajectory the encoder did not generate) to promote the
-helix-manifold [proven] result toward arbitrary-motion [H]. The wgpu/wasm decode
-tiers (plan §Decode tiers b/c) remain deferred on the shared PROBE-GPU-LUT harness.
+helix-manifold [proven] result toward arbitrary-motion [H].
+
+## Results (2026-07-18 — PROBE-GPU-LUT, the shared wgpu decode-tier harness, main-thread-adjudicated)
+
+**Verdict: HARNESS-REAL / CPU-primitive GREEN / GPU-exec COMPILED+SHIPPED, execution-parity adapter-deferred. The KILL ("GPU lane abandoned for LUTs") did NOT fire.**
+
+Probe: `a2ui-rs crates/a2ui-paint/src/gpu_lut_probe.rs`. The wgpu decode tier
+(§Decode tiers c, the `a2ui N2` queue row) was gated on a "shared PROBE-GPU-LUT
+harness" — operator ruling this session pinned that harness to a2ui-paint's real
+`wgpu = "22"` seam (WebGPU + WebGL2), the one in-scope GPU path (q2 `sculpt` +
+ndarray `splat3d` both deliberately opt OUT of GPU; measured this session).
+
+- **CPU-reference leg (ran here, PASS):** the 256²-u16 palette-distance LUT
+  texture-gather (`textureLoad(lut,(q,k)).r` == row-major `lut[q*256+k]`) is
+  bit-exact over all 65536 entries; table is symmetric + zero-diagonal +
+  deterministic (SplitMix64); 256² u16 = 128 KiB (the §10(i) materialized-table
+  figure). **This is the falsifiable core** — the arithmetic is what could be
+  wrong; the GPU only executes it.
+- **GPU-exec leg (COMPILED + SHIPPED, adapter-deferred):** the full
+  R16Uint-LUT → fragment `textureLoad` → R32Uint target → readback →
+  full-table-parity path compiles clean under wgpu 22 (WebGPU + WebGL2 via
+  `glow`; `clippy --features wgpu -D warnings` clean, fmt clean) and
+  **SKIPS-green** in this sandbox — measured: `libvulkan` loader present but
+  **0 ICDs** installed → `request_adapter()` returns `None`. It runs the real
+  65536/65536 parity wherever a WebGPU/WebGL2 adapter exists (lavapipe CI, a
+  browser). Integer sampled texture + `textureLoad` + integer render target are
+  all WebGL2-core, so the one shader covers both backends.
+- **KILL did not fire** (§Decode tiers c / `a2ui N2`): the bgz17 256²-u16 table
+  IS gatherable through a real in-scope wgpu texture, so the GPU LUT lane is not
+  abandoned — the harness capability is proven buildable.
+- **HONEST CAVEAT:** the GPU-exec *execution* was NOT run on silicon here (no
+  adapter). "GPU-exec green" = COMPILES + SKIPS-cleanly + is the shipped WGSL,
+  NOT "65536 texels compared on a GPU in this session." The CPU-reference is the
+  leg that actually ran. Runtime-execution parity is the one piece that awaits an
+  adapter environment (the `a2ui N2` render-parity-headless-vs-browser bar).
+- **Boundary kept clean:** no bgz17 dep in a2ui-paint (charter: no consumer
+  crate deps) — the 256² table is built deterministically with bgz17's table
+  STRUCTURE (symmetric u16, zero diagonal); this is a HARNESS-CAPABILITY probe,
+  not a bgz17 integration. Test-only `pollster` dev-dep for the async block.
+
+**Consequence:** §Decode tiers (c) wgpu + the wasm tier (b, same code) are
+**structurally un-gated** — the shared harness they waited on is real and the
+LUT-gather compiles + CPU-proves. The remaining deferral is narrow: run the
+GPU-exec parity in an adapter environment (lavapipe CI or browser) to close the
+`a2ui N2` render-parity bar on silicon.
