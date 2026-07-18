@@ -196,9 +196,12 @@ report bits/frame + PSNR") is now RUN — and made visual.
 - **Encoder:** x265 3.5, preset medium, `--psnr`. x265 ran its OWN I/P/B GOP
   over our moving scene (the arc's "replay x265's GOP grammar" made literal):
   1 I, 56 P, 183 B, up to 5 consecutive B-frames.
-- **Numbers:** raw Y4M 27,649,483 B → HEVC 47,836 B = **578×**; **1594.5
-  bits/frame** (199 B/frame); Global **PSNR 60.79 dB** (Y 47.3–49.2 by
-  slice-type; chroma neutral). Encode 296 fps.
+- **Numbers:** raw Y4M 27,649,483 B → HEVC 43,115 B = **641×**; **1437.2
+  bits/frame** (180 B/frame); Global **PSNR 60.94 dB** (Y 47.5–52.0 by
+  slice-type; chroma neutral). Encode 316 fps. (Re-run after the CodeRabbit #738
+  fix: the reproducer now uses `sprite_replay`'s canonical draw sequence +
+  signed-z hemisphere projection; the earlier 578×/60.79 dB figures were the
+  pre-fix scene where `sign` was inert.)
 - **Roundtrip visual:** frames decoded back OUT of the `.265` bitstream (ffmpeg)
   into a 5-frame motion montage + animated GIF — the sprites visibly at
   different positions/sizes across time.
