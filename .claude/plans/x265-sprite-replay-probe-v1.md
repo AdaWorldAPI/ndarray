@@ -131,5 +131,89 @@ guard); N=8 sprites, TOTAL=240, 6 anchors (I+5P), GOP `I B B P ...`. Determinist
 
 **Follow-up (named, deferred):** an arbitrary-independent-ground-truth motion
 probe (a captured 3-D trajectory the encoder did not generate) to promote the
-helix-manifold [proven] result toward arbitrary-motion [H]. The wgpu/wasm decode
-tiers (plan §Decode tiers b/c) remain deferred on the shared PROBE-GPU-LUT harness.
+helix-manifold [proven] result toward arbitrary-motion [H].
+
+## Results (2026-07-18 — PROBE-GPU-LUT, the shared wgpu decode-tier harness, main-thread-adjudicated)
+
+**Verdict: HARNESS-REAL / CPU-primitive GREEN / GPU-exec COMPILED+SHIPPED, execution-parity adapter-deferred. The KILL ("GPU lane abandoned for LUTs") did NOT fire.**
+
+Probe: `a2ui-rs crates/a2ui-paint/src/gpu_lut_probe.rs`. The wgpu decode tier
+(§Decode tiers c, the `a2ui N2` queue row) was gated on a "shared PROBE-GPU-LUT
+harness" — operator ruling this session pinned that harness to a2ui-paint's real
+`wgpu = "22"` seam (WebGPU + WebGL2), the one in-scope GPU path (q2 `sculpt` +
+ndarray `splat3d` both deliberately opt OUT of GPU; measured this session).
+
+- **CPU-reference leg (ran here, PASS):** the 256²-u16 palette-distance LUT
+  texture-gather (`textureLoad(lut,(q,k)).r` == row-major `lut[q*256+k]`) is
+  bit-exact over all 65536 entries; table is symmetric + zero-diagonal +
+  deterministic (SplitMix64); 256² u16 = 128 KiB (the §10(i) materialized-table
+  figure). **This is the falsifiable core** — the arithmetic is what could be
+  wrong; the GPU only executes it.
+- **GPU-exec leg (COMPILED + SHIPPED, adapter-deferred):** the full
+  R16Uint-LUT → fragment `textureLoad` → R32Uint target → readback →
+  full-table-parity path compiles clean under wgpu 22 (WebGPU + WebGL2 via
+  `glow`; `clippy --features wgpu -D warnings` clean, fmt clean) and
+  **SKIPS-green** in this sandbox — measured: `libvulkan` loader present but
+  **0 ICDs** installed → `request_adapter()` returns `None`. It runs the real
+  65536/65536 parity wherever a WebGPU/WebGL2 adapter exists (lavapipe CI, a
+  browser). Integer sampled texture + `textureLoad` + integer render target are
+  all WebGL2-core, so the one shader covers both backends.
+- **KILL did not fire** (§Decode tiers c / `a2ui N2`): the bgz17 256²-u16 table
+  IS gatherable through a real in-scope wgpu texture, so the GPU LUT lane is not
+  abandoned — the harness capability is proven buildable.
+- **HONEST CAVEAT:** the GPU-exec *execution* was NOT run on silicon here (no
+  adapter). "GPU-exec green" = COMPILES + SKIPS-cleanly + is the shipped WGSL,
+  NOT "65536 texels compared on a GPU in this session." The CPU-reference is the
+  leg that actually ran. Runtime-execution parity is the one piece that awaits an
+  adapter environment (the `a2ui N2` render-parity-headless-vs-browser bar).
+- **Boundary kept clean:** no bgz17 dep in a2ui-paint (charter: no consumer
+  crate deps) — the 256² table is built deterministically with bgz17's table
+  STRUCTURE (symmetric u16, zero diagonal); this is a HARNESS-CAPABILITY probe,
+  not a bgz17 integration. Test-only `pollster` dev-dep for the async block.
+
+**Consequence (scoped — corrected per codex P2 on ndarray #249):** only §Decode
+tiers **(c) the wgpu harness** is structurally un-gated — the shared harness it
+waited on is real and the LUT-gather compiles + CPU-proves. The remaining
+deferral is narrow: run the GPU-exec parity in an adapter environment (lavapipe
+CI or browser) to close the `a2ui N2` render-parity bar on silicon.
+
+**Tier (b) — the wasm tier — is NOT un-gated by this wave.** Its gate is a
+distinct check: **CPU-native vs wasm32 replay-determinism** of the decoded
+sprite states (plan §4). PROBE-GPU-LUT recorded only a CPU-reference run + an
+adapter-skipped GPU leg — **no wasm result**. Tier (b) still requires its own
+CPU-vs-wasm parity run before it can be called un-gated; PROBE-GPU-LUT does not
+touch it.
+
+## Results (2026-07-18 — HEVC external anchor, §5 optional context, RUN + VISUAL)
+
+The plan §5 optional anchor ("run actual x265 over the CPU raster sequence;
+report bits/frame + PSNR") is now RUN — and made visual.
+
+- **Scene:** 8 gaussian sprites tracing φ-spiral (golden-angle hemisphere)
+  paths, alternating hemispheres by index parity — the sprite-replay scene
+  (NUM_SPRITES=8, TOTAL=240) rendered to pixels. 320×240, 240 frames, a faint
+  panning background so P/B-frames have global motion to track.
+- **Encoder:** x265 3.5, preset medium, `--psnr`. x265 ran its OWN I/P/B GOP
+  over our moving scene (the arc's "replay x265's GOP grammar" made literal):
+  1 I, 56 P, 183 B, up to 5 consecutive B-frames.
+- **Numbers:** raw Y4M 27,649,483 B → HEVC 43,115 B = **641×**; **1437.2
+  bits/frame** (180 B/frame); Global **PSNR 60.94 dB** (Y 47.5–52.0 by
+  slice-type; chroma neutral). Encode 316 fps. (Re-run after the CodeRabbit #738
+  fix: the reproducer now uses `sprite_replay`'s canonical draw sequence +
+  signed-z hemisphere projection; the earlier 578×/60.79 dB figures were the
+  pre-fix scene where `sign` was inert.)
+- **Roundtrip visual:** frames decoded back OUT of the `.265` bitstream (ffmpeg)
+  into a 5-frame motion montage + animated GIF — the sprites visibly at
+  different positions/sizes across time.
+- **Reproducer:** `lance-graph crates/helix/examples/hevc_moving_scene.rs`
+  (std-only, deterministic SplitMix64) → Y4M; `x265 --input scene.y4m --y4m
+  --preset medium --psnr -o scene.265`; `ffmpeg -i scene.265 … montage/gif`.
+
+**Reading (honest):** this is an EXTERNAL ANCHOR (plan §5, explicitly "not a
+gate"), NOT a claim about our codec. The 578× / 60.79 dB are **x265's** numbers
+on a smooth-gaussian synthetic scene that compresses easily — they anchor "what
+a stock HEVC encoder does with this content," not "our primitives beat x265."
+The arc's own sprite-replay motion coding (E-SPRITE-IPB-HELIX-1: one Signed360
+code per sprite per P-frame) is the thing being contextualized; the
+bitrate-comparison study (our object-level motion codes vs x265's per-block MV
+field on the SAME scene) is a NAMED follow-up, not done here.
