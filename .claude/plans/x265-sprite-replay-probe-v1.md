@@ -171,8 +171,15 @@ ndarray `splat3d` both deliberately opt OUT of GPU; measured this session).
   STRUCTURE (symmetric u16, zero diagonal); this is a HARNESS-CAPABILITY probe,
   not a bgz17 integration. Test-only `pollster` dev-dep for the async block.
 
-**Consequence:** §Decode tiers (c) wgpu + the wasm tier (b, same code) are
-**structurally un-gated** — the shared harness they waited on is real and the
-LUT-gather compiles + CPU-proves. The remaining deferral is narrow: run the
-GPU-exec parity in an adapter environment (lavapipe CI or browser) to close the
-`a2ui N2` render-parity bar on silicon.
+**Consequence (scoped — corrected per codex P2 on ndarray #249):** only §Decode
+tiers **(c) the wgpu harness** is structurally un-gated — the shared harness it
+waited on is real and the LUT-gather compiles + CPU-proves. The remaining
+deferral is narrow: run the GPU-exec parity in an adapter environment (lavapipe
+CI or browser) to close the `a2ui N2` render-parity bar on silicon.
+
+**Tier (b) — the wasm tier — is NOT un-gated by this wave.** Its gate is a
+distinct check: **CPU-native vs wasm32 replay-determinism** of the decoded
+sprite states (plan §4). PROBE-GPU-LUT recorded only a CPU-reference run + an
+adapter-skipped GPU leg — **no wasm result**. Tier (b) still requires its own
+CPU-vs-wasm parity run before it can be called un-gated; PROBE-GPU-LUT does not
+touch it.
