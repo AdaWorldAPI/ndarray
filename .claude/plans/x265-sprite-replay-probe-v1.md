@@ -217,3 +217,38 @@ The arc's own sprite-replay motion coding (E-SPRITE-IPB-HELIX-1: one Signed360
 code per sprite per P-frame) is the thing being contextualized; the
 bitrate-comparison study (our object-level motion codes vs x265's per-block MV
 field on the SAME scene) is a NAMED follow-up, not done here.
+
+## Results (2026-07-18 — HEAD-TO-HEAD: our helix motion codes vs x265 MV field)
+
+The head-to-head the HEVC anchor set up: our object-level helix motion codes vs
+x265's per-block MV search, on the SAME φ-spiral scene. Reproducer:
+`lance-graph crates/helix/examples/hevc_headtohead.rs` (uses the REAL helix
+public API — `ResidueEncoder::encode_signed` / `Signed360` / azimuth-roundtrip
+decode — not a re-inline; 3 tests, clippy-clean).
+
+| Lane | Bytes | bits/frame | PSNR | Codec |
+|---|---|---|---|---|
+| A — x265 3.5 medium | 43,115 | 1437.2 | 60.94 dB | general block-MV, blind to scene structure |
+| B — our helix `Signed360` | **432** (192 appearance + 240 motion) | 14.4 | **∞ (bit-exact)** | object-motion: 1× 6-byte code / sprite / P-frame |
+
+**Verdict: TAUTOLOGICAL-WIN / MODEL-MATCHED LOWER BOUND (KILL did not fire; NOT a
+general-codec win).** Lane B was handed the EXACT generative model of a
+self-generated φ-scene; the ∞ PSNR is the decoder re-running the same generator.
+Legitimately establishes the object-motion amortization's concrete bit-cost — one
+6-byte `Signed360` per sprite per P-frame = 240 B of motion for the whole
+240-frame GOP — replacing x265's entire per-block MV field, bit-exact on
+model-matched content. Does NOT beat x265 in general: arbitrary non-φ-manifold
+motion needs stored residuals (PROBE-SPRITE-REPLAY's [H] gate), the named
+follow-up. Board: lance-graph `E-X265-HEADTOHEAD-1`.
+
+## Follow-up probe queued — PROBE-SPLAT-μ-HYDRATION-RHO (the spatial cousin)
+
+The operator's 3DGS↔blasgraph↔gridlake presumption, adjudicated by the
+convergence-architect (lance-graph `E-3DGS-MU-HYDRATION-1`): `splat3d::GaussianBatch`
+is ALREADY SoA, so the only net-new "gridlake" claim is **address-derived gaussian
+μ** (WORTH-EXPLORING on the φ-manifold — the SAME [H] gate as this head-to-head's
+temporal tautology). "EWA = blasgraph semiring" DROPPED (depth-sorted Porter-Duff
+*over* is non-commutative → axiom break). Named probe **PROBE-SPLAT-μ-HYDRATION-RHO**
+runs on a real trained Inria `.ply` (non-φ input via `splat3d::ply`): μ-hydration
+ratio + semiring-matches-EWA (commutative-⊕ vs sorted-over) + SoA-sweep throughput.
+PASS→[H] / KILL→DROP bands in the board entry.
