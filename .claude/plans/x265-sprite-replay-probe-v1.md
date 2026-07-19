@@ -329,3 +329,33 @@ magnitude (dis-occlusion grows with the delta); non-rigid motion is out of scope
 sub-pel **appearance** (vs position) is the inverse-pyramid-descent leg; cross-level
 carry for large objects; and the real-x265 inter-frame byte comparison at matched
 PSNR.
+
+## Self-optimizing axis — PROBE-RDO-ARBITER (the endgame's last word, measured)
+
+The operator's endgame framing — "a self-optimizing space-time-aware graph" — has
+three axes, and the arc measured all three: SPACE = `E-X265-MORTON-SHIFT-1`
+(address-arithmetic motion); TIME = `E-3DGS-MU-HYDRATION-2` (the transmitted
+generation-index); SELF-OPTIMIZING = this probe, the RDO / free-energy mode arbiter.
+
+### Results — RAN (2026-07-19, lance-graph `E-X265-RDO-ARBITER-1`)
+
+`crates/helix/examples/rdo_arbiter_probe.rs` (std-only, SplitMix64, 5 tests green):
+
+```
+dispatch_correct=64/64  ms_picks=32  res_picks=32   ← perfect content-adaptive dispatch
+composite_bytes=5212  all_residual_bytes=8178  signal_overhead=64
+composite_over_fixed_ratio=0.6373   ← adaptive 36% cheaper than fixed, INCLUDING mode-signal
+flip: rigid→MortonShift, newcontent→Residual        ← the choice reads content, not a label
+```
+
+**Verdict: PASS→[H].** A free-energy arbiter detects rigid-motion applicability per
+region (a real `rigid_match` search), dispatches MortonShift-vs-Residual by
+`argmin(bits)`, and the adaptive composite beats the fixed (address-substrate-less,
+x265-like) pipeline by 36% — after paying the per-region mode-signal. "Self-optimizing"
+is now a number: **0.64**. RDO mode-decision ≡ active-inference dispatch. Not a
+tautology: applicability-detection + content-flip + surviving signal overhead +
+rigid-localized savings are the load-bearing content.
+
+**v2 (honest):** the residual rate is a `bits/px` MODEL not a real entropy coder (the
+#1 parity gap); a λ-swept rate-distortion frontier + a larger ME window are v2; 0.64
+is content-dependent proof-of-mechanism, not a headline compression number.
