@@ -266,3 +266,28 @@ temporal tautology). "EWA = blasgraph semiring" DROPPED (depth-sorted Porter-Duf
 runs on a real trained Inria `.ply` (non-φ input via `splat3d::ply`): μ-hydration
 ratio + semiring-matches-EWA (commutative-⊕ vs sorted-over) + SoA-sweep throughput.
 PASS→[H] / KILL→DROP bands in the board entry.
+
+### Results — leg 1 RAN (2026-07-19, `E-3DGS-MU-HYDRATION-2`)
+
+Leg 1 (the synthetic-structured falsifier, before the real-`.ply` v2) ran on
+lance-graph `crates/helix/examples/mu_hydration_probe.rs` (std-only,
+`helix::placement` public API, SplitMix64, 5 tests green):
+
+```
+set=ctrl_naddr  rho=1.0000 residual=0.0000 escalation=0.0000   ← φ-phase at GENERATION index: perfect
+set=ctrl        rho=-0.0198 escalation=0.9978                   ← SAME cloud, MORTON spatial address: collapses
+set=nonphi      rho=-0.0676 escalation=1.0000                   ← structured cloud, spatial address: no win
+comma_phi_three_gap_distinct=3   comma_coprime_full_perm=1      ← comma fence green (Steinhaus ≤3 + coprime full-perm)
+```
+
+**Verdict: KILL→DROP for STATIC spatially-addressed μ-hydration** — escalation ≈1.0
+is precisely the KILL band; a spatially-addressed static cloud collapses to the
+ordinary float-SoA `splat3d` already ships (no positions-free win). The
+`ctrl_naddr` contrast (same data, `rho=1.0` at the generation index vs `rho≈0` at
+the Morton address) proves hydration is **addressing-dependent, not data-dependent**:
+the win needs a transmitted sequential generation index, which motion has (the
+frame/path counter — the `E-X265-HEADTOHEAD-1` ∞-PSNR case) and a static cloud does
+not. **μ-hydration ⊂ motion-hydration.** The comma is the decoupler: φ's
+incommensurability (three-gap = 3) is exactly what makes the spatial address unable
+to invert to `n`. The real-`.ply` `splat3d::ply` leg (v2) would confirm on trained
+geometry but the mechanism already forecloses the static win.
