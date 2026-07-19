@@ -291,3 +291,41 @@ not. **μ-hydration ⊂ motion-hydration.** The comma is the decoupler: φ's
 incommensurability (three-gap = 3) is exactly what makes the spatial address unable
 to invert to `n`. The real-`.ply` `splat3d::ply` leg (v2) would confirm on trained
 geometry but the mechanism already forecloses the static win.
+
+## Head-to-head-2 — PROBE-MORTON-SHIFT-MOTION (the non-tautological one)
+
+The operator's follow-up claim: *x265 never had blasgraph + the Morton-cascade
+inverse-pyramid 4×4 neighborhood with the Pythagorean comma (akin to the Fujifilm
+X-Trans sensor), and **moving a sprite could become bit-shifting to adjacent**.*
+This is the sharpest form of the amortization thesis, and unlike head-to-head-1 it
+is NOT a tautology: the sprite APPEARANCE is arbitrary deterministic-noise (never
+φ-placed), paid for equally on both sides — only the MOTION representation is
+compared.
+
+### Results — RAN (2026-07-19, lance-graph `E-X265-MORTON-SHIFT-1`)
+
+`crates/helix/examples/morton_shift_motion_probe.rs` (std-only, SplitMix64, 6 tests
+green):
+
+```
+legA dx∈{(1,0),(0,1),(7,5),(16,16)}  bit_exact=1  motion_bytes=2  sprite_px=576
+legA_dilated_add_identity=1     ← morton2(x+dx,y+dy) == two carry-through-holes adds (4096 samples)
+legB disocc_dx=2 dy=1 disocc_px=70 disocc_frac=0.1215   ← interior residual = 0; only the L-strip is new
+legC comma_three_gap_distinct=3  comma_coprime_full_perm=1   ← sub-pel dither aperiodic
+```
+
+**Verdict: PASS→[H] for the structural claim.** Rigid tile-aligned translation of an
+arbitrary sprite IS a dilated-lane Morton address-add — bit-exact, and the whole
+576-pixel object moves for a **2-byte** delta (O(1) in sprite size). The interior
+residual is exactly 0 (x265's DCT+quant round-trip never is); the only new content
+is the revealed leading-edge L-strip (dis-occlusion), which is the residual the
+entropy coder must still carry — the tail SHRINKS to genuine-new-information, it
+does not vanish. Sub-pel rides the comma phase (three-gap=3), the Fujifilm X-Trans
+anti-moiré move, replacing quarter-pel interpolation. This is the concrete
+**"MortonShift" prediction mode** for the add-a-mode/RDO parity path.
+
+**v2 gates (deferred, honest):** advantage scales inversely with per-frame motion
+magnitude (dis-occlusion grows with the delta); non-rigid motion is out of scope;
+sub-pel **appearance** (vs position) is the inverse-pyramid-descent leg; cross-level
+carry for large objects; and the real-x265 inter-frame byte comparison at matched
+PSNR.
