@@ -1123,6 +1123,118 @@ pub mod wasm32_simd {
     }
 
     // ════════════════════════════════════════════════════════════════════
+    // INT8 dot / GEMM — i8×i8→i32 via i16-widen + i32-pairwise-reduce.
+    //
+    // wasm32 SIMD128 has no VNNI-style unsigned×signed dot-product
+    // instruction (no `VPDPBUSD` analogue — see `hpc::amx_matmul`'s AMX /
+    // AVX-512-VNNI / AVX-VNNI tiers on x86_64, which all shift i8 → u8 to
+    // feed exactly such an instruction), so this is the wasm32+simd128
+    // tier of `matmul_i8_to_i32`'s dispatch ladder: signed i8×i8 products
+    // widen to i16 via `i16x8_extmul_{low,high}_i8x16` (both operands are
+    // read as SIGNED `i8x16` — confirmed against the `core::arch::wasm32`
+    // source, which implements these via a sign-extending
+    // `simd_cast::<i8x8, i16x8>`, distinct from the separate `_u8x16`
+    // unsigned entry points), then each i16x8 half reduces to i32x4 via
+    // `i32x4_extadd_pairwise_i16x8` (signed adjacent-pair sum).
+    // ════════════════════════════════════════════════════════════════════
+
+    /// i8×i8→i32 dot product over the first `k` elements of `a`/`b`.
+    ///
+    /// **Exactness.** `i8::MIN * i8::MIN = (-128) * (-128) = 16384` is the
+    /// largest possible `|product|`; it fits `i16` (max `32767`) with
+    /// headroom, so `i16x8_extmul_{low,high}_i8x16` never overflows. The
+    /// pairwise sum of two such products maxes at `32768`, still well
+    /// inside `i32`, so `i32x4_extadd_pairwise_i16x8` never overflows
+    /// either. Accumulating the per-chunk `i32x4` partials (`i32x4_add`)
+    /// and horizontal-reducing at the end is therefore bit-identical, for
+    /// any `k`, to the plain scalar reference `Σ a[i] as i32 * b[i] as
+    /// i32` — up to the same `i32`-accumulator overflow ceiling the
+    /// scalar form already has (roughly `k > i32::MAX / 16384 ≈
+    /// 131_072`, unreachable for any realistic GEMM dimension).
+    ///
+    /// **No sign-shift bias trick needed.** Unlike the AMX / AVX-512-VNNI
+    /// / AVX-VNNI tiers in `hpc::amx_matmul::matmul_i8_to_i32` (which
+    /// shift i8 → u8 by `+128` to feed an unsigned×signed instruction,
+    /// then subtract `128 · colsum(B)` to undo the bias), signed×signed
+    /// multiply is native to this i16-widening path, so no bias
+    /// correction is required here.
+    ///
+    /// `a` and `b` must have length `>= k`; only the first `k` elements
+    /// of each are read. The tail (`k % 16 != 0`) is a plain scalar
+    /// accumulation over the remaining `< 16` elements, using the same
+    /// `i32` accumulation as the SIMD path.
+    #[inline(always)]
+    pub fn dot_i8_to_i32_wasm(a: &[i8], b: &[i8], k: usize) -> i32 {
+        debug_assert!(a.len() >= k && b.len() >= k);
+        let chunks = k / 16;
+        let tail = k % 16;
+
+        let mut acc = i32x4_splat(0);
+        for c in 0..chunks {
+            let off = c * 16;
+            // SAFETY: `off + 16 <= chunks * 16 <= k <= a.len()` (and
+            // likewise for `b`), so both loads read exactly 16 in-bounds
+            // bytes.
+            let (va, vb) = unsafe {
+                (v128_load(a.as_ptr().add(off) as *const v128), v128_load(b.as_ptr().add(off) as *const v128))
+            };
+            let lo = i32x4_extadd_pairwise_i16x8(i16x8_extmul_low_i8x16(va, vb));
+            let hi = i32x4_extadd_pairwise_i16x8(i16x8_extmul_high_i8x16(va, vb));
+            acc = i32x4_add(acc, i32x4_add(lo, hi));
+        }
+
+        let mut sum = i32x4_extract_lane::<0>(acc)
+            + i32x4_extract_lane::<1>(acc)
+            + i32x4_extract_lane::<2>(acc)
+            + i32x4_extract_lane::<3>(acc);
+
+        for t in 0..tail {
+            let idx = chunks * 16 + t;
+            sum += a[idx] as i32 * b[idx] as i32;
+        }
+        sum
+    }
+
+    /// i8×i8 → i32 GEMM: `c[i*n+j] = Σ_p a[i*k+p] * b[p*n+j]`.
+    ///
+    /// Row-major `a` (M×K), row-major `b` (K×N), row-major `c` (M×N,
+    /// fully OVERWRITTEN — not accumulated). `b`'s "columns" are strided
+    /// (stride `n`) in its row-major layout, which the contiguous v128
+    /// loads in [`dot_i8_to_i32_wasm`] can't walk directly, so this
+    /// transposes `b` into an `n × k` column-major scratch buffer ONCE (a
+    /// plain `O(k·n)` data reshuffle — not a change to the dot-product
+    /// kernel's intrinsic sequence itself) and then calls
+    /// `dot_i8_to_i32_wasm` once per output cell, matching row-major `a`
+    /// against the now-contiguous transposed column of `b`.
+    ///
+    /// Bit-identical to the plain scalar `i8×i8→i32` triple-loop
+    /// reference for any `m`/`n`/`k` (integer addition is associative /
+    /// commutative, so summing the `k` products in a different order —
+    /// per-cell dot product here vs. the scalar reference's `ikj`
+    /// accumulation order — cannot change the exact result, only the
+    /// memory-access pattern).
+    #[inline(always)]
+    pub fn matmul_i8_to_i32_wasm(a: &[i8], b: &[i8], c: &mut [i32], m: usize, n: usize, k: usize) {
+        debug_assert!(a.len() >= m * k);
+        debug_assert!(b.len() >= k * n);
+        debug_assert!(c.len() >= m * n);
+
+        let mut b_t = vec![0i8; n * k];
+        for p in 0..k {
+            for j in 0..n {
+                b_t[j * k + p] = b[p * n + j];
+            }
+        }
+        for i in 0..m {
+            let a_row = &a[i * k..i * k + k];
+            for j in 0..n {
+                let b_col = &b_t[j * k..j * k + k];
+                c[i * n + j] = dot_i8_to_i32_wasm(a_row, b_col, k);
+            }
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════
     // BF16 batch conversion — v128-accelerated (shift, no hardware BF16).
     // ════════════════════════════════════════════════════════════════════
 
@@ -1239,6 +1351,98 @@ pub mod wasm32_simd {
             let want: i32 = (0..17).map(|i| (a[i] as i32 - b[i] as i32).abs()).sum();
             assert_eq!(base17_l1_wasm(&a, &b), want);
             assert_eq!(want, 17 * 60000);
+        }
+
+        // ── SplitMix64 — deterministic PRNG shared by the INT8 GEMM parity
+        // tests below (self-contained, no external dep). ──────────────────
+        struct SplitMix64(u64);
+        impl SplitMix64 {
+            fn next_u64(&mut self) -> u64 {
+                self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+                let mut z = self.0;
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+                z ^ (z >> 31)
+            }
+            fn next_i8(&mut self) -> i8 {
+                (self.next_u64() & 0xFF) as u8 as i8
+            }
+        }
+
+        /// Direct parity test of the dot-product primitive (not routed
+        /// through the GEMM/transpose wrapper) across `k` values that hit:
+        /// zero, sub-chunk, exactly one chunk, multiple chunks, and
+        /// multiple chunks plus a tail.
+        #[test]
+        fn dot_i8_to_i32_wasm_matches_scalar_various_k() {
+            for &k in &[0usize, 1, 3, 15, 16, 17, 31, 32, 33, 100] {
+                let mut rng = SplitMix64(0x1234_5678_9ABC_DEF0 ^ (k as u64));
+                let a: Vec<i8> = (0..k).map(|_| rng.next_i8()).collect();
+                let b: Vec<i8> = (0..k).map(|_| rng.next_i8()).collect();
+                let expected: i32 = (0..k).map(|i| a[i] as i32 * b[i] as i32).sum();
+                assert_eq!(dot_i8_to_i32_wasm(&a, &b, k), expected, "mismatch at k={k}");
+            }
+        }
+
+        /// W1a-mandatory parity test: `matmul_i8_to_i32_wasm` (the wasm32
+        /// SIMD128 arm feeding `matmul_i8_to_i32`'s dispatch ladder) vs a
+        /// scalar `i8×i8→i32` GEMM reference, across several shapes
+        /// including K not a multiple of 16. The scalar reference here
+        /// replicates `hpc::amx_matmul::matmul_i8_to_i32`'s tier-4 scalar
+        /// fallback verbatim (that module is `#[cfg(target_arch =
+        /// "x86_64")]`-gated and therefore unreachable from a wasm32 test
+        /// binary, so the reference is inlined rather than called into —
+        /// same math: `c[i,j] = Σ_p a[i,p] as i32 * b[p,j] as i32`, plain
+        /// `i32` accumulation, no sign-shift bias).
+        #[test]
+        fn wasm_matmul_i8_matches_scalar() {
+            fn scalar_reference(a: &[i8], b: &[i8], m: usize, n: usize, k: usize) -> Vec<i32> {
+                let mut c = vec![0i32; m * n];
+                for i in 0..m {
+                    for p in 0..k {
+                        let av = a[i * k + p] as i32;
+                        for j in 0..n {
+                            c[i * n + j] += av * b[p * n + j] as i32;
+                        }
+                    }
+                }
+                c
+            }
+
+            // Shapes deliberately include: exact multiples of 16, K not a
+            // multiple of 16 (tail exercised), K < 16 (tail-only, zero
+            // full chunks), and non-square M/N so row/col mixups show up.
+            let shapes: &[(usize, usize, usize)] =
+                &[(1, 1, 1), (4, 3, 5), (2, 2, 16), (3, 5, 17), (8, 4, 31), (5, 6, 64), (7, 1, 33), (1, 9, 100)];
+
+            let mut rng = SplitMix64(0xC0FF_EE12_3456_78);
+            for &(m, n, k) in shapes {
+                let mut a: Vec<i8> = (0..m * k).map(|_| rng.next_i8()).collect();
+                let mut b: Vec<i8> = (0..k * n).map(|_| rng.next_i8()).collect();
+                // Force the i8::MIN/i8::MAX extremes in explicitly: the
+                // exactness argument in `dot_i8_to_i32_wasm`'s doc comment
+                // hinges on i8::MIN * i8::MIN being the largest-magnitude
+                // product, so it must appear in the corpus rather than
+                // rely on the PRNG landing on it.
+                if !a.is_empty() {
+                    a[0] = i8::MIN;
+                }
+                if !b.is_empty() {
+                    b[0] = i8::MIN;
+                }
+                if a.len() > 1 {
+                    a[1] = i8::MAX;
+                }
+                if b.len() > 1 {
+                    b[1] = i8::MAX;
+                }
+
+                let expected = scalar_reference(&a, &b, m, n, k);
+                let mut actual = vec![0i32; m * n];
+                matmul_i8_to_i32_wasm(&a, &b, &mut actual, m, n, k);
+
+                assert_eq!(actual, expected, "mismatch at shape m={m} n={n} k={k}");
+            }
         }
     }
 }
