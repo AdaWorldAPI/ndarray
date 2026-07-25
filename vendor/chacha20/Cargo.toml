@@ -1,3 +1,19 @@
+# AdaWorldAPI fork of RustCrypto `chacha20` v0.10.1 (the "matryoshka").
+#
+# Verbatim upstream cipher — state schedule, counter, XChaCha, RNG and the
+# soft/sse2/avx2/avx512/neon backends are UNTOUCHED. The only delta is one added
+# backend, `src/backends/ndarray_simd.rs`, which expresses the keystream
+# double-round over `ndarray::simd::U32x16` and REPLACES the intrinsic vector
+# backends when `--cfg chacha20_ndarray_simd` is set (see `src/backends.rs` and
+# `src/lib.rs::process_with_backend`).
+#
+# The crate name/version stay `chacha20` / `0.10.1` so `[patch.crates-io]` folds
+# this over the registry crate, transitively accelerating `chacha20poly1305 ->
+# encryption -> ogar-encryption -> consumers` with zero change to any of them.
+# Re-sync on a RustCrypto advisory: refresh the vendored source from
+# AdaWorldAPI/stream-ciphers, re-apply this one backend + its two cfg branches,
+# re-run the vectors. Backup of the previous 0.9.1 state:
+# ndarray branch `backup/chacha20-matryoshka-0.9.1`.
 [package]
 name = "chacha20"
 version = "0.10.1"
@@ -17,6 +33,11 @@ hardware acceleration (AVX2, SSE2). Additionally provides the ChaCha8, ChaCha12,
 XChaCha20, XChaCha12 and XChaCha8 stream ciphers, and also optional
 rand_core-compatible RNGs based on those ciphers.
 """
+
+[target."cfg(any(target_arch = \"x86_64\", target_arch = \"wasm32\"))".dependencies.ndarray]
+path = "../.."
+default-features = false
+features = ["std"]
 
 [dependencies]
 cfg-if = "1"

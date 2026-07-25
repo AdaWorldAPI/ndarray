@@ -243,6 +243,18 @@ impl<R: Rounds, V: Variant> StreamCipherCore for ChaChaCore<R, V> {
         cfg_if! {
             if #[cfg(chacha20_backend = "soft")] {
                 f.call(&mut backends::soft::Backend(self));
+            } else if #[cfg(any(
+                all(
+            target_arch = "x86_64",
+            target_feature = "avx512f",
+            not(chacha20_backend = "avx2"),
+            not(chacha20_backend = "sse2"),
+            not(chacha20_backend = "avx512"),
+        ),
+        all(target_arch = "wasm32", target_feature = "simd128"),
+            ))] {
+                // No `unsafe`: the vector work lives inside `ndarray::simd`.
+                backends::ndarray_simd::inner::<R, _, V>(&mut self.state, f);
             } else if #[cfg(any(target_arch = "x86", target_arch = "x86_64"))] {
                 cfg_if! {
                     if #[cfg(all(chacha20_avx512, chacha20_backend = "avx512"))] {
