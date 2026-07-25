@@ -9,7 +9,6 @@
 //! |---|---|---|
 //! | Password hash / KDF | **Argon2id** | memory-hard, GPU/ASIC-resistant |
 //! | Recoverable-secret AEAD | **XChaCha20-Poly1305** | 192-bit random nonce → no nonce-management footguns; authenticated; constant-time in software |
-//! | Signatures (licences, audit) | **Ed25519** | small keys/sigs, deterministic, misuse-resistant |
 //! | Hashing (merkle, fingerprints) | **SHA-384** | truncation-resistant SHA-2; no length-extension |
 //!
 //! The point of the wasm leg: a consumer application can run
@@ -69,7 +68,6 @@ pub mod aead;
 pub mod envelope;
 pub mod hash;
 pub mod kdf;
-pub mod sign;
 
 #[cfg(feature = "wasm-bindings")]
 pub mod wasm;
