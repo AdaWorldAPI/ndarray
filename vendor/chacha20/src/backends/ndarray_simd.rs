@@ -15,16 +15,13 @@
 //! `U32x16` equivalent). Bit-identical to the `soft` backend by construction; the
 //! crate's RFC 8439 vectors run through it.
 //!
-//! ## Ported to 0.10, and the one thing that is not a rename
+//! ## 0.10 port
 //!
-//! The 0.9.1 version of this file added `lane_index` straight onto `orig[12]`.
-//! In 0.10 the counter is variant-dependent: `size_of::<V::Counter>() == 8` means
-//! a 64-bit counter spanning `state[12]` (low) and `state[13]` (high), while the
-//! 32-bit variant keeps `state[13]` as a nonce word. Adding the lane index to the
-//! low word alone is correct only for the 32-bit case — for the 64-bit one it
-//! silently produces the wrong keystream on any 16-block span that carries across
-//! the word boundary. That is not a compile error, so it is spelled out here and
-//! the lane counters are computed as 64-bit values, split into low/high words.
+//! Renames only, except one: the counter is variant-dependent now.
+//! `size_of::<V::Counter>() == 8` spans state[12] (low) + state[13] (high);
+//! the 32-bit variant keeps state[13] as nonce. The 0.9.1 file added
+//! lane_index onto orig[12] unconditionally — right for 32-bit, silently
+//! wrong keystream for 64-bit on a carry across the word boundary.
 
 use crate::{Rounds, STATE_WORDS, Variant};
 
@@ -40,11 +37,7 @@ use ndarray::simd::U32x16;
 /// Keystream blocks produced per call — the `U32x16` lane count.
 const PAR_BLOCKS: usize = 16;
 
-/// Set up the 16 lane counters, run the closure, write the counter back.
-///
-/// Mirrors the shape of the `avx2`/`avx512` backends' `inner`, minus the
-/// `unsafe`: the vector work is `ndarray::simd`'s, and it is safe by
-/// construction.
+/// Same shape as the `avx2`/`avx512` `inner`, minus the `unsafe`.
 #[inline]
 #[cfg(feature = "cipher")]
 pub(crate) fn inner<R, F, V>(state: &mut [u32; STATE_WORDS], f: F)
@@ -85,8 +78,7 @@ impl<R: Rounds, V: Variant> ParBlocksSizeUser for Backend<R, V> {
 impl<R: Rounds, V: Variant> StreamCipherBackend for Backend<R, V> {
     #[inline(always)]
     fn gen_ks_block(&mut self, block: &mut Block) {
-        // Single block: reuse the 16-wide core, take lane 0, advance by one —
-        // exactly the `soft` backend's contract.
+        // Lane 0 of the 16-wide core — the `soft` backend's contract.
         let ks = ks16::<R, V>(&self.state);
         block.copy_from_slice(&ks[0]);
         self.advance::<V>(1);
@@ -140,8 +132,7 @@ fn ks16<R: Rounds, V: Variant>(state: &[u32; STATE_WORDS]) -> [[u8; 64]; PAR_BLO
         *o = U32x16::splat(state[w]);
     }
 
-    // The lane counters. 64-bit variant: carry propagates into word 13, so both
-    // words vary per lane. 32-bit variant: word 13 is nonce and stays broadcast.
+    // 64-bit: carry propagates into word 13. 32-bit: word 13 is nonce.
     if size_of::<V::Counter>() == 8 {
         let base = (u64::from(state[13]) << 32) | u64::from(state[12]);
         let mut lo = [0u32; PAR_BLOCKS];
