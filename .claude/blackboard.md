@@ -848,11 +848,28 @@ process reserves. Tamper detection works exactly as designed and the
 process still dies before reaching it. *Authenticated-but-only-later is not
 the same as trusted.*
 
-`KdfParams::validate()` now gates m/t/p against a policy ceiling (1 GiB,
-64 passes, 64 lanes) in `derive_key` and in `decode_header`, i.e. before
-any allocation. The tests assert the refusal is **cheap** — an expensive
-rejection is itself the attack.
+`KdfParams::validate()` now gates m/t/p **before any allocation**, in
+`derive_key` and in `decode_header`. The tests assert the refusal is
+**cheap** — an expensive rejection is itself the attack.
 
-**Loose end:** the ceiling is a crate-level policy constant, not
-configurable. If a caller ever legitimately needs >1 GiB, it becomes a
-builder parameter — but the default must stay bounded.
+**Codex P1 on the first cut, and it was right:** the initial ceiling
+(1 GiB / 64 passes) was chosen as "below Argon2's 4 TiB roof", which is a
+rounding error, not a limit — 1 GiB × 64 passes pre-authentication is
+equally fatal on a browser tab or a small container, and a few concurrent
+requests exhaust the host. Replaced by `CostLimits`, a caller-supplied
+budget: `DEFAULT` = 128 MiB / 4 / 2 (twice the memory and one pass more
+than the heaviest shipped preset, so a cost bump still opens old and new
+blobs), `SHIPPED_PRESETS_ONLY` = exactly 64 MiB / 3 / 1 for services that
+mint every blob they open. `open_within` / `derive_key_within` take the
+budget explicitly.
+
+Measured worst case the default admits: **414 ms, 128 MiB** (release, this
+box; the `#[ignore]`d `worst_admitted_cost_is_within_the_documented_budget`
+prints it). The bit-flip sweep dropped 13.5 s → 2.3 s once the tighter cap
+started refusing the flips it used to honour — the sweep had itself been
+running multi-hundred-MiB derivations.
+
+**Not done — an allowlist of known profiles** (Codex's alternative) would
+break cost bumps in the other direction: a reader shipped before the writer
+would reject the new profile. A bounded budget keeps the forward
+compatibility the header format exists for.
