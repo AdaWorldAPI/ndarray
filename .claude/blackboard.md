@@ -827,3 +827,49 @@ default is x86-64-v3 (avx2) so ndarray_simd activates on avx512 builds only.
 - **PROBE-WH-MAG-2 deferral weakened**: the Skip/Merge/Delta/Escape
   mode grammar already IS the per-tile escape tier; WH-MAG-2 = WH under
   the mode grammar, not a wait for new machinery.
+
+## 2026-07-25 — encryption: the KDF cost fields are acted on before they are authenticated
+
+**Status:** FINDING (reproducer in `envelope::tests::every_single_bit_flip_is_refused_and_none_of_them_are_expensive`)
+
+Found by a downstream consumer building a password-sealed record POC on
+`encryption::envelope`. An exhaustive single-bit-flip sweep over a sealed
+blob did not fail — it **aborted the test process**. One flipped bit in the
+`m_cost_kib` header field asks Argon2id for a 4 TiB allocation; the
+allocation fails, and a failed allocation in Rust aborts rather than
+unwinding.
+
+The header IS authenticated (it is the AEAD's associated data), and that
+was the reasoning behind not checking it. But verifying the tag needs the
+key, and deriving the key means first running Argon2id **with the
+parameters the blob just supplied**. So there is a window, before anything
+is proven, where an attacker-chosen cost decides how much memory this
+process reserves. Tamper detection works exactly as designed and the
+process still dies before reaching it. *Authenticated-but-only-later is not
+the same as trusted.*
+
+`KdfParams::validate()` now gates m/t/p **before any allocation**, in
+`derive_key` and in `decode_header`. The tests assert the refusal is
+**cheap** — an expensive rejection is itself the attack.
+
+**Codex P1 on the first cut, and it was right:** the initial ceiling
+(1 GiB / 64 passes) was chosen as "below Argon2's 4 TiB roof", which is a
+rounding error, not a limit — 1 GiB × 64 passes pre-authentication is
+equally fatal on a browser tab or a small container, and a few concurrent
+requests exhaust the host. Replaced by `CostLimits`, a caller-supplied
+budget: `DEFAULT` = 128 MiB / 4 / 2 (twice the memory and one pass more
+than the heaviest shipped preset, so a cost bump still opens old and new
+blobs), `SHIPPED_PRESETS_ONLY` = exactly 64 MiB / 3 / 1 for services that
+mint every blob they open. `open_within` / `derive_key_within` take the
+budget explicitly.
+
+Measured worst case the default admits: **414 ms, 128 MiB** (release, this
+box; the `#[ignore]`d `worst_admitted_cost_is_within_the_documented_budget`
+prints it). The bit-flip sweep dropped 13.5 s → 2.3 s once the tighter cap
+started refusing the flips it used to honour — the sweep had itself been
+running multi-hundred-MiB derivations.
+
+**Not done — an allowlist of known profiles** (Codex's alternative) would
+break cost bumps in the other direction: a reader shipped before the writer
+would reject the new profile. A bounded budget keeps the forward
+compatibility the header format exists for.
