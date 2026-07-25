@@ -66,9 +66,12 @@
 #![forbid(unsafe_code)]
 
 pub mod aead;
+pub mod bundle;
 pub mod envelope;
 pub mod hash;
+pub mod hkdf_sha384;
 pub mod kdf;
+pub mod kx;
 pub mod sign;
 
 #[cfg(feature = "wasm-bindings")]
