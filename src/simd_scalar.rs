@@ -538,6 +538,69 @@ impl_int_type!(I16x16, i16, 16, 0i16);
 // the same type names through `crate::simd::*`.
 impl_int_type!(U16x16, u16, 16, 0u16);
 impl_int_type!(U32x8, u32, 8, 0u32);
+
+// ── ChaCha20 ARX vocabulary on the 8-lane u32 register ────────────────────
+//
+// The portable tier: the completeness reference the AVX2 lane is parity-checked
+// against, and the implementation NEON/wasm builds actually use (neither
+// defines its own `U32x8`). Semantics are defined here and mirrored there —
+// never the other way round.
+impl U32x8 {
+    /// Rotate each 32-bit lane left by `n` (delegates to `u32::rotate_left`,
+    /// which is defined for every `n` — `n % 32` is applied by the stdlib).
+    #[inline(always)]
+    pub fn rotate_left(self, n: u32) -> Self {
+        let mut out = self.0;
+        for v in out.iter_mut() {
+            *v = v.rotate_left(n);
+        }
+        Self(out)
+    }
+
+    /// Permute the 32-bit lanes WITHIN each 128-bit half — the semantics of
+    /// `_mm256_shuffle_epi32`: output lane `i` of a half takes input lane
+    /// `(IMM >> (2*i)) & 3` of that same half, both halves sharing `IMM`.
+    #[inline(always)]
+    pub fn shuffle_epi32<const IMM: i32>(self) -> Self {
+        let a = self.0;
+        let mut out = [0u32; 8];
+        for half in 0..2 {
+            for i in 0..4 {
+                let sel = ((IMM as u32) >> (2 * i)) & 3;
+                out[half * 4 + i] = a[half * 4 + sel as usize];
+            }
+        }
+        Self(out)
+    }
+
+    /// Broadcast four u32 across both 128-bit halves.
+    #[inline(always)]
+    pub fn broadcast_u32x4(a: [u32; 4]) -> Self {
+        Self([a[0], a[1], a[2], a[3], a[0], a[1], a[2], a[3]])
+    }
+
+    /// Const-folded lane extract.
+    #[inline(always)]
+    pub fn lane_u32<const N: usize>(self) -> u32 {
+        self.0[N]
+    }
+
+    /// Add treating the register as four 64-bit lanes, carry crossing each
+    /// u32 pair (little-endian: even lane is the low half).
+    #[inline(always)]
+    pub fn add_u64_lanes(self, other: Self) -> Self {
+        let mut out = [0u32; 8];
+        for pair in 0..4 {
+            let lo = pair * 2;
+            let a = (u64::from(self.0[lo + 1]) << 32) | u64::from(self.0[lo]);
+            let b = (u64::from(other.0[lo + 1]) << 32) | u64::from(other.0[lo]);
+            let sum = a.wrapping_add(b);
+            out[lo] = sum as u32;
+            out[lo + 1] = (sum >> 32) as u32;
+        }
+        Self(out)
+    }
+}
 impl_int_type!(U64x4, u64, 4, 0u64);
 impl_int_type!(I32x8, i32, 8, 0i32);
 impl_int_type!(I64x4, i64, 4, 0i64);

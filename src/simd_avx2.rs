@@ -1785,6 +1785,80 @@ impl PartialEq for U16x16 {
 }
 
 avx2_int_type!(U32x8, u32, 8, 0u32);
+
+// ── ChaCha20 ARX vocabulary on the 8-lane u32 register ────────────────────
+//
+// The chacha20 matryoshka replaces the crate's own `avx2.rs` backend, which is
+// written against `__m256i`. These are the operations that backend uses and
+// `avx2_int_type!` does not already provide, so the replacement is a
+// transliteration rather than a rewrite.
+//
+// Shape follows `U32x16::rotate_left` above: this arm's 256-bit int types are
+// the `[u32; 8]` polyfill (native `__m256i` lowering is the deferred TD-SIMD-3
+// work), so these are per-lane loops — bit-identical to the scalar tier, which
+// is the shared parity reference. No intrinsics here on purpose: adding them
+// would make this arm diverge from the representation the macro defines.
+impl U32x8 {
+    /// Lane-wise left-rotate by `n` bits — the ARX rotate (matches
+    /// `u32::rotate_left`, so `n % 32` is applied and `n == 0` returns `self`).
+    /// Companion to [`U32x16::rotate_left`] on the 8-lane register.
+    #[inline(always)]
+    pub fn rotate_left(self, n: u32) -> Self {
+        let mut out = [0u32; 8];
+        for i in 0..8 {
+            out[i] = self.0[i].rotate_left(n);
+        }
+        Self(out)
+    }
+
+    /// Permute the 32-bit lanes WITHIN each 128-bit half — the semantics of
+    /// `_mm256_shuffle_epi32`: output lane `i` of a half takes input lane
+    /// `(IMM >> (2*i)) & 3` of that same half, both halves sharing `IMM`. This
+    /// is NOT a cross-lane permute; see [`U16x16::permute2x128`] for that.
+    #[inline(always)]
+    pub fn shuffle_epi32<const IMM: i32>(self) -> Self {
+        let mut out = [0u32; 8];
+        for half in 0..2 {
+            for i in 0..4 {
+                let sel = (((IMM as u32) >> (2 * i)) & 3) as usize;
+                out[half * 4 + i] = self.0[half * 4 + sel];
+            }
+        }
+        Self(out)
+    }
+
+    /// Broadcast four u32 across both 128-bit halves — the semantics of
+    /// `_mm256_broadcastsi128_si256`.
+    #[inline(always)]
+    pub fn broadcast_u32x4(a: [u32; 4]) -> Self {
+        Self([a[0], a[1], a[2], a[3], a[0], a[1], a[2], a[3]])
+    }
+
+    /// Const-folded lane extract, same shape as [`I8x16::lane_i8`].
+    #[inline(always)]
+    pub fn lane_u32<const N: usize>(self) -> u32 {
+        self.0[N]
+    }
+
+    /// Add treating the register as four 64-bit lanes, carry crossing each u32
+    /// pair (little-endian: the even lane is the low half) — the semantics of
+    /// `_mm256_add_epi64`. ChaCha20's 64-bit-counter variant needs exactly
+    /// this; the 32-bit variant uses the ordinary `Add`.
+    #[inline(always)]
+    pub fn add_u64_lanes(self, other: Self) -> Self {
+        let mut out = [0u32; 8];
+        for pair in 0..4 {
+            let lo = pair * 2;
+            let a = (u64::from(self.0[lo + 1]) << 32) | u64::from(self.0[lo]);
+            let b = (u64::from(other.0[lo + 1]) << 32) | u64::from(other.0[lo]);
+            let sum = a.wrapping_add(b);
+            out[lo] = sum as u32;
+            out[lo + 1] = (sum >> 32) as u32;
+        }
+        Self(out)
+    }
+}
+
 avx2_int_type!(U64x4, u64, 4, 0u64);
 avx2_int_type!(I32x8, i32, 8, 0i32);
 avx2_int_type!(I64x4, i64, 4, 0i64);
@@ -2636,6 +2710,62 @@ pub type i64x4 = I64x4;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── U32x8 ARX vocabulary (the chacha20 matryoshka's transliteration set) ──
+    //
+    // Parity is against the plain-`u32` meaning of each intrinsic these stand
+    // in for, spelled out per test. This arm and `simd_scalar` share the
+    // `[u32; 8]` representation, so the same expectations bind both.
+
+    #[test]
+    fn u32x8_rotate_left_matches_the_scalar_rotate_including_the_edges() {
+        let v = U32x8::from_array([0x8000_0001, 1, 0xdead_beef, 0, 7, 0xffff_ffff, 0x0f0f_0f0f, 42]);
+        for n in [0u32, 1, 7, 8, 12, 16, 24, 31, 32] {
+            let got = v.rotate_left(n).to_array();
+            for (i, &x) in v.to_array().iter().enumerate() {
+                assert_eq!(got[i], x.rotate_left(n), "lane {i}, n={n}");
+            }
+        }
+    }
+
+    #[test]
+    fn u32x8_shuffle_epi32_permutes_within_each_128_bit_half() {
+        let v = U32x8::from_array([0, 1, 2, 3, 4, 5, 6, 7]);
+        // 0b_00_11_10_01 = lanes (1, 2, 3, 0) within each half — the control
+        // ChaCha20's AVX2 backend uses to diagonalise.
+        let got = v.shuffle_epi32::<0b_00_11_10_01>().to_array();
+        assert_eq!(got, [1, 2, 3, 0, 5, 6, 7, 4]);
+        // Identity control leaves the register untouched.
+        assert_eq!(v.shuffle_epi32::<0b_11_10_01_00>().to_array(), v.to_array());
+        // Broadcast-lane-0 within each half.
+        assert_eq!(v.shuffle_epi32::<0>().to_array(), [0, 0, 0, 0, 4, 4, 4, 4]);
+    }
+
+    #[test]
+    fn u32x8_broadcast_u32x4_fills_both_halves() {
+        assert_eq!(U32x8::broadcast_u32x4([9, 8, 7, 6]).to_array(), [9, 8, 7, 6, 9, 8, 7, 6]);
+    }
+
+    #[test]
+    fn u32x8_lane_extract_reads_the_named_lane() {
+        let v = U32x8::from_array([10, 11, 12, 13, 14, 15, 16, 17]);
+        assert_eq!(v.lane_u32::<0>(), 10);
+        assert_eq!(v.lane_u32::<7>(), 17);
+    }
+
+    #[test]
+    fn u32x8_add_u64_lanes_carries_across_the_pair_and_wraps_at_64_bits() {
+        // Low half at u32::MAX must carry into the high half — the case a
+        // lane-wise Add gets wrong, and the reason this method exists.
+        let a = U32x8::from_array([0xffff_ffff, 0, 0xffff_ffff, 7, 0, 0, 1, 0]);
+        let b = U32x8::from_array([1, 0, 1, 0, 0, 0, 0, 0]);
+        assert_eq!(a.add_u64_lanes(b).to_array(), [0, 1, 0, 8, 0, 0, 1, 0]);
+
+        // And the whole 64-bit lane wraps rather than panicking.
+        let max = U32x8::from_array([0xffff_ffff, 0xffff_ffff, 0, 0, 0, 0, 0, 0]);
+        let one = U32x8::from_array([1, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(max.add_u64_lanes(one).to_array()[..2], [0, 0]);
+    }
 
     #[test]
     fn test_dot_f32() {
