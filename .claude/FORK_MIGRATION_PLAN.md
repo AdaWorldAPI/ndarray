@@ -5,6 +5,11 @@
 > breaks the fork rule. Reverting is one option; migrating the whole crate to the
 > forks is the other, and it fixes four pre-existing violations at the same time.
 
+> **CORRECTED 2026-07-25 after the S0 measurements** (`.claude/s0-findings/`).
+> Two claims below were wrong when written and are struck through in place:
+> §0's "all five move together or not at all", and §3's implication that the
+> foreign AVX2 arrived with PR #256. See §7.
+
 ## 0. Why this is one move and not five
 
 `crates/encryption` today pulls every primitive from crates.io. The forks exist
@@ -110,3 +115,59 @@ backend. So migrating to the fork fixes the *source* rule and leaves the
 S0 is grindwork over five cloned repos: mechanical, bounded, and exactly what
 a Sonnet fleet is for. S1–S4 are edits gated on S0's findings. S5 and S6 are
 operator decisions and are not started without one.
+
+---
+
+## 7. Corrections from S0 (measured, not assumed)
+
+**§0 was wrong: the five deps do NOT have to move together.** Two trait
+generations coexist in one graph — Cargo carries `crypto-common` 0.1 and 0.2
+side by side. They only conflict where a *typed* value crosses the seam, and in
+`crates/encryption` nothing does: every boundary hands over raw `&[u8; N]`.
+argon2 (via blake2) and sha2 share `digest 0.10.7` today; the moment
+`ed25519-dalek 3` lands it demands `sha2 0.11`, and argon2 stays behind on 0.10.
+That is a cost — compile time, binary size, two audit surfaces — not a blocker.
+
+**§3 implied the foreign AVX2 came in with PR #256. It did not.**
+`curve25519-dalek 4.1.3` is in `Cargo.lock` at `2850886e`, the commit *before*
+that merge, pulled by `ed25519-dalek`, which this crate has always used.
+#256 added a **source** violation (x25519-dalek and hkdf from crates.io); the
+**polyfill** violation predates it. Reverting #256 therefore fixes 2 of 6
+registry dependencies and 0 of 1 AVX2 problems.
+
+**The AVX2 problem has a one-line fix, independent of everything else.**
+`curve25519-dalek` honours `--cfg curve25519_dalek_backend="serial"` via
+RUSTFLAGS (its own README, lines 107/113). Appended to the x86_64 blocks in the
+three `.cargo/config*.toml` files it removes the crate's 37 `unsafe` intrinsic
+sites from the crypto path with no version bump, no fork question, no revert.
+Cost: the curve loses its vector acceleration.
+
+**The curve polyfill (§3 option b) is not viable as scoped.** `field.rs`
+bypasses `packed_simd.rs` at 35 sites across 7 intrinsics — 17× `blend_epi32`,
+8× `shuffle_epi32`, 2× `permutevar8x32_epi32` among them — so "replace one shim"
+is false on inspection. `ndarray::simd` has no cross-lane vocabulary for
+`U32x8`/`U64x4` at all, and the ChaCha20 precedent only worked because the
+algorithm was redesigned into a transpose form that needs no cross-lane
+shuffles. `FieldElement2625x4` has no such escape: the shuffles ARE the
+cross-term arithmetic. Estimate ~500–600 lines over two files plus new
+primitives whose lowering is an open design question.
+
+**Fork coverage is incomplete above the primitives.** `hmac`, `digest` and
+`hybrid-array` have no reachable AdaWorldAPI fork, so even a completed
+migration pulls them transitively from crates.io. Per the P0 rule this is a
+STOP-and-ask, not a silent fallback. (`password-hashes` likewise unreachable —
+which, given replication lag, is not evidence of absence.)
+
+**One silent failure mode found, worth a guard.** `Cargo.lock` carried a
+`[[patch.unused]]` entry for `chacha20` while `Cargo.toml` claimed the patch was
+exercised by the test suite. The matryoshka was simply not in the build, and
+nothing said so. MedCare-rs is set up to repeat this with its own vendored copy.
+A test that fails on `[[patch.unused]]` costs nothing and would have caught it.
+
+## 8. What this leaves the operator, as three separate calls
+
+1. **Foreign AVX2 out of the crypto path** — one line, today, costs curve speed.
+2. **#256: keep or revert** — a scope question (do we need `kx` / `hkdf_sha384`
+   / `bundle` now?), no longer a safety question.
+3. **Fork migration** — multi-day, gated on argon2 and on whether the fork rule
+   binds trait crates that have no fork.
