@@ -25,6 +25,12 @@
 //! they are integrity-bound to the ciphertext: an attacker cannot, for
 //! example, lower `m_cost_kib` to cheapen an offline guess and still
 //! have the blob open.
+//!
+//! That binding is checked *after* the key exists, though, and the key
+//! comes from running Argon2id with the very parameters the blob supplied.
+//! The cost fields are therefore acted upon before they are authenticated,
+//! which is why [`KdfParams::validate`] gates them on the way in — see the
+//! note there. Authenticated-but-only-later is not the same as trusted.
 
 use crate::aead::{self, NONCE_LEN};
 pub use crate::kdf::KdfParams;
@@ -128,6 +134,8 @@ fn decode_header(blob: &[u8]) -> Result<(KdfParams, [u8; SALT_LEN], [u8; NONCE_L
         t_cost: le_u32(9),
         p_cost: le_u32(13),
     };
+    // Refused here, before the derivation this header would otherwise drive.
+    params.validate().map_err(EnvelopeError::Kdf)?;
     let mut salt = [0u8; SALT_LEN];
     salt.copy_from_slice(&blob[17..17 + SALT_LEN]);
     let mut nonce = [0u8; NONCE_LEN];
@@ -187,6 +195,43 @@ mod tests {
         let mut blob = seal(b"pw", b"s", &FAST).unwrap();
         blob[4] = 99;
         assert_eq!(open(b"pw", &blob).unwrap_err(), EnvelopeError::UnsupportedVersion);
+    }
+
+    /// The test that found it. Flipping one bit in the memory-cost field
+    /// asks for a 4 TiB allocation, and a failed allocation aborts the
+    /// process — so before the ceiling landed this did not report a failure,
+    /// it killed the test binary partway through the sweep.
+    ///
+    /// Every single-bit corruption of a sealed blob must now come back as an
+    /// error, and the whole sweep must stay fast: an expensive rejection is
+    /// itself the attack.
+    #[test]
+    fn every_single_bit_flip_is_refused_and_none_of_them_are_expensive() {
+        let blob = seal(b"pw", b"the secret", &FAST).unwrap();
+        let started = std::time::Instant::now();
+        for byte in 0..blob.len() {
+            for bit in 0..8 {
+                let mut corrupt = blob.clone();
+                corrupt[byte] ^= 1 << bit;
+                assert!(open(b"pw", &corrupt).is_err(), "flipping bit {bit} of byte {byte} produced an openable blob");
+            }
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "a corrupt header must be refused, not honoured"
+        );
+    }
+
+    /// The refusal is a header check, so it must not depend on the password.
+    #[test]
+    fn an_absurd_cost_header_is_refused_before_the_password_matters() {
+        let mut blob = seal(b"pw", b"s", &FAST).unwrap();
+        blob[8] = 0xFF; // top byte of m_cost_kib → ~4 TiB
+        assert_eq!(open(b"pw", &blob).unwrap_err(), EnvelopeError::Kdf(crate::kdf::KdfError::CostOutOfPolicy));
+        assert_eq!(
+            open(b"wrong-password-entirely", &blob).unwrap_err(),
+            EnvelopeError::Kdf(crate::kdf::KdfError::CostOutOfPolicy)
+        );
     }
 
     #[test]
