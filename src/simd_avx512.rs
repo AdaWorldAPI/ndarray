@@ -2318,7 +2318,127 @@ pub type i16x16 = I16x16;
 // the `avx2_int_type!` macro) so the v4 dispatch arm in `simd.rs` can
 // surface them through `crate::simd::*` with the same names the v3 arm
 // uses. Native AVX2 `__m256i` upgrades for these are TD-SIMD-3.
-pub use crate::simd_avx2::{i32x8, i64x4, u16x16, u32x8, u64x4, I32x8, I64x4, U16x16, U32x8, U64x4};
+pub use crate::simd_avx2::{i32x8, i64x4, u16x16, u32x8, u64x4, I32x8, I64x4, U16x16, U64x4};
+
+// ============================================================================
+// U32x8 — 8 × u32 in one __m256i (AVX-512VL)
+// ============================================================================
+//
+// Native on this arm rather than re-exported from `simd_avx2`, whose 256-bit
+// integer types are the `[u32; 8]` polyfill. The chacha20 matryoshka
+// transliterates upstream's `avx2.rs` over this vocabulary, so it is the one
+// place where the 8-lane register earns a native lowering: VPROLVD does in one
+// instruction what the polyfill does as a per-lane loop, and it is the same
+// instruction `U32x16::rotate_left` above already uses.
+//
+// Semantics are the scalar tier's, which stays the parity reference.
+#[derive(Copy, Clone)]
+#[repr(align(32))]
+pub struct U32x8(pub __m256i);
+
+impl Default for U32x8 {
+    #[inline(always)]
+    fn default() -> Self {
+        Self::splat(0)
+    }
+}
+
+impl U32x8 {
+    pub const LANES: usize = 8;
+
+    #[inline(always)]
+    pub fn splat(v: u32) -> Self {
+        // SAFETY: AVX-512VL baseline on this arm.
+        Self(unsafe { _mm256_set1_epi32(v as i32) })
+    }
+
+    #[inline(always)]
+    pub fn from_slice(s: &[u32]) -> Self {
+        assert!(s.len() >= 8);
+        // SAFETY: length asserted above; unaligned load.
+        Self(unsafe { _mm256_loadu_si256(s.as_ptr().cast()) })
+    }
+
+    #[inline(always)]
+    pub fn from_array(arr: [u32; 8]) -> Self {
+        // SAFETY: `arr` is exactly 32 bytes; unaligned load.
+        Self(unsafe { _mm256_loadu_si256(arr.as_ptr().cast()) })
+    }
+
+    #[inline(always)]
+    pub fn to_array(self) -> [u32; 8] {
+        let mut arr = [0u32; 8];
+        // SAFETY: `arr` is exactly 32 bytes; unaligned store.
+        unsafe { _mm256_storeu_si256(arr.as_mut_ptr().cast(), self.0) };
+        arr
+    }
+
+    #[inline(always)]
+    pub fn copy_to_slice(self, s: &mut [u32]) {
+        assert!(s.len() >= 8);
+        // SAFETY: length asserted above; unaligned store.
+        unsafe { _mm256_storeu_si256(s.as_mut_ptr().cast(), self.0) };
+    }
+
+    #[inline(always)]
+    pub fn reduce_sum(self) -> u32 {
+        self.to_array().iter().fold(0u32, |a, &b| a.wrapping_add(b))
+    }
+
+    /// Lane-wise left-rotate by `n` bits — the ARX rotate (matches
+    /// `u32::rotate_left`). Single `VPROLVD` (AVX-512VL variable rotate), the
+    /// same instruction [`U32x16::rotate_left`] uses one width up. The rotate
+    /// amount in ARX ciphers is a public constant, never secret.
+    #[inline(always)]
+    pub fn rotate_left(self, n: u32) -> Self {
+        // SAFETY: AVX-512VL baseline; VPROLVD takes the count modulo 32 itself,
+        // matching `u32::rotate_left`.
+        Self(unsafe { _mm256_rolv_epi32(self.0, _mm256_set1_epi32(n as i32)) })
+    }
+
+    /// Permute the 32-bit lanes WITHIN each 128-bit half
+    /// (`_mm256_shuffle_epi32`): output lane `i` of a half takes input lane
+    /// `(IMM >> (2*i)) & 3` of that same half, both halves sharing `IMM`. Not a
+    /// cross-lane permute.
+    #[inline(always)]
+    pub fn shuffle_epi32<const IMM: i32>(self) -> Self {
+        // SAFETY: AVX2 baseline, present on this arm.
+        Self(unsafe { _mm256_shuffle_epi32::<IMM>(self.0) })
+    }
+
+    /// Broadcast four u32 across both 128-bit halves
+    /// (`_mm256_broadcastsi128_si256`).
+    #[inline(always)]
+    pub fn broadcast_u32x4(a: [u32; 4]) -> Self {
+        // SAFETY: `a` is exactly 16 bytes; unaligned load, then broadcast.
+        Self(unsafe { _mm256_broadcastsi128_si256(_mm_loadu_si128(a.as_ptr().cast())) })
+    }
+
+    /// Const-folded lane extract, same shape as [`I8x16::lane_i8`].
+    #[inline(always)]
+    pub fn lane_u32<const N: usize>(self) -> u32 {
+        self.to_array()[N]
+    }
+
+    /// Add treating the register as four 64-bit lanes, carry crossing each u32
+    /// pair (`_mm256_add_epi64`) — what ChaCha20's 64-bit counter needs and a
+    /// lane-wise `Add` gets wrong.
+    #[inline(always)]
+    pub fn add_u64_lanes(self, other: Self) -> Self {
+        // SAFETY: AVX2 baseline, present on this arm.
+        Self(unsafe { _mm256_add_epi64(self.0, other.0) })
+    }
+}
+
+impl_bin_op!(U32x8, Add, add, _mm256_add_epi32);
+impl_bin_op!(U32x8, Sub, sub, _mm256_sub_epi32);
+impl_bin_op!(U32x8, BitAnd, bitand, _mm256_and_si256);
+impl_bin_op!(U32x8, BitXor, bitxor, _mm256_xor_si256);
+impl_bin_op!(U32x8, BitOr, bitor, _mm256_or_si256);
+impl_assign_op!(U32x8, AddAssign, add_assign, _mm256_add_epi32);
+
+#[allow(non_camel_case_types)]
+pub type u32x8_avx512 = U32x8;
 
 // ============================================================================
 // W1a SIMD primitives — AVX-512 backend
@@ -4401,8 +4521,94 @@ mod tier3_tests {
 // ────────────────────────────────────────────────────────────────────────
 
 #[cfg(all(test, target_feature = "avx512f"))]
+mod u32x8_bit_exact_tests {
+    // Crypto has no error budget: an ARX keystream that differs in one bit is a
+    // different cipher. These assert the native __m256i lowering on this arm is
+    // BIT-EXACT against the [u32; 8] tier every other arch uses — identical,
+    // not close.
+    use crate::simd_avx2::U32x8 as Poly;
+    use crate::simd_avx512::U32x8 as Native;
+
+    const CASES: [[u32; 8]; 4] = [
+        [0, 1, 2, 3, 4, 5, 6, 7],
+        [0xffff_ffff, 0x8000_0000, 1, 0, 0xdead_beef, 0x0f0f_0f0f, 0x7fff_ffff, 42],
+        // "expa" "nd 3" "2-by" "te k" — the ChaCha20 constants.
+        [0x6170_7865, 0x3320_646e, 0x7962_2d32, 0x6b20_6574, 0, 0, 0, 0],
+        [u32::MAX; 8],
+    ];
+
+    #[test]
+    fn rotate_left_is_bit_exact() {
+        for case in CASES {
+            for n in [0u32, 1, 7, 8, 12, 16, 24, 31, 32] {
+                assert_eq!(
+                    Native::from_array(case).rotate_left(n).to_array(),
+                    Poly::from_array(case).rotate_left(n).to_array(),
+                    "case {case:?}, n={n}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shuffle_epi32_is_bit_exact() {
+        for case in CASES {
+            assert_eq!(
+                Native::from_array(case)
+                    .shuffle_epi32::<0b_00_11_10_01>()
+                    .to_array(),
+                Poly::from_array(case)
+                    .shuffle_epi32::<0b_00_11_10_01>()
+                    .to_array()
+            );
+            assert_eq!(
+                Native::from_array(case).shuffle_epi32::<0>().to_array(),
+                Poly::from_array(case).shuffle_epi32::<0>().to_array()
+            );
+        }
+    }
+
+    #[test]
+    fn add_xor_and_the_64_bit_carry_are_bit_exact() {
+        for a in CASES {
+            for b in CASES {
+                assert_eq!(
+                    (Native::from_array(a) + Native::from_array(b)).to_array(),
+                    (Poly::from_array(a) + Poly::from_array(b)).to_array()
+                );
+                assert_eq!(
+                    (Native::from_array(a) ^ Native::from_array(b)).to_array(),
+                    (Poly::from_array(a) ^ Poly::from_array(b)).to_array()
+                );
+                assert_eq!(
+                    Native::from_array(a)
+                        .add_u64_lanes(Native::from_array(b))
+                        .to_array(),
+                    Poly::from_array(a)
+                        .add_u64_lanes(Poly::from_array(b))
+                        .to_array(),
+                    "the carry across each u32 pair must agree"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn broadcast_and_lane_extract_are_bit_exact() {
+        let q = [0x6170_7865u32, 0x3320_646e, 0x7962_2d32, 0x6b20_6574];
+        assert_eq!(Native::broadcast_u32x4(q).to_array(), Poly::broadcast_u32x4(q).to_array());
+        for case in CASES {
+            assert_eq!(Native::from_array(case).lane_u32::<3>(), Poly::from_array(case).lane_u32::<3>());
+        }
+    }
+}
+
+#[cfg(all(test, target_feature = "avx512f"))]
 mod int_simd_tests {
-    use crate::simd::{I16x16, I16x32, I8x32, I8x64};
+    // I8x16 / U16x8 / U64x8 were used below but never imported: this module is
+    // gated on target_feature = "avx512f", which the v3 CI baseline never sets,
+    // so it had not been compiled since those tests were added.
+    use crate::simd::{I16x16, I16x32, I8x16, I8x32, I8x64, U16x8, U64x8};
 
     #[test]
     fn i8x64_add_pair_to_constant() {
