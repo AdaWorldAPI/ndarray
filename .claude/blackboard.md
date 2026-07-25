@@ -873,34 +873,3 @@ running multi-hundred-MiB derivations.
 break cost bumps in the other direction: a reader shipped before the writer
 would reject the new profile. A bounded budget keeps the forward
 compatibility the header format exists for.
-## 2026-07-25 — Do NOT run git surgery in the shared checkout while the fleet is live
-
-**Status:** FINDING (orchestrator error, no damage, caught by an agent's own report)
-
-`agent-cargo-hygiene.md` says to fan the Sonnet fleet out in the SHARED
-checkout so twelve agents don't materialise twelve 7 GB `target/`s. Correct —
-but it leaves out the consequence: the orchestrator's own git operations hit
-the same working tree the fleet is writing into.
-
-This session: while an X25519 agent was still working, the orchestrator
-cherry-picked its branch and then ran `git reset --hard origin/<branch>` on
-the branch the agent was standing in. The reset deleted the agent's
-in-progress file from disk. The agent noticed (its file had vanished),
-rewrote it from what it had already verified, and reported the reflog entry —
-which is how this was caught at all.
-
-**No work was lost:** the file had already been committed and pushed to a
-separate branch minutes earlier, and the agent's reconstruction turned out
-byte-for-byte identical to the pushed version. The exposure was real anyway;
-the outcome was luck plus an agent that reported an anomaly instead of
-silently continuing.
-
-**The rule:** while any fleet agent is live in the shared checkout, the
-orchestrator may `add`/`commit`/`push` (append-only, non-destructive) but must
-NOT `reset --hard`, `checkout` another branch, `stash`, or `clean`. Branch
-surgery waits until every agent has reported. If it cannot wait, do it in a
-throwaway clone, not the shared tree.
-
-**Corollary worth keeping:** an agent that reports "my file disappeared and
-here is the reflog entry that explains it" is doing its job. Brief the fleet
-so anomalies get reported rather than worked around.
