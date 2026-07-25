@@ -142,15 +142,35 @@ three `.cargo/config*.toml` files it removes the crate's 37 `unsafe` intrinsic
 sites from the crypto path with no version bump, no fork question, no revert.
 Cost: the curve loses its vector acceleration.
 
-**The curve polyfill (§3 option b) is not viable as scoped.** `field.rs`
-bypasses `packed_simd.rs` at 35 sites across 7 intrinsics — 17× `blend_epi32`,
-8× `shuffle_epi32`, 2× `permutevar8x32_epi32` among them — so "replace one shim"
-is false on inspection. `ndarray::simd` has no cross-lane vocabulary for
-`U32x8`/`U64x4` at all, and the ChaCha20 precedent only worked because the
-algorithm was redesigned into a transpose form that needs no cross-lane
-shuffles. `FieldElement2625x4` has no such escape: the shuffles ARE the
-cross-term arithmetic. Estimate ~500–600 lines over two files plus new
-primitives whose lowering is an open design question.
+**The curve polyfill (§3 option b) IS viable — it is just bigger, and it was
+wrong to relay it as "not viable."** What the S0 agent actually established is
+narrower: the *one-shim* framing ("replace `packed_simd.rs`, consumers
+untouched") is false, because `field.rs` also reaches the intrinsics directly
+at 35 sites across 7 of them (17× `blend_epi32`, 8× `shuffle_epi32`, 2×
+`permutevar8x32_epi32`, plus `srlv`/`mul_epu32`/`unpack`). Those 35 sites are
+the work, not a wall: each becomes a `U32x8`/`U64x4` method, exactly as the
+five ChaCha20 primitives were added.
+
+The cross-lane ops are not a blocker either. The polyfill already carries two
+tiers, and both can express them bit-exactly:
+- scalar-array tier: `permutevar8x32` is `out[i] = self[idx[i] & 7]`, `blend`
+  is a mask loop, `unpack` is an interleave loop — trivially correct, no design
+  question;
+- AVX-512 tier: the native `vpermd` / `vpblendd` / `vpunpck` intrinsics.
+
+The one genuinely open item is **performance on the AVX2-only tier**, where a
+cross-lane permute lowers to a scalar gather. That is a speed question, not a
+correctness or viability one — and bit-exactness, the crypto requirement, holds
+in both tiers regardless. ChaCha20 sidestepped it by redesigning to a transpose
+layout; `FieldElement2625x4` cannot (the shuffles ARE the cross-term
+arithmetic), so here the cross-lane vocabulary gets built rather than avoided.
+
+Scope, stated honestly: ~500–600 lines over `packed_simd.rs` + `field.rs`, plus
+~7 new cross-lane primitives on `U32x8`/`U64x4` in all three SIMD tiers. Larger
+than ChaCha20, same pattern. Every other fork this migration pulls in needs its
+own polyfill pass too (`sha2`'s `x86_avx2.rs`, `blake2`'s `simd/`) — that is the
+real cost of the migration, and calling any single one "not viable" was a way
+of not stating that total.
 
 **Fork coverage is incomplete above the primitives.** `hmac`, `digest` and
 `hybrid-array` have no reachable AdaWorldAPI fork, so even a completed
@@ -166,8 +186,11 @@ A test that fails on `[[patch.unused]]` costs nothing and would have caught it.
 
 ## 8. What this leaves the operator, as three separate calls
 
-1. **Foreign AVX2 out of the crypto path** — one line, today, costs curve speed.
+1. **Foreign AVX2 out of the crypto path** — the one-line `serial` cfg buys time
+   TODAY (costs curve speed); the durable fix is the curve polyfill pass, which
+   is viable and large, not "not viable" as an earlier draft of this plan said.
 2. **#256: keep or revert** — a scope question (do we need `kx` / `hkdf_sha384`
    / `bundle` now?), no longer a safety question.
-3. **Fork migration** — multi-day, gated on argon2 and on whether the fork rule
-   binds trait crates that have no fork.
+3. **Fork migration** — multi-day, and the honest total is: every fork with a
+   SIMD backend needs a polyfill pass (curve25519, sha2, blake2), gated on
+   argon2 and on whether the fork rule binds trait crates that have no fork.
