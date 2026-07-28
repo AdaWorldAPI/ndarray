@@ -19,6 +19,15 @@ const BLOCK_LEN: usize = 128;
 /// Keys longer than the block size are hashed first; shorter keys are
 /// zero-padded. `msg` is passed as a slice of parts so callers can feed a
 /// transcript without concatenating it into a temporary buffer.
+///
+/// ```
+/// use encryption::hkdf_sha384::hmac_sha384;
+///
+/// // The parts are concatenated, not hashed independently — these agree.
+/// let split = hmac_sha384(b"key", &[b"hello ", b"world"]);
+/// let whole = hmac_sha384(b"key", &[b"hello world"]);
+/// assert_eq!(split, whole);
+/// ```
 #[must_use]
 pub fn hmac_sha384(key: &[u8], parts: &[&[u8]]) -> [u8; DIGEST_LEN] {
     let mut padded = [0u8; BLOCK_LEN];
@@ -30,9 +39,9 @@ pub fn hmac_sha384(key: &[u8], parts: &[&[u8]]) -> [u8; DIGEST_LEN] {
 
     let mut inner = [0u8; BLOCK_LEN];
     let mut outer = [0u8; BLOCK_LEN];
-    for i in 0..BLOCK_LEN {
-        inner[i] = padded[i] ^ 0x36;
-        outer[i] = padded[i] ^ 0x5c;
+    for ((i, o), p) in inner.iter_mut().zip(outer.iter_mut()).zip(padded.iter()) {
+        *i = p ^ 0x36;
+        *o = p ^ 0x5c;
     }
     padded.zeroize();
 
@@ -62,6 +71,13 @@ pub struct Prk([u8; DIGEST_LEN]);
 
 impl Prk {
     /// Borrow the raw PRK bytes.
+    ///
+    /// ```
+    /// use encryption::hkdf_sha384::extract;
+    ///
+    /// let prk = extract(b"salt", b"input keying material");
+    /// assert_eq!(prk.as_bytes().len(), 48); // SHA-384 output width
+    /// ```
     #[must_use]
     pub fn as_bytes(&self) -> &[u8; DIGEST_LEN] {
         &self.0
@@ -73,6 +89,14 @@ impl Prk {
 /// The salt is the *public* transcript; the IKM is the Diffie-Hellman output,
 /// which is uniform-ish but not uniform — extracting is what turns it into a
 /// key, and skipping it is the classic mistake.
+///
+/// ```
+/// use encryption::hkdf_sha384::extract;
+///
+/// // Deterministic in both inputs, and the salt is not decorative.
+/// assert_eq!(extract(b"salt", b"ikm").as_bytes(), extract(b"salt", b"ikm").as_bytes());
+/// assert_ne!(extract(b"salt", b"ikm").as_bytes(), extract(b"other", b"ikm").as_bytes());
+/// ```
 #[must_use]
 pub fn extract(salt: &[u8], ikm: &[u8]) -> Prk {
     Prk(hmac_sha384(salt, &[ikm]))
@@ -82,6 +106,23 @@ pub fn extract(salt: &[u8], ikm: &[u8]) -> Prk {
 ///
 /// Returns `Err(())` for an output longer than `255 * 48` bytes, the
 /// construction's ceiling.
+///
+/// ```
+/// use encryption::hkdf_sha384::{expand, extract};
+///
+/// let prk = extract(b"salt", b"ikm");
+/// let mut enc_key = [0u8; 32];
+/// let mut mac_key = [0u8; 32];
+/// expand(&prk, b"encryption", &mut enc_key).unwrap();
+/// expand(&prk, b"authentication", &mut mac_key).unwrap();
+///
+/// // One PRK, two independent keys — that is what `info` is for.
+/// assert_ne!(enc_key, mac_key);
+/// ```
+///
+/// # Errors
+///
+/// [`ExpandTooLong`] if `out` is longer than `255 * 48` bytes.
 pub fn expand(prk: &Prk, info: &[u8], out: &mut [u8]) -> Result<(), ExpandTooLong> {
     if out.len() > 255 * DIGEST_LEN {
         return Err(ExpandTooLong);
