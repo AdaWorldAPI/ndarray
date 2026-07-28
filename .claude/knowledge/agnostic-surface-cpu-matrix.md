@@ -98,6 +98,30 @@ two `__m256i` halves; "4×NEON" means four 128-bit NEON registers (e.g.
 inner ops may currently use scalar storage under `#[target_feature]` rather
 than real `__m256i` intrinsics. Needs verification (see § J integration plan).
 
+> **⏳ RESOLVED — TD-T22 CLOSED, no gap (2026-07-28).** The audit is done and
+> the answer is: the storage IS scalar in the SOURCE, and that costs nothing.
+> `.cargo/config.toml` pins `-Ctarget-cpu=x86-64-v3` for every x86_64 build,
+> so LLVM auto-vectorizes the `avx2_int_type!` loop bodies into packed AVX2.
+> Measured on the ChaCha20 ARX triple over `U32x16`: **no scalar arithmetic
+> touches lane data** (the only non-vector ops across all three probes are
+> `retq` and the loop's `movl`/`decl`/`jne` trip counter),
+> `rotate_left(16)` strength-reduced to `vpshufb`, and the
+> 10-round double-round loop emits exactly **8 `vpaddd` for 64 u32 lanes** —
+> the AVX2 instruction-count floor, with no headroom a hand-written
+> `__m256i` version could recover. `reduce_sum` emits a logarithmic
+> `vpaddd`/`vpshufd`/`vextracti128` reduction tree, not the scalar fold its
+> source spells out. The float side matches: `F32x16::mul_add` is the same
+> `to_array` → loop → `from_array` shape and emits real `vfmadd213ps`.
+>
+> **So these ⏳ cells are ACCURATE AS WRITTEN and must not be read as a
+> performance defect.** A lowering can only be justified by `repr(align(64))`
+> cacheline guarantees (which the polyfill already has and a
+> `repr(transparent)` wrapper would LOSE), non-inlined ABI shape, or
+> `opt-level`/LLVM-version independence — never by speed.
+>
+> Full artifact with probe source, exact commands, and per-symbol instruction
+> histograms: `.claude/knowledge/td-t22-asm-investigation.md`.
+
 ### Mask vectors
 
 | Type      | SKX/CLX/CPL/ICX/SPR/GNR/Z4/Z5 | HSW/ARL | A76/A72/A53 | SCA |
