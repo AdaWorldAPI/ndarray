@@ -124,3 +124,51 @@ inspiration, never authority.
 fabrications still on master) · #5 ASG canon spec · #7 ASG-leaf impl (extend
 `CamPlaneSplat`, don't reinvent) · `cam-pq-production-wiring` (cam_pq shipped, unrouted
 through `CamCodecContract`) · `UNUSED_INVENTORY_1.95` A1–A9 dead-code.
+
+## 2026-07-28 — A dependency's SIMD surface is a reachability question, not a porting one (PR #258)
+**Status:** FINDING (verified — counts + cfg gate + build output all checked live)
+**Scope:** @simd-savant @workspace-primer domain:crypto domain:matryoshka
+
+The same wrong conclusion was reached twice in one arc: "curve25519-dalek's
+vector backend carries raw intrinsics (`avx2/field.rs` reaches around
+`packed_simd.rs`), therefore the matryoshka pattern requires removing the
+dependency." It got as far as a merged removal commit (`3694a3c`) before the
+premise was checked. The counts were right; the conclusion was not:
+
+- **Counts (verified):** 57 `_mm*` intrinsic calls in the AVX2 path
+  (35 `backend/vector/avx2/field.rs` + 22 `backend/vector/packed_simd.rs`),
+  under 52 `unsafe` occurrences in those two files. (`ifma/field.rs` adds 6
+  more on a nightly-only path.)
+- **The gate (verified):** ALL of it sits behind ONE cfg —
+  `curve25519-dalek-4.1.3/src/backend/mod.rs:42`,
+  `#[cfg(curve25519_dalek_backend = "simd")] pub mod vector;` — and dalek's
+  build.rs reads that cfg from `CARGO_CFG_CURVE25519_DALEK_BACKEND`.
+- **The fix (one line):** `.cargo/config.toml` rustflags
+  `--cfg curve25519_dalek_backend="serial"` compiles the entire second SIMD
+  surface out. Verified after `cargo clean -p curve25519-dalek`: the build
+  emits `curve25519_dalek_backend="serial"` only.
+- **`serial` costs nothing we use:** X25519's Montgomery ladder
+  (`montgomery.rs`) never references the vector backend; the vector path
+  serves only Edwards multi-scalar / variable-base multiplication (batch
+  verification, Ristretto protocols) — neither performed by
+  `crates/encryption`.
+
+**The rule this mints:** before porting a third-party crate's SIMD onto
+`ndarray::simd` — and *long* before removing the crate — grep for the
+backend's cfg/feature gate. "It contains raw intrinsics" and "raw intrinsics
+reach the binary" are different claims; the matryoshka invariant binds the
+second, not the first. PR #258 (merged `b127e25`) is the worked example: the
+removal reverted, Ed25519 kept, the surface neutralized by cfg, diff net
+additive.
+
+**Carried tripwire (X25519 port):** `x448::x448()` returns `Option` and
+rejects low-order points; `x25519_dalek::x25519()` returns a bare
+`[u8; 32]` — RFC 7748's contributory check is OPTIONAL, so a mechanical port
+drops it silently. The test
+`channel::tests::low_order_peer_keys_are_refused_and_honest_ones_are_not`
+(both halves asserted, per the falsifiability rule) fails if it does.
+
+Cross-ref: PR #258 body (the full correction narrative), `.cargo/config.toml`
+comment block (the in-tree record), lance-graph
+`E-VACUOUS-ASSERTION-IS-THE-HOUSE-STYLE-1` (the falsifiability rule the
+low-order test follows).

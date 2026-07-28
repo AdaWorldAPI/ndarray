@@ -326,3 +326,32 @@ The `simd-savant` agent on the `lance-graph` side runs PRE-MERGE against every W
 
 > **Is the consumer site cited in the PR description?**
 > Missing = reject. We're shipping primitives for known workloads, not speculative ones.
+
+## Third-party dependencies: neutralize by cfg BEFORE porting, port BEFORE removing (2026-07-28, PR #258)
+
+The matryoshka invariant — all SIMD lives once, audited, inside
+`ndarray::simd` — binds what **reaches the binary**, not what a dependency's
+source tree *contains*. When a third-party crate carries its own intrinsics,
+the escalation ladder is:
+
+1. **Grep for the gate.** Most crypto/perf crates gate their vector backend
+   behind one cfg or feature (`curve25519-dalek`:
+   `#[cfg(curve25519_dalek_backend = "simd")] pub mod vector;` at
+   `backend/mod.rs:42`, selected by build.rs from
+   `CARGO_CFG_CURVE25519_DALEK_BACKEND`). One rustflags line in
+   `.cargo/config.toml` compiles the whole surface out. Cost: zero code.
+   Verify with a clean rebuild that the cfg actually flips
+   (`cargo build -v | grep <cfg name>`).
+2. **Port onto `ndarray::simd`** only if the intrinsics are load-bearing for
+   a path we actually execute (the `vendor/chacha20` precedent — the ARX
+   lane IS our hot path).
+3. **Remove the dependency** only if neither applies — and then the claim
+   "can't be neutralized" must cite the failed gate-grep, not the intrinsic
+   count.
+
+PR #258 is the cautionary worked example: an intrinsic count (57 sites, real)
+was read as a porting obligation, escalated straight to step 3, and a merged
+removal commit had to be reverted once the step-1 gate was found. "Contains
+raw intrinsics" and "raw intrinsics are reachable" are different claims;
+audit the second. Full record: board `EPIPHANIES.md` 2026-07-28 entry +
+the `.cargo/config.toml` comment block.
