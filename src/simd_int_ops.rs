@@ -52,7 +52,7 @@ pub fn add_i8(dst: &mut [i8], src: &[i8]) {
 
     #[cfg(target_arch = "aarch64")]
     {
-        use crate::simd_neon::I8x16;
+        use crate::simd::I8x16;
         const L: usize = 16;
         let chunks = n / L;
         for c in 0..chunks {
@@ -104,7 +104,7 @@ pub fn sub_i8(dst: &mut [i8], src: &[i8]) {
 
     #[cfg(target_arch = "aarch64")]
     {
-        use crate::simd_neon::I8x16;
+        use crate::simd::I8x16;
         const L: usize = 16;
         let chunks = n / L;
         for c in 0..chunks {
@@ -155,6 +155,17 @@ pub fn add_i16(dst: &mut [i16], src: &[i16]) {
 
     #[cfg(target_arch = "aarch64")]
     {
+        // KNOWN DEVIATION from the trampoline rule (all SIMD types come from
+        // `crate::simd::*`; never reach into a backend module from the ops
+        // layer). Every sibling block in this file was corrected to
+        // `crate::simd::I8x16` — this one CANNOT be, because `I16x8` is not a
+        // key in the registry: it exists only as `simd_neon.rs:1311`
+        // `pub struct I16x8(pub int16x8_t)` and is re-exported by no arm of
+        // `simd.rs`. Trampolining requires first registering `I16x8` in the
+        // dispatch arms, which also needs a counterpart on the arms that have
+        // none (scalar / v3 / v4 / wasm) — a registry change, not a path swap.
+        // Left as a direct reference deliberately, so the gap stays visible
+        // rather than being hidden behind a half-fix.
         use crate::simd_neon::I16x8;
         const L: usize = 8;
         let chunks = n / L;
@@ -355,7 +366,7 @@ pub fn min_i8(s: &[i8]) -> i8 {
 
     #[cfg(target_arch = "aarch64")]
     {
-        use crate::simd_neon::I8x16;
+        use crate::simd::I8x16;
         const L: usize = 16;
         let n = s.len();
         if n >= L {
@@ -427,7 +438,7 @@ pub fn max_i8(s: &[i8]) -> i8 {
 
     #[cfg(target_arch = "aarch64")]
     {
-        use crate::simd_neon::I8x16;
+        use crate::simd::I8x16;
         const L: usize = 16;
         let n = s.len();
         if n >= L {
