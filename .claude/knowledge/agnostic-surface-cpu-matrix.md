@@ -102,8 +102,10 @@ than real `__m256i` intrinsics. Needs verification (see § J integration plan).
 > the answer is: the storage IS scalar in the SOURCE, and that costs nothing.
 > `.cargo/config.toml` pins `-Ctarget-cpu=x86-64-v3` for every x86_64 build,
 > so LLVM auto-vectorizes the `avx2_int_type!` loop bodies into packed AVX2.
-> Measured on the ChaCha20 ARX triple over `U32x16`: **zero scalar ALU
-> instructions**, `rotate_left(16)` strength-reduced to `vpshufb`, and the
+> Measured on the ChaCha20 ARX triple over `U32x16`: **no scalar arithmetic
+> touches lane data** (the only non-vector ops across all three probes are
+> `retq` and the loop's `movl`/`decl`/`jne` trip counter),
+> `rotate_left(16)` strength-reduced to `vpshufb`, and the
 > 10-round double-round loop emits exactly **8 `vpaddd` for 64 u32 lanes** —
 > the AVX2 instruction-count floor, with no headroom a hand-written
 > `__m256i` version could recover. `reduce_sum` emits a logarithmic

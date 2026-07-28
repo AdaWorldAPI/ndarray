@@ -83,7 +83,7 @@ cargo rustc --release --example td_t22_probe -p ndarray -- --emit asm -C debugin
 | `vpxor` | 2 |
 | `vpshufb` | 2 |
 | `vmovdqa` | 5 |
-| **scalar ALU** | **0** |
+| **scalar arithmetic on lane data** | **0** |
 
 16 u32 lanes = 2 ymm registers, so 2 packed ops per lane-op is exactly one
 instruction per half. LLVM strength-reduced `rotate_left(16)` into a **byte
@@ -99,7 +99,7 @@ intrinsic version would emit.
 | `vpshufb` | 6 |
 | `vpsrld` / `vpslld` / `vpor` | 4 / 4 / 4 |
 | `jne` | 1 |
-| **scalar ALU** | **0** |
+| **scalar arithmetic on lane data** | **0** |
 
 The `jne` shows this is one rolled loop body, so the counts are per
 iteration. **This is the instruction-count floor:** 4 `U32x16` adds = 64 u32
@@ -116,10 +116,19 @@ for a hand-written version to recover.**
 | `vpshufd` | 2 |
 | `vextracti128` | 1 |
 | `vmovd` | 1 |
-| **scalar ALU** | **0** |
+| **scalar arithmetic on lane data** | **0** |
 
 A textbook logarithmic horizontal-reduction tree, not the scalar
 `wrapping_add` fold the source literally spells out.
+
+**Precision on "0 scalar arithmetic on lane data".** A broad sweep of ALL
+non-vector instructions across the three symbols returns exactly:
+`3 retq`, `1 movl`, `1 jne`, `1 decl`. The `movl`/`decl`/`jne` are the
+`arx_ten_rounds` loop counter and branch — loop control, not lane
+arithmetic. So the honest claim is **no scalar op touches lane data**, not
+"no scalar instruction exists": one `decl` does, and it decrements the trip
+count. Every `u32` lane operation in all three probes is a packed AVX2
+instruction.
 
 ## The same result holds for the float side
 
