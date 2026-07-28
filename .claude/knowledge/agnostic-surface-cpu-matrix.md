@@ -539,11 +539,18 @@ verifies that no per-CPU regression has crept in vs the historical baseline:
 >
 > - **Validation (what the lanes compute):** `scripts/neon-parity.sh` cross-builds
 >   `crates/neon-simd-parity` for `aarch64-unknown-linux-gnu` and runs it under
->   `qemu-aarch64-static`, asserting every `ndarray::simd` NEON lane is
->   bit-identical to its scalar reference; `scripts/wasm-parity.sh` is the
->   wasm32+simd128 twin under node. These are the measurement of record for lane
->   arithmetic — and they need **no physical silicon**, which is why the aarch64
->   surface could be measured at all.
+>   `qemu-aarch64-static`, asserting the exercised lanes are bit-identical to
+>   their scalar reference; `scripts/wasm-parity.sh` is the wasm32+simd128 twin
+>   under node. **Coverage as of 2026-07-28 (from `selfcheck` in
+>   `crates/neon-simd-parity/src/main.rs`, not the full export surface):**
+>   `U32x16` (Add / BitXor / rotate_left — the ChaCha20/BLAKE ARX triple),
+>   `F32x16` (splat / roundtrip / add / reduce_sum), `I8x16` (roundtrip / add).
+>   Exported lanes NOT yet exercised there (e.g. `I16x8`, `U8x16`, `U64x2`) are
+>   **unverified by this harness** — a later SIMD audit must not treat them as
+>   measured; extending `selfcheck` is the way to promote one. Within its
+>   coverage these runs are the measurement of record for lane arithmetic — and
+>   they need **no physical silicon**, which is why the aarch64 surface could be
+>   measured at all.
 > - **Runtime detection (what a given CPU admits to having):**
 >   `sysctl hw.optional.arm.FEAT_*` on Darwin / `getauxval(AT_HWCAP)` on
 >   Linux/Android (`src/simd_neon_dotprod.rs:29-30`), `__cpuid_count` on x86

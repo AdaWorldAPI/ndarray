@@ -32,13 +32,22 @@ https://raw.githubusercontent.com/gcc-mirror/gcc/<SHA>/<path>
 |---|---|---|
 | **1. declarations** | `gcc/config/i386/*intrin.h`<br>`gcc/config/aarch64/arm_neon.h` | *What builtin does this intrinsic map to, and what are its exact C types?* |
 | **2. machine description** | `gcc/config/*/*.md` | *What instruction / RTL does that builtin lower to, and what are the bit encodings?* |
-| **3. conformance tests** | `gcc/testsuite/gcc.target/{i386,aarch64,arm,...}/` | *What does it compute?* — an executable test per intrinsic with an **inline scalar reference implementation** |
+| **3. conformance tests** | `gcc/testsuite/gcc.target/{i386,aarch64,arm,...}/` | *What does it compute?* — **where a runtime test exists**, an executable check with an **inline scalar reference implementation** |
 
-Layer 3 is the one people don't know about and is by far the most useful: it is
-a per-intrinsic **oracle**, not prose. That makes it directly usable for the
-byte-parity discipline this workspace already applies elsewhere (tesseract-rs,
-stockfish-rs) — port a kernel, then prove it against GCC's own definition of
-what the instruction computes, rather than against a hand-written reference.
+Layer 3 is the one people don't know about and is the most useful **when it
+applies** — but qualify the claim: `gcc.target` mixes runtime tests with
+compile-only, diagnostic, and codegen (`scan-assembler`) tests, and not every
+intrinsic has a runtime test with a scalar reference. The discriminator is the
+DejaGnu directive: `dg-do run` (executable) vs `dg-do compile` / `dg-do
+assemble` (no semantic validation). Where a `dg-do run` test with a scalar
+loop + `abort()`-style comparison exists, it is a per-intrinsic **oracle**,
+not prose — directly usable for the byte-parity discipline this workspace
+already applies elsewhere (tesseract-rs, stockfish-rs): port a kernel, then
+prove it against GCC's own definition of what the instruction computes rather
+than a hand-written reference. Where only a compile/scan test exists, layer 3
+proves nothing about semantics — fall back to the ISA specification (Intel
+SDM / Arm ARM) as the authority, with layers 1-2 still pinning types and
+lowering.
 
 ## Worked example — the question that motivated this file
 
