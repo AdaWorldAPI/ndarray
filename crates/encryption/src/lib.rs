@@ -66,8 +66,10 @@
 #![forbid(unsafe_code)]
 
 pub mod aead;
+pub mod channel;
 pub mod envelope;
 pub mod hash;
+pub mod hkdf_sha384;
 pub mod kdf;
 pub mod sign;
 
