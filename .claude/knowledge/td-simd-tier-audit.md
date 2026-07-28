@@ -271,7 +271,23 @@ pub use scalar::{
 
 On aarch64, the only types from `simd_neon::aarch64_simd` (line 349) are `f32x16, f64x8, F32Mask16, F32x16, F64Mask8, F64x8`. Every integer width — `I32x16`, `I8x32`, `U8x64`, `U16x32`, etc. — comes from `scalar::*`. Pi 5 / M2 get scalar integer SIMD even though NEON has `int32x4_t`, `uint8x16_t`, etc.
 
-### TD-T22 · `src/simd.rs:310, 318-321` · 256-bit int types in AVX2 build come from `simd_avx512`
+### TD-T22 ✅ CLOSED (2026-07-28) — investigated, NO GAP · `src/simd.rs:310, 318-321` · 256-bit int types in AVX2 build come from `simd_avx512`
+
+> **Closure note (append-only; the original entry below is unchanged).**
+> The deferred question — "are the 256-bit polyfills real `__m256i`
+> intrinsics or scalar arrays?" — is answered: **scalar in the source,
+> packed AVX2 in the binary.** The mandatory `-Ctarget-cpu=x86-64-v3`
+> baseline means LLVM vectorizes the `avx2_int_type!` bodies. Measured:
+> zero scalar ALU instructions on the ARX triple, 8 `vpaddd` for 64 u32
+> lanes (the AVX2 floor), `rotate_left(16)` → `vpshufb`, and a logarithmic
+> reduction tree for `reduce_sum`. **No `__m256i` lowering is warranted on
+> codegen grounds** for `U16x16`/`U32x8`/`U64x4`/`I32x8`/`I64x4` or the
+> existing wider types. Artifact:
+> `.claude/knowledge/td-t22-asm-investigation.md`.
+>
+> Also settled: `U32x8` must NOT be introduced as `U32x16`'s building block
+> (operator ruling — it splits the lane vocabulary). The lowering PR that
+> did so was closed unmerged (ndarray #261).
 
 ```rust
 // 310: AVX2-baseline arm uses simd_avx512 for the 256-bit shapes
