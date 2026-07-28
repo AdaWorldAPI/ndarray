@@ -693,13 +693,14 @@ impl F32x16 {
         for i in 0..16 {
             o[i] = a[i].to_bits();
         }
-        U32x16(o)
+        U32x16::from_array(o)
     }
     #[inline(always)]
     pub fn from_bits(bits: U32x16) -> Self {
+        let bits_arr = bits.to_array();
         let mut o = [0.0f32; 16];
         for i in 0..16 {
-            o[i] = f32::from_bits(bits.0[i]);
+            o[i] = f32::from_bits(bits_arr[i]);
         }
         Self::from_array(o)
     }
@@ -1539,25 +1540,11 @@ impl U8x64 {
 avx2_int_type!(I32x16, i32, 16, 0i32);
 avx2_int_type!(I64x8, i64, 8, 0i64);
 avx2_int_type!(U16x32, u16, 32, 0u16);
-avx2_int_type!(U32x16, u32, 16, 0u32);
 avx2_int_type!(U64x8, u64, 8, 0u64);
 
-impl U32x16 {
-    /// Lane-wise left-rotate by `n` bits — the ARX rotate (matches
-    /// `u32::rotate_left`), completing `Add` + `BitXor` for ChaCha20/BLAKE.
-    /// This arm's `U32x16` is the `[u32; 16]` polyfill (native `2× __m256i` is
-    /// the deferred TD-SIMD-3 lowering), so the rotate is a per-lane
-    /// `u32::rotate_left` loop — bit-identical to the scalar tier and to the
-    /// native `VPROLVD` path, the shared parity reference.
-    #[inline(always)]
-    pub fn rotate_left(self, n: u32) -> Self {
-        let mut out = [0u32; 16];
-        for i in 0..16 {
-            out[i] = self.0[i].rotate_left(n);
-        }
-        Self(out)
-    }
-}
+// U32x16 is defined natively (as two `U32x8` halves) further below, right
+// after the native `U32x8` — see "U32x16 — recomposed from two native
+// `U32x8` halves" (TD-SIMD-3).
 
 // 256-bit int lanes — scalar polyfills filling the gap surfaced by the
 // 2026-05-20 matrix audit. None of these had wrappers anywhere except
@@ -1672,18 +1659,16 @@ impl U16x16 {
     /// so they fit exactly in f32; this is the lossless u16→f32 step before the
     /// per-query `scale·partial` FMA.
     #[inline(always)]
-    pub fn to_f32x8_lo(self) -> crate::simd_avx512::F32x8 {
+    pub fn to_f32x8_lo(self) -> crate::simd::F32x8 {
         // SAFETY: AVX2 baseline.
-        crate::simd_avx512::F32x8(unsafe { _mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(_mm256_castsi256_si128(self.0))) })
+        crate::simd::F32x8(unsafe { _mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(_mm256_castsi256_si128(self.0))) })
     }
 
     /// Zero-extend the high 8 × u16 lanes to f32 (sibling of `to_f32x8_lo`).
     #[inline(always)]
-    pub fn to_f32x8_hi(self) -> crate::simd_avx512::F32x8 {
+    pub fn to_f32x8_hi(self) -> crate::simd::F32x8 {
         // SAFETY: AVX2 baseline.
-        crate::simd_avx512::F32x8(unsafe {
-            _mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(_mm256_extracti128_si256::<1>(self.0)))
-        })
+        crate::simd::F32x8(unsafe { _mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(_mm256_extracti128_si256::<1>(self.0))) })
     }
 }
 
@@ -1784,7 +1769,372 @@ impl PartialEq for U16x16 {
     }
 }
 
-avx2_int_type!(U32x8, u32, 8, 0u32);
+// ── U32x8 — native AVX2 `__m256i` (8 × u32) ─────────────────────────────────
+// TD-SIMD-3 lowering: previously `avx2_int_type!(U32x8, ...)` — a scalar
+// `[u32; 8]` polyfill. Now a real `__m256i` wrapper, mirroring the native
+// `U16x16` immediately above (same SAFETY-comment style, same operator-impl
+// layout). A 256-bit register is valid on both AVX2 and AVX-512 hosts, so
+// both `simd.rs` dispatch arms share this one native type (already true today
+// via the by-name re-export in `simd_avx512.rs:2320` — the struct keeps its
+// name, so no re-export edits are needed). This is the ARX lane's native AVX2
+// half — `U32x16` below recomposes two of these.
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct U32x8(pub __m256i);
+
+impl U32x8 {
+    pub const LANES: usize = 8;
+
+    #[inline(always)]
+    pub fn splat(v: u32) -> Self {
+        Self(unsafe { _mm256_set1_epi32(v as i32) })
+    }
+
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self(unsafe { _mm256_setzero_si256() })
+    }
+
+    #[inline(always)]
+    pub fn from_slice(s: &[u32]) -> Self {
+        assert!(s.len() >= 8);
+        // SAFETY: 8 × u32 = 32 bytes = one __m256i. Unaligned load.
+        Self(unsafe { _mm256_loadu_si256(s.as_ptr() as *const __m256i) })
+    }
+
+    #[inline(always)]
+    pub fn from_array(arr: [u32; 8]) -> Self {
+        Self(unsafe { _mm256_loadu_si256(arr.as_ptr() as *const __m256i) })
+    }
+
+    #[inline(always)]
+    pub fn to_array(self) -> [u32; 8] {
+        let mut arr = [0u32; 8];
+        // SAFETY: store 32 bytes into 8 × u32.
+        unsafe { _mm256_storeu_si256(arr.as_mut_ptr() as *mut __m256i, self.0) };
+        arr
+    }
+
+    #[inline(always)]
+    pub fn copy_to_slice(self, s: &mut [u32]) {
+        assert!(s.len() >= 8);
+        unsafe { _mm256_storeu_si256(s.as_mut_ptr() as *mut __m256i, self.0) };
+    }
+
+    /// Horizontal sum of all 8 lanes — WRAPPING, matching the retired
+    /// `avx2_int_type!` macro's `wrapping_add` fold (unlike `U16x16::reduce_sum`,
+    /// which widens to `u32` and cannot overflow; `u32` has nowhere wider to
+    /// widen to here without changing the return type).
+    #[inline(always)]
+    pub fn reduce_sum(self) -> u32 {
+        self.to_array().iter().fold(0u32, |a, &v| a.wrapping_add(v))
+    }
+
+    /// Lane-wise left-rotate by `n` bits — the ARX rotate (matches
+    /// `u32::rotate_left` for every `n`, including `n == 0` and `n >= 32`).
+    /// `n` is first reduced mod 32 (matching `u32::rotate_left`'s own
+    /// wraparound), then built from `sll(n) | srl(32 - n)`. At `n == 0` this is
+    /// `sll(0) | srl(32)`: per the ISA, `_mm256_srl_epi32` with a shift count
+    /// `>= 32` produces all-zero lanes, so the `srl` term vanishes and the
+    /// `sll(0)` term (identity) is exactly `self` — no branch needed. As with
+    /// the AVX-512 `VPROLVD` rotate, ARX rotate amounts are public constants
+    /// (never secret), so a runtime `n` carries no timing concern.
+    #[inline(always)]
+    pub fn rotate_left(self, n: u32) -> Self {
+        let n = n % 32;
+        // SAFETY: AVX2 baseline. `_mm256_sll_epi32`/`_mm256_srl_epi32` take a
+        // runtime shift count from the low 64 bits of an xmm register.
+        unsafe {
+            let cnt_lo = _mm_cvtsi32_si128(n as i32);
+            let cnt_hi = _mm_cvtsi32_si128((32 - n) as i32);
+            Self(_mm256_or_si256(_mm256_sll_epi32(self.0, cnt_lo), _mm256_srl_epi32(self.0, cnt_hi)))
+        }
+    }
+
+    /// Logical left shift each 32-bit lane by `imm` (matches `U16x16::shl`;
+    /// runtime lane count, so every shift amount in `0..32` works — an
+    /// `imm >= 32` yields all-zero lanes per the ISA).
+    #[inline(always)]
+    pub fn shl(self, imm: u32) -> Self {
+        // SAFETY: AVX2 baseline.
+        Self(unsafe { _mm256_sll_epi32(self.0, _mm_cvtsi32_si128(imm as i32)) })
+    }
+
+    /// Logical right shift each 32-bit lane by `imm` (matches `U16x16::shr`).
+    #[inline(always)]
+    pub fn shr(self, imm: u32) -> Self {
+        // SAFETY: AVX2 baseline.
+        Self(unsafe { _mm256_srl_epi32(self.0, _mm_cvtsi32_si128(imm as i32)) })
+    }
+}
+
+impl Default for U32x8 {
+    #[inline(always)]
+    fn default() -> Self {
+        Self::zero()
+    }
+}
+
+impl Add for U32x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn add(self, rhs: Self) -> Self {
+        Self(unsafe { _mm256_add_epi32(self.0, rhs.0) })
+    }
+}
+impl Sub for U32x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn sub(self, rhs: Self) -> Self {
+        Self(unsafe { _mm256_sub_epi32(self.0, rhs.0) })
+    }
+}
+impl Mul for U32x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn mul(self, rhs: Self) -> Self {
+        Self(unsafe { _mm256_mullo_epi32(self.0, rhs.0) })
+    }
+}
+impl AddAssign for U32x8 {
+    #[inline(always)]
+    fn add_assign(&mut self, rhs: Self) {
+        self.0 = unsafe { _mm256_add_epi32(self.0, rhs.0) };
+    }
+}
+impl SubAssign for U32x8 {
+    #[inline(always)]
+    fn sub_assign(&mut self, rhs: Self) {
+        self.0 = unsafe { _mm256_sub_epi32(self.0, rhs.0) };
+    }
+}
+impl BitAnd for U32x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitand(self, rhs: Self) -> Self {
+        Self(unsafe { _mm256_and_si256(self.0, rhs.0) })
+    }
+}
+impl BitOr for U32x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitor(self, rhs: Self) -> Self {
+        Self(unsafe { _mm256_or_si256(self.0, rhs.0) })
+    }
+}
+impl BitXor for U32x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitxor(self, rhs: Self) -> Self {
+        Self(unsafe { _mm256_xor_si256(self.0, rhs.0) })
+    }
+}
+impl BitAndAssign for U32x8 {
+    #[inline(always)]
+    fn bitand_assign(&mut self, rhs: Self) {
+        self.0 = unsafe { _mm256_and_si256(self.0, rhs.0) };
+    }
+}
+impl BitOrAssign for U32x8 {
+    #[inline(always)]
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 = unsafe { _mm256_or_si256(self.0, rhs.0) };
+    }
+}
+impl BitXorAssign for U32x8 {
+    #[inline(always)]
+    fn bitxor_assign(&mut self, rhs: Self) {
+        self.0 = unsafe { _mm256_xor_si256(self.0, rhs.0) };
+    }
+}
+impl Not for U32x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn not(self) -> Self {
+        Self(unsafe { _mm256_xor_si256(self.0, _mm256_set1_epi32(-1)) })
+    }
+}
+impl fmt::Debug for U32x8 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "U32x8({:?})", self.to_array())
+    }
+}
+impl PartialEq for U32x8 {
+    fn eq(&self, other: &Self) -> bool {
+        self.to_array() == other.to_array()
+    }
+}
+
+// ── U32x16 — recomposed from two native `U32x8` halves ─────────────────────
+// TD-SIMD-3 lowering: previously `avx2_int_type!(U32x16, ...)` (a scalar
+// `[u32; 16]` polyfill) plus a hand-written `rotate_left` polyfill. Now two
+// native `U32x8` (`__m256i`) halves — the same two-register composition
+// `F32x16` above uses (two `__m256` halves) — completing the ARX lane
+// natively on the AVX2 tier: lo = lanes 0-7, hi = lanes 8-15. This is the
+// deferred half of TD-SIMD-3 named in `.claude/CHACHA20_MATRYOSHKA_PLAN.md`
+// step 3.
+#[derive(Copy, Clone)]
+pub struct U32x16(pub U32x8, pub U32x8);
+
+impl U32x16 {
+    pub const LANES: usize = 16;
+
+    #[inline(always)]
+    pub fn splat(v: u32) -> Self {
+        Self(U32x8::splat(v), U32x8::splat(v))
+    }
+
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self(U32x8::zero(), U32x8::zero())
+    }
+
+    #[inline(always)]
+    pub fn from_slice(s: &[u32]) -> Self {
+        assert!(s.len() >= 16);
+        Self(U32x8::from_slice(&s[..8]), U32x8::from_slice(&s[8..16]))
+    }
+
+    #[inline(always)]
+    pub fn from_array(a: [u32; 16]) -> Self {
+        Self(U32x8::from_array(a[..8].try_into().unwrap()), U32x8::from_array(a[8..].try_into().unwrap()))
+    }
+
+    #[inline(always)]
+    pub fn to_array(self) -> [u32; 16] {
+        let mut out = [0u32; 16];
+        out[..8].copy_from_slice(&self.0.to_array());
+        out[8..].copy_from_slice(&self.1.to_array());
+        out
+    }
+
+    #[inline(always)]
+    pub fn copy_to_slice(self, s: &mut [u32]) {
+        assert!(s.len() >= 16);
+        s[..8].copy_from_slice(&self.0.to_array());
+        s[8..16].copy_from_slice(&self.1.to_array());
+    }
+
+    /// Horizontal sum of all 16 lanes — WRAPPING (matches the retired
+    /// `avx2_int_type!` macro semantics).
+    #[inline(always)]
+    pub fn reduce_sum(self) -> u32 {
+        self.to_array().iter().fold(0u32, |a, &v| a.wrapping_add(v))
+    }
+
+    /// Lane-wise left-rotate by `n` bits — the ARX rotate (matches
+    /// `u32::rotate_left`), completing `Add` + `BitXor` for ChaCha20/BLAKE.
+    /// Delegates to the native `U32x8::rotate_left` per half — bit-identical
+    /// to the scalar tier and to the native `VPROLVD` path, the shared parity
+    /// reference (see `simd.rs::u32x16_arx_ops_match_scalar`).
+    #[inline(always)]
+    pub fn rotate_left(self, n: u32) -> Self {
+        Self(self.0.rotate_left(n), self.1.rotate_left(n))
+    }
+}
+
+impl Default for U32x16 {
+    #[inline(always)]
+    fn default() -> Self {
+        Self::zero()
+    }
+}
+
+impl Add for U32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn add(self, rhs: Self) -> Self {
+        Self(self.0 + rhs.0, self.1 + rhs.1)
+    }
+}
+impl Sub for U32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn sub(self, rhs: Self) -> Self {
+        Self(self.0 - rhs.0, self.1 - rhs.1)
+    }
+}
+impl Mul for U32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn mul(self, rhs: Self) -> Self {
+        Self(self.0 * rhs.0, self.1 * rhs.1)
+    }
+}
+impl AddAssign for U32x16 {
+    #[inline(always)]
+    fn add_assign(&mut self, rhs: Self) {
+        self.0 += rhs.0;
+        self.1 += rhs.1;
+    }
+}
+impl SubAssign for U32x16 {
+    #[inline(always)]
+    fn sub_assign(&mut self, rhs: Self) {
+        self.0 -= rhs.0;
+        self.1 -= rhs.1;
+    }
+}
+impl BitAnd for U32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitand(self, rhs: Self) -> Self {
+        Self(self.0 & rhs.0, self.1 & rhs.1)
+    }
+}
+impl BitOr for U32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0, self.1 | rhs.1)
+    }
+}
+impl BitXor for U32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitxor(self, rhs: Self) -> Self {
+        Self(self.0 ^ rhs.0, self.1 ^ rhs.1)
+    }
+}
+impl BitAndAssign for U32x16 {
+    #[inline(always)]
+    fn bitand_assign(&mut self, rhs: Self) {
+        self.0 &= rhs.0;
+        self.1 &= rhs.1;
+    }
+}
+impl BitOrAssign for U32x16 {
+    #[inline(always)]
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+        self.1 |= rhs.1;
+    }
+}
+impl BitXorAssign for U32x16 {
+    #[inline(always)]
+    fn bitxor_assign(&mut self, rhs: Self) {
+        self.0 ^= rhs.0;
+        self.1 ^= rhs.1;
+    }
+}
+impl Not for U32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn not(self) -> Self {
+        Self(!self.0, !self.1)
+    }
+}
+impl fmt::Debug for U32x16 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "U32x16({:?})", self.to_array())
+    }
+}
+impl PartialEq for U32x16 {
+    fn eq(&self, other: &Self) -> bool {
+        self.to_array() == other.to_array()
+    }
+}
+
 avx2_int_type!(U64x4, u64, 4, 0u64);
 avx2_int_type!(I32x8, i32, 8, 0i32);
 avx2_int_type!(I64x4, i64, 4, 0i64);
@@ -2725,6 +3075,309 @@ mod tests {
         assert_eq!(distances[1], 128);
         assert_eq!(distances[2], 64);
         assert_eq!(distances[3], 8);
+    }
+
+    // ── TD-SIMD-3: native U32x8 / U32x16 ─────────────────────────────────────
+    // Falsifiability rule: every assertion below can fail on a wrong
+    // implementation. Inputs are chosen so wrapping/rotation actually matter
+    // (distinct per-lane values, values that overflow, rotate amounts that
+    // exceed the register width) — never all-zeros, never compared to itself.
+
+    const U32X8_PATTERN: [u32; 8] = [0, 1, u32::MAX, 0x8000_0000, 0xDEAD_BEEF, 0x1234_5678, 0x0000_0002, 0xFFFF_0000];
+    const U32X16_PATTERN: [u32; 16] = [
+        0,
+        1,
+        u32::MAX,
+        0x8000_0000,
+        0xDEAD_BEEF,
+        0x1234_5678,
+        0x0000_0002,
+        0xFFFF_0000,
+        0x0000_0001,
+        0x7FFF_FFFF,
+        0xCAFE_BABE,
+        0x0F0F_0F0F,
+        0xF0F0_F0F0,
+        0x5555_5555,
+        0xAAAA_AAAA,
+        0x0000_00FF,
+    ];
+
+    #[test]
+    fn u32x8_roundtrip() {
+        let v = U32x8::from_array(U32X8_PATTERN);
+        assert_eq!(v.to_array(), U32X8_PATTERN);
+
+        let mut buf = [0u32; 8];
+        v.copy_to_slice(&mut buf);
+        assert_eq!(buf, U32X8_PATTERN);
+
+        let v2 = U32x8::from_slice(&U32X8_PATTERN);
+        assert_eq!(v2.to_array(), U32X8_PATTERN);
+    }
+
+    #[test]
+    fn u32x16_roundtrip() {
+        let v = U32x16::from_array(U32X16_PATTERN);
+        assert_eq!(v.to_array(), U32X16_PATTERN);
+
+        let mut buf = [0u32; 16];
+        v.copy_to_slice(&mut buf);
+        assert_eq!(buf, U32X16_PATTERN);
+
+        let v2 = U32x16::from_slice(&U32X16_PATTERN);
+        assert_eq!(v2.to_array(), U32X16_PATTERN);
+    }
+
+    #[test]
+    fn u32x8_add_sub_wrapping() {
+        let a_arr = [0u32, 1, u32::MAX, 0x8000_0000, u32::MAX, 5, 0, 0x7FFF_FFFF];
+        let b_arr = [0u32, u32::MAX, 1, 0x8000_0000, 1, 10, u32::MAX, 1];
+        let a = U32x8::from_array(a_arr);
+        let b = U32x8::from_array(b_arr);
+
+        let add = (a + b).to_array();
+        let sub = (a - b).to_array();
+        for i in 0..8 {
+            assert_eq!(add[i], a_arr[i].wrapping_add(b_arr[i]), "lane {i} add");
+            assert_eq!(sub[i], a_arr[i].wrapping_sub(b_arr[i]), "lane {i} sub");
+        }
+    }
+
+    #[test]
+    fn u32x16_add_sub_wrapping() {
+        let a = U32x16::from_array(U32X16_PATTERN);
+        let mut b_arr = U32X16_PATTERN;
+        b_arr.reverse();
+        let b = U32x16::from_array(b_arr);
+
+        let add = (a + b).to_array();
+        let sub = (a - b).to_array();
+        for i in 0..16 {
+            assert_eq!(add[i], U32X16_PATTERN[i].wrapping_add(b_arr[i]), "lane {i} add");
+            assert_eq!(sub[i], U32X16_PATTERN[i].wrapping_sub(b_arr[i]), "lane {i} sub");
+        }
+    }
+
+    #[test]
+    fn u32x8_mul_wrapping() {
+        let a_arr = [0xFFFF_FFFFu32, 0x1_0000, 3, 0x8000_0000, 0xDEAD_BEEF, 2, 0x0001_0001, 0xABCD_1234];
+        let b_arr = [2u32, 0x1_0000, 0x5555_5555, 2, 0x1234_5678, 0x7FFF_FFFF, 0x0002_0002, 0x1000_0001];
+        let a = U32x8::from_array(a_arr);
+        let b = U32x8::from_array(b_arr);
+        let mul = (a * b).to_array();
+        for i in 0..8 {
+            assert_eq!(mul[i], a_arr[i].wrapping_mul(b_arr[i]), "lane {i} mul");
+        }
+    }
+
+    #[test]
+    fn u32x16_mul_wrapping() {
+        let a = U32x16::from_array(U32X16_PATTERN);
+        let mut b_arr = U32X16_PATTERN;
+        b_arr.rotate_left(3);
+        let b = U32x16::from_array(b_arr);
+        let mul = (a * b).to_array();
+        for i in 0..16 {
+            assert_eq!(mul[i], U32X16_PATTERN[i].wrapping_mul(b_arr[i]), "lane {i} mul");
+        }
+    }
+
+    #[test]
+    fn u32x8_bitwise() {
+        let a_arr = [0x0F0F_0F0Fu32, 0xFFFF_0000, 0xAAAA_AAAA, 0, u32::MAX, 0x1234_5678, 0x8000_0001, 0x5A5A_5A5A];
+        let b_arr = [0xF0F0_F0F0u32, 0x00FF_00FF, 0x5555_5555, u32::MAX, 0, 0x8765_4321, 0x0000_0001, 0xA5A5_A5A5];
+        let a = U32x8::from_array(a_arr);
+        let b = U32x8::from_array(b_arr);
+
+        let and = (a & b).to_array();
+        let or = (a | b).to_array();
+        let xor = (a ^ b).to_array();
+        let not_a = (!a).to_array();
+        for i in 0..8 {
+            assert_eq!(and[i], a_arr[i] & b_arr[i], "lane {i} and");
+            assert_eq!(or[i], a_arr[i] | b_arr[i], "lane {i} or");
+            assert_eq!(xor[i], a_arr[i] ^ b_arr[i], "lane {i} xor");
+            assert_eq!(not_a[i], !a_arr[i], "lane {i} not");
+        }
+    }
+
+    #[test]
+    fn u32x16_bitwise() {
+        let a = U32x16::from_array(U32X16_PATTERN);
+        let mut b_arr = U32X16_PATTERN;
+        b_arr.reverse();
+        let b = U32x16::from_array(b_arr);
+
+        let and = (a & b).to_array();
+        let or = (a | b).to_array();
+        let xor = (a ^ b).to_array();
+        let not_a = (!a).to_array();
+        for i in 0..16 {
+            assert_eq!(and[i], U32X16_PATTERN[i] & b_arr[i], "lane {i} and");
+            assert_eq!(or[i], U32X16_PATTERN[i] | b_arr[i], "lane {i} or");
+            assert_eq!(xor[i], U32X16_PATTERN[i] ^ b_arr[i], "lane {i} xor");
+            assert_eq!(not_a[i], !U32X16_PATTERN[i], "lane {i} not");
+        }
+    }
+
+    #[test]
+    fn u32x8_rotate_left_matches_scalar() {
+        let v = U32x8::from_array(U32X8_PATTERN);
+        for n in [0u32, 1, 7, 8, 12, 16, 24, 31, 32, 33] {
+            let got = v.rotate_left(n).to_array();
+            for i in 0..8 {
+                assert_eq!(got[i], U32X8_PATTERN[i].rotate_left(n), "n={n} lane {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn u32x16_rotate_left_matches_scalar() {
+        let v = U32x16::from_array(U32X16_PATTERN);
+        for n in [0u32, 1, 7, 8, 12, 16, 24, 31, 32, 33] {
+            let got = v.rotate_left(n).to_array();
+            for i in 0..16 {
+                assert_eq!(got[i], U32X16_PATTERN[i].rotate_left(n), "n={n} lane {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn u32x8_shl_shr_matches_scalar() {
+        // Contract mirrors `U16x16::shl`/`shr`: amounts >= 32 are not covered
+        // (they zero every lane per the ISA, which is not std `<<`/`>>` for
+        // u32 at width 32 — that would panic in debug). Amounts in-range only.
+        let arr = [0x0000_0001u32, 0x8000_0001, 0xFFFF_FFFF, 0x1234_5678, 0, 0x0F0F_0F0F, 0xF0F0_F0F0, 0x0000_00FF];
+        let v = U32x8::from_array(arr);
+        for amt in [0u32, 1, 5, 31] {
+            let shl = v.shl(amt).to_array();
+            let shr = v.shr(amt).to_array();
+            for i in 0..8 {
+                assert_eq!(shl[i], arr[i] << amt, "shl amt={amt} lane {i}");
+                assert_eq!(shr[i], arr[i] >> amt, "shr amt={amt} lane {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn u32x8_reduce_sum_wraps() {
+        // Chosen so the sum exceeds u32::MAX and wraps.
+        let arr = [u32::MAX, u32::MAX, u32::MAX, u32::MAX, u32::MAX, u32::MAX, u32::MAX, u32::MAX];
+        let v = U32x8::from_array(arr);
+        let expected = arr.iter().fold(0u32, |a, &x| a.wrapping_add(x));
+        assert_eq!(v.reduce_sum(), expected);
+        assert_ne!(expected as u64, arr.iter().map(|&x| x as u64).sum::<u64>());
+
+        // Also check a non-degenerate pattern (not all-equal lanes).
+        let arr2 = U32X8_PATTERN;
+        let v2 = U32x8::from_array(arr2);
+        let expected2 = arr2.iter().fold(0u32, |a, &x| a.wrapping_add(x));
+        assert_eq!(v2.reduce_sum(), expected2);
+    }
+
+    #[test]
+    fn u32x16_reduce_sum_wraps() {
+        let arr = [u32::MAX; 16];
+        let v = U32x16::from_array(arr);
+        let expected = arr.iter().fold(0u32, |a, &x| a.wrapping_add(x));
+        assert_eq!(v.reduce_sum(), expected);
+        assert_ne!(expected as u64, arr.iter().map(|&x| x as u64).sum::<u64>());
+
+        let v2 = U32x16::from_array(U32X16_PATTERN);
+        let expected2 = U32X16_PATTERN.iter().fold(0u32, |a, &x| a.wrapping_add(x));
+        assert_eq!(v2.reduce_sum(), expected2);
+    }
+
+    #[test]
+    fn u32x8_assign_ops_match_binary() {
+        let a_arr = [0x0F0F_0F0Fu32, 0xFFFF_0000, 3, 0x8000_0000, u32::MAX, 5, 0x1234_5678, 0x7FFF_FFFF];
+        let b_arr = [0xF0F0_F0F0u32, 0x00FF_00FF, 5, 0x8000_0000, 1, 10, 0x8765_4321, 1];
+        let a = U32x8::from_array(a_arr);
+        let b = U32x8::from_array(b_arr);
+
+        let mut x = a;
+        x += b;
+        assert_eq!(x.to_array(), (a + b).to_array(), "+=");
+
+        let mut x = a;
+        x -= b;
+        assert_eq!(x.to_array(), (a - b).to_array(), "-=");
+
+        let mut x = a;
+        x &= b;
+        assert_eq!(x.to_array(), (a & b).to_array(), "&=");
+
+        let mut x = a;
+        x |= b;
+        assert_eq!(x.to_array(), (a | b).to_array(), "|=");
+
+        let mut x = a;
+        x ^= b;
+        assert_eq!(x.to_array(), (a ^ b).to_array(), "^=");
+    }
+
+    #[test]
+    fn u32x16_assign_ops_match_binary() {
+        let a = U32x16::from_array(U32X16_PATTERN);
+        let mut b_arr = U32X16_PATTERN;
+        b_arr.reverse();
+        let b = U32x16::from_array(b_arr);
+
+        let mut x = a;
+        x += b;
+        assert_eq!(x.to_array(), (a + b).to_array(), "+=");
+
+        let mut x = a;
+        x -= b;
+        assert_eq!(x.to_array(), (a - b).to_array(), "-=");
+
+        let mut x = a;
+        x &= b;
+        assert_eq!(x.to_array(), (a & b).to_array(), "&=");
+
+        let mut x = a;
+        x |= b;
+        assert_eq!(x.to_array(), (a | b).to_array(), "|=");
+
+        let mut x = a;
+        x ^= b;
+        assert_eq!(x.to_array(), (a ^ b).to_array(), "^=");
+    }
+
+    /// U32x16 half-seam test: lanes 7 (end of lo half) and 8 (start of hi
+    /// half) hold different values, so a lo/hi swap or off-by-one in the
+    /// split would corrupt exactly the seam this test targets.
+    #[test]
+    fn u32x16_half_seam_add_and_rotate() {
+        let mut a_arr = U32X16_PATTERN;
+        a_arr[7] = 0x1111_1111;
+        a_arr[8] = 0x2222_2222;
+        let mut b_arr = U32X16_PATTERN;
+        b_arr.reverse();
+        b_arr[7] = 0x3333_3333;
+        b_arr[8] = 0x4444_4444;
+
+        let a = U32x16::from_array(a_arr);
+        let b = U32x16::from_array(b_arr);
+
+        let add = (a + b).to_array();
+        for i in 0..8 {
+            assert_eq!(add[i], a_arr[i].wrapping_add(b_arr[i]), "lo half lane {i}");
+        }
+        for i in 8..16 {
+            assert_eq!(add[i], a_arr[i].wrapping_add(b_arr[i]), "hi half lane {i}");
+        }
+
+        for n in [7u32, 16, 31] {
+            let rot = a.rotate_left(n).to_array();
+            for i in 0..8 {
+                assert_eq!(rot[i], a_arr[i].rotate_left(n), "lo half rotate n={n} lane {i}");
+            }
+            for i in 8..16 {
+                assert_eq!(rot[i], a_arr[i].rotate_left(n), "hi half rotate n={n} lane {i}");
+            }
+        }
     }
 }
 
