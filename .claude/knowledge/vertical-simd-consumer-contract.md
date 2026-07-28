@@ -300,6 +300,16 @@ The `simd-savant` agent on the `lance-graph` side runs PRE-MERGE against every W
 - PR #400 (architectural capture commit) — the canonical reference + tech-debt entries
 
 **External references:**
+
+> **Sourcing note (appended 2026-07-27):** the four intrinsic citations below
+> were recorded as bare "Intel Intrinsics Guide" mentions with no link. The
+> checkable source for intrinsic *semantics* in this workspace is GCC —
+> declarations in `gcc/config/i386/*intrin.h`, plus an executable per-intrinsic
+> oracle (scalar reference inline) in `gcc/testsuite/gcc.target/i386/`. See
+> `.claude/knowledge/gcc-intrinsic-spec-reference.md` for the three-layer
+> drill-down and a pinned SHA. Prefer that, at a pinned commit, over an
+> unlinked guide reference. Original lines kept verbatim below.
+
 - Intel Intrinsics Guide — `_mm512_abs_epi8` (VPABSB; does NOT saturate `i8::MIN`)
 - Intel Intrinsics Guide — `_mm512_min_epu8` (VPMINUB; unsigned-byte minimum, used to clamp the VPABSB result)
 - Intel Intrinsics Guide — `_mm512_popcnt_epi64` (VPOPCNTDQ; AVX-512 feature `avx512vpopcntdq`)
