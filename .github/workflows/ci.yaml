@@ -163,6 +163,22 @@ jobs:
       - name: NEON SIMD parity (cross-build + qemu run)
         run: ./scripts/neon-parity.sh
 
+  simd-codegen-oracle:
+    # Proves (in both directions) what `.cargo/config.toml`'s
+    # `-Ctarget-cpu=x86-64-v3` baseline actually does to this crate's
+    # "scalar polyfill" SIMD storage types: Group A probes must show packed
+    # AVX2 codegen from scalar *source*, Group B probes must show none, and
+    # Group C probes (the u64 rotate gap) are reported without a pass/fail
+    # verdict. See crates/simd-codegen-oracle/src/main.rs and
+    # scripts/codegen_oracle_analyze.py for the full picture.
+    runs-on: ubuntu-latest
+    name: simd-codegen-oracle/instruction-histogram
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: SIMD codegen oracle (build --emit asm + classify + baseline compare)
+        run: ./scripts/codegen-oracle.sh
+
   tests:
     runs-on: ubuntu-latest
     needs: pass-msrv
@@ -388,6 +404,7 @@ jobs:
       - nostd
       - wasm_simd
       - neon_simd
+      - simd-codegen-oracle
       - tests
       - native-backend
       - hpc-stream-parallel
