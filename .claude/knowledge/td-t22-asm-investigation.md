@@ -172,3 +172,53 @@ shipped ~700 lines of hand-written intrinsics on the premise that these
 polyfills executed scalar code. They do not. The PR was closed on the
 operator's `U32x8`-composition ruling; this investigation is the deliverable
 the ticket originally asked for.
+
+---
+
+## ⚠ CI DOES NOT APPLY THE v3 BASELINE (found 2026-07-29 by the oracle)
+
+Everything above was measured on a developer host, where
+`.cargo/config.toml` supplies `-Ctarget-cpu=x86-64-v3`. **On CI it does
+not.** The oracle's first CI run reported `packed = 0` for every Group-A
+probe — `arx_rounds_u32x16` came back 0 packed / 146 scalar / 491 memory,
+against 52 packed / 0 scalar locally.
+
+**Cause:** `.github/workflows/ci.yaml:23` sets `RUSTFLAGS: "-D warnings"` at
+workflow level, and cargo's `RUSTFLAGS` env var **replaces**
+`[target.'cfg(...)'].rustflags` from `.cargo/config.toml` — the two do not
+merge. Verified locally:
+
+```sh
+$ cargo build -p ndarray --lib -v | grep -o 'target-cpu=[a-z0-9-]*'
+target-cpu=x86-64-v3
+$ RUSTFLAGS="-D warnings" cargo build -p ndarray --lib -v | grep -o 'target-cpu=[a-z0-9-]*'
+                                    # (empty — flag silently dropped)
+```
+
+### Consequences
+
+1. **Every CI job that inherits the workflow `env:` compiles at baseline
+   x86-64 (SSE2)** — `tests/{stable,beta,1.95.0}`, `clippy`,
+   `native-backend`, `hpc-stream-parallel`. Not the AVX2 tier developers
+   build and run locally. CI has been testing different machine code than
+   anyone reviews.
+2. **The comment in `.cargo/config.toml` — "This is what GitHub CI runs
+   against" — is false**, and has been since `RUSTFLAGS` was added.
+3. **TD-T22's finding is unaffected but narrower than stated.** "The scalar
+   polyfill compiles to packed AVX2" is true *under the v3 baseline*. It is
+   the baseline, not the source form, that does the work — and CI never had
+   it. `tier4-avx512-check` is unaffected because it uses the more specific
+   `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS`, which does not collide.
+
+### What was done here
+
+`scripts/codegen-oracle.sh` now **declares** its baseline instead of
+inheriting it, passing `-C target-cpu=x86-64-v3` after the `--` so it lands
+on the final rustc invocation and wins regardless of ambient `RUSTFLAGS`.
+Confirmed: with `RUSTFLAGS="-D warnings"` exported, all 13 probes match.
+
+**The wider question — whether CI should build at v3 so tests exercise the
+code that ships — is deliberately NOT changed here.** Making every CI job
+switch instruction sets is an operator decision with real consequences
+(SIGILL risk on runners without AVX2 is what TD-SIMD-1 was about), not a
+drive-by fix in a tooling PR.

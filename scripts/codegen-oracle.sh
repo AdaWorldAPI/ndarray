@@ -39,11 +39,43 @@ if [ ! -f "$BASELINE" ]; then
     exit 90
 fi
 
+# The measured baseline is DECLARED here, never inherited from the ambient
+# environment. This is load-bearing:
+#
+#   `.cargo/config.toml` sets `-Ctarget-cpu=x86-64-v3` via
+#   `[target.'cfg(target_arch = "x86_64")'].rustflags`, but cargo's RUSTFLAGS
+#   env var REPLACES that config wholesale — the two do not merge. CI sets
+#   `RUSTFLAGS: "-D warnings"` at workflow level (.github/workflows/ci.yaml),
+#   so on CI the target-cpu flag is silently DROPPED and everything compiles
+#   at baseline x86-64 (SSE2). Verified:
+#     $ cargo build -v            | grep target-cpu   -> target-cpu=x86-64-v3
+#     $ RUSTFLAGS="-D warnings" cargo build -v | grep target-cpu   -> (empty)
+#
+#   An oracle that inherits the ambient baseline therefore measures a
+#   DIFFERENT machine's codegen depending on where it runs, which is exactly
+#   the class of error it exists to catch. Passing `-C target-cpu` after the
+#   `--` puts it on the final rustc invocation, where it wins regardless of
+#   RUSTFLAGS.
+case "$TARGET" in
+    x86_64-*) BASELINE_CPU="x86-64-v3" ;;
+    *)        BASELINE_CPU="" ;;
+esac
+
+if [ -n "$BASELINE_CPU" ]; then
+    CPU_FLAG="-C target-cpu=$BASELINE_CPU"
+    echo "==> baseline: $TARGET @ target-cpu=$BASELINE_CPU (declared, not inherited)"
+else
+    CPU_FLAG=""
+    echo "==> baseline: $TARGET @ target default (no target-cpu override)"
+fi
+
 echo "==> building simd-codegen-oracle (--emit asm) for $TARGET"
 if [ "$TARGET" = "$(rustc -vV | sed -n 's/^host: //p')" ]; then
-    cargo rustc --release --manifest-path "$MANIFEST" -- --emit asm -C debuginfo=0
+    # shellcheck disable=SC2086
+    cargo rustc --release --manifest-path "$MANIFEST" -- --emit asm -C debuginfo=0 $CPU_FLAG
 else
-    cargo rustc --release --manifest-path "$MANIFEST" --target "$TARGET" -- --emit asm -C debuginfo=0
+    # shellcheck disable=SC2086
+    cargo rustc --release --manifest-path "$MANIFEST" --target "$TARGET" -- --emit asm -C debuginfo=0 $CPU_FLAG
 fi
 
 # Excluded crate -> cargo places `deps/` either under the crate's own target
