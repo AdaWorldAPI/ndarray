@@ -154,63 +154,48 @@ libc = { version = "0.2.82", optional = true }
 matrixmultiply = { version = "0.3.2", default-features = false, features=["cgemm"] }
 
 # =====================================================================
-# blake3 — DEPENDENCY OF `std` FEATURE (NOT `hpc-extras`). READ BEFORE
-# TOUCHING.
+# blake3 — NO LONGER A DEPENDENCY. Do not re-add it.
 # =====================================================================
 #
-# blake3 is required by the cognitive substrate modules — plane, seal,
-# merkle_tree, vsa, spo_bundle, crystal_encoder, compression_curves,
-# deepnsm — which all live under `pub mod hpc;` (itself gated on
-# `feature = "std"` in lib.rs). Those modules `use blake3;` directly
-# and unconditionally; there is no #[cfg] dance inside them.
+# BLAKE3 now lives in-tree at `src/hpc/blake3.rs`, as a **portable-only
+# transcription of the BLAKE3 reference implementation -- no SIMD, no
+# unsafe**. See that module's own header. It is the serial path every
+# conformant implementation reduces to at `simd_degree() == 1`, which
+# suffices here because ndarray's usage is entirely single-input.
 #
-# Pinning blake3 to the `std` feature (rather than `hpc-extras`) means:
-#   * ANY consumer that enables `std` automatically gets blake3, with
-#     ZERO additional feature wiring. This is the default. Cargo's
-#     transitive feature resolution does the rest.
-#   * Consumers selecting `default-features = false, features = ["std"]`
-#     (e.g. burn-ndarray, which disables hpc-extras to shed p64/fractal)
-#     STILL get blake3 — no more "missing blake3" build errors that
-#     used to require chasing down hpc-extras.
-#   * Consumers selecting `default-features = false` (no std at all,
-#     e.g. the `thumbv6m-none-eabi` CI matrix entry) do NOT pull blake3
-#     and therefore do not pull `constant_time_eq`, whose lack of
-#     `#![no_std]` declaration would otherwise fail the nostd link with
-#     `error[E0463]: can't find crate for std`.
+# The external crate was removed because even with `default-features =
+# false, features = ["pure"]` it carried its own SSE2/SSE4.1/AVX2
+# intrinsics -- a second SIMD surface beside `ndarray::simd`, which is
+# exactly what the matryoshka pattern exists to prevent. The old comment
+# block here said "Tracked, not done here"; this is it being done.
 #
-# If you find yourself wanting to make blake3 unconditional (drop the
-# `optional = true`), check first: does it still pass
-# `cargo rustc -p ndarray --target=thumbv6m-none-eabi
-#  --no-default-features --features portable-atomic-critical-section`?
-# If not, leave the `optional = true` + `std`-feature pinning in place.
+# It also breaks a cycle. `ndarray -> blake3` meant blake3 could never be
+# built ON `ndarray::simd` without cargo seeing `ndarray -> blake3 ->
+# ndarray`. Dropping the dep is what makes an ndarray-backed BLAKE3
+# possible -- NOT here (this module is portable), but for a future
+# SIMD-backed implementation and for the AdaWorldAPI/BLAKE3 fork.
 #
-# =====================================================================
-# `default-features = false` + `pure`: NO C/ASM FFI. Operator directive
-# 2026-07-28 — "I don't want any ffi with c".
+# Separately: blake3 carried `cc` as an unconditional build-dependency, and
+# the `pure` feature existed only to stop that `cc` from compiling the
+# bundled C/ASM (operator directive 2026-07-28, "I don't want any ffi with
+# c"). In-tree there is no C to opt out of, and `cc` is no longer pulled on
+# blake3's account. Dropping blake3 also removed `constant_time_eq`,
+# `arrayref` and `arrayvec` from the lockfile.
 #
-# blake3's default build runs `cc::Build` over `c/blake3_{sse2,sse41,avx2,
-# avx512}_x86-64_unix.S` and links them (measured before this change: 33 `.o`
-# files plus `libblake3_avx512_assembly.a` in target/, with `blake3_*_ffi`
-# cfgs set). The `pure` feature routes build.rs to
-# `build_sse2_sse41_avx2_rust_intrinsics()` — its own comment: "No C code to
-# compile here" — which only sets `blake3_{sse2,sse41,avx2}_rust` cfgs and
-# lets the normal cargo build compile the Rust intrinsics modules.
+# Cost, measured: 1.25-1.39x across the input sizes this crate actually
+# hashes (16 B word 1.34-1.39x, 256 B 1.25-1.29x, 2 KB 1.30x), rising to
+# 4.7-4.9x at 64 KB where upstream's `hash_many` has no in-tree counterpart.
+# Every call site here sits in the small-input band, not the 64 KB one. Full
+# table, methodology and the attribution of the gap:
+# `.claude/knowledge/blake3-in-tree-measured.md`.
 #
-# What `pure` costs (build.rs:344-371): the hand-tuned x86-64 assembly is
-# replaced by Rust intrinsics, the AVX-512 path is dropped entirely, and the
-# aarch64 NEON C intrinsics are dropped. What it removes: every byte of C.
+# The A/B bench under `.claude/knowledge/blake3-ab-bench/` compared the two
+# implementations and is, by its own design note, unbuildable from this commit
+# onward — there is no longer a second implementation to compare against.
 #
-# `default-features = false` also drops blake3's own `std` (which only gates
-# `constant_time_eq/std`); this crate's `std` feature is what pulls blake3 in
-# at all, so nothing here needs blake3's.
-#
-# NOTE: `pure` still leaves blake3's Rust SSE2/SSE4.1/AVX2 intrinsics — a
-# second SIMD surface beside `ndarray::simd`, which the matryoshka pattern
-# exists to prevent. Closing that means implementing BLAKE3's compression on
-# `ndarray::simd::U32x16` (it is a ChaCha-derived u32 ARX kernel, and that
-# lane is proven at the AVX2 instruction floor — see
-# `.claude/knowledge/td-t22-asm-investigation.md`). Tracked, not done here.
-blake3 = { version = "1", optional = true, default-features = false, features = ["pure"] }
+# Call sites live under `pub mod hpc;` (gated on `feature = "std"` in lib.rs),
+# so the nostd matrix is untouched: `blake3` and its `constant_time_eq`
+# dependency are both gone from Cargo.lock entirely.
 
 # p64 + fractal — specialized convergence / manifold math. Gated behind
 # `hpc-extras` since they pull in a dep tree burn-ndarray doesn't need.
@@ -306,7 +291,7 @@ blas = ["dep:cblas-sys", "dep:libc"]
 
 serde = ["dep:serde"]
 
-std = ["num-traits/std", "matrixmultiply/std", "dep:blake3"]
+std = ["num-traits/std", "matrixmultiply/std"]
 rayon = ["dep:rayon", "std"]
 
 # Portable-SIMD backend (NIGHTLY ONLY). Routes `crate::simd::*` types
@@ -345,13 +330,9 @@ nightly-simd = ["std"]
 runtime-dispatch = ["std"]
 
 # HPC extras: p64 palette/NARS bridge + fractal manifold.
-# (blake3 was previously listed here; it is now part of `std` directly
-# because the cognitive substrate modules under hpc/ that import blake3
-# are themselves `std`-gated. See the blake3 comment in [dependencies].)
 # These pull in a non-trivial dependency tree; downstream crates such as
 # burn-ndarray that only need the core array layer can disable this with
-# `default-features = false` (and re-enable `std` explicitly if needed —
-# blake3 will come along with `std`).
+# `default-features = false` (and re-enable `std` explicitly if needed).
 hpc-extras = ["std", "dep:p64", "dep:fractal", "fractal/std"]
 
 matrixmultiply-threading = ["matrixmultiply/threading"]

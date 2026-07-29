@@ -1,8 +1,22 @@
 # In-tree BLAKE3 — correct, and what it costs
 
-> **Status: MEASURED, 2026-07-29.** Correctness against the official vectors;
-> throughput against the external crate. Both numbers below are reproducible
-> with the instruments in this directory.
+> **Status: MEASURED, 2026-07-29 — and SWAPPED, 2026-07-29.** Correctness
+> against the official vectors; throughput against the external crate.
+>
+> **The open decision this document existed to inform has been taken:** the
+> operator authorised the swap, all 15 call sites now reach
+> `crate::hpc::blake3`, and the external dependency is gone. The cost below
+> was accepted with the numbers in hand, not discovered afterward.
+>
+> Two consequences for anyone reading this later:
+>
+> - The **correctness** numbers remain reproducible. The vectors file
+>   (`src/hpc/blake3_test_vectors.json`) is byte-identical to upstream's
+>   `test_vectors.json` — verified against `AdaWorldAPI/BLAKE3` v1.8.5.
+> - The **throughput** numbers are now historical and cannot be re-run. The
+>   A/B bench needs both implementations present; with the crate dropped there
+>   is nothing to compare against, exactly as its own header anticipated. To
+>   re-measure, you must temporarily re-add the dependency.
 
 ## READ BY:
 - Anyone about to drop the external `blake3` dependency
@@ -21,10 +35,16 @@ cycle — the only rung of the ladder that has one (`the-simd-ladder.md`).
 Cutting it means ndarray owning BLAKE3 rather than consuming the crate.
 
 Scoping finding that made this small: **ndarray's usage is entirely
-single-input.** 14 call sites across 8 files use only `hash`,
-`Hasher::{new, new_keyed, update, finalize, finalize_xof().fill()}`,
-`Hash::as_bytes`, and `Hash` as a signature type. **No `hash_many`.** So the
-serial core suffices, and it needs no SIMD at all.
+single-input.** 15 `blake3::` references across 8 files — 14 calls plus one
+type position (`merkle_tree::truncate_hash`'s `&blake3::Hash` parameter) —
+using only `hash`, `Hasher::{new, new_keyed, update, finalize,
+finalize_xof().fill()}`, `Hash::as_bytes`, and `Hash` as a signature type.
+**No `hash_many`.** So the serial core suffices, and it needs no SIMD at all.
+
+(An earlier revision said "14 call sites", counting calls but not the type
+position, while the swap record above counts all 15 references. Raised by
+CodeRabbit on #269; both numbers were describing different things, and the
+distinction is now explicit rather than a discrepancy.)
 
 ## Correctness — proven
 
@@ -135,9 +155,16 @@ hash small nodes, `deepnsm`/`compression_curves` small. So ndarray's real
 exposure is the **1.3–1.6× band**, not the 5× one — but 1.3× on a hot encoder
 path is a real cost, not a rounding error.
 
-**Not swapped here.** The module lands and is tested; the call sites still
-use the external crate. Flipping them is a decision with a measured price
-tag, and it is the operator's.
+**Not swapped in the commit this section was written for.** The module landed
+and was tested; the call sites still used the external crate. Flipping them
+was a decision with a measured price tag, and it was the operator's.
+
+**Taken 2026-07-29.** The operator authorised the flip with this table in
+hand. All 15 call sites across the eight modules named above now reach
+`crate::hpc::blake3` via a per-module `use super::blake3;`; `blake3` and its
+transitive `constant_time_eq` are gone from `Cargo.lock`. The accepted price
+is the 1.3× small-input band — the 4.8× 64 KB row was never on ndarray's
+curve, since no call site here hashes bulk input.
 
 ## One deliberate deviation from upstream, and one restored
 

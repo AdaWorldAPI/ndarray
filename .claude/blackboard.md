@@ -3,7 +3,52 @@
 > **Read this first.** The "Polyglot Notebook" architecture below is a
 > separate/older program, not the current epoch.
 
-## 2026-07-06 (latest) — F64 GEMM completed: FMA tier + register residency + native-engine swap
+## 2026-07-29 (latest) — blake3 dependency DROPPED: call sites swapped to the in-tree module
+
+Operator: "go ahead" on the rung-3a swap, with the measured cost table in
+hand. This closes the only rung of `the-simd-ladder.md` that carried a cargo
+cycle (`blake3 → ndarray::simd`).
+
+1. **15 call sites, 8 modules** (`seal`, `merkle_tree`, `plane`, `vsa`,
+   `spo_bundle`, `crystal_encoder`, `compression_curves`, `deepnsm`) now
+   reach `crate::hpc::blake3`. Implemented as one `use super::blake3;` per
+   module rather than rewriting each `blake3::` path — the in-tree API is
+   shape-compatible (`hash`, `Hasher::{new,new_keyed,new_derive_key,update,
+   finalize,finalize_xof}`, `Hash::as_bytes → &[u8;32]`), so the diff is 10
+   added lines, not 15 edited ones. `spo_bundle`'s use is inside
+   `#[cfg(test)]`, so it takes `use crate::hpc::blake3;` there instead of
+   leaning on the subtree's blanket `unused_imports` allow.
+2. **Dependency gone.** `dep:blake3` off the `std` feature; the ~55-line
+   Cargo.toml comment block replaced with a do-not-re-add note. `blake3`
+   **and** its transitive `constant_time_eq` are both absent from
+   `Cargo.lock`. nostd matrix untouched — every call site is under
+   `pub mod hpc`, itself `#[cfg(feature = "std")]`.
+3. **What this actually bought:** the second SIMD surface. Even at
+   `default-features = false, features = ["pure"]` the crate shipped its own
+   `rust_{sse2,sse41,avx2}.rs` intrinsics beside `ndarray::simd` — the exact
+   thing the matryoshka pattern exists to prevent. The old Cargo.toml comment
+   named this and said "Tracked, not done here."
+
+**Cost, accepted with numbers in hand [MEASURED, not re-measurable]:**
+1.25–1.39× across the input sizes this crate hashes (16 B 1.34–1.39×, 256 B
+1.25–1.29×, 2 KB 1.30×); 4.7–4.9× at 64 KB, which no call site here touches.
+The A/B bench needs both implementations present and is unbuildable from this
+commit forward, by its own design note.
+
+**Loose ends.**
+- `AdaWorldAPI/BLAKE3` (v1.8.5) exists and is an **unmodified upstream
+  mirror** — no ndarray wiring, all `ffi_*`/`rust_*` files intact. Master had
+  been pinning `blake3 = { version = "1" }` from **crates.io** while that fork
+  existed, i.e. the P0 fork rule was already broken. This change resolves it
+  by deletion; wiring the fork instead would have been the other resolution
+  and would NOT have closed the second-surface problem.
+- Verified `src/hpc/blake3_test_vectors.json` is **byte-identical** (31,922 B)
+  to that fork's `test_vectors.json`, so the correctness tests run against
+  genuine upstream vectors.
+- Rung 3b (`hash_many`) still absent; that is the whole 64 KB gap. Not worth
+  building for ndarray's own call sites — nothing here hashes bulk.
+
+## 2026-07-06 — F64 GEMM completed: FMA tier + register residency + native-engine swap
 
 Operator: "complete the F64 gemm… and pr". Three moves, all on the entry
 below's foundation:

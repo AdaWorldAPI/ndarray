@@ -8,6 +8,7 @@
 //! 3. **Pure Crystal Encoding** — hash-based word encoding via a 65-entry
 //!    NSM semantic-primes codebook, bundled into SPO nodes.
 
+use super::blake3;
 use super::fingerprint::Fingerprint;
 use super::node::Node;
 use super::plane::Plane;
