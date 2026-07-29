@@ -86,10 +86,51 @@ Two things make this a genuine finding rather than a shrug:
    and rotate-by-7. It has the tools and declines to apply them at 64-bit
    width.
 
+### Confirmed a second and third way: it is the OPERATION, not the idiom
+
+The measurement above used one source form — `u64::rotate_right(n)`. That
+leaves an obvious objection: maybe LLVM declines the *rotate idiom* at 64-bit
+width, and an explicit shift-or would vectorize, exactly as it does for u32's
+`rotate_left(12)`/`(7)`. AVX2 has `vpsllq`/`vpsrlq`, so the ingredients exist.
+
+Tested. It does not.
+
+| probe | spelling | amount | packed |
+|---|---|---|---|
+| `rot_u64x8` | `u64::rotate_right(n)` | runtime | **0** |
+| `shiftor_rot_u64x8` | `(x >> n) \| (x << (64-n))` | runtime | **0** |
+| `shiftor_rot_const_u64x8` | explicit shift-or | **const** 32/24/16/63 | **0** |
+
+The third row is the sharp one. At u32 width a *constant* amount vectorizes
+two different ways depending on granularity — byte-granular folds to
+`vpshufb`, bit-granular to the shift-or triple — and both are packed. At u64
+width neither happens, for either kind of constant.
+
+**And a fourth confirmation arrived unasked.** A `blake2b_g_shiftor_u64x8`
+probe was written as the direct counterpart to `blake2b_g_u64x8`. It never
+appeared in the emitted assembly: LLVM **folded the two functions**, leaving
+zero mentions of the shiftor symbol and two call sites pointing at the
+survivor. So the two spellings are not merely both-scalar — they are
+*byte-identical*. The probe was removed rather than kept as a permanently
+failing row, since a probe the compiler cannot distinguish from its own
+control measures nothing.
+
 **So the u64 ARX lane is the crate's first intrinsic override that meets the
-entry criterion** (a probe proving the generic form fails). AVX-512:
-`_mm512_rorv_epi64` / `VPROLVQ`, one instruction. AVX2 / NEON / wasm: write
-the `vpsllq`/`vpsrlq`-shaped shift-or explicitly, since LLVM will not.
+entry criterion** (a probe proving the generic form fails).
+
+What SHIPPED, per backend (#268), which is not uniform:
+
+- **AVX-512:** `_mm512_rolv_epi64` / `_mm512_rorv_epi64` — `VPROLVQ`/`VPRORVQ`,
+  one instruction. This is the earned override.
+- **AVX2 / scalar / nightly:** per-lane loops. NEON and wasm re-export the
+  scalar `U64x8` and are covered by that arm.
+
+An earlier draft of this paragraph instructed AVX2/NEON/wasm to "write the
+`vpsllq`/`vpsrlq`-shaped shift-or explicitly, since LLVM will not." That
+prescription contradicted the fourth confirmation directly above it — LLVM
+folded the explicit shift-or into the rotate form, byte-identically, so
+writing it out is not known to change anything. **It is an unmeasured future
+experiment, not the prescribed implementation**, and it is not what shipped.
 
 Contrast with the u32 lane, where hand-writing intrinsics *lost* to the
 optimizer. Same crate, same week, opposite answers — which is the argument

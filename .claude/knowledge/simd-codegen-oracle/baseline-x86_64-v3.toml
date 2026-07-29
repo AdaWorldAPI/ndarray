@@ -156,3 +156,37 @@ note = "MEASURED FULLY VECTORIZED, and it closes the Group-D question. Observed 
 [probe.transpose_16x16_composed]
 expect = "unknown"
 note = "MEASURED VECTORIZED, with a genuine shuffle network. Observed 79 packed / 0 scalar-lane-arith / 38 loop-control / 41 memory. The 79 packed split into 60 vector moves and 19 real shuffle/permute instructions: vinserti128 x7, vpshufd x3, vpblendd x3, vpunpcklqdq x2, vpermq x2, vunpcklpd x1, vpermpd x1 -- covering all four granularities the network needs, including the 64-bit unpack and the 256-bit cross-lane permute that transpose_stage_u32x16 never exercised. Correctness is CHECKED, not assumed: the driver compares the result against a naive nested-loop transpose and aborts on mismatch, and run.sh now executes the probe binary (--emit asm links nothing, so the assertion would otherwise never run). The check was control-tested by deleting stage::<8>, which makes it fire (exit 101). Honest caveats: unlike the single-stage probe this is NOT clean straight-line code -- LLVM kept loop structure (38 loop-control) and there is real spill traffic (41 memory), which is expected, since sixteen 512-bit vectors of live state are 32 ymm registers against 16 architectural ones. A hand-written intrinsic backend faces the same register pressure. So this measurement establishes that the shuffle network is SYNTHESIZED rather than degraded to scalar copies; it does NOT establish throughput parity with rust_avx2.rs, which needs a benchmark that has not been run."
+
+# ============================================================================
+# Group E -- UNKNOWN. Is the 4096-bit / 512-byte node a viable DEFAULT lane?
+# ============================================================================
+
+[probe.arx_node4096]
+expect = "unknown"
+note = "MEASURED FULLY PACKED, ZERO SPILL. Observed 98 packed / 0 scalar-lane-arith / 0 loop-control / 0 memory. The arithmetic is IDENTICAL to the 8x-lane baseline below: 16 vpaddd + 16 vpxor + 16 vpshufb + 33 vmovdqa in both. The 17-instruction delta (16 vmovaps + 1 vxorps) is the dead zero-init of `[U32x16::splat(0); 8]` in the loop form, not a cost of the wider unit -- a real implementation building the array by value emits neither. Crucially the memory column is ZERO: 128 u32 of live state does NOT spill, because the ARX triple is STREAMING (each of the 8 vectors is independent, so LLVM never needs all 128 lanes live at once). Contrast transpose_16x16_composed, which needs all 16 vectors live simultaneously and pays 41 memory ops. That is the discriminating property for node-wide work: free for elementwise/streaming ops, expensive for whole-node-live ops."
+
+[probe.arx_lane512_x8]
+expect = "unknown"
+note = "MEASURED FULLY PACKED. Observed 81 packed / 0 scalar-lane-arith / 0 loop-control / 0 memory: 16 vpaddd + 16 vpxor + 16 vpshufb + 33 vmovdqa. Bit-for-bit identical output to arx_node4096 (asserted in the driver), and identical arithmetic in the emitted code -- so the node-wide unit costs nothing structurally over eight applications of the 512-bit lane."
+
+# Group C, continued -- the u64 rotate written as an EXPLICIT shift-or rather
+# than as `u64::rotate_right`. Group C above tested one SOURCE FORM; this tests
+# whether LLVM declines the rotate IDIOM at 64-bit width or declines the
+# OPERATION. Decides whether ladder rung 6 needs an intrinsic override.
+#
+# ANSWER: it declines the OPERATION. Both spellings come back 0 packed, for
+# runtime-variable AND compile-time-constant amounts. A third probe
+# (blake2b_g_shiftor_u64x8) was written and removed: LLVM FOLDED it into
+# blake2b_g_u64x8 -- zero mentions of the shiftor symbol in the emitted asm,
+# two call sites on the survivor -- proving the two spellings are byte-identical
+# rather than merely both-scalar. A probe the compiler cannot distinguish from
+# its own control measures nothing.
+
+[probe.shiftor_rot_u64x8]
+expect = "unknown"
+note = "MEASURED SCALAR -- 0 packed / 8 scalar-lane-arith / 19 memory, i.e. indistinguishable from rot_u64x8. Writing the rotate as an explicit (x >> n) | (x << (64-n)) does NOT persuade LLVM to vectorize it, so the refusal is about the 64-bit OPERATION and not about the rotate idiom. Driver asserts equality with u64::rotate_right, so this is the same function in a different spelling."
+
+[probe.shiftor_rot_const_u64x8]
+expect = "unknown"
+note = "MEASURED SCALAR -- 0 packed / 8 scalar-lane-arith / 8 memory, with BLAKE2b's COMPILE-TIME-CONSTANT 32/24/16/63. This is the sharper half: at u32 width a constant byte-granular amount folds to vpshufb and a constant bit-granular one folds to shift-or, both packed. At u64 width neither happens, for either kind of constant. A third independent confirmation that the u64 lane is the crate's one earned intrinsic override."
+

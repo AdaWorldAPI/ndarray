@@ -1,5 +1,89 @@
 # ndarray — Epiphanies (append-only)
 
+## 2026-07-29 — Which PACKAGE pulls a dep decides whether it can consume you
+**Status:** FINDING
+**Scope:** @simd-savant @truth-architect domain:build-graph
+**Cross-ref:** PR #267, `.claude/knowledge/the-simd-ladder.md`
+
+The ladder's goal is that every dependency carrying its own SIMD instead
+consumes `ndarray::simd`. Whether a given dependency *can* is not a property
+of the dependency, and not of "the workspace" — it is decided by **which
+package in the workspace pulls it**:
+
+| dependency | entry point | can consume `ndarray::simd`? |
+|---|---|---|
+| `chacha20` | `crates/encryption` → … → `chacha20` | **yes** |
+| `curve25519-dalek` | `crates/encryption` → `ed25519-dalek` → … | **yes** |
+| `blake3` | **root `ndarray`** (`std` feature) | **no — cycle** |
+
+Measured — and measured the right way round. The evidence is the **positive**
+reverse tree (which terminates at `encryption`, with root `ndarray` absent),
+plus a control proving the method can produce a hit:
+
+```console
+$ cargo tree -p encryption -i curve25519-dalek     # positive: full path shown
+curve25519-dalek v4.1.3
+└── ed25519-dalek v2.2.0
+    └── encryption v0.1.0 (crates/encryption)
+
+$ cargo tree -p ndarray -i blake3                  # control: a real edge DOES hit
+blake3 v1.8.4
+└── ndarray v0.17.2 (/workspace/ndarray)
+```
+
+**Not** an error message. A first draft rested on
+`cargo tree -p ndarray -i curve25519-dalek` failing with `package ID
+specification ... did not match any packages`; a typo produces that message
+byte-for-byte, so it cannot distinguish "no such edge" from "no such
+package". Corrected by CodeRabbit on #268 — and it is the same defect this
+repo keeps hitting one level down: a check that cannot fail for the reason
+you think it is failing.
+
+Only blake3 is pulled by the ROOT package, so only blake3 closes a loop when
+it depends back on ndarray. The other two ride a shape that already works in
+this repo today — `crates/encryption` → `chacha20` → `ndarray(root)` is
+exactly it.
+
+**Why this is worth recording rather than re-derived.** "ndarray depends on
+X, so X can't depend on ndarray" is the intuitive rule and it is wrong at
+workspace granularity. A sub-crate is a different package; the cycle is
+per-package, not per-workspace. Reasoning at workspace granularity says all
+three are blocked, which would have parked two rungs that have no blocker at
+all.
+
+**On the diagnostic — be precise, because two different things were
+conflated here.** Cargo *does* report the cycle when the patched package
+would be selected; `cargo update -p blake3` printed the chain
+(`blake3 ... satisfies dependency of ndarray ... satisfies path dependency
+ndarray of blake3`). What is NOT a cycle diagnostic is `[[patch.unused]]`.
+That only says the patch was not selected, and the usual causes are a version
+that does not satisfy the requirement or a stale lockfile.
+
+An earlier version of this entry read the unused patch as the cycle's
+signature and called the failure "silent." Both halves were wrong, and codex
+caught it on #268. Treating `[[patch.unused]]` as a cycle report teaches the
+next reader to misdiagnose an ordinary stale patch — and undermines the very
+check this entry prescribes.
+
+The check stands, but ONLY in its positive form — and the wording here was
+itself an instance of the bug it warns about, corrected on #268:
+
+Consequence: **before planning any "make X consume our crate" work, run
+`cargo tree -p <our-root> -i <X>`.**
+
+1. First confirm `<X>` is a real package in the selected graph (a typo, or a
+   package absent from that graph, produces the byte-identical error).
+2. A tree that resolves and shows the root package = the edge must be cut
+   first.
+3. A tree that resolves and does NOT show it = unblocked.
+4. **A package-ID error is inconclusive — never "no cycle".**
+
+An earlier draft of this very entry said "an error there means no cycle and
+the work is unblocked", one paragraph after explaining that the error is
+ambiguous. Read literally it would mark blocked work as unblocked on the
+strength of a typo.
+
+
 ## 2026-07-29 — BLAKE3 needs a method surface, not intrinsics (measured)
 **Status:** FINDING
 **Scope:** @simd-savant domain:codec

@@ -1636,6 +1636,52 @@ pub struct U64x8(pub __m512i);
 impl U64x8 {
     pub const LANES: usize = 8;
 
+    /// Lane-wise left-rotate by `n` bits — the u64 ARX rotate.
+    ///
+    /// **This is the crate's one earned intrinsic override.** The codegen
+    /// oracle measured that a scalar u64 rotate loop does NOT vectorize, on
+    /// three independent spellings: `u64::rotate_right(n)`, an explicit
+    /// `(x >> n) | (x << (64 - n))` with a runtime amount, and the same with
+    /// BLAKE2b's compile-time constants 32/24/16/63. All three came back
+    /// 0 packed / one scalar `rorq` per lane — and LLVM folded two of the
+    /// probes into byte-identical code, proving it declines the 64-bit
+    /// *operation* rather than the rotate *idiom*. Contrast the u32 lane,
+    /// where hand-written intrinsics LOSE to the optimizer
+    /// (`.claude/knowledge/td-t22-asm-investigation.md`).
+    ///
+    /// `n` is taken mod 64; `n == 0` returns `self` unchanged, because
+    /// `x >> 64` is UB on `u64` and `VPROLVQ`'s own count is taken mod 64.
+    ///
+    /// See `.claude/knowledge/crypto-lane-status.md` — BLAKE2b needs this,
+    /// and argon2 needs BLAKE2b.
+    #[inline(always)]
+    pub fn rotate_left(self, n: u32) -> Self {
+        let n = n % 64;
+        if n == 0 {
+            return self;
+        }
+        // SAFETY: `Self` is a native `__m512i`; this arm is compiled only
+        // under the avx512f dispatch, the same guarantee every other method
+        // on this type relies on.
+        Self(unsafe { _mm512_rolv_epi64(self.0, _mm512_set1_epi64(n as i64)) })
+    }
+
+    /// Lane-wise right-rotate by `n` bits — BLAKE2b's rotation direction.
+    ///
+    /// `rotr(n) == rotl(64 - n)` exactly, since rotation is modular; this is
+    /// a distinct method rather than a caller-side subtraction because
+    /// BLAKE2b/argon2 are specified in terms of right rotation, and
+    /// `VPRORVQ` is a single instruction in its own right.
+    #[inline(always)]
+    pub fn rotate_right(self, n: u32) -> Self {
+        let n = n % 64;
+        if n == 0 {
+            return self;
+        }
+        // SAFETY: as `rotate_left` above.
+        Self(unsafe { _mm512_rorv_epi64(self.0, _mm512_set1_epi64(n as i64)) })
+    }
+
     #[inline(always)]
     pub fn splat(v: u64) -> Self {
         Self(unsafe { _mm512_set1_epi64(v as i64) })

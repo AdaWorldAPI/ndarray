@@ -526,6 +526,54 @@ impl_int_type!(U16x32, u16, 32, 0u16);
 impl_int_type!(U32x16, u32, 16, 0u32);
 impl_int_type!(U64x8, u64, 8, 0u64);
 
+/// u64 ARX rotate — the BLAKE2b / argon2 lane.
+///
+/// Scalar per-lane loops, and **measured not to vectorize**: the codegen
+/// oracle tried three spellings (`u64::rotate_right`, an explicit shift-or
+/// with a runtime amount, and the same with BLAKE2b's constants 32/24/16/63)
+/// and every one came back 0 packed, one `rorq` per lane. LLVM declines the
+/// 64-bit *operation*, not the rotate *idiom* — it folded two of the probes
+/// into byte-identical code.
+///
+/// So unlike every other lane-wise op in this crate, the scalar spec is NOT
+/// the implementation here. The native `VPROLVQ`/`VPRORVQ` override lives on
+/// `simd_avx512`'s `U64x8`, which is a real `__m512i`; these arms are the
+/// correct-but-unvectorized fallback, and that is a known cost rather than an
+/// oversight. See `.claude/knowledge/crypto-lane-status.md`.
+impl U64x8 {
+    /// Lane-wise left-rotate by `n` bits. `n` is taken mod 64.
+    #[inline(always)]
+    pub fn rotate_left(self, n: u32) -> Self {
+        let n = n % 64;
+        if n == 0 {
+            return self;
+        }
+        let a = self.to_array();
+        let mut o = [0u64; 8];
+        for i in 0..8 {
+            o[i] = a[i].rotate_left(n);
+        }
+        Self::from_array(o)
+    }
+
+    /// Lane-wise right-rotate by `n` bits — BLAKE2b's direction.
+    /// `rotr(n) == rotl(64 - n)` exactly; kept distinct because BLAKE2b and
+    /// argon2 are specified in terms of right rotation.
+    #[inline(always)]
+    pub fn rotate_right(self, n: u32) -> Self {
+        let n = n % 64;
+        if n == 0 {
+            return self;
+        }
+        let a = self.to_array();
+        let mut o = [0u64; 8];
+        for i in 0..8 {
+            o[i] = a[i].rotate_right(n);
+        }
+        Self::from_array(o)
+    }
+}
+
 // I8/I16 SIMD types (scalar fallback)
 impl_int_type!(I8x64, i8, 64, 0i8);
 impl_int_type!(I8x32, i8, 32, 0i8);
