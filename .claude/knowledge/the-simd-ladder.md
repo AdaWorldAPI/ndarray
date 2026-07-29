@@ -163,17 +163,36 @@ only Edwards multi-scalar work this crate doesn't do). Porting it onto
 `ndarray::simd` is a real rung, has **no cycle**, and is gated on nothing
 except appetite.
 
-### 6. u64 ARX — the one *earned* intrinsic override, unbuilt
+### 6. u64 ARX — the one *earned* intrinsic override, BUILT
 
-Measured: `rotate_left`/`rotate_right` do not exist on `U64x8`/`U64x4` on any
-of the six backends, and a scalar u64 rotate loop does **not** vectorize —
-0 packed, one scalar `rorq` per lane, even for byte-granular amounts, even
-with compile-time-constant counts, on a target that has `vpsllq`/`vpsrlq` and
-uses exactly that shift-or for u32 (`crypto-lane-status.md`).
+Measured first: `rotate_left`/`rotate_right` did not exist on `U64x8`/`U64x4`
+on any of the six backends, and a scalar u64 rotate loop does **not**
+vectorize — 0 packed, one scalar `rorq` per lane, even for byte-granular
+amounts, even with compile-time-constant counts, on a target that has
+`vpsllq`/`vpsrlq` and uses exactly that shift-or for u32
+(`crypto-lane-status.md`). LLVM folded two byte-identical probes together,
+which says it declines the 64-bit *operation*, not the rotate *idiom*.
 
-This is the only place in the crate where a hand-written intrinsic currently
-meets `simd-one-spec-design.md`'s entry criterion. BLAKE2b needs it, and
-argon2 needs BLAKE2b. Nothing is built on it.
+This is the only place in the crate where a hand-written intrinsic meets
+`simd-one-spec-design.md`'s entry criterion. **Shipped**, and what each
+backend got is not uniform:
+
+| backend | implementation |
+|---|---|
+| avx512 | native `_mm512_rolv_epi64` / `_mm512_rorv_epi64` — **the override** |
+| avx2, scalar, nightly | per-lane loops — correct, measured not to vectorize |
+| neon, wasm | re-export the scalar `U64x8`, covered by that arm |
+
+So the earned intrinsic exists on exactly one backend; the others carry a
+known cost rather than an oversight. The explicit `vpsllq`/`vpsrlq` shift-or
+for avx2 is **not** written — that is the obvious follow-up and is unmeasured.
+
+`n` is taken mod 64 with an `n == 0` short-circuit, since `x >> 64` is UB on
+`u64` and `VPROLVQ` takes its count mod 64; the two agree at every input
+rather than only in the interior.
+
+**Nothing consumes it yet.** BLAKE2b needs it, argon2 needs BLAKE2b, and
+neither is built.
 
 ---
 
@@ -232,7 +251,7 @@ anything 3a does.
 
 4  (chacha20 AVX-512 arm)   [independent — needs a bench + a ruling]
 5  (dalek)                  [independent — no blocker but appetite]
-6  (u64 ARX / argon2)       [independent — no blocker but appetite]
+6  (u64 ARX lane)          DONE — the rotate exists; BLAKE2b/argon2 do not
 ```
 
 ## What is NOT claimed here
@@ -244,8 +263,12 @@ anything 3a does.
 - **Not that rung 5 is a defect today.** `serial` is a correct, deliberate,
   documented choice, and the vector backend serves no operation this crate
   performs.
-- **Not that the ladder must be completed.** Rungs 4–6 are optional; only 3a
-  removes something (a cycle, a C build, an unaudited surface).
+- **Not that the ladder must be completed.** Rungs 4–5 are optional; only 3a
+  removes something (a cycle and an unaudited surface — **not** a C build,
+  which `features = ["pure"]` already removed in #264; see rung 3a).
+- **Not that rung 6 pays off yet.** The rotate is shipped and tested, but no
+  BLAKE2b and no argon2 consume it, and it has been measured at instruction
+  class only — never timed against a hand-written BLAKE2b.
 
 ## Open, needing a ruling rather than work
 
