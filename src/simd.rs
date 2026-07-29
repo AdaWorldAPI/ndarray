@@ -743,6 +743,109 @@ mod tests {
         }
     }
 
+    /// The BLAKE3 shuffle surface on `U32x16`, checked against the REAL x86
+    /// intrinsics it reproduces — applied to each 256-bit half.
+    ///
+    /// `U32x16` holds two `__m256i` worth of lanes, and BLAKE3's `hash_many`
+    /// is either lane-wise or confined within a 128-/256-bit lane, so the two
+    /// 8-lane groups run independently in one vector at DEGREE 16. This test
+    /// proves that equivalence rather than assuming it: each half of the
+    /// `U32x16` result must equal the corresponding 256-bit intrinsic applied
+    /// to that half's inputs.
+    ///
+    /// Load-bearing because the bodies are index loops. Nothing about them is
+    /// self-evidently `_mm256_unpacklo_epi32`, and a subtly-wrong interleave
+    /// yields wrong hashes, not a compile error.
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    #[test]
+    fn u32x16_blake3_shuffles_match_x86_intrinsics_per_half() {
+        use core::arch::x86_64::*;
+
+        // Distinct value per lane, so any misplaced lane is visible.
+        let a_arr: [u32; 16] = core::array::from_fn(|i| 0x1000_0000 | (i as u32) << 8 | i as u32);
+        let b_arr: [u32; 16] = core::array::from_fn(|i| 0x2000_0000 | (i as u32) << 8 | i as u32);
+        let (a, b) = (U32x16::from_array(a_arr), U32x16::from_array(b_arr));
+
+        // SAFETY: guarded by `target_feature = "avx2"` on this test.
+        unsafe {
+            let load = |src: &[u32; 16], half: usize| _mm256_loadu_si256(src.as_ptr().add(half * 8) as *const __m256i);
+            let read = |v: __m256i| -> [u32; 8] {
+                let mut out = [0u32; 8];
+                _mm256_storeu_si256(out.as_mut_ptr() as *mut __m256i, v);
+                out
+            };
+            // Assert `got`'s two halves against the 256-bit intrinsic applied
+            // to each half's own inputs.
+            let check = |got: U32x16, want: fn(__m256i, __m256i) -> __m256i, name: &str| {
+                let g = got.to_array();
+                for half in 0..2 {
+                    let expect = read(want(load(&a_arr, half), load(&b_arr, half)));
+                    assert_eq!(&g[half * 8..half * 8 + 8], &expect[..], "{name}, half {half}");
+                }
+            };
+
+            check(a.interleave_lo_u32(b), |x, y| _mm256_unpacklo_epi32(x, y), "interleave_lo_u32");
+            check(a.interleave_hi_u32(b), |x, y| _mm256_unpackhi_epi32(x, y), "interleave_hi_u32");
+            check(a.interleave_lo_u64(b), |x, y| _mm256_unpacklo_epi64(x, y), "interleave_lo_u64");
+            check(a.interleave_hi_u64(b), |x, y| _mm256_unpackhi_epi64(x, y), "interleave_hi_u64");
+            check(a.concat_lo_halves(b), |x, y| _mm256_permute2x128_si256(x, y, 0x20), "concat_lo_halves");
+            check(a.concat_hi_halves(b), |x, y| _mm256_permute2x128_si256(x, y, 0x31), "concat_hi_halves");
+
+            // BLAKE3 rotates RIGHT by 16/12/8/7 -> rotl(32 - n). Assert against
+            // upstream's exact `srli | slli` form, not a reformulation of ours.
+            // Unrolled because the shift intrinsics take const immediates --
+            // which also mirrors upstream's four separate rot fns one-to-one.
+            let rot = |got: U32x16, want: fn(__m256i) -> __m256i, name: &str| {
+                let g = got.to_array();
+                for half in 0..2 {
+                    let expect = read(want(load(&a_arr, half)));
+                    assert_eq!(&g[half * 8..half * 8 + 8], &expect[..], "{name}, half {half}");
+                }
+            };
+            rot(a.rotate_left(16), |x| _mm256_or_si256(_mm256_srli_epi32(x, 16), _mm256_slli_epi32(x, 16)), "rot16");
+            rot(a.rotate_left(20), |x| _mm256_or_si256(_mm256_srli_epi32(x, 12), _mm256_slli_epi32(x, 20)), "rot12");
+            rot(a.rotate_left(24), |x| _mm256_or_si256(_mm256_srli_epi32(x, 8), _mm256_slli_epi32(x, 24)), "rot8");
+            rot(a.rotate_left(25), |x| _mm256_or_si256(_mm256_srli_epi32(x, 7), _mm256_slli_epi32(x, 25)), "rot7");
+        }
+    }
+
+    /// The same six methods pinned lane-by-lane with no intrinsics, so every
+    /// backend — scalar / avx512 / neon / wasm / nightly — is held to the
+    /// identical permutation on machines where the x86 oracle cannot run.
+    #[test]
+    fn u32x16_blake3_shuffles_are_lane_exact() {
+        let a: [u32; 16] = core::array::from_fn(|i| 10 + i as u32);
+        let b: [u32; 16] = core::array::from_fn(|i| 30 + i as u32);
+        let (va, vb) = (U32x16::from_array(a), U32x16::from_array(b));
+
+        // Per 128-bit quad q: lanes 4q..4q+4, independently in each quad.
+        assert_eq!(
+            va.interleave_lo_u32(vb).to_array(),
+            [10, 30, 11, 31, 14, 34, 15, 35, 18, 38, 19, 39, 22, 42, 23, 43]
+        );
+        assert_eq!(
+            va.interleave_hi_u32(vb).to_array(),
+            [12, 32, 13, 33, 16, 36, 17, 37, 20, 40, 21, 41, 24, 44, 25, 45]
+        );
+        assert_eq!(
+            va.interleave_lo_u64(vb).to_array(),
+            [10, 11, 30, 31, 14, 15, 34, 35, 18, 19, 38, 39, 22, 23, 42, 43]
+        );
+        assert_eq!(
+            va.interleave_hi_u64(vb).to_array(),
+            [12, 13, 32, 33, 16, 17, 36, 37, 20, 21, 40, 41, 24, 25, 44, 45]
+        );
+        // Per 256-bit half h: lanes 8h..8h+8.
+        assert_eq!(
+            va.concat_lo_halves(vb).to_array(),
+            [10, 11, 12, 13, 30, 31, 32, 33, 18, 19, 20, 21, 38, 39, 40, 41]
+        );
+        assert_eq!(
+            va.concat_hi_halves(vb).to_array(),
+            [14, 15, 16, 17, 34, 35, 36, 37, 22, 23, 24, 25, 42, 43, 44, 45]
+        );
+    }
+
     /// `U32x8`'s shuffle + rotate surface, checked against the REAL x86
     /// intrinsics it claims to reproduce.
     ///
