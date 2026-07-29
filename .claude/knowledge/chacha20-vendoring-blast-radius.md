@@ -1,7 +1,7 @@
 # `vendor/chacha20` — what it actually reaches
 
-> **Status: MEASURED, 2026-07-29.** Every row below is read from
-> `Cargo.lock`, a `rustc --print cfg`, or a manifest on disk. No estimates.
+> **Status: MEASURED, 2026-07-29.** Every row below is read from `Cargo.lock`,
+> a manifest on disk, `rustc --print cfg`, or a git object hash. No estimates.
 
 ## READ BY:
 - Anyone about to re-sync, extend, or delete `vendor/chacha20`
@@ -66,7 +66,7 @@ all(target_arch = "wasm32",  target_feature = "simd128")
 `avx512f` is a **compile-time** feature cfg, so it is present only if the
 build pins a target-cpu that includes it. Measured:
 
-```
+```console
 $ rustc --print cfg -Ctarget-cpu=x86-64-v3 | grep avx
 target_feature="avx2"            # <- no avx512f
 $ rustc --print cfg -Ctarget-cpu=x86-64-v4 | grep avx512f
@@ -124,9 +124,28 @@ ruling; the finding is recorded instead of applied.
 
 Three consequences worth stating plainly:
 
-1. **The fork carries no AdaWorldAPI delta.** One commit, no branches beyond
-   `master`. It is a mirror, not a modified fork — so "depend on the fork"
-   and "depend on upstream" are currently the same bytes.
+1. **The fork carries no AdaWorldAPI delta**, and this is checkable rather
+   than inferred from a branch count. Against `RustCrypto/stream-ciphers`
+   fetched as `upstream`:
+
+   ```console
+   $ git rev-parse HEAD
+   5f3430b7531a33aa14957b6bd407b46687635124
+   $ git rev-parse upstream/master
+   5f3430b7531a33aa14957b6bd407b46687635124
+   $ git rev-list --count upstream/master..HEAD
+   0
+   $ git rev-parse HEAD:chacha20 upstream/master:chacha20
+   3f58304be34b79a3a38430a5752fb8db223d1a20
+   3f58304be34b79a3a38430a5752fb8db223d1a20
+   ```
+
+   The fork's head *is* upstream's head — same commit hash, zero commits
+   ahead, and the `chacha20/` subtree hashes to the same object. Git tree
+   hashes cover content recursively, so identical tree ids mean byte equality
+   for that directory. "Depend on the fork" and "depend on upstream" are
+   therefore the same bytes today — as a verified fact, not an inference.
+   (Repeat the check after any upstream sync; it is one command.)
 2. **The vendored tree is not a checkout of the fork**, and is one minor
    release behind it. It cannot be re-synced by `git pull`; the re-sync
    procedure its own header describes (bump the source, re-apply the backend

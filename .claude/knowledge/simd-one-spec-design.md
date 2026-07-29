@@ -193,6 +193,11 @@ the answer goes in a doc. It is not re-answered on every commit.
 Run it when a codegen question is genuinely open:
 
 ```sh
-sh .claude/knowledge/simd-codegen-oracle/run.sh                                # host, x86-64-v3 baseline
-sh .claude/knowledge/simd-codegen-oracle/run.sh aarch64-unknown-linux-gnu      # cross-target
+sh .claude/knowledge/simd-codegen-oracle/run.sh          # host, x86-64-v3 baseline
 ```
+
+Cross-targets take a triple argument, but each needs its own
+`baseline-<triple>.toml` first — only `baseline-x86_64-v3.toml` exists today,
+so `run.sh aarch64-unknown-linux-gnu` currently exits 90 by design. Producing
+that baseline is step 2 of the migration below, not a prerequisite anyone has
+met yet.

@@ -73,10 +73,11 @@ shuffles got measured first.
 | `blake3_g_u32x16` | **72** | 0 | `vpshufb` ×2 (rotr 16, rotr 8), `vpsrld`+`vpslld`+`vpor` ×2 (rotr 12, rotr 7), `vpaddd`/`vpxor` throughout |
 | `interleave_lo_u32x16` | **11** | 0 | `vbroadcasti128` + `vpmovzxdq` + `vpermd` (constant mask) + `vpblendd $170` |
 | `transpose_16x16_u32` | **0** | 1 | 1088 B of stack, a 256-iteration scalar element copy, stride-64 scatter |
-| `transpose_stage_u32x16` | **27** | 1 | **`vunpcklps` / `vunpckhps`** — the unpack family the intrinsic backend hand-writes |
+| `transpose_stage_u32x16` | **27** | 1 | `vunpcklps` / `vunpckhps` — one 32-bit stage only |
+| `transpose_16x16_composed` | **79** | 0 | 60 vector moves + **19 shuffles**: `vinserti128` ×7, `vpshufd` ×3, `vpblendd` ×3, `vpunpcklqdq` ×2, `vpermq` ×2, `vunpcklpd`, `vpermpd` |
 
-The last two are the same transpose. The difference is only how it is
-written.
+Rows 3 and 5 are the same transpose, correctness-checked to be the same
+function. The difference is only how it is written.
 
 ### The G function is free
 
@@ -112,10 +113,38 @@ shuffle to the vectorizer.
 
 ### …but the composed transpose is
 
-Same transpose, expressed as eight pairwise interleave calls per butterfly
-stage: **27 packed, and the instructions are `vunpcklps` / `vunpckhps`** —
-literally the unpack family that `rust_avx2.rs` writes by hand as
-`_mm256_unpacklo_epi32` / `_mm256_unpackhi_epi32`.
+A complete, correctness-checked 16×16 transpose, written as four butterfly
+stages at granularities 1 / 2 / 4 / 8 (32-bit unpack, 64-bit unpack, 128-bit
+lane exchange, 256-bit half exchange) over a `const G` parameter so every
+shuffle pattern is compile-time constant: **79 packed, zero scalar on lane
+data**, of which 19 are real shuffles — `vinserti128`, `vpshufd`,
+`vpblendd`, `vpunpcklqdq`, `vpermq`, `vunpcklpd`, `vpermpd`. All four
+granularities appear in the emitted code, including the 64-bit unpack and the
+256-bit cross-lane permute.
+
+The single-stage probe (`transpose_stage_u32x16`, 27 packed, `vunpcklps` /
+`vunpckhps`) remains in the oracle as a narrower data point, but it is **not**
+what supports the conclusion. It is one 32-bit stage, exercises neither wider
+exchange, and its whole-vector helper semantics do not compose into a real
+transpose — so an earlier version of this document that rested the conclusion
+on it was inferring, not measuring. Raised by codex on PR #265; the finding
+was correct, and `transpose_16x16_composed` is the answer to it.
+
+**Correctness is checked, not asserted.** The driver compares the composed
+result against a naive nested-loop transpose and aborts on mismatch, and
+`run.sh` now executes the probe binary — `--emit asm` links nothing, so the
+assertion would otherwise never run. The check was control-tested by deleting
+`stage::<8>`, which makes it fire (exit 101). A packed-but-wrong network
+cannot be reported here as a success.
+
+**Two honest caveats.** Unlike the single stage, this is not clean
+straight-line code: LLVM kept loop structure (38 loop-control instructions)
+and there is real spill traffic (41 memory). That is expected — sixteen
+512-bit vectors of live state are 32 ymm registers against 16 architectural
+ones, and a hand-written intrinsic backend faces exactly the same pressure.
+So the measurement establishes that the shuffle network is *synthesized*
+rather than degraded to scalar copies. It does not establish throughput
+parity with `rust_avx2.rs`.
 
 ## What this means
 
@@ -125,19 +154,29 @@ fails. The generic form does not fail here — the primitive vectorizes, and so
 does a composition of primitives. Only the monolithic index-loop spelling
 fails, and that is a spelling, not a capability.
 
-So what is missing is a **method surface on `U32x16`**, each member
-implemented as the scalar index loop LLVM already handles:
+So what is missing is a **method surface on `U32x16`**, implemented as the
+scalar index loops LLVM already handles. The measured probe suggests it wants
+to be *one* const-generic operation rather than five named ones:
 
-| method | intrinsic role | replaces |
+```rust
+fn exchange<const G: usize>(lo: Self, hi: Self) -> (Self, Self)
+```
+
+`G = 1` is the 32-bit unpack, `G = 2` the 64-bit unpack, `G = 4` the 128-bit
+lane exchange, `G = 8` the 256-bit half exchange:
+
+| `G` | intrinsic role | replaces in `rust_avx2.rs` |
 |---|---|---|
-| `interleave_lo` / `interleave_hi` | 32-bit unpack | `_mm256_unpack{lo,hi}_epi32` (8 sites) |
-| `interleave_lo_u64` / `interleave_hi_u64` | 64-bit unpack | `_mm256_unpack{lo,hi}_epi64` (8 sites) |
-| `permute_halves` | 128-bit lane swap | `_mm256_permute2x128_si256` (2 sites) |
+| 1 | 32-bit unpack | `_mm256_unpack{lo,hi}_epi32` (8 sites) |
+| 2 | 64-bit unpack | `_mm256_unpack{lo,hi}_epi64` (8 sites) |
+| 4 | 128-bit lane exchange | `_mm256_permute2x128_si256` (2 sites) |
+| 8 | 256-bit half exchange | (no AVX2 analogue — a 512-bit lane needs it) |
 
-Roughly fifteen lines each. **Zero `unsafe`, zero `core::arch`, zero C.** The
-transpose is then written as a composition of them — which is what the
-intrinsic backends already are, just spelled in the lane vocabulary instead
-of in x86.
+About fifteen lines, once. **Zero `unsafe`, zero `core::arch`, zero C.** The
+transpose is a composition of four stages over it — which is what the
+intrinsic backends already are, spelled in the lane vocabulary instead of in
+x86. The measured `transpose_16x16_composed` probe is that composition,
+verified to be a correct transpose.
 
 That is the whole gap. It is a method surface, not a porting effort.
 

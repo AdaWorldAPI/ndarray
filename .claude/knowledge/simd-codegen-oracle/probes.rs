@@ -432,6 +432,67 @@ pub fn transpose_stage_u32x16(m: [U32x16; 16]) -> [U32x16; 16] {
     out
 }
 
+/// One butterfly exchange at block granularity `G` elements — the general
+/// form of the whole unpack/permute family, parameterized by granularity
+/// instead of one method per width.
+///
+/// `G = 1` is the 32-bit unpack (`_mm256_unpack{lo,hi}_epi32`), `G = 2` the
+/// 64-bit unpack (`_mm256_unpack{lo,hi}_epi64`), `G = 4` the 128-bit lane
+/// exchange (`_mm256_permute2x128_si256`), and `G = 8` the 256-bit half
+/// exchange a 512-bit-wide lane additionally needs. `G` is a const parameter,
+/// so every shuffle pattern is compile-time constant — the same property a
+/// hand-written intrinsic has, and a precondition for LLVM to select a
+/// shuffle rather than an indexed copy.
+#[inline(always)]
+fn exchange<const G: usize>(lo: U32x16, hi: U32x16) -> (U32x16, U32x16) {
+    let (l, h) = (lo.to_array(), hi.to_array());
+    let mut nl = [0u32; 16];
+    let mut nh = [0u32; 16];
+    for c in 0..16 {
+        nl[c] = if c & G == 0 { l[c] } else { h[c ^ G] };
+        nh[c] = if c & G != 0 { h[c] } else { l[c ^ G] };
+    }
+    (U32x16::from_array(nl), U32x16::from_array(nh))
+}
+
+/// One full stage: pair every row `r` with `r | G` and exchange at
+/// granularity `G`.
+#[inline(always)]
+fn stage<const G: usize>(m: &mut [U32x16; 16]) {
+    for r in 0..16 {
+        if r & G == 0 {
+            let (a, b) = exchange::<G>(m[r], m[r | G]);
+            m[r] = a;
+            m[r | G] = b;
+        }
+    }
+}
+
+/// A COMPLETE, CORRECT 16x16 `u32` transpose composed from all four
+/// granularities — which `transpose_stage_u32x16` above is not.
+///
+/// This exists because that single-stage probe did not support the conclusion
+/// drawn from it. It exercises only the 32-bit interleave shape, never the
+/// 64-bit or 128/256-bit exchanges, and its helpers' whole-vector semantics
+/// do not compose into a real transpose — so "the composed transpose stays
+/// packed" was an inference, not a measurement. (Raised by codex on PR #265;
+/// the finding was correct.)
+///
+/// Algorithm: the standard recursive block transpose. For each granularity
+/// `G` in 1, 2, 4, 8, pair row `r` with row `r | G` and swap the off-diagonal
+/// blocks. Correctness is not asserted in prose — the driver checks this
+/// against a naive nested-loop transpose on random input and aborts on
+/// mismatch, so a packed-but-wrong result cannot be reported as a success.
+#[inline(never)]
+pub fn transpose_16x16_composed(m: [U32x16; 16]) -> [U32x16; 16] {
+    let mut m = m;
+    stage::<1>(&mut m);
+    stage::<2>(&mut m);
+    stage::<4>(&mut m);
+    stage::<8>(&mut m);
+    m
+}
+
 // ============================================================================
 // Driver — runtime-derived inputs, every result consumed.
 // ============================================================================
@@ -568,6 +629,26 @@ fn main() {
     let mat2: [U32x16; 16] = std::array::from_fn(|_| rand_u32x16());
     let staged = transpose_stage_u32x16(black_box(mat2));
     acc ^= staged.iter().fold(0u64, |s, v| s ^ v.reduce_sum() as u64);
+
+    // The composed transpose is checked for CORRECTNESS against a naive
+    // nested-loop transpose before its codegen is reported. A shuffle network
+    // that is packed but wrong would otherwise read as a success, which is
+    // exactly the class of error this oracle exists to prevent.
+    let mat3: [U32x16; 16] = std::array::from_fn(|_| rand_u32x16());
+    let composed = transpose_16x16_composed(black_box(mat3));
+    {
+        let src: [[u32; 16]; 16] = std::array::from_fn(|i| mat3[i].to_array());
+        let got: [[u32; 16]; 16] = std::array::from_fn(|i| composed[i].to_array());
+        for i in 0..16 {
+            for j in 0..16 {
+                assert_eq!(
+                    got[j][i], src[i][j],
+                    "transpose_16x16_composed is not a transpose at ({i},{j})"
+                );
+            }
+        }
+    }
+    acc ^= composed.iter().fold(0u64, |s, v| s ^ v.reduce_sum() as u64);
 
     println!("simd-codegen-oracle: probes executed, combined checksum = {acc:#018x}");
 }
