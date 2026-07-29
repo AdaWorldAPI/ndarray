@@ -51,7 +51,7 @@ Still unmeasured, and stated as such: throughput vs `rust_avx2.rs`. "Emits
 packed shuffles" is not "is faster."
 
 
-## 2026-07-29 — Reading one config file is not reading the build
+## 2026-07-29 — A build claim has two axes; the correction erred on the second
 **Status:** FINDING
 **Scope:** @simd-savant @truth-architect domain:build-tiers
 **Cross-ref:** PR #265, `.claude/knowledge/chacha20-vendoring-blast-radius.md`,
@@ -68,27 +68,55 @@ This repo has **three** build tiers, and an audit that reads only
 
 Operator's formulation: *cargo is CI is github needs V3; dockerfile is V4.*
 
-**Two conclusions I published were wrong because of this**, both in the same
-week, both stated with measurement-backed confidence:
+**A claim about "what a build does" has TWO axes, and I got each one wrong on
+a separate pass** — the second time while correcting the first:
 
-1. *"No default build of any repo runs `vendor/chacha20`'s `ndarray_simd`
-   backend."* True of `cargo build`, false as a claim about what ships —
-   `Dockerfile.avx512` is a v4 build of this workspace and compiles it. The
-   backend is the deployed path on AVX-512 silicon, not dead code.
-2. *"CI has been testing different machine code than anyone reviews"*, filed
-   as a ⚠ defect. It is the design, and `ci.yaml:17-22` says so in prose I
-   had not read: a global pin collides with the non-x86 cross_test matrix and
-   contradicts the runtime-dispatch intent.
+| axis | question | where the answer lives |
+|---|---|---|
+| `target-cpu` | which cfg-gated code is *selected*? | `.cargo/config*.toml`, `Dockerfile*` `RUSTFLAGS`, workflow `env:` incl. per-job |
+| package selection | is that crate *compiled at all*? | `default-members`, and the `-p` / `--workspace` flags on the actual command |
 
-**The pattern to name:** each measurement was individually correct. The error
-was in the *scope quantifier* — "no build", "CI" — attached to evidence drawn
-from one file. `rustc --print cfg` told me what v3 lacks; it could not tell me
-which tiers exist. A claim quantified over "every build" needs an enumeration
-of builds, and `find . -iname 'Dockerfile*'` is that enumeration.
+Three passes on one paragraph:
 
-Consequence, concretely: **before any claim of the form "no build does X" or
-"CI does Y", enumerate the tiers** — `.cargo/config*.toml`, `Dockerfile*`, and
-the workflow `env:` blocks including per-job overrides. Three greps.
+1. **First claim:** *"No default build runs `vendor/chacha20`'s
+   `ndarray_simd`."* Reasoned only from `.cargo/config.toml` pinning v3.
+   Right answer, incomplete reason.
+2. **First correction:** operator said *cargo is CI is github needs V3;
+   dockerfile is V4*, so I concluded `Dockerfile.avx512` compiles and ships
+   the backend. **Wrong.** I fixed the target-cpu axis and immediately erred
+   on the package-selection axis I still had not checked — both Dockerfiles
+   run bare `cargo build --release`, `default-members` omits
+   `crates/encryption`, and nothing else in that set pulls chacha20. Caught by
+   codex on #266.
+3. **Settled:** `ndarray_simd` is reached only by an explicit
+   `-p encryption` / `--workspace` build under an AVX-512 config, or by
+   wasm32+`simd128`. No image compiles it.
+
+A separate instance of the same shape, same week: *"CI has been testing
+different machine code than anyone reviews"*, filed as a ⚠ defect. It is the
+design, and `ci.yaml:17-22` says so in prose I had not read — a global pin
+collides with the non-x86 cross_test matrix and contradicts the
+runtime-dispatch intent.
+
+**The pattern to name:** every individual measurement was correct. The error
+was always the *scope quantifier* — "no build", "CI", "ships" — attached to
+evidence drawn from one file. `rustc --print cfg` told me what v3 lacks; it
+could not tell me which tiers exist. Knowing the tiers still could not tell me
+what each tier builds.
+
+**And the correction is as dangerous as the original claim.** Being handed the
+missing piece feels like completion, so pass 2 shipped faster and with more
+confidence than pass 1, and was more wrong. A correction is a new claim and
+earns no discount on verification.
+
+Consequence, concretely — before any "no build does X" / "X ships with Y":
+
+```console
+find . -iname 'Dockerfile*'                 # which tiers exist
+grep -n 'RUN cargo' Dockerfile*             # what each one actually builds
+sed -n '/default-members/,/]/p' Cargo.toml  # what a bare build selects
+cargo tree -p <pkg> -i <dep>                # per package, not per workspace
+```
 
 A second-order note worth keeping: ndarray's own SIMD upgrades itself at run
 time via `LazyLock<Tier>` even in a v3 build, but `vendor/chacha20`'s gate is

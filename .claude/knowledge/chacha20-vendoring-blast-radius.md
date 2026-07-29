@@ -73,42 +73,74 @@ $ rustc --print cfg -Ctarget-cpu=x86-64-v4 | grep avx512f
 target_feature="avx512f"
 ```
 
-### The three tiers, and which one ships
+### The tiers, and what each one actually builds
 
-The repo has a deliberate three-tier build story. Reading only
-`.cargo/config.toml` — as an earlier version of this audit did — sees one
-third of it and draws the wrong conclusion.
+**Two independent axes decide this, and reading either one alone gets it
+wrong.** Axis one is `target-cpu`, which decides *which backend* is selected.
+Axis two is **package selection**, which decides whether `chacha20` is
+compiled at all.
 
-| tier | where | target-cpu | `avx512f` | chacha20 backend |
-|---|---|---|---|---|
-| **CI** | `.github/workflows/ci.yaml` | *none* in global env | absent | RustCrypto soft/avx2/sse2 |
-| **`Dockerfile`** | `RUSTFLAGS="-C target-cpu=x86-64-v3"` | v3 | absent | RustCrypto soft/avx2/sse2 |
-| **`Dockerfile.avx512`** | `RUSTFLAGS="-C target-cpu=x86-64-v4"` | v4 | **present** | **`ndarray_simd`** |
+| tier | target-cpu | builds `encryption`? | chacha20 backend |
+|---|---|---|---|
+| **CI** (`ci.yaml`) | none globally | no | not compiled |
+| CI `tier4-avx512-check` | v4, per-job | no — `-p ndarray` | not compiled |
+| **`Dockerfile`** | v3 | **no** — bare `cargo build` | **not compiled** |
+| **`Dockerfile.avx512`** | v4 | **no** — bare `cargo build` | **not compiled** |
+| dev `cargo build -p encryption` | v3 (`.cargo/config.toml`) | yes | RustCrypto avx2/sse2 |
+| …with `--config .cargo/config-avx512.toml` | sapphirerapids | yes | **`ndarray_simd`** |
+| wasm32 + `simd128` | — | if selected | **`ndarray_simd`** |
 
-Plus two developer paths: `cargo build` picks up `.cargo/config.toml` (v3),
-and `--config .cargo/config-avx512.toml` pins `sapphirerapids` (a superset of
-v4). And a wasm32 + `simd128` build reaches `ndarray_simd` through the other
-arm of the cfg.
+The Dockerfile rows are the ones that surprise. Both images run bare
+`cargo build --release`, which selects `default-members`
+(`Cargo.toml:436-443`): `.`, `ndarray-rand`, `crates/ndarray-gen`,
+`crates/numeric-tests`, `crates/serialization-tests`. **`crates/encryption`
+is not among them**, and nothing else in that set depends on chacha20 —
+verified per-package:
 
-**So `ndarray_simd` is not dead code — `Dockerfile.avx512` is the tier that
-compiles it.** The earlier headline here ("no default build of any repo runs
-it") was true of `cargo build` and false as a statement about what ships,
-which is the only reading that matters. Correcting it, with thanks to the
-operator: *cargo is CI is github needs V3; dockerfile is V4.*
+```console
+$ for p in ndarray ndarray-rand ndarray-gen numeric-tests serialization-tests; do
+      cargo tree -p "$p" -i chacha20; done
+error: package ID specification `chacha20` did not match any packages   # x5
 
-Two things this does **not** change:
+$ cargo tree -p encryption -i chacha20
+chacha20 v0.9.1 (/workspace/ndarray/vendor/chacha20)
+└── chacha20poly1305 v0.10.1
+    └── encryption v0.1.0 (/workspace/ndarray/crates/encryption)
+```
 
-- The **patch-reach** table above stands. `Dockerfile.avx512` builds ndarray,
-  where the patch applies. The five repos that declare no patch still link
-  the registry crate at every tier, v4 included.
+`encryption` *is* a workspace member (via `crates/*`), so `--workspace` or
+`-p encryption` reaches it — neither Dockerfile passes either.
+
+**So `ndarray_simd` is reached only by an explicit `-p encryption` /
+`--workspace` build under an AVX-512 config, or by a wasm32+`simd128`
+build.** No image in this repo compiles it.
+
+### Correction history — three passes on one paragraph
+
+Worth keeping visible, because the failure mode repeated:
+
+1. **First claim:** "no default build runs `ndarray_simd`", reasoned purely
+   from `.cargo/config.toml` pinning v3. Right answer, incomplete reason.
+2. **First correction:** the operator pointed out *cargo is CI is github
+   needs V3; dockerfile is V4*, so I concluded `Dockerfile.avx512` compiles
+   and ships the backend. **Wrong** — I fixed the `target-cpu` axis and
+   introduced a new error on the package-selection axis I still had not
+   checked. (Caught by codex on PR #266.)
+3. **This version:** both axes checked with `cargo tree`, per package.
+
+The operator's tier statement was correct throughout; what it does not imply
+is that either image builds the crate that pulls chacha20.
+
+Two things none of this changes:
+
+- The **patch-reach** table above stands. It is about which repos link the
+  vendored source when they *do* build it.
 - The gate is **compile-time**, not runtime. `Dockerfile`'s own comment notes
   that ndarray's `simd.rs` detects AVX-512 at run time via `LazyLock<Tier>`
   even in a v3 build — but `vendor/chacha20/src/backends.rs` keys on
-  `#[cfg(target_feature = "avx512f")]`, which is resolved by the compiler and
-  gets no such fallback. A v3 image running on AVX-512 silicon uses
-  RustCrypto's backends for the keystream while ndarray's own kernels
-  upgrade themselves. That asymmetry is real and worth knowing before
-  reasoning about a deployed binary.
+  `#[cfg(target_feature = "avx512f")]`, resolved by the compiler with no such
+  fallback. So even in a hypothetical v4 image that *did* build `encryption`,
+  the two subsystems would dispatch by different mechanisms.
 
 ### The v4 arm is covered in CI, per-job
 
@@ -130,14 +162,20 @@ SIGILL on a runner without AVX-512 silicon.
 > `target-cpu=x86-64-v4`)**.
 
 An earlier version of this audit filed that parenthetical as a factual error,
-on the grounds that the workspace pins v3. **That was half wrong and the
-filing is withdrawn.** `Dockerfile.avx512` is a v4 build of this workspace,
-so "the workspace's `target-cpu=x86-64-v4`" names a real tier — it just is
-not the tier `cargo build` selects. The sentence is imprecise about *which*
-build, not false about whether one exists.
+on the grounds that the workspace pins v3; a later version withdrew the
+filing, on the grounds that `Dockerfile.avx512` is a v4 build of this
+workspace. **Both were partly wrong.**
 
-**Not edited here.** Manifest string changes in this repo need an operator
-ruling; the finding is recorded instead of applied.
+Settled: "the workspace's `target-cpu=x86-64-v4`" does name a real tier, so
+the parenthetical is imprecise rather than false — it is not the tier
+`cargo build` selects. But the sentence's *main* clause is the weaker part.
+"This transitively accelerates the `encryption` crate's … keystream" holds
+only for a build that actually selects `encryption`, and **no image in this
+repo does**. The acceleration is real and reachable; it is not automatic, and
+nothing ships with it today.
+
+Still **not edited**, for the same reason as before: manifest string changes
+need a ruling. Recorded here so the next reader is not misled by it.
 
 ## The fork the P0 rule names is not this tree
 

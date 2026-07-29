@@ -24,11 +24,15 @@
 `3c427ae`. The Major one (transpose probe did not validate a correct
 transpose) was a genuine methodological error, not a nit — see EPIPHANIES.
 
-**Corrected after merge** (operator: *cargo is CI is github needs V3;
-dockerfile is V4*): two published conclusions were scoped wrong because the
-audit read `.cargo/config.toml` and not the Dockerfiles. `ndarray_simd` is
-the shipped path on v4, and CI's missing global pin is deliberate. Both docs
-amended; EPIPHANIES entry names the pattern.
+**Corrected after merge, twice** (#266). Operator: *cargo is CI is github
+needs V3; dockerfile is V4*. Pass 1 of the correction concluded
+`Dockerfile.avx512` compiles and ships `ndarray_simd` — wrong; codex caught
+that both Dockerfiles run bare `cargo build --release` and `default-members`
+omits `crates/encryption`. Settled: no image compiles the backend; it is
+reached only by `-p encryption` / `--workspace` under an AVX-512 config, or
+wasm32+simd128. CI's missing global pin is separately confirmed deliberate
+(`ci.yaml:17-22`). EPIPHANIES entry names the two-axis pattern and the fact
+that the correction itself was the more confident error.
 
 **Open:** throughput bench vs `rust_avx2.rs` and vs upstream chacha20's own
 `avx512.rs`; the fork-vs-vendored-copy decision; whether the chacha20 cfg
