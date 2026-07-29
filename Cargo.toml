@@ -157,18 +157,23 @@ matrixmultiply = { version = "0.3.2", default-features = false, features=["cgemm
 # blake3 — NO LONGER A DEPENDENCY. Do not re-add it.
 # =====================================================================
 #
-# BLAKE3 now lives in-tree at `src/hpc/blake3.rs`, built on
-# `ndarray::simd::U32x16` (it is a ChaCha-derived u32 ARX kernel). The
-# external crate was removed because even with `default-features = false,
-# features = ["pure"]` it carried its own SSE2/SSE4.1/AVX2 intrinsics —
-# a second SIMD surface beside `ndarray::simd`, which is exactly what the
-# matryoshka pattern exists to prevent. The old comment block here said
-# "Tracked, not done here"; this is it being done.
+# BLAKE3 now lives in-tree at `src/hpc/blake3.rs`, as a **portable-only
+# transcription of the BLAKE3 reference implementation -- no SIMD, no
+# unsafe**. See that module's own header. It is the serial path every
+# conformant implementation reduces to at `simd_degree() == 1`, which
+# suffices here because ndarray's usage is entirely single-input.
+#
+# The external crate was removed because even with `default-features =
+# false, features = ["pure"]` it carried its own SSE2/SSE4.1/AVX2
+# intrinsics -- a second SIMD surface beside `ndarray::simd`, which is
+# exactly what the matryoshka pattern exists to prevent. The old comment
+# block here said "Tracked, not done here"; this is it being done.
 #
 # It also breaks a cycle. `ndarray -> blake3` meant blake3 could never be
 # built ON `ndarray::simd` without cargo seeing `ndarray -> blake3 ->
 # ndarray`. Dropping the dep is what makes an ndarray-backed BLAKE3
-# possible at all -- here, and in the AdaWorldAPI fork.
+# possible -- NOT here (this module is portable), but for a future
+# SIMD-backed implementation and for the AdaWorldAPI/BLAKE3 fork.
 #
 # Separately: blake3 carried `cc` as an unconditional build-dependency, and
 # the `pure` feature existed only to stop that `cc` from compiling the

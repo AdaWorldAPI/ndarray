@@ -35,10 +35,16 @@ cycle — the only rung of the ladder that has one (`the-simd-ladder.md`).
 Cutting it means ndarray owning BLAKE3 rather than consuming the crate.
 
 Scoping finding that made this small: **ndarray's usage is entirely
-single-input.** 14 call sites across 8 files use only `hash`,
-`Hasher::{new, new_keyed, update, finalize, finalize_xof().fill()}`,
-`Hash::as_bytes`, and `Hash` as a signature type. **No `hash_many`.** So the
-serial core suffices, and it needs no SIMD at all.
+single-input.** 15 `blake3::` references across 8 files — 14 calls plus one
+type position (`merkle_tree::truncate_hash`'s `&blake3::Hash` parameter) —
+using only `hash`, `Hasher::{new, new_keyed, update, finalize,
+finalize_xof().fill()}`, `Hash::as_bytes`, and `Hash` as a signature type.
+**No `hash_many`.** So the serial core suffices, and it needs no SIMD at all.
+
+(An earlier revision said "14 call sites", counting calls but not the type
+position, while the swap record above counts all 15 references. Raised by
+CodeRabbit on #269; both numbers were describing different things, and the
+distinction is now explicit rather than a discrepancy.)
 
 ## Correctness — proven
 
