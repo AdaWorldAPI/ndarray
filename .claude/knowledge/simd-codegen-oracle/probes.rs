@@ -494,6 +494,52 @@ pub fn transpose_16x16_composed(m: [U32x16; 16]) -> [U32x16; 16] {
 }
 
 // ============================================================================
+// Group E — UNKNOWN. Is 4096 bit / 512 byte a viable DEFAULT lane?
+// ============================================================================
+// The substrate's canonical node is 4096 bit = 512 byte
+// (`key(16) | edges(16) | value(480)`). `U32x16` is 512 BIT — one eighth of
+// it. So the question is whether a node-wide unit, `[U32x16; 8]` = 128 u32
+// lanes, stays fully packed and amortizes better than looping eight times
+// over `U32x16`.
+//
+// It cannot be a register type: 512 byte is 8 zmm / 16 ymm, so a node-wide
+// lane is necessarily a TILE over the existing lane, exactly as `U32x16` is
+// already a polyfill over 2 ymm on avx2. The question is therefore not "does
+// it fit" but "does the wider unit cost anything" — if the 8x form emits the
+// same instruction count as 8 separate ops with no extra spill, the node
+// width is free and can be the default unit; if it spills, it cannot.
+//
+// 128 u32 of live state is 8 zmm or 16 ymm against 16 architectural
+// registers, so spill is the thing to watch — the same pressure that showed
+// up as 41 memory ops in `transpose_16x16_composed`.
+
+/// One ARX triple over a NODE-WIDE unit: `[U32x16; 8]` = 4096 bit = 512 byte.
+#[inline(never)]
+pub fn arx_node4096(a: [U32x16; 8], b: [U32x16; 8]) -> [U32x16; 8] {
+    let mut out = [U32x16::splat(0); 8];
+    for i in 0..8 {
+        out[i] = ((a[i] + b[i]) ^ b[i]).rotate_left(16);
+    }
+    out
+}
+
+/// The SAME work as `arx_node4096`, expressed as the existing 512-bit lane
+/// applied eight times by the caller — the baseline it must not lose to.
+#[inline(never)]
+pub fn arx_lane512_x8(a: [U32x16; 8], b: [U32x16; 8]) -> [U32x16; 8] {
+    [
+        ((a[0] + b[0]) ^ b[0]).rotate_left(16),
+        ((a[1] + b[1]) ^ b[1]).rotate_left(16),
+        ((a[2] + b[2]) ^ b[2]).rotate_left(16),
+        ((a[3] + b[3]) ^ b[3]).rotate_left(16),
+        ((a[4] + b[4]) ^ b[4]).rotate_left(16),
+        ((a[5] + b[5]) ^ b[5]).rotate_left(16),
+        ((a[6] + b[6]) ^ b[6]).rotate_left(16),
+        ((a[7] + b[7]) ^ b[7]).rotate_left(16),
+    ]
+}
+
+// ============================================================================
 // Driver — runtime-derived inputs, every result consumed.
 // ============================================================================
 
@@ -649,6 +695,22 @@ fn main() {
         }
     }
     acc ^= composed.iter().fold(0u64, |s, v| s ^ v.reduce_sum() as u64);
+
+    // ---- Group E ----
+    let node_a: [U32x16; 8] = std::array::from_fn(|_| rand_u32x16());
+    let node_b: [U32x16; 8] = std::array::from_fn(|_| rand_u32x16());
+    let n1 = arx_node4096(black_box(node_a), black_box(node_b));
+    let n2 = arx_lane512_x8(black_box(node_a), black_box(node_b));
+    // Same work, so the two forms must agree bit-for-bit.
+    for i in 0..8 {
+        assert_eq!(
+            n1[i].to_array(),
+            n2[i].to_array(),
+            "arx_node4096 != arx_lane512_x8 at vector {i}"
+        );
+    }
+    acc ^= n1.iter().fold(0u64, |s, v| s ^ v.reduce_sum() as u64);
+    acc ^= n2.iter().fold(0u64, |s, v| s ^ v.reduce_sum() as u64);
 
     println!("simd-codegen-oracle: probes executed, combined checksum = {acc:#018x}");
 }

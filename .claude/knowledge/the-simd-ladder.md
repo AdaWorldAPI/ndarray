@@ -177,6 +177,44 @@ argon2 needs BLAKE2b. Nothing is built on it.
 
 ---
 
+## Is 4096 bit / 512 byte viable as the DEFAULT unit? — MEASURED, yes
+
+The substrate's canonical node is 4096 bit = 512 byte
+(`key(16) | edges(16) | value(480)`). `U32x16` is 512 **bit** — one eighth of
+it. So: does a node-wide unit, `[U32x16; 8]` = 128 u32 lanes, stay packed, or
+does it drown in spill?
+
+It cannot be a register type — 512 byte is 8 zmm / 16 ymm — so a node-wide
+lane is necessarily a **tile** over the existing lane, exactly as `U32x16` is
+already a polyfill over 2 ymm on avx2. The real question is whether the wider
+unit costs anything.
+
+Measured (`arx_node4096` vs `arx_lane512_x8`, same work, asserted bit-for-bit
+identical in the driver):
+
+| form | packed | scalar | **memory** | arithmetic emitted |
+|---|---|---|---|---|
+| `[U32x16; 8]` node-wide | 98 | 0 | **0** | 16 `vpaddd`, 16 `vpxor`, 16 `vpshufb`, 33 `vmovdqa` |
+| `U32x16` × 8 | 81 | 0 | **0** | *identical* |
+
+**The arithmetic is the same instruction-for-instruction, and neither spills.**
+The 17-instruction delta is `16 vmovaps + 1 vxorps` — the dead zero-init of
+`[U32x16::splat(0); 8]` in the loop form, which an implementation building the
+array by value does not emit.
+
+**So the node width is free — for the right shape of work.** The
+discriminating property is *liveness*, not width:
+
+- **Streaming / elementwise** (ARX, bitwise, add-mul): each of the 8 vectors
+  is independent, LLVM processes them one at a time, and 128 lanes of state
+  never need to be live simultaneously. **Zero spill.**
+- **Whole-node-live** (a transpose): all vectors must be live at once.
+  `transpose_16x16_composed` pays 41 memory ops for exactly this reason.
+
+That is the rule to design against: a node-wide default unit is viable, and
+the ops that must stay lane-width are the ones that need the whole node
+resident.
+
 ## Order
 
 **There is almost no ordering.** An earlier version drew arrows from 3a to

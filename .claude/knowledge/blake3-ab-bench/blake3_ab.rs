@@ -14,8 +14,15 @@ fn bench<F: FnMut() -> [u8; 32]>(name: &str, iters: u32, mut f: F) -> f64 {
 }
 
 fn main() {
-    // 16 B ~ a word (crystal_encoder); 256 B ~ text; 2 KB ~ VSA_BYTES; 64 KB ~ bulk.
-    for &n in &[16usize, 256, 2048, 65536] {
+    // Sizes chosen to match what this substrate ACTUALLY hashes:
+    //   16 B   a word (crystal_encoder)
+    //   256 B  short text
+    //   480 B  the SoA node's value region (512 - key(16) - edges(16))
+    //   512 B  THE canonical SoA node -- 4096 bit, the default unit
+    //   1024 B one BLAKE3 chunk exactly (the hash_many threshold)
+    //   2 KB   VSA_BYTES
+    //   64 KB  bulk
+    for &n in &[16usize, 256, 480, 512, 1024, 2048, 65536] {
         let data: Vec<u8> = (0..n).map(|i| (i % 251) as u8).collect();
         let iters = if n >= 65536 { 2_000 } else { 50_000 };
         println!("  input = {n} B");
