@@ -214,6 +214,24 @@ impl ChunkState {
     }
 
     fn update(&mut self, mut input: &[u8]) {
+        // This method does NOT split across chunks — `Hasher::update` is what
+        // caps each call, via `want = CHUNK_LEN - self.chunk_state.len()`.
+        // That cap lives ~250 lines away and the fast path below silently
+        // depends on it: without it, `full` could run past the chunk boundary
+        // and compress more than 16 blocks under one chunk counter, producing
+        // a wrong-but-plausible hash.
+        //
+        // The official vectors would NOT catch that, because they only reach
+        // this method through `Hasher::update`. So state the invariant where
+        // it is relied upon instead of trusting a distant caller.
+        debug_assert!(
+            self.len() + input.len() <= CHUNK_LEN,
+            "ChunkState::update overran a chunk: {} + {} > {}",
+            self.len(),
+            input.len(),
+            CHUNK_LEN,
+        );
+
         // Fast path — compress whole blocks straight out of `input`.
         //
         // The staging path below copies every byte twice: once into
