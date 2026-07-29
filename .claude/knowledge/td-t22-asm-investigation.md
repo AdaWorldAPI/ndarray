@@ -175,7 +175,7 @@ the ticket originally asked for.
 
 ---
 
-## ⚠ CI DOES NOT APPLY THE v3 BASELINE (found 2026-07-29 by the oracle)
+## CI DOES NOT APPLY THE v3 BASELINE — BY DESIGN (corrected 2026-07-29)
 
 Everything above was measured on a developer host, where
 `.cargo/config.toml` supplies `-Ctarget-cpu=x86-64-v3`. **On CI it does
@@ -195,20 +195,54 @@ $ RUSTFLAGS="-D warnings" cargo build -p ndarray --lib -v | grep -o 'target-cpu=
                                     # (empty — flag silently dropped)
 ```
 
-### Consequences
+### It is intentional, and the reason is recorded in the workflow
 
-1. **Every CI job that inherits the workflow `env:` compiles at baseline
-   x86-64 (SSE2)** — `tests/{stable,beta,1.95.0}`, `clippy`,
-   `native-backend`, `hpc-stream-parallel`. Not the AVX2 tier developers
-   build and run locally. CI has been testing different machine code than
-   anyone reviews.
+The first version of this section called that a defect — "CI has been testing
+different machine code than anyone reviews." **That framing was wrong.**
+`ci.yaml:17-22` states the decision and its rationale explicitly:
+
+> `-C target-cpu=x86-64-v3` was removed from the global env. It conflicts
+> with the cross_test matrix (`i686-unknown-linux-gnu` is 32-bit, `s390x`
+> isn't even x86) and contradicts the design intent recorded in
+> `.cargo/config.toml`: per-function `#[target_feature]` + runtime
+> `LazyLock<Tier>` detection means one binary, all ISAs. Jobs that
+> specifically need a higher target-cpu can opt in via per-job env.
+
+So the absence of a global pin is the design, not an oversight, and the v4
+arm *is* exercised — `tier4-avx512-check` opts in per-job with
+`CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS`, deliberately the
+per-target form because plain `RUSTFLAGS` also reaches host build scripts,
+which then SIGILL on a runner without AVX-512 silicon.
+
+### The three tiers
+
+| tier | target-cpu | what it is for |
+|---|---|---|
+| CI (`ci.yaml`) | none globally; v4 in `tier4-avx512-check` | one binary, runtime `LazyLock<Tier>` dispatch; cross_test matrix spans non-x86 |
+| `Dockerfile` | `x86-64-v3` | the portable image |
+| `Dockerfile.avx512` | `x86-64-v4` | the AVX-512 image; all SIMD inlined, no dispatch |
+
+Operator's summary: *cargo is CI is github needs V3; dockerfile is V4.*
+
+### What does still hold
+
+1. **TD-T22's measurement is baseline-scoped, and that is worth saying.**
+   "The scalar polyfill compiles to packed AVX2" is true *under a v3-or-above
+   baseline*. It is the baseline, not the source form, that does the work.
+
+   Be precise about what "no `target-cpu`" then means, because two different
+   things get conflated: it selects the **generic `x86-64` baseline**, on
+   which SSE2 is available — it does **not** follow that SSE2 instructions
+   are emitted. The measurement above says otherwise. `arx_rounds_u32x16`
+   came back **0 packed / 146 scalar / 491 memory**: LLVM did not vectorize
+   that source at the generic baseline at all, packed-SSE2 or otherwise. The
+   available ISA is a ceiling, not a prediction. (Raised by CodeRabbit on
+   PR #266; the phrasing here previously said "gets SSE2 codegen", which the
+   histogram directly contradicts.)
 2. **The comment in `.cargo/config.toml` — "This is what GitHub CI runs
-   against" — is false**, and has been since `RUSTFLAGS` was added.
-3. **TD-T22's finding is unaffected but narrower than stated.** "The scalar
-   polyfill compiles to packed AVX2" is true *under the v3 baseline*. It is
-   the baseline, not the source form, that does the work — and CI never had
-   it. `tier4-avx512-check` is unaffected because it uses the more specific
-   `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS`, which does not collide.
+   against" — is stale.** CI applies no global pin; `Dockerfile` is what runs
+   at v3. Left as a record rather than edited (manifest/config string changes
+   need a ruling), but do not read it as current.
 
 ### What was done here
 
@@ -217,8 +251,8 @@ inheriting it, passing `-C target-cpu=x86-64-v3` after the `--` so it lands
 on the final rustc invocation and wins regardless of ambient `RUSTFLAGS`.
 Confirmed: with `RUSTFLAGS="-D warnings"` exported, all 13 probes match.
 
-**The wider question — whether CI should build at v3 so tests exercise the
-code that ships — is deliberately NOT changed here.** Making every CI job
-switch instruction sets is an operator decision with real consequences
-(SIGILL risk on runners without AVX2 is what TD-SIMD-1 was about), not a
-drive-by fix in a tooling PR.
+**The wider question is settled and was never open.** "Should CI build at v3
+so tests exercise the code that ships?" presumes CI and the shipped artifact
+are meant to match; they are not. CI proves one binary works across ISAs via
+runtime dispatch, and the Dockerfiles pin the two shipping tiers. Changing
+CI's global env would break the `cross_test` matrix outright.

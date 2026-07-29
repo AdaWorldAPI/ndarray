@@ -73,24 +73,102 @@ $ rustc --print cfg -Ctarget-cpu=x86-64-v4 | grep avx512f
 target_feature="avx512f"
 ```
 
-| build | target-cpu | `avx512f` | backend compiled |
+### The tiers, and what each one actually builds
+
+**Two independent axes decide this, and reading either one alone gets it
+wrong.** Axis one is `target-cpu`, which decides *which backend* is selected.
+Axis two is **package selection**, which decides whether `chacha20` is
+compiled at all.
+
+| tier | target-cpu | builds `encryption`? | chacha20 backend |
 |---|---|---|---|
-| ndarray, default | `x86-64-v3` (`.cargo/config.toml`) | absent | RustCrypto soft/avx2/sse2 |
-| ndarray, `--config .cargo/config-avx512.toml` | `x86-64-v4` | present | **`ndarray_simd`** |
-| MedCare-rs, default | none — no `.cargo/config.toml` at all | absent | RustCrypto soft/avx2/sse2 |
-| wasm32 + `simd128` | — | n/a | **`ndarray_simd`** |
-| the five unpatched repos | — | — | not present in the source they link |
+| **CI** (`ci.yaml`) | none globally | no | not compiled |
+| CI `tier4-avx512-check` | v4, per-job | no — `-p ndarray` only | not compiled |
+| **`Dockerfile`** | v3 | **no** — bare `cargo build` | **not compiled** |
+| **`Dockerfile.avx512`** | v4 | **no** — bare `cargo build` | **not compiled** |
+| dev `cargo build -p encryption` | v3 (`.cargo/config.toml`) | yes | RustCrypto avx2/sse2 |
+| …with `--config .cargo/config-avx512.toml` | sapphirerapids | yes | **`ndarray_simd`** |
+| wasm32 + `simd128` | — | if selected | **`ndarray_simd`** |
 
-**No default build of any repo in the workspace runs `ndarray_simd`.** Two
-opt-in configurations do: an explicitly-selected AVX-512 x86_64 build, and a
-wasm32 build with `simd128`.
+The Dockerfile rows are the ones that surprise. Both images run bare
+`cargo build --release`, which selects `default-members`
+(`Cargo.toml:436-443`): `.`, `ndarray-rand`, `crates/ndarray-gen`,
+`crates/numeric-tests`, `crates/serialization-tests`. **`crates/encryption`
+is not among them**, and nothing else in that set depends on chacha20 —
+verified per-package:
 
-This is not a defect — the fallthrough is correct and the comments in
-MedCare-rs's manifest describe it accurately ("non-avx512 builds fall through
-to RustCrypto's own backends"). It is a scope fact that keeps being stated
-one size too large.
+```console
+$ for p in ndarray ndarray-rand ndarray-gen numeric-tests serialization-tests; do
+      cargo tree -p "$p" -i chacha20; done
+error: package ID specification `chacha20` did not match any packages   # x5
 
-## One manifest comment overstates it
+$ cargo tree -p encryption -i chacha20
+chacha20 v0.9.1 (/workspace/ndarray/vendor/chacha20)
+└── chacha20poly1305 v0.10.1
+    └── encryption v0.1.0 (/workspace/ndarray/crates/encryption)
+```
+
+`encryption` *is* a workspace member (via `crates/*`), so `--workspace` or
+`-p encryption` reaches it — neither Dockerfile passes either.
+
+**So `ndarray_simd` is reached only by an explicit `-p encryption` /
+`--workspace` build under an AVX-512 config, or by a wasm32+`simd128`
+build.** No image in this repo compiles it.
+
+### Correction history — three passes on one paragraph
+
+Worth keeping visible, because the failure mode repeated:
+
+1. **First claim:** "no default build runs `ndarray_simd`", reasoned purely
+   from `.cargo/config.toml` pinning v3. Right answer, incomplete reason.
+2. **First correction:** the operator pointed out *cargo is CI is github
+   needs V3; dockerfile is V4*, so I concluded `Dockerfile.avx512` compiles
+   and ships the backend. **Wrong** — I fixed the `target-cpu` axis and
+   introduced a new error on the package-selection axis I still had not
+   checked. (Caught by codex on PR #266.)
+3. **This version:** both axes checked with `cargo tree`, per package.
+
+The operator's tier statement was correct throughout; what it does not imply
+is that either image builds the crate that pulls chacha20.
+
+Two things none of this changes:
+
+- The **patch-reach** table above stands. It is about which repos link the
+  vendored source when they *do* build it.
+- The gate is **compile-time**, not runtime. `Dockerfile`'s own comment notes
+  that ndarray's `simd.rs` detects AVX-512 at run time via `LazyLock<Tier>`
+  even in a v3 build — but `vendor/chacha20/src/backends.rs` keys on
+  `#[cfg(target_feature = "avx512f")]`, resolved by the compiler with no such
+  fallback. So even in a hypothetical v4 image that *did* build `encryption`,
+  the two subsystems would dispatch by different mechanisms.
+
+### The v4 arm is covered in CI, per-job
+
+CI's global env carries no `target-cpu`, and `ci.yaml:17-22` records why:
+it collides with the `cross_test` matrix (`i686` is 32-bit, `s390x` is not
+x86 at all) and contradicts the one-binary + runtime-dispatch design intent.
+Jobs needing a higher tier opt in individually — `tier4-avx512-check` sets
+`CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings
+-Ctarget-cpu=x86-64-v4"`, deliberately the per-target form rather than plain
+`RUSTFLAGS`, because `RUSTFLAGS` also applies to host build scripts and those
+SIGILL on a runner without AVX-512 silicon.
+
+**That job covers ndarray's v4 arm and nothing else.** Both its steps are
+`cargo check --target=x86_64-unknown-linux-gnu -p ndarray --features
+approx,serde,rayon` (the second adding `hpc-extras`) — package-scoped to
+`ndarray`, so `crates/encryption` and therefore `vendor/chacha20` are outside
+it. **No CI job compiles the chacha20 AVX-512 backend**, and none of the
+coverage claimed here extends to it. Closing that gap would take an explicit
+step such as:
+
+```console
+$ CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-Ctarget-cpu=x86-64-v4" \
+      cargo check --target=x86_64-unknown-linux-gnu -p encryption
+```
+
+Not added here — adding a CI job is a product change, and this is a docs PR.
+
+## The manifest comment, re-read
 
 `Cargo.toml:481-482` reads:
 
@@ -98,13 +176,21 @@ one size too large.
 > keystream … **on any x86_64+avx512f build (the workspace's
 > `target-cpu=x86-64-v4`)**.
 
-The workspace's pinned target-cpu is **v3**, in `.cargo/config.toml`. `v4`
-is the opt-in `.cargo/config-avx512.toml`. The conditional half of the
-sentence is right; the parenthetical asserts the default build satisfies it,
-and it does not.
+An earlier version of this audit filed that parenthetical as a factual error,
+on the grounds that the workspace pins v3; a later version withdrew the
+filing, on the grounds that `Dockerfile.avx512` is a v4 build of this
+workspace. **Both were partly wrong.**
 
-**Not edited here.** Manifest string changes in this repo need an operator
-ruling; the finding is recorded instead of applied.
+Settled: "the workspace's `target-cpu=x86-64-v4`" does name a real tier, so
+the parenthetical is imprecise rather than false — it is not the tier
+`cargo build` selects. But the sentence's *main* clause is the weaker part.
+"This transitively accelerates the `encryption` crate's … keystream" holds
+only for a build that actually selects `encryption`, and **no image in this
+repo does**. The acceleration is real and reachable; it is not automatic, and
+nothing ships with it today.
+
+Still **not edited**, for the same reason as before: manifest string changes
+need a ruling. Recorded here so the next reader is not misled by it.
 
 ## The fork the P0 rule names is not this tree
 
@@ -161,21 +247,27 @@ Three consequences worth stating plainly:
 
 ## What is NOT claimed here
 
-- Not that the vendored backend is wrong. It is untested by default builds,
-  which is a different statement.
-- Not that the patch should be removed. That is a decision, and it depends on
-  (3) above plus the AVX-512 deployment question, neither of which this audit
-  settles.
+- Not that the vendored backend is wrong, or unused. `Dockerfile.avx512`
+  compiles it; it is the shipped path on v4 silicon.
+- Not that the patch should be removed. That depends on (3) above, which is a
+  measurement nobody has taken.
 - Not that MedCare-rs's wiring is incorrect. It is the one consumer that
   declared its patch deliberately and documented the fallthrough honestly.
 
-## Open, for an operator ruling
+## Still open
 
-1. **Point `vendor/chacha20` at the fork, or keep the copy?** The P0 rule
-   says depend on the AdaWorldAPI fork. Today the tree is neither — a copy of
+1. **Point `vendor/chacha20` at the fork, or keep the copy?** The P0 rule says
+   depend on the AdaWorldAPI fork. Today the tree is neither — a hand copy of
    a version the fork does not carry, with `repository` rewritten to point at
-   ndarray itself.
-2. **Does `ndarray_simd` still beat upstream's own `avx512.rs`?** Answerable
-   with the oracle. Unmeasured today, on both sides.
-3. **The v3/v4 manifest comment** — correct in place, or leave the record and
-   annotate?
+   ndarray itself. The fork is provably a bare upstream mirror (same head sha,
+   same `chacha20/` tree hash), so "track the fork" currently means "track
+   upstream 0.10.1", which crosses a `cipher` major.
+2. **Does `ndarray_simd` still beat upstream's own `avx512.rs`?** This is the
+   load-bearing question now that upstream ships an AVX-512 backend of its
+   own, and it is the one that decides (1). Unmeasured on both sides. The
+   oracle answers the codegen half; the throughput half needs a bench.
+3. **Should `vendor/chacha20`'s cfg gate get a runtime arm?** Today it is
+   compile-time only, so a v3 image on AVX-512 silicon runs RustCrypto's
+   backends for the keystream while ndarray's own kernels upgrade via
+   `LazyLock<Tier>`. Whether that asymmetry is worth closing is a design call,
+   not a bug report — and it only matters if (2) says the ndarray lane wins.
