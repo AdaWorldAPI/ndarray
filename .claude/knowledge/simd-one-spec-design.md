@@ -78,7 +78,7 @@ simd_type! {
 **The entry criterion is the whole point.** Today "should this be an
 intrinsic?" is answered by intuition, and intuition said yes to a case where
 LLVM was already at the instruction floor. Under this design the question is
-answered by `scripts/codegen-oracle.sh`: if the generic form vectorizes, the
+answered by the oracle (`.claude/knowledge/simd-codegen-oracle/`): if the generic form vectorizes, the
 override is rejected; if it doesn't, the override is justified and the probe
 that justified it is committed alongside.
 
@@ -135,7 +135,7 @@ shift-or composition written explicitly.
 ## Staged migration (not one PR)
 
 1. **Answer the codegen question once, in the design.** Run
-   `scripts/codegen-oracle.sh` for the type family under consideration and
+   the oracle (`.claude/knowledge/simd-codegen-oracle/`) for the type family under consideration and
    record the result. This is a design activity, not a standing check.
 2. **Characterize.** Run the oracle across x86-64-v3 / v4 / aarch64 / wasm32.
    Produce the per-target table of what vectorizes and what doesn't. That
@@ -176,7 +176,7 @@ shift-or composition written explicitly.
 
 ## On tooling — why this is NOT a CI job
 
-`crates/simd-codegen-oracle` is an **on-demand instrument**, deliberately
+`.claude/knowledge/simd-codegen-oracle/` is an **on-demand instrument**, deliberately
 not wired into CI (operator ruling, 2026-07-29). A standing job that parses
 assembly to catch a designer skipping the measurement is machinery guarding
 against a lapse the design step should prevent — it institutionalizes the
@@ -191,8 +191,8 @@ the answer goes in a doc. It is not re-answered on every commit.
 Run it when a codegen question is genuinely open:
 
 ```sh
-sh scripts/codegen-oracle.sh                       # host, x86-64-v3 baseline
-sh scripts/codegen-oracle.sh aarch64-unknown-linux-gnu
+see .claude/knowledge/simd-codegen-oracle/README.md                       # host, x86-64-v3 baseline
+see .claude/knowledge/simd-codegen-oracle/README.md aarch64-unknown-linux-gnu
 ```
 - ~13k LoC of hand-maintained backend code: substantially reduced, with the
   remainder being exactly the intrinsics that earn their place.

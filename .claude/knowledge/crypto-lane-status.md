@@ -62,7 +62,7 @@ what LLVM would do with it.
 
 ### ANSWERED by the oracle: no, it does not vectorize
 
-Measured on x86_64 v3 via `crates/simd-codegen-oracle`:
+Measured on x86_64 v3 via `.claude/knowledge/simd-codegen-oracle/`:
 
 | probe | packed | scalar lane-arith | verdict |
 |---|---|---|---|

@@ -431,7 +431,6 @@ exclude = [
     "crates/burn",
     "crates/wasm-simd-parity",
     "crates/neon-simd-parity",
-    "crates/simd-codegen-oracle",
     "vendor/chacha20",
 ]
 default-members = [

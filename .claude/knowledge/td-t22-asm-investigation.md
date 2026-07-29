@@ -212,7 +212,7 @@ $ RUSTFLAGS="-D warnings" cargo build -p ndarray --lib -v | grep -o 'target-cpu=
 
 ### What was done here
 
-`scripts/codegen-oracle.sh` now **declares** its baseline instead of
+the oracle (`.claude/knowledge/simd-codegen-oracle/`) now **declares** its baseline instead of
 inheriting it, passing `-C target-cpu=x86-64-v3` after the `--` so it lands
 on the final rustc invocation and wins regardless of ambient `RUSTFLAGS`.
 Confirmed: with `RUSTFLAGS="-D warnings"` exported, all 13 probes match.
