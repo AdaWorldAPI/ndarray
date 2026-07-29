@@ -922,9 +922,8 @@ mod tests {
         }
 
         // Row r, lane c = r*16 + c. A transpose must yield row r, lane c = c*16 + r.
-        let mut m: [U32x16; 16] = core::array::from_fn(|r| {
-            U32x16::from_array(core::array::from_fn(|c| (r * 16 + c) as u32))
-        });
+        let mut m: [U32x16; 16] =
+            core::array::from_fn(|r| U32x16::from_array(core::array::from_fn(|c| (r * 16 + c) as u32)));
 
         stage::<1>(&mut m);
         stage::<2>(&mut m);
@@ -954,10 +953,8 @@ mod tests {
                 4 => va.exchange::<4>(vb),
                 _ => va.exchange::<8>(vb),
             };
-            let want_lo: [u32; 16] =
-                core::array::from_fn(|c| if c & g == 0 { a[c] } else { b[c ^ g] });
-            let want_hi: [u32; 16] =
-                core::array::from_fn(|c| if c & g != 0 { b[c] } else { a[c ^ g] });
+            let want_lo: [u32; 16] = core::array::from_fn(|c| if c & g == 0 { a[c] } else { b[c ^ g] });
+            let want_hi: [u32; 16] = core::array::from_fn(|c| if c & g != 0 { b[c] } else { a[c ^ g] });
             assert_eq!(lo.to_array(), want_lo, "exchange::<{g}> lo");
             assert_eq!(hi.to_array(), want_hi, "exchange::<{g}> hi");
         }
