@@ -28,32 +28,18 @@ prevent. Measure during design instead.
 
 ## Running it
 
-The tool needs a throwaway crate to compile the probes against `ndarray`:
-
 ```sh
-cd /path/to/ndarray
-mkdir -p /tmp/oracle/src
-cp .claude/knowledge/simd-codegen-oracle/probes.rs /tmp/oracle/src/main.rs
-cat > /tmp/oracle/Cargo.toml <<'EOF'
-[package]
-name = "simd-codegen-oracle"
-version = "0.0.0"
-edition = "2021"
-[dependencies]
-ndarray = { path = "/path/to/ndarray", features = ["std"] }
-[profile.release]
-debug = false
-EOF
-
-cargo rustc --release --manifest-path /tmp/oracle/Cargo.toml -- \
-    --emit asm -C debuginfo=0 -C target-cpu=x86-64-v3
-python3 .claude/knowledge/simd-codegen-oracle/analyze.py \
-    "$(ls -t /tmp/oracle/target/release/deps/simd_codegen_oracle-*.s | head -1)" \
-    .claude/knowledge/simd-codegen-oracle/baseline-x86_64-v3.toml
+sh .claude/knowledge/simd-codegen-oracle/run.sh                 # host, x86-64-v3 baseline
+sh .claude/knowledge/simd-codegen-oracle/run.sh <target-triple> # cross-target
+sh .claude/knowledge/simd-codegen-oracle/run.sh --verbose        # per-probe instruction detail
 ```
 
-`run.sh` automates this against a crate laid out as above; adjust
-`MANIFEST`/`BASELINE` at the top for your scratch location.
+No setup: the script locates the ndarray checkout it lives in, builds a
+throwaway crate from `probes.rs` under `$TMPDIR`, emits assembly, and hands
+the `.s` to `analyze.py`. The scratch tree is removed on exit.
+
+Adding a target means adding a `baseline-<triple>.toml`; the script refuses
+to guess and exits 90 if one is missing.
 
 ## Two properties that make the result trustworthy
 
