@@ -260,6 +260,7 @@ fn to_ranks(v: &[f64]) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hpc::blake3;
     use std::collections::HashSet;
 
     // ========================================================================

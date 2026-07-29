@@ -5,6 +5,7 @@
 //! on 16Kbit Containers (CLAM, CHAODA, CHESS, CAKES, panCAKES, BNN,
 //! cascade) should also work on the 8Kbit tree at higher speed.
 
+use super::blake3;
 use super::seal::MerkleRoot;
 
 /// Number of branches in the Merkle tree.

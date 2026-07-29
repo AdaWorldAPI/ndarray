@@ -14,6 +14,8 @@
 //! - **Product Quantization** (sub-vector k-means, simplified): PQ-lite
 //! - **Random Projection + Binarize**: JL-lemma based
 
+use super::blake3;
+
 // ============================================================================
 // PRNG (self-contained, deterministic)
 // ============================================================================

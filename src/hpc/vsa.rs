@@ -12,6 +12,8 @@
 //! tier (FP16x32 / FP32x16 / F64x8). Matches the Binary16K / Vsa16k carrier
 //! shared with lance-graph-contract (`crystal::fingerprint`).
 
+use super::blake3;
+
 /// VSA dimensionality: 16,384 bits (Binary16K).
 pub const VSA_DIMS: usize = 16_384;
 

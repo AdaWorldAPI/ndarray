@@ -3,6 +3,7 @@
 //! [`MerkleRoot`] is a 48-bit truncated blake3 hash of data masked by alpha.
 //! [`Seal`] is the verification result: `Wisdom` (matches) or `Staunen` (differs).
 
+use super::blake3;
 use super::plane::Plane;
 
 /// Integrity seal. Byte equality comparison of blake3 hashes.
