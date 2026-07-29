@@ -898,6 +898,68 @@ mod tests {
         );
     }
 
+    /// `exchange::<G>` composes a complete 16x16 transpose over four stages.
+    ///
+    /// This is the control the codegen oracle's driver applies to
+    /// `transpose_16x16_composed`, brought into the test suite so the library
+    /// method is checked and not merely its probe-local twin. A packed-but-
+    /// wrong shuffle network would pass a codegen histogram and fail here.
+    ///
+    /// Note the semantics differ from `interleave_*` / `concat_*` above: those
+    /// mirror x86's per-128-bit-lane `unpack`, whereas `exchange` pairs lane
+    /// `c` with lane `c ^ G` across the whole vector. They are different
+    /// permutations and neither substitutes for the other.
+    #[test]
+    fn u32x16_exchange_stages_compose_a_transpose() {
+        fn stage<const G: usize>(m: &mut [U32x16; 16]) {
+            for r in 0..16 {
+                if r & G == 0 {
+                    let (lo, hi) = m[r].exchange::<G>(m[r | G]);
+                    m[r] = lo;
+                    m[r | G] = hi;
+                }
+            }
+        }
+
+        // Row r, lane c = r*16 + c. A transpose must yield row r, lane c = c*16 + r.
+        let mut m: [U32x16; 16] =
+            core::array::from_fn(|r| U32x16::from_array(core::array::from_fn(|c| (r * 16 + c) as u32)));
+
+        stage::<1>(&mut m);
+        stage::<2>(&mut m);
+        stage::<4>(&mut m);
+        stage::<8>(&mut m);
+
+        for (r, row) in m.iter().enumerate() {
+            let want: [u32; 16] = core::array::from_fn(|c| (c * 16 + r) as u32);
+            assert_eq!(row.to_array(), want, "row {r} after four exchange stages");
+        }
+    }
+
+    /// Each granularity in isolation, pinned lane-by-lane, so a backend that
+    /// gets one stage wrong is not masked by the composition above.
+    #[test]
+    fn u32x16_exchange_is_lane_exact_per_granularity() {
+        let a: [u32; 16] = core::array::from_fn(|i| 10 + i as u32);
+        let b: [u32; 16] = core::array::from_fn(|i| 30 + i as u32);
+        let (va, vb) = (U32x16::from_array(a), U32x16::from_array(b));
+
+        // lo[c] = a[c] when c & G == 0 else b[c ^ G]
+        // hi[c] = b[c] when c & G != 0 else a[c ^ G]
+        for g in [1usize, 2, 4, 8] {
+            let (lo, hi) = match g {
+                1 => va.exchange::<1>(vb),
+                2 => va.exchange::<2>(vb),
+                4 => va.exchange::<4>(vb),
+                _ => va.exchange::<8>(vb),
+            };
+            let want_lo: [u32; 16] = core::array::from_fn(|c| if c & g == 0 { a[c] } else { b[c ^ g] });
+            let want_hi: [u32; 16] = core::array::from_fn(|c| if c & g != 0 { b[c] } else { a[c ^ g] });
+            assert_eq!(lo.to_array(), want_lo, "exchange::<{g}> lo");
+            assert_eq!(hi.to_array(), want_hi, "exchange::<{g}> hi");
+        }
+    }
+
     /// `U32x8`'s shuffle + rotate surface, checked against the REAL x86
     /// intrinsics it claims to reproduce.
     ///

@@ -1521,6 +1521,38 @@ impl U32x16 {
         }
         Self::from_array(o)
     }
+
+    /// One butterfly exchange at block granularity `G` elements — the general
+    /// form of the whole unpack / lane-exchange family, parameterized by
+    /// granularity instead of one method per width.
+    ///
+    /// `G = 1` is the 32-bit unpack, `G = 2` the 64-bit unpack, `G = 4` the
+    /// 128-bit lane exchange, and `G = 8` the 256-bit half exchange that a
+    /// 512-bit lane additionally needs and for which no AVX2 intrinsic exists.
+    /// `G` is a const parameter, so every shuffle pattern is compile-time
+    /// constant — the same property a hand-written intrinsic has, and the
+    /// precondition for LLVM to select a shuffle rather than an indexed copy.
+    ///
+    /// Four stages over this (`G` = 1, 2, 4, 8, pairing row `r` with `r | G`)
+    /// compose a complete 16x16 transpose. Measured as
+    /// `transpose_16x16_composed`: **79 packed / 0 scalar-lane-arith**, 19 of
+    /// them real shuffles. The same transpose written as one monolithic index
+    /// loop measures **0 packed** — 1088 bytes of stack and a 256-iteration
+    /// scalar copy. The spelling is the entire difference. See
+    /// `.claude/knowledge/blake3-on-ndarray-simd.md`.
+    ///
+    /// No intrinsic override is earned: the generic form does not fail.
+    #[inline(always)]
+    pub fn exchange<const G: usize>(self, other: Self) -> (Self, Self) {
+        let (l, h) = (self.to_array(), other.to_array());
+        let mut nl = [0u32; 16];
+        let mut nh = [0u32; 16];
+        for c in 0..16 {
+            nl[c] = if c & G == 0 { l[c] } else { h[c ^ G] };
+            nh[c] = if c & G != 0 { h[c] } else { l[c ^ G] };
+        }
+        (Self::from_array(nl), Self::from_array(nh))
+    }
 }
 
 impl U32x16 {
