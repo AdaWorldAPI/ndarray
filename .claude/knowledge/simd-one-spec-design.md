@@ -173,6 +173,8 @@ shift-or composition written explicitly.
 - Ten currently-unlowered AVX2 int types: free.
 - The "is this fast enough?" argument: answered by a twenty-minute
   measurement during design, instead of debated.
+- ~13k LoC of hand-maintained backend code: substantially reduced, with the
+  remainder being exactly the intrinsics that earn their place.
 
 ## On tooling — why this is NOT a CI job
 
@@ -191,8 +193,6 @@ the answer goes in a doc. It is not re-answered on every commit.
 Run it when a codegen question is genuinely open:
 
 ```sh
-see .claude/knowledge/simd-codegen-oracle/README.md                       # host, x86-64-v3 baseline
-see .claude/knowledge/simd-codegen-oracle/README.md aarch64-unknown-linux-gnu
+sh .claude/knowledge/simd-codegen-oracle/run.sh                                # host, x86-64-v3 baseline
+sh .claude/knowledge/simd-codegen-oracle/run.sh aarch64-unknown-linux-gnu      # cross-target
 ```
-- ~13k LoC of hand-maintained backend code: substantially reduced, with the
-  remainder being exactly the intrinsics that earn their place.
