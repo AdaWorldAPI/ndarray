@@ -542,6 +542,74 @@ impl_int_type!(U64x4, u64, 4, 0u64);
 impl_int_type!(I32x8, i32, 8, 0i32);
 impl_int_type!(I64x4, i64, 4, 0i64);
 
+// ── U32x8 shuffle + rotate surface — scalar mirror of `simd_avx2.rs` ────────
+//
+// Same six methods, same semantics, same doc contract. The AVX2 arm's bodies
+// are ALSO plain index loops (see the long comment there and
+// `.claude/knowledge/blake3-on-ndarray-simd.md`), so this is not a "fallback"
+// that behaves differently — the two arms are the same source shape, and the
+// parity tests in `simd.rs` bind them to the real x86 intrinsics on the one
+// backend where those exist.
+//
+// Semantics are x86's, INCLUDING the per-128-bit-lane split, on every
+// backend. That is not an x86 leak: BLAKE3's transpose network is defined in
+// terms of it, so a backend that "helpfully" used whole-vector interleave
+// would compute a different permutation and produce wrong hashes.
+impl U32x8 {
+    /// Lane-wise `u32::rotate_left(n)`. See the AVX2 arm for the
+    /// `rotr(n) == rotate_left(32 - n)` note.
+    #[inline(always)]
+    pub fn rotate_left(self, n: u32) -> Self {
+        let mut out = [0u32; 8];
+        for i in 0..8 {
+            out[i] = self.0[i].rotate_left(n);
+        }
+        Self(out)
+    }
+
+    /// `_mm256_unpacklo_epi32`: `[a0,b0,a1,b1, a4,b4,a5,b5]`.
+    #[inline(always)]
+    pub fn interleave_lo_u32(self, other: Self) -> Self {
+        let (a, b) = (self.0, other.0);
+        Self([a[0], b[0], a[1], b[1], a[4], b[4], a[5], b[5]])
+    }
+
+    /// `_mm256_unpackhi_epi32`: `[a2,b2,a3,b3, a6,b6,a7,b7]`.
+    #[inline(always)]
+    pub fn interleave_hi_u32(self, other: Self) -> Self {
+        let (a, b) = (self.0, other.0);
+        Self([a[2], b[2], a[3], b[3], a[6], b[6], a[7], b[7]])
+    }
+
+    /// `_mm256_unpacklo_epi64`: `[a0,a1,b0,b1, a4,a5,b4,b5]`.
+    #[inline(always)]
+    pub fn interleave_lo_u64(self, other: Self) -> Self {
+        let (a, b) = (self.0, other.0);
+        Self([a[0], a[1], b[0], b[1], a[4], a[5], b[4], b[5]])
+    }
+
+    /// `_mm256_unpackhi_epi64`: `[a2,a3,b2,b3, a6,a7,b6,b7]`.
+    #[inline(always)]
+    pub fn interleave_hi_u64(self, other: Self) -> Self {
+        let (a, b) = (self.0, other.0);
+        Self([a[2], a[3], b[2], b[3], a[6], a[7], b[6], b[7]])
+    }
+
+    /// `_mm256_permute2x128_si256(a, b, 0x20)`: `[a0..a3, b0..b3]`.
+    #[inline(always)]
+    pub fn concat_lo_halves(self, other: Self) -> Self {
+        let (a, b) = (self.0, other.0);
+        Self([a[0], a[1], a[2], a[3], b[0], b[1], b[2], b[3]])
+    }
+
+    /// `_mm256_permute2x128_si256(a, b, 0x31)`: `[a4..a7, b4..b7]`.
+    #[inline(always)]
+    pub fn concat_hi_halves(self, other: Self) -> Self {
+        let (a, b) = (self.0, other.0);
+        Self([a[4], a[5], a[6], a[7], b[4], b[5], b[6], b[7]])
+    }
+}
+
 // I8x64 / I8x32 / I16x32 / I16x16 — AVX-512BW-style methods (scalar shape)
 impl I8x64 {
     #[inline(always)]

@@ -743,6 +743,134 @@ mod tests {
         }
     }
 
+    /// `U32x8`'s shuffle + rotate surface, checked against the REAL x86
+    /// intrinsics it claims to reproduce.
+    ///
+    /// This is the load-bearing test for the BLAKE3 `rust_avx2.rs` port. Those
+    /// six methods have plain index-loop bodies, so nothing about them is
+    /// self-evidently equal to `_mm256_unpacklo_epi32` and friends — and the
+    /// per-128-bit-lane semantics are exactly the kind of thing an "obvious"
+    /// whole-vector implementation gets wrong while still looking reasonable.
+    /// A transpose built on a subtly-wrong interleave produces wrong hashes,
+    /// not a compile error.
+    ///
+    /// Gated on `target_feature = "avx2"` because it calls the intrinsics
+    /// directly as the oracle. The methods themselves are backend-agnostic;
+    /// `u32x8_shuffle_surface_is_lane_exact` below covers them everywhere.
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    #[test]
+    fn u32x8_shuffles_match_x86_intrinsics() {
+        use super::U32x8;
+        use core::arch::x86_64::*;
+
+        // Distinct values in every lane, so any misplaced lane is visible.
+        let a_arr: [u32; 8] = [
+            0x1000_0000, 0x1100_0001, 0x1200_0002, 0x1300_0003, 0x1400_0004, 0x1500_0005, 0x1600_0006, 0x1700_0007,
+        ];
+        let b_arr: [u32; 8] = [
+            0x2000_0000, 0x2100_0001, 0x2200_0002, 0x2300_0003, 0x2400_0004, 0x2500_0005, 0x2600_0006, 0x2700_0007,
+        ];
+        let (a, b) = (U32x8::from_array(a_arr), U32x8::from_array(b_arr));
+
+        // SAFETY: guarded by `target_feature = "avx2"` on this test.
+        unsafe {
+            let va = _mm256_loadu_si256(a_arr.as_ptr() as *const __m256i);
+            let vb = _mm256_loadu_si256(b_arr.as_ptr() as *const __m256i);
+            let read = |v: __m256i| -> [u32; 8] {
+                let mut out = [0u32; 8];
+                _mm256_storeu_si256(out.as_mut_ptr() as *mut __m256i, v);
+                out
+            };
+
+            assert_eq!(
+                a.interleave_lo_u32(b).to_array(),
+                read(_mm256_unpacklo_epi32(va, vb)),
+                "interleave_lo_u32 != _mm256_unpacklo_epi32"
+            );
+            assert_eq!(
+                a.interleave_hi_u32(b).to_array(),
+                read(_mm256_unpackhi_epi32(va, vb)),
+                "interleave_hi_u32 != _mm256_unpackhi_epi32"
+            );
+            assert_eq!(
+                a.interleave_lo_u64(b).to_array(),
+                read(_mm256_unpacklo_epi64(va, vb)),
+                "interleave_lo_u64 != _mm256_unpacklo_epi64"
+            );
+            assert_eq!(
+                a.interleave_hi_u64(b).to_array(),
+                read(_mm256_unpackhi_epi64(va, vb)),
+                "interleave_hi_u64 != _mm256_unpackhi_epi64"
+            );
+            assert_eq!(
+                a.concat_lo_halves(b).to_array(),
+                read(_mm256_permute2x128_si256(va, vb, 0x20)),
+                "concat_lo_halves != _mm256_permute2x128_si256(_, _, 0x20)"
+            );
+            assert_eq!(
+                a.concat_hi_halves(b).to_array(),
+                read(_mm256_permute2x128_si256(va, vb, 0x31)),
+                "concat_hi_halves != _mm256_permute2x128_si256(_, _, 0x31)"
+            );
+
+            // BLAKE3 rotates RIGHT by 16/12/8/7, expressed as rotl(32 - n).
+            // Upstream implements each as `srli | slli`; assert against that
+            // exact form, not against a reformulation of our own. Written out
+            // four times rather than looped because the shift intrinsics take
+            // const immediates -- which also makes this mirror upstream's four
+            // separate `rot16` / `rot12` / `rot8` / `rot7` functions one-to-one.
+            assert_eq!(
+                a.rotate_left(16).to_array(),
+                read(_mm256_or_si256(_mm256_srli_epi32(va, 16), _mm256_slli_epi32(va, 16))),
+                "rotate_left(16) != upstream rot16"
+            );
+            assert_eq!(
+                a.rotate_left(20).to_array(),
+                read(_mm256_or_si256(_mm256_srli_epi32(va, 12), _mm256_slli_epi32(va, 20))),
+                "rotate_left(20) != upstream rot12"
+            );
+            assert_eq!(
+                a.rotate_left(24).to_array(),
+                read(_mm256_or_si256(_mm256_srli_epi32(va, 8), _mm256_slli_epi32(va, 24))),
+                "rotate_left(24) != upstream rot8"
+            );
+            assert_eq!(
+                a.rotate_left(25).to_array(),
+                read(_mm256_or_si256(_mm256_srli_epi32(va, 7), _mm256_slli_epi32(va, 25))),
+                "rotate_left(25) != upstream rot7"
+            );
+        }
+    }
+
+    /// The same six methods, asserted lane-by-lane against their documented
+    /// index formulas — on EVERY backend, with no intrinsics involved.
+    ///
+    /// The intrinsic test above can only run where AVX2 exists. This one
+    /// pins the contract on scalar / avx512 / any future arm, so a backend
+    /// cannot quietly diverge on a machine where the oracle is unavailable.
+    #[test]
+    fn u32x8_shuffle_surface_is_lane_exact() {
+        use super::U32x8;
+
+        let a: [u32; 8] = [10, 11, 12, 13, 14, 15, 16, 17];
+        let b: [u32; 8] = [20, 21, 22, 23, 24, 25, 26, 27];
+        let (va, vb) = (U32x8::from_array(a), U32x8::from_array(b));
+
+        assert_eq!(va.interleave_lo_u32(vb).to_array(), [10, 20, 11, 21, 14, 24, 15, 25]);
+        assert_eq!(va.interleave_hi_u32(vb).to_array(), [12, 22, 13, 23, 16, 26, 17, 27]);
+        assert_eq!(va.interleave_lo_u64(vb).to_array(), [10, 11, 20, 21, 14, 15, 24, 25]);
+        assert_eq!(va.interleave_hi_u64(vb).to_array(), [12, 13, 22, 23, 16, 17, 26, 27]);
+        assert_eq!(va.concat_lo_halves(vb).to_array(), [10, 11, 12, 13, 20, 21, 22, 23]);
+        assert_eq!(va.concat_hi_halves(vb).to_array(), [14, 15, 16, 17, 24, 25, 26, 27]);
+
+        for n in [0u32, 1, 7, 16, 20, 24, 25, 31] {
+            let got = va.rotate_left(n).to_array();
+            for i in 0..8 {
+                assert_eq!(got[i], a[i].rotate_left(n), "lane {i} rotate_left({n})");
+            }
+        }
+    }
+
     #[test]
     fn f32x16_add_sub_mul_div() {
         let a = F32x16::splat(6.0);
