@@ -185,7 +185,32 @@ matrixmultiply = { version = "0.3.2", default-features = false, features=["cgemm
 # If not, leave the `optional = true` + `std`-feature pinning in place.
 #
 # =====================================================================
-blake3 = { version = "1", optional = true }
+# `default-features = false` + `pure`: NO C/ASM FFI. Operator directive
+# 2026-07-28 — "I don't want any ffi with c".
+#
+# blake3's default build runs `cc::Build` over `c/blake3_{sse2,sse41,avx2,
+# avx512}_x86-64_unix.S` and links them (measured before this change: 33 `.o`
+# files plus `libblake3_avx512_assembly.a` in target/, with `blake3_*_ffi`
+# cfgs set). The `pure` feature routes build.rs to
+# `build_sse2_sse41_avx2_rust_intrinsics()` — its own comment: "No C code to
+# compile here" — which only sets `blake3_{sse2,sse41,avx2}_rust` cfgs and
+# lets the normal cargo build compile the Rust intrinsics modules.
+#
+# What `pure` costs (build.rs:344-371): the hand-tuned x86-64 assembly is
+# replaced by Rust intrinsics, the AVX-512 path is dropped entirely, and the
+# aarch64 NEON C intrinsics are dropped. What it removes: every byte of C.
+#
+# `default-features = false` also drops blake3's own `std` (which only gates
+# `constant_time_eq/std`); this crate's `std` feature is what pulls blake3 in
+# at all, so nothing here needs blake3's.
+#
+# NOTE: `pure` still leaves blake3's Rust SSE2/SSE4.1/AVX2 intrinsics — a
+# second SIMD surface beside `ndarray::simd`, which the matryoshka pattern
+# exists to prevent. Closing that means implementing BLAKE3's compression on
+# `ndarray::simd::U32x16` (it is a ChaCha-derived u32 ARX kernel, and that
+# lane is proven at the AVX2 instruction floor — see
+# `.claude/knowledge/td-t22-asm-investigation.md`). Tracked, not done here.
+blake3 = { version = "1", optional = true, default-features = false, features = ["pure"] }
 
 # p64 + fractal — specialized convergence / manifold math. Gated behind
 # `hpc-extras` since they pull in a dep tree burn-ndarray doesn't need.
@@ -402,7 +427,12 @@ members = [
     "ndarray-rand",
     "crates/*",
 ]
-exclude = ["crates/burn", "crates/wasm-simd-parity", "crates/neon-simd-parity", "vendor/chacha20"]
+exclude = [
+    "crates/burn",
+    "crates/wasm-simd-parity",
+    "crates/neon-simd-parity",
+    "vendor/chacha20",
+]
 default-members = [
     ".",
     "ndarray-rand",

@@ -1,0 +1,122 @@
+# Baseline instruction-class expectations for simd-codegen-oracle on
+# x86_64-unknown-linux-gnu, generated from the first run on this host
+# (AVX2 baseline, `-Ctarget-cpu=x86-64-v3`, rustc 1.95.0).
+#
+# Bounds are class ASSERTIONS, not exact instruction counts -- LLVM version
+# drift changes exact counts across toolchain updates. `min_packed` is set at
+# roughly 60% of the first observed count (see each probe's `note` for the
+# exact observed numbers) so a regression trips the gate without noise-
+# triggering on harmless codegen wobble. `max_scalar_lane_arith` bounds the
+# "scalar arithmetic on lane data" bucket -- see
+# scripts/codegen_oracle_analyze.py's module docstring for exactly what is
+# and isn't counted there.
+#
+# expect = "vectorized" | "scalar" | "unknown"
+#   vectorized -> require packed-vector >= min_packed (and, if set,
+#                 scalar-lane-arith <= max_scalar_lane_arith)
+#   scalar     -> require packed-vector <= max_packed (default 0)
+#   unknown    -> report only, no pass/fail (Group C: the open question)
+
+# ============================================================================
+# Group A -- expected to fully vectorize. All 5 confirmed.
+# ============================================================================
+
+[probe.arx_u32x16]
+expect = "vectorized"
+min_packed = 6
+max_scalar_lane_arith = 0
+note = "ChaCha/BLAKE ARX triple; rotate_left(16) folds to vpshufb (byte-granular rotate). Observed 11 packed / 0 scalar-lane-arith / 0 loop-control on rustc 1.95.0."
+
+[probe.arx_rounds_u32x16]
+expect = "vectorized"
+min_packed = 30
+max_scalar_lane_arith = 0
+note = "10-round ChaCha double-round over 4x U32x16 lanes; NOT fully unrolled (real loop, trip count 10) -- retains exactly 2 GPR instructions (movl $10,%eax / decl %eax, the loop counter) which correctly land in loop-control, not lane-arith. rotate(16)/(8) fold to vpshufb; rotate(12)/(7) fold to vpslld+vpsrld+vpor. Observed 52 packed / 0 scalar-lane-arith / 2 loop-control."
+
+[probe.fma_f32x16]
+expect = "vectorized"
+min_packed = 16
+max_scalar_lane_arith = 3
+note = "ndarray::simd::add_mul_f32 is a general slice-length FMA: unrolled x4 vfmadd213ps main loop (8-wide ymm) + a second x4-unrolled 8-wide ymm loop + xmm remainder loop + a genuine single-element vfmadd213ss tail for n%4 leftovers. The tail's vfmadd213ss IS real scalar-lane-arith (by design, not a codegen failure) -- a nonzero count here is EXPECTED, not a regression signal by itself. Observed 28 packed (vmovups+vfmadd213ps) / 1 scalar-lane-arith (the vfmadd213ss tail) / 62 loop-control (three-way min(acc.len(),a.len(),b.len()) bound tracking -- rax index, r10 combined bound, rbx/r14/r15 parallel countdown copies, rcx aligned trip count -- all correctly identified as index/bound bookkeeping, not lane data) / 18 memory, for n=64 (exactly divisible by 16, so the tail paths are present in the static code but do not execute at runtime for this input)."
+
+[probe.reduce_u32x16]
+expect = "vectorized"
+min_packed = 4
+max_scalar_lane_arith = 0
+note = "avx2_int_type! reduce_sum: horizontal add via vpaddd + vextracti128 + vpshufd shuffle-reduce tree. Observed 8 packed / 0 scalar-lane-arith."
+
+[probe.bitwise_u8x64]
+expect = "vectorized"
+min_packed = 7
+max_scalar_lane_arith = 0
+note = "(a^b)&a|b over U8x64, both 32-byte ymm halves. Observed 12 packed / 0 scalar-lane-arith -- LLVM chose the *ps float-domain packed-bitwise forms (vxorps/vandps/vorps instead of vpxor/vpand/vpor), still packed-vector under our classification (domain choice, not width)."
+
+# ============================================================================
+# Group B -- expected to NOT fully vectorize. THREE surprises measured here:
+# saturating_abs_i8x32, widening_u16_to_f32, and cross_lane_reverse_u8x64 ALL
+# vectorized despite being hand-written as scalar loops. Only
+# serial_dependent_chain and gather_lookup_u8 came out scalar as hypothesized.
+# `expect` below reflects the MEASURED reality, not the original hypothesis;
+# that 3-of-5 mismatch IS the finding -- kept visible in each probe's `note`
+# rather than silently "fixed" by relabeling without comment.
+# ============================================================================
+
+[probe.serial_dependent_chain]
+expect = "scalar"
+max_packed = 0
+note = "Genuinely serial (nonlinear rotate+xor chain, runtime trip count). Confirmed scalar: rorxl/addl/xorl on GPRs (BMI2 rorxl chosen over the plain scalar ror, since -Ctarget-cpu=x86-64-v3 includes BMI2), real backward branches. Observed 0 packed / 27 scalar-lane-arith (rorxl+addl+xorl x9, the unrolled-by-8 main loop plus the up-to-7-iteration remainder loop) / 12 loop-control (trip-count bookkeeping for both loops, correctly separated from the arithmetic)."
+
+[probe.saturating_abs_i8x32]
+expect = "vectorized"
+min_packed = 2
+max_scalar_lane_arith = 0
+note = "SURPRISE: hand-written as a 32-iteration scalar loop over to_array()/i8::saturating_abs(), but LLVM recognized the idiom and emitted vpxor+vpsubsb+vpblendvb (subtract-saturate-from-zero, then blend by original sign) -- the exact abs+clamp trick the VPABSB correction doc (.claude/knowledge/vertical-simd-consumer-contract.md) describes for i8::MIN, discovered automatically by the vectorizer with zero scalar loop surviving. Observed 4 packed / 0 scalar-lane-arith. Originally hypothesized Group B; measured result is fully vectorized -- do not 'fix' this, it is real."
+
+[probe.gather_lookup_u8]
+expect = "scalar"
+max_packed = 0
+note = "Gather-shaped table lookup (table[idx[i]]), fully unrolled x32, ZERO arithmetic instructions at all -- pure movzbl/movb chains, addressing folded entirely into immediate-offset operands. Confirmed scalar as hypothesized. Observed 0 packed / 0 scalar-lane-arith / 0 loop-control (no loop at all, fully unrolled -- there is no trip count to track) / 96 memory (movzbl+movzbl+movb x32)."
+
+[probe.widening_u16_to_f32]
+expect = "vectorized"
+min_packed = 3
+max_scalar_lane_arith = 0
+note = "SURPRISE: hand-written as a 16-iteration scalar `as f32` cast loop, but LLVM recognized the zero-extend-then-convert idiom and emitted vpmovzxwd+vcvtdq2ps (two 8-wide ymm chunks). Observed 6 packed / 0 scalar-lane-arith. Originally hypothesized Group B; measured result is fully vectorized -- do not 'fix' this, it is real."
+
+[probe.cross_lane_reverse_u8x64]
+expect = "vectorized"
+min_packed = 5
+max_scalar_lane_arith = 0
+note = "SURPRISE: hand-written as a 64-iteration scalar index-reversal loop (out[i] = in[63-i]), but LLVM recognized it and emitted vbroadcasti128 + vpshufb (byte-reverse within each 16-byte lane) + vpermq (swap the two 128-bit halves across the ymm) -- a real cross-lane permute, not just a within-lane shuffle. Observed 9 packed / 0 scalar-lane-arith. Originally hypothesized Group B; measured result is fully vectorized -- do not 'fix' this, it is real."
+
+# ============================================================================
+# Group C -- UNKNOWN. Report only, no pass/fail. This is the open question
+# that motivated extending this oracle: does a scalar-shaped u64 rotate loop,
+# mirroring U32x16::rotate_left's own shape line for line, get the same free
+# ride from LLVM that the u32 lane gets? No backend in this crate defines
+# rotate_left/rotate_right on any u64 lane type today.
+#
+# MEASURED ANSWER: NO. All three probes below show packed-vector == 0 for
+# every rotate-dependent instruction; the rotate itself always lowers to a
+# scalar GPR rorq/rorxq, regardless of whether the rotate amount is a runtime
+# variable (rot_u64x8/rot_u64x4) or a compile-time constant
+# (blake2b_g_u64x8's 32/24/16/63) -- unlike the u32 lane, where BOTH the
+# byte-granular constant case (rotate_left(16)/(8) -> vpshufb) and the
+# bit-granular constant case (rotate_left(12)/(7) -> vpslld+vpsrld+vpor)
+# vectorize (see arx_rounds_u32x16 above). This is the one probe family in
+# this oracle where the "scalar source still gets packed codegen" claim does
+# NOT hold -- the first probe result in this crate that is a legitimate case
+# for a hand-written intrinsic, per the task brief's own framing.
+# ============================================================================
+
+[probe.rot_u64x8]
+expect = "unknown"
+note = "MEASURED SCALAR. 8x (movq-load + rorq %cl,reg [variable count] + movq-store), zero packed instructions anywhere in the function. AVX2 has vpsllq/vpsrlq (uniform-count packed 64-bit shift, which is exactly the mechanism LLVM used to vectorize u32's rotate(12)/(7) via shift+or), so the ingredients for a packed shift-or lowering exist on this target -- LLVM simply did not apply them here for a runtime-variable-count u64 rotate. Observed 0 packed / 8 scalar-lane-arith (the 8 rorq) / 0 loop-control (straight-line, no loop) / 19 memory (movq loads+stores + the count setup)."
+
+[probe.rot_u64x4]
+expect = "unknown"
+note = "Same pattern as rot_u64x8, 4 lanes instead of 8, same verdict. Observed 0 packed / 4 scalar-lane-arith (4x rorq) / 0 loop-control / 9 memory."
+
+[probe.blake2b_g_u64x8]
+expect = "unknown"
+note = "MEASURED MIXED, and the most interesting single result in this oracle. The G-function's straight-line body has NO loop at all (fully unrolled by construction -- 8 lanes, no trip count, confirmed by 0 jumps in the disassembly). The LEADING a=a+b step DOES vectorize (vpaddq over both 32-byte ymm halves -- 2 of the function's 22 packed instructions; the rest of the 22 are the final vmovaps/vmovups reassembly into the return-struct). The moment a rotate is needed, LLVM extracts every lane out to a GPR (vmovq/vpextrq, in the 'other'/memory buckets) and the REST of the function -- all four rotate stages (32/24/16/63) and essentially every subsequent add/xor -- stays scalar (rorxq/addq/xorq on GPRs) all the way through, only reassembling into ymm registers at the very end for the tuple-return store. Byte-granular rotate amounts (32/24/16 -- whole bytes, the exact shape that folds to vpshufb for u32's rotate(16)/(8)) did NOT fold to a shuffle here either -- all four rotate amounts, byte-granular or not, lowered to scalar rorxq identically. This directly answers the motivating question: no, u64 rotate does not get the u32 lane's free ride, not even for the byte-granular special case, not even with compile-time-constant rotate amounts (unlike rot_u64x8/x4's runtime-variable case, ruling out 'maybe it only needed a constant amount' as an explanation). Observed 22 packed (the leading vpaddq pair + the trailing reassembly moves) / 74 scalar-lane-arith (rorxq/addq/xorq on GPRs, automated count) / 14 loop-control (automated count) / 98 memory (lane extract/insert + loads/stores) / 2 other. KNOWN UNDER-COUNT: the 14 instructions the automated classifier placed in loop-control are, on manual inspection, ALSO genuine scalar lane arithmetic (xorq/addq on %r8/%rsi) -- they were misclassified because those two registers were used as memory-operand address bases earlier in the function (dereferencing the incoming d-pointer) before being overwritten and reused to carry rotated lane data, and the whole-block heuristic in scripts/codegen_oracle_analyze.py cannot distinguish a register's role before vs. after such a reuse (documented in that script's module docstring, 'KNOWN LIMITATION' paragraph). The true scalar-lane-arith count is therefore ~88, not 74; the qualitative verdict (packed only for the leading add and the trailing reassembly; scalar for the entire rotate-dependent chain in between) is unaffected either way and was cross-checked by hand against the raw --verbose disassembly."
