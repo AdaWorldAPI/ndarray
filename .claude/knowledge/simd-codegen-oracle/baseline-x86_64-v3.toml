@@ -120,3 +120,35 @@ note = "Same pattern as rot_u64x8, 4 lanes instead of 8, same verdict. Observed 
 [probe.blake2b_g_u64x8]
 expect = "unknown"
 note = "MEASURED MIXED, and the most interesting single result in this oracle. The G-function's straight-line body has NO loop at all (fully unrolled by construction -- 8 lanes, no trip count, confirmed by 0 jumps in the disassembly). The LEADING a=a+b step DOES vectorize (vpaddq over both 32-byte ymm halves -- 2 of the function's 22 packed instructions; the rest of the 22 are the final vmovaps/vmovups reassembly into the return-struct). The moment a rotate is needed, LLVM extracts every lane out to a GPR (vmovq/vpextrq, in the 'other'/memory buckets) and the REST of the function -- all four rotate stages (32/24/16/63) and essentially every subsequent add/xor -- stays scalar (rorxq/addq/xorq on GPRs) all the way through, only reassembling into ymm registers at the very end for the tuple-return store. Byte-granular rotate amounts (32/24/16 -- whole bytes, the exact shape that folds to vpshufb for u32's rotate(16)/(8)) did NOT fold to a shuffle here either -- all four rotate amounts, byte-granular or not, lowered to scalar rorxq identically. This directly answers the motivating question: no, u64 rotate does not get the u32 lane's free ride, not even for the byte-granular special case, not even with compile-time-constant rotate amounts (unlike rot_u64x8/x4's runtime-variable case, ruling out 'maybe it only needed a constant amount' as an explanation). Observed 22 packed (the leading vpaddq pair + the trailing reassembly moves) / 74 scalar-lane-arith (rorxq/addq/xorq on GPRs, automated count) / 14 loop-control (automated count) / 98 memory (lane extract/insert + loads/stores) / 2 other. KNOWN UNDER-COUNT: the 14 instructions the automated classifier placed in loop-control are, on manual inspection, ALSO genuine scalar lane arithmetic (xorq/addq on %r8/%rsi) -- they were misclassified because those two registers were used as memory-operand address bases earlier in the function (dereferencing the incoming d-pointer) before being overwritten and reused to carry rotated lane data, and the whole-block heuristic in scripts/codegen_oracle_analyze.py cannot distinguish a register's role before vs. after such a reuse (documented in that script's module docstring, 'KNOWN LIMITATION' paragraph). The true scalar-lane-arith count is therefore ~88, not 74; the qualitative verdict (packed only for the leading add and the trailing reassembly; scalar for the entire rotate-dependent chain in between) is unaffected either way and was cross-checked by hand against the raw --verbose disassembly."
+
+# ============================================================================
+# Group D -- UNKNOWN. Report only, no pass/fail. Does a fixed lane permutation
+# written as a scalar index loop vectorize? This is the one thing standing
+# between `ndarray::simd::U32x16` and a BLAKE3 backend with no raw intrinsics
+# and no C: BLAKE3's pure-Rust AVX2 backend uses 15 distinct intrinsics, 12 of
+# which U32x16 already expresses, and the other 3 families (unpacklo/hi_epi32,
+# unpacklo/hi_epi64, permute2x128 -- 18 call sites) exist solely to build
+# hash_many's transpose.
+#
+# `blake3_g_u32x16` carries no suspense and is here as the anchor: the same
+# ARX shape Group A already measured at the AVX2 instruction floor. It is
+# marked "unknown" rather than "vectorized" only so the Group-D block reads as
+# one measurement rather than a pass mixed with two observations; if it ever
+# stops vectorizing, arx_rounds_u32x16 fails first and louder.
+# ============================================================================
+
+[probe.blake3_g_u32x16]
+expect = "unknown"
+note = "MEASURED FULLY VECTORIZED, as predicted. Observed 72 packed / 0 scalar-lane-arith / 0 loop-control (straight-line, fully unrolled) / 1 memory. The rotate split came out exactly as the u32 lane's known behaviour implies: rotr16 -> vpshufb with mask .LCPI5_0, rotr8 -> vpshufb with mask .LCPI5_1, rotr12 -> vpsrld $12 + vpslld $20 + vpor, rotr7 -> the same triple. Everything else is vpaddd / vpxor over both ymm halves. BLAKE3's compression core therefore needs NOTHING new from this crate -- compress_in_place and compress_xof are expressible on U32x16 today."
+
+[probe.interleave_lo_u32x16]
+expect = "unknown"
+note = "MEASURED FULLY VECTORIZED. Observed 11 packed / 0 scalar-lane-arith / 0 loop-control. LLVM emitted vbroadcasti128 + vpmovzxdq + vpermd (constant permute mask from .LCPI10_0) + vpblendd $170 -- a genuine two-source cross-lane permutation synthesized from index arithmetic, extending cross_lane_reverse_u8x64's single-source result to the two-source case. The interleave primitive is FREE from scalar source; it earns no intrinsic override."
+
+[probe.transpose_16x16_u32]
+expect = "unknown"
+note = "MEASURED SCALAR -- and this is the finding. Observed 0 packed / 1 scalar-lane-arith / 8 loop-control / 47 memory. LLVM did not vectorize any part of it: it allocated 1088 bytes of stack (subq $1088,%rsp with a 64-byte alignment andq $-64,%rsp) and emitted a real 256-iteration element-at-a-time copy loop (cmpq $256,%rax / jne), striding output by 64 bytes per step. The stride-64 scatter is what defeats it -- each output vector gathers one element from each of sixteen inputs. Compare transpose_stage_u32x16 below, which is the SAME transpose expressed as a composition of interleaves and stays fully packed. The lesson is about how the transpose is WRITTEN, not about what the hardware or the lane type can do."
+
+[probe.transpose_stage_u32x16]
+expect = "unknown"
+note = "MEASURED FULLY VECTORIZED, and it closes the Group-D question. Observed 27 packed / 1 scalar-lane-arith / 5 loop-control / 9 memory. LLVM emitted vunpcklps / vunpckhps -- literally the unpack instruction family BLAKE3's rust_avx2.rs hand-writes as _mm256_unpacklo_epi32 / _mm256_unpackhi_epi32 -- four pairs per loop iteration over a 1024-byte stride. The single scalar-lane-arith is an xorl %esi,%esi zero-idiom from the [U32x16::splat(0); 16] initializer, not lane work. Read against transpose_16x16_u32's 0 packed: the transpose must be COMPOSED from interleave primitives rather than written as a nested index loop. Since the primitive itself vectorizes from scalar source (interleave_lo_u32x16), the conclusion is that a BLAKE3 backend on ndarray::simd needs no hand-written intrinsic at all -- only that the shuffle methods EXIST on U32x16."
