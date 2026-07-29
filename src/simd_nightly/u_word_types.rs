@@ -19,6 +19,48 @@ pub struct U64x8(pub u64x8);
 impl U64x8 {
     pub const LANES: usize = 8;
 
+    /// Lane-wise left-rotate by `n` bits — the u64 ARX rotate (BLAKE2b /
+    /// argon2 lane). `n` is taken mod 64; `n == 0` returns `self`, since
+    /// `x >> 64` is UB on `u64`.
+    ///
+    /// `core::simd` has no rotate, so this is the same per-lane loop the
+    /// scalar backend uses. The codegen oracle measured that such a loop does
+    /// **not** vectorize on stable (0 packed, one `rorq` per lane, across
+    /// three spellings); whether this backend's codegen does better is
+    /// **unmeasured** — the oracle runs on stable and cannot see it. The
+    /// native `VPROLVQ`/`VPRORVQ` override lives on `simd_avx512`'s `U64x8`.
+    /// See `.claude/knowledge/crypto-lane-status.md`.
+    #[inline(always)]
+    pub fn rotate_left(self, n: u32) -> Self {
+        let n = n % 64;
+        if n == 0 {
+            return self;
+        }
+        let a = self.to_array();
+        let mut o = [0u64; 8];
+        for i in 0..8 {
+            o[i] = a[i].rotate_left(n);
+        }
+        Self::from_array(o)
+    }
+
+    /// Lane-wise right-rotate by `n` bits — BLAKE2b's direction.
+    /// `rotr(n) == rotl(64 - n)` exactly; kept distinct because BLAKE2b and
+    /// argon2 are specified in terms of right rotation.
+    #[inline(always)]
+    pub fn rotate_right(self, n: u32) -> Self {
+        let n = n % 64;
+        if n == 0 {
+            return self;
+        }
+        let a = self.to_array();
+        let mut o = [0u64; 8];
+        for i in 0..8 {
+            o[i] = a[i].rotate_right(n);
+        }
+        Self::from_array(o)
+    }
+
     #[inline(always)]
     pub fn splat(v: u64) -> Self {
         Self(u64x8::splat(v))

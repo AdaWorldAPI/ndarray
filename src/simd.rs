@@ -743,6 +743,53 @@ mod tests {
         }
     }
 
+    /// The u64 ARX rotate — `U64x8::rotate_left` / `rotate_right`, the lane
+    /// BLAKE2b (and therefore argon2) needs.
+    ///
+    /// Runs on whichever tier this build compiled, so it gates the native
+    /// AVX-512 `VPROLVQ`/`VPRORVQ` override and the portable scalar arms
+    /// against the *same* reference — per-lane `u64::rotate_left`. That
+    /// matters more here than for the u32 lane, because unlike every other
+    /// lane-wise op in this crate the two implementations are genuinely
+    /// different code, not one source form compiled twice.
+    ///
+    /// Covers BLAKE2b's own amounts (32/24/16/63) plus the edges, and asserts
+    /// `rotr(n) == rotl(64 - n)` for each — the identity the two methods'
+    /// equivalence rests on.
+    #[test]
+    fn u64x8_arx_rotate_matches_scalar() {
+        use super::U64x8;
+
+        let a_arr: [u64; 8] = [
+            0x0123_4567_89AB_CDEF, 0xFFFF_FFFF_FFFF_FFFF, 0x0000_0000_0000_0001, 0x8000_0000_0000_0000,
+            0xDEAD_BEEF_CAFE_BABE, 0x0000_0000_FFFF_FFFF, 0xAAAA_AAAA_5555_5555, 0x0F0F_0F0F_F0F0_F0F0,
+        ];
+        let a = U64x8::from_array(a_arr);
+
+        // BLAKE2b uses 32/24/16/63; 0 and 63 are the edges, and 64 must wrap
+        // to the identity rather than shifting by the full width (UB on u64).
+        for n in [0u32, 1, 7, 16, 24, 31, 32, 63, 64] {
+            let l = a.rotate_left(n).to_array();
+            let r = a.rotate_right(n).to_array();
+            for i in 0..8 {
+                assert_eq!(l[i], a_arr[i].rotate_left(n), "lane {i} rotate_left({n})");
+                assert_eq!(r[i], a_arr[i].rotate_right(n), "lane {i} rotate_right({n})");
+            }
+            // rotr(n) == rotl(64 - n): the identity the pair rests on.
+            let back = a.rotate_left((64 - (n % 64)) % 64).to_array();
+            assert_eq!(r, back, "rotate_right({n}) != rotate_left(64 - {n})");
+        }
+
+        // Round-trip: rotating out and back is the identity for every amount.
+        for n in [1u32, 16, 24, 32, 63] {
+            assert_eq!(
+                a.rotate_left(n).rotate_right(n).to_array(),
+                a_arr,
+                "rotate_left({n}) then rotate_right({n}) is not the identity"
+            );
+        }
+    }
+
     /// The BLAKE3 shuffle surface on `U32x16`, checked against the REAL x86
     /// intrinsics it reproduces — applied to each 256-bit half.
     ///
