@@ -52,8 +52,16 @@ pub mod fingerprint;
 // substrate goes through the `simd_{type}.rs` family per the W1a layering
 // rule (carriers in simd_soa, slicing/ops in simd_ops).
 #[allow(missing_docs)]
-pub mod blake3;
 pub mod plane;
+
+/// In-tree BLAKE3 — see `.claude/knowledge/blake3-in-tree-measured.md`.
+///
+/// Fully documented, so deliberately NOT under the `#[allow(missing_docs)]`
+/// that guards `plane`. An earlier revision declared it on the line directly
+/// after that attribute, which silently re-targeted the attribute onto this
+/// module and left `plane` unguarded — seven CI jobs failed on `missing_docs`
+/// errors in a file the change never touched.
+pub mod blake3;
 #[allow(missing_docs)]
 pub mod seal;
 #[allow(missing_docs)]

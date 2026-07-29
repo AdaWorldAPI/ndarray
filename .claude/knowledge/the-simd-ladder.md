@@ -30,15 +30,39 @@ ndarray package pulls it**, and this was measured, not assumed:
 | `curve25519-dalek` | `crates/encryption` → `ed25519-dalek` → `curve25519-dalek` | **no** |
 | `blake3` | **root `ndarray`** (`std` feature, 11 files in `src/hpc/`) | **YES** |
 
+The evidence is the **positive** reverse tree, not an error message. Asking
+for the full reverse-dependency tree of `curve25519-dalek` shows every path
+to it, and the tree terminates at `encryption` — root `ndarray` is nowhere in
+it:
+
 ```console
 $ cargo tree -p encryption -i curve25519-dalek
 curve25519-dalek v4.1.3
 └── ed25519-dalek v2.2.0
     └── encryption v0.1.0 (crates/encryption)
-
-$ cargo tree -p ndarray -i curve25519-dalek
-error: package ID specification `curve25519-dalek` did not match any packages
 ```
+
+**Control — the same command shape does produce a hit when the edge exists**,
+so the method can discriminate:
+
+```console
+$ cargo tree -p ndarray -i blake3
+blake3 v1.8.4
+└── ndarray v0.17.2 (/workspace/ndarray)
+```
+
+An earlier version rested this on `cargo tree -p ndarray -i curve25519-dalek`
+returning `error: package ID specification ... did not match any packages`.
+That is **weak evidence and was corrected** (CodeRabbit, #268): a mistyped
+name produces the byte-identical message —
+
+```console
+$ cargo tree -p ndarray -i curve25519-dalekk
+error: package ID specification `curve25519-dalekk` did not match any packages
+```
+
+— so the error cannot distinguish "no such edge" from "no such package". Use
+the positive tree, and keep a known-hit control beside it.
 
 **Only blake3 has a cycle**, because only blake3 is pulled by the *root*
 package. `cargo update -p blake3` reports it by naming the chain — the patched
@@ -165,7 +189,7 @@ already depends on `ndarray`, dalek has no cycle (established above), and the
 u64 lane is implemented *inside* `ndarray`. None of the three is unblocked by
 anything 3a does.
 
-```
+```text
 3a (cut the cycle) ──> 3b (hash_many throughput)   [needs a bench]
 
 4  (chacha20 AVX-512 arm)   [independent — needs a bench + a ruling]

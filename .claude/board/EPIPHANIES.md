@@ -16,12 +16,28 @@ package in the workspace pulls it**:
 | `curve25519-dalek` | `crates/encryption` → `ed25519-dalek` → … | **yes** |
 | `blake3` | **root `ndarray`** (`std` feature) | **no — cycle** |
 
-Measured, not inferred:
+Measured — and measured the right way round. The evidence is the **positive**
+reverse tree (which terminates at `encryption`, with root `ndarray` absent),
+plus a control proving the method can produce a hit:
 
 ```console
-$ cargo tree -p ndarray -i curve25519-dalek
-error: package ID specification `curve25519-dalek` did not match any packages
+$ cargo tree -p encryption -i curve25519-dalek     # positive: full path shown
+curve25519-dalek v4.1.3
+└── ed25519-dalek v2.2.0
+    └── encryption v0.1.0 (crates/encryption)
+
+$ cargo tree -p ndarray -i blake3                  # control: a real edge DOES hit
+blake3 v1.8.4
+└── ndarray v0.17.2 (/workspace/ndarray)
 ```
+
+**Not** an error message. A first draft rested on
+`cargo tree -p ndarray -i curve25519-dalek` failing with `package ID
+specification ... did not match any packages`; a typo produces that message
+byte-for-byte, so it cannot distinguish "no such edge" from "no such
+package". Corrected by CodeRabbit on #268 — and it is the same defect this
+repo keeps hitting one level down: a check that cannot fail for the reason
+you think it is failing.
 
 Only blake3 is pulled by the ROOT package, so only blake3 closes a loop when
 it depends back on ndarray. The other two ride a shape that already works in
