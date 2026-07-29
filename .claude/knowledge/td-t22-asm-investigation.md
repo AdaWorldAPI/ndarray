@@ -228,8 +228,17 @@ Operator's summary: *cargo is CI is github needs V3; dockerfile is V4.*
 
 1. **TD-T22's measurement is baseline-scoped, and that is worth saying.**
    "The scalar polyfill compiles to packed AVX2" is true *under a v3-or-above
-   baseline*. It is the baseline, not the source form, that does the work. A
-   build with no `target-cpu` gets SSE2 codegen from the same source.
+   baseline*. It is the baseline, not the source form, that does the work.
+
+   Be precise about what "no `target-cpu`" then means, because two different
+   things get conflated: it selects the **generic `x86-64` baseline**, on
+   which SSE2 is available — it does **not** follow that SSE2 instructions
+   are emitted. The measurement above says otherwise. `arx_rounds_u32x16`
+   came back **0 packed / 146 scalar / 491 memory**: LLVM did not vectorize
+   that source at the generic baseline at all, packed-SSE2 or otherwise. The
+   available ISA is a ceiling, not a prediction. (Raised by CodeRabbit on
+   PR #266; the phrasing here previously said "gets SSE2 codegen", which the
+   histogram directly contradicts.)
 2. **The comment in `.cargo/config.toml` — "This is what GitHub CI runs
    against" — is stale.** CI applies no global pin; `Dockerfile` is what runs
    at v3. Left as a record rather than edited (manifest/config string changes

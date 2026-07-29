@@ -83,7 +83,7 @@ compiled at all.
 | tier | target-cpu | builds `encryption`? | chacha20 backend |
 |---|---|---|---|
 | **CI** (`ci.yaml`) | none globally | no | not compiled |
-| CI `tier4-avx512-check` | v4, per-job | no — `-p ndarray` | not compiled |
+| CI `tier4-avx512-check` | v4, per-job | no — `-p ndarray` only | not compiled |
 | **`Dockerfile`** | v3 | **no** — bare `cargo build` | **not compiled** |
 | **`Dockerfile.avx512`** | v4 | **no** — bare `cargo build` | **not compiled** |
 | dev `cargo build -p encryption` | v3 (`.cargo/config.toml`) | yes | RustCrypto avx2/sse2 |
@@ -152,6 +152,21 @@ Jobs needing a higher tier opt in individually — `tier4-avx512-check` sets
 -Ctarget-cpu=x86-64-v4"`, deliberately the per-target form rather than plain
 `RUSTFLAGS`, because `RUSTFLAGS` also applies to host build scripts and those
 SIGILL on a runner without AVX-512 silicon.
+
+**That job covers ndarray's v4 arm and nothing else.** Both its steps are
+`cargo check --target=x86_64-unknown-linux-gnu -p ndarray --features
+approx,serde,rayon` (the second adding `hpc-extras`) — package-scoped to
+`ndarray`, so `crates/encryption` and therefore `vendor/chacha20` are outside
+it. **No CI job compiles the chacha20 AVX-512 backend**, and none of the
+coverage claimed here extends to it. Closing that gap would take an explicit
+step such as:
+
+```console
+$ CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-Ctarget-cpu=x86-64-v4" \
+      cargo check --target=x86_64-unknown-linux-gnu -p encryption
+```
+
+Not added here — adding a CI job is a product change, and this is a docs PR.
 
 ## The manifest comment, re-read
 
