@@ -116,9 +116,21 @@ failing row, since a probe the compiler cannot distinguish from its own
 control measures nothing.
 
 **So the u64 ARX lane is the crate's first intrinsic override that meets the
-entry criterion** (a probe proving the generic form fails). AVX-512:
-`_mm512_rorv_epi64` / `VPROLVQ`, one instruction. AVX2 / NEON / wasm: write
-the `vpsllq`/`vpsrlq`-shaped shift-or explicitly, since LLVM will not.
+entry criterion** (a probe proving the generic form fails).
+
+What SHIPPED, per backend (#268), which is not uniform:
+
+- **AVX-512:** `_mm512_rolv_epi64` / `_mm512_rorv_epi64` — `VPROLVQ`/`VPRORVQ`,
+  one instruction. This is the earned override.
+- **AVX2 / scalar / nightly:** per-lane loops. NEON and wasm re-export the
+  scalar `U64x8` and are covered by that arm.
+
+An earlier draft of this paragraph instructed AVX2/NEON/wasm to "write the
+`vpsllq`/`vpsrlq`-shaped shift-or explicitly, since LLVM will not." That
+prescription contradicted the fourth confirmation directly above it — LLVM
+folded the explicit shift-or into the rotate form, byte-identically, so
+writing it out is not known to change anything. **It is an unmeasured future
+experiment, not the prescribed implementation**, and it is not what shipped.
 
 Contrast with the u32 lane, where hand-writing intrinsics *lost* to the
 optimizer. Same crate, same week, opposite answers — which is the argument

@@ -375,8 +375,14 @@ impl PartialEq for Hash {
     /// `==` leaks match-prefix length through timing. Upstream reaches for
     /// the `constant_time_eq` crate; this crate takes no new dependencies, so
     /// the fold is written here: accumulate the XOR of every byte pair and
-    /// test once at the end, with `read_volatile` on the accumulator to stop
-    /// the optimizer reintroducing an early exit.
+    /// test once at the end, with `core::hint::black_box` on the accumulator
+    /// to stop the optimizer reintroducing an early exit.
+    ///
+    /// `black_box` is a **best-effort optimizer barrier, not a guarantee** —
+    /// its documentation is explicit that it provides no formal contract. The
+    /// data-independent loop above is the real property; the barrier only
+    /// discourages LLVM from undoing it. A caller needing an audited
+    /// guarantee should use a dedicated constant-time crate.
     ///
     /// No call site in this crate currently compares two `Hash` values —
     /// `seal.rs` compares the truncated `MerkleRoot` instead — so this is a
@@ -387,8 +393,8 @@ impl PartialEq for Hash {
         for i in 0..OUT_LEN {
             diff |= self.0[i] ^ other.0[i];
         }
-        // SAFETY-free volatile read of a local: prevents the compiler from
-        // proving an early return is equivalent.
+        // Optimizer barrier (best-effort): discourages LLVM from proving an
+        // early return equivalent and reintroducing the short circuit.
         core::hint::black_box(diff) == 0
     }
 }
@@ -608,7 +614,7 @@ pub fn keyed_hash(key: &[u8; KEY_LEN], input: &[u8]) -> Hash {
 pub fn derive_key(context: &str, key_material: &[u8]) -> [u8; OUT_LEN] {
     let mut hasher = Hasher::new_derive_key(context);
     hasher.update(key_material);
-    (*hasher.finalize().as_bytes()).into()
+    *hasher.finalize().as_bytes()
 }
 
 // =======================================================================
@@ -624,13 +630,16 @@ pub fn derive_key(context: &str, key_material: &[u8]) -> [u8; OUT_LEN] {
 // - `update_rayon` and anything behind the `rayon` feature.
 // - `zeroize` support (feature-gated in the original; secrets are not a
 //   concern for ndarray's usage of this module).
-// - Constant-time equality (`constant_time_eq`): the original `Hash::eq` is
-//   constant-time as a defense-in-depth measure for MAC comparisons. Adding
-//   that would mean hand-rolling a constant-time byte compare with no
-//   external crate; out of scope for what ndarray needs (a plain fingerprint
-//   equality check), so `PartialEq` here is a normal short-circuiting
-//   byte-array compare. Flagged explicitly since it is a behavioral
-//   difference from upstream `blake3::Hash`, not just a missing convenience.
+// - The `constant_time_eq` CRATE — the dependency, NOT the behaviour. The
+//   constant-time compare itself IS implemented: see `impl PartialEq for
+//   Hash`, which XOR-folds all 32 bytes and tests once, so `Hash::eq` keeps
+//   upstream's timing property without adding the dependency.
+//
+//   An earlier revision of this list claimed the opposite — "`PartialEq` here
+//   is a normal short-circuiting byte-array compare" — left stale when the
+//   fold landed. Documenting a timing property backwards is worse than
+//   omitting it: someone auditing a MAC comparison would have believed this
+//   file leaks match-prefix length when it does not.
 // - Hex encoding/decoding (`to_hex`/`from_hex`) and `Display`/`FromStr`: not
 //   in the required API list.
 // =======================================================================
@@ -648,7 +657,16 @@ mod tests {
         input_len: usize,
         hash_hex: String,
         keyed_hash_hex: String,
+        derive_key_hex: String,
     }
+
+    /// The context string the official vectors' `derive_key` outputs were
+    /// generated with (the `context_string` field of `test_vectors.json`).
+    ///
+    /// Deliberately NOT named `DERIVE_KEY_CONTEXT` — that is a `u32` domain
+    /// flag at module scope, and reusing the name here would shadow it inside
+    /// this module.
+    const VECTORS_CONTEXT: &str = "BLAKE3 2019-12-27 16:29:52 test vectors context";
 
     /// Hand-rolled extraction of the fields we need from the official BLAKE3
     /// test_vectors.json, without pulling in serde. The file's `cases` array
@@ -683,10 +701,19 @@ mod tests {
             let keyed_hash_hex = extract_quoted(rest);
             rest = &rest[keyed_hash_hex.len() + 2..];
 
+            let dk_idx = rest
+                .find("\"derive_key\":")
+                .expect("missing derive_key field")
+                + "\"derive_key\":".len();
+            rest = &rest[dk_idx..];
+            let derive_key_hex = extract_quoted(rest);
+            rest = &rest[derive_key_hex.len() + 2..];
+
             cases.push(Case {
                 input_len,
                 hash_hex,
                 keyed_hash_hex,
+                derive_key_hex,
             });
         }
         cases
@@ -717,7 +744,7 @@ mod tests {
     }
 
     #[test]
-    fn official_test_vectors_hash_and_keyed_hash() {
+    fn official_test_vectors_all_three_modes() {
         let cases = parse_cases(VECTORS_JSON);
         assert!(!cases.is_empty(), "no cases parsed");
         let mut checked = 0usize;
@@ -760,6 +787,31 @@ mod tests {
             assert_eq!(
                 kextended, expected_keyed,
                 "keyed finalize_xof extended output mismatch at input_len={}",
+                case.input_len
+            );
+
+            // --- derive_key, 32-byte default output ---
+            //
+            // The third public mode, and the one whose flags are easiest to
+            // get wrong while the other two still pass: it is a TWO-pass
+            // construction (DERIVE_KEY_CONTEXT over the context string,
+            // whose output becomes the key words for a DERIVE_KEY_MATERIAL
+            // pass over the material). A single-pass transcription, or one
+            // that swapped the two flags, would be invisible to every
+            // assertion above.
+            let expected_dk = hex_decode(&case.derive_key_hex);
+            let got_dk = derive_key(VECTORS_CONTEXT, &input);
+            assert_eq!(got_dk[..], expected_dk[..32], "derive_key() mismatch at input_len={}", case.input_len);
+
+            // --- derive_key, extended output via finalize_xof ---
+            let mut dhasher = Hasher::new_derive_key(VECTORS_CONTEXT);
+            dhasher.update(&input);
+            let mut dxof = dhasher.finalize_xof();
+            let mut dextended = std::vec![0u8; expected_dk.len()];
+            dxof.fill(&mut dextended);
+            assert_eq!(
+                dextended, expected_dk,
+                "derive_key finalize_xof extended output mismatch at input_len={}",
                 case.input_len
             );
 

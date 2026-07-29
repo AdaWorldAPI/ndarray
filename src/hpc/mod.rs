@@ -54,13 +54,17 @@ pub mod fingerprint;
 #[allow(missing_docs)]
 pub mod plane;
 
-/// In-tree BLAKE3 — see `.claude/knowledge/blake3-in-tree-measured.md`.
-///
-/// Fully documented, so deliberately NOT under the `#[allow(missing_docs)]`
-/// that guards `plane`. An earlier revision declared it on the line directly
-/// after that attribute, which silently re-targeted the attribute onto this
-/// module and left `plane` unguarded — seven CI jobs failed on `missing_docs`
-/// errors in a file the change never touched.
+// In-tree BLAKE3 — see `.claude/knowledge/blake3-in-tree-measured.md`.
+//
+// A plain `//` comment, not `///`: this is repo incident history, and an outer
+// doc comment here would be concatenated into the published rustdoc for the
+// module.
+//
+// The module is fully documented, so it is deliberately NOT under the
+// `#[allow(missing_docs)]` that guards `plane`. An earlier revision declared
+// it on the line directly after that attribute, which silently re-targeted the
+// attribute onto this module and left `plane` unguarded — seven CI jobs failed
+// on `missing_docs` errors in a file the change never touched.
 pub mod blake3;
 #[allow(missing_docs)]
 pub mod seal;

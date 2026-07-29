@@ -114,8 +114,15 @@ So the honest shape is:
 
 ## What this means for the swap
 
-**The cycle-cut is available now and is correct.** It removes a cargo cycle,
-the C build question, and 2,910 lines of second-surface `core::arch`.
+**The cycle-cut is available now and is correct.** It removes a cargo cycle
+and 2,910 lines of second-surface `core::arch`.
+
+It does **not** remove a C build — `Cargo.toml:213` already sets
+`default-features = false, features = ["pure"]`, which removed all C/ASM
+compilation back in #264. An earlier revision of this line credited the swap
+with that too; overstating the benefit matters here specifically, because
+what it is being weighed against is transcribing a cryptographic
+implementation.
 
 **It is not free**, and the previous framing ("removes things, needs no
 benchmark to justify") was true about what it *removes* and silent about what

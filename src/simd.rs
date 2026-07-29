@@ -768,7 +768,12 @@ mod tests {
 
         // BLAKE2b uses 32/24/16/63; 0 and 63 are the edges, and 64 must wrap
         // to the identity rather than shifting by the full width (UB on u64).
-        for n in [0u32, 1, 7, 16, 24, 31, 32, 63, 64] {
+        // 65/127/128/191 pin the documented mod-64 contract: an implementation
+        // that only special-cased the width would pass at 64 and fail here.
+        // The per-lane oracle is std's own `u64::rotate_left`, which is
+        // specified to take its count mod 64, so this asserts agreement with
+        // the language rather than with our own restatement of the rule.
+        for n in [0u32, 1, 7, 16, 24, 31, 32, 63, 64, 65, 127, 128, 191] {
             let l = a.rotate_left(n).to_array();
             let r = a.rotate_right(n).to_array();
             for i in 0..8 {

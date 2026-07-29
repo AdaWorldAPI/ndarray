@@ -520,8 +520,22 @@ fn shiftor_rotr_u64x8(v: U64x8, n: u32) -> U64x8 {
 }
 
 /// Explicit shift-or u64 rotate, runtime-variable amount, 8 lanes.
+///
+/// Normalizes `n` to `0..64` and short-circuits zero, so this public entry
+/// point agrees with `u64::rotate_right` at **every** `u32` input rather than
+/// only on `1..=63`. Without it, `n >= 64` reaches `a >> n` — a panic in
+/// debug, a wrapping shift in release, and a rotate in neither.
+///
+/// The normalization lives HERE and deliberately NOT in `shiftor_rotr_u64x8`:
+/// that inner body is the thing being measured, and adding a branch plus a
+/// modulo inside it would change the very codegen the oracle exists to
+/// observe. Guard at the boundary; measure the bare form.
 #[inline(never)]
 pub fn shiftor_rot_u64x8(v: U64x8, n: u32) -> U64x8 {
+    let n = n % 64;
+    if n == 0 {
+        return v;
+    }
     shiftor_rotr_u64x8(v, n)
 }
 

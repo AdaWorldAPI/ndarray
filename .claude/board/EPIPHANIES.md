@@ -65,14 +65,23 @@ caught it on #268. Treating `[[patch.unused]]` as a cycle report teaches the
 next reader to misdiagnose an ordinary stale patch — and undermines the very
 check this entry prescribes.
 
-The check stands, on its own evidence: run
-`cargo tree -p <our-root> -i <X>` **before** planning the work. An error
-there means no cycle and the work is unblocked; a hit means the edge must be
-cut first.
+The check stands, but ONLY in its positive form — and the wording here was
+itself an instance of the bug it warns about, corrected on #268:
 
 Consequence: **before planning any "make X consume our crate" work, run
-`cargo tree -p <our-root> -i <X>`.** An error there means no cycle and the
-work is unblocked; a hit means the edge must be cut first.
+`cargo tree -p <our-root> -i <X>`.**
+
+1. First confirm `<X>` is a real package in the selected graph (a typo, or a
+   package absent from that graph, produces the byte-identical error).
+2. A tree that resolves and shows the root package = the edge must be cut
+   first.
+3. A tree that resolves and does NOT show it = unblocked.
+4. **A package-ID error is inconclusive — never "no cycle".**
+
+An earlier draft of this very entry said "an error there means no cycle and
+the work is unblocked", one paragraph after explaining that the error is
+ambiguous. Read literally it would mark blocked work as unblocked on the
+strength of a typo.
 
 
 ## 2026-07-29 — BLAKE3 needs a method surface, not intrinsics (measured)
