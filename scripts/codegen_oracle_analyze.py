@@ -407,9 +407,19 @@ def main():
         print("ERROR: one or more probes were not found in the emitted assembly.")
     if exit_mask == 0:
         print("simd-codegen-oracle: ALL PROBES MATCH BASELINE EXPECTATIONS")
-    else:
-        print(f"simd-codegen-oracle: FAILURES (exit bitmask 0x{exit_mask:x}) -- see FAIL rows above")
-    return exit_mask
+        return 0
+
+    # The bitmask is DIAGNOSTIC OUTPUT ONLY, never the exit status.
+    #
+    # Unix truncates an exit status to its low 8 bits. Returning the raw
+    # mask means a failure confined to probe index >= 8 exits 0x100 / 0x200
+    # / ..., which the shell observes as 0: the script prints "FAILURES"
+    # and reports success. With probes sorted alphabetically that silently
+    # swallowed regressions in rot_u64x4, rot_u64x8, saturating_abs_i8x32,
+    # serial_dependent_chain and widening_u16_to_f32 -- including both
+    # u64-rotate probes, the finding this tool exists to protect.
+    print(f"simd-codegen-oracle: FAILURES (probe bitmask 0x{exit_mask:x}) -- see FAIL rows above")
+    return 1
 
 
 if __name__ == "__main__":

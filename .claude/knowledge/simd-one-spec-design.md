@@ -57,7 +57,8 @@ simd_type! {
 
     // Lane-wise ops. Emitted as the scalar loop form for EVERY backend.
     // LLVM vectorizes them under the pinned target-cpu baseline; the
-    // codegen oracle proves it, per target, in CI.
+    // an on-demand codegen probe proves it, per target, when the question
+    // is actually open. NOT a standing CI job — see "On tooling" below.
     lanewise: [
         add(wrapping), sub(wrapping), mul(wrapping),
         and, or, xor, not,
@@ -133,8 +134,9 @@ shift-or composition written explicitly.
 
 ## Staged migration (not one PR)
 
-1. **Oracle first.** `crates/simd-codegen-oracle` + CI job. Without it the
-   entry criterion is unenforceable and this design is just a refactor.
+1. **Answer the codegen question once, in the design.** Run
+   `scripts/codegen-oracle.sh` for the type family under consideration and
+   record the result. This is a design activity, not a standing check.
 2. **Characterize.** Run the oracle across x86-64-v3 / v4 / aarch64 / wasm32.
    Produce the per-target table of what vectorizes and what doesn't. That
    table *is* the specification of which intrinsic overrides are legitimate.
@@ -169,6 +171,28 @@ shift-or composition written explicitly.
 
 - Adding a lane type: one declaration instead of a five-file change.
 - Ten currently-unlowered AVX2 int types: free.
-- The "is this fast enough?" argument: replaced by a CI check.
+- The "is this fast enough?" argument: answered by a twenty-minute
+  measurement during design, instead of debated.
+
+## On tooling — why this is NOT a CI job
+
+`crates/simd-codegen-oracle` is an **on-demand instrument**, deliberately
+not wired into CI (operator ruling, 2026-07-29). A standing job that parses
+assembly to catch a designer skipping the measurement is machinery guarding
+against a lapse the design step should prevent — it institutionalizes the
+lapse instead of fixing it, and it carries permanent cost: an asm parser, a
+per-target baseline, and brittleness that already bit once (the job's first
+run failed because it inherited its baseline from the ambient environment
+rather than declaring it).
+
+The question "does this vectorize?" is answered **once, during design**, and
+the answer goes in a doc. It is not re-answered on every commit.
+
+Run it when a codegen question is genuinely open:
+
+```sh
+sh scripts/codegen-oracle.sh                       # host, x86-64-v3 baseline
+sh scripts/codegen-oracle.sh aarch64-unknown-linux-gnu
+```
 - ~13k LoC of hand-maintained backend code: substantially reduced, with the
   remainder being exactly the intrinsics that earn their place.
