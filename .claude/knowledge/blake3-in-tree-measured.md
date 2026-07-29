@@ -106,7 +106,7 @@ the fast path turns on — 63/64/65 (the `> BLOCK_LEN` guard itself),
 
 So the honest shape is:
 
-```
+```text
 3a  in-tree core, correct          DONE, costs 1.3x typical / 5x bulk
 3b  hash_many on U32x16            closes the bulk gap
 3c  SIMD single-compress (U32x4)   closes the small-input gap
@@ -138,9 +138,16 @@ tag, and it is the operator's.
   `portable.rs` + `lib.rs`. Upstream ships the reference implementation as
   the readable, algorithmically-identical serial version, which is what
   "take the serial branch everywhere" reduces to. Correctness is proven by
-  the vectors. Part of the 1.3× is likely this choice rather than the SIMD
-  gap — `portable.rs` avoids a per-block staging copy — and that has **not**
-  been separated out.
+  the vectors.
+
+  An earlier revision of this document guessed that "part of the 1.3× is
+  likely this choice rather than the SIMD gap — `portable.rs` avoids a
+  per-block staging copy." **That guess is now separated out and was wrong
+  for the small-input case.** Removing the staging copy (the `array_chunks`
+  fast path above) bought 21 % at 2 KB and **nothing at ≤ 1 block**, because
+  inputs that small never reach the fast path. So the small-input 1.3× is not
+  the staging copy — it is the crate's SIMD single-compress, as originally
+  suspected.
 - **Restored:** `Hash::eq` is **constant-time**. Upstream uses the
   `constant_time_eq` crate; the transcription initially used a plain `==`,
   which leaks match-prefix length through timing when a BLAKE3 output is used
@@ -153,8 +160,9 @@ tag, and it is the operator's.
 
 - Not that the in-tree version should replace the crate. That is the open
   decision this document exists to inform.
-- Not that 1.3× is attributable to any single cause. The reference-impl
-  choice and the absent single-compress SIMD are confounded and were not
-  separated.
+- Not that the remaining 1.3× has been fully attributed. The staging-copy
+  term IS now separated (measured at 21 % of the 2 KB cost, 0 % at ≤ 1
+  block); what is left at small inputs is *presumed* to be the crate's SIMD
+  single-compress, and that has not been isolated by building one.
 - Not that the bench is rigorous. It is a warm-loop wall-clock A/B, adequate
   for a 1.3× vs 5× distinction and not for anything finer.
