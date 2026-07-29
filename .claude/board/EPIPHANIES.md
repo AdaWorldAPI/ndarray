@@ -1,5 +1,51 @@
 # ndarray — Epiphanies (append-only)
 
+## 2026-07-29 — Which PACKAGE pulls a dep decides whether it can consume you
+**Status:** FINDING
+**Scope:** @simd-savant @truth-architect domain:build-graph
+**Cross-ref:** PR #267, `.claude/knowledge/the-simd-ladder.md`
+
+The ladder's goal is that every dependency carrying its own SIMD instead
+consumes `ndarray::simd`. Whether a given dependency *can* is not a property
+of the dependency, and not of "the workspace" — it is decided by **which
+package in the workspace pulls it**:
+
+| dependency | entry point | can consume `ndarray::simd`? |
+|---|---|---|
+| `chacha20` | `crates/encryption` → … → `chacha20` | **yes** |
+| `curve25519-dalek` | `crates/encryption` → `ed25519-dalek` → … | **yes** |
+| `blake3` | **root `ndarray`** (`std` feature) | **no — cycle** |
+
+Measured, not inferred:
+
+```console
+$ cargo tree -p ndarray -i curve25519-dalek
+error: package ID specification `curve25519-dalek` did not match any packages
+```
+
+Only blake3 is pulled by the ROOT package, so only blake3 closes a loop when
+it depends back on ndarray. The other two ride a shape that already works in
+this repo today — `crates/encryption` → `chacha20` → `ndarray(root)` is
+exactly it.
+
+**Why this is worth recording rather than re-derived.** "ndarray depends on
+X, so X can't depend on ndarray" is the intuitive rule and it is wrong at
+workspace granularity. A sub-crate is a different package; the cycle is
+per-package, not per-workspace. Reasoning at workspace granularity says all
+three are blocked, which would have parked two rungs that have no blocker at
+all.
+
+**And the failure is silent.** Cargo does not error on the blake3 case — it
+names the chain, declines to apply the patch, and falls back to the registry
+crate with `[[patch.unused]]`. A port done anyway compiles clean and has zero
+effect. That is the same silent-no-op class as the chacha20 patch, which is
+now two independent instances of the same shape in one dependency graph.
+
+Consequence: **before planning any "make X consume our crate" work, run
+`cargo tree -p <our-root> -i <X>`.** An error there means no cycle and the
+work is unblocked; a hit means the edge must be cut first.
+
+
 ## 2026-07-29 — BLAKE3 needs a method surface, not intrinsics (measured)
 **Status:** FINDING
 **Scope:** @simd-savant domain:codec
