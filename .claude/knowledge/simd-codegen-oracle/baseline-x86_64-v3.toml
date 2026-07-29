@@ -168,3 +168,25 @@ note = "MEASURED FULLY PACKED, ZERO SPILL. Observed 98 packed / 0 scalar-lane-ar
 [probe.arx_lane512_x8]
 expect = "unknown"
 note = "MEASURED FULLY PACKED. Observed 81 packed / 0 scalar-lane-arith / 0 loop-control / 0 memory: 16 vpaddd + 16 vpxor + 16 vpshufb + 33 vmovdqa. Bit-for-bit identical output to arx_node4096 (asserted in the driver), and identical arithmetic in the emitted code -- so the node-wide unit costs nothing structurally over eight applications of the 512-bit lane."
+
+# Group C, continued -- the u64 rotate written as an EXPLICIT shift-or rather
+# than as `u64::rotate_right`. Group C above tested one SOURCE FORM; this tests
+# whether LLVM declines the rotate IDIOM at 64-bit width or declines the
+# OPERATION. Decides whether ladder rung 6 needs an intrinsic override.
+#
+# ANSWER: it declines the OPERATION. Both spellings come back 0 packed, for
+# runtime-variable AND compile-time-constant amounts. A third probe
+# (blake2b_g_shiftor_u64x8) was written and removed: LLVM FOLDED it into
+# blake2b_g_u64x8 -- zero mentions of the shiftor symbol in the emitted asm,
+# two call sites on the survivor -- proving the two spellings are byte-identical
+# rather than merely both-scalar. A probe the compiler cannot distinguish from
+# its own control measures nothing.
+
+[probe.shiftor_rot_u64x8]
+expect = "unknown"
+note = "MEASURED SCALAR -- 0 packed / 8 scalar-lane-arith / 19 memory, i.e. indistinguishable from rot_u64x8. Writing the rotate as an explicit (x >> n) | (x << (64-n)) does NOT persuade LLVM to vectorize it, so the refusal is about the 64-bit OPERATION and not about the rotate idiom. Driver asserts equality with u64::rotate_right, so this is the same function in a different spelling."
+
+[probe.shiftor_rot_const_u64x8]
+expect = "unknown"
+note = "MEASURED SCALAR -- 0 packed / 8 scalar-lane-arith / 8 memory, with BLAKE2b's COMPILE-TIME-CONSTANT 32/24/16/63. This is the sharper half: at u32 width a constant byte-granular amount folds to vpshufb and a constant bit-granular one folds to shift-or, both packed. At u64 width neither happens, for either kind of constant. A third independent confirmation that the u64 lane is the crate's one earned intrinsic override."
+

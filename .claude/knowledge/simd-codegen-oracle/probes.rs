@@ -493,6 +493,51 @@ pub fn transpose_16x16_composed(m: [U32x16; 16]) -> [U32x16; 16] {
     m
 }
 
+/// The u64 rotate written as an EXPLICIT shift-or, not as `u64::rotate_right`.
+///
+/// Group C measured that `u64::rotate_right(n)` lowers to a scalar `rorq` per
+/// lane — 0 packed. But that tested one SOURCE FORM. LLVM already vectorizes
+/// u32's `rotate_left(12)`/`(7)` as `vpslld`+`vpsrld`+`vpor`, and AVX2 has the
+/// 64-bit equivalents `vpsllq`/`vpsrlq`. So the open question is whether LLVM
+/// declines the *rotate idiom* at 64-bit width, or declines the *operation*.
+///
+/// If the explicit form vectorizes, rung 6 of the ladder needs no intrinsic
+/// override at all — just a differently-spelled body, exactly as rung 2 needed
+/// only index loops. If it does not, rung 6 is the crate's first genuinely
+/// earned `unsafe` intrinsic.
+///
+/// `n` is constrained to `1..=63` by the caller: `x >> 64` is UB on `u64`, so
+/// the zero case must be excluded rather than masked, matching how
+/// `simd_nightly`'s `U32x16::rotate_left` guards `n % 32 == 0`.
+#[inline(always)]
+fn shiftor_rotr_u64x8(v: U64x8, n: u32) -> U64x8 {
+    let a = v.to_array();
+    let mut out = [0u64; 8];
+    for i in 0..8 {
+        out[i] = (a[i] >> n) | (a[i] << (64 - n));
+    }
+    U64x8::from_array(out)
+}
+
+/// Explicit shift-or u64 rotate, runtime-variable amount, 8 lanes.
+#[inline(never)]
+pub fn shiftor_rot_u64x8(v: U64x8, n: u32) -> U64x8 {
+    shiftor_rotr_u64x8(v, n)
+}
+
+/// Explicit shift-or u64 rotate with COMPILE-TIME-CONSTANT amounts — BLAKE2b's
+/// 32/24/16/63. Separated from the runtime-variable probe above because the
+/// u32 lane vectorizes constants and variables differently (`vpshufb` for
+/// byte-granular constants, shift-or otherwise), so the two cases must be
+/// distinguished rather than averaged.
+#[inline(never)]
+pub fn shiftor_rot_const_u64x8(v: U64x8) -> U64x8 {
+    let a = shiftor_rotr_u64x8(v, 32);
+    let b = shiftor_rotr_u64x8(a, 24);
+    let c = shiftor_rotr_u64x8(b, 16);
+    shiftor_rotr_u64x8(c, 63)
+}
+
 // ============================================================================
 // Group E — UNKNOWN. Is 4096 bit / 512 byte a viable DEFAULT lane?
 // ============================================================================
@@ -650,6 +695,31 @@ fn main() {
         black_box(U64x8::from_array(std::array::from_fn(|_| rng.next()))),
     );
     acc ^= ga.reduce_sum() ^ gb.reduce_sum() ^ gc.reduce_sum() ^ gd.reduce_sum();
+
+    // ---- Group C, explicit shift-or form ----
+    let sv = U64x8::from_array(std::array::from_fn(|_| rng.next()));
+    let sn = 1 + (rng.next() % 63) as u32;
+    // The explicit form must agree with `u64::rotate_right` -- same function,
+    // different spelling. A codegen probe that measured a DIFFERENT function
+    // would be worthless.
+    let want: [u64; 8] = {
+        let a = sv.to_array();
+        std::array::from_fn(|i| a[i].rotate_right(sn))
+    };
+    let got = shiftor_rot_u64x8(black_box(sv), black_box(sn));
+    assert_eq!(got.to_array(), want, "shift-or rotate != u64::rotate_right");
+    acc ^= got.reduce_sum();
+
+    acc ^= shiftor_rot_const_u64x8(black_box(sv)).reduce_sum();
+
+    // NOTE: a `blake2b_g_shiftor_u64x8` probe was written here and REMOVED,
+    // because LLVM folded it into `blake2b_g_u64x8` -- identical machine code,
+    // zero mentions of the shiftor symbol in the emitted asm, and two call
+    // sites pointing at the surviving one. That fold is the result: the
+    // explicit shift-or spelling and `u64::rotate_right` are not merely both
+    // scalar, they are BYTE-IDENTICAL. A probe the compiler cannot tell apart
+    // from its own control measures nothing, so it is gone rather than kept
+    // as a permanently-failing row.
 
     // ---- Group D ----
     let mut rand_u32x16 = || U32x16::from_array(std::array::from_fn(|_| rng.next() as u32));
