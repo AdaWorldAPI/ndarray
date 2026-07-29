@@ -214,6 +214,38 @@ impl ChunkState {
     }
 
     fn update(&mut self, mut input: &[u8]) {
+        // Fast path — compress whole blocks straight out of `input`.
+        //
+        // The staging path below copies every byte twice: once into
+        // `self.block`, then again into `block_words`. For a full block that
+        // first copy is pure overhead. `array_chunks::<64>` walks the input as
+        // `&[u8; 64]` with no copy at all (it is `as_chunks`, a pointer cast),
+        // so a full block goes input -> words directly.
+        //
+        // The guard is `input.len() > BLOCK_LEN`, strictly greater: BLAKE3
+        // must not compress a chunk's FINAL block until it knows whether more
+        // input follows, because that block carries CHUNK_END. Holding back
+        // the last <= 64 bytes preserves that, and the official vectors are
+        // the gate — the 0/1/64/65/1024/1025-byte cases all cross this
+        // boundary.
+        if self.block_len == 0 && input.len() > BLOCK_LEN {
+            let full = (input.len() - 1) / BLOCK_LEN; // never the last block
+            let (head, tail) = input.split_at(full * BLOCK_LEN);
+            for block in crate::simd_ops::array_chunks::<u8, BLOCK_LEN>(head) {
+                let mut block_words = [0u32; 16];
+                words_from_little_endian_bytes(block, &mut block_words);
+                self.chaining_value = first_8_words(compress(
+                    &self.chaining_value,
+                    &block_words,
+                    self.chunk_counter,
+                    BLOCK_LEN as u32,
+                    self.flags | self.start_flag(),
+                ));
+                self.blocks_compressed += 1;
+            }
+            input = tail;
+        }
+
         while !input.is_empty() {
             // If the block buffer is full, compress it and clear it. More
             // input is coming, so this compression is not CHUNK_END.

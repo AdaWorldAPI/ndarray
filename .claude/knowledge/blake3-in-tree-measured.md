@@ -53,10 +53,44 @@ different flags, so it came free.
 
 | input | in-tree | `blake3` crate | ratio |
 |---|---|---|---|
-| 16 B (a word) | 137 ns | 100 ns | **1.34×** |
-| 256 B (text) | 445 ns | 350 ns | **1.28×** |
-| 2 KB (`VSA_BYTES`) | 4.3 µs | 2.7 µs | **1.34–1.60×** |
-| 64 KB (bulk) | 115 µs | 23 µs | **4.6–5.1×** |
+| 16 B (a word) | 134 ns | 100 ns | **1.34–1.39×** |
+| 256 B (text) | 437 ns | 350 ns | **1.25–1.29×** |
+| 2 KB (`VSA_BYTES`) | 3.4 µs | 2.6 µs | **1.30×** |
+| 64 KB (bulk) | 109 µs | 23 µs | **4.7–4.9×** |
+
+### The `array_chunks` fast path — operator's lead, measured
+
+Hypothesis (operator, citing the blasgraph JIT-gap precedent): the gap might
+be closed by proper use of the existing slice primitives rather than by new
+SIMD. The staging path copies every byte **twice** — input → `self.block` →
+`block_words` — and for a full block the first copy is pure overhead.
+
+Implemented as a `crate::simd_ops::array_chunks::<u8, 64>` fast path in
+`ChunkState::update`, guarded `input.len() > BLOCK_LEN` so a chunk's final
+block is never compressed early (it carries `CHUNK_END`). **Measured, three
+runs:**
+
+| input | before | after | change |
+|---|---|---|---|
+| 16 B | 137 ns | 134 ns | — (never reaches the fast path) |
+| 256 B | 445 ns | 437 ns | — |
+| **2 KB** | **4322 ns** | **3421 ns** | **−21 %** |
+| 64 KB | 114.8 µs | 109.0 µs | −5 % |
+
+**Verdict: real, and bounded.** The double copy was costing ~21 % at the mid
+sizes — not nothing, and free to remove. But it does **not** replace the two
+structural gaps: inputs ≤ 1 block never reach the fast path at all, and at
+64 KB the copy is noise beside the absent `hash_many`. The ratio at 2 KB
+moved 1.34–1.60× → a stable 1.30×; the small-input 1.3× and the bulk 4.8×
+both stand.
+
+So the answer to "does it just need proper `array_chunks` use?" is **partly,
+and the part it fixes is now fixed.** Rungs 3b (`hash_many`) and 3c (SIMD
+single-compress) remain the load-bearing ones.
+
+Correctness is gated, not assumed: the official vectors cover every boundary
+the fast path turns on — 63/64/65 (the `> BLOCK_LEN` guard itself),
+127/128/129, and 1023/1024/1025 (the chunk boundary).
 
 **The two gaps have different causes, and only one is about `hash_many`.**
 
