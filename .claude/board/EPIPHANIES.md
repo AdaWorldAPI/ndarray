@@ -35,11 +35,24 @@ per-package, not per-workspace. Reasoning at workspace granularity says all
 three are blocked, which would have parked two rungs that have no blocker at
 all.
 
-**And the failure is silent.** Cargo does not error on the blake3 case — it
-names the chain, declines to apply the patch, and falls back to the registry
-crate with `[[patch.unused]]`. A port done anyway compiles clean and has zero
-effect. That is the same silent-no-op class as the chacha20 patch, which is
-now two independent instances of the same shape in one dependency graph.
+**On the diagnostic — be precise, because two different things were
+conflated here.** Cargo *does* report the cycle when the patched package
+would be selected; `cargo update -p blake3` printed the chain
+(`blake3 ... satisfies dependency of ndarray ... satisfies path dependency
+ndarray of blake3`). What is NOT a cycle diagnostic is `[[patch.unused]]`.
+That only says the patch was not selected, and the usual causes are a version
+that does not satisfy the requirement or a stale lockfile.
+
+An earlier version of this entry read the unused patch as the cycle's
+signature and called the failure "silent." Both halves were wrong, and codex
+caught it on #268. Treating `[[patch.unused]]` as a cycle report teaches the
+next reader to misdiagnose an ordinary stale patch — and undermines the very
+check this entry prescribes.
+
+The check stands, on its own evidence: run
+`cargo tree -p <our-root> -i <X>` **before** planning the work. An error
+there means no cycle and the work is unblocked; a hit means the edge must be
+cut first.
 
 Consequence: **before planning any "make X consume our crate" work, run
 `cargo tree -p <our-root> -i <X>`.** An error there means no cycle and the

@@ -52,6 +52,7 @@ pub mod fingerprint;
 // substrate goes through the `simd_{type}.rs` family per the W1a layering
 // rule (carriers in simd_soa, slicing/ops in simd_ops).
 #[allow(missing_docs)]
+pub mod blake3;
 pub mod plane;
 #[allow(missing_docs)]
 pub mod seal;

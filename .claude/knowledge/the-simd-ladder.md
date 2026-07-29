@@ -41,10 +41,15 @@ error: package ID specification `curve25519-dalek` did not match any packages
 ```
 
 **Only blake3 has a cycle**, because only blake3 is pulled by the *root*
-package. Cargo names it explicitly and then silently falls back to the
-registry crate with `[[patch.unused]]`, so a naive port compiles and has zero
-effect — the same silent-no-op class as the chacha20 patch (see
-`chacha20-vendoring-blast-radius.md`).
+package. `cargo update -p blake3` reports it by naming the chain — the patched
+`blake3` satisfies ndarray's dependency, and ndarray satisfies blake3's path
+dependency.
+
+Do **not** read `[[patch.unused]]` as that diagnostic. It only means the patch
+was not selected, and the ordinary causes are a version that does not satisfy
+the requirement or a stale lockfile. The two were conflated in an earlier
+draft (codex, #268); treating the unused patch as a cycle signature teaches
+the next reader to misdiagnose a plain stale patch.
 
 The other two ride a pattern that **already works in this repo today**:
 `crates/encryption` → `chacha20` → `ndarray(root)` is exactly that shape.
@@ -83,19 +88,42 @@ no SIMD at all.
 That splits the rung:
 
 - **3a — cut the cycle.** Transcribe portable BLAKE3 into ndarray, drop the
-  external crate. Removes the cycle, the C question, and 2,910 lines of
-  second-surface `core::arch` in one move. Verified against the official
-  `test_vectors.json`. *No SIMD involved — correctness only.*
+  external crate. Removes the cycle and ~2,910 lines of second-surface
+  `core::arch`. Verified against the official `test_vectors.json`. *No SIMD
+  involved — correctness only.*
+
+  **It does NOT remove a C build.** `Cargo.toml:213` already sets
+  `default-features = false, features = ["pure"]`, which removed all C/ASM
+  compilation in #264 — 33 `.o` objects and `libblake3_avx512_assembly.a`,
+  measured at the time. Earlier wording here credited 3a with removing a C
+  build that a previous PR had already removed; codex caught it on #268.
+  Overstating the benefit matters especially here, because the thing being
+  weighed against it is transcribing a cryptographic implementation.
 - **3b — throughput, optional.** Port `hash_many` onto the rung-2 shuffle
   surface for multi-chunk inputs. **This is where a benchmark matters**, and
   it is not on the critical path.
 
-### 4. chacha20 — backend exists, effectively unreachable
+### 4. chacha20 — the wasm arm is live and CI-guarded; the AVX-512 arm is not
 
-`vendor/chacha20` already has an `ndarray_simd` backend. Measured: no image
-and no CI job compiles it (`chacha20-vendoring-blast-radius.md`). And
-upstream 0.10.1 now ships its own `avx512.rs` in the same niche, unmeasured
-against ours. **Blocked on a benchmark, then on the fork-vs-vendored ruling.**
+`vendor/chacha20`'s `ndarray_simd` backend has two arms, and they are in
+very different states:
+
+- **wasm32 + `simd128` — compiled and guarded.** `ci.yaml:141-142` builds
+  `vendor/chacha20` for `wasm32-unknown-unknown` with
+  `RUSTFLAGS="-C target-feature=+simd128"`, which selects `ndarray_simd`.
+  The job comment calls it "the wasm matryoshka" guard, and it sits directly
+  after the node parity step that proves the same `U32x16` lane bit-exact.
+- **x86_64 + `avx512f` — compiled by nothing.** No image and no CI job
+  (`chacha20-vendoring-blast-radius.md`).
+
+An earlier version of this section said "no CI job compiles it" without
+qualification. That was **false** — caught by codex on #268 — and is a fourth
+instance of the scope-quantifier error this repo keeps hitting: the x86 path
+was checked and the conclusion generalized to all targets.
+
+Upstream 0.10.1 now ships its own `avx512.rs` in the same niche, unmeasured
+against ours. **The AVX-512 arm is blocked on a benchmark, then on the
+fork-vs-vendored ruling. The wasm arm is already working.**
 
 ### 5. curve25519-dalek — the largest untouched surface
 
@@ -127,15 +155,22 @@ argon2 needs BLAKE2b. Nothing is built on it.
 
 ## Order
 
-3a is the only rung that unblocks anything else, and it needs no measurement
-to justify — it removes a dependency edge, a C build, and a second SIMD
-surface regardless of throughput. Everything after it is independent:
+**There is almost no ordering.** An earlier version drew arrows from 3a to
+everything, which contradicted this section's own next sentence and would
+have serialized independent work; codex caught it on #268.
+
+The only real dependency is 3a → 3b, because `hash_many` needs an in-tree
+BLAKE3 to live in. Everything else is genuinely parallel: chacha20's backend
+already depends on `ndarray`, dalek has no cycle (established above), and the
+u64 lane is implemented *inside* `ndarray`. None of the three is unblocked by
+anything 3a does.
 
 ```
-3a (cut the cycle)  ──> 3b (hash_many throughput)   [needs a bench]
-                    ──> 4  (chacha20)               [needs a bench + a ruling]
-                    ──> 5  (dalek)                  [no blocker but appetite]
-                    ──> 6  (u64 ARX / argon2)       [no blocker but appetite]
+3a (cut the cycle) ──> 3b (hash_many throughput)   [needs a bench]
+
+4  (chacha20 AVX-512 arm)   [independent — needs a bench + a ruling]
+5  (dalek)                  [independent — no blocker but appetite]
+6  (u64 ARX / argon2)       [independent — no blocker but appetite]
 ```
 
 ## What is NOT claimed here

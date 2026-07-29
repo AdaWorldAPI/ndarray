@@ -157,9 +157,18 @@ SIGILL on a runner without AVX-512 silicon.
 `cargo check --target=x86_64-unknown-linux-gnu -p ndarray --features
 approx,serde,rayon` (the second adding `hpc-extras`) — package-scoped to
 `ndarray`, so `crates/encryption` and therefore `vendor/chacha20` are outside
-it. **No CI job compiles the chacha20 AVX-512 backend**, and none of the
-coverage claimed here extends to it. Closing that gap would take an explicit
-step such as:
+it. **No CI job compiles the chacha20 AVX-512 backend.**
+
+**Correction (codex, #268): the wasm arm IS covered, and an earlier version of
+this document said otherwise.** `ci.yaml:141-142`, inside the `wasm_simd` job,
+runs `RUSTFLAGS="-C target-feature=+simd128" cargo build --manifest-path
+vendor/chacha20/Cargo.toml --target wasm32-unknown-unknown --lib` — which
+selects `backends::ndarray_simd` through the cfg's wasm arm, and whose own
+comment calls it "the wasm matryoshka" guard. So the accurate statement is
+**arm-specific, not backend-wide**: wasm32+simd128 is compiled and guarded in
+CI; the x86_64 avx512f arm is compiled by nothing.
+
+Closing the AVX-512 gap would take an explicit step such as:
 
 ```console
 $ CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-Ctarget-cpu=x86-64-v4" \
