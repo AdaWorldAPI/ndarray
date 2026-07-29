@@ -73,24 +73,55 @@ $ rustc --print cfg -Ctarget-cpu=x86-64-v4 | grep avx512f
 target_feature="avx512f"
 ```
 
-| build | target-cpu | `avx512f` | backend compiled |
-|---|---|---|---|
-| ndarray, default | `x86-64-v3` (`.cargo/config.toml`) | absent | RustCrypto soft/avx2/sse2 |
-| ndarray, `--config .cargo/config-avx512.toml` | `x86-64-v4` | present | **`ndarray_simd`** |
-| MedCare-rs, default | none — no `.cargo/config.toml` at all | absent | RustCrypto soft/avx2/sse2 |
-| wasm32 + `simd128` | — | n/a | **`ndarray_simd`** |
-| the five unpatched repos | — | — | not present in the source they link |
+### The three tiers, and which one ships
 
-**No default build of any repo in the workspace runs `ndarray_simd`.** Two
-opt-in configurations do: an explicitly-selected AVX-512 x86_64 build, and a
-wasm32 build with `simd128`.
+The repo has a deliberate three-tier build story. Reading only
+`.cargo/config.toml` — as an earlier version of this audit did — sees one
+third of it and draws the wrong conclusion.
 
-This is not a defect — the fallthrough is correct and the comments in
-MedCare-rs's manifest describe it accurately ("non-avx512 builds fall through
-to RustCrypto's own backends"). It is a scope fact that keeps being stated
-one size too large.
+| tier | where | target-cpu | `avx512f` | chacha20 backend |
+|---|---|---|---|---|
+| **CI** | `.github/workflows/ci.yaml` | *none* in global env | absent | RustCrypto soft/avx2/sse2 |
+| **`Dockerfile`** | `RUSTFLAGS="-C target-cpu=x86-64-v3"` | v3 | absent | RustCrypto soft/avx2/sse2 |
+| **`Dockerfile.avx512`** | `RUSTFLAGS="-C target-cpu=x86-64-v4"` | v4 | **present** | **`ndarray_simd`** |
 
-## One manifest comment overstates it
+Plus two developer paths: `cargo build` picks up `.cargo/config.toml` (v3),
+and `--config .cargo/config-avx512.toml` pins `sapphirerapids` (a superset of
+v4). And a wasm32 + `simd128` build reaches `ndarray_simd` through the other
+arm of the cfg.
+
+**So `ndarray_simd` is not dead code — `Dockerfile.avx512` is the tier that
+compiles it.** The earlier headline here ("no default build of any repo runs
+it") was true of `cargo build` and false as a statement about what ships,
+which is the only reading that matters. Correcting it, with thanks to the
+operator: *cargo is CI is github needs V3; dockerfile is V4.*
+
+Two things this does **not** change:
+
+- The **patch-reach** table above stands. `Dockerfile.avx512` builds ndarray,
+  where the patch applies. The five repos that declare no patch still link
+  the registry crate at every tier, v4 included.
+- The gate is **compile-time**, not runtime. `Dockerfile`'s own comment notes
+  that ndarray's `simd.rs` detects AVX-512 at run time via `LazyLock<Tier>`
+  even in a v3 build — but `vendor/chacha20/src/backends.rs` keys on
+  `#[cfg(target_feature = "avx512f")]`, which is resolved by the compiler and
+  gets no such fallback. A v3 image running on AVX-512 silicon uses
+  RustCrypto's backends for the keystream while ndarray's own kernels
+  upgrade themselves. That asymmetry is real and worth knowing before
+  reasoning about a deployed binary.
+
+### The v4 arm is covered in CI, per-job
+
+CI's global env carries no `target-cpu`, and `ci.yaml:17-22` records why:
+it collides with the `cross_test` matrix (`i686` is 32-bit, `s390x` is not
+x86 at all) and contradicts the one-binary + runtime-dispatch design intent.
+Jobs needing a higher tier opt in individually — `tier4-avx512-check` sets
+`CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings
+-Ctarget-cpu=x86-64-v4"`, deliberately the per-target form rather than plain
+`RUSTFLAGS`, because `RUSTFLAGS` also applies to host build scripts and those
+SIGILL on a runner without AVX-512 silicon.
+
+## The manifest comment, re-read
 
 `Cargo.toml:481-482` reads:
 
@@ -98,10 +129,12 @@ one size too large.
 > keystream … **on any x86_64+avx512f build (the workspace's
 > `target-cpu=x86-64-v4`)**.
 
-The workspace's pinned target-cpu is **v3**, in `.cargo/config.toml`. `v4`
-is the opt-in `.cargo/config-avx512.toml`. The conditional half of the
-sentence is right; the parenthetical asserts the default build satisfies it,
-and it does not.
+An earlier version of this audit filed that parenthetical as a factual error,
+on the grounds that the workspace pins v3. **That was half wrong and the
+filing is withdrawn.** `Dockerfile.avx512` is a v4 build of this workspace,
+so "the workspace's `target-cpu=x86-64-v4`" names a real tier — it just is
+not the tier `cargo build` selects. The sentence is imprecise about *which*
+build, not false about whether one exists.
 
 **Not edited here.** Manifest string changes in this repo need an operator
 ruling; the finding is recorded instead of applied.
@@ -161,21 +194,27 @@ Three consequences worth stating plainly:
 
 ## What is NOT claimed here
 
-- Not that the vendored backend is wrong. It is untested by default builds,
-  which is a different statement.
-- Not that the patch should be removed. That is a decision, and it depends on
-  (3) above plus the AVX-512 deployment question, neither of which this audit
-  settles.
+- Not that the vendored backend is wrong, or unused. `Dockerfile.avx512`
+  compiles it; it is the shipped path on v4 silicon.
+- Not that the patch should be removed. That depends on (3) above, which is a
+  measurement nobody has taken.
 - Not that MedCare-rs's wiring is incorrect. It is the one consumer that
   declared its patch deliberately and documented the fallthrough honestly.
 
-## Open, for an operator ruling
+## Still open
 
-1. **Point `vendor/chacha20` at the fork, or keep the copy?** The P0 rule
-   says depend on the AdaWorldAPI fork. Today the tree is neither — a copy of
+1. **Point `vendor/chacha20` at the fork, or keep the copy?** The P0 rule says
+   depend on the AdaWorldAPI fork. Today the tree is neither — a hand copy of
    a version the fork does not carry, with `repository` rewritten to point at
-   ndarray itself.
-2. **Does `ndarray_simd` still beat upstream's own `avx512.rs`?** Answerable
-   with the oracle. Unmeasured today, on both sides.
-3. **The v3/v4 manifest comment** — correct in place, or leave the record and
-   annotate?
+   ndarray itself. The fork is provably a bare upstream mirror (same head sha,
+   same `chacha20/` tree hash), so "track the fork" currently means "track
+   upstream 0.10.1", which crosses a `cipher` major.
+2. **Does `ndarray_simd` still beat upstream's own `avx512.rs`?** This is the
+   load-bearing question now that upstream ships an AVX-512 backend of its
+   own, and it is the one that decides (1). Unmeasured on both sides. The
+   oracle answers the codegen half; the throughput half needs a bench.
+3. **Should `vendor/chacha20`'s cfg gate get a runtime arm?** Today it is
+   compile-time only, so a v3 image on AVX-512 silicon runs RustCrypto's
+   backends for the keystream while ndarray's own kernels upgrade via
+   `LazyLock<Tier>`. Whether that asymmetry is worth closing is a design call,
+   not a bug report — and it only matters if (2) says the ndarray lane wins.
