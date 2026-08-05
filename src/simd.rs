@@ -623,6 +623,15 @@ pub use crate::hpc::cam_pq::{kmeans, squared_l2};
 
 pub use crate::hpc::heel_f64x8::cosine_f32_to_f64_simd;
 
+// The Belichtungsmesser — banded multi-resolution cascade search
+// (`Cascade::expose(distance) → Band`, `recalibrate(ShiftAlert)`,
+// `PackedDatabase`, `adaptive_resolution`). Trampolined as a whole module so
+// consumers under the "all SIMD from `ndarray::simd`" invariant reach the
+// exposure-meter surface as `ndarray::simd::cascade::*` without dipping into
+// `crate::hpc` directly. Module alias, not an item list — new cascade items
+// arrive here without a re-export edit. Same `std` gate as this module.
+pub use crate::hpc::cascade;
+
 // Dispatched integer matmul — the polyfill entry for batched int8 scoring.
 // `matmul_i8_to_i32` runtime-selects AMX `TDPBUSD` tiles (byte-asm, 16384
 // MAC/instr, Sapphire Rapids+) → AVX-512 VPDPBUSD → AVX-VNNI → scalar, and
