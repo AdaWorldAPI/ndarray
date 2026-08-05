@@ -807,8 +807,8 @@ mod tests {
 
         // Create states with a small palette
         let mut states = vec![0u16; 4096];
-        for i in 0..4096 {
-            states[i] = (i % 4) as u16;
+        for (i, state) in states.iter_mut().enumerate() {
+            *state = (i % 4) as u16;
         }
 
         let mut palette = HashMap::new();

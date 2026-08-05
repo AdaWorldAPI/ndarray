@@ -634,7 +634,8 @@ mod tests {
     #[test]
     fn test_popcount_batch_u64() {
         let words = [0xFFFFFFFFFFFFFFFFu64, 0, 0x0F0F0F0F0F0F0F0F];
-        assert_eq!(super::popcount_batch_u64(&words), 64 + 0 + 32);
+        // per-word contributions: 64 + 0 + 32
+        assert_eq!(super::popcount_batch_u64(&words), 96);
     }
 
     #[test]
