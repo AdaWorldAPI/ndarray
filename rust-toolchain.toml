@@ -1,5 +1,5 @@
 [toolchain]
-channel = "1.95.0"
+channel = "1.97.1"
 # Pinned to 1.95.0 (2026-04-14). Aligns ndarray with the rest of the
 # AdaWorldAPI stack: bevy (already on 1.95 for edition 2024) and
 # lance-graph (bumped in parallel). 1.95 introduced one new clippy lint
