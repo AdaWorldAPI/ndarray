@@ -3,7 +3,14 @@
 name = "ndarray"
 version = "0.17.2"
 edition = "2021"
-rust-version = "1.95"
+# Matches `rust-toolchain.toml` (1.97.1) and CI's `MSRV` / `BLAS_MSRV` env, which
+# are ALREADY 1.97.1. This said 1.95 until 2026-08-05 — a declared MSRV that
+# nothing tested, because no CI job builds at 1.95. Consumers read this field:
+# tesseract-rs path-deps both ndarray and lance-graph-contract, and a 1.95 build
+# of the contract crate happens to still succeed today — a coincidence, not a
+# guarantee, and exactly what an untested MSRV declaration buys. Declare what is
+# actually verified.
+rust-version = "1.97"
 authors = [
   "Ulrik Sverdrup \"bluss\"",
   "Jim Turner"

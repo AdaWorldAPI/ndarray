@@ -1,10 +1,19 @@
 [toolchain]
-channel = "1.95.0"
-# Pinned to 1.95.0 (2026-04-14). Aligns ndarray with the rest of the
-# AdaWorldAPI stack: bevy (already on 1.95 for edition 2024) and
-# lance-graph (bumped in parallel). 1.95 introduced one new clippy lint
-# that fires on this codebase (`clippy::manual_checked_ops` on
-# `impl_owned_array.rs::into_scalar`); that's fixed in this same commit.
+channel = "1.97.1"
+# Pinned to 1.97.1 (2026-08-05). Aligns ndarray with the rest of the
+# AdaWorldAPI stack — lance-graph, OGAR, ruff, MedCare-rs, woa-rs, a2ui-rs and
+# stockfish-rs are all on 1.97.1; ndarray was the last sibling still declaring
+# 1.95, so a consumer path-dep'ing both it and lance-graph-contract saw two
+# different MSRVs.
+#
+# The channel here and `Cargo.toml`'s `rust-version` must move TOGETHER. They
+# were out of step between the 1.95 → 1.97.1 channel bump and 2026-08-05: this
+# file said 1.97.1 while the manifest still declared 1.95, and the comment below
+# still described the 1.95 rationale. A stale comment on a version pin is how the
+# next reader learns the wrong number.
+#
+# (Historical: the 1.95 bump introduced `clippy::manual_checked_ops`, which fired
+# on `impl_owned_array.rs::into_scalar` and was fixed in that same commit.)
 # Never auto-track `stable` — bump explicitly when a future version is
 # reviewed and the workspace clippy passes clean.
 components = ["clippy", "rustfmt"]

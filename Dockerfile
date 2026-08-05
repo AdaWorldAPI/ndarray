@@ -1,6 +1,6 @@
 # ndarray — Railway compile-test image (AVX2 default)
 # Verifies the HPC module builds cleanly (default + jit-native features)
-# Requires Rust 1.95.0 (LazyLock, simd_caps, modern std APIs)
+# Requires Rust 1.97.1 (LazyLock, simd_caps, modern std APIs)
 #
 # CPU detection & SIMD dispatch documentation: see Dockerfile.md
 # AVX-512 pinned variant: see Dockerfile.avx512
@@ -15,8 +15,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates gcc libc6-dev pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Rust 1.95.0 via rustup — MUST match rust-toolchain.toml (channel =
-# "1.95.0") and Cargo.toml's `rust-version = "1.95"`. rust-toolchain.toml is
+# Install Rust 1.97.1 via rustup — MUST match rust-toolchain.toml (channel =
+# "1.97.1") and Cargo.toml's `rust-version = "1.97"`. rust-toolchain.toml is
 # deliberately NOT copied into the image (rustup would try to download a second
 # toolchain at build time), so this pin is the only thing keeping the image in
 # step with the repo — bump it whenever rust-toolchain.toml moves.
@@ -24,8 +24,8 @@ ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
-    sh -s -- -y --default-toolchain 1.95.0 --profile minimal \
-    && rustc --version | grep -q "1.95.0"
+    sh -s -- -y --default-toolchain 1.97.1 --profile minimal \
+    && rustc --version | grep -q "1.97.1"
 
 WORKDIR /app
 
@@ -76,4 +76,4 @@ RUN cargo test --release --lib -- hpc:: 2>&1 && echo "=== HPC TESTS OK ==="
 # Minimal runtime image — just proves it compiled
 FROM debian:bookworm-slim
 COPY --from=builder /app/target/release/libndarray.rlib /usr/local/lib/
-CMD ["echo", "ndarray build verified — Rust 1.95.0"]
+CMD ["echo", "ndarray build verified — Rust 1.97.1"]

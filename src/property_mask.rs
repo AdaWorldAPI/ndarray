@@ -423,7 +423,7 @@ mod tests {
         assert!(m.test(0b1000)); // field = 10 => 2
         assert!(!m.test(0b0100)); // field = 01 => 1
         assert!(!m.test(0b1100)); // field = 11 => 3
-        assert!(m.test(0b11111_1000)); // field still 10
+        assert!(m.test(0b1_1111_1000)); // field still 10
     }
 
     #[test]
