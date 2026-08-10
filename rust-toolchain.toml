@@ -1,10 +1,21 @@
 [toolchain]
-channel = "1.95.0"
-# Pinned to 1.95.0 (2026-04-14). Aligns ndarray with the rest of the
-# AdaWorldAPI stack: bevy (already on 1.95 for edition 2024) and
-# lance-graph (bumped in parallel). 1.95 introduced one new clippy lint
-# that fires on this codebase (`clippy::manual_checked_ops` on
-# `impl_owned_array.rs::into_scalar`); that's fixed in this same commit.
-# Never auto-track `stable` — bump explicitly when a future version is
-# reviewed and the workspace clippy passes clean.
+channel = "1.97.1"
+# The pinned version is the `channel` line ABOVE — deliberately not restated in
+# this comment. Restating it is how these files go stale: a bump edits `channel`
+# and leaves the prose behind (lance-graph's copy was wrong twice for exactly
+# that reason before it was restructured this way).
+#
+# Bump log (append one line per bump):
+#   → 1.95.0   2026-04-14. Aligned with bevy (edition 2024) and lance-graph,
+#              bumped in parallel. 1.95 added `clippy::manual_checked_ops`,
+#              which fired on `impl_owned_array.rs::into_scalar`; fixed in the
+#              same commit.
+#   → 1.97.1   2026-08-10. Ecosystem realignment: lance-graph, OGAR, woa-rs and
+#              MedCare-rs were already on 1.97.1 (the lance-9 / DataFusion-54
+#              sweep, lance-graph b2b08b07). ndarray has no lance/arrow/
+#              datafusion dependency of its own, so this is a compiler-only
+#              alignment — nothing in the dependency graph moves with it.
+#
+# Never auto-track `stable` — bump explicitly when a future version is reviewed
+# and the workspace clippy passes clean.
 components = ["clippy", "rustfmt"]
