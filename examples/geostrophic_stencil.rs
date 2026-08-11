@@ -62,11 +62,12 @@
 //!         sample must carry real synoptic-scale variation, or a mechanism
 //!         that produces near-zero everywhere would trivially "pass" BAR-2.
 //!   BAR-4/BAR-5 (the cascade arm): the same stencil, same kernel, over a
-//!         rolling-floor palette256 cascade — corr ≥ 0.98 and per-cell error
-//!         within 2× the FINEST tier step. Measured on this fixture the
-//!         cascade lands 32× tighter than BF16 at identical 2-byte cost,
-//!         because palette indices are EXACT in BF16 so the GEMM contributes
-//!         no error at all and only the quantizer's floor remains.
+//!         SIGNED rolling-floor palette cascade about the standard atmosphere
+//!         — corr ≥ 0.98 and per-cell error within 2× the FINEST tier step.
+//!         Measured on this fixture the cascade lands 32× tighter than BF16 at
+//!         identical 2-byte cost, because palette indices are EXACT in BF16 so
+//!         the GEMM contributes no error at all and only the quantizer's floor
+//!         remains. Tier 0's SIGN BIT is the Tief/Hoch classification, free.
 //!   DISABLE-RUN (falsifier self-check): re-run with the stencil SIGN
 //!         FLIPPED. If this does not invert the correlation to ≤ −0.9, the
 //!         harness cannot actually detect a broken stencil and BAR-1 is
@@ -91,13 +92,18 @@ const P_REF_PA: f32 = 100_000.0;
 /// UNIVERSAL bound quoted below; the per-tile bound uses this tile's own max.
 const P_WINDOW_HALF_PA: f64 = 5_000.0;
 
-/// Rolling-floor palette base: 940 hPa. With 256 levels of 0.5 hPa the palette
-/// spans 940–1068 hPa, which contains every MSLP value Earth produces (record
-/// extremes 870–1085 clip, and are not weather this operator is used on).
-const PAL_BASE_PA: f32 = 94_000.0;
+/// Rolling-floor palette ZERO: 1013.25 hPa, the standard atmosphere — which is
+/// also the meteorological boundary between low and high pressure. Tier 0 is
+/// therefore SIGNED, and the sign bit alone classifies the sample: negative is
+/// a Tief, positive a Hoch. That classification costs nothing — it is not
+/// computed, it IS the sign bit — and it makes the stencil's output a signed
+/// gradient with no offset bookkeeping.
+const PAL_ZERO_PA: f32 = 101_325.0;
 /// Tier-0 step: 0.5 hPa = 50 Pa. Chosen so the index is MENTALLY computable —
-/// `idx = (p_hPa − 940) · 2`, inverse `p_hPa = 940 + idx/2`. 0.5 hPa is also
-/// the operational precision surface pressure is reported at.
+/// `idx = (p_hPa − 1013.25) · 2`, inverse `p_hPa = 1013.25 + idx/2`. 0.5 hPa is
+/// also the operational precision surface pressure is reported at. Signed i8
+/// then spans 949.25–1076.75 hPa, which contains the operational MSLP range
+/// (the 870/1085 hPa records clip, and are not what this operator is used on).
 const PAL_STEP_PA: f32 = 50.0;
 /// Tier count. Each tier is one u8 that refines the previous tier's residual by
 /// 1/256, so tier k has step `PAL_STEP_PA / 256^k`. Two tiers cost the same 2
@@ -154,8 +160,14 @@ fn encode_bf16(rows: &[[f32; K]; M]) -> (Vec<u16>, f32) {
     (a, absmax)
 }
 
-/// Encode `A` as a rolling-floor palette256 CASCADE, each tier returned as
-/// BF16-encoded indices ready for the same tile-GEMM.
+/// Encode `A` as a rolling-floor palette CASCADE about the standard
+/// atmosphere: tier 0 SIGNED (i8 range, sign = Tief/Hoch), later tiers
+/// unsigned residual refinements. Every tier is returned BF16-encoded, ready
+/// for the same tile-GEMM.
+///
+/// Why the later tiers stay unsigned: FLOOR is used, not round-to-nearest, so
+/// the residual `r − idx·step` lies in `[0, step)` even where `idx` is
+/// negative. The sign lives in tier 0 alone; the refinements are magnitudes.
 ///
 /// Why this composes with a difference operator: each tier is a UNIFORM
 /// quantizer, so it is affine in the physical quantity, and
@@ -163,20 +175,29 @@ fn encode_bf16(rows: &[[f32; K]; M]) -> (Vec<u16>, f32) {
 /// NOT have this property and would break the stencil — uniformity is the
 /// condition, not palette-ness.
 ///
-/// Why the indices survive BF16 exactly: BF16 carries 8 significand bits, so
-/// every integer in `0..=255` is exact, and so is their difference in the f32
-/// accumulator. The GEMM therefore contributes ZERO error — all of it lives in
-/// the quantizer, which is what the per-tier step then bounds.
-fn encode_palette_cascade(rows: &[[f32; K]; M]) -> Vec<Vec<u16>> {
+/// Why the indices survive BF16 exactly: BF16 carries 8 significand bits plus
+/// a sign bit, so every integer in `-128..=255` is exact, and so is their
+/// difference in the f32 accumulator. The GEMM therefore contributes ZERO
+/// error — all of it lives in the quantizer, bounded by the finest tier step.
+fn encode_palette_cascade(rows: &[[f32; K]; M]) -> (Vec<Vec<u16>>, i32, i32) {
     let flat: Vec<f32> = rows.iter().flatten().copied().collect();
-    let mut residual = add_scalar_f32(&flat, -PAL_BASE_PA);
+    let mut residual = add_scalar_f32(&flat, -PAL_ZERO_PA);
     let mut tiers = Vec::with_capacity(PAL_TIERS);
     let mut step = PAL_STEP_PA;
-    for _ in 0..PAL_TIERS {
+    let (mut lo, mut hi) = (i32::MAX, i32::MIN);
+    for tier in 0..PAL_TIERS {
+        // Tier 0 is signed (i8); refinements are unsigned (u8).
+        let (clamp_lo, clamp_hi) = if tier == 0 { (-128.0, 127.0) } else { (0.0, 255.0) };
         let idx: Vec<f32> = residual
             .iter()
-            .map(|&r| (r / step).floor().clamp(0.0, 255.0))
+            .map(|&r| (r / step).floor().clamp(clamp_lo, clamp_hi))
             .collect();
+        if tier == 0 {
+            for &i in &idx {
+                lo = lo.min(i as i32);
+                hi = hi.max(i as i32);
+            }
+        }
         residual = residual
             .iter()
             .zip(&idx)
@@ -185,7 +206,7 @@ fn encode_palette_cascade(rows: &[[f32; K]; M]) -> Vec<Vec<u16>> {
         tiers.push(idx.iter().map(|&i| f32_to_bf16_scalar(i)).collect());
         step /= 256.0;
     }
-    tiers
+    (tiers, lo, hi)
 }
 
 /// Reference finite differences in f64, via the crate's own fixed-size sliding
@@ -269,7 +290,7 @@ fn main() {
     // tile referenced to 1000 hPa has |anomaly| <= 5000 Pa.
     let universal_bound = 2.0 * P_WINDOW_HALF_PA * u;
 
-    let pal = encode_palette_cascade(&rows);
+    let (pal, pal_lo, pal_hi) = encode_palette_cascade(&rows);
     // Each tier is a UNIFORM quantizer, so its floor error is one step; the
     // cascade's residual after PAL_TIERS tiers is bounded by the finest step,
     // and the stencil differences TWO samples.
@@ -289,11 +310,24 @@ fn main() {
     println!("  encoding: ref {:.0} hPa (fixed), anomaly |max| {absmax:.1} Pa", P_REF_PA / 100.0);
     println!("  BF16 bound: {bf16_bound:.4} Pa this tile / {universal_bound:.4} Pa any Earth MSLP tile");
     println!(
-        "  palette256 rolling floor: base {:.0} hPa, tier-0 step {:.1} hPa (idx = (p_hPa - {:.0})*2),\n  \
-         {PAL_TIERS} tiers = {PAL_TIERS} byte(s), finest step {pal_step_fine:.5} Pa, bound {pal_bound:.5} Pa\n",
-        PAL_BASE_PA / 100.0,
+        "  palette cascade: zero {:.2} hPa (std atmosphere), tier-0 step {:.1} hPa SIGNED\n  \
+         idx = (p_hPa - {:.2})*2, i8 spans {:.2}..{:.2} hPa; {PAL_TIERS} tiers = {PAL_TIERS} byte(s), \
+         finest step {pal_step_fine:.5} Pa, bound {pal_bound:.5} Pa",
+        PAL_ZERO_PA / 100.0,
         PAL_STEP_PA / 100.0,
-        PAL_BASE_PA / 100.0
+        PAL_ZERO_PA / 100.0,
+        (PAL_ZERO_PA - 128.0 * PAL_STEP_PA) / 100.0,
+        (PAL_ZERO_PA + 127.0 * PAL_STEP_PA) / 100.0,
+    );
+    println!(
+        "  tier-0 index range on this tile: {pal_lo} .. {pal_hi}  -> sign bit says: {}\n",
+        if pal_hi < 0 {
+            "TIEF (every sample below the standard atmosphere)"
+        } else if pal_lo > 0 {
+            "HOCH (every sample above it)"
+        } else {
+            "MIXED (the tile straddles the low/high boundary)"
+        }
     );
 
     let flat_true = reference_differences(&rows);
