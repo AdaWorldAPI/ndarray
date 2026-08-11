@@ -918,3 +918,30 @@ running multi-hundred-MiB derivations.
 break cost bumps in the other direction: a reader shipped before the writer
 would reject the new profile. A bounded budget keeps the forward
 compatibility the header format exists for.
+
+---
+
+[PROBE] `examples/geostrophic_stencil.rs` (2026-08-11) — real ERA5 pressure
+data through `int8_tile_gemm_16x16`, testing whether a physics finite-
+difference stencil survives u8 quantization + the shipped tile-GEMM. Cross-
+repo context: `lance-graph`'s `symbiont/domino.rs` tile-batches 16 SoA
+boards into one AMX 16x16 GEMM; this asks whether the SAME shape can carry
+a real geostrophic stencil, not just BF16 board state. 4 pre-registered
+bars, all measured PASS (corr 0.9985 vs bar 0.98; max err 10.58 Pa vs bar
+11.86 Pa; std 91.62 Pa vs bar 50 Pa non-triviality guard; sign-flip
+disable-run inverts to -0.9985, proving the harness can detect a broken
+stencil). Full provenance (WB2 store, t=91246, lat/lon indices) in the
+fixture's doc comment; regenerable, not just re-runnable.
+  [DECISION] Used `int8_tile_gemm_16x16` (the safe dispatching wrapper),
+  NOT `int8_gemm_amx_tiled` — the latter's own doc says "production
+  builds skip [the AMX check] for performance; callers must runtime-check
+  amx_available() themselves", and this container has no AMX_TILE/
+  AMX_INT8 (checked /proc/cpuinfo before writing any code). Calling the
+  unchecked function here would have executed raw TDPBUSD on non-AMX
+  silicon and faulted.
+  [LOOSE END] `amx_available() = false` on this host — the run exercised
+  ONLY the scalar fallback path, not AMX TDPBUSD throughput. The crate's
+  own `fallback_matches_scalar_reference_k64` licenses treating the two
+  as numerically interchangeable, but no session on this container can
+  measure the AMX path's actual behavior. Needs a Sapphire-Rapids-class
+  (or newer) host to close.
