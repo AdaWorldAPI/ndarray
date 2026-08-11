@@ -210,7 +210,12 @@ pub fn gemm_i8(a: &[u8], b: &[i8], c: &mut [i32], m: usize, n: usize, k: usize) 
 #[allow(clippy::needless_return)]
 pub fn gemm_bf16(a: &[u16], b: &[u16], c: &mut [f32], m: usize, n: usize, k: usize) {
     // Reinterpret u16 slices as BF16 slices (repr(transparent))
-    #[cfg(feature = "std")]
+    //
+    // x86_64: route through the ArrayView2-based AMX dispatcher
+    // (`amx_matmul::matmul_bf16_to_f32` = AMX TDPBF16PS → AVX-512 VDPBF16PS →
+    // scalar tiled `bf16_gemm_f32`). That module is `#[cfg(target_arch =
+    // "x86_64")]`, so off x86 we call the same scalar reference directly.
+    #[cfg(all(feature = "std", target_arch = "x86_64"))]
     {
         use crate::{ArrayView2, ArrayViewMut2};
 
@@ -233,6 +238,22 @@ pub fn gemm_bf16(a: &[u16], b: &[u16], c: &mut [f32], m: usize, n: usize, k: usi
         let rhs = ArrayView2::from_shape((k, n), &b_bf16[..k * n]).expect("gemm_bf16: B shape (k,n) vs slice len");
         let out = ArrayViewMut2::from_shape((m, n), &mut c[..m * n]).expect("gemm_bf16: C shape (m,n) vs slice len");
         crate::hpc::amx_matmul::matmul_bf16_to_f32(lhs, rhs, out).expect("gemm_bf16: matmul shape contract");
+        return;
+    }
+    // Non-x86 std hosts (aarch64 / wasm32 / riscv …): the AMX tile path is
+    // x86-only; route through the portable scalar reference
+    // `crate::hpc::quantized::bf16_gemm_f32` (alpha = 1, beta = 0 → C
+    // overwritten), bit-equivalent to the scalar fallback the x86 dispatcher
+    // takes on non-AMX silicon.
+    #[cfg(all(feature = "std", not(target_arch = "x86_64")))]
+    {
+        let a_bf16: &[crate::hpc::quantized::BF16] =
+            // SAFETY: BF16 is #[repr(transparent)] over u16; bit pattern preserved.
+            unsafe { core::slice::from_raw_parts(a.as_ptr() as *const crate::hpc::quantized::BF16, a.len()) };
+        let b_bf16: &[crate::hpc::quantized::BF16] =
+            // SAFETY: same repr(transparent) invariant as `a_bf16` above.
+            unsafe { core::slice::from_raw_parts(b.as_ptr() as *const crate::hpc::quantized::BF16, b.len()) };
+        crate::hpc::quantized::bf16_gemm_f32(&a_bf16[..m * k], &b_bf16[..k * n], &mut c[..m * n], m, n, k, 1.0, 0.0);
         return;
     }
     #[cfg(not(feature = "std"))]

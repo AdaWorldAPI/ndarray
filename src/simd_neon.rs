@@ -183,24 +183,34 @@ pub unsafe fn codebook_gather_f32x4_a72(centroids: &[f32], indices: &[u8], dim: 
 // Tier 3: A76 DotProd + FP16 (Pi 5, Orange Pi 5)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// SDOT: 4×(4×i8 · 4×i8) → 4×i32 in ONE instruction.
-/// ARMv8.2+ dotprod. 4× throughput vs manual widening multiply.
-/// Core of int8 quantized codebook inference on Pi 5.
+/// int8 dot product of two 16-lane chunks → i32.
+///
+/// Stable-Rust widening path: `vmull_s8` (8×(i8·i8)→i16 per half) then
+/// `vpaddlq_s16` (pairwise widen i16→i32) and a horizontal `vaddvq_s32`.
+/// Bit-identical result to the ARMv8.2 `SDOT` instruction, but compiles on
+/// stable (the `vdotq_s32` intrinsic is nightly-only, issue #117224) and runs
+/// on **all** aarch64 — no `dotprod` feature required. Max |product| = 16384,
+/// pairwise sums stay well inside i32, so no overflow for any i8 input.
 #[cfg(target_arch = "aarch64")]
-#[target_feature(enable = "dotprod")]
+#[inline(always)]
 pub unsafe fn dot_i8x16_neon(a: &[i8; 16], b: &[i8; 16]) -> i32 {
     let va = vld1q_s8(a.as_ptr());
     let vb = vld1q_s8(b.as_ptr());
-    let acc = vdupq_n_s32(0);
-    let result = vdotq_s32(acc, va, vb);
-    // Horizontal sum of 4×i32
-    vaddvq_s32(result)
+    // 8×i16 products for the low and high halves.
+    let plo = vmull_s8(vget_low_s8(va), vget_low_s8(vb));
+    let phi = vmull_s8(vget_high_s8(va), vget_high_s8(vb));
+    // Widen i16→i32 (pairwise) so the accumulation never overflows, then reduce.
+    vaddvq_s32(vaddq_s32(vpaddlq_s16(plo), vpaddlq_s16(phi)))
 }
 
-/// Quantized codebook gather via SDOT (Pi 5 only).
-/// Centroids stored as i8, accumulated as i32. 4× throughput vs f32 path.
+/// Quantized codebook gather: element-wise widen-accumulate the selected i8
+/// centroids into an i32 output of length `dim` (`dim` a multiple of 16).
+///
+/// The i32 counterpart of [`codebook_gather_f32x4_neon`]: for each output lane
+/// `k`, `output_i32[k] = Σ_idx centroids_i8[idx*dim + k]`, widened i8→i32 via
+/// `vmovl_s8` + `vaddw_s16`. Stable on all aarch64 (no `dotprod` intrinsic).
 #[cfg(target_arch = "aarch64")]
-#[target_feature(enable = "dotprod")]
+#[inline(always)]
 pub unsafe fn codebook_gather_i8_dotprod(
     centroids_i8: &[i8], // quantized centroids: N × dim (i8)
     indices: &[u8],
@@ -208,9 +218,11 @@ pub unsafe fn codebook_gather_i8_dotprod(
     output_i32: &mut [i32], // accumulated i32 (dequantize later)
 ) {
     debug_assert!(dim % 16 == 0);
+    debug_assert!(output_i32.len() >= dim);
     let chunks = dim / 16;
 
     for c in 0..chunks {
+        // Four i32x4 accumulators cover the 16 i8 lanes of this chunk.
         let mut acc0 = vdupq_n_s32(0);
         let mut acc1 = vdupq_n_s32(0);
         let mut acc2 = vdupq_n_s32(0);
@@ -218,14 +230,15 @@ pub unsafe fn codebook_gather_i8_dotprod(
 
         for &idx in indices {
             let base = idx as usize * dim + c * 16;
-            let v0 = vld1q_s8(centroids_i8[base..].as_ptr());
-            let v1 = vld1q_s8(centroids_i8[base..].as_ptr());
-            // dotprod: each vdotq_s32 does 4×(4×i8·4×i8)→4×i32
-            let ones = vdupq_n_s8(1); // identity for accumulation
-            acc0 = vdotq_s32(acc0, v0, ones);
+            let v = vld1q_s8(centroids_i8[base..].as_ptr()); // 16 i8
+            let lo = vmovl_s8(vget_low_s8(v)); // lanes 0..8  → i16
+            let hi = vmovl_s8(vget_high_s8(v)); // lanes 8..16 → i16
+            acc0 = vaddw_s16(acc0, vget_low_s16(lo));
+            acc1 = vaddw_s16(acc1, vget_high_s16(lo));
+            acc2 = vaddw_s16(acc2, vget_low_s16(hi));
+            acc3 = vaddw_s16(acc3, vget_high_s16(hi));
         }
 
-        // Store 4 i32 results
         vst1q_s32(output_i32[c * 16..].as_mut_ptr(), acc0);
         vst1q_s32(output_i32[c * 16 + 4..].as_mut_ptr(), acc1);
         vst1q_s32(output_i32[c * 16 + 8..].as_mut_ptr(), acc2);
@@ -467,7 +480,11 @@ pub mod aarch64_simd {
 
     // Integer types come from the scalar fallback in simd.rs — they aren't on
     // the perf-critical f32 BLAS-1 / VML path that this module accelerates.
-    pub use crate::simd::scalar::{I32x16, U32x16, U64x8};
+    // `U32x16` is the exception: it carries the ARX vocabulary (Add/BitXor/
+    // rotate_left) the ChaCha20 lane needs, so it is the native `[U32x4; 4]`
+    // defined at the top of this file (mirroring `simd_wasm::wasm32_simd`).
+    pub use super::U32x16;
+    pub use crate::simd::scalar::{I32x16, U64x8};
 
     /// 16×f32 backed by 4× NEON `float32x4_t` registers (paired loads).
     #[derive(Copy, Clone)]
@@ -674,13 +691,14 @@ pub mod aarch64_simd {
             for i in 0..16 {
                 o[i] = a[i].to_bits();
             }
-            U32x16(o)
+            U32x16::from_array(o)
         }
         #[inline(always)]
         pub fn from_bits(bits: U32x16) -> Self {
+            let b = bits.to_array();
             let mut o = [0.0f32; 16];
             for i in 0..16 {
-                o[i] = f32::from_bits(bits.0[i]);
+                o[i] = f32::from_bits(b[i]);
             }
             Self::from_array(o)
         }
@@ -1490,6 +1508,11 @@ impl U16x8 {
     }
 }
 
+// Lowercase alias (consumer-API parity — `simd.rs` re-exports `u16x8`).
+#[cfg(target_arch = "aarch64")]
+#[allow(non_camel_case_types)]
+pub type u16x8 = U16x8;
+
 #[cfg(target_arch = "aarch64")]
 #[derive(Copy, Clone)]
 #[repr(transparent)]
@@ -1542,7 +1565,281 @@ impl U32x4 {
     pub fn max(self, other: Self) -> Self {
         Self(unsafe { vmaxq_u32(self.0, other.0) })
     }
+    /// Lane-wise XOR — the ARX `⊕` (`veorq_u32`).
+    #[inline(always)]
+    pub fn bitxor(self, other: Self) -> Self {
+        Self(unsafe { veorq_u32(self.0, other.0) })
+    }
+    /// Lane-wise left-rotate by `n` bits — the ARX rotate (matches
+    /// `u32::rotate_left`). NEON has no rotate op, so this is the shift-or via
+    /// the variable-count `vshlq_u32` (a signed per-lane count: `+n` shifts
+    /// left by `n`, `n-32 < 0` shifts logical-right by `32-n`). The `n % 32 == 0`
+    /// early-return avoids the ambiguous full-width shift. Rotate amount is a
+    /// public ARX constant.
+    #[inline(always)]
+    pub fn rotate_left(self, n: u32) -> Self {
+        let n = n % 32;
+        if n == 0 {
+            return self;
+        }
+        unsafe {
+            let l = vshlq_u32(self.0, vdupq_n_s32(n as i32));
+            let r = vshlq_u32(self.0, vdupq_n_s32(n as i32 - 32));
+            Self(vorrq_u32(l, r))
+        }
+    }
 }
+
+/// 16×u32 as `[U32x4; 4]` — the NEON-native 16-wide ARX lane (ChaCha20 /
+/// BLAKE). `U32x4` is the dispatched native unit (`uint32x4_t`); `U32x16` fans
+/// each op over the 4 sub-lanes. Consumer API (`Add` / `BitXor` / `rotate_left`)
+/// matches `simd_avx512::U32x16` exactly, so the ChaCha20 backend compiles
+/// unchanged on every tier (the wasm arm uses the identical `[U32x4; 4]` shape).
+#[cfg(target_arch = "aarch64")]
+#[derive(Copy, Clone)]
+#[repr(align(64))]
+pub struct U32x16(pub [U32x4; 4]);
+
+#[cfg(target_arch = "aarch64")]
+/// BLAKE3 `hash_many` shuffle surface — the transpose network's four unpacks
+/// and two half-concatenations, at DEGREE 16.
+///
+/// **Why these live on `U32x16` and not on a half-width type.** BLAKE3's
+/// AVX2 backend is DEGREE 8 over `__m256i`. Two of those fit in one
+/// `U32x16`, and every operation in `hash_many` is either lane-wise
+/// (add / xor / rotate) or confined *within* a 128- or 256-bit lane — which
+/// is exactly what the methods below preserve. The two 8-lane groups
+/// therefore never interact, and the algorithm runs on both at once as
+/// DEGREE 16 with no cross-talk. A `U32x8` is neither needed nor wanted
+/// (operator ruling, 2026-07-28: a half-width type standing in for the lane
+/// the substrate actually uses is an absolute no-go).
+///
+/// Semantics are x86's, applied to **each 256-bit half independently**:
+/// `interleave_*_u32` / `interleave_*_u64` reproduce
+/// `_mm256_unpack{lo,hi}_epi{32,64}` within each 128-bit quad, and
+/// `concat_{lo,hi}_halves` reproduce
+/// `_mm256_permute2x128_si256(_, _, 0x20 / 0x31)` within each 256-bit half.
+/// The per-lane structure is load-bearing: BLAKE3's transpose is defined in
+/// terms of it, so a "helpful" whole-vector interleave would compute a
+/// different permutation and produce wrong hashes with no compile error.
+///
+/// Every body is a plain index loop. The codegen oracle
+/// (`.claude/knowledge/simd-codegen-oracle/`) measured this exact shape:
+/// fixed two-source permutations written as index loops compile to real
+/// packed shuffles, and a transpose composed from them emits
+/// `vpunpcklqdq` / `vpermq` / `vinserti128`. No `unsafe`, no `core::arch`,
+/// no intrinsic override earned. See
+/// `.claude/knowledge/blake3-on-ndarray-simd.md`.
+impl U32x16 {
+    /// `_mm256_unpacklo_epi32` per 256-bit half: within each 128-bit quad,
+    /// interleave the low two `u32` of each operand.
+    #[inline(always)]
+    pub fn interleave_lo_u32(self, other: Self) -> Self {
+        let (a, b) = (self.to_array(), other.to_array());
+        let mut o = [0u32; 16];
+        for q in 0..4 {
+            let i = 4 * q;
+            o[i] = a[i];
+            o[i + 1] = b[i];
+            o[i + 2] = a[i + 1];
+            o[i + 3] = b[i + 1];
+        }
+        Self::from_array(o)
+    }
+
+    /// `_mm256_unpackhi_epi32` per 256-bit half: within each 128-bit quad,
+    /// interleave the high two `u32` of each operand.
+    #[inline(always)]
+    pub fn interleave_hi_u32(self, other: Self) -> Self {
+        let (a, b) = (self.to_array(), other.to_array());
+        let mut o = [0u32; 16];
+        for q in 0..4 {
+            let i = 4 * q;
+            o[i] = a[i + 2];
+            o[i + 1] = b[i + 2];
+            o[i + 2] = a[i + 3];
+            o[i + 3] = b[i + 3];
+        }
+        Self::from_array(o)
+    }
+
+    /// `_mm256_unpacklo_epi64` per 256-bit half: within each 128-bit quad,
+    /// the low `u64` of each operand.
+    #[inline(always)]
+    pub fn interleave_lo_u64(self, other: Self) -> Self {
+        let (a, b) = (self.to_array(), other.to_array());
+        let mut o = [0u32; 16];
+        for q in 0..4 {
+            let i = 4 * q;
+            o[i] = a[i];
+            o[i + 1] = a[i + 1];
+            o[i + 2] = b[i];
+            o[i + 3] = b[i + 1];
+        }
+        Self::from_array(o)
+    }
+
+    /// `_mm256_unpackhi_epi64` per 256-bit half: within each 128-bit quad,
+    /// the high `u64` of each operand.
+    #[inline(always)]
+    pub fn interleave_hi_u64(self, other: Self) -> Self {
+        let (a, b) = (self.to_array(), other.to_array());
+        let mut o = [0u32; 16];
+        for q in 0..4 {
+            let i = 4 * q;
+            o[i] = a[i + 2];
+            o[i + 1] = a[i + 3];
+            o[i + 2] = b[i + 2];
+            o[i + 3] = b[i + 3];
+        }
+        Self::from_array(o)
+    }
+
+    /// `_mm256_permute2x128_si256(a, b, 0x20)` per 256-bit half: the low
+    /// 128-bit lane of each operand, concatenated.
+    ///
+    /// Only the two immediates BLAKE3's transpose uses are exposed, as named
+    /// methods rather than a generic `const IMM` permute: the remaining
+    /// immediates would have no caller and no parity test.
+    #[inline(always)]
+    pub fn concat_lo_halves(self, other: Self) -> Self {
+        let (a, b) = (self.to_array(), other.to_array());
+        let mut o = [0u32; 16];
+        for h in 0..2 {
+            let i = 8 * h;
+            o[i..i + 4].copy_from_slice(&a[i..i + 4]);
+            o[i + 4..i + 8].copy_from_slice(&b[i..i + 4]);
+        }
+        Self::from_array(o)
+    }
+
+    /// `_mm256_permute2x128_si256(a, b, 0x31)` per 256-bit half: the high
+    /// 128-bit lane of each operand, concatenated.
+    #[inline(always)]
+    pub fn concat_hi_halves(self, other: Self) -> Self {
+        let (a, b) = (self.to_array(), other.to_array());
+        let mut o = [0u32; 16];
+        for h in 0..2 {
+            let i = 8 * h;
+            o[i..i + 4].copy_from_slice(&a[i + 4..i + 8]);
+            o[i + 4..i + 8].copy_from_slice(&b[i + 4..i + 8]);
+        }
+        Self::from_array(o)
+    }
+
+    /// One butterfly exchange at block granularity `G` elements — the general
+    /// form of the whole unpack / lane-exchange family, parameterized by
+    /// granularity instead of one method per width.
+    ///
+    /// `G = 1` is the 32-bit unpack, `G = 2` the 64-bit unpack, `G = 4` the
+    /// 128-bit lane exchange, and `G = 8` the 256-bit half exchange that a
+    /// 512-bit lane additionally needs and for which no AVX2 intrinsic exists.
+    /// `G` is a const parameter, so every shuffle pattern is compile-time
+    /// constant — the same property a hand-written intrinsic has, and the
+    /// precondition for LLVM to select a shuffle rather than an indexed copy.
+    ///
+    /// Four stages over this (`G` = 1, 2, 4, 8, pairing row `r` with `r | G`)
+    /// compose a complete 16x16 transpose. Measured as
+    /// `transpose_16x16_composed`: **79 packed / 0 scalar-lane-arith**, 19 of
+    /// them real shuffles. The same transpose written as one monolithic index
+    /// loop measures **0 packed** — 1088 bytes of stack and a 256-iteration
+    /// scalar copy. The spelling is the entire difference. See
+    /// `.claude/knowledge/blake3-on-ndarray-simd.md`.
+    ///
+    /// No intrinsic override is earned: the generic form does not fail.
+    #[inline(always)]
+    pub fn exchange<const G: usize>(self, other: Self) -> (Self, Self) {
+        let (l, h) = (self.to_array(), other.to_array());
+        let mut nl = [0u32; 16];
+        let mut nh = [0u32; 16];
+        for c in 0..16 {
+            nl[c] = if c & G == 0 { l[c] } else { h[c ^ G] };
+            nh[c] = if c & G != 0 { h[c] } else { l[c ^ G] };
+        }
+        (Self::from_array(nl), Self::from_array(nh))
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl U32x16 {
+    pub const LANES: usize = 16;
+
+    #[inline(always)]
+    pub fn splat(v: u32) -> Self {
+        Self([U32x4::splat(v); 4])
+    }
+
+    #[inline(always)]
+    pub fn from_array(a: [u32; 16]) -> Self {
+        Self([
+            U32x4::from_array([a[0], a[1], a[2], a[3]]),
+            U32x4::from_array([a[4], a[5], a[6], a[7]]),
+            U32x4::from_array([a[8], a[9], a[10], a[11]]),
+            U32x4::from_array([a[12], a[13], a[14], a[15]]),
+        ])
+    }
+
+    #[inline(always)]
+    pub fn to_array(self) -> [u32; 16] {
+        let mut o = [0u32; 16];
+        for i in 0..4 {
+            o[i * 4..i * 4 + 4].copy_from_slice(&self.0[i].to_array());
+        }
+        o
+    }
+
+    /// Lane-wise left-rotate by `n` bits (ARX rotate), fanned over 4 lanes.
+    #[inline(always)]
+    pub fn rotate_left(self, n: u32) -> Self {
+        Self([
+            self.0[0].rotate_left(n),
+            self.0[1].rotate_left(n),
+            self.0[2].rotate_left(n),
+            self.0[3].rotate_left(n),
+        ])
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl core::ops::Add for U32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn add(self, r: Self) -> Self {
+        Self([self.0[0].add(r.0[0]), self.0[1].add(r.0[1]), self.0[2].add(r.0[2]), self.0[3].add(r.0[3])])
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl core::ops::BitXor for U32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitxor(self, r: Self) -> Self {
+        Self([
+            self.0[0].bitxor(r.0[0]),
+            self.0[1].bitxor(r.0[1]),
+            self.0[2].bitxor(r.0[2]),
+            self.0[3].bitxor(r.0[3]),
+        ])
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl core::fmt::Debug for U32x16 {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "U32x16({:?})", self.to_array())
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl PartialEq for U32x16 {
+    fn eq(&self, other: &Self) -> bool {
+        self.to_array() == other.to_array()
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[allow(non_camel_case_types)]
+pub type u32x16 = U32x16;
 
 #[cfg(target_arch = "aarch64")]
 #[derive(Copy, Clone)]

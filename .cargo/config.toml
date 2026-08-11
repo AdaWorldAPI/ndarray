@@ -22,5 +22,67 @@
 # silicon) is a fifth opt-in mode — see § 7.1 of
 # .claude/knowledge/simd-dispatch-architecture.md. Reserved for the
 # release-binary distribution path; never the dev / CI default.
+# curve25519-dalek backend: SERIAL, deliberately.
+#
+# `ed25519-dalek` pulls in `curve25519-dalek`, whose build.rs AUTO-SELECTS its
+# own AVX2 backend whenever the target is x86_64 + 64-bit — which the
+# `-Ctarget-cpu=x86-64-v3` line below guarantees. That backend carries its own
+# raw intrinsics and its own `unsafe`: 57 `_mm*` intrinsic calls (35 in
+# `backend/vector/avx2/field.rs`, 22 in `backend/vector/packed_simd.rs`) under
+# 52 `unsafe` occurrences in the same two files — a SECOND unaudited SIMD
+# surface beside `ndarray::simd`, which is exactly what the matryoshka pattern
+# exists to prevent (cf. `vendor/chacha20`: "no raw intrinsics and no `unsafe`
+# here — all of that lives once, audited, inside `ndarray::simd`").
+#
+# Note this is a REACHABILITY question, not a porting one. Neutralizing that
+# surface does not require porting 57 call sites onto `ndarray::simd`; the whole
+# `vector` module is gated behind one cfg — `backend/mod.rs:42`,
+# `#[cfg(curve25519_dalek_backend = "simd")] pub mod vector;` — so the one line
+# below compiles the whole surface out.
+#
+# `serial` costs nothing we use: X25519's Montgomery ladder
+# (`montgomery.rs`) never references the vector backend at all, and Ed25519
+# signing is not on a hot path here. The vector backend serves ONLY Edwards
+# multi-scalar / variable-base multiplication (batch signature verification,
+# Ristretto protocols) — neither of which this crate performs.
+#
+# Read by curve25519-dalek's build.rs via CARGO_CFG_CURVE25519_DALEK_BACKEND.
+# Verify: cargo build -p encryption -v 2>&1 | grep curve25519_dalek_backend
+
+# poly1305 backend: SOFT, deliberately. Same reasoning as dalek above, but
+# unlike dalek this surface was actually REACHING THE BINARY.
+#
+# `crates/encryption` -> `chacha20poly1305` -> `poly1305`, and poly1305 0.8
+# auto-selects its AVX2 backend on any x86/x86_64 target unless told otherwise.
+# That backend is 424 `_mm*` intrinsic calls under 30 `unsafe` occurrences in a
+# single file (`src/backend/avx2/helpers.rs`) — over seven times dalek's 57, and
+# a second unaudited SIMD surface beside `ndarray::simd`, which is what the
+# matryoshka pattern exists to prevent.
+#
+# Reachability, not porting: the whole thing is gated behind one cfg —
+# `src/backend.rs`, `#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"),
+# not(poly1305_force_soft)))] pub(crate) mod avx2;` — so the flag below compiles
+# it out without touching a line of crypto.
+#
+# What it costs: the soft backend (poly1305-donna, the same algorithm) instead
+# of the AVX2 one, on the AEAD's MAC. That is a real throughput cost on large
+# payloads and it has NOT been measured here. It is accepted because the
+# alternative is an unaudited intrinsic surface in the crypto path.
+#
+# What it does NOT mean: writing our own Poly1305. Per the operator-ratified
+# doctrine in `.claude/CHACHA20_MATRYOSHKA_PLAN.md` — "RustCrypto owns the
+# algorithm; ndarray owns the SIMD... Rolling your own AEAD (HChaCha20 +
+# Poly1305 + framing) is the footgun; it is forbidden." The sanctioned way to
+# accelerate this later is the chacha20 route: vendor the fork and give
+# RustCrypto's own backend an `ndarray::simd` lane, never a reimplementation.
+#
+# Read by poly1305's src/backend.rs as a plain cfg.
+# Verify: cargo build -p encryption -v 2>&1 | grep poly1305_force_soft
 [target.'cfg(target_arch = "x86_64")']
-rustflags = ["-Ctarget-cpu=x86-64-v3"]
+rustflags = [
+    "-Ctarget-cpu=x86-64-v3",
+    "--cfg",
+    "curve25519_dalek_backend=\"serial\"",
+    "--cfg",
+    "poly1305_force_soft",
+]

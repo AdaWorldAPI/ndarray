@@ -1,5 +1,216 @@
 # ndarray — Epiphanies (append-only)
 
+## 2026-07-29 — Which PACKAGE pulls a dep decides whether it can consume you
+**Status:** FINDING
+**Scope:** @simd-savant @truth-architect domain:build-graph
+**Cross-ref:** PR #267, `.claude/knowledge/the-simd-ladder.md`
+
+The ladder's goal is that every dependency carrying its own SIMD instead
+consumes `ndarray::simd`. Whether a given dependency *can* is not a property
+of the dependency, and not of "the workspace" — it is decided by **which
+package in the workspace pulls it**:
+
+| dependency | entry point | can consume `ndarray::simd`? |
+|---|---|---|
+| `chacha20` | `crates/encryption` → … → `chacha20` | **yes** |
+| `curve25519-dalek` | `crates/encryption` → `ed25519-dalek` → … | **yes** |
+| `blake3` | **root `ndarray`** (`std` feature) | **no — cycle** |
+
+Measured — and measured the right way round. The evidence is the **positive**
+reverse tree (which terminates at `encryption`, with root `ndarray` absent),
+plus a control proving the method can produce a hit:
+
+```console
+$ cargo tree -p encryption -i curve25519-dalek     # positive: full path shown
+curve25519-dalek v4.1.3
+└── ed25519-dalek v2.2.0
+    └── encryption v0.1.0 (crates/encryption)
+
+$ cargo tree -p ndarray -i blake3                  # control: a real edge DOES hit
+blake3 v1.8.4
+└── ndarray v0.17.2 (/workspace/ndarray)
+```
+
+**Not** an error message. A first draft rested on
+`cargo tree -p ndarray -i curve25519-dalek` failing with `package ID
+specification ... did not match any packages`; a typo produces that message
+byte-for-byte, so it cannot distinguish "no such edge" from "no such
+package". Corrected by CodeRabbit on #268 — and it is the same defect this
+repo keeps hitting one level down: a check that cannot fail for the reason
+you think it is failing.
+
+Only blake3 is pulled by the ROOT package, so only blake3 closes a loop when
+it depends back on ndarray. The other two ride a shape that already works in
+this repo today — `crates/encryption` → `chacha20` → `ndarray(root)` is
+exactly it.
+
+**Why this is worth recording rather than re-derived.** "ndarray depends on
+X, so X can't depend on ndarray" is the intuitive rule and it is wrong at
+workspace granularity. A sub-crate is a different package; the cycle is
+per-package, not per-workspace. Reasoning at workspace granularity says all
+three are blocked, which would have parked two rungs that have no blocker at
+all.
+
+**On the diagnostic — be precise, because two different things were
+conflated here.** Cargo *does* report the cycle when the patched package
+would be selected; `cargo update -p blake3` printed the chain
+(`blake3 ... satisfies dependency of ndarray ... satisfies path dependency
+ndarray of blake3`). What is NOT a cycle diagnostic is `[[patch.unused]]`.
+That only says the patch was not selected, and the usual causes are a version
+that does not satisfy the requirement or a stale lockfile.
+
+An earlier version of this entry read the unused patch as the cycle's
+signature and called the failure "silent." Both halves were wrong, and codex
+caught it on #268. Treating `[[patch.unused]]` as a cycle report teaches the
+next reader to misdiagnose an ordinary stale patch — and undermines the very
+check this entry prescribes.
+
+The check stands, but ONLY in its positive form — and the wording here was
+itself an instance of the bug it warns about, corrected on #268:
+
+Consequence: **before planning any "make X consume our crate" work, run
+`cargo tree -p <our-root> -i <X>`.**
+
+1. First confirm `<X>` is a real package in the selected graph (a typo, or a
+   package absent from that graph, produces the byte-identical error).
+2. A tree that resolves and shows the root package = the edge must be cut
+   first.
+3. A tree that resolves and does NOT show it = unblocked.
+4. **A package-ID error is inconclusive — never "no cycle".**
+
+An earlier draft of this very entry said "an error there means no cycle and
+the work is unblocked", one paragraph after explaining that the error is
+ambiguous. Read literally it would mark blocked work as unblocked on the
+strength of a typo.
+
+
+## 2026-07-29 — BLAKE3 needs a method surface, not intrinsics (measured)
+**Status:** FINDING
+**Scope:** @simd-savant domain:codec
+**Cross-ref:** PR #264, PR #265, `.claude/knowledge/blake3-on-ndarray-simd.md`,
+`.claude/knowledge/simd-codegen-oracle/`
+
+C is out of `blake3` (`features = ["pure"]`, #264 — 33 `.o` objects and
+`libblake3_avx512_assembly.a` gone). What remained was a second SIMD surface:
+2,910 lines of raw `core::arch` in its Rust backends.
+
+Census + four probes settle what a `ndarray::simd` backend would cost.
+`rust_avx2.rs` uses 15 distinct intrinsics; **twelve already exist on
+`U32x16`**. The other three families (`unpack{lo,hi}_epi32`,
+`unpack{lo,hi}_epi64`, `permute2x128` — 18 call sites) serve one purpose:
+`hash_many`'s transpose.
+
+| probe | packed | scalar on lane data |
+|---|---|---|
+| `blake3_g_u32x16` | 72 | 0 |
+| `interleave_lo_u32x16` | 11 | 0 |
+| `transpose_16x16_u32` (index loop) | **0** | 1 |
+| `transpose_16x16_composed` (4 stages, correctness-checked) | 79 | 0 |
+
+The compression core is free. The interleave *primitive* is free — a scalar
+index loop compiles to `vpermd` + `vpblendd`, a real two-source cross-lane
+permute. Only the **monolithic index-loop spelling** of the transpose fails;
+composed from `exchange<G>` at G = 1/2/4/8 it emits `vpunpcklqdq`, `vpermq`,
+`vpermpd`, `vinserti128` — the same family the intrinsic backend hand-writes.
+
+**So no intrinsic override is earned.** The gap is one const-generic method,
+~15 lines, no `unsafe` and no `core::arch`. That is the third consecutive
+time this oracle has turned "obviously needs intrinsics" into "already free"
+(after `saturating_abs`, `widening`, and `cross_lane_reverse`).
+
+**The methodological catch is the part worth keeping.** The first version of
+this finding rested on `transpose_stage_u32x16` — ONE 32-bit stage whose
+helpers, by their own doc comment, do not compose into a transpose. Codex and
+CodeRabbit independently flagged it. It was an inference wearing a
+measurement's clothes, published in the document that cites TD-T22 as the
+reason not to do exactly that. Two guards added in response:
+
+- the composed transpose is **checked against a naive reference and aborts on
+  mismatch**, control-tested by deleting `stage::<8>` to confirm it fires;
+- `run.sh` now **executes** the probe binary, because `--emit asm` links
+  nothing and the assertion had never actually run. A claim of verification
+  that does not verify is the same defect one level up.
+
+Still unmeasured, and stated as such: throughput vs `rust_avx2.rs`. "Emits
+packed shuffles" is not "is faster."
+
+
+## 2026-07-29 — A build claim has two axes; the correction erred on the second
+**Status:** FINDING
+**Scope:** @simd-savant @truth-architect domain:build-tiers
+**Cross-ref:** PR #265, `.claude/knowledge/chacha20-vendoring-blast-radius.md`,
+`.claude/knowledge/td-t22-asm-investigation.md`
+
+This repo has **three** build tiers, and an audit that reads only
+`.cargo/config.toml` sees one of them and concludes the opposite of the truth.
+
+| tier | target-cpu | purpose |
+|---|---|---|
+| CI (`ci.yaml`) | none globally; v4 in `tier4-avx512-check` | one binary, all ISAs, runtime `LazyLock<Tier>`; the `cross_test` matrix spans i686 and s390x, so a global pin is impossible |
+| `Dockerfile` | `x86-64-v3` | the portable image |
+| `Dockerfile.avx512` | `x86-64-v4` | the AVX-512 image |
+
+Operator's formulation: *cargo is CI is github needs V3; dockerfile is V4.*
+
+**A claim about "what a build does" has TWO axes, and I got each one wrong on
+a separate pass** — the second time while correcting the first:
+
+| axis | question | where the answer lives |
+|---|---|---|
+| `target-cpu` | which cfg-gated code is *selected*? | `.cargo/config*.toml`, `Dockerfile*` `RUSTFLAGS`, workflow `env:` incl. per-job |
+| package selection | is that crate *compiled at all*? | `default-members`, and the `-p` / `--workspace` flags on the actual command |
+
+Three passes on one paragraph:
+
+1. **First claim:** *"No default build runs `vendor/chacha20`'s
+   `ndarray_simd`."* Reasoned only from `.cargo/config.toml` pinning v3.
+   Right answer, incomplete reason.
+2. **First correction:** operator said *cargo is CI is github needs V3;
+   dockerfile is V4*, so I concluded `Dockerfile.avx512` compiles and ships
+   the backend. **Wrong.** I fixed the target-cpu axis and immediately erred
+   on the package-selection axis I still had not checked — both Dockerfiles
+   run bare `cargo build --release`, `default-members` omits
+   `crates/encryption`, and nothing else in that set pulls chacha20. Caught by
+   codex on #266.
+3. **Settled:** `ndarray_simd` is reached only by an explicit
+   `-p encryption` / `--workspace` build under an AVX-512 config, or by
+   wasm32+`simd128`. No image compiles it.
+
+A separate instance of the same shape, same week: *"CI has been testing
+different machine code than anyone reviews"*, filed as a ⚠ defect. It is the
+design, and `ci.yaml:17-22` says so in prose I had not read — a global pin
+collides with the non-x86 cross_test matrix and contradicts the
+runtime-dispatch intent.
+
+**The pattern to name:** every individual measurement was correct. The error
+was always the *scope quantifier* — "no build", "CI", "ships" — attached to
+evidence drawn from one file. `rustc --print cfg` told me what v3 lacks; it
+could not tell me which tiers exist. Knowing the tiers still could not tell me
+what each tier builds.
+
+**And the correction is as dangerous as the original claim.** Being handed the
+missing piece feels like completion, so pass 2 shipped faster and with more
+confidence than pass 1, and was more wrong. A correction is a new claim and
+earns no discount on verification.
+
+Consequence, concretely — before any "no build does X" / "X ships with Y":
+
+```console
+find . -iname 'Dockerfile*'                 # which tiers exist
+grep -n 'RUN cargo' Dockerfile*             # what each one actually builds
+sed -n '/default-members/,/]/p' Cargo.toml  # what a bare build selects
+cargo tree -p <pkg> -i <dep>                # per package, not per workspace
+```
+
+A second-order note worth keeping: ndarray's own SIMD upgrades itself at run
+time via `LazyLock<Tier>` even in a v3 build, but `vendor/chacha20`'s gate is
+`#[cfg(target_feature = "avx512f")]` — compile-time, no runtime fallback. So a
+v3 image on AVX-512 silicon has ndarray's kernels upgrading while the chacha20
+keystream stays on RustCrypto's backends. Compile-time and runtime dispatch
+living in one binary is not a contradiction, but it means "this build is v3"
+does not settle what any given subsystem selects.
+
+
 ## 2026-04-19 — Prompt↔PR ledger is 10⁷× cheaper than code grep
 **Status:** FINDING
 **Scope:** @workspace-primer domain:bookkeeping
@@ -124,3 +335,51 @@ inspiration, never authority.
 fabrications still on master) · #5 ASG canon spec · #7 ASG-leaf impl (extend
 `CamPlaneSplat`, don't reinvent) · `cam-pq-production-wiring` (cam_pq shipped, unrouted
 through `CamCodecContract`) · `UNUSED_INVENTORY_1.95` A1–A9 dead-code.
+
+## 2026-07-28 — A dependency's SIMD surface is a reachability question, not a porting one (PR #258)
+**Status:** FINDING (verified — counts + cfg gate + build output all checked live)
+**Scope:** @simd-savant @workspace-primer domain:crypto domain:matryoshka
+
+The same wrong conclusion was reached twice in one arc: "curve25519-dalek's
+vector backend carries raw intrinsics (`avx2/field.rs` reaches around
+`packed_simd.rs`), therefore the matryoshka pattern requires removing the
+dependency." It got as far as a merged removal commit (`3694a3c`) before the
+premise was checked. The counts were right; the conclusion was not:
+
+- **Counts (verified):** 57 `_mm*` intrinsic calls in the AVX2 path
+  (35 `backend/vector/avx2/field.rs` + 22 `backend/vector/packed_simd.rs`),
+  under 52 `unsafe` occurrences in those two files. (`ifma/field.rs` adds 6
+  more on a nightly-only path.)
+- **The gate (verified):** ALL of it sits behind ONE cfg —
+  `curve25519-dalek-4.1.3/src/backend/mod.rs:42`,
+  `#[cfg(curve25519_dalek_backend = "simd")] pub mod vector;` — and dalek's
+  build.rs reads that cfg from `CARGO_CFG_CURVE25519_DALEK_BACKEND`.
+- **The fix (one line):** `.cargo/config.toml` rustflags
+  `--cfg curve25519_dalek_backend="serial"` compiles the entire second SIMD
+  surface out. Verified after `cargo clean -p curve25519-dalek`: the build
+  emits `curve25519_dalek_backend="serial"` only.
+- **`serial` costs nothing we use:** X25519's Montgomery ladder
+  (`montgomery.rs`) never references the vector backend; the vector path
+  serves only Edwards multi-scalar / variable-base multiplication (batch
+  verification, Ristretto protocols) — neither performed by
+  `crates/encryption`.
+
+**The rule this mints:** before porting a third-party crate's SIMD onto
+`ndarray::simd` — and *long* before removing the crate — grep for the
+backend's cfg/feature gate. "It contains raw intrinsics" and "raw intrinsics
+reach the binary" are different claims; the matryoshka invariant binds the
+second, not the first. PR #258 (merged `b127e25`) is the worked example: the
+removal reverted, Ed25519 kept, the surface neutralized by cfg, diff net
+additive.
+
+**Carried tripwire (X25519 port):** `x448::x448()` returns `Option` and
+rejects low-order points; `x25519_dalek::x25519()` returns a bare
+`[u8; 32]` — RFC 7748's contributory check is OPTIONAL, so a mechanical port
+drops it silently. The test
+`channel::tests::low_order_peer_keys_are_refused_and_honest_ones_are_not`
+(both halves asserted, per the falsifiability rule) fails if it does.
+
+Cross-ref: PR #258 body (the full correction narrative), `.cargo/config.toml`
+comment block (the in-tree record), lance-graph
+`E-VACUOUS-ASSERTION-IS-THE-HOUSE-STYLE-1` (the falsifiability rule the
+low-order test follows).

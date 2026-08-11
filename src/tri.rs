@@ -342,7 +342,10 @@ mod tests {
     #[test]
     fn test_odd_k() {
         let x = array![[1, 2, 3], [4, 5, 6], [7, 8, 9]];
-        let z = Array2::zeros([3, 3]);
+        // Explicit element type: `serde_json` (dev-dep via criterion) now ships
+        // `impl PartialEq<Value> for i32`, so bare `Array2::zeros` leaves the
+        // `assert_eq!` element type ambiguous.
+        let z = Array2::<i32>::zeros([3, 3]);
         assert_eq!(x.triu(isize::MIN), x);
         assert_eq!(x.tril(isize::MIN), z);
         assert_eq!(x.triu(isize::MAX), z);

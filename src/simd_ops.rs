@@ -20,7 +20,7 @@
 //! delete them without verifying every BLAS-graph kernel still compiles
 //! AND that the JIT alternative has been re-evaluated.**
 
-use crate::simd::{F32x16, F64x8};
+use crate::simd::{bf16_to_f32_batch, F32x16, F64x8};
 
 // ═══════════════════════════════════════════════════════════════════
 // f32 binary ops (out-of-place)
@@ -556,6 +556,136 @@ pub fn array_windows_checked<T, const N: usize>(data: &[T]) -> Result<impl Itera
     Ok(array_windows::<T, N>(data))
 }
 
+/// BF16 16×16 tile GEMM: `C[16,16] += A[16,K] · B[K,16]` where `A`, `B` are
+/// BF16 row-major (`u16` bit patterns) and `C` is f32 row-major. `K` must be a
+/// multiple of 32.
+///
+/// Pure SIMD-polyfill kernel: decodes BF16→f32 and accumulates with
+/// [`F32x16::mul_add`] (FMA), so it rides the polyfill's per-arch escalation —
+/// AVX-512 `VFMADD231PS` where available, the emulated `(F32x8, F32x8)` pair on
+/// AVX2, NEON on aarch64, scalar otherwise. The `F32x16` wrapper owns the
+/// dispatch; there is no AMX intrinsic and no external BLAS backend.
+///
+/// Accumulates into `c` (`+=`), matching BLAS `C := A·B + C`. Inputs are
+/// decoded BF16→f32, so the result matches an f32-accumulated scalar reference
+/// up to BF16 input precision (~2⁻⁸ per multiply, O(√K) accumulated).
+///
+/// # Panics
+/// Panics if `k % 32 != 0`, `a_bf16.len() != 16 * k`, `b_bf16.len() != k * 16`,
+/// or `c.len() != 256`.
+///
+/// # Examples
+/// ```
+/// use ndarray::simd::{bf16_tile_gemm_16x16, f32_to_bf16_scalar};
+/// let k = 32;
+/// let a = vec![f32_to_bf16_scalar(1.0); 16 * k];
+/// let b = vec![f32_to_bf16_scalar(1.0); k * 16];
+/// let mut c = vec![0.0f32; 256];
+/// bf16_tile_gemm_16x16(&a, &b, &mut c, k);
+/// assert!((c[0] - k as f32).abs() < 1e-3); // Σ_{p<k} 1·1 = k
+/// ```
+pub fn bf16_tile_gemm_16x16(a_bf16: &[u16], b_bf16: &[u16], c: &mut [f32], k: usize) {
+    assert_eq!(k % 32, 0, "K must be a multiple of 32");
+    assert_eq!(a_bf16.len(), 16 * k, "A must be 16xK BF16 row-major");
+    assert_eq!(b_bf16.len(), k * 16, "B must be Kx16 BF16 row-major");
+    assert_eq!(c.len(), 16 * 16, "C must be 16x16 f32 row-major");
+
+    // Decode BF16 -> f32 once; the batch decode rides the polyfill too.
+    let mut a_f32 = vec![0.0f32; a_bf16.len()];
+    let mut b_f32 = vec![0.0f32; b_bf16.len()];
+    bf16_to_f32_batch(a_bf16, &mut a_f32);
+    bf16_to_f32_batch(b_bf16, &mut b_f32);
+
+    // C[i,j] += dot(A row i, B col j) via F32x16 + FMA on 16-wide chunks.
+    // K is a multiple of 32, so chunks_exact(16) tiles A's row / B's column
+    // with no remainder.
+    for i in 0..16 {
+        let a_row = &a_f32[i * k..i * k + k];
+        for j in 0..16 {
+            // Gather B column j (row-major B is strided by 16) into a buffer so
+            // the dot product hits the contiguous chunks_exact(16) fast path.
+            let mut col = vec![0.0f32; k];
+            for (kk, slot) in col.iter_mut().enumerate() {
+                *slot = b_f32[kk * 16 + j];
+            }
+            let mut acc = F32x16::splat(0.0);
+            for (ra, rb) in a_row.chunks_exact(16).zip(col.chunks_exact(16)) {
+                acc = F32x16::from_slice(ra).mul_add(F32x16::from_slice(rb), acc);
+            }
+            c[i * 16 + j] += acc.reduce_sum();
+        }
+    }
+}
+
+#[cfg(test)]
+mod bf16_tile_gemm_tests {
+    use super::*;
+    use crate::simd::{bf16_to_f32_batch, f32_to_bf16_batch, f32_to_bf16_scalar};
+
+    /// Scalar BF16 reference (f32-accumulated, `+=`) — the correctness anchor.
+    fn ref_gemm(a: &[f32], b: &[f32], c: &mut [f32], k: usize) {
+        for i in 0..16 {
+            for j in 0..16 {
+                let mut s = 0.0f32;
+                for kk in 0..k {
+                    s += a[i * k + kk] * b[kk * 16 + j];
+                }
+                c[i * 16 + j] += s;
+            }
+        }
+    }
+
+    #[test]
+    fn matches_scalar_reference_k64() {
+        let k = 64;
+        let mut a_f32 = vec![0.0f32; 16 * k];
+        let mut b_f32 = vec![0.0f32; k * 16];
+        for (i, v) in a_f32.iter_mut().enumerate() {
+            *v =
+                (((i as i32).wrapping_mul(1103515245).wrapping_add(12345) >> 8) as f32 / 2147483648.0).clamp(-1.0, 1.0);
+        }
+        for (i, v) in b_f32.iter_mut().enumerate() {
+            *v = (((i as i32).wrapping_mul(69069).wrapping_add(1) >> 8) as f32 / 2147483648.0).clamp(-1.0, 1.0);
+        }
+        let mut a_bf16 = vec![0u16; a_f32.len()];
+        let mut b_bf16 = vec![0u16; b_f32.len()];
+        f32_to_bf16_batch(&a_f32, &mut a_bf16);
+        f32_to_bf16_batch(&b_f32, &mut b_bf16);
+
+        // Reference consumes the same BF16-truncated inputs the kernel sees.
+        let mut a_back = vec![0.0f32; a_f32.len()];
+        let mut b_back = vec![0.0f32; b_f32.len()];
+        bf16_to_f32_batch(&a_bf16, &mut a_back);
+        bf16_to_f32_batch(&b_bf16, &mut b_back);
+        let mut c_ref = vec![0.0f32; 256];
+        ref_gemm(&a_back, &b_back, &mut c_ref, k);
+
+        let mut c = vec![0.0f32; 256];
+        bf16_tile_gemm_16x16(&a_bf16, &b_bf16, &mut c, k);
+
+        let max_err = c
+            .iter()
+            .zip(&c_ref)
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0f32, f32::max);
+        assert!(max_err < 1e-3, "polyfill vs scalar ref max_err = {max_err}");
+    }
+
+    #[test]
+    fn accumulates_into_c() {
+        // C is preloaded with 5.0; the kernel must ADD, not overwrite.
+        let k = 32;
+        let a = vec![f32_to_bf16_scalar(1.0); 16 * k];
+        let b = vec![f32_to_bf16_scalar(1.0); k * 16];
+        let mut c = vec![5.0f32; 256];
+        bf16_tile_gemm_16x16(&a, &b, &mut c, k);
+        // 5 (preload) + Σ_{p<32} 1·1 = 37
+        for v in &c {
+            assert!((v - 37.0).abs() < 1e-3, "got {v}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod array_chunks_tests {
     use super::*;
@@ -748,5 +878,513 @@ mod add_mul_tests {
                 assert!((got - want).abs() < 1e-10, "len={len} idx={i}: got={got} want={want}");
             }
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Tiled f64 GEMM — the crate-native, bit-exact reference GEMM
+// ═══════════════════════════════════════════════════════════════════
+
+/// Tiled GEMM: `C := alpha·A·B + beta·C` (f64, row-major, leading dims).
+///
+/// The crate-native f64 GEMM: a TILE=64-blocked loop nest with the
+/// innermost j-run vectorized on the dispatched [`F64x8`] (AVX-512 /
+/// AVX2 / NEON / WASM-SIMD128 / scalar — one source, every backend).
+/// Entirely in-crate with a bit-exactness contract, so probes can
+/// certify other kernels against it as ground truth — and since it IS
+/// the engine behind `backend::native::gemm_f64`, the native f64 BLAS
+/// path carries the same auditable numerics (the f32 sibling still
+/// delegates to the external `matrixmultiply` crate).
+///
+/// # Bit-exactness contract
+///
+/// Every `C[i,j]` receives the exact IEEE op sequence
+/// `c = c + (alpha·A[i,p])·B[p,j]` in ascending-`p` order, with the
+/// multiply and add **unfused** (the `*`/`+` operators on the SIMD
+/// types lower to plain `mul`/`add` on every backend — never
+/// FMA-contracted). The result is therefore **bit-identical across all
+/// backends for non-NaN inputs** (NaN-*ness* propagates everywhere,
+/// but NaN *payloads* are backend-defined — WASM in particular may
+/// canonicalize), and for `alpha == 1.0, beta == 0.0` (the
+/// certification shape) bit-identical to the naive triple-loop
+/// reference `s = Σ_p A[i,p]·B[p,j]; C[i,j] = s`.
+///
+/// Edge semantics: `m == 0` or `n == 0` is a no-op (`c` untouched);
+/// `k == 0` applies only the beta pass; `beta == 0.0` overwrites `c`
+/// without reading it (BLAS convention — pre-existing NaN/Inf in `c`
+/// do not propagate); `beta == 1.0` accumulates into `c` as-is;
+/// non-finite values in `a`/`b` propagate per IEEE. Unlike BLAS
+/// `xGEMM`, `alpha == 0.0` does **not** short-circuit the product
+/// term: `a`/`b` are still read and `(±0.0·a)·b` terms are added, so
+/// NaN/Inf in `a`/`b` propagate into `c` (`0·Inf = NaN`) and a `-0.0`
+/// in `c` can flip to `+0.0`.
+///
+/// Free-function shape follows the simd-surface GEMM family precedent
+/// ([`bf16_tile_gemm_16x16`], `matmul_i8_to_i32`) — an 11-argument
+/// slice-level BLAS kernel has no typed-wrapper home (W1a).
+///
+/// # Panics
+///
+/// Panics if `lda < k`, `ldb < n`, `ldc < n`, or if `a`, `b`, or `c`
+/// is shorter than `(rows − 1)·ld + cols` for its shape (computed
+/// overflow-checked). All checks are skipped when `m == 0 || n == 0`
+/// (the no-op path), and the `a`/`b` length checks are skipped when
+/// `k == 0` (neither is read).
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::gemm_f64_tiled;
+///
+/// let a = [1.0, 2.0, 3.0, 4.0]; // 2×2 row-major
+/// let b = [5.0, 6.0, 7.0, 8.0]; // 2×2 row-major
+/// let mut c = [0.0f64; 4];
+/// gemm_f64_tiled(2, 2, 2, 1.0, &a, 2, &b, 2, 0.0, &mut c, 2);
+/// assert_eq!(c, [19.0, 22.0, 43.0, 50.0]);
+/// ```
+// BLAS gemm argument list kept verbatim (drop-in for `backend::native::gemm_f64`).
+#[allow(clippy::too_many_arguments)]
+pub fn gemm_f64_tiled(
+    m: usize, n: usize, k: usize, alpha: f64, a: &[f64], lda: usize, b: &[f64], ldb: usize, beta: f64, c: &mut [f64],
+    ldc: usize,
+) {
+    gemm_f64_tiled_impl::<false>(m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+/// Fast tier of [`gemm_f64_tiled`]: same tiling, same ascending-`p`
+/// per-element order, but each step is a **fused** multiply-add
+/// (`c = fma(alpha·A[i,p], B[p,j], c)` — one rounding per step via
+/// `F64x8::mul_add`; fused semantics on every backend, though the
+/// lowering varies: native `vfmadd` on the AVX-512 arm, `vfmaq_f64` on
+/// NEON, per-lane `f64::mul_add` on the AVX2 polyfill and the scalar
+/// tail — which can become a libm `fma()` call on targets built
+/// without the `fma` feature: correct, but slow. Prefer the reference
+/// tier, or an FMA-capable target pin, in that situation).
+///
+/// Semantics relative to the reference tier:
+/// - **Deterministic per (build, runtime)**, but NOT bit-stable across
+///   backends: fusion differs (WASM without `relaxed-simd` has no
+///   fused vector `mul_add`, so its vector lanes match the unfused
+///   reference while the scalar tail is still fused; WASM WITH
+///   `relaxed-simd` uses `f64x2_relaxed_madd`, whose fusion is
+///   implementation-defined — the same wasm binary may round
+///   differently on different runtimes).
+/// - **Bit-identical to [`gemm_f64_tiled`]** whenever every
+///   `a_val·b` product and running sum is exactly representable —
+///   e.g. integer-valued data with products and accumulation inside
+///   `2^53` (asserted in tests). On general float data each step
+///   differs from the reference by at most the dropped intermediate
+///   rounding (classic FMA-vs-mul+add last-ulp effects).
+/// - Same argument contract, edge semantics, and panics as
+///   [`gemm_f64_tiled`].
+///
+/// Use the reference tier for certification/ground truth; use this
+/// tier when GEMM throughput matters.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::{gemm_f64_tiled, gemm_f64_tiled_fma};
+///
+/// let a = [1.0, 2.0, 3.0, 4.0]; // integer-valued → tiers bit-identical
+/// let b = [5.0, 6.0, 7.0, 8.0];
+/// let (mut c1, mut c2) = ([0.0f64; 4], [0.0f64; 4]);
+/// gemm_f64_tiled(2, 2, 2, 1.0, &a, 2, &b, 2, 0.0, &mut c1, 2);
+/// gemm_f64_tiled_fma(2, 2, 2, 1.0, &a, 2, &b, 2, 0.0, &mut c2, 2);
+/// assert_eq!(c1, c2);
+/// assert_eq!(c1, [19.0, 22.0, 43.0, 50.0]);
+/// ```
+#[allow(clippy::too_many_arguments)]
+pub fn gemm_f64_tiled_fma(
+    m: usize, n: usize, k: usize, alpha: f64, a: &[f64], lda: usize, b: &[f64], ldb: usize, beta: f64, c: &mut [f64],
+    ldc: usize,
+) {
+    gemm_f64_tiled_impl::<true>(m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn gemm_f64_tiled_impl<const FMA: bool>(
+    m: usize, n: usize, k: usize, alpha: f64, a: &[f64], lda: usize, b: &[f64], ldb: usize, beta: f64, c: &mut [f64],
+    ldc: usize,
+) {
+    if m == 0 || n == 0 {
+        return;
+    }
+    assert!(lda >= k, "lda ({lda}) must be >= k ({k})");
+    assert!(ldb >= n, "ldb ({ldb}) must be >= n ({n})");
+    assert!(ldc >= n, "ldc ({ldc}) must be >= n ({n})");
+    // Overflow-checked extents: a wrapping (rows−1)·ld in release would let
+    // the precondition spuriously pass and surface later as a mid-compute
+    // index panic (after the beta pass mutated `c`).
+    let extent = |rows: usize, ld: usize, cols: usize| {
+        (rows - 1)
+            .checked_mul(ld)
+            .and_then(|x| x.checked_add(cols))
+            .expect("matrix extent overflows usize")
+    };
+    if k > 0 {
+        assert!(a.len() >= extent(m, lda, k), "a too short for m×k with lda");
+        assert!(b.len() >= extent(k, ldb, n), "b too short for k×n with ldb");
+    }
+    assert!(c.len() >= extent(m, ldc, n), "c too short for m×n with ldc");
+
+    const TILE: usize = 64;
+    const LANES: usize = 8; // F64x8
+
+    // Beta pass — one scalar op per element (`= 0.0` / `*= beta`), so the
+    // pass is trivially bit-identical however it is traversed.
+    if beta == 0.0 {
+        for i in 0..m {
+            for x in &mut c[i * ldc..i * ldc + n] {
+                *x = 0.0;
+            }
+        }
+    } else if beta != 1.0 {
+        for i in 0..m {
+            for x in &mut c[i * ldc..i * ldc + n] {
+                *x *= beta;
+            }
+        }
+    }
+
+    let mut kk = 0;
+    while kk < k {
+        let kb = TILE.min(k - kk);
+        let mut ii = 0;
+        while ii < m {
+            let ib = TILE.min(m - ii);
+            let mut jj = 0;
+            while jj < n {
+                let jb = TILE.min(n - jj);
+                let nvec = jb / LANES; // ≤ TILE/LANES full-lane groups
+                let ntail = jb % LANES;
+                for i in 0..ib {
+                    let c_row = (ii + i) * ldc + jj;
+                    // Register-resident C row-block: load once, accumulate the
+                    // whole kb-loop in registers, store once. f64→f64
+                    // store/reload never rounds, so this is bit-identical to
+                    // per-step write-back — same per-element op sequence, the
+                    // C-row traffic just drops from O(kb) to O(1).
+                    let mut acc = [F64x8::splat(0.0); TILE / LANES];
+                    for (v, av) in acc.iter_mut().enumerate().take(nvec) {
+                        *av = F64x8::from_slice(&c[c_row + v * LANES..]);
+                    }
+                    let mut tail = [0.0f64; LANES - 1];
+                    for (t, tv) in tail.iter_mut().enumerate().take(ntail) {
+                        *tv = c[c_row + nvec * LANES + t];
+                    }
+                    for p in 0..kb {
+                        let a_val = alpha * a[(ii + i) * lda + (kk + p)];
+                        let va = F64x8::splat(a_val);
+                        let b_row = (kk + p) * ldb + jj;
+                        // Reference tier: unfused `acc + va·vb`, bit-identical
+                        // to the scalar tail. FMA tier: fused, one rounding per
+                        // step. Monomorphized — no runtime branch.
+                        for (v, av) in acc.iter_mut().enumerate().take(nvec) {
+                            let vb = F64x8::from_slice(&b[b_row + v * LANES..]);
+                            *av = if FMA { va.mul_add(vb, *av) } else { *av + va * vb };
+                        }
+                        for (t, tv) in tail.iter_mut().enumerate().take(ntail) {
+                            let bv = b[b_row + nvec * LANES + t];
+                            *tv = if FMA { a_val.mul_add(bv, *tv) } else { *tv + a_val * bv };
+                        }
+                    }
+                    for (v, av) in acc.iter().enumerate().take(nvec) {
+                        av.copy_to_slice(&mut c[c_row + v * LANES..]);
+                    }
+                    for (t, tv) in tail.iter().enumerate().take(ntail) {
+                        c[c_row + nvec * LANES + t] = *tv;
+                    }
+                }
+                jj += jb;
+            }
+            ii += ib;
+        }
+        kk += kb;
+    }
+}
+
+#[cfg(test)]
+mod gemm_f64_tiled_tests {
+    use super::gemm_f64_tiled;
+
+    /// splitmix64 finalizer → f64 in [-1, 1) with full mantissa churn.
+    fn mix(mut z: u64) -> u64 {
+        z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+    fn rnd(seed: u64) -> f64 {
+        (mix(seed) as f64 / u64::MAX as f64) * 2.0 - 1.0
+    }
+
+    /// Reference with the SAME documented op sequence: beta pass, then
+    /// `c += (alpha·a)·b` in ascending-p order. Bit-exact oracle.
+    #[allow(clippy::too_many_arguments)]
+    fn ref_gemm_ipj(
+        m: usize, n: usize, k: usize, alpha: f64, a: &[f64], lda: usize, b: &[f64], ldb: usize, beta: f64,
+        c: &mut [f64], ldc: usize,
+    ) {
+        for i in 0..m {
+            for x in &mut c[i * ldc..i * ldc + n] {
+                if beta == 0.0 {
+                    *x = 0.0;
+                } else if beta != 1.0 {
+                    *x *= beta;
+                }
+            }
+        }
+        for i in 0..m {
+            for p in 0..k {
+                let a_val = alpha * a[i * lda + p];
+                for j in 0..n {
+                    c[i * ldc + j] += a_val * b[p * ldb + j];
+                }
+            }
+        }
+    }
+
+    /// The classic naive form (local accumulator, i-j-k). Bit-identical to
+    /// the kernel for alpha=1, beta=0 — the certification shape.
+    #[allow(clippy::too_many_arguments)]
+    fn ref_naive_ijk(
+        m: usize, n: usize, k: usize, a: &[f64], lda: usize, b: &[f64], ldb: usize, ldc: usize,
+    ) -> Vec<f64> {
+        let mut c = vec![0.0f64; if m == 0 { 0 } else { (m - 1) * ldc + n }];
+        for i in 0..m {
+            for j in 0..n {
+                let mut s = 0.0f64;
+                for p in 0..k {
+                    s += a[i * lda + p] * b[p * ldb + j];
+                }
+                c[i * ldc + j] = s;
+            }
+        }
+        c
+    }
+
+    fn fill(len: usize, salt: u64) -> Vec<f64> {
+        (0..len).map(|i| rnd(i as u64 ^ salt)).collect()
+    }
+
+    fn assert_bits_eq(got: &[f64], want: &[f64], tag: &str) {
+        assert_eq!(got.len(), want.len(), "{tag}: length");
+        for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
+            assert_eq!(g.to_bits(), w.to_bits(), "{tag}: bit mismatch at {i}: got {g:e}, want {w:e}");
+        }
+    }
+
+    const SHAPES: &[(usize, usize, usize)] = &[
+        (1, 1, 1),
+        (2, 3, 4),
+        (3, 7, 5),
+        (7, 8, 9),
+        (8, 8, 8),
+        (16, 16, 16),
+        (9, 17, 33),
+        (16, 16, 64),
+        (5, 8, 128),
+        (65, 3, 65),
+        (64, 64, 64),
+        (70, 70, 70),
+        (1, 100, 1),
+    ];
+
+    #[test]
+    fn bit_exact_vs_both_references_shape_sweep() {
+        for &(m, n, k) in SHAPES {
+            let a = fill(m * k, 0xA);
+            let b = fill(k * n, 0xB);
+            let mut c = vec![0.0f64; m * n];
+            gemm_f64_tiled(m, n, k, 1.0, &a, k, &b, n, 0.0, &mut c, n);
+
+            let mut c_ref = vec![0.0f64; m * n];
+            ref_gemm_ipj(m, n, k, 1.0, &a, k, &b, n, 0.0, &mut c_ref, n);
+            assert_bits_eq(&c, &c_ref, &format!("ipj ({m},{n},{k})"));
+
+            let c_naive = ref_naive_ijk(m, n, k, &a, k, &b, n, n);
+            assert_bits_eq(&c, &c_naive, &format!("naive ({m},{n},{k})"));
+        }
+    }
+
+    #[test]
+    fn bit_exact_general_alpha_beta_preloaded_c() {
+        // Full shape sweep × 4 (alpha, beta) combos = 52 kernel invocations,
+        // + 13 in the sweep above + edge tests → 70+ corpus entries (W1a
+        // criterion 3's "50+ test inputs").
+        for &(m, n, k) in SHAPES {
+            for &(alpha, beta) in &[(0.75, 2.5), (-1.25, 1.0), (2.0, -0.5), (0.0, 3.0)] {
+                let a = fill(m * k, 0x1);
+                let b = fill(k * n, 0x2);
+                let c0 = fill(m * n, 0x3);
+                let mut c = c0.clone();
+                gemm_f64_tiled(m, n, k, alpha, &a, k, &b, n, beta, &mut c, n);
+                let mut c_ref = c0.clone();
+                ref_gemm_ipj(m, n, k, alpha, &a, k, &b, n, beta, &mut c_ref, n);
+                assert_bits_eq(&c, &c_ref, &format!("({m},{n},{k}) α={alpha} β={beta}"));
+            }
+        }
+    }
+
+    #[test]
+    fn strided_leading_dims_padding_untouched() {
+        let (m, n, k) = (17usize, 9usize, 33usize);
+        let (lda, ldb, ldc) = (k + 5, n + 3, n + 7);
+        const SENTINEL: f64 = 12345.678;
+        let mut a = vec![SENTINEL; (m - 1) * lda + k + 4];
+        let mut b = vec![SENTINEL; (k - 1) * ldb + n + 2];
+        let mut c = vec![SENTINEL; (m - 1) * ldc + n + 6];
+        for i in 0..m {
+            for p in 0..k {
+                a[i * lda + p] = rnd((i * k + p) as u64 ^ 0x11);
+            }
+        }
+        for p in 0..k {
+            for j in 0..n {
+                b[p * ldb + j] = rnd((p * n + j) as u64 ^ 0x22);
+            }
+        }
+        for i in 0..m {
+            for j in 0..n {
+                c[i * ldc + j] = rnd((i * n + j) as u64 ^ 0x33);
+            }
+        }
+        let mut c_ref = c.clone();
+        gemm_f64_tiled(m, n, k, 1.5, &a, lda, &b, ldb, 0.5, &mut c, ldc);
+        ref_gemm_ipj(m, n, k, 1.5, &a, lda, &b, ldb, 0.5, &mut c_ref, ldc);
+        assert_bits_eq(&c, &c_ref, "strided");
+        // Row padding (columns n..ldc) must be untouched.
+        for i in 0..m - 1 {
+            for j in n..ldc {
+                assert_eq!(c[i * ldc + j], c_ref[i * ldc + j], "padding clobbered at row {i} col {j}");
+                assert_eq!(c[i * ldc + j].to_bits(), SENTINEL.to_bits(), "padding not sentinel at row {i} col {j}");
+            }
+        }
+    }
+
+    #[test]
+    fn beta_zero_overwrites_nan_c() {
+        let (m, n, k) = (8usize, 11usize, 5usize);
+        let a = fill(m * k, 0x4);
+        let b = fill(k * n, 0x5);
+        let mut c = vec![f64::NAN; m * n];
+        gemm_f64_tiled(m, n, k, 1.0, &a, k, &b, n, 0.0, &mut c, n);
+        let c_naive = ref_naive_ijk(m, n, k, &a, k, &b, n, n);
+        assert_bits_eq(&c, &c_naive, "beta=0 over NaN");
+    }
+
+    #[test]
+    fn k_zero_applies_beta_only() {
+        let (m, n) = (6usize, 10usize);
+        let c0 = fill(m * n, 0x6);
+        // beta = 0 → zeros
+        let mut c = c0.clone();
+        gemm_f64_tiled(m, n, 0, 1.0, &[], 0, &[], n, 0.0, &mut c, n);
+        assert!(c.iter().all(|x| x.to_bits() == 0.0f64.to_bits()), "beta=0, k=0 must zero c");
+        // beta = 2.5 → scaled
+        let mut c = c0.clone();
+        gemm_f64_tiled(m, n, 0, 1.0, &[], 0, &[], n, 2.5, &mut c, n);
+        for (got, want) in c.iter().zip(c0.iter()) {
+            assert_eq!(got.to_bits(), (want * 2.5).to_bits(), "beta=2.5, k=0 must scale c");
+        }
+        // beta = 1 → untouched
+        let mut c = c0.clone();
+        gemm_f64_tiled(m, n, 0, 1.0, &[], 0, &[], n, 1.0, &mut c, n);
+        assert_bits_eq(&c, &c0, "beta=1, k=0");
+    }
+
+    #[test]
+    fn m_or_n_zero_is_noop() {
+        let mut c = vec![7.5f64; 12];
+        gemm_f64_tiled(0, 4, 3, 1.0, &[], 3, &[1.0; 12], 4, 0.0, &mut c, 4);
+        gemm_f64_tiled(3, 0, 4, 1.0, &[1.0; 12], 4, &[], 1, 0.0, &mut c, 1);
+        assert!(c.iter().all(|x| x.to_bits() == 7.5f64.to_bits()), "m==0 / n==0 must not touch c");
+    }
+
+    #[test]
+    fn denormals_and_negzero_bit_exact() {
+        let (m, n, k) = (4usize, 9usize, 7usize);
+        let mut a = fill(m * k, 0x7);
+        let mut b = fill(k * n, 0x8);
+        // Inject denormals, -0.0, and tiny/huge magnitudes.
+        a[0] = 5e-324; // smallest denormal
+        a[1] = -0.0;
+        a[2] = 1e-310;
+        b[0] = -5e-324;
+        b[1] = -0.0;
+        b[2] = 1e300;
+        let mut c = vec![0.0f64; m * n];
+        gemm_f64_tiled(m, n, k, 1.0, &a, k, &b, n, 0.0, &mut c, n);
+        let c_naive = ref_naive_ijk(m, n, k, &a, k, &b, n, n);
+        assert_bits_eq(&c, &c_naive, "denormals");
+    }
+
+    // ── FMA tier ──
+
+    /// Integer-valued corpus: values in [-9, 9], so every a·b product
+    /// (≤ 81) and running sum (≤ k_max·81·|α| + 9 = 128·81·2 + 9 ≈ 2.1e4,
+    /// far below 2^53) is exactly representable — fused and unfused
+    /// steps round identically → tiers bit-identical.
+    fn fill_int(len: usize, salt: u64) -> Vec<f64> {
+        (0..len)
+            .map(|i| ((mix(i as u64 ^ salt) % 19) as i64 - 9) as f64)
+            .collect()
+    }
+
+    #[test]
+    fn fma_bit_identical_to_reference_on_integer_operands() {
+        for &(m, n, k) in SHAPES {
+            for &(alpha, beta) in &[(1.0, 0.0), (2.0, 1.0)] {
+                let a = fill_int(m * k, 0xF1);
+                let b = fill_int(k * n, 0xF2);
+                let c0 = fill_int(m * n, 0xF3);
+                let mut c_ref = c0.clone();
+                let mut c_fma = c0.clone();
+                super::gemm_f64_tiled(m, n, k, alpha, &a, k, &b, n, beta, &mut c_ref, n);
+                super::gemm_f64_tiled_fma(m, n, k, alpha, &a, k, &b, n, beta, &mut c_fma, n);
+                assert_bits_eq(&c_fma, &c_ref, &format!("fma int ({m},{n},{k}) α={alpha} β={beta}"));
+            }
+        }
+    }
+
+    #[test]
+    fn fma_matches_reference_within_fused_rounding_on_floats() {
+        for &(m, n, k) in SHAPES {
+            let a = fill(m * k, 0xF4);
+            let b = fill(k * n, 0xF5);
+            let mut c_ref = vec![0.0f64; m * n];
+            let mut c_fma = vec![0.0f64; m * n];
+            super::gemm_f64_tiled(m, n, k, 1.0, &a, k, &b, n, 0.0, &mut c_ref, n);
+            super::gemm_f64_tiled_fma(m, n, k, 1.0, &a, k, &b, n, 0.0, &mut c_fma, n);
+            // FMA-vs-unfused divergence scales with the SUMMAND magnitudes
+            // (each step drops one intermediate rounding relative to the
+            // running sum), not with the possibly-cancelled final value:
+            // ≤ k steps × ~2ε per step × O(1) summands for inputs in [-1,1).
+            let tol = (k as f64) * 4.0 * f64::EPSILON;
+            for (i, (f, r)) in c_fma.iter().zip(c_ref.iter()).enumerate() {
+                let tol = tol.max(1e-13 * r.abs());
+                assert!(
+                    (f - r).abs() <= tol,
+                    "fma float ({m},{n},{k}) idx {i}: fma={f:e} ref={r:e} (Δ={:e} > tol={tol:e})",
+                    (f - r).abs()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fma_edge_cases_match_reference() {
+        // k=0 beta pass, m/n=0 no-op — same paths as the reference tier.
+        let c0 = fill(24, 0xF6);
+        let mut c_ref = c0.clone();
+        let mut c_fma = c0.clone();
+        super::gemm_f64_tiled(4, 6, 0, 1.0, &[], 0, &[], 6, 2.5, &mut c_ref, 6);
+        super::gemm_f64_tiled_fma(4, 6, 0, 1.0, &[], 0, &[], 6, 2.5, &mut c_fma, 6);
+        assert_bits_eq(&c_fma, &c_ref, "fma k=0");
+        let mut c = c0.clone();
+        super::gemm_f64_tiled_fma(0, 6, 4, 1.0, &[], 4, &[1.0; 24], 6, 0.0, &mut c, 6);
+        assert_bits_eq(&c, &c0, "fma m=0 no-op");
     }
 }

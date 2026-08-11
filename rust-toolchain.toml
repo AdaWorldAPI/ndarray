@@ -17,5 +17,9 @@ channel = "1.97.1"
 #              alignment — nothing in the dependency graph moves with it.
 #
 # Never auto-track `stable` — bump explicitly when a future version is reviewed
-# and the workspace clippy passes clean.
+# and the workspace clippy passes clean.#
+# The `channel` here and `Cargo.toml`'s `rust-version` must move TOGETHER —
+# they were out of step once (channel bumped, manifest left at 1.95) and the
+# split MSRV surfaced downstream. (Folded from the parallel master-side bump
+# comment at the 2026-08-11 merge; both sides pinned the same 1.97.1.)
 components = ["clippy", "rustfmt"]

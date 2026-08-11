@@ -21,8 +21,8 @@ env:
   # `LazyLock<Tier>` detection means one binary, all ISAs. Jobs that
   # specifically need a higher target-cpu can opt in via per-job env.
   RUSTFLAGS: "-D warnings"
-  MSRV: 1.95.0
-  BLAS_MSRV: 1.95.0
+  MSRV: 1.97.1
+  BLAS_MSRV: 1.97.1
 
 jobs:
   pass-msrv:
@@ -41,18 +41,18 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # Pinned to 1.95.0 to match `rust-toolchain.toml`. The workspace
-        # bumped from 1.94.1 → 1.95.0 in commit
+        # Pinned to 1.97.1 to match `rust-toolchain.toml`. The workspace
+        # bumped from 1.94.1 → 1.97.1 in commit
         # https://github.com/AdaWorldAPI/ndarray (this PR) to align with
         # bevy (edition 2024 → 1.95 MSRV) and lance-graph. 1.95 added the
         # `clippy::manual_checked_ops` lint which fires on
         # `impl_owned_array.rs::into_scalar` — fixed in this same PR.
         rust:
-          - "1.95.0"
+          - "1.97.1"
     name: clippy/${{ matrix.rust }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
@@ -74,10 +74,10 @@ jobs:
     # That state no longer exists; the band-aid is removed in this PR.
     steps:
       - uses: actions/checkout@v4
-      # Stable rustfmt 1.95.0 — pinned in `rust-toolchain.toml`. No
+      # Stable rustfmt 1.97.1 — pinned in `rust-toolchain.toml`. No
       # nightly dependency since rustfmt.toml is stable-clean post-PR
       # #133.
-      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: rustfmt
       - run: cargo fmt --all --check
@@ -99,7 +99,7 @@ jobs:
         with:
           toolchain: ${{ matrix.rust }}
           targets: ${{ matrix.target }}
-      # rust-toolchain.toml pins 1.95.0 — install the cross-compile target
+      # rust-toolchain.toml pins 1.97.1 — install the cross-compile target
       # for that toolchain too, since dtolnay/rust-toolchain only installs
       # for the matrix value which may differ from the pinned version.
       - run: rustup target add ${{ matrix.target }}
@@ -111,6 +111,57 @@ jobs:
           # critical-section; only its dev-dependency tree pulls std-requiring
           # crates that have no business existing in the nostd build.
           cargo rustc -p ndarray "--target=${{ matrix.target }}" --no-default-features --features portable-atomic-critical-section
+
+  wasm_simd:
+    # The x86 `cargo test` suite never touches `simd_wasm.rs` (it is cfg'd to
+    # wasm32), so wasm SIMD correctness is otherwise unverified. Build the real
+    # `ndarray::simd` wasm types (+simd128) via the excluded `wasm-simd-parity`
+    # cdylib and run its numeric selfcheck under node — both integration (the
+    # lib compiles for wasm32+simd128) and parity (each lane == scalar). The
+    # standing version of the one-off node check from commit 500d57e6.
+    runs-on: ubuntu-latest
+    name: wasm-simd/parity-node
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      # rust-toolchain.toml pins 1.97.1 — install the wasm target for the pinned
+      # toolchain too (dtolnay installs for `stable`, which may differ).
+      - run: rustup target add wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: wasm SIMD parity (build + node run)
+        run: ./scripts/wasm-parity.sh
+      # Guard the wasm matryoshka: the chacha20 fork's ndarray_simd backend must
+      # keep compiling for wasm32+simd128 (it rides the same U32x16 lane the node
+      # parity step above proves bit-exact). A future ndarray::simd change that
+      # broke the wasm backend build would fail here.
+      - name: wasm matryoshka backend (chacha20 fork) compiles for wasm32+simd128
+        run: RUSTFLAGS="-C target-feature=+simd128" cargo build --manifest-path vendor/chacha20/Cargo.toml --target wasm32-unknown-unknown --lib
+
+  neon_simd:
+    # The x86 `cargo test` suite never touches `simd_neon.rs` (it is cfg'd to
+    # aarch64), so NEON SIMD correctness is otherwise unverified. Cross-build the
+    # real `ndarray::simd` aarch64 types via the excluded `neon-simd-parity` bin
+    # and run its numeric selfcheck under qemu — both integration (the lib
+    # compiles for aarch64 on stable) and parity (each lane == scalar). The
+    # aarch64 twin of the wasm_simd job above.
+    runs-on: ubuntu-latest
+    name: neon-simd/parity-qemu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+      # rust-toolchain.toml pins 1.97.1 — install the aarch64 target for the
+      # pinned toolchain too (dtolnay installs for `stable`, which may differ).
+      - run: rustup target add aarch64-unknown-linux-gnu
+      - name: install aarch64 cross toolchain + qemu-user
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu qemu-user-static
+      - name: NEON SIMD parity (cross-build + qemu run)
+        run: ./scripts/neon-parity.sh
 
   tests:
     runs-on: ubuntu-latest
@@ -159,7 +210,7 @@ jobs:
     name: hpc-stream-parallel/rayon
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: dtolnay/rust-toolchain@1.97.1
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
       - name: cargo check (no rayon — scalar path unchanged)
@@ -335,6 +386,8 @@ jobs:
       - clippy
       - format
       - nostd
+      - wasm_simd
+      - neon_simd
       - tests
       - native-backend
       - hpc-stream-parallel

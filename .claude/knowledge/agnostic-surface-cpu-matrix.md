@@ -98,6 +98,30 @@ two `__m256i` halves; "4×NEON" means four 128-bit NEON registers (e.g.
 inner ops may currently use scalar storage under `#[target_feature]` rather
 than real `__m256i` intrinsics. Needs verification (see § J integration plan).
 
+> **⏳ RESOLVED — TD-T22 CLOSED, no gap (2026-07-28).** The audit is done and
+> the answer is: the storage IS scalar in the SOURCE, and that costs nothing.
+> `.cargo/config.toml` pins `-Ctarget-cpu=x86-64-v3` for every x86_64 build,
+> so LLVM auto-vectorizes the `avx2_int_type!` loop bodies into packed AVX2.
+> Measured on the ChaCha20 ARX triple over `U32x16`: **no scalar arithmetic
+> touches lane data** (the only non-vector ops across all three probes are
+> `retq` and the loop's `movl`/`decl`/`jne` trip counter),
+> `rotate_left(16)` strength-reduced to `vpshufb`, and the
+> 10-round double-round loop emits exactly **8 `vpaddd` for 64 u32 lanes** —
+> the AVX2 instruction-count floor, with no headroom a hand-written
+> `__m256i` version could recover. `reduce_sum` emits a logarithmic
+> `vpaddd`/`vpshufd`/`vextracti128` reduction tree, not the scalar fold its
+> source spells out. The float side matches: `F32x16::mul_add` is the same
+> `to_array` → loop → `from_array` shape and emits real `vfmadd213ps`.
+>
+> **So these ⏳ cells are ACCURATE AS WRITTEN and must not be read as a
+> performance defect.** A lowering can only be justified by `repr(align(64))`
+> cacheline guarantees (which the polyfill already has and a
+> `repr(transparent)` wrapper would LOSE), non-inlined ABI shape, or
+> `opt-level`/LLVM-version independence — never by speed.
+>
+> Full artifact with probe source, exact commands, and per-symbol instruction
+> histograms: `.claude/knowledge/td-t22-asm-investigation.md`.
+
 ### Mask vectors
 
 | Type      | SKX/CLX/CPL/ICX/SPR/GNR/Z4/Z5 | HSW/ARL | A76/A72/A53 | SCA |
@@ -531,6 +555,40 @@ verifies that no per-CPU regression has crept in vs the historical baseline:
    PRs that add a public symbol without a corresponding matrix entry.
 
 ## M. AArch64 ground-truth core enumeration (GCC source)
+
+> **Scope correction (appended 2026-07-27, operator-stated).** The heading and
+> the "authoritative" wording below overstate GCC's role. **GCC is the fill-in
+> for what we could not execute**; everything reachable was verified by running
+> it. Two distinct mechanisms, not to be conflated:
+>
+> - **Validation (what the lanes compute):** `scripts/neon-parity.sh` cross-builds
+>   `crates/neon-simd-parity` for `aarch64-unknown-linux-gnu` and runs it under
+>   `qemu-aarch64-static`, asserting the exercised lanes are bit-identical to
+>   their scalar reference; `scripts/wasm-parity.sh` is the wasm32+simd128 twin
+>   under node. **Coverage as of 2026-07-28 (from `selfcheck` in
+>   `crates/neon-simd-parity/src/main.rs`, not the full export surface):**
+>   `U32x16` (Add / BitXor / rotate_left — the ChaCha20/BLAKE ARX triple),
+>   `F32x16` (splat / roundtrip / add / reduce_sum), `I8x16` (roundtrip / add).
+>   Exported lanes NOT yet exercised there (e.g. `I16x8`, `U8x16`, `U64x2`) are
+>   **unverified by this harness** — a later SIMD audit must not treat them as
+>   measured; extending `selfcheck` is the way to promote one. Within its
+>   coverage these runs are the measurement of record for lane arithmetic — and
+>   they need **no physical silicon**, which is why the aarch64 surface could be
+>   measured at all.
+> - **Runtime detection (what a given CPU admits to having):**
+>   `sysctl hw.optional.arm.FEAT_*` on Darwin / `getauxval(AT_HWCAP)` on
+>   Linux/Android (`src/simd_neon_dotprod.rs:29-30`), `__cpuid_count` on x86
+>   (`src/simd_caps.rs:160-167`).
+>
+> GCC's role is the third thing neither of those gives you: **which shipping core
+> carries which feature.** Emulation proves an instruction works; it cannot tell
+> you that `cortex-a76` has DOTPROD and `cortex-a72` does not. Read the table
+> below as *GCC's declared per-core feature membership* — authoritative for
+> untestable parts, corroborating elsewhere.
+>
+> The URL cited at the end of this section points at mutable `master`; pin a
+> commit when re-scraping (see `.claude/knowledge/gcc-intrinsic-spec-reference.md`,
+> which also documents the intrinsic-semantics layers of the same source).
 
 The matrix above uses three aarch64 columns (A53 / A72 / A76) that
 each cover a *dispatch tier* — multiple physical cores share the same

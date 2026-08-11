@@ -7,6 +7,7 @@
 //! Transcoded from Python DeepNSM (<https://github.com/AdaWorldAPI/DeepNSM>).
 //! Rust 1.94.0 · SIMD via `crate::simd::F32x16` · Arrow 57 / DataFusion 51 ready.
 
+use super::blake3;
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 

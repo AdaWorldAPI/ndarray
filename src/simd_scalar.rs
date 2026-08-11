@@ -526,6 +526,54 @@ impl_int_type!(U16x32, u16, 32, 0u16);
 impl_int_type!(U32x16, u32, 16, 0u32);
 impl_int_type!(U64x8, u64, 8, 0u64);
 
+/// u64 ARX rotate — the BLAKE2b / argon2 lane.
+///
+/// Scalar per-lane loops, and **measured not to vectorize**: the codegen
+/// oracle tried three spellings (`u64::rotate_right`, an explicit shift-or
+/// with a runtime amount, and the same with BLAKE2b's constants 32/24/16/63)
+/// and every one came back 0 packed, one `rorq` per lane. LLVM declines the
+/// 64-bit *operation*, not the rotate *idiom* — it folded two of the probes
+/// into byte-identical code.
+///
+/// So unlike every other lane-wise op in this crate, the scalar spec is NOT
+/// the implementation here. The native `VPROLVQ`/`VPRORVQ` override lives on
+/// `simd_avx512`'s `U64x8`, which is a real `__m512i`; these arms are the
+/// correct-but-unvectorized fallback, and that is a known cost rather than an
+/// oversight. See `.claude/knowledge/crypto-lane-status.md`.
+impl U64x8 {
+    /// Lane-wise left-rotate by `n` bits. `n` is taken mod 64.
+    #[inline(always)]
+    pub fn rotate_left(self, n: u32) -> Self {
+        let n = n % 64;
+        if n == 0 {
+            return self;
+        }
+        let a = self.to_array();
+        let mut o = [0u64; 8];
+        for i in 0..8 {
+            o[i] = a[i].rotate_left(n);
+        }
+        Self::from_array(o)
+    }
+
+    /// Lane-wise right-rotate by `n` bits — BLAKE2b's direction.
+    /// `rotr(n) == rotl(64 - n)` exactly; kept distinct because BLAKE2b and
+    /// argon2 are specified in terms of right rotation.
+    #[inline(always)]
+    pub fn rotate_right(self, n: u32) -> Self {
+        let n = n % 64;
+        if n == 0 {
+            return self;
+        }
+        let a = self.to_array();
+        let mut o = [0u64; 8];
+        for i in 0..8 {
+            o[i] = a[i].rotate_right(n);
+        }
+        Self::from_array(o)
+    }
+}
+
 // I8/I16 SIMD types (scalar fallback)
 impl_int_type!(I8x64, i8, 64, 0i8);
 impl_int_type!(I8x32, i8, 32, 0i8);
@@ -541,6 +589,74 @@ impl_int_type!(U32x8, u32, 8, 0u32);
 impl_int_type!(U64x4, u64, 4, 0u64);
 impl_int_type!(I32x8, i32, 8, 0i32);
 impl_int_type!(I64x4, i64, 4, 0i64);
+
+// ── U32x8 shuffle + rotate surface — scalar mirror of `simd_avx2.rs` ────────
+//
+// Same six methods, same semantics, same doc contract. The AVX2 arm's bodies
+// are ALSO plain index loops (see the long comment there and
+// `.claude/knowledge/blake3-on-ndarray-simd.md`), so this is not a "fallback"
+// that behaves differently — the two arms are the same source shape, and the
+// parity tests in `simd.rs` bind them to the real x86 intrinsics on the one
+// backend where those exist.
+//
+// Semantics are x86's, INCLUDING the per-128-bit-lane split, on every
+// backend. That is not an x86 leak: BLAKE3's transpose network is defined in
+// terms of it, so a backend that "helpfully" used whole-vector interleave
+// would compute a different permutation and produce wrong hashes.
+impl U32x8 {
+    /// Lane-wise `u32::rotate_left(n)`. See the AVX2 arm for the
+    /// `rotr(n) == rotate_left(32 - n)` note.
+    #[inline(always)]
+    pub fn rotate_left(self, n: u32) -> Self {
+        let mut out = [0u32; 8];
+        for i in 0..8 {
+            out[i] = self.0[i].rotate_left(n);
+        }
+        Self(out)
+    }
+
+    /// `_mm256_unpacklo_epi32`: `[a0,b0,a1,b1, a4,b4,a5,b5]`.
+    #[inline(always)]
+    pub fn interleave_lo_u32(self, other: Self) -> Self {
+        let (a, b) = (self.0, other.0);
+        Self([a[0], b[0], a[1], b[1], a[4], b[4], a[5], b[5]])
+    }
+
+    /// `_mm256_unpackhi_epi32`: `[a2,b2,a3,b3, a6,b6,a7,b7]`.
+    #[inline(always)]
+    pub fn interleave_hi_u32(self, other: Self) -> Self {
+        let (a, b) = (self.0, other.0);
+        Self([a[2], b[2], a[3], b[3], a[6], b[6], a[7], b[7]])
+    }
+
+    /// `_mm256_unpacklo_epi64`: `[a0,a1,b0,b1, a4,a5,b4,b5]`.
+    #[inline(always)]
+    pub fn interleave_lo_u64(self, other: Self) -> Self {
+        let (a, b) = (self.0, other.0);
+        Self([a[0], a[1], b[0], b[1], a[4], a[5], b[4], b[5]])
+    }
+
+    /// `_mm256_unpackhi_epi64`: `[a2,a3,b2,b3, a6,a7,b6,b7]`.
+    #[inline(always)]
+    pub fn interleave_hi_u64(self, other: Self) -> Self {
+        let (a, b) = (self.0, other.0);
+        Self([a[2], a[3], b[2], b[3], a[6], a[7], b[6], b[7]])
+    }
+
+    /// `_mm256_permute2x128_si256(a, b, 0x20)`: `[a0..a3, b0..b3]`.
+    #[inline(always)]
+    pub fn concat_lo_halves(self, other: Self) -> Self {
+        let (a, b) = (self.0, other.0);
+        Self([a[0], a[1], a[2], a[3], b[0], b[1], b[2], b[3]])
+    }
+
+    /// `_mm256_permute2x128_si256(a, b, 0x31)`: `[a4..a7, b4..b7]`.
+    #[inline(always)]
+    pub fn concat_hi_halves(self, other: Self) -> Self {
+        let (a, b) = (self.0, other.0);
+        Self([a[4], a[5], a[6], a[7], b[4], b[5], b[6], b[7]])
+    }
+}
 
 // I8x64 / I8x32 / I16x32 / I16x16 — AVX-512BW-style methods (scalar shape)
 impl I8x64 {
@@ -1023,6 +1139,181 @@ impl Shl<Self> for U32x16 {
         let mut out = [0u32; 16];
         for i in 0..16 {
             out[i] = self.0[i] << rhs.0[i];
+        }
+        Self(out)
+    }
+}
+
+/// BLAKE3 `hash_many` shuffle surface — the transpose network's four unpacks
+/// and two half-concatenations, at DEGREE 16.
+///
+/// **Why these live on `U32x16` and not on a half-width type.** BLAKE3's
+/// AVX2 backend is DEGREE 8 over `__m256i`. Two of those fit in one
+/// `U32x16`, and every operation in `hash_many` is either lane-wise
+/// (add / xor / rotate) or confined *within* a 128- or 256-bit lane — which
+/// is exactly what the methods below preserve. The two 8-lane groups
+/// therefore never interact, and the algorithm runs on both at once as
+/// DEGREE 16 with no cross-talk. A `U32x8` is neither needed nor wanted
+/// (operator ruling, 2026-07-28: a half-width type standing in for the lane
+/// the substrate actually uses is an absolute no-go).
+///
+/// Semantics are x86's, applied to **each 256-bit half independently**:
+/// `interleave_*_u32` / `interleave_*_u64` reproduce
+/// `_mm256_unpack{lo,hi}_epi{32,64}` within each 128-bit quad, and
+/// `concat_{lo,hi}_halves` reproduce
+/// `_mm256_permute2x128_si256(_, _, 0x20 / 0x31)` within each 256-bit half.
+/// The per-lane structure is load-bearing: BLAKE3's transpose is defined in
+/// terms of it, so a "helpful" whole-vector interleave would compute a
+/// different permutation and produce wrong hashes with no compile error.
+///
+/// Every body is a plain index loop. The codegen oracle
+/// (`.claude/knowledge/simd-codegen-oracle/`) measured this exact shape:
+/// fixed two-source permutations written as index loops compile to real
+/// packed shuffles, and a transpose composed from them emits
+/// `vpunpcklqdq` / `vpermq` / `vinserti128`. No `unsafe`, no `core::arch`,
+/// no intrinsic override earned. See
+/// `.claude/knowledge/blake3-on-ndarray-simd.md`.
+impl U32x16 {
+    /// `_mm256_unpacklo_epi32` per 256-bit half: within each 128-bit quad,
+    /// interleave the low two `u32` of each operand.
+    #[inline(always)]
+    pub fn interleave_lo_u32(self, other: Self) -> Self {
+        let (a, b) = (self.to_array(), other.to_array());
+        let mut o = [0u32; 16];
+        for q in 0..4 {
+            let i = 4 * q;
+            o[i] = a[i];
+            o[i + 1] = b[i];
+            o[i + 2] = a[i + 1];
+            o[i + 3] = b[i + 1];
+        }
+        Self::from_array(o)
+    }
+
+    /// `_mm256_unpackhi_epi32` per 256-bit half: within each 128-bit quad,
+    /// interleave the high two `u32` of each operand.
+    #[inline(always)]
+    pub fn interleave_hi_u32(self, other: Self) -> Self {
+        let (a, b) = (self.to_array(), other.to_array());
+        let mut o = [0u32; 16];
+        for q in 0..4 {
+            let i = 4 * q;
+            o[i] = a[i + 2];
+            o[i + 1] = b[i + 2];
+            o[i + 2] = a[i + 3];
+            o[i + 3] = b[i + 3];
+        }
+        Self::from_array(o)
+    }
+
+    /// `_mm256_unpacklo_epi64` per 256-bit half: within each 128-bit quad,
+    /// the low `u64` of each operand.
+    #[inline(always)]
+    pub fn interleave_lo_u64(self, other: Self) -> Self {
+        let (a, b) = (self.to_array(), other.to_array());
+        let mut o = [0u32; 16];
+        for q in 0..4 {
+            let i = 4 * q;
+            o[i] = a[i];
+            o[i + 1] = a[i + 1];
+            o[i + 2] = b[i];
+            o[i + 3] = b[i + 1];
+        }
+        Self::from_array(o)
+    }
+
+    /// `_mm256_unpackhi_epi64` per 256-bit half: within each 128-bit quad,
+    /// the high `u64` of each operand.
+    #[inline(always)]
+    pub fn interleave_hi_u64(self, other: Self) -> Self {
+        let (a, b) = (self.to_array(), other.to_array());
+        let mut o = [0u32; 16];
+        for q in 0..4 {
+            let i = 4 * q;
+            o[i] = a[i + 2];
+            o[i + 1] = a[i + 3];
+            o[i + 2] = b[i + 2];
+            o[i + 3] = b[i + 3];
+        }
+        Self::from_array(o)
+    }
+
+    /// `_mm256_permute2x128_si256(a, b, 0x20)` per 256-bit half: the low
+    /// 128-bit lane of each operand, concatenated.
+    ///
+    /// Only the two immediates BLAKE3's transpose uses are exposed, as named
+    /// methods rather than a generic `const IMM` permute: the remaining
+    /// immediates would have no caller and no parity test.
+    #[inline(always)]
+    pub fn concat_lo_halves(self, other: Self) -> Self {
+        let (a, b) = (self.to_array(), other.to_array());
+        let mut o = [0u32; 16];
+        for h in 0..2 {
+            let i = 8 * h;
+            o[i..i + 4].copy_from_slice(&a[i..i + 4]);
+            o[i + 4..i + 8].copy_from_slice(&b[i..i + 4]);
+        }
+        Self::from_array(o)
+    }
+
+    /// `_mm256_permute2x128_si256(a, b, 0x31)` per 256-bit half: the high
+    /// 128-bit lane of each operand, concatenated.
+    #[inline(always)]
+    pub fn concat_hi_halves(self, other: Self) -> Self {
+        let (a, b) = (self.to_array(), other.to_array());
+        let mut o = [0u32; 16];
+        for h in 0..2 {
+            let i = 8 * h;
+            o[i..i + 4].copy_from_slice(&a[i + 4..i + 8]);
+            o[i + 4..i + 8].copy_from_slice(&b[i + 4..i + 8]);
+        }
+        Self::from_array(o)
+    }
+
+    /// One butterfly exchange at block granularity `G` elements — the general
+    /// form of the whole unpack / lane-exchange family, parameterized by
+    /// granularity instead of one method per width.
+    ///
+    /// `G = 1` is the 32-bit unpack, `G = 2` the 64-bit unpack, `G = 4` the
+    /// 128-bit lane exchange, and `G = 8` the 256-bit half exchange that a
+    /// 512-bit lane additionally needs and for which no AVX2 intrinsic exists.
+    /// `G` is a const parameter, so every shuffle pattern is compile-time
+    /// constant — the same property a hand-written intrinsic has, and the
+    /// precondition for LLVM to select a shuffle rather than an indexed copy.
+    ///
+    /// Four stages over this (`G` = 1, 2, 4, 8, pairing row `r` with `r | G`)
+    /// compose a complete 16x16 transpose. Measured as
+    /// `transpose_16x16_composed`: **79 packed / 0 scalar-lane-arith**, 19 of
+    /// them real shuffles. The same transpose written as one monolithic index
+    /// loop measures **0 packed** — 1088 bytes of stack and a 256-iteration
+    /// scalar copy. The spelling is the entire difference. See
+    /// `.claude/knowledge/blake3-on-ndarray-simd.md`.
+    ///
+    /// No intrinsic override is earned: the generic form does not fail.
+    #[inline(always)]
+    pub fn exchange<const G: usize>(self, other: Self) -> (Self, Self) {
+        let (l, h) = (self.to_array(), other.to_array());
+        let mut nl = [0u32; 16];
+        let mut nh = [0u32; 16];
+        for c in 0..16 {
+            nl[c] = if c & G == 0 { l[c] } else { h[c ^ G] };
+            nh[c] = if c & G != 0 { h[c] } else { l[c ^ G] };
+        }
+        (Self::from_array(nl), Self::from_array(nh))
+    }
+}
+
+impl U32x16 {
+    /// Lane-wise left-rotate by `n` bits — the ARX rotate (matches
+    /// `u32::rotate_left`). The completeness tier: a full, correct
+    /// implementation held to the same bar as the SIMD tiers, and the bit-exact
+    /// reference they are parity-checked against. Delegates to `u32::rotate_left`
+    /// per lane (`rotate_left(0)` and `rotate_left(32)` both no-op, matching std).
+    #[inline(always)]
+    pub fn rotate_left(self, n: u32) -> Self {
+        let mut out = [0u32; 16];
+        for i in 0..16 {
+            out[i] = self.0[i].rotate_left(n);
         }
         Self(out)
     }

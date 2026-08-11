@@ -9,6 +9,7 @@
 //!
 //! SIMD wired through: all bulk operations delegate to ndarray's bitwise dispatch.
 
+use super::blake3;
 use super::fingerprint::Fingerprint;
 use std::cell::RefCell;
 

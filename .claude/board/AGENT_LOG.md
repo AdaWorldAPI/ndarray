@@ -5,6 +5,40 @@
 > **Spawn protocol:** every agent reads this file before starting,
 > appends one entry on completion via `tee -a`.
 
+## 2026-07-29 — main thread — oracle repair + chacha20 reach + BLAKE3 gap
+
+**PRs:** #264 (merged), #265 (merged, `58521c3`)
+**Commits:** `87b9b4c`, `de4e4d1`, `3e72c5d`, `3c427ae`
+**Docs:** `.claude/knowledge/{blake3-on-ndarray-simd,chacha20-vendoring-blast-radius}.md`,
+`.claude/knowledge/simd-codegen-oracle/*`, `td-t22-asm-investigation.md`,
+`simd-one-spec-design.md`
+
+| item | outcome |
+|---|---|
+| oracle `run.sh` shipped unusable by #264's relocation | repaired, self-contained, 17/17 probes green from a clean master checkout |
+| `vendor/chacha20` blast radius | patch reaches 2 repos (ndarray, MedCare-rs), not 7; backend is compile-time gated on `avx512f` |
+| `AdaWorldAPI/stream-ciphers` | bare upstream mirror — same head sha, same `chacha20/` tree hash, 0 commits ahead |
+| BLAKE3 on `ndarray::simd` | needs one const-generic `exchange<G>` method, no intrinsics, no C |
+
+**Review:** 3 findings from codex, 6 from CodeRabbit, all addressed in
+`3c427ae`. The Major one (transpose probe did not validate a correct
+transpose) was a genuine methodological error, not a nit — see EPIPHANIES.
+
+**Corrected after merge, twice** (#266). Operator: *cargo is CI is github
+needs V3; dockerfile is V4*. Pass 1 of the correction concluded
+`Dockerfile.avx512` compiles and ships `ndarray_simd` — wrong; codex caught
+that both Dockerfiles run bare `cargo build --release` and `default-members`
+omits `crates/encryption`. Settled: no image compiles the backend; it is
+reached only by `-p encryption` / `--workspace` under an AVX-512 config, or
+wasm32+simd128. CI's missing global pin is separately confirmed deliberate
+(`ci.yaml:17-22`). EPIPHANIES entry names the two-axis pattern and the fact
+that the correction itself was the more confident error.
+
+**Open:** throughput bench vs `rust_avx2.rs` and vs upstream chacha20's own
+`avx512.rs`; the fork-vs-vendored-copy decision; whether the chacha20 cfg
+gate should gain a runtime arm.
+
+
 ## Fleet manifest
 
 | # | Agent | File | Model | Status |

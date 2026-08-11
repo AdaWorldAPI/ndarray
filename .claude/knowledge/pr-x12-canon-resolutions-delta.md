@@ -13,7 +13,7 @@ The merged canon (`bc9da4ad`) argued the architecture; canon-resolutions makes i
 
 1. **Concrete trait signatures** — R-1 (`Basis<T>` + `LinearReduce` split), §8 surface (`PredictiveSignal`, `CurveOrder<const N>`, `RdoMetric`)
 2. **Quantified budgets** — R-3 LoC envelope per sub-card / per consumer + audit rule; R-4 four Plan G thresholds; R-11 4K@60fps latency budget
-3. **Math identities** — R-6 SSD-via-VNNI (`||A||² - 2A·B + ||B||²`), R-7 tropical-GEMM partition (`O(4^d) → O(d²)`, kernel at `bgz17::scalar_sparse::tropical_spmv`)
+3. **Math identities** — R-6 SSD-via-VNNI (`||A||² - 2A·B + ||B||²`), R-7 tropical-GEMM partition (`O(4^d) → O(d²)`; kernel home is `lance-graph::blasgraph` [canonical, bit-exact]; the only shipped min-plus today is the method `bgz17::ScalarCsr::spmv_min_plus` — a sibling lossy-stack adapter, NOT the canon. Corrected 2026-07-16 per `PR-X12-docs-audit.md` #1/#2)
 4. **Type-level invariants** — R-2 bit-15/bit-14 split, R-9 topology-FREE codec
 5. **Phasing patterns** — R-8 confidence-gate framing, R-13 Option-A-then-B for federated codebook (primitives: `cam_pq` + `bgz-hhtl-d` + `dn_tree` + `merkle_tree`)
 6. **Formal-correctness + stream lane (post-merge)** — R-14 (`jc::pflug` Pillar 10 + `jc::hambly_lyons` Pillar 11), R-15 (`SignatureBasis<DEPTH>` as fifth Plan G lane)
@@ -159,10 +159,14 @@ Three-way pass per load: (ratio + quality + LoC). Sub-threshold on any one = blo
 |---|---|
 | 4K resolution | 3840 × 2160 = 8.3 M pixels |
 | 60 fps | 16.67 ms/frame |
-| 64×64 CTU | 132,710 CTUs/frame |
-| **Per-CTU budget** | **125 ns/CTU** |
+| 8×8 leaf | 129,600 leaves/frame (exact: 3840·2160/64; padded 64×64 accounting: 2,040 CTUs → 130,560 leaves) |
+| **Per-leaf budget** | **~129 ns/leaf** (16.67 ms / 129,600) |
 
-Encoder per-CTU breakdown:
+> Corrected 2026-07-16 (audit #8 + review): the unit is 8×8 **leaves**, not
+> 64×64 CTUs, and the previously-cited 132,710 count was not numerically
+> grounded (exact 8×8 accounting gives 129,600; padded 64×64 gives 130,560).
+
+Encoder per-leaf breakdown:
 
 | Stage | Scalar reference | SIMD-batched target |
 |---|---|---|
@@ -174,7 +178,7 @@ Encoder per-CTU breakdown:
 | rANS encode (A7) | ~40 ns | ~40 ns |
 | **Total** | **~960 ns** | **~210 ns** |
 
-Scalar misses 60 fps by 7.6×; SIMD-batched misses by 1.7× (same OoM). **Pins B:D-CODEC-8 / A:T-7 from P2 → P1** — A4-impl and A6 must ship SIMD-batched, not scalar-then-vectorize.
+Scalar misses 60 fps by ~7.5×; SIMD-batched misses by ~1.6× (same OoM). **Pins B:D-CODEC-8 / A:T-7 from P2 → P1** — A4-impl and A6 must ship SIMD-batched, not scalar-then-vectorize.
 
 ---
 
@@ -198,7 +202,7 @@ A_batch @ B          : N×256 @ 256×1 → N×1 GEMV
 
 **Throughput:** VNNI VPDPBUSD = 64 i8·i8→i32 dot-products per cycle on Cascade Lake+. One 256-elem dot = 4 VPDPBUSD ops = ~4 cycles. Hand-tuned SAD via VPSADBW = ~128 cycles per 16×16 block. **Speedup: 30-50×.**
 
-**Layering:** lands as `batched_ssd_search` in `ndarray::hpc::blas_level2`. Not codec-specific. Codec uses the math; BLAS owns the math.
+**Layering:** lands as `batched_ssd_search` in `ndarray::hpc::blas_level2`. Not codec-specific. Codec uses the math; BLAS owns the math. **[PLANNED symbol — does not exist in `blas_level2.rs` (verified absent 2026-05-22 audit #5, re-verified 2026-07-16). Do not cite as an existing API.]**
 
 ### 3.2 Tropical-GEMM partition RDO (R-7)
 
@@ -215,11 +219,21 @@ Tropical-semiring (+, min) formulation:
 
 **Complexity:** `O(d² × |nodes|)`. For d=4, |nodes|=85: 1360 ops/CTU vs 21,760 naive. **~16× speedup.**
 
-At 4K 132K CTUs/frame: ~4 ms vs ~64 ms just for partition RDO. At 60 fps, the difference between fitting and missing budget.
+At 4K (~2,040 CTUs/frame; corrected 2026-07-16 — "132K" was the leaf count, not CTUs): ~2.8 ms vs ~44 ms just for partition RDO at ~1 op/ns. At 60 fps, the difference between fitting and missing budget.
 
 **Dep direction:** `ndarray-codec → lance-graph::blasgraph` (tropical-GEMM kernels nominally live in blasgraph). Allowed post-Plan-H because ndarray-codec is a sibling crate, not the bottom.
 
-**Actual kernel home (current):** `lance-graph::bgz17::scalar_sparse::tropical_spmv`. The `blasgraph` namespace is the eventual abstraction; until that lands, ndarray-codec depends on bgz17 directly. Cite the symbol when wiring A6, not the namespace.
+**Kernel home (corrected 2026-07-16, audit #1/#2):** `lance-graph::blasgraph`
+is the **canonical, bit-exact** substrate — the prior framing here ("bgz17 is the
+actual kernel home; blasgraph is the eventual abstraction") had the relationship
+inverted. blasgraph today exports 7 HDR semirings over 16384-bit BitVec, none of
+which is a numerical min-plus over weighted f32 edges — so the tropical-GEMM
+partition kernel is **unwritten** and must land in blasgraph when A6 wires it.
+The only shipped min-plus primitive is `bgz17::ScalarCsr::spmv_min_plus`
+(a method on `ScalarCsr`, `fn(&self, x: &[f32]) -> Vec<f32>`; the free function
+`tropical_spmv(edge_weights, dag)` cited earlier does not exist). bgz17 is a
+**lossy sibling encoding** — usable as a prototype adapter for A6, never a
+substitute for the bit-exact canon.
 
 **Plan A6 (1 week) ships this.** λ-RDO knob scales edge weights; tropical-GEMM relaxation computes optimal mode tree.
 
@@ -322,7 +336,12 @@ FlushUnit::Reserved 11
 
 ## 6. Cross-architecture DCT-II crossover (R-5)
 
-DCT-II vs GEMM dispatch crossover varies by architecture. Plan A4-impl calibrates per arch:
+DCT-II vs GEMM dispatch crossover varies by architecture. Plan A4-impl calibrates per arch.
+
+> **[UNCALIBRATED ESTIMATES — no measurement source]** (audit #6, marked
+> 2026-07-16). Every crossover number below is a pre-bench heuristic, not a
+> commitment. They stay in the table because they may be roughly right, but no
+> codec-bench has run. Treat as hypotheses until Plan G produces measurements.
 
 | Architecture | Crossover N | Per-block path | Batched path |
 |---|---|---|---|
@@ -368,7 +387,7 @@ Highlights of falsifiers — the canary tests:
 | R-1 | A7 has to subclass `LinearReduce` to make rANS work | Trait factoring wrong; A7 wastes 1.5 wks |
 | R-3 | Cumulative generic LoC > 1500 after A4-A8 | M:H-NEW-2 falsified; the abstraction grew domain-specific code |
 | R-9 | `grep -E 'North|East|West|South' src/hpc/codec/*.rs` returns production paths | Topology-free contract broken; consumer semantics leaked into codec |
-| R-11 | SIMD-batched encode > 210 ns/CTU on SPR | Plan G video threshold can't pass; 4K real-time falsified |
+| R-11 | SIMD-batched encode > 210 ns/leaf on SPR | Plan G video threshold can't pass; 4K real-time falsified |
 
 ---
 
@@ -429,7 +448,7 @@ The substrate-binding doc (`pr-x12-cam-pq-sigker-dn-tree-substrate-bindings.md`)
 
 R-4's quality-floor rows for video / KV / gradient inherit Pillar 10's Lipschitz bound. R-15's signature lane gates on Pillar 11.
 
-**Open work (G-4):** PR #350 corrects `sigker::signature_kernel_pde`'s known Goursat-PDE math bug; Pillar 11's probe deliberately uses `signature_truncated` (tensor-algebra) until PR #350 lands. Production-scale benchmarking pending.
+**Open work (G-4):** Production-scale benchmarking pending. *(Corrected 2026-07-16, audit #9: the earlier claim that `sigker::signature_kernel_pde` "ships a known Goursat-PDE math bug" is withdrawn — the function's own passing tests prove convergence to `I_0(2·√⟨u,v⟩)` at `rel<1e-3` with O(1/N) refinement. Pillar 11's probe uses `signature_truncated` as a valid design choice, not a bug workaround.)*
 
 ---
 
@@ -453,7 +472,7 @@ impl<const DEPTH: usize> Basis<f32> for SignatureBasis<DEPTH> {
 
 **Plan G gets a fifth lane: "stream signal"** — audio waveforms / time-series / gesture / handwriting paths. Codec is `SignatureBasis<DEPTH=3>` + standard rANS over the four-mode taxonomy; quality floor inherits from Pillar 11 (R-14); compression target ~10× over raw f32 path samples (calibrate during Plan G).
 
-**Why `signature_truncated` not `signature_kernel_pde`:** the PDE form ships a known divergence bug (PR #350). The tensor-algebra path is correct today and is what Pillar 11 cites.
+**Why `signature_truncated` not `signature_kernel_pde`:** design choice — the tensor-algebra path is what Pillar 11 cites directly. *(Corrected 2026-07-16, audit #9: the previous "known divergence bug" rationale was false; the PDE form's convergence tests to `I_0(2·√⟨u,v⟩)` pass. Either form is numerically sound.)*
 
 ---
 

@@ -43,6 +43,7 @@ int8 2048³ = 169.7 GMAC/s, 600× scalar, single-thread
 | runs fine, `correct=false` | operand index/sign convention mirrored | Gotcha 12 |
 | compile error `unstable x86_amx_intrinsics` | used nightly intrinsics | Gotcha 1, 8 |
 | compile error `rbx is used internally by LLVM` | inline-asm CPUID | Gotcha 3 |
+| exact when idle, silently wrong under CPU load (VM) | tile state lost across host vCPU switch | Gotcha 14 |
 
 ---
 
@@ -222,7 +223,51 @@ once is correct even under rayon. `cpu_model()` is cached the same way.
 
 ---
 
-## Gotcha 14: a guest can DENY AMX outright — environment gate, NOT a code/ISA bug
+## Gotcha 14: on oversubscribed VMs, tile state is silently corrupted under host CPU contention  ⚑
+
+Observed 2026-07-02 on this remote VM (4 vCPU, EMR-class Xeon, guest kernel
+6.18.5) by `examples/onebrc_cascade_probe.rs`, reproduced on demand:
+
+```
+idle:                       413/413 stations bit-exact (10M and 100M rows)
+4 busy-loop competitors:    89/413, 152/413 exact — whole rows LOST, no fault
+probe pinned to core 0,
+load pinned to cores 1-3:   124/413 exact — pinning does NOT mitigate
+idle control right after:   413/413 exact again
+```
+
+Signature: **no crash, no SIGSEGV/SIGILL — results are silently wrong, and
+only under load.** An AVX-512 path in the same process, same run, stays
+bit-exact, isolating the corruption to TMM tile state (the tmm0 accumulator
+loses in-flight partial sums). Because guest-side pinning doesn't help, the
+suspected mechanism is the **host** hypervisor's vCPU context switch failing
+to save/restore guest `XTILEDATA` when the host multiplexes oversubscribed
+pCPUs (idle guests keep their vCPUs resident → no corruption; loaded guests
+get switched → corruption). Guest-side `arch_prctl` permission (Gotcha 4) is
+correctly granted — this is a layer below the guest kernel.
+
+Consequences:
+
+- **Never certify AMX numerics from a shared/oversubscribed VM.** Bare metal
+  or a dedicated-CPU instance only. A "PASS on my cloud box" is worthless
+  under this gotcha unless the box was provably idle.
+- **Extend Gotcha 9's discipline**: a parity test for a tile kernel must ALSO
+  run under deliberate CPU contention (a few busy loops are enough — see the
+  reproduction above). Exact-when-idle is necessary, not sufficient.
+- **Keep tile residency short.** Long accumulation loops that live in tmm
+  across many iterations (the 16×16×K pattern holds tmm0 for K/32 iterations)
+  maximize the exposure window. Draining accumulators to memory more often
+  shrinks it but does NOT close it — treat it as harm reduction, not a fix.
+- Production dispatch on virtualized hosts should either avoid AMX or pair it
+  with a checksum/parity channel (e.g. a redundant ones-row whose expected
+  value is known — the onebrc probe's count row doubles as exactly that).
+
+Fault signature: `correct=true` in every quiet test, sporadic wrong results
+in production under load, AVX-512 siblings unaffected.
+
+---
+
+## Gotcha 15: a guest can DENY AMX outright — environment gate, NOT a code/ISA bug
 
 > Cross-check breadcrumb (2026-06-20). Buried mid-doc on purpose (away from the
 > head/tail a skim touches) so NO session concludes "AMX is broken" from one
@@ -248,7 +293,6 @@ guest where `arch_prctl` returns 0 and XCR0 bits are set (e.g. the Emerald Rapid
 host this file's header was verified on). **`false` here ≠ broken — it's an
 environment gate above the code.** Full write-up + a ~25-line four-gate probe:
 lance-graph `.claude/board/EPIPHANIES.md` → `E-DOMINO-SOA-ORCHESTRATION-GREEN`.
-
 ---
 
 ## Hardware tiers

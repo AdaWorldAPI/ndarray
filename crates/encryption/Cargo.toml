@@ -1,0 +1,40 @@
+[package]
+name = "encryption"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+description = "Zero-knowledge envelope crypto for the Ada stack: Argon2id KDF, XChaCha20-Poly1305 AEAD, Ed25519 signatures, SHA-384 hashing. One codebase for native servers and wasm32 browsers."
+publish = false
+
+[lib]
+# rlib for native consumers; cdylib so `wasm-pack` / `wasm-bindgen` can emit
+# a browser module from the same source.
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+# RustCrypto suite — all pure Rust, all compile to wasm32-unknown-unknown.
+argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+ed25519-dalek = { version = "2", default-features = false, features = ["alloc", "zeroize"] }
+sha2 = { version = "0.10", default-features = false }
+# X448 key agreement — AdaWorldAPI fork of RustCrypto/elliptic-curves. No dalek,
+# and crypto-bigint underneath means no foreign AVX2 for the polyfill to fix.
+x448 = { git = "https://github.com/AdaWorldAPI/elliptic-curves", rev = "739304e026fdf06cd1a31606e4db487d3f47c5ae", default-features = false }
+zeroize = { version = "1", features = ["derive"] }
+
+# THE ONLY ENTROPY SOURCE. On wasm32 the `js` feature routes this to
+# `crypto.getRandomValues` (the browser CSPRNG). Never substitute a
+# non-cryptographic RNG (e.g. `rand::SmallRng`) anywhere in this crate.
+getrandom = "0.2"
+
+# Optional browser bindings (enable with `--features wasm-bindings` when
+# building for wasm32; see src/wasm.rs).
+wasm-bindgen = { version = "0.2", optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+
+[features]
+default = []
+wasm-bindings = ["dep:wasm-bindgen"]

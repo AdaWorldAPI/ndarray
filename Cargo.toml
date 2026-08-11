@@ -3,7 +3,14 @@
 name = "ndarray"
 version = "0.17.2"
 edition = "2021"
-rust-version = "1.95"
+# Matches `rust-toolchain.toml` (1.97.1) and CI's `MSRV` / `BLAS_MSRV` env, which
+# are ALREADY 1.97.1. This said 1.95 until 2026-08-05 — a declared MSRV that
+# nothing tested, because no CI job builds at 1.95. Consumers read this field:
+# tesseract-rs path-deps both ndarray and lance-graph-contract, and a 1.95 build
+# of the contract crate happens to still succeed today — a coincidence, not a
+# guarantee, and exactly what an untested MSRV declaration buys. Declare what is
+# actually verified.
+rust-version = "1.97"
 authors = [
   "Ulrik Sverdrup \"bluss\"",
   "Jim Turner"
@@ -65,6 +72,12 @@ required-features = ["std"]
 name = "morton_cascade_probe"
 required-features = ["std"]
 
+# 1BRC-on-substrate probe: Morton group-by + AMX BF16 tile-GEMM mean path
+# (imports `ndarray::simd` + `ndarray::hpc`, both std-gated).
+[[example]]
+name = "onebrc_cascade_probe"
+required-features = ["std"]
+
 [[example]]
 name = "golden_helix_probe"
 required-features = ["std"]
@@ -75,6 +88,30 @@ required-features = ["std"]
 
 [[example]]
 name = "edge_codec_compare"
+required-features = ["std"]
+
+[[example]]
+name = "codec_mode_histogram"
+required-features = ["codec"]
+
+[[example]]
+name = "mc_via_shader"
+required-features = ["codec"]
+
+[[example]]
+name = "residue_upscale"
+required-features = ["codec"]
+
+[[example]]
+name = "motion_transform_noop"
+required-features = ["codec"]
+
+[[example]]
+name = "gridlake_field_tile"
+required-features = ["std"]
+
+[[example]]
+name = "subpel_tap_tile"
 required-features = ["std"]
 
 [[example]]
@@ -128,38 +165,48 @@ libc = { version = "0.2.82", optional = true }
 matrixmultiply = { version = "0.3.2", default-features = false, features=["cgemm"] }
 
 # =====================================================================
-# blake3 — DEPENDENCY OF `std` FEATURE (NOT `hpc-extras`). READ BEFORE
-# TOUCHING.
+# blake3 — NO LONGER A DEPENDENCY. Do not re-add it.
 # =====================================================================
 #
-# blake3 is required by the cognitive substrate modules — plane, seal,
-# merkle_tree, vsa, spo_bundle, crystal_encoder, compression_curves,
-# deepnsm — which all live under `pub mod hpc;` (itself gated on
-# `feature = "std"` in lib.rs). Those modules `use blake3;` directly
-# and unconditionally; there is no #[cfg] dance inside them.
+# BLAKE3 now lives in-tree at `src/hpc/blake3.rs`, as a **portable-only
+# transcription of the BLAKE3 reference implementation -- no SIMD, no
+# unsafe**. See that module's own header. It is the serial path every
+# conformant implementation reduces to at `simd_degree() == 1`, which
+# suffices here because ndarray's usage is entirely single-input.
 #
-# Pinning blake3 to the `std` feature (rather than `hpc-extras`) means:
-#   * ANY consumer that enables `std` automatically gets blake3, with
-#     ZERO additional feature wiring. This is the default. Cargo's
-#     transitive feature resolution does the rest.
-#   * Consumers selecting `default-features = false, features = ["std"]`
-#     (e.g. burn-ndarray, which disables hpc-extras to shed p64/fractal)
-#     STILL get blake3 — no more "missing blake3" build errors that
-#     used to require chasing down hpc-extras.
-#   * Consumers selecting `default-features = false` (no std at all,
-#     e.g. the `thumbv6m-none-eabi` CI matrix entry) do NOT pull blake3
-#     and therefore do not pull `constant_time_eq`, whose lack of
-#     `#![no_std]` declaration would otherwise fail the nostd link with
-#     `error[E0463]: can't find crate for std`.
+# The external crate was removed because even with `default-features =
+# false, features = ["pure"]` it carried its own SSE2/SSE4.1/AVX2
+# intrinsics -- a second SIMD surface beside `ndarray::simd`, which is
+# exactly what the matryoshka pattern exists to prevent. The old comment
+# block here said "Tracked, not done here"; this is it being done.
 #
-# If you find yourself wanting to make blake3 unconditional (drop the
-# `optional = true`), check first: does it still pass
-# `cargo rustc -p ndarray --target=thumbv6m-none-eabi
-#  --no-default-features --features portable-atomic-critical-section`?
-# If not, leave the `optional = true` + `std`-feature pinning in place.
+# It also breaks a cycle. `ndarray -> blake3` meant blake3 could never be
+# built ON `ndarray::simd` without cargo seeing `ndarray -> blake3 ->
+# ndarray`. Dropping the dep is what makes an ndarray-backed BLAKE3
+# possible -- NOT here (this module is portable), but for a future
+# SIMD-backed implementation and for the AdaWorldAPI/BLAKE3 fork.
 #
-# =====================================================================
-blake3 = { version = "1", optional = true }
+# Separately: blake3 carried `cc` as an unconditional build-dependency, and
+# the `pure` feature existed only to stop that `cc` from compiling the
+# bundled C/ASM (operator directive 2026-07-28, "I don't want any ffi with
+# c"). In-tree there is no C to opt out of, and `cc` is no longer pulled on
+# blake3's account. Dropping blake3 also removed `constant_time_eq`,
+# `arrayref` and `arrayvec` from the lockfile.
+#
+# Cost, measured: 1.25-1.39x across the input sizes this crate actually
+# hashes (16 B word 1.34-1.39x, 256 B 1.25-1.29x, 2 KB 1.30x), rising to
+# 4.7-4.9x at 64 KB where upstream's `hash_many` has no in-tree counterpart.
+# Every call site here sits in the small-input band, not the 64 KB one. Full
+# table, methodology and the attribution of the gap:
+# `.claude/knowledge/blake3-in-tree-measured.md`.
+#
+# The A/B bench under `.claude/knowledge/blake3-ab-bench/` compared the two
+# implementations and is, by its own design note, unbuildable from this commit
+# onward — there is no longer a second implementation to compare against.
+#
+# Call sites live under `pub mod hpc;` (gated on `feature = "std"` in lib.rs),
+# so the nostd matrix is untouched: `blake3` and its `constant_time_eq`
+# dependency are both gone from Cargo.lock entirely.
 
 # p64 + fractal — specialized convergence / manifold math. Gated behind
 # `hpc-extras` since they pull in a dep tree burn-ndarray doesn't need.
@@ -255,7 +302,7 @@ blas = ["dep:cblas-sys", "dep:libc"]
 
 serde = ["dep:serde"]
 
-std = ["num-traits/std", "matrixmultiply/std", "dep:blake3"]
+std = ["num-traits/std", "matrixmultiply/std"]
 rayon = ["dep:rayon", "std"]
 
 # Portable-SIMD backend (NIGHTLY ONLY). Routes `crate::simd::*` types
@@ -294,13 +341,9 @@ nightly-simd = ["std"]
 runtime-dispatch = ["std"]
 
 # HPC extras: p64 palette/NARS bridge + fractal manifold.
-# (blake3 was previously listed here; it is now part of `std` directly
-# because the cognitive substrate modules under hpc/ that import blake3
-# are themselves `std`-gated. See the blake3 comment in [dependencies].)
 # These pull in a non-trivial dependency tree; downstream crates such as
 # burn-ndarray that only need the core array layer can disable this with
-# `default-features = false` (and re-enable `std` explicitly if needed —
-# blake3 will come along with `std`).
+# `default-features = false` (and re-enable `std` explicitly if needed).
 hpc-extras = ["std", "dep:p64", "dep:fractal", "fractal/std"]
 
 matrixmultiply-threading = ["matrixmultiply/threading"]
@@ -376,7 +419,12 @@ members = [
     "ndarray-rand",
     "crates/*",
 ]
-exclude = ["crates/burn"]
+exclude = [
+    "crates/burn",
+    "crates/wasm-simd-parity",
+    "crates/neon-simd-parity",
+    "vendor/chacha20",
+]
 default-members = [
     ".",
     "ndarray-rand",
@@ -418,3 +466,15 @@ tag-name = "{{version}}"
 features = ["approx", "serde", "rayon"]
 # Define the configuration attribute `docsrs`
 rustdoc-args = ["--cfg", "docsrs"]
+
+# ── ChaCha20 matryoshka (AdaWorldAPI fork) ──────────────────────────────────
+# Fold the AVX-512/ndarray::simd-accelerated `chacha20` fork over the registry
+# crate. This transitively accelerates the `encryption` crate's XChaCha20-Poly1305
+# keystream (chacha20poly1305 -> chacha20) with zero change to the AEAD, on any
+# x86_64+avx512f build (the workspace's `target-cpu=x86-64-v4`). Non-x86 builds of
+# the fork fall through to RustCrypto's own backends and never pull ndarray.
+# NOTE: a "Patch `chacha20` was not used in the crate graph" note appears on
+# scoped builds that don't pull `encryption` (e.g. `-p ndarray`); it is benign —
+# the patch is exercised by `cargo test -p encryption` and the full workspace.
+[patch.crates-io]
+chacha20 = { path = "vendor/chacha20" }

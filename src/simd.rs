@@ -12,6 +12,11 @@ use std::sync::LazyLock;
 // `detect_tier()`'s feature-detection blocks are `target_arch = "x86_64"`
 // or `"aarch64"` gated, both false on i686. Without `dead_code` allowance
 // the `-D warnings` build fails with `variants ... are never constructed`.
+// Note: this `Tier` enum is *runtime* dispatch only. On `wasm32 +
+// target_feature = "simd128"` the SIMD *types* are NOT scalar — they come
+// from the compile-time `simd_wasm::wasm32_simd` v128 backend (re-exported
+// below); `detect_tier()` simply has no wasm arm, so the runtime tier stays
+// `Scalar`.
 #[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Debug)]
 #[repr(u8)]
@@ -156,7 +161,9 @@ pub const PREFERRED_F64_LANES: usize = 8;
 pub const PREFERRED_F64_LANES: usize = 4;
 #[cfg(target_arch = "aarch64")]
 pub const PREFERRED_F64_LANES: usize = 2; // NEON: float64x2_t = 2 × f64
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(target_arch = "wasm32")]
+pub const PREFERRED_F64_LANES: usize = 2; // WASM SIMD128: f64x2 = 2 × f64
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "wasm32")))]
 pub const PREFERRED_F64_LANES: usize = 4; // scalar fallback: same as AVX2 shape
 
 /// Preferred f32 SIMD width.
@@ -167,7 +174,9 @@ pub const PREFERRED_F32_LANES: usize = 16;
 pub const PREFERRED_F32_LANES: usize = 8;
 #[cfg(target_arch = "aarch64")]
 pub const PREFERRED_F32_LANES: usize = 4; // NEON: float32x4_t = 4 × f32
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(target_arch = "wasm32")]
+pub const PREFERRED_F32_LANES: usize = 4; // WASM SIMD128: f32x4 = 4 × f32
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "wasm32")))]
 pub const PREFERRED_F32_LANES: usize = 8;
 
 /// Preferred u64 SIMD width.
@@ -178,7 +187,9 @@ pub const PREFERRED_U64_LANES: usize = 8;
 pub const PREFERRED_U64_LANES: usize = 4;
 #[cfg(target_arch = "aarch64")]
 pub const PREFERRED_U64_LANES: usize = 2; // NEON: uint64x2_t
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(target_arch = "wasm32")]
+pub const PREFERRED_U64_LANES: usize = 2; // WASM SIMD128: i64x2 = 2 × u64
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "wasm32")))]
 pub const PREFERRED_U64_LANES: usize = 4;
 
 /// Preferred i16 SIMD width (for Base17 L1 on i16[17]).
@@ -191,7 +202,9 @@ pub const PREFERRED_I16_LANES: usize = 32;
 pub const PREFERRED_I16_LANES: usize = 16;
 #[cfg(target_arch = "aarch64")]
 pub const PREFERRED_I16_LANES: usize = 8; // NEON: int16x8_t
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(target_arch = "wasm32")]
+pub const PREFERRED_I16_LANES: usize = 8; // WASM SIMD128: i16x8 = 8 × i16
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "wasm32")))]
 pub const PREFERRED_I16_LANES: usize = 16;
 
 // ============================================================================
@@ -370,16 +383,42 @@ pub use crate::simd_neon::{
 // U16x8 on aarch64 comes from simd_neon (backed by uint16x8_t)
 #[cfg(all(target_arch = "aarch64", not(feature = "nightly-simd")))]
 pub use crate::simd_neon::{u16x8, U16x8};
+// U32x16 (native `[U32x4; 4]`) — the ARX lane the ChaCha20 backend rides. Comes
+// from simd_neon, not the scalar fallback, so it carries Add/BitXor/rotate_left.
+#[cfg(all(target_arch = "aarch64", not(feature = "nightly-simd")))]
+pub use crate::simd_neon::{u32x16, U32x16};
 #[cfg(all(target_arch = "aarch64", not(feature = "nightly-simd")))]
 pub use scalar::{
-    f32x8, f64x4, i32x16, i32x8, i64x4, i64x8, u16x16, u32x16, u32x8, u64x4, u64x8, u8x64, F32x8, F64x4, I32x16, I32x8,
-    I64x4, I64x8, U16x16, U16x32, U32x16, U32x8, U64x4, U64x8, U8x64,
+    f32x8, f64x4, i32x16, i32x8, i64x4, i64x8, u16x16, u32x8, u64x4, u64x8, u8x64, F32x8, F64x4, I32x16, I32x8, I64x4,
+    I64x8, U16x16, U16x32, U32x8, U64x4, U64x8, U8x64,
 };
 
-// Other non-x86 targets (wasm, riscv, etc.): full scalar fallback.
+// wasm32 + simd128: the native v128 float hot path (F32x16 / F64x8 + masks)
+// and native I8x16 come from `simd_wasm::wasm32_simd`; the long-tail integer
+// and 256-bit-shaped types come from the scalar fallback. Same split
+// `simd_neon` uses on aarch64 (native float kernels, scalar for the rest).
+// The `wasm32_simd` module only exists under `target_feature = "simd128"`,
+// so this arm is gated identically.
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128", not(feature = "nightly-simd")))]
+pub use crate::simd_wasm::wasm32_simd::{
+    f32x16, f64x8, i8x16, u32x16, F32Mask16, F32x16, F64Mask8, F64x8, I8x16, U32x16,
+};
+// `u32x16`/`U32x16` now come from the native `wasm32_simd` arm above (the ARX
+// lane the ChaCha20 backend rides), so they are dropped from this scalar list.
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128", not(feature = "nightly-simd")))]
+pub use scalar::{
+    batch_packed_i4_16, f32x8, f64x4, i16x16, i16x32, i32x16, i32x8, i64x4, i64x8, i8x32, i8x64, palette_lookup_u8x8,
+    prefetch_read_t0, prefetch_read_t1, prefetch_read_t2, u16x16, u16x8, u32x8, u64x4, u64x8, u8x64, u8x8, F32x8,
+    F64x4, I16x16, I16x32, I32x16, I32x8, I64x4, I64x8, I8x32, I8x64, U16x16, U16x32, U16x8, U32x8, U64x4, U64x8,
+    U8x64, U8x8,
+};
+
+// Other non-x86 targets — wasm32 without simd128, riscv, etc.: full scalar
+// fallback. Excludes the wasm32+simd128 case handled by the native arm above.
 #[cfg(all(
     not(target_arch = "x86_64"),
     not(target_arch = "aarch64"),
+    not(all(target_arch = "wasm32", target_feature = "simd128")),
     not(feature = "nightly-simd")
 ))]
 pub use scalar::{
@@ -535,6 +574,20 @@ pub use crate::hpc::fingerprint::{
 // the reason the JIT-native option was deemed unnecessary. See the
 // "Foundation primitives — do not remove" notice in `src/simd_ops.rs`.
 pub use crate::simd_ops::{array_chunks, array_chunks_checked, array_windows, array_windows_checked};
+// Crate-native tiled f64 GEMM (`C := α·A·B + β·C`) with a bit-exactness
+// contract: unfused mul+add in ascending-k order per element → bit-identical
+// on every backend (AVX-512/AVX2/NEON/WASM/scalar) and, at α=1 β=0,
+// bit-identical to the naive triple-loop reference. This is the in-crate
+// ground-truth GEMM for probes/certification AND the engine behind
+// `backend::native::gemm_f64` (own Rust in the f64 BLAS path; the f32
+// sibling still delegates to the external `matrixmultiply` crate).
+// `gemm_f64_tiled_fma` is the fast fused tier (same tiling/order, one
+// rounding per step) for consumers on FMA-pinned targets — not the
+// backend engine, because its scalar polyfill can lower to libm `fma()`
+// on baseline builds. Both kernels are alloc-free, but `pub mod
+// simd`/`simd_ops` are std-gated in lib.rs, so they are reachable only
+// in `std` builds today.
+pub use crate::simd_ops::{gemm_f64_tiled, gemm_f64_tiled_fma};
 pub use crate::simd_soa::MultiLaneColumn;
 
 pub use crate::hpc::quantized::{
@@ -570,6 +623,15 @@ pub use crate::hpc::cam_pq::{kmeans, squared_l2};
 
 pub use crate::hpc::heel_f64x8::cosine_f32_to_f64_simd;
 
+// The Belichtungsmesser — banded multi-resolution cascade search
+// (`Cascade::expose(distance) → Band`, `recalibrate(ShiftAlert)`,
+// `PackedDatabase`, `adaptive_resolution`). Trampolined as a whole module so
+// consumers under the "all SIMD from `ndarray::simd`" invariant reach the
+// exposure-meter surface as `ndarray::simd::cascade::*` without dipping into
+// `crate::hpc` directly. Module alias, not an item list — new cascade items
+// arrive here without a re-export edit. Same `std` gate as this module.
+pub use crate::hpc::cascade;
+
 // Dispatched integer matmul — the polyfill entry for batched int8 scoring.
 // `matmul_i8_to_i32` runtime-selects AMX `TDPBUSD` tiles (byte-asm, 16384
 // MAC/instr, Sapphire Rapids+) → AVX-512 VPDPBUSD → AVX-VNNI → scalar, and
@@ -577,7 +639,11 @@ pub use crate::hpc::heel_f64x8::cosine_f32_to_f64_simd;
 // whole AMX ladder through the canonical `ndarray::simd::*` import (W1a)
 // without dipping into `crate::hpc::amx_matmul` directly. `amx_available()`
 // exposes the runtime tier check for reporting.
-#[cfg(feature = "std")]
+// AMX is x86_64-only (the `amx_matmul` / `simd_amx` modules are
+// `#[cfg(target_arch = "x86_64")]`), so these re-exports are arch-gated.
+// Off x86 the cross-platform entry points are `backend::gemm_i8` /
+// `backend::gemm_bf16` (portable scalar / NEON / wasm-SIMD paths).
+#[cfg(all(feature = "std", target_arch = "x86_64"))]
 pub use crate::hpc::amx_matmul::{amx_available, matmul_i8_to_i32};
 // BF16 16×16 tile GEMM — AMX `TDPBF16PS` when `amx_available()`, `F32x16` FMA
 // fallback otherwise. Same W1a rule: reach it via `ndarray::simd::*`, never
@@ -585,17 +651,55 @@ pub use crate::hpc::amx_matmul::{amx_available, matmul_i8_to_i32};
 // inside `amx_available()`, which this dispatcher calls before any tile op).
 #[cfg(feature = "std")]
 pub use crate::hpc::bf16_tile_gemm::bf16_tile_gemm_16x16;
-// CPU-generation detection (cached): SPR / EMR / GNR / Sierra Forest. Lets a
+// Runtime-dispatch trampolines (`simd_runtime`, feature = "runtime-dispatch")
+// surfaced through the canonical `ndarray::simd::*` namespace — the W1a
+// consumer invariant is "all SIMD from `ndarray::simd`", so consumers that
+// were importing `ndarray::simd_runtime::{matmul_*, gemm_u8_i8, ...}`
+// directly (e.g. the tesseract-rs recognizer's int8 GEMM) can now stay on
+// the one polyfill import path. These are thin `#[inline(always)]` aliases
+// of the SAME underlying tier ladders (`hpc::amx_matmul`, `simd_int_ops`),
+// so switching import paths is bit-identical by construction.
+#[cfg(feature = "runtime-dispatch")]
+pub use crate::simd_runtime::{gemm_u8_i8, matmul_bf16_to_f32, matmul_f32, vnni_dot_u8_i8};
+// `matmul_i8_to_i32` already has its canonical `simd::` name on
+// x86_64 + std (the `hpc::amx_matmul` re-export above — the identical
+// function `simd_runtime::matmul_i8_to_i32` wraps). Off x86_64 the name
+// only exists via the runtime-dispatch trampoline, re-exported here so the
+// import path is arch-uniform; the cfg keeps the two aliases from
+// colliding when both features hold on x86_64.
+#[cfg(all(feature = "runtime-dispatch", not(target_arch = "x86_64")))]
+pub use crate::simd_runtime::matmul_i8_to_i32;
+// Tile-dispatching sibling of the polyfill `bf16_tile_gemm_16x16` below:
+// AMX TDPBF16PS → AVX-512 VDPBF16PS → the same FMA polyfill kernel, selected
+// at runtime. Same W1a rationale as `matmul_i8_to_i32` — consumers reach the
+// tile ladder through `ndarray::simd::*`; the `_amx` suffix keeps the
+// pure-polyfill kernel and the tile-dispatching wrapper distinguishable at
+// the call site. `bf16_tile_gemm_16x16_packed` + `PackedBf16B` hoist the
+// VNNI pack (and its allocation) out of hot loops — `PackedBf16B::vnni_index`
+// additionally supports staging B directly in VNNI layout (zero pack cost).
+// `bf16_tile_gemm_tier()` names the tier that will run, for Gotcha-9-style
+// run reports.
+#[cfg(all(feature = "std", target_arch = "x86_64"))]
+pub use crate::hpc::bf16_tile_gemm::{
+    bf16_tile_gemm_16x16 as bf16_tile_gemm_16x16_amx, bf16_tile_gemm_16x16_packed, bf16_tile_gemm_tier, PackedBf16B,
+};// CPU-generation detection (cached): SPR / EMR / GNR / Sierra Forest. Lets a
 // consumer report which silicon a run landed on and distinguish "no AMX
 // silicon" from "AMX present but not OS-enabled" — both surface via `amx_report`.
+#[cfg(target_arch = "x86_64")]
 pub use crate::simd_amx::{amx_report, cpu_model, CpuModel};
 
 // Elementwise slice ops — polyfill-dispatched (F32x16/F64x8 chunks + scalar tail).
 #[cfg(feature = "std")]
 pub use crate::simd_ops::{
-    add_f32, add_f32_inplace, add_f64, add_f64_inplace, add_mul_f32, add_mul_f64, add_scalar_f32, div_f32,
-    div_f32_inplace, mul_f32, mul_f32_inplace, mul_f64, scale_f32, scale_f32_inplace, sub_f32, sub_f32_inplace,
+    add_f32, add_f32_inplace, add_f64, add_f64_inplace, add_mul_f32, add_mul_f64, add_scalar_f32, bf16_tile_gemm_16x16,
+    div_f32, div_f32_inplace, mul_f32, mul_f32_inplace, mul_f64, scale_f32, scale_f32_inplace, sub_f32,
+    sub_f32_inplace,
 };
+
+// ChaCha20 keystream is NO LONGER an `ndarray::simd` surface: the AdaWorldAPI
+// `chacha20` fork (`vendor/chacha20/`) carries the accelerated backend, riding
+// the `U32x16` ARX lane above, and is `[patch]`ed transitively under the
+// `encryption` AEAD. RustCrypto owns the cipher; ndarray exposes only the lane.
 
 // ============================================================================
 // Tests
@@ -616,6 +720,386 @@ mod tests {
         let data: [f32; 16] = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0];
         let v = F32x16::from_array(data);
         assert_eq!(v.to_array(), data);
+    }
+
+    /// ARX triple parity: `U32x16`'s `Add` / `BitXor` / `rotate_left` must be
+    /// bit-identical to per-lane `u32` semantics — the ChaCha20/BLAKE primitive
+    /// set. Runs on whichever tier this build compiled (`super::*` re-exports the
+    /// dispatched `U32x16`), so it gates avx512 / avx2 / neon / wasm / scalar
+    /// alike. `rotate_left` is the newly-added op; add/xor are locked with it so
+    /// the whole quarter-round vocabulary is proven together.
+    #[test]
+    fn u32x16_arx_ops_match_scalar() {
+        let a_arr: [u32; 16] = [
+            0x0000_0000, 0xFFFF_FFFF, 0x0000_0001, 0x8000_0000, 0x1234_5678, 0x9ABC_DEF0, 0xDEAD_BEEF, 0xCAFE_BABE,
+            0x0F0F_0F0F, 0xF0F0_F0F0, 0x5555_5555, 0xAAAA_AAAA, 0x0000_00FF, 0xFF00_0000, 0x0101_0101, 0x8080_8080,
+        ];
+        let b_arr: [u32; 16] = [
+            0x9E37_79B9, 0x1111_1111, 0xDEAD_C0DE, 0x0BAD_F00D, 0x7FFF_FFFF, 0x0000_0000, 0xFFFF_FFFF, 0x1357_9BDF,
+            0x2468_ACE0, 0xFEDC_BA98, 0x0000_0010, 0x0000_001F, 0xABCD_EF01, 0x1020_4080, 0x0F0F_F0F0, 0xC0DE_CAFE,
+        ];
+        let a = U32x16::from_array(a_arr);
+        let b = U32x16::from_array(b_arr);
+
+        let add = (a + b).to_array();
+        let xor = (a ^ b).to_array();
+        for i in 0..16 {
+            assert_eq!(add[i], a_arr[i].wrapping_add(b_arr[i]), "lane {i} add");
+            assert_eq!(xor[i], a_arr[i] ^ b_arr[i], "lane {i} xor");
+        }
+
+        // The ARX rotate — ChaCha20 uses 16/12/8/7; edges included.
+        for n in [0u32, 1, 7, 8, 12, 16, 24, 31] {
+            let got = a.rotate_left(n).to_array();
+            for i in 0..16 {
+                assert_eq!(got[i], a_arr[i].rotate_left(n), "lane {i} rotate_left({n})");
+            }
+        }
+    }
+
+    /// The u64 ARX rotate — `U64x8::rotate_left` / `rotate_right`, the lane
+    /// BLAKE2b (and therefore argon2) needs.
+    ///
+    /// Runs on whichever tier this build compiled, so it gates the native
+    /// AVX-512 `VPROLVQ`/`VPRORVQ` override and the portable scalar arms
+    /// against the *same* reference — per-lane `u64::rotate_left`. That
+    /// matters more here than for the u32 lane, because unlike every other
+    /// lane-wise op in this crate the two implementations are genuinely
+    /// different code, not one source form compiled twice.
+    ///
+    /// Covers BLAKE2b's own amounts (32/24/16/63) plus the edges, and asserts
+    /// `rotr(n) == rotl(64 - n)` for each — the identity the two methods'
+    /// equivalence rests on.
+    #[test]
+    fn u64x8_arx_rotate_matches_scalar() {
+        use super::U64x8;
+
+        let a_arr: [u64; 8] = [
+            0x0123_4567_89AB_CDEF, 0xFFFF_FFFF_FFFF_FFFF, 0x0000_0000_0000_0001, 0x8000_0000_0000_0000,
+            0xDEAD_BEEF_CAFE_BABE, 0x0000_0000_FFFF_FFFF, 0xAAAA_AAAA_5555_5555, 0x0F0F_0F0F_F0F0_F0F0,
+        ];
+        let a = U64x8::from_array(a_arr);
+
+        // BLAKE2b uses 32/24/16/63; 0 and 63 are the edges, and 64 must wrap
+        // to the identity rather than shifting by the full width (UB on u64).
+        // 65/127/128/191 pin the documented mod-64 contract: an implementation
+        // that only special-cased the width would pass at 64 and fail here.
+        // The per-lane oracle is std's own `u64::rotate_left`, which is
+        // specified to take its count mod 64, so this asserts agreement with
+        // the language rather than with our own restatement of the rule.
+        for n in [0u32, 1, 7, 16, 24, 31, 32, 63, 64, 65, 127, 128, 191] {
+            let l = a.rotate_left(n).to_array();
+            let r = a.rotate_right(n).to_array();
+            for i in 0..8 {
+                assert_eq!(l[i], a_arr[i].rotate_left(n), "lane {i} rotate_left({n})");
+                assert_eq!(r[i], a_arr[i].rotate_right(n), "lane {i} rotate_right({n})");
+            }
+            // rotr(n) == rotl(64 - n): the identity the pair rests on.
+            let back = a.rotate_left((64 - (n % 64)) % 64).to_array();
+            assert_eq!(r, back, "rotate_right({n}) != rotate_left(64 - {n})");
+        }
+
+        // Round-trip: rotating out and back is the identity for every amount.
+        for n in [1u32, 16, 24, 32, 63] {
+            assert_eq!(
+                a.rotate_left(n).rotate_right(n).to_array(),
+                a_arr,
+                "rotate_left({n}) then rotate_right({n}) is not the identity"
+            );
+        }
+    }
+
+    /// The BLAKE3 shuffle surface on `U32x16`, checked against the REAL x86
+    /// intrinsics it reproduces — applied to each 256-bit half.
+    ///
+    /// `U32x16` holds two `__m256i` worth of lanes, and BLAKE3's `hash_many`
+    /// is either lane-wise or confined within a 128-/256-bit lane, so the two
+    /// 8-lane groups run independently in one vector at DEGREE 16. This test
+    /// proves that equivalence rather than assuming it: each half of the
+    /// `U32x16` result must equal the corresponding 256-bit intrinsic applied
+    /// to that half's inputs.
+    ///
+    /// Load-bearing because the bodies are index loops. Nothing about them is
+    /// self-evidently `_mm256_unpacklo_epi32`, and a subtly-wrong interleave
+    /// yields wrong hashes, not a compile error.
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    #[test]
+    fn u32x16_blake3_shuffles_match_x86_intrinsics_per_half() {
+        use core::arch::x86_64::*;
+
+        // Distinct value per lane, so any misplaced lane is visible.
+        let a_arr: [u32; 16] = core::array::from_fn(|i| 0x1000_0000 | (i as u32) << 8 | i as u32);
+        let b_arr: [u32; 16] = core::array::from_fn(|i| 0x2000_0000 | (i as u32) << 8 | i as u32);
+        let (a, b) = (U32x16::from_array(a_arr), U32x16::from_array(b_arr));
+
+        // SAFETY: guarded by `target_feature = "avx2"` on this test.
+        unsafe {
+            let load = |src: &[u32; 16], half: usize| _mm256_loadu_si256(src.as_ptr().add(half * 8) as *const __m256i);
+            let read = |v: __m256i| -> [u32; 8] {
+                let mut out = [0u32; 8];
+                _mm256_storeu_si256(out.as_mut_ptr() as *mut __m256i, v);
+                out
+            };
+            // Assert `got`'s two halves against the 256-bit intrinsic applied
+            // to each half's own inputs.
+            let check = |got: U32x16, want: fn(__m256i, __m256i) -> __m256i, name: &str| {
+                let g = got.to_array();
+                for half in 0..2 {
+                    let expect = read(want(load(&a_arr, half), load(&b_arr, half)));
+                    assert_eq!(&g[half * 8..half * 8 + 8], &expect[..], "{name}, half {half}");
+                }
+            };
+
+            check(a.interleave_lo_u32(b), |x, y| _mm256_unpacklo_epi32(x, y), "interleave_lo_u32");
+            check(a.interleave_hi_u32(b), |x, y| _mm256_unpackhi_epi32(x, y), "interleave_hi_u32");
+            check(a.interleave_lo_u64(b), |x, y| _mm256_unpacklo_epi64(x, y), "interleave_lo_u64");
+            check(a.interleave_hi_u64(b), |x, y| _mm256_unpackhi_epi64(x, y), "interleave_hi_u64");
+            check(a.concat_lo_halves(b), |x, y| _mm256_permute2x128_si256(x, y, 0x20), "concat_lo_halves");
+            check(a.concat_hi_halves(b), |x, y| _mm256_permute2x128_si256(x, y, 0x31), "concat_hi_halves");
+
+            // BLAKE3 rotates RIGHT by 16/12/8/7 -> rotl(32 - n). Assert against
+            // upstream's exact `srli | slli` form, not a reformulation of ours.
+            // Unrolled because the shift intrinsics take const immediates --
+            // which also mirrors upstream's four separate rot fns one-to-one.
+            let rot = |got: U32x16, want: fn(__m256i) -> __m256i, name: &str| {
+                let g = got.to_array();
+                for half in 0..2 {
+                    let expect = read(want(load(&a_arr, half)));
+                    assert_eq!(&g[half * 8..half * 8 + 8], &expect[..], "{name}, half {half}");
+                }
+            };
+            rot(a.rotate_left(16), |x| _mm256_or_si256(_mm256_srli_epi32(x, 16), _mm256_slli_epi32(x, 16)), "rot16");
+            rot(a.rotate_left(20), |x| _mm256_or_si256(_mm256_srli_epi32(x, 12), _mm256_slli_epi32(x, 20)), "rot12");
+            rot(a.rotate_left(24), |x| _mm256_or_si256(_mm256_srli_epi32(x, 8), _mm256_slli_epi32(x, 24)), "rot8");
+            rot(a.rotate_left(25), |x| _mm256_or_si256(_mm256_srli_epi32(x, 7), _mm256_slli_epi32(x, 25)), "rot7");
+        }
+    }
+
+    /// The same six methods pinned lane-by-lane with no intrinsics, so every
+    /// backend — scalar / avx512 / neon / wasm / nightly — is held to the
+    /// identical permutation on machines where the x86 oracle cannot run.
+    #[test]
+    fn u32x16_blake3_shuffles_are_lane_exact() {
+        let a: [u32; 16] = core::array::from_fn(|i| 10 + i as u32);
+        let b: [u32; 16] = core::array::from_fn(|i| 30 + i as u32);
+        let (va, vb) = (U32x16::from_array(a), U32x16::from_array(b));
+
+        // Per 128-bit quad q: lanes 4q..4q+4, independently in each quad.
+        assert_eq!(
+            va.interleave_lo_u32(vb).to_array(),
+            [10, 30, 11, 31, 14, 34, 15, 35, 18, 38, 19, 39, 22, 42, 23, 43]
+        );
+        assert_eq!(
+            va.interleave_hi_u32(vb).to_array(),
+            [12, 32, 13, 33, 16, 36, 17, 37, 20, 40, 21, 41, 24, 44, 25, 45]
+        );
+        assert_eq!(
+            va.interleave_lo_u64(vb).to_array(),
+            [10, 11, 30, 31, 14, 15, 34, 35, 18, 19, 38, 39, 22, 23, 42, 43]
+        );
+        assert_eq!(
+            va.interleave_hi_u64(vb).to_array(),
+            [12, 13, 32, 33, 16, 17, 36, 37, 20, 21, 40, 41, 24, 25, 44, 45]
+        );
+        // Per 256-bit half h: lanes 8h..8h+8.
+        assert_eq!(
+            va.concat_lo_halves(vb).to_array(),
+            [10, 11, 12, 13, 30, 31, 32, 33, 18, 19, 20, 21, 38, 39, 40, 41]
+        );
+        assert_eq!(
+            va.concat_hi_halves(vb).to_array(),
+            [14, 15, 16, 17, 34, 35, 36, 37, 22, 23, 24, 25, 42, 43, 44, 45]
+        );
+    }
+
+    /// `exchange::<G>` composes a complete 16x16 transpose over four stages.
+    ///
+    /// This is the control the codegen oracle's driver applies to
+    /// `transpose_16x16_composed`, brought into the test suite so the library
+    /// method is checked and not merely its probe-local twin. A packed-but-
+    /// wrong shuffle network would pass a codegen histogram and fail here.
+    ///
+    /// Note the semantics differ from `interleave_*` / `concat_*` above: those
+    /// mirror x86's per-128-bit-lane `unpack`, whereas `exchange` pairs lane
+    /// `c` with lane `c ^ G` across the whole vector. They are different
+    /// permutations and neither substitutes for the other.
+    #[test]
+    fn u32x16_exchange_stages_compose_a_transpose() {
+        fn stage<const G: usize>(m: &mut [U32x16; 16]) {
+            for r in 0..16 {
+                if r & G == 0 {
+                    let (lo, hi) = m[r].exchange::<G>(m[r | G]);
+                    m[r] = lo;
+                    m[r | G] = hi;
+                }
+            }
+        }
+
+        // Row r, lane c = r*16 + c. A transpose must yield row r, lane c = c*16 + r.
+        let mut m: [U32x16; 16] =
+            core::array::from_fn(|r| U32x16::from_array(core::array::from_fn(|c| (r * 16 + c) as u32)));
+
+        stage::<1>(&mut m);
+        stage::<2>(&mut m);
+        stage::<4>(&mut m);
+        stage::<8>(&mut m);
+
+        for (r, row) in m.iter().enumerate() {
+            let want: [u32; 16] = core::array::from_fn(|c| (c * 16 + r) as u32);
+            assert_eq!(row.to_array(), want, "row {r} after four exchange stages");
+        }
+    }
+
+    /// Each granularity in isolation, pinned lane-by-lane, so a backend that
+    /// gets one stage wrong is not masked by the composition above.
+    #[test]
+    fn u32x16_exchange_is_lane_exact_per_granularity() {
+        let a: [u32; 16] = core::array::from_fn(|i| 10 + i as u32);
+        let b: [u32; 16] = core::array::from_fn(|i| 30 + i as u32);
+        let (va, vb) = (U32x16::from_array(a), U32x16::from_array(b));
+
+        // lo[c] = a[c] when c & G == 0 else b[c ^ G]
+        // hi[c] = b[c] when c & G != 0 else a[c ^ G]
+        for g in [1usize, 2, 4, 8] {
+            let (lo, hi) = match g {
+                1 => va.exchange::<1>(vb),
+                2 => va.exchange::<2>(vb),
+                4 => va.exchange::<4>(vb),
+                _ => va.exchange::<8>(vb),
+            };
+            let want_lo: [u32; 16] = core::array::from_fn(|c| if c & g == 0 { a[c] } else { b[c ^ g] });
+            let want_hi: [u32; 16] = core::array::from_fn(|c| if c & g != 0 { b[c] } else { a[c ^ g] });
+            assert_eq!(lo.to_array(), want_lo, "exchange::<{g}> lo");
+            assert_eq!(hi.to_array(), want_hi, "exchange::<{g}> hi");
+        }
+    }
+
+    /// `U32x8`'s shuffle + rotate surface, checked against the REAL x86
+    /// intrinsics it claims to reproduce.
+    ///
+    /// This is the load-bearing test for the BLAKE3 `rust_avx2.rs` port. Those
+    /// six methods have plain index-loop bodies, so nothing about them is
+    /// self-evidently equal to `_mm256_unpacklo_epi32` and friends — and the
+    /// per-128-bit-lane semantics are exactly the kind of thing an "obvious"
+    /// whole-vector implementation gets wrong while still looking reasonable.
+    /// A transpose built on a subtly-wrong interleave produces wrong hashes,
+    /// not a compile error.
+    ///
+    /// Gated on `target_feature = "avx2"` because it calls the intrinsics
+    /// directly as the oracle. The methods themselves are backend-agnostic;
+    /// `u32x8_shuffle_surface_is_lane_exact` below covers them everywhere.
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    #[test]
+    fn u32x8_shuffles_match_x86_intrinsics() {
+        use super::U32x8;
+        use core::arch::x86_64::*;
+
+        // Distinct values in every lane, so any misplaced lane is visible.
+        let a_arr: [u32; 8] = [
+            0x1000_0000, 0x1100_0001, 0x1200_0002, 0x1300_0003, 0x1400_0004, 0x1500_0005, 0x1600_0006, 0x1700_0007,
+        ];
+        let b_arr: [u32; 8] = [
+            0x2000_0000, 0x2100_0001, 0x2200_0002, 0x2300_0003, 0x2400_0004, 0x2500_0005, 0x2600_0006, 0x2700_0007,
+        ];
+        let (a, b) = (U32x8::from_array(a_arr), U32x8::from_array(b_arr));
+
+        // SAFETY: guarded by `target_feature = "avx2"` on this test.
+        unsafe {
+            let va = _mm256_loadu_si256(a_arr.as_ptr() as *const __m256i);
+            let vb = _mm256_loadu_si256(b_arr.as_ptr() as *const __m256i);
+            let read = |v: __m256i| -> [u32; 8] {
+                let mut out = [0u32; 8];
+                _mm256_storeu_si256(out.as_mut_ptr() as *mut __m256i, v);
+                out
+            };
+
+            assert_eq!(
+                a.interleave_lo_u32(b).to_array(),
+                read(_mm256_unpacklo_epi32(va, vb)),
+                "interleave_lo_u32 != _mm256_unpacklo_epi32"
+            );
+            assert_eq!(
+                a.interleave_hi_u32(b).to_array(),
+                read(_mm256_unpackhi_epi32(va, vb)),
+                "interleave_hi_u32 != _mm256_unpackhi_epi32"
+            );
+            assert_eq!(
+                a.interleave_lo_u64(b).to_array(),
+                read(_mm256_unpacklo_epi64(va, vb)),
+                "interleave_lo_u64 != _mm256_unpacklo_epi64"
+            );
+            assert_eq!(
+                a.interleave_hi_u64(b).to_array(),
+                read(_mm256_unpackhi_epi64(va, vb)),
+                "interleave_hi_u64 != _mm256_unpackhi_epi64"
+            );
+            assert_eq!(
+                a.concat_lo_halves(b).to_array(),
+                read(_mm256_permute2x128_si256(va, vb, 0x20)),
+                "concat_lo_halves != _mm256_permute2x128_si256(_, _, 0x20)"
+            );
+            assert_eq!(
+                a.concat_hi_halves(b).to_array(),
+                read(_mm256_permute2x128_si256(va, vb, 0x31)),
+                "concat_hi_halves != _mm256_permute2x128_si256(_, _, 0x31)"
+            );
+
+            // BLAKE3 rotates RIGHT by 16/12/8/7, expressed as rotl(32 - n).
+            // Upstream implements each as `srli | slli`; assert against that
+            // exact form, not against a reformulation of our own. Written out
+            // four times rather than looped because the shift intrinsics take
+            // const immediates -- which also makes this mirror upstream's four
+            // separate `rot16` / `rot12` / `rot8` / `rot7` functions one-to-one.
+            assert_eq!(
+                a.rotate_left(16).to_array(),
+                read(_mm256_or_si256(_mm256_srli_epi32(va, 16), _mm256_slli_epi32(va, 16))),
+                "rotate_left(16) != upstream rot16"
+            );
+            assert_eq!(
+                a.rotate_left(20).to_array(),
+                read(_mm256_or_si256(_mm256_srli_epi32(va, 12), _mm256_slli_epi32(va, 20))),
+                "rotate_left(20) != upstream rot12"
+            );
+            assert_eq!(
+                a.rotate_left(24).to_array(),
+                read(_mm256_or_si256(_mm256_srli_epi32(va, 8), _mm256_slli_epi32(va, 24))),
+                "rotate_left(24) != upstream rot8"
+            );
+            assert_eq!(
+                a.rotate_left(25).to_array(),
+                read(_mm256_or_si256(_mm256_srli_epi32(va, 7), _mm256_slli_epi32(va, 25))),
+                "rotate_left(25) != upstream rot7"
+            );
+        }
+    }
+
+    /// The same six methods, asserted lane-by-lane against their documented
+    /// index formulas — on EVERY backend, with no intrinsics involved.
+    ///
+    /// The intrinsic test above can only run where AVX2 exists. This one
+    /// pins the contract on scalar / avx512 / any future arm, so a backend
+    /// cannot quietly diverge on a machine where the oracle is unavailable.
+    #[test]
+    fn u32x8_shuffle_surface_is_lane_exact() {
+        use super::U32x8;
+
+        let a: [u32; 8] = [10, 11, 12, 13, 14, 15, 16, 17];
+        let b: [u32; 8] = [20, 21, 22, 23, 24, 25, 26, 27];
+        let (va, vb) = (U32x8::from_array(a), U32x8::from_array(b));
+
+        assert_eq!(va.interleave_lo_u32(vb).to_array(), [10, 20, 11, 21, 14, 24, 15, 25]);
+        assert_eq!(va.interleave_hi_u32(vb).to_array(), [12, 22, 13, 23, 16, 26, 17, 27]);
+        assert_eq!(va.interleave_lo_u64(vb).to_array(), [10, 11, 20, 21, 14, 15, 24, 25]);
+        assert_eq!(va.interleave_hi_u64(vb).to_array(), [12, 13, 22, 23, 16, 17, 26, 27]);
+        assert_eq!(va.concat_lo_halves(vb).to_array(), [10, 11, 12, 13, 20, 21, 22, 23]);
+        assert_eq!(va.concat_hi_halves(vb).to_array(), [14, 15, 16, 17, 24, 25, 26, 27]);
+
+        for n in [0u32, 1, 7, 16, 20, 24, 25, 31] {
+            let got = va.rotate_left(n).to_array();
+            for i in 0..8 {
+                assert_eq!(got[i], a[i].rotate_left(n), "lane {i} rotate_left({n})");
+            }
+        }
     }
 
     #[test]

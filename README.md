@@ -210,20 +210,26 @@ cargo test
 
 ### Transitive dependencies of the `std` feature
 
-Enabling the `std` feature (the default) pulls in **`blake3`** as a hard
-transitive dependency. The cognitive substrate modules under `hpc/` —
-`plane`, `seal`, `merkle_tree`, `vsa`, `spo_bundle`, `crystal_encoder`,
-`compression_curves`, `deepnsm` — import `blake3` directly for integrity
-hashing and XOF expansion, and there is no separate feature to enable it.
-This was previously gated behind `hpc-extras`, which caused recurring
-"missing blake3" build errors for consumers (e.g. `burn-ndarray`) that
-selected `default-features = false, features = ["std"]` to shed the
-`p64` / `fractal` dependency tree. Pinning blake3 to `std` removes that
-footgun: any `std`-enabled build automatically gets blake3.
+**None for hashing.** BLAKE3 is in-tree.
+
+The cognitive substrate modules under `hpc/` — `plane`, `seal`,
+`merkle_tree`, `vsa`, `spo_bundle`, `crystal_encoder`, `compression_curves`,
+`deepnsm` — use `hpc::blake3` for integrity hashing and XOF expansion. That
+is a portable pure-Rust transcription of the BLAKE3 reference
+implementation, shipped in this crate: no SIMD, no `unsafe`, no C, and no
+build script.
+
+Earlier revisions pulled the external **`blake3`** crate here, first gated
+behind `hpc-extras` (which caused recurring "missing blake3" build errors
+for consumers such as `burn-ndarray` selecting
+`default-features = false, features = ["std"]`), then pinned to `std`.
+**Both are gone.** `blake3` and its transitive `constant_time_eq`,
+`arrayref` and `arrayvec` no longer appear in the dependency graph at any
+feature combination, so the footgun cannot recur.
 
 Consumers building `default-features = false` (no `std`, e.g. the
-`thumbv6m-none-eabi` nostd target) skip both the `hpc` module and the
-blake3 dep, so the nostd link is unaffected.
+`thumbv6m-none-eabi` nostd target) skip the `hpc` module and the BLAKE3
+code with it, so the nostd link is unaffected.
 
 ## Ecosystem
 

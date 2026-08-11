@@ -284,7 +284,7 @@ Updating the inventory from `pr-x12-bgz-jc-substrate-synergies.md` §7 with the 
 | 4096-entry basin codebook | `bgz-tensor::Codebook4096` (literal 4096-entry type), trained by **`cam_pq`**. `bgz-hhtl-d` is a *different* basin-codebook strategy (4-basin × 16-HIP × 256-TWIG = 16,384-cell address space over a shared 256-entry palette) — not the canonical 4096 |
 | `CurveOrder<const N>` | `highheelbgz` spiral addressing |
 | `LinearReduce<T> + Basis<T>` | `bgz-tensor` AttentionSemiring + ComposeTable + DistanceTable; **`sigker::SignatureBasis`** (proposed) |
-| Tropical-GEMM (R-7) | `bgz17::scalar_sparse::tropical_spmv` |
+| Tropical-GEMM (R-7) | canonical home `lance-graph::blasgraph` (kernel unwritten); shipped min-plus is the method `bgz17::ScalarCsr::spmv_min_plus` [lossy sibling, prototype only — corrected 2026-07-16 per audit] |
 | Federated codebook (R-13) | `bgz-hhtl-d` shared-palette + **`cam_pq::CamCodebook`** + **`dn_tree`** (online update) + **`merkle_tree`** (integrity) |
 | Formal correctness — codec quantization | `jc` **Pillar 10 (Pflug-Pichler)** — nested-distance Lipschitz on Sigma DN-trees, certifies CAM-PQ tree quantization preserves FreeEnergy within Lε |
 | Formal correctness — path-signature lane | `jc` **Pillar 11 (Hambly-Lyons)** via **`sigker`** — certifies Index-regime classification (sigker only, not bgz) |
@@ -335,15 +335,22 @@ Recommended edits to `pr-x12-canon-resolutions-delta.md`:
 > - **Quantization correctness (Pillar 10, Pflug-Pichler):** nested-distance Lipschitz on Sigma DN-trees — proves CAM-PQ tree quantization preserves FreeEnergy within Lε. This is the proof PR-X12 cites for "wire-format quantization is faithful."
 > - **Path-signature correctness (Pillar 11, Hambly-Lyons):** signature uniqueness on tree-quotient — proves any path is uniquely determined by its truncated signature up to tree-like equivalence. Active under `--features hambly-lyons` (since 2026-05-07, PR #348). This is the proof PR-X12 cites for the `SignatureBasis<DEPTH>` lane (R-15).
 >
-> Both pillars exist; the codec cites them and does not reprove. **Status: Pillar 10 active; Pillar 11 active under feature gate. Production-scale benchmarking + PR #350 (signature_kernel_pde math correction) — see Gap G-4.**
+> Both pillars exist; the codec cites them and does not reprove. **Status: Pillar 10 active; Pillar 11 active under feature gate. Production-scale benchmarking — see Gap G-4.** *(Corrected 2026-07-16, audit #9: the "PR #350 signature_kernel_pde math correction" claim is withdrawn — the PDE form's convergence tests to `I₀(2·√⟨u,v⟩)` pass; there is no known bug.)*
 
-**R-7 path correction** — the kernel home:
+**R-7 kernel home** *(corrected 2026-07-16, audit #1-#4 — the earlier "path
+correction" here had the canon/adapter relationship inverted)*:
 
-> R-7 (corrected): tropical-GEMM lives at `lance-graph::bgz17::scalar_sparse::tropical_spmv` (not the abstract `blasgraph` namespace). The codec's tropical-GEMM RDO call is `bgz17::scalar_sparse::tropical_spmv(edge_weights, dag)`.
+> R-7 (corrected): the canonical, bit-exact home for the tropical-GEMM
+> partition kernel is `lance-graph::blasgraph`; that f32 min-plus kernel is
+> UNWRITTEN today. The only shipped min-plus is the method
+> `bgz17::ScalarCsr::spmv_min_plus` (`fn(&self, x: &[f32]) -> Vec<f32>`) —
+> a lossy-sibling prototype, never a substitute for the blasgraph canon.
+> The free function `tropical_spmv(edge_weights, dag)` cited previously
+> does not exist.
 
 **R-15 (new candidate)** — signature-basis as Basis<T> impl:
 
-> R-15 (candidate): the substrate supports path-structured signals via `sigker::SignatureBasis<DEPTH>: Basis<f32>`, alongside `DctIIBasis<N>: Basis<i16>` (video) and `EwaSplatBasis: Basis<f16>` (3DGS). Implementation: ~1 week wrapper around `sigker::signature_kernel_pde`. **Plan G** gets a fifth lane (path-structured: audio waveform, time-series, gesture/handwriting).
+> R-15 (candidate): the substrate supports path-structured signals via `sigker::SignatureBasis<DEPTH>: Basis<f32>`, alongside `DctIIBasis<N>: Basis<i16>` (video) and `EwaSplatBasis: Basis<f16>` (3DGS). Implementation: ~1 week wrapper around `sigker::signature_truncated` (the form Pillar 11 cites; the PDE form is equally sound — audit #9 — but the truncated path is what R-15 commits). **Plan G** gets a fifth lane (path-structured: audio waveform, time-series, gesture/handwriting).
 
 ---
 

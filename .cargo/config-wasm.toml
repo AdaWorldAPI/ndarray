@@ -1,0 +1,23 @@
+# WebAssembly with SIMD128 — enables the native v128 SIMD backend
+# (`src/simd_wasm.rs::wasm32_simd`) instead of the pure-scalar fallback.
+#
+# Use with:
+#   cargo --config .cargo/config-wasm.toml build -p ndarray --lib --target wasm32-unknown-unknown
+#
+# Equivalent env form:
+#   RUSTFLAGS='-Ctarget-feature=+simd128' cargo build -p ndarray --lib --target wasm32-unknown-unknown
+#
+# The `simd128` target feature is what gates the `wasm32_simd` module and the
+# `simd.rs` dispatch arm that re-exports its `F32x16` / `F64x8` / `I8x16`
+# types. Without it, `wasm32` falls back to the portable scalar SIMD types
+# (still correct, just not vectorized). Add `+relaxed-simd` as well to light
+# up the fused `f32x4_relaxed_madd` path in `mul_add`:
+#
+#   rustflags = ["-Ctarget-feature=+simd128,+relaxed-simd"]
+#
+# Applies to both wasm32-unknown-unknown and wasm32-wasip1.
+[target.wasm32-unknown-unknown]
+rustflags = ["-Ctarget-feature=+simd128"]
+
+[target.wasm32-wasip1]
+rustflags = ["-Ctarget-feature=+simd128"]
