@@ -281,9 +281,11 @@ directly (not just CPUID) — each a few lines of stable asm (Gotcha 4/5 has the
   0 (a generic model name like `Xeon @ 2.80GHz` is the tell).
 - `_xgetbv(0)` XCR0 b17/b18 (TILECFG/TILEDATA) — if **0**, the OS never enabled
   tile XSTATE; AMX cannot run, full stop.
-- `arch_prctl(158, ARCH_REQ_XCOMP_PERM, XTILEDATA=18)` — `-95 / -EOPNOTSUPP`
+- `syscall(SYS_arch_prctl /* 158 */, ARCH_REQ_XCOMP_PERM, XFEATURE_XTILEDATA=18)`
+  — `-95 / -EOPNOTSUPP`
   means the kernel REFUSES the grant; **no byte-call can force it**.
-- `arch_prctl(158, ARCH_GET_XCOMP_PERM, &mask)` — XTILEDATA (b18) must be in mask.
+- `syscall(SYS_arch_prctl /* 158 */, ARCH_GET_XCOMP_PERM, &mask)` — XTILEDATA (b18)
+  must be in mask.
 
 Observed once on one provisioning (kernel 6.18.5 guest): CPUID=0 **and** XCR0
 b17/b18=0 **and** REQ=`-EOPNOTSUPP` → genuinely unavailable. `detect_amx()`

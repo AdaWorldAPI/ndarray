@@ -645,12 +645,11 @@ pub use crate::hpc::cascade;
 // `backend::gemm_bf16` (portable scalar / NEON / wasm-SIMD paths).
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
 pub use crate::hpc::amx_matmul::{amx_available, matmul_i8_to_i32};
-// BF16 16×16 tile GEMM — AMX `TDPBF16PS` when `amx_available()`, `F32x16` FMA
-// fallback otherwise. Same W1a rule: reach it via `ndarray::simd::*`, never
-// `crate::hpc` directly (the one-time `arch_prctl(158)` XTILEDATA grant is gated
-// inside `amx_available()`, which this dispatcher calls before any tile op).
-#[cfg(feature = "std")]
-pub use crate::hpc::bf16_tile_gemm::bf16_tile_gemm_16x16;
+// (The BF16 tile GEMM this branch re-exported unaliased is already surfaced
+// twice below — `bf16_tile_gemm_16x16` from `simd_ops` (the pure polyfill
+// kernel) and `bf16_tile_gemm_16x16_amx` from `hpc` (the tile-dispatching
+// wrapper). A third, unaliased `hpc` re-export collided with the `simd_ops`
+// name; dropped at the 2026-08-11 merge in favour of master's two-name split.)
 // Runtime-dispatch trampolines (`simd_runtime`, feature = "runtime-dispatch")
 // surfaced through the canonical `ndarray::simd::*` namespace — the W1a
 // consumer invariant is "all SIMD from `ndarray::simd`", so consumers that
@@ -682,7 +681,8 @@ pub use crate::simd_runtime::matmul_i8_to_i32;
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
 pub use crate::hpc::bf16_tile_gemm::{
     bf16_tile_gemm_16x16 as bf16_tile_gemm_16x16_amx, bf16_tile_gemm_16x16_packed, bf16_tile_gemm_tier, PackedBf16B,
-};// CPU-generation detection (cached): SPR / EMR / GNR / Sierra Forest. Lets a
+};
+// CPU-generation detection (cached): SPR / EMR / GNR / Sierra Forest. Lets a
 // consumer report which silicon a run landed on and distinguish "no AMX
 // silicon" from "AMX present but not OS-enabled" — both surface via `amx_report`.
 #[cfg(target_arch = "x86_64")]
