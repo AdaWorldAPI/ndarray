@@ -16,9 +16,10 @@
 //!   difference stencil at a distinct longitude tap — no quantization error
 //!   in the operator itself, only in the DATA it multiplies.
 //! - `C[16, 16]` (i32) = `A · B`, computed via
-//!   [`int8_tile_gemm_16x16`] — the SAFE dispatching wrapper (AMX `TDPBUSD`
-//!   when available, scalar fallback otherwise; the two paths are proven
-//!   bit-exact by the crate's own `fallback_matches_scalar_reference_k64`).
+//!   [`ndarray::simd::gemm_u8_i8`] — the canonical polyfill entry (AMX
+//!   `TDPBUSD` when available, then avx512vnni / avxvnni / scalar; the tiers
+//!   are proven bit-identical by the crate's own parity tests). Consumers
+//!   reach SIMD ONLY through `ndarray::simd::*` — never `ndarray::hpc::*`.
 //!
 //! `C[i,j] = idx(p[row_i, tap_j+1]) − idx(p[row_i, tap_j−1])`, an INTEGER
 //! bucket-index difference. Dequantized by the shared bucket width, that is
@@ -36,8 +37,8 @@
 //! sibling repo against the same store/time_index/indices recorded here.
 //!
 //! # What this DOES and does NOT prove
-//! `int8_tile_gemm_16x16` is the SAFE wrapper — it runtime-dispatches to
-//! AMX `TDPBUSD` when `amx_available()`, scalar otherwise. This host's
+//! `gemm_u8_i8` runtime-dispatches to AMX `TDPBUSD` when `amx_available()`,
+//! then the VNNI and scalar tiers. This host's
 //! actual path is reported at the top of the run. On a non-AMX host this
 //! validates the stencil-as-GEMM NUMERICS and the u8-quantization pipeline,
 //! not AMX instruction throughput — the crate's own bit-exact fallback
@@ -59,8 +60,7 @@
 //!
 //!   cargo run --release --example geostrophic_stencil
 
-use ndarray::hpc::int8_tile_gemm::int8_tile_gemm_16x16;
-use ndarray::simd::amx_available;
+use ndarray::simd::{amx_available, gemm_u8_i8};
 
 const RAW: &[u8] = include_bytes!("geostrophic_stencil.bin");
 const M: usize = 16; // latitude rows
@@ -129,7 +129,7 @@ fn build_stencil(sign: i8) -> [i8; K * N] {
 fn run_gemm(a_u8: &[[u8; K]; M], b_i8: &[i8; K * N]) -> [i32; M * N] {
     let a_flat: Vec<u8> = a_u8.iter().flatten().copied().collect();
     let mut c = [0i32; M * N];
-    int8_tile_gemm_16x16(&a_flat, b_i8, &mut c, K);
+    gemm_u8_i8(&a_flat, b_i8, &mut c, M, N, K);
     c
 }
 
@@ -158,7 +158,7 @@ fn main() {
         if amx_available() {
             "AMX TDPBUSD"
         } else {
-            "scalar fallback (int8_tile_gemm_16x16's own dispatch)"
+            "scalar/VNNI tier (gemm_u8_i8's own dispatch)"
         }
     );
     println!("  fixture: p range [{lo:.1}, {hi:.1}] Pa, bucket width {bucket_width:.4} Pa\n");
@@ -221,6 +221,6 @@ fn main() {
         std::process::exit(1);
     }
     println!("\n  All bars satisfied. The geostrophic centered-difference stencil");
-    println!("  survives u8 quantization + int8_tile_gemm_16x16 on this host's");
+    println!("  survives u8 quantization + ndarray::simd::gemm_u8_i8 on this host's");
     println!("  {} path.", if amx_available() { "AMX" } else { "scalar-fallback" });
 }
