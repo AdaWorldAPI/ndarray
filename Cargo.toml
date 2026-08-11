@@ -65,7 +65,7 @@ required-features = ["std"]
 
 [[example]]
 name = "geostrophic_stencil"
-required-features = ["std", "runtime-dispatch"]
+required-features = ["std"]
 
 # Morton cascade probe imports `ndarray::simd` (std-gated).
 [[example]]
