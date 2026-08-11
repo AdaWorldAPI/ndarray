@@ -63,6 +63,10 @@ required-features = ["std"]
 name = "amx_rb_probe"
 required-features = ["std"]
 
+[[example]]
+name = "geostrophic_stencil"
+required-features = ["std"]
+
 # Morton cascade probe imports `ndarray::simd` (std-gated).
 [[example]]
 name = "morton_cascade_probe"
