@@ -155,10 +155,7 @@ impl RailSpec {
     /// The same spec with a continuation register stacked at `at`.
     #[must_use]
     pub const fn stacked(self, at: usize) -> Self {
-        Self {
-            cont: Some(at),
-            ..self
-        }
+        Self { cont: Some(at), ..self }
     }
 
     /// Maximum representable depth under this spec.
@@ -298,7 +295,12 @@ mod tests {
     fn row(levels: &[u8], axis: RailAxis, fill: u8) -> Vec<u8> {
         let mut r = vec![0u8; 512];
         for (i, &v) in levels.iter().enumerate().take(RAIL_PAIRS) {
-            let at = 4 + 2 * i + match axis { RailAxis::Lo => 0, RailAxis::Hi => 1 };
+            let at = 4
+                + 2 * i
+                + match axis {
+                    RailAxis::Lo => 0,
+                    RailAxis::Hi => 1,
+                };
             r[at] = v;
         }
         for b in &mut r[V3_VALUE_OFF..] {

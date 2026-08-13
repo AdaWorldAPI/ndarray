@@ -243,16 +243,15 @@ impl ClamTree {
     /// The one construction core, parameterised over any callable. Both
     /// public arms land here.
     fn build_core(
-        data: &[u8], vec_len: usize, count: usize, config: &BuildConfig,
-        dist: &dyn Fn(&[u8], &[u8]) -> u64, carrier: TreeDistance,
+        data: &[u8], vec_len: usize, count: usize, config: &BuildConfig, dist: &dyn Fn(&[u8], &[u8]) -> u64,
+        carrier: TreeDistance,
     ) -> Self {
         let tmp = Self::build_core_nodes(data, vec_len, count, config, dist);
         Self::assemble(tmp, carrier)
     }
 
     fn build_core_nodes(
-        data: &[u8], vec_len: usize, count: usize, config: &BuildConfig,
-        dist: &dyn Fn(&[u8], &[u8]) -> u64,
+        data: &[u8], vec_len: usize, count: usize, config: &BuildConfig, dist: &dyn Fn(&[u8], &[u8]) -> u64,
     ) -> (Vec<Cluster>, Vec<usize>) {
         // Order and constants are the ORIGINAL build's, verbatim: assert
         // before the empty return, the 0xDEAD_BEEF_CAFE_BABE seed, the
@@ -3142,7 +3141,9 @@ mod tests {
     fn arm_test_data() -> Vec<u8> {
         // Deterministic, structured enough to force real splits.
         let mut rng = SplitMix64::new(0x51_7EED);
-        (0..64 * 32).map(|_| (rng.next_u64() & 0xFF) as u8).collect()
+        (0..64 * 32)
+            .map(|_| (rng.next_u64() & 0xFF) as u8)
+            .collect()
     }
 
     fn assert_same_tree(a: &ClamTree, b: &ClamTree) {
@@ -3163,7 +3164,10 @@ mod tests {
     #[test]
     fn the_two_arms_build_the_identical_tree() {
         let data = arm_test_data();
-        let cfg = BuildConfig { min_cardinality: 4, ..Default::default() };
+        let cfg = BuildConfig {
+            min_cardinality: 4,
+            ..Default::default()
+        };
         let ptr = ClamTree::build_with_fn(&data, 32, 64, &cfg, tail16_hamming);
         let dy = ClamTree::build_with_distance(&data, 32, 64, &cfg, TailHamming { from: 16 });
         assert_same_tree(&ptr, &dy);
@@ -3189,7 +3193,10 @@ mod tests {
             }
         }
         let data = arm_test_data();
-        let cfg = BuildConfig { min_cardinality: 4, ..Default::default() };
+        let cfg = BuildConfig {
+            min_cardinality: 4,
+            ..Default::default()
+        };
         assert!(ClamTree::build_with_fn(&data, 32, 64, &cfg, hamming_inline).is_metric());
         assert!(!ClamTree::build_with_distance(&data, 32, 64, &cfg, NotAMetric).is_metric());
     }
@@ -3200,7 +3207,10 @@ mod tests {
     #[should_panic(expected = "build_with_distance")]
     fn the_fn_pointer_accessor_refuses_the_stateful_arm() {
         let data = arm_test_data();
-        let cfg = BuildConfig { min_cardinality: 4, ..Default::default() };
+        let cfg = BuildConfig {
+            min_cardinality: 4,
+            ..Default::default()
+        };
         let t = ClamTree::build_with_distance(&data, 32, 64, &cfg, TailHamming { from: 0 });
         let _ = t.distance_fn();
     }
