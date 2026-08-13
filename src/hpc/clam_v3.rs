@@ -88,64 +88,108 @@ pub const RAIL_PAIRS: usize = 6;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RailAxis {
     /// Byte 0 of each pair (the `X` of `X:Y`).
-    Lo,
+    Lo = 0,
     /// Byte 1 of each pair (the `Y` of `X:Y`).
-    Hi,
+    Hi = 1,
 }
 
-/// The byte-range + axis handle for reading a row's rail register(s).
+/// The byte-range handle for reading a row's rail register(s) — the
+/// ClassView's reading made portable.
 ///
-/// This is the ClassView's reading made portable: the caller resolves WHICH
-/// bytes carry the register and which axis is walked from its
-/// ClassView / WideFieldMask, and hands the result here. ndarray never
-/// resolves a classid — it only refuses to guess.
+/// The caller resolves WHICH bytes carry the register, how many levels it
+/// holds, and how they are laid out from its ClassView / WideFieldMask, and
+/// hands the result here. ndarray never resolves a classid — it only refuses
+/// to guess. Two carvings are real today, and the spec expresses both:
+///
+/// | carving | levels | stride | constructor |
+/// |---|---|---|---|
+/// | interleaved axis pairs `X:Y` in the facet payload | 6 | 2 | [`RailSpec::v3_facet`] |
+/// | contiguous per-axis slab (one axis per register) | 12 | 1 | [`RailSpec::slab`] |
+///
+/// The second is not a variant for variety's sake: on the medcare bake the
+/// pair reading was **measured and rejected** (it fits only 44.25 % of
+/// paths; the per-axis slab fits 99.62 % in twelve levels). Which carving a
+/// row uses is a property of its bake, resolved where the ClassView lives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RailSpec {
-    /// Byte offset of the primary register (6 pairs = 12 bytes).
+    /// Byte offset of the walked axis' first level in the primary register.
     pub reg: usize,
-    /// Optional stacked continuation register (6 more pairs), e.g. carved
-    /// into the edge lane when the ClassView says so. `None` = 6 levels max.
+    /// Levels per register.
+    pub levels: usize,
+    /// Bytes between consecutive levels: 2 for interleaved `X:Y` pairs,
+    /// 1 for a contiguous per-axis slab.
+    pub stride: usize,
+    /// Optional continuation register (another `levels` levels), possibly
+    /// discontiguous — e.g. carved into the edge lane, or further down the
+    /// value slab. `None` = the primary register is the whole story.
     pub cont: Option<usize>,
-    /// Which byte of each level pair the walk reads.
-    pub axis: RailAxis,
 }
 
 impl RailSpec {
-    /// The zero-fallback default: primary register at `4..16` (the facet
-    /// payload), axis `Lo`, no continuation. Correct for a class whose
-    /// ClassView has not said otherwise — and ONLY for such a class.
+    /// The facet-payload reading: 6 interleaved `(u8:u8)` pairs at `4..16`,
+    /// walking one axis of each pair. The zero-fallback default for a class
+    /// whose ClassView has not said otherwise — and ONLY for such a class.
     #[must_use]
-    pub const fn v3_facet() -> Self {
-        Self { reg: 4, cont: None, axis: RailAxis::Lo }
+    pub const fn v3_facet(axis: RailAxis) -> Self {
+        Self {
+            reg: 4 + axis as usize,
+            levels: RAIL_PAIRS,
+            stride: 2,
+            cont: None,
+        }
     }
 
-    /// The same spec with a continuation register stacked at `at` —
-    /// e.g. `V3_KEY_LEN` when the ClassView carves it into the edge lane.
+    /// A contiguous per-axis slab: `levels` at `reg..reg+levels`, one byte
+    /// per level, with an optional (possibly discontiguous) continuation.
+    /// This is the carving the medcare bake measured its way to.
+    #[must_use]
+    pub const fn slab(reg: usize, levels: usize, cont: Option<usize>) -> Self {
+        Self {
+            reg,
+            levels,
+            stride: 1,
+            cont,
+        }
+    }
+
+    /// The same spec with a continuation register stacked at `at`.
     #[must_use]
     pub const fn stacked(self, at: usize) -> Self {
-        Self { cont: Some(at), ..self }
+        Self {
+            cont: Some(at),
+            ..self
+        }
     }
 
     /// Maximum representable depth under this spec.
     #[must_use]
     pub const fn max_depth(&self) -> u32 {
-        if self.cont.is_some() { 2 * RAIL_PAIRS as u32 } else { RAIL_PAIRS as u32 }
+        if self.cont.is_some() {
+            2 * self.levels as u32
+        } else {
+            self.levels as u32
+        }
     }
 
     /// The walked-axis byte of level `i` (0-based), or 0 if out of range.
-    /// Position is the information: byte index IS the level.
+    /// Position is the information: level index maps to a byte position and
+    /// nothing else.
     #[inline]
     fn level(&self, row: &[u8], i: usize) -> u8 {
-        let (base, k) = if i < RAIL_PAIRS {
+        let (base, k) = if i < self.levels {
             (self.reg, i)
         } else {
             match self.cont {
-                Some(c) => (c, i - RAIL_PAIRS),
+                Some(c) => (c, i - self.levels),
                 None => return 0,
             }
         };
-        let at = base + 2 * k + match self.axis { RailAxis::Lo => 0, RailAxis::Hi => 1 };
-        if at < row.len() { row[at] } else { 0 }
+        let at = base + self.stride * k;
+        if at < row.len() {
+            row[at]
+        } else {
+            0
+        }
     }
 
     /// Depth = occupied leading levels. Stops at the first zero: a hole ends
@@ -260,7 +304,7 @@ mod tests {
 
     #[test]
     fn depth_stops_at_the_first_hole() {
-        let spec = RailSpec::v3_facet();
+        let spec = RailSpec::v3_facet(RailAxis::Lo);
         assert_eq!(spec.depth(&row(&[1, 2, 3], RailAxis::Lo, 0)), 3);
         // a value AFTER a hole is not ancestry
         assert_eq!(spec.depth(&row(&[1, 0, 7], RailAxis::Lo, 0)), 1);
@@ -269,7 +313,7 @@ mod tests {
 
     #[test]
     fn geodesic_is_the_tree_distance_on_the_linearisation() {
-        let spec = RailSpec::v3_facet();
+        let spec = RailSpec::v3_facet(RailAxis::Lo);
         let parent = row(&[3, 5], RailAxis::Lo, 0);
         let child = row(&[3, 5, 2], RailAxis::Lo, 0);
         let sibling = row(&[3, 5, 4], RailAxis::Lo, 0);
@@ -287,8 +331,8 @@ mod tests {
     /// This is the test a widened u16 could not pass.
     #[test]
     fn the_axes_of_a_pair_are_independent() {
-        let spec_lo = RailSpec::v3_facet();
-        let spec_hi = RailSpec { axis: RailAxis::Hi, ..spec_lo };
+        let spec_lo = RailSpec::v3_facet(RailAxis::Lo);
+        let spec_hi = RailSpec::v3_facet(RailAxis::Hi);
         let mut r = vec![0u8; 512];
         r[4] = 2; // level 0, Lo
         r[5] = 7; // level 0, Hi — different chain entirely
@@ -305,7 +349,7 @@ mod tests {
     /// walk past six levels with the same hole rule.
     #[test]
     fn a_stacked_register_extends_depth_past_six() {
-        let plain = RailSpec::v3_facet();
+        let plain = RailSpec::v3_facet(RailAxis::Lo);
         let stacked = plain.stacked(V3_KEY_LEN);
         let mut r = vec![0u8; 512];
         for i in 0..RAIL_PAIRS {
@@ -337,7 +381,7 @@ mod tests {
     /// CLAM's pruning actually relies on.
     #[test]
     fn the_geodesic_satisfies_the_triangle_inequality() {
-        let spec = RailSpec::v3_facet();
+        let spec = RailSpec::v3_facet(RailAxis::Lo);
         let rows = [
             row(&[1], RailAxis::Lo, 0),
             row(&[1, 2], RailAxis::Lo, 0),
@@ -363,7 +407,7 @@ mod tests {
     /// of indiscernibles must refine over stored ancestry, not trust this.
     #[test]
     fn distinct_nodes_past_the_stored_depth_measure_zero() {
-        let spec = RailSpec::v3_facet();
+        let spec = RailSpec::v3_facet(RailAxis::Lo);
         let mut a = vec![0u8; 512];
         let mut b = vec![0u8; 512];
         for i in 0..RAIL_PAIRS {
@@ -374,5 +418,31 @@ mod tests {
         a[V3_VALUE_OFF] = 0xFF;
         assert_eq!(spec.geodesic(&a, &b), 0, "das ist die dokumentierte Grenze");
         assert!(v3_value_hamming(&a, &b) > 0, "der Inhalt unterscheidet sie");
+    }
+
+    /// The medcare carving, mirrored byte-exact: per-axis slab at
+    /// value 44..56 (row-absolute 76..88), continuation at value 68..80
+    /// (row-absolute 100..112), stride 1, twelve levels per register.
+    /// The pair reading was measured and REJECTED for that bake (44.25 %),
+    /// so this test exists to keep the slab expressible forever.
+    #[test]
+    fn a_per_axis_slab_reads_stride_one_with_discontiguous_continuation() {
+        let spec = RailSpec::slab(V3_VALUE_OFF + 44, 12, Some(V3_VALUE_OFF + 68));
+        assert_eq!(spec.max_depth(), 24);
+        let mut r = vec![0u8; 512];
+        for i in 0..12 {
+            r[V3_VALUE_OFF + 44 + i] = 1; // primary full
+        }
+        r[V3_VALUE_OFF + 68] = 3; // continuation level 12
+        r[V3_VALUE_OFF + 69] = 5; // continuation level 13
+        assert_eq!(spec.depth(&r), 14);
+        // the byte BETWEEN the registers (value 56..68 = part_of) is never read
+        let mut s2 = r.clone();
+        s2[V3_VALUE_OFF + 60] = 9;
+        assert_eq!(spec.geodesic(&r, &s2), 0, "fremde Register sind unsichtbar");
+        // sibling at continuation depth
+        let mut sib = r.clone();
+        sib[V3_VALUE_OFF + 69] = 6;
+        assert_eq!(spec.geodesic(&r, &sib), 2);
     }
 }
