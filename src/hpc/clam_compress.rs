@@ -359,7 +359,7 @@ impl CompressedTree {
     /// Cost: O(num_diffs) per point instead of O(vec_len).
     pub fn hamming_to_compressed(
         &self, query: &[u8], point_idx: usize, data: &[u8], vec_len: usize, dist_cache: &mut DistanceCache,
-        dist_fn: fn(&[u8], &[u8]) -> u64,
+        dist_fn: impl Fn(&[u8], &[u8]) -> u64,
     ) -> u64 {
         let center_idx = self.encoding_centers[point_idx];
 
