@@ -273,6 +273,11 @@ impl Distance for V3ValueHamming {
 /// [`super::clam::DistanceFn`] so it plugs straight into
 /// `ClamTree::build_with_fn(rows, 512, …, v3_value_hamming)`.
 ///
+/// The rail geodesic has no such bare-fn form BY DESIGN: it carries a
+/// [`RailSpec`], and state does not fit in a fn pointer. It rides
+/// [`super::clam::ClamTree::build_with_distance`] as [`V3RailGeodesic`]
+/// directly — no `const` workaround needed since the universal-builder pass.
+///
 /// A row shorter than the value offset contributes nothing — an honest 0
 /// beats a panic in a distance callback, and a truncated row is a loader
 /// bug this function cannot repair.

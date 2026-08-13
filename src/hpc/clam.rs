@@ -158,13 +158,42 @@ impl Default for BuildConfig {
 /// Distance function type: takes two byte slices of equal length, returns u64.
 pub type DistanceFn = fn(&[u8], &[u8]) -> u64;
 
+/// The tree's distance, carried on one of two arms.
+///
+/// `Ptr` is every pre-existing construction path, byte-identical in behaviour.
+/// `Dyn` is the stateful arm ([`ClamTree::build_with_distance`]): a distance
+/// that carries configuration — e.g. a ClassView-derived `RailSpec` — which a
+/// bare fn pointer cannot hold. Both arms feed the SAME partition core and the
+/// SAME search paths through [`ClamTree::dist`], so one name can never mean
+/// two things (`I-LEGACY-API-FEATURE-GATED`).
+enum TreeDistance {
+    Ptr(DistanceFn),
+    Dyn {
+        f: Box<dyn Fn(&[u8], &[u8]) -> u64 + Send + Sync>,
+        /// Carried from [`Distance::is_metric`]. The `Ptr` arm is recorded as
+        /// metric because every historical caller relied on triangle-inequality
+        /// pruning with it — preserving, not blessing, that assumption.
+        metric: bool,
+    },
+}
+
+impl TreeDistance {
+    #[inline]
+    fn eval(&self, a: &[u8], b: &[u8]) -> u64 {
+        match self {
+            TreeDistance::Ptr(f) => f(a, b),
+            TreeDistance::Dyn { f, .. } => f(a, b),
+        }
+    }
+}
+
 /// Divisive hierarchical clustering tree.
 pub struct ClamTree {
     pub nodes: Vec<Cluster>,
     pub reordered: Vec<usize>,
     pub num_leaves: usize,
     pub mean_leaf_radius: f64,
-    distance_fn: DistanceFn,
+    distance: TreeDistance,
 }
 
 impl ClamTree {
@@ -185,24 +214,65 @@ impl ClamTree {
 
     /// Build a CLAM tree with a custom distance function.
     pub fn build_with_fn(data: &[u8], vec_len: usize, count: usize, config: &BuildConfig, dist_fn: DistanceFn) -> Self {
+        Self::build_core(data, vec_len, count, config, &dist_fn, TreeDistance::Ptr(dist_fn))
+    }
+
+    /// Build with a **stateful** distance — the universal arm.
+    ///
+    /// A [`Distance`] impl can carry configuration a bare fn pointer cannot:
+    /// a byte-range spec, a codebook, a resolved ClassView reading. Its
+    /// [`Distance::is_metric`] answer is carried into the tree (see
+    /// [`ClamTree::is_metric`]) instead of being assumed. Identical inputs
+    /// produce a tree identical to the fn-pointer arm — pinned by test, not
+    /// claimed.
+    pub fn build_with_distance<D>(data: &[u8], vec_len: usize, count: usize, config: &BuildConfig, dist: D) -> Self
+    where
+        D: Distance<Point = [u8]> + Send + Sync + 'static,
+    {
+        let metric = dist.is_metric();
+        let f: Box<dyn Fn(&[u8], &[u8]) -> u64 + Send + Sync> = Box::new(move |a, b| dist.distance(a, b));
+        // Build against a borrow of the SAME closure that will be stored —
+        // one callable, never a rebuilt twin that could drift.
+        let nodes_input = &*f as &dyn Fn(&[u8], &[u8]) -> u64;
+        // SAFETY-free reborrow dance: build_core only borrows `dist` during
+        // construction; the box is moved into the carrier afterwards.
+        let tmp = Self::build_core_nodes(data, vec_len, count, config, nodes_input);
+        Self::assemble(tmp, TreeDistance::Dyn { f, metric })
+    }
+
+    /// The one construction core, parameterised over any callable. Both
+    /// public arms land here.
+    fn build_core(
+        data: &[u8], vec_len: usize, count: usize, config: &BuildConfig,
+        dist: &dyn Fn(&[u8], &[u8]) -> u64, carrier: TreeDistance,
+    ) -> Self {
+        let tmp = Self::build_core_nodes(data, vec_len, count, config, dist);
+        Self::assemble(tmp, carrier)
+    }
+
+    fn build_core_nodes(
+        data: &[u8], vec_len: usize, count: usize, config: &BuildConfig,
+        dist: &dyn Fn(&[u8], &[u8]) -> u64,
+    ) -> (Vec<Cluster>, Vec<usize>) {
+        // Order and constants are the ORIGINAL build's, verbatim: assert
+        // before the empty return, the 0xDEAD_BEEF_CAFE_BABE seed, the
+        // 2*count capacity. A shared core that quietly changes any of them
+        // would rebuild every existing caller's tree differently — the exact
+        // silent break this refactor exists to make impossible.
         assert_eq!(data.len(), vec_len * count);
-
         if count == 0 {
-            return ClamTree {
-                nodes: Vec::new(),
-                reordered: Vec::new(),
-                num_leaves: 0,
-                mean_leaf_radius: 0.0,
-                distance_fn: dist_fn,
-            };
+            return (Vec::new(), Vec::new());
         }
-
         let mut indices: Vec<usize> = (0..count).collect();
         let mut nodes = Vec::with_capacity(2 * count);
         let mut rng = SplitMix64::new(0xDEAD_BEEF_CAFE_BABE);
+        Self::partition(data, vec_len, &mut indices, 0, count, 0, config, &mut nodes, &mut rng, dist);
+        (nodes, indices)
+    }
 
-        Self::partition(data, vec_len, &mut indices, 0, count, 0, config, &mut nodes, &mut rng, dist_fn);
-
+    fn assemble((nodes, reordered): (Vec<Cluster>, Vec<usize>), carrier: TreeDistance) -> Self {
+        // Integer sum, one division — the original arithmetic, not an f64
+        // re-summation with different rounding.
         let mut num_leaves = 0usize;
         let mut leaf_radius_sum = 0u64;
         for node in &nodes {
@@ -216,13 +286,12 @@ impl ClamTree {
         } else {
             0.0
         };
-
         ClamTree {
             nodes,
-            reordered: indices,
+            reordered,
             num_leaves,
             mean_leaf_radius,
-            distance_fn: dist_fn,
+            distance: carrier,
         }
     }
 
@@ -230,7 +299,7 @@ impl ClamTree {
     #[allow(clippy::too_many_arguments)]
     fn partition(
         data: &[u8], vec_len: usize, indices: &mut [usize], start: usize, end: usize, depth: usize,
-        config: &BuildConfig, nodes: &mut Vec<Cluster>, rng: &mut SplitMix64, dist_fn: DistanceFn,
+        config: &BuildConfig, nodes: &mut Vec<Cluster>, rng: &mut SplitMix64, dist_fn: &dyn Fn(&[u8], &[u8]) -> u64,
     ) -> usize {
         let n = end - start;
         let node_idx = nodes.len();
@@ -370,12 +439,40 @@ impl ClamTree {
 
     #[inline]
     pub fn dist(&self, a: &[u8], b: &[u8]) -> u64 {
-        (self.distance_fn)(a, b)
+        self.distance.eval(a, b)
     }
 
     #[inline]
+    /// The raw fn-pointer arm, for callers that thread it onward.
+    ///
+    /// # Panics
+    /// On a tree built with [`ClamTree::build_with_distance`] — a stateful
+    /// distance has no fn pointer to hand out, and returning a substitute
+    /// would silently measure something else. New code should call
+    /// [`ClamTree::dist`] instead; no pre-existing construction path can
+    /// reach the panic.
     pub fn distance_fn(&self) -> DistanceFn {
-        self.distance_fn
+        match &self.distance {
+            TreeDistance::Ptr(f) => *f,
+            TreeDistance::Dyn { .. } => panic!(
+                "ClamTree was built with build_with_distance (stateful arm); \
+                 use ClamTree::dist instead of extracting a fn pointer"
+            ),
+        }
+    }
+
+    /// Whether this tree's distance declared itself a metric.
+    ///
+    /// The fn-pointer arm reports `true` — every historical caller relied on
+    /// triangle-inequality pruning with it, and this accessor preserves that
+    /// assumption rather than blessing it. The stateful arm carries the
+    /// answer from [`Distance::is_metric`]; `rho_nn`-style pruning over a
+    /// distance that answers `false` is unsound (silent false negatives).
+    pub fn is_metric(&self) -> bool {
+        match &self.distance {
+            TreeDistance::Ptr(_) => true,
+            TreeDistance::Dyn { metric, .. } => *metric,
+        }
     }
 
     pub fn root(&self) -> &Cluster {
@@ -492,7 +589,7 @@ impl ClamTree {
         let center = self.center_data(cluster, data, vec_len);
         let mut distances: Vec<u64> = self
             .cluster_points(cluster, data, vec_len)
-            .map(|(_, point)| (self.distance_fn)(center, point))
+            .map(|(_, point)| self.distance.eval(center, point))
             .collect();
 
         if distances.is_empty() {
@@ -1068,7 +1165,7 @@ impl CompressedTree {
     /// Compute Hamming distance from query to compressed point WITHOUT decompression.
     pub fn hamming_to_compressed(
         &self, query: &[u8], point_idx: usize, data: &[u8], vec_len: usize, dist_cache: &mut DistanceCache,
-        dist_fn: DistanceFn,
+        dist_fn: impl Fn(&[u8], &[u8]) -> u64,
     ) -> u64 {
         let center_idx = self.encoding_centers[point_idx];
 
@@ -1167,7 +1264,7 @@ impl ClamTree {
         while let Some(node_idx) = stack.pop() {
             let node = &self.nodes[node_idx];
             let center = &data[self.reordered[node.center_idx] * vec_len..][..vec_len];
-            let dist_to_center = (self.distance_fn)(query, center);
+            let dist_to_center = self.distance.eval(query, center);
 
             // Triangle inequality: closest possible point in cluster
             if node.delta_minus(dist_to_center) > rho {
@@ -1179,7 +1276,7 @@ impl ClamTree {
                 for i in node.offset..node.offset + node.cardinality {
                     let idx = self.reordered[i];
                     let point = &data[idx * vec_len..][..vec_len];
-                    let d = (self.distance_fn)(query, point);
+                    let d = self.distance.eval(query, point);
                     if d <= rho {
                         candidates.push((idx, d));
                     }
@@ -1430,7 +1527,12 @@ impl ClamTree {
         let mut cache = DistanceCache::new();
         let mut hits = Vec::new();
         let mut distance_calls = 0usize;
-        let dist_fn = self.distance_fn();
+        // A borrow of the carrier, not an extracted fn pointer — this path
+        // must work on BOTH arms (a Dyn-built tree has no pointer to hand out).
+        let dist_fn: &dyn Fn(&[u8], &[u8]) -> u64 = match &self.distance {
+            TreeDistance::Ptr(f) => f,
+            TreeDistance::Dyn { f, .. } => &**f,
+        };
 
         // Use CLAM tree structure: walk to find overlapping leaves,
         // then do compressive distance on leaf members
@@ -3011,5 +3113,95 @@ mod tests {
         let query = &data[0..vec_len];
         let hits = clam_cascade_search(&tree, &cascade, &data, vec_len, query, u64::MAX, 5);
         assert!(hits.len() <= 5);
+    }
+
+    // ── the universal-builder pass: two arms, one core ──
+
+    /// A stateful distance for the Dyn arm: Hamming over the tail from a
+    /// CONFIGURED offset — state a bare fn pointer cannot carry.
+    struct TailHamming {
+        from: usize,
+    }
+    impl Distance for TailHamming {
+        type Point = [u8];
+        fn distance(&self, a: &[u8], b: &[u8]) -> u64 {
+            hamming_inline(&a[self.from..], &b[self.from..])
+        }
+        fn is_metric(&self) -> bool {
+            true
+        }
+    }
+
+    /// The fn-pointer twin of `TailHamming { from: 16 }` — offset hardcoded,
+    /// because a pointer can hold nothing else. Exists so the two arms can be
+    /// compared on EQUAL inputs.
+    fn tail16_hamming(a: &[u8], b: &[u8]) -> u64 {
+        hamming_inline(&a[16..], &b[16..])
+    }
+
+    fn arm_test_data() -> Vec<u8> {
+        // Deterministic, structured enough to force real splits.
+        let mut rng = SplitMix64::new(0x51_7EED);
+        (0..64 * 32).map(|_| (rng.next_u64() & 0xFF) as u8).collect()
+    }
+
+    fn assert_same_tree(a: &ClamTree, b: &ClamTree) {
+        assert_eq!(a.reordered, b.reordered, "reordering diverged");
+        assert_eq!(a.nodes.len(), b.nodes.len(), "node count diverged");
+        for (i, (x, y)) in a.nodes.iter().zip(&b.nodes).enumerate() {
+            assert_eq!(
+                (x.center_idx, x.radius, x.cardinality, x.offset, x.depth, x.left, x.right),
+                (y.center_idx, y.radius, y.cardinality, y.offset, y.depth, y.left, y.right),
+                "cluster {i} diverged"
+            );
+        }
+        assert_eq!(a.num_leaves, b.num_leaves);
+    }
+
+    /// THE claim of the refactor, pinned: both arms land in one core, so the
+    /// same distance produces the byte-identical tree regardless of arm.
+    #[test]
+    fn the_two_arms_build_the_identical_tree() {
+        let data = arm_test_data();
+        let cfg = BuildConfig { min_cardinality: 4, ..Default::default() };
+        let ptr = ClamTree::build_with_fn(&data, 32, 64, &cfg, tail16_hamming);
+        let dy = ClamTree::build_with_distance(&data, 32, 64, &cfg, TailHamming { from: 16 });
+        assert_same_tree(&ptr, &dy);
+        // and the search paths agree through the dispatch
+        let q = &data[0..32];
+        let r1 = rho_nn(&ptr, &data, 32, q, 40);
+        let r2 = rho_nn(&dy, &data, 32, q, 40);
+        assert_eq!(r1.hits, r2.hits, "rho_nn diverged between arms");
+    }
+
+    /// `is_metric` rides the carrier: the Ptr arm preserves the historical
+    /// assumption (true), the Dyn arm carries the distance's own answer.
+    #[test]
+    fn is_metric_is_carried_not_assumed() {
+        struct NotAMetric;
+        impl Distance for NotAMetric {
+            type Point = [u8];
+            fn distance(&self, a: &[u8], b: &[u8]) -> u64 {
+                hamming_inline(a, b)
+            }
+            fn is_metric(&self) -> bool {
+                false
+            }
+        }
+        let data = arm_test_data();
+        let cfg = BuildConfig { min_cardinality: 4, ..Default::default() };
+        assert!(ClamTree::build_with_fn(&data, 32, 64, &cfg, hamming_inline).is_metric());
+        assert!(!ClamTree::build_with_distance(&data, 32, 64, &cfg, NotAMetric).is_metric());
+    }
+
+    /// The fn-pointer accessor refuses the stateful arm LOUDLY. A silent
+    /// substitute would measure something else; a panic names the fix.
+    #[test]
+    #[should_panic(expected = "build_with_distance")]
+    fn the_fn_pointer_accessor_refuses_the_stateful_arm() {
+        let data = arm_test_data();
+        let cfg = BuildConfig { min_cardinality: 4, ..Default::default() };
+        let t = ClamTree::build_with_distance(&data, 32, 64, &cfg, TailHamming { from: 0 });
+        let _ = t.distance_fn();
     }
 }
