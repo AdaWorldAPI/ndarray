@@ -112,6 +112,7 @@ pub mod bnn;
 pub mod clam;
 #[allow(missing_docs)]
 pub mod clam_search;
+pub mod clam_v3;
 #[allow(missing_docs)]
 pub mod clam_compress;
 #[allow(missing_docs)]
