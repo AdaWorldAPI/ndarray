@@ -683,6 +683,25 @@ pub use crate::hpc::bf16_tile_gemm::{
 #[cfg(target_arch = "x86_64")]
 pub use crate::simd_amx::{amx_report, cpu_model, CpuModel};
 
+// Packed-bitmask predicates + mask algebra — the columnar-selection lane.
+// Slice-level siblings of `add_i8` / `dot_i8`, built on the lane-level
+// `U32x16::eq_bitmask` / `I32x16::gt_bitmask` methods. Surfaced here because
+// the W1a invariant is "all SIMD from `ndarray::simd`": a consumer that had to
+// reach into `ndarray::simd_int_ops` (or worse, write its own compare-and-pack
+// loop) would be a polyfill bypass. Bit order is normative and identical
+// across all of them — element `i` at bit `i % 64` of word `i / 64`, trailing
+// bits zero. See `src/simd_int_ops.rs` for the full statement.
+#[cfg(feature = "std")]
+pub use crate::simd_int_ops::{
+    eq_u32_strided_to_mask, eq_u32_to_mask, gt_i32_to_mask, mask_and, mask_and_assign, mask_or, mask_or_assign,
+    masked_sum_i32,
+};
+// The popcount that closes the loop on the masks above: `mask_count` in ABI
+// terms. Already public at `ndarray::bitwise::popcount_batch_u64`; re-exported
+// here so a mask producer and its reducer share one import path (the sibling
+// `popcount_raw` / `hamming_distance_raw` re-export is just above).
+pub use crate::bitwise::popcount_batch_u64;
+
 // Elementwise slice ops — polyfill-dispatched (F32x16/F64x8 chunks + scalar tail).
 #[cfg(feature = "std")]
 pub use crate::simd_ops::{

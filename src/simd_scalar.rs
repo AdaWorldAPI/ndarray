@@ -976,6 +976,32 @@ impl I32x16 {
         }
         mask
     }
+
+    /// Lane-wise **signed** greater-than as a packed 16-bit bitmask.
+    ///
+    /// Bit `i` of the result is set iff `self.lane(i) > other.lane(i)` under
+    /// two's-complement signed ordering. Bit order is **LSB-first**: lane `0`
+    /// occupies bit `0`. Same convention as [`Self::cmpge_zero_mask`].
+    ///
+    /// Edge cases (all exact; no saturation, wrapping, or clamping):
+    /// * `i32::MIN` as the threshold is set for every lane strictly greater
+    ///   than it, and clear for lanes equal to `i32::MIN`.
+    /// * `i32::MAX` as the threshold yields `0` — no `i32` exceeds it.
+    /// * Comparison is signed, *not* bit-pattern: `-1 > 0` is `false`.
+    ///
+    /// This is the **scalar correctness anchor** for the primitive: the
+    /// AVX-512 arm (`VPCMPGTD` → `__mmask16`) and the AVX2 / NEON / wasm
+    /// index-loop arms are all required to agree with this body bit-for-bit.
+    #[inline(always)]
+    pub fn gt_bitmask(self, other: Self) -> u16 {
+        let mut mask = 0u16;
+        for i in 0..16 {
+            if self.0[i] > other.0[i] {
+                mask |= 1 << i;
+            }
+        }
+        mask
+    }
 }
 
 impl Mul for I32x16 {
@@ -1316,6 +1342,30 @@ impl U32x16 {
             out[i] = self.0[i].rotate_left(n);
         }
         Self(out)
+    }
+
+    /// Lane-wise equality as a packed 16-bit bitmask.
+    ///
+    /// Bit `i` of the result is set iff `self.lane(i) == other.lane(i)`. Bit
+    /// order is **LSB-first**: lane `0` occupies bit `0`. Same convention as
+    /// [`I32x16::cmpge_zero_mask`] and [`I32x16::gt_bitmask`].
+    ///
+    /// Edge cases: equality is exact bitwise comparison over the full 32-bit
+    /// range, so `u32::MAX` and `0` behave like any other value — no
+    /// saturation, wrapping, or signedness question arises.
+    ///
+    /// This is the **scalar correctness anchor** for the primitive: the
+    /// AVX-512 arm (`VPCMPEQD` → `__mmask16`) and the AVX2 / NEON / wasm
+    /// index-loop arms are all required to agree with this body bit-for-bit.
+    #[inline(always)]
+    pub fn eq_bitmask(self, other: Self) -> u16 {
+        let mut mask = 0u16;
+        for i in 0..16 {
+            if self.0[i] == other.0[i] {
+                mask |= 1 << i;
+            }
+        }
+        mask
     }
 }
 
