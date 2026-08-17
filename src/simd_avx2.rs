@@ -1764,6 +1764,29 @@ impl U32x16 {
         }
         Self(out)
     }
+
+    /// Lane-wise equality as a packed 16-bit bitmask.
+    ///
+    /// Bit `i` of the result is set iff `self.lane(i) == other.lane(i)`. Bit
+    /// order is **LSB-first**: lane `0` occupies bit `0`. Same convention as
+    /// [`I32x16::cmpge_zero_mask`] and [`I32x16::gt_bitmask`].
+    ///
+    /// Edge cases: equality is exact bitwise comparison over the full 32-bit
+    /// range, so `u32::MAX` and `0` behave like any other value — no
+    /// saturation, wrapping, or signedness question arises.
+    ///
+    /// Plain index loop over the array polyfill; see [`I32x16::gt_bitmask`]
+    /// for why no intrinsic override is earned.
+    #[inline(always)]
+    pub fn eq_bitmask(self, other: Self) -> u16 {
+        let mut mask = 0u16;
+        for i in 0..16 {
+            if self.0[i] == other.0[i] {
+                mask |= 1 << i;
+            }
+        }
+        mask
+    }
 }
 
 // 256-bit int lanes — scalar polyfills filling the gap surfaced by the
@@ -2302,6 +2325,34 @@ impl I32x16 {
         let mut mask = 0u16;
         for i in 0..16 {
             if self.0[i] >= 0 {
+                mask |= 1 << i;
+            }
+        }
+        mask
+    }
+
+    /// Lane-wise **signed** greater-than as a packed 16-bit bitmask.
+    ///
+    /// Bit `i` of the result is set iff `self.lane(i) > other.lane(i)` under
+    /// two's-complement signed ordering. Bit order is **LSB-first**: lane `0`
+    /// occupies bit `0`. Same convention as [`Self::cmpge_zero_mask`].
+    ///
+    /// Edge cases (all exact; no saturation, wrapping, or clamping):
+    /// * `i32::MIN` as the threshold is set for every lane strictly greater
+    ///   than it, and clear for lanes equal to `i32::MIN`.
+    /// * `i32::MAX` as the threshold yields `0` — no `i32` exceeds it.
+    /// * Comparison is signed, *not* bit-pattern: `-1 > 0` is `false`.
+    ///
+    /// Plain index loop over the array polyfill — the codegen oracle
+    /// (`.claude/knowledge/simd-codegen-oracle/`) measured that LLVM lowers
+    /// compare-and-pack-to-bitmask shapes of exactly this form to packed
+    /// compares plus a `vmovmsk`-class extraction, so no `unsafe` and no
+    /// `core::arch` intrinsic override is earned here.
+    #[inline(always)]
+    pub fn gt_bitmask(self, other: Self) -> u16 {
+        let mut mask = 0u16;
+        for i in 0..16 {
+            if self.0[i] > other.0[i] {
                 mask |= 1 << i;
             }
         }

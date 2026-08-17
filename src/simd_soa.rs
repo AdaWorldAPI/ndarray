@@ -35,7 +35,7 @@ use std::sync::Arc;
 // re-exports the right backend (AVX-512 / NEON / scalar) per `cfg`. Per
 // the W1a layering rule, `simd_soa.rs` MUST go through `crate::simd::`
 // rather than dipping into `simd_avx512` / `simd_neon` / `scalar` directly.
-use crate::simd::{F32x16, F64x8, I32x16, I64x8, U64x8, U8x64};
+use crate::simd::{F32x16, F64x8, I32x16, I64x8, U32x16, U64x8, U8x64};
 
 // Endian-correct `&[u8; 4]` → `f32` / `&[u8; 8]` → `f64`/`u64` helpers.
 // `f32::from_le_bytes` is intrinsically optimised to a single load on
@@ -87,6 +87,15 @@ fn u64x8_from_chunk(chunk: &[u8; 64]) -> U64x8 {
         ])
     });
     U64x8::from_array(arr)
+}
+
+#[inline(always)]
+fn u32x16_from_chunk(chunk: &[u8; 64]) -> U32x16 {
+    let arr: [u32; 16] = core::array::from_fn(|i| {
+        let off = i * 4;
+        u32::from_le_bytes([chunk[off], chunk[off + 1], chunk[off + 2], chunk[off + 3]])
+    });
+    U32x16::from_array(arr)
 }
 
 #[inline(always)]
@@ -206,6 +215,11 @@ impl MultiLaneColumn {
         self.data.len() / 64
     }
 
+    /// Number of `U32x16`-shaped (16 × u32 = 64-byte) chunks.
+    pub fn len_u32x16(&self) -> usize {
+        self.data.len() / 64
+    }
+
     /// Number of `I32x16`-shaped (16 × i32 = 64-byte) chunks.
     pub fn len_i32x16(&self) -> usize {
         self.data.len() / 64
@@ -271,6 +285,34 @@ impl MultiLaneColumn {
     /// `crate::simd::*`.
     pub fn iter_u64x8(&self) -> impl Iterator<Item = U64x8> + '_ {
         self.data.as_chunks::<64>().0.iter().map(u64x8_from_chunk)
+    }
+
+    /// Iterate the column as typed [`U32x16`] values dispatched via
+    /// `crate::simd::*`.
+    ///
+    /// Bytes are decoded little-endian (`u32::from_le_bytes`), the unsigned
+    /// sibling of [`iter_i32x16`](Self::iter_i32x16) — the lane width an
+    /// AoS-facet row store needs for classid columns: a 64-byte chunk of a
+    /// 512-byte row holds four 16-byte facets, whose `u32` classids sit at
+    /// `U32x16` positions 0/4/8/12, so one `U32x16::eq_bitmask` per chunk
+    /// answers "which of these four facets carry classid X".
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::MultiLaneColumn;
+    /// use std::sync::Arc;
+    ///
+    /// let mut bytes = vec![0u8; 64];
+    /// bytes[0..4].copy_from_slice(&7u32.to_le_bytes());
+    /// bytes[60..64].copy_from_slice(&u32::MAX.to_le_bytes());
+    /// let col = MultiLaneColumn::new(Arc::from(bytes)).unwrap();
+    /// let lane = col.iter_u32x16().next().unwrap();
+    /// assert_eq!(lane.to_array()[0], 7);
+    /// assert_eq!(lane.to_array()[15], u32::MAX);
+    /// ```
+    pub fn iter_u32x16(&self) -> impl Iterator<Item = U32x16> + '_ {
+        self.data.as_chunks::<64>().0.iter().map(u32x16_from_chunk)
     }
 
     /// Iterate the column as typed [`I32x16`] values dispatched via
@@ -363,6 +405,40 @@ mod tests {
             col2.as_bytes().as_ptr(),
             "clone must share the same Arc backing, not copy"
         );
+    }
+
+    #[test]
+    fn iter_u32x16_le_round_trip() {
+        // 16 u32 values incl. 0 and u32::MAX so a signed misread would show.
+        let src: [u32; 16] = core::array::from_fn(|i| match i {
+            0 => 0,
+            15 => u32::MAX,
+            _ => (i as u32).wrapping_mul(0x9E37_79B9),
+        });
+        let mut bytes = vec![0u8; 64];
+        for (i, &v) in src.iter().enumerate() {
+            bytes[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        let col = MultiLaneColumn::new(Arc::from(bytes)).unwrap();
+        let lane = col.iter_u32x16().next().expect("one lane");
+        assert_eq!(lane.to_array(), src);
+    }
+
+    /// The facet-scan shape iter_u32x16 exists for: a 64-byte chunk viewed as
+    /// four 16-byte facets, classids at u32 positions 0/4/8/12 — one
+    /// `eq_bitmask` answers all four at once.
+    #[test]
+    fn iter_u32x16_supports_the_facet_classid_scan() {
+        let mut bytes = vec![0u8; 64];
+        // facet 0 and facet 2 carry classid 7; facets 1 and 3 carry 9.
+        for (facet, class) in [(0usize, 7u32), (1, 9), (2, 7), (3, 9)] {
+            bytes[facet * 16..facet * 16 + 4].copy_from_slice(&class.to_le_bytes());
+        }
+        let col = MultiLaneColumn::new(Arc::from(bytes)).unwrap();
+        let lane = col.iter_u32x16().next().unwrap();
+        let needle = U32x16::from_array([7u32; 16]);
+        let m = lane.eq_bitmask(needle) & 0x1111; // classid positions only
+        assert_eq!(m, (1 << 0) | (1 << 8), "facets 0 and 2 match");
     }
 
     #[test]

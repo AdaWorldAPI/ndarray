@@ -943,6 +943,32 @@ impl I32x16 {
         unsafe { _mm512_cmpge_epi32_mask(self.0, _mm512_setzero_si512()) }
     }
 
+    /// Lane-wise **signed** greater-than as a packed 16-bit bitmask.
+    ///
+    /// Bit `i` of the result is set iff `self.lane(i) > other.lane(i)` under
+    /// two's-complement signed ordering. Bit order is **LSB-first**: lane `0`
+    /// occupies bit `0`. Sibling of [`Self::cmpge_zero_mask`], which uses the
+    /// same convention.
+    ///
+    /// Edge cases (all exact, no saturation or clamping anywhere):
+    /// * `i32::MIN > i32::MIN` → `false`; nothing is greater than `i32::MIN`
+    ///   except strictly larger values, so `x.gt_bitmask(splat(i32::MIN))` is
+    ///   set for every lane except those equal to `i32::MIN`.
+    /// * `i32::MAX` as the threshold yields `0` — no `i32` exceeds it.
+    /// * Negative operands compare as signed, *not* as bit patterns:
+    ///   `-1 > 0` is `false` even though `0xFFFF_FFFF > 0` unsigned.
+    ///
+    /// AVX-512 lowers this to a single `VPCMPGTD` into a `__mmask16`, which
+    /// *is* a `u16` — the packed bitmask is the hardware's native result, so
+    /// there is no extraction step to elide.
+    #[inline(always)]
+    pub fn gt_bitmask(self, other: Self) -> u16 {
+        // SAFETY: `Self` wraps a native `__m512i` and this impl block is
+        // compiled only under the `avx512f` dispatch arm, the same guarantee
+        // every other method on this type relies on.
+        unsafe { _mm512_cmpgt_epi32_mask(self.0, other.0) }
+    }
+
     #[inline(always)]
     pub fn simd_min(self, other: Self) -> Self {
         Self(unsafe { _mm512_min_epi32(self.0, other.0) })
@@ -1590,6 +1616,27 @@ impl U32x16 {
     #[inline(always)]
     pub fn reduce_sum(self) -> u32 {
         unsafe { _mm512_reduce_add_epi32(self.0) as u32 }
+    }
+
+    /// Lane-wise equality as a packed 16-bit bitmask.
+    ///
+    /// Bit `i` of the result is set iff `self.lane(i) == other.lane(i)`. Bit
+    /// order is **LSB-first**: lane `0` occupies bit `0`. Same convention as
+    /// [`I32x16::cmpge_zero_mask`] and [`I32x16::gt_bitmask`].
+    ///
+    /// Edge cases: equality is exact bitwise comparison over the full 32-bit
+    /// range, so `u32::MAX` and `0` behave like any other value and there is
+    /// no saturation, wrapping, or signedness question to resolve — an `i32`
+    /// lane pattern compares identically if reinterpreted.
+    ///
+    /// AVX-512 lowers this to a single `VPCMPEQD` into a `__mmask16`, which
+    /// *is* a `u16` — the packed bitmask is the hardware's native result.
+    #[inline(always)]
+    pub fn eq_bitmask(self, other: Self) -> u16 {
+        // SAFETY: `Self` wraps a native `__m512i` and this impl block is
+        // compiled only under the `avx512f` dispatch arm, the same guarantee
+        // every other method on this type relies on.
+        unsafe { _mm512_cmpeq_epu32_mask(self.0, other.0) }
     }
 
     /// Lane-wise left-rotate by `n` bits — the ARX rotate (matches

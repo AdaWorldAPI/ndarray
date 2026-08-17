@@ -1798,6 +1798,34 @@ impl U32x16 {
             self.0[3].rotate_left(n),
         ])
     }
+
+    /// Lane-wise equality as a packed 16-bit bitmask.
+    ///
+    /// Bit `i` of the result is set iff `self.lane(i) == other.lane(i)`. Bit
+    /// order is **LSB-first**: lane `0` occupies bit `0`. Same convention as
+    /// `I32x16::cmpge_zero_mask` / `I32x16::gt_bitmask` (which on aarch64 come
+    /// from the scalar tier — `I32x16` is re-exported from `simd_scalar`).
+    ///
+    /// Edge cases: equality is exact bitwise comparison over the full 32-bit
+    /// range, so `u32::MAX` and `0` behave like any other value — no
+    /// saturation, wrapping, or signedness question arises.
+    ///
+    /// Plain index loop over the `[U32x4; 4]` fan-out. The codegen oracle
+    /// (`.claude/knowledge/simd-codegen-oracle/`) measured that LLVM lowers
+    /// compare-and-pack-to-bitmask shapes of this form to packed compares plus
+    /// a narrowing extraction (`CMEQ` + `SHRN`-class on NEON), so no `unsafe`
+    /// and no `core::arch` intrinsic override is earned here.
+    #[inline(always)]
+    pub fn eq_bitmask(self, other: Self) -> u16 {
+        let (a, b) = (self.to_array(), other.to_array());
+        let mut mask = 0u16;
+        for i in 0..16 {
+            if a[i] == b[i] {
+                mask |= 1 << i;
+            }
+        }
+        mask
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
