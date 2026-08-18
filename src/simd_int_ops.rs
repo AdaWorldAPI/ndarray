@@ -855,6 +855,77 @@ pub fn mask_or_assign(dst: &mut [u64], src: &[u64]) {
     }
 }
 
+/// `dst = a & !b`, elementwise over `u64` mask words — "a minus b" as a
+/// bitmask set difference (every bit set in `a` but not in `b`).
+///
+/// # Tail-bit semantics
+///
+/// `!b` sets every bit of `b`'s tail — the padding bits past whatever
+/// logical row count `b` represents — because bitwise NOT has no notion of
+/// "past the end" and will happily flip a conforming (zero) tail to all
+/// ones. That looks like the same hazard [`mask_or`] warns about, but the
+/// AND with `a` recovers it: `a & !b` is a bitwise subset of `a` (every bit
+/// set in the result is also set in `a`), so **`dst`'s tail is zero
+/// whenever `a`'s tail is zero, regardless of what `!b`'s tail does.** This
+/// is the same pre-conforming-inputs contract `mask_or` documents — a
+/// caller holding a possibly-non-conforming `a` must clear `a`'s tail
+/// itself (the lgj-abi kernel does, against its own known `n_rows`); a
+/// conforming `a` composes safely against any `b`, tail included.
+///
+/// `dst` must not overlap `a` or `b`; use [`mask_andnot_assign`] for the
+/// in-place case (Rust's borrow rules already prevent the overlap in safe
+/// code, so this is a note about which function to reach for, not a
+/// hazard).
+///
+/// # Panics
+///
+/// Panics unless `a.len() == b.len() == dst.len()`.
+#[inline]
+pub fn mask_andnot(a: &[u64], b: &[u64], dst: &mut [u64]) {
+    assert_eq!(a.len(), b.len(), "mask_andnot: a/b length mismatch");
+    assert_eq!(a.len(), dst.len(), "mask_andnot: a/dst length mismatch");
+    let n = a.len();
+
+    const L: usize = crate::simd::U64x8::LANES;
+    let groups = n / L;
+    for g in 0..groups {
+        let off = g * L;
+        let va = crate::simd::U64x8::from_slice(&a[off..]);
+        let vb = crate::simd::U64x8::from_slice(&b[off..]);
+        (va & !vb).copy_to_slice(&mut dst[off..]);
+    }
+    for i in (groups * L)..n {
+        dst[i] = a[i] & !b[i];
+    }
+}
+
+/// `a &= !b`, elementwise over `u64` mask words.
+///
+/// The in-place form of [`mask_andnot`] — same tail-bit contract: the
+/// result is a bitwise subset of the (pre-update) `a`, so `a`'s tail stays
+/// zero whenever it started zero, regardless of what `b`'s tail holds.
+///
+/// # Panics
+///
+/// Panics if `a.len() != b.len()`.
+#[inline]
+pub fn mask_andnot_assign(a: &mut [u64], b: &[u64]) {
+    assert_eq!(a.len(), b.len(), "mask_andnot_assign: length mismatch");
+    let n = a.len();
+
+    const L: usize = crate::simd::U64x8::LANES;
+    let groups = n / L;
+    for g in 0..groups {
+        let off = g * L;
+        let va = crate::simd::U64x8::from_slice(&a[off..]);
+        let vb = crate::simd::U64x8::from_slice(&b[off..]);
+        (va & !vb).copy_to_slice(&mut a[off..]);
+    }
+    for i in (groups * L)..n {
+        a[i] &= !b[i];
+    }
+}
+
 /// Sum of `values[i]` where mask bit `i` is set, widened to `i64`.
 ///
 /// Bit order is the module convention: element `i` is bit `i % 64` of
@@ -1790,6 +1861,102 @@ mod tests {
     fn mask_and_rejects_length_mismatch() {
         let mut dst = [0u64; 4];
         mask_and(&[0u64; 4], &[0u64; 3], &mut dst);
+    }
+
+    // ── mask_andnot (a & !b) ─────────────────────────────────────────────────
+
+    #[test]
+    fn mask_andnot_matches_scalar_reference() {
+        // Same length set as `mask_and_or_match_scalar_reference`, straddling
+        // the 8-word U64x8 group boundary; len=2 is the `mask_words_for(70)`
+        // shape (70 rows -> 2 words, a 6-bit tail in the second word).
+        for &len in &[0usize, 1, 2, 7, 8, 9, 15, 16, 17, 31, 63, 64, 100] {
+            let mut seed = 0xA11C_E5EE_D000_0001;
+            let a: Vec<u64> = (0..len).map(|_| splitmix64(&mut seed)).collect();
+            let b: Vec<u64> = (0..len).map(|_| splitmix64(&mut seed)).collect();
+
+            let ref_andnot: Vec<u64> = a.iter().zip(&b).map(|(x, y)| x & !y).collect();
+
+            let mut dst = vec![0xDEAD_BEEFu64; len];
+            mask_andnot(&a, &b, &mut dst);
+            assert_eq!(dst, ref_andnot, "mask_andnot len={len}");
+
+            let mut dst = a.clone();
+            mask_andnot_assign(&mut dst, &b);
+            assert_eq!(dst, ref_andnot, "mask_andnot_assign len={len}");
+        }
+    }
+
+    #[test]
+    fn mask_andnot_algebra_identities() {
+        let mut seed = 0x1357_9BDF_2468_ACE0;
+        let a: Vec<u64> = (0..20).map(|_| splitmix64(&mut seed)).collect();
+        let b: Vec<u64> = (0..20).map(|_| splitmix64(&mut seed)).collect();
+
+        // (a & !b) | (a & b) == a — partitioning a's bits by whether b also
+        // has them set recovers a exactly.
+        let mut a_andnot_b = vec![0u64; 20];
+        mask_andnot(&a, &b, &mut a_andnot_b);
+        let mut a_and_b = vec![0u64; 20];
+        mask_and(&a, &b, &mut a_and_b);
+        let mut recombined = vec![0u64; 20];
+        mask_or(&a_andnot_b, &a_and_b, &mut recombined);
+        assert_eq!(recombined, a, "(a & !b) | (a & b) == a");
+
+        // (a & !b) & b == 0 — the "not b" half can never overlap b.
+        let mut overlap = vec![0u64; 20];
+        mask_and(&a_andnot_b, &b, &mut overlap);
+        assert_eq!(overlap, vec![0u64; 20], "(a & !b) & b == 0");
+
+        // ...and non-trivially so: on this corpus a_andnot_b must actually
+        // differ from a (b removes real bits), or both identities above hold
+        // vacuously of a no-op.
+        assert_ne!(a_andnot_b, a, "andnot must actually remove bits on this corpus");
+    }
+
+    #[test]
+    fn mask_andnot_preserves_conforming_tail() {
+        // 2 words = the `mask_words_for(70)` shape: word 0 fully valid (rows
+        // 0..63), word 1 valid only in its low 7 bits (rows 64..70); the
+        // tail is word 1 bits 7..63, which a conforming mask always holds
+        // zero.
+        const TAIL_MASK: u64 = !0x7Fu64; // bits 7..63
+
+        // Arm 1: a conforms (tail zero), b is maximally non-conforming (all
+        // bits set, including its own tail) — dst must still be zero
+        // everywhere, tail included, because `a & !b` can never exceed `a`.
+        let a = [0x1234_5678_9ABC_DEF0u64, 0x0000_0000_0000_005Bu64];
+        assert_eq!(a[1] & TAIL_MASK, 0, "fixture precondition: a's tail is zero");
+        let b = [u64::MAX; 2];
+        let mut dst = [0xDEAD_BEEFu64; 2];
+        mask_andnot(&a, &b, &mut dst);
+        assert_eq!(dst, [0u64, 0u64], "a & !(all-ones) == 0, tail included");
+
+        // Arm 2: a still conforms; b's body is zero (so it removes nothing
+        // from a) but b's tail is dirty (all ones) — exactly the shape where
+        // `!b` flips a normally-zero tail to all ones. dst must equal a
+        // exactly, and in particular dst's tail must stay zero: a's tail was
+        // already zero, and `a & !b` can only ever narrow a, never widen it.
+        let b_dirty_tail = [0u64, TAIL_MASK];
+        assert_ne!(b_dirty_tail[1] & TAIL_MASK, 0, "fixture precondition: b's tail is dirty");
+        let mut dst = [0xDEAD_BEEFu64; 2];
+        mask_andnot(&a, &b_dirty_tail, &mut dst);
+        assert_eq!(dst, a, "a & !b == a when b's body is 0, even with a dirty b tail");
+        assert_eq!(dst[1] & TAIL_MASK, 0, "dst's tail stays zero despite b's dirty tail");
+    }
+
+    #[test]
+    #[should_panic(expected = "length mismatch")]
+    fn mask_andnot_rejects_length_mismatch() {
+        let mut dst = [0u64; 4];
+        mask_andnot(&[0u64; 4], &[0u64; 3], &mut dst);
+    }
+
+    #[test]
+    #[should_panic(expected = "length mismatch")]
+    fn mask_andnot_assign_rejects_length_mismatch() {
+        let mut a = [0u64; 4];
+        mask_andnot_assign(&mut a, &[0u64; 3]);
     }
 
     #[test]
