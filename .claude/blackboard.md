@@ -918,3 +918,40 @@ running multi-hundred-MiB derivations.
 break cost bumps in the other direction: a reader shipped before the writer
 would reject the new profile. A bounded budget keeps the forward
 compatibility the header format exists for.
+
+## 2026-08-18 — mask_andnot / mask_andnot_assign added for lance-graph-java D-LGJ-W8
+
+Added `mask_andnot(a, b, dst)` (`dst = a & !b`) and `mask_andnot_assign(a, b)`
+(`a &= !b`) to `src/simd_int_ops.rs`, re-exported through
+`ndarray::simd::{mask_andnot, mask_andnot_assign}`. Consumer: lance-graph-java
+wave D-LGJ-W8 — the mask-native navigation correction — `lgj_mask_andnot`
+behind `Mask.minus`.
+
+Both follow the existing mask-op family shape exactly: `U64x8`-chunked
+polyfill dispatch with a scalar tail, panic-on-length-mismatch, and the
+tail-bit semantics documented precisely (`dst`'s tail is zero whenever `a`'s
+tail is zero, because `a & !b` is a bitwise subset of `a` — the same
+pre-conforming-inputs contract `mask_or` already carries). Parity vs an
+independent scalar reference, algebra identities
+(`(a & !b) | (a & b) == a`, `(a & !b) & b == 0`), and a dedicated
+tail-conformance falsifier (a conforming `a` against a maximally dirty `b`,
+including a `b`-tail-only-dirty arm) are all in place.
+
+**EXPLICIT W1a DEVIATION RECORD.** The pair follows the existing mask-op
+*family* shape (free functions re-exported through `ndarray::simd`) rather
+than the W1a struct-method litmus —
+`.claude/knowledge/vertical-simd-consumer-contract.md:325-326` would reject
+a free fn for a *new* primitive. Rationale: `mask_andnot` /
+`mask_andnot_assign` are not a new primitive shape, they are the fifth and
+sixth members of the existing `mask_and` / `mask_and_assign` / `mask_or` /
+`mask_or_assign` free-function family; a lone struct-method member sitting
+beside four free-fn siblings would fragment exactly the polyfill surface
+the `simd.rs` re-export comment (:686-693) protects, not honor it. All
+other W1a criteria hold in full:
+parity vs scalar reference, tail-bit semantics documented, all backends
+reached via the existing polyfill dispatch (`crate::simd::U64x8`, which
+resolves to AVX-512 / AVX2 / NEON-scalar / wasm-scalar / portable-scalar
+per target — every arm confirmed to carry `Not`). Deviation was
+council-surfaced (5+3, S2-7) and operator-visible, not smuggled.
+
+Loose ends: none.
