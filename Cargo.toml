@@ -474,3 +474,19 @@ rustdoc-args = ["--cfg", "docsrs"]
 # the patch is exercised by `cargo test -p encryption` and the full workspace.
 [patch.crates-io]
 chacha20 = { path = "vendor/chacha20" }
+
+# Debug info OFF for dev and test builds — the single biggest lever on build
+# cost. Measured across this fleet 2026-08-22: 22 GB / ~40 min with debug info
+# vs 4.4 GB / ~10 min without, on the same tree. `[profile.test]` inherits from
+# `dev`, so this one entry covers `cargo build` and `cargo test` alike.
+#
+# It belongs in the manifest rather than in each session's environment: carried
+# as `CARGO_PROFILE_*` env vars it only helps a session that remembers, and a
+# fresh clone or a CI runner gets the expensive build. lance-graph (#962) and
+# MedCare-rs already set this default.
+#
+# Given up: line numbers in panic backtraces. `debug = "line-tables-only"`
+# restores them cheaply when a debugging session needs them — a deliberate
+# temporary edit, not a reason to keep the default expensive.
+[profile.dev]
+debug = 0
