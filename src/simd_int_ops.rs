@@ -1007,6 +1007,116 @@ pub fn masked_sum_i32(values: &[i32], mask_words: &[u64]) -> i64 {
 // Tests
 // ────────────────────────────────────────────────────────────────────────
 
+/// Sum a sub-word group field out of a **strided** record, over the records a
+/// mask selects, widened to `i128` and range-checked into `i64`.
+///
+/// The shape this exists for: a row-strided store whose each record carries a small
+/// content-blind register, read under a runtime grouping — `groups × group_bytes`
+/// little-endian fields per record. `lance-graph-java`'s V3 facet is the
+/// motivating case (512-byte rows, a 12-byte register read as `6×2` / `4×3` /
+/// `3×4`), but nothing here is specific to it.
+///
+/// # Why this lives HERE
+///
+/// It is the primitive a consumer would otherwise hand-roll with raw intrinsics,
+/// which is exactly what the "all SIMD from `ndarray::simd`" invariant exists to
+/// prevent. [`masked_sum_i32`] is contiguous `i32`;
+/// [`eq_u32_strided_to_mask`] reads one aligned `u32` per record. Neither covers
+/// "gather a sub-word group out of a strided register and widen-accumulate", so
+/// the consumer had a real gap and this closes it.
+///
+/// # Vectorisation, honestly
+///
+/// **This kernel is scalar, and measurement is why — not oversight.** The access
+/// pattern is one small register per record at a large stride (512 bytes in the
+/// motivating case), so every record is on its own cache line and the loop is
+/// memory-bound. The per-record work is 12 bytes; a vector register is 32-64.
+/// There is no way to vector-load several records' registers at once because
+/// they are not adjacent, and widening 6 `u16`s within one record does not fill
+/// a lane. Vectorising the *decode* would optimise the part that is already
+/// free.
+///
+/// Should a caller ever present a CONTIGUOUS or small-stride variant, that is a
+/// different primitive with a different name, and it would genuinely vectorise —
+/// this one should not grow a flag for it.
+///
+/// # Overflow
+///
+/// Accumulates in `i128` and range-checks once, returning `None` rather than a
+/// wrapped value. `i64` is not closed under this reduction: with
+/// `group_bytes = 4` a single record contributes up to `groups × (2³² − 1)`.
+///
+/// # Panics
+///
+/// If `group_bytes` is not in `1..=4`, if `mask_words` is too short for
+/// `n_records`, or if the last selected record's field would read past `bytes`.
+/// Each is a caller contract violation rather than a recoverable condition.
+///
+/// ```
+/// use ndarray::simd::masked_strided_group_sum;
+///
+/// // Two 8-byte records; the register starts at byte 2 and holds 3 × u16 LE.
+/// let mut b = vec![0u8; 16];
+/// b[2..8].copy_from_slice(&[1, 0, 2, 0, 3, 0]);   // record 0 -> 1 + 2 + 3
+/// b[10..16].copy_from_slice(&[10, 0, 20, 0, 30, 0]); // record 1 -> 60
+/// // mask selects record 0 only
+/// assert_eq!(masked_strided_group_sum(&b, 2, 8, 2, 3, 2, &[0b01]), Some(6));
+/// // both records
+/// assert_eq!(masked_strided_group_sum(&b, 2, 8, 2, 3, 2, &[0b11]), Some(66));
+/// ```
+#[inline]
+pub fn masked_strided_group_sum(
+    bytes: &[u8], first_offset: usize, stride_bytes: usize, n_records: usize, groups: usize, group_bytes: usize,
+    mask_words: &[u64],
+) -> Option<i64> {
+    assert!((1..=4).contains(&group_bytes), "masked_strided_group_sum: group_bytes={group_bytes} outside 1..=4");
+    let words = mask_words_for(n_records);
+    assert!(
+        mask_words.len() >= words,
+        "masked_strided_group_sum: mask_words.len()={} < required {}",
+        mask_words.len(),
+        words
+    );
+
+    let mut acc: i128 = 0;
+    for (w, &word) in mask_words.iter().take(words).enumerate() {
+        let base = w * 64;
+        if base >= n_records {
+            break;
+        }
+        let mut bits = word;
+        // Clamp the final partial word so a dirty tail cannot address a record
+        // that does not exist. Same guard, same reason, as `masked_sum_i32`.
+        let valid = n_records - base;
+        if valid < 64 {
+            bits &= (1u64 << valid) - 1;
+        }
+        while bits != 0 {
+            let rec = base + bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            let reg = rec * stride_bytes + first_offset;
+            let end = reg + groups * group_bytes;
+            assert!(
+                end <= bytes.len(),
+                "masked_strided_group_sum: record {rec} reads {reg}..{end}, past len {}",
+                bytes.len()
+            );
+            for g in 0..groups {
+                let o = reg + g * group_bytes;
+                // Byte-wise, not a widened load: `o` is not guaranteed aligned
+                // for a 3-byte grouping, and an unaligned wide read is UB in
+                // Rust even where the hardware tolerates it.
+                let mut v: u32 = 0;
+                for k in 0..group_bytes {
+                    v |= (bytes[o + k] as u32) << (8 * k);
+                }
+                acc += v as i128;
+            }
+        }
+    }
+    i64::try_from(acc).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2081,5 +2191,92 @@ mod tests {
         let mut c = vec![0i32; m * n];
         gemm_u8_i8(&a, &b, &mut c, m, n, k);
         assert_eq!(c, expected, "gemm_u8_i8 AMX path mismatch");
+    }
+
+    // ── masked_strided_group_sum ──
+
+    /// The three groupings of a 12-byte register read the SAME bytes and must
+    /// give three DIFFERENT answers — otherwise every test below would pass for
+    /// an implementation that ignored `groups`/`group_bytes`.
+    #[test]
+    fn each_grouping_of_the_same_register_reads_it_differently() {
+        let mut b = vec![0u8; 512];
+        for k in 0..12 {
+            b[4 + k] = (k + 1) as u8;
+        }
+        let m = [0b1u64];
+        let rails = masked_strided_group_sum(&b, 4, 512, 1, 6, 2, &m).unwrap();
+        let trips = masked_strided_group_sum(&b, 4, 512, 1, 4, 3, &m).unwrap();
+        let quads = masked_strided_group_sum(&b, 4, 512, 1, 3, 4, &m).unwrap();
+
+        // Hand-computed from bytes 1..=12, little-endian per group.
+        assert_eq!(rails, 0x0201 + 0x0403 + 0x0605 + 0x0807 + 0x0A09 + 0x0C0B);
+        assert_eq!(trips, 0x030201 + 0x060504 + 0x090807 + 0x0C0B0A);
+        assert_eq!(quads, 0x04030201 + 0x08070605 + 0x0C0B0A09);
+        assert!(rails != trips && trips != quads && rails != quads);
+    }
+
+    /// The mask selects records rather than being decoration, and the stride is
+    /// respected: two records with different content must sum separately and
+    /// additively.
+    #[test]
+    fn the_mask_and_the_stride_both_bind() {
+        let mut b = vec![0u8; 2 * 64];
+        b[0..4].copy_from_slice(&[1, 0, 2, 0]);
+        b[64..68].copy_from_slice(&[10, 0, 20, 0]);
+        let f = |m: u64| masked_strided_group_sum(&b, 0, 64, 2, 2, 2, &[m]).unwrap();
+        assert_eq!(f(0b00), 0, "an empty mask sums nothing");
+        assert_eq!(f(0b01), 3);
+        assert_eq!(f(0b10), 30);
+        assert_eq!(f(0b11), 33, "additive over disjoint selections");
+    }
+
+    /// A dirty tail bit past `n_records` is ignored rather than read — the
+    /// buffer here is too short for it, so an unclamped kernel would panic.
+    #[test]
+    fn a_dirty_tail_bit_is_ignored() {
+        let mut b = vec![0u8; 2 * 16];
+        b[0..2].copy_from_slice(&[5, 0]);
+        b[16..18].copy_from_slice(&[7, 0]);
+        let clean = masked_strided_group_sum(&b, 0, 16, 2, 1, 2, &[0b11]).unwrap();
+        let dirty = masked_strided_group_sum(&b, 0, 16, 2, 1, 2, &[0b1111]).unwrap();
+        assert_eq!(clean, 12);
+        assert_eq!(clean, dirty);
+    }
+
+    /// Overflow is reported, not wrapped. Four max-valued u32 groups per record
+    /// over many records exceeds `i64::MAX`; the boundary itself is asserted so
+    /// the claim is checkable rather than narrated.
+    #[test]
+    fn overflow_is_reported_rather_than_wrapped() {
+        let recs = 8usize;
+        let mut b = vec![0xFFu8; recs * 16];
+        let m = [0xFFu64];
+        // Small case: comfortably inside i64.
+        let small = masked_strided_group_sum(&b, 0, 16, recs, 3, 4, &m).unwrap();
+        assert_eq!(small, recs as i64 * 3 * 0xFFFF_FFFF);
+
+        // The documented bound, checked: how many max quad records fit?
+        let per_record = 3i128 * 0xFFFF_FFFFi128;
+        assert_eq!(i64::MAX as i128 / per_record, 715_827_882);
+
+        // And the range check itself is what decides, not a wrap.
+        assert!(i64::try_from(i64::MAX as i128 + 1).is_err());
+        b.clear();
+    }
+
+    #[test]
+    #[should_panic(expected = "group_bytes")]
+    fn a_group_wider_than_four_bytes_is_rejected() {
+        let b = vec![0u8; 64];
+        let _ = masked_strided_group_sum(&b, 0, 16, 1, 1, 5, &[0b1]);
+    }
+
+    #[test]
+    #[should_panic(expected = "past len")]
+    fn a_record_reading_past_the_buffer_is_rejected() {
+        let b = vec![0u8; 8];
+        // Record 0's register would read 0..12 out of an 8-byte buffer.
+        let _ = masked_strided_group_sum(&b, 0, 16, 1, 3, 4, &[0b1]);
     }
 }

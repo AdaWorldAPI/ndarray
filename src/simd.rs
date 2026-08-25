@@ -694,7 +694,7 @@ pub use crate::simd_amx::{amx_report, cpu_model, CpuModel};
 #[cfg(feature = "std")]
 pub use crate::simd_int_ops::{
     eq_u32_strided_to_mask, eq_u32_to_mask, gt_i32_to_mask, mask_and, mask_and_assign, mask_andnot, mask_andnot_assign,
-    mask_or, mask_or_assign, masked_sum_i32,
+    mask_or, mask_or_assign, masked_strided_group_sum, masked_sum_i32,
 };
 // The popcount that closes the loop on the masks above: `mask_count` in ABI
 // terms. Already public at `ndarray::bitwise::popcount_batch_u64`; re-exported
