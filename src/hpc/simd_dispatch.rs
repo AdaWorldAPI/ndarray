@@ -21,7 +21,17 @@
 //! | 3 | SSE2 | 128-bit | `caps.sse2` (always true on x86_64) |
 //! | 4 | Scalar | 1 lane | fallback |
 //!
-//! On wasm32 (future): tier would be WASM SIMD (128-bit, `+simd128`).
+//! **wasm32 is not a tier here, by construction.** The table above is
+//! *runtime* dispatch over `simd_caps()`; wasm SIMD is selected at COMPILE
+//! time instead — `cfg(all(target_arch = "wasm32", target_feature =
+//! "simd128"))` in `crate::simd` re-exports the native 128-bit `v128`
+//! types from `crate::simd_wasm::wasm32_simd`, with a full scalar fallback
+//! when `simd128` is absent. There is no wasm runtime feature probe to
+//! dispatch on, so nothing is added to `SimdTier`.
+//!
+//! That arm is shipped and CI-verified, not future work: the
+//! `wasm-simd/parity-node` job builds the real `+simd128` types and runs a
+//! lane-vs-scalar selfcheck under node (`scripts/wasm-parity.sh`).
 
 use super::simd_caps::simd_caps;
 use std::sync::LazyLock;
