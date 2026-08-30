@@ -3500,3 +3500,135 @@ mod f16_precision_tests {
         }
     }
 }
+
+// ── W1a-#9: U64x8 / U32x16 :: andnot + ternlog (AVX2 backend) ───────────────
+//
+// Written in the same idiom as this file's `avx2_int_type!` bitwise operators:
+// an element-wise loop over the `#[repr(align(64))]` backing array, no
+// intrinsics and no `unsafe`. Under this crate's x86-64-v3 baseline LLVM
+// auto-vectorises these to `vpand`/`vpandn`/`vpor` on `ymm` — the alignment
+// attribute is what lets it emit aligned moves. The same source lowers to
+// `vandq_u64`/`vbicq_u64` on NEON and `v128_and`/`v128_andnot` on wasm, which
+// is why one portable body serves all three of those profiles.
+
+/// Evaluate a ternlog truth table for one lane. `imm` is a compile-time
+/// constant at every call site, so only the minterms the table selects survive
+/// const-folding — `AND3` (0x80) reduces to two ANDs.
+#[inline(always)]
+const fn ternlog_lane_u64_avx2(a: u64, b: u64, c: u64, imm: i32) -> u64 {
+    let mut r = 0u64;
+    if imm & 0x01 != 0 {
+        r |= !a & !b & !c;
+    }
+    if imm & 0x02 != 0 {
+        r |= !a & !b & c;
+    }
+    if imm & 0x04 != 0 {
+        r |= !a & b & !c;
+    }
+    if imm & 0x08 != 0 {
+        r |= !a & b & c;
+    }
+    if imm & 0x10 != 0 {
+        r |= a & !b & !c;
+    }
+    if imm & 0x20 != 0 {
+        r |= a & !b & c;
+    }
+    if imm & 0x40 != 0 {
+        r |= a & b & !c;
+    }
+    if imm & 0x80 != 0 {
+        r |= a & b & c;
+    }
+    r
+}
+
+#[inline(always)]
+const fn ternlog_lane_u32_avx2(a: u32, b: u32, c: u32, imm: i32) -> u32 {
+    let mut r = 0u32;
+    if imm & 0x01 != 0 {
+        r |= !a & !b & !c;
+    }
+    if imm & 0x02 != 0 {
+        r |= !a & !b & c;
+    }
+    if imm & 0x04 != 0 {
+        r |= !a & b & !c;
+    }
+    if imm & 0x08 != 0 {
+        r |= !a & b & c;
+    }
+    if imm & 0x10 != 0 {
+        r |= a & !b & !c;
+    }
+    if imm & 0x20 != 0 {
+        r |= a & !b & c;
+    }
+    if imm & 0x40 != 0 {
+        r |= a & b & !c;
+    }
+    if imm & 0x80 != 0 {
+        r |= a & b & c;
+    }
+    r
+}
+
+impl U64x8 {
+    /// Set difference: `self & !other`, lane-wise.
+    ///
+    /// **Argument order differs from the raw Intel intrinsic.**
+    /// `_mm256_andnot_si256(a, b)` computes `!a & b`; this method computes
+    /// `self & !other` — "self minus other". Every backend implements this
+    /// same direction.
+    ///
+    /// Total function: no saturation, no overflow, no UB. `x.andnot(x)` is
+    /// zero; `x.andnot(U64x8::splat(0))` is `x`.
+    #[inline(always)]
+    pub fn andnot(self, other: Self) -> Self {
+        let mut o = [0u64; 8];
+        for i in 0..8 {
+            o[i] = self.0[i] & !other.0[i];
+        }
+        Self(o)
+    }
+
+    /// Any 3-input boolean function of `self`, `b` and `c`, selected by the
+    /// const truth-table immediate `IMM`.
+    ///
+    /// Per bit position: `index = (self << 2) | (b << 1) | c`, result bit =
+    /// `(IMM >> index) & 1` — Intel's VPTERNLOG convention, matched exactly by
+    /// every backend. `IMM` is `i32` to mirror the intrinsic's signature; only
+    /// `0..=255` is legal and the AVX-512 backend rejects wider values at
+    /// compile time. Within that domain: total function, no lane interaction.
+    #[inline(always)]
+    pub fn ternlog<const IMM: i32>(self, b: Self, c: Self) -> Self {
+        let mut o = [0u64; 8];
+        for i in 0..8 {
+            o[i] = ternlog_lane_u64_avx2(self.0[i], b.0[i], c.0[i], IMM);
+        }
+        Self(o)
+    }
+}
+
+impl U32x16 {
+    /// Set difference: `self & !other`, lane-wise. See [`U64x8::andnot`].
+    #[inline(always)]
+    pub fn andnot(self, other: Self) -> Self {
+        let mut o = [0u32; 16];
+        for i in 0..16 {
+            o[i] = self.0[i] & !other.0[i];
+        }
+        Self(o)
+    }
+
+    /// Any 3-input boolean function, 32-bit lanes. See [`U64x8::ternlog`].
+    #[inline(always)]
+    pub fn ternlog<const IMM: i32>(self, b: Self, c: Self) -> Self {
+        let mut o = [0u32; 16];
+        for i in 0..16 {
+            o[i] = ternlog_lane_u32_avx2(self.0[i], b.0[i], c.0[i], IMM);
+        }
+        Self(o)
+    }
+}

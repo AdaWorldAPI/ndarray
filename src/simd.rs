@@ -1266,4 +1266,220 @@ mod tests {
             assert!(v.is_finite(), "exp(200) must saturate, got {}", v);
         }
     }
+
+    // ── W1a-#9 parity: U64x8/U32x16 andnot + ternlog ────────────────────────
+    //
+    // The backends are compile-time exclusive, so "all three agree" is proven
+    // by asserting the ACTIVE backend against an independent scalar reference
+    // computed inline here, then running this suite under each cargo config
+    // (.cargo/config.toml = AVX2, config-avx512.toml = AVX-512, and the
+    // aarch64/wasm configs, which resolve U64x8 to the scalar backend).
+    // The reference below is written from the Intel truth-table definition,
+    // NOT by calling the primitive it checks.
+
+    /// SplitMix64 — fixed seed, deterministic corpus (no dev-dependency).
+    fn splitmix64(state: &mut u64) -> u64 {
+        *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = *state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// Independent reference: bit i of the result is `(imm >> idx) & 1` where
+    /// `idx = (a_i << 2) | (b_i << 1) | c_i`. Computed bit-by-bit on purpose —
+    /// deliberately NOT the same shape as the implementation.
+    fn ref_ternlog_u64(a: u64, b: u64, c: u64, imm: i32) -> u64 {
+        let mut out = 0u64;
+        for bit in 0..64 {
+            let ab = (a >> bit) & 1;
+            let bb = (b >> bit) & 1;
+            let cb = (c >> bit) & 1;
+            let idx = (ab << 2) | (bb << 1) | cb;
+            if (imm as u64 >> idx) & 1 == 1 {
+                out |= 1u64 << bit;
+            }
+        }
+        out
+    }
+
+    /// Corpus: edge cases first, then a fixed-seed random tail. 8 lanes each.
+    fn corpus_u64(n: usize) -> Vec<[u64; 8]> {
+        let mut v: Vec<[u64; 8]> = vec![
+            [0u64; 8],
+            [u64::MAX; 8],
+            [0x5555_5555_5555_5555; 8],
+            [0xAAAA_AAAA_AAAA_AAAA; 8],
+            [1, 0, u64::MAX, 0x8000_0000_0000_0000, 0xFFFF_FFFF, 0, 1 << 63, 7],
+        ];
+        let mut st = 0x0DDB_1A5E_5EED_1234u64;
+        while v.len() < n {
+            let mut lanes = [0u64; 8];
+            for l in lanes.iter_mut() {
+                *l = splitmix64(&mut st);
+            }
+            v.push(lanes);
+        }
+        v
+    }
+
+    /// G1 — `andnot` is set difference in the documented direction, and it is
+    /// NOT the raw intrinsic's `!a & b`. The anti-half is the asymmetry
+    /// assertion: a constant-zero or argument-swapped implementation fails.
+    #[test]
+    fn w1a9_andnot_is_self_minus_other_u64x8() {
+        let corpus = corpus_u64(40);
+        let mut asymmetric_seen = 0usize;
+        for w in corpus.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            let got = U64x8::from_array(a).andnot(U64x8::from_array(b)).to_array();
+            for i in 0..8 {
+                assert_eq!(got[i], a[i] & !b[i], "andnot lane {i}: {a:?} \\ {b:?}");
+            }
+            // Direction check: `self & !other` differs from `!self & other`
+            // whenever the two masks are not equal-and-symmetric.
+            let swapped: Vec<u64> = (0..8).map(|i| !a[i] & b[i]).collect();
+            if (0..8).any(|i| got[i] != swapped[i]) {
+                asymmetric_seen += 1;
+            }
+        }
+        // Anti-vacuity: the direction must actually be observable on this
+        // corpus, or the test above proves nothing about argument order.
+        assert!(
+            asymmetric_seen * 3 > corpus.len(),
+            "andnot direction is unobservable on this corpus ({asymmetric_seen} asymmetric)"
+        );
+        // Identities.
+        let x = U64x8::from_array(corpus[4]);
+        assert!(x.andnot(x).to_array().iter().all(|&v| v == 0));
+        assert_eq!(x.andnot(U64x8::splat(0)).to_array(), corpus[4]);
+    }
+
+    /// G2 — `ternlog` matches the independent truth-table reference for ALL
+    /// 256 immediates over the whole corpus. Any collapsed arm, wrong index
+    /// order, or dropped term fails.
+    #[test]
+    fn w1a9_ternlog_matches_truth_table_reference_all_256_imms() {
+        let corpus = corpus_u64(24);
+        // A hand-written subset of immediates is not enough — sweep all 256
+        // via a macro-expanded const, since IMM is a const generic.
+        macro_rules! sweep {
+            ($($imm:literal),* $(,)?) => {$({
+                for w in corpus.windows(3) {
+                    let (a, b, c) = (w[0], w[1], w[2]);
+                    let got = U64x8::from_array(a)
+                        .ternlog::<$imm>(U64x8::from_array(b), U64x8::from_array(c))
+                        .to_array();
+                    for i in 0..8 {
+                        assert_eq!(
+                            got[i],
+                            ref_ternlog_u64(a[i], b[i], c[i], $imm),
+                            "ternlog imm={} lane={}", $imm, i
+                        );
+                    }
+                }
+            })*};
+        }
+        // All 256 truth tables.
+        sweep!(
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28,
+            29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55,
+            56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82,
+            83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107,
+            108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128,
+            129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149,
+            150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170,
+            171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189, 190, 191,
+            192, 193, 194, 195, 196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212,
+            213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230, 231, 232, 233,
+            234, 235, 236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254,
+            255
+        );
+    }
+
+    /// G3 — the named truth-table constants mean what their docs say, and each
+    /// one is distinguishable from the others on real input (anti-vacuity: a
+    /// table of aliases would pass a weaker test).
+    #[test]
+    fn w1a9_named_immediates_have_their_documented_meaning() {
+        let a = U64x8::from_array([0xF0F0_F0F0_F0F0_F0F0; 8]);
+        let b = U64x8::from_array([0xCCCC_CCCC_CCCC_CCCC; 8]);
+        let c = U64x8::from_array([0xAAAA_AAAA_AAAA_AAAA; 8]);
+        let (av, bv, cv) = (0xF0F0_F0F0_F0F0_F0F0u64, 0xCCCC_CCCC_CCCC_CCCCu64, 0xAAAA_AAAA_AAAA_AAAAu64);
+
+        let and3 = a.ternlog::<0x80>(b, c).to_array()[0];
+        assert_eq!(and3, av & bv & cv, "AND3");
+        let and2_andnot = a.ternlog::<0x40>(b, c).to_array()[0];
+        assert_eq!(and2_andnot, av & bv & !cv, "AND2_ANDNOT");
+        let and_andnot2 = a.ternlog::<0x10>(b, c).to_array()[0];
+        assert_eq!(and_andnot2, av & !bv & !cv, "AND_ANDNOT2");
+        let or2_and = a.ternlog::<0xA8>(b, c).to_array()[0];
+        assert_eq!(or2_and, (av | bv) & cv, "OR2_AND");
+        let xor3 = a.ternlog::<0x96>(b, c).to_array()[0];
+        assert_eq!(xor3, av ^ bv ^ cv, "XOR3");
+        let maj3 = a.ternlog::<0xE8>(b, c).to_array()[0];
+        assert_eq!(maj3, (av & bv) | (av & cv) | (bv & cv), "MAJ3");
+        let and2 = a.ternlog::<0xC0>(b, c).to_array()[0];
+        assert_eq!(and2, av & bv, "AND2 (c ignored)");
+        let or3 = a.ternlog::<0xFE>(b, c).to_array()[0];
+        assert_eq!(or3, av | bv | cv, "OR3");
+
+        // Anti-vacuity: all eight are pairwise distinct on this input, so the
+        // assertions above cannot be passing by aliasing.
+        let all = [and3, and2_andnot, and_andnot2, or2_and, xor3, maj3, and2, or3];
+        for i in 0..all.len() {
+            for j in (i + 1)..all.len() {
+                assert_ne!(all[i], all[j], "named immediates {i} and {j} alias");
+            }
+        }
+    }
+
+    /// G4 — `ternlog::<0xC0>` (AND2, c ignored) equals plain `BitAnd`, and
+    /// `ternlog` composed with `andnot` agrees with the two-step form. This is
+    /// the bridge assertion: the new three-input primitive must not disagree
+    /// with the operators already shipping on these types.
+    #[test]
+    fn w1a9_ternlog_agrees_with_existing_operators() {
+        let corpus = corpus_u64(30);
+        for w in corpus.windows(3) {
+            let (a, b, c) = (U64x8::from_array(w[0]), U64x8::from_array(w[1]), U64x8::from_array(w[2]));
+            assert_eq!(a.ternlog::<0xC0>(b, c).to_array(), (a & b).to_array(), "AND2 vs BitAnd");
+            assert_eq!(a.ternlog::<0xFE>(b, c).to_array(), (a | b | c).to_array(), "OR3 vs BitOr");
+            assert_eq!(a.ternlog::<0x96>(b, c).to_array(), (a ^ b ^ c).to_array(), "XOR3 vs BitXor");
+            // Three-layer stack: (a & b) \ c, one instruction vs two steps.
+            assert_eq!(
+                a.ternlog::<0x40>(b, c).to_array(),
+                (a & b).andnot(c).to_array(),
+                "AND2_ANDNOT vs (a & b).andnot(c)"
+            );
+        }
+    }
+
+    /// G5 — the 32-bit-lane sibling carries the same semantics.
+    #[test]
+    fn w1a9_u32x16_andnot_and_ternlog() {
+        let mut st = 0xC0FF_EE00_1234_5678u64;
+        for _ in 0..40 {
+            let mut a = [0u32; 16];
+            let mut b = [0u32; 16];
+            let mut c = [0u32; 16];
+            for i in 0..16 {
+                a[i] = splitmix64(&mut st) as u32;
+                b[i] = splitmix64(&mut st) as u32;
+                c[i] = splitmix64(&mut st) as u32;
+            }
+            let got = U32x16::from_array(a)
+                .andnot(U32x16::from_array(b))
+                .to_array();
+            for i in 0..16 {
+                assert_eq!(got[i], a[i] & !b[i], "u32 andnot lane {i}");
+            }
+            let t = U32x16::from_array(a)
+                .ternlog::<0x40>(U32x16::from_array(b), U32x16::from_array(c))
+                .to_array();
+            for i in 0..16 {
+                assert_eq!(t[i], a[i] & b[i] & !c[i], "u32 ternlog lane {i}");
+            }
+        }
+    }
 }
