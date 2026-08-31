@@ -1845,6 +1845,15 @@ impl U32x16 {
     /// Elementwise over the fanned array — the codegen shape this file's own
     /// oracle blessed: LLVM vectorizes the loop over the aligned array, no
     /// intrinsic override earned.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::U32x16;
+    /// let a = U32x16::splat(0b1100);
+    /// let b = U32x16::splat(0b1010);
+    /// assert_eq!(a.andnot(b).to_array()[0], 0b0100); // a & !b
+    /// ```
     #[inline(always)]
     pub fn andnot(self, other: Self) -> Self {
         let (a, b) = (self.to_array(), other.to_array());
@@ -1860,6 +1869,15 @@ impl U32x16 {
     /// matched exactly by every backend. Named immediates:
     /// `crate::simd::ternlog`. Only `0..=255` is legal, enforced at compile
     /// time on every backend.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::{ternlog, U32x16};
+    /// let (a, b, c) = (U32x16::splat(0b1100), U32x16::splat(0b1010), U32x16::splat(0b1001));
+    /// let maj = a.ternlog::<{ ternlog::MAJ3 }>(b, c); // two-of-three majority
+    /// assert_eq!(maj.to_array()[0], 0b1000);
+    /// ```
     #[inline(always)]
     pub fn ternlog<const IMM: i32>(self, b: Self, c: Self) -> Self {
         const { assert!(IMM >= 0 && IMM <= 255, "ternlog IMM is an 8-bit truth table") }

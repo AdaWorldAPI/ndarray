@@ -960,6 +960,15 @@ pub mod wasm32_simd {
         /// Set difference: `self & !other`, lane-wise — one `v128.andnot` per
         /// 128-bit part (the wasm intrinsic's argument order already matches
         /// this crate's direction). Reference doc: `simd_avx512::U32x16::andnot`.
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// use ndarray::simd::U32x16;
+        /// let a = U32x16::splat(0b1100);
+        /// let b = U32x16::splat(0b1010);
+        /// assert_eq!(a.andnot(b).to_array()[0], 0b0100); // a & !b
+        /// ```
         #[inline(always)]
         pub fn andnot(self, other: Self) -> Self {
             Self([
@@ -976,6 +985,15 @@ pub mod wasm32_simd {
         /// enforced at compile time on every backend. Composed per 128-bit
         /// part from `v128` bit ops; the minterm branches fold at compile
         /// time, so only the truth table's terms survive.
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// use ndarray::simd::{ternlog, U32x16};
+        /// let (a, b, c) = (U32x16::splat(0b1100), U32x16::splat(0b1010), U32x16::splat(0b1001));
+        /// let maj = a.ternlog::<{ ternlog::MAJ3 }>(b, c); // two-of-three majority
+        /// assert_eq!(maj.to_array()[0], 0b1000);
+        /// ```
         #[inline(always)]
         pub fn ternlog<const IMM: i32>(self, b: Self, c: Self) -> Self {
             const { assert!(IMM >= 0 && IMM <= 255, "ternlog IMM is an 8-bit truth table") }

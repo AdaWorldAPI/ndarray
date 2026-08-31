@@ -2051,6 +2051,15 @@ impl U64x8 {
     ///
     /// Total function: no saturation, no overflow, no UB. `x.andnot(x)` is
     /// zero; `x.andnot(U64x8::splat(0))` is `x`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::U64x8;
+    /// let a = U64x8::splat(0b1100);
+    /// let b = U64x8::splat(0b1010);
+    /// assert_eq!(a.andnot(b).to_array()[0], 0b0100); // a & !b
+    /// ```
     #[inline(always)]
     pub fn andnot(self, other: Self) -> Self {
         self & !other
@@ -2065,6 +2074,15 @@ impl U64x8 {
     /// `0..=255` is legal, enforced at compile time on the AVX-512 backend by
     /// the intrinsic's own static assert. Within that domain: total function,
     /// no lane interaction.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::{ternlog, U64x8};
+    /// let (a, b, c) = (U64x8::splat(0b1100), U64x8::splat(0b1010), U64x8::splat(0b1001));
+    /// let maj = a.ternlog::<{ ternlog::MAJ3 }>(b, c); // two-of-three majority
+    /// assert_eq!(maj.to_array()[0], 0b1000);
+    /// ```
     #[inline(always)]
     pub fn ternlog<const IMM: i32>(self, b: Self, c: Self) -> Self {
         let (a, z) = (self, Self::splat(0));
@@ -2099,12 +2117,30 @@ impl U64x8 {
 
 impl U32x16 {
     /// Set difference: `self & !other`. See [`U64x8::andnot`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::U32x16;
+    /// let a = U32x16::splat(0b1100);
+    /// let b = U32x16::splat(0b1010);
+    /// assert_eq!(a.andnot(b).to_array()[0], 0b0100); // a & !b
+    /// ```
     #[inline(always)]
     pub fn andnot(self, other: Self) -> Self {
         self & !other
     }
 
     /// Any 3-input boolean function, 32-bit lanes. See [`U64x8::ternlog`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::{ternlog, U32x16};
+    /// let (a, b, c) = (U32x16::splat(0b1100), U32x16::splat(0b1010), U32x16::splat(0b1001));
+    /// let maj = a.ternlog::<{ ternlog::MAJ3 }>(b, c); // two-of-three majority
+    /// assert_eq!(maj.to_array()[0], 0b1000);
+    /// ```
     #[inline(always)]
     pub fn ternlog<const IMM: i32>(self, b: Self, c: Self) -> Self {
         const { assert!(IMM >= 0 && IMM <= 255, "ternlog IMM is an 8-bit truth table") }

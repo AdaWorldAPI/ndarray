@@ -886,6 +886,15 @@ mod tests {
 impl U64x8 {
     /// Set difference: `self & !other`, lane-wise. Same direction as every
     /// other backend (`simd_avx512::U64x8::andnot` is the reference doc).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::U64x8;
+    /// let a = U64x8::splat(0b1100);
+    /// let b = U64x8::splat(0b1010);
+    /// assert_eq!(a.andnot(b).to_array()[0], 0b0100); // a & !b
+    /// ```
     #[inline(always)]
     pub fn andnot(self, other: Self) -> Self {
         Self(self.0 & !other.0)
@@ -896,6 +905,15 @@ impl U64x8 {
     /// matched exactly by every backend (64-bit lanes). Named immediates:
     /// `crate::simd::ternlog`. Only `0..=255` is legal, enforced at compile
     /// time on every backend. The minterm branches fold at compile time.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::{ternlog, U64x8};
+    /// let (a, b, c) = (U64x8::splat(0b1100), U64x8::splat(0b1010), U64x8::splat(0b1001));
+    /// let maj = a.ternlog::<{ ternlog::MAJ3 }>(b, c); // two-of-three majority
+    /// assert_eq!(maj.to_array()[0], 0b1000);
+    /// ```
     #[inline(always)]
     pub fn ternlog<const IMM: i32>(self, b: Self, c: Self) -> Self {
         const { assert!(IMM >= 0 && IMM <= 255, "ternlog IMM is an 8-bit truth table") }
@@ -932,6 +950,15 @@ impl U64x8 {
 impl U32x16 {
     /// Set difference: `self & !other`, lane-wise. Same direction as every
     /// other backend (`simd_avx512::U32x16::andnot` is the reference doc).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::U32x16;
+    /// let a = U32x16::splat(0b1100);
+    /// let b = U32x16::splat(0b1010);
+    /// assert_eq!(a.andnot(b).to_array()[0], 0b0100); // a & !b
+    /// ```
     #[inline(always)]
     pub fn andnot(self, other: Self) -> Self {
         Self(self.0 & !other.0)
@@ -942,6 +969,15 @@ impl U32x16 {
     /// matched exactly by every backend (32-bit lanes). Named immediates:
     /// `crate::simd::ternlog`. Only `0..=255` is legal, enforced at compile
     /// time on every backend. The minterm branches fold at compile time.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::{ternlog, U32x16};
+    /// let (a, b, c) = (U32x16::splat(0b1100), U32x16::splat(0b1010), U32x16::splat(0b1001));
+    /// let maj = a.ternlog::<{ ternlog::MAJ3 }>(b, c); // two-of-three majority
+    /// assert_eq!(maj.to_array()[0], 0b1000);
+    /// ```
     #[inline(always)]
     pub fn ternlog<const IMM: i32>(self, b: Self, c: Self) -> Self {
         const { assert!(IMM >= 0 && IMM <= 255, "ternlog IMM is an 8-bit truth table") }
