@@ -424,6 +424,9 @@ exclude = [
     "crates/burn",
     "crates/wasm-simd-parity",
     "crates/neon-simd-parity",
+    # Cross-repo: its dev-dep is a PATH into a lance-graph sibling checkout.
+    # In-workspace, a missing sibling would fail resolution for EVERY member.
+    "crates/sigker-parity",
     "vendor/chacha20",
 ]
 default-members = [

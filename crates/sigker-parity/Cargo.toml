@@ -1,0 +1,32 @@
+# sigker-parity — the cross-repo gate for the Pillar-11 signature lanes.
+#
+# `ndarray::hpc::pillar::signature::signature_d2_deg3` (hardware: f32, fixed
+# d=2/deg-3, Chen accumulation) and lance-graph `sigker::signature_truncated`
+# (reference: f64, any d/depth) compute the SAME iterated integrals and had
+# zero cross-checks — census finding F-4 of
+# `pillar11-signature-certification-unification-v1`. The workspace's own
+# architecture rule (ndarray = hardware, lance-graph = thinking) blesses the
+# split but demands the parity test it never got. This crate is that test
+# (W1), plus the depth-infinity PSD leg (W4) that needs the same sibling.
+#
+# EXCLUDED from the workspace (see root Cargo.toml `exclude`) because its
+# `sigker` dep is a PATH into a sibling checkout. An unconditional path dep
+# whose target is absent fails manifest resolution for the WHOLE workspace —
+# ndarray CI does not check lance-graph out, so an in-workspace dep here
+# would break every ndarray build on a fresh clone. Excluded, it costs
+# nothing when the sibling is missing and runs on demand:
+#
+#   cargo test --manifest-path crates/sigker-parity/Cargo.toml
+#
+# Same shape as `crates/wasm-simd-parity` and `crates/neon-simd-parity`.
+[package]
+name = "sigker-parity"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+ndarray = { path = "../..", default-features = false, features = ["std", "hpc-extras", "pillar"] }
+
+[dev-dependencies]
+sigker = { path = "../../../lance-graph/crates/sigker" }
