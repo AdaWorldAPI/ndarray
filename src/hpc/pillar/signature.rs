@@ -1,4 +1,18 @@
-//! Pillar-11 — Hambly–Lyons signature transform (rough-path lifting).
+//! Pillar-11 (B7) — truncated signature-kernel STABILITY battery.
+//!
+//! # What this certifies — and the cross-repo name collision, disambiguated
+//!
+//! This battery certifies **kernel stability**: PSD-ness + concentration of
+//! the depth-3 truncated signature-kernel Gram over Brownian paths. It does
+//! NOT certify the Hambly–Lyons uniqueness theorem — that claim lives in the
+//! OTHER "Pillar 11", lance-graph's `crates/jc/src/hambly_lyons.rs`
+//! (tree-quotient semantics against `sigker::signature_truncated`,
+//! feature-gated). Two repos, one slot number, DISJOINT claims — a session
+//! reading "Pillar 11 is green" must know which one held (found by the
+//! 2026-08-31 census, `pillar11-signature-certification-unification-v1`
+//! W0/F-1; the slot id B7/11 is stored history and deliberately unchanged,
+//! ruling Q3: docs only). Headline reframed the same day; the transform
+//! description below is unchanged.
 //!
 //! Given a path γ: [0, T] → ℝ², the **signature** S(γ) is the sequence of
 //! iterated Stieltjes integrals:
@@ -18,10 +32,15 @@
 //! and can be computed exactly in O(N · d³) time by accumulating along each
 //! linear segment.  The kernel [`signature_d2_deg3`] implements this.
 //!
-//! # Hambly–Lyons kernel
+//! # The truncated signature kernel (historically labelled "Hambly–Lyons")
 //!
-//! The *Hambly–Lyons sig-kernel* between two rough paths P, Q is defined as
-//! the inner product of their truncated signatures:
+//! The kernel between two paths P, Q is the inner product of their truncated
+//! signatures — a plain truncated sig-kernel. The "Hambly–Lyons" label this
+//! file attached to it is a MISNOMER kept only in the function name for API
+//! stability (`sigker_hl`): HL 2010 is a *uniqueness theorem*, not a kernel
+//! construction, and the label imported authority the construction does not
+//! carry (census F-2, ruling Q3: docs only — the symbol stays, its doc tells
+//! the truth):
 //!
 //! ```text
 //! k_HL(P, Q) = Σₙ₌₀³  〈S⁽ⁿ⁾(P), S⁽ⁿ⁾(Q)〉
@@ -163,7 +182,11 @@ pub fn signature_d2_deg3(path: &[f32], n_points: usize) -> [f32; SIG_D2_DEG3_LEN
 
 // ── Hambly–Lyons sig-kernel ────────────────────────────────────────────────────
 
-/// Hambly–Lyons signature kernel between two paths P and Q.
+/// Truncated signature kernel between two paths P and Q.
+///
+/// Historically named "Hambly–Lyons kernel" here — a misnomer (HL 2010 is
+/// the uniqueness theorem, not a kernel); the `_hl` symbol survives for API
+/// stability, the label does not. See the module docs.
 ///
 /// Computes `k_HL(P, Q) = 〈S(P), S(Q)〉` — the Euclidean inner product of
 /// their degree-3 truncated signatures.
