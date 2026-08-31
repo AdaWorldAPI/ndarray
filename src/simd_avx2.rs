@@ -3539,6 +3539,7 @@ impl U64x8 {
     /// no lane interaction.
     #[inline(always)]
     pub fn ternlog<const IMM: i32>(self, b: Self, c: Self) -> Self {
+        const { assert!(IMM >= 0 && IMM <= 255, "ternlog IMM is an 8-bit truth table") }
         let (a, z) = (self, Self::splat(0));
         let mut r = z;
         if IMM & 0x01 != 0 {
@@ -3579,6 +3580,7 @@ impl U32x16 {
     /// Any 3-input boolean function, 32-bit lanes. See [`U64x8::ternlog`].
     #[inline(always)]
     pub fn ternlog<const IMM: i32>(self, b: Self, c: Self) -> Self {
+        const { assert!(IMM >= 0 && IMM <= 255, "ternlog IMM is an 8-bit truth table") }
         let (a, z) = (self, Self::splat(0));
         let mut r = z;
         if IMM & 0x01 != 0 {

@@ -556,6 +556,36 @@ pub fn simd_ln_f32(x: F32x16) -> F32x16 {
 // Without `hpc-extras`, consumers still get the SIMD polyfill types above
 // (F32x16, I8x32, etc.) but NOT the domain-specific functions below.
 
+/// Truth-table immediates for `U64x8::ternlog` / `U32x16::ternlog`.
+///
+/// A ternlog immediate IS the truth table of a 3-input boolean function: for
+/// each bit position, `index = (a << 2) | (b << 1) | c`, and the result bit is
+/// `(IMM >> index) & 1`. Intel's VPTERNLOG convention, reproduced exactly by
+/// every backend in this crate.
+///
+/// Lives on the facade — NOT in a backend — so `ndarray::simd::ternlog::AND3`
+/// resolves on every dispatch arm (a backend-resident module is compiled out
+/// whenever another backend is selected, which is exactly what happened to
+/// this module's first home in the scalar backend).
+pub mod ternlog {
+    /// `a & b & c` — stack three prerequisite masks.
+    pub const AND3: i32 = 0x80;
+    /// `a & b & !c` — stack two prerequisites, exclude a third.
+    pub const AND2_ANDNOT: i32 = 0x40;
+    /// `a & !b & !c` — one base mask, two exclusions.
+    pub const AND_ANDNOT2: i32 = 0x10;
+    /// `(a | b) & c` — either of two prerequisites, gated by a third.
+    pub const OR2_AND: i32 = 0xA8;
+    /// `a ^ b ^ c` — three-way parity.
+    pub const XOR3: i32 = 0x96;
+    /// `(a & b) | (a & c) | (b & c)` — two-of-three majority.
+    pub const MAJ3: i32 = 0xE8;
+    /// `a & b` — two-input AND, `c` ignored.
+    pub const AND2: i32 = 0xC0;
+    /// `a | b | c` — union of three masks.
+    pub const OR3: i32 = 0xFE;
+}
+
 pub use crate::hpc::bitwise::{hamming_distance_raw, popcount_raw};
 pub use crate::hpc::bnn_cross_plane::CollapseGate;
 pub use crate::hpc::fft::{wht_f32, wht_f32_new};
@@ -1402,26 +1432,27 @@ mod tests {
     /// table of aliases would pass a weaker test).
     #[test]
     fn w1a9_named_immediates_have_their_documented_meaning() {
+        use super::ternlog;
         let a = U64x8::from_array([0xF0F0_F0F0_F0F0_F0F0; 8]);
         let b = U64x8::from_array([0xCCCC_CCCC_CCCC_CCCC; 8]);
         let c = U64x8::from_array([0xAAAA_AAAA_AAAA_AAAA; 8]);
         let (av, bv, cv) = (0xF0F0_F0F0_F0F0_F0F0u64, 0xCCCC_CCCC_CCCC_CCCCu64, 0xAAAA_AAAA_AAAA_AAAAu64);
 
-        let and3 = a.ternlog::<0x80>(b, c).to_array()[0];
+        let and3 = a.ternlog::<{ ternlog::AND3 }>(b, c).to_array()[0];
         assert_eq!(and3, av & bv & cv, "AND3");
-        let and2_andnot = a.ternlog::<0x40>(b, c).to_array()[0];
+        let and2_andnot = a.ternlog::<{ ternlog::AND2_ANDNOT }>(b, c).to_array()[0];
         assert_eq!(and2_andnot, av & bv & !cv, "AND2_ANDNOT");
-        let and_andnot2 = a.ternlog::<0x10>(b, c).to_array()[0];
+        let and_andnot2 = a.ternlog::<{ ternlog::AND_ANDNOT2 }>(b, c).to_array()[0];
         assert_eq!(and_andnot2, av & !bv & !cv, "AND_ANDNOT2");
-        let or2_and = a.ternlog::<0xA8>(b, c).to_array()[0];
+        let or2_and = a.ternlog::<{ ternlog::OR2_AND }>(b, c).to_array()[0];
         assert_eq!(or2_and, (av | bv) & cv, "OR2_AND");
-        let xor3 = a.ternlog::<0x96>(b, c).to_array()[0];
+        let xor3 = a.ternlog::<{ ternlog::XOR3 }>(b, c).to_array()[0];
         assert_eq!(xor3, av ^ bv ^ cv, "XOR3");
-        let maj3 = a.ternlog::<0xE8>(b, c).to_array()[0];
+        let maj3 = a.ternlog::<{ ternlog::MAJ3 }>(b, c).to_array()[0];
         assert_eq!(maj3, (av & bv) | (av & cv) | (bv & cv), "MAJ3");
-        let and2 = a.ternlog::<0xC0>(b, c).to_array()[0];
+        let and2 = a.ternlog::<{ ternlog::AND2 }>(b, c).to_array()[0];
         assert_eq!(and2, av & bv, "AND2 (c ignored)");
-        let or3 = a.ternlog::<0xFE>(b, c).to_array()[0];
+        let or3 = a.ternlog::<{ ternlog::OR3 }>(b, c).to_array()[0];
         assert_eq!(or3, av | bv | cv, "OR3");
 
         // Anti-vacuity: all eight are pairwise distinct on this input, so the

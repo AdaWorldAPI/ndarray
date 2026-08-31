@@ -2107,6 +2107,7 @@ impl U32x16 {
     /// Any 3-input boolean function, 32-bit lanes. See [`U64x8::ternlog`].
     #[inline(always)]
     pub fn ternlog<const IMM: i32>(self, b: Self, c: Self) -> Self {
+        const { assert!(IMM >= 0 && IMM <= 255, "ternlog IMM is an 8-bit truth table") }
         let (a, z) = (self, Self::splat(0));
         let mut r = z;
         if IMM & 0x01 != 0 {
@@ -2135,29 +2136,4 @@ impl U32x16 {
         }
         r
     }
-}
-
-/// Truth-table immediates for `U64x8::ternlog` / `U32x16::ternlog`.
-///
-/// A ternlog immediate IS the truth table of a 3-input boolean function: for
-/// each bit position, `index = (a << 2) | (b << 1) | c`, and the result bit is
-/// `(IMM >> index) & 1`. Intel's VPTERNLOG convention, reproduced exactly by
-/// every backend in this crate.
-pub mod ternlog {
-    /// `a & b & c` — stack three prerequisite masks.
-    pub const AND3: i32 = 0x80;
-    /// `a & b & !c` — stack two prerequisites, exclude a third.
-    pub const AND2_ANDNOT: i32 = 0x40;
-    /// `a & !b & !c` — one base mask, two exclusions.
-    pub const AND_ANDNOT2: i32 = 0x10;
-    /// `(a | b) & c` — either of two prerequisites, gated by a third.
-    pub const OR2_AND: i32 = 0xA8;
-    /// `a ^ b ^ c` — three-way parity.
-    pub const XOR3: i32 = 0x96;
-    /// `(a & b) | (a & c) | (b & c)` — two-of-three majority.
-    pub const MAJ3: i32 = 0xE8;
-    /// `a & b` — two-input AND, `c` ignored.
-    pub const AND2: i32 = 0xC0;
-    /// `a | b | c` — union of three masks.
-    pub const OR3: i32 = 0xFE;
 }

@@ -4905,8 +4905,8 @@ impl U64x8 {
     /// const truth-table immediate `IMM` — a single VPTERNLOGQ.
     ///
     /// Per bit position: `index = (self << 2) | (b << 1) | c`, result bit =
-    /// `(IMM >> index) & 1`. Named immediates live in the scalar backend's
-    /// `ternlog` module (`AND3`, `AND2_ANDNOT`, `OR2_AND`, `MAJ3`, …).
+    /// `(IMM >> index) & 1`. Named immediates live in `crate::simd::ternlog`
+    /// (`AND3`, `AND2_ANDNOT`, `OR2_AND`, `MAJ3`, …).
     ///
     /// `IMM` is `i32` to match the intrinsic's signature; only `0..=255` is
     /// legal, and the intrinsic's own `static_assert_uimm_bits!` rejects

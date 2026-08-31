@@ -1838,6 +1838,67 @@ impl core::ops::Add for U32x16 {
 }
 
 #[cfg(target_arch = "aarch64")]
+impl U32x16 {
+    /// Set difference: `self & !other`, lane-wise. Same direction as every
+    /// other backend (`simd_avx512::U32x16::andnot` is the reference doc).
+    ///
+    /// Elementwise over the fanned array — the codegen shape this file's own
+    /// oracle blessed: LLVM vectorizes the loop over the aligned array, no
+    /// intrinsic override earned.
+    #[inline(always)]
+    pub fn andnot(self, other: Self) -> Self {
+        let (a, b) = (self.to_array(), other.to_array());
+        let mut o = [0u32; 16];
+        for i in 0..16 {
+            o[i] = a[i] & !b[i];
+        }
+        Self::from_array(o)
+    }
+
+    /// Any 3-input boolean function of `self`, `b` and `c`, selected by the
+    /// const truth-table immediate `IMM` — Intel's VPTERNLOG convention,
+    /// matched exactly by every backend. Named immediates:
+    /// `crate::simd::ternlog`. Only `0..=255` is legal, enforced at compile
+    /// time on every backend.
+    #[inline(always)]
+    pub fn ternlog<const IMM: i32>(self, b: Self, c: Self) -> Self {
+        const { assert!(IMM >= 0 && IMM <= 255, "ternlog IMM is an 8-bit truth table") }
+        let (a, b, c) = (self.to_array(), b.to_array(), c.to_array());
+        let mut o = [0u32; 16];
+        for i in 0..16 {
+            let (x, y, z) = (a[i], b[i], c[i]);
+            let mut r = 0u32;
+            if IMM & 0x01 != 0 {
+                r |= !x & !y & !z;
+            }
+            if IMM & 0x02 != 0 {
+                r |= !x & !y & z;
+            }
+            if IMM & 0x04 != 0 {
+                r |= !x & y & !z;
+            }
+            if IMM & 0x08 != 0 {
+                r |= !x & y & z;
+            }
+            if IMM & 0x10 != 0 {
+                r |= x & !y & !z;
+            }
+            if IMM & 0x20 != 0 {
+                r |= x & !y & z;
+            }
+            if IMM & 0x40 != 0 {
+                r |= x & y & !z;
+            }
+            if IMM & 0x80 != 0 {
+                r |= x & y & z;
+            }
+            o[i] = r;
+        }
+        Self::from_array(o)
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
 impl core::ops::BitXor for U32x16 {
     type Output = Self;
     #[inline(always)]
