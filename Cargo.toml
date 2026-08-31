@@ -92,6 +92,18 @@ required-features = ["codec"]
 
 # W1a-#9 masking-primitive codegen probe imports `ndarray::simd` (std-gated).
 [[example]]
+name = "psd_bit_exactness"
+required-features = ["pillar", "std"]
+
+[[example]]
+name = "psd_jitter_sweep"
+required-features = ["pillar", "std"]
+
+[[example]]
+name = "psd_f32_vs_f64_probe"
+required-features = ["pillar", "std"]
+
+[[example]]
 name = "w1a9_codegen_probe"
 required-features = ["std"]
 

@@ -60,6 +60,8 @@
 //! * Chen (1954), *Iterated path integrals*, Bull. AMS.
 
 use super::prove_runner::{PillarReport, SplitMix64};
+use crate::hpc::lapack::LapackOps;
+use crate::Array2;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -244,6 +246,55 @@ pub fn brownian_path_d2(rng: &mut SplitMix64, n_steps: usize) -> alloc::vec::Vec
 
 // ── Prove ─────────────────────────────────────────────────────────────────────
 
+/// Relative diagonal jitter for the PSD test.
+///
+/// **Why a jitter is mandatory here, not a convenience.** The truncated
+/// signature is a 15-dimensional feature map (1 + 2 + 4 + 8), so the Gram of
+/// N > 15 paths is rank-deficient BY CONSTRUCTION. Plain Cholesky tests
+/// positive *definite* and must therefore fail for any N ≥ 16 — measured
+/// exactly at that boundary (`examples/psd_f32_vs_f64_probe.rs`):
+///
+/// ```text
+///   subset   f32 info   f64 info
+///       15          0          0
+///       16         16         16     <- the feature dimension, not a defect
+///       50         16         16
+/// ```
+///
+/// The property this battery wants is positive SEMI-definite, which is
+/// Cholesky on a jittered diagonal. The value is pinned from a sweep that
+/// measured BOTH sides at once (`examples/psd_jitter_sweep.rs`): the real
+/// Gram is admitted from 1e-6 upward, and a genuinely indefinite Gram is
+/// still rejected at every jitter through 1e-1. 1e-4 sits two orders above
+/// the lower edge with three orders of headroom above it.
+///
+/// Note also that f32 and f64 accumulation agreed on every verdict in that
+/// probe — precision was never the question; rank was.
+const PSD_JITTER: f64 = 1e-4;
+
+/// Positive semi-definiteness of a symmetric Gram, by Cholesky on a jittered
+/// diagonal.
+///
+/// This is the SUFFICIENT test. Diagonal positivity and Cauchy–Schwarz — the
+/// two conditions this battery checked before — are each necessary and
+/// neither is sufficient: a matrix can satisfy both and still have a negative
+/// eigenvalue. `psd_gate_rejects_an_indefinite_gram_that_passes_both_weak_criteria`
+/// constructs exactly such a matrix, so the distinction is asserted rather
+/// than assumed.
+fn gram_is_psd(gram: &Array2<f64>) -> bool {
+    let n = gram.nrows();
+    if n == 0 {
+        return true;
+    }
+    let mean_diag = (0..n).map(|i| gram[[i, i]]).sum::<f64>() / n as f64;
+    let eps = PSD_JITTER * mean_diag.abs().max(1.0);
+    let mut jittered = gram.clone();
+    for i in 0..n {
+        jittered[[i, i]] += eps;
+    }
+    jittered.cholesky().info == 0
+}
+
 /// Pillar-11 certification probe — Hambly–Lyons sigker convergence on 1 000 Lévy paths.
 ///
 /// # PASS criteria
@@ -319,27 +370,39 @@ pub fn prove_pillar_11() -> PillarReport {
         f64::INFINITY
     };
 
-    // ── Criterion 2: PSD diagonal check on first SUBSET paths ────────────────
-    // For a valid kernel the diagonal K[i,i] = k_HL(Pᵢ, Pᵢ) must be > 0.
-    // Also verify Cauchy–Schwarz: K[i,j]² ≤ K[i,i] · K[j,j] for all pairs.
+    // ── Criterion 2: the Gram over the first SUBSET paths ────────────────────
+    // Materialised ONCE (the previous form recomputed both diagonals inside
+    // the inner loop, O(n²) kernel calls for O(n) distinct values), then read
+    // three times: diagonal positivity, Cauchy–Schwarz, and positive
+    // semi-definiteness.
+    let mut gram = Array2::<f64>::zeros((SUBSET, SUBSET));
+    for i in 0..SUBSET {
+        for j in 0..SUBSET {
+            gram[[i, j]] = sigker_hl(&sigs[i], &sigs[j]) as f64;
+        }
+    }
+
+    // Necessary condition 1: K[i,i] > 0.
+    // Necessary condition 2: Cauchy–Schwarz, K[i,j]² ≤ K[i,i]·K[j,j].
     let mut cs_violations: u32 = 0;
     for i in 0..SUBSET {
         for j in i + 1..SUBSET {
-            let kij = sigker_hl(&sigs[i], &sigs[j]);
-            let kii = sigker_hl(&sigs[i], &sigs[i]);
-            let kjj = sigker_hl(&sigs[j], &sigs[j]);
-            if kij * kij > kii * kjj * 1.001 {
+            if gram[[i, j]] * gram[[i, j]] > gram[[i, i]] * gram[[j, j]] * 1.001 {
                 // 0.1% tolerance for f32 rounding
                 cs_violations += 1;
             }
         }
     }
 
+    // Sufficient condition: positive semi-definiteness by Cholesky.
+    let psd_ok = gram_is_psd(&gram);
+
     // ── Determine PASS ────────────────────────────────────────────────────────
     let psd_rate = positive_count as f64 / N_PATHS as f64;
     let passed = psd_rate >= 1.0           // all self-kernels positive
         && concentration < 0.20           // half-means agree within 20 %
-        && cs_violations == 0; // Cauchy–Schwarz holds in subset
+        && cs_violations == 0             // Cauchy–Schwarz holds in subset
+        && psd_ok; // and the Gram is actually PSD — see gram_is_psd
 
     PillarReport {
         pillar_id: 11,
@@ -359,6 +422,134 @@ extern crate alloc;
 
 #[cfg(test)]
 mod tests {
+    // ── PSD gate: the closed falsifier ──────────────────────────────────────
+
+    /// The pair the battery relied on before — diagonal positivity and
+    /// Cauchy–Schwarz — cannot see an indefinite Gram. This asserts all three
+    /// facts about ONE matrix, which is what makes the upgrade non-decorative
+    /// rather than two unrelated claims:
+    ///
+    ///   (a) every diagonal is positive          — weak criterion 1 PASSES
+    ///   (b) Cauchy–Schwarz holds for every pair — weak criterion 2 PASSES
+    ///   (c) `gram_is_psd` rejects it            — only the new gate catches it
+    #[test]
+    fn psd_gate_rejects_an_indefinite_gram_that_passes_both_weak_criteria() {
+        // Three unit-diagonal vectors that cannot be a Gram: x·y strongly
+        // negative while x·z and y·z are both strongly positive.
+        let a = 0.999_f64;
+        let mut g = Array2::<f64>::eye(3);
+        g[[0, 1]] = -a;
+        g[[1, 0]] = -a;
+        g[[0, 2]] = a;
+        g[[2, 0]] = a;
+        g[[1, 2]] = a;
+        g[[2, 1]] = a;
+
+        for i in 0..3 {
+            assert!(g[[i, i]] > 0.0, "weak criterion 1 must PASS on the fixture");
+            for j in i + 1..3 {
+                assert!(
+                    g[[i, j]] * g[[i, j]] <= g[[i, i]] * g[[j, j]] * 1.001,
+                    "weak criterion 2 must PASS on the fixture at ({i},{j})"
+                );
+            }
+        }
+
+        assert!(
+            !gram_is_psd(&g),
+            "the PSD gate must reject an indefinite Gram that both weak \
+             criteria admit — otherwise the gate adds nothing"
+        );
+    }
+
+    /// The can-stay-silent half: a genuinely PSD Gram must be ADMITTED at the
+    /// same jitter, including the rank-deficient case the real battery
+    /// produces (the truncated signature is a 15-dimensional feature map, so
+    /// any Gram over more than 15 paths is singular by construction).
+    #[test]
+    fn psd_gate_admits_a_rank_deficient_but_valid_gram() {
+        // Outer products of 15-dimensional signatures: PSD, and singular as
+        // soon as there are more than 15 of them.
+        let mut rng = SplitMix64::new(PILLAR_11_SEED);
+        let sigs: alloc::vec::Vec<[f32; SIG_D2_DEG3_LEN]> = (0..40)
+            .map(|_| {
+                let p = brownian_path_d2(&mut rng, 50);
+                signature_d2_deg3(&p, 51)
+            })
+            .collect();
+        let mut g = Array2::<f64>::zeros((40, 40));
+        for i in 0..40 {
+            for j in 0..40 {
+                g[[i, j]] = sigker_hl(&sigs[i], &sigs[j]) as f64;
+            }
+        }
+        assert!(
+            gram_is_psd(&g),
+            "a real (PSD but rank-deficient) Gram must be admitted — a gate \
+             that rejects it is measuring the feature dimension, not validity"
+        );
+    }
+
+    // ── Bit-exactness: the CI gate ──────────────────────────────────────────
+
+    /// The Pillar-11 pipeline is bit-exact, and this pins it.
+    ///
+    /// Measured across every axis available here — run to run, `target-cpu=
+    /// x86-64-v4` (this repo's `.cargo/config.toml` default) against baseline
+    /// `x86-64`, and debug against release — the signature bits, the kernel
+    /// bits and the Cholesky factor bits were identical in all six runs. So
+    /// exact values may be pinned rather than tolerances, and any drift in
+    /// autovectorisation, FMA contraction or evaluation order shows up here
+    /// instead of silently shifting a battery that would still report green.
+    ///
+    /// **What this test does NOT claim.** A fingerprint proves the numbers are
+    /// the SAME, never that they are RIGHT — that is what the PSD,
+    /// Cauchy–Schwarz and concentration gates above are for. The two kinds of
+    /// check are paired on purpose; neither substitutes for the other.
+    ///
+    /// If this fails after a deliberate change to the signature or kernel,
+    /// re-pin it in the same commit and say so in the message.
+    #[test]
+    fn pillar_11_pipeline_is_bit_exact() {
+        fn fnv(acc: &mut u64, bits: u64) {
+            for b in bits.to_le_bytes() {
+                *acc ^= b as u64;
+                *acc = acc.wrapping_mul(0x100_0000_01b3);
+            }
+        }
+        const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+
+        let mut rng = SplitMix64::new(PILLAR_11_SEED);
+        let sigs: alloc::vec::Vec<[f32; SIG_D2_DEG3_LEN]> = (0..50)
+            .map(|_| {
+                let p = brownian_path_d2(&mut rng, 50);
+                signature_d2_deg3(&p, 51)
+            })
+            .collect();
+
+        let mut sig_fp = FNV_OFFSET;
+        for v in &sigs {
+            for x in v {
+                fnv(&mut sig_fp, x.to_bits() as u64);
+            }
+        }
+        assert_eq!(sig_fp, 0x4434_20ec_eee1_5ce1, "signature bit pattern drifted");
+
+        let mut k_fp = FNV_OFFSET;
+        let mut g = Array2::<f64>::zeros((50, 50));
+        for i in 0..50 {
+            for j in 0..50 {
+                let v = sigker_hl(&sigs[i], &sigs[j]);
+                fnv(&mut k_fp, v.to_bits() as u64);
+                g[[i, j]] = v as f64;
+            }
+        }
+        assert_eq!(k_fp, 0x1bdc_8789_8bea_ee77, "kernel bit pattern drifted");
+
+        // And the gate itself, on those exact bits.
+        assert!(gram_is_psd(&g), "the pinned Gram must pass the PSD gate");
+    }
+
     use super::*;
 
     // ── signature_d2_deg3 basic ───────────────────────────────────────────────
