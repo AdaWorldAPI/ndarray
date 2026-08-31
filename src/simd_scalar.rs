@@ -2071,9 +2071,10 @@ impl U64x8 {
     /// Per bit position: `index = (self << 2) | (b << 1) | c`, result bit =
     /// `(IMM >> index) & 1` — Intel's VPTERNLOG convention, matched exactly by
     /// every backend. `IMM` is `i32` to mirror the intrinsic's signature; only
-    /// `0..=255` is legal, enforced at compile time on the AVX-512 backend by
-    /// the intrinsic's own static assert. Within that domain: total function,
-    /// no lane interaction.
+    /// `0..=255` is legal, enforced at compile time on EVERY backend (here by
+    /// an inline const assert, on AVX-512 by the intrinsic's own static
+    /// assert). Named immediates live in `crate::simd::ternlog`. Within that
+    /// domain: total function, no lane interaction.
     ///
     /// # Examples
     ///
@@ -2085,6 +2086,7 @@ impl U64x8 {
     /// ```
     #[inline(always)]
     pub fn ternlog<const IMM: i32>(self, b: Self, c: Self) -> Self {
+        const { assert!(IMM >= 0 && IMM <= 255, "ternlog IMM is an 8-bit truth table") }
         let (a, z) = (self, Self::splat(0));
         let mut r = z;
         if IMM & 0x01 != 0 {
