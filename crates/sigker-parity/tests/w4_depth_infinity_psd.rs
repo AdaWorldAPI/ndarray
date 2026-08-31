@@ -27,8 +27,13 @@ use ndarray::hpc::pillar::signature::brownian_path_d2;
 use ndarray::hpc::pillar::SplitMix64;
 use sigker::signature_kernel_pde;
 
-/// Same seed as the truncated battery, so both certify the same pool.
-const PILLAR_11_SEED: u64 = 0x5EED_1111_5164_A7AB;
+// The seed is IMPORTED, not retyped. An earlier revision of this file
+// hardcoded a different value while its comment claimed "same seed as the
+// truncated battery, so both certify the same pool" — the two batteries were
+// certifying different pools, and nothing could have noticed, because both
+// sides of every comparison used the wrong constant consistently. Caught by
+// the bit-exactness gate added to the truncated battery.
+use ndarray::hpc::pillar::signature::PILLAR_11_SEED;
 /// Gram pool — O(N^2) kernel solves, so kept small.
 const N_PATHS: usize = 64;
 /// Concentration pool — O(N) solves, matched to the truncated battery's 1000
