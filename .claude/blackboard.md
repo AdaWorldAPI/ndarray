@@ -3,7 +3,31 @@
 > **Read this first.** The "Polyglot Notebook" architecture below is a
 > separate/older program, not the current epoch.
 
-## 2026-07-29 (latest) — blake3 dependency DROPPED: call sites swapped to the in-tree module
+## 2026-08-31 (latest) — W1a-#9 masking primitives SHIPPED on every dispatch arm (PR #285)
+
+`U64x8`/`U32x16` gained `andnot` (set difference, `self & !other` — argument
+order deliberately differs from the raw Intel intrinsic, same direction on
+every backend) and `ternlog::<IMM>` (any 3-input boolean via the VPTERNLOG
+truth-table immediate; single VPTERNLOGQ/D on avx512, const-folded minterm
+composition elsewhere). Review round forced the completion that mattered:
+the methods exist on ALL SIX arms (scalar, avx2, avx512, neon `U32x16`,
+wasm `U32x16` via per-part `v128_andnot`, nightly via core::simd), the
+named immediates live on the always-compiled facade as
+`crate::simd::ternlog` (their first home in the scalar backend was compiled
+out on x86 — three bots caught it independently), and every portable arm
+carries the avx512-equivalent compile-time IMM domain guard. Doc examples
+on all twelve method sites; the avx512 ones execute in this environment's
+doc-test run. Declined finding, reasons on the PR thread: extending the
+pre-existing off-by-default nightly arm is REQUIRED (not extending it is
+the E0599 hole), and the stable-only rule governs the default build graph,
+which is untouched. Loose end, deliberate: whole-crate wasm compile-check
+is blocked by the pre-existing getrandom wasm dependency gap — the
+wasm-simd-parity sibling crate remains the verification home for that arm.
+Consumer side: lance-graph's mask-algebra arc (D-MAR-1, #1099) is the
+first caller; the codegen probe measured `vpternlogq $0x80` / `vandnps`
+single-instruction lowering under v4.
+
+## 2026-07-29 — blake3 dependency DROPPED: call sites swapped to the in-tree module
 
 Operator: "go ahead" on the rung-3a swap, with the measured cost table in
 hand. This closes the only rung of `the-simd-ladder.md` that carried a cargo
