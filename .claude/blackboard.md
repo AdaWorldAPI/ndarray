@@ -16,8 +16,21 @@ named immediates live on the always-compiled facade as
 `crate::simd::ternlog` (their first home in the scalar backend was compiled
 out on x86 — three bots caught it independently), and every portable arm
 carries the avx512-equivalent compile-time IMM domain guard. Doc examples
-on all twelve method sites; the avx512 ones execute in this environment's
-doc-test run. Declined finding, reasons on the PR thread: extending the
+on all twelve method sites.
+
+> **⊘ Correction (2026-08-31, codex P2 pair on the record PR — both
+> accepted):** (a) the sentence that stood here claimed the avx512 doc
+> examples "execute in this environment's doc-test run" — under the
+> default v3 config the examples import the FACADE types, so what runs is
+> default-facade coverage, not the avx512 backend; the claim is retired.
+> The honest replacement is a MEASUREMENT: this host carries avx512f
+> (cpuinfo), and all five w1a9 facade tests pass under
+> `CARGO_BUILD_RUSTFLAGS='-Ctarget-cpu=x86-64-v4'` — that run IS the
+> avx512 backend's runtime verification, hardware-executed, not inferred.
+> (b) the scalar U64x8 ternlog was missing the IMM const guard the entry
+> recorded as complete (U32x16 had it; U64x8 did not — `ternlog::<256>`
+> compiled and silently truncated). Guard added with the same message as
+> every other arm. Declined finding, reasons on the PR thread: extending the
 pre-existing off-by-default nightly arm is REQUIRED (not extending it is
 the E0599 hole), and the stable-only rule governs the default build graph,
 which is untouched. Loose end, deliberate: whole-crate wasm compile-check
