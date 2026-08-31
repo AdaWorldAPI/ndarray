@@ -90,6 +90,11 @@ required-features = ["std"]
 name = "codec_mode_histogram"
 required-features = ["codec"]
 
+# W1a-#9 masking-primitive codegen probe imports `ndarray::simd` (std-gated).
+[[example]]
+name = "w1a9_codegen_probe"
+required-features = ["std"]
+
 [[example]]
 name = "mc_via_shader"
 required-features = ["codec"]

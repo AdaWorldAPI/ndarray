@@ -957,6 +957,79 @@ pub mod wasm32_simd {
     /// no intrinsic override earned. See
     /// `.claude/knowledge/blake3-on-ndarray-simd.md`.
     impl U32x16 {
+        /// Set difference: `self & !other`, lane-wise — one `v128.andnot` per
+        /// 128-bit part (the wasm intrinsic's argument order already matches
+        /// this crate's direction). Reference doc: `simd_avx512::U32x16::andnot`.
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// use ndarray::simd::U32x16;
+        /// let a = U32x16::splat(0b1100);
+        /// let b = U32x16::splat(0b1010);
+        /// assert_eq!(a.andnot(b).to_array()[0], 0b0100); // a & !b
+        /// ```
+        #[inline(always)]
+        pub fn andnot(self, other: Self) -> Self {
+            Self([
+                U32x4(v128_andnot(self.0[0].0, other.0[0].0)),
+                U32x4(v128_andnot(self.0[1].0, other.0[1].0)),
+                U32x4(v128_andnot(self.0[2].0, other.0[2].0)),
+                U32x4(v128_andnot(self.0[3].0, other.0[3].0)),
+            ])
+        }
+
+        /// Any 3-input boolean function of `self`, `b` and `c` — Intel's
+        /// VPTERNLOG convention, matched exactly by every backend. Named
+        /// immediates: `crate::simd::ternlog`. Only `0..=255` is legal,
+        /// enforced at compile time on every backend. Composed per 128-bit
+        /// part from `v128` bit ops; the minterm branches fold at compile
+        /// time, so only the truth table's terms survive.
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// use ndarray::simd::{ternlog, U32x16};
+        /// let (a, b, c) = (U32x16::splat(0b1100), U32x16::splat(0b1010), U32x16::splat(0b1001));
+        /// let maj = a.ternlog::<{ ternlog::MAJ3 }>(b, c); // two-of-three majority
+        /// assert_eq!(maj.to_array()[0], 0b1000);
+        /// ```
+        #[inline(always)]
+        pub fn ternlog<const IMM: i32>(self, b: Self, c: Self) -> Self {
+            const { assert!(IMM >= 0 && IMM <= 255, "ternlog IMM is an 8-bit truth table") }
+            let mut parts = [self.0[0].0; 4];
+            for p in 0..4 {
+                let (x, y, z) = (self.0[p].0, b.0[p].0, c.0[p].0);
+                let mut r = v128_xor(x, x); // zero
+                if IMM & 0x01 != 0 {
+                    r = v128_or(r, v128_and(v128_not(x), v128_andnot(v128_not(y), z)));
+                }
+                if IMM & 0x02 != 0 {
+                    r = v128_or(r, v128_and(v128_not(x), v128_andnot(z, y)));
+                }
+                if IMM & 0x04 != 0 {
+                    r = v128_or(r, v128_and(v128_not(x), v128_andnot(y, z)));
+                }
+                if IMM & 0x08 != 0 {
+                    r = v128_or(r, v128_and(v128_not(x), v128_and(y, z)));
+                }
+                if IMM & 0x10 != 0 {
+                    r = v128_or(r, v128_and(x, v128_andnot(v128_not(y), z)));
+                }
+                if IMM & 0x20 != 0 {
+                    r = v128_or(r, v128_and(x, v128_andnot(z, y)));
+                }
+                if IMM & 0x40 != 0 {
+                    r = v128_or(r, v128_and(x, v128_andnot(y, z)));
+                }
+                if IMM & 0x80 != 0 {
+                    r = v128_or(r, v128_and(x, v128_and(y, z)));
+                }
+                parts[p] = r;
+            }
+            Self([U32x4(parts[0]), U32x4(parts[1]), U32x4(parts[2]), U32x4(parts[3])])
+        }
+
         /// `_mm256_unpacklo_epi32` per 256-bit half: within each 128-bit quad,
         /// interleave the low two `u32` of each operand.
         #[inline(always)]

@@ -4873,3 +4873,105 @@ mod int_simd_tests {
         assert_eq!(got, [10, 30, 50, 70, 20, 40, 60, 80]);
     }
 }
+
+// ── W1a-#9: U64x8 / U32x16 :: andnot + ternlog (AVX-512 backend) ────────────
+//
+// The masking primitives, native. `andnot` is VPANDNQ/VPANDND; `ternlog` is
+// VPTERNLOGQ/VPTERNLOGD — ONE instruction for ANY three-input boolean function
+// of three 512-bit registers, selected by an 8-bit immediate that IS the
+// function's truth table. Stacking three prerequisite masks therefore costs a
+// single instruction, independent of how many bits are set.
+
+impl U64x8 {
+    /// Set difference: `self & !other`, lane-wise (VPANDNQ).
+    ///
+    /// **Argument order differs from the raw Intel intrinsic.**
+    /// `_mm512_andnot_si512(a, b)` computes `!a & b`; this method computes
+    /// `self & !other` — "self minus other" — so the arguments are swapped at
+    /// the call below. Every backend implements this same direction.
+    ///
+    /// Total function: no saturation, no overflow, no UB. `x.andnot(x)` is
+    /// zero; `x.andnot(U64x8::splat(0))` is `x`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::U64x8;
+    /// let a = U64x8::splat(0b1100);
+    /// let b = U64x8::splat(0b1010);
+    /// assert_eq!(a.andnot(b).to_array()[0], 0b0100); // a & !b
+    /// ```
+    #[inline(always)]
+    pub fn andnot(self, other: Self) -> Self {
+        // SAFETY: this module is only reachable under `target_feature =
+        // "avx512f"`, so the intrinsic's required feature is enabled at
+        // compile time. Arguments are swapped because `_mm512_andnot_si512`
+        // computes `!a & b` and this method's contract is `self & !other`.
+        U64x8(unsafe { _mm512_andnot_si512(other.0, self.0) })
+    }
+
+    /// Any 3-input boolean function of `self`, `b` and `c`, selected by the
+    /// const truth-table immediate `IMM` — a single VPTERNLOGQ.
+    ///
+    /// Per bit position: `index = (self << 2) | (b << 1) | c`, result bit =
+    /// `(IMM >> index) & 1`. Named immediates live in `crate::simd::ternlog`
+    /// (`AND3`, `AND2_ANDNOT`, `OR2_AND`, `MAJ3`, …).
+    ///
+    /// `IMM` is `i32` to match the intrinsic's signature; only `0..=255` is
+    /// legal, and the intrinsic's own `static_assert_uimm_bits!` rejects
+    /// anything wider **at compile time**. Within that domain this is a total
+    /// function: no saturation, no overflow, no UB, no lane interaction.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::{ternlog, U64x8};
+    /// let (a, b, c) = (U64x8::splat(0b1100), U64x8::splat(0b1010), U64x8::splat(0b1001));
+    /// let maj = a.ternlog::<{ ternlog::MAJ3 }>(b, c); // two-of-three majority
+    /// assert_eq!(maj.to_array()[0], 0b1000);
+    /// ```
+    #[inline(always)]
+    pub fn ternlog<const IMM: i32>(self, b: Self, c: Self) -> Self {
+        // SAFETY: avx512f is enabled at compile time (see `andnot`). IMM is a
+        // compile-time constant validated by the intrinsic's own static assert.
+        U64x8(unsafe { _mm512_ternarylogic_epi64::<IMM>(self.0, b.0, c.0) })
+    }
+}
+
+impl U32x16 {
+    /// Set difference: `self & !other`, lane-wise (VPANDND). See
+    /// [`U64x8::andnot`] for the argument-order note.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::U32x16;
+    /// let a = U32x16::splat(0b1100);
+    /// let b = U32x16::splat(0b1010);
+    /// assert_eq!(a.andnot(b).to_array()[0], 0b0100); // a & !b
+    /// ```
+    #[inline(always)]
+    pub fn andnot(self, other: Self) -> Self {
+        // SAFETY: avx512f enabled at compile time; arguments swapped so this
+        // computes `self & !other`, not the intrinsic's `!a & b`.
+        U32x16(unsafe { _mm512_andnot_si512(other.0, self.0) })
+    }
+
+    /// Any 3-input boolean function, 32-bit lanes — a single VPTERNLOGD.
+    /// See [`U64x8::ternlog`] for the truth-table convention and IMM domain.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::{ternlog, U32x16};
+    /// let (a, b, c) = (U32x16::splat(0b1100), U32x16::splat(0b1010), U32x16::splat(0b1001));
+    /// let maj = a.ternlog::<{ ternlog::MAJ3 }>(b, c); // two-of-three majority
+    /// assert_eq!(maj.to_array()[0], 0b1000);
+    /// ```
+    #[inline(always)]
+    pub fn ternlog<const IMM: i32>(self, b: Self, c: Self) -> Self {
+        // SAFETY: avx512f enabled at compile time; IMM validated by the
+        // intrinsic's own static assert.
+        U32x16(unsafe { _mm512_ternarylogic_epi32::<IMM>(self.0, b.0, c.0) })
+    }
+}

@@ -882,3 +882,131 @@ mod tests {
         assert_eq!(a.cmpgt_mask(b), 0x05u8);
     }
 }
+
+impl U64x8 {
+    /// Set difference: `self & !other`, lane-wise. Same direction as every
+    /// other backend (`simd_avx512::U64x8::andnot` is the reference doc).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::U64x8;
+    /// let a = U64x8::splat(0b1100);
+    /// let b = U64x8::splat(0b1010);
+    /// assert_eq!(a.andnot(b).to_array()[0], 0b0100); // a & !b
+    /// ```
+    #[inline(always)]
+    pub fn andnot(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
+    }
+
+    /// Any 3-input boolean function of `self`, `b` and `c`, selected by the
+    /// const truth-table immediate `IMM` — Intel's VPTERNLOG convention,
+    /// matched exactly by every backend (64-bit lanes). Named immediates:
+    /// `crate::simd::ternlog`. Only `0..=255` is legal, enforced at compile
+    /// time on every backend. The minterm branches fold at compile time.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::{ternlog, U64x8};
+    /// let (a, b, c) = (U64x8::splat(0b1100), U64x8::splat(0b1010), U64x8::splat(0b1001));
+    /// let maj = a.ternlog::<{ ternlog::MAJ3 }>(b, c); // two-of-three majority
+    /// assert_eq!(maj.to_array()[0], 0b1000);
+    /// ```
+    #[inline(always)]
+    pub fn ternlog<const IMM: i32>(self, b: Self, c: Self) -> Self {
+        const { assert!(IMM >= 0 && IMM <= 255, "ternlog IMM is an 8-bit truth table") }
+        let (a, b, c) = (self.0, b.0, c.0);
+        let mut r = a ^ a;
+        if IMM & 0x01 != 0 {
+            r |= !a & !b & !c;
+        }
+        if IMM & 0x02 != 0 {
+            r |= !a & !b & c;
+        }
+        if IMM & 0x04 != 0 {
+            r |= !a & b & !c;
+        }
+        if IMM & 0x08 != 0 {
+            r |= !a & b & c;
+        }
+        if IMM & 0x10 != 0 {
+            r |= a & !b & !c;
+        }
+        if IMM & 0x20 != 0 {
+            r |= a & !b & c;
+        }
+        if IMM & 0x40 != 0 {
+            r |= a & b & !c;
+        }
+        if IMM & 0x80 != 0 {
+            r |= a & b & c;
+        }
+        Self(r)
+    }
+}
+
+impl U32x16 {
+    /// Set difference: `self & !other`, lane-wise. Same direction as every
+    /// other backend (`simd_avx512::U32x16::andnot` is the reference doc).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::U32x16;
+    /// let a = U32x16::splat(0b1100);
+    /// let b = U32x16::splat(0b1010);
+    /// assert_eq!(a.andnot(b).to_array()[0], 0b0100); // a & !b
+    /// ```
+    #[inline(always)]
+    pub fn andnot(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
+    }
+
+    /// Any 3-input boolean function of `self`, `b` and `c`, selected by the
+    /// const truth-table immediate `IMM` — Intel's VPTERNLOG convention,
+    /// matched exactly by every backend (32-bit lanes). Named immediates:
+    /// `crate::simd::ternlog`. Only `0..=255` is legal, enforced at compile
+    /// time on every backend. The minterm branches fold at compile time.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::{ternlog, U32x16};
+    /// let (a, b, c) = (U32x16::splat(0b1100), U32x16::splat(0b1010), U32x16::splat(0b1001));
+    /// let maj = a.ternlog::<{ ternlog::MAJ3 }>(b, c); // two-of-three majority
+    /// assert_eq!(maj.to_array()[0], 0b1000);
+    /// ```
+    #[inline(always)]
+    pub fn ternlog<const IMM: i32>(self, b: Self, c: Self) -> Self {
+        const { assert!(IMM >= 0 && IMM <= 255, "ternlog IMM is an 8-bit truth table") }
+        let (a, b, c) = (self.0, b.0, c.0);
+        let mut r = a ^ a;
+        if IMM & 0x01 != 0 {
+            r |= !a & !b & !c;
+        }
+        if IMM & 0x02 != 0 {
+            r |= !a & !b & c;
+        }
+        if IMM & 0x04 != 0 {
+            r |= !a & b & !c;
+        }
+        if IMM & 0x08 != 0 {
+            r |= !a & b & c;
+        }
+        if IMM & 0x10 != 0 {
+            r |= a & !b & !c;
+        }
+        if IMM & 0x20 != 0 {
+            r |= a & !b & c;
+        }
+        if IMM & 0x40 != 0 {
+            r |= a & b & !c;
+        }
+        if IMM & 0x80 != 0 {
+            r |= a & b & c;
+        }
+        Self(r)
+    }
+}

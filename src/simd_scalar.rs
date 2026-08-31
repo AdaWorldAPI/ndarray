@@ -2028,3 +2028,148 @@ pub type u64x4 = U64x4;
 pub type i32x8 = I32x8;
 #[allow(non_camel_case_types)]
 pub type i64x4 = I64x4;
+
+// ── W1a-#9: U64x8 / U32x16 :: andnot + ternlog (portable backend) ───────────
+//
+// Masked projection, never traversal. The geometry is fixed and identical on
+// every architecture, so these are whole-register operations composed from the
+// `BitAnd` / `BitOr` / `Not` this type already carries — there is no lane
+// index anywhere below. LLVM lowers the same source to `vpand`/`vpandn` on
+// ymm (v3), `vandq_u64`/`vbicq_u64` on NEON, and `v128_and`/`v128_andnot` on
+// wasm; the `repr(align(64))` backing is what earns the aligned moves.
+//
+// `IMM` is a const generic, so each `if IMM & bit` folds at compile time and
+// only the minterms the truth table names survive. `AND3` (0x80) reduces to
+// two ANDs of the whole register.
+
+impl U64x8 {
+    /// Set difference: `self & !other`.
+    ///
+    /// **Argument order differs from the raw Intel intrinsic.**
+    /// `_mm*_andnot_si*(a, b)` computes `!a & b`; this computes
+    /// `self & !other` — "self minus other". Every backend, same direction.
+    ///
+    /// Total function: no saturation, no overflow, no UB. `x.andnot(x)` is
+    /// zero; `x.andnot(U64x8::splat(0))` is `x`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::U64x8;
+    /// let a = U64x8::splat(0b1100);
+    /// let b = U64x8::splat(0b1010);
+    /// assert_eq!(a.andnot(b).to_array()[0], 0b0100); // a & !b
+    /// ```
+    #[inline(always)]
+    pub fn andnot(self, other: Self) -> Self {
+        self & !other
+    }
+
+    /// Any 3-input boolean function of `self`, `b` and `c`, selected by the
+    /// const truth-table immediate `IMM`.
+    ///
+    /// Per bit position: `index = (self << 2) | (b << 1) | c`, result bit =
+    /// `(IMM >> index) & 1` — Intel's VPTERNLOG convention, matched exactly by
+    /// every backend. `IMM` is `i32` to mirror the intrinsic's signature; only
+    /// `0..=255` is legal, enforced at compile time on the AVX-512 backend by
+    /// the intrinsic's own static assert. Within that domain: total function,
+    /// no lane interaction.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::{ternlog, U64x8};
+    /// let (a, b, c) = (U64x8::splat(0b1100), U64x8::splat(0b1010), U64x8::splat(0b1001));
+    /// let maj = a.ternlog::<{ ternlog::MAJ3 }>(b, c); // two-of-three majority
+    /// assert_eq!(maj.to_array()[0], 0b1000);
+    /// ```
+    #[inline(always)]
+    pub fn ternlog<const IMM: i32>(self, b: Self, c: Self) -> Self {
+        let (a, z) = (self, Self::splat(0));
+        let mut r = z;
+        if IMM & 0x01 != 0 {
+            r = r | !a & !b & !c;
+        }
+        if IMM & 0x02 != 0 {
+            r = r | !a & !b & c;
+        }
+        if IMM & 0x04 != 0 {
+            r = r | !a & b & !c;
+        }
+        if IMM & 0x08 != 0 {
+            r = r | !a & b & c;
+        }
+        if IMM & 0x10 != 0 {
+            r = r | a & !b & !c;
+        }
+        if IMM & 0x20 != 0 {
+            r = r | a & !b & c;
+        }
+        if IMM & 0x40 != 0 {
+            r = r | a & b & !c;
+        }
+        if IMM & 0x80 != 0 {
+            r = r | a & b & c;
+        }
+        r
+    }
+}
+
+impl U32x16 {
+    /// Set difference: `self & !other`. See [`U64x8::andnot`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::U32x16;
+    /// let a = U32x16::splat(0b1100);
+    /// let b = U32x16::splat(0b1010);
+    /// assert_eq!(a.andnot(b).to_array()[0], 0b0100); // a & !b
+    /// ```
+    #[inline(always)]
+    pub fn andnot(self, other: Self) -> Self {
+        self & !other
+    }
+
+    /// Any 3-input boolean function, 32-bit lanes. See [`U64x8::ternlog`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::{ternlog, U32x16};
+    /// let (a, b, c) = (U32x16::splat(0b1100), U32x16::splat(0b1010), U32x16::splat(0b1001));
+    /// let maj = a.ternlog::<{ ternlog::MAJ3 }>(b, c); // two-of-three majority
+    /// assert_eq!(maj.to_array()[0], 0b1000);
+    /// ```
+    #[inline(always)]
+    pub fn ternlog<const IMM: i32>(self, b: Self, c: Self) -> Self {
+        const { assert!(IMM >= 0 && IMM <= 255, "ternlog IMM is an 8-bit truth table") }
+        let (a, z) = (self, Self::splat(0));
+        let mut r = z;
+        if IMM & 0x01 != 0 {
+            r = r | !a & !b & !c;
+        }
+        if IMM & 0x02 != 0 {
+            r = r | !a & !b & c;
+        }
+        if IMM & 0x04 != 0 {
+            r = r | !a & b & !c;
+        }
+        if IMM & 0x08 != 0 {
+            r = r | !a & b & c;
+        }
+        if IMM & 0x10 != 0 {
+            r = r | a & !b & !c;
+        }
+        if IMM & 0x20 != 0 {
+            r = r | a & !b & c;
+        }
+        if IMM & 0x40 != 0 {
+            r = r | a & b & !c;
+        }
+        if IMM & 0x80 != 0 {
+            r = r | a & b & c;
+        }
+        r
+    }
+}
