@@ -38,7 +38,7 @@
 //! ├── cov_high_d.rs         ← B5: Pillar-9  Cov16384 CLT probe
 //! ├── pflug.rs              ← B6: Pillar-10 Pflug-Pichler nested distance
 //! ├── signature.rs          ← B7: Pillar-11 f32 depth-3 kernel-stability battery
-//! ├── lattice_signature.rs  ← Pillar-11 lattice lane: bit-exact i128 signature + Thm 2/3 certificate
+//! ├── lattice_signature.rs  ← Pillar-11 lattice lane: bit-exact i128 signature + Annals Thm 5/6 certificate
 //! │
 //! │   ─── Substrate tier (native to ndarray) ───
 //! ├── splat_invariants.rs   ← Pillar-12  Splat-construction rotation invariance
@@ -89,8 +89,8 @@ pub mod pflug;
 pub mod signature;
 
 /// Pillar-11 (lattice lane): the BIT-EXACT integer signature of a lattice
-/// walk (`k!·S_k` as `i128`) and the finite-depth Hambly–Lyons Theorem 2/3
-/// certificate — reduced words separated at `⌈2.3959·L⌉`, tree-like words
+/// walk (`k!·S_k` as `i128`) and the finite-depth Hambly–Lyons Theorem 5/6
+/// certificate — reduced words separated at `⌈4.7917·L⌉` (Annals Thm 5/6), tree-like words
 /// exactly the identity, the depth-2 figure-of-8 class separated at level 3,
 /// the `d = 1` collapse pinned. Integer depth policy, no floating point.
 pub mod lattice_signature;

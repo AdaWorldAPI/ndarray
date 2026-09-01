@@ -3,7 +3,7 @@
 > **Read this first.** The "Polyglot Notebook" architecture below is a
 > separate/older program, not the current epoch.
 
-## 2026-09-01 (latest) — Pillar-11 lattice lane: BIT-EXACT i128 lattice signature + Hambly–Lyons Thm 2/3 certificate
+## 2026-09-01 (latest) — Pillar-11 lattice lane: BIT-EXACT i128 lattice signature + Hambly–Lyons Thm 5/6 certificate
 
 `src/hpc/pillar/lattice_signature.rs` (feature `pillar`). For unit-step
 lattice walks every level-`k` signature coefficient is a rational with
@@ -11,20 +11,25 @@ denominator `k!`, so the lane stores `k!·S_k` as `i128` and the whole
 computation is bit-exact — identity is `==`, no tolerance. Chen composition
 with a unit step is a binomial convolution against a tensor supported on
 `(a,…,a)` only, so each step costs `O(Σ_k d^k·k)`. Depth policy is INTEGER:
-`theorem2_depth(L) = ⌈23959·L/10000⌉ ≥ ⌊e·ln(1+√2)·L⌋` (constant re-read
-from math/0507536v2 p.11/p.14 on the main thread; the float never enters
-the kernel), `theorem3_factor(d) = 2⌈log₃(d/2)⌉+3` by integer loop.
-Measured (debug, 3.2 s): 484/484 reduced `d=2` words of length ≤ 5 separated
-at the theorem depth; 64/64 tree-like words EXACTLY the identity; 64
+`theorem2_depth(L) = ⌈47917·L/10000⌉ ≥ ⌊2e·ln(1+√2)·L⌋` (the PUBLISHED
+constant: Annals of Math 171 (2010) Theorem 5, `⌊2e·log(1+√2)·L⌋`; the
+arXiv v2 preprint's Thm 2 states `e` — a version trap CodeRabbit caught on
+lance-graph #1133 and the Annals PDF confirmed; the float never enters the
+kernel), `theorem3_factor(d) = 2⌈log₃(d/2)⌉+3` by integer loop.
+Measured (debug): 52/52 reduced `d=2` words of length ≤ 3 separated at the
+theorem depth (`LATTICE_L_MAX = 3` — the doubled constant makes depth ⌊c·L⌋
+grow to 19 at L=4, and `d^depth` coefficients per level exhaust memory); 64/64 tree-like words EXACTLY the identity at a fixed depth 12
+(`LATTICE_TREELIKE_DEPTH`, since identity holds at every depth and the
+theorem depth for length-6 words is 28); 64
 reduced length-8 words share `S^(2) = 1` with the constant path (the
 paper's §1.6 figure-of-8 class) and every one separates at level 3
 (`3!·S_xxy = 6` for the canonical one); `d = 1` collapses the 64 length-6
 words to exactly 7 tensors (net increment only — the `d ≥ 2` precondition
 is now a pin, not prose). Parity pin against the existing f32 lane
 `signature_d2_deg3` on every lattice word of length ≤ 6 (exact small
-integers). Bit-exactness pin: FNV digest `0xBFAB3E55601E4E41` over all
-words of length ≤ 4 at theorem depth. `prove_pillar_11_lattice()` reports
-`psd_rate` = separated fraction (1.0), `n_paths` = 484, `n_hops` = 64
+integers). Bit-exactness pin: FNV digest `0x7C9612A734212FC6` over all
+words of length ≤ 3 at theorem depth. `prove_pillar_11_lattice()` reports
+`psd_rate` = separated fraction (1.0), `n_paths` = 52, `n_hops` = 64
 false merges, `lognorm_concentration` = deepest separation level (3).
 **Disambiguation:** `signature.rs` stays the f32 depth-3 kernel-STABILITY
 battery; this lane is the UNIQUENESS half, and it is the ndarray twin of

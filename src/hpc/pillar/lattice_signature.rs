@@ -14,14 +14,20 @@
 //! walks have the same truncated signature iff the two `i128` tensors are
 //! `==`.
 //!
-//! # Why that is the certificate (Hambly–Lyons math/0507536v2 §2.4)
+//! # Why that is the certificate (Hambly–Lyons, Annals 171 (2010) §2.4)
 //!
-//! **Theorem 2.** A path of length `L` on the 2-d integer lattice whose first
-//! `⌊e·log(1+√2)·L⌋` GL(2,C)-iterated integrals vanish is tree-like and its
-//! reduced word is trivial. (`e·ln(1+√2) = 2.3958…`)
+//! **Theorem 5** (Annals numbering; Theorem 1 of the introduction restates
+//! it). A path of length `L` on the 2-d integer lattice whose first
+//! `⌊2e·log(1+√2)·L⌋` GL(2,C)-iterated integrals vanish is tree-like and its
+//! reduced word is trivial. (`2e·ln(1+√2) = 4.7916…`)
 //!
-//! **Theorem 3.** In the `d`-dimensional lattice the depth is
-//! `⌊(2⌈log₃(d/2)⌉ + 3)·e·log(1+√2)·L⌋`.
+//! **Theorem 6.** In the `d`-dimensional lattice the depth is
+//! `⌊(2⌈log₃(d/2)⌉ + 3)·2e·log(1+√2)·L⌋`.
+//!
+//! ⚠ Version trap: arXiv math/0507536v2 states these as Theorems 2/3 with
+//! coefficient `e`; its proof indexes the odd-degree sum by pairs, so the
+//! published text corrected the coefficient to `2e` (proof takes
+//! `x = 2·log(1+√2)·L`). This lane implements the published form.
 //!
 //! The GL(2,C) integrals are a projection of the tensor-algebra ones (the
 //! paper's fn. 2: "a priori contain less information"), so vanishing of the
@@ -41,8 +47,8 @@
 //! # Depth policy — integer, never float
 //!
 //! The paper's constant is transcendental. This lane never evaluates it in
-//! floating point: [`theorem2_depth`] returns `⌈23959·L / 10000⌉`, an
-//! integer upper bound on `c·L` (`23959/10000 = 2.3959 > 2.39582…`), hence
+//! floating point: [`theorem2_depth`] returns `⌈47917·L / 10000⌉`, an
+//! integer upper bound on `c·L` (`47917/10000 = 4.7917 > 4.79164…`), hence
 //! `≥ ⌊c·L⌋` and always sufficient. The general-`d` factor
 //! `2⌈log₃(d/2)⌉ + 3` is computed with integer arithmetic too.
 //!
@@ -53,7 +59,7 @@
 //!   1-d path is tree-like). A single `u8:u8` rail read as ONE scalar axis
 //!   is `d = 1` and is out of regime — see `d1_carries_only_the_net_increment`.
 //! * Unit basis-aligned steps (`‖x_k − x_{k+1}‖ = 1`, `x_k ∈ Z^d`). Arbitrary
-//!   quantized step vectors are outside Theorem 2; for those the applicable
+//!   quantized step vectors are outside Theorem 5; for those the applicable
 //!   statement is Theorem 9 (non-triviality, no explicit depth).
 //!
 //! # Overflow contract
@@ -83,9 +89,9 @@ use super::prove_runner::{PillarReport, SplitMix64};
 /// Deterministic seed for the lattice lane (tree-like word generation).
 pub const PILLAR_11_LATTICE_SEED: u64 = 0x_0516_DC5A_DD11;
 
-/// Numerator / denominator of the rational upper bound on `e·ln(1+√2)`
-/// used by [`theorem2_depth`]: `2.3959 > 2.39582…`.
-pub const THEOREM2_C_NUM: usize = 23_959;
+/// Numerator / denominator of the rational upper bound on `2e·ln(1+√2)`
+/// used by [`theorem2_depth`]: `4.7917 > 4.79164…`.
+pub const THEOREM2_C_NUM: usize = 47_917;
 /// See [`THEOREM2_C_NUM`].
 pub const THEOREM2_C_DEN: usize = 10_000;
 
@@ -184,17 +190,16 @@ pub fn fits_i128(len: usize, depth: usize) -> bool {
     true
 }
 
-/// Theorem 2 depth for a `d = 2` walk of length `len`: the integer upper
-/// bound `⌈23959·len / 10000⌉ ≥ ⌊e·ln(1+√2)·len⌋`. No floating point.
+/// Theorem 5 depth for a `d = 2` walk of length `len`: the integer upper
+/// bound `⌈47917·len / 10000⌉ ≥ ⌊2e·ln(1+√2)·len⌋`. No floating point.
 #[must_use]
 pub const fn theorem2_depth(len: usize) -> usize {
     (THEOREM2_C_NUM * len + THEOREM2_C_DEN - 1) / THEOREM2_C_DEN
 }
 
-/// Theorem 3 factor `2⌈log₃(d/2)⌉ + 3`, integer arithmetic. For `d ≤ 2` the
-/// factor is `3` (the paper's embedding is the identity for two generators
-/// only in the sense that Theorem 2 applies directly — callers with `d = 2`
-/// should use [`theorem2_depth`]).
+/// Theorem 6 factor `2⌈log₃(d/2)⌉ + 3`, integer arithmetic. For `d ≤ 2` the
+/// factor is `3` (callers with `d = 2` should use [`theorem2_depth`], which
+/// is Theorem 5 directly).
 #[must_use]
 pub const fn theorem3_factor(dim: usize) -> usize {
     // ⌈log₃(d/2)⌉ = smallest m with 3^m ≥ ⌈d/2⌉.
@@ -208,7 +213,7 @@ pub const fn theorem3_factor(dim: usize) -> usize {
     2 * m + 3
 }
 
-/// Theorem 3 depth for a `d`-dimensional lattice walk of length `len`.
+/// Theorem 6 depth for a `d`-dimensional lattice walk of length `len`.
 #[must_use]
 pub const fn theorem3_depth(dim: usize, len: usize) -> usize {
     theorem2_depth(theorem3_factor(dim) * len)
@@ -361,13 +366,15 @@ pub fn treelike_word(rng: &mut SplitMix64, dim: usize, len: usize) -> Vec<Step> 
     w
 }
 
-/// Longest word the exhaustive theorem arm enumerates (`484` reduced words
-/// in `d = 2`; depth `theorem2_depth(5) = 12`).
-pub const LATTICE_L_MAX: usize = 5;
+/// Longest word the exhaustive theorem arm enumerates (`52` reduced words
+/// in `d = 2`; depth `theorem2_depth(3) = 15`).
+pub const LATTICE_L_MAX: usize = 3;
 /// Length of the depth-2 false-merge search (the figure-of-8 class lives here).
 pub const LATTICE_FALSE_MERGE_L: usize = 8;
 /// Tree-like words drawn per run.
 pub const LATTICE_N_TREELIKE: u32 = 64;
+/// Depth for the tree-like arm (identity holds at every depth; fixed, cheap).
+pub const LATTICE_TREELIKE_DEPTH: usize = 12;
 
 /// The measurements of one lattice-lane run.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -396,7 +403,7 @@ pub struct LatticeLeg {
 pub fn lattice_leg() -> LatticeLeg {
     let dim = 2;
 
-    // Arm 1 — Theorem 2: reduced ⟹ separated at the theorem depth.
+    // Arm 1 — Theorem 5: reduced ⟹ separated at the theorem depth.
     let mut reduced_checked = 0u32;
     let mut reduced_merged = 0u32;
     for len in 1..=LATTICE_L_MAX {
@@ -416,11 +423,14 @@ pub fn lattice_leg() -> LatticeLeg {
     let mut rng = SplitMix64::new(PILLAR_11_LATTICE_SEED);
     let mut treelike_checked = 0u32;
     let mut treelike_not_identity = 0u32;
+    // Tree-like words are the identity at EVERY depth (Hambly–Lyons Cor. 6.4),
+    // so this arm needs no theorem depth — a fixed one keeps the length-6
+    // words off the 2^29-coefficient tensors the theorem depth would demand.
     for i in 0..LATTICE_N_TREELIKE {
         let len = 2 + 2 * (i as usize % 3);
         let w = treelike_word(&mut rng, dim, len);
         treelike_checked += 1;
-        if !lattice_signature(&w, dim, theorem2_depth(len)).is_identity() {
+        if !lattice_signature(&w, dim, LATTICE_TREELIKE_DEPTH).is_identity() {
             treelike_not_identity += 1;
         }
     }
@@ -512,8 +522,8 @@ mod tests {
 
     #[test]
     fn depth_policy_dominates_the_paper_floor_without_floats() {
-        // ⌊2.3958…·L⌋ for L = 1..16, pinned from the primary source constant.
-        let floors = [2usize, 4, 7, 9, 11, 14, 16, 19, 21, 23, 26, 28, 31, 33, 35, 38];
+        // ⌊4.7916…·L⌋ for L = 1..16, pinned from the published constant.
+        let floors = [4usize, 9, 14, 19, 23, 28, 33, 38, 43, 47, 52, 57, 62, 67, 71, 76];
         for (i, &f) in floors.iter().enumerate() {
             let l = i + 1;
             assert!(theorem2_depth(l) >= f, "L={l}: {} < ⌊cL⌋={f}", theorem2_depth(l));
@@ -539,8 +549,11 @@ mod tests {
         let w = [A, B, inv(A), inv(B), inv(B), inv(A), B, A];
         assert!(is_reduced(&w));
         assert!(lattice_signature(&w, 2, 2).is_identity());
-        let s = lattice_signature(&w, 2, theorem2_depth(8));
+        // Escalate like the leg does: depth 3 already separates it, and the
+        // theorem depth ⌊c·8⌋ = 38 would materialize a 2^39-entry tensor.
+        let s = lattice_signature(&w, 2, 3);
         assert_eq!(s.first_nonzero_level(), Some(3));
+        assert!(3 <= theorem2_depth(8));
         // 3!·S_{xxy} = 6 — the f64 probe measured S¹¹² = 1.0 exactly
         assert_eq!(s.levels[3][0b001], 6);
     }
@@ -596,7 +609,7 @@ mod tests {
     #[test]
     fn theorem2_separates_every_reduced_word_and_collapses_every_treelike_one() {
         let leg = lattice_leg();
-        assert_eq!(leg.reduced_checked, 484);
+        assert_eq!(leg.reduced_checked, 52);
         assert_eq!(leg.reduced_merged, 0);
         assert_eq!(leg.treelike_checked, 64);
         assert_eq!(leg.treelike_not_identity, 0);
@@ -637,7 +650,7 @@ mod tests {
         let r2 = prove_pillar_11_lattice();
         assert!(r1.passed, "{r1:?}");
         assert_eq!(r1.psd_rate, r2.psd_rate);
-        assert_eq!(r1.n_paths, 484);
+        assert_eq!(r1.n_paths, 52);
         assert_eq!(r1.n_hops, 64);
         assert_eq!(r1.seed, PILLAR_11_LATTICE_SEED);
     }
@@ -647,7 +660,7 @@ mod tests {
     #[test]
     fn lattice_lane_is_bit_exact() {
         let mut h: u64 = 0;
-        for len in 1..=4 {
+        for len in 1..=3 {
             for_each_word(2, len, |w| {
                 h ^= lattice_signature(w, 2, theorem2_depth(len))
                     .digest()
@@ -657,6 +670,6 @@ mod tests {
         assert_eq!(h, LATTICE_DIGEST_PIN, "digest drifted: 0x{h:016X}");
     }
 
-    /// Pinned from the first run of `lattice_lane_is_bit_exact`.
-    const LATTICE_DIGEST_PIN: u64 = 0xBFAB_3E55_601E_4E41;
+    /// Pinned from the first run of `lattice_lane_is_bit_exact` (words of length ≤ 3 at the theorem depth).
+    const LATTICE_DIGEST_PIN: u64 = 0x7C9612A734212FC6;
 }
