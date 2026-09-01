@@ -37,7 +37,8 @@
 //! ├── temporal_sandwich.rs  ← B4: Pillar-8  temporal drift sandwich
 //! ├── cov_high_d.rs         ← B5: Pillar-9  Cov16384 CLT probe
 //! ├── pflug.rs              ← B6: Pillar-10 Pflug-Pichler nested distance
-//! ├── signature.rs          ← B7: Pillar-11 Hambly-Lyons signature transform
+//! ├── signature.rs          ← B7: Pillar-11 f32 depth-3 kernel-stability battery
+//! ├── lattice_signature.rs  ← Pillar-11 lattice lane: bit-exact i128 signature + Thm 2/3 certificate
 //! │
 //! │   ─── Substrate tier (native to ndarray) ───
 //! ├── splat_invariants.rs   ← Pillar-12  Splat-construction rotation invariance
@@ -86,6 +87,13 @@ pub mod pflug;
 
 /// Pillar-11: Hambly–Lyons iterated-integrals signature transform (B7).
 pub mod signature;
+
+/// Pillar-11 (lattice lane): the BIT-EXACT integer signature of a lattice
+/// walk (`k!·S_k` as `i128`) and the finite-depth Hambly–Lyons Theorem 2/3
+/// certificate — reduced words separated at `⌈2.3959·L⌉`, tree-like words
+/// exactly the identity, the depth-2 figure-of-8 class separated at level 3,
+/// the `d = 1` collapse pinned. Integer depth policy, no floating point.
+pub mod lattice_signature;
 
 // ── Substrate tier — Pillars 12 through 17 (native to ndarray) ──────────────
 
@@ -137,6 +145,7 @@ pub use prove_runner::{assert_psd_rate, random_contractive_spd2, random_contract
 
 pub use btsp_unbiased::prove_pillar_16;
 pub use hhtl_contraction::prove_pillar_13;
+pub use lattice_signature::prove_pillar_11_lattice;
 pub use mexican_hat::prove_pillar_15;
 pub use ogit_lattice::prove_pillar_14;
 pub use splat_invariants::prove_pillar_12;
