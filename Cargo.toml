@@ -140,6 +140,10 @@ name = "signature_pde_bench"
 required-features = ["std"]
 
 [[example]]
+name = "randomized_signature_bench"
+required-features = ["std"]
+
+[[example]]
 name = "cakes_grail_probe"
 required-features = ["std"]
 
