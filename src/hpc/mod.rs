@@ -29,6 +29,8 @@ pub mod statistics;
 pub mod reliability;
 /// Entropy ladder: Staunen↔Wisdom coordinate over NARS truth + Pearl-2³ SPO.
 pub mod entropy_ladder;
+/// Signature kernel via the Goursat PDE, generalized-dimension, SIMD wavefront.
+pub mod signature_pde;
 pub mod activations;
 pub mod hdc;
 // Bitwise SIMD primitives — graduated to crate root. Back-compat re-export.
