@@ -261,8 +261,8 @@ where
     let mut delta_x = vec![0.0f64; path_dim];
 
     for window in path.windows(2) {
-        debug_assert_eq!(window[0].len(), path_dim, "randomized_signature: ragged path");
-        debug_assert_eq!(window[1].len(), path_dim, "randomized_signature: ragged path");
+        assert_eq!(window[0].len(), path_dim, "randomized_signature: ragged path");
+        assert_eq!(window[1].len(), path_dim, "randomized_signature: ragged path");
         for (a, slot) in delta_x.iter_mut().enumerate() {
             *slot = window[1][a] - window[0][a];
         }
@@ -511,5 +511,20 @@ mod tests {
     #[should_panic(expected = "biases must hold")]
     fn wrong_bias_length_panics() {
         let _ = randomized_signature_sweep(&[vec![0.0], vec![1.0]], &[0.0; 4], &[0.0; 3], 2);
+    }
+
+    /// A ragged path (a later point with a different coordinate count than
+    /// `path[0]`) must panic in every build profile, not just debug —
+    /// `debug_assert_eq!` disappears under `--release`, and this crate never
+    /// ships debug builds. Without this the wider-point case would silently
+    /// truncate to `path_dim` and return a signature for the wrong path; the
+    /// narrower-point case would panic anyway on out-of-bounds indexing, but
+    /// with a confusing message instead of naming the real defect.
+    #[test]
+    #[should_panic(expected = "ragged path")]
+    fn ragged_path_panics_in_release_too() {
+        let (matrices, biases) = projections(2, 4, 7);
+        let ragged = [vec![0.0, 0.0], vec![1.0, 1.0, 1.0]];
+        let _ = randomized_signature_sweep(&ragged, &matrices, &biases, 4);
     }
 }
