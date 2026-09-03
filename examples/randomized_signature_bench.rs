@@ -19,6 +19,9 @@ use std::time::Instant;
 struct SplitMix64(u64);
 
 impl SplitMix64 {
+    /// One raw 64-bit draw, advancing the state by the SplitMix64 gamma
+    /// constant. Deterministic given the seed, so every run of this bench
+    /// measures the same projections and the same path.
     fn next_u64(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.0;
@@ -26,9 +29,13 @@ impl SplitMix64 {
         z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
         z ^ (z >> 31)
     }
+    /// A draw in `[0, 1)`, taking the top 53 bits so every value is exactly
+    /// representable in `f64`.
     fn uniform(&mut self) -> f64 {
         (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
     }
+    /// A standard-normal draw via Box-Muller (cosine branch), clamping `u1`
+    /// away from zero so `ln` never returns `-inf`.
     fn normal(&mut self) -> f64 {
         let u1 = self.uniform().max(1e-300);
         let u2 = self.uniform();
@@ -36,6 +43,10 @@ impl SplitMix64 {
     }
 }
 
+/// Build the `(matrices, biases)` pair for a `d`-dimensional path and a `k`
+/// -wide state: `d` stacked `k×k` Gaussian blocks plus `d` bias vectors of
+/// length `k`, all scaled by `1/sqrt(k)` — the builder's own recipe, so the
+/// benchmarked operand magnitudes match the consumer's.
 fn projections(d: usize, k: usize, seed: u64) -> (Vec<f64>, Vec<f64>) {
     let scale = (k as f64).recip().sqrt();
     let mut rng = SplitMix64(seed);
@@ -44,6 +55,12 @@ fn projections(d: usize, k: usize, seed: u64) -> (Vec<f64>, Vec<f64>) {
     (matrices, biases)
 }
 
+/// A `t`-step, `d`-dimensional benchmark path: a linear ramp per coordinate
+/// plus a small out-of-phase cosine wobble.
+///
+/// The wobble matters for timing, not just realism — every increment stays
+/// clear of the `1e-15` skip threshold, so no step is short-circuited and
+/// both implementations do the full `O(T·d·k²)` of work being compared.
 fn path(t: usize, d: usize, seed: f64) -> Vec<Vec<f64>> {
     (0..=t)
         .map(|i| {
@@ -94,6 +111,12 @@ fn scalar_encode(path: &[Vec<f64>], matrices: &[f64], biases: &[f64], k: usize) 
     z
 }
 
+/// Max relative error between two states, with the denominator floored at
+/// `1.0` so near-zero rows report absolute rather than exploding error.
+///
+/// Reported alongside every timing row: a speedup is only meaningful if the
+/// two implementations still agree, and this is what makes a "fast but wrong"
+/// kernel visible in the bench output instead of silently applauded.
 fn rel_err(a: &[f64], b: &[f64]) -> f64 {
     a.iter()
         .zip(b.iter())
@@ -101,6 +124,13 @@ fn rel_err(a: &[f64], b: &[f64]) -> f64 {
         .fold(0.0f64, f64::max)
 }
 
+/// Time one `(T, d, k)` shape both ways and print the row: scalar seconds,
+/// SIMD seconds, speedup, and max relative error.
+///
+/// Single-shot timing, not a statistical harness — the shapes here run long
+/// enough (milliseconds and up) that run-to-run noise stays well below the
+/// effect being reported. Both implementations see the identical projections
+/// and path, so the comparison is like-for-like.
 fn bench_one(t: usize, d: usize, k: usize) {
     let (matrices, biases) = projections(d, k, 0xBEEF);
     let p = path(t, d, 0.3);
@@ -121,6 +151,14 @@ fn bench_one(t: usize, d: usize, k: usize) {
     );
 }
 
+/// Sweep the state widths `k = 32 … 512` against the scalar baseline, then
+/// run sigker's headline envelope shape (`T = 64, d = 8, k = 4096`)
+/// SIMD-only and report its achieved GFLOP/s.
+///
+/// The envelope row omits a scalar baseline deliberately: at `k = 4096` the
+/// row-major loop runs for minutes, and the row is there to show the shape is
+/// reachable at all, not to claim a speedup. Its `|z|_inf` is printed so the
+/// result is visibly finite rather than a NaN that timed well.
 fn main() {
     println!("== randomized_signature_sweep — SIMD GEMV+axpy vs. row-major scalar ==\n");
 

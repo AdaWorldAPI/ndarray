@@ -327,6 +327,15 @@ mod e2e_tests {
     use super::node::{Node, _P_, __O, SPO, S__};
     use super::seal::Seal;
 
+    /// Fingerprint -> Node -> Seal: two independently seeded nodes are
+    /// *comparable* (non-zero overlap) and *distinct* (non-zero disagreement),
+    /// and a plane's Merkle root detects mutation.
+    ///
+    /// The seal half is the discriminating one. `verify` returns `Wisdom` against
+    /// the root it was built from, then `Staunen` after a single further
+    /// `encounter` -- so a `merkle()` that ignored later writes, or a `verify`
+    /// that always agreed, fails here. The plane is rebuilt from scratch rather
+    /// than reusing the nodes above, to keep the root deterministic.
     #[test]
     fn pipeline_fingerprint_to_node_to_seal() {
         // 1. Create two nodes and accumulate evidence
@@ -357,6 +366,13 @@ mod e2e_tests {
         assert_eq!(p.verify(&root), Seal::Staunen);
     }
 
+    /// Cascade search over a packed database of 50 random 256-byte fingerprints
+    /// must find the query itself at Hamming distance 0.
+    ///
+    /// The query *is* `database[0]`, so an exact self-hit is the falsifiable
+    /// minimum: a cascade whose band thresholds rejected the foveal band, or
+    /// whose stride walked the packed buffer at the wrong vector width, would
+    /// return results that never contain `index == 0`.
     #[test]
     fn pipeline_cascade_search() {
         let vec_bytes = 256;
@@ -384,6 +400,15 @@ mod e2e_tests {
         assert!(results.iter().any(|r| r.index == 0 && r.hamming == 0));
     }
 
+    /// CLAM k-NN over one-hot vectors: brute force returns exactly `k` hits with
+    /// the self-match ranked first at distance 0, and `ClamTree::build` covers
+    /// the whole input.
+    ///
+    /// The data is deliberately one-hot (vector `i` sets byte `i % vec_len`), so
+    /// distances are uniform apart from the self-match and the ranking has a
+    /// single unambiguous winner. `root().cardinality == n` is the coverage
+    /// check -- a tree that dropped points during partitioning still builds
+    /// non-empty, so `!nodes.is_empty()` alone would not catch it.
     #[test]
     fn pipeline_clam_knn() {
         let vec_len = 32;
@@ -409,6 +434,13 @@ mod e2e_tests {
         assert_eq!(tree.root().cardinality, n);
     }
 
+    /// Causality decomposition reads the *sign* of each qualia channel:
+    /// positive resonance decomposes to `Forward`, negative to `Backward`.
+    ///
+    /// Three channels are set with mixed signs (warmth +, social -, sacredness +)
+    /// against a zero baseline, so the test discriminates in a way a single
+    /// channel could not: a decomposition that ignored sign, or applied one
+    /// direction uniformly across channels, matches on at most two of the three.
     #[test]
     fn pipeline_causality_decomposition() {
         let mut a = PackedQualia::zero();
@@ -423,6 +455,12 @@ mod e2e_tests {
         assert_eq!(dec.sacredness_dir, CausalityDirection::Forward);
     }
 
+    /// Binary neural dot over 16384-bit fingerprints, pinned at both poles:
+    /// all-ones against all-ones is a full 16384 matches scoring `+1.0`, and
+    /// all-zeros against all-ones is 0 matches scoring `-1.0`.
+    ///
+    /// Testing both ends fixes the whole affine mapping from match count to
+    /// score. Either pole alone would admit a wrong scale or offset.
     #[test]
     fn pipeline_bnn_inference() {
         let act = Fingerprint::<256>::ones();
@@ -437,6 +475,13 @@ mod e2e_tests {
         assert!((result2.score - (-1.0)).abs() < 1e-6);
     }
 
+    /// Blackboard typed-slot arena: allocate two differently typed slots, mutate
+    /// each through `get_mut`, and read the mutations back through `get`.
+    ///
+    /// Both a present and an absent key are asserted against `contains`, so the
+    /// membership check cannot pass by unconditionally returning `true` -- and
+    /// the read-back is what proves `get_mut` hands out a reference into the
+    /// arena rather than a copy that is dropped.
     #[test]
     fn pipeline_blackboard_arena() {
         let mut bb = Blackboard::new();
@@ -458,6 +503,15 @@ mod e2e_tests {
         assert!(!bb.contains("nonexistent"));
     }
 
+    /// The whole chain in one pass: `Node` -> truth -> per-plane distance ->
+    /// Merkle seal -> cascade band -> BNN inference.
+    ///
+    /// Where the tests above each pin one stage, this one pins that the stages
+    /// *compose* on the same pair of nodes -- every plane mask (`S__`, `_P_`,
+    /// `__O`, `SPO`) yields `Measured` rather than `Incomparable`, and the
+    /// fingerprints that come out the far end still score strictly inside
+    /// `(-1, 1)`, which a stage that silently zeroed or saturated its output
+    /// would violate.
     #[test]
     fn pipeline_full_e2e() {
         // Full pipeline: Node → truth → causality → cascade → BNN

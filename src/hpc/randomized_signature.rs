@@ -345,6 +345,9 @@ mod tests {
     struct SplitMix64(u64);
 
     impl SplitMix64 {
+        /// One raw 64-bit draw, advancing the state by the SplitMix64 gamma
+        /// constant. Deterministic given the seed — every corpus below is
+        /// reproducible from its seed alone.
         fn next_u64(&mut self) -> u64 {
             self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
             let mut z = self.0;
@@ -352,9 +355,13 @@ mod tests {
             z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
             z ^ (z >> 31)
         }
+        /// A draw in `[0, 1)`, taking the top 53 bits so every value is
+        /// exactly representable in `f64`.
         fn uniform(&mut self) -> f64 {
             (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
         }
+        /// A standard-normal draw via Box-Muller (cosine branch), clamping
+        /// `u1` away from zero so `ln` never returns `-inf`.
         fn normal(&mut self) -> f64 {
             let u1 = self.uniform().max(1e-300);
             let u2 = self.uniform();
@@ -371,6 +378,10 @@ mod tests {
         (matrices, biases)
     }
 
+    /// A `t`-step, `d`-dimensional test path: a linear ramp per coordinate
+    /// plus a small out-of-phase cosine wobble, so consecutive increments are
+    /// non-zero, non-constant, and differ across coordinates. `seed` shifts
+    /// the phase, giving independent-looking paths without an RNG.
     fn wiggly_path(t: usize, d: usize, seed: f64) -> Vec<Vec<f64>> {
         (0..=t)
             .map(|i| {
@@ -385,6 +396,15 @@ mod tests {
             .collect()
     }
 
+    /// The parity harness: run `path` through both the SIMD sweep and the
+    /// scalar oracle over the same seeded projections and assert they agree
+    /// row-wise to the module's declared `1e-9` relative tolerance.
+    ///
+    /// The tolerance is a contract, not a fudge factor — the SIMD GEMV
+    /// reduces eight partial sums and fuses its products, so it is not
+    /// bit-identical to the oracle by construction (see the module docs).
+    /// Also asserts the returned width is `state_dim`, so a silently
+    /// truncated state cannot pass by matching on a prefix.
     fn assert_matches_reference(path: &[Vec<f64>], d: usize, k: usize, seed: u64) {
         let (matrices, biases) = projections(d, k, seed);
         let expected = scalar_reference(path, &matrices, &biases, k);
@@ -401,14 +421,22 @@ mod tests {
         }
     }
 
+    /// Parity with the scalar oracle across state widths that straddle the
+    /// `F64x8` lane boundary in both directions — `1, 7` (under), `8, 16, 64`
+    /// (exact multiples), `9, 33` (one past). This is the test that catches a
+    /// mishandled remainder loop: a kernel that only walked whole lanes would
+    /// pass at `k = 8` and fail at `k = 9`.
     #[test]
     fn parity_across_state_widths() {
-        // Widths straddling the lane boundary in both directions.
         for &k in &[1usize, 7, 8, 9, 16, 33, 64] {
             assert_matches_reference(&wiggly_path(12, 3, 0.4), 3, k, 0xDEAD_BEEF);
         }
     }
 
+    /// Parity across path dimensions `d`, the axis that selects which of the
+    /// `d` stacked `k×k` blocks of `matrices` a step reads. Fixes `k` and
+    /// varies `d` alone, so a wrong `i * k * k` block stride shows up here
+    /// rather than hiding behind a state-width failure.
     #[test]
     fn parity_across_path_dimensions() {
         for &d in &[1usize, 2, 5, 9] {
@@ -416,10 +444,12 @@ mod tests {
         }
     }
 
+    /// Parity over 60 distinct `(seed, T, d, k)` draws — the consumer
+    /// contract's "hand-roll 50+ inputs" corpus, every case carrying a fresh
+    /// Gaussian projection. Fixed root seed, so a failure names a
+    /// reproducible case rather than a flake.
     #[test]
     fn parity_over_seeded_corpus() {
-        // 60 distinct (seed, T, d, k) draws — the contract's "hand-roll 50+
-        // inputs" corpus, every one of them a fresh Gaussian projection.
         let mut rng = SplitMix64(0xC0FF_EE00);
         for case in 0..60u64 {
             let t = 2 + (rng.next_u64() % 9) as usize;
@@ -429,12 +459,19 @@ mod tests {
         }
     }
 
+    /// Parity on a case that is past one lane in every dimension with no
+    /// dimension a multiple of 8 (`T = 37`, `k = 67`): enough accumulated
+    /// steps for a drifting reduction order to exceed tolerance, and a
+    /// remainder tail on every GEMV row.
     #[test]
     fn parity_with_long_path_and_wide_state() {
-        // Past one lane in every dimension, none of them a multiple of 8.
         assert_matches_reference(&wiggly_path(37, 3, 0.9), 3, 67, 7);
     }
 
+    /// A path with no increments — a single point, or empty — yields the zero
+    /// state rather than panicking. `windows(2)` is empty in both cases, so
+    /// `z` never leaves `z_0 = 0`; this pins that as documented behaviour and
+    /// not an accident of the loop shape.
     #[test]
     fn degenerate_single_point_path_is_zero_state() {
         let (matrices, biases) = projections(3, 11, 5);
@@ -444,26 +481,31 @@ mod tests {
         assert_eq!(randomized_signature_sweep(&empty, &matrices, &biases, 11), vec![0.0; 11]);
     }
 
+    /// A constant path has `|dx_i| = 0 < 1e-15` on every coordinate, so every
+    /// GEMV is skipped and `z` never leaves `z_0 = 0`. The invariant is
+    /// hand-derived from the skip rule, not read off the code under test.
+    ///
+    /// On its own this test is weak — drop the skip entirely and the result
+    /// is still zero here, because `dx = 0` scales the axpy to nothing. What
+    /// makes the guard falsifiable is the paired supra-epsilon half in
+    /// [`sub_epsilon_increment_is_skipped_but_supra_epsilon_is_not`].
     #[test]
     fn zero_increment_path_leaves_state_at_zero() {
-        // A constant path has |dx_i| = 0 < 1e-15 on every coordinate, so
-        // every GEMV is skipped and z never leaves z_0 = 0. This is a real
-        // invariant of the recurrence (hand-derived from the skip rule, not
-        // read off the code under test) and it discriminates: drop the skip
-        // and the result is still 0 here, but *flip the skip into an
-        // unconditional apply with a non-zero dx* and it is not — which the
-        // next test covers.
         let (matrices, biases) = projections(2, 20, 11);
         let path: Vec<Vec<f64>> = (0..15).map(|_| vec![7.0, -3.0]).collect();
         assert_eq!(randomized_signature_sweep(&path, &matrices, &biases, 20), vec![0.0; 20]);
     }
 
+    /// The [`INCREMENT_EPSILON`] guard must actually gate, in both
+    /// directions: an increment just under `1e-15` leaves the state
+    /// untouched, one just over it moves it.
+    ///
+    /// Both halves are required. A can-it-fire assertion alone would pass for
+    /// a primitive with no guard; a can-it-stay-silent assertion alone (the
+    /// constant-path test) would pass for one that skipped everything. Only
+    /// the pair proves the threshold discriminates.
     #[test]
     fn sub_epsilon_increment_is_skipped_but_supra_epsilon_is_not() {
-        // The 1e-15 guard must actually gate: an increment just under it
-        // leaves the state untouched, one just over it does not. Without
-        // both halves the constant-path test above would pass for a
-        // primitive that had no guard at all.
         let (matrices, biases) = projections(1, 12, 3);
         let below = vec![vec![0.0], vec![1e-16]];
         let above = vec![vec![0.0], vec![1e-13]];
@@ -473,11 +515,16 @@ mod tests {
         assert!(z_above.iter().any(|v| *v != 0.0), "supra-epsilon increment must move the state");
     }
 
+    /// The caller's activation closure is genuinely applied, not decoration
+    /// over a hard-wired `tanh`.
+    ///
+    /// With `sigma == identity` the first step collapses to `z_1 = b * dx`
+    /// exactly — `z_0 = 0`, so `A · z_0 = 0` — which is checkable in closed
+    /// form against `biases`. The second half then asserts `tanh` gives a
+    /// *different* answer on the same inputs, so the test cannot pass by the
+    /// two activations happening to agree.
     #[test]
     fn custom_activation_is_the_one_applied() {
-        // sigma == identity turns the first step into z_1 = b * dx exactly
-        // (z_0 = 0, so A . z_0 = 0), which is checkable in closed form —
-        // proving the closure is used rather than tanh being hard-wired.
         let (matrices, biases) = projections(1, 9, 17);
         let path = vec![vec![0.0], vec![2.0]];
         let z = randomized_signature_sweep_with(&path, &matrices, &biases, 9, |x| x);
@@ -492,6 +539,13 @@ mod tests {
             .any(|(a, b)| (a - b).abs() > 1e-9));
     }
 
+    /// The two public entry points agree: [`randomized_signature_step`] from
+    /// the zero state reproduces [`randomized_signature_sweep`] over a
+    /// two-point path with the same increment, bit for bit.
+    ///
+    /// Asserted with `assert_eq!` rather than a tolerance — both paths run
+    /// the identical `step_into` kernel, so any drift here means the sweep
+    /// wrapper has diverged from the step wrapper, not a numerics issue.
     #[test]
     fn step_matches_one_sweep_iteration() {
         let (matrices, biases) = projections(2, 13, 23);
@@ -501,12 +555,20 @@ mod tests {
         assert_eq!(swept, stepped);
     }
 
+    /// A `matrices` buffer that is not `d * k * k` long panics with a message
+    /// naming the field, instead of silently indexing a short buffer or
+    /// inferring `k` from the length it happens to have. Lengths are checked,
+    /// never inferred.
     #[test]
     #[should_panic(expected = "matrices must hold")]
     fn wrong_matrix_length_panics() {
         let _ = randomized_signature_sweep(&[vec![0.0], vec![1.0]], &[0.0; 3], &[0.0; 2], 2);
     }
 
+    /// The `biases` counterpart to [`wrong_matrix_length_panics`]: a correct
+    /// `matrices` with a short `biases` must still be caught, so the two
+    /// length checks are separately falsifiable rather than one guard that
+    /// happens to cover both.
     #[test]
     #[should_panic(expected = "biases must hold")]
     fn wrong_bias_length_panics() {
