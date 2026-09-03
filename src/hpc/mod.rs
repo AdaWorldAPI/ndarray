@@ -31,6 +31,9 @@ pub mod reliability;
 pub mod entropy_ladder;
 /// Signature kernel via the Goursat PDE, generalized-dimension, SIMD wavefront.
 pub mod signature_pde;
+/// Randomized signatures (Cuchiero et al.): fixed-width random-projection
+/// path encoding, SIMD GEMV + axpy per increment.
+pub mod randomized_signature;
 pub mod activations;
 pub mod hdc;
 // Bitwise SIMD primitives — graduated to crate root. Back-compat re-export.
