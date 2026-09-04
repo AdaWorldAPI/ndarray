@@ -113,6 +113,8 @@ Detection happens once on first access via `LazyLock<SimdCaps>` — a single CPU
 
 Upstream hits a cache cliff at 1024 x 1024: no tiling, no threading, no microkernel. The fork uses the Goto algorithm with cache blocking (L1/L2/L3) and achieves 10.5x throughput — on par with NumPy's decades-old OpenBLAS.
 
+The 512 x 512 and 1024 x 1024 numbers specifically depend on `simd_ops::array_windows`/`array_windows_checked` (a stable-Rust, const-generic reimplementation of nightly `slice::array_windows::<N>()`, giving overlapping `&[T; N]` references with no bounds check per step) paired with `array_chunks` (the non-overlapping counterpart) and the polyfilled `mul_add`/`add_mul_f32`/`add_mul_f64` FMA primitives. That combination is the same blocking/window discipline the original C blasgraph kernels relied on for cache-line-exact reuse at these matrix sizes, and it was benchmarked per-call against the original C blasgraph kernel and an actual Cranelift-JIT-compiled inner loop as alternatives: roughly 7 ns (original C blasgraph) vs 12 ns (Cranelift JIT) vs 17 ns (static `array_windows` microkernel) — landing close to the JIT without paying for one (compile latency, codegen complexity, or the dependency). Remove `array_windows` and the fork's GEMM falls back toward upstream's unblocked cache-cliff behavior at exactly this size range.
+
 ### Data Types Beyond f32/f64
 
 | Type | Upstream | This Fork | Method |
