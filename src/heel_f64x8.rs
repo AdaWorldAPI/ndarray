@@ -158,9 +158,7 @@ pub fn cosine_f32_to_f64_simd(a: &[f32], b: &[f32]) -> f64 {
     let mut buf_a = [0.0f64; 8];
     let mut buf_b = [0.0f64; 8];
 
-    for (ca, cb) in
-        array_chunks::<f32, 8>(&a[..n]).zip(array_chunks::<f32, 8>(&b[..n]))
-    {
+    for (ca, cb) in array_chunks::<f32, 8>(&a[..n]).zip(array_chunks::<f32, 8>(&b[..n])) {
         for j in 0..8 {
             buf_a[j] = ca[j] as f64;
             buf_b[j] = cb[j] as f64;

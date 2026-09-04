@@ -111,9 +111,16 @@ Detection happens once on first access via `LazyLock<SimdCaps>` — a single CPU
 | 1024 x 1024 | ~13 GFLOPS | 139 GFLOPS | ~120 GFLOPS | ~3,500 GFLOPS |
 | 2048 x 2048 | ~13 GFLOPS | ~150 GFLOPS | ~140 GFLOPS | ~5,000 GFLOPS |
 
-Upstream hits a cache cliff at 1024 x 1024: no tiling, no threading, no microkernel. The fork's f32 GEMM (`backend::native::gemm_f32`) delegates to the `matrixmultiply` crate's Goto algorithm with cache blocking (L1/L2/L3); f64 GEMM (`ndarray::simd::gemm_f64_tiled`) is an in-crate fixed-tile (`TILE=64`) kernel with `F64x8`-vectorized register accumulation. Either way the fork achieves 10.5x throughput over upstream — on par with NumPy's decades-old OpenBLAS.
+> **Provenance of this table is unverified.** The numbers predate the current
+> tree and the benchmark that produced them is not in the repository, so the
+> API and element type they measured cannot be identified. Do not cite them as
+> a fork-vs-upstream result until they are reproduced. What the code does say:
+>
+> - `Array::dot()` calls `matrixmultiply::sgemm`/`dgemm` (`src/linalg/impl_linalg.rs:503,522`) — for f32 this is the **same engine** `backend::native::gemm_f32` uses (`src/backend/native.rs:220`), so on that path there is no fork-vs-upstream engine difference to attribute a speedup to.
+> - `matrixmultiply` implements Goto-style cache blocking with microkernels, so "upstream has no tiling/microkernel" is false.
+> - The one genuinely fork-local GEMM kernel is `simd::gemm_f64_tiled` (`simd_ops.rs:947`) — fixed `TILE=64`, `F64x8` register accumulation, reached via `backend::native::gemm_f64` / `BlasLevel3::blas_gemm`, **not** via `Array::dot()`.
 
-`simd_ops::array_windows`/`array_windows_checked` (a stable-Rust, const-generic reimplementation of nightly `slice::array_windows::<N>()`, giving overlapping `&[T; N]` references with no bounds check per step) and `array_chunks` (the non-overlapping counterpart) are separate fork primitives, not part of the GEMM path above — their production call site today is block-chunked hashing (`hpc::blake3`'s 64-byte `BLOCK_LEN` iteration via `array_chunks`). They're available to any consumer needing overlapping- or chunked-window traversal with the same cache-line-exact discipline the original C blasgraph kernels used, and were benchmarked standalone against a Cranelift-JIT-compiled inner loop as an alternative, landing close to the JIT's per-call latency without paying for one (compile latency, codegen complexity, or the dependency).
+`simd_ops::array_chunks` walks a slice as non-overlapping `&[T; N]` windows; `array_windows` is the overlapping counterpart (a stable-Rust equivalent of nightly `slice::array_windows::<N>()`). Both pin the window size at the call site so it feeds `F32x16::from_array` / `F64x8::from_array` directly, and both drop the per-element bounds check a dynamically-indexed loop pays. Current in-crate call sites: `hpc::blake3` (64-byte block chunking) and `heel_f64x8::cosine_f32_to_f64_simd`, both via `array_chunks`; `array_windows`, `array_windows_checked`, and `array_chunks_checked` are exported but have no in-crate production caller yet. They are the traversal primitive the hand-rolled BLAS-graph/bgz17 kernels are built on, where the const-generic window landed close to a Cranelift-JIT'd inner loop without paying for a JIT — see `src/simd_ops.rs` module docs.
 
 ### Data Types Beyond f32/f64
 
