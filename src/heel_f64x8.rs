@@ -9,7 +9,7 @@
 //!   Scalar:  [f64; 8] fallback
 //! Consumer writes `crate::simd::F64x8`. The polyfill handles the rest.
 
-use crate::simd::F64x8;
+use crate::simd::{array_chunks, F64x8};
 
 /// Compute weighted dot product of 8 HEEL plane distances.
 ///
@@ -158,14 +158,13 @@ pub fn cosine_f32_to_f64_simd(a: &[f32], b: &[f32]) -> f64 {
     let mut buf_a = [0.0f64; 8];
     let mut buf_b = [0.0f64; 8];
 
-    for i in 0..chunks {
-        let off = i * 8;
+    for (ca, cb) in array_chunks::<f32, 8>(&a[..n]).zip(array_chunks::<f32, 8>(&b[..n])) {
         for j in 0..8 {
-            buf_a[j] = a[off + j] as f64;
-            buf_b[j] = b[off + j] as f64;
+            buf_a[j] = ca[j] as f64;
+            buf_b[j] = cb[j] as f64;
         }
-        let va = F64x8::from_slice(&buf_a);
-        let vb = F64x8::from_slice(&buf_b);
+        let va = F64x8::from_array(buf_a);
+        let vb = F64x8::from_array(buf_b);
         dot_acc = va.mul_add(vb, dot_acc);
         na_acc = va.mul_add(va, na_acc);
         nb_acc = vb.mul_add(vb, nb_acc);
