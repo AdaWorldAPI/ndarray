@@ -13,3 +13,8 @@ target/
 
 # Claude Code: per-user permission overrides (survives branch switches)
 .claude/settings.local.json
+
+# Cargo.lock is not committed: this is a library crate consumed by sibling
+# repos (tract, lance-graph) via git dependency, so a committed lock is never
+# used by a downstream build and only goes stale against the branch.
+Cargo.lock
