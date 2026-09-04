@@ -1094,3 +1094,48 @@ per target — every arm confirmed to carry `Not`). Deviation was
 council-surfaced (5+3, S2-7) and operator-visible, not smuggled.
 
 Loose ends: none.
+
+## 2026-09-04 — mask_ternlog / mask_ternlog_assign + contiguous fast path in eq_u32_strided_to_mask (lance-graph-java lgj_hop)
+
+Added `mask_ternlog::<IMM>(a, b, c, dst)` and `mask_ternlog_assign::<IMM>(a, b, c)`
+to `src/simd_int_ops.rs`, re-exported through `ndarray::simd::{mask_ternlog,
+mask_ternlog_assign}`. Consumer: lance-graph-java `lgj_hop`, whose selection
+`selected = class_f ∧ src ∧ struct_f` was two `mask_and_assign` passes through a
+scratch write and is now ONE `AND3` (0x80) pass — the rank-1 spelling of a
+3-input mask op replaced by the op itself.
+
+Shape: the general member of the mask-op family (`mask_and` is `AND2` with `c`
+ignored, `mask_andnot` is `AND2_ANDNOT`). `U64x8::ternlog::<IMM>` polyfill
+dispatch (one VPTERNLOGQ per 512 bits on AVX-512; AVX2/NEON/wasm/scalar arms
+already carried `ternlog` from W1a-#9) with a bit-serial scalar tail
+(`ternlog_word`) that doubles as the parity reference. Tail-bit contract stated
+precisely: conforming inputs give a conforming `dst` **iff `IMM` is even** (the
+all-zero row of the truth table); every named immediate in `simd::ternlog` is
+even; the subset-shaped tables inherit `mask_andnot`'s stronger "subset of `a`"
+guarantee. Tests: all 256 tables × 13 lengths against an independent bit-serial
+reference, `AND3 == and∘and` (non-vacuous: both narrowers must contribute),
+tail-conforms-iff-even with the odd (NOR3) can-it-fire arm, length-mismatch
+panics for both forms.
+
+**W1a deviation record — same as 2026-08-18 `mask_andnot`:** free-fn family
+shape, not struct-method; a lone method beside six free-fn siblings would
+fragment the `simd.rs` re-export surface. All other W1a criteria in full.
+
+**Second change, same PR:** `eq_u32_strided_to_mask` at `stride_bytes == 4` was
+gathering 16 bounds-checked scalar `u32` reads into a temporary array before the
+`U32x16` compare — a copy where a cast belonged. That is the exact shape of
+every facet lane in lance-graph-java's facet-major columnar store (ABI minor
+10), so the store was contiguous and the kernel still read it as strided. Added
+a contiguous path: one fixed `[u8; 64]` window per 16 elements (safe `try_into`,
+bounds proven up front), which the compiler lowers to a single vector load. The
+existing `eq_u32_strided_stride4_matches_contiguous_primitive` parity test
+covers it. Measured through lance-graph-java's own `columnar_hop_bench`
+(65 536 rows, 32 facets, both changes together): `lgj_hop` 6 342/6 408/7 547 µs
+→ **1 203/1 101/1 851 µs** (classid / hop2 / all-rows frontiers), 4.1–5.8×,
+equivalence asserted before timing. 16 MB of lane read in ~1.2 ms ≈ 13 GB/s,
+up from 2.1 GB/s.
+
+Loose ends: the general strided path still gathers scalar (correct — at row
+strides ≥ a cache line a hardware gather buys nothing, per the doc); a
+`stride_bytes == 8` twin for `u64` lanes does not exist yet because no caller
+compares `u64` lanes.
