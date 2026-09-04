@@ -648,6 +648,12 @@ pub use crate::simd_half::BF16x16;
 // K-means + L2 distance
 
 pub use crate::hpc::cam_pq::{kmeans, squared_l2};
+// Real BLAS Level 3 GEMM (and its siblings syrk/symm/trmm/trsm) surfaced here so a
+// consumer reaches the native-SIMD-dispatching matmul through the canonical
+// `ndarray::simd::*` import instead of dipping into `crate::hpc::blas_level3` directly
+// (the W1a consumer invariant — "all SIMD from `ndarray::simd`").
+pub use crate::hpc::blas_level2::Uplo;
+pub use crate::hpc::blas_level3::{BlasLevel3, Side};
 
 // SIMD cosine
 
