@@ -590,7 +590,8 @@ pub fn eq_u32_to_mask(values: &[u32], needle: u32, out_words: &mut [u64]) {
 ///
 /// Element `i` is the little-endian `u32` at byte offset
 /// `first_offset + i * stride_bytes`. `stride_bytes == 4` reads a contiguous
-/// `u32` column (then [`eq_u32_to_mask`] is the better call); `stride_bytes
+/// `u32` column and takes a dedicated contiguous path (one 64-byte window per
+/// 16 elements — the same load shape as [`eq_u32_to_mask`]); `stride_bytes
 /// == 0` re-reads the same field `count` times, which is legal and produces
 /// an all-ones or all-zeros mask.
 ///
@@ -666,11 +667,30 @@ pub fn eq_u32_strided_to_mask(
 
     let needle_v = crate::simd::U32x16::splat(needle);
     let groups = count / 16;
-    for g in 0..groups {
-        let base = first_offset + g * 16 * stride_bytes;
-        let lanes: [u32; 16] = core::array::from_fn(|k| read_le_u32(bytes, base + k * stride_bytes));
-        let bits = crate::simd::U32x16::from_array(lanes).eq_bitmask(needle_v);
-        out_words[g / 4] |= (bits as u64) << ((g % 4) * 16);
+    if stride_bytes == 4 {
+        // Contiguous lane (a facet-major column): 16 elements are ONE 64-byte
+        // window. Alias it as a fixed-size array so the compiler emits a single
+        // vector load instead of the general path's 16 bounds-checked scalar
+        // reads gathered into a temporary — a cast, not a copy. Bounds were
+        // proven above for the last element, so `try_into` cannot fail here.
+        for g in 0..groups {
+            let base = first_offset + g * 64;
+            let window: &[u8; 64] = bytes[base..base + 64]
+                .try_into()
+                .expect("64-byte window proven in bounds");
+            let lanes: [u32; 16] = core::array::from_fn(|k| {
+                u32::from_le_bytes([window[4 * k], window[4 * k + 1], window[4 * k + 2], window[4 * k + 3]])
+            });
+            let bits = crate::simd::U32x16::from_array(lanes).eq_bitmask(needle_v);
+            out_words[g / 4] |= (bits as u64) << ((g % 4) * 16);
+        }
+    } else {
+        for g in 0..groups {
+            let base = first_offset + g * 16 * stride_bytes;
+            let lanes: [u32; 16] = core::array::from_fn(|k| read_le_u32(bytes, base + k * stride_bytes));
+            let bits = crate::simd::U32x16::from_array(lanes).eq_bitmask(needle_v);
+            out_words[g / 4] |= (bits as u64) << ((g % 4) * 16);
+        }
     }
     for i in (groups * 16)..count {
         if read_le_u32(bytes, first_offset + i * stride_bytes) == needle {
@@ -924,6 +944,126 @@ pub fn mask_andnot_assign(a: &mut [u64], b: &[u64]) {
     for i in (groups * L)..n {
         a[i] &= !b[i];
     }
+}
+
+/// `dst = ternlog::<IMM>(a, b, c)`, elementwise over `u64` mask words — any
+/// 3-input Boolean function of three masks in one pass.
+///
+/// `IMM` is the 8-bit truth table in Intel's VPTERNLOG convention (index
+/// `(a<<2)|(b<<1)|c`, result bit `(IMM >> index) & 1`); the named tables in
+/// [`crate::simd::ternlog`] (`AND3`, `OR3`, `MAJ3`, `AND2_ANDNOT`, …) are
+/// the sanctioned spellings. This is the mask-op family's general member:
+/// [`mask_and`] is `mask_ternlog::<{ ternlog::AND2 }>` with `c` ignored,
+/// [`mask_andnot`] is `AND2_ANDNOT` with `c` ignored, and the composed
+/// `a & b & c` that a consumer would otherwise spell as two `mask_and_assign`
+/// passes through a scratch buffer is ONE `AND3` pass here — one
+/// `VPTERNLOGQ` per 512 bits on AVX-512, the polyfill elsewhere.
+///
+/// # Tail-bit semantics
+///
+/// Whether `dst`'s tail conforms depends on the truth table, not on the
+/// inputs alone: the tail of every conforming input is zero, so `dst`'s tail
+/// is `IMM & 1` replicated — **zero iff `IMM` is even** (index 0 = all-zero
+/// inputs maps to 0). Every named table in [`crate::simd::ternlog`] is even.
+/// An odd `IMM` (one whose function is true of `(0,0,0)`) sets every tail bit
+/// and the caller must clear the tail against its own known row count, exactly
+/// as [`mask_or`] documents for a non-conforming operand. For the
+/// subset-shaped tables (`AND3`, `AND2_ANDNOT`, `AND_ANDNOT2`, `AND2`) the
+/// stronger [`mask_andnot`] guarantee also holds: the result is a bitwise
+/// subset of `a`, so `dst`'s tail is zero whenever `a`'s is, regardless of
+/// `b` and `c`.
+///
+/// `dst` must not overlap `a`, `b` or `c`; use [`mask_ternlog_assign`] for
+/// the in-place case.
+///
+/// # Panics
+///
+/// Panics unless `a.len() == b.len() == c.len() == dst.len()`.
+#[inline]
+pub fn mask_ternlog<const IMM: i32>(a: &[u64], b: &[u64], c: &[u64], dst: &mut [u64]) {
+    assert_eq!(a.len(), b.len(), "mask_ternlog: a/b length mismatch");
+    assert_eq!(a.len(), c.len(), "mask_ternlog: a/c length mismatch");
+    assert_eq!(a.len(), dst.len(), "mask_ternlog: a/dst length mismatch");
+    let n = a.len();
+
+    const L: usize = crate::simd::U64x8::LANES;
+    let groups = n / L;
+    for g in 0..groups {
+        let off = g * L;
+        let va = crate::simd::U64x8::from_slice(&a[off..]);
+        let vb = crate::simd::U64x8::from_slice(&b[off..]);
+        let vc = crate::simd::U64x8::from_slice(&c[off..]);
+        va.ternlog::<IMM>(vb, vc).copy_to_slice(&mut dst[off..]);
+    }
+    for i in (groups * L)..n {
+        dst[i] = ternlog_word::<IMM>(a[i], b[i], c[i]);
+    }
+}
+
+/// `a = ternlog::<IMM>(a, b, c)`, elementwise over `u64` mask words.
+///
+/// The in-place form of [`mask_ternlog`] — `a` is the first truth-table
+/// operand AND the destination, which is the shape a fused predicate plan
+/// wants when narrowing an accumulator against two more masks in one pass
+/// (`selected = selected & src & gate` as `AND3`). Same tail contract as
+/// [`mask_ternlog`].
+///
+/// # Panics
+///
+/// Panics unless `a.len() == b.len() == c.len()`.
+#[inline]
+pub fn mask_ternlog_assign<const IMM: i32>(a: &mut [u64], b: &[u64], c: &[u64]) {
+    assert_eq!(a.len(), b.len(), "mask_ternlog_assign: a/b length mismatch");
+    assert_eq!(a.len(), c.len(), "mask_ternlog_assign: a/c length mismatch");
+    let n = a.len();
+
+    const L: usize = crate::simd::U64x8::LANES;
+    let groups = n / L;
+    for g in 0..groups {
+        let off = g * L;
+        let va = crate::simd::U64x8::from_slice(&a[off..]);
+        let vb = crate::simd::U64x8::from_slice(&b[off..]);
+        let vc = crate::simd::U64x8::from_slice(&c[off..]);
+        va.ternlog::<IMM>(vb, vc).copy_to_slice(&mut a[off..]);
+    }
+    for i in (groups * L)..n {
+        a[i] = ternlog_word::<IMM>(a[i], b[i], c[i]);
+    }
+}
+
+/// One `u64` of the truth-table function — the scalar tail of the two
+/// `mask_ternlog` forms, and the independent reference their parity test is
+/// checked against. Bit-serial over the eight table rows, so it cannot share
+/// a bug with any backend's lane implementation.
+#[inline(always)]
+fn ternlog_word<const IMM: i32>(a: u64, b: u64, c: u64) -> u64 {
+    const { assert!(IMM >= 0 && IMM <= 255, "ternlog IMM is an 8-bit truth table") }
+    let mut r = 0u64;
+    if IMM & 0x01 != 0 {
+        r |= !a & !b & !c;
+    }
+    if IMM & 0x02 != 0 {
+        r |= !a & !b & c;
+    }
+    if IMM & 0x04 != 0 {
+        r |= !a & b & !c;
+    }
+    if IMM & 0x08 != 0 {
+        r |= !a & b & c;
+    }
+    if IMM & 0x10 != 0 {
+        r |= a & !b & !c;
+    }
+    if IMM & 0x20 != 0 {
+        r |= a & !b & c;
+    }
+    if IMM & 0x40 != 0 {
+        r |= a & b & !c;
+    }
+    if IMM & 0x80 != 0 {
+        r |= a & b & c;
+    }
+    r
 }
 
 /// Sum of `values[i]` where mask bit `i` is set, widened to `i64`.
@@ -2067,6 +2207,145 @@ mod tests {
     fn mask_andnot_assign_rejects_length_mismatch() {
         let mut a = [0u64; 4];
         mask_andnot_assign(&mut a, &[0u64; 3]);
+    }
+
+    // ── mask_ternlog (any 3-input Boolean, one pass) ─────────────────────────
+
+    /// Truth-table reference evaluated one BIT at a time — independent of
+    /// both `ternlog_word` (bit-parallel over rows) and every backend lane.
+    fn ref_ternlog_bitwise(a: u64, b: u64, c: u64, imm: i32) -> u64 {
+        let mut r = 0u64;
+        for bit in 0..64 {
+            let idx = (((a >> bit) & 1) << 2) | (((b >> bit) & 1) << 1) | ((c >> bit) & 1);
+            if (imm >> idx) & 1 == 1 {
+                r |= 1u64 << bit;
+            }
+        }
+        r
+    }
+
+    /// Exercise one IMM over the family's standard length set, both forms,
+    /// against the bit-serial reference.
+    fn check_ternlog_imm<const IMM: i32>() {
+        for &len in &[0usize, 1, 2, 7, 8, 9, 15, 16, 17, 31, 63, 64, 100] {
+            let mut seed = 0x7E12_10C0_0000_0001 ^ (IMM as u64);
+            let a: Vec<u64> = (0..len).map(|_| splitmix64(&mut seed)).collect();
+            let b: Vec<u64> = (0..len).map(|_| splitmix64(&mut seed)).collect();
+            let c: Vec<u64> = (0..len).map(|_| splitmix64(&mut seed)).collect();
+            let expect: Vec<u64> = (0..len)
+                .map(|i| ref_ternlog_bitwise(a[i], b[i], c[i], IMM))
+                .collect();
+
+            let mut dst = vec![0xDEAD_BEEFu64; len];
+            mask_ternlog::<IMM>(&a, &b, &c, &mut dst);
+            assert_eq!(dst, expect, "mask_ternlog imm={IMM:#04x} len={len}");
+
+            let mut dst = a.clone();
+            mask_ternlog_assign::<IMM>(&mut dst, &b, &c);
+            assert_eq!(dst, expect, "mask_ternlog_assign imm={IMM:#04x} len={len}");
+        }
+    }
+
+    #[test]
+    fn mask_ternlog_matches_bitwise_reference_for_all_256_tables() {
+        // Const generics need a literal per instantiation; a macro unrolls
+        // all 256 so no table is left to "obviously the same as the others".
+        macro_rules! all_imms {
+            ($($imm:literal),* $(,)?) => { $( check_ternlog_imm::<$imm>(); )* };
+        }
+        all_imms!(
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11,
+            0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23,
+            0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35,
+            0x36, 0x37, 0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47,
+            0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F, 0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59,
+            0x5A, 0x5B, 0x5C, 0x5D, 0x5E, 0x5F, 0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6A, 0x6B,
+            0x6C, 0x6D, 0x6E, 0x6F, 0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x7B, 0x7C, 0x7D,
+            0x7E, 0x7F, 0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8A, 0x8B, 0x8C, 0x8D, 0x8E, 0x8F,
+            0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9A, 0x9B, 0x9C, 0x9D, 0x9E, 0x9F, 0xA0, 0xA1,
+            0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF, 0xB0, 0xB1, 0xB2, 0xB3,
+            0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF, 0xC0, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5,
+            0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCD, 0xCE, 0xCF, 0xD0, 0xD1, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7,
+            0xD8, 0xD9, 0xDA, 0xDB, 0xDC, 0xDD, 0xDE, 0xDF, 0xE0, 0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9,
+            0xEA, 0xEB, 0xEC, 0xED, 0xEE, 0xEF, 0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0xFA, 0xFB,
+            0xFC, 0xFD, 0xFE, 0xFF,
+        );
+    }
+
+    #[test]
+    fn mask_ternlog_and3_equals_two_and_passes() {
+        // The consumer motivation: `selected & src & gate` as one AND3 pass
+        // must be bit-identical to the two-pass `mask_and_assign` spelling.
+        use crate::simd::ternlog::AND3;
+        let mut seed = 0xA3D3_0000_0000_0001;
+        let sel: Vec<u64> = (0..20).map(|_| splitmix64(&mut seed)).collect();
+        let src: Vec<u64> = (0..20).map(|_| splitmix64(&mut seed)).collect();
+        let gate: Vec<u64> = (0..20).map(|_| splitmix64(&mut seed)).collect();
+
+        let mut two_pass = sel.clone();
+        mask_and_assign(&mut two_pass, &src);
+        mask_and_assign(&mut two_pass, &gate);
+
+        let mut one_pass = sel.clone();
+        mask_ternlog_assign::<AND3>(&mut one_pass, &src, &gate);
+        assert_eq!(one_pass, two_pass, "AND3 == and∘and");
+
+        // Non-vacuous: the narrowing must have removed bits, and both narrower
+        // operands must have contributed (each alone leaves a different set).
+        assert_ne!(one_pass, sel, "AND3 must narrow on this corpus");
+        let mut src_only = sel.clone();
+        mask_and_assign(&mut src_only, &src);
+        assert_ne!(one_pass, src_only, "gate must contribute, not just src");
+    }
+
+    #[test]
+    fn mask_ternlog_tail_conforms_iff_imm_is_even() {
+        // 2 words = the `mask_words_for(70)` shape; tail = word 1 bits 7..63.
+        const TAIL_MASK: u64 = !0x7Fu64;
+        let a = [0x1234_5678_9ABC_DEF0u64, 0x0000_0000_0000_005Bu64];
+        let b = [0x0F0F_0F0F_0F0F_0F0Fu64, 0x0000_0000_0000_0071u64];
+        let c = [0xFFFF_0000_FFFF_0000u64, 0x0000_0000_0000_002Eu64];
+        for m in [&a, &b, &c] {
+            assert_eq!(m[1] & TAIL_MASK, 0, "fixture precondition: conforming inputs");
+        }
+        use crate::simd::ternlog::{AND3, MAJ3, OR3, XOR3};
+
+        // Every named table is even: tail stays zero.
+        let mut d = [0xDEAD_BEEFu64; 2];
+        mask_ternlog::<AND3>(&a, &b, &c, &mut d);
+        assert_eq!(d[1] & TAIL_MASK, 0, "AND3 tail");
+        mask_ternlog::<OR3>(&a, &b, &c, &mut d);
+        assert_eq!(d[1] & TAIL_MASK, 0, "OR3 tail");
+        mask_ternlog::<MAJ3>(&a, &b, &c, &mut d);
+        assert_eq!(d[1] & TAIL_MASK, 0, "MAJ3 tail");
+        mask_ternlog::<XOR3>(&a, &b, &c, &mut d);
+        assert_eq!(d[1] & TAIL_MASK, 0, "XOR3 tail");
+
+        // The can-it-fire half: an ODD table (NOR3 = 0x01, true of all-zero
+        // inputs) sets every tail bit, so the doc's "iff even" is a real
+        // boundary and not a restatement of the inputs.
+        mask_ternlog::<0x01>(&a, &b, &c, &mut d);
+        assert_eq!(d[1] & TAIL_MASK, TAIL_MASK, "odd IMM fills the tail");
+
+        // Subset-shaped table against dirty b/c: still a subset of a.
+        let dirty = [u64::MAX; 2];
+        mask_ternlog::<AND3>(&a, &dirty, &dirty, &mut d);
+        assert_eq!(d, a, "AND3 against all-ones is a");
+        assert_eq!(d[1] & TAIL_MASK, 0, "AND3 tail follows a's tail");
+    }
+
+    #[test]
+    #[should_panic(expected = "length mismatch")]
+    fn mask_ternlog_rejects_length_mismatch() {
+        let mut dst = [0u64; 4];
+        mask_ternlog::<0x80>(&[0u64; 4], &[0u64; 4], &[0u64; 3], &mut dst);
+    }
+
+    #[test]
+    #[should_panic(expected = "length mismatch")]
+    fn mask_ternlog_assign_rejects_length_mismatch() {
+        let mut a = [0u64; 4];
+        mask_ternlog_assign::<0x80>(&mut a, &[0u64; 3], &[0u64; 4]);
     }
 
     #[test]
