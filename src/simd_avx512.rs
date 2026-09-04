@@ -4654,7 +4654,7 @@ mod tier3_tests {
 
 #[cfg(all(test, target_feature = "avx512f"))]
 mod int_simd_tests {
-    use crate::simd::{I16x16, I16x32, I8x32, I8x64};
+    use crate::simd::{I16x16, I16x32, I8x16, I8x32, I8x64, U16x8, U64x8};
 
     #[test]
     fn i8x64_add_pair_to_constant() {
