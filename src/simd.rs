@@ -652,6 +652,7 @@ pub use crate::hpc::cam_pq::{kmeans, squared_l2};
 // consumer reaches the native-SIMD-dispatching matmul through the canonical
 // `ndarray::simd::*` import instead of dipping into `crate::hpc::blas_level3` directly
 // (the W1a consumer invariant — "all SIMD from `ndarray::simd`").
+pub use crate::hpc::blas_level2::Uplo;
 pub use crate::hpc::blas_level3::{BlasLevel3, Side};
 
 // SIMD cosine
