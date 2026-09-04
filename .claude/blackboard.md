@@ -3,6 +3,69 @@
 > **Read this first.** The "Polyglot Notebook" architecture below is a
 > separate/older program, not the current epoch.
 
+## 2026-09-04 (latest) — W1.5 signature primitives: PR #293/#294/#295 landed, no board entry until now
+
+Three merged PRs closing W1.5 signature-kernel work items went unrecorded on
+this blackboard — corrected here.
+
+**PR #293 — `hpc: signature_pde_sweep`** (merged), closes W1.5-#6
+`TD-NDARRAY-SIMD-SIGNATURE-PDE-SWEEP`. Signature kernel `<S(X),S(Y)>` via the
+Goursat PDE, anti-diagonal SIMD wavefront. **Correction it recorded:** the
+consumer-contract doc sketched `f32`/`F32x16`; sigker is actually
+`f64`/`Vec<f64>`. **Now wired:** lance-graph `crates/sigker/src/kernel.rs:35`
+does `use ndarray::hpc::signature_pde::signature_pde_sweep;`.
+
+**PR #294 — `hpc: randomized_signature_sweep`** (merged), closes W1.5-#7
+`TD-NDARRAY-SIMD-RANDOMIZED-PROJECTION`. Cuchiero-Schmocker-Teichmann
+randomized-signature recurrence on `F64x8`. New file
+`src/hpc/randomized_signature.rs` + `examples/randomized_signature_bench.rs`.
+Public API: `randomized_signature_sweep`, `randomized_signature_sweep_with`,
+`randomized_signature_step`, `const INCREMENT_EPSILON = 1e-15`. Same
+lane-type correction as #293 (doc sketched `F32x16`; real consumer is f64 →
+`F64x8`); doc also wrongly sketched per-step re-derived Gaussians and a
+single-register update — real shape is materialize-once buffers + runtime-k
+`k×k` GEMV + axpy, `O(T·d·k²)`. Built only on already-parity-confirmed
+`F64x8` methods (splat, from_slice, mul_add, reduce_sum, copy_to_slice) → zero
+new arch-specific code, zero `unsafe`. [MEASURED] 2.00x @ k=32 up to 3.79x @
+k=512 vs scalar; max rel err 1e-14; cross-backend contract is 1e-9 relative
+tolerance, NOT bit-equality (reduce_sum order differs per backend). Second
+commit `c129662` fixed a real bug CodeRabbit caught: the ragged-path guard
+used `debug_assert_eq!`, which compiles out under `--release`; a wider later
+path point would silently truncate and return a signature for the WRONG
+path. Switched to `assert_eq!` + a `should_panic` test proving it fires in
+release. **Loose end:** sigker's `RandomizedSignatureBuilder::encode` does
+NOT yet delegate — still its own scalar loop
+(lance-graph `crates/sigker/src/randomized.rs:95`). Wiring is in flight this
+session.
+
+**PR #295 — `hpc: docstring the randomized_signature tests, bench, and e2e
+pipeline tests`** (merged, master `183c324`). Comments only, no behavioural
+change. Motivation: CodeRabbit's docstring-coverage check on #294 reported
+61.76% against an 80% threshold, scoped to functions touched by that diff (34
+functions / 3 files) — gap was entirely test + bench code; all 3 public fns
+and all 4 private compute helpers were already documented. Commit 1:
+docstringed SplitMix64 methods, `wiggly_path`, `assert_matches_reference`, 10
+of 11 test bodies, 8 of 9 bench fns in `src/hpc/randomized_signature.rs` +
+`examples/randomized_signature_bench.rs`. Commit 2: docstringed the 7
+`e2e_tests` pipeline tests in `src/hpc/mod.rs` (outside the check's scope —
+#294's diff only added a `pub mod` line to that file — but the last
+undocumented fns in the hpc surface). Result: 42/42 functions documented
+across the three files. CI green: 13 non-skipped jobs incl.
+tests/{stable,beta,1.97.1}, clippy/1.97.1, format/stable, wasm-simd,
+neon-simd, tier4-avx512, nostd/thumbv6m. **Caveat worth recording:** the PR
+was merged ~5s after leaving draft, so CodeRabbit never re-ran the coverage
+check — the 100% figure is verified by a strict `///` scan, not by the bot's
+own (looser) heuristic.
+
+**Loose ends (all three PRs):**
+- sigker randomized-signature wiring not yet landed (in flight, see #294).
+- W1.5-#8 `TD-NDARRAY-SIMD-LYNDON-PACK` is the last unbuilt W1.5 primitive.
+  Its gate (jc Pillar 11, Hambly-Lyons) IS activated — `jc/src/lib.rs:26`
+  says "Pillar 11 activated 2026-05-07" — so #8 is unblocked, not deferred.
+- The consumer-contract doc's W1.5 lane-type sketches have now been wrong
+  twice (both #293 and #294). #8's `I16x16` sketch should be treated as
+  unverified until checked against the real consumer.
+
 ## 2026-09-01 (latest) — Pillar-11 lattice lane: BIT-EXACT i128 lattice signature + Hambly–Lyons Thm 5/6 certificate
 
 `src/hpc/pillar/lattice_signature.rs` (feature `pillar`). For unit-step

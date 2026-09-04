@@ -226,9 +226,25 @@ impl U64x4 {
 
 ---
 
-## W1.5 — DEFERRED primitives (gated on `lance-graph:crates/sigker` certification)
+## W1.5 — sigker primitives (gate now OPEN; #6 and #7 SHIPPED)
 
-Three more primitives are queued behind a certification gate. `crates/sigker` is `lance-graph`'s path-signature codec — it's pure-scalar Rust today (zero raw intrinsics, zero ndarray dep), and is positioned as the **Index-regime third encoding lane** alongside palette-distance (bgz17) and NSM tiling (deepnsm). It explicitly bypasses the `I-NOISE-FLOOR-JIRAK` iron rule (Jirak 2016 Berry-Esseen for weak-dependence data) via Hambly-Lyons 2010 path-signature uniqueness.
+> **⊘ CORRECTED (2026-09-04) — this section originally read as three
+> future/deferred primitives, gated on a certification that had not yet
+> happened. That framing is stale: the gate opened 2026-05-07
+> (`lance-graph:crates/jc/src/lib.rs:26`, "Pillar 11 activated
+> 2026-05-07"; `jc/src/hambly_lyons.rs` is a live module, `pub mod
+> hambly_lyons;` at `jc/lib.rs:37`), and W1.5-#6 and W1.5-#7 have since
+> shipped (ndarray PR #293, PR #294). The original sketches below are
+> kept verbatim, each followed by a correction block, rather than
+> silently rewritten — see the standing note at the end of this section
+> for why every remaining sketch (#8) must be treated as unverified.**
+
+Three primitives were queued behind a certification gate. `crates/sigker` is `lance-graph`'s path-signature codec — it's pure-scalar Rust today (zero raw intrinsics, zero ndarray dep), and is positioned as the **Index-regime third encoding lane** alongside palette-distance (bgz17) and NSM tiling (deepnsm). It explicitly bypasses the `I-NOISE-FLOOR-JIRAK` iron rule (Jirak 2016 Berry-Esseen for weak-dependence data) via Hambly-Lyons 2010 path-signature uniqueness.
+
+> **⊘ CORRECTED:** the paragraph above and the "When `jc Pillar 11`… lights
+> up" sentence below described the gate as future-conditional. **The gate is
+> OPEN as of 2026-05-07.** `crates/sigker` is also no longer purely scalar —
+> its consumer wiring for #6 is live (see #6 below).
 
 When `jc Pillar 11` (Hambly-Lyons signature uniqueness on lance-graph paths) activates and sigker is benchmarked at production carrier widths, the W1.5 queue lights up:
 
@@ -249,15 +265,57 @@ where
 
 2D banded grid sweep; closure-parameterized kernel evaluator per step.
 
+> **⊘ CORRECTED — SHIPPED (ndarray PR #293).** The sketch above is WRONG on
+> lane type and is superseded, not merely deferred. Real state:
+> - Shipped as `ndarray::hpc::signature_pde::signature_pde_sweep`, an
+>   anti-diagonal SIMD wavefront sweep.
+> - **Lane type is f64-based, NOT `F32x16` as sketched.** The real
+>   consumer (`lance-graph crates/sigker`) works in `f64`/`Vec<f64>`, so the
+>   shipped primitive is built on `F64x8`.
+> - **Consumer wired:** `lance-graph crates/sigker/src/kernel.rs:35` imports
+>   it directly; `sigker`'s `Cargo.toml` now carries ndarray as a mandatory
+>   path dep (no longer the "zero ndarray dep" state described above).
+
 ### W1.5-#7 — `TD-NDARRAY-SIMD-RANDOMIZED-PROJECTION`
 
 Cuchiero-Schmocker-Teichmann (2021) randomized signatures: Gaussian random-matrix-vector update with `F32x16` state. Same closure-batch shape as W1a-#1, different lane type.
+
+> **⊘ CORRECTED — SHIPPED (ndarray PR #294).** The sketch above is WRONG on
+> lane type AND on data ownership. Real state:
+> - Shipped as `ndarray::hpc::randomized_signature`, exposing
+>   `randomized_signature_sweep` / `_sweep_with` / `_step`, plus
+>   `INCREMENT_EPSILON = 1e-15`.
+> - **Lane type is `F64x8`, not `F32x16`.**
+> - **Ownership model was wrong too:** the sketch implied Gaussian entries
+>   re-derived per step from `(seed, depth)`. In reality the projections are
+>   materialized ONCE per encoder instance (seeded SplitMix64 + Box-Muller)
+>   and reused across every path and step — so the primitive must CONSUME
+>   caller-owned buffers, not generate them internally.
+> - **`k` is a runtime value** (32…4096 in the consumer's own tests), not a
+>   fixed lane width — the hot path is a `k×k` GEMV plus an axpy per path
+>   dimension, O(T·d·k²), not a single-register lane update.
+> - **Consumer NOT yet wired:** `lance-graph crates/sigker/src/randomized.rs:95`
+>   `RandomizedSignatureBuilder::encode` still runs its own scalar loop.
+>   Wiring is in flight in a parallel task as of this correction — treat as
+>   in-flight, not done.
 
 ### W1.5-#8 — `TD-NDARRAY-SIMD-LYNDON-PACK`
 
 Log-signature compression in the Lyndon basis of the free Lie algebra (7-13× compression, lossless). Pack/unpack primitives on `I16x16` state with combinatorial-index awareness.
 
-**No code needed today for W1.5.** Mentioned here so W1a additions are designed broad enough to compose with these later (in particular: the closure-batch shape introduced in W1a-#1 is the foundation for W1.5-#7).
+> **⊘ CORRECTED — still unbuilt, but NO LONGER GATED** (Pillar 11 is active,
+> see above). **The `I16x16` state sketch above is UNVERIFIED against the
+> real consumer** (`lance-graph crates/sigker/src/log_signature.rs`) — the
+> equivalent sketches for #6 and #7 were BOTH wrong on lane type (2-for-2
+> miss rate). Do not implement from this sketch. Read the actual consumer
+> source first and confirm the real lane type before writing any code.
+
+**Standing note (2026-09-04):** the pattern across #6 and #7 is that this
+doc's API sketches predate the consumer code and drift from it — both
+missed the lane type, and #7 also missed the ownership model and the
+runtime-`k` shape. Treat every remaining sketch in this section as a
+starting hypothesis to verify against `lance-graph crates/sigker`, never as
+a spec.
 
 ---
 
