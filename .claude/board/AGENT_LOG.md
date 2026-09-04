@@ -5,6 +5,36 @@
 > **Spawn protocol:** every agent reads this file before starting,
 > appends one entry on completion via `tee -a`.
 
+## 2026-09-04 — main thread — W1.5 signature primitives (#293/#294/#295) board-hygiene backfill
+
+**PRs:** #293 (merged), #294 (merged, `c129662` follow-up), #295 (merged, master `183c324`)
+**Closes:** W1.5-#6 `TD-NDARRAY-SIMD-SIGNATURE-PDE-SWEEP`, W1.5-#7
+`TD-NDARRAY-SIMD-RANDOMIZED-PROJECTION`
+
+Three PRs landed with zero mentions in `.claude/blackboard.md` or this log —
+backfilled per the Agent Protocol ("write decisions to the blackboard, not
+just to chat"). No code changes this session; hygiene-only. Full detail in
+`.claude/blackboard.md` 2026-09-04 entry — summary here:
+
+| PR | File(s) | Outcome |
+|---|---|---|
+| #293 | `src/hpc/signature_pde.rs` | Goursat-PDE signature kernel, anti-diagonal SIMD wavefront, f64/`F64x8` (doc sketch of f32/`F32x16` corrected); now consumed by lance-graph `crates/sigker/src/kernel.rs:35` |
+| #294 | `src/hpc/randomized_signature.rs`, `examples/randomized_signature_bench.rs` | Cuchiero-Schmocker-Teichmann randomized-signature recurrence, `F64x8`-only (zero new arch code, zero `unsafe`); 2.00x–3.79x vs scalar; follow-up `c129662` fixed a real `debug_assert_eq!`-compiles-out-in-release bug on the ragged-path guard |
+| #295 | same 3 files, docs only | Docstring coverage 61.76%→100% (42/42 fns) after CodeRabbit's scoped-diff coverage check flagged #294; caveat: merged before the bot could re-verify, so the 100% figure is a manual `///` scan, not bot-confirmed |
+
+**Loose ends carried forward:** sigker `RandomizedSignatureBuilder::encode`
+still a standalone scalar loop, not yet delegating to
+`randomized_signature_sweep` (in flight per operator note); W1.5-#8
+`TD-NDARRAY-SIMD-LYNDON-PACK` is unblocked (jc Pillar 11 activated
+2026-05-07) but unbuilt — its `I16x16` lane-type sketch in the
+consumer-contract doc should be treated as unverified, since both #293 and
+#294 corrected an analogous sketch.
+
+**Verification:** none run this session (edit-only, hygiene backfill; no
+`.rs` files touched).
+
+---
+
 ## 2026-07-29 — main thread — oracle repair + chacha20 reach + BLAKE3 gap
 
 **PRs:** #264 (merged), #265 (merged, `58521c3`)
