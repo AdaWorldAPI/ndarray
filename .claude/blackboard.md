@@ -3,6 +3,45 @@
 > **Read this first.** The "Polyglot Notebook" architecture below is a
 > separate/older program, not the current epoch.
 
+## 2026-09-05 (v1.2) — GEMM plan: grey/white matter over ONE packed register; D-GTM-5 corrected a third time
+
+**Operator statement folded in as §11.** Hex field = digital grey/white matter over
+one packed-address substrate, not two graphs. Grey = local hex state in the
+existing 96-bit `6×2×8` register (same geometry is substrate AND mask; learning
+changes permeability masks, never pointers). White = trie routing through packed
+location (`ADDRESS & PREFIX_MASK == PREFIX`; a tract is `(prefix, mask, learned
+transition)`, never a materialized path). TERNLOGQ is the membrane algebra.
+**Invariant: `substrate == selection == routing`** — expanding a mask into IDs,
+materializing a neighbour list, or converting the trie to an edge table on the hot
+path is the loss condition. Hypothesis is NOT "ternlog replaces GEMM": GEMM wins
+when dense; hex/trie may win when cognition is successive elimination.
+
+**Reconciled with the measured hex record, not against it.** Q6/Q7/Q8 tested a
+learned *association overlay* (recall/interference); §11 is a *compute + bytes*
+claim — the bar r2il §7.2 already sharpened ("wins only as a COMPUTE topology").
+E-Q8's degree-ablation lesson is now a MANDATORY control on every new probe. §9 R1
+re-graded [S]→[H]: adjacency (grey, six neighbours) and carving (white, six rails)
+are two readings of the same 12 bytes — `le-contract.md` §3 already says the
+register "holds every sanctioned reading at once".
+
+**The census bites both existing HHTL arms AND my own §9:** blasgraph
+`heel_search → Vec<SearchHit>` (k=50 per tier) and splat3d `Vec<BlockDepthDecision>`
+both materialize IDs; `splat3d/tile.rs`'s packed `(tile_id<<32 | depth)` key already
+conforms. **D-GTM-5 corrected a THIRD time:** v1 `Vec<u32>` → v1.1 `ArrayVec<u32>`
+→ v1.2 `pack_a_masked_f32` consumes mask words directly (tzcnt / vpcompress),
+zero index materialization. Each revision removed one layer; the invariant is the
+fixed point.
+
+**K0..K7 [H]** = the SPO 2³ `TriadicProjection` masks (`cam-codebook-resonance-
+projection.md`: 8 observation/query masks, "not decorative — the query grammar")
+= the 8 rows of a ternlog truth table. **Six operator falsifiers** D-GTM-0g..0l
+(mask/trie vs GEMM; VPTERNLOGQ residency vs depth; density sweep; crossover;
+bytes-materialized/step → 0; prefix-routing codebook entropy) with one
+pre-registered kill condition. **Panela + diamond (§11.9):** the toy's
+positive/negative shape IS the invariant; diamond lattice (coord 4, tetrahedral)
+as white-matter geometry is [S] — it conflicts with the 16-ary nibble trie unless
+read as two bits of a level; flagged for one operator word.
+
 ## 2026-09-05 (later) — GEMM consolidation plan v1.1: Mississippi Queen amendment + Wave 0 static results
 
 **Operator metaphor folded in (§9).** Mississippi Queen: the river board is laid a

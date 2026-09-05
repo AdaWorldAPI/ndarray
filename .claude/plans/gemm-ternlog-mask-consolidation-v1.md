@@ -1,5 +1,13 @@
 # gemm-ternlog-mask-consolidation-v1 — one GEMM entry per dtype, masks as the prefilter, ternlog as the mask ALU
 
+> **Status:** DRAFT v1.2 (2026-09-05) — §11 folds in the operator's grey/white-matter
+> statement: hex (grey, 6×2×8 rails, local permeability) and trie (white, 3×2 path
+> prefixes, routing) are ONE 12-byte register read two ways; `substrate == selection ==
+> routing` is the V3 4+12 facet doctrine as a compute model. §9 R1 re-graded [S]→[H];
+> D-GTM-5 corrected a THIRD time (pack consumes mask words, zero index materialization);
+> K0..K7 = the SPO 2³ triadic projections [H]; six operator falsifiers D-GTM-0g..0l with
+> the E-Q8 degree-ablation control mandatory.
+>
 > **Status:** DRAFT v1.1 (2026-09-05) — §9 folds in the operator's Mississippi Queen
 > metaphor: M1 CORRECTS D-GTM-F4/D-GTM-5 (panel-ahead expansion, not a whole-board
 > prologue), M1b names where the cache lives, M2 re-shapes D-GTM-0e into a ladder,
@@ -141,7 +149,7 @@ A 3-input `IMM` is the whole truth table (`simd.rs:561-563`), so any Boolean ove
 | D-GTM-F1 | `gemm_f32` default = hand-rolled F32x16 `sgemm_blocked` on `avx512f` hosts for square-ish shapes; `matrixmultiply` for skinny/wide rectangles (threshold from D-GTM-0c) and on other hosts. Exact on both. | §1.3: wins 256³–4096³ (up to 7%); LOSES 10–19% at 256×8192×256 and 64×2048×8192 |
 | D-GTM-F2 | AMX serves `gemm_bf16` and `gemm_i8` ONLY. Any f32 AMX path is a named opt-in carrying its measured table. | §1.3; ndarray#303 |
 | D-GTM-F3 | The facade is `backend::{gemm_f32, gemm_f64, gemm_bf16, gemm_i8}` (+ batched). Every other GEMM symbol is `pub(crate)`, a documented opt-in, or deleted. | §1.1 count 54→4 |
-| D-GTM-F4 | ⊘ **AMENDED by §9 M1/M1b.** Mask→GEMM prefilter expands mask→indices ONE PANEL AHEAD of the pack cursor (stack, no hot-loop alloc), cached at `(mask generation, panel index)` — never a whole-board `Vec<u32>` prologue, never a bit-test inside the micro-kernel. | §2.3; mask-risc §14.7; §9 M1 |
+| D-GTM-F4 | ⊘ **AMENDED AGAIN by §11.4.** The pack CONSUMES MASK WORDS directly (tzcnt / vpcompress inside the panel window) — **no index list exists at any point**, not a `Vec<u32>` prologue (v1), not a panel-ahead `ArrayVec<u32>` (v1.1). Cache key stays `(mask generation, panel index)`; the reusable object generalizes to a permeability codebook entry (§11.6). | `substrate == selection == routing`; §11.4 |
 | D-GTM-F5 | Every accuracy test in this surface uses inputs whose significands exceed 8 bits, and tolerances at f32 grade (1e-5) for f32 APIs. | the vacuous `(i+j)*0.5` test that hid the bf16 loss (#303) |
 | D-GTM-F6 | Every new kernel lands with a two-sided pin: the fast path must beat the reference by a stated factor AND the reference must still be measurably slower — so a regression in either direction fails. | `three_pass_split_beats_one_bf16_pass` pattern |
 
@@ -167,7 +175,7 @@ A 3-input `IMM` is the whole truth table (`simd.rs:561-563`), so any Boolean ove
 
 ### Wave 2 — the mask→GEMM seam (ndarray + lgj-abi, one PR each)
 
-- D-GTM-5 (ndarray): `pruned_gemm_rows` takes a `&[u32]` compacted index list, not a mask; a `mask_to_row_indices(&[u64]) -> Vec<u32>` T1 primitive builds it (popcount + expand, one pass). Density crossover per D-GTM-0e.
+- D-GTM-5 (ndarray): ⊘ corrected three times, see §11.4 — `pack_a_masked_f32(a, lda, mask, row_cursor, kc, k_start, buf) -> rows_packed` consumes mask words directly; **no index list, no `Vec<u32>`, no `ArrayVec<u32>`**. `pruned_gemm_rows` has zero callers (§10 0f) so this is a first writer. Ladder per D-GTM-0e; bytes-materialized per D-GTM-0k must be ≈ 0.
 - D-GTM-6 (lgj-abi, **filed against mask-risc-lowering-v1, not built here**): a carving kind whose payload is that index list, keyed by mask generation, invalidated with the mask. This is the single ask of the other plan.
 
 ### Wave 3 — consumers (last, by the STOP rule)
@@ -398,3 +406,213 @@ lookahead × density **ladder**) are measurement probes and are not run here. No
 0e's target is now known to be dead code — the ladder measures a kernel with no
 consumers, which is fine for a probe and must not be described as measuring
 production behaviour.
+
+## §11 — v1.2: the hex/trie field is ONE packed-address substrate read two ways (operator statement, 2026-09-05)
+
+### 11.1 The statement, compressed to its load-bearing claims
+
+> *Treat the hexagon field as digital grey/white matter over one packed-address
+> substrate, not as two separately materialized graphs.*
+
+1. **Grey = local hex state.** Each cell is a fixed-width state carrier — the
+   existing **96-bit 6×2×8** geometry. The same geometry is substrate AND mask.
+   Local learning changes *admissibility/permeability masks*, never an external
+   pointer structure.
+2. **White = trie routing through packed location.** Long-range edges are never
+   object lists. Location is hierarchical *in the address bits*; each prefix is a
+   trie level/region; navigation is successive prefix refinement. Every prefix is
+   itself a mask: `ADDRESS & PREFIX_MASK == PREFIX`. A tract is
+   `(prefix, mask, learned transition)`, not a materialized path.
+3. **TERNLOGQ is the membrane algebra.** `U' = ternlog(U, local_membrane_mask,
+   trie_route_mask)`; the surviving bits ARE the lawful next hex / prefix
+   refinement. Cached masks (`current_state`, `local_hex_mask`,
+   `trie_prefix_mask`, `learned_relation_mask`, `attention/focus_mask`) chain in
+   the same native bit geometry.
+4. **Learning is a codebook, not addresses.** `context mask + relation atom +
+   packed prefix delta → permeability`. After exposure, most structure resolves
+   through learned vocabulary; only residual novelty alters the membrane. The
+   R2IL/C64 experiment is the model.
+5. **The invariant: `substrate == selection geometry == routing geometry`.**
+   Expanding a mask into IDs, materializing a neighbour list, or converting the
+   trie into an edge table *for the hot path* is the loss condition.
+6. **The hypothesis is NOT "TERNLOGQ replaces GEMM."** GEMM is attractive when
+   information is dense; a hex/trie field may win when cognition is mostly
+   *successive elimination of possibility*. Grey squeezes locally; white moves
+   the constraint field cheaply across distance.
+7. **Underlined:** white matter is not another data structure — it is an
+   *interpretation of packed location prefixes*. Hexagon supplies neighbourhood;
+   trie supplies scale; TERNLOGQ supplies permeability.
+
+### 11.2 Why the measured hex record (Q6 / Q7 / Q8) does NOT close this — and what it DOES bind
+
+Three board entries measured "hex" and found it wanting:
+`E-Q6-HEX-FAILS-CONTENT-ADDRESSING-…-1` (learns less *and* interferes more),
+`E-Q7-…-COMPLEMENTARY-NOT-COMPETING-1` (frequency sizing rescues learning, not
+interference), `E-Q8-THE-SIX-DOES-NO-WORK-…-1` (degree-1 ablation: identical
+completion at 5.5× less memory — *"the information is in the PAIR, not in the
+neighbourhood's shape"*). The #1023 audit found **zero** hex adjacency by grep
+anywhere in lance-graph / ndarray / OGAR.
+
+**Those experiments tested a different claim.** Their B-arm was a *learned
+association overlay* — a co-occurrence neighbourhood graph for macro recall,
+scored on completion / false resonance / interference. §11.1 is a *compute and
+memory* claim: propagation cost and bytes materialized under successive
+elimination, against GEMM. That is precisely the bar `r2il-machine-semantic-
+contract-v1` §7.2 already sharpened: *"if hex wins, it wins as a COMPUTE
+topology — never retroactively as an explanation of the 96-bit register."*
+§11.1 claims exactly and only that.
+
+**What the record binds, non-negotiably:**
+- **E-Q8's lesson becomes a mandatory control.** *"A locality claim needs a
+  DEGREE ablation, not only a wiring null."* Every probe in §11.7 runs the hex
+  arm at degree 6 **and** degree 1; any advantage that survives degree 1 is not
+  hexagonal and must not be reported as such.
+- The ratified demarcation is retained verbatim: *"White Matter ist Wahrheit und
+  Zwang. Grey Matter ist Hypothese und Plastizität. … Hexagon ist noch gar
+  nichts außer einem Kandidaten für lokale Rechengeometrie."* Grey is
+  hypothesis; a learned permeability mask is never a second truth
+  (`E-*-a-macro-never-becomes-a-second-truth`, the B4 invariant).
+
+⊘ **§9 R1 is therefore RE-GRADED, [S] → [H]-with-falsifier.** R1 said the game's
+six (adjacency) and the substrate's six (carving) were different mechanisms.
+That distinction stands — and §11.1 resolves it by assigning them to the two
+tissues: adjacency is *grey* (the six neighbours, an unproven compute topology),
+carving is *white* (the six rails, the packed address). Not rhyme, not the same
+six — two readings of one register (11.3).
+
+### 11.3 6×2×8 and 3×2 are the SAME twelve bytes — this is already canon
+
+| reading | what the 12-byte V3 payload means | tissue |
+|---|---|---|
+| **rails** — `6×(u8:u8)` = 6×2×8 = 96 bits | six `palette256:palette256` pairs; the colon carries the distribution (`E-PALETTE256-IS-A-NEEDLE-THE-COLON-IS-THE-DISTRIBUTION-1`) | **grey** — local state |
+| **path** — `HEEL:HIP:TWIG` = 3 tiers × 2 axes = 6 bytes | the CAM-PQ `6×256` code; `path distance = 3 tier-table lookups, O(1)`; longest-prefix binding; `is_ancestor_of` = centroid-tree containment (OGAR `CLAUDE.md` §Tier interpretation) | **white** — routing |
+
+`le-contract.md` §3 already says it: *"the 12B is a dumb byte register the
+ClassView projects — it holds every sanctioned reading at once."* So the
+operator's invariant `substrate == selection == routing` is **the V3
+content-blind 4+12 facet doctrine restated as a compute model.** Nothing new is
+laid out; the proposal is a way of *executing over* the existing register. That
+is what makes it admissible under the STOP rule — no new tissue.
+
+The L0…L5 ladder (`region → basin → tract → bundle → hex → local state`) is the
+nibble-tree: 1 hex digit = 1 level of the 16-ary tree, tier-of-level = `level >> 2`
+(a shift, never a branch). The trie already exists; §11.1 asks that it be *read as
+a mask* rather than *walked as a structure*.
+
+### 11.4 Where the tree currently VIOLATES the invariant — including my own §9
+
+The loss condition is materializing IDs on the hot path. Census:
+
+| site | what it materializes | verdict |
+|---|---|---|
+| `lance-graph/…/blasgraph/heel_hip_twig_leaf.rs` — `heel_search` → `Vec<SearchHit>` = `Vec<(usize, u32)>`, `k = 50` survivors **per tier**, sorted + truncated | a gathered row set, four times per query | **violates** — the semantic HHTL arm is the anti-pattern §11.1 names |
+| `ndarray/src/hpc/splat3d/depth_cascade.rs` — `cascade_blocks` → per-block `BlockDepthDecision { block_index, tier_reached, action, … }` | an ID-carrying decision per block | **violates** (spatial HHTL arm) — though `HhtlAction::{Reject, KeepCoarse, Refine, ProjectExact, RenderExact}` is already a 5-valued *"lawful next refinement"*, exactly §11.1's surviving-bits semantics wearing an enum |
+| `ndarray/src/hpc/splat3d/tile.rs` — packed `u64` key `(tile_id << 32) \| depth_bits`, sorted tile-major | **nothing** — routes by packed-key prefix | **conforms** — the renderer already does white-matter routing by address prefix |
+| **this plan, §9 M1** — `next_panel_indices(...) -> ArrayVec<u32, SGEMM_MR>` | a per-panel index list | **violates.** Smaller than v1's `Vec<u32>`, still an ID expansion on the hot path. |
+
+⊘ **D-GTM-5 is corrected a THIRD time.** v1: whole-board `Vec<u32>`. v1.1 (§9):
+panel-ahead `ArrayVec<u32>`. v1.2: **the pack consumes mask words directly** —
+iterate set bits with `tzcnt` inside the panel window (or `vpcompress` on
+AVX-512), gathering rows straight into the packed panel buffer, **zero index
+materialization**:
+
+```rust
+// v1.2 — the pack reads the mask; no index list exists at any point
+fn pack_a_masked_f32(a: &[f32], lda: usize, mask: &[u64], row_cursor: usize,
+                     kc: usize, k_start: usize, buf: &mut [f32]) -> usize /* rows packed */
+```
+
+Each revision removed one more layer of materialization; the operator's
+invariant names the fixed point.
+
+### 11.5 K0…K7 — the eight "terniating" masks are the SPO 2³ triadic projections [H]
+
+A 3-input `ternlog` immediate is an 8-entry truth table indexed by
+`(a<<2)|(b<<1)|c` (`simd.rs:559-563`). Eight is also **exactly** the query
+grammar the workspace already carries:
+
+```rust
+// lance-graph/.claude/knowledge/cam-codebook-resonance-projection.md §SPO 2^3
+pub enum TriadicProjection { Abc, AbAskC, AcAskB, BcAskA, AOnly, BOnly, COnly, Background }
+```
+
+*"For a triad (A, B, C), there are 2³ observation/query masks … The 2³
+structure is not decorative. It is the query grammar for the CAM field."* So
+`K0…K7` reads as: the eight presence-patterns of `(S, P, O)`, each selecting
+which of the triadic pressures (`S×P → O`, `S×O → P`, `P×O → S`) applies, and
+"terniating" = iterating the ternlog truth table over them. **[H] pending one
+operator word** — the mapping is exact in cardinality and in role, but the name
+`K0..K7` itself is not in the tree.
+
+### 11.6 What amortizes, precisely
+
+§9 M1b said the cache key is `(mask generation, panel index)`. §11.1 generalizes
+the *tile*: the reusable object is a **codebook entry**
+`(context mask, relation atom, packed prefix delta) → permeability mask`. It is
+laid once — by whichever traversal first needs it — and every later traversal
+that hits the same `(prefix, relation)` crosses it for free. That is the
+Mississippi Queen tile at the level of *learned transitions*, and it is what
+keeps learned semantics low-entropy (§11.7 probe 6 measures exactly whether it
+stays that way).
+
+### 11.7 The falsification program — six operator probes, plus the E-Q8 control
+
+Each is a W0 probe; none is production code. Numbering continues §5.
+
+| id | probe (operator's words) | the measurement | the E-Q8 control |
+|---|---|---|---|
+| D-GTM-0g | mask/trie propagation vs dense GEMM for an equivalent sparse learned transition | wall time + result equality, same transition matrix realized both ways | hex arm at degree 6 **and** 1 |
+| D-GTM-0h | does chained VPTERNLOGQ stay register/cache resident as depth increases | `perf` L1/L2 miss rate vs chain depth 1…32; the knee is the finding | — |
+| D-GTM-0i | sweep unknown density almost-empty → almost-full | density ∈ {1,5,10,25,50,75,90,99}% | — |
+| D-GTM-0j | the crossover where GEMM wins | from 0g × 0i: a density-vs-size frontier, not a single number | — |
+| D-GTM-0k | **bytes materialized per inference step** | count every heap/stack byte that is not the mask itself; the hex/trie path must approach **zero** | this is the invariant's own falsifier |
+| D-GTM-0l | can packed-prefix routing express all required long-range transitions without exploding codebook entropy | entries needed vs transitions covered, on the R2IL/C64 ore; the C64 vocabulary-resolution rate is the reference | — |
+
+**Pre-registered kill condition (one, stated before any run):** if at every
+density in 0i the GEMM arm is both faster AND materializes fewer bytes than the
+hex/trie arm, §11.1's hypothesis is false *for this substrate* and is recorded
+as such — the same way Q6 was.
+
+### 11.8 Restated non-goals
+
+- Not "TERNLOGQ replaces GEMM" (§11.1 pt 6 — the operator's own fence).
+- Not a new layout, a new crate, or a second graph. The register is the V3
+  facet; the trie is the nibble tree; both exist.
+- Not a re-run of Q6/Q7/Q8's association task. Different claim, different
+  metrics, same degree-ablation discipline.
+
+### 11.9 The Panela primitive, and hex + diamond as the two lattices (operator infographic, 2026-09-05)
+
+**Panela** — the DDR construction toy: one flat piece with an E-E comb profile that
+interlocks with its own kind. *"One shape. Many worlds. Positive shape =
+connectivity. Negative space = admissibility."* That is the §11.1 invariant as a
+physical object: the same piece IS the structure and IS the selection, and the
+infographic draws the 96-bit `6×2×8` register (six rows L0…L5 × byte 0 / byte 1)
+**as** the E-profile. Substrate S and mask M are the same silhouette; ternlog
+combines them without either ever leaving the lane.
+
+**Two lattices, one per tissue** — "from planar to space-filling":
+
+| lattice | coordination | character | tissue |
+|---|---|---|---|
+| **hexagonal** (Bienenwaben) | 6, isotropic, planar | efficient packing, natural for local reasoning | **grey** — dense local recurrence |
+| **diamond** (Bindungen) | 4, tetrahedral, 3-D | strong directional bonds, efficient long-range structure | **white** — cross-scale tracts |
+
+A hex sheet per level, diamond links between levels: the cortical sheet with its
+tracts. This is the first *geometric* statement of white matter in this plan —
+§11.1 gave it as an *interpretation of prefixes*; the diamond gives it a shape.
+
+**One mismatch to flag, not resolve.** A diamond lattice has coordination **4**;
+the canon's trie is **16-ary** (1 hex digit = 1 level, `FAN_OUT=16`, tier-of-level
+= `level >> 2`). A tetrahedral tract therefore does not map one-to-one onto a
+nibble level — it maps onto **two bits** of one. Either the diamond is a
+*visualization* of the four sub-branches a nibble refines through (in which case
+it is rhyme, and harmless), or it is a claim that white-matter routing is 4-ary
+at each step (in which case it conflicts with the 3×4 vs 4×3 standing watch and
+needs its own probe). **Graded [S] until the operator says which.** Nothing in
+§11.7's six probes depends on it.
+
+**The neuron reading** (dendrites = incoming masks, membrane = permeability mask,
+axon = outgoing mask, learning = mask update, state = the 96-bit substrate) and
+**constraint soaking** (`U₁ = U₀ ⊗ M₁`, `U₂ = U₁ ⊗ M₂`, … until residual) are §11.1
+points 1 and 6 restated; recorded as vocabulary, not as new claims.
