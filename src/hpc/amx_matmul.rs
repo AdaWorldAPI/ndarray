@@ -720,6 +720,17 @@ unsafe fn bf16_gemm_vdpbf16ps(a: &[BF16], b: &[BF16], c: &mut [f32], m: usize, n
 /// computation runs in pure f32 and is bit-stable.
 ///
 /// `out` must be row-contiguous; inputs may be strided.
+/// `true` iff every value survives a BF16 downcast finite.
+///
+/// Two ways to fail: a non-finite input (`inf - inf = NaN` in the tail), and a
+/// finite input above BF16's max finite (~3.39e38) whose RNE head rounds to
+/// `inf` — `f32::MAX` does. Either poisons the tile product with a NaN cross
+/// term, so both AMX opt-ins fall back to the exact CPU GEMM for such inputs.
+fn bf16_safe(v: &[f32]) -> bool {
+    v.iter()
+        .all(|&x| x.is_finite() && BF16::from_f32_rounded(x).to_f32().is_finite())
+}
+
 /// Splits `v` into a BF16 head and a BF16 tail such that
 /// `head.to_f32() + tail.to_f32()` reproduces `v` to ~17 significand bits.
 ///
@@ -737,6 +748,24 @@ fn split_bf16(v: &[f32]) -> (Vec<BF16>, Vec<BF16>) {
     (hi, lo)
 }
 
+/// # Example
+///
+/// ```
+/// use ndarray::Array2;
+/// use ndarray::hpc::amx_matmul::matmul_f32_bf16_fast;
+///
+/// let a = Array2::<f32>::from_shape_fn((16, 32), |(i, j)| (i * 32 + j) as f32 * 0.01);
+/// let b = Array2::<f32>::from_shape_fn((32, 16), |(i, j)| (i + j) as f32 * 0.02);
+/// let mut c = Array2::<f32>::zeros((16, 16));
+/// matmul_f32_bf16_fast(a.view(), b.view(), c.view_mut()).unwrap();
+///
+/// // With AMX: one BF16 pass, expect ~1e-3 relative error.
+/// // Without AMX (or for inputs that would overflow BF16): the exact CPU GEMM.
+/// let exact = a.dot(&b);
+/// let rel = (&c - &exact).iter().map(|x| x.abs()).fold(0.0f32, f32::max)
+///     / exact.iter().map(|x| x.abs()).fold(0.0f32, f32::max);
+/// assert!(rel < 5e-3);
+/// ```
 /// Single-BF16-pass `f32` matmul: one third of [`matmul_f32`]'s tile work,
 /// at BF16 precision (~1e-3 relative error, measured).
 ///
@@ -753,7 +782,7 @@ pub fn matmul_f32_bf16_fast(
     let b_f32 = pack_contig(&rhs);
     let mut c = vec![0.0f32; m * n];
 
-    if amx_available() {
+    if amx_available() && bf16_safe(&a_f32) && bf16_safe(&b_f32) {
         let a_bf16: Vec<BF16> = a_f32.iter().map(|&v| BF16::from_f32_rounded(v)).collect();
         let b_bf16: Vec<BF16> = b_f32.iter().map(|&v| BF16::from_f32_rounded(v)).collect();
         bf16_gemm_dispatch(&a_bf16, &b_bf16, &mut c, m, n, k);
@@ -772,6 +801,23 @@ pub fn matmul_f32_bf16_fast(
     Ok(())
 }
 
+/// # Example
+///
+/// ```
+/// use ndarray::Array2;
+/// use ndarray::hpc::amx_matmul::matmul_f32;
+///
+/// let a = Array2::<f32>::from_shape_fn((4, 8), |(i, j)| (i * 8 + j) as f32 * 0.37);
+/// let b = Array2::<f32>::from_shape_fn((8, 4), |(i, j)| (i + j) as f32 * 0.11);
+/// let mut c = Array2::<f32>::zeros((4, 4));
+/// matmul_f32(a.view(), b.view(), c.view_mut()).unwrap();
+///
+/// // Exact on every host — never routed through AMX.
+/// let exact = a.dot(&b);
+/// for (x, y) in c.iter().zip(exact.iter()) {
+///     assert!((x - y).abs() <= 1e-5 * y.abs().max(1.0));
+/// }
+/// ```
 /// Exact f32 matmul. Never routes through AMX — measured slower AND less
 /// accurate than the CPU f32 GEMM at every size tried (see the table in
 /// [`matmul_f32_amx_split`]).
@@ -790,6 +836,24 @@ pub fn matmul_f32(
     Ok(())
 }
 
+/// # Example
+///
+/// ```
+/// use ndarray::Array2;
+/// use ndarray::hpc::amx_matmul::{matmul_f32, matmul_f32_amx_split};
+///
+/// let a = Array2::<f32>::from_shape_fn((16, 32), |(i, j)| ((i * 7 + j) % 13) as f32 * 0.3137);
+/// let b = Array2::<f32>::from_shape_fn((32, 16), |(i, j)| ((i + j * 5) % 11) as f32 * 0.2713);
+/// let (mut split, mut exact) = (Array2::<f32>::zeros((16, 16)), Array2::<f32>::zeros((16, 16)));
+/// matmul_f32_amx_split(a.view(), b.view(), split.view_mut()).unwrap();
+/// matmul_f32(a.view(), b.view(), exact.view_mut()).unwrap();
+///
+/// // f32-grade (~1e-6 relative) on AMX — but ~6x SLOWER than `matmul_f32`.
+/// // Exists to keep the measurement reproducible, not as a path to reach for.
+/// let rel = (&split - &exact).iter().map(|x| x.abs()).fold(0.0f32, f32::max)
+///     / exact.iter().map(|x| x.abs()).fold(0.0f32, f32::max);
+/// assert!(rel <= 1e-5);
+/// ```
 /// AMX three-pass BF16-split matmul: f32-grade accuracy on the tile unit.
 ///
 /// KEPT FOR THE RECORD, NOT RECOMMENDED. Benchmarked against the exact CPU
@@ -816,7 +880,7 @@ pub fn matmul_f32_amx_split(
     let b_f32 = pack_contig(&rhs);
     let mut c = vec![0.0f32; m * n];
 
-    if amx_available() {
+    if amx_available() && bf16_safe(&a_f32) && bf16_safe(&b_f32) {
         // AMX has no f32 tile op, so f32 operands must reach the tile
         // kernel as BF16. A single RNE downcast discards 16 of f32's 24
         // significand bits — measured ~1e-3 relative error, which is
@@ -1314,6 +1378,40 @@ mod tests {
                 *v = (*v * 100.0).round() / 100.0;
             }
             eprintln!("{sz}^3  matrixmultiply {mm_ms:>8.2}ms rel={r_mm:.1e} | F32x16 sgemm_blocked {blk_ms:>8.2}ms rel={r_blk:.1e} | AMX 1-pass {fast_ms:>8.2}ms rel={r_fast:.1e} | AMX 3-pass {split_ms:>8.2}ms rel={r_split:.1e}");
+        }
+    }
+    /// The guard: non-finite inputs and inputs whose BF16 head overflows must
+    /// NOT reach the tile path. Two-sided — the first half proves the guard
+    /// fires (a NaN would otherwise appear in the split's cross term), the
+    /// second half proves it stays silent on ordinary inputs.
+    #[test]
+    fn amx_opt_ins_fall_back_for_inputs_bf16_cannot_carry() {
+        // Sanity on the premise the guard rests on, independent of AMX:
+        assert!(!BF16::from_f32_rounded(f32::MAX).to_f32().is_finite(), "f32::MAX must round to BF16 inf");
+        assert!(!bf16_safe(&[f32::INFINITY]));
+        assert!(!bf16_safe(&[f32::MAX]));
+        assert!(!bf16_safe(&[f32::NAN]));
+        assert!(bf16_safe(&[1.0, -3.0e38, 1e-40]), "large-but-BF16-representable and subnormal are fine");
+
+        let (m, k, n) = (16, 32, 16);
+        for (name, poison) in [("inf", f32::INFINITY), ("f32::MAX", f32::MAX)] {
+            let (mut a, b) = irrational_pair(m, k, n);
+            a[[3, 5]] = poison;
+            let expect = ref_matmul_f32(&a, &b);
+            type Path = fn(ArrayView2<'_, f32>, ArrayView2<'_, f32>, ArrayViewMut2<'_, f32>) -> Result<(), MatmulError>;
+            let paths: [(&str, Path); 2] = [("split", matmul_f32_amx_split), ("fast", matmul_f32_bf16_fast)];
+            for (which, f) in paths {
+                let mut out = Array2::<f32>::zeros((m, n));
+                f(a.view(), b.view(), out.view_mut()).unwrap();
+                assert!(out.iter().all(|x| !x.is_nan()), "{which}/{name}: NaN leaked into the result");
+                // Fell back to the exact path: bit-for-bit the reference.
+                for (x, y) in out.iter().zip(expect.iter()) {
+                    assert!(
+                        x.to_bits() == y.to_bits() || (x - y).abs() <= 1e-5 * y.abs().max(1.0),
+                        "{which}/{name}: {x} vs reference {y}"
+                    );
+                }
+            }
         }
     }
 }
