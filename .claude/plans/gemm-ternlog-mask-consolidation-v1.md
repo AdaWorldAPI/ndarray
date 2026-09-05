@@ -1,5 +1,13 @@
 # gemm-ternlog-mask-consolidation-v1 — one GEMM entry per dtype, masks as the prefilter, ternlog as the mask ALU
 
+> **Status:** DRAFT v1.4 (2026-09-05) — §12 RUNS D-GTM-0g/0h/0i/0j/0k. 0k passes
+> cleanly (mask hot path = 0 bytes/step, measured by a counting allocator). **0j
+> falsifies the framing:** there is no density crossover — masks win 745×→297× from
+> 0.02% to 100% relation density — because "GEMM wins when dense" is wrong for a
+> BOOLEAN relation; the real boundary is a TYPE one (Boolean ⇒ masks, valued ⇒ GEMM).
+> The dense-f32 baseline is mis-specified and the headline numbers are explicitly NOT
+> evidence (§12.5); the missing arm is CSR SpMV. D-GTM-0l is now the decisive probe.
+>
 > **Status:** DRAFT v1.3 (2026-09-05) — §11.10 strengthens the invariant to
 > `substrate == mask geometry == projection surface`: the 3-D field (diamond tracts, the
 > "cube") is never allocated — it is a mask-address projection of the 2-D 6×2×8 surface,
@@ -687,3 +695,110 @@ the 3×4 standing watch; nothing to probe about arity.
 
 Those two probes together are the hologram's test: recover the relation (0l)
 without allocating it (0k). Nothing else in the program changes.
+
+## §12 — WAVE 0 MEASURED: D-GTM-0g/0h/0i/0j/0k run, and the hypothesis's own framing is corrected
+
+Probe: `examples/hex_trie_vs_gemm_probe.rs` (`--release`, committed). N = 4096,
+mask = 512 B, dense relation matrix = 64 MB. Task, identical for both arms:
+`D` steps of `state = R(state) ∩ constraint`, with a **correctness gate** —
+survivor counts must match or the run aborts.
+
+### 12.1 The gate fired, and it found a bug in the probe itself
+
+First run: PREFIX passed at every cell, RANDOM failed immediately
+(`gemm 912 vs mask 930`). Cause: the GEMM arm computes
+`{ i : srcs(i) ∩ active ≠ ∅ }` while the mask arm was unioning `srcs(i)` over
+active `i`. **Those agree only for a SYMMETRIC relation** — true of bucket
+membership, false of a random relation. The mask arm must union the TRANSPOSE
+(`fwd[j]` = what `j` can activate). Fixed; recorded because the asymmetry is
+easy to reintroduce and the gate is the only thing that catches it.
+
+A second flaw was caught by reading, not by any gate: the mask arm first timed
+at 0.000–0.001 ms — **at or below timer resolution**, so every "speedup" in that
+table (25,940× … 853,300×) was a ratio against quantization noise. Both arms now
+run to a 50 ms floor and report ns/step.
+
+### 12.2 What was measured (all cells passed the equality gate)
+
+**State-density sweep**, depth ∈ {1, 8, 32}:
+
+| relation | mask ns/step | GEMM ns/step | mask B/step | GEMM B/step |
+|---|---|---|---|---|
+| PREFIX (structured) | **21–79**, flat in state density | 8.4–8.8 M | **0** | 73,728 |
+| RANDOM (no structure) | 305 (1%) → 35,522 (99%), scales with active bits | 10.6–13.0 M | **0** | 73,728 |
+
+**Relation-density sweep** (RANDOM, state 50%, depth 8) — the axis the first
+table missed:
+
+| edges/row | relation density | GEMM ns/step | mask ns/step | speedup |
+|---|---|---|---|---|
+| 1 | 0.02% | 8,758,129 | 11,743 | 745.8× |
+| 16 | 0.39% | 12,050,934 | 42,601 | 282.9× |
+| 64 | 1.56% | 12,309,149 | 41,855 | 294.1× |
+| 256 | 6.25% | 13,112,322 | 42,667 | 307.3× |
+| 1024 | 25.00% | 12,525,352 | 42,559 | 294.3× |
+| **4096** | **100.00%** | 12,776,345 | 43,024 | **297.0×** |
+
+### 12.3 D-GTM-0k — ANSWERED, and it is the one clean result
+
+**Mask hot path: 0 bytes/step at every density, every depth, both relation
+shapes.** GEMM: 73,728 B/step (a packing buffer inside `gemm_f32`). The
+invariant's own falsifier passes — nothing is materialized on the mask path,
+measured by a counting global allocator rather than asserted.
+
+### 12.4 D-GTM-0j — there is NO crossover, and that falsifies the framing rather than confirming it
+
+§11.1 pt 6 says *"GEMM is attractive when information is dense; a hex/trie field
+may win when cognition is mostly successive elimination."* **Measured, the
+density axis does not produce a crossover at all** — the mask arm wins by ~300×
+at 0.02% and by 297× at 100%. Both costs are flat in relation density: GEMM pays
+`O(N²)` FMAs regardless, the mask arm pays `O(active · N/64)` word-ORs
+regardless.
+
+⊘ **So "GEMM wins when dense" is FALSE as stated for a Boolean relation.** The
+honest correction, and it is a TYPE boundary rather than a density:
+
+> **Masks win whenever the relation is Boolean; GEMM is required when the
+> relation carries VALUES.** A bitmask is 32× denser than f32 *before any
+> algorithm runs*, so a Boolean relation in f32 was never the right
+> representation. Where a weight must be accumulated (evidence strength, a
+> learned probability, a distance), the mask arm cannot express the operation at
+> all — that, not density, is where GEMM becomes mandatory.
+
+### 12.5 The baseline is mis-specified, and the headline numbers are NOT evidence
+
+Stated plainly so no future session cites 297× as support:
+
+1. **A dense f32 matrix for a 0/1 relation is an unfair baseline.** The mask arm
+   is not beating GEMM; it is beating a 32×-wasteful *representation* of a
+   Boolean relation. The number is real and the credit is misattributed.
+2. **The missing arm is CSR SpMV.** A sparse f32 baseline costs `O(nnz)`, so at
+   `deg = 1` it is ~4,096 FMAs — the same order as the mask arm's 11.7 µs, and
+   it would plausibly cross. Until that arm is built, no claim about "mask beats
+   sparse GEMM" is available, and none is made here.
+3. **The structured/unstructured separation is the one comparison that IS
+   internally fair** (same arm, same representation, same task): PREFIX 21–79 ns
+   flat vs RANDOM 305–35,522 ns scaling with active bits. ~3 orders of
+   magnitude, and it degrades exactly where the mask arm has no structure to
+   exploit — which is the E-Q8 discipline applied to compute rather than recall.
+
+### 12.6 D-GTM-0h — a limit of the sandbox, stated rather than papered over
+
+`perf` is unavailable here, so register/cache residency could not be measured
+with counters. The timing proxy is suggestive only: PREFIX per-step cost *falls*
+from ~70 ns at depth 1 to ~21–27 ns at depths 8 and 32 (loop-invariant setup
+amortizing over more steps), with no knee up to depth 32 — consistent with
+staying resident, and **not proof of it**. Graded [S] pending a machine with
+counters.
+
+### 12.7 What W0 now leaves open
+
+- **D-GTM-0g** — partially answered; needs the CSR SpMV arm (12.5 pt 2) before
+  "mask/trie vs GEMM" means anything beyond "packed beats unpacked".
+- **D-GTM-0l** — unrun. It is now the *decisive* probe: with the density axis
+  dead, the hypothesis stands or falls on whether packed-prefix routing can
+  express real long-range relations without codebook entropy exploding, on the
+  R2IL/C64 ore.
+- **The weighted arm** — new, implied by 12.4: the type boundary needs its own
+  measurement (where does accumulating a value force GEMM?).
+- 0c / 0d / 0e remain unrun.

@@ -52,6 +52,10 @@ required-features = ["splat3d"]
 # AMX examples import `ndarray::simd` / `ndarray::hpc`, both `#[cfg(feature =
 # "std")]`, so they must be skipped in `--no-default-features` CI jobs.
 [[example]]
+name = "hex_trie_vs_gemm_probe"
+required-features = ["std"]
+
+[[example]]
 name = "amx_gemm_bench"
 required-features = ["std"]
 
