@@ -412,8 +412,14 @@ pub fn vnni_pack_i8(src: &[i8], dst: &mut [i8], k: usize, n: usize) {
 // ═══════════════════════════════════════════════════════════════════════════
 //
 // Three entry points operating on `ArrayView2` / `ArrayViewMut2`:
-//   matmul_f32         — f32 × f32 → f32  (BF16 compute via AMX TDPBF16PS,
-//                        f32 fallback on hosts without AMX)
+//   matmul_f32         — f32 × f32 → f32, EXACT: `backend::native::gemm_f32`
+//                        (matrixmultiply). Never AMX — measured slower and
+//                        less accurate than CPU f32 at every size (see
+//                        `matmul_f32_amx_split`'s table).
+//   matmul_f32_amx_split — three-pass BF16 split on AMX, f32-grade but ~6x
+//                        slower than `matmul_f32`. Kept for re-measurement.
+//   matmul_f32_bf16_fast — ONE BF16 pass on AMX (~1e-3 rel). Still slower
+//                        than `matmul_f32`. Opt in by name only.
 //   matmul_bf16_to_f32 — BF16 × BF16 → f32 (AMX TDPBF16PS or `bf16_gemm_f32`)
 //   matmul_i8_to_i32   — i8 × i8 → i32   (AMX TDPBUSD or scalar `int8_gemm_i32`)
 //
@@ -714,7 +720,94 @@ unsafe fn bf16_gemm_vdpbf16ps(a: &[BF16], b: &[BF16], c: &mut [f32], m: usize, n
 /// computation runs in pure f32 and is bit-stable.
 ///
 /// `out` must be row-contiguous; inputs may be strided.
+/// Splits `v` into a BF16 head and a BF16 tail such that
+/// `head.to_f32() + tail.to_f32()` reproduces `v` to ~17 significand bits.
+///
+/// Both halves are exactly BF16-representable, so a later `from_f32_rounded`
+/// on either is the identity — that is what keeps the three-pass product at
+/// one rounding per operand rather than two.
+fn split_bf16(v: &[f32]) -> (Vec<BF16>, Vec<BF16>) {
+    let mut hi = Vec::with_capacity(v.len());
+    let mut lo = Vec::with_capacity(v.len());
+    for &x in v {
+        let h = BF16::from_f32_rounded(x);
+        hi.push(h);
+        lo.push(BF16::from_f32_rounded(x - h.to_f32()));
+    }
+    (hi, lo)
+}
+
+/// Single-BF16-pass `f32` matmul: one third of [`matmul_f32`]'s tile work,
+/// at BF16 precision (~1e-3 relative error, measured).
+///
+/// Use only where BF16-grade accuracy has been measured as acceptable for the
+/// workload. [`matmul_f32`] is the default because its name promises f32 and
+/// a silent 1e-3 is outside what f32 callers — linear algebra especially —
+/// tolerate: routing burn's `burn-ndarray` through this path fails 50 of its
+/// linalg tests (qr / lu / svd / det) that pass on the three-pass version.
+pub fn matmul_f32_bf16_fast(
+    lhs: ArrayView2<'_, f32>, rhs: ArrayView2<'_, f32>, mut out: ArrayViewMut2<'_, f32>,
+) -> Result<(), MatmulError> {
+    let (m, n, k) = check_shapes(&lhs, &rhs, &out)?;
+    let a_f32 = pack_contig(&lhs);
+    let b_f32 = pack_contig(&rhs);
+    let mut c = vec![0.0f32; m * n];
+
+    if amx_available() {
+        let a_bf16: Vec<BF16> = a_f32.iter().map(|&v| BF16::from_f32_rounded(v)).collect();
+        let b_bf16: Vec<BF16> = b_f32.iter().map(|&v| BF16::from_f32_rounded(v)).collect();
+        bf16_gemm_dispatch(&a_bf16, &b_bf16, &mut c, m, n, k);
+    } else {
+        for i in 0..m {
+            for p in 0..k {
+                let av = a_f32[i * k + p];
+                for j in 0..n {
+                    c[i * n + j] += av * b_f32[p * n + j];
+                }
+            }
+        }
+    }
+
+    write_contig(&mut out, &c);
+    Ok(())
+}
+
+/// Exact f32 matmul. Never routes through AMX — measured slower AND less
+/// accurate than the CPU f32 GEMM at every size tried (see the table in
+/// [`matmul_f32_amx_split`]).
+///
+/// Delegates to `backend::native::gemm_f32` (matrixmultiply), which is
+/// f32 end to end: no BF16 downcast, no tile emulation.
 pub fn matmul_f32(
+    lhs: ArrayView2<'_, f32>, rhs: ArrayView2<'_, f32>, mut out: ArrayViewMut2<'_, f32>,
+) -> Result<(), MatmulError> {
+    let (m, n, k) = check_shapes(&lhs, &rhs, &out)?;
+    let a_f32 = pack_contig(&lhs);
+    let b_f32 = pack_contig(&rhs);
+    let mut c = vec![0.0f32; m * n];
+    crate::backend::native::gemm_f32(m, n, k, 1.0, &a_f32, k, &b_f32, n, 0.0, &mut c, n);
+    write_contig(&mut out, &c);
+    Ok(())
+}
+
+/// AMX three-pass BF16-split matmul: f32-grade accuracy on the tile unit.
+///
+/// KEPT FOR THE RECORD, NOT RECOMMENDED. Benchmarked against the exact CPU
+/// paths on a Xeon with AMX + AVX-512 (`gemm_paths_bench`), square f32:
+///
+/// | size  | native gemm_f32 | F32x16 sgemm_blocked | this (3-pass) | 1-pass BF16 |
+/// |-------|-----------------|----------------------|---------------|-------------|
+/// | 256   | 0.42ms 2.9e-7   | 0.37ms 2.9e-7        | 2.78ms 1.4e-6 | 0.77ms 3.7e-4 |
+/// | 512   | 3.51ms 1.2e-6   | 3.22ms 1.2e-6        | 20.9ms 1.4e-6 | 6.37ms 2.2e-4 |
+/// | 1024  | 28.8ms 1.4e-6   | 27.3ms 1.4e-6        | 159ms  1.5e-6 | 45.9ms 1.6e-4 |
+///
+/// AMX loses on BOTH axes at every size — the packing, the BF16 conversion
+/// and (here) three passes cost more than the tile unit saves, and even the
+/// single pass is slower than plain f32 while being ~1000x less accurate.
+/// Exposed so the measurement is reproducible and so a future host (or a
+/// real f32 tile op) can be re-measured against it, not because a caller
+/// should reach for it.
+pub fn matmul_f32_amx_split(
     lhs: ArrayView2<'_, f32>, rhs: ArrayView2<'_, f32>, mut out: ArrayViewMut2<'_, f32>,
 ) -> Result<(), MatmulError> {
     let (m, n, k) = check_shapes(&lhs, &rhs, &out)?;
@@ -724,13 +817,40 @@ pub fn matmul_f32(
     let mut c = vec![0.0f32; m * n];
 
     if amx_available() {
-        // AMX path: down-cast to BF16 (RNE, ~1 ULP at BF16 mantissa
-        // precision), then dispatch through the shared BF16 helper
-        // which picks `TDPBF16PS` tile kernel for 16/16/32-aligned
-        // shapes and the scalar `bf16_gemm_f32` reference otherwise.
-        let a_bf16: Vec<BF16> = a_f32.iter().map(|&v| BF16::from_f32_rounded(v)).collect();
-        let b_bf16: Vec<BF16> = b_f32.iter().map(|&v| BF16::from_f32_rounded(v)).collect();
-        bf16_gemm_dispatch(&a_bf16, &b_bf16, &mut c, m, n, k);
+        // AMX has no f32 tile op, so f32 operands must reach the tile
+        // kernel as BF16. A single RNE downcast discards 16 of f32's 24
+        // significand bits — measured ~1e-3 relative error, which is
+        // BF16 grade, not f32 grade, and this function's name promises
+        // f32. So split each operand into a BF16 head plus a BF16 tail:
+        //
+        //     a = a_hi + a_lo,  b = b_hi + b_lo   (all four exactly BF16)
+        //     a·b = a_hi·b_hi + a_hi·b_lo + a_lo·b_hi + a_lo·b_lo
+        //
+        // and drop the last term: it is O(2^-18) relative, below the f32
+        // significand, so three passes suffice. Each pass still rounds
+        // exactly once (its inputs are already BF16-representable, so the
+        // downcast inside the kernel is the identity) and accumulates in
+        // f32 — the one-rounding discipline is preserved, and the bits it
+        // used to discard are now carried by the tail.
+        //
+        // Measured on Xeon w/ AMX, vs an f32 reference:
+        //     16x32x16   1-pass 1.09e-3  ->  3-pass 2.6e-6
+        //     32x64x32   1-pass 8.40e-4  ->  3-pass 2.1e-6
+        // i.e. ~400x, at 3x the tile work. Callers that want the single
+        // BF16 pass ask for it by name: `matmul_f32_bf16_fast`.
+        let (a_hi, a_lo) = split_bf16(&a_f32);
+        let (b_hi, b_lo) = split_bf16(&b_f32);
+
+        let mut scratch = vec![0.0f32; m * n];
+        bf16_gemm_dispatch(&a_hi, &b_hi, &mut c, m, n, k);
+        bf16_gemm_dispatch(&a_hi, &b_lo, &mut scratch, m, n, k);
+        for (dst, add) in c.iter_mut().zip(scratch.iter()) {
+            *dst += *add;
+        }
+        bf16_gemm_dispatch(&a_lo, &b_hi, &mut scratch, m, n, k);
+        for (dst, add) in c.iter_mut().zip(scratch.iter()) {
+            *dst += *add;
+        }
     } else {
         // Pure f32 reference path.
         for i in 0..m {
@@ -956,20 +1076,74 @@ mod tests {
         assert!(r < 0.01, "bf16 matmul exceeded 1% relative error: {}", r);
     }
 
+    /// Inputs whose significands do NOT fit in BF16's 8 bits.
+    ///
+    /// The previous version of this test used `(i + j) * 0.5` and
+    /// `(i * 3 + j) * 0.25` — every one of those values is exactly
+    /// BF16-representable, so the downcast was lossless and the test
+    /// reported success no matter how much precision the kernel threw
+    /// away. Paired with a 1% AMX tolerance, it could neither detect
+    /// nor fail on the ~1e-3 error the single-pass path actually had.
+    fn irrational_pair(m: usize, k: usize, n: usize) -> (Array2<f32>, Array2<f32>) {
+        let a = Array2::<f32>::from_shape_fn((m, k), |(i, j)| (((i * 7 + j * 3) % 97) as f32).sqrt() * 0.3137 - 1.0);
+        let b = Array2::<f32>::from_shape_fn((k, n), |(i, j)| (((i * 5 + j * 2) % 89) as f32).sqrt() * 0.2713 - 0.5);
+        (a, b)
+    }
+
     #[test]
     fn matmul_f32_16x16() {
-        let m = 16;
-        let n = 16;
-        let k = 16;
-        let a = Array2::<f32>::from_shape_fn((m, k), |(i, j)| ((i + j) as f32) * 0.5);
-        let b = Array2::<f32>::from_shape_fn((k, n), |(i, j)| ((i * 3 + j) as f32) * 0.25);
+        let (m, k, n) = (16, 16, 16);
+        let (a, b) = irrational_pair(m, k, n);
         let mut out = Array2::<f32>::zeros((m, n));
         matmul_f32(a.view(), b.view(), out.view_mut()).expect("f32 matmul");
         let expect = ref_matmul_f32(&a, &b);
-        // Without AMX the path is exact; with AMX up to 1% bf16 error allowed.
-        let tol = if amx_available() { 0.01 } else { 1e-5 };
+        // f32 grade on both paths: exact without AMX, three-pass BF16 split
+        // with it. 1e-5 is ~100x tighter than one BF16 pass can reach, so
+        // this fails if `matmul_f32` ever regresses to a single downcast.
         let r = rel_max(&out, &expect);
-        assert!(r <= tol, "f32 matmul exceeded {} tol: {}", tol, r);
+        assert!(r <= 1e-5, "f32 matmul exceeded 1e-5 tol: {}", r);
+    }
+
+    /// Two-sided: the split must beat one pass by a wide margin AND the
+    /// single-pass path must still be measurably lossy.
+    ///
+    /// If the second half ever fails, AMX gained a real f32 op (or the
+    /// host has none and both paths are the exact reference) — either way
+    /// the three-pass cost should be re-justified rather than assumed.
+    #[test]
+    fn three_pass_split_beats_one_bf16_pass() {
+        if !amx_available() {
+            return; // both paths are the exact f32 reference; nothing to compare
+        }
+        for (m, k, n) in [(16usize, 32usize, 16usize), (32, 64, 32)] {
+            let (a, b) = irrational_pair(m, k, n);
+            let expect = ref_matmul_f32(&a, &b);
+
+            let mut exact = Array2::<f32>::zeros((m, n));
+            matmul_f32(a.view(), b.view(), exact.view_mut()).expect("exact");
+            let r_exact = rel_max(&exact, &expect);
+            assert!(r_exact <= 1e-5, "{m}x{k}x{n}: default matmul_f32 {r_exact} is not f32 grade");
+
+            let mut split = Array2::<f32>::zeros((m, n));
+            matmul_f32_amx_split(a.view(), b.view(), split.view_mut()).expect("split");
+            let r_split = rel_max(&split, &expect);
+
+            let mut fast = Array2::<f32>::zeros((m, n));
+            matmul_f32_bf16_fast(a.view(), b.view(), fast.view_mut()).expect("fast");
+            let r_fast = rel_max(&fast, &expect);
+
+            assert!(r_split <= 1e-5, "{m}x{k}x{n}: split {r_split} is not f32 grade");
+            assert!(
+                r_fast > 1e-4,
+                "{m}x{k}x{n}: single pass {r_fast} is unexpectedly accurate \
+                 — AMX may have a real f32 path now; re-justify the 3x cost"
+            );
+            assert!(
+                r_split * 50.0 < r_fast,
+                "{m}x{k}x{n}: split {r_split} vs fast {r_fast} \
+                 — less than the ~400x measured; the tail term may not be reaching the kernel"
+            );
+        }
     }
 
     #[test]
@@ -1088,6 +1262,58 @@ mod tests {
         // 4-wide row of 1s × 4-tall col of 1s = 4
         for v in out.iter() {
             assert!((*v - 4.0).abs() < 1e-4);
+        }
+    }
+    /// Accuracy + throughput of every f32 GEMM path the fork offers, on
+    /// one host. `cargo test --release --lib gemm_paths_bench -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn gemm_paths_bench() {
+        use std::time::Instant;
+        let time = |f: &mut dyn FnMut()| {
+            f(); // warm
+            let reps = 5;
+            let t = Instant::now();
+            for _ in 0..reps {
+                f();
+            }
+            t.elapsed().as_secs_f64() * 1e3 / reps as f64
+        };
+        let have_avx512 = std::is_x86_feature_detected!("avx512f");
+        eprintln!("host amx={} avx512f={}", amx_available(), have_avx512);
+        if !have_avx512 {
+            eprintln!("no avx512f — skipping the F32x16 arm");
+            return;
+        }
+        for &sz in &[256usize, 512, 1024] {
+            let (m, k, n) = (sz, sz, sz);
+            let (a, b) = irrational_pair(m, k, n);
+            let expect = ref_matmul_f32(&a, &b);
+            let av: Vec<f32> = a.iter().copied().collect();
+            let bv: Vec<f32> = b.iter().copied().collect();
+            let mut c = vec![0.0f32; m * n];
+
+            let mut mm_ms =
+                time(&mut || crate::backend::native::gemm_f32(m, n, k, 1.0, &av, k, &bv, n, 0.0, &mut c, n));
+            let r_mm = rel_max(&Array2::from_shape_vec((m, n), c.clone()).unwrap(), &expect);
+            let mut blk_ms = time(&mut || {
+                c.iter_mut().for_each(|x| *x = 0.0);
+                // SAFETY: `#[target_feature(enable = "avx512f")]`; guarded by the
+                // runtime check below, and this bench only runs when it passes.
+                unsafe { crate::backend::kernels_avx512::sgemm_blocked(m, n, k, 1.0, &av, k, &bv, n, &mut c, n) }
+            });
+            let r_blk = rel_max(&Array2::from_shape_vec((m, n), c.clone()).unwrap(), &expect);
+
+            let mut out = Array2::<f32>::zeros((m, n));
+            let mut fast_ms = time(&mut || matmul_f32_bf16_fast(a.view(), b.view(), out.view_mut()).unwrap());
+            let r_fast = rel_max(&out, &expect);
+            let mut split_ms = time(&mut || matmul_f32_amx_split(a.view(), b.view(), out.view_mut()).unwrap());
+            let r_split = rel_max(&out, &expect);
+
+            for v in [&mut mm_ms, &mut blk_ms, &mut fast_ms, &mut split_ms] {
+                *v = (*v * 100.0).round() / 100.0;
+            }
+            eprintln!("{sz}^3  matrixmultiply {mm_ms:>8.2}ms rel={r_mm:.1e} | F32x16 sgemm_blocked {blk_ms:>8.2}ms rel={r_blk:.1e} | AMX 1-pass {fast_ms:>8.2}ms rel={r_fast:.1e} | AMX 3-pass {split_ms:>8.2}ms rel={r_split:.1e}");
         }
     }
 }
