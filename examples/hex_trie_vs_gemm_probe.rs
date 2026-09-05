@@ -164,8 +164,8 @@ fn step_mask_prefix(state: &mut [u64], c1: &[u64], c2: &[u64]) {
 /// active bit. This is the fallback the invariant calls the loss condition.
 fn step_mask_random(state: &mut [u64], fwd: &[u64], out: &mut [u64], c1: &[u64], c2: &[u64]) {
     out.fill(0);
-    for wi in 0..W {
-        let mut word = state[wi];
+    for (wi, &w0) in state.iter().enumerate() {
+        let mut word = w0;
         while word != 0 {
             let b = word.trailing_zeros() as usize;
             word &= word - 1;

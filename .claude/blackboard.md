@@ -3,6 +3,45 @@
 > **Read this first.** The "Polyglot Notebook" architecture below is a
 > separate/older program, not the current epoch.
 
+## 2026-09-05 (W0 MEASURED) — mask/trie vs GEMM: 0k passes, 0j falsifies the density framing
+
+Probe `examples/hex_trie_vs_gemm_probe.rs` (committed, --release). N=4096, mask
+512 B, dense relation 64 MB, correctness gate on survivor counts at every cell.
+
+**D-GTM-0k ANSWERED, cleanly.** Mask hot path = **0 bytes/step** at every
+density, every depth, both relation shapes — measured with a counting global
+allocator, not asserted. GEMM = 73,728 B/step (packing buffer inside gemm_f32).
+The invariant's own falsifier passes.
+
+**D-GTM-0j FALSIFIES §11.1 pt 6.** "GEMM is attractive when information is
+dense" — measured, there is NO density crossover: masks win 745x at 0.02%
+relation density and 297x at 100%. Both costs are flat in density (GEMM O(N²)
+FMAs; mask O(active·N/64) word ORs). Honest correction, a TYPE boundary not a
+density one: **masks win whenever the relation is Boolean; GEMM is required when
+the relation carries VALUES.** A bitmask is 32x denser than f32 before any
+algorithm runs, so a 0/1 relation in f32 was never the right representation.
+
+**The headline numbers are explicitly NOT evidence** (§12.5): the dense-f32
+baseline is mis-specified, and the missing arm is CSR SpMV (O(nnz) — at deg=1
+that is ~4096 FMAs, same order as the mask arm's 11.7 µs, so it would plausibly
+cross). The one internally fair comparison is PREFIX vs RANDOM inside the mask
+arm: 21-79 ns flat vs 305-35,522 ns scaling with active bits — structure worth
+~3 orders of magnitude, degrading exactly where there is nothing to exploit.
+
+**The gate caught a bug in my own probe.** RANDOM failed immediately (912 vs
+930): the GEMM arm computes `{i : srcs(i) ∩ active ≠ ∅}` while the mask arm was
+unioning `srcs(i)` over active i — those agree only for a SYMMETRIC relation
+(bucket membership is, random is not). The mask arm must union the TRANSPOSE.
+A second flaw was caught by reading, not by any gate: mask timings at/below
+timer resolution made every early "speedup" (25,940x…853,300x) a noise ratio;
+both arms now run to a 50 ms floor and report ns/step.
+
+**0h graded [S]:** no perf in this sandbox; residency inferred from timing
+(PREFIX 70 ns at depth 1 → 21-27 ns at depths 8/32, no knee to 32) — consistent
+with resident, not proof. **0l is now the decisive probe** — with the density
+axis dead, the hypothesis stands or falls on prefix-routing coverage vs codebook
+entropy on the R2IL/C64 ore. New probe implied by 12.4: the weighted arm.
+
 ## 2026-09-05 (v1.3) — the invariant strengthened: `substrate == mask geometry == projection surface`
 
 Operator: "make the 96-bit object holographic" was metaphor while the cube wanted
