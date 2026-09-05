@@ -272,10 +272,6 @@ fn composition(label: &str, names: &[String], per_block_ops: &[Vec<Vec<String>>]
         .flatten()
         .collect();
     let a = alphabet.len();
-    let mut have = vec![0usize; MAX_TOKEN + 1];
-    for t in &book {
-        have[t.len()] += 1;
-    }
     // Alphabet-saturation control. With a small opcode alphabet, an n-gram
     // codebook can cover almost any sequence by combinatorics alone, which is
     // the boring explanation this workspace has already caught once: a 7-symbol
