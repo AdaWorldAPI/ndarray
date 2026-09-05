@@ -87,10 +87,27 @@ matched coverage. The alphabet control explains why coverage saturates: seven
 symbols, and the real codebook holds 44.9% of possible bigrams, 15.2% of
 trigrams, 0.3% of 6-grams.
 
+**[M] Direction control — transfer is strongly asymmetric.** Soaking the other
+way round, an x86-64 codebook of 275 atoms covers **81.1% and 81.0%** of the two
+6502 images, against 50.4% and 56.8% in the forward direction.
+
+| direction | soak atoms | exact-match reuse on the other ISA |
+|---|---|---|
+| 6502 → x86-64 | 370 | 50.4% · 56.8% |
+| x86-64 → 6502 | 275 | **81.1% · 81.0%** |
+
+If two architectures had genuinely converged on a shared behavioural basis,
+transfer would be roughly symmetric. A 30-point asymmetry says instead that one
+repertoire largely *contains* the other: the 6502 corpus is repetitive (299
+atoms over 1,430 blocks) while the x86 corpus is varied (275 atoms over 529
+blocks). Containment of a simpler repertoire by a richer one is the ordinary
+expectation, not evidence of convergence.
+
 **Ruling on F2.** The cross-language regularity is real but it is **not** a
 coverage phenomenon and **not** evidence of a behavioural basis in the strong
 sense. Restated honestly: *lowering to a seven-opcode IR makes coverage
-saturate for anyone, and the learned vocabulary's only measured advantage is
+saturate for anyone, the direction of transfer is asymmetric in the way
+containment predicts, and the learned vocabulary's only measured advantage is
 that it does the same job with 6.6× less state.* Compression, not
 comprehension.
 
