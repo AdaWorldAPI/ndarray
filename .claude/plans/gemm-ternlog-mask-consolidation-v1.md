@@ -84,7 +84,19 @@ Three claims, each falsifiable in §6:
 | 512³ | 3.51 ms · 1.2e-6 | **3.22 ms · 1.2e-6** | 20.9 ms · 1.4e-6 | 6.37 ms · 2.2e-4 |
 | 1024³ | 28.8 ms · 1.4e-6 | **27.3 ms · 1.4e-6** | 159 ms · 1.5e-6 | 45.9 ms · 1.6e-4 |
 
-Three consequences, all frozen in §4: the hand-rolled kernel is the exact default; AMX is BF16/INT8-only; the "one rounding + f32 accumulate" discipline was correctly implemented in the AMX path and was still insufficient for an f32 contract — the missing half was operand splitting, and even that half loses to not using AMX.
+**Re-measured past the cache-resident regime (operator objection: "256/512/1024 are undersized"):**
+
+| shape | matrixmultiply | F32x16 `sgemm_blocked` | AMX 1-pass | AMX 3-pass |
+|---|---|---|---|---|
+| 2048³ | 218.7 ms | **216.7 ms** | 371.2 ms · 1.2e-4 | 1099 ms · 2.3e-6 |
+| 4096³ | 1737 ms | **1616 ms** | 2826 ms · 1.1e-4 | 8106 ms · 2.9e-6 |
+| 1024×4096×1024 (deep K) | 115.0 ms | **109.6 ms** | 206.6 ms | 580.7 ms |
+| 256×8192×256 (skinny) | **14.4 ms** | 17.1 ms | 33.2 ms | 99.3 ms |
+| 64×2048×8192 (wide N) | **35.6 ms** | 39.3 ms | 148.5 ms | 369.6 ms |
+
+AMX does not converge with size — 1-pass is 1.75× slower than F32x16 at 4096³, 3-pass 5×. "Undersized" was not hiding an AMX win. What size DID expose: on the two skinny rectangles `matrixmultiply` beats `sgemm_blocked` by 10–19% — the hand-rolled MC=72/NC=256 blocking is tuned for square-ish operands. **D-GTM-F1 therefore needs the shape guard D-GTM-0c anticipated**, not a blanket default.
+
+Three consequences, all frozen in §4: the hand-rolled kernel is the exact default *for square-ish shapes, with a measured rectangle guard*; AMX is BF16/INT8-only; the "one rounding + f32 accumulate" discipline was correctly implemented in the AMX path and was still insufficient for an f32 contract — the missing half was operand splitting, and even that half loses to not using AMX.
 
 ### §1.4 — Mask caching: owned elsewhere, consumed here
 
@@ -121,7 +133,7 @@ A 3-input `IMM` is the whole truth table (`simd.rs:561-563`), so any Boolean ove
 
 | id | decision | evidence |
 |---|---|---|
-| D-GTM-F1 | `gemm_f32` default = hand-rolled F32x16 `sgemm_blocked` on `avx512f` hosts, `matrixmultiply` otherwise. Exact on both. | §1.3: 0.37 vs 0.42 ms, identical error |
+| D-GTM-F1 | `gemm_f32` default = hand-rolled F32x16 `sgemm_blocked` on `avx512f` hosts for square-ish shapes; `matrixmultiply` for skinny/wide rectangles (threshold from D-GTM-0c) and on other hosts. Exact on both. | §1.3: wins 256³–4096³ (up to 7%); LOSES 10–19% at 256×8192×256 and 64×2048×8192 |
 | D-GTM-F2 | AMX serves `gemm_bf16` and `gemm_i8` ONLY. Any f32 AMX path is a named opt-in carrying its measured table. | §1.3; ndarray#303 |
 | D-GTM-F3 | The facade is `backend::{gemm_f32, gemm_f64, gemm_bf16, gemm_i8}` (+ batched). Every other GEMM symbol is `pub(crate)`, a documented opt-in, or deleted. | §1.1 count 54→4 |
 | D-GTM-F4 | Mask→GEMM prefilter consumes a compacted row-index list built once per mask generation, stored as a mask carving. Never bit-tests inside the micro-kernel. | §2.3; mask-risc §14.7 |

@@ -1349,8 +1349,14 @@ mod tests {
             eprintln!("no avx512f — skipping the F32x16 arm");
             return;
         }
-        for &sz in &[256usize, 512, 1024] {
-            let (m, k, n) = (sz, sz, sz);
+        // Square 256..4096 (crosses the L2/L3-resident boundary), plus deep-K
+        // and wide-N rectangles — small squares alone can flatter packing cost.
+        let shapes: Vec<(usize, usize, usize)> = [256usize, 512, 1024, 2048, 4096]
+            .iter()
+            .map(|&s| (s, s, s))
+            .chain([(1024, 4096, 1024), (256, 8192, 256), (64, 2048, 8192)])
+            .collect();
+        for (m, k, n) in shapes {
             let (a, b) = irrational_pair(m, k, n);
             let expect = ref_matmul_f32(&a, &b);
             let av: Vec<f32> = a.iter().copied().collect();
@@ -1377,7 +1383,7 @@ mod tests {
             for v in [&mut mm_ms, &mut blk_ms, &mut fast_ms, &mut split_ms] {
                 *v = (*v * 100.0).round() / 100.0;
             }
-            eprintln!("{sz}^3  matrixmultiply {mm_ms:>8.2}ms rel={r_mm:.1e} | F32x16 sgemm_blocked {blk_ms:>8.2}ms rel={r_blk:.1e} | AMX 1-pass {fast_ms:>8.2}ms rel={r_fast:.1e} | AMX 3-pass {split_ms:>8.2}ms rel={r_split:.1e}");
+            eprintln!("{m}x{k}x{n}  matrixmultiply {mm_ms:>8.2}ms rel={r_mm:.1e} | F32x16 sgemm_blocked {blk_ms:>8.2}ms rel={r_blk:.1e} | AMX 1-pass {fast_ms:>8.2}ms rel={r_fast:.1e} | AMX 3-pass {split_ms:>8.2}ms rel={r_split:.1e}");
         }
     }
     /// The guard: non-finite inputs and inputs whose BF16 head overflows must
