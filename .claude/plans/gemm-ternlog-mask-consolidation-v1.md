@@ -1,5 +1,10 @@
 # gemm-ternlog-mask-consolidation-v1 — one GEMM entry per dtype, masks as the prefilter, ternlog as the mask ALU
 
+> **Status:** DRAFT v1.1 (2026-09-05) — §9 folds in the operator's Mississippi Queen
+> metaphor: M1 CORRECTS D-GTM-F4/D-GTM-5 (panel-ahead expansion, not a whole-board
+> prologue), M1b names where the cache lives, M2 re-shapes D-GTM-0e into a ladder,
+> M3 turns the T2→T1 prohibition into a budget. R1 (the hexagon) is marked rhyme.
+>
 > **Status:** DRAFT v1 (2026-09-05). Source-first: every "exists" row cites `file:line`
 > at ndarray `claude/great-curie-d2ufyl` HEAD (PR #303 + this doc). Every "proposed"
 > row carries a falsifier. Nothing in §5 is built. No kernel, no ABI symbol.
@@ -64,7 +69,7 @@ Three claims, each falsifiable in §6:
 | Runtime re-exports | `matmul_f32`, `matmul_bf16_to_f32`, `matmul_i8_to_i32` (×2), `gemm_u8_i8` | `simd_runtime/matmul.rs:43,33,80,193,227` | feature `runtime-dispatch` mirror of the AMX API |
 | Misc | `matmul_vec`, `matmul_i8_to_i32_wasm` | `hpc/models/layers.rs:174`, `simd_wasm.rs:1474` | model layer GEMV; wasm arm |
 
-**Counted, not estimated:** 54 entry points, 12 files, **4 unified.** `hpc/blas_level3.rs` (named in CLAUDE.md as "BLAS L3 gemm/syrk/trsm/symm") returned **zero** `pub fn` hits in this grep — W0 must resolve whether that module is empty, macro-generated, or misnamed.
+**Counted, not estimated:** 54 entry points, 12 files, **4 unified.** ⊘ **§10 D-GTM-0b corrects this count's blind spot:** `hpc/blas_level3.rs` returned zero `pub fn` hits because its surface is a **trait** (`BlasLevel3<A>`, six methods, blanket impl, re-exported at `simd.rs:656`) dispatching through `BlasFloat::backend_gemm` — a dtype-generic facade that already exists beside the four free functions. A `pub fn` grep cannot see a method; any re-inventory must grep `fn`.
 
 ### §1.2 — ternlog: already a T1 primitive, already chained once
 
@@ -136,7 +141,7 @@ A 3-input `IMM` is the whole truth table (`simd.rs:561-563`), so any Boolean ove
 | D-GTM-F1 | `gemm_f32` default = hand-rolled F32x16 `sgemm_blocked` on `avx512f` hosts for square-ish shapes; `matrixmultiply` for skinny/wide rectangles (threshold from D-GTM-0c) and on other hosts. Exact on both. | §1.3: wins 256³–4096³ (up to 7%); LOSES 10–19% at 256×8192×256 and 64×2048×8192 |
 | D-GTM-F2 | AMX serves `gemm_bf16` and `gemm_i8` ONLY. Any f32 AMX path is a named opt-in carrying its measured table. | §1.3; ndarray#303 |
 | D-GTM-F3 | The facade is `backend::{gemm_f32, gemm_f64, gemm_bf16, gemm_i8}` (+ batched). Every other GEMM symbol is `pub(crate)`, a documented opt-in, or deleted. | §1.1 count 54→4 |
-| D-GTM-F4 | Mask→GEMM prefilter consumes a compacted row-index list built once per mask generation, stored as a mask carving. Never bit-tests inside the micro-kernel. | §2.3; mask-risc §14.7 |
+| D-GTM-F4 | ⊘ **AMENDED by §9 M1/M1b.** Mask→GEMM prefilter expands mask→indices ONE PANEL AHEAD of the pack cursor (stack, no hot-loop alloc), cached at `(mask generation, panel index)` — never a whole-board `Vec<u32>` prologue, never a bit-test inside the micro-kernel. | §2.3; mask-risc §14.7; §9 M1 |
 | D-GTM-F5 | Every accuracy test in this surface uses inputs whose significands exceed 8 bits, and tolerances at f32 grade (1e-5) for f32 APIs. | the vacuous `(i+j)*0.5` test that hid the bf16 loss (#303) |
 | D-GTM-F6 | Every new kernel lands with a two-sided pin: the fast path must beat the reference by a stated factor AND the reference must still be measurably slower — so a regression in either direction fails. | `three_pass_split_beats_one_bf16_pass` pattern |
 
@@ -146,12 +151,12 @@ A 3-input `IMM` is the whole truth table (`simd.rs:561-563`), so any Boolean ove
 
 | id | probe | falsifier / gate |
 |---|---|---|
-| D-GTM-0a | Diff `simd_ops.rs:587 bf16_tile_gemm_16x16` vs `hpc/bf16_tile_gemm.rs:45`; diff `simd_avx2.rs:462 sgemm_blocked` vs `kernels_avx512.rs:665`. | byte-identical bodies → delete one; divergent → record which is canonical and why |
-| D-GTM-0b | Resolve `hpc/blas_level3.rs`: what does it export, if anything? | zero `pub fn` → either delete the CLAUDE.md claim or find the macro |
+| D-GTM-0a | ✅ **RUN — §10.** Both pairs divergent. `bf16_tile_gemm_16x16` = polyfill vs dispatcher, legitimate, facade already renames one `_amx`. `sgemm_blocked` in `simd_avx2.rs` = a naive scalar triple loop (neither AVX2 nor blocked) — a naming defect. | v1 expected "byte-identical → delete"; neither pair is |
+| D-GTM-0b | ✅ **RUN — §10.** A `BlasLevel3<A>` trait, 6 methods, blanket impl, → `BlasFloat::backend_gemm` (f32/f64 only). CLAUDE.md was right; the grep was blind. **Re-frames D-GTM-F3: two facades already exist.** | found the surface; the macro hypothesis was wrong |
 | D-GTM-0c | Extend `gemm_paths_bench` to f64 (`dgemm_blocked` vs `gemm_f64_tiled_fma` vs matrixmultiply) and to non-square / K-tail shapes (e.g. 1000×1000×1000, 17×33×15 scaled). | if `sgemm_blocked` loses on any tail shape, D-GTM-F1 gains a shape guard, not a revert |
 | D-GTM-0d | **The MKL-ternlog hunch:** in `backend/mkl.rs` `sgemm` (`:384`), time the tail-lane handling with the current idiom vs one `mask_ternlog` select, K∈{255,257,1023,1025}. | < 3% end-to-end → record as shape-only win, no speed claim; ≥ 3% → W1 item |
-| D-GTM-0e | `pruned_gemm_rows` (`prefilter.rs:189`): measure per-row bit-test vs compacted-index pack at 10%/50%/90% mask density. | the crossover density decides D-GTM-F4's threshold, or proves compaction always wins |
-| D-GTM-0f | Count real call sites of every §1.1 symbol across ndarray, lance-graph, lance-graph-java, burn (`grep -rn`). | symbols with zero external callers are `pub(crate)` candidates for W1 with no consumer wave |
+| D-GTM-0e | ⊘ **RE-SHAPED by §9 M2 into a LADDER:** `pruned_gemm_rows` (`prefilter.rs:189`) measured over lookahead ∈ {1,2,4,8} panels × density ∈ {10%,50%,90%}, per-row bit-test as the floor. | a single crossover cannot express a ±1-adaptive depth; the ladder decides the step size, or proves depth inert |
+| D-GTM-0f | ✅ **RUN — §10.** `pruned_gemm_rows` and `mixed_precision_gemm` have **0 callers anywhere**; `blas_gemm` 0 external; only `bf16_tile_gemm_16x16` has real external consumers (5), reached by two paths that resolve to two different bodies (one an iron-rule violation, reported). | D-GTM-5 is a FIRST WRITER, not a migration |
 
 ### Wave 1 — ndarray (the facade and the backends)
 
@@ -190,3 +195,206 @@ A 3-input `IMM` is the whole truth table (`simd.rs:561-563`), so any Boolean ove
 2. Does the reverse-engineered MKL path have any caller today, or is it a second facade with zero consumers? (D-GTM-0f decides whether W1 demotes it or deletes it)
 3. At what mask density does compacted-index packing beat per-row bit tests? (D-GTM-0e)
 4. Is there a real shape where an f32 AMX path wins? Nothing measured says yes; the opt-ins exist so the question stays cheap to re-ask.
+
+## §9 — The Mississippi Queen shape (operator metaphor, 2026-09-05) — v1.1 AMENDMENT
+
+**The game.** A paddle-steamer race whose river board does not exist in advance:
+hex tiles are laid a few ahead of the lead boat, never the whole course. Each turn
+you set speed by **±1 only** and commit it *before* moving that many hexes. One
+direction change is free; extras are paid from a fixed **coal** budget. Several
+boats race the same river, and a tile laid for the leader is free for everyone
+behind.
+
+Graded per the workspace rule (`cross-domain-synthesizer`: shared MECHANISM is
+transferable, mere rhyme is decorative and must be labelled). Three mechanisms,
+one rhyme.
+
+### M1 — Reveal ahead of the cursor; never lay the whole river [G] — **CORRECTS D-GTM-F4 / D-GTM-5**
+
+D-GTM-F4 as written says the compacted row-index list is *"built once per mask
+generation"*. That is laying the entire river before any boat moves: `O(n_rows)`
+memory, and it pays for rows the GEMM may never reach — a pruned GEMM can stop
+early, and a blocked GEMM only ever needs the panel under its cursor.
+
+The premise that makes the correction concrete is already in the code:
+`pack_a_f32` (`backend/kernels_avx512.rs:552`) walks
+`while ii + SGEMM_MR <= mc`, addressing `a[(i_start + ii + ir) * lda + …]`.
+**Packing already has a cursor.** The mask→index expansion belongs at that same
+cursor, in that same loop, one panel ahead — not in a prologue.
+
+Consequence, replacing D-GTM-5's signature:
+
+```rust
+// WAS (v1): whole-board prologue, heap, pays for unreached rows
+fn mask_to_row_indices(mask: &[u64]) -> Vec<u32>
+
+// IS (v1.1): one panel ahead of the pack cursor, stack, no hot-loop alloc
+fn next_panel_indices(mask: &[u64], cursor: usize, mr: usize) -> ArrayVec<u32, SGEMM_MR>
+```
+
+This also satisfies `.claude/rules/data-flow.md` §1 ("never allocate inside a hot
+loop — slice into pre-allocated storage"), which the `Vec<u32>` version quietly
+violated.
+
+### M1b — A tile serves every boat behind it [G] — this is *the* amortization
+
+Several boats race one river. The leader pays to reveal a tile; everyone behind
+crosses it free. That is the amortization the operator named, and the game says
+**where the cache lives**: on the *tile*, not on the *boat*.
+
+So the cache key is `(mask generation, panel index)` — **not** the call. Two GEMMs
+against the same mask generation reuse the same expanded panels; a new mask
+generation invalidates them wholesale (the registry already does exactly this to
+`cached_carving`, `lgj-abi/registry.rs:842-849`). A per-call cache would re-lay the
+river for every boat and amortize nothing.
+
+### M2 — Speed changes by ±1 and is committed before the move [H]
+
+Lookahead depth (how many panels ahead the expansion runs) is a state variable
+that moves **one step at a time** and is **committed before the panel is entered**.
+Two properties, both load-bearing:
+
+- *Hysteresis* — it cannot be re-derived per row, which is what stops a
+  per-call heuristic from thrashing between depths on adjacent panels.
+- *Commit-ahead* — you cannot discover mid-panel that you needed a deeper
+  lookahead; by then the pack loop is already running.
+
+**Changes D-GTM-0e:** it measured a single crossover density. It now measures a
+**ladder** — lookahead ∈ {1, 2, 4, 8} panels × density ∈ {10%, 50%, 90%} — because
+a single crossover cannot express a ±1-adaptive depth. Graded [H]: the ladder shape
+is argued, the step size is not yet measured.
+
+### M3 — Coal: a bounded budget for extra maneuvers [H]
+
+Re-chaining the ternlog predicate mid-stream (the mask gains a conjunct, or changes
+shape) is a maneuver paid from a fixed budget. When the budget is spent you commit
+to the mask you hold rather than re-deriving it.
+
+This is what keeps *chaining* from degenerating into *re-evaluate the predicate per
+panel* — the exact T2→T1 violation `membrane-tiers.md:105` already forbids as a
+prohibition. The game supplies the better form: **a budget rather than a ban**, so
+the legitimate mid-stream re-chain stays possible and the pathological one runs out
+of coal.
+
+### R1 — The hexagon itself is rhyme, pending one operator word [S]
+
+Six is conspicuous on both sides: the game moves on 6-neighbour hexes; this
+substrate carves the 12-byte V3 facet as `6×(u8:u8)` and the HHTL path as 6 bytes
+= CAM-PQ `6×256`. **They are not obviously the same six.** The game's six is
+*adjacency* (which cell may I move to next); the substrate's six is *field carving*
+(which byte pair means what). Adjacency and carving are different mechanisms that
+happen to share a cardinality — the textbook rhyme signature.
+
+Left [S] and unbuilt. If the operator meant the **rails** specifically, this is
+promoted and gets its own section; nothing in M1-M3 depends on it either way.
+
+### What this amendment does NOT touch
+
+The AMX verdict (§1.3, measured), the facade consolidation (D-GTM-F1/F3), and the
+W0 static probes (0a, 0b, 0f) are unaffected — the metaphor is about *when work is
+done and who pays for it*, not about which kernel is fastest or how many entry
+points exist.
+
+## §10 — WAVE 0 RESULTS (run 2026-09-05, static probes 0a / 0b / 0f)
+
+Three of the six W0 probes are measurement-free (greps and body diffs) and are run
+here. Each corrected something in §1.1's inventory — which is the point of running
+them before building anything.
+
+### D-GTM-0a — the two duplicate names: BOTH divergent, only ONE is a defect
+
+| pair | `simd_*` body | `hpc/` or `backend/` body | verdict |
+|---|---|---|---|
+| `bf16_tile_gemm_16x16` | `simd_ops.rs`, 37 lines — decode BF16→f32, then F32x16 + FMA. The **polyfill**. | `hpc/bf16_tile_gemm.rs`, 17 lines — `amx_available() \|\| avx512bf16` → VNNI-pack → tile tiers. The **dispatcher**. | **NOT a defect.** Backend vs dispatcher, legitimately distinct. The facade already disambiguates: `simd.rs:714` re-exports the hpc one **renamed** `bf16_tile_gemm_16x16_amx`; `simd.rs:744` exports the polyfill under the plain name. |
+| `sgemm_blocked` | `simd_avx2.rs:462`, 14 lines — a **naive scalar triple loop** (`for i / for j / for p { sum += … }`). | `backend/kernels_avx512.rs:665`, 52 lines — the real packed-panel MR=6/NR=16 kernel. | **DEFECT, naming.** The `simd_avx2.rs` body is neither AVX2 nor blocked; the file name, the function name, and the body disagree three ways. |
+
+⊘ **Corrects v1's D-GTM-0a**, which anticipated "byte-identical bodies → delete
+one". Neither pair is byte-identical and neither should be deleted. The real
+finding is narrower and different: one legitimate tier pair (already handled by a
+facade rename) and one mislabelled scalar fallback.
+
+### D-GTM-0b — `blas_level3.rs` is not empty; the inventory grep was blind
+
+393 lines, **zero `pub fn`** — because the surface is method-shaped:
+
+```rust
+pub trait BlasLevel3<A> {
+    fn blas_gemm(&self, alpha: A, b: &Self, beta: A) -> Array<A, Ix2>;
+    fn blas_gemm_into(&self, alpha: A, b: &Self, beta: A, c: &mut Array<A, Ix2>);
+    fn blas_syrk (&self, uplo: Uplo, alpha: A, beta: A, c_init: Option<&Self>) -> Array<A, Ix2>;
+    fn blas_symm (&self, side: Side, uplo: Uplo, alpha: A, b: &Self, beta: A, c_init: Option<&Self>) -> …;
+    fn blas_trmm (&self, side: Side, uplo: Uplo, alpha: A, a_tri: &Self) -> Array<A, Ix2>;
+    fn blas_trsm (&self, side: Side, uplo: Uplo, alpha: A, b: &Self) -> Array<A, Ix2>;
+}
+impl<A, S> BlasLevel3<A> for ArrayBase<S, Ix2> where A: BlasFloat + Float + AddAssign, S: Data<Elem = A>
+```
+
+Re-exported at `simd.rs:656`. CLAUDE.md's "BLAS L3 (gemm, syrk, trsm, symm)" claim
+was **accurate all along**; §1.1's `grep 'pub fn …gemm'` simply could not see a
+trait. **Any future inventory of this crate must grep `fn`, not `pub fn`.**
+
+**And it dispatches through a facade that already exists.** `blas_gemm`'s body is
+`A::backend_gemm(m, n, k, alpha, …)` — a method on `BlasFloat` (`backend/mod.rs:75`),
+implemented for **f32 and f64 only** (`:83`, `:110`), with `f32::backend_gemm` →
+`gemm_f32`.
+
+⊘ **This materially re-frames D-GTM-F3.** v1 said "the facade is
+`backend::{gemm_f32, gemm_f64, gemm_bf16, gemm_i8}`; consolidate everything else
+under it." In fact **two facades already exist side by side**:
+
+| | shape | dtypes | callers (0f) |
+|---|---|---|---|
+| `BlasFloat::backend_gemm` | dtype-**generic** trait method | f32, f64 | reached only via `BlasLevel3` |
+| `backend::{cblas_sgemm, cblas_dgemm, gemm_i8, gemm_bf16}` | four **free functions** | f32, f64, i8, bf16 | 10 / 2 / 6 in-crate |
+
+The consolidation question is therefore **not** "build one facade" but "**which of
+the two existing facades is canonical**". The constraint that decides it is already
+in the source: `BlasFloat`'s impl bounds require `num_traits::Float`, so **i8 and
+bf16 cannot join it** without a second trait or a bound change. A generic facade
+that structurally excludes half the dtypes is not the canonical one. Recorded as
+the first thing W1 must settle; no verdict claimed here.
+
+### D-GTM-0f — caller census: two of the plan's own load-bearing symbols are DEAD
+
+| symbol | in-crate | external | note |
+|---|---|---|---|
+| `bf16_tile_gemm_16x16` | 21 | **5** | the only symbol with real external consumers |
+| `int8_gemm_vnni` | 12 | 0 | |
+| `batched_gemm_f32` | 11 | 0 | |
+| `cblas_sgemm` | 10 | 0 | |
+| `gemm_f64_tiled_fma` | 9 | 0 | |
+| `gemm_bf16` | 6 | 0 | |
+| `sgemm_blocked` | 3 | 0 | `pub(crate)`-reachable only |
+| `gemm_i8` | 2 | 0 | |
+| `blas_gemm` | 2 | 0 | decl + impl; the trait facade is **unused** |
+| **`pruned_gemm_rows`** | **0** | **0** | ⚠ |
+| **`mixed_precision_gemm`** | **0** | **0** | ⚠ |
+
+**`pruned_gemm_rows` has zero callers.** §2.3 called it "the seed" and "the ONLY
+existing mask→GEMM bridge", and §9 M1 rewrote its signature — all of that was
+reasoning about **dead code**. It is still the right *shape* to build on, but the
+plan must stop describing it as an existing integration: nothing integrates it.
+D-GTM-5 is therefore a **first writer**, not a migration.
+
+### A live iron-rule violation, found incidentally by 0f
+
+The five external `bf16_tile_gemm_16x16` references reach it by **two different
+paths**, and because 0a proved the bodies divergent, they are calling **different
+functions**:
+
+- `lance-graph/crates/symbiont/src/domino.rs:27` — `use ndarray::simd::{amx_available, amx_report, bf16_tile_gemm_16x16}` → resolves to the **polyfill** (F32x16 decode), *not* a tile op. Its own module doc at `:8` reads *"which `bf16_tile_gemm_16x16` calls before any tile op"*, and it imports `amx_available` alongside — so the call site appears to expect the AMX dispatcher and receives the polyfill. `..._amx` is the name it wants.
+- `lance-graph/crates/thinking-engine/examples/amx_bf16_probe.rs:15` — `use ndarray::hpc::bf16_tile_gemm::bf16_tile_gemm_16x16`, reaching **past the facade into `hpc::`**. That is the exact form the workspace iron rule forbids (*"all SIMD from `ndarray::simd`, never `ndarray::hpc::*`, never raw intrinsics"* — lance-graph-java `CLAUDE.md`, `abi.md` §8). It gets the dispatcher, correctly, by an illegal route.
+
+Both are **lance-graph** call sites, not ndarray's, and `symbiont` is
+⊘ DEPRECATED (operator no-go, 2026-08-18) — so this is **reported, not fixed**, and
+belongs to whoever next touches those files. ndarray's own facade is correct: the
+rename at `simd.rs:714` is precisely the disambiguation these call sites failed to
+use.
+
+### W0 remaining
+
+`0c` (f64 + tail-shape bench), `0d` (the MKL-ternlog tail hunch), `0e` (the M2
+lookahead × density **ladder**) are measurement probes and are not run here. Note
+0e's target is now known to be dead code — the ladder measures a kernel with no
+consumers, which is fine for a probe and must not be described as measuring
+production behaviour.

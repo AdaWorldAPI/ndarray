@@ -3,6 +3,62 @@
 > **Read this first.** The "Polyglot Notebook" architecture below is a
 > separate/older program, not the current epoch.
 
+## 2026-09-05 (later) — GEMM consolidation plan v1.1: Mississippi Queen amendment + Wave 0 static results
+
+**Operator metaphor folded in (§9).** Mississippi Queen: the river board is laid a
+few hex tiles ahead of the lead boat, speed changes ±1 and is committed before the
+move, extra maneuvers cost from a fixed coal budget, and a tile laid for the leader
+is free for every boat behind. Graded per the mechanism-vs-rhyme rule:
+
+- **M1 [G] CORRECTS D-GTM-F4/D-GTM-5.** v1 said the compacted row-index list is
+  "built once per mask generation" — laying the whole river before any boat moves.
+  Wrong shape: `pack_a_f32` (`kernels_avx512.rs:552`) already walks a panel cursor,
+  so mask→index expansion belongs ONE PANEL AHEAD of that cursor, in that loop.
+  Signature changes `mask_to_row_indices(&[u64]) -> Vec<u32>` →
+  `next_panel_indices(&[u64], cursor, mr) -> ArrayVec<u32, SGEMM_MR>` (stack, no
+  hot-loop alloc — which also fixes a quiet `data-flow.md` §1 violation in v1).
+- **M1b [G] — the amortization itself.** Many boats, one river: the cache key is
+  `(mask generation, panel index)`, NOT the call. Per-call caching amortizes nothing.
+- **M2 [H]** lookahead depth adapts ±1 and commits before the panel → D-GTM-0e
+  becomes a LADDER (lookahead 1/2/4/8 × density 10/50/90%), not one crossover.
+- **M3 [H]** coal = a bounded budget for mid-stream re-chains; replaces the
+  T2→T1 prohibition (`membrane-tiers.md:105`) with a budget.
+- **R1 [S] the hexagon is rhyme** pending one operator word: the game's six is
+  ADJACENCY, the substrate's six (`6×(u8:u8)` facet rails, 6-byte HHTL path =
+  CAM-PQ 6×256) is FIELD CARVING. Same cardinality, different mechanism. Unbuilt.
+
+**Wave 0 static probes run (§10) — each corrected the inventory:**
+
+- **0a:** both duplicate names DIVERGENT, only one a defect. `bf16_tile_gemm_16x16`
+  = polyfill (`simd_ops.rs`, F32x16 decode) vs dispatcher (`hpc/`, AMX/VNNI) —
+  legitimate, and `simd.rs:714` already renames the dispatcher `_amx`.
+  `simd_avx2.rs:462 sgemm_blocked` is a **naive scalar triple loop** — neither AVX2
+  nor blocked; file, name and body disagree three ways.
+- **0b:** `blas_level3.rs` is NOT empty — 393 lines, zero `pub fn` because it is a
+  **trait** (`BlasLevel3<A>`: gemm/gemm_into/syrk/symm/trmm/trsm, blanket impl,
+  re-exported `simd.rs:656`) dispatching to `BlasFloat::backend_gemm`
+  (`backend/mod.rs:75`, impl'd **f32/f64 only**). CLAUDE.md was right; my `pub fn`
+  grep was blind. **Re-frames D-GTM-F3: TWO facades already exist** — the generic
+  trait method and the four free functions — and `BlasFloat`'s `num_traits::Float`
+  bound structurally excludes i8/bf16 from the generic one. W1's first question is
+  which is canonical, not how to build one.
+- **0f caller census:** `pruned_gemm_rows` **0 callers**, `mixed_precision_gemm`
+  **0**, `blas_gemm` 0 external. §2.3 called `pruned_gemm_rows` "the ONLY existing
+  mask→GEMM bridge" — it is dead code, so D-GTM-5 is a FIRST WRITER, not a
+  migration. Only `bf16_tile_gemm_16x16` has real external consumers (5).
+
+**Incidental find, reported not fixed (lance-graph call sites):** the 5 external
+references reach `bf16_tile_gemm_16x16` by two paths that resolve to two different
+bodies. `symbiont/src/domino.rs:27` imports it from `ndarray::simd` alongside
+`amx_available` and its doc mentions tile ops — but that name is the POLYFILL; it
+wants `bf16_tile_gemm_16x16_amx`. `thinking-engine/examples/amx_bf16_probe.rs:15`
+imports from `ndarray::hpc::bf16_tile_gemm::*`, reaching past the facade — the exact
+form the "all SIMD from `ndarray::simd`, never `hpc::*`" iron rule forbids. ndarray's
+own facade is correct; both defects are consumer-side (and symbiont is deprecated).
+
+**Not run:** 0c (f64/tail bench), 0d (MKL-ternlog tail hunch), 0e (the M2 ladder —
+now known to measure a zero-caller kernel, fine for a probe, not production evidence).
+
 ## 2026-09-05 — AMX f32 GEMM was silently bf16; `matmul_f32` made exact; consolidation plan filed
 
 **Finding (measured, PR #303):** `hpc::amx_matmul::matmul_f32` downcast both operands
