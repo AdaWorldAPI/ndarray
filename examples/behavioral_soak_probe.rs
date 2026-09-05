@@ -261,16 +261,6 @@ fn composition(label: &str, names: &[String], per_block_ops: &[Vec<Vec<String>>]
             }
         }
     }
-    // Saturation control: with a ~12-symbol opcode alphabet a codebook can cover
-    // every short n-gram by combinatorics alone, at which case a high ops/token
-    // is arithmetic, not transfer. Report what fraction of the possible n-grams
-    // over the observed alphabet the codebook actually holds.
-    let alphabet: HashSet<&String> = per_block_ops
-        .iter()
-        .take(first_n)
-        .flatten()
-        .flatten()
-        .collect();
     // Alphabet-saturation control. With a small opcode alphabet, an n-gram
     // codebook can cover almost any sequence by combinatorics alone, which is
     // the boring explanation this workspace has already caught once: a 7-symbol
