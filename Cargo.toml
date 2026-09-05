@@ -56,6 +56,10 @@ name = "hex_trie_vs_gemm_probe"
 required-features = ["std"]
 
 [[example]]
+name = "ternlog_amortization_probe"
+required-features = ["std"]
+
+[[example]]
 name = "amx_gemm_bench"
 required-features = ["std"]
 
