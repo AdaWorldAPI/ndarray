@@ -3,7 +3,36 @@
 > **Read this first.** The "Polyglot Notebook" architecture below is a
 > separate/older program, not the current epoch.
 
-## 2026-09-04 (latest) — W1.5 signature primitives: PR #293/#294/#295 landed, no board entry until now
+## 2026-09-05 — AMX f32 GEMM was silently bf16; `matmul_f32` made exact; consolidation plan filed
+
+**Finding (measured, PR #303):** `hpc::amx_matmul::matmul_f32` downcast both operands
+to BF16 once and ran `TDPBF16PS` — ~1e-3 relative error under an f32 name, `Ok(())`
+returned. Found via burn (burn#9): 50 linalg tests failed (25 qr / 13 lu / 7 svd /
+3 det / 1 attention) vs 1826/1826 on the exact path. The one-rounding + f32-accumulate
+discipline was correctly implemented and still insufficient: single rounding discards
+16 of 24 significand bits. The existing test used `(i+j)*0.5` / `(i*3+j)*0.25` inputs —
+all exactly BF16-representable — at 1% tolerance, so it could neither see nor fail on it.
+
+**Decision:** `matmul_f32` delegates to `backend::native::gemm_f32` (exact, every host).
+Both AMX-f32 variants (`matmul_f32_amx_split` 3-pass hi/lo split, `matmul_f32_bf16_fast`
+1-pass) kept as NAMED opt-ins carrying the bench table. Why not the split: measured
+`gemm_paths_bench` — AMX loses on BOTH axes at every size (1024³: F32x16 `sgemm_blocked`
+27.3 ms / 1.4e-6; matrixmultiply 28.8 ms; AMX 3-pass 159 ms / 1.5e-6; AMX 1-pass
+45.9 ms / 1.6e-4). AMX is a BF16/INT8 unit; `matmul_bf16_to_f32` / `matmul_i8_to_i32`
+untouched.
+
+**Plan filed:** `.claude/plans/gemm-ternlog-mask-consolidation-v1.md` (DRAFT v1) —
+54 `gemm|matmul` entry points across 12 files, 4 unified; one facade per dtype
+(D-GTM-F3), F32x16 `sgemm_blocked` as the exact default (D-GTM-F1), ternlog chaining
+at T1 feeding a compacted-index GEMM prefilter (D-GTM-F4). Cached-mask reuse is
+CONSUMED from lance-graph-java `mask-risc-lowering-v1` (v4.2), not re-planned. W0 is
+six measurement probes; nothing in W1+ is built.
+
+**Loose ends:** burn's `amx-f32` feature becomes dead once #303 merges — delete it
+(burn#9 follow-up). `hpc/blas_level3.rs` shows zero `pub fn` in the inventory grep
+(D-GTM-0b). `simd_ops.rs:587` duplicates `hpc/bf16_tile_gemm.rs:45` by name (D-GTM-0a).
+
+## 2026-09-04 — W1.5 signature primitives: PR #293/#294/#295 landed, no board entry until now
 
 Three merged PRs closing W1.5 signature-kernel work items went unrecorded on
 this blackboard — corrected here.
