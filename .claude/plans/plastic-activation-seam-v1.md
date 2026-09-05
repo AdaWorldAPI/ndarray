@@ -9,6 +9,88 @@ session · **[I]** inference from F/M · **[S]** speculation.
 
 ---
 
+## A. Shipped activation physics — what lance-graph can actually do today
+
+Read from source, callers counted outside `#[cfg(test)]`, `tests/`, `examples/`.
+
+### A.1 The five-level table
+
+| capability | exists | reachable | selected by a policy | active in a shipped path | changes a LATER selection |
+|---|---|---|---|---|---|
+| `PremiseBundle` → `BeliefArena` → `rcr_abduce` differential | Y | Y | Y | **Y** (MedCare open-set, non-default feature) | N — the arena is rebuilt per call |
+| `dispatch_thought` wave schedule + recipe kernels | Y | Y | Y | **Y** (MedCare frontier dispatch) | N — see A.3 |
+| `ShaderDriver` cycle: free energy → MUL gate → awareness revise → rung elevator | Y | Y | Y | N — lab/serve/grpc bins only | (Y in-process, never reached) |
+| `AutocompleteCache` turn loop | Y | Y | Y | N — serve bin only | (Y in-memory, never reached) |
+| `MetaOrchestrator` topology revise → `select_next` | Y | Y | Y | N — zero callers | (Y, never reached) |
+| `cycle_driver::run_cycle`, held-owner re-poll | Y | Y | Y | N — zero non-test callers | N |
+| `MailboxSoA` energy / threshold / `consume_firing` | Y | Y | Y | **N — zero non-test callers** | N |
+| Planner 17-strategy affinity selection | Y | Y | Y | N — `LanceNativePlanner` has zero callers | N |
+| `select_tactic` / `dispatch_mode::route` | Y | Y | Y | N — examples only | N |
+| HHTL `RouteAction` skip/attend table | Y | Y | Y (percentile rule, at build) | N — `graph/audio` has no callers | N — static table |
+| `NestedBands` ternlog buckets | Y | Y | N | N — test/probe only | N |
+| `EdgeBlock` slot decode | Y | Y | N | N — and **no slot→row resolution exists anywhere** | N |
+| BlasGraph `traverse` | Y | Y | N | N — the query path returns `Err` unconditionally | N |
+| Gremlin `Traversal.step` | Y | Y | N | N — zero callers | N |
+| `OgarAuthority::activate`, `ReinforcementLane` | Y | Y | N | N — zero callers | N |
+
+**Reaches "active": 2 of 15. Reaches "changes a later selection": 0 of 15.**
+That matches MedCare's independently measured 0 of 54.
+
+### A.2 The plastic field is already built
+
+`mailbox_soa.rs:348/380` is the literal activation physics: energy accumulates
+as `mantissa × confidence`, the row fires when `|energy| ≥ threshold`, once per
+cycle. **`apply_edges` and `consume_firing` have zero non-test callers**, in
+lance-graph or in MedCare, which touches only the setters.
+
+So the question "what is the smallest plastic mechanism" has an uncomfortable
+answer: a threshold-and-accumulate field **exists, is shipped, and is not
+called**. Four further closed loops exist and are equally unreached — an
+awareness vector revised each cycle and read back into the gate, a turn cache
+that mutates and reads its own state, a topology that records outcomes and
+selects on them, and a driver that re-polls held owners.
+
+### A.3 The one live dispatch path discards its own propagation
+
+`wave_dispatch.rs:62-87` runs a static dataflow schedule over recipe
+`requires`/`writes` masks. Inside the per-wave closure it does
+`let mut ctx = seed.clone();` — **every rung restarts from the seed**, so wave
+*n+1* never observes wave *n*'s writes. The audit's phrasing: *the plan models a
+dependency chain the runtime does not execute.* Its output is a scanpath of
+claimed addresses, rendered to strings and dropped.
+
+This is the sharpest finding in the whole map. The single reached activation
+loop is prevented from propagating by one clone, not by a missing subsystem.
+
+### A.4 Masks, ternlog, edges, traversal
+
+- **No mask cache exists.** Not implemented, not stubbed, not planned in code.
+- **`mask_ternlog_assign` has zero callers in lance-graph.** The only ternlog
+  use is `nested_bands.rs`, one chain at bucket-build time, nothing in a request
+  path — and `NestedBands` is constructed only by a test and probes.
+- **Edges cannot be walked.** `edge_slots_coarse` returns raw refs and its own
+  doc says resolving a ref to a neighbour row "needs the basin-local-index→row
+  convention"; that convention does not exist. Every `EdgeCodecFlavor` resolves
+  to `CoarseOnly` because the trait default ignores the class.
+- **Eight traversal engines exist; none is reachable from MedCare.** The
+  GraphBLAS path returns `Err("not yet wired to input datasets")` unconditionally
+  with the traversal below it marked unreachable.
+- **The 96-bit facet register is a format, not a selector.** Encode/decode is
+  used inside the contract crate; nothing in a shipped path selects on a rail
+  value, and `walk_rails` has zero callers.
+- **Skip-vs-attend is decided by nothing today.** `SigmaBandScan::plan` is
+  literally `Ok(input)`; `TruthPropagation::plan` is the same shape.
+
+### A.5 Learned and persistent state
+
+Nothing is loaded at startup and modified by outcomes. The awareness vector is
+bootstrapped fresh per process and never saved. `TripleModel` plasticity and the
+reinforcement lane are in-memory with persistence documented as deferred.
+`EpisodicMemory` is constructed only in tests.
+
+
+---
+
 ## C. The old 95% finding — what it proves and what it does not
 
 ### C.1 What was actually recovered
@@ -390,6 +472,18 @@ its A2 rate beside it. A single spectacular trace is not evidence.
 ---
 
 ## L. Epiphanies
+
+**[F] The plastic field, the closed loops, and the write seam are all already
+built — and none is called.** A threshold-and-accumulate activation substrate
+(`MailboxSoA` energy/`consume_firing`), four in-memory closed loops, and an
+outcome-recording write (`append_witness` + `patient_nodes`) exist in shipped
+source with zero non-test callers between them. The missing thing is not a
+mechanism.
+
+**[F] The one live dispatch path cannot propagate, by one line.**
+`dispatch_thought` clones the seed at every rung, so its own wave schedule never
+carries wave *n*'s writes into wave *n+1*. Before any learner is designed, this
+is the cheapest possible experiment in the entire map.
 
 **[F] The activation seam is already built and unwired.** `append_witness` plus
 `patient_nodes` are complete, documented as the normal path, and have zero
