@@ -3,6 +3,22 @@
 > **Read this first.** The "Polyglot Notebook" architecture below is a
 > separate/older program, not the current epoch.
 
+## 2026-09-05 (v1.3) — the invariant strengthened: `substrate == mask geometry == projection surface`
+
+Operator: "make the 96-bit object holographic" was metaphor while the cube wanted
+voxel-by-voxel states. The Panela/photolithographic layer fixes it — **the cube is
+never stored.** Holographic now means: *the information to reconstruct/address the
+relevant 3-D relation is distributed through the 2-D 6×2×8 surface*, and the
+volume appears only when a question requires it. Depth ← packed location; local
+curvature ← hex adjacency; scale ← trie prefixes; permeability ← masks; dumb
+physics ← VPTERNLOGQ (meaning lives in layout, never in the instruction —
+`membrane-tiers.md` T1 from the other side). Hardware inversion: don't flatten
+3-D onto silicon; make the higher-dimensional object a mask-address projection of
+the 2-D surface. **Resolves the §11.9 diamond flag [S]→[H]:** bonds are implied
+by address+masks, not walked, so coordination-4 vs the 16-ary trie is not a
+conflict. The hologram's test already sits in the program: recover the relation
+(D-GTM-0l, codebook entropy) without allocating it (D-GTM-0k, bytes/step → 0).
+
 ## 2026-09-05 (v1.2) — GEMM plan: grey/white matter over ONE packed register; D-GTM-5 corrected a third time
 
 **Operator statement folded in as §11.** Hex field = digital grey/white matter over

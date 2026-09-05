@@ -1,5 +1,12 @@
 # gemm-ternlog-mask-consolidation-v1 — one GEMM entry per dtype, masks as the prefilter, ternlog as the mask ALU
 
+> **Status:** DRAFT v1.3 (2026-09-05) — §11.10 strengthens the invariant to
+> `substrate == mask geometry == projection surface`: the 3-D field (diamond tracts, the
+> "cube") is never allocated — it is a mask-address projection of the 2-D 6×2×8 surface,
+> recovered only when a question requires it. "Holographic" gets a falsifiable definition
+> (recoverability, D-GTM-0l) paired with non-allocation (D-GTM-0k). §11.9's diamond flag
+> resolved [S]→[H]: bonds are implied, not walked, so no arity conflict with the trie.
+>
 > **Status:** DRAFT v1.2 (2026-09-05) — §11 folds in the operator's grey/white-matter
 > statement: hex (grey, 6×2×8 rails, local permeability) and trie (white, 3×2 path
 > prefixes, routing) are ONE 12-byte register read two ways; `substrate == selection ==
@@ -149,7 +156,7 @@ A 3-input `IMM` is the whole truth table (`simd.rs:561-563`), so any Boolean ove
 | D-GTM-F1 | `gemm_f32` default = hand-rolled F32x16 `sgemm_blocked` on `avx512f` hosts for square-ish shapes; `matrixmultiply` for skinny/wide rectangles (threshold from D-GTM-0c) and on other hosts. Exact on both. | §1.3: wins 256³–4096³ (up to 7%); LOSES 10–19% at 256×8192×256 and 64×2048×8192 |
 | D-GTM-F2 | AMX serves `gemm_bf16` and `gemm_i8` ONLY. Any f32 AMX path is a named opt-in carrying its measured table. | §1.3; ndarray#303 |
 | D-GTM-F3 | The facade is `backend::{gemm_f32, gemm_f64, gemm_bf16, gemm_i8}` (+ batched). Every other GEMM symbol is `pub(crate)`, a documented opt-in, or deleted. | §1.1 count 54→4 |
-| D-GTM-F4 | ⊘ **AMENDED AGAIN by §11.4.** The pack CONSUMES MASK WORDS directly (tzcnt / vpcompress inside the panel window) — **no index list exists at any point**, not a `Vec<u32>` prologue (v1), not a panel-ahead `ArrayVec<u32>` (v1.1). Cache key stays `(mask generation, panel index)`; the reusable object generalizes to a permeability codebook entry (§11.6). | `substrate == selection == routing`; §11.4 |
+| D-GTM-F4 | ⊘ **AMENDED AGAIN by §11.4.** The pack CONSUMES MASK WORDS directly (tzcnt / vpcompress inside the panel window) — **no index list exists at any point**, not a `Vec<u32>` prologue (v1), not a panel-ahead `ArrayVec<u32>` (v1.1). Cache key stays `(mask generation, panel index)`; the reusable object generalizes to a permeability codebook entry (§11.6). | `substrate == mask geometry == projection surface` (§11.10, strengthening §11.4) |
 | D-GTM-F5 | Every accuracy test in this surface uses inputs whose significands exceed 8 bits, and tolerances at f32 grade (1e-5) for f32 APIs. | the vacuous `(i+j)*0.5` test that hid the bf16 loss (#303) |
 | D-GTM-F6 | Every new kernel lands with a two-sided pin: the fast path must beat the reference by a stated factor AND the reference must still be measurably slower — so a regression in either direction fails. | `three_pass_split_beats_one_bf16_pass` pattern |
 
@@ -616,3 +623,67 @@ needs its own probe). **Graded [S] until the operator says which.** Nothing in
 axon = outgoing mask, learning = mask update, state = the 96-bit substrate) and
 **constraint soaking** (`U₁ = U₀ ⊗ M₁`, `U₂ = U₁ ⊗ M₂`, … until residual) are §11.1
 points 1 and 6 restated; recorded as vocabulary, not as new claims.
+
+### 11.10 The amended invariant: `substrate == mask geometry == projection surface` (operator, 2026-09-05)
+
+**What was missing, in the operator's words.** *"Make the 96-bit object
+holographic"* risked being metaphor, because a volumetric cube wants a huge
+number of independently addressable states — the 3-D geometry existed with no
+economical way of specifying its interior. The Panela / photolithographic layer
+closes that: **the cube is never stored voxel-by-voxel.**
+
+```
+apparent 3-D field  (diamond bonds, tracts, the "cube")   ← NOT materialized
+        ⇅ projection
+planar bit geometry: EE EE EE …  = 6×2×8 register, masks + packed location
+```
+
+**Holographic, defined falsifiably:** not "every voxel exists" but *the
+information required to reconstruct / address the relevant 3-D relation is
+distributed through the 2-D representation.* You don't fill the hologram with
+bits; you fill the surface with enough invariants that the volume can be
+recovered *when something asks a question that requires it.*
+
+**Assignment of parts** (replaces §11.1 pt 7):
+
+| supplies | from |
+|---|---|
+| depth | packed location |
+| local curvature | hex adjacency |
+| scale | trie prefixes |
+| permeability | masks |
+| the dumb physics | VPTERNLOGQ |
+
+**The invariant, strengthened.** §11.1's `substrate == selection geometry ==
+routing geometry` becomes
+
+> **`substrate == mask geometry == projection surface`**
+
+The hardware inversion is the point: not *3-D problem → flatten awkwardly onto
+silicon*, but *embrace the 2-D silicon-like representation and make the
+higher-dimensional object a mask-address projection of it.* VPTERNLOGQ stays
+wonderfully boring — three bit fields, one Boolean function, no knowledge of
+neurons, cubes, hexagons or ontology. **The meaning lives in how the fields are
+laid out, not in the instruction executing them** — which is `membrane-tiers.md`'s
+T1 rule (a primitive is dumb; the tier above it carries the meaning) stated from
+the other side.
+
+⊘ **§11.9's diamond flag is RESOLVED, [S] → [H].** The mismatch I flagged — a
+tetrahedral tract (coordination 4) against the 16-ary nibble trie — assumed the
+diamond bonds were *walked*. They are not: they are *implied* by address + masks
+and recovered on demand. Nothing is 4-ary per step because nothing steps. The
+diamond is the shape of the projection, not a level of the trie. No conflict with
+the 3×4 standing watch; nothing to probe about arity.
+
+**What IS now falsifiable, and where it already sits in §11.7:**
+
+- *Holographic recoverability* = **D-GTM-0l**: can packed-prefix routing +
+  masks + codebook express every required long-range relation without codebook
+  entropy exploding? If the surface's invariants are insufficient, the volume
+  cannot be recovered and the claim fails there — measured on the R2IL/C64 ore.
+- *The volume is never allocated* = **D-GTM-0k**: bytes materialized per
+  inference step → 0. A "projection" that secretly allocates the cube shows up
+  as bytes.
+
+Those two probes together are the hologram's test: recover the relation (0l)
+without allocating it (0k). Nothing else in the program changes.
