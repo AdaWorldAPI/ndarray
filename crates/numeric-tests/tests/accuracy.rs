@@ -269,18 +269,17 @@ fn accurate_mul_with_column_f64() {
         let a = gen::<f64, _>(Ix2(m, k), rng);
         let b_owner = gen::<f64, _>(Ix2(k, k), rng);
         let b_row_col;
-        let b_sq;
 
         // pick dense square or broadcasted to square matrix
-        match i {
-            0..=3 => b_sq = b_owner.view(),
+        let b_sq = match i {
+            0..=3 => b_owner.view(),
             4..=7 => {
                 b_row_col = b_owner.column(0);
-                b_sq = b_row_col.broadcast((k, k)).unwrap();
+                b_row_col.broadcast((k, k)).unwrap()
             }
             _otherwise => {
                 b_row_col = b_owner.row(0);
-                b_sq = b_row_col.broadcast((k, k)).unwrap();
+                b_row_col.broadcast((k, k)).unwrap()
             }
         };
 

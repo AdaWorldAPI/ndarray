@@ -10,7 +10,7 @@ edition = "2021"
 # of the contract crate happens to still succeed today — a coincidence, not a
 # guarantee, and exactly what an untested MSRV declaration buys. Declare what is
 # actually verified.
-rust-version = "1.97"
+rust-version = "1.98"
 authors = [
   "Ulrik Sverdrup \"bluss\"",
   "Jim Turner"

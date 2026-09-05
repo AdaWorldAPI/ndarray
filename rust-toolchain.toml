@@ -1,19 +1,28 @@
 [toolchain]
-channel = "1.97.1"
-# Pinned to 1.97.1 (2026-08-05). Aligns ndarray with the rest of the
-# AdaWorldAPI stack — lance-graph, OGAR, ruff, MedCare-rs, woa-rs, a2ui-rs and
-# stockfish-rs are all on 1.97.1; ndarray was the last sibling still declaring
-# 1.95, so a consumer path-dep'ing both it and lance-graph-contract saw two
-# different MSRVs.
+channel = "1.98.1"
+# The pinned version is the `channel` line ABOVE — deliberately not restated
+# here. This comment used to open "Pinned to 1.97.1", and this file's own
+# warning explains why that is a trap: "A stale comment on a version pin is how
+# the next reader learns the wrong number." A bump edits `channel` and leaves
+# prose behind, so the prose keeps only the rationale.
+#
+# Rationale: ndarray moves in lockstep with the rest of the AdaWorldAPI stack —
+# lance-graph, OGAR, ruff, MedCare-rs, woa-rs, a2ui-rs, stockfish-rs — because a
+# consumer path-dep'ing both ndarray and lance-graph-contract otherwise sees two
+# different MSRVs. ndarray was once the last sibling still declaring 1.95.
 #
 # The channel here and `Cargo.toml`'s `rust-version` must move TOGETHER. They
 # were out of step between the 1.95 → 1.97.1 channel bump and 2026-08-05: this
-# file said 1.97.1 while the manifest still declared 1.95, and the comment below
-# still described the 1.95 rationale. A stale comment on a version pin is how the
-# next reader learns the wrong number.
+# file named one version while the manifest declared another.
 #
-# (Historical: the 1.95 bump introduced `clippy::manual_checked_ops`, which fired
-# on `impl_owned_array.rs::into_scalar` and was fixed in that same commit.)
+# Bump log (append one line per bump):
+#   1.95   → 1.97.1  stack alignment (2026-08-05); the 1.95 bump had introduced
+#                    `clippy::manual_checked_ops`, fixed in `impl_owned_array.rs`
+#   1.97.1 → 1.98.1  current stable (1.98.0 2026-08-20, 1.98.1 2026-09-01);
+#                    workspace-wide sweep. The 1.98 delta measured across the
+#                    stack is ONE lint, `clippy::chunks_exact_to_as_chunks`
+#                    (new, default-on STYLE group) — zero sites in this repo.
+#
 # Never auto-track `stable` — bump explicitly when a future version is
 # reviewed and the workspace clippy passes clean.
 components = ["clippy", "rustfmt"]

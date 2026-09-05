@@ -609,7 +609,12 @@ pub fn bf16_tile_gemm_16x16(a_bf16: &[u16], b_bf16: &[u16], c: &mut [f32], k: us
                 *slot = b_f32[kk * 16 + j];
             }
             let mut acc = F32x16::splat(0.0);
-            for (ra, rb) in a_row.chunks_exact(16).zip(col.chunks_exact(16)) {
+            for (ra, rb) in a_row
+                .as_chunks::<16>()
+                .0
+                .iter()
+                .zip(col.as_chunks::<16>().0)
+            {
                 acc = F32x16::from_slice(ra).mul_add(F32x16::from_slice(rb), acc);
             }
             c[i * 16 + j] += acc.reduce_sum();
