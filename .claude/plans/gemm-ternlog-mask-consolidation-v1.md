@@ -802,3 +802,73 @@ counters.
 - **The weighted arm** — new, implied by 12.4: the type boundary needs its own
   measurement (where does accumulating a value force GEMM?).
 - 0c / 0d / 0e remain unrun.
+
+---
+
+## §13 — D-GTM-0l MEASURED: packed-prefix routing does not cover real long-range edges
+
+Probe: `examples/prefix_tract_coverage_probe.rs` (committed). Ore: the R2IL 6502
+harvest in `AdaWorldAPI/Elite-rs` `.claude/harvest/r2il-6502/` — 34,186 lifted
+instruction facts over two images, 427 `CallSite` long-range edges across 2,647
+distinct packed addresses. The ore is passed by path and never vendored; its own
+provenance file forbids redistributing the corpus, and this repo stores the
+measurement rather than the instruction stream.
+
+**The claim under test** (operator, grey/white-matter framing): *"white matter should
+not be another data structure. It should be an interpretation of packed location
+prefixes."* A tract is `(prefix, mask, learned transition)`; routing is
+`ADDRESS & PREFIX_MASK == PREFIX`. That is a routing mechanism only if the tract
+codebook is much smaller than the edge set it covers.
+
+### Result 1 — prefix locality is real signal, ~11× over the null
+
+| shared prefix | real | degree-preserving null (50 shuffles) |
+|---|---|---|
+| k=0 | 61.36% | 84.90% |
+| k=1 | 22.95% | 13.54% |
+| k=2 | 13.35% | 1.46% |
+| k=3 | 2.34% | 0.06% |
+| k=4 | 0.00% | 0.04% |
+
+k≥2 is 15.69% real against 1.52% null. The mechanism is not measuring noise.
+
+### Result 2 — but the codebook does not compress at any usable width
+
+| k | tract width | tracts | edges | compression |
+|---|---|---|---|---|
+| 1 | 4 KiB | 56 | 427 | 7.62× |
+| 2 | 256 B | 257 | 427 | 1.66× |
+| 3 | 16 B | 396 | 427 | 1.08× |
+| 4 | 1 B | 427 | 427 | 1.00× |
+
+k=1 is the only width that compresses, and on a 64 KiB image it is 16 buckets — the
+routing decision has almost no resolution left. By k=2 the codebook is already
+1.66× and by k=3 it is an edge list with extra steps.
+
+### Result 3 — the non-local residual is DIFFUSE, so no exception table rescues it
+
+262 non-local edges over 113 distinct targets; top-10 targets cover 32.1%, top-40
+cover 64.9%; target entropy 6.36 bits against 6.82 uniform — only 0.46 bits below
+uniform. There is no small hub set. A k=1 tract plus explicit far edges is 318
+entries against 427 edges (1.34×).
+
+### Verdict — [G] on this ore, with the scope leg named
+
+**On physically laid-out addresses, packed-prefix routing is a real but partial
+signal that cannot carry the transition set alone.** The hypothesis's own success
+condition ("not another data structure") fails: to resolve a destination you need
+essentially one tract per edge.
+
+**Scope leg, load-bearing.** This ore's addresses are PHYSICAL — a 1986 linker's
+layout, with no reason to be prefix-organized by meaning. The hypothesis was about
+packed SEMANTIC addresses (`classid | HEEL | HIP | TWIG`, minted so that the prefix
+IS the meaning). Those are different claims, and this measurement falsifies only the
+first. It is the hardest case and arguably the wrong one — but it was the decisive
+one *offered*, so the result stands as recorded rather than explained away.
+
+**What this makes the next probe.** Re-run the identical instrument against an
+OGAR-minted address space, where prefixes are minted from the concept hierarchy
+rather than from a linker. If enrichment rises and k=2/k=3 compression goes with it,
+the mechanism survives on the substrate it was actually proposed for. If the
+compression column looks like the table above, the tract framing is dead generally
+and white matter needs to be a structure after all.

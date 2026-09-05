@@ -1,3 +1,24 @@
+## 2026-09-05 — D-GTM-0l MEASURED (prefix-tract coverage, R2IL 6502 ore)
+
+The probe I flagged as decisive ran. `examples/prefix_tract_coverage_probe.rs`
+against the Elite-rs R2IL harvest (427 long-range call edges, 2,647 packed addresses;
+ore passed by path, never vendored — its provenance forbids redistribution).
+
+- Prefix locality is REAL: k>=2 shared prefix is 15.69% of edges vs 1.52% under a
+  degree-preserving null (50 shuffles). ~11x enrichment.
+- The tract codebook does NOT compress: 7.62x at k=1 (4 KiB buckets, 16 of them on a
+  64 KiB image — no resolution left), 1.66x at k=2, 1.08x at k=3, 1.00x at k=4.
+- The non-local residual is DIFFUSE, not a hub set: 262 edges over 113 targets,
+  entropy 6.36 bits vs 6.82 uniform. A k=1 tract plus explicit far edges is 318
+  entries against 427 edges.
+
+Verdict [G] on this ore: "white matter as an interpretation of packed location
+prefixes" fails its own success condition — one tract per edge is an edge list.
+Scope leg: these are PHYSICAL addresses from a 1986 linker, not semantic addresses
+minted so the prefix carries meaning. The falsification is of the physical case only.
+Next probe is the same instrument against an OGAR-minted classid space; the plan's
+new §13 carries the full tables and the pass/fail condition for it.
+
 # Current epoch (2026-05-26) — splat / palette / pillar / 3DGS
 
 > **Read this first.** The "Polyglot Notebook" architecture below is a
