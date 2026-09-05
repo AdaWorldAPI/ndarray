@@ -173,12 +173,13 @@ pub fn scal_f64(alpha: f64, x: &mut [f64]) {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 pub fn asum_f32(x: &[f32]) -> f32 {
+    let (chunks, remainder) = x.as_chunks::<16>();
     let mut acc = F32x16::splat(0.0);
-    for chunk in x.chunks_exact(16) {
+    for chunk in chunks {
         acc += F32x16::from_slice(chunk).abs();
     }
     let mut sum = acc.reduce_sum();
-    for &v in x.chunks_exact(16).remainder() {
+    for &v in remainder {
         sum += v.abs();
     }
     sum
@@ -190,12 +191,13 @@ pub fn asum_f32(x: &[f32]) -> f32 {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 pub fn asum_f64(x: &[f64]) -> f64 {
+    let (chunks, remainder) = x.as_chunks::<8>();
     let mut acc = F64x8::splat(0.0);
-    for chunk in x.chunks_exact(8) {
+    for chunk in chunks {
         acc += F64x8::from_slice(chunk).abs();
     }
     let mut sum = acc.reduce_sum();
-    for &v in x.chunks_exact(8).remainder() {
+    for &v in remainder {
         sum += v.abs();
     }
     sum

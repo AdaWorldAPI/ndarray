@@ -201,7 +201,7 @@ impl Pyramid {
         for l in 1..=k as usize {
             let prev = &levels[l - 1];
             let mut cur = Vec::with_capacity(prev.len() / 4);
-            for q in prev.chunks_exact(4) {
+            for q in prev.as_chunks::<4>().0 {
                 cur.push(Node {
                     min: q.iter().map(|n| n.min).fold(f32::INFINITY, f32::min),
                     max: q.iter().map(|n| n.max).fold(f32::NEG_INFINITY, f32::max),
