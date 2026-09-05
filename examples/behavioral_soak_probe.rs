@@ -249,7 +249,7 @@ fn stratified(names: &[String], per_corpus: &[Vec<String>], first_n: usize) {
 /// What matters is (a) ops per token — how much of the sequence a single known
 /// token accounts for — and (b) the share of ops covered by tokens of length ≥ 2,
 /// which is the share that is genuinely structural rather than per-opcode.
-fn composition(names: &[String], per_block_ops: &[Vec<Vec<String>>], first_n: usize) {
+fn composition(label: &str, names: &[String], per_block_ops: &[Vec<Vec<String>>], first_n: usize) {
     const MAX_TOKEN: usize = 6;
     let mut book: HashSet<Vec<String>> = HashSet::new();
     for corpus in per_block_ops.iter().take(first_n) {
@@ -271,17 +271,33 @@ fn composition(names: &[String], per_block_ops: &[Vec<Vec<String>>], first_n: us
         .flatten()
         .flatten()
         .collect();
-    let a = alphabet.len() as f64;
+    let a = alphabet.len();
     let mut have = vec![0usize; MAX_TOKEN + 1];
     for t in &book {
         have[t.len()] += 1;
     }
-    println!("\nBPE-style composition against a {}-token soaked codebook (n-grams n<={MAX_TOKEN})", book.len());
-    print!("  alphabet {} opcodes; codebook holds", alphabet.len());
+    // Alphabet-saturation control. With a small opcode alphabet, an n-gram
+    // codebook can cover almost any sequence by combinatorics alone, which is
+    // the boring explanation this workspace has already caught once: a 7-symbol
+    // alphabet made held-out coverage look tautological, and made a degree-6
+    // neighbourhood the complete graph minus self. So report what fraction of
+    // the POSSIBLE short n-grams the codebook holds; if that is near 1, high
+    // composition coverage is arithmetic rather than structure.
+    let alphabet: HashSet<&String> = per_block_ops
+        .iter()
+        .take(first_n)
+        .flatten()
+        .flatten()
+        .collect();
+    let a = alphabet.len();
+    println!("\n{label} — {}-token codebook (n-grams n<={MAX_TOKEN})", book.len());
+    print!("  alphabet {a} symbols; codebook holds");
     for n in 1..=MAX_TOKEN {
-        print!(" n{n}:{}/{:.0}", have[n], a.powi(n as i32));
+        let possible = (a as f64).powi(n as i32);
+        let held = book.iter().filter(|t| t.len() == n).count();
+        print!(" {n}-gram {:.1}%", 100.0 * held as f64 / possible);
     }
-    println!();
+    println!("  <- near 100% would make coverage arithmetic, not structure");
     println!(
         "  corpus                    | blocks | ops   | tokens | ops/token | ops in len>=2 tokens | unseen opcodes"
     );
@@ -389,7 +405,29 @@ fn main() {
                 .collect()
         })
         .collect();
-    composition(&names, &per_block_ops, first_n);
+    composition("BPE-style composition, REAL soak", &names, &per_block_ops, first_n);
+
+    // The null that decides whether composition coverage is structure. Shuffle
+    // the SOAK corpora's opcodes so every block keeps its length and the corpus
+    // keeps its opcode marginal exactly, but co-occurrence order is destroyed;
+    // mint the codebook from that and tokenize the REAL transfer corpora. If
+    // coverage and ops/token survive, the result was the opcode distribution
+    // reappearing, not a behavioural basis.
+    let mut nrng = SplitMix(0x5EED_1234_5678_9ABC);
+    let mut shuffled = per_block_ops.clone();
+    for corpus in shuffled.iter_mut().take(first_n) {
+        let mut pool: Vec<String> = corpus.iter().flatten().cloned().collect();
+        for i in (1..pool.len()).rev() {
+            pool.swap(i, (nrng.next() % (i as u64 + 1)) as usize);
+        }
+        let mut cur = 0usize;
+        for b in corpus.iter_mut() {
+            let n = b.len();
+            b.clone_from_slice(&pool[cur..cur + n]);
+            cur += n;
+        }
+    }
+    composition("COMPOSITION NULL, shuffled soak", &names, &shuffled, first_n);
 
     // Null: preserve every block's length and the corpus-wide opcode marginal,
     // destroy which opcodes co-occur in a block. Reported at G2, the rung whose
