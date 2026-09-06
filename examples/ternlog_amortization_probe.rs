@@ -44,12 +44,18 @@ use ndarray::simd::{mask_and_assign, mask_ternlog_assign};
 /// Counting allocator — "materialized 0 bytes" is a measurement here, not a claim.
 struct Counting;
 static ALLOCATED: AtomicUsize = AtomicUsize::new(0);
+// SAFETY: a pure pass-through allocator. Every call forwards the caller's own
+// `Layout` (and, for `dealloc`, the pointer that `alloc` returned for that
+// layout) to `System` unchanged, so `System` upholds the `GlobalAlloc`
+// contract on our behalf; the only added work is a relaxed atomic counter.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, l: Layout) -> *mut u8 {
         ALLOCATED.fetch_add(l.size(), Ordering::Relaxed);
+        // SAFETY: `l` is the layout the caller passed, forwarded verbatim.
         unsafe { System.alloc(l) }
     }
     unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+        // SAFETY: `p` was returned by `System.alloc(l)` above for this same `l`.
         unsafe { System.dealloc(p, l) }
     }
 }
@@ -296,7 +302,6 @@ fn main() {
             mask_and_assign(&mut t1v, m);
         }
         let survivors = popcnt(&t1v);
-        let sparse: Vec<Vec<u32>> = masks.iter().map(|m| to_ids(m)).collect();
         let base_ids = to_ids(&base);
 
         const FLOOR: f64 = 0.060;
@@ -337,7 +342,6 @@ fn main() {
             i5 += 1;
         }
         let ns5 = c5.elapsed().as_secs_f64() * 1e9 / (i5 as f64 * 8.0);
-        let _ = &sparse;
 
         let winner = if ns5 < ns3 { "sparse" } else { "mask" };
         println!("  {:8} | {:9} | {:6.0} | {:10.0} | {:9.0} | {winner}", label, survivors, ns1, ns3, ns5);

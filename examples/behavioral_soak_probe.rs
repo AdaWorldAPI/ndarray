@@ -22,7 +22,7 @@
 //! | G0 | opcode | control — must saturate; proves nothing |
 //! | G1 | (kind, opcode) | still near-trivial |
 //! | G2 | block opcode sequence | the behavioural BPE token |
-//! | G3 | block (opcode, in-arity, out-arity) sequence | shape-sensitive |
+//! | G3 | block UNORDERED opcode:in-arity:out-arity profile | dataflow-shape, order-blind |
 //! | G4 | function block-token sequence | whole-routine shape |
 //!
 //! The null shuffles opcodes across blocks while preserving every block's LENGTH
@@ -118,7 +118,11 @@ fn atoms(bs: &[Vec<&Fact>], rung: usize) -> Vec<String> {
         3 => bs
             .iter()
             .map(|b| {
-                // per-instruction shape: opcode plus how many values it consumed/produced
+                // Per-block dataflow profile: for each opcode, how many values it
+                // consumed/produced across the block. Deliberately ORDER-BLIND and
+                // occurrence-merged, so G3 is not strictly finer than G2 — a block
+                // `load,store,load` and `store,load,load` share one G3 atom. It is
+                // a different cut (dataflow shape), not a deeper rung of G2.
                 let mut per: BTreeMap<&str, (u32, u32)> = BTreeMap::new();
                 for f in b {
                     let e = per.entry(f.opcode.as_str()).or_default();

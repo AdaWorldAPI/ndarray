@@ -163,7 +163,7 @@ A 3-input `IMM` is the whole truth table (`simd.rs:561-563`), so any Boolean ove
 |---|---|---|
 | D-GTM-F1 | `gemm_f32` default = hand-rolled F32x16 `sgemm_blocked` on `avx512f` hosts for square-ish shapes; `matrixmultiply` for skinny/wide rectangles (threshold from D-GTM-0c) and on other hosts. Exact on both. | §1.3: wins 256³–4096³ (up to 7%); LOSES 10–19% at 256×8192×256 and 64×2048×8192 |
 | D-GTM-F2 | AMX serves `gemm_bf16` and `gemm_i8` ONLY. Any f32 AMX path is a named opt-in carrying its measured table. | §1.3; ndarray#303 |
-| D-GTM-F3 | The facade is `backend::{gemm_f32, gemm_f64, gemm_bf16, gemm_i8}` (+ batched). Every other GEMM symbol is `pub(crate)`, a documented opt-in, or deleted. | §1.1 count 54→4 |
+| D-GTM-F3 | ⊘ **REOPENED by D-GTM-0b (§10).** v1 froze `backend::{gemm_f32, gemm_f64, gemm_bf16, gemm_i8}` (+ batched) as THE facade. 0b then found a second shipped public contract, the `BlasLevel3<A>` trait → `BlasFloat::backend_gemm`. Until one is named canonical (and the other made a documented delegate), F3 is CONDITIONAL: **W1's D-GTM-2 may not demote or bypass either contract.** Candidate resolution: the free functions delegate to the trait (trait = contract, functions = ergonomic facade); decided by a probe of external callers of each, not by preference. | §1.1 count 54→4 was blind to the trait; §10 0b |
 | D-GTM-F4 | ⊘ **AMENDED AGAIN by §11.4.** The pack CONSUMES MASK WORDS directly (tzcnt / vpcompress inside the panel window) — **no index list exists at any point**, not a `Vec<u32>` prologue (v1), not a panel-ahead `ArrayVec<u32>` (v1.1). Cache key stays `(mask generation, panel index)`; the reusable object generalizes to a permeability codebook entry (§11.6). | `substrate == mask geometry == projection surface` (§11.10, strengthening §11.4) |
 | D-GTM-F5 | Every accuracy test in this surface uses inputs whose significands exceed 8 bits, and tolerances at f32 grade (1e-5) for f32 APIs. | the vacuous `(i+j)*0.5` test that hid the bf16 loss (#303) |
 | D-GTM-F6 | Every new kernel lands with a two-sided pin: the fast path must beat the reference by a stated factor AND the reference must still be measurably slower — so a regression in either direction fails. | `three_pass_split_beats_one_bf16_pass` pattern |
@@ -191,7 +191,7 @@ A 3-input `IMM` is the whole truth table (`simd.rs:561-563`), so any Boolean ove
 ### Wave 2 — the mask→GEMM seam (ndarray + lgj-abi, one PR each)
 
 - D-GTM-5 (ndarray): ⊘ corrected three times, see §11.4 — `pack_a_masked_f32(a, lda, mask, row_cursor, kc, k_start, buf) -> rows_packed` consumes mask words directly; **no index list, no `Vec<u32>`, no `ArrayVec<u32>`**. `pruned_gemm_rows` has zero callers (§10 0f) so this is a first writer. Ladder per D-GTM-0e; bytes-materialized per D-GTM-0k must be ≈ 0.
-- D-GTM-6 (lgj-abi, **filed against mask-risc-lowering-v1, not built here**): a carving kind whose payload is that index list, keyed by mask generation, invalidated with the mask. This is the single ask of the other plan.
+- D-GTM-6 (lgj-abi, **filed against mask-risc-lowering-v1, not built here**): ⊘ corrected to match F4/D-GTM-5 — a carving kind whose payload is the **mask words themselves (or the §11.6 permeability codebook entry)**, keyed by mask generation, invalidated with the mask. **No index list**: the earlier "payload is that index list" wording predated the §11.4 amendment and contradicted F4. If a consumer ever needs an index list it is a separate, non-GEMM artifact with its own named producer and consumer, never this carving. This is the single ask of the other plan.
 
 ### Wave 3 — consumers (last, by the STOP rule)
 
@@ -450,10 +450,13 @@ production behaviour.
 5. **The invariant: `substrate == selection geometry == routing geometry`.**
    Expanding a mask into IDs, materializing a neighbour list, or converting the
    trie into an edge table *for the hot path* is the loss condition.
-6. **The hypothesis is NOT "TERNLOGQ replaces GEMM."** GEMM is attractive when
-   information is dense; a hex/trie field may win when cognition is mostly
-   *successive elimination of possibility*. Grey squeezes locally; white moves
-   the constraint field cheaply across distance.
+6. **The hypothesis is NOT "TERNLOGQ replaces GEMM."** ⊘ *The density half of
+   this point is FALSIFIED by D-GTM-0j (§12.4): there is no density crossover for
+   a Boolean relation.* What survives: the boundary is the relation's TYPE.
+   Masks carry Boolean elimination; a value-carrying relation needs a
+   value-aware algorithm (which one — GEMM, CSR SpMV, or another — is the open
+   weighted probe, §12.5). Grey squeezes locally; white moves the constraint
+   field cheaply across distance.
 7. **Underlined:** white matter is not another data structure — it is an
    *interpretation of packed location prefixes*. Hexagon supplies neighbourhood;
    trie supplies scale; TERNLOGQ supplies permeability.
@@ -758,12 +761,23 @@ regardless.
 ⊘ **So "GEMM wins when dense" is FALSE as stated for a Boolean relation.** The
 honest correction, and it is a TYPE boundary rather than a density:
 
-> **Masks win whenever the relation is Boolean; GEMM is required when the
-> relation carries VALUES.** A bitmask is 32× denser than f32 *before any
+> **Masks win whenever the relation is Boolean; a relation that carries VALUES
+> needs a value-aware algorithm.** A bitmask is 32× denser than f32 *before any
 > algorithm runs*, so a Boolean relation in f32 was never the right
 > representation. Where a weight must be accumulated (evidence strength, a
 > learned probability, a distance), the mask arm cannot express the operation at
-> all — that, not density, is where GEMM becomes mandatory.
+> all — that, not density, is the boundary. **Which value-aware algorithm wins
+> there (dense GEMM, CSR SpMV, something else) is NOT established by this probe**;
+> it is the weighted arm (§12.5 pt 2) and nothing here should be read as
+> "GEMM is required".
+
+**Density column correction (post-review).** The §12.4 table's "relation density"
+column was the NOMINAL `deg / N`. The Random relation draws `deg` columns per row
+with replacement, so collisions make the realized density lower; the probe now
+counts non-zero cells. Re-run after the fix: 0.02 / 0.39 / 1.55 / 6.06 / 22.12 /
+**63.22 %** for deg = 1 … 4096 (the nominal "100 %" row is really 63 %). The
+conclusion is unchanged — both costs stay flat across the whole realized range —
+and the correctness gate now compares survivor SETS, not counts, at every cell.
 
 ### 12.5 The baseline is mis-specified, and the headline numbers are NOT evidence
 

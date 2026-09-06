@@ -46,14 +46,21 @@ static ALLOCED: AtomicUsize = AtomicUsize::new(0);
 static COUNTING: AtomicUsize = AtomicUsize::new(0);
 
 struct Counting;
+// SAFETY: a pure pass-through allocator. Every call forwards the caller's own
+// `Layout` (and, for `dealloc`, the pointer that `alloc` returned for that
+// layout) to `System` unchanged, so `System` upholds the `GlobalAlloc`
+// contract on our behalf; the only added work is a relaxed atomic counter
+// that never touches the allocation.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, l: Layout) -> *mut u8 {
         if COUNTING.load(Ordering::Relaxed) == 1 {
             ALLOCED.fetch_add(l.size(), Ordering::Relaxed);
         }
+        // SAFETY: `l` is the layout the caller passed, forwarded verbatim.
         unsafe { System.alloc(l) }
     }
     unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+        // SAFETY: `p` was returned by `System.alloc(l)` above for this same `l`.
         unsafe { System.dealloc(p, l) }
     }
 }
@@ -102,7 +109,9 @@ fn build_matrix_deg(rel: Rel, seed: u64, deg: usize) -> Vec<f32> {
             }
         }
         Rel::Random => {
-            // SAME edge count, no prefix structure.
+            // Same NOMINAL degree, no prefix structure. Random column draws
+            // collide, so the realized edge count is below N*deg; the table
+            // reports the realized density, counted from the matrix.
             for i in 0..N {
                 for _ in 0..deg {
                     let j = (splitmix(&mut s) as usize) % N;
@@ -181,6 +190,18 @@ fn step_mask_random(state: &mut [u64], fwd: &[u64], out: &mut [u64], c1: &[u64],
 
 fn popcnt(m: &[u64]) -> u32 {
     m.iter().map(|w| w.count_ones()).sum()
+}
+
+/// The GEMM arm's survivor vector as a bitset, so the gate compares SETS.
+/// Two different survivor sets of equal size must not pass as agreement.
+fn gemm_bits(gs: &[f32]) -> Vec<u64> {
+    let mut m = vec![0u64; W];
+    for (i, &v) in gs.iter().enumerate() {
+        if v > 0.0 {
+            m[i / 64] |= 1u64 << (i % 64);
+        }
+    }
+    m
 }
 
 fn main() {
@@ -271,11 +292,12 @@ fn main() {
                 std::hint::black_box(&ms_);
 
                 // ── correctness gate: same survivors, or the numbers mean nothing ──
-                let gemm_pop = gs.iter().filter(|&&v| v > 0.0).count() as u32;
-                let mask_pop = popcnt(&ms_);
-                assert_eq!(
-                    gemm_pop, mask_pop,
-                    "ARMS DISAGREE at dens={dens} depth={depth} ({name}): gemm {gemm_pop} vs mask {mask_pop}"
+                let gemm_set = gemm_bits(&gs);
+                assert!(
+                    gemm_set == ms_,
+                    "ARMS DISAGREE at dens={dens} depth={depth} ({name}): gemm {} vs mask {} survivors (sets differ)",
+                    popcnt(&gemm_set),
+                    popcnt(&ms_)
                 );
 
                 println!(
@@ -344,12 +366,12 @@ fn main() {
         }
         let mask_ns = t.elapsed().as_secs_f64() * 1e9 / (mr * 8) as f64;
 
-        let gp = gs.iter().filter(|&&v| v > 0.0).count() as u32;
-        assert_eq!(gp, popcnt(&ms_), "ARMS DISAGREE at deg={deg}");
+        let gemm_set = gemm_bits(&gs);
+        assert!(gemm_set == ms_, "ARMS DISAGREE at deg={deg}: survivor sets differ");
         println!(
             "  {:>8} {:>8.2}% {:>12.0} {:>12.0} {:>8.1}x",
             deg,
-            100.0 * deg as f64 / N as f64,
+            100.0 * matrix.iter().filter(|&&v| v != 0.0).count() as f64 / (N * N) as f64,
             gemm_ns,
             mask_ns,
             gemm_ns / mask_ns.max(1e-9)

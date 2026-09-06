@@ -38,9 +38,11 @@ The invariant's own falsifier passes.
 dense" — measured, there is NO density crossover: masks win 745x at 0.02%
 relation density and 297x at 100%. Both costs are flat in density (GEMM O(N²)
 FMAs; mask O(active·N/64) word ORs). Honest correction, a TYPE boundary not a
-density one: **masks win whenever the relation is Boolean; GEMM is required when
-the relation carries VALUES.** A bitmask is 32x denser than f32 before any
-algorithm runs, so a 0/1 relation in f32 was never the right representation.
+density one: **masks win whenever the relation is Boolean; a relation that
+carries VALUES needs a value-aware algorithm** — which one (GEMM, CSR SpMV, other)
+is the still-unrun weighted arm, not a conclusion of 0j. A bitmask is 32x denser
+than f32 before any algorithm runs, so a 0/1 relation in f32 was never the right
+representation.
 
 **The headline numbers are explicitly NOT evidence** (§12.5): the dense-f32
 baseline is mis-specified, and the missing arm is CSR SpMV (O(nnz) — at deg=1
