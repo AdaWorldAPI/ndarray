@@ -1,6 +1,5 @@
 # ndarray — Railway compile-test image (AVX2 default)
 # Verifies the HPC module builds cleanly (default + jit-native features)
-# Requires Rust 1.97.1 (LazyLock, simd_caps, modern std APIs)
 #
 # CPU detection & SIMD dispatch documentation: see Dockerfile.md
 # AVX-512 pinned variant: see Dockerfile.avx512
@@ -15,22 +14,33 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates gcc libc6-dev pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Rust 1.97.1 via rustup — MUST match rust-toolchain.toml (channel =
-# "1.97.1") and Cargo.toml's `rust-version = "1.97"`. rust-toolchain.toml is
-# deliberately NOT copied into the image (rustup would try to download a second
-# toolchain at build time), so this pin is the only thing keeping the image in
-# step with the repo — bump it whenever rust-toolchain.toml moves.
+# Install Rust via rustup. The version below MUST match rust-toolchain.toml's
+# `channel` and satisfy Cargo.toml's `rust-version`; the number is deliberately
+# not restated in this prose, per rust-toolchain.toml's own warning that "a stale
+# comment on a version pin is how the next reader learns the wrong number" — that
+# is exactly how this file came to pin 1.97.1 while the repo required 1.98, which
+# fails at once with "rustc 1.97.1 is not supported by the following package".
+# rust-toolchain.toml is deliberately NOT copied into the image (rustup would
+# download a second toolchain at build time), so this pin is the only thing
+# keeping the image in step with the repo — bump it whenever the channel moves.
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
-    sh -s -- -y --default-toolchain 1.97.1 --profile minimal \
-    && rustc --version | grep -q "1.97.1"
+    sh -s -- -y --default-toolchain 1.98.1 --profile minimal \
+    && rustc --version | grep -q "1.98.1"
 
 WORKDIR /app
 
-# Copy workspace files first for layer caching
-COPY Cargo.toml Cargo.lock ./
+# Copy workspace files first for layer caching.
+#
+# Cargo.lock is deliberately NOT copied: it is gitignored (see .gitignore — this
+# is a library crate consumed by sibling repos via git dependency, so a committed
+# lock is never used by a downstream build), which means it is absent from the
+# build context and `COPY Cargo.toml Cargo.lock ./` fails the build outright with
+# "failed to calculate checksum ... /Cargo.lock: not found" — BuildKit's wording
+# for a missing source, not a corrupt one. Cargo resolves fresh here instead.
+COPY Cargo.toml ./
 COPY ndarray-rand/Cargo.toml ndarray-rand/Cargo.toml
 COPY crates/ crates/
 
@@ -76,4 +86,4 @@ RUN cargo test --release --lib -- hpc:: 2>&1 && echo "=== HPC TESTS OK ==="
 # Minimal runtime image — just proves it compiled
 FROM debian:bookworm-slim
 COPY --from=builder /app/target/release/libndarray.rlib /usr/local/lib/
-CMD ["echo", "ndarray build verified — Rust 1.97.1"]
+CMD ["echo", "ndarray build verified"]
