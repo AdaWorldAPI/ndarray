@@ -26,7 +26,9 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
 
 WORKDIR /app
 
-COPY Cargo.toml Cargo.lock ./
+# Cargo.lock is gitignored and therefore absent from the build context; copying
+# it fails the build at this line. See the same note in ./Dockerfile.
+COPY Cargo.toml ./
 COPY ndarray-rand/Cargo.toml ndarray-rand/Cargo.toml
 COPY crates/ crates/
 

@@ -29,8 +29,15 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
 
 WORKDIR /app
 
-# Copy workspace files first for layer caching
-COPY Cargo.toml Cargo.lock ./
+# Copy workspace files first for layer caching.
+#
+# Cargo.lock is deliberately NOT copied: it is gitignored (see .gitignore — this
+# is a library crate consumed by sibling repos via git dependency, so a committed
+# lock is never used by a downstream build), which means it is absent from the
+# build context and `COPY Cargo.toml Cargo.lock ./` fails the build outright with
+# "failed to calculate checksum ... /Cargo.lock: not found" — BuildKit's wording
+# for a missing source, not a corrupt one. Cargo resolves fresh here instead.
+COPY Cargo.toml ./
 COPY ndarray-rand/Cargo.toml ndarray-rand/Cargo.toml
 COPY crates/ crates/
 
