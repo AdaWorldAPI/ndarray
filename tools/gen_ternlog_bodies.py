@@ -234,9 +234,11 @@ def main(write):
     # fn that itself carries the attribute — E0133 otherwise, and rustc says
     # explicitly that the feature being enabled in the build configuration
     # "does not remove the requirement to list it". A safe annotated fn called
-    # from a plain fn fails the same way, so the requirement propagates up the
-    # whole call chain and cannot stop at a pub boundary that safe consumers
-    # (simd_masking_ops, mask-risc) call. Identical on x86 (sse2 / avx2 /
+    # from a plain fn fails the same way. Annotating is NOT the answer: a
+    # simd_{arch}.rs file is compiled for exactly one target CPU, selected by
+    # cfg, so the feature is already a property of the file; per-fn attributes
+    # would restate it redundantly and propagate to every safe caller
+    # (simd_masking_ops, mask-risc). rustc just does not read the cfg as proof. Identical on x86 (sse2 / avx2 /
     # avx512f, even under -Ctarget-cpu=x86-64-v4). ONLY wasm32 simd128
     # intrinsics are callable from plain safe code (with or without the flag),
     # which is why the wasm body below carries no `unsafe`. Hence: one

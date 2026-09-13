@@ -476,7 +476,11 @@ simd_{avx512,avx2,neon,wasm,scalar}.rs   peer backends, each owns realization
   fns whose CALL requires the caller to carry the matching
   `#[target_feature]`; build-config features do not count (rustc says so in
   the E0133 note), and a safe annotated fn called from a plain fn fails the
-  same way, so the requirement propagates to the pub boundary. wasm32
+  same way. The per-fn annotation is not the fix: a `simd_{arch}.rs` file is
+  compiled for exactly one target CPU, selected by `cfg`, so the feature is
+  already a property of the file — restating it on every fn is illogical and
+  propagates to every safe caller; rustc just does not read the `cfg` as
+  evidence. wasm32
   simd128 intrinsics are callable from plain safe code. Rule: a backend
   method owns exactly one expression-narrow `unsafe` at its intrinsic
   boundary with a SAFETY line; wasm bodies carry none; nothing above a

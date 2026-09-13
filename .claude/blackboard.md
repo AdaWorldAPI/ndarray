@@ -113,9 +113,14 @@ backend author will look:**
   | x86_64: plain fn → `_mm512_ternarylogic_epi64`, even with `-Ctarget-cpu=x86-64-v4` | **E0133** |
   | wasm32: plain fn → `v128_and`, with or without `+simd128` | **OK** |
 
-  So the intrinsic *functions* are safe, but a safe call chain must be
-  `#[target_feature]`-annotated end to end, and it cannot end at a pub fn that
-  safe consumers call. Consequence: one expression-narrow `unsafe` at the
+  So the intrinsic *functions* are safe, but rustc only accepts a per-fn
+  `#[target_feature]` as evidence — and in this repo that evidence is
+  **illogical to state** (operator ruling): every `simd_{arch}.rs` is compiled
+  for exactly one target CPU, selected by `cfg` at compile time, so the
+  feature is already a property of the file. Annotating each fn would be a
+  second, redundant declaration of the same fact, and it would propagate to
+  every safe caller up to the pub boundary. rustc simply does not read the
+  `cfg` as proof. Consequence: one expression-narrow `unsafe` at the
   intrinsic boundary per backend method, with a SAFETY line (the generated
   NEON body); the generated WASM body carries none; `simd_masking_ops.rs`
   and every consumer above it stay `forbid(unsafe_code)`. Follow-up, not
