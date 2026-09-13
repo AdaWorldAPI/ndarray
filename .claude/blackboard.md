@@ -98,16 +98,29 @@ whether the selection is fast.
 backend author will look:**
 
 - **97 % safe. `unsafe` only for byte-code asm (AMX-class inline asm).**
-  Measured limit on aarch64 with rustc 1.98.1: the NEON intrinsics are safe
-  `#[target_feature(enable = "neon")]` fns, but calling one from a fn that
-  does not itself carry that attribute is E0133 ("the neon target feature
-  being enabled in the build configuration does not remove the requirement
-  to list it"), and putting the attribute on the pub `ternlog` would push
-  the same requirement onto every safe caller. So the intrinsic boundary in
-  a backend file is the one residual `unsafe`, narrowed to the expression,
-  with a SAFETY line; `simd_masking_ops.rs` and every consumer above it stay
-  `forbid(unsafe_code)`. (The first safe-call attempt is in the generator's
-  comment so it is not retried blind.)
+  Operator, on the intrinsic question: *"98 % of intrinsics are available in
+  safe mode by rust 1.98.1 — if not, document where and why."* Measured on
+  the pinned 1.98.1 with `tools/safe_intrinsic_probe` (re-run after every
+  toolchain bump; the answer is a toolchain property):
+
+  | arch / call shape | 1.98.1 |
+  |---|---|
+  | aarch64: plain fn → `vandq_u32` | **E0133** — caller must carry `#[target_feature(enable = "neon")]`; build-config `neon` "does not remove the requirement" |
+  | aarch64: `#[target_feature(neon)]` fn → `vandq_u32` | OK (safe, no `unsafe`) |
+  | aarch64: plain fn → that safe annotated fn | **E0133** — the requirement propagates up the chain |
+  | x86_64: plain fn → `_mm_and_si128` (sse2, baseline) | **E0133** |
+  | x86_64: plain fn → `_mm256_and_si256`, even with `-Ctarget-cpu=x86-64-v3` | **E0133** |
+  | x86_64: plain fn → `_mm512_ternarylogic_epi64`, even with `-Ctarget-cpu=x86-64-v4` | **E0133** |
+  | wasm32: plain fn → `v128_and`, with or without `+simd128` | **OK** |
+
+  So the intrinsic *functions* are safe, but a safe call chain must be
+  `#[target_feature]`-annotated end to end, and it cannot end at a pub fn that
+  safe consumers call. Consequence: one expression-narrow `unsafe` at the
+  intrinsic boundary per backend method, with a SAFETY line (the generated
+  NEON body); the generated WASM body carries none; `simd_masking_ops.rs`
+  and every consumer above it stay `forbid(unsafe_code)`. Follow-up, not
+  this PR: the 20 pre-existing `unsafe` blocks in `simd_wasm.rs` are
+  removable under this finding.
 - **Conversions are bit-exact; rounding happens at most once.** F32 →
   BF16x16 rounds exactly once, through a fused `add_mul` — never a separate
   multiply then add, never a convert-then-convert. Mask primitives carry no

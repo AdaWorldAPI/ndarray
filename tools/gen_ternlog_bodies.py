@@ -228,16 +228,20 @@ def main(write):
     # fails rung 3 of the aarch64 ladder ("the assembly contains the expected
     # NEON operations and no unexpected scalarization"). The body must be
     # written in the backend's own intrinsic vocabulary, one quad at a time.
-    # Why `unsafe` (measured 2026-09-13, not assumed): the NEON intrinsics are
-    # safe `#[target_feature(enable = "neon")]` fns since Rust 1.87, but rustc
-    # (1.98.1) still requires the CALLER to carry `#[target_feature(enable =
-    # "neon")]` — "the neon target feature being enabled in the build
-    # configuration does not remove the requirement to list it" (E0133). Putting
-    # that attribute on the pub `ternlog` would propagate the same requirement
-    # to every safe caller (simd_masking_ops, mask-risc), so the intrinsic
-    # boundary is the ONE place unsafe lives, as narrowly as an expression, with
-    # the same SAFETY reasoning every other intrinsic call in simd_neon.rs
-    # carries. Everything above the backend stays `forbid(unsafe_code)`.
+    # Why `unsafe` here at all (MEASURED on the pinned rustc 1.98.1 with
+    # tools/safe_intrinsic_probe, not assumed): the NEON intrinsics are safe
+    # `#[target_feature(enable = "neon")]` fns, but a call is only safe from a
+    # fn that itself carries the attribute — E0133 otherwise, and rustc says
+    # explicitly that the feature being enabled in the build configuration
+    # "does not remove the requirement to list it". A safe annotated fn called
+    # from a plain fn fails the same way, so the requirement propagates up the
+    # whole call chain and cannot stop at a pub boundary that safe consumers
+    # (simd_masking_ops, mask-risc) call. Identical on x86 (sse2 / avx2 /
+    # avx512f, even under -Ctarget-cpu=x86-64-v4). ONLY wasm32 simd128
+    # intrinsics are callable from plain safe code (with or without the flag),
+    # which is why the wasm body below carries no `unsafe`. Hence: one
+    # expression-narrow `unsafe` at the intrinsic boundary per backend method,
+    # with a SAFETY line; everything above the backends is forbid(unsafe_code).
     NEON_SAFETY = ("NEON is a baseline feature of every aarch64 target this module compiles\n"
                    "for; these are pure register operations on values already in `uint32x4_t`.")
     lad = ladder("ternlog_two_input_u32x4", "x", "y", "z", indent="                ", **NEONL)

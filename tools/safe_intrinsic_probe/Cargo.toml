@@ -1,0 +1,21 @@
+# safe_intrinsic_probe — which SIMD intrinsics are callable from SAFE code on
+# the pinned toolchain, per architecture. Not a workspace member; run by hand
+# after a toolchain bump (the answer is a toolchain property, not a code one):
+#
+#   cd tools/safe_intrinsic_probe
+#   RUSTFLAGS="--cfg probe_a"  cargo check --target aarch64-unknown-linux-gnu   # E0133 on 1.98.1
+#   RUSTFLAGS="--cfg probe_c"  cargo check --target aarch64-unknown-linux-gnu   # E0133 on 1.98.1
+#   RUSTFLAGS="--cfg probe_a3 -Ctarget-cpu=x86-64-v4" cargo check               # E0133 on 1.98.1
+#   RUSTFLAGS="--cfg probe_a -Ctarget-feature=+simd128" cargo check --target wasm32-unknown-unknown  # OK
+#
+# Result matrix and the consequence for the backends: see
+# .claude/knowledge/vertical-simd-consumer-contract.md § "unsafe at the
+# intrinsic boundary". Uses the repo's rust-toolchain.toml via the symlink.
+[package]
+name = "safe_intrinsic_probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
