@@ -423,3 +423,51 @@ removal commit had to be reverted once the step-1 gate was found. "Contains
 raw intrinsics" and "raw intrinsics are reachable" are different claims;
 audit the second. Full record: board `EPIPHANIES.md` 2026-07-28 entry +
 the `.cargo/config.toml` comment block.
+
+---
+
+## The masking layer: `simd_masking_ops.rs` and the two laws above the backends (2026-09-13)
+
+Operator-ruled during the mask-RISC arc; recorded here because every W1a
+primitive that turns values into masks, composes masks, or reduces under a
+mask is now expected to land in THIS shape rather than beside `add_i8`.
+
+```text
+consumers                 semantic ops only — TERNLOG<IMM>, AND, XOR, COUNT
+simd_masking_ops.rs       slice/chunk/tail ergonomics, *_assign forms,
+                          mask composition, masked reductions — never an ISA
+simd.rs                   architecture-agnostic types, compile-time selection
+simd_{avx512,avx2,neon,wasm,scalar}.rs   peer backends, each owns realization
+```
+
+- **Polyfill law.** Every public mask/SIMD primitive a consumer uses has a
+  compile-time implementation in ALL FIVE backends; scalar is a peer, not a
+  fallback; no runtime ISA dispatch above `simd.rs`; hardware-specific
+  optimisation (including truth-table specialisation of `ternlog`) lives in
+  the backend file only. A consumer that branches on ISA is a violation.
+- **Backend law.** No shared generic implementation body under the backends.
+  Shared tests and shared *generated* truth-table logic are fine
+  (`tools/gen_ternlog_bodies.py` emits backend-LOCAL bodies between
+  `GEN-TERNLOG` markers); a common function the backends call into is not.
+- **Placement rule for new work.** Backend semantics (what `U64x8::ternlog`
+  *is*) never move into `simd_masking_ops.rs`; slice ergonomics, tail
+  handling, reusable-destination forms and fused conveniences never move into
+  a backend. A facade function that cannot be one delegation is the signal
+  the substrate is missing a word (the missing-capability STOP rule).
+- **Acceptance for a mask primitive** adds one row to the criteria above:
+  the cross-ISA parity harnesses (`crates/wasm-simd-parity`, run under node;
+  `crates/neon-simd-parity`, run under qemu) must carry the primitive's
+  check — the x86 `cargo test` suite never compiles `simd_wasm.rs` or
+  `simd_neon.rs`, so a backend body that only x86 tests cover is unproven on
+  the target it was written for. The 256-table `ternlog` arm is the template.
+- **AArch64 without the hardware — the acceptance ladder.** A NEON body is
+  authored from the LLVM/Clang intrinsic corpus + Rust `core::arch::aarch64`
+  declarations and proven by: (1) cross-target compile; (2) the parity harness
+  under qemu (CI); (3) cross-compiled assembly showing the expected NEON ops
+  and no unexpected scalarisation — a `to_array()`-per-lane loop passed rungs
+  1, 2 and 4 and FAILED 3 (536 scalar vs 4 vector ops), which is why rung 3 is
+  not optional; (4) exhaustive reference parity; (5) hardware benchmarking as
+  a later performance gate. Command shape for rung 3:
+  `cargo rustc --release --manifest-path crates/neon-simd-parity/Cargo.toml
+  --target aarch64-unknown-linux-gnu -- --emit=asm`, then count
+  `(and|orr|eor|bic|orn) v*.16b` against `(and|orr|eor|bic) w*,`.

@@ -1,3 +1,125 @@
+## 2026-09-13 — `simd_masking_ops.rs` + generated backend-local `ternlog` bodies + the DuckDB-vector-execution primitive set (PR1 of the mask-RISC arc)
+
+**Three-layer contract, operator-ruled this session — the architecture law
+this entry exists to make durable:**
+
+```text
+consumers (lance-graph-mask-risc, lgj-abi kernels, planner)
+        │  semantic ops only: TERNLOG<IMM>, AND, XOR, COUNT, eq→mask …
+        ▼
+simd_masking_ops.rs     slice/chunk/tail ergonomics, *_assign forms,
+        │               mask composition, masked reductions — NEVER an ISA
+        ▼
+simd.rs                 architecture-agnostic lane types, compile-time selected
+        ▼
+simd_{avx512,avx2,neon,wasm,scalar}.rs   each owns its realization, as a PEER
+```
+
+- **POLYFILL LAW.** ndarray is the ISA membrane. Every public mask/SIMD
+  primitive a consumer uses has compile-time implementations for AVX-512,
+  AVX2, NEON, WASM SIMD and scalar. **Scalar is a peer backend, not a
+  fallback.** No runtime ISA dispatch, no fallback chains. Hardware-specific
+  optimisation — including truth-table specialisation of `ternlog` — lives
+  entirely inside the corresponding backend file. Consumers never branch on
+  ISA; `TERNLOG` stays semantic above the backends.
+- **BACKEND LAW.** No shared generic/polyfill implementation body that the
+  backends delegate into. Shared *tests* and shared *generated truth-table
+  logic* are fine; a shared *runtime* body is not. The route to remove
+  repeated source is code generation emitting backend-LOCAL bodies.
+
+**What landed:**
+
+1. **`src/simd_masking_ops.rs`** — the mask family moved out of
+   `simd_int_ops.rs` wholesale (predicates→mask, mask algebra, ternlog,
+   masked reductions, care-masked register match, blend) with its tests.
+   `simd_int_ops.rs` is integer arithmetic/conversion again. Public surface
+   unchanged: every `pub fn` still re-exports through `ndarray::simd`; the one
+   consumer that named the internal module (`lance-graph-planner`
+   `examples/dcr_w0_replay_budget.rs`) now imports from the facade.
+2. **`tools/gen_ternlog_bodies.py`** — Shannon-lowers each 8-bit table into
+   two 2-input tables (`f = (!c & T0) | (c & T1)`), ≤ 7 ops (the naive
+   minterm form was up to 36), self-checks all 256 tables in Python, and
+   PRINTS each backend's body in that backend's own vocabulary between
+   `GEN-TERNLOG` markers: operator traits on the array lanes (avx2, scalar),
+   per-`u32`-lane for NEON (`#[cfg(target_arch = "aarch64")]`-gated helper),
+   `v128_*` intrinsics for WASM (helper inside the cfg-gated `wasm32_simd`
+   module). AVX-512 keeps `_mm512_ternarylogic_epi64` untouched. The generic
+   `simd_ternlog_lower.rs` that a first cut shared across four backends was
+   DELETED — it violated the Backend Law and also blew the debug stack
+   (`#[inline(always)]` × 256 tables in one test frame).
+   Two generator traps recorded: a `const` item cannot read the enclosing
+   fn's `IMM` (E0401) — the tables are `let`-bound and fold identically after
+   monomorphisation; and the helper must be placed INSIDE the cfg-gated
+   module or every host compiles it and fails to resolve the intrinsics.
+3. **New primitives** (all through `ndarray::simd`): `lt/ge/le/ne/eq_i32_to_mask`,
+   `ne_u32_to_mask`, `mask_not{,_assign}` (tail re-cleared against `n_rows`),
+   `mask_xor{,_assign}` (its own primitive, lane `^` — NOT `ternlog::<XOR3>`,
+   whose AVX2 minterm cost is pointless for a native op), `mask_any`,
+   `mask_all`, `ternary_match_{u32,u64,strided}_to_mask` (care-masked
+   register match via `ternlog::<XOR_AND>` + zero test — the TCAM shape of a
+   V3 12-byte facet), `masked_min/max_i32`, `blend_i32`; immediates
+   `XOR_AND = 0x28`, `AND2_OR = 0xEA`. Ordered compares derive from `gt`
+   by complement, so they are exact at `i32::MIN`/`MAX` (threshold shifting
+   underflows).
+
+**Acceptance matrix, measured (not asserted):** for every IMM in 0..=255,
+bit-serial reference == the compiled realisation —
+AVX2 arm (`cargo test`, x86-64-v3): 113/113; AVX-512 arm (`x86-64-v4`,
+separate target dir): 113/113; **WASM: run for real under node** via
+`scripts/wasm-parity.sh`, whose harness gained `check_ternlog_all_tables`
+(256 tables × `U32x16` native v128 body × `U64x8` scalar body, two operand
+triples each) — rc=0; **NEON: rungs 1 and 3 of the AArch64 ladder measured on this host** —
+`cargo check --target aarch64-unknown-linux-gnu` of lib+tests and the
+harness (all 256 monomorphisations) compile; the cross-compiled harness
+assembly selects **424 NEON vector logical ops** (`and/orr/eor/bic/orn
+v.16b` — LLVM fuses `orr(mvn)` into `orn`) against 41 scalar ops left in
+harness scaffolding. The FIRST generated NEON body — a per-`u32`-lane loop
+through `to_array()`/`from_array()` — SCALARIZED: 536 scalar vs 4 vector
+ops. Same truth tables, same tests, rung 3 red. The body is now emitted
+per 128-bit quad in the backend's own intrinsic vocabulary
+(`vandq/vorrq/veorq/vbicq/vmvnq_u32` on `uint32x4_t`). Rung 2 (run under
+qemu) is CI's `neon_simd` job — no cross linker / qemu on this host, stated
+not assumed; rung 5 (Apple/AArch64 hardware) is a later performance gate,
+never a blocker for authoring the backend. Both harness arms use the SAME check body — shared tests are
+allowed, shared implementation is not.
+
+**AArch64 acceptance ladder (operator, 2026-09-13)** — the LLVM/Clang
+intrinsic corpus is the remote instruction catalogue for a backend the
+author cannot run: (1) cross-target compile succeeds; (2) parity harness
+compiles/runs under an emulator where sensible; (3) generated LLVM IR /
+assembly contains the expected NEON operations and no unexpected
+scalarisation; (4) truth-table / reference parity is exhaustive where
+possible; (5) real hardware benchmarking is a LATER performance gate.
+Three different proofs, kept sharp: LLVM says what lowering is available,
+cross-compiled assembly says what LLVM actually selected, hardware says
+whether the selection is fast.
+
+**Two standing rules (operator, 2026-09-13), recorded where the next
+backend author will look:**
+
+- **97 % safe. `unsafe` only for byte-code asm (AMX-class inline asm).**
+  Measured limit on aarch64 with rustc 1.98.1: the NEON intrinsics are safe
+  `#[target_feature(enable = "neon")]` fns, but calling one from a fn that
+  does not itself carry that attribute is E0133 ("the neon target feature
+  being enabled in the build configuration does not remove the requirement
+  to list it"), and putting the attribute on the pub `ternlog` would push
+  the same requirement onto every safe caller. So the intrinsic boundary in
+  a backend file is the one residual `unsafe`, narrowed to the expression,
+  with a SAFETY line; `simd_masking_ops.rs` and every consumer above it stay
+  `forbid(unsafe_code)`. (The first safe-call attempt is in the generator's
+  comment so it is not retried blind.)
+- **Conversions are bit-exact; rounding happens at most once.** F32 →
+  BF16x16 rounds exactly once, through a fused `add_mul` — never a separate
+  multiply then add, never a convert-then-convert. Mask primitives carry no
+  floats, so this PR is unaffected; the rule binds the BF16 lanes and every
+  future reduction that touches them.
+
+**Loose ends:** `simd_masking_ops` still has only slice-level compositions
+that consumers already needed; the ergonomic fused forms the mask-RISC
+executor will want (`masked_count_where_eq`, chunked survivor-word skip
+helpers) land with that consumer, backend-first. A `stride_bytes == 8` twin
+of the contiguous `eq_u32_strided` fast path is still unbuilt (no caller).
+
 ## 2026-09-05 — D-GTM-0l MEASURED (prefix-tract coverage, R2IL 6502 ore)
 
 The probe I flagged as decisive ran. `examples/prefix_tract_coverage_probe.rs`

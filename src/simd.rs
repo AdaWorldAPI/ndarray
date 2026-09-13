@@ -584,6 +584,13 @@ pub mod ternlog {
     pub const AND2: i32 = 0xC0;
     /// `a | b | c` — union of three masks.
     pub const OR3: i32 = 0xFE;
+    /// `(a ^ b) & c` — the bits where `a` and `b` DIFFER, restricted to the
+    /// care set `c`; zero iff `a` matches `b` under care. The care-masked
+    /// (ternary) match kernel: `ternary_match_*_to_mask` tests this for zero.
+    pub const XOR_AND: i32 = 0x28;
+    /// `(a & b) | c` — two prerequisites, or an override. The immediate the
+    /// `lance-graph-duckmask` flagship `(A & B) | C` lowers to.
+    pub const AND2_OR: i32 = 0xEA;
 }
 
 pub use crate::hpc::bitwise::{hamming_distance_raw, popcount_raw};
@@ -719,18 +726,51 @@ pub use crate::hpc::bf16_tile_gemm::{
 #[cfg(target_arch = "x86_64")]
 pub use crate::simd_amx::{amx_report, cpu_model, CpuModel};
 
-// Packed-bitmask predicates + mask algebra — the columnar-selection lane.
-// Slice-level siblings of `add_i8` / `dot_i8`, built on the lane-level
-// `U32x16::eq_bitmask` / `I32x16::gt_bitmask` methods. Surfaced here because
-// the W1a invariant is "all SIMD from `ndarray::simd`": a consumer that had to
-// reach into `ndarray::simd_int_ops` (or worse, write its own compare-and-pack
-// loop) would be a polyfill bypass. Bit order is normative and identical
-// across all of them — element `i` at bit `i % 64` of word `i / 64`, trailing
-// bits zero. See `src/simd_int_ops.rs` for the full statement.
+// Packed-bitmask predicates + mask algebra + masked reductions — the
+// columnar-selection lane, owned by `simd_masking_ops.rs` (the ergonomic
+// masking layer: slice/tail/in-place composition over the lane-level
+// `U32x16::eq_bitmask` / `I32x16::gt_bitmask` / `U64x8::ternlog` methods,
+// never an ISA). Surfaced here because the W1a invariant is "all SIMD from
+// `ndarray::simd`": a consumer that reached into `ndarray::simd_masking_ops`
+// directly (or worse, wrote its own compare-and-pack loop) would be a
+// polyfill bypass. Bit order is normative and identical across all of them —
+// element `i` at bit `i % 64` of word `i / 64`, trailing bits zero. See
+// `src/simd_masking_ops.rs` for the full statement.
 #[cfg(feature = "std")]
-pub use crate::simd_int_ops::{
-    eq_u32_strided_to_mask, eq_u32_to_mask, gt_i32_to_mask, mask_and, mask_and_assign, mask_andnot, mask_andnot_assign,
-    mask_or, mask_or_assign, mask_ternlog, mask_ternlog_assign, masked_strided_group_sum, masked_sum_i32,
+pub use crate::simd_masking_ops::{
+    // 2026-09-13: the closed comparison family + complement/xor/any/all + care-masked
+    // register match + masked min/max + blend (lance-graph-duckmask, lgj-abi D-MRL-1a).
+    blend_i32,
+    eq_i32_to_mask,
+    eq_u32_strided_to_mask,
+    eq_u32_to_mask,
+    ge_i32_to_mask,
+    gt_i32_to_mask,
+    le_i32_to_mask,
+    lt_i32_to_mask,
+    mask_all,
+    mask_and,
+    mask_and_assign,
+    mask_andnot,
+    mask_andnot_assign,
+    mask_any,
+    mask_not,
+    mask_not_assign,
+    mask_or,
+    mask_or_assign,
+    mask_ternlog,
+    mask_ternlog_assign,
+    mask_xor,
+    mask_xor_assign,
+    masked_max_i32,
+    masked_min_i32,
+    masked_strided_group_sum,
+    masked_sum_i32,
+    ne_i32_to_mask,
+    ne_u32_to_mask,
+    ternary_match_strided_to_mask,
+    ternary_match_u32_to_mask,
+    ternary_match_u64_to_mask,
 };
 // The popcount that closes the loop on the masks above: `mask_count` in ABI
 // terms. Already public at `ndarray::bitwise::popcount_batch_u64`; re-exported
