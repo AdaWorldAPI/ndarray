@@ -17,20 +17,23 @@
 //! `U64x8`, `0x3xx` `U64x8` algebra, `0x4xx` `I32x16` compares, `0x5xx`
 //! predicate→mask, `0x6xx` mask algebra, `0x7xx` care-match, `0x8xx` masked
 //! reductions and blend, `0x9xx` `mask_shift_morton` (the Morton hex
-//! neighbour shift, D-GTM-1m). `main.rs` (native / qemu) and `selfcheck()`
+//! neighbour shift, D-GTM-1m), `0xAxx` the gated `*_to_mask_under`
+//! predicates (mask-risc `Pred { under }`, D-MRX-0). `main.rs` (native / qemu) and `selfcheck()`
 //! (the wasm cdylib export, driven by `run.mjs`) both call [`run`].
 
 use ndarray::simd::{
-    blend_i32, eq_i32_to_mask, eq_u32_strided_to_mask, eq_u32_to_mask, ge_i32_to_mask, gt_i32_to_mask, le_i32_to_mask,
-    lt_i32_to_mask, mask_all, mask_and, mask_and_assign, mask_andnot, mask_andnot_assign, mask_any, mask_not,
-    mask_not_assign, mask_or, mask_or_assign, mask_shift_morton, mask_ternlog, mask_ternlog_assign, mask_xor,
-    mask_xor_assign, masked_max_i32, masked_min_i32, masked_strided_group_sum, masked_sum_i32, ne_i32_to_mask,
-    ne_u32_to_mask, ternary_match_strided_to_mask, ternary_match_u32_to_mask, ternary_match_u64_to_mask, ternlog,
-    I32x16, MortonDir, U32x16, U64x8,
+    blend_i32, eq_i32_to_mask, eq_i32_to_mask_under, eq_u32_strided_to_mask, eq_u32_to_mask, eq_u32_to_mask_under,
+    ge_i32_to_mask, ge_i32_to_mask_under, gt_i32_to_mask, gt_i32_to_mask_under, le_i32_to_mask, le_i32_to_mask_under,
+    lt_i32_to_mask, lt_i32_to_mask_under, mask_all, mask_and, mask_and_assign, mask_andnot, mask_andnot_assign,
+    mask_any, mask_not, mask_not_assign, mask_or, mask_or_assign, mask_shift_morton, mask_ternlog, mask_ternlog_assign,
+    mask_xor, mask_xor_assign, masked_max_i32, masked_min_i32, masked_strided_group_sum, masked_sum_i32,
+    ne_i32_to_mask, ne_i32_to_mask_under, ne_u32_to_mask, ne_u32_to_mask_under, ternary_match_strided_to_mask,
+    ternary_match_u32_to_mask, ternary_match_u32_to_mask_under, ternary_match_u64_to_mask,
+    ternary_match_u64_to_mask_under, ternlog, I32x16, MortonDir, U32x16, U64x8,
 };
 
 /// Number of check groups [`run`] executes (for the log line only).
-pub const CHECKS: usize = 9;
+pub const CHECKS: usize = 10;
 
 /// The wasm export: identical to [`run`], `extern "C"` so `run.mjs` can call it.
 #[no_mangle]
@@ -43,6 +46,7 @@ pub fn run() -> u32 {
     let groups: [fn() -> Result<(), u32>; CHECKS] = [
         check_ternlog_all_tables, check_u64x8_algebra, check_i32x16_compare, check_predicates_to_mask,
         check_mask_algebra, check_care_match, check_masked_reductions, check_blend, check_morton_shift,
+        check_predicates_under,
     ];
     for g in groups {
         if let Err(code) = g() {
@@ -428,6 +432,79 @@ fn check_predicates_to_mask() -> Result<(), u32> {
         eq_u32_strided_to_mask(&bytes, 4, 16, n, 7, &mut out);
         if out != reference_mask(n, out_len, |i| uvals[i] == 7) {
             return Err(0x580);
+        }
+    }
+    Ok(())
+}
+
+// ── 0xAxx: the gated predicates — `out = pred & under`, survivor-word skip ──
+
+/// Every `*_to_mask_under` against `reference_mask(n, out_len, |i| pred(i) &&
+/// gate_bit(i))`. The gate is built with every other word forced to ZERO (so
+/// the skip path is exercised on every length ≥ 64) and random bits elsewhere
+/// INCLUDING the last word's bits past `n` — the reference reads the gate BIT
+/// for row `i`, so a phantom past `n` never enters it, and the primitive must
+/// agree. One surplus out word pre-filled `u64::MAX` catches an OR-er.
+fn check_predicates_under() -> Result<(), u32> {
+    let mut rng = SplitMix64(0x5EED_0000_00A0);
+    for &n in &LENS {
+        let out_len = words_for(n) + 1;
+        let vals = i32_values(n, &mut rng);
+        let uvals = u32_values(n, &mut rng);
+        let vals64: Vec<u64> = (0..n).map(|_| rng.next() % 16).collect();
+        let gate: Vec<u64> = (0..words_for(n))
+            .map(|w| if w % 2 == 1 { 0 } else { rng.next() | 1 })
+            .collect();
+        let gate_bit = |i: usize| (gate[i / 64] >> (i % 64)) & 1 == 1;
+        let mut out = vec![u64::MAX; out_len];
+        let thresholds = [i32::MIN, -1, 0, 7, i32::MAX];
+        for (k, &t) in thresholds.iter().enumerate() {
+            let k = k as u32;
+            macro_rules! pred {
+                ($f:ident, $op:tt, $code:expr) => {{
+                    out.iter_mut().for_each(|w| *w = u64::MAX);
+                    $f(&vals, t, &gate, &mut out);
+                    if out != reference_mask(n, out_len, |i| vals[i] $op t && gate_bit(i)) {
+                        return Err($code | k);
+                    }
+                }};
+            }
+            pred!(gt_i32_to_mask_under, >, 0xA00);
+            pred!(lt_i32_to_mask_under, <, 0xA10);
+            pred!(ge_i32_to_mask_under, >=, 0xA20);
+            pred!(le_i32_to_mask_under, <=, 0xA30);
+            pred!(ne_i32_to_mask_under, !=, 0xA40);
+            pred!(eq_i32_to_mask_under, ==, 0xA50);
+        }
+        for (k, &needle) in [0u32, 7, u32::MAX, 0x8000_0000].iter().enumerate() {
+            let k = k as u32;
+            out.iter_mut().for_each(|w| *w = u64::MAX);
+            eq_u32_to_mask_under(&uvals, needle, &gate, &mut out);
+            if out != reference_mask(n, out_len, |i| uvals[i] == needle && gate_bit(i)) {
+                return Err(0xA60 | k);
+            }
+            out.iter_mut().for_each(|w| *w = u64::MAX);
+            ne_u32_to_mask_under(&uvals, needle, &gate, &mut out);
+            if out != reference_mask(n, out_len, |i| uvals[i] != needle && gate_bit(i)) {
+                return Err(0xA70 | k);
+            }
+        }
+        for (k, &(pattern, care)) in [(0b1010u32, 0b1011u32), (7, u32::MAX), (0, 0)]
+            .iter()
+            .enumerate()
+        {
+            let k = k as u32;
+            out.iter_mut().for_each(|w| *w = u64::MAX);
+            ternary_match_u32_to_mask_under(&uvals, pattern, care, &gate, &mut out);
+            if out != reference_mask(n, out_len, |i| (uvals[i] ^ pattern) & care == 0 && gate_bit(i)) {
+                return Err(0xA80 | k);
+            }
+            let (p64, c64) = (u64::from(pattern), u64::from(care));
+            out.iter_mut().for_each(|w| *w = u64::MAX);
+            ternary_match_u64_to_mask_under(&vals64, p64, c64, &gate, &mut out);
+            if out != reference_mask(n, out_len, |i| (vals64[i] ^ p64) & c64 == 0 && gate_bit(i)) {
+                return Err(0xA90 | k);
+            }
         }
     }
     Ok(())

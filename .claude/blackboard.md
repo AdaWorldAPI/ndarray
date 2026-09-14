@@ -1,3 +1,44 @@
+## 2026-09-14 (4) — D-MRX-0: `*_to_mask_under` — the gated predicate mask-risc's `Pred { under }` promised and T1 lacked
+
+**Why now.** lance-graph #1225's kernel-membrane review (PR2 council) ruled the
+executor may not compose a gated predicate from `*_to_mask` + `mask_and` (the
+whole plane, twice) nor skip words itself (a compute path above the facade):
+*"PR3 lands `*_to_mask_under` first."* This is that word.
+
+**Shape.** ONE private engine, `pack_under::<T, L>(name, values, under, out,
+group_bits)`: `out[w] = under[w] & pred(values)[w]`, the predicate evaluated
+only where `under[w] != 0`. Word granularity (64 rows) is the finest a packed
+compare can skip at; an executor may skip coarser (mask-risc speaks of
+1024-row chunks) with an identical result. Cost ∝ live gate words, never rows.
+The predicate's own tail law makes a phantom gate bit past `n` vanish — the
+AND conforms regardless, so a gate never needs cleaning before use. Ten public
+members, one per `Pred` variant (`gt/lt/ge/le/eq/ne_i32`, `eq/ne_u32`,
+`ternary_match_u32/u64`), each one `pack_under` call over the SAME lane op its
+ungated sibling uses — no new backend semantics, so no backend file changed.
+
+**Falsifiers.** (1) family ≡ `ungated & gate` word-for-word at ten lengths with
+phantom gate bits present; (2) the skip is MEASURED: a counting closure sees
+20 of 40 groups under an alternating gate, 40 under all-ones — disable-run
+red (`left: 40, right: 20`) with the `gate == 0` early-out removed, green
+restored; (3) phantom bits do not leak at n = 70; (4) short gate panics;
+doctests 10/10. Parity harness group 10 (`0xAxx`, `check_predicates_under`):
+alternating-zero gate with random phantom bits, reference reads the gate BIT
+per row. Native (AVX2), nightly (`core::simd`), wasm simd128 and wasm scalar: all
+10/10 bit-identical (neon under qemu not runnable in this environment, as
+before).
+
+**Allocation.** Engine + first member by the orchestrator; nine members +
+tests by a Sonnet worker against a written spec (its Bash died on a full disk
+mid-run — the tasks tmpfs and the checkout share one allowance — so it landed
+Tasks A–C unverified and reported exactly that; the orchestrator gated
+centrally after freeing 6.5 GB of stale scratch targets and landed the parity
+arm itself). W1a deviation record as for `mask_andnot` / `mask_ternlog`:
+free-fn family shape beside its siblings, not a struct method.
+
+**Loose ends.** The strided operand family (12-in-16-byte register compares
+for `LaneRef`) and `u8/u16/u64` compare-to-mask (DuckDB matrix G1/G2) remain
+T1 gaps; neither is needed for PR3's first executor.
+
 ## 2026-09-14 (3) — D-GTM-1m MEASURED: `mask_shift_morton` lands; the win is in the NODE SPAN, not the op — n = 17.0 → 5.7 µs (−66 %)
 
 `mask_shift_morton` (255c36d) is bit-exact (F1–F4, parity 9/9 on native/
