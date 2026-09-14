@@ -64,6 +64,10 @@ name = "ternlog_codegen_probe"
 required-features = ["std"]
 
 [[example]]
+name = "amx_realization_report"
+required-features = ["std"]
+
+[[example]]
 name = "amx_gemm_bench"
 required-features = ["std"]
 

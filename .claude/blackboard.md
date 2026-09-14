@@ -150,6 +150,20 @@ simd_{avx512,avx2,neon,wasm,scalar}.rs   each owns its realization, as a PEER
 
 **What landed:**
 
+> **CI finding (2026-09-14, e730109 red on `tier4-avx512-check`):** `ci.yaml`'s
+> workflow-global `RUSTFLAGS: "-D warnings"` REPLACES every `.cargo/config*`
+> rustflags entry (cargo precedence: RUSTFLAGS > target.<triple> > target.<cfg>
+> > build). Consequences, both measured: (a) the v4 job never had a
+> target-cpu, with the env-var recipe (which loses to the joined cfg `v3`
+> locally) or with `--config` (erased by the global env in CI) — the new
+> vpternlog assertion caught it at 0; (b) EVERY x86 job in CI builds at the
+> x86-64 baseline, without the v3 pin and without the dalek/poly1305 `--cfg`s
+> that `.cargo/config.toml` exists to apply. (a) is fixed in this PR
+> (`env -u RUSTFLAGS` + `--config .cargo/config-v4.toml`, `-Dwarnings` moved
+> into that file). (b) is pre-existing and out of this PR's concern: the fix
+> is a triple-scoped `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS` for the
+> x86 jobs plus per-target flags for nostd/wasm/aarch64, its own PR.
+
 1. **`src/simd_masking_ops.rs`** — the mask family moved out of
    `simd_int_ops.rs` wholesale (predicates→mask, mask algebra, ternlog,
    masked reductions, care-masked register match, blend) with its tests.

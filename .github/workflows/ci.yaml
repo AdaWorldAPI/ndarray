@@ -261,6 +261,18 @@ jobs:
     # witness on PR #306 found 0 `vpternlog` in a "v4" build. `--config`
     # is the same cfg key at higher precedence, placed LAST, so v4 wins;
     # explicit `--target` still keeps build scripts on the host baseline.
+    #
+    # # ...and why `env -u RUSTFLAGS` (first run of the assertion below, e730109):
+    #
+    # This workflow sets a GLOBAL `RUSTFLAGS: "-D warnings"`, and a RUSTFLAGS
+    # env REPLACES every `.cargo/config*` rustflags entry outright (cargo's
+    # precedence: RUSTFLAGS > target.<triple> > target.<cfg> > build). So with
+    # the global env in force NO config target-cpu applies — `--config` or
+    # not — and the probe assembled to 0 vpternlog. The steps below unset it
+    # for the cargo call; `-Dwarnings` comes back through config-v4.toml's
+    # own rustflags list so the warning gate is not lost. (The same global
+    # env also erases the v3 pin and the dalek/poly1305 cfgs for every other
+    # x86 job — a pre-existing gap, recorded in the blackboard, not this PR's.)
     runs-on: ubuntu-latest
     name: tier4-avx512-check
     steps:
@@ -268,13 +280,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: cargo check (v4 / AVX-512 dispatch arm)
-        run: cargo --config .cargo/config-v4.toml check --target=x86_64-unknown-linux-gnu -p ndarray --features approx,serde,rayon
+        run: env -u RUSTFLAGS cargo --config .cargo/config-v4.toml check --target=x86_64-unknown-linux-gnu -p ndarray --features approx,serde,rayon
       - name: cargo check (v4 / AVX-512 + hpc-extras)
-        run: cargo --config .cargo/config-v4.toml check --target=x86_64-unknown-linux-gnu -p ndarray --features approx,serde,rayon,hpc-extras
+        run: env -u RUSTFLAGS cargo --config .cargo/config-v4.toml check --target=x86_64-unknown-linux-gnu -p ndarray --features approx,serde,rayon,hpc-extras
       - name: prove the arm actually selected (a v4 build must emit vpternlog)
         run: |
-          cargo --config .cargo/config-v4.toml rustc --profile ci-codegen --example ternlog_codegen_probe --target=x86_64-unknown-linux-gnu -- --emit=asm -C debuginfo=0
-          grep -c vpternlog target/x86_64-unknown-linux-gnu/ci-codegen/examples/ternlog_codegen_probe-*.s
+          env -u RUSTFLAGS cargo --config .cargo/config-v4.toml rustc --profile ci-codegen --example ternlog_codegen_probe --target=x86_64-unknown-linux-gnu -- --emit=asm -C debuginfo=0
+          n=$(cat target/x86_64-unknown-linux-gnu/ci-codegen/examples/ternlog_codegen_probe-*.s | grep -c vpternlog)
+          echo "vpternlog instructions: $n"
+          test "$n" -ge 3
 
   nightly-simd-polyfill:
     # TD-SIMD-9 from .claude/knowledge/simd-dispatch-architecture.md.

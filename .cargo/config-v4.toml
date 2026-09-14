@@ -15,5 +15,8 @@
 # `config-avx512.toml` is the stricter Sapphire Rapids EXECUTION config (VNNI,
 # BF16, FP16, AMX…); it SIGILLs on any earlier AVX-512 silicon, so it is never
 # the CI compile oracle.
+# `-Dwarnings` rides here because CI must `env -u RUSTFLAGS` to let this file
+# apply at all (a RUSTFLAGS env replaces every config rustflags entry), and
+# the repo rule is warnings-clean on every arm anyway.
 [target.'cfg(target_arch = "x86_64")']
-rustflags = ["-Ctarget-cpu=x86-64-v4"]
+rustflags = ["-Ctarget-cpu=x86-64-v4", "-Dwarnings"]
