@@ -2,7 +2,9 @@
 //!
 //! Two main macros:
 //! - `impl_fp_ops!` — Add/Sub/Mul/Div/Neg + assign variants for float types.
-//! - `impl_int_ops!` — Add/Sub/BitAnd/BitOr/BitXor + assign variants for int types.
+//! - `impl_int_ops!` — Add/Sub/BitAnd/BitOr/BitXor/Not + assign variants for int types
+//!   (`Not` added 2026-09-14: the mask family's `!U64x8` complement did not compile on
+//!   this backend — the first of three gaps the five-flavour audit of #306 closed here).
 //!
 //! A separate `impl_default!` macro handles `Default` for types whose own
 //! module has NOT already derived/implemented it (e.g. F32x16/F32x8 already
@@ -170,6 +172,13 @@ macro_rules! impl_int_ops {
             }
         }
 
+        impl core::ops::Not for $name {
+            type Output = Self;
+            #[inline(always)]
+            fn not(self) -> Self {
+                Self(!self.0)
+            }
+        }
         impl core::ops::BitXorAssign for $name {
             #[inline(always)]
             fn bitxor_assign(&mut self, rhs: Self) {

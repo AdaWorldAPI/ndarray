@@ -351,7 +351,7 @@ fn check_u64x8_algebra() -> Result<(), u32> {
     if (a - b).to_array() != core::array::from_fn(|i| a_arr[i].wrapping_sub(b_arr[i])) {
         return Err(0x30D);
     }
-    if !(a == a) || a == b {
+    if !(a == U64x8::from_array(a_arr)) || a == b {
         return Err(0x30E);
     }
     Ok(())
@@ -419,7 +419,7 @@ fn check_i32x16_compare() -> Result<(), u32> {
     if a.to_i16_array() != core::array::from_fn(|i| a_arr[i] as i16) {
         return Err(0x40C);
     }
-    if !(a == a) || a == b {
+    if !(a == I32x16::from_array(a_arr)) || a == b {
         return Err(0x40D);
     }
     Ok(())

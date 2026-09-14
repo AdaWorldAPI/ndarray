@@ -154,12 +154,15 @@ simd_{avx512,avx2,neon,wasm,scalar}.rs   each owns its realization, as a PEER
    `simd_int_ops.rs` wholesale (predicates→mask, mask algebra, ternlog,
    masked reductions, care-masked register match, blend) with its tests.
    `simd_int_ops.rs` is integer arithmetic/conversion again. Every moved
-   `pub fn` (31/31) still re-exports through `ndarray::simd`; the
-   `ndarray::simd_int_ops::<mask fn>` MODULE paths are gone (`simd_int_ops`
-   is `pub mod`, so that IS a public-path removal — "public surface
-   unchanged" was an overclaim, C2). The one known consumer of the module
-   path (`lance-graph-planner` `examples/dcr_w0_replay_budget.rs`) is moved
-   to the facade in the lance-graph PR, not in this one.
+   `pub fn` (31/31) still re-exports through `ndarray::simd`, AND the 13
+   mask functions that were public on master as `ndarray::simd_int_ops::<f>`
+   (`simd_int_ops` is `pub mod`, so those were public paths — the first
+   draft dropped them and called the surface "unchanged", C2; CodeRabbit
+   round 2 caught the downstream break) are re-exported from `simd_int_ops`
+   as a compatibility surface, verified complete by diffing master's
+   `pub fn` list against HEAD's `pub fn` + `pub use` set (0 missing). The
+   canonical path is the facade; `lance-graph-planner`
+   `examples/dcr_w0_replay_budget.rs` moves to it in the lance-graph PR.
 2. **`tools/gen_ternlog_bodies.py`** — Shannon-lowers each 8-bit table into
    two 2-input tables (`f = (!c & T0) | (c & T1)`), ≤ 7 ops (the naive
    minterm form was up to 36), self-checks all 256 tables in Python, and

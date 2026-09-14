@@ -226,7 +226,8 @@ unsafe fn aabb_intersect_batch_avx512(query: &Aabb, candidates: &[Aabb]) -> Vec<
         let m5 = q_min_z.simd_le(v_c_max_z);
         let m6 = q_max_z.simd_ge(v_c_min_z);
 
-        let all = m1.0 & m2.0 & m3.0 & m4.0 & m5.0 & m6.0;
+        let all =
+            m1.to_bitmask() & m2.to_bitmask() & m3.to_bitmask() & m4.to_bitmask() & m5.to_bitmask() & m6.to_bitmask();
 
         for i in 0..16 {
             result.push((all >> i) & 1 != 0);
@@ -401,7 +402,7 @@ unsafe fn ray_aabb_slab_test_avx512(ray: &Ray, aabbs: &[Aabb]) -> (Vec<bool>, Ve
         // hit = t_enter <= t_exit AND t_exit >= 0
         let m_le = t_enter.simd_le(t_exit);
         let m_ge = t_exit.simd_ge(zero);
-        let hit_mask = m_le.0 & m_ge.0;
+        let hit_mask = m_le.to_bitmask() & m_ge.to_bitmask();
 
         // Clamp t_enter to 0 for origins inside box
         let t_enter_clamped = t_enter.simd_max(zero);

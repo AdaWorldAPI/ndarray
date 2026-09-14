@@ -3,6 +3,7 @@
 
 use core::simd::cmp::{SimdOrd, SimdPartialEq, SimdPartialOrd};
 use core::simd::num::SimdUint;
+use core::simd::simd_swizzle;
 use core::simd::{u16x16, u16x32, u32x16, u32x8, u64x4, u64x8};
 
 // ════════════════════════════════════════════════════════════════════
@@ -130,6 +131,19 @@ impl U64x8 {
     pub fn cmpgt_mask(self, other: Self) -> u8 {
         self.0.simd_gt(other.0).to_bitmask() as u8
     }
+
+    /// Lane-wise population count (`u64::count_ones` per lane, as `u64`).
+    #[inline(always)]
+    pub fn popcnt(self) -> Self {
+        Self(self.0.count_ones())
+    }
+
+    /// `popcount(self ^ other)` summed over all 8 lanes — the Hamming distance
+    /// of two 512-bit fingerprints.
+    #[inline(always)]
+    pub fn xor_popcount(self, other: Self) -> u64 {
+        (self.0 ^ other.0).count_ones().reduce_sum()
+    }
 }
 
 impl Default for U64x8 {
@@ -222,6 +236,12 @@ impl U64x4 {
     pub fn cmpgt_mask(self, other: Self) -> u8 {
         self.0.simd_gt(other.0).to_bitmask() as u8
     }
+
+    /// Lane-wise population count (`u64::count_ones` per lane, as `u64`).
+    #[inline(always)]
+    pub fn popcnt(self) -> Self {
+        Self(self.0.count_ones())
+    }
 }
 
 impl Default for U64x4 {
@@ -313,6 +333,55 @@ impl U32x8 {
     #[inline(always)]
     pub fn cmpgt_mask(self, other: Self) -> u8 {
         self.0.simd_gt(other.0).to_bitmask() as u8
+    }
+
+    /// Lane-wise left-rotate by `n` bits (`n` mod 32; `0` returns `self`) —
+    /// the 8-lane twin of `U32x16::rotate_left`.
+    #[inline(always)]
+    pub fn rotate_left(self, n: u32) -> Self {
+        let n = n % 32;
+        if n == 0 {
+            return self;
+        }
+        Self((self.0 << u32x8::splat(n)) | (self.0 >> u32x8::splat(32 - n)))
+    }
+
+    /// `_mm256_unpacklo_epi32`: `[a0,b0,a1,b1, a4,b4,a5,b5]` — the per-128-bit-lane
+    /// interleave every backend exposes under this name (BLAKE3's transpose
+    /// vocabulary); a compile-time `simd_swizzle!` here.
+    #[inline(always)]
+    pub fn interleave_lo_u32(self, other: Self) -> Self {
+        Self(simd_swizzle!(self.0, other.0, [0, 8, 1, 9, 4, 12, 5, 13]))
+    }
+
+    /// `_mm256_unpackhi_epi32`: `[a2,b2,a3,b3, a6,b6,a7,b7]`.
+    #[inline(always)]
+    pub fn interleave_hi_u32(self, other: Self) -> Self {
+        Self(simd_swizzle!(self.0, other.0, [2, 10, 3, 11, 6, 14, 7, 15]))
+    }
+
+    /// `_mm256_unpacklo_epi64`: `[a0,a1,b0,b1, a4,a5,b4,b5]`.
+    #[inline(always)]
+    pub fn interleave_lo_u64(self, other: Self) -> Self {
+        Self(simd_swizzle!(self.0, other.0, [0, 1, 8, 9, 4, 5, 12, 13]))
+    }
+
+    /// `_mm256_unpackhi_epi64`: `[a2,a3,b2,b3, a6,a7,b6,b7]`.
+    #[inline(always)]
+    pub fn interleave_hi_u64(self, other: Self) -> Self {
+        Self(simd_swizzle!(self.0, other.0, [2, 3, 10, 11, 6, 7, 14, 15]))
+    }
+
+    /// `_mm256_permute2x128_si256(a, b, 0x20)`: `[a0..a3, b0..b3]`.
+    #[inline(always)]
+    pub fn concat_lo_halves(self, other: Self) -> Self {
+        Self(simd_swizzle!(self.0, other.0, [0, 1, 2, 3, 8, 9, 10, 11]))
+    }
+
+    /// `_mm256_permute2x128_si256(a, b, 0x31)`: `[a4..a7, b4..b7]`.
+    #[inline(always)]
+    pub fn concat_hi_halves(self, other: Self) -> Self {
+        Self(simd_swizzle!(self.0, other.0, [4, 5, 6, 7, 12, 13, 14, 15]))
     }
 }
 
@@ -564,6 +633,14 @@ impl U32x16 {
     #[inline(always)]
     pub fn cmpgt_mask(self, other: Self) -> u16 {
         self.0.simd_gt(other.0).to_bitmask() as u16
+    }
+
+    /// Per-lane equality as a packed 16-bit bitmask, LSB-first — the name the
+    /// agnostic mask surface (`simd_masking_ops`) calls on every backend
+    /// (`cmpeq_mask` is this backend's older spelling of the same thing).
+    #[inline(always)]
+    pub fn eq_bitmask(self, other: Self) -> u16 {
+        self.0.simd_eq(other.0).to_bitmask() as u16
     }
 
     /// Lane-wise left-rotate by `n` bits — the ARX rotate (matches

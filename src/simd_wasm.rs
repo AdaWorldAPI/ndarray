@@ -397,6 +397,16 @@ pub mod wasm32_simd {
     #[derive(Copy, Clone, Debug)]
     pub struct F32Mask16(pub u16);
     impl F32Mask16 {
+        /// The mask as a packed 16-bit bitmask, LSB-first (bit `i` = lane `i`).
+        /// The one representation-independent reading of a compare result: every
+        /// backend stores its mask differently (`__mmask16`, `u16`,
+        /// `core::simd::Mask`), so callers combine and inspect masks through this
+        /// rather than the tuple field (the `aabb` broadphase read `.0` directly
+        /// and did not compile on the portable backend — fixed 2026-09-14).
+        #[inline(always)]
+        pub fn to_bitmask(self) -> u16 {
+            self.0
+        }
         #[inline(always)]
         pub fn select(self, true_val: F32x16, false_val: F32x16) -> F32x16 {
             let t = true_val.to_array();
@@ -1179,6 +1189,19 @@ pub mod wasm32_simd {
                 o[i * 4..i * 4 + 4].copy_from_slice(&self.0[i].to_array());
             }
             o
+        }
+
+        /// Wrapping horizontal sum (`u32x4_add` tree, four extracts) — the
+        /// same method the AVX2 / AVX-512 / scalar `U32x16` carry; missing on
+        /// this backend until the aarch64 codegen witness exposed the gap on
+        /// 2026-09-14 (the wasm twin was closed in the same pass).
+        #[inline(always)]
+        pub fn reduce_sum(self) -> u32 {
+            let t = u32x4_add(u32x4_add(self.0[0].0, self.0[1].0), u32x4_add(self.0[2].0, self.0[3].0));
+            u32x4_extract_lane::<0>(t)
+                .wrapping_add(u32x4_extract_lane::<1>(t))
+                .wrapping_add(u32x4_extract_lane::<2>(t))
+                .wrapping_add(u32x4_extract_lane::<3>(t))
         }
 
         /// Lane-wise left-rotate by `n` bits (ARX rotate), fanned over 4 lanes.

@@ -1,0 +1,19 @@
+[build]
+# Plain AVX-512 baseline — `x86-64-v4` (F + BW + CD + DQ + VL), nothing above
+# it. Use with:
+#   cargo --config .cargo/config-v4.toml check --lib
+#   cargo --config .cargo/config-v4.toml test --lib --no-run
+#
+# This is the deterministic AVX-512 COMPILE contract the SIMD realization
+# matrix builds against: `simd.rs` keys its arm off `target_feature = "avx512f"`,
+# so this selects `simd_avx512` and emits `vpternlogq` etc. regardless of the
+# build host's silicon — code generation and execution are separate, and a
+# GitHub runner does not need AVX-512 to prove LLVM emits it. Do NOT run the
+# resulting binary on a host without AVX-512 (SIGILL); use the v3 or native
+# configs for execution, or qemu for semantic parity.
+#
+# `config-avx512.toml` is the stricter Sapphire Rapids EXECUTION config (VNNI,
+# BF16, FP16, AMX…); it SIGILLs on any earlier AVX-512 silicon, so it is never
+# the CI compile oracle.
+[target.'cfg(target_arch = "x86_64")']
+rustflags = ["-Ctarget-cpu=x86-64-v4"]

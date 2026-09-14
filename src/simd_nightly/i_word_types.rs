@@ -314,12 +314,70 @@ impl I32x16 {
     pub fn cmpgt_mask(self, other: Self) -> u16 {
         self.0.simd_gt(other.0).to_bitmask() as u16
     }
+
+    /// Per-lane signed greater-than as a packed 16-bit bitmask, LSB-first —
+    /// the name the agnostic mask surface (`simd_masking_ops`) calls on every
+    /// backend; identical to [`Self::cmpgt_mask`].
+    #[inline(always)]
+    pub fn gt_bitmask(self, other: Self) -> u16 {
+        self.0.simd_gt(other.0).to_bitmask() as u16
+    }
+
+    /// Load 16 × `i16` and sign-extend to 16 × `i32` (the `VPMOVSXWD`
+    /// widening the other backends perform; here `Simd::cast`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `s.len() < 16`.
+    #[inline(always)]
+    pub fn from_i16_slice(s: &[i16]) -> Self {
+        assert!(s.len() >= 16, "I32x16::from_i16_slice needs ≥16 elements");
+        Self(i16x16::from_slice(s).cast::<i32>())
+    }
+
+    /// Narrow 16 × `i32` to 16 × `i16` by truncation (the `VPMOVDW` the
+    /// other backends perform; `Simd::cast` truncates like `as i16`).
+    #[inline(always)]
+    pub fn to_i16_array(self) -> [i16; 16] {
+        self.0.cast::<i16>().to_array()
+    }
+
+    /// Lane-wise absolute value, WRAPPING at `i32::MIN` (`|i32::MIN|` stays
+    /// `i32::MIN`) — the same semantics as `VPABSD` on the other backends.
+    #[inline(always)]
+    pub fn abs(self) -> Self {
+        Self(self.0.abs())
+    }
+
+    /// Bit `i` set where lane `i >= 0` (LSB-first) — the sign-bit-clear test
+    /// the other backends expose under this name.
+    #[inline(always)]
+    pub fn cmpge_zero_mask(self) -> u16 {
+        self.0.simd_ge(i32x16::splat(0)).to_bitmask() as u16
+    }
 }
 
 impl PartialEq for I32x16 {
     #[inline(always)]
     fn eq(&self, other: &Self) -> bool {
         self.to_array() == other.to_array()
+    }
+}
+
+/// Lane-wise WRAPPING multiply (low 32 bits of the product) — the `VPMULLD`
+/// semantics of the other backends; `core::simd`'s `*` wraps identically.
+impl core::ops::Mul for I32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn mul(self, rhs: Self) -> Self {
+        Self(self.0 * rhs.0)
+    }
+}
+
+impl core::ops::MulAssign for I32x16 {
+    #[inline(always)]
+    fn mul_assign(&mut self, rhs: Self) {
+        self.0 *= rhs.0;
     }
 }
 

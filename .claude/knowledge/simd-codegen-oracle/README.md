@@ -78,6 +78,9 @@ Measured on x86_64 + `x86-64-v3`, rustc 1.95.0. Full narrative in
 | `cross_lane_reverse_u8x64` | 9 | 0 | `vbroadcasti128`/`vpshufb`/`vpermq` — invented a cross-lane permute from a scalar index loop |
 | **`rot_u64x8`** | **0** | 8 | scalar `rorq %cl`, one per lane |
 | **`rot_u64x4`** | **0** | 4 | scalar `rorq %cl`, one per lane |
+| **`blake2b_g_u64x8`** | 22 | ~88 | packed leading add; scalar through all four rotates |
+| `gather_lookup_u8` | 0 | 0 | `movzbl` chain, no arithmetic |
+| `serial_dependent_chain` | 0 | 27 | loop-carried dependency |
 
 Group F — the mask family (PR #306), measured 2026-09-14 on rustc 1.98.1
 through the shipped library methods. Two runs: array polyfill first, then
@@ -100,9 +103,6 @@ The two "mixed" rows are the instructive ones: a shape can be *mostly*
 packed and still carry a scalar peel, and the method's doc comment had
 claimed a clean lowering it never had. Measure the shipped symbol, not the
 look-alike.
-| **`blake2b_g_u64x8`** | 22 | ~88 | packed leading add; scalar through all four rotates |
-| `gather_lookup_u8` | 0 | 0 | `movzbl` chain, no arithmetic |
-| `serial_dependent_chain` | 0 | 27 | loop-carried dependency |
 
 **The headline:** LLVM vectorizes far more than intuition suggests —
 including cross-lane permutes, widening converts, and saturating

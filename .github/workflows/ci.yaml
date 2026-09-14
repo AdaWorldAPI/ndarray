@@ -250,18 +250,31 @@ jobs:
     # to host build scripts. Combined with explicit `--target` (so cargo
     # distinguishes host from target even when they're the same triple),
     # this gives us "v4 for our crate, baseline for build scripts."
+    #
+    # # Why `--config .cargo/config-v4.toml` and NOT that env var (2026-09-14):
+    #
+    # cargo JOINS every matching `target.<triple>.rustflags` and
+    # `target.<cfg>.rustflags` entry, and the last `-Ctarget-cpu` wins.
+    # Measured with `cargo -v`: the env var form passed `x86-64-v4` and THEN
+    # `.cargo/config.toml`'s cfg-keyed `x86-64-v3`, so this job had been
+    # checking the AVX2 arm while named "tier4-avx512-check" — the codegen
+    # witness on PR #306 found 0 `vpternlog` in a "v4" build. `--config`
+    # is the same cfg key at higher precedence, placed LAST, so v4 wins;
+    # explicit `--target` still keeps build scripts on the host baseline.
     runs-on: ubuntu-latest
     name: tier4-avx512-check
-    env:
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings -Ctarget-cpu=x86-64-v4"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: cargo check (v4 / AVX-512 dispatch arm)
-        run: cargo check --target=x86_64-unknown-linux-gnu -p ndarray --features approx,serde,rayon
+        run: cargo --config .cargo/config-v4.toml check --target=x86_64-unknown-linux-gnu -p ndarray --features approx,serde,rayon
       - name: cargo check (v4 / AVX-512 + hpc-extras)
-        run: cargo check --target=x86_64-unknown-linux-gnu -p ndarray --features approx,serde,rayon,hpc-extras
+        run: cargo --config .cargo/config-v4.toml check --target=x86_64-unknown-linux-gnu -p ndarray --features approx,serde,rayon,hpc-extras
+      - name: prove the arm actually selected (a v4 build must emit vpternlog)
+        run: |
+          cargo --config .cargo/config-v4.toml rustc --profile ci-codegen --example ternlog_codegen_probe --target=x86_64-unknown-linux-gnu -- --emit=asm -C debuginfo=0
+          grep -c vpternlog target/x86_64-unknown-linux-gnu/ci-codegen/examples/ternlog_codegen_probe-*.s
 
   nightly-simd-polyfill:
     # TD-SIMD-9 from .claude/knowledge/simd-dispatch-architecture.md.

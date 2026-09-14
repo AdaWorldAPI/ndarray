@@ -97,6 +97,29 @@ impl I8x64 {
         Self(self.0.simd_max(other.0))
     }
 
+    /// Lane-wise minimum — the short name `simd_int_ops` calls on every
+    /// backend (identical to [`Self::simd_min`]).
+    #[inline(always)]
+    pub fn min(self, other: Self) -> Self {
+        Self(self.0.simd_min(other.0))
+    }
+
+    /// Lane-wise maximum — the short name `simd_int_ops` calls on every
+    /// backend (identical to [`Self::simd_max`]).
+    #[inline(always)]
+    pub fn max(self, other: Self) -> Self {
+        Self(self.0.simd_max(other.0))
+    }
+
+    /// Saturating absolute value: `|i8::MIN|` is `i8::MAX` (127), never the
+    /// wrapped `i8::MIN` — the crate's `saturating_abs` contract (see the
+    /// VPABSB correction in `vertical-simd-consumer-contract.md`).
+    /// `core::simd`'s `saturating_abs` saturates identically.
+    #[inline(always)]
+    pub fn saturating_abs(self) -> Self {
+        Self(self.0.saturating_abs())
+    }
+
     // ── Saturating arithmetic ─────────────────────────────────────
 
     /// Per-lane signed saturating add. Results clamp to `[i8::MIN, i8::MAX]`.
@@ -224,6 +247,29 @@ impl I8x32 {
     #[inline(always)]
     pub fn simd_max(self, other: Self) -> Self {
         Self(self.0.simd_max(other.0))
+    }
+
+    /// Lane-wise minimum — the short name `simd_int_ops` calls on every
+    /// backend (identical to [`Self::simd_min`]).
+    #[inline(always)]
+    pub fn min(self, other: Self) -> Self {
+        Self(self.0.simd_min(other.0))
+    }
+
+    /// Lane-wise maximum — the short name `simd_int_ops` calls on every
+    /// backend (identical to [`Self::simd_max`]).
+    #[inline(always)]
+    pub fn max(self, other: Self) -> Self {
+        Self(self.0.simd_max(other.0))
+    }
+
+    /// Saturating absolute value: `|i8::MIN|` is `i8::MAX` (127), never the
+    /// wrapped `i8::MIN` — the crate's `saturating_abs` contract (see the
+    /// VPABSB correction in `vertical-simd-consumer-contract.md`).
+    /// `core::simd`'s `saturating_abs` saturates identically.
+    #[inline(always)]
+    pub fn saturating_abs(self) -> Self {
+        Self(self.0.saturating_abs())
     }
 
     // ── Saturating arithmetic ─────────────────────────────────────

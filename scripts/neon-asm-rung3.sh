@@ -23,8 +23,13 @@ TARGET="aarch64-unknown-linux-gnu"
 TD="${CARGO_TARGET_DIR:-$ROOT/target-aarch64}"
 
 echo "==> emitting aarch64 assembly of neon-simd-parity (link step skipped)"
+# Stale-assembly guard: remove any previous .s FIRST and let a build failure
+# fail the script — with `|| true` and suppressed output, a broken build would
+# leave an older .s for `ls -t` to pick up and the gate would PASS on assembly
+# that does not match the source (CodeRabbit, PR #306).
+rm -f "$TD/$TARGET/release/deps/"neon_simd_parity-*.s
 CARGO_TARGET_DIR="$TD" cargo rustc --release --manifest-path "$MANIFEST" --target "$TARGET" \
-  -- --emit=asm -C debuginfo=0 >/dev/null 2>&1 || true
+  -- --emit=asm -C debuginfo=0
 ASM="$(ls -t "$TD/$TARGET/release/deps/"neon_simd_parity-*.s | head -1)"
 [ -f "$ASM" ] || { echo "no .s produced"; exit 2; }
 echo "asm: $ASM"

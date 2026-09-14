@@ -7,6 +7,7 @@ use core::simd::{f32x16 as core_f32x16, f32x8 as core_f32x8};
 // `mul_add`, `sqrt`, `round`, `floor`, `abs` live in `StdFloat` (std-only nightly trait).
 use std::simd::StdFloat;
 
+use super::i_word_types::I32x16;
 use super::masks::{F32Mask16, F32Mask8};
 use super::u_word_types::{U32x16, U32x8};
 
@@ -54,6 +55,27 @@ impl F32x16 {
     #[inline(always)]
     pub fn to_array(self) -> [f32; 16] {
         self.0.to_array()
+    }
+
+    /// Gather 16 `f32` at `base_ptr[indices[i]]` — the `VPGATHERDD`-shaped
+    /// load the other backends expose under the same signature. Portable
+    /// SIMD has no gather over a raw pointer, so this reads lane by lane.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure every `base_ptr.add(indices[i] as usize)` for
+    /// `i in 0..16` is a valid, aligned, readable `f32` (the same contract
+    /// as `_mm512_i32gather_ps`). Negative indices are undefined here as
+    /// there.
+    #[inline(always)]
+    pub unsafe fn gather(indices: I32x16, base_ptr: *const f32) -> Self {
+        let idx = indices.to_array();
+        let mut out = [0.0f32; 16];
+        for (o, &i) in out.iter_mut().zip(idx.iter()) {
+            // SAFETY: validity of each address is the caller's contract (above).
+            *o = unsafe { *base_ptr.add(i as usize) };
+        }
+        Self::from_array(out)
     }
 
     /// Store all 16 lanes into the first 16 slots of `s`.

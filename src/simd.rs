@@ -233,10 +233,11 @@ pub const PREFERRED_I16_LANES: usize = 16;
 // as soon as `nightly-simd` is on.
 #[cfg(feature = "nightly-simd")]
 pub use crate::simd_nightly::{
-    f32x16, f32x8, f64x4, f64x8, i16x16, i16x32, i32x16, i32x8, i64x4, i64x8, i8x32, i8x64, u16x16, u16x32, u32x16,
-    u32x8, u64x4, u64x8, u8x32, u8x64, BF16x16, BF16x8, F16x16, F32Mask16, F32Mask8, F32x16, F32x8, F64Mask4, F64Mask8,
-    F64x4, F64x8, I16x16, I16x32, I32x16, I32x8, I64x4, I64x8, I8x32, I8x64, U16x16, U16x32, U32x16, U32x8, U64x4,
-    U64x8, U8x32, U8x64,
+    batch_packed_i4_16, f32x16, f32x8, f64x4, f64x8, i16x16, i16x32, i32x16, i32x8, i64x4, i64x8, i8x16, i8x32, i8x64,
+    palette_lookup_u8x8, prefetch_read_t0, prefetch_read_t1, prefetch_read_t2, u16x16, u16x32, u16x8, u32x16, u32x8,
+    u64x4, u64x8, u8x32, u8x64, u8x8, BF16x16, BF16x8, F16x16, F32Mask16, F32Mask8, F32x16, F32x8, F64Mask4, F64Mask8,
+    F64x4, F64x8, I16x16, I16x32, I32x16, I32x8, I64x4, I64x8, I8x16, I8x32, I8x64, U16x16, U16x32, U16x8, U32x16,
+    U32x8, U64x4, U64x8, U8x32, U8x64, U8x8,
 };
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f", not(feature = "nightly-simd")))]
@@ -652,16 +653,28 @@ pub use crate::hpc::quantized::{
 // On all other targets (including avx512f-without-bf16, NEON, scalar) the
 // portable `simd_half::BF16x16` is the canonical 16-lane BF16 vector.
 
-// Always re-export F16x16 + all slice-level ops (no naming conflict).
+// Always re-export the slice-level ops (no naming conflict).
 #[cfg(feature = "std")]
 pub use crate::simd_half::{
     add_bf16_inplace, add_f16_inplace, cast_bf16_to_f32_batch, cast_f16_to_f32_batch, cast_f32_to_bf16_batch,
-    cast_f32_to_f16_batch, mul_bf16_inplace, mul_f16_inplace, F16x16,
+    cast_f32_to_f16_batch, mul_bf16_inplace, mul_f16_inplace,
 };
 
-// Re-export portable BF16x16 only when the hardware-native avx512bf16 variant
-// is NOT active (otherwise `simd_avx512::BF16x16` already occupies the name).
-#[cfg(all(feature = "std", not(all(target_arch = "x86_64", target_feature = "avx512bf16"))))]
+// The portable `simd_half::F16x16` yields the name to a backend that owns it:
+// the `nightly-simd` arm above re-exports its own `F16x16`, so under that
+// feature this re-export was a second definition (E0252 — one of the 25
+// nightly-rot errors fixed 2026-09-14). Same rule as `BF16x16` below.
+#[cfg(all(feature = "std", not(feature = "nightly-simd")))]
+pub use crate::simd_half::F16x16;
+
+// Re-export portable BF16x16 only when neither hardware-native variant owns the
+// name (`simd_avx512::BF16x16` under avx512bf16; `simd_nightly::BF16x16` under
+// `nightly-simd`).
+#[cfg(all(
+    feature = "std",
+    not(feature = "nightly-simd"),
+    not(all(target_arch = "x86_64", target_feature = "avx512bf16"))
+))]
 pub use crate::simd_half::BF16x16;
 
 // K-means + L2 distance
@@ -1485,11 +1498,6 @@ mod tests {
         );
     }
 
-    /// The same exhaustive sweep on the `U32x16` lane. On x86 this is a
-    /// DISTINCT body from the `U64x8` one (a second generated ladder and a
-    /// second two-input helper on the v3 arm; `_mm512_ternarylogic_epi32` vs
-    /// `_epi64` on v4), so the `U64x8` sweep above proves nothing about it —
-    /// before this test, x86 covered the `U32x16` body at two immediates.
     /// The `I32x16` compare-to-bitmask and horizontal min/max methods at
     /// LANE EXTREMES. On the AVX2 backend these are two-half intrinsic
     /// realizations (PR #306, measured on the codegen oracle), and the two
@@ -1542,6 +1550,11 @@ mod tests {
         assert_eq!(va.reduce_max(), *a.iter().max().unwrap());
     }
 
+    /// The same exhaustive sweep on the `U32x16` lane. On x86 this is a
+    /// DISTINCT body from the `U64x8` one (a second generated ladder and a
+    /// second two-input helper on the v3 arm; `_mm512_ternarylogic_epi32` vs
+    /// `_epi64` on v4), so the `U64x8` sweep above proves nothing about it —
+    /// before this test, x86 covered the `U32x16` body at two immediates.
     #[test]
     fn w1a9_u32x16_ternlog_matches_truth_table_reference_all_256_imms() {
         let mut st = 0x5EED_0F32_5EED_0F32_u64;

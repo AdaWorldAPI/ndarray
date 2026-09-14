@@ -13,6 +13,15 @@
 //! deliberately wider than the lane element type — `127 × 127 × 64 ≈ 1 M`
 //! fits in i32 but not in i8/i16 reductions.
 
+// The mask family lived here until PR #306 moved it to `simd_masking_ops`.
+// `simd_int_ops` is a `pub mod`, so `ndarray::simd_int_ops::<mask_fn>` was a
+// public path; these re-exports keep every such path compiling. The canonical
+// path is `ndarray::simd::<mask_fn>` (the facade) — new code uses that.
+pub use crate::simd_masking_ops::{
+    eq_u32_strided_to_mask, eq_u32_to_mask, gt_i32_to_mask, mask_and, mask_and_assign, mask_andnot, mask_andnot_assign,
+    mask_or, mask_or_assign, mask_ternlog, mask_ternlog_assign, masked_strided_group_sum, masked_sum_i32,
+};
+
 // ────────────────────────────────────────────────────────────────────────
 // add_i8 / sub_i8 — element-wise mutate-in-place
 // ────────────────────────────────────────────────────────────────────────
