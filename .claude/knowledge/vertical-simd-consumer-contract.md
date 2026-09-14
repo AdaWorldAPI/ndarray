@@ -522,8 +522,26 @@ simd_{avx512,avx2,neon,wasm,scalar}.rs   peer backends, each owns realization
   compute path above the facade. The family (`gt/lt/ge/le/eq/ne_i32`,
   `eq/ne_u32`, `ternary_match_u32/u64` — the ten `Pred` variants, one each)
   shares ONE private engine (`pack_under`) whose skip is at word
-  granularity: `under[w] == 0` writes zero and evaluates nothing. Cost ∝ live
-  gate words; result ≡ `pred & under` bit-for-bit, and the predicate's own
-  tail law makes a phantom gate bit past `n` vanish without a clean. The
-  can-it-fire test counts the closure invocations (5 live words × 4 groups =
-  20 of 40), so "skips" is measured, not asserted.
+  granularity: `under[w] == 0` writes zero and evaluates nothing. Compare
+  cost ∝ live gate WORDS (a sparse frontier spread across every word pays
+  every compare); the per-word gate test stays ∝ rows/64. Result ≡
+  `pred & under` bit-for-bit, and the predicate's own tail law makes a
+  phantom gate bit past `n` vanish without a clean (surplus `under` words
+  are never read). The can-it-fire test counts the closure invocations
+  (5 live words × 4 groups = 20 of 40), so "skips" is a measured call
+  count — no timing of the skip exists.
+- **`mask_shift_morton` is admitted on a narrower argument than the rest of
+  this module, and the argument is written down (2026-09-14, kernel-membrane
+  review of ndarray #307).** The admission test every word here passes: a
+  slice-level composition of lane ops with no ISA branch (`U64x8` shifts,
+  ANDs, ORs — zero `core::arch`, `#![forbid(unsafe_code)]` holds). What no
+  other word here does: it asserts a caller-held ADDRESS MODEL (word index =
+  Morton key of an 8×8-block grid; `q` on even bits, `r` on odd) and treats
+  the slice AS the field, so a sub-span shift is not the restriction of the
+  full-field shift. That is the cost of admitting it, and the fence is the
+  op's own doc paragraph ("The slice IS the field") plus the caller's
+  alignment assert. It stays here rather than in a consumer because the
+  alternative — the per-active-bit loop the hex probe measured at 17.0 µs a
+  step — is exactly the above-facade compute path T1 exists to prevent; and
+  it is named a lattice axis shift, not a hex op, because the four variants
+  are Cartesian and every hex diagonal is a two-call composition.

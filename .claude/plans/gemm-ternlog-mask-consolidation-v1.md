@@ -969,7 +969,7 @@ permutation with `U64x8` and/shl/or lane ops (the same facade-over-lane-types
 shape `mask_xor` uses — no per-ISA code in the facade; if a backend lacks
 `Shl<u32>`/`Shl<Self>` for `U64x8`, the implementer STOPS and reports which,
 never hand-rolls an intrinsic); pass 2 a scalar loop over words applying the
-carry byte to `inc/dec(w)`. Tail law: the field is square so there is no tail;
+carry byte to `inc/dec(w)`. Tail law: the field is square, but `4^0 = 1` and `4^1 = 4` words are not multiples of `U64x8::LANES`, so the implementation carries a padded-tail branch for those two sizes (corrected 2026-09-14 — an earlier draft of this line claimed there is no tail);
 the assert makes that explicit.
 
 **Falsifiers (all required, all must be able to fail):**

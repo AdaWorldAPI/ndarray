@@ -1682,6 +1682,7 @@ impl Shl<Self> for U64x8 {
     type Output = Self;
     #[inline(always)]
     fn shl(self, rhs: Self) -> Self {
+        debug_assert!(rhs.to_array().iter().all(|&n| n < 64), "U64x8 shift counts are a caller contract: < 64");
         let (lo, hi) = self.avx2_halves();
         let (clo, chi) = rhs.avx2_halves();
         // SAFETY: same obligation as `avx2_halves` — this is the x86-64-v3
@@ -1695,6 +1696,7 @@ impl Shr<Self> for U64x8 {
     type Output = Self;
     #[inline(always)]
     fn shr(self, rhs: Self) -> Self {
+        debug_assert!(rhs.to_array().iter().all(|&n| n < 64), "U64x8 shift counts are a caller contract: < 64");
         let (lo, hi) = self.avx2_halves();
         let (clo, chi) = rhs.avx2_halves();
         // SAFETY: as for `shl` — AVX2 present by the arm's contract;

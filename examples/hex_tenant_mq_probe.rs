@@ -229,6 +229,38 @@ struct Resident<'a> {
 }
 
 #[inline(never)]
+/// The Hebbian reverse walk shared by both spread arms: for every cell `j`
+/// newly reached this step (`scratch & !state`), bump the strength byte of
+/// each rail `d` whose predecessor `i` (j's neighbour along the opposite rail)
+/// is BOTH in this step's `source` frontier AND eligible to leave along `d`.
+/// Returns the number of firings. Reads `source` and `state`, writes only
+/// `rails` — the caller publishes the new `delta` afterwards, because under
+/// `from_delta` the source IS the old delta and must survive the walk.
+fn hebbian_reverse_walk(
+    scratch: &[u64], state: &[u64], source: &[u64], elig: &[Vec<u64>], dirs: usize, rails: &mut [[u8; 12]],
+) -> usize {
+    let mut fired = 0usize;
+    for wi in 0..scratch.len() {
+        let mut new_bits = scratch[wi] & !state[wi];
+        while new_bits != 0 {
+            let j = (wi << 6) | new_bits.trailing_zeros() as usize;
+            new_bits &= new_bits - 1;
+            for d in 0..dirs {
+                // the rail that reaches j from i along d is d; i is j's neighbour along the reverse rail
+                let rev = d ^ 1; // HEX pairs (0,1) (2,3) (4,5) are opposites
+                if let Some(i) = neighbour(j as u32, rev) {
+                    let i = i as usize;
+                    if bit(source, i) && bit(&elig[d], i) {
+                        rails[i][2 * d + 1] = rails[i][2 * d + 1].saturating_add(1);
+                        fired += 1;
+                    }
+                }
+            }
+        }
+    }
+    fired
+}
+
 fn spread_step(
     state: &mut [u64], delta: &mut [u64], scratch: &mut [u64], res: &Resident<'_>, rails: &mut [[u8; 12]],
 ) -> usize {
@@ -275,26 +307,15 @@ fn spread_step(
     // Hebbian, on SURVIVORS only: a rail fires when the cell it points at
     // actually became active after the chain — reverse walk from each newly
     // reached cell to the eligible neighbour that could have carried it.
-    let mut fired = 0usize;
+    // The predecessor is tested against the SOURCE frontier of this step,
+    // not the accumulated state: under `from_delta` only delta cells
+    // propagated, so an older active neighbour of a newly reached cell did
+    // not carry it and must not be credited (codex P2 on #307). `delta` is
+    // therefore published only after attribution — it IS the source while
+    // the walk runs.
+    let fired = hebbian_reverse_walk(scratch, state, source, elig, dirs, rails);
     for wi in 0..scratch.len() {
-        let new_bits_word = scratch[wi] & !state[wi];
-        delta[wi] = new_bits_word;
-        let mut new_bits = new_bits_word;
-        while new_bits != 0 {
-            let j = (wi << 6) | new_bits.trailing_zeros() as usize;
-            new_bits &= new_bits - 1;
-            for d in 0..dirs {
-                // the rail that reaches j from i along d is d; i is j's neighbour along the reverse rail
-                let rev = d ^ 1; // HEX pairs (0,1) (2,3) (4,5) are opposites
-                if let Some(i) = neighbour(j as u32, rev) {
-                    let i = i as usize;
-                    if bit(state, i) && bit(&elig[d], i) {
-                        rails[i][2 * d + 1] = rails[i][2 * d + 1].saturating_add(1);
-                        fired += 1;
-                    }
-                }
-            }
-        }
+        delta[wi] = scratch[wi] & !state[wi];
     }
     state.copy_from_slice(scratch);
     fired
@@ -336,6 +357,11 @@ fn spread_step_shift(
     // carry can arrive from outside the span, and a carry LEAVING the span
     // would be removed by the `& tile` below anyway.
     let (lo, hi) = word_range.unwrap_or((0, scratch.len()));
+    // `mask_shift_morton` treats the slice AS the field (no carry across the
+    // span boundary), which is only the restriction of the full-field shift
+    // when the span is a Morton-aligned node: its origin is a multiple of
+    // its own length. Enforced where it is known, not assumed.
+    assert_eq!(lo % (hi - lo), 0, "word_range {lo}..{hi} is not a Morton-aligned node span");
     let src = &source[lo..hi];
     let masked = &mut masked[lo..hi];
     let diag_scratch = &mut diag_scratch[lo..hi];
@@ -374,26 +400,11 @@ fn spread_step_shift(
         let g2 = &gates[(k + 1) % gates.len()];
         mask_ternlog_assign::<AND3>(scratch, g1, g2);
     }
-    // Hebbian reverse walk — stays as is, verbatim from `spread_step`.
-    let mut fired = 0usize;
+    // Hebbian reverse walk — the same attribution as `spread_step`, against
+    // the step's SOURCE frontier; `delta` is published after it.
+    let fired = hebbian_reverse_walk(scratch, state, source, elig, dirs, rails);
     for wi in 0..scratch.len() {
-        let new_bits_word = scratch[wi] & !state[wi];
-        delta[wi] = new_bits_word;
-        let mut new_bits = new_bits_word;
-        while new_bits != 0 {
-            let j = (wi << 6) | new_bits.trailing_zeros() as usize;
-            new_bits &= new_bits - 1;
-            for d in 0..dirs {
-                let rev = d ^ 1;
-                if let Some(i) = neighbour(j as u32, rev) {
-                    let i = i as usize;
-                    if bit(state, i) && bit(&elig[d], i) {
-                        rails[i][2 * d + 1] = rails[i][2 * d + 1].saturating_add(1);
-                        fired += 1;
-                    }
-                }
-            }
-        }
+        delta[wi] = scratch[wi] & !state[wi];
     }
     state.copy_from_slice(scratch);
     fired
@@ -622,7 +633,9 @@ fn main() {
                 let mut fired_total = 0usize;
                 let mut ok = true;
                 // repeat the whole 24-step run to a 50 ms floor; the reset is an
-                // 8 KiB copy and is inside the timed region (stated).
+                // reset is two 8 KiB copies PLUS the 786 KiB `rails_run` copy
+                // (65 536 × 12 B), all inside the timed region (stated): it
+                // amortizes to ~1 µs per step and sits inside every arm's `n`.
                 let mut reps = 1usize;
                 let (el, heap) = loop {
                     count_on();

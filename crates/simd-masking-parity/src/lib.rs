@@ -441,8 +441,9 @@ fn check_predicates_to_mask() -> Result<(), u32> {
 
 /// Every `*_to_mask_under` against `reference_mask(n, out_len, |i| pred(i) &&
 /// gate_bit(i))`. The gate is built with every other word forced to ZERO (so
-/// the skip path is exercised on every length ≥ 64) and random bits elsewhere
-/// INCLUDING the last word's bits past `n` — the reference reads the gate BIT
+/// the skip path is exercised on every length > 64 — 65 and 130 here) and
+/// random bits elsewhere INCLUDING, at lengths whose last word index is even
+/// (1, 63, 130), that word's bits past `n` — the reference reads the gate BIT
 /// for row `i`, so a phantom past `n` never enters it, and the primitive must
 /// agree. One surplus out word pre-filled `u64::MAX` catches an OR-er.
 fn check_predicates_under() -> Result<(), u32> {
@@ -926,6 +927,17 @@ fn check_morton_shift() -> Result<(), u32> {
                 if got != want {
                     return Err(0x900 | k as u32);
                 }
+            }
+            // 0x904: the OR-accumulate contract — a pre-filled `dst` keeps its
+            // prior bits (every other arm starts from zero and cannot see an
+            // overwrite).
+            let prior: Vec<u64> = (0..n_words).map(|_| rng.next()).collect();
+            let mut got = prior.clone();
+            mask_shift_morton(&src, MortonDir::PosQ, &mut got);
+            let want = morton_reference_shift(&src, 1, 0, n_cells, x_bits, y_bits);
+            let expect: Vec<u64> = prior.iter().zip(&want).map(|(p, w)| p | w).collect();
+            if got != expect {
+                return Err(0x904);
             }
         }
     }

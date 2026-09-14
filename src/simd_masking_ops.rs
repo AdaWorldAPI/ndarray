@@ -67,6 +67,13 @@
 // in-range elements, which makes the guarantee structural rather than a
 // tail-handling special case that could be forgotten.
 //
+// ONE exception, named here so the guarantee stays checkable: the lattice
+// shift `mask_shift_morton` is an ACCUMULATOR (`dst |= ...`) and is
+// word-indexed, not element-indexed — it has no `values.len()` and no
+// trailing-bit law, so the bit-order paragraph above does not apply to it.
+// A caller that wants a fresh answer zeroes `dst` first. Every other writer
+// in this file obeys the paragraph above.
+//
 // ## Why free functions here, not methods on a wrapper
 //
 // The W1a consumer contract's "struct method, not free function" litmus
@@ -1484,18 +1491,27 @@ pub fn ternary_match_strided_to_mask(
 // ── Gated predicates: `*_to_mask_under` (mask-risc `Pred { under }`) ────────
 //
 // `out[w] = under[w] & pred(values)[w]`, with the predicate EVALUATED only
-// on words where `under[w] != 0` — the survivor-word skip. Cost is
-// proportional to the live words of `under`, never to the row count: a
-// frontier that has narrowed to 3 % of the plane pays 3 % of the compares.
-// The alternative — a full `*_to_mask` pass followed by `mask_and` — costs
-// the whole plane twice and is exactly what a mask program must not do
-// once its first predicate has already narrowed the population.
+// on words where `under[w] != 0` — the survivor-word skip. The COMPARE cost
+// is proportional to the live words of `under`; the per-word gate test and
+// zero store remain proportional to `rows / 64`. The skip is word-granular,
+// so what a frontier pays is its share of live WORDS, not of live rows: a
+// frontier whose survivors occupy 3 % of the gate words pays 3 % of the
+// compares, and a sparse frontier spread across every word pays all of
+// them. (Measured: the counting closure in `under_skips_compares_on_empty_
+// gate_words` sees 20 of 40 groups under an alternating gate — a call
+// count, not a timing.) The alternative — a full `*_to_mask` pass followed
+// by `mask_and` — costs the whole plane twice and is exactly what a mask
+// program must not do once its first predicate has already narrowed the
+// population.
 //
-// Word granularity (64 rows) is the finest a packed compare can skip at:
-// one word is four 16-lane groups (or eight 8-lane groups), and the skip
-// decision is one `u64 != 0` test on a word the caller already holds. An
-// executor is free to skip COARSER (mask-risc's IR speaks of 1024-row
-// chunks); the result is identical, only the cost differs.
+// This engine skips at word granularity (64 rows), the unit the caller
+// already holds: one word is four 16-lane groups (or eight 8-lane groups),
+// and the skip decision is one `u64 != 0` test. A per-group skip (16 rows)
+// would be reachable with one extra AND per group and is deliberately not
+// done. An executor is free to skip COARSER (mask-risc's IR speaks of
+// 1024-row chunks); the result is identical by construction — a skipped
+// chunk is an all-zero gate, and `pred & 0 == 0` — though no test performs
+// a coarser skip. Only the cost differs.
 //
 // Semantics are otherwise those of the ungated sibling, and the tail law is
 // inherited from it: the predicate's bits past `n` are zero, so
@@ -1540,7 +1556,11 @@ fn pack_under<T: Copy + Default, const L: usize>(
             } else {
                 pad_tail(group)
             };
-            bits |= group_bits(lanes, live) << shift;
+            let g = group_bits(lanes, live);
+            // The closure contract (bits above `live` are zero) is what keeps
+            // one group from corrupting the next group's bit range.
+            debug_assert!(live == 64 || g >> live == 0, "{name}: group bits above live={live} must be zero");
+            bits |= g << shift;
             start += L;
             shift += L;
         }
@@ -2037,7 +2057,8 @@ pub fn blend_i32(mask_words: &[u64], a: &[i32], b: &[i32], dst: &mut [i32]) {
 }
 
 // ────────────────────────────────────────────────────────────────────────
-// Morton hex neighbour shift — the D-GTM-1m word-level op (§15)
+// Morton lattice axis shift — the D-GTM-1m word-level op (§15); the hex
+// probe composes its six rails from these four Cartesian axis moves
 // ────────────────────────────────────────────────────────────────────────
 //
 // Rows are Morton-keyed 2-D (`q` on the even address bits, `r` on the odd
@@ -2059,13 +2080,15 @@ pub fn blend_i32(mask_words: &[u64], a: &[i32], b: &[i32], dst: &mut [i32]) {
 /// direction at the call site, not at compile time).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum MortonDir {
-    /// Increment the local `q` sub-coordinate (`HEX[0] = (+1, 0)`).
+    /// Increment the even-bit (`q`) sub-coordinate — a lattice axis move;
+    /// the hex probe's rail 0 (`(+1, 0)`). The two hex diagonals are
+    /// compositions of two variants, never variants themselves.
     PosQ,
-    /// Decrement the local `q` sub-coordinate (`HEX[1] = (-1, 0)`).
+    /// Decrement the even-bit (`q`) sub-coordinate (the hex probe's rail 1).
     NegQ,
-    /// Increment the local `r` sub-coordinate (`HEX[2] = (0, +1)`).
+    /// Increment the odd-bit (`r`) sub-coordinate (the hex probe's rail 2).
     PosR,
-    /// Decrement the local `r` sub-coordinate (`HEX[3] = (0, -1)`).
+    /// Decrement the odd-bit (`r`) sub-coordinate (the hex probe's rail 3).
     NegR,
 }
 
@@ -2210,6 +2233,18 @@ fn dec_word(w: usize, axis_bits: u64, other_bits: u64) -> Option<usize> {
 /// (`+q-r` or `-q+r`) is two calls: shift into a scratch buffer along the
 /// first axis, then shift that scratch (not `src`) along the second axis
 /// into `dst`.
+///
+/// **The slice IS the field.** A sub-span of a larger field is treated as
+/// its own field: no carry enters or leaves the span, so the result is NOT
+/// the restriction of the full-field shift — at every span boundary the
+/// full field would carry into the adjacent block and the span version
+/// emits nothing. This op receives only a slice and cannot check where it
+/// sits in a parent field. A caller shifting a tile in place must
+/// independently hold BOTH that (a) the span's origin is aligned to its own
+/// length in the parent field's Morton order (a trie node: `lo % len == 0`)
+/// and (b) the source is confined to the span, or accept that a boundary
+/// carry is dropped. `examples/hex_tenant_mq_probe.rs` asserts (a) at its
+/// call site and holds (b) by construction (`state ⊆ tile`).
 ///
 /// # Panics
 ///
@@ -3598,7 +3633,9 @@ mod tests {
     #[test]
     fn morton_shift_matches_the_per_bit_oracle_on_random_fields() {
         let mut seed = 0x1357_2468_1357_2468u64;
-        for &n_words in &[64usize, 1024] {
+        // 1 and 4 words run pass 1's padded-tail branch (the whole field is
+        // shorter than one register); 64 and 1024 run the chunk body.
+        for &n_words in &[1usize, 4, 64, 1024] {
             let n_cells = n_words * 64;
             let (x_bits, y_bits) = oracle_axis_bits(n_cells);
             for _ in 0..8 {
@@ -3611,6 +3648,38 @@ mod tests {
                     assert_eq!(got, want, "n_words={n_words} dir={dir:?}");
                 }
             }
+        }
+    }
+
+    /// F6 — the documented OR-accumulate contract: `dst` is never cleared,
+    /// so a pre-filled `dst` keeps its prior bits and several directions
+    /// chain into one plane. FAILS IF pass 1 overwrites instead of
+    /// accumulating (`acc = splat(0)` instead of `from_array(*d)`) — every
+    /// other morton test starts from a zeroed `dst` and cannot see that
+    /// (falsifier audit on #307).
+    #[test]
+    fn morton_shift_or_accumulates_into_a_prefilled_dst() {
+        let mut seed = 0x0F1E_2D3C_4B5A_6978u64;
+        for &n_words in &[4usize, 64, 1024] {
+            let n_cells = n_words * 64;
+            let (x_bits, y_bits) = oracle_axis_bits(n_cells);
+            let src: Vec<u64> = (0..n_words).map(|_| splitmix64(&mut seed)).collect();
+            let prior: Vec<u64> = (0..n_words).map(|_| splitmix64(&mut seed)).collect();
+            // prior bits survive alongside the shifted field
+            let mut got = prior.clone();
+            mask_shift_morton(&src, MortonDir::PosQ, &mut got);
+            let want_q = oracle_shift_field(&src, 1, 0, n_cells, x_bits, y_bits);
+            let expect: Vec<u64> = prior.iter().zip(&want_q).map(|(p, w)| p | w).collect();
+            assert_eq!(got, expect, "n_words={n_words}: prior bits lost or shift missing");
+            // anti-vacuity: the prior actually contributed bits the shift did not
+            assert!(prior.iter().zip(&want_q).any(|(p, w)| p & !w != 0), "prior added nothing — fixture too weak");
+            // two directions chained into one plane
+            let mut chained = vec![0u64; n_words];
+            mask_shift_morton(&src, MortonDir::PosQ, &mut chained);
+            mask_shift_morton(&src, MortonDir::NegR, &mut chained);
+            let want_r = oracle_shift_field(&src, 0, -1, n_cells, x_bits, y_bits);
+            let expect2: Vec<u64> = want_q.iter().zip(&want_r).map(|(a, b)| a | b).collect();
+            assert_eq!(chained, expect2, "n_words={n_words}: chaining two directions lost one");
         }
     }
 
@@ -3911,6 +3980,28 @@ mod tests {
             },
         );
         assert_eq!(counter.get(), 40, "an all-ones gate evaluates every group");
+    }
+
+    /// Every public `*_to_mask_under` member is ONE `pack_under` delegation,
+    /// so the skip falsifier on the private engine covers all ten. Counted
+    /// from this file's own source: ten call sites before the test module.
+    /// FAILS IF a member hand-rolls its loop (baton audit P2 on #307).
+    #[test]
+    fn every_under_member_delegates_to_the_one_engine() {
+        let src = include_str!("simd_masking_ops.rs");
+        let production = src
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the file has a test module");
+        // Count definitions, not mentions: the doc comments name the members
+        // many more times than the source defines them.
+        let members = production
+            .lines()
+            .filter(|l| l.trim_start().starts_with("pub fn ") && l.contains("_to_mask_under"))
+            .count();
+        let delegations = production.matches("pack_under::<").count();
+        assert_eq!(members, 10, "ten public `*_to_mask_under` members");
+        assert_eq!(delegations, 10, "one pack_under call per member");
     }
 
     /// A dirty phantom bit in the gate's last live word (bits at or past
