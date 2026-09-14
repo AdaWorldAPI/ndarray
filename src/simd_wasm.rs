@@ -1304,6 +1304,12 @@ pub mod wasm32_simd {
     pub type i8x16 = I8x16;
     #[allow(non_camel_case_types)]
     pub type u32x16 = U32x16;
+    /// Lowercase alias of the native wasm [`I32x16`] (travels with the type).
+    #[allow(non_camel_case_types)]
+    pub type i32x16 = I32x16;
+    /// Lowercase alias of the native wasm [`U64x8`] (travels with the type).
+    #[allow(non_camel_case_types)]
+    pub type u64x8 = U64x8;
 
     // ════════════════════════════════════════════════════════════════════
     // Free hot-kernel functions — v128 counterparts to the NEON kernels in

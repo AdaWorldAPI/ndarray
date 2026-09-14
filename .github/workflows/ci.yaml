@@ -284,11 +284,11 @@ jobs:
       - name: cargo check (v4 / AVX-512 + hpc-extras)
         run: env -u RUSTFLAGS cargo --config .cargo/config-v4.toml check --target=x86_64-unknown-linux-gnu -p ndarray --features approx,serde,rayon,hpc-extras
       - name: prove the arm actually selected (a v4 build must emit vpternlog)
-        run: |
-          env -u RUSTFLAGS cargo --config .cargo/config-v4.toml rustc --profile ci-codegen --example ternlog_codegen_probe --target=x86_64-unknown-linux-gnu -- --emit=asm -C debuginfo=0
-          n=$(cat target/x86_64-unknown-linux-gnu/ci-codegen/examples/ternlog_codegen_probe-*.s | grep -c vpternlog)
-          echo "vpternlog instructions: $n"
-          test "$n" -ge 3
+        # Runs the witness script in asm-only mode (this runner may lack
+        # avx512f, so the probe is never executed here) rather than an inline
+        # copy: the script owns the stale-assembly guard (`rm -f` + `touch` of
+        # the probe source, without which a rust-cache hit re-emits no `.s`).
+        run: env -u RUSTFLAGS WITNESS_NO_RUN=1 CARGO_ARGS='--config .cargo/config-v4.toml' bash scripts/codegen-witness.sh avx512
 
   nightly-simd-polyfill:
     # TD-SIMD-9 from .claude/knowledge/simd-dispatch-architecture.md.

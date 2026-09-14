@@ -153,8 +153,11 @@ pub fn amx_tile_available() -> bool {
 /// Check if AMX is present, OS-enabled, AND this process holds XTILEDATA
 /// permission. Cached after the first call (see the `AMX_AVAILABLE` static).
 ///
-/// Four gates, in order — any miss ⇒ `false` (gates 1-4 minus the INT8 bit are
-/// [`amx_tile_available`], which the non-INT8 compute tiers gate on instead):
+/// Four gates — any miss ⇒ `false`. Gates 1 (TILE only), 2, 3 and 4 run in
+/// that order inside [`amx_tile_available`], which the non-INT8 compute tiers
+/// gate on; the INT8 bit of gate 1 is consulted LAST, after the tile gate has
+/// passed, so a TILE-only host takes the `arch_prctl` request but still
+/// answers `false` here:
 ///   1. CPUID.07H.0H:EDX bits 24 (AMX-TILE) + 25 (AMX-INT8): silicon supports it.
 ///   2. CPUID.01H:ECX bit 27 (OSXSAVE): OS turned on XSAVE.
 ///   3. XGETBV(0) bits 17 (TILECFG) + 18 (TILEDATA): OS enabled tile XSTATE.
@@ -186,6 +189,11 @@ fn detect_amx() -> bool {
 #[cfg(target_arch = "x86_64")]
 fn detect_amx_tile() -> bool {
     // Step 1: CPU supports AMX-TILE? (INT8 is checked by `detect_amx`, not here.)
+    // Leaf 7 is guarded by the max basic leaf, as `amx_ops::detect_amx_features`
+    // does: an out-of-range basic leaf may echo the highest leaf's data.
+    if core::arch::x86_64::__cpuid(0).eax < 7 {
+        return false;
+    }
     let cpuid = core::arch::x86_64::__cpuid_count(7, 0);
     let amx_tile = (cpuid.edx >> 24) & 1;
     if amx_tile == 0 {
@@ -203,6 +211,9 @@ fn detect_amx_tile() -> bool {
     // _xgetbv(0) reads the ACTUAL XCR0 register (what the OS set),
     // not the CPUID-reported capability.
     // Bit 17 = TILECFG, Bit 18 = TILEDATA. Both must be set.
+    // SAFETY: `_xgetbv` requires the `xsave` feature; XGETBV(0) is legal
+    // (never #UD) once CPUID.01H:ECX[27] (OSXSAVE) is set, which step 2
+    // above has just verified — it is the only precondition the intrinsic has.
     let xcr0: u64 = unsafe { core::arch::x86_64::_xgetbv(0) };
     let tilecfg = (xcr0 >> 17) & 1;
     let tiledata = (xcr0 >> 18) & 1;

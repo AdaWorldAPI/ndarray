@@ -19,7 +19,7 @@ fn main() {
         std::process::exit(1);
     }
     println!(
-        "simd-masking-parity OK: {} checks bit-identical to the bit-serial reference",
+        "simd-masking-parity OK: {} check groups bit-identical to their scalar / bit-serial references",
         simd_masking_parity::CHECKS
     );
 }

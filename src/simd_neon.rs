@@ -1851,8 +1851,8 @@ impl U32x16 {
     ///
     /// Bit `i` of the result is set iff `self.lane(i) == other.lane(i)`. Bit
     /// order is **LSB-first**: lane `0` occupies bit `0`. Same convention as
-    /// `I32x16::cmpge_zero_mask` / `I32x16::gt_bitmask` (which on aarch64 come
-    /// from the scalar tier — `I32x16` is re-exported from `simd_scalar`).
+    /// `I32x16::cmpge_zero_mask` / `I32x16::gt_bitmask` (the native NEON
+    /// `I32x16` in this file, since the five-flavour audit of #306).
     ///
     /// Edge cases: equality is exact bitwise comparison over the full 32-bit
     /// range, so `u32::MAX` and `0` behave like any other value — no
@@ -1991,6 +1991,14 @@ impl PartialEq for U32x16 {
 #[cfg(target_arch = "aarch64")]
 #[allow(non_camel_case_types)]
 pub type u32x16 = U32x16;
+/// Lowercase alias of the native NEON [`I32x16`] (travels with the type).
+#[cfg(target_arch = "aarch64")]
+#[allow(non_camel_case_types)]
+pub type i32x16 = I32x16;
+/// Lowercase alias of the native NEON [`U64x8`] (travels with the type).
+#[cfg(target_arch = "aarch64")]
+#[allow(non_camel_case_types)]
+pub type u64x8 = U64x8;
 
 #[cfg(target_arch = "aarch64")]
 #[derive(Copy, Clone)]
@@ -2984,7 +2992,9 @@ impl Default for I32x16 {
 #[inline(always)]
 fn quad_mask4(cmp: uint32x4_t) -> u16 {
     const WEIGHTS: [u32; 4] = [1, 2, 4, 8];
-    // SAFETY: NEON baseline; pure register ops.
+    // SAFETY: NEON baseline. The one memory access is `vld1q_u32` of
+    // `WEIGHTS`, a `const [u32; 4]` — 16 readable, 4-byte-aligned bytes, which
+    // is all `vld1q_u32` requires; the rest is register-only.
     unsafe { vaddvq_u32(vandq_u32(cmp, vld1q_u32(WEIGHTS.as_ptr()))) as u16 }
 }
 

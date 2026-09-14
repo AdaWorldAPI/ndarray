@@ -296,7 +296,9 @@ impl F32Mask16 {
     ///
     /// # Examples
     /// Bit `i` is lane `i`: with lanes 0 and 15 below the threshold the
-    /// `simd_lt` mask reads `0b1000_0000_0000_0001`.
+    /// `simd_lt` mask reads `0b1000_0000_0000_0001`. `ignore`d rather than
+    /// `no_run` because this type exists only under a compile-time `avx512f`
+    /// (v4 / native builds); a v3 doctest build cannot see it.
     /// ```rust,ignore
     /// let mut a = [10.0f32; 16];
     /// a[0] = -1.0;

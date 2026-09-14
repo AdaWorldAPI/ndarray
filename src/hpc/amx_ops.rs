@@ -9,8 +9,12 @@
 //! inside `asm!` WITHOUT any target feature, and `asm_const` lets the tile
 //! index be a generic parameter, so `tilezero tmm{t}` assembles for all eight
 //! tiles from one body. This module is that surface. The `.byte` tables stay
-//! where they are; the encoding test below reads this module's emitted bytes
-//! back and pins them to those tables, so the two can never disagree silently.
+//! where they are; the encoding tests below read this module's emitted bytes
+//! out of the test binary and pin the GEMM subset — TILEZERO tmm0, TILERELEASE,
+//! TDPBUSD and TDPBF16PS in the kernel's `(0, 2, 1)` placement — to the
+//! EMR-validated table, so THOSE four cannot disagree silently. Every other
+//! pinned op is pinned to LLVM 22.1.8's own emission (a drift guard); the
+//! `amx_matmul` load/store rows are not cross-pinned.
 //!
 //! # Operand order — the "mirror" resolved
 //!
@@ -69,9 +73,10 @@
 //!
 //! 1. **Tile state + permission**: [`crate::simd_amx::amx_tile_available`]
 //!    returned `true` (AMX-TILE, XSAVE, tile XSTATE, XTILEDATA permission —
-//!    no compute-tier bit). Sufficient on its own for the tile-STATE ops
-//!    (`ldtilecfg`, `sttilecfg`, `tilezero`, `tileloadd*`, `tilestored`,
-//!    `tilerelease`).
+//!    no compute-tier bit). Sufficient on its own for the tile-STATE ops:
+//!    `ldtilecfg`, `sttilecfg`, `tilezero`, `tileloadd`, `tileloaddt1`,
+//!    `tilestored`, `tilerelease`. NOT for `tileloaddrs`/`tileloaddrst1`,
+//!    which are AMX-MOVRS and take gate 2 like any other tier.
 //! 2. **Tier**: the compute op's tier is advertised — INT8 ops via
 //!    [`super::amx_matmul::amx_available`] (which is gate 1 plus the INT8
 //!    bit), every other op via gate 1 AND its [`AmxFeatures`] bit
@@ -102,7 +107,7 @@ use core::arch::asm;
 /// if amx_tile_available() {
 ///     let cfg = TileConfig::for_dpbusd(64);
 ///     // SAFETY: tile permission held (checked above); `cfg` is 64 aligned bytes
-///     // with palette 1 and in-range shapes, covering tiles 0..3.
+///     // with palette 1 and in-range shapes, covering tiles 0-2.
 ///     unsafe {
 ///         ldtilecfg(cfg.data.as_ptr());
 ///         tilerelease();
@@ -129,7 +134,7 @@ pub unsafe fn ldtilecfg(cfg: *const u8) {
 /// if amx_tile_available() {
 ///     let cfg = TileConfig::for_dpbusd(64);
 ///     // SAFETY: tile permission held (checked above); `cfg` is 64 aligned bytes
-///     // with palette 1 and in-range shapes, covering tiles 0..3.
+///     // with palette 1 and in-range shapes, covering tiles 0-2.
 ///     unsafe {
 ///         ldtilecfg(cfg.data.as_ptr());
 ///         let mut back = TileConfig { data: [0u8; 64] };
@@ -159,7 +164,7 @@ pub unsafe fn sttilecfg(cfg: *mut u8) {
 /// if amx_tile_available() {
 ///     let cfg = TileConfig::for_dpbusd(64);
 ///     // SAFETY: tile permission held (checked above); `cfg` is 64 aligned bytes
-///     // with palette 1 and in-range shapes, covering tiles 0..3.
+///     // with palette 1 and in-range shapes, covering tiles 0-2.
 ///     unsafe {
 ///         ldtilecfg(cfg.data.as_ptr());
 ///         tilerelease();
@@ -186,7 +191,7 @@ pub unsafe fn tilerelease() {
 /// if amx_tile_available() {
 ///     let cfg = TileConfig::for_dpbusd(64);
 ///     // SAFETY: tile permission held (checked above); `cfg` is 64 aligned bytes
-///     // with palette 1 and in-range shapes, covering tiles 0..3.
+///     // with palette 1 and in-range shapes, covering tiles 0-2.
 ///     unsafe {
 ///         ldtilecfg(cfg.data.as_ptr());
 ///         tilezero::<0>();
@@ -217,7 +222,7 @@ pub unsafe fn tilezero<const T: u8>() {
 /// if amx_tile_available() {
 ///     let cfg = TileConfig::for_dpbusd(64);
 ///     // SAFETY: tile permission held (checked above); `cfg` is 64 aligned bytes
-///     // with palette 1 and in-range shapes, covering tiles 0..3.
+///     // with palette 1 and in-range shapes, covering tiles 0-2.
 ///     unsafe {
 ///         ldtilecfg(cfg.data.as_ptr());
 ///         // tmm2 is the 16-row × 64-byte M×K operand: one 64-byte row per stride.
@@ -248,7 +253,7 @@ pub unsafe fn tileloadd<const T: u8>(base: *const u8, stride: usize) {
 /// if amx_tile_available() {
 ///     let cfg = TileConfig::for_dpbusd(64);
 ///     // SAFETY: tile permission held (checked above); `cfg` is 64 aligned bytes
-///     // with palette 1 and in-range shapes, covering tiles 0..3.
+///     // with palette 1 and in-range shapes, covering tiles 0-2.
 ///     unsafe {
 ///         ldtilecfg(cfg.data.as_ptr());
 ///         let a = [0u8; 16 * 64];
@@ -279,7 +284,7 @@ pub unsafe fn tileloaddt1<const T: u8>(base: *const u8, stride: usize) {
 /// if amx_tile_available() {
 ///     let cfg = TileConfig::for_dpbusd(64);
 ///     // SAFETY: tile permission held (checked above); `cfg` is 64 aligned bytes
-///     // with palette 1 and in-range shapes, covering tiles 0..3.
+///     // with palette 1 and in-range shapes, covering tiles 0-2.
 ///     unsafe {
 ///         ldtilecfg(cfg.data.as_ptr());
 ///         // tmm0 is the 16×16 i32 accumulator: 16 rows of 64 bytes.
@@ -389,7 +394,7 @@ macro_rules! tdp3 {
         #[doc = concat!("if amx_tile_available() && amx_features().", stringify!($tier), " {")]
         ///     let cfg = TileConfig::for_dpbusd(64);
         ///     // SAFETY: tile permission held (checked above), the config covers
-        ///     // tiles 0..3 with compatible shapes, and the operands are distinct.
+        ///     // tiles 0-2 with compatible shapes, and the operands are distinct.
         ///     unsafe {
         ///         ldtilecfg(cfg.data.as_ptr());
         ///         tilezero::<0>();
@@ -479,8 +484,12 @@ tdp3!(
 /// enforced at compile time.
 ///
 /// # Safety
-/// Tiles configured with compatible shapes, AMX available, and the host
-/// must report AMX-TF32.
+/// Tiles configured with compatible shapes,
+/// [`crate::simd_amx::amx_tile_available`] true, and the host must report
+/// [`AmxFeatures::tf32`]. The expected bytes were derived by LLVM 22.1.8's
+/// assembler from the mnemonic (commit 9ebd2c5, green on stable) before the
+/// wrapper switched to raw bytes; the encoding test pins both the `(0, 1, 2)`
+/// and the `(0, 2, 1)` instantiation to that origin.
 ///
 /// # Examples
 ///
@@ -492,7 +501,7 @@ tdp3!(
 /// if amx_tile_available() && amx_features().tf32 {
 ///     let cfg = TileConfig::for_dpbusd(64);
 ///     // SAFETY: tile permission held, TF32 advertised, config covers tiles
-///     // 0..3, operands distinct.
+///     // 0-2, operands distinct.
 ///     unsafe {
 ///         ldtilecfg(cfg.data.as_ptr());
 ///         tilezero::<0>();
@@ -640,9 +649,10 @@ tile_row_to_zmm!(
 
 /// Which AMX tiers this CPU advertises, per LLVM `Host.cpp`'s bit positions.
 ///
-/// Silicon bits only — [`super::amx_matmul::amx_available`] is still the gate
-/// for "may I execute a tile op" (OS XSAVE state + `arch_prctl` permission);
-/// this struct answers "which ops exist once I may".
+/// Silicon bits only — the gate for "may I execute a tile op" is
+/// [`crate::simd_amx::amx_tile_available`] (OS XSAVE state + `arch_prctl`
+/// permission); [`super::amx_matmul::amx_available`] adds only the INT8 bit
+/// and gates the INT8 ops. This struct answers "which ops exist once I may".
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub struct AmxFeatures {
     /// AMX-TILE (7.0:EDX[24]).
@@ -715,9 +725,9 @@ static AMX_FEATURES: std::sync::LazyLock<AmxFeatures> = std::sync::LazyLock::new
 /// ```
 /// use ndarray::hpc::amx_ops::amx_features;
 /// let f = amx_features();
-/// // Every compute tier rides on AMX-TILE; a tier without TILE is not a CPU.
-/// if f.int8 || f.bf16 || f.fp16 {
-///     assert!(f.tile);
+/// println!("AMX tiers: tile={} int8={} bf16={} fp16={}", f.tile, f.int8, f.bf16, f.fp16);
+/// if f.tile && f.int8 {
+///     println!("the int8 GEMM tier exists on this silicon (OS gates still apply)");
 /// }
 /// ```
 pub fn amx_features() -> AmxFeatures {
@@ -728,210 +738,409 @@ pub fn amx_features() -> AmxFeatures {
 mod tests {
     use super::*;
 
-    /// Read the machine code of a monomorphized op out of the OBJECT FILE —
-    /// the test binary itself, `/proc/self/exe` — via its ELF `.symtab`: the
-    /// symbol's `st_value`/`st_size` are the linker's own statement of where
-    /// the wrapper starts and how long it is, so the extent is validated by
-    /// the producer of the bytes, never inferred from a function pointer, a
-    /// fixed window, or a `ret`-byte heuristic (0xC3 can sit inside another
-    /// instruction's immediate). No executable memory is dereferenced at all.
-    /// Each wrapper carries an `export_name` so it can be found by name, and
-    /// `#[inline(never)]` so the op's bytes are its own symbol's bytes. Runs
-    /// on ANY x86_64 Linux host — it inspects encodings, never executes a
-    /// tile op — so the `.byte` tables in `amx_matmul` and the mnemonics here
-    /// are pinned to each other by CI, not by an EMR box. Requires an
-    /// unstripped test binary (cargo's default for every test profile).
-    fn symbol_bytes(name: &str) -> Vec<u8> {
-        let exe = std::fs::read("/proc/self/exe").expect("read /proc/self/exe");
-        let u16_at = |o: usize| u16::from_le_bytes([exe[o], exe[o + 1]]);
-        let u32_at = |o: usize| u32::from_le_bytes(exe[o..o + 4].try_into().expect("4 bytes"));
-        let u64_at = |o: usize| u64::from_le_bytes(exe[o..o + 8].try_into().expect("8 bytes"));
-        assert_eq!(&exe[..4], b"\x7fELF", "test binary is ELF");
-        assert_eq!(exe[4], 2, "ELF64");
-        let shoff = u64_at(0x28) as usize;
-        let shentsize = u16_at(0x3a) as usize;
-        let shnum = u16_at(0x3c) as usize;
-        // (sh_type, sh_addr, sh_offset, sh_size, sh_link, sh_entsize)
-        let section = |i: usize| {
-            let b = shoff + i * shentsize;
-            (
-                u32_at(b + 4),
-                u64_at(b + 0x10),
-                u64_at(b + 0x18),
-                u64_at(b + 0x20),
-                u32_at(b + 0x28),
-                u64_at(b + 0x38),
-            )
-        };
-        const SHT_SYMTAB: u32 = 2;
-        let symtab = (0..shnum)
-            .map(section)
-            .find(|s| s.0 == SHT_SYMTAB)
-            .expect("test binary carries .symtab — do not strip test binaries");
-        let strtab = section(symtab.4 as usize);
-        let entsize = symtab.5 as usize;
-        assert_eq!(entsize, 24, "Elf64_Sym");
-        for i in 0..(symtab.3 as usize / entsize) {
-            let b = symtab.2 as usize + i * entsize;
-            let name_off = strtab.2 as usize + u32_at(b) as usize;
-            let name_len = exe[name_off..]
-                .iter()
-                .position(|&c| c == 0)
-                .expect("NUL-terminated symbol name");
-            if &exe[name_off..name_off + name_len] != name.as_bytes() {
-                continue;
+    /// Everything that reads `/proc/self/exe` — Linux only, as its own doc
+    /// says; on another x86_64 OS these tests do not exist rather than fail
+    /// at the `expect`. The CPUID consistency test below stays OS-agnostic.
+    #[cfg(target_os = "linux")]
+    mod encodings {
+        use super::super::*;
+
+        /// Read the machine code of a monomorphized op out of the OBJECT FILE —
+        /// the test binary itself, `/proc/self/exe` — via its ELF `.symtab`: the
+        /// symbol's `st_value`/`st_size` are the linker's own statement of where
+        /// the wrapper starts and how long it is, so the extent is validated by
+        /// the producer of the bytes, never inferred from a function pointer, a
+        /// fixed window, or a `ret`-byte heuristic (0xC3 can sit inside another
+        /// instruction's immediate). No executable memory is dereferenced at all.
+        /// Each wrapper carries an `export_name` so it can be found by name, and
+        /// `#[inline(never)]` so the op's bytes are its own symbol's bytes. Runs
+        /// on ANY x86_64 Linux host — it inspects encodings, never executes a
+        /// tile op — so the `.byte` tables in `amx_matmul` and the mnemonics here
+        /// are pinned to each other by CI, not by an EMR box. Requires an
+        /// unstripped test binary (cargo's default for every test profile).
+        fn symbol_bytes(name: &str) -> Vec<u8> {
+            // Read the binary once per process, not once per assertion (each
+            // lookup walks the whole `.symtab`; the file is tens of MiB).
+            static EXE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+            let exe = EXE.get_or_init(|| std::fs::read("/proc/self/exe").expect("read /proc/self/exe"));
+            let u16_at = |o: usize| u16::from_le_bytes([exe[o], exe[o + 1]]);
+            let u32_at = |o: usize| u32::from_le_bytes(exe[o..o + 4].try_into().expect("4 bytes"));
+            let u64_at = |o: usize| u64::from_le_bytes(exe[o..o + 8].try_into().expect("8 bytes"));
+            assert_eq!(&exe[..4], b"\x7fELF", "test binary is ELF");
+            assert_eq!(exe[4], 2, "ELF64");
+            let shoff = u64_at(0x28) as usize;
+            let shentsize = u16_at(0x3a) as usize;
+            let shnum = u16_at(0x3c) as usize;
+            // (sh_type, sh_addr, sh_offset, sh_size, sh_link, sh_entsize)
+            let section = |i: usize| {
+                let b = shoff + i * shentsize;
+                (
+                    u32_at(b + 4),
+                    u64_at(b + 0x10),
+                    u64_at(b + 0x18),
+                    u64_at(b + 0x20),
+                    u32_at(b + 0x28),
+                    u64_at(b + 0x38),
+                )
+            };
+            const SHT_SYMTAB: u32 = 2;
+            let symtab = (0..shnum)
+                .map(section)
+                .find(|s| s.0 == SHT_SYMTAB)
+                .expect("test binary carries .symtab — do not strip test binaries");
+            let strtab = section(symtab.4 as usize);
+            let entsize = symtab.5 as usize;
+            assert_eq!(entsize, 24, "Elf64_Sym");
+            for i in 0..(symtab.3 as usize / entsize) {
+                let b = symtab.2 as usize + i * entsize;
+                let name_off = strtab.2 as usize + u32_at(b) as usize;
+                let name_len = exe[name_off..]
+                    .iter()
+                    .position(|&c| c == 0)
+                    .expect("NUL-terminated symbol name");
+                if &exe[name_off..name_off + name_len] != name.as_bytes() {
+                    continue;
+                }
+                // ORDER MATTERS: the section lookup below must stay AFTER the name
+                // match. Hundreds of symbols in this binary carry a special
+                // `st_shndx` (`SHN_ABS` 0xfff1 for every `STT_FILE`, `SHN_UNDEF`,
+                // …) that is not a section index at all; `section()` on one of
+                // them indexes past the section table. A matched probe is always
+                // a real `FUNC` in `.text`, so only the match may reach it.
+                let st_shndx = u16_at(b + 6) as usize;
+                let st_value = u64_at(b + 8);
+                let st_size = u64_at(b + 16) as usize;
+                assert!(st_size > 0, "{name}: symbol has no size");
+                let sec = section(st_shndx);
+                let file_off = (st_value - sec.1 + sec.2) as usize;
+                return exe[file_off..file_off + st_size].to_vec();
             }
-            let st_shndx = u16_at(b + 6) as usize;
-            let st_value = u64_at(b + 8);
-            let st_size = u64_at(b + 16) as usize;
-            assert!(st_size > 0, "{name}: symbol has no size");
-            let sec = section(st_shndx);
-            let file_off = (st_value - sec.1 + sec.2) as usize;
-            return exe[file_off..file_off + st_size].to_vec();
+            panic!("symbol {name} not found in .symtab");
         }
-        panic!("symbol {name} not found in .symtab");
+
+        /// A wrapper as (fn pointer, exported symbol name). The pointer is only
+        /// ever passed through `black_box` — it is never dereferenced — so that
+        /// the otherwise-unreferenced wrapper is actually codegen'd into the test
+        /// binary (an `export_name` alone does not keep a dead fn alive here;
+        /// measured: 0 probe symbols in `.symtab` without the reference).
+        macro_rules! probe {
+            ($w:ident) => {
+                ($w as unsafe fn(), concat!("ndarray_amx_probe_", stringify!($w)))
+            };
+        }
+
+        /// Does the wrapper's own symbol contain the exact encoding? Bounded by
+        /// the symbol's linker-recorded size, so a neighbouring wrapper's bytes
+        /// can neither fail a negative assertion nor pass a positive one.
+        fn contains((f, name): (unsafe fn(), &str), needle: &[u8]) -> bool {
+            std::hint::black_box(f as usize);
+            symbol_bytes(name)
+                .windows(needle.len())
+                .any(|w| w == needle)
+        }
+
+        /// `contains` with a per-byte mask, for ops whose encoding carries a
+        /// register the ALLOCATOR chooses: a memory operand's base/index land in
+        /// VEX byte 1's B/X bits and the SIB byte, a zmm destination in the
+        /// ModRM.reg field and EVEX R/R'. Those bits are masked OFF; the opcode,
+        /// prefix map, W/L/pp, the tile number and any immediate are matched
+        /// exactly. `(byte, mask)` pairs; a mask of `0xff` is an exact byte.
+        fn contains_masked((f, name): (unsafe fn(), &str), needle: &[(u8, u8)]) -> bool {
+            std::hint::black_box(f as usize);
+            symbol_bytes(name)
+                .windows(needle.len())
+                .any(|w| w.iter().zip(needle).all(|(&b, &(e, m))| b & m == e & m))
+        }
+
+        #[inline(never)]
+        #[export_name = "ndarray_amx_probe_w_tilezero0"]
+        unsafe fn w_tilezero0() {
+            tilezero::<0>()
+        }
+        #[inline(never)]
+        #[export_name = "ndarray_amx_probe_w_tilezero7"]
+        unsafe fn w_tilezero7() {
+            tilezero::<7>()
+        }
+        #[inline(never)]
+        #[export_name = "ndarray_amx_probe_w_tilerelease"]
+        unsafe fn w_tilerelease() {
+            tilerelease()
+        }
+        #[inline(never)]
+        #[export_name = "ndarray_amx_probe_w_tdpbusd_021"]
+        unsafe fn w_tdpbusd_021() {
+            tdpbusd::<0, 2, 1>()
+        }
+        #[inline(never)]
+        #[export_name = "ndarray_amx_probe_w_tdpbf16ps_021"]
+        unsafe fn w_tdpbf16ps_021() {
+            tdpbf16ps::<0, 2, 1>()
+        }
+        #[inline(never)]
+        #[export_name = "ndarray_amx_probe_w_tdpbusd_012"]
+        unsafe fn w_tdpbusd_012() {
+            tdpbusd::<0, 1, 2>()
+        }
+        #[inline(never)]
+        #[export_name = "ndarray_amx_probe_w_tdpbssd_012"]
+        unsafe fn w_tdpbssd_012() {
+            tdpbssd::<0, 1, 2>()
+        }
+        #[inline(never)]
+        #[export_name = "ndarray_amx_probe_w_tdpfp16ps_012"]
+        unsafe fn w_tdpfp16ps_012() {
+            tdpfp16ps::<0, 1, 2>()
+        }
+        #[inline(never)]
+        #[export_name = "ndarray_amx_probe_w_tcmmimfp16ps_012"]
+        unsafe fn w_tcmmimfp16ps_012() {
+            tcmmimfp16ps::<0, 1, 2>()
+        }
+        #[inline(never)]
+        #[export_name = "ndarray_amx_probe_w_tdpbf8ps_012"]
+        unsafe fn w_tdpbf8ps_012() {
+            tdpbf8ps::<0, 1, 2>()
+        }
+        #[inline(never)]
+        #[export_name = "ndarray_amx_probe_w_tdphf8ps_012"]
+        unsafe fn w_tdphf8ps_012() {
+            tdphf8ps::<0, 1, 2>()
+        }
+        #[inline(never)]
+        #[export_name = "ndarray_amx_probe_w_tmmultf32ps_012"]
+        unsafe fn w_tmmultf32ps_012() {
+            tmmultf32ps::<0, 1, 2>()
+        }
+        #[inline(never)]
+        #[export_name = "ndarray_amx_probe_w_tmmultf32ps_021"]
+        unsafe fn w_tmmultf32ps_021() {
+            tmmultf32ps::<0, 2, 1>()
+        }
+        #[inline(never)]
+        #[export_name = "ndarray_amx_probe_w_tdpbsud_012"]
+        unsafe fn w_tdpbsud_012() {
+            tdpbsud::<0, 1, 2>()
+        }
+        #[inline(never)]
+        #[export_name = "ndarray_amx_probe_w_tdpbuud_012"]
+        unsafe fn w_tdpbuud_012() {
+            tdpbuud::<0, 1, 2>()
+        }
+        #[inline(never)]
+        #[export_name = "ndarray_amx_probe_w_tcmmrlfp16ps_012"]
+        unsafe fn w_tcmmrlfp16ps_012() {
+            tcmmrlfp16ps::<0, 1, 2>()
+        }
+        #[inline(never)]
+        #[export_name = "ndarray_amx_probe_w_tdpbhf8ps_012"]
+        unsafe fn w_tdpbhf8ps_012() {
+            tdpbhf8ps::<0, 1, 2>()
+        }
+        #[inline(never)]
+        #[export_name = "ndarray_amx_probe_w_tdphbf8ps_012"]
+        unsafe fn w_tdphbf8ps_012() {
+            tdphbf8ps::<0, 1, 2>()
+        }
+
+        // Memory-operand ops. The pointer/stride come from `black_box` so the
+        // allocator picks the registers; the masked matcher ignores them.
+        static SCRATCH: [u8; 64] = [0u8; 64];
+        #[inline(never)]
+        #[export_name = "ndarray_amx_probe_w_ldtilecfg"]
+        unsafe fn w_ldtilecfg() {
+            ldtilecfg(std::hint::black_box(SCRATCH.as_ptr()))
+        }
+        #[inline(never)]
+        #[export_name = "ndarray_amx_probe_w_sttilecfg"]
+        unsafe fn w_sttilecfg() {
+            sttilecfg(std::hint::black_box(SCRATCH.as_ptr() as *mut u8))
+        }
+        #[inline(never)]
+        #[export_name = "ndarray_amx_probe_w_tileloadd2"]
+        unsafe fn w_tileloadd2() {
+            tileloadd::<2>(std::hint::black_box(SCRATCH.as_ptr()), std::hint::black_box(64))
+        }
+        #[inline(never)]
+        #[export_name = "ndarray_amx_probe_w_tileloaddt1_2"]
+        unsafe fn w_tileloaddt1_2() {
+            tileloaddt1::<2>(std::hint::black_box(SCRATCH.as_ptr()), std::hint::black_box(64))
+        }
+        #[inline(never)]
+        #[export_name = "ndarray_amx_probe_w_tilestored0"]
+        unsafe fn w_tilestored0() {
+            tilestored::<0>(std::hint::black_box(SCRATCH.as_ptr() as *mut u8), std::hint::black_box(64))
+        }
+        #[inline(never)]
+        #[export_name = "ndarray_amx_probe_w_tileloaddrs2"]
+        unsafe fn w_tileloaddrs2() {
+            tileloaddrs::<2>(std::hint::black_box(SCRATCH.as_ptr()), std::hint::black_box(64))
+        }
+        #[inline(never)]
+        #[export_name = "ndarray_amx_probe_w_tileloaddrst1_2"]
+        unsafe fn w_tileloaddrst1_2() {
+            tileloaddrst1::<2>(std::hint::black_box(SCRATCH.as_ptr()), std::hint::black_box(64))
+        }
+        #[cfg(target_feature = "avx512f")]
+        #[inline(never)]
+        #[export_name = "ndarray_amx_probe_w_tcvtrowd2ps_imm_1_3"]
+        unsafe fn w_tcvtrowd2ps_imm_1_3() {
+            let _ = std::hint::black_box(tcvtrowd2ps_imm::<1, 3>());
+        }
+        #[cfg(target_feature = "avx512f")]
+        #[inline(never)]
+        #[export_name = "ndarray_amx_probe_w_tilemovrow_imm_1_5"]
+        unsafe fn w_tilemovrow_imm_1_5() {
+            let _ = std::hint::black_box(tilemovrow_imm::<1, 5>());
+        }
+
+        /// The mnemonic path must reproduce `amx_matmul`'s validated `.byte`
+        /// table byte for byte — these are the sequences measured on Emerald
+        /// Rapids (`amx-enablement-and-kernel.md` §5).
+        #[test]
+        fn mnemonics_reproduce_the_validated_byte_table() {
+            assert!(contains(probe!(w_tilezero0), &[0xc4, 0xe2, 0x7b, 0x49, 0xc0]), "TILEZERO tmm0");
+            assert!(contains(probe!(w_tilerelease), &[0xc4, 0xe2, 0x78, 0x49, 0xc0]), "TILERELEASE");
+            assert!(
+                contains(probe!(w_tdpbusd_021), &[0xc4, 0xe2, 0x71, 0x5e, 0xc2]),
+                "TDPBUSD tmm0, tmm2, tmm1 == table C4 E2 71 5E C2"
+            );
+            assert!(
+                contains(probe!(w_tdpbf16ps_021), &[0xc4, 0xe2, 0x72, 0x5c, 0xc2]),
+                "TDPBF16PS tmm0, tmm2, tmm1 == table C4 E2 72 5C C2"
+            );
+        }
+
+        /// The operand convention, stated as bytes: swapping S1/S2 swaps
+        /// ModRM.rm and VEX.vvvv, nothing else. A body that silently reordered
+        /// the operands (the "mirror" the gotchas warn about) would fail one half.
+        #[test]
+        fn operand_order_is_intel_order_rm_then_vvvv() {
+            assert!(
+                contains(probe!(w_tdpbusd_012), &[0xc4, 0xe2, 0x69, 0x5e, 0xc1]),
+                "tdpbusd tmm0,tmm1,tmm2 → rm=1 vvvv=2"
+            );
+            assert!(
+                contains(probe!(w_tdpbusd_021), &[0xc4, 0xe2, 0x71, 0x5e, 0xc2]),
+                "tdpbusd tmm0,tmm2,tmm1 → rm=2 vvvv=1"
+            );
+            assert!(!contains(probe!(w_tdpbusd_012), &[0xc4, 0xe2, 0x71, 0x5e, 0xc2]));
+        }
+
+        /// Beyond the GEMM tier: the bytes LLVM 22.1.8 emits for the mnemonics
+        /// that have never executed here (assembler-verified, per the module doc).
+        #[test]
+        fn extended_tiers_assemble_to_their_llvm_encodings() {
+            assert!(contains(probe!(w_tilezero7), &[0xc4, 0xe2, 0x7b, 0x49, 0xf8]), "TILEZERO tmm7");
+            assert!(contains(probe!(w_tdpbssd_012), &[0xc4, 0xe2, 0x6b, 0x5e, 0xc1]), "TDPBSSD (F2 prefix)");
+            assert!(contains(probe!(w_tdpfp16ps_012), &[0xc4, 0xe2, 0x6b, 0x5c, 0xc1]), "TDPFP16PS = 5C with F2");
+            assert!(contains(probe!(w_tcmmimfp16ps_012), &[0xc4, 0xe2, 0x69, 0x6c, 0xc1]), "TCMMIMFP16PS = 6C with 66");
+            assert!(contains(probe!(w_tdpbf8ps_012), &[0xc4, 0xe5, 0x68, 0xfd, 0xc1]), "TDPBF8PS = map5 FD, no prefix");
+            assert!(contains(probe!(w_tdphf8ps_012), &[0xc4, 0xe5, 0x69, 0xfd, 0xc1]), "TDPHF8PS = map5 FD, 66");
+            assert!(contains(probe!(w_tmmultf32ps_012), &[0xc4, 0xe2, 0x69, 0x48, 0xc1]), "TMMULTF32PS = 48 with 66");
+            assert!(
+                contains(probe!(w_tmmultf32ps_021), &[0xc4, 0xe2, 0x71, 0x48, 0xc2]),
+                "TMMULTF32PS (0,2,1): vvvv=~1 → 71, rm=2 → C2"
+            );
+            assert!(contains(probe!(w_tdpbsud_012), &[0xc4, 0xe2, 0x6a, 0x5e, 0xc1]), "TDPBSUD (F3 prefix)");
+            assert!(contains(probe!(w_tdpbuud_012), &[0xc4, 0xe2, 0x68, 0x5e, 0xc1]), "TDPBUUD (no prefix)");
+            assert!(contains(probe!(w_tcmmrlfp16ps_012), &[0xc4, 0xe2, 0x68, 0x6c, 0xc1]), "TCMMRLFP16PS = 6C, NP");
+            assert!(contains(probe!(w_tdpbhf8ps_012), &[0xc4, 0xe5, 0x6b, 0xfd, 0xc1]), "TDPBHF8PS = map5 FD, F2");
+            assert!(contains(probe!(w_tdphbf8ps_012), &[0xc4, 0xe5, 0x6a, 0xfd, 0xc1]), "TDPHBF8PS = map5 FD, F3");
+        }
+
+        /// The memory-operand ops: opcode, map, prefix and TILE NUMBER pinned;
+        /// the base/index registers (VEX B/X bits, SIB) are the allocator's and
+        /// are masked. `E` = exact byte, `B1` = VEX byte 1 with R/X/B masked,
+        /// `REG(t)` = ModRM with only the reg field (the tile) compared.
+        #[test]
+        fn memory_operand_ops_pin_opcode_prefix_and_tile() {
+            const E: u8 = 0xff;
+            const B1: (u8, u8) = (0xe2, 0x1f);
+            const fn reg(t: u8) -> (u8, u8) {
+                (t << 3, 0x38)
+            }
+            // LDTILECFG: VEX.128.NP.0F38.W0 49 /0
+            assert!(contains_masked(probe!(w_ldtilecfg), &[(0xc4, E), B1, (0x78, E), (0x49, E), reg(0)]), "LDTILECFG");
+            // STTILECFG: VEX.128.66.0F38.W0 49 /0
+            assert!(contains_masked(probe!(w_sttilecfg), &[(0xc4, E), B1, (0x79, E), (0x49, E), reg(0)]), "STTILECFG");
+            // TILELOADD tmm2: VEX.128.F2.0F38.W0 4B /r
+            assert!(contains_masked(probe!(w_tileloadd2), &[(0xc4, E), B1, (0x7b, E), (0x4b, E), reg(2)]), "TILELOADD");
+            // TILELOADDT1 tmm2: 66 prefix
+            assert!(
+                contains_masked(probe!(w_tileloaddt1_2), &[(0xc4, E), B1, (0x79, E), (0x4b, E), reg(2)]),
+                "TILELOADDT1"
+            );
+            // TILESTORED tmm0: F3 prefix
+            assert!(
+                contains_masked(probe!(w_tilestored0), &[(0xc4, E), B1, (0x7a, E), (0x4b, E), reg(0)]),
+                "TILESTORED"
+            );
+            // TILELOADDRS tmm2 / TILELOADDRST1 tmm2: opcode 4A, F2 / 66
+            assert!(
+                contains_masked(probe!(w_tileloaddrs2), &[(0xc4, E), B1, (0x7b, E), (0x4a, E), reg(2)]),
+                "TILELOADDRS"
+            );
+            assert!(
+                contains_masked(probe!(w_tileloaddrst1_2), &[(0xc4, E), B1, (0x79, E), (0x4a, E), reg(2)]),
+                "TILELOADDRST1"
+            );
+            // A wrong tile number must fail: tmm2's reg field is not tmm3's.
+            assert!(!contains_masked(probe!(w_tileloadd2), &[(0xc4, E), B1, (0x7b, E), (0x4b, E), reg(3)]));
+        }
+
+        /// AMX-AVX512 row ops, immediate-row forms (`avx512f` builds only): EVEX
+        /// map, prefix, opcode, tile and immediate pinned; the zmm destination
+        /// (EVEX R/R' in byte 1, ModRM.reg) is the allocator's and is masked.
+        #[cfg(target_feature = "avx512f")]
+        #[test]
+        fn avx512_row_ops_assemble_to_their_llvm_encodings() {
+            const E: u8 = 0xff;
+            // TCVTROWD2PS zmm, tmm1, imm8 = EVEX 62 F3 7E 48 07 /r ib
+            assert!(
+                contains_masked(
+                    probe!(w_tcvtrowd2ps_imm_1_3),
+                    &[(0x62, E), (0xf3, 0x6f), (0x7e, E), (0x48, E), (0x07, E), (0xc1, 0xc7), (0x03, E)]
+                ),
+                "TCVTROWD2PS imm"
+            );
+            // TILEMOVROW zmm, tmm1, imm8 = EVEX 62 F3 7D 48 07 /r ib
+            assert!(
+                contains_masked(
+                    probe!(w_tilemovrow_imm_1_5),
+                    &[(0x62, E), (0xf3, 0x6f), (0x7d, E), (0x48, E), (0x07, E), (0xc1, 0xc7), (0x05, E)]
+                ),
+                "TILEMOVROW imm"
+            );
+        }
     }
 
-    /// A wrapper as (fn pointer, exported symbol name). The pointer is only
-    /// ever passed through `black_box` — it is never dereferenced — so that
-    /// the otherwise-unreferenced wrapper is actually codegen'd into the test
-    /// binary (an `export_name` alone does not keep a dead fn alive here;
-    /// measured: 0 probe symbols in `.symtab` without the reference).
-    macro_rules! probe {
-        ($w:ident) => {
-            ($w as unsafe fn(), concat!("ndarray_amx_probe_", stringify!($w)))
-        };
-    }
-
-    /// Does the wrapper's own symbol contain the exact encoding? Bounded by
-    /// the symbol's linker-recorded size, so a neighbouring wrapper's bytes
-    /// can neither fail a negative assertion nor pass a positive one.
-    fn contains((f, name): (unsafe fn(), &str), needle: &[u8]) -> bool {
-        std::hint::black_box(f as usize);
-        symbol_bytes(name)
-            .windows(needle.len())
-            .any(|w| w == needle)
-    }
-
-    #[inline(never)]
-    #[export_name = "ndarray_amx_probe_w_tilezero0"]
-    unsafe fn w_tilezero0() {
-        tilezero::<0>()
-    }
-    #[inline(never)]
-    #[export_name = "ndarray_amx_probe_w_tilezero7"]
-    unsafe fn w_tilezero7() {
-        tilezero::<7>()
-    }
-    #[inline(never)]
-    #[export_name = "ndarray_amx_probe_w_tilerelease"]
-    unsafe fn w_tilerelease() {
-        tilerelease()
-    }
-    #[inline(never)]
-    #[export_name = "ndarray_amx_probe_w_tdpbusd_021"]
-    unsafe fn w_tdpbusd_021() {
-        tdpbusd::<0, 2, 1>()
-    }
-    #[inline(never)]
-    #[export_name = "ndarray_amx_probe_w_tdpbf16ps_021"]
-    unsafe fn w_tdpbf16ps_021() {
-        tdpbf16ps::<0, 2, 1>()
-    }
-    #[inline(never)]
-    #[export_name = "ndarray_amx_probe_w_tdpbusd_012"]
-    unsafe fn w_tdpbusd_012() {
-        tdpbusd::<0, 1, 2>()
-    }
-    #[inline(never)]
-    #[export_name = "ndarray_amx_probe_w_tdpbssd_012"]
-    unsafe fn w_tdpbssd_012() {
-        tdpbssd::<0, 1, 2>()
-    }
-    #[inline(never)]
-    #[export_name = "ndarray_amx_probe_w_tdpfp16ps_012"]
-    unsafe fn w_tdpfp16ps_012() {
-        tdpfp16ps::<0, 1, 2>()
-    }
-    #[inline(never)]
-    #[export_name = "ndarray_amx_probe_w_tcmmimfp16ps_012"]
-    unsafe fn w_tcmmimfp16ps_012() {
-        tcmmimfp16ps::<0, 1, 2>()
-    }
-    #[inline(never)]
-    #[export_name = "ndarray_amx_probe_w_tdpbf8ps_012"]
-    unsafe fn w_tdpbf8ps_012() {
-        tdpbf8ps::<0, 1, 2>()
-    }
-    #[inline(never)]
-    #[export_name = "ndarray_amx_probe_w_tdphf8ps_012"]
-    unsafe fn w_tdphf8ps_012() {
-        tdphf8ps::<0, 1, 2>()
-    }
-    #[inline(never)]
-    #[export_name = "ndarray_amx_probe_w_tmmultf32ps_012"]
-    unsafe fn w_tmmultf32ps_012() {
-        tmmultf32ps::<0, 1, 2>()
-    }
-
-    /// The mnemonic path must reproduce `amx_matmul`'s validated `.byte`
-    /// table byte for byte — these are the sequences measured on Emerald
-    /// Rapids (`amx-enablement-and-kernel.md` §5).
-    #[test]
-    fn mnemonics_reproduce_the_validated_byte_table() {
-        assert!(contains(probe!(w_tilezero0), &[0xc4, 0xe2, 0x7b, 0x49, 0xc0]), "TILEZERO tmm0");
-        assert!(contains(probe!(w_tilerelease), &[0xc4, 0xe2, 0x78, 0x49, 0xc0]), "TILERELEASE");
-        assert!(
-            contains(probe!(w_tdpbusd_021), &[0xc4, 0xe2, 0x71, 0x5e, 0xc2]),
-            "TDPBUSD tmm0, tmm2, tmm1 == table C4 E2 71 5E C2"
-        );
-        assert!(
-            contains(probe!(w_tdpbf16ps_021), &[0xc4, 0xe2, 0x72, 0x5c, 0xc2]),
-            "TDPBF16PS tmm0, tmm2, tmm1 == table C4 E2 72 5C C2"
-        );
-    }
-
-    /// The operand convention, stated as bytes: swapping S1/S2 swaps
-    /// ModRM.rm and VEX.vvvv, nothing else. A body that silently reordered
-    /// the operands (the "mirror" the gotchas warn about) would fail one half.
-    #[test]
-    fn operand_order_is_intel_order_rm_then_vvvv() {
-        assert!(
-            contains(probe!(w_tdpbusd_012), &[0xc4, 0xe2, 0x69, 0x5e, 0xc1]),
-            "tdpbusd tmm0,tmm1,tmm2 → rm=1 vvvv=2"
-        );
-        assert!(
-            contains(probe!(w_tdpbusd_021), &[0xc4, 0xe2, 0x71, 0x5e, 0xc2]),
-            "tdpbusd tmm0,tmm2,tmm1 → rm=2 vvvv=1"
-        );
-        assert!(!contains(probe!(w_tdpbusd_012), &[0xc4, 0xe2, 0x71, 0x5e, 0xc2]));
-    }
-
-    /// Beyond the GEMM tier: the bytes LLVM 22.1.8 emits for the mnemonics
-    /// that have never executed here (assembler-verified, per the module doc).
-    #[test]
-    fn extended_tiers_assemble_to_their_llvm_encodings() {
-        assert!(contains(probe!(w_tilezero7), &[0xc4, 0xe2, 0x7b, 0x49, 0xf8]), "TILEZERO tmm7");
-        assert!(contains(probe!(w_tdpbssd_012), &[0xc4, 0xe2, 0x6b, 0x5e, 0xc1]), "TDPBSSD (F2 prefix)");
-        assert!(contains(probe!(w_tdpfp16ps_012), &[0xc4, 0xe2, 0x6b, 0x5c, 0xc1]), "TDPFP16PS = 5C with F2");
-        assert!(contains(probe!(w_tcmmimfp16ps_012), &[0xc4, 0xe2, 0x69, 0x6c, 0xc1]), "TCMMIMFP16PS = 6C with 66");
-        assert!(contains(probe!(w_tdpbf8ps_012), &[0xc4, 0xe5, 0x68, 0xfd, 0xc1]), "TDPBF8PS = map5 FD, no prefix");
-        assert!(contains(probe!(w_tdphf8ps_012), &[0xc4, 0xe5, 0x69, 0xfd, 0xc1]), "TDPHF8PS = map5 FD, 66");
-        assert!(contains(probe!(w_tmmultf32ps_012), &[0xc4, 0xe2, 0x69, 0x48, 0xc1]), "TMMULTF32PS = 48 with 66");
-    }
-
+    /// A consistency re-derivation, and honest about its reach: on a host
+    /// without AMX (every GitHub runner) all six bits are `false` on both
+    /// sides and the equalities are `false == false` — a wrong bit POSITION
+    /// in `detect_amx_features` is only caught on AMX silicon. The
+    /// encoding tests carry the real weight; this one prints what it saw.
     #[test]
     fn feature_bits_are_consistent_with_the_legacy_detector() {
         let f = amx_features();
-        // The three SPR-era bits are exactly what `amx_report` reads; the
-        // extended tiers imply TILE.
         let l7 = core::arch::x86_64::__cpuid_count(7, 0);
         assert_eq!(f.tile, (l7.edx >> 24) & 1 == 1);
         assert_eq!(f.int8, (l7.edx >> 25) & 1 == 1);
         assert_eq!(f.bf16, (l7.edx >> 22) & 1 == 1);
-        for ext in [f.fp16, f.complex, f.fp8, f.tf32, f.avx512, f.movrs] {
-            if ext {
-                assert!(f.tile, "an extended AMX tier without AMX-TILE is not a real CPU");
+        eprintln!("amx feature bits on this host: {f:?} (non-AMX host ⇒ this test is a no-op)");
+        // "An extended tier implies TILE" is a silicon expectation, not a
+        // guarantee — a hypervisor masks CPUID bits arbitrarily — so it is
+        // observed, not asserted.
+        for (name, ext) in [
+            ("fp16", f.fp16),
+            ("complex", f.complex),
+            ("fp8", f.fp8),
+            ("tf32", f.tf32),
+            ("avx512", f.avx512),
+            ("movrs", f.movrs),
+        ] {
+            if ext && !f.tile {
+                eprintln!("note: CPUID advertises AMX-{name} without AMX-TILE (hypervisor mask?)");
             }
         }
     }

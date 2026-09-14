@@ -192,8 +192,10 @@ list `(tmm0, tmm1, tmm2)`; the assembler reads `(tmm0, tmm1, tmm2)` as
 rm = tmm1, vvvv = tmm2 = `C4 E2 69 5E C1`. Pinned two-sided in
 `operand_order_is_intel_order_rm_then_vvvv`.
 
-Assembler-verified encodings for the tiers beyond GEMM (LLVM `Host.cpp`
-CPUID bits; NONE of these has executed in this workspace — no GNR/DMR host):
+Assembler-verified encodings, LLVM `Host.cpp` CPUID bits. The INT8/BF16 rows
+are listed for reference and DID execute on EMR in the `(0,2,1)` placement;
+the `(0,1,2)` placements shown here, and every row below them, have NOT
+executed in this workspace (no GNR/DMR host):
 
 ```
                                          CPUID          bytes (tmm0,tmm1,tmm2 / tmm3,[rdi+rsi])
@@ -211,19 +213,24 @@ TILEMOVROW zmm0,tmm1,edi / ,5    AVX512                 62 F2 45 48 4A C1 / 62 F
 STTILECFG [rdi] / TILELOADDT1    TILE    7.0:EDX[24]    C4 E2 79 49 07 / C4 E2 79 4B 14 16
 ```
 
-Detection: `amx_ops::amx_features()` (cached) returns the per-tier bits;
-`amx_available()` remains the execute gate (XCR0 + arch_prctl). `amx_report()`
-prints both. Gotcha 14 (VM tile-state corruption) applies to every tier.
+Detection: `amx_ops::amx_features()` (cached) returns the per-tier bits.
+The execute gate for tile STATE is `simd_amx::amx_tile_available()` (TILE +
+XCR0 + arch_prctl); `amx_available()` is that plus the INT8 bit and gates the
+INT8 ops only; every other tier gates on `amx_tile_available()` AND its
+`AmxFeatures` bit. `amx_report()` prints both gates and every tier bit.
+Gotcha 14 (VM tile-state corruption) applies to every tier.
 
 ## 6. Detection API (cached, CPU-aware)
 
 ```rust
-use ndarray::simd::{amx_available, cpu_model, amx_report, CpuModel};
+use ndarray::simd::{amx_available, amx_tile_available, amx_features, cpu_model, amx_report, CpuModel};
 
-amx_available()  // bool, cached once via LazyLock (the 4 gates of §1)
+amx_available()       // bool, cached once via LazyLock (the 4 gates of §1, INT8 bit last)
+amx_tile_available()  // the tier-agnostic tile gate (TILE + OSXSAVE + XCR0 + arch_prctl)
+amx_features()        // AmxFeatures — per-tier silicon bits (§5b)
 cpu_model()      // CpuModel::{SapphireRapids,EmeraldRapids,GraniteRapids,SierraForest,OtherX86,NonX86}
 cpu_model().has_amx()   // true for SPR/EMR/GNR; false for Sierra Forest (E-core)
-amx_report()     // e.g. "AMX [Emerald Rapids expects_amx=true]: TILE=true INT8=true BF16=true available=true"
+amx_report()     // e.g. "AMX [Emerald Rapids expects_amx=true]: TILE=true INT8=true BF16=true tile_available=true available=true | tiers: fp16=false complex=false fp8=false tf32=false avx512=false movrs=false"
 ```
 
 Why `LazyLock`: the four gates (CPUID, XGETBV, one `arch_prctl`) are all

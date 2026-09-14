@@ -4,8 +4,9 @@
 //! predicate→mask, the mask algebra, all 256 `ternlog` tables on both mask
 //! lane widths, the care-masked register matches (contiguous and strided),
 //! the tail rules at 0 / 1 / 63 / 64 / 65 / 130 rows, the masked reductions,
-//! and `blend` — against a bit-serial reference computed here, and returns `0`
-//! iff every result is bit-identical. It has NO idea which backend
+//! and `blend` — against references computed here (bit-serial for `ternlog`,
+//! scalar word-serial for the rest; none of them touches an `ndarray::simd`
+//! type), and returns `0` iff every result is bit-identical. It has NO idea which backend
 //! `simd.rs` selected: no `cfg(target_feature)`, no backend module, no
 //! intrinsic. The build (its `-Ctarget-cpu`, its target, its
 //! `nightly-simd` feature) chooses the realization; this program only asks
@@ -433,10 +434,17 @@ fn check_predicates_to_mask() -> Result<(), u32> {
 
 // ── 0x6xx: mask algebra, in-place forms, ternlog over slices, any / all ─────
 
+/// Word counts for the mask-algebra group. `LENS` are ROW counts, and at 130
+/// rows a mask is only 3 words — below one `U64x8` chunk — so iterating `LENS`
+/// here would run the padded tail of every word op and never its `as_chunks`
+/// body (savant-architect, PR #306). These counts straddle the 8-word chunk
+/// boundary and cover every tail length 1..=7.
+const WORD_LENS: [usize; 14] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 16, 17, 31];
+
 fn check_mask_algebra() -> Result<(), u32> {
     let mut rng = SplitMix64(0x6000_0000_0002);
-    for &n in &LENS {
-        let nw = words_for(n);
+    for &nw in &WORD_LENS {
+        let n = nw * 64;
         // Conforming inputs: random bits with the tail beyond `n` cleared.
         let tail_mask = |i: usize| -> u64 {
             let live = n.saturating_sub(i * 64).min(64);

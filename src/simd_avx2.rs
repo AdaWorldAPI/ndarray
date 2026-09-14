@@ -1587,19 +1587,26 @@ impl U64x8 {
     /// The two 256-bit halves of the 64-byte-aligned array, loaded once.
     #[inline(always)]
     fn avx2_halves(self) -> (__m256i, __m256i) {
-        // SAFETY: this file is the x86-64-v3 backend — `.cargo/config.toml`
-        // pins `-Ctarget-cpu=x86-64-v3` for every x86_64 build that selects
-        // this arm, so AVX2 is a compile-time property here (the footing the
-        // native `U16x16` below already stands on). The array is
-        // `#[repr(align(64))]` and 64 bytes long, so both 32-byte loads are
-        // in bounds (`loadu` needs no alignment regardless).
+        // SAFETY: this file is the x86-64-v3 backend. `.cargo/config.toml`
+        // pins `-Ctarget-cpu=x86-64-v3` for the SUPPORTED x86_64 builds that
+        // select this arm, but that pin is not enforced by the arm's cfg —
+        // a build whose RUSTFLAGS replaced the config compiles this arm too
+        // and is "not a supported execution target for it (it would SIGILL)",
+        // as `simd.rs`'s arm note says. So the obligation is the CALLER's:
+        // AVX2 must be present at run time on any host this arm runs on
+        // (the same footing the native `U16x16` below already stands on). The
+        // memory half is proven here: the array is `#[repr(align(64))]` and
+        // 64 bytes long, so both 32-byte loads are in bounds (`loadu` needs
+        // no alignment regardless).
         unsafe {
             let p = self.0.as_ptr() as *const __m256i;
             (_mm256_loadu_si256(p), _mm256_loadu_si256(p.add(1)))
         }
     }
 
-    /// Store two 256-bit halves back into a fresh 64-byte-aligned array.
+    /// Store two 256-bit halves back into a fresh `[u64; 8]` (8-byte aligned
+    /// local; the `#[repr(align(64))]` lives on the wrapper it is moved into,
+    /// which is why the stores below are `storeu`, never `store`).
     #[inline(always)]
     fn from_avx2_halves(lo: __m256i, hi: __m256i) -> Self {
         let mut o = [0u64; 8];

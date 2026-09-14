@@ -399,12 +399,16 @@ pub use crate::simd_neon::{u32x16, U32x16};
 // 2026-09-13 (the five-flavour audit of #306: every bulk mask op and the whole
 // signed-compare family ride these two types, and both used to resolve to the
 // scalar backend here — the polyfill law wants a peer realisation per backend).
+// The lowercase aliases travel WITH the types: `i32x16`/`u64x8` must name the
+// same nominal type as `I32x16`/`U64x8` on every arm, so they come from the
+// arm that owns the type (an alias left on the scalar list would silently
+// split the facade into two types on this arch — product-engineer, PR #306).
 #[cfg(all(target_arch = "aarch64", not(feature = "nightly-simd")))]
-pub use crate::simd_neon::{I32x16, U64x8};
+pub use crate::simd_neon::{i32x16, u64x8, I32x16, U64x8};
 #[cfg(all(target_arch = "aarch64", not(feature = "nightly-simd")))]
 pub use scalar::{
-    f32x8, f64x4, i32x16, i32x8, i64x4, i64x8, u16x16, u32x8, u64x4, u64x8, u8x64, F32x8, F64x4, I32x8, I64x4, I64x8,
-    U16x16, U16x32, U32x8, U64x4, U8x64,
+    f32x8, f64x4, i32x8, i64x4, i64x8, u16x16, u32x8, u64x4, u8x64, F32x8, F64x4, I32x8, I64x4, I64x8, U16x16, U16x32,
+    U32x8, U64x4, U8x64,
 };
 
 // wasm32 + simd128: the native v128 float hot path (F32x16 / F64x8 + masks)
@@ -415,15 +419,16 @@ pub use scalar::{
 // so this arm is gated identically.
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128", not(feature = "nightly-simd")))]
 pub use crate::simd_wasm::wasm32_simd::{
-    f32x16, f64x8, i8x16, u32x16, F32Mask16, F32x16, F64Mask8, F64x8, I32x16, I8x16, U32x16, U64x8,
+    f32x16, f64x8, i32x16, i8x16, u32x16, u64x8, F32Mask16, F32x16, F64Mask8, F64x8, I32x16, I8x16, U32x16, U64x8,
 };
-// `u32x16`/`U32x16` now come from the native `wasm32_simd` arm above (the ARX
-// lane the ChaCha20 backend rides), so they are dropped from this scalar list.
+// `u32x16`/`U32x16`, `i32x16`/`I32x16` and `u64x8`/`U64x8` come from the
+// native `wasm32_simd` arm above (the lowercase alias travels with its type —
+// see the aarch64 note), so they are dropped from this scalar list.
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128", not(feature = "nightly-simd")))]
 pub use scalar::{
-    batch_packed_i4_16, f32x8, f64x4, i16x16, i16x32, i32x16, i32x8, i64x4, i64x8, i8x32, i8x64, palette_lookup_u8x8,
-    prefetch_read_t0, prefetch_read_t1, prefetch_read_t2, u16x16, u16x8, u32x8, u64x4, u64x8, u8x64, u8x8, F32x8,
-    F64x4, I16x16, I16x32, I32x8, I64x4, I64x8, I8x32, I8x64, U16x16, U16x32, U16x8, U32x8, U64x4, U8x64, U8x8,
+    batch_packed_i4_16, f32x8, f64x4, i16x16, i16x32, i32x8, i64x4, i64x8, i8x32, i8x64, palette_lookup_u8x8,
+    prefetch_read_t0, prefetch_read_t1, prefetch_read_t2, u16x16, u16x8, u32x8, u64x4, u8x64, u8x8, F32x8, F64x4,
+    I16x16, I16x32, I32x8, I64x4, I64x8, I8x32, I8x64, U16x16, U16x32, U16x8, U32x8, U64x4, U8x64, U8x8,
 };
 
 // Other non-x86 targets — wasm32 without simd128, riscv, etc.: full scalar
@@ -750,6 +755,13 @@ pub use crate::hpc::bf16_tile_gemm::{
 // silicon" from "AMX present but not OS-enabled" — both surface via `amx_report`.
 #[cfg(target_arch = "x86_64")]
 pub use crate::simd_amx::{amx_report, cpu_model, CpuModel};
+// The tier-agnostic tile gate and the per-tier silicon bits: precondition #1
+// and #2 of every op in `hpc::amx_ops`, reachable through the facade so a
+// consumer under the "all SIMD from `ndarray::simd`" rule can state them.
+#[cfg(target_arch = "x86_64")]
+pub use crate::hpc::amx_ops::{amx_features, AmxFeatures};
+#[cfg(target_arch = "x86_64")]
+pub use crate::simd_amx::amx_tile_available;
 
 // Packed-bitmask predicates + mask algebra + masked reductions — the
 // columnar-selection lane, owned by `simd_masking_ops.rs` (the ergonomic

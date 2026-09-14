@@ -81,18 +81,30 @@ fn mask_words_for(n: usize) -> usize {
     n.div_ceil(64)
 }
 
-// Every slice op below walks its input with `slice::as_chunks::<LANES>()`
-// (stable since 1.88): the main body iterates `&[[T; LANES]]` and feeds each
-// chunk to `from_array` — a fixed-size load with no per-chunk bounds check
-// and no `g * L` index arithmetic for LLVM to prove away — and the remainder
-// is the EXACT tail slice. That tail is NOT peeled as a scalar loop: it is
-// zero-padded into one register (`pad_tail`) and run through the SAME packed
-// op as the body, with padding lanes never written back. Measured reason
-// (codegen witness, 2026-09-14): a scalar tail over `< LANES` words is fully
-// unrolled by LLVM on aarch64 into 7 × (and, orr) on GPRs — 16 GPR logic ops
-// on lane data in a facade op whose contract is "packed on every backend" —
-// while on AVX2 the same loop became `vpmaskmovq` masked vectors. Padding
-// makes both arms the same shape: packed body, packed tail, zero GPR logic.
+// Every contiguous LANE op below — the predicate builders over `&[u32]` /
+// `&[i32]` and the word-algebra ops over `&[u64]` — walks its input with
+// `slice::as_chunks::<LANES>()` (stable since 1.88): the main body iterates
+// `&[[T; LANES]]` and feeds each chunk to `from_array` — a fixed-size load
+// with no per-chunk bounds check and no `g * L` index arithmetic for LLVM to
+// prove away — and the remainder is the EXACT tail slice. That tail is NOT
+// peeled as a scalar loop: it is zero-padded into one register (`pad_tail`)
+// and run through the SAME packed op as the body, with padding lanes never
+// written back. (The strided byte-gather ops, the popcount-driven folds, and
+// `blend_i32` are NOT in this family and say so in their own docs.)
+//
+// Measured reason (codegen witness, 2026-09-14): with an exact-length scalar
+// tail LLVM fully unrolled it on aarch64 into 7 × (and, orr) on GPRs, which
+// with the 2 index-mask ops read as 16 GPR logic ops in a facade op whose
+// contract is "packed on every backend", while on AVX2 the same loop became
+// `vpmaskmovq` masked vectors. Padding makes both arms the same shape: packed
+// body, packed tail. What REMAINS is not zero: 4 GPR logic ops on v3 and 2 on
+// aarch64, hand-classified as length/index arithmetic (`andl $7`, `& !63`),
+// not lane data — the witness bounds their COUNT (`SLICE_GPR_CAP`), it does
+// not classify them. What was measured is that count; no throughput
+// comparison against the old peel has been made (the tail is a zero-init +
+// two bounded `copy_from_slice`s + one packed op, and for inputs shorter than
+// one register it IS the whole operation).
+//
 // `from_array` (not `from_slice`) because it exists on every backend's
 // `U32x16`/`I32x16`/`U64x8` — the NEON and wasm `[..x4; 4]` fan-outs expose
 // no `from_slice` — so the loops stay free of any `cfg(target_arch)`.
@@ -128,9 +140,10 @@ fn tail_lane_bits(n: usize) -> u16 {
 /// `u32::MAX` are ordinary needles, and there is no saturation, wrapping, or
 /// signedness question to resolve. An empty `values` writes only zeros.
 ///
-/// Runs 16 lanes at a time through [`crate::simd::U32x16::eq_bitmask`] with a
-/// scalar tail for the final partial group; the scalar tail is bit-identical
-/// to the vector path by construction (same comparison, same bit index).
+/// Runs 16 lanes at a time through [`crate::simd::U32x16::eq_bitmask`]; the
+/// final partial group is zero-padded into one register and run through the
+/// same packed compare, with the padding lanes' bits masked off — no scalar
+/// tail, so the tail cannot disagree with the body.
 ///
 /// # Panics
 ///
@@ -304,8 +317,9 @@ pub fn eq_u32_strided_to_mask(
 ///
 /// An empty `values` writes only zeros.
 ///
-/// Runs 16 lanes at a time through [`crate::simd::I32x16::gt_bitmask`] with a
-/// scalar tail for the final partial group.
+/// Runs 16 lanes at a time through [`crate::simd::I32x16::gt_bitmask`]; the
+/// final partial group is zero-padded into one register and run through the
+/// same packed compare, with the padding lanes' bits masked off.
 ///
 /// # Panics
 ///
@@ -851,6 +865,18 @@ fn clear_mask_tail(out_words: &mut [u64], n: usize) {
 /// # Panics
 ///
 /// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::lt_i32_to_mask;
+///
+/// let values = [5i32, -5, 0, 10];
+/// let mut words = [0u64; 1];
+/// lt_i32_to_mask(&values, 0, &mut words);
+/// // only -5 is less than 0 → bit 1 → 0b0010
+/// assert_eq!(words[0], 0b0010);
+/// ```
 #[inline]
 pub fn lt_i32_to_mask(values: &[i32], threshold: i32, out_words: &mut [u64]) {
     let n = values.len();
@@ -878,6 +904,18 @@ pub fn lt_i32_to_mask(values: &[i32], threshold: i32, out_words: &mut [u64]) {
 /// # Panics
 ///
 /// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::ge_i32_to_mask;
+///
+/// let values = [5i32, -5, 0, 10];
+/// let mut words = [0u64; 1];
+/// ge_i32_to_mask(&values, 0, &mut words);
+/// // 5, 0 and 10 are >= 0 → bits 0, 2, 3 → 0b1101
+/// assert_eq!(words[0], 0b1101);
+/// ```
 #[inline]
 pub fn ge_i32_to_mask(values: &[i32], threshold: i32, out_words: &mut [u64]) {
     lt_i32_to_mask(values, threshold, out_words);
@@ -893,6 +931,18 @@ pub fn ge_i32_to_mask(values: &[i32], threshold: i32, out_words: &mut [u64]) {
 /// # Panics
 ///
 /// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::le_i32_to_mask;
+///
+/// let values = [5i32, -5, 0, 10];
+/// let mut words = [0u64; 1];
+/// le_i32_to_mask(&values, 0, &mut words);
+/// // -5 and 0 are <= 0 → bits 1, 2 → 0b0110
+/// assert_eq!(words[0], 0b0110);
+/// ```
 #[inline]
 pub fn le_i32_to_mask(values: &[i32], threshold: i32, out_words: &mut [u64]) {
     gt_i32_to_mask(values, threshold, out_words);
@@ -909,6 +959,18 @@ pub fn le_i32_to_mask(values: &[i32], threshold: i32, out_words: &mut [u64]) {
 /// # Panics
 ///
 /// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::ne_i32_to_mask;
+///
+/// let values = [7i32, 1, 7, 2];
+/// let mut words = [0u64; 1];
+/// ne_i32_to_mask(&values, 7, &mut words);
+/// // elements 1 and 3 differ from 7 → bits 1 and 3 → 0b1010
+/// assert_eq!(words[0], 0b1010);
+/// ```
 #[inline]
 pub fn ne_i32_to_mask(values: &[i32], needle: i32, out_words: &mut [u64]) {
     let n = values.len();
@@ -939,6 +1001,18 @@ pub fn ne_i32_to_mask(values: &[i32], needle: i32, out_words: &mut [u64]) {
 /// # Panics
 ///
 /// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::eq_i32_to_mask;
+///
+/// let values = [7i32, 1, 7, 2];
+/// let mut words = [0u64; 1];
+/// eq_i32_to_mask(&values, 7, &mut words);
+/// // elements 0 and 2 equal 7 → bits 0 and 2 → 0b0101
+/// assert_eq!(words[0], 0b0101);
+/// ```
 #[inline]
 pub fn eq_i32_to_mask(values: &[i32], needle: i32, out_words: &mut [u64]) {
     ne_i32_to_mask(values, needle, out_words);
@@ -954,6 +1028,18 @@ pub fn eq_i32_to_mask(values: &[i32], needle: i32, out_words: &mut [u64]) {
 /// # Panics
 ///
 /// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::ne_u32_to_mask;
+///
+/// let values = [7u32, 1, 7, 2];
+/// let mut words = [0u64; 1];
+/// ne_u32_to_mask(&values, 7, &mut words);
+/// // elements 1 and 3 differ from 7 → bits 1 and 3 → 0b1010
+/// assert_eq!(words[0], 0b1010);
+/// ```
 #[inline]
 pub fn ne_u32_to_mask(values: &[u32], needle: u32, out_words: &mut [u64]) {
     eq_u32_to_mask(values, needle, out_words);
@@ -970,6 +1056,18 @@ pub fn ne_u32_to_mask(values: &[u32], needle: u32, out_words: &mut [u64]) {
 /// # Panics
 ///
 /// Panics unless `src.len() == dst.len() >= n_rows.div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::mask_not;
+///
+/// let src = [0b0011u64];
+/// let mut dst = [0u64; 1];
+/// mask_not(&src, 4, &mut dst);
+/// // complement of the low 4 bits of 0b0011, tail past row 4 stays zero
+/// assert_eq!(dst[0], 0b1100);
+/// ```
 #[inline]
 pub fn mask_not(src: &[u64], n_rows: usize, dst: &mut [u64]) {
     assert_eq!(src.len(), dst.len(), "mask_not: src/dst length mismatch");
@@ -991,6 +1089,17 @@ pub fn mask_not(src: &[u64], n_rows: usize, dst: &mut [u64]) {
 /// # Panics
 ///
 /// Panics if `dst.len() < n_rows.div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::mask_not_assign;
+///
+/// let mut dst = [0b0011u64];
+/// mask_not_assign(&mut dst, 4);
+/// // complement of the low 4 bits of 0b0011, tail past row 4 stays zero
+/// assert_eq!(dst[0], 0b1100);
+/// ```
 #[inline]
 pub fn mask_not_assign(dst: &mut [u64], n_rows: usize) {
     assert!(
@@ -1013,6 +1122,19 @@ pub fn mask_not_assign(dst: &mut [u64], n_rows: usize) {
 /// # Panics
 ///
 /// Panics unless `a.len() == b.len() == dst.len()`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::mask_xor;
+///
+/// let a = [0b0110u64];
+/// let b = [0b0011u64];
+/// let mut dst = [0u64; 1];
+/// mask_xor(&a, &b, &mut dst);
+/// // bits set in exactly one of a, b: bit 1 (both) cancels, 0 and 2 survive
+/// assert_eq!(dst[0], 0b0101);
+/// ```
 #[inline]
 pub fn mask_xor(a: &[u64], b: &[u64], dst: &mut [u64]) {
     assert_eq!(a.len(), b.len(), "mask_xor: a/b length mismatch");
@@ -1038,6 +1160,18 @@ pub fn mask_xor(a: &[u64], b: &[u64], dst: &mut [u64]) {
 /// # Panics
 ///
 /// Panics if `dst.len() != src.len()`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::mask_xor_assign;
+///
+/// let mut dst = [0b0110u64];
+/// let src = [0b0011u64];
+/// mask_xor_assign(&mut dst, &src);
+/// // bit 1 (set in both) cancels, bits 0 and 2 survive
+/// assert_eq!(dst[0], 0b0101);
+/// ```
 #[inline]
 pub fn mask_xor_assign(dst: &mut [u64], src: &[u64]) {
     assert_eq!(dst.len(), src.len(), "mask_xor_assign: length mismatch");
@@ -1066,6 +1200,17 @@ pub fn mask_xor_assign(dst: &mut [u64], src: &[u64]) {
 /// outside this module with a dirty tail will read as "some row set". The
 /// pair [`mask_all`] takes `n_rows` because a full-population test must know
 /// where the population ends; a non-empty test does not.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::mask_any;
+///
+/// // all-zero word: nothing set
+/// assert!(!mask_any(&[0u64]));
+/// // bit 2 set (0b0100): at least one row selected
+/// assert!(mask_any(&[0b0100u64]));
+/// ```
 #[inline]
 pub fn mask_any(words: &[u64]) -> bool {
     let mut acc = 0u64;
@@ -1082,6 +1227,17 @@ pub fn mask_any(words: &[u64]) -> bool {
 /// # Panics
 ///
 /// Panics if `words.len() < n_rows.div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::mask_all;
+///
+/// // bits 0, 1, 2 set (0b0111): rows 0..3 are all selected, row 3 is not
+/// let words = [0b0111u64];
+/// assert!(mask_all(&words, 3));
+/// assert!(!mask_all(&words, 4));
+/// ```
 #[inline]
 pub fn mask_all(words: &[u64], n_rows: usize) -> bool {
     let full = n_rows / 64;
@@ -1112,6 +1268,19 @@ pub fn mask_all(words: &[u64], n_rows: usize) -> bool {
 /// # Panics
 ///
 /// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::ternary_match_u32_to_mask;
+///
+/// let values = [0b1010u32, 0b1110, 0b0010, 0b1011];
+/// let mut words = [0u64; 1];
+/// // pattern 0b1010 with bit 2 "don't care" (care=0b1011, bit 2 clear):
+/// // elements 0 and 1 match on every cared-about bit
+/// ternary_match_u32_to_mask(&values, 0b1010, 0b1011, &mut words);
+/// assert_eq!(words[0], 0b0011);
+/// ```
 #[inline]
 pub fn ternary_match_u32_to_mask(values: &[u32], pattern: u32, care: u32, out_words: &mut [u64]) {
     let n = values.len();
@@ -1153,6 +1322,18 @@ pub fn ternary_match_u32_to_mask(values: &[u32], pattern: u32, care: u32, out_wo
 /// # Panics
 ///
 /// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::ternary_match_u64_to_mask;
+///
+/// let values = [0b1010u64, 0b1110, 0b0010, 0b1011];
+/// let mut words = [0u64; 1];
+/// // same pattern/care as the u32 sibling: elements 0 and 1 match
+/// ternary_match_u64_to_mask(&values, 0b1010, 0b1011, &mut words);
+/// assert_eq!(words[0], 0b0011);
+/// ```
 #[inline]
 pub fn ternary_match_u64_to_mask(values: &[u64], pattern: u64, care: u64, out_words: &mut [u64]) {
     let n = values.len();
@@ -1212,6 +1393,24 @@ pub fn ternary_match_u64_to_mask(values: &[u64], pattern: u64, care: u64, out_wo
 /// Panics if `out_words.len() < count.div_ceil(64)`, or if any element's
 /// 12 bytes would fall outside `bytes` (checked up front with overflow-safe
 /// arithmetic; the loop never reads out of bounds).
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::ternary_match_strided_to_mask;
+///
+/// // Two 16-byte records; only the register's first byte is "cared about".
+/// let mut bytes = vec![0u8; 32];
+/// bytes[0] = 0xAA; // record 0's cared byte matches the pattern
+/// bytes[16] = 0xBB; // record 1's cared byte does not
+/// let mut pattern = [0u8; 12];
+/// pattern[0] = 0xAA;
+/// let mut care = [0u8; 12];
+/// care[0] = 0xFF; // bytes 1..12 are don't-care
+/// let mut words = [0u64; 1];
+/// ternary_match_strided_to_mask(&bytes, 0, 16, 2, &pattern, &care, &mut words);
+/// assert_eq!(words[0], 0b01); // only record 0 matches
+/// ```
 #[inline]
 pub fn ternary_match_strided_to_mask(
     bytes: &[u8], first_offset: usize, stride_bytes: usize, count: usize, pattern: &[u8; 12], care: &[u8; 12],
@@ -1289,6 +1488,16 @@ pub fn ternary_match_strided_to_mask(
 /// # Panics
 ///
 /// Panics if `mask_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::masked_min_i32;
+///
+/// let values = [10i32, -5, 30, 2];
+/// // bits 1 and 3 select -5 and 2; the minimum of the two is -5
+/// assert_eq!(masked_min_i32(&values, &[0b1010]), Some(-5));
+/// ```
 #[inline]
 pub fn masked_min_i32(values: &[i32], mask_words: &[u64]) -> Option<i32> {
     masked_fold_i32(values, mask_words, i32::min)
@@ -1300,6 +1509,16 @@ pub fn masked_min_i32(values: &[i32], mask_words: &[u64]) -> Option<i32> {
 /// # Panics
 ///
 /// Panics if `mask_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::masked_max_i32;
+///
+/// let values = [10i32, -5, 30, 2];
+/// // bits 1 and 3 select -5 and 2; the maximum of the two is 2
+/// assert_eq!(masked_max_i32(&values, &[0b1010]), Some(2));
+/// ```
 #[inline]
 pub fn masked_max_i32(values: &[i32], mask_words: &[u64]) -> Option<i32> {
     masked_fold_i32(values, mask_words, i32::max)
@@ -1346,6 +1565,19 @@ fn masked_fold_i32(values: &[i32], mask_words: &[u64], f: impl Fn(i32, i32) -> i
 ///
 /// Panics unless `a.len() == b.len() == dst.len()` and
 /// `mask_words.len() >= a.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::blend_i32;
+///
+/// let a = [1i32, 2, 3, 4];
+/// let b = [10i32, 20, 30, 40];
+/// let mut dst = [0i32; 4];
+/// // bits 0 and 2 (0b0101) pick from `a`; bits 1 and 3 pick from `b`
+/// blend_i32(&[0b0101], &a, &b, &mut dst);
+/// assert_eq!(dst, [1, 20, 3, 40]);
+/// ```
 #[inline]
 pub fn blend_i32(mask_words: &[u64], a: &[i32], b: &[i32], dst: &mut [i32]) {
     assert_eq!(a.len(), b.len(), "blend_i32: a/b length mismatch");

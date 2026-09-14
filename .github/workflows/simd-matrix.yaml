@@ -15,6 +15,8 @@ on:
       - 'scripts/neon-asm-rung3.sh'
       - 'tools/gen_ternlog_bodies.py'
       - '.cargo/**'
+      - 'Cargo.toml'
+      - 'src/lib.rs'
       - '.github/workflows/simd-matrix.yaml'
   merge_group:
   push:
@@ -29,15 +31,19 @@ name: SIMD realization matrix
 #   realization  ×  platform
 #   avx512 / avx2 / neon / wasm / scalar / nightly   ×   x86_64 / aarch64 / wasm32
 #
-# Every row runs the SAME facade-only parity program
+# Four rows run the SAME facade-only parity program unconditionally
 # (`crates/simd-masking-parity`, via `scripts/masking-parity.sh <arm>`) — it
 # has no idea which backend `simd.rs` selected, so a row proves "this
-# realization is bit-identical to the bit-serial reference" and nothing else.
-# Where a row's assembly can be inspected, the tiny opt-3 codegen oracle
-# (`examples/ternlog_codegen_probe.rs`, via `scripts/codegen-witness.sh <arm>`)
-# runs beside it: the parity program proves bits at opt-level 0, the oracle
-# proves the backend selected the instruction it is REQUIRED to select at
-# opt-level 3. Neither replaces the other.
+# realization is bit-identical to its scalar / bit-serial references" and
+# nothing else. The avx512 row runs it ONLY on a runner that has avx512f;
+# otherwise it degrades to an assembly-only assertion, and on that path the
+# AVX-512 realization's bits are NOT proven in CI (the local v4 gate is the
+# record for them). Where a row's assembly can be inspected, the tiny opt-3
+# codegen oracle (`examples/ternlog_codegen_probe.rs`, via
+# `scripts/codegen-witness.sh <arm>`) runs beside it: the parity program
+# proves bits at the parity crate's release opt-level 2, the oracle proves the
+# backend selected the instruction it is REQUIRED to select at opt-level 3.
+# Neither replaces the other.
 #
 # The scalar realization has no host of its own: it is what `simd.rs` selects
 # on wasm32 WITHOUT `+simd128`, so the `scalar` row is a wasm32 build with the
@@ -107,15 +113,12 @@ jobs:
         run: CARGO_ARGS='--config .cargo/config-v4.toml' bash scripts/codegen-witness.sh avx512
       - name: codegen witness (avx512) — assembly inspection only (runner lacks avx512f)
         if: steps.cpu.outputs.has == '0'
+        # The SAME script, in its asm-only mode — one implementation of the
+        # stale-assembly guard (`rm -f` + `touch`) and of the symbol
+        # attribution, not a second hand-rolled copy that drifts.
         run: |
           echo "::warning::runner lacks avx512f — v4 parity run and probe self-check SKIPPED; asserting the emitted assembly only"
-          env -u RUSTFLAGS cargo --config .cargo/config-v4.toml rustc --profile ci-codegen --example ternlog_codegen_probe --target x86_64-unknown-linux-gnu -- --emit=asm -C debuginfo=0
-          ASM="$(ls -t target/x86_64-unknown-linux-gnu/ci-codegen/examples/ternlog_codegen_probe-*.s | head -1)"
-          for sym in probe_ternlog_u64x8 probe_ternlog_u32x16 probe_mask_ternlog_slice; do
-            n="$(awk -v s="$sym" '$0 ~ s":"{p=1} p&&/\.cfi_endproc/{exit} p' "$ASM" | grep -c vpternlog || true)"
-            echo "   $sym: $n vpternlog"
-            [ "$n" -ge 1 ] || { echo "FAIL: $sym selected no vpternlog on the v4 build"; exit 1; }
-          done
+          env -u RUSTFLAGS WITNESS_NO_RUN=1 CARGO_ARGS='--config .cargo/config-v4.toml' bash scripts/codegen-witness.sh avx512
 
   neon:
     # aarch64 realization: cross-build on the x86 runner, run under qemu-user.

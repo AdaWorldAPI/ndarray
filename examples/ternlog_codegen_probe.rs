@@ -40,9 +40,10 @@ fn probe_andnot_u64x8(a: U64x8, b: U64x8) -> U64x8 {
     a.andnot(b)
 }
 
-/// The slice-level facade op over 64 words (8 full `U64x8` chunks) — the
-/// shape a consumer actually calls; proves the ergonomic layer inlines down
-/// to the backend's realization rather than adding a scalar detour.
+/// The slice-level facade op — the shape a consumer actually calls; proves
+/// the ergonomic layer inlines down to the backend's realization rather than
+/// adding a scalar detour. Driven at 64 words (eight full `U64x8` chunks) and
+/// at 67 (plus a padded three-word tail) by the self-check.
 #[inline(never)]
 fn probe_mask_ternlog_slice(a: &[u64], b: &[u64], c: &[u64], dst: &mut [u64]) {
     mask_ternlog::<{ ternlog::AND2_OR }>(a, b, c, dst)
@@ -105,15 +106,20 @@ fn main() {
     }
     acc ^= ugot.reduce_sum() as u64;
 
-    let sa: Vec<u64> = (0..64).map(|_| rng.next()).collect();
-    let sb: Vec<u64> = (0..64).map(|_| rng.next()).collect();
-    let sc: Vec<u64> = (0..64).map(|_| rng.next()).collect();
-    let mut sd = vec![0u64; 64];
-    probe_mask_ternlog_slice(black_box(&sa), black_box(&sb), black_box(&sc), black_box(&mut sd));
-    for i in 0..64 {
-        assert_eq!(sd[i], ref_ternlog(ternlog::AND2_OR, sa[i], sb[i], sc[i]));
+    // Two lengths: 64 (eight full chunks, no tail) and 67 (eight chunks + a
+    // three-word padded tail), so the self-check covers the tail path the
+    // slice op takes on a non-multiple-of-8 mask, not only the body.
+    for len in [64usize, 67] {
+        let sa: Vec<u64> = (0..len).map(|_| rng.next()).collect();
+        let sb: Vec<u64> = (0..len).map(|_| rng.next()).collect();
+        let sc: Vec<u64> = (0..len).map(|_| rng.next()).collect();
+        let mut sd = vec![0u64; len];
+        probe_mask_ternlog_slice(black_box(&sa), black_box(&sb), black_box(&sc), black_box(&mut sd));
+        for i in 0..len {
+            assert_eq!(sd[i], ref_ternlog(ternlog::AND2_OR, sa[i], sb[i], sc[i]));
+        }
+        acc ^= sd.iter().fold(0, |s, &x| s ^ x);
     }
-    acc ^= sd.iter().fold(0, |s, &x| s ^ x);
 
     println!("ternlog_codegen_probe: self-check OK, checksum = {acc:#018x}");
 }
