@@ -1,3 +1,41 @@
+## 2026-09-14 (3) — D-GTM-1m MEASURED: `mask_shift_morton` lands; the win is in the NODE SPAN, not the op — n = 17.0 → 5.7 µs (−66 %)
+
+`mask_shift_morton` (255c36d) is bit-exact (F1–F4, parity 9/9 on native/
+nightly/wasm/wasm-scalar; neon-qemu absent here) — and over the FULL field it
+barely moves `n`: 14.5–16.5 µs vs 17.0 µs for the per-bit loop. The Sonnet
+implementer named the mechanism correctly: the op is FIELD-size-bound (1024
+words × ~8 passes per direction) while the per-bit loop is ACTIVE-bound, so at
+1.8 % density they cost about the same and the op loses once gates thin the
+frontier.
+
+**The fix is the fixed-spatial-distribution dividend a second time.** A trie
+node is a contiguous word span AND a square Morton sub-field (the level-1 tile =
+64 words = a 64×64 field, `log2(64)` even), so the shifts run over the node's
+own span with no correctness change (the source ⊆ tile, so no carry enters the
+span; a carry leaving it is what `& tile` removes anyway). Measured, dirs = 6,
+x = 0, same gates green (68/68 rows, 0 heap B/step):
+
+| arm | ns/step | vs ladder |
+|---|---|---|
+| ladder (per-bit, full state) | 16,944 | — |
+| nnue (per-bit, delta frontier) | 9,296 | −45 % |
+| shift (word op, full field) | 14,517 | −14 % |
+| **node (word op, tile span)** | **5,677** | **−66 %** |
+| node+g / node+nn / node+nn+g | 5,722 / 6,044 / 5,774 | — |
+
+Delta-frontier on top of the node span buys nothing (5.7 → 6.0), as predicted:
+a span-bound op does not care how many bits are set. Degree-1 control: node
+4.5 µs vs ladder 6.7 µs — the ratio survives the E-Q8 ablation, so the gain is
+the word op, not the six. The ternlog fit is unchanged (281 ns/pass, n = 17.0 µs
+on the ladder arm by construction). Remaining 5.7 µs is the field-wide
+housekeeping (scratch zeroing, `OR2_AND`, the Hebbian reverse walk over 1024
+words) — the next rung restricts THOSE to the node span too and re-measures;
+not claimed here.
+
+Rule extracted: **a word-level op pays for the span it is given; give it the
+node, never the field.** The same statement as "top-down is a range, not a
+compare" (2026-09-14 (2)), now on the grey side.
+
 ## 2026-09-14 (2) — D-GTM-0m: the hex TENANT — top-down traversal AND spread on ONE Morton-keyed SoA; `step = x·ternlogq + n` measured, and the chain is 1.7 % of it
 
 Probe: `examples/hex_tenant_mq_probe.rs` (`--release`, committed; output banked

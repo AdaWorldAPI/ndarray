@@ -222,6 +222,10 @@ struct Resident<'a> {
     x: usize,
     dirs: usize,
     from_delta: bool,
+    /// `Some((lo, hi))` = run the word-level shifts over ONLY this word range
+    /// (the trie node's own contiguous span — a square Morton sub-field), so
+    /// the op's cost is bound by the NODE, not the field. `None` = full field.
+    word_range: Option<(usize, usize)>,
 }
 
 #[inline(never)]
@@ -235,6 +239,7 @@ fn spread_step(
         x,
         dirs,
         from_delta,
+        word_range: _,
     } = *res;
     for w in scratch.iter_mut() {
         *w = 0;
@@ -320,34 +325,44 @@ fn spread_step_shift(
         x,
         dirs,
         from_delta,
+        word_range,
     } = *res;
     for w in scratch.iter_mut() {
         *w = 0;
     }
     let source: &[u64] = if from_delta { delta } else { state };
+    // The word-level shifts run over the node's own span when one is given.
+    // Correctness is unchanged: the source is a subset of the tile, so no
+    // carry can arrive from outside the span, and a carry LEAVING the span
+    // would be removed by the `& tile` below anyway.
+    let (lo, hi) = word_range.unwrap_or((0, scratch.len()));
+    let src = &source[lo..hi];
+    let masked = &mut masked[lo..hi];
+    let diag_scratch = &mut diag_scratch[lo..hi];
+    let out = &mut scratch[lo..hi];
 
     const AXES: [MortonDir; 4] = [MortonDir::PosQ, MortonDir::NegQ, MortonDir::PosR, MortonDir::NegR];
     for (d, &dir) in AXES.iter().enumerate().take(dirs.min(4)) {
-        mask_and(source, &elig[d], masked);
-        mask_shift_morton(masked, dir, scratch);
+        mask_and(src, &elig[d][lo..hi], masked);
+        mask_shift_morton(masked, dir, out);
     }
     if dirs > 4 {
         // rail 4 = +q-r
-        mask_and(source, &elig[4], masked);
+        mask_and(src, &elig[4][lo..hi], masked);
         for w in diag_scratch.iter_mut() {
             *w = 0;
         }
         mask_shift_morton(masked, MortonDir::PosQ, diag_scratch);
-        mask_shift_morton(diag_scratch, MortonDir::NegR, scratch);
+        mask_shift_morton(diag_scratch, MortonDir::NegR, out);
     }
     if dirs > 5 {
         // rail 5 = -q+r (the mirror composition)
-        mask_and(source, &elig[5], masked);
+        mask_and(src, &elig[5][lo..hi], masked);
         for w in diag_scratch.iter_mut() {
             *w = 0;
         }
         mask_shift_morton(masked, MortonDir::NegQ, diag_scratch);
-        mask_shift_morton(diag_scratch, MortonDir::PosR, scratch);
+        mask_shift_morton(diag_scratch, MortonDir::PosR, out);
     }
 
     // scratch = (scratch | state) & tile, then the chain narrows scratch in
@@ -548,17 +563,27 @@ fn main() {
     println!("(otherwise the gates shrink the frontier and n moves with x — the fit measures nothing).");
     println!("The GATED arm uses the 4 real 90%-dense gates: what a rung/tenant chain does to the spread.");
     println!("The NNUE arm spreads from the DELTA frontier only (nnue+g = with the real gates).");
+    println!(
+        "The SHIFT arms use mask_shift_morton over the FULL field; the NODE arms over the tile's own 64-word span."
+    );
     println!("The SHIFT arm replaces the per-bit hex loop with mask_shift_morton over whole words —");
     println!("the D-GTM-1m primitive; same identity/real-gate split as ladder/gated (shift+g).");
-    println!("arm     dirs  x   ns/step   fired/step  heap B/step  gate");
+    println!("arm        dirs  x   ns/step   fired/step  heap B/step  gate");
     let mut fits: Vec<(usize, f64)> = Vec::new();
-    for (arm, gates, gates_ref, from_delta, use_shift) in [
-        ("ladder", &ones, &ones_ref, false, false),
-        ("gated", &gates, &gates_ref, false, false),
-        ("nnue", &ones, &ones_ref, true, false),
-        ("nnue+g", &gates, &gates_ref, true, false),
-        ("shift", &ones, &ones_ref, false, true),
-        ("shift+g", &gates, &gates_ref, false, true),
+    // the tile is a level-1 node = one 64x64 Morton sub-field = 64 contiguous
+    // words; `node` arms run the word-level shifts over exactly that span
+    let tile_words = (tlo >> 6, thi >> 6);
+    for (arm, gates, gates_ref, from_delta, use_shift, word_range) in [
+        ("ladder", &ones, &ones_ref, false, false, None),
+        ("gated", &gates, &gates_ref, false, false, None),
+        ("nnue", &ones, &ones_ref, true, false, None),
+        ("nnue+g", &gates, &gates_ref, true, false, None),
+        ("shift", &ones, &ones_ref, false, true, None),
+        ("shift+g", &gates, &gates_ref, false, true, None),
+        ("node", &ones, &ones_ref, false, true, Some(tile_words)),
+        ("node+g", &gates, &gates_ref, false, true, Some(tile_words)),
+        ("node+nn", &ones, &ones_ref, true, true, Some(tile_words)),
+        ("node+nn+g", &gates, &gates_ref, true, true, Some(tile_words)),
     ] {
         for dirs in [6usize, 1] {
             for x in [0usize, 1, 2, 4, 8, 16, 32] {
@@ -582,6 +607,7 @@ fn main() {
                     x,
                     dirs,
                     from_delta,
+                    word_range,
                 };
                 let mut state = vec![0u64; WORDS];
                 let mut delta = vec![0u64; WORDS];
@@ -650,7 +676,7 @@ fn main() {
                     fits.push((x, el));
                 }
                 println!(
-                    "{arm:<7} {dirs:>4}  {x:>2}  {el:>8.0}   {:>10.1}  {heap:>11}  ok  (survivors {})",
+                    "{arm:<10} {dirs:>4}  {x:>2}  {el:>8.0}   {:>10.1}  {heap:>11}  ok  (survivors {})",
                     fired_total as f64 / steps as f64,
                     popcount_batch_u64(&state)
                 );
