@@ -150,6 +150,15 @@ simd_{avx512,avx2,neon,wasm,scalar}.rs   each owns its realization, as a PEER
 
 **What landed:**
 
+> **AMX fill (2026-09-14):** `src/hpc/amx_ops.rs` — the whole `X86InstrAMX.td`
+> surface as mnemonics with `const` tile operands (INT8×4, BF16, FP16,
+> COMPLEX×2, FP8×4, TF32, MOVRS×2, AVX512 row ops ×6 under `avx512f` cfg,
+> STTILECFG/TILELOADDT1, all 8 tiles), `amx_features()` per LLVM `Host.cpp`
+> bits, `amx_report()` prints the tiers. Encoding falsifiers read the emitted
+> bytes back on any x86 host and pin them to the EMR-validated table; the
+> "mirrored operand convention" turned out to be a misread of that table
+> (Gotcha 15). Extended tiers are assembler-verified only.
+
 > **CI finding (2026-09-14, e730109 red on `tier4-avx512-check`):** `ci.yaml`'s
 > workflow-global `RUSTFLAGS: "-D warnings"` REPLACES every `.cargo/config*`
 > rustflags entry (cargo precedence: RUSTFLAGS > target.<triple> > target.<cfg>

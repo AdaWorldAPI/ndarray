@@ -267,6 +267,19 @@ in production under load, AVX-512 siblings unaffected.
 
 ---
 
+## Gotcha 15: the operand "mirror" was a misread of the byte table — use mnemonics
+
+`src/hpc/amx_ops.rs` (2026-09-14) assembles every AMX mnemonic on stable
+1.98.1 with `const` tile operands. Intel order is `tdpbusd tmmD, tmmS1, tmmS2`
+= `D += S1·S2`, S1 = ModRM.rm (plain M×K), S2 = VEX.vvvv (VNNI K×N). The
+validated `C4 E2 71 5E C2` is `tdpbusd tmm0, tmm2, tmm1`, i.e. the kernel's
+"A in tmm2, B in tmm1" placement is the plain SDM semantics, not a mirror.
+Gotcha 12's *placement* stays correct; its *explanation* is superseded.
+Aliased tile operands are now a compile error (`const` assert), so the SIGILL
+of Gotcha 11 cannot be written. Encodings of every tier are pinned by tests
+that read the emitted bytes back; the extended tiers (FP16/COMPLEX/FP8/TF32/
+MOVRS/AVX512) are assembler-verified ONLY — no host here has executed them.
+
 ## Hardware tiers
 
 ```

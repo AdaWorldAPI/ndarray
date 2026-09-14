@@ -227,14 +227,21 @@ pub fn amx_report() -> String {
         let int8 = (cpuid.edx >> 25) & 1 == 1;
         let bf16 = (cpuid.edx >> 22) & 1 == 1;
         let model = cpu_model();
+        let f = crate::hpc::amx_ops::amx_features();
         format!(
-            "AMX [{} expects_amx={}]: TILE={} INT8={} BF16={} available={}",
+            "AMX [{} expects_amx={}]: TILE={} INT8={} BF16={} available={} | tiers: fp16={} complex={} fp8={} tf32={} avx512={} movrs={}",
             model.label(),
             model.has_amx(),
             tile,
             int8,
             bf16,
-            amx_available()
+            amx_available(),
+            f.fp16,
+            f.complex,
+            f.fp8,
+            f.tf32,
+            f.avx512,
+            f.movrs,
         )
     }
     #[cfg(not(target_arch = "x86_64"))]
