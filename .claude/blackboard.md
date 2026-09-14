@@ -1,3 +1,158 @@
+## 2026-09-14 (5) — STORNO on entries (3) and (2), from the #307 council (measurement-skeptic, kernel-membrane, overclaim): same numbers, tighter words
+
+The numbers stand; the wording ran past them. Corrections, each to the sentence it replaces:
+
+- (3) *"full-field −14 %"* → **−5 % to −14 % across two runs** (14 517 vs 16 944 and 16 507 vs 17 462): within this density's cross-run noise, i.e. no reliable full-field win over the per-bit loop. The table pinned the better run.
+- (3) *"node-span −66 % (n 17.0 → 5.7 µs)"* → **on this fixture (frontier confined to one 64-word level-1 tile, 1/16 of the field, 29 % of the tile span), restricting the shifts to the tile span cuts the x=0 STEP from 16.9 to 5.7 µs (−66 %, one run).** It is a step ratio, not an op ratio: every arm still carries the full-field housekeeping (scratch zeroing, `OR2_AND`, the reverse walk over 1024 words) AND the probe's own per-rep reset — the `rails_run` copy is **786 KiB** (65 536 × 12 B), not the "8 KiB" the probe comment said (fixed), ~1 µs per step amortized inside every `n`. A frontier straddling k nodes pays Σ spans.
+- (3) *"the ratio survives the degree-1 ablation"* → **a −33 % gain survives** (4 487 vs 6 704); the ratio halves. What the ablation shows is that the word op's advantage is not hex-specific; the other half of the degree-6 gain scales with the per-bit loop's direction count.
+- (3) *"remaining 5.7 µs is the field-wide housekeeping"* → housekeeping **plus** the reset amortization; neither is separated.
+- (3) *"delta-frontier on top of the node span buys nothing (5.7 → 6.0)"* → no gain; the +0.4 µs is inside single-window noise, not a finding.
+- (2)/(3) *"coal = 8.9 µs = 0.48 maintained steps"* → **8.8–13.7 µs across three runs = 0.47–0.76 steps at x=4** (single window each). *"ternlogq 281 ns/pass"* → 280–300 across runs, max residual ≤ 2.8 %; the "1.7 % at x=1" is fit-derived. *"228–462×"* range-reveal ratio → ~200–490× across three runs at N = 65 536; the range arm's floor is the 8 KiB output clear.
+- (3) *"68/68 gates"* → 68/68 probe ROWS pass the three spread gates on one fixture and one seed. *"1.8 % density"* → 1.8 % of the field, **29 % of the tile span** — the denominator that explains why the word op loses full-field and wins node-span.
+- Method: one 50 ms window per cell, no repeats, no variance reported; cross-run spread is visible only because three runs were banked (ladder x=0 spread 3 %, `shift` 14 %, coal 56 %). Single-fixture observations, all of them.
+- Kernel-membrane, on `mask_shift_morton`: the slice IS the field — a sub-span shift is NOT the restriction of the full-field shift (no carry crosses the span edge). The probe's node arm was correct only because a level-1 tile is Morton-aligned and the source is confined to it; that law is now on the op's doc and the probe asserts `lo % len == 0` at the call site. The op is a lattice axis shift (four Cartesian moves; hex diagonals are two-call compositions), renamed as such in its docs.
+- Codex P2 on the probe: the Hebbian reverse walk credited any predecessor in the accumulated `state`; under the delta-frontier arms only `delta` cells propagated, so an older active neighbour of a newly reached cell could be credited for a firing it did not carry. Fixed (attribution against the step's SOURCE frontier, `delta` published after the walk) and **measured inert on this fixture — all 68 rows' fired/step and survivors identical before and after** — because eligibility is static here: an older predecessor's target was already settled when that predecessor was itself in the delta. Real for dynamic eligibility, unobservable in this probe.
+
+## 2026-09-14 (4) — D-MRX-0: `*_to_mask_under` — the gated predicate mask-risc's `Pred { under }` promised and T1 lacked
+
+**Why now.** lance-graph #1225's kernel-membrane review (PR2 council) ruled the
+executor may not compose a gated predicate from `*_to_mask` + `mask_and` (the
+whole plane, twice) nor skip words itself (a compute path above the facade):
+*"PR3 lands `*_to_mask_under` first."* This is that word.
+
+**Shape.** ONE private engine, `pack_under::<T, L>(name, values, under, out,
+group_bits)`: `out[w] = under[w] & pred(values)[w]`, the predicate evaluated
+only where `under[w] != 0`. The skip is word-granular (64 rows) — the unit
+the caller holds; a per-group skip is reachable and deliberately not done. An
+executor may skip coarser (mask-risc speaks of 1024-row chunks) with a result
+identical by construction (a skipped chunk is an all-zero gate) — not
+exercised by any test. COMPARE cost ∝ live gate WORDS (a sparse frontier
+spread across every word pays every compare); the per-word gate test and
+zero store stay ∝ rows/64; no timing of the skip exists, only the call count
+below. The predicate's own tail law makes a phantom gate bit past `n` vanish —
+the AND conforms regardless, so a gate never needs cleaning before use
+(surplus `under` words are never read). Ten public
+members, one per `Pred` variant (`gt/lt/ge/le/eq/ne_i32`, `eq/ne_u32`,
+`ternary_match_u32/u64`), each one `pack_under` call over the SAME lane op its
+ungated sibling uses — no new backend semantics, so no backend file changed.
+
+**Falsifiers.** (1) family ≡ `ungated & gate` word-for-word at ten lengths with
+phantom gate bits present; (2) the skip is MEASURED: a counting closure sees
+20 of 40 groups under an alternating gate, 40 under all-ones — disable-run
+red (`left: 40, right: 20`) with the `gate == 0` early-out removed, green
+restored (verified once, not re-runnable); (3) phantom bits do not leak at
+n = 70; (4) short gate panics; (5) each public member is ONE `pack_under`
+delegation, counted from the source, so the skip test on the private engine
+covers all ten;
+doctests 10/10. Parity harness group 10 (`0xAxx`, `check_predicates_under`):
+alternating-zero gate with random phantom bits, reference reads the gate BIT
+per row. Native (AVX2), nightly (`core::simd`), wasm simd128 and wasm scalar: all
+10/10 bit-identical here; neon has no qemu in this sandbox, and the
+`neon-simd/parity-qemu` CI job on #307 is the witness for that arm (green).
+
+**Allocation.** Engine + first member by the orchestrator; nine members +
+tests by a worker agent against a written spec (its Bash died on a full disk
+mid-run — the tasks tmpfs and the checkout share one allowance — so it landed
+Tasks A–C unverified and reported exactly that; the orchestrator gated
+centrally after freeing 6.5 GB of stale scratch targets and landed the parity
+arm itself). W1a deviation record as for `mask_andnot` / `mask_ternlog`:
+free-fn family shape beside its siblings, not a struct method.
+
+**Loose ends.** The strided operand family (12-in-16-byte register compares
+for `LaneRef`) and `u8/u16/u64` compare-to-mask (DuckDB matrix G1/G2) remain
+T1 gaps; neither is needed for PR3's first executor.
+
+## 2026-09-14 (3) — D-GTM-1m MEASURED: `mask_shift_morton` lands; the win is in the NODE SPAN, not the op — n = 17.0 → 5.7 µs (−66 %)
+
+`mask_shift_morton` (255c36d) is bit-exact (F1–F4, parity 9/9 on native/
+nightly/wasm/wasm-scalar; neon-qemu absent here) — and over the FULL field it
+barely moves `n`: 14.5–16.5 µs vs 17.0 µs for the per-bit loop. The worker
+implementer named the mechanism correctly: the op is FIELD-size-bound (1024
+words × ~8 passes per direction) while the per-bit loop is ACTIVE-bound, so at
+1.8 % density they cost about the same and the op loses once gates thin the
+frontier.
+
+**The fix is the fixed-spatial-distribution dividend a second time.** A trie
+node is a contiguous word span AND a square Morton sub-field (the level-1 tile =
+64 words = a 64×64 field, `log2(64)` even), so the shifts run over the node's
+own span with no correctness change (the source ⊆ tile, so no carry enters the
+span; a carry leaving it is what `& tile` removes anyway). Measured, dirs = 6,
+x = 0, same gates green (68/68 rows, 0 heap B/step):
+
+| arm | ns/step | vs ladder |
+|---|---|---|
+| ladder (per-bit, full state) | 16,944 | — |
+| nnue (per-bit, delta frontier) | 9,296 | −45 % |
+| shift (word op, full field) | 14,517 | −14 % |
+| **node (word op, tile span)** | **5,677** | **−66 %** |
+| node+g / node+nn / node+nn+g | 5,722 / 6,044 / 5,774 | — |
+
+Delta-frontier on top of the node span buys nothing (5.7 → 6.0), as predicted:
+a span-bound op does not care how many bits are set. Degree-1 control: node
+4.5 µs vs ladder 6.7 µs — the ratio survives the E-Q8 ablation, so the gain is
+the word op, not the six. The ternlog fit is unchanged (281 ns/pass, n = 17.0 µs
+on the ladder arm by construction). Remaining 5.7 µs is the field-wide
+housekeeping (scratch zeroing, `OR2_AND`, the Hebbian reverse walk over 1024
+words) — the next rung restricts THOSE to the node span too and re-measures;
+not claimed here.
+
+Rule extracted: **a word-level op pays for the span it is given; give it the
+node, never the field.** The same statement as "top-down is a range, not a
+compare" (2026-09-14 (2)), now on the grey side.
+
+## 2026-09-14 (2) — D-GTM-0m: the hex TENANT — top-down traversal AND spread on ONE Morton-keyed SoA; `step = x·ternlogq + n` measured, and the chain is 1.7 % of it
+
+Probe: `examples/hex_tenant_mq_probe.rs` (`--release`, committed; output banked
+in the session scratchpad). Operator statement it builds (2026-09-14): *"static
+traversal top down AND plasticity (spread) in the same substrate — SoA gets a
+hex tenant with 6×2×8 bit and the field is a trie (fixed spatial distribution)."*
+This is `gemm-ternlog-mask-consolidation-v1.md` §9 M1/M1b/M2/M3 and §11.10
+(`substrate == mask geometry == projection surface`) executed on the merged #306
+facade, not argued. Substrate: 65,536 rows = 256×256 axial hex cells, **row =
+Morton(q, r)**, payload = the V3 12-byte register read `6×(u8:u8)` with rail `d`
+= hex direction `d`, `u8:u8 = (permeability, strength)`. §9 R1 ("not obviously
+the same six") is resolved by construction: adjacency and carving ARE the same
+six once the rail index is the direction. Three gates, all green (32/32 cells):
+range reveal == TCAM reveal at every level/prefix; Morton-arm spread == an
+independent row-major axial BFS at every step (plasticity bytes compared too);
+hot-path heap = **0 B/step** everywhere (counting allocator).
+
+**White — top-down is a RANGE, not a compare.** A trie node at nibble level L is
+`2^(16−4L)` CONTIGUOUS rows, so revealing it is a range write: **49–99 ns** vs
+**22.4–22.8 µs** for the general `ternary_match_u32_to_mask` sweep over the
+address column — **228–462×**. That is the fixed-spatial-distribution dividend
+stated as a number: the TCAM op stays for addresses that are NOT laid out (the
+D-GTM-0l linker case); a minted, Morton-keyed tenant never pays it.
+
+**Grey — the cost model, fitted (identity gates, survivors held at 1175):**
+`step = x·ternlogq + n` with **ternlogq = 291 ns/pass** (8 KiB masks, 0.285
+ns/word) and **n = 17.3 µs**, max residual 2.8 % over x ∈ {0,1,2,4,8,16,32}.
+So at x = 1 the chain is **1.7 %** of the step; even x = 32 only doubles it.
+`n` is the ONE non-mask op on the path — the per-active-bit hex shift (dilated-
+integer add per direction). **That is the missing substrate word**: a mask-level
+neighbour shift on the Morton lattice (`mask_shift_hex(state, d, dst)` — within
+a nibble a 4×4 block shift, carries across blocks), which would fold `n` into a
+handful of word passes. Filed, not built. First rung without it: the **NNUE
+reading** — spread from the DELTA frontier (`scratch & !state`), never from the
+accumulated state — gives the identical closure (gate green) at **8.8 µs**
+(−48 %), 8.4 µs with the real gates. The E-Q8 control is in the table (degree-1
+arm: 7.0 µs, 301 survivors — a different closure, so a cost floor, not a cost
+equivalence).
+
+**Coal.** One re-chain (regenerate a resident mask from its column,
+`gt_i32_to_mask` over 256 KiB) = **8.9 µs = 30.6 ternlogq passes = 0.48
+maintained steps** at x = 4. M2 is linear: x → x±1 is one pass (291 ns), no
+cliff. M1b generation (6 eligibility masks) = 75 µs once per mask generation.
+Plasticity: 740 rows' strength bytes bumped IN the register (1,263 firings over
+24 steps), on survivors only — the first version fired on every re-reached cell
+the gates then removed, which is the "fire before you know it survived" bug the
+reverse walk fixes.
+
+**Stated limits.** The T1 compare is i32-wide, so the u8 permeability column is
+widened 4× for `gt_i32_to_mask` — `n_gen` and coal are UPPER bounds; a u8/u16
+compare-to-mask is a T1 addition. One fixture density (62 % permeable), one
+tile size, timing floor 50 ms, no `perf`. No production caller; this is W0.
+
 ## 2026-09-14 — AVX2 arm of the mask family MEASURED, not rewritten: 6 of 10 shapes were already packed, 4 earned intrinsic realizations
 
 **The pre-compaction plan was wrong, and the instrument said so before code

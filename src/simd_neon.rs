@@ -2939,6 +2939,7 @@ impl core::ops::Shl<Self> for U64x8 {
     type Output = Self;
     #[inline(always)]
     fn shl(self, r: Self) -> Self {
+        debug_assert!(r.to_array().iter().all(|&n| n < 64), "U64x8 shift counts are a caller contract: < 64");
         // SAFETY: NEON baseline; pure register ops.
         Self(core::array::from_fn(|p| U64x2(unsafe { vshlq_u64(self.0[p].0, vreinterpretq_s64_u64(r.0[p].0)) })))
     }
@@ -2949,6 +2950,7 @@ impl core::ops::Shr<Self> for U64x8 {
     type Output = Self;
     #[inline(always)]
     fn shr(self, r: Self) -> Self {
+        debug_assert!(r.to_array().iter().all(|&n| n < 64), "U64x8 shift counts are a caller contract: < 64");
         // SAFETY: NEON baseline; pure register ops.
         Self(core::array::from_fn(|p| {
             U64x2(unsafe { vshlq_u64(self.0[p].0, vnegq_s64(vreinterpretq_s64_u64(r.0[p].0))) })

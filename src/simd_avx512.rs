@@ -1847,6 +1847,7 @@ impl Shr<Self> for U64x8 {
     type Output = Self;
     #[inline(always)]
     fn shr(self, rhs: Self) -> Self {
+        debug_assert!(rhs.to_array().iter().all(|&n| n < 64), "U64x8 shift counts are a caller contract: < 64");
         Self(unsafe { _mm512_srlv_epi64(self.0, rhs.0) })
     }
 }
@@ -1855,6 +1856,7 @@ impl Shl<Self> for U64x8 {
     type Output = Self;
     #[inline(always)]
     fn shl(self, rhs: Self) -> Self {
+        debug_assert!(rhs.to_array().iter().all(|&n| n < 64), "U64x8 shift counts are a caller contract: < 64");
         Self(unsafe { _mm512_sllv_epi64(self.0, rhs.0) })
     }
 }

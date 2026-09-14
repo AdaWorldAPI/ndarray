@@ -165,6 +165,41 @@ impl U64x8 {
     }
 }
 
+/// Lane-wise variable shifts — `core::simd`'s own `<<` / `>>`, so this
+/// backend carries the same `Shl<Self>` / `Shr<Self>` surface as every other
+/// arm (the mask family's Morton hex shift composes `and`/`shl`/`or`). Counts
+/// stay below 64 by the callers' contract; what `core::simd` does at 64+ is
+/// its own business, not a portable promise.
+///
+/// ```
+/// use ndarray::simd::U64x8;
+/// let x = U64x8::splat(1);
+/// let counts = U64x8::from_array([0, 1, 2, 3, 4, 5, 6, 63]);
+/// let left = x << counts;
+/// assert_eq!(left.to_array(), [1, 2, 4, 8, 16, 32, 64, 1 << 63]);
+/// let right = left >> counts;
+/// assert_eq!(right.to_array(), [1; 8]);
+/// ```
+impl core::ops::Shl<Self> for U64x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn shl(self, rhs: Self) -> Self {
+        debug_assert!(rhs.to_array().iter().all(|&n| n < 64), "U64x8 shift counts are a caller contract: < 64");
+        Self(self.0 << rhs.0)
+    }
+}
+
+/// Lane-wise variable right shift; see the `Shl<Self>` impl above for the
+/// count contract and a worked example (the two are inverses below 64).
+impl core::ops::Shr<Self> for U64x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn shr(self, rhs: Self) -> Self {
+        debug_assert!(rhs.to_array().iter().all(|&n| n < 64), "U64x8 shift counts are a caller contract: < 64");
+        Self(self.0 >> rhs.0)
+    }
+}
+
 impl Default for U64x8 {
     #[inline(always)]
     fn default() -> Self {

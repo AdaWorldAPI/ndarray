@@ -67,6 +67,13 @@
 // in-range elements, which makes the guarantee structural rather than a
 // tail-handling special case that could be forgotten.
 //
+// ONE exception, named here so the guarantee stays checkable: the lattice
+// shift `mask_shift_morton` is an ACCUMULATOR (`dst |= ...`) and is
+// word-indexed, not element-indexed — it has no `values.len()` and no
+// trailing-bit law, so the bit-order paragraph above does not apply to it.
+// A caller that wants a fresh answer zeroes `dst` first. Every other writer
+// in this file obeys the paragraph above.
+//
 // ## Why free functions here, not methods on a wrapper
 //
 // The W1a consumer contract's "struct method, not free function" litmus
@@ -1481,6 +1488,460 @@ pub fn ternary_match_strided_to_mask(
     }
 }
 
+// ── Gated predicates: `*_to_mask_under` (mask-risc `Pred { under }`) ────────
+//
+// `out[w] = under[w] & pred(values)[w]`, with the predicate EVALUATED only
+// on words where `under[w] != 0` — the survivor-word skip. The COMPARE cost
+// is proportional to the live words of `under`; the per-word gate test and
+// zero store remain proportional to `rows / 64`. The skip is word-granular,
+// so what a frontier pays is its share of live WORDS, not of live rows: a
+// frontier whose survivors occupy 3 % of the gate words pays 3 % of the
+// compares, and a sparse frontier spread across every word pays all of
+// them. (Measured: the counting closure in `under_skips_compares_on_empty_
+// gate_words` sees 20 of 40 groups under an alternating gate — a call
+// count, not a timing.) The alternative — a full `*_to_mask` pass followed
+// by `mask_and` — costs the whole plane twice and is exactly what a mask
+// program must not do once its first predicate has already narrowed the
+// population.
+//
+// This engine skips at word granularity (64 rows), the unit the caller
+// already holds: one word is four 16-lane groups (or eight 8-lane groups),
+// and the skip decision is one `u64 != 0` test. A per-group skip (16 rows)
+// would be reachable with one extra AND per group and is deliberately not
+// done. An executor is free to skip COARSER (mask-risc's IR speaks of
+// 1024-row chunks); the result is identical by construction — a skipped
+// chunk is an all-zero gate, and `pred & 0 == 0` — though no test performs
+// a coarser skip. Only the cost differs.
+//
+// Semantics are otherwise those of the ungated sibling, and the tail law is
+// inherited from it: the predicate's bits past `n` are zero, so
+// `pred & under` conforms EVEN IF `under` carries phantom tail bits — a
+// gate never needs cleaning before it is applied. Full overwrite: surplus
+// words of `out_words` are written zero, as in every `*_to_mask`.
+
+/// The shared survivor-skip loop under every `*_to_mask_under`.
+///
+/// `group_bits(lanes, live)` packs one register's worth of predicate results
+/// — `lanes` is the full `[T; L]` (zero-padded when `live < L`) and the
+/// closure masks its answer down to the low `live` bits — into a `u64`
+/// whose bits above `live` are zero. The loop places each group at bit
+/// `g * L` of its word and ANDs the word with `under[w]`.
+#[inline(always)]
+fn pack_under<T: Copy + Default, const L: usize>(
+    name: &str, values: &[T], under: &[u64], out_words: &mut [u64], group_bits: impl Fn([T; L], usize) -> u64,
+) {
+    const { assert!(64 % L == 0, "a mask word must hold whole lane groups") }
+    let n = values.len();
+    let words = mask_words_for(n);
+    assert!(out_words.len() >= words, "{name}: out_words.len()={} < required {words}", out_words.len());
+    assert!(under.len() >= words, "{name}: under.len()={} < required {words}", under.len());
+    for w in out_words[words..].iter_mut() {
+        *w = 0;
+    }
+    for w in 0..words {
+        let gate = under[w];
+        if gate == 0 {
+            out_words[w] = 0;
+            continue;
+        }
+        let mut bits = 0u64;
+        let mut start = w * 64;
+        let end = n.min(start + 64);
+        let mut shift = 0;
+        while start < end {
+            let live = (end - start).min(L);
+            let group = &values[start..start + live];
+            let lanes: [T; L] = if live == L {
+                group.try_into().expect("a full group is exactly L lanes")
+            } else {
+                pad_tail(group)
+            };
+            let g = group_bits(lanes, live);
+            // The closure contract (bits above `live` are zero) is what keeps
+            // one group from corrupting the next group's bit range.
+            debug_assert!(live == 64 || g >> live == 0, "{name}: group bits above live={live} must be zero");
+            bits |= g << shift;
+            start += L;
+            shift += L;
+        }
+        out_words[w] = bits & gate;
+    }
+}
+
+/// `live`-lane validity mask for a 16-lane group: all ones for a full group,
+/// [`tail_lane_bits`] for a padded one.
+#[inline(always)]
+fn live16(live: usize) -> u16 {
+    if live == 16 {
+        u16::MAX
+    } else {
+        tail_lane_bits(live)
+    }
+}
+
+/// Packs `values[i] > threshold` (signed) AND `under`: bit `i` is set iff
+/// both hold, and words where `under` has no survivor are written zero
+/// **without evaluating the compare** — the survivor-word skip whose cost
+/// is proportional to `under`'s live words, not to `values.len()`.
+///
+/// Same comparison, bit order, and full-overwrite contract as
+/// [`gt_i32_to_mask`]; `under`'s bits past `values.len()` are harmless (the
+/// predicate's own tail is zero, so the AND conforms regardless).
+///
+/// # Panics
+///
+/// Panics if `out_words.len()` or `under.len()` is below
+/// `values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::{gt_i32_to_mask, gt_i32_to_mask_under};
+///
+/// let values = [5i32, -5, 9, 12];
+/// let mut full = [0u64; 1];
+/// gt_i32_to_mask(&values, 0, &mut full);
+/// assert_eq!(full[0], 0b1101);
+/// // gate out element 3: the answer is the ungated mask AND the gate
+/// let mut gated = [0u64; 1];
+/// gt_i32_to_mask_under(&values, 0, &[0b0111], &mut gated);
+/// assert_eq!(gated[0], 0b0101);
+/// // an empty gate word is written zero and its compares are skipped
+/// gt_i32_to_mask_under(&values, 0, &[0], &mut gated);
+/// assert_eq!(gated[0], 0);
+/// ```
+#[inline]
+pub fn gt_i32_to_mask_under(values: &[i32], threshold: i32, under: &[u64], out_words: &mut [u64]) {
+    let t = crate::simd::I32x16::splat(threshold);
+    pack_under::<i32, 16>("gt_i32_to_mask_under", values, under, out_words, |lanes, live| {
+        (crate::simd::I32x16::from_array(lanes).gt_bitmask(t) & live16(live)) as u64
+    });
+}
+
+/// Packs `values[i] < threshold` (signed) AND `under`, using the
+/// survivor-word skip: words where `under` has no live bit are written zero
+/// without evaluating the compare. Same contract as [`gt_i32_to_mask_under`];
+/// gated form of [`lt_i32_to_mask`].
+///
+/// # Panics
+///
+/// Panics if `out_words.len()` or `under.len()` is below
+/// `values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::{lt_i32_to_mask, lt_i32_to_mask_under};
+///
+/// let values = [5i32, -5, -1, 10];
+/// let mut full = [0u64; 1];
+/// lt_i32_to_mask(&values, 0, &mut full);
+/// assert_eq!(full[0], 0b0110);
+/// // gate out element 2: only element 1 survives
+/// let mut gated = [0u64; 1];
+/// lt_i32_to_mask_under(&values, 0, &[0b1011], &mut gated);
+/// assert_eq!(gated[0], 0b0010);
+/// // an empty gate word is written zero and its compares are skipped
+/// lt_i32_to_mask_under(&values, 0, &[0], &mut gated);
+/// assert_eq!(gated[0], 0);
+/// ```
+#[inline]
+pub fn lt_i32_to_mask_under(values: &[i32], threshold: i32, under: &[u64], out_words: &mut [u64]) {
+    let t = crate::simd::I32x16::splat(threshold);
+    pack_under::<i32, 16>("lt_i32_to_mask_under", values, under, out_words, |lanes, live| {
+        (t.gt_bitmask(crate::simd::I32x16::from_array(lanes)) & live16(live)) as u64
+    });
+}
+
+/// Packs `values[i] >= threshold` (signed) AND `under`, complementing
+/// [`lt_i32_to_mask_under`]'s per-group bits *inside* the group so the tail
+/// law stays [`live16`]'s to enforce, never a whole-word complement. Same
+/// contract as [`gt_i32_to_mask_under`]; gated form of [`ge_i32_to_mask`].
+///
+/// # Panics
+///
+/// Panics if `out_words.len()` or `under.len()` is below
+/// `values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::{ge_i32_to_mask, ge_i32_to_mask_under};
+///
+/// let values = [5i32, -5, -1, 10];
+/// let mut full = [0u64; 1];
+/// ge_i32_to_mask(&values, 0, &mut full);
+/// assert_eq!(full[0], 0b1001);
+/// // gate out element 3: only element 0 survives
+/// let mut gated = [0u64; 1];
+/// ge_i32_to_mask_under(&values, 0, &[0b0011], &mut gated);
+/// assert_eq!(gated[0], 0b0001);
+/// // an empty gate word is written zero and its compares are skipped
+/// ge_i32_to_mask_under(&values, 0, &[0], &mut gated);
+/// assert_eq!(gated[0], 0);
+/// ```
+#[inline]
+pub fn ge_i32_to_mask_under(values: &[i32], threshold: i32, under: &[u64], out_words: &mut [u64]) {
+    let t = crate::simd::I32x16::splat(threshold);
+    pack_under::<i32, 16>("ge_i32_to_mask_under", values, under, out_words, |lanes, live| {
+        (!t.gt_bitmask(crate::simd::I32x16::from_array(lanes)) & live16(live)) as u64
+    });
+}
+
+/// Packs `values[i] <= threshold` (signed) AND `under`, complementing
+/// [`gt_i32_to_mask_under`]'s per-group bits *inside* the group. Same
+/// contract as [`gt_i32_to_mask_under`]; gated form of [`le_i32_to_mask`].
+///
+/// # Panics
+///
+/// Panics if `out_words.len()` or `under.len()` is below
+/// `values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::{le_i32_to_mask, le_i32_to_mask_under};
+///
+/// let values = [5i32, -5, -1, 10];
+/// let mut full = [0u64; 1];
+/// le_i32_to_mask(&values, 0, &mut full);
+/// assert_eq!(full[0], 0b0110);
+/// // gate out element 2: only element 1 survives
+/// let mut gated = [0u64; 1];
+/// le_i32_to_mask_under(&values, 0, &[0b1011], &mut gated);
+/// assert_eq!(gated[0], 0b0010);
+/// // an empty gate word is written zero and its compares are skipped
+/// le_i32_to_mask_under(&values, 0, &[0], &mut gated);
+/// assert_eq!(gated[0], 0);
+/// ```
+#[inline]
+pub fn le_i32_to_mask_under(values: &[i32], threshold: i32, under: &[u64], out_words: &mut [u64]) {
+    let t = crate::simd::I32x16::splat(threshold);
+    pack_under::<i32, 16>("le_i32_to_mask_under", values, under, out_words, |lanes, live| {
+        (!crate::simd::I32x16::from_array(lanes).gt_bitmask(t) & live16(live)) as u64
+    });
+}
+
+/// Packs `values[i] != needle` (signed) AND `under`, in one pass as
+/// `(needle > v) | (v > needle)` — no complement, so the tail is zero by
+/// construction, same as the ungated sibling. Same contract as
+/// [`gt_i32_to_mask_under`]; gated form of [`ne_i32_to_mask`].
+///
+/// # Panics
+///
+/// Panics if `out_words.len()` or `under.len()` is below
+/// `values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::{ne_i32_to_mask, ne_i32_to_mask_under};
+///
+/// let values = [7i32, 1, 7, 2];
+/// let mut full = [0u64; 1];
+/// ne_i32_to_mask(&values, 7, &mut full);
+/// assert_eq!(full[0], 0b1010);
+/// // gate out element 3: only element 1 survives
+/// let mut gated = [0u64; 1];
+/// ne_i32_to_mask_under(&values, 7, &[0b0011], &mut gated);
+/// assert_eq!(gated[0], 0b0010);
+/// // an empty gate word is written zero and its compares are skipped
+/// ne_i32_to_mask_under(&values, 7, &[0], &mut gated);
+/// assert_eq!(gated[0], 0);
+/// ```
+#[inline]
+pub fn ne_i32_to_mask_under(values: &[i32], needle: i32, under: &[u64], out_words: &mut [u64]) {
+    let t = crate::simd::I32x16::splat(needle);
+    pack_under::<i32, 16>("ne_i32_to_mask_under", values, under, out_words, |lanes, live| {
+        let v = crate::simd::I32x16::from_array(lanes);
+        ((t.gt_bitmask(v) | v.gt_bitmask(t)) & live16(live)) as u64
+    });
+}
+
+/// Packs `values[i] == needle` (signed, exact) AND `under`, complementing
+/// [`ne_i32_to_mask_under`]'s per-group bits *inside* the group. Same
+/// contract as [`gt_i32_to_mask_under`]; gated form of [`eq_i32_to_mask`].
+///
+/// # Panics
+///
+/// Panics if `out_words.len()` or `under.len()` is below
+/// `values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::{eq_i32_to_mask, eq_i32_to_mask_under};
+///
+/// let values = [7i32, 1, 7, 2];
+/// let mut full = [0u64; 1];
+/// eq_i32_to_mask(&values, 7, &mut full);
+/// assert_eq!(full[0], 0b0101);
+/// // gate out element 2: only element 0 survives
+/// let mut gated = [0u64; 1];
+/// eq_i32_to_mask_under(&values, 7, &[0b0011], &mut gated);
+/// assert_eq!(gated[0], 0b0001);
+/// // an empty gate word is written zero and its compares are skipped
+/// eq_i32_to_mask_under(&values, 7, &[0], &mut gated);
+/// assert_eq!(gated[0], 0);
+/// ```
+#[inline]
+pub fn eq_i32_to_mask_under(values: &[i32], needle: i32, under: &[u64], out_words: &mut [u64]) {
+    let t = crate::simd::I32x16::splat(needle);
+    pack_under::<i32, 16>("eq_i32_to_mask_under", values, under, out_words, |lanes, live| {
+        let v = crate::simd::I32x16::from_array(lanes);
+        (!(t.gt_bitmask(v) | v.gt_bitmask(t)) & live16(live)) as u64
+    });
+}
+
+/// Packs `values[i] == needle` (unsigned, exact) AND `under`. Same contract
+/// as [`gt_i32_to_mask_under`]; gated form of [`eq_u32_to_mask`].
+///
+/// # Panics
+///
+/// Panics if `out_words.len()` or `under.len()` is below
+/// `values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::{eq_u32_to_mask, eq_u32_to_mask_under};
+///
+/// let values = [7u32, 1, 7, 2];
+/// let mut full = [0u64; 1];
+/// eq_u32_to_mask(&values, 7, &mut full);
+/// assert_eq!(full[0], 0b0101);
+/// // gate out element 2: only element 0 survives
+/// let mut gated = [0u64; 1];
+/// eq_u32_to_mask_under(&values, 7, &[0b0011], &mut gated);
+/// assert_eq!(gated[0], 0b0001);
+/// // an empty gate word is written zero and its compares are skipped
+/// eq_u32_to_mask_under(&values, 7, &[0], &mut gated);
+/// assert_eq!(gated[0], 0);
+/// ```
+#[inline]
+pub fn eq_u32_to_mask_under(values: &[u32], needle: u32, under: &[u64], out_words: &mut [u64]) {
+    let needle_v = crate::simd::U32x16::splat(needle);
+    pack_under::<u32, 16>("eq_u32_to_mask_under", values, under, out_words, |lanes, live| {
+        (crate::simd::U32x16::from_array(lanes).eq_bitmask(needle_v) & live16(live)) as u64
+    });
+}
+
+/// Packs `values[i] != needle` (unsigned) AND `under`, complementing
+/// [`eq_u32_to_mask_under`]'s per-group bits *inside* the group. Same
+/// contract as [`gt_i32_to_mask_under`]; gated form of [`ne_u32_to_mask`].
+///
+/// # Panics
+///
+/// Panics if `out_words.len()` or `under.len()` is below
+/// `values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::{ne_u32_to_mask, ne_u32_to_mask_under};
+///
+/// let values = [7u32, 1, 7, 2];
+/// let mut full = [0u64; 1];
+/// ne_u32_to_mask(&values, 7, &mut full);
+/// assert_eq!(full[0], 0b1010);
+/// // gate out element 3: only element 1 survives
+/// let mut gated = [0u64; 1];
+/// ne_u32_to_mask_under(&values, 7, &[0b0011], &mut gated);
+/// assert_eq!(gated[0], 0b0010);
+/// // an empty gate word is written zero and its compares are skipped
+/// ne_u32_to_mask_under(&values, 7, &[0], &mut gated);
+/// assert_eq!(gated[0], 0);
+/// ```
+#[inline]
+pub fn ne_u32_to_mask_under(values: &[u32], needle: u32, under: &[u64], out_words: &mut [u64]) {
+    let needle_v = crate::simd::U32x16::splat(needle);
+    pack_under::<u32, 16>("ne_u32_to_mask_under", values, under, out_words, |lanes, live| {
+        (!crate::simd::U32x16::from_array(lanes).eq_bitmask(needle_v) & live16(live)) as u64
+    });
+}
+
+/// Care-masked match of `values[i]` against `pattern` (bits selected by
+/// `care`) AND `under`: element `i` survives iff `((values[i] ^ pattern) &
+/// care) == 0` **and** its gate bit is set. Same contract as
+/// [`gt_i32_to_mask_under`]; gated form of [`ternary_match_u32_to_mask`].
+///
+/// # Panics
+///
+/// Panics if `out_words.len()` or `under.len()` is below
+/// `values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::{ternary_match_u32_to_mask, ternary_match_u32_to_mask_under};
+///
+/// let values = [0b1010u32, 0b1110, 0b0010, 0b1011];
+/// let mut full = [0u64; 1];
+/// ternary_match_u32_to_mask(&values, 0b1010, 0b1011, &mut full);
+/// assert_eq!(full[0], 0b0011);
+/// // gate out element 1: only element 0 survives
+/// let mut gated = [0u64; 1];
+/// ternary_match_u32_to_mask_under(&values, 0b1010, 0b1011, &[0b1101], &mut gated);
+/// assert_eq!(gated[0], 0b0001);
+/// // an empty gate word is written zero and its compares are skipped
+/// ternary_match_u32_to_mask_under(&values, 0b1010, 0b1011, &[0], &mut gated);
+/// assert_eq!(gated[0], 0);
+/// ```
+#[inline]
+pub fn ternary_match_u32_to_mask_under(values: &[u32], pattern: u32, care: u32, under: &[u64], out_words: &mut [u64]) {
+    let p = crate::simd::U32x16::splat(pattern);
+    let c = crate::simd::U32x16::splat(care);
+    let zero = crate::simd::U32x16::splat(0);
+    pack_under::<u32, 16>("ternary_match_u32_to_mask_under", values, under, out_words, |lanes, live| {
+        let bits = crate::simd::U32x16::from_array(lanes)
+            .ternlog::<{ crate::simd::ternlog::XOR_AND }>(p, c)
+            .eq_bitmask(zero);
+        (bits & live16(live)) as u64
+    });
+}
+
+/// The 64-bit sibling of [`ternary_match_u32_to_mask_under`]: care-masked
+/// match of `values[i]` against `pattern`/`care` AND `under`. Same contract
+/// as [`gt_i32_to_mask_under`]; gated form of [`ternary_match_u64_to_mask`].
+///
+/// # Panics
+///
+/// Panics if `out_words.len()` or `under.len()` is below
+/// `values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::{ternary_match_u64_to_mask, ternary_match_u64_to_mask_under};
+///
+/// let values = [0b1010u64, 0b1110, 0b0010, 0b1011];
+/// let mut full = [0u64; 1];
+/// ternary_match_u64_to_mask(&values, 0b1010, 0b1011, &mut full);
+/// assert_eq!(full[0], 0b0011);
+/// // gate out element 1: only element 0 survives
+/// let mut gated = [0u64; 1];
+/// ternary_match_u64_to_mask_under(&values, 0b1010, 0b1011, &[0b1101], &mut gated);
+/// assert_eq!(gated[0], 0b0001);
+/// // an empty gate word is written zero and its compares are skipped
+/// ternary_match_u64_to_mask_under(&values, 0b1010, 0b1011, &[0], &mut gated);
+/// assert_eq!(gated[0], 0);
+/// ```
+#[inline]
+pub fn ternary_match_u64_to_mask_under(values: &[u64], pattern: u64, care: u64, under: &[u64], out_words: &mut [u64]) {
+    let p = crate::simd::U64x8::splat(pattern);
+    let c = crate::simd::U64x8::splat(care);
+    pack_under::<u64, 8>("ternary_match_u64_to_mask_under", values, under, out_words, |lanes, live| {
+        let r = crate::simd::U64x8::from_array(lanes)
+            .ternlog::<{ crate::simd::ternlog::XOR_AND }>(p, c)
+            .to_array();
+        let mut bits = 0u64;
+        for (lane, &x) in r.iter().take(live).enumerate() {
+            bits |= ((x == 0) as u64) << lane;
+        }
+        bits
+    });
+}
+
 /// Minimum of `values[i]` over set mask bits, `None` when no bit is set.
 /// Same bit order and "bits at or past `values.len()` are ignored" contract
 /// as [`masked_sum_i32`]; cost proportional to the popcount.
@@ -1592,6 +2053,284 @@ pub fn blend_i32(mask_words: &[u64], a: &[i32], b: &[i32], dst: &mut [i32]) {
     for i in 0..n {
         let bit = (mask_words[i / 64] >> (i % 64)) & 1;
         dst[i] = if bit == 1 { a[i] } else { b[i] };
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Morton lattice axis shift — the D-GTM-1m word-level op (§15); the hex
+// probe composes its six rails from these four Cartesian axis moves
+// ────────────────────────────────────────────────────────────────────────
+//
+// Rows are Morton-keyed 2-D (`q` on the even address bits, `r` on the odd
+// ones — `hex_tenant_mq_probe.rs::morton`). A mask word covers 64 rows, i.e.
+// an 8×8 axial block; within a word, bit index `b` in `0..64` has its local
+// `q` sub-coordinate at bits `{0,2,4}` and its local `r` sub-coordinate at
+// bits `{1,3,5}`. `mask_shift_morton` moves every set bit one cell along one
+// of the four axis directions, entirely as word-level ops: three fixed bit
+// permutations cover the cells whose local sub-coordinate does not overflow
+// the word, and one carry moves the cells that do into the adjacent word.
+//
+// `D-GTM-0m` (`.claude/blackboard.md`) measured that this per-active-bit
+// shift is the WHOLE cost of a spread step once the mask chain itself is
+// ~free; this op removes it by making the shift itself a handful of word
+// passes instead of a loop over set bits.
+
+/// One axis direction, as a runtime value (never a const generic — a
+/// consumer composing all four, or the two diagonal directions, picks the
+/// direction at the call site, not at compile time).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum MortonDir {
+    /// Increment the even-bit (`q`) sub-coordinate — a lattice axis move;
+    /// the hex probe's rail 0 (`(+1, 0)`). The two hex diagonals are
+    /// compositions of two variants, never variants themselves.
+    PosQ,
+    /// Decrement the even-bit (`q`) sub-coordinate (the hex probe's rail 1).
+    NegQ,
+    /// Increment the odd-bit (`r`) sub-coordinate (the hex probe's rail 2).
+    PosR,
+    /// Decrement the odd-bit (`r`) sub-coordinate (the hex probe's rail 3).
+    NegR,
+}
+
+/// Build a 64-bit mask of every `b` in `0..64` for which
+/// `(b & test_mask) == test_pattern` — the case-selector predicates §15
+/// states literally as `b & M == P`. `const fn` so every `AxisTable` below is
+/// computed once, at compile time, never as a runtime literal.
+const fn morton_case_mask(test_mask: u32, test_pattern: u32) -> u64 {
+    let mut m = 0u64;
+    let mut b = 0u32;
+    while b < 64 {
+        if (b & test_mask) == test_pattern {
+            m |= 1u64 << b;
+        }
+        b += 1;
+    }
+    m
+}
+
+/// One direction's word-level shift recipe: the three interior (non-
+/// wrapping) case masks with their signed bit-shift amount (`> 0` is `<<`,
+/// `< 0` is `>>`), and the fourth (wrapping) case that carries into the
+/// neighbouring word.
+struct AxisTable {
+    /// `(case mask, signed shift)` for the three cells whose local
+    /// sub-coordinate does not overflow the word.
+    interior: [(u64, i32); 3],
+    /// The cells whose local sub-coordinate wraps and must carry out.
+    carry_mask: u64,
+    /// Magnitude of the carry's local re-basing shift.
+    carry_shift: u32,
+    /// `true` for `NegQ`/`NegR`: the carry moves toward the DECREASING
+    /// word (`dec_word`) and re-bases with `<<`. `false` for `PosQ`/`PosR`:
+    /// toward the INCREASING word (`inc_word`), re-based with `>>`.
+    carry_decrements: bool,
+}
+
+// The four tables, one per `MortonDir`, exactly as specified: `+r`/`-r` are
+// `+q`/`-q`'s tables with every bit position and shift amount doubled (the
+// local `r` sub-coordinate sits one bit to the left of `q`'s at every tier).
+
+const POS_Q: AxisTable = AxisTable {
+    interior: [(morton_case_mask(1, 0), 1), (morton_case_mask(5, 1), 3), (morton_case_mask(21, 5), 11)],
+    carry_mask: morton_case_mask(21, 21),
+    carry_shift: 21,
+    carry_decrements: false,
+};
+
+const NEG_Q: AxisTable = AxisTable {
+    interior: [(morton_case_mask(1, 1), -1), (morton_case_mask(5, 4), -3), (morton_case_mask(21, 16), -11)],
+    carry_mask: morton_case_mask(21, 0),
+    carry_shift: 21,
+    carry_decrements: true,
+};
+
+const POS_R: AxisTable = AxisTable {
+    interior: [(morton_case_mask(2, 0), 2), (morton_case_mask(10, 2), 6), (morton_case_mask(42, 10), 22)],
+    carry_mask: morton_case_mask(42, 42),
+    carry_shift: 42,
+    carry_decrements: false,
+};
+
+const NEG_R: AxisTable = AxisTable {
+    interior: [(morton_case_mask(2, 2), -2), (morton_case_mask(10, 8), -6), (morton_case_mask(42, 32), -22)],
+    carry_mask: morton_case_mask(42, 0),
+    carry_shift: 42,
+    carry_decrements: true,
+};
+
+/// `(self & mask) << shift` if `shift >= 0`, else `(self & mask) >> -shift` —
+/// the one interior case, as a whole-register op. `Shl<Self>`/`Shr<Self>` on
+/// `U64x8` take a per-lane vector count; a uniform shift is `splat(n)`, the
+/// same shape every backend already carries (`d11dd0f` filled the two that
+/// did not: AVX2 and nightly-simd).
+#[inline(always)]
+fn morton_case_shift(v: crate::simd::U64x8, mask: u64, shift: i32) -> crate::simd::U64x8 {
+    let masked = v & crate::simd::U64x8::splat(mask);
+    if shift >= 0 {
+        masked << crate::simd::U64x8::splat(shift as u64)
+    } else {
+        masked >> crate::simd::U64x8::splat((-shift) as u64)
+    }
+}
+
+/// The word-space `(x_bits, y_bits)` pair for a field of `n_words` words:
+/// the even/odd address-bit masks one tier UP from the cell-level `X_BITS`/
+/// `Y_BITS` in `hex_tenant_mq_probe.rs` — the word index is itself the
+/// Morton key of the block coordinates, so the same dilated-integer
+/// even/odd split applies, just over `log2(n_words)` bits instead of 16.
+#[inline(always)]
+fn word_axis_bits(n_words: usize) -> (u64, u64) {
+    let total_bits = n_words.trailing_zeros();
+    let mut x = 0u64;
+    let mut b = 0u32;
+    while b < total_bits {
+        x |= 1u64 << b;
+        b += 2;
+    }
+    (x, x << 1)
+}
+
+/// Dilated-integer increment of the `axis_bits` sub-coordinate of word `w`,
+/// `other_bits`-coordinate held fixed. `None` at the far edge (`axis_bits`
+/// already all-ones) — the same no-wrap contract as the cell-level
+/// `neighbour()` in the probe, one tier up.
+#[inline(always)]
+fn inc_word(w: usize, axis_bits: u64, other_bits: u64) -> Option<usize> {
+    let w = w as u64;
+    let x = w & axis_bits;
+    if x == axis_bits {
+        return None;
+    }
+    let xn = (x | other_bits).wrapping_add(1) & axis_bits;
+    Some((xn | (w & other_bits)) as usize)
+}
+
+/// Dilated-integer decrement, the mirror of [`inc_word`]. `None` at `x == 0`.
+#[inline(always)]
+fn dec_word(w: usize, axis_bits: u64, other_bits: u64) -> Option<usize> {
+    let w = w as u64;
+    let x = w & axis_bits;
+    if x == 0 {
+        return None;
+    }
+    let xn = x.wrapping_sub(1) & axis_bits;
+    Some((xn | (w & other_bits)) as usize)
+}
+
+/// `dst |= src` shifted one cell along `dir` on the Morton-keyed 2-D
+/// lattice (D-GTM-1m, `.claude/plans/gemm-ternlog-mask-consolidation-v1.md`
+/// §15) — the mask-level replacement for the per-active-bit hex neighbour
+/// shift `D-GTM-0m` measured as the whole cost of a spread step.
+///
+/// `src.len()` and `dst.len()` must be equal and a power of **four**: the
+/// word index doubles as the Morton key of the field's block coordinates, so
+/// `log2(n_words)` (the address bits above one word's own 6) must split
+/// evenly between the `q` and `r` halves — a non-square field is refused,
+/// never approximated. Cells on the far edge of `dir` produce nothing (no
+/// wrap-around). `dst` is **OR-accumulated, not overwritten** — clear it
+/// first, or chain several directions (e.g. all six hex neighbours) into one
+/// plane by calling this repeatedly with the same `dst`. A hex diagonal
+/// (`+q-r` or `-q+r`) is two calls: shift into a scratch buffer along the
+/// first axis, then shift that scratch (not `src`) along the second axis
+/// into `dst`.
+///
+/// **The slice IS the field.** A sub-span of a larger field is treated as
+/// its own field: no carry enters or leaves the span, so the result is NOT
+/// the restriction of the full-field shift — at every span boundary the
+/// full field would carry into the adjacent block and the span version
+/// emits nothing. This op receives only a slice and cannot check where it
+/// sits in a parent field. A caller shifting a tile in place must
+/// independently hold BOTH that (a) the span's origin is aligned to its own
+/// length in the parent field's Morton order (a trie node: `lo % len == 0`)
+/// and (b) the source is confined to the span, or accept that a boundary
+/// carry is dropped. `examples/hex_tenant_mq_probe.rs` asserts (a) at its
+/// call site and holds (b) by construction (`state ⊆ tile`).
+///
+/// # Panics
+///
+/// Panics if `src.len() != dst.len()`, or if that length is not `4^k` for
+/// some `k >= 0`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::{mask_shift_morton, MortonDir};
+///
+/// // a 64-word field (an 8×8 grid of 8×8 blocks = 64×64 cells).
+/// // cell 0 (q=0, r=0, bit 0 of word 0) shifted +q lands at cell (1, 0),
+/// // which is bit 1 of the same word (case A: b&1==0 -> b+1).
+/// let mut src = vec![0u64; 64];
+/// src[0] = 1;
+/// let mut dst = vec![0u64; 64];
+/// mask_shift_morton(&src, MortonDir::PosQ, &mut dst);
+/// assert_eq!(dst[0], 0b10);
+/// ```
+#[inline]
+pub fn mask_shift_morton(src: &[u64], dir: MortonDir, dst: &mut [u64]) {
+    assert_eq!(src.len(), dst.len(), "mask_shift_morton: src/dst length mismatch");
+    let n_words = src.len();
+    assert!(
+        n_words.is_power_of_two() && n_words.trailing_zeros().is_multiple_of(2),
+        "mask_shift_morton: n_words={n_words} is not a square Morton field (need n_words = 4^k, \
+         so the word index carries an even q/r bit split)"
+    );
+
+    let table = match dir {
+        MortonDir::PosQ => &POS_Q,
+        MortonDir::NegQ => &NEG_Q,
+        MortonDir::PosR => &POS_R,
+        MortonDir::NegR => &NEG_R,
+    };
+
+    // Pass 1 — the interior permutation, vectorized: and/shl-or-shr/or over
+    // whole `U64x8` registers, OR-accumulated into `dst`. Same chunk/tail
+    // shape as `mask_xor_assign` (both `src` and `dst` tails are read, since
+    // this is an accumulate, not an overwrite).
+    const L: usize = crate::simd::U64x8::LANES;
+    let (cs, ts) = src.as_chunks::<L>();
+    let (cd, td) = dst.as_chunks_mut::<L>();
+    for (s, d) in cs.iter().zip(cd.iter_mut()) {
+        let vs = crate::simd::U64x8::from_array(*s);
+        let mut acc = crate::simd::U64x8::from_array(*d);
+        for &(mask, shift) in &table.interior {
+            acc |= morton_case_shift(vs, mask, shift);
+        }
+        *d = acc.to_array();
+    }
+    if !ts.is_empty() {
+        let vs = crate::simd::U64x8::from_array(pad_tail(ts));
+        let mut acc = crate::simd::U64x8::from_array(pad_tail(td));
+        for &(mask, shift) in &table.interior {
+            acc |= morton_case_shift(vs, mask, shift);
+        }
+        td.copy_from_slice(&acc.to_array()[..td.len()]);
+    }
+
+    // Pass 2 — the one-word carry, scalar (there is exactly one neighbour
+    // word per source word, so there is nothing here for a vector lane to
+    // parallelize over).
+    let (x_bits, y_bits) = word_axis_bits(n_words);
+    let (axis_bits, other_bits) = match dir {
+        MortonDir::PosQ | MortonDir::NegQ => (x_bits, y_bits),
+        MortonDir::PosR | MortonDir::NegR => (y_bits, x_bits),
+    };
+    for (w, &s) in src.iter().enumerate() {
+        let carry_bits = s & table.carry_mask;
+        if carry_bits == 0 {
+            continue;
+        }
+        let neighbour = if table.carry_decrements {
+            dec_word(w, axis_bits, other_bits)
+        } else {
+            inc_word(w, axis_bits, other_bits)
+        };
+        if let Some(nb) = neighbour {
+            dst[nb] |= if table.carry_decrements {
+                carry_bits << table.carry_shift
+            } else {
+                carry_bits >> table.carry_shift
+            };
+        }
     }
 }
 
@@ -2726,5 +3465,569 @@ mod tests {
                 }
             }
         }
+    }
+    // ── D-GTM-1m: mask_shift_morton (§15) ───────────────────────────────────
+    //
+    // The oracle below (`oracle_neighbour`) is a fresh transcription of
+    // `hex_tenant_mq_probe.rs::neighbour`'s dilated-integer add/sub — never a
+    // call into `mask_shift_morton` or its `AxisTable`s — generalized from
+    // the probe's fixed 16-bit field to whatever `n_cells` the test picks.
+
+    /// Even/odd address-bit split for a field of `n_cells` cells (must be a
+    /// power of four): the cell-level analogue of `word_axis_bits`, kept
+    /// independent here rather than calling it.
+    fn oracle_axis_bits(n_cells: usize) -> (u32, u32) {
+        let total_bits = n_cells.trailing_zeros();
+        let mut x = 0u32;
+        let mut b = 0u32;
+        while b < total_bits {
+            x |= 1u32 << b;
+            b += 2;
+        }
+        (x, x << 1)
+    }
+
+    /// One dilated-integer neighbour step, `(dq, dr)` each in `{-1, 0, 1}` —
+    /// zero on an axis leaves it untouched, non-zero on both is a diagonal.
+    /// `None` at the field edge (no wrap), exactly `neighbour()`'s contract.
+    fn oracle_neighbour(m: u32, dq: i32, dr: i32, x_bits: u32, y_bits: u32) -> Option<u32> {
+        let mut x = m & x_bits;
+        let mut y = m & y_bits;
+        match dq {
+            1 => {
+                if x == x_bits {
+                    return None;
+                }
+                x = (x | y_bits).wrapping_add(1) & x_bits;
+            }
+            -1 => {
+                if x == 0 {
+                    return None;
+                }
+                x = x.wrapping_sub(1) & x_bits;
+            }
+            _ => {}
+        }
+        match dr {
+            1 => {
+                if y == y_bits {
+                    return None;
+                }
+                y = (y | x_bits).wrapping_add(1) & y_bits;
+            }
+            -1 => {
+                if y == 0 {
+                    return None;
+                }
+                y = y.wrapping_sub(1) & y_bits;
+            }
+            _ => {}
+        }
+        Some(x | y)
+    }
+
+    fn dir_to_dq_dr(dir: MortonDir) -> (i32, i32) {
+        match dir {
+            MortonDir::PosQ => (1, 0),
+            MortonDir::NegQ => (-1, 0),
+            MortonDir::PosR => (0, 1),
+            MortonDir::NegR => (0, -1),
+        }
+    }
+
+    /// Apply one (possibly diagonal) oracle step to every set bit of `src`,
+    /// bit-by-bit — the reference `mask_shift_morton` must match.
+    fn oracle_shift_field(src: &[u64], dq: i32, dr: i32, n_cells: usize, x_bits: u32, y_bits: u32) -> Vec<u64> {
+        let mut dst = vec![0u64; src.len()];
+        for i in 0..n_cells {
+            if (src[i >> 6] >> (i & 63)) & 1 == 0 {
+                continue;
+            }
+            if let Some(j) = oracle_neighbour(i as u32, dq, dr, x_bits, y_bits) {
+                let j = j as usize;
+                dst[j >> 6] |= 1u64 << (j & 63);
+            }
+        }
+        dst
+    }
+
+    /// F1 — the four `AxisTable`s' masks (3 interior + 1 carry, per
+    /// direction) equal an INDEPENDENT runtime fold of the exact §15
+    /// predicates, computed here via explicit local-coordinate
+    /// classification (never `b & mask == pattern` arithmetic, which is how
+    /// the op itself is built) — a literal typo in either implementation
+    /// shows up as a mismatch.
+    #[test]
+    fn morton_axis_tables_match_a_per_bit_predicate_fold() {
+        // the local 3-bit sub-coordinate at `bits` (`{0,2,4}` for q, `{1,3,5}`
+        // for r), MSB-first from `bits[2]`.
+        fn local(b: u32, bits: [u32; 3]) -> u32 {
+            (((b >> bits[2]) & 1) << 2) | (((b >> bits[1]) & 1) << 1) | ((b >> bits[0]) & 1)
+        }
+        fn classify_pos(l: u32) -> usize {
+            match l {
+                0 | 2 | 4 | 6 => 0, // ..0  -> ..1                (+1 / +2)
+                1 | 5 => 1,         // ..01 -> ..10               (+3 / +6)
+                3 => 2,             // 011  -> 100                (+11 / +22)
+                7 => 3,             // 111  wraps                 (carry)
+                _ => unreachable!("a 3-bit local value is in 0..=7"),
+            }
+        }
+        fn classify_neg(l: u32) -> usize {
+            match l {
+                1 | 3 | 5 | 7 => 0, // ..1  -> ..0                (-1 / -2)
+                2 | 6 => 1,         // ..10 -> ..01               (-3 / -6)
+                4 => 2,             // 100  -> 011                (-11 / -22)
+                0 => 3,             // 000  wraps                 (carry)
+                _ => unreachable!("a 3-bit local value is in 0..=7"),
+            }
+        }
+        fn fold(bits: [u32; 3], classify: fn(u32) -> usize) -> [u64; 4] {
+            let mut out = [0u64; 4];
+            for b in 0u32..64 {
+                out[classify(local(b, bits))] |= 1u64 << b;
+            }
+            out
+        }
+
+        let q_bits = [0, 2, 4];
+        let r_bits = [1, 3, 5];
+        let pos_q = fold(q_bits, classify_pos);
+        let neg_q = fold(q_bits, classify_neg);
+        let pos_r = fold(r_bits, classify_pos);
+        let neg_r = fold(r_bits, classify_neg);
+
+        assert_eq!(POS_Q.interior.map(|(m, _)| m), [pos_q[0], pos_q[1], pos_q[2]], "POS_Q interior masks");
+        assert_eq!(POS_Q.carry_mask, pos_q[3], "POS_Q carry mask");
+        assert_eq!(NEG_Q.interior.map(|(m, _)| m), [neg_q[0], neg_q[1], neg_q[2]], "NEG_Q interior masks");
+        assert_eq!(NEG_Q.carry_mask, neg_q[3], "NEG_Q carry mask");
+        assert_eq!(POS_R.interior.map(|(m, _)| m), [pos_r[0], pos_r[1], pos_r[2]], "POS_R interior masks");
+        assert_eq!(POS_R.carry_mask, pos_r[3], "POS_R carry mask");
+        assert_eq!(NEG_R.interior.map(|(m, _)| m), [neg_r[0], neg_r[1], neg_r[2]], "NEG_R interior masks");
+        assert_eq!(NEG_R.carry_mask, neg_r[3], "NEG_R carry mask");
+
+        // anti-vacuity: each direction's four cases partition all 64 bits
+        // exactly once — a typo that dropped or doubled a bit shows here
+        // even if it happened to leave the individual masks pairwise unequal
+        // to something else that was also wrong.
+        for masks in [pos_q, neg_q, pos_r, neg_r] {
+            assert_eq!(masks[0] | masks[1] | masks[2] | masks[3], u64::MAX, "cases must cover every bit");
+            let total: u32 = masks.iter().map(|m| m.count_ones()).sum();
+            assert_eq!(total, 64, "cases must be pairwise disjoint");
+        }
+
+        // the shift amounts and carry directions, against §15's literal table.
+        assert_eq!(POS_Q.interior.map(|(_, s)| s), [1, 3, 11]);
+        assert_eq!((POS_Q.carry_shift, POS_Q.carry_decrements), (21, false));
+        assert_eq!(NEG_Q.interior.map(|(_, s)| s), [-1, -3, -11]);
+        assert_eq!((NEG_Q.carry_shift, NEG_Q.carry_decrements), (21, true));
+        assert_eq!(POS_R.interior.map(|(_, s)| s), [2, 6, 22]);
+        assert_eq!((POS_R.carry_shift, POS_R.carry_decrements), (42, false));
+        assert_eq!(NEG_R.interior.map(|(_, s)| s), [-2, -6, -22]);
+        assert_eq!((NEG_R.carry_shift, NEG_R.carry_decrements), (42, true));
+    }
+
+    /// F2 — `mask_shift_morton` matches `oracle_shift_field` bit-for-bit, over
+    /// random masks, at two field sizes (64 words = 64×64 cells, 1024 words =
+    /// 256×256 cells) and all four axis directions.
+    #[test]
+    fn morton_shift_matches_the_per_bit_oracle_on_random_fields() {
+        let mut seed = 0x1357_2468_1357_2468u64;
+        // 1 and 4 words run pass 1's padded-tail branch (the whole field is
+        // shorter than one register); 64 and 1024 run the chunk body.
+        for &n_words in &[1usize, 4, 64, 1024] {
+            let n_cells = n_words * 64;
+            let (x_bits, y_bits) = oracle_axis_bits(n_cells);
+            for _ in 0..8 {
+                let src: Vec<u64> = (0..n_words).map(|_| splitmix64(&mut seed)).collect();
+                for dir in [MortonDir::PosQ, MortonDir::NegQ, MortonDir::PosR, MortonDir::NegR] {
+                    let mut got = vec![0u64; n_words];
+                    mask_shift_morton(&src, dir, &mut got);
+                    let (dq, dr) = dir_to_dq_dr(dir);
+                    let want = oracle_shift_field(&src, dq, dr, n_cells, x_bits, y_bits);
+                    assert_eq!(got, want, "n_words={n_words} dir={dir:?}");
+                }
+            }
+        }
+    }
+
+    /// F6 — the documented OR-accumulate contract: `dst` is never cleared,
+    /// so a pre-filled `dst` keeps its prior bits and several directions
+    /// chain into one plane. FAILS IF pass 1 overwrites instead of
+    /// accumulating (`acc = splat(0)` instead of `from_array(*d)`) — every
+    /// other morton test starts from a zeroed `dst` and cannot see that
+    /// (falsifier audit on #307).
+    #[test]
+    fn morton_shift_or_accumulates_into_a_prefilled_dst() {
+        let mut seed = 0x0F1E_2D3C_4B5A_6978u64;
+        for &n_words in &[4usize, 64, 1024] {
+            let n_cells = n_words * 64;
+            let (x_bits, y_bits) = oracle_axis_bits(n_cells);
+            let src: Vec<u64> = (0..n_words).map(|_| splitmix64(&mut seed)).collect();
+            let prior: Vec<u64> = (0..n_words).map(|_| splitmix64(&mut seed)).collect();
+            // prior bits survive alongside the shifted field
+            let mut got = prior.clone();
+            mask_shift_morton(&src, MortonDir::PosQ, &mut got);
+            let want_q = oracle_shift_field(&src, 1, 0, n_cells, x_bits, y_bits);
+            let expect: Vec<u64> = prior.iter().zip(&want_q).map(|(p, w)| p | w).collect();
+            assert_eq!(got, expect, "n_words={n_words}: prior bits lost or shift missing");
+            // anti-vacuity: the prior actually contributed bits the shift did not
+            assert!(prior.iter().zip(&want_q).any(|(p, w)| p & !w != 0), "prior added nothing — fixture too weak");
+            // two directions chained into one plane
+            let mut chained = vec![0u64; n_words];
+            mask_shift_morton(&src, MortonDir::PosQ, &mut chained);
+            mask_shift_morton(&src, MortonDir::NegR, &mut chained);
+            let want_r = oracle_shift_field(&src, 0, -1, n_cells, x_bits, y_bits);
+            let expect2: Vec<u64> = want_q.iter().zip(&want_r).map(|(a, b)| a | b).collect();
+            assert_eq!(chained, expect2, "n_words={n_words}: chaining two directions lost one");
+        }
+    }
+
+    /// F3 — can-fire: a lone interior bit moves to exactly one bit, at the
+    /// oracle's address, for every direction. Can-stay-silent: a NON-trivial
+    /// far-edge mask (every cell on `dir`'s edge, spread across many words —
+    /// not an empty mask) produces an all-zero `dst`.
+    #[test]
+    fn morton_shift_can_fire_and_can_stay_silent() {
+        let n_words = 64usize;
+        let n_cells = n_words * 64;
+        let (x_bits, y_bits) = oracle_axis_bits(n_cells);
+
+        let mut seed = 0xABCD_EF01_2345_6789u64;
+        for dir in [MortonDir::PosQ, MortonDir::NegQ, MortonDir::PosR, MortonDir::NegR] {
+            let (dq, dr) = dir_to_dq_dr(dir);
+            for _ in 0..16 {
+                // an interior cell: strictly inside both axes, so it is never
+                // the far edge for any direction under test.
+                let i = loop {
+                    let x = (splitmix64(&mut seed) as u32) & x_bits;
+                    let y = (splitmix64(&mut seed) as u32) & y_bits;
+                    if x != 0 && x != x_bits && y != 0 && y != y_bits {
+                        break (x | y) as usize;
+                    }
+                };
+                let mut src = vec![0u64; n_words];
+                src[i >> 6] |= 1u64 << (i & 63);
+                let mut dst = vec![0u64; n_words];
+                mask_shift_morton(&src, dir, &mut dst);
+                let fired: Vec<usize> = (0..n_cells)
+                    .filter(|&j| (dst[j >> 6] >> (j & 63)) & 1 == 1)
+                    .collect();
+                assert_eq!(fired.len(), 1, "exactly one bit must move, dir={dir:?} i={i}");
+                let want = oracle_shift_field(&src, dq, dr, n_cells, x_bits, y_bits);
+                assert_eq!(dst, want, "the moved bit must land at the oracle's address, dir={dir:?}");
+            }
+        }
+
+        for dir in [MortonDir::PosQ, MortonDir::NegQ, MortonDir::PosR, MortonDir::NegR] {
+            let mut src = vec![0u64; n_words];
+            let mut planted = 0usize;
+            for i in 0..n_cells {
+                let m = i as u32;
+                let (x, y) = (m & x_bits, m & y_bits);
+                let at_edge = match dir {
+                    MortonDir::PosQ => x == x_bits,
+                    MortonDir::NegQ => x == 0,
+                    MortonDir::PosR => y == y_bits,
+                    MortonDir::NegR => y == 0,
+                };
+                if at_edge {
+                    src[i >> 6] |= 1u64 << (i & 63);
+                    planted += 1;
+                }
+            }
+            // non-trivial and spread: strictly more than "a handful", and
+            // touching more than one word (never a single-word fixture that
+            // could pass by accident of layout).
+            assert!(planted >= 16, "far-edge fixture must be non-trivial, dir={dir:?} planted={planted}");
+            let touched_words = src.iter().filter(|&&w| w != 0).count();
+            assert!(touched_words > 1, "far-edge fixture must spread across words, dir={dir:?}");
+
+            let mut dst = vec![0u64; n_words];
+            mask_shift_morton(&src, dir, &mut dst);
+            assert!(dst.iter().all(|&w| w == 0), "far-edge bits must produce silence, dir={dir:?}");
+        }
+    }
+
+    /// F4 — composition: `+q` then `-q` is the identity on interior cells,
+    /// and a hex diagonal via two calls matches the oracle's one-step
+    /// diagonal, for both `+q-r` and its mirror `-q+r`.
+    #[test]
+    fn morton_shift_composes_to_identity_and_matches_the_hex_diagonal() {
+        let n_words = 64usize;
+        let n_cells = n_words * 64;
+        let (x_bits, y_bits) = oracle_axis_bits(n_cells);
+        let mut seed = 0x0F0F_1E1E_2D2D_3C3Cu64;
+
+        // +q then -q == identity, restricted to cells that cannot fall off
+        // the +q edge (so the round trip is well posed for every one).
+        let raw: Vec<u64> = (0..n_words).map(|_| splitmix64(&mut seed)).collect();
+        let mut interior = raw.clone();
+        for i in 0..n_cells {
+            if (i as u32) & x_bits == x_bits {
+                interior[i >> 6] &= !(1u64 << (i & 63));
+            }
+        }
+        assert!(interior.iter().any(|&w| w != 0), "the interior fixture must be non-empty");
+        let mut forward = vec![0u64; n_words];
+        mask_shift_morton(&interior, MortonDir::PosQ, &mut forward);
+        let mut back = vec![0u64; n_words];
+        mask_shift_morton(&forward, MortonDir::NegQ, &mut back);
+        assert_eq!(back, interior, "+q then -q must be the identity on interior cells");
+
+        // the hex diagonal: two composed calls must match the oracle's own
+        // single-step diagonal (`dq` and `dr` both non-zero at once).
+        let diag_src: Vec<u64> = (0..n_words).map(|_| splitmix64(&mut seed)).collect();
+
+        let mut scratch = vec![0u64; n_words];
+        mask_shift_morton(&diag_src, MortonDir::PosQ, &mut scratch);
+        let mut dst = vec![0u64; n_words];
+        mask_shift_morton(&scratch, MortonDir::NegR, &mut dst);
+        let want = oracle_shift_field(&diag_src, 1, -1, n_cells, x_bits, y_bits);
+        assert_eq!(dst, want, "+q-r composed via two calls must match the oracle diagonal");
+
+        let mut scratch2 = vec![0u64; n_words];
+        mask_shift_morton(&diag_src, MortonDir::NegQ, &mut scratch2);
+        let mut dst2 = vec![0u64; n_words];
+        mask_shift_morton(&scratch2, MortonDir::PosR, &mut dst2);
+        let want2 = oracle_shift_field(&diag_src, -1, 1, n_cells, x_bits, y_bits);
+        assert_eq!(dst2, want2, "-q+r composed via two calls must match the oracle diagonal");
+    }
+
+    // ── Gated predicates: `*_to_mask_under` (survivor-word skip) ────────────
+
+    /// Every `*_to_mask_under` member must equal `ungated_sibling(values) &
+    /// gate`, word for word, including when the gate itself carries dirty
+    /// bits past `values.len()` in its last live word — the gate's own
+    /// phantom bits must never leak into the answer, and the ungated
+    /// reference's own tail law is what proves it (its bits past `n` are
+    /// already zero, so `full & gate` conforms regardless of the gate).
+    #[test]
+    fn under_family_equals_ungated_and_gate() {
+        const UNDER_LENS: [usize; 10] = [0, 1, 15, 16, 17, 63, 64, 65, 130, 1000];
+        let i32_thresholds = [i32::MIN, i32::MIN + 1, -1, 0, 7, i32::MAX - 1, i32::MAX];
+        let u32_needles = [0u32, 1, 3, 6, 42, u32::MAX];
+        let ternary_cases: [(u32, u32); 4] = [(0b0101, 0xF), (0b0101, 0b1010), (0, 0), (0xF, 0xF)];
+
+        for &n in &UNDER_LENS {
+            let words = mask_words_for(n);
+            let v_i32 = i32_corpus(n, 0x1357_9BDF_ACE1_1234u64.wrapping_add(n as u64));
+
+            let mut s_eq = 0xF00D_BEEF_1234_5678u64.wrapping_add(n as u64);
+            let v_u32_eq: Vec<u32> = (0..n).map(|_| (splitmix(&mut s_eq) % 7) as u32).collect();
+
+            let mut s_tern32 = 0x9E37_79B9_ABCD_EF01u64.wrapping_add(n as u64);
+            let v_u32_tern: Vec<u32> = (0..n)
+                .map(|_| (splitmix(&mut s_tern32) % 16) as u32)
+                .collect();
+
+            let mut s_tern64 = 0x1122_3344_5566_7788u64.wrapping_add(n as u64);
+            let v_u64_tern: Vec<u64> = (0..n).map(|_| splitmix(&mut s_tern64) % 16).collect();
+
+            // ~50% zero words, random bits elsewhere, with the last live
+            // word's phantom bits (past `n`) also forced dirty at random —
+            // the engine must clean those independently of the ungated
+            // reference, which already zeroes them by its own contract.
+            let mut s_gate = 0xDEAD_C0DE_F00D_BAADu64.wrapping_add(n as u64);
+            let mut gate = vec![0u64; words];
+            for w in gate.iter_mut() {
+                *w = if splitmix(&mut s_gate).is_multiple_of(2) {
+                    0
+                } else {
+                    splitmix(&mut s_gate)
+                };
+            }
+            if words > 0 && !n.is_multiple_of(64) {
+                let last = words - 1;
+                let live = n - last * 64;
+                let phantom = !((1u64 << live) - 1);
+                gate[last] |= phantom & splitmix(&mut s_gate);
+            }
+
+            // gt / lt / ge / le / ne_i32 / eq_i32, over signed thresholds.
+            for &t in &i32_thresholds {
+                let mut full = vec![0u64; words];
+                let mut gated = vec![u64::MAX; words + 1];
+
+                gt_i32_to_mask(&v_i32, t, &mut full);
+                gt_i32_to_mask_under(&v_i32, t, &gate, &mut gated);
+                for w in 0..words {
+                    assert_eq!(gated[w], full[w] & gate[w], "gt_i32 n={n} t={t} w={w}");
+                }
+                assert_eq!(gated[words], 0, "gt_i32 n={n} t={t} surplus word");
+
+                lt_i32_to_mask(&v_i32, t, &mut full);
+                lt_i32_to_mask_under(&v_i32, t, &gate, &mut gated);
+                for w in 0..words {
+                    assert_eq!(gated[w], full[w] & gate[w], "lt_i32 n={n} t={t} w={w}");
+                }
+                assert_eq!(gated[words], 0, "lt_i32 n={n} t={t} surplus word");
+
+                ge_i32_to_mask(&v_i32, t, &mut full);
+                ge_i32_to_mask_under(&v_i32, t, &gate, &mut gated);
+                for w in 0..words {
+                    assert_eq!(gated[w], full[w] & gate[w], "ge_i32 n={n} t={t} w={w}");
+                }
+                assert_eq!(gated[words], 0, "ge_i32 n={n} t={t} surplus word");
+
+                le_i32_to_mask(&v_i32, t, &mut full);
+                le_i32_to_mask_under(&v_i32, t, &gate, &mut gated);
+                for w in 0..words {
+                    assert_eq!(gated[w], full[w] & gate[w], "le_i32 n={n} t={t} w={w}");
+                }
+                assert_eq!(gated[words], 0, "le_i32 n={n} t={t} surplus word");
+
+                ne_i32_to_mask(&v_i32, t, &mut full);
+                ne_i32_to_mask_under(&v_i32, t, &gate, &mut gated);
+                for w in 0..words {
+                    assert_eq!(gated[w], full[w] & gate[w], "ne_i32 n={n} t={t} w={w}");
+                }
+                assert_eq!(gated[words], 0, "ne_i32 n={n} t={t} surplus word");
+
+                eq_i32_to_mask(&v_i32, t, &mut full);
+                eq_i32_to_mask_under(&v_i32, t, &gate, &mut gated);
+                for w in 0..words {
+                    assert_eq!(gated[w], full[w] & gate[w], "eq_i32 n={n} t={t} w={w}");
+                }
+                assert_eq!(gated[words], 0, "eq_i32 n={n} t={t} surplus word");
+            }
+
+            // eq_u32 / ne_u32, over unsigned needles.
+            for &needle in &u32_needles {
+                let mut full = vec![0u64; words];
+                let mut gated = vec![u64::MAX; words + 1];
+
+                eq_u32_to_mask(&v_u32_eq, needle, &mut full);
+                eq_u32_to_mask_under(&v_u32_eq, needle, &gate, &mut gated);
+                for w in 0..words {
+                    assert_eq!(gated[w], full[w] & gate[w], "eq_u32 n={n} needle={needle} w={w}");
+                }
+                assert_eq!(gated[words], 0, "eq_u32 n={n} needle={needle} surplus word");
+
+                ne_u32_to_mask(&v_u32_eq, needle, &mut full);
+                ne_u32_to_mask_under(&v_u32_eq, needle, &gate, &mut gated);
+                for w in 0..words {
+                    assert_eq!(gated[w], full[w] & gate[w], "ne_u32 n={n} needle={needle} w={w}");
+                }
+                assert_eq!(gated[words], 0, "ne_u32 n={n} needle={needle} surplus word");
+            }
+
+            // ternary_match_u32 / ternary_match_u64, over pattern/care cases.
+            for &(pattern, care) in &ternary_cases {
+                let mut full = vec![0u64; words];
+                let mut gated = vec![u64::MAX; words + 1];
+
+                ternary_match_u32_to_mask(&v_u32_tern, pattern, care, &mut full);
+                ternary_match_u32_to_mask_under(&v_u32_tern, pattern, care, &gate, &mut gated);
+                for w in 0..words {
+                    assert_eq!(
+                        gated[w],
+                        full[w] & gate[w],
+                        "ternary_u32 n={n} pattern={pattern:#x} care={care:#x} w={w}"
+                    );
+                }
+                assert_eq!(gated[words], 0, "ternary_u32 n={n} pattern={pattern:#x} care={care:#x} surplus word");
+
+                let pattern64 = pattern as u64;
+                let care64 = care as u64;
+                ternary_match_u64_to_mask(&v_u64_tern, pattern64, care64, &mut full);
+                ternary_match_u64_to_mask_under(&v_u64_tern, pattern64, care64, &gate, &mut gated);
+                for w in 0..words {
+                    assert_eq!(
+                        gated[w],
+                        full[w] & gate[w],
+                        "ternary_u64 n={n} pattern={pattern64:#x} care={care64:#x} w={w}"
+                    );
+                }
+                assert_eq!(gated[words], 0, "ternary_u64 n={n} pattern={pattern64:#x} care={care64:#x} surplus word");
+            }
+        }
+    }
+
+    /// Can-it-fire test for the survivor-word skip: an empty gate word must
+    /// never reach the predicate. Gate alternates `u64::MAX` / `0` over 10
+    /// words (5 live), so the predicate closure — which counts its own
+    /// invocations — must fire exactly `5 * 4` times (five live words, four
+    /// 16-lane groups per word); an all-ones gate must fire on every group.
+    #[test]
+    fn under_skips_compares_on_empty_gate_words() {
+        let n = 640; // exactly 10 words of 64 elements
+        let values = vec![0i32; n];
+        let words = mask_words_for(n);
+        assert_eq!(words, 10);
+
+        let counter = std::cell::Cell::new(0usize);
+        let gate: Vec<u64> = (0..words)
+            .map(|w| if w % 2 == 0 { u64::MAX } else { 0 })
+            .collect();
+        let mut out = vec![0u64; words];
+        pack_under::<i32, 16>("under_skips_compares_on_empty_gate_words", &values, &gate, &mut out, |_lanes, _live| {
+            counter.set(counter.get() + 1);
+            0
+        });
+        assert_eq!(counter.get(), 5 * 4, "five live words x four 16-lane groups");
+
+        counter.set(0);
+        let all_ones = vec![u64::MAX; words];
+        pack_under::<i32, 16>(
+            "under_skips_compares_on_empty_gate_words",
+            &values,
+            &all_ones,
+            &mut out,
+            |_lanes, _live| {
+                counter.set(counter.get() + 1);
+                0
+            },
+        );
+        assert_eq!(counter.get(), 40, "an all-ones gate evaluates every group");
+    }
+
+    /// Every public `*_to_mask_under` member is ONE `pack_under` delegation,
+    /// so the skip falsifier on the private engine covers all ten. Counted
+    /// from this file's own source: ten call sites before the test module.
+    /// FAILS IF a member hand-rolls its loop (baton audit P2 on #307).
+    #[test]
+    fn every_under_member_delegates_to_the_one_engine() {
+        let src = include_str!("simd_masking_ops.rs");
+        let production = src
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the file has a test module");
+        // Count definitions, not mentions: the doc comments name the members
+        // many more times than the source defines them.
+        let members = production
+            .lines()
+            .filter(|l| l.trim_start().starts_with("pub fn ") && l.contains("_to_mask_under"))
+            .count();
+        let delegations = production.matches("pack_under::<").count();
+        assert_eq!(members, 10, "ten public `*_to_mask_under` members");
+        assert_eq!(delegations, 10, "one pack_under call per member");
+    }
+
+    /// A dirty phantom bit in the gate's last live word (bits at or past
+    /// `n % 64`, which correspond to no real element) must never survive
+    /// into the answer — element count 70 leaves word 1 with only 6 live
+    /// bits, and the gate sets every bit of that word including the 58
+    /// phantom ones.
+    #[test]
+    fn under_phantom_gate_bits_do_not_leak() {
+        let n = 70;
+        let values = vec![0i32; n]; // every value satisfies `> i32::MIN`
+        let gate = vec![u64::MAX, u64::MAX]; // word 1's bits 6..64 are phantom
+        let mut out = vec![0u64; 2];
+        gt_i32_to_mask_under(&values, i32::MIN, &gate, &mut out);
+        assert_eq!(out[0], u64::MAX, "word 0 is fully live and fully satisfies `> i32::MIN`");
+        assert_eq!(out[1], 0b11_1111, "only the 6 live bits of word 1 may be set");
+    }
+
+    /// `under.len()` one word short of `values.len().div_ceil(64)` must
+    /// panic, mirroring every other `*_to_mask` length guard in this module.
+    #[test]
+    #[should_panic(expected = "under.len()")]
+    fn under_rejects_short_gate() {
+        let values = vec![0i32; 65]; // needs 2 gate words
+        let gate = vec![0u64; 1]; // one short
+        let mut out = vec![0u64; 2];
+        gt_i32_to_mask_under(&values, 0, &gate, &mut out);
     }
 }

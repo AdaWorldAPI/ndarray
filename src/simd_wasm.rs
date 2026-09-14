@@ -2004,6 +2004,7 @@ pub mod wasm32_simd {
         type Output = Self;
         #[inline(always)]
         fn shl(self, r: Self) -> Self {
+            debug_assert!(r.to_array().iter().all(|&n| n < 64), "U64x8 shift counts are a caller contract: < 64");
             let (a, n) = (self.to_array(), r.to_array());
             Self::from_array(core::array::from_fn(|i| a[i].wrapping_shl(n[i] as u32)))
         }
@@ -2013,6 +2014,7 @@ pub mod wasm32_simd {
         type Output = Self;
         #[inline(always)]
         fn shr(self, r: Self) -> Self {
+            debug_assert!(r.to_array().iter().all(|&n| n < 64), "U64x8 shift counts are a caller contract: < 64");
             let (a, n) = (self.to_array(), r.to_array());
             Self::from_array(core::array::from_fn(|i| a[i].wrapping_shr(n[i] as u32)))
         }

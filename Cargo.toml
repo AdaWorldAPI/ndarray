@@ -60,6 +60,10 @@ name = "ternlog_amortization_probe"
 required-features = ["std"]
 
 [[example]]
+name = "hex_tenant_mq_probe"
+required-features = ["std"]
+
+[[example]]
 name = "ternlog_codegen_probe"
 required-features = ["std"]
 
