@@ -911,3 +911,86 @@ Probe `examples/hex_tenant_mq_probe.rs`; full numbers in `.claude/blackboard.md`
 - **0k holds on this shape too:** 0 heap bytes/step on every arm.
 - Still open: the u8/u16 compare-to-mask (T1), the shift primitive (T1), a
   second density and tile size, and `perf` counters for the residency claim.
+
+## §15 — SPEC: `mask_shift_morton` — the hex neighbour shift as a word-level op (D-GTM-1m, 2026-09-14)
+
+§14 measured that `n` — the whole cost of a spread step — is the per-active-bit
+neighbour shift. This section specifies the T1 word that removes it. It is a
+spec for a Sonnet implementer; every claim below is either a bit-arithmetic
+fact (checkable by the test in F1) or marked as the implementer's finding.
+
+**Address model.** Rows are Morton-keyed 2-D: `q` occupies the EVEN address
+bits, `r` the ODD bits (`dilate8(q) | dilate8(r) << 1`; `hex_tenant_mq_probe.rs`
+`morton`). A mask word `w` covers rows `[64w, 64w+64)`: the low 6 address bits =
+3 q-bits + 3 r-bits = an **8×8 axial block**; the word index `w` is itself the
+Morton key of the block coordinates `(Q, R) = (q >> 3, r >> 3)`. Within a word,
+bit index `b ∈ 0..64` has `ql = bits {0,2,4} of b`, `rl = bits {1,3,5} of b`.
+
+**Four axis shifts, each = a fixed bit permutation inside the word + ONE carry
+byte into ONE neighbour word.** For `+q` (increment the dilated `ql`):
+
+| cells (by `b`) | move | why |
+|---|---|---|
+| `b & 1 == 0` (ql bit0 = 0) | `b + 1` | `..0 → ..1` |
+| `b & 5 == 1` (ql = ?01) | `b + 3` | `..01 → ..10`: −1 + 4 |
+| `b & 21 == 5` (ql = 011) | `b + 11` | `011 → 100`: −1 − 4 + 16 |
+| `b & 21 == 21` (ql = 111) | carry to word `inc_q(w)`, local `b − 21` | ql wraps to 000 |
+
+So per word: `dst[w] |= ((src[w] & MA) << 1) | ((src[w] & MB) << 3) | ((src[w] & MC) << 11)`
+and `dst[inc_q(w)] |= (src[w] & MD) >> 21` when `Q < Q_max`. `MA..MD` are
+`const` u64s **computed by a `const fn` over `b in 0..64`** from the three
+predicates above — never typed as literals — and F1 asserts them against the
+per-bit definition. `−q` is the mirror (`b & 1 == 1 → b − 1`; `b & 5 == 4 → b − 3`;
+`b & 21 == 16 → b − 11`; `b & 21 == 0` carries to `dec_q(w)` at `b + 21`, when
+`Q > 0`). `±r` are the same tables on the odd bit set (shifts 2 / 6 / 22, carry
+42). `inc_q(w)` / `dec_q(w)` on the WORD index are the same dilated-integer
+inc/dec the probe uses on cells (`neighbour`), applied to `w`'s own even/odd
+bits — the number of address bits above the word is `log2(n_words)` and must be
+even (a square field); a non-square field is REFUSED (assert), not approximated.
+
+**The six hex directions** are `+q`, `−q`, `+r`, `−r`, `+q−r`, `−q+r`
+(`HEX` in the probe). The two diagonals are composed: `shift(+q)` into scratch,
+then `shift(−r)` of scratch into `dst`. Two passes; do not derive a fused table
+for the diagonals in this rung (it exists, it is not needed to remove `n`).
+
+**Facade signature (T1, `simd_masking_ops.rs`):**
+
+```rust
+/// dst |= src shifted one cell along `dir` on the Morton-keyed 2-D lattice.
+/// `src.len() == dst.len() == n_words`, `n_words` a power of FOUR (square field).
+/// Cells on the far edge produce nothing (no wrap). `dst` is OR-accumulated,
+/// not overwritten — callers clear it or chain six directions into one plane.
+pub fn mask_shift_morton(src: &[u64], dir: MortonDir, dst: &mut [u64])
+pub enum MortonDir { PosQ, NegQ, PosR, NegR }   // hex diagonals = two calls
+```
+
+Body shape: pass 1 over `as_chunks::<U64x8::LANES>()` computing the interior
+permutation with `U64x8` and/shl/or lane ops (the same facade-over-lane-types
+shape `mask_xor` uses — no per-ISA code in the facade; if a backend lacks
+`Shl<u32>`/`Shl<Self>` for `U64x8`, the implementer STOPS and reports which,
+never hand-rolls an intrinsic); pass 2 a scalar loop over words applying the
+carry byte to `inc/dec(w)`. Tail law: the field is square so there is no tail;
+the assert makes that explicit.
+
+**Falsifiers (all required, all must be able to fail):**
+
+- **F1** — the four `const` masks equal a runtime fold over `b in 0..64` of the
+  stated predicates (a literal typo fails here).
+- **F2** — equivalence: on random masks over a 256×256 field (1024 words) and a
+  64×64 field (64 words), `mask_shift_morton` == the per-bit oracle
+  (`neighbour()` from the probe, transcribed into the test) for all four dirs;
+  the oracle is written in the TEST, not imported from the op.
+- **F3** — can-fire: one set bit at a random interior cell lands on exactly ONE
+  bit, at the oracle's address; can-stay-silent: a bit on the far edge of `dir`
+  produces an all-zero `dst`.
+- **F4** — composition: for interior cells, `shift(+q)` then `shift(−q)` == identity,
+  and the hex diagonal via two calls == the oracle's diagonal neighbour.
+- **F5** — parity: added to `crates/simd-masking-parity` so every flavour
+  (avx512 / avx2 / neon / wasm / scalar / nightly) is bit-exact on the same
+  seeds — the shape of the existing arms; the arm count printed by the run
+  must rise by the number of arms added.
+- **F6** — the probe: `hex_tenant_mq_probe.rs` gains a `shift` arm using six
+  `mask_shift_morton` calls (four axis + two composed) in place of the per-bit
+  loop; the spread gate (Morton == axial BFS) must stay green, and `n` is
+  re-measured. The claim this rung makes is only that `n` drops; the number is
+  the finding, not a prediction.
