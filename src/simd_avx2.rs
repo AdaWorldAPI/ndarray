@@ -501,7 +501,7 @@ pub fn dgemm_blocked(
 use core::fmt;
 use core::ops::{
     Add, AddAssign, BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Div, DivAssign, Mul, MulAssign,
-    Neg, Not, Sub, SubAssign,
+    Neg, Not, Shl, Shr, Sub, SubAssign,
 };
 
 /// 16×f32 via 2× AVX2 F32x8 (__m256). Same API as simd_avx512::F32x16.
@@ -1668,6 +1668,38 @@ impl U64x8 {
         }
         let (lo, hi) = self.avx2_halves();
         Self::from_avx2_halves(Self::rotl_half(lo, 64 - n), Self::rotl_half(hi, 64 - n))
+    }
+}
+
+/// Lane-wise variable shifts for the mask family's word ops (the Morton hex
+/// neighbour shift composes `and`/`shl`/`or` over `U64x8`). Same signature as
+/// the AVX-512 / NEON / WASM / scalar backends: the count is a per-lane
+/// vector, so a uniform shift is `x << U64x8::splat(n)`. Counts of 64 or more
+/// are not a portable contract — this backend zeroes the lane (`VPSLLVQ` /
+/// `VPSRLVQ` semantics) while the scalar backend's `<<` would overflow — so
+/// callers keep every count below 64, as the mask ops do.
+impl Shl<Self> for U64x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn shl(self, rhs: Self) -> Self {
+        let (lo, hi) = self.avx2_halves();
+        let (clo, chi) = rhs.avx2_halves();
+        // SAFETY: same obligation as `avx2_halves` — this is the x86-64-v3
+        // arm, AVX2 is present on any host that runs it; `_mm256_sllv_epi64`
+        // is an AVX2 instruction operating on the register values only.
+        unsafe { Self::from_avx2_halves(_mm256_sllv_epi64(lo, clo), _mm256_sllv_epi64(hi, chi)) }
+    }
+}
+
+impl Shr<Self> for U64x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn shr(self, rhs: Self) -> Self {
+        let (lo, hi) = self.avx2_halves();
+        let (clo, chi) = rhs.avx2_halves();
+        // SAFETY: as for `shl` — AVX2 present by the arm's contract;
+        // `_mm256_srlv_epi64` touches registers only.
+        unsafe { Self::from_avx2_halves(_mm256_srlv_epi64(lo, clo), _mm256_srlv_epi64(hi, chi)) }
     }
 }
 
@@ -3116,6 +3148,39 @@ pub type i64x4 = I64x4;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Fails if either variable shift disagrees with the scalar `<<` / `>>`
+    /// on any lane for any count in 0..64 (a swapped intrinsic, a halves
+    /// mix-up, or a count applied to the wrong lane all show here).
+    #[test]
+    fn u64x8_variable_shifts_match_scalar_per_lane() {
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut fired = 0usize;
+        for round in 0..256 {
+            let vals: [u64; 8] = core::array::from_fn(|_| next());
+            // per-lane counts, deliberately NOT uniform, all below 64
+            let cnts: [u64; 8] = core::array::from_fn(|i| (round as u64 * 7 + i as u64 * 11) % 64);
+            let v = U64x8::from_array(vals);
+            let c = U64x8::from_array(cnts);
+            let l = (v << c).to_array();
+            let r = (v >> c).to_array();
+            for i in 0..8 {
+                assert_eq!(l[i], vals[i] << cnts[i], "shl lane {i} count {}", cnts[i]);
+                assert_eq!(r[i], vals[i] >> cnts[i], "shr lane {i} count {}", cnts[i]);
+                if cnts[i] != 0 && (l[i] != vals[i] || r[i] != vals[i]) {
+                    fired += 1;
+                }
+            }
+        }
+        // anti-vacuity: the shifts actually moved bits on most lanes
+        assert!(fired > 256 * 8 / 2, "shifts did nothing on {fired} lanes");
+    }
 
     #[test]
     fn test_dot_f32() {
