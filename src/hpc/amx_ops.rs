@@ -41,9 +41,16 @@
 //! | AMX-MOVRS | `tileloaddrs{,t1}` | 1E.1:EAX[8] | Diamond Rapids |
 //!
 //! Note on TF32: LLVM `main` has removed `amx-tf32` (and `amx-transpose`)
-//! from both the assembler and `Host.cpp`; the 22.1.8 assembler in this
-//! toolchain still accepts `tmmultf32ps`, so it is provided, gated on the
-//! CPUID bit the older `Host.cpp` used. Treat it as CLAIMED, never executed.
+//! from both the assembler and `Host.cpp`. The 22.1.8 assembler in the
+//! stable toolchain still accepts `tmmultf32ps`, but nightly's LLVM 23
+//! already rejects the mnemonic (measured 2026-09-14: `invalid instruction
+//! mnemonic 'tmmultf32ps'` on `1.100.0-nightly` / LLVM 23.1.1 — the lib
+//! builds because the wrapper is generic, but the first instantiation
+//! fails). So that ONE wrapper is emitted as its fixed ISA byte encoding
+//! (`VEX.128.66.0F38.W0 48 /r`) instead of the mnemonic — the encoding is
+//! defined by the ISA, not by which LLVM still knows the name — and it is
+//! gated on the CPUID bit the older `Host.cpp` used. Treat it as CLAIMED,
+//! never executed.
 //!
 //! # What has executed
 //!
@@ -238,11 +245,37 @@ tdp3!(
     /// `TDPHF8PS` — E4M3 × E4M3 → f32 (AMX-FP8). Assembler-verified only.
     tdphf8ps, "tdphf8ps"
 );
-tdp3!(
-    /// `TMMULTF32PS` — tf32 × tf32 → f32 (AMX-TF32). Assembles on LLVM 22.1.8;
-    /// removed from LLVM `main`. CLAIMED — no host has executed it.
-    tmmultf32ps, "tmmultf32ps"
-);
+/// `TMMULTF32PS` — tf32 × tf32 → f32 (AMX-TF32). CLAIMED — no host has
+/// executed it.
+///
+/// Emitted as raw bytes, not a mnemonic: LLVM `main` dropped `amx-tf32`, and
+/// nightly's LLVM 23 rejects `tmmultf32ps` while stable's 22.1.8 still
+/// assembles it. The encoding is fixed by the ISA — `C4 E2 <vex> 48 <modrm>`
+/// with `vex = (!S2 & 0xF) << 3 | 0b01` (W0, vvvv = S2 inverted, L0, pp=66)
+/// and `modrm = 0xC0 | D << 3 | S1` — and reproduces the same byte table the
+/// mnemonic form did (`C4 E2 69 48 C1` for tiles 0, 1, 2), which the
+/// `extended_tiers_assemble_to_their_llvm_encodings` test pins.
+///
+/// `D += S1 · S2`; S1 is the plain M×K operand (ModRM.rm), S2 the
+/// VNNI-packed K×N operand (VEX.vvvv). The three tiles must be distinct —
+/// enforced at compile time.
+///
+/// # Safety
+/// Tiles configured with compatible shapes, AMX available, and the host
+/// must report AMX-TF32.
+#[inline(always)]
+pub unsafe fn tmmultf32ps<const D: u8, const S1: u8, const S2: u8>() {
+    const {
+        assert!(D < 8 && S1 < 8 && S2 < 8);
+        assert!(D != S1 && D != S2 && S1 != S2, "tile operands must be distinct (#UD otherwise)");
+    }
+    asm!(
+        ".byte 0xC4, 0xE2, {vex}, 0x48, {modrm}",
+        vex = const ((!S2 & 0x0F) << 3) | 0x01,
+        modrm = const 0xC0 | (D << 3) | S1,
+        options(nostack, nomem)
+    );
+}
 
 // ── AMX-AVX512 (Diamond Rapids): tile row → zmm ─────────────────────────────
 //

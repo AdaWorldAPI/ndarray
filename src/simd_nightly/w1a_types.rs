@@ -85,6 +85,17 @@ impl I8x16 {
     /// The sign extension is the `(x << 4) >> 4` arithmetic-shift identity on
     /// the i8 lane, which is exactly what the scalar backend's
     /// `if nibble > 7 { nibble - 16 }` computes.
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::I8x16;
+    /// assert_eq!(I8x16::from_i4_packed_u64(0).to_array(), [0i8; 16]);
+    /// assert_eq!(I8x16::from_i4_packed_u64(u64::MAX).to_array(), [-1i8; 16]);
+    /// let v = I8x16::from_i4_packed_u64(0x8_7);
+    /// assert_eq!((v.lane_i8::<0>(), v.lane_i8::<1>()), (7, -8));
+    /// # }
+    /// ```
     #[inline(always)]
     pub fn from_i4_packed_u64(packed: u64) -> Self {
         const SHIFTS: u64x16 = Simd::from_array([0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60]);
@@ -94,36 +105,78 @@ impl I8x16 {
     }
 
     /// Extract lane `N` as an `i8`. `N` must be in `0..16`.
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::I8x16;
+    /// let v = I8x16::from_array(core::array::from_fn(|i| i as i8 * 3));
+    /// assert_eq!(v.lane_i8::<5>(), 15);
+    /// # }
+    /// ```
     #[inline(always)]
     pub fn lane_i8<const N: usize>(self) -> i8 {
         self.0[N]
     }
 
     /// Lane-wise saturating absolute value: `saturating_abs(i8::MIN) == i8::MAX`.
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::I8x16;
+    /// assert_eq!(I8x16::splat(i8::MIN).saturating_abs().to_array(), [i8::MAX; 16]);
+    /// assert_eq!(I8x16::splat(-4).saturating_abs().to_array(), [4; 16]);
+    /// # }
+    /// ```
     #[inline(always)]
     pub fn saturating_abs(self) -> Self {
         Self(self.0.saturating_abs())
     }
 
     /// Lane-wise minimum.
+    ///
+    /// # Examples
+    /// See [`Self::cmpeq_mask`] — one example exercises the four compare / min / max methods.
     #[inline(always)]
     pub fn simd_min(self, other: Self) -> Self {
         Self(self.0.simd_min(other.0))
     }
 
     /// Lane-wise maximum.
+    ///
+    /// # Examples
+    /// See [`Self::cmpeq_mask`] — one example exercises the four compare / min / max methods.
     #[inline(always)]
     pub fn simd_max(self, other: Self) -> Self {
         Self(self.0.simd_max(other.0))
     }
 
     /// Per-lane `self == other`, as a 16-bit mask (bit `i` = lane `i`).
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::I8x16;
+    /// let mut a = [0i8; 16];
+    /// a[0] = 9;
+    /// a[15] = 9;
+    /// let v = I8x16::from_array(a);
+    /// assert_eq!(v.cmpeq_mask(I8x16::splat(9)), 0b1000_0000_0000_0001);
+    /// assert_eq!(v.cmpgt_mask(I8x16::splat(0)), 0b1000_0000_0000_0001);
+    /// assert_eq!(v.simd_min(I8x16::splat(3)).to_array()[0], 3);
+    /// assert_eq!(v.simd_max(I8x16::splat(3)).to_array()[1], 3);
+    /// # }
+    /// ```
     #[inline(always)]
     pub fn cmpeq_mask(self, other: Self) -> u16 {
         self.0.simd_eq(other.0).to_bitmask() as u16
     }
 
     /// Per-lane signed `self > other`, as a 16-bit mask.
+    ///
+    /// # Examples
+    /// See [`Self::cmpeq_mask`] — one example exercises the four compare / min / max methods.
     #[inline(always)]
     pub fn cmpgt_mask(self, other: Self) -> u16 {
         self.0.simd_gt(other.0).to_bitmask() as u16
@@ -193,6 +246,17 @@ impl U16x8 {
     /// Panics in debug if any index is `>= table.len()`; in release an
     /// out-of-range index yields `0` (the scalar backend's rule, kept so the
     /// two realizations never disagree on the same input).
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::U16x8;
+    /// let table = [10u16, 20, 30, 40, 50, 60, 70, 80];
+    /// let idx = U16x8::from_array([0, 2, 4, 6, 1, 3, 5, 7]);
+    /// assert_eq!(U16x8::gather_u16(idx, &table).to_array(), [10, 30, 50, 70, 20, 40, 60, 80]);
+    /// assert_eq!(U16x8::gather_u16(idx, &table).lane(7), 80);
+    /// # }
+    /// ```
     #[inline(always)]
     pub fn gather_u16(indices: U16x8, table: &[u16]) -> Self {
         let idx = indices.to_array();
@@ -226,6 +290,17 @@ impl U16x8 {
     }
 
     /// Horizontal wrapping sum of all 8 lanes.
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::U16x8;
+    /// let v = U16x8::from_array([1, 2, 3, 4, 5, 6, 7, 8]);
+    /// assert_eq!(v.reduce_sum(), 36);
+    /// assert_eq!(v.simd_min(U16x8::splat(4)).to_array(), [1, 2, 3, 4, 4, 4, 4, 4]);
+    /// assert_eq!(v.simd_max(U16x8::splat(4)).to_array(), [4, 4, 4, 4, 5, 6, 7, 8]);
+    /// # }
+    /// ```
     #[inline(always)]
     pub fn reduce_sum(self) -> u16 {
         self.0.reduce_sum()
@@ -273,6 +348,15 @@ impl U8x8 {
     }
 
     /// Horizontal wrapping sum of all 8 lanes.
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::U8x8;
+    /// assert_eq!(U8x8::from_array([1, 2, 3, 4, 5, 6, 7, 8]).reduce_sum(), 36);
+    /// assert_eq!(U8x8::splat(255).reduce_sum(), 255u8.wrapping_mul(8));
+    /// # }
+    /// ```
     #[inline(always)]
     pub fn reduce_sum(self) -> u8 {
         self.0.reduce_sum()
@@ -295,6 +379,16 @@ impl fmt::Debug for U8x8 {
 ///
 /// Panics in debug on an out-of-range index; returns `0` for it in release —
 /// identical to the scalar backend.
+///
+/// # Examples
+/// ```rust
+/// # #[cfg(feature = "nightly-simd")] {
+/// use ndarray::simd_nightly::{palette_lookup_u8x8, U16x8};
+/// let lut: Vec<u8> = (0..=255u8).rev().collect();
+/// let idx = U16x8::from_array([0, 1, 2, 255, 100, 200, 3, 4]);
+/// assert_eq!(palette_lookup_u8x8(idx, &lut).to_array(), [255, 254, 253, 0, 155, 55, 252, 251]);
+/// # }
+/// ```
 #[inline(always)]
 pub fn palette_lookup_u8x8(idx_v: U16x8, lut: &[u8]) -> U8x8 {
     let idx = idx_v.to_array();
@@ -314,6 +408,17 @@ pub fn palette_lookup_u8x8(idx_v: U16x8, lut: &[u8]) -> U8x8 {
 /// Hint that `ptr` will be read soon. A deliberate no-op on this backend:
 /// `core::simd` carries no prefetch, and the contract is a hint with no
 /// observable result. `ptr` may be invalid; it is never dereferenced.
+///
+/// # Examples
+/// ```rust
+/// # #[cfg(feature = "nightly-simd")] {
+/// use ndarray::simd_nightly::{prefetch_read_t0, prefetch_read_t1, prefetch_read_t2};
+/// let buf = [0u8; 64];
+/// prefetch_read_t0(buf.as_ptr());
+/// prefetch_read_t1(core::ptr::null()); // a hint never dereferences
+/// prefetch_read_t2(buf.as_ptr());
+/// # }
+/// ```
 #[inline(always)]
 pub fn prefetch_read_t0(_ptr: *const u8) {}
 
@@ -334,6 +439,20 @@ pub fn prefetch_read_t2(_ptr: *const u8) {}
 /// Iterates `min(packed.len(), out.len())` times; each iteration unpacks
 /// `packed[i]` into an [`I8x16`] and passes it with `aux[i]` to `f`, storing
 /// the result in `out[i]`. Panics if `packed.len() != aux.len()`.
+///
+/// # Examples
+/// ```rust
+/// # #[cfg(feature = "nightly-simd")] {
+/// use ndarray::simd_nightly::batch_packed_i4_16;
+/// let packed = [0x7777_7777_7777_7777u64, 0x8888_8888_8888_8888];
+/// let aux = [1i8, 2];
+/// let mut out = [0i32; 2];
+/// batch_packed_i4_16(&packed, &aux, &mut out, |v, a| {
+///     v.to_array().iter().map(|&x| x as i32).sum::<i32>() * a as i32
+/// });
+/// assert_eq!(out, [16 * 7, 16 * -8 * 2]);
+/// # }
+/// ```
 #[inline]
 pub fn batch_packed_i4_16<E, F>(packed: &[u64], aux: &[i8], out: &mut [E], f: F)
 where

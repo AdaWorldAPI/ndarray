@@ -23,7 +23,12 @@ cd "$ROOT"
 # shellcheck disable=SC2086
 case "$ARM" in
   native)
-    cargo ${CARGO_ARGS:-} build --release --manifest-path "$MANIFEST" --bin simd-masking-parity
+    # `env -u RUSTFLAGS`: a workflow-global RUSTFLAGS (CI sets "-D warnings")
+    # REPLACES every cargo-config rustflags entry, so a `--config
+    # .cargo/config-v4.toml` passed through CARGO_ARGS would silently lose its
+    # `-Ctarget-cpu=x86-64-v4` and this arm would measure v3 while claiming
+    # v4 — the exact trap the tier4 CI job hit. Clearing it lets the config win.
+    env -u RUSTFLAGS cargo ${CARGO_ARGS:-} build --release --manifest-path "$MANIFEST" --bin simd-masking-parity
     "$TD/release/simd-masking-parity"
     ;;
   nightly)

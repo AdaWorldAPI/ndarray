@@ -97,15 +97,33 @@ impl I8x64 {
         Self(self.0.simd_max(other.0))
     }
 
-    /// Lane-wise minimum — the short name `simd_int_ops` calls on every
-    /// backend (identical to [`Self::simd_min`]).
+    /// Lane-wise minimum — the short name `simd_int_ops::min_i8` (the
+    /// integer facade, which still exists; the MASK family moved to
+    /// `simd_masking_ops`) calls on every backend; identical to
+    /// [`Self::simd_min`].
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::I8x64;
+    /// assert_eq!(I8x64::splat(-3).min(I8x64::splat(7)).to_array()[0], -3);
+    /// # }
+    /// ```
     #[inline(always)]
     pub fn min(self, other: Self) -> Self {
         Self(self.0.simd_min(other.0))
     }
 
-    /// Lane-wise maximum — the short name `simd_int_ops` calls on every
-    /// backend (identical to [`Self::simd_max`]).
+    /// Lane-wise maximum — the short name `simd_int_ops::max_i8` calls on
+    /// every backend; identical to [`Self::simd_max`].
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::I8x64;
+    /// assert_eq!(I8x64::splat(-3).max(I8x64::splat(7)).to_array()[0], 7);
+    /// # }
+    /// ```
     #[inline(always)]
     pub fn max(self, other: Self) -> Self {
         Self(self.0.simd_max(other.0))
@@ -115,6 +133,15 @@ impl I8x64 {
     /// wrapped `i8::MIN` — the crate's `saturating_abs` contract (see the
     /// VPABSB correction in `vertical-simd-consumer-contract.md`).
     /// `core::simd`'s `saturating_abs` saturates identically.
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::I8x64;
+    /// assert_eq!(I8x64::splat(i8::MIN).saturating_abs().to_array()[0], i8::MAX);
+    /// assert_eq!(I8x64::splat(-5).saturating_abs().to_array()[0], 5);
+    /// # }
+    /// ```
     #[inline(always)]
     pub fn saturating_abs(self) -> Self {
         Self(self.0.saturating_abs())
@@ -249,15 +276,33 @@ impl I8x32 {
         Self(self.0.simd_max(other.0))
     }
 
-    /// Lane-wise minimum — the short name `simd_int_ops` calls on every
-    /// backend (identical to [`Self::simd_min`]).
+    /// Lane-wise minimum — the short name `simd_int_ops::min_i8` (the
+    /// integer facade, which still exists; the MASK family moved to
+    /// `simd_masking_ops`) calls on every backend; identical to
+    /// [`Self::simd_min`].
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::I8x32;
+    /// assert_eq!(I8x32::splat(-3).min(I8x32::splat(7)).to_array()[0], -3);
+    /// # }
+    /// ```
     #[inline(always)]
     pub fn min(self, other: Self) -> Self {
         Self(self.0.simd_min(other.0))
     }
 
-    /// Lane-wise maximum — the short name `simd_int_ops` calls on every
-    /// backend (identical to [`Self::simd_max`]).
+    /// Lane-wise maximum — the short name `simd_int_ops::max_i8` calls on
+    /// every backend; identical to [`Self::simd_max`].
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::I8x32;
+    /// assert_eq!(I8x32::splat(-3).max(I8x32::splat(7)).to_array()[0], 7);
+    /// # }
+    /// ```
     #[inline(always)]
     pub fn max(self, other: Self) -> Self {
         Self(self.0.simd_max(other.0))
@@ -267,6 +312,15 @@ impl I8x32 {
     /// wrapped `i8::MIN` — the crate's `saturating_abs` contract (see the
     /// VPABSB correction in `vertical-simd-consumer-contract.md`).
     /// `core::simd`'s `saturating_abs` saturates identically.
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::I8x32;
+    /// assert_eq!(I8x32::splat(i8::MIN).saturating_abs().to_array()[0], i8::MAX);
+    /// assert_eq!(I8x32::splat(-5).saturating_abs().to_array()[0], 5);
+    /// # }
+    /// ```
     #[inline(always)]
     pub fn saturating_abs(self) -> Self {
         Self(self.0.saturating_abs())

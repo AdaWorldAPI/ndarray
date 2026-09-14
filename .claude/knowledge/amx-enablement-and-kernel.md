@@ -203,7 +203,7 @@ TDPFP16PS                        FP16    7.1:EAX[21]    C4 E2 6B 5C C1
 TCMMIMFP16PS / TCMMRLFP16PS      COMPLEX 7.1:EDX[8]     C4 E2 {69,68} 6C C1
 TDPBF8PS/TDPBHF8PS/TDPHBF8PS/    FP8     1E.1:EAX[4]    C4 E5 {68,6B,6A,69} FD C1   (map5)
   TDPHF8PS
-TMMULTF32PS                      TF32    1E.1:EAX[6]    C4 E2 69 48 C1   (dropped from LLVM main; 22.1.8 assembles it)
+TMMULTF32PS                      TF32    1E.1:EAX[6]    C4 E2 69 48 C1   (dropped from LLVM main; 22.1.8 assembles the mnemonic, nightly LLVM 23 does not → emitted as raw bytes)
 TILELOADDRS / TILELOADDRST1      MOVRS   1E.1:EAX[8]    C4 E2 {7B,79} 4A 1C 37
 TCVTROWD2PS zmm0,tmm1,edi / ,3   AVX512  1E.1:EAX[7]    62 F2 46 48 4A C1 / 62 F3 7E 48 07 C1 03   (EVEX; needs avx512f cfg)
 TCVTROWPS2{PHH,PHL,BF16H,BF16L}  AVX512                 62 F2 {44,46,47,45} 48 6D C1

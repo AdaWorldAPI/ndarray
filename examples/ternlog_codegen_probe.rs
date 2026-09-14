@@ -24,19 +24,19 @@ use std::hint::black_box;
 
 /// `U64x8::ternlog::<MAJ3>` — the general Shannon-ladder arm.
 #[inline(never)]
-pub fn probe_ternlog_u64x8(a: U64x8, b: U64x8, c: U64x8) -> U64x8 {
+fn probe_ternlog_u64x8(a: U64x8, b: U64x8, c: U64x8) -> U64x8 {
     a.ternlog::<{ ternlog::MAJ3 }>(b, c)
 }
 
 /// `U32x16::ternlog::<XOR_AND>` — the immediate `simd_masking_ops` uses.
 #[inline(never)]
-pub fn probe_ternlog_u32x16(a: U32x16, b: U32x16, c: U32x16) -> U32x16 {
+fn probe_ternlog_u32x16(a: U32x16, b: U32x16, c: U32x16) -> U32x16 {
     a.ternlog::<{ ternlog::XOR_AND }>(b, c)
 }
 
 /// `U64x8::andnot` — the mask set-difference.
 #[inline(never)]
-pub fn probe_andnot_u64x8(a: U64x8, b: U64x8) -> U64x8 {
+fn probe_andnot_u64x8(a: U64x8, b: U64x8) -> U64x8 {
     a.andnot(b)
 }
 
@@ -44,7 +44,7 @@ pub fn probe_andnot_u64x8(a: U64x8, b: U64x8) -> U64x8 {
 /// shape a consumer actually calls; proves the ergonomic layer inlines down
 /// to the backend's realization rather than adding a scalar detour.
 #[inline(never)]
-pub fn probe_mask_ternlog_slice(a: &[u64], b: &[u64], c: &[u64], dst: &mut [u64]) {
+fn probe_mask_ternlog_slice(a: &[u64], b: &[u64], c: &[u64], dst: &mut [u64]) {
     mask_ternlog::<{ ternlog::AND2_OR }>(a, b, c, dst)
 }
 

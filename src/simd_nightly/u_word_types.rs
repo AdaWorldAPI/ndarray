@@ -133,6 +133,15 @@ impl U64x8 {
     }
 
     /// Lane-wise population count (`u64::count_ones` per lane, as `u64`).
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::U64x8;
+    /// let v = U64x8::from_array([u64::MAX, 0, 1, !1, 3, 0xF0, 1 << 63, 0xFFFF]);
+    /// assert_eq!(v.popcnt().to_array(), [64, 0, 1, 63, 2, 4, 1, 16]);
+    /// # }
+    /// ```
     #[inline(always)]
     pub fn popcnt(self) -> Self {
         Self(self.0.count_ones())
@@ -140,6 +149,16 @@ impl U64x8 {
 
     /// `popcount(self ^ other)` summed over all 8 lanes — the Hamming distance
     /// of two 512-bit fingerprints.
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::U64x8;
+    /// let a = U64x8::splat(u64::MAX);
+    /// assert_eq!(a.xor_popcount(U64x8::splat(0)), 512);
+    /// assert_eq!(a.xor_popcount(a), 0);
+    /// # }
+    /// ```
     #[inline(always)]
     pub fn xor_popcount(self, other: Self) -> u64 {
         (self.0 ^ other.0).count_ones().reduce_sum()
@@ -238,6 +257,14 @@ impl U64x4 {
     }
 
     /// Lane-wise population count (`u64::count_ones` per lane, as `u64`).
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::U64x4;
+    /// assert_eq!(U64x4::from_array([u64::MAX, 0, 1, !1]).popcnt().to_array(), [64, 0, 1, 63]);
+    /// # }
+    /// ```
     #[inline(always)]
     pub fn popcnt(self) -> Self {
         Self(self.0.count_ones())
@@ -337,6 +364,16 @@ impl U32x8 {
 
     /// Lane-wise left-rotate by `n` bits (`n` mod 32; `0` returns `self`) —
     /// the 8-lane twin of `U32x16::rotate_left`.
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::U32x8;
+    /// let v = U32x8::splat(0x8000_0001);
+    /// assert_eq!(v.rotate_left(1).to_array()[0], 0x0000_0003);
+    /// assert_eq!(v.rotate_left(32).to_array()[0], 0x8000_0001);
+    /// # }
+    /// ```
     #[inline(always)]
     pub fn rotate_left(self, n: u32) -> Self {
         let n = n % 32;
@@ -349,36 +386,67 @@ impl U32x8 {
     /// `_mm256_unpacklo_epi32`: `[a0,b0,a1,b1, a4,b4,a5,b5]` — the per-128-bit-lane
     /// interleave every backend exposes under this name (BLAKE3's transpose
     /// vocabulary); a compile-time `simd_swizzle!` here.
+    ///
+    /// # Examples
+    /// The six lane shuffles, on `a = [0..8)` and `b = [10..18)`:
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::U32x8;
+    /// let a = U32x8::from_array([0, 1, 2, 3, 4, 5, 6, 7]);
+    /// let b = U32x8::from_array([10, 11, 12, 13, 14, 15, 16, 17]);
+    /// assert_eq!(a.interleave_lo_u32(b).to_array(), [0, 10, 1, 11, 4, 14, 5, 15]);
+    /// assert_eq!(a.interleave_hi_u32(b).to_array(), [2, 12, 3, 13, 6, 16, 7, 17]);
+    /// assert_eq!(a.interleave_lo_u64(b).to_array(), [0, 1, 10, 11, 4, 5, 14, 15]);
+    /// assert_eq!(a.interleave_hi_u64(b).to_array(), [2, 3, 12, 13, 6, 7, 16, 17]);
+    /// assert_eq!(a.concat_lo_halves(b).to_array(), [0, 1, 2, 3, 10, 11, 12, 13]);
+    /// assert_eq!(a.concat_hi_halves(b).to_array(), [4, 5, 6, 7, 14, 15, 16, 17]);
+    /// # }
+    /// ```
     #[inline(always)]
     pub fn interleave_lo_u32(self, other: Self) -> Self {
         Self(simd_swizzle!(self.0, other.0, [0, 8, 1, 9, 4, 12, 5, 13]))
     }
 
     /// `_mm256_unpackhi_epi32`: `[a2,b2,a3,b3, a6,b6,a7,b7]`.
+    ///
+    /// # Examples
+    /// See [`Self::interleave_lo_u32`] — one worked example covers all six shuffles.
     #[inline(always)]
     pub fn interleave_hi_u32(self, other: Self) -> Self {
         Self(simd_swizzle!(self.0, other.0, [2, 10, 3, 11, 6, 14, 7, 15]))
     }
 
     /// `_mm256_unpacklo_epi64`: `[a0,a1,b0,b1, a4,a5,b4,b5]`.
+    ///
+    /// # Examples
+    /// See [`Self::interleave_lo_u32`] — one worked example covers all six shuffles.
     #[inline(always)]
     pub fn interleave_lo_u64(self, other: Self) -> Self {
         Self(simd_swizzle!(self.0, other.0, [0, 1, 8, 9, 4, 5, 12, 13]))
     }
 
     /// `_mm256_unpackhi_epi64`: `[a2,a3,b2,b3, a6,a7,b6,b7]`.
+    ///
+    /// # Examples
+    /// See [`Self::interleave_lo_u32`] — one worked example covers all six shuffles.
     #[inline(always)]
     pub fn interleave_hi_u64(self, other: Self) -> Self {
         Self(simd_swizzle!(self.0, other.0, [2, 3, 10, 11, 6, 7, 14, 15]))
     }
 
     /// `_mm256_permute2x128_si256(a, b, 0x20)`: `[a0..a3, b0..b3]`.
+    ///
+    /// # Examples
+    /// See [`Self::interleave_lo_u32`] — one worked example covers all six shuffles.
     #[inline(always)]
     pub fn concat_lo_halves(self, other: Self) -> Self {
         Self(simd_swizzle!(self.0, other.0, [0, 1, 2, 3, 8, 9, 10, 11]))
     }
 
     /// `_mm256_permute2x128_si256(a, b, 0x31)`: `[a4..a7, b4..b7]`.
+    ///
+    /// # Examples
+    /// See [`Self::interleave_lo_u32`] — one worked example covers all six shuffles.
     #[inline(always)]
     pub fn concat_hi_halves(self, other: Self) -> Self {
         Self(simd_swizzle!(self.0, other.0, [4, 5, 6, 7, 12, 13, 14, 15]))
@@ -638,6 +706,17 @@ impl U32x16 {
     /// Per-lane equality as a packed 16-bit bitmask, LSB-first — the name the
     /// agnostic mask surface (`simd_masking_ops`) calls on every backend
     /// (`cmpeq_mask` is this backend's older spelling of the same thing).
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::U32x16;
+    /// let mut a = [0u32; 16];
+    /// a[0] = 7;
+    /// a[15] = 7;
+    /// assert_eq!(U32x16::from_array(a).eq_bitmask(U32x16::splat(7)), 0b1000_0000_0000_0001);
+    /// # }
+    /// ```
     #[inline(always)]
     pub fn eq_bitmask(self, other: Self) -> u16 {
         self.0.simd_eq(other.0).to_bitmask() as u16

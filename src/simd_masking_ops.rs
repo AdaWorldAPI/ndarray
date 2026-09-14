@@ -81,26 +81,39 @@ fn mask_words_for(n: usize) -> usize {
     n.div_ceil(64)
 }
 
-/// Load 16 `u32` lanes from the front of `src`.
-///
-/// Uses `from_array` rather than `from_slice` deliberately: `from_slice` is
-/// not present on every backend's `U32x16` (the NEON and wasm `[U32x4; 4]`
-/// fan-outs expose `from_array` only), and going through the array keeps this
-/// helper free of any `cfg(target_arch)` selection. The 64-byte copy is
-/// elided into a single vector load by LLVM.
+// Every slice op below walks its input with `slice::as_chunks::<LANES>()`
+// (stable since 1.88): the main body iterates `&[[T; LANES]]` and feeds each
+// chunk to `from_array` — a fixed-size load with no per-chunk bounds check
+// and no `g * L` index arithmetic for LLVM to prove away — and the remainder
+// is the EXACT tail slice. That tail is NOT peeled as a scalar loop: it is
+// zero-padded into one register (`pad_tail`) and run through the SAME packed
+// op as the body, with padding lanes never written back. Measured reason
+// (codegen witness, 2026-09-14): a scalar tail over `< LANES` words is fully
+// unrolled by LLVM on aarch64 into 7 × (and, orr) on GPRs — 16 GPR logic ops
+// on lane data in a facade op whose contract is "packed on every backend" —
+// while on AVX2 the same loop became `vpmaskmovq` masked vectors. Padding
+// makes both arms the same shape: packed body, packed tail, zero GPR logic.
+// `from_array` (not `from_slice`) because it exists on every backend's
+// `U32x16`/`I32x16`/`U64x8` — the NEON and wasm `[..x4; 4]` fan-outs expose
+// no `from_slice` — so the loops stay free of any `cfg(target_arch)`.
+
+/// Zero-pad a `< N`-element tail into one full register's worth of lanes so
+/// the tail runs through the same packed op as the body. Padding lanes are
+/// never written back: word-op callers copy out exactly `tail.len()` results,
+/// predicate callers mask the bitmask down with [`tail_lane_bits`].
 #[inline(always)]
-fn load_u32x16(src: &[u32]) -> crate::simd::U32x16 {
-    let mut a = [0u32; 16];
-    a.copy_from_slice(&src[..16]);
-    crate::simd::U32x16::from_array(a)
+fn pad_tail<T: Copy + Default, const N: usize>(tail: &[T]) -> [T; N] {
+    let mut lanes = [T::default(); N];
+    lanes[..tail.len()].copy_from_slice(tail);
+    lanes
 }
 
-/// Load 16 `i32` lanes from the front of `src`. See [`load_u32x16`].
+/// The low `n` bits set (`n < 16`): the lane-validity mask for a padded
+/// 16-lane predicate tail, so a padding lane can never contribute a match.
 #[inline(always)]
-fn load_i32x16(src: &[i32]) -> crate::simd::I32x16 {
-    let mut a = [0i32; 16];
-    a.copy_from_slice(&src[..16]);
-    crate::simd::I32x16::from_array(a)
+fn tail_lane_bits(n: usize) -> u16 {
+    debug_assert!(n < 16, "a tail is shorter than one register");
+    ((1u32 << n) - 1) as u16
 }
 
 /// Packs `values[i] == needle` into `out_words`, one bit per element,
@@ -146,15 +159,15 @@ pub fn eq_u32_to_mask(values: &[u32], needle: u32, out_words: &mut [u64]) {
     }
 
     let needle_v = crate::simd::U32x16::splat(needle);
-    let groups = n / 16;
-    for g in 0..groups {
-        let bits = load_u32x16(&values[g * 16..]).eq_bitmask(needle_v);
+    let (chunks, tail) = values.as_chunks::<16>();
+    for (g, chunk) in chunks.iter().enumerate() {
+        let bits = crate::simd::U32x16::from_array(*chunk).eq_bitmask(needle_v);
         out_words[g / 4] |= (bits as u64) << ((g % 4) * 16);
     }
-    for i in (groups * 16)..n {
-        if values[i] == needle {
-            out_words[i / 64] |= 1u64 << (i % 64);
-        }
+    if !tail.is_empty() {
+        let g = chunks.len();
+        let bits = crate::simd::U32x16::from_array(pad_tail(tail)).eq_bitmask(needle_v) & tail_lane_bits(tail.len());
+        out_words[g / 4] |= (bits as u64) << ((g % 4) * 16);
     }
 }
 
@@ -245,16 +258,14 @@ pub fn eq_u32_strided_to_mask(
     let groups = count / 16;
     if stride_bytes == 4 {
         // Contiguous lane (a facet-major column): 16 elements are ONE 64-byte
-        // window. Alias it as a fixed-size array so the 16 per-element bounds
-        // checks of the general path disappear; the `[u32; 16]` built from it
-        // is the same register-sized temporary both paths use (what this
-        // removes is the checks, not the temporary). Bounds were proven above
-        // for the last element, so `try_into` cannot fail here.
-        for g in 0..groups {
-            let base = first_offset + g * 64;
-            let window: &[u8; 64] = bytes[base..base + 64]
-                .try_into()
-                .expect("64-byte window proven in bounds");
+        // window, so the full groups are exactly the `as_chunks::<64>()` of
+        // the byte range they cover — fixed-size windows with no per-element
+        // bounds check (bounds were proven above for the last element, so the
+        // sub-slice cannot panic). The `[u32; 16]` built from each window is
+        // the same register-sized temporary the general path uses; what this
+        // removes is the checks, not the temporary.
+        let (windows, _) = bytes[first_offset..first_offset + groups * 64].as_chunks::<64>();
+        for (g, window) in windows.iter().enumerate() {
             let lanes: [u32; 16] = core::array::from_fn(|k| {
                 u32::from_le_bytes([window[4 * k], window[4 * k + 1], window[4 * k + 2], window[4 * k + 3]])
             });
@@ -322,15 +333,15 @@ pub fn gt_i32_to_mask(values: &[i32], threshold: i32, out_words: &mut [u64]) {
     }
 
     let threshold_v = crate::simd::I32x16::splat(threshold);
-    let groups = n / 16;
-    for g in 0..groups {
-        let bits = load_i32x16(&values[g * 16..]).gt_bitmask(threshold_v);
+    let (chunks, tail) = values.as_chunks::<16>();
+    for (g, chunk) in chunks.iter().enumerate() {
+        let bits = crate::simd::I32x16::from_array(*chunk).gt_bitmask(threshold_v);
         out_words[g / 4] |= (bits as u64) << ((g % 4) * 16);
     }
-    for i in (groups * 16)..n {
-        if values[i] > threshold {
-            out_words[i / 64] |= 1u64 << (i % 64);
-        }
+    if !tail.is_empty() {
+        let g = chunks.len();
+        let bits = crate::simd::I32x16::from_array(pad_tail(tail)).gt_bitmask(threshold_v) & tail_lane_bits(tail.len());
+        out_words[g / 4] |= (bits as u64) << ((g % 4) * 16);
     }
 }
 
@@ -352,18 +363,19 @@ pub fn gt_i32_to_mask(values: &[i32], threshold: i32, out_words: &mut [u64]) {
 pub fn mask_and(a: &[u64], b: &[u64], dst: &mut [u64]) {
     assert_eq!(a.len(), b.len(), "mask_and: a/b length mismatch");
     assert_eq!(a.len(), dst.len(), "mask_and: a/dst length mismatch");
-    let n = a.len();
-
     const L: usize = crate::simd::U64x8::LANES;
-    let groups = n / L;
-    for g in 0..groups {
-        let off = g * L;
-        let va = crate::simd::U64x8::from_slice(&a[off..]);
-        let vb = crate::simd::U64x8::from_slice(&b[off..]);
-        (va & vb).copy_to_slice(&mut dst[off..]);
+    let (ca, ta) = a.as_chunks::<L>();
+    let (cb, tb) = b.as_chunks::<L>();
+    let (cd, td) = dst.as_chunks_mut::<L>();
+    for ((x, y), d) in ca.iter().zip(cb).zip(cd.iter_mut()) {
+        let va = crate::simd::U64x8::from_array(*x);
+        let vb = crate::simd::U64x8::from_array(*y);
+        *d = (va & vb).to_array();
     }
-    for i in (groups * L)..n {
-        dst[i] = a[i] & b[i];
+    if !ta.is_empty() {
+        let va = crate::simd::U64x8::from_array(pad_tail(ta));
+        let vb = crate::simd::U64x8::from_array(pad_tail(tb));
+        td.copy_from_slice(&(va & vb).to_array()[..td.len()]);
     }
 }
 
@@ -384,18 +396,19 @@ pub fn mask_and(a: &[u64], b: &[u64], dst: &mut [u64]) {
 pub fn mask_or(a: &[u64], b: &[u64], dst: &mut [u64]) {
     assert_eq!(a.len(), b.len(), "mask_or: a/b length mismatch");
     assert_eq!(a.len(), dst.len(), "mask_or: a/dst length mismatch");
-    let n = a.len();
-
     const L: usize = crate::simd::U64x8::LANES;
-    let groups = n / L;
-    for g in 0..groups {
-        let off = g * L;
-        let va = crate::simd::U64x8::from_slice(&a[off..]);
-        let vb = crate::simd::U64x8::from_slice(&b[off..]);
-        (va | vb).copy_to_slice(&mut dst[off..]);
+    let (ca, ta) = a.as_chunks::<L>();
+    let (cb, tb) = b.as_chunks::<L>();
+    let (cd, td) = dst.as_chunks_mut::<L>();
+    for ((x, y), d) in ca.iter().zip(cb).zip(cd.iter_mut()) {
+        let va = crate::simd::U64x8::from_array(*x);
+        let vb = crate::simd::U64x8::from_array(*y);
+        *d = (va | vb).to_array();
     }
-    for i in (groups * L)..n {
-        dst[i] = a[i] | b[i];
+    if !ta.is_empty() {
+        let va = crate::simd::U64x8::from_array(pad_tail(ta));
+        let vb = crate::simd::U64x8::from_array(pad_tail(tb));
+        td.copy_from_slice(&(va | vb).to_array()[..td.len()]);
     }
 }
 
@@ -411,18 +424,18 @@ pub fn mask_or(a: &[u64], b: &[u64], dst: &mut [u64]) {
 #[inline]
 pub fn mask_and_assign(dst: &mut [u64], src: &[u64]) {
     assert_eq!(dst.len(), src.len(), "mask_and_assign: length mismatch");
-    let n = dst.len();
-
     const L: usize = crate::simd::U64x8::LANES;
-    let groups = n / L;
-    for g in 0..groups {
-        let off = g * L;
-        let vd = crate::simd::U64x8::from_slice(&dst[off..]);
-        let vs = crate::simd::U64x8::from_slice(&src[off..]);
-        (vd & vs).copy_to_slice(&mut dst[off..]);
+    let (cd, td) = dst.as_chunks_mut::<L>();
+    let (cs, ts) = src.as_chunks::<L>();
+    for (d, s) in cd.iter_mut().zip(cs) {
+        let vd = crate::simd::U64x8::from_array(*d);
+        let vs = crate::simd::U64x8::from_array(*s);
+        *d = (vd & vs).to_array();
     }
-    for i in (groups * L)..n {
-        dst[i] &= src[i];
+    if !td.is_empty() {
+        let vd = crate::simd::U64x8::from_array(pad_tail(td));
+        let vs = crate::simd::U64x8::from_array(pad_tail(ts));
+        td.copy_from_slice(&(vd & vs).to_array()[..td.len()]);
     }
 }
 
@@ -437,18 +450,18 @@ pub fn mask_and_assign(dst: &mut [u64], src: &[u64]) {
 #[inline]
 pub fn mask_or_assign(dst: &mut [u64], src: &[u64]) {
     assert_eq!(dst.len(), src.len(), "mask_or_assign: length mismatch");
-    let n = dst.len();
-
     const L: usize = crate::simd::U64x8::LANES;
-    let groups = n / L;
-    for g in 0..groups {
-        let off = g * L;
-        let vd = crate::simd::U64x8::from_slice(&dst[off..]);
-        let vs = crate::simd::U64x8::from_slice(&src[off..]);
-        (vd | vs).copy_to_slice(&mut dst[off..]);
+    let (cd, td) = dst.as_chunks_mut::<L>();
+    let (cs, ts) = src.as_chunks::<L>();
+    for (d, s) in cd.iter_mut().zip(cs) {
+        let vd = crate::simd::U64x8::from_array(*d);
+        let vs = crate::simd::U64x8::from_array(*s);
+        *d = (vd | vs).to_array();
     }
-    for i in (groups * L)..n {
-        dst[i] |= src[i];
+    if !td.is_empty() {
+        let vd = crate::simd::U64x8::from_array(pad_tail(td));
+        let vs = crate::simd::U64x8::from_array(pad_tail(ts));
+        td.copy_from_slice(&(vd | vs).to_array()[..td.len()]);
     }
 }
 
@@ -481,18 +494,19 @@ pub fn mask_or_assign(dst: &mut [u64], src: &[u64]) {
 pub fn mask_andnot(a: &[u64], b: &[u64], dst: &mut [u64]) {
     assert_eq!(a.len(), b.len(), "mask_andnot: a/b length mismatch");
     assert_eq!(a.len(), dst.len(), "mask_andnot: a/dst length mismatch");
-    let n = a.len();
-
     const L: usize = crate::simd::U64x8::LANES;
-    let groups = n / L;
-    for g in 0..groups {
-        let off = g * L;
-        let va = crate::simd::U64x8::from_slice(&a[off..]);
-        let vb = crate::simd::U64x8::from_slice(&b[off..]);
-        (va & !vb).copy_to_slice(&mut dst[off..]);
+    let (ca, ta) = a.as_chunks::<L>();
+    let (cb, tb) = b.as_chunks::<L>();
+    let (cd, td) = dst.as_chunks_mut::<L>();
+    for ((x, y), d) in ca.iter().zip(cb).zip(cd.iter_mut()) {
+        let va = crate::simd::U64x8::from_array(*x);
+        let vb = crate::simd::U64x8::from_array(*y);
+        *d = (va & !vb).to_array();
     }
-    for i in (groups * L)..n {
-        dst[i] = a[i] & !b[i];
+    if !ta.is_empty() {
+        let va = crate::simd::U64x8::from_array(pad_tail(ta));
+        let vb = crate::simd::U64x8::from_array(pad_tail(tb));
+        td.copy_from_slice(&(va & !vb).to_array()[..td.len()]);
     }
 }
 
@@ -508,18 +522,18 @@ pub fn mask_andnot(a: &[u64], b: &[u64], dst: &mut [u64]) {
 #[inline]
 pub fn mask_andnot_assign(a: &mut [u64], b: &[u64]) {
     assert_eq!(a.len(), b.len(), "mask_andnot_assign: length mismatch");
-    let n = a.len();
-
     const L: usize = crate::simd::U64x8::LANES;
-    let groups = n / L;
-    for g in 0..groups {
-        let off = g * L;
-        let va = crate::simd::U64x8::from_slice(&a[off..]);
-        let vb = crate::simd::U64x8::from_slice(&b[off..]);
-        (va & !vb).copy_to_slice(&mut a[off..]);
+    let (ca, ta) = a.as_chunks_mut::<L>();
+    let (cb, tb) = b.as_chunks::<L>();
+    for (x, y) in ca.iter_mut().zip(cb) {
+        let va = crate::simd::U64x8::from_array(*x);
+        let vb = crate::simd::U64x8::from_array(*y);
+        *x = (va & !vb).to_array();
     }
-    for i in (groups * L)..n {
-        a[i] &= !b[i];
+    if !ta.is_empty() {
+        let va = crate::simd::U64x8::from_array(pad_tail(ta));
+        let vb = crate::simd::U64x8::from_array(pad_tail(tb));
+        ta.copy_from_slice(&(va & !vb).to_array()[..ta.len()]);
     }
 }
 
@@ -561,19 +575,22 @@ pub fn mask_ternlog<const IMM: i32>(a: &[u64], b: &[u64], c: &[u64], dst: &mut [
     assert_eq!(a.len(), b.len(), "mask_ternlog: a/b length mismatch");
     assert_eq!(a.len(), c.len(), "mask_ternlog: a/c length mismatch");
     assert_eq!(a.len(), dst.len(), "mask_ternlog: a/dst length mismatch");
-    let n = a.len();
-
     const L: usize = crate::simd::U64x8::LANES;
-    let groups = n / L;
-    for g in 0..groups {
-        let off = g * L;
-        let va = crate::simd::U64x8::from_slice(&a[off..]);
-        let vb = crate::simd::U64x8::from_slice(&b[off..]);
-        let vc = crate::simd::U64x8::from_slice(&c[off..]);
-        va.ternlog::<IMM>(vb, vc).copy_to_slice(&mut dst[off..]);
+    let (ca, ta) = a.as_chunks::<L>();
+    let (cb, tb) = b.as_chunks::<L>();
+    let (cc, tc) = c.as_chunks::<L>();
+    let (cd, td) = dst.as_chunks_mut::<L>();
+    for (((x, y), z), d) in ca.iter().zip(cb).zip(cc).zip(cd.iter_mut()) {
+        let va = crate::simd::U64x8::from_array(*x);
+        let vb = crate::simd::U64x8::from_array(*y);
+        let vc = crate::simd::U64x8::from_array(*z);
+        *d = va.ternlog::<IMM>(vb, vc).to_array();
     }
-    for i in (groups * L)..n {
-        dst[i] = ternlog_word::<IMM>(a[i], b[i], c[i]);
+    if !ta.is_empty() {
+        let va = crate::simd::U64x8::from_array(pad_tail(ta));
+        let vb = crate::simd::U64x8::from_array(pad_tail(tb));
+        let vc = crate::simd::U64x8::from_array(pad_tail(tc));
+        td.copy_from_slice(&va.ternlog::<IMM>(vb, vc).to_array()[..td.len()]);
     }
 }
 
@@ -592,55 +609,22 @@ pub fn mask_ternlog<const IMM: i32>(a: &[u64], b: &[u64], c: &[u64], dst: &mut [
 pub fn mask_ternlog_assign<const IMM: i32>(a: &mut [u64], b: &[u64], c: &[u64]) {
     assert_eq!(a.len(), b.len(), "mask_ternlog_assign: a/b length mismatch");
     assert_eq!(a.len(), c.len(), "mask_ternlog_assign: a/c length mismatch");
-    let n = a.len();
-
     const L: usize = crate::simd::U64x8::LANES;
-    let groups = n / L;
-    for g in 0..groups {
-        let off = g * L;
-        let va = crate::simd::U64x8::from_slice(&a[off..]);
-        let vb = crate::simd::U64x8::from_slice(&b[off..]);
-        let vc = crate::simd::U64x8::from_slice(&c[off..]);
-        va.ternlog::<IMM>(vb, vc).copy_to_slice(&mut a[off..]);
+    let (ca, ta) = a.as_chunks_mut::<L>();
+    let (cb, tb) = b.as_chunks::<L>();
+    let (cc, tc) = c.as_chunks::<L>();
+    for ((x, y), z) in ca.iter_mut().zip(cb).zip(cc) {
+        let va = crate::simd::U64x8::from_array(*x);
+        let vb = crate::simd::U64x8::from_array(*y);
+        let vc = crate::simd::U64x8::from_array(*z);
+        *x = va.ternlog::<IMM>(vb, vc).to_array();
     }
-    for i in (groups * L)..n {
-        a[i] = ternlog_word::<IMM>(a[i], b[i], c[i]);
+    if !ta.is_empty() {
+        let va = crate::simd::U64x8::from_array(pad_tail(ta));
+        let vb = crate::simd::U64x8::from_array(pad_tail(tb));
+        let vc = crate::simd::U64x8::from_array(pad_tail(tc));
+        ta.copy_from_slice(&va.ternlog::<IMM>(vb, vc).to_array()[..ta.len()]);
     }
-}
-
-/// One `u64` of the truth-table function — the scalar tail of the two
-/// `mask_ternlog` forms, and the independent reference their parity test is
-/// checked against. Bit-serial over the eight table rows, so it cannot share
-/// a bug with any backend's lane implementation.
-#[inline(always)]
-fn ternlog_word<const IMM: i32>(a: u64, b: u64, c: u64) -> u64 {
-    const { assert!(IMM >= 0 && IMM <= 255, "ternlog IMM is an 8-bit truth table") }
-    let mut r = 0u64;
-    if IMM & 0x01 != 0 {
-        r |= !a & !b & !c;
-    }
-    if IMM & 0x02 != 0 {
-        r |= !a & !b & c;
-    }
-    if IMM & 0x04 != 0 {
-        r |= !a & b & !c;
-    }
-    if IMM & 0x08 != 0 {
-        r |= !a & b & c;
-    }
-    if IMM & 0x10 != 0 {
-        r |= a & !b & !c;
-    }
-    if IMM & 0x20 != 0 {
-        r |= a & !b & c;
-    }
-    if IMM & 0x40 != 0 {
-        r |= a & b & !c;
-    }
-    if IMM & 0x80 != 0 {
-        r |= a & b & c;
-    }
-    r
 }
 
 /// Sum of `values[i]` where mask bit `i` is set, widened to `i64`.
@@ -876,15 +860,15 @@ pub fn lt_i32_to_mask(values: &[i32], threshold: i32, out_words: &mut [u64]) {
         *w = 0;
     }
     let t = crate::simd::I32x16::splat(threshold);
-    let groups = n / 16;
-    for g in 0..groups {
-        let bits = t.gt_bitmask(load_i32x16(&values[g * 16..]));
+    let (chunks, tail) = values.as_chunks::<16>();
+    for (g, chunk) in chunks.iter().enumerate() {
+        let bits = t.gt_bitmask(crate::simd::I32x16::from_array(*chunk));
         out_words[g / 4] |= (bits as u64) << ((g % 4) * 16);
     }
-    for i in (groups * 16)..n {
-        if values[i] < threshold {
-            out_words[i / 64] |= 1u64 << (i % 64);
-        }
+    if !tail.is_empty() {
+        let g = chunks.len();
+        let bits = t.gt_bitmask(crate::simd::I32x16::from_array(pad_tail(tail))) & tail_lane_bits(tail.len());
+        out_words[g / 4] |= (bits as u64) << ((g % 4) * 16);
     }
 }
 
@@ -934,16 +918,17 @@ pub fn ne_i32_to_mask(values: &[i32], needle: i32, out_words: &mut [u64]) {
         *w = 0;
     }
     let t = crate::simd::I32x16::splat(needle);
-    let groups = n / 16;
-    for g in 0..groups {
-        let v = load_i32x16(&values[g * 16..]);
+    let (chunks, tail) = values.as_chunks::<16>();
+    for (g, chunk) in chunks.iter().enumerate() {
+        let v = crate::simd::I32x16::from_array(*chunk);
         let bits = t.gt_bitmask(v) | v.gt_bitmask(t);
         out_words[g / 4] |= (bits as u64) << ((g % 4) * 16);
     }
-    for i in (groups * 16)..n {
-        if values[i] != needle {
-            out_words[i / 64] |= 1u64 << (i % 64);
-        }
+    if !tail.is_empty() {
+        let g = chunks.len();
+        let v = crate::simd::I32x16::from_array(pad_tail(tail));
+        let bits = (t.gt_bitmask(v) | v.gt_bitmask(t)) & tail_lane_bits(tail.len());
+        out_words[g / 4] |= (bits as u64) << ((g % 4) * 16);
     }
 }
 
@@ -1032,17 +1017,19 @@ pub fn mask_not_assign(dst: &mut [u64], n_rows: usize) {
 pub fn mask_xor(a: &[u64], b: &[u64], dst: &mut [u64]) {
     assert_eq!(a.len(), b.len(), "mask_xor: a/b length mismatch");
     assert_eq!(a.len(), dst.len(), "mask_xor: a/dst length mismatch");
-    let n = a.len();
     const L: usize = crate::simd::U64x8::LANES;
-    let groups = n / L;
-    for g in 0..groups {
-        let off = g * L;
-        let va = crate::simd::U64x8::from_slice(&a[off..]);
-        let vb = crate::simd::U64x8::from_slice(&b[off..]);
-        (va ^ vb).copy_to_slice(&mut dst[off..]);
+    let (ca, ta) = a.as_chunks::<L>();
+    let (cb, tb) = b.as_chunks::<L>();
+    let (cd, td) = dst.as_chunks_mut::<L>();
+    for ((x, y), d) in ca.iter().zip(cb).zip(cd.iter_mut()) {
+        let va = crate::simd::U64x8::from_array(*x);
+        let vb = crate::simd::U64x8::from_array(*y);
+        *d = (va ^ vb).to_array();
     }
-    for i in (groups * L)..n {
-        dst[i] = a[i] ^ b[i];
+    if !ta.is_empty() {
+        let va = crate::simd::U64x8::from_array(pad_tail(ta));
+        let vb = crate::simd::U64x8::from_array(pad_tail(tb));
+        td.copy_from_slice(&(va ^ vb).to_array()[..td.len()]);
     }
 }
 
@@ -1054,17 +1041,18 @@ pub fn mask_xor(a: &[u64], b: &[u64], dst: &mut [u64]) {
 #[inline]
 pub fn mask_xor_assign(dst: &mut [u64], src: &[u64]) {
     assert_eq!(dst.len(), src.len(), "mask_xor_assign: length mismatch");
-    let n = dst.len();
     const L: usize = crate::simd::U64x8::LANES;
-    let groups = n / L;
-    for g in 0..groups {
-        let off = g * L;
-        let vd = crate::simd::U64x8::from_slice(&dst[off..]);
-        let vs = crate::simd::U64x8::from_slice(&src[off..]);
-        (vd ^ vs).copy_to_slice(&mut dst[off..]);
+    let (cd, td) = dst.as_chunks_mut::<L>();
+    let (cs, ts) = src.as_chunks::<L>();
+    for (d, s) in cd.iter_mut().zip(cs) {
+        let vd = crate::simd::U64x8::from_array(*d);
+        let vs = crate::simd::U64x8::from_array(*s);
+        *d = (vd ^ vs).to_array();
     }
-    for i in (groups * L)..n {
-        dst[i] ^= src[i];
+    if !td.is_empty() {
+        let vd = crate::simd::U64x8::from_array(pad_tail(td));
+        let vs = crate::simd::U64x8::from_array(pad_tail(ts));
+        td.copy_from_slice(&(vd ^ vs).to_array()[..td.len()]);
     }
 }
 
@@ -1140,18 +1128,21 @@ pub fn ternary_match_u32_to_mask(values: &[u32], pattern: u32, care: u32, out_wo
     let p = crate::simd::U32x16::splat(pattern);
     let c = crate::simd::U32x16::splat(care);
     let zero = crate::simd::U32x16::splat(0);
-    let groups = n / 16;
-    for g in 0..groups {
-        let v = load_u32x16(&values[g * 16..]);
+    let (chunks, tail) = values.as_chunks::<16>();
+    for (g, chunk) in chunks.iter().enumerate() {
+        let v = crate::simd::U32x16::from_array(*chunk);
         let bits = v
             .ternlog::<{ crate::simd::ternlog::XOR_AND }>(p, c)
             .eq_bitmask(zero);
         out_words[g / 4] |= (bits as u64) << ((g % 4) * 16);
     }
-    for i in (groups * 16)..n {
-        if (values[i] ^ pattern) & care == 0 {
-            out_words[i / 64] |= 1u64 << (i % 64);
-        }
+    if !tail.is_empty() {
+        let g = chunks.len();
+        let bits = crate::simd::U32x16::from_array(pad_tail(tail))
+            .ternlog::<{ crate::simd::ternlog::XOR_AND }>(p, c)
+            .eq_bitmask(zero)
+            & tail_lane_bits(tail.len());
+        out_words[g / 4] |= (bits as u64) << ((g % 4) * 16);
     }
 }
 
@@ -1178,10 +1169,9 @@ pub fn ternary_match_u64_to_mask(values: &[u64], pattern: u64, care: u64, out_wo
     let p = crate::simd::U64x8::splat(pattern);
     let c = crate::simd::U64x8::splat(care);
     const L: usize = crate::simd::U64x8::LANES;
-    let groups = n / L;
-    for g in 0..groups {
-        let v = crate::simd::U64x8::from_slice(&values[g * L..]);
-        let r = v
+    let (chunks, tail) = values.as_chunks::<L>();
+    for (g, chunk) in chunks.iter().enumerate() {
+        let r = crate::simd::U64x8::from_array(*chunk)
             .ternlog::<{ crate::simd::ternlog::XOR_AND }>(p, c)
             .to_array();
         let mut bits = 0u64;
@@ -1190,10 +1180,16 @@ pub fn ternary_match_u64_to_mask(values: &[u64], pattern: u64, care: u64, out_wo
         }
         out_words[g / 8] |= bits << ((g % 8) * 8);
     }
-    for i in (groups * L)..n {
-        if (values[i] ^ pattern) & care == 0 {
-            out_words[i / 64] |= 1u64 << (i % 64);
+    if !tail.is_empty() {
+        let g = chunks.len();
+        let r = crate::simd::U64x8::from_array(pad_tail(tail))
+            .ternlog::<{ crate::simd::ternlog::XOR_AND }>(p, c)
+            .to_array();
+        let mut bits = 0u64;
+        for (lane, &x) in r.iter().take(tail.len()).enumerate() {
+            bits |= ((x == 0) as u64) << lane;
         }
+        out_words[g / 8] |= bits << ((g % 8) * 8);
     }
 }
 
@@ -1265,10 +1261,8 @@ pub fn ternary_match_strided_to_mask(
             .ternlog::<{ crate::simd::ternlog::XOR_AND }>(vphi, vchi)
             .eq_bitmask(zero32);
         let mut lo_bits = 0u16;
-        for half in 0..2 {
-            let mut arr = [0u64; 8];
-            arr.copy_from_slice(&lo[half * 8..half * 8 + 8]);
-            let r = crate::simd::U64x8::from_array(arr)
+        for (half, arr) in lo.as_chunks::<8>().0.iter().enumerate() {
+            let r = crate::simd::U64x8::from_array(*arr)
                 .ternlog::<{ crate::simd::ternlog::XOR_AND }>(vplo, vclo)
                 .to_array();
             for (lane, &x) in r.iter().enumerate() {
@@ -1882,7 +1876,8 @@ mod tests {
     // ── mask_ternlog (any 3-input Boolean, one pass) ─────────────────────────
 
     /// Truth-table reference evaluated one BIT at a time — independent of
-    /// both `ternlog_word` (bit-parallel over rows) and every backend lane.
+    /// every backend lane (the scalar tail it once shared with them is gone —
+    /// tails run through the same packed op as the body).
     fn ref_ternlog_bitwise(a: u64, b: u64, c: u64, imm: i32) -> u64 {
         let mut r = 0u64;
         for bit in 0..64 {

@@ -803,6 +803,17 @@ impl F32Mask16 {
     /// `core::simd::Mask`), so callers combine and inspect masks through this
     /// rather than the tuple field (the `aabb` broadphase read `.0` directly
     /// and did not compile on the portable backend — fixed 2026-09-14).
+    ///
+    /// # Examples
+    /// Bit `i` is lane `i`: with lanes 0 and 15 below the threshold the
+    /// `simd_lt` mask reads `0b1000_0000_0000_0001`.
+    /// ```rust,ignore
+    /// let mut a = [10.0f32; 16];
+    /// a[0] = -1.0;
+    /// a[15] = -1.0;
+    /// let m = F32x16::from_array(a).simd_lt(F32x16::splat(0.0));
+    /// assert_eq!(m.to_bitmask(), 0b1000_0000_0000_0001);
+    /// ```
     #[inline(always)]
     pub fn to_bitmask(self) -> u16 {
         self.0

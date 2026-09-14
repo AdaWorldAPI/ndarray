@@ -478,11 +478,16 @@ pub mod aarch64_simd {
     use core::fmt;
     use core::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
-    // Integer types come from the scalar fallback in simd.rs — they aren't on
-    // the perf-critical f32 BLAS-1 / VML path that this module accelerates.
-    // `U32x16` is the exception: it carries the ARX vocabulary (Add/BitXor/
-    // rotate_left) the ChaCha20 lane needs, so it is the native `[U32x4; 4]`
-    // defined at the top of this file (mirroring `simd_wasm::wasm32_simd`).
+    // Three integer types are NATIVE here, defined at the top of this file
+    // as `[U32x4; 4]` / `[I32x4; 4]` / `[U64x2; 4]` register fan-outs
+    // (mirroring `simd_wasm::wasm32_simd`): `U32x16` carries the ARX
+    // vocabulary (Add/BitXor/rotate_left) the ChaCha20 lane needs, and
+    // `U64x8` / `I32x16` carry the mask family (bulk algebra + ternlog, the
+    // signed-compare→bitmask family) since the 2026-09-13 five-flavour audit
+    // — before it, both resolved to the scalar backend on aarch64. The long
+    // tail of integer lanes (I8x64, U16x32, …) still comes from the scalar
+    // fallback in simd.rs; none of it is on the f32 BLAS-1 / VML path this
+    // module accelerates.
     pub use super::{I32x16, U32x16, U64x8};
 
     /// 16×f32 backed by 4× NEON `float32x4_t` registers (paired loads).
@@ -824,6 +829,17 @@ pub mod aarch64_simd {
         /// `core::simd::Mask`), so callers combine and inspect masks through this
         /// rather than the tuple field (the `aabb` broadphase read `.0` directly
         /// and did not compile on the portable backend — fixed 2026-09-14).
+        ///
+        /// # Examples
+        /// Bit `i` is lane `i`: with lanes 0 and 15 below the threshold the
+        /// `simd_lt` mask reads `0b1000_0000_0000_0001`.
+        /// ```rust,ignore
+        /// let mut a = [10.0f32; 16];
+        /// a[0] = -1.0;
+        /// a[15] = -1.0;
+        /// let m = F32x16::from_array(a).simd_lt(F32x16::splat(0.0));
+        /// assert_eq!(m.to_bitmask(), 0b1000_0000_0000_0001);
+        /// ```
         #[inline(always)]
         pub fn to_bitmask(self) -> u16 {
             self.0
@@ -1802,6 +1818,13 @@ impl U32x16 {
     /// AVX2 / AVX-512 / scalar `U32x16` carry; it was missing on this backend
     /// until the codegen witness (`examples/ternlog_codegen_probe.rs`) failed
     /// to compile for aarch64 on 2026-09-14.
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// let v = U32x16::from_array(core::array::from_fn(|i| i as u32)); // 0..16
+    /// assert_eq!(v.reduce_sum(), 120);
+    /// assert_eq!(U32x16::splat(u32::MAX).reduce_sum(), u32::MAX.wrapping_mul(16));
+    /// ```
     #[inline(always)]
     pub fn reduce_sum(self) -> u32 {
         // SAFETY: NEON baseline; register reductions on four owned quads.

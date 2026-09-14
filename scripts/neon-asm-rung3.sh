@@ -28,6 +28,9 @@ echo "==> emitting aarch64 assembly of neon-simd-parity (link step skipped)"
 # leave an older .s for `ls -t` to pick up and the gate would PASS on assembly
 # that does not match the source (CodeRabbit, PR #306).
 rm -f "$TD/$TARGET/release/deps/"neon_simd_parity-*.s
+# A cached build re-emits no .s after the rm, so force the harness crate to
+# recompile (the library stays cached); see scripts/codegen-witness.sh.
+touch "$ROOT/crates/neon-simd-parity/src/main.rs"
 CARGO_TARGET_DIR="$TD" cargo rustc --release --manifest-path "$MANIFEST" --target "$TARGET" \
   -- --emit=asm -C debuginfo=0
 ASM="$(ls -t "$TD/$TARGET/release/deps/"neon_simd_parity-*.s | head -1)"

@@ -34,6 +34,11 @@ OUT="$TD/$TRIPLE/ci-codegen/examples"
 
 cd "$ROOT"
 rm -f "$OUT"/ternlog_codegen_probe-*.s
+# Deleting the old .s is only half of "never grade stale assembly": a cached
+# build re-emits nothing, so the glob below would find no file at all (it did,
+# on the first run after the rm landed). Touching the probe source forces the
+# ONE crate that produces the .s to recompile; the library stays cached.
+touch "$ROOT/examples/ternlog_codegen_probe.rs"
 HOST="$(rustc -vV | sed -n 's/^host: //p')"
 # A cross target emits assembly only: linking would need the foreign linker,
 # and the self-check is a semantic claim the parity arms already carry for
@@ -62,19 +67,46 @@ fi
 #     straight-line, no loop: packed logic present AND ZERO GPR logic.
 #   * the slice probe (probe_mask_ternlog_slice) — a loop over 64 words:
 #     packed logic present AND GPR logic bounded by SLICE_GPR_CAP. The GPR
-#     ops that legitimately remain are loop control (`andq $-8` / `andl $3`
-#     index rounding, `xorl` counter zeroing) plus the one scalar tail peel
-#     for len % lanes; measured 9 on the v3 build 2026-09-14. A scalarised
-#     body fails the "packed present" half, which is the discriminating one —
-#     the cap only stops a body from quietly growing a second scalar loop.
+#     ops that legitimately remain are index arithmetic on LENGTHS, never on
+#     lane data: `andl $7` (tail length = len % lanes) and `andq $-64`-style
+#     chunk-byte rounding from `as_chunks`. There is NO scalar tail peel any
+#     more — `simd_masking_ops` zero-pads the tail into one register and
+#     runs it through the same packed op (`pad_tail`), so a peel showing up
+#     here is a regression. `xorl %r, %r` register clears are excluded from
+#     the count. Measured 2026-09-14 with every operand field inspected:
+#     4 on v3 and 2 on aarch64 (down from 9 / 16 — the 16 was LLVM fully
+#     unrolling the old scalar tail into 7 × (and, orr) on aarch64, which is
+#     exactly what the cap exists to catch and what the padding removed).
+#     A scalarised body fails the "packed present" half, which is the
+#     discriminating one — the cap only stops a body from quietly growing a
+#     second scalar loop; 12 leaves headroom for LLVM's index-math choices
+#     without admitting a 7-word unrolled peel.
 SLICE_GPR_CAP=12
+# The scalar rule inspects EVERY operand field ($2..$NF), not just the first:
+# `andq $-8, %r10` has its register in $3 and `andq (%rdi,%rax,8), %r9` its
+# register in $3 too, so a `$2`-only rule undercounted exactly the two forms
+# the slice cap exists to bound (CodeRabbit, PR #306). Every required probe
+# is always printed (the loops below fail on a missing row rather than
+# skipping it), so a symbol the compiler folded away cannot pass by absence.
+REQUIRED_PROBES="probe_ternlog_u64x8 probe_ternlog_u32x16 probe_andnot_u64x8 probe_mask_ternlog_slice"
 report() {
-  awk -v vec="$1" -v sca="$2" '
-    /^[A-Za-z_$][A-Za-z0-9_.$]*:/ { sym=$1 }
+  awk -v vec="$1" -v sca="$2" -v req="$REQUIRED_PROBES" '
+    BEGIN { n = split(req, r, " "); for (i = 1; i <= n; i++) want[r[i]] = 1 }
+    /^[A-Za-z_$][A-Za-z0-9_.$]*:/ { sym=$1; for (k in want) if (index(sym, k)) seen[k] = sym }
     sym ~ /probe_/ && $1 ~ vec { v[sym]++ }
-    sym ~ /probe_/ && $1 ~ sca && $2 ~ /%[re][a-z0-9]+|^[wx][0-9]+,/ { s[sym]++ }
-    END { for (k in v) printf "%6d vec %6d sca  %s\n", v[k], s[k]+0, k;
-          for (k in s) if (!(k in v)) printf "%6d vec %6d sca  %s\n", 0, s[k], k }
+    sym ~ /probe_/ && $1 ~ sca {
+      # `xorl %eax, %eax` is the register-clear idiom, not logic on data:
+      # identical source and destination means the value is discarded.
+      a = $2; sub(/,$/, "", a)
+      if ($1 ~ /^xor/ && NF == 3 && a == $3) next
+      hit = 0
+      for (f = 2; f <= NF; f++) if ($f ~ /%[re][a-z0-9]+|^[wx][0-9]+,?$/) hit = 1
+      if (hit) s[sym]++
+    }
+    END {
+      for (k in want) if (!(k in seen)) printf "%6d vec %6d sca  MISSING:%s\n", 0, 0, k
+      for (k in seen) { sym = seen[k]; printf "%6d vec %6d sca  %s\n", v[sym]+0, s[sym]+0, sym }
+    }
   ' "$ASM" | sort -k5
 }
 
@@ -96,6 +128,8 @@ case "$EXPECT" in
     report '^(vpand|vpandn|vpor|vpxor|vandps|vandnps|vorps|vxorps|vandpd|vandnpd|vorpd|vxorpd)$' '^(and[lq]?|or[lq]?|xor[lq]?|andn[lq]?|not[lq]?)$'
     while read -r v _ s _ sym; do
       case "$sym" in
+        MISSING:*)
+          echo "   FAIL: required probe $sym has no symbol in the assembly"; fail=1 ;;
         *probe_mask_ternlog_slice*)
           [ "$v" -ge 2 ] || { echo "   FAIL: $sym has no packed logic (facade layer scalarised)"; fail=1; }
           [ "$s" -le "$SLICE_GPR_CAP" ] || { echo "   FAIL: $sym carries $s GPR logic ops (cap $SLICE_GPR_CAP: loop control + one tail peel)"; fail=1; } ;;
@@ -110,6 +144,8 @@ case "$EXPECT" in
     report '^(and|orr|eor|bic|orn|eon|mvn|not|bif|bit|bsl)$' '^(and|orr|eor|bic|orn|eon|mvn)$'
     while read -r v _ s _ sym; do
       case "$sym" in
+        MISSING:*)
+          echo "   FAIL: required probe $sym has no symbol in the assembly"; fail=1 ;;
         *probe_mask_ternlog_slice*)
           [ "$v" -ge 2 ] || { echo "   FAIL: $sym has no vector logic (facade layer scalarised)"; fail=1; }
           [ "$s" -le "$SLICE_GPR_CAP" ] || { echo "   FAIL: $sym carries $s GPR logic ops (cap $SLICE_GPR_CAP: loop control + one tail peel)"; fail=1; } ;;

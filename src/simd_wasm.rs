@@ -403,6 +403,17 @@ pub mod wasm32_simd {
         /// `core::simd::Mask`), so callers combine and inspect masks through this
         /// rather than the tuple field (the `aabb` broadphase read `.0` directly
         /// and did not compile on the portable backend — fixed 2026-09-14).
+        ///
+        /// # Examples
+        /// Bit `i` is lane `i`: with lanes 0 and 15 below the threshold the
+        /// `simd_lt` mask reads `0b1000_0000_0000_0001`.
+        /// ```rust,ignore
+        /// let mut a = [10.0f32; 16];
+        /// a[0] = -1.0;
+        /// a[15] = -1.0;
+        /// let m = F32x16::from_array(a).simd_lt(F32x16::splat(0.0));
+        /// assert_eq!(m.to_bitmask(), 0b1000_0000_0000_0001);
+        /// ```
         #[inline(always)]
         pub fn to_bitmask(self) -> u16 {
             self.0
@@ -1195,6 +1206,13 @@ pub mod wasm32_simd {
         /// same method the AVX2 / AVX-512 / scalar `U32x16` carry; missing on
         /// this backend until the aarch64 codegen witness exposed the gap on
         /// 2026-09-14 (the wasm twin was closed in the same pass).
+        ///
+        /// # Examples
+        /// ```rust,ignore
+        /// let v = U32x16::from_array(core::array::from_fn(|i| i as u32)); // 0..16
+        /// assert_eq!(v.reduce_sum(), 120);
+        /// assert_eq!(U32x16::splat(u32::MAX).reduce_sum(), u32::MAX.wrapping_mul(16));
+        /// ```
         #[inline(always)]
         pub fn reduce_sum(self) -> u32 {
             let t = u32x4_add(u32x4_add(self.0[0].0, self.0[1].0), u32x4_add(self.0[2].0, self.0[3].0));
@@ -1219,8 +1237,8 @@ pub mod wasm32_simd {
         ///
         /// Bit `i` of the result is set iff `self.lane(i) == other.lane(i)`.
         /// Bit order is **LSB-first**: lane `0` occupies bit `0`. Same
-        /// convention as `I32x16::cmpge_zero_mask` / `I32x16::gt_bitmask`
-        /// (which on wasm32 come from the scalar tier).
+        /// convention as the native wasm `I32x16::cmpge_zero_mask` /
+        /// `I32x16::gt_bitmask` below.
         ///
         /// Edge cases: equality is exact bitwise comparison over the full
         /// 32-bit range, so `u32::MAX` and `0` behave like any other value —
