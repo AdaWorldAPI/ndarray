@@ -728,88 +728,148 @@ pub fn amx_features() -> AmxFeatures {
 mod tests {
     use super::*;
 
-    /// Read the machine code of a monomorphized op back out of the text
-    /// segment. The wrapper is `#[inline(never)]` so the op's bytes sit inside
-    /// one small function; we scan a bounded window for the expected sequence.
-    /// This runs on ANY x86_64 host — it inspects encodings, never executes a
+    /// Read the machine code of a monomorphized op out of the OBJECT FILE —
+    /// the test binary itself, `/proc/self/exe` — via its ELF `.symtab`: the
+    /// symbol's `st_value`/`st_size` are the linker's own statement of where
+    /// the wrapper starts and how long it is, so the extent is validated by
+    /// the producer of the bytes, never inferred from a function pointer, a
+    /// fixed window, or a `ret`-byte heuristic (0xC3 can sit inside another
+    /// instruction's immediate). No executable memory is dereferenced at all.
+    /// Each wrapper carries an `export_name` so it can be found by name, and
+    /// `#[inline(never)]` so the op's bytes are its own symbol's bytes. Runs
+    /// on ANY x86_64 Linux host — it inspects encodings, never executes a
     /// tile op — so the `.byte` tables in `amx_matmul` and the mnemonics here
-    /// are pinned to each other by CI, not by an EMR box.
-    fn contains(f: unsafe fn(), needle: &[u8]) -> bool {
-        // The bytes are read ONE AT A TIME, stopping at this wrapper's own
-        // `ret` (0xC3) — never through a slice over an extent nobody has
-        // validated. Every byte up to and including a function's `ret` lies
-        // inside that function's body, so each read is inside mapped text
-        // regardless of where the section or page ends; the 96-byte cap only
-        // bounds a wrapper that somehow has no `ret`, and the assertion below
-        // turns that into a test failure rather than a wild read.
-        //
-        // Stopping at `ret` is also what keeps the assertions honest: the
-        // linker packs these wrappers back to back, so a window that ran on
-        // would read the NEXT wrapper's encoding — a negative assertion would
-        // fail on it and a positive one could pass on it. None of the needles
-        // contains 0xC3, and the wrappers carry no other 0xC3 before their
-        // return.
-        let base = f as *const u8;
-        let mut code = Vec::with_capacity(96);
-        for i in 0..96usize {
-            // SAFETY: no byte before this one was `ret`, so byte `i` is still
-            // inside the wrapper's own body in the text segment — a mapped,
-            // readable address. `read_volatile` keeps the read a real load.
-            let b = unsafe { core::ptr::read_volatile(base.add(i)) };
-            code.push(b);
-            if b == 0xc3 {
-                break;
+    /// are pinned to each other by CI, not by an EMR box. Requires an
+    /// unstripped test binary (cargo's default for every test profile).
+    fn symbol_bytes(name: &str) -> Vec<u8> {
+        let exe = std::fs::read("/proc/self/exe").expect("read /proc/self/exe");
+        let u16_at = |o: usize| u16::from_le_bytes([exe[o], exe[o + 1]]);
+        let u32_at = |o: usize| u32::from_le_bytes(exe[o..o + 4].try_into().expect("4 bytes"));
+        let u64_at = |o: usize| u64::from_le_bytes(exe[o..o + 8].try_into().expect("8 bytes"));
+        assert_eq!(&exe[..4], b"\x7fELF", "test binary is ELF");
+        assert_eq!(exe[4], 2, "ELF64");
+        let shoff = u64_at(0x28) as usize;
+        let shentsize = u16_at(0x3a) as usize;
+        let shnum = u16_at(0x3c) as usize;
+        // (sh_type, sh_addr, sh_offset, sh_size, sh_link, sh_entsize)
+        let section = |i: usize| {
+            let b = shoff + i * shentsize;
+            (
+                u32_at(b + 4),
+                u64_at(b + 0x10),
+                u64_at(b + 0x18),
+                u64_at(b + 0x20),
+                u32_at(b + 0x28),
+                u64_at(b + 0x38),
+            )
+        };
+        const SHT_SYMTAB: u32 = 2;
+        let symtab = (0..shnum)
+            .map(section)
+            .find(|s| s.0 == SHT_SYMTAB)
+            .expect("test binary carries .symtab — do not strip test binaries");
+        let strtab = section(symtab.4 as usize);
+        let entsize = symtab.5 as usize;
+        assert_eq!(entsize, 24, "Elf64_Sym");
+        for i in 0..(symtab.3 as usize / entsize) {
+            let b = symtab.2 as usize + i * entsize;
+            let name_off = strtab.2 as usize + u32_at(b) as usize;
+            let name_len = exe[name_off..]
+                .iter()
+                .position(|&c| c == 0)
+                .expect("NUL-terminated symbol name");
+            if &exe[name_off..name_off + name_len] != name.as_bytes() {
+                continue;
             }
+            let st_shndx = u16_at(b + 6) as usize;
+            let st_value = u64_at(b + 8);
+            let st_size = u64_at(b + 16) as usize;
+            assert!(st_size > 0, "{name}: symbol has no size");
+            let sec = section(st_shndx);
+            let file_off = (st_value - sec.1 + sec.2) as usize;
+            return exe[file_off..file_off + st_size].to_vec();
         }
-        assert_eq!(code.last().copied(), Some(0xc3), "wrapper has no `ret` within 96 bytes");
-        code.windows(needle.len()).any(|w| w == needle)
+        panic!("symbol {name} not found in .symtab");
+    }
+
+    /// A wrapper as (fn pointer, exported symbol name). The pointer is only
+    /// ever passed through `black_box` — it is never dereferenced — so that
+    /// the otherwise-unreferenced wrapper is actually codegen'd into the test
+    /// binary (an `export_name` alone does not keep a dead fn alive here;
+    /// measured: 0 probe symbols in `.symtab` without the reference).
+    macro_rules! probe {
+        ($w:ident) => {
+            ($w as unsafe fn(), concat!("ndarray_amx_probe_", stringify!($w)))
+        };
+    }
+
+    /// Does the wrapper's own symbol contain the exact encoding? Bounded by
+    /// the symbol's linker-recorded size, so a neighbouring wrapper's bytes
+    /// can neither fail a negative assertion nor pass a positive one.
+    fn contains((f, name): (unsafe fn(), &str), needle: &[u8]) -> bool {
+        std::hint::black_box(f as usize);
+        symbol_bytes(name)
+            .windows(needle.len())
+            .any(|w| w == needle)
     }
 
     #[inline(never)]
+    #[export_name = "ndarray_amx_probe_w_tilezero0"]
     unsafe fn w_tilezero0() {
         tilezero::<0>()
     }
     #[inline(never)]
+    #[export_name = "ndarray_amx_probe_w_tilezero7"]
     unsafe fn w_tilezero7() {
         tilezero::<7>()
     }
     #[inline(never)]
+    #[export_name = "ndarray_amx_probe_w_tilerelease"]
     unsafe fn w_tilerelease() {
         tilerelease()
     }
     #[inline(never)]
+    #[export_name = "ndarray_amx_probe_w_tdpbusd_021"]
     unsafe fn w_tdpbusd_021() {
         tdpbusd::<0, 2, 1>()
     }
     #[inline(never)]
+    #[export_name = "ndarray_amx_probe_w_tdpbf16ps_021"]
     unsafe fn w_tdpbf16ps_021() {
         tdpbf16ps::<0, 2, 1>()
     }
     #[inline(never)]
+    #[export_name = "ndarray_amx_probe_w_tdpbusd_012"]
     unsafe fn w_tdpbusd_012() {
         tdpbusd::<0, 1, 2>()
     }
     #[inline(never)]
+    #[export_name = "ndarray_amx_probe_w_tdpbssd_012"]
     unsafe fn w_tdpbssd_012() {
         tdpbssd::<0, 1, 2>()
     }
     #[inline(never)]
+    #[export_name = "ndarray_amx_probe_w_tdpfp16ps_012"]
     unsafe fn w_tdpfp16ps_012() {
         tdpfp16ps::<0, 1, 2>()
     }
     #[inline(never)]
+    #[export_name = "ndarray_amx_probe_w_tcmmimfp16ps_012"]
     unsafe fn w_tcmmimfp16ps_012() {
         tcmmimfp16ps::<0, 1, 2>()
     }
     #[inline(never)]
+    #[export_name = "ndarray_amx_probe_w_tdpbf8ps_012"]
     unsafe fn w_tdpbf8ps_012() {
         tdpbf8ps::<0, 1, 2>()
     }
     #[inline(never)]
+    #[export_name = "ndarray_amx_probe_w_tdphf8ps_012"]
     unsafe fn w_tdphf8ps_012() {
         tdphf8ps::<0, 1, 2>()
     }
     #[inline(never)]
+    #[export_name = "ndarray_amx_probe_w_tmmultf32ps_012"]
     unsafe fn w_tmmultf32ps_012() {
         tmmultf32ps::<0, 1, 2>()
     }
@@ -819,14 +879,14 @@ mod tests {
     /// Rapids (`amx-enablement-and-kernel.md` §5).
     #[test]
     fn mnemonics_reproduce_the_validated_byte_table() {
-        assert!(contains(w_tilezero0, &[0xc4, 0xe2, 0x7b, 0x49, 0xc0]), "TILEZERO tmm0");
-        assert!(contains(w_tilerelease, &[0xc4, 0xe2, 0x78, 0x49, 0xc0]), "TILERELEASE");
+        assert!(contains(probe!(w_tilezero0), &[0xc4, 0xe2, 0x7b, 0x49, 0xc0]), "TILEZERO tmm0");
+        assert!(contains(probe!(w_tilerelease), &[0xc4, 0xe2, 0x78, 0x49, 0xc0]), "TILERELEASE");
         assert!(
-            contains(w_tdpbusd_021, &[0xc4, 0xe2, 0x71, 0x5e, 0xc2]),
+            contains(probe!(w_tdpbusd_021), &[0xc4, 0xe2, 0x71, 0x5e, 0xc2]),
             "TDPBUSD tmm0, tmm2, tmm1 == table C4 E2 71 5E C2"
         );
         assert!(
-            contains(w_tdpbf16ps_021, &[0xc4, 0xe2, 0x72, 0x5c, 0xc2]),
+            contains(probe!(w_tdpbf16ps_021), &[0xc4, 0xe2, 0x72, 0x5c, 0xc2]),
             "TDPBF16PS tmm0, tmm2, tmm1 == table C4 E2 72 5C C2"
         );
     }
@@ -836,22 +896,28 @@ mod tests {
     /// the operands (the "mirror" the gotchas warn about) would fail one half.
     #[test]
     fn operand_order_is_intel_order_rm_then_vvvv() {
-        assert!(contains(w_tdpbusd_012, &[0xc4, 0xe2, 0x69, 0x5e, 0xc1]), "tdpbusd tmm0,tmm1,tmm2 → rm=1 vvvv=2");
-        assert!(contains(w_tdpbusd_021, &[0xc4, 0xe2, 0x71, 0x5e, 0xc2]), "tdpbusd tmm0,tmm2,tmm1 → rm=2 vvvv=1");
-        assert!(!contains(w_tdpbusd_012, &[0xc4, 0xe2, 0x71, 0x5e, 0xc2]));
+        assert!(
+            contains(probe!(w_tdpbusd_012), &[0xc4, 0xe2, 0x69, 0x5e, 0xc1]),
+            "tdpbusd tmm0,tmm1,tmm2 → rm=1 vvvv=2"
+        );
+        assert!(
+            contains(probe!(w_tdpbusd_021), &[0xc4, 0xe2, 0x71, 0x5e, 0xc2]),
+            "tdpbusd tmm0,tmm2,tmm1 → rm=2 vvvv=1"
+        );
+        assert!(!contains(probe!(w_tdpbusd_012), &[0xc4, 0xe2, 0x71, 0x5e, 0xc2]));
     }
 
     /// Beyond the GEMM tier: the bytes LLVM 22.1.8 emits for the mnemonics
     /// that have never executed here (assembler-verified, per the module doc).
     #[test]
     fn extended_tiers_assemble_to_their_llvm_encodings() {
-        assert!(contains(w_tilezero7, &[0xc4, 0xe2, 0x7b, 0x49, 0xf8]), "TILEZERO tmm7");
-        assert!(contains(w_tdpbssd_012, &[0xc4, 0xe2, 0x6b, 0x5e, 0xc1]), "TDPBSSD (F2 prefix)");
-        assert!(contains(w_tdpfp16ps_012, &[0xc4, 0xe2, 0x6b, 0x5c, 0xc1]), "TDPFP16PS = 5C with F2");
-        assert!(contains(w_tcmmimfp16ps_012, &[0xc4, 0xe2, 0x69, 0x6c, 0xc1]), "TCMMIMFP16PS = 6C with 66");
-        assert!(contains(w_tdpbf8ps_012, &[0xc4, 0xe5, 0x68, 0xfd, 0xc1]), "TDPBF8PS = map5 FD, no prefix");
-        assert!(contains(w_tdphf8ps_012, &[0xc4, 0xe5, 0x69, 0xfd, 0xc1]), "TDPHF8PS = map5 FD, 66");
-        assert!(contains(w_tmmultf32ps_012, &[0xc4, 0xe2, 0x69, 0x48, 0xc1]), "TMMULTF32PS = 48 with 66");
+        assert!(contains(probe!(w_tilezero7), &[0xc4, 0xe2, 0x7b, 0x49, 0xf8]), "TILEZERO tmm7");
+        assert!(contains(probe!(w_tdpbssd_012), &[0xc4, 0xe2, 0x6b, 0x5e, 0xc1]), "TDPBSSD (F2 prefix)");
+        assert!(contains(probe!(w_tdpfp16ps_012), &[0xc4, 0xe2, 0x6b, 0x5c, 0xc1]), "TDPFP16PS = 5C with F2");
+        assert!(contains(probe!(w_tcmmimfp16ps_012), &[0xc4, 0xe2, 0x69, 0x6c, 0xc1]), "TCMMIMFP16PS = 6C with 66");
+        assert!(contains(probe!(w_tdpbf8ps_012), &[0xc4, 0xe5, 0x68, 0xfd, 0xc1]), "TDPBF8PS = map5 FD, no prefix");
+        assert!(contains(probe!(w_tdphf8ps_012), &[0xc4, 0xe5, 0x69, 0xfd, 0xc1]), "TDPHF8PS = map5 FD, 66");
+        assert!(contains(probe!(w_tmmultf32ps_012), &[0xc4, 0xe2, 0x69, 0x48, 0xc1]), "TMMULTF32PS = 48 with 66");
     }
 
     #[test]
