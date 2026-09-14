@@ -441,10 +441,31 @@ fn check_predicates_to_mask() -> Result<(), u32> {
 /// boundary and cover every tail length 1..=7.
 const WORD_LENS: [usize; 14] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 16, 17, 31];
 
+/// Row counts for the mask-algebra group: every full-word count in
+/// `WORD_LENS`, plus, for each non-zero word count, three partially-live
+/// final words (63, 32 and 1 live bits). The full-word counts keep the
+/// `as_chunks` bodies covered; the partial ones are the ONLY inputs that
+/// reach the tail branches of `mask_not` / `mask_not_assign` / `mask_all` and
+/// the tail-only `mask_any` check below — with `n` always `nw * 64`, that
+/// branch was dead and a backend mishandling tail bits would still have
+/// passed (CodeRabbit on PR #306).
+fn row_lens() -> Vec<usize> {
+    let mut v = Vec::with_capacity(WORD_LENS.len() * 4);
+    for &nw in &WORD_LENS {
+        v.push(nw * 64);
+        if nw > 0 {
+            v.push(nw * 64 - 1);
+            v.push(nw * 64 - 32);
+            v.push(nw * 64 - 63);
+        }
+    }
+    v
+}
+
 fn check_mask_algebra() -> Result<(), u32> {
     let mut rng = SplitMix64(0x6000_0000_0002);
-    for &nw in &WORD_LENS {
-        let n = nw * 64;
+    for n in row_lens() {
+        let nw = words_for(n);
         // Conforming inputs: random bits with the tail beyond `n` cleared.
         let tail_mask = |i: usize| -> u64 {
             let live = n.saturating_sub(i * 64).min(64);

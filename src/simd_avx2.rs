@@ -673,16 +673,26 @@ impl F32x16 {
         }
         F32Mask16(bits)
     }
-    /// Gather 16 f32 values from `base_ptr` using 16 i32 indices.
+    /// Gather 16 f32 values at `base_ptr.offset(indices[i])` — the same
+    /// signature and contract as the AVX-512 backend's `_mm512_i32gather_ps`
+    /// form: indices are SIGNED element offsets, so a negative index reads
+    /// an element before `base_ptr`. (A first cut cast each index to `usize`
+    /// and used `add`, which turned `-1` into a huge positive offset —
+    /// undefined behaviour on this backend for an index the other backends
+    /// accept; CodeRabbit on PR #306.)
     ///
     /// # Safety
-    /// Caller must ensure all indices are valid offsets into the memory at `base_ptr`.
+    /// For every `i in 0..16`, `base_ptr.offset(indices[i] as isize)` must
+    /// lie inside one allocation together with `base_ptr`, be 4-byte
+    /// aligned, and point at an initialised, readable `f32`.
     #[inline(always)]
     pub unsafe fn gather(indices: I32x16, base_ptr: *const f32) -> Self {
         let idx = indices.0;
         let mut o = [0.0f32; 16];
         for i in 0..16 {
-            o[i] = *base_ptr.add(idx[i] as usize);
+            // SAFETY: the caller's contract above — each signed offset stays
+            // inside `base_ptr`'s allocation and points at a readable `f32`.
+            o[i] = unsafe { *base_ptr.offset(idx[i] as isize) };
         }
         Self::from_array(o)
     }

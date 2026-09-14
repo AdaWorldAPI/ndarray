@@ -26,6 +26,13 @@ on:
 
 name: SIMD realization matrix
 
+# Least privilege: nothing here pushes, comments, or releases. Every job
+# only reads the tree, so the token is read-only and is not persisted into
+# the checkout's git config (a repository-controlled command that runs after
+# checkout would otherwise inherit whatever the repo's default token can do).
+permissions:
+  contents: read
+
 # Two axes, one program.
 #
 #   realization  ×  platform
@@ -70,6 +77,8 @@ jobs:
     name: realization/avx2 × x86_64
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: generated ternlog bodies are current
@@ -94,14 +103,24 @@ jobs:
     name: realization/avx512 × x86_64
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           key: v4
-      - name: detect avx512f on this runner
+      - name: detect the full x86-64-v4 AVX-512 set on this runner
         id: cpu
+        # A v4 build may emit any of F/BW/CD/DQ/VL (the masking ops use the
+        # BW/VL byte and word compares beside the F ternlog), so avx512f alone
+        # would let a partially-capable host reach the run steps and SIGILL.
+        # All five or none.
         run: |
-          if grep -q -w avx512f /proc/cpuinfo; then echo "has=1" >> "$GITHUB_OUTPUT"; else echo "has=0" >> "$GITHUB_OUTPUT"; fi
+          has=1
+          for f in avx512f avx512bw avx512cd avx512dq avx512vl; do
+            grep -q -w "$f" /proc/cpuinfo || { echo "missing: $f"; has=0; }
+          done
+          echo "has=$has" >> "$GITHUB_OUTPUT"
           grep -m1 'model name' /proc/cpuinfo || true
       - name: build the parity program at x86-64-v4
         run: env -u RUSTFLAGS cargo --config .cargo/config-v4.toml build --release --manifest-path crates/simd-masking-parity/Cargo.toml --bin simd-masking-parity --target x86_64-unknown-linux-gnu
@@ -129,6 +148,8 @@ jobs:
     name: realization/neon × aarch64
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-unknown-linux-gnu
@@ -153,6 +174,8 @@ jobs:
     name: realization/wasm + scalar × wasm32
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -178,6 +201,8 @@ jobs:
     name: realization/nightly × x86_64
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
         with:
