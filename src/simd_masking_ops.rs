@@ -1595,6 +1595,269 @@ pub fn blend_i32(mask_words: &[u64], a: &[i32], b: &[i32], dst: &mut [i32]) {
     }
 }
 
+// ────────────────────────────────────────────────────────────────────────
+// Morton hex neighbour shift — the D-GTM-1m word-level op (§15)
+// ────────────────────────────────────────────────────────────────────────
+//
+// Rows are Morton-keyed 2-D (`q` on the even address bits, `r` on the odd
+// ones — `hex_tenant_mq_probe.rs::morton`). A mask word covers 64 rows, i.e.
+// an 8×8 axial block; within a word, bit index `b` in `0..64` has its local
+// `q` sub-coordinate at bits `{0,2,4}` and its local `r` sub-coordinate at
+// bits `{1,3,5}`. `mask_shift_morton` moves every set bit one cell along one
+// of the four axis directions, entirely as word-level ops: three fixed bit
+// permutations cover the cells whose local sub-coordinate does not overflow
+// the word, and one carry moves the cells that do into the adjacent word.
+//
+// `D-GTM-0m` (`.claude/blackboard.md`) measured that this per-active-bit
+// shift is the WHOLE cost of a spread step once the mask chain itself is
+// ~free; this op removes it by making the shift itself a handful of word
+// passes instead of a loop over set bits.
+
+/// One axis direction, as a runtime value (never a const generic — a
+/// consumer composing all four, or the two diagonal directions, picks the
+/// direction at the call site, not at compile time).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum MortonDir {
+    /// Increment the local `q` sub-coordinate (`HEX[0] = (+1, 0)`).
+    PosQ,
+    /// Decrement the local `q` sub-coordinate (`HEX[1] = (-1, 0)`).
+    NegQ,
+    /// Increment the local `r` sub-coordinate (`HEX[2] = (0, +1)`).
+    PosR,
+    /// Decrement the local `r` sub-coordinate (`HEX[3] = (0, -1)`).
+    NegR,
+}
+
+/// Build a 64-bit mask of every `b` in `0..64` for which
+/// `(b & test_mask) == test_pattern` — the case-selector predicates §15
+/// states literally as `b & M == P`. `const fn` so every `AxisTable` below is
+/// computed once, at compile time, never as a runtime literal.
+const fn morton_case_mask(test_mask: u32, test_pattern: u32) -> u64 {
+    let mut m = 0u64;
+    let mut b = 0u32;
+    while b < 64 {
+        if (b & test_mask) == test_pattern {
+            m |= 1u64 << b;
+        }
+        b += 1;
+    }
+    m
+}
+
+/// One direction's word-level shift recipe: the three interior (non-
+/// wrapping) case masks with their signed bit-shift amount (`> 0` is `<<`,
+/// `< 0` is `>>`), and the fourth (wrapping) case that carries into the
+/// neighbouring word.
+struct AxisTable {
+    /// `(case mask, signed shift)` for the three cells whose local
+    /// sub-coordinate does not overflow the word.
+    interior: [(u64, i32); 3],
+    /// The cells whose local sub-coordinate wraps and must carry out.
+    carry_mask: u64,
+    /// Magnitude of the carry's local re-basing shift.
+    carry_shift: u32,
+    /// `true` for `NegQ`/`NegR`: the carry moves toward the DECREASING
+    /// word (`dec_word`) and re-bases with `<<`. `false` for `PosQ`/`PosR`:
+    /// toward the INCREASING word (`inc_word`), re-based with `>>`.
+    carry_decrements: bool,
+}
+
+// The four tables, one per `MortonDir`, exactly as specified: `+r`/`-r` are
+// `+q`/`-q`'s tables with every bit position and shift amount doubled (the
+// local `r` sub-coordinate sits one bit to the left of `q`'s at every tier).
+
+const POS_Q: AxisTable = AxisTable {
+    interior: [(morton_case_mask(1, 0), 1), (morton_case_mask(5, 1), 3), (morton_case_mask(21, 5), 11)],
+    carry_mask: morton_case_mask(21, 21),
+    carry_shift: 21,
+    carry_decrements: false,
+};
+
+const NEG_Q: AxisTable = AxisTable {
+    interior: [(morton_case_mask(1, 1), -1), (morton_case_mask(5, 4), -3), (morton_case_mask(21, 16), -11)],
+    carry_mask: morton_case_mask(21, 0),
+    carry_shift: 21,
+    carry_decrements: true,
+};
+
+const POS_R: AxisTable = AxisTable {
+    interior: [(morton_case_mask(2, 0), 2), (morton_case_mask(10, 2), 6), (morton_case_mask(42, 10), 22)],
+    carry_mask: morton_case_mask(42, 42),
+    carry_shift: 42,
+    carry_decrements: false,
+};
+
+const NEG_R: AxisTable = AxisTable {
+    interior: [(morton_case_mask(2, 2), -2), (morton_case_mask(10, 8), -6), (morton_case_mask(42, 32), -22)],
+    carry_mask: morton_case_mask(42, 0),
+    carry_shift: 42,
+    carry_decrements: true,
+};
+
+/// `(self & mask) << shift` if `shift >= 0`, else `(self & mask) >> -shift` —
+/// the one interior case, as a whole-register op. `Shl<Self>`/`Shr<Self>` on
+/// `U64x8` take a per-lane vector count; a uniform shift is `splat(n)`, the
+/// same shape every backend already carries (`d11dd0f` filled the two that
+/// did not: AVX2 and nightly-simd).
+#[inline(always)]
+fn morton_case_shift(v: crate::simd::U64x8, mask: u64, shift: i32) -> crate::simd::U64x8 {
+    let masked = v & crate::simd::U64x8::splat(mask);
+    if shift >= 0 {
+        masked << crate::simd::U64x8::splat(shift as u64)
+    } else {
+        masked >> crate::simd::U64x8::splat((-shift) as u64)
+    }
+}
+
+/// The word-space `(x_bits, y_bits)` pair for a field of `n_words` words:
+/// the even/odd address-bit masks one tier UP from the cell-level `X_BITS`/
+/// `Y_BITS` in `hex_tenant_mq_probe.rs` — the word index is itself the
+/// Morton key of the block coordinates, so the same dilated-integer
+/// even/odd split applies, just over `log2(n_words)` bits instead of 16.
+#[inline(always)]
+fn word_axis_bits(n_words: usize) -> (u64, u64) {
+    let total_bits = n_words.trailing_zeros();
+    let mut x = 0u64;
+    let mut b = 0u32;
+    while b < total_bits {
+        x |= 1u64 << b;
+        b += 2;
+    }
+    (x, x << 1)
+}
+
+/// Dilated-integer increment of the `axis_bits` sub-coordinate of word `w`,
+/// `other_bits`-coordinate held fixed. `None` at the far edge (`axis_bits`
+/// already all-ones) — the same no-wrap contract as the cell-level
+/// `neighbour()` in the probe, one tier up.
+#[inline(always)]
+fn inc_word(w: usize, axis_bits: u64, other_bits: u64) -> Option<usize> {
+    let w = w as u64;
+    let x = w & axis_bits;
+    if x == axis_bits {
+        return None;
+    }
+    let xn = (x | other_bits).wrapping_add(1) & axis_bits;
+    Some((xn | (w & other_bits)) as usize)
+}
+
+/// Dilated-integer decrement, the mirror of [`inc_word`]. `None` at `x == 0`.
+#[inline(always)]
+fn dec_word(w: usize, axis_bits: u64, other_bits: u64) -> Option<usize> {
+    let w = w as u64;
+    let x = w & axis_bits;
+    if x == 0 {
+        return None;
+    }
+    let xn = x.wrapping_sub(1) & axis_bits;
+    Some((xn | (w & other_bits)) as usize)
+}
+
+/// `dst |= src` shifted one cell along `dir` on the Morton-keyed 2-D
+/// lattice (D-GTM-1m, `.claude/plans/gemm-ternlog-mask-consolidation-v1.md`
+/// §15) — the mask-level replacement for the per-active-bit hex neighbour
+/// shift `D-GTM-0m` measured as the whole cost of a spread step.
+///
+/// `src.len()` and `dst.len()` must be equal and a power of **four**: the
+/// word index doubles as the Morton key of the field's block coordinates, so
+/// `log2(n_words)` (the address bits above one word's own 6) must split
+/// evenly between the `q` and `r` halves — a non-square field is refused,
+/// never approximated. Cells on the far edge of `dir` produce nothing (no
+/// wrap-around). `dst` is **OR-accumulated, not overwritten** — clear it
+/// first, or chain several directions (e.g. all six hex neighbours) into one
+/// plane by calling this repeatedly with the same `dst`. A hex diagonal
+/// (`+q-r` or `-q+r`) is two calls: shift into a scratch buffer along the
+/// first axis, then shift that scratch (not `src`) along the second axis
+/// into `dst`.
+///
+/// # Panics
+///
+/// Panics if `src.len() != dst.len()`, or if that length is not `4^k` for
+/// some `k >= 0`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::{mask_shift_morton, MortonDir};
+///
+/// // a 64-word field (an 8×8 grid of 8×8 blocks = 64×64 cells).
+/// // cell 0 (q=0, r=0, bit 0 of word 0) shifted +q lands at cell (1, 0),
+/// // which is bit 1 of the same word (case A: b&1==0 -> b+1).
+/// let mut src = vec![0u64; 64];
+/// src[0] = 1;
+/// let mut dst = vec![0u64; 64];
+/// mask_shift_morton(&src, MortonDir::PosQ, &mut dst);
+/// assert_eq!(dst[0], 0b10);
+/// ```
+#[inline]
+pub fn mask_shift_morton(src: &[u64], dir: MortonDir, dst: &mut [u64]) {
+    assert_eq!(src.len(), dst.len(), "mask_shift_morton: src/dst length mismatch");
+    let n_words = src.len();
+    assert!(
+        n_words.is_power_of_two() && n_words.trailing_zeros().is_multiple_of(2),
+        "mask_shift_morton: n_words={n_words} is not a square Morton field (need n_words = 4^k, \
+         so the word index carries an even q/r bit split)"
+    );
+
+    let table = match dir {
+        MortonDir::PosQ => &POS_Q,
+        MortonDir::NegQ => &NEG_Q,
+        MortonDir::PosR => &POS_R,
+        MortonDir::NegR => &NEG_R,
+    };
+
+    // Pass 1 — the interior permutation, vectorized: and/shl-or-shr/or over
+    // whole `U64x8` registers, OR-accumulated into `dst`. Same chunk/tail
+    // shape as `mask_xor_assign` (both `src` and `dst` tails are read, since
+    // this is an accumulate, not an overwrite).
+    const L: usize = crate::simd::U64x8::LANES;
+    let (cs, ts) = src.as_chunks::<L>();
+    let (cd, td) = dst.as_chunks_mut::<L>();
+    for (s, d) in cs.iter().zip(cd.iter_mut()) {
+        let vs = crate::simd::U64x8::from_array(*s);
+        let mut acc = crate::simd::U64x8::from_array(*d);
+        for &(mask, shift) in &table.interior {
+            acc |= morton_case_shift(vs, mask, shift);
+        }
+        *d = acc.to_array();
+    }
+    if !ts.is_empty() {
+        let vs = crate::simd::U64x8::from_array(pad_tail(ts));
+        let mut acc = crate::simd::U64x8::from_array(pad_tail(td));
+        for &(mask, shift) in &table.interior {
+            acc |= morton_case_shift(vs, mask, shift);
+        }
+        td.copy_from_slice(&acc.to_array()[..td.len()]);
+    }
+
+    // Pass 2 — the one-word carry, scalar (there is exactly one neighbour
+    // word per source word, so there is nothing here for a vector lane to
+    // parallelize over).
+    let (x_bits, y_bits) = word_axis_bits(n_words);
+    let (axis_bits, other_bits) = match dir {
+        MortonDir::PosQ | MortonDir::NegQ => (x_bits, y_bits),
+        MortonDir::PosR | MortonDir::NegR => (y_bits, x_bits),
+    };
+    for (w, &s) in src.iter().enumerate() {
+        let carry_bits = s & table.carry_mask;
+        if carry_bits == 0 {
+            continue;
+        }
+        let neighbour = if table.carry_decrements {
+            dec_word(w, axis_bits, other_bits)
+        } else {
+            inc_word(w, axis_bits, other_bits)
+        };
+        if let Some(nb) = neighbour {
+            dst[nb] |= if table.carry_decrements {
+                carry_bits << table.carry_shift
+            } else {
+                carry_bits >> table.carry_shift
+            };
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2726,5 +2989,298 @@ mod tests {
                 }
             }
         }
+    }
+    // ── D-GTM-1m: mask_shift_morton (§15) ───────────────────────────────────
+    //
+    // The oracle below (`oracle_neighbour`) is a fresh transcription of
+    // `hex_tenant_mq_probe.rs::neighbour`'s dilated-integer add/sub — never a
+    // call into `mask_shift_morton` or its `AxisTable`s — generalized from
+    // the probe's fixed 16-bit field to whatever `n_cells` the test picks.
+
+    /// Even/odd address-bit split for a field of `n_cells` cells (must be a
+    /// power of four): the cell-level analogue of `word_axis_bits`, kept
+    /// independent here rather than calling it.
+    fn oracle_axis_bits(n_cells: usize) -> (u32, u32) {
+        let total_bits = n_cells.trailing_zeros();
+        let mut x = 0u32;
+        let mut b = 0u32;
+        while b < total_bits {
+            x |= 1u32 << b;
+            b += 2;
+        }
+        (x, x << 1)
+    }
+
+    /// One dilated-integer neighbour step, `(dq, dr)` each in `{-1, 0, 1}` —
+    /// zero on an axis leaves it untouched, non-zero on both is a diagonal.
+    /// `None` at the field edge (no wrap), exactly `neighbour()`'s contract.
+    fn oracle_neighbour(m: u32, dq: i32, dr: i32, x_bits: u32, y_bits: u32) -> Option<u32> {
+        let mut x = m & x_bits;
+        let mut y = m & y_bits;
+        match dq {
+            1 => {
+                if x == x_bits {
+                    return None;
+                }
+                x = (x | y_bits).wrapping_add(1) & x_bits;
+            }
+            -1 => {
+                if x == 0 {
+                    return None;
+                }
+                x = x.wrapping_sub(1) & x_bits;
+            }
+            _ => {}
+        }
+        match dr {
+            1 => {
+                if y == y_bits {
+                    return None;
+                }
+                y = (y | x_bits).wrapping_add(1) & y_bits;
+            }
+            -1 => {
+                if y == 0 {
+                    return None;
+                }
+                y = y.wrapping_sub(1) & y_bits;
+            }
+            _ => {}
+        }
+        Some(x | y)
+    }
+
+    fn dir_to_dq_dr(dir: MortonDir) -> (i32, i32) {
+        match dir {
+            MortonDir::PosQ => (1, 0),
+            MortonDir::NegQ => (-1, 0),
+            MortonDir::PosR => (0, 1),
+            MortonDir::NegR => (0, -1),
+        }
+    }
+
+    /// Apply one (possibly diagonal) oracle step to every set bit of `src`,
+    /// bit-by-bit — the reference `mask_shift_morton` must match.
+    fn oracle_shift_field(src: &[u64], dq: i32, dr: i32, n_cells: usize, x_bits: u32, y_bits: u32) -> Vec<u64> {
+        let mut dst = vec![0u64; src.len()];
+        for i in 0..n_cells {
+            if (src[i >> 6] >> (i & 63)) & 1 == 0 {
+                continue;
+            }
+            if let Some(j) = oracle_neighbour(i as u32, dq, dr, x_bits, y_bits) {
+                let j = j as usize;
+                dst[j >> 6] |= 1u64 << (j & 63);
+            }
+        }
+        dst
+    }
+
+    /// F1 — the four `AxisTable`s' masks (3 interior + 1 carry, per
+    /// direction) equal an INDEPENDENT runtime fold of the exact §15
+    /// predicates, computed here via explicit local-coordinate
+    /// classification (never `b & mask == pattern` arithmetic, which is how
+    /// the op itself is built) — a literal typo in either implementation
+    /// shows up as a mismatch.
+    #[test]
+    fn morton_axis_tables_match_a_per_bit_predicate_fold() {
+        // the local 3-bit sub-coordinate at `bits` (`{0,2,4}` for q, `{1,3,5}`
+        // for r), MSB-first from `bits[2]`.
+        fn local(b: u32, bits: [u32; 3]) -> u32 {
+            (((b >> bits[2]) & 1) << 2) | (((b >> bits[1]) & 1) << 1) | ((b >> bits[0]) & 1)
+        }
+        fn classify_pos(l: u32) -> usize {
+            match l {
+                0 | 2 | 4 | 6 => 0, // ..0  -> ..1                (+1 / +2)
+                1 | 5 => 1,         // ..01 -> ..10               (+3 / +6)
+                3 => 2,             // 011  -> 100                (+11 / +22)
+                7 => 3,             // 111  wraps                 (carry)
+                _ => unreachable!("a 3-bit local value is in 0..=7"),
+            }
+        }
+        fn classify_neg(l: u32) -> usize {
+            match l {
+                1 | 3 | 5 | 7 => 0, // ..1  -> ..0                (-1 / -2)
+                2 | 6 => 1,         // ..10 -> ..01               (-3 / -6)
+                4 => 2,             // 100  -> 011                (-11 / -22)
+                0 => 3,             // 000  wraps                 (carry)
+                _ => unreachable!("a 3-bit local value is in 0..=7"),
+            }
+        }
+        fn fold(bits: [u32; 3], classify: fn(u32) -> usize) -> [u64; 4] {
+            let mut out = [0u64; 4];
+            for b in 0u32..64 {
+                out[classify(local(b, bits))] |= 1u64 << b;
+            }
+            out
+        }
+
+        let q_bits = [0, 2, 4];
+        let r_bits = [1, 3, 5];
+        let pos_q = fold(q_bits, classify_pos);
+        let neg_q = fold(q_bits, classify_neg);
+        let pos_r = fold(r_bits, classify_pos);
+        let neg_r = fold(r_bits, classify_neg);
+
+        assert_eq!(POS_Q.interior.map(|(m, _)| m), [pos_q[0], pos_q[1], pos_q[2]], "POS_Q interior masks");
+        assert_eq!(POS_Q.carry_mask, pos_q[3], "POS_Q carry mask");
+        assert_eq!(NEG_Q.interior.map(|(m, _)| m), [neg_q[0], neg_q[1], neg_q[2]], "NEG_Q interior masks");
+        assert_eq!(NEG_Q.carry_mask, neg_q[3], "NEG_Q carry mask");
+        assert_eq!(POS_R.interior.map(|(m, _)| m), [pos_r[0], pos_r[1], pos_r[2]], "POS_R interior masks");
+        assert_eq!(POS_R.carry_mask, pos_r[3], "POS_R carry mask");
+        assert_eq!(NEG_R.interior.map(|(m, _)| m), [neg_r[0], neg_r[1], neg_r[2]], "NEG_R interior masks");
+        assert_eq!(NEG_R.carry_mask, neg_r[3], "NEG_R carry mask");
+
+        // anti-vacuity: each direction's four cases partition all 64 bits
+        // exactly once — a typo that dropped or doubled a bit shows here
+        // even if it happened to leave the individual masks pairwise unequal
+        // to something else that was also wrong.
+        for masks in [pos_q, neg_q, pos_r, neg_r] {
+            assert_eq!(masks[0] | masks[1] | masks[2] | masks[3], u64::MAX, "cases must cover every bit");
+            let total: u32 = masks.iter().map(|m| m.count_ones()).sum();
+            assert_eq!(total, 64, "cases must be pairwise disjoint");
+        }
+
+        // the shift amounts and carry directions, against §15's literal table.
+        assert_eq!(POS_Q.interior.map(|(_, s)| s), [1, 3, 11]);
+        assert_eq!((POS_Q.carry_shift, POS_Q.carry_decrements), (21, false));
+        assert_eq!(NEG_Q.interior.map(|(_, s)| s), [-1, -3, -11]);
+        assert_eq!((NEG_Q.carry_shift, NEG_Q.carry_decrements), (21, true));
+        assert_eq!(POS_R.interior.map(|(_, s)| s), [2, 6, 22]);
+        assert_eq!((POS_R.carry_shift, POS_R.carry_decrements), (42, false));
+        assert_eq!(NEG_R.interior.map(|(_, s)| s), [-2, -6, -22]);
+        assert_eq!((NEG_R.carry_shift, NEG_R.carry_decrements), (42, true));
+    }
+
+    /// F2 — `mask_shift_morton` matches `oracle_shift_field` bit-for-bit, over
+    /// random masks, at two field sizes (64 words = 64×64 cells, 1024 words =
+    /// 256×256 cells) and all four axis directions.
+    #[test]
+    fn morton_shift_matches_the_per_bit_oracle_on_random_fields() {
+        let mut seed = 0x1357_2468_1357_2468u64;
+        for &n_words in &[64usize, 1024] {
+            let n_cells = n_words * 64;
+            let (x_bits, y_bits) = oracle_axis_bits(n_cells);
+            for _ in 0..8 {
+                let src: Vec<u64> = (0..n_words).map(|_| splitmix64(&mut seed)).collect();
+                for dir in [MortonDir::PosQ, MortonDir::NegQ, MortonDir::PosR, MortonDir::NegR] {
+                    let mut got = vec![0u64; n_words];
+                    mask_shift_morton(&src, dir, &mut got);
+                    let (dq, dr) = dir_to_dq_dr(dir);
+                    let want = oracle_shift_field(&src, dq, dr, n_cells, x_bits, y_bits);
+                    assert_eq!(got, want, "n_words={n_words} dir={dir:?}");
+                }
+            }
+        }
+    }
+
+    /// F3 — can-fire: a lone interior bit moves to exactly one bit, at the
+    /// oracle's address, for every direction. Can-stay-silent: a NON-trivial
+    /// far-edge mask (every cell on `dir`'s edge, spread across many words —
+    /// not an empty mask) produces an all-zero `dst`.
+    #[test]
+    fn morton_shift_can_fire_and_can_stay_silent() {
+        let n_words = 64usize;
+        let n_cells = n_words * 64;
+        let (x_bits, y_bits) = oracle_axis_bits(n_cells);
+
+        let mut seed = 0xABCD_EF01_2345_6789u64;
+        for dir in [MortonDir::PosQ, MortonDir::NegQ, MortonDir::PosR, MortonDir::NegR] {
+            let (dq, dr) = dir_to_dq_dr(dir);
+            for _ in 0..16 {
+                // an interior cell: strictly inside both axes, so it is never
+                // the far edge for any direction under test.
+                let i = loop {
+                    let x = (splitmix64(&mut seed) as u32) & x_bits;
+                    let y = (splitmix64(&mut seed) as u32) & y_bits;
+                    if x != 0 && x != x_bits && y != 0 && y != y_bits {
+                        break (x | y) as usize;
+                    }
+                };
+                let mut src = vec![0u64; n_words];
+                src[i >> 6] |= 1u64 << (i & 63);
+                let mut dst = vec![0u64; n_words];
+                mask_shift_morton(&src, dir, &mut dst);
+                let fired: Vec<usize> = (0..n_cells)
+                    .filter(|&j| (dst[j >> 6] >> (j & 63)) & 1 == 1)
+                    .collect();
+                assert_eq!(fired.len(), 1, "exactly one bit must move, dir={dir:?} i={i}");
+                let want = oracle_shift_field(&src, dq, dr, n_cells, x_bits, y_bits);
+                assert_eq!(dst, want, "the moved bit must land at the oracle's address, dir={dir:?}");
+            }
+        }
+
+        for dir in [MortonDir::PosQ, MortonDir::NegQ, MortonDir::PosR, MortonDir::NegR] {
+            let mut src = vec![0u64; n_words];
+            let mut planted = 0usize;
+            for i in 0..n_cells {
+                let m = i as u32;
+                let (x, y) = (m & x_bits, m & y_bits);
+                let at_edge = match dir {
+                    MortonDir::PosQ => x == x_bits,
+                    MortonDir::NegQ => x == 0,
+                    MortonDir::PosR => y == y_bits,
+                    MortonDir::NegR => y == 0,
+                };
+                if at_edge {
+                    src[i >> 6] |= 1u64 << (i & 63);
+                    planted += 1;
+                }
+            }
+            // non-trivial and spread: strictly more than "a handful", and
+            // touching more than one word (never a single-word fixture that
+            // could pass by accident of layout).
+            assert!(planted >= 16, "far-edge fixture must be non-trivial, dir={dir:?} planted={planted}");
+            let touched_words = src.iter().filter(|&&w| w != 0).count();
+            assert!(touched_words > 1, "far-edge fixture must spread across words, dir={dir:?}");
+
+            let mut dst = vec![0u64; n_words];
+            mask_shift_morton(&src, dir, &mut dst);
+            assert!(dst.iter().all(|&w| w == 0), "far-edge bits must produce silence, dir={dir:?}");
+        }
+    }
+
+    /// F4 — composition: `+q` then `-q` is the identity on interior cells,
+    /// and a hex diagonal via two calls matches the oracle's one-step
+    /// diagonal, for both `+q-r` and its mirror `-q+r`.
+    #[test]
+    fn morton_shift_composes_to_identity_and_matches_the_hex_diagonal() {
+        let n_words = 64usize;
+        let n_cells = n_words * 64;
+        let (x_bits, y_bits) = oracle_axis_bits(n_cells);
+        let mut seed = 0x0F0F_1E1E_2D2D_3C3Cu64;
+
+        // +q then -q == identity, restricted to cells that cannot fall off
+        // the +q edge (so the round trip is well posed for every one).
+        let raw: Vec<u64> = (0..n_words).map(|_| splitmix64(&mut seed)).collect();
+        let mut interior = raw.clone();
+        for i in 0..n_cells {
+            if (i as u32) & x_bits == x_bits {
+                interior[i >> 6] &= !(1u64 << (i & 63));
+            }
+        }
+        assert!(interior.iter().any(|&w| w != 0), "the interior fixture must be non-empty");
+        let mut forward = vec![0u64; n_words];
+        mask_shift_morton(&interior, MortonDir::PosQ, &mut forward);
+        let mut back = vec![0u64; n_words];
+        mask_shift_morton(&forward, MortonDir::NegQ, &mut back);
+        assert_eq!(back, interior, "+q then -q must be the identity on interior cells");
+
+        // the hex diagonal: two composed calls must match the oracle's own
+        // single-step diagonal (`dq` and `dr` both non-zero at once).
+        let diag_src: Vec<u64> = (0..n_words).map(|_| splitmix64(&mut seed)).collect();
+
+        let mut scratch = vec![0u64; n_words];
+        mask_shift_morton(&diag_src, MortonDir::PosQ, &mut scratch);
+        let mut dst = vec![0u64; n_words];
+        mask_shift_morton(&scratch, MortonDir::NegR, &mut dst);
+        let want = oracle_shift_field(&diag_src, 1, -1, n_cells, x_bits, y_bits);
+        assert_eq!(dst, want, "+q-r composed via two calls must match the oracle diagonal");
+
+        let mut scratch2 = vec![0u64; n_words];
+        mask_shift_morton(&diag_src, MortonDir::NegQ, &mut scratch2);
+        let mut dst2 = vec![0u64; n_words];
+        mask_shift_morton(&scratch2, MortonDir::PosR, &mut dst2);
+        let want2 = oracle_shift_field(&diag_src, -1, 1, n_cells, x_bits, y_bits);
+        assert_eq!(dst2, want2, "-q+r composed via two calls must match the oracle diagonal");
     }
 }

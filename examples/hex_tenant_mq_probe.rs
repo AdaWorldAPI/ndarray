@@ -52,7 +52,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use ndarray::simd::ternlog::{AND3, OR2_AND};
-use ndarray::simd::{gt_i32_to_mask, mask_ternlog_assign, popcount_batch_u64, ternary_match_u32_to_mask};
+use ndarray::simd::{
+    gt_i32_to_mask, mask_and, mask_shift_morton, mask_ternlog_assign, popcount_batch_u64, ternary_match_u32_to_mask,
+    MortonDir,
+};
 
 // ── counting allocator: the 0k instrument ────────────────────────────────────
 static ALLOCED: AtomicUsize = AtomicUsize::new(0);
@@ -292,6 +295,95 @@ fn spread_step(
     fired
 }
 
+/// The same step as [`spread_step`], but with the per-active-bit hex
+/// neighbour loop — the `n` term §14/§15 name as the whole cost of a spread
+/// step — replaced by [`mask_shift_morton`] over whole words. For each axis
+/// rail `d`, the eligibility mask is applied to the SOURCE first (`elig[d]`
+/// bit `i` means "cell `i` may leave along `d`", so `source & elig[d]`
+/// selects the cells allowed to leave, THEN the shift moves them), and the
+/// shifted result is OR-accumulated into `scratch`. The two diagonal rails
+/// (4 = `+q-r`, 5 = `-q+r`) are two composed calls through `diag_scratch`
+/// (§15: shift the masked source along the FIRST axis into `diag_scratch`,
+/// then shift `diag_scratch` — never the masked source again — along the
+/// SECOND axis into `scratch`). Everything from the tile/gate chain onward,
+/// including the Hebbian reverse walk, is copied verbatim from
+/// [`spread_step`] — this function changes only how `scratch` is built.
+#[inline(never)]
+fn spread_step_shift(
+    state: &mut [u64], delta: &mut [u64], scratch: &mut [u64], res: &Resident<'_>, rails: &mut [[u8; 12]],
+    masked: &mut [u64], diag_scratch: &mut [u64],
+) -> usize {
+    let Resident {
+        elig,
+        tile,
+        gates,
+        x,
+        dirs,
+        from_delta,
+    } = *res;
+    for w in scratch.iter_mut() {
+        *w = 0;
+    }
+    let source: &[u64] = if from_delta { delta } else { state };
+
+    const AXES: [MortonDir; 4] = [MortonDir::PosQ, MortonDir::NegQ, MortonDir::PosR, MortonDir::NegR];
+    for (d, &dir) in AXES.iter().enumerate().take(dirs.min(4)) {
+        mask_and(source, &elig[d], masked);
+        mask_shift_morton(masked, dir, scratch);
+    }
+    if dirs > 4 {
+        // rail 4 = +q-r
+        mask_and(source, &elig[4], masked);
+        for w in diag_scratch.iter_mut() {
+            *w = 0;
+        }
+        mask_shift_morton(masked, MortonDir::PosQ, diag_scratch);
+        mask_shift_morton(diag_scratch, MortonDir::NegR, scratch);
+    }
+    if dirs > 5 {
+        // rail 5 = -q+r (the mirror composition)
+        mask_and(source, &elig[5], masked);
+        for w in diag_scratch.iter_mut() {
+            *w = 0;
+        }
+        mask_shift_morton(masked, MortonDir::NegQ, diag_scratch);
+        mask_shift_morton(diag_scratch, MortonDir::PosR, scratch);
+    }
+
+    // scratch = (scratch | state) & tile, then the chain narrows scratch in
+    // place: x resident gate masks, one AND3 pass each — verbatim from
+    // `spread_step`.
+    mask_ternlog_assign::<OR2_AND>(scratch, state, tile);
+    for k in 0..x {
+        let g1 = &gates[k % gates.len()];
+        let g2 = &gates[(k + 1) % gates.len()];
+        mask_ternlog_assign::<AND3>(scratch, g1, g2);
+    }
+    // Hebbian reverse walk — stays as is, verbatim from `spread_step`.
+    let mut fired = 0usize;
+    for wi in 0..scratch.len() {
+        let new_bits_word = scratch[wi] & !state[wi];
+        delta[wi] = new_bits_word;
+        let mut new_bits = new_bits_word;
+        while new_bits != 0 {
+            let j = (wi << 6) | new_bits.trailing_zeros() as usize;
+            new_bits &= new_bits - 1;
+            for d in 0..dirs {
+                let rev = d ^ 1;
+                if let Some(i) = neighbour(j as u32, rev) {
+                    let i = i as usize;
+                    if bit(state, i) && bit(&elig[d], i) {
+                        rails[i][2 * d + 1] = rails[i][2 * d + 1].saturating_add(1);
+                        fired += 1;
+                    }
+                }
+            }
+        }
+    }
+    state.copy_from_slice(scratch);
+    fired
+}
+
 /// Independent reference: row-major axial BFS with the same permeability,
 /// tile and gate semantics, no Morton, no masks.
 fn reference_step(
@@ -456,13 +548,17 @@ fn main() {
     println!("(otherwise the gates shrink the frontier and n moves with x — the fit measures nothing).");
     println!("The GATED arm uses the 4 real 90%-dense gates: what a rung/tenant chain does to the spread.");
     println!("The NNUE arm spreads from the DELTA frontier only (nnue+g = with the real gates).");
+    println!("The SHIFT arm replaces the per-bit hex loop with mask_shift_morton over whole words —");
+    println!("the D-GTM-1m primitive; same identity/real-gate split as ladder/gated (shift+g).");
     println!("arm     dirs  x   ns/step   fired/step  heap B/step  gate");
     let mut fits: Vec<(usize, f64)> = Vec::new();
-    for (arm, gates, gates_ref, from_delta) in [
-        ("ladder", &ones, &ones_ref, false),
-        ("gated", &gates, &gates_ref, false),
-        ("nnue", &ones, &ones_ref, true),
-        ("nnue+g", &gates, &gates_ref, true),
+    for (arm, gates, gates_ref, from_delta, use_shift) in [
+        ("ladder", &ones, &ones_ref, false, false),
+        ("gated", &gates, &gates_ref, false, false),
+        ("nnue", &ones, &ones_ref, true, false),
+        ("nnue+g", &gates, &gates_ref, true, false),
+        ("shift", &ones, &ones_ref, false, true),
+        ("shift+g", &gates, &gates_ref, false, true),
     ] {
         for dirs in [6usize, 1] {
             for x in [0usize, 1, 2, 4, 8, 16, 32] {
@@ -490,6 +586,12 @@ fn main() {
                 let mut state = vec![0u64; WORDS];
                 let mut delta = vec![0u64; WORDS];
                 let mut scratch = vec![0u64; WORDS];
+                // only the `shift`/`shift+g` arms touch these; allocated
+                // unconditionally (outside the timed region, negligible) so
+                // the dispatch below stays a plain branch, not a second copy
+                // of the buffer setup per arm.
+                let mut masked = vec![0u64; WORDS];
+                let mut diag_scratch = vec![0u64; WORDS];
                 let mut rails_run = rails.clone();
                 let mut fired_total = 0usize;
                 let mut ok = true;
@@ -505,7 +607,14 @@ fn main() {
                         rails_run.copy_from_slice(&rails);
                         fired_total = 0;
                         for _ in 0..steps {
-                            fired_total += spread_step(&mut state, &mut delta, &mut scratch, &res, &mut rails_run);
+                            fired_total += if use_shift {
+                                spread_step_shift(
+                                    &mut state, &mut delta, &mut scratch, &res, &mut rails_run, &mut masked,
+                                    &mut diag_scratch,
+                                )
+                            } else {
+                                spread_step(&mut state, &mut delta, &mut scratch, &res, &mut rails_run)
+                            };
                         }
                     }
                     let e = t.elapsed();
@@ -519,9 +628,18 @@ fn main() {
                 let mut state_chk = seed_state.clone();
                 let mut delta_chk = seed_state.clone();
                 let mut scratch_chk = vec![0u64; WORDS];
+                let mut masked_chk = vec![0u64; WORDS];
+                let mut diag_scratch_chk = vec![0u64; WORDS];
                 let mut rails_chk = rails.clone();
                 for _ in 0..steps {
-                    spread_step(&mut state_chk, &mut delta_chk, &mut scratch_chk, &res, &mut rails_chk);
+                    if use_shift {
+                        spread_step_shift(
+                            &mut state_chk, &mut delta_chk, &mut scratch_chk, &res, &mut rails_chk, &mut masked_chk,
+                            &mut diag_scratch_chk,
+                        );
+                    } else {
+                        spread_step(&mut state_chk, &mut delta_chk, &mut scratch_chk, &res, &mut rails_chk);
+                    }
                     reference_step(&mut reference, &rails, thr, &tile_ref, gates_ref, x, dirs);
                     ok &= masks_equal_axial(&state_chk, &reference);
                 }

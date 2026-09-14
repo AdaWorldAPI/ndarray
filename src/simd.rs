@@ -795,6 +795,7 @@ pub use crate::simd_masking_ops::{
     mask_not_assign,
     mask_or,
     mask_or_assign,
+    mask_shift_morton,
     mask_ternlog,
     mask_ternlog_assign,
     mask_xor,
@@ -808,6 +809,7 @@ pub use crate::simd_masking_ops::{
     ternary_match_strided_to_mask,
     ternary_match_u32_to_mask,
     ternary_match_u64_to_mask,
+    MortonDir,
 };
 // The popcount that closes the loop on the masks above: `mask_count` in ABI
 // terms. Already public at `ndarray::bitwise::popcount_batch_u64`; re-exported

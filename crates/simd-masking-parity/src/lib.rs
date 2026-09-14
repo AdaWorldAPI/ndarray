@@ -16,20 +16,21 @@
 //! op and shape: `0x1IM` / `0x2IM` = ternlog table `IM` on `U32x16` /
 //! `U64x8`, `0x3xx` `U64x8` algebra, `0x4xx` `I32x16` compares, `0x5xx`
 //! predicate→mask, `0x6xx` mask algebra, `0x7xx` care-match, `0x8xx` masked
-//! reductions and blend. `main.rs` (native / qemu) and `selfcheck()` (the
-//! wasm cdylib export, driven by `run.mjs`) both call [`run`].
+//! reductions and blend, `0x9xx` `mask_shift_morton` (the Morton hex
+//! neighbour shift, D-GTM-1m). `main.rs` (native / qemu) and `selfcheck()`
+//! (the wasm cdylib export, driven by `run.mjs`) both call [`run`].
 
 use ndarray::simd::{
     blend_i32, eq_i32_to_mask, eq_u32_strided_to_mask, eq_u32_to_mask, ge_i32_to_mask, gt_i32_to_mask, le_i32_to_mask,
     lt_i32_to_mask, mask_all, mask_and, mask_and_assign, mask_andnot, mask_andnot_assign, mask_any, mask_not,
-    mask_not_assign, mask_or, mask_or_assign, mask_ternlog, mask_ternlog_assign, mask_xor, mask_xor_assign,
-    masked_max_i32, masked_min_i32, masked_strided_group_sum, masked_sum_i32, ne_i32_to_mask, ne_u32_to_mask,
-    ternary_match_strided_to_mask, ternary_match_u32_to_mask, ternary_match_u64_to_mask, ternlog, I32x16, U32x16,
-    U64x8,
+    mask_not_assign, mask_or, mask_or_assign, mask_shift_morton, mask_ternlog, mask_ternlog_assign, mask_xor,
+    mask_xor_assign, masked_max_i32, masked_min_i32, masked_strided_group_sum, masked_sum_i32, ne_i32_to_mask,
+    ne_u32_to_mask, ternary_match_strided_to_mask, ternary_match_u32_to_mask, ternary_match_u64_to_mask, ternlog,
+    I32x16, MortonDir, U32x16, U64x8,
 };
 
 /// Number of check groups [`run`] executes (for the log line only).
-pub const CHECKS: usize = 8;
+pub const CHECKS: usize = 9;
 
 /// The wasm export: identical to [`run`], `extern "C"` so `run.mjs` can call it.
 #[no_mangle]
@@ -41,7 +42,7 @@ pub extern "C" fn selfcheck() -> u32 {
 pub fn run() -> u32 {
     let groups: [fn() -> Result<(), u32>; CHECKS] = [
         check_ternlog_all_tables, check_u64x8_algebra, check_i32x16_compare, check_predicates_to_mask,
-        check_mask_algebra, check_care_match, check_masked_reductions, check_blend,
+        check_mask_algebra, check_care_match, check_masked_reductions, check_blend, check_morton_shift,
     ];
     for g in groups {
         if let Err(code) = g() {
@@ -752,6 +753,102 @@ fn check_blend() -> Result<(), u32> {
             let want = if (m[i / 64] >> (i % 64)) & 1 == 1 { a[i] } else { b[i] };
             if dst[i] != want {
                 return Err(0x880);
+            }
+        }
+    }
+    Ok(())
+}
+
+// ── 0x9xx: mask_shift_morton — the Morton hex neighbour shift (D-GTM-1m) ────
+//
+// The reference below is an INDEPENDENT transcription of
+// `hex_tenant_mq_probe.rs::neighbour`'s dilated-integer add/sub (never a
+// call into `mask_shift_morton`), generalized from the probe's fixed
+// 256×256/16-bit field to whatever field size this check picks.
+
+/// Even/odd address-bit split for a field of `n_cells` cells.
+fn morton_axis_bits(n_cells: usize) -> (u32, u32) {
+    let total_bits = n_cells.trailing_zeros();
+    let mut x = 0u32;
+    let mut b = 0u32;
+    while b < total_bits {
+        x |= 1u32 << b;
+        b += 2;
+    }
+    (x, x << 1)
+}
+
+/// One dilated-integer neighbour step; `None` at the field edge (no wrap).
+fn morton_neighbour(m: u32, dq: i32, dr: i32, x_bits: u32, y_bits: u32) -> Option<u32> {
+    let mut x = m & x_bits;
+    let mut y = m & y_bits;
+    match dq {
+        1 => {
+            if x == x_bits {
+                return None;
+            }
+            x = (x | y_bits).wrapping_add(1) & x_bits;
+        }
+        -1 => {
+            if x == 0 {
+                return None;
+            }
+            x = x.wrapping_sub(1) & x_bits;
+        }
+        _ => {}
+    }
+    match dr {
+        1 => {
+            if y == y_bits {
+                return None;
+            }
+            y = (y | x_bits).wrapping_add(1) & y_bits;
+        }
+        -1 => {
+            if y == 0 {
+                return None;
+            }
+            y = y.wrapping_sub(1) & y_bits;
+        }
+        _ => {}
+    }
+    Some(x | y)
+}
+
+fn morton_reference_shift(src: &[u64], dq: i32, dr: i32, n_cells: usize, x_bits: u32, y_bits: u32) -> Vec<u64> {
+    let mut dst = vec![0u64; src.len()];
+    for i in 0..n_cells {
+        if (src[i >> 6] >> (i & 63)) & 1 == 0 {
+            continue;
+        }
+        if let Some(j) = morton_neighbour(i as u32, dq, dr, x_bits, y_bits) {
+            let j = j as usize;
+            dst[j >> 6] |= 1u64 << (j & 63);
+        }
+    }
+    dst
+}
+
+fn check_morton_shift() -> Result<(), u32> {
+    let mut rng = SplitMix64(0x9000_0000_0001);
+    let dirs = [
+        (MortonDir::PosQ, 1i32, 0i32),
+        (MortonDir::NegQ, -1, 0),
+        (MortonDir::PosR, 0, 1),
+        (MortonDir::NegR, 0, -1),
+    ];
+    for &n_words in &[1usize, 4, 64, 1024] {
+        let n_cells = n_words * 64;
+        let (x_bits, y_bits) = morton_axis_bits(n_cells);
+        for _ in 0..4 {
+            let src: Vec<u64> = (0..n_words).map(|_| rng.next()).collect();
+            for (k, &(dir, dq, dr)) in dirs.iter().enumerate() {
+                let mut got = vec![0u64; n_words];
+                mask_shift_morton(&src, dir, &mut got);
+                let want = morton_reference_shift(&src, dq, dr, n_cells, x_bits, y_bits);
+                if got != want {
+                    return Err(0x900 | k as u32);
+                }
             }
         }
     }
