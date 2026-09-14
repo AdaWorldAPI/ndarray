@@ -886,3 +886,28 @@ rather than from a linker. If enrichment rises and k=2/k=3 compression goes with
 the mechanism survives on the substrate it was actually proposed for. If the
 compression column looks like the table above, the tract framing is dead generally
 and white matter needs to be a structure after all.
+
+## §14 — D-GTM-0m MEASURED: the hex TENANT — one Morton-keyed SoA, top-down AND spread (2026-09-14)
+
+Probe `examples/hex_tenant_mq_probe.rs`; full numbers in `.claude/blackboard.md`
+(2026-09-14 (2)). What it settles, against this plan's own rows:
+
+- **§9 R1 is closed [G] by construction, not by argument.** With the SoA row =
+  Morton(q, r) and rail `d` = hex direction `d`, adjacency and carving are the
+  same six. Grey = the rail bytes (permeability, strength — plastic, one owner);
+  white = the address prefix (a trie node = a contiguous row range).
+- **M1 (reveal ahead) has a measured dividend for FIXED distributions:** a node
+  reveal is a range write, 49–99 ns, against 22 µs for the TCAM sweep — 228–462×.
+  `ternary_match_*` remains the op for addresses that were not minted in order.
+- **M2/M3 are priced:** `step = x·ternlogq + n`, ternlogq = 291 ns/pass on 8 KiB
+  masks, n = 17.3 µs, residual 2.8 %. Chain depth is ~free (1.7 % at x = 1); the
+  reveal/spread term is the whole cost; coal (one re-chain) = 0.48 maintained
+  steps. The formula holds only when `n` is held fixed — with real gates the
+  survivor population moves with x and a naive fit reads 13–32 % residual. That
+  is a measurement-apparatus fact, recorded so the next ladder does not repeat it.
+- **The missing primitive is named:** a mask-level hex neighbour shift on the
+  Morton lattice. Until it exists, spread from the delta frontier (the NNUE
+  reading) halves `n` with the identical closure.
+- **0k holds on this shape too:** 0 heap bytes/step on every arm.
+- Still open: the u8/u16 compare-to-mask (T1), the shift primitive (T1), a
+  second density and tile size, and `perf` counters for the residency claim.

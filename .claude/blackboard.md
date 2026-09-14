@@ -1,3 +1,56 @@
+## 2026-09-14 (2) — D-GTM-0m: the hex TENANT — top-down traversal AND spread on ONE Morton-keyed SoA; `step = x·ternlogq + n` measured, and the chain is 1.7 % of it
+
+Probe: `examples/hex_tenant_mq_probe.rs` (`--release`, committed; output banked
+in the session scratchpad). Operator statement it builds (2026-09-14): *"static
+traversal top down AND plasticity (spread) in the same substrate — SoA gets a
+hex tenant with 6×2×8 bit and the field is a trie (fixed spatial distribution)."*
+This is `gemm-ternlog-mask-consolidation-v1.md` §9 M1/M1b/M2/M3 and §11.10
+(`substrate == mask geometry == projection surface`) executed on the merged #306
+facade, not argued. Substrate: 65,536 rows = 256×256 axial hex cells, **row =
+Morton(q, r)**, payload = the V3 12-byte register read `6×(u8:u8)` with rail `d`
+= hex direction `d`, `u8:u8 = (permeability, strength)`. §9 R1 ("not obviously
+the same six") is resolved by construction: adjacency and carving ARE the same
+six once the rail index is the direction. Three gates, all green (32/32 cells):
+range reveal == TCAM reveal at every level/prefix; Morton-arm spread == an
+independent row-major axial BFS at every step (plasticity bytes compared too);
+hot-path heap = **0 B/step** everywhere (counting allocator).
+
+**White — top-down is a RANGE, not a compare.** A trie node at nibble level L is
+`2^(16−4L)` CONTIGUOUS rows, so revealing it is a range write: **49–99 ns** vs
+**22.4–22.8 µs** for the general `ternary_match_u32_to_mask` sweep over the
+address column — **228–462×**. That is the fixed-spatial-distribution dividend
+stated as a number: the TCAM op stays for addresses that are NOT laid out (the
+D-GTM-0l linker case); a minted, Morton-keyed tenant never pays it.
+
+**Grey — the cost model, fitted (identity gates, survivors held at 1175):**
+`step = x·ternlogq + n` with **ternlogq = 291 ns/pass** (8 KiB masks, 0.285
+ns/word) and **n = 17.3 µs**, max residual 2.8 % over x ∈ {0,1,2,4,8,16,32}.
+So at x = 1 the chain is **1.7 %** of the step; even x = 32 only doubles it.
+`n` is the ONE non-mask op on the path — the per-active-bit hex shift (dilated-
+integer add per direction). **That is the missing substrate word**: a mask-level
+neighbour shift on the Morton lattice (`mask_shift_hex(state, d, dst)` — within
+a nibble a 4×4 block shift, carries across blocks), which would fold `n` into a
+handful of word passes. Filed, not built. First rung without it: the **NNUE
+reading** — spread from the DELTA frontier (`scratch & !state`), never from the
+accumulated state — gives the identical closure (gate green) at **8.8 µs**
+(−48 %), 8.4 µs with the real gates. The E-Q8 control is in the table (degree-1
+arm: 7.0 µs, 301 survivors — a different closure, so a cost floor, not a cost
+equivalence).
+
+**Coal.** One re-chain (regenerate a resident mask from its column,
+`gt_i32_to_mask` over 256 KiB) = **8.9 µs = 30.6 ternlogq passes = 0.48
+maintained steps** at x = 4. M2 is linear: x → x±1 is one pass (291 ns), no
+cliff. M1b generation (6 eligibility masks) = 75 µs once per mask generation.
+Plasticity: 740 rows' strength bytes bumped IN the register (1,263 firings over
+24 steps), on survivors only — the first version fired on every re-reached cell
+the gates then removed, which is the "fire before you know it survived" bug the
+reverse walk fixes.
+
+**Stated limits.** The T1 compare is i32-wide, so the u8 permeability column is
+widened 4× for `gt_i32_to_mask` — `n_gen` and coal are UPPER bounds; a u8/u16
+compare-to-mask is a T1 addition. One fixture density (62 % permeable), one
+tile size, timing floor 50 ms, no `perf`. No production caller; this is W0.
+
 ## 2026-09-14 — AVX2 arm of the mask family MEASURED, not rewritten: 6 of 10 shapes were already packed, 4 earned intrinsic realizations
 
 **The pre-compaction plan was wrong, and the instrument said so before code
