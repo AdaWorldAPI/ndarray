@@ -42,7 +42,7 @@
 //! - The return value is consumed (folded into the printed report), so nothing
 //!   is dead-code-eliminated.
 
-use ndarray::simd::{add_mul_f32, I8x32, U32x16, U64x4, U64x8, U8x64};
+use ndarray::simd::{add_mul_f32, ternlog, I32x16, I8x32, U32x16, U64x4, U64x8, U8x64};
 use std::hint::black_box;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -602,6 +602,80 @@ pub fn arx_lane512_x8(a: [U32x16; 8], b: [U32x16; 8]) -> [U32x16; 8] {
 // Driver — runtime-derived inputs, every result consumed.
 // ============================================================================
 
+// ============================================================================
+// Group F — the MASK FAMILY (PR #306). Does the x86-64-v3 backend's array
+// polyfill lower the exact shapes `simd_masking_ops` calls to packed AVX2, or
+// does any of them scalarise the way the u64 rotate does? Every probe calls
+// the LIBRARY method (no hand-written mirror) so the answer is about the code
+// that ships, not about a look-alike. Rung 3 of the acceptance ladder, x86.
+// ============================================================================
+
+/// `U64x8::ternlog::<MAJ3>` — the two-of-three majority, the table with the
+/// deepest Shannon ladder (t0 != t1, neither zero nor full, not complements).
+#[inline(never)]
+pub fn ternlog_u64x8_maj3(a: U64x8, b: U64x8, c: U64x8) -> U64x8 {
+    a.ternlog::<{ ternlog::MAJ3 }>(b, c)
+}
+
+/// `U64x8::ternlog::<0xCA>` — `c ? a : b` (bit select), the general-case
+/// ladder arm `(T0 & !c) | (T1 & c)`.
+#[inline(never)]
+pub fn ternlog_u64x8_select(a: U64x8, b: U64x8, c: U64x8) -> U64x8 {
+    a.ternlog::<0xCA>(b, c)
+}
+
+/// `U32x16::ternlog::<XOR_AND>` — the exact immediate `simd_masking_ops`
+/// uses four times.
+#[inline(never)]
+pub fn ternlog_u32x16_xor_and(a: U32x16, b: U32x16, c: U32x16) -> U32x16 {
+    a.ternlog::<{ ternlog::XOR_AND }>(b, c)
+}
+
+/// `U64x8::andnot` — `self & !other`, the mask set-difference.
+#[inline(never)]
+pub fn andnot_u64x8(a: U64x8, b: U64x8) -> U64x8 {
+    a.andnot(b)
+}
+
+/// `U64x8::popcnt` — per-lane population count (no packed popcnt below
+/// AVX-512 VPOPCNTDQ; the question is whether LLVM emits the pshufb-nibble
+/// or Harley-Seal idiom, or eight scalar `popcntq`).
+#[inline(never)]
+pub fn popcnt_u64x8(a: U64x8) -> U64x8 {
+    a.popcnt()
+}
+
+/// `U64x8::xor_popcount` — Hamming distance, the reduction form.
+#[inline(never)]
+pub fn xor_popcount_u64x8(a: U64x8, b: U64x8) -> u64 {
+    a.xor_popcount(b)
+}
+
+/// `U64x8::rotate_left` through the LIBRARY method (rot_u64x8 above measures a
+/// hand-written mirror of it; this one measures the shipped code).
+#[inline(never)]
+pub fn rotate_left_lib_u64x8(a: U64x8, n: u32) -> U64x8 {
+    a.rotate_left(n)
+}
+
+/// `I32x16::gt_bitmask` — packed signed compare to a 16-bit LSB-first mask.
+#[inline(never)]
+pub fn gt_bitmask_i32x16(a: I32x16, b: I32x16) -> u16 {
+    a.gt_bitmask(b)
+}
+
+/// `I32x16::cmpge_zero_mask` — sign-bit extraction as a 16-bit mask.
+#[inline(never)]
+pub fn cmpge_zero_mask_i32x16(a: I32x16) -> u16 {
+    a.cmpge_zero_mask()
+}
+
+/// `I32x16::reduce_max` — horizontal max over the polyfill.
+#[inline(never)]
+pub fn reduce_max_i32x16(a: I32x16) -> i32 {
+    a.reduce_max()
+}
+
 /// Wall-clock nanoseconds XORed with argc — a runtime value no build-time
 /// constant folder can predict, used to seed a small PRNG for building probe
 /// inputs. Piped through `black_box` at every call site below as well, so
@@ -795,6 +869,85 @@ fn main() {
     }
     acc ^= n1.iter().fold(0u64, |s, v| s ^ v.reduce_sum() as u64);
     acc ^= n2.iter().fold(0u64, |s, v| s ^ v.reduce_sum() as u64);
+
+    // ---- Group F (mask family) ----
+    let (fa, fb, fc) = (
+        U64x8::from_array(std::array::from_fn(|_| rng.next())),
+        U64x8::from_array(std::array::from_fn(|_| rng.next())),
+        U64x8::from_array(std::array::from_fn(|_| rng.next())),
+    );
+    // Correctness first: every ternlog probe is checked against the bit-serial
+    // truth-table definition before its codegen is reported.
+    let ref_ternlog = |imm: i32, a: u64, b: u64, c: u64| -> u64 {
+        let mut out = 0u64;
+        for bit in 0..64 {
+            let idx = (((a >> bit) & 1) << 2) | (((b >> bit) & 1) << 1) | ((c >> bit) & 1);
+            out |= (((imm as u64) >> idx) & 1) << bit;
+        }
+        out
+    };
+    let maj = ternlog_u64x8_maj3(black_box(fa), black_box(fb), black_box(fc));
+    let sel = ternlog_u64x8_select(black_box(fa), black_box(fb), black_box(fc));
+    {
+        let (a, b, c) = (fa.to_array(), fb.to_array(), fc.to_array());
+        for i in 0..8 {
+            assert_eq!(maj.to_array()[i], ref_ternlog(ternlog::MAJ3, a[i], b[i], c[i]), "MAJ3 lane {i}");
+            assert_eq!(sel.to_array()[i], ref_ternlog(0xCA, a[i], b[i], c[i]), "0xCA lane {i}");
+        }
+    }
+    acc ^= maj.reduce_sum() ^ sel.reduce_sum();
+
+    let (ua, ub, uc) = (
+        U32x16::from_array(std::array::from_fn(|_| rng.next() as u32)),
+        U32x16::from_array(std::array::from_fn(|_| rng.next() as u32)),
+        U32x16::from_array(std::array::from_fn(|_| rng.next() as u32)),
+    );
+    let xa = ternlog_u32x16_xor_and(black_box(ua), black_box(ub), black_box(uc));
+    {
+        let (a, b, c) = (ua.to_array(), ub.to_array(), uc.to_array());
+        for i in 0..16 {
+            assert_eq!(
+                xa.to_array()[i],
+                ref_ternlog(ternlog::XOR_AND, a[i] as u64, b[i] as u64, c[i] as u64) as u32,
+                "XOR_AND lane {i}"
+            );
+        }
+    }
+    acc ^= xa.reduce_sum() as u64;
+
+    let an = andnot_u64x8(black_box(fa), black_box(fb));
+    assert_eq!(an.to_array(), std::array::from_fn::<u64, 8, _>(|i| fa.to_array()[i] & !fb.to_array()[i]));
+    acc ^= an.reduce_sum();
+
+    let pc = popcnt_u64x8(black_box(fa));
+    assert_eq!(pc.to_array(), std::array::from_fn::<u64, 8, _>(|i| fa.to_array()[i].count_ones() as u64));
+    acc ^= pc.reduce_sum();
+
+    let xp = xor_popcount_u64x8(black_box(fa), black_box(fb));
+    assert_eq!(xp, (0..8).map(|i| (fa.to_array()[i] ^ fb.to_array()[i]).count_ones() as u64).sum::<u64>());
+    acc ^= xp;
+
+    let rn = 1 + (rng.next() % 63) as u32;
+    let rl = rotate_left_lib_u64x8(black_box(fa), black_box(rn));
+    assert_eq!(rl.to_array(), std::array::from_fn::<u64, 8, _>(|i| fa.to_array()[i].rotate_left(rn)));
+    acc ^= rl.reduce_sum();
+
+    let (ia, ib) = (
+        I32x16::from_array(std::array::from_fn(|_| rng.next() as i32)),
+        I32x16::from_array(std::array::from_fn(|_| rng.next() as i32)),
+    );
+    let gt = gt_bitmask_i32x16(black_box(ia), black_box(ib));
+    let ge0 = cmpge_zero_mask_i32x16(black_box(ia));
+    let mx = reduce_max_i32x16(black_box(ia));
+    {
+        let (a, b) = (ia.to_array(), ib.to_array());
+        let want_gt = (0..16).fold(0u16, |m, i| m | (((a[i] > b[i]) as u16) << i));
+        let want_ge0 = (0..16).fold(0u16, |m, i| m | (((a[i] >= 0) as u16) << i));
+        assert_eq!(gt, want_gt, "gt_bitmask");
+        assert_eq!(ge0, want_ge0, "cmpge_zero_mask");
+        assert_eq!(mx, *a.iter().max().unwrap(), "reduce_max");
+    }
+    acc ^= (gt as u64) ^ ((ge0 as u64) << 16) ^ ((mx as u32 as u64) << 32);
 
     println!("simd-codegen-oracle: probes executed, combined checksum = {acc:#018x}");
 }

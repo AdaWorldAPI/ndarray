@@ -267,6 +267,25 @@ in production under load, AVX-512 siblings unaffected.
 
 ---
 
+## Gotcha 15: the operand "mirror" was a misread of the byte table — use mnemonics
+
+`src/hpc/amx_ops.rs` (2026-09-14) assembles every AMX mnemonic on stable
+1.98.1 with `const` tile operands. Intel order is `tdpbusd tmmD, tmmS1, tmmS2`
+= `D += S1·S2`, S1 = ModRM.rm (plain M×K), S2 = VEX.vvvv (VNNI K×N). The
+validated `C4 E2 71 5E C2` is `tdpbusd tmm0, tmm2, tmm1`, i.e. the kernel's
+"A in tmm2, B in tmm1" placement is the plain SDM semantics, not a mirror.
+Gotcha 12's *placement* stays correct; its *explanation* is superseded.
+Aliased tile operands are now a compile error (`const` assert), so the SIGILL
+of Gotcha 11 cannot be written THROUGH `amx_ops` (the `.byte` path in
+`amx_matmul` is untouched and still lets a caller alias tiles). Encoding
+tests read each wrapper's bytes out of the test binary's ELF symtab and pin
+at least one op of every tier that has a register-only or masked encoding:
+the four GEMM-tier sequences to the EMR-validated table, everything else to
+LLVM 22.1.8's own emission (a drift guard). TF32 is hand-encoded raw bytes
+(nightly's LLVM 23 dropped the mnemonic) pinned to the bytes 22.1.8 once
+produced. The AVX512 row ops are pinned only on `avx512f` builds. NO tier
+beyond TILE/INT8/BF16 has executed on any host here.
+
 ## Hardware tiers
 
 ```

@@ -1,0 +1,213 @@
+on:
+  pull_request:
+    paths:
+      - 'src/simd*.rs'
+      - 'src/simd_nightly/**'
+      - 'src/simd_masking_ops.rs'
+      - 'src/hpc/amx_ops.rs'
+      - 'src/hpc/amx_matmul.rs'
+      - 'crates/simd-masking-parity/**'
+      - 'crates/neon-simd-parity/**'
+      - 'examples/ternlog_codegen_probe.rs'
+      - 'examples/amx_realization_report.rs'
+      - 'scripts/masking-parity.sh'
+      - 'scripts/codegen-witness.sh'
+      - 'scripts/neon-asm-rung3.sh'
+      - 'tools/gen_ternlog_bodies.py'
+      - '.cargo/**'
+      - 'Cargo.toml'
+      - 'src/lib.rs'
+      - '.github/workflows/simd-matrix.yaml'
+  merge_group:
+  push:
+    branches:
+      - master
+      - main
+
+name: SIMD realization matrix
+
+# Least privilege: nothing here pushes, comments, or releases. Every job
+# only reads the tree, so the token is read-only and is not persisted into
+# the checkout's git config (a repository-controlled command that runs after
+# checkout would otherwise inherit whatever the repo's default token can do).
+permissions:
+  contents: read
+
+# Two axes, one program.
+#
+#   realization  ×  platform
+#   avx512 / avx2 / neon / wasm / scalar / nightly   ×   x86_64 / aarch64 / wasm32
+#
+# Four rows run the SAME facade-only parity program unconditionally
+# (`crates/simd-masking-parity`, via `scripts/masking-parity.sh <arm>`) — it
+# has no idea which backend `simd.rs` selected, so a row proves "this
+# realization is bit-identical to its scalar / bit-serial references" and
+# nothing else. The avx512 row runs it ONLY on a runner that has avx512f;
+# otherwise it degrades to an assembly-only assertion, and on that path the
+# AVX-512 realization's bits are NOT proven in CI (the local v4 gate is the
+# record for them). Where a row's assembly can be inspected, the tiny opt-3
+# codegen oracle (`examples/ternlog_codegen_probe.rs`, via
+# `scripts/codegen-witness.sh <arm>`) runs beside it: the parity program
+# proves bits at the parity crate's release opt-level 2, the oracle proves the
+# backend selected the instruction it is REQUIRED to select at opt-level 3.
+# Neither replaces the other.
+#
+# The scalar realization has no host of its own: it is what `simd.rs` selects
+# on wasm32 WITHOUT `+simd128`, so the `scalar` row is a wasm32 build with the
+# feature off, run under node. `nightly` is the `core::simd` realization
+# behind the opt-in `nightly-simd` feature and needs a nightly rustc.
+#
+# No workflow-global RUSTFLAGS here, on purpose: a global RUSTFLAGS REPLACES
+# every cargo-config `rustflags` entry, which is how the v4 row would silently
+# become a v3 row (see `.github/workflows/ci.yaml` tier4 for the incident).
+# The v4 row passes `--config .cargo/config-v4.toml` through CARGO_ARGS.
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  native:
+    # x86_64 host at the crate's default target-cpu (x86-64-v3 = the AVX2
+    # realization). Also the ONLY row that can exercise AMX: the tile ops are
+    # runtime-gated and always compiled into native builds, so the report
+    # prints which gates this runner clears (`tile_available`/`available`
+    # false on a non-AMX runner is the expected, honest answer) and the
+    # encoding tests pin the assembled bytes without executing a tile op.
+    runs-on: ubuntu-latest
+    name: realization/avx2 × x86_64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: generated ternlog bodies are current
+        run: python3 tools/gen_ternlog_bodies.py --check
+      - name: masking parity (native, default config)
+        run: bash scripts/masking-parity.sh native
+      - name: codegen witness (avx2)
+        run: bash scripts/codegen-witness.sh avx2
+      - name: AMX realization report (runtime-gated; prints this runner's gates)
+        run: cargo run --example amx_realization_report
+      - name: AMX encoding + detection tests (no tile op executes)
+        run: cargo test --lib -- hpc::amx_ops simd_amx
+
+  native-v4:
+    # Same host, AVX-512 realization via the v4 cargo config. Building and
+    # inspecting the assembly needs no AVX-512 silicon; RUNNING the parity
+    # binary and the probe's self-check does, and GitHub's ubuntu runners do
+    # not promise it — so the run steps are gated on /proc/cpuinfo and report
+    # SKIPPED loudly rather than SIGILL. The build + witness inspection (which
+    # asserts vpternlog was selected) always runs.
+    runs-on: ubuntu-latest
+    name: realization/avx512 × x86_64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: v4
+      - name: detect the full x86-64-v4 AVX-512 set on this runner
+        id: cpu
+        # A v4 build may emit any of F/BW/CD/DQ/VL (the masking ops use the
+        # BW/VL byte and word compares beside the F ternlog), so avx512f alone
+        # would let a partially-capable host reach the run steps and SIGILL.
+        # All five or none.
+        run: |
+          has=1
+          for f in avx512f avx512bw avx512cd avx512dq avx512vl; do
+            grep -q -w "$f" /proc/cpuinfo || { echo "missing: $f"; has=0; }
+          done
+          echo "has=$has" >> "$GITHUB_OUTPUT"
+          grep -m1 'model name' /proc/cpuinfo || true
+      - name: build the parity program at x86-64-v4
+        run: env -u RUSTFLAGS cargo --config .cargo/config-v4.toml build --release --manifest-path crates/simd-masking-parity/Cargo.toml --bin simd-masking-parity --target x86_64-unknown-linux-gnu
+      - name: masking parity (native, v4 config)
+        if: steps.cpu.outputs.has == '1'
+        run: CARGO_ARGS='--config .cargo/config-v4.toml' bash scripts/masking-parity.sh native
+      - name: codegen witness (avx512) — assembly inspection + native self-check
+        if: steps.cpu.outputs.has == '1'
+        run: CARGO_ARGS='--config .cargo/config-v4.toml' bash scripts/codegen-witness.sh avx512
+      - name: codegen witness (avx512) — assembly inspection only (runner lacks avx512f)
+        if: steps.cpu.outputs.has == '0'
+        # The SAME script, in its asm-only mode — one implementation of the
+        # stale-assembly guard (`rm -f` + `touch`) and of the symbol
+        # attribution, not a second hand-rolled copy that drifts.
+        run: |
+          echo "::warning::runner lacks avx512f — v4 parity run and probe self-check SKIPPED; asserting the emitted assembly only"
+          env -u RUSTFLAGS WITNESS_NO_RUN=1 CARGO_ARGS='--config .cargo/config-v4.toml' bash scripts/codegen-witness.sh avx512
+
+  neon:
+    # aarch64 realization: cross-build on the x86 runner, run under qemu-user.
+    # Three rungs: parity under qemu (bits), the codegen witness (opt-3 NEON
+    # logic on v*.16b, GPR logic bounded), and rung 3 of the pre-existing NEON
+    # asm gate (`neon-simd-parity`, the wider type surface).
+    runs-on: ubuntu-latest
+    name: realization/neon × aarch64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+      - run: rustup target add aarch64-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: aarch64
+      - name: install aarch64 cross toolchain + qemu-user
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu qemu-user-static
+      - name: masking parity (neon, qemu)
+        run: bash scripts/masking-parity.sh neon-qemu
+      - name: codegen witness (neon)
+        run: CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc bash scripts/codegen-witness.sh neon aarch64-unknown-linux-gnu
+      - name: NEON asm rung 3
+        run: CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc bash scripts/neon-asm-rung3.sh
+
+  wasm:
+    # wasm32 with +simd128 = the `simd_wasm` realization; wasm32 WITHOUT it is
+    # what `simd.rs` selects as the scalar realization — the scalar backend's
+    # only executable row, run through the identical program.
+    runs-on: ubuntu-latest
+    name: realization/wasm + scalar × wasm32
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: masking parity (wasm, +simd128)
+        run: bash scripts/masking-parity.sh wasm
+      - name: masking parity (scalar realization = wasm32 without simd128)
+        run: bash scripts/masking-parity.sh wasm-scalar
+
+  nightly:
+    # The `core::simd` realization behind the opt-in `nightly-simd` feature.
+    # Same program, same reference, nightly rustc; plus the lib tests that
+    # exercise the arm directly (masking ops, facade tests, AMX encodings —
+    # the latter because nightly's newer LLVM is where a dropped mnemonic
+    # first surfaces, as TF32 did).
+    runs-on: ubuntu-latest
+    name: realization/nightly × x86_64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: nightly
+      - name: masking parity (nightly-simd)
+        run: bash scripts/masking-parity.sh nightly
+      - name: lib tests on the nightly arm
+        run: cargo +nightly test --lib --features nightly-simd -- simd_masking_ops simd::tests hpc::amx_ops simd_amx

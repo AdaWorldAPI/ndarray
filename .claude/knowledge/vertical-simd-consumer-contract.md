@@ -423,3 +423,93 @@ removal commit had to be reverted once the step-1 gate was found. "Contains
 raw intrinsics" and "raw intrinsics are reachable" are different claims;
 audit the second. Full record: board `EPIPHANIES.md` 2026-07-28 entry +
 the `.cargo/config.toml` comment block.
+
+---
+
+## The masking layer: `simd_masking_ops.rs` and the two laws above the backends (2026-09-13)
+
+Operator-ruled during the mask-RISC arc; recorded here because every W1a
+primitive that turns values into masks, composes masks, or reduces under a
+mask is now expected to land in THIS shape rather than beside `add_i8`.
+
+```text
+consumers                 semantic ops only — TERNLOG<IMM>, AND, XOR, COUNT
+simd_masking_ops.rs       slice/chunk/tail ergonomics, *_assign forms,
+                          mask composition, masked reductions — never an ISA
+simd.rs                   architecture-agnostic types, compile-time selection
+simd_{avx512,avx2,neon,wasm,scalar}.rs   peer backends, each owns realization
+```
+
+- **Polyfill law.** Every public mask/SIMD primitive a consumer uses has a
+  compile-time implementation in ALL FIVE backends; scalar is a peer, not a
+  fallback; no runtime ISA dispatch above `simd.rs`; hardware-specific
+  optimisation (including truth-table specialisation of `ternlog`) lives in
+  the backend file only. A consumer that branches on ISA is a violation.
+- **Backend law.** No shared generic implementation body under the backends.
+  Shared tests and shared *generated* truth-table logic are fine
+  (`tools/gen_ternlog_bodies.py` emits backend-LOCAL bodies between
+  `GEN-TERNLOG` markers); a common function the backends call into is not.
+- **Placement rule for new work.** Backend semantics (what `U64x8::ternlog`
+  *is*) never move into `simd_masking_ops.rs`; slice ergonomics, tail
+  handling, reusable-destination forms and fused conveniences never move into
+  a backend. A facade function that cannot be one delegation is the signal
+  the substrate is missing a word (the missing-capability STOP rule).
+- **Acceptance for a mask primitive** adds one row to the criteria above:
+  the cross-ISA parity harnesses (`crates/wasm-simd-parity`, run under node;
+  `crates/neon-simd-parity`, run under qemu) must carry the primitive's
+  check — the x86 `cargo test` suite never compiles `simd_wasm.rs` or
+  `simd_neon.rs`, so a backend body that only x86 tests cover is unproven on
+  the target it was written for. The 256-table `ternlog` arm is the template.
+- **AArch64 without the hardware — the acceptance ladder.** A NEON body is
+  authored from the LLVM/Clang intrinsic corpus + Rust `core::arch::aarch64`
+  declarations and proven by: (1) cross-target compile; (2) the parity harness
+  under qemu (CI); (3) cross-compiled assembly showing the expected NEON ops
+  and no unexpected scalarisation — a `to_array()`-per-lane loop passed rungs
+  1, 2 and 4 and FAILED 3 (536 scalar vs 4 vector ops), which is why rung 3 is
+  not optional; (4) exhaustive reference parity; (5) hardware benchmarking as
+  a later performance gate. Command shape for rung 3:
+  `cargo rustc --release --manifest-path crates/neon-simd-parity/Cargo.toml
+  --target aarch64-unknown-linux-gnu -- --emit=asm`, then count
+  `(and|orr|eor|bic|orn) v*.16b` against `(and|orr|eor|bic) w*,`.
+- **`unsafe` at the intrinsic boundary — where and why (measured, 1.98.1,
+  `tools/safe_intrinsic_probe`).** x86 and aarch64 SIMD intrinsics are safe
+  fns whose CALL requires the caller to carry the matching
+  `#[target_feature]`; build-config features do not count (rustc says so in
+  the E0133 note), and a safe annotated fn called from a plain fn fails the
+  same way. The per-fn annotation is not the fix: a `simd_{arch}.rs` file is
+  compiled for exactly one target CPU, selected by `cfg`, so the feature is
+  already a property of the file — restating it on every fn is illogical and
+  propagates to every safe caller; rustc just does not read the `cfg` as
+  evidence. wasm32
+  simd128 intrinsics are callable from plain safe code. Rule: a backend
+  method owns exactly one expression-narrow `unsafe` at its intrinsic
+  boundary with a SAFETY line; wasm bodies carry none; nothing above a
+  backend file is ever `unsafe`. Re-run the probe after a toolchain bump —
+  the day rustc counts baseline features, the aarch64/x86 rows flip and the
+  blocks come out.
+- **Five execution flavours, one semantic surface (operator, 2026-09-13).**
+  (1) x86-64-v3 default/CI → `simd_avx2`; (2) AVX-512/v4 → `simd_avx512`;
+  (3) `target-cpu=native` → backend chosen from the build host's CPUID;
+  (4) `nightly-simd` → `core::simd`; (5) `runtime-dispatch` → LazyLock
+  detection then a specialised kernel. `#[target_feature]` propagation is not
+  the architecture: the selected backend (or the LazyLock branch) is the
+  capability proof, intrinsics stay at the backend's narrow `unsafe`
+  boundary, and `simd_masking_ops` / mask-RISC / consumers never inherit an
+  ISA calling contract. A mask primitive is never routed through Scalar
+  because rustc wants `unsafe` at an intrinsic. **Audit rule:** a new mask
+  primitive is proven on every flavour whose backend has a native lane type
+  for it — check `simd.rs`'s re-export arm per target, not the file you
+  authored in; `U64x8`/`I32x16` resolved to scalar on aarch64 and wasm32
+  until the #306 audit caught it.
+- **Measure the shipped symbol before overriding it (2026-09-14, the AVX2
+  arm of the mask family).** The plan said "replace the `avx2_int_type!`
+  array polyfills with native `[__m256i; 2]`"; the codegen oracle
+  (`.claude/knowledge/simd-codegen-oracle/`, Group F) said six of the ten
+  mask shapes — every ternlog ladder, andnot, popcnt, xor_popcount — were
+  ALREADY packed from scalar source, and four were not (u64 rotate, i32
+  horizontal min/max, and the two compare-to-bitmask forms, which were
+  *mixed*: mostly packed with lanes 0 and 13–15 peeled to scalar). Only the
+  four got intrinsic realizations. Rule: a polyfill lane loop is not scalar
+  because it is spelled as a loop; it is scalar when `--emit asm` on the
+  shipped method says so — and "mostly packed" is a category the oracle
+  must be able to report, because a peel is invisible to any parity test.

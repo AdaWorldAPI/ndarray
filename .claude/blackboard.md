@@ -1,3 +1,310 @@
+## 2026-09-14 — AVX2 arm of the mask family MEASURED, not rewritten: 6 of 10 shapes were already packed, 4 earned intrinsic realizations
+
+**The pre-compaction plan was wrong, and the instrument said so before code
+was written.** The five-flavour audit (entry below) scheduled a rewrite of
+`simd_avx2.rs`'s `U64x8`/`I32x16` from `avx2_int_type!` array polyfills to
+native `[__m256i; 2]` types. Before doing it I added the mask family to the
+codegen oracle as Group F (`.claude/knowledge/simd-codegen-oracle/probes.rs`,
+ten `#[inline(never)]` probes calling the SHIPPED library methods, each with
+a runtime self-check against the bit-serial definition) and ran it on the
+untouched polyfill at `-Ctarget-cpu=x86-64-v3`:
+
+| shape | packed / scalar-lane-arith |
+|---|---|
+| `ternlog::<MAJ3>` / `::<0xCA>` u64x8 | 18 / 0 |
+| `ternlog::<XOR_AND>` u32x16 | 8 / 0 |
+| `andnot` u64x8 | 6 / 0 |
+| `popcnt` u64x8 | 21 / 0 (vpshufb nibble LUT, not 8× popcntq) |
+| `xor_popcount` u64x8 | 25 / 0 |
+| **`rotate_left`** u64x8 | **0 / 8** `rolq` |
+| **`reduce_max`** i32x16 | **0 / 17** `cmpl` |
+| **`gt_bitmask`** i32x16 | **23 / 3** MIXED — lanes 0, 13–15 peeled to scalar |
+| **`cmpge_zero_mask`** i32x16 | **17 / 11** MIXED — same peel |
+
+The whole bit-logic half — the generated Shannon ladders, andnot, popcount
+— was packed from scalar source, exactly the oracle README's standing
+finding ("a recent PR hand-wrote ~700 lines of intrinsics to fix a gap that
+did not exist"). A `[__m256i; 2]` rewrite would have re-implemented six
+already-packed shapes and broken every `.0[i]` site in the file's seven
+`U64x8`/`I32x16`/`U32x16` impl blocks for nothing.
+
+**What shipped instead (backend-local, narrow `unsafe`, no `#[target_feature]`):**
+`U64x8::rotate_left/right` → `vpsllq`+`vpsrlq`+`vpor` per 256-bit half
+(uniform xmm count; 10 packed / 2 scalar — the 2 are `n % 64` / `64 - n`
+count setup, not lane data); `I32x16::reduce_min/max` → `vpminsd`/`vpmaxsd`
+tree 16→8→4→2→1 (8 / 0); `I32x16::gt_bitmask` → `vpcmpgtd` + movemask per
+half (9 / 0); `I32x16::cmpge_zero_mask` → complemented sign-bit movemask
+(10 / 0). SAFETY precondition on every block: this file is the x86-64-v3
+backend, `.cargo/config.toml` pins the target-cpu for every x86_64 build
+that selects the arm — the footing the native `U16x16` already stood on.
+Oracle re-run: ALL PROBES MATCH; Group F rows now carry `expect =
+"vectorized"` with 60 % floors and both runs' numbers in the notes.
+
+**Two stale claims corrected in the same pass.** `I32x16::gt_bitmask`'s doc
+comment said the oracle had measured a clean packed lowering for "exactly
+this form" — it had not been probed; measured, it was the mixed peel above.
+And `simd.rs`'s AVX2-arm comment claimed `simd_avx2.rs` carries
+per-function `#[target_feature(enable = "avx,avx2,fma")]` — grep finds
+zero, and by the operator's standing rule there must be none (one backend
+file, one compile-time target). Both rewritten to what is true.
+
+**Instrument findings, recorded not explained.** (a) `scripts/neon-asm-rung3.sh`
+misreported `check_ternlog_all_tables` as scalarised on its first real run
+because it counted LLVM's `.LBB*` basic-block labels as symbol boundaries —
+684 vector ops fragmented into hundreds of 4-op stubs. Fixed (function
+symbols only) and the scalar reference oracles excluded from the gate: rung
+3 PASS at 794 vector / 33 scalar. (b) The oracle's untouched hand-written
+`shiftor_rot_u64x8` probe flipped 0→10 packed in the same run that made the
+library rotate an intrinsic, while its two siblings stayed scalar; mechanism
+not established, noted on its baseline row as a finding about the instrument.
+
+**Gates on the final tree:** v3 clippy `-D warnings` + full lib 2292/2292;
+v4 clippy + 114 masking/simd tests; aarch64 check + rung 3 PASS; WASM parity
+OK; oracle ALL MATCH. New falsifier
+`i32x16_compare_bitmasks_and_reductions_at_lane_extremes` places the signed
+extremes at lanes 0/7/8/15 and walks MIN/MAX through every lane, so a
+wrong half order or a lane-dropping tree cannot pass it.
+
+## 2026-09-13 (2) — FIVE-FLAVOUR AUDIT of the masking substrate: U64x8/I32x16 were SCALAR on NEON, WASM and (as array polyfills) AVX2
+
+**Operator correction, verbatim in substance:** *re-read the dispatch
+architecture before using `safe_intrinsic_probe` to establish policy.* There
+are five execution flavours — (1) x86-64-v3 default/CI → `simd_avx2`;
+(2) AVX-512/v4 → `simd_avx512`; (3) `target-cpu=native` → backend from the
+build host's CPUID; (4) `nightly-simd` → `simd_nightly`/`core::simd`;
+(5) `--features runtime-dispatch` → one LazyLock capability detection, then the
+selected kernel. **`#[target_feature]` propagation is NOT the architecture.**
+For every compile-time flavour the selected backend file IS the capability
+proof and raw intrinsics stay at a narrow backend-local `unsafe` boundary; for
+flavour 5 the LazyLock branch is the proof; nightly inherits no ISA contract.
+**Never route a mask primitive through Scalar because rustc wants `unsafe` at
+an intrinsic.** (Measured: PR #306 adds no `#[target_feature]` outside the
+probe's two demonstration arms; the worker briefs forbid it verbatim.)
+
+**The audit's finding, the one that mattered:** the mask family is built on
+`U64x8` (all bulk algebra + ternlog) and `I32x16` (the signed-compare family),
+and `simd.rs` resolved BOTH to the **scalar** backend on aarch64
+(`:390-393`) and wasm32 (`:408-414`), while the v3 arm's are `avx2_int_type!`
+array polyfills. Only the `U32x16` paths (`eq_u32`/`ne_u32`/`ternary_match_u32`)
+reached NEON/v128. So the "424 NEON vector ops" rung-3 measurement was on the
+one lane type the family barely uses, and every `mask_and`/`mask_ternlog`/
+`gt_i32_to_mask` ran scalar loops on three of five flavours. The
+`agnostic-surface-cpu-matrix.md` rows claiming NEON `4×uint64x2_t` /
+`4×int32x4_t` were wrong (the dispatch-architecture matrix's ❌ was right).
+
+**Fix (PR1 scope — "backend-local polyfill completion"):** native `U64x8`
+(`[uint64x2_t;4]` / `[v128;4]` / `[__m256i;2]`) and `I32x16` (`[int32x4_t;4]` /
+`[v128;4]` / `[__m256i;2]`) in `simd_neon.rs`, `simd_wasm.rs`, `simd_avx2.rs`
+with the FULL scalar `impl_int_type!` surface (so nothing that compiled
+against the scalar re-export breaks — census: no consumer constructs these
+types or reads `.0`); generator arms for their `ternlog`; `simd.rs` re-export
+flip; harness arms (`check_u64x8_algebra`, `check_i32x16_compare`) on NEON and
+WASM; `scripts/neon-asm-rung3.sh` — the rung-3 count made symmetric
+(same mnemonic set on v-regs and w/x-regs, incl. `orn`/`mvn`), attributed per
+symbol, with a gate that every `ternlog` symbol is vector-dominant.
+
+**Recorded limits, not fixed here:** flavour 4 — the mask family does not
+compile under `nightly-simd` (`I32x16` has `cmpgt_mask`, not `gt_bitmask`;
+`U64x8` has no `andnot`; `ternlog` is the 36-op minterm) — PRE-EXISTING (same
+calls lived in `simd_int_ops` before #306; CI's nightly job is skipped).
+> ⊘ SUPERSEDED within #306 (e730109 "nightly realization complete"): the
+> nightly arm now carries `gt_bitmask`, `andnot`, `ternlog` and the W1a
+> types; the parity program runs on it (`masking-parity.sh nightly`) and
+> the matrix's nightly row exercises it. The limit above is history.
+Flavour 5 — no mask trampolines in `simd_runtime`; a release binary runs the
+v3-compiled mask kernels on every host. Both are separate decisions.
+
+**Council corrections folded in (C2, overclaim audit):** "≤ 7 ops" → 7/8 per
+vocabulary, now asserted by the generator; "113/113" → the filter is named;
+the x86 256-table sweep gained a `U32x16` twin; "public surface unchanged" →
+facade-preserved, module paths removed; `#![forbid(unsafe_code)]` is now
+declared on `simd_masking_ops.rs` rather than claimed; the wasm harness
+comment no longer claims the NEON equality it does not run; `mask_any` is
+documented tail-blind (its pair `mask_all` takes `n_rows`); the generator gained
+`--check` (regenerate-and-diff; a hand-edited body is now detectable).
+
+## 2026-09-13 — `simd_masking_ops.rs` + generated backend-local `ternlog` bodies + the DuckDB-vector-execution primitive set (PR1 of the mask-RISC arc)
+
+**Three-layer contract, operator-ruled this session — the architecture law
+this entry exists to make durable:**
+
+```text
+consumers (lance-graph-mask-risc, lgj-abi kernels, planner)
+        │  semantic ops only: TERNLOG<IMM>, AND, XOR, COUNT, eq→mask …
+        ▼
+simd_masking_ops.rs     slice/chunk/tail ergonomics, *_assign forms,
+        │               mask composition, masked reductions — NEVER an ISA
+        ▼
+simd.rs                 architecture-agnostic lane types, compile-time selected
+        ▼
+simd_{avx512,avx2,neon,wasm,scalar}.rs   each owns its realization, as a PEER
+```
+
+- **POLYFILL LAW.** ndarray is the ISA membrane. Every public mask/SIMD
+  primitive a consumer uses has compile-time implementations for AVX-512,
+  AVX2, NEON, WASM SIMD and scalar. **Scalar is a peer backend, not a
+  fallback.** No runtime ISA dispatch, no fallback chains. Hardware-specific
+  optimisation — including truth-table specialisation of `ternlog` — lives
+  entirely inside the corresponding backend file. Consumers never branch on
+  ISA; `TERNLOG` stays semantic above the backends.
+- **BACKEND LAW.** No shared generic/polyfill implementation body that the
+  backends delegate into. Shared *tests* and shared *generated truth-table
+  logic* are fine; a shared *runtime* body is not. The route to remove
+  repeated source is code generation emitting backend-LOCAL bodies.
+
+**What landed:**
+
+> **AMX fill (2026-09-14):** `src/hpc/amx_ops.rs` — the surviving
+> `X86InstrAMX.td` surface (amx-transpose is absent by design) as mnemonics
+> with `const` tile operands (INT8×4, BF16, FP16, COMPLEX×2, FP8×4, MOVRS×2,
+> AVX512 row ops ×6 under `avx512f` cfg, STTILECFG/TILELOADDT1, all 8 tiles)
+> plus TF32 as hand-encoded raw bytes (nightly's LLVM 23 rejects the
+> mnemonic; b80fd83). `amx_features()` per LLVM `Host.cpp` bits;
+> `amx_report()` prints the tiers. Encoding falsifiers read each wrapper's
+> bytes out of the test binary's ELF symtab on any x86 host: the four
+> GEMM-tier sequences are pinned to the EMR-VALIDATED table, every other
+> pinned op is pinned to LLVM's own emission (a drift guard, not silicon
+> validation). The "mirrored operand convention" turned out to be a misread
+> of that table (Gotcha 15). Extended tiers are assembler-verified only.
+
+> **CI finding (2026-09-14, e730109 red on `tier4-avx512-check`):** `ci.yaml`'s
+> workflow-global `RUSTFLAGS: "-D warnings"` REPLACES every `.cargo/config*`
+> rustflags entry (cargo precedence: RUSTFLAGS > target.<triple> > target.<cfg>
+> > build). Consequences, both measured: (a) the v4 job never had a
+> target-cpu, with the env-var recipe (which loses to the joined cfg `v3`
+> locally) or with `--config` (erased by the global env in CI) — the new
+> vpternlog assertion caught it at 0; (b) EVERY x86 job in CI builds at the
+> x86-64 baseline, without the v3 pin and without the dalek/poly1305 `--cfg`s
+> that `.cargo/config.toml` exists to apply. (a) is fixed in this PR
+> (`env -u RUSTFLAGS` + `--config .cargo/config-v4.toml`, `-Dwarnings` moved
+> into that file). (b) is pre-existing and out of this PR's concern: the fix
+> is a triple-scoped `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS` for the
+> x86 jobs plus per-target flags for nostd/wasm/aarch64, its own PR.
+
+1. **`src/simd_masking_ops.rs`** — the mask family moved out of
+   `simd_int_ops.rs` wholesale (predicates→mask, mask algebra, ternlog,
+   masked reductions, care-masked register match, blend) with its tests.
+   `simd_int_ops.rs` is integer arithmetic/conversion again. Every moved
+   `pub fn` (31/31) still re-exports through `ndarray::simd`, AND the 13
+   mask functions that were public on master as `ndarray::simd_int_ops::<f>`
+   (`simd_int_ops` is `pub mod`, so those were public paths — the first
+   draft dropped them and called the surface "unchanged", C2; CodeRabbit
+   round 2 caught the downstream break) are re-exported from `simd_int_ops`
+   as a compatibility surface, verified complete by diffing master's
+   `pub fn` list against HEAD's `pub fn` + `pub use` set (0 missing). The
+   canonical path is the facade; `lance-graph-planner`
+   `examples/dcr_w0_replay_budget.rs` moves to it in the lance-graph PR.
+2. **`tools/gen_ternlog_bodies.py`** — Shannon-lowers each 8-bit table into
+   two 2-input tables (`f = (!c & T0) | (c & T1)`), ≤ 7 ops (the naive
+   minterm form was up to 36), self-checks all 256 tables in Python, and
+   PRINTS each backend's body in that backend's own vocabulary between
+   `GEN-TERNLOG` markers (worst case **7 ops** where the vocabulary has a
+   native and-not — NEON `vbic`, WASM `v128.andnot` — and **8** where and-not
+   is spelled `x & !y`, the avx2/scalar operator vocabularies; the generator
+   ASSERTS these bounds on the emitted text, `count_ops`; the earlier "≤ 7 for
+   any table" was wrong for two of four backends — C2 council finding): operator traits on the array lanes (avx2, scalar),
+   per-`u32`-lane for NEON (`#[cfg(target_arch = "aarch64")]`-gated helper),
+   `v128_*` intrinsics for WASM (helper inside the cfg-gated `wasm32_simd`
+   module). AVX-512 keeps `_mm512_ternarylogic_epi64` untouched. The generic
+   `simd_ternlog_lower.rs` that a first cut shared across four backends was
+   DELETED — it violated the Backend Law and also blew the debug stack
+   (`#[inline(always)]` × 256 tables in one test frame).
+   Two generator traps recorded: a `const` item cannot read the enclosing
+   fn's `IMM` (E0401) — the tables are `let`-bound and fold identically after
+   monomorphisation; and the helper must be placed INSIDE the cfg-gated
+   module or every host compiles it and fails to resolve the intrinsics.
+3. **New primitives** (all through `ndarray::simd`): `lt/ge/le/ne/eq_i32_to_mask`,
+   `ne_u32_to_mask`, `mask_not{,_assign}` (tail re-cleared against `n_rows`),
+   `mask_xor{,_assign}` (its own primitive, lane `^` — NOT `ternlog::<XOR3>`,
+   whose AVX2 minterm cost is pointless for a native op), `mask_any`,
+   `mask_all`, `ternary_match_{u32,u64,strided}_to_mask` (care-masked
+   register match via `ternlog::<XOR_AND>` + zero test — the TCAM shape of a
+   V3 12-byte facet), `masked_min/max_i32`, `blend_i32`; immediates
+   `XOR_AND = 0x28`, `AND2_OR = 0xEA`. Ordered compares derive from `gt`
+   by complement, so they are exact at `i32::MIN`/`MAX` (threshold shifting
+   underflows).
+
+**Acceptance matrix, measured (not asserted):** for every IMM in 0..=255,
+bit-serial reference == the compiled realisation —
+x86 arms, `cargo test --lib -- simd_masking_ops::tests simd_int_ops::tests
+simd::tests` (a FILTER — the lib suite is ~3,100 tests; 113 is the selected
+set): v3 113/113, v4 (separate target dir) 113/113. On x86 the 256-table
+sweep now runs on BOTH lane types (`U64x8` and, since the C2 finding, a
+distinct `U32x16` sweep — the v3 arm carries two separate generated
+ladders and v4 two different intrinsics, so one sweep proved nothing about
+the other); **WASM: run for real under node** via
+`scripts/wasm-parity.sh`, whose harness gained `check_ternlog_all_tables`
+(256 tables × `U32x16` native v128 body × `U64x8` scalar body, two operand
+triples each) — rc=0; **NEON: rungs 1 and 3 of the AArch64 ladder measured on this host** —
+`cargo check --target aarch64-unknown-linux-gnu` of lib+tests and the
+harness (all 256 monomorphisations) compile; the cross-compiled harness
+assembly selects **424 NEON vector logical ops** (`and/orr/eor/bic/orn
+v.16b` — LLVM fuses `orr(mvn)` into `orn`) against 41 scalar ops left in
+harness scaffolding. The FIRST generated NEON body — a per-`u32`-lane loop
+through `to_array()`/`from_array()` — SCALARIZED: 536 scalar vs 4 vector
+ops. Same truth tables, same tests, rung 3 red. The body is now emitted
+per 128-bit quad in the backend's own intrinsic vocabulary
+(`vandq/vorrq/veorq/vbicq/vmvnq_u32` on `uint32x4_t`). Rung 2 (run under
+qemu) is CI's `neon_simd` job — no cross linker / qemu on this host, stated
+not assumed; rung 5 (Apple/AArch64 hardware) is a later performance gate,
+never a blocker for authoring the backend. Both harness arms use the SAME check body — shared tests are
+allowed, shared implementation is not.
+
+**AArch64 acceptance ladder (operator, 2026-09-13)** — the LLVM/Clang
+intrinsic corpus is the remote instruction catalogue for a backend the
+author cannot run: (1) cross-target compile succeeds; (2) parity harness
+compiles/runs under an emulator where sensible; (3) generated LLVM IR /
+assembly contains the expected NEON operations and no unexpected
+scalarisation; (4) truth-table / reference parity is exhaustive where
+possible; (5) real hardware benchmarking is a LATER performance gate.
+Three different proofs, kept sharp: LLVM says what lowering is available,
+cross-compiled assembly says what LLVM actually selected, hardware says
+whether the selection is fast.
+
+**Two standing rules (operator, 2026-09-13), recorded where the next
+backend author will look:**
+
+- **97 % safe. `unsafe` only for byte-code asm (AMX-class inline asm).**
+  Operator, on the intrinsic question: *"98 % of intrinsics are available in
+  safe mode by rust 1.98.1 — if not, document where and why."* Measured on
+  the pinned 1.98.1 with `tools/safe_intrinsic_probe` (re-run after every
+  toolchain bump; the answer is a toolchain property):
+
+  | arch / call shape | 1.98.1 |
+  |---|---|
+  | aarch64: plain fn → `vandq_u32` | **E0133** — caller must carry `#[target_feature(enable = "neon")]`; build-config `neon` "does not remove the requirement" |
+  | aarch64: `#[target_feature(neon)]` fn → `vandq_u32` | OK (safe, no `unsafe`) |
+  | aarch64: plain fn → that safe annotated fn | **E0133** — the requirement propagates up the chain |
+  | x86_64: plain fn → `_mm_and_si128` (sse2, baseline) | **E0133** |
+  | x86_64: plain fn → `_mm256_and_si256`, even with `-Ctarget-cpu=x86-64-v3` | **E0133** |
+  | x86_64: plain fn → `_mm512_ternarylogic_epi64`, even with `-Ctarget-cpu=x86-64-v4` | **E0133** |
+  | wasm32: plain fn → `v128_and`, with or without `+simd128` | **OK** |
+
+  So the intrinsic *functions* are safe, but rustc only accepts a per-fn
+  `#[target_feature]` as evidence — and in this repo that evidence is
+  **illogical to state** (operator ruling): every `simd_{arch}.rs` is compiled
+  for exactly one target CPU, selected by `cfg` at compile time, so the
+  feature is already a property of the file. Annotating each fn would be a
+  second, redundant declaration of the same fact, and it would propagate to
+  every safe caller up to the pub boundary. rustc simply does not read the
+  `cfg` as proof. Consequence: one expression-narrow `unsafe` at the
+  intrinsic boundary per backend method, with a SAFETY line (the generated
+  NEON body); the generated WASM body carries none; `simd_masking_ops.rs`
+  and every consumer above it stay `forbid(unsafe_code)`. Follow-up, not
+  this PR: the 20 pre-existing `unsafe` blocks in `simd_wasm.rs` are
+  removable under this finding.
+- **Conversions are bit-exact; rounding happens at most once.** F32 →
+  BF16x16 rounds exactly once, through a fused `add_mul` — never a separate
+  multiply then add, never a convert-then-convert. Mask primitives carry no
+  floats, so this PR is unaffected; the rule binds the BF16 lanes and every
+  future reduction that touches them.
+
+**Loose ends:** `simd_masking_ops` still has only slice-level compositions
+that consumers already needed; the ergonomic fused forms the mask-RISC
+executor will want (`masked_count_where_eq`, chunked survivor-word skip
+helpers) land with that consumer, backend-first. A `stride_bytes == 8` twin
+of the contiguous `eq_u32_strided` fast path is still unbuilt (no caller).
+
 ## 2026-09-05 — D-GTM-0l MEASURED (prefix-tract coverage, R2IL 6502 ore)
 
 The probe I flagged as decisive ran. `examples/prefix_tract_coverage_probe.rs`

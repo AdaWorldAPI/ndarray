@@ -287,6 +287,29 @@ impl PartialEq for F32x16 {
 pub struct F32Mask16(pub __mmask16);
 
 impl F32Mask16 {
+    /// The mask as a packed 16-bit bitmask, LSB-first (bit `i` = lane `i`).
+    /// The one representation-independent reading of a compare result: every
+    /// backend stores its mask differently (`__mmask16`, `u16`,
+    /// `core::simd::Mask`), so callers combine and inspect masks through this
+    /// rather than the tuple field (the `aabb` broadphase read `.0` directly
+    /// and did not compile on the portable backend — fixed 2026-09-14).
+    ///
+    /// # Examples
+    /// Bit `i` is lane `i`: with lanes 0 and 15 below the threshold the
+    /// `simd_lt` mask reads `0b1000_0000_0000_0001`. `ignore`d rather than
+    /// `no_run` because this type exists only under a compile-time `avx512f`
+    /// (v4 / native builds); a v3 doctest build cannot see it.
+    /// ```rust,ignore
+    /// let mut a = [10.0f32; 16];
+    /// a[0] = -1.0;
+    /// a[15] = -1.0;
+    /// let m = F32x16::from_array(a).simd_lt(F32x16::splat(0.0));
+    /// assert_eq!(m.to_bitmask(), 0b1000_0000_0000_0001);
+    /// ```
+    #[inline(always)]
+    pub fn to_bitmask(self) -> u16 {
+        self.0
+    }
     /// Select: for each lane, if mask bit is 1 → true_val, else false_val.
     #[inline(always)]
     pub fn select(self, true_val: F32x16, false_val: F32x16) -> F32x16 {

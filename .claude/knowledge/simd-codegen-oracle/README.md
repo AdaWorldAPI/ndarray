@@ -82,6 +82,28 @@ Measured on x86_64 + `x86-64-v3`, rustc 1.95.0. Full narrative in
 | `gather_lookup_u8` | 0 | 0 | `movzbl` chain, no arithmetic |
 | `serial_dependent_chain` | 0 | 27 | loop-carried dependency |
 
+Group F — the mask family (PR #306), measured 2026-09-14 on rustc 1.98.1
+through the shipped library methods. Two runs: array polyfill first, then
+after the four non-packed shapes were given backend-local AVX2 intrinsic
+realizations. The bit-logic half needed nothing.
+
+| probe | polyfill run | after override | lowering |
+|---|---|---|---|
+| `ternlog_u64x8_maj3` / `_select` | 18 / 0 | unchanged | generated Shannon ladder → `vpand`/`vpandn`/`vpor`/`vpxor` |
+| `ternlog_u32x16_xor_and` | 8 / 0 | unchanged | same, 32-bit lanes |
+| `andnot_u64x8` | 6 / 0 | unchanged | `vpandn` |
+| `popcnt_u64x8` | 21 / 0 | unchanged | `vpshufb` nibble-LUT popcount, not 8× `popcntq` |
+| `xor_popcount_u64x8` | 25 / 0 | unchanged | `vpxor` + nibble popcount + add tree |
+| **`rotate_left_lib_u64x8`** | **0 / 8** `rolq` | 10 / 2 (count setup) | `vpsllq`+`vpsrlq`+`vpor` per half — the earned u64 override |
+| **`gt_bitmask_i32x16`** | **23 / 3** mixed (lanes 0, 13–15 peeled) | 9 / 0 | `vpcmpgtd` + movemask |
+| **`cmpge_zero_mask_i32x16`** | **17 / 11** mixed | 10 / 0 | complemented sign-bit movemask |
+| **`reduce_max_i32x16`** | **0 / 17** `cmpl` | 8 / 0 | `vpmaxsd` tree |
+
+The two "mixed" rows are the instructive ones: a shape can be *mostly*
+packed and still carry a scalar peel, and the method's doc comment had
+claimed a clean lowering it never had. Measure the shipped symbol, not the
+look-alike.
+
 **The headline:** LLVM vectorizes far more than intuition suggests —
 including cross-lane permutes, widening converts, and saturating
 arithmetic, all from plain scalar loops. It does **not** vectorize u64

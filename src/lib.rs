@@ -452,6 +452,13 @@ pub mod simd_soa;
 #[allow(missing_docs)]
 pub mod simd_int_ops;
 
+/// Packed-bitmask predicates, mask algebra, and masked reductions — the
+/// ergonomic masking layer between consumers and the compile-time-selected
+/// backend (`eq_u32_to_mask`, `mask_ternlog`, `masked_sum_i32`, …). Owns
+/// slice/tail/in-place ergonomics only; never an ISA.
+#[cfg(feature = "std")]
+pub mod simd_masking_ops;
+
 /// Slice-level elementwise ops (f32/f64) built on the polyfill SIMD types.
 /// `add_f32`, `mul_f32`, `add_f32_inplace`, `scale_f32`, etc.
 /// Re-exported flat through `ndarray::simd::add_f32`.

@@ -75,7 +75,6 @@ pub mod wasm32_simd {
     // `U32x16` is the exception: it carries the ARX vocabulary (Add/BitXor/
     // rotate_left) the ChaCha20 lane needs, so it is native here (`[U32x4; 4]`,
     // NEON-style) rather than the scalar fallback — see below.
-    pub use crate::simd::scalar::{I32x16, U64x8};
 
     // ════════════════════════════════════════════════════════════════════
     // F32x16 — 16 × f32 backed by 4 × v128 (f32x4 interpretation)
@@ -295,7 +294,7 @@ pub mod wasm32_simd {
             for i in 0..16 {
                 o[i] = a[i] as i32;
             }
-            I32x16(o)
+            I32x16::from_array(o)
         }
     }
 
@@ -398,6 +397,27 @@ pub mod wasm32_simd {
     #[derive(Copy, Clone, Debug)]
     pub struct F32Mask16(pub u16);
     impl F32Mask16 {
+        /// The mask as a packed 16-bit bitmask, LSB-first (bit `i` = lane `i`).
+        /// The one representation-independent reading of a compare result: every
+        /// backend stores its mask differently (`__mmask16`, `u16`,
+        /// `core::simd::Mask`), so callers combine and inspect masks through this
+        /// rather than the tuple field (the `aabb` broadphase read `.0` directly
+        /// and did not compile on the portable backend — fixed 2026-09-14).
+        ///
+        /// # Examples
+        /// Bit `i` is lane `i`: with lanes 0 and 15 below the threshold the
+        /// `simd_lt` mask reads `0b1000_0000_0000_0001`.
+        /// ```rust,ignore
+        /// let mut a = [10.0f32; 16];
+        /// a[0] = -1.0;
+        /// a[15] = -1.0;
+        /// let m = F32x16::from_array(a).simd_lt(F32x16::splat(0.0));
+        /// assert_eq!(m.to_bitmask(), 0b1000_0000_0000_0001);
+        /// ```
+        #[inline(always)]
+        pub fn to_bitmask(self) -> u16 {
+            self.0
+        }
         #[inline(always)]
         pub fn select(self, true_val: F32x16, false_val: F32x16) -> F32x16 {
             let t = true_val.to_array();
@@ -604,13 +624,14 @@ pub mod wasm32_simd {
             for i in 0..8 {
                 o[i] = a[i].to_bits();
             }
-            U64x8(o)
+            U64x8::from_array(o)
         }
         #[inline(always)]
         pub fn from_bits(bits: U64x8) -> Self {
+            let b = bits.to_array();
             let mut o = [0.0f64; 8];
             for i in 0..8 {
-                o[i] = f64::from_bits(bits.0[i]);
+                o[i] = f64::from_bits(b[i]);
             }
             Self::from_array(o)
         }
@@ -997,37 +1018,32 @@ pub mod wasm32_simd {
         #[inline(always)]
         pub fn ternlog<const IMM: i32>(self, b: Self, c: Self) -> Self {
             const { assert!(IMM >= 0 && IMM <= 255, "ternlog IMM is an 8-bit truth table") }
-            let mut parts = [self.0[0].0; 4];
-            for p in 0..4 {
+            // GENERATED lowering (tools/gen_ternlog_bodies.py), per 128-bit quad.
+            Self(core::array::from_fn(|p| {
                 let (x, y, z) = (self.0[p].0, b.0[p].0, c.0[p].0);
-                let mut r = v128_xor(x, x); // zero
-                if IMM & 0x01 != 0 {
-                    r = v128_or(r, v128_and(v128_not(x), v128_andnot(v128_not(y), z)));
-                }
-                if IMM & 0x02 != 0 {
-                    r = v128_or(r, v128_and(v128_not(x), v128_andnot(z, y)));
-                }
-                if IMM & 0x04 != 0 {
-                    r = v128_or(r, v128_and(v128_not(x), v128_andnot(y, z)));
-                }
-                if IMM & 0x08 != 0 {
-                    r = v128_or(r, v128_and(v128_not(x), v128_and(y, z)));
-                }
-                if IMM & 0x10 != 0 {
-                    r = v128_or(r, v128_and(x, v128_andnot(v128_not(y), z)));
-                }
-                if IMM & 0x20 != 0 {
-                    r = v128_or(r, v128_and(x, v128_andnot(z, y)));
-                }
-                if IMM & 0x40 != 0 {
-                    r = v128_or(r, v128_and(x, v128_andnot(y, z)));
-                }
-                if IMM & 0x80 != 0 {
-                    r = v128_or(r, v128_and(x, v128_and(y, z)));
-                }
-                parts[p] = r;
-            }
-            Self([U32x4(parts[0]), U32x4(parts[1]), U32x4(parts[2]), U32x4(parts[3])])
+                let t0: u8 = ((IMM & 1) | ((IMM >> 1) & 2) | ((IMM >> 2) & 4) | ((IMM >> 3) & 8)) as u8;
+                let t1: u8 = (((IMM >> 1) & 1) | ((IMM >> 2) & 2) | ((IMM >> 3) & 4) | ((IMM >> 4) & 8)) as u8;
+                U32x4({
+                    if t0 == t1 {
+                        ternlog_two_input_v128(t0, x, y)
+                    } else if t0 == 0 {
+                        v128_and(z, ternlog_two_input_v128(t1, x, y))
+                    } else if t1 == 0 {
+                        v128_andnot(ternlog_two_input_v128(t0, x, y), z)
+                    } else if t1 == (t0 ^ 0xF) {
+                        v128_xor(z, ternlog_two_input_v128(t0, x, y))
+                    } else if t0 == 0xF {
+                        v128_or(v128_not(z), ternlog_two_input_v128(t1, x, y))
+                    } else if t1 == 0xF {
+                        v128_or(z, ternlog_two_input_v128(t0, x, y))
+                    } else {
+                        v128_or(
+                            v128_andnot(ternlog_two_input_v128(t0, x, y), z),
+                            v128_and(ternlog_two_input_v128(t1, x, y), z),
+                        )
+                    }
+                })
+            }))
         }
 
         /// `_mm256_unpacklo_epi32` per 256-bit half: within each 128-bit quad,
@@ -1186,6 +1202,26 @@ pub mod wasm32_simd {
             o
         }
 
+        /// Wrapping horizontal sum (`u32x4_add` tree, four extracts) — the
+        /// same method the AVX2 / AVX-512 / scalar `U32x16` carry; missing on
+        /// this backend until the aarch64 codegen witness exposed the gap on
+        /// 2026-09-14 (the wasm twin was closed in the same pass).
+        ///
+        /// # Examples
+        /// ```rust,ignore
+        /// let v = U32x16::from_array(core::array::from_fn(|i| i as u32)); // 0..16
+        /// assert_eq!(v.reduce_sum(), 120);
+        /// assert_eq!(U32x16::splat(u32::MAX).reduce_sum(), u32::MAX.wrapping_mul(16));
+        /// ```
+        #[inline(always)]
+        pub fn reduce_sum(self) -> u32 {
+            let t = u32x4_add(u32x4_add(self.0[0].0, self.0[1].0), u32x4_add(self.0[2].0, self.0[3].0));
+            u32x4_extract_lane::<0>(t)
+                .wrapping_add(u32x4_extract_lane::<1>(t))
+                .wrapping_add(u32x4_extract_lane::<2>(t))
+                .wrapping_add(u32x4_extract_lane::<3>(t))
+        }
+
         /// Lane-wise left-rotate by `n` bits (ARX rotate), fanned over 4 lanes.
         #[inline(always)]
         pub fn rotate_left(self, n: u32) -> Self {
@@ -1201,8 +1237,8 @@ pub mod wasm32_simd {
         ///
         /// Bit `i` of the result is set iff `self.lane(i) == other.lane(i)`.
         /// Bit order is **LSB-first**: lane `0` occupies bit `0`. Same
-        /// convention as `I32x16::cmpge_zero_mask` / `I32x16::gt_bitmask`
-        /// (which on wasm32 come from the scalar tier).
+        /// convention as the native wasm `I32x16::cmpge_zero_mask` /
+        /// `I32x16::gt_bitmask` below.
         ///
         /// Edge cases: equality is exact bitwise comparison over the full
         /// 32-bit range, so `u32::MAX` and `0` behave like any other value —
@@ -1268,6 +1304,12 @@ pub mod wasm32_simd {
     pub type i8x16 = I8x16;
     #[allow(non_camel_case_types)]
     pub type u32x16 = U32x16;
+    /// Lowercase alias of the native wasm [`I32x16`] (travels with the type).
+    #[allow(non_camel_case_types)]
+    pub type i32x16 = I32x16;
+    /// Lowercase alias of the native wasm [`U64x8`] (travels with the type).
+    #[allow(non_camel_case_types)]
+    pub type u64x8 = U64x8;
 
     // ════════════════════════════════════════════════════════════════════
     // Free hot-kernel functions — v128 counterparts to the NEON kernels in
@@ -1702,4 +1744,585 @@ pub mod wasm32_simd {
             }
         }
     }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Native U64x8 / I32x16 — the two lane types the mask family rides
+    // (2026-09-13, PR #306 five-flavour audit)
+    // ════════════════════════════════════════════════════════════════════
+    //
+    // `simd_masking_ops` builds every bulk mask op on `U64x8` and the whole
+    // signed-compare family on `I32x16::gt_bitmask`; until this section both
+    // came from the SCALAR backend on wasm32, so the mask lane ran per-element
+    // loops while only the `U32x16` paths reached v128. Same `[quad; 4]`
+    // fan-out as `U32x16`; every op is the simd128 instruction per quad. The
+    // simd128 intrinsics are safe on the pinned toolchain — no `unsafe` here;
+    // quads are built with the `u64x2(..)` / `i32x4(..)` constructors and
+    // read back with `*_extract_lane`, so no raw-pointer loads either.
+    // Surface = the scalar backend's `impl_int_type!` set plus its `U64x8` /
+    // `I32x16` extras, signature for signature.
+
+    /// 2×u64 in one `v128`.
+    #[derive(Copy, Clone)]
+    #[repr(transparent)]
+    pub struct U64x2(pub v128);
+
+    /// 4×i32 in one `v128`.
+    #[derive(Copy, Clone)]
+    #[repr(transparent)]
+    pub struct I32x4(pub v128);
+
+    /// 8×u64 backed by 4× `v128` (`[U64x2; 4]`). The packed-mask word lane.
+    #[derive(Copy, Clone)]
+    #[repr(align(64))]
+    pub struct U64x8(pub [U64x2; 4]);
+
+    impl Default for U64x8 {
+        #[inline(always)]
+        fn default() -> Self {
+            Self::splat(0)
+        }
+    }
+
+    impl U64x8 {
+        pub const LANES: usize = 8;
+
+        /// Broadcast (`u64x2_splat` ×4).
+        #[inline(always)]
+        pub fn splat(v: u64) -> Self {
+            Self([U64x2(u64x2_splat(v)); 4])
+        }
+
+        /// All-zero lanes.
+        #[inline(always)]
+        pub fn zero() -> Self {
+            Self::splat(0)
+        }
+
+        /// Load the first 8 elements of `s`. Panics if `s.len() < 8`.
+        #[inline(always)]
+        pub fn from_slice(s: &[u64]) -> Self {
+            assert!(s.len() >= 8);
+            Self([
+                U64x2(u64x2(s[0], s[1])),
+                U64x2(u64x2(s[2], s[3])),
+                U64x2(u64x2(s[4], s[5])),
+                U64x2(u64x2(s[6], s[7])),
+            ])
+        }
+
+        #[inline(always)]
+        pub fn from_array(a: [u64; 8]) -> Self {
+            Self::from_slice(&a)
+        }
+
+        #[inline(always)]
+        pub fn to_array(self) -> [u64; 8] {
+            let mut o = [0u64; 8];
+            self.copy_to_slice(&mut o);
+            o
+        }
+
+        /// Store the 8 lanes into the front of `s`. Panics if `s.len() < 8`.
+        #[inline(always)]
+        pub fn copy_to_slice(self, s: &mut [u64]) {
+            assert!(s.len() >= 8);
+            for p in 0..4 {
+                s[2 * p] = u64x2_extract_lane::<0>(self.0[p].0);
+                s[2 * p + 1] = u64x2_extract_lane::<1>(self.0[p].0);
+            }
+        }
+
+        /// Wrapping horizontal sum: `i64x2_add` tree, two lane extracts.
+        #[inline(always)]
+        pub fn reduce_sum(self) -> u64 {
+            let t = i64x2_add(i64x2_add(self.0[0].0, self.0[1].0), i64x2_add(self.0[2].0, self.0[3].0));
+            u64x2_extract_lane::<0>(t).wrapping_add(u64x2_extract_lane::<1>(t))
+        }
+
+        /// Lane-wise left-rotate by `n` bits, `n` mod 64 (`i64x2_shl` | `u64x2_shr`).
+        #[inline(always)]
+        pub fn rotate_left(self, n: u32) -> Self {
+            let n = n % 64;
+            if n == 0 {
+                return self;
+            }
+            Self(core::array::from_fn(|p| U64x2(v128_or(i64x2_shl(self.0[p].0, n), u64x2_shr(self.0[p].0, 64 - n)))))
+        }
+
+        /// Lane-wise right-rotate — `rotr(n) == rotl(64 - n)` exactly.
+        #[inline(always)]
+        pub fn rotate_right(self, n: u32) -> Self {
+            let n = n % 64;
+            if n == 0 {
+                return self;
+            }
+            self.rotate_left(64 - n)
+        }
+
+        /// Lane-wise population count: `i8x16_popcnt`, then the pairwise
+        /// widening adds up to 32-bit halves, then the two halves of each u64
+        /// summed (`u64x2_shr` 32 + masked add).
+        #[inline(always)]
+        pub fn popcnt(self) -> Self {
+            Self(core::array::from_fn(|p| {
+                let bytes = i8x16_popcnt(self.0[p].0);
+                let halves = u32x4_extadd_pairwise_u16x8(u16x8_extadd_pairwise_u8x16(bytes));
+                let lo = v128_and(halves, u64x2_splat(0xFFFF_FFFF));
+                U64x2(i64x2_add(lo, u64x2_shr(halves, 32)))
+            }))
+        }
+
+        /// XOR lane-wise, popcount, sum all 8 lanes — the 512-bit Hamming distance.
+        #[inline(always)]
+        pub fn xor_popcount(self, other: Self) -> u64 {
+            (self ^ other).popcnt().reduce_sum()
+        }
+
+        /// Set difference: `self & !other` — `v128_andnot(a, b)` IS `a & !b`
+        /// (unlike Intel's `andnot`). Same direction as every backend.
+        #[inline(always)]
+        pub fn andnot(self, other: Self) -> Self {
+            Self(core::array::from_fn(|p| U64x2(v128_andnot(self.0[p].0, other.0[p].0))))
+        }
+
+        /// Any 3-input boolean function of `self`, `b` and `c`, selected by the
+        /// const truth-table immediate `IMM` — Intel's VPTERNLOG convention
+        /// (`index = (self << 2) | (b << 1) | c`, result bit = `(IMM >> index) & 1`),
+        /// matched exactly by every backend. Only `0..=255` is legal
+        /// (compile-time assert). Named immediates: `crate::simd::ternlog`.
+        /// The body is generated (`tools/gen_ternlog_bodies.py`): a
+        /// Shannon-expanded ladder in `v128_and/or/xor/andnot` per quad.
+        #[inline(always)]
+        pub fn ternlog<const IMM: i32>(self, b: Self, c: Self) -> Self {
+            const { assert!(IMM >= 0 && IMM <= 255, "ternlog IMM is an 8-bit truth table") }
+            // GENERATED lowering (tools/gen_ternlog_bodies.py), per 128-bit quad.
+            Self(core::array::from_fn(|p| {
+                let (x, y, z) = (self.0[p].0, b.0[p].0, c.0[p].0);
+                let t0: u8 = ((IMM & 1) | ((IMM >> 1) & 2) | ((IMM >> 2) & 4) | ((IMM >> 3) & 8)) as u8;
+                let t1: u8 = (((IMM >> 1) & 1) | ((IMM >> 2) & 2) | ((IMM >> 3) & 4) | ((IMM >> 4) & 8)) as u8;
+                U64x2({
+                    if t0 == t1 {
+                        ternlog_two_input_v128(t0, x, y)
+                    } else if t0 == 0 {
+                        v128_and(z, ternlog_two_input_v128(t1, x, y))
+                    } else if t1 == 0 {
+                        v128_andnot(ternlog_two_input_v128(t0, x, y), z)
+                    } else if t1 == (t0 ^ 0xF) {
+                        v128_xor(z, ternlog_two_input_v128(t0, x, y))
+                    } else if t0 == 0xF {
+                        v128_or(v128_not(z), ternlog_two_input_v128(t1, x, y))
+                    } else if t1 == 0xF {
+                        v128_or(z, ternlog_two_input_v128(t0, x, y))
+                    } else {
+                        v128_or(
+                            v128_andnot(ternlog_two_input_v128(t0, x, y), z),
+                            v128_and(ternlog_two_input_v128(t1, x, y), z),
+                        )
+                    }
+                })
+            }))
+        }
+    }
+
+    impl Add for U64x8 {
+        type Output = Self;
+        #[inline(always)]
+        fn add(self, r: Self) -> Self {
+            Self(core::array::from_fn(|p| U64x2(i64x2_add(self.0[p].0, r.0[p].0))))
+        }
+    }
+    impl Sub for U64x8 {
+        type Output = Self;
+        #[inline(always)]
+        fn sub(self, r: Self) -> Self {
+            Self(core::array::from_fn(|p| U64x2(i64x2_sub(self.0[p].0, r.0[p].0))))
+        }
+    }
+    impl AddAssign for U64x8 {
+        #[inline(always)]
+        fn add_assign(&mut self, r: Self) {
+            *self = *self + r;
+        }
+    }
+    impl SubAssign for U64x8 {
+        #[inline(always)]
+        fn sub_assign(&mut self, r: Self) {
+            *self = *self - r;
+        }
+    }
+    impl core::ops::BitAnd for U64x8 {
+        type Output = Self;
+        #[inline(always)]
+        fn bitand(self, r: Self) -> Self {
+            Self(core::array::from_fn(|p| U64x2(v128_and(self.0[p].0, r.0[p].0))))
+        }
+    }
+    impl core::ops::BitOr for U64x8 {
+        type Output = Self;
+        #[inline(always)]
+        fn bitor(self, r: Self) -> Self {
+            Self(core::array::from_fn(|p| U64x2(v128_or(self.0[p].0, r.0[p].0))))
+        }
+    }
+    impl BitXor for U64x8 {
+        type Output = Self;
+        #[inline(always)]
+        fn bitxor(self, r: Self) -> Self {
+            Self(core::array::from_fn(|p| U64x2(v128_xor(self.0[p].0, r.0[p].0))))
+        }
+    }
+    impl core::ops::BitAndAssign for U64x8 {
+        #[inline(always)]
+        fn bitand_assign(&mut self, r: Self) {
+            *self = *self & r;
+        }
+    }
+    impl core::ops::BitOrAssign for U64x8 {
+        #[inline(always)]
+        fn bitor_assign(&mut self, r: Self) {
+            *self = *self | r;
+        }
+    }
+    impl core::ops::BitXorAssign for U64x8 {
+        #[inline(always)]
+        fn bitxor_assign(&mut self, r: Self) {
+            *self = *self ^ r;
+        }
+    }
+    impl core::ops::Not for U64x8 {
+        type Output = Self;
+        #[inline(always)]
+        fn not(self) -> Self {
+            Self(core::array::from_fn(|p| U64x2(v128_not(self.0[p].0))))
+        }
+    }
+    /// Lane-wise `self << rhs` with PER-LANE counts. simd128 has only a uniform
+    /// shift, so this one operator goes through lane extracts; the scalar
+    /// backend's `<<` panics on a count of 64 or more in debug builds, so
+    /// callers already stay inside `0..64`.
+    impl core::ops::Shl<Self> for U64x8 {
+        type Output = Self;
+        #[inline(always)]
+        fn shl(self, r: Self) -> Self {
+            let (a, n) = (self.to_array(), r.to_array());
+            Self::from_array(core::array::from_fn(|i| a[i].wrapping_shl(n[i] as u32)))
+        }
+    }
+    /// Lane-wise `self >> rhs` with per-lane counts (see `Shl`).
+    impl core::ops::Shr<Self> for U64x8 {
+        type Output = Self;
+        #[inline(always)]
+        fn shr(self, r: Self) -> Self {
+            let (a, n) = (self.to_array(), r.to_array());
+            Self::from_array(core::array::from_fn(|i| a[i].wrapping_shr(n[i] as u32)))
+        }
+    }
+    impl PartialEq for U64x8 {
+        #[inline(always)]
+        fn eq(&self, other: &Self) -> bool {
+            (0..4).all(|p| i64x2_all_true(i64x2_eq(self.0[p].0, other.0[p].0)))
+        }
+    }
+    impl fmt::Debug for U64x8 {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "U64x8({:?})", self.to_array())
+        }
+    }
+
+    /// 16×i32 backed by 4× `v128` (`[I32x4; 4]`). The signed-compare lane:
+    /// `gt_bitmask` / `cmpge_zero_mask` are `i32x4_gt` / `i32x4_ge` +
+    /// `i32x4_bitmask` (no per-lane loop).
+    #[derive(Copy, Clone)]
+    #[repr(align(64))]
+    pub struct I32x16(pub [I32x4; 4]);
+
+    impl Default for I32x16 {
+        #[inline(always)]
+        fn default() -> Self {
+            Self::splat(0)
+        }
+    }
+
+    impl I32x16 {
+        pub const LANES: usize = 16;
+
+        /// Broadcast (`i32x4_splat` ×4).
+        #[inline(always)]
+        pub fn splat(v: i32) -> Self {
+            Self([I32x4(i32x4_splat(v)); 4])
+        }
+
+        /// All-zero lanes.
+        #[inline(always)]
+        pub fn zero() -> Self {
+            Self::splat(0)
+        }
+
+        /// Load the first 16 elements of `s`. Panics if `s.len() < 16`.
+        #[inline(always)]
+        pub fn from_slice(s: &[i32]) -> Self {
+            assert!(s.len() >= 16);
+            Self(core::array::from_fn(|p| I32x4(i32x4(s[4 * p], s[4 * p + 1], s[4 * p + 2], s[4 * p + 3]))))
+        }
+
+        #[inline(always)]
+        pub fn from_array(a: [i32; 16]) -> Self {
+            Self::from_slice(&a)
+        }
+
+        #[inline(always)]
+        pub fn to_array(self) -> [i32; 16] {
+            let mut o = [0i32; 16];
+            self.copy_to_slice(&mut o);
+            o
+        }
+
+        /// Store the 16 lanes into the front of `s`. Panics if `s.len() < 16`.
+        #[inline(always)]
+        pub fn copy_to_slice(self, s: &mut [i32]) {
+            assert!(s.len() >= 16);
+            for p in 0..4 {
+                let q = self.0[p].0;
+                s[4 * p] = i32x4_extract_lane::<0>(q);
+                s[4 * p + 1] = i32x4_extract_lane::<1>(q);
+                s[4 * p + 2] = i32x4_extract_lane::<2>(q);
+                s[4 * p + 3] = i32x4_extract_lane::<3>(q);
+            }
+        }
+
+        /// Wrapping horizontal sum (`i32x4_add` tree, four extracts).
+        #[inline(always)]
+        pub fn reduce_sum(self) -> i32 {
+            let t = i32x4_add(i32x4_add(self.0[0].0, self.0[1].0), i32x4_add(self.0[2].0, self.0[3].0));
+            i32x4_extract_lane::<0>(t)
+                .wrapping_add(i32x4_extract_lane::<1>(t))
+                .wrapping_add(i32x4_extract_lane::<2>(t))
+                .wrapping_add(i32x4_extract_lane::<3>(t))
+        }
+
+        /// Minimum over all 16 lanes (`i32x4_min` tree, four extracts).
+        #[inline(always)]
+        pub fn reduce_min(self) -> i32 {
+            let t = i32x4_min(i32x4_min(self.0[0].0, self.0[1].0), i32x4_min(self.0[2].0, self.0[3].0));
+            i32x4_extract_lane::<0>(t)
+                .min(i32x4_extract_lane::<1>(t))
+                .min(i32x4_extract_lane::<2>(t))
+                .min(i32x4_extract_lane::<3>(t))
+        }
+
+        /// Maximum over all 16 lanes (`i32x4_max` tree, four extracts).
+        #[inline(always)]
+        pub fn reduce_max(self) -> i32 {
+            let t = i32x4_max(i32x4_max(self.0[0].0, self.0[1].0), i32x4_max(self.0[2].0, self.0[3].0));
+            i32x4_extract_lane::<0>(t)
+                .max(i32x4_extract_lane::<1>(t))
+                .max(i32x4_extract_lane::<2>(t))
+                .max(i32x4_extract_lane::<3>(t))
+        }
+
+        /// Lane-wise minimum (`i32x4_min`).
+        #[inline(always)]
+        pub fn simd_min(self, other: Self) -> Self {
+            Self(core::array::from_fn(|p| I32x4(i32x4_min(self.0[p].0, other.0[p].0))))
+        }
+
+        /// Lane-wise maximum (`i32x4_max`).
+        #[inline(always)]
+        pub fn simd_max(self, other: Self) -> Self {
+            Self(core::array::from_fn(|p| I32x4(i32x4_max(self.0[p].0, other.0[p].0))))
+        }
+
+        /// Lane-wise `i32 → f32` (`f32x4_convert_i32x4` per quad).
+        #[inline(always)]
+        pub fn cast_f32(self) -> F32x16 {
+            F32x16(core::array::from_fn(|p| f32x4_convert_i32x4(self.0[p].0)))
+        }
+
+        /// Lane-wise absolute value (`i32x4_abs`; `i32::MIN` wraps to itself,
+        /// the release-mode behaviour of the scalar backend).
+        #[inline(always)]
+        pub fn abs(self) -> Self {
+            Self(core::array::from_fn(|p| I32x4(i32x4_abs(self.0[p].0))))
+        }
+
+        /// Sign-extend the first 16 `i16` of `s` (`i32x4_extend_low/high_i16x8`
+        /// over two `i16x8` quads). Panics if `s.len() < 16`.
+        #[inline(always)]
+        pub fn from_i16_slice(s: &[i16]) -> Self {
+            assert!(s.len() >= 16);
+            let lo = i16x8(s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]);
+            let hi = i16x8(s[8], s[9], s[10], s[11], s[12], s[13], s[14], s[15]);
+            Self([
+                I32x4(i32x4_extend_low_i16x8(lo)),
+                I32x4(i32x4_extend_high_i16x8(lo)),
+                I32x4(i32x4_extend_low_i16x8(hi)),
+                I32x4(i32x4_extend_high_i16x8(hi)),
+            ])
+        }
+
+        /// Truncate each lane to `i16` (low 16 bits, like `as i16` — NOT the
+        /// saturating `i16x8_narrow_i32x4`, which would change values).
+        #[inline(always)]
+        pub fn to_i16_array(self) -> [i16; 16] {
+            let a = self.to_array();
+            core::array::from_fn(|i| a[i] as i16)
+        }
+
+        /// Bit `i` set iff lane `i >= 0` (`i32x4_ge` vs zero + `i32x4_bitmask`), LSB-first.
+        #[inline(always)]
+        pub fn cmpge_zero_mask(self) -> u16 {
+            let z = i32x4_splat(0);
+            let mut m = 0u16;
+            for p in 0..4 {
+                m |= (i32x4_bitmask(i32x4_ge(self.0[p].0, z)) as u16) << (4 * p);
+            }
+            m
+        }
+
+        /// Lane-wise **signed** greater-than as a packed 16-bit bitmask
+        /// (`i32x4_gt` + `i32x4_bitmask`). Bit `i` set iff
+        /// `self.lane(i) > other.lane(i)`, LSB-first; exact at `i32::MIN` /
+        /// `i32::MAX`; signed, never bit-pattern. Agrees bit-for-bit with the
+        /// scalar correctness anchor.
+        #[inline(always)]
+        pub fn gt_bitmask(self, other: Self) -> u16 {
+            let mut m = 0u16;
+            for p in 0..4 {
+                m |= (i32x4_bitmask(i32x4_gt(self.0[p].0, other.0[p].0)) as u16) << (4 * p);
+            }
+            m
+        }
+    }
+
+    impl Add for I32x16 {
+        type Output = Self;
+        #[inline(always)]
+        fn add(self, r: Self) -> Self {
+            Self(core::array::from_fn(|p| I32x4(i32x4_add(self.0[p].0, r.0[p].0))))
+        }
+    }
+    impl Sub for I32x16 {
+        type Output = Self;
+        #[inline(always)]
+        fn sub(self, r: Self) -> Self {
+            Self(core::array::from_fn(|p| I32x4(i32x4_sub(self.0[p].0, r.0[p].0))))
+        }
+    }
+    impl AddAssign for I32x16 {
+        #[inline(always)]
+        fn add_assign(&mut self, r: Self) {
+            *self = *self + r;
+        }
+    }
+    impl SubAssign for I32x16 {
+        #[inline(always)]
+        fn sub_assign(&mut self, r: Self) {
+            *self = *self - r;
+        }
+    }
+    impl Mul for I32x16 {
+        type Output = Self;
+        #[inline(always)]
+        fn mul(self, r: Self) -> Self {
+            Self(core::array::from_fn(|p| I32x4(i32x4_mul(self.0[p].0, r.0[p].0))))
+        }
+    }
+    impl MulAssign for I32x16 {
+        #[inline(always)]
+        fn mul_assign(&mut self, r: Self) {
+            *self = *self * r;
+        }
+    }
+    impl Neg for I32x16 {
+        type Output = Self;
+        #[inline(always)]
+        fn neg(self) -> Self {
+            Self(core::array::from_fn(|p| I32x4(i32x4_neg(self.0[p].0))))
+        }
+    }
+    impl core::ops::BitAnd for I32x16 {
+        type Output = Self;
+        #[inline(always)]
+        fn bitand(self, r: Self) -> Self {
+            Self(core::array::from_fn(|p| I32x4(v128_and(self.0[p].0, r.0[p].0))))
+        }
+    }
+    impl core::ops::BitOr for I32x16 {
+        type Output = Self;
+        #[inline(always)]
+        fn bitor(self, r: Self) -> Self {
+            Self(core::array::from_fn(|p| I32x4(v128_or(self.0[p].0, r.0[p].0))))
+        }
+    }
+    impl BitXor for I32x16 {
+        type Output = Self;
+        #[inline(always)]
+        fn bitxor(self, r: Self) -> Self {
+            Self(core::array::from_fn(|p| I32x4(v128_xor(self.0[p].0, r.0[p].0))))
+        }
+    }
+    impl core::ops::BitAndAssign for I32x16 {
+        #[inline(always)]
+        fn bitand_assign(&mut self, r: Self) {
+            *self = *self & r;
+        }
+    }
+    impl core::ops::BitOrAssign for I32x16 {
+        #[inline(always)]
+        fn bitor_assign(&mut self, r: Self) {
+            *self = *self | r;
+        }
+    }
+    impl core::ops::BitXorAssign for I32x16 {
+        #[inline(always)]
+        fn bitxor_assign(&mut self, r: Self) {
+            *self = *self ^ r;
+        }
+    }
+    impl core::ops::Not for I32x16 {
+        type Output = Self;
+        #[inline(always)]
+        fn not(self) -> Self {
+            Self(core::array::from_fn(|p| I32x4(v128_not(self.0[p].0))))
+        }
+    }
+    impl PartialEq for I32x16 {
+        #[inline(always)]
+        fn eq(&self, other: &Self) -> bool {
+            (0..4).all(|p| i32x4_all_true(i32x4_eq(self.0[p].0, other.0[p].0)))
+        }
+    }
+    impl fmt::Debug for I32x16 {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "I32x16({:?})", self.to_array())
+        }
+    }
+
+    // GEN-TERNLOG-BEGIN (tools/gen_ternlog_bodies.py — regenerate, do not hand-edit)
+    /// GENERATED by `tools/gen_ternlog_bodies.py` — a 2-input Boolean function
+    /// by its 4-bit table (bit `k` = value at index `(a << 1) | b`), at most
+    /// two operations. `#[inline]` (not `always`): the 256-table test would
+    /// otherwise carry every arm's temporaries in one debug frame.
+    #[inline]
+    fn ternlog_two_input_v128(t: u8, a: v128, b: v128) -> v128 {
+        match t & 0xF {
+            0x0 => u32x4_splat(0),
+            0x1 => v128_not(v128_or(a, b)),
+            0x2 => v128_and(v128_not(a), b),
+            0x3 => v128_not(a),
+            0x4 => v128_andnot(a, b),
+            0x5 => v128_not(b),
+            0x6 => v128_xor(a, b),
+            0x7 => v128_not(v128_and(a, b)),
+            0x8 => v128_and(a, b),
+            0x9 => v128_not(v128_xor(a, b)),
+            0xa => b,
+            0xb => v128_or(v128_not(a), b),
+            0xc => a,
+            0xd => v128_or(a, v128_not(b)),
+            0xe => v128_or(a, b),
+            _ => u32x4_splat(!0),
+        }
+    }
+    // GEN-TERNLOG-END
 }

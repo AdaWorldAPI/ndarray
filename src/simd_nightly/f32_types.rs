@@ -7,6 +7,7 @@ use core::simd::{f32x16 as core_f32x16, f32x8 as core_f32x8};
 // `mul_add`, `sqrt`, `round`, `floor`, `abs` live in `StdFloat` (std-only nightly trait).
 use std::simd::StdFloat;
 
+use super::i_word_types::I32x16;
 use super::masks::{F32Mask16, F32Mask8};
 use super::u_word_types::{U32x16, U32x8};
 
@@ -54,6 +55,48 @@ impl F32x16 {
     #[inline(always)]
     pub fn to_array(self) -> [f32; 16] {
         self.0.to_array()
+    }
+
+    /// Gather 16 `f32` at `base_ptr.offset(indices[i])` — the `VPGATHERDD`-
+    /// shaped load the other backends expose under the same signature.
+    /// Portable SIMD has no gather over a raw pointer, so this reads lane by
+    /// lane. Indices are SIGNED element offsets, exactly as
+    /// `_mm512_i32gather_ps::<4>` treats them on the AVX-512 backend: a
+    /// negative index addresses an element before `base_ptr`, which is valid
+    /// whenever the caller's contract below holds (a first cut cast to
+    /// `usize`, turning `-1` into a huge positive offset — CodeRabbit on
+    /// PR #306).
+    ///
+    /// # Safety
+    ///
+    /// For every `i in 0..16`, `base_ptr.offset(indices[i] as isize)` must
+    /// lie inside one allocation together with `base_ptr`, be 4-byte aligned,
+    /// and point at an initialised, readable `f32`.
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::{F32x16, I32x16};
+    /// let table: Vec<f32> = (0..32).map(|i| i as f32).collect();
+    /// // Index from the MIDDLE of the table so negative offsets are exercised.
+    /// let base = table[16..].as_ptr();
+    /// let idx = I32x16::from_array([-16, -1, 0, 1, 15, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    /// // SAFETY: every offset lands inside `table`.
+    /// let g = unsafe { F32x16::gather(idx, base) };
+    /// assert_eq!(g.to_array()[0], 0.0);
+    /// assert_eq!(g.to_array()[1], 15.0);
+    /// assert_eq!(g.to_array()[4], 31.0);
+    /// # }
+    /// ```
+    #[inline(always)]
+    pub unsafe fn gather(indices: I32x16, base_ptr: *const f32) -> Self {
+        let idx = indices.to_array();
+        let mut out = [0.0f32; 16];
+        for (o, &i) in out.iter_mut().zip(idx.iter()) {
+            // SAFETY: validity of each address is the caller's contract (above).
+            *o = unsafe { *base_ptr.offset(i as isize) };
+        }
+        Self::from_array(out)
     }
 
     /// Store all 16 lanes into the first 16 slots of `s`.

@@ -89,6 +89,11 @@ pub use crate::heel_f64x8;
 #[cfg(target_arch = "x86_64")]
 #[allow(missing_docs)]
 pub mod amx_matmul;
+/// The full AMX mnemonic surface (INT8 / BF16 / FP16 / COMPLEX / FP8 / TF32 /
+/// MOVRS / AVX512 row ops) with `const` tile operands, plus per-tier CPUID
+/// detection — see the module doc for what has executed vs. only assembled.
+#[cfg(target_arch = "x86_64")]
+pub mod amx_ops;
 #[cfg(target_arch = "x86_64")]
 pub mod bf16_tile_gemm;
 /// INT8 (`u8 × i8 → i32`) tile GEMM via AMX `TDPBUSD` — mirror of

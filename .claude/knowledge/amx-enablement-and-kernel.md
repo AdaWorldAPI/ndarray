@@ -169,15 +169,68 @@ which is bug #2. For the 16×16 int8/bf16 tile, all three tiles are 16 rows ×
 
 ---
 
+## 5b. The mnemonic surface — `src/hpc/amx_ops.rs` (2026-09-14, LLVM 22.1.8)
+
+The `.byte` tables above were forced by 1.94. Measured on **1.98.1 (LLVM
+22.1.8)**: the integrated assembler accepts EVERY AMX mnemonic inside `asm!`
+with no target feature, and `asm_const` makes the tile index a generic
+parameter (`tilezero tmm{t}`, `t = const T`). `amx_ops.rs` exposes the whole
+`X86InstrAMX.td` surface that way, and its tests read the emitted bytes back
+out of the text segment and pin them to this table — on any x86_64 host, no
+EMR needed. Tile-operand aliasing (Gotcha 11) is a `const` assert, so `#UD`
+is now a compile error.
+
+**The "mirror" (Gotcha 12, §4) is a reading of the byte table, not a hardware
+quirk.** `MRMSrcReg4VOp3` puts `dst` in ModRM.reg, **S1 in ModRM.rm, S2 in
+VEX.vvvv**, and Intel syntax names them in that order: `tdpbusd tmmD, tmmS1,
+tmmS2` = `D += S1(M×K, plain) · S2(K×N, VNNI)`, with the `U`/`S` letters
+naming S1 then S2. The table row `C4 E2 71 5E C2` (rm = tmm2, vvvv = tmm1)
+is the mnemonic `tdpbusd tmm0, tmm2, tmm1` — `amx_ops::tdpbusd::<0, 2, 1>` —
+which is exactly the kernel's placement (A u8 → tmm2, B VNNI i8 → tmm1). The
+row's comment "dst=tmm0,vvvv=tmm1,rm=tmm2" had been read as the operand
+list `(tmm0, tmm1, tmm2)`; the assembler reads `(tmm0, tmm1, tmm2)` as
+rm = tmm1, vvvv = tmm2 = `C4 E2 69 5E C1`. Pinned two-sided in
+`operand_order_is_intel_order_rm_then_vvvv`.
+
+Assembler-verified encodings, LLVM `Host.cpp` CPUID bits. The INT8/BF16 rows
+are listed for reference and DID execute on EMR in the `(0,2,1)` placement;
+the `(0,1,2)` placements shown here, and every row below them, have NOT
+executed in this workspace (no GNR/DMR host):
+
+```
+                                         CPUID          bytes (tmm0,tmm1,tmm2 / tmm3,[rdi+rsi])
+TDPBSSD/TDPBSUD/TDPBUSD/TDPBUUD  INT8    7.0:EDX[25]    C4 E2 {6B,6A,69,68} 5E C1
+TDPBF16PS                        BF16    7.0:EDX[22]    C4 E2 6A 5C C1
+TDPFP16PS                        FP16    7.1:EAX[21]    C4 E2 6B 5C C1
+TCMMIMFP16PS / TCMMRLFP16PS      COMPLEX 7.1:EDX[8]     C4 E2 {69,68} 6C C1
+TDPBF8PS/TDPBHF8PS/TDPHBF8PS/    FP8     1E.1:EAX[4]    C4 E5 {68,6B,6A,69} FD C1   (map5)
+  TDPHF8PS
+TMMULTF32PS                      TF32    1E.1:EAX[6]    C4 E2 69 48 C1   (dropped from LLVM main; 22.1.8 assembles the mnemonic, nightly LLVM 23 does not → emitted as raw bytes)
+TILELOADDRS / TILELOADDRST1      MOVRS   1E.1:EAX[8]    C4 E2 {7B,79} 4A 1C 37
+TCVTROWD2PS zmm0,tmm1,edi / ,3   AVX512  1E.1:EAX[7]    62 F2 46 48 4A C1 / 62 F3 7E 48 07 C1 03   (EVEX; needs avx512f cfg)
+TCVTROWPS2{PHH,PHL,BF16H,BF16L}  AVX512                 62 F2 {44,46,47,45} 48 6D C1
+TILEMOVROW zmm0,tmm1,edi / ,5    AVX512                 62 F2 45 48 4A C1 / 62 F3 7D 48 07 C1 05
+STTILECFG [rdi] / TILELOADDT1    TILE    7.0:EDX[24]    C4 E2 79 49 07 / C4 E2 79 4B 14 16
+```
+
+Detection: `amx_ops::amx_features()` (cached) returns the per-tier bits.
+The execute gate for tile STATE is `simd_amx::amx_tile_available()` (TILE +
+XCR0 + arch_prctl); `amx_available()` is that plus the INT8 bit and gates the
+INT8 ops only; every other tier gates on `amx_tile_available()` AND its
+`AmxFeatures` bit. `amx_report()` prints both gates and every tier bit.
+Gotcha 14 (VM tile-state corruption) applies to every tier.
+
 ## 6. Detection API (cached, CPU-aware)
 
 ```rust
-use ndarray::simd::{amx_available, cpu_model, amx_report, CpuModel};
+use ndarray::simd::{amx_available, amx_tile_available, amx_features, cpu_model, amx_report, CpuModel};
 
-amx_available()  // bool, cached once via LazyLock (the 4 gates of §1)
+amx_available()       // bool, cached once via LazyLock (the 4 gates of §1, INT8 bit last)
+amx_tile_available()  // the tier-agnostic tile gate (TILE + OSXSAVE + XCR0 + arch_prctl)
+amx_features()        // AmxFeatures — per-tier silicon bits (§5b)
 cpu_model()      // CpuModel::{SapphireRapids,EmeraldRapids,GraniteRapids,SierraForest,OtherX86,NonX86}
 cpu_model().has_amx()   // true for SPR/EMR/GNR; false for Sierra Forest (E-core)
-amx_report()     // e.g. "AMX [Emerald Rapids expects_amx=true]: TILE=true INT8=true BF16=true available=true"
+amx_report()     // e.g. "AMX [Emerald Rapids expects_amx=true]: TILE=true INT8=true BF16=true tile_available=true available=true | tiers: fp16=false complex=false fp8=false tf32=false avx512=false movrs=false"
 ```
 
 Why `LazyLock`: the four gates (CPUID, XGETBV, one `arch_prctl`) are all

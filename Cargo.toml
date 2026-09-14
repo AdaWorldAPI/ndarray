@@ -60,6 +60,14 @@ name = "ternlog_amortization_probe"
 required-features = ["std"]
 
 [[example]]
+name = "ternlog_codegen_probe"
+required-features = ["std"]
+
+[[example]]
+name = "amx_realization_report"
+required-features = ["std"]
+
+[[example]]
 name = "amx_gemm_bench"
 required-features = ["std"]
 
@@ -452,6 +460,7 @@ exclude = [
     "crates/burn",
     "crates/wasm-simd-parity",
     "crates/neon-simd-parity",
+    "crates/simd-masking-parity",
     # Cross-repo: its dev-dep is a PATH into a lance-graph sibling checkout.
     # In-workspace, a missing sibling would fail resolution for EVERY member.
     "crates/sigker-parity",
@@ -483,6 +492,19 @@ cblas-sys = { version = "0.1.4", default-features = false }
 
 [profile.bench]
 debug = true
+
+# The codegen-witness profile (`scripts/codegen-witness.sh`): optimized so LLVM
+# actually performs the vectorization the SIMD realization matrix certifies,
+# with no debuginfo and no LTO so it stays a TINY build of one example, not a
+# release build of the crate. The semantic arms of the matrix run at opt-level
+# 0 instead — bits are proven cheaply there, machine code is proven here.
+[profile.ci-codegen]
+inherits = "release"
+opt-level = 3
+debug = 0
+lto = false
+incremental = false
+panic = "abort"
 
 [profile.test.package.numeric-tests]
 opt-level = 2

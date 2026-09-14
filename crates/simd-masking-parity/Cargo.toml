@@ -1,0 +1,39 @@
+# simd-masking-parity — ONE masking parity program, compiled under every SIMD
+# realization the matrix certifies (scalar / v3-avx2 / v4-avx512 / native /
+# nightly) × every platform (linux-x86 / linux-arm64 / macos-arm64 /
+# wasm32-simd128 / wasm32-without-simd128 = the scalar arm).
+#
+# It calls the SHIPPED `ndarray::simd` facade only — never a backend module,
+# never an intrinsic, never a `cfg(target_feature)` on lane data — and checks
+# every result against a bit-serial reference computed in the same module.
+# Whatever backend `simd.rs` selected for the build is the thing under test;
+# the program has no idea which one that is, and must not.
+#
+# Ships as an rlib + cdylib (`selfcheck()` for the node harness on wasm) and a
+# bin (`main.rs`, exits non-zero on the first mismatch, for native / qemu).
+# EXCLUDED from the workspace (root Cargo.toml `exclude`) so it has zero effect
+# on ordinary builds; `scripts/masking-parity.sh` builds it via --manifest-path.
+[package]
+name = "simd-masking-parity"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "simd-masking-parity"
+path = "src/main.rs"
+
+[dependencies]
+# `simd` + `simd_masking_ops` need only ndarray's `std` feature.
+ndarray = { path = "../..", default-features = false, features = ["std"] }
+
+[features]
+# The nightly realization: forwards to ndarray's portable-simd backend.
+nightly-simd = ["ndarray/nightly-simd"]
+
+[profile.release]
+panic = "abort"
+opt-level = 2

@@ -6,7 +6,8 @@
 - **What**: High-performance linear algebra with pluggable BLAS backends (Native SIMD, MKL, OpenBLAS)
 - **Source**: `adaworldapi/rustynum` — reference GEMM, SIMD, and FFI implementations
 - **Target**: This repo — ndarray fork enhanced with HPC backends
-- **Rust**: 1.94 Stable only. No nightly features.
+- **Rust**: stable only — the pinned `rust-toolchain.toml` (1.98.1; `rust-version` in `Cargo.toml` is the floor). No nightly features on any default or supported build path.
+  - **The one documented exception — `nightly-simd` (opt-in, validation-only, since PR #173):** a Cargo feature that swaps the SIMD realization for `core::simd` (`src/simd_nightly/*`, `#![feature(portable_simd)]`) so the realization matrix can witness that backend too. It is never enabled by default, nothing on stable may depend on it, every stable CI row builds without it, and it is exercised only by the dedicated nightly CI rows (`nightly-simd-polyfill`, the `simd-matrix` nightly row) and `scripts/masking-parity.sh nightly`. Removing the feature would drop that backend from the matrix; enabling it anywhere by default would violate this rule.
 
 ## Agent Protocol
 This project uses specialized agents in `.claude/agents/`. Follow these rules:
