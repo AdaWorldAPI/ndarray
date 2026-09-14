@@ -11,6 +11,11 @@
 # Result matrix and the consequence for the backends: see
 # .claude/knowledge/vertical-simd-consumer-contract.md § "unsafe at the
 # intrinsic boundary". Uses the repo's rust-toolchain.toml via the symlink.
+# Standalone: opt out of the parent workspace (a manifest below a workspace root
+# that is neither a member nor excluded makes cargo refuse to build it — Codex
+# P2 on PR #306).
+[workspace]
+
 [package]
 name = "safe_intrinsic_probe"
 version = "0.0.0"
@@ -19,3 +24,8 @@ publish = false
 
 [lib]
 path = "src/lib.rs"
+
+# The probe arms are opt-in cfgs, not features: declare them so rustc's
+# `unexpected_cfgs` check knows they are deliberate.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(probe_a)', 'cfg(probe_a2)', 'cfg(probe_a3)', 'cfg(probe_c)'] }

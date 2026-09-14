@@ -2088,7 +2088,8 @@ impl U64x8 {
     pub fn ternlog<const IMM: i32>(self, b: Self, c: Self) -> Self {
         const { assert!(IMM >= 0 && IMM <= 255, "ternlog IMM is an 8-bit truth table") }
         // GENERATED lowering (tools/gen_ternlog_bodies.py): Shannon-expand on `c`
-        // into two 2-input tables; <= 7 ops for any table, folded at compile time.
+        // into two 2-input tables; <= 8 ops for any table in this vocabulary
+        // (and-not is `x & !y`, two ops), folded at compile time.
         let t0: u8 = ((IMM & 1) | ((IMM >> 1) & 2) | ((IMM >> 2) & 4) | ((IMM >> 3) & 8)) as u8;
         let t1: u8 = (((IMM >> 1) & 1) | ((IMM >> 2) & 2) | ((IMM >> 3) & 4) | ((IMM >> 4) & 8)) as u8;
         if t0 == t1 {
@@ -2139,7 +2140,8 @@ impl U32x16 {
     pub fn ternlog<const IMM: i32>(self, b: Self, c: Self) -> Self {
         const { assert!(IMM >= 0 && IMM <= 255, "ternlog IMM is an 8-bit truth table") }
         // GENERATED lowering (tools/gen_ternlog_bodies.py): Shannon-expand on `c`
-        // into two 2-input tables; <= 7 ops for any table, folded at compile time.
+        // into two 2-input tables; <= 8 ops for any table in this vocabulary
+        // (and-not is `x & !y`, two ops), folded at compile time.
         let t0: u8 = ((IMM & 1) | ((IMM >> 1) & 2) | ((IMM >> 2) & 4) | ((IMM >> 3) & 8)) as u8;
         let t1: u8 = (((IMM >> 1) & 1) | ((IMM >> 2) & 2) | ((IMM >> 3) & 4) | ((IMM >> 4) & 8)) as u8;
         if t0 == t1 {

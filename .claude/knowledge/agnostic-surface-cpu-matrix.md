@@ -85,14 +85,16 @@ two `__m256i` halves; "4×NEON" means four 128-bit NEON registers (e.g.
 | `I16x16` | `__m256i`  | ←   | ←   | ←   | ←   | ←   | ←   | ←   | `__m256i`  | `__m256i`  | 2×`int16x8_t`  | ←  | ←  | `[i16;16]` |
 | `U16x32` | `__m512i`  | ←   | ←   | ←   | ←   | ←   | ←   | ←   | 2×`__m256i`⏳| 2×`__m256i`⏳| 4×`uint16x8_t`  | ←  | ←  | `[u16;32]` |
 | `U16x16` | `__m256i`  | ←   | ←   | ←   | ←   | ←   | ←   | ←   | `__m256i`  | `__m256i`  | 2×`uint16x8_t` | ←  | ←  | `[u16;16]` |
-| `I32x16` | `__m512i`  | ←   | ←   | ←   | ←   | ←   | ←   | ←   | 2×`__m256i`| 2×`__m256i`| 4×`int32x4_t`  | ←  | ←  | `[i32;16]` |
+| `I32x16` | `__m512i`  | ←   | ←   | ←   | ←   | ←   | ←   | ←   | 2×`__m256i`†| 2×`__m256i`†| 4×`int32x4_t`† | ←  | ←  | `[i32;16]` |
 | `I32x8`  | `__m256i`  | ←   | ←   | ←   | ←   | ←   | ←   | ←   | `__m256i`  | `__m256i`  | 2×`int32x4_t`  | ←  | ←  | `[i32;8]`  |
 | `U32x16` | `__m512i`  | ←   | ←   | ←   | ←   | ←   | ←   | ←   | 2×`__m256i`⏳| 2×`__m256i`⏳| 4×`uint32x4_t` | ←  | ←  | `[u32;16]` |
 | `U32x8`  | `__m256i`  | ←   | ←   | ←   | ←   | ←   | ←   | ←   | `__m256i`⏳ | `__m256i`⏳ | 2×`uint32x4_t` | ←  | ←  | `[u32;8]`  |
 | `I64x8`  | `__m512i`  | ←   | ←   | ←   | ←   | ←   | ←   | ←   | 2×`__m256i`| 2×`__m256i`| 4×`int64x2_t`  | ←  | ←  | `[i64;8]`  |
 | `I64x4`  | `__m256i`  | ←   | ←   | ←   | ←   | ←   | ←   | ←   | `__m256i`  | `__m256i`  | 2×`int64x2_t`  | ←  | ←  | `[i64;4]`  |
-| `U64x8`  | `__m512i`  | ←   | ←   | ←   | ←   | ←   | ←   | ←   | 2×`__m256i`| 2×`__m256i`| 4×`uint64x2_t` | ←  | ←  | `[u64;8]`  |
+| `U64x8`  | `__m512i`  | ←   | ←   | ←   | ←   | ←   | ←   | ←   | 2×`__m256i`†| 2×`__m256i`†| 4×`uint64x2_t`† | ←  | ←  | `[u64;8]`  |
 | `U64x4`  | `__m256i`  | ←   | ←   | ←   | ←   | ←   | ←   | ←   | `__m256i`  | `__m256i`  | 2×`uint64x2_t` | ←  | ←  | `[u64;4]`  |
+
+† = native since 2026-09-13 (PR #306 five-flavour audit; the AVX2 column's "2×`__m256i`" is the storage SHAPE the codegen lowers to — the type stays the `#[repr(align(64))]` `[T; N]` array, measured packed for the bit-logic half and given two-half intrinsic bodies for rotate / reduce / compare-bitmask on 2026-09-14). Until then these two rows were WRONG: on aarch64 and wasm32 `simd.rs` re-exported the SCALAR `U64x8`/`I32x16`, and on the v3 arm they were `avx2_int_type!` array polyfills — the mask family (`simd_masking_ops`) rides exactly these two types, so it ran scalar on three of five flavours.
 
 ⏳ = TD-T22 polyfill audit — the 256-bit `U16x16/U16x32/U32x8/U32x16`
 inner ops may currently use scalar storage under `#[target_feature]` rather

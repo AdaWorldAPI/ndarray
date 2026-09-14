@@ -487,3 +487,29 @@ simd_{avx512,avx2,neon,wasm,scalar}.rs   peer backends, each owns realization
   backend file is ever `unsafe`. Re-run the probe after a toolchain bump —
   the day rustc counts baseline features, the aarch64/x86 rows flip and the
   blocks come out.
+- **Five execution flavours, one semantic surface (operator, 2026-09-13).**
+  (1) x86-64-v3 default/CI → `simd_avx2`; (2) AVX-512/v4 → `simd_avx512`;
+  (3) `target-cpu=native` → backend chosen from the build host's CPUID;
+  (4) `nightly-simd` → `core::simd`; (5) `runtime-dispatch` → LazyLock
+  detection then a specialised kernel. `#[target_feature]` propagation is not
+  the architecture: the selected backend (or the LazyLock branch) is the
+  capability proof, intrinsics stay at the backend's narrow `unsafe`
+  boundary, and `simd_masking_ops` / mask-RISC / consumers never inherit an
+  ISA calling contract. A mask primitive is never routed through Scalar
+  because rustc wants `unsafe` at an intrinsic. **Audit rule:** a new mask
+  primitive is proven on every flavour whose backend has a native lane type
+  for it — check `simd.rs`'s re-export arm per target, not the file you
+  authored in; `U64x8`/`I32x16` resolved to scalar on aarch64 and wasm32
+  until the #306 audit caught it.
+- **Measure the shipped symbol before overriding it (2026-09-14, the AVX2
+  arm of the mask family).** The plan said "replace the `avx2_int_type!`
+  array polyfills with native `[__m256i; 2]`"; the codegen oracle
+  (`.claude/knowledge/simd-codegen-oracle/`, Group F) said six of the ten
+  mask shapes — every ternlog ladder, andnot, popcnt, xor_popcount — were
+  ALREADY packed from scalar source, and four were not (u64 rotate, i32
+  horizontal min/max, and the two compare-to-bitmask forms, which were
+  *mixed*: mostly packed with lanes 0 and 13–15 peeled to scalar). Only the
+  four got intrinsic realizations. Rule: a polyfill lane loop is not scalar
+  because it is spelled as a loop; it is scalar when `--emit asm` on the
+  shipped method says so — and "mostly packed" is a category the oracle
+  must be able to report, because a peel is invisible to any parity test.

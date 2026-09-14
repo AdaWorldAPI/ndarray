@@ -36,6 +36,7 @@
 //! Element `i` lives at bit `i % 64` of word `i / 64`, LSB-first; every bit
 //! at or past the element count is zero. The full statement, and why it is
 //! structural rather than a tail special case, is in the section header below.
+#![forbid(unsafe_code)]
 
 // ────────────────────────────────────────────────────────────────────────
 // Packed-bitmask predicates + mask algebra (the columnar-selection lane)
@@ -244,10 +245,11 @@ pub fn eq_u32_strided_to_mask(
     let groups = count / 16;
     if stride_bytes == 4 {
         // Contiguous lane (a facet-major column): 16 elements are ONE 64-byte
-        // window. Alias it as a fixed-size array so the compiler emits a single
-        // vector load instead of the general path's 16 bounds-checked scalar
-        // reads gathered into a temporary — a cast, not a copy. Bounds were
-        // proven above for the last element, so `try_into` cannot fail here.
+        // window. Alias it as a fixed-size array so the 16 per-element bounds
+        // checks of the general path disappear; the `[u32; 16]` built from it
+        // is the same register-sized temporary both paths use (what this
+        // removes is the checks, not the temporary). Bounds were proven above
+        // for the last element, so `try_into` cannot fail here.
         for g in 0..groups {
             let base = first_offset + g * 64;
             let window: &[u8; 64] = bytes[base..base + 64]
@@ -1069,6 +1071,13 @@ pub fn mask_xor_assign(dst: &mut [u64], src: &[u64]) {
 /// `true` iff any bit is set. Word-OR reduction; an empty slice is `false`.
 /// This is the survivor test a fused plan uses to stop early, and the
 /// `EXISTS` terminal.
+///
+/// Reads EVERY word, surplus words included, and takes no `n_rows` — it
+/// relies on the normative contract that every writer leaves bits at or past
+/// the element count zero. A destination that was written by something
+/// outside this module with a dirty tail will read as "some row set". The
+/// pair [`mask_all`] takes `n_rows` because a full-population test must know
+/// where the population ends; a non-empty test does not.
 #[inline]
 pub fn mask_any(words: &[u64]) -> bool {
     let mut acc = 0u64;
@@ -1334,8 +1343,10 @@ fn masked_fold_i32(values: &[i32], mask_words: &[u64], f: impl Fn(i32, i32) -> i
 
 /// `dst[i] = if mask bit i { a[i] } else { b[i] }` — the conditional-select
 /// (`CASE WHEN`) over a row mask, with no compaction. Bits at or past
-/// `a.len()` are ignored. Plain index loop: the codegen oracle showed LLVM
-/// lowers this shape to packed blends, so no lane wrapper is earned.
+/// `a.len()` are ignored. Plain index loop, deliberately: a bit-per-element
+/// select over `i32` has no lane wrapper in the mask vocabulary yet, and a
+/// scalar loop is the honest shape until one is measured to be needed
+/// (no assembly inspection backs a claim about what LLVM emits here).
 ///
 /// # Panics
 ///

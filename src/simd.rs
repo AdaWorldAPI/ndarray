@@ -316,16 +316,23 @@ pub use crate::simd_avx512::{f32_to_bf16_batch_rne, f32_to_bf16_scalar_rne};
 pub use crate::simd_avx512::{BF16x16, BF16x8};
 
 // AVX2 baseline arm — selected by the `x86-64-v3` cargo default. The
-// predicate is `not(avx512f)` rather than `avx2 + not(avx512f)`: the
-// inner intrinsics in `simd_avx2.rs` use per-function `#[target_feature
-// (enable = "avx,avx2,fma")]` annotations, so the OPERATIONS gate
-// themselves at the symbol level even when the consumer build target
-// is x86-64 baseline. The struct-field types (`__m256` / `__m256i`)
-// are core::arch declarations and don't require AVX/AVX2 at the type
-// level — only execution does. Keeps GitHub CI green (it runs with
-// `RUSTFLAGS="-D warnings"` env, which overrides our v3 config.toml,
-// landing on x86-64 baseline → the previous tighter `avx2` predicate
-// left no matching arm).
+// predicate is `not(avx512f)` rather than `avx2 + not(avx512f)` so that
+// an x86-64 baseline build (e.g. a `RUSTFLAGS` env that REPLACES the
+// `.cargo/config.toml` target-cpu pin) still has a matching arm and
+// COMPILES: the struct-field types (`__m256` / `__m256i`) are core::arch
+// declarations that need no target feature at the type level.
+//
+// CORRECTED 2026-09-14: an earlier version of this comment claimed the
+// inner intrinsics in `simd_avx2.rs` carry per-function
+// `#[target_feature(enable = "avx,avx2,fma")]`. They do not, and by
+// standing rule they must not — every `simd_{isa}.rs` file is one
+// backend for one compile-time target, so a per-function feature gate is
+// a second, contradictory selection mechanism. The intrinsic calls in
+// `simd_avx2.rs` sit inside narrow `unsafe` blocks whose SAFETY
+// precondition is the v3 baseline `.cargo/config.toml` pins for every
+// x86_64 build; a baseline build compiles this arm but is not a supported
+// execution target for it (it would SIGILL on the first `vp*` — the
+// PR #170 failure mode the config pin exists to prevent).
 #[cfg(all(
     target_arch = "x86_64",
     not(target_feature = "avx512f"),
@@ -387,10 +394,16 @@ pub use crate::simd_neon::{u16x8, U16x8};
 // from simd_neon, not the scalar fallback, so it carries Add/BitXor/rotate_left.
 #[cfg(all(target_arch = "aarch64", not(feature = "nightly-simd")))]
 pub use crate::simd_neon::{u32x16, U32x16};
+// U64x8 + I32x16 — native `[uint64x2_t; 4]` / `[int32x4_t; 4]` fan-outs since
+// 2026-09-13 (the five-flavour audit of #306: every bulk mask op and the whole
+// signed-compare family ride these two types, and both used to resolve to the
+// scalar backend here — the polyfill law wants a peer realisation per backend).
+#[cfg(all(target_arch = "aarch64", not(feature = "nightly-simd")))]
+pub use crate::simd_neon::{I32x16, U64x8};
 #[cfg(all(target_arch = "aarch64", not(feature = "nightly-simd")))]
 pub use scalar::{
-    f32x8, f64x4, i32x16, i32x8, i64x4, i64x8, u16x16, u32x8, u64x4, u64x8, u8x64, F32x8, F64x4, I32x16, I32x8, I64x4,
-    I64x8, U16x16, U16x32, U32x8, U64x4, U64x8, U8x64,
+    f32x8, f64x4, i32x16, i32x8, i64x4, i64x8, u16x16, u32x8, u64x4, u64x8, u8x64, F32x8, F64x4, I32x8, I64x4, I64x8,
+    U16x16, U16x32, U32x8, U64x4, U8x64,
 };
 
 // wasm32 + simd128: the native v128 float hot path (F32x16 / F64x8 + masks)
@@ -401,7 +414,7 @@ pub use scalar::{
 // so this arm is gated identically.
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128", not(feature = "nightly-simd")))]
 pub use crate::simd_wasm::wasm32_simd::{
-    f32x16, f64x8, i8x16, u32x16, F32Mask16, F32x16, F64Mask8, F64x8, I8x16, U32x16,
+    f32x16, f64x8, i8x16, u32x16, F32Mask16, F32x16, F64Mask8, F64x8, I32x16, I8x16, U32x16, U64x8,
 };
 // `u32x16`/`U32x16` now come from the native `wasm32_simd` arm above (the ARX
 // lane the ChaCha20 backend rides), so they are dropped from this scalar list.
@@ -409,8 +422,7 @@ pub use crate::simd_wasm::wasm32_simd::{
 pub use scalar::{
     batch_packed_i4_16, f32x8, f64x4, i16x16, i16x32, i32x16, i32x8, i64x4, i64x8, i8x32, i8x64, palette_lookup_u8x8,
     prefetch_read_t0, prefetch_read_t1, prefetch_read_t2, u16x16, u16x8, u32x8, u64x4, u64x8, u8x64, u8x8, F32x8,
-    F64x4, I16x16, I16x32, I32x16, I32x8, I64x4, I64x8, I8x32, I8x64, U16x16, U16x32, U16x8, U32x8, U64x4, U64x8,
-    U8x64, U8x8,
+    F64x4, I16x16, I16x32, I32x8, I64x4, I64x8, I8x32, I8x64, U16x16, U16x32, U16x8, U32x8, U64x4, U8x64, U8x8,
 };
 
 // Other non-x86 targets — wasm32 without simd128, riscv, etc.: full scalar
@@ -1457,6 +1469,107 @@ mod tests {
             })*};
         }
         // All 256 truth tables.
+        sweep!(
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28,
+            29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55,
+            56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82,
+            83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107,
+            108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128,
+            129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149,
+            150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170,
+            171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189, 190, 191,
+            192, 193, 194, 195, 196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212,
+            213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230, 231, 232, 233,
+            234, 235, 236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254,
+            255
+        );
+    }
+
+    /// The same exhaustive sweep on the `U32x16` lane. On x86 this is a
+    /// DISTINCT body from the `U64x8` one (a second generated ladder and a
+    /// second two-input helper on the v3 arm; `_mm512_ternarylogic_epi32` vs
+    /// `_epi64` on v4), so the `U64x8` sweep above proves nothing about it —
+    /// before this test, x86 covered the `U32x16` body at two immediates.
+    /// The `I32x16` compare-to-bitmask and horizontal min/max methods at
+    /// LANE EXTREMES. On the AVX2 backend these are two-half intrinsic
+    /// realizations (PR #306, measured on the codegen oracle), and the two
+    /// ways such a body goes wrong — the halves concatenated in the wrong
+    /// order, or a reduction tree that drops a lane — are both invisible to a
+    /// splat-only test. So: every lane distinct, the signed extremes placed at
+    /// lane 0 / 7 / 8 / 15 (both edges of both halves), and the mask compared
+    /// bit-for-bit against the scalar definition, LSB-first.
+    #[test]
+    fn i32x16_compare_bitmasks_and_reductions_at_lane_extremes() {
+        use crate::simd::I32x16;
+        // Lanes 0/7/8/15 carry the extremes; the rest are distinct, mixed-sign.
+        let mut a = [0i32; 16];
+        for (i, v) in a.iter_mut().enumerate() {
+            *v = (i as i32 - 8) * 1_000_003;
+        }
+        a[0] = i32::MIN;
+        a[7] = i32::MAX;
+        a[8] = -1;
+        a[15] = 0;
+        let mut b = a;
+        b.rotate_left(3); // same values, different lanes -> nontrivial gt pattern
+        let (va, vb) = (I32x16::from_array(a), I32x16::from_array(b));
+
+        let want_gt = (0..16).fold(0u16, |m, i| m | (((a[i] > b[i]) as u16) << i));
+        let want_ge0 = (0..16).fold(0u16, |m, i| m | (((a[i] >= 0) as u16) << i));
+        assert_eq!(va.gt_bitmask(vb), want_gt, "gt_bitmask lane order / sign");
+        assert_eq!(vb.gt_bitmask(va), (0..16).fold(0u16, |m, i| m | (((b[i] > a[i]) as u16) << i)));
+        assert_eq!(va.cmpge_zero_mask(), want_ge0, "cmpge_zero_mask");
+        // Anti-vacuity: the patterns must exercise both halves and both edges.
+        assert_ne!(want_gt & 0x00FF, 0);
+        assert_ne!(want_gt & 0xFF00, 0);
+        assert_ne!(want_gt, 0xFFFF);
+        assert_eq!(want_ge0 & 1, 0, "lane 0 is i32::MIN, must be clear");
+        assert_ne!(want_ge0 & (1 << 15), 0, "lane 15 is 0, must be set");
+        assert_ne!(want_ge0 & (1 << 7), 0, "lane 7 is i32::MAX, must be set");
+        assert_eq!(want_ge0 & (1 << 8), 0, "lane 8 is -1, must be clear");
+
+        // Reductions: the extreme must be found wherever it sits, so walk it
+        // through every lane position (a tree that drops a lane fails here).
+        for pos in 0..16 {
+            let mut m = a;
+            m.swap(0, pos); // move i32::MIN to `pos`
+            let mut x = a;
+            x.swap(7, pos); // move i32::MAX to `pos`
+            assert_eq!(I32x16::from_array(m).reduce_min(), i32::MIN, "reduce_min with MIN at lane {pos}");
+            assert_eq!(I32x16::from_array(x).reduce_max(), i32::MAX, "reduce_max with MAX at lane {pos}");
+        }
+        assert_eq!(va.reduce_min(), *a.iter().min().unwrap());
+        assert_eq!(va.reduce_max(), *a.iter().max().unwrap());
+    }
+
+    #[test]
+    fn w1a9_u32x16_ternlog_matches_truth_table_reference_all_256_imms() {
+        let mut st = 0x5EED_0F32_5EED_0F32_u64;
+        let mut corpus: Vec<[u32; 16]> = Vec::with_capacity(24);
+        corpus.push([0xF0F0_F0F0; 16]);
+        corpus.push([0xCCCC_CCCC; 16]);
+        corpus.push([0xAAAA_AAAA; 16]);
+        for _ in 0..21 {
+            let mut a = [0u32; 16];
+            for lane in a.iter_mut() {
+                *lane = splitmix64(&mut st) as u32;
+            }
+            corpus.push(a);
+        }
+        macro_rules! sweep {
+            ($($imm:literal),* $(,)?) => {$({
+                for w in corpus.windows(3) {
+                    let (a, b, c) = (w[0], w[1], w[2]);
+                    let got = U32x16::from_array(a)
+                        .ternlog::<$imm>(U32x16::from_array(b), U32x16::from_array(c))
+                        .to_array();
+                    for i in 0..16 {
+                        let want = ref_ternlog_u64(a[i] as u64, b[i] as u64, c[i] as u64, $imm) as u32;
+                        assert_eq!(got[i], want, "u32 ternlog imm={} lane={}", $imm, i);
+                    }
+                }
+            })*};
+        }
         sweep!(
             0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28,
             29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55,

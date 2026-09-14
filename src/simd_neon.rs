@@ -483,8 +483,7 @@ pub mod aarch64_simd {
     // `U32x16` is the exception: it carries the ARX vocabulary (Add/BitXor/
     // rotate_left) the ChaCha20 lane needs, so it is the native `[U32x4; 4]`
     // defined at the top of this file (mirroring `simd_wasm::wasm32_simd`).
-    pub use super::U32x16;
-    pub use crate::simd::scalar::{I32x16, U64x8};
+    pub use super::{I32x16, U32x16, U64x8};
 
     /// 16×f32 backed by 4× NEON `float32x4_t` registers (paired loads).
     #[derive(Copy, Clone)]
@@ -709,7 +708,7 @@ pub mod aarch64_simd {
             for i in 0..16 {
                 o[i] = a[i] as i32;
             }
-            I32x16(o)
+            I32x16::from_array(o)
         }
     }
 
@@ -1004,13 +1003,14 @@ pub mod aarch64_simd {
             for i in 0..8 {
                 o[i] = a[i].to_bits();
             }
-            U64x8(o)
+            U64x8::from_array(o)
         }
         #[inline(always)]
         pub fn from_bits(bits: U64x8) -> Self {
+            let b = bits.to_array();
             let mut o = [0.0f64; 8];
             for i in 0..8 {
-                o[i] = f64::from_bits(bits.0[i]);
+                o[i] = f64::from_bits(b[i]);
             }
             Self::from_array(o)
         }
@@ -1884,11 +1884,11 @@ impl U32x16 {
         // GENERATED lowering (tools/gen_ternlog_bodies.py), per 128-bit quad (NEON).
         Self(core::array::from_fn(|p| {
             let (x, y, z) = (self.0[p].0, b.0[p].0, c.0[p].0);
+            let t0: u8 = ((IMM & 1) | ((IMM >> 1) & 2) | ((IMM >> 2) & 4) | ((IMM >> 3) & 8)) as u8;
+            let t1: u8 = (((IMM >> 1) & 1) | ((IMM >> 2) & 2) | ((IMM >> 3) & 4) | ((IMM >> 4) & 8)) as u8;
             // SAFETY: NEON is a baseline feature of every aarch64 target this module compiles
             // for; these are pure register operations on values already in `uint32x4_t`.
             U32x4(unsafe {
-                let t0: u8 = ((IMM & 1) | ((IMM >> 1) & 2) | ((IMM >> 2) & 4) | ((IMM >> 3) & 8)) as u8;
-                let t1: u8 = (((IMM >> 1) & 1) | ((IMM >> 2) & 2) | ((IMM >> 3) & 4) | ((IMM >> 4) & 8)) as u8;
                 if t0 == t1 {
                     ternlog_two_input_u32x4(t0, x, y)
                 } else if t0 == 0 {
@@ -2593,6 +2593,638 @@ mod tests {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Native U64x8 / I32x16 — the two lane types the mask family rides
+// (2026-09-13, PR #306 five-flavour audit)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// `simd_masking_ops` builds every bulk mask op (`mask_and/or/xor/andnot`,
+// `mask_ternlog`) on `U64x8` and the whole signed-compare family
+// (`gt/lt/ge/le_i32_to_mask`) on `I32x16::gt_bitmask`. Until this section
+// both types were re-exported from the SCALAR backend on aarch64, so the mask
+// lane ran per-element loops on ARM while only the `U32x16` paths reached
+// NEON. Same fan-out shape as `U32x16`: four 128-bit quads, every op applied
+// per quad with the NEON intrinsic, ONE narrow `unsafe` per method at the
+// intrinsic boundary (the cfg-selected backend file is the capability proof;
+// no `#[target_feature]` — operator ruling). Surface = the scalar backend's
+// `impl_int_type!` set plus its `U64x8` / `I32x16` extras, signature for
+// signature, so nothing that compiled against the scalar re-export changes.
+
+/// 8×u64 backed by 4× NEON `uint64x2_t` (`[U64x2; 4]`). The packed-mask word
+/// lane: `& | ^ !`, `andnot`, `ternlog`, rotates, `popcnt`.
+#[cfg(target_arch = "aarch64")]
+#[derive(Copy, Clone)]
+#[repr(align(64))]
+pub struct U64x8(pub [U64x2; 4]);
+
+#[cfg(target_arch = "aarch64")]
+impl Default for U64x8 {
+    #[inline(always)]
+    fn default() -> Self {
+        Self::splat(0)
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl U64x8 {
+    pub const LANES: usize = 8;
+
+    /// Broadcast `v` to all 8 lanes (`vdupq_n_u64` ×4).
+    #[inline(always)]
+    pub fn splat(v: u64) -> Self {
+        Self([U64x2::splat(v); 4])
+    }
+
+    /// All-zero lanes.
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self::splat(0)
+    }
+
+    /// Load the first 8 elements of `s` (`vld1q_u64` ×4). Panics if `s.len() < 8`.
+    #[inline(always)]
+    pub fn from_slice(s: &[u64]) -> Self {
+        assert!(s.len() >= 8);
+        Self([
+            U64x2::from_slice(&s[0..2]),
+            U64x2::from_slice(&s[2..4]),
+            U64x2::from_slice(&s[4..6]),
+            U64x2::from_slice(&s[6..8]),
+        ])
+    }
+
+    /// Load from an array (`vld1q_u64` ×4).
+    #[inline(always)]
+    pub fn from_array(arr: [u64; 8]) -> Self {
+        Self::from_slice(&arr)
+    }
+
+    /// Store to an array (`vst1q_u64` ×4).
+    #[inline(always)]
+    pub fn to_array(self) -> [u64; 8] {
+        let mut arr = [0u64; 8];
+        self.copy_to_slice(&mut arr);
+        arr
+    }
+
+    /// Store the 8 lanes into the front of `s` (`vst1q_u64` ×4). Panics if `s.len() < 8`.
+    #[inline(always)]
+    pub fn copy_to_slice(self, s: &mut [u64]) {
+        assert!(s.len() >= 8);
+        self.0[0].copy_to_slice(&mut s[0..2]);
+        self.0[1].copy_to_slice(&mut s[2..4]);
+        self.0[2].copy_to_slice(&mut s[4..6]);
+        self.0[3].copy_to_slice(&mut s[6..8]);
+    }
+
+    /// Wrapping horizontal sum of all 8 lanes (`vaddvq_u64` per quad).
+    #[inline(always)]
+    pub fn reduce_sum(self) -> u64 {
+        // SAFETY: NEON baseline; register reductions on values already in uint64x2_t.
+        let q: [u64; 4] = unsafe {
+            [vaddvq_u64(self.0[0].0), vaddvq_u64(self.0[1].0), vaddvq_u64(self.0[2].0), vaddvq_u64(self.0[3].0)]
+        };
+        q[0].wrapping_add(q[1])
+            .wrapping_add(q[2])
+            .wrapping_add(q[3])
+    }
+
+    /// Lane-wise left-rotate by `n` bits. `n` is taken mod 64. Two `vshlq_u64`
+    /// (a negative shift count is a right shift on NEON) and one `vorrq_u64`
+    /// per quad.
+    #[inline(always)]
+    pub fn rotate_left(self, n: u32) -> Self {
+        let n = n % 64;
+        if n == 0 {
+            return self;
+        }
+        // SAFETY: NEON baseline; pure register ops on uint64x2_t.
+        Self(core::array::from_fn(|p| unsafe {
+            let l = vshlq_u64(self.0[p].0, vdupq_n_s64(n as i64));
+            let r = vshlq_u64(self.0[p].0, vdupq_n_s64(n as i64 - 64));
+            U64x2(vorrq_u64(l, r))
+        }))
+    }
+
+    /// Lane-wise right-rotate by `n` bits — BLAKE2b's direction.
+    /// `rotr(n) == rotl(64 - n)` exactly.
+    #[inline(always)]
+    pub fn rotate_right(self, n: u32) -> Self {
+        let n = n % 64;
+        if n == 0 {
+            return self;
+        }
+        self.rotate_left(64 - n)
+    }
+
+    /// Lane-wise population count: `vcntq_u8` on the bytes, then the
+    /// `vpaddlq_u8 → vpaddlq_u16 → vpaddlq_u32` widening-add ladder back to
+    /// one count per u64 lane (0..=64).
+    #[inline(always)]
+    pub fn popcnt(self) -> Self {
+        // SAFETY: NEON baseline; pure register ops.
+        Self(core::array::from_fn(|p| unsafe {
+            let bytes = vcntq_u8(vreinterpretq_u8_u64(self.0[p].0));
+            U64x2(vpaddlq_u32(vpaddlq_u16(vpaddlq_u8(bytes))))
+        }))
+    }
+
+    /// XOR two vectors lane-wise, popcount each lane, sum all 8 lanes — the
+    /// Hamming distance of 512 bits.
+    #[inline(always)]
+    pub fn xor_popcount(self, other: Self) -> u64 {
+        (self ^ other).popcnt().reduce_sum()
+    }
+
+    /// Set difference: `self & !other` (`vbicq_u64` — note the intrinsic's
+    /// operand order IS `a & !b`, unlike Intel's `andnot`). Same direction as
+    /// every other backend.
+    #[inline(always)]
+    pub fn andnot(self, other: Self) -> Self {
+        // SAFETY: NEON baseline; pure register ops.
+        Self(core::array::from_fn(|p| U64x2(unsafe { vbicq_u64(self.0[p].0, other.0[p].0) })))
+    }
+
+    /// Any 3-input boolean function of `self`, `b` and `c`, selected by the
+    /// const truth-table immediate `IMM` — Intel's VPTERNLOG convention
+    /// (`index = (self << 2) | (b << 1) | c`, result bit = `(IMM >> index) & 1`),
+    /// matched exactly by every backend. Only `0..=255` is legal (compile-time
+    /// assert). Named immediates: `crate::simd::ternlog`. The body is
+    /// generated (`tools/gen_ternlog_bodies.py`): a Shannon-expanded ladder in
+    /// `vandq/vorrq/veorq/vbicq_u64` per quad.
+    #[inline(always)]
+    pub fn ternlog<const IMM: i32>(self, b: Self, c: Self) -> Self {
+        const { assert!(IMM >= 0 && IMM <= 255, "ternlog IMM is an 8-bit truth table") }
+        // GENERATED lowering (tools/gen_ternlog_bodies.py), per 128-bit quad (NEON).
+        Self(core::array::from_fn(|p| {
+            let (x, y, z) = (self.0[p].0, b.0[p].0, c.0[p].0);
+            let t0: u8 = ((IMM & 1) | ((IMM >> 1) & 2) | ((IMM >> 2) & 4) | ((IMM >> 3) & 8)) as u8;
+            let t1: u8 = (((IMM >> 1) & 1) | ((IMM >> 2) & 2) | ((IMM >> 3) & 4) | ((IMM >> 4) & 8)) as u8;
+            // SAFETY: NEON is a baseline feature of every aarch64 target this module compiles
+            // for; these are pure register operations on values already in `uint64x2_t`.
+            U64x2(unsafe {
+                if t0 == t1 {
+                    ternlog_two_input_u64x2(t0, x, y)
+                } else if t0 == 0 {
+                    vandq_u64(z, ternlog_two_input_u64x2(t1, x, y))
+                } else if t1 == 0 {
+                    vbicq_u64(ternlog_two_input_u64x2(t0, x, y), z)
+                } else if t1 == (t0 ^ 0xF) {
+                    veorq_u64(z, ternlog_two_input_u64x2(t0, x, y))
+                } else if t0 == 0xF {
+                    vorrq_u64(veorq_u64(z, vdupq_n_u64(!0)), ternlog_two_input_u64x2(t1, x, y))
+                } else if t1 == 0xF {
+                    vorrq_u64(z, ternlog_two_input_u64x2(t0, x, y))
+                } else {
+                    vorrq_u64(
+                        vbicq_u64(ternlog_two_input_u64x2(t0, x, y), z),
+                        vandq_u64(ternlog_two_input_u64x2(t1, x, y), z),
+                    )
+                }
+            })
+        }))
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl core::ops::Add for U64x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn add(self, r: Self) -> Self {
+        Self(core::array::from_fn(|p| self.0[p].add(r.0[p])))
+    }
+}
+#[cfg(target_arch = "aarch64")]
+impl core::ops::Sub for U64x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn sub(self, r: Self) -> Self {
+        Self(core::array::from_fn(|p| self.0[p].sub(r.0[p])))
+    }
+}
+#[cfg(target_arch = "aarch64")]
+impl core::ops::AddAssign for U64x8 {
+    #[inline(always)]
+    fn add_assign(&mut self, r: Self) {
+        *self = *self + r;
+    }
+}
+#[cfg(target_arch = "aarch64")]
+impl core::ops::SubAssign for U64x8 {
+    #[inline(always)]
+    fn sub_assign(&mut self, r: Self) {
+        *self = *self - r;
+    }
+}
+#[cfg(target_arch = "aarch64")]
+impl core::ops::BitAnd for U64x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitand(self, r: Self) -> Self {
+        // SAFETY: NEON baseline; pure register ops.
+        Self(core::array::from_fn(|p| U64x2(unsafe { vandq_u64(self.0[p].0, r.0[p].0) })))
+    }
+}
+#[cfg(target_arch = "aarch64")]
+impl core::ops::BitOr for U64x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitor(self, r: Self) -> Self {
+        // SAFETY: NEON baseline; pure register ops.
+        Self(core::array::from_fn(|p| U64x2(unsafe { vorrq_u64(self.0[p].0, r.0[p].0) })))
+    }
+}
+#[cfg(target_arch = "aarch64")]
+impl core::ops::BitXor for U64x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitxor(self, r: Self) -> Self {
+        // SAFETY: NEON baseline; pure register ops.
+        Self(core::array::from_fn(|p| U64x2(unsafe { veorq_u64(self.0[p].0, r.0[p].0) })))
+    }
+}
+#[cfg(target_arch = "aarch64")]
+impl core::ops::BitAndAssign for U64x8 {
+    #[inline(always)]
+    fn bitand_assign(&mut self, r: Self) {
+        *self = *self & r;
+    }
+}
+#[cfg(target_arch = "aarch64")]
+impl core::ops::BitOrAssign for U64x8 {
+    #[inline(always)]
+    fn bitor_assign(&mut self, r: Self) {
+        *self = *self | r;
+    }
+}
+#[cfg(target_arch = "aarch64")]
+impl core::ops::BitXorAssign for U64x8 {
+    #[inline(always)]
+    fn bitxor_assign(&mut self, r: Self) {
+        *self = *self ^ r;
+    }
+}
+#[cfg(target_arch = "aarch64")]
+impl core::ops::Not for U64x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn not(self) -> Self {
+        // SAFETY: NEON baseline; `vmvnq_u32` on the same 128 bits reinterpreted.
+        Self(core::array::from_fn(|p| {
+            U64x2(unsafe { vreinterpretq_u64_u32(vmvnq_u32(vreinterpretq_u32_u64(self.0[p].0))) })
+        }))
+    }
+}
+/// Lane-wise `self << rhs` (per-lane counts; a count of 64 or more yields 0,
+/// which is what the shift instruction does — the scalar backend's `<<`
+/// panics there in debug builds, so callers already stay inside `0..64`).
+#[cfg(target_arch = "aarch64")]
+impl core::ops::Shl<Self> for U64x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn shl(self, r: Self) -> Self {
+        // SAFETY: NEON baseline; pure register ops.
+        Self(core::array::from_fn(|p| U64x2(unsafe { vshlq_u64(self.0[p].0, vreinterpretq_s64_u64(r.0[p].0)) })))
+    }
+}
+/// Lane-wise `self >> rhs` (`vshlq_u64` with negated counts).
+#[cfg(target_arch = "aarch64")]
+impl core::ops::Shr<Self> for U64x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn shr(self, r: Self) -> Self {
+        // SAFETY: NEON baseline; pure register ops.
+        Self(core::array::from_fn(|p| {
+            U64x2(unsafe { vshlq_u64(self.0[p].0, vnegq_s64(vreinterpretq_s64_u64(r.0[p].0))) })
+        }))
+    }
+}
+#[cfg(target_arch = "aarch64")]
+impl PartialEq for U64x8 {
+    #[inline(always)]
+    fn eq(&self, other: &Self) -> bool {
+        // SAFETY: NEON baseline; `vceqq_u64` then an all-lanes check via the u32 min.
+        (0..4).all(|p| unsafe { vminvq_u32(vreinterpretq_u32_u64(vceqq_u64(self.0[p].0, other.0[p].0))) == u32::MAX })
+    }
+}
+#[cfg(target_arch = "aarch64")]
+impl core::fmt::Debug for U64x8 {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "U64x8({:?})", self.to_array())
+    }
+}
+
+/// 16×i32 backed by 4× NEON `int32x4_t` (`[I32x4; 4]`). The signed-compare
+/// lane: `gt_bitmask` / `cmpge_zero_mask` are `vcgtq_s32` / `vcgezq_s32` with a
+/// vector bit-pack (no per-lane loop).
+#[cfg(target_arch = "aarch64")]
+#[derive(Copy, Clone)]
+#[repr(align(64))]
+pub struct I32x16(pub [I32x4; 4]);
+
+#[cfg(target_arch = "aarch64")]
+impl Default for I32x16 {
+    #[inline(always)]
+    fn default() -> Self {
+        Self::splat(0)
+    }
+}
+
+/// Pack a per-lane all-ones/all-zeros `uint32x4_t` compare result into a 4-bit
+/// mask, bit `i` = lane `i`: AND with `[1, 2, 4, 8]`, horizontal add.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn quad_mask4(cmp: uint32x4_t) -> u16 {
+    const WEIGHTS: [u32; 4] = [1, 2, 4, 8];
+    // SAFETY: NEON baseline; pure register ops.
+    unsafe { vaddvq_u32(vandq_u32(cmp, vld1q_u32(WEIGHTS.as_ptr()))) as u16 }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl I32x16 {
+    pub const LANES: usize = 16;
+
+    /// Broadcast (`vdupq_n_s32` ×4).
+    #[inline(always)]
+    pub fn splat(v: i32) -> Self {
+        Self([I32x4::splat(v); 4])
+    }
+
+    /// All-zero lanes.
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self::splat(0)
+    }
+
+    /// Load the first 16 elements of `s` (`vld1q_s32` ×4). Panics if `s.len() < 16`.
+    #[inline(always)]
+    pub fn from_slice(s: &[i32]) -> Self {
+        assert!(s.len() >= 16);
+        Self([
+            I32x4::from_slice(&s[0..4]),
+            I32x4::from_slice(&s[4..8]),
+            I32x4::from_slice(&s[8..12]),
+            I32x4::from_slice(&s[12..16]),
+        ])
+    }
+
+    /// Load from an array (`vld1q_s32` ×4).
+    #[inline(always)]
+    pub fn from_array(arr: [i32; 16]) -> Self {
+        Self::from_slice(&arr)
+    }
+
+    /// Store to an array (`vst1q_s32` ×4).
+    #[inline(always)]
+    pub fn to_array(self) -> [i32; 16] {
+        let mut arr = [0i32; 16];
+        self.copy_to_slice(&mut arr);
+        arr
+    }
+
+    /// Store the 16 lanes into the front of `s`. Panics if `s.len() < 16`.
+    #[inline(always)]
+    pub fn copy_to_slice(self, s: &mut [i32]) {
+        assert!(s.len() >= 16);
+        self.0[0].copy_to_slice(&mut s[0..4]);
+        self.0[1].copy_to_slice(&mut s[4..8]);
+        self.0[2].copy_to_slice(&mut s[8..12]);
+        self.0[3].copy_to_slice(&mut s[12..16]);
+    }
+
+    /// Wrapping horizontal sum (`vaddvq_s32` per quad).
+    #[inline(always)]
+    pub fn reduce_sum(self) -> i32 {
+        // SAFETY: NEON baseline; register reductions.
+        let q: [i32; 4] = unsafe {
+            [vaddvq_s32(self.0[0].0), vaddvq_s32(self.0[1].0), vaddvq_s32(self.0[2].0), vaddvq_s32(self.0[3].0)]
+        };
+        q[0].wrapping_add(q[1])
+            .wrapping_add(q[2])
+            .wrapping_add(q[3])
+    }
+
+    /// Minimum over all 16 lanes (`vminq_s32` tree, then `vminvq_s32`).
+    #[inline(always)]
+    pub fn reduce_min(self) -> i32 {
+        // SAFETY: NEON baseline; pure register ops.
+        unsafe {
+            let m = vminq_s32(vminq_s32(self.0[0].0, self.0[1].0), vminq_s32(self.0[2].0, self.0[3].0));
+            vminvq_s32(m)
+        }
+    }
+
+    /// Maximum over all 16 lanes (`vmaxq_s32` tree, then `vmaxvq_s32`).
+    #[inline(always)]
+    pub fn reduce_max(self) -> i32 {
+        // SAFETY: NEON baseline; pure register ops.
+        unsafe {
+            let m = vmaxq_s32(vmaxq_s32(self.0[0].0, self.0[1].0), vmaxq_s32(self.0[2].0, self.0[3].0));
+            vmaxvq_s32(m)
+        }
+    }
+
+    /// Lane-wise minimum (`vminq_s32`).
+    #[inline(always)]
+    pub fn simd_min(self, other: Self) -> Self {
+        Self(core::array::from_fn(|p| self.0[p].min(other.0[p])))
+    }
+
+    /// Lane-wise maximum (`vmaxq_s32`).
+    #[inline(always)]
+    pub fn simd_max(self, other: Self) -> Self {
+        Self(core::array::from_fn(|p| self.0[p].max(other.0[p])))
+    }
+
+    /// Lane-wise `i32 → f32` (`vcvtq_f32_s32` per quad) into the NEON `F32x16`.
+    #[inline(always)]
+    pub fn cast_f32(self) -> aarch64_simd::F32x16 {
+        // SAFETY: NEON baseline; pure register ops.
+        aarch64_simd::F32x16(core::array::from_fn(|p| unsafe { vcvtq_f32_s32(self.0[p].0) }))
+    }
+
+    /// Lane-wise absolute value (`vabsq_s32`; `i32::MIN` wraps to itself, the
+    /// release-mode behaviour of the scalar backend).
+    #[inline(always)]
+    pub fn abs(self) -> Self {
+        // SAFETY: NEON baseline; pure register ops.
+        Self(core::array::from_fn(|p| I32x4(unsafe { vabsq_s32(self.0[p].0) })))
+    }
+
+    /// Sign-extend the first 16 `i16` of `s` (`vld1_s16` + `vmovl_s16` per quad).
+    /// Panics if `s.len() < 16`.
+    #[inline(always)]
+    pub fn from_i16_slice(s: &[i16]) -> Self {
+        assert!(s.len() >= 16);
+        // SAFETY: NEON baseline; `vld1_s16` reads 4 elements at an in-bounds
+        // offset (length asserted above).
+        Self(core::array::from_fn(|p| I32x4(unsafe { vmovl_s16(vld1_s16(s.as_ptr().add(4 * p))) })))
+    }
+
+    /// Truncate each lane to `i16` (`vmovn_s32` per quad; low 16 bits, like `as i16`).
+    #[inline(always)]
+    pub fn to_i16_array(self) -> [i16; 16] {
+        let mut o = [0i16; 16];
+        for p in 0..4 {
+            // SAFETY: NEON baseline; store of 4 i16 at an in-bounds offset.
+            unsafe { vst1_s16(o.as_mut_ptr().add(4 * p), vmovn_s32(self.0[p].0)) };
+        }
+        o
+    }
+
+    /// Bit `i` set iff lane `i >= 0` (`vcgezq_s32` + vector pack), LSB-first.
+    #[inline(always)]
+    pub fn cmpge_zero_mask(self) -> u16 {
+        let mut m = 0u16;
+        for p in 0..4 {
+            // SAFETY: NEON baseline; pure register ops.
+            m |= quad_mask4(unsafe { vcgezq_s32(self.0[p].0) }) << (4 * p);
+        }
+        m
+    }
+
+    /// Lane-wise **signed** greater-than as a packed 16-bit bitmask
+    /// (`vcgtq_s32` + vector pack). Bit `i` set iff `self.lane(i) > other.lane(i)`,
+    /// LSB-first; exact at `i32::MIN` / `i32::MAX`; signed, never bit-pattern.
+    /// Agrees bit-for-bit with the scalar correctness anchor.
+    #[inline(always)]
+    pub fn gt_bitmask(self, other: Self) -> u16 {
+        let mut m = 0u16;
+        for p in 0..4 {
+            // SAFETY: NEON baseline; pure register ops.
+            m |= quad_mask4(unsafe { vcgtq_s32(self.0[p].0, other.0[p].0) }) << (4 * p);
+        }
+        m
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl core::ops::Add for I32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn add(self, r: Self) -> Self {
+        Self(core::array::from_fn(|p| self.0[p].add(r.0[p])))
+    }
+}
+#[cfg(target_arch = "aarch64")]
+impl core::ops::Sub for I32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn sub(self, r: Self) -> Self {
+        Self(core::array::from_fn(|p| self.0[p].sub(r.0[p])))
+    }
+}
+#[cfg(target_arch = "aarch64")]
+impl core::ops::AddAssign for I32x16 {
+    #[inline(always)]
+    fn add_assign(&mut self, r: Self) {
+        *self = *self + r;
+    }
+}
+#[cfg(target_arch = "aarch64")]
+impl core::ops::SubAssign for I32x16 {
+    #[inline(always)]
+    fn sub_assign(&mut self, r: Self) {
+        *self = *self - r;
+    }
+}
+#[cfg(target_arch = "aarch64")]
+impl core::ops::Mul for I32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn mul(self, r: Self) -> Self {
+        // SAFETY: NEON baseline; `vmulq_s32` wraps, matching `wrapping_mul`.
+        Self(core::array::from_fn(|p| I32x4(unsafe { vmulq_s32(self.0[p].0, r.0[p].0) })))
+    }
+}
+#[cfg(target_arch = "aarch64")]
+impl core::ops::MulAssign for I32x16 {
+    #[inline(always)]
+    fn mul_assign(&mut self, r: Self) {
+        *self = *self * r;
+    }
+}
+#[cfg(target_arch = "aarch64")]
+impl core::ops::Neg for I32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn neg(self) -> Self {
+        // SAFETY: NEON baseline; `vnegq_s32` wraps at i32::MIN (release semantics).
+        Self(core::array::from_fn(|p| I32x4(unsafe { vnegq_s32(self.0[p].0) })))
+    }
+}
+#[cfg(target_arch = "aarch64")]
+impl core::ops::BitAnd for I32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitand(self, r: Self) -> Self {
+        // SAFETY: NEON baseline; pure register ops.
+        Self(core::array::from_fn(|p| I32x4(unsafe { vandq_s32(self.0[p].0, r.0[p].0) })))
+    }
+}
+#[cfg(target_arch = "aarch64")]
+impl core::ops::BitOr for I32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitor(self, r: Self) -> Self {
+        // SAFETY: NEON baseline; pure register ops.
+        Self(core::array::from_fn(|p| I32x4(unsafe { vorrq_s32(self.0[p].0, r.0[p].0) })))
+    }
+}
+#[cfg(target_arch = "aarch64")]
+impl core::ops::BitXor for I32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitxor(self, r: Self) -> Self {
+        // SAFETY: NEON baseline; pure register ops.
+        Self(core::array::from_fn(|p| I32x4(unsafe { veorq_s32(self.0[p].0, r.0[p].0) })))
+    }
+}
+#[cfg(target_arch = "aarch64")]
+impl core::ops::BitAndAssign for I32x16 {
+    #[inline(always)]
+    fn bitand_assign(&mut self, r: Self) {
+        *self = *self & r;
+    }
+}
+#[cfg(target_arch = "aarch64")]
+impl core::ops::BitOrAssign for I32x16 {
+    #[inline(always)]
+    fn bitor_assign(&mut self, r: Self) {
+        *self = *self | r;
+    }
+}
+#[cfg(target_arch = "aarch64")]
+impl core::ops::BitXorAssign for I32x16 {
+    #[inline(always)]
+    fn bitxor_assign(&mut self, r: Self) {
+        *self = *self ^ r;
+    }
+}
+#[cfg(target_arch = "aarch64")]
+impl core::ops::Not for I32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn not(self) -> Self {
+        // SAFETY: NEON baseline; pure register ops.
+        Self(core::array::from_fn(|p| I32x4(unsafe { vmvnq_s32(self.0[p].0) })))
+    }
+}
+#[cfg(target_arch = "aarch64")]
+impl PartialEq for I32x16 {
+    #[inline(always)]
+    fn eq(&self, other: &Self) -> bool {
+        // SAFETY: NEON baseline; `vceqq_s32` then an all-lanes check.
+        (0..4).all(|p| unsafe { vminvq_u32(vceqq_s32(self.0[p].0, other.0[p].0)) == u32::MAX })
+    }
+}
+#[cfg(target_arch = "aarch64")]
+impl core::fmt::Debug for I32x16 {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "I32x16({:?})", self.to_array())
+    }
+}
+
 // GEN-TERNLOG-BEGIN (tools/gen_ternlog_bodies.py — regenerate, do not hand-edit)
 /// GENERATED by `tools/gen_ternlog_bodies.py` — a 2-input Boolean function
 /// by its 4-bit table (bit `k` = value at index `(a << 1) | b`), at most
@@ -2621,6 +3253,37 @@ fn ternlog_two_input_u32x4(t: u8, a: uint32x4_t, b: uint32x4_t) -> uint32x4_t {
             0xd => vorrq_u32(a, vmvnq_u32(b)),
             0xe => vorrq_u32(a, b),
             _ => vdupq_n_u32(!0),
+        }
+    }
+}
+
+/// GENERATED by `tools/gen_ternlog_bodies.py` — a 2-input Boolean function
+/// by its 4-bit table (bit `k` = value at index `(a << 1) | b`), at most
+/// two operations. `#[inline]` (not `always`): the 256-table test would
+/// otherwise carry every arm's temporaries in one debug frame.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn ternlog_two_input_u64x2(t: u8, a: uint64x2_t, b: uint64x2_t) -> uint64x2_t {
+    // SAFETY: NEON is a baseline feature of every aarch64 target this module compiles
+    // for; these are pure register operations on values already in `uint64x2_t`.
+    unsafe {
+        match t & 0xF {
+            0x0 => vdupq_n_u64(0),
+            0x1 => veorq_u64(vorrq_u64(a, b), vdupq_n_u64(!0)),
+            0x2 => vandq_u64(veorq_u64(a, vdupq_n_u64(!0)), b),
+            0x3 => veorq_u64(a, vdupq_n_u64(!0)),
+            0x4 => vbicq_u64(a, b),
+            0x5 => veorq_u64(b, vdupq_n_u64(!0)),
+            0x6 => veorq_u64(a, b),
+            0x7 => veorq_u64(vandq_u64(a, b), vdupq_n_u64(!0)),
+            0x8 => vandq_u64(a, b),
+            0x9 => veorq_u64(veorq_u64(a, b), vdupq_n_u64(!0)),
+            0xa => b,
+            0xb => vorrq_u64(veorq_u64(a, vdupq_n_u64(!0)), b),
+            0xc => a,
+            0xd => vorrq_u64(a, veorq_u64(b, vdupq_n_u64(!0))),
+            0xe => vorrq_u64(a, b),
+            _ => vdupq_n_u64(!0),
         }
     }
 }

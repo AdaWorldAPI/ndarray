@@ -184,9 +184,91 @@ note = "MEASURED FULLY PACKED. Observed 81 packed / 0 scalar-lane-arith / 0 loop
 
 [probe.shiftor_rot_u64x8]
 expect = "unknown"
-note = "MEASURED SCALAR -- 0 packed / 8 scalar-lane-arith / 19 memory, i.e. indistinguishable from rot_u64x8. Writing the rotate as an explicit (x >> n) | (x << (64-n)) does NOT persuade LLVM to vectorize it, so the refusal is about the 64-bit OPERATION and not about the rotate idiom. Driver asserts equality with u64::rotate_right, so this is the same function in a different spelling."
+note = "MEASURED SCALAR on 2026-07 (0 packed / 8 scalar-lane-arith / 19 memory, indistinguishable from rot_u64x8): writing the rotate as an explicit (x >> n) | (x << (64-n)) did NOT persuade LLVM to vectorize it, so the refusal is about the 64-bit OPERATION and not about the rotate idiom. Driver asserts equality with u64::rotate_right, so this is the same function in a different spelling. OBSERVATION 2026-09-14, recorded rather than explained: in the run where U64x8::rotate_left/right became a vpsllq/vpsrlq/vpor intrinsic realization in simd_avx2.rs, THIS probe -- untouched -- read 10 packed / 2 scalar-lane-arith, byte-for-byte the library method's shape, while rot_u64x8 and shiftor_rot_const_u64x8 stayed 0 packed. The probe calls no library rotate; the mechanism (LLVM recognising the shift-or as the rotate operation now that a vector-typed lowering of that operation exists in the module and folding, or something else) is NOT established. Kept `unknown`; a probe whose reading moves without its source changing is a finding about the instrument, not the lane."
 
 [probe.shiftor_rot_const_u64x8]
 expect = "unknown"
 note = "MEASURED SCALAR -- 0 packed / 8 scalar-lane-arith / 8 memory, with BLAKE2b's COMPILE-TIME-CONSTANT 32/24/16/63. This is the sharper half: at u32 width a constant byte-granular amount folds to vpshufb and a constant bit-granular one folds to shift-or, both packed. At u64 width neither happens, for either kind of constant. A third independent confirmation that the u64 lane is the crate's one earned intrinsic override."
 
+
+# ============================================================================
+# Group F -- the MASK FAMILY (PR #306): the exact shapes `simd_masking_ops`
+# calls on the x86-64-v3 (AVX2) backend, each through the LIBRARY method so
+# the measurement is of shipped code. Rung 3 of the acceptance ladder, x86
+# arm. Measured 2026-09-14, rustc 1.98.1, in TWO runs: first on the pure
+# array polyfill, then after the four shapes that did not lower packed were
+# given backend-local intrinsic realizations in simd_avx2.rs.
+#
+# FIRST-RUN RESULT (array polyfill, no intrinsics): ternlog (both u64 tables
+# and the u32 XOR_AND), andnot, popcnt and xor_popcount were ALREADY fully
+# packed with 0 scalar lane arithmetic -- the oracle's standing finding
+# ("scalar source, packed codegen") holds for the whole bit-logic half of the
+# mask family, so those earned NO rewrite. Four shapes did not: rotate_left
+# (0 packed / 8 rolq -- the known u64 rotate refusal, now confirmed on the
+# shipped method), reduce_max (0 packed / 17 cmpl -- `iter().max()` is a
+# scalar chain), and the two compare-to-bitmask forms, which were MIXED:
+# LLVM vectorized lanes 1..=12 but peeled lanes 0 and 13..=15 into scalar
+# compares plus shll/orl bit assembly (cmpge_zero_mask 17 packed / 11 scalar;
+# gt_bitmask 23 / 3). Those four are the earned overrides; `expect` below is
+# the SECOND-run state and is what the gate now holds.
+# ============================================================================
+
+[probe.ternlog_u64x8_maj3]
+expect = "vectorized"
+min_packed = 10
+max_scalar_lane_arith = 0
+note = "ARRAY POLYFILL, unchanged. Observed 18 packed / 0 scalar-lane-arith / 0 loop-control on both runs: the generated Shannon ladder (t0 != t1, general arm) lowers to vpand/vpandn/vpor/vpxor over both ymm halves. No intrinsic override earned."
+
+[probe.ternlog_u64x8_select]
+expect = "vectorized"
+min_packed = 10
+max_scalar_lane_arith = 0
+note = "ARRAY POLYFILL, unchanged. 0xCA (c ? a : b) -- the (T0 & !c) | (T1 & c) arm. Observed 18 packed / 0 scalar-lane-arith, identical shape to MAJ3."
+
+[probe.ternlog_u32x16_xor_and]
+expect = "vectorized"
+min_packed = 4
+max_scalar_lane_arith = 0
+note = "ARRAY POLYFILL, unchanged. The exact immediate simd_masking_ops uses. Observed 8 packed / 0 scalar-lane-arith."
+
+[probe.andnot_u64x8]
+expect = "vectorized"
+min_packed = 3
+max_scalar_lane_arith = 0
+note = "ARRAY POLYFILL, unchanged. `self & !other` folds to vpandn per half. Observed 6 packed / 0 scalar-lane-arith."
+
+[probe.popcnt_u64x8]
+expect = "vectorized"
+min_packed = 12
+max_scalar_lane_arith = 0
+note = "ARRAY POLYFILL, unchanged -- and the surprise of the group: eight `count_ones()` in a lane loop did NOT become eight scalar popcntq; LLVM emitted the vpshufb nibble-LUT popcount over both ymm halves (21 packed / 0 scalar-lane-arith). No override earned."
+
+[probe.xor_popcount_u64x8]
+expect = "vectorized"
+min_packed = 15
+max_scalar_lane_arith = 0
+note = "ARRAY POLYFILL, unchanged. vpxor + the same vpshufb popcount + a horizontal add tree. Observed 25 packed / 0 scalar-lane-arith."
+
+[probe.rotate_left_lib_u64x8]
+expect = "vectorized"
+min_packed = 6
+max_scalar_lane_arith = 2
+note = "INTRINSIC REALIZATION EARNED. First run (array polyfill): 0 packed / 8 rolq %cl -- the shipped method scalarised exactly like the hand-written rot_u64x8 mirror. Second run (vpsllq + vpsrlq + vpor per 256-bit half, uniform xmm count): 10 packed / 2 scalar-lane-arith / 1 loop-control. The 2 scalar ops are `andl $63` and `subl` on the COUNT (n % 64, 64 - n), not on lane data; the branch is the n == 0 early return. The u32 lane got this lowering for free; the u64 lane had to be told."
+
+[probe.gt_bitmask_i32x16]
+expect = "vectorized"
+min_packed = 5
+max_scalar_lane_arith = 0
+note = "INTRINSIC REALIZATION EARNED. First run (index loop): 23 packed / 3 scalar-lane-arith / 5 loop-control -- MIXED: LLVM vectorized lanes 1..=12 (a ymm at offset 4 and an xmm at offset 36) and peeled lanes 0 and 13..=15 into scalar cmpl + shll/orl bit assembly. The doc comment on the method had claimed a clean packed lowering; the measurement did not bear it out. Second run (vpcmpgtd per half + vmovmskps): 9 packed / 0 scalar-lane-arith / 0 loop-control -- LLVM further folded the two movemasks into one vpackssdw/vpacksswb/vpmovmskb."
+
+[probe.cmpge_zero_mask_i32x16]
+expect = "vectorized"
+min_packed = 6
+max_scalar_lane_arith = 0
+note = "INTRINSIC REALIZATION EARNED. First run (index loop): 17 packed / 11 scalar-lane-arith / 4 loop-control -- the same lane-0 + lanes-13..=15 peel as gt_bitmask. Second run (complemented vmovmskps sign bits per half): 10 packed / 0 scalar-lane-arith / 0 loop-control (vpcmpgtd against all-ones + pack + vpmovmskb)."
+
+[probe.reduce_max_i32x16]
+expect = "vectorized"
+min_packed = 5
+max_scalar_lane_arith = 0
+note = "INTRINSIC REALIZATION EARNED. First run (`iter().max()`): 0 packed / 17 cmpl -- a scalar compare chain, nothing packed. Second run (vpmaxsd tree 16 -> 8 -> 4 -> 2 -> 1): 8 packed / 0 scalar-lane-arith. reduce_min is the vpminsd twin, not separately probed (same shape, same ladder)."

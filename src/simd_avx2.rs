@@ -1542,21 +1542,72 @@ avx2_int_type!(U16x32, u16, 32, 0u16);
 avx2_int_type!(U32x16, u32, 16, 0u32);
 avx2_int_type!(U64x8, u64, 8, 0u64);
 
-/// u64 ARX rotate — the BLAKE2b / argon2 lane.
+/// u64 ARX rotate — the BLAKE2b / argon2 lane, and the mask family's
+/// word rotate.
 ///
-/// Scalar per-lane loops, and **measured not to vectorize**: the codegen
-/// oracle tried three spellings (`u64::rotate_right`, an explicit shift-or
-/// with a runtime amount, and the same with BLAKE2b's constants 32/24/16/63)
-/// and every one came back 0 packed, one `rorq` per lane. LLVM declines the
-/// 64-bit *operation*, not the rotate *idiom* — it folded two of the probes
-/// into byte-identical code.
+/// **Measured not to vectorize from scalar source**: the codegen oracle
+/// (`.claude/knowledge/simd-codegen-oracle/`) tried three spellings
+/// (`u64::rotate_right`, an explicit shift-or with a runtime amount, and the
+/// same with BLAKE2b's constants 32/24/16/63) and every one came back
+/// 0 packed, one `rorq`/`rolq` per lane — re-confirmed 2026-09-14 on the
+/// shipped method itself (`rotate_left_lib_u64x8`: 0 packed / 8 `rolq`).
+/// LLVM declines the 64-bit *operation*, not the rotate *idiom*.
 ///
-/// So unlike every other lane-wise op in this crate, the scalar spec is NOT
-/// the implementation here. The native `VPROLVQ`/`VPRORVQ` override lives on
-/// `simd_avx512`'s `U64x8`, which is a real `__m512i`; these arms are the
-/// correct-but-unvectorized fallback, and that is a known cost rather than an
-/// oversight. See `.claude/knowledge/crypto-lane-status.md`.
+/// So this is the one place in the AVX2 backend where the array polyfill's
+/// lane loop is replaced by an intrinsic realization: AVX2 has no packed
+/// 64-bit rotate, but it has uniform-count packed 64-bit shifts, so a rotate
+/// is `vpsllq` + `vpsrlq` + `vpor` per 256-bit half — the same lowering LLVM
+/// applies on its own to the u32 lane's `rotate_left(12)`. The native
+/// `VPROLVQ`/`VPRORVQ` single-instruction form lives on `simd_avx512`'s
+/// `U64x8`. Bit-exact with `u64::rotate_left` for every `n` (the count is
+/// reduced mod 64 and the zero case returned early, so no shift ever reaches
+/// 64). See `.claude/knowledge/crypto-lane-status.md`.
 impl U64x8 {
+    /// The two 256-bit halves of the 64-byte-aligned array, loaded once.
+    #[inline(always)]
+    fn avx2_halves(self) -> (__m256i, __m256i) {
+        // SAFETY: this file is the x86-64-v3 backend — `.cargo/config.toml`
+        // pins `-Ctarget-cpu=x86-64-v3` for every x86_64 build that selects
+        // this arm, so AVX2 is a compile-time property here (the footing the
+        // native `U16x16` below already stands on). The array is
+        // `#[repr(align(64))]` and 64 bytes long, so both 32-byte loads are
+        // in bounds (`loadu` needs no alignment regardless).
+        unsafe {
+            let p = self.0.as_ptr() as *const __m256i;
+            (_mm256_loadu_si256(p), _mm256_loadu_si256(p.add(1)))
+        }
+    }
+
+    /// Store two 256-bit halves back into a fresh 64-byte-aligned array.
+    #[inline(always)]
+    fn from_avx2_halves(lo: __m256i, hi: __m256i) -> Self {
+        let mut o = [0u64; 8];
+        // SAFETY: see `avx2_halves`; two 32-byte stores into a 64-byte array.
+        unsafe {
+            let p = o.as_mut_ptr() as *mut __m256i;
+            _mm256_storeu_si256(p, lo);
+            _mm256_storeu_si256(p.add(1), hi);
+        }
+        Self(o)
+    }
+
+    /// `(x << n) | (x >> (64 - n))` per 64-bit lane on one 256-bit half,
+    /// with `1 <= n <= 63` guaranteed by the callers. `_mm256_sll_epi64` /
+    /// `_mm256_srl_epi64` take the count from the low 64 bits of an xmm
+    /// (uniform across lanes), which is exactly a runtime-variable rotate.
+    #[inline(always)]
+    fn rotl_half(v: __m256i, n: u32) -> __m256i {
+        debug_assert!((1..=63).contains(&n));
+        // SAFETY: AVX2 (see `avx2_halves`). Shift counts are in `1..=63`, so
+        // neither packed shift is by 64 or more (which would zero the lane
+        // and break the rotate identity).
+        unsafe {
+            let l = _mm256_sll_epi64(v, _mm_cvtsi32_si128(n as i32));
+            let r = _mm256_srl_epi64(v, _mm_cvtsi32_si128((64 - n) as i32));
+            _mm256_or_si256(l, r)
+        }
+    }
+
     /// Lane-wise left-rotate by `n` bits. `n` is taken mod 64.
     #[inline(always)]
     pub fn rotate_left(self, n: u32) -> Self {
@@ -1564,12 +1615,8 @@ impl U64x8 {
         if n == 0 {
             return self;
         }
-        let a = self.to_array();
-        let mut o = [0u64; 8];
-        for i in 0..8 {
-            o[i] = a[i].rotate_left(n);
-        }
-        Self::from_array(o)
+        let (lo, hi) = self.avx2_halves();
+        Self::from_avx2_halves(Self::rotl_half(lo, n), Self::rotl_half(hi, n))
     }
 
     /// Lane-wise right-rotate by `n` bits — BLAKE2b's direction.
@@ -1581,12 +1628,8 @@ impl U64x8 {
         if n == 0 {
             return self;
         }
-        let a = self.to_array();
-        let mut o = [0u64; 8];
-        for i in 0..8 {
-            o[i] = a[i].rotate_right(n);
-        }
-        Self::from_array(o)
+        let (lo, hi) = self.avx2_halves();
+        Self::from_avx2_halves(Self::rotl_half(lo, 64 - n), Self::rotl_half(hi, 64 - n))
     }
 }
 
@@ -2257,13 +2300,45 @@ impl U16x32 {
 }
 
 impl I32x16 {
+    /// The two 256-bit halves of the 64-byte-aligned array, loaded once.
+    #[inline(always)]
+    fn avx2_halves(self) -> (__m256i, __m256i) {
+        // SAFETY: x86-64-v3 backend, AVX2 is a compile-time property (see
+        // `U64x8::avx2_halves`); the array is 64 bytes, both loads in bounds.
+        unsafe {
+            let p = self.0.as_ptr() as *const __m256i;
+            (_mm256_loadu_si256(p), _mm256_loadu_si256(p.add(1)))
+        }
+    }
+
+    /// Horizontal signed minimum. `iter().min()` measured fully scalar on
+    /// the codegen oracle (17 `cmpl` on GPRs, 0 packed), so this is a
+    /// `vpminsd` tree: 16 → 8 → 4 → 2 → 1 lanes. Exact — min is order-free.
     #[inline(always)]
     pub fn reduce_min(self) -> i32 {
-        *self.0.iter().min().unwrap()
+        let (lo, hi) = self.avx2_halves();
+        // SAFETY: AVX2 (see `avx2_halves`); pure register ops.
+        unsafe {
+            let m8 = _mm256_min_epi32(lo, hi);
+            let m4 = _mm_min_epi32(_mm256_castsi256_si128(m8), _mm256_extracti128_si256(m8, 1));
+            let m2 = _mm_min_epi32(m4, _mm_shuffle_epi32(m4, 0b01_00_11_10));
+            let m1 = _mm_min_epi32(m2, _mm_shuffle_epi32(m2, 0b00_00_00_01));
+            _mm_cvtsi128_si32(m1)
+        }
     }
+
+    /// Horizontal signed maximum — the `vpmaxsd` twin of [`Self::reduce_min`].
     #[inline(always)]
     pub fn reduce_max(self) -> i32 {
-        *self.0.iter().max().unwrap()
+        let (lo, hi) = self.avx2_halves();
+        // SAFETY: AVX2 (see `avx2_halves`); pure register ops.
+        unsafe {
+            let m8 = _mm256_max_epi32(lo, hi);
+            let m4 = _mm_max_epi32(_mm256_castsi256_si128(m8), _mm256_extracti128_si256(m8, 1));
+            let m2 = _mm_max_epi32(m4, _mm_shuffle_epi32(m4, 0b01_00_11_10));
+            let m1 = _mm_max_epi32(m2, _mm_shuffle_epi32(m2, 0b00_00_00_01));
+            _mm_cvtsi128_si32(m1)
+        }
     }
     #[inline(always)]
     pub fn simd_min(self, other: Self) -> Self {
@@ -2319,16 +2394,22 @@ impl I32x16 {
         o
     }
 
-    /// Mask: bit i set where lane i >= 0.
+    /// Mask: bit i set where lane i >= 0 (LSB-first, lane 0 = bit 0).
+    ///
+    /// `>= 0` is "sign bit clear", so this is the complement of the packed
+    /// sign-bit extraction `vmovmskps` performs on each 256-bit half. The
+    /// scalar-loop spelling measured MIXED on the codegen oracle (LLVM
+    /// vectorized lanes 1..=12 and peeled lanes 0 and 13..=15 into scalar
+    /// `shll`/`orl` bit assembly); this is the clean two-`vmovmskps` form.
     #[inline(always)]
     pub fn cmpge_zero_mask(self) -> u16 {
-        let mut mask = 0u16;
-        for i in 0..16 {
-            if self.0[i] >= 0 {
-                mask |= 1 << i;
-            }
-        }
-        mask
+        let (lo, hi) = self.avx2_halves();
+        // SAFETY: AVX2 (see `avx2_halves`); the casts reinterpret bits only.
+        let neg = unsafe {
+            (_mm256_movemask_ps(_mm256_castsi256_ps(lo)) as u32)
+                | ((_mm256_movemask_ps(_mm256_castsi256_ps(hi)) as u32) << 8)
+        };
+        !(neg as u16)
     }
 
     /// Lane-wise **signed** greater-than as a packed 16-bit bitmask.
@@ -2343,20 +2424,25 @@ impl I32x16 {
     /// * `i32::MAX` as the threshold yields `0` — no `i32` exceeds it.
     /// * Comparison is signed, *not* bit-pattern: `-1 > 0` is `false`.
     ///
-    /// Plain index loop over the array polyfill — the codegen oracle
-    /// (`.claude/knowledge/simd-codegen-oracle/`) measured that LLVM lowers
-    /// compare-and-pack-to-bitmask shapes of exactly this form to packed
-    /// compares plus a `vmovmsk`-class extraction, so no `unsafe` and no
-    /// `core::arch` intrinsic override is earned here.
+    /// `vpcmpgtd` per 256-bit half, then `vmovmskps` on the all-ones/all-zeros
+    /// lanes — bit `i` of each 8-bit movemask is lane `i`'s sign bit, so the
+    /// two halves concatenate LSB-first with no reordering.
+    ///
+    /// The earlier index-loop spelling measured MIXED on the codegen oracle
+    /// (`gt_bitmask_i32x16`, 2026-09-14: 23 packed but lanes 0 and 13..=15
+    /// peeled off into scalar compares and `shll`/`orl` assembly) — the doc
+    /// comment that stood here claimed a clean packed lowering, which the
+    /// measurement did not bear out. Hence the intrinsic realization.
     #[inline(always)]
     pub fn gt_bitmask(self, other: Self) -> u16 {
-        let mut mask = 0u16;
-        for i in 0..16 {
-            if self.0[i] > other.0[i] {
-                mask |= 1 << i;
-            }
+        let (a_lo, a_hi) = self.avx2_halves();
+        let (b_lo, b_hi) = other.avx2_halves();
+        // SAFETY: AVX2 (see `avx2_halves`); pure register ops.
+        unsafe {
+            let lo = _mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpgt_epi32(a_lo, b_lo))) as u32;
+            let hi = _mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpgt_epi32(a_hi, b_hi))) as u32;
+            (lo | (hi << 8)) as u16
         }
-        mask
     }
 }
 impl Mul for I32x16 {
@@ -3559,7 +3645,8 @@ impl U64x8 {
     pub fn ternlog<const IMM: i32>(self, b: Self, c: Self) -> Self {
         const { assert!(IMM >= 0 && IMM <= 255, "ternlog IMM is an 8-bit truth table") }
         // GENERATED lowering (tools/gen_ternlog_bodies.py): Shannon-expand on `c`
-        // into two 2-input tables; <= 7 ops for any table, folded at compile time.
+        // into two 2-input tables; <= 8 ops for any table in this vocabulary
+        // (and-not is `x & !y`, two ops), folded at compile time.
         let t0: u8 = ((IMM & 1) | ((IMM >> 1) & 2) | ((IMM >> 2) & 4) | ((IMM >> 3) & 8)) as u8;
         let t1: u8 = (((IMM >> 1) & 1) | ((IMM >> 2) & 2) | ((IMM >> 3) & 4) | ((IMM >> 4) & 8)) as u8;
         if t0 == t1 {
@@ -3610,7 +3697,8 @@ impl U32x16 {
     pub fn ternlog<const IMM: i32>(self, b: Self, c: Self) -> Self {
         const { assert!(IMM >= 0 && IMM <= 255, "ternlog IMM is an 8-bit truth table") }
         // GENERATED lowering (tools/gen_ternlog_bodies.py): Shannon-expand on `c`
-        // into two 2-input tables; <= 7 ops for any table, folded at compile time.
+        // into two 2-input tables; <= 8 ops for any table in this vocabulary
+        // (and-not is `x & !y`, two ops), folded at compile time.
         let t0: u8 = ((IMM & 1) | ((IMM >> 1) & 2) | ((IMM >> 2) & 4) | ((IMM >> 3) & 8)) as u8;
         let t1: u8 = (((IMM >> 1) & 1) | ((IMM >> 2) & 2) | ((IMM >> 3) & 4) | ((IMM >> 4) & 8)) as u8;
         if t0 == t1 {

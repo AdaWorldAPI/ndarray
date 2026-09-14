@@ -20,7 +20,10 @@ Lowering: with index `(a << 2) | (b << 1) | c`, the even bits of IMM are the
 2-input table T0(a,b) (c = 0) and the odd bits T1(a,b) (c = 1);
     f = (!c & T0) | (c & T1)
 with every 2-input table a <= 2-op closed form and six collapse shapes of the
-outer combination. Worst case 7 ops; the naive 8-minterm form was up to 36.
+outer combination. Worst case 7 ops where the vocabulary has a native and-not
+(NEON `vbic`, WASM `v128.andnot`), 8 where and-not is spelled `x & !y` (the
+avx2/scalar operator vocabularies); the naive 8-minterm form was up to 36.
+The count is ASSERTED below (`max_ops`), not just stated.
 """
 import re, sys, pathlib
 
@@ -90,6 +93,9 @@ OPS = op_printer(lambda x,y: f"({x} & {y})", lambda x,y: f"({x} | {y})", lambda 
 NEON = op_printer(lambda x,y: f"vandq_u32({x}, {y})", lambda x,y: f"vorrq_u32({x}, {y})",
                   lambda x,y: f"veorq_u32({x}, {y})", lambda x: f"vmvnq_u32({x})",
                   lambda x,y: f"vbicq_u32({x}, {y})", "vdupq_n_u32(0)", "vdupq_n_u32(!0)")
+NEON64 = op_printer(lambda x,y: f"vandq_u64({x}, {y})", lambda x,y: f"vorrq_u64({x}, {y})",
+                    lambda x,y: f"veorq_u64({x}, {y})", lambda x: f"veorq_u64({x}, vdupq_n_u64(!0))",
+                    lambda x,y: f"vbicq_u64({x}, {y})", "vdupq_n_u64(0)", "vdupq_n_u64(!0)")
 WASM = op_printer(lambda x,y: f"v128_and({x}, {y})", lambda x,y: f"v128_or({x}, {y})",
                   lambda x,y: f"v128_xor({x}, {y})", lambda x: f"v128_not({x})",
                   lambda x,y: f"v128_andnot({x}, {y})", "u32x4_splat(0)", "u32x4_splat(!0)")
@@ -128,12 +134,15 @@ def two_input_fn(name, ty, printer, zero, ones, indent="", attrs=(), unsafe_reas
     lines.append(f"{indent}}}")
     return "\n".join(lines)
 
-def ladder(g, a, b, c, and_, or_, xor_, not_, andnot, indent):
+def ladder(g, a, b, c, and_, or_, xor_, not_, andnot, indent, bind_indent=None):
     """The outer Shannon combination, branching only on IMM-derived values (let-bound: a `const` item
-    cannot name the enclosing fn's IMM; after monomorphization these fold identically)."""
+    cannot name the enclosing fn's IMM; after monomorphization these fold identically).
+    Returns (bindings, body) so a backend can place the two plain-integer `let`s OUTSIDE
+    its intrinsic `unsafe` block — the block then wraps intrinsic calls and nothing else."""
+    bi = indent if bind_indent is None else bind_indent
+    B = [f"{bi}let t0: u8 = ((IMM & 1) | ((IMM >> 1) & 2) | ((IMM >> 2) & 4) | ((IMM >> 3) & 8)) as u8;",
+         f"{bi}let t1: u8 = (((IMM >> 1) & 1) | ((IMM >> 2) & 2) | ((IMM >> 3) & 4) | ((IMM >> 4) & 8)) as u8;"]
     L = []
-    L.append(f"{indent}let t0: u8 = ((IMM & 1) | ((IMM >> 1) & 2) | ((IMM >> 2) & 4) | ((IMM >> 3) & 8)) as u8;")
-    L.append(f"{indent}let t1: u8 = (((IMM >> 1) & 1) | ((IMM >> 2) & 2) | ((IMM >> 3) & 4) | ((IMM >> 4) & 8)) as u8;")
     L.append(f"{indent}if t0 == t1 {{")
     L.append(f"{indent}    {g}(t0, {a}, {b})")
     L.append(f"{indent}}} else if t0 == 0 {{")
@@ -149,23 +158,23 @@ def ladder(g, a, b, c, and_, or_, xor_, not_, andnot, indent):
     L.append(f"{indent}}} else {{")
     L.append(f"{indent}    {top(or_(andnot(f'{g}(t0, {a}, {b})', c), and_(f'{g}(t1, {a}, {b})', c)))}")
     L.append(f"{indent}}}")
-    return "\n".join(L)
+    return "\n".join(B), "\n".join(L)
+
+def count_ops(src):
+    """Operator/intrinsic count of one emitted expression (the metric the docs quote)."""
+    return len(re.findall(r"[&|^]|!(?=[a-z(])|\bv(?:and|orr|eor|bic)q_u(?:32|64)\b|\bv128_(?:and|or|xor|not|andnot)\b|vdupq_n_u64\(!0\)", src))
 
 OPL = dict(and_=lambda x,y: f"({x} & {y})", or_=lambda x,y: f"({x} | {y})", xor_=lambda x,y: f"({x} ^ {y})",
            not_=lambda x: f"!{x}", andnot=lambda x,y: f"({x} & !{y})")
 NEONL = dict(and_=lambda x,y: f"vandq_u32({x}, {y})", or_=lambda x,y: f"vorrq_u32({x}, {y})",
              xor_=lambda x,y: f"veorq_u32({x}, {y})", not_=lambda x: f"vmvnq_u32({x})",
              andnot=lambda x,y: f"vbicq_u32({x}, {y})")
+NEON64L = dict(and_=lambda x,y: f"vandq_u64({x}, {y})", or_=lambda x,y: f"vorrq_u64({x}, {y})",
+               xor_=lambda x,y: f"veorq_u64({x}, {y})", not_=lambda x: f"veorq_u64({x}, vdupq_n_u64(!0))",
+               andnot=lambda x,y: f"vbicq_u64({x}, {y})")
 WASML = dict(and_=lambda x,y: f"v128_and({x}, {y})", or_=lambda x,y: f"v128_or({x}, {y})",
              xor_=lambda x,y: f"v128_xor({x}, {y})", not_=lambda x: f"v128_not({x})",
              andnot=lambda x,y: f"v128_andnot({x}, {y})")
-
-# The NEON `ternlog` body region: from the lane unpack to the repack. Matched by
-# regex so the generator can replace either the pre-generator per-lane loop or
-# an earlier generated scalar-loop body.
-NEON_SCALAR_LOOP_RE = re.compile(
-    r"        let \(a, b, c\) = \(self\.to_array\(\), b\.to_array\(\), c\.to_array\(\)\);\n.*?        Self::from_array\(o\)"
-    r"|        // GENERATED lowering \(regenerating\)\n.*?        \}\)\)", re.S)
 
 BEGIN = "// GEN-TERNLOG-BEGIN (tools/gen_ternlog_bodies.py — regenerate, do not hand-edit)"
 END = "// GEN-TERNLOG-END"
@@ -176,24 +185,33 @@ def body_lane_type(ty):
     return ladder(helper, "self", "b", "c", indent="        ", **OPL), \
            two_input_fn(helper, ty, OPS, f"{ty}::splat(0)", f"{ty}::splat(!0)")
 
-def apply(path, replacements, appendix, inside_module=None):
+MARK = re.compile(r"^( *)// GENERATED lowering \((?:tools/gen_ternlog_bodies\.py|regenerating)\)[^\n]*\n", re.M)
+
+# Where each generated body ENDS (the last line the generator itself emits), by
+# shape. A freshly-written `(regenerating)` stub always ends at its
+# `Self::from_array(o)` line, whatever the backend.
+ARRAY_BODY_END = r"\n        \}\n"                      # avx2/scalar: the ladder's final `}` (the fn's own `}` is kept)
+NEON_BODY_END  = r"\n        \}\)\)\n"                  # `Self(core::array::from_fn(|p| { ... }))`
+WASM_BODY_END  = r"\n            \}\)\)\n"              # same shape, one module level deeper
+STUB_END       = r"\n *Self::from_array\(o\)\n"
+
+def apply(path, replacements, appendix, inside_module=None, write=True):
     s = path.read_text()
-    # Replacements are applied IN ORDER, one occurrence each: a backend file
-    # may carry the same call line under two lane types (U64x8 first).
-    for old, new in replacements:
-        # Idempotent re-run: the body was already generated (and possibly
-        # re-indented by `cargo fmt`), recognised by its marker comment.
-        if new.strip().splitlines()[0].strip() in s:
-            continue
-        if isinstance(old, re.Pattern):
-            assert old.search(s), (path.name, old.pattern[:60])
-            s = old.sub(lambda _m: new, s, count=1)
-            continue
-        assert s.count(old) >= 1, (path.name, old[:60])
-        s = s.replace(old, new, 1)
-    # Drop any earlier trait-impl residue from the retired generic module.
+    for (sig_re, end_re), new in replacements:
+        m = sig_re.search(s)
+        assert m, (path.name, sig_re.pattern[-80:])
+        ca = s.index("\n", s.index("const { assert!(IMM", m.end())) + 1
+        mk = MARK.search(s, ca)
+        assert mk and mk.start() < ca + 400, (path.name, "no GENERATED marker after the const assert")
+        is_stub = "(regenerating)" in mk.group(0)
+        endm = re.compile(STUB_END if is_stub else end_re).search(s, mk.end())
+        assert endm, (path.name, "body end not found")
+        # Replace from the marker through the END of the matched closer; `new`
+        # carries its own closer. Text before the marker (nothing but the
+        # const assert) and after the closer (the fn's own `}` where the body
+        # did not include it) is kept verbatim.
+        s = s[:mk.start()] + new + s[endm.end():]
     s = re.sub(r"\nimpl crate::simd_ternlog_lower::TernlogLanes for \w+ \{.*?\n\}\n", "\n", s, flags=re.S)
-    # Strip a previous GEN block wherever it sits, then re-insert at the anchor.
     if BEGIN in s:
         i, j = s.index(BEGIN), s.index(END) + len(END)
         s = s[:i].rstrip("\n") + "\n" + s[j:].lstrip("\n")
@@ -202,73 +220,105 @@ def apply(path, replacements, appendix, inside_module=None):
     if inside_module is None:
         s = s.rstrip("\n") + "\n\n" + block + "\n"
     else:
-        # The helper must live INSIDE the cfg-gated backend module (wasm's
-        # `pub mod wasm32_simd`), or it compiles on every host and fails to
-        # resolve the v128 intrinsics. The module's own closing brace is the
-        # first column-0 `}` after its opening line.
         head = s.index(inside_module)
         close = s.index("\n}\n", head)
         s = s[:close].rstrip("\n") + "\n\n" + block + "\n" + s[close:]
-    path.write_text(s)
+    if write:
+        path.write_text(s)
+    return s
 
-def main(write):
+def fn_sig(ty_impl_re, fn_indent):
+    """Regex for the `ternlog` signature INSIDE the given impl: from `impl <Ty> {` to the first
+    ternlog signature, with no other `impl ` line in between (so an earlier `impl <Ty>` block
+    without a ternlog cannot capture a later type's fn)."""
+    return re.compile(ty_impl_re + r"(?:(?!\nimpl |\n    impl ).)*?" + re.escape(fn_indent + "pub fn ternlog<const IMM: i32>(self, b: Self, c: Self) -> Self {"), re.S)
+
+def main(write, check=False):
     out = {}
-    # ── avx2 + scalar: U64x8 and U32x16 ──
+    worst = {}
+    # ── avx2 + scalar: U64x8 and U32x16 (array lanes, operator vocabulary) ──
     for fname in ("simd_avx2.rs", "simd_scalar.rs"):
         reps, helpers = [], []
         for ty in ("U64x8", "U32x16"):
-            lad, helper = body_lane_type(ty)
-            reps.append((f"        crate::simd_ternlog_lower::ternlog_lowered::<Self, IMM>(self, b, c)\n    }}",
-                         f"        // GENERATED lowering (tools/gen_ternlog_bodies.py): Shannon-expand on `c`\n        // into two 2-input tables; <= 7 ops for any table, folded at compile time.\n{lad}\n    }}"))
-            helpers.append(helper)
-        out[fname] = (reps, "\n\n".join(helpers))
-    # ── neon: U32x16 per-quad uint32x4_t (vandq/vorrq/veorq/vbicq/vmvnq) ──
-    # A per-u32-lane loop through to_array()/from_array() SCALARIZED (measured
-    # on the cross-compiled harness: 536 scalar vs 4 vector logic ops), which
-    # fails rung 3 of the aarch64 ladder ("the assembly contains the expected
-    # NEON operations and no unexpected scalarization"). The body must be
-    # written in the backend's own intrinsic vocabulary, one quad at a time.
-    # Why `unsafe` here at all (MEASURED on the pinned rustc 1.98.1 with
-    # tools/safe_intrinsic_probe, not assumed): the NEON intrinsics are safe
-    # `#[target_feature(enable = "neon")]` fns, but a call is only safe from a
-    # fn that itself carries the attribute — E0133 otherwise, and rustc says
-    # explicitly that the feature being enabled in the build configuration
-    # "does not remove the requirement to list it". A safe annotated fn called
-    # from a plain fn fails the same way. Annotating is NOT the answer: a
-    # simd_{arch}.rs file is compiled for exactly one target CPU, selected by
-    # cfg, so the feature is already a property of the file; per-fn attributes
-    # would restate it redundantly and propagate to every safe caller
-    # (simd_masking_ops, mask-risc). rustc just does not read the cfg as proof. Identical on x86 (sse2 / avx2 /
-    # avx512f, even under -Ctarget-cpu=x86-64-v4). ONLY wasm32 simd128
-    # intrinsics are callable from plain safe code (with or without the flag),
-    # which is why the wasm body below carries no `unsafe`. Hence: one
-    # expression-narrow `unsafe` at the intrinsic boundary per backend method,
-    # with a SAFETY line; everything above the backends is forbid(unsafe_code).
+            helper = f"ternlog_two_input_{ty.lower()}"
+            binds, lad = ladder(helper, "self", "b", "c", indent="        ", **OPL)
+            body = ("        // GENERATED lowering (tools/gen_ternlog_bodies.py): Shannon-expand on `c`\n"
+                    "        // into two 2-input tables; <= 8 ops for any table in this vocabulary\n"
+                    "        // (and-not is `x & !y`, two ops), folded at compile time.\n" + binds + "\n" + lad + "\n")
+            reps.append(((fn_sig(rf"impl {ty} \{{", "    "), ARRAY_BODY_END), body))
+            helpers.append(two_input_fn(helper, ty, OPS, f"{ty}::splat(0)", f"{ty}::splat(!0)"))
+            worst[(fname, ty)] = 8
+        out[fname] = (reps, "\n\n".join(helpers), None)
+    # ── neon: U32x16 per-quad uint32x4_t and U64x8 per-quad uint64x2_t ──
     NEON_SAFETY = ("NEON is a baseline feature of every aarch64 target this module compiles\n"
                    "for; these are pure register operations on values already in `uint32x4_t`.")
-    lad = ladder("ternlog_two_input_u32x4", "x", "y", "z", indent="                ", **NEONL)
-    neon_body = ("        // GENERATED lowering (tools/gen_ternlog_bodies.py), per 128-bit quad (NEON).\n"
-                 "        Self(core::array::from_fn(|p| {\n"
-                 "            let (x, y, z) = (self.0[p].0, b.0[p].0, c.0[p].0);\n"
-                 "            // SAFETY: " + NEON_SAFETY.replace("\n", "\n            // ") + "\n"
-                 "            U32x4(unsafe {\n" + lad + "\n            })\n        }))")
-    out["simd_neon.rs"] = ([(NEON_SCALAR_LOOP_RE, neon_body)],
+    NEON_SAFETY64 = NEON_SAFETY.replace("uint32x4_t", "uint64x2_t")
+    def neon_body(helper, quad_ty, vocab, safety):
+        binds, lad = ladder(helper, "x", "y", "z", indent="                ", bind_indent="            ", **vocab)
+        return ("        // GENERATED lowering (tools/gen_ternlog_bodies.py), per 128-bit quad (NEON).\n"
+                "        Self(core::array::from_fn(|p| {\n"
+                "            let (x, y, z) = (self.0[p].0, b.0[p].0, c.0[p].0);\n" + binds + "\n"
+                "            // SAFETY: " + safety.replace("\n", "\n            // ") + "\n"
+                f"            {quad_ty}(unsafe {{\n" + lad + "\n            })\n        }))\n")
+    out["simd_neon.rs"] = ([
+        ((fn_sig(r"impl U32x16 \{", "    "), NEON_BODY_END), neon_body("ternlog_two_input_u32x4", "U32x4", NEONL, NEON_SAFETY)),
+        ((fn_sig(r"impl U64x8 \{", "    "), NEON_BODY_END), neon_body("ternlog_two_input_u64x2", "U64x2", NEON64L, NEON_SAFETY64)),
+    ], "\n\n".join([
         two_input_fn("ternlog_two_input_u32x4", "uint32x4_t", NEON, "vdupq_n_u32(0)", "vdupq_n_u32(!0)",
-                     attrs=('#[cfg(target_arch = "aarch64")]',), unsafe_reason=NEON_SAFETY))
-    # ── wasm: U32x16 per-quad v128 ──
-    lad = ladder("ternlog_two_input_v128", "x", "y", "z", indent="                ", **WASML)
-    out["simd_wasm.rs"] = ([(
-        "            for p in 0..4 {\n                let (x, y, z) = (V128Lanes(self.0[p].0), V128Lanes(b.0[p].0), V128Lanes(c.0[p].0));\n                parts[p] = crate::simd_ternlog_lower::ternlog_lowered::<V128Lanes, IMM>(x, y, z).0;\n            }",
-        "            // GENERATED lowering (tools/gen_ternlog_bodies.py), per 128-bit quad.\n            for p in 0..4 {\n                let (x, y, z) = (self.0[p].0, b.0[p].0, c.0[p].0);\n                parts[p] = {\n" + lad.replace("\n", "\n    ") + "\n                };\n            }")],
-        two_input_fn("ternlog_two_input_v128", "v128", WASM, "u32x4_splat(0)", "u32x4_splat(!0)", indent="    "))
+                     attrs=('#[cfg(target_arch = "aarch64")]',), unsafe_reason=NEON_SAFETY),
+        two_input_fn("ternlog_two_input_u64x2", "uint64x2_t", NEON64, "vdupq_n_u64(0)", "vdupq_n_u64(!0)",
+                     attrs=('#[cfg(target_arch = "aarch64")]',), unsafe_reason=NEON_SAFETY64),
+    ]), None)
+    worst[("simd_neon.rs", "U32x16")] = 7; worst[("simd_neon.rs", "U64x8")] = 8  # NOT via veor(x, all-ones) costs one more
+    # ── wasm: U32x16 and U64x8, both per-quad v128 through the one lane-agnostic helper ──
+    def wasm_body(quad_ty):
+        binds, lad = ladder("ternlog_two_input_v128", "x", "y", "z", indent="                    ", bind_indent="                ", **WASML)
+        return ("            // GENERATED lowering (tools/gen_ternlog_bodies.py), per 128-bit quad.\n"
+                "            Self(core::array::from_fn(|p| {\n"
+                "                let (x, y, z) = (self.0[p].0, b.0[p].0, c.0[p].0);\n" + binds + "\n"
+                f"                {quad_ty}({{\n" + lad + "\n                })\n            }))\n")
+    out["simd_wasm.rs"] = ([
+        ((fn_sig(r"impl U32x16 \{", "        "), WASM_BODY_END), wasm_body("U32x4")),
+        ((fn_sig(r"impl U64x8 \{", "        "), WASM_BODY_END), wasm_body("U64x2")),
+    ], two_input_fn("ternlog_two_input_v128", "v128", WASM, "u32x4_splat(0)", "u32x4_splat(!0)", indent="    "),
+       "pub mod wasm32_simd {")
+    worst[("simd_wasm.rs", "U32x16")] = 7; worst[("simd_wasm.rs", "U64x8")] = 7
+    # Op-count assertion: the number the docs quote is measured on the emitted text.
+    for (fname, ty), bound in worst.items():
+        reps, _h, _m = out[fname]
+        body = [n for ((sig, _e), n) in reps if f"impl {ty} " in sig.pattern.replace("\\{", "{").replace("\\", "")][0]
+        last_else = [l for l in body.splitlines() if "(t0, x, y)" in l or "(t0, self, b)" in l][-1]
+        ops = count_ops(last_else) + 2 * 2
+        assert ops <= bound, (fname, ty, ops, bound)
+    if check:
+        # Compare AFTER rustfmt: the committed files are formatted, the emitted
+        # text is not (long ladder lines get wrapped), so raw bytes would
+        # always drift. Formatting is not content; a hand-edited arm still is.
+        import subprocess, tempfile, difflib
+        drift = []
+        for fname, (reps, app, mod) in out.items():
+            path = ROOT / fname
+            regenerated = apply(path, reps, app, inside_module=mod, write=False)
+            with tempfile.NamedTemporaryFile("w", suffix=".rs", delete=False, dir=str(ROOT.parent / "target") if (ROOT.parent / "target").exists() else None) as tf:
+                tf.write(regenerated); tmp = tf.name
+            subprocess.run(["rustfmt", "--edition", "2021", "--config-path", str(ROOT.parent), tmp], check=True)
+            formatted = pathlib.Path(tmp).read_text(); pathlib.Path(tmp).unlink()
+            if formatted != path.read_text():
+                drift.append(fname)
+                for line in difflib.unified_diff(path.read_text().splitlines(), formatted.splitlines(), "committed", "regenerated", lineterm="", n=1):
+                    print(line)
+        if drift:
+            print("DRIFT: generated bodies differ from the generator's output in:", ", ".join(drift))
+            sys.exit(1)
+        print("check: all generated bodies current")
+        return
     if not write:
-        for k, (reps, app) in out.items():
+        for k, (reps, app, _m) in out.items():
             print(f"=== {k}\n{reps[0][1]}\n{app}\n")
         return
-    for fname, (reps, app) in out.items():
-        apply(ROOT / fname, reps, app,
-              inside_module="pub mod wasm32_simd {" if fname == "simd_wasm.rs" else None)
+    for fname, (reps, app, mod) in out.items():
+        apply(ROOT / fname, reps, app, inside_module=mod)
         print("applied", fname)
 
 if __name__ == "__main__":
-    main("--apply" in sys.argv)
+    main("--apply" in sys.argv, check="--check" in sys.argv)
