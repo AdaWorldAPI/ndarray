@@ -658,6 +658,12 @@ fn main() {
                     }
                     let e = t.elapsed();
                     let heap = count_off();
+                    // The header names this as a gate, so it aborts like the
+                    // other two rather than silently invalidating the ns/step.
+                    assert_eq!(
+                        heap, 0,
+                        "heap gate FAILED arm={arm} dirs={dirs} x={x}: {heap} bytes allocated on the hot path"
+                    );
                     if e.as_millis() >= 50 {
                         break (e.as_nanos() as f64 / (reps * steps) as f64, heap / reps);
                     }

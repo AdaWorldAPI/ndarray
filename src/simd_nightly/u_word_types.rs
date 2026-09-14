@@ -170,6 +170,16 @@ impl U64x8 {
 /// arm (the mask family's Morton hex shift composes `and`/`shl`/`or`). Counts
 /// stay below 64 by the callers' contract; what `core::simd` does at 64+ is
 /// its own business, not a portable promise.
+///
+/// ```
+/// use ndarray::simd::U64x8;
+/// let x = U64x8::splat(1);
+/// let counts = U64x8::from_array([0, 1, 2, 3, 4, 5, 6, 63]);
+/// let left = x << counts;
+/// assert_eq!(left.to_array(), [1, 2, 4, 8, 16, 32, 64, 1 << 63]);
+/// let right = left >> counts;
+/// assert_eq!(right.to_array(), [1; 8]);
+/// ```
 impl core::ops::Shl<Self> for U64x8 {
     type Output = Self;
     #[inline(always)]
@@ -179,6 +189,8 @@ impl core::ops::Shl<Self> for U64x8 {
     }
 }
 
+/// Lane-wise variable right shift; see the `Shl<Self>` impl above for the
+/// count contract and a worked example (the two are inverses below 64).
 impl core::ops::Shr<Self> for U64x8 {
     type Output = Self;
     #[inline(always)]

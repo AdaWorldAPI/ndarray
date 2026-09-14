@@ -1678,6 +1678,16 @@ impl U64x8 {
 /// are not a portable contract — this backend zeroes the lane (`VPSLLVQ` /
 /// `VPSRLVQ` semantics) while the scalar backend's `<<` would overflow — so
 /// callers keep every count below 64, as the mask ops do.
+///
+/// ```
+/// use ndarray::simd::U64x8;
+/// let x = U64x8::splat(1);
+/// let counts = U64x8::from_array([0, 1, 2, 3, 4, 5, 6, 63]);
+/// let left = x << counts;
+/// assert_eq!(left.to_array(), [1, 2, 4, 8, 16, 32, 64, 1 << 63]);
+/// let right = left >> counts;
+/// assert_eq!(right.to_array(), [1; 8]);
+/// ```
 impl Shl<Self> for U64x8 {
     type Output = Self;
     #[inline(always)]
@@ -1692,6 +1702,8 @@ impl Shl<Self> for U64x8 {
     }
 }
 
+/// Lane-wise variable right shift; see the `Shl<Self>` impl above for the
+/// count contract and a worked example (the two are inverses below 64).
 impl Shr<Self> for U64x8 {
     type Output = Self;
     #[inline(always)]
