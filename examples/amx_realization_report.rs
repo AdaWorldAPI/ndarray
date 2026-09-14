@@ -16,7 +16,11 @@ fn main() {
             cpu_model(),
             cpu_model().has_amx(),
             amx_available(),
-            if amx_available() { "EXECUTED" } else { "SKIPPED (no AMX on this host)" }
+            if amx_available() {
+                "EXECUTED"
+            } else {
+                "SKIPPED (no AMX on this host)"
+            }
         );
     }
     #[cfg(not(target_arch = "x86_64"))]
