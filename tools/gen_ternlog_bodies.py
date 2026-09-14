@@ -12,7 +12,9 @@ This script is that shared logic. It derives, once, the Shannon lowering of
 an 8-bit truth table into a minimal Boolean DAG, checks it against a
 bit-serial reference for all 256 tables, and then PRINTS each backend's body
 in that backend's own vocabulary (operator traits on the array-backed lane
-types; plain `u32` for NEON's per-lane loop; `v128_*` intrinsics for WASM).
+types; `vandq/vorrq/veorq/vbicq_u{32,64}` NEON intrinsics per 128-bit quad —
+NOT a per-lane `u32` loop, which LLVM scalarised (536 scalar / 4 vector ops
+measured); `v128_*` intrinsics for WASM).
 The emitted text is pasted into the backend file between GEN markers by
 `--apply`; it is committed source, and the generator is its provenance.
 
