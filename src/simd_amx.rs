@@ -121,10 +121,40 @@ pub fn cpu_model() -> CpuModel {
 #[cfg(target_arch = "x86_64")]
 static AMX_AVAILABLE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(detect_amx);
 
+/// The tier-agnostic half of [`amx_available`], cached once: AMX-TILE on the
+/// silicon, XSAVE + tile XSTATE enabled by the OS, and XTILEDATA permission
+/// held by this process — everything a tile-STATE op (`ldtilecfg`,
+/// `tilezero`, `tileloadd`, `tilestored`, `tilerelease`) needs, and nothing
+/// about which compute tier exists. A host or hypervisor can expose TILE with
+/// BF16 / FP16 / FP8 while masking INT8, so the compute tiers are gated
+/// separately: INT8 by [`amx_available`], every other tier by this function
+/// AND its `hpc::amx_ops::AmxFeatures` bit.
+#[cfg(target_arch = "x86_64")]
+static AMX_TILE_AVAILABLE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(detect_amx_tile);
+
+/// AMX-TILE present, OS-enabled, and permitted for this process — the gate
+/// for tile-state ops of ANY tier. See [`AMX_TILE_AVAILABLE`]; [`amx_available`]
+/// is this plus the AMX-INT8 silicon bit.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd_amx::{amx_available, amx_tile_available};
+/// // INT8 availability implies tile availability, never the reverse.
+/// if amx_available() {
+///     assert!(amx_tile_available());
+/// }
+/// ```
+#[cfg(target_arch = "x86_64")]
+pub fn amx_tile_available() -> bool {
+    *AMX_TILE_AVAILABLE
+}
+
 /// Check if AMX is present, OS-enabled, AND this process holds XTILEDATA
 /// permission. Cached after the first call (see the `AMX_AVAILABLE` static).
 ///
-/// Four gates, in order — any miss ⇒ `false`:
+/// Four gates, in order — any miss ⇒ `false` (gates 1-4 minus the INT8 bit are
+/// [`amx_tile_available`], which the non-INT8 compute tiers gate on instead):
 ///   1. CPUID.07H.0H:EDX bits 24 (AMX-TILE) + 25 (AMX-INT8): silicon supports it.
 ///   2. CPUID.01H:ECX bit 27 (OSXSAVE): OS turned on XSAVE.
 ///   3. XGETBV(0) bits 17 (TILECFG) + 18 (TILEDATA): OS enabled tile XSTATE.
@@ -140,14 +170,25 @@ pub fn amx_available() -> bool {
     *AMX_AVAILABLE
 }
 
-/// The actual four-gate detection, run once behind the `AMX_AVAILABLE` static.
+/// The actual four-gate detection, run once behind the `AMX_AVAILABLE` static:
+/// the tier-agnostic tile gate, then the AMX-INT8 silicon bit.
 #[cfg(target_arch = "x86_64")]
 fn detect_amx() -> bool {
-    // Step 1: CPU supports AMX-TILE + AMX-INT8?
+    if !amx_tile_available() {
+        return false;
+    }
+    // CPUID.07H.0H:EDX bit 25 — the INT8 compute tier this crate's GEMM uses.
+    (core::arch::x86_64::__cpuid_count(7, 0).edx >> 25) & 1 == 1
+}
+
+/// Gates 1 (TILE only), 2, 3 and 4 of [`amx_available`], run once behind the
+/// `AMX_TILE_AVAILABLE` static.
+#[cfg(target_arch = "x86_64")]
+fn detect_amx_tile() -> bool {
+    // Step 1: CPU supports AMX-TILE? (INT8 is checked by `detect_amx`, not here.)
     let cpuid = core::arch::x86_64::__cpuid_count(7, 0);
     let amx_tile = (cpuid.edx >> 24) & 1;
-    let amx_int8 = (cpuid.edx >> 25) & 1;
-    if amx_tile == 0 || amx_int8 == 0 {
+    if amx_tile == 0 {
         return false;
     }
 
@@ -216,6 +257,12 @@ pub fn amx_available() -> bool {
     false
 }
 
+/// Non-x86: no tiles. See the x86_64 [`amx_tile_available`].
+#[cfg(not(target_arch = "x86_64"))]
+pub fn amx_tile_available() -> bool {
+    false
+}
+
 /// AMX capability report: detected CPU model + CPUID feature bits + the cached
 /// `amx_available()` verdict. If `model.has_amx()` is true but `available` is
 /// false, the gap is OS / hypervisor enablement (XCR0 / arch_prctl), not silicon.
@@ -229,12 +276,13 @@ pub fn amx_report() -> String {
         let model = cpu_model();
         let f = crate::hpc::amx_ops::amx_features();
         format!(
-            "AMX [{} expects_amx={}]: TILE={} INT8={} BF16={} available={} | tiers: fp16={} complex={} fp8={} tf32={} avx512={} movrs={}",
+            "AMX [{} expects_amx={}]: TILE={} INT8={} BF16={} tile_available={} available={} | tiers: fp16={} complex={} fp8={} tf32={} avx512={} movrs={}",
             model.label(),
             model.has_amx(),
             tile,
             int8,
             bf16,
+            amx_tile_available(),
             amx_available(),
             f.fp16,
             f.complex,

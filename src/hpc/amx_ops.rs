@@ -62,12 +62,25 @@
 //!
 //! # Safety model
 //!
-//! Every op is `unsafe` with the same three preconditions as `amx_matmul`:
-//! [`super::amx_matmul::amx_available`] returned `true`, `LDTILECFG` has been
-//! executed with a config covering every tile named, and pointers/strides
-//! are valid for the configured rows × colsb. Tile-operand aliasing
-//! (Gotcha 11, `#UD` → SIGILL) is a COMPILE error here: every three-tile op
-//! asserts `D != S1 != S2` in a `const` block.
+//! Every op is `unsafe` with three preconditions, and the FIRST is split by
+//! tier — `amx_available()` is the INT8 gate (AMX-TILE + AMX-INT8 + OS +
+//! permission) and must NOT be the precondition for every op, because a host
+//! or hypervisor can expose TILE with BF16 / FP16 / FP8 while masking INT8:
+//!
+//! 1. **Tile state + permission**: [`crate::simd_amx::amx_tile_available`]
+//!    returned `true` (AMX-TILE, XSAVE, tile XSTATE, XTILEDATA permission —
+//!    no compute-tier bit). Sufficient on its own for the tile-STATE ops
+//!    (`ldtilecfg`, `sttilecfg`, `tilezero`, `tileloadd*`, `tilestored`,
+//!    `tilerelease`).
+//! 2. **Tier**: the compute op's tier is advertised — INT8 ops via
+//!    [`super::amx_matmul::amx_available`] (which is gate 1 plus the INT8
+//!    bit), every other op via gate 1 AND its [`AmxFeatures`] bit
+//!    (`bf16`, `fp16`, `complex`, `fp8`, `tf32`, `avx512`, `movrs`).
+//! 3. `LDTILECFG` has been executed with a config covering every tile named,
+//!    and pointers/strides are valid for the configured rows × colsb.
+//!
+//! Tile-operand aliasing (Gotcha 11, `#UD` → SIGILL) is a COMPILE error here:
+//! every three-tile op asserts `D != S1 != S2` in a `const` block.
 
 use core::arch::asm;
 
@@ -78,6 +91,24 @@ use core::arch::asm;
 /// # Safety
 /// `cfg` must point to 64 readable bytes, 64-byte aligned (`TileConfig`), with
 /// a valid palette and in-range rows/colsb (Gotchas 2, 6, 7).
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use ndarray::hpc::amx_matmul::TileConfig;
+/// use ndarray::hpc::amx_ops::{ldtilecfg, tilerelease};
+/// use ndarray::simd_amx::amx_tile_available;
+///
+/// if amx_tile_available() {
+///     let cfg = TileConfig::for_dpbusd(64);
+///     // SAFETY: tile permission held (checked above); `cfg` is 64 aligned bytes
+///     // with palette 1 and in-range shapes, covering tiles 0..3.
+///     unsafe {
+///         ldtilecfg(cfg.data.as_ptr());
+///         tilerelease();
+///     }
+/// }
+/// ```
 #[inline(always)]
 pub unsafe fn ldtilecfg(cfg: *const u8) {
     asm!("ldtilecfg [{c}]", c = in(reg) cfg, options(nostack, readonly));
@@ -87,6 +118,27 @@ pub unsafe fn ldtilecfg(cfg: *const u8) {
 ///
 /// # Safety
 /// `cfg` must point to 64 writable, 64-byte-aligned bytes.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use ndarray::hpc::amx_matmul::TileConfig;
+/// use ndarray::hpc::amx_ops::{ldtilecfg, tilerelease, sttilecfg};
+/// use ndarray::simd_amx::amx_tile_available;
+///
+/// if amx_tile_available() {
+///     let cfg = TileConfig::for_dpbusd(64);
+///     // SAFETY: tile permission held (checked above); `cfg` is 64 aligned bytes
+///     // with palette 1 and in-range shapes, covering tiles 0..3.
+///     unsafe {
+///         ldtilecfg(cfg.data.as_ptr());
+///         let mut back = TileConfig { data: [0u8; 64] };
+///         sttilecfg(back.data.as_mut_ptr());
+///         assert_eq!(back.data[0], 1, "palette 1 reads back");
+///         tilerelease();
+///     }
+/// }
+/// ```
 #[inline(always)]
 pub unsafe fn sttilecfg(cfg: *mut u8) {
     asm!("sttilecfg [{c}]", c = in(reg) cfg, options(nostack));
@@ -96,6 +148,24 @@ pub unsafe fn sttilecfg(cfg: *mut u8) {
 ///
 /// # Safety
 /// AMX must be available; no tile may be needed afterwards.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use ndarray::hpc::amx_matmul::TileConfig;
+/// use ndarray::hpc::amx_ops::{ldtilecfg, tilerelease};
+/// use ndarray::simd_amx::amx_tile_available;
+///
+/// if amx_tile_available() {
+///     let cfg = TileConfig::for_dpbusd(64);
+///     // SAFETY: tile permission held (checked above); `cfg` is 64 aligned bytes
+///     // with palette 1 and in-range shapes, covering tiles 0..3.
+///     unsafe {
+///         ldtilecfg(cfg.data.as_ptr());
+///         tilerelease();
+///     }
+/// }
+/// ```
 #[inline(always)]
 pub unsafe fn tilerelease() {
     asm!("tilerelease", options(nostack, nomem));
@@ -105,6 +175,25 @@ pub unsafe fn tilerelease() {
 ///
 /// # Safety
 /// Tiles configured; `T < 8`.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use ndarray::hpc::amx_matmul::TileConfig;
+/// use ndarray::hpc::amx_ops::{ldtilecfg, tilerelease, tilezero};
+/// use ndarray::simd_amx::amx_tile_available;
+///
+/// if amx_tile_available() {
+///     let cfg = TileConfig::for_dpbusd(64);
+///     // SAFETY: tile permission held (checked above); `cfg` is 64 aligned bytes
+///     // with palette 1 and in-range shapes, covering tiles 0..3.
+///     unsafe {
+///         ldtilecfg(cfg.data.as_ptr());
+///         tilezero::<0>();
+///         tilerelease();
+///     }
+/// }
+/// ```
 #[inline(always)]
 pub unsafe fn tilezero<const T: u8>() {
     const { assert!(T < 8) }
@@ -117,6 +206,27 @@ pub unsafe fn tilezero<const T: u8>() {
 /// # Safety
 /// `base` must be readable for `rows × colsb` of tile `T` at the given row
 /// stride; tile configured.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use ndarray::hpc::amx_matmul::TileConfig;
+/// use ndarray::hpc::amx_ops::{ldtilecfg, tilerelease, tileloadd};
+/// use ndarray::simd_amx::amx_tile_available;
+///
+/// if amx_tile_available() {
+///     let cfg = TileConfig::for_dpbusd(64);
+///     // SAFETY: tile permission held (checked above); `cfg` is 64 aligned bytes
+///     // with palette 1 and in-range shapes, covering tiles 0..3.
+///     unsafe {
+///         ldtilecfg(cfg.data.as_ptr());
+///         // tmm2 is the 16-row × 64-byte M×K operand: one 64-byte row per stride.
+///         let a = [0u8; 16 * 64];
+///         tileloadd::<2>(a.as_ptr(), 64);
+///         tilerelease();
+///     }
+/// }
+/// ```
 #[inline(always)]
 pub unsafe fn tileloadd<const T: u8>(base: *const u8, stride: usize) {
     const { assert!(T < 8) }
@@ -127,6 +237,26 @@ pub unsafe fn tileloadd<const T: u8>(base: *const u8, stride: usize) {
 ///
 /// # Safety
 /// As [`tileloadd`].
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use ndarray::hpc::amx_matmul::TileConfig;
+/// use ndarray::hpc::amx_ops::{ldtilecfg, tilerelease, tileloaddt1};
+/// use ndarray::simd_amx::amx_tile_available;
+///
+/// if amx_tile_available() {
+///     let cfg = TileConfig::for_dpbusd(64);
+///     // SAFETY: tile permission held (checked above); `cfg` is 64 aligned bytes
+///     // with palette 1 and in-range shapes, covering tiles 0..3.
+///     unsafe {
+///         ldtilecfg(cfg.data.as_ptr());
+///         let a = [0u8; 16 * 64];
+///         tileloaddt1::<2>(a.as_ptr(), 64);
+///         tilerelease();
+///     }
+/// }
+/// ```
 #[inline(always)]
 pub unsafe fn tileloaddt1<const T: u8>(base: *const u8, stride: usize) {
     const { assert!(T < 8) }
@@ -138,6 +268,29 @@ pub unsafe fn tileloaddt1<const T: u8>(base: *const u8, stride: usize) {
 /// # Safety
 /// `base` must be writable for `rows × colsb` of tile `T` at the given row
 /// stride; tile configured.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use ndarray::hpc::amx_matmul::TileConfig;
+/// use ndarray::hpc::amx_ops::{ldtilecfg, tilerelease, tilestored, tilezero};
+/// use ndarray::simd_amx::amx_tile_available;
+///
+/// if amx_tile_available() {
+///     let cfg = TileConfig::for_dpbusd(64);
+///     // SAFETY: tile permission held (checked above); `cfg` is 64 aligned bytes
+///     // with palette 1 and in-range shapes, covering tiles 0..3.
+///     unsafe {
+///         ldtilecfg(cfg.data.as_ptr());
+///         // tmm0 is the 16×16 i32 accumulator: 16 rows of 64 bytes.
+///         let mut c = [0i32; 16 * 16];
+///         tilezero::<0>();
+///         tilestored::<0>(c.as_mut_ptr().cast::<u8>(), 64);
+///         assert!(c.iter().all(|&x| x == 0));
+///         tilerelease();
+///     }
+/// }
+/// ```
 #[inline(always)]
 pub unsafe fn tilestored<const T: u8>(base: *mut u8, stride: usize) {
     const { assert!(T < 8) }
@@ -151,6 +304,26 @@ pub unsafe fn tilestored<const T: u8>(base: *mut u8, stride: usize) {
 ///
 /// # Safety
 /// As [`tileloadd`], and the host must report [`AmxFeatures::movrs`].
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use ndarray::hpc::amx_matmul::TileConfig;
+/// use ndarray::hpc::amx_ops::{amx_features, ldtilecfg, tilerelease, tileloaddrs};
+/// use ndarray::simd_amx::amx_tile_available;
+///
+/// // Tile state AND the MOVRS tier — the INT8 gate says nothing about MOVRS.
+/// if amx_tile_available() && amx_features().movrs {
+///     let cfg = TileConfig::for_dpbusd(64);
+///     let a = [0u8; 16 * 64];
+///     // SAFETY: tile permission held, config covers tile 2, `a` is 16 rows × 64 B.
+///     unsafe {
+///         ldtilecfg(cfg.data.as_ptr());
+///         tileloaddrs::<2>(a.as_ptr(), 64);
+///         tilerelease();
+///     }
+/// }
+/// ```
 #[inline(always)]
 pub unsafe fn tileloaddrs<const T: u8>(base: *const u8, stride: usize) {
     const { assert!(T < 8) }
@@ -161,6 +334,26 @@ pub unsafe fn tileloaddrs<const T: u8>(base: *const u8, stride: usize) {
 ///
 /// # Safety
 /// As [`tileloaddrs`].
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use ndarray::hpc::amx_matmul::TileConfig;
+/// use ndarray::hpc::amx_ops::{amx_features, ldtilecfg, tilerelease, tileloaddrst1};
+/// use ndarray::simd_amx::amx_tile_available;
+///
+/// // Tile state AND the MOVRS tier — the INT8 gate says nothing about MOVRS.
+/// if amx_tile_available() && amx_features().movrs {
+///     let cfg = TileConfig::for_dpbusd(64);
+///     let a = [0u8; 16 * 64];
+///     // SAFETY: tile permission held, config covers tile 2, `a` is 16 rows × 64 B.
+///     unsafe {
+///         ldtilecfg(cfg.data.as_ptr());
+///         tileloaddrst1::<2>(a.as_ptr(), 64);
+///         tilerelease();
+///     }
+/// }
+/// ```
 #[inline(always)]
 pub unsafe fn tileloaddrst1<const T: u8>(base: *const u8, stride: usize) {
     const { assert!(T < 8) }
@@ -170,7 +363,7 @@ pub unsafe fn tileloaddrst1<const T: u8>(base: *const u8, stride: usize) {
 // ── Three-tile dot products: D += S1 · S2 ───────────────────────────────────
 
 macro_rules! tdp3 {
-    ($(#[$m:meta])* $name:ident, $mn:literal) => {
+    ($(#[$m:meta])* $name:ident, $mn:literal, $tier:ident) => {
         $(#[$m])*
         ///
         /// `D += S1 · S2`; S1 is the plain M×K operand (ModRM.rm), S2 the
@@ -178,8 +371,33 @@ macro_rules! tdp3 {
         /// distinct — enforced at compile time.
         ///
         /// # Safety
-        /// Tiles configured with compatible shapes, AMX available, and the
-        /// host must report the feature tier this op belongs to.
+        /// Tiles configured with compatible shapes,
+        /// [`crate::simd_amx::amx_tile_available`] true, and the host must
+        #[doc = concat!("report this op's tier: [`AmxFeatures::", stringify!($tier), "`].")]
+        ///
+        /// # Examples
+        ///
+        /// Gate on the tile state AND this op's own tier — never on the INT8
+        /// gate for a non-INT8 op — then run it on the three distinct tiles
+        /// the GEMM config lays out (`C → tmm0`, VNNI K×N → tmm1, M×K → tmm2).
+        ///
+        /// ```rust,no_run
+        /// use ndarray::hpc::amx_matmul::TileConfig;
+        #[doc = concat!("use ndarray::hpc::amx_ops::{amx_features, ldtilecfg, tilerelease, tilezero, ", stringify!($name), "};")]
+        /// use ndarray::simd_amx::amx_tile_available;
+        ///
+        #[doc = concat!("if amx_tile_available() && amx_features().", stringify!($tier), " {")]
+        ///     let cfg = TileConfig::for_dpbusd(64);
+        ///     // SAFETY: tile permission held (checked above), the config covers
+        ///     // tiles 0..3 with compatible shapes, and the operands are distinct.
+        ///     unsafe {
+        ///         ldtilecfg(cfg.data.as_ptr());
+        ///         tilezero::<0>();
+        #[doc = concat!("        ", stringify!($name), "::<0, 2, 1>();")]
+        ///         tilerelease();
+        ///     }
+        /// }
+        /// ```
         #[inline(always)]
         pub unsafe fn $name<const D: u8, const S1: u8, const S2: u8>() {
             const {
@@ -193,57 +411,57 @@ macro_rules! tdp3 {
 
 tdp3!(
     /// `TDPBSSD` — signed i8 × signed i8 → i32 (AMX-INT8).
-    tdpbssd, "tdpbssd"
+    tdpbssd, "tdpbssd", int8
 );
 tdp3!(
     /// `TDPBSUD` — signed i8 (S1) × unsigned u8 (S2) → i32 (AMX-INT8).
-    tdpbsud, "tdpbsud"
+    tdpbsud, "tdpbsud", int8
 );
 tdp3!(
     /// `TDPBUSD` — unsigned u8 (S1) × signed i8 (S2) → i32 (AMX-INT8). The
     /// kernel's op: [`tdpbusd::<0, 2, 1>`] is the validated `C4 E2 71 5E C2`.
-    tdpbusd, "tdpbusd"
+    tdpbusd, "tdpbusd", int8
 );
 tdp3!(
     /// `TDPBUUD` — unsigned u8 × unsigned u8 → i32 (AMX-INT8).
-    tdpbuud, "tdpbuud"
+    tdpbuud, "tdpbuud", int8
 );
 tdp3!(
     /// `TDPBF16PS` — bf16 × bf16 → f32 (AMX-BF16). [`tdpbf16ps::<0, 2, 1>`] is
     /// the validated `C4 E2 72 5C C2`.
-    tdpbf16ps, "tdpbf16ps"
+    tdpbf16ps, "tdpbf16ps", bf16
 );
 tdp3!(
     /// `TDPFP16PS` — fp16 × fp16 → f32 (AMX-FP16, Granite Rapids).
     /// Assembler-verified only.
-    tdpfp16ps, "tdpfp16ps"
+    tdpfp16ps, "tdpfp16ps", fp16
 );
 tdp3!(
     /// `TCMMIMFP16PS` — imaginary part of a complex fp16 matrix product → f32
     /// (AMX-COMPLEX). Assembler-verified only.
-    tcmmimfp16ps, "tcmmimfp16ps"
+    tcmmimfp16ps, "tcmmimfp16ps", complex
 );
 tdp3!(
     /// `TCMMRLFP16PS` — real part of a complex fp16 matrix product → f32
     /// (AMX-COMPLEX). Assembler-verified only.
-    tcmmrlfp16ps, "tcmmrlfp16ps"
+    tcmmrlfp16ps, "tcmmrlfp16ps", complex
 );
 tdp3!(
     /// `TDPBF8PS` — E5M2 × E5M2 → f32 (AMX-FP8, Diamond Rapids).
     /// Assembler-verified only.
-    tdpbf8ps, "tdpbf8ps"
+    tdpbf8ps, "tdpbf8ps", fp8
 );
 tdp3!(
     /// `TDPBHF8PS` — E5M2 (S1) × E4M3 (S2) → f32 (AMX-FP8). Assembler-verified only.
-    tdpbhf8ps, "tdpbhf8ps"
+    tdpbhf8ps, "tdpbhf8ps", fp8
 );
 tdp3!(
     /// `TDPHBF8PS` — E4M3 (S1) × E5M2 (S2) → f32 (AMX-FP8). Assembler-verified only.
-    tdphbf8ps, "tdphbf8ps"
+    tdphbf8ps, "tdphbf8ps", fp8
 );
 tdp3!(
     /// `TDPHF8PS` — E4M3 × E4M3 → f32 (AMX-FP8). Assembler-verified only.
-    tdphf8ps, "tdphf8ps"
+    tdphf8ps, "tdphf8ps", fp8
 );
 /// `TMMULTF32PS` — tf32 × tf32 → f32 (AMX-TF32). CLAIMED — no host has
 /// executed it.
@@ -263,6 +481,26 @@ tdp3!(
 /// # Safety
 /// Tiles configured with compatible shapes, AMX available, and the host
 /// must report AMX-TF32.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use ndarray::hpc::amx_matmul::TileConfig;
+/// use ndarray::hpc::amx_ops::{amx_features, ldtilecfg, tilerelease, tilezero, tmmultf32ps};
+/// use ndarray::simd_amx::amx_tile_available;
+///
+/// if amx_tile_available() && amx_features().tf32 {
+///     let cfg = TileConfig::for_dpbusd(64);
+///     // SAFETY: tile permission held, TF32 advertised, config covers tiles
+///     // 0..3, operands distinct.
+///     unsafe {
+///         ldtilecfg(cfg.data.as_ptr());
+///         tilezero::<0>();
+///         tmmultf32ps::<0, 2, 1>();
+///         tilerelease();
+///     }
+/// }
+/// ```
 #[inline(always)]
 pub unsafe fn tmmultf32ps<const D: u8, const S1: u8, const S2: u8>() {
     const {
@@ -292,8 +530,33 @@ macro_rules! tile_row_to_zmm {
         /// Register-row form: `row` selects the tile row at run time.
         ///
         /// # Safety
-        /// Tile `T` configured and holding data; the host must report
-        /// [`AmxFeatures::avx512`].
+        /// Tile `T` configured and holding data,
+        /// [`crate::simd_amx::amx_tile_available`] true, and the host must
+        /// report [`AmxFeatures::avx512`].
+        ///
+        /// # Examples
+        ///
+        /// `ignore`d rather than `no_run` because this function exists only
+        /// when `avx512f` is a compile-time target feature (v4 / native
+        /// builds); a v3 doctest build would not find it.
+        ///
+        /// ```rust,ignore
+        /// use ndarray::hpc::amx_matmul::TileConfig;
+        #[doc = concat!("use ndarray::hpc::amx_ops::{amx_features, ldtilecfg, tilerelease, tilezero, ", stringify!($name), "};")]
+        /// use ndarray::simd_amx::amx_tile_available;
+        ///
+        /// if amx_tile_available() && amx_features().avx512 {
+        ///     let cfg = TileConfig::for_dpbusd(64);
+        ///     // SAFETY: tile permission held, AMX-AVX512 advertised, tile 0
+        ///     // configured and zeroed before its row is read.
+        ///     unsafe {
+        ///         ldtilecfg(cfg.data.as_ptr());
+        ///         tilezero::<0>();
+        #[doc = concat!("        let _row0 = ", stringify!($name), "::<0>(0);")]
+        ///         tilerelease();
+        ///     }
+        /// }
+        /// ```
         #[inline(always)]
         pub unsafe fn $name<const T: u8>(row: u32) -> $ty {
             const { assert!(T < 8) }
@@ -307,6 +570,29 @@ macro_rules! tile_row_to_zmm {
         ///
         /// # Safety
         /// As the register-row form.
+        ///
+        /// # Examples
+        ///
+        /// `ignore`d for the same reason as the register-row form (the
+        /// function exists only under a compile-time `avx512f`).
+        ///
+        /// ```rust,ignore
+        /// use ndarray::hpc::amx_matmul::TileConfig;
+        #[doc = concat!("use ndarray::hpc::amx_ops::{amx_features, ldtilecfg, tilerelease, tilezero, ", stringify!($name_imm), "};")]
+        /// use ndarray::simd_amx::amx_tile_available;
+        ///
+        /// if amx_tile_available() && amx_features().avx512 {
+        ///     let cfg = TileConfig::for_dpbusd(64);
+        ///     // SAFETY: tile permission held, AMX-AVX512 advertised, tile 0
+        ///     // configured and zeroed; ROW 3 < 16 configured rows.
+        ///     unsafe {
+        ///         ldtilecfg(cfg.data.as_ptr());
+        ///         tilezero::<0>();
+        #[doc = concat!("        let _row3 = ", stringify!($name_imm), "::<0, 3>();")]
+        ///         tilerelease();
+        ///     }
+        /// }
+        /// ```
         #[inline(always)]
         pub unsafe fn $name_imm<const T: u8, const ROW: u8>() -> $ty {
             const { assert!(T < 8 && ROW < 16) }
@@ -380,18 +666,28 @@ pub struct AmxFeatures {
 }
 
 fn detect_amx_features() -> AmxFeatures {
-    use core::arch::x86_64::{__cpuid, __cpuid_count};
+    use core::arch::x86_64::{__cpuid, __cpuid_count, CpuidResult};
     let max_leaf = __cpuid(0).eax;
-    let l7_0 = __cpuid_count(7, 0);
-    let l7_1 = if max_leaf >= 7 && __cpuid_count(7, 0).eax >= 1 {
+    // An out-of-range basic leaf may return the HIGHEST basic leaf's data, so
+    // every leaf is guarded by `max_leaf` and an unavailable one reads as all
+    // zero — never as leaf 0 (vendor string + max leaf), whose bits are not
+    // feature bits either.
+    let zero = || CpuidResult {
+        eax: 0,
+        ebx: 0,
+        ecx: 0,
+        edx: 0,
+    };
+    let l7_0 = if max_leaf >= 7 { __cpuid_count(7, 0) } else { zero() };
+    let l7_1 = if max_leaf >= 7 && l7_0.eax >= 1 {
         __cpuid_count(7, 1)
     } else {
-        __cpuid_count(0, 0)
+        zero()
     };
     let l1e_1 = if max_leaf >= 0x1e {
         __cpuid_count(0x1e, 1)
     } else {
-        __cpuid_count(0, 0)
+        zero()
     };
     let bit = |v: u32, b: u32| (v >> b) & 1 == 1;
     AmxFeatures {
@@ -411,6 +707,19 @@ static AMX_FEATURES: std::sync::LazyLock<AmxFeatures> = std::sync::LazyLock::new
 
 /// The advertised AMX tiers, cached (CPUID is a serializing instruction; once
 /// is enough).
+///
+/// # Examples
+///
+/// Runs on any x86_64 host — it only reads CPUID:
+///
+/// ```
+/// use ndarray::hpc::amx_ops::amx_features;
+/// let f = amx_features();
+/// // Every compute tier rides on AMX-TILE; a tier without TILE is not a CPU.
+/// if f.int8 || f.bf16 || f.fp16 {
+///     assert!(f.tile);
+/// }
+/// ```
 pub fn amx_features() -> AmxFeatures {
     *AMX_FEATURES
 }
@@ -426,21 +735,34 @@ mod tests {
     /// tile op — so the `.byte` tables in `amx_matmul` and the mnemonics here
     /// are pinned to each other by CI, not by an EMR box.
     fn contains(f: unsafe fn(), needle: &[u8]) -> bool {
-        // SAFETY: `f` is a real function in this binary's text segment; the
-        // first 96 bytes from its entry are mapped and readable (the linker
-        // packs these wrappers back to back, so the window runs into the
-        // NEXT wrapper long before it leaves the section).
-        let code = unsafe { core::slice::from_raw_parts(f as *const u8, 96) };
-        // ...which is exactly why the window must stop at this wrapper's own
-        // `ret` (0xC3): without that bound a negative assertion reads the
-        // neighbouring wrapper's encoding and fails, and a positive one can
-        // pass on a neighbour's bytes. None of the needles below contains
-        // 0xC3, and the wrappers carry no other 0xC3 before their return.
-        let end = code
-            .iter()
-            .position(|&b| b == 0xc3)
-            .map_or(code.len(), |p| p + 1);
-        code[..end].windows(needle.len()).any(|w| w == needle)
+        // The bytes are read ONE AT A TIME, stopping at this wrapper's own
+        // `ret` (0xC3) — never through a slice over an extent nobody has
+        // validated. Every byte up to and including a function's `ret` lies
+        // inside that function's body, so each read is inside mapped text
+        // regardless of where the section or page ends; the 96-byte cap only
+        // bounds a wrapper that somehow has no `ret`, and the assertion below
+        // turns that into a test failure rather than a wild read.
+        //
+        // Stopping at `ret` is also what keeps the assertions honest: the
+        // linker packs these wrappers back to back, so a window that ran on
+        // would read the NEXT wrapper's encoding — a negative assertion would
+        // fail on it and a positive one could pass on it. None of the needles
+        // contains 0xC3, and the wrappers carry no other 0xC3 before their
+        // return.
+        let base = f as *const u8;
+        let mut code = Vec::with_capacity(96);
+        for i in 0..96usize {
+            // SAFETY: no byte before this one was `ret`, so byte `i` is still
+            // inside the wrapper's own body in the text segment — a mapped,
+            // readable address. `read_volatile` keeps the read a real load.
+            let b = unsafe { core::ptr::read_volatile(base.add(i)) };
+            code.push(b);
+            if b == 0xc3 {
+                break;
+            }
+        }
+        assert_eq!(code.last().copied(), Some(0xc3), "wrapper has no `ret` within 96 bytes");
+        code.windows(needle.len()).any(|w| w == needle)
     }
 
     #[inline(never)]
