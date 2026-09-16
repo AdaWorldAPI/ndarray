@@ -294,6 +294,19 @@ pub fn gemm_u8_i8(a: &[u8], b: &[i8], c: &mut [i32], m: usize, n: usize, k: usiz
     // Zen 4 silicon that supports VNNI at runtime (the regression codex flagged
     // on PR #217). Runtime detection keeps the VNNI kernels reachable on the
     // baseline build, matching the pre-consolidation `simd_caps()` behaviour.
+    // `allow`, not `expect`, and the distinction is the point: this lint is
+    // CONFIG-DEPENDENT. The trailing scalar fallback below is `#[cfg(not(any(
+    // avx512vnni, avxvnni)))]`, so on a build where either IS a compile-time
+    // feature (e.g. the `target-cpu=native` default on VNNI silicon) the
+    // fallback is stripped, the second `return` becomes the block's final
+    // statement, and `needless_return` fires — while on the portable v3 arm the
+    // fallback is present and BOTH returns are load-bearing. `expect` would
+    // then fail the v3 build for the lint NOT firing, turning one arm's cleanup
+    // into the other arm's error. The returns stay symmetric on purpose: two
+    // parallel runtime-detected arms that read the same way in every config.
+    // (Surfaced 2026-09-16 by the default flip to `native` — under the old v3
+    // default this code path was never linted at its own feature level.)
+    #[allow(clippy::needless_return)]
     #[cfg(target_arch = "x86_64")]
     {
         if std::is_x86_feature_detected!("avx512vnni") {

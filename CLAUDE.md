@@ -104,21 +104,61 @@ src/
 ### New Modules
 - `src/hpc/styles/` — 34 cognitive primitives (rte, htd, smad, tcp, irs, mcp, tca, cdt, mct, lsi, pso, cdi, cws, are, tcf, ssr, etd, amp, zcf, hpm, cur, mpc, ssam, idr, spp, icr, sdd, dtmf, hkf). Each is `fn(Base17, NarsTruth) → result`. 49 tests.
 - `src/hpc/causal_diff.rs` — CausalEdge64 (u64 packed), scaffold_to_palette3d_layers(), quality scoring (GOOD/BAD/UNCERTAIN), NARS self-reinforcement LoRA, PAL8 serialization (4101 bytes).
-- **Build config — AVX-512 is NOT the default, and believing it is corrupts
-  measurements.** `.cargo/config.toml` sets **`x86-64-v3` (AVX2)**, deliberately:
-  it is the portable CI/distribution baseline, and its own comment explains why
-  (without a v3 floor the AVX2 intrinsics in `simd_avx2.rs` SIGILL). A plain
-  `cargo build`/`run`/`test` therefore measures **v3**.
-  **For AVX-512 you must ask for it, every time:**
+- **Build config — the default is `target-cpu=native`: it MEASURES THE MACHINE
+  IT RUNS ON, and therefore NAMES NO TIER.**
+
+  > ⊘ **SUPERSEDED 2026-09-16.** This bullet read *"AVX-512 is NOT the default…
+  > `.cargo/config.toml` sets `x86-64-v3` (AVX2), deliberately… for AVX-512 you
+  > must ask for it, every time."* That was accurate for the old default and is
+  > now wrong on its main clause. **What survives unchanged: v3 IS the portable
+  > distribution baseline** — it moved out of the unnamed default into
+  > `.cargo/config-v3.toml`, where a row that depends on it says so.
+  >
+  > Why the flip: a default naming a tier the host is not means every AVX-512
+  > measurement needs an incantation, and a forgotten incantation does not fail
+  > — it grades the wrong tier silently. Measured the day of the flip:
+  > `scripts/codegen-witness.sh avx512` run WITHOUT
+  > `CARGO_ARGS='--config .cargo/config-v4.toml'` built v3 and reported three
+  > `FAIL: … has no vpternlog on an AVX-512 build` on probe symbols the change
+  > under test never touched. Same command after the flip: PASS, 6 vpternlog.
+
+  A plain `cargo build`/`run`/`test` therefore measures **whatever this host
+  is** — on an AVX-512 box, AVX-512. **So a tier is never inferred from "it was
+  the default"; it is READ from the arm's own report** (`simd-masking-parity`
+  and every probe print `avx512f=true|false`) or PINNED by the caller:
 
   ```sh
+  env -u RUSTFLAGS cargo --config .cargo/config-v3.toml <cmd>   # portable baseline (AVX2)
   env -u RUSTFLAGS cargo --config .cargo/config-v4.toml run --release --example <name>
   ```
+
+  **The pin is load-bearing in BOTH directions, measured two-sided the same
+  day on an AVX-512 host:** `codegen-witness.sh avx2` BARE now FAILS
+  (`has no packed logic` — it is grading v4 assembly against an assertion that
+  no vpternlog may appear), and PASSES with
+  `CARGO_ARGS='--config .cargo/config-v3.toml'`. The portable CI row pins it
+  for exactly this reason.
 
   `env -u RUSTFLAGS` is load-bearing: a RUSTFLAGS env var REPLACES every
   cargo-config rustflags entry, so it silently drops `-Ctarget-cpu=x86-64-v4`
   and the arm measures v3 while claiming v4 (the trap `scripts/masking-parity.sh`
-  documents). Verify the arm you got — the parity program prints
+  documents).
+
+  **That same mechanism had silently disabled the whole config in CI, and it is
+  the more serious half (found 2026-09-16).** `.github/workflows/ci.yaml` sets a
+  workflow-global `RUSTFLAGS: "-D warnings"`, so **none** of
+  `.cargo/config.toml`'s flags had ever applied to any job in that workflow —
+  not the target-cpu, and **not the two crypto-backend cfgs**
+  (`curve25519_dalek_backend="serial"`, `poly1305_force_soft`) that keep
+  dalek's 57 and poly1305's 424 raw intrinsics OUT of the binary. That is the
+  matryoshka guarantee the config file argues for at length, absent in CI.
+  Measured two-sided on one unit: no RUSTFLAGS → 65× `-Ctarget-cpu`, 65×
+  `poly1305_force_soft`; `RUSTFLAGS="-D warnings"` → **zero of each**. Fixed by
+  putting the two **arch-neutral** cfgs into that global RUSTFLAGS (target-cpu
+  stays out — it is the arch-sensitive part, correctly removed for the i686 /
+  s390x cross rows). **The general rule: a config that can be silently replaced
+  is not a guarantee.** Before citing any `.cargo/config.toml` flag as being in
+  force, check whether the caller sets RUSTFLAGS. Verify the arm you got — the parity program prints
   `avx512f=true|false`, and any probe that reports timings should too.
   `.cargo/config-avx512.toml` is the stricter Sapphire Rapids EXECUTION config
   (VNNI/BF16/FP16/AMX) and SIGILLs on earlier AVX-512 silicon; `config-native.toml`

@@ -305,7 +305,7 @@ fn main() {
     // ---- the crux: for a tail of t words, which decomposition wins? ----
     // t = 6 is the interesting one: 1 ymm + 1 xmm, or 3 xmm, or one padded zmm?
     println!("== TAIL-ONLY, per remainder length: which split? (ns per call) ==");
-    println!("{:>5}  {:>10} {:>10} {:>10}   {}", "t", "P padded", "G greedy", "X all-xmm", "winner");
+    println!("{:>5}  {:>10} {:>10} {:>10}   winner", "t", "P padded", "G greedy", "X all-xmm");
     for t in 1..=7usize {
         let a: Vec<u64> = (0..t).map(|i| 0xF0F0_1111u64 ^ i as u64).collect();
         let b: Vec<u64> = (0..t).map(|i| 0xFF00_2222u64 ^ i as u64).collect();

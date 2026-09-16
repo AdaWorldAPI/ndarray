@@ -1,0 +1,32 @@
+# x86-64-v3 (AVX2) — the PORTABLE DISTRIBUTION BASELINE, pinned explicitly.
+#
+# Usage:
+#   env -u RUSTFLAGS cargo --config .cargo/config-v3.toml <cmd>
+#   CARGO_ARGS='--config .cargo/config-v3.toml' bash scripts/masking-parity.sh native
+#
+# v3 is portable across all x86_64 silicon shipping since ~2013 (Haswell+) and
+# is what a general-distribution build should target. Until 2026-09-16 it was
+# `.cargo/config.toml`'s default and therefore UNNAMED at every call site; the
+# default is now `target-cpu=native` (see that file's superseded-in-place note
+# for why), so the tier a row depends on is named BY that row. This file is
+# where "portable" is spelled.
+#
+# Overlay semantics, measured 2026-09-16: cargo JOINS `target.<cfg>.rustflags`
+# across config files and the LAST `-Ctarget-cpu` wins, so this file needs the
+# target-cpu ONLY — `.cargo/config.toml`'s two crypto-backend cfgs
+# (`curve25519_dalek_backend="serial"`, `poly1305_force_soft`) come through the
+# join and stay in force. Verified with `cargo build -p encryption -v`: both
+# `-Ctarget-cpu` values present, v3 last, both cfgs present.
+#
+# `env -u RUSTFLAGS` is load-bearing: a RUSTFLAGS env REPLACES every
+# cargo-config rustflags entry, so with one set this file does not apply AND
+# neither do the crypto cfgs.
+#
+# No `-Dwarnings` here, deliberately — unlike `config-v4.toml`. A config that
+# promotes warnings to errors turns a disable-run (which typically orphans a
+# binding) into "did not compile", which reads identically to "the guard was
+# not load-bearing" when piped through a grep. The portable arm is the one most
+# likely to be used for a disable-run, so it stays warnings-permissive; the
+# repo's `-D warnings` gate is the explicit clippy invocation.
+[target.'cfg(target_arch = "x86_64")']
+rustflags = ["-Ctarget-cpu=x86-64-v3"]
