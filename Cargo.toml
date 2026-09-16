@@ -72,6 +72,10 @@ name = "mask_algebra_tail_probe"
 required-features = ["std"]
 
 [[example]]
+name = "narrow_bitop_codegen_probe"
+required-features = ["std"]
+
+[[example]]
 name = "ternlogq_sparse_reapply_probe"
 required-features = ["std"]
 
