@@ -524,7 +524,18 @@ mod imp {
         // ── Step 3: the question that decides what gets BUILT ─────────────
         println!("\n── what does the tail actually need: intrinsics, or a fixed trip count? ──");
         let med_gap = median(&mut ds_gap);
-        println!("median (S - D) within pass 1: {med_gap:.2} ns   [noise floor {floor:.2} ns]");
+        // `ds_gap` is declared outside the `rep` loop and never cleared, so this
+        // is pooled over EVERY pass, and it is pushed before the qualification
+        // gate so it covers EVERY width — including the noise-dominated ones the
+        // percentage statistics below exclude. Both facts belong in the label:
+        // it read "within pass 1" until coderabbit caught it on #315, the same
+        // defect class as the pooling bug one screen up (a label outrunning what
+        // the code computes) and a reminder that finding one instance of that
+        // is not the same as finding them all.
+        println!(
+            "median (S - D), pooled over all {REPEATS} passes and ALL widths (unfiltered): \
+             {med_gap:.2} ns   [noise floor {floor:.2} ns]"
+        );
 
         let lo = |v: &[f64]| {
             if v.is_empty() {
