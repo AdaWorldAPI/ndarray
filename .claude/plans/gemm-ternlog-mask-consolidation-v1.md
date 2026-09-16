@@ -1360,3 +1360,37 @@ aarch64 or wasm32 target is installed in this container (`rustup target list
 stdarch cannot be grepped locally either. A cross-target `cargo check` is the
 stronger gate and is the follow-up if either row is ever load-bearing for a
 shipped decision rather than for planning.
+
+> **⊘ CORRECTION, same day, before any N3 code was written: the premise of the
+> paragraph above is FALSE, and the stronger gate was available the whole time.**
+> `rustup target list --installed` returns **three** targets here, not one:
+> `aarch64-unknown-linux-gnu`, `wasm32-unknown-unknown`, `x86_64-unknown-linux-gnu`.
+> Both cross arms compile-check clean on the unmodified tree:
+>
+> ```sh
+> env -u RUSTFLAGS cargo check -p ndarray --lib --no-default-features --features std \
+>   --target aarch64-unknown-linux-gnu                       # exit 0
+> RUSTFLAGS="-C target-feature=+simd128" cargo check -p ndarray --lib \
+>   --no-default-features --features std --target wasm32-unknown-unknown   # exit 0
+> ```
+>
+> Two details make these REAL gates rather than vacuous ones, and both had to be
+> checked rather than assumed. `simd_neon` and `simd_wasm` are declared in
+> `lib.rs` behind **`#[cfg(feature = "std")]` alone, with no target cfg**
+> (`lib.rs:416-418`, `:438-440`), so their mere presence in an x86 build proves
+> nothing — the arch gate is INSIDE each file (`simd_neon.rs` per-item
+> `#[cfg(target_arch = "aarch64")]`; `simd_wasm.rs:65` one
+> `#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))] pub mod
+> wasm32_simd`). And `--features std` is load-bearing: `simd_masking_ops.rs` is
+> std-gated, so a bare `--no-default-features` check compiles neither the facade
+> nor its callers. A wasm check WITHOUT `+simd128` compiles the scalar arm and
+> reports success while never touching `simd_wasm.rs` at all — the exact false
+> gate this plan keeps finding elsewhere.
+>
+> Residual limit, stated precisely: NEON can be **checked** but not **run** (no
+> `qemu-aarch64` in this container); WASM can be **both** (`node` is present, and
+> `scripts/masking-parity.sh wasm` drives it). So the honest scope is *"NEON
+> compile-verified, WASM compile- and run-verified"*, not *"both read from a
+> spec"*. The stdarch readings in the table stay useful — they say which
+> INSTRUCTION each intrinsic lowers to, which a `cargo check` cannot tell you —
+> but they are no longer the only evidence for those two rows.
