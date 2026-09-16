@@ -72,6 +72,15 @@ COPY ndarray-rand/benches/ ndarray-rand/benches/
 # detects AVX-512 at runtime via LazyLock<Tier> even when compiled for v3;
 # compile-time v3 just means the scalar/AVX2 fallback paths are used when the
 # runtime check fails. Both paths produce identical results.
+# The cargo CONFIG DIRECTORY, required by the `--config` flags below and easy to
+# forget: this Dockerfile COPYs selectively by design (see the note above), so a
+# file that is not named here does not exist in the image. Adding `--config
+# .cargo/config-v3.toml` without this line makes cargo fail on a missing
+# configuration file BEFORE it compiles anything — which is exactly what
+# happened on #313 and was caught in review after merge, not by a build (there
+# is no Docker daemon in the dev container, so neither image is built here).
+COPY .cargo/ .cargo/
+
 # The tier is passed as a CONFIG, not as `ENV RUSTFLAGS` (changed 2026-09-16).
 # A RUSTFLAGS env REPLACES every cargo-config `rustflags` entry rather than
 # joining it, so `ENV RUSTFLAGS="-C target-cpu=x86-64-v3"` did set the tier —

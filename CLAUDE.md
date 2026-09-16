@@ -141,8 +141,19 @@ src/
 
   `env -u RUSTFLAGS` is load-bearing: a RUSTFLAGS env var REPLACES every
   cargo-config rustflags entry, so it silently drops `-Ctarget-cpu=x86-64-v4`
-  and the arm measures v3 while claiming v4 (the trap `scripts/masking-parity.sh`
-  documents).
+  and the arm does NOT measure v4 while claiming to (the trap
+  `scripts/masking-parity.sh` documents).
+
+  > ⊘ **CORRECTED 2026-09-16 (coderabbit, #313).** This read "*and the arm
+  > measures v3*". Wrong, and this session's own measurement is what disproves
+  > it: RUSTFLAGS replaces **every** config rustflags entry, so it drops the
+  > DEFAULT config's target-cpu too, not just the overlay's. Measured on one
+  > unit — `RUSTFLAGS="-D warnings"` produced **zero** `-Ctarget-cpu` flags,
+  > against 65 with the env unset. What you actually get is rustc's own default
+  > for the target, i.e. the `x86-64` baseline (SSE2), which is LOWER than v3
+  > and is the tier `simd_avx2.rs`'s intrinsics SIGILL on. The sentence was
+  > wrong before the native flip as well; the flip only changed which config
+  > gets discarded.
 
   **That same mechanism had silently disabled the whole config in CI, and it is
   the more serious half (found 2026-09-16).** `.github/workflows/ci.yaml` sets a
