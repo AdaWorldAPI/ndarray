@@ -37,6 +37,12 @@ impl I8x64 {
         Self(i8x64::splat(v))
     }
 
+    /// All lanes zero.
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self::splat(0)
+    }
+
     /// Load from a slice of at least 64 elements (panics otherwise).
     #[inline(always)]
     pub fn from_slice(s: &[i8]) -> Self {
@@ -129,6 +135,18 @@ impl I8x64 {
         Self(self.0.simd_max(other.0))
     }
 
+    /// Lane-wise wrapping add — mirrors `simd_avx512::I8x64::add` (`_mm512_add_epi8`).
+    #[inline(always)]
+    pub fn add(self, other: Self) -> Self {
+        Self(self.0 + other.0)
+    }
+
+    /// Lane-wise wrapping subtract — mirrors `simd_avx512::I8x64::sub` (`_mm512_sub_epi8`).
+    #[inline(always)]
+    pub fn sub(self, other: Self) -> Self {
+        Self(self.0 - other.0)
+    }
+
     /// Saturating absolute value: `|i8::MIN|` is `i8::MAX` (127), never the
     /// wrapped `i8::MIN` — the crate's `saturating_abs` contract (see the
     /// VPABSB correction in `vertical-simd-consumer-contract.md`).
@@ -178,6 +196,12 @@ impl I8x64 {
     pub fn cmpgt_mask(self, other: Self) -> u64 {
         self.0.simd_gt(other.0).to_bitmask()
     }
+
+    /// Bitmask of `self > other`, one bit per lane — mirrors `simd_avx512::I8x64::cmp_gt`.
+    #[inline(always)]
+    pub fn cmp_gt(self, other: Self) -> u64 {
+        self.cmpgt_mask(other)
+    }
 }
 
 impl PartialEq for I8x64 {
@@ -214,6 +238,12 @@ impl I8x32 {
     #[inline(always)]
     pub fn splat(v: i8) -> Self {
         Self(i8x32::splat(v))
+    }
+
+    /// All lanes zero.
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self::splat(0)
     }
 
     /// Load from a slice of at least 32 elements (panics otherwise).
@@ -308,6 +338,18 @@ impl I8x32 {
         Self(self.0.simd_max(other.0))
     }
 
+    /// Lane-wise wrapping add — mirrors `simd_avx512::I8x32::add` (`_mm512_add_epi8`).
+    #[inline(always)]
+    pub fn add(self, other: Self) -> Self {
+        Self(self.0 + other.0)
+    }
+
+    /// Lane-wise wrapping subtract — mirrors `simd_avx512::I8x32::sub` (`_mm512_sub_epi8`).
+    #[inline(always)]
+    pub fn sub(self, other: Self) -> Self {
+        Self(self.0 - other.0)
+    }
+
     /// Saturating absolute value: `|i8::MIN|` is `i8::MAX` (127), never the
     /// wrapped `i8::MIN` — the crate's `saturating_abs` contract (see the
     /// VPABSB correction in `vertical-simd-consumer-contract.md`).
@@ -356,6 +398,12 @@ impl I8x32 {
     #[inline(always)]
     pub fn cmpgt_mask(self, other: Self) -> u32 {
         self.0.simd_gt(other.0).to_bitmask() as u32
+    }
+
+    /// Bitmask of `self > other`, one bit per lane — mirrors `simd_avx512::I8x32::cmp_gt`.
+    #[inline(always)]
+    pub fn cmp_gt(self, other: Self) -> u32 {
+        self.cmpgt_mask(other)
     }
 }
 

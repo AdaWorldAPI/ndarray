@@ -24,6 +24,12 @@ impl I16x16 {
         Self(i16x16::splat(v))
     }
 
+    /// All lanes zero.
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self::splat(0)
+    }
+
     #[inline(always)]
     pub fn from_array(arr: [i16; 16]) -> Self {
         Self(i16x16::from_array(arr))
@@ -76,6 +82,30 @@ impl I16x16 {
         Self(self.0.simd_max(other.0))
     }
 
+    /// Lane-wise signed minimum — mirrors `simd_avx512::I16x16::min` (`_mm512_min_epi16`).
+    #[inline(always)]
+    pub fn min(self, other: Self) -> Self {
+        Self(self.0.simd_min(other.0))
+    }
+
+    /// Lane-wise signed maximum — mirrors `simd_avx512::I16x16::max` (`_mm512_max_epi16`).
+    #[inline(always)]
+    pub fn max(self, other: Self) -> Self {
+        Self(self.0.simd_max(other.0))
+    }
+
+    /// Lane-wise wrapping add — mirrors `simd_avx512::I16x16::add` (`_mm512_add_epi16`).
+    #[inline(always)]
+    pub fn add(self, other: Self) -> Self {
+        Self(self.0 + other.0)
+    }
+
+    /// Lane-wise wrapping subtract — mirrors `simd_avx512::I16x16::sub` (`_mm512_sub_epi16`).
+    #[inline(always)]
+    pub fn sub(self, other: Self) -> Self {
+        Self(self.0 - other.0)
+    }
+
     // ── Saturating arithmetic ─────────────────────────────────────
 
     #[inline(always)]
@@ -101,6 +131,12 @@ impl I16x16 {
     #[inline(always)]
     pub fn cmpgt_mask(self, other: Self) -> u16 {
         self.0.simd_gt(other.0).to_bitmask() as u16
+    }
+
+    /// Bitmask of `self > other`, one bit per lane — mirrors `simd_avx512::I16x16::cmp_gt`.
+    #[inline(always)]
+    pub fn cmp_gt(self, other: Self) -> u16 {
+        self.cmpgt_mask(other)
     }
 }
 
@@ -134,6 +170,12 @@ impl I16x32 {
     #[inline(always)]
     pub fn splat(v: i16) -> Self {
         Self(i16x32::splat(v))
+    }
+
+    /// All lanes zero.
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self::splat(0)
     }
 
     #[inline(always)]
@@ -188,6 +230,30 @@ impl I16x32 {
         Self(self.0.simd_max(other.0))
     }
 
+    /// Lane-wise signed minimum — mirrors `simd_avx512::I16x32::min` (`_mm512_min_epi16`).
+    #[inline(always)]
+    pub fn min(self, other: Self) -> Self {
+        Self(self.0.simd_min(other.0))
+    }
+
+    /// Lane-wise signed maximum — mirrors `simd_avx512::I16x32::max` (`_mm512_max_epi16`).
+    #[inline(always)]
+    pub fn max(self, other: Self) -> Self {
+        Self(self.0.simd_max(other.0))
+    }
+
+    /// Lane-wise wrapping add — mirrors `simd_avx512::I16x32::add` (`_mm512_add_epi16`).
+    #[inline(always)]
+    pub fn add(self, other: Self) -> Self {
+        Self(self.0 + other.0)
+    }
+
+    /// Lane-wise wrapping subtract — mirrors `simd_avx512::I16x32::sub` (`_mm512_sub_epi16`).
+    #[inline(always)]
+    pub fn sub(self, other: Self) -> Self {
+        Self(self.0 - other.0)
+    }
+
     // ── Saturating arithmetic ─────────────────────────────────────
 
     #[inline(always)]
@@ -213,6 +279,12 @@ impl I16x32 {
     #[inline(always)]
     pub fn cmpgt_mask(self, other: Self) -> u32 {
         self.0.simd_gt(other.0).to_bitmask() as u32
+    }
+
+    /// Bitmask of `self > other`, one bit per lane — mirrors `simd_avx512::I16x32::cmp_gt`.
+    #[inline(always)]
+    pub fn cmp_gt(self, other: Self) -> u32 {
+        self.cmpgt_mask(other)
     }
 }
 
