@@ -1117,6 +1117,21 @@ UPPER bounds because of it, and PR #308's r2il probe measures the mask arms at
 `gt_u8_to_mask`, re-run both probes; **if neither the 8.9 µs re-chain nor the
 #308 crossover moves, the widening was not the cost and G1 drops in priority.**
 
+> **STATUS 2026-09-16 — the CODE half landed (`a8e7d7d`), the MEASUREMENT half
+> has not.** `{eq,ne,gt,ge,lt,le}_u8_to_mask` ship with the `simd.rs` facade
+> re-export, v4-gated (clippy `-D warnings` clean, 2366 lib tests, 6 doctests,
+> parity `avx512f=true`), three disable runs red-then-green. `u16` deliberately
+> NOT built — no consumer compares `u16` lanes, and a speculative family is
+> surface with no falsifier attached. **The pre-registered falsifier above is
+> still OPEN**: neither `hex_tenant_mq_probe` nor #308's `r2il_column_scan_probe`
+> has been re-run against the new primitive. Existing code is not a moved
+> measurement, and G1's priority verdict stands unanswered until both probes
+> report. Implementation note carried forward to N3: at `u8` the packing is
+> FREE — `U8x64` is 64 lanes and a mask word is 64 bits, so one chunk is one
+> whole word with no shift. That coincidence is unique to this width and is
+> **false for `U64x2 × 4`**, which must pack
+> `out_words[g / 8] |= (bits as u64) << ((g % 8) * 8)`.
+
 **N3 — G2 ordered `u64`/`i64` compare.** The matrix left this conditional:
 *"count how many intended predicates over a U64 lane are ordered rather than
 equality. If the answer is zero, G2 is not a gap."* **PR #308 answers it: the

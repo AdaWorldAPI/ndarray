@@ -103,6 +103,20 @@ src/
   (This line previously claimed `config.toml` was v4 "AVX-512 mandatory" — it
   never was, and that error made a whole measurement arc read v3 as v4. Corrected
   2026-09-16 against `.cargo/config.toml:83`.)
+
+  **The v4 config also carries `-D warnings`, which makes a DISABLE RUN fail
+  in a way that reads as success.** A disable typically removes a use of
+  something; the variable it fed then goes unused; `-D warnings` promotes that
+  to a hard error; the test binary is never built, so the run emits no `test
+  result:` line at all. Piped through a `grep` for the failing assertion, "did
+  not compile" and "the guard was not load-bearing" look identical — the
+  workspace's known trap (*a disable that does not APPLY is indistinguishable
+  from a guard that does not bind*) with a second door. Measured 2026-09-16 on
+  the `gt_u8_to_mask` signed-compare disable: it silently produced `error:
+  unused variable: threshold_v` and I nearly recorded the falsifier as inert.
+  **Always read the disable run's exit status and the `test result:` line
+  itself, never only a grep of its assertions** — and prefix, don't delete,
+  when a disable orphans a binding.
 - `src/simd.rs` — compile-time AVX-512 dispatch via `cfg(target_feature = "avx512f")`.
 
 ### Key Data

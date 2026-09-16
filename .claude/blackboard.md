@@ -1,3 +1,89 @@
+## 2026-09-16 (9) — N2 / T1 gap G1 LANDED: at `u8` the packing is FREE, and a disable run has a second failure door
+
+Six functions in `simd_masking_ops.rs` (`{eq,ne,gt,ge,lt,le}_u8_to_mask`) plus
+the `simd.rs` facade re-export that makes them reachable — commit `a8e7d7d`.
+Gap G1 of the DuckDB→V3 translation matrix closed for the `u8` width; `u16` is
+deliberately NOT built, because no consumer compares `u16` lanes and a
+speculative family is a maintenance surface with no falsifier attached to it.
+
+**The one genuinely new fact, and it does not generalize.** `U8x64` is 64 lanes
+and a mask word is 64 bits, so `cmpeq_mask` / `cmpgt_mask` over one
+`as_chunks::<64>()` group yields *exactly one whole* `out_words[g]` — no shift,
+no accumulate, no partial-word carry. That is why these bodies are visibly
+shorter than their `i32` siblings, where `I32x16` needs four chunks and three
+shifts per word. It is worth stating precisely because the temptation in N3 is
+to assume the same shape: it is false there. `U64x2::cmpgt_mask -> u8` composes
+×4 per the operator's `64x2 × 4` rule and then has to be PACKED,
+`out_words[g / 8] |= (bits as u64) << ((g % 8) * 8)`. The u8 family is the only
+width in the matrix where the lane count and the word width coincide.
+
+Three shapes, deliberately not four — `eq`/`gt` direct; `lt` as an OPERAND SWAP
+(`t.cmpgt_mask(v)`, never `x > t - 1`, which underflows at `t == 0`, the same
+reasoning the `i32` family already carries for `i32::MIN`); `ge`/`le`/`ne` as
+the complement of their strict sibling with `clear_mask_tail` re-run, which
+fixes both the partial last word and every surplus word. The tail is
+`pad_tail` into one zero-padded register through the same packed compare, then
+`& word_range_mask(0, tail.len())` — load-bearing, because on the `lt` arm the
+zero padding compares TRUE against any `threshold > 0` and would report phantom
+set bits.
+
+**Disable table — all three red-then-green, none assumed:**
+
+| test | disable | observed |
+|---|---|---|
+| `gt_lt_u8_to_mask_are_unsigned_not_signed` | `gt_u8_to_mask` compares signed | `0x80 > 0x7F must be true unsigned (signed: -128 > 127 is false)` |
+| `complement_forms_clear_every_trailing_bit` | `ge_u8_to_mask` fixes only the last live word | `ge: bit 128 (n=65) must be clear` |
+| `u8_family_matches_scalar_reference_randomized` | `lt_u8_to_mask` loses the operand swap | `lt n=1 t=0` |
+
+The unsigned falsifier is the one that matters at this width: `u8` values
+`0x80..=0xFF` are NEGATIVE under a signed compare, so an implementation that
+reached for a signed lane op passes every small-value test and inverts on
+exactly half the domain. The surplus-word test pre-sets **two** words past
+`ceil(n/64)` to `u64::MAX` at `n = 65` and `n = 100` (both non-multiples of 64),
+so neither a writer that skips the surplus words nor one that fixes only the
+last live word can pass by accident.
+
+**⊘ THE NEW TRAP, and I walked into it on the first disable.** The v4 config
+carries `-D warnings`. The signed disable removed the last use of
+`threshold_v`; `unused variable` became a hard error; the test binary was never
+built; the run emitted no `test result:` line at all. Piped through a grep for
+the failing assertion, that is **byte-identical to a guard that is not
+load-bearing** — no output either way. I read it as "the falsifier is inert"
+for one turn before re-running unfiltered and seeing `error: unused variable:
+threshold_v`.
+
+This is the workspace's existing trap (*a disable that does not APPLY is
+indistinguishable from a guard that does not bind*) with a **second door**: a
+disable that applies, asserts its anchors, and still never runs. The anchor
+assertion — which I did have, and which correctly reported `3 anchor(s)
+asserted unique` — does not protect against it, because the edit genuinely
+landed. **Read the exit status and the `test result:` line, never only a grep
+of the assertions**; and prefix rather than delete when a disable orphans a
+binding. Recorded in `CLAUDE.md` beside the v4 invocation, which is where a
+session looks before running anything under that config.
+
+**Chunking is vindicated as the dispatch fix, on evidence.** Worker B vanished
+after 3–5 h with nothing written; this identical class of work, handed out as
+one small scoped chunk (A1: one file, six functions, an explicit "do not run
+cargo", `tee -a` durability), came back complete with a correct hand-back —
+including the one thing it was right NOT to do itself: it FLAGGED the
+cross-file `simd.rs` re-export dependency rather than smuggling a second file
+into a one-file task. Without that flag the six `///` examples (`use
+ndarray::simd::eq_u8_to_mask;`) would not have compiled, and the failure would
+have surfaced only in a doctest run nobody had scheduled.
+
+**v4 gate (`--config .cargo/config-v4.toml`, `env -u RUSTFLAGS`):** clippy
+clean at `-D warnings`; **2366** lib tests pass, 0 failed; the **6** new
+doctests pass; facade parity `avx512f=true`, 11 check groups bit-identical.
+
+Loose ends: the six `_under` siblings (care-masked forms) are not built — the
+`i32`/`u32` families have them and the shape is mechanical, but no caller needs
+a care-masked `u8` compare yet. `u16` is not built, same reason. The G1
+*measurement* (re-run `hex_tenant_mq_probe`'s 8.9 µs re-chain and PR #308's
+`r2il_column_scan_probe` crossover) has NOT been done: if neither moves, the
+4× widening was not the cost the matrix assumed and G1 drops in priority
+regardless of the code now existing.
+
 ## 2026-09-16 (8) — LLVM counter-test: the unfused bit-exactness contract SURVIVES codegen, and BF16 tile GEMM is fully fused — both now measured, not read
 
 Operator: *"ggf mit LLVM Gegentesten."* Correct reflex — entry (7) asserted
