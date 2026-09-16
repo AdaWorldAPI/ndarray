@@ -1137,3 +1137,67 @@ density framing and left a TYPE boundary — masks win where the relation is
 Boolean, GEMM is required only where it carries VALUES — so the bridge's real
 job is the weighted case, and §12.5 pt 2 still forbids any comparative claim
 until a sparse arm exists. §16.4 may already have part of that arm.
+
+---
+
+## §17 — ⊘ THE REVEAL RATIO WAS MEASURED ON THE WRONG TIER (2026-09-16, operator ruling: "it's unacceptable to use avx2")
+
+Every reveal-vs-TCAM number in this document — §14's 228–462×, the board
+STORNO's ~200–490×, and §16.2's own 161.8×–343.5× — was produced by a **plain
+`cargo run`**, which this repo's `.cargo/config.toml:83` pins to
+**`x86-64-v3` (AVX2)**. None of them is an AVX-512 number and none said so.
+
+Root cause, and it is a documentation defect, not only my error: `CLAUDE.md:84`
+claimed *"`.cargo/config.toml` — `target-cpu=x86-64-v4` (AVX-512 mandatory)"*.
+The file has always set v3. CLAUDE.md is the first thing a session reads, so the
+error propagates to every session that trusts it. Corrected in place 2026-09-16
+with the v4 invocation and the `env -u RUSTFLAGS` trap spelled out.
+
+### The same probe, same binary, same host, two configs
+
+Host: Xeon @ 2.10 GHz with the full AVX-512 set (`f bw cd dq vl` plus
+`vnni bf16 fp16 vbmi vbmi2 vpopcntdq ifma bitalg`). Parity confirms the arm:
+`avx512f=false` under the default, `avx512f=true` under `--config .cargo/config-v4.toml`.
+
+| quantity | v3 / AVX2 (the default) | **v4 / AVX-512** |
+|---|---|---|
+| TCAM sweep | 14 126 – 15 141 ns | **5 298 – 5 484 ns** |
+| range write | 50 – 52 ns | 43 – 49 ns |
+| **reveal ratio** | 273.9× – 300.9× | **110.2× – 123.2×** |
+| ternlogq | 149.0 ns/pass (0.146 ns/word) | **111.6 ns/pass (0.109 ns/word)** |
+| coal (one re-chain) | 5 630 ns = 0.79 steps @ x=4 | **4 666 ns = 0.62 steps @ x=4** |
+
+### The finding, and it generalizes past this probe
+
+**A ratio between two arms that vectorize DIFFERENTLY is not a property of the
+algorithm pair. It is a property of the pair AND the target-cpu — and nothing in
+this record was labelled with one.** The TCAM sweep is a compare over a value
+column and gains **2.7×** from AVX-512; the range write is a handful of stores,
+already memory-bound, and gains almost nothing. So the ratio falls by ~2.5×
+*precisely because the wider ISA helps the arm being beaten*. Publishing such a
+ratio without its build config is publishing half a measurement.
+
+Consequence for every "N×" in this plan: none of them is portable, and the
+older ones are not even attributable. §14's ternlogq of 291 ns (0.285 ns/word)
+is 2.0× my v3 and 2.6× my v4 per word, so it is neither of these runs and its
+config is unrecorded — it cannot be placed on this table at all.
+
+### What SURVIVES, stated exactly
+
+The DuckDB matrix's re-scope condition for G6 is: *"If the range/sweep ratio
+collapses below ~10× the 'top-down is a range, not a compare' claim needs
+re-scoping to the specific geometry."* **110× clears that by an order of
+magnitude.** So the CLAIM survives on the correct tier; the HEADLINE NUMBER does
+not, and is more than halved.
+
+The shape survives too, and it is the part that was never the headline: the TCAM
+arm is FLAT in node size on both tiers (it sweeps the whole column whatever the
+node), while the range arm tracks the node. Cost follows the selection, not the
+corpus. That is what makes the prefix stepless, and it is config-independent.
+
+### Standing rule from here
+
+Every timing published for this plan names its target-cpu, and any probe that
+prints timings prints the realization it was built for (the parity program
+already does: `arch=… avx2=… avx512f=…`). A number without that label is not a
+measurement, it is an anecdote.

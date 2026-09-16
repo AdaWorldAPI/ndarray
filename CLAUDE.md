@@ -81,7 +81,28 @@ src/
 ### New Modules
 - `src/hpc/styles/` — 34 cognitive primitives (rte, htd, smad, tcp, irs, mcp, tca, cdt, mct, lsi, pso, cdi, cws, are, tcf, ssr, etd, amp, zcf, hpm, cur, mpc, ssam, idr, spp, icr, sdd, dtmf, hkf). Each is `fn(Base17, NarsTruth) → result`. 49 tests.
 - `src/hpc/causal_diff.rs` — CausalEdge64 (u64 packed), scaffold_to_palette3d_layers(), quality scoring (GOOD/BAD/UNCERTAIN), NARS self-reinforcement LoRA, PAL8 serialization (4101 bytes).
-- `.cargo/config.toml` — `target-cpu=x86-64-v4` (AVX-512 mandatory).
+- **Build config — AVX-512 is NOT the default, and believing it is corrupts
+  measurements.** `.cargo/config.toml` sets **`x86-64-v3` (AVX2)**, deliberately:
+  it is the portable CI/distribution baseline, and its own comment explains why
+  (without a v3 floor the AVX2 intrinsics in `simd_avx2.rs` SIGILL). A plain
+  `cargo build`/`run`/`test` therefore measures **v3**.
+  **For AVX-512 you must ask for it, every time:**
+
+  ```sh
+  env -u RUSTFLAGS cargo --config .cargo/config-v4.toml run --release --example <name>
+  ```
+
+  `env -u RUSTFLAGS` is load-bearing: a RUSTFLAGS env var REPLACES every
+  cargo-config rustflags entry, so it silently drops `-Ctarget-cpu=x86-64-v4`
+  and the arm measures v3 while claiming v4 (the trap `scripts/masking-parity.sh`
+  documents). Verify the arm you got — the parity program prints
+  `avx512f=true|false`, and any probe that reports timings should too.
+  `.cargo/config-avx512.toml` is the stricter Sapphire Rapids EXECUTION config
+  (VNNI/BF16/FP16/AMX) and SIGILLs on earlier AVX-512 silicon; `config-native.toml`
+  resolves the host CPUID.
+  (This line previously claimed `config.toml` was v4 "AVX-512 mandatory" — it
+  never was, and that error made a whole measurement arc read v3 as v4. Corrected
+  2026-09-16 against `.cargo/config.toml:83`.)
 - `src/simd.rs` — compile-time AVX-512 dispatch via `cfg(target_feature = "avx512f")`.
 
 ### Key Data

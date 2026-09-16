@@ -1,3 +1,45 @@
+## 2026-09-16 (3) — ⊘ every reveal-ratio number in this arc was v3/AVX2, including today's; the AVX-512 ratio is 110–123×, and CLAUDE.md was why
+
+Operator ruling: *"It's unacceptable to use avx2 / of course you need to run
+ndarray with x86 v4 avx512f."* Correct, and the reason I was not is a
+documentation defect I have now fixed rather than worked around.
+
+`CLAUDE.md:84` claimed `.cargo/config.toml` sets `target-cpu=x86-64-v4`
+("AVX-512 mandatory"). It sets **v3**, and always has (`.cargo/config.toml:83`),
+deliberately — v3 is the portable CI/distribution floor. So a plain `cargo run`
+measures AVX2. Every number in §14, in the (5) STORNO, and in my own §16.2
+entry earlier today is a v3 number that does not say so. CLAUDE.md now carries
+the v4 invocation and the `env -u RUSTFLAGS` trap explicitly.
+
+Same probe, same binary, same host (Xeon with the full AVX-512 set), verified by
+the parity program's own `avx512f=` line:
+
+| | v3 / AVX2 | **v4 / AVX-512** |
+|---|---|---|
+| TCAM sweep | 14 126–15 141 ns | **5 298–5 484 ns** |
+| range write | 50–52 ns | 43–49 ns |
+| reveal ratio | 273.9×–300.9× | **110.2×–123.2×** |
+| ternlogq | 149.0 ns (0.146/word) | **111.6 ns (0.109/word)** |
+| coal | 5 630 ns = 0.79 steps | **4 666 ns = 0.62 steps** |
+
+**The generalizable finding: a ratio between two arms that vectorize
+differently belongs to the pair AND the target-cpu.** The TCAM sweep gains 2.7×
+from AVX-512; the range write is memory-bound and gains ~nothing. The ratio
+therefore falls by ~2.5× *because the wider ISA helps the arm being beaten*.
+§14's 291 ns/pass (0.285 ns/word) is 2.0× my v3 and 2.6× my v4 per word, so it
+belongs to neither run and its config was never recorded — it cannot be placed
+on this table at all.
+
+What survives on the correct tier: the matrix's G6 re-scope trigger is "below
+~10×", and 110× clears it by an order of magnitude, so the claim stands while
+the headline number is more than halved. The SHAPE is config-independent and was
+never the headline — the TCAM arm is flat in node size on both tiers, the range
+arm tracks the node.
+
+Standing rule: every timing published for this plan names its target-cpu.
+`mask_set_range`'s 5/5 tests and the 11 parity groups are green under v4 as
+well as v3.
+
 ## 2026-09-16 (2) — N1 / T1 gap G6 LANDED: `mask_set_range`, and the primitive changed the measured SHAPE, not only the code
 
 `pub fn mask_set_range(out_words: &mut [u64], lo: usize, hi: usize)` — full
