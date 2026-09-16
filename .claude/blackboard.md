@@ -1,3 +1,38 @@
+## 2026-09-16 (5) — why worker-side cargo is prohibited ABSOLUTELY: residue is the cost, BACKEND POLLUTION is the correctness failure
+
+Operator, verbatim: *"Worker are prohibited from running cargo"*, and the reason:
+*"Würdest du mit jedem worker kompilieren hättest du target residue backend
+pollution."* The second half was not written down anywhere and is the stronger
+argument, so it now sits in `.claude/rules/agent-cargo-hygiene.md` beside the
+residue one.
+
+The shared `target/` holds ONE realization at a time. A target-cpu change
+invalidates the cache, so a worker's plain `cargo test` — which takes
+`.cargo/config.toml`, i.e. **v3/AVX2** — run after the orchestrator built
+`--config .cargo/config-v4.toml` **replaces** the v4 artifacts rather than
+adding to them. The next probe reports whichever tier compiled last and says
+nothing about which.
+
+**This is plan §17's defect one scale down, and the severity differs.** On the
+orchestrator's own runs a tier is merely UNLABELLED — a re-run under a named
+config repairs it, which is exactly what happened today (273.9×–300.9× v3 →
+110.2×–123.2× v4). With N workers compiling on their own schedule it becomes
+UNATTRIBUTABLE: the interleaving is gone and no number can be traced to a
+backend afterwards.
+
+One shared `target/`, one realization, one compiler — the orchestrator. Workers
+edit. Both worker briefs dispatched today carry the prohibition verbatim as
+rule 1, with no carve-out for `test` or `clippy`.
+
+Separately, operator correction to my own framing: **clippy is not compiling.**
+I had read the rule file's "tests yes, compile no" as contradicting the absolute
+prohibition on the grounds that clippy compiles. It does not — it type-checks and
+lints. The rule file was left unedited on that point; only the missing second
+reason was appended. Practical consequence for the orchestrator's gates: a green
+`cargo clippy` proves types and lints, NOT that a runnable artifact builds. The
+evidence for today's landings was the `cargo run --release` probe and parity
+runs, not the lint.
+
 ## 2026-09-16 (4) — the AVX2 tier's `U8x64` byte compares were scalar loops beside a vectorized `U8x32` that already solved them
 
 Found while scoping T1 gap G1 (the `u8` compare-to-mask family): on the v3/AVX2
