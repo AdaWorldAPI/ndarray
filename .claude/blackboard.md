@@ -1,4 +1,4 @@
-## 2026-09-16 (18) — the tail OPTIMISATION IS INERT ON EVERY POWER-OF-TWO POPULATION, including the 4096-row tile
+## 2026-09-16 (18) — the tail OPTIMISATION IS INERT ON EVERY POWER-OF-TWO POPULATION >= 512 ROWS, including the 4096-row tile
 
 Established before writing the rewrite (15)-(17) argued for, and it changes
 whether that rewrite is worth doing at all. No code; this entry is the gate.
@@ -10,16 +10,35 @@ this file's own `mask_words_for`). The facade's algebra ops walk `U64x8`, so a
 TAIL exists only when `words % 8 != 0`. For a power of two, `words = 2^(k-6)`,
 and `2^(k-6) % 8 == 0` for every `k >= 9`. So:
 
-| rows | words | tail | tail share of the whole op |
-|---:|---:|---:|---:|
-| 512 | 8 | 0 | **none** |
-| **4096** | **64** | **0** | **none** |
-| 10 000 | 157 | 5 | 73 % |
-| 65 536 | 1024 | 0 | **none** |
-| 1 000 000 | 15 625 | 1 | 2.6 % |
-| 16 777 216 | 262 144 | 0 | **none** |
+| rows | words | tail | tail SHARE of the op | what the REWRITE would WIN |
+|---:|---:|---:|---:|---:|
+| 64 | 1 | 1 | 100 % | 67 % |
+| 128 | 2 | 2 | 100 % | 67 % |
+| 256 | 4 | 4 | 100 % | 67 % |
+| **512** | **8** | **0** | **none** | **none** |
+| **4096** | **64** | **0** | **none** | **none** |
+| 10 000 | 157 | 5 | 73 % | 49 % |
+| 65 536 | 1024 | 0 | **none** | **none** |
+| 1 000 000 | 15 625 | 1 | 2.6 % | **1.7 %** |
+| 16 777 216 | 262 144 | 0 | **none** | **none** |
 
-(share computed as 16 ns padded tail against a body of `groups × 0.31 ns`.)
+⊘ **Two corrections, both codex on #316, both to this table and its headline.**
+
+**(a) The headline dropped its own condition.** It read "inert on every
+power-of-two population". False below 512 rows: 64/128/256 rows are 1/2/4
+words, so `words % 8 != 0` and the tail is the WHOLE op. The derivation right
+above the table says `k >= 9` and the prose below said "at or above 512 rows" —
+the TITLE is what lost it, which is the fourth level of this session's one
+defect class: after a label outrunning its accumulator, a claim outrunning its
+evidence and a measurement outrunning its regime, **a headline outrunning the
+derivation directly beneath it.**
+
+**(b) A SHARE is not a WIN, and this entry conflated them.** The 16 ns is the
+padded tail's share of the current op; the rewrite does not remove it, it
+replaces it with #315's measured fixed-step tail of **5.33 ns**. So the win is
+`(16 − 5.33) / current`, and every share figure overstated it by exactly
+`16 / 10.67 = 1.5×`. At a million rows: current `1953 × 0.31 + 16 ≈ 621 ns`,
+win `10.67 ns ≈ 1.7 %` — not 2.6 %.
 
 **Every power-of-two population at or above 512 rows has NO TAIL AT ALL**, and
 this workspace's shapes are overwhelmingly powers of two — the 4096-row tile,
@@ -100,22 +119,29 @@ committed test or bench in the consumer can ever exercise the regime the
 optimisation targets — which is exactly why #315's probe had to choose
 `base = 8` and `64` words to see it at all.
 
-**3. Where it does bite, as a share of the op** (16 ns tail, 0.31 ns/group):
+**3. Where it does bite** — reported as the WIN the rewrite would deliver, not
+the tail's share, per the correction above (padded 16 ns replaced by #315's
+measured fixed-step 5.33 ns, against a body of `groups × 0.31 ns`):
 
-| population | tail share |
-|---:|---:|
-| 5 000 rows | 85 % |
-| 50 000 | 35 % |
-| 100 000 | 21 % |
-| **~502 000** | **5 %** |
-| 1 000 000 | 2.6 % |
-| ~2 616 000 | 1 % |
-| any power of two ≥ 512 | **0 %** |
+| population | tail share | REWRITE WIN |
+|---:|---:|---:|
+| 5 000 rows | 85 % | 57 % |
+| 50 000 | 35 % | 23 % |
+| 100 000 | 21 % | 14 % |
+| ~325 000 | 7.5 % | **5 %** |
+| ~502 000 | 5 % | 3.4 % |
+| 1 000 000 | 2.6 % | **1.7 %** |
+| ~1 735 000 | 1.5 % | **1 %** |
+| any power of two ≥ 512 | 0 % | **0 %** |
+
+So the crossovers move in with the correction: the win falls under **5 %** above
+~325 k rows and under **1 %** above ~1.74 M, where the share figures put those
+thresholds at ~502 k and ~2.6 M.
 
 ### Verdict on step (b): DO NOT BUILD IT
 
 The optimisation is worth something only for arbitrary populations in roughly
-the **5 k – 500 k row** band. Outside it: under 512 rows the op is all tail and
+the **5 k – 325 k row** band (where the WIN, not the share, clears 5 %). Outside it: under 512 rows the op is all tail and
 untimed, above ~2.6 M rows it is under 1 %, and on every power of two it is
 exactly zero. Against that it would touch a hot facade at 11 sites across six
 realizations, and make `mask_ternlog` WORSE (its padded form is one full-width
