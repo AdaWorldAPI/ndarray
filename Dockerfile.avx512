@@ -50,12 +50,19 @@ COPY examples/ examples/
 COPY benches/ benches/
 COPY ndarray-rand/benches/ ndarray-rand/benches/
 
-# AVX-512 pinned: compile-time dispatch, everything inlined
-ENV RUSTFLAGS="-C target-cpu=x86-64-v4"
+# AVX-512 pinned: compile-time dispatch, everything inlined.
+#
+# Passed as a CONFIG, not `ENV RUSTFLAGS` (changed 2026-09-16): a RUSTFLAGS env
+# REPLACES every cargo-config `rustflags` entry, so the old form set the tier
+# and silently dropped `.cargo/config.toml`'s two crypto-backend cfgs, shipping
+# curve25519-dalek's and poly1305's raw-intrinsic AVX2 backends into the image.
+# `--config` joins, so tier + cfgs both apply. (`config-v4.toml` also carries
+# `-Dwarnings`, which is fine for an image build and is why these RUNs must
+# stay warnings-clean.)
 
-RUN cargo build --release 2>&1 && echo "=== AVX-512 BUILD OK ==="
-RUN cargo build --release --features jit-native 2>&1 && echo "=== AVX-512 JIT BUILD OK ==="
-RUN cargo test --release --lib -- hpc:: 2>&1 && echo "=== AVX-512 HPC TESTS OK ==="
+RUN cargo --config .cargo/config-v4.toml build --release 2>&1 && echo "=== AVX-512 BUILD OK ==="
+RUN cargo --config .cargo/config-v4.toml build --release --features jit-native 2>&1 && echo "=== AVX-512 JIT BUILD OK ==="
+RUN cargo --config .cargo/config-v4.toml test --release --lib -- hpc:: 2>&1 && echo "=== AVX-512 HPC TESTS OK ==="
 
 FROM debian:bookworm-slim
 COPY --from=builder /app/target/release/libndarray.rlib /usr/local/lib/

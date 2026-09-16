@@ -24,6 +24,18 @@
 # is pinned by that row, explicitly:
 #
 #   portable / distribution baseline   --config .cargo/config-v3.toml   (v3, AVX2)
+#                                      ^ REQUIRED for anything you ship. A plain
+#   `cargo build --release` is now tuned to the BUILD HOST and is not portable
+#   — `.cargo/config-native.toml` has always said so about this exact flag
+#   ("do NOT distribute artifacts built with this config"), and that warning now
+#   applies to the default. Runtime `simd_caps()` dispatch does NOT rescue it:
+#   detection picks among code paths, it cannot un-emit host-only instructions
+#   the baseline codegen already placed everywhere. (Raised by codex on #313;
+#   README's build table and both Dockerfiles were corrected in the same PR.)
+#   Nothing is shipped from a default build today — this crate is a `[lib]` with
+#   no bin targets, and the published crate does not carry this file to
+#   consumers, who build under their own config. The caveat is for THIS
+#   workspace's own release artifacts and images.
 #   AVX-512                            --config .cargo/config-v4.toml   (v4)
 #   Sapphire Rapids (VNNI/BF16/AMX)    --config .cargo/config-avx512.toml
 #

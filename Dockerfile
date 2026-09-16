@@ -72,16 +72,27 @@ COPY ndarray-rand/benches/ ndarray-rand/benches/
 # detects AVX-512 at runtime via LazyLock<Tier> even when compiled for v3;
 # compile-time v3 just means the scalar/AVX2 fallback paths are used when the
 # runtime check fails. Both paths produce identical results.
-ENV RUSTFLAGS="-C target-cpu=x86-64-v3"
+# The tier is passed as a CONFIG, not as `ENV RUSTFLAGS` (changed 2026-09-16).
+# A RUSTFLAGS env REPLACES every cargo-config `rustflags` entry rather than
+# joining it, so `ENV RUSTFLAGS="-C target-cpu=x86-64-v3"` did set the tier —
+# and silently dropped `.cargo/config.toml`'s two crypto-backend cfgs
+# (`curve25519_dalek_backend="serial"`, `poly1305_force_soft`) that compile out
+# curve25519-dalek's and poly1305's raw-intrinsic AVX2 backends. This image
+# therefore shipped the unaudited SIMD surfaces the matryoshka rule exists to
+# keep out. `--config` JOINS, so the tier AND the cfgs both apply.
+#
+# Passing it explicitly is also now required rather than optional: the default
+# `.cargo/config.toml` is `target-cpu=native`, which tunes the artifact to
+# whatever machine built the image and is not portable.
 
 # Build default features
-RUN cargo build --release 2>&1 && echo "=== DEFAULT BUILD OK ==="
+RUN cargo --config .cargo/config-v3.toml build --release 2>&1 && echo "=== DEFAULT BUILD OK ==="
 
 # Build with JIT
-RUN cargo build --release --features jit-native 2>&1 && echo "=== JIT-NATIVE BUILD OK ==="
+RUN cargo --config .cargo/config-v3.toml build --release --features jit-native 2>&1 && echo "=== JIT-NATIVE BUILD OK ==="
 
 # Run tests
-RUN cargo test --release --lib -- hpc:: 2>&1 && echo "=== HPC TESTS OK ==="
+RUN cargo --config .cargo/config-v3.toml test --release --lib -- hpc:: 2>&1 && echo "=== HPC TESTS OK ==="
 
 # Minimal runtime image — just proves it compiled
 FROM debian:bookworm-slim

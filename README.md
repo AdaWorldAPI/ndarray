@@ -198,14 +198,22 @@ if caps.neon { println!("ARM profile: {}", caps.arm_profile().name()); }
 ```
 
 ```bash
-# Automatic SIMD detection
+# Portable / distribution build — x86-64-v3 (AVX2) baseline, runs on any
+# Haswell-or-later x86_64. Pass the config EXPLICITLY: since 2026-09-16 the
+# default is `target-cpu=native`, which tunes the artifact to the BUILD host
+# and is not safe to ship (`.cargo/config-native.toml` says so in as many
+# words). Runtime `simd_caps()` detection cannot rescue a binary whose
+# baseline codegen already emits host-only instructions.
+cargo --config .cargo/config-v3.toml build --release
+
+# Build for THIS machine (dev / benchmarking). Fastest here, portable nowhere.
 cargo build --release
 
 # Cross-compile for Raspberry Pi 4
 cargo build --release --target aarch64-unknown-linux-gnu
 
 # Maximum performance on AVX-512 server
-RUSTFLAGS="-C target-cpu=x86-64-v4" cargo build --release
+cargo --config .cargo/config-v4.toml build --release
 
 # Run 880 HPC tests
 cargo test

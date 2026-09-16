@@ -201,9 +201,25 @@ and the dynamic `qemu-aarch64` from `qemu-user` leaves a second, differently
 worded failure (`command not found`) that looks like a fresh problem rather
 than the same one. Install `qemu-user-static`.
 
-**And `native` is the AVX2 arm, not the AVX-512 one** — it takes
-`.cargo/config.toml` (v3), so a green `native` leaves every `_mm512_*` body
-unwitnessed. The AVX-512 arm is the binary run under the v4 config directly:
+**And `native` is the HOST arm — it names no tier at all.**
+
+> ⊘ **SUPERSEDED 2026-09-16.** This line read *"`native` is the AVX2 arm, not
+> the AVX-512 one — it takes `.cargo/config.toml` (v3)"*. True until the default
+> flipped; false the moment it did, and it is the SAME defect class this whole
+> section warns about — a doc asserting a tier instead of reading the arm's own
+> report. Caught in review, on the PR that caused it.
+
+`scripts/masking-parity.sh native` builds with the DEFAULT config, which is now
+`target-cpu=native`: on an AVX-512 host that arm is AVX-512, on a v3 host it is
+AVX2. So a green `native` witnesses **whatever this machine is** — read the
+header line to find out which. To witness AVX2 specifically, pin it:
+
+```sh
+CARGO_ARGS='--config .cargo/config-v3.toml' bash scripts/masking-parity.sh native
+```
+
+The AVX-512 arm can also be pinned explicitly, which is what CI does and what
+you want when the host is not AVX-512:
 
 ```sh
 cd crates/simd-masking-parity
