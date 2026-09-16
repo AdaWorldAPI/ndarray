@@ -48,6 +48,19 @@ built: `U64x4::ternlog` / `U64x2::ternlog` on the facade + rewire
 `mask_ternlog`'s tail; an un-gated `pack<const L>` sibling of `pack_under` to
 retire the 12 hand-rolled `if !tail.is_empty()` sites.
 
+> *Correction 2026-09-16 (counted, after Codex on lance-graph #1244):* "12"
+> is the number of branches literally named `tail`; the full set of
+> hand-rolled tail branches in `simd_masking_ops.rs` at `c746735` is
+> **23** — 12 `tail` + 7 `ta` + 3 `td` + 1 `ts` (`mask_shift_morton`).
+> *Scope, corrected same day (Codex on #312):* they are TWO kinds. The 12
+> `tail` branches are predicate-packing tails (one `values` slice → output
+> words) — an un-gated `pack<const L>` retires exactly those. The 11
+> `ta`/`td`/`ts` branches are mask-ALGEBRA tails (multi-input, in-place,
+> and the accumulating Morton shift) — a packer cannot express them; they
+> are what the VL descent (`U64x4::ternlog` / `U64x2::ternlog` + a
+> `tail_descend` helper over the lane op) is for. Two follow-ups, one per
+> kind; neither retires the other's set.
+
 ### 2. `examples/ternlogq_sparse_reapply_probe.rs` — FULL-WIDTH sparse frontier. NO.
 
 1 024 words (65 536 rows, the MQ / `lgj_hop` population), `dst = src ∧ gate ∧
