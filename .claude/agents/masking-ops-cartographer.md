@@ -67,6 +67,30 @@ answer.
   missing-capability STOP rule applies: it lands HERE, substrate-first, never
   hand-rolled in the consumer.
 
+## The consumer question has ONE answer, and it is not Java
+
+Operator ruling, 2026-09-16: *"Java doesnt use masking ops. `Mask.minus()`,
+`RowStore.hop()`. Lance-graph does. Java just sees boring `sql()` handed to
+duckdb (Example)."*
+
+So when a design asks *"which consumer calls this op?"*, **"the Java surface"
+is never a valid answer** — it is a finding. The consumers of this file's ops
+are lance-graph, the ABI kernels, and quack's lowering. Java sits one tier
+above all of them and is never told any of this exists; its relation to
+`sql()` is exactly a consumer crate's relation to `ndarray::simd` — *"java
+doesnt know why there is `sql()` polyfill, we just make sure there is."*
+
+Two consequences for this card's verdicts:
+
+- A **GENUINE-GAP** whose justification is "a Java caller needs it" is
+  mis-scoped. Re-ask it as: which lance-graph or ABI path needs it in order
+  to answer an ordinary `sql()`? If none does, the gap is imaginary.
+- A proposal to expose an op — by any name — on a public Java signature is
+  **DELIBERATELY-ABSENT by ruling**, not an open opportunity. The reason is
+  the endgame: low-code *"Bring your own software"* against Palantir Foundry,
+  where every unit of novel API is lock-in-by-learning-curve, which is the
+  one thing BYOS promises not to require. Route it to `java-surface-warden`.
+
 ## What this card does not do
 
 It does not build, and it does not adjudicate the cost model. G4 is the warning:

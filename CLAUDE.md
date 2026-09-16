@@ -142,6 +142,42 @@ src/
   when a disable orphans a binding.
 - `src/simd.rs` — compile-time AVX-512 dispatch via `cfg(target_feature = "avx512f")`.
 
+### The parity arms are ALL reachable here — never report one as blocked without apt
+
+`scripts/masking-parity.sh` takes `native | nightly | wasm | wasm-scalar |
+neon-qemu`, and the cross arms are an `apt-get` away, not an environment
+limit. Measured 2026-09-16: `neon-qemu` failed with a bare
+`No such file or directory (os error 2)` — which reads as "this target is not
+available here" and is in fact a **missing linker**, then a missing
+interpreter, in two separate steps:
+
+```sh
+sudo apt-get update
+sudo apt-get install -y gcc-aarch64-linux-gnu qemu-user-static
+```
+
+`qemu-user` alone is NOT enough: the script invokes `qemu-aarch64-static`,
+and the dynamic `qemu-aarch64` from `qemu-user` leaves a second, differently
+worded failure (`command not found`) that looks like a fresh problem rather
+than the same one. Install `qemu-user-static`.
+
+**And `native` is the AVX2 arm, not the AVX-512 one** — it takes
+`.cargo/config.toml` (v3), so a green `native` leaves every `_mm512_*` body
+unwitnessed. The AVX-512 arm is the binary run under the v4 config directly:
+
+```sh
+cd crates/simd-masking-parity
+env -u RUSTFLAGS cargo --config ../../.cargo/config-v4.toml run --release
+```
+
+Read the program's own header line to confirm which arm you actually got
+(`avx512f=true`, `neon=true`, …) — that line exists precisely because the
+config can silently not apply. Five of the six realizations are reachable
+without nightly (AVX2, AVX-512, NEON, wasm-simd128, wasm-scalar); only
+`nightly-simd` needs a toolchain this repo does not pin. The same lesson the
+sibling `lance-graph-java` records for the JDK: **a stale index or a missing
+helper binary reporting absence is not evidence of absence.**
+
 ### Key Data
 - 5 Qwen3.5 models indexed: 685 MB bgz7 from 201 GB BF16 safetensors
 - GitHub Release `v0.1.0-bgz-data` on AdaWorldAPI/lance-graph: 41 bgz7 files

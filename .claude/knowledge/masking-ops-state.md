@@ -30,6 +30,16 @@ intake glove around the lance-graph spine — lance-graph-java just happens to
 offer the menu to the table in a pleasing way, using masking ops, offering 5
 star for the price of a blink."* The masking ops ARE what makes the menu cheap.
 
+> **⊘ CORRECTED, same day (operator).** *"Java doesnt use masking ops.
+> `Mask.minus()`, `RowStore.hop()`. Lance-graph does. Java just sees boring
+> `sql()` handed to duckdb (Example)."* The masking ops make the menu cheap —
+> but they are the KITCHEN's, not the menu's, and the diner is never handed a
+> mask verb. Read "using masking ops" as *served by* masking ops. The Java
+> surface is the boring call a developer already knows; `Mask`/`RowStore` are
+> the substrate's algebra standing on the wrong side of the wall. Full ruling
+> + the BYOS endgame it serves: `lance-graph-java/CLAUDE.md` § "THE JAVA
+> SURFACE IS `sql()`, NOT THE MASK ALGEBRA".
+
 ## The gap list is not ours — it is the DuckDB→V3 matrix's own §3
 
 `lance-graph/.claude/plans/duckdb-to-v3-translation-matrix-v1.md` §3 enumerates
@@ -149,7 +159,7 @@ behind a menu, and the courses are at different stages:
 | course | surface | state |
 |---|---|---|
 | **starter** | **SQL, via `lance-graph-quack`** — DuckDB→V3, zero-copy masked ops | **SHIPPED.** *"duckdb > quack is a nice proof-of-concept surface to offer SQL zero-copy masked ops, handed in the menu as a starter."* Plane leaf + survivor-skip gate, IN, projection, fused lowering, two-phase GROUP BY, each with a per-row oracle; and `plan_lower` is pinned EQUAL to quack's lowering by a differential, so there is one lowering rather than two that agree by luck. |
-| **main** | **the Java glove** — `view.where(..).hop(..).count()` | **SHIPPED** (ABI minor 11). Reads as ordinary Java, costs a blink, because the work and the data are both elsewhere. |
+| **main** | **the Java glove** — a boring `sql()`, handed down zero-copy | **SHIPPED** (ABI minor 11) as the ABI floor; the SURFACE is being made boring. Reads as ordinary Java, costs a blink, because the work and the data are both elsewhere. ⊘ this row read `view.where(..).hop(..).count()` until the operator's 2026-09-16 ruling — that spelling is the mask algebra leaking onto the Java side, not the menu. |
 | **another course** | **Gremlin / TinkerPop** | POTENTIAL, see below. |
 
 Why the starter matters beyond being a demo: **SQL is the surface where "zero
@@ -157,6 +167,26 @@ copy" is checkable by a stranger.** A `SELECT … WHERE` either returns the righ
 rows or it does not, and the per-row oracle says which — so the proof-of-concept
 is also the cheapest available falsifier for the whole mask-travels-instead-of-
 the-data claim. That is a better reason to keep it than novelty.
+
+**And the starter is also the MAIN's shape, which reframes this whole table.**
+The operator's 2026-09-16 ruling makes `sql()` the Java surface too — so the
+"starter" is not a lesser course that the Java glove improves on; it is the
+same boring-front pattern, first. The relation to this file's own subject is
+the exact one a consumer crate has to `ndarray::simd`:
+
+| tier | the caller writes | the caller does not know |
+|---|---|---|
+| consumer crate → ndarray | `U8x64::cmpeq_mask(..)` | which of six backends ran |
+| Java → lance-graph | `sql("select …")` | that any of THIS FILE exists |
+
+*"java doesnt know why there is `sql()` polyfill, we just make sure there is."*
+Which is this file's own STOP rule, one tier up: a missing `sql()` capability
+is a gap to close in lance-graph/the ABI, never a licence for the Java side to
+grow a mask verb — exactly as a missing primitive here is never a licence for a
+consumer to write intrinsics. **The endgame that makes it non-negotiable:**
+low-code *"Bring your own software"* against Palantir Foundry — novel API is
+lock-in-by-learning-curve, which is the thing BYOS promises not to require, so
+on the Java side novelty loses even when it is fast.
 
 ## POTENTIAL — strategic, explicitly not a plan
 
