@@ -1201,3 +1201,69 @@ Every timing published for this plan names its target-cpu, and any probe that
 prints timings prints the realization it was built for (the parity program
 already does: `arch=… avx2=… avx512f=…`). A number without that label is not a
 measurement, it is an anecdote.
+
+---
+
+## §18 — N3 / T1 gap G2 surface census (2026-09-16, prepared while N2's first chunk ran)
+
+Measured by brace-scoped extraction of `impl U64x8` blocks across all five
+realizations, NOT by a file-wide grep. **That distinction is load-bearing:** a
+file-wide grep for `cmpeq_mask` hits in `simd_avx2.rs` and `simd_scalar.rs`
+come from the `U8x64` impl blocks, which sit adjacent in the same files and DO
+carry compares. Read file-wide, the surface looks present. It is not.
+
+### What `U64x8` actually has
+
+| arm | representation | `impl U64x8` methods | compare-to-mask |
+|---|---|---|---|
+| avx512 | `__m512i` (`simd_avx512.rs:1736`) | 12 | **none** |
+| avx2 | **scalar polyfill from the `avx2_int_type!` macro** — the file says so at `simd_avx2.rs:2295` | 6 (`rotate_left`, `rotate_right`, `popcnt`, `xor_popcount`, `andnot`, `ternlog`) | **none** |
+| scalar | array-backed | same 6 | **none** |
+| neon | `[U64x2; 4]` (`simd_neon.rs:2674`) | 13 | **none** |
+| wasm | `[U64x2; 4]` (`simd_wasm.rs:1777`) | 13 | **none** |
+| nightly | `u64x8` portable-simd | — | **none** |
+
+`U64x2`, the neon/wasm building block, has 10 methods on neon and **no compare
+among them**, so composing four of those is not available either.
+
+### Consequence — N3 is NOT N2, and the difference decides the brief
+
+N2 (G1, the `u8` family) was facade-only: `U8x64::{cmpeq_mask, cmpgt_mask}`
+already existed on every arm, so only the T1 wrapper was missing. **N3 has no
+backend primitive on any arm.** Both layers are new.
+
+Scope, stated honestly rather than aspirationally:
+
+- **avx512 — native and cheap.** `_mm512_cmpeq_epu64_mask` /
+  `_mm512_cmpgt_epu64_mask` return `__mmask8` directly; 8 lanes is exactly one
+  byte of bitmask. This is the tier the workspace measures on (operator ruling,
+  §17), so it is the tier that decides whether G2 pays.
+- **avx2 — a per-lane loop is the house pattern here, and that is not the same
+  concession as the `U8x64` defect.** On that arm `U64x8` is a *scalar polyfill
+  produced by a macro*: it holds no `__m256i` to exploit. The `U8x64` fix
+  (`3a5da8c`) was possible only because a vectorized `U8x32` sat beside it in
+  the same file; there is no `U64x4`-with-compares to compose here. Vectorizing
+  it would mean changing what the macro generates — out of N3's scope, and
+  named as such rather than silently skipped.
+- **neon / wasm / scalar** — scalar per-lane, bit-exact via the parity program.
+
+### The pre-registered question the matrix asked, and #308's answer
+
+The matrix left G2 conditional: *"count how many intended predicates over a U64
+lane are ordered rather than equality. If the answer is zero, G2 is not a gap,
+it is a correctly-scoped surface."* **PR #308 answers it: the count is ≥ 1.**
+Its `find_ram_in_range` needs `lo <= offset < hi` over `u64`, and **100 % of the
+real Ram-space offsets exceed 2³²**, so narrowing into the existing `i32`
+ordered family is unsound. The probe worked around it by splitting the offset
+into `hi32`/`lo32` and asserting the window lies inside one `hi32` bucket —
+valid for that fixture, not in general.
+
+### Chunk plan (per `.claude/rules/agent-output-durability.md`)
+
+1. `U64x8::{cmpeq_mask, cmpgt_mask} -> u8` on avx512 + scalar, with a scalar
+   oracle test. One file each.
+2. The same on neon / wasm / nightly.
+3. Facade `lt/le/gt/ge_u64_to_mask`, packing `out_words[g / 8] |= (bits as u64)
+   << ((g % 8) * 8)` — 8 lanes per chunk, so eight chunks per word, unlike N2's
+   one-chunk-one-word and unlike the u32 family's four-groups-per-word.
+4. `_under` siblings, then the facade re-export and a parity group.
