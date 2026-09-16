@@ -1940,6 +1940,71 @@ impl U64x8 {
         }
         sum
     }
+
+    /// Lane-wise equality comparison. Returns an 8-bit mask: bit `i` is set
+    /// iff `self[i] == other[i]`. `U64x8` has exactly 8 lanes, so the mask
+    /// is `u8` — one bit per lane, and nothing above bit 7: bits at or above
+    /// 8 simply do not exist in the return type (contrast
+    /// `U8x64::cmpeq_mask` above, whose 64 lanes need a `u64` mask).
+    ///
+    /// Composed as four 2-lane groups (`p in 0..4`, lanes `2p`/`2p+1`)
+    /// rather than a flat 8-iteration loop — deliberate: storage flat,
+    /// composition 2×4. Every non-avx512 backend realizes `U64x8` as four
+    /// `U64x2` pairs (`simd_neon.rs`/`simd_wasm.rs`:
+    /// `pub struct U64x8(pub [U64x2; 4])`); walking the same four pairs here
+    /// keeps this arm's shape identical to theirs even though this file's
+    /// own storage is a flat `[u64; 8]` (see `impl_int_type!` above). Do not
+    /// "simplify" this into a single `for i in 0..8` loop.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let a = U64x8::from_array([1, 2, 3, 4, 5, 6, 7, 8]);
+    /// let b = U64x8::from_array([1, 0, 3, 0, 5, 0, 7, 0]);
+    /// assert_eq!(a.cmpeq_mask(b), 0b0101_0101);
+    /// ```
+    #[inline(always)]
+    pub fn cmpeq_mask(self, other: Self) -> u8 {
+        let mut mask: u8 = 0;
+        for p in 0..4 {
+            if self.0[2 * p] == other.0[2 * p] {
+                mask |= 1 << (2 * p);
+            }
+            if self.0[2 * p + 1] == other.0[2 * p + 1] {
+                mask |= 1 << (2 * p + 1);
+            }
+        }
+        mask
+    }
+
+    /// Lane-wise **unsigned** greater-than comparison. Returns an 8-bit
+    /// mask: bit `i` is set iff `self[i] > other[i]`. Symmetric to
+    /// `cmpeq_mask` above — same 8-bits-only footprint, same 2×4 grouping,
+    /// same "bits at or above 8 do not exist" contract.
+    ///
+    /// Plain `>` on Rust's `u64` is *already* the unsigned ordering, so
+    /// unlike wasm's `i64x2_gt` (signed-only) or an AVX2 byte-width compare
+    /// (`_mm256_cmpgt_epi8`, also signed-only, needing a sign-bias XOR to
+    /// become unsigned), no sign-bias trick is needed at this lane width.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let a = U64x8::from_array([1, 2, 3, 4, 5, 6, 7, 8]);
+    /// let b = U64x8::from_array([0, 2, 0, 4, 0, 6, 0, 8]);
+    /// assert_eq!(a.cmpgt_mask(b), 0b0101_0101);
+    /// ```
+    #[inline(always)]
+    pub fn cmpgt_mask(self, other: Self) -> u8 {
+        let mut mask: u8 = 0;
+        for p in 0..4 {
+            if self.0[2 * p] > other.0[2 * p] {
+                mask |= 1 << (2 * p);
+            }
+            if self.0[2 * p + 1] > other.0[2 * p + 1] {
+                mask |= 1 << (2 * p + 1);
+            }
+        }
+        mask
+    }
 }
 
 impl U64x4 {

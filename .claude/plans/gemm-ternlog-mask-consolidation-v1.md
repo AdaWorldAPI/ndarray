@@ -994,3 +994,501 @@ the assert makes that explicit.
   loop; the spread gate (Morton == axial BFS) must stay green, and `n` is
   re-measured. The claim this rung makes is only that `n` drops; the number is
   the finding, not a prediction.
+
+---
+
+## §16 — v1.5 GOVERNANCE CORRECTIONS + the G1/G2/G6 wave (2026-09-16)
+
+Append-only. Four defects found by a census of this plan against the board and
+git history, each verified before being written here; then the wave they gate.
+
+### 16.1 ⊘ §14's numbers are STALE — the board corrected them and the plan was not updated
+
+`blackboard.md` 2026-09-14 (5) is a STORNO on entries (3) and (2) from the #307
+council. Its corrections apply to §14's bullets, which still state the
+pre-STORNO figures as settled fact. **The commit that added the STORNO
+(`e5a87e6`) DID edit this plan — and changed exactly one line, §15's tail law.**
+So this is not a timing oversight: the file was open and the numbers were left.
+
+| §14 says | the board's correction |
+|---|---|
+| reveal 49–99 ns vs 22 µs — **228–462×** | ~200–490× across three runs; the range arm's floor is the 8 KiB output clear |
+| ternlogq **291 ns/pass**, residual 2.8 % | 280–300 ns across runs; the "1.7 % at x=1" is fit-derived |
+| coal = **0.48 maintained steps** | 8.8–13.7 µs = **0.47–0.76 steps**, single window each; cross-run spread on coal is **56 %** |
+| (§15 opening) "`n` … 17.0 → 5.7 µs (−66 %)" | a STEP ratio, not an op ratio, on one fixture; the reset copy is **786 KiB**, not the 8 KiB the probe comment claimed |
+| "the ratio survives the degree-1 ablation" | **a −33 % gain survives** (4 487 vs 6 704) — the ratio HALVES |
+| "68/68 gates" | 68/68 probe ROWS, one fixture, one seed |
+
+Read §14 through this table. The numbers are not withdrawn; their CONFIDENCE is.
+
+### 16.2 A FOURTH run, measured today — it widens the spread on both axes
+
+`cargo run --release --example hex_tenant_mq_probe --features std`, this host:
+
+| level | rows/node | range ns | TCAM ns | ratio |
+|---|---|---|---|---|
+| 0 | 65 536 | 89 | 14 377 | 161.8× |
+| 1 | 4 096 | 54 | 14 394 | 266.8× |
+| 2 | 256 | 44 | 14 374 | 323.0× |
+| 3 | 16 | 43 | 14 363 | 334.6× |
+| 4 | 1 | 43 | 14 610 | 343.5× |
+
+`ternlogq = 152.4 ns/pass (0.149 ns/word)`, `n = 7 678 ns`, max rel residual
+15.9 %; `coal = 6 938 ns = 45.5 ternlogq passes = 0.84 maintained steps at x=4`;
+M2 linear, no cliff. Gates green.
+
+Two things this run does, and one it does not:
+- It puts the reveal ratio's low end at **161.8×**, BELOW the STORNO's stated
+  ~200× floor. Across four runs the honest range is **~160–490×**.
+- Its `ternlogq` is **152 ns/pass (0.149 ns/word)** against the board's 280–300
+  (0.285 ns/word) — a 2× divergence, i.e. a DIFFERENT HOST, not a tighter
+  estimate. Consequently coal reads **0.84** maintained steps here against
+  0.47–0.76 there: the µs went DOWN and the step count went UP, because the step
+  it is denominated in got cheaper. **Coal in "maintained steps" is not a
+  portable unit.** Report it with its host or report the µs.
+- It does NOT resolve the fixture question. Still one geometry, one density.
+
+The shape everyone agrees on is the one worth keeping: the TCAM arm is FLAT
+(~14.4 µs, it sweeps the column whatever the node size) while the range arm
+tracks the node (89 ns at the root → 43 ns at one row). Cost follows the
+selection, not the corpus. That is the stepless property, and it is invariant
+across all four runs.
+
+### 16.3 ⊘ `D-GTM-0m` names TWO unrelated probes
+
+- `f1f4023` (2026-09-05) — `examples/behavioral_soak_probe.rs`, a cross-ISA
+  codebook soak. Real measured numbers in its commit message (coverage 50.4 % /
+  56.8 % against a marginal-preserving null of 17.1 % / 37.5 %; real codebook 681
+  tokens where shuffled needs 4 526, a 6.6× compression).
+- `d9459f0` (2026-09-14) — `examples/hex_tenant_mq_probe.rs`, the hex tenant.
+  This is the one §14 and the board discuss.
+
+Nine days apart, same id. The first is invisible to any reader of the plan or
+the board. **Not renumbered here** — a retroactive renumber would break the
+commit messages that carry the results. Recorded so a future reader knows which
+`0m` a citation means, and no new work may use the id.
+
+### 16.4 ⊘ `D-GTM-0n` is a real measured probe that appears in NO governance doc
+
+`741e34b` (2026-09-05, 2.5 minutes BEFORE the 0m-soak commit) —
+`examples/ternlog_amortization_probe.rs`, with numbers: T3/T1 ~0.44–0.70 while
+L1-resident, back to ~1.0 by K=32; L1 ~139 GB/s, L2 90–93, L3 29–30; the
+mask-vs-sparse-survivor cross between 0.1 % and 0.8 % active. §12.7's own "what
+W0 leaves open" list says "0c/0d/0e remain unrun" and never mentions 0n exists.
+The omission is not staleness: the commit that updated §12's text
+(`3e598a1`) also EDITED that probe file.
+
+**That crossover number is load-bearing and orphaned.** §12.5 pt 2 says no
+"mask beats sparse GEMM" claim is available until a sparse arm exists — and 0n
+measured a mask-vs-sparse-survivor crossover at 0.1–0.8 % active. Whether that
+answers §12.5 pt 2 or is a different comparison is an open question, and it
+could not be asked while the probe was invisible.
+
+### 16.5 ⊘ The Status header caps at v1.4 (2026-09-05); the body runs to §15 (2026-09-14)
+
+Three sections past the last version line, one of them (§14) carrying numbers
+the board later corrected. This section is v1.5; the header stack is left
+untouched per append-only, and this line is the pointer.
+
+### 16.6 THE WAVE — it is the DuckDB matrix's own T1 gap list, not a new idea
+
+`lance-graph/.claude/plans/duckdb-to-v3-translation-matrix-v1.md` §3 already
+enumerates these, each **verified absent** with a pre-registered falsifier. The
+wave closes them in this order:
+
+**N1 — G6 `mask_set_range(out, lo, hi)`.** Two independent consumers work
+around its absence today: `lance-graph-quack`'s `Filter::prefix_u32` spells the
+PREDICATE and cites the missing-capability STOP rule, and this repo's own
+`hex_tenant_mq_probe.rs` hand-rolls the write inside an example. DuckDB carries
+the same op on the same representation (`TemplatedValidityMask::SetRangeInvalid`).
+Payoff already measured (§16.2). The matrix's own open question, carried here
+unanswered: **does a general `[lo, hi)` beat a nibble-aligned
+`reveal(prefix, level)`?** The latter is alignment-guaranteed and may be
+strictly simpler. Shipping the general form first is a decision, not a finding —
+if the aligned form measures better, the general one becomes its caller.
+
+**N2 — G1 `u8`/`u16` compare-to-mask.** The matrix's grounds: the V3 12-byte
+register is carved into BYTES, so byte width is the substrate's NATIVE width and
+i32 is the foreign one. Two independent fixtures now measure the widening cost —
+the hex tenant widens a u8 permeability column 4× and reports `n_gen` and coal as
+UPPER bounds because of it, and PR #308's r2il probe measures the mask arms at
+**12 B/op against the scalar arm's 9 B/op**, with the mask arms LOSING from
+~200 K ops. Falsifier, pre-registered by the matrix and unchanged: build
+`gt_u8_to_mask`, re-run both probes; **if neither the 8.9 µs re-chain nor the
+#308 crossover moves, the widening was not the cost and G1 drops in priority.**
+
+> **STATUS 2026-09-16 — the CODE half landed (`a8e7d7d`), the MEASUREMENT half
+> has not.** `{eq,ne,gt,ge,lt,le}_u8_to_mask` ship with the `simd.rs` facade
+> re-export, v4-gated (clippy `-D warnings` clean, 2366 lib tests, 6 doctests,
+> parity `avx512f=true`), three disable runs red-then-green. `u16` deliberately
+> NOT built — no consumer compares `u16` lanes, and a speculative family is
+> surface with no falsifier attached. **⊘ THE FALSIFIER IS ANSWERED ON THE HALF THAT
+> COULD RUN, AND THE WIDENING *WAS* THE COST** (`92b4fcd`).
+> `hex_tenant_mq_probe` gained a NATIVE u8 arm beside its widened i32 one —
+> same process, same data, bit-identity asserted before either is timed:
+>
+> ⊘ **The first published table was INFLATED by dead-store elimination** — the
+> timed closures carried no `black_box`, and the exposure was asymmetric: the
+> i32 arms were accidentally protected by a later read, the u8 arms had no
+> reader at all (codex P2 on #309). Corrected, all six timed sites guarded on
+> both inputs and outputs:
+>
+> | tier | M1b: 6 masks | coal: one re-chain |
+> |---|---|---|
+> | v4 / AVX-512 | 41268 → **5973 ns** (**6.91×**, was 8.06×) | 6319 → **1082 ns** (**5.84×**, was 6.75×) |
+> | v3 / AVX2 | 38840 → 6084 ns (**6.38×**, was 7.77×) | 6060 → 935 ns (**6.48×**, was 6.53×) |
+>
+> The tell is in the absolutes: the u8 arm got SLOWER (1006 → 1082 ns) and the
+> i32 arm FASTER (6789 → 6319 ns). And v3's coal ratio barely moved while v4's
+> moved 13% — consistent with the mechanism (AVX-512 codegen had more room to
+> delete the dead stores), not with noise.
+>
+> In the probe's own units a maneuver drops from **0.74 maintained steps to
+> 0.13** at x=4. The ratio is nearly tier-INdependent, so this is a WIDTH
+> effect, not an ISA one: 4× fewer instructions AND 4× less memory, plus
+> (conjecture) the vanished packing arithmetic. Note **neither tier reproduces
+> the 8.9 µs quoted above** (v4 6789, v3 7189) — that absolute came from a
+> build this session does not reproduce, which is exactly why the native arm
+> was ADDED rather than swapped in: a ratio survives baseline drift, a
+> cross-run before/after would not have.
+>
+> **The #308 half is BLOCKED, not skipped.** `r2il_column_scan_probe` needs a
+> column dump from `r2sleigh-lift`'s `win32_census`, which needs a Win32 PE
+> binary; the generator exists in the sibling repo but no PE binary exists in
+> this container. A synthetic dump would produce a number shaped like the
+> answer without being it, against that probe's own *"a real lift rather than a
+> synthetic stream"*. So the crossover verdict is still owed. Implementation note carried forward to N3: at `u8` the packing is
+> FREE — `U8x64` is 64 lanes and a mask word is 64 bits, so one chunk is one
+> whole word with no shift. That coincidence is unique to this width and is
+> **false for `U64x2 × 4`**, which must pack
+> `out_words[g / 8] |= (bits as u64) << ((g % 8) * 8)`.
+
+> **STATUS 2026-09-16 — CODE LANDED on all six realizations (`e05afbd`);
+> MEASUREMENT still OPEN.** `{eq,ne,gt,ge,lt,le}_u64_to_mask` + the `simd.rs`
+> facade + `U64x8::{cmpeq_mask, cmpgt_mask} -> u8` per arm. `i64` NOT built —
+> the named consumer is unsigned, and a speculative family is surface with no
+> falsifier. Gate: avx512 (v4) 2370 tests + clippy `-D warnings` + 8 doctests
+> + parity `avx512f=true`; avx2 (v3) 2319; neon `cargo check --target aarch64`
+> (no qemu, check only); wasm+simd128 and scalar both RUN under node; nightly
+> PASS. Three semantic disables red-then-green, plus **four routing proofs** —
+> renaming an arm's `cmpgt_mask` must fail exactly the target that routes to
+> it, and the compiler names the arm (`wasm32_simd::U64x8` / `U64x8` /
+> `simd_avx2::U64x8` / `simd_neon::U64x8`). That step is what turns a green
+> cross-target check into evidence about WHICH arm compiled; without it, a
+> wasm check lacking `+simd128` silently gates the scalar arm instead.
+>
+> **The falsifier this section pre-registered is still unrun.** PR #308's
+> `find_ram_in_range` dodged the missing primitive by splitting offsets into
+> hi32/lo32 buckets — valid for its fixture, not in general. Re-express it
+> against the real `u64` family and re-measure. Until then "G2 was worth
+> closing" is asserted, not shown; existing code is not a moved measurement.
+>
+> **And G1's measured win does NOT transfer here.** G1 came in at 6.5-8×, but
+> part of that is the packing vanishing — at u8 one chunk IS one whole mask
+> word. **That property is false at u64**, where eight groups share a word and
+> each needs a shift. So the u64 family starts from a structurally weaker
+> position than the u8 family did, and assuming it inherits G1's ratio is
+> exactly the inference the tier-independence result warns against.
+
+**N3 — G2 ordered `u64`/`i64` compare.** The matrix left this conditional:
+*"count how many intended predicates over a U64 lane are ordered rather than
+equality. If the answer is zero, G2 is not a gap."* **PR #308 answers it: the
+count is ≥ 1.** Its `find_ram_in_range` needs `lo <= offset < hi` over u64, and
+**100 % of the real Ram-space offsets exceed 2³²**, so narrowing to the existing
+i32 family is unsound. The probe re-expressed the query by splitting the offset
+into hi32/lo32 and asserts the window lies in one hi32 bucket — valid for that
+fixture, not in general. G2 is a gap.
+
+**Layering fence, load-bearing for N1.** `mask_set_range` is ADDRESS-BLIND: it
+sets a bit range. A prefix maps to a contiguous ROW range only when row order IS
+address order — the V3 SoA invariant. Deciding whether that holds is the
+CALLER's job. ndarray must not grow a notion of "is this column sorted."
+
+**Not in this wave, and why.** The weighted arm / `pack_a_masked_f32` (D-GTM-5,
+corrected three times, still unbuilt) stays after N1–N3: D-GTM-0j killed the
+density framing and left a TYPE boundary — masks win where the relation is
+Boolean, GEMM is required only where it carries VALUES — so the bridge's real
+job is the weighted case, and §12.5 pt 2 still forbids any comparative claim
+until a sparse arm exists. §16.4 may already have part of that arm.
+
+---
+
+## §17 — ⊘ THE REVEAL RATIO WAS MEASURED ON THE WRONG TIER (2026-09-16, operator ruling: "it's unacceptable to use avx2")
+
+Every reveal-vs-TCAM number in this document — §14's 228–462×, the board
+STORNO's ~200–490×, and §16.2's own 161.8×–343.5× — was produced by a **plain
+`cargo run`**, which this repo's `.cargo/config.toml:83` pins to
+**`x86-64-v3` (AVX2)**. None of them is an AVX-512 number and none said so.
+
+Root cause, and it is a documentation defect, not only my error: `CLAUDE.md:84`
+claimed *"`.cargo/config.toml` — `target-cpu=x86-64-v4` (AVX-512 mandatory)"*.
+The file has always set v3. CLAUDE.md is the first thing a session reads, so the
+error propagates to every session that trusts it. Corrected in place 2026-09-16
+with the v4 invocation and the `env -u RUSTFLAGS` trap spelled out.
+
+### The same probe, same binary, same host, two configs
+
+Host: Xeon @ 2.10 GHz with the full AVX-512 set (`f bw cd dq vl` plus
+`vnni bf16 fp16 vbmi vbmi2 vpopcntdq ifma bitalg`). Parity confirms the arm:
+`avx512f=false` under the default, `avx512f=true` under `--config .cargo/config-v4.toml`.
+
+| quantity | v3 / AVX2 (the default) | **v4 / AVX-512** |
+|---|---|---|
+| TCAM sweep | 14 126 – 15 141 ns | **5 298 – 5 484 ns** |
+| range write | 50 – 52 ns | 43 – 49 ns |
+| **reveal ratio** | 273.9× – 300.9× | **110.2× – 123.2×** |
+| ternlogq | 149.0 ns/pass (0.146 ns/word) | **111.6 ns/pass (0.109 ns/word)** |
+| coal (one re-chain) | 5 630 ns = 0.79 steps @ x=4 | **4 666 ns = 0.62 steps @ x=4** |
+
+### The finding, and it generalizes past this probe
+
+**A ratio between two arms that vectorize DIFFERENTLY is not a property of the
+algorithm pair. It is a property of the pair AND the target-cpu — and nothing in
+this record was labelled with one.** The TCAM sweep is a compare over a value
+column and gains **2.7×** from AVX-512; the range write is a handful of stores,
+already memory-bound, and gains almost nothing. So the ratio falls by ~2.5×
+*precisely because the wider ISA helps the arm being beaten*. Publishing such a
+ratio without its build config is publishing half a measurement.
+
+Consequence for every "N×" in this plan: none of them is portable, and the
+older ones are not even attributable. §14's ternlogq of 291 ns (0.285 ns/word)
+is 2.0× my v3 and 2.6× my v4 per word, so it is neither of these runs and its
+config is unrecorded — it cannot be placed on this table at all.
+
+### What SURVIVES, stated exactly
+
+The DuckDB matrix's re-scope condition for G6 is: *"If the range/sweep ratio
+collapses below ~10× the 'top-down is a range, not a compare' claim needs
+re-scoping to the specific geometry."* **110× clears that by an order of
+magnitude.** So the CLAIM survives on the correct tier; the HEADLINE NUMBER does
+not, and is more than halved.
+
+The shape survives too, and it is the part that was never the headline: the TCAM
+arm is FLAT in node size on both tiers (it sweeps the whole column whatever the
+node), while the range arm tracks the node. Cost follows the selection, not the
+corpus. That is what makes the prefix stepless, and it is config-independent.
+
+### Standing rule from here
+
+Every timing published for this plan names its target-cpu, and any probe that
+prints timings prints the realization it was built for (the parity program
+already does: `arch=… avx2=… avx512f=…`). A number without that label is not a
+measurement, it is an anecdote.
+
+---
+
+## §18 — N3 / T1 gap G2 surface census (2026-09-16, prepared while N2's first chunk ran)
+
+Measured by brace-scoped extraction of `impl U64x8` blocks across all five
+realizations, NOT by a file-wide grep. **That distinction is load-bearing:** a
+file-wide grep for `cmpeq_mask` hits in `simd_avx2.rs` and `simd_scalar.rs`
+come from the `U8x64` impl blocks, which sit adjacent in the same files and DO
+carry compares. Read file-wide, the surface looks present. It is not.
+
+### What `U64x8` actually has
+
+| arm | representation | `impl U64x8` methods | compare-to-mask |
+|---|---|---|---|
+| avx512 | `__m512i` (`simd_avx512.rs:1736`) | 12 | **none** |
+| avx2 | **scalar polyfill from the `avx2_int_type!` macro** — the file says so at `simd_avx2.rs:2295` | 6 (`rotate_left`, `rotate_right`, `popcnt`, `xor_popcount`, `andnot`, `ternlog`) | **none** |
+| scalar | array-backed | same 6 | **none** |
+| neon | `[U64x2; 4]` (`simd_neon.rs:2674`) | 13 | **none** |
+| wasm | `[U64x2; 4]` (`simd_wasm.rs:1777`) | 13 | **none** |
+| nightly | `u64x8` portable-simd | — | **none** |
+
+> **⊘ THE NIGHTLY ROW IS WRONG, and the correction reframes the whole wave
+> (2026-09-16, found by the N3 worker assigned to that arm, verified here by
+> brace-scoped extraction).** `src/simd_nightly/u_word_types.rs` has carried
+> `U64x8::{cmpeq_mask, cmpgt_mask} -> u8` since before this wave, at lines
+> 125/131 — `self.0.simd_eq(other.0).to_bitmask() as u8` and the `simd_gt`
+> twin — under its own `// ── Compare -> bitmask ──` section header. It is not
+> an isolated pair either: the nightly arm ships **18 such pairs across every
+> width in the directory** (`u_word_types.rs` ×7 incl. `U64x4`/`U32x8`/
+> `U32x16`/`U16x32`/`U16x16`, `i_word_types.rs` ×6, `u8_types.rs` ×2,
+> `i8_types.rs` ×2, `w1a_types.rs` ×1).
+>
+> **Why the census missed it, and the lesson is the mirror of §18's own.**
+> §18 warns that a FILE-WIDE grep makes an absent surface look present
+> (`cmpeq_mask` hits in `simd_avx2.rs` come from the adjacent `U8x64` block).
+> This is the inverse: the nightly arm is a **directory**
+> (`src/simd_nightly/*.rs`), not a `simd_<arm>.rs` file, so a census shaped
+> around the single-file arms skips it entirely and a PRESENT surface looks
+> absent. Both failures come from letting the search SHAPE stand in for the
+> thing searched.
+>
+> **Three consequences, all load-bearing for N3:**
+>
+> 1. **This wave is not adding a capability — it is bringing the stable arms up
+>    to a contract the validation arm already states.** That is a materially
+>    different claim and a much easier one to get right.
+> 2. **The nightly bodies are the CONTRACT REFERENCE.** Return width `u8` for
+>    8 lanes, lane `i` → bit `i`, `simd_gt` on a `u64` element type (already
+>    unsigned, no bias). Every stable arm must match that, and its terse
+>    one-line doc style is the house convention for this family.
+> 3. **An unplanned gate exists:** `scripts/masking-parity.sh nightly` builds
+>    the facade against this arm, so once the stable arms land, stable-vs-
+>    nightly is a genuine cross-realization differential rather than a
+>    same-author self-check. That gate was not in the plan and is stronger than
+>    what was.
+>
+> Coverage gap noted by the same worker, not fixed here: the nightly tests have
+> `u64x8_cmpeq_mask_all` but **no `u64x8_cmpgt_mask` test**, where the sibling
+> `U64x4` has both. Filed rather than folded in — it is that arm's own
+> regression surface, not N3's.
+
+`U64x2`, the neon/wasm building block, has 10 methods on neon and **no compare
+among them**, so composing four of those is not available either.
+
+### Consequence — N3 is NOT N2, and the difference decides the brief
+
+N2 (G1, the `u8` family) was facade-only: `U8x64::{cmpeq_mask, cmpgt_mask}`
+already existed on every arm, so only the T1 wrapper was missing. **N3 has no
+backend primitive on any arm.** Both layers are new.
+
+Scope, stated honestly rather than aspirationally:
+
+- **avx512 — native and cheap.** `_mm512_cmpeq_epu64_mask` /
+  `_mm512_cmpgt_epu64_mask` return `__mmask8` directly; 8 lanes is exactly one
+  byte of bitmask. This is the tier the workspace measures on (operator ruling,
+  §17), so it is the tier that decides whether G2 pays.
+- **avx2 — a per-lane loop is the house pattern here, and that is not the same
+  concession as the `U8x64` defect.** On that arm `U64x8` is a *scalar polyfill
+  produced by a macro*: it holds no `__m256i` to exploit. The `U8x64` fix
+  (`3a5da8c`) was possible only because a vectorized `U8x32` sat beside it in
+  the same file; there is no `U64x4`-with-compares to compose here. Vectorizing
+  it would mean changing what the macro generates — out of N3's scope, and
+  named as such rather than silently skipped.
+- **neon / wasm / scalar** — scalar per-lane, bit-exact via the parity program.
+
+### The pre-registered question the matrix asked, and #308's answer
+
+The matrix left G2 conditional: *"count how many intended predicates over a U64
+lane are ordered rather than equality. If the answer is zero, G2 is not a gap,
+it is a correctly-scoped surface."* **PR #308 answers it: the count is ≥ 1.**
+Its `find_ram_in_range` needs `lo <= offset < hi` over `u64`, and **100 % of the
+real Ram-space offsets exceed 2³²**, so narrowing into the existing `i32`
+ordered family is unsound. The probe worked around it by splitting the offset
+into `hi32`/`lo32` and asserting the window lies inside one `hi32` bucket —
+valid for that fixture, not in general.
+
+### Chunk plan (per `.claude/rules/agent-output-durability.md`)
+
+1. `U64x8::{cmpeq_mask, cmpgt_mask} -> u8` on avx512 + scalar, with a scalar
+   oracle test. One file each.
+2. The same on neon / wasm / nightly.
+3. Facade `lt/le/gt/ge_u64_to_mask`, packing `out_words[g / 8] |= (bits as u64)
+   << ((g % 8) * 8)` — 8 lanes per chunk, so eight chunks per word, unlike N2's
+   one-chunk-one-word and unlike the u32 family's four-groups-per-word.
+4. `_under` siblings, then the facade re-export and a parity group.
+
+### 18a. ⊘ Correction to §18's scope — the composition is `64x2 × 4`, not "scalar per-lane" (operator, 2026-09-16)
+
+Operator: *"64x8 wird bei wasm und Skalar immer durch 64x2 \* 4 erledigt."*
+§18 above wrote "scalar per-lane" for neon/wasm/scalar, which is looser than the
+rule and would have produced four bespoke 8-lane bodies. Read as a build rule,
+not a description, it says: **one narrow primitive per arm at `U64x2`, composed
+×4 into the 8-lane result.**
+
+Measured state, so the rule is applied against facts rather than assumption:
+
+| arm | declaration | shape |
+|---|---|---|
+| neon | `struct U64x8(pub [U64x2; 4])` (`simd_neon.rs:2674`) | **`64x2 × 4`** |
+| wasm | `struct U64x8(pub [U64x2; 4])` (`simd_wasm.rs:1777`) | **`64x2 × 4`** |
+| scalar | `impl_int_type!(U64x8, u64, 8, 0u64)` (`simd_scalar.rs:527`) | flat `[u64; 8]` |
+| avx2 | `avx2_int_type!` polyfill (`simd_avx2.rs:2295` names it) | flat |
+| avx512 | `__m512i` (`simd_avx512.rs:1736`) | native |
+
+**One divergence, recorded rather than smoothed over:** on the scalar arm the
+macro generates a FLAT eight-lane array today, not `[U64x2; 4]`. The rule is
+still honoured without touching the macro-generated layout — the COMPOSITION is
+four 2-lane groups even where the STORAGE is flat, so every non-avx512 body has
+the identical shape and only the element access differs. Changing what
+`impl_int_type!` emits is a separate decision with a much wider blast radius and
+is not smuggled into N3.
+
+Consequence for the chunk plan in §18: chunk 1 and 2 merge into "add
+`U64x2::{cmpeq_mask, cmpgt_mask} -> u8` (2 bits) per arm, then compose ×4".
+`U64x2` has **10 methods on neon and no compare among them, and none at all on
+the other arms** (measured), so that narrow primitive is new everywhere too —
+but it is written once per arm instead of once per arm per width, and the ×4
+fold is shared.
+
+### 18b. N3's per-arm compare availability — verified, not assumed (2026-09-16)
+
+Operator: *"GitHub LLVM hat alle CPU SIMD ops dokumentiert"* — so look them up
+instead of guessing. Done. Two rows compiled on this toolchain, two read from
+stdarch's own source/spec; provenance is per row because it differs.
+
+| arm | unsigned 64-bit ORDERED compare | equality | how verified |
+|---|---|---|---|
+| **AVX-512** | `_mm512_cmpgt_epu64_mask` → `__mmask8` | `_mm512_cmpeq_epu64_mask` | **compiled** here under `avx512f` |
+| **AVX2** | **ABSENT** — only the SIGNED `_mm256_cmpgt_epi64` | `_mm256_cmpeq_epi64` (bit equality is sign-agnostic) | **compile error** here: *"cannot find function `_mm256_cmpgt_epu64`"* |
+| **NEON** | `vcgtq_u64` → **`cmhi`**, `vcgeq_u64` → **`cmhs`** | `vceqq_u64` → `cmeq` | stdarch `aarch64.spec.yml`, the generated-intrinsics spec |
+| **WASM** | **ABSENT** — only `i64x2_{lt,le,gt,ge}`, signed; the file says so in its own doc (*"as if they were two vectors of 2 sixty-four-bit SIGNED integers"*) | `u64x2_eq` / `u64x2_ne` exist, as aliases of the i64x2 forms | stdarch `wasm32/simd128.rs` |
+| scalar | plain `>` on `u64` | `==` | n/a |
+
+### What this decides, and it corrects an assumption I would otherwise have made
+
+**NEON gets REAL vector instructions, not a scalar fold.** `cmhi` / `cmhs`
+support the 2D (64-bit) element form, so the `[U64x2; 4]` fan-out (§18a) lowers
+to four genuine compares per arm. Had I not checked I would have written the
+neon arm as a per-lane loop on the grounds that `U64x2` "has no compare today" —
+which is true of this repo's wrapper and false of the ISA underneath it.
+
+**AVX2 and WASM need the SAME sign-bias trick, and it is already in the tree.**
+Neither has an unsigned ordered 64-bit compare, so both flip the sign bit
+(`^ 0x8000_0000_0000_0000`) and use the signed instruction — ordering is
+preserved under that XOR. This is not an invention: `U8x32::cmpgt_mask`
+(`simd_avx2.rs:2746-2754`) already documents and implements exactly this at byte
+width, *"AVX2 only has signed `_mm256_cmpgt_epi8`, so we XOR both operands with
+`0x80` to convert unsigned ↔ signed (preserves ordering for unsigned compare)."*
+The N3 worker cites that precedent rather than deriving it.
+
+**Equality needs no bias anywhere.** Bit equality is sign-agnostic, which is why
+wasm ships `u64x2_eq` as a plain alias. Only the ordered ops are affected.
+
+### Honest scope of this table
+
+The AVX-512 and AVX2 rows are compile-verified on the toolchain we actually
+build with — the strongest form available here. The NEON and WASM rows are read
+from stdarch's own generating spec and source, **not** compiled, because no
+aarch64 or wasm32 target is installed in this container (`rustup target list
+--installed` returns x86_64 only) and `rust-src` is absent so the vendored
+stdarch cannot be grepped locally either. A cross-target `cargo check` is the
+stronger gate and is the follow-up if either row is ever load-bearing for a
+shipped decision rather than for planning.
+
+> **⊘ CORRECTION, same day, before any N3 code was written: the premise of the
+> paragraph above is FALSE, and the stronger gate was available the whole time.**
+> `rustup target list --installed` returns **three** targets here, not one:
+> `aarch64-unknown-linux-gnu`, `wasm32-unknown-unknown`, `x86_64-unknown-linux-gnu`.
+> Both cross arms compile-check clean on the unmodified tree:
+>
+> ```sh
+> env -u RUSTFLAGS cargo check -p ndarray --lib --no-default-features --features std \
+>   --target aarch64-unknown-linux-gnu                       # exit 0
+> RUSTFLAGS="-C target-feature=+simd128" cargo check -p ndarray --lib \
+>   --no-default-features --features std --target wasm32-unknown-unknown   # exit 0
+> ```
+>
+> Two details make these REAL gates rather than vacuous ones, and both had to be
+> checked rather than assumed. `simd_neon` and `simd_wasm` are declared in
+> `lib.rs` behind **`#[cfg(feature = "std")]` alone, with no target cfg**
+> (`lib.rs:416-418`, `:438-440`), so their mere presence in an x86 build proves
+> nothing — the arch gate is INSIDE each file (`simd_neon.rs` per-item
+> `#[cfg(target_arch = "aarch64")]`; `simd_wasm.rs:65` one
+> `#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))] pub mod
+> wasm32_simd`). And `--features std` is load-bearing: `simd_masking_ops.rs` is
+> std-gated, so a bare `--no-default-features` check compiles neither the facade
+> nor its callers. A wasm check WITHOUT `+simd128` compiles the scalar arm and
+> reports success while never touching `simd_wasm.rs` at all — the exact false
+> gate this plan keeps finding elsewhere.
+>
+> Residual limit, stated precisely: NEON can be **checked** but not **run** (no
+> `qemu-aarch64` in this container); WASM can be **both** (`node` is present, and
+> `scripts/masking-parity.sh wasm` drives it). So the honest scope is *"NEON
+> compile-verified, WASM compile- and run-verified"*, not *"both read from a
+> spec"*. The stdarch readings in the table stay useful — they say which
+> INSTRUCTION each intrinsic lowers to, which a `cargo check` cannot tell you —
+> but they are no longer the only evidence for those two rows.

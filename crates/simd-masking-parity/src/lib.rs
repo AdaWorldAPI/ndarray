@@ -18,22 +18,28 @@
 //! predicate→mask, `0x6xx` mask algebra, `0x7xx` care-match, `0x8xx` masked
 //! reductions and blend, `0x9xx` `mask_shift_morton` (the Morton hex
 //! neighbour shift, D-GTM-1m), `0xAxx` the gated `*_to_mask_under`
-//! predicates (mask-risc `Pred { under }`, D-MRX-0). `main.rs` (native / qemu) and `selfcheck()`
-//! (the wasm cdylib export, driven by `run.mjs`) both call [`run`].
+//! predicates (mask-risc `Pred { under }`, D-MRX-0), `0xBxx` `mask_set_range`
+//! (the range WRITE, N1), `0xCxx` the unsigned `u8` / `u64` compare→mask
+//! family (`eq`/`ne`/`gt`/`ge`/`lt`/`le`, N2/N3 — built earlier but never
+//! exercised by this program until now). `main.rs` (native / qemu) and
+//! `selfcheck()` (the wasm cdylib export, driven by `run.mjs`) both call
+//! [`run`].
 
 use ndarray::simd::{
     blend_i32, eq_i32_to_mask, eq_i32_to_mask_under, eq_u32_strided_to_mask, eq_u32_to_mask, eq_u32_to_mask_under,
-    ge_i32_to_mask, ge_i32_to_mask_under, gt_i32_to_mask, gt_i32_to_mask_under, le_i32_to_mask, le_i32_to_mask_under,
-    lt_i32_to_mask, lt_i32_to_mask_under, mask_all, mask_and, mask_and_assign, mask_andnot, mask_andnot_assign,
-    mask_any, mask_not, mask_not_assign, mask_or, mask_or_assign, mask_shift_morton, mask_ternlog, mask_ternlog_assign,
-    mask_xor, mask_xor_assign, masked_max_i32, masked_min_i32, masked_strided_group_sum, masked_sum_i32,
-    ne_i32_to_mask, ne_i32_to_mask_under, ne_u32_to_mask, ne_u32_to_mask_under, ternary_match_strided_to_mask,
-    ternary_match_u32_to_mask, ternary_match_u32_to_mask_under, ternary_match_u64_to_mask,
-    ternary_match_u64_to_mask_under, ternlog, I32x16, MortonDir, U32x16, U64x8,
+    eq_u64_to_mask, eq_u8_to_mask, ge_i32_to_mask, ge_i32_to_mask_under, ge_u64_to_mask, ge_u8_to_mask, gt_i32_to_mask,
+    gt_i32_to_mask_under, gt_u64_to_mask, gt_u8_to_mask, le_i32_to_mask, le_i32_to_mask_under, le_u64_to_mask,
+    le_u8_to_mask, lt_i32_to_mask, lt_i32_to_mask_under, lt_u64_to_mask, lt_u8_to_mask, mask_all, mask_and,
+    mask_and_assign, mask_andnot, mask_andnot_assign, mask_any, mask_not, mask_not_assign, mask_or, mask_or_assign,
+    mask_set_range, mask_shift_morton, mask_ternlog, mask_ternlog_assign, mask_xor, mask_xor_assign, masked_max_i32,
+    masked_min_i32, masked_strided_group_sum, masked_sum_i32, ne_i32_to_mask, ne_i32_to_mask_under, ne_u32_to_mask,
+    ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask, ternary_match_strided_to_mask, ternary_match_u32_to_mask,
+    ternary_match_u32_to_mask_under, ternary_match_u64_to_mask, ternary_match_u64_to_mask_under, ternlog, I32x16,
+    MortonDir, U32x16, U64x8,
 };
 
 /// Number of check groups [`run`] executes (for the log line only).
-pub const CHECKS: usize = 10;
+pub const CHECKS: usize = 12;
 
 /// The wasm export: identical to [`run`], `extern "C"` so `run.mjs` can call it.
 #[no_mangle]
@@ -46,7 +52,7 @@ pub fn run() -> u32 {
     let groups: [fn() -> Result<(), u32>; CHECKS] = [
         check_ternlog_all_tables, check_u64x8_algebra, check_i32x16_compare, check_predicates_to_mask,
         check_mask_algebra, check_care_match, check_masked_reductions, check_blend, check_morton_shift,
-        check_predicates_under,
+        check_predicates_under, check_set_range, check_unsigned_compare_to_mask,
     ];
     for g in groups {
         if let Err(code) = g() {
@@ -939,6 +945,176 @@ fn check_morton_shift() -> Result<(), u32> {
             if got != expect {
                 return Err(0x904);
             }
+        }
+    }
+    Ok(())
+}
+
+// ── 0xBxx: mask_set_range — the range WRITE, no per-bit loop (N1) ───────────
+//
+// The reference below is a from-scratch bit-serial writer over `[lo, hi)`
+// membership — it does not call `mask_set_range` and does not reuse
+// `reference_mask`'s predicate-over-index shape, because a range write's law
+// is membership in an interval, not a predicate over `values[i]`.
+
+fn set_range_reference(n_words: usize, lo: usize, hi: usize) -> Vec<u64> {
+    let mut w = vec![0u64; n_words];
+    for i in lo..hi {
+        w[i / 64] |= 1u64 << (i % 64);
+    }
+    w
+}
+
+fn check_set_range() -> Result<(), u32> {
+    let mut rng = SplitMix64(0xB000_0000_0006);
+    for &n_words in &[1usize, 2, 3, 4, 8] {
+        let capacity = n_words * 64;
+        // The boundary shapes the primitive's own doc names, plus randomized
+        // fuzz within capacity. `lo == hi` (both 0 and both `capacity`) is
+        // the legal empty range; the rest straddle every word-alignment case.
+        let mut cases: Vec<(usize, usize)> =
+            vec![(0, 0), (capacity, capacity), (0, capacity), (0, 1), (capacity - 1, capacity), (5, 6)];
+        if n_words >= 2 {
+            cases.push((60, 70)); // adjacent words, neither aligned
+            cases.push((64, 128)); // both endpoints word-aligned
+            cases.push((0, 64)); // lo aligned, leaves surplus words unset
+        }
+        for _ in 0..12 {
+            let lo = (rng.next() as usize) % (capacity + 1);
+            let span = (rng.next() as usize) % (capacity + 1 - lo);
+            cases.push((lo, lo + span));
+        }
+        for (lo, hi) in cases {
+            let mut got = vec![u64::MAX; n_words]; // pre-dirtied: an OR-er fails immediately
+            mask_set_range(&mut got, lo, hi);
+            let want = set_range_reference(n_words, lo, hi);
+            if got != want {
+                return Err(0xB00);
+            }
+        }
+        // Anti-vacuity: a genuinely non-trivial range sets EXACTLY `hi - lo`
+        // bits, not "some" bits — catches an always-set-everything or
+        // always-set-nothing implementation that could otherwise still pass
+        // every case above.
+        if capacity >= 8 {
+            let (lo, hi) = (3, capacity - 2);
+            let mut got = vec![0u64; n_words];
+            mask_set_range(&mut got, lo, hi);
+            let popcount: u32 = got.iter().map(|w| w.count_ones()).sum();
+            if popcount as usize != hi - lo {
+                return Err(0xB01);
+            }
+        }
+    }
+    Ok(())
+}
+
+// ── 0xCxx: unsigned u8 / u64 compare → mask — N2/N3's untested twelve ──────
+//
+// `eq_i32_to_mask` et al. (0x5xx) are SIGNED comparisons; `u8` and `u64` have
+// no sign, and `simd_masking_ops.rs`'s own doc comments name the risk this
+// group exists to catch: an arm that reaches its ordering by flipping the
+// top bit and running the SIGNED compare instruction the hardware actually
+// offers (the trick some realizations use for `gt`/`ge`/`lt`/`le` at these
+// widths) gets every element with that bit set BACKWARDS if it forgets the
+// flip. So the value sets below sit ON that bit — `0x80` for `u8`, `1 << 63`
+// for `u64` — rather than merely including some large number somewhere in
+// the fixture.
+//
+// The two widths also differ in PACKING, not just in domain. `u8`'s 64-lane
+// `U8x64` register is exactly one output word wide, so `LENS` (which
+// straddles the 64-ROW boundary) already straddles `u8`'s only packing seam
+// too — reused directly below, no new lengths needed. `u64`'s `U64x8`
+// register is 8 lanes, and EIGHT of those pack into one output word
+// (`out_words[g / 8] |= (bits as u64) << ((g % 8) * 8)`) — a seam `LENS`
+// alone never isolates, since none of its six values sit at a bare multiple
+// of 8 outside the already-covered 0/64/128-adjacent cases. `U64_CMP_LENS`
+// adds 7 / 8 / 9: a register short of full, exactly one register with
+// nothing left over, and one register plus a one-element tail that must
+// land at BYTE 1 of the SAME word rather than spilling into a new one — the
+// placement a naive `g * 8` (forgetting the `% 8`) would get wrong starting
+// at exactly this length.
+
+/// Row lengths for the `u64` half of [`check_unsigned_compare_to_mask`]:
+/// [`LENS`] plus 7 / 8 / 9, which straddle the 8-lane `U64x8` register
+/// boundary that `LENS` alone never isolates (see the banner above).
+const U64_CMP_LENS: [usize; 9] = [0, 1, 7, 8, 9, 63, 64, 65, 130];
+
+/// `u8` operands spanning the full unsigned range, with a fixed prefix
+/// sitting exactly on `0x7F` / `0x80` — the byte pair a SIGNED `i8` compare
+/// would misorder relative to unsigned `u8` ordering — before random fill.
+fn u8_values(n: usize, rng: &mut SplitMix64) -> Vec<u8> {
+    let fixed = [0u8, 0xFF, 0x7F, 0x80, 0x81, 0xFE, 1, 7, 7];
+    (0..n)
+        .map(|i| if i < fixed.len() { fixed[i] } else { rng.next() as u8 })
+        .collect()
+}
+
+/// `u64` operands including the sign-bit boundary a SIGNED `i64` compare
+/// would misorder: `1 << 63` itself, one below it (the largest value still
+/// "positive" under a signed read), one above it, and `u64::MAX`.
+fn u64_values(n: usize, rng: &mut SplitMix64) -> Vec<u64> {
+    let fixed = [0u64, u64::MAX, 1u64 << 63, 0x7FFF_FFFF_FFFF_FFFF, (1u64 << 63) + 1, 0x7FFF_FFFF_FFFF_FFFE, 1, 7, 7];
+    (0..n)
+        .map(|i| if i < fixed.len() { fixed[i] } else { rng.next() })
+        .collect()
+}
+
+fn check_unsigned_compare_to_mask() -> Result<(), u32> {
+    let mut rng = SplitMix64(0xC000_0000_0007);
+
+    // u8: `LENS` already straddles its only packing seam (see the banner
+    // above), so it is reused directly rather than duplicated.
+    let u8_thresholds = [0u8, 1, 0x7F, 0x80, 0x81, 0xFE, 0xFF, 7];
+    for &n in &LENS {
+        let out_len = words_for(n) + 1;
+        let vals = u8_values(n, &mut rng);
+        let mut out = vec![u64::MAX; out_len];
+        for (k, &t) in u8_thresholds.iter().enumerate() {
+            let k = k as u32;
+            macro_rules! pred8 {
+                ($f:ident, $op:tt, $code:expr) => {{
+                    out.iter_mut().for_each(|w| *w = u64::MAX);
+                    $f(&vals, t, &mut out);
+                    if out != reference_mask(n, out_len, |i| vals[i] $op t) {
+                        return Err($code | k);
+                    }
+                }};
+            }
+            pred8!(eq_u8_to_mask, ==, 0xC00);
+            pred8!(ne_u8_to_mask, !=, 0xC10);
+            pred8!(lt_u8_to_mask, <, 0xC20);
+            pred8!(le_u8_to_mask, <=, 0xC30);
+            pred8!(gt_u8_to_mask, >, 0xC40);
+            pred8!(ge_u8_to_mask, >=, 0xC50);
+        }
+    }
+
+    // u64: `LENS` plus the register-boundary lengths 7 / 8 / 9 (see the
+    // banner above).
+    let u64_thresholds =
+        [0u64, 1, 0x7FFF_FFFF_FFFF_FFFF, 1u64 << 63, (1u64 << 63) + 1, 0x7FFF_FFFF_FFFF_FFFE, u64::MAX, 7];
+    for &n in &U64_CMP_LENS {
+        let out_len = words_for(n) + 1;
+        let vals = u64_values(n, &mut rng);
+        let mut out = vec![u64::MAX; out_len];
+        for (k, &t) in u64_thresholds.iter().enumerate() {
+            let k = k as u32;
+            macro_rules! pred64 {
+                ($f:ident, $op:tt, $code:expr) => {{
+                    out.iter_mut().for_each(|w| *w = u64::MAX);
+                    $f(&vals, t, &mut out);
+                    if out != reference_mask(n, out_len, |i| vals[i] $op t) {
+                        return Err($code | k);
+                    }
+                }};
+            }
+            pred64!(eq_u64_to_mask, ==, 0xC60);
+            pred64!(ne_u64_to_mask, !=, 0xC70);
+            pred64!(lt_u64_to_mask, <, 0xC80);
+            pred64!(le_u64_to_mask, <=, 0xC90);
+            pred64!(gt_u64_to_mask, >, 0xCA0);
+            pred64!(ge_u64_to_mask, >=, 0xCB0);
         }
     }
     Ok(())

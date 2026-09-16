@@ -48,13 +48,14 @@
 //!   cargo run --release --example hex_tenant_mq_probe --features std
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::hint::black_box;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use ndarray::simd::ternlog::{AND3, OR2_AND};
 use ndarray::simd::{
-    gt_i32_to_mask, mask_and, mask_shift_morton, mask_ternlog_assign, popcount_batch_u64, ternary_match_u32_to_mask,
-    MortonDir,
+    gt_i32_to_mask, gt_u8_to_mask, mask_and, mask_set_range, mask_shift_morton, mask_ternlog_assign,
+    popcount_batch_u64, ternary_match_u32_to_mask, MortonDir,
 };
 
 // ── counting allocator: the 0k instrument ────────────────────────────────────
@@ -181,27 +182,16 @@ fn set(words: &mut [u64], i: usize) {
 
 /// A trie node at nibble level `level` (0..=4) with prefix `p`: rows
 /// `[p << shift, (p+1) << shift)`. The fixed spatial distribution makes the
-/// reveal a range write, not a compare.
+/// reveal a range write, not a compare — `ndarray::simd::mask_set_range` is
+/// exactly that primitive (N1,
+/// `.claude/plans/gemm-ternlog-mask-consolidation-v1.md` §16.6), so the
+/// range write itself lives there now; this function only computes the
+/// `(lo, hi)` node bounds.
 fn range_reveal(level: u32, p: u32, out: &mut [u64]) -> (usize, usize) {
     let shift = 16 - 4 * level;
     let lo = (p as usize) << shift;
     let hi = ((p + 1) as usize) << shift;
-    for w in out.iter_mut() {
-        *w = 0;
-    }
-    // inclusive last word; the run may start and end mid-word
-    let (w0, w1) = (lo >> 6, (hi - 1) >> 6);
-    let head = u64::MAX << (lo & 63);
-    let tail = u64::MAX >> (63 - ((hi - 1) & 63));
-    if w0 == w1 {
-        out[w0] = head & tail;
-    } else {
-        out[w0] = head;
-        for w in out[w0 + 1..w1].iter_mut() {
-            *w = u64::MAX;
-        }
-        out[w1] = tail;
-    }
+    mask_set_range(out, lo, hi);
     (lo, hi)
 }
 
@@ -451,8 +441,18 @@ fn masks_equal_axial(mask: &[u64], reference: &[bool]) -> bool {
     })
 }
 
+/// Run to a 50 ms floor and report ns per call.
+///
+/// **Every closure passed here must `black_box` its output.** `timed` repeats
+/// the call with nothing reading the result, so a write-only closure is dead
+/// code an optimizing build may eliminate or hoist — and the damage is not
+/// symmetric. Reported on PR #309: the widened-i32 arms happened to be
+/// protected by a LATER read (the spread loop consumes `elig`; the parity
+/// `assert_eq!` consumes `m_new`) while the native-u8 arms had no reader at
+/// all, so the very ratio the probe exists to measure could have been the
+/// optimizer deleting one side. Protect BOTH sides or the comparison is not
+/// one.
 fn timed<F: FnMut()>(mut f: F) -> f64 {
-    // run to a 50 ms floor; report ns per call
     let mut reps = 1usize;
     loop {
         let t = Instant::now();
@@ -483,9 +483,23 @@ fn main() {
         })
         .collect();
     let thr: u8 = 96; // ~62% of rails permeable
-                      // Column views for the SIMD compare. The T1 compare is i32-wide today; a
-                      // u8 column compare is a T1 addition (stated, not hidden). Widening costs
-                      // 4× the bandwidth, so `n_gen` below is an UPPER bound on the reveal term.
+
+    // Column views for the SIMD compare, BOTH widths, so the widening cost is
+    // measured in one process instead of argued across two runs.
+    //
+    // This probe's original note read: *"The T1 compare is i32-wide today; a
+    // u8 column compare is a T1 addition (stated, not hidden). Widening costs
+    // 4× the bandwidth, so `n_gen` below is an UPPER bound on the reveal
+    // term."* That T1 addition landed (N2/G1, `gt_u8_to_mask`), so the upper
+    // bound can be replaced by a measurement — which is the falsifier the plan
+    // pre-registered for G1: build the u8 comparator, re-run this probe, and
+    // **if the re-chain does not move, the widening was never the cost.**
+    //
+    // The rail byte is the NATIVE column: `r[2 * d]` is already `u8`, and the
+    // `as i32` below is the whole widening.
+    let perm_cols_u8: Vec<Vec<u8>> = (0..DIRS)
+        .map(|d| rails.iter().map(|r| r[2 * d]).collect())
+        .collect();
     let perm_cols: Vec<Vec<i32>> = (0..DIRS)
         .map(|d| rails.iter().map(|r| r[2 * d] as i32).collect())
         .collect();
@@ -495,9 +509,32 @@ fn main() {
     let mut elig: [Vec<u64>; DIRS] = std::array::from_fn(|_| vec![0u64; WORDS]);
     let t_gen = timed(|| {
         for d in 0..DIRS {
-            gt_i32_to_mask(&perm_cols[d], thr as i32, &mut elig[d]);
+            gt_i32_to_mask(black_box(&perm_cols[d]), black_box(thr as i32), &mut elig[d]);
+            black_box(&elig[d]);
         }
     });
+
+    // The same six masks off the NATIVE u8 columns. Gate first, time second:
+    // a timing comparison between two operations that do not produce the same
+    // answer measures nothing, so bit-identity is asserted before any number
+    // is printed.
+    let mut elig_u8: [Vec<u64>; DIRS] = std::array::from_fn(|_| vec![0u64; WORDS]);
+    for d in 0..DIRS {
+        gt_u8_to_mask(&perm_cols_u8[d], thr, &mut elig_u8[d]);
+        assert_eq!(elig_u8[d], elig[d], "u8 and widened-i32 eligibility masks differ on rail {d}");
+    }
+    let t_gen_u8 = timed(|| {
+        for d in 0..DIRS {
+            gt_u8_to_mask(black_box(&perm_cols_u8[d]), black_box(thr), &mut elig_u8[d]);
+            black_box(&elig_u8[d]);
+        }
+    });
+    println!(
+        "M1b generation NATIVE u8: 6 masks = {t_gen_u8:.0} ns ({:.0} ns/mask, {:.2} ns/row) — {:.2}× the widened i32 arm",
+        t_gen_u8 / DIRS as f64,
+        t_gen_u8 / (DIRS * N) as f64,
+        t_gen / t_gen_u8
+    );
     println!(
         "M1b generation: 6 eligibility masks from 6 columns = {:.0} ns ({:.0} ns/mask, {:.2} ns/row)",
         t_gen,
@@ -521,10 +558,12 @@ fn main() {
         assert!(ok, "reveal gate FAILED at level {level}");
         let p = n_nodes / 2;
         let tr = timed(|| {
-            range_reveal(level, p, &mut m_range);
+            range_reveal(black_box(level), black_box(p), &mut m_range);
+            black_box(&m_range);
         });
         let tt = timed(|| {
-            tcam_reveal(&addr, level, p, &mut m_tcam);
+            tcam_reveal(black_box(&addr), black_box(level), black_box(p), &mut m_tcam);
+            black_box(&m_tcam);
         });
         println!("{level:>5}  {:>9}  {tr:>8.0}  {tt:>8.0}  {:>6.1}×  ok", 1usize << (16 - 4 * level), tt / tr);
     }
@@ -729,11 +768,27 @@ fn main() {
 
     // ── M3: coal — one maneuver = re-chain a resident mask from its column ──
     let mut m_new = vec![0u64; WORDS];
-    let c = timed(|| gt_i32_to_mask(&perm_cols[0], thr as i32, &mut m_new));
+    let c = timed(|| {
+        gt_i32_to_mask(black_box(&perm_cols[0]), black_box(thr as i32), &mut m_new);
+        black_box(&m_new);
+    });
     println!(
         "[coal] one re-chain (gt_i32 sweep over one column) = {c:.0} ns = {:.1} ternlogq passes = {:.2} maintained steps at x=4",
         c / t_tern,
         c / (4.0 * t_tern + n_term)
+    );
+    let mut m_new_u8 = vec![0u64; WORDS];
+    gt_u8_to_mask(&perm_cols_u8[0], thr, &mut m_new_u8);
+    assert_eq!(m_new_u8, m_new, "u8 and widened-i32 re-chain masks differ");
+    let c_u8 = timed(|| {
+        gt_u8_to_mask(black_box(&perm_cols_u8[0]), black_box(thr), &mut m_new_u8);
+        black_box(&m_new_u8);
+    });
+    println!(
+        "[coal] one re-chain NATIVE u8 (gt_u8 sweep)          = {c_u8:.0} ns = {:.1} ternlogq passes = {:.2} maintained steps at x=4  →  {:.2}× vs widened",
+        c_u8 / t_tern,
+        c_u8 / (4.0 * t_tern + n_term),
+        c / c_u8
     );
     println!(
         "[M2]   speed change x→x±1 costs one ternlogq pass ({t_tern:.0} ns); x→x±k costs k passes — linear, no cliff"

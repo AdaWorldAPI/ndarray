@@ -135,6 +135,19 @@ fn tail_lane_bits(n: usize) -> u16 {
     ((1u32 << n) - 1) as u16
 }
 
+/// The low `n` bits set (`n < 8`): the lane-validity mask for a padded
+/// 8-lane predicate tail, so a padding lane can never contribute a match.
+///
+/// Sibling of [`tail_lane_bits`], which serves the 16-lane registers. Kept
+/// separate rather than made generic because the return width IS the
+/// register's lane count, and the caller ORs the result into a byte-shifted
+/// slot whose width has to match.
+#[inline(always)]
+fn tail_lane_bits_8(n: usize) -> u8 {
+    debug_assert!(n < 8, "a tail is shorter than one register");
+    ((1u16 << n) - 1) as u8
+}
+
 /// Packs `values[i] == needle` into `out_words`, one bit per element,
 /// LSB-first within each `u64` word (bit `k` of word `w` corresponds to
 /// element `w * 64 + k`).
@@ -1056,6 +1069,528 @@ pub fn ne_u32_to_mask(values: &[u32], needle: u32, out_words: &mut [u64]) {
     clear_mask_tail(out_words, values.len());
 }
 
+// ────────────────────────────────────────────────────────────────────────
+// The u8 comparison family (`*_u8_to_mask`) — the byte-width sibling of the
+// u32/i32 families above. [`crate::simd::U8x64`] is 64 lanes wide, so unlike
+// those families (whose 16-lane groups pack four per `u64` word via
+// `out_words[g / 4] |= (bits as u64) << ((g % 4) * 16)`), one chunk here
+// fills exactly ONE whole output word: `out_words[g] = bits`, a plain
+// assignment, no shift-and-OR.
+//
+// Comparison is UNSIGNED — `u8`'s only ordering — via `U8x64::cmpeq_mask` /
+// `U8x64::cmpgt_mask`, exact with no saturation or wrapping. Derived exactly
+// as the i32 family is: `gt`/`lt` are DIRECT (`cmpgt_mask` with the operands
+// in the order the comparison needs); `ge`/`le`/`ne` are the complement of
+// `lt`/`gt`/`eq` with [`clear_mask_tail`] re-clearing the tail — the same
+// shape as [`ge_i32_to_mask`] / [`le_i32_to_mask`] / [`ne_u32_to_mask`].
+//
+// The DIRECT forms' tail is a genuinely different shape from the u32/i32
+// family's, though: a 64-lane chunk's tail can hold up to 63 elements (not
+// up to 15), so it needs a wider "valid lane" mask than [`tail_lane_bits`]
+// provides (16-lane only, `debug_assert!(n < 16)`). [`word_range_mask`] —
+// already built for [`mask_set_range`] to return the low-N-bits `u64`
+// without ever evaluating `1u64 << 64` — is reused here as
+// `word_range_mask(0, tail.len())`, rather than adding a second such helper.
+// ────────────────────────────────────────────────────────────────────────
+
+/// Packs `values[i] == needle` into `out_words`, one bit per element,
+/// LSB-first within each `u64` word (bit `k` of word `w` corresponds to
+/// element `w * 64 + k`).
+///
+/// `out_words` is **fully overwritten**, not OR-ed into. Trailing bits in the
+/// final word beyond `values.len()`, and any surplus words past
+/// `ceil(len / 64)`, are written as `0`.
+///
+/// Equality is exact bitwise comparison over the full `u8` range — `0` and
+/// `u8::MAX` are ordinary needles, and there is no saturation, wrapping, or
+/// signedness question to resolve. An empty `values` writes only zeros.
+///
+/// Runs 64 lanes at a time through [`crate::simd::U8x64::cmpeq_mask`] — one
+/// whole output word per chunk, since `U8x64` is exactly 64 lanes wide
+/// (unlike the u32/i32 families' 16-lane groups, four of which pack into one
+/// word). The final partial group is zero-padded into one register and run
+/// through the same packed compare, with the padding lanes' bits masked off
+/// by [`word_range_mask`] — no scalar tail, so the tail cannot disagree with
+/// the body.
+///
+/// # Panics
+///
+/// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::eq_u8_to_mask;
+///
+/// let values = [7u8, 1, 7, 2];
+/// let mut words = [0u64; 1];
+/// eq_u8_to_mask(&values, 7, &mut words);
+/// // elements 0 and 2 match → bits 0 and 2 → 0b0101
+/// assert_eq!(words[0], 0b0101);
+/// ```
+#[inline]
+pub fn eq_u8_to_mask(values: &[u8], needle: u8, out_words: &mut [u64]) {
+    let n = values.len();
+    let words = mask_words_for(n);
+    assert!(out_words.len() >= words, "eq_u8_to_mask: out_words.len()={} < required {}", out_words.len(), words);
+
+    for w in out_words.iter_mut() {
+        *w = 0;
+    }
+
+    let needle_v = crate::simd::U8x64::splat(needle);
+    let (chunks, tail) = values.as_chunks::<64>();
+    for (g, chunk) in chunks.iter().enumerate() {
+        out_words[g] = crate::simd::U8x64::from_array(*chunk).cmpeq_mask(needle_v);
+    }
+    if !tail.is_empty() {
+        let g = chunks.len();
+        out_words[g] =
+            crate::simd::U8x64::from_array(pad_tail(tail)).cmpeq_mask(needle_v) & word_range_mask(0, tail.len());
+    }
+}
+
+/// Packs `values[i] > threshold` (**unsigned** comparison — the only
+/// ordering `u8` has) into `out_words`, one bit per element, LSB-first
+/// within each `u64` word (bit `k` of word `w` corresponds to element
+/// `w * 64 + k`).
+///
+/// `out_words` is **fully overwritten**, not OR-ed into. Trailing bits in the
+/// final word beyond `values.len()`, and any surplus words past
+/// `ceil(len / 64)`, are written as `0`.
+///
+/// Comparison is unsigned and strict (`>`, never `>=`), exact with no
+/// saturation or wrapping:
+/// * `threshold == 0` sets every lane except those equal to `0`.
+/// * `threshold == u8::MAX` sets nothing — no `u8` exceeds it.
+///
+/// An empty `values` writes only zeros.
+///
+/// Runs 64 lanes at a time through [`crate::simd::U8x64::cmpgt_mask`] — one
+/// whole output word per chunk. The final partial group is zero-padded into
+/// one register and run through the same packed compare, with the padding
+/// lanes' bits masked off by [`word_range_mask`].
+///
+/// # Panics
+///
+/// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::gt_u8_to_mask;
+///
+/// let values = [5u8, 0, 200, 255];
+/// let mut words = [0u64; 1];
+/// gt_u8_to_mask(&values, 4, &mut words);
+/// // elements 0, 2 and 3 exceed 4 → bits 0, 2, 3 → 0b1101
+/// assert_eq!(words[0], 0b1101);
+/// ```
+#[inline]
+pub fn gt_u8_to_mask(values: &[u8], threshold: u8, out_words: &mut [u64]) {
+    let n = values.len();
+    let words = mask_words_for(n);
+    assert!(out_words.len() >= words, "gt_u8_to_mask: out_words.len()={} < required {}", out_words.len(), words);
+
+    for w in out_words.iter_mut() {
+        *w = 0;
+    }
+
+    let threshold_v = crate::simd::U8x64::splat(threshold);
+    let (chunks, tail) = values.as_chunks::<64>();
+    for (g, chunk) in chunks.iter().enumerate() {
+        out_words[g] = crate::simd::U8x64::from_array(*chunk).cmpgt_mask(threshold_v);
+    }
+    if !tail.is_empty() {
+        let g = chunks.len();
+        out_words[g] =
+            crate::simd::U8x64::from_array(pad_tail(tail)).cmpgt_mask(threshold_v) & word_range_mask(0, tail.len());
+    }
+}
+
+/// Packs `values[i] < threshold` (unsigned): computed directly as
+/// `threshold > values[i]` through [`crate::simd::U8x64::cmpgt_mask`] with
+/// the operands swapped — the same shape [`lt_i32_to_mask`] uses (there
+/// `x > t - 1` would underflow at `t == i32::MIN`; `u8` has no such boundary,
+/// but the swapped-operand derivation is kept identical across the two
+/// families rather than special-cased per element type). Full overwrite,
+/// trailing bits zero.
+///
+/// # Panics
+///
+/// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::lt_u8_to_mask;
+///
+/// let values = [5u8, 0, 200, 255];
+/// let mut words = [0u64; 1];
+/// lt_u8_to_mask(&values, 4, &mut words);
+/// // only element 1 (0) is less than 4 → bit 1 → 0b0010
+/// assert_eq!(words[0], 0b0010);
+/// ```
+#[inline]
+pub fn lt_u8_to_mask(values: &[u8], threshold: u8, out_words: &mut [u64]) {
+    let n = values.len();
+    let words = mask_words_for(n);
+    assert!(out_words.len() >= words, "lt_u8_to_mask: out_words.len()={} < required {}", out_words.len(), words);
+
+    for w in out_words.iter_mut() {
+        *w = 0;
+    }
+
+    let t = crate::simd::U8x64::splat(threshold);
+    let (chunks, tail) = values.as_chunks::<64>();
+    for (g, chunk) in chunks.iter().enumerate() {
+        out_words[g] = t.cmpgt_mask(crate::simd::U8x64::from_array(*chunk));
+    }
+    if !tail.is_empty() {
+        let g = chunks.len();
+        out_words[g] = t.cmpgt_mask(crate::simd::U8x64::from_array(pad_tail(tail))) & word_range_mask(0, tail.len());
+    }
+}
+
+/// Packs `values[i] >= threshold` (unsigned): the complement of
+/// [`lt_u8_to_mask`] with the tail re-cleared. Full overwrite.
+///
+/// # Panics
+///
+/// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::ge_u8_to_mask;
+///
+/// let values = [5u8, 0, 200, 255];
+/// let mut words = [0u64; 1];
+/// ge_u8_to_mask(&values, 4, &mut words);
+/// // 5, 200 and 255 are >= 4 → bits 0, 2, 3 → 0b1101
+/// assert_eq!(words[0], 0b1101);
+/// ```
+#[inline]
+pub fn ge_u8_to_mask(values: &[u8], threshold: u8, out_words: &mut [u64]) {
+    lt_u8_to_mask(values, threshold, out_words);
+    for w in out_words.iter_mut() {
+        *w = !*w;
+    }
+    clear_mask_tail(out_words, values.len());
+}
+
+/// Packs `values[i] <= threshold` (unsigned): the complement of
+/// [`gt_u8_to_mask`] with the tail re-cleared. Full overwrite.
+///
+/// # Panics
+///
+/// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::le_u8_to_mask;
+///
+/// let values = [5u8, 0, 200, 255];
+/// let mut words = [0u64; 1];
+/// le_u8_to_mask(&values, 4, &mut words);
+/// // only element 1 (0) is <= 4 → bit 1 → 0b0010
+/// assert_eq!(words[0], 0b0010);
+/// ```
+#[inline]
+pub fn le_u8_to_mask(values: &[u8], threshold: u8, out_words: &mut [u64]) {
+    gt_u8_to_mask(values, threshold, out_words);
+    for w in out_words.iter_mut() {
+        *w = !*w;
+    }
+    clear_mask_tail(out_words, values.len());
+}
+
+/// Packs `values[i] != needle`: the complement of [`eq_u8_to_mask`] with the
+/// tail re-cleared. Full overwrite.
+///
+/// # Panics
+///
+/// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::ne_u8_to_mask;
+///
+/// let values = [7u8, 1, 7, 2];
+/// let mut words = [0u64; 1];
+/// ne_u8_to_mask(&values, 7, &mut words);
+/// // elements 1 and 3 differ from 7 → bits 1 and 3 → 0b1010
+/// assert_eq!(words[0], 0b1010);
+/// ```
+#[inline]
+pub fn ne_u8_to_mask(values: &[u8], needle: u8, out_words: &mut [u64]) {
+    eq_u8_to_mask(values, needle, out_words);
+    for w in out_words.iter_mut() {
+        *w = !*w;
+    }
+    clear_mask_tail(out_words, values.len());
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Ordered 64-bit predicates — T1 gap G2 of the DuckDB→V3 translation matrix.
+//
+// The width where the packing is NOT free. `U8x64` is 64 lanes against a
+// 64-bit word, so one chunk is one whole word with no shift; `U64x8` is 8
+// lanes, so eight chunks share a word and each must be placed at its own
+// byte, `out_words[g / 8] |= (bits as u64) << ((g % 8) * 8)`. That is the
+// same packing `eq_u32_to_mask` does at four-chunks-per-word, one step
+// further.
+//
+// Why `u64` and not `i64`: the named consumer is an ordered window over
+// address-space offsets (`lo <= x < hi`), which are unsigned and routinely
+// exceed `2^32`, so narrowing to the existing `i32` family is unsound. No
+// caller compares `i64` lanes, so that family is deliberately not built —
+// a speculative family is surface with no falsifier attached to it.
+//
+// The ORDERED ops need an unsigned compare, and only two of the six
+// realizations have one natively (AVX-512 `_mm512_cmpgt_epu64_mask`, NEON
+// `cmhi`). WASM and the byte-width AVX2 path reach it by flipping the sign
+// bit of both operands — an order-preserving bijection — and the flat
+// polyfill arms get it for free because Rust's `>` on `u64` already is the
+// unsigned compare. All of that lives in the arm files; this layer never
+// sees it, which is the point of the facade.
+// ────────────────────────────────────────────────────────────────────────
+
+/// Packs `values[i] == needle` into `out_words`, one bit per element,
+/// LSB-first within each `u64` word (bit `k` of word `w` is element
+/// `w * 64 + k`).
+///
+/// `out_words` is **fully overwritten**, not OR-ed into. Trailing bits in
+/// the final word beyond `values.len()`, and any surplus words past
+/// `ceil(len / 64)`, are written as `0`.
+///
+/// Runs 8 lanes at a time through [`crate::simd::U64x8::cmpeq_mask`], whose
+/// 8-bit result is placed at byte `g % 8` of word `g / 8`. The final partial
+/// group is zero-padded into one register and run through the same packed
+/// compare, with the padding lanes' bits masked off — load-bearing, because
+/// a `needle` of `0` matches the padding.
+///
+/// # Panics
+///
+/// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::eq_u64_to_mask;
+///
+/// let values = [7u64, 1, 7, 1 << 63];
+/// let mut words = [0u64; 1];
+/// eq_u64_to_mask(&values, 7, &mut words);
+/// // elements 0 and 2 equal 7 → bits 0 and 2 → 0b0101
+/// assert_eq!(words[0], 0b0101);
+/// ```
+#[inline]
+pub fn eq_u64_to_mask(values: &[u64], needle: u64, out_words: &mut [u64]) {
+    let n = values.len();
+    let words = mask_words_for(n);
+    assert!(out_words.len() >= words, "eq_u64_to_mask: out_words.len()={} < required {}", out_words.len(), words);
+
+    for w in out_words.iter_mut() {
+        *w = 0;
+    }
+
+    let needle_v = crate::simd::U64x8::splat(needle);
+    let (chunks, tail) = values.as_chunks::<8>();
+    for (g, chunk) in chunks.iter().enumerate() {
+        let bits = crate::simd::U64x8::from_array(*chunk).cmpeq_mask(needle_v);
+        out_words[g / 8] |= (bits as u64) << ((g % 8) * 8);
+    }
+    if !tail.is_empty() {
+        let g = chunks.len();
+        let bits = crate::simd::U64x8::from_array(pad_tail(tail)).cmpeq_mask(needle_v) & tail_lane_bits_8(tail.len());
+        out_words[g / 8] |= (bits as u64) << ((g % 8) * 8);
+    }
+}
+
+/// Packs `values[i] > threshold` (**unsigned** — the only ordering `u64`
+/// has) into `out_words`. Full overwrite, trailing bits zero.
+///
+/// Unsigned is not a detail at this width: a `u64` at or above `1 << 63`
+/// reads as NEGATIVE under a signed compare, so a signed instruction
+/// inverts the answer on exactly half the domain — and address-space
+/// offsets, the reason this family exists, live in that half.
+///
+/// * `threshold == 0` sets every lane except those equal to `0`.
+/// * `threshold == u64::MAX` sets nothing — no `u64` exceeds it.
+///
+/// # Panics
+///
+/// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::gt_u64_to_mask;
+///
+/// let values = [5u64, 0, 1 << 63, u64::MAX];
+/// let mut words = [0u64; 1];
+/// gt_u64_to_mask(&values, 4, &mut words);
+/// // 5, 2^63 and u64::MAX all exceed 4 → bits 0, 2, 3 → 0b1101
+/// assert_eq!(words[0], 0b1101);
+/// ```
+#[inline]
+pub fn gt_u64_to_mask(values: &[u64], threshold: u64, out_words: &mut [u64]) {
+    let n = values.len();
+    let words = mask_words_for(n);
+    assert!(out_words.len() >= words, "gt_u64_to_mask: out_words.len()={} < required {}", out_words.len(), words);
+
+    for w in out_words.iter_mut() {
+        *w = 0;
+    }
+
+    let threshold_v = crate::simd::U64x8::splat(threshold);
+    let (chunks, tail) = values.as_chunks::<8>();
+    for (g, chunk) in chunks.iter().enumerate() {
+        let bits = crate::simd::U64x8::from_array(*chunk).cmpgt_mask(threshold_v);
+        out_words[g / 8] |= (bits as u64) << ((g % 8) * 8);
+    }
+    if !tail.is_empty() {
+        let g = chunks.len();
+        let bits =
+            crate::simd::U64x8::from_array(pad_tail(tail)).cmpgt_mask(threshold_v) & tail_lane_bits_8(tail.len());
+        out_words[g / 8] |= (bits as u64) << ((g % 8) * 8);
+    }
+}
+
+/// Packs `values[i] < threshold` (unsigned): computed directly as
+/// `threshold > values[i]` through [`crate::simd::U64x8::cmpgt_mask`] with
+/// the operands swapped.
+///
+/// An **operand swap, never `x > t - 1`** — that spelling underflows at
+/// `t == 0` and would report every lane as less-than nothing. Same
+/// reasoning the `i32` family carries for `i32::MIN`.
+///
+/// The padding lanes of a partial group are `0`, and `threshold > 0` holds
+/// for every `threshold` above zero, so the tail mask here is what keeps a
+/// short input from reporting phantom set bits.
+///
+/// # Panics
+///
+/// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::lt_u64_to_mask;
+///
+/// let values = [5u64, 0, 1 << 63, u64::MAX];
+/// let mut words = [0u64; 1];
+/// lt_u64_to_mask(&values, 6, &mut words);
+/// // only 5 and 0 are below 6 → bits 0, 1 → 0b0011
+/// assert_eq!(words[0], 0b0011);
+/// ```
+#[inline]
+pub fn lt_u64_to_mask(values: &[u64], threshold: u64, out_words: &mut [u64]) {
+    let n = values.len();
+    let words = mask_words_for(n);
+    assert!(out_words.len() >= words, "lt_u64_to_mask: out_words.len()={} < required {}", out_words.len(), words);
+
+    for w in out_words.iter_mut() {
+        *w = 0;
+    }
+
+    let t = crate::simd::U64x8::splat(threshold);
+    let (chunks, tail) = values.as_chunks::<8>();
+    for (g, chunk) in chunks.iter().enumerate() {
+        let bits = t.cmpgt_mask(crate::simd::U64x8::from_array(*chunk));
+        out_words[g / 8] |= (bits as u64) << ((g % 8) * 8);
+    }
+    if !tail.is_empty() {
+        let g = chunks.len();
+        let bits = t.cmpgt_mask(crate::simd::U64x8::from_array(pad_tail(tail))) & tail_lane_bits_8(tail.len());
+        out_words[g / 8] |= (bits as u64) << ((g % 8) * 8);
+    }
+}
+
+/// Packs `values[i] >= threshold` (unsigned): the complement of
+/// [`lt_u64_to_mask`] with the tail re-cleared. Full overwrite.
+///
+/// # Panics
+///
+/// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::ge_u64_to_mask;
+///
+/// let values = [5u64, 0, 1 << 63, u64::MAX];
+/// let mut words = [0u64; 1];
+/// ge_u64_to_mask(&values, 5, &mut words);
+/// // 5, 2^63 and u64::MAX are >= 5 → bits 0, 2, 3 → 0b1101
+/// assert_eq!(words[0], 0b1101);
+/// ```
+#[inline]
+pub fn ge_u64_to_mask(values: &[u64], threshold: u64, out_words: &mut [u64]) {
+    lt_u64_to_mask(values, threshold, out_words);
+    for w in out_words.iter_mut() {
+        *w = !*w;
+    }
+    clear_mask_tail(out_words, values.len());
+}
+
+/// Packs `values[i] <= threshold` (unsigned): the complement of
+/// [`gt_u64_to_mask`] with the tail re-cleared. Full overwrite.
+///
+/// # Panics
+///
+/// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::le_u64_to_mask;
+///
+/// let values = [5u64, 0, 1 << 63, u64::MAX];
+/// let mut words = [0u64; 1];
+/// le_u64_to_mask(&values, 5, &mut words);
+/// // only 5 and 0 are <= 5 → bits 0, 1 → 0b0011
+/// assert_eq!(words[0], 0b0011);
+/// ```
+#[inline]
+pub fn le_u64_to_mask(values: &[u64], threshold: u64, out_words: &mut [u64]) {
+    gt_u64_to_mask(values, threshold, out_words);
+    for w in out_words.iter_mut() {
+        *w = !*w;
+    }
+    clear_mask_tail(out_words, values.len());
+}
+
+/// Packs `values[i] != needle`: the complement of [`eq_u64_to_mask`] with
+/// the tail re-cleared. Full overwrite.
+///
+/// # Panics
+///
+/// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::ne_u64_to_mask;
+///
+/// let values = [7u64, 1, 7, 2];
+/// let mut words = [0u64; 1];
+/// ne_u64_to_mask(&values, 7, &mut words);
+/// // elements 1 and 3 differ from 7 → bits 1 and 3 → 0b1010
+/// assert_eq!(words[0], 0b1010);
+/// ```
+#[inline]
+pub fn ne_u64_to_mask(values: &[u64], needle: u64, out_words: &mut [u64]) {
+    eq_u64_to_mask(values, needle, out_words);
+    for w in out_words.iter_mut() {
+        *w = !*w;
+    }
+    clear_mask_tail(out_words, values.len());
+}
+
 /// `dst = !src` over `n_rows` elements — the tail-aware complement. Bits at
 /// or past `n_rows` are written `0`, so a conforming input yields a
 /// conforming output (plain `!` on the words would set every tail bit).
@@ -1119,6 +1654,129 @@ pub fn mask_not_assign(dst: &mut [u64], n_rows: usize) {
         *d = !*d;
     }
     clear_mask_tail(dst, n_rows);
+}
+
+/// Sets bits `[lo, hi)` of `out_words` to `1` and every other bit — inside
+/// the range's own edge words and every word outside it — to `0`. The
+/// **range WRITE** this file's care-masked matches are the READ half of:
+/// [`ternary_match_u32_to_mask`] answers "which rows equal this pattern",
+/// this answers "make exactly these rows true, and nothing else."
+///
+/// # Why this exists
+///
+/// `lance-graph-quack`'s `Filter::prefix_u32` spells a full ternary-match
+/// PREDICATE to express what is really a contiguous row-range write, and
+/// says so in its own doc comment: the range write is missing from
+/// `ndarray::simd`, and per the missing-capability STOP rule a consumer does
+/// not hand-roll it one layer up. This repo's own `examples/hex_tenant_mq_probe.rs`
+/// hand-rolled the identical shape as a private `range_reveal` and measured
+/// it at 161.8×–343.5× faster than the equivalent TCAM compare sweep, across
+/// trie levels from a 65,536-row reveal down to a 1-row one
+/// (`.claude/plans/gemm-ternlog-mask-consolidation-v1.md` §16.2). DuckDB
+/// carries the identical operation over the identical representation
+/// (`TemplatedValidityMask::SetRangeInvalid`), so the shape is not invented
+/// here.
+///
+/// This primitive is deliberately **address-blind**: it sets a bit range and
+/// nothing else. Whether a column prefix legally maps to a contiguous row
+/// range — or whether the backing column is sorted at all — is the
+/// **caller's** decision, kept out of this layer on purpose.
+///
+/// `lo == hi` is a legal empty range and writes an all-zero mask (not a
+/// no-op: every bit is still overwritten).
+///
+/// # No per-bit loop
+///
+/// The write is at most three passes over `out_words`: every word strictly
+/// before `lo`'s word is zeroed, every word strictly after `hi`'s last live
+/// word is zeroed, whole interior words are written `u64::MAX`, and the (at
+/// most two) edge words each get one computed mask ([`word_range_mask`]).
+/// When `lo` and `hi` fall in the SAME word, that word is written exactly
+/// once through the single-word branch — never as two overlapping edge
+/// writes.
+///
+/// # Panics
+///
+/// Panics if `lo > hi`, or if `hi > out_words.len() * 64`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::mask_set_range;
+///
+/// let mut words = [0u64; 2];
+/// mask_set_range(&mut words, 60, 70);
+/// // bits 60..64 of word 0, bits 0..6 of word 1 — an adjacent-word range.
+/// assert_eq!(words[0], 0xF000_0000_0000_0000);
+/// assert_eq!(words[1], 0b0011_1111);
+///
+/// // lo == hi is a legal empty range: an all-zero overwrite, not a no-op.
+/// words[0] = u64::MAX;
+/// mask_set_range(&mut words, 3, 3);
+/// assert_eq!(words, [0, 0]);
+/// ```
+#[inline]
+pub fn mask_set_range(out_words: &mut [u64], lo: usize, hi: usize) {
+    assert!(lo <= hi, "mask_set_range: lo={lo} > hi={hi}");
+    let words = mask_words_for(hi);
+    assert!(out_words.len() >= words, "mask_set_range: out_words.len()={} < required {}", out_words.len(), words);
+
+    if lo == hi {
+        fill_words(out_words, 0);
+        return;
+    }
+
+    // `lo < hi` from here on, so `hi >= 1` and `hi - 1` cannot underflow.
+    let lo_word = lo / 64;
+    let hi_word = (hi - 1) / 64;
+
+    fill_words(&mut out_words[..lo_word], 0);
+    fill_words(&mut out_words[hi_word + 1..], 0);
+
+    if lo_word == hi_word {
+        // The single-word case: exactly one write, never two overlapping
+        // edge writes.
+        out_words[lo_word] = word_range_mask(lo % 64, hi - lo_word * 64);
+    } else {
+        out_words[lo_word] = word_range_mask(lo % 64, 64);
+        fill_words(&mut out_words[lo_word + 1..hi_word], u64::MAX);
+        out_words[hi_word] = word_range_mask(0, hi - hi_word * 64);
+    }
+}
+
+/// Writes `value` into every word of `dst`, walking `as_chunks_mut::<LANES>()`
+/// and storing one `U64x8` per chunk — the same lane walk every contiguous
+/// word op in this file uses (see the NORMATIVE note above and `mask_and`'s
+/// body), rather than a scalar `iter_mut` loop.
+///
+/// The tail is written scalar-wise on purpose: a padded-tail `from_array` would
+/// have to read `dst`'s surplus lanes back before storing them, and there is
+/// nothing to read here — every lane of a constant fill has the same value, so
+/// the tail is a straight copy of `value` into the remaining words.
+#[inline]
+fn fill_words(dst: &mut [u64], value: u64) {
+    const L: usize = crate::simd::U64x8::LANES;
+    let splat = crate::simd::U64x8::splat(value).to_array();
+    let (chunks, tail) = dst.as_chunks_mut::<L>();
+    for c in chunks.iter_mut() {
+        *c = splat;
+    }
+    for w in tail.iter_mut() {
+        *w = value;
+    }
+}
+
+/// One word's worth of the half-open range `[lo_bit, hi_bit)` set,
+/// `0 <= lo_bit <= hi_bit <= 64` — the edge-word primitive [`mask_set_range`]
+/// composes. Built from two "bits below N" masks rather than one shifted
+/// range so that `hi_bit == 64` never computes `1u64 << 64` (a shift amount
+/// equal to the type's own bit width, which panics under overflow checks).
+#[inline(always)]
+fn word_range_mask(lo_bit: usize, hi_bit: usize) -> u64 {
+    debug_assert!(lo_bit <= hi_bit && hi_bit <= 64, "word_range_mask: lo_bit={lo_bit} hi_bit={hi_bit}");
+    let below_hi = if hi_bit == 64 { u64::MAX } else { (1u64 << hi_bit) - 1 };
+    let below_lo = if lo_bit == 0 { 0 } else { (1u64 << lo_bit) - 1 };
+    below_hi & !below_lo
 }
 
 /// `dst = a ^ b`, elementwise over `u64` mask words — symmetric difference.
@@ -3270,6 +3928,336 @@ mod tests {
         }
     }
 
+    // ── u8 comparison family (`*_u8_to_mask`) ───────────────────────────
+
+    /// Adversarial u8 corpus: boundary values plus randomness — the
+    /// byte-width sibling of [`i32_corpus`] for the family below.
+    fn u8_corpus(n: usize, seed: u64) -> Vec<u8> {
+        let mut s = seed;
+        let edge = [0u8, 1, 127, 128, 254, 255];
+        (0..n)
+            .map(|i| {
+                if i % 5 == 0 {
+                    edge[(splitmix(&mut s) % 6) as usize]
+                } else {
+                    splitmix(&mut s) as u8
+                }
+            })
+            .collect()
+    }
+
+    const U8_LENS: [usize; 6] = [1, 63, 64, 65, 127, 200];
+
+    /// Randomized agreement for all six `*_u8_to_mask` functions against a
+    /// scalar per-element oracle written here (never against the shipped
+    /// path's own tail handling, which would be tautological).
+    ///
+    /// Anti-vacuity: at least one (length, threshold, comparison) case must
+    /// select neither nothing nor everything — otherwise a function that
+    /// always answered all-zero or all-one for this corpus could pass by
+    /// accident.
+    #[test]
+    fn u8_family_matches_scalar_reference_randomized() {
+        let mut saw_a_partial_match = false;
+        for &n in &U8_LENS {
+            let v = u8_corpus(n, 0xFEED_BEEF);
+            let words = n.div_ceil(64);
+            for &t in &[0u8, 1, 42, 127, 128, 254, 255] {
+                // Dirty, over-long destination on every call: each function
+                // must overwrite it (never OR into it) and must clear the
+                // one surplus word past `words`.
+                let mut out = vec![u64::MAX; words + 1];
+
+                eq_u8_to_mask(&v, t, &mut out);
+                let eq = scalar_pred_mask(n, |i| v[i] == t);
+                assert_eq!(&out[..words], &eq[..], "eq n={n} t={t}");
+                assert_eq!(out[words], 0, "eq surplus word n={n} t={t}");
+
+                ne_u8_to_mask(&v, t, &mut out);
+                let ne = scalar_pred_mask(n, |i| v[i] != t);
+                assert_eq!(&out[..words], &ne[..], "ne n={n} t={t}");
+                assert_eq!(out[words], 0, "ne surplus word n={n} t={t}");
+
+                gt_u8_to_mask(&v, t, &mut out);
+                let gt = scalar_pred_mask(n, |i| v[i] > t);
+                assert_eq!(&out[..words], &gt[..], "gt n={n} t={t}");
+                assert_eq!(out[words], 0, "gt surplus word n={n} t={t}");
+
+                lt_u8_to_mask(&v, t, &mut out);
+                let lt = scalar_pred_mask(n, |i| v[i] < t);
+                assert_eq!(&out[..words], &lt[..], "lt n={n} t={t}");
+                assert_eq!(out[words], 0, "lt surplus word n={n} t={t}");
+
+                ge_u8_to_mask(&v, t, &mut out);
+                let ge = scalar_pred_mask(n, |i| v[i] >= t);
+                assert_eq!(&out[..words], &ge[..], "ge n={n} t={t}");
+                assert_eq!(out[words], 0, "ge surplus word n={n} t={t}");
+
+                le_u8_to_mask(&v, t, &mut out);
+                let le = scalar_pred_mask(n, |i| v[i] <= t);
+                assert_eq!(&out[..words], &le[..], "le n={n} t={t}");
+                assert_eq!(out[words], 0, "le surplus word n={n} t={t}");
+
+                for reference in [&eq, &ne, &gt, &lt, &ge, &le] {
+                    let pc = crate::bitwise::popcount_batch_u64(reference);
+                    if pc != 0 && pc != n as u64 {
+                        saw_a_partial_match = true;
+                    }
+                }
+            }
+        }
+        assert!(saw_a_partial_match, "anti-vacuity: every (n, t, op) case selected either nothing or everything");
+    }
+
+    /// `gt`/`lt` must compare `u8` as UNSIGNED, not as if it were a two's
+    /// complement `i8`. A signed compare gets both these boundary pairs
+    /// backwards: 0x80 is 128 unsigned but -128 signed, against 0x7F (127
+    /// either way).
+    #[test]
+    fn gt_lt_u8_to_mask_are_unsigned_not_signed() {
+        let mut out = [0u64; 1];
+
+        gt_u8_to_mask(&[0x80u8], 0x7F, &mut out);
+        assert_eq!(out[0], 0b1, "0x80 > 0x7F must be true unsigned (signed: -128 > 127 is false)");
+
+        gt_u8_to_mask(&[0x7Fu8], 0x80, &mut out);
+        assert_eq!(out[0], 0, "0x7F > 0x80 must be false unsigned (signed: 127 > -128 is true)");
+
+        lt_u8_to_mask(&[0x7Fu8], 0x80, &mut out);
+        assert_eq!(out[0], 0b1, "0x7F < 0x80 must be true unsigned (signed: 127 < -128 is false)");
+
+        lt_u8_to_mask(&[0x80u8], 0x7F, &mut out);
+        assert_eq!(out[0], 0, "0x80 < 0x7F must be false unsigned (signed: -128 < 127 is true)");
+    }
+
+    /// For the complement forms (`ne`/`ge`/`le`), every bit at or past
+    /// `values.len()` — the tail of the last live word AND every surplus
+    /// word — must be clear. This is the case a naive `!mask` gets wrong: it
+    /// sets every one of those bits, since bitwise NOT has no notion of
+    /// "past the end".
+    #[test]
+    fn complement_forms_clear_every_trailing_bit() {
+        fn assert_tail_clear(out: &[u64], n: usize, label: &str) {
+            for i in n..out.len() * 64 {
+                assert_eq!((out[i / 64] >> (i % 64)) & 1, 0, "{label}: bit {i} (n={n}) must be clear");
+            }
+        }
+
+        for &n in &[65usize, 100] {
+            let v = u8_corpus(n, 0x1234_5678);
+            let words = n.div_ceil(64);
+            // Two surplus words, every bit pre-set, so a writer that merely
+            // narrows without re-clearing (or that fixes only the last live
+            // word) cannot pass by accident.
+            let mut out = vec![u64::MAX; words + 2];
+
+            ne_u8_to_mask(&v, 7, &mut out);
+            assert_tail_clear(&out, n, "ne");
+
+            ge_u8_to_mask(&v, 7, &mut out);
+            assert_tail_clear(&out, n, "ge");
+
+            le_u8_to_mask(&v, 7, &mut out);
+            assert_tail_clear(&out, n, "le");
+        }
+    }
+
+    /// A `u64` corpus that deliberately over-samples the half of the domain a
+    /// SIGNED compare gets wrong — values at or above `1 << 63` — plus the
+    /// boundary pair either side of it.
+    fn u64_corpus(n: usize, seed: u64) -> Vec<u64> {
+        let mut s = seed;
+        let edge = [
+            0u64,
+            1,
+            0x7FFF_FFFF_FFFF_FFFF, // i64::MAX — the last value a signed compare reads as positive
+            0x8000_0000_0000_0000, // the first it reads as negative
+            0x8000_0000_0000_0001,
+            u64::MAX,
+            1 << 32, // above the i32 family's reach: why G2 exists at all
+            u64::from(u32::MAX) + 1,
+        ];
+        (0..n)
+            .map(|i| {
+                if i % 3 == 0 {
+                    edge[(splitmix(&mut s) % edge.len() as u64) as usize]
+                } else {
+                    // Full 64-bit spread, half of it with the top bit set.
+                    splitmix(&mut s)
+                }
+            })
+            .collect()
+    }
+
+    /// Lengths that straddle BOTH boundaries this width has: the 8-lane
+    /// register and the 64-bit word (8 registers to a word). 7/8/9 exercise a
+    /// partial first group; 63/64/65 a partial last group in a full word; 200
+    /// several whole words plus a ragged tail.
+    const U64_LENS: [usize; 8] = [1, 7, 8, 9, 63, 64, 65, 200];
+
+    /// Randomized agreement for all six `*_u64_to_mask` functions against a
+    /// scalar per-element oracle written here — never against the shipped
+    /// path's own tail or packing logic, which would be tautological.
+    ///
+    /// Anti-vacuity: at least one (length, threshold, comparison) case must
+    /// select neither nothing nor everything, otherwise a function that always
+    /// answered all-zero or all-one for this corpus would pass by accident.
+    #[test]
+    fn u64_family_matches_scalar_reference_randomized() {
+        let mut saw_a_partial_match = false;
+        for &n in &U64_LENS {
+            let v = u64_corpus(n, 0x0BAD_C0DE_F00D);
+            let words = n.div_ceil(64);
+            for &t in &[0u64, 1, 0x7FFF_FFFF_FFFF_FFFF, 0x8000_0000_0000_0000, 1 << 32, u64::MAX] {
+                // Dirty, over-long destination on every call: each function
+                // must fully overwrite it, never OR into it, and must clear
+                // the surplus word past `words`.
+                let mut out = vec![u64::MAX; words + 1];
+
+                let check = |out: &[u64], pred: &dyn Fn(u64) -> bool, label: &str| {
+                    for (i, &x) in v.iter().enumerate() {
+                        let got = (out[i / 64] >> (i % 64)) & 1 == 1;
+                        assert_eq!(got, pred(x), "{label} n={n} t={t} i={i} x={x:#018x}");
+                    }
+                    for i in n..out.len() * 64 {
+                        assert_eq!((out[i / 64] >> (i % 64)) & 1, 0, "{label} tail bit {i} n={n} t={t}");
+                    }
+                };
+
+                eq_u64_to_mask(&v, t, &mut out);
+                check(&out, &|x| x == t, "eq");
+                ne_u64_to_mask(&v, t, &mut out);
+                check(&out, &|x| x != t, "ne");
+                gt_u64_to_mask(&v, t, &mut out);
+                check(&out, &|x| x > t, "gt");
+                ge_u64_to_mask(&v, t, &mut out);
+                check(&out, &|x| x >= t, "ge");
+                lt_u64_to_mask(&v, t, &mut out);
+                check(&out, &|x| x < t, "lt");
+                le_u64_to_mask(&v, t, &mut out);
+                check(&out, &|x| x <= t, "le");
+
+                let hits = v.iter().filter(|&&x| x > t).count();
+                if hits > 0 && hits < n {
+                    saw_a_partial_match = true;
+                }
+            }
+        }
+        assert!(
+            saw_a_partial_match,
+            "corpus never produced a partial `gt` selection — the agreement above is vacuous"
+        );
+    }
+
+    /// THE falsifier for this width, and the reason G2 could not be served by
+    /// narrowing to the existing `i32` family.
+    ///
+    /// A `u64` at or above `1 << 63` reads as NEGATIVE under a signed 64-bit
+    /// compare, so an implementation that reached for a signed lane op — which
+    /// is the ONLY ordered 64-bit compare wasm has, and the only one AVX2 has
+    /// at this width — passes every small-value test and inverts the answer on
+    /// exactly half the domain. Every arm that lacks an unsigned instruction
+    /// has to flip the sign bit of both operands; this is what proves it did.
+    #[test]
+    fn gt_lt_u64_to_mask_are_unsigned_not_signed() {
+        const HI: u64 = 0x8000_0000_0000_0000; // signed: i64::MIN
+        const LO: u64 = 0x7FFF_FFFF_FFFF_FFFF; // signed: i64::MAX
+        let v = [LO, HI, u64::MAX, 0];
+        let mut out = [0u64; 1];
+
+        gt_u64_to_mask(&v, LO, &mut out);
+        // Unsigned: HI and u64::MAX exceed LO → bits 1, 2.
+        // Signed:   HI is i64::MIN and would NOT exceed i64::MAX → bit 1 lost.
+        assert_eq!(
+            out[0], 0b0110,
+            "{HI:#018x} > {LO:#018x} must be true unsigned (signed: i64::MIN > i64::MAX is false)"
+        );
+
+        lt_u64_to_mask(&v, HI, &mut out);
+        // Unsigned: only LO and 0 are below HI → bits 0, 3.
+        assert_eq!(
+            out[0], 0b1001,
+            "{LO:#018x} < {HI:#018x} must be true unsigned (signed: i64::MAX < i64::MIN is false)"
+        );
+
+        // And the complement pair must agree with their strict siblings.
+        ge_u64_to_mask(&v, HI, &mut out);
+        assert_eq!(out[0], 0b0110, "ge at the sign boundary");
+        le_u64_to_mask(&v, LO, &mut out);
+        assert_eq!(out[0], 0b1001, "le at the sign boundary");
+    }
+
+    /// The packing falsifier, specific to this width.
+    ///
+    /// `U64x8` yields 8 bits per chunk and eight chunks share one 64-bit word,
+    /// so group `g` must land at byte `g % 8` of word `g / 8`. The `u8` family
+    /// has no packing at all (64 lanes == one whole word), so nothing upstream
+    /// of here exercises the shift — a wrong `(g % 8) * 8` would survive every
+    /// other test in this file whose length happens to be a multiple of 64.
+    ///
+    /// Built by selecting exactly ONE group at a time and asserting the mask is
+    /// that group's byte and nothing else.
+    #[test]
+    fn u64_packing_places_each_group_in_its_own_byte() {
+        const NEEDLE: u64 = 0xDEAD_BEEF_CAFE_F00D;
+        for g in 0..8usize {
+            // 64 values = 8 groups = exactly one word. Only group `g` matches.
+            let mut v = vec![0u64; 64];
+            for lane in 0..8 {
+                v[g * 8 + lane] = NEEDLE;
+            }
+            let mut out = [0u64; 1];
+            eq_u64_to_mask(&v, NEEDLE, &mut out);
+            assert_eq!(out[0], 0xFFu64 << (g * 8), "group {g} must occupy byte {g} alone (got {:#018x})", out[0]);
+        }
+
+        // Two words: group 8 is byte 0 of word 1, not byte 0 of word 0.
+        let mut v = vec![0u64; 128];
+        for lane in 0..8 {
+            v[64 + lane] = NEEDLE;
+        }
+        let mut out = [0u64; 2];
+        eq_u64_to_mask(&v, NEEDLE, &mut out);
+        assert_eq!(out[0], 0, "word 0 must stay clear when only group 8 matches");
+        assert_eq!(out[1], 0xFF, "group 8 is byte 0 of word 1");
+    }
+
+    /// The consumer-shaped test: the half-open address window `lo <= x < hi`
+    /// that motivated G2 in the first place.
+    ///
+    /// Every offset here exceeds `2^32`, which is the point — narrowing them
+    /// into the existing `i32` family is not a precision trade, it is unsound.
+    /// The window is composed from two of this family's masks through
+    /// [`mask_and`], which is how a caller actually expresses a range.
+    #[test]
+    fn an_address_window_over_offsets_above_2_32_needs_the_u64_family() {
+        let offsets: Vec<u64> = vec![
+            0x0000_0001_0000_0000, // 2^32, below the window
+            0x0000_0002_0000_0000, // in
+            0x0000_0002_8000_0000, // in
+            0x0000_0003_0000_0000, // == hi, EXCLUDED (half-open)
+            0x0000_0004_0000_0000, // above
+            0xFFFF_FFFF_FFFF_FFFF, // above, and negative under a signed compare
+        ];
+        let lo: u64 = 0x0000_0002_0000_0000;
+        let hi: u64 = 0x0000_0003_0000_0000;
+
+        let mut ge_lo = [0u64; 1];
+        let mut lt_hi = [0u64; 1];
+        let mut window = [0u64; 1];
+        ge_u64_to_mask(&offsets, lo, &mut ge_lo);
+        lt_u64_to_mask(&offsets, hi, &mut lt_hi);
+        mask_and(&ge_lo, &lt_hi, &mut window);
+
+        assert_eq!(window[0], 0b000110, "half-open window [lo, hi) selects exactly elements 1 and 2");
+
+        // Anti-vacuity on both halves: neither input mask may already be the
+        // answer, or the `mask_and` is decorative and the test would pass with
+        // one of the two predicates broken.
+        assert_ne!(ge_lo[0], window[0], "ge_lo alone must not equal the window");
+        assert_ne!(lt_hi[0], window[0], "lt_hi alone must not equal the window");
+    }
+
     #[test]
     fn mask_not_clears_the_tail_and_round_trips() {
         for &n in &LENS {
@@ -4029,5 +5017,122 @@ mod tests {
         let gate = vec![0u64; 1]; // one short
         let mut out = vec![0u64; 2];
         gt_i32_to_mask_under(&values, 0, &gate, &mut out);
+    }
+
+    // ── mask_set_range: the range WRITE (N1,
+    //    `.claude/plans/gemm-ternlog-mask-consolidation-v1.md` §16.6) ────────
+
+    /// Independent bit-serial reference: bit `b` set iff `lo <= b < hi`.
+    /// Never calls `mask_set_range` or `word_range_mask`.
+    fn reference_set_range(words: usize, lo: usize, hi: usize) -> Vec<u64> {
+        let mut v = vec![0u64; words];
+        for b in lo..hi {
+            v[b / 64] |= 1u64 << (b % 64);
+        }
+        v
+    }
+
+    #[test]
+    fn mask_set_range_matches_scalar_reference_randomized() {
+        let mut seed = 0xB000_0000_5E7A_11u64;
+        for &words in &[1usize, 2, 3, 4, 7, 8, 16] {
+            let capacity = words * 64;
+            for _ in 0..40 {
+                let lo = (splitmix64(&mut seed) as usize) % (capacity + 1);
+                let span = (splitmix64(&mut seed) as usize) % (capacity + 1 - lo);
+                let hi = lo + span;
+                let mut got = vec![u64::MAX; words]; // pre-dirtied: an OR-er fails immediately
+                mask_set_range(&mut got, lo, hi);
+                assert_eq!(got, reference_set_range(words, lo, hi), "words={words} lo={lo} hi={hi}");
+            }
+        }
+        // Anti-vacuity: a genuinely non-trivial range sets EXACTLY `hi - lo`
+        // bits, not "some" bits — catches an always-set-everything or
+        // always-set-nothing implementation that could otherwise still pass
+        // the boundary and randomized cases above by accident of which
+        // random `(lo, hi)` pairs happened to be drawn.
+        let mut got = vec![0u64; 4];
+        mask_set_range(&mut got, 7, 250);
+        let popcount: u32 = got.iter().map(|w| w.count_ones()).sum();
+        assert_eq!(popcount, 250 - 7, "popcount must equal hi - lo exactly");
+    }
+
+    /// Every boundary shape named in the primitive's own doc comment, each
+    /// checked explicitly rather than only through the randomized fuzz above.
+    #[test]
+    fn mask_set_range_boundary_shapes() {
+        // lo == hi: the empty range. All-zero output — NOT a no-op, the
+        // destination is still fully overwritten (pre-dirtied to catch a
+        // "lo == hi means skip the call" shortcut).
+        let mut got = vec![u64::MAX; 2];
+        mask_set_range(&mut got, 0, 0);
+        assert_eq!(got, vec![0, 0], "lo == hi == 0 must zero everything");
+        let mut got = vec![u64::MAX; 2];
+        mask_set_range(&mut got, 128, 128);
+        assert_eq!(got, vec![0, 0], "lo == hi == capacity must zero everything");
+
+        // lo == 0: the range starts at the very first bit.
+        let mut got = vec![u64::MAX; 2];
+        mask_set_range(&mut got, 0, 70);
+        assert_eq!(got, reference_set_range(2, 0, 70), "lo == 0");
+
+        // hi == words * 64: the range runs all the way to the last bit.
+        let mut got = vec![u64::MAX; 2];
+        mask_set_range(&mut got, 40, 128);
+        assert_eq!(got, reference_set_range(2, 40, 128), "hi == capacity");
+
+        // Both endpoints inside ONE word: the single-word branch, one write.
+        let mut got = vec![u64::MAX; 2];
+        mask_set_range(&mut got, 2, 5);
+        assert_eq!(got[0], 0b0001_1100, "both endpoints in one word: bits 2,3,4");
+        assert_eq!(got[1], 0, "the untouched second word must be cleared too");
+
+        // Endpoints in ADJACENT words, neither word-aligned.
+        let mut got = vec![u64::MAX; 2];
+        mask_set_range(&mut got, 60, 70);
+        assert_eq!(got[0], 0xF000_0000_0000_0000, "adjacent words: low word's tail (bits 60..64)");
+        assert_eq!(got[1], 0b0011_1111, "adjacent words: high word's head (bits 0..6)");
+
+        // Both endpoints word-ALIGNED (`lo % 64 == 0 && hi % 64 == 0`): the
+        // range is exactly one interior word, reached via the single-word
+        // branch (lo_word == hi_word here, not the interior-word loop).
+        let mut got = vec![u64::MAX; 3];
+        mask_set_range(&mut got, 64, 128);
+        assert_eq!(got, vec![0, u64::MAX, 0], "word-aligned range is exactly one full word");
+
+        // A range of exactly 1 bit.
+        let mut got = vec![u64::MAX; 1];
+        mask_set_range(&mut got, 5, 6);
+        assert_eq!(got[0], 1u64 << 5, "a single-bit range sets exactly that bit");
+    }
+
+    /// The falsifier for "full overwrite, not OR": every word starts
+    /// all-ones, and afterwards a bit survives iff it is inside `[lo, hi)` —
+    /// checked bit-by-bit across the whole buffer, including the surplus
+    /// bits of the partially-live last word, which an OR-based "fix" would
+    /// leave set.
+    #[test]
+    fn mask_set_range_overwrites_a_dirty_destination_rather_than_oring() {
+        let mut got = vec![u64::MAX; 3];
+        mask_set_range(&mut got, 70, 130);
+        for b in 0..192 {
+            let want = (70..130).contains(&b);
+            let bit = (got[b / 64] >> (b % 64)) & 1 == 1;
+            assert_eq!(bit, want, "bit {b}");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "mask_set_range: lo=")]
+    fn mask_set_range_rejects_lo_greater_than_hi() {
+        let mut out = vec![0u64; 1];
+        mask_set_range(&mut out, 5, 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "mask_set_range: out_words.len()=")]
+    fn mask_set_range_rejects_hi_past_capacity() {
+        let mut out = vec![0u64; 1]; // capacity 64
+        mask_set_range(&mut out, 0, 65);
     }
 }

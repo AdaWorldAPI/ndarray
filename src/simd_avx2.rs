@@ -1371,15 +1371,17 @@ impl I16x32 {
 // These match the AVX-512 U8x64 methods in simd_avx512.rs.
 impl U8x64 {
     /// Byte-wise equality mask: bit i set if self[i] == other[i].
+    ///
+    /// Composed from two native AVX2 `U8x32::cmpeq_mask` calls (lanes
+    /// 0..32 in the low half, 32..64 in the high half) instead of a
+    /// 64-iteration scalar loop — AVX2's natural byte width is 32, not 64
+    /// (see the `U8x32` module doc above), and `U8x32` already carries the
+    /// `_mm256_cmpeq_epi8` + `_mm256_movemask_epi8` realization.
     #[inline(always)]
     pub fn cmpeq_mask(self, other: Self) -> u64 {
-        let mut mask = 0u64;
-        for i in 0..64 {
-            if self.0[i] == other.0[i] {
-                mask |= 1u64 << i;
-            }
-        }
-        mask
+        let lo = U8x32::from_slice(&self.0[..32]).cmpeq_mask(U8x32::from_slice(&other.0[..32]));
+        let hi = U8x32::from_slice(&self.0[32..]).cmpeq_mask(U8x32::from_slice(&other.0[32..]));
+        (lo as u64) | ((hi as u64) << 32)
     }
 
     /// Shift right each 16-bit lane by imm bits (operates on pairs of u8 as u16).
@@ -1416,15 +1418,18 @@ impl U8x64 {
         }
         Self(out)
     }
+    /// Byte-wise UNSIGNED greater-than mask: bit i set if self[i] > other[i].
+    ///
+    /// Composed from two native AVX2 `U8x32::cmpgt_mask` calls, which
+    /// already carry the sign-bias XOR trick AVX2 needs to get an unsigned
+    /// compare out of the signed-only `_mm256_cmpgt_epi8` (see that
+    /// method's doc comment). Do not replace this with a signed compare —
+    /// unsigned ordering is the entire reason the bias exists.
     #[inline(always)]
     pub fn cmpgt_mask(self, other: Self) -> u64 {
-        let mut m: u64 = 0;
-        for i in 0..64 {
-            if self.0[i] > other.0[i] {
-                m |= 1 << i;
-            }
-        }
-        m
+        let lo = U8x32::from_slice(&self.0[..32]).cmpgt_mask(U8x32::from_slice(&other.0[..32]));
+        let hi = U8x32::from_slice(&self.0[32..]).cmpgt_mask(U8x32::from_slice(&other.0[32..]));
+        (lo as u64) | ((hi as u64) << 32)
     }
     #[inline(always)]
     pub fn mask_blend(mask: u64, a: Self, b: Self) -> Self {
@@ -2326,6 +2331,81 @@ impl U64x8 {
         }
         sum
     }
+
+    /// Lane-wise equality comparison. Returns an 8-bit mask: bit `i` is set
+    /// iff `self[i] == other[i]`. Same 8-lanes-in-8-bits contract as the
+    /// AVX-512 `U64x8::cmpeq_mask` (`simd_avx512.rs`) — one bit per lane;
+    /// bits at or above 8 simply do not exist in the `u8` return type.
+    ///
+    /// **This is the scalar polyfill, not a missed vectorization** — as the
+    /// file's own note just above this `impl` block says: "The
+    /// `avx2_int_type!` macro generated `U64x8` as a scalar polyfill in
+    /// this file." AVX2 has no packed unsigned 64-bit ordered compare worth
+    /// wiring at this width, unlike the `rotate_left`/`rotate_right`/`Shl`/
+    /// `Shr` impls further up this file, which DO reach for real `__m256i`
+    /// halves via `avx2_halves()` — because AVX2 has packed 64-bit
+    /// *shifts*, just not a packed 64-bit *unsigned compare*.
+    ///
+    /// Composed as four 2-lane groups (`p in 0..4`, lanes `2p`/`2p+1`)
+    /// rather than a flat 8-iteration loop — deliberate: storage flat,
+    /// composition 2×4. Every non-avx512 backend realizes `U64x8` as four
+    /// `U64x2` pairs (`simd_neon.rs`/`simd_wasm.rs`:
+    /// `pub struct U64x8(pub [U64x2; 4])`); walking the same four pairs
+    /// here keeps this arm's shape identical to theirs even though this
+    /// file's own storage is a flat `[u64; 8]`. Do not "simplify" this into
+    /// a single `for i in 0..8` loop.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let a = U64x8::from_array([1, 2, 3, 4, 5, 6, 7, 8]);
+    /// let b = U64x8::from_array([1, 0, 3, 0, 5, 0, 7, 0]);
+    /// assert_eq!(a.cmpeq_mask(b), 0b0101_0101);
+    /// ```
+    #[inline(always)]
+    pub fn cmpeq_mask(self, other: Self) -> u8 {
+        let mut mask: u8 = 0;
+        for p in 0..4 {
+            if self.0[2 * p] == other.0[2 * p] {
+                mask |= 1 << (2 * p);
+            }
+            if self.0[2 * p + 1] == other.0[2 * p + 1] {
+                mask |= 1 << (2 * p + 1);
+            }
+        }
+        mask
+    }
+
+    /// Lane-wise **unsigned** greater-than comparison. Returns an 8-bit
+    /// mask: bit `i` is set iff `self[i] > other[i]`. Symmetric to
+    /// `cmpeq_mask` above — same 8-bits-only footprint, same 2×4 grouping,
+    /// same "bits at or above 8 do not exist" contract.
+    ///
+    /// Plain `>` on Rust's `u64` is *already* the unsigned ordering. Unlike
+    /// this file's own `U8x32::cmpgt_mask` (signed-only `_mm256_cmpgt_epi8`,
+    /// biased into an unsigned answer via a sign-flip XOR) there is no
+    /// sign-bias trick to apply here — this arm is the scalar polyfill (see
+    /// `cmpeq_mask` above), so there is no signed intrinsic to bias in the
+    /// first place.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let a = U64x8::from_array([1, 2, 3, 4, 5, 6, 7, 8]);
+    /// let b = U64x8::from_array([0, 2, 0, 4, 0, 6, 0, 8]);
+    /// assert_eq!(a.cmpgt_mask(b), 0b0101_0101);
+    /// ```
+    #[inline(always)]
+    pub fn cmpgt_mask(self, other: Self) -> u8 {
+        let mut mask: u8 = 0;
+        for p in 0..4 {
+            if self.0[2 * p] > other.0[2 * p] {
+                mask |= 1 << (2 * p);
+            }
+            if self.0[2 * p + 1] > other.0[2 * p + 1] {
+                mask |= 1 << (2 * p + 1);
+            }
+        }
+        mask
+    }
 }
 
 // Extra methods for U16x32 (widen/narrow, shift, multiply) — AVX2 scalar fallback.
@@ -3194,6 +3274,130 @@ mod tests {
         }
         // anti-vacuity: the shifts actually moved bits on most lanes
         assert!(fired > 256 * 8 / 2, "shifts did nothing on {fired} lanes");
+    }
+
+    /// `U8x64::cmpeq_mask`/`cmpgt_mask` are composed from two `U8x32`
+    /// halves; this is the scalar oracle that composition must match
+    /// bit-for-bit, over many random 64-byte pairs. Written here rather
+    /// than imported so the reference is never the function under test.
+    #[test]
+    fn u8x64_cmpeq_and_cmpgt_mask_match_scalar_oracle() {
+        // Same xorshift64 construction as `u64x8_variable_shifts_match_scalar_per_lane`
+        // above, seeded differently, narrowed to a byte per draw.
+        let mut seed = 0xD1B5_4A32_D192_ED03u64;
+        let mut next_u8 = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 56) as u8
+        };
+
+        let mut saw_mixed_eq = false;
+        let mut saw_mixed_gt = false;
+
+        for _ in 0..512 {
+            let a: [u8; 64] = core::array::from_fn(|_| next_u8());
+            let b: [u8; 64] = core::array::from_fn(|_| next_u8());
+
+            let mut eq_expected = 0u64;
+            let mut gt_expected = 0u64;
+            for i in 0..64 {
+                if a[i] == b[i] {
+                    eq_expected |= 1u64 << i;
+                }
+                if a[i] > b[i] {
+                    gt_expected |= 1u64 << i;
+                }
+            }
+
+            let eq_actual = U8x64::from_array(a).cmpeq_mask(U8x64::from_array(b));
+            let gt_actual = U8x64::from_array(a).cmpgt_mask(U8x64::from_array(b));
+            assert_eq!(eq_actual, eq_expected, "cmpeq_mask mismatch for a={a:?} b={b:?}");
+            assert_eq!(gt_actual, gt_expected, "cmpgt_mask mismatch for a={a:?} b={b:?}");
+
+            if eq_actual != 0 && eq_actual != u64::MAX {
+                saw_mixed_eq = true;
+            }
+            if gt_actual != 0 && gt_actual != u64::MAX {
+                saw_mixed_gt = true;
+            }
+        }
+
+        // Anti-vacuity: an always-zero or always-ones implementation must
+        // not be able to pass just because it happens to agree with the
+        // oracle on the all-zero/all-ones edge case alone.
+        assert!(saw_mixed_eq, "512 random draws never produced a mixed cmpeq_mask result");
+        assert!(saw_mixed_gt, "512 random draws never produced a mixed cmpgt_mask result");
+    }
+
+    /// AVX2 only has a SIGNED byte compare; `U8x32::cmpgt_mask` (which
+    /// `U8x64::cmpgt_mask` composes) must bias both operands by 0x80 to
+    /// recover UNSIGNED ordering. Exercise the sign boundary in EACH
+    /// 32-lane half, since a wrong bias would only show up as a flipped
+    /// bit, never as a panic or a type error.
+    #[test]
+    fn u8x64_cmpgt_mask_respects_unsigned_ordering_at_the_sign_boundary() {
+        let mut a = [0u8; 64];
+        let mut b = [0u8; 64];
+
+        for base in [0usize, 32] {
+            a[base] = 0x7F;
+            b[base] = 0x80; // 0x7F > 0x80 is FALSE unsigned; TRUE if signed
+            a[base + 1] = 0x80;
+            b[base + 1] = 0x7F; // 0x80 > 0x7F is TRUE unsigned; FALSE if signed
+            a[base + 2] = 0xFF;
+            b[base + 2] = 0x00; // TRUE either way — sanity anchor
+            a[base + 3] = 0x00;
+            b[base + 3] = 0xFF; // FALSE either way — sanity anchor
+            a[base + 4] = 0x80;
+            b[base + 4] = 0x80; // equal — never > regardless of signedness
+            a[base + 5] = 0xFF;
+            b[base + 5] = 0xFF; // equal
+        }
+
+        let m = U8x64::from_array(a).cmpgt_mask(U8x64::from_array(b));
+
+        for base in [0usize, 32] {
+            assert!(m & (1u64 << (base + 1)) != 0, "0x80 > 0x7F must be TRUE at lane {}", base + 1);
+            assert!(m & (1u64 << base) == 0, "0x7F > 0x80 must be FALSE at lane {base}");
+        }
+
+        // Full-lane cross-check: Rust's native `u8: PartialOrd` is already
+        // an unsigned compare, so it doubles as the oracle for every lane,
+        // not just the six named above.
+        let mut expected = 0u64;
+        for i in 0..64 {
+            if a[i] > b[i] {
+                expected |= 1u64 << i;
+            }
+        }
+        assert_eq!(m, expected);
+    }
+
+    /// A single differing lane at each half's edges (0, 31, 32, 63) must
+    /// set EXACTLY that one bit. 31/32 straddle the lo/hi `U8x32` split;
+    /// a wrong half chosen, or a `<< 32` applied to the wrong operand,
+    /// shows up here as a bit landing at the wrong position rather than
+    /// as a compile error.
+    #[test]
+    fn u8x64_cmpeq_and_cmpgt_mask_isolate_lane_position() {
+        for lane in [0usize, 31, 32, 63] {
+            // cmpeq_mask: every lane differs except `lane`, which matches.
+            let mut a = [1u8; 64];
+            let mut b = [2u8; 64];
+            a[lane] = 9;
+            b[lane] = 9;
+            let m = U8x64::from_array(a).cmpeq_mask(U8x64::from_array(b));
+            assert_eq!(m, 1u64 << lane, "cmpeq_mask lane {lane}: expected exactly bit {lane} set");
+
+            // cmpgt_mask: every lane is equal except `lane`, where a > b.
+            let mut a2 = [7u8; 64];
+            let mut b2 = [7u8; 64];
+            a2[lane] = 200;
+            b2[lane] = 50;
+            let m2 = U8x64::from_array(a2).cmpgt_mask(U8x64::from_array(b2));
+            assert_eq!(m2, 1u64 << lane, "cmpgt_mask lane {lane}: expected exactly bit {lane} set");
+        }
     }
 
     #[test]
