@@ -532,9 +532,15 @@ mod imp {
         // defect class as the pooling bug one screen up (a label outrunning what
         // the code computes) and a reminder that finding one instance of that
         // is not the same as finding them all.
+        // ...and mark it when it is below its own resolution, as every other
+        // figure here is. Measured on the run that prompted this: 1.33 ns
+        // against a 1.57 ns floor — a bare number there is the same defect one
+        // more time, a value printed without the fact that it cannot be
+        // distinguished from zero.
         println!(
             "median (S - D), pooled over all {REPEATS} passes and ALL widths (unfiltered): \
-             {med_gap:.2} ns   [noise floor {floor:.2} ns]"
+             {med_gap:.2} ns{}   [noise floor {floor:.2} ns]",
+            if med_gap.abs() < floor { "  ~noise" } else { "" }
         );
 
         let lo = |v: &[f64]| {
