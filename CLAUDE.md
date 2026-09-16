@@ -28,6 +28,16 @@ This project uses specialized agents in `.claude/agents/`. Follow these rules:
 - OpenBLAS and MKL are **mutually exclusive** feature gates. Never both.
 - Zero-cost abstractions: generics monomorphize, no `Box<dyn>` in hot paths.
 - Every `unsafe` block needs a `// SAFETY:` comment.
+- **`&&`-chain a commit to the edit that produces it — never sequence it
+  after.** An anchor assertion in an edit script protects the FILE; it does
+  not protect the RECORD. Measured here 2026-09-16: an edit script's assertion
+  fired correctly (a mid-line anchor that did not match), the script aborted,
+  no bad edit landed — and the `git commit` that followed it ran anyway,
+  shipping a message claiming two files while `git show --stat` showed one.
+  For one commit a plan was documented as updated while it was not. The
+  narrative remedy (`git show` the diff before claiming it) is real but
+  optional; `python3 edit.py && git add … && git commit …` is mechanical and
+  cannot be forgotten.
 - All public APIs need `///` doc comments with examples.
 - `cargo clippy -- -D warnings` must pass.
 - **Every compile runs with `CARGO_PROFILE_DEV_DEBUG=0`** (operator, 2026-09-16:
