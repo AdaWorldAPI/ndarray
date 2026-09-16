@@ -53,8 +53,8 @@ use std::time::Instant;
 
 use ndarray::simd::ternlog::{AND3, OR2_AND};
 use ndarray::simd::{
-    gt_i32_to_mask, mask_and, mask_set_range, mask_shift_morton, mask_ternlog_assign, popcount_batch_u64,
-    ternary_match_u32_to_mask, MortonDir,
+    gt_i32_to_mask, gt_u8_to_mask, mask_and, mask_set_range, mask_shift_morton, mask_ternlog_assign,
+    popcount_batch_u64, ternary_match_u32_to_mask, MortonDir,
 };
 
 // ── counting allocator: the 0k instrument ────────────────────────────────────
@@ -472,9 +472,23 @@ fn main() {
         })
         .collect();
     let thr: u8 = 96; // ~62% of rails permeable
-                      // Column views for the SIMD compare. The T1 compare is i32-wide today; a
-                      // u8 column compare is a T1 addition (stated, not hidden). Widening costs
-                      // 4× the bandwidth, so `n_gen` below is an UPPER bound on the reveal term.
+
+    // Column views for the SIMD compare, BOTH widths, so the widening cost is
+    // measured in one process instead of argued across two runs.
+    //
+    // This probe's original note read: *"The T1 compare is i32-wide today; a
+    // u8 column compare is a T1 addition (stated, not hidden). Widening costs
+    // 4× the bandwidth, so `n_gen` below is an UPPER bound on the reveal
+    // term."* That T1 addition landed (N2/G1, `gt_u8_to_mask`), so the upper
+    // bound can be replaced by a measurement — which is the falsifier the plan
+    // pre-registered for G1: build the u8 comparator, re-run this probe, and
+    // **if the re-chain does not move, the widening was never the cost.**
+    //
+    // The rail byte is the NATIVE column: `r[2 * d]` is already `u8`, and the
+    // `as i32` below is the whole widening.
+    let perm_cols_u8: Vec<Vec<u8>> = (0..DIRS)
+        .map(|d| rails.iter().map(|r| r[2 * d]).collect())
+        .collect();
     let perm_cols: Vec<Vec<i32>> = (0..DIRS)
         .map(|d| rails.iter().map(|r| r[2 * d] as i32).collect())
         .collect();
@@ -487,6 +501,27 @@ fn main() {
             gt_i32_to_mask(&perm_cols[d], thr as i32, &mut elig[d]);
         }
     });
+
+    // The same six masks off the NATIVE u8 columns. Gate first, time second:
+    // a timing comparison between two operations that do not produce the same
+    // answer measures nothing, so bit-identity is asserted before any number
+    // is printed.
+    let mut elig_u8: [Vec<u64>; DIRS] = std::array::from_fn(|_| vec![0u64; WORDS]);
+    for d in 0..DIRS {
+        gt_u8_to_mask(&perm_cols_u8[d], thr, &mut elig_u8[d]);
+        assert_eq!(elig_u8[d], elig[d], "u8 and widened-i32 eligibility masks differ on rail {d}");
+    }
+    let t_gen_u8 = timed(|| {
+        for d in 0..DIRS {
+            gt_u8_to_mask(&perm_cols_u8[d], thr, &mut elig_u8[d]);
+        }
+    });
+    println!(
+        "M1b generation NATIVE u8: 6 masks = {t_gen_u8:.0} ns ({:.0} ns/mask, {:.2} ns/row) — {:.2}× the widened i32 arm",
+        t_gen_u8 / DIRS as f64,
+        t_gen_u8 / (DIRS * N) as f64,
+        t_gen / t_gen_u8
+    );
     println!(
         "M1b generation: 6 eligibility masks from 6 columns = {:.0} ns ({:.0} ns/mask, {:.2} ns/row)",
         t_gen,
@@ -723,6 +758,16 @@ fn main() {
         "[coal] one re-chain (gt_i32 sweep over one column) = {c:.0} ns = {:.1} ternlogq passes = {:.2} maintained steps at x=4",
         c / t_tern,
         c / (4.0 * t_tern + n_term)
+    );
+    let mut m_new_u8 = vec![0u64; WORDS];
+    gt_u8_to_mask(&perm_cols_u8[0], thr, &mut m_new_u8);
+    assert_eq!(m_new_u8, m_new, "u8 and widened-i32 re-chain masks differ");
+    let c_u8 = timed(|| gt_u8_to_mask(&perm_cols_u8[0], thr, &mut m_new_u8));
+    println!(
+        "[coal] one re-chain NATIVE u8 (gt_u8 sweep)          = {c_u8:.0} ns = {:.1} ternlogq passes = {:.2} maintained steps at x=4  →  {:.2}× vs widened",
+        c_u8 / t_tern,
+        c_u8 / (4.0 * t_tern + n_term),
+        c / c_u8
     );
     println!(
         "[M2]   speed change x→x±1 costs one ternlogq pass ({t_tern:.0} ns); x→x±k costs k passes — linear, no cliff"
