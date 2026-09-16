@@ -21,6 +21,9 @@
 //!
 //! AVX-512 only, deliberately: v3 is the GitHub/distribution baseline, not a
 //! deployment target.
+//! Gated on `avx512f` AND `avx512vl` (Codex P2 on #311): the ymm/xmm rungs are
+//! VL encodings, and a `#[target_feature]` attribute is a caller precondition,
+//! not a CPU check — an F-only target (Knights Landing) takes the no-op `main`.
 //!
 //! # Measured 2026-09-16 — Xeon @ 2.10 GHz, `avx512f=true`, release, 3 runs
 //!
@@ -84,20 +87,20 @@
 //!     --example ternlogq_tail_descent_probe
 //! ```
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl"))]
 use std::hint::black_box;
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl"))]
 use std::time::Instant;
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl"))]
 use ndarray::simd::ternlog::AND3;
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl"))]
 use ndarray::simd::U64x8;
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl"))]
 use std::arch::x86_64::*;
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl"))]
 #[target_feature(enable = "avx512f,avx512vl")]
 /// **P** — pad the remainder into one zmm (today's shape).
 unsafe fn tail_padded(a: &[u64], b: &[u64], c: &[u64], dst: &mut [u64]) {
@@ -112,7 +115,7 @@ unsafe fn tail_padded(a: &[u64], b: &[u64], c: &[u64], dst: &mut [u64]) {
     dst.copy_from_slice(&v[..t]);
 }
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl"))]
 #[target_feature(enable = "avx512f,avx512vl")]
 /// **G** — greedy widest-first: ymm, then xmm, then xmm-low.
 unsafe fn tail_greedy(a: &[u64], b: &[u64], c: &[u64], dst: &mut [u64]) {
@@ -147,7 +150,7 @@ unsafe fn tail_greedy(a: &[u64], b: &[u64], c: &[u64], dst: &mut [u64]) {
     }
 }
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl"))]
 #[target_feature(enable = "avx512f,avx512vl")]
 /// **X** — never widen past xmm: pairs, then the odd one.
 unsafe fn tail_all_xmm(a: &[u64], b: &[u64], c: &[u64], dst: &mut [u64]) {
@@ -173,7 +176,7 @@ unsafe fn tail_all_xmm(a: &[u64], b: &[u64], c: &[u64], dst: &mut [u64]) {
     }
 }
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl"))]
 /// Today's shape: three zero-filled 8-word arrays, one zmm op, prefix copy out.
 fn tern_padded(a: &[u64], b: &[u64], c: &[u64], dst: &mut [u64]) {
     const L: usize = U64x8::LANES;
@@ -200,7 +203,7 @@ fn tern_padded(a: &[u64], b: &[u64], c: &[u64], dst: &mut [u64]) {
 
 /// zmm for the body, then ymm → xmm → xmm-low for the remainder. Every lane
 /// live; no zero-fill, no prefix copy, and no GPR logic on lane data.
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl"))]
 #[target_feature(enable = "avx512f,avx512vl")]
 unsafe fn tern_descend(a: &[u64], b: &[u64], c: &[u64], dst: &mut [u64]) {
     const L: usize = U64x8::LANES;
@@ -244,7 +247,7 @@ unsafe fn tern_descend(a: &[u64], b: &[u64], c: &[u64], dst: &mut [u64]) {
     }
 }
 
-#[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f")))]
+#[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl")))]
 fn main() {
     // The descent rungs are `VPTERNLOGQ` ymm/xmm under AVX512VL, so this probe
     // has nothing to measure off v4 x86_64. It still has to BUILD on the
@@ -253,7 +256,7 @@ fn main() {
     println!("skipped: needs x86_64 + avx512f — run under .cargo/config-v4.toml");
 }
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl"))]
 fn main() {
     println!("realization: avx512f=true\n");
 

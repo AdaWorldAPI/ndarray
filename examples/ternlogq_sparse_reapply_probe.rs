@@ -68,7 +68,10 @@
 //! mask it is the wrong tool, and the one lever that shows is chunk-skip on a
 //! clustered frontier, worth ≤ 1.24×.
 //!
-//! AVX-512 only (v4 config); no-op elsewhere so every matrix row still builds.
+//! AVX-512 only (v4 config), gated on `avx512f` AND `avx512vl` AND `avx512dq`
+//! (Codex P2 on #311): `S4`/`S2` are VL encodings and `vptestmq` is DQ; a
+//! `#[target_feature]` attribute is a caller precondition, not a CPU check, so
+//! an F-only target takes the no-op `main`.
 //!
 //! ```text
 //! env -u RUSTFLAGS cargo --config .cargo/config-v4.toml run --release \
