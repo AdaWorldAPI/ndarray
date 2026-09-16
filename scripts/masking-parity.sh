@@ -26,8 +26,21 @@ case "$ARM" in
     # `env -u RUSTFLAGS`: a workflow-global RUSTFLAGS (CI sets "-D warnings")
     # REPLACES every cargo-config rustflags entry, so a `--config
     # .cargo/config-v4.toml` passed through CARGO_ARGS would silently lose its
-    # `-Ctarget-cpu=x86-64-v4` and this arm would measure v3 while claiming
-    # v4 — the exact trap the tier4 CI job hit. Clearing it lets the config win.
+    # `-Ctarget-cpu=x86-64-v4` — the exact trap the tier4 CI job hit. Clearing
+    # it lets the config win.
+    #
+    # What you get INSTEAD is not v3 (corrected 2026-09-16, coderabbit on #314;
+    # this comment said "would measure v3"). RUSTFLAGS replaces EVERY entry,
+    # including the DEFAULT `.cargo/config.toml`'s own `-Ctarget-cpu`, so no
+    # target-cpu reaches rustc at all and the build lands on rustc's generic
+    # `x86-64` baseline — SSE2, BELOW v3, and the tier `simd_avx2.rs`'s
+    # intrinsics SIGILL on. Measured on one unit: `RUSTFLAGS="-D warnings"`
+    # emitted ZERO `-Ctarget-cpu` flags against 65 with the env unset.
+    #
+    # This arm NAMES NO TIER by design: it builds with whatever config wins,
+    # which by default is `target-cpu=native` (the host). Read the program's
+    # own `avx512f=` header line for the tier; pin `.cargo/config-v3.toml`
+    # through CARGO_ARGS when you specifically want AVX2.
     env -u RUSTFLAGS cargo ${CARGO_ARGS:-} build --release --manifest-path "$MANIFEST" --bin simd-masking-parity
     "$TD/release/simd-masking-parity"
     ;;

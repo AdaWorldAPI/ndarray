@@ -50,6 +50,11 @@ COPY examples/ examples/
 COPY benches/ benches/
 COPY ndarray-rand/benches/ ndarray-rand/benches/
 
+# The cargo CONFIG DIRECTORY, required by the `--config` flags below. This
+# Dockerfile COPYs selectively, so a file not named here is absent from the
+# image and cargo fails on a missing configuration file before compiling.
+COPY .cargo/ .cargo/
+
 # AVX-512 pinned: compile-time dispatch, everything inlined.
 #
 # Passed as a CONFIG, not `ENV RUSTFLAGS` (changed 2026-09-16): a RUSTFLAGS env
