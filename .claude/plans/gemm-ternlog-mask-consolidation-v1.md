@@ -1300,3 +1300,48 @@ Consequence for the chunk plan in §18: chunk 1 and 2 merge into "add
 the other arms** (measured), so that narrow primitive is new everywhere too —
 but it is written once per arm instead of once per arm per width, and the ×4
 fold is shared.
+
+### 18b. N3's per-arm compare availability — verified, not assumed (2026-09-16)
+
+Operator: *"GitHub LLVM hat alle CPU SIMD ops dokumentiert"* — so look them up
+instead of guessing. Done. Two rows compiled on this toolchain, two read from
+stdarch's own source/spec; provenance is per row because it differs.
+
+| arm | unsigned 64-bit ORDERED compare | equality | how verified |
+|---|---|---|---|
+| **AVX-512** | `_mm512_cmpgt_epu64_mask` → `__mmask8` | `_mm512_cmpeq_epu64_mask` | **compiled** here under `avx512f` |
+| **AVX2** | **ABSENT** — only the SIGNED `_mm256_cmpgt_epi64` | `_mm256_cmpeq_epi64` (bit equality is sign-agnostic) | **compile error** here: *"cannot find function `_mm256_cmpgt_epu64`"* |
+| **NEON** | `vcgtq_u64` → **`cmhi`**, `vcgeq_u64` → **`cmhs`** | `vceqq_u64` → `cmeq` | stdarch `aarch64.spec.yml`, the generated-intrinsics spec |
+| **WASM** | **ABSENT** — only `i64x2_{lt,le,gt,ge}`, signed; the file says so in its own doc (*"as if they were two vectors of 2 sixty-four-bit SIGNED integers"*) | `u64x2_eq` / `u64x2_ne` exist, as aliases of the i64x2 forms | stdarch `wasm32/simd128.rs` |
+| scalar | plain `>` on `u64` | `==` | n/a |
+
+### What this decides, and it corrects an assumption I would otherwise have made
+
+**NEON gets REAL vector instructions, not a scalar fold.** `cmhi` / `cmhs`
+support the 2D (64-bit) element form, so the `[U64x2; 4]` fan-out (§18a) lowers
+to four genuine compares per arm. Had I not checked I would have written the
+neon arm as a per-lane loop on the grounds that `U64x2` "has no compare today" —
+which is true of this repo's wrapper and false of the ISA underneath it.
+
+**AVX2 and WASM need the SAME sign-bias trick, and it is already in the tree.**
+Neither has an unsigned ordered 64-bit compare, so both flip the sign bit
+(`^ 0x8000_0000_0000_0000`) and use the signed instruction — ordering is
+preserved under that XOR. This is not an invention: `U8x32::cmpgt_mask`
+(`simd_avx2.rs:2746-2754`) already documents and implements exactly this at byte
+width, *"AVX2 only has signed `_mm256_cmpgt_epi8`, so we XOR both operands with
+`0x80` to convert unsigned ↔ signed (preserves ordering for unsigned compare)."*
+The N3 worker cites that precedent rather than deriving it.
+
+**Equality needs no bias anywhere.** Bit equality is sign-agnostic, which is why
+wasm ships `u64x2_eq` as a plain alias. Only the ordered ops are affected.
+
+### Honest scope of this table
+
+The AVX-512 and AVX2 rows are compile-verified on the toolchain we actually
+build with — the strongest form available here. The NEON and WASM rows are read
+from stdarch's own generating spec and source, **not** compiled, because no
+aarch64 or wasm32 target is installed in this container (`rustup target list
+--installed` returns x86_64 only) and `rust-src` is absent so the vendored
+stdarch cannot be grepped locally either. A cross-target `cargo check` is the
+stronger gate and is the follow-up if either row is ever load-bearing for a
+shipped decision rather than for planning.
