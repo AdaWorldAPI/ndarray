@@ -182,26 +182,10 @@ fn tail_lane_bits_8(n: usize) -> u8 {
 /// ```
 #[inline]
 pub fn eq_u32_to_mask(values: &[u32], needle: u32, out_words: &mut [u64]) {
-    let n = values.len();
-    let words = mask_words_for(n);
-    assert!(out_words.len() >= words, "eq_u32_to_mask: out_words.len()={} < required {}", out_words.len(), words);
-
-    // Zero first: makes the "trailing bits are 0" guarantee structural.
-    for w in out_words.iter_mut() {
-        *w = 0;
-    }
-
     let needle_v = crate::simd::U32x16::splat(needle);
-    let (chunks, tail) = values.as_chunks::<16>();
-    for (g, chunk) in chunks.iter().enumerate() {
-        let bits = crate::simd::U32x16::from_array(*chunk).eq_bitmask(needle_v);
-        out_words[g / 4] |= (bits as u64) << ((g % 4) * 16);
-    }
-    if !tail.is_empty() {
-        let g = chunks.len();
-        let bits = crate::simd::U32x16::from_array(pad_tail(tail)).eq_bitmask(needle_v) & tail_lane_bits(tail.len());
-        out_words[g / 4] |= (bits as u64) << ((g % 4) * 16);
-    }
+    pack::<u32, 16>("eq_u32_to_mask", values, out_words, |lanes, live| {
+        (crate::simd::U32x16::from_array(lanes).eq_bitmask(needle_v) & live16(live)) as u64
+    });
 }
 
 /// Packs `read_le_u32(bytes, first_offset + i * stride_bytes) == needle` into
@@ -358,25 +342,10 @@ pub fn eq_u32_strided_to_mask(
 /// ```
 #[inline]
 pub fn gt_i32_to_mask(values: &[i32], threshold: i32, out_words: &mut [u64]) {
-    let n = values.len();
-    let words = mask_words_for(n);
-    assert!(out_words.len() >= words, "gt_i32_to_mask: out_words.len()={} < required {}", out_words.len(), words);
-
-    for w in out_words.iter_mut() {
-        *w = 0;
-    }
-
     let threshold_v = crate::simd::I32x16::splat(threshold);
-    let (chunks, tail) = values.as_chunks::<16>();
-    for (g, chunk) in chunks.iter().enumerate() {
-        let bits = crate::simd::I32x16::from_array(*chunk).gt_bitmask(threshold_v);
-        out_words[g / 4] |= (bits as u64) << ((g % 4) * 16);
-    }
-    if !tail.is_empty() {
-        let g = chunks.len();
-        let bits = crate::simd::I32x16::from_array(pad_tail(tail)).gt_bitmask(threshold_v) & tail_lane_bits(tail.len());
-        out_words[g / 4] |= (bits as u64) << ((g % 4) * 16);
-    }
+    pack::<i32, 16>("gt_i32_to_mask", values, out_words, |lanes, live| {
+        (crate::simd::I32x16::from_array(lanes).gt_bitmask(threshold_v) & live16(live)) as u64
+    });
 }
 
 /// `dst = a & b`, elementwise over `u64` mask words.
@@ -899,23 +868,10 @@ fn clear_mask_tail(out_words: &mut [u64], n: usize) {
 /// ```
 #[inline]
 pub fn lt_i32_to_mask(values: &[i32], threshold: i32, out_words: &mut [u64]) {
-    let n = values.len();
-    let words = mask_words_for(n);
-    assert!(out_words.len() >= words, "lt_i32_to_mask: out_words.len()={} < required {}", out_words.len(), words);
-    for w in out_words.iter_mut() {
-        *w = 0;
-    }
     let t = crate::simd::I32x16::splat(threshold);
-    let (chunks, tail) = values.as_chunks::<16>();
-    for (g, chunk) in chunks.iter().enumerate() {
-        let bits = t.gt_bitmask(crate::simd::I32x16::from_array(*chunk));
-        out_words[g / 4] |= (bits as u64) << ((g % 4) * 16);
-    }
-    if !tail.is_empty() {
-        let g = chunks.len();
-        let bits = t.gt_bitmask(crate::simd::I32x16::from_array(pad_tail(tail))) & tail_lane_bits(tail.len());
-        out_words[g / 4] |= (bits as u64) << ((g % 4) * 16);
-    }
+    pack::<i32, 16>("lt_i32_to_mask", values, out_words, |lanes, live| {
+        (t.gt_bitmask(crate::simd::I32x16::from_array(lanes)) & live16(live)) as u64
+    });
 }
 
 /// Packs `values[i] >= threshold` (signed): the complement of
@@ -993,25 +949,11 @@ pub fn le_i32_to_mask(values: &[i32], threshold: i32, out_words: &mut [u64]) {
 /// ```
 #[inline]
 pub fn ne_i32_to_mask(values: &[i32], needle: i32, out_words: &mut [u64]) {
-    let n = values.len();
-    let words = mask_words_for(n);
-    assert!(out_words.len() >= words, "ne_i32_to_mask: out_words.len()={} < required {}", out_words.len(), words);
-    for w in out_words.iter_mut() {
-        *w = 0;
-    }
     let t = crate::simd::I32x16::splat(needle);
-    let (chunks, tail) = values.as_chunks::<16>();
-    for (g, chunk) in chunks.iter().enumerate() {
-        let v = crate::simd::I32x16::from_array(*chunk);
-        let bits = t.gt_bitmask(v) | v.gt_bitmask(t);
-        out_words[g / 4] |= (bits as u64) << ((g % 4) * 16);
-    }
-    if !tail.is_empty() {
-        let g = chunks.len();
-        let v = crate::simd::I32x16::from_array(pad_tail(tail));
-        let bits = (t.gt_bitmask(v) | v.gt_bitmask(t)) & tail_lane_bits(tail.len());
-        out_words[g / 4] |= (bits as u64) << ((g % 4) * 16);
-    }
+    pack::<i32, 16>("ne_i32_to_mask", values, out_words, |lanes, live| {
+        let v = crate::simd::I32x16::from_array(lanes);
+        ((t.gt_bitmask(v) | v.gt_bitmask(t)) & live16(live)) as u64
+    });
 }
 
 /// Packs `values[i] == needle` (signed lanes, exact): the complement of
@@ -1130,24 +1072,10 @@ pub fn ne_u32_to_mask(values: &[u32], needle: u32, out_words: &mut [u64]) {
 /// ```
 #[inline]
 pub fn eq_u8_to_mask(values: &[u8], needle: u8, out_words: &mut [u64]) {
-    let n = values.len();
-    let words = mask_words_for(n);
-    assert!(out_words.len() >= words, "eq_u8_to_mask: out_words.len()={} < required {}", out_words.len(), words);
-
-    for w in out_words.iter_mut() {
-        *w = 0;
-    }
-
     let needle_v = crate::simd::U8x64::splat(needle);
-    let (chunks, tail) = values.as_chunks::<64>();
-    for (g, chunk) in chunks.iter().enumerate() {
-        out_words[g] = crate::simd::U8x64::from_array(*chunk).cmpeq_mask(needle_v);
-    }
-    if !tail.is_empty() {
-        let g = chunks.len();
-        out_words[g] =
-            crate::simd::U8x64::from_array(pad_tail(tail)).cmpeq_mask(needle_v) & word_range_mask(0, tail.len());
-    }
+    pack::<u8, 64>("eq_u8_to_mask", values, out_words, |lanes, live| {
+        crate::simd::U8x64::from_array(lanes).cmpeq_mask(needle_v) & live64(live)
+    });
 }
 
 /// Packs `values[i] > threshold` (**unsigned** comparison — the only
@@ -1188,24 +1116,10 @@ pub fn eq_u8_to_mask(values: &[u8], needle: u8, out_words: &mut [u64]) {
 /// ```
 #[inline]
 pub fn gt_u8_to_mask(values: &[u8], threshold: u8, out_words: &mut [u64]) {
-    let n = values.len();
-    let words = mask_words_for(n);
-    assert!(out_words.len() >= words, "gt_u8_to_mask: out_words.len()={} < required {}", out_words.len(), words);
-
-    for w in out_words.iter_mut() {
-        *w = 0;
-    }
-
     let threshold_v = crate::simd::U8x64::splat(threshold);
-    let (chunks, tail) = values.as_chunks::<64>();
-    for (g, chunk) in chunks.iter().enumerate() {
-        out_words[g] = crate::simd::U8x64::from_array(*chunk).cmpgt_mask(threshold_v);
-    }
-    if !tail.is_empty() {
-        let g = chunks.len();
-        out_words[g] =
-            crate::simd::U8x64::from_array(pad_tail(tail)).cmpgt_mask(threshold_v) & word_range_mask(0, tail.len());
-    }
+    pack::<u8, 64>("gt_u8_to_mask", values, out_words, |lanes, live| {
+        crate::simd::U8x64::from_array(lanes).cmpgt_mask(threshold_v) & live64(live)
+    });
 }
 
 /// Packs `values[i] < threshold` (unsigned): computed directly as
@@ -1233,23 +1147,10 @@ pub fn gt_u8_to_mask(values: &[u8], threshold: u8, out_words: &mut [u64]) {
 /// ```
 #[inline]
 pub fn lt_u8_to_mask(values: &[u8], threshold: u8, out_words: &mut [u64]) {
-    let n = values.len();
-    let words = mask_words_for(n);
-    assert!(out_words.len() >= words, "lt_u8_to_mask: out_words.len()={} < required {}", out_words.len(), words);
-
-    for w in out_words.iter_mut() {
-        *w = 0;
-    }
-
     let t = crate::simd::U8x64::splat(threshold);
-    let (chunks, tail) = values.as_chunks::<64>();
-    for (g, chunk) in chunks.iter().enumerate() {
-        out_words[g] = t.cmpgt_mask(crate::simd::U8x64::from_array(*chunk));
-    }
-    if !tail.is_empty() {
-        let g = chunks.len();
-        out_words[g] = t.cmpgt_mask(crate::simd::U8x64::from_array(pad_tail(tail))) & word_range_mask(0, tail.len());
-    }
+    pack::<u8, 64>("lt_u8_to_mask", values, out_words, |lanes, live| {
+        t.cmpgt_mask(crate::simd::U8x64::from_array(lanes)) & live64(live)
+    });
 }
 
 /// Packs `values[i] >= threshold` (unsigned): the complement of
@@ -1389,25 +1290,10 @@ pub fn ne_u8_to_mask(values: &[u8], needle: u8, out_words: &mut [u64]) {
 /// ```
 #[inline]
 pub fn eq_u64_to_mask(values: &[u64], needle: u64, out_words: &mut [u64]) {
-    let n = values.len();
-    let words = mask_words_for(n);
-    assert!(out_words.len() >= words, "eq_u64_to_mask: out_words.len()={} < required {}", out_words.len(), words);
-
-    for w in out_words.iter_mut() {
-        *w = 0;
-    }
-
     let needle_v = crate::simd::U64x8::splat(needle);
-    let (chunks, tail) = values.as_chunks::<8>();
-    for (g, chunk) in chunks.iter().enumerate() {
-        let bits = crate::simd::U64x8::from_array(*chunk).cmpeq_mask(needle_v);
-        out_words[g / 8] |= (bits as u64) << ((g % 8) * 8);
-    }
-    if !tail.is_empty() {
-        let g = chunks.len();
-        let bits = crate::simd::U64x8::from_array(pad_tail(tail)).cmpeq_mask(needle_v) & tail_lane_bits_8(tail.len());
-        out_words[g / 8] |= (bits as u64) << ((g % 8) * 8);
-    }
+    pack::<u64, 8>("eq_u64_to_mask", values, out_words, |lanes, live| {
+        (crate::simd::U64x8::from_array(lanes).cmpeq_mask(needle_v) & live8(live)) as u64
+    });
 }
 
 /// Packs `values[i] > threshold` (**unsigned** — the only ordering `u64`
@@ -1438,26 +1324,10 @@ pub fn eq_u64_to_mask(values: &[u64], needle: u64, out_words: &mut [u64]) {
 /// ```
 #[inline]
 pub fn gt_u64_to_mask(values: &[u64], threshold: u64, out_words: &mut [u64]) {
-    let n = values.len();
-    let words = mask_words_for(n);
-    assert!(out_words.len() >= words, "gt_u64_to_mask: out_words.len()={} < required {}", out_words.len(), words);
-
-    for w in out_words.iter_mut() {
-        *w = 0;
-    }
-
     let threshold_v = crate::simd::U64x8::splat(threshold);
-    let (chunks, tail) = values.as_chunks::<8>();
-    for (g, chunk) in chunks.iter().enumerate() {
-        let bits = crate::simd::U64x8::from_array(*chunk).cmpgt_mask(threshold_v);
-        out_words[g / 8] |= (bits as u64) << ((g % 8) * 8);
-    }
-    if !tail.is_empty() {
-        let g = chunks.len();
-        let bits =
-            crate::simd::U64x8::from_array(pad_tail(tail)).cmpgt_mask(threshold_v) & tail_lane_bits_8(tail.len());
-        out_words[g / 8] |= (bits as u64) << ((g % 8) * 8);
-    }
+    pack::<u64, 8>("gt_u64_to_mask", values, out_words, |lanes, live| {
+        (crate::simd::U64x8::from_array(lanes).cmpgt_mask(threshold_v) & live8(live)) as u64
+    });
 }
 
 /// Packs `values[i] < threshold` (unsigned): computed directly as
@@ -1489,25 +1359,10 @@ pub fn gt_u64_to_mask(values: &[u64], threshold: u64, out_words: &mut [u64]) {
 /// ```
 #[inline]
 pub fn lt_u64_to_mask(values: &[u64], threshold: u64, out_words: &mut [u64]) {
-    let n = values.len();
-    let words = mask_words_for(n);
-    assert!(out_words.len() >= words, "lt_u64_to_mask: out_words.len()={} < required {}", out_words.len(), words);
-
-    for w in out_words.iter_mut() {
-        *w = 0;
-    }
-
     let t = crate::simd::U64x8::splat(threshold);
-    let (chunks, tail) = values.as_chunks::<8>();
-    for (g, chunk) in chunks.iter().enumerate() {
-        let bits = t.cmpgt_mask(crate::simd::U64x8::from_array(*chunk));
-        out_words[g / 8] |= (bits as u64) << ((g % 8) * 8);
-    }
-    if !tail.is_empty() {
-        let g = chunks.len();
-        let bits = t.cmpgt_mask(crate::simd::U64x8::from_array(pad_tail(tail))) & tail_lane_bits_8(tail.len());
-        out_words[g / 8] |= (bits as u64) << ((g % 8) * 8);
-    }
+    pack::<u64, 8>("lt_u64_to_mask", values, out_words, |lanes, live| {
+        (t.cmpgt_mask(crate::simd::U64x8::from_array(lanes)) & live8(live)) as u64
+    });
 }
 
 /// Packs `values[i] >= threshold` (unsigned): the complement of
@@ -1948,36 +1803,15 @@ pub fn mask_all(words: &[u64], n_rows: usize) -> bool {
 /// ```
 #[inline]
 pub fn ternary_match_u32_to_mask(values: &[u32], pattern: u32, care: u32, out_words: &mut [u64]) {
-    let n = values.len();
-    let words = mask_words_for(n);
-    assert!(
-        out_words.len() >= words,
-        "ternary_match_u32_to_mask: out_words.len()={} < required {}",
-        out_words.len(),
-        words
-    );
-    for w in out_words.iter_mut() {
-        *w = 0;
-    }
     let p = crate::simd::U32x16::splat(pattern);
     let c = crate::simd::U32x16::splat(care);
     let zero = crate::simd::U32x16::splat(0);
-    let (chunks, tail) = values.as_chunks::<16>();
-    for (g, chunk) in chunks.iter().enumerate() {
-        let v = crate::simd::U32x16::from_array(*chunk);
-        let bits = v
+    pack::<u32, 16>("ternary_match_u32_to_mask", values, out_words, |lanes, live| {
+        let bits = crate::simd::U32x16::from_array(lanes)
             .ternlog::<{ crate::simd::ternlog::XOR_AND }>(p, c)
             .eq_bitmask(zero);
-        out_words[g / 4] |= (bits as u64) << ((g % 4) * 16);
-    }
-    if !tail.is_empty() {
-        let g = chunks.len();
-        let bits = crate::simd::U32x16::from_array(pad_tail(tail))
-            .ternlog::<{ crate::simd::ternlog::XOR_AND }>(p, c)
-            .eq_bitmask(zero)
-            & tail_lane_bits(tail.len());
-        out_words[g / 4] |= (bits as u64) << ((g % 4) * 16);
-    }
+        (bits & live16(live)) as u64
+    });
 }
 
 /// The 64-bit sibling of [`ternary_match_u32_to_mask`]: packs
@@ -2001,42 +1835,18 @@ pub fn ternary_match_u32_to_mask(values: &[u32], pattern: u32, care: u32, out_wo
 /// ```
 #[inline]
 pub fn ternary_match_u64_to_mask(values: &[u64], pattern: u64, care: u64, out_words: &mut [u64]) {
-    let n = values.len();
-    let words = mask_words_for(n);
-    assert!(
-        out_words.len() >= words,
-        "ternary_match_u64_to_mask: out_words.len()={} < required {}",
-        out_words.len(),
-        words
-    );
-    for w in out_words.iter_mut() {
-        *w = 0;
-    }
     let p = crate::simd::U64x8::splat(pattern);
     let c = crate::simd::U64x8::splat(care);
-    const L: usize = crate::simd::U64x8::LANES;
-    let (chunks, tail) = values.as_chunks::<L>();
-    for (g, chunk) in chunks.iter().enumerate() {
-        let r = crate::simd::U64x8::from_array(*chunk)
+    pack::<u64, { crate::simd::U64x8::LANES }>("ternary_match_u64_to_mask", values, out_words, |lanes, live| {
+        let r = crate::simd::U64x8::from_array(lanes)
             .ternlog::<{ crate::simd::ternlog::XOR_AND }>(p, c)
             .to_array();
         let mut bits = 0u64;
-        for (lane, &x) in r.iter().enumerate() {
+        for (lane, &x) in r.iter().take(live).enumerate() {
             bits |= ((x == 0) as u64) << lane;
         }
-        out_words[g / 8] |= bits << ((g % 8) * 8);
-    }
-    if !tail.is_empty() {
-        let g = chunks.len();
-        let r = crate::simd::U64x8::from_array(pad_tail(tail))
-            .ternlog::<{ crate::simd::ternlog::XOR_AND }>(p, c)
-            .to_array();
-        let mut bits = 0u64;
-        for (lane, &x) in r.iter().take(tail.len()).enumerate() {
-            bits |= ((x == 0) as u64) << lane;
-        }
-        out_words[g / 8] |= bits << ((g % 8) * 8);
-    }
+        bits
+    });
 }
 
 /// Care-masked match of a **12-byte little-endian register** found at
@@ -2234,6 +2044,68 @@ fn live16(live: usize) -> u16 {
         u16::MAX
     } else {
         tail_lane_bits(live)
+    }
+}
+
+/// `live`-lane validity mask for an 8-lane group: all ones for a full group,
+/// [`tail_lane_bits_8`] for a padded one.
+#[inline(always)]
+fn live8(live: usize) -> u8 {
+    if live == 8 {
+        u8::MAX
+    } else {
+        tail_lane_bits_8(live)
+    }
+}
+
+/// `live`-lane validity mask for a 64-lane group (one `u8x64` register is one
+/// whole mask word): all ones for a full group, the low `live` bits otherwise.
+#[inline(always)]
+fn live64(live: usize) -> u64 {
+    if live == 64 {
+        u64::MAX
+    } else {
+        word_range_mask(0, live)
+    }
+}
+
+/// The shared full-scan packer under every contiguous `*_to_mask` predicate —
+/// the ungated sibling of [`pack_under`].
+///
+/// `group_bits(lanes, live)` packs one register's worth of predicate results:
+/// `lanes` is the full `[T; L]` (zero-padded when `live < L`, i.e. only for
+/// the final group) and the closure masks its answer down to the low `live`
+/// bits. The body iterates `as_chunks::<L>()` — fixed-size loads, no index
+/// arithmetic — and the remainder is the ONE spelling of the predicate tail:
+/// zero-padded into a register, run through the same closure as the body,
+/// masked to `live`. This is where the 12 hand-rolled `if !tail.is_empty()`
+/// branches that preceded it were folded (2026-09-16); the mask-algebra tails
+/// (`mask_and` and friends) are a different kind and are NOT served here.
+#[inline(always)]
+fn pack<T: Copy + Default, const L: usize>(
+    name: &str, values: &[T], out_words: &mut [u64], group_bits: impl Fn([T; L], usize) -> u64,
+) {
+    const { assert!(64 % L == 0, "a mask word must hold whole lane groups") }
+    let k = 64 / L;
+    let n = values.len();
+    let words = mask_words_for(n);
+    assert!(out_words.len() >= words, "{name}: out_words.len()={} < required {words}", out_words.len());
+    // Zero first: makes the "trailing bits are 0" guarantee structural.
+    for w in out_words.iter_mut() {
+        *w = 0;
+    }
+    let (chunks, tail) = values.as_chunks::<L>();
+    for (g, chunk) in chunks.iter().enumerate() {
+        out_words[g / k] |= group_bits(*chunk, L) << ((g % k) * L);
+    }
+    if !tail.is_empty() {
+        let g = chunks.len();
+        let live = tail.len();
+        let bits = group_bits(pad_tail(tail), live);
+        // The closure contract (bits above `live` are zero) is what keeps a
+        // padding lane from ever contributing a match.
+        debug_assert!(live == 64 || bits >> live == 0, "{name}: tail bits above live={live} must be zero");
+        out_words[g / k] |= bits << ((g % k) * L);
     }
 }
 
