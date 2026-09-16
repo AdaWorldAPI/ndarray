@@ -69,6 +69,62 @@ optimisation lands, ask what the consumer's actual shapes are — a 3x win on a
 size nobody runs is worth nothing, and the cheapest way to find that out is
 arithmetic on the size formula, not another benchmark.
 
+### The consumer census (18) called for — run, and it closes the question
+
+Done read-only against `lance-graph-java`'s `lgj-abi`, the binding consumer of
+the facade's mask algebra.
+
+**1. There is NO tiling of the population.** `lgj_pattern_open(n_rows, …)` /
+`lgj_rowstore_open(n_rows, …)` take the row count directly and a mask spans the
+WHOLE population (`abi.rs::mask_words_for` = `n_rows.div_ceil(64)`). The only
+"tile" in that crate is the 12-byte facet register, not the rows. So the padded
+tail is paid ONCE per op and amortizes over the entire body — the favourable
+direction for the status quo.
+
+**2. Every committed population size is blind to the tail**, and in a
+bimodal way that is worth seeing laid out:
+
+| rows | words | can it see a tail? |
+|---:|---:|---|
+| 4, 8, 10, 16, 32, 64 | 1 | **all tail** — not one full group |
+| 70, 100, 128 | 2 | **all tail** |
+| 200 | 4 | **all tail** |
+| 500 | 8 | none |
+| 1000, 1024 | 16 | none |
+| 4096 | 64 | none |
+| 64000 | 1000 | none |
+
+The small sizes are correctness fixtures where the op IS its tail and speed is
+irrelevant; every size large enough to have a body has **zero tail**. So no
+committed test or bench in the consumer can ever exercise the regime the
+optimisation targets — which is exactly why #315's probe had to choose
+`base = 8` and `64` words to see it at all.
+
+**3. Where it does bite, as a share of the op** (16 ns tail, 0.31 ns/group):
+
+| population | tail share |
+|---:|---:|
+| 5 000 rows | 85 % |
+| 50 000 | 35 % |
+| 100 000 | 21 % |
+| **~502 000** | **5 %** |
+| 1 000 000 | 2.6 % |
+| ~2 616 000 | 1 % |
+| any power of two ≥ 512 | **0 %** |
+
+### Verdict on step (b): DO NOT BUILD IT
+
+The optimisation is worth something only for arbitrary populations in roughly
+the **5 k – 500 k row** band. Outside it: under 512 rows the op is all tail and
+untimed, above ~2.6 M rows it is under 1 %, and on every power of two it is
+exactly zero. Against that it would touch a hot facade at 11 sites across six
+realizations, and make `mask_ternlog` WORSE (its padded form is one full-width
+`vpternlogq`; the peel is three ops plus more).
+
+**So step (b) is closed as measured-not-worth-doing, not deferred.** Reopening
+it needs a named consumer workload whose populations sit in that band — not
+another kernel benchmark.
+
 Cross-ref: (15) the trip-count finding and the codegen witnesses stand
 unchanged — `U64x4 &` really is bit-identical to a hand-written loop, fixed
 peels really are packed on aarch64, the `avx512vl` gate really is unnecessary.
