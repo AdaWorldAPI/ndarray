@@ -51,8 +51,8 @@ This file tracks their state.
 | gap | what | state |
 |---|---|---|
 | **G6** | `mask_set_range(dst, lo, hi)` | **SHIPPED** (`33716b9`, fills vectorized `347875e`). Two consumers were working around its absence. `word_range_mask` built from two bits-below-N masks so `hi == 64` never computes `1u64 << 64`. |
-| **G1** | `{eq,ne,gt,ge,lt,le}_u8_to_mask` | **SHIPPED** (`a8e7d7d`). The width where **packing is free**: 64 lanes, 64-bit word, one chunk is one whole word, no shift. **Falsifier ANSWERED — see below.** |
-| **G2** | `{eq,ne,gt,ge,lt,le}_u64_to_mask` + `U64x8::{cmpeq_mask,cmpgt_mask}` on all six realizations | **SHIPPED** (`e05afbd`). Packing is NOT free here — eight groups share a word. Only avx512 (`epu64`) and NEON (`cmhi`) have the instruction; wasm has **no** unsigned ordered 64-bit compare and uses the sign-bias trick; scalar/avx2 are flat polyfills. **Measurement OPEN.** |
+| **G1** | `{eq,ne,gt,ge,lt,le}_u8_to_mask` | **SHIPPED** (`a8e7d7d`). The width where **packing is free**: 64 lanes, 64-bit word, one chunk is one whole word, no shift. **Both falsifiers ANSWERED** — see below, and § "The PENDING half is now RUN". |
+| **G2** | `{eq,ne,gt,ge,lt,le}_u64_to_mask` + `U64x8::{cmpeq_mask,cmpgt_mask}` on all six realizations | **SHIPPED** (`e05afbd`). Packing is NOT free here — eight groups share a word. Only avx512 (`epu64`) and NEON (`cmhi`) have the instruction; wasm has **no** unsigned ordered 64-bit compare and uses the sign-bias trick; scalar/avx2 are flat polyfills. **MEASURED 2026-09-16 — and it is TIER-DEPENDENT.** See § "The PENDING half is now RUN". |
 | **G4** | `mask_shift_morton` | **SHIPPED** (`255c36d`) — **and its own falsifier FIRED.** See OUTLOOK. |
 
 Also shipped alongside, not a numbered gap: `simd_avx2`'s `U8x64::{cmpeq_mask,
@@ -78,25 +78,67 @@ asymmetric: the i32 arms were accidentally protected by a later read, the u8
 arms had none. Corrected in `daed0fd`/`95ac06f`. **The conclusion survived, the
 number did not** — which is the reason to state both.
 
-## PENDING — the measurement half, and it is not optional
+## The PENDING half is now RUN (2026-09-16) — both falsifiers answered
 
-**Existing code is not a moved measurement.** Two pre-registered falsifiers are
-still unrun, and both run through the same probe:
+⊘ **The blocker recorded here was STALE, and that is the first finding.** This
+section read *"that probe needs a column dump from `r2sleigh-lift`'s
+`win32_census`, which needs a Win32 PE binary; none exists in this container."*
+One does: `r2sleigh/probes/win32-census/legacy_app.exe`, 130 613 bytes,
+committed since 2026-08-27. No synthetic dump was needed. The lesson is the
+workspace's own: **a report of absence is not evidence of absence** — the same
+shape as the `neon-qemu` "missing target" that was a missing linker.
 
-- **G1's second half** — PR #308's `r2il_column_scan_probe` crossover.
-- **G2's only half** — its `find_ram_in_range` re-expressed against the real
-  `u64` family instead of the hi32/lo32 bucket split it used to dodge the
-  missing primitive.
+Run against the REAL lift — 12 408 p-code ops, `r2il_column_scan_probe`, both
+tiers, `black_box` on every arm's inputs and outputs, 3 runs.
 
-**Blocked, not skipped.** That probe needs a column dump from `r2sleigh-lift`'s
-`win32_census`, which needs a **Win32 PE binary**; none exists in this
-container. A synthetic dump would produce a number shaped like the answer
-without being it, against that probe's own *"a real lift rather than a
-synthetic stream"*.
+### G1's second half — ANSWERED, decisively
 
-**G1's answer does not transfer to G2.** Part of G1's win is the packing
-vanishing — a property of u8 alone. At u64 eight groups share a word and each
-needs a shift, so the u64 family starts from a structurally weaker position.
+| tier | scalar | widened `eq_u32` | NATIVE `eq_u8` |
+|---|---:|---:|---:|
+| v4 / AVX-512 | 1× | 3.96× | **34.4×** |
+| v3 / AVX2 | 1× | 1.84× | **26.1×** |
+
+The native primitive beats the widening workaround it replaced by **8.7× (v4)
+/ 14× (v3)**. Do not compare the 26-34× to G1's own 6.91×: that pair is
+u8-vectorized vs i32-vectorized; this one is scalar vs vectorized, where the
+lane count (32-64 B/instruction vs a 1-byte loop) is the expected answer.
+Bandwidth corroborates — 52 GB/s L1-resident vs 2 GB/s scalar.
+
+### G2 — ANSWERED, and the answer is TIER-DEPENDENT
+
+The same `find_ram_in_range` native arm (`eq_u8` + `ge_u64` + `lt_u64` +
+`AND3`), 12 408 ops, against the scalar baseline:
+
+| tier | S ns/op | NATIVE ns/op | S/NATIVE |
+|---|---:|---:|---:|
+| v4 / AVX-512 | 0.73 | **0.48** | **1.51× WIN** |
+| v3 / AVX2 | 0.72 | **1.31** | **0.55× LOSS** |
+
+**This file predicted the direction and the mechanism** — *"only avx512
+(`epu64`) and NEON (`cmhi`) have the instruction; scalar/avx2 are flat
+polyfills"* — and the measurement puts a number on it: on v3 the native path
+is a scalar loop wearing a vector signature, and it is **worse than the scalar
+baseline**. Consequence for consumers: on an AVX2 baseline keep the hi32/lo32
+split; on v4 the native spelling is both faster and general (no bucket
+assumption).
+
+### The widening tax was real for u8 and NEVER existed for u64
+
+PR #308 blamed its Q2 crossover on widened columns. Measured, the Q2 arms never
+paid one: `offset` read twice is 16 B/op and `hi32`+`lo32` read twice is also
+16 B/op. Splitting a u64 into two u32s **does not add traffic — it halves the
+element width**, which is what the vector units reward, and is why the widened
+arms beat the native one on v3 and match it on v4. The 4× tax was only ever
+u8→u32. ⊘ That corrects PR #308's stated mechanism; its crossover number
+survives.
+
+### What did NOT change
+
+Every arm still degrades to ≤ 1.0× above ~200 K ops, on both tiers. And the
+consumer verdict is unmoved: a whole-census `find_ram_in_range` is ~9.0 µs
+scalar vs ~5.9 µs native-on-v4 — **3 µs** on a binary whose SLEIGH lift costs
+milliseconds. The primitive surface changed; *a word-level op pays for the span
+it is given* did not.
 
 Also pending, and each is a deliberate non-build rather than an oversight:
 
