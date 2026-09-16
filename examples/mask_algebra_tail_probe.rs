@@ -130,6 +130,11 @@ mod imp {
 
     type Arm = fn(&[u64], &[u64], &mut [u64]);
 
+    /// Median-free single timing of one arm: warm up over an eighth of the
+    /// budget, then time `iters` back-to-back calls and return ns/call.
+    ///
+    /// `black_box` wraps BOTH the inputs and one output word, so the optimizer
+    /// can neither hoist the call out of the loop nor delete the write.
     fn time_once(f: Arm, a: &[u64], b: &[u64], dst: &mut [u64], iters: u32) -> f64 {
         for _ in 0..(iters / 8).max(1) {
             f(black_box(a), black_box(b), black_box(dst));
@@ -143,6 +148,10 @@ mod imp {
         e.as_secs_f64() * 1e9 / f64::from(iters)
     }
 
+    /// Median of a timing sample, the robust centre for this probe.
+    ///
+    /// Deliberately not the mean: a scheduler preemption lands as one huge
+    /// outlier, which moves a mean by more than the effect being measured.
     fn median(v: &mut [f64]) -> f64 {
         v.sort_by(|x, y| x.partial_cmp(y).expect("timings are finite"));
         let m = v.len() / 2;
@@ -179,12 +188,21 @@ mod imp {
         (median(&mut ps), median(&mut ds))
     }
 
+    /// Deterministic pseudo-random operand of `n` words.
+    ///
+    /// The odd Weyl multiplier gives every word a different bit pattern, so a
+    /// tail group cannot accidentally be all-zero and time as free.
     fn mk(n: usize, seed: u64) -> Vec<u64> {
         (0..n)
             .map(|i| seed ^ (i as u64).wrapping_mul(0x9E37_79B9))
             .collect()
     }
 
+    /// Correctness gate: both arms must be BIT-IDENTICAL to a scalar `&`
+    /// reference at this width before any timing of that width is believed.
+    ///
+    /// A descent that silently skipped its tail would be faster and wrong; the
+    /// gate is what stops the speed number from being reported anyway.
     fn gate(n: usize) {
         let a = mk(n, 0xF0F0_5555_AAAA_1111);
         let b = mk(n, 0x0FF0_1234_5678_9ABC);
