@@ -1,3 +1,35 @@
+## 2026-09-16 (1) — census of this plan against the board and git: four governance defects, a fourth hex-tenant run, and the wave is the DuckDB matrix's own T1 gap list
+
+Three read-only censuses (ndarray code, ndarray plan+board, lance-graph
+consumers) plus my own verification of every decisive claim. Full text:
+`.claude/plans/gemm-ternlog-mask-consolidation-v1.md` §16.
+
+- **§14's numbers are stale against entry (5)'s STORNO, and the STORNO's own
+  commit `e5a87e6` edited this plan without touching them** (verified by diff:
+  one line changed, §15's tail law). §16.1 tabulates every correction.
+- **A fourth hex-tenant run** (§16.2) puts the reveal ratio at 161.8×–343.5×,
+  below the stated ~200× floor, so across four runs the honest range is
+  ~160–490×. Its `ternlogq` is 152 ns/pass against the board's 280–300 — a
+  different HOST, not a better estimate. Consequence worth keeping: **coal
+  denominated in "maintained steps" is not a portable unit** (µs fell, steps
+  rose, because the step got cheaper). The invariant across all four runs is the
+  SHAPE: the TCAM arm is flat in node size, the range arm tracks it.
+- **`D-GTM-0m` names two unrelated probes** nine days apart (`f1f4023`
+  behavioural soak, `d9459f0` hex tenant). Not renumbered — that would break the
+  commit messages carrying the results — but no new work may use the id.
+- **`D-GTM-0n` is measured, committed, and in NO governance doc.** Its
+  mask-vs-sparse-survivor crossover (0.1–0.8 % active) is directly relevant to
+  §12.5 pt 2's "no mask-beats-sparse claim until a sparse arm exists", and that
+  question could not be asked while the probe was invisible.
+- **The wave is not new.** `duckdb-to-v3-translation-matrix-v1.md` §3 already
+  lists G6 (`mask_set_range`), G1 (u8/u16 compare-to-mask) and G2 (ordered
+  u64/i64) as verified-absent with pre-registered falsifiers. N1 = G6 (two
+  consumers working around it, payoff measured). N2 = G1 (two fixtures measure
+  the 4× widening cost; the matrix's falsifier stands unchanged). N3 = G2 —
+  **PR #308 answers the matrix's own open question**: the ordered-u64 predicate
+  count is ≥ 1, and 100 % of the real offsets exceed 2³², so narrowing is
+  unsound. G2 is a gap.
+
 ## 2026-09-14 (5) — STORNO on entries (3) and (2), from the #307 council (measurement-skeptic, kernel-membrane, overclaim): same numbers, tighter words
 
 The numbers stand; the wording ran past them. Corrections, each to the sentence it replaces:

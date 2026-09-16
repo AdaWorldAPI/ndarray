@@ -994,3 +994,146 @@ the assert makes that explicit.
   loop; the spread gate (Morton == axial BFS) must stay green, and `n` is
   re-measured. The claim this rung makes is only that `n` drops; the number is
   the finding, not a prediction.
+
+---
+
+## §16 — v1.5 GOVERNANCE CORRECTIONS + the G1/G2/G6 wave (2026-09-16)
+
+Append-only. Four defects found by a census of this plan against the board and
+git history, each verified before being written here; then the wave they gate.
+
+### 16.1 ⊘ §14's numbers are STALE — the board corrected them and the plan was not updated
+
+`blackboard.md` 2026-09-14 (5) is a STORNO on entries (3) and (2) from the #307
+council. Its corrections apply to §14's bullets, which still state the
+pre-STORNO figures as settled fact. **The commit that added the STORNO
+(`e5a87e6`) DID edit this plan — and changed exactly one line, §15's tail law.**
+So this is not a timing oversight: the file was open and the numbers were left.
+
+| §14 says | the board's correction |
+|---|---|
+| reveal 49–99 ns vs 22 µs — **228–462×** | ~200–490× across three runs; the range arm's floor is the 8 KiB output clear |
+| ternlogq **291 ns/pass**, residual 2.8 % | 280–300 ns across runs; the "1.7 % at x=1" is fit-derived |
+| coal = **0.48 maintained steps** | 8.8–13.7 µs = **0.47–0.76 steps**, single window each; cross-run spread on coal is **56 %** |
+| (§15 opening) "`n` … 17.0 → 5.7 µs (−66 %)" | a STEP ratio, not an op ratio, on one fixture; the reset copy is **786 KiB**, not the 8 KiB the probe comment claimed |
+| "the ratio survives the degree-1 ablation" | **a −33 % gain survives** (4 487 vs 6 704) — the ratio HALVES |
+| "68/68 gates" | 68/68 probe ROWS, one fixture, one seed |
+
+Read §14 through this table. The numbers are not withdrawn; their CONFIDENCE is.
+
+### 16.2 A FOURTH run, measured today — it widens the spread on both axes
+
+`cargo run --release --example hex_tenant_mq_probe --features std`, this host:
+
+| level | rows/node | range ns | TCAM ns | ratio |
+|---|---|---|---|---|
+| 0 | 65 536 | 89 | 14 377 | 161.8× |
+| 1 | 4 096 | 54 | 14 394 | 266.8× |
+| 2 | 256 | 44 | 14 374 | 323.0× |
+| 3 | 16 | 43 | 14 363 | 334.6× |
+| 4 | 1 | 43 | 14 610 | 343.5× |
+
+`ternlogq = 152.4 ns/pass (0.149 ns/word)`, `n = 7 678 ns`, max rel residual
+15.9 %; `coal = 6 938 ns = 45.5 ternlogq passes = 0.84 maintained steps at x=4`;
+M2 linear, no cliff. Gates green.
+
+Two things this run does, and one it does not:
+- It puts the reveal ratio's low end at **161.8×**, BELOW the STORNO's stated
+  ~200× floor. Across four runs the honest range is **~160–490×**.
+- Its `ternlogq` is **152 ns/pass (0.149 ns/word)** against the board's 280–300
+  (0.285 ns/word) — a 2× divergence, i.e. a DIFFERENT HOST, not a tighter
+  estimate. Consequently coal reads **0.84** maintained steps here against
+  0.47–0.76 there: the µs went DOWN and the step count went UP, because the step
+  it is denominated in got cheaper. **Coal in "maintained steps" is not a
+  portable unit.** Report it with its host or report the µs.
+- It does NOT resolve the fixture question. Still one geometry, one density.
+
+The shape everyone agrees on is the one worth keeping: the TCAM arm is FLAT
+(~14.4 µs, it sweeps the column whatever the node size) while the range arm
+tracks the node (89 ns at the root → 43 ns at one row). Cost follows the
+selection, not the corpus. That is the stepless property, and it is invariant
+across all four runs.
+
+### 16.3 ⊘ `D-GTM-0m` names TWO unrelated probes
+
+- `f1f4023` (2026-09-05) — `examples/behavioral_soak_probe.rs`, a cross-ISA
+  codebook soak. Real measured numbers in its commit message (coverage 50.4 % /
+  56.8 % against a marginal-preserving null of 17.1 % / 37.5 %; real codebook 681
+  tokens where shuffled needs 4 526, a 6.6× compression).
+- `d9459f0` (2026-09-14) — `examples/hex_tenant_mq_probe.rs`, the hex tenant.
+  This is the one §14 and the board discuss.
+
+Nine days apart, same id. The first is invisible to any reader of the plan or
+the board. **Not renumbered here** — a retroactive renumber would break the
+commit messages that carry the results. Recorded so a future reader knows which
+`0m` a citation means, and no new work may use the id.
+
+### 16.4 ⊘ `D-GTM-0n` is a real measured probe that appears in NO governance doc
+
+`741e34b` (2026-09-05, 2.5 minutes BEFORE the 0m-soak commit) —
+`examples/ternlog_amortization_probe.rs`, with numbers: T3/T1 ~0.44–0.70 while
+L1-resident, back to ~1.0 by K=32; L1 ~139 GB/s, L2 90–93, L3 29–30; the
+mask-vs-sparse-survivor cross between 0.1 % and 0.8 % active. §12.7's own "what
+W0 leaves open" list says "0c/0d/0e remain unrun" and never mentions 0n exists.
+The omission is not staleness: the commit that updated §12's text
+(`3e598a1`) also EDITED that probe file.
+
+**That crossover number is load-bearing and orphaned.** §12.5 pt 2 says no
+"mask beats sparse GEMM" claim is available until a sparse arm exists — and 0n
+measured a mask-vs-sparse-survivor crossover at 0.1–0.8 % active. Whether that
+answers §12.5 pt 2 or is a different comparison is an open question, and it
+could not be asked while the probe was invisible.
+
+### 16.5 ⊘ The Status header caps at v1.4 (2026-09-05); the body runs to §15 (2026-09-14)
+
+Three sections past the last version line, one of them (§14) carrying numbers
+the board later corrected. This section is v1.5; the header stack is left
+untouched per append-only, and this line is the pointer.
+
+### 16.6 THE WAVE — it is the DuckDB matrix's own T1 gap list, not a new idea
+
+`lance-graph/.claude/plans/duckdb-to-v3-translation-matrix-v1.md` §3 already
+enumerates these, each **verified absent** with a pre-registered falsifier. The
+wave closes them in this order:
+
+**N1 — G6 `mask_set_range(out, lo, hi)`.** Two independent consumers work
+around its absence today: `lance-graph-quack`'s `Filter::prefix_u32` spells the
+PREDICATE and cites the missing-capability STOP rule, and this repo's own
+`hex_tenant_mq_probe.rs` hand-rolls the write inside an example. DuckDB carries
+the same op on the same representation (`TemplatedValidityMask::SetRangeInvalid`).
+Payoff already measured (§16.2). The matrix's own open question, carried here
+unanswered: **does a general `[lo, hi)` beat a nibble-aligned
+`reveal(prefix, level)`?** The latter is alignment-guaranteed and may be
+strictly simpler. Shipping the general form first is a decision, not a finding —
+if the aligned form measures better, the general one becomes its caller.
+
+**N2 — G1 `u8`/`u16` compare-to-mask.** The matrix's grounds: the V3 12-byte
+register is carved into BYTES, so byte width is the substrate's NATIVE width and
+i32 is the foreign one. Two independent fixtures now measure the widening cost —
+the hex tenant widens a u8 permeability column 4× and reports `n_gen` and coal as
+UPPER bounds because of it, and PR #308's r2il probe measures the mask arms at
+**12 B/op against the scalar arm's 9 B/op**, with the mask arms LOSING from
+~200 K ops. Falsifier, pre-registered by the matrix and unchanged: build
+`gt_u8_to_mask`, re-run both probes; **if neither the 8.9 µs re-chain nor the
+#308 crossover moves, the widening was not the cost and G1 drops in priority.**
+
+**N3 — G2 ordered `u64`/`i64` compare.** The matrix left this conditional:
+*"count how many intended predicates over a U64 lane are ordered rather than
+equality. If the answer is zero, G2 is not a gap."* **PR #308 answers it: the
+count is ≥ 1.** Its `find_ram_in_range` needs `lo <= offset < hi` over u64, and
+**100 % of the real Ram-space offsets exceed 2³²**, so narrowing to the existing
+i32 family is unsound. The probe re-expressed the query by splitting the offset
+into hi32/lo32 and asserts the window lies in one hi32 bucket — valid for that
+fixture, not in general. G2 is a gap.
+
+**Layering fence, load-bearing for N1.** `mask_set_range` is ADDRESS-BLIND: it
+sets a bit range. A prefix maps to a contiguous ROW range only when row order IS
+address order — the V3 SoA invariant. Deciding whether that holds is the
+CALLER's job. ndarray must not grow a notion of "is this column sorted."
+
+**Not in this wave, and why.** The weighted arm / `pack_a_masked_f32` (D-GTM-5,
+corrected three times, still unbuilt) stays after N1–N3: D-GTM-0j killed the
+density framing and left a TYPE boundary — masks win where the relation is
+Boolean, GEMM is required only where it carries VALUES — so the bridge's real
+job is the weighted case, and §12.5 pt 2 still forbids any comparative claim
+until a sparse arm exists. §16.4 may already have part of that arm.
