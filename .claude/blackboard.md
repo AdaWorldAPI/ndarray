@@ -1,3 +1,65 @@
+## 2026-09-16 (7) — `array_windows` + `add_mul` closes TWO different mantissa losses, and "bit exact" splits into two contracts the tree already distinguishes
+
+Operator: *"Und hilft dadurch immer bit exakt zu sein ohne mantissa Verluste —
+besonders bei BF16X16 tile Gemm und F32 x add_mul."* Verified at both named
+sites, and the verification turned up a distinction worth keeping.
+
+### The two losses the pair closes
+
+**(1) Product rounding.** The exact product of two f32s needs ~48 mantissa bits;
+f32 holds 24. An unfused `a*b + c` rounds the product to 24 bits BEFORE the add,
+then rounds again. `mul_add` carries the full-width product into the addend and
+rounds ONCE. `add_mul_f32` (`simd_ops.rs:158`) is exactly this —
+`va.mul_add(vb, vacc)` on `F32x16`, and its scalar tail (`:169`,
+`acc[i] = a[i].mul_add(b[i], acc[i])`) uses the SAME fused op, so the tail is not
+a second rounding regime and the function does not change behaviour with length.
+
+**(2) Accumulator narrowing — the bigger one, and it is what BF16 is about.**
+BF16 carries 8 mantissa bits against f32's 24. `bf16_tile_gemm_16x16`
+(`simd_ops.rs`) takes `a_bf16: &[u16]`, `b_bf16: &[u16]` and `c: &mut [f32]`,
+decodes BF16 → f32 **once, before the loops** (`bf16_to_f32_batch`), then
+accumulates entirely in an `F32x16` REGISTER via `mul_add`, writing to `c` only
+at the closing `reduce_sum()`. **BF16 is the input format and never the
+accumulate format.** Round-tripping the accumulator through BF16 storage would
+truncate 16 mantissa bits per step — a loss of a different order than (1).
+
+**Where the const window comes in:** `array_windows::<{PREFERRED_*_LANES}>`
+makes N a compile-time constant so the chain unrolls into registers and the
+accumulator is never spilled. A spill to a narrower slot re-opens (2), which is
+why the const size is not an ergonomic detail.
+
+### ⊘ But "bit exact" is TWO contracts here, and the tree chose differently for each
+
+`simd.rs:632-641` states it plainly for the f64 GEMM:
+
+> *"Crate-native tiled f64 GEMM … with a bit-exactness contract: **unfused
+> mul+add in ascending-k order** per element → bit-identical on every backend
+> (AVX-512/AVX2/NEON/WASM/scalar) and, at α=1 β=0, bit-identical to the naive
+> triple-loop reference."* — `gemm_f64_tiled_fma` is *"the fast fused tier (same
+> tiling/order, one rounding per step) … **not the backend engine, because its
+> scalar polyfill can lower to libm `fma()` on baseline builds**."*
+
+So:
+
+| sense of "bit exact" | how it is achieved | which kernel |
+|---|---|---|
+| **fewest roundings / no mantissa loss** — the operator's sense | FUSE: one rounding per step | `add_mul_f32/f64`, `bf16_tile_gemm_16x16`, `gemm_f64_tiled_fma` |
+| **reproducible across backends and against the naive reference** | DO NOT fuse, and pin the k-order | `gemm_f64_tiled` — the ground-truth GEMM for probes/certification |
+
+They pull opposite ways for one reason: whether `mul_add` becomes a hardware FMA
+or an unfused pair is a TARGET property (the scalar polyfill may reach libm
+`fma()`), so fusing buys accuracy at the cost of cross-backend identity. The
+accuracy sense is right for compute; the reproducibility sense is what a parity
+oracle needs. A session citing "bit exact" about a float kernel must say which.
+
+### One adjacent finding, named and NOT fixed
+
+`bf16_tile_gemm_16x16` allocates inside its `(i, j)` double loop — a
+`vec![0.0f32; k]` per column gather, so 256 allocations per call, plus the two
+decode buffers. `.claude/rules/data-flow.md` §1 says "never allocate inside a hot
+loop — slice into pre-allocated storage". Recorded here rather than drive-by
+fixed; it is a real defect in a kernel nobody asked me to touch today.
+
 ## 2026-09-16 (6) — ⊘ `array_windows` exists for `add_mul`, not for "overlap"; I had the right conclusion from the wrong reason
 
 Operator: *"array_windows ist immer für add_mul um rounding roundtrips zu
