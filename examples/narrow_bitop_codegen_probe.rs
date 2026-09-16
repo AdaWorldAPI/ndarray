@@ -56,6 +56,36 @@
 //! That is what makes fixed-width steps admissible rather than merely faster:
 //! they PRESERVE the property padding was chosen to protect, on x86 and
 //! aarch64 alike, while the padded form pays 8-20 ns for it.
+//!
+//! # Ternlog is NOT settled by the AND arms — measured, and it cuts both ways
+//!
+//! Every other arm here is two-input AND, which is not the question for
+//! `mask_ternlog` (codex P1, #315): that is the one mask-algebra op whose
+//! narrow descent would reach for `_mm256_ternarylogic_epi64`, a VL
+//! instruction. `probe_fixed4_ternlog` asks what LLVM does with a fixed-step
+//! arbitrary three-input truth table. Measured 2026-09-16:
+//!
+//! ```text
+//! v4:  vpor %ymm0, %ymm2, %ymm3
+//!      vpternlogq $32,  %ymm0, %ymm1, %ymm2
+//!      vpternlogq $236, %ymm1, %ymm2, %ymm3      <- 3 logic ops, 2 of them VL
+//! v3:  vandnps / vandps / vorps / vandps / vorps  <- 5 logic ops, packed, no VL
+//! ```
+//!
+//! Two findings, and they point opposite ways:
+//!
+//! - **The `avx512vl` GATE is unnecessary even for ternlog.** LLVM emits
+//!   `vpternlogq` on a 256-bit `ymm` from plain Rust when the target supports
+//!   it, and degrades to packed boolean ops when it does not. Tier selection
+//!   is the compiler's job; naming VL in our source would only duplicate it.
+//! - **But an intrinsic descent would still be strictly better HERE.** One
+//!   `_mm256_ternarylogic_epi64` is ONE instruction; LLVM used three. That is
+//!   a real gap, and it exists for ternlog alone — the AND arms lower to a
+//!   single `vandps`.
+//!
+//! So the throughput question for `mask_ternlog`'s tail is **OPEN**, and the
+//! AND measurements must not be read as closing it. What IS closed: the other
+//! ten algebra tails, and the gate.
 
 use ndarray::simd::{U64x4, U64x8};
 
@@ -86,6 +116,38 @@ pub extern "C" fn probe_scalar4_and(a: &[u64; 4], b: &[u64; 4], out: &mut [u64; 
     }
 }
 
+/// A fixed-step 4-lane arbitrary THREE-input truth table — the case that
+/// decides whether `mask_ternlog`'s tail can drop AVX-512VL.
+///
+/// Every other probe here is two-input AND, and two-input AND is not the
+/// question (codex P1, #315): `mask_ternlog` is the ONE mask-algebra op whose
+/// narrow descent would reach for `_mm256_ternarylogic_epi64`, which IS a VL
+/// instruction. If LLVM lowers this to several boolean ops instead of one
+/// `vpternlogq`, then the VL gate survives for ternlog even though the AND /
+/// OR / XOR / ANDNOT tails do not need it.
+///
+/// `IMM` is the 8-bit truth table, matching `mask_ternlog`'s own convention:
+/// bit `(a<<2)|(b<<1)|c` of `IMM` is the output for that input triple. Written
+/// as the canonical sum-of-minterms so nothing but the truth table is assumed.
+#[inline(never)]
+#[unsafe(no_mangle)]
+pub extern "C" fn probe_fixed4_ternlog(a: &[u64; 4], b: &[u64; 4], c: &[u64; 4], out: &mut [u64; 4]) {
+    const IMM: u64 = 0xE8; // majority(a, b, c) — a table with no 2-input shortcut
+    for i in 0..4 {
+        let (x, y, z) = (a[i], b[i], c[i]);
+        let mut r = 0u64;
+        for m in 0..8u32 {
+            if (IMM >> m) & 1 == 1 {
+                let mx = if m & 4 != 0 { x } else { !x };
+                let my = if m & 2 != 0 { y } else { !y };
+                let mz = if m & 1 != 0 { z } else { !z };
+                r |= mx & my & mz;
+            }
+        }
+        out[i] = r;
+    }
+}
+
 /// Two-lane scalar AND — the last rung of a descent, and the width at which
 /// auto-vectorization is least likely to be worth LLVM's while.
 #[inline(never)]
@@ -106,6 +168,8 @@ fn main() {
     let b8 = [0x00FFu64; 8];
     let mut o8 = [0u64; 8];
     probe_u64x8_and(&a8, &b8, &mut o8);
+    let c4 = [0x0F0Fu64; 4];
+    probe_fixed4_ternlog(&a4, &b4, &c4, &mut o4);
     let mut o2 = [0u64; 2];
     probe_scalar2_and(&[1, 2], &[3, 3], &mut o2);
     println!("probe: {o4:?} {o8:?} {o2:?}");

@@ -562,6 +562,32 @@ mod imp {
                 "  n/a".to_string()
             }
         };
+        println!(
+            "\nmedian ABSOLUTE tail cost on the {qualified} qualified widths (ns):\n\
+             \x20 P {:.2}   D {:.2}   S {:.2}   F {:.2}",
+            median(&mut p_ns.clone()),
+            median(&mut d_ns.clone()),
+            median(&mut s_ns.clone()),
+            median(&mut f_ns.clone())
+        );
+        // ⊘ The filter is a SELECTION on the very quantities being compared,
+        // and the first version of this note had its direction backwards. It
+        // said the filter is "conservative AGAINST D, S and F" because it
+        // keeps the widths where their tails are most expensive, and that for
+        // D-vs-F it "restricts the subset without tilting the difference"
+        // because the requirement is symmetric. The second half is false
+        // (codex P2, #315): when the true costs sit near the floor — exactly
+        // this regime — an arm qualifies only on draws where its OWN
+        // measurement error pushed it upward. That truncation compresses the
+        // observed D-F gap toward zero, which systematically favours the
+        // "fixed steps tie intrinsics" reading. Symmetry does not remove the
+        // conditioning, it applies it to both arms.
+        //
+        // The filter stays because unfiltered is worse — negative tails gave
+        // "D removes 121.3% of the padded cost" — but this is a CENSORED
+        // sample and the D-F gap it yields is a lower bound on any true
+        // difference. Resolving it properly needs precision, not filtering:
+        // more iterations, a quiet machine, or modelling the censored points.
         println!("\npooled over all {REPEATS} passes -- S {}  D {}  F {}", pc(s_all), pc(d_all), pc(f_all));
         println!("\nShare of the padded tail's cost removed, differenced per pass.");
         println!("Percentage-point gaps, pooled, with the per-pass spread beside them:");
@@ -605,14 +631,12 @@ mod imp {
                  floor: every tail strategy removes most of the PADDED tail's 8-20 ns,\n\
                  which is the finding this probe was built to establish.\n\
                  \n\
-                 And inconclusive is not neutral about what to BUILD. D, S and F came\n\
-                 out within a point or two of each other, so the burden of proof sits\n\
-                 on the expensive option and it has not been met: nothing here supports\n\
-                 a `U64x4`/`U64x2` narrow type across six backend files plus an\n\
-                 `avx512vl` gate. Take the cheapest form that captures the padded-tail\n\
-                 win — fixed-width steps in plain Rust — which needs no backend edits\n\
-                 and no raw intrinsics, and so reaches the NEON, wasm and scalar tails\n\
-                 that an x86 descent never could."
+                 This branch deliberately stops here. An earlier version went on to\n\
+                 say D, S and F had landed \"within a point or two\" and to recommend F\n\
+                 anyway — a measurement claim drawn from the data the same paragraph\n\
+                 had just rejected, on a run where those gaps may be NaN or arbitrarily\n\
+                 large (codex P2, #315). Nothing here establishes that closeness, so\n\
+                 nothing here recommends an architecture."
             );
         } else if ds_med <= 2.0 {
             println!(
