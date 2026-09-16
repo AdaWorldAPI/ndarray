@@ -1267,3 +1267,36 @@ valid for that fixture, not in general.
    << ((g % 8) * 8)` — 8 lanes per chunk, so eight chunks per word, unlike N2's
    one-chunk-one-word and unlike the u32 family's four-groups-per-word.
 4. `_under` siblings, then the facade re-export and a parity group.
+
+### 18a. ⊘ Correction to §18's scope — the composition is `64x2 × 4`, not "scalar per-lane" (operator, 2026-09-16)
+
+Operator: *"64x8 wird bei wasm und Skalar immer durch 64x2 \* 4 erledigt."*
+§18 above wrote "scalar per-lane" for neon/wasm/scalar, which is looser than the
+rule and would have produced four bespoke 8-lane bodies. Read as a build rule,
+not a description, it says: **one narrow primitive per arm at `U64x2`, composed
+×4 into the 8-lane result.**
+
+Measured state, so the rule is applied against facts rather than assumption:
+
+| arm | declaration | shape |
+|---|---|---|
+| neon | `struct U64x8(pub [U64x2; 4])` (`simd_neon.rs:2674`) | **`64x2 × 4`** |
+| wasm | `struct U64x8(pub [U64x2; 4])` (`simd_wasm.rs:1777`) | **`64x2 × 4`** |
+| scalar | `impl_int_type!(U64x8, u64, 8, 0u64)` (`simd_scalar.rs:527`) | flat `[u64; 8]` |
+| avx2 | `avx2_int_type!` polyfill (`simd_avx2.rs:2295` names it) | flat |
+| avx512 | `__m512i` (`simd_avx512.rs:1736`) | native |
+
+**One divergence, recorded rather than smoothed over:** on the scalar arm the
+macro generates a FLAT eight-lane array today, not `[U64x2; 4]`. The rule is
+still honoured without touching the macro-generated layout — the COMPOSITION is
+four 2-lane groups even where the STORAGE is flat, so every non-avx512 body has
+the identical shape and only the element access differs. Changing what
+`impl_int_type!` emits is a separate decision with a much wider blast radius and
+is not smuggled into N3.
+
+Consequence for the chunk plan in §18: chunk 1 and 2 merge into "add
+`U64x2::{cmpeq_mask, cmpgt_mask} -> u8` (2 bits) per arm, then compose ×4".
+`U64x2` has **10 methods on neon and no compare among them, and none at all on
+the other arms** (measured), so that narrow primitive is new everywhere too —
+but it is written once per arm instead of once per arm per width, and the ×4
+fold is shared.
