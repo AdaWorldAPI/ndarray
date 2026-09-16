@@ -20,7 +20,32 @@ env:
   # `.cargo/config.toml`: per-function `#[target_feature]` + runtime
   # `LazyLock<Tier>` detection means one binary, all ISAs. Jobs that
   # specifically need a higher target-cpu can opt in via per-job env.
-  RUSTFLAGS: "-D warnings"
+  #
+  # The two `--cfg` flags are NOT a preference — they are the matryoshka
+  # guarantee, and they are here because SETTING THIS VARIABLE AT ALL SILENTLY
+  # DISABLED THEM (found 2026-09-16). A RUSTFLAGS env REPLACES every
+  # cargo-config `rustflags` entry rather than joining it, so from the moment
+  # this workflow gained a global RUSTFLAGS, NOTHING in `.cargo/config.toml`
+  # applied to any job here — including the two cfgs that compile out
+  # curve25519-dalek's AVX2 backend (57 raw `_mm*` intrinsics under 52
+  # `unsafe`) and poly1305's (424 under 30). Those are second and third
+  # unaudited SIMD surfaces beside `ndarray::simd`, in the crypto path, and
+  # `.cargo/config.toml` argues at length for keeping them out. In CI they
+  # were in.
+  #
+  # Measured two-sided on one unit, same tree, same day:
+  #   no RUSTFLAGS env            -> 65x -Ctarget-cpu, 65x poly1305_force_soft
+  #   RUSTFLAGS="-D warnings"     -> ZERO of each
+  #   RUSTFLAGS="-D warnings <the two cfgs>" -> both cfgs present, build clean
+  #
+  # Only the ARCH-NEUTRAL half is restored here. `-Ctarget-cpu` stays out for
+  # the reason above (i686 / s390x); both cfgs are read by their crates on
+  # every arch, so they are safe across the whole cross matrix.
+  #
+  # Rule for anyone editing this line: a flag added to a RUSTFLAGS env does not
+  # ADD to the cargo config, it REPLACES it. Re-read `.cargo/config.toml`
+  # before changing this value and carry forward anything still needed.
+  RUSTFLAGS: '-D warnings --cfg curve25519_dalek_backend="serial" --cfg poly1305_force_soft'
   MSRV: 1.98.1
   BLAS_MSRV: 1.98.1
 

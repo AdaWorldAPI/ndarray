@@ -1,22 +1,64 @@
 [build]
-# Default cargo config — x86-64-v3 (AVX2) baseline. Portable across all
-# x86_64 silicon shipping since ~2013 (Haswell+). This is what GitHub CI
-# runs against and what `cargo build` produces for general distribution.
+# Default cargo config — `target-cpu=native`: the default MEASURES THE MACHINE
+# IT RUNS ON.
 #
-# Why v3 and not "no target-cpu":
+# ### ⊘ SUPERSEDED 2026-09-16: this file used to pin x86-64-v3 as the default
+#
+# The v3 pin was correct about one thing and wrong about the consequence. It IS
+# the portable distribution baseline — that part stands and is now spelled
+# explicitly in `.cargo/config-v3.toml`. What it got wrong is that a default
+# naming a tier the host is NOT means every AVX-512 measurement needs an
+# incantation, and a forgotten incantation does not fail — it silently grades
+# the wrong tier. Measured the day of the flip: `scripts/codegen-witness.sh
+# avx512` run WITHOUT `CARGO_ARGS='--config .cargo/config-v4.toml'` built v3 and
+# reported three FAILs ("has no vpternlog on an AVX-512 build") on probe symbols
+# the change under test never touched. The assertion was right, the build was
+# the wrong one, and nothing in the output said so.
+#
+# `native` cannot mis-grade that way: rustc resolves the host CPUID, so the
+# default arm is always the arm this machine can actually run, and it can never
+# SIGILL by construction. The cost is stated plainly rather than hidden: the
+# default no longer NAMES a tier, so **a measurement is labelled by the arm the
+# program itself reports** (`simd-masking-parity` and every probe print
+# `avx512f=true|false`), never by "it was the default". A tier a row depends on
+# is pinned by that row, explicitly:
+#
+#   portable / distribution baseline   --config .cargo/config-v3.toml   (v3, AVX2)
+#                                      ^ REQUIRED for anything you ship. A plain
+#   `cargo build --release` is now tuned to the BUILD HOST and is not portable
+#   — `.cargo/config-native.toml` has always said so about this exact flag
+#   ("do NOT distribute artifacts built with this config"), and that warning now
+#   applies to the default. Runtime `simd_caps()` dispatch does NOT rescue it:
+#   detection picks among code paths, it cannot un-emit host-only instructions
+#   the baseline codegen already placed everywhere. (Raised by codex on #313;
+#   README's build table and both Dockerfiles were corrected in the same PR.)
+#   Nothing is shipped from a default build today — this crate is a `[lib]` with
+#   no bin targets, and the published crate does not carry this file to
+#   consumers, who build under their own config. The caveat is for THIS
+#   workspace's own release artifacts and images.
+#   AVX-512                            --config .cargo/config-v4.toml   (v4)
+#   Sapphire Rapids (VNNI/BF16/AMX)    --config .cargo/config-avx512.toml
+#
+# This does NOT reach `.github/workflows/ci.yaml`. That workflow sets a global
+# `RUSTFLAGS: "-D warnings"`, and a RUSTFLAGS env REPLACES every cargo-config
+# rustflags entry — so none of the flags in this file have ever applied there,
+# including the two crypto cfgs below. Measured two-sided on the same unit the
+# same day: no RUSTFLAGS → 65× `-Ctarget-cpu`, 65× `poly1305_force_soft`;
+# `RUSTFLAGS="-D warnings"` → zero of each.
+#
+# Why NOT "no target-cpu at all":
 #   `src/simd_avx2.rs` composes `F32x16` as two `__m256` halves (AVX
 #   intrinsics), and the `simd_avx2_*` op funcs use `__m256i` (AVX2).
-#   Without a global v3 baseline, rustc compiles to x86-64 generic (SSE2)
-#   and those intrinsics emit instructions the CPU never executes →
-#   SIGILL at run time, exactly the PR #170 CI failure mode.
+#   With NO baseline at all, rustc compiles to x86-64 generic (SSE2) and
+#   those intrinsics emit instructions the CPU never executes → SIGILL at
+#   run time, exactly the PR #170 CI failure mode. `native` clears that floor
+#   on any host that has the features, and on a host that does not, the
+#   backend `simd.rs` selects is the one that host can run.
 #
-# AVX-512 builds: use `--config .cargo/config-avx512.toml` (or
-# `CARGO_BUILD_RUSTFLAGS='-Ctarget-cpu=x86-64-v4'`). The simd.rs dispatch
-# arms key off `target_feature = "avx512f"`; under v4 they pick the
-# `simd_avx512` backend (native `__m512` / `__m512d` / `__m512i`).
-#
-# Build-machine-tuned binaries: use `--config .cargo/config-native.toml`
-# (`target-cpu = "native"`); rustc resolves the host CPUID at compile.
+# `.cargo/config-native.toml` is kept and is now a no-op overlay on x86_64
+# (same flag as the default). It stays because it names the intent at a call
+# site and because a caller may pass it on a host whose own default config
+# differs.
 #
 # Runtime LazyLock dispatch (one release binary, heterogeneous deployment
 # silicon) is a fifth opt-in mode — see § 7.1 of
@@ -80,7 +122,7 @@
 # Verify: cargo build -p encryption -v 2>&1 | grep poly1305_force_soft
 [target.'cfg(target_arch = "x86_64")']
 rustflags = [
-    "-Ctarget-cpu=x86-64-v3",
+    "-Ctarget-cpu=native",
     "--cfg",
     "curve25519_dalek_backend=\"serial\"",
     "--cfg",

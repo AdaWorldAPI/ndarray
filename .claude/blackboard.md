@@ -1,3 +1,173 @@
+## 2026-09-16 (14) — the default `target-cpu` now MEASURES THE HOST; a config that a caller can silently REPLACE was never a guarantee
+
+Three findings, one root cause, PR #313 (branch `claude/c64-6502-falsifier-shztkk`).
+The root cause is one sentence: **a build flag you did not have to ask for is a
+flag you cannot tell you got.**
+
+### 1. The flip: `.cargo/config.toml` → `target-cpu=native`
+
+It used to pin `x86-64-v3`. That is the correct PORTABLE baseline and still is —
+it moved into `.cargo/config-v3.toml`, where a row that needs it SAYS so. What
+was wrong was making it the *unnamed default*, because then every AVX-512
+measurement needs an incantation, and a forgotten incantation does not fail.
+
+**The incident that prompted it, same session.** Gating the `pack<const L>` fold
+I ran `scripts/codegen-witness.sh avx512` WITHOUT
+`CARGO_ARGS='--config .cargo/config-v4.toml'`. It built v3 and printed:
+
+```
+   probe_ternlog_u64x8: 0 vpternlog
+   FAIL: probe_ternlog_u64x8 has no vpternlog on an AVX-512 build
+```
+
+Three FAILs, on probe symbols the change under test never touched. The assertion
+was right, the build was the wrong one, and **nothing in the output said which**.
+That is the workspace's own recorded trap — *a timing without its target-cpu is
+an anecdote* — with a second door: an ASSERTION without its target-cpu is a
+false alarm, and a false alarm on symbols you did not touch is the shape most
+likely to be believed.
+
+After the flip the identical bare command PASSES with 6 `vpternlog`.
+
+### 2. The pin is load-bearing in BOTH directions — measured two-sided
+
+A flip that only made v4 easier would have moved the landmine, not removed it.
+On this AVX-512 host:
+
+| command | result |
+|---|---|
+| `codegen-witness.sh avx2` bare | **FAIL** `has no packed logic` — grading v4 assembly against "no vpternlog may appear" |
+| `codegen-witness.sh avx2` + `config-v3` | **PASS** |
+
+So the matrix's portable row now PINS v3 instead of inheriting it. Unpinned it
+would grade whichever tier the runner SKU happens to be — and some Azure runner
+generations carry AVX-512, so it would be **nondeterministic across reruns**,
+which is worse than wrong.
+
+**The rule this generalizes to: a tier is READ, never inferred.** Every probe
+and the parity program print `avx512f=true|false` precisely because the default
+no longer names a tier. Cite that line, not "it was the default".
+
+### 3. The bigger find, and it was NOT the one I went looking for
+
+`.github/workflows/ci.yaml` sets a workflow-global `RUSTFLAGS: "-D warnings"`.
+A RUSTFLAGS env **REPLACES** every cargo-config `rustflags` entry rather than
+joining it. So from the moment that variable was introduced, **nothing in
+`.cargo/config.toml` had ever applied to any job in that workflow** — not the
+target-cpu, and not the two cfgs that compile out curve25519-dalek's AVX2
+backend (57 raw `_mm*` under 52 `unsafe`) and poly1305's (424 under 30).
+
+Those are the second and third unaudited SIMD surfaces beside `ndarray::simd`,
+in the crypto path. The config file argues at length for keeping them out of the
+binary — the matryoshka rule. **In CI they were in.**
+
+Measured two-sided, same tree, same unit (`cargo build -p encryption -v`):
+
+| RUSTFLAGS | `-Ctarget-cpu` | `poly1305_force_soft` |
+|---|---:|---:|
+| unset | 65× | 65× |
+| `-D warnings` | **0** | **0** |
+| `-D warnings` + the two cfgs | — | present, clean |
+
+Fixed by putting the two **arch-neutral** cfgs into that global RUSTFLAGS.
+`-Ctarget-cpu` stays out for the reason it was removed (i686 is 32-bit, s390x is
+not x86); both cfgs are read by their crates on every arch.
+
+**⊘ Correction to how this file has been reasoning.** Several earlier entries
+cite `.cargo/config.toml:83` as evidence of what a build *was*. That is sound
+only when no RUSTFLAGS env is set. **Before citing any config flag as in force,
+check whether the caller sets RUSTFLAGS.** Entries (13) and earlier are not
+wrong — they used `env -u RUSTFLAGS` — but the habit of citing the file rather
+than the arm's own report is what let this sit unnoticed.
+
+### 4. Two real defects the flip surfaced on DAY ONE
+
+Both in code the v3 default never compiled, and therefore never linted:
+
+- `src/simd_int_ops.rs` — `needless_return` in the runtime-VNNI block. The lint
+  is **config-dependent**: the trailing scalar fallback is cfg'd out when
+  `avx512vnni`/`avxvnni` is a compile feature, so the second `return` is
+  trailing there and load-bearing on v3. **`allow`, not `expect`** — `expect`
+  would fail the v3 build for the lint NOT firing, turning one arm's cleanup
+  into the other arm's error. Worth keeping: a cfg-dependent lint is the one
+  case where `expect` is the wrong tool.
+- `examples/ternlogq_tail_descent_probe.rs` — `print_literal`. Gated
+  `avx512f + avx512vl`, so #311's own clippy run never compiled it. My #311
+  commit message claimed "clippy v3 `--examples --tests` clean"; that was TRUE
+  and did not cover this file. **A green lint over code that was cfg'd out is
+  not evidence about that code.**
+
+### 5. The open question — ANSWERED the same day, and the answer is bigger
+
+A new `host-native` matrix row runs the unpinned parity program and is
+**`continue-on-error` on purpose**: a row whose answer is "whatever this
+runner is" cannot gate a merge on pool scheduling.
+
+**Measured on its first run, and it beat the question.** Within ONE workflow
+run (35148155422, head `c1bd7015`), two jobs — both `runs-on: ubuntu-latest`,
+both under the `target-cpu=native` default — reported different tiers:
+
+| job | reports |
+|---|---|
+| `realization/nightly x x86_64` | `avx512f=TRUE` |
+| `realization/host-native x x86_64` | `avx512f=FALSE` |
+
+**GitHub's `ubuntu-latest` pool is HETEROGENEOUS: the tier is decided per
+JOB, not per run and not per repo.** So `native` in CI is a coin flip, and
+an ISA assertion on an unpinned row would pass or fail on scheduling. That
+is the empirical vindication of pinning the portable row — a green unpinned
+run would have proven only that the day's scheduling was lucky.
+
+**⊘ Correction to this session's own reasoning, recorded because the error is
+instructive.** When the nightly row failed I inferred "the GitHub runner has
+AVX-512" from the failure's mechanism alone (the errors sat in
+`#[cfg(all(test, target_feature = "avx512f"))]` modules, so that predicate
+had to be true). The inference was locally valid and the generalization was
+wrong: it was true of THAT job, and false of another job in the same run. **A
+mechanism that proves a fact about one runner proves nothing about "the
+runner".** The `host-native` row is what caught it, which is the whole reason
+a row that only reports is worth having.
+
+### 5b. What the nightly CI failure actually was — a REAL bug, not collateral
+
+`realization/nightly x x86_64` went red on the first push. Root cause, and it
+is the flip earning its keep rather than the flip breaking something:
+
+`cargo +nightly test --features nightly-simd` **fails to compile on ANY host
+where `avx512f` is a compile-time feature**, and has for as long as both
+existed. The call sites live in `#[cfg(all(test, target_feature = "avx512f"))]`
+modules of `src/simd_avx512.rs`; under the old v3 default that predicate was
+false, so the two features never co-compiled anywhere — not in CI, not
+locally. Any developer on an AVX-512 machine hits it today.
+
+The gap was a stated-contract violation: both polyfill files' own doc comments
+say *"API mirrors `simd_avx512::<Type>` so consumer code is backend-agnostic"*,
+and four types were short — `I8x64`/`I8x32` (zero, add, sub, cmp_gt) and
+`I16x32`/`I16x16` (those plus min, max).
+
+**Fixed the surface, did not pin the row.** Pinning the nightly row to v3
+would have hidden a defect that bites outside CI and stopped that row ever
+witnessing the combination again — "disable the thing that found the bug".
+
+Semantics were READ off the native bodies, not guessed: `add`/`sub` are
+`_mm512_add/sub_epi{8,16}`, i.e. WRAPPING, so the polyfill uses `+`/`-` and
+NOT the `saturating_*` methods sitting next to them, which are a different
+operation and the obvious way to get this subtly wrong. `cmp_gt` delegates to
+each type's existing `cmpgt_mask` so the two spellings cannot drift.
+
+Evidence is a RUN, not a lint: `cargo +nightly test --lib --features
+nightly-simd` -> **2534 passed**, and the ones that matter are the AVX-512
+backend's OWN test vectors now executing against the `core::simd` polyfill and
+agreeing with the native expectations. That is cross-backend parity this repo
+did not previously have.
+
+### What did NOT change
+
+v3 is still the portable distribution baseline. The SIGILL floor argument in the
+config file still holds (`simd_avx2.rs`'s `__m256`/`__m256i` bodies need AVX2
+present) — `native` clears it on any host that has the features, and on a host
+that does not, `simd.rs` selects a backend that host can run.
+
 ## 2026-09-16 (13) — the `VPTERNLOGQ` tail is a DESCENT, not a pad (5–8×); a 64×2 re-apply on a full-width mask is NOT (0.5–0.7×); the GEMM block-stop tail is INERT (0.99–1.02×)
 
 Three probes, one question in three places (operator: *"instead of padding the

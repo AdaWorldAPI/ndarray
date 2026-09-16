@@ -67,8 +67,21 @@ env:
 
 jobs:
   native:
-    # x86_64 host at the crate's default target-cpu (x86-64-v3 = the AVX2
-    # realization). Also the ONLY row that can exercise AMX: the tile ops are
+    # x86_64 at x86-64-v3 (the AVX2 realization), PINNED EXPLICITLY via
+    # `.cargo/config-v3.toml`.
+    #
+    # ⊘ This row used to rely on v3 being `.cargo/config.toml`'s DEFAULT. That
+    # default is now `target-cpu=native`, so the pin is load-bearing rather
+    # than decorative, and the reason is two-sided-measured (2026-09-16, on an
+    # AVX-512 host): `codegen-witness.sh avx2` BARE reports
+    # "FAIL: ... has no packed logic" — it is grading vpternlog-carrying v4
+    # assembly against an assertion that says no vpternlog may appear — while
+    # the same command with `CARGO_ARGS='--config .cargo/config-v3.toml'`
+    # PASSES. Unpinned, this row would grade whichever tier the runner SKU
+    # happens to be; some Azure runner generations carry AVX-512, so it would
+    # be nondeterministic across reruns, not merely wrong.
+    #
+    # Also the ONLY row that can exercise AMX: the tile ops are
     # runtime-gated and always compiled into native builds, so the report
     # prints which gates this runner clears (`tile_available`/`available`
     # false on a non-AMX runner is the expected, honest answer) and the
@@ -83,14 +96,69 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: generated ternlog bodies are current
         run: python3 tools/gen_ternlog_bodies.py --check
-      - name: masking parity (native, default config)
-        run: bash scripts/masking-parity.sh native
-      - name: codegen witness (avx2)
-        run: bash scripts/codegen-witness.sh avx2
+      - name: masking parity (x86-64-v3, pinned)
+        run: CARGO_ARGS='--config .cargo/config-v3.toml' bash scripts/masking-parity.sh native
+      - name: codegen witness (avx2, pinned to v3)
+        run: CARGO_ARGS='--config .cargo/config-v3.toml' bash scripts/codegen-witness.sh avx2
       - name: AMX realization report (runtime-gated; prints this runner's gates)
         run: cargo run --example amx_realization_report
       - name: AMX encoding + detection tests (no tile op executes)
         run: cargo test --lib -- hpc::amx_ops simd_amx
+
+  host-native:
+    # INFORMATIONAL, non-gating (`continue-on-error`). Testing the waters:
+    # what does a GitHub runner actually GIVE us under the new
+    # `target-cpu=native` default?
+    #
+    # Every other row in this matrix names its tier and asserts against it.
+    # This one names NOTHING and just reports — because the open question the
+    # native default raises is empirical and we do not have the answer:
+    # GitHub's ubuntu-latest pool is not one SKU, and some generations carry
+    # AVX-512 while others do not. The parity program's own header line
+    # (`avx512f=true|false`) is the reading; `lscpu` beside it is the
+    # corroboration.
+    #
+    # ANSWER, measured 2026-09-16 on this row's first run — and it is stronger
+    # than the question asked. Within ONE workflow run (35148155422), two jobs
+    # both `runs-on: ubuntu-latest`, both under the `target-cpu=native`
+    # default, reported DIFFERENT tiers:
+    #
+    #   realization/nightly x x86_64        avx512f=TRUE
+    #   realization/host-native x x86_64    avx512f=FALSE
+    #
+    # So the pool is HETEROGENEOUS and the tier is decided per JOB, not per
+    # run and not per repo. (The nightly row's failure on the previous head
+    # was caused by landing on an AVX-512 runner, which compiled
+    # `#[cfg(all(test, target_feature = "avx512f"))]` modules that had never
+    # been compiled in CI before — a real polyfill gap, fixed in c1bd7015.)
+    #
+    # That is exactly why `native` pins nothing and the portable row pins v3:
+    # unpinned, an ISA assertion here would be a coin flip per job, and a
+    # green run would prove only that today's scheduling was lucky.
+    #
+    # It is `continue-on-error` ON PURPOSE and must stay that way: a row whose
+    # result is "whatever this runner is" cannot gate a merge without making
+    # the merge depend on pool scheduling. If a future session wants to ASSERT
+    # a tier here, that is a different row with an explicit pin — do not
+    # promote this one by deleting the flag.
+    #
+    # What it can still catch, and why it is worth a row at all: the parity
+    # program must be bit-identical to its scalar references on WHATEVER
+    # realization it lands on. A red here is a real parity failure on a tier
+    # no pinned row happens to cover.
+    runs-on: ubuntu-latest
+    name: realization/host-native × x86_64 (informational)
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: what silicon is this runner
+        run: lscpu | sed -n '1,/^Flags/p' | head -30
+      - name: masking parity (host-native, unpinned — READ THE HEADER LINE)
+        run: bash scripts/masking-parity.sh native
 
   native-v4:
     # Same host, AVX-512 realization via the v4 cargo config. Building and
