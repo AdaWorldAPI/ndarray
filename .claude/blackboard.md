@@ -1,3 +1,86 @@
+## 2026-09-16 (11) — the G1 falsifier is ANSWERED, and the widening WAS the cost: 6.75× on the re-chain
+
+The plan pre-registered this and carried it open through BOTH N2 and N3:
+*"build `gt_u8_to_mask`, re-run both probes; if neither the 8.9 µs re-chain nor
+the #308 crossover moves, the widening was not the cost and G1 drops in
+priority."* Answered on the half that could be run. Commit `92b4fcd`.
+
+| tier | M1b: 6 masks (widened i32 → native u8) | ratio | coal: one re-chain | ratio |
+|---|---|---|---|---|
+| **v4 / AVX-512** | 40810 ns → **5064 ns** | **8.06×** | 6789 ns → **1006 ns** | **6.75×** |
+| v3 / AVX2 | 43798 ns → 5638 ns | 7.77× | 7189 ns → 1101 ns | 6.53× |
+
+In the probe's own cost-model units (v4, x=4) a maneuver drops from **1.02
+maintained steps to 0.15** — a re-chain used to cost a whole maintained step
+and now costs about a seventh of one. That changes the Mississippi Queen coal
+budget qualitatively, not marginally: re-chaining was priced as roughly "skip a
+step", and it is now close to free relative to a step.
+
+### The method is what makes the number worth anything
+
+- **Bit-identity asserted BEFORE either arm is timed.** Two `assert_eq!`s; the
+  probe aborts on mismatch. A timing comparison between operations that do not
+  produce the same answer measures nothing — the same rule the parity-oracle
+  work states as *"an oracle must reproduce the operation under test, not
+  something in its neighbourhood that also rotates."*
+- **One process, one dataset, both arms.** The native arm was **added beside**
+  the widened one, never swapped in. That turned out to matter: **neither tier
+  reproduces the 8.9 µs this probe's re-chain is quoted at** (v4 6789, v3
+  7189), so that historical absolute came from a build this session does not
+  reproduce. A before/after across runs would have been contaminated by that
+  drift; a ratio measured side by side is not.
+- **The widened column's materialization sits OUTSIDE the timed region** (built
+  once, up front), so 6.75× is steady-state sweep cost only — the reading that
+  FAVOURS the widened arm. The real end-to-end gap is larger.
+
+### The ratio is nearly tier-independent, and that is the interesting part
+
+6.75× (v4) vs 6.53× (v3) — essentially the same. **So this is a WIDTH effect,
+not an ISA effect**, and it would not have shown up by picking a better
+instruction. Arithmetic that bounds it: for N elements the i32 path issues
+N/16 compares reading 4N bytes; the u8 path issues N/64 compares reading N
+bytes — 4× fewer instructions AND 4× less memory. Observed 6.5-8× exceeds
+either factor alone.
+
+The plausible remainder is **the packing**, which is exactly the property N3
+had to discover the hard way: at u8 one 64-lane chunk IS one whole 64-bit mask
+word, so `out_words[g] = bits` with no shift, while the i32 path must
+shift-and-OR each 16-bit group into its word (`out_words[g / 4] |= bits <<
+((g % 4) * 16)`). Labelled **CONJECTURE** — it is consistent with the numbers
+and with the architecture, but it is an attribution, not a separate
+measurement. Isolating it would need a third arm that packs u8 results the i32
+way.
+
+### Half the falsifier is BLOCKED, not skipped — and the distinction matters
+
+`r2il_column_scan_probe` is the other pre-registered half, and it is the more
+interesting one: its own header names BOTH gaps this wave closed — *"1. No
+`u8` comparator ... a consumer must keep a widened copy"* and *"2. No `u64`
+RANGE comparator ... the ordered family stops at `i32`"*, i.e. N2 and N3
+respectively. It even records that **100 % of the real Ram-space offsets exceed
+2³²**, and that it worked around G2 by splitting the offset into hi32/lo32
+columns, *"valid only because the chosen window lies inside one `hi32`
+bucket"*.
+
+It cannot run here. It needs a column dump from `r2sleigh-lift`'s
+`win32_census`, which needs a Win32 PE binary; the generator exists in the
+sibling repo (`99d2553`) but **no PE binary exists in this container**.
+Synthesizing a dump would yield a number shaped like the falsifier's answer
+without being it, and that probe's own docs insist on *"a real lift rather than
+a synthetic stream"*. So:
+
+- **G1: measured, and the answer is that closing it was worth it** (on the hex
+  tenant; the r2il crossover half is still owed).
+- **G2: code landed on six realizations, measurement still OPEN.** Nothing yet
+  shows the u64 range family pays for itself, because the one consumer that
+  would show it is the blocked probe. Recorded as open rather than inferred
+  from G1's result — the widths are different and G1's win came partly from a
+  packing property that **does not hold at u64**.
+
+Reproduce: `CARGO_PROFILE_DEV_DEBUG=0 env -u RUSTFLAGS cargo --config
+.cargo/config-v4.toml run --release --example hex_tenant_mq_probe`, and the
+same without `--config` for the v3 row.
+
 ## 2026-09-16 (10) — N3 / T1 gap G2 LANDED on all six realizations, and a cross-target "it compiles" needed a ROUTING PROOF to mean anything
 
 `{eq,ne,gt,ge,lt,le}_u64_to_mask` + the `simd.rs` facade + the lane primitive
