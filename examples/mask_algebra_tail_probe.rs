@@ -12,6 +12,35 @@
 //! The answer decides whether a `U64x4`/`U64x2` facade surface across six
 //! backend files is worth building.
 //!
+//! # What the padded tail is actually FOR — read this before proposing a peel
+//!
+//! The zero-padded tail is not an oversight and not a speed choice. It was
+//! chosen deliberately (`simd_masking_ops.rs:102-107`, codegen witness
+//! 2026-09-14) for codegen UNIFORMITY: an exact-length scalar tail "fully
+//! unrolled ... on aarch64 into 7 x (and, orr) on GPRs ... in a facade op
+//! whose contract is `packed on every backend`", and became `vpmaskmovq` on
+//! AVX2. Padding makes both arms one shape — packed body, packed tail.
+//!
+//! That header is also explicit that "no throughput comparison against the old
+//! peel has been made". THAT is the gap this probe fills. So any tail proposal
+//! clears two bars, and being faster is only the first:
+//!
+//! 1. **Throughput** — measured here. The padded tail costs 8-20 ns against a
+//!    body of ~3.5 ns at 8 words, so it is routinely larger than the work it
+//!    trails, and 7 of 8 mask sizes have one.
+//! 2. **Packed on every backend** — measured in `narrow_bitop_codegen_probe`,
+//!    including on the backend the objection was about. A FIXED-WIDTH peel
+//!    emits `and v0.16b` on aarch64 and `vandps ymm`/`xmm` on x86. The
+//!    distinction the 2026-09-14 witness could not draw is between an
+//!    EXACT-LENGTH tail, whose trip count is a runtime value, and a
+//!    FIXED-WIDTH step, whose trip count is a constant. Only the first
+//!    degenerates to GPRs — which is also exactly why arm `S` below loses to
+//!    arm `F`.
+//!
+//! So the recommendation is not "padding was wrong". Padding bought a real
+//! property with a real measurement behind it; fixed-width steps keep that
+//! property AND stop paying 8-20 ns for it.
+//!
 //! # The arms
 //!
 //! - **P — production.** `ndarray::simd::mask_and`, called directly. Not a
