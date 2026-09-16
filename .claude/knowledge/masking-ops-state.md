@@ -122,15 +122,30 @@ baseline**. Consequence for consumers: on an AVX2 baseline keep the hi32/lo32
 split; on v4 the native spelling is both faster and general (no bucket
 assumption).
 
-### The widening tax was real for u8 and NEVER existed for u64
+### The u8 widening is a 4× tax; the u64 "widening" is a DISCOUNT
 
-PR #308 blamed its Q2 crossover on widened columns. Measured, the Q2 arms never
-paid one: `offset` read twice is 16 B/op and `hi32`+`lo32` read twice is also
-16 B/op. Splitting a u64 into two u32s **does not add traffic — it halves the
-element width**, which is what the vector units reward, and is why the widened
-arms beat the native one on v3 and match it on v4. The 4× tax was only ever
-u8→u32. ⊘ That corrects PR #308's stated mechanism; its crossover number
-survives.
+PR #308 blamed its Q2 crossover on widened columns. Counted per arm, the
+widened path is not merely no worse — it reads **less**:
+
+| arm | reads per logical row | total |
+|---|---|---:|
+| `NATIVE` | `space` 1 B + `offset` 8 B (`ge`) + `offset` 8 B (`lt`) | **17 B** |
+| `AND` / `TERN` | `space32` 4 B + `hi32` 4 B + `lo32` 4 B + `lo32` 4 B | **16 B** |
+
+Offset-derived alone: **16 B native vs 12 B split**, a 25 % saving, because
+each split predicate touches only the half it needs (`hi32` once, `lo32` twice)
+while every native `u64` predicate pulls all eight bytes. The split therefore
+halves the element width AND cuts traffic — which is why the widened arms beat
+the native one on v3 and match it on v4. The `u8` case has the opposite sign: a
+real 4× tax with no compensating structure.
+
+⊘ **Corrected 2026-09-16 (coderabbit, ndarray #310).** The first version of
+this section claimed `hi32`+`lo32` came to "also 16 B/op" and concluded the Q2
+arms paid no tax at all. `hi32` is read ONCE, not twice — 12 B, not 16. The
+direction is unchanged and rests on the measured timings and the native path's
+generality; the equal-traffic mechanism offered for it was wrong. PR #308's
+crossover number survives; both its stated mechanism and this file's first
+correction of it do not.
 
 ### What did NOT change
 

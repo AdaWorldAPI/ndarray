@@ -114,14 +114,30 @@
 //! v3 baseline should keep the hi32/lo32 split; on v4 the native spelling is
 //! both faster and general.
 //!
-//! ## The widening tax was real for u8 and NEVER existed for u64
+//! ## The u8 widening is a 4× tax; the u64 "widening" is a DISCOUNT
 //!
-//! The first run blamed Q2's crossover on widened columns. Measured, the Q2
-//! arms never paid one: `offset` read twice is 16 B/op, and `hi32`+`lo32`
-//! read twice is also 16 B/op. Splitting a u64 into two u32s does not add
-//! traffic — it **halves the element width**, which is what the vector units
-//! reward, and it is why the widened arms stay competitive with (v4) or beat
-//! (v3) the native one. The tax was only ever u8→u32, where it is 4×.
+//! The first run blamed Q2's crossover on widened columns. Counted per arm,
+//! the widened path is not merely no worse — it reads **less**:
+//!
+//! | arm | reads per logical row | total |
+//! |---|---|---:|
+//! | `NATIVE` | `space` 1 B + `offset` 8 B (`ge`) + `offset` 8 B (`lt`) | **17 B** |
+//! | `AND` / `TERN` | `space32` 4 B + `hi32` 4 B + `lo32` 4 B + `lo32` 4 B | **16 B** |
+//!
+//! Offset-derived alone it is **16 B native vs 12 B split** — a 25 % saving,
+//! because each split predicate touches only the half it needs (`hi32` once,
+//! `lo32` twice) while every native `u64` predicate must pull all eight bytes.
+//! So the split both halves the element width (what the vector units reward)
+//! AND cuts traffic. The `u8` case is the opposite sign: widening `tag`/`space`
+//! to `u32` is a real 4× tax with no compensating structure.
+//!
+//! ⊘ This corrects the first published version of this section, which claimed
+//! `hi32`+`lo32` came to "also 16 B/op" and concluded the Q2 arms paid no tax
+//! at all. `hi32` is read ONCE, not twice — 12 B, not 16. The **direction**
+//! (widened beats native on v3, matches on v4) is unchanged and is what the
+//! measured timings show; the equal-traffic mechanism offered for it was
+//! wrong. The consumer guidance below follows the timings and the native
+//! path's generality, never that retired claim.
 //!
 //! ## The crossover survives both corrections
 //!
