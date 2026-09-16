@@ -1,3 +1,44 @@
+## 2026-09-16 (6) — ⊘ `array_windows` exists for `add_mul`, not for "overlap"; I had the right conclusion from the wrong reason
+
+Operator: *"array_windows ist immer für add_mul um rounding roundtrips zu
+vermeiden."* Verified against the facade, which says it itself
+(`src/simd.rs:625-630`):
+
+> *"`array_chunks` (non-overlapping) and `array_windows` (overlapping) are the
+> stable-Rust foundation primitives for SIMD-staged kernels — **together with
+> `add_mul_f32` / `add_mul_f64` below**, they reach within a few % of a
+> Cranelift-JIT'd inner loop on the BLAS-graph GEMM path and are the reason the
+> JIT-native option was deemed unnecessary."*
+
+And `src/simd.rs:142-150` exists solely to serve it: `PREFERRED_F64_LANES` is
+declared per arm (8 avx512 / 4 avx2 / 2 neon / 2 wasm / 4 scalar) *"for
+`array_windows`"*, with the documented call shape
+`data.array_windows::<{PREFERRED_F64_LANES}>()` → `F64x8::from_array(*window)`.
+
+**Why the const size is the whole point.** `array_windows` yields `&[T; N]` with
+`N` a compile-time constant, so the FMA chain unrolls into registers and the
+accumulator never spills. A dynamic-length `slice::windows()` cannot, and every
+spill/reload is an extra rounding — the "rounding roundtrip". One fused
+`mul_add` per step, one rounding; the alternative rounds at the multiply, again
+at the reload, again at the add.
+
+**My error, recorded because I said it out loud.** I had written that
+`array_windows` "fits nowhere in this wave" because *a compare-to-mask has no
+overlap*. The conclusion is right and the reason is wrong: overlap is not what
+the primitive is for. A compare-to-mask does not ACCUMULATE at all, which is why
+it never reaches for `array_windows` — and a stencil that accumulates over a
+fixed window reaches for it even though its windows could be described some
+other way.
+
+Helper selection, corrected, for this wave and after:
+
+| helper | for | in this wave |
+|---|---|---|
+| `slice::as_chunks::<L>()` | non-overlapping lanes **plus the tail**, which a predicate builder must mask | the predicate bodies |
+| `array_chunks::<T, L>` | same walk, **tail discarded** (`simd_ops.rs:423` is literally `as_chunks::<N>().0.iter()`) | only where the length is a guaranteed multiple; `array_chunks_checked` surfaces a violation as `Err` instead of truncating |
+| `array_windows::<T, N>` + `add_mul_*` | the FMA staging pair, `N` const so the accumulator stays in registers | nowhere — masking accumulates nothing |
+| `X::from_slice` / `copy_to_slice` | the typed-wrapper ↔ slice bridge | throughout |
+
 ## 2026-09-16 (5) — why worker-side cargo is prohibited ABSOLUTELY: residue is the cost, BACKEND POLLUTION is the correctness failure
 
 Operator, verbatim: *"Worker are prohibited from running cargo"*, and the reason:
