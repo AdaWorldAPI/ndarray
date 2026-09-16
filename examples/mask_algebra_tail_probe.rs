@@ -418,10 +418,23 @@ mod imp {
         // so on some runs NOTHING qualifies and the only honest output is to
         // say the question was not answered.
         let mut qualified = 0usize;
+        // Absolute tail cost in ns on the qualified widths, per arm. Ratios and
+        // shares can blow up when a denominator or numerator approaches zero;
+        // a nanosecond cannot. These four numbers are the least-processed form
+        // of the result and are what the verdict should be sanity-checked
+        // against.
+        let mut p_ns = Vec::new();
+        let mut d_ns = Vec::new();
+        let mut s_ns = Vec::new();
+        let mut f_ns = Vec::new();
         for rep in 0..REPEATS {
-            s_frac.clear();
-            d_frac.clear();
-            f_frac.clear();
+            // Mark where this pass's contributions start. The vectors are NOT
+            // cleared: the headline medians POOL every pass, and only the
+            // spread line slices out one pass at a time. Clearing here — which
+            // is what this code did until it was caught by re-reading the diff
+            // — left the line labelled "pooled over all N passes" reading the
+            // LAST pass alone, a false label on the headline number.
+            let pass_start = s_frac.len();
             for &base in &[8usize, 64] {
                 let ab = mk(base, 0xF0F0_5555_AAAA_1111);
                 let bb = mk(base, 0x0FF0_1234_5678_9ABC);
@@ -449,6 +462,10 @@ mod imp {
                     // negative NUMERATOR inflates instead.
                     if pt >= floor && dt >= floor && st >= floor && ft >= floor {
                         qualified += 1;
+                        p_ns.push(pt);
+                        d_ns.push(dt);
+                        s_ns.push(st);
+                        f_ns.push(ft);
                         s_frac.push((pt - st) / pt);
                         d_frac.push((pt - dt) / pt);
                         f_frac.push((pt - ft) / pt);
@@ -486,9 +503,9 @@ mod imp {
                     }
                 }
             }
-            let sp = median(&mut s_frac.clone()) * 100.0;
-            let dp = median(&mut d_frac.clone()) * 100.0;
-            let fp = median(&mut f_frac.clone()) * 100.0;
+            let sp = median(&mut s_frac[pass_start..].to_vec()) * 100.0;
+            let dp = median(&mut d_frac[pass_start..].to_vec()) * 100.0;
+            let fp = median(&mut f_frac[pass_start..].to_vec()) * 100.0;
             if (dp - sp).is_finite() {
                 ds_pts.push(dp - sp);
             }
