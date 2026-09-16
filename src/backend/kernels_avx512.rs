@@ -1055,7 +1055,11 @@ mod block_stop_probe {
                             let a_off = (ir / SGEMM_MR) * (SGEMM_MR * kc);
                             let b_off = (jr / SGEMM_NR) * (SGEMM_NR * kc);
                             let cc = &mut c[(ii + ir) * ldc + (jj + jr)..];
-                            // SAFETY: same preconditions as `sgemm_blocked`.
+                            // SAFETY: this fn is `#[target_feature(enable = "avx512f")]`,
+                            // so the callee's feature precondition holds; `a_off`/`b_off`
+                            // index whole packed panels of `mr_eff`/`nr_eff` live rows
+                            // inside `a_packed`/`b_packed`, and `cc` starts at `(ii+ir,
+                            // jj+jr)` with `ldc` so every masked store lands in `c`.
                             unsafe {
                                 match mr_eff {
                                     2 => ukernel_rows::<2>(
@@ -1130,7 +1134,9 @@ mod block_stop_probe {
             let b = fill(k * n, 2);
             let mut c1 = vec![0.0f32; m * n];
             let mut c2 = vec![0.0f32; m * n];
-            // SAFETY: avx512f asserted above.
+            // SAFETY: `is_x86_feature_detected!("avx512f")` asserted above, so
+            // both `#[target_feature]` callees may run; buffers are `m*k`,
+            // `k*n`, `m*n` with the matching leading dimensions.
             unsafe {
                 sgemm_blocked(m, n, k, 1.0, &a, k, &b, n, &mut c1, n);
                 sgemm_blocked_desc(m, n, k, 1.0, &a, k, &b, n, &mut c2, n);
@@ -1149,10 +1155,12 @@ mod block_stop_probe {
             };
             let t1 = time(&mut || {
                 c1.fill(0.0);
+                // SAFETY: as the equivalence call above — avx512f asserted, same buffers.
                 unsafe { sgemm_blocked(m, n, k, 1.0, black_box(&a), k, black_box(&b), n, black_box(&mut c1), n) }
             });
             let t2 = time(&mut || {
                 c2.fill(0.0);
+                // SAFETY: as the equivalence call above — avx512f asserted, same buffers.
                 unsafe { sgemm_blocked_desc(m, n, k, 1.0, black_box(&a), k, black_box(&b), n, black_box(&mut c2), n) }
             });
             let tail = m % SGEMM_MR;

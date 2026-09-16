@@ -120,6 +120,10 @@ unsafe fn tail_padded(a: &[u64], b: &[u64], c: &[u64], dst: &mut [u64]) {
 /// **G** — greedy widest-first: ymm, then xmm, then xmm-low.
 unsafe fn tail_greedy(a: &[u64], b: &[u64], c: &[u64], dst: &mut [u64]) {
     let (t, mut i) = (dst.len(), 0usize);
+    // SAFETY: caller guarantees avx512f+avx512vl (the `#[target_feature]`
+    // precondition) and equal-length slices; each rung reads/writes exactly
+    // `4`, `2` or `1` words at `i` only when `t - i` covers it, so every
+    // unaligned load/store stays inside `a`/`b`/`c`/`dst`.
     unsafe {
         if t - i >= 4 {
             let v = _mm256_ternarylogic_epi64::<AND3>(
@@ -155,6 +159,9 @@ unsafe fn tail_greedy(a: &[u64], b: &[u64], c: &[u64], dst: &mut [u64]) {
 /// **X** — never widen past xmm: pairs, then the odd one.
 unsafe fn tail_all_xmm(a: &[u64], b: &[u64], c: &[u64], dst: &mut [u64]) {
     let (t, mut i) = (dst.len(), 0usize);
+    // SAFETY: same contract as `tail_greedy` — avx512f+avx512vl from the
+    // caller, equal-length slices, and each xmm/xmm-low access is guarded by
+    // `t - i >= 2` / `== 1`, so no access leaves the slices.
     unsafe {
         while t - i >= 2 {
             let v = _mm_ternarylogic_epi64::<AND3>(
@@ -211,6 +218,8 @@ unsafe fn tern_descend(a: &[u64], b: &[u64], c: &[u64], dst: &mut [u64]) {
     let full = n / L;
     for g in 0..full {
         let (i, p) = (g * L, dst.as_mut_ptr());
+        // SAFETY: caller guarantees avx512f+avx512vl and equal-length slices;
+        // `g < n / L` keeps the 8-word window `[i, i + L)` inside every slice.
         unsafe {
             let va = _mm512_loadu_si512(a.as_ptr().add(i).cast());
             let vb = _mm512_loadu_si512(b.as_ptr().add(i).cast());
@@ -219,6 +228,9 @@ unsafe fn tern_descend(a: &[u64], b: &[u64], c: &[u64], dst: &mut [u64]) {
         }
     }
     let mut i = full * L;
+    // SAFETY: same contract; the remainder `n - i < L` is descended by rungs
+    // each guarded by `n - i >= 4` / `>= 2` / `== 1`, so every ymm / xmm /
+    // 64-bit access stays inside the slices.
     unsafe {
         // ymm rung — 4 live words.
         if n - i >= 4 {
@@ -253,7 +265,7 @@ fn main() {
     // has nothing to measure off v4 x86_64. It still has to BUILD on the
     // matrix's aarch64 / wasm32 / v3 rows, hence a running no-op rather than a
     // `compile_error!` or a constant assert (which clippy rejects anyway).
-    println!("skipped: needs x86_64 + avx512f — run under .cargo/config-v4.toml");
+    println!("skipped: needs x86_64 + avx512f + avx512vl — run under .cargo/config-v4.toml");
 }
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl"))]

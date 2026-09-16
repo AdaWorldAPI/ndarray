@@ -112,6 +112,9 @@ mod probe {
     unsafe fn s8(src: &[u64], gate: &[u64], elig: &[u64], dst: &mut [u64]) {
         let n = src.len();
         let mut i = 0;
+        // SAFETY: caller guarantees avx512f+avx512vl+avx512dq and equal-length
+        // slices; the loop runs only while `i + 8 <= n`, so every zmm
+        // load/store of 8 words at `i` is inside `src`/`gate`/`elig`/`dst`.
         unsafe {
             while i + 8 <= n {
                 let s = _mm512_loadu_si512(src.as_ptr().add(i).cast());
@@ -136,6 +139,9 @@ mod probe {
     unsafe fn s4(src: &[u64], gate: &[u64], elig: &[u64], dst: &mut [u64]) {
         let n = src.len();
         let mut i = 0;
+        // SAFETY: caller guarantees avx512f+avx512vl+avx512dq and equal-length
+        // slices; the loop runs only while `i + 4 <= n`, so every ymm
+        // load/store of 4 words at `i` is inside `src`/`gate`/`elig`/`dst`.
         unsafe {
             while i + 4 <= n {
                 let s = _mm256_loadu_si256(src.as_ptr().add(i).cast());
@@ -159,6 +165,9 @@ mod probe {
     unsafe fn s2(src: &[u64], gate: &[u64], elig: &[u64], dst: &mut [u64]) {
         let n = src.len();
         let mut i = 0;
+        // SAFETY: caller guarantees avx512f+avx512vl+avx512dq and equal-length
+        // slices; the loop runs only while `i + 2 <= n`, so every xmm
+        // load/store of 2 words at `i` is inside `src`/`gate`/`elig`/`dst`.
         unsafe {
             while i + 2 <= n {
                 let s = _mm_loadu_si128(src.as_ptr().add(i).cast());
@@ -272,6 +281,9 @@ mod probe {
                 f8(&src, &gate, &elig, &mut d_ref);
                 let mut d = vec![0u64; WORDS];
                 // equivalence gate, every arm, before any timing
+                // SAFETY (this and the timed calls below): the active `main` is
+                // cfg-gated on avx512f+avx512vl+avx512dq, and all four buffers
+                // are `WORDS` long.
                 unsafe { s8(&src, &gate, &elig, &mut d) };
                 assert_eq!(d, d_ref, "S8");
                 unsafe { s4(&src, &gate, &elig, &mut d) };
@@ -333,5 +345,7 @@ fn main() {
     target_feature = "avx512dq"
 )))]
 fn main() {
-    println!("ternlogq_sparse_reapply_probe: AVX-512 only; nothing to measure on this realization.");
+    println!(
+        "ternlogq_sparse_reapply_probe: needs x86_64 + avx512f + avx512vl + avx512dq — run under .cargo/config-v4.toml"
+    );
 }
