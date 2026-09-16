@@ -118,6 +118,24 @@ jobs:
     # (`avx512f=true|false`) is the reading; `lscpu` beside it is the
     # corroboration.
     #
+    # ANSWER, measured 2026-09-16 on this row's first run — and it is stronger
+    # than the question asked. Within ONE workflow run (35148155422), two jobs
+    # both `runs-on: ubuntu-latest`, both under the `target-cpu=native`
+    # default, reported DIFFERENT tiers:
+    #
+    #   realization/nightly x x86_64        avx512f=TRUE
+    #   realization/host-native x x86_64    avx512f=FALSE
+    #
+    # So the pool is HETEROGENEOUS and the tier is decided per JOB, not per
+    # run and not per repo. (The nightly row's failure on the previous head
+    # was caused by landing on an AVX-512 runner, which compiled
+    # `#[cfg(all(test, target_feature = "avx512f"))]` modules that had never
+    # been compiled in CI before — a real polyfill gap, fixed in c1bd7015.)
+    #
+    # That is exactly why `native` pins nothing and the portable row pins v3:
+    # unpinned, an ISA assertion here would be a coin flip per job, and a
+    # green run would prove only that today's scheduling was lucky.
+    #
     # It is `continue-on-error` ON PURPOSE and must stay that way: a row whose
     # result is "whatever this runner is" cannot gate a merge without making
     # the merge depend on pool scheduling. If a future session wants to ASSERT

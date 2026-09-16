@@ -97,14 +97,69 @@ Both in code the v3 default never compiled, and therefore never linted:
   and did not cover this file. **A green lint over code that was cfg'd out is
   not evidence about that code.**
 
-### 5. The open question, deliberately left open
+### 5. The open question — ANSWERED the same day, and the answer is bigger
 
-A new `host-native` matrix row runs `lscpu` + the unpinned parity program and is
-**`continue-on-error` on purpose**: what a GitHub runner actually gives us is
-empirical and unknown, and a row whose answer is "whatever this runner is"
-cannot gate a merge on pool scheduling. It can still catch a real parity failure
-on a tier no pinned row covers. Promoting it means adding an explicit pin, never
-deleting the flag.
+A new `host-native` matrix row runs the unpinned parity program and is
+**`continue-on-error` on purpose**: a row whose answer is "whatever this
+runner is" cannot gate a merge on pool scheduling.
+
+**Measured on its first run, and it beat the question.** Within ONE workflow
+run (35148155422, head `c1bd7015`), two jobs — both `runs-on: ubuntu-latest`,
+both under the `target-cpu=native` default — reported different tiers:
+
+| job | reports |
+|---|---|
+| `realization/nightly x x86_64` | `avx512f=TRUE` |
+| `realization/host-native x x86_64` | `avx512f=FALSE` |
+
+**GitHub's `ubuntu-latest` pool is HETEROGENEOUS: the tier is decided per
+JOB, not per run and not per repo.** So `native` in CI is a coin flip, and
+an ISA assertion on an unpinned row would pass or fail on scheduling. That
+is the empirical vindication of pinning the portable row — a green unpinned
+run would have proven only that the day's scheduling was lucky.
+
+**⊘ Correction to this session's own reasoning, recorded because the error is
+instructive.** When the nightly row failed I inferred "the GitHub runner has
+AVX-512" from the failure's mechanism alone (the errors sat in
+`#[cfg(all(test, target_feature = "avx512f"))]` modules, so that predicate
+had to be true). The inference was locally valid and the generalization was
+wrong: it was true of THAT job, and false of another job in the same run. **A
+mechanism that proves a fact about one runner proves nothing about "the
+runner".** The `host-native` row is what caught it, which is the whole reason
+a row that only reports is worth having.
+
+### 5b. What the nightly CI failure actually was — a REAL bug, not collateral
+
+`realization/nightly x x86_64` went red on the first push. Root cause, and it
+is the flip earning its keep rather than the flip breaking something:
+
+`cargo +nightly test --features nightly-simd` **fails to compile on ANY host
+where `avx512f` is a compile-time feature**, and has for as long as both
+existed. The call sites live in `#[cfg(all(test, target_feature = "avx512f"))]`
+modules of `src/simd_avx512.rs`; under the old v3 default that predicate was
+false, so the two features never co-compiled anywhere — not in CI, not
+locally. Any developer on an AVX-512 machine hits it today.
+
+The gap was a stated-contract violation: both polyfill files' own doc comments
+say *"API mirrors `simd_avx512::<Type>` so consumer code is backend-agnostic"*,
+and four types were short — `I8x64`/`I8x32` (zero, add, sub, cmp_gt) and
+`I16x32`/`I16x16` (those plus min, max).
+
+**Fixed the surface, did not pin the row.** Pinning the nightly row to v3
+would have hidden a defect that bites outside CI and stopped that row ever
+witnessing the combination again — "disable the thing that found the bug".
+
+Semantics were READ off the native bodies, not guessed: `add`/`sub` are
+`_mm512_add/sub_epi{8,16}`, i.e. WRAPPING, so the polyfill uses `+`/`-` and
+NOT the `saturating_*` methods sitting next to them, which are a different
+operation and the obvious way to get this subtly wrong. `cmp_gt` delegates to
+each type's existing `cmpgt_mask` so the two spellings cannot drift.
+
+Evidence is a RUN, not a lint: `cargo +nightly test --lib --features
+nightly-simd` -> **2534 passed**, and the ones that matter are the AVX-512
+backend's OWN test vectors now executing against the `core::simd` polyfill and
+agreeing with the native expectations. That is cross-backend parity this repo
+did not previously have.
 
 ### What did NOT change
 
