@@ -1,3 +1,81 @@
+## 2026-09-16 (18) — the tail OPTIMISATION IS INERT ON EVERY POWER-OF-TWO POPULATION, including the 4096-row tile
+
+Established before writing the rewrite (15)-(17) argued for, and it changes
+whether that rewrite is worth doing at all. No code; this entry is the gate.
+
+### The arithmetic
+
+A mask over `n` rows is `ceil(n/64)` words (`lgj-abi`'s `mask_words_for`, and
+this file's own `mask_words_for`). The facade's algebra ops walk `U64x8`, so a
+TAIL exists only when `words % 8 != 0`. For a power of two, `words = 2^(k-6)`,
+and `2^(k-6) % 8 == 0` for every `k >= 9`. So:
+
+| rows | words | tail | tail share of the whole op |
+|---:|---:|---:|---:|
+| 512 | 8 | 0 | **none** |
+| **4096** | **64** | **0** | **none** |
+| 10 000 | 157 | 5 | 73 % |
+| 65 536 | 1024 | 0 | **none** |
+| 1 000 000 | 15 625 | 1 | 2.6 % |
+| 16 777 216 | 262 144 | 0 | **none** |
+
+(share computed as 16 ns padded tail against a body of `groups × 0.31 ns`.)
+
+**Every power-of-two population at or above 512 rows has NO TAIL AT ALL**, and
+this workspace's shapes are overwhelmingly powers of two — the 4096-row tile,
+the 64-word mask, the 512-byte node, the 4096-centroid codebook.
+
+### What this does to (15)-(17)
+
+Those entries are not wrong; they are **scoped narrower than they read.** The
+probe swept `base = 8` and `base = 64` WORDS — 512 and 4096 rows — plus `k` of
+1..7, i.e. exactly the small end, and its "7 of 8 mask sizes have a tail" is a
+statement about ARBITRARY sizes. The consumers' sizes are not arbitrary.
+
+So the honest reading of the merged measurement:
+
+- "the padded tail is routinely larger than the work it trails" — true **at
+  8-71 words**, which is 512-4544 rows.
+- On a million-row table the same tail is **2.6 %**.
+- On the canonical 4096-row tile it is **0 %** — the op has no tail to pay for.
+
+### Consequence: the 11-function rewrite is NOT justified yet
+
+It would touch a hot facade across six realizations to win 0 % on the canonical
+shape, ~2.6 % on a large arbitrary one, and a lot on sizes like 10 000 rows.
+Whether that last case is real is a CONSUMER question nobody has asked yet:
+which populations actually reach `mask_and` and friends, at what row counts.
+
+**The gate for step (b) is therefore not "a quieter machine" (what I told the
+reviewer on #315) — it is a census of real consumer population sizes.** If they
+are powers of two, the work is inert and should not be done; if arbitrary row
+counts dominate, it is worth ~2.6 % there and much more on small masks.
+
+### And ternlog specifically points the other way
+
+For `mask_ternlog` the padded form is **ONE** instruction — a full-width
+`vpternlogq zmm` over the zero-padded register. The fixed-step peel measured in
+(16) needs **three** logic ops at 4-lane plus more at 2-lane plus a scalar
+step. So for ternlog the padded tail may well be the CHEAPER shape, which is
+the opposite of the direction (15) proposed for it, and is an independent
+reason not to sweep all 11 sites uniformly.
+
+### The rule this is an instance of
+
+(15)-(17) were each about a label outrunning its measurement. This one is one
+level up: **a measurement outrunning its REGIME.** The numbers were correct at
+the sizes probed and the conclusion was stated without them. Before a kernel
+optimisation lands, ask what the consumer's actual shapes are — a 3x win on a
+size nobody runs is worth nothing, and the cheapest way to find that out is
+arithmetic on the size formula, not another benchmark.
+
+Cross-ref: (15) the trip-count finding and the codegen witnesses stand
+unchanged — `U64x4 &` really is bit-identical to a hand-written loop, fixed
+peels really are packed on aarch64, the `avx512vl` gate really is unnecessary.
+What is withdrawn is only the implied priority of acting on them.
+
+---
+
 ## 2026-09-16 (17) — ⊘ CORRECTS (16) twice: the unit was OBSERVATIONS not widths, and "lower bound" was one claim too many
 
 Both caught by coderabbit on the same PR (#315), both are errors (16) introduced
