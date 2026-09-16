@@ -64,6 +64,10 @@ name = "r2il_column_scan_probe"
 required-features = ["std"]
 
 [[example]]
+name = "ternlogq_tail_descent_probe"
+required-features = ["std"]
+
+[[example]]
 name = "hex_tenant_mq_probe"
 required-features = ["std"]
 
