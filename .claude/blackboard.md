@@ -1,3 +1,61 @@
+## 2026-09-16 (8) — LLVM counter-test: the unfused bit-exactness contract SURVIVES codegen, and BF16 tile GEMM is fully fused — both now measured, not read
+
+Operator: *"ggf mit LLVM Gegentesten."* Correct reflex — entry (7) asserted
+things about generated code having only read source. Done, with the repo's own
+witness technique (`scripts/codegen-witness.sh`'s method: optimized build,
+`--emit=asm`, per-symbol instruction counts), under **v4**:
+
+```
+env -u RUSTFLAGS cargo --config .cargo/config-v4.toml rustc --release --lib --features std -- --emit=asm
+```
+
+Counts are per mangled symbol body in the emitted `.s`:
+
+| symbol | `vfmadd*` | `vmul{pd,ps,sd,ss}` | `vadd*` | `%zmm` refs |
+|---|---|---|---|---|
+| `simd_ops::gemm_f64_tiled` — the UNFUSED contract | **0** | 22 | 15 | 57 |
+| `simd_ops::gemm_f64_tiled_fma` — the fused tier | **15** | 7 | 0 | 33 |
+| `simd_ops::bf16_tile_gemm_16x16` | **17** | **0** | 19 | 193 |
+
+### What this settles
+
+**The bit-exactness contract holds at the instruction level.**
+`gemm_f64_tiled`'s doc (`simd.rs:632`) claims bit-identity across backends via
+UNFUSED mul+add in ascending-k order. A contraction by LLVM would break that
+silently, and nothing in the tree checked it. Measured: **zero `vfmadd` in that
+symbol** under v4. Rust does not enable FP contraction by default, so this is
+the expected outcome — but expected is not verified, and the whole point of the
+contract is that it must not depend on a default nobody re-checks.
+
+**BF16 tile GEMM is fully fused, on zmm.** `vmul = 0` alongside 17 `vfmadd`
+means every multiply in that symbol is fused; there is no unfused product
+anywhere in the accumulate. With 193 `%zmm` references the accumulator is in
+512-bit registers, which is the register-residency half of entry (7)'s claim.
+The 19 `vadd` are the horizontal `reduce_sum` and the `c[i*16+j] +=`, not the
+inner product.
+
+**The fused tier is fused as documented**: 15 `vfmadd`, 0 `vadd`; its 7 `vmul`
+are the α/β scaling, outside the accumulate.
+
+### The gap this exposes, named
+
+`add_mul_f32` / `add_mul_f64` produce **no standalone symbol** — they are
+`#[inline]` and were inlined away, so the counter-test cannot witness them from
+the library asm. That is exactly why `examples/ternlog_codegen_probe.rs` exists
+in the shape it does: `#[inline(never)]` bodies, `black_box` inputs so nothing
+constant-folds, and a self-check that a packed-but-wrong body fails before its
+assembly is trusted. **An `add_mul` arm in that probe is the clean follow-up**;
+until it exists, the FMA claim for those two functions is verified by reading
+only, and is labelled so.
+
+### Method note worth keeping
+
+`--config .cargo/config-v4.toml` is load-bearing here for the reason
+`codegen-witness.sh` already documents: cargo JOINS matching `target.*.rustflags`
+entries and the LAST `-Ctarget-cpu` wins, so the env-var form passes v4 and THEN
+`.cargo/config.toml`'s v3, producing a v3 build that reports itself as v4. This
+run used `--config`, which is the same cfg key at higher precedence.
+
 ## 2026-09-16 (7) — `array_windows` + `add_mul` closes TWO different mantissa losses, and "bit exact" splits into two contracts the tree already distinguishes
 
 Operator: *"Und hilft dadurch immer bit exakt zu sein ohne mantissa Verluste —
