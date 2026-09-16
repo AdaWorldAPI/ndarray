@@ -1,3 +1,68 @@
+## 2026-09-16 (17) — ⊘ CORRECTS (16) twice: the unit was OBSERVATIONS not widths, and "lower bound" was one claim too many
+
+Both caught by coderabbit on the same PR (#315), both are errors (16) introduced
+while correcting (15), and both are the SAME defect class (15) and (16) already
+name — a label or a claim outrunning what the measurement supports. Third
+generation of one mistake in one session, which is the finding worth keeping.
+
+### 1. "7 of 98 widths" — wrong unit, overstated the design 7×
+
+The sweep visits `2 bases × 7 k = 14` **distinct widths** and repeats them
+`REPEATS = 7` times, so the counter tops out at **98 OBSERVATIONS of 14
+widths**. (16) reported "7 of 98 widths", which invents 84 widths that do not
+exist. Corrected in both the probe's labels and here:
+
+```
+median ABSOLUTE tail cost, 7 qualified observations of 14 widths (ns):
+  P 16.82    D 5.24    S 6.28    F 5.33
+observations where all four tails were measurable: 7 of 98
+  (14 distinct widths × 7 passes)
+```
+
+The measured numbers are unchanged; what was wrong is what they were counting.
+
+### 2. "the gap is a LOWER BOUND" — not established, withdrawn
+
+(16) said the censored D−F gap is "a **lower bound** on any true difference".
+That is one claim too many. Truncation does compress the gap toward zero — but
+only toward zero **from whichever side the truly cheaper arm sits on**, and
+which arm that is is precisely what this sample cannot say. A bound needs the
+sign first. So the honest statement, now in both places:
+
+> **selection-biased; direction and magnitude unresolved.**
+
+Note this is STRICTLY more honest than the claim it replaces, and it weakens
+nothing that mattered: the decision never rested on the size of D−F, only on
+the absence of support for the expensive option.
+
+### Why this keeps happening, stated so the next session can shortcut it
+
+Five instances, one class, three of them introduced *by the fix for the
+previous one*:
+
+| # | the claim | what the code/design actually had |
+|---|---|---|
+| 1 | D/P ratio read as a tail result | arms with different bodies; `tail == 0` rows moved |
+| 2 | "widths where D beats S: N of 14" | a count thresholded by a floor that is itself a draw |
+| 3 | "pooled over all 7 passes" | the last pass alone |
+| 4 | "D removes 121.3% of the padded cost" | a fraction inflated by a negative numerator |
+| 5 | "7 of 98 **widths**" / "a **lower bound**" | 98 observations of 14 widths / no established sign |
+
+**The generalizable rule: correcting one statistic does not audit the ones
+beside it, and the correction itself is a new claim needing the same check.**
+The cheap sweep is mechanical — for every printed line, name the accumulator
+behind it, its UNIT, and its SCOPE, then read whether the words match all
+three. That sweep found instance 5's siblings in one pass (all thirteen
+accumulators pool; none is cleared) where four rounds of review had found them
+one at a time.
+
+Corollary for a verdict rather than a label: state only what the sample can
+support. "No measured support for the expensive option" survives every one of
+the five corrections above. "The cheap option is equal", "the gap is a lower
+bound", and every ratio drawn from a near-zero denominator did not.
+
+---
+
 ## 2026-09-16 (16) — ⊘ CORRECTS (15): its headline numbers came from a BUGGY binary, and the D-vs-F ordering is NOT established
 
 Same PR (#315), same day, four codex findings later. Entry (15) stands on its

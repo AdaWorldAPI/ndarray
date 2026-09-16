@@ -129,6 +129,21 @@ pub extern "C" fn probe_scalar4_and(a: &[u64; 4], b: &[u64; 4], out: &mut [u64; 
 /// `IMM` is the 8-bit truth table, matching `mask_ternlog`'s own convention:
 /// bit `(a<<2)|(b<<1)|c` of `IMM` is the output for that input triple. Written
 /// as the canonical sum-of-minterms so nothing but the truth table is assumed.
+///
+/// `IMM = 0xE8` is bitwise MAJORITY — a bit is set where at least two of the
+/// three inputs have it set:
+///
+/// ```text
+/// a = 0xF0F0, b = 0x00FF, c = 0x0F0F
+/// a&b = 0x00F0    a&c = 0x0000    b&c = 0x000F    ->   0x00FF
+/// ```
+///
+/// This is deliberately NOT written as a rustdoc example. This file lives in
+/// `examples/`, where rustdoc never runs, so a ``` block here would be an
+/// untested assertion dressed as a verified one — the exact thing the rest of
+/// this PR spent its time removing (coderabbit asked for a usage example,
+/// #315). `main` asserts the triple above instead, so the claim is CHECKED on
+/// every run rather than decorated.
 #[inline(never)]
 #[unsafe(no_mangle)]
 pub extern "C" fn probe_fixed4_ternlog(a: &[u64; 4], b: &[u64; 4], c: &[u64; 4], out: &mut [u64; 4]) {
@@ -168,8 +183,19 @@ fn main() {
     let b8 = [0x00FFu64; 8];
     let mut o8 = [0u64; 8];
     probe_u64x8_and(&a8, &b8, &mut o8);
+    // Pin the ternlog arm's SEMANTICS, not just that it runs: `IMM = 0xE8` is
+    // bitwise majority, so a bit survives where at least two inputs set it.
+    // 0xF0F0/0x00FF/0x0F0F pairwise-AND to 0x00F0 | 0x0000 | 0x000F = 0x00FF.
+    //
+    // This assertion earned its place on the first run: it rejected 0x0FFF,
+    // which is what I had written from doing the arithmetic in my head (I had
+    // 0xF0F0 & 0x0F0F as 0x0F00 when the nibbles do not overlap at all, so it
+    // is 0x0000). A truth table transcribed one bit off would still emit
+    // plausible `vpternlogq` and survive a read of the assembly — and so would
+    // a doc example nobody executes. This fails instead.
     let c4 = [0x0F0Fu64; 4];
     probe_fixed4_ternlog(&a4, &b4, &c4, &mut o4);
+    assert_eq!(o4, [0x00FFu64; 4], "IMM=0xE8 must be bitwise majority: 0xF0F0/0x00FF/0x0F0F -> 0x00FF");
     let mut o2 = [0u64; 2];
     probe_scalar2_and(&[1, 2], &[3, 3], &mut o2);
     println!("probe: {o4:?} {o8:?} {o2:?}");

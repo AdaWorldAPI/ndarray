@@ -418,7 +418,12 @@ mod imp {
         // so on some runs NOTHING qualifies and the only honest output is to
         // say the question was not answered.
         let mut qualified = 0usize;
-        // Absolute tail cost in ns on the qualified widths, per arm. Ratios and
+        // Absolute tail cost in ns on the qualified OBSERVATIONS, per arm.
+        // "Observation", not "width": the sweep visits 2 bases x 7 k = 14
+        // distinct widths and repeats them REPEATS times, so the counter tops
+        // out at 98 samples of 14 widths. Calling 98 a width count overstates
+        // the design by 7x (coderabbit, #315) — the same wrong-unit defect as
+        // the pooled-vs-per-pass labels, one field over. Ratios and
         // shares can blow up when a denominator or numerator approaches zero;
         // a nanosecond cannot. These four numbers are the least-processed form
         // of the result and are what the verdict should be sanity-checked
@@ -580,7 +585,7 @@ mod imp {
             }
         };
         println!(
-            "\nmedian ABSOLUTE tail cost on the {qualified} qualified widths (ns):\n\
+            "\nmedian ABSOLUTE tail cost, {qualified} qualified observations of 14 widths (ns):\n\
              \x20 P {:.2}   D {:.2}   S {:.2}   F {:.2}",
             median(&mut p_ns.clone()),
             median(&mut d_ns.clone()),
@@ -601,10 +606,19 @@ mod imp {
         // conditioning, it applies it to both arms.
         //
         // The filter stays because unfiltered is worse — negative tails gave
-        // "D removes 121.3% of the padded cost" — but this is a CENSORED
-        // sample and the D-F gap it yields is a lower bound on any true
-        // difference. Resolving it properly needs precision, not filtering:
-        // more iterations, a quiet machine, or modelling the censored points.
+        // "D removes 121.3% of the padded cost" — but this is a CENSORED sample:
+        // SELECTION-BIASED, with the direction and magnitude of the bias
+        // UNRESOLVED.
+        //
+        // ⊘ An earlier version of this note called the observed D-F gap a
+        // "lower bound on any true difference". That is one claim too many
+        // (coderabbit, #315). Truncation does compress the gap toward zero —
+        // but only toward zero FROM WHICHEVER SIDE the truly cheaper arm sits
+        // on, and which arm that is is precisely what this sample cannot say.
+        // Asserting a bound requires knowing the sign first, so neither the
+        // sign nor the magnitude of the true difference is recoverable here.
+        // Resolving it needs precision, not filtering: more iterations, a
+        // quiet machine, or modelling the censored points.
         println!("\npooled over all {REPEATS} passes -- S {}  D {}  F {}", pc(s_all), pc(d_all), pc(f_all));
         println!("\nShare of the padded tail's cost removed, differenced per pass.");
         println!("Percentage-point gaps, pooled, with the per-pass spread beside them:");
@@ -632,7 +646,8 @@ mod imp {
         // adjudicate the finer D-vs-F question, and saying so is the result.
         let resolvable = qualified * 4 >= rows && ds_med.is_finite() && df_med.is_finite();
         println!(
-            "widths where all four tails were measurable: {qualified} of {rows}               ({}resolvable)",
+            "observations where all four tails were measurable: {qualified} of {rows}  \
+             (14 distinct widths x {REPEATS} passes)  ({}resolvable)",
             if resolvable { "" } else { "NOT " }
         );
         if !resolvable {
