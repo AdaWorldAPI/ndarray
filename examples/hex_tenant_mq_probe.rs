@@ -48,6 +48,7 @@
 //!   cargo run --release --example hex_tenant_mq_probe --features std
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::hint::black_box;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
@@ -440,8 +441,18 @@ fn masks_equal_axial(mask: &[u64], reference: &[bool]) -> bool {
     })
 }
 
+/// Run to a 50 ms floor and report ns per call.
+///
+/// **Every closure passed here must `black_box` its output.** `timed` repeats
+/// the call with nothing reading the result, so a write-only closure is dead
+/// code an optimizing build may eliminate or hoist — and the damage is not
+/// symmetric. Reported on PR #309: the widened-i32 arms happened to be
+/// protected by a LATER read (the spread loop consumes `elig`; the parity
+/// `assert_eq!` consumes `m_new`) while the native-u8 arms had no reader at
+/// all, so the very ratio the probe exists to measure could have been the
+/// optimizer deleting one side. Protect BOTH sides or the comparison is not
+/// one.
 fn timed<F: FnMut()>(mut f: F) -> f64 {
-    // run to a 50 ms floor; report ns per call
     let mut reps = 1usize;
     loop {
         let t = Instant::now();
@@ -498,7 +509,8 @@ fn main() {
     let mut elig: [Vec<u64>; DIRS] = std::array::from_fn(|_| vec![0u64; WORDS]);
     let t_gen = timed(|| {
         for d in 0..DIRS {
-            gt_i32_to_mask(&perm_cols[d], thr as i32, &mut elig[d]);
+            gt_i32_to_mask(black_box(&perm_cols[d]), black_box(thr as i32), &mut elig[d]);
+            black_box(&elig[d]);
         }
     });
 
@@ -513,7 +525,8 @@ fn main() {
     }
     let t_gen_u8 = timed(|| {
         for d in 0..DIRS {
-            gt_u8_to_mask(&perm_cols_u8[d], thr, &mut elig_u8[d]);
+            gt_u8_to_mask(black_box(&perm_cols_u8[d]), black_box(thr), &mut elig_u8[d]);
+            black_box(&elig_u8[d]);
         }
     });
     println!(
@@ -545,10 +558,12 @@ fn main() {
         assert!(ok, "reveal gate FAILED at level {level}");
         let p = n_nodes / 2;
         let tr = timed(|| {
-            range_reveal(level, p, &mut m_range);
+            range_reveal(black_box(level), black_box(p), &mut m_range);
+            black_box(&m_range);
         });
         let tt = timed(|| {
-            tcam_reveal(&addr, level, p, &mut m_tcam);
+            tcam_reveal(black_box(&addr), black_box(level), black_box(p), &mut m_tcam);
+            black_box(&m_tcam);
         });
         println!("{level:>5}  {:>9}  {tr:>8.0}  {tt:>8.0}  {:>6.1}×  ok", 1usize << (16 - 4 * level), tt / tr);
     }
@@ -753,7 +768,10 @@ fn main() {
 
     // ── M3: coal — one maneuver = re-chain a resident mask from its column ──
     let mut m_new = vec![0u64; WORDS];
-    let c = timed(|| gt_i32_to_mask(&perm_cols[0], thr as i32, &mut m_new));
+    let c = timed(|| {
+        gt_i32_to_mask(black_box(&perm_cols[0]), black_box(thr as i32), &mut m_new);
+        black_box(&m_new);
+    });
     println!(
         "[coal] one re-chain (gt_i32 sweep over one column) = {c:.0} ns = {:.1} ternlogq passes = {:.2} maintained steps at x=4",
         c / t_tern,
@@ -762,7 +780,10 @@ fn main() {
     let mut m_new_u8 = vec![0u64; WORDS];
     gt_u8_to_mask(&perm_cols_u8[0], thr, &mut m_new_u8);
     assert_eq!(m_new_u8, m_new, "u8 and widened-i32 re-chain masks differ");
-    let c_u8 = timed(|| gt_u8_to_mask(&perm_cols_u8[0], thr, &mut m_new_u8));
+    let c_u8 = timed(|| {
+        gt_u8_to_mask(black_box(&perm_cols_u8[0]), black_box(thr), &mut m_new_u8);
+        black_box(&m_new_u8);
+    });
     println!(
         "[coal] one re-chain NATIVE u8 (gt_u8 sweep)          = {c_u8:.0} ns = {:.1} ternlogq passes = {:.2} maintained steps at x=4  →  {:.2}× vs widened",
         c_u8 / t_tern,
