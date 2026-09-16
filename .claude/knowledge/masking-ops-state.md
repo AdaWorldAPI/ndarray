@@ -141,6 +141,23 @@ arm already stated. Consequence: `scripts/masking-parity.sh nightly` is a real
 cross-realization differential, not a same-author self-check, and the nightly
 bodies are what a new width should be matched against.
 
+## THE MENU — who serves these ops to whom (operator framing, 2026-09-16)
+
+The masking ops are not a library looking for a caller; they are the kitchen
+behind a menu, and the courses are at different stages:
+
+| course | surface | state |
+|---|---|---|
+| **starter** | **SQL, via `lance-graph-quack`** — DuckDB→V3, zero-copy masked ops | **SHIPPED.** *"duckdb > quack is a nice proof-of-concept surface to offer SQL zero-copy masked ops, handed in the menu as a starter."* Plane leaf + survivor-skip gate, IN, projection, fused lowering, two-phase GROUP BY, each with a per-row oracle; and `plan_lower` is pinned EQUAL to quack's lowering by a differential, so there is one lowering rather than two that agree by luck. |
+| **main** | **the Java glove** — `view.where(..).hop(..).count()` | **SHIPPED** (ABI minor 11). Reads as ordinary Java, costs a blink, because the work and the data are both elsewhere. |
+| **another course** | **Gremlin / TinkerPop** | POTENTIAL, see below. |
+
+Why the starter matters beyond being a demo: **SQL is the surface where "zero
+copy" is checkable by a stranger.** A `SELECT … WHERE` either returns the right
+rows or it does not, and the per-row oracle says which — so the proof-of-concept
+is also the cheapest available falsifier for the whole mask-travels-instead-of-
+the-data claim. That is a better reason to keep it than novelty.
+
 ## POTENTIAL — strategic, explicitly not a plan
 
 These are the operator's outlook statements. **None has a falsifier, none is
