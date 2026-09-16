@@ -22,7 +22,12 @@
 //! `space == Ram && lo <= offset < hi`. Four expressible predicates once the
 //! u64 offset is split (see below), so it is the conjunction question.
 //!
-//! # Two primitive gaps this probe had to work around, and they are findings
+//! # Two primitive gaps this probe reported — both now CLOSED by ndarray #309
+//!
+//! Stated as the FIRST run found them, because the widened arms below still
+//! exist and still need their rationale. What changed: `{eq,…}_u8_to_mask` and
+//! `{ge,lt,…}_u64_to_mask` now ship, so the `NATIVE` arm spells the query
+//! directly and the two workarounds are kept only as the comparison.
 //!
 //! 1. **No `u8` comparator.** `OpColumns::{tag,space}` are `Vec<u8>`; the
 //!    facade's narrowest value type is `u32`. A consumer must keep a widened
@@ -36,20 +41,25 @@
 //!    re-expressed EXACTLY here by splitting the offset into `hi32`/`lo32`
 //!    columns — valid only because the chosen window lies inside one `hi32`
 //!    bucket, which the probe asserts rather than assumes. A general range
-//!    needs the primitive.
+//!    needed the primitive — `ge_u64_to_mask` / `lt_u64_to_mask` are it, and
+//!    the `NATIVE` arm uses them with no split and no bucket assumption.
 //!
 //! # Arms (every arm must produce a bit-identical mask, or the run aborts)
 //!
 //! | arm | how the conjunction is formed | passes |
 //! |---|---|---|
-//! | `S` | scalar over the NATIVE `u8`/`u64` columns (no widening at all) | 1 |
-//! | `AND` | 4 `*_to_mask` + 3 `mask_and_assign` | 7 |
-//! | `TERN` | 4 `*_to_mask` + `mask_ternlog::<AND3>` + `mask_and_assign` | 6 |
-//! | `UNDER` | the `_under` chain — each predicate narrows the live mask | 4 |
+//! | `S` | scalar over the columns' own `u8`/`u64` types (no widening at all) | 1 |
+//! | `AND` | 4 `*_to_mask` over WIDENED columns + 3 `mask_and_assign` | 7 |
+//! | `TERN` | 4 `*_to_mask` over WIDENED columns + `mask_ternlog::<AND3>` + `mask_and_assign` | 6 |
+//! | `UNDER` | the `_under` chain over WIDENED columns — each predicate narrows the live mask | 4 |
+//! | `NATIVE` | 3 `*_to_mask` over the columns' OWN types (`eq_u8` + `ge_u64` + `lt_u64`) + one `mask_ternlog::<AND3>` | 4 |
 //!
-//! `S` is the honest baseline precisely because it needs no widened columns:
-//! charging the SIMD arms for the layout they require is the comparison a
-//! consumer actually faces.
+//! `NATIVE` is the arm ndarray #309 made possible: three predicates instead of
+//! four (the `hi32 == 1` term disappears with the split), zero widened columns,
+//! and no assumption that the window lies inside one `hi32` bucket. `S` is the
+//! honest baseline precisely because it too needs no widened columns: charging
+//! the widened arms for the layout they require is the comparison a consumer
+//! actually faces.
 //!
 //! # Measured — and the two gaps this probe reported are now CLOSED
 //!
