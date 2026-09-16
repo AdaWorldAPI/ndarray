@@ -1,3 +1,263 @@
+## 2026-09-16 (17) — ⊘ CORRECTS (16) twice: the unit was OBSERVATIONS not widths, and "lower bound" was one claim too many
+
+Both caught by coderabbit on the same PR (#315), both are errors (16) introduced
+while correcting (15), and both are the SAME defect class (15) and (16) already
+name — a label or a claim outrunning what the measurement supports. Third
+generation of one mistake in one session, which is the finding worth keeping.
+
+### 1. "7 of 98 widths" — wrong unit, overstated the design 7×
+
+The sweep visits `2 bases × 7 k = 14` **distinct widths** and repeats them
+`REPEATS = 7` times, so the counter tops out at **98 OBSERVATIONS of 14
+widths**. (16) reported "7 of 98 widths", which invents 84 widths that do not
+exist. Corrected in both the probe's labels and here:
+
+```
+median ABSOLUTE tail cost, 7 qualified observations of 14 widths (ns):
+  P 16.82    D 5.24    S 6.28    F 5.33
+observations where all four tails were measurable: 7 of 98
+  (14 distinct widths × 7 passes)
+```
+
+The measured numbers are unchanged; what was wrong is what they were counting.
+
+### 2. "the gap is a LOWER BOUND" — not established, withdrawn
+
+(16) said the censored D−F gap is "a **lower bound** on any true difference".
+That is one claim too many. Truncation does compress the gap toward zero — but
+only toward zero **from whichever side the truly cheaper arm sits on**, and
+which arm that is is precisely what this sample cannot say. A bound needs the
+sign first. So the honest statement, now in both places:
+
+> **selection-biased; direction and magnitude unresolved.**
+
+Note this is STRICTLY more honest than the claim it replaces, and it weakens
+nothing that mattered: the decision never rested on the size of D−F, only on
+the absence of support for the expensive option.
+
+### Why this keeps happening, stated so the next session can shortcut it
+
+Five instances, one class, three of them introduced *by the fix for the
+previous one*:
+
+| # | the claim | what the code/design actually had |
+|---|---|---|
+| 1 | D/P ratio read as a tail result | arms with different bodies; `tail == 0` rows moved |
+| 2 | "widths where D beats S: N of 14" | a count thresholded by a floor that is itself a draw |
+| 3 | "pooled over all 7 passes" | the last pass alone |
+| 4 | "D removes 121.3% of the padded cost" | a fraction inflated by a negative numerator |
+| 5 | "7 of 98 **widths**" / "a **lower bound**" | 98 observations of 14 widths / no established sign |
+
+**The generalizable rule: correcting one statistic does not audit the ones
+beside it, and the correction itself is a new claim needing the same check.**
+The cheap sweep is mechanical — for every printed line, name the accumulator
+behind it, its UNIT, and its SCOPE, then read whether the words match all
+three. That sweep found instance 5's siblings in one pass (all thirteen
+accumulators pool; none is cleared) where four rounds of review had found them
+one at a time.
+
+Corollary for a verdict rather than a label: state only what the sample can
+support. "No measured support for the expensive option" survives every one of
+the five corrections above. "The cheap option is equal", "the gap is a lower
+bound", and every ratio drawn from a near-zero denominator did not.
+
+---
+
+## 2026-09-16 (16) — ⊘ CORRECTS (15): its headline numbers came from a BUGGY binary, and the D-vs-F ordering is NOT established
+
+Same PR (#315), same day, four codex findings later. Entry (15) stands on its
+codegen half and is **withdrawn on its timing half**. Read them together; (15)
+is not deleted.
+
+### What is WITHDRAWN from (15)
+
+> `D − S = +2.9 pts` and **`D − F = −0.7 pts`**
+
+Those came from a binary whose medians, printed as *"pooled over all 7 passes"*,
+were computed from **the last pass alone**: `s_frac`/`d_frac`/`f_frac` were
+cleared at the top of every pass while `qualified`, `rows` and `wins` on the
+same screen accumulated across all seven — two denominators under one heading,
+and a run could call itself resolvable off a single final-pass observation.
+
+**The pooling had been written and silently lost.** `cargo fmt` reindented the
+target between the replacement being composed and applied, so the string match
+found nothing, and a passing `clippy -D warnings` plus plausible output gave no
+sign. **Second instance of that exact failure in one session** — the other ate
+an entire `println!` block while leaving its `Vec::push` calls alive, so the
+lint saw a used variable and the commit message shipped a claim the diff did
+not contain. *Assert on the anchor, and diff the commit against the message.*
+
+### What replaces it
+
+With pooling correct, this machine reports **INCONCLUSIVE**: 7 of 98 widths
+resolvable against a 3.65 ns floor. The least-processed form of the result,
+which has no ratio pathology at all:
+
+```
+median ABSOLUTE tail cost, qualified widths (ns):
+  P 16.82    D 5.24    S 6.28    F 5.33
+```
+
+**The padded tail is ~3× every alternative** — an order of magnitude above the
+floor, so that part is solid and is what the probe was built to establish. The
+ordering of D against F (0.09 ns apart here) is **not** established, and the
+probe now says INCONCLUSIVE rather than picking.
+
+### The codex finding that changed the architecture answer: TERNLOG
+
+Every timing arm was two-input AND, and `mask_ternlog` is the ONE algebra op
+whose narrow descent would reach `_mm256_ternarylogic_epi64` — a VL
+instruction. So the AND arms could never have settled the VL question, and
+(15) overreached in saying they did. Measured on a fixed-step arbitrary
+three-input truth table:
+
+```
+v4:  vpor / vpternlogq $32 / vpternlogq $236    3 logic ops, 2 of them VL
+v3:  vandnps/vandps/vorps/vandps/vorps          5 logic ops, packed, no VL
+```
+
+Two halves, opposite directions:
+
+- **The `avx512vl` GATE is unnecessary — and for a better reason than (15)
+  gave.** LLVM reaches `vpternlogq` on a 256-bit `ymm` from PLAIN RUST when the
+  target allows it and degrades to packed boolean ops when it does not. Naming
+  VL in our source would duplicate tier selection the compiler already does.
+- **Ternlog's THROUGHPUT question is OPEN.** One intrinsic is one instruction
+  where LLVM used three. That gap is ternlog-specific; the AND arms lower to a
+  single `vandps`.
+
+### The statistical correction, because I had it backwards IN THE SOURCE
+
+Widths contribute only when all four tail costs clear the floor (unfiltered,
+negative tails gave *"D removes 121.3% of the padded cost"*). My comment claimed
+this was *conservative against* the peel arms and that symmetry left D−F
+untilted. **The second half is false.** Near the floor an arm qualifies only on
+draws where its OWN error pushed it upward, so the observed D−F gap is
+compressed toward zero — favouring exactly the "fixed steps tie intrinsics"
+reading I drew from it. Symmetry applies the conditioning to both arms rather
+than cancelling it. The filter stays as the lesser evil; the source now calls
+the sample **censored** and the gap a **lower bound**, and names precision (more
+iterations, a quiet machine) as the fix rather than more filtering.
+
+### And the overclaim in the INCONCLUSIVE branch
+
+It reported "no support" and then asserted D, S and F were "within a point or
+two" and recommended F — a measurement claim drawn from data the same paragraph
+had just rejected. Removed; that branch now recommends nothing.
+
+### Net standing position
+
+| claim | status |
+|---|---|
+| padded tail costs ~3× any alternative | **established** |
+| `U64x4 &` is bit-identical to a hand-written loop (assembler MERGES the symbols) | **established** |
+| fixed-width peels are packed on aarch64 too (`and v0.16b`) | **established** |
+| `avx512vl` gate unnecessary, incl. ternlog | **established** (codegen) |
+| narrow `U64x4`/`U64x2` facade type | **no measured support** — which is not the same as shown equivalent |
+| F ties D | **NOT established** — needs a quiet machine |
+| ternlog tail throughput | **OPEN** |
+
+The **rule** worth carrying: absence of support for the expensive option is a
+reason not to build it yet, never evidence that the cheap one is equal. (15)
+blurred those; this entry separates them.
+
+---
+
+## 2026-09-16 (15) — the mask-algebra tail wanted a fixed TRIP COUNT, not intrinsics; the `U64x4`/`U64x2` + `avx512vl` build is CANCELLED
+
+PR #315 (branch `claude/mask-algebra-tail-probe`). The planned step (b) — give
+`U64x4`/`U64x2` a real surface across six backend files, add a `tail_descend`
+helper, gate `mask_ternlog`'s tail behind `avx512vl` — is **not justified**, and
+the probe that was written to support it is what killed it.
+
+### What the earlier measurement actually compared
+
+`D` (an x86 intrinsic 4→2→1 descent) against `P` (the zero-padded full-width op
+production runs today). D won by 5–17×, which is real. It is also **the wrong
+comparison for deciding what to build**, because the alternative it did not
+test was free. Two arms were added:
+
+| arm | tail |
+|---|---|
+| S | `for i in done..n` |
+| F | FIXED-WIDTH steps, plain Rust, zero intrinsics |
+
+Resolvable v4 run (floor 1.32 ns, 34 of 98 widths resolvable), as the share of
+the padded tail's cost removed: **S 79.6% · D 82.5% · F 83.2%**, i.e.
+`D − S = +2.9 pts` and **`D − F = −0.7 pts`**.
+
+**The mechanism is the trip count.** `done..n` is unknown at compile time, so
+LLVM emits a scalar loop with a branch per word. `for j in 0..4` compiles to a
+single `vandps ymm`. Intrinsics contribute nothing on top of that.
+
+### The codegen half, and it is the stronger half
+
+`examples/narrow_bitop_codegen_probe.rs`. On the x86 backends `U64x4` is
+`pub struct U64x4(pub [u64; 4])` — the `avx2_int_type!` scalar polyfill — and
+the obvious reading is that the facade cannot supply a real 256-bit `and`
+without being retyped to `__m256i`. That reading is false, and the assembler
+says so outright:
+
+```
+probe_u64x4_and = probe_scalar4_and
+        vmovups (%rsi), %ymm0
+        vandps  (%rdi), %ymm0, %ymm0
+        vmovups %ymm0, (%rdx)
+```
+
+The two functions produced **bit-identical machine code and were merged into
+one symbol**. So the scalar polyfill never cost anything, and retyping it would
+buy nothing. A struct's storage type is not its codegen.
+
+### The decision
+
+Write the tail as fixed-width steps in plain Rust. It needs **no backend edits
+and no raw intrinsics** — so `simd_masking_ops.rs` keeps the `cfg(target_arch)`-free
+property its own header claims (`:117`), there is no exception to the
+all-SIMD-from-the-facade invariant, and it covers **all 11** algebra tails
+rather than the 8 an x86 descent could reach, because NEON, wasm and scalar get
+it for free. `avx512vl` stays unused in `src/` — this would have been its first
+dependency anywhere in the tree.
+
+### Four measurement errors, all mine, each caught by a number the probe printed
+
+Kept because the failure modes generalize past this probe.
+
+1. **Confounded bodies.** The arms had different bodies, so at `n % 8 == 0` —
+   *no tail at all* — D/P still read 0.72–0.84. A tail strategy cannot move a
+   call with no tail. Shared one `body()`, then isolated with
+   difference-in-differences, `t(base+k) − t(base)` at fixed body size.
+2. **A floor-thresholded COUNT is not a statistic.** "Widths where D beats S"
+   gave **2 of 14** then **10 of 14** on consecutive runs, off floors of
+   1.35 ns and 0.64 ns. The magnitudes being thresholded were stable
+   throughout. A verdict that flips with the floor cannot decide a six-file
+   change.
+3. **A per-pass median over 14 widths is itself noise** — it swung `D − S`
+   across **[−27, +34]** points. Pool across passes for the headline; print the
+   per-pass spread beside it so the scatter is visible rather than implied.
+4. **A negative tail inflates a fraction.** `(pt − dt)/pt > 1` when `dt < 0`,
+   and pooling those produced *"D removes 121.3% of the padded cost"* — not a
+   quantity. This is the SAME asymmetric-noise error codex caught in the ratio
+   column on this very PR, **reintroduced one statistic later**: rejecting a
+   negative *denominator* is not enough when a negative *numerator* inflates
+   instead. Widths now qualify only when all four tail costs clear the floor.
+
+### Two rules worth carrying forward
+
+- **A probe must be able to say INCONCLUSIVE.** A k-word tail costs ~1 ns and
+  the floor on a busy machine is ~2 ns, so some runs genuinely cannot resolve
+  the question. It now reports that instead of manufacturing a verdict — and
+  notes that inconclusive is *not neutral about what to build*: D, S and F land
+  within a point or two, so the burden of proof is on the expensive option and
+  it has not been met.
+- **`is_x86_feature_detected!` is the HOST, `cfg!(target_feature)` is the
+  BUILD.** The header printed the first, so a `--config .cargo/config-v3.toml`
+  build on this AVX-512 machine announced `avx512f=true`. That is exactly the
+  read-the-arm's-own-report failure entry (14) warns about, committed by the
+  session that wrote entry (14). It now prints both, labelled.
+
+---
+
 ## 2026-09-16 (14) — the default `target-cpu` now MEASURES THE HOST; a config that a caller can silently REPLACE was never a guarantee
 
 Three findings, one root cause, PR #313 (branch `claude/c64-6502-falsifier-shztkk`).
