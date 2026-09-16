@@ -78,7 +78,12 @@
 //!     --example ternlogq_sparse_reapply_probe
 //! ```
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "avx512f",
+    target_feature = "avx512vl",
+    target_feature = "avx512dq"
+))]
 mod probe {
     use ndarray::simd::mask_ternlog;
     use ndarray::simd::ternlog::AND3;
@@ -311,12 +316,22 @@ mod probe {
     }
 }
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "avx512f",
+    target_feature = "avx512vl",
+    target_feature = "avx512dq"
+))]
 fn main() {
     probe::main();
 }
 
-#[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f")))]
+#[cfg(not(all(
+    target_arch = "x86_64",
+    target_feature = "avx512f",
+    target_feature = "avx512vl",
+    target_feature = "avx512dq"
+)))]
 fn main() {
     println!("ternlogq_sparse_reapply_probe: AVX-512 only; nothing to measure on this realization.");
 }
