@@ -1,3 +1,98 @@
+## 2026-09-16 (15) — the mask-algebra tail wanted a fixed TRIP COUNT, not intrinsics; the `U64x4`/`U64x2` + `avx512vl` build is CANCELLED
+
+PR #315 (branch `claude/mask-algebra-tail-probe`). The planned step (b) — give
+`U64x4`/`U64x2` a real surface across six backend files, add a `tail_descend`
+helper, gate `mask_ternlog`'s tail behind `avx512vl` — is **not justified**, and
+the probe that was written to support it is what killed it.
+
+### What the earlier measurement actually compared
+
+`D` (an x86 intrinsic 4→2→1 descent) against `P` (the zero-padded full-width op
+production runs today). D won by 5–17×, which is real. It is also **the wrong
+comparison for deciding what to build**, because the alternative it did not
+test was free. Two arms were added:
+
+| arm | tail |
+|---|---|
+| S | `for i in done..n` |
+| F | FIXED-WIDTH steps, plain Rust, zero intrinsics |
+
+Resolvable v4 run (floor 1.32 ns, 34 of 98 widths resolvable), as the share of
+the padded tail's cost removed: **S 79.6% · D 82.5% · F 83.2%**, i.e.
+`D − S = +2.9 pts` and **`D − F = −0.7 pts`**.
+
+**The mechanism is the trip count.** `done..n` is unknown at compile time, so
+LLVM emits a scalar loop with a branch per word. `for j in 0..4` compiles to a
+single `vandps ymm`. Intrinsics contribute nothing on top of that.
+
+### The codegen half, and it is the stronger half
+
+`examples/narrow_bitop_codegen_probe.rs`. On the x86 backends `U64x4` is
+`pub struct U64x4(pub [u64; 4])` — the `avx2_int_type!` scalar polyfill — and
+the obvious reading is that the facade cannot supply a real 256-bit `and`
+without being retyped to `__m256i`. That reading is false, and the assembler
+says so outright:
+
+```
+probe_u64x4_and = probe_scalar4_and
+        vmovups (%rsi), %ymm0
+        vandps  (%rdi), %ymm0, %ymm0
+        vmovups %ymm0, (%rdx)
+```
+
+The two functions produced **bit-identical machine code and were merged into
+one symbol**. So the scalar polyfill never cost anything, and retyping it would
+buy nothing. A struct's storage type is not its codegen.
+
+### The decision
+
+Write the tail as fixed-width steps in plain Rust. It needs **no backend edits
+and no raw intrinsics** — so `simd_masking_ops.rs` keeps the `cfg(target_arch)`-free
+property its own header claims (`:117`), there is no exception to the
+all-SIMD-from-the-facade invariant, and it covers **all 11** algebra tails
+rather than the 8 an x86 descent could reach, because NEON, wasm and scalar get
+it for free. `avx512vl` stays unused in `src/` — this would have been its first
+dependency anywhere in the tree.
+
+### Four measurement errors, all mine, each caught by a number the probe printed
+
+Kept because the failure modes generalize past this probe.
+
+1. **Confounded bodies.** The arms had different bodies, so at `n % 8 == 0` —
+   *no tail at all* — D/P still read 0.72–0.84. A tail strategy cannot move a
+   call with no tail. Shared one `body()`, then isolated with
+   difference-in-differences, `t(base+k) − t(base)` at fixed body size.
+2. **A floor-thresholded COUNT is not a statistic.** "Widths where D beats S"
+   gave **2 of 14** then **10 of 14** on consecutive runs, off floors of
+   1.35 ns and 0.64 ns. The magnitudes being thresholded were stable
+   throughout. A verdict that flips with the floor cannot decide a six-file
+   change.
+3. **A per-pass median over 14 widths is itself noise** — it swung `D − S`
+   across **[−27, +34]** points. Pool across passes for the headline; print the
+   per-pass spread beside it so the scatter is visible rather than implied.
+4. **A negative tail inflates a fraction.** `(pt − dt)/pt > 1` when `dt < 0`,
+   and pooling those produced *"D removes 121.3% of the padded cost"* — not a
+   quantity. This is the SAME asymmetric-noise error codex caught in the ratio
+   column on this very PR, **reintroduced one statistic later**: rejecting a
+   negative *denominator* is not enough when a negative *numerator* inflates
+   instead. Widths now qualify only when all four tail costs clear the floor.
+
+### Two rules worth carrying forward
+
+- **A probe must be able to say INCONCLUSIVE.** A k-word tail costs ~1 ns and
+  the floor on a busy machine is ~2 ns, so some runs genuinely cannot resolve
+  the question. It now reports that instead of manufacturing a verdict — and
+  notes that inconclusive is *not neutral about what to build*: D, S and F land
+  within a point or two, so the burden of proof is on the expensive option and
+  it has not been met.
+- **`is_x86_feature_detected!` is the HOST, `cfg!(target_feature)` is the
+  BUILD.** The header printed the first, so a `--config .cargo/config-v3.toml`
+  build on this AVX-512 machine announced `avx512f=true`. That is exactly the
+  read-the-arm's-own-report failure entry (14) warns about, committed by the
+  session that wrote entry (14). It now prints both, labelled.
+
+---
+
 ## 2026-09-16 (14) — the default `target-cpu` now MEASURES THE HOST; a config that a caller can silently REPLACE was never a guarantee
 
 Three findings, one root cause, PR #313 (branch `claude/c64-6502-falsifier-shztkk`).
