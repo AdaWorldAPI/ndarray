@@ -1132,6 +1132,26 @@ UPPER bounds because of it, and PR #308's r2il probe measures the mask arms at
 > **false for `U64x2 × 4`**, which must pack
 > `out_words[g / 8] |= (bits as u64) << ((g % 8) * 8)`.
 
+> **STATUS 2026-09-16 — CODE LANDED on all six realizations (`e05afbd`);
+> MEASUREMENT still OPEN.** `{eq,ne,gt,ge,lt,le}_u64_to_mask` + the `simd.rs`
+> facade + `U64x8::{cmpeq_mask, cmpgt_mask} -> u8` per arm. `i64` NOT built —
+> the named consumer is unsigned, and a speculative family is surface with no
+> falsifier. Gate: avx512 (v4) 2370 tests + clippy `-D warnings` + 8 doctests
+> + parity `avx512f=true`; avx2 (v3) 2319; neon `cargo check --target aarch64`
+> (no qemu, check only); wasm+simd128 and scalar both RUN under node; nightly
+> PASS. Three semantic disables red-then-green, plus **four routing proofs** —
+> renaming an arm's `cmpgt_mask` must fail exactly the target that routes to
+> it, and the compiler names the arm (`wasm32_simd::U64x8` / `U64x8` /
+> `simd_avx2::U64x8` / `simd_neon::U64x8`). That step is what turns a green
+> cross-target check into evidence about WHICH arm compiled; without it, a
+> wasm check lacking `+simd128` silently gates the scalar arm instead.
+>
+> **The falsifier this section pre-registered is still unrun.** PR #308's
+> `find_ram_in_range` dodged the missing primitive by splitting offsets into
+> hi32/lo32 buckets — valid for its fixture, not in general. Re-express it
+> against the real `u64` family and re-measure. Until then "G2 was worth
+> closing" is asserted, not shown; existing code is not a moved measurement.
+
 **N3 — G2 ordered `u64`/`i64` compare.** The matrix left this conditional:
 *"count how many intended predicates over a U64 lane are ordered rather than
 equality. If the answer is zero, G2 is not a gap."* **PR #308 answers it: the

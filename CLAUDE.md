@@ -30,6 +30,19 @@ This project uses specialized agents in `.claude/agents/`. Follow these rules:
 - Every `unsafe` block needs a `// SAFETY:` comment.
 - All public APIs need `///` doc comments with examples.
 - `cargo clippy -- -D warnings` must pass.
+- **Every compile runs with `CARGO_PROFILE_DEV_DEBUG=0`** (operator, 2026-09-16:
+  *"use debug 0"*). Not a preference — **debug info is the disk hog, not the
+  code**, and this container's writable allowance is a fixed per-session budget
+  that presents as `No space left on device` mid-link, not as a full disk.
+  Measured here the same day on the identical tree and the identical test run:
+  `target/debug` is **1.9 GB with debug info and 291 MB without** — a 6.5×
+  cut, for a run that passed 2319 tests either way. Export it (plus
+  `CARGO_PROFILE_TEST_DEBUG=0` and `CARGO_INCREMENTAL=0`) as ENV, never as a
+  profile edit in `Cargo.toml`: the rule governs the agent's compiles, not the
+  profile a human commits. `--release` is NOT a substitute — it is slower to
+  build and the test runs need the dev path. And because a profile change
+  invalidates the whole cache, **delete `target/debug` before switching rather
+  than growing a second copy beside it.**
 - **All new public `pub fn` in `src/simd_*.rs` follows the W1a consumer contract** at `.claude/knowledge/vertical-simd-consumer-contract.md` — struct methods on typed wrappers, closure-parameterized batch primitives, all three backends (AVX*/NEON/scalar) implemented, parity test mandatory, saturating/overflow semantics documented. The Ada stack (lance-graph + downstream) enforces "all SIMD from `ndarray::simd`" via its `simd-savant` agent; missing primitives in ndarray force consumer-side raw-intrinsic violations, so additions here are gating the consumer-side sweep. **VPABSB does NOT saturate `i8::MIN`** — see § "VPABSB correction" in the contract doc before implementing `saturating_abs` or any abs primitive.
 
 ## Compaction Preservation

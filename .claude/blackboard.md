@@ -1,3 +1,127 @@
+## 2026-09-16 (10) — N3 / T1 gap G2 LANDED on all six realizations, and a cross-target "it compiles" needed a ROUTING PROOF to mean anything
+
+`{eq,ne,gt,ge,lt,le}_u64_to_mask` + the `simd.rs` facade + the lane primitive
+`U64x8::{cmpeq_mask, cmpgt_mask} -> u8` on every arm that lacked it — commit
+`e05afbd`. `i64` deliberately not built (no consumer), same rule that skipped
+`u16` in N2.
+
+**The width where the packing is NOT free, which is the fact N2 could not
+teach.** `U8x64` is 64 lanes against a 64-bit word, so one chunk was one whole
+word with no shift at all. `U64x8` is 8 lanes: eight groups share a word and
+each must land at its own byte, `out_words[g / 8] |= (bits as u64) << ((g % 8)
+* 8)`. Nothing upstream of this family exercises that shift — every u8 test
+would pass with it wrong — so it got a test whose whole job is the shift.
+
+**Per-arm, because only two of six have the instruction.** avx512 native
+(`_mm512_cmp{eq,gt}_epu64_mask`; `__mmask8` IS `u8`, read out of the
+toolchain's own stdarch rather than assumed). NEON native (`cmhi`/`cmeq` — and
+the plan's earlier instinct to write this as a scalar fold would have been
+wrong: a gap in this repo's WRAPPER is not a gap in the ISA). WASM has **no**
+unsigned ordered 64-bit compare at all, so it flips the sign bit of both
+operands into `i64x2_gt` — the same trick `U8x32::cmpgt_mask` already carries
+at byte width, cited rather than re-derived. scalar and avx2 are both flat
+`[u64; 8]` polyfills (the avx2 file says so itself), where Rust's `>` on `u64`
+already IS the unsigned compare.
+
+### ⊘ The census defect this wave found in the plan's OWN table
+
+§18 graded the nightly arm "compare-to-mask: **none**". False, and not
+marginally: `src/simd_nightly/` has carried **18 such pairs across every
+width** — `U64x8::{cmpeq_mask, cmpgt_mask} -> u8` included — since before this
+wave started.
+
+**Why the census missed it is the exact mirror of the trap §18 itself
+documents.** §18 warns that a FILE-WIDE grep makes an absent surface look
+present (`cmpeq_mask` hits in `simd_avx2.rs` come from the adjacent `U8x64`
+block). This is the inverse: the nightly arm is a **directory**, not a
+`simd_<arm>.rs` file, so a census shaped around the single-file arms skips it
+and a PRESENT surface looks absent. Both failures are the same error —
+letting the search SHAPE stand in for the thing searched.
+
+It reframes the wave, and downward in difficulty: **N2 and N3 were not adding
+a capability, they were bringing the stable arms up to a contract the
+validation arm already stated.** The nightly bodies are therefore the contract
+reference (return width, bit order, `simd_gt` on a `u64` element type being
+already unsigned), and `masking-parity.sh nightly` becomes a genuine
+cross-realization differential rather than a same-author self-check. That gate
+was not in the plan and is stronger than what was.
+
+### ★ ROUTING PROOFS — the new method, and it is the durable part of this entry
+
+A cross-target `cargo check` that passes is evidence about **nothing** unless
+you know WHICH arm it compiled. `simd_neon` and `simd_wasm` are declared in
+`lib.rs` behind `#[cfg(feature = "std")]` alone — no target cfg — so their
+mere presence in a build proves nothing; the arch gate is inside each file.
+A wasm check without `+simd128` compiles the scalar arm and reports success
+while never touching `simd_wasm.rs`.
+
+So each arm was proved by RENAMING its `cmpgt_mask` and confirming that
+exactly the target routing to it fails — and the compiler names the arm:
+
+| target | error names |
+|---|---|
+| `wasm32 +simd128` | `wasm32_simd::U64x8` |
+| `wasm32` bare | `U64x8` (the scalar arm) |
+| `x86_64` v3 | `simd_avx2::U64x8` |
+| `aarch64` | `simd_neon::U64x8` |
+
+**The anchor assertion earned its place on the neon one.** `simd_neon.rs` has
+TWO `pub fn cmpgt_mask(self, other: Self) -> u8` — the `U64x2` leaf and the
+`U64x8` composition — so the script refused the non-unique anchor instead of
+silently renaming whichever came first. Re-aimed at the composition by
+anchoring on its `self.0[p]` loop body.
+
+### Three semantic disables, red-then-green
+
+| test | disable | observed |
+|---|---|---|
+| `gt_lt_u64_to_mask_are_unsigned_not_signed` | `epu64` → `epi64` | `0x8000000000000000 > 0x7fffffffffffffff must be true unsigned` |
+| `u64_packing_places_each_group_in_its_own_byte` | `(g % 8) * 8` → `* 4` | `group 1 must occupy byte 1 alone (got 0x...0ff0)` |
+| `u64_family_matches_scalar_reference_randomized` | `lt` loses the operand swap | `ge n=8 t=0 i=0` |
+
+Restore was by `cp` from a backup, **not** `git checkout` — which sidesteps the
+workspace's known trap (checkout reverts to the last COMMIT, so a disable run
+over uncommitted work deletes it) without needing to commit first, and let the
+disables run while the last worker was still writing a different file.
+
+### Gate, all six realizations
+
+`avx512` (v4): 2370 lib tests, clippy `-D warnings`, 8 doctests, parity
+`avx512f=true`. `avx2` (v3): 2319. `neon`: `cargo check --target aarch64`
+(check only — no qemu here). `wasm+simd128` and `scalar` (wasm32 without
+simd128): built and RUN under node, both PASS. `nightly`: PASS,
+`nightly-simd=true`. The 2370-vs-2319 gap is arch-gated tests, not a
+regression.
+
+### Two corrections to the plan's own honest-scope claims, both made before code
+
+§18b closed with *"no aarch64 or wasm32 target is installed in this
+container"*. **Three are installed.** Both cross arms compile-check clean on
+the unmodified tree, and wasm can additionally be RUN under node. The
+paragraph would have sent a worker into those arms believing the gate did not
+exist. Residual limit stated precisely instead of dropped: NEON can be checked
+but not run.
+
+### Operator rule landed the same session: `CARGO_PROFILE_DEV_DEBUG=0`
+
+*"use debug 0."* Measured here on the identical tree and the identical run:
+`target/debug` **1.9 GB → 291 MB**, 6.5×, for a suite that passed 2319 tests
+either way. **Debug info is the disk hog, not the code** — and this container's
+writable allowance is a fixed per-session budget that presents as `No space
+left on device` mid-LINK, not as a full disk, so the symptom points at the
+wrong thing. Recorded in `CLAUDE.md` beside the build-config block. Note a
+profile change invalidates the whole cache, so `target/debug` gets deleted
+before the switch rather than a second copy growing beside it.
+
+### Still open
+
+G2's own measurement half, exactly as G1's: the code exists, and existing code
+is not a moved measurement. PR #308's `find_ram_in_range` re-expressed its
+query by splitting offsets into hi32/lo32 buckets to dodge the missing
+primitive; until that probe is re-run against the real `u64` family, the claim
+that G2 was worth closing is unmeasured. Same for N2's `hex_tenant_mq_probe`
+re-chain. Two probes, both still unrun, both pre-registered.
+
 ## 2026-09-16 (9) — N2 / T1 gap G1 LANDED: at `u8` the packing is FREE, and a disable run has a second failure door
 
 Six functions in `simd_masking_ops.rs` (`{eq,ne,gt,ge,lt,le}_u8_to_mask`) plus
