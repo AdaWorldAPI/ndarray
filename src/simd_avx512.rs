@@ -1817,6 +1817,39 @@ impl U64x8 {
     pub fn reduce_sum(self) -> u64 {
         unsafe { _mm512_reduce_add_epi64(self.0) as u64 }
     }
+
+    /// Lane-wise equality comparison. Returns an 8-bit mask: bit `i` is set
+    /// iff `self[i] == other[i]`.
+    ///
+    /// The mask is `u8`, not `u64`, because `U64x8` has exactly 8 lanes — one
+    /// bit per lane (contrast `U8x64::cmpeq_mask` above, whose 64 lanes need
+    /// a `u64` mask). Equality has no sign, so — unlike `cmpgt_mask` below —
+    /// there is no unsigned/signed instruction choice to make here.
+    #[inline(always)]
+    pub fn cmpeq_mask(self, other: Self) -> u8 {
+        // SAFETY: `Self` is a native `__m512i`; this arm is compiled only
+        // under the avx512f dispatch, the same guarantee every other method
+        // on this type relies on. `_mm512_cmpeq_epu64_mask` needs only
+        // avx512f (not avx512bw/vl) for its 512-bit form.
+        unsafe { _mm512_cmpeq_epu64_mask(self.0, other.0) }
+    }
+
+    /// Lane-wise **unsigned** greater-than comparison. Returns an 8-bit mask:
+    /// bit `i` is set iff `self[i] > other[i]`, treating each full 64-bit
+    /// lane as unsigned. Symmetric to `cmpeq_mask` above.
+    ///
+    /// This calls `_mm512_cmpgt_epu64_mask` (`epu64` — unsigned), never the
+    /// signed `_mm512_cmpgt_epi64_mask` (`epi64`). A `u64` with the top bit
+    /// set (`>= 1 << 63`) is *negative* under a signed 64-bit compare, so an
+    /// `epi64` instruction would invert the answer for exactly that half of
+    /// the `u64` domain. `U64x8` stores unsigned lanes by construction, so
+    /// the unsigned comparison is the only one that matches the type.
+    #[inline(always)]
+    pub fn cmpgt_mask(self, other: Self) -> u8 {
+        // SAFETY: as `cmpeq_mask` above — avx512f-only dispatch, stable
+        // intrinsic. Unsigned compare via `_epu64`, never `_epi64`.
+        unsafe { _mm512_cmpgt_epu64_mask(self.0, other.0) }
+    }
 }
 
 impl_bin_op!(U64x8, Add, add, _mm512_add_epi64);

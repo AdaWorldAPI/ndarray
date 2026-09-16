@@ -1238,6 +1238,46 @@ carry compares. Read file-wide, the surface looks present. It is not.
 | wasm | `[U64x2; 4]` (`simd_wasm.rs:1777`) | 13 | **none** |
 | nightly | `u64x8` portable-simd | — | **none** |
 
+> **⊘ THE NIGHTLY ROW IS WRONG, and the correction reframes the whole wave
+> (2026-09-16, found by the N3 worker assigned to that arm, verified here by
+> brace-scoped extraction).** `src/simd_nightly/u_word_types.rs` has carried
+> `U64x8::{cmpeq_mask, cmpgt_mask} -> u8` since before this wave, at lines
+> 125/131 — `self.0.simd_eq(other.0).to_bitmask() as u8` and the `simd_gt`
+> twin — under its own `// ── Compare -> bitmask ──` section header. It is not
+> an isolated pair either: the nightly arm ships **18 such pairs across every
+> width in the directory** (`u_word_types.rs` ×7 incl. `U64x4`/`U32x8`/
+> `U32x16`/`U16x32`/`U16x16`, `i_word_types.rs` ×6, `u8_types.rs` ×2,
+> `i8_types.rs` ×2, `w1a_types.rs` ×1).
+>
+> **Why the census missed it, and the lesson is the mirror of §18's own.**
+> §18 warns that a FILE-WIDE grep makes an absent surface look present
+> (`cmpeq_mask` hits in `simd_avx2.rs` come from the adjacent `U8x64` block).
+> This is the inverse: the nightly arm is a **directory**
+> (`src/simd_nightly/*.rs`), not a `simd_<arm>.rs` file, so a census shaped
+> around the single-file arms skips it entirely and a PRESENT surface looks
+> absent. Both failures come from letting the search SHAPE stand in for the
+> thing searched.
+>
+> **Three consequences, all load-bearing for N3:**
+>
+> 1. **This wave is not adding a capability — it is bringing the stable arms up
+>    to a contract the validation arm already states.** That is a materially
+>    different claim and a much easier one to get right.
+> 2. **The nightly bodies are the CONTRACT REFERENCE.** Return width `u8` for
+>    8 lanes, lane `i` → bit `i`, `simd_gt` on a `u64` element type (already
+>    unsigned, no bias). Every stable arm must match that, and its terse
+>    one-line doc style is the house convention for this family.
+> 3. **An unplanned gate exists:** `scripts/masking-parity.sh nightly` builds
+>    the facade against this arm, so once the stable arms land, stable-vs-
+>    nightly is a genuine cross-realization differential rather than a
+>    same-author self-check. That gate was not in the plan and is stronger than
+>    what was.
+>
+> Coverage gap noted by the same worker, not fixed here: the nightly tests have
+> `u64x8_cmpeq_mask_all` but **no `u64x8_cmpgt_mask` test**, where the sibling
+> `U64x4` has both. Filed rather than folded in — it is that arm's own
+> regression surface, not N3's.
+
 `U64x2`, the neon/wasm building block, has 10 methods on neon and **no compare
 among them**, so composing four of those is not available either.
 

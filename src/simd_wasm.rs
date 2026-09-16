@@ -1922,6 +1922,55 @@ pub mod wasm32_simd {
                 })
             }))
         }
+
+        /// Per-lane equality as a packed 8-bit bitmask: bit `i` set iff
+        /// `self[i] == other[i]`. Bits at or above 8 are always zero — the
+        /// `u8` return type has room for exactly 8, and there are only 8
+        /// lanes.
+        ///
+        /// `u64x2_eq` needs no sign bias: bit equality is sign-agnostic, and
+        /// wasm SIMD128 reflects that directly — it ships `u64x2_eq` as a
+        /// plain `pub use i64x2_eq as u64x2_eq` alias, because there is no
+        /// separate unsigned/signed equality instruction to begin with.
+        /// Each compare yields an all-ones/all-zeros lane; `i64x2_bitmask`
+        /// extracts the 2 per-quad bits directly — the same reduction
+        /// `F64x8::cmp_mask` above already uses to fold 4× `v128` compare
+        /// results into one packed mask.
+        #[inline(always)]
+        pub fn cmpeq_mask(self, other: Self) -> u8 {
+            let mut bits: u8 = 0;
+            for p in 0..4 {
+                bits |= (i64x2_bitmask(u64x2_eq(self.0[p].0, other.0[p].0)) as u8) << (2 * p);
+            }
+            bits
+        }
+
+        /// Per-lane **unsigned** greater-than as a packed 8-bit bitmask:
+        /// bit `i` set iff `self[i] > other[i]`. Bits at or above 8 are
+        /// always zero.
+        ///
+        /// wasm SIMD128 has no unsigned ordered 64-bit compare — only the
+        /// signed `i64x2_lt`/`i64x2_gt`/`i64x2_le`/`i64x2_ge` family, which
+        /// stdarch documents as treating the operands "as if they were two
+        /// vectors of 2 sixty-four-bit signed integers". So both operands
+        /// are XORed with the sign bit (`0x8000_0000_0000_0000`) before the
+        /// signed compare — an order-preserving bijection from unsigned to
+        /// signed ordering. Same trick, same reasoning, as
+        /// `U8x32::cmpgt_mask` in `simd_avx2.rs`, which documents and uses
+        /// it at byte width: "AVX2 only has signed `_mm256_cmpgt_epi8`, so
+        /// we XOR both operands with `0x80` to convert unsigned ↔ signed
+        /// (preserves ordering for unsigned compare)."
+        #[inline(always)]
+        pub fn cmpgt_mask(self, other: Self) -> u8 {
+            let bias = u64x2_splat(0x8000_0000_0000_0000);
+            let mut bits: u8 = 0;
+            for p in 0..4 {
+                let a_s = v128_xor(self.0[p].0, bias);
+                let b_s = v128_xor(other.0[p].0, bias);
+                bits |= (i64x2_bitmask(i64x2_gt(a_s, b_s)) as u8) << (2 * p);
+            }
+            bits
+        }
     }
 
     impl Add for U64x8 {

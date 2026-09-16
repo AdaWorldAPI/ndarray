@@ -780,24 +780,32 @@ pub use crate::simd_masking_ops::{
     // 2026-09-16: the u8 compare-to-mask family — one 64-lane `U8x64` chunk is
     // exactly one whole 64-bit mask word, so these pack without a shift (N2/G1
     // of the DuckDB->V3 translation matrix).
+    // 2026-09-16: the ordered u64 family (N3/G2). The width where the packing
+    // is NOT free — `U64x8` is 8 lanes, so eight groups share a word and each
+    // lands at its own byte.
     blend_i32,
     eq_i32_to_mask,
     eq_i32_to_mask_under,
     eq_u32_strided_to_mask,
     eq_u32_to_mask,
     eq_u32_to_mask_under,
+    eq_u64_to_mask,
     eq_u8_to_mask,
     ge_i32_to_mask,
     ge_i32_to_mask_under,
+    ge_u64_to_mask,
     ge_u8_to_mask,
     gt_i32_to_mask,
     gt_i32_to_mask_under,
+    gt_u64_to_mask,
     gt_u8_to_mask,
     le_i32_to_mask,
     le_i32_to_mask_under,
+    le_u64_to_mask,
     le_u8_to_mask,
     lt_i32_to_mask,
     lt_i32_to_mask_under,
+    lt_u64_to_mask,
     lt_u8_to_mask,
     mask_all,
     mask_and,
@@ -823,6 +831,7 @@ pub use crate::simd_masking_ops::{
     ne_i32_to_mask_under,
     ne_u32_to_mask,
     ne_u32_to_mask_under,
+    ne_u64_to_mask,
     ne_u8_to_mask,
     ternary_match_strided_to_mask,
     ternary_match_u32_to_mask,

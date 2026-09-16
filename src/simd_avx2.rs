@@ -2331,6 +2331,81 @@ impl U64x8 {
         }
         sum
     }
+
+    /// Lane-wise equality comparison. Returns an 8-bit mask: bit `i` is set
+    /// iff `self[i] == other[i]`. Same 8-lanes-in-8-bits contract as the
+    /// AVX-512 `U64x8::cmpeq_mask` (`simd_avx512.rs`) — one bit per lane;
+    /// bits at or above 8 simply do not exist in the `u8` return type.
+    ///
+    /// **This is the scalar polyfill, not a missed vectorization** — as the
+    /// file's own note just above this `impl` block says: "The
+    /// `avx2_int_type!` macro generated `U64x8` as a scalar polyfill in
+    /// this file." AVX2 has no packed unsigned 64-bit ordered compare worth
+    /// wiring at this width, unlike the `rotate_left`/`rotate_right`/`Shl`/
+    /// `Shr` impls further up this file, which DO reach for real `__m256i`
+    /// halves via `avx2_halves()` — because AVX2 has packed 64-bit
+    /// *shifts*, just not a packed 64-bit *unsigned compare*.
+    ///
+    /// Composed as four 2-lane groups (`p in 0..4`, lanes `2p`/`2p+1`)
+    /// rather than a flat 8-iteration loop — deliberate: storage flat,
+    /// composition 2×4. Every non-avx512 backend realizes `U64x8` as four
+    /// `U64x2` pairs (`simd_neon.rs`/`simd_wasm.rs`:
+    /// `pub struct U64x8(pub [U64x2; 4])`); walking the same four pairs
+    /// here keeps this arm's shape identical to theirs even though this
+    /// file's own storage is a flat `[u64; 8]`. Do not "simplify" this into
+    /// a single `for i in 0..8` loop.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let a = U64x8::from_array([1, 2, 3, 4, 5, 6, 7, 8]);
+    /// let b = U64x8::from_array([1, 0, 3, 0, 5, 0, 7, 0]);
+    /// assert_eq!(a.cmpeq_mask(b), 0b0101_0101);
+    /// ```
+    #[inline(always)]
+    pub fn cmpeq_mask(self, other: Self) -> u8 {
+        let mut mask: u8 = 0;
+        for p in 0..4 {
+            if self.0[2 * p] == other.0[2 * p] {
+                mask |= 1 << (2 * p);
+            }
+            if self.0[2 * p + 1] == other.0[2 * p + 1] {
+                mask |= 1 << (2 * p + 1);
+            }
+        }
+        mask
+    }
+
+    /// Lane-wise **unsigned** greater-than comparison. Returns an 8-bit
+    /// mask: bit `i` is set iff `self[i] > other[i]`. Symmetric to
+    /// `cmpeq_mask` above — same 8-bits-only footprint, same 2×4 grouping,
+    /// same "bits at or above 8 do not exist" contract.
+    ///
+    /// Plain `>` on Rust's `u64` is *already* the unsigned ordering. Unlike
+    /// this file's own `U8x32::cmpgt_mask` (signed-only `_mm256_cmpgt_epi8`,
+    /// biased into an unsigned answer via a sign-flip XOR) there is no
+    /// sign-bias trick to apply here — this arm is the scalar polyfill (see
+    /// `cmpeq_mask` above), so there is no signed intrinsic to bias in the
+    /// first place.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let a = U64x8::from_array([1, 2, 3, 4, 5, 6, 7, 8]);
+    /// let b = U64x8::from_array([0, 2, 0, 4, 0, 6, 0, 8]);
+    /// assert_eq!(a.cmpgt_mask(b), 0b0101_0101);
+    /// ```
+    #[inline(always)]
+    pub fn cmpgt_mask(self, other: Self) -> u8 {
+        let mut mask: u8 = 0;
+        for p in 0..4 {
+            if self.0[2 * p] > other.0[2 * p] {
+                mask |= 1 << (2 * p);
+            }
+            if self.0[2 * p + 1] > other.0[2 * p + 1] {
+                mask |= 1 << (2 * p + 1);
+            }
+        }
+        mask
+    }
 }
 
 // Extra methods for U16x32 (widen/narrow, shift, multiply) — AVX2 scalar fallback.

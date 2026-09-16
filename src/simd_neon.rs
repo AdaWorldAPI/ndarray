@@ -2057,6 +2057,57 @@ impl U64x2 {
         let b = other.to_array();
         Self::from_array([a[0].max(b[0]), a[1].max(b[1])])
     }
+
+    /// Lane-wise equality as a packed bitmask; bit `i` set iff
+    /// `self.lane(i) == other.lane(i)`. Only bits `0..2` are meaningful —
+    /// the upper 6 bits of the returned `u8` are always zero, which
+    /// `U64x8::cmpeq_mask` below relies on when it OR-shifts four of these
+    /// 2-lane results into one 8-bit result (a nonzero bit above position 1
+    /// here would corrupt a neighbouring group).
+    ///
+    /// `vceqq_u64` (`CMEQ`) produces an all-ones (`u64::MAX`) or all-zero
+    /// lane per comparison; each lane is extracted with `vgetq_lane_u64`
+    /// and folded to its own bit. This file's other movemask-style
+    /// reduction (`quad_mask4`, used by `I32x16::{cmpge_zero_mask,
+    /// gt_bitmask}` further down) packs a `uint32x4_t` compare via a
+    /// weighted AND + `vaddvq_u32`, but its weights `[1, 2, 4, 8]` are
+    /// baked in for four 32-bit lanes -> four bits; reusing it here would
+    /// need reinterpreting this `uint64x2_t` as `uint32x4_t` (each 64-bit
+    /// lane becomes two identical 32-bit halves — the same reinterpret
+    /// `U64x8`'s `PartialEq::eq` impl already relies on) plus a
+    /// *different*, zero-padded weight set so the duplicate halves aren't
+    /// double-counted. That is a second, less obviously correct convention
+    /// just to save two scalar lane reads, so direct extraction is used
+    /// instead — simpler and unambiguously correct for only two lanes.
+    #[inline(always)]
+    pub fn cmpeq_mask(self, other: Self) -> u8 {
+        // SAFETY: NEON baseline; pure register compare plus two in-register
+        // lane reads (`vgetq_lane_u64` reads a lane already held in a NEON
+        // register — no memory access).
+        unsafe {
+            let cmp = vceqq_u64(self.0, other.0);
+            (vgetq_lane_u64(cmp, 0) & 1) as u8 | (((vgetq_lane_u64(cmp, 1) & 1) as u8) << 1)
+        }
+    }
+
+    /// Lane-wise **unsigned** greater-than as a packed bitmask; bit `i` set
+    /// iff `self.lane(i) > other.lane(i)` under unsigned ordering. Same bit
+    /// convention and upper-bits-zero guarantee as `cmpeq_mask` above.
+    ///
+    /// `vcgtq_u64` maps to `CMHI` ("compare higher", the unsigned form) on
+    /// aarch64 — a genuine hardware unsigned 64-bit compare, so unlike a
+    /// backend with only a signed 64-bit compare (which must XOR the sign
+    /// bit of both operands first to fake an unsigned ordering), no bias
+    /// correction is needed on this arm.
+    #[inline(always)]
+    pub fn cmpgt_mask(self, other: Self) -> u8 {
+        // SAFETY: NEON baseline; pure register compare plus two in-register
+        // lane reads.
+        unsafe {
+            let cmp = vcgtq_u64(self.0, other.0);
+            (vgetq_lane_u64(cmp, 0) & 1) as u8 | (((vgetq_lane_u64(cmp, 1) & 1) as u8) << 1)
+        }
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -2839,6 +2890,40 @@ impl U64x8 {
                 }
             })
         }))
+    }
+
+    /// Lane-wise equality as a packed 8-bit bitmask, bit `i` set iff
+    /// `self.lane(i) == other.lane(i)` (LSB-first — lane `0` is bit `0` —
+    /// same convention as `U32x16::eq_bitmask` / `I32x16::gt_bitmask`
+    /// elsewhere in this file, and matching the scalar backend's
+    /// `U64x8::cmpeq_mask` oracle bit-for-bit).
+    ///
+    /// Composed from four `U64x2::cmpeq_mask` calls, one per fanned-out
+    /// register: group `p` (lanes `2p` and `2p+1`) occupies bits `2p..2p+2`
+    /// of the result. `U64x8` is four independent `uint64x2_t` registers
+    /// with no single 8-lane NEON compare to reduce in one step, so this
+    /// composes four already-correct 2-lane masks rather than reinventing
+    /// the reduction at 8-lane width; `U64x2::cmpeq_mask`'s own doc comment
+    /// is what guarantees its upper 6 bits are zero, which is what makes
+    /// this OR-shift safe against corrupting a neighbouring group.
+    #[inline(always)]
+    pub fn cmpeq_mask(self, other: Self) -> u8 {
+        let mut m = 0u8;
+        for p in 0..4 {
+            m |= self.0[p].cmpeq_mask(other.0[p]) << (2 * p);
+        }
+        m
+    }
+
+    /// Lane-wise **unsigned** greater-than as a packed 8-bit bitmask. Same
+    /// group-of-2 composition and bit convention as `cmpeq_mask` above.
+    #[inline(always)]
+    pub fn cmpgt_mask(self, other: Self) -> u8 {
+        let mut m = 0u8;
+        for p in 0..4 {
+            m |= self.0[p].cmpgt_mask(other.0[p]) << (2 * p);
+        }
+        m
     }
 }
 
