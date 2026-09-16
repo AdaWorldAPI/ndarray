@@ -1,3 +1,28 @@
+## 2026-09-16 (4) — the AVX2 tier's `U8x64` byte compares were scalar loops beside a vectorized `U8x32` that already solved them
+
+Found while scoping T1 gap G1 (the `u8` compare-to-mask family): on the v3/AVX2
+arm `U8x64::{cmpeq_mask, cmpgt_mask}` built the `u64` one bit at a time, under a
+comment calling itself a "scalar fallback", while `U8x32` in the SAME file
+already carried `_mm256_cmpeq_epi8` + `_mm256_movemask_epi8` and an UNSIGNED
+`cmpgt_mask` with the sign-bias XOR that AVX2 needs (it has only the signed
+`_mm256_cmpgt_epi8`). Both now compose two halves: `(lo) | (hi << 32)`.
+
+**Scope, and it decides where this is exercised:** this body compiles ONLY on
+the v3 arm. Under x86-64-v4 `U8x64` is the native `__m512i` from
+`simd_avx512.rs` and none of it is reached. Per the operator ruling recorded in
+entry (3), v3 is not where this workspace MEASURES — it is where the
+realization matrix requires every backend to stay bit-exact, which is the whole
+reason to fix it rather than leave it.
+
+Disable run (after the commit `3a5da8c`, so the restore could not eat it):
+swapping the `lo`/`hi` halves fails 2 of 3 tests — the scalar-oracle test and
+the lane-position test at indices 0/31/32/63. The sign-boundary test correctly
+stays GREEN under that disable, because it tests signedness, not composition;
+each of the three pins its own property and none of them is redundant.
+
+Gates on the v3 arm: clippy `-D warnings` clean, fmt clean, 70 tests across the
+two touched modules, masking parity 11 groups bit-identical.
+
 ## 2026-09-16 (3) — ⊘ every reveal-ratio number in this arc was v3/AVX2, including today's; the AVX-512 ratio is 110–123×, and CLAUDE.md was why
 
 Operator ruling: *"It's unacceptable to use avx2 / of course you need to run
