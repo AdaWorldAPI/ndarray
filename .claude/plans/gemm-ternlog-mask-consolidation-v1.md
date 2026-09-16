@@ -1127,13 +1127,24 @@ UPPER bounds because of it, and PR #308's r2il probe measures the mask arms at
 > `hex_tenant_mq_probe` gained a NATIVE u8 arm beside its widened i32 one —
 > same process, same data, bit-identity asserted before either is timed:
 >
+> ⊘ **The first published table was INFLATED by dead-store elimination** — the
+> timed closures carried no `black_box`, and the exposure was asymmetric: the
+> i32 arms were accidentally protected by a later read, the u8 arms had no
+> reader at all (codex P2 on #309). Corrected, all six timed sites guarded on
+> both inputs and outputs:
+>
 > | tier | M1b: 6 masks | coal: one re-chain |
 > |---|---|---|
-> | v4 / AVX-512 | 40810 → **5064 ns** (**8.06×**) | 6789 → **1006 ns** (**6.75×**) |
-> | v3 / AVX2 | 43798 → 5638 ns (7.77×) | 7189 → 1101 ns (6.53×) |
+> | v4 / AVX-512 | 41268 → **5973 ns** (**6.91×**, was 8.06×) | 6319 → **1082 ns** (**5.84×**, was 6.75×) |
+> | v3 / AVX2 | 38840 → 6084 ns (**6.38×**, was 7.77×) | 6060 → 935 ns (**6.48×**, was 6.53×) |
 >
-> In the probe's own units a maneuver drops from **1.02 maintained steps to
-> 0.15** at x=4. The ratio is nearly tier-INdependent, so this is a WIDTH
+> The tell is in the absolutes: the u8 arm got SLOWER (1006 → 1082 ns) and the
+> i32 arm FASTER (6789 → 6319 ns). And v3's coal ratio barely moved while v4's
+> moved 13% — consistent with the mechanism (AVX-512 codegen had more room to
+> delete the dead stores), not with noise.
+>
+> In the probe's own units a maneuver drops from **0.74 maintained steps to
+> 0.13** at x=4. The ratio is nearly tier-INdependent, so this is a WIDTH
 > effect, not an ISA one: 4× fewer instructions AND 4× less memory, plus
 > (conjecture) the vanished packing arithmetic. Note **neither tier reproduces
 > the 8.9 µs quoted above** (v4 6789, v3 7189) — that absolute came from a

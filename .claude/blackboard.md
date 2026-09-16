@@ -1,4 +1,69 @@
+## 2026-09-16 (12) — ⊘ the G1 ratio was INFLATED by dead-store elimination; corrected 6.75× → 5.84×, and the conclusion survives
+
+codex P2 on PR #309, and it was load-bearing. Entry (11)'s numbers are
+superseded by the ones here.
+
+**The defect.** `timed()` repeats a closure with nothing reading the result, and
+`hex_tenant_mq_probe` had **zero `black_box` anywhere**. A write-only closure is
+then dead code an optimizing build may delete. The exposure was not symmetric —
+it ran in exactly the direction that flattered the new arm:
+
+- the widened-**i32** arms were accidentally protected by a LATER read: the
+  spread loop consumes `elig`, and the parity `assert_eq!` at `:764` consumes
+  `m_new`;
+- the native-**u8** arms had **no reader at all** — `elig_u8` and `m_new_u8` are
+  read only by the asserts that run *before* their timed calls.
+
+So the very ratio the probe exists to measure could have been the optimizer
+deleting one side of it.
+
+**Corrected, release, both tiers, all six timed sites `black_box`ed on BOTH
+inputs and outputs:**
+
+| tier | M1b: 6 masks | coal: one re-chain |
+|---|---|---|
+| v4 / AVX-512 | 8.06× → **6.91×** | 6.75× → **5.84×** |
+| v3 / AVX2 | 7.77× → **6.38×** | 6.53× → **6.48×** |
+
+Absolutes behind the v4 coal row are the tell: the u8 arm got **slower**
+(1006 → 1082 ns) and the i32 arm got **faster** (6789 → 6319 ns) — the
+signature of dead-store elimination on the u8 side specifically, not of noise.
+Maintained steps at x=4 move with it: i32 1.02 → **0.74**, u8 0.15 → **0.13**.
+
+**v3's coal ratio barely moved (6.53 → 6.48) while v4's moved 13%**, which is
+itself consistent with the mechanism rather than with noise: AVX-512 codegen had
+more room to eliminate the dead stores. A noise explanation would not pick the
+tier with more optimization headroom.
+
+**The conclusion survives; the number does not.** The widening was still the
+cost, at ~5.8-6.5× rather than ~6.5-6.8×, and still nearly tier-independent,
+so still a WIDTH effect rather than an ISA one.
+
+### The lesson, which is sharper than the fix
+
+I had the measurement discipline right in every other respect on this probe —
+bit-identity asserted before timing, both arms in one process, the widened
+column's materialization deliberately left outside the timed region — and
+still shipped a number that an optimizer could have manufactured. **A
+benchmark's correctness is not only about what it MEASURES; it is about
+whether the code under test is still THERE.** The asymmetry is what made it
+dangerous: had neither arm been protected, both would have been deleted and
+the ratio would have looked absurd. One arm accidentally protected by an
+unrelated later read is the case that produces a plausible wrong answer.
+
+`timed()` now carries the rule in its own doc comment with this incident as
+provenance, so the next closure written against it cannot omit the guard by
+accident — the same "put the rule where the next person will be standing"
+move as the v4 `-D warnings` disable trap in `CLAUDE.md`.
+
 ## 2026-09-16 (11) — the G1 falsifier is ANSWERED, and the widening WAS the cost: 6.75× on the re-chain
+
+> **⊘ SUPERSEDED ON ITS NUMBERS by entry (12) above** — every ratio below was
+> inflated by dead-store elimination in the un-`black_box`ed timed closures.
+> The coal ratio is **5.84× (v4) / 6.48× (v3)**, not 6.75×/6.53×. The
+> conclusion (the widening was the cost; a width effect, not an ISA one) is
+> unchanged; the method notes below stand and are worth reading — they are
+> what made the correction cheap.
 
 The plan pre-registered this and carried it open through BOTH N2 and N3:
 *"build `gt_u8_to_mask`, re-run both probes; if neither the 8.9 µs re-chain nor
