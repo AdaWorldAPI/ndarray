@@ -1,3 +1,103 @@
+## 2026-09-16 (16) — ⊘ CORRECTS (15): its headline numbers came from a BUGGY binary, and the D-vs-F ordering is NOT established
+
+Same PR (#315), same day, four codex findings later. Entry (15) stands on its
+codegen half and is **withdrawn on its timing half**. Read them together; (15)
+is not deleted.
+
+### What is WITHDRAWN from (15)
+
+> `D − S = +2.9 pts` and **`D − F = −0.7 pts`**
+
+Those came from a binary whose medians, printed as *"pooled over all 7 passes"*,
+were computed from **the last pass alone**: `s_frac`/`d_frac`/`f_frac` were
+cleared at the top of every pass while `qualified`, `rows` and `wins` on the
+same screen accumulated across all seven — two denominators under one heading,
+and a run could call itself resolvable off a single final-pass observation.
+
+**The pooling had been written and silently lost.** `cargo fmt` reindented the
+target between the replacement being composed and applied, so the string match
+found nothing, and a passing `clippy -D warnings` plus plausible output gave no
+sign. **Second instance of that exact failure in one session** — the other ate
+an entire `println!` block while leaving its `Vec::push` calls alive, so the
+lint saw a used variable and the commit message shipped a claim the diff did
+not contain. *Assert on the anchor, and diff the commit against the message.*
+
+### What replaces it
+
+With pooling correct, this machine reports **INCONCLUSIVE**: 7 of 98 widths
+resolvable against a 3.65 ns floor. The least-processed form of the result,
+which has no ratio pathology at all:
+
+```
+median ABSOLUTE tail cost, qualified widths (ns):
+  P 16.82    D 5.24    S 6.28    F 5.33
+```
+
+**The padded tail is ~3× every alternative** — an order of magnitude above the
+floor, so that part is solid and is what the probe was built to establish. The
+ordering of D against F (0.09 ns apart here) is **not** established, and the
+probe now says INCONCLUSIVE rather than picking.
+
+### The codex finding that changed the architecture answer: TERNLOG
+
+Every timing arm was two-input AND, and `mask_ternlog` is the ONE algebra op
+whose narrow descent would reach `_mm256_ternarylogic_epi64` — a VL
+instruction. So the AND arms could never have settled the VL question, and
+(15) overreached in saying they did. Measured on a fixed-step arbitrary
+three-input truth table:
+
+```
+v4:  vpor / vpternlogq $32 / vpternlogq $236    3 logic ops, 2 of them VL
+v3:  vandnps/vandps/vorps/vandps/vorps          5 logic ops, packed, no VL
+```
+
+Two halves, opposite directions:
+
+- **The `avx512vl` GATE is unnecessary — and for a better reason than (15)
+  gave.** LLVM reaches `vpternlogq` on a 256-bit `ymm` from PLAIN RUST when the
+  target allows it and degrades to packed boolean ops when it does not. Naming
+  VL in our source would duplicate tier selection the compiler already does.
+- **Ternlog's THROUGHPUT question is OPEN.** One intrinsic is one instruction
+  where LLVM used three. That gap is ternlog-specific; the AND arms lower to a
+  single `vandps`.
+
+### The statistical correction, because I had it backwards IN THE SOURCE
+
+Widths contribute only when all four tail costs clear the floor (unfiltered,
+negative tails gave *"D removes 121.3% of the padded cost"*). My comment claimed
+this was *conservative against* the peel arms and that symmetry left D−F
+untilted. **The second half is false.** Near the floor an arm qualifies only on
+draws where its OWN error pushed it upward, so the observed D−F gap is
+compressed toward zero — favouring exactly the "fixed steps tie intrinsics"
+reading I drew from it. Symmetry applies the conditioning to both arms rather
+than cancelling it. The filter stays as the lesser evil; the source now calls
+the sample **censored** and the gap a **lower bound**, and names precision (more
+iterations, a quiet machine) as the fix rather than more filtering.
+
+### And the overclaim in the INCONCLUSIVE branch
+
+It reported "no support" and then asserted D, S and F were "within a point or
+two" and recommended F — a measurement claim drawn from data the same paragraph
+had just rejected. Removed; that branch now recommends nothing.
+
+### Net standing position
+
+| claim | status |
+|---|---|
+| padded tail costs ~3× any alternative | **established** |
+| `U64x4 &` is bit-identical to a hand-written loop (assembler MERGES the symbols) | **established** |
+| fixed-width peels are packed on aarch64 too (`and v0.16b`) | **established** |
+| `avx512vl` gate unnecessary, incl. ternlog | **established** (codegen) |
+| narrow `U64x4`/`U64x2` facade type | **no measured support** — which is not the same as shown equivalent |
+| F ties D | **NOT established** — needs a quiet machine |
+| ternlog tail throughput | **OPEN** |
+
+The **rule** worth carrying: absence of support for the expensive option is a
+reason not to build it yet, never evidence that the cheap one is equal. (15)
+blurred those; this entry separates them.
+
+---
+
 ## 2026-09-16 (15) — the mask-algebra tail wanted a fixed TRIP COUNT, not intrinsics; the `U64x4`/`U64x2` + `avx512vl` build is CANCELLED
 
 PR #315 (branch `claude/mask-algebra-tail-probe`). The planned step (b) — give
