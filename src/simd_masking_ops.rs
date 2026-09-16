@@ -1187,9 +1187,7 @@ pub fn mask_set_range(out_words: &mut [u64], lo: usize, hi: usize) {
     assert!(out_words.len() >= words, "mask_set_range: out_words.len()={} < required {}", out_words.len(), words);
 
     if lo == hi {
-        for w in out_words.iter_mut() {
-            *w = 0;
-        }
+        fill_words(out_words, 0);
         return;
     }
 
@@ -1197,12 +1195,8 @@ pub fn mask_set_range(out_words: &mut [u64], lo: usize, hi: usize) {
     let lo_word = lo / 64;
     let hi_word = (hi - 1) / 64;
 
-    for w in out_words[..lo_word].iter_mut() {
-        *w = 0;
-    }
-    for w in out_words[hi_word + 1..].iter_mut() {
-        *w = 0;
-    }
+    fill_words(&mut out_words[..lo_word], 0);
+    fill_words(&mut out_words[hi_word + 1..], 0);
 
     if lo_word == hi_word {
         // The single-word case: exactly one write, never two overlapping
@@ -1210,10 +1204,30 @@ pub fn mask_set_range(out_words: &mut [u64], lo: usize, hi: usize) {
         out_words[lo_word] = word_range_mask(lo % 64, hi - lo_word * 64);
     } else {
         out_words[lo_word] = word_range_mask(lo % 64, 64);
-        for w in out_words[lo_word + 1..hi_word].iter_mut() {
-            *w = u64::MAX;
-        }
+        fill_words(&mut out_words[lo_word + 1..hi_word], u64::MAX);
         out_words[hi_word] = word_range_mask(0, hi - hi_word * 64);
+    }
+}
+
+/// Writes `value` into every word of `dst`, walking `as_chunks_mut::<LANES>()`
+/// and storing one `U64x8` per chunk — the same lane walk every contiguous
+/// word op in this file uses (see the NORMATIVE note above and `mask_and`'s
+/// body), rather than a scalar `iter_mut` loop.
+///
+/// The tail is written scalar-wise on purpose: a padded-tail `from_array` would
+/// have to read `dst`'s surplus lanes back before storing them, and there is
+/// nothing to read here — every lane of a constant fill has the same value, so
+/// the tail is a straight copy of `value` into the remaining words.
+#[inline]
+fn fill_words(dst: &mut [u64], value: u64) {
+    const L: usize = crate::simd::U64x8::LANES;
+    let splat = crate::simd::U64x8::splat(value).to_array();
+    let (chunks, tail) = dst.as_chunks_mut::<L>();
+    for c in chunks.iter_mut() {
+        *c = splat;
+    }
+    for w in tail.iter_mut() {
+        *w = value;
     }
 }
 
