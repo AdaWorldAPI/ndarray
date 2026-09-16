@@ -801,6 +801,7 @@ pub use crate::simd_masking_ops::{
     mask_not_assign,
     mask_or,
     mask_or_assign,
+    mask_set_range,
     mask_shift_morton,
     mask_ternlog,
     mask_ternlog_assign,

@@ -1121,6 +1121,115 @@ pub fn mask_not_assign(dst: &mut [u64], n_rows: usize) {
     clear_mask_tail(dst, n_rows);
 }
 
+/// Sets bits `[lo, hi)` of `out_words` to `1` and every other bit — inside
+/// the range's own edge words and every word outside it — to `0`. The
+/// **range WRITE** this file's care-masked matches are the READ half of:
+/// [`ternary_match_u32_to_mask`] answers "which rows equal this pattern",
+/// this answers "make exactly these rows true, and nothing else."
+///
+/// # Why this exists
+///
+/// `lance-graph-quack`'s `Filter::prefix_u32` spells a full ternary-match
+/// PREDICATE to express what is really a contiguous row-range write, and
+/// says so in its own doc comment: the range write is missing from
+/// `ndarray::simd`, and per the missing-capability STOP rule a consumer does
+/// not hand-roll it one layer up. This repo's own `examples/hex_tenant_mq_probe.rs`
+/// hand-rolled the identical shape as a private `range_reveal` and measured
+/// it at 161.8×–343.5× faster than the equivalent TCAM compare sweep, across
+/// trie levels from a 65,536-row reveal down to a 1-row one
+/// (`.claude/plans/gemm-ternlog-mask-consolidation-v1.md` §16.2). DuckDB
+/// carries the identical operation over the identical representation
+/// (`TemplatedValidityMask::SetRangeInvalid`), so the shape is not invented
+/// here.
+///
+/// This primitive is deliberately **address-blind**: it sets a bit range and
+/// nothing else. Whether a column prefix legally maps to a contiguous row
+/// range — or whether the backing column is sorted at all — is the
+/// **caller's** decision, kept out of this layer on purpose.
+///
+/// `lo == hi` is a legal empty range and writes an all-zero mask (not a
+/// no-op: every bit is still overwritten).
+///
+/// # No per-bit loop
+///
+/// The write is at most three passes over `out_words`: every word strictly
+/// before `lo`'s word is zeroed, every word strictly after `hi`'s last live
+/// word is zeroed, whole interior words are written `u64::MAX`, and the (at
+/// most two) edge words each get one computed mask ([`word_range_mask`]).
+/// When `lo` and `hi` fall in the SAME word, that word is written exactly
+/// once through the single-word branch — never as two overlapping edge
+/// writes.
+///
+/// # Panics
+///
+/// Panics if `lo > hi`, or if `hi > out_words.len() * 64`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::mask_set_range;
+///
+/// let mut words = [0u64; 2];
+/// mask_set_range(&mut words, 60, 70);
+/// // bits 60..64 of word 0, bits 0..6 of word 1 — an adjacent-word range.
+/// assert_eq!(words[0], 0xF000_0000_0000_0000);
+/// assert_eq!(words[1], 0b0011_1111);
+///
+/// // lo == hi is a legal empty range: an all-zero overwrite, not a no-op.
+/// words[0] = u64::MAX;
+/// mask_set_range(&mut words, 3, 3);
+/// assert_eq!(words, [0, 0]);
+/// ```
+#[inline]
+pub fn mask_set_range(out_words: &mut [u64], lo: usize, hi: usize) {
+    assert!(lo <= hi, "mask_set_range: lo={lo} > hi={hi}");
+    let words = mask_words_for(hi);
+    assert!(out_words.len() >= words, "mask_set_range: out_words.len()={} < required {}", out_words.len(), words);
+
+    if lo == hi {
+        for w in out_words.iter_mut() {
+            *w = 0;
+        }
+        return;
+    }
+
+    // `lo < hi` from here on, so `hi >= 1` and `hi - 1` cannot underflow.
+    let lo_word = lo / 64;
+    let hi_word = (hi - 1) / 64;
+
+    for w in out_words[..lo_word].iter_mut() {
+        *w = 0;
+    }
+    for w in out_words[hi_word + 1..].iter_mut() {
+        *w = 0;
+    }
+
+    if lo_word == hi_word {
+        // The single-word case: exactly one write, never two overlapping
+        // edge writes.
+        out_words[lo_word] = word_range_mask(lo % 64, hi - lo_word * 64);
+    } else {
+        out_words[lo_word] = word_range_mask(lo % 64, 64);
+        for w in out_words[lo_word + 1..hi_word].iter_mut() {
+            *w = u64::MAX;
+        }
+        out_words[hi_word] = word_range_mask(0, hi - hi_word * 64);
+    }
+}
+
+/// One word's worth of the half-open range `[lo_bit, hi_bit)` set,
+/// `0 <= lo_bit <= hi_bit <= 64` — the edge-word primitive [`mask_set_range`]
+/// composes. Built from two "bits below N" masks rather than one shifted
+/// range so that `hi_bit == 64` never computes `1u64 << 64` (a shift amount
+/// equal to the type's own bit width, which panics under overflow checks).
+#[inline(always)]
+fn word_range_mask(lo_bit: usize, hi_bit: usize) -> u64 {
+    debug_assert!(lo_bit <= hi_bit && hi_bit <= 64, "word_range_mask: lo_bit={lo_bit} hi_bit={hi_bit}");
+    let below_hi = if hi_bit == 64 { u64::MAX } else { (1u64 << hi_bit) - 1 };
+    let below_lo = if lo_bit == 0 { 0 } else { (1u64 << lo_bit) - 1 };
+    below_hi & !below_lo
+}
+
 /// `dst = a ^ b`, elementwise over `u64` mask words — symmetric difference.
 /// XOR preserves the trailing-zero guarantee iff both inputs conform
 /// (`0 ^ 0 = 0`). Its own primitive, with its own realization on every
@@ -4029,5 +4138,122 @@ mod tests {
         let gate = vec![0u64; 1]; // one short
         let mut out = vec![0u64; 2];
         gt_i32_to_mask_under(&values, 0, &gate, &mut out);
+    }
+
+    // ── mask_set_range: the range WRITE (N1,
+    //    `.claude/plans/gemm-ternlog-mask-consolidation-v1.md` §16.6) ────────
+
+    /// Independent bit-serial reference: bit `b` set iff `lo <= b < hi`.
+    /// Never calls `mask_set_range` or `word_range_mask`.
+    fn reference_set_range(words: usize, lo: usize, hi: usize) -> Vec<u64> {
+        let mut v = vec![0u64; words];
+        for b in lo..hi {
+            v[b / 64] |= 1u64 << (b % 64);
+        }
+        v
+    }
+
+    #[test]
+    fn mask_set_range_matches_scalar_reference_randomized() {
+        let mut seed = 0xB000_0000_5E7A_11u64;
+        for &words in &[1usize, 2, 3, 4, 7, 8, 16] {
+            let capacity = words * 64;
+            for _ in 0..40 {
+                let lo = (splitmix64(&mut seed) as usize) % (capacity + 1);
+                let span = (splitmix64(&mut seed) as usize) % (capacity + 1 - lo);
+                let hi = lo + span;
+                let mut got = vec![u64::MAX; words]; // pre-dirtied: an OR-er fails immediately
+                mask_set_range(&mut got, lo, hi);
+                assert_eq!(got, reference_set_range(words, lo, hi), "words={words} lo={lo} hi={hi}");
+            }
+        }
+        // Anti-vacuity: a genuinely non-trivial range sets EXACTLY `hi - lo`
+        // bits, not "some" bits — catches an always-set-everything or
+        // always-set-nothing implementation that could otherwise still pass
+        // the boundary and randomized cases above by accident of which
+        // random `(lo, hi)` pairs happened to be drawn.
+        let mut got = vec![0u64; 4];
+        mask_set_range(&mut got, 7, 250);
+        let popcount: u32 = got.iter().map(|w| w.count_ones()).sum();
+        assert_eq!(popcount, 250 - 7, "popcount must equal hi - lo exactly");
+    }
+
+    /// Every boundary shape named in the primitive's own doc comment, each
+    /// checked explicitly rather than only through the randomized fuzz above.
+    #[test]
+    fn mask_set_range_boundary_shapes() {
+        // lo == hi: the empty range. All-zero output — NOT a no-op, the
+        // destination is still fully overwritten (pre-dirtied to catch a
+        // "lo == hi means skip the call" shortcut).
+        let mut got = vec![u64::MAX; 2];
+        mask_set_range(&mut got, 0, 0);
+        assert_eq!(got, vec![0, 0], "lo == hi == 0 must zero everything");
+        let mut got = vec![u64::MAX; 2];
+        mask_set_range(&mut got, 128, 128);
+        assert_eq!(got, vec![0, 0], "lo == hi == capacity must zero everything");
+
+        // lo == 0: the range starts at the very first bit.
+        let mut got = vec![u64::MAX; 2];
+        mask_set_range(&mut got, 0, 70);
+        assert_eq!(got, reference_set_range(2, 0, 70), "lo == 0");
+
+        // hi == words * 64: the range runs all the way to the last bit.
+        let mut got = vec![u64::MAX; 2];
+        mask_set_range(&mut got, 40, 128);
+        assert_eq!(got, reference_set_range(2, 40, 128), "hi == capacity");
+
+        // Both endpoints inside ONE word: the single-word branch, one write.
+        let mut got = vec![u64::MAX; 2];
+        mask_set_range(&mut got, 2, 5);
+        assert_eq!(got[0], 0b0001_1100, "both endpoints in one word: bits 2,3,4");
+        assert_eq!(got[1], 0, "the untouched second word must be cleared too");
+
+        // Endpoints in ADJACENT words, neither word-aligned.
+        let mut got = vec![u64::MAX; 2];
+        mask_set_range(&mut got, 60, 70);
+        assert_eq!(got[0], 0xF000_0000_0000_0000, "adjacent words: low word's tail (bits 60..64)");
+        assert_eq!(got[1], 0b0011_1111, "adjacent words: high word's head (bits 0..6)");
+
+        // Both endpoints word-ALIGNED (`lo % 64 == 0 && hi % 64 == 0`): the
+        // range is exactly one interior word, reached via the single-word
+        // branch (lo_word == hi_word here, not the interior-word loop).
+        let mut got = vec![u64::MAX; 3];
+        mask_set_range(&mut got, 64, 128);
+        assert_eq!(got, vec![0, u64::MAX, 0], "word-aligned range is exactly one full word");
+
+        // A range of exactly 1 bit.
+        let mut got = vec![u64::MAX; 1];
+        mask_set_range(&mut got, 5, 6);
+        assert_eq!(got[0], 1u64 << 5, "a single-bit range sets exactly that bit");
+    }
+
+    /// The falsifier for "full overwrite, not OR": every word starts
+    /// all-ones, and afterwards a bit survives iff it is inside `[lo, hi)` —
+    /// checked bit-by-bit across the whole buffer, including the surplus
+    /// bits of the partially-live last word, which an OR-based "fix" would
+    /// leave set.
+    #[test]
+    fn mask_set_range_overwrites_a_dirty_destination_rather_than_oring() {
+        let mut got = vec![u64::MAX; 3];
+        mask_set_range(&mut got, 70, 130);
+        for b in 0..192 {
+            let want = (70..130).contains(&b);
+            let bit = (got[b / 64] >> (b % 64)) & 1 == 1;
+            assert_eq!(bit, want, "bit {b}");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "mask_set_range: lo=")]
+    fn mask_set_range_rejects_lo_greater_than_hi() {
+        let mut out = vec![0u64; 1];
+        mask_set_range(&mut out, 5, 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "mask_set_range: out_words.len()=")]
+    fn mask_set_range_rejects_hi_past_capacity() {
+        let mut out = vec![0u64; 1]; // capacity 64
+        mask_set_range(&mut out, 0, 65);
     }
 }

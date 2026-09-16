@@ -18,22 +18,23 @@
 //! predicate→mask, `0x6xx` mask algebra, `0x7xx` care-match, `0x8xx` masked
 //! reductions and blend, `0x9xx` `mask_shift_morton` (the Morton hex
 //! neighbour shift, D-GTM-1m), `0xAxx` the gated `*_to_mask_under`
-//! predicates (mask-risc `Pred { under }`, D-MRX-0). `main.rs` (native / qemu) and `selfcheck()`
+//! predicates (mask-risc `Pred { under }`, D-MRX-0), `0xBxx` `mask_set_range`
+//! (the range WRITE, N1). `main.rs` (native / qemu) and `selfcheck()`
 //! (the wasm cdylib export, driven by `run.mjs`) both call [`run`].
 
 use ndarray::simd::{
     blend_i32, eq_i32_to_mask, eq_i32_to_mask_under, eq_u32_strided_to_mask, eq_u32_to_mask, eq_u32_to_mask_under,
     ge_i32_to_mask, ge_i32_to_mask_under, gt_i32_to_mask, gt_i32_to_mask_under, le_i32_to_mask, le_i32_to_mask_under,
     lt_i32_to_mask, lt_i32_to_mask_under, mask_all, mask_and, mask_and_assign, mask_andnot, mask_andnot_assign,
-    mask_any, mask_not, mask_not_assign, mask_or, mask_or_assign, mask_shift_morton, mask_ternlog, mask_ternlog_assign,
-    mask_xor, mask_xor_assign, masked_max_i32, masked_min_i32, masked_strided_group_sum, masked_sum_i32,
-    ne_i32_to_mask, ne_i32_to_mask_under, ne_u32_to_mask, ne_u32_to_mask_under, ternary_match_strided_to_mask,
-    ternary_match_u32_to_mask, ternary_match_u32_to_mask_under, ternary_match_u64_to_mask,
-    ternary_match_u64_to_mask_under, ternlog, I32x16, MortonDir, U32x16, U64x8,
+    mask_any, mask_not, mask_not_assign, mask_or, mask_or_assign, mask_set_range, mask_shift_morton, mask_ternlog,
+    mask_ternlog_assign, mask_xor, mask_xor_assign, masked_max_i32, masked_min_i32, masked_strided_group_sum,
+    masked_sum_i32, ne_i32_to_mask, ne_i32_to_mask_under, ne_u32_to_mask, ne_u32_to_mask_under,
+    ternary_match_strided_to_mask, ternary_match_u32_to_mask, ternary_match_u32_to_mask_under,
+    ternary_match_u64_to_mask, ternary_match_u64_to_mask_under, ternlog, I32x16, MortonDir, U32x16, U64x8,
 };
 
 /// Number of check groups [`run`] executes (for the log line only).
-pub const CHECKS: usize = 10;
+pub const CHECKS: usize = 11;
 
 /// The wasm export: identical to [`run`], `extern "C"` so `run.mjs` can call it.
 #[no_mangle]
@@ -46,7 +47,7 @@ pub fn run() -> u32 {
     let groups: [fn() -> Result<(), u32>; CHECKS] = [
         check_ternlog_all_tables, check_u64x8_algebra, check_i32x16_compare, check_predicates_to_mask,
         check_mask_algebra, check_care_match, check_masked_reductions, check_blend, check_morton_shift,
-        check_predicates_under,
+        check_predicates_under, check_set_range,
     ];
     for g in groups {
         if let Err(code) = g() {
@@ -938,6 +939,65 @@ fn check_morton_shift() -> Result<(), u32> {
             let expect: Vec<u64> = prior.iter().zip(&want).map(|(p, w)| p | w).collect();
             if got != expect {
                 return Err(0x904);
+            }
+        }
+    }
+    Ok(())
+}
+
+// ── 0xBxx: mask_set_range — the range WRITE, no per-bit loop (N1) ───────────
+//
+// The reference below is a from-scratch bit-serial writer over `[lo, hi)`
+// membership — it does not call `mask_set_range` and does not reuse
+// `reference_mask`'s predicate-over-index shape, because a range write's law
+// is membership in an interval, not a predicate over `values[i]`.
+
+fn set_range_reference(n_words: usize, lo: usize, hi: usize) -> Vec<u64> {
+    let mut w = vec![0u64; n_words];
+    for i in lo..hi {
+        w[i / 64] |= 1u64 << (i % 64);
+    }
+    w
+}
+
+fn check_set_range() -> Result<(), u32> {
+    let mut rng = SplitMix64(0xB000_0000_0006);
+    for &n_words in &[1usize, 2, 3, 4, 8] {
+        let capacity = n_words * 64;
+        // The boundary shapes the primitive's own doc names, plus randomized
+        // fuzz within capacity. `lo == hi` (both 0 and both `capacity`) is
+        // the legal empty range; the rest straddle every word-alignment case.
+        let mut cases: Vec<(usize, usize)> =
+            vec![(0, 0), (capacity, capacity), (0, capacity), (0, 1), (capacity - 1, capacity), (5, 6)];
+        if n_words >= 2 {
+            cases.push((60, 70)); // adjacent words, neither aligned
+            cases.push((64, 128)); // both endpoints word-aligned
+            cases.push((0, 64)); // lo aligned, leaves surplus words unset
+        }
+        for _ in 0..12 {
+            let lo = (rng.next() as usize) % (capacity + 1);
+            let span = (rng.next() as usize) % (capacity + 1 - lo);
+            cases.push((lo, lo + span));
+        }
+        for (lo, hi) in cases {
+            let mut got = vec![u64::MAX; n_words]; // pre-dirtied: an OR-er fails immediately
+            mask_set_range(&mut got, lo, hi);
+            let want = set_range_reference(n_words, lo, hi);
+            if got != want {
+                return Err(0xB00);
+            }
+        }
+        // Anti-vacuity: a genuinely non-trivial range sets EXACTLY `hi - lo`
+        // bits, not "some" bits — catches an always-set-everything or
+        // always-set-nothing implementation that could otherwise still pass
+        // every case above.
+        if capacity >= 8 {
+            let (lo, hi) = (3, capacity - 2);
+            let mut got = vec![0u64; n_words];
+            mask_set_range(&mut got, lo, hi);
+            let popcount: u32 = got.iter().map(|w| w.count_ones()).sum();
+            if popcount as usize != hi - lo {
+                return Err(0xB01);
             }
         }
     }

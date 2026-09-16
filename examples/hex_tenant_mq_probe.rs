@@ -53,8 +53,8 @@ use std::time::Instant;
 
 use ndarray::simd::ternlog::{AND3, OR2_AND};
 use ndarray::simd::{
-    gt_i32_to_mask, mask_and, mask_shift_morton, mask_ternlog_assign, popcount_batch_u64, ternary_match_u32_to_mask,
-    MortonDir,
+    gt_i32_to_mask, mask_and, mask_set_range, mask_shift_morton, mask_ternlog_assign, popcount_batch_u64,
+    ternary_match_u32_to_mask, MortonDir,
 };
 
 // ── counting allocator: the 0k instrument ────────────────────────────────────
@@ -181,27 +181,16 @@ fn set(words: &mut [u64], i: usize) {
 
 /// A trie node at nibble level `level` (0..=4) with prefix `p`: rows
 /// `[p << shift, (p+1) << shift)`. The fixed spatial distribution makes the
-/// reveal a range write, not a compare.
+/// reveal a range write, not a compare — `ndarray::simd::mask_set_range` is
+/// exactly that primitive (N1,
+/// `.claude/plans/gemm-ternlog-mask-consolidation-v1.md` §16.6), so the
+/// range write itself lives there now; this function only computes the
+/// `(lo, hi)` node bounds.
 fn range_reveal(level: u32, p: u32, out: &mut [u64]) -> (usize, usize) {
     let shift = 16 - 4 * level;
     let lo = (p as usize) << shift;
     let hi = ((p + 1) as usize) << shift;
-    for w in out.iter_mut() {
-        *w = 0;
-    }
-    // inclusive last word; the run may start and end mid-word
-    let (w0, w1) = (lo >> 6, (hi - 1) >> 6);
-    let head = u64::MAX << (lo & 63);
-    let tail = u64::MAX >> (63 - ((hi - 1) & 63));
-    if w0 == w1 {
-        out[w0] = head & tail;
-    } else {
-        out[w0] = head;
-        for w in out[w0 + 1..w1].iter_mut() {
-            *w = u64::MAX;
-        }
-        out[w1] = tail;
-    }
+    mask_set_range(out, lo, hi);
     (lo, hi)
 }
 
