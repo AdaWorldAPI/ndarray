@@ -1122,11 +1122,31 @@ UPPER bounds because of it, and PR #308's r2il probe measures the mask arms at
 > re-export, v4-gated (clippy `-D warnings` clean, 2366 lib tests, 6 doctests,
 > parity `avx512f=true`), three disable runs red-then-green. `u16` deliberately
 > NOT built — no consumer compares `u16` lanes, and a speculative family is
-> surface with no falsifier attached. **The pre-registered falsifier above is
-> still OPEN**: neither `hex_tenant_mq_probe` nor #308's `r2il_column_scan_probe`
-> has been re-run against the new primitive. Existing code is not a moved
-> measurement, and G1's priority verdict stands unanswered until both probes
-> report. Implementation note carried forward to N3: at `u8` the packing is
+> surface with no falsifier attached. **⊘ THE FALSIFIER IS ANSWERED ON THE HALF THAT
+> COULD RUN, AND THE WIDENING *WAS* THE COST** (`92b4fcd`).
+> `hex_tenant_mq_probe` gained a NATIVE u8 arm beside its widened i32 one —
+> same process, same data, bit-identity asserted before either is timed:
+>
+> | tier | M1b: 6 masks | coal: one re-chain |
+> |---|---|---|
+> | v4 / AVX-512 | 40810 → **5064 ns** (**8.06×**) | 6789 → **1006 ns** (**6.75×**) |
+> | v3 / AVX2 | 43798 → 5638 ns (7.77×) | 7189 → 1101 ns (6.53×) |
+>
+> In the probe's own units a maneuver drops from **1.02 maintained steps to
+> 0.15** at x=4. The ratio is nearly tier-INdependent, so this is a WIDTH
+> effect, not an ISA one: 4× fewer instructions AND 4× less memory, plus
+> (conjecture) the vanished packing arithmetic. Note **neither tier reproduces
+> the 8.9 µs quoted above** (v4 6789, v3 7189) — that absolute came from a
+> build this session does not reproduce, which is exactly why the native arm
+> was ADDED rather than swapped in: a ratio survives baseline drift, a
+> cross-run before/after would not have.
+>
+> **The #308 half is BLOCKED, not skipped.** `r2il_column_scan_probe` needs a
+> column dump from `r2sleigh-lift`'s `win32_census`, which needs a Win32 PE
+> binary; the generator exists in the sibling repo but no PE binary exists in
+> this container. A synthetic dump would produce a number shaped like the
+> answer without being it, against that probe's own *"a real lift rather than a
+> synthetic stream"*. So the crossover verdict is still owed. Implementation note carried forward to N3: at `u8` the packing is
 > FREE — `U8x64` is 64 lanes and a mask word is 64 bits, so one chunk is one
 > whole word with no shift. That coincidence is unique to this width and is
 > **false for `U64x2 × 4`**, which must pack
@@ -1151,6 +1171,13 @@ UPPER bounds because of it, and PR #308's r2il probe measures the mask arms at
 > hi32/lo32 buckets — valid for its fixture, not in general. Re-express it
 > against the real `u64` family and re-measure. Until then "G2 was worth
 > closing" is asserted, not shown; existing code is not a moved measurement.
+>
+> **And G1's measured win does NOT transfer here.** G1 came in at 6.5-8×, but
+> part of that is the packing vanishing — at u8 one chunk IS one whole mask
+> word. **That property is false at u64**, where eight groups share a word and
+> each needs a shift. So the u64 family starts from a structurally weaker
+> position than the u8 family did, and assuming it inherits G1's ratio is
+> exactly the inference the tier-independence result warns against.
 
 **N3 — G2 ordered `u64`/`i64` compare.** The matrix left this conditional:
 *"count how many intended predicates over a U64 lane are ordered rather than
