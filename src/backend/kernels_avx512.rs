@@ -965,3 +965,211 @@ pub fn hamming_batch(query: &[u8], database: &[u8], num_rows: usize, row_bytes: 
         })
         .collect()
 }
+
+/// Block-stop probe (operator, 2026-09-16: *"would the MKL GEMM stop logic
+/// profit from a tail optimization?"*). `sgemm_blocked`'s M-stop pads the last
+/// `MR = 6` panel to six rows and the ukernel computes all six accumulators
+/// regardless of `mr_eff`; every power-of-two `m` has such a tail (128 = 21·6+2,
+/// 256 = 42·6+4, 512 = 85·6+2, 1024 = 170·6+4). This test-local variant runs an
+/// `R × 16` ukernel on the tail tile only (R ∈ {2, 4}) and times both against
+/// each other, equivalence-gated first. `cargo test --release --lib
+/// block_stop_probe -- --ignored --nocapture` under `.cargo/config-v4.toml`.
+///
+/// Measured 2026-09-16 (Xeon @ 2.10 GHz, `avx512f=true`, release, best of 9):
+///
+/// | m×n×k | tail | shipped ms | desc ms | ratio | FMA waste |
+/// |---|---:|---:|---:|---:|---:|
+/// | 126×256×256 | 0 | 0.183 | 0.185 | 0.987× | 0.0 % |
+/// | 128×256×256 | 2 | 0.190 | 0.192 | 0.989× | 3.1 % |
+/// | 130×256×256 | 4 | 0.190 | 0.191 | 0.992× | 1.5 % |
+/// | 132×256×256 | 0 | 0.193 | 0.190 | 1.012× | 0.0 % |
+/// | 128³ | 2 | 0.056 | 0.055 | 1.015× | 3.1 % |
+/// | 256³ | 4 | 0.347 | 0.350 | 0.992× | 0.8 % |
+/// | 512³ | 2 | 3.110 | 3.054 | 1.018× | 0.8 % |
+/// | 1024³ | 4 | 32.57 | 32.04 | 1.016× | 0.2 % |
+///
+/// **Inert.** Bit-identical output, 0.99–1.02× everywhere — noise. The padded
+/// accumulator rows never reach the critical path: at 1024³ the kernel runs at
+/// ~66 GFLOP/s (about half of one core's FMA peak), so packing and memory
+/// traffic hide a 0.2–3 % FMA surplus entirely. The K-stop has no waste and the
+/// N-stop's padding is on lanes the FMA unit processes anyway, so no lane-width
+/// descent applies to GEMM at all. Recorded so the tail question is not
+/// re-opened for the F32x16 path; the BF16 `vdpbf16ps` path's stop problem is a
+/// single accumulator chain per row (`amx_matmul.rs`), not its tails.
+#[cfg(all(test, target_arch = "x86_64", target_feature = "avx512f"))]
+mod block_stop_probe {
+    use super::*;
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    #[target_feature(enable = "avx512f")]
+    unsafe fn ukernel_rows<const R: usize>(
+        kc: usize, alpha: f32, a_packed: &[f32], b_packed: &[f32], c: &mut [f32], ldc: usize, nr_eff: usize,
+    ) {
+        let mut acc = [_mm512_setzero_ps(); R];
+        for p in 0..kc {
+            let bv = _mm512_loadu_ps(b_packed[p * SGEMM_NR..].as_ptr());
+            let a_off = p * SGEMM_MR;
+            for r in 0..R {
+                acc[r] = _mm512_fmadd_ps(_mm512_set1_ps(a_packed[a_off + r]), bv, acc[r]);
+            }
+        }
+        let alpha_v = _mm512_set1_ps(alpha);
+        for (r, v) in acc.iter().enumerate() {
+            let row_ptr = c[r * ldc..].as_mut_ptr();
+            let v = _mm512_mul_ps(*v, alpha_v);
+            if nr_eff == SGEMM_NR {
+                _mm512_storeu_ps(row_ptr, _mm512_add_ps(_mm512_loadu_ps(row_ptr), v));
+            } else {
+                let mask: u16 = (1u32 << nr_eff) as u16 - 1;
+                _mm512_mask_storeu_ps(row_ptr, mask, _mm512_add_ps(_mm512_maskz_loadu_ps(mask, row_ptr), v));
+            }
+        }
+    }
+
+    /// `sgemm_blocked` with the M-tail tile dispatched to an `R×16` ukernel.
+    #[target_feature(enable = "avx512f")]
+    fn sgemm_blocked_desc(
+        m: usize, n: usize, k: usize, alpha: f32, a: &[f32], lda: usize, b: &[f32], ldb: usize, c: &mut [f32],
+        ldc: usize,
+    ) {
+        let mut a_packed = vec![0.0f32; SGEMM_MC * SGEMM_KC];
+        let mut b_packed = vec![0.0f32; SGEMM_KC * SGEMM_NC];
+        let mut kk = 0;
+        while kk < k {
+            let kc = SGEMM_KC.min(k - kk);
+            let mut jj = 0;
+            while jj < n {
+                let nc = SGEMM_NC.min(n - jj);
+                pack_b_f32(b, ldb, kc, nc, kk, jj, &mut b_packed);
+                let mut ii = 0;
+                while ii < m {
+                    let mc = SGEMM_MC.min(m - ii);
+                    pack_a_f32(a, lda, mc, kc, ii, kk, &mut a_packed);
+                    let mut ir = 0;
+                    while ir < mc {
+                        let mr_eff = SGEMM_MR.min(mc - ir);
+                        let mut jr = 0;
+                        while jr < nc {
+                            let nr_eff = SGEMM_NR.min(nc - jr);
+                            let a_off = (ir / SGEMM_MR) * (SGEMM_MR * kc);
+                            let b_off = (jr / SGEMM_NR) * (SGEMM_NR * kc);
+                            let cc = &mut c[(ii + ir) * ldc + (jj + jr)..];
+                            // SAFETY: this fn is `#[target_feature(enable = "avx512f")]`,
+                            // so the callee's feature precondition holds; `a_off`/`b_off`
+                            // index whole packed panels of `mr_eff`/`nr_eff` live rows
+                            // inside `a_packed`/`b_packed`, and `cc` starts at `(ii+ir,
+                            // jj+jr)` with `ldc` so every masked store lands in `c`.
+                            unsafe {
+                                match mr_eff {
+                                    2 => ukernel_rows::<2>(
+                                        kc,
+                                        alpha,
+                                        &a_packed[a_off..],
+                                        &b_packed[b_off..],
+                                        cc,
+                                        ldc,
+                                        nr_eff,
+                                    ),
+                                    4 => ukernel_rows::<4>(
+                                        kc,
+                                        alpha,
+                                        &a_packed[a_off..],
+                                        &b_packed[b_off..],
+                                        cc,
+                                        ldc,
+                                        nr_eff,
+                                    ),
+                                    _ => sgemm_ukernel_6x16(
+                                        kc,
+                                        alpha,
+                                        &a_packed[a_off..],
+                                        &b_packed[b_off..],
+                                        cc,
+                                        ldc,
+                                        mr_eff,
+                                        nr_eff,
+                                    ),
+                                }
+                            }
+                            jr += SGEMM_NR;
+                        }
+                        ir += SGEMM_MR;
+                    }
+                    ii += mc;
+                }
+                jj += nc;
+            }
+            kk += kc;
+        }
+    }
+
+    fn fill(n: usize, seed: u64) -> Vec<f32> {
+        let mut s = seed;
+        (0..n)
+            .map(|_| {
+                s = s
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                ((s >> 40) as f32 / (1u64 << 24) as f32) - 0.5
+            })
+            .collect()
+    }
+
+    #[test]
+    #[ignore]
+    fn block_stop_probe() {
+        assert!(std::is_x86_feature_detected!("avx512f"));
+        eprintln!("realization: avx512f=true  MR={SGEMM_MR} NR={SGEMM_NR} MC={SGEMM_MC}");
+        eprintln!(
+            "{:>5} {:>5} {:>5} {:>4} | {:>10} {:>10} | {:>7} {:>8}",
+            "m", "n", "k", "tail", "shipped_ms", "desc_ms", "ratio", "fma_waste"
+        );
+        let shapes: Vec<(usize, usize, usize)> = [(126, 256, 256), (128, 256, 256), (130, 256, 256), (132, 256, 256)]
+            .into_iter()
+            .chain([128usize, 256, 512, 1024].into_iter().map(|s| (s, s, s)))
+            .collect();
+        for (m, n, k) in shapes {
+            let a = fill(m * k, 1);
+            let b = fill(k * n, 2);
+            let mut c1 = vec![0.0f32; m * n];
+            let mut c2 = vec![0.0f32; m * n];
+            // SAFETY: `is_x86_feature_detected!("avx512f")` asserted above, so
+            // both `#[target_feature]` callees may run; buffers are `m*k`,
+            // `k*n`, `m*n` with the matching leading dimensions.
+            unsafe {
+                sgemm_blocked(m, n, k, 1.0, &a, k, &b, n, &mut c1, n);
+                sgemm_blocked_desc(m, n, k, 1.0, &a, k, &b, n, &mut c2, n);
+            }
+            assert!(c1.iter().zip(&c2).all(|(x, y)| x.to_bits() == y.to_bits()), "{m}x{n}x{k}: desc diverges");
+            let time = |f: &mut dyn FnMut()| {
+                f();
+                let reps = if m >= 1024 { 3 } else { 9 };
+                let mut best = f64::MAX;
+                for _ in 0..reps {
+                    let t = Instant::now();
+                    f();
+                    best = best.min(t.elapsed().as_secs_f64() * 1e3);
+                }
+                best
+            };
+            let t1 = time(&mut || {
+                c1.fill(0.0);
+                // SAFETY: as the equivalence call above — avx512f asserted, same buffers.
+                unsafe { sgemm_blocked(m, n, k, 1.0, black_box(&a), k, black_box(&b), n, black_box(&mut c1), n) }
+            });
+            let t2 = time(&mut || {
+                c2.fill(0.0);
+                // SAFETY: as the equivalence call above — avx512f asserted, same buffers.
+                unsafe { sgemm_blocked_desc(m, n, k, 1.0, black_box(&a), k, black_box(&b), n, black_box(&mut c2), n) }
+            });
+            let tail = m % SGEMM_MR;
+            let waste = if tail == 0 {
+                0.0
+            } else {
+                (SGEMM_MR - tail) as f64 / m as f64 * 100.0
+            };
+            eprintln!("{m:>5} {n:>5} {k:>5} {tail:>4} | {t1:>10.3} {t2:>10.3} | {:>6.3}x {waste:>7.1}%", t1 / t2);
+        }
+    }
+}

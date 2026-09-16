@@ -5034,7 +5034,7 @@ mod tests {
 
     #[test]
     fn mask_set_range_matches_scalar_reference_randomized() {
-        let mut seed = 0xB000_0000_5E7A_11u64;
+        let mut seed = 0x00B0_0000_005E_7A11_u64;
         for &words in &[1usize, 2, 3, 4, 7, 8, 16] {
             let capacity = words * 64;
             for _ in 0..40 {

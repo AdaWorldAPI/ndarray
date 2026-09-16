@@ -1,3 +1,111 @@
+## 2026-09-16 (13) — the `VPTERNLOGQ` tail is a DESCENT, not a pad (5–8×); a 64×2 re-apply on a full-width mask is NOT (0.5–0.7×); the GEMM block-stop tail is INERT (0.99–1.02×)
+
+Three probes, one question in three places (operator: *"instead of padding the
+tail you could simply split the N×64×8 + N×64×2 tail"*, then *"would the gather
+vs re-apply be faster with 64×2 instead of 64×8"*, then *"would the MKL GEMM
+stop logic profit from a tail optimization"*). All AVX-512 (`.cargo/config-v4.toml`,
+`avx512f=true` printed by each program), release, `black_box` on inputs AND
+outputs, every arm gated bit-identical before timing. Branch
+`claude/c64-6502-falsifier-shztkk`, PR #311.
+
+### 1. `examples/ternlogq_tail_descent_probe.rs` — the TAIL. YES.
+
+`mask_ternlog` chunks over `U64x8` (512 rows) and ends on three `pad_tail`s
+(zero-fill three `[u64; 8]`, one zmm op, prefix copy). The alternative: descend
+zmm → ymm → xmm (`4 + 2 + 1`, every lane live, all in vector registers).
+
+Crux — for a remainder of `t` words, tail only, ns/call, 3 runs:
+
+| t | shape | P padded zmm | **G greedy** | X all-xmm | winner |
+|---:|---|---:|---:|---:|---|
+| 1 | `1` | 13.1–13.8 | 1.78–1.90 | 1.49–1.60 | G = X (identical code) |
+| 2 | `2` | 13.0–13.7 | **1.74–1.94** | 2.57–2.78 | G |
+| 3 | `2+1` | 17.1–18.6 | **2.13–2.36** | 2.82–3.23 | G |
+| 4 | `4` vs `2+2` | 12.8–13.6 | **1.59–1.76** | 2.92–3.00 | G |
+| 5 | `4+1` vs `2+2+1` | 17.3–18.3 | **2.08–2.13** | 3.23–3.49 | G |
+| **6** | **`4+2`** vs `2+2+2` | 17.0–18.3 | **2.26–2.74** | 3.29–3.68 | **G** |
+| 7 | `4+2+1` vs `2+2+2+1` | 16.8–18.5 | **2.38–2.57** | 3.68–3.95 | G |
+
+Greedy widest-first wins every `t ≥ 2`: 1.3–1.6× over all-xmm, 5–8× over
+padding. The operator's crux (`t = 6`): one ymm + one xmm beats three xmm.
+
+End to end through the real chunk loop:
+
+| words | rows | tail | padded ns | descend ns | ratio |
+|---:|---:|---:|---:|---:|---:|
+| 3 (`ogar-r2il` `CallMask`) | 192 | 3 | 18.1 | 2.3 | **7.7–8.0×** |
+| 1–7 | 64–448 | 1–7 | 13–23 | 2.0–2.6 | 5.9–8.0× |
+| 9 | 576 | 1 | 14.2 | 3.7 | 4.2× |
+| 11 | 704 | 3 | 21.9 | 3.6 | 5.4–5.6× |
+| 31 | 1 984 | 7 | 23.6 | 6.8 | 2.5–3.3× |
+| 194 | 12 416 | 2 | 41.4 | 26.5 | 1.3–1.4× |
+| 8 / 16 / 24 / 64 | — | none | — | — | 1.0–1.4× (loop shape, not tail) |
+
+asm: 33 zmm + 3 ymm + 6 xmm `vpternlogq`, folded memory operands, **zero** GPR
+and/or/xor on lane data — a descent is not the scalar peel
+`scripts/codegen-witness.sh` caps at `SLICE_GPR_CAP=6`. Follow-up named, not
+built: `U64x4::ternlog` / `U64x2::ternlog` on the facade + rewire
+`mask_ternlog`'s tail; an un-gated `pack<const L>` sibling of `pack_under` to
+retire the 12 hand-rolled `if !tail.is_empty()` sites.
+
+### 2. `examples/ternlogq_sparse_reapply_probe.rs` — FULL-WIDTH sparse frontier. NO.
+
+1 024 words (65 536 rows, the MQ / `lgj_hop` population), `dst = src ∧ gate ∧
+elig`, arms: F8 full zmm pass (shipped), S8/S4/S2 chunk-skip at zmm/ymm/xmm
+(`vptestmq` → kortest), S1 GPR floor, W per-bit gather walk. ns/call, 3 runs:
+
+| frontier | shape | live | F8 | S8 | S4 | S2 | S1 | W |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 0.01 % | uniform | 7 | 143–164 | **121–141** | 148–168 | 239–277 | 192–233 | 404–435 |
+| 0.01 % | clustered | 7 | 148–163 | **125–136** | 144–145 | 240–242 | 223 | 358–368 |
+| 0.1 % | clustered | 66 | 127–161 | **103–132** | 137–145 | 227–240 | 198–223 | 394–421 |
+| 1 % | uniform | 655 | **153–162** | 190–197 | 216–222 | 277–289 | 198–224 | 918–1 013 |
+| 1 % | clustered | 655 | 152–162 | **123–132** | 129–146 | 190–240 | 223–227 | 933–981 |
+| 10 % | uniform | 6 554 | **153–162** | 188–200 | 213–222 | 314–334 | 216–224 | 9 987–10 849 |
+| 10 % | clustered | 6 554 | 152–161 | **135–141** | 144–157 | 239–258 | 193–222 | 6 187–6 926 |
+| 100 % | either | 65 536 | **145–161** | 172–205 | 194–222 | 313–339 | 201–229 | 52–58 k |
+
+S2 is 1.5–2.1× SLOWER than the full pass everywhere; S4 never beats S8; the
+skip is worth ≤ 1.24× on clustered frontiers and LOSES on uniform ≥ 1 %
+(branch mispredicts). 150 ns for 32 KiB of traffic is L1 bandwidth; narrower
+chunks are more iterations, not less work. The gather walks all 1 024 words
+before knowing they are empty (≥ 360 ns at 7 bits, ~0.8 ns/bit after). The
+64×2 rung is a tail instrument only.
+
+### 3. `kernels_avx512.rs::block_stop_probe` (ignored test) — the GEMM stop. INERT.
+
+`sgemm_blocked`'s M-stop pads the last `MR=6` panel and the ukernel computes all
+six accumulators regardless of `mr_eff`; every power-of-two `m` has such a tail
+(128 = 21·6+2, 256 = 42·6+4, 512 = 85·6+2, 1024 = 170·6+4). A test-local `R×16`
+tail ukernel (R ∈ {2, 4}) on the tail tile only, bit-identical, best of 9:
+
+| m×n×k | tail | shipped ms | desc ms | ratio | FMA waste |
+|---|---:|---:|---:|---:|---:|
+| 126×256×256 | 0 | 0.183 | 0.185 | 0.987× | 0.0 % |
+| 128×256×256 | 2 | 0.190 | 0.192 | 0.989× | 3.1 % |
+| 130×256×256 | 4 | 0.190 | 0.191 | 0.992× | 1.5 % |
+| 132×256×256 | 0 | 0.193 | 0.190 | 1.012× | 0.0 % |
+| 128³ | 2 | 0.056 | 0.055 | 1.015× | 3.1 % |
+| 256³ | 4 | 0.347 | 0.350 | 0.992× | 0.8 % |
+| 512³ | 2 | 3.110 | 3.054 | 1.018× | 0.8 % |
+| 1024³ | 4 | 32.57 | 32.04 | 1.016× | 0.2 % |
+
+Noise. ~66 GFLOP/s at 1024³ (half of one core's FMA peak): packing and memory
+traffic hide the padded rows. K-stop has no waste; N-stop padding is on lanes
+the FMA unit processes anyway — no lane-width descent applies to GEMM. The BF16
+`vdpbf16ps` path's stop problem is ONE accumulator chain per row
+(`amx_matmul.rs:686-697`, latency-bound), not its tails.
+
+### The rule the three share
+
+The tail descent paid where the pad cost **loads and a copy** (3 zero-fills +
+prefix copy per call). It buys nothing where the padding is **ALU on lanes the
+unit processes anyway** (GEMM N-stop, sparse re-apply, GEMM M-stop hidden
+behind bandwidth). Sibling finding the same day, lance-graph #1241: the facet's
+per-axis LCP was gathering + re-folding per call; reading the single `u128`
+register masked to the axis bytes (the `-f` done ONCE at mint) took it
+12.5 → 5.8 ns for both axes.
+
 ## 2026-09-16 (12) — ⊘ the G1 ratio was INFLATED by dead-store elimination; corrected 6.75× → 5.84×, and the conclusion survives
 
 codex P2 on PR #309, and it was load-bearing. Entry (11)'s numbers are
