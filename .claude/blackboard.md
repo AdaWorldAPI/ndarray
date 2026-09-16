@@ -1,3 +1,53 @@
+## 2026-09-16 (2) — N1 / T1 gap G6 LANDED: `mask_set_range`, and the primitive changed the measured SHAPE, not only the code
+
+`pub fn mask_set_range(out_words: &mut [u64], lo: usize, hi: usize)` — full
+overwrite (bits `[lo, hi)` set, everything else zeroed), address-blind, no
+per-bit loop, single-word case its own branch. Plan §16.6 N1; matrix §3 G6.
+Consumer wired: `hex_tenant_mq_probe`'s `range_reveal` keeps its `(lo, hi)`
+trie arithmetic and calls the primitive for the write.
+
+**The measurement is a MIXED result and is recorded as one.** The probe's range
+arm:
+
+| level | rows/node | hand-rolled ns | with the primitive |
+|---|---|---|---|
+| 0 | 65 536 | 89 | 52 |
+| 1 | 4 096 | 54 | 50 |
+| 2 | 256 | 44 | 51 |
+| 3 | 16 | 43 | 50 |
+| 4 | 1 | 43 | 52 |
+
+Faster at large ranges, **marginally slower at small ones**, flat overall.
+Mechanism, and it is the reason to keep the primitive rather than the ratio:
+the hand-rolled version zeroed the WHOLE buffer and then overwrote the
+interior, paying 1024 redundant word writes at level 0 and none at level 4; the
+primitive splits the zero-fill around the range, so it writes each word once.
+Reveal-vs-TCAM band: **161.8×–343.5× → 273.9×–300.9×** — a higher floor and a
+flatter curve. Both bands are one host, one fixture, one seed; §16.2's
+portability caveat applies unchanged.
+
+`n` read 6 556 ns with residual 2.2 % here against 7 678 / 15.9 % on the
+immediately preceding run of the SAME binary. That spread is cross-run noise on
+this host, not an effect of the change — recorded so neither number is cited as
+a before/after.
+
+**Disable runs, both red-then-green, both after the commit (`33716b9`) so the
+restore could not eat the work:**
+
+| disable | observed |
+|---|---|
+| drop the three zero-fills and make the single-word write an `\|=` (i.e. OR, not overwrite) | 3 of 5 unit tests FAIL, including `..._overwrites_a_dirty_destination_rather_than_oring`; the two `should_panic` guards correctly stay green |
+| make the single-word branch unreachable so it falls into the two-edge path | 2 of 5 unit tests FAIL **and the parity program ABORTS** — so the new `0xBxx` group is non-vacuous, not decoration |
+
+Gates: clippy `-D warnings` clean, `cargo fmt` clean, 5/5 unit tests, masking
+parity **11** groups bit-identical (was 10), probe gate (range mask == TCAM
+mask, popcount == node size) green at every level.
+
+Not built, named: no OR-ing variant (no consumer, and a zero-caller function is
+dead code here). Still open from §16.6: whether a nibble-aligned
+`reveal(prefix, level)` beats the general `[lo, hi)` — the general form shipped
+first as a decision, not a finding.
+
 ## 2026-09-16 (1) — census of this plan against the board and git: four governance defects, a fourth hex-tenant run, and the wave is the DuckDB matrix's own T1 gap list
 
 Three read-only censuses (ndarray code, ndarray plan+board, lance-graph
