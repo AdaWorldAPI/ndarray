@@ -414,6 +414,22 @@ entries and the LAST `-Ctarget-cpu` wins, so the env-var form passes v4 and THEN
 `.cargo/config.toml`'s v3, producing a v3 build that reports itself as v4. This
 run used `--config`, which is the same cfg key at higher precedence.
 
+> **⊘ CORRECTED 2026-09-16 (codex/coderabbit, PR #309) — the mechanism above is
+> stated BACKWARDS, and the two halves belong to different cargo rules.**
+> Cargo joins matching `target.<cfg>.rustflags` across **config sources**
+> (`--config` + `.cargo/config.toml`), last `-Ctarget-cpu` winning — that half
+> is right, and it is why `--config` is load-bearing. But the `RUSTFLAGS`
+> **environment variable is not a config source**: it is mutually exclusive
+> with them and REPLACES the lot, so it can never "pass v4 and THEN v3."
+>
+> The real trap runs the other way, and `CLAUDE.md` states it correctly: an
+> **already-set** `RUSTFLAGS` (from anything in the environment) silently
+> discards `config-v4.toml`'s `-Ctarget-cpu=x86-64-v4` entirely, so the arm
+> measures whatever that env var says while the command line claims v4. That
+> is why every v4 invocation is written `env -u RUSTFLAGS cargo --config …`,
+> and why the parity program prints `avx512f=true|false` rather than trusting
+> the flag it was launched with.
+
 ## 2026-09-16 (7) — `array_windows` + `add_mul` closes TWO different mantissa losses, and "bit exact" splits into two contracts the tree already distinguishes
 
 Operator: *"Und hilft dadurch immer bit exakt zu sein ohne mantissa Verluste —
@@ -499,6 +515,20 @@ accumulator never spills. A dynamic-length `slice::windows()` cannot, and every
 spill/reload is an extra rounding — the "rounding roundtrip". One fused
 `mul_add` per step, one rounding; the alternative rounds at the multiply, again
 at the reload, again at the add.
+
+> **⊘ CORRECTED 2026-09-16 (coderabbit, PR #309) — "every spill/reload is an
+> extra rounding" is FALSE and mis-attributes a real effect.** An `f32` spilled
+> to memory and reloaded as `f32` is bit-exact; the store/load is lossless.
+> Rounding enters only on a NARROWING store (`f32 → bf16`/`f16`), or where a
+> wider accumulator is forced back to the narrow type.
+>
+> The rounding difference being described is real but its cause is **FMA, not
+> the spill**: `mul_add` computes `a*b + c` with a single rounding at the end,
+> where separate multiply-then-add rounds the product first and the sum second.
+> That is one extra rounding per step, and it is present whether or not
+> anything spills. Read the paragraph above with "spill/reload" replaced by
+> "the un-fused multiply's intermediate rounding"; the conclusion (prefer one
+> fused `mul_add` per step) is unchanged and the mechanism is now the right one.
 
 **My error, recorded because I said it out loud.** I had written that
 `array_windows` "fits nowhere in this wave" because *a compare-to-mask has no

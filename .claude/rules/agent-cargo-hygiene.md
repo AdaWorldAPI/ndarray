@@ -14,9 +14,25 @@ build residue and twelve cold compiles competing for the same cores.
 - **Sonnet fleet agents: do NOT each run a full compile.** They edit code and
   reason; they must not spawn isolated worktrees or trigger their own cold
   `cargo build`/`check`/`test` that each grow a separate 7 GB `target/`.
-  - "tests yes, compile no": a targeted `cargo test`/`clippy` against the
-    **shared** workspace `target/` is fine; a bare compile-only
-    (`cargo check`/`build`) is wasted residue — clippy already compiles.
+  - ⊘ **SUPERSEDED — this file used to carve out "tests yes, compile no": a
+    targeted `cargo test`/`clippy` against the shared `target/` is fine;
+    clippy already compiles.** Both halves are now wrong, and the file
+    contradicted its own BACKEND POLLUTION section below (which says the
+    prohibition is absolute) for as long as the carve-out stood. Corrected
+    2026-09-16 after coderabbit flagged the inconsistency on PR #309:
+
+    1. **Operator ruling: workers do not run cargo. At all.** Not `build`,
+       not `check`, not `test`, not `clippy`. The pollution argument below is
+       what makes this absolute rather than a budget — a worker's plain
+       `cargo test` takes `.cargo/config.toml` (v3) and REPLACES whatever
+       realization the orchestrator last built, so the next probe reports a
+       tier nobody can reconstruct.
+    2. **"clippy already compiles" is false** (operator correction to my own
+       framing): clippy type-checks and lints, it does not produce a runnable
+       artifact. Practical consequence for the ORCHESTRATOR's own gates, which
+       is where cargo is still allowed: a green `cargo clippy` proves types and
+       lints, never that the thing builds and runs. Evidence for a landing is a
+       `cargo run`/`cargo test` result, not a lint.
 - **Verification is centralised.** The orchestrator (Opus) runs
   `cargo fmt` + `cargo clippy` + `cargo test` **once**, in the single shared
   `target/`, after the fleet's edits land. One build, not twelve.
