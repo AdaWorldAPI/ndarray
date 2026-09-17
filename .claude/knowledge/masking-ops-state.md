@@ -200,6 +200,46 @@ unary-with-constant, and that narrowing is exactly the register in which the
 constant, record G7 as *deliberately absent* **in the IR's docs**, so a future
 session does not "fix" it.
 
+**G8 — `lzcnt_bswap_u64_to_u8` (tree-depth column) — NAMED 2026-09-17, not
+built.** The V3 facet's tail (bytes 8..16 = tiers 2–5, one aligned `u64` at a
+compile-time offset — a PEEK, not a gather) is a **tree path**: each tier byte
+is a 4-level 4-ary centroid hierarchy (OGAR canon, 256 = 4⁴), high nibble
+coarse. The metric on a tree path is depth-of-divergence, which on a `u64` is
+`lzcnt(a ^ b) >> 2` — position-aware. `popcount(a ^ b)` is **position-blind**
+on it (a leaf-nibble flip counts the same as a root-nibble flip; lance-graph
+LATEST_STATE 2026-09-15 (8): *"popcount also finds elephant : Wal"*), so the
+existing `popcount_batch_u64` / `xor_popcount` are the wrong primitive for
+ranking and the right one only for the in-cell tie-break (`x & below(depth)`).
+
+**The byte-order wrinkle the first implementation will get backwards:** the
+facet is little-endian (tier 2 at the LOW byte of the tail `u64`) but the
+hierarchy inside a byte is MSB-coarse. `tzcnt` gets byte order right and
+nibble order wrong; `lzcnt` the reverse. One `bswap` reconciles them:
+
+```
+depth_nibbles = lzcnt(bswap(a ^ b)) >> 2      // 0..16, stepless, no branch
+```
+
+That is three scalar instructions (`xor`, `bswap`, `lzcnt`) or, as a column,
+`vpshufb` (byte reverse) + `vplzcntq` (AVX-512CD) over 8 rows per zmm with
+**no padding and no tail descent** — eight tails tile a zmm exactly, which is
+the whole reason the `u64` width is the right one here (and consistent with
+blackboard (18): the tail optimisation is inert on power-of-two populations
+because there is no tail; stripping HEEL/HIP makes the operand *start*
+power-of-two). Consumer: basin-local similarity in lance-graph (`FacetCascade`
+tail) and the CAKES nearest-ranking on `NiblePath` (lance-graph
+`ISS-NIBLEPATH-FOLD-IS-CARRIER-2-UNMASKED`, the packed-`u64` carrier where the
+same `lzcnt` IS the fold). Realizations: `vplzcntq` on avx512cd; avx2 has no
+vector lzcnt — polyfill via the float-exponent trick or a scalar peel (measure
+which); NEON has `clz` on 32-bit lanes (two halves + select); wasm/scalar flat.
+Pre-registered falsifier: the column op must equal the scalar
+`(a ^ b).swap_bytes().leading_zeros() >> 2` on every row of a 64k fixture at
+all six realizations, AND a disable-run without the `bswap` must fail on a
+fixture whose divergence is in a low nibble of a high tier (that is the
+backwards-implementation trap, and the test must be able to see it). Gate
+before building: one named consumer call site that ranks by depth — the same
+count rule G5 carries.
+
 **The nightly arm is AHEAD of the stable arms, and it is the contract
 reference.** `src/simd_nightly/` carries **18 compare-to-mask pairs across
 every width**; the stable arms have a subset. So N2/N3 were not adding a
