@@ -202,7 +202,13 @@ session does not "fix" it.
 
 **G8 — `lzcnt_bswap_u64_to_u8` (tree-depth column) — NAMED 2026-09-17, not
 built.** The V3 facet's tail (bytes 8..16 = tiers 2–5, one aligned `u64` at a
-compile-time offset — a PEEK, not a gather) is a **tree path**: each tier byte
+compile-time offset — a PEEK, not a gather) is a **tree path**. State the
+carving before the op, because "tier" and "byte" are not the same unit: the
+V3 facet is `classid(4) | payload(12)`, and `RailSpec::v3_facet`
+(`src/hpc/clam_v3.rs`) walks **six sequential `(u8:u8)` levels at key offsets
+`4..16`, stride 2** — so a tier is TWO bytes, one per axis, not one byte. The
+`u64` operand at `8..16` therefore covers tiers 2–5, i.e. **4 tiers × 2 bytes
+= 8 bytes = 16 nibbles**. Each *byte* within a tier
 is a **16-ary nibble hierarchy** — OGAR canon's *"1 hex digit = 1 nibble = 1
 level of the 16-ary tree (`FAN_OUT=16`)"* — high nibble coarse. The metric on
 a tree path is depth-of-divergence, which at that granularity on a `u64` is
@@ -233,22 +239,33 @@ facet is little-endian (tier 2 at the LOW byte of the tail `u64`) but the
 hierarchy inside a byte is MSB-coarse. `tzcnt` gets byte order right and
 nibble order wrong; `lzcnt` the reverse. One `bswap` reconciles them:
 
-```
+```text
 depth_nibbles = lzcnt(bswap(a ^ b)) >> 2      // 0..16, stepless, no branch
 ```
 
 That is three scalar instructions (`xor`, `bswap`, `lzcnt`) or, as a column,
-`vpshufb` (byte reverse) + `vplzcntq` (AVX-512CD) over 8 rows per zmm with
-**no padding and no tail descent** — eight tails tile a zmm exactly, which is
+`vpshufb` (byte reverse, **AVX-512BW** at zmm width) + `vplzcntq`
+(**AVX-512CD**) over 8 rows per zmm — BOTH feature bits, not CD alone; a
+target with CD but not BW needs a different byte reversal. Per 8-row group
+there is **no operand padding and no tail descent** — eight tails tile a zmm
+exactly, which is
 the whole reason the `u64` width is the right one here (and consistent with
 blackboard (18): the tail optimisation is inert on power-of-two populations
 because there is no tail; stripping HEEL/HIP makes the operand *start*
-power-of-two). Consumer: basin-local similarity in lance-graph (`FacetCascade`
+power-of-two). **That is a claim about the OPERAND, not the population:** a
+row count not divisible by 8 still leaves a column remainder, exactly as the
+slice-level `U64x8` ops handle with `pad_tail`. No multiple-of-eight input
+contract is stated or intended, so an implementation keeps a remainder path
+and tests non-multiple-of-eight lengths. What is eliminated is the
+*within-operand* padding a narrower width would need, not the last partial
+group. Consumer: basin-local similarity in lance-graph (`FacetCascade`
 tail) and the CAKES nearest-ranking on `NiblePath` (lance-graph
 `ISS-NIBLEPATH-FOLD-IS-CARRIER-2-UNMASKED`, the packed-`u64` carrier where the
 same `lzcnt` IS the fold). Realizations: `vplzcntq` on avx512cd; avx2 has no
 vector lzcnt — polyfill via the float-exponent trick or a scalar peel (measure
-which); NEON has `clz` on 32-bit lanes (two halves + select); wasm/scalar flat.
+which); NEON has `clz` on 32-bit lanes (two halves + select); wasm/scalar flat;
+and the **nightly** `core::simd` arm (`src/simd_nightly/`) — six in total,
+which is the count the falsifier below means.
 Pre-registered falsifier: the column op must equal the scalar
 `(a ^ b).swap_bytes().leading_zeros() >> 2` on every row of a 64k fixture at
 all six realizations, AND a disable-run without the `bswap` must fail on a
@@ -283,9 +300,29 @@ hierarchy, the `lo` chain the orthogonal one"*), not coarse and fine of one.
 So raw-tail depth is a **mixed-axis** metric: still a valid monotone
 tie-breaker, NOT a depth in either hierarchy. A consumer that wants one
 axis needs a per-chain fold (the existing `hi_distance` / `lo_distance`) or a
-deinterleave before the `lzcnt`. Whether the mixed-axis reading is what the
-basin-local-similarity consumer actually wants is now part of the gate, not
-an assumption. Gate
+deinterleave before the `lzcnt`.
+
+**And `clam_v3.rs` already answers which carving the real bake wants — it is
+not the pair reading.** `RailSpec` carries TWO carvings, and the doc comment
+records a measurement against them: the interleaved `X:Y` pair reading
+(`v3_facet`, 6 levels, stride 2) *"fits only 44.25 % of paths"* on the
+medcare bake, while the contiguous per-axis slab (`RailSpec::slab`, 12 levels,
+stride 1) *"fits 99.62 % in twelve levels"*. That inverts the gate for G8: on
+the **slab** carving a contiguous `u64` IS one axis, the mixed-axis caveat
+above evaporates, and a plain `lzcnt(bswap(·))` is exactly right. On the
+**pair** carving it is a mixed-axis tiebreaker. So G8's consumer gate must
+name the CARVING as well as the call site, and the measured 99.62 %/44.25 %
+split says the slab is the likelier target. Do not build against the pair
+reading on the strength of it being the zero-fallback default.
+
+**Stacking, not widening, is how the levels grow.** The same module: *"a class
+that needs more than six levels does not widen a byte — it stacks a second
+register, e.g. into the edge lane, and chains it (`RailSpec::stacked`). Depth
+then runs 0..=12 over two registers, same hole rule, same arithmetic."* The
+edge lane at `16..32` is explicitly contemplated as that continuation register
+(*"`16..32` may be a continuation register (if the spec says so)"*). A G8
+column op over a stacked pair is therefore two operands chained, never one
+wider one — which is also why no `u128` variant of G8 is proposed. Gate
 before building: one named consumer call site that ranks by depth — the same
 count rule G5 carries.
 
