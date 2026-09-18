@@ -203,9 +203,26 @@ session does not "fix" it.
 **G8 — `lzcnt_bswap_u64_to_u8` (tree-depth column) — NAMED 2026-09-17, not
 built.** The V3 facet's tail (bytes 8..16 = tiers 2–5, one aligned `u64` at a
 compile-time offset — a PEEK, not a gather) is a **tree path**: each tier byte
-is a 4-level 4-ary centroid hierarchy (OGAR canon, 256 = 4⁴), high nibble
-coarse. The metric on a tree path is depth-of-divergence, which on a `u64` is
-`lzcnt(a ^ b) >> 2` — position-aware. `popcount(a ^ b)` is **position-blind**
+is a **16-ary nibble hierarchy** — OGAR canon's *"1 hex digit = 1 nibble = 1
+level of the 16-ary tree (`FAN_OUT=16`)"* — high nibble coarse. The metric on
+a tree path is depth-of-divergence, which at that granularity on a `u64` is
+`lzcnt(a ^ b) >> 2` — position-aware.
+
+**Which factorization of 256 this op commits to, stated because OGAR carries
+two and they differ by 2×.** Beside the nibble reading above, the canon also
+says *"256 = 4⁴ — each codebook is built as a 4-level 4-ary centroid
+hierarchy"*. That one is the **Morton-interleaved** centroid space, where a
+nibble of `FacetTier::morton()` is a 2 bit × 2 bit quad-tree level across BOTH
+axes at once — a different tree, one level finer per step, over a different
+operand. G8 reads the **raw** tail `u64`, not the interleaved code, so it is
+the nibble tree and the shift is `>> 2` (depth 0..16 over 8 bytes). A 4-ary
+depth over the raw bytes would be `>> 1` (0..32). Both are monotone in
+leading-equal-bits, so **ranking is identical either way** — the granularity
+only bites where depth is consumed as a *value*, which is exactly the in-cell
+tie-break `x & below(depth)` proposed below. Do not cite 4⁴ as the
+justification for `>> 2`; it justifies `>> 1`. (Corrected 2026-09-18 after a
+sibling session measured the two against a fixture; the first draft of this
+entry asserted 4⁴ while shipping the nibble shift.) `popcount(a ^ b)` is **position-blind**
 on it (a leaf-nibble flip counts the same as a root-nibble flip; lance-graph
 LATEST_STATE 2026-09-15 (8): *"popcount also finds elephant : Wal"*), so the
 existing `popcount_batch_u64` / `xor_popcount` are the wrong primitive for
@@ -236,7 +253,39 @@ Pre-registered falsifier: the column op must equal the scalar
 `(a ^ b).swap_bytes().leading_zeros() >> 2` on every row of a 64k fixture at
 all six realizations, AND a disable-run without the `bswap` must fail on a
 fixture whose divergence is in a low nibble of a high tier (that is the
-backwards-implementation trap, and the test must be able to see it). Gate
+backwards-implementation trap, and the test must be able to see it).
+**Plus a third arm, because the first two cannot catch a wrong shift:** both
+compare the column op against `(a ^ b).swap_bytes().leading_zeros() >> 2`,
+which is the same formula in a different spelling, so they agree even if the
+shift is wrong. The third arm builds the fixture *independently* — plant a
+divergence at a KNOWN tier and nibble, assert the KNOWN depth — and is the
+only one that discriminates `>> 2` from `>> 1`. **Measured** (2026-09-18, all
+16 positions, against a scalar model): for tier `t` ∈ 2..5, byte-in-tier `b`
+(0 = `lo`, the LOWER address; 1 = `hi`) and nibble-in-byte `k` (0 = high/MSB,
+1 = low/LSB),
+
+```
+depth = 4*(t-2) + 2*b + k        // 0..15; 16 iff the tails are identical
+```
+
+— exact at every one of the 16 positions. (A first draft of this arm wrote
+`2*(t-2) + n`, which is right only for tier 2 and drifts by `2*(t-2)`
+thereafter; each tier is 2 bytes = **4** nibbles, not 2. It was caught by
+running the model, which is the point of the arm.)
+
+**Caveat the measurement surfaced, and the reason the consumer gate matters
+more than it looked.** `FacetTier` is `{ lo, hi }` with `lo` at the LOWER
+address, so after the `bswap` a single `lzcnt` over the raw tail walks
+`lo` BEFORE `hi` within every tier — i.e. it alternates between the two
+chains every two nibbles. But `hi_chain` and `lo_chain` are documented as two
+**orthogonal** hierarchies (`facet.rs`: *"the `hi` chain prefix-routes one
+hierarchy, the `lo` chain the orthogonal one"*), not coarse and fine of one.
+So raw-tail depth is a **mixed-axis** metric: still a valid monotone
+tie-breaker, NOT a depth in either hierarchy. A consumer that wants one
+axis needs a per-chain fold (the existing `hi_distance` / `lo_distance`) or a
+deinterleave before the `lzcnt`. Whether the mixed-axis reading is what the
+basin-local-similarity consumer actually wants is now part of the gate, not
+an assumption. Gate
 before building: one named consumer call site that ranks by depth — the same
 count rule G5 carries.
 
