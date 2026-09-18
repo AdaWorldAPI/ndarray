@@ -1,3 +1,21 @@
+## 2026-09-17 (19) — G8 named: a tree-depth column (`lzcnt(bswap(x)) >> 2`) is the missing primitive for basin-local ranking; popcount is only its tie-break
+
+Filed, not built. Full text in `masking-ops-state.md` § OUTLOOK G8 and the
+2026-09-17 EPIPHANIES entry. Two things for the next session:
+
+- **Loose end:** the gate is a named consumer call site that ranks by depth.
+  Candidates: lance-graph `FacetCascade` tail ranking (basin-local similarity)
+  and `NiblePath::common_prefix_depth` (the packed-`u64` carrier where this
+  `lzcnt` IS the fold — `ISS-NIBLEPATH-FOLD-IS-CARRIER-2-UNMASKED`). Either
+  one, once it exists as a call, licenses the build.
+- **Decision recorded:** do NOT add a `popcount` variant for this; the existing
+  `popcount_batch_u64` already serves the tie-break. The gap is `lzcnt` (+
+  `bswap`), and (8) on the lance-graph board had already named the `lzcnt`
+  half.
+
+Consistent with (18): stripping HEEL/HIP makes the operand start power-of-two,
+so the tail-padding question never arises for this op.
+
 ## 2026-09-16 (18) — the tail OPTIMISATION IS INERT ON EVERY POWER-OF-TWO POPULATION >= 512 ROWS, including the 4096-row tile
 
 Established before writing the rewrite (15)-(17) argued for, and it changes

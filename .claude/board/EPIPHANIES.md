@@ -1,5 +1,38 @@
 # ndarray — Epiphanies (append-only)
 
+## 2026-09-17 — On a tree-path register the metric is lzcnt, popcount is the tie-break, and little-endian bytes need one bswap first
+**Status:** FINDING (the layout and the instruction facts) + NAMED GAP (G8, not built)
+**Scope:** @simd-savant @family-codec-smith domain:masking-ops domain:v3-facet
+**Cross-ref:** `.claude/knowledge/masking-ops-state.md` § OUTLOOK G8; lance-graph
+`E-THREE-CARRIERS-THREE-FOLDS-1`, `ISS-NIBLEPATH-FOLD-IS-CARRIER-2-UNMASKED`,
+LATEST_STATE 2026-09-15 (6)–(8); blackboard (18)
+
+Within a basin every V3 facet shares HEEL and HIP by construction, so the
+6-tier LCP saturates and the information is in the tail — bytes 8..16, tiers
+2–5, one aligned `u64` at a compile-time offset. Loading it is a PEEK (an
+address), not a mask (a reassembly), so register ops on it are legitimate
+under the carrier doctrine; and stripping the shared prefix is a load-offset
+choice that costs nothing. Two consequences the workspace had not written down:
+
+1. **Padding is useless once you can strip.** The tail descent / `[u64; 8]`
+   zero-padding story exists because a 128-bit facet operand is ragged in a
+   512-bit register. A 64-bit tail is not: eight tails tile a zmm exactly.
+   Blackboard (18) found the tail optimisation inert on power-of-two
+   populations *because there is no tail*; this is the same fact from the
+   operand side — choose the width that starts power-of-two.
+2. **The op on it is `lzcnt`, not `popcount`.** Each tier byte is a 4-level
+   4-ary centroid tree, so the tail is a path and its metric is depth of
+   divergence. Popcount is position-blind on a path (leaf flip == root flip).
+   Ranking = `lzcnt(bswap(a ^ b)) >> 2`; popcount belongs only to the
+   tie-break among equal-depth candidates (`x & below(depth)`) — coarse by
+   depth, fine by density.
+
+The `bswap` is load-bearing and is the trap: LE byte order puts the root tier
+at the LOW byte, but nibble order inside a byte is MSB-coarse, so neither
+`tzcnt` nor `lzcnt` alone reads the path in one direction. G8 records the
+falsifier that catches a `bswap`-less implementation. Gate before building is
+the G5 rule: one named consumer call site.
+
 ## 2026-07-29 — Which PACKAGE pulls a dep decides whether it can consume you
 **Status:** FINDING
 **Scope:** @simd-savant @truth-architect domain:build-graph
