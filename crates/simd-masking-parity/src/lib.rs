@@ -1163,6 +1163,10 @@ fn check_gather_scatter_group() -> Result<(), u32> {
         }
 
         // ── mask_scatter_or_u32 ──────────────────────────────────────────
+        // `out2` starts explicitly zeroed (the caller's job now, not the
+        // primitive's): the accumulate contract means a dirty prefill would
+        // stay dirty rather than being cleared, so parity against a
+        // from-zero reference needs a from-zero `out2`.
         let out_rows = 50usize;
         let out_words_count = words_for(out_rows);
         let src_bits: Vec<u64> = (0..nw).map(|_| rng.next()).collect();
@@ -1176,8 +1180,8 @@ fn check_gather_scatter_group() -> Result<(), u32> {
                 }
             })
             .collect();
-        let out_len2 = out_words_count + 1; // dirty, over-long
-        let mut out2 = vec![u64::MAX; out_len2];
+        let out_len2 = out_words_count + 1; // over-long, but zeroed not dirty
+        let mut out2 = vec![0u64; out_len2];
         mask_scatter_or_u32(&src_bits, &idx2, &mut out2, out_rows);
         let mut want2 = vec![false; out_rows];
         for i in 0..n {
@@ -1191,6 +1195,23 @@ fn check_gather_scatter_group() -> Result<(), u32> {
         let want2_words = reference_mask(out_rows, out_len2, |t| want2[t]);
         if out2 != want2_words {
             return Err(0xD10);
+        }
+
+        // Accumulation check: preload a bit, prove it survives the call
+        // unioned with the scatter result — the reference is the union
+        // regardless of whether the preloaded bit also happens to be a
+        // scatter target, which is exactly what accumulation must produce.
+        {
+            let preset_bit = out_rows - 1;
+            let mut out2_acc = vec![0u64; out_len2];
+            out2_acc[preset_bit / 64] |= 1u64 << (preset_bit % 64);
+            mask_scatter_or_u32(&src_bits, &idx2, &mut out2_acc, out_rows);
+            let mut want2_acc = want2.clone();
+            want2_acc[preset_bit] = true;
+            let want2_acc_words = reference_mask(out_rows, out_len2, |t| want2_acc[t]);
+            if out2_acc != want2_acc_words {
+                return Err(0xD11);
+            }
         }
 
         // ── masked_group_sum_i32 ─────────────────────────────────────────
@@ -1207,7 +1228,9 @@ fn check_gather_scatter_group() -> Result<(), u32> {
             })
             .collect();
         let values = i32_values(n, &mut rng);
-        let mut group_out = vec![-1i64; n_groups + 1]; // garbage + one unreferenced slot
+        // `out` starts explicitly zeroed: the caller's job now, not the
+        // primitive's.
+        let mut group_out = vec![0i64; n_groups + 1]; // one unreferenced slot
         masked_group_sum_i32(&mask_bits, &keys, &values, &mut group_out);
         let mut want_group = vec![0i64; n_groups];
         for i in 0..n {
@@ -1221,9 +1244,25 @@ fn check_gather_scatter_group() -> Result<(), u32> {
         if group_out[..n_groups] != want_group[..] {
             return Err(0xD20);
         }
-        // The unreferenced slot must be zeroed, not left as garbage.
+        // The unreferenced slot must stay exactly as the caller left it
+        // (zero here), never touched.
         if group_out[n_groups] != 0 {
             return Err(0xD21);
+        }
+        // Accumulation check: preload every group slot with a known value,
+        // prove the call adds its contribution on top rather than resetting.
+        {
+            let preload = 1_000_000i64;
+            let mut group_out_acc = vec![preload; n_groups + 1];
+            masked_group_sum_i32(&mask_bits, &keys, &values, &mut group_out_acc);
+            for k in 0..n_groups {
+                if group_out_acc[k] != preload.wrapping_add(want_group[k]) {
+                    return Err(0xD22);
+                }
+            }
+            if group_out_acc[n_groups] != preload {
+                return Err(0xD22);
+            }
         }
 
         // ── masked_group_sum_i32_via ─────────────────────────────────────
@@ -1251,7 +1290,9 @@ fn check_gather_scatter_group() -> Result<(), u32> {
                 }
             })
             .collect();
-        let mut via_out = vec![-1i64; n_groups + 1]; // garbage + one unreferenced slot
+        // `out` starts explicitly zeroed: the caller's job now, not the
+        // primitive's.
+        let mut via_out = vec![0i64; n_groups + 1]; // one unreferenced slot
         masked_group_sum_i32_via(&mask_bits, &index, &remap, &values, &mut via_out);
         let mut want_via = vec![0i64; n_groups];
         for i in 0..n {
@@ -1270,8 +1311,25 @@ fn check_gather_scatter_group() -> Result<(), u32> {
         if via_out[..n_groups] != want_via[..] {
             return Err(0xD30);
         }
+        // The unreferenced slot must stay exactly as the caller left it
+        // (zero here), never touched.
         if via_out[n_groups] != 0 {
             return Err(0xD31);
+        }
+        // Accumulation check: preload every group slot, prove the call adds
+        // its contribution on top rather than resetting.
+        {
+            let preload = 2_000_000i64;
+            let mut via_out_acc = vec![preload; n_groups + 1];
+            masked_group_sum_i32_via(&mask_bits, &index, &remap, &values, &mut via_out_acc);
+            for k in 0..n_groups {
+                if via_out_acc[k] != preload.wrapping_add(want_via[k]) {
+                    return Err(0xD32);
+                }
+            }
+            if via_out_acc[n_groups] != preload {
+                return Err(0xD32);
+            }
         }
     }
     Ok(())

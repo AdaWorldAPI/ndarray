@@ -935,11 +935,12 @@ pub fn mask_gather_u32(src: &[u64], src_rows: usize, index: &[u32], out_words: &
 /// (union), so repeats are harmless and order-independent — the same
 /// reason `vsa_bundle`-shaped accumulation is safe under reordering.
 ///
-/// `out_words[..out_rows.div_ceil(64)]` is **fully overwritten**, not
-/// OR-ed into an existing result: it is zeroed first, then every scattered
-/// bit is set. A caller composing this into an accumulating pipeline
-/// combines the *result* with `mask_or`/`mask_or_assign`, not by pre-seeding
-/// `out_words`.
+/// `out_words[..out_rows.div_ceil(64)]` is **accumulated into, not
+/// overwritten**: every scattered bit is OR-ed into whatever `out_words`
+/// already holds, and a bit set before the call that this call does not
+/// itself scatter to stays set. The caller zeroes `out_words` once before
+/// the first call in a sequence; repeated calls (e.g. one per source batch)
+/// compose as a running union without re-zeroing between them.
 ///
 /// **An out-of-range target (`index[i] >= out_rows`) is silently dropped**,
 /// not an error — the same zero-fallback contract as [`mask_gather_u32`]'s
@@ -993,11 +994,8 @@ pub fn mask_scatter_or_u32(src: &[u64], index: &[u32], out_words: &mut [u64], ou
         out_word_count
     );
 
-    // Zero first, whole buffer — same full-overwrite convention as every
-    // other writer in this module.
-    for w in out_words.iter_mut() {
-        *w = 0;
-    }
+    // Accumulate: OR scattered bits into whatever the caller already has in
+    // `out_words`. The caller zeroes once before the first call.
     for (w, &word) in src.iter().take(src_words).enumerate() {
         let base = w * 64;
         let mut bits = word;
@@ -1037,8 +1035,10 @@ pub fn mask_scatter_or_u32(src: &[u64], index: &[u32], out_words: &mut [u64], ou
 /// selected population and has no notion of a register. Same word
 /// "group", two unrelated shapes; do not conflate them.
 ///
-/// `out` is **fully overwritten**, not accumulated into an existing
-/// result: it is zeroed first. **A key at or past `out.len()` is dropped,
+/// `out` is **accumulated into, not overwritten**: contributions are
+/// added to whatever `out` already holds, so the caller zeroes `out` once
+/// before the first call in a sequence rather than this function doing it.
+/// **A key at or past `out.len()` is dropped,
 /// not an error** — the zero-fallback contract shared by
 /// [`mask_gather_u32`]/[`mask_scatter_or_u32`]: a key naming no group in
 /// `out` is not a group, the same way an unminted classid is not a class.
@@ -1100,9 +1100,8 @@ pub fn masked_group_sum_i32(mask_words: &[u64], keys: &[u32], values: &[i32], ou
         words
     );
 
-    for o in out.iter_mut() {
-        *o = 0;
-    }
+    // Accumulate: add into whatever `out` already holds. The caller zeroes
+    // once before the first call.
     for (w, &word) in mask_words.iter().take(words).enumerate() {
         let base = w * 64;
         let mut bits = word;
@@ -1145,9 +1144,10 @@ pub fn masked_group_sum_i32(mask_words: &[u64], keys: &[u32], values: &[i32], ou
 /// to avoid — one fused scan over the selected rows costs no more than the
 /// naive two-hop lookup per selected row, with no second array in between.
 ///
-/// `out` is fully overwritten (zeroed first); overflow wraps the same way
-/// as [`masked_group_sum_i32`] (widened to `i64`, `wrapping_add`), and the
-/// mask tail is clamped identically.
+/// `out` is accumulated into (not zeroed by this function) — the caller
+/// zeroes `out` once before the first call, same as [`masked_group_sum_i32`];
+/// overflow wraps the same way as [`masked_group_sum_i32`] (widened to
+/// `i64`, `wrapping_add`), and the mask tail is clamped identically.
 ///
 /// # Panics
 ///
@@ -1181,9 +1181,8 @@ pub fn masked_group_sum_i32_via(mask_words: &[u64], index: &[u32], remap: &[u32]
         words
     );
 
-    for o in out.iter_mut() {
-        *o = 0;
-    }
+    // Accumulate: add into whatever `out` already holds. The caller zeroes
+    // once before the first call.
     for (w, &word) in mask_words.iter().take(words).enumerate() {
         let base = w * 64;
         let mut bits = word;
@@ -4208,9 +4207,9 @@ mod tests {
     fn mask_scatter_or_u32_empty_index_writes_nothing() {
         let src: [u64; 0] = [];
         let index: [u32; 0] = [];
-        let mut out = [0xFFFF_FFFF_FFFF_FFFFu64; 1];
+        let mut out = [0u64; 1]; // caller zeroes before the first call
         mask_scatter_or_u32(&src, &index, &mut out, 10);
-        assert_eq!(out[0], 0, "no source rows selected ⇒ output cleared, nothing set");
+        assert_eq!(out[0], 0, "no source rows selected ⇒ output unchanged, nothing set");
     }
 
     #[test]
@@ -4232,10 +4231,12 @@ mod tests {
                 .collect();
             let want = bits_to_words(&naive_scatter(&src_bits, &index, out_rows));
             let out_words = out_rows.div_ceil(64);
-            let mut out = vec![0xFFFF_FFFF_FFFF_FFFFu64; out_words + 1]; // dirty, over-long
+            // Caller zeroes once before the first call; over-long by one word
+            // to prove the surplus word is left untouched, not cleared by us.
+            let mut out = vec![0u64; out_words + 1];
             mask_scatter_or_u32(&src, &index, &mut out, out_rows);
             assert_eq!(&out[..want.len()], &want[..], "scatter mismatch at n={n}");
-            assert_eq!(out[out_words], 0, "surplus word must be cleared at n={n}");
+            assert_eq!(out[out_words], 0, "surplus word is untouched (stays as the caller left it) at n={n}");
         }
     }
 
@@ -4264,6 +4265,26 @@ mod tests {
         let mut out = [0u64; 1];
         mask_scatter_or_u32(&src, &index, &mut out, 8);
         assert_eq!(out[0], 1u64 << 3);
+    }
+
+    #[test]
+    fn mask_scatter_or_u32_accumulates_into_a_preloaded_out_buffer() {
+        // A bit the call never scatters to must survive; the call's own
+        // contribution must land alongside it. This must FAIL if the old
+        // whole-buffer zeroing is restored (bit 7 would be cleared).
+        let src = [0b1u64]; // row 0 selected
+        let index = [3u32]; // scatters to bit 3
+        let mut out = [1u64 << 7]; // pre-set bit 7, not touched by this call
+        mask_scatter_or_u32(&src, &index, &mut out, 8);
+        assert_eq!(out[0], (1u64 << 3) | (1u64 << 7), "pre-existing bit 7 must survive alongside the new bit 3");
+    }
+
+    #[test]
+    fn mask_scatter_or_u32_a_second_call_with_a_different_mask_unions_on_top() {
+        let mut out = [0u64; 1];
+        mask_scatter_or_u32(&[0b1u64], &[2u32], &mut out, 8);
+        mask_scatter_or_u32(&[0b1u64], &[5u32], &mut out, 8);
+        assert_eq!(out[0], (1u64 << 2) | (1u64 << 5), "two calls union, the second does not erase the first");
     }
 
     #[test]
@@ -4302,7 +4323,7 @@ mod tests {
         let mask: [u64; 0] = [];
         let keys: [u32; 0] = [];
         let values: [i32; 0] = [];
-        let mut out = [123i64; 4]; // garbage, must be cleared
+        let mut out = [0i64; 4]; // caller zeroes before the first call
         masked_group_sum_i32(&mask, &keys, &values, &mut out);
         assert_eq!(out, [0, 0, 0, 0]);
     }
@@ -4327,10 +4348,15 @@ mod tests {
             // Signed values spanning both sides of zero.
             let values: Vec<i32> = (0..n).map(|_| (splitmix(&mut seed) as i32) / 2).collect();
             let want = naive_group_sum(&mask_bits, &keys, &values, n_groups);
-            let mut out = vec![-999i64; n_groups + 1]; // garbage, and one extra slot no key ever hits
+            // Caller zeroes once before the first call; one extra slot no
+            // key ever hits, to prove it is left untouched, not cleared.
+            let mut out = vec![0i64; n_groups + 1];
             masked_group_sum_i32(&mask, &keys, &values, &mut out);
             assert_eq!(&out[..n_groups], &want[..], "group sum mismatch at n={n}");
-            assert_eq!(out[n_groups], 0, "an unreferenced group slot must be zero, not garbage, at n={n}");
+            assert_eq!(
+                out[n_groups], 0,
+                "an unreferenced group slot is untouched (stays as the caller left it) at n={n}"
+            );
         }
     }
 
@@ -4363,6 +4389,28 @@ mod tests {
         let mut out = [0i64; 2];
         masked_group_sum_i32(&mask, &keys, &values, &mut out);
         assert_eq!(out, [10, 20], "the out-of-range key contributes nothing");
+    }
+
+    #[test]
+    fn masked_group_sum_i32_accumulates_into_a_preloaded_out_buffer() {
+        // Slot 1 starts pre-loaded and is never touched by this call; slot 0
+        // starts pre-loaded and IS the call's target. This must FAIL if the
+        // old whole-buffer zeroing is restored (both would reset to 0 first).
+        let mask = [0b1u64]; // row 0 selected
+        let keys = [0u32]; // routes to slot 0
+        let values = [7i32];
+        let mut out = [5i64, 42i64]; // slot 0 preloaded 5, slot 1 preloaded 42
+        masked_group_sum_i32(&mask, &keys, &values, &mut out);
+        assert_eq!(out[0], 12, "slot 0: preload 5 + contribution 7 = 12");
+        assert_eq!(out[1], 42, "slot 1 is untouched, must survive exactly as preloaded");
+    }
+
+    #[test]
+    fn masked_group_sum_i32_a_second_call_with_a_different_mask_sums_on_top() {
+        let mut out = [0i64; 2];
+        masked_group_sum_i32(&[0b1u64], &[0u32], &[10i32], &mut out);
+        masked_group_sum_i32(&[0b1u64], &[0u32], &[3i32], &mut out);
+        assert_eq!(out, [13, 0], "two calls sum, the second does not erase the first's contribution");
     }
 
     #[test]
@@ -4408,7 +4456,7 @@ mod tests {
             let mut want = vec![0i64; n_groups];
             masked_group_sum_i32(&mask, &keys, &values, &mut want);
 
-            let mut got = vec![-1i64; n_groups];
+            let mut got = vec![0i64; n_groups]; // caller zeroes before the first call
             masked_group_sum_i32_via(&mask, &index, &remap, &values, &mut got);
             assert_eq!(got, want, "via mismatched the plain two-hop-materialised form at n={n}");
         }
@@ -4484,9 +4532,32 @@ mod tests {
                 want[k] = want[k].wrapping_add(values[i] as i64);
             }
         }
-        let mut got = vec![-1i64; n_groups];
+        let mut got = vec![0i64; n_groups]; // caller zeroes before the first call
         masked_group_sum_i32_via(&mask, &index, &remap, &values, &mut got);
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn masked_group_sum_i32_via_accumulates_into_a_preloaded_out_buffer() {
+        // Slot 1 is preloaded and never targeted; slot 0 is preloaded and IS
+        // the resolved target. Must FAIL if whole-buffer zeroing returns.
+        let mask = [0b1u64]; // row 0 selected
+        let index = [0u32]; // partner 0
+        let remap = [0u32]; // partner 0 -> group 0
+        let values = [7i32];
+        let mut out = [5i64, 42i64];
+        masked_group_sum_i32_via(&mask, &index, &remap, &values, &mut out);
+        assert_eq!(out[0], 12, "group 0: preload 5 + contribution 7 = 12");
+        assert_eq!(out[1], 42, "group 1 is untouched, must survive exactly as preloaded");
+    }
+
+    #[test]
+    fn masked_group_sum_i32_via_a_second_call_with_a_different_mask_sums_on_top() {
+        let remap = [0u32];
+        let mut out = [0i64; 1];
+        masked_group_sum_i32_via(&[0b1u64], &[0u32], &remap, &[10i32], &mut out);
+        masked_group_sum_i32_via(&[0b1u64], &[0u32], &remap, &[3i32], &mut out);
+        assert_eq!(out, [13], "two calls sum, the second does not erase the first's contribution");
     }
 
     #[test]
