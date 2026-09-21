@@ -789,6 +789,7 @@ pub use crate::simd_masking_ops::{
     eq_u32_strided_to_mask,
     eq_u32_to_mask,
     eq_u32_to_mask_under,
+    eq_u32_via_to_mask,
     eq_u64_to_mask,
     eq_u8_to_mask,
     ge_i32_to_mask,

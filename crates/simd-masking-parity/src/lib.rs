@@ -25,22 +25,24 @@
 //! permutation/scatter family (`mask_gather_u32`/`mask_scatter_or_u32`/
 //! `masked_group_sum_i32`/`masked_group_sum_i32_via`, for
 //! lance-graph-mask-risc's Gather/ScatterOr/GroupSum verbs); `0xD3x` the
-//! fk-indirected `masked_group_sum_i32_via` (two-hop zero-fallback). `main.rs` (native / qemu) and
+//! fk-indirected `masked_group_sum_i32_via` (two-hop zero-fallback); `0xD4x`
+//! `eq_u32_via_to_mask` (the same fk lane, packed as a predicate rather than
+//! folded into a sum). `main.rs` (native / qemu) and
 //! `selfcheck()` (the wasm cdylib export, driven by `run.mjs`) both call
 //! [`run`].
 
 use ndarray::simd::{
     blend_i32, eq_i32_to_mask, eq_i32_to_mask_under, eq_u32_strided_to_mask, eq_u32_to_mask, eq_u32_to_mask_under,
-    eq_u64_to_mask, eq_u8_to_mask, ge_i32_to_mask, ge_i32_to_mask_under, ge_u64_to_mask, ge_u8_to_mask, gt_i32_to_mask,
-    gt_i32_to_mask_under, gt_u64_to_mask, gt_u8_to_mask, le_i32_to_mask, le_i32_to_mask_under, le_u64_to_mask,
-    le_u8_to_mask, lt_i32_to_mask, lt_i32_to_mask_under, lt_u64_to_mask, lt_u8_to_mask, mask_all, mask_and,
-    mask_and_assign, mask_andnot, mask_andnot_assign, mask_any, mask_gather_u32, mask_not, mask_not_assign, mask_or,
-    mask_or_assign, mask_scatter_or_u32, mask_set_range, mask_shift_morton, mask_ternlog, mask_ternlog_assign,
-    mask_xor, mask_xor_assign, masked_group_sum_i32, masked_group_sum_i32_via, masked_max_i32, masked_min_i32,
-    masked_strided_group_sum, masked_sum_i32, ne_i32_to_mask, ne_i32_to_mask_under, ne_u32_to_mask,
-    ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask, ternary_match_strided_to_mask, ternary_match_u32_to_mask,
-    ternary_match_u32_to_mask_under, ternary_match_u64_to_mask, ternary_match_u64_to_mask_under, ternlog, I32x16,
-    MortonDir, U32x16, U64x8,
+    eq_u32_via_to_mask, eq_u64_to_mask, eq_u8_to_mask, ge_i32_to_mask, ge_i32_to_mask_under, ge_u64_to_mask,
+    ge_u8_to_mask, gt_i32_to_mask, gt_i32_to_mask_under, gt_u64_to_mask, gt_u8_to_mask, le_i32_to_mask,
+    le_i32_to_mask_under, le_u64_to_mask, le_u8_to_mask, lt_i32_to_mask, lt_i32_to_mask_under, lt_u64_to_mask,
+    lt_u8_to_mask, mask_all, mask_and, mask_and_assign, mask_andnot, mask_andnot_assign, mask_any, mask_gather_u32,
+    mask_not, mask_not_assign, mask_or, mask_or_assign, mask_scatter_or_u32, mask_set_range, mask_shift_morton,
+    mask_ternlog, mask_ternlog_assign, mask_xor, mask_xor_assign, masked_group_sum_i32, masked_group_sum_i32_via,
+    masked_max_i32, masked_min_i32, masked_strided_group_sum, masked_sum_i32, ne_i32_to_mask, ne_i32_to_mask_under,
+    ne_u32_to_mask, ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask, ternary_match_strided_to_mask,
+    ternary_match_u32_to_mask, ternary_match_u32_to_mask_under, ternary_match_u64_to_mask,
+    ternary_match_u64_to_mask_under, ternlog, I32x16, MortonDir, U32x16, U64x8,
 };
 
 /// Number of check groups [`run`] executes (for the log line only).
@@ -1330,6 +1332,33 @@ fn check_gather_scatter_group() -> Result<(), u32> {
             if via_out_acc[n_groups] != preload {
                 return Err(0xD32);
             }
+        }
+
+        // ── eq_u32_via_to_mask ────────────────────────────────────────────
+        // A predicate evaluated through the same fk lane `masked_group_sum_i32_via`
+        // uses for its key, but packed into a bitmask rather than folded into a
+        // sum: `fk[i] < foreign.len() && foreign[fk[i]] == v`.
+        let foreign_len = 9usize;
+        let foreign: Vec<u32> = (0..foreign_len).map(|_| (rng.next() % 5) as u32).collect();
+        let v = 2u32;
+        // Every fourth key is deliberately out of range for `foreign`.
+        let fk: Vec<u32> = (0..n)
+            .map(|i| {
+                if i % 4 == 0 {
+                    (foreign_len as u64 + 6 + i as u64) as u32
+                } else {
+                    (rng.next() % foreign_len as u64) as u32
+                }
+            })
+            .collect();
+        let mut via_mask = vec![u64::MAX; out_len]; // dirty, over-long
+        eq_u32_via_to_mask(&fk, &foreign, v, &mut via_mask);
+        let want_via_mask = reference_mask(n, out_len, |i| {
+            let k = fk[i] as usize;
+            k < foreign.len() && foreign[k] == v
+        });
+        if via_mask != want_via_mask {
+            return Err(0xD40);
         }
     }
     Ok(())

@@ -1207,6 +1207,94 @@ pub fn masked_group_sum_i32_via(mask_words: &[u64], index: &[u32], remap: &[u32]
     }
 }
 
+/// Packs `fk[i] < foreign.len() && foreign[fk[i]] == v` into `out_words`,
+/// one bit per row `i < fk.len()`, LSB-first — a join-filter predicate
+/// evaluated **through a foreign key**, with no gathered mask and no
+/// materialised foreign predicate plane in between.
+///
+/// `WHERE partner.country = v` filtered from the `line` side, without
+/// first computing `country_of_line[i] = country[partner_id[i]]` into its
+/// own array and then comparing that: `fk = line.partner_id`,
+/// `foreign = partner.country`, and this fuses the gather-then-compare
+/// into one pass over `fk`, the same fusion [`masked_group_sum_i32_via`]
+/// applies to a fk-indirected group key rather than a fk-indirected
+/// predicate.
+///
+/// **Zero-fallback, same rule as [`mask_gather_u32`]'s out-of-range
+/// read**: `fk[i] >= foreign.len()` means row `i`'s key names no foreign
+/// row, so it does not match — not an error, not a panic, just `false` for
+/// that bit. A key that names no row is not a match, the same way an
+/// unminted classid is not a class.
+///
+/// `out_words` is **fully overwritten**, not OR-ed into; trailing bits
+/// beyond `fk.len()`, and any surplus words past `mask_words_for(fk.len())`,
+/// are written `0` — this writes exactly its own output tile and nothing
+/// past it, the same contract as [`mask_gather_u32`].
+///
+/// # Why this lives HERE
+///
+/// [`mask_gather_u32`] reads a *mask bit* through an index; this reads an
+/// *equality predicate* through an index, and belongs beside it for the
+/// same reason: a consumer hand-rolling `foreign[fk[i]] == v` in a loop is
+/// exactly the polyfill bypass the "all SIMD from `ndarray::simd`"
+/// invariant exists to prevent, and it is the gather half of
+/// [`masked_group_sum_i32_via`]'s two-hop shape applied to a predicate
+/// instead of a sum.
+///
+/// # Vectorisation, honestly
+///
+/// **Scalar, and by necessity, not oversight** — same shape as
+/// [`mask_gather_u32`]: the address read from `foreign` is `fk[i]`, a
+/// value out of another array, so there is no vector gather over
+/// individual predicate results on any of this crate's backends. Cost is
+/// `O(fk.len())`; there is no input mask to skip zero words against.
+///
+/// # Panics
+///
+/// Panics if `out_words.len() < mask_words_for(fk.len())`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::eq_u32_via_to_mask;
+///
+/// // partner 0 -> country 7, partner 1 -> country 3; row 2's fk (5) is
+/// // out of range for `foreign` and never matches.
+/// let fk = [0u32, 1, 5, 0];
+/// let foreign = [7u32, 3];
+/// let mut out = [u64::MAX]; // dirty tail must be overwritten
+/// eq_u32_via_to_mask(&fk, &foreign, 7, &mut out);
+/// // rows 0 and 3 resolve to country 7; row 1 resolves to 3; row 2 drops.
+/// assert_eq!(out[0], 0b1001);
+/// ```
+#[inline]
+pub fn eq_u32_via_to_mask(fk: &[u32], foreign: &[u32], v: u32, out_words: &mut [u64]) {
+    let n = fk.len();
+    let words = mask_words_for(n);
+    assert!(
+        out_words.len() >= words,
+        "eq_u32_via_to_mask: out_words.len()={} < required {}",
+        out_words.len(),
+        words
+    );
+
+    for (w, out_word) in out_words.iter_mut().enumerate().take(words) {
+        let base = w * 64;
+        let live = (n - base).min(64);
+        let mut acc = 0u64;
+        for lane in 0..live {
+            let key = fk[base + lane] as usize;
+            if key < foreign.len() && foreign[key] == v {
+                acc |= 1u64 << lane;
+            }
+        }
+        *out_word = acc;
+    }
+    for w in out_words.iter_mut().skip(words) {
+        *w = 0;
+    }
+}
+
 // ────────────────────────────────────────────────────────────────────────
 // The closed comparison family + mask complement/xor/any + care-masked
 // register match + masked min/max + blend (the DuckDB-vector-execution set,
@@ -4580,6 +4668,99 @@ mod tests {
         let values = vec![0i32; 65];
         let mut out = [0i64; 1];
         masked_group_sum_i32_via(&mask, &index, &remap, &values, &mut out);
+    }
+
+    // ── eq_u32_via_to_mask ──
+
+    fn naive_eq_via(fk: &[u32], foreign: &[u32], v: u32) -> Vec<bool> {
+        fk.iter()
+            .map(|&k| {
+                let k = k as usize;
+                k < foreign.len() && foreign[k] == v
+            })
+            .collect()
+    }
+
+    #[test]
+    fn eq_u32_via_to_mask_matches_naive_reference_across_the_tail() {
+        for &n in &[0usize, 1, 63, 64, 65, 130, 1000] {
+            let mut seed = 0xACE1_2345_6789_BEEFu64;
+            let foreign_len = 17usize;
+            let foreign: Vec<u32> = (0..foreign_len)
+                .map(|_| (splitmix(&mut seed) % 5) as u32)
+                .collect();
+            let v = 2u32;
+            // A third of keys are deliberately out of range; the rest hit
+            // `foreign`, so both the match and no-match arms are genuinely
+            // exercised (not merely plausible).
+            let fk: Vec<u32> = (0..n)
+                .map(|i| {
+                    if i % 3 == 0 {
+                        (foreign_len as u64 + 3 + i as u64) as u32
+                    } else {
+                        (splitmix(&mut seed) % foreign_len as u64) as u32
+                    }
+                })
+                .collect();
+            let want_bits = naive_eq_via(&fk, &foreign, v);
+            let want = bits_to_words(&want_bits);
+            let out_words = n.div_ceil(64).max(1);
+            let mut out = vec![0xFFFF_FFFF_FFFF_FFFFu64; out_words + 1]; // dirty, over-long
+            eq_u32_via_to_mask(&fk, &foreign, v, &mut out);
+            assert_eq!(&out[..want.len()], &want[..], "eq_u32_via_to_mask mismatch at n={n}");
+            assert_eq!(out[out_words], 0, "surplus word must be cleared at n={n}");
+            if n >= 10 {
+                // Anti-vacuity (skipped at tiny n, where a single fixture
+                // cannot be relied on to hit both arms): this fixture must
+                // actually contain both a match and a non-match, or the
+                // comparison above proves nothing about which arm is
+                // exercised.
+                assert!(want_bits.iter().any(|&b| b), "fixture at n={n} has no matching row at all");
+                assert!(want_bits.iter().any(|&b| !b), "fixture at n={n} has no non-matching row at all");
+            }
+        }
+    }
+
+    #[test]
+    fn eq_u32_via_to_mask_out_of_range_fk_never_matches_even_when_foreign_0_equals_v() {
+        let fk = [5u32, 10, 100, u32::MAX];
+        let foreign = [7u32]; // foreign[0] == v, but every fk above is >= 1
+        let mut out = [0u64; 1];
+        eq_u32_via_to_mask(&fk, &foreign, 7, &mut out);
+        assert_eq!(out[0], 0, "every fk names no row in `foreign`, so nothing may match");
+    }
+
+    #[test]
+    fn eq_u32_via_to_mask_tail_and_surplus_words_are_cleared_not_left_dirty() {
+        let fk = [0u32, 0, 0, 0, 0]; // n = 5, one word; foreign[0] == v for all
+        let foreign = [9u32];
+        let mut out = [0xFFFF_FFFF_FFFF_FFFFu64; 3]; // one live word + two surplus
+        eq_u32_via_to_mask(&fk, &foreign, 9, &mut out);
+        assert_eq!(out[0], 0b11111, "the five live rows should be set");
+        assert_eq!(out[0] & !0b11111, 0, "bits past n=5 in the live word must be zero, not dirty");
+        assert_eq!(out[1], 0, "surplus word 1 must be cleared");
+        assert_eq!(out[2], 0, "surplus word 2 must be cleared");
+    }
+
+    #[test]
+    fn eq_u32_via_to_mask_empty_foreign_yields_all_zero_mask_for_nonempty_fk() {
+        // Every fk names a row, but `foreign` is empty, so every key is out
+        // of range: the whole mask must be false, not a panic and not a
+        // vacuous "unreachable, so anything goes".
+        let fk = [0u32, 1, 2, 3, 4, 5, 6, 7];
+        let foreign: [u32; 0] = [];
+        let mut out = [0xFFFF_FFFF_FFFF_FFFFu64; 1];
+        eq_u32_via_to_mask(&fk, &foreign, 0, &mut out);
+        assert_eq!(out[0], 0, "an empty foreign table matches nothing");
+    }
+
+    #[test]
+    #[should_panic(expected = "out_words.len()")]
+    fn eq_u32_via_to_mask_rejects_short_out_buffer() {
+        let fk = vec![0u32; 65]; // needs 2 words
+        let foreign = [0u32];
+        let mut out = [0u64; 1];
+        eq_u32_via_to_mask(&fk, &foreign, 0, &mut out);
     }
 
     // ── 2026-09-13 additions: the closed comparison family, complement/xor/
