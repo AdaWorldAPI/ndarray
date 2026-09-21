@@ -4,6 +4,7 @@ Added `mask_gather_u32`, `mask_scatter_or_u32`, `masked_group_sum_i32` to `simd_
 All three are deliberately scalar bit-walks — permutations/scatters indexed by `index`/`keys` data, not a fixed stride, so none of this crate's backends can vector-load them (same shape as `masked_strided_group_sum`, which says so in its own doc).
 `masked_strided_group_sum` is NOT a keyed group-by and never was — it sums one record's own byte-groups into a single scalar with no key at all; zero callers of either are affected by this addition.
 Parity: `check_gather_scatter_group` (0xDxx) in `crates/simd-masking-parity`, against naive per-element references, disable-verified red-then-green.
+`masked_group_sum_i32_via(mask, index, remap, values, out)` — the same one-pass keyed sum with the key read through a foreign-key hop (`SUM(line.amount) GROUP BY partner.country`); the indirection is fused so no remapped key lane of N is ever materialised. Fourth arm of the same parity group (0xD3x).
 Consumer: lance-graph-mask-risc `Gather`/`ScatterOr`/`GroupSum` (landing next).
 
 ## 2026-09-17 (19) — G8 named: a tree-depth column (`lzcnt(bswap(x)) >> 2`) is the missing primitive for basin-local ranking; popcount is only its tie-break

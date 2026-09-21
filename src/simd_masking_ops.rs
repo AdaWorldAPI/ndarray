@@ -1124,6 +1124,90 @@ pub fn masked_group_sum_i32(mask_words: &[u64], keys: &[u32], values: &[i32], ou
     }
 }
 
+/// Like [`masked_group_sum_i32`], but the group key of row `i` is
+/// `remap[index[i]]` — the key lives on a FOREIGN table reached through a
+/// foreign-key lane: `SUM(line.amount) GROUP BY partner.country` is
+/// `index = line.partner_id`, `remap = partner.country`, exactly the
+/// `mask_gather_u32`/`mask_scatter_or_u32` fk-lane shape applied to the
+/// group-sum's key instead of to a mask bit.
+///
+/// **Zero-fallback at BOTH hops, same rule as [`mask_gather_u32`]'s
+/// out-of-range read**: `index[i] >= remap.len()` drops row `i` (the fk
+/// names no row on the foreign table); `remap[index[i]] as usize >=
+/// out.len()` drops it too (the resolved key names no group). Neither is
+/// an error — an unminted address is not a group, at either hop.
+///
+/// # Why the indirection is fused here
+///
+/// Materialising `remap[index[i]]` into its own `Vec<u32>` of length `N`
+/// first and then calling [`masked_group_sum_i32`] on that would allocate
+/// and fully populate exactly the intermediate key lane this fold exists
+/// to avoid — one fused scan over the selected rows costs no more than the
+/// naive two-hop lookup per selected row, with no second array in between.
+///
+/// `out` is fully overwritten (zeroed first); overflow wraps the same way
+/// as [`masked_group_sum_i32`] (widened to `i64`, `wrapping_add`), and the
+/// mask tail is clamped identically.
+///
+/// # Panics
+///
+/// Panics if `index.len() != values.len()`, or if `mask_words.len() <
+/// values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::masked_group_sum_i32_via;
+///
+/// // Two lines reference partner 0 (country 0); one references partner 5,
+/// // which is out of range for `remap` and is dropped at the first hop.
+/// let mask = [0b111u64];
+/// let index = [0u32, 0, 5];
+/// let remap = [0u32]; // partner 0 -> country 0
+/// let values = [10i32, 20, 999];
+/// let mut out = [0i64; 1];
+/// masked_group_sum_i32_via(&mask, &index, &remap, &values, &mut out);
+/// assert_eq!(out, [30]);
+/// ```
+#[inline]
+pub fn masked_group_sum_i32_via(mask_words: &[u64], index: &[u32], remap: &[u32], values: &[i32], out: &mut [i64]) {
+    assert_eq!(index.len(), values.len(), "masked_group_sum_i32_via: index/values length mismatch");
+    let n = values.len();
+    let words = mask_words_for(n);
+    assert!(
+        mask_words.len() >= words,
+        "masked_group_sum_i32_via: mask_words.len()={} < required {}",
+        mask_words.len(),
+        words
+    );
+
+    for o in out.iter_mut() {
+        *o = 0;
+    }
+    for (w, &word) in mask_words.iter().take(words).enumerate() {
+        let base = w * 64;
+        let mut bits = word;
+        // Same tail clamp as masked_group_sum_i32.
+        let valid = n - base;
+        if valid < 64 {
+            bits &= (1u64 << valid) - 1;
+        }
+        while bits != 0 {
+            let lane = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            let i = base + lane;
+            let fk = index[i] as usize;
+            if fk >= remap.len() {
+                continue;
+            }
+            let k = remap[fk] as usize;
+            if k < out.len() {
+                out[k] = out[k].wrapping_add(values[i] as i64);
+            }
+        }
+    }
+}
+
 // ────────────────────────────────────────────────────────────────────────
 // The closed comparison family + mask complement/xor/any + care-masked
 // register match + masked min/max + blend (the DuckDB-vector-execution set,
@@ -4299,6 +4383,132 @@ mod tests {
         let values = vec![0i32; 65];
         let mut out = [0i64; 1];
         masked_group_sum_i32(&mask, &keys, &values, &mut out);
+    }
+
+    // ── masked_group_sum_i32_via ──
+
+    #[test]
+    fn masked_group_sum_i32_via_agrees_with_the_plain_form_on_a_precomputed_key_lane() {
+        for &n in &[0usize, 1, 63, 64, 65, 67, 130] {
+            let mut seed = 0x2222_4444_6666_8888u64;
+            let n_partners = 9usize;
+            let n_groups = 5usize;
+            let mask_bits: Vec<bool> = (0..n).map(|_| splitmix(&mut seed) & 1 == 1).collect();
+            let mask = bits_to_words(&mask_bits);
+            let index: Vec<u32> = (0..n)
+                .map(|_| (splitmix(&mut seed) % n_partners as u64) as u32)
+                .collect();
+            let remap: Vec<u32> = (0..n_partners)
+                .map(|_| (splitmix(&mut seed) % n_groups as u64) as u32)
+                .collect();
+            let values: Vec<i32> = (0..n).map(|_| (splitmix(&mut seed) as i32) / 2).collect();
+
+            // The naive two-hop key lane, materialised, fed to the plain form.
+            let keys: Vec<u32> = index.iter().map(|&fk| remap[fk as usize]).collect();
+            let mut want = vec![0i64; n_groups];
+            masked_group_sum_i32(&mask, &keys, &values, &mut want);
+
+            let mut got = vec![-1i64; n_groups];
+            masked_group_sum_i32_via(&mask, &index, &remap, &values, &mut got);
+            assert_eq!(got, want, "via mismatched the plain two-hop-materialised form at n={n}");
+        }
+    }
+
+    #[test]
+    fn masked_group_sum_i32_via_drops_at_the_first_hop_when_index_names_no_partner() {
+        // Row 1's fk (5) is out of range for a 2-entry remap — dropped before
+        // remap is ever consulted.
+        let mask = [0b111u64];
+        let index = [0u32, 5, 1];
+        let remap = [0u32, 1];
+        let values = [10i32, 999, 20];
+        let mut out = [0i64; 2];
+        masked_group_sum_i32_via(&mask, &index, &remap, &values, &mut out);
+        assert_eq!(out, [10, 20], "the out-of-range fk contributes nothing");
+    }
+
+    #[test]
+    fn masked_group_sum_i32_via_drops_at_the_second_hop_when_remap_names_no_group() {
+        // Row 1's partner (1) resolves via remap to group 9, out of range for
+        // a 2-slot out — dropped after the fk resolves cleanly.
+        let mask = [0b111u64];
+        let index = [0u32, 1, 0];
+        let remap = [0u32, 9]; // partner 1 -> group 9 (out of range)
+        let values = [10i32, 999, 20];
+        let mut out = [0i64; 2];
+        masked_group_sum_i32_via(&mask, &index, &remap, &values, &mut out);
+        assert_eq!(out, [30, 0], "the second-hop out-of-range key contributes nothing");
+    }
+
+    #[test]
+    fn masked_group_sum_i32_via_matches_naive_reference_at_the_67_row_tail() {
+        let n = 67usize;
+        let mut seed = 0xABCD_EF01_2345_6789u64;
+        let n_partners = 6usize;
+        let n_groups = 4usize;
+        let mask_bits: Vec<bool> = (0..n).map(|_| splitmix(&mut seed) & 1 == 1).collect();
+        let mask = bits_to_words(&mask_bits);
+        // Every fifth fk deliberately out of range for `remap`.
+        let index: Vec<u32> = (0..n)
+            .map(|i| {
+                if i % 5 == 0 {
+                    (n_partners as u64 + 2 + i as u64) as u32
+                } else {
+                    (splitmix(&mut seed) % n_partners as u64) as u32
+                }
+            })
+            .collect();
+        // Every third partner deliberately maps out of range for `out`.
+        let remap: Vec<u32> = (0..n_partners)
+            .map(|p| {
+                if p % 3 == 0 {
+                    (n_groups as u64 + 1) as u32
+                } else {
+                    (splitmix(&mut seed) % n_groups as u64) as u32
+                }
+            })
+            .collect();
+        let values: Vec<i32> = (0..n).map(|_| (splitmix(&mut seed) as i32) / 2).collect();
+
+        let mut want = vec![0i64; n_groups];
+        for i in 0..n {
+            if !mask_bits[i] {
+                continue;
+            }
+            let fk = index[i] as usize;
+            if fk >= remap.len() {
+                continue;
+            }
+            let k = remap[fk] as usize;
+            if k < n_groups {
+                want[k] = want[k].wrapping_add(values[i] as i64);
+            }
+        }
+        let mut got = vec![-1i64; n_groups];
+        masked_group_sum_i32_via(&mask, &index, &remap, &values, &mut got);
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    #[should_panic(expected = "index/values length mismatch")]
+    fn masked_group_sum_i32_via_rejects_mismatched_index_and_values() {
+        let mask = [0b1u64];
+        let index = [0u32, 1];
+        let remap = [0u32];
+        let values = [10i32];
+        let mut out = [0i64; 1];
+        masked_group_sum_i32_via(&mask, &index, &remap, &values, &mut out);
+    }
+
+    #[test]
+    #[should_panic(expected = "mask_words.len()")]
+    fn masked_group_sum_i32_via_rejects_short_mask_buffer() {
+        let mask = [0u64; 1]; // covers only 64 rows
+        let index = vec![0u32; 65];
+        let remap = vec![0u32; 1];
+        let values = vec![0i32; 65];
+        let mut out = [0i64; 1];
+        masked_group_sum_i32_via(&mask, &index, &remap, &values, &mut out);
     }
 
     // ── 2026-09-13 additions: the closed comparison family, complement/xor/

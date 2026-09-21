@@ -826,6 +826,7 @@ pub use crate::simd_masking_ops::{
     mask_xor,
     mask_xor_assign,
     masked_group_sum_i32,
+    masked_group_sum_i32_via,
     masked_max_i32,
     masked_min_i32,
     masked_strided_group_sum,

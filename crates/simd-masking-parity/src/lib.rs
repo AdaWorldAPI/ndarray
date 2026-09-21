@@ -23,8 +23,9 @@
 //! family (`eq`/`ne`/`gt`/`ge`/`lt`/`le`, N2/N3 — built earlier but never
 //! exercised by this program until now), `0xDxx` the data-indexed
 //! permutation/scatter family (`mask_gather_u32`/`mask_scatter_or_u32`/
-//! `masked_group_sum_i32`, for lance-graph-mask-risc's Gather/ScatterOr/
-//! GroupSum verbs). `main.rs` (native / qemu) and
+//! `masked_group_sum_i32`/`masked_group_sum_i32_via`, for
+//! lance-graph-mask-risc's Gather/ScatterOr/GroupSum verbs); `0xD3x` the
+//! fk-indirected `masked_group_sum_i32_via` (two-hop zero-fallback). `main.rs` (native / qemu) and
 //! `selfcheck()` (the wasm cdylib export, driven by `run.mjs`) both call
 //! [`run`].
 
@@ -35,10 +36,11 @@ use ndarray::simd::{
     le_u8_to_mask, lt_i32_to_mask, lt_i32_to_mask_under, lt_u64_to_mask, lt_u8_to_mask, mask_all, mask_and,
     mask_and_assign, mask_andnot, mask_andnot_assign, mask_any, mask_gather_u32, mask_not, mask_not_assign, mask_or,
     mask_or_assign, mask_scatter_or_u32, mask_set_range, mask_shift_morton, mask_ternlog, mask_ternlog_assign,
-    mask_xor, mask_xor_assign, masked_group_sum_i32, masked_max_i32, masked_min_i32, masked_strided_group_sum,
-    masked_sum_i32, ne_i32_to_mask, ne_i32_to_mask_under, ne_u32_to_mask, ne_u32_to_mask_under, ne_u64_to_mask,
-    ne_u8_to_mask, ternary_match_strided_to_mask, ternary_match_u32_to_mask, ternary_match_u32_to_mask_under,
-    ternary_match_u64_to_mask, ternary_match_u64_to_mask_under, ternlog, I32x16, MortonDir, U32x16, U64x8,
+    mask_xor, mask_xor_assign, masked_group_sum_i32, masked_group_sum_i32_via, masked_max_i32, masked_min_i32,
+    masked_strided_group_sum, masked_sum_i32, ne_i32_to_mask, ne_i32_to_mask_under, ne_u32_to_mask,
+    ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask, ternary_match_strided_to_mask, ternary_match_u32_to_mask,
+    ternary_match_u32_to_mask_under, ternary_match_u64_to_mask, ternary_match_u64_to_mask_under, ternlog, I32x16,
+    MortonDir, U32x16, U64x8,
 };
 
 /// Number of check groups [`run`] executes (for the log line only).
@@ -1222,6 +1224,54 @@ fn check_gather_scatter_group() -> Result<(), u32> {
         // The unreferenced slot must be zeroed, not left as garbage.
         if group_out[n_groups] != 0 {
             return Err(0xD21);
+        }
+
+        // ── masked_group_sum_i32_via ─────────────────────────────────────
+        // Same n_groups/mask_bits/values as above, but the key is reached
+        // through a second-hop `index -> remap` lane rather than a direct
+        // `keys` lane — out-of-range addresses are mixed in at BOTH hops.
+        let n_partners = 8usize;
+        // Every fourth fk is deliberately out of range for `remap`.
+        let index: Vec<u32> = (0..n)
+            .map(|i| {
+                if i % 4 == 0 {
+                    (n_partners as u64 + 6 + i as u64) as u32
+                } else {
+                    (rng.next() % n_partners as u64) as u32
+                }
+            })
+            .collect();
+        // Every third partner deliberately resolves out of range for `out`.
+        let remap: Vec<u32> = (0..n_partners)
+            .map(|p| {
+                if p % 3 == 0 {
+                    (n_groups as u64 + 4) as u32
+                } else {
+                    (rng.next() % n_groups as u64) as u32
+                }
+            })
+            .collect();
+        let mut via_out = vec![-1i64; n_groups + 1]; // garbage + one unreferenced slot
+        masked_group_sum_i32_via(&mask_bits, &index, &remap, &values, &mut via_out);
+        let mut want_via = vec![0i64; n_groups];
+        for i in 0..n {
+            if (mask_bits[i / 64] >> (i % 64)) & 1 != 1 {
+                continue;
+            }
+            let fk = index[i] as usize;
+            if fk >= remap.len() {
+                continue;
+            }
+            let k = remap[fk] as usize;
+            if k < n_groups {
+                want_via[k] = want_via[k].wrapping_add(values[i] as i64);
+            }
+        }
+        if via_out[..n_groups] != want_via[..] {
+            return Err(0xD30);
+        }
+        if via_out[n_groups] != 0 {
+            return Err(0xD31);
         }
     }
     Ok(())
