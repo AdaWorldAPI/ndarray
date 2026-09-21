@@ -25,8 +25,8 @@
 //! permutation/scatter family (`mask_gather_u32`/`mask_scatter_or_u32`/
 //! `masked_group_sum_i32`/`masked_group_sum_i32_via`, for
 //! lance-graph-mask-risc's Gather/ScatterOr/GroupSum verbs); `0xD3x` the
-//! fk-indirected `masked_group_sum_i32_via` (two-hop zero-fallback); `0xD4x`
-//! `eq_u32_via_to_mask` (the same fk lane, packed as a predicate rather than
+//! index-addressed `masked_group_sum_i32_via` (two-hop zero-fallback); `0xD4x`
+//! `eq_u32_via_to_mask` (the same index lane, packed as a predicate rather than
 //! folded into a sum). `main.rs` (native / qemu) and
 //! `selfcheck()` (the wasm cdylib export, driven by `run.mjs`) both call
 //! [`run`].
@@ -39,10 +39,10 @@ use ndarray::simd::{
     lt_u8_to_mask, mask_all, mask_and, mask_and_assign, mask_andnot, mask_andnot_assign, mask_any, mask_gather_u32,
     mask_not, mask_not_assign, mask_or, mask_or_assign, mask_scatter_or_u32, mask_set_range, mask_shift_morton,
     mask_ternlog, mask_ternlog_assign, mask_xor, mask_xor_assign, masked_group_sum_i32, masked_group_sum_i32_via,
-    masked_max_i32, masked_min_i32, masked_strided_group_sum, masked_sum_i32, ne_i32_to_mask, ne_i32_to_mask_under,
-    ne_u32_to_mask, ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask, ternary_match_strided_to_mask,
-    ternary_match_u32_to_mask, ternary_match_u32_to_mask_under, ternary_match_u64_to_mask,
-    ternary_match_u64_to_mask_under, ternlog, I32x16, MortonDir, U32x16, U64x8,
+    masked_key_run_count_u32, masked_max_i32, masked_min_i32, masked_strided_group_sum, masked_sum_i32, ne_i32_to_mask,
+    ne_i32_to_mask_under, ne_u32_to_mask, ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask,
+    ternary_match_strided_to_mask, ternary_match_u32_to_mask, ternary_match_u32_to_mask_under,
+    ternary_match_u64_to_mask, ternary_match_u64_to_mask_under, ternlog, I32x16, KeyRunCarry, MortonDir, U32x16, U64x8,
 };
 
 /// Number of check groups [`run`] executes (for the log line only).
@@ -1335,7 +1335,7 @@ fn check_gather_scatter_group() -> Result<(), u32> {
         }
 
         // ── eq_u32_via_to_mask ────────────────────────────────────────────
-        // A predicate evaluated through the same fk lane `masked_group_sum_i32_via`
+        // A predicate evaluated through the same index lane `masked_group_sum_i32_via`
         // uses for its key, but packed into a bitmask rather than folded into a
         // sum: `fk[i] < foreign.len() && foreign[fk[i]] == v`.
         let foreign_len = 9usize;
@@ -1360,6 +1360,37 @@ fn check_gather_scatter_group() -> Result<(), u32> {
         if via_mask != want_via_mask {
             return Err(0xD40);
         }
+
+        // ── masked_key_run_count_u32 ─────────────────────────────────────
+        // A key-clustered lane (sorted with repeats), folded in uneven tiles
+        // with the carry threaded through; the reference is a plain
+        // seen-set over the selected elements — the population-sized state
+        // the fold replaces on a clustered lane.
+        let mut keys: Vec<u32> = (0..n).map(|_| (rng.next() % 23) as u32).collect();
+        keys.sort_unstable();
+        let sel: Vec<bool> = (0..n).map(|_| rng.next().is_multiple_of(3)).collect();
+        let sel_bits = reference_mask(n, nw, |i| sel[i]);
+        let mut carry = KeyRunCarry::default();
+        let mut got = 0usize;
+        let mut start = 0usize;
+        let tile = 37usize;
+        while start < n {
+            let end = (start + tile).min(n);
+            let mut tile_bits = vec![0u64; (end - start).div_ceil(64).max(1)];
+            for i in start..end {
+                if sel[i] {
+                    tile_bits[(i - start) / 64] |= 1 << ((i - start) % 64);
+                }
+            }
+            got += masked_key_run_count_u32(&keys[start..end], &tile_bits, &mut carry);
+            start = end;
+        }
+        got += carry.finish();
+        let want: std::collections::BTreeSet<u32> = (0..n).filter(|&i| sel[i]).map(|i| keys[i]).collect();
+        if got != want.len() {
+            return Err(0xD50);
+        }
+        let _ = sel_bits;
     }
     Ok(())
 }

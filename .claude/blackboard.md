@@ -3276,3 +3276,5 @@ Loose ends: the general strided path still gathers scalar (correct — at row
 strides ≥ a cache line a hardware gather buys nothing, per the doc); a
 `stride_bytes == 8` twin for `u64` lanes does not exist yet because no caller
 compares `u64` lanes.
+
+2026-09-21 (materialisation ruling): the five data-indexed primitives are re-documented in ADDRESS terms only — `index`/`table` parameters, no foreign-key / join / semijoin / table-name vocabulary; `mask_gather_u32` and `mask_scatter_or_u32` now carry their SURVIVAL CONDITIONS (gather: source must be resident state, output tile-local; scatter: destination must be the demanded sink or the accumulator of the fold whose scalar leaves). Sixth arm of the 0xDxx group: `masked_key_run_count_u32(keys, mask_words, &mut KeyRunCarry)` — on a key-clustered lane the distinct count over selected elements as a two-word-carry run fold, no population-sized set; parity `0xD50` threads the carry across uneven tiles against a seen-set reference. Not exact on an unclustered lane by construction (documented; unit test pins the over-count).
