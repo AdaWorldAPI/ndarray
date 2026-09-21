@@ -24,7 +24,7 @@
 //! exercised by this program until now), `0xDxx` the data-indexed
 //! permutation/scatter family (`mask_gather_u32`/`mask_scatter_or_u32`/
 //! `masked_group_sum_i32`/`masked_group_sum_i32_via`, for
-//! lance-graph-mask-risc's Gather/ScatterOr/GroupSum verbs); `0xD3x` the
+//! the index-addressed permutation/scatter family); `0xD3x` the
 //! index-addressed `masked_group_sum_i32_via` (two-hop zero-fallback); `0xD4x`
 //! `eq_u32_via_to_mask` (the same index lane, packed as a predicate rather than
 //! folded into a sum). `main.rs` (native / qemu) and
@@ -1128,8 +1128,7 @@ fn check_unsigned_compare_to_mask() -> Result<(), u32> {
 }
 
 // ── 0xDxx: mask_gather_u32 / mask_scatter_or_u32 / masked_group_sum_i32 —
-// the data-indexed permutation/scatter family (lance-graph-mask-risc's
-// Gather/ScatterOr/GroupSum verbs). Every reference below is a plain `for`
+// the index-addressed permutation/scatter family. Every reference below is a plain `for`
 // loop indexed by the SAME data (`index`/`keys`) the primitive under test
 // reads, never a call back into the primitive itself.
 
@@ -1272,7 +1271,7 @@ fn check_gather_scatter_group() -> Result<(), u32> {
         // through a second-hop `index -> remap` lane rather than a direct
         // `keys` lane — out-of-range addresses are mixed in at BOTH hops.
         let n_partners = 8usize;
-        // Every fourth fk is deliberately out of range for `remap`.
+        // Every fourth index is deliberately out of range for `remap`.
         let index: Vec<u32> = (0..n)
             .map(|i| {
                 if i % 4 == 0 {
@@ -1301,11 +1300,11 @@ fn check_gather_scatter_group() -> Result<(), u32> {
             if (mask_bits[i / 64] >> (i % 64)) & 1 != 1 {
                 continue;
             }
-            let fk = index[i] as usize;
-            if fk >= remap.len() {
+            let j = index[i] as usize;
+            if j >= remap.len() {
                 continue;
             }
-            let k = remap[fk] as usize;
+            let k = remap[j] as usize;
             if k < n_groups {
                 want_via[k] = want_via[k].wrapping_add(values[i] as i64);
             }
@@ -1337,25 +1336,25 @@ fn check_gather_scatter_group() -> Result<(), u32> {
         // ── eq_u32_via_to_mask ────────────────────────────────────────────
         // A predicate evaluated through the same index lane `masked_group_sum_i32_via`
         // uses for its key, but packed into a bitmask rather than folded into a
-        // sum: `fk[i] < foreign.len() && foreign[fk[i]] == v`.
-        let foreign_len = 9usize;
-        let foreign: Vec<u32> = (0..foreign_len).map(|_| (rng.next() % 5) as u32).collect();
+        // sum: `index[i] < table.len() && table[index[i]] == v`.
+        let table_len = 9usize;
+        let table: Vec<u32> = (0..table_len).map(|_| (rng.next() % 5) as u32).collect();
         let v = 2u32;
-        // Every fourth key is deliberately out of range for `foreign`.
-        let fk: Vec<u32> = (0..n)
+        // Every fourth index is deliberately out of range for `table`.
+        let index2: Vec<u32> = (0..n)
             .map(|i| {
                 if i % 4 == 0 {
-                    (foreign_len as u64 + 6 + i as u64) as u32
+                    (table_len as u64 + 6 + i as u64) as u32
                 } else {
-                    (rng.next() % foreign_len as u64) as u32
+                    (rng.next() % table_len as u64) as u32
                 }
             })
             .collect();
         let mut via_mask = vec![u64::MAX; out_len]; // dirty, over-long
-        eq_u32_via_to_mask(&fk, &foreign, v, &mut via_mask);
+        eq_u32_via_to_mask(&index2, &table, v, &mut via_mask);
         let want_via_mask = reference_mask(n, out_len, |i| {
-            let k = fk[i] as usize;
-            k < foreign.len() && foreign[k] == v
+            let k = index2[i] as usize;
+            k < table.len() && table[k] == v
         });
         if via_mask != want_via_mask {
             return Err(0xD40);
@@ -1395,14 +1394,20 @@ fn check_gather_scatter_group() -> Result<(), u32> {
         }
         let _ = sel_bits;
         // The refusal half: one descent anywhere in the lane must be seen.
-        if n >= 2 {
-            let mut bad = keys.clone();
-            bad.swap(0, n - 1);
-            if bad[0] > bad[n - 1] {
-                let mut c = KeyRunCarry::default();
-                if masked_key_run_count_u32(&bad, &sel_bits, &mut c).is_some() {
-                    return Err(0xD52);
-                }
+        // Rotate the smallest key to the END so the descent is the LAST
+        // element: by then a non-transactional walk would have advanced
+        // through every run of the lane, which is what 0xD53 must catch.
+        if n >= 2 && keys[0] < keys[n - 1] {
+            let mut bad = keys[1..].to_vec();
+            bad.push(keys[0]);
+            let mut c = KeyRunCarry { key: Some(bad[0]), hit: true };
+            let before = c;
+            if masked_key_run_count_u32(&bad, &sel_bits, &mut c).is_some() {
+                return Err(0xD52);
+            }
+            // A refused call commits nothing: the carry is as on entry.
+            if c != before {
+                return Err(0xD53);
             }
         }
     }

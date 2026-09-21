@@ -1306,8 +1306,9 @@ pub fn eq_u32_via_to_mask(index: &[u32], table: &[u32], v: u32, out_words: &mut 
 
 /// Carry of [`masked_key_run_count_u32`] across calls: the key of the run
 /// that is open at the end of the last call, and whether that run has
-/// already seen a selected element. Two words, independent of the
-/// population — the whole state a key-ORDERED distinct count needs.
+/// already seen a selected element. Two scalar fields, O(1) and
+/// independent of the population — the whole state a key-ORDERED
+/// distinct count needs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct KeyRunCarry {
     /// The key of the currently open run, `None` before the first element.
@@ -1347,14 +1348,16 @@ impl KeyRunCarry {
 ///
 /// **Refuses a lane that is not in key order.** A key smaller than the open
 /// run's key means an earlier key can recur later, so a run is not a key
-/// and the count would be wrong: the call returns `None` at that element,
-/// having touched nothing but the carry. Non-decreasing order is the one
+/// and the count would be wrong: the call returns `None` at that element
+/// and **leaves `carry` exactly as it was on entry** (the walk works on a
+/// local copy and commits it only on `Some`), so the caller's continuation
+/// state is never poisoned by a refused call. Non-decreasing order is the one
 /// contiguity certificate checkable with O(1) state in the same pass
 /// (proving merely "each key occurs in one run" would need the seen-set
-/// this fold exists to avoid), so ORDER is the precondition: on a lane in
-/// key order — the address order a projection stores a child population
-/// under its parent — this IS the count of distinct keys among the selected
-/// elements, folded with two words of state and no population-sized set. A
+/// this fold exists to avoid), so ORDER is the precondition: on a
+/// non-decreasing key lane this IS the count of distinct keys among the
+/// selected elements, folded with an O(1) carry and no population-sized
+/// set. A
 /// lane whose equal keys are contiguous but not sorted (`3 3 1 1`) is
 /// refused too; that is deliberate, not a wrong answer. Nothing is ever
 /// over-counted.
@@ -1394,9 +1397,11 @@ impl KeyRunCarry {
 /// let b = masked_key_run_count_u32(&keys[3..], &[mask[0] >> 3], &mut carry).unwrap();
 /// assert_eq!(a + b + carry.finish(), 2); // keys 3 and 9, not 7
 ///
-/// // Out of key order: 1 2 1 — refused, never counted as three keys.
+/// // Out of key order: 1 2 1 — refused, never counted as three keys,
+/// // and the carry is untouched by the refused call.
 /// let mut c = KeyRunCarry::default();
 /// assert_eq!(masked_key_run_count_u32(&[1u32, 2, 1], &[0b111], &mut c), None);
+/// assert_eq!(c, KeyRunCarry::default());
 /// ```
 #[inline]
 pub fn masked_key_run_count_u32(keys: &[u32], mask_words: &[u64], carry: &mut KeyRunCarry) -> Option<usize> {
@@ -1408,19 +1413,23 @@ pub fn masked_key_run_count_u32(keys: &[u32], mask_words: &[u64], carry: &mut Ke
         mask_words.len(),
         words
     );
+    // Work on a local copy: `None` must leave the caller's carry exactly as
+    // it was on entry, so nothing is committed until the whole lane passed.
+    let mut local = *carry;
     let mut closed = 0usize;
     for (i, &k) in keys.iter().enumerate() {
         let selected = (mask_words[i / 64] >> (i % 64)) & 1 == 1;
-        match carry.key {
-            Some(cur) if cur == k => carry.hit |= selected,
+        match local.key {
+            Some(cur) if cur == k => local.hit |= selected,
             Some(cur) if cur > k => return None,
             _ => {
-                closed += usize::from(carry.key.is_some() && carry.hit);
-                carry.key = Some(k);
-                carry.hit = selected;
+                closed += usize::from(local.key.is_some() && local.hit);
+                local.key = Some(k);
+                local.hit = selected;
             }
         }
     }
+    *carry = local;
     Some(closed)
 }
 
@@ -4669,7 +4678,7 @@ mod tests {
             let values: Vec<i32> = (0..n).map(|_| (splitmix(&mut seed) as i32) / 2).collect();
 
             // The naive two-hop key lane, materialised, fed to the plain form.
-            let keys: Vec<u32> = index.iter().map(|&fk| remap[fk as usize]).collect();
+            let keys: Vec<u32> = index.iter().map(|&idx| remap[idx as usize]).collect();
             let mut want = vec![0i64; n_groups];
             masked_group_sum_i32(&mask, &keys, &values, &mut want);
 
@@ -4681,7 +4690,7 @@ mod tests {
 
     #[test]
     fn masked_group_sum_i32_via_drops_at_the_first_hop_when_index_names_no_partner() {
-        // Row 1's fk (5) is out of range for a 2-entry remap — dropped before
+        // Row 1's idx (5) is out of range for a 2-entry remap — dropped before
         // remap is ever consulted.
         let mask = [0b111u64];
         let index = [0u32, 5, 1];
@@ -4689,13 +4698,13 @@ mod tests {
         let values = [10i32, 999, 20];
         let mut out = [0i64; 2];
         masked_group_sum_i32_via(&mask, &index, &remap, &values, &mut out);
-        assert_eq!(out, [10, 20], "the out-of-range fk contributes nothing");
+        assert_eq!(out, [10, 20], "the out-of-range idx contributes nothing");
     }
 
     #[test]
     fn masked_group_sum_i32_via_drops_at_the_second_hop_when_remap_names_no_group() {
         // Row 1's partner (1) resolves via remap to group 9, out of range for
-        // a 2-slot out — dropped after the fk resolves cleanly.
+        // a 2-slot out — dropped after the idx resolves cleanly.
         let mask = [0b111u64];
         let index = [0u32, 1, 0];
         let remap = [0u32, 9]; // partner 1 -> group 9 (out of range)
@@ -4713,7 +4722,7 @@ mod tests {
         let n_groups = 4usize;
         let mask_bits: Vec<bool> = (0..n).map(|_| splitmix(&mut seed) & 1 == 1).collect();
         let mask = bits_to_words(&mask_bits);
-        // Every fifth fk deliberately out of range for `remap`.
+        // Every fifth idx deliberately out of range for `remap`.
         let index: Vec<u32> = (0..n)
             .map(|i| {
                 if i % 5 == 0 {
@@ -4740,11 +4749,11 @@ mod tests {
             if !mask_bits[i] {
                 continue;
             }
-            let fk = index[i] as usize;
-            if fk >= remap.len() {
+            let idx = index[i] as usize;
+            if idx >= remap.len() {
                 continue;
             }
-            let k = remap[fk] as usize;
+            let k = remap[idx] as usize;
             if k < n_groups {
                 want[k] = want[k].wrapping_add(values[i] as i64);
             }
@@ -4801,11 +4810,11 @@ mod tests {
 
     // ── eq_u32_via_to_mask ──
 
-    fn naive_eq_via(fk: &[u32], foreign: &[u32], v: u32) -> Vec<bool> {
-        fk.iter()
+    fn naive_eq_via(idx: &[u32], table: &[u32], v: u32) -> Vec<bool> {
+        idx.iter()
             .map(|&k| {
                 let k = k as usize;
-                k < foreign.len() && foreign[k] == v
+                k < table.len() && table[k] == v
             })
             .collect()
     }
@@ -4814,28 +4823,28 @@ mod tests {
     fn eq_u32_via_to_mask_matches_naive_reference_across_the_tail() {
         for &n in &[0usize, 1, 63, 64, 65, 130, 1000] {
             let mut seed = 0xACE1_2345_6789_BEEFu64;
-            let foreign_len = 17usize;
-            let foreign: Vec<u32> = (0..foreign_len)
+            let table_len = 17usize;
+            let table: Vec<u32> = (0..table_len)
                 .map(|_| (splitmix(&mut seed) % 5) as u32)
                 .collect();
             let v = 2u32;
             // A third of keys are deliberately out of range; the rest hit
-            // `foreign`, so both the match and no-match arms are genuinely
+            // `table`, so both the match and no-match arms are genuinely
             // exercised (not merely plausible).
-            let fk: Vec<u32> = (0..n)
+            let idx: Vec<u32> = (0..n)
                 .map(|i| {
                     if i % 3 == 0 {
-                        (foreign_len as u64 + 3 + i as u64) as u32
+                        (table_len as u64 + 3 + i as u64) as u32
                     } else {
-                        (splitmix(&mut seed) % foreign_len as u64) as u32
+                        (splitmix(&mut seed) % table_len as u64) as u32
                     }
                 })
                 .collect();
-            let want_bits = naive_eq_via(&fk, &foreign, v);
+            let want_bits = naive_eq_via(&idx, &table, v);
             let want = bits_to_words(&want_bits);
             let out_words = n.div_ceil(64).max(1);
             let mut out = vec![0xFFFF_FFFF_FFFF_FFFFu64; out_words + 1]; // dirty, over-long
-            eq_u32_via_to_mask(&fk, &foreign, v, &mut out);
+            eq_u32_via_to_mask(&idx, &table, v, &mut out);
             assert_eq!(&out[..want.len()], &want[..], "eq_u32_via_to_mask mismatch at n={n}");
             assert_eq!(out[out_words], 0, "surplus word must be cleared at n={n}");
             if n >= 10 {
@@ -4852,19 +4861,19 @@ mod tests {
 
     #[test]
     fn eq_u32_via_to_mask_out_of_range_fk_never_matches_even_when_foreign_0_equals_v() {
-        let fk = [5u32, 10, 100, u32::MAX];
-        let foreign = [7u32]; // foreign[0] == v, but every fk above is >= 1
+        let idx = [5u32, 10, 100, u32::MAX];
+        let table = [7u32]; // table[0] == v, but every idx above is >= 1
         let mut out = [0u64; 1];
-        eq_u32_via_to_mask(&fk, &foreign, 7, &mut out);
-        assert_eq!(out[0], 0, "every fk names no row in `foreign`, so nothing may match");
+        eq_u32_via_to_mask(&idx, &table, 7, &mut out);
+        assert_eq!(out[0], 0, "every index names no row in `table`, so nothing may match");
     }
 
     #[test]
     fn eq_u32_via_to_mask_tail_and_surplus_words_are_cleared_not_left_dirty() {
-        let fk = [0u32, 0, 0, 0, 0]; // n = 5, one word; foreign[0] == v for all
-        let foreign = [9u32];
+        let idx = [0u32, 0, 0, 0, 0]; // n = 5, one word; table[0] == v for all
+        let table = [9u32];
         let mut out = [0xFFFF_FFFF_FFFF_FFFFu64; 3]; // one live word + two surplus
-        eq_u32_via_to_mask(&fk, &foreign, 9, &mut out);
+        eq_u32_via_to_mask(&idx, &table, 9, &mut out);
         assert_eq!(out[0], 0b11111, "the five live rows should be set");
         assert_eq!(out[0] & !0b11111, 0, "bits past n=5 in the live word must be zero, not dirty");
         assert_eq!(out[1], 0, "surplus word 1 must be cleared");
@@ -4873,23 +4882,23 @@ mod tests {
 
     #[test]
     fn eq_u32_via_to_mask_empty_foreign_yields_all_zero_mask_for_nonempty_fk() {
-        // Every fk names a row, but `foreign` is empty, so every key is out
+        // Every idx names a row, but `table` is empty, so every key is out
         // of range: the whole mask must be false, not a panic and not a
         // vacuous "unreachable, so anything goes".
-        let fk = [0u32, 1, 2, 3, 4, 5, 6, 7];
-        let foreign: [u32; 0] = [];
+        let idx = [0u32, 1, 2, 3, 4, 5, 6, 7];
+        let table: [u32; 0] = [];
         let mut out = [0xFFFF_FFFF_FFFF_FFFFu64; 1];
-        eq_u32_via_to_mask(&fk, &foreign, 0, &mut out);
-        assert_eq!(out[0], 0, "an empty foreign table matches nothing");
+        eq_u32_via_to_mask(&idx, &table, 0, &mut out);
+        assert_eq!(out[0], 0, "an empty table table matches nothing");
     }
 
     #[test]
     #[should_panic(expected = "out_words.len()")]
     fn eq_u32_via_to_mask_rejects_short_out_buffer() {
-        let fk = vec![0u32; 65]; // needs 2 words
-        let foreign = [0u32];
+        let idx = vec![0u32; 65]; // needs 2 words
+        let table = [0u32];
         let mut out = [0u64; 1];
-        eq_u32_via_to_mask(&fk, &foreign, 0, &mut out);
+        eq_u32_via_to_mask(&idx, &table, 0, &mut out);
     }
 
     // ── 2026-09-13 additions: the closed comparison family, complement/xor/
@@ -6286,7 +6295,9 @@ mod key_run_tests {
         // in the second call, whose carry still holds the larger key.
         let mut c = KeyRunCarry::default();
         assert_eq!(masked_key_run_count_u32(&keys[..2], &m, &mut c), Some(1));
+        let before = c;
         assert_eq!(masked_key_run_count_u32(&keys[2..], &[m[0] >> 2], &mut c), None);
+        assert_eq!(c, before, "a refused call leaves the carry as it was on entry");
         // The seen-set sink is what an unordered lane needs for an exact answer.
         let mut sink = [0u64; 1];
         mask_scatter_or_u32(&m, &keys, &mut sink, 3);
@@ -6301,6 +6312,32 @@ mod key_run_tests {
         let keys = [1u32, 2, 1];
         let mut c = KeyRunCarry::default();
         assert_eq!(masked_key_run_count_u32(&keys, &pack(&[true, false, true]), &mut c), None);
+    }
+
+    #[test]
+    fn a_refused_call_commits_nothing_to_the_carry() {
+        // 5 5 | 9 9 | 2: two runs close inside the call before the descent.
+        // A fold that advanced the caller's carry as it went would leave it
+        // at key 9 — a continuation state for a lane that was never
+        // accepted. `None` must mean "carry exactly as on entry".
+        let keys = [5u32, 5, 9, 9, 2];
+        let mut c = KeyRunCarry {
+            key: Some(5),
+            hit: false,
+        };
+        let before = c;
+        assert_eq!(masked_key_run_count_u32(&keys, &pack(&[true; 5]), &mut c), None);
+        assert_eq!(c, before);
+        // ...and a successful call over the accepted prefix DOES advance it,
+        // so the assertion above is about refusal, not about inertness.
+        assert_eq!(masked_key_run_count_u32(&keys[..4], &pack(&[true; 4]), &mut c), Some(1));
+        assert_eq!(
+            c,
+            KeyRunCarry {
+                key: Some(9),
+                hit: true
+            }
+        );
     }
 
     #[test]
