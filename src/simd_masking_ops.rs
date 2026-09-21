@@ -1329,20 +1329,21 @@ impl KeyRunCarry {
 
 /// Counts the maximal runs of equal consecutive `keys` values that contain
 /// at least one element selected by `mask_words`, closing runs as it goes
-/// and carrying the open one in `carry`. Returns the runs CLOSED by this
-/// call; [`KeyRunCarry::finish`] adds the last one.
+/// and carrying the open one in `carry`. Returns `Some(runs CLOSED by this
+/// call)`; [`KeyRunCarry::finish`] adds the last one.
 ///
-/// On a lane whose equal keys are contiguous — a key-clustered lane, the
-/// address order a projection stores a child population under its parent
-/// — this IS the count of distinct keys among the selected elements, folded
-/// with two words of state and no population-sized set. On a lane that is
-/// NOT clustered it counts runs, not keys, and over-counts: clustering is
-/// the caller's precondition, not something this kernel can check (checking
-/// it exactly needs the very seen-set the fold exists to avoid). For an
-/// unclustered lane the exact answer needs one bit per possible key
-/// ([`mask_scatter_or_u32`] into a demanded sink, popcounted); no smaller
-/// state can be exact — see the pigeonhole falsifier in
-/// `lance-graph-mask-risc`.
+/// **Refuses a lane that is not in key order.** A key smaller than the open
+/// run's key means an earlier key can recur later, so a run is not a key
+/// and the count would be wrong: the call returns `None` at that element,
+/// having touched nothing but the carry. Non-decreasing order is the one
+/// clustering certificate checkable with O(1) state in the same pass (an
+/// exact clustering check would need the seen-set this fold exists to
+/// avoid), so it is the precondition: on a lane in key order — the address
+/// order a projection stores a child population under its parent — this IS
+/// the count of distinct keys among the selected elements, folded with two
+/// words of state and no population-sized set. A lane that is clustered but
+/// not sorted is refused too; that is deliberate conservatism, not a
+/// wrong answer. Nothing is ever over-counted.
 ///
 /// The mask tail past `keys.len()` is never read; the walk is
 /// `O(keys.len())` in row order (a run boundary is a compare against the
@@ -1365,16 +1366,20 @@ impl KeyRunCarry {
 /// ```
 /// use ndarray::simd::{masked_key_run_count_u32, KeyRunCarry};
 ///
-/// // keys clustered: 7 7 | 3 | 9 9 9 ; selected rows 1 and 4.
-/// let keys = [7u32, 7, 3, 9, 9, 9];
+/// // keys in key order: 3 3 | 7 | 9 9 9 ; selected rows 1 and 4.
+/// let keys = [3u32, 3, 7, 9, 9, 9];
 /// let mask = [0b010010u64];
 /// let mut carry = KeyRunCarry::default();
-/// let a = masked_key_run_count_u32(&keys[..3], &mask, &mut carry);
-/// let b = masked_key_run_count_u32(&keys[3..], &[mask[0] >> 3], &mut carry);
-/// assert_eq!(a + b + carry.finish(), 2); // keys 7 and 9, not 3
+/// let a = masked_key_run_count_u32(&keys[..3], &mask, &mut carry).unwrap();
+/// let b = masked_key_run_count_u32(&keys[3..], &[mask[0] >> 3], &mut carry).unwrap();
+/// assert_eq!(a + b + carry.finish(), 2); // keys 3 and 9, not 7
+///
+/// // Out of key order: 1 2 1 — refused, never counted as three keys.
+/// let mut c = KeyRunCarry::default();
+/// assert_eq!(masked_key_run_count_u32(&[1u32, 2, 1], &[0b111], &mut c), None);
 /// ```
 #[inline]
-pub fn masked_key_run_count_u32(keys: &[u32], mask_words: &[u64], carry: &mut KeyRunCarry) -> usize {
+pub fn masked_key_run_count_u32(keys: &[u32], mask_words: &[u64], carry: &mut KeyRunCarry) -> Option<usize> {
     let n = keys.len();
     let words = mask_words_for(n);
     assert!(
@@ -1388,6 +1393,7 @@ pub fn masked_key_run_count_u32(keys: &[u32], mask_words: &[u64], carry: &mut Ke
         let selected = (mask_words[i / 64] >> (i % 64)) & 1 == 1;
         match carry.key {
             Some(cur) if cur == k => carry.hit |= selected,
+            Some(cur) if cur > k => return None,
             _ => {
                 closed += usize::from(carry.key.is_some() && carry.hit);
                 carry.key = Some(k);
@@ -1395,7 +1401,7 @@ pub fn masked_key_run_count_u32(keys: &[u32], mask_words: &[u64], carry: &mut Ke
             }
         }
     }
-    closed
+    Some(closed)
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -6206,7 +6212,7 @@ mod key_run_tests {
     }
 
     #[test]
-    fn on_a_clustered_lane_the_run_fold_equals_the_distinct_count_across_any_tiling() {
+    fn on_a_lane_in_key_order_the_run_fold_equals_the_distinct_count_across_any_tiling() {
         let mut seed = 0x51u64;
         for &n in &[1usize, 63, 64, 65, 200, 1000] {
             // Clustered: sorted keys with repeats, so equal keys are contiguous.
@@ -6223,7 +6229,8 @@ mod key_run_tests {
                 let mut start = 0;
                 while start < n {
                     let end = (start + tile).min(n);
-                    got += masked_key_run_count_u32(&keys[start..end], &pack(&sel[start..end]), &mut carry);
+                    got += masked_key_run_count_u32(&keys[start..end], &pack(&sel[start..end]), &mut carry)
+                        .expect("a sorted lane is never refused");
                     start = end;
                 }
                 got += carry.finish();
@@ -6235,32 +6242,44 @@ mod key_run_tests {
 
     #[test]
     fn a_run_with_no_selected_element_is_not_counted_and_a_split_run_counts_once() {
-        // 4 4 4 | 9 | 2 2 — key 9 never selected; key 4 selected in the
+        // 2 2 2 | 4 | 9 9 — key 4 never selected; key 2 selected in the
         // first and third element (the run is entered by two tiles).
-        let keys = [4u32, 4, 4, 9, 2, 2];
+        let keys = [2u32, 2, 2, 4, 9, 9];
         let sel = [true, false, true, false, false, true];
         let m = pack(&sel);
         let mut c = KeyRunCarry::default();
         let a = masked_key_run_count_u32(&keys[..2], &m, &mut c);
         let b = masked_key_run_count_u32(&keys[2..], &[m[0] >> 2], &mut c);
-        assert_eq!(a, 0, "the run of 4s is still open after two elements");
-        assert_eq!(b, 1, "closing the 4-run counts it once; the 9-run closes unhit");
-        assert_eq!(c.finish(), 1, "the trailing 2-run was hit");
+        assert_eq!(a, Some(0), "the run of 2s is still open after two elements");
+        assert_eq!(b, Some(1), "closing the 2-run counts it once; the 4-run closes unhit");
+        assert_eq!(c.finish(), 1, "the trailing 9-run was hit");
     }
 
     #[test]
-    fn on_an_unclustered_lane_the_run_fold_over_counts_and_the_scatter_sink_is_exact() {
-        // The precondition is real: interleaved keys make runs ≠ keys.
-        let keys = [1u32, 2, 1, 2, 1, 2];
-        let sel = [true; 6];
-        let m = pack(&sel);
+    fn a_lane_out_of_key_order_is_refused_not_over_counted() {
+        // 1 2 1: three runs but two keys. The fold must not answer 3.
+        let keys = [1u32, 2, 1];
+        let m = pack(&[true; 3]);
         let mut c = KeyRunCarry::default();
-        let runs = masked_key_run_count_u32(&keys, &m, &mut c) + c.finish();
-        assert_eq!(runs, 6, "six runs of length one");
+        assert_eq!(masked_key_run_count_u32(&keys, &m, &mut c), None);
+        // The refusal is also visible across a tile edge: the descent lands
+        // in the second call, whose carry still holds the larger key.
+        let mut c = KeyRunCarry::default();
+        assert_eq!(masked_key_run_count_u32(&keys[..2], &m, &mut c), Some(1));
+        assert_eq!(masked_key_run_count_u32(&keys[2..], &[m[0] >> 2], &mut c), None);
+        // The seen-set sink is what an unordered lane needs for an exact answer.
         let mut sink = [0u64; 1];
         mask_scatter_or_u32(&m, &keys, &mut sink, 3);
         assert_eq!(sink[0].count_ones(), 2, "two distinct keys");
-        assert_ne!(runs, 2, "the fold is NOT a distinct count without clustering");
+    }
+
+    #[test]
+    fn clustered_but_unsorted_is_refused_deliberately() {
+        // 3 3 1 1: every key contiguous, so a run count WOULD be exact —
+        // but the certificate is order, and 1 < 3 breaks it.
+        let keys = [3u32, 3, 1, 1];
+        let mut c = KeyRunCarry::default();
+        assert_eq!(masked_key_run_count_u32(&keys, &pack(&[true; 4]), &mut c), None);
     }
 
     #[test]

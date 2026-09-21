@@ -1382,7 +1382,10 @@ fn check_gather_scatter_group() -> Result<(), u32> {
                     tile_bits[(i - start) / 64] |= 1 << ((i - start) % 64);
                 }
             }
-            got += masked_key_run_count_u32(&keys[start..end], &tile_bits, &mut carry);
+            let Some(closed) = masked_key_run_count_u32(&keys[start..end], &tile_bits, &mut carry) else {
+                return Err(0xD51);
+            };
+            got += closed;
             start = end;
         }
         got += carry.finish();
@@ -1391,6 +1394,17 @@ fn check_gather_scatter_group() -> Result<(), u32> {
             return Err(0xD50);
         }
         let _ = sel_bits;
+        // The refusal half: one descent anywhere in the lane must be seen.
+        if n >= 2 {
+            let mut bad = keys.clone();
+            bad.swap(0, n - 1);
+            if bad[0] > bad[n - 1] {
+                let mut c = KeyRunCarry::default();
+                if masked_key_run_count_u32(&bad, &sel_bits, &mut c).is_some() {
+                    return Err(0xD52);
+                }
+            }
+        }
     }
     Ok(())
 }
