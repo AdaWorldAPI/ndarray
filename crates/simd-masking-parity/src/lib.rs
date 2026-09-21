@@ -21,7 +21,10 @@
 //! predicates (mask-risc `Pred { under }`, D-MRX-0), `0xBxx` `mask_set_range`
 //! (the range WRITE, N1), `0xCxx` the unsigned `u8` / `u64` compare→mask
 //! family (`eq`/`ne`/`gt`/`ge`/`lt`/`le`, N2/N3 — built earlier but never
-//! exercised by this program until now). `main.rs` (native / qemu) and
+//! exercised by this program until now), `0xDxx` the data-indexed
+//! permutation/scatter family (`mask_gather_u32`/`mask_scatter_or_u32`/
+//! `masked_group_sum_i32`, for lance-graph-mask-risc's Gather/ScatterOr/
+//! GroupSum verbs). `main.rs` (native / qemu) and
 //! `selfcheck()` (the wasm cdylib export, driven by `run.mjs`) both call
 //! [`run`].
 
@@ -30,16 +33,16 @@ use ndarray::simd::{
     eq_u64_to_mask, eq_u8_to_mask, ge_i32_to_mask, ge_i32_to_mask_under, ge_u64_to_mask, ge_u8_to_mask, gt_i32_to_mask,
     gt_i32_to_mask_under, gt_u64_to_mask, gt_u8_to_mask, le_i32_to_mask, le_i32_to_mask_under, le_u64_to_mask,
     le_u8_to_mask, lt_i32_to_mask, lt_i32_to_mask_under, lt_u64_to_mask, lt_u8_to_mask, mask_all, mask_and,
-    mask_and_assign, mask_andnot, mask_andnot_assign, mask_any, mask_not, mask_not_assign, mask_or, mask_or_assign,
-    mask_set_range, mask_shift_morton, mask_ternlog, mask_ternlog_assign, mask_xor, mask_xor_assign, masked_max_i32,
-    masked_min_i32, masked_strided_group_sum, masked_sum_i32, ne_i32_to_mask, ne_i32_to_mask_under, ne_u32_to_mask,
-    ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask, ternary_match_strided_to_mask, ternary_match_u32_to_mask,
-    ternary_match_u32_to_mask_under, ternary_match_u64_to_mask, ternary_match_u64_to_mask_under, ternlog, I32x16,
-    MortonDir, U32x16, U64x8,
+    mask_and_assign, mask_andnot, mask_andnot_assign, mask_any, mask_gather_u32, mask_not, mask_not_assign, mask_or,
+    mask_or_assign, mask_scatter_or_u32, mask_set_range, mask_shift_morton, mask_ternlog, mask_ternlog_assign,
+    mask_xor, mask_xor_assign, masked_group_sum_i32, masked_max_i32, masked_min_i32, masked_strided_group_sum,
+    masked_sum_i32, ne_i32_to_mask, ne_i32_to_mask_under, ne_u32_to_mask, ne_u32_to_mask_under, ne_u64_to_mask,
+    ne_u8_to_mask, ternary_match_strided_to_mask, ternary_match_u32_to_mask, ternary_match_u32_to_mask_under,
+    ternary_match_u64_to_mask, ternary_match_u64_to_mask_under, ternlog, I32x16, MortonDir, U32x16, U64x8,
 };
 
 /// Number of check groups [`run`] executes (for the log line only).
-pub const CHECKS: usize = 12;
+pub const CHECKS: usize = 13;
 
 /// The wasm export: identical to [`run`], `extern "C"` so `run.mjs` can call it.
 #[no_mangle]
@@ -52,7 +55,7 @@ pub fn run() -> u32 {
     let groups: [fn() -> Result<(), u32>; CHECKS] = [
         check_ternlog_all_tables, check_u64x8_algebra, check_i32x16_compare, check_predicates_to_mask,
         check_mask_algebra, check_care_match, check_masked_reductions, check_blend, check_morton_shift,
-        check_predicates_under, check_set_range, check_unsigned_compare_to_mask,
+        check_predicates_under, check_set_range, check_unsigned_compare_to_mask, check_gather_scatter_group,
     ];
     for g in groups {
         if let Err(code) = g() {
@@ -1115,6 +1118,110 @@ fn check_unsigned_compare_to_mask() -> Result<(), u32> {
             pred64!(le_u64_to_mask, <=, 0xC90);
             pred64!(gt_u64_to_mask, >, 0xCA0);
             pred64!(ge_u64_to_mask, >=, 0xCB0);
+        }
+    }
+    Ok(())
+}
+
+// ── 0xDxx: mask_gather_u32 / mask_scatter_or_u32 / masked_group_sum_i32 —
+// the data-indexed permutation/scatter family (lance-graph-mask-risc's
+// Gather/ScatterOr/GroupSum verbs). Every reference below is a plain `for`
+// loop indexed by the SAME data (`index`/`keys`) the primitive under test
+// reads, never a call back into the primitive itself.
+
+fn check_gather_scatter_group() -> Result<(), u32> {
+    let mut rng = SplitMix64(0xD000_0000_0008);
+    for &n in &LENS {
+        let nw = words_for(n);
+
+        // ── mask_gather_u32 ──────────────────────────────────────────────
+        let src_rows = 40usize;
+        let src_words = words_for(src_rows);
+        let src: Vec<u64> = (0..src_words).map(|_| rng.next()).collect();
+        // Every third address is deliberately out of range, so the
+        // "false by contract" arm is exercised, not merely plausible.
+        let index: Vec<u32> = (0..n)
+            .map(|i| {
+                if i % 3 == 0 {
+                    (src_rows as u64 + 5 + i as u64) as u32
+                } else {
+                    (rng.next() % src_rows as u64) as u32
+                }
+            })
+            .collect();
+        let out_len = nw + 1; // dirty, over-long
+        let mut out = vec![u64::MAX; out_len];
+        mask_gather_u32(&src, src_rows, &index, &mut out);
+        let want = reference_mask(n, out_len, |i| {
+            let idx = index[i] as usize;
+            idx < src_rows && (src[idx / 64] >> (idx % 64)) & 1 == 1
+        });
+        if out != want {
+            return Err(0xD00);
+        }
+
+        // ── mask_scatter_or_u32 ──────────────────────────────────────────
+        let out_rows = 50usize;
+        let out_words_count = words_for(out_rows);
+        let src_bits: Vec<u64> = (0..nw).map(|_| rng.next()).collect();
+        // Every fourth target is deliberately out of range.
+        let idx2: Vec<u32> = (0..n)
+            .map(|i| {
+                if i % 4 == 0 {
+                    (out_rows as u64 + 7 + i as u64) as u32
+                } else {
+                    (rng.next() % out_rows as u64) as u32
+                }
+            })
+            .collect();
+        let out_len2 = out_words_count + 1; // dirty, over-long
+        let mut out2 = vec![u64::MAX; out_len2];
+        mask_scatter_or_u32(&src_bits, &idx2, &mut out2, out_rows);
+        let mut want2 = vec![false; out_rows];
+        for i in 0..n {
+            if (src_bits[i / 64] >> (i % 64)) & 1 == 1 {
+                let t = idx2[i] as usize;
+                if t < out_rows {
+                    want2[t] = true;
+                }
+            }
+        }
+        let want2_words = reference_mask(out_rows, out_len2, |t| want2[t]);
+        if out2 != want2_words {
+            return Err(0xD10);
+        }
+
+        // ── masked_group_sum_i32 ─────────────────────────────────────────
+        let n_groups = 12usize;
+        let mask_bits: Vec<u64> = (0..nw).map(|_| rng.next()).collect();
+        // Every fifth key is deliberately out of range.
+        let keys: Vec<u32> = (0..n)
+            .map(|i| {
+                if i % 5 == 0 {
+                    (n_groups as u64 + 3 + i as u64) as u32
+                } else {
+                    (rng.next() % n_groups as u64) as u32
+                }
+            })
+            .collect();
+        let values = i32_values(n, &mut rng);
+        let mut group_out = vec![-1i64; n_groups + 1]; // garbage + one unreferenced slot
+        masked_group_sum_i32(&mask_bits, &keys, &values, &mut group_out);
+        let mut want_group = vec![0i64; n_groups];
+        for i in 0..n {
+            if (mask_bits[i / 64] >> (i % 64)) & 1 == 1 {
+                let k = keys[i] as usize;
+                if k < n_groups {
+                    want_group[k] = want_group[k].wrapping_add(values[i] as i64);
+                }
+            }
+        }
+        if group_out[..n_groups] != want_group[..] {
+            return Err(0xD20);
+        }
+        // The unreferenced slot must be zeroed, not left as garbage.
+        if group_out[n_groups] != 0 {
+            return Err(0xD21);
         }
     }
     Ok(())

@@ -1,3 +1,11 @@
+## 2026-09-21 (20) — three data-indexed mask primitives: gather / scatter-or / keyed group-sum
+
+Added `mask_gather_u32`, `mask_scatter_or_u32`, `masked_group_sum_i32` to `simd_masking_ops.rs` + the `simd::` facade.
+All three are deliberately scalar bit-walks — permutations/scatters indexed by `index`/`keys` data, not a fixed stride, so none of this crate's backends can vector-load them (same shape as `masked_strided_group_sum`, which says so in its own doc).
+`masked_strided_group_sum` is NOT a keyed group-by and never was — it sums one record's own byte-groups into a single scalar with no key at all; zero callers of either are affected by this addition.
+Parity: `check_gather_scatter_group` (0xDxx) in `crates/simd-masking-parity`, against naive per-element references, disable-verified red-then-green.
+Consumer: lance-graph-mask-risc `Gather`/`ScatterOr`/`GroupSum` (landing next).
+
 ## 2026-09-17 (19) — G8 named: a tree-depth column (`lzcnt(bswap(x)) >> 2`) is the missing primitive for basin-local ranking; popcount is only its tie-break
 
 Filed, not built. Full text in `masking-ops-state.md` § OUTLOOK G8 and the
