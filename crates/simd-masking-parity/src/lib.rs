@@ -1362,10 +1362,10 @@ fn check_gather_scatter_group() -> Result<(), u32> {
         }
 
         // ── masked_key_run_count_u32 ─────────────────────────────────────
-        // A key-clustered lane (sorted with repeats), folded in uneven tiles
+        // A key-ORDERED lane (sorted with repeats), folded in uneven tiles
         // with the carry threaded through; the reference is a plain
         // seen-set over the selected elements — the population-sized state
-        // the fold replaces on a clustered lane.
+        // the fold replaces on an ordered lane.
         let mut keys: Vec<u32> = (0..n).map(|_| (rng.next() % 23) as u32).collect();
         keys.sort_unstable();
         let sel: Vec<bool> = (0..n).map(|_| rng.next().is_multiple_of(3)).collect();

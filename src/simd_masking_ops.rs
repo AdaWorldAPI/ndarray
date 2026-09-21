@@ -1307,7 +1307,7 @@ pub fn eq_u32_via_to_mask(index: &[u32], table: &[u32], v: u32, out_words: &mut 
 /// Carry of [`masked_key_run_count_u32`] across calls: the key of the run
 /// that is open at the end of the last call, and whether that run has
 /// already seen a selected element. Two words, independent of the
-/// population — the whole state a key-clustered distinct count needs.
+/// population — the whole state a key-ORDERED distinct count needs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct KeyRunCarry {
     /// The key of the currently open run, `None` before the first element.
@@ -1336,14 +1336,21 @@ impl KeyRunCarry {
 /// run's key means an earlier key can recur later, so a run is not a key
 /// and the count would be wrong: the call returns `None` at that element,
 /// having touched nothing but the carry. Non-decreasing order is the one
-/// clustering certificate checkable with O(1) state in the same pass (an
-/// exact clustering check would need the seen-set this fold exists to
-/// avoid), so it is the precondition: on a lane in key order — the address
-/// order a projection stores a child population under its parent — this IS
-/// the count of distinct keys among the selected elements, folded with two
-/// words of state and no population-sized set. A lane that is clustered but
-/// not sorted is refused too; that is deliberate conservatism, not a
-/// wrong answer. Nothing is ever over-counted.
+/// contiguity certificate checkable with O(1) state in the same pass
+/// (proving merely "each key occurs in one run" would need the seen-set
+/// this fold exists to avoid), so ORDER is the precondition: on a lane in
+/// key order — the address order a projection stores a child population
+/// under its parent — this IS the count of distinct keys among the selected
+/// elements, folded with two words of state and no population-sized set. A
+/// lane whose equal keys are contiguous but not sorted (`3 3 1 1`) is
+/// refused too; that is deliberate, not a wrong answer. Nothing is ever
+/// over-counted.
+///
+/// The order check inspects EVERY key, selected or not: in `keys = 1 2 1`
+/// with only the two `1`s selected, the selected subsequence looks
+/// contiguous, but the lane holds two runs of `1` and a fold that skipped
+/// the unselected `2` would count it twice. The invariant belongs to the
+/// whole lane.
 ///
 /// The mask tail past `keys.len()` is never read; the walk is
 /// `O(keys.len())` in row order (a run boundary is a compare against the
@@ -6212,10 +6219,10 @@ mod key_run_tests {
     }
 
     #[test]
-    fn on_a_lane_in_key_order_the_run_fold_equals_the_distinct_count_across_any_tiling() {
+    fn on_an_ordered_lane_the_run_fold_equals_the_distinct_count_across_any_tiling() {
         let mut seed = 0x51u64;
         for &n in &[1usize, 63, 64, 65, 200, 1000] {
-            // Clustered: sorted keys with repeats, so equal keys are contiguous.
+            // Ordered: sorted keys with repeats.
             let mut keys: Vec<u32> = (0..n).map(|_| (splitmix(&mut seed) % 37) as u32).collect();
             keys.sort_unstable();
             let sel: Vec<bool> = (0..n)
@@ -6274,9 +6281,19 @@ mod key_run_tests {
     }
 
     #[test]
-    fn clustered_but_unsorted_is_refused_deliberately() {
+    fn the_order_check_inspects_unselected_keys_too() {
+        // keys 1 2 1, selected 1 0 1: the selected subsequence reads 1,1 but
+        // the lane has two runs of 1 — a fold that only looked at survivors
+        // would answer 2 instead of refusing.
+        let keys = [1u32, 2, 1];
+        let mut c = KeyRunCarry::default();
+        assert_eq!(masked_key_run_count_u32(&keys, &pack(&[true, false, true]), &mut c), None);
+    }
+
+    #[test]
+    fn contiguous_but_unsorted_is_refused_deliberately() {
         // 3 3 1 1: every key contiguous, so a run count WOULD be exact —
-        // but the certificate is order, and 1 < 3 breaks it.
+        // but the O(1)-checkable certificate is ORDER, and 1 < 3 breaks it.
         let keys = [3u32, 3, 1, 1];
         let mut c = KeyRunCarry::default();
         assert_eq!(masked_key_run_count_u32(&keys, &pack(&[true; 4]), &mut c), None);
