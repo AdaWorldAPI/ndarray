@@ -1319,6 +1319,19 @@ pub struct KeyRunCarry {
 impl KeyRunCarry {
     /// Close the final run: `1` if it is open and was hit, else `0`. Call
     /// once after the last call; the carry is reset to its initial state.
+    ///
+    /// ```
+    /// use ndarray::simd::{masked_key_run_count_u32, KeyRunCarry};
+    ///
+    /// // keys 4 4 | 8 8 with rows 1 and 3 selected: the first run closes
+    /// // inside the call (counted there); the last run is still open.
+    /// let mut carry = KeyRunCarry::default();
+    /// let closed = masked_key_run_count_u32(&[4u32, 4, 8, 8], &[0b1010], &mut carry).unwrap();
+    /// assert_eq!(closed, 1);
+    /// assert_eq!(carry.finish(), 1); // the open 8-run was hit
+    /// assert_eq!(carry, KeyRunCarry::default()); // and the carry is reset
+    /// assert_eq!(carry.finish(), 0); // nothing open any more
+    /// ```
     #[inline]
     pub fn finish(&mut self) -> usize {
         let n = usize::from(self.key.is_some() && self.hit);
