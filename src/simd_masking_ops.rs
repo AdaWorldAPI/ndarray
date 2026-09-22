@@ -707,6 +707,70 @@ pub fn masked_sum_i32(values: &[i32], mask_words: &[u64]) -> i64 {
     acc
 }
 
+/// Sum `a[i].wrapping_add(b[i])` where mask bit `i` is set, with the
+/// wrapped row value widened to `i64` before accumulation.
+///
+/// This is the semantics-preserving fused form of a wrapping `i32` row
+/// expression followed by [`masked_sum_i32`]. It exists so a consumer can
+/// fold `SUM(a + b)` without materialising the derived `i32` lane and
+/// without changing the program to `SUM(a) + SUM(b)`, which is not
+/// equivalent when any selected row overflows `i32`.
+///
+/// Row arithmetic is deliberately **wrapping `i32` first, widening second**:
+/// `i32::MAX + 1` contributes `i32::MIN as i64`, not `2^31`. Once each
+/// row has been reduced to one `i32`, accumulation has the same `i64`
+/// bound and theoretical wrapping behavior as [`masked_sum_i32`].
+///
+/// Mask bits past `a.len()` are ignored. `a` and `b` must have equal
+/// length; `mask_words` must cover that length.
+///
+/// # Panics
+///
+/// Panics if `a.len() != b.len()` or if `mask_words` is too short.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::masked_sum_wrapping_add_i32;
+///
+/// let a = [i32::MAX, 10];
+/// let b = [1, 20];
+/// // Both rows selected: wrapping MAX+1 = MIN, then +30 in widened i64.
+/// assert_eq!(
+///     masked_sum_wrapping_add_i32(&a, &b, &[0b11]),
+///     i64::from(i32::MIN) + 30
+/// );
+/// ```
+#[inline]
+pub fn masked_sum_wrapping_add_i32(a: &[i32], b: &[i32], mask_words: &[u64]) -> i64 {
+    assert_eq!(a.len(), b.len(), "masked_sum_wrapping_add_i32: a/b length mismatch");
+    let n = a.len();
+    let words = mask_words_for(n);
+    assert!(
+        mask_words.len() >= words,
+        "masked_sum_wrapping_add_i32: mask_words.len()={} < required {}",
+        mask_words.len(),
+        words
+    );
+
+    let mut acc: i64 = 0;
+    for (w, &word) in mask_words.iter().take(words).enumerate() {
+        let base = w * 64;
+        let mut bits = word;
+        let valid = n - base;
+        if valid < 64 {
+            bits &= (1u64 << valid) - 1;
+        }
+        while bits != 0 {
+            let lane = bits.trailing_zeros() as usize;
+            let i = base + lane;
+            acc = acc.wrapping_add(a[i].wrapping_add(b[i]) as i64);
+            bits &= bits - 1;
+        }
+    }
+    acc
+}
+
 /// Sum a sub-word group field out of a **strided** record, over the records a
 /// mask selects, widened to `i128` and range-checked into `i64`.
 ///

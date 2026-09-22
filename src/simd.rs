@@ -833,6 +833,7 @@ pub use crate::simd_masking_ops::{
     masked_min_i32,
     masked_strided_group_sum,
     masked_sum_i32,
+    masked_sum_wrapping_add_i32,
     ne_i32_to_mask,
     ne_i32_to_mask_under,
     ne_u32_to_mask,

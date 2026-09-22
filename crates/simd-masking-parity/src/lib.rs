@@ -39,7 +39,8 @@ use ndarray::simd::{
     lt_u8_to_mask, mask_all, mask_and, mask_and_assign, mask_andnot, mask_andnot_assign, mask_any, mask_gather_u32,
     mask_not, mask_not_assign, mask_or, mask_or_assign, mask_scatter_or_u32, mask_set_range, mask_shift_morton,
     mask_ternlog, mask_ternlog_assign, mask_xor, mask_xor_assign, masked_group_sum_i32, masked_group_sum_i32_via,
-    masked_key_run_count_u32, masked_max_i32, masked_min_i32, masked_strided_group_sum, masked_sum_i32, ne_i32_to_mask,
+    masked_key_run_count_u32, masked_max_i32, masked_min_i32, masked_strided_group_sum, masked_sum_i32,
+    masked_sum_wrapping_add_i32, ne_i32_to_mask,
     ne_i32_to_mask_under, ne_u32_to_mask, ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask,
     ternary_match_strided_to_mask, ternary_match_u32_to_mask, ternary_match_u32_to_mask_under,
     ternary_match_u64_to_mask, ternary_match_u64_to_mask_under, ternlog, I32x16, KeyRunCarry, MortonDir, U32x16, U64x8,
@@ -758,6 +759,7 @@ fn check_masked_reductions() -> Result<(), u32> {
     for &n in &LENS {
         let nw = words_for(n);
         let vals = i32_values(n, &mut rng);
+        let rhs = i32_values(n, &mut rng);
         let tail_mask = |i: usize| -> u64 {
             let live = n.saturating_sub(i * 64).min(64);
             if live == 64 {
@@ -783,6 +785,14 @@ fn check_masked_reductions() -> Result<(), u32> {
             let want_sum: i64 = selected.iter().map(|&v| v as i64).sum();
             if masked_sum_i32(&vals, m) != want_sum {
                 return Err(0x800 | k);
+            }
+            let want_wrapping_add = (0..n)
+                .filter(|&i| (m[i / 64] >> (i % 64)) & 1 == 1)
+                .fold(0i64, |acc, i| {
+                    acc.wrapping_add(vals[i].wrapping_add(rhs[i]) as i64)
+                });
+            if masked_sum_wrapping_add_i32(&vals, &rhs, m) != want_wrapping_add {
+                return Err(0x850 | k);
             }
             if masked_min_i32(&vals, m) != selected.iter().copied().min() {
                 return Err(0x810 | k);
