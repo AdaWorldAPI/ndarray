@@ -818,6 +818,622 @@ pub fn masked_strided_group_sum(
 }
 
 // ────────────────────────────────────────────────────────────────────────
+// Data-indexed mask primitives: gather, scatter-OR, keyed group-sum.
+//
+// Every op above this point walks its input in LANE order (predicate
+// builders) or POPCOUNT order (masked reductions) — the address of the next
+// element to touch is a fixed stride or the next set bit, never a value read
+// out of another array. The three functions below are the opposite shape:
+// each is a permutation or scatter-add whose per-element address comes from
+// a DATA array (`index` or `keys`), so none of them vector-loads and each
+// says so in its own doc, matching `masked_strided_group_sum` above. None of
+// the three takes a `_under` gate — a gate composes on the *result* mask via
+// `mask_and`/`mask_ternlog`, not as an extra parameter on a data-indexed op.
+// ────────────────────────────────────────────────────────────────────────
+
+/// Gather bits by row index: element `i` of the result is
+/// `index[i] < src_rows && bit index[i] of src`.
+///
+/// A bit of a RESIDENT mask read through an index lane: `index` has one
+/// entry per element of THIS population, each an address into the
+/// population `src` is defined over, and the result is a mask over THIS
+/// population, set iff the addressed bit of `src` is.
+///
+/// **Survival condition.** `src` must be state the caller already holds
+/// (a resident plane) — never a mask produced only so that this call can
+/// read it. A population-sized mask that exists to feed the next fold is
+/// forbidden intermediate state; an addressed read is legal only when its
+/// source is resident and its output is one tile of the caller's own
+/// scratch. A predicate through an index lane belongs in
+/// [`eq_u32_via_to_mask`], which never builds the source mask at all.
+///
+/// **An out-of-range index is FALSE by contract, not an error** — the V3
+/// zero-fallback rule applied to addressing: an index naming no row in
+/// `src` (`index[i] >= src_rows`) resolves to "no match", the same way an
+/// address naming no element resolves to "no element" rather than
+/// panicking. A caller that needs a hard out-of-range to be visible builds its own
+/// out-of-range mask separately (e.g. `ge_u32_to_mask(index, src_rows as
+/// u32, ..)`); this primitive never raises it.
+///
+/// `out_words` is **fully overwritten**, not OR-ed into: every bit at or
+/// past `index.len()` — the tail of the last live word and every surplus
+/// word — is written `0`, exactly as every predicate builder above.
+///
+/// # Why this lives HERE
+///
+/// It is a permutation indexed by `index`, not a fixed stride or a
+/// popcount walk — every other primitive above reads its input in lane or
+/// set-bit order; this one reads ROW order but dereferences `src` at a
+/// data-dependent bit position per row. That is a gather, and a consumer
+/// hand-rolling `bit(src, index[i])` in a loop is exactly the polyfill
+/// bypass the "all SIMD from `ndarray::simd`" invariant exists to prevent.
+///
+/// # Vectorisation, honestly
+///
+/// **Scalar, and by necessity, not oversight.** The address of the bit to
+/// read is `index[i]`, a value out of another array — there is no vector
+/// gather over individual BITS on any of this crate's backends (a
+/// byte/word/dword gather exists; a bit gather does not), so "read one bit
+/// at a data-dependent offset" is inherently scalar. Cost is
+/// `O(index.len())`: unlike the popcount-driven reductions above, there is
+/// no input mask to skip zero words against — every entry of `index` must
+/// be consulted regardless of what `src` contains.
+///
+/// # Panics
+///
+/// Panics if `out_words.len() < index.len().div_ceil(64)`, or if
+/// `src.len() < src_rows.div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::mask_gather_u32;
+///
+/// // src has rows 0 and 2 set, out of 3 rows.
+/// let src = [0b101u64];
+/// let index = [2u32, 1, 0, 5]; // row 5 is out of range
+/// let mut out = [u64::MAX]; // dirty tail must be cleared
+/// mask_gather_u32(&src, 3, &index, &mut out);
+/// // bit 0 -> src row 2 (set), bit 1 -> src row 1 (unset),
+/// // bit 2 -> src row 0 (set), bit 3 -> out of range (false)
+/// assert_eq!(out[0], 0b0101);
+/// ```
+#[inline]
+pub fn mask_gather_u32(src: &[u64], src_rows: usize, index: &[u32], out_words: &mut [u64]) {
+    let n = index.len();
+    let words = mask_words_for(n);
+    assert!(
+        out_words.len() >= words,
+        "mask_gather_u32: out_words.len()={} < required {}",
+        out_words.len(),
+        words
+    );
+    let src_words = mask_words_for(src_rows);
+    assert!(src.len() >= src_words, "mask_gather_u32: src.len()={} < required {}", src.len(), src_words);
+
+    // Zero first, whole buffer: makes the "tail and surplus are 0" guarantee
+    // structural, matching every predicate builder's `pack` convention.
+    for w in out_words.iter_mut() {
+        *w = 0;
+    }
+    for (w, out_word) in out_words.iter_mut().enumerate().take(words) {
+        let base = w * 64;
+        let live = (n - base).min(64);
+        let mut acc = 0u64;
+        for lane in 0..live {
+            let idx = index[base + lane] as usize;
+            if idx < src_rows && (src[idx / 64] >> (idx % 64)) & 1 == 1 {
+                acc |= 1u64 << lane;
+            }
+        }
+        *out_word = acc;
+    }
+}
+
+/// Scatter-OR by row index: for every element `i` selected by `src` (bit `i`
+/// set, `i < index.len()`), sets bit `index[i]` of the result — provided
+/// `index[i] < out_rows`.
+///
+/// The inverse addressing of [`mask_gather_u32`]: that one reads through
+/// `index`, this one writes through it — "targets some selected element
+/// addresses" rather than "elements whose target is selected". Several
+/// source elements may scatter to the same target bit; the contract is OR
+/// (union), so repeats are harmless and order-independent — the same
+/// reason `vsa_bundle`-shaped accumulation is safe under reordering.
+///
+/// **Survival condition.** `out_words` is the caller's DEMANDED sink — the
+/// requested result is this mask, or this mask is the accumulator of the
+/// fold whose scalar leaves (a distinct count is its popcount). It is never
+/// a buffer another pass reads back as input; a scattered population mask
+/// handed to a further fold is forbidden intermediate state.
+///
+/// `out_words[..out_rows.div_ceil(64)]` is **accumulated into, not
+/// overwritten**: every scattered bit is OR-ed into whatever `out_words`
+/// already holds, and a bit set before the call that this call does not
+/// itself scatter to stays set. The caller zeroes `out_words` once before
+/// the first call in a sequence; repeated calls (e.g. one per source batch)
+/// compose as a running union without re-zeroing between them.
+///
+/// **An out-of-range target (`index[i] >= out_rows`) is silently dropped**,
+/// not an error — the same zero-fallback contract as [`mask_gather_u32`]'s
+/// out-of-range read, applied to the write side: a target that names no row
+/// in the output population has nowhere to land.
+///
+/// # Why this lives HERE
+///
+/// The mirror image of [`mask_gather_u32`]: that one reads `src` at an
+/// address named by `index`; this one writes to an address named by
+/// `index`. Same reasoning for living beside the other data-indexed
+/// primitives rather than being hand-rolled per call site.
+///
+/// # Vectorisation, honestly
+///
+/// **Scalar, and by necessity, not oversight** — same shape as
+/// [`mask_gather_u32`], mirrored: the address written is `index[i]`, a
+/// value out of another array, so this is a scatter, not a gather, and
+/// none of this crate's backends has a bit-level scatter. Cost is
+/// proportional to `popcount(src)` (clamped to `index.len()`), not to
+/// `index.len()` itself — only selected source elements are walked, the
+/// same shape as [`masked_sum_i32`]'s set-bit walk.
+///
+/// # Panics
+///
+/// Panics if `src.len() < index.len().div_ceil(64)`, or if
+/// `out_words.len() < out_rows.div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::mask_scatter_or_u32;
+///
+/// let src = [0b0101u64]; // rows 0 and 2 of `index`'s population are selected
+/// let index = [5u32, 1, 9, 20]; // row 2 maps to 9; row 3's 20 is never read
+/// let mut out = [0u64; 1];
+/// mask_scatter_or_u32(&src, &index, &mut out, 10);
+/// // selected: i=0 -> index[0]=5 -> set bit 5; i=2 -> index[2]=9 -> set bit 9
+/// assert_eq!(out[0], (1u64 << 5) | (1u64 << 9));
+/// ```
+#[inline]
+pub fn mask_scatter_or_u32(src: &[u64], index: &[u32], out_words: &mut [u64], out_rows: usize) {
+    let n = index.len();
+    let src_words = mask_words_for(n);
+    assert!(src.len() >= src_words, "mask_scatter_or_u32: src.len()={} < required {}", src.len(), src_words);
+    let out_word_count = mask_words_for(out_rows);
+    assert!(
+        out_words.len() >= out_word_count,
+        "mask_scatter_or_u32: out_words.len()={} < required {}",
+        out_words.len(),
+        out_word_count
+    );
+
+    // Accumulate: OR scattered bits into whatever the caller already has in
+    // `out_words`. The caller zeroes once before the first call.
+    for (w, &word) in src.iter().take(src_words).enumerate() {
+        let base = w * 64;
+        let mut bits = word;
+        // Clamp the final partial src word to index.len(), exactly as
+        // masked_sum_i32 clamps: a dirty tail bit must never address
+        // `index` past its real length.
+        let valid = n - base;
+        if valid < 64 {
+            bits &= (1u64 << valid) - 1;
+        }
+        while bits != 0 {
+            let lane = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            let i = base + lane;
+            let t = index[i] as usize;
+            if t < out_rows {
+                out_words[t / 64] |= 1u64 << (t % 64);
+            }
+        }
+    }
+}
+
+/// Keyed group-sum: for every element `i` selected by `mask_words` (bit `i`
+/// set, `i < values.len()`), adds `values[i]` (widened to `i64`) into
+/// `out[keys[i]]` — provided `keys[i] < out.len()`.
+///
+/// A keyed segmented sum: the caller sizes `out` to the key universe (one
+/// slot per key) and this
+/// walks the selected rows **once**, replacing K separate masked-sum passes
+/// (one per group) with a single pass that routes each row's contribution
+/// to its own slot as it goes.
+///
+/// **This is NOT [`masked_strided_group_sum`].** That function sums the
+/// byte-*groups* of ONE record's small register (`6×2`/`4×3`/`3×4` fields)
+/// into a single scalar and has no notion of a key — it is a record-local
+/// fold. This function sums *rows* into *per-key* buckets across a whole
+/// selected population and has no notion of a register. Same word
+/// "group", two unrelated shapes; do not conflate them.
+///
+/// `out` is **accumulated into, not overwritten**: contributions are
+/// added to whatever `out` already holds, so the caller zeroes `out` once
+/// before the first call in a sequence rather than this function doing it.
+/// **A key at or past `out.len()` is dropped,
+/// not an error** — the zero-fallback contract shared by
+/// [`mask_gather_u32`]/[`mask_scatter_or_u32`]: a key naming no group in
+/// `out` is not a group, the same way an address naming no slot is not a slot.
+///
+/// # Why this lives HERE
+///
+/// A scatter-reduce indexed by `keys`, not a fixed stride or a plain
+/// set-bit sum — [`masked_sum_i32`] above sums every selected element into
+/// ONE accumulator; this routes each selected element into ONE OF MANY
+/// accumulators chosen by data. A consumer hand-rolling per-group masked
+/// sums (`masked_sum_i32` called once per key, K passes over the data) is
+/// exactly the shape this closes — one pass instead of K.
+///
+/// # Vectorisation, honestly
+///
+/// **Scalar, and by necessity, not oversight** — the destination of each
+/// add is `keys[i]`, a value out of another array, so this is a
+/// scatter-add, and none of this crate's backends has a vector scatter-add
+/// with per-lane conflict resolution (two selected rows can share a key in
+/// the same 16- or 64-lane group, which a naive vector scatter would race).
+/// Cost is proportional to `popcount(mask_words)` (clamped to
+/// `values.len()`), the same set-bit walk as [`masked_sum_i32`].
+///
+/// # Overflow
+///
+/// Each element is widened to `i64` before the add and accumulated with
+/// `wrapping_add`, the same contract as [`masked_sum_i32`] — a per-key sum
+/// of `i32`s cannot overflow `i64` at any length that fits a 64-bit address
+/// space, and the wrap is defined behaviour rather than a debug-only panic
+/// for the theoretical case that could.
+///
+/// # Panics
+///
+/// Panics if `keys.len() != values.len()`, or if `mask_words.len() <
+/// values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::masked_group_sum_i32;
+///
+/// let mask = [0b1011u64]; // rows 0, 1, 3 selected; row 2 is not
+/// let keys = [0u32, 1, 0, 1];
+/// let values = [10i32, 20, 30, 40];
+/// let mut out = [0i64; 2];
+/// masked_group_sum_i32(&mask, &keys, &values, &mut out);
+/// // row 0 -> key 0 (+10); row 1 -> key 1 (+20); row 3 -> key 1 (+40)
+/// assert_eq!(out, [10, 60]);
+/// ```
+#[inline]
+pub fn masked_group_sum_i32(mask_words: &[u64], keys: &[u32], values: &[i32], out: &mut [i64]) {
+    assert_eq!(keys.len(), values.len(), "masked_group_sum_i32: keys/values length mismatch");
+    let n = values.len();
+    let words = mask_words_for(n);
+    assert!(
+        mask_words.len() >= words,
+        "masked_group_sum_i32: mask_words.len()={} < required {}",
+        mask_words.len(),
+        words
+    );
+
+    // Accumulate: add into whatever `out` already holds. The caller zeroes
+    // once before the first call.
+    for (w, &word) in mask_words.iter().take(words).enumerate() {
+        let base = w * 64;
+        let mut bits = word;
+        // Same tail clamp as masked_sum_i32: a dirty final word must never
+        // index past `values`/`keys`.
+        let valid = n - base;
+        if valid < 64 {
+            bits &= (1u64 << valid) - 1;
+        }
+        while bits != 0 {
+            let lane = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            let i = base + lane;
+            let k = keys[i] as usize;
+            if k < out.len() {
+                out[k] = out[k].wrapping_add(values[i] as i64);
+            }
+        }
+    }
+}
+
+/// Like [`masked_group_sum_i32`], but the group key of row `i` is
+/// `table[index[i]]` — the key lives in a second address space reached
+/// through an index lane: exactly the [`mask_gather_u32`] /
+/// [`mask_scatter_or_u32`] index-lane shape applied to the group-sum's key
+/// instead of to a mask bit.
+///
+/// **Zero-fallback at BOTH hops, same rule as [`mask_gather_u32`]'s
+/// out-of-range read**: `index[i] >= table.len()` drops row `i` (the index
+/// names no entry of `table`); `table[index[i]] as usize >=
+/// out.len()` drops it too (the resolved key names no group). Neither is
+/// an error — an unminted address is not a group, at either hop.
+///
+/// # Why the indirection is fused here
+///
+/// Materialising `table[index[i]]` into its own `Vec<u32>` of length `N`
+/// first and then calling [`masked_group_sum_i32`] on that would allocate
+/// and fully populate exactly the intermediate key lane this fold exists
+/// to avoid — one fused scan over the selected rows costs no more than the
+/// naive two-hop lookup per selected row, with no second array in between.
+///
+/// `out` is accumulated into (not zeroed by this function) — the caller
+/// zeroes `out` once before the first call, same as [`masked_group_sum_i32`];
+/// overflow wraps the same way as [`masked_group_sum_i32`] (widened to
+/// `i64`, `wrapping_add`), and the mask tail is clamped identically.
+///
+/// # Panics
+///
+/// Panics if `index.len() != values.len()`, or if `mask_words.len() <
+/// values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::masked_group_sum_i32_via;
+///
+/// // Two rows address entry 0 (key 0); one addresses entry 5, which is out
+/// // of range for `table` and is dropped at the first hop.
+/// let mask = [0b111u64];
+/// let index = [0u32, 0, 5];
+/// let table = [0u32]; // entry 0 -> key 0
+/// let values = [10i32, 20, 999];
+/// let mut out = [0i64; 1];
+/// masked_group_sum_i32_via(&mask, &index, &table, &values, &mut out);
+/// assert_eq!(out, [30]);
+/// ```
+#[inline]
+pub fn masked_group_sum_i32_via(mask_words: &[u64], index: &[u32], table: &[u32], values: &[i32], out: &mut [i64]) {
+    assert_eq!(index.len(), values.len(), "masked_group_sum_i32_via: index/values length mismatch");
+    let n = values.len();
+    let words = mask_words_for(n);
+    assert!(
+        mask_words.len() >= words,
+        "masked_group_sum_i32_via: mask_words.len()={} < required {}",
+        mask_words.len(),
+        words
+    );
+
+    // Accumulate: add into whatever `out` already holds. The caller zeroes
+    // once before the first call.
+    for (w, &word) in mask_words.iter().take(words).enumerate() {
+        let base = w * 64;
+        let mut bits = word;
+        // Same tail clamp as masked_group_sum_i32.
+        let valid = n - base;
+        if valid < 64 {
+            bits &= (1u64 << valid) - 1;
+        }
+        while bits != 0 {
+            let lane = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            let i = base + lane;
+            let addr = index[i] as usize;
+            if addr >= table.len() {
+                continue;
+            }
+            let k = table[addr] as usize;
+            if k < out.len() {
+                out[k] = out[k].wrapping_add(values[i] as i64);
+            }
+        }
+    }
+}
+
+/// Packs `index[i] < table.len() && table[index[i]] == v` into `out_words`,
+/// one bit per row `i < index.len()`, LSB-first — an equality predicate
+/// evaluated **through an index lane**, with no gathered mask and no
+/// materialised predicate plane over `table`'s population in between.
+///
+/// The projection→projection shape: `table[index[i]]` is never written
+/// into its own array and compared afterwards; the addressed read and the
+/// compare fuse into one pass over `index`, the same fusion
+/// [`masked_group_sum_i32_via`] applies to an addressed group key rather than an addressed
+/// predicate.
+///
+/// **Zero-fallback, same rule as [`mask_gather_u32`]'s out-of-range
+/// read**: `index[i] >= table.len()` means row `i` addresses no
+/// row, so it does not match — not an error, not a panic, just `false` for
+/// that bit. A key that names no row is not a match, the same way an
+/// address naming no entry is not a match.
+///
+/// `out_words` is **fully overwritten**, not OR-ed into; trailing bits
+/// beyond `index.len()`, and any surplus words past `mask_words_for(index.len())`,
+/// are written `0` — this writes exactly its own output tile and nothing
+/// past it, the same contract as [`mask_gather_u32`].
+///
+/// # Why this lives HERE
+///
+/// [`mask_gather_u32`] reads a *mask bit* through an index; this reads an
+/// *equality predicate* through an index, and belongs beside it for the
+/// same reason: a consumer hand-rolling `table[index[i]] == v` in a loop is
+/// exactly the polyfill bypass the "all SIMD from `ndarray::simd`"
+/// invariant exists to prevent, and it is the gather half of
+/// [`masked_group_sum_i32_via`]'s two-hop shape applied to a predicate
+/// instead of a sum.
+///
+/// # Vectorisation, honestly
+///
+/// **Scalar, and by necessity, not oversight** — same shape as
+/// [`mask_gather_u32`]: the address read from `table` is `index[i]`, a
+/// value out of another array, so there is no vector gather over
+/// individual predicate results on any of this crate's backends. Cost is
+/// `O(index.len())`; there is no input mask to skip zero words against.
+///
+/// # Panics
+///
+/// Panics if `out_words.len() < mask_words_for(index.len())`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::eq_u32_via_to_mask;
+///
+/// // entry 0 -> 7, entry 1 -> 3; row 2's index (5) is out of range for
+/// // `table` and never matches.
+/// let index = [0u32, 1, 5, 0];
+/// let table = [7u32, 3];
+/// let mut out = [u64::MAX]; // dirty tail must be overwritten
+/// eq_u32_via_to_mask(&index, &table, 7, &mut out);
+/// // rows 0 and 3 resolve to 7; row 1 resolves to 3; row 2 drops.
+/// assert_eq!(out[0], 0b1001);
+/// ```
+#[inline]
+pub fn eq_u32_via_to_mask(index: &[u32], table: &[u32], v: u32, out_words: &mut [u64]) {
+    let n = index.len();
+    let words = mask_words_for(n);
+    assert!(
+        out_words.len() >= words,
+        "eq_u32_via_to_mask: out_words.len()={} < required {}",
+        out_words.len(),
+        words
+    );
+
+    for (w, out_word) in out_words.iter_mut().enumerate().take(words) {
+        let base = w * 64;
+        let live = (n - base).min(64);
+        let mut acc = 0u64;
+        for lane in 0..live {
+            let addr = index[base + lane] as usize;
+            if addr < table.len() && table[addr] == v {
+                acc |= 1u64 << lane;
+            }
+        }
+        *out_word = acc;
+    }
+    for w in out_words.iter_mut().skip(words) {
+        *w = 0;
+    }
+}
+
+/// Carry of [`masked_key_run_count_u32`] across calls: the key of the run
+/// that is open at the end of the last call, and whether that run has
+/// already seen a selected element. Two scalar fields, O(1) and
+/// independent of the population — the whole state a key-ORDERED
+/// distinct count needs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct KeyRunCarry {
+    /// The key of the currently open run, `None` before the first element.
+    pub key: Option<u32>,
+    /// Whether the open run has a selected element so far.
+    pub hit: bool,
+}
+
+impl KeyRunCarry {
+    /// Close the final run: `1` if it is open and was hit, else `0`. Call
+    /// once after the last call; the carry is reset to its initial state.
+    ///
+    /// ```
+    /// use ndarray::simd::{masked_key_run_count_u32, KeyRunCarry};
+    ///
+    /// // keys 4 4 | 8 8 with rows 1 and 3 selected: the first run closes
+    /// // inside the call (counted there); the last run is still open.
+    /// let mut carry = KeyRunCarry::default();
+    /// let closed = masked_key_run_count_u32(&[4u32, 4, 8, 8], &[0b1010], &mut carry).unwrap();
+    /// assert_eq!(closed, 1);
+    /// assert_eq!(carry.finish(), 1); // the open 8-run was hit
+    /// assert_eq!(carry, KeyRunCarry::default()); // and the carry is reset
+    /// assert_eq!(carry.finish(), 0); // nothing open any more
+    /// ```
+    #[inline]
+    pub fn finish(&mut self) -> usize {
+        let n = usize::from(self.key.is_some() && self.hit);
+        *self = Self::default();
+        n
+    }
+}
+
+/// Counts the maximal runs of equal consecutive `keys` values that contain
+/// at least one element selected by `mask_words`, closing runs as it goes
+/// and carrying the open one in `carry`. Returns `Some(runs CLOSED by this
+/// call)`; [`KeyRunCarry::finish`] adds the last one.
+///
+/// **Refuses a lane that is not in key order.** A key smaller than the open
+/// run's key means an earlier key can recur later, so a run is not a key
+/// and the count would be wrong: the call returns `None` at that element
+/// and **leaves `carry` exactly as it was on entry** (the walk works on a
+/// local copy and commits it only on `Some`), so the caller's continuation
+/// state is never poisoned by a refused call. Non-decreasing order is the one
+/// contiguity certificate checkable with O(1) state in the same pass
+/// (proving merely "each key occurs in one run" would need the seen-set
+/// this fold exists to avoid), so ORDER is the precondition: on a
+/// non-decreasing key lane this IS the count of distinct keys among the
+/// selected elements, folded with an O(1) carry and no population-sized
+/// set. A
+/// lane whose equal keys are contiguous but not sorted (`3 3 1 1`) is
+/// refused too; that is deliberate, not a wrong answer. Nothing is ever
+/// over-counted.
+///
+/// The order check inspects EVERY key, selected or not: in `keys = 1 2 1`
+/// with only the two `1`s selected, the selected subsequence looks
+/// contiguous, but the lane holds two runs of `1` and a fold that skipped
+/// the unselected `2` would count it twice. The invariant belongs to the
+/// whole lane.
+///
+/// The mask tail past `keys.len()` is never read; the walk is
+/// `O(keys.len())` in row order (a run boundary is a compare against the
+/// previous key, a hit is a mask bit — both lane-order reads, no
+/// data-dependent address).
+///
+/// # Vectorisation, honestly
+///
+/// **Scalar.** Boundaries (`keys[i] != keys[i-1]`) vectorise as a shifted
+/// compare and hits are a mask word, but "first hit per run" is a segmented
+/// scan with a serial carry; at one compare + one bit test per element it is
+/// memory-bound already. Left scalar until a measurement says otherwise.
+///
+/// # Panics
+///
+/// Panics if `mask_words.len() < keys.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::{masked_key_run_count_u32, KeyRunCarry};
+///
+/// // keys in key order: 3 3 | 7 | 9 9 9 ; selected rows 1 and 4.
+/// let keys = [3u32, 3, 7, 9, 9, 9];
+/// let mask = [0b010010u64];
+/// let mut carry = KeyRunCarry::default();
+/// let a = masked_key_run_count_u32(&keys[..3], &mask, &mut carry).unwrap();
+/// let b = masked_key_run_count_u32(&keys[3..], &[mask[0] >> 3], &mut carry).unwrap();
+/// assert_eq!(a + b + carry.finish(), 2); // keys 3 and 9, not 7
+///
+/// // Out of key order: 1 2 1 — refused, never counted as three keys,
+/// // and the carry is untouched by the refused call.
+/// let mut c = KeyRunCarry::default();
+/// assert_eq!(masked_key_run_count_u32(&[1u32, 2, 1], &[0b111], &mut c), None);
+/// assert_eq!(c, KeyRunCarry::default());
+/// ```
+#[inline]
+pub fn masked_key_run_count_u32(keys: &[u32], mask_words: &[u64], carry: &mut KeyRunCarry) -> Option<usize> {
+    let n = keys.len();
+    let words = mask_words_for(n);
+    assert!(
+        mask_words.len() >= words,
+        "masked_key_run_count_u32: mask_words.len()={} < required {}",
+        mask_words.len(),
+        words
+    );
+    // Work on a local copy: `None` must leave the caller's carry exactly as
+    // it was on entry, so nothing is committed until the whole lane passed.
+    let mut local = *carry;
+    let mut closed = 0usize;
+    for (i, &k) in keys.iter().enumerate() {
+        let selected = (mask_words[i / 64] >> (i % 64)) & 1 == 1;
+        match local.key {
+            Some(cur) if cur == k => local.hit |= selected,
+            Some(cur) if cur > k => return None,
+            _ => {
+                closed += usize::from(local.key.is_some() && local.hit);
+                local.key = Some(k);
+                local.hit = selected;
+            }
+        }
+    }
+    *carry = local;
+    Some(closed)
+}
+
+// ────────────────────────────────────────────────────────────────────────
 // The closed comparison family + mask complement/xor/any + care-masked
 // register match + masked min/max + blend (the DuckDB-vector-execution set,
 // added 2026-09-13 for `lance-graph-duckmask` and lgj-abi D-MRL-1a).
@@ -3704,6 +4320,587 @@ mod tests {
         let _ = masked_strided_group_sum(&b, 0, 16, 1, 3, 4, &[0b1]);
     }
 
+    // ── mask_gather_u32 / mask_scatter_or_u32 / masked_group_sum_i32 ──
+    //
+    // The three data-indexed permutation/scatter primitives: each is checked
+    // against a plain `for` loop over indices (never `Vec<bool>` — the spec's
+    // own naive reference shape), at the empty case, at both sides of a word
+    // boundary (67 and 130, neither a multiple of 64), with an out-of-range
+    // address dropped rather than panicking, and with a garbage-filled output
+    // buffer to prove the tail is actually written zero, not merely OR-ed.
+
+    fn naive_gather(src: &[u64], src_rows: usize, index: &[u32]) -> Vec<bool> {
+        index
+            .iter()
+            .map(|&idx| {
+                let idx = idx as usize;
+                idx < src_rows && (src[idx / 64] >> (idx % 64)) & 1 == 1
+            })
+            .collect()
+    }
+
+    fn bits_to_words(bits: &[bool]) -> Vec<u64> {
+        let mut out = vec![0u64; bits.len().div_ceil(64).max(1)];
+        for (i, &b) in bits.iter().enumerate() {
+            if b {
+                out[i / 64] |= 1u64 << (i % 64);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn mask_gather_u32_empty_index_writes_nothing() {
+        let src = [0u64; 1];
+        let index: [u32; 0] = [];
+        let mut out = [0xFFFF_FFFF_FFFF_FFFFu64; 1];
+        mask_gather_u32(&src, 3, &index, &mut out);
+        assert_eq!(out[0], 0, "an empty index gathers no bits and clears the buffer");
+    }
+
+    #[test]
+    fn mask_gather_u32_matches_naive_reference_across_the_tail() {
+        for &n in &[0usize, 1, 63, 64, 65, 67, 130] {
+            let mut seed = 0x1357_9BDF_2468_ACE0u64;
+            let src_rows = 40usize;
+            let src_words = src_rows.div_ceil(64);
+            let src: Vec<u64> = (0..src_words).map(|_| splitmix(&mut seed)).collect();
+            // Half the index values genuinely address `src`; the rest are
+            // deliberately out of range, so the "false by contract" arm is
+            // actually exercised, not merely plausible.
+            let index: Vec<u32> = (0..n)
+                .map(|i| {
+                    if i % 3 == 0 {
+                        (src_rows as u64 + 5 + i as u64) as u32
+                    } else {
+                        (splitmix(&mut seed) % src_rows as u64) as u32
+                    }
+                })
+                .collect();
+            let want = bits_to_words(&naive_gather(&src, src_rows, &index));
+            let out_words = n.div_ceil(64).max(1);
+            let mut out = vec![0xFFFF_FFFF_FFFF_FFFFu64; out_words + 1]; // dirty, over-long
+            mask_gather_u32(&src, src_rows, &index, &mut out);
+            assert_eq!(&out[..want.len()], &want[..], "gather mismatch at n={n}");
+            assert_eq!(out[out_words], 0, "surplus word must be cleared at n={n}");
+        }
+    }
+
+    #[test]
+    fn mask_gather_u32_src_rows_smaller_than_max_index_is_false_not_a_panic() {
+        // src has only 2 rows; every index in `index` is >= 2, so every
+        // result bit must be false — and the call must not panic reading
+        // past a 2-row src.
+        let src = [0b11u64]; // rows 0 and 1 both set, but out of reach
+        let index = [2u32, 5, 100, u32::MAX];
+        let mut out = [0u64; 1];
+        mask_gather_u32(&src, 2, &index, &mut out);
+        assert_eq!(out[0], 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "out_words.len()")]
+    fn mask_gather_u32_rejects_short_out_buffer() {
+        let src = [0u64; 1];
+        let index = vec![0u32; 65];
+        let mut out = [0u64; 1]; // 65 elements need 2 words
+        mask_gather_u32(&src, 1, &index, &mut out);
+    }
+
+    #[test]
+    #[should_panic(expected = "src.len()")]
+    fn mask_gather_u32_rejects_short_src_buffer() {
+        let src = [0u64; 1]; // covers only 64 rows
+        let index = [0u32];
+        let mut out = [0u64; 1];
+        mask_gather_u32(&src, 65, &index, &mut out); // claims 65 rows
+    }
+
+    fn naive_scatter(src_bits: &[bool], index: &[u32], out_rows: usize) -> Vec<bool> {
+        let mut out = vec![false; out_rows];
+        for (i, &selected) in src_bits.iter().enumerate() {
+            if selected {
+                let t = index[i] as usize;
+                if t < out_rows {
+                    out[t] = true;
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn mask_scatter_or_u32_empty_index_writes_nothing() {
+        let src: [u64; 0] = [];
+        let index: [u32; 0] = [];
+        let mut out = [0u64; 1]; // caller zeroes before the first call
+        mask_scatter_or_u32(&src, &index, &mut out, 10);
+        assert_eq!(out[0], 0, "no source rows selected ⇒ output unchanged, nothing set");
+    }
+
+    #[test]
+    fn mask_scatter_or_u32_matches_naive_reference_across_the_tail() {
+        for &n in &[0usize, 1, 63, 64, 65, 67, 130] {
+            let mut seed = 0xC0FF_EE00_1234_5678u64;
+            let out_rows = 50usize;
+            let src_bits: Vec<bool> = (0..n).map(|_| splitmix(&mut seed) & 1 == 1).collect();
+            let src = bits_to_words(&src_bits);
+            // Every third target is deliberately out of range.
+            let index: Vec<u32> = (0..n)
+                .map(|i| {
+                    if i % 3 == 0 {
+                        (out_rows as u64 + 7 + i as u64) as u32
+                    } else {
+                        (splitmix(&mut seed) % out_rows as u64) as u32
+                    }
+                })
+                .collect();
+            let want = bits_to_words(&naive_scatter(&src_bits, &index, out_rows));
+            let out_words = out_rows.div_ceil(64);
+            // Caller zeroes once before the first call; over-long by one word
+            // to prove the surplus word is left untouched, not cleared by us.
+            let mut out = vec![0u64; out_words + 1];
+            mask_scatter_or_u32(&src, &index, &mut out, out_rows);
+            assert_eq!(&out[..want.len()], &want[..], "scatter mismatch at n={n}");
+            assert_eq!(out[out_words], 0, "surplus word is untouched (stays as the caller left it) at n={n}");
+        }
+    }
+
+    #[test]
+    fn mask_scatter_or_u32_into_out_rows_larger_and_smaller_than_src_population() {
+        // 3 source rows, all selected, targeting rows 0/1/2.
+        let src = [0b111u64];
+        let index = [0u32, 1, 2];
+        // Larger out_rows: all three land, nothing else set.
+        let mut big = [0u64; 1];
+        mask_scatter_or_u32(&src, &index, &mut big, 40);
+        assert_eq!(big[0], 0b111);
+        // Smaller out_rows: target 2 is out of range and must be dropped,
+        // not panic.
+        let mut small = [0u64; 1];
+        mask_scatter_or_u32(&src, &index, &mut small, 2);
+        assert_eq!(small[0], 0b011, "target 2 is out of range for out_rows=2 and is dropped");
+    }
+
+    #[test]
+    fn mask_scatter_or_u32_repeated_targets_are_a_union_not_a_count() {
+        // Every source row scatters to the same target; OR means it is set
+        // exactly once, never accumulated or overwritten to something else.
+        let src = [0b1111u64];
+        let index = [3u32, 3, 3, 3];
+        let mut out = [0u64; 1];
+        mask_scatter_or_u32(&src, &index, &mut out, 8);
+        assert_eq!(out[0], 1u64 << 3);
+    }
+
+    #[test]
+    fn mask_scatter_or_u32_accumulates_into_a_preloaded_out_buffer() {
+        // A bit the call never scatters to must survive; the call's own
+        // contribution must land alongside it. This must FAIL if the old
+        // whole-buffer zeroing is restored (bit 7 would be cleared).
+        let src = [0b1u64]; // row 0 selected
+        let index = [3u32]; // scatters to bit 3
+        let mut out = [1u64 << 7]; // pre-set bit 7, not touched by this call
+        mask_scatter_or_u32(&src, &index, &mut out, 8);
+        assert_eq!(out[0], (1u64 << 3) | (1u64 << 7), "pre-existing bit 7 must survive alongside the new bit 3");
+    }
+
+    #[test]
+    fn mask_scatter_or_u32_a_second_call_with_a_different_mask_unions_on_top() {
+        let mut out = [0u64; 1];
+        mask_scatter_or_u32(&[0b1u64], &[2u32], &mut out, 8);
+        mask_scatter_or_u32(&[0b1u64], &[5u32], &mut out, 8);
+        assert_eq!(out[0], (1u64 << 2) | (1u64 << 5), "two calls union, the second does not erase the first");
+    }
+
+    #[test]
+    #[should_panic(expected = "out_words.len()")]
+    fn mask_scatter_or_u32_rejects_short_out_buffer() {
+        let src = [0b1u64];
+        let index = [200u32];
+        let mut out = [0u64; 1]; // out_rows=200 needs 4 words
+        mask_scatter_or_u32(&src, &index, &mut out, 200);
+    }
+
+    #[test]
+    #[should_panic(expected = "src.len()")]
+    fn mask_scatter_or_u32_rejects_short_src_buffer() {
+        let src = [0u64; 1]; // covers only 64 index rows
+        let index = vec![0u32; 65];
+        let mut out = [0u64; 1];
+        mask_scatter_or_u32(&src, &index, &mut out, 4);
+    }
+
+    fn naive_group_sum(mask_bits: &[bool], keys: &[u32], values: &[i32], out_len: usize) -> Vec<i64> {
+        let mut out = vec![0i64; out_len];
+        for (i, &selected) in mask_bits.iter().enumerate() {
+            if selected {
+                let k = keys[i] as usize;
+                if k < out_len {
+                    out[k] = out[k].wrapping_add(values[i] as i64);
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn masked_group_sum_i32_empty_inputs_write_zero() {
+        let mask: [u64; 0] = [];
+        let keys: [u32; 0] = [];
+        let values: [i32; 0] = [];
+        let mut out = [0i64; 4]; // caller zeroes before the first call
+        masked_group_sum_i32(&mask, &keys, &values, &mut out);
+        assert_eq!(out, [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn masked_group_sum_i32_matches_naive_reference_across_the_tail() {
+        for &n in &[0usize, 1, 63, 64, 65, 67, 130] {
+            let mut seed = 0x9E37_79B9_0000_0001u64;
+            let n_groups = 12usize;
+            let mask_bits: Vec<bool> = (0..n).map(|_| splitmix(&mut seed) & 1 == 1).collect();
+            let mask = bits_to_words(&mask_bits);
+            // Every fourth key deliberately out of range.
+            let keys: Vec<u32> = (0..n)
+                .map(|i| {
+                    if i % 4 == 0 {
+                        (n_groups as u64 + 3 + i as u64) as u32
+                    } else {
+                        (splitmix(&mut seed) % n_groups as u64) as u32
+                    }
+                })
+                .collect();
+            // Signed values spanning both sides of zero.
+            let values: Vec<i32> = (0..n).map(|_| (splitmix(&mut seed) as i32) / 2).collect();
+            let want = naive_group_sum(&mask_bits, &keys, &values, n_groups);
+            // Caller zeroes once before the first call; one extra slot no
+            // key ever hits, to prove it is left untouched, not cleared.
+            let mut out = vec![0i64; n_groups + 1];
+            masked_group_sum_i32(&mask, &keys, &values, &mut out);
+            assert_eq!(&out[..n_groups], &want[..], "group sum mismatch at n={n}");
+            assert_eq!(
+                out[n_groups], 0,
+                "an unreferenced group slot is untouched (stays as the caller left it) at n={n}"
+            );
+        }
+    }
+
+    #[test]
+    fn masked_group_sum_i32_handles_negative_values() {
+        let mask = [0b111u64];
+        let keys = [0u32, 0, 1];
+        let values = [-10i32, 5, -3];
+        let mut out = [0i64; 2];
+        masked_group_sum_i32(&mask, &keys, &values, &mut out);
+        assert_eq!(out, [-5, -3]);
+    }
+
+    #[test]
+    fn masked_group_sum_i32_all_keys_equal_accumulates_into_one_slot() {
+        let mask = [0b1111u64];
+        let keys = [7u32, 7, 7, 7];
+        let values = [1i32, 2, 3, 4];
+        let mut out = [0i64; 8];
+        masked_group_sum_i32(&mask, &keys, &values, &mut out);
+        assert_eq!(out[7], 10);
+        assert!(out.iter().enumerate().all(|(i, &v)| i == 7 || v == 0), "no other slot is touched");
+    }
+
+    #[test]
+    fn masked_group_sum_i32_out_of_range_key_is_dropped_not_a_panic() {
+        let mask = [0b111u64];
+        let keys = [0u32, 99, 1]; // row 1's key is out of range for a 2-group out
+        let values = [10i32, 999, 20];
+        let mut out = [0i64; 2];
+        masked_group_sum_i32(&mask, &keys, &values, &mut out);
+        assert_eq!(out, [10, 20], "the out-of-range key contributes nothing");
+    }
+
+    #[test]
+    fn masked_group_sum_i32_accumulates_into_a_preloaded_out_buffer() {
+        // Slot 1 starts pre-loaded and is never touched by this call; slot 0
+        // starts pre-loaded and IS the call's target. This must FAIL if the
+        // old whole-buffer zeroing is restored (both would reset to 0 first).
+        let mask = [0b1u64]; // row 0 selected
+        let keys = [0u32]; // routes to slot 0
+        let values = [7i32];
+        let mut out = [5i64, 42i64]; // slot 0 preloaded 5, slot 1 preloaded 42
+        masked_group_sum_i32(&mask, &keys, &values, &mut out);
+        assert_eq!(out[0], 12, "slot 0: preload 5 + contribution 7 = 12");
+        assert_eq!(out[1], 42, "slot 1 is untouched, must survive exactly as preloaded");
+    }
+
+    #[test]
+    fn masked_group_sum_i32_a_second_call_with_a_different_mask_sums_on_top() {
+        let mut out = [0i64; 2];
+        masked_group_sum_i32(&[0b1u64], &[0u32], &[10i32], &mut out);
+        masked_group_sum_i32(&[0b1u64], &[0u32], &[3i32], &mut out);
+        assert_eq!(out, [13, 0], "two calls sum, the second does not erase the first's contribution");
+    }
+
+    #[test]
+    #[should_panic(expected = "keys/values length mismatch")]
+    fn masked_group_sum_i32_rejects_mismatched_keys_and_values() {
+        let mask = [0b1u64];
+        let keys = [0u32, 1];
+        let values = [10i32];
+        let mut out = [0i64; 2];
+        masked_group_sum_i32(&mask, &keys, &values, &mut out);
+    }
+
+    #[test]
+    #[should_panic(expected = "mask_words.len()")]
+    fn masked_group_sum_i32_rejects_short_mask_buffer() {
+        let mask = [0u64; 1]; // covers only 64 rows
+        let keys = vec![0u32; 65];
+        let values = vec![0i32; 65];
+        let mut out = [0i64; 1];
+        masked_group_sum_i32(&mask, &keys, &values, &mut out);
+    }
+
+    // ── masked_group_sum_i32_via ──
+
+    #[test]
+    fn masked_group_sum_i32_via_agrees_with_the_plain_form_on_a_precomputed_key_lane() {
+        for &n in &[0usize, 1, 63, 64, 65, 67, 130] {
+            let mut seed = 0x2222_4444_6666_8888u64;
+            let n_partners = 9usize;
+            let n_groups = 5usize;
+            let mask_bits: Vec<bool> = (0..n).map(|_| splitmix(&mut seed) & 1 == 1).collect();
+            let mask = bits_to_words(&mask_bits);
+            let index: Vec<u32> = (0..n)
+                .map(|_| (splitmix(&mut seed) % n_partners as u64) as u32)
+                .collect();
+            let remap: Vec<u32> = (0..n_partners)
+                .map(|_| (splitmix(&mut seed) % n_groups as u64) as u32)
+                .collect();
+            let values: Vec<i32> = (0..n).map(|_| (splitmix(&mut seed) as i32) / 2).collect();
+
+            // The naive two-hop key lane, materialised, fed to the plain form.
+            let keys: Vec<u32> = index.iter().map(|&idx| remap[idx as usize]).collect();
+            let mut want = vec![0i64; n_groups];
+            masked_group_sum_i32(&mask, &keys, &values, &mut want);
+
+            let mut got = vec![0i64; n_groups]; // caller zeroes before the first call
+            masked_group_sum_i32_via(&mask, &index, &remap, &values, &mut got);
+            assert_eq!(got, want, "via mismatched the plain two-hop-materialised form at n={n}");
+        }
+    }
+
+    #[test]
+    fn masked_group_sum_i32_via_drops_at_the_first_hop_when_index_names_no_partner() {
+        // Row 1's idx (5) is out of range for a 2-entry remap — dropped before
+        // remap is ever consulted.
+        let mask = [0b111u64];
+        let index = [0u32, 5, 1];
+        let remap = [0u32, 1];
+        let values = [10i32, 999, 20];
+        let mut out = [0i64; 2];
+        masked_group_sum_i32_via(&mask, &index, &remap, &values, &mut out);
+        assert_eq!(out, [10, 20], "the out-of-range idx contributes nothing");
+    }
+
+    #[test]
+    fn masked_group_sum_i32_via_drops_at_the_second_hop_when_remap_names_no_group() {
+        // Row 1's partner (1) resolves via remap to group 9, out of range for
+        // a 2-slot out — dropped after the idx resolves cleanly.
+        let mask = [0b111u64];
+        let index = [0u32, 1, 0];
+        let remap = [0u32, 9]; // partner 1 -> group 9 (out of range)
+        let values = [10i32, 999, 20];
+        let mut out = [0i64; 2];
+        masked_group_sum_i32_via(&mask, &index, &remap, &values, &mut out);
+        assert_eq!(out, [30, 0], "the second-hop out-of-range key contributes nothing");
+    }
+
+    #[test]
+    fn masked_group_sum_i32_via_matches_naive_reference_at_the_67_row_tail() {
+        let n = 67usize;
+        let mut seed = 0xABCD_EF01_2345_6789u64;
+        let n_partners = 6usize;
+        let n_groups = 4usize;
+        let mask_bits: Vec<bool> = (0..n).map(|_| splitmix(&mut seed) & 1 == 1).collect();
+        let mask = bits_to_words(&mask_bits);
+        // Every fifth idx deliberately out of range for `remap`.
+        let index: Vec<u32> = (0..n)
+            .map(|i| {
+                if i % 5 == 0 {
+                    (n_partners as u64 + 2 + i as u64) as u32
+                } else {
+                    (splitmix(&mut seed) % n_partners as u64) as u32
+                }
+            })
+            .collect();
+        // Every third partner deliberately maps out of range for `out`.
+        let remap: Vec<u32> = (0..n_partners)
+            .map(|p| {
+                if p % 3 == 0 {
+                    (n_groups as u64 + 1) as u32
+                } else {
+                    (splitmix(&mut seed) % n_groups as u64) as u32
+                }
+            })
+            .collect();
+        let values: Vec<i32> = (0..n).map(|_| (splitmix(&mut seed) as i32) / 2).collect();
+
+        let mut want = vec![0i64; n_groups];
+        for i in 0..n {
+            if !mask_bits[i] {
+                continue;
+            }
+            let idx = index[i] as usize;
+            if idx >= remap.len() {
+                continue;
+            }
+            let k = remap[idx] as usize;
+            if k < n_groups {
+                want[k] = want[k].wrapping_add(values[i] as i64);
+            }
+        }
+        let mut got = vec![0i64; n_groups]; // caller zeroes before the first call
+        masked_group_sum_i32_via(&mask, &index, &remap, &values, &mut got);
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn masked_group_sum_i32_via_accumulates_into_a_preloaded_out_buffer() {
+        // Slot 1 is preloaded and never targeted; slot 0 is preloaded and IS
+        // the resolved target. Must FAIL if whole-buffer zeroing returns.
+        let mask = [0b1u64]; // row 0 selected
+        let index = [0u32]; // partner 0
+        let remap = [0u32]; // partner 0 -> group 0
+        let values = [7i32];
+        let mut out = [5i64, 42i64];
+        masked_group_sum_i32_via(&mask, &index, &remap, &values, &mut out);
+        assert_eq!(out[0], 12, "group 0: preload 5 + contribution 7 = 12");
+        assert_eq!(out[1], 42, "group 1 is untouched, must survive exactly as preloaded");
+    }
+
+    #[test]
+    fn masked_group_sum_i32_via_a_second_call_with_a_different_mask_sums_on_top() {
+        let remap = [0u32];
+        let mut out = [0i64; 1];
+        masked_group_sum_i32_via(&[0b1u64], &[0u32], &remap, &[10i32], &mut out);
+        masked_group_sum_i32_via(&[0b1u64], &[0u32], &remap, &[3i32], &mut out);
+        assert_eq!(out, [13], "two calls sum, the second does not erase the first's contribution");
+    }
+
+    #[test]
+    #[should_panic(expected = "index/values length mismatch")]
+    fn masked_group_sum_i32_via_rejects_mismatched_index_and_values() {
+        let mask = [0b1u64];
+        let index = [0u32, 1];
+        let remap = [0u32];
+        let values = [10i32];
+        let mut out = [0i64; 1];
+        masked_group_sum_i32_via(&mask, &index, &remap, &values, &mut out);
+    }
+
+    #[test]
+    #[should_panic(expected = "mask_words.len()")]
+    fn masked_group_sum_i32_via_rejects_short_mask_buffer() {
+        let mask = [0u64; 1]; // covers only 64 rows
+        let index = vec![0u32; 65];
+        let remap = vec![0u32; 1];
+        let values = vec![0i32; 65];
+        let mut out = [0i64; 1];
+        masked_group_sum_i32_via(&mask, &index, &remap, &values, &mut out);
+    }
+
+    // ── eq_u32_via_to_mask ──
+
+    fn naive_eq_via(idx: &[u32], table: &[u32], v: u32) -> Vec<bool> {
+        idx.iter()
+            .map(|&k| {
+                let k = k as usize;
+                k < table.len() && table[k] == v
+            })
+            .collect()
+    }
+
+    #[test]
+    fn eq_u32_via_to_mask_matches_naive_reference_across_the_tail() {
+        for &n in &[0usize, 1, 63, 64, 65, 130, 1000] {
+            let mut seed = 0xACE1_2345_6789_BEEFu64;
+            let table_len = 17usize;
+            let table: Vec<u32> = (0..table_len)
+                .map(|_| (splitmix(&mut seed) % 5) as u32)
+                .collect();
+            let v = 2u32;
+            // A third of keys are deliberately out of range; the rest hit
+            // `table`, so both the match and no-match arms are genuinely
+            // exercised (not merely plausible).
+            let idx: Vec<u32> = (0..n)
+                .map(|i| {
+                    if i % 3 == 0 {
+                        (table_len as u64 + 3 + i as u64) as u32
+                    } else {
+                        (splitmix(&mut seed) % table_len as u64) as u32
+                    }
+                })
+                .collect();
+            let want_bits = naive_eq_via(&idx, &table, v);
+            let want = bits_to_words(&want_bits);
+            let out_words = n.div_ceil(64).max(1);
+            let mut out = vec![0xFFFF_FFFF_FFFF_FFFFu64; out_words + 1]; // dirty, over-long
+            eq_u32_via_to_mask(&idx, &table, v, &mut out);
+            assert_eq!(&out[..want.len()], &want[..], "eq_u32_via_to_mask mismatch at n={n}");
+            assert_eq!(out[out_words], 0, "surplus word must be cleared at n={n}");
+            if n >= 10 {
+                // Anti-vacuity (skipped at tiny n, where a single fixture
+                // cannot be relied on to hit both arms): this fixture must
+                // actually contain both a match and a non-match, or the
+                // comparison above proves nothing about which arm is
+                // exercised.
+                assert!(want_bits.iter().any(|&b| b), "fixture at n={n} has no matching row at all");
+                assert!(want_bits.iter().any(|&b| !b), "fixture at n={n} has no non-matching row at all");
+            }
+        }
+    }
+
+    #[test]
+    fn eq_u32_via_to_mask_out_of_range_fk_never_matches_even_when_foreign_0_equals_v() {
+        let idx = [5u32, 10, 100, u32::MAX];
+        let table = [7u32]; // table[0] == v, but every idx above is >= 1
+        let mut out = [0u64; 1];
+        eq_u32_via_to_mask(&idx, &table, 7, &mut out);
+        assert_eq!(out[0], 0, "every index names no row in `table`, so nothing may match");
+    }
+
+    #[test]
+    fn eq_u32_via_to_mask_tail_and_surplus_words_are_cleared_not_left_dirty() {
+        let idx = [0u32, 0, 0, 0, 0]; // n = 5, one word; table[0] == v for all
+        let table = [9u32];
+        let mut out = [0xFFFF_FFFF_FFFF_FFFFu64; 3]; // one live word + two surplus
+        eq_u32_via_to_mask(&idx, &table, 9, &mut out);
+        assert_eq!(out[0], 0b11111, "the five live rows should be set");
+        assert_eq!(out[0] & !0b11111, 0, "bits past n=5 in the live word must be zero, not dirty");
+        assert_eq!(out[1], 0, "surplus word 1 must be cleared");
+        assert_eq!(out[2], 0, "surplus word 2 must be cleared");
+    }
+
+    #[test]
+    fn eq_u32_via_to_mask_empty_foreign_yields_all_zero_mask_for_nonempty_fk() {
+        // Every idx names a row, but `table` is empty, so every key is out
+        // of range: the whole mask must be false, not a panic and not a
+        // vacuous "unreachable, so anything goes".
+        let idx = [0u32, 1, 2, 3, 4, 5, 6, 7];
+        let table: [u32; 0] = [];
+        let mut out = [0xFFFF_FFFF_FFFF_FFFFu64; 1];
+        eq_u32_via_to_mask(&idx, &table, 0, &mut out);
+        assert_eq!(out[0], 0, "an empty table table matches nothing");
+    }
+
+    #[test]
+    #[should_panic(expected = "out_words.len()")]
+    fn eq_u32_via_to_mask_rejects_short_out_buffer() {
+        let idx = vec![0u32; 65]; // needs 2 words
+        let table = [0u32];
+        let mut out = [0u64; 1];
+        eq_u32_via_to_mask(&idx, &table, 0, &mut out);
+    }
+
     // ── 2026-09-13 additions: the closed comparison family, complement/xor/
     //    any/all, care-masked register match, masked min/max, blend ──
 
@@ -5006,5 +6203,156 @@ mod tests {
     fn mask_set_range_rejects_hi_past_capacity() {
         let mut out = vec![0u64; 1]; // capacity 64
         mask_set_range(&mut out, 0, 65);
+    }
+}
+
+#[cfg(test)]
+mod key_run_tests {
+    use super::{mask_scatter_or_u32, masked_key_run_count_u32, KeyRunCarry};
+
+    fn splitmix(state: &mut u64) -> u64 {
+        *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = *state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    fn pack(bits: &[bool]) -> Vec<u64> {
+        let mut w = vec![0u64; bits.len().div_ceil(64).max(1)];
+        for (i, &b) in bits.iter().enumerate() {
+            if b {
+                w[i / 64] |= 1 << (i % 64);
+            }
+        }
+        w
+    }
+
+    /// The independent answer: a set of keys, which is exactly the
+    /// population-sized state the run fold exists to avoid.
+    fn distinct_selected(keys: &[u32], sel: &[bool]) -> usize {
+        let mut seen = std::collections::BTreeSet::new();
+        for (k, &s) in keys.iter().zip(sel) {
+            if s {
+                seen.insert(*k);
+            }
+        }
+        seen.len()
+    }
+
+    #[test]
+    fn on_an_ordered_lane_the_run_fold_equals_the_distinct_count_across_any_tiling() {
+        let mut seed = 0x51u64;
+        for &n in &[1usize, 63, 64, 65, 200, 1000] {
+            // Ordered: sorted keys with repeats.
+            let mut keys: Vec<u32> = (0..n).map(|_| (splitmix(&mut seed) % 37) as u32).collect();
+            keys.sort_unstable();
+            let sel: Vec<bool> = (0..n)
+                .map(|_| splitmix(&mut seed).is_multiple_of(3))
+                .collect();
+            let want = distinct_selected(&keys, &sel);
+            assert!(want > 0 || n < 3, "fixture must select something");
+            for &tile in &[1usize, 7, 64, 100, n] {
+                let mut carry = KeyRunCarry::default();
+                let mut got = 0;
+                let mut start = 0;
+                while start < n {
+                    let end = (start + tile).min(n);
+                    got += masked_key_run_count_u32(&keys[start..end], &pack(&sel[start..end]), &mut carry)
+                        .expect("a sorted lane is never refused");
+                    start = end;
+                }
+                got += carry.finish();
+                assert_eq!(got, want, "n={n} tile={tile}");
+                assert_eq!(carry, KeyRunCarry::default(), "finish resets the carry");
+            }
+        }
+    }
+
+    #[test]
+    fn a_run_with_no_selected_element_is_not_counted_and_a_split_run_counts_once() {
+        // 2 2 2 | 4 | 9 9 — key 4 never selected; key 2 selected in the
+        // first and third element (the run is entered by two tiles).
+        let keys = [2u32, 2, 2, 4, 9, 9];
+        let sel = [true, false, true, false, false, true];
+        let m = pack(&sel);
+        let mut c = KeyRunCarry::default();
+        let a = masked_key_run_count_u32(&keys[..2], &m, &mut c);
+        let b = masked_key_run_count_u32(&keys[2..], &[m[0] >> 2], &mut c);
+        assert_eq!(a, Some(0), "the run of 2s is still open after two elements");
+        assert_eq!(b, Some(1), "closing the 2-run counts it once; the 4-run closes unhit");
+        assert_eq!(c.finish(), 1, "the trailing 9-run was hit");
+    }
+
+    #[test]
+    fn a_lane_out_of_key_order_is_refused_not_over_counted() {
+        // 1 2 1: three runs but two keys. The fold must not answer 3.
+        let keys = [1u32, 2, 1];
+        let m = pack(&[true; 3]);
+        let mut c = KeyRunCarry::default();
+        assert_eq!(masked_key_run_count_u32(&keys, &m, &mut c), None);
+        // The refusal is also visible across a tile edge: the descent lands
+        // in the second call, whose carry still holds the larger key.
+        let mut c = KeyRunCarry::default();
+        assert_eq!(masked_key_run_count_u32(&keys[..2], &m, &mut c), Some(1));
+        let before = c;
+        assert_eq!(masked_key_run_count_u32(&keys[2..], &[m[0] >> 2], &mut c), None);
+        assert_eq!(c, before, "a refused call leaves the carry as it was on entry");
+        // The seen-set sink is what an unordered lane needs for an exact answer.
+        let mut sink = [0u64; 1];
+        mask_scatter_or_u32(&m, &keys, &mut sink, 3);
+        assert_eq!(sink[0].count_ones(), 2, "two distinct keys");
+    }
+
+    #[test]
+    fn the_order_check_inspects_unselected_keys_too() {
+        // keys 1 2 1, selected 1 0 1: the selected subsequence reads 1,1 but
+        // the lane has two runs of 1 — a fold that only looked at survivors
+        // would answer 2 instead of refusing.
+        let keys = [1u32, 2, 1];
+        let mut c = KeyRunCarry::default();
+        assert_eq!(masked_key_run_count_u32(&keys, &pack(&[true, false, true]), &mut c), None);
+    }
+
+    #[test]
+    fn a_refused_call_commits_nothing_to_the_carry() {
+        // 5 5 | 9 9 | 2: two runs close inside the call before the descent.
+        // A fold that advanced the caller's carry as it went would leave it
+        // at key 9 — a continuation state for a lane that was never
+        // accepted. `None` must mean "carry exactly as on entry".
+        let keys = [5u32, 5, 9, 9, 2];
+        let mut c = KeyRunCarry {
+            key: Some(5),
+            hit: false,
+        };
+        let before = c;
+        assert_eq!(masked_key_run_count_u32(&keys, &pack(&[true; 5]), &mut c), None);
+        assert_eq!(c, before);
+        // ...and a successful call over the accepted prefix DOES advance it,
+        // so the assertion above is about refusal, not about inertness.
+        assert_eq!(masked_key_run_count_u32(&keys[..4], &pack(&[true; 4]), &mut c), Some(1));
+        assert_eq!(
+            c,
+            KeyRunCarry {
+                key: Some(9),
+                hit: true
+            }
+        );
+    }
+
+    #[test]
+    fn contiguous_but_unsorted_is_refused_deliberately() {
+        // 3 3 1 1: every key contiguous, so a run count WOULD be exact —
+        // but the O(1)-checkable certificate is ORDER, and 1 < 3 breaks it.
+        let keys = [3u32, 3, 1, 1];
+        let mut c = KeyRunCarry::default();
+        assert_eq!(masked_key_run_count_u32(&keys, &pack(&[true; 4]), &mut c), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "mask_words.len()=0 < required 1")]
+    fn short_mask_panics() {
+        let mut c = KeyRunCarry::default();
+        masked_key_run_count_u32(&[1u32, 2], &[], &mut c);
     }
 }

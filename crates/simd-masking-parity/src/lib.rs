@@ -21,25 +21,32 @@
 //! predicates (mask-risc `Pred { under }`, D-MRX-0), `0xBxx` `mask_set_range`
 //! (the range WRITE, N1), `0xCxx` the unsigned `u8` / `u64` compare→mask
 //! family (`eq`/`ne`/`gt`/`ge`/`lt`/`le`, N2/N3 — built earlier but never
-//! exercised by this program until now). `main.rs` (native / qemu) and
+//! exercised by this program until now), `0xDxx` the data-indexed
+//! permutation/scatter family (`mask_gather_u32`/`mask_scatter_or_u32`/
+//! `masked_group_sum_i32`/`masked_group_sum_i32_via`, for
+//! the index-addressed permutation/scatter family); `0xD3x` the
+//! index-addressed `masked_group_sum_i32_via` (two-hop zero-fallback); `0xD4x`
+//! `eq_u32_via_to_mask` (the same index lane, packed as a predicate rather than
+//! folded into a sum). `main.rs` (native / qemu) and
 //! `selfcheck()` (the wasm cdylib export, driven by `run.mjs`) both call
 //! [`run`].
 
 use ndarray::simd::{
     blend_i32, eq_i32_to_mask, eq_i32_to_mask_under, eq_u32_strided_to_mask, eq_u32_to_mask, eq_u32_to_mask_under,
-    eq_u64_to_mask, eq_u8_to_mask, ge_i32_to_mask, ge_i32_to_mask_under, ge_u64_to_mask, ge_u8_to_mask, gt_i32_to_mask,
-    gt_i32_to_mask_under, gt_u64_to_mask, gt_u8_to_mask, le_i32_to_mask, le_i32_to_mask_under, le_u64_to_mask,
-    le_u8_to_mask, lt_i32_to_mask, lt_i32_to_mask_under, lt_u64_to_mask, lt_u8_to_mask, mask_all, mask_and,
-    mask_and_assign, mask_andnot, mask_andnot_assign, mask_any, mask_not, mask_not_assign, mask_or, mask_or_assign,
-    mask_set_range, mask_shift_morton, mask_ternlog, mask_ternlog_assign, mask_xor, mask_xor_assign, masked_max_i32,
-    masked_min_i32, masked_strided_group_sum, masked_sum_i32, ne_i32_to_mask, ne_i32_to_mask_under, ne_u32_to_mask,
-    ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask, ternary_match_strided_to_mask, ternary_match_u32_to_mask,
-    ternary_match_u32_to_mask_under, ternary_match_u64_to_mask, ternary_match_u64_to_mask_under, ternlog, I32x16,
-    MortonDir, U32x16, U64x8,
+    eq_u32_via_to_mask, eq_u64_to_mask, eq_u8_to_mask, ge_i32_to_mask, ge_i32_to_mask_under, ge_u64_to_mask,
+    ge_u8_to_mask, gt_i32_to_mask, gt_i32_to_mask_under, gt_u64_to_mask, gt_u8_to_mask, le_i32_to_mask,
+    le_i32_to_mask_under, le_u64_to_mask, le_u8_to_mask, lt_i32_to_mask, lt_i32_to_mask_under, lt_u64_to_mask,
+    lt_u8_to_mask, mask_all, mask_and, mask_and_assign, mask_andnot, mask_andnot_assign, mask_any, mask_gather_u32,
+    mask_not, mask_not_assign, mask_or, mask_or_assign, mask_scatter_or_u32, mask_set_range, mask_shift_morton,
+    mask_ternlog, mask_ternlog_assign, mask_xor, mask_xor_assign, masked_group_sum_i32, masked_group_sum_i32_via,
+    masked_key_run_count_u32, masked_max_i32, masked_min_i32, masked_strided_group_sum, masked_sum_i32, ne_i32_to_mask,
+    ne_i32_to_mask_under, ne_u32_to_mask, ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask,
+    ternary_match_strided_to_mask, ternary_match_u32_to_mask, ternary_match_u32_to_mask_under,
+    ternary_match_u64_to_mask, ternary_match_u64_to_mask_under, ternlog, I32x16, KeyRunCarry, MortonDir, U32x16, U64x8,
 };
 
 /// Number of check groups [`run`] executes (for the log line only).
-pub const CHECKS: usize = 12;
+pub const CHECKS: usize = 13;
 
 /// The wasm export: identical to [`run`], `extern "C"` so `run.mjs` can call it.
 #[no_mangle]
@@ -52,7 +59,7 @@ pub fn run() -> u32 {
     let groups: [fn() -> Result<(), u32>; CHECKS] = [
         check_ternlog_all_tables, check_u64x8_algebra, check_i32x16_compare, check_predicates_to_mask,
         check_mask_algebra, check_care_match, check_masked_reductions, check_blend, check_morton_shift,
-        check_predicates_under, check_set_range, check_unsigned_compare_to_mask,
+        check_predicates_under, check_set_range, check_unsigned_compare_to_mask, check_gather_scatter_group,
     ];
     for g in groups {
         if let Err(code) = g() {
@@ -1115,6 +1122,293 @@ fn check_unsigned_compare_to_mask() -> Result<(), u32> {
             pred64!(le_u64_to_mask, <=, 0xC90);
             pred64!(gt_u64_to_mask, >, 0xCA0);
             pred64!(ge_u64_to_mask, >=, 0xCB0);
+        }
+    }
+    Ok(())
+}
+
+// ── 0xDxx: mask_gather_u32 / mask_scatter_or_u32 / masked_group_sum_i32 —
+// the index-addressed permutation/scatter family. Every reference below is a plain `for`
+// loop indexed by the SAME data (`index`/`keys`) the primitive under test
+// reads, never a call back into the primitive itself.
+
+fn check_gather_scatter_group() -> Result<(), u32> {
+    let mut rng = SplitMix64(0xD000_0000_0008);
+    for &n in &LENS {
+        let nw = words_for(n);
+
+        // ── mask_gather_u32 ──────────────────────────────────────────────
+        let src_rows = 40usize;
+        let src_words = words_for(src_rows);
+        let src: Vec<u64> = (0..src_words).map(|_| rng.next()).collect();
+        // Every third address is deliberately out of range, so the
+        // "false by contract" arm is exercised, not merely plausible.
+        let index: Vec<u32> = (0..n)
+            .map(|i| {
+                if i % 3 == 0 {
+                    (src_rows as u64 + 5 + i as u64) as u32
+                } else {
+                    (rng.next() % src_rows as u64) as u32
+                }
+            })
+            .collect();
+        let out_len = nw + 1; // dirty, over-long
+        let mut out = vec![u64::MAX; out_len];
+        mask_gather_u32(&src, src_rows, &index, &mut out);
+        let want = reference_mask(n, out_len, |i| {
+            let idx = index[i] as usize;
+            idx < src_rows && (src[idx / 64] >> (idx % 64)) & 1 == 1
+        });
+        if out != want {
+            return Err(0xD00);
+        }
+
+        // ── mask_scatter_or_u32 ──────────────────────────────────────────
+        // `out2` starts explicitly zeroed (the caller's job now, not the
+        // primitive's): the accumulate contract means a dirty prefill would
+        // stay dirty rather than being cleared, so parity against a
+        // from-zero reference needs a from-zero `out2`.
+        let out_rows = 50usize;
+        let out_words_count = words_for(out_rows);
+        let src_bits: Vec<u64> = (0..nw).map(|_| rng.next()).collect();
+        // Every fourth target is deliberately out of range.
+        let idx2: Vec<u32> = (0..n)
+            .map(|i| {
+                if i % 4 == 0 {
+                    (out_rows as u64 + 7 + i as u64) as u32
+                } else {
+                    (rng.next() % out_rows as u64) as u32
+                }
+            })
+            .collect();
+        let out_len2 = out_words_count + 1; // over-long, but zeroed not dirty
+        let mut out2 = vec![0u64; out_len2];
+        mask_scatter_or_u32(&src_bits, &idx2, &mut out2, out_rows);
+        let mut want2 = vec![false; out_rows];
+        for i in 0..n {
+            if (src_bits[i / 64] >> (i % 64)) & 1 == 1 {
+                let t = idx2[i] as usize;
+                if t < out_rows {
+                    want2[t] = true;
+                }
+            }
+        }
+        let want2_words = reference_mask(out_rows, out_len2, |t| want2[t]);
+        if out2 != want2_words {
+            return Err(0xD10);
+        }
+
+        // Accumulation check: preload a bit, prove it survives the call
+        // unioned with the scatter result — the reference is the union
+        // regardless of whether the preloaded bit also happens to be a
+        // scatter target, which is exactly what accumulation must produce.
+        {
+            let preset_bit = out_rows - 1;
+            let mut out2_acc = vec![0u64; out_len2];
+            out2_acc[preset_bit / 64] |= 1u64 << (preset_bit % 64);
+            mask_scatter_or_u32(&src_bits, &idx2, &mut out2_acc, out_rows);
+            let mut want2_acc = want2.clone();
+            want2_acc[preset_bit] = true;
+            let want2_acc_words = reference_mask(out_rows, out_len2, |t| want2_acc[t]);
+            if out2_acc != want2_acc_words {
+                return Err(0xD11);
+            }
+        }
+
+        // ── masked_group_sum_i32 ─────────────────────────────────────────
+        let n_groups = 12usize;
+        let mask_bits: Vec<u64> = (0..nw).map(|_| rng.next()).collect();
+        // Every fifth key is deliberately out of range.
+        let keys: Vec<u32> = (0..n)
+            .map(|i| {
+                if i % 5 == 0 {
+                    (n_groups as u64 + 3 + i as u64) as u32
+                } else {
+                    (rng.next() % n_groups as u64) as u32
+                }
+            })
+            .collect();
+        let values = i32_values(n, &mut rng);
+        // `out` starts explicitly zeroed: the caller's job now, not the
+        // primitive's.
+        let mut group_out = vec![0i64; n_groups + 1]; // one unreferenced slot
+        masked_group_sum_i32(&mask_bits, &keys, &values, &mut group_out);
+        let mut want_group = vec![0i64; n_groups];
+        for i in 0..n {
+            if (mask_bits[i / 64] >> (i % 64)) & 1 == 1 {
+                let k = keys[i] as usize;
+                if k < n_groups {
+                    want_group[k] = want_group[k].wrapping_add(values[i] as i64);
+                }
+            }
+        }
+        if group_out[..n_groups] != want_group[..] {
+            return Err(0xD20);
+        }
+        // The unreferenced slot must stay exactly as the caller left it
+        // (zero here), never touched.
+        if group_out[n_groups] != 0 {
+            return Err(0xD21);
+        }
+        // Accumulation check: preload every group slot with a known value,
+        // prove the call adds its contribution on top rather than resetting.
+        {
+            let preload = 1_000_000i64;
+            let mut group_out_acc = vec![preload; n_groups + 1];
+            masked_group_sum_i32(&mask_bits, &keys, &values, &mut group_out_acc);
+            for k in 0..n_groups {
+                if group_out_acc[k] != preload.wrapping_add(want_group[k]) {
+                    return Err(0xD22);
+                }
+            }
+            if group_out_acc[n_groups] != preload {
+                return Err(0xD22);
+            }
+        }
+
+        // ── masked_group_sum_i32_via ─────────────────────────────────────
+        // Same n_groups/mask_bits/values as above, but the key is reached
+        // through a second-hop `index -> remap` lane rather than a direct
+        // `keys` lane — out-of-range addresses are mixed in at BOTH hops.
+        let n_partners = 8usize;
+        // Every fourth index is deliberately out of range for `remap`.
+        let index: Vec<u32> = (0..n)
+            .map(|i| {
+                if i % 4 == 0 {
+                    (n_partners as u64 + 6 + i as u64) as u32
+                } else {
+                    (rng.next() % n_partners as u64) as u32
+                }
+            })
+            .collect();
+        // Every third partner deliberately resolves out of range for `out`.
+        let remap: Vec<u32> = (0..n_partners)
+            .map(|p| {
+                if p % 3 == 0 {
+                    (n_groups as u64 + 4) as u32
+                } else {
+                    (rng.next() % n_groups as u64) as u32
+                }
+            })
+            .collect();
+        // `out` starts explicitly zeroed: the caller's job now, not the
+        // primitive's.
+        let mut via_out = vec![0i64; n_groups + 1]; // one unreferenced slot
+        masked_group_sum_i32_via(&mask_bits, &index, &remap, &values, &mut via_out);
+        let mut want_via = vec![0i64; n_groups];
+        for i in 0..n {
+            if (mask_bits[i / 64] >> (i % 64)) & 1 != 1 {
+                continue;
+            }
+            let j = index[i] as usize;
+            if j >= remap.len() {
+                continue;
+            }
+            let k = remap[j] as usize;
+            if k < n_groups {
+                want_via[k] = want_via[k].wrapping_add(values[i] as i64);
+            }
+        }
+        if via_out[..n_groups] != want_via[..] {
+            return Err(0xD30);
+        }
+        // The unreferenced slot must stay exactly as the caller left it
+        // (zero here), never touched.
+        if via_out[n_groups] != 0 {
+            return Err(0xD31);
+        }
+        // Accumulation check: preload every group slot, prove the call adds
+        // its contribution on top rather than resetting.
+        {
+            let preload = 2_000_000i64;
+            let mut via_out_acc = vec![preload; n_groups + 1];
+            masked_group_sum_i32_via(&mask_bits, &index, &remap, &values, &mut via_out_acc);
+            for k in 0..n_groups {
+                if via_out_acc[k] != preload.wrapping_add(want_via[k]) {
+                    return Err(0xD32);
+                }
+            }
+            if via_out_acc[n_groups] != preload {
+                return Err(0xD32);
+            }
+        }
+
+        // ── eq_u32_via_to_mask ────────────────────────────────────────────
+        // A predicate evaluated through the same index lane `masked_group_sum_i32_via`
+        // uses for its key, but packed into a bitmask rather than folded into a
+        // sum: `index[i] < table.len() && table[index[i]] == v`.
+        let table_len = 9usize;
+        let table: Vec<u32> = (0..table_len).map(|_| (rng.next() % 5) as u32).collect();
+        let v = 2u32;
+        // Every fourth index is deliberately out of range for `table`.
+        let index2: Vec<u32> = (0..n)
+            .map(|i| {
+                if i % 4 == 0 {
+                    (table_len as u64 + 6 + i as u64) as u32
+                } else {
+                    (rng.next() % table_len as u64) as u32
+                }
+            })
+            .collect();
+        let mut via_mask = vec![u64::MAX; out_len]; // dirty, over-long
+        eq_u32_via_to_mask(&index2, &table, v, &mut via_mask);
+        let want_via_mask = reference_mask(n, out_len, |i| {
+            let k = index2[i] as usize;
+            k < table.len() && table[k] == v
+        });
+        if via_mask != want_via_mask {
+            return Err(0xD40);
+        }
+
+        // ── masked_key_run_count_u32 ─────────────────────────────────────
+        // A key-ORDERED lane (sorted with repeats), folded in uneven tiles
+        // with the carry threaded through; the reference is a plain
+        // seen-set over the selected elements — the population-sized state
+        // the fold replaces on an ordered lane.
+        let mut keys: Vec<u32> = (0..n).map(|_| (rng.next() % 23) as u32).collect();
+        keys.sort_unstable();
+        let sel: Vec<bool> = (0..n).map(|_| rng.next().is_multiple_of(3)).collect();
+        let sel_bits = reference_mask(n, nw, |i| sel[i]);
+        let mut carry = KeyRunCarry::default();
+        let mut got = 0usize;
+        let mut start = 0usize;
+        let tile = 37usize;
+        while start < n {
+            let end = (start + tile).min(n);
+            let mut tile_bits = vec![0u64; (end - start).div_ceil(64).max(1)];
+            for i in start..end {
+                if sel[i] {
+                    tile_bits[(i - start) / 64] |= 1 << ((i - start) % 64);
+                }
+            }
+            let Some(closed) = masked_key_run_count_u32(&keys[start..end], &tile_bits, &mut carry) else {
+                return Err(0xD51);
+            };
+            got += closed;
+            start = end;
+        }
+        got += carry.finish();
+        let want: std::collections::BTreeSet<u32> = (0..n).filter(|&i| sel[i]).map(|i| keys[i]).collect();
+        if got != want.len() {
+            return Err(0xD50);
+        }
+        let _ = sel_bits;
+        // The refusal half: one descent anywhere in the lane must be seen.
+        // Rotate the smallest key to the END so the descent is the LAST
+        // element: by then a non-transactional walk would have advanced
+        // through every run of the lane, which is what 0xD53 must catch.
+        if n >= 2 && keys[0] < keys[n - 1] {
+            let mut bad = keys[1..].to_vec();
+            bad.push(keys[0]);
+            let mut c = KeyRunCarry { key: Some(bad[0]), hit: true };
+            let before = c;
+            if masked_key_run_count_u32(&bad, &sel_bits, &mut c).is_some() {
+                return Err(0xD52);
+            }
+            // A refused call commits nothing: the carry is as on entry.
+            if c != before {
+                return Err(0xD53);
+            }
         }
     }
     Ok(())

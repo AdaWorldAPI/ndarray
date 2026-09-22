@@ -1,3 +1,19 @@
+## 2026-09-21 (20) — six index-addressed mask primitives (0xDxx): gather / scatter-or / keyed group-sum (direct + via index) / indexed equality / ORDERED key-run distinct fold
+
+All in `simd_masking_ops.rs` + the `simd::` facade, documented in ADDRESS terms only (`index` / `table` / `keys`; no join, foreign-key, semijoin, table-name or ERP vocabulary — T1 does not know what a consumer means by an index lane). All are deliberately scalar bit-walks: permutations/scatters indexed by data, not a fixed stride, so none of this crate's backends can vector-load them (same shape as `masked_strided_group_sum`, which is NOT a keyed group-by — it sums one record's own byte-groups into a scalar; zero callers of it are affected).
+
+- `mask_gather_u32(src, src_rows, index, out)` — bit `i` of `out` = bit `index[i]` of `src`, zero-fallback out of range, full overwrite of `out`. Survival condition: `src` is resident state, `out` a tile of the caller's scratch.
+- `mask_scatter_or_u32(src, index, out, out_rows)` — OR through `index` into `out`; ACCUMULATES (the caller zeroes once). Survival condition: `out` is the demanded sink or the accumulator of the fold whose scalar leaves — never a buffer another pass reads back.
+- `masked_group_sum_i32(mask, keys, values, out)` / `masked_group_sum_i32_via(mask, index, table, values, out)` — one-pass keyed segmented sum, key read directly or through `index`→`table` (fused; no remapped key lane of N is materialised). Accumulate.
+- `eq_u32_via_to_mask(index, table, v, out_words)` — `index[i] < table.len() && table[index[i]] == v` packed as a mask; full overwrite like gather.
+- `masked_key_run_count_u32(keys, mask_words, &mut KeyRunCarry) -> Option<usize>` — on a NON-DECREASING key lane, the count of distinct keys among selected elements as a run fold with an O(1) carry (`KeyRunCarry { key: Option<u32>, hit: bool }`, two scalar fields; `finish()` closes the last run). Any descent — checked over EVERY key, selected or not (`1 2 1` with `1 0 1` selected is the pinned whole-lane counterexample) — returns `None` and leaves the carry exactly as on entry (the walk commits a local copy only on `Some`). Contiguous-but-unsorted (`3 3 1 1`) is refused too, deliberately: order is the one contiguity certificate checkable with O(1) state in the same pass. Nothing is ever over-counted.
+
+Fold kernels accumulate into the caller's sink and never zero it (operator ruling, same day): every unit test prefills `out` explicitly and each accumulating function has two-sided tests (a preloaded slot survives beside the call's own contribution; a second call sums/unions on top), disable-verified red-then-green by temporarily restoring the whole-buffer zero.
+
+Parity: `check_gather_scatter_group` in `crates/simd-masking-parity` — `0xD0x`/`0xD1x`/`0xD2x` gather/scatter/group-sum (+ accumulation checks `0xD11`/`0xD22`/`0xD32`), `0xD3x` via-index group-sum, `0xD40` indexed equality, `0xD50` run fold threaded across uneven tiles vs a seen-set reference, `0xD51` a sorted lane is never refused, `0xD52` one descent is refused, `0xD53` a refused call leaves the carry unchanged. All against naive per-element references, disable-verified red-then-green.
+
+Consumer: lance-graph-mask-risc (`Gather`, `ScatterOrU32`, `GroupSum*`, `Pred::EqU32Via`, `CountKeyRunsU32` → `ExecError::LaneNotOrdered`).
+
 ## 2026-09-17 (19) — G8 named: a tree-depth column (`lzcnt(bswap(x)) >> 2`) is the missing primitive for basin-local ranking; popcount is only its tie-break
 
 Filed, not built. Full text in `masking-ops-state.md` § OUTLOOK G8 and the
