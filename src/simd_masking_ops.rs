@@ -743,11 +743,7 @@ pub fn masked_sum_i32(values: &[i32], mask_words: &[u64]) -> i64 {
 /// ```
 #[inline]
 pub fn masked_sum_wrapping_add_i32(a: &[i32], b: &[i32], mask_words: &[u64]) -> i64 {
-    assert_eq!(
-        a.len(),
-        b.len(),
-        "masked_sum_wrapping_add_i32: a/b length mismatch"
-    );
+    assert_eq!(a.len(), b.len(), "masked_sum_wrapping_add_i32: a/b length mismatch");
     let n = a.len();
     let words = mask_words_for(n);
     assert!(
