@@ -6657,6 +6657,8 @@ mod group_family_tests {
     //! out-of-universe keys, dirty mask tails and the accumulate contract.
     use super::*;
 
+    /// A deterministic 64-bit LCG, high bits only, so every fixture is
+    /// reproducible from its seed with no RNG dependency.
     fn lcg(s: &mut u64) -> u64 {
         *s = s
             .wrapping_mul(6364136223846793005)
@@ -6664,6 +6666,8 @@ mod group_family_tests {
         *s >> 17
     }
 
+    /// One generated fixture: a mask over `n` rows, a resident key lane, a
+    /// VIA address (`index` into `table`) and the value lane MIN/MAX read.
     struct Fx {
         mask: Vec<u64>,
         keys: Vec<u32>,
@@ -6707,15 +6711,19 @@ mod group_family_tests {
         }
     }
 
+    /// Row `i`'s mask bit, read longhand (never through the walker).
     fn selected(fx: &Fx, i: usize) -> bool {
         fx.mask[i / 64] >> (i % 64) & 1 == 1
     }
 
+    /// Row `i`'s resident group, or `None` when the key is past the universe.
     fn key_resident(fx: &Fx, i: usize) -> Option<usize> {
         let k = fx.keys[i] as usize;
         (k < GROUPS).then_some(k)
     }
 
+    /// Row `i`'s VIA group, `table[index[i]]`, or `None` when either hop
+    /// drops (index past the table, or key past the universe).
     fn key_via(fx: &Fx, i: usize) -> Option<usize> {
         let a = fx.index[i] as usize;
         if a >= fx.table.len() {
@@ -6725,6 +6733,9 @@ mod group_family_tests {
         (k < GROUPS).then_some(k)
     }
 
+    /// The independent scalar oracle: fold `f` over every selected row whose
+    /// group resolves, starting each slot at `seed`; `count` folds a 1 per
+    /// row instead of the row's value.
     fn reference(
         fx: &Fx, key: fn(&Fx, usize) -> Option<usize>, seed: i64, f: fn(i64, i64) -> i64, count: bool,
     ) -> Vec<i64> {
@@ -6741,6 +6752,8 @@ mod group_family_tests {
 
     const LENS: &[usize] = &[0, 1, 63, 64, 65, 130, 1000];
 
+    /// All eight members (sum, count, min, max × resident, VIA) equal the
+    /// scalar oracle at every length in [`LENS`], word boundaries included.
     #[test]
     fn every_member_matches_the_scalar_reference_on_both_addresses() {
         for &n in LENS {
@@ -6851,12 +6864,15 @@ mod group_family_tests {
         assert_eq!(s, [i64::MIN]);
     }
 
+    /// A mask shorter than the row count is refused, and the panic names the
+    /// public function the caller used, not the shared walker.
     #[test]
     #[should_panic(expected = "masked_group_count_u32: mask_words.len()=0 < required 1")]
     fn a_short_mask_is_refused_with_the_callers_name() {
         masked_group_count_u32(&[], &[0], &mut [0]);
     }
 
+    /// MIN refuses key and value lanes of different lengths.
     #[test]
     #[should_panic(expected = "keys/values length mismatch")]
     fn min_refuses_mismatched_lanes() {
