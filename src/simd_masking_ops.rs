@@ -1316,8 +1316,10 @@ fn group_walk(
 /// popcounts (one per group).
 ///
 /// Same contract as [`masked_group_sum_i32`] in every other respect: `out`
-/// is accumulated into (the caller zeroes it once), a key past `out.len()`
-/// is dropped, and the final mask word is clamped to `keys.len()`.
+/// is accumulated into (the caller zeroes it once) with `wrapping_add`, so a
+/// slot the caller seeded near `i64::MAX` wraps identically in every build
+/// profile; a key past `out.len()` is dropped, and the final mask word is
+/// clamped to `keys.len()`.
 ///
 /// # Panics
 ///
@@ -1337,7 +1339,7 @@ fn group_walk(
 #[inline]
 pub fn masked_group_count_u32(mask_words: &[u64], keys: &[u32], out: &mut [i64]) {
     group_walk("masked_group_count_u32", mask_words, keys.len(), GroupKeyAddr::Resident(keys), out, |slot, _| {
-        *slot += 1
+        *slot = slot.wrapping_add(1)
     });
 }
 
@@ -1369,7 +1371,7 @@ pub fn masked_group_count_u32_via(mask_words: &[u64], index: &[u32], table: &[u3
         index.len(),
         GroupKeyAddr::Via { index, table },
         out,
-        |slot, _| *slot += 1,
+        |slot, _| *slot = slot.wrapping_add(1),
     );
 }
 
@@ -6826,6 +6828,27 @@ mod group_family_tests {
         let mut m = [-50i64; 1];
         masked_group_min_i32(&mask, &keys, &values, &mut m);
         assert_eq!(m, [-50], "an existing smaller value must survive");
+    }
+
+    /// A count slot the caller seeded at `i64::MAX` must WRAP on the next
+    /// selected row, in every build profile, exactly as the sum family does.
+    /// A plain `+= 1` panics here in a debug build and wraps in release; the
+    /// behavior must not depend on which one is running.
+    #[test]
+    fn counts_wrap_like_sums_at_the_i64_boundary() {
+        let mask = [0b1u64];
+        let mut c = [i64::MAX; 1];
+        masked_group_count_u32(&mask, &[0], &mut c);
+        assert_eq!(c, [i64::MIN], "resident count must wrap, not panic");
+
+        let mut v = [i64::MAX; 1];
+        masked_group_count_u32_via(&mask, &[0], &[0], &mut v);
+        assert_eq!(v, [i64::MIN], "via count must wrap, not panic");
+
+        // Same boundary on the sum family, for parity.
+        let mut s = [i64::MAX; 1];
+        masked_group_sum_i32(&mask, &[0], &[1], &mut s);
+        assert_eq!(s, [i64::MIN]);
     }
 
     #[test]
