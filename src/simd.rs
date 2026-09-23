@@ -834,8 +834,8 @@ pub use crate::simd_masking_ops::{
     masked_group_min_i32_via,
     masked_group_sum_i32,
     masked_group_sum_i32_via,
-    masked_group_sum_seeded_i32,
-    masked_group_sum_seeded_i32_via,
+    masked_group_sum_sym_i32,
+    masked_group_sum_sym_i32_via,
     masked_key_run_count_u32,
     masked_max_i32,
     masked_min_i32,
@@ -855,6 +855,7 @@ pub use crate::simd_masking_ops::{
     ternary_match_u64_to_mask_under,
     KeyRunCarry,
     MortonDir,
+    SYM_EMPTY_I64,
 };
 // The popcount that closes the loop on the masks above: `mask_count` in ABI
 // terms. Already public at `ndarray::bitwise::popcount_batch_u64`; re-exported
