@@ -38,12 +38,12 @@ use ndarray::simd::{
     le_i32_to_mask_under, le_u64_to_mask, le_u8_to_mask, lt_i32_to_mask, lt_i32_to_mask_under, lt_u64_to_mask,
     lt_u8_to_mask, mask_all, mask_and, mask_and_assign, mask_andnot, mask_andnot_assign, mask_any, mask_gather_u32,
     mask_not, mask_not_assign, mask_or, mask_or_assign, mask_scatter_or_u32, mask_set_range, mask_shift_morton,
-    mask_ternlog, mask_ternlog_assign, mask_xor, mask_xor_assign, masked_group_sum_i32, masked_group_sum_i32_via,
-    masked_key_run_count_u32, masked_max_i32, masked_min_i32, masked_strided_group_sum, masked_sum_i32,
-    masked_sum_wrapping_add_i32, ne_i32_to_mask,
-    ne_i32_to_mask_under, ne_u32_to_mask, ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask,
-    ternary_match_strided_to_mask, ternary_match_u32_to_mask, ternary_match_u32_to_mask_under,
-    ternary_match_u64_to_mask, ternary_match_u64_to_mask_under, ternlog, I32x16, KeyRunCarry, MortonDir, U32x16, U64x8,
+    mask_ternlog, mask_ternlog_any, mask_ternlog_assign, mask_ternlog_popcount, mask_xor, mask_xor_assign,
+    masked_group_sum_i32, masked_group_sum_i32_via, masked_key_run_count_u32, masked_max_i32, masked_min_i32,
+    masked_strided_group_sum, masked_sum_i32, masked_sum_wrapping_add_i32, ne_i32_to_mask, ne_i32_to_mask_under,
+    ne_u32_to_mask, ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask, ternary_match_strided_to_mask,
+    ternary_match_u32_to_mask, ternary_match_u32_to_mask_under, ternary_match_u64_to_mask,
+    ternary_match_u64_to_mask_under, ternlog, I32x16, KeyRunCarry, MortonDir, U32x16, U64x8,
 };
 
 /// Number of check groups [`run`] executes (for the log line only).
@@ -642,6 +642,14 @@ fn check_mask_algebra() -> Result<(), u32> {
                 if t != dst {
                     return Err($code | 0x8);
                 }
+                // The no-mask folds equal the materializing pair they replace.
+                let want: u64 = dst.iter().map(|w| u64::from(w.count_ones())).sum();
+                if mask_ternlog_popcount::<IMM>(&a, &b, &c) != want {
+                    return Err($code | 0x80);
+                }
+                if mask_ternlog_any::<IMM>(&a, &b, &c) != mask_any(&dst) {
+                    return Err($code | 0x40);
+                }
             }};
         }
         slice_ternlog!(ternlog::AND2_OR, 0x610);
@@ -788,9 +796,7 @@ fn check_masked_reductions() -> Result<(), u32> {
             }
             let want_wrapping_add = (0..n)
                 .filter(|&i| (m[i / 64] >> (i % 64)) & 1 == 1)
-                .fold(0i64, |acc, i| {
-                    acc.wrapping_add(vals[i].wrapping_add(rhs[i]) as i64)
-                });
+                .fold(0i64, |acc, i| acc.wrapping_add(vals[i].wrapping_add(rhs[i]) as i64));
             if masked_sum_wrapping_add_i32(&vals, &rhs, m) != want_wrapping_add {
                 return Err(0x850 | k);
             }
@@ -1410,7 +1416,10 @@ fn check_gather_scatter_group() -> Result<(), u32> {
         if n >= 2 && keys[0] < keys[n - 1] {
             let mut bad = keys[1..].to_vec();
             bad.push(keys[0]);
-            let mut c = KeyRunCarry { key: Some(bad[0]), hit: true };
+            let mut c = KeyRunCarry {
+                key: Some(bad[0]),
+                hit: true,
+            };
             let before = c;
             if masked_key_run_count_u32(&bad, &sel_bits, &mut c).is_some() {
                 return Err(0xD52);
