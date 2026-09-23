@@ -27,7 +27,7 @@
 //! z buffer and no inverse back to cosine. [`fisher_z`] exists for single
 //! scalars — a report statistic, a threshold — not for arrays.
 
-use crate::simd::{simd_ln_f32, F32x16};
+use crate::simd::F32x16;
 
 /// Rim clamp for the `f64` Fisher transform — identical to
 /// `helix::fisher_z::Similarity::CLAMP_EPS`, so this and helix agree bit for
@@ -48,6 +48,11 @@ pub const FISHER_CLAMP_F32: f32 = 1.0 - f32::EPSILON / 2.0;
 /// values; NaN propagates. Under the usual bivariate-normal model `z` is
 /// approximately normal with variance `1/(n−3)`, which is what makes
 /// confidence bands on it mean the same thing everywhere on the scale.
+///
+/// **Not bit-exact across targets.** This is the `f64` scalar for single
+/// values (a report statistic, a threshold) and uses the platform `ln`; its
+/// last ulp can differ between targets (measured: x86-64 glibc vs wasm32).
+/// The substrate path — [`ZGamma`] codes — does not use it and is bit-exact.
 ///
 /// # Example
 ///
@@ -174,7 +179,10 @@ impl ZGamma {
         let shift = F32x16::splat(127.0);
         for (s, d) in cs.iter().zip(cd) {
             let x = F32x16::from_array(core::array::from_fn(|i| clamp_f32(s[i])));
-            let z = (simd_ln_f32(one + x) - simd_ln_f32(one - x)) * half;
+            let (p, m) = ((one + x).to_array(), (one - x).to_array());
+            let lp = F32x16::from_array(core::array::from_fn(|i| ln_det(p[i])));
+            let lm = F32x16::from_array(core::array::from_fn(|i| ln_det(m[i])));
+            let z = (lp - lm) * half;
             let v = (((z - z_min) / z_range) * scale - shift).to_array();
             *d = core::array::from_fn(|i| quantize(v[i]));
         }
@@ -224,10 +232,54 @@ fn quantize(v: f32) -> i8 {
 
 /// Scalar `f32` Fisher-Z with the `f32` rim clamp. Private on purpose: its
 /// result only ever lives in a register on its way to a code.
+///
+/// Uses [`ln_det`], not `f32::ln`: the platform libm differs in the last one
+/// or two ulp between targets (measured: 624 of 8 539 grid values differ
+/// between x86-64 glibc and wasm32), and a one-ulp difference at a rounding
+/// boundary flips a code.
 #[inline]
 fn fisher_z_f32(r: f32) -> f32 {
     let s = clamp_f32(r);
-    ((1.0 + s).ln() - (1.0 - s).ln()) * 0.5
+    (ln_det(1.0 + s) - ln_det(1.0 - s)) * 0.5
+}
+
+/// Deterministic natural log for positive normal `f32`, bit-identical on
+/// every target.
+///
+/// Built only from IEEE add, sub, mul, div and bit operations, evaluated in a
+/// fixed order (Rust never contracts into FMA), so every conforming target
+/// produces the same bits. Algorithm: musl / FreeBSD `logf` — split off the
+/// exponent `k`, reduce the mantissa to `[√½, √2)`, and evaluate a degree-8
+/// polynomial in `s = f/(2+f)`. Error is below one ulp.
+///
+/// Domain: the Fisher path only ever passes `1 ± s` with `|s| ≤ 1 − 2⁻²⁴`,
+/// i.e. `[2⁻²⁴, 2)` — positive and normal. NaN propagates. Zero, negative,
+/// subnormal and infinite inputs are outside the domain and not handled.
+#[inline]
+fn ln_det(x: f32) -> f32 {
+    const LN2_HI: f32 = f32::from_bits(0x3f31_7180); // 6.9313812256e-01
+    const LN2_LO: f32 = f32::from_bits(0x3717_f7d1); // 9.0580006145e-06
+    const LG1: f32 = f32::from_bits(0x3f2a_aaaa); // 0.66666662693
+    const LG2: f32 = f32::from_bits(0x3ecc_ce13); // 0.40000972152
+    const LG3: f32 = f32::from_bits(0x3e91_e9ee); // 0.28498786688
+    const LG4: f32 = f32::from_bits(0x3e78_9e26); // 0.24279078841
+    if x.is_nan() {
+        return x;
+    }
+    let mut ix = x.to_bits();
+    ix = ix.wrapping_add(0x3f80_0000 - 0x3f35_04f3);
+    let k = (ix >> 23) as i32 - 0x7f;
+    ix = (ix & 0x007f_ffff) + 0x3f35_04f3;
+    let f = f32::from_bits(ix) - 1.0;
+    let s = f / (2.0 + f);
+    let z = s * s;
+    let w = z * z;
+    let t1 = w * (LG2 + w * LG4);
+    let t2 = z * (LG1 + w * LG3);
+    let r = t2 + t1;
+    let hfsq = 0.5 * f * f;
+    let dk = k as f32;
+    s * (hfsq + r) + dk * LN2_LO - hfsq + f + dk * LN2_HI
 }
 
 #[inline]
@@ -431,5 +483,76 @@ mod tests {
         assert_eq!(hamming_null_z(8192 - 64, 16_384), -1.0);
         assert_eq!(hamming_null_z(8192 + 192, 16_384), 3.0);
         assert_eq!(hamming_null_z(5, 0), 0.0);
+    }
+}
+
+#[cfg(test)]
+mod golden {
+    use super::*;
+
+    fn fnv(bytes: impl IntoIterator<Item = u8>) -> u64 {
+        let mut h = 0xcbf2_9ce4_8422_2325u64;
+        for b in bytes {
+            h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+        }
+        h
+    }
+
+    fn grid() -> Vec<f32> {
+        // Dense in the centre, and walking every f32 bit pattern near the rim,
+        // where ln(1 − r) is most sensitive to the last ulp.
+        let mut v: Vec<f32> = (-4096..=4096).map(|i| i as f32 / 4096.0).collect();
+        let mut r = 0.999f32;
+        while r < 1.0 {
+            v.push(r);
+            v.push(-r);
+            r = f32::from_bits(r.to_bits() + 97);
+        }
+        v
+    }
+
+    /// `ln_det` stays within one ulp of the correctly rounded result over
+    /// its whole domain `[2⁻²⁴, 2)`, sampled every 257th bit pattern.
+    #[test]
+    fn ln_det_is_within_one_ulp() {
+        let (lo, hi) = (2f32.powi(-24).to_bits(), 2f32.to_bits());
+        let mut worst = 0u32;
+        let mut b = lo;
+        while b < hi {
+            let x = f32::from_bits(b);
+            let exact = (f64::from(x).ln()) as f32;
+            let got = ln_det(x);
+            let ulp = got.to_bits().abs_diff(exact.to_bits());
+            // The sign can differ only at x = 1, where both are ±0.
+            if exact != 0.0 {
+                worst = worst.max(ulp);
+            }
+            b += 257;
+        }
+        assert!(worst <= 1, "worst error {worst} ulp");
+        assert!(ln_det(f32::NAN).is_nan());
+        assert_eq!(ln_det(1.0), 0.0);
+    }
+
+    /// Pinned digests over a fixed grid (dense centre plus every 97th f32
+    /// bit pattern near the rim). The same constants must hold on every
+    /// target — x86-64 (all realizations), aarch64 and wasm32. Measured
+    /// before `ln_det`: with libm, 624 of the 8 539 z values differed between
+    /// x86-64 glibc and wasm32.
+    pub const GOLDEN_CODES: u64 = 0xfb0b_294d_2a65_3dbb;
+    pub const GOLDEN_Z32: u64 = 0x2e92_a08e_fd1f_cb69;
+
+    #[test]
+    fn digests_are_pinned() {
+        let g = grid();
+        assert_eq!(g.len(), 8539);
+        let env = ZGamma::fit(&g);
+        let mut codes = vec![0i8; g.len()];
+        env.encode_batch(&g, &mut codes);
+        assert_eq!(fnv(codes.iter().map(|&c| c as u8)), GOLDEN_CODES, "codes drifted");
+        let z = fnv(g
+            .iter()
+            .flat_map(|&r| fisher_z_f32(r).to_bits().to_le_bytes()));
+        assert_eq!(z, GOLDEN_Z32, "z bits drifted");
     }
 }
