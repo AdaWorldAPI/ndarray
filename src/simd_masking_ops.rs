@@ -1234,6 +1234,106 @@ pub fn masked_group_sum_i32_via(mask_words: &[u64], index: &[u32], table: &[u32]
     );
 }
 
+/// The reserved code of the `_sym` family: the one `i64` a `_sym` fold
+/// never produces as a real value, marking "no row reached this group".
+///
+/// # Full range versus `_sym` (NORMATIVE for this file)
+///
+/// Every masked reduction in this file WITHOUT a `_sym` suffix uses the full
+/// two's-complement range: every `i64` it writes is a real value, `i64::MIN`
+/// included. Nothing there reserves a code, so a caller that treats the
+/// output as plain integers is always right.
+///
+/// A function WITH the `_sym` suffix uses the symmetric range
+/// `±(2^63 − 1)` and reserves `i64::MIN` (this constant) as "empty", the way
+/// a 4-bit code read as `−7..+7` frees `−8` for a NaN. The reservation is
+/// opt-in by name only: no full-range function ever interprets `i64::MIN`
+/// specially, and a `_sym` output must never be handed to code that assumes
+/// full range without first mapping `SYM_EMPTY_I64` away.
+pub const SYM_EMPTY_I64: i64 = i64::MIN;
+
+/// [`masked_group_sum_i32`] in the symmetric range: tells an EMPTY group
+/// from a group that sums to zero. A slot still holding [`SYM_EMPTY_I64`]
+/// has seen no row: the first selected row landing there REPLACES the
+/// marker, and every later row adds to it (`wrapping_add`, as the plain sum).
+///
+/// The full-range sum cannot make this distinction: an empty group and a
+/// group whose rows cancel (`+5`, `-5`) both end at `0`. Fill `out` with
+/// [`SYM_EMPTY_I64`] once; afterwards a slot equals it exactly when no row
+/// reached it.
+///
+/// # Row bound
+///
+/// A sum of `n` `i32`s is bounded by `n × 2^31`, which stays strictly above
+/// `i64::MIN` for every `n < 2^32`. At exactly `2^32` rows of `i32::MIN` a
+/// real sum would land on the reserved code, so a caller folding `2^32` or
+/// more rows into one slot must bound its row count.
+///
+/// # Panics
+///
+/// Panics if `keys.len() != values.len()`, or if `mask_words.len() <
+/// values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::{masked_group_sum_sym_i32, SYM_EMPTY_I64};
+///
+/// let mask = [0b0111u64]; // rows 0, 1, 2
+/// let keys = [0u32, 0, 2, 1];
+/// let values = [5i32, -5, 7, 9];
+/// let mut out = [SYM_EMPTY_I64; 3];
+/// masked_group_sum_sym_i32(&mask, &keys, &values, &mut out);
+/// // group 0 cancels to 0 (non-empty); group 1 saw no selected row.
+/// assert_eq!(out, [0, SYM_EMPTY_I64, 7]);
+/// ```
+#[inline]
+pub fn masked_group_sum_sym_i32(mask_words: &[u64], keys: &[u32], values: &[i32], out: &mut [i64]) {
+    assert_eq!(keys.len(), values.len(), "masked_group_sum_sym_i32: keys/values length mismatch");
+    group_walk(
+        "masked_group_sum_sym_i32",
+        mask_words,
+        values.len(),
+        GroupKeyAddr::Resident(keys),
+        out,
+        sym_sum_fold(values),
+    );
+}
+
+/// [`masked_group_sum_sym_i32`] with the group of row `i` read as
+/// `table[index[i]]`, zero-fallback at both hops exactly as
+/// [`masked_group_sum_i32_via`]. Same reserved code, same row bound.
+///
+/// # Panics
+///
+/// Panics if `index.len() != values.len()`, or if `mask_words.len() <
+/// values.len().div_ceil(64)`.
+#[inline]
+pub fn masked_group_sum_sym_i32_via(mask_words: &[u64], index: &[u32], table: &[u32], values: &[i32], out: &mut [i64]) {
+    assert_eq!(index.len(), values.len(), "masked_group_sum_sym_i32_via: index/values length mismatch");
+    group_walk(
+        "masked_group_sum_sym_i32_via",
+        mask_words,
+        values.len(),
+        GroupKeyAddr::Via { index, table },
+        out,
+        sym_sum_fold(values),
+    );
+}
+
+/// The one `_sym` sum fold, shared by both key addresses.
+#[inline(always)]
+fn sym_sum_fold(values: &[i32]) -> impl FnMut(&mut i64, usize) + '_ {
+    move |slot, i| {
+        let v = values[i] as i64;
+        *slot = if *slot == SYM_EMPTY_I64 {
+            v
+        } else {
+            slot.wrapping_add(v)
+        };
+    }
+}
+
 // ── The keyed-reduction family ───────────────────────────────────────────
 //
 // Every keyed reduction in this file is the SAME walk: visit the rows the
@@ -6862,6 +6962,72 @@ mod group_family_tests {
         let mut s = [i64::MAX; 1];
         masked_group_sum_i32(&mask, &[0], &[1], &mut s);
         assert_eq!(s, [i64::MIN]);
+    }
+
+    /// The `_sym` sum equals the scalar oracle on both addresses at every
+    /// length, where a group is present exactly when some selected row
+    /// resolved to it; an empty group keeps the marker.
+    #[test]
+    fn sym_sum_matches_the_reference_and_marks_empty_groups() {
+        const E: i64 = SYM_EMPTY_I64;
+        for &n in LENS {
+            let fx = fixture(n, 0xface ^ n as u64);
+            for (name, key) in [("resident", key_resident as fn(&Fx, usize) -> Option<usize>), ("via", key_via)] {
+                let mut want = vec![E; GROUPS];
+                for i in 0..n {
+                    if selected(&fx, i) {
+                        if let Some(k) = key(&fx, i) {
+                            let v = fx.values[i] as i64;
+                            want[k] = if want[k] == E { v } else { want[k] + v };
+                        }
+                    }
+                }
+                let mut got = vec![E; GROUPS];
+                if name == "resident" {
+                    masked_group_sum_sym_i32(&fx.mask, &fx.keys, &fx.values, &mut got);
+                } else {
+                    masked_group_sum_sym_i32_via(&fx.mask, &fx.index, &fx.table, &fx.values, &mut got);
+                }
+                assert_eq!(got, want, "{name} n={n}");
+            }
+        }
+    }
+
+    /// The case the plain sum cannot express: a group whose rows cancel to 0
+    /// is NOT empty, and a group no row reached IS. Both hops of the VIA
+    /// path drop a row rather than mark its group present.
+    #[test]
+    fn a_cancelling_group_is_present_and_an_unreached_group_is_empty() {
+        let mask = [0b1111u64];
+        let keys = [0u32, 0, 9, 2];
+        let values = [5i32, -5, 1, 3];
+        let mut out = [i64::MIN; 3];
+        masked_group_sum_sym_i32(&mask, &keys, &values, &mut out);
+        assert_eq!(out, [0, i64::MIN, 3], "key 9 is past the universe and is dropped");
+
+        let mut plain = [0i64; 3];
+        masked_group_sum_i32(&mask, &keys, &values, &mut plain);
+        assert_eq!(plain[0], plain[1], "the plain sum cannot tell cancel from empty");
+
+        let index = [0u32, 7, 1];
+        let table = [1u32, 5];
+        let mut via = [i64::MIN; 3];
+        masked_group_sum_sym_i32_via(&[0b111], &index, &table, &[4, 8, 6], &mut via);
+        assert_eq!(via, [i64::MIN, 4, i64::MIN], "index 7 misses the table; table 5 misses the universe");
+    }
+
+    /// The reservation is opt-in by NAME: a full-range function treats
+    /// `i64::MIN` as an ordinary value. A slot already holding it is added to,
+    /// never replaced, so an unsuffixed caller can never trip the `_sym` rule.
+    #[test]
+    fn full_range_sum_never_treats_the_sym_code_as_empty() {
+        let mut plain = [SYM_EMPTY_I64; 1];
+        masked_group_sum_i32(&[0b1], &[0], &[5], &mut plain);
+        assert_eq!(plain, [SYM_EMPTY_I64 + 5], "full range adds to i64::MIN");
+
+        let mut sym = [SYM_EMPTY_I64; 1];
+        masked_group_sum_sym_i32(&[0b1], &[0], &[5], &mut sym);
+        assert_eq!(sym, [5], "_sym replaces its reserved code");
     }
 
     /// A mask shorter than the row count is refused, and the panic names the
