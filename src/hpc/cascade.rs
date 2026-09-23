@@ -706,6 +706,68 @@ mod tests {
         assert!(results.iter().any(|r| r.index == 3 && r.hamming == 0));
     }
 
+    /// Candidates that all survive Stroke 1 (8 differing prefix bits) with
+    /// full distances straddling the threshold. The exact strokes must return
+    /// precisely those with `8 + k <= threshold`, each with its true distance.
+    /// Guards the early-exit budget: granting the rest the WHOLE threshold
+    /// instead of `threshold - prefix` would admit k = 593, 597 and 600.
+    fn straddling_database() -> (Vec<u8>, Vec<u8>, usize, Vec<u64>) {
+        let vec_bytes = 2048;
+        let tail_bits: [usize; 8] = [0, 100, 590, 592, 593, 597, 600, 700];
+        let query: Vec<u8> = (0..vec_bytes).map(|i| (i as u8).wrapping_mul(37)).collect();
+        let mut database = Vec::with_capacity(vec_bytes * tail_bits.len());
+        let mut expected = Vec::new();
+        for &k in &tail_bits {
+            let mut v = query.clone();
+            v[0] ^= 0xFF; // 8 differing bits in every stroke-1 prefix
+            for bit in 0..k {
+                let byte = vec_bytes - 1 - bit / 8;
+                v[byte] ^= 1 << (bit % 8);
+            }
+            expected.push(8 + k as u64);
+            database.extend_from_slice(&v);
+        }
+        (query, database, vec_bytes, expected)
+    }
+
+    fn exact_hits(expected: &[u64], threshold: u64) -> Vec<(usize, u64)> {
+        expected
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|&(_, d)| d <= threshold)
+            .collect()
+    }
+
+    #[test]
+    fn query_exact_strokes_respect_the_prefix_budget() {
+        let (query, database, vec_bytes, expected) = straddling_database();
+        let threshold = 600;
+        let cascade = Cascade::from_threshold(threshold, vec_bytes);
+        let mut got: Vec<(usize, u64)> = cascade
+            .query(&query, &database, vec_bytes, expected.len())
+            .iter()
+            .map(|r| (r.index, r.hamming))
+            .collect();
+        got.sort_unstable();
+        assert_eq!(got, exact_hits(&expected, threshold));
+    }
+
+    #[test]
+    fn packed_stroke3_respects_the_prefix_budget() {
+        let (query, database, vec_bytes, expected) = straddling_database();
+        let threshold = 600;
+        let cascade = Cascade::from_threshold(threshold, vec_bytes);
+        let packed = PackedDatabase::pack(&database, vec_bytes);
+        let mut got: Vec<(usize, u64)> = packed
+            .cascade_query(&query, &cascade, expected.len())
+            .iter()
+            .map(|r| (r.index, r.hamming))
+            .collect();
+        got.sort_unstable();
+        assert_eq!(got, exact_hits(&expected, threshold));
+    }
+
     #[test]
     fn packed_database_roundtrip() {
         let vec_bytes = 256;
