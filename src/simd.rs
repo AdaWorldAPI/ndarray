@@ -834,6 +834,8 @@ pub use crate::simd_masking_ops::{
     masked_group_min_i32_via,
     masked_group_sum_i32,
     masked_group_sum_i32_via,
+    masked_group_sum_seeded_i32,
+    masked_group_sum_seeded_i32_via,
     masked_key_run_count_u32,
     masked_max_i32,
     masked_min_i32,

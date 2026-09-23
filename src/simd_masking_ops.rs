@@ -1234,6 +1234,85 @@ pub fn masked_group_sum_i32_via(mask_words: &[u64], index: &[u32], table: &[u32]
     );
 }
 
+/// [`masked_group_sum_i32`] that can tell an EMPTY group from a group that
+/// sums to zero. A slot still holding the caller's `empty` marker has seen
+/// no row: the first selected row landing there REPLACES the marker, and
+/// every later row adds to it (`wrapping_add`, as the plain sum).
+///
+/// The plain sum cannot make this distinction: an empty group and a group
+/// whose rows cancel (`+5`, `-5`) both end at `0`. Seed `out` with `empty`
+/// once, and afterwards a slot equals `empty` exactly when no row reached it.
+///
+/// # Choosing `empty`
+///
+/// `empty` must be a value no real partial sum can reach. `i64::MIN` is the
+/// natural choice: a sum of `n` `i32`s is bounded by `n × 2^31`, which stays
+/// strictly above `i64::MIN` for every `n < 2^32`. Reserving it leaves a
+/// symmetric range `±(2^63 − 1)` for real sums, closed under negation. A
+/// caller that sums `2^32` or more rows into one slot must pick another
+/// marker or bound its row count, because at exactly `2^32` rows of
+/// `i32::MIN` a real sum lands on `i64::MIN`.
+///
+/// # Panics
+///
+/// Panics if `keys.len() != values.len()`, or if `mask_words.len() <
+/// values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::masked_group_sum_seeded_i32;
+///
+/// let mask = [0b0111u64]; // rows 0, 1, 2
+/// let keys = [0u32, 0, 2, 1];
+/// let values = [5i32, -5, 7, 9];
+/// let mut out = [i64::MIN; 3];
+/// masked_group_sum_seeded_i32(&mask, &keys, &values, i64::MIN, &mut out);
+/// // group 0 cancels to 0 (non-empty); group 1 saw no selected row.
+/// assert_eq!(out, [0, i64::MIN, 7]);
+/// ```
+#[inline]
+pub fn masked_group_sum_seeded_i32(mask_words: &[u64], keys: &[u32], values: &[i32], empty: i64, out: &mut [i64]) {
+    assert_eq!(keys.len(), values.len(), "masked_group_sum_seeded_i32: keys/values length mismatch");
+    group_walk(
+        "masked_group_sum_seeded_i32",
+        mask_words,
+        values.len(),
+        GroupKeyAddr::Resident(keys),
+        out,
+        |slot, i| {
+            let v = values[i] as i64;
+            *slot = if *slot == empty { v } else { slot.wrapping_add(v) };
+        },
+    );
+}
+
+/// [`masked_group_sum_seeded_i32`] with the group of row `i` read as
+/// `table[index[i]]`, zero-fallback at both hops exactly as
+/// [`masked_group_sum_i32_via`]. The same `empty` marker rule applies.
+///
+/// # Panics
+///
+/// Panics if `index.len() != values.len()`, or if `mask_words.len() <
+/// values.len().div_ceil(64)`.
+#[inline]
+pub fn masked_group_sum_seeded_i32_via(
+    mask_words: &[u64], index: &[u32], table: &[u32], values: &[i32], empty: i64, out: &mut [i64],
+) {
+    assert_eq!(index.len(), values.len(), "masked_group_sum_seeded_i32_via: index/values length mismatch");
+    group_walk(
+        "masked_group_sum_seeded_i32_via",
+        mask_words,
+        values.len(),
+        GroupKeyAddr::Via { index, table },
+        out,
+        |slot, i| {
+            let v = values[i] as i64;
+            *slot = if *slot == empty { v } else { slot.wrapping_add(v) };
+        },
+    );
+}
+
 // ── The keyed-reduction family ───────────────────────────────────────────
 //
 // Every keyed reduction in this file is the SAME walk: visit the rows the
@@ -6862,6 +6941,58 @@ mod group_family_tests {
         let mut s = [i64::MAX; 1];
         masked_group_sum_i32(&mask, &[0], &[1], &mut s);
         assert_eq!(s, [i64::MIN]);
+    }
+
+    /// The seeded sum equals the scalar oracle on both addresses at every
+    /// length, where a group is present exactly when some selected row
+    /// resolved to it; an empty group keeps the marker.
+    #[test]
+    fn seeded_sum_matches_the_reference_and_marks_empty_groups() {
+        const E: i64 = i64::MIN;
+        for &n in LENS {
+            let fx = fixture(n, 0xface ^ n as u64);
+            for (name, key) in [("resident", key_resident as fn(&Fx, usize) -> Option<usize>), ("via", key_via)] {
+                let mut want = vec![E; GROUPS];
+                for i in 0..n {
+                    if selected(&fx, i) {
+                        if let Some(k) = key(&fx, i) {
+                            let v = fx.values[i] as i64;
+                            want[k] = if want[k] == E { v } else { want[k] + v };
+                        }
+                    }
+                }
+                let mut got = vec![E; GROUPS];
+                if name == "resident" {
+                    masked_group_sum_seeded_i32(&fx.mask, &fx.keys, &fx.values, E, &mut got);
+                } else {
+                    masked_group_sum_seeded_i32_via(&fx.mask, &fx.index, &fx.table, &fx.values, E, &mut got);
+                }
+                assert_eq!(got, want, "{name} n={n}");
+            }
+        }
+    }
+
+    /// The case the plain sum cannot express: a group whose rows cancel to 0
+    /// is NOT empty, and a group no row reached IS. Both hops of the VIA
+    /// path drop a row rather than mark its group present.
+    #[test]
+    fn a_cancelling_group_is_present_and_an_unreached_group_is_empty() {
+        let mask = [0b1111u64];
+        let keys = [0u32, 0, 9, 2];
+        let values = [5i32, -5, 1, 3];
+        let mut out = [i64::MIN; 3];
+        masked_group_sum_seeded_i32(&mask, &keys, &values, i64::MIN, &mut out);
+        assert_eq!(out, [0, i64::MIN, 3], "key 9 is past the universe and is dropped");
+
+        let mut plain = [0i64; 3];
+        masked_group_sum_i32(&mask, &keys, &values, &mut plain);
+        assert_eq!(plain[0], plain[1], "the plain sum cannot tell cancel from empty");
+
+        let index = [0u32, 7, 1];
+        let table = [1u32, 5];
+        let mut via = [i64::MIN; 3];
+        masked_group_sum_seeded_i32_via(&[0b111], &index, &table, &[4, 8, 6], i64::MIN, &mut via);
+        assert_eq!(via, [i64::MIN, 4, i64::MIN], "index 7 misses the table; table 5 misses the universe");
     }
 
     /// A mask shorter than the row count is refused, and the panic names the
