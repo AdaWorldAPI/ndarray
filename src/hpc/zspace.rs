@@ -83,14 +83,22 @@ pub fn hyperbolic_depth(r: f64) -> f64 {
 /// converted into code space once with [`ZGamma::threshold_code`]; it is never
 /// converted back.
 ///
-/// The code is `((z − z_min) / z_range)·254 − 127`, clamped to
-/// `[−128, 127]` and truncated toward zero. `z_min`/`z_range` travel with the
-/// codes as 8 bytes of little-endian `f32` ([`ZGamma::to_le_bytes`]). The byte
-/// layout and the code formula match
-/// `bgz_tensor::fisher_z::FamilyGamma`, so an envelope written by one can be
-/// read by the other. The two clamp the cosine differently at the rim
-/// (bgz-tensor uses `0.9999`, this uses [`FISHER_CLAMP_F32`]), so codes agree
-/// bit for bit only for `|cos| ≤ 0.9999`.
+/// The code is `((z − z_min) / z_range)·254 − 127`, **rounded** to the
+/// nearest integer (ties to even) and saturated to the **symmetric** range
+/// `[−127, 127]`. `z_min`/`z_range` travel with the codes as 8 bytes of
+/// little-endian `f32` ([`ZGamma::to_le_bytes`]).
+///
+/// Two deliberate departures from `bgz_tensor::fisher_z::FamilyGamma`, whose
+/// byte layout this shares but whose code does not:
+///
+/// - **Rounding, not truncation.** `as i8` truncates toward zero, which makes
+///   the code-0 bucket twice as wide as every other and pulls every code half
+///   a step toward the centre (measured: mean error `+0.49` below the centre,
+///   `−0.49` above it). Rounding removes that median bias.
+/// - **Symmetric range with a sentinel.** Two's-complement `i8` is asymmetric
+///   (`−128..=127`); using `−128` for data would give one side an extra level.
+///   Data codes stay in `−127..=127` and `−128` is reserved as
+///   [`ZGamma::NAN_CODE`], so NaN can never be mistaken for a real value.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ZGamma {
     /// z of the smallest cosine the envelope covers.
@@ -102,6 +110,10 @@ pub struct ZGamma {
 impl ZGamma {
     /// Serialized size: two little-endian `f32`s.
     pub const BYTES: usize = 8;
+
+    /// The code for a NaN input. It is outside the data range `−127..=127`,
+    /// so no finite cosine ever encodes to it.
+    pub const NAN_CODE: i8 = i8::MIN;
 
     /// Fit the envelope to a population of cosines.
     ///
@@ -133,12 +145,12 @@ impl ZGamma {
 
     /// Encode one cosine as a z-space code.
     ///
-    /// NaN encodes as `0`, the code for the envelope midpoint, because Rust's
-    /// saturating `as i8` maps NaN to zero.
+    /// NaN encodes as [`ZGamma::NAN_CODE`]; values outside the envelope
+    /// saturate to `±127`.
     #[inline]
     pub fn encode(&self, cosine: f32) -> i8 {
         let n = (fisher_z_f32(cosine) - self.z_min) / self.z_range;
-        (n * 254.0 - 127.0).clamp(-128.0, 127.0) as i8
+        quantize(n * 254.0 - 127.0)
     }
 
     /// Encode a slice of cosines, sixteen lanes at a time.
@@ -164,7 +176,7 @@ impl ZGamma {
             let x = F32x16::from_array(core::array::from_fn(|i| clamp_f32(s[i])));
             let z = (simd_ln_f32(one + x) - simd_ln_f32(one - x)) * half;
             let v = (((z - z_min) / z_range) * scale - shift).to_array();
-            *d = core::array::from_fn(|i| v[i].clamp(-128.0, 127.0) as i8);
+            *d = core::array::from_fn(|i| quantize(v[i]));
         }
         for (s, d) in ts.iter().zip(td) {
             *d = self.encode(*s);
@@ -197,6 +209,17 @@ impl ZGamma {
             z_range: f32::from_le_bytes([b[4], b[5], b[6], b[7]]),
         }
     }
+}
+
+/// Round to the nearest code (ties to even), saturate to the symmetric data
+/// range, and map NaN to the sentinel. Shared by the scalar and batch paths so
+/// they cannot drift.
+#[inline]
+fn quantize(v: f32) -> i8 {
+    if v.is_nan() {
+        return ZGamma::NAN_CODE;
+    }
+    v.round_ties_even().clamp(-127.0, 127.0) as i8
 }
 
 /// Scalar `f32` Fisher-Z with the `f32` rim clamp. Private on purpose: its
@@ -307,8 +330,8 @@ mod tests {
         assert_eq!(g.encode(-0.2), -127);
         assert_eq!(g.encode(0.9), 127);
         assert!(g.encode(0.1) > -127 && g.encode(0.4) < 127);
-        // Outside the envelope saturates rather than wrapping.
-        assert_eq!(g.encode(-0.9), -128);
+        // Outside the envelope saturates, symmetrically, rather than wrapping.
+        assert_eq!(g.encode(-0.9), -127);
         assert_eq!(g.encode(0.99), 127);
     }
 
@@ -327,9 +350,8 @@ mod tests {
         for pop in [&[][..], &[f32::NAN][..], &[0.5, 0.5][..], &[1.0, 1.0][..]] {
             let g = ZGamma::fit(pop);
             assert!(g.z_min.is_finite() && g.z_range > 0.0, "{pop:?}");
-            assert!(g.encode(0.3) >= -128);
+            assert!(g.encode(0.3) >= -127);
         }
-        assert_eq!(ZGamma::fit(&[f32::NAN]).encode(f32::NAN), 0);
     }
 
     #[test]
@@ -356,20 +378,50 @@ mod tests {
         assert_eq!(ZGamma::from_le_bytes(b), g);
     }
 
-    /// Same formula as `bgz_tensor::fisher_z::FamilyGamma::encode`, written
-    /// out independently: codes must agree away from the rim.
+    /// No median bias: over z uniform on the envelope, code 0 holds the same
+    /// share as its neighbours and the signed error is centred on both sides.
+    /// Truncation toward zero fails this: code 0 gets twice its share and
+    /// every code is pulled half a step inward.
     #[test]
-    fn matches_the_family_gamma_formula() {
+    fn rounding_has_no_median_bias() {
         let g = ZGamma {
-            z_min: -0.5,
+            z_min: -1.0,
             z_range: 2.0,
         };
-        for i in -99..=99 {
-            let c = i as f32 / 100.0;
-            let z = c.clamp(-0.9999, 0.9999).atanh();
-            let want = (((z - g.z_min) / g.z_range) * 254.0 - 127.0).clamp(-128.0, 127.0) as i8;
-            let got = g.encode(c);
-            assert!((i32::from(got) - i32::from(want)).abs() <= 1, "c={c} got={got} want={want}");
+        let mut count = [0u32; 256];
+        let (mut err_neg, mut n_neg, mut err_pos, mut n_pos) = (0.0f64, 0u32, 0.0f64, 0u32);
+        for i in 0..=20_000 {
+            let z = -1.0 + 2.0 * i as f32 / 20_000.0;
+            let k = g.encode(z.tanh());
+            count[(i32::from(k) + 128) as usize] += 1;
+            let v = f64::from(((z - g.z_min) / g.z_range) * 254.0 - 127.0);
+            let e = f64::from(k) - v;
+            if v < -0.5 {
+                err_neg += e;
+                n_neg += 1;
+            } else if v > 0.5 {
+                err_pos += e;
+                n_pos += 1;
+            }
+        }
+        let (c0, c1) = (count[128], count[129]);
+        assert!(c0 * 10 <= c1 * 12, "code 0 over-full: {c0} vs neighbour {c1}");
+        assert!((err_neg / f64::from(n_neg)).abs() < 0.05, "bias below centre {}", err_neg / f64::from(n_neg));
+        assert!((err_pos / f64::from(n_pos)).abs() < 0.05, "bias above centre {}", err_pos / f64::from(n_pos));
+    }
+
+    /// NaN has its own code, and no finite input — however far outside the
+    /// envelope — can produce it.
+    #[test]
+    fn nan_sentinel_is_reserved() {
+        let g = ZGamma::fit(&[-0.2, 0.3]);
+        assert_eq!(g.encode(f32::NAN), ZGamma::NAN_CODE);
+        let mut out = [0i8; 1];
+        g.encode_batch(&[f32::NAN], &mut out);
+        assert_eq!(out[0], ZGamma::NAN_CODE);
+        for c in [-1.0f32, -0.99, -0.5, 0.0, 0.5, 1.0, 5.0, -5.0, f32::INFINITY, f32::NEG_INFINITY] {
+            let k = g.encode(c);
+            assert!((-127..=127).contains(&k), "c={c} -> {k}");
         }
     }
 
