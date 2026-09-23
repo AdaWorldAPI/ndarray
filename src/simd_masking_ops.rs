@@ -7540,22 +7540,26 @@ mod group_family_tests {
     }
 
     /// A minor key at or past `stride` names no group at all, regardless of
-    /// `hi` — the same zero-fallback drop the group-universe check applies,
-    /// checked both ways: a kept row (`lo < stride`) IS counted, and the
-    /// dropped rows (`lo >= stride`, including `lo == u32::MAX`) are not.
+    /// `hi`. The universe is sized so the dropped rows WOULD alias a real
+    /// slot without the guard: `(hi=0, lo=4)` composes to 4, which is
+    /// exactly `(hi=1, lo=0)`'s group, and `(hi=1, lo=5)` composes to 9,
+    /// `(hi=2, lo=1)`'s. Only the `lo >= stride` drop keeps them out; the
+    /// group-universe drop cannot, since both composites are `< groups`.
+    /// Checked both ways: the kept rows ARE counted where they belong.
     #[test]
     fn pair_drops_a_minor_key_at_or_past_stride() {
-        let mask = [0b1111u64]; // rows 0..3 selected
-        let hi = [0u32, 0, 0, 0];
-        let lo = [3u32, 4, u32::MAX, 3];
+        let mask = [0b11111u64]; // rows 0..5 selected
+        let hi = [0u32, 0, 1, 1, 0];
+        let lo = [3u32, 4, 5, 0, u32::MAX];
         let stride = 4u32;
-        let mut out = [0i64; 4];
+        let mut out = [0i64; 12]; // 3 majors x stride 4
         masked_group_count_u32_pair(&mask, &hi, &lo, stride, &mut out);
-        // Rows 0 and 3 (lo=3 < stride) both land in group hi*stride+lo = 3.
-        assert_eq!(out[3], 2, "the kept rows (lo < stride) are counted");
-        // Rows 1 (lo=4) and 2 (lo=u32::MAX) are dropped before `hi` is ever
-        // consulted: neither contributes to any slot.
-        assert_eq!(out.iter().sum::<i64>(), 2, "the dropped rows (lo >= stride) contribute nothing anywhere");
+        // Kept: row 0 -> 0*4+3 = 3, row 3 -> 1*4+0 = 4.
+        assert_eq!(out[3], 1, "(0, 3) is counted");
+        assert_eq!(out[4], 1, "(1, 0) is counted once, and only by its own row");
+        // Row 1 (lo=4 -> 4) and row 2 (lo=5 -> 9) would alias real slots.
+        assert_eq!(out[9], 0, "(1, 5) must not alias (2, 1)");
+        assert_eq!(out.iter().sum::<i64>(), 2, "the lo >= stride rows contribute nothing anywhere");
     }
 
     /// A composite key that would address far past the group universe is
