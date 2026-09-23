@@ -1367,6 +1367,56 @@ pub fn masked_group_sum_i32_via(mask_words: &[u64], index: &[u32], table: &[u32]
     );
 }
 
+/// [`masked_group_sum_i32`] with the group of row `i` read as the composite
+/// address `hi[i] * stride + lo[i]` — a two-column `GROUP BY (hi, lo)`
+/// fused into one pass, no composite key lane ever materialised.
+///
+/// **Zero-fallback**: `lo[i] >= stride` names no group at all (a minor key
+/// outside its own declared cardinality) and drops row `i`; a resolved
+/// composite key past `out.len()` drops it too — the same rule as
+/// [`masked_group_sum_i32_via`]'s two hops.
+///
+/// `out` is accumulated into (not zeroed by this function), same as
+/// [`masked_group_sum_i32`]; overflow wraps the same way (widened to `i64`,
+/// `wrapping_add`), and the mask tail is clamped identically.
+///
+/// # Panics
+///
+/// Panics if `hi.len() != lo.len()`, if `hi.len() != values.len()`, or if
+/// `mask_words.len() < hi.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::masked_group_sum_i32_pair;
+///
+/// let mask = [0b111u64];
+/// let hi = [0u32, 1, 0];
+/// let lo = [0u32, 0, 4]; // stride 4: row 2's lo (4) is out of range and dropped
+/// let values = [10i32, 20, 999];
+/// let mut out = [0i64; 8]; // group (hi, lo) = hi * 4 + lo
+/// masked_group_sum_i32_pair(&mask, &hi, &lo, 4, &values, &mut out);
+/// assert_eq!(out[0], 10); // (0, 0) -> 0
+/// assert_eq!(out[4], 20); // (1, 0) -> 4
+/// ```
+#[inline]
+pub fn masked_group_sum_i32_pair(
+    mask_words: &[u64], hi: &[u32], lo: &[u32], stride: u32, values: &[i32], out: &mut [i64],
+) {
+    assert_eq!(hi.len(), lo.len(), "masked_group_sum_i32_pair: hi.len() != lo.len()");
+    assert_eq!(hi.len(), values.len(), "masked_group_sum_i32_pair: hi/values length mismatch");
+    // Accumulate: add into whatever `out` already holds. The caller zeroes
+    // once before the first call.
+    group_walk(
+        "masked_group_sum_i32_pair",
+        mask_words,
+        hi.len(),
+        GroupKeyAddr::Pair { hi, lo, stride },
+        out,
+        |slot, i| *slot = slot.wrapping_add(values[i] as i64),
+    );
+}
+
 /// The reserved code of the `_sym` family: the one `i64` a `_sym` fold
 /// never produces as a real value, marking "no row reached this group".
 ///
@@ -1454,6 +1504,30 @@ pub fn masked_group_sum_sym_i32_via(mask_words: &[u64], index: &[u32], table: &[
     );
 }
 
+/// [`masked_group_sum_sym_i32`] with the group of row `i` read as the
+/// composite address `hi[i] * stride + lo[i]`, zero-fallback exactly as
+/// [`masked_group_sum_i32_pair`]. Same reserved code, same row bound.
+///
+/// # Panics
+///
+/// Panics if `hi.len() != lo.len()`, if `hi.len() != values.len()`, or if
+/// `mask_words.len() < hi.len().div_ceil(64)`.
+#[inline]
+pub fn masked_group_sum_sym_i32_pair(
+    mask_words: &[u64], hi: &[u32], lo: &[u32], stride: u32, values: &[i32], out: &mut [i64],
+) {
+    assert_eq!(hi.len(), lo.len(), "masked_group_sum_sym_i32_pair: hi.len() != lo.len()");
+    assert_eq!(hi.len(), values.len(), "masked_group_sum_sym_i32_pair: hi/values length mismatch");
+    group_walk(
+        "masked_group_sum_sym_i32_pair",
+        mask_words,
+        hi.len(),
+        GroupKeyAddr::Pair { hi, lo, stride },
+        out,
+        sym_sum_fold(values),
+    );
+}
+
 /// The one `_sym` sum fold, shared by both key addresses.
 #[inline(always)]
 fn sym_sum_fold(values: &[i32]) -> impl FnMut(&mut i64, usize) + '_ {
@@ -1487,18 +1561,33 @@ enum GroupKeyAddr<'a> {
     /// The key of row `i` is `table[index[i]]`. The indirection is fused:
     /// no remapped key lane is ever materialised between the two hops.
     Via { index: &'a [u32], table: &'a [u32] },
+    /// The key of row `i` is `hi[i] * stride + lo[i]` — the composite
+    /// address of a two-column `GROUP BY`. Fused: no composite key lane is
+    /// ever materialised.
+    Pair { hi: &'a [u32], lo: &'a [u32], stride: u32 },
 }
 
 impl GroupKeyAddr<'_> {
     /// The group of row `i`, or `None` when either hop names nothing: an
-    /// index past `table` (VIA only) or a key past the group universe. Both
-    /// drops are the zero-fallback contract of [`mask_gather_u32`] — an
-    /// unminted address is not a group — never an error.
+    /// index past `table` (VIA only), a minor key at or past `stride`
+    /// (Pair only — a minor key outside its own declared cardinality names
+    /// no group), or a key past the group universe. Every drop is the
+    /// zero-fallback contract of [`mask_gather_u32`] — an unminted address
+    /// is not a group — never an error.
     #[inline(always)]
     fn group_of(self, i: usize, groups: usize) -> Option<usize> {
         let k = match self {
             GroupKeyAddr::Resident(keys) => keys[i] as usize,
             GroupKeyAddr::Via { index, table } => *table.get(index[i] as usize)? as usize,
+            GroupKeyAddr::Pair { hi, lo, stride } => {
+                if lo[i] >= stride {
+                    return None;
+                }
+                // hi and lo are both u32, stride is u32: widen to u64 first
+                // so the multiply-add cannot overflow.
+                let composite = hi[i] as u64 * stride as u64 + lo[i] as u64;
+                usize::try_from(composite).ok()?
+            }
         };
         (k < groups).then_some(k)
     }
@@ -1608,6 +1697,50 @@ pub fn masked_group_count_u32_via(mask_words: &[u64], index: &[u32], table: &[u3
     );
 }
 
+/// [`masked_group_count_u32`] with the group of row `i` read as the
+/// composite address `hi[i] * stride + lo[i]` — a two-column `GROUP BY
+/// (hi, lo)` fused into one pass, no composite key lane ever materialised.
+///
+/// **Zero-fallback**: `lo[i] >= stride` names no group at all (a minor key
+/// outside its own declared cardinality) and drops row `i`; a resolved
+/// composite key past `out.len()` drops it too — the same rule as
+/// [`masked_group_sum_i32_via`]'s two hops.
+///
+/// Same contract as [`masked_group_sum_i32_pair`] in every other respect:
+/// `out` is accumulated into (the caller zeroes it once) with
+/// `wrapping_add`, and the final mask word is clamped to `hi.len()`.
+///
+/// # Panics
+///
+/// Panics if `hi.len() != lo.len()`, or if `mask_words.len() <
+/// hi.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::masked_group_count_u32_pair;
+///
+/// let mask = [0b111u64];
+/// let hi = [0u32, 1, 0];
+/// let lo = [0u32, 0, 4]; // stride 4: row 2's lo (4) is out of range and dropped
+/// let mut out = [0i64; 8]; // group (hi, lo) = hi * 4 + lo
+/// masked_group_count_u32_pair(&mask, &hi, &lo, 4, &mut out);
+/// assert_eq!(out[0], 1); // (0, 0) -> 0
+/// assert_eq!(out[4], 1); // (1, 0) -> 4
+/// ```
+#[inline]
+pub fn masked_group_count_u32_pair(mask_words: &[u64], hi: &[u32], lo: &[u32], stride: u32, out: &mut [i64]) {
+    assert_eq!(hi.len(), lo.len(), "masked_group_count_u32_pair: hi.len() != lo.len()");
+    group_walk(
+        "masked_group_count_u32_pair",
+        mask_words,
+        hi.len(),
+        GroupKeyAddr::Pair { hi, lo, stride },
+        out,
+        |slot, _| *slot = slot.wrapping_add(1),
+    );
+}
+
 /// Keyed group-minimum: for every row `i` selected by `mask_words`, lowers
 /// `out[keys[i]]` to `values[i]` (widened to `i64`) if that is smaller —
 /// `MIN(values) … GROUP BY key` in one pass.
@@ -1679,6 +1812,44 @@ pub fn masked_group_min_i32_via(mask_words: &[u64], index: &[u32], table: &[u32]
     );
 }
 
+/// [`masked_group_min_i32`] with the group of row `i` read as the composite
+/// address `hi[i] * stride + lo[i]`, zero-fallback exactly as
+/// [`masked_group_count_u32_pair`]. Seed `out` with `i64::MAX`.
+///
+/// # Panics
+///
+/// Panics if `hi.len() != lo.len()`, if `hi.len() != values.len()`, or if
+/// `mask_words.len() < hi.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::masked_group_min_i32_pair;
+///
+/// let mask = [0b111u64];
+/// let hi = [0u32, 0, 0];
+/// let lo = [0u32, 0, 4]; // stride 4: row 2's lo (4) is out of range and dropped
+/// let values = [4i32, -9, 999];
+/// let mut out = [i64::MAX; 1];
+/// masked_group_min_i32_pair(&mask, &hi, &lo, 4, &values, &mut out);
+/// assert_eq!(out, [-9]);
+/// ```
+#[inline]
+pub fn masked_group_min_i32_pair(
+    mask_words: &[u64], hi: &[u32], lo: &[u32], stride: u32, values: &[i32], out: &mut [i64],
+) {
+    assert_eq!(hi.len(), lo.len(), "masked_group_min_i32_pair: hi.len() != lo.len()");
+    assert_eq!(hi.len(), values.len(), "masked_group_min_i32_pair: hi/values length mismatch");
+    group_walk(
+        "masked_group_min_i32_pair",
+        mask_words,
+        hi.len(),
+        GroupKeyAddr::Pair { hi, lo, stride },
+        out,
+        |slot, i| *slot = (*slot).min(values[i] as i64),
+    );
+}
+
 /// Keyed group-maximum: the mirror of [`masked_group_min_i32`]. **The caller
 /// seeds `out` with `i64::MIN`**, which no `i32` can reach, so a slot still
 /// holding `i64::MIN` afterwards is a group no selected row named.
@@ -1738,6 +1909,44 @@ pub fn masked_group_max_i32_via(mask_words: &[u64], index: &[u32], table: &[u32]
         mask_words,
         values.len(),
         GroupKeyAddr::Via { index, table },
+        out,
+        |slot, i| *slot = (*slot).max(values[i] as i64),
+    );
+}
+
+/// [`masked_group_max_i32`] with the group of row `i` read as the composite
+/// address `hi[i] * stride + lo[i]`, zero-fallback exactly as
+/// [`masked_group_count_u32_pair`]. Seed `out` with `i64::MIN`.
+///
+/// # Panics
+///
+/// Panics if `hi.len() != lo.len()`, if `hi.len() != values.len()`, or if
+/// `mask_words.len() < hi.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::masked_group_max_i32_pair;
+///
+/// let mask = [0b111u64];
+/// let hi = [0u32, 0, 0];
+/// let lo = [0u32, 0, 4]; // stride 4: row 2's lo (4) is out of range and dropped
+/// let values = [4i32, 99, 999];
+/// let mut out = [i64::MIN; 1];
+/// masked_group_max_i32_pair(&mask, &hi, &lo, 4, &values, &mut out);
+/// assert_eq!(out, [99]);
+/// ```
+#[inline]
+pub fn masked_group_max_i32_pair(
+    mask_words: &[u64], hi: &[u32], lo: &[u32], stride: u32, values: &[i32], out: &mut [i64],
+) {
+    assert_eq!(hi.len(), lo.len(), "masked_group_max_i32_pair: hi.len() != lo.len()");
+    assert_eq!(hi.len(), values.len(), "masked_group_max_i32_pair: hi/values length mismatch");
+    group_walk(
+        "masked_group_max_i32_pair",
+        mask_words,
+        hi.len(),
+        GroupKeyAddr::Pair { hi, lo, stride },
         out,
         |slot, i| *slot = (*slot).max(values[i] as i64),
     );
@@ -7270,5 +7479,109 @@ mod group_family_tests {
     #[should_panic(expected = "keys/values length mismatch")]
     fn min_refuses_mismatched_lanes() {
         masked_group_min_i32(&[1], &[0, 0], &[1], &mut [0]);
+    }
+
+    // ── the `_pair` (composite two-column) address ──────────────────────
+
+    /// Every `_pair` fold computes exactly the group the `Resident` form
+    /// computes when fed a precomputed `hi * stride + lo` key lane — proving
+    /// the fused composite address is not a new algorithm, just a different
+    /// route to the same key the caller could have materialised by hand.
+    #[test]
+    fn pair_matches_resident_on_a_precomputed_composite_key() {
+        let n = 1000usize;
+        let mut s = 0xC0FF_EE00_1234_5678u64 ^ n as u64;
+        let stride: u32 = 7;
+        let words = n.div_ceil(64);
+        // Mask words are left with their natural high bits past `n` —
+        // the same dirty-tail construction `fixture` uses above.
+        let mask: Vec<u64> = (0..words)
+            .map(|_| lcg(&mut s) ^ (lcg(&mut s) << 32))
+            .collect();
+        let hi: Vec<u32> = (0..n).map(|_| (lcg(&mut s) % 9) as u32).collect(); // 0..=8
+        let lo: Vec<u32> = (0..n).map(|_| (lcg(&mut s) % 7) as u32).collect(); // 0..=6, always < stride
+        let values: Vec<i32> = (0..n).map(|_| (lcg(&mut s) % 101) as i32 - 50).collect(); // -50..=50
+        let groups = 63usize; // 8 * 7 + 6 = 62 is the largest reachable key
+        let keys: Vec<u32> = hi.iter().zip(&lo).map(|(&h, &l)| h * stride + l).collect();
+
+        let mut count_pair = vec![0i64; groups];
+        masked_group_count_u32_pair(&mask, &hi, &lo, stride, &mut count_pair);
+        let mut count_res = vec![0i64; groups];
+        masked_group_count_u32(&mask, &keys, &mut count_res);
+        assert_eq!(count_pair, count_res, "count");
+        assert!(
+            count_pair.iter().filter(|&&v| v != 0).count() >= 20,
+            "anti-vacuity: fewer than 20 distinct non-identity slots, the fixture barely exercises the fold"
+        );
+
+        let mut sum_pair = vec![0i64; groups];
+        masked_group_sum_i32_pair(&mask, &hi, &lo, stride, &values, &mut sum_pair);
+        let mut sum_res = vec![0i64; groups];
+        masked_group_sum_i32(&mask, &keys, &values, &mut sum_res);
+        assert_eq!(sum_pair, sum_res, "sum");
+
+        let mut sym_pair = vec![SYM_EMPTY_I64; groups];
+        masked_group_sum_sym_i32_pair(&mask, &hi, &lo, stride, &values, &mut sym_pair);
+        let mut sym_res = vec![SYM_EMPTY_I64; groups];
+        masked_group_sum_sym_i32(&mask, &keys, &values, &mut sym_res);
+        assert_eq!(sym_pair, sym_res, "sym sum");
+
+        let mut min_pair = vec![i64::MAX; groups];
+        masked_group_min_i32_pair(&mask, &hi, &lo, stride, &values, &mut min_pair);
+        let mut min_res = vec![i64::MAX; groups];
+        masked_group_min_i32(&mask, &keys, &values, &mut min_res);
+        assert_eq!(min_pair, min_res, "min");
+
+        let mut max_pair = vec![i64::MIN; groups];
+        masked_group_max_i32_pair(&mask, &hi, &lo, stride, &values, &mut max_pair);
+        let mut max_res = vec![i64::MIN; groups];
+        masked_group_max_i32(&mask, &keys, &values, &mut max_res);
+        assert_eq!(max_pair, max_res, "max");
+    }
+
+    /// A minor key at or past `stride` names no group at all, regardless of
+    /// `hi` — the same zero-fallback drop the group-universe check applies,
+    /// checked both ways: a kept row (`lo < stride`) IS counted, and the
+    /// dropped rows (`lo >= stride`, including `lo == u32::MAX`) are not.
+    #[test]
+    fn pair_drops_a_minor_key_at_or_past_stride() {
+        let mask = [0b1111u64]; // rows 0..3 selected
+        let hi = [0u32, 0, 0, 0];
+        let lo = [3u32, 4, u32::MAX, 3];
+        let stride = 4u32;
+        let mut out = [0i64; 4];
+        masked_group_count_u32_pair(&mask, &hi, &lo, stride, &mut out);
+        // Rows 0 and 3 (lo=3 < stride) both land in group hi*stride+lo = 3.
+        assert_eq!(out[3], 2, "the kept rows (lo < stride) are counted");
+        // Rows 1 (lo=4) and 2 (lo=u32::MAX) are dropped before `hi` is ever
+        // consulted: neither contributes to any slot.
+        assert_eq!(out.iter().sum::<i64>(), 2, "the dropped rows (lo >= stride) contribute nothing anywhere");
+    }
+
+    /// A composite key that would address far past the group universe is
+    /// dropped like any other out-of-range key, and the `hi * stride + lo`
+    /// widening never panics even when both `hi` and `stride` are
+    /// `u32::MAX` — the multiply-add is done in `u64`, which cannot overflow.
+    #[test]
+    fn pair_drops_a_composite_past_the_group_universe_without_overflow() {
+        let mask = [0b11u64]; // rows 0, 1
+        let hi = [u32::MAX, 0u32];
+        let lo = [0u32, 1u32];
+        let stride = u32::MAX;
+        let mut out = [0i64; 2];
+        masked_group_count_u32_pair(&mask, &hi, &lo, stride, &mut out);
+        // Row 0's composite key (u32::MAX * u32::MAX + 0, ~1.8e19) is far
+        // past `out.len()` and is dropped without panicking; row 1's
+        // composite key (0 * u32::MAX + 1 = 1) lands cleanly in out[1].
+        assert_eq!(out, [0, 1]);
+    }
+
+    /// `hi` and `lo` of different lengths are refused before any row is
+    /// read, exactly the `keys/values`-style length guard the other members
+    /// of this family already carry.
+    #[test]
+    #[should_panic(expected = "hi.len() != lo.len()")]
+    fn pair_panics_on_mismatched_lengths() {
+        masked_group_count_u32_pair(&[1], &[0, 0], &[0], 4, &mut [0]);
     }
 }
