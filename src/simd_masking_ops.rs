@@ -1167,36 +1167,11 @@ pub fn mask_scatter_or_u32(src: &[u64], index: &[u32], out_words: &mut [u64], ou
 #[inline]
 pub fn masked_group_sum_i32(mask_words: &[u64], keys: &[u32], values: &[i32], out: &mut [i64]) {
     assert_eq!(keys.len(), values.len(), "masked_group_sum_i32: keys/values length mismatch");
-    let n = values.len();
-    let words = mask_words_for(n);
-    assert!(
-        mask_words.len() >= words,
-        "masked_group_sum_i32: mask_words.len()={} < required {}",
-        mask_words.len(),
-        words
-    );
-
     // Accumulate: add into whatever `out` already holds. The caller zeroes
     // once before the first call.
-    for (w, &word) in mask_words.iter().take(words).enumerate() {
-        let base = w * 64;
-        let mut bits = word;
-        // Same tail clamp as masked_sum_i32: a dirty final word must never
-        // index past `values`/`keys`.
-        let valid = n - base;
-        if valid < 64 {
-            bits &= (1u64 << valid) - 1;
-        }
-        while bits != 0 {
-            let lane = bits.trailing_zeros() as usize;
-            bits &= bits - 1;
-            let i = base + lane;
-            let k = keys[i] as usize;
-            if k < out.len() {
-                out[k] = out[k].wrapping_add(values[i] as i64);
-            }
-        }
-    }
+    group_walk("masked_group_sum_i32", mask_words, values.len(), GroupKeyAddr::Resident(keys), out, |slot, i| {
+        *slot = slot.wrapping_add(values[i] as i64)
+    });
 }
 
 /// Like [`masked_group_sum_i32`], but the group key of row `i` is
@@ -1247,21 +1222,79 @@ pub fn masked_group_sum_i32(mask_words: &[u64], keys: &[u32], values: &[i32], ou
 #[inline]
 pub fn masked_group_sum_i32_via(mask_words: &[u64], index: &[u32], table: &[u32], values: &[i32], out: &mut [i64]) {
     assert_eq!(index.len(), values.len(), "masked_group_sum_i32_via: index/values length mismatch");
-    let n = values.len();
-    let words = mask_words_for(n);
-    assert!(
-        mask_words.len() >= words,
-        "masked_group_sum_i32_via: mask_words.len()={} < required {}",
-        mask_words.len(),
-        words
-    );
-
     // Accumulate: add into whatever `out` already holds. The caller zeroes
     // once before the first call.
+    group_walk(
+        "masked_group_sum_i32_via",
+        mask_words,
+        values.len(),
+        GroupKeyAddr::Via { index, table },
+        out,
+        |slot, i| *slot = slot.wrapping_add(values[i] as i64),
+    );
+}
+
+// ── The keyed-reduction family ───────────────────────────────────────────
+//
+// Every keyed reduction in this file is the SAME walk: visit the rows the
+// mask selects, resolve each row's group through one of two key addresses,
+// and fold that row into its group's slot. What varies is only the fold
+// (sum / count / min / max) and the address (a resident key lane, or a key
+// reached `VIA` an index lane into a second table). So there is one walker,
+// one address type, and each public function is a named instance — the same
+// shape as the `simd.rs` facade over its backends: callers see names, the
+// mechanics exist once. A new keyed reduction is a new closure over
+// `group_walk`, never a new copy of the bit loop.
+
+/// Where a selected row's group lives.
+#[derive(Clone, Copy)]
+enum GroupKeyAddr<'a> {
+    /// The key of row `i` is `keys[i]`.
+    Resident(&'a [u32]),
+    /// The key of row `i` is `table[index[i]]`. The indirection is fused:
+    /// no remapped key lane is ever materialised between the two hops.
+    Via { index: &'a [u32], table: &'a [u32] },
+}
+
+impl GroupKeyAddr<'_> {
+    /// The group of row `i`, or `None` when either hop names nothing: an
+    /// index past `table` (VIA only) or a key past the group universe. Both
+    /// drops are the zero-fallback contract of [`mask_gather_u32`] — an
+    /// unminted address is not a group — never an error.
+    #[inline(always)]
+    fn group_of(self, i: usize, groups: usize) -> Option<usize> {
+        let k = match self {
+            GroupKeyAddr::Resident(keys) => keys[i] as usize,
+            GroupKeyAddr::Via { index, table } => *table.get(index[i] as usize)? as usize,
+        };
+        (k < groups).then_some(k)
+    }
+}
+
+/// The one walk behind every keyed reduction: for each row `i < n` whose
+/// mask bit is set, resolve its group and call `fold(&mut out[group], i)`.
+///
+/// The final mask word is clamped to `n` exactly as [`masked_sum_i32`]
+/// clamps, so a dirty tail bit never indexes past the lanes. Cost is
+/// proportional to `popcount(mask_words)` (clamped to `n`). Scalar by
+/// necessity: the destination of each fold is data-dependent (a
+/// scatter-reduce), and no backend offers a conflict-free vector scatter.
+///
+/// # Panics
+///
+/// Panics if `mask_words.len() < n.div_ceil(64)`; the message is prefixed
+/// with the calling function's `name`.
+#[inline(always)]
+fn group_walk(
+    name: &str, mask_words: &[u64], n: usize, key: GroupKeyAddr<'_>, out: &mut [i64],
+    mut fold: impl FnMut(&mut i64, usize),
+) {
+    let words = mask_words_for(n);
+    assert!(mask_words.len() >= words, "{name}: mask_words.len()={} < required {}", mask_words.len(), words);
+    let groups = out.len();
     for (w, &word) in mask_words.iter().take(words).enumerate() {
         let base = w * 64;
         let mut bits = word;
-        // Same tail clamp as masked_group_sum_i32.
         let valid = n - base;
         if valid < 64 {
             bits &= (1u64 << valid) - 1;
@@ -1270,16 +1303,211 @@ pub fn masked_group_sum_i32_via(mask_words: &[u64], index: &[u32], table: &[u32]
             let lane = bits.trailing_zeros() as usize;
             bits &= bits - 1;
             let i = base + lane;
-            let addr = index[i] as usize;
-            if addr >= table.len() {
-                continue;
-            }
-            let k = table[addr] as usize;
-            if k < out.len() {
-                out[k] = out[k].wrapping_add(values[i] as i64);
+            if let Some(k) = key.group_of(i, groups) {
+                fold(&mut out[k], i);
             }
         }
     }
+}
+
+/// Keyed group-count: for every row `i` selected by `mask_words` (`i <
+/// keys.len()`), adds 1 into `out[keys[i]]` — provided `keys[i] <
+/// out.len()`. `COUNT(*) … GROUP BY key` in one pass, replacing K masked
+/// popcounts (one per group).
+///
+/// Same contract as [`masked_group_sum_i32`] in every other respect: `out`
+/// is accumulated into (the caller zeroes it once) with `wrapping_add`, so a
+/// slot the caller seeded near `i64::MAX` wraps identically in every build
+/// profile; a key past `out.len()` is dropped, and the final mask word is
+/// clamped to `keys.len()`.
+///
+/// # Panics
+///
+/// Panics if `mask_words.len() < keys.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::masked_group_count_u32;
+///
+/// let mask = [0b1011u64]; // rows 0, 1, 3
+/// let keys = [0u32, 1, 0, 1];
+/// let mut out = [0i64; 2];
+/// masked_group_count_u32(&mask, &keys, &mut out);
+/// assert_eq!(out, [1, 2]);
+/// ```
+#[inline]
+pub fn masked_group_count_u32(mask_words: &[u64], keys: &[u32], out: &mut [i64]) {
+    group_walk("masked_group_count_u32", mask_words, keys.len(), GroupKeyAddr::Resident(keys), out, |slot, _| {
+        *slot = slot.wrapping_add(1)
+    });
+}
+
+/// [`masked_group_count_u32`] with the group of row `i` read as
+/// `table[index[i]]`, zero-fallback at both hops exactly as
+/// [`masked_group_sum_i32_via`]. The row population is `index.len()`.
+///
+/// # Panics
+///
+/// Panics if `mask_words.len() < index.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::masked_group_count_u32_via;
+///
+/// let mask = [0b111u64];
+/// let index = [0u32, 1, 9]; // row 2 names no table entry: dropped
+/// let table = [1u32, 1];
+/// let mut out = [0i64; 2];
+/// masked_group_count_u32_via(&mask, &index, &table, &mut out);
+/// assert_eq!(out, [0, 2]);
+/// ```
+#[inline]
+pub fn masked_group_count_u32_via(mask_words: &[u64], index: &[u32], table: &[u32], out: &mut [i64]) {
+    group_walk(
+        "masked_group_count_u32_via",
+        mask_words,
+        index.len(),
+        GroupKeyAddr::Via { index, table },
+        out,
+        |slot, _| *slot = slot.wrapping_add(1),
+    );
+}
+
+/// Keyed group-minimum: for every row `i` selected by `mask_words`, lowers
+/// `out[keys[i]]` to `values[i]` (widened to `i64`) if that is smaller —
+/// `MIN(values) … GROUP BY key` in one pass.
+///
+/// `out` is folded into, not overwritten. **The caller seeds it with
+/// `i64::MAX`**, which no `i32` can reach, so a slot still holding
+/// `i64::MAX` afterwards is exactly a group no selected row named — the
+/// SQL `NULL` of an empty group, recoverable without a second count pass.
+/// A key past `out.len()` is dropped; the final mask word is clamped to
+/// `values.len()`.
+///
+/// # Panics
+///
+/// Panics if `keys.len() != values.len()`, or if `mask_words.len() <
+/// values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::masked_group_min_i32;
+///
+/// let mask = [0b0111u64]; // rows 0..3; row 3 is not selected
+/// let keys = [0u32, 0, 1, 1];
+/// let values = [5i32, -3, 7, -100];
+/// let mut out = [i64::MAX; 3];
+/// masked_group_min_i32(&mask, &keys, &values, &mut out);
+/// assert_eq!(out, [-3, 7, i64::MAX]); // group 2 is empty
+/// ```
+#[inline]
+pub fn masked_group_min_i32(mask_words: &[u64], keys: &[u32], values: &[i32], out: &mut [i64]) {
+    assert_eq!(keys.len(), values.len(), "masked_group_min_i32: keys/values length mismatch");
+    group_walk("masked_group_min_i32", mask_words, values.len(), GroupKeyAddr::Resident(keys), out, |slot, i| {
+        *slot = (*slot).min(values[i] as i64)
+    });
+}
+
+/// [`masked_group_min_i32`] with the group of row `i` read as
+/// `table[index[i]]`, zero-fallback at both hops exactly as
+/// [`masked_group_sum_i32_via`]. Seed `out` with `i64::MAX`.
+///
+/// # Panics
+///
+/// Panics if `index.len() != values.len()`, or if `mask_words.len() <
+/// values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::masked_group_min_i32_via;
+///
+/// let mask = [0b11u64];
+/// let index = [0u32, 1];
+/// let table = [0u32, 0]; // both rows resolve to group 0
+/// let values = [4i32, -9];
+/// let mut out = [i64::MAX; 1];
+/// masked_group_min_i32_via(&mask, &index, &table, &values, &mut out);
+/// assert_eq!(out, [-9]);
+/// ```
+#[inline]
+pub fn masked_group_min_i32_via(mask_words: &[u64], index: &[u32], table: &[u32], values: &[i32], out: &mut [i64]) {
+    assert_eq!(index.len(), values.len(), "masked_group_min_i32_via: index/values length mismatch");
+    group_walk(
+        "masked_group_min_i32_via",
+        mask_words,
+        values.len(),
+        GroupKeyAddr::Via { index, table },
+        out,
+        |slot, i| *slot = (*slot).min(values[i] as i64),
+    );
+}
+
+/// Keyed group-maximum: the mirror of [`masked_group_min_i32`]. **The caller
+/// seeds `out` with `i64::MIN`**, which no `i32` can reach, so a slot still
+/// holding `i64::MIN` afterwards is a group no selected row named.
+///
+/// # Panics
+///
+/// Panics if `keys.len() != values.len()`, or if `mask_words.len() <
+/// values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::masked_group_max_i32;
+///
+/// let mask = [0b0111u64];
+/// let keys = [0u32, 0, 1, 1];
+/// let values = [5i32, -3, 7, 100];
+/// let mut out = [i64::MIN; 2];
+/// masked_group_max_i32(&mask, &keys, &values, &mut out);
+/// assert_eq!(out, [5, 7]); // row 3 (100) is not selected
+/// ```
+#[inline]
+pub fn masked_group_max_i32(mask_words: &[u64], keys: &[u32], values: &[i32], out: &mut [i64]) {
+    assert_eq!(keys.len(), values.len(), "masked_group_max_i32: keys/values length mismatch");
+    group_walk("masked_group_max_i32", mask_words, values.len(), GroupKeyAddr::Resident(keys), out, |slot, i| {
+        *slot = (*slot).max(values[i] as i64)
+    });
+}
+
+/// [`masked_group_max_i32`] with the group of row `i` read as
+/// `table[index[i]]`, zero-fallback at both hops exactly as
+/// [`masked_group_sum_i32_via`]. Seed `out` with `i64::MIN`.
+///
+/// # Panics
+///
+/// Panics if `index.len() != values.len()`, or if `mask_words.len() <
+/// values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::masked_group_max_i32_via;
+///
+/// let mask = [0b11u64];
+/// let index = [0u32, 7]; // row 1 names no table entry: dropped
+/// let table = [0u32];
+/// let values = [4i32, 99];
+/// let mut out = [i64::MIN; 1];
+/// masked_group_max_i32_via(&mask, &index, &table, &values, &mut out);
+/// assert_eq!(out, [4]);
+/// ```
+#[inline]
+pub fn masked_group_max_i32_via(mask_words: &[u64], index: &[u32], table: &[u32], values: &[i32], out: &mut [i64]) {
+    assert_eq!(index.len(), values.len(), "masked_group_max_i32_via: index/values length mismatch");
+    group_walk(
+        "masked_group_max_i32_via",
+        mask_words,
+        values.len(),
+        GroupKeyAddr::Via { index, table },
+        out,
+        |slot, i| *slot = (*slot).max(values[i] as i64),
+    );
 }
 
 /// Packs `index[i] < table.len() && table[index[i]] == v` into `out_words`,
@@ -6418,5 +6646,236 @@ mod key_run_tests {
     fn short_mask_panics() {
         let mut c = KeyRunCarry::default();
         masked_key_run_count_u32(&[1u32, 2], &[], &mut c);
+    }
+}
+
+#[cfg(test)]
+mod group_family_tests {
+    //! The keyed-reduction family against an INDEPENDENT scalar reference:
+    //! every row, every key, written out longhand here, never through
+    //! `group_walk`. Covers both key addresses, both drops of the VIA path,
+    //! out-of-universe keys, dirty mask tails and the accumulate contract.
+    use super::*;
+
+    /// A deterministic 64-bit LCG, high bits only, so every fixture is
+    /// reproducible from its seed with no RNG dependency.
+    fn lcg(s: &mut u64) -> u64 {
+        *s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        *s >> 17
+    }
+
+    /// One generated fixture: a mask over `n` rows, a resident key lane, a
+    /// VIA address (`index` into `table`) and the value lane MIN/MAX read.
+    struct Fx {
+        mask: Vec<u64>,
+        keys: Vec<u32>,
+        index: Vec<u32>,
+        table: Vec<u32>,
+        values: Vec<i32>,
+    }
+
+    const GROUPS: usize = 7;
+
+    /// `n` rows; mask words carry DIRTY bits past `n` on purpose; keys span
+    /// past the group universe; the index spans past the table.
+    fn fixture(n: usize, seed: u64) -> Fx {
+        let mut s = seed;
+        let words = n.div_ceil(64);
+        let mask = (0..words)
+            .map(|_| lcg(&mut s) ^ (lcg(&mut s) << 32))
+            .collect();
+        let keys = (0..n)
+            .map(|_| (lcg(&mut s) % (GROUPS as u64 + 3)) as u32)
+            .collect();
+        let table: Vec<u32> = (0..11)
+            .map(|_| (lcg(&mut s) % (GROUPS as u64 + 2)) as u32)
+            .collect();
+        let index = (0..n)
+            .map(|_| (lcg(&mut s) % (table.len() as u64 + 4)) as u32)
+            .collect();
+        let values = (0..n)
+            .map(|i| match i % 17 {
+                0 => i32::MIN,
+                1 => i32::MAX,
+                _ => (lcg(&mut s) % 2001) as i32 - 1000,
+            })
+            .collect();
+        Fx {
+            mask,
+            keys,
+            index,
+            table,
+            values,
+        }
+    }
+
+    /// Row `i`'s mask bit, read longhand (never through the walker).
+    fn selected(fx: &Fx, i: usize) -> bool {
+        fx.mask[i / 64] >> (i % 64) & 1 == 1
+    }
+
+    /// Row `i`'s resident group, or `None` when the key is past the universe.
+    fn key_resident(fx: &Fx, i: usize) -> Option<usize> {
+        let k = fx.keys[i] as usize;
+        (k < GROUPS).then_some(k)
+    }
+
+    /// Row `i`'s VIA group, `table[index[i]]`, or `None` when either hop
+    /// drops (index past the table, or key past the universe).
+    fn key_via(fx: &Fx, i: usize) -> Option<usize> {
+        let a = fx.index[i] as usize;
+        if a >= fx.table.len() {
+            return None;
+        }
+        let k = fx.table[a] as usize;
+        (k < GROUPS).then_some(k)
+    }
+
+    /// The independent scalar oracle: fold `f` over every selected row whose
+    /// group resolves, starting each slot at `seed`; `count` folds a 1 per
+    /// row instead of the row's value.
+    fn reference(
+        fx: &Fx, key: fn(&Fx, usize) -> Option<usize>, seed: i64, f: fn(i64, i64) -> i64, count: bool,
+    ) -> Vec<i64> {
+        let mut out = vec![seed; GROUPS];
+        for i in 0..fx.values.len() {
+            if selected(fx, i) {
+                if let Some(k) = key(fx, i) {
+                    out[k] = f(out[k], if count { 1 } else { fx.values[i] as i64 });
+                }
+            }
+        }
+        out
+    }
+
+    const LENS: &[usize] = &[0, 1, 63, 64, 65, 130, 1000];
+
+    /// All eight members (sum, count, min, max × resident, VIA) equal the
+    /// scalar oracle at every length in [`LENS`], word boundaries included.
+    #[test]
+    fn every_member_matches_the_scalar_reference_on_both_addresses() {
+        for &n in LENS {
+            let fx = fixture(n, 0x5eed ^ n as u64);
+            let add = |a: i64, b: i64| a + b;
+
+            let mut o = vec![0; GROUPS];
+            masked_group_count_u32(&fx.mask, &fx.keys, &mut o);
+            assert_eq!(o, reference(&fx, key_resident, 0, add, true), "count n={n}");
+            let mut o = vec![0; GROUPS];
+            masked_group_count_u32_via(&fx.mask, &fx.index, &fx.table, &mut o);
+            assert_eq!(o, reference(&fx, key_via, 0, add, true), "count_via n={n}");
+
+            let mut o = vec![0; GROUPS];
+            masked_group_sum_i32(&fx.mask, &fx.keys, &fx.values, &mut o);
+            assert_eq!(o, reference(&fx, key_resident, 0, add, false), "sum n={n}");
+            let mut o = vec![0; GROUPS];
+            masked_group_sum_i32_via(&fx.mask, &fx.index, &fx.table, &fx.values, &mut o);
+            assert_eq!(o, reference(&fx, key_via, 0, add, false), "sum_via n={n}");
+
+            let mut o = vec![i64::MAX; GROUPS];
+            masked_group_min_i32(&fx.mask, &fx.keys, &fx.values, &mut o);
+            assert_eq!(o, reference(&fx, key_resident, i64::MAX, i64::min, false), "min n={n}");
+            let mut o = vec![i64::MAX; GROUPS];
+            masked_group_min_i32_via(&fx.mask, &fx.index, &fx.table, &fx.values, &mut o);
+            assert_eq!(o, reference(&fx, key_via, i64::MAX, i64::min, false), "min_via n={n}");
+
+            let mut o = vec![i64::MIN; GROUPS];
+            masked_group_max_i32(&fx.mask, &fx.keys, &fx.values, &mut o);
+            assert_eq!(o, reference(&fx, key_resident, i64::MIN, i64::max, false), "max n={n}");
+            let mut o = vec![i64::MIN; GROUPS];
+            masked_group_max_i32_via(&fx.mask, &fx.index, &fx.table, &fx.values, &mut o);
+            assert_eq!(o, reference(&fx, key_via, i64::MIN, i64::max, false), "max_via n={n}");
+        }
+    }
+
+    /// Anti-vacuity: the fixture must actually exercise every path the
+    /// reference distinguishes — otherwise agreement proves nothing about it.
+    #[test]
+    fn the_fixture_exercises_every_drop_and_the_dirty_tail() {
+        let n = 1000;
+        let fx = fixture(n, 0x5eed ^ n as u64);
+        let sel: Vec<usize> = (0..n).filter(|&i| selected(&fx, i)).collect();
+        assert!(sel.iter().any(|&i| fx.keys[i] as usize >= GROUPS), "no out-of-universe resident key");
+        assert!(sel.iter().any(|&i| fx.index[i] as usize >= fx.table.len()), "no first-hop VIA drop");
+        assert!(
+            sel.iter().any(|&i| fx
+                .table
+                .get(fx.index[i] as usize)
+                .is_some_and(|&k| k as usize >= GROUPS)),
+            "no second-hop VIA drop"
+        );
+        assert!(sel.iter().any(|&i| fx.values[i] == i32::MIN), "no i32::MIN reaches a group");
+        // n = 1000 leaves 24 dirty bits in the last word; at least one set.
+        let tail = fx.mask[n / 64] >> (n % 64);
+        assert_ne!(tail, 0, "last mask word has no dirty bit past n");
+    }
+
+    /// The seed survives an empty group: a slot no selected row names keeps
+    /// the caller's seed, which is how an empty group's NULL is recovered.
+    #[test]
+    fn an_empty_group_keeps_its_seed() {
+        let mask = [0b1u64];
+        let keys = [0u32];
+        let values = [42i32];
+        let mut min = [i64::MAX; 2];
+        masked_group_min_i32(&mask, &keys, &values, &mut min);
+        assert_eq!(min, [42, i64::MAX]);
+        let mut max = [i64::MIN; 2];
+        masked_group_max_i32(&mask, &keys, &values, &mut max);
+        assert_eq!(max, [42, i64::MIN]);
+    }
+
+    /// `out` is folded into, not overwritten: a second call over the same
+    /// rows doubles a count and leaves a min unchanged.
+    #[test]
+    fn calls_accumulate_rather_than_overwrite() {
+        let mask = [0b11u64];
+        let keys = [0u32, 0];
+        let values = [3i32, -2];
+        let mut c = [0i64; 1];
+        masked_group_count_u32(&mask, &keys, &mut c);
+        masked_group_count_u32(&mask, &keys, &mut c);
+        assert_eq!(c, [4]);
+        let mut m = [-50i64; 1];
+        masked_group_min_i32(&mask, &keys, &values, &mut m);
+        assert_eq!(m, [-50], "an existing smaller value must survive");
+    }
+
+    /// A count slot the caller seeded at `i64::MAX` must WRAP on the next
+    /// selected row, in every build profile, exactly as the sum family does.
+    /// A plain `+= 1` panics here in a debug build and wraps in release; the
+    /// behavior must not depend on which one is running.
+    #[test]
+    fn counts_wrap_like_sums_at_the_i64_boundary() {
+        let mask = [0b1u64];
+        let mut c = [i64::MAX; 1];
+        masked_group_count_u32(&mask, &[0], &mut c);
+        assert_eq!(c, [i64::MIN], "resident count must wrap, not panic");
+
+        let mut v = [i64::MAX; 1];
+        masked_group_count_u32_via(&mask, &[0], &[0], &mut v);
+        assert_eq!(v, [i64::MIN], "via count must wrap, not panic");
+
+        // Same boundary on the sum family, for parity.
+        let mut s = [i64::MAX; 1];
+        masked_group_sum_i32(&mask, &[0], &[1], &mut s);
+        assert_eq!(s, [i64::MIN]);
+    }
+
+    /// A mask shorter than the row count is refused, and the panic names the
+    /// public function the caller used, not the shared walker.
+    #[test]
+    #[should_panic(expected = "masked_group_count_u32: mask_words.len()=0 < required 1")]
+    fn a_short_mask_is_refused_with_the_callers_name() {
+        masked_group_count_u32(&[], &[0], &mut [0]);
+    }
+
+    /// MIN refuses key and value lanes of different lengths.
+    #[test]
+    #[should_panic(expected = "keys/values length mismatch")]
+    fn min_refuses_mismatched_lanes() {
+        masked_group_min_i32(&[1], &[0, 0], &[1], &mut [0]);
     }
 }
