@@ -6,7 +6,7 @@
 //!
 //! - **Cosine-shaped** values (cosine, Pearson r, normalized dot products —
 //!   anything bounded in `[-1, 1]`) pay the Fisher-Z entry tax:
-//!   [`fisher_z`] / [`fisher_z_f32_batch`]. No exceptions, including lab and
+//!   [`ZGamma`] (codes) / [`fisher_z`] (one scalar). No exceptions, including lab and
 //!   calibration code. A raw cosine is not a z-score: its variance shrinks
 //!   towards the rim, so equal steps do not mean equal evidence and a fixed
 //!   `cos > t` threshold means a different confidence at every `t`.
@@ -21,6 +21,11 @@
 //! `[−1+ε, 1−ε]`, `ε = `[`FISHER_CLAMP_EPS`] `= 1e-9`, so every finite input
 //! gives a finite z and NaN propagates. Hyperbolic depth `2z` is
 //! [`hyperbolic_depth`].
+//!
+//! **z is never materialized.** Populations are encoded through a
+//! [`ZGamma`] envelope straight to `i8` codes and stay there; there is no
+//! z buffer and no inverse back to cosine. [`fisher_z`] exists for single
+//! scalars — a report statistic, a threshold — not for arrays.
 
 use crate::simd::{simd_ln_f32, F32x16};
 
@@ -62,12 +67,6 @@ pub fn fisher_z(r: f64) -> f64 {
     0.5 * ((1.0 + s).ln() - (1.0 - s).ln())
 }
 
-/// Inverse of [`fisher_z`]: `r = tanh(z)`.
-#[inline]
-pub fn fisher_z_inv(z: f64) -> f64 {
-    z.tanh()
-}
-
 /// Hyperbolic (Poincaré-disk) depth `2·atanh(r)` — exactly `2 ×` [`fisher_z`],
 /// the "Fisher 2z" of helix and `jc`.
 #[inline]
@@ -75,46 +74,133 @@ pub fn hyperbolic_depth(r: f64) -> f64 {
     2.0 * fisher_z(r)
 }
 
-/// Fisher-Z over a slice of `f32` similarities, sixteen lanes at a time.
+/// The z-space envelope: the metadata that makes an `i8` code mean a z-score.
 ///
-/// Each element is clamped to `[−`[`FISHER_CLAMP_F32`]`, `[`FISHER_CLAMP_F32`]`]`
-/// and transformed with the same `ln` form as [`fisher_z`], through `F32x16`
-/// and [`simd_ln_f32`]. The result is bit-identical to applying that formula
-/// to each element in scalar `f32`; NaN propagates.
+/// **Fisher-Z is never materialized.** There is no buffer of z values and no
+/// way back to cosine. A cosine enters, is transformed in registers, is
+/// normalized against this envelope, and leaves as an `i8` code. Everything
+/// after that — thresholds, bands, ranking — works on codes. A threshold is
+/// converted into code space once with [`ZGamma::threshold_code`]; it is never
+/// converted back.
 ///
-/// # Panics
-///
-/// Panics if `src.len() != dst.len()`.
-///
-/// # Example
-///
-/// ```
-/// use ndarray::hpc::zspace::fisher_z_f32_batch;
-///
-/// let r = [0.0f32, 0.5, -0.5, 1.0];
-/// let mut z = [0.0f32; 4];
-/// fisher_z_f32_batch(&r, &mut z);
-/// assert_eq!(z[0], 0.0);
-/// assert_eq!(z[1], -z[2]);
-/// assert!(z[3].is_finite());
-/// ```
-pub fn fisher_z_f32_batch(src: &[f32], dst: &mut [f32]) {
-    assert_eq!(src.len(), dst.len(), "fisher_z_f32_batch: length mismatch");
-    let (cs, ts) = src.as_chunks::<16>();
-    let (cd, td) = dst.as_chunks_mut::<16>();
-    let one = F32x16::splat(1.0);
-    let half = F32x16::splat(0.5);
-    for (s, d) in cs.iter().zip(cd) {
-        let x = F32x16::from_array(core::array::from_fn(|i| clamp_f32(s[i])));
-        *d = ((simd_ln_f32(one + x) - simd_ln_f32(one - x)) * half).to_array();
+/// The code is `((z − z_min) / z_range)·254 − 127`, clamped to
+/// `[−128, 127]` and truncated toward zero. `z_min`/`z_range` travel with the
+/// codes as 8 bytes of little-endian `f32` ([`ZGamma::to_le_bytes`]). The byte
+/// layout and the code formula match
+/// `bgz_tensor::fisher_z::FamilyGamma`, so an envelope written by one can be
+/// read by the other. The two clamp the cosine differently at the rim
+/// (bgz-tensor uses `0.9999`, this uses [`FISHER_CLAMP_F32`]), so codes agree
+/// bit for bit only for `|cos| ≤ 0.9999`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ZGamma {
+    /// z of the smallest cosine the envelope covers.
+    pub z_min: f32,
+    /// `z_max − z_min`; always `> 0`.
+    pub z_range: f32,
+}
+
+impl ZGamma {
+    /// Serialized size: two little-endian `f32`s.
+    pub const BYTES: usize = 8;
+
+    /// Fit the envelope to a population of cosines.
+    ///
+    /// Fisher-Z is monotone, so the z range is the transform of the cosine
+    /// range: only the cosine minimum and maximum are scanned, and no z value
+    /// is stored. NaN elements are ignored. An empty, all-NaN, or constant
+    /// population gets `z_range = 1.0` so that codes stay finite.
+    pub fn fit(cosines: &[f32]) -> Self {
+        let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+        for &c in cosines {
+            if !c.is_nan() {
+                lo = lo.min(c);
+                hi = hi.max(c);
+            }
+        }
+        if lo > hi {
+            return Self {
+                z_min: 0.0,
+                z_range: 1.0,
+            };
+        }
+        let z_min = fisher_z_f32(lo);
+        let range = fisher_z_f32(hi) - z_min;
+        Self {
+            z_min,
+            z_range: if range > 0.0 { range } else { 1.0 },
+        }
     }
-    for (s, d) in ts.iter().zip(td) {
-        *d = fisher_z_f32(*s);
+
+    /// Encode one cosine as a z-space code.
+    ///
+    /// NaN encodes as `0`, the code for the envelope midpoint, because Rust's
+    /// saturating `as i8` maps NaN to zero.
+    #[inline]
+    pub fn encode(&self, cosine: f32) -> i8 {
+        let n = (fisher_z_f32(cosine) - self.z_min) / self.z_range;
+        (n * 254.0 - 127.0).clamp(-128.0, 127.0) as i8
+    }
+
+    /// Encode a slice of cosines, sixteen lanes at a time.
+    ///
+    /// Clamp, Fisher transform and normalization are fused in `F32x16`
+    /// registers; the only thing written is the `i8` code. The result is
+    /// bit-identical to [`ZGamma::encode`] per element.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `cosines.len() != codes.len()`.
+    pub fn encode_batch(&self, cosines: &[f32], codes: &mut [i8]) {
+        assert_eq!(cosines.len(), codes.len(), "ZGamma::encode_batch: length mismatch");
+        let (cs, ts) = cosines.as_chunks::<16>();
+        let (cd, td) = codes.as_chunks_mut::<16>();
+        let one = F32x16::splat(1.0);
+        let half = F32x16::splat(0.5);
+        let z_min = F32x16::splat(self.z_min);
+        let z_range = F32x16::splat(self.z_range);
+        let scale = F32x16::splat(254.0);
+        let shift = F32x16::splat(127.0);
+        for (s, d) in cs.iter().zip(cd) {
+            let x = F32x16::from_array(core::array::from_fn(|i| clamp_f32(s[i])));
+            let z = (simd_ln_f32(one + x) - simd_ln_f32(one - x)) * half;
+            let v = (((z - z_min) / z_range) * scale - shift).to_array();
+            *d = core::array::from_fn(|i| v[i].clamp(-128.0, 127.0) as i8);
+        }
+        for (s, d) in ts.iter().zip(td) {
+            *d = self.encode(*s);
+        }
+    }
+
+    /// Convert a cosine threshold into code space, once.
+    ///
+    /// Because the code is monotone in the cosine, `encode(c) >= t` with
+    /// `t = threshold_code(c₀)` holds for every `c ≥ c₀`. A cosine slightly
+    /// below `c₀` can share its code, so the test is inclusive at the
+    /// resolution of one code step.
+    #[inline]
+    pub fn threshold_code(&self, cosine: f32) -> i8 {
+        self.encode(cosine)
+    }
+
+    /// The envelope as 8 little-endian bytes: `z_min` then `z_range`.
+    pub fn to_le_bytes(&self) -> [u8; Self::BYTES] {
+        let mut b = [0u8; Self::BYTES];
+        b[..4].copy_from_slice(&self.z_min.to_le_bytes());
+        b[4..].copy_from_slice(&self.z_range.to_le_bytes());
+        b
+    }
+
+    /// Read an envelope written by [`ZGamma::to_le_bytes`].
+    pub fn from_le_bytes(b: [u8; Self::BYTES]) -> Self {
+        Self {
+            z_min: f32::from_le_bytes([b[0], b[1], b[2], b[3]]),
+            z_range: f32::from_le_bytes([b[4], b[5], b[6], b[7]]),
+        }
     }
 }
 
-/// Scalar `f32` Fisher-Z with the batch path's clamp — the per-element
-/// definition [`fisher_z_f32_batch`] must reproduce.
+/// Scalar `f32` Fisher-Z with the `f32` rim clamp. Private on purpose: its
+/// result only ever lives in a register on its way to a code.
 #[inline]
 fn fisher_z_f32(r: f32) -> f32 {
     let s = clamp_f32(r);
@@ -186,45 +272,105 @@ mod tests {
         assert!(fisher_z(f64::NAN).is_nan());
     }
 
-    #[test]
-    fn fisher_z_inverse_round_trips() {
-        for i in -99..=99 {
-            let r = f64::from(i) / 100.0;
-            assert!((fisher_z_inv(fisher_z(r)) - r).abs() < 1e-12, "r = {r}");
-        }
-    }
-
-    /// The batch path must equal the scalar f32 definition bit for bit, at
-    /// every length across the 16-lane boundary and at the rim.
-    #[test]
-    fn batch_is_bit_identical_to_scalar_f32() {
-        let mut src: Vec<f32> = (0..200)
+    fn cosines() -> Vec<f32> {
+        let mut v: Vec<f32> = (0..200)
             .map(|i| ((i * 37) % 199) as f32 / 99.0 - 1.0)
             .collect();
-        src[3] = 1.0;
-        src[20] = -1.0;
-        src[33] = 7.5;
+        v[3] = 1.0;
+        v[20] = -1.0;
+        v[33] = 7.5;
+        v[50] = f32::NAN;
+        v
+    }
+
+    /// The fused batch path must equal the scalar encoder bit for bit, at
+    /// every length across the 16-lane boundary, at the rim, and on NaN.
+    #[test]
+    fn encode_batch_is_bit_identical_to_encode() {
+        let src = cosines();
+        let g = ZGamma::fit(&src[..150]);
         for n in (0..=40).chain([199, 200]) {
-            let mut dst = vec![0.0f32; n];
-            fisher_z_f32_batch(&src[..n], &mut dst);
-            for (i, (&r, &z)) in src[..n].iter().zip(&dst).enumerate() {
-                assert_eq!(z.to_bits(), fisher_z_f32(r).to_bits(), "n={n} i={i} r={r}");
-                assert!(z.is_finite(), "n={n} i={i} r={r}");
+            let mut dst = vec![0i8; n];
+            g.encode_batch(&src[..n], &mut dst);
+            for (i, (&c, &k)) in src[..n].iter().zip(&dst).enumerate() {
+                assert_eq!(k, g.encode(c), "n={n} i={i} c={c}");
             }
         }
     }
 
-    /// The f32 rim clamp is load-bearing: without it, `r = 1.0` in f32 is
-    /// `ln(0) = −∞` and the result is infinite.
+    /// The fitted envelope spans the full code range: the population minimum
+    /// lands at −127, the maximum at 127.
     #[test]
-    fn f32_rim_is_finite_and_close_to_f64() {
-        let mut z = [0.0f32; 2];
-        fisher_z_f32_batch(&[1.0, -1.0], &mut z);
-        assert!(z[0].is_finite() && z[1].is_finite());
-        assert!((f64::from(z[0]) - fisher_z(f64::from(FISHER_CLAMP_F32))).abs() < 1e-3);
-        let mut nan = [0.0f32; 1];
-        fisher_z_f32_batch(&[f32::NAN], &mut nan);
-        assert!(nan[0].is_nan());
+    fn fit_spans_the_code_range() {
+        let pop = [-0.2f32, 0.1, 0.4, 0.9];
+        let g = ZGamma::fit(&pop);
+        assert_eq!(g.encode(-0.2), -127);
+        assert_eq!(g.encode(0.9), 127);
+        assert!(g.encode(0.1) > -127 && g.encode(0.4) < 127);
+        // Outside the envelope saturates rather than wrapping.
+        assert_eq!(g.encode(-0.9), -128);
+        assert_eq!(g.encode(0.99), 127);
+    }
+
+    /// Codes are spaced in z, not in cosine: two cosine steps of the same
+    /// size get more codes near the rim, where the evidence is stronger.
+    #[test]
+    fn codes_are_spaced_in_z_not_in_cosine() {
+        let g = ZGamma::fit(&[0.0, 0.99]);
+        let mid = i32::from(g.encode(0.10)) - i32::from(g.encode(0.00));
+        let rim = i32::from(g.encode(0.99)) - i32::from(g.encode(0.89));
+        assert!(rim > 2 * mid, "rim step {rim} vs centre step {mid}");
+    }
+
+    #[test]
+    fn fit_is_finite_on_degenerate_populations() {
+        for pop in [&[][..], &[f32::NAN][..], &[0.5, 0.5][..], &[1.0, 1.0][..]] {
+            let g = ZGamma::fit(pop);
+            assert!(g.z_min.is_finite() && g.z_range > 0.0, "{pop:?}");
+            assert!(g.encode(0.3) >= -128);
+        }
+        assert_eq!(ZGamma::fit(&[f32::NAN]).encode(f32::NAN), 0);
+    }
+
+    #[test]
+    fn threshold_code_is_inclusive_and_monotone() {
+        let src = cosines();
+        let g = ZGamma::fit(&src);
+        let t = g.threshold_code(0.3);
+        for &c in src.iter().filter(|c| !c.is_nan()) {
+            if c >= 0.3 {
+                assert!(g.encode(c) >= t, "c={c}");
+            }
+        }
+    }
+
+    #[test]
+    fn envelope_round_trips_through_8_le_bytes() {
+        let g = ZGamma {
+            z_min: -0.75,
+            z_range: 3.25,
+        };
+        let b = g.to_le_bytes();
+        assert_eq!(b.len(), 8);
+        assert_eq!(&b[..4], &(-0.75f32).to_le_bytes());
+        assert_eq!(ZGamma::from_le_bytes(b), g);
+    }
+
+    /// Same formula as `bgz_tensor::fisher_z::FamilyGamma::encode`, written
+    /// out independently: codes must agree away from the rim.
+    #[test]
+    fn matches_the_family_gamma_formula() {
+        let g = ZGamma {
+            z_min: -0.5,
+            z_range: 2.0,
+        };
+        for i in -99..=99 {
+            let c = i as f32 / 100.0;
+            let z = c.clamp(-0.9999, 0.9999).atanh();
+            let want = (((z - g.z_min) / g.z_range) * 254.0 - 127.0).clamp(-128.0, 127.0) as i8;
+            let got = g.encode(c);
+            assert!((i32::from(got) - i32::from(want)).abs() <= 1, "c={c} got={got} want={want}");
+        }
     }
 
     #[test]
