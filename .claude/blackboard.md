@@ -1,3 +1,20 @@
+## 2026-09-23 (21) — ternlog → Count/Any without a mask: a slice loop, NOT a new ISA primitive
+
+Question asked (lance-graph #1270 prompt): what is the smallest T1 operation that lets an arbitrary 2/3-input Boolean membership END in Count/Any without writing a mask — and does existing `U64x8` composition already do it register-only?
+
+**Answer (MEASURED): the composition exists on every realization; only the slice loop was missing.** `U64x8::{ternlog::<IMM>, popcnt, +, |, reduce_sum}` are present on avx512 / avx2-polyfill / scalar / neon / wasm, so no backend code is added. Added two slice functions to `simd_masking_ops.rs` + the facade, built only from those methods:
+
+- `mask_ternlog_popcount::<IMM>(a, b, c) -> u64` — `Σ popcount(ternlog(a,b,c))`, lane-wise accumulate, one `reduce_sum`.
+- `mask_ternlog_any::<IMM>(a, b, c) -> bool` — OR-accumulate, horizontal test once per block of 8 chunks.
+
+Word-level contract (both): every bit of every word counts, exactly as `popcount_batch_u64`/`mask_any` over the materialized `mask_ternlog` result would; an odd `IMM` sets the last word's dead tail bits and they count (caller masks the last word). Register PADDING never counts — the tail runs through the packed op and only the live lanes are read, because `ternlog(0,0,0)` is all-ones for an odd table (pinned by `mask_ternlog_folds_never_count_register_padding`, NOR3 over 9 words).
+
+Evidence: `examples/ternlog_fold_probe.rs` (M = materialize+reduce, R = register fold, S = scalar fused), `AND2_OR`. Count M/R: avx2 1.27–1.50×, avx512 1.90–1.94×. Any M/R (all-zero worst case): avx2 3.2–6.2×, avx512 2.6–4.4×. A per-chunk Any test LOST to M on avx2 at 16K words (0.91×) — hence the block. S ≈ R on avx2 and at the memory-bound avx512 size: the win is not writing the mask, not SIMD per se.
+
+Tests: `mask_ternlog_folds_match_the_materializing_pair_for_all_256_tables` (all 256 tables × 14 lengths × dense/sparse, against the exact pair they replace), padding test, two length-mismatch panics. Parity: `slice_ternlog!` in `crates/simd-masking-parity` now also checks both folds (`0x69x` count, `0x65x` any); green on native v4, native v3, neon-qemu, wasm, wasm-scalar.
+
+Consumer: lance-graph-mask-risc fused terminal `MaskOp::{And,Or,Xor,AndNot,Ternlog} → Count/Any`.
+
 ## 2026-09-21 (20) — six index-addressed mask primitives (0xDxx): gather / scatter-or / keyed group-sum (direct + via index) / indexed equality / ORDERED key-run distinct fold
 
 All in `simd_masking_ops.rs` + the `simd::` facade, documented in ADDRESS terms only (`index` / `table` / `keys`; no join, foreign-key, semijoin, table-name or ERP vocabulary — T1 does not know what a consumer means by an index lane). All are deliberately scalar bit-walks: permutations/scatters indexed by data, not a fixed stride, so none of this crate's backends can vector-load them (same shape as `masked_strided_group_sum`, which is NOT a keyed group-by — it sums one record's own byte-groups into a scalar; zero callers of it are affected).

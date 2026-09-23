@@ -630,6 +630,139 @@ pub fn mask_ternlog_assign<const IMM: i32>(a: &mut [u64], b: &[u64], c: &[u64]) 
     }
 }
 
+/// `Σ popcount(ternlog::<IMM>(a, b, c))` over `u64` mask words — the count
+/// of a 3-input Boolean membership, with **no mask written**.
+///
+/// The fold [`mask_ternlog`] followed by [`popcount_batch_u64`](crate::bitwise::popcount_batch_u64) would compute,
+/// minus the intermediate buffer: each 8-word chunk is combined in a register
+/// (`U64x8::ternlog`), popcounted in the register (`U64x8::popcnt`) and added
+/// lane-wise into an accumulator that is reduced once at the end. It is built
+/// only from `U64x8` methods every realization carries, so it adds no backend
+/// code and no `cfg`.
+///
+/// Two-input functions are the same call with `c` ignored by the table
+/// (`ternlog::AND2` is `a & b`, whatever `c` holds); pass any same-length
+/// slice for `c`, e.g. `a` again.
+///
+/// # Word-level contract (tail bits)
+///
+/// Every bit of every word is counted, exactly as [`popcount_batch_u64`](crate::bitwise::popcount_batch_u64) over
+/// the materialized result would count it. For an even `IMM` and conforming
+/// inputs (tail bits zero) that is the row count; for an **odd** `IMM` (true of
+/// all-zero inputs) the dead tail bits of the last word are set by the table
+/// and ARE counted — mask them out of the last word yourself, exactly as
+/// [`mask_ternlog`] documents for its `dst`. Register padding past the end of
+/// the slices is never counted.
+///
+/// # Panics
+///
+/// Panics unless `a.len() == b.len() == c.len()`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::{mask_ternlog_popcount, ternlog};
+///
+/// let a = [0b1100u64, u64::MAX];
+/// let b = [0b1010u64, 0];
+/// let c = [0b0001u64, 0b111];
+/// // (a & b) | c: word 0 -> 0b1001 (2 bits), word 1 -> 0b111 (3 bits)
+/// assert_eq!(mask_ternlog_popcount::<{ ternlog::AND2_OR }>(&a, &b, &c), 5);
+/// ```
+#[inline]
+pub fn mask_ternlog_popcount<const IMM: i32>(a: &[u64], b: &[u64], c: &[u64]) -> u64 {
+    assert_eq!(a.len(), b.len(), "mask_ternlog_popcount: a/b length mismatch");
+    assert_eq!(a.len(), c.len(), "mask_ternlog_popcount: a/c length mismatch");
+    const L: usize = crate::simd::U64x8::LANES;
+    let (ca, ta) = a.as_chunks::<L>();
+    let (cb, tb) = b.as_chunks::<L>();
+    let (cc, tc) = c.as_chunks::<L>();
+    let mut acc = crate::simd::U64x8::splat(0);
+    for ((x, y), z) in ca.iter().zip(cb).zip(cc) {
+        let va = crate::simd::U64x8::from_array(*x);
+        let vb = crate::simd::U64x8::from_array(*y);
+        let vc = crate::simd::U64x8::from_array(*z);
+        acc += va.ternlog::<IMM>(vb, vc).popcnt();
+    }
+    let mut total = acc.reduce_sum();
+    if !ta.is_empty() {
+        let va = crate::simd::U64x8::from_array(pad_tail(ta));
+        let vb = crate::simd::U64x8::from_array(pad_tail(tb));
+        let vc = crate::simd::U64x8::from_array(pad_tail(tc));
+        // Only the live lanes: a padding lane holds ternlog(0,0,0), which is
+        // all-ones for an odd IMM and must not be counted.
+        let t = va.ternlog::<IMM>(vb, vc).to_array();
+        total += t[..ta.len()]
+            .iter()
+            .map(|w| u64::from(w.count_ones()))
+            .sum::<u64>();
+    }
+    total
+}
+
+/// `true` iff any bit of `ternlog::<IMM>(a, b, c)` is set, over `u64` mask
+/// words — a 3-input Boolean membership tested for non-emptiness with **no
+/// mask written**.
+///
+/// The fold [`mask_ternlog`] followed by [`mask_any`] would compute, minus the
+/// intermediate buffer. Each 8-word chunk is combined in a register and
+/// OR-accumulated; the accumulator is tested once per block of chunks rather
+/// than per chunk (a per-chunk horizontal test costs more than the ternlog it
+/// guards), so a hit returns within one block of where it occurs. Built only
+/// from `U64x8` methods every realization carries.
+///
+/// Tail bits follow [`mask_ternlog_popcount`]'s word-level contract: for an odd
+/// `IMM` the last word's dead tail bits are set by the table and make this
+/// `true`; register padding past the end of the slices never does.
+///
+/// # Panics
+///
+/// Panics unless `a.len() == b.len() == c.len()`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::{mask_ternlog_any, ternlog};
+///
+/// let a = [0b1100u64; 3];
+/// let b = [0b0011u64; 3];
+/// let c = [0u64; 3];
+/// assert!(!mask_ternlog_any::<{ ternlog::AND3 }>(&a, &b, &c)); // disjoint
+/// assert!(mask_ternlog_any::<{ ternlog::OR3 }>(&a, &b, &c));
+/// ```
+#[inline]
+pub fn mask_ternlog_any<const IMM: i32>(a: &[u64], b: &[u64], c: &[u64]) -> bool {
+    assert_eq!(a.len(), b.len(), "mask_ternlog_any: a/b length mismatch");
+    assert_eq!(a.len(), c.len(), "mask_ternlog_any: a/c length mismatch");
+    const L: usize = crate::simd::U64x8::LANES;
+    /// Chunks OR-accumulated between two horizontal tests.
+    const BLOCK: usize = 8;
+    let (ca, ta) = a.as_chunks::<L>();
+    let (cb, tb) = b.as_chunks::<L>();
+    let (cc, tc) = c.as_chunks::<L>();
+    let mut acc = crate::simd::U64x8::splat(0);
+    for (i, ((x, y), z)) in ca.iter().zip(cb).zip(cc).enumerate() {
+        let va = crate::simd::U64x8::from_array(*x);
+        let vb = crate::simd::U64x8::from_array(*y);
+        let vc = crate::simd::U64x8::from_array(*z);
+        acc |= va.ternlog::<IMM>(vb, vc);
+        if i % BLOCK == BLOCK - 1 && acc.to_array().iter().any(|&w| w != 0) {
+            return true;
+        }
+    }
+    if acc.to_array().iter().any(|&w| w != 0) {
+        return true;
+    }
+    if !ta.is_empty() {
+        let va = crate::simd::U64x8::from_array(pad_tail(ta));
+        let vb = crate::simd::U64x8::from_array(pad_tail(tb));
+        let vc = crate::simd::U64x8::from_array(pad_tail(tc));
+        let t = va.ternlog::<IMM>(vb, vc).to_array();
+        return t[..ta.len()].iter().any(|&w| w != 0);
+    }
+    false
+}
+
 /// Sum of `values[i]` where mask bit `i` is set, widened to `i64`.
 ///
 /// Bit order is the module convention: element `i` is bit `i % 64` of
@@ -4506,6 +4639,100 @@ mod tests {
         mask_ternlog::<AND3>(&a, &dirty, &dirty, &mut d);
         assert_eq!(d, a, "AND3 against all-ones is a");
         assert_eq!(d[1] & TAIL_MASK, 0, "AND3 tail follows a's tail");
+    }
+
+    /// The ternlog→Count/Any folds against the MATERIALIZING spelling
+    /// (`mask_ternlog` + `popcount_batch_u64` / `mask_any`) — the exact pair
+    /// they replace — over the family's length set, dense and sparse.
+    fn check_ternlog_fold_imm<const IMM: i32>() {
+        for &len in &[0usize, 1, 2, 7, 8, 9, 15, 16, 17, 63, 64, 65, 100, 129] {
+            for sparse in [false, true] {
+                let mut seed = 0xF01D_0000_0000_0001 ^ (IMM as u64) ^ (len as u64) << 8 ^ u64::from(sparse);
+                let mut w = || {
+                    let x = splitmix64(&mut seed);
+                    if sparse {
+                        x & splitmix64(&mut seed) & splitmix64(&mut seed) & splitmix64(&mut seed)
+                    } else {
+                        x
+                    }
+                };
+                let a: Vec<u64> = (0..len).map(|_| w()).collect();
+                let b: Vec<u64> = (0..len).map(|_| w()).collect();
+                let c: Vec<u64> = (0..len).map(|_| w()).collect();
+                let mut dst = vec![0u64; len];
+                mask_ternlog::<IMM>(&a, &b, &c, &mut dst);
+                assert_eq!(
+                    mask_ternlog_popcount::<IMM>(&a, &b, &c),
+                    crate::bitwise::popcount_batch_u64(&dst),
+                    "count imm={IMM:#04x} len={len} sparse={sparse}"
+                );
+                assert_eq!(
+                    mask_ternlog_any::<IMM>(&a, &b, &c),
+                    mask_any(&dst),
+                    "any imm={IMM:#04x} len={len} sparse={sparse}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mask_ternlog_folds_match_the_materializing_pair_for_all_256_tables() {
+        macro_rules! all_imms {
+            ($($imm:literal),* $(,)?) => { $( check_ternlog_fold_imm::<$imm>(); )* };
+        }
+        all_imms!(
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11,
+            0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23,
+            0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35,
+            0x36, 0x37, 0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47,
+            0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F, 0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59,
+            0x5A, 0x5B, 0x5C, 0x5D, 0x5E, 0x5F, 0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6A, 0x6B,
+            0x6C, 0x6D, 0x6E, 0x6F, 0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x7B, 0x7C, 0x7D,
+            0x7E, 0x7F, 0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8A, 0x8B, 0x8C, 0x8D, 0x8E, 0x8F,
+            0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9A, 0x9B, 0x9C, 0x9D, 0x9E, 0x9F, 0xA0, 0xA1,
+            0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF, 0xB0, 0xB1, 0xB2, 0xB3,
+            0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF, 0xC0, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5,
+            0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCD, 0xCE, 0xCF, 0xD0, 0xD1, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7,
+            0xD8, 0xD9, 0xDA, 0xDB, 0xDC, 0xDD, 0xDE, 0xDF, 0xE0, 0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9,
+            0xEA, 0xEB, 0xEC, 0xED, 0xEE, 0xEF, 0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0xFA, 0xFB,
+            0xFC, 0xFD, 0xFE, 0xFF,
+        );
+    }
+
+    #[test]
+    fn mask_ternlog_folds_never_count_register_padding() {
+        // NOR3 (0x01) is true of all-zero inputs, so a zero-padded register
+        // lane evaluates to all-ones. 9 words = one full chunk + a 1-word
+        // tail, leaving 7 padding lanes that would add 448 if counted.
+        let z = [0u64; 9];
+        assert_eq!(mask_ternlog_popcount::<0x01>(&z, &z, &z), 9 * 64);
+        // A single live lane is enough to decide Any, but with every live
+        // word forced to zero the answer must come from live lanes only.
+        let ones = [u64::MAX; 9];
+        assert_eq!(mask_ternlog_popcount::<0x01>(&ones, &ones, &ones), 0);
+        assert!(!mask_ternlog_any::<0x01>(&ones, &ones, &ones), "padding must not make Any true");
+        // Can-fire half: a hit in the tail alone is found.
+        let mut a = [0u64; 9];
+        a[8] = 1 << 63;
+        assert!(mask_ternlog_any::<{ crate::simd::ternlog::OR3 }>(&a, &z, &z));
+        // ...and one past the first block (chunk 8 = words 64..72), found too.
+        let mut far = vec![0u64; 200];
+        far[70] = 1;
+        let zz = vec![0u64; 200];
+        assert!(mask_ternlog_any::<{ crate::simd::ternlog::OR3 }>(&far, &zz, &zz));
+        assert_eq!(mask_ternlog_popcount::<{ crate::simd::ternlog::OR3 }>(&far, &zz, &zz), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "length mismatch")]
+    fn mask_ternlog_popcount_rejects_length_mismatch() {
+        mask_ternlog_popcount::<0x80>(&[0u64; 4], &[0u64; 3], &[0u64; 4]);
+    }
+
+    #[test]
+    #[should_panic(expected = "length mismatch")]
+    fn mask_ternlog_any_rejects_length_mismatch() {
+        mask_ternlog_any::<0x80>(&[0u64; 4], &[0u64; 4], &[0u64; 5]);
     }
 
     #[test]
