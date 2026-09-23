@@ -193,6 +193,46 @@ pub fn hamming_distance_raw(a: &[u8], b: &[u8]) -> u64 {
     dispatch_hamming(a, b)
 }
 
+/// Bytes per early-exit block in [`hamming_distance_within`]. Each block is
+/// counted by the same runtime-dispatched kernel [`hamming_distance_raw`]
+/// uses, so the per-block work keeps the best available lowering; 256 bytes
+/// is 2048 bits, four full 512-bit chunks per block.
+const HAMMING_WITHIN_BLOCK: usize = 256;
+
+/// Hamming distance with an early exit: `Some(d)` if the distance `d` is at
+/// most `max`, `None` otherwise.
+///
+/// Exact, not approximate: the running total only grows, so once it exceeds
+/// `max` the final distance must too, and the remaining bytes are skipped.
+/// The check happens after every [`HAMMING_WITHIN_BLOCK`]-byte block, so a
+/// reject costs at most one block beyond the point where the budget ran out.
+/// Like [`hamming_distance_raw`], unequal lengths measure the common prefix.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::bitwise::hamming_distance_within;
+///
+/// let a = [0xFFu8; 512];
+/// let b = [0x00u8; 512];
+/// assert_eq!(hamming_distance_within(&a, &b, 4096), Some(4096));
+/// assert_eq!(hamming_distance_within(&a, &b, 4095), None);
+/// ```
+pub fn hamming_distance_within(a: &[u8], b: &[u8], max: u64) -> Option<u64> {
+    let n = a.len().min(b.len());
+    let mut total = 0u64;
+    for (x, y) in a[..n]
+        .chunks(HAMMING_WITHIN_BLOCK)
+        .zip(b[..n].chunks(HAMMING_WITHIN_BLOCK))
+    {
+        total += dispatch_hamming(x, y);
+        if total > max {
+            return None;
+        }
+    }
+    Some(total)
+}
+
 /// Population count on raw slice.
 pub fn popcount_raw(a: &[u8]) -> u64 {
     dispatch_popcount(a)
@@ -683,6 +723,46 @@ mod tests {
         let x = vec![0xAAu8; 65536];
         let y = vec![0x55u8; 65536];
         assert_eq!(hamming_u64x8(&x, &y), 65536 * 8, "max distance");
+    }
+
+    /// `hamming_distance_within` is exact: `Some(d)` iff the true distance
+    /// `d <= max`, otherwise `None` — at every length (block boundaries at
+    /// multiples of 256 bytes), at `max` exactly on, one below and one above
+    /// the true distance, and at the extremes 0 and `u64::MAX`.
+    #[test]
+    fn test_hamming_distance_within_is_exact() {
+        for n in [0usize, 1, 63, 64, 255, 256, 257, 511, 512, 1000, 2048, 8192] {
+            let a = test_data(n, 0x42);
+            let b = test_data(n, 0x99);
+            let d = reference_hamming(&a, &b);
+            assert_eq!(hamming_distance_within(&a, &b, d), Some(d), "max == d, n={n}");
+            assert_eq!(hamming_distance_within(&a, &b, d + 1), Some(d), "max > d, n={n}");
+            assert_eq!(hamming_distance_within(&a, &b, u64::MAX), Some(d), "max = MAX, n={n}");
+            if d > 0 {
+                assert_eq!(hamming_distance_within(&a, &b, d - 1), None, "max == d-1, n={n}");
+                assert_eq!(hamming_distance_within(&a, &b, 0), None, "max = 0, n={n}");
+            }
+        }
+        let a = test_data(1000, 0x13);
+        let b = test_data(700, 0x37);
+        let d = hamming_scalar(&a, &b);
+        assert_eq!(hamming_distance_within(&a, &b, d), Some(d), "unequal lengths");
+        assert_eq!(hamming_distance_within(&a, &b, d - 1), None, "unequal lengths, below");
+    }
+
+    /// The early exit must actually fire: when the first block alone exceeds
+    /// `max`, the answer must not depend on the bytes after it. Poisoning the
+    /// tail cannot be observed through the return value, so the check is that
+    /// a `max` below the FIRST block's distance returns `None` even though the
+    /// remaining blocks are identical (distance 0 there).
+    #[test]
+    fn test_hamming_distance_within_rejects_on_the_first_block() {
+        let mut a = vec![0u8; 4096];
+        let b = vec![0u8; 4096];
+        a[..HAMMING_WITHIN_BLOCK].fill(0xFF);
+        let first = (HAMMING_WITHIN_BLOCK * 8) as u64;
+        assert_eq!(hamming_distance_within(&a, &b, first), Some(first));
+        assert_eq!(hamming_distance_within(&a, &b, first - 1), None);
     }
 
     #[test]

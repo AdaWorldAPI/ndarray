@@ -176,7 +176,7 @@ impl Cascade {
     }
 
     pub fn test(&self, a: &[u8], b: &[u8]) -> bool {
-        bitwise::hamming_distance_raw(a, b) <= self.threshold
+        bitwise::hamming_distance_within(a, b, self.threshold).is_some()
     }
 
     pub fn observe(&mut self, distance: u32) -> Option<ShiftAlert> {
@@ -230,8 +230,7 @@ impl Cascade {
             let mut results = Vec::new();
             for i in 0..num_vectors {
                 let base = i * vec_bytes;
-                let d = bitwise::hamming_distance_raw(query, &database[base..base + vec_bytes]);
-                if d <= threshold {
+                if let Some(d) = bitwise::hamming_distance_within(query, &database[base..base + vec_bytes], threshold) {
                     results.push(RankedHit {
                         index: i,
                         hamming: d,
@@ -293,9 +292,14 @@ impl Cascade {
         let query_rest = &query[s1_bytes..];
         for &(idx, d_prefix) in &survivors {
             let base = idx * vec_bytes;
-            let d_rest = bitwise::hamming_distance_raw(query_rest, &database[base + s1_bytes..base + vec_bytes]);
-            let d_full = d_prefix + d_rest;
-            if d_full <= threshold {
+            // Exact early exit: the rest may use only what the prefix left of
+            // the budget; a prefix already over it rejects without a scan.
+            let Some(budget) = threshold.checked_sub(d_prefix) else {
+                continue;
+            };
+            let rest = &database[base + s1_bytes..base + vec_bytes];
+            if let Some(d_rest) = bitwise::hamming_distance_within(query_rest, rest, budget) {
+                let d_full = d_prefix + d_rest;
                 finalists.push(RankedHit {
                     index: idx,
                     hamming: d_full,
@@ -621,9 +625,12 @@ impl PackedDatabase {
         for &(idx, d12) in &finalists {
             if self.s3_bytes > 0 {
                 let s3_start = idx * self.s3_bytes;
-                let d3 = bitwise::hamming_distance_raw(query_s3, &self.stroke3[s3_start..s3_start + self.s3_bytes]);
-                let d_full = d12 + d3;
-                if d_full <= threshold {
+                let s3 = &self.stroke3[s3_start..s3_start + self.s3_bytes];
+                let d3 = threshold
+                    .checked_sub(d12)
+                    .and_then(|budget| bitwise::hamming_distance_within(query_s3, s3, budget));
+                if let Some(d3) = d3 {
+                    let d_full = d12 + d3;
                     results.push(RankedHit {
                         index: idx,
                         hamming: d_full,

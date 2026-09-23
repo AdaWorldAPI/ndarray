@@ -611,7 +611,7 @@ pub mod ternlog {
     pub const AND2_OR: i32 = 0xEA;
 }
 
-pub use crate::hpc::bitwise::{hamming_distance_raw, popcount_raw};
+pub use crate::hpc::bitwise::{hamming_distance_raw, hamming_distance_within, popcount_raw};
 pub use crate::hpc::bnn_cross_plane::CollapseGate;
 pub use crate::hpc::fft::{wht_f32, wht_f32_new};
 pub use crate::hpc::fingerprint::{
