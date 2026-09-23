@@ -48,6 +48,8 @@ fn popcount_scalar(data: &[u8]) -> u64 {
     count
 }
 
+/// Byte-wise reference — the test oracle for every tier.
+#[cfg(test)]
 fn hamming_scalar(a: &[u8], b: &[u8]) -> u64 {
     let n = a.len().min(b.len());
     let mut count = 0u64;
@@ -57,28 +59,38 @@ fn hamming_scalar(a: &[u8], b: &[u8]) -> u64 {
     count
 }
 
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-unsafe fn hamming_avx2(a: &[u8], b: &[u8]) -> u64 {
-    // No U8x32 polyfill available — use u64 XOR + count_ones (hardware POPCNT).
+/// Hamming distance through the `U64x8` polyfill — every backend, no
+/// runtime gate. 64-byte chunks are read as eight `u64` words, XORed and
+/// counted with [`U64x8::popcnt`](crate::simd::U64x8::popcnt), which each
+/// realization lowers natively: VPOPCNTQ when `avx512vpopcntdq` is compiled
+/// in, `vcntq_u8` on NEON, `i8x16_popcnt` on wasm simd128, a per-lane
+/// `count_ones` on the AVX2 and scalar builds. Lane totals stay in the
+/// accumulator and are reduced once at the end.
+///
+/// Byte order of the word load does not matter: popcount of an XOR is
+/// invariant under any permutation of the bits, so `from_le_bytes` is used
+/// only because it is a plain load on every target this crate supports.
+///
+/// Measures the common prefix when the lengths differ, like `hamming_scalar`.
+fn hamming_u64x8(a: &[u8], b: &[u8]) -> u64 {
+    use crate::simd::U64x8;
+
     let n = a.len().min(b.len());
-    let mut total = 0u64;
-    let mut i = 0;
-
-    // Process 8 bytes (one u64) per iteration
-    while i + 8 <= n {
-        let wa = u64::from_ne_bytes(a[i..i + 8].try_into().unwrap());
-        let wb = u64::from_ne_bytes(b[i..i + 8].try_into().unwrap());
-        total += (wa ^ wb).count_ones() as u64;
-        i += 8;
+    let (ca, ta) = a[..n].as_chunks::<64>();
+    let (cb, tb) = b[..n].as_chunks::<64>();
+    let words = |c: &[u8; 64]| -> [u64; 8] {
+        core::array::from_fn(|i| u64::from_le_bytes(c[i * 8..i * 8 + 8].try_into().unwrap()))
+    };
+    let mut acc = U64x8::splat(0);
+    for (x, y) in ca.iter().zip(cb) {
+        acc += (U64x8::from_array(words(x)) ^ U64x8::from_array(words(y))).popcnt();
     }
-
-    // Scalar remainder
-    while i < n {
-        total += (a[i] ^ b[i]).count_ones() as u64;
-        i += 1;
-    }
-    total
+    let tail: u64 = ta
+        .iter()
+        .zip(tb)
+        .map(|(x, y)| u64::from((x ^ y).count_ones()))
+        .sum();
+    acc.reduce_sum() + tail
 }
 
 /// AVX-512 BW hamming using 512-bit vpshufb — 64 bytes per iteration.
@@ -174,7 +186,7 @@ unsafe fn popcount_avx512bw(a: &[u8]) -> u64 {
     total
 }
 
-/// Hamming distance on raw slices — dispatches to VPOPCNTDQ → AVX-512BW → AVX2 → scalar.
+/// Hamming distance on raw slices — dispatches to VPOPCNTDQ → AVX-512BW → the `U64x8` polyfill.
 ///
 /// Public API for callers that operate on raw `&[u8]` without ndarray arrays.
 pub fn hamming_distance_raw(a: &[u8], b: &[u8]) -> u64 {
@@ -227,12 +239,8 @@ fn dispatch_hamming(a: &[u8], b: &[u8]) -> u64 {
             // SAFETY: checked AVX-512 BW — uses 512-bit vpshufb (64B/iter)
             return unsafe { hamming_avx512bw(a, b) };
         }
-        if caps.avx2 {
-            // SAFETY: checked AVX2 — uses 256-bit vpshufb (32B/iter)
-            return unsafe { hamming_avx2(a, b) };
-        }
     }
-    hamming_scalar(a, b)
+    hamming_u64x8(a, b)
 }
 
 fn dispatch_popcount(a: &[u8]) -> u64 {
@@ -271,9 +279,21 @@ fn dispatch_hamming_batch(query: &[u8], database: &[u8], num_rows: usize, row_by
 
 /// Count set bits across an array of u64 words.
 /// More efficient than reinterpreting as bytes — works on native u64s directly.
+///
+/// Runs through the `U64x8` polyfill: eight words per step, counted with
+/// [`U64x8::popcnt`](crate::simd::U64x8::popcnt) (VPOPCNTQ / `vcntq_u8` /
+/// `i8x16_popcnt` / per-lane `count_ones`, whichever the build realizes),
+/// lane totals reduced once at the end. A lane can hold at most
+/// `64 * words.len() / 8` — no overflow for any slice that fits in memory.
 pub fn popcount_batch_u64(words: &[u64]) -> u64 {
-    // Use POPCNT instruction if available, else scalar
-    words.iter().map(|w| w.count_ones() as u64).sum()
+    use crate::simd::U64x8;
+
+    let (chunks, tail) = words.as_chunks::<{ U64x8::LANES }>();
+    let mut acc = U64x8::splat(0);
+    for c in chunks {
+        acc += U64x8::from_array(*c).popcnt();
+    }
+    acc.reduce_sum() + tail.iter().map(|w| u64::from(w.count_ones())).sum::<u64>()
 }
 
 /// Per-word popcount: returns count of set bits in each u64.
@@ -479,19 +499,14 @@ mod tests {
         }
     }
 
-    #[cfg(target_arch = "x86_64")]
     #[test]
-    fn test_tier_avx2_hamming() {
-        if !is_x86_feature_detected!("avx2") {
-            eprintln!("SKIP: AVX2 not available");
-            return;
-        }
+    fn test_tier_u64x8_hamming() {
         for &n in &[0, 1, 7, 15, 31, 32, 33, 63, 64, 65, 127, 128, 255, 256, 1024, 4096, 8192] {
             let a = test_data(n, 0xAA);
             let b = test_data(n, 0x55);
             let expected = reference_hamming(&a, &b);
-            let got = unsafe { hamming_avx2(&a, &b) };
-            assert_eq!(got, expected, "AVX2 hamming failed at n={}", n);
+            let got = hamming_u64x8(&a, &b);
+            assert_eq!(got, expected, "U64x8 hamming failed at n={}", n);
         }
     }
 
@@ -568,10 +583,8 @@ mod tests {
             let b = test_data(n, 0x99);
             let scalar = hamming_scalar(&a, &b);
 
-            if is_x86_feature_detected!("avx2") {
-                let avx2 = unsafe { hamming_avx2(&a, &b) };
-                assert_eq!(scalar, avx2, "scalar≠avx2 at n={}: {} vs {}", n, scalar, avx2);
-            }
+            let poly = hamming_u64x8(&a, &b);
+            assert_eq!(scalar, poly, "scalar≠u64x8 at n={}: {} vs {}", n, scalar, poly);
             if is_x86_feature_detected!("avx512bw") {
                 let bw = unsafe { hamming_avx512bw(&a, &b) };
                 assert_eq!(scalar, bw, "scalar≠avx512bw at n={}: {} vs {}", n, scalar, bw);
@@ -616,9 +629,7 @@ mod tests {
 
         assert_eq!(hamming_scalar(&a, &b), expected, "scalar large");
 
-        if is_x86_feature_detected!("avx2") {
-            assert_eq!(unsafe { hamming_avx2(&a, &b) }, expected, "avx2 large");
-        }
+        assert_eq!(hamming_u64x8(&a, &b), expected, "u64x8 large");
         if is_x86_feature_detected!("avx512bw") {
             assert_eq!(unsafe { hamming_avx512bw(&a, &b) }, expected, "avx512bw large");
         }
@@ -629,6 +640,49 @@ mod tests {
                 "vpopcntdq large"
             );
         }
+    }
+
+    /// `popcount_batch_u64` against a per-word reference: every tail length
+    /// (0..=17 covers "no full U64x8 chunk", "exactly one" and "one plus a
+    /// tail"), a large all-ones input (lane accumulators must not truncate),
+    /// and a slice that starts one word in (no alignment assumption).
+    #[test]
+    fn test_popcount_batch_u64_matches_reference() {
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let words: Vec<u64> = (0..1031)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                seed
+            })
+            .collect();
+        let reference = |w: &[u64]| w.iter().map(|x| u64::from(x.count_ones())).sum::<u64>();
+        for n in (0..=17).chain([64, 65, 1000, 1031]) {
+            assert_eq!(super::popcount_batch_u64(&words[..n]), reference(&words[..n]), "n={n}");
+        }
+        assert_eq!(super::popcount_batch_u64(&words[1..]), reference(&words[1..]), "offset slice");
+        let ones = vec![u64::MAX; 100_003];
+        assert_eq!(super::popcount_batch_u64(&ones), 100_003 * 64, "all ones");
+    }
+
+    /// The polyfill Hamming path against the byte-wise reference: every
+    /// length across the 64-byte chunk boundary, an unaligned start, and
+    /// unequal lengths (distance over the common prefix, like `hamming_scalar`).
+    #[test]
+    fn test_hamming_u64x8_matches_reference() {
+        for n in (0..=130).chain([255, 256, 1024, 4095, 8192, 65536]) {
+            let a = test_data(n, 0x42);
+            let b = test_data(n, 0x99);
+            assert_eq!(hamming_u64x8(&a, &b), reference_hamming(&a, &b), "n={n}");
+        }
+        let a = test_data(1000, 0x13);
+        let b = test_data(1000, 0x37);
+        assert_eq!(hamming_u64x8(&a[1..], &b[3..]), hamming_scalar(&a[1..], &b[3..]), "unaligned");
+        assert_eq!(hamming_u64x8(&a[..700], &b), hamming_scalar(&a[..700], &b), "unequal lengths");
+        let x = vec![0xAAu8; 65536];
+        let y = vec![0x55u8; 65536];
+        assert_eq!(hamming_u64x8(&x, &y), 65536 * 8, "max distance");
     }
 
     #[test]
@@ -662,9 +716,7 @@ mod tests {
             let b = a.clone();
 
             assert_eq!(hamming_scalar(&a, &b), 0, "scalar identical n={}", n);
-            if is_x86_feature_detected!("avx2") {
-                assert_eq!(unsafe { hamming_avx2(&a, &b) }, 0, "avx2 identical n={}", n);
-            }
+            assert_eq!(hamming_u64x8(&a, &b), 0, "u64x8 identical n={}", n);
             if is_x86_feature_detected!("avx512bw") {
                 assert_eq!(unsafe { hamming_avx512bw(&a, &b) }, 0, "bw identical n={}", n);
             }
