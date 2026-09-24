@@ -567,8 +567,15 @@ fn variance_floor(m: &MomentsU32) -> u128 {
     if let (Some(a), Some(b)) = (n.checked_mul(m.sum_sq), m.sum.checked_mul(m.sum)) {
         return (a - b) / (n * n);
     }
-    // n·M2 = C·n − r², with C centred on the floor mean. Write C = a·n + b;
-    // then ⌊(C·n − r²)/n²⌋ = a − [b·n < r²], and b·n, r² < 2^128.
+    variance_floor_centred(m)
+}
+
+/// The overflow-free form of [`variance_floor`], valid for every `n > 0`.
+/// `n·M2 = C·n − r²`, with `C` centred on the floor mean. Write
+/// `C = a·n + b`; then `⌊(C·n − r²)/n²⌋ = a − [b·n < r²]`, and both `b·n`
+/// and `r²` are below `2^128`.
+fn variance_floor_centred(m: &MomentsU32) -> u128 {
+    let n = u128::from(m.n);
     let c = centred_on_floor_mean(m);
     let r = m.sum % n;
     let (a, b) = (c / n, c % n);
@@ -846,6 +853,47 @@ mod tests {
             sum_sq: 30,
         }; // 1,2,3,4: var 1.25
         assert_eq!(variance_floor(&m), 1);
+    }
+
+    /// The overflow-free variance form agrees with the direct one on every
+    /// small sample, including the fractional means that take the `a − 1`
+    /// correction.
+    #[test]
+    fn centred_variance_floor_matches_the_direct_form() {
+        let mut corrected = 0;
+        for seed in 1..400u64 {
+            let len = 2 + (seed % 37) as usize;
+            let xs = stream(len, (seed * 97 % 5000) as u32, 1 + (seed % 60) as u32, seed);
+            let m = moments_u32(&xs);
+            let n = u128::from(m.n);
+            let direct = (n * m.sum_sq - m.sum * m.sum) / (n * n);
+            assert_eq!(variance_floor_centred(&m), direct, "{xs:?}");
+            let c = centred_on_floor_mean(&m);
+            corrected += usize::from((c % n) * n < (m.sum % n).pow(2));
+        }
+        assert!(corrected > 0, "fixture must exercise the correction branch");
+    }
+
+    /// Each kurtosis bound switches to empirical floors on its own, with the
+    /// skew inside the window: a uniform stream is too light-tailed, a
+    /// narrow-core wide-tail mixture too heavy-tailed.
+    #[test]
+    fn kurtosis_alone_switches_to_empirical() {
+        let uniform = stream(2000, 8000, 400, 21);
+        let mut u = RollingFloor::calibrate(&uniform[..1000]);
+        u.observe_batch(&uniform[1000..]);
+        assert!(u.skewness().abs() < 2 && u.kurtosis() <= 200, "skew {} kurt {}", u.skewness(), u.kurtosis());
+        assert!(u.is_empirical());
+
+        let (core, tail) = (normalish(2000, 8192, 10, 22), normalish(200, 8192, 120, 23));
+        let mut mix = core;
+        for (i, t) in tail.into_iter().enumerate() {
+            mix[i * 9] = t;
+        }
+        let mut h = RollingFloor::calibrate(&mix[..1000]);
+        h.observe_batch(&mix[1000..]);
+        assert!(h.skewness().abs() < 2 && h.kurtosis() >= 500, "skew {} kurt {}", h.skewness(), h.kurtosis());
+        assert!(h.is_empirical());
     }
 
     #[test]
