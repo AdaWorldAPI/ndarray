@@ -1088,10 +1088,23 @@ mod tests {
             let doubled = i64::from(mu) + (d * 2 * i64::from(s)).div_euclid(i64::from(s));
             assert_eq!(i64::from(e.locate(l, mu, 2 * s)), doubled, "scale, k {}", l.0);
         }
+        // Rounding is floor (toward −∞), also for offsets below the mean.
+        let below = SigmaLevel(12);
+        let x = quantile_of_sorted(e.sorted(), below.gaussian_tail_per_10000());
+        let d = i64::from(x) - i64::from(mu);
+        assert!(
+            d < 0 && (d * i64::from(s + 1)) % i64::from(s) != 0,
+            "fixture must exercise a fractional negative offset"
+        );
+        assert_eq!(
+            i64::from(e.locate(below, mu, s + 1)),
+            i64::from(mu) + (d * i64::from(s + 1)).div_euclid(i64::from(s))
+        );
         assert_eq!(EmpiricalShape::from_sample(&[]), None);
-        // No spread: the offset is used unscaled.
-        let flat = EmpiricalShape::from_sample(&[7, 7, 7]).unwrap();
-        assert_eq!((flat.sigma(), flat.locate(SigmaLevel(12), 100, 50)), (0, 100));
+        // Floor spread 0 with a non-zero offset: the offset is used unscaled.
+        let flat = EmpiricalShape::from_sample(&[7, 8, 8, 8]).unwrap();
+        assert_eq!((flat.mu(), flat.sigma()), (7, 0));
+        assert_eq!(flat.locate(SigmaLevel(0), 100, 50), 101);
     }
 
     /// Each kurtosis bound switches to the empirical shape on its own, with
