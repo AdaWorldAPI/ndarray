@@ -617,6 +617,7 @@ pub use crate::hpc::fft::{wht_f32, wht_f32_new};
 pub use crate::hpc::fingerprint::{
     vector_config, Fingerprint, Fingerprint1K, Fingerprint2K, Fingerprint64K, VectorConfig, VectorWidth,
 };
+pub use crate::hpc::statistics::{moments_u32, MomentsU32};
 
 // PR-X1 — SoA carrier + const-size slice helpers, dispatched from their
 // respective `simd_{type}.rs` modules. The W1a consumer contract forbids

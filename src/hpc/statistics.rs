@@ -360,3 +360,233 @@ mod tests {
         }
     }
 }
+
+// ── Batch moments for shard-parallel Welford ──────────────────────────────
+
+/// Exact first and second moments of a `u32` sample: count, `Σx` and `Σx²`.
+///
+/// These three integers are the sufficient statistics of a Welford rolling
+/// floor. Unlike a running `(mean, M2)` pair they merge by plain addition, so
+/// [`MomentsU32::merge`] is exact, associative and commutative: shards of a
+/// sample can be reduced in parallel, in any order, and combined into the
+/// same result as one sequential pass. Floats appear only in [`mean`] and
+/// [`variance`], at the end.
+///
+/// [`mean`]: MomentsU32::mean
+/// [`variance`]: MomentsU32::variance
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MomentsU32 {
+    /// Number of values.
+    pub n: u64,
+    /// `Σx`.
+    pub sum: u128,
+    /// `Σx²`.
+    pub sum_sq: u128,
+}
+
+impl MomentsU32 {
+    /// Moments of the union of two samples — exact integer addition.
+    #[inline]
+    #[must_use]
+    pub fn merge(self, other: Self) -> Self {
+        Self {
+            n: self.n + other.n,
+            sum: self.sum + other.sum,
+            sum_sq: self.sum_sq + other.sum_sq,
+        }
+    }
+
+    /// Sample mean; `0.0` for an empty sample.
+    pub fn mean(&self) -> f64 {
+        if self.n == 0 {
+            0.0
+        } else {
+            self.sum as f64 / self.n as f64
+        }
+    }
+
+    /// Population variance `E[(X - μ)²]`; `0.0` for an empty sample.
+    ///
+    /// Computed as `(n·Σx² − (Σx)²) / n²`. The numerator is formed exactly in
+    /// `u128` whenever it fits (always, for Hamming-scale data: n ≤ 2³², x ≤
+    /// 2¹⁷), so there is no cancellation between two large floats; only the
+    /// final division rounds. Past that range it centres the sums on the
+    /// integer part of the mean in `u128` first, so the `f64` step still
+    /// works on small, variance-sized quantities.
+    pub fn variance(&self) -> f64 {
+        if self.n == 0 {
+            return 0.0;
+        }
+        let n = u128::from(self.n);
+        match (n.checked_mul(self.sum_sq), self.sum.checked_mul(self.sum)) {
+            (Some(a), Some(b)) => (a - b) as f64 / (self.n as f64 * self.n as f64),
+            _ => {
+                // Centre on the integer part of the mean, q = ⌊Σx / n⌋, with
+                // remainder r = Σx − n·q < n. Then, exactly in u128,
+                // Σ(x − q)² = Σx² − q·Σx − q·r, which is < n·2⁶⁴ and never
+                // negative at any step. The true M2 is that minus r²/n, and
+                // both terms are O(n·(σ² + 1)), so the one float subtraction
+                // cannot cancel the variance away.
+                let q = self.sum / n;
+                let r = self.sum % n;
+                let centred = self.sum_sq - q * self.sum - q * r;
+                let rf = r as f64;
+                let nf = self.n as f64;
+                ((centred as f64 - rf * rf / nf) / nf).max(0.0)
+            }
+        }
+    }
+}
+
+/// Exact [`MomentsU32`] of `values`, eight lanes at a time through `U64x8`.
+///
+/// Each value is widened to `u64` and its square split into 32-bit halves, so
+/// every lane add is below 2³², and the lanes are drained into `u128` totals
+/// every 2²⁸ chunks, before an 8-lane reduction could overflow `u64`. The
+/// widening multiply is plain lane-wise Rust that the compiler vectorizes
+/// (`vpmuludq` on x86); the accumulation and the final reduction go through
+/// the polyfill, so every backend runs the same code.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::hpc::statistics::moments_u32;
+///
+/// let m = moments_u32(&[1, 2, 3, 4]);
+/// assert_eq!((m.n, m.sum, m.sum_sq), (4, 10, 30));
+/// assert_eq!(m.mean(), 2.5);
+/// assert_eq!(m.variance(), 1.25);
+/// ```
+pub fn moments_u32(values: &[u32]) -> MomentsU32 {
+    use crate::simd::U64x8;
+
+    /// Chunks per drain. Every lane add is below 2^32, so after 2^28 chunks
+    /// a lane is below 2^60 and the 8-lane `reduce_sum` below 2^63 — the
+    /// reduction, not the lane, is the binding limit.
+    const DRAIN: usize = 1 << 28;
+
+    let (chunks, tail) = values.as_chunks::<8>();
+    let mut out = MomentsU32 {
+        n: values.len() as u64,
+        ..MomentsU32::default()
+    };
+    for block in chunks.chunks(DRAIN) {
+        let (mut s, mut lo, mut hi) = (U64x8::splat(0), U64x8::splat(0), U64x8::splat(0));
+        for c in block {
+            let x: [u64; 8] = core::array::from_fn(|i| u64::from(c[i]));
+            let sq: [u64; 8] = core::array::from_fn(|i| x[i] * x[i]);
+            s += U64x8::from_array(x);
+            lo += U64x8::from_array(core::array::from_fn(|i| sq[i] & 0xFFFF_FFFF));
+            hi += U64x8::from_array(core::array::from_fn(|i| sq[i] >> 32));
+        }
+        out.sum += u128::from(s.reduce_sum());
+        out.sum_sq += u128::from(lo.reduce_sum()) + (u128::from(hi.reduce_sum()) << 32);
+    }
+    for &v in tail {
+        out.sum += u128::from(v);
+        out.sum_sq += u128::from(v) * u128::from(v);
+    }
+    out
+}
+
+#[cfg(test)]
+mod moments_tests {
+    use super::*;
+
+    /// Past the exact-`u128` range the variance must not cancel: 2³³ values
+    /// split evenly between `u32::MAX` and `u32::MAX - 1` have variance
+    /// exactly 0.25, and `n·Σx²` overflows `u128`, so this takes the
+    /// fallback path.
+    #[test]
+    fn variance_fallback_does_not_cancel() {
+        let half = 1u128 << 32;
+        let hi = u128::from(u32::MAX);
+        let lo = hi - 1;
+        let m = MomentsU32 {
+            n: 1u64 << 33,
+            sum: half * (hi + lo),
+            sum_sq: half * (hi * hi + lo * lo),
+        };
+        assert!(u128::from(m.n).checked_mul(m.sum_sq).is_none(), "fixture must take the fallback");
+        assert!((m.variance() - 0.25).abs() < 1e-9, "variance {}", m.variance());
+    }
+
+    fn xorshift(n: usize, mut s: u64, mask: u32) -> Vec<u32> {
+        (0..n)
+            .map(|_| {
+                s ^= s << 13;
+                s ^= s >> 7;
+                s ^= s << 17;
+                (s as u32) & mask
+            })
+            .collect()
+    }
+
+    fn reference(x: &[u32]) -> MomentsU32 {
+        MomentsU32 {
+            n: x.len() as u64,
+            sum: x.iter().map(|&v| u128::from(v)).sum(),
+            sum_sq: x.iter().map(|&v| u128::from(v) * u128::from(v)).sum(),
+        }
+    }
+
+    /// Exact against a u128 reference at every length across the 8-lane
+    /// chunk boundary, for small (Hamming-scale) and full-range values.
+    #[test]
+    fn moments_u32_is_exact() {
+        for mask in [0x3FFF, u32::MAX] {
+            let x = xorshift(1000, 0x9E37_79B9_7F4A_7C15, mask);
+            for n in (0..=40).chain([63, 64, 65, 999, 1000]) {
+                assert_eq!(moments_u32(&x[..n]), reference(&x[..n]), "n={n} mask={mask:#x}");
+            }
+        }
+    }
+
+    /// Worst case for the square accumulator: every square is (2^32-1)^2,
+    /// which alone nearly fills a u64. A lane that summed whole squares
+    /// would overflow on the second element.
+    #[test]
+    fn moments_u32_does_not_overflow_at_u32_max() {
+        let x = vec![u32::MAX; 100_003];
+        let m = moments_u32(&x);
+        let v = u128::from(u32::MAX);
+        assert_eq!(m.n, 100_003);
+        assert_eq!(m.sum, 100_003 * v);
+        assert_eq!(m.sum_sq, 100_003 * v * v);
+    }
+
+    /// Merging is exact integer addition: the moments of a concatenation
+    /// equal the merge of the parts' moments at any split point and in
+    /// either order — which is what makes shard-parallel statistics exact.
+    #[test]
+    fn merge_is_exact_and_order_independent() {
+        let x = xorshift(777, 42, u32::MAX);
+        let whole = moments_u32(&x);
+        for split in [0, 1, 7, 8, 9, 400, 776, 777] {
+            let (a, b) = x.split_at(split);
+            assert_eq!(moments_u32(a).merge(moments_u32(b)), whole, "split={split}");
+            assert_eq!(moments_u32(b).merge(moments_u32(a)), whole, "reversed split={split}");
+        }
+    }
+
+    /// Mean and population variance against a two-pass f64 reference.
+    #[test]
+    fn mean_and_variance_match_two_pass() {
+        for mask in [0x3FFF, u32::MAX] {
+            let x = xorshift(5000, 7, mask);
+            let n = x.len() as f64;
+            let mean = x.iter().map(|&v| f64::from(v)).sum::<f64>() / n;
+            let var = x
+                .iter()
+                .map(|&v| (f64::from(v) - mean).powi(2))
+                .sum::<f64>()
+                / n;
+            let m = moments_u32(&x);
+            assert!((m.mean() - mean).abs() <= 1e-9 * mean.abs(), "mean mask={mask:#x}");
+            assert!((m.variance() - var).abs() <= 1e-9 * var, "variance mask={mask:#x}");
+        }
+        assert_eq!(MomentsU32::default().mean(), 0.0);
+        assert_eq!(MomentsU32::default().variance(), 0.0);
+        assert_eq!(moments_u32(&[5, 5, 5]).variance(), 0.0, "constant input has zero variance");
+    }
+}
