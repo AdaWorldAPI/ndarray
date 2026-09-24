@@ -1,46 +1,62 @@
-//! HDR rolling floor: an online distribution floor for popcount / Hamming
-//! observations.
+//! HDR rolling distribution: live statistics of popcount / Hamming
+//! observations, and σ-lattice thresholds derived from them on demand.
 //!
-//! This is the adaptive half of the HDR exposure meter, harvested from
-//! lance-graph's `graph/blasgraph/hdr.rs`. That file stays the behavioural
-//! reference: constants, cadence, drift rule and reset semantics are carried
-//! over unchanged. What changed is the arithmetic underneath. The old
-//! approximate integer Welford is replaced by the exact, mergeable
-//! [`MomentsU32`].
+//! Harvested from lance-graph's `graph/blasgraph/hdr.rs`. Its constants
+//! (reservoir capacity, cadence, minimum population, normality window, drift
+//! rule) carry over unchanged; the arithmetic underneath is #327's exact,
+//! mergeable [`MomentsU32`].
 //!
-//! # Two layers, two cadences
+//! # The accumulator owns facts, the query owns the view
 //!
-//! * **Parameters (continuous, cheap).** Every observation folds into exact
-//!   `(n, Σx, Σx²)`. Location and spread are available at any time, so the
-//!   floor can be used from the first observation and only gets better as the
-//!   population grows. There is no training barrier.
-//! * **Shape (periodic, amortised).** A deterministic Algorithm-R reservoir
-//!   feeds median, empirical quantiles, skewness and kurtosis. They are
-//!   evaluated once every [`RollingFloor::EVAL_CADENCE`] observations, never on
-//!   the per-observation path.
+//! What is stored:
 //!
-//! # Floors
+//! * **Moments** — exact `(n, Σx, Σx²)`, folded on every observation. The
+//!   current coordinates `(μ_t, σ_t)` follow from them at any time, from the
+//!   first observation on: observation and use are concurrent, and more
+//!   observations only sharpen the estimate.
+//! * **Reservoir** — a deterministic Algorithm-R sample, the *evidence* for
+//!   the periodic shape check.
+//! * **Shape** — the *belief* about the distribution family: [`Shape::Gaussian`]
+//!   (no data) or [`Shape::Empirical`] (a sorted sample and the `(μ_s, σ_s)`
+//!   frame it was measured in).
+//! * **Anchor** — the calibrated `(μ, σ)`, used only as the reference the drift
+//!   rule measures against.
 //!
-//! While the shape reads as normal, the floors are the analytical quantiles of
-//! the calibrated `(μ, σ)`: `μ − kσ`, i.e. `μ + σ·Φ⁻¹(p)` at the percentiles
-//! the empirical tables name. When the shape does not read as normal, the
-//! floors are the reservoir's empirical quantiles at those same percentiles.
+//! What is derived, never stored: every threshold. A detector asks for a
+//! [`SigmaLevel`] — a point on the integer σ-lattice, `k` quarter-σ below the
+//! noise floor — and the active shape locates it in the current coordinates:
+//!
+//! * Gaussian: `μ_t − k·σ_t/4`.
+//! * Empirical: the sample value at `k`'s Gaussian-equivalent tail rank,
+//!   moved into the current frame, `μ_t + (x − μ_s)·σ_t/σ_s`.
+//!
+//! The percentile is not a second coordinate: it is fixed by `k` through
+//! [`SigmaLevel::gaussian_tail_per_10000`]. A detector's shade of a response is
+//! how far along its chosen lattice points the response survives
+//! ([`RollingFloor::shade`]). Everything is integer.
+//!
+//! # Two cadences
+//!
+//! Moments and reservoir update on every observation. Every
+//! [`RollingFloor::EVAL_CADENCE`] observations (after the first cadence) a
+//! checkpoint checks drift and, when the parameters have not drifted, the
+//! shape.
+//!
+//! # Parameter drift is not shape drift
+//!
+//! A drift alert means the running `(μ, σ)` left the anchor: the evidence now
+//! spans two parameter regimes, so the shape is not judged from it at that
+//! checkpoint. [`RollingFloor::recalibrate`] moves the anchor and forgets the
+//! moments and the reservoir, but keeps the shape: a Gaussian whose `μ` and
+//! `σ` moved is still Gaussian. The shape changes only at a drift-free
+//! checkpoint.
 //!
 //! # What is and is not mergeable
 //!
-//! The moments are exact and partition-independent: shards can be merged in
-//! any order. The reservoir is not. It is deterministic for a given
-//! observation *order* and has no merge law. [`RollingFloor::observe_batch`]
-//! therefore reproduces the scalar stream exactly rather than merging shards.
-//!
-//! # Reference behaviour this preserves, including its limits
-//!
-//! * Floors move only when a drift alert is acted on
-//!   ([`RollingFloor::recalibrate`]), not continuously with the running
-//!   parameters.
-//! * A parameter drift resets the shape layer too (reservoir, empirical mode,
-//!   skewness, kurtosis). The reference does not separate parameter drift from
-//!   shape drift; neither does this port.
+//! The moments are exact and partition-independent. The reservoir is
+//! deterministic for a given observation *order* and has no merge law;
+//! [`RollingFloor::observe_batch`] therefore reproduces the scalar stream
+//! exactly rather than merging shards.
 
 use super::statistics::{moments_u32, MomentsU32};
 
@@ -69,6 +85,43 @@ pub fn isqrt_u32(n: u32) -> u32 {
     }
 }
 
+/// Rank `⌊per_10000 · len / 10000⌋`, clamped to the last index. `0` for an
+/// empty sample. The integer rank rule for every empirical lookup.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::hpc::rolling_floor::rank_per_10000;
+/// assert_eq!(rank_per_10000(1000, 1587), 158);
+/// assert_eq!(rank_per_10000(1000, 10_000), 999);
+/// assert_eq!(rank_per_10000(0, 5000), 0);
+/// ```
+pub fn rank_per_10000(len: usize, per_10000: u32) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    ((u64::from(per_10000) * len as u64 / 10_000) as usize).min(len - 1)
+}
+
+/// Empirical quantile of an ascending slice at `per_10000 / 10000`, by
+/// [`rank_per_10000`]. `0` for an empty slice.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::hpc::rolling_floor::quantile_of_sorted;
+/// let s = [1, 2, 3, 4];
+/// assert_eq!(quantile_of_sorted(&s, 0), 1);
+/// assert_eq!(quantile_of_sorted(&s, 5000), 3);
+/// assert_eq!(quantile_of_sorted(&s, 10_000), 4);
+/// ```
+pub fn quantile_of_sorted(sorted: &[u32], per_10000: u32) -> u32 {
+    if sorted.is_empty() {
+        return 0;
+    }
+    sorted[rank_per_10000(sorted.len(), per_10000)]
+}
+
 /// Deterministic reservoir sample of a `u32` stream (Vitter's Algorithm R).
 ///
 /// Every element seen so far has the same chance of being held. The
@@ -85,7 +138,7 @@ pub fn isqrt_u32(n: u32) -> u32 {
 ///     r.observe(d);
 /// }
 /// assert_eq!(r.len(), 3);
-/// assert_eq!(r.quantile(0.5), 20);
+/// assert_eq!(r.quantile(5000), 20);
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReservoirU32 {
@@ -144,21 +197,17 @@ impl ReservoirU32 {
         &self.samples
     }
 
-    /// The held samples, sorted ascending. Sort once and use
-    /// [`quantile_of_sorted`] when several quantiles are needed.
+    /// The held samples, sorted ascending.
     pub fn sorted(&self) -> Vec<u32> {
         let mut s = self.samples.clone();
         s.sort_unstable();
         s
     }
 
-    /// Empirical quantile: the sorted sample at index `⌊q·len⌋`, clamped to
-    /// the last element. `0` for an empty reservoir.
-    ///
-    /// O(len · log len); meant for the periodic shape path, not per
-    /// observation.
-    pub fn quantile(&self, q: f32) -> u32 {
-        quantile_of_sorted(&self.sorted(), q)
+    /// Empirical quantile at `per_10000 / 10000` (see [`rank_per_10000`]).
+    /// O(len · log len); meant for the periodic shape path.
+    pub fn quantile(&self, per_10000: u32) -> u32 {
+        quantile_of_sorted(&self.sorted(), per_10000)
     }
 
     /// Pearson's second skewness `3(μ − median) / σ`, in integer division.
@@ -168,7 +217,7 @@ impl ReservoirU32 {
         if sigma == 0 || self.samples.is_empty() {
             return 0;
         }
-        skewness_from_median(mu, sigma, self.quantile(0.5))
+        skewness_from_median(mu, sigma, self.quantile(5000))
     }
 
     /// Kurtosis ×100: `100 · E[(X − μ)⁴] / σ⁴` over the reservoir, with the
@@ -202,40 +251,141 @@ impl ReservoirU32 {
     }
 }
 
-/// Empirical quantile of an ascending slice: the element at `⌊q·len⌋`,
-/// clamped to the last element. `0` for an empty slice.
-///
-/// # Example
-///
-/// ```
-/// use ndarray::hpc::rolling_floor::quantile_of_sorted;
-/// let s = [1, 2, 3, 4];
-/// assert_eq!(quantile_of_sorted(&s, 0.0), 1);
-/// assert_eq!(quantile_of_sorted(&s, 0.5), 3);
-/// assert_eq!(quantile_of_sorted(&s, 1.0), 4);
-/// ```
-pub fn quantile_of_sorted(sorted: &[u32], q: f32) -> u32 {
-    if sorted.is_empty() {
-        return 0;
-    }
-    let idx = ((q * sorted.len() as f32) as usize).min(sorted.len() - 1);
-    sorted[idx]
-}
-
 fn skewness_from_median(mu: u32, sigma: u32, median: u32) -> i32 {
     // i64 so no difference of two u32 values can overflow.
     let s = 3 * (i64::from(mu) - i64::from(median)) / i64::from(sigma);
     s.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
-/// A detected drift of the running parameters away from the calibrated ones.
+/// `Φ(−k/4)`, the Gaussian lower-tail mass `k` quarter-σ below the mean, in
+/// parts per 10 000 (rounded to nearest), for `k = 0..=16`.
+const GAUSSIAN_TAIL_PER_10000: [u32; 17] =
+    [5000, 4013, 3085, 2266, 1587, 1056, 668, 401, 228, 122, 62, 30, 13, 6, 2, 1, 0];
+
+/// A point on the integer σ-lattice: `k` quarter-σ below the noise floor.
+///
+/// This is the identity of a sensitivity cut. A detector chooses which points
+/// it asks for; the active [`Shape`] decides how each point is located in the
+/// current distribution. `SigmaLevel(12)` is 3σ, `SigmaLevel(6)` is 1.5σ,
+/// `SigmaLevel(0)` is the mean itself.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::hpc::rolling_floor::SigmaLevel;
+/// assert_eq!(SigmaLevel(4).gaussian_tail_per_10000(), 1587); // 1σ
+/// assert_eq!(SigmaLevel(12).gaussian_tail_per_10000(), 13); // 3σ
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SigmaLevel(pub u8);
+
+impl SigmaLevel {
+    /// The lattice coordinate `k`, in quarter-σ.
+    pub const fn quarters(self) -> u32 {
+        self.0 as u32
+    }
+
+    /// The Gaussian-equivalent lower-tail mass of this level, `Φ(−k/4)`, in
+    /// parts per 10 000. This is how an empirical shape locates the same cut:
+    /// the level fixes the rank, no caller supplies a percentile. Levels
+    /// beyond 4σ (`k > 16`) have tail `0`, i.e. the sample minimum.
+    pub const fn gaussian_tail_per_10000(self) -> u32 {
+        let k = self.0 as usize;
+        if k < GAUSSIAN_TAIL_PER_10000.len() {
+            GAUSSIAN_TAIL_PER_10000[k]
+        } else {
+            0
+        }
+    }
+}
+
+/// The learned geometry of a non-Gaussian distribution: a sorted sample and
+/// the `(μ_s, σ_s)` frame it was measured in.
+///
+/// It answers a [`SigmaLevel`] by the sample value at the level's tail rank,
+/// moved from its own frame into the current coordinates.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::hpc::rolling_floor::{EmpiricalShape, SigmaLevel};
+/// let shape = EmpiricalShape::from_sample(&[10, 20, 30, 40]).unwrap();
+/// // In its own frame a level answers with the raw sample value.
+/// let (mu, sigma) = (shape.mu(), shape.sigma());
+/// assert_eq!(shape.locate(SigmaLevel(0), mu, sigma), 30);
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmpiricalShape {
+    sorted: Vec<u32>,
+    mu: u32,
+    sigma: u32,
+}
+
+impl EmpiricalShape {
+    /// Learn the shape from a sample: sort it and record its own floor mean
+    /// and `⌊√⌊M2/n⌋⌋` spread. `None` for an empty sample.
+    pub fn from_sample(sample: &[u32]) -> Option<Self> {
+        if sample.is_empty() {
+            return None;
+        }
+        let mut sorted = sample.to_vec();
+        sorted.sort_unstable();
+        let m = moments_u32(&sorted);
+        Some(Self {
+            mu: saturate_u32(m.sum / u128::from(m.n)),
+            sigma: isqrt_u32(saturate_u32(variance_floor(&m))),
+            sorted,
+        })
+    }
+
+    /// The sorted sample.
+    pub fn sorted(&self) -> &[u32] {
+        &self.sorted
+    }
+
+    /// The sample's floor mean.
+    pub fn mu(&self) -> u32 {
+        self.mu
+    }
+
+    /// The sample's spread.
+    pub fn sigma(&self) -> u32 {
+        self.sigma
+    }
+
+    /// Locate `level` in the frame `(mu, sigma)`:
+    /// `mu + ⌊(x − μ_s)·sigma / σ_s⌋` with `x` the sample value at the level's
+    /// tail rank, clamped to `u32`. When the sample has no spread (`σ_s = 0`)
+    /// the offset `x − μ_s` is used unscaled.
+    pub fn locate(&self, level: SigmaLevel, mu: u32, sigma: u32) -> u32 {
+        let x = quantile_of_sorted(&self.sorted, level.gaussian_tail_per_10000());
+        let delta = i128::from(x) - i128::from(self.mu);
+        let offset = if self.sigma == 0 {
+            delta
+        } else {
+            (delta * i128::from(sigma)).div_euclid(i128::from(self.sigma))
+        };
+        (i128::from(mu) + offset).clamp(0, i128::from(u32::MAX)) as u32
+    }
+}
+
+/// The distribution family a [`RollingFloor`] currently believes in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Shape {
+    /// Normal: levels are located analytically as `μ − k·σ/4`.
+    Gaussian,
+    /// Not normal: levels are located through a learned sample.
+    Empirical(EmpiricalShape),
+}
+
+/// A detected drift of the running parameters away from the anchor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FloorShift {
-    /// Calibrated mean before the shift.
+    /// Anchor mean before the shift.
     pub old_mu: u32,
     /// Running mean at the checkpoint that raised the shift.
     pub new_mu: u32,
-    /// Calibrated standard deviation before the shift.
+    /// Anchor standard deviation before the shift.
     pub old_sigma: u32,
     /// Running standard deviation at that checkpoint.
     pub new_sigma: u32,
@@ -243,98 +393,67 @@ pub struct FloorShift {
     pub observations: u64,
 }
 
-/// The HDR rolling floor for a stream of `u32` distances.
-///
-/// It holds the calibrated `(μ, σ)`, the sigma floors derived from them, and
-/// empirical floors from a reservoir. Running parameters come from exact
-/// [`MomentsU32`]. Every [`EVAL_CADENCE`](Self::EVAL_CADENCE) observations
-/// (after the first cadence) it re-reads the distribution shape, selects sigma
-/// or empirical floors, and checks for drift.
-///
-/// The floors are lower-is-better thresholds, from strictest to loosest:
-/// four band floors at `[μ−3σ, μ−2σ, μ−σ, μ]` and eight cascade floors at
-/// quarter-σ steps from `μ−σ` to `μ−3σ`. How a caller turns them into bands
-/// is its own policy.
+/// Live distribution of a stream of `u32` distances, answering σ-lattice
+/// thresholds on demand.
 ///
 /// # Example
 ///
 /// ```
-/// use ndarray::hpc::rolling_floor::RollingFloor;
+/// use ndarray::hpc::rolling_floor::{RollingFloor, SigmaLevel};
 /// let mut floor = RollingFloor::for_width(16384);
-/// assert_eq!(floor.mu(), 8192);
-/// assert_eq!(floor.sigma(), 64);
-/// assert_eq!(floor.active_floors(), [8000, 8064, 8128, 8192]);
-/// // Usable immediately; observations refine it as they arrive.
+/// // No observations yet: the binomial prior μ = 8192, σ = 64 answers.
+/// assert_eq!(floor.threshold(SigmaLevel(12)), 8000);
+/// // The first observation is already a valid current state.
+/// floor.observe(8100);
+/// assert_eq!(floor.coordinates(), Some((8100, 0)));
+/// // Three sensitivities of one detector; the response's shade is how many
+/// // of them it survives.
 /// for d in 0..3000u32 {
 ///     if let Some(shift) = floor.observe(8192 + (d % 7)) {
 ///         floor.recalibrate(&shift);
 ///     }
 /// }
+/// let levels = [SigmaLevel(6), SigmaLevel(8), SigmaLevel(12)];
+/// assert_eq!(floor.shade(0, &levels), 3);
+/// assert_eq!(floor.shade(u32::MAX, &levels), 0);
 /// ```
 #[derive(Debug, Clone)]
 pub struct RollingFloor {
-    mu: u32,
-    sigma: u32,
-    sigma_floors: [u32; 4],
-    sigma_cascade: [u32; 8],
+    anchor_mu: u32,
+    anchor_sigma: u32,
+    moments: MomentsU32,
     reservoir: ReservoirU32,
-    empirical_floors: [u32; 4],
-    empirical_cascade: [u32; 8],
-    use_empirical: bool,
+    shape: Shape,
     skewness: i32,
     kurtosis: u32,
-    moments: MomentsU32,
 }
 
 impl RollingFloor {
     /// Reservoir capacity.
     pub const RESERVOIR_CAP: usize = 1000;
-    /// Shape and drift are evaluated when the observation count is a multiple
-    /// of this, and larger than it.
+    /// Checkpoints fall where the observation count is a multiple of this and
+    /// larger than it.
     pub const EVAL_CADENCE: u64 = 1000;
-    /// Minimum reservoir population before shape is evaluated.
+    /// Minimum reservoir population before the shape is judged.
     pub const MIN_SHAPE_SAMPLES: usize = 100;
     /// Kurtosis ×100 of the normal distribution.
     pub const NORMAL_KURTOSIS: u32 = 300;
-    /// Percentiles of the empirical band floors: ≈3σ, 2σ, 1σ, median.
-    pub const FLOOR_PERCENTILES: [f32; 4] = [0.001, 0.023, 0.159, 0.500];
-    /// Percentiles of the empirical cascade floors: 1σ, 1.5σ, 1.75σ, 2σ,
-    /// 2.25σ, 2.5σ, 2.75σ, 3σ below the mean.
-    pub const CASCADE_PERCENTILES: [f32; 8] = [0.1587, 0.0668, 0.0401, 0.0228, 0.0122, 0.0062, 0.0030, 0.0013];
 
-    /// Band floors `[μ−3σ, μ−2σ, μ−σ, μ]`, saturating at zero.
-    pub fn sigma_floors_of(mu: u32, sigma: u32) -> [u32; 4] {
-        [mu.saturating_sub(3 * sigma), mu.saturating_sub(2 * sigma), mu.saturating_sub(sigma), mu]
-    }
-
-    /// Cascade floors at `μ − kσ/4` for `k = 4, 6, 7, 8, 9, 10, 11, 12`,
-    /// saturating at zero.
-    pub fn sigma_cascade_of(mu: u32, sigma: u32) -> [u32; 8] {
-        [4, 6, 7, 8, 9, 10, 11, 12].map(|k: u32| mu.saturating_sub(k * sigma / 4))
-    }
-
-    /// Floors that assume only a prior `(μ, σ)`, with no observations yet.
+    /// A floor with only a prior `(μ, σ)`: Gaussian shape, no observations.
     pub fn from_params(mu: u32, sigma: u32) -> Self {
-        let sigma_floors = Self::sigma_floors_of(mu, sigma);
-        let sigma_cascade = Self::sigma_cascade_of(mu, sigma);
         Self {
-            mu,
-            sigma,
-            sigma_floors,
-            sigma_cascade,
+            anchor_mu: mu,
+            anchor_sigma: sigma,
+            moments: MomentsU32::default(),
             reservoir: ReservoirU32::new(Self::RESERVOIR_CAP),
-            empirical_floors: sigma_floors,
-            empirical_cascade: sigma_cascade,
-            use_empirical: false,
+            shape: Shape::Gaussian,
             skewness: 0,
             kurtosis: Self::NORMAL_KURTOSIS,
-            moments: MomentsU32::default(),
         }
     }
 
-    /// Resume from calibrated `(μ, σ)` and already-accumulated running
-    /// moments, with an empty reservoir. The next checkpoint follows from
-    /// `moments.n`.
+    /// Resume from an anchor `(μ, σ)` and already-accumulated moments, with an
+    /// empty reservoir and Gaussian shape.
     pub fn from_params_and_moments(mu: u32, sigma: u32, moments: MomentsU32) -> Self {
         let mut floor = Self::from_params(mu, sigma);
         floor.moments = moments;
@@ -349,10 +468,9 @@ impl RollingFloor {
 
     /// Calibrate from a warm-up sample of at least two distances.
     ///
-    /// `μ` is the floor of the sample mean and `σ` is
-    /// `max(1, ⌊√⌊Σ(x − μ)² / n⌋⌋)`, spread measured around that integer
-    /// mean, exactly as the reference does. The sample seeds the reservoir and
-    /// the running moments; the floors start in sigma mode.
+    /// The anchor is `μ = ⌊Σx/n⌋` and `σ = max(1, ⌊√⌊Σ(x − μ)²/n⌋⌋)`, spread
+    /// around that integer mean exactly as the reference does. The sample
+    /// seeds the moments and the reservoir; the shape starts Gaussian.
     ///
     /// # Panics
     ///
@@ -362,41 +480,33 @@ impl RollingFloor {
         let moments = moments_u32(sample);
         let mu = saturate_u32(moments.sum / u128::from(moments.n));
         let sigma = isqrt_u32(saturate_u32(centred_on_floor_mean(&moments) / u128::from(moments.n))).max(1);
-        let mut floor = Self::from_params(mu, sigma);
+        let mut floor = Self::from_params_and_moments(mu, sigma, moments);
         for &d in sample {
             floor.reservoir.observe(d);
         }
-        let sorted = floor.reservoir.sorted();
-        floor.empirical_floors = Self::FLOOR_PERCENTILES.map(|p| quantile_of_sorted(&sorted, p));
-        floor.empirical_cascade = Self::CASCADE_PERCENTILES.map(|p| quantile_of_sorted(&sorted, p));
-        floor.moments = moments;
         floor
     }
 
-    /// Fold one observation in. Returns a shift when this observation lands
-    /// on a checkpoint and the running parameters have drifted:
-    /// `|μ_run − μ| > σ/2` or `|σ_run − σ| > σ/4`, against the calibrated
-    /// `(μ, σ)`.
+    /// Fold one observation in. At a checkpoint, returns a shift when the
+    /// running parameters have drifted from the anchor:
+    /// `|μ_run − μ| > σ/2` or `|σ_run − σ| > σ/4`.
     #[inline]
     pub fn observe(&mut self, distance: u32) -> Option<FloorShift> {
         self.moments.observe(distance);
         self.reservoir.observe(distance);
         if self.at_checkpoint() {
-            self.evaluate()
+            self.checkpoint()
         } else {
             None
         }
     }
 
     /// Fold a batch in, stopping right after the first checkpoint that
-    /// raises a shift.
+    /// raises a shift. Returns how many values were consumed and the shift.
     ///
-    /// Returns how many values were consumed and the shift, if any. Feeding
-    /// the unconsumed rest in after acting on the shift reproduces the scalar
-    /// loop `if let Some(s) = observe(d) { recalibrate(&s) }` exactly, for any
-    /// batching: the moments between checkpoints go through
-    /// [`moments_u32`], the reservoir sees every value in stream order, and
-    /// every checkpoint is evaluated on the same state the scalar loop sees.
+    /// Feeding the unconsumed rest in after acting on the shift reproduces the
+    /// scalar loop `if let Some(s) = observe(d) { recalibrate(&s) }` exactly,
+    /// for any batching.
     pub fn observe_batch(&mut self, distances: &[u32]) -> (usize, Option<FloorShift>) {
         let mut consumed = 0;
         while consumed < distances.len() {
@@ -409,7 +519,7 @@ impl RollingFloor {
             }
             consumed += take;
             if take == to_checkpoint && self.at_checkpoint() {
-                if let Some(shift) = self.evaluate() {
+                if let Some(shift) = self.checkpoint() {
                     return (consumed, Some(shift));
                 }
             }
@@ -417,11 +527,14 @@ impl RollingFloor {
         (consumed, None)
     }
 
-    /// Adopt the shifted parameters as the new calibration and restart
-    /// observation from scratch: running moments, reservoir, empirical mode
-    /// and shape diagnostics are all reset. `σ` is floored at 1.
+    /// Adopt the shifted parameters as the new anchor and forget the
+    /// accumulated evidence (moments and reservoir). The shape is kept:
+    /// parameter drift is not shape drift. `σ` is floored at 1.
     pub fn recalibrate(&mut self, shift: &FloorShift) {
-        *self = Self::from_params(shift.new_mu, shift.new_sigma.max(1));
+        self.anchor_mu = shift.new_mu;
+        self.anchor_sigma = shift.new_sigma.max(1);
+        self.moments = MomentsU32::default();
+        self.reservoir = ReservoirU32::new(Self::RESERVOIR_CAP);
     }
 
     fn at_checkpoint(&self) -> bool {
@@ -429,37 +542,37 @@ impl RollingFloor {
         n.is_multiple_of(Self::EVAL_CADENCE) && n > Self::EVAL_CADENCE
     }
 
-    /// The periodic path: shape evaluation, floor selection, drift check.
-    fn evaluate(&mut self) -> Option<FloorShift> {
+    /// The periodic path: drift first; the shape only when there is none.
+    fn checkpoint(&mut self) -> Option<FloorShift> {
         let run_mu = saturate_u32(self.moments.sum / u128::from(self.moments.n));
         let run_sigma = isqrt_u32(saturate_u32(variance_floor(&self.moments))).max(1);
 
-        if self.reservoir.len() >= Self::MIN_SHAPE_SAMPLES {
-            let sorted = self.reservoir.sorted();
-            self.skewness = skewness_from_median(run_mu, run_sigma, quantile_of_sorted(&sorted, 0.5));
-            self.kurtosis = self.reservoir.kurtosis(run_mu, run_sigma);
-            if self.shape_is_normal() {
-                self.use_empirical = false;
-            } else {
-                self.empirical_floors = Self::FLOOR_PERCENTILES.map(|p| quantile_of_sorted(&sorted, p));
-                self.empirical_cascade = Self::CASCADE_PERCENTILES.map(|p| quantile_of_sorted(&sorted, p));
-                self.use_empirical = true;
-            }
-        }
-
-        let mu_drift = run_mu.abs_diff(self.mu);
-        let sigma_drift = run_sigma.abs_diff(self.sigma);
-        if mu_drift > self.sigma / 2 || sigma_drift > self.sigma / 4 {
-            Some(FloorShift {
-                old_mu: self.mu,
+        let mu_drift = run_mu.abs_diff(self.anchor_mu);
+        let sigma_drift = run_sigma.abs_diff(self.anchor_sigma);
+        if mu_drift > self.anchor_sigma / 2 || sigma_drift > self.anchor_sigma / 4 {
+            // The evidence spans two parameter regimes; do not read the shape
+            // from it.
+            return Some(FloorShift {
+                old_mu: self.anchor_mu,
                 new_mu: run_mu,
-                old_sigma: self.sigma,
+                old_sigma: self.anchor_sigma,
                 new_sigma: run_sigma,
                 observations: self.moments.n,
-            })
-        } else {
-            None
+            });
         }
+
+        if self.reservoir.len() >= Self::MIN_SHAPE_SAMPLES {
+            let sorted = self.reservoir.sorted();
+            self.skewness = skewness_from_median(run_mu, run_sigma, quantile_of_sorted(&sorted, 5000));
+            self.kurtosis = self.reservoir.kurtosis(run_mu, run_sigma);
+            self.shape = if self.shape_is_normal() {
+                Shape::Gaussian
+            } else {
+                // `sorted` is non-empty here.
+                EmpiricalShape::from_sample(&sorted).map_or(Shape::Gaussian, Shape::Empirical)
+            };
+        }
+        None
     }
 
     /// The reference normality window: `|skew| < 2` and `200 < kurt < 500`.
@@ -467,66 +580,79 @@ impl RollingFloor {
         self.skewness.abs() < 2 && self.kurtosis > 200 && self.kurtosis < 500
     }
 
-    /// Calibrated mean.
-    pub fn mu(&self) -> u32 {
-        self.mu
+    /// Current coordinates `(μ_t, σ_t)` from the running moments:
+    /// `⌊Σx/n⌋` and `⌊√⌊M2/n⌋⌋`. `None` only before the first observation;
+    /// after one observation they are `(x, 0)`.
+    pub fn coordinates(&self) -> Option<(u32, u32)> {
+        if self.moments.n == 0 {
+            return None;
+        }
+        Some((
+            saturate_u32(self.moments.sum / u128::from(self.moments.n)),
+            isqrt_u32(saturate_u32(variance_floor(&self.moments))),
+        ))
     }
 
-    /// Calibrated standard deviation.
-    pub fn sigma(&self) -> u32 {
-        self.sigma
+    /// The coordinates a threshold is located in: the running ones, or the
+    /// anchor when nothing has been observed yet.
+    fn frame(&self) -> (u32, u32) {
+        self.coordinates()
+            .unwrap_or((self.anchor_mu, self.anchor_sigma))
     }
 
-    /// Band floors derived from the calibrated `(μ, σ)`.
-    pub fn sigma_floors(&self) -> [u32; 4] {
-        self.sigma_floors
-    }
-
-    /// Cascade floors derived from the calibrated `(μ, σ)`.
-    pub fn sigma_cascade(&self) -> [u32; 8] {
-        self.sigma_cascade
-    }
-
-    /// Band floors from the reservoir's empirical quantiles.
-    pub fn empirical_floors(&self) -> [u32; 4] {
-        self.empirical_floors
-    }
-
-    /// Cascade floors from the reservoir's empirical quantiles.
-    pub fn empirical_cascade(&self) -> [u32; 8] {
-        self.empirical_cascade
-    }
-
-    /// The band floors in effect: empirical when the shape read as non-normal
-    /// at the last checkpoint, sigma otherwise.
-    pub fn active_floors(&self) -> [u32; 4] {
-        if self.use_empirical {
-            self.empirical_floors
-        } else {
-            self.sigma_floors
+    fn locate(&self, level: SigmaLevel, mu: u32, sigma: u32) -> u32 {
+        match &self.shape {
+            Shape::Gaussian => mu.saturating_sub(level.quarters() * sigma / 4),
+            Shape::Empirical(e) => e.locate(level, mu, sigma),
         }
     }
 
-    /// The cascade floors in effect, chosen like [`active_floors`](Self::active_floors).
-    pub fn active_cascade(&self) -> [u32; 8] {
-        if self.use_empirical {
-            self.empirical_cascade
-        } else {
-            self.sigma_cascade
-        }
+    /// The threshold of one σ-lattice point in the current distribution.
+    /// With `σ_t = 0` every Gaussian level sits at `μ_t`.
+    pub fn threshold(&self, level: SigmaLevel) -> u32 {
+        let (mu, sigma) = self.frame();
+        self.locate(level, mu, sigma)
     }
 
-    /// Whether the empirical floors are in effect.
+    /// Thresholds of several lattice points, reading the coordinates once.
+    pub fn thresholds<const N: usize>(&self, levels: &[SigmaLevel; N]) -> [u32; N] {
+        let (mu, sigma) = self.frame();
+        levels.map(|l| self.locate(l, mu, sigma))
+    }
+
+    /// How many of `levels` the response `x` survives: the number whose
+    /// threshold lies strictly above `x` (lower distance is stronger). This is
+    /// the response's shade on the detector's own lattice.
+    pub fn shade<const N: usize>(&self, x: u32, levels: &[SigmaLevel; N]) -> usize {
+        self.thresholds(levels).iter().filter(|&&t| x < t).count()
+    }
+
+    /// The current shape belief.
+    pub fn shape(&self) -> &Shape {
+        &self.shape
+    }
+
+    /// Whether the shape is empirical.
     pub fn is_empirical(&self) -> bool {
-        self.use_empirical
+        matches!(self.shape, Shape::Empirical(_))
     }
 
-    /// Skewness at the last shape evaluation (`0` before any).
+    /// Anchor mean, the drift reference.
+    pub fn mu(&self) -> u32 {
+        self.anchor_mu
+    }
+
+    /// Anchor standard deviation, the drift reference.
+    pub fn sigma(&self) -> u32 {
+        self.anchor_sigma
+    }
+
+    /// Skewness at the last shape check (`0` before any).
     pub fn skewness(&self) -> i32 {
         self.skewness
     }
 
-    /// Kurtosis ×100 at the last shape evaluation (300 before any).
+    /// Kurtosis ×100 at the last shape check (300 before any).
     pub fn kurtosis(&self) -> u32 {
         self.kurtosis
     }
@@ -541,7 +667,7 @@ impl RollingFloor {
         self.moments.n
     }
 
-    /// The reservoir behind the empirical floors.
+    /// The reservoir, the shape check's evidence.
     pub fn reservoir(&self) -> &ReservoirU32 {
         &self.reservoir
     }
@@ -646,13 +772,25 @@ mod tests {
         (f, shifts)
     }
 
+    const LATTICE: [SigmaLevel; 9] = [
+        SigmaLevel(0),
+        SigmaLevel(4),
+        SigmaLevel(6),
+        SigmaLevel(7),
+        SigmaLevel(8),
+        SigmaLevel(9),
+        SigmaLevel(10),
+        SigmaLevel(11),
+        SigmaLevel(12),
+    ];
+
     fn same_state(a: &RollingFloor, b: &RollingFloor) {
         assert_eq!(a.moments(), b.moments());
         assert_eq!(a.reservoir(), b.reservoir());
         assert_eq!((a.mu(), a.sigma()), (b.mu(), b.sigma()));
-        assert_eq!(a.active_floors(), b.active_floors());
-        assert_eq!(a.active_cascade(), b.active_cascade());
-        assert_eq!((a.is_empirical(), a.skewness(), a.kurtosis()), (b.is_empirical(), b.skewness(), b.kurtosis()));
+        assert_eq!(a.shape(), b.shape());
+        assert_eq!((a.skewness(), a.kurtosis()), (b.skewness(), b.kurtosis()));
+        assert_eq!(a.thresholds(&LATTICE), b.thresholds(&LATTICE));
     }
 
     #[test]
@@ -662,6 +800,75 @@ mod tests {
             assert!(u64::from(r) * u64::from(r) <= u64::from(n));
             assert!(u64::from(r + 1) * u64::from(r + 1) > u64::from(n));
         }
+    }
+
+    /// `Φ(−k/4)` at the quarter-σ lattice, per 10 000.
+    #[test]
+    fn gaussian_tail_table_is_phi() {
+        let expect = [
+            (0, 5000),
+            (4, 1587),
+            (6, 668),
+            (7, 401),
+            (8, 228),
+            (9, 122),
+            (10, 62),
+            (11, 30),
+            (12, 13),
+            (16, 0),
+            (40, 0),
+        ];
+        for (k, v) in expect {
+            assert_eq!(SigmaLevel(k).gaussian_tail_per_10000(), v, "k {k}");
+        }
+        // Monotone: a deeper cut is rarer.
+        for k in 0..16u8 {
+            assert!(SigmaLevel(k).gaussian_tail_per_10000() >= SigmaLevel(k + 1).gaussian_tail_per_10000());
+        }
+    }
+
+    /// The integer rank rule against the reference `f32` rule
+    /// `⌊(q as f32)·len⌋`, for every reservoir length 1..=1000.
+    ///
+    /// The eight cascade levels match the reference exactly. The three old
+    /// band percentiles (0.159, 0.023, 0.001) were coarse approximations of
+    /// 1σ, 2σ and 3σ; unifying them onto the lattice ranks changes the sample
+    /// index at exactly these many lengths, pinned so the delta is explicit.
+    #[test]
+    fn integer_rank_rule_against_the_reference() {
+        let f32_rank = |q: f32, len: usize| ((q * len as f32) as usize).min(len - 1);
+        let cascade = [
+            (4u8, 0.1587f32),
+            (6, 0.0668),
+            (7, 0.0401),
+            (8, 0.0228),
+            (9, 0.0122),
+            (10, 0.0062),
+            (11, 0.0030),
+            (12, 0.0013),
+        ];
+        for len in 1..=1000 {
+            for (k, q) in cascade {
+                assert_eq!(
+                    rank_per_10000(len, SigmaLevel(k).gaussian_tail_per_10000()),
+                    f32_rank(q, len),
+                    "k {k} len {len}"
+                );
+            }
+            assert_eq!(rank_per_10000(len, SigmaLevel(0).gaussian_tail_per_10000()), f32_rank(0.5, len));
+        }
+        let changed = |k: u8, q: f32| {
+            (1..=1000)
+                .filter(|&len| rank_per_10000(len, SigmaLevel(k).gaussian_tail_per_10000()) != f32_rank(q, len))
+                .count()
+        };
+        assert_eq!(changed(4, 0.159), 150);
+        assert_eq!(changed(8, 0.023), 98);
+        assert_eq!(changed(12, 0.001), 230);
+        // At the full reservoir: 1σ 159 → 158, 2σ 23 → 22, 3σ 1 → 1.
+        assert_eq!((f32_rank(0.159, 1000), rank_per_10000(1000, 1587)), (159, 158));
+        assert_eq!((f32_rank(0.023, 1000), rank_per_10000(1000, 228)), (23, 22));
+        assert_eq!((f32_rank(0.001, 1000), rank_per_10000(1000, 13)), (1, 1));
     }
 
     #[test]
@@ -699,7 +906,7 @@ mod tests {
 
     #[test]
     fn checkpoint_cadence_is_every_1000_after_the_first() {
-        // A floor far from the data: every checkpoint must alert.
+        // An anchor far from the data: every checkpoint must alert.
         let mut f = RollingFloor::from_params(100, 1);
         let mut at = Vec::new();
         for i in 1..=4000u64 {
@@ -712,10 +919,9 @@ mod tests {
 
     #[test]
     fn drift_boundary_is_strict() {
-        // Calibrated σ = 8: shift iff |Δμ| > 4 or |Δσ| > 2.
+        // Anchor σ = 8: shift iff |Δμ| > 4 or |Δσ| > 2.
         for (value, expect) in [(104u32, false), (105, true)] {
             let mut f = RollingFloor::from_params(100, 8);
-            // Alternate value ± 8 so the running σ is exactly 8.
             let mut hit = None;
             for i in 0..2000u32 {
                 hit = f.observe(if i % 2 == 0 { value - 8 } else { value + 8 });
@@ -732,22 +938,111 @@ mod tests {
         }
     }
 
+    /// The ballot box: no running coordinates before the first observation,
+    /// a valid (noisy) state after it, and σ = 0 collapses every Gaussian cut
+    /// onto μ rather than borrowing the anchor.
     #[test]
-    fn recalibration_resets_the_running_state() {
-        let mut f = RollingFloor::calibrate(&normalish(2000, 5000, 50, 9));
-        let shift = f
-            .observe_batch(&normalish(3000, 5400, 50, 10))
-            .1
-            .expect("shift");
+    fn coordinates_are_valid_from_the_first_observation() {
+        let mut f = RollingFloor::from_params(5000, 50);
+        assert_eq!(f.coordinates(), None);
+        assert_eq!(f.threshold(SigmaLevel(8)), 4900, "prior answers before any observation");
+        f.observe(7000);
+        assert_eq!(f.coordinates(), Some((7000, 0)));
+        assert_eq!(f.thresholds(&[SigmaLevel(0), SigmaLevel(4), SigmaLevel(12)]), [7000, 7000, 7000]);
+        let levels = [SigmaLevel(4), SigmaLevel(8), SigmaLevel(12)];
+        assert_eq!(f.shade(6999, &levels), 3);
+        assert_eq!(f.shade(7000, &levels), 0);
+        f.observe(7010);
+        assert_eq!(f.coordinates(), Some((7005, 5)));
+    }
+
+    /// Gaussian thresholds follow the running coordinates on every
+    /// observation, with no recalibration: exactly `μ_t − k·σ_t/4`.
+    #[test]
+    fn gaussian_thresholds_follow_current_moments() {
+        let mut f = RollingFloor::calibrate(&normalish(1000, 5000, 40, 5));
+        let anchored = f.thresholds(&LATTICE);
+        let mut moved = false;
+        // A slow drift, small enough never to raise a shift.
+        for (i, d) in normalish(900, 5015, 40, 6).into_iter().enumerate() {
+            assert!(f.observe(d).is_none());
+            let (mu, s) = f.coordinates().unwrap();
+            let want = LATTICE.map(|l| mu.saturating_sub(l.quarters() * s / 4));
+            assert_eq!(f.thresholds(&LATTICE), want, "observation {i}");
+            moved |= want != anchored;
+        }
+        assert!(moved, "the floor must move without recalibration");
+    }
+
+    /// Half-σ lattice points reproduce the integer `SigmaGate::custom` tiers
+    /// bit for bit.
+    #[test]
+    fn half_sigma_levels_match_the_sigma_gate() {
+        use crate::hpc::kernels::SigmaGate;
+        for (mu, s) in [(8192u32, 64u32), (5000, 51), (1000, 7), (100, 1)] {
+            let f = RollingFloor::from_params(mu, s);
+            let g = SigmaGate::custom(mu, s);
+            let t = f.thresholds(&[SigmaLevel(12), SigmaLevel(10), SigmaLevel(8), SigmaLevel(6)]);
+            assert_eq!(t, [g.discovery, g.strong, g.evidence, g.hint], "mu {mu} sigma {s}");
+        }
+    }
+
+    #[test]
+    fn shade_counts_the_levels_a_response_survives() {
+        let f = RollingFloor::from_params(8192, 64);
+        let levels = [SigmaLevel(12), SigmaLevel(6), SigmaLevel(8)]; // order is free
+                                                                     // Cuts at 8000 (3σ), 8096 (1.5σ), 8064 (2σ).
+        assert_eq!(f.shade(7999, &levels), 3);
+        assert_eq!(f.shade(8000, &levels), 2);
+        assert_eq!(f.shade(8063, &levels), 2);
+        assert_eq!(f.shade(8064, &levels), 1);
+        assert_eq!(f.shade(8095, &levels), 1);
+        assert_eq!(f.shade(8096, &levels), 0);
+    }
+
+    /// Recalibration forgets the evidence and moves the anchor, but keeps the
+    /// shape.
+    #[test]
+    fn recalibration_forgets_evidence_and_keeps_shape() {
+        let (lo, hi) = (normalish(1000, 7800, 20, 3), normalish(1000, 8600, 20, 4));
+        let bimodal: Vec<u32> = lo.iter().zip(&hi).flat_map(|(&a, &b)| [a, b]).collect();
+        let mut f = RollingFloor::calibrate(&bimodal[..1000]);
+        f.observe_batch(&bimodal[1000..]);
+        assert!(f.is_empirical());
+        let shape = f.shape().clone();
+        let shift = FloorShift {
+            old_mu: f.mu(),
+            new_mu: 9000,
+            old_sigma: f.sigma(),
+            new_sigma: 300,
+            observations: f.observations(),
+        };
         f.recalibrate(&shift);
-        assert_eq!((f.mu(), f.sigma()), (shift.new_mu, shift.new_sigma));
+        assert_eq!((f.mu(), f.sigma()), (9000, 300));
         assert_eq!(f.observations(), 0);
         assert!(f.reservoir().is_empty());
         assert_eq!(f.reservoir().capacity(), RollingFloor::RESERVOIR_CAP);
-        assert!(!f.is_empirical());
-        assert_eq!((f.skewness(), f.kurtosis()), (0, 300));
-        assert_eq!(f.active_floors(), RollingFloor::sigma_floors_of(f.mu(), f.sigma()));
-        assert_eq!(f.empirical_cascade(), f.sigma_cascade());
+        assert_eq!(f.shape(), &shape);
+    }
+
+    /// A pure location and spread change of a normal stream is parameter
+    /// drift only: the drift checkpoint does not read the mixed evidence as a
+    /// new shape, and the shape stays Gaussian throughout.
+    #[test]
+    fn pure_parameter_shift_keeps_the_gaussian_shape() {
+        let mut f = RollingFloor::calibrate(&normalish(1000, 5000, 40, 7));
+        let shifted = normalish(8000, 5600, 90, 8);
+        let (used, shift) = f.observe_batch(&shifted);
+        let shift = shift.expect("parameters moved");
+        assert_eq!(shift.observations, 2000);
+        assert_eq!(f.shape(), &Shape::Gaussian, "mixed evidence must not relearn the shape");
+        f.recalibrate(&shift);
+        let (f, later) = run_scalar(f, &shifted[used..]);
+        assert!(later.len() <= 1, "{later:?}");
+        assert_eq!(f.shape(), &Shape::Gaussian);
+        assert!(f.shape_is_normal(), "skew {} kurt {}", f.skewness(), f.kurtosis());
+        let (mu, s) = f.coordinates().unwrap();
+        assert!(mu.abs_diff(5600) <= 5 && s.abs_diff(90) <= 5, "{mu} {s}");
     }
 
     #[test]
@@ -760,123 +1055,47 @@ mod tests {
         assert_eq!(a, b);
         assert_eq!(a.len(), 1000);
         assert_eq!(a.seen(), 20_000);
-        // Replacement actually happens: the held set is not the first 1000.
         assert_ne!(a.samples(), &xs[..1000]);
     }
 
     #[test]
-    fn quantile_rule_is_floor_index_clamped() {
-        let s: Vec<u32> = (0..1000).collect();
-        assert_eq!(quantile_of_sorted(&s, 0.0013), 1);
-        assert_eq!(quantile_of_sorted(&s, 0.159), 159);
-        assert_eq!(quantile_of_sorted(&s, 0.5), 500);
-        assert_eq!(quantile_of_sorted(&s, 1.0), 999);
-        assert_eq!(quantile_of_sorted(&[], 0.5), 0);
-    }
-
-    #[test]
-    fn normal_stream_stays_sigma_and_bimodal_goes_empirical() {
+    fn normal_stream_stays_gaussian_and_bimodal_goes_empirical() {
         let mut f = RollingFloor::calibrate(&normalish(1000, 8192, 64, 1));
         f.observe_batch(&normalish(1000, 8192, 64, 2));
         assert!(f.shape_is_normal(), "skew {} kurt {}", f.skewness(), f.kurtosis());
-        assert!(!f.is_empirical());
+        assert_eq!(f.shape(), &Shape::Gaussian);
 
-        // Symmetric two-mode mixture: kurtosis ≈ 100, far below the window.
         let (lo, hi) = (normalish(1000, 7800, 20, 3), normalish(1000, 8600, 20, 4));
         let bimodal: Vec<u32> = lo.iter().zip(&hi).flat_map(|(&a, &b)| [a, b]).collect();
         let mut g = RollingFloor::calibrate(&bimodal[..1000]);
         g.observe_batch(&bimodal[1000..]);
         assert!(g.is_empirical(), "skew {} kurt {}", g.skewness(), g.kurtosis());
-        let sorted = g.reservoir().sorted();
-        assert_eq!(g.active_floors()[2], quantile_of_sorted(&sorted, 0.159));
     }
 
-    /// Parameter drift and shape are separate readings. A pure location and
-    /// spread change of a normal stream raises a parameter shift. At that
-    /// checkpoint the reservoir still mixes the old and the new population,
-    /// so the shape reads non-normal: this is the reference behaviour, kept
-    /// as is. After recalibration the shape layer restarts and the same
-    /// shifted stream reads normal again.
+    /// An empirical shape answers with the raw sample quantile in its own
+    /// frame, translates with μ and scales with σ.
     #[test]
-    fn parameter_drift_then_recalibration_restores_the_normal_shape() {
-        let mut f = RollingFloor::calibrate(&normalish(1000, 5000, 40, 7));
-        let shifted = normalish(5000, 5600, 90, 8);
-        let (used, shift) = f.observe_batch(&shifted);
-        let shift = shift.expect("parameters moved");
-        assert!(!f.shape_is_normal(), "mixed reservoir at the drift checkpoint");
-        assert_eq!(shift.observations, 2000, "first checkpoint still mixes both");
-        f.recalibrate(&shift);
-        // The first shift adopts the mixture; the next one settles on the
-        // shifted stream's own parameters.
-        let (f, later) = run_scalar(f, &shifted[used..]);
-        assert_eq!(later.len(), 1, "{later:?}");
-        assert!(f.mu().abs_diff(5600) <= 5 && f.sigma().abs_diff(90) <= 5, "{} {}", f.mu(), f.sigma());
-        assert!(f.shape_is_normal(), "skew {} kurt {}", f.skewness(), f.kurtosis());
-        assert!(!f.is_empirical());
-    }
-
-    /// Usable from the first observation, and refined by more of them without
-    /// any reset.
-    #[test]
-    fn anytime_use_refines_with_population() {
-        let mut f = RollingFloor::for_width(16384);
-        assert_eq!(f.active_floors(), [8000, 8064, 8128, 8192]);
-        let xs = normalish(50_000, 8192, 64, 12);
-        let mut errs = Vec::new();
-        for (i, &d) in xs.iter().enumerate() {
-            assert!(f.observe(d).is_none(), "on-prior data must not drift");
-            if [100, 1000, 50_000].contains(&(i + 1)) {
-                let m = f.moments();
-                errs.push((m.variance().sqrt() - 64.0).abs());
-            }
+    fn empirical_shape_projects_into_current_coordinates() {
+        let (lo, hi) = (normalish(500, 7800, 20, 3), normalish(500, 8600, 20, 4));
+        let sample: Vec<u32> = lo.into_iter().chain(hi).collect();
+        let e = EmpiricalShape::from_sample(&sample).unwrap();
+        let (mu, s) = (e.mu(), e.sigma());
+        for l in LATTICE {
+            let x = quantile_of_sorted(e.sorted(), l.gaussian_tail_per_10000());
+            assert_eq!(e.locate(l, mu, s), x, "own frame, k {}", l.0);
+            assert_eq!(e.locate(l, mu + 100, s), x + 100, "translation, k {}", l.0);
+            let d = i64::from(x) - i64::from(mu);
+            let doubled = i64::from(mu) + (d * 2 * i64::from(s)).div_euclid(i64::from(s));
+            assert_eq!(i64::from(e.locate(l, mu, 2 * s)), doubled, "scale, k {}", l.0);
         }
-        assert_eq!(f.observations(), 50_000);
-        assert!(errs[2] < errs[0], "{errs:?}");
+        assert_eq!(EmpiricalShape::from_sample(&[]), None);
+        // No spread: the offset is used unscaled.
+        let flat = EmpiricalShape::from_sample(&[7, 7, 7]).unwrap();
+        assert_eq!((flat.sigma(), flat.locate(SigmaLevel(12), 100, 50)), (0, 100));
     }
 
-    /// Large-population running spread is still meaningful: the checkpoint
-    /// variance comes from exact moments past the u128 product range.
-    #[test]
-    fn large_population_variance_floor_is_exact() {
-        let half = 1u128 << 32;
-        let hi = u128::from(u32::MAX);
-        let m = MomentsU32 {
-            n: 1 << 33,
-            sum: half * (hi + hi - 2),
-            sum_sq: half * (hi * hi + (hi - 2) * (hi - 2)),
-        };
-        assert!(u128::from(m.n).checked_mul(m.sum_sq).is_none());
-        assert_eq!(variance_floor(&m), 1); // values ±1 around the mean
-        let m = MomentsU32 {
-            n: 4,
-            sum: 10,
-            sum_sq: 30,
-        }; // 1,2,3,4: var 1.25
-        assert_eq!(variance_floor(&m), 1);
-    }
-
-    /// The overflow-free variance form agrees with the direct one on every
-    /// small sample, including the fractional means that take the `a − 1`
-    /// correction.
-    #[test]
-    fn centred_variance_floor_matches_the_direct_form() {
-        let mut corrected = 0;
-        for seed in 1..400u64 {
-            let len = 2 + (seed % 37) as usize;
-            let xs = stream(len, (seed * 97 % 5000) as u32, 1 + (seed % 60) as u32, seed);
-            let m = moments_u32(&xs);
-            let n = u128::from(m.n);
-            let direct = (n * m.sum_sq - m.sum * m.sum) / (n * n);
-            assert_eq!(variance_floor_centred(&m), direct, "{xs:?}");
-            let c = centred_on_floor_mean(&m);
-            corrected += usize::from((c % n) * n < (m.sum % n).pow(2));
-        }
-        assert!(corrected > 0, "fixture must exercise the correction branch");
-    }
-
-    /// Each kurtosis bound switches to empirical floors on its own, with the
-    /// skew inside the window: a uniform stream is too light-tailed, a
-    /// narrow-core wide-tail mixture too heavy-tailed.
+    /// Each kurtosis bound switches to the empirical shape on its own, with
+    /// the skew inside the window.
     #[test]
     fn kurtosis_alone_switches_to_empirical() {
         let uniform = stream(2000, 8000, 400, 21);
@@ -917,9 +1136,63 @@ mod tests {
         }
     }
 
+    /// Usable from the first observation, refined by more of them without
+    /// any reset.
+    #[test]
+    fn anytime_use_refines_with_population() {
+        let mut f = RollingFloor::for_width(16384);
+        let xs = normalish(50_000, 8192, 64, 12);
+        let mut errs = Vec::new();
+        for (i, &d) in xs.iter().enumerate() {
+            assert!(f.observe(d).is_none(), "on-prior data must not drift");
+            if [100, 1000, 50_000].contains(&(i + 1)) {
+                errs.push(f.coordinates().unwrap().1.abs_diff(64));
+            }
+        }
+        assert_eq!(f.observations(), 50_000);
+        assert!(errs[2] <= errs[0], "{errs:?}");
+    }
+
+    #[test]
+    fn large_population_variance_floor_is_exact() {
+        let half = 1u128 << 32;
+        let hi = u128::from(u32::MAX);
+        let m = MomentsU32 {
+            n: 1 << 33,
+            sum: half * (hi + hi - 2),
+            sum_sq: half * (hi * hi + (hi - 2) * (hi - 2)),
+        };
+        assert!(u128::from(m.n).checked_mul(m.sum_sq).is_none());
+        assert_eq!(variance_floor(&m), 1);
+        let m = MomentsU32 {
+            n: 4,
+            sum: 10,
+            sum_sq: 30,
+        };
+        assert_eq!(variance_floor(&m), 1);
+    }
+
+    /// The overflow-free variance form agrees with the direct one on every
+    /// small sample, including the fractional means that take the `a − 1`
+    /// correction.
+    #[test]
+    fn centred_variance_floor_matches_the_direct_form() {
+        let mut corrected = 0;
+        for seed in 1..400u64 {
+            let len = 2 + (seed % 37) as usize;
+            let xs = stream(len, (seed * 97 % 5000) as u32, 1 + (seed % 60) as u32, seed);
+            let m = moments_u32(&xs);
+            let n = u128::from(m.n);
+            let direct = (n * m.sum_sq - m.sum * m.sum) / (n * n);
+            assert_eq!(variance_floor_centred(&m), direct, "{xs:?}");
+            let c = centred_on_floor_mean(&m);
+            corrected += usize::from((c % n) * n < (m.sum % n).pow(2));
+        }
+        assert!(corrected > 0, "fixture must exercise the correction branch");
+    }
+
     #[test]
     fn calibrate_uses_spread_around_the_integer_mean() {
-        // 0,0,0,1: mean 0.25, floor mean 0, Σ(x−0)² = 1, 1/4 = 0 -> σ 1 (floored).
         let f = RollingFloor::calibrate(&[0, 0, 0, 1]);
         assert_eq!((f.mu(), f.sigma()), (0, 1));
         let f = RollingFloor::calibrate(&[100, 120, 100, 120]);
@@ -928,9 +1201,6 @@ mod tests {
     }
 
     // ── The lance-graph reference, kept verbatim as an oracle ───────────
-    //
-    // Old `hdr.rs` arithmetic: integer Welford with truncated means. Used
-    // only to measure where exact moments change a floor decision.
     struct LegacyWelford {
         n: u64,
         sum: u64,

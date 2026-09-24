@@ -13,10 +13,14 @@
 //!
 //! Periodic path, once per 1000 observations:
 //!   5. shape evaluation (sort 1000 samples, median, kurtosis)
-//!   6. empirical quantiles (12 lookups into the sorted reservoir)
+//!   6. empirical shape: locate 8 σ-lattice levels
+//!
+//! Query path, on demand (nothing is stored):
+//!   7. Gaussian thresholds of 8 levels
+//!   8. shade of a response over 8 levels
 
 use ndarray::hpc::bitwise::hamming_distance_raw;
-use ndarray::hpc::rolling_floor::{quantile_of_sorted, ReservoirU32, RollingFloor};
+use ndarray::hpc::rolling_floor::{quantile_of_sorted, EmpiricalShape, ReservoirU32, RollingFloor, SigmaLevel};
 use ndarray::hpc::statistics::{moments_u32, MomentsU32};
 use std::hint::black_box;
 use std::time::Instant;
@@ -110,15 +114,35 @@ fn main() {
     ns_per("5. shape: sort + median + kurtosis", K, || {
         for _ in 0..K {
             let sorted = black_box(&r).sorted();
-            black_box(quantile_of_sorted(&sorted, 0.5));
+            black_box(quantile_of_sorted(&sorted, 5000));
             black_box(r.kurtosis(8192, 64));
         }
     });
-    let sorted = r.sorted();
-    ns_per("6. empirical floors: 12 quantiles (sorted)", K, || {
+    let lattice = [4u8, 6, 7, 8, 9, 10, 11, 12].map(SigmaLevel);
+    let shape = EmpiricalShape::from_sample(r.samples()).unwrap();
+    ns_per("6. empirical: locate 8 lattice levels", K, || {
         for _ in 0..K {
-            black_box(RollingFloor::FLOOR_PERCENTILES.map(|p| quantile_of_sorted(black_box(&sorted), p)));
-            black_box(RollingFloor::CASCADE_PERCENTILES.map(|p| quantile_of_sorted(black_box(&sorted), p)));
+            black_box(lattice.map(|l| black_box(&shape).locate(l, 8200, 70)));
         }
+    });
+
+    println!("-- query path, on demand --");
+    let mut g = RollingFloor::for_width(16384);
+    dists[..3000].iter().for_each(|&d| {
+        if let Some(s) = g.observe(d) {
+            g.recalibrate(&s);
+        }
+    });
+    ns_per("7. Gaussian: thresholds of 8 levels", N, || {
+        for _ in 0..N {
+            black_box(black_box(&g).thresholds(&lattice));
+        }
+    });
+    ns_per("8. Gaussian: shade over 8 levels", N, || {
+        let mut acc = 0usize;
+        for &d in &dists {
+            acc += black_box(&g).shade(d, &lattice);
+        }
+        black_box(acc);
     });
 }
