@@ -421,9 +421,7 @@ impl RollingFloor {
     /// observation from scratch: running moments, reservoir, empirical mode
     /// and shape diagnostics are all reset. `σ` is floored at 1.
     pub fn recalibrate(&mut self, shift: &FloorShift) {
-        let capacity = self.reservoir.capacity();
         *self = Self::from_params(shift.new_mu, shift.new_sigma.max(1));
-        self.reservoir = ReservoirU32::new(capacity);
     }
 
     fn at_checkpoint(&self) -> bool {
