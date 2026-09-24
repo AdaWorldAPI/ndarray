@@ -1,3 +1,15 @@
+## 2026-09-24 (2) — U64x8::mul_lo32: the widening lo32×lo32→u64 multiply (argon2 BlaMka)
+
+Added on all six realizations: AVX-512 `_mm512_mul_epu32`; AVX2 `_mm256_mul_epu32` per half; NEON `vmovn_u64` + `vmull_u32`; wasm `i32x4_shuffle::<0,2,0,2>` + `u64x2_extmul_low_u32x4`; scalar reference loop; nightly masked `core::simd` multiply. Unblocks argon2's BlaMka (`a + b + 2·lo32(a)·lo32(b)`), which `ogar-encryption` → a2ui sessions and ogar-auth logins run; also the limb multiply radix-2²⁶ Poly1305 / curve25519 need.
+
+Why intrinsics, not portable source, on AVX-512 and NEON: the LLVM probe (see the 2026-09-24 inventory entry) showed the portable form in BlaMka's add chain lowered to `VPMULLQ` on x86-64-v4 and stayed scalar `madd` on aarch64.
+
+**Evidence:** `simd::tests::u64x8_mul_lo32_matches_scalar` (every operand lane has non-zero high bits and is asserted to differ under a full 64-bit multiply; 5 lanes exceed 32-bit products; commutativity; RFC 9106 fBlaMka) passes native (AVX-512) and pinned v3; `neon-parity.sh` (qemu) and `wasm-parity.sh` (node) pass with the new `0x30F` check. **Disable runs, all red:** AVX-512 → `_mm512_mullo_epi64` fails lane 0; NEON high-half `vshrn` → rc 783 (0x30F); wasm `<1,3,1,3>` shuffle → rc 783. Full `cargo test --lib` native: 2478 passed. clippy `-D warnings` clean native and v3. Not run: the nightly-simd arm (no nightly toolchain here; CI's nightly rows cover it).
+
+**Trap found:** `cargo --config X clippy` does NOT apply `X` — `clippy` is an external subcommand and cargo does not forward `--config` given before it. Measured: rustc ran with `target-cpu=native` only. `cargo clippy --config X` works (`native` then `x86-64-v3`, last wins). `cargo --config X test` is fine (built-in subcommand). A "v3 clippy" run the first way silently re-checks the native tier.
+
+**Next:** vendor `argon2` and give `Block::compress` a vertical `U64x8` lane (8 independent G's per register; rotates already exist); RFC 9106 vectors as the oracle.
+
 ## 2026-09-24 — per-CPU SIMD inventory generated from LLVM's TableGen source
 
 `tools/gen_llvm_inventory.py` reads llvm-project's `X86.td`, `AArch64Processors.td`, `AArch64Features.td` (plus the instruction/predicate `.td` files) at the `llvmorg-*` tag matching `rustc -vV` (22.1.8 under the pinned 1.98.1), resolves every processor's features, and writes `tools/llvm-inventory/inventory.json` + `.claude/knowledge/llvm-cpu-inventory.md`. Same pattern as `gen_ternlog_bodies.py`: committed output, generator as provenance; default mode exits 1 if the output is stale.
