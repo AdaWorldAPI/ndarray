@@ -53,7 +53,10 @@
 //! shift when `|Δμ| > σ/2` or `|Δσ| > σ/4` of the anchor. On the Gaussian
 //! lattice this is exactly the running-versus-anchor parameter comparison;
 //! through an empirical shape it is judged in the learned geometry, so motion
-//! the ruler cannot express moves no bucket and is not drift.
+//! the ruler cannot express moves no bucket and is not drift. The cuts decide
+//! only *whether* the floor drifted: the shift, and the anchor that
+//! [`RollingFloor::recalibrate`] adopts from it, are the exact running
+//! coordinates from the moments, never the quantized cut decomposition.
 //!
 //! # Parameter drift is not shape drift
 //!
@@ -451,18 +454,27 @@ pub struct FloorShift {
 /// `Δσ = (ΔT_first − ΔT_last) · σ / (off_first(σ) − off_last(σ))`, and
 /// `Δμ = ΔT_first − off_first(σ) · Δσ / σ`. On the Gaussian lattice with
 /// cuts at 1σ and 3σ this is `Δσ = (ΔT_first − ΔT_last)/2`,
-/// `Δμ = ΔT_first + Δσ`, exactly.
+/// `Δμ = ΔT_first + Δσ`, exactly. Through an empirical shape the offsets are
+/// learned ranks, so the decomposition is an effective, quantized reading.
+///
+/// The cuts decide *whether* the floor drifted; the running moments decide
+/// *where* it now is. A [`FloorShift`] never takes its coordinates from here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CutDrift {
     /// Motion of the first cut ([`RollingFloor::FIRST_CUT`]).
     pub first: i64,
     /// Motion of the last cut ([`RollingFloor::LAST_CUT`]).
     pub last: i64,
-    /// Location change recovered from the two motions.
+    /// Location change implied by the two motions. Gaussian: the exact
+    /// parameter change. Empirical: the cut-implied, effective change,
+    /// subject to the reservoir's rank resolution, not the actual
+    /// statistical change. A diagnostic; [`FloorShift`] carries the exact
+    /// running coordinates from the moments.
     pub d_mu: i64,
-    /// Spread change recovered from the two motions. `0` when the two cuts
-    /// sit at the same offset (a learned sample with no spread): the ruler
-    /// cannot see dilation it does not have.
+    /// Spread change implied by the two motions, with the same Gaussian /
+    /// empirical caveat as `d_mu`. `0` when the two cuts sit at the same
+    /// offset (a learned sample with no spread): spread motion is then
+    /// unobservable by this ruler, and its effective `d_sigma` is zero.
     pub d_sigma: i64,
 }
 
@@ -624,19 +636,22 @@ impl RollingFloor {
         let run_mu = saturate_u32(self.moments.sum / u128::from(self.moments.n));
         let run_sigma = sqrt_u32(variance_floor(&self.moments)).max(1);
 
-        // The change indicator is the motion of the first and last cut, read
-        // through the active shape: the same lookup that assigns buckets.
+        // Cuts decide WHETHER, moments decide WHERE. The motion of the first
+        // and last cut, read through the active shape (the same lookup that
+        // assigns buckets), is only the drift criterion. The shift carries
+        // the exact running coordinates: on the empirical path the cut
+        // decomposition is quantized by the ruler's resolution, which is
+        // fine for an indicator and wrong for a new anchor.
         let drift = self.cut_drift_to(run_mu, run_sigma);
         let a = i64::from(self.anchor_sigma);
         if drift.d_mu.unsigned_abs() > (a / 2) as u64 || drift.d_sigma.unsigned_abs() > (a / 4) as u64 {
             // The evidence spans two parameter regimes; do not read the shape
             // from it.
-            let clamp = |v: i64| v.clamp(0, i64::from(u32::MAX)) as u32;
             return Some(FloorShift {
                 old_mu: self.anchor_mu,
-                new_mu: clamp(i64::from(self.anchor_mu) + drift.d_mu),
+                new_mu: run_mu,
                 old_sigma: self.anchor_sigma,
-                new_sigma: clamp(a + drift.d_sigma),
+                new_sigma: run_sigma,
                 observations: self.moments.n,
             });
         }
@@ -1161,6 +1176,37 @@ mod tests {
         assert!(bound < 80, "the ruler must resolve an 80-unit dilation: bound {bound}");
     }
 
+    /// Cuts decide WHETHER, moments decide WHERE. Through an empirical shape
+    /// an actual 80-unit dilation reads as 84 on the cut ruler (plus a
+    /// phantom Δμ). That reading is enough to raise the shift, but the shift
+    /// and the recalibrated anchor must be the exact running coordinates,
+    /// never `anchor + effective Δ`.
+    #[test]
+    fn cuts_decide_whether_moments_decide_where() {
+        let (lo, hi) = (normalish(500, 7800, 20, 3), normalish(500, 8600, 20, 4));
+        let sample: Vec<u32> = lo.into_iter().chain(hi).collect();
+        let e = EmpiricalShape::from_sample(&sample).unwrap();
+        let (mu_a, s_a) = (e.mu(), 316);
+        let mut f = floor_at(mu_a, s_a, mu_a, s_a + 80);
+        f.shape = Shape::Empirical(e);
+        let (run_mu, run_sigma) = f.coordinates().unwrap();
+        assert_eq!((run_mu, run_sigma), (mu_a, s_a + 80));
+
+        // 1. The ruler misreads the actual change.
+        let cut = f.cut_drift().unwrap();
+        assert_eq!((cut.d_mu, cut.d_sigma), (6, 84), "fixture: the ruler must misread");
+        // 2. The misreading still crosses the drift criterion.
+        assert!(cut.d_sigma.unsigned_abs() > u64::from(s_a / 4));
+        let shift = f.checkpoint().expect("the cut motion must raise drift");
+        // 3. The shift carries the exact moments, not anchor + effective Δ.
+        assert_eq!((shift.old_mu, shift.new_mu, shift.old_sigma, shift.new_sigma), (mu_a, run_mu, s_a, run_sigma));
+        assert_ne!(shift.new_sigma, s_a + 84);
+        assert_ne!(shift.new_mu, mu_a + 6);
+        // 4. Recalibration anchors on the exact MomentsU32 coordinates.
+        f.recalibrate(&shift);
+        assert_eq!((f.anchor_mu, f.anchor_sigma), (run_mu, run_sigma));
+    }
+
     /// The checkpoint decides drift from the cuts alone. A learned sample with
     /// no spread has both cuts at one offset, so widening moves no bucket
     /// boundary and is not drift; moving the centre still is.
@@ -1178,7 +1224,10 @@ mod tests {
         g.shape = Shape::Empirical(flat);
         let shifted = vec![560u32; 2000];
         let (_, shift) = g.observe_batch(&shifted);
-        assert_eq!(shift.map(|s| (s.new_mu, s.new_sigma)), Some((560, 8)));
+        // The shift adopts the exact running coordinates, not the anchor's
+        // σ carried through a zero cut-implied Δσ: a constant stream has
+        // σ = 0, floored at 1.
+        assert_eq!(shift.map(|s| (s.new_mu, s.new_sigma)), Some((560, 1)));
     }
 
     #[test]
