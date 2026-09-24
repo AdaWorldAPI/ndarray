@@ -1,3 +1,18 @@
+## 2026-09-24 — per-CPU SIMD inventory generated from LLVM's TableGen source
+
+`tools/gen_llvm_inventory.py` reads llvm-project's `X86.td`, `AArch64Processors.td`, `AArch64Features.td` (plus the instruction/predicate `.td` files) at the `llvmorg-*` tag matching `rustc -vV` (22.1.8 under the pinned 1.98.1), resolves every processor's features, and writes `tools/llvm-inventory/inventory.json` + `.claude/knowledge/llvm-cpu-inventory.md`. Same pattern as `gen_ternlog_bodies.py`: committed output, generator as provenance; default mode exits 1 if the output is stale.
+
+**Verified, not asserted:** `--verify-rustc` compares EVERY CPU (92 x86, 99 aarch64) with rustc's own `--print cfg -C target-cpu=...` over all features stable rustc exposes (56 / 37), using rustc's own Rust↔LLVM name table parsed from `rustc_codegen_llvm/src/llvm_util.rs` at the pinned release. 191/191 agree. The comparator failed first and drove five real fixes: `!listremove`; `Architecture64` implied list is the first list arg, not the last; aarch64 arch DefaultExts are part of rustc's cfg (apple-m4 `ssbs`); x86 ABI baseline `sse/sse2` is target-level; **tune records imply ISA features** (`TuneOryon` → FullFP16/FP16FML/SPE).
+
+**Findings the table makes visible (for crypto dispatch):**
+- `x86-64-v3` (our portable baseline) has no `aes` and no `pclmul` — compile-time dispatch cannot reach AES-NI or PCLMULQDQ on the v3 build.
+- `haswell` in LLVM has `pclmul` but not `aes`; `arrowlake` has `avxifma` (VEX IFMA) without AVX-512.
+- aarch64 `neoverse-v2` (Graviton4/Grace) and `cortex-x925` have no `aes` → no hardware AES and no 64-bit PMULL without an explicit `+aes`.
+
+**Primitive rows** (mul_lo32, var shift/permute u32, IFMA, clmul, AES round) name the LLVM instruction def and gating predicate; the generator ASSERTS they still exist in the `.td` files, so an LLVM rename fails loudly.
+
+**Loose ends:** the `backend` column mirrors the `simd.rs` cfg ladder by hand (not parsed); no wasm rows (wasm has no processor table); no CI job runs the staleness check yet; rustc builds on rust-lang's LLVM fork (`rustc/22.1-2026-05-19`) — its AArch64 `.td` files matched the upstream tag byte-for-byte here, and `--verify-rustc` is the guard if that ever diverges.
+
 ## 2026-09-23 (21) — ternlog → Count/Any without a mask: a slice loop, NOT a new ISA primitive
 
 Question asked (lance-graph #1270 prompt): what is the smallest T1 operation that lets an arbitrary 2/3-input Boolean membership END in Count/Any without writing a mask — and does existing `U64x8` composition already do it register-only?
