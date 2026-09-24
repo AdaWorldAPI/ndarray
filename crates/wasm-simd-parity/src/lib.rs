@@ -35,6 +35,9 @@ pub extern "C" fn selfcheck() -> u32 {
     if let Err(code) = check_i32x16_compare() {
         return code;
     }
+    if let Err(code) = check_zgamma_golden() {
+        return code;
+    }
     0
 }
 
@@ -421,6 +424,41 @@ fn check_i32x16_compare() -> Result<(), u32> {
     }
     if !(a == I32x16::from_array(a_arr)) || a == b {
         return Err(0x40D);
+    }
+    Ok(())
+}
+
+/// `ZGamma` codes are bit-exact on every target: the same grid and pinned
+/// digest as `ndarray::hpc::zspace::golden::GOLDEN_CODES` (keep in sync).
+/// Before the deterministic `ln`, 624 of these 8 539 z values differed between
+/// x86-64 glibc and wasm32, so this is the target where drift would show.
+fn check_zgamma_golden() -> Result<(), u32> {
+    use ndarray::hpc::zspace::ZGamma;
+    const GOLDEN_CODES: u64 = 0xfb0b_294d_2a65_3dbb;
+    let mut grid: Vec<f32> = (-4096..=4096).map(|i| i as f32 / 4096.0).collect();
+    let mut r = 0.999f32;
+    while r < 1.0 {
+        grid.push(r);
+        grid.push(-r);
+        r = f32::from_bits(r.to_bits() + 97);
+    }
+    if grid.len() != 8539 {
+        return Err(0x500);
+    }
+    let env = ZGamma::fit(&grid);
+    let mut codes = vec![0i8; grid.len()];
+    env.encode_batch(&grid, &mut codes);
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for &c in &codes {
+        h = (h ^ u64::from(c as u8)).wrapping_mul(0x0100_0000_01b3);
+    }
+    if h != GOLDEN_CODES {
+        return Err(0x501);
+    }
+    for (&c, &k) in grid.iter().zip(&codes) {
+        if env.encode(c) != k {
+            return Err(0x502);
+        }
     }
     Ok(())
 }

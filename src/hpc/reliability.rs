@@ -215,6 +215,12 @@ pub fn icc_a1(ratings: &[&[f64]]) -> f64 {
 /// One call computes all four coefficients plus the relative-L2 error and
 /// cosine similarity, so a harness can print a row per codec/flavor without
 /// recomputing means four times.
+///
+/// `pearson`, `spearman` and `cosine` are cosine-shaped and stay raw for
+/// display; anything that thresholds, averages or compares them goes through
+/// [`pearson_z`](Self::pearson_z) / [`spearman_z`](Self::spearman_z) /
+/// [`cosine_z`](Self::cosine_z) (the Fisher-Z entry point in
+/// [`zspace`](crate::hpc::zspace)).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FidelityReport {
     /// Pearson product-moment correlation (linear association).
@@ -246,7 +252,9 @@ impl FidelityReport {
     /// let truth = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0];
     /// let est = [0.1, 0.9, 2.1, 2.9, 4.2, 4.8];
     /// let r = FidelityReport::compute(&truth, &est);
-    /// assert!(r.pearson > 0.99 && r.spearman > 0.99);
+    /// // Cosine-shaped coefficients are consumed in Fisher-Z space.
+    /// use ndarray::hpc::zspace::fisher_z;
+    /// assert!(r.pearson_z() > fisher_z(0.99) && r.spearman_z() > fisher_z(0.99));
     /// assert!(r.rel_l2 < 0.1);
     /// // Mismatched lengths → degenerate (does NOT truncate-then-score):
     /// let bad = FidelityReport::compute(&[1.0, 2.0, 100.0], &[1.0, 2.0]);
@@ -295,11 +303,41 @@ impl FidelityReport {
             cosine,
         }
     }
+
+    /// Fisher-Z of [`pearson`](Self::pearson) — the form every threshold,
+    /// average or confidence interval over it must use.
+    pub fn pearson_z(&self) -> f64 {
+        crate::hpc::zspace::fisher_z(self.pearson)
+    }
+
+    /// Fisher-Z of [`spearman`](Self::spearman).
+    pub fn spearman_z(&self) -> f64 {
+        crate::hpc::zspace::fisher_z(self.spearman)
+    }
+
+    /// Fisher-Z of [`cosine`](Self::cosine).
+    pub fn cosine_z(&self) -> f64 {
+        crate::hpc::zspace::fisher_z(self.cosine)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The z accessors are exactly Fisher-Z of the raw coefficients, and a
+    /// perfect score stays finite (the rim clamp, not `atanh(1) = inf`).
+    #[test]
+    fn fidelity_z_accessors_are_fisher_z() {
+        use crate::hpc::zspace::fisher_z;
+        let truth = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0];
+        let r = FidelityReport::compute(&truth, &[0.1, 0.9, 2.1, 2.9, 4.2, 4.8]);
+        assert_eq!(r.pearson_z(), fisher_z(r.pearson));
+        assert_eq!(r.spearman_z(), fisher_z(r.spearman));
+        assert_eq!(r.cosine_z(), fisher_z(r.cosine));
+        let perfect = FidelityReport::compute(&truth, &truth);
+        assert!(perfect.pearson_z().is_finite() && perfect.pearson_z() > 10.0);
+    }
 
     #[test]
     fn pearson_perfect_and_anti() {
