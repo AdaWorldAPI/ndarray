@@ -410,7 +410,9 @@ impl MomentsU32 {
     /// Computed as `(n·Σx² − (Σx)²) / n²`. The numerator is formed exactly in
     /// `u128` whenever it fits (always, for Hamming-scale data: n ≤ 2³², x ≤
     /// 2¹⁷), so there is no cancellation between two large floats; only the
-    /// final division rounds. Past that range it falls back to `f64`.
+    /// final division rounds. Past that range it centres the sums on the
+    /// integer part of the mean in `u128` first, so the `f64` step still
+    /// works on small, variance-sized quantities.
     pub fn variance(&self) -> f64 {
         if self.n == 0 {
             return 0.0;
@@ -419,8 +421,18 @@ impl MomentsU32 {
         match (n.checked_mul(self.sum_sq), self.sum.checked_mul(self.sum)) {
             (Some(a), Some(b)) => (a - b) as f64 / (self.n as f64 * self.n as f64),
             _ => {
-                let mean = self.mean();
-                (self.sum_sq as f64 / self.n as f64 - mean * mean).max(0.0)
+                // Centre on the integer part of the mean, q = ⌊Σx / n⌋, with
+                // remainder r = Σx − n·q < n. Then, exactly in u128,
+                // Σ(x − q)² = Σx² − q·Σx − q·r, which is < n·2⁶⁴ and never
+                // negative at any step. The true M2 is that minus r²/n, and
+                // both terms are O(n·(σ² + 1)), so the one float subtraction
+                // cannot cancel the variance away.
+                let q = self.sum / n;
+                let r = self.sum % n;
+                let centred = self.sum_sq - q * self.sum - q * r;
+                let rf = r as f64;
+                let nf = self.n as f64;
+                ((centred as f64 - rf * rf / nf) / nf).max(0.0)
             }
         }
     }
@@ -480,6 +492,24 @@ pub fn moments_u32(values: &[u32]) -> MomentsU32 {
 #[cfg(test)]
 mod moments_tests {
     use super::*;
+
+    /// Past the exact-`u128` range the variance must not cancel: 2³³ values
+    /// split evenly between `u32::MAX` and `u32::MAX - 1` have variance
+    /// exactly 0.25, and `n·Σx²` overflows `u128`, so this takes the
+    /// fallback path.
+    #[test]
+    fn variance_fallback_does_not_cancel() {
+        let half = 1u128 << 32;
+        let hi = u128::from(u32::MAX);
+        let lo = hi - 1;
+        let m = MomentsU32 {
+            n: 1u64 << 33,
+            sum: half * (hi + lo),
+            sum_sq: half * (hi * hi + lo * lo),
+        };
+        assert!(u128::from(m.n).checked_mul(m.sum_sq).is_none(), "fixture must take the fallback");
+        assert!((m.variance() - 0.25).abs() < 1e-9, "variance {}", m.variance());
+    }
 
     fn xorshift(n: usize, mut s: u64, mask: u32) -> Vec<u32> {
         (0..n)

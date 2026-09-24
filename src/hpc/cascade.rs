@@ -220,8 +220,9 @@ impl Cascade {
     ///
     /// Drift is judged once per batch, not per element: an alert fires when
     /// the batch moves μ by more than 2σ of the pre-batch state (and the state
-    /// had > 10 observations and σ > 0), the same test `observe` applies to a
-    /// single step.
+    /// had at least 10 observations and σ > 0), the same test `observe`
+    /// applies to a single step, so `observe_batch(&[x])` alerts exactly when
+    /// `observe(x)` does.
     pub fn observe_batch(&mut self, distances: &[u32]) -> Option<ShiftAlert> {
         let b = crate::hpc::statistics::moments_u32(distances);
         if b.n == 0 {
@@ -245,7 +246,7 @@ impl Cascade {
         }
         self.observations = old_n + b.n as usize;
 
-        if old_n > 10 && old_sigma > 0.0 && (self.mu - old_mu).abs() > 2.0 * old_sigma {
+        if old_n >= 10 && old_sigma > 0.0 && (self.mu - old_mu).abs() > 2.0 * old_sigma {
             Some(ShiftAlert {
                 old_mu,
                 new_mu: self.mu,
@@ -886,6 +887,25 @@ mod tests {
             .observe_batch(&noisy(5000, 9000, 100, 6))
             .expect("shifted batch must alert");
         assert!(alert.new_mu > alert.old_mu + 2.0 * alert.old_sigma);
+    }
+
+    /// A singleton batch is the same event as one `observe` call, so both
+    /// must agree on the alert gate at the boundary: exactly 10 prior
+    /// observations, then an outlier. `observe` counts the new element
+    /// before testing `> 10`; `observe_batch` must admit the same state.
+    #[test]
+    fn observe_batch_singleton_matches_observe_alert_gate() {
+        let mut seq = Cascade::from_threshold(8000, 2048);
+        let mut batch = Cascade::from_threshold(8000, 2048);
+        for i in 0..10u32 {
+            assert!(seq.observe(8000 + 100 * (i % 2)).is_none());
+            assert!(batch.observe(8000 + 100 * (i % 2)).is_none());
+        }
+        assert_eq!(seq.observations(), 10);
+        let a = seq.observe(20000);
+        let b = batch.observe_batch(&[20000]);
+        assert!(a.is_some(), "observe must alert on the outlier");
+        assert!(b.is_some(), "observe_batch(&[x]) must alert exactly like observe(x)");
     }
 
     #[test]
