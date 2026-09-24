@@ -42,6 +42,19 @@
 //! checkpoint checks drift and, when the parameters have not drifted, the
 //! shape.
 //!
+//! # The change indicator: the first and last cut
+//!
+//! Change is read where it matters, at the bucket boundaries. The first cut
+//! ([`RollingFloor::FIRST_CUT`], 1σ) and the last ([`RollingFloor::LAST_CUT`],
+//! 3σ) are located through the active shape at the anchor and at the current
+//! coordinates. If both move by the same amount the floor translated; if they
+//! move apart or together it widened or narrowed; [`CutDrift`] holds both
+//! motions and the `(Δμ, Δσ)` they decompose into. A checkpoint raises a
+//! shift when `|Δμ| > σ/2` or `|Δσ| > σ/4` of the anchor. On the Gaussian
+//! lattice this is exactly the running-versus-anchor parameter comparison;
+//! through an empirical shape it is judged in the learned geometry, so motion
+//! the ruler cannot express moves no bucket and is not drift.
+//!
 //! # Parameter drift is not shape drift
 //!
 //! A drift alert means the running `(μ, σ)` left the anchor: the evidence now
@@ -390,14 +403,19 @@ impl EmpiricalShape {
     /// tail rank, clamped to `u32`. When the sample has no spread (`σ_s = 0`)
     /// the offset `x − μ_s` is used unscaled.
     pub fn locate(&self, level: SigmaLevel, mu: u32, sigma: u32) -> u32 {
+        (i128::from(mu) + self.offset(level, sigma)).clamp(0, i128::from(u32::MAX)) as u32
+    }
+
+    /// The level's signed distance from `μ` at spread `sigma`:
+    /// `⌊(x − μ_s)·sigma / σ_s⌋`, or `x − μ_s` unscaled when `σ_s = 0`.
+    pub fn offset(&self, level: SigmaLevel, sigma: u32) -> i128 {
         let x = quantile_of_sorted(&self.sorted, level.gaussian_tail_per_10000());
         let delta = i128::from(x) - i128::from(self.mu);
-        let offset = if self.sigma == 0 {
+        if self.sigma == 0 {
             delta
         } else {
             (delta * i128::from(sigma)).div_euclid(i128::from(self.sigma))
-        };
-        (i128::from(mu) + offset).clamp(0, i128::from(u32::MAX)) as u32
+        }
     }
 }
 
@@ -423,6 +441,29 @@ pub struct FloorShift {
     pub new_sigma: u32,
     /// Observation count at that checkpoint.
     pub observations: u64,
+}
+
+/// How the first and last cut moved from the anchor to the current floor,
+/// and the location and spread change that motion decomposes into.
+///
+/// Two cuts `T_k = μ + off_k(σ)` move by `ΔT_k = Δμ + Δoff_k`. Equal
+/// motion is a pure translation; unequal motion is a change of spread,
+/// `Δσ = (ΔT_first − ΔT_last) · σ / (off_first(σ) − off_last(σ))`, and
+/// `Δμ = ΔT_first − off_first(σ) · Δσ / σ`. On the Gaussian lattice with
+/// cuts at 1σ and 3σ this is `Δσ = (ΔT_first − ΔT_last)/2`,
+/// `Δμ = ΔT_first + Δσ`, exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CutDrift {
+    /// Motion of the first cut ([`RollingFloor::FIRST_CUT`]).
+    pub first: i64,
+    /// Motion of the last cut ([`RollingFloor::LAST_CUT`]).
+    pub last: i64,
+    /// Location change recovered from the two motions.
+    pub d_mu: i64,
+    /// Spread change recovered from the two motions. `0` when the two cuts
+    /// sit at the same offset (a learned sample with no spread): the ruler
+    /// cannot see dilation it does not have.
+    pub d_sigma: i64,
 }
 
 /// Live distribution of a stream of `u32` distances, answering σ-lattice
@@ -470,6 +511,10 @@ impl RollingFloor {
     pub const MIN_SHAPE_SAMPLES: usize = 100;
     /// Kurtosis ×100 of the normal distribution.
     pub const NORMAL_KURTOSIS: u32 = 300;
+    /// The inner probe of the change indicator: 1σ.
+    pub const FIRST_CUT: SigmaLevel = SigmaLevel(4);
+    /// The outer probe of the change indicator: 3σ.
+    pub const LAST_CUT: SigmaLevel = SigmaLevel(12);
 
     /// A floor with only a prior `(μ, σ)`: Gaussian shape, no observations.
     pub fn from_params(mu: u32, sigma: u32) -> Self {
@@ -520,8 +565,8 @@ impl RollingFloor {
     }
 
     /// Fold one observation in. At a checkpoint, returns a shift when the
-    /// running parameters have drifted from the anchor:
-    /// `|μ_run − μ| > σ/2` or `|σ_run − σ| > σ/4`.
+    /// first and last cut moved enough to mean `|Δμ| > σ/2` or `|Δσ| > σ/4`
+    /// of the anchor (see [`CutDrift`]).
     #[inline]
     pub fn observe(&mut self, distance: u32) -> Option<FloorShift> {
         self.moments.observe(distance);
@@ -579,16 +624,19 @@ impl RollingFloor {
         let run_mu = saturate_u32(self.moments.sum / u128::from(self.moments.n));
         let run_sigma = sqrt_u32(variance_floor(&self.moments)).max(1);
 
-        let mu_drift = run_mu.abs_diff(self.anchor_mu);
-        let sigma_drift = run_sigma.abs_diff(self.anchor_sigma);
-        if mu_drift > self.anchor_sigma / 2 || sigma_drift > self.anchor_sigma / 4 {
+        // The change indicator is the motion of the first and last cut, read
+        // through the active shape: the same lookup that assigns buckets.
+        let drift = self.cut_drift_to(run_mu, run_sigma);
+        let a = i64::from(self.anchor_sigma);
+        if drift.d_mu.unsigned_abs() > (a / 2) as u64 || drift.d_sigma.unsigned_abs() > (a / 4) as u64 {
             // The evidence spans two parameter regimes; do not read the shape
             // from it.
+            let clamp = |v: i64| v.clamp(0, i64::from(u32::MAX)) as u32;
             return Some(FloorShift {
                 old_mu: self.anchor_mu,
-                new_mu: run_mu,
+                new_mu: clamp(i64::from(self.anchor_mu) + drift.d_mu),
                 old_sigma: self.anchor_sigma,
-                new_sigma: run_sigma,
+                new_sigma: clamp(a + drift.d_sigma),
                 observations: self.moments.n,
             });
         }
@@ -630,11 +678,48 @@ impl RollingFloor {
     }
 
     fn locate(&self, level: SigmaLevel, mu: u32, sigma: u32) -> u32 {
+        (i128::from(mu) + self.offset(level, sigma)).clamp(0, i128::from(u32::MAX)) as u32
+    }
+
+    /// A level's signed distance from `μ` at spread `sigma`, by the active
+    /// shape: `−⌊k·σ/4⌋` for Gaussian.
+    fn offset(&self, level: SigmaLevel, sigma: u32) -> i128 {
         match &self.shape {
-            Shape::Gaussian => {
-                saturate_u32(u128::from(mu).saturating_sub(u128::from(level.quarters()) * u128::from(sigma) / 4))
-            }
-            Shape::Empirical(e) => e.locate(level, mu, sigma),
+            Shape::Gaussian => -((u128::from(level.quarters()) * u128::from(sigma) / 4) as i128),
+            Shape::Empirical(e) => e.offset(level, sigma),
+        }
+    }
+
+    /// The change indicator: how the first and last cut moved from the
+    /// anchor to the current coordinates, decomposed into location and
+    /// spread change. `None` before the first observation.
+    pub fn cut_drift(&self) -> Option<CutDrift> {
+        self.coordinates()
+            .map(|(mu, sigma)| self.cut_drift_to(mu, sigma))
+    }
+
+    fn cut_drift_to(&self, mu: u32, sigma: u32) -> CutDrift {
+        let (f, l) = (Self::FIRST_CUT, Self::LAST_CUT);
+        let (mu_a, sigma_a) = (i128::from(self.anchor_mu), self.anchor_sigma);
+        // Cut positions unclamped, so saturation at 0 cannot fake a motion.
+        let cut = |lv, m: i128, s: u32| m + self.offset(lv, s);
+        let first = cut(f, i128::from(mu), sigma) - cut(f, mu_a, sigma_a);
+        let last = cut(l, i128::from(mu), sigma) - cut(l, mu_a, sigma_a);
+        // The ruler's own unit: the two cuts' offsets at the anchor spread.
+        let unit = sigma_a.max(1);
+        let (off_f, off_l) = (self.offset(f, unit), self.offset(l, unit));
+        let d_sigma = if off_f == off_l {
+            0
+        } else {
+            ((first - last) * i128::from(unit)).div_euclid(off_f - off_l)
+        };
+        let d_mu = first - (off_f * d_sigma).div_euclid(i128::from(unit));
+        let to_i64 = |v: i128| v.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
+        CutDrift {
+            first: to_i64(first),
+            last: to_i64(last),
+            d_mu: to_i64(d_mu),
+            d_sigma: to_i64(d_sigma),
         }
     }
 
@@ -1012,6 +1097,88 @@ mod tests {
             assert!(r.checked_mul(r).is_some_and(|sq| sq <= n), "n {n}");
             assert!((r + 1).checked_mul(r + 1).is_none_or(|sq| sq > n), "n {n}");
         }
+    }
+
+    /// A floor anchored at `(mu_a, sigma_a)` whose running moments sit
+    /// exactly at `(mu, sigma)`.
+    fn floor_at(mu_a: u32, sigma_a: u32, mu: u32, sigma: u32) -> RollingFloor {
+        let (n, m, sd) = (1000u128, u128::from(mu), u128::from(sigma));
+        let moments = MomentsU32 {
+            n: 1000,
+            sum: m * n,
+            sum_sq: (sd * sd + m * m) * n,
+        };
+        let f = RollingFloor::from_params_and_moments(mu_a, sigma_a, moments);
+        assert_eq!(f.coordinates(), Some((mu, sigma)));
+        f
+    }
+
+    /// First and last cut: equal motion is translation, opposite-sign gap is
+    /// dilation, and both are recovered exactly on the Gaussian lattice.
+    #[test]
+    fn first_and_last_cut_separate_translation_from_dilation() {
+        let drift = |mu, sigma| floor_at(1000, 40, mu, sigma).cut_drift().unwrap();
+        let d = |first, last, d_mu, d_sigma| CutDrift {
+            first,
+            last,
+            d_mu,
+            d_sigma,
+        };
+        assert_eq!(drift(1010, 40), d(10, 10, 10, 0), "pure translation");
+        assert_eq!(drift(990, 40), d(-10, -10, -10, 0), "translation down");
+        assert_eq!(drift(1000, 48), d(-8, -24, 0, 8), "pure dilation");
+        assert_eq!(drift(1000, 36), d(4, 12, 0, -4), "pure narrowing");
+        assert_eq!(drift(1007, 44), d(3, -5, 7, 4), "both");
+        assert_eq!(drift(1000, 40), d(0, 0, 0, 0), "at rest");
+        assert_eq!(RollingFloor::from_params(1000, 40).cut_drift(), None);
+    }
+
+    /// Through an empirical shape the same two cuts read the motion in the
+    /// learned geometry: translation stays exact, dilation within the ruler's
+    /// integer resolution.
+    #[test]
+    fn empirical_cuts_read_the_same_motion() {
+        let (lo, hi) = (normalish(500, 7800, 20, 3), normalish(500, 8600, 20, 4));
+        let sample: Vec<u32> = lo.into_iter().chain(hi).collect();
+        let e = EmpiricalShape::from_sample(&sample).unwrap();
+        let (mu_a, s_a) = (e.mu(), e.sigma());
+        let with_shape = |mu, sigma| {
+            let mut f = floor_at(mu_a, s_a, mu, sigma);
+            f.shape = Shape::Empirical(e.clone());
+            f.cut_drift().unwrap()
+        };
+        let t = with_shape(mu_a + 50, s_a);
+        assert_eq!((t.first, t.last, t.d_mu, t.d_sigma), (50, 50, 50, 0));
+        let w = with_shape(mu_a, s_a + 80);
+        assert!(w.first != w.last, "dilation must move the cuts apart: {w:?}");
+        // Resolution of this ruler: two ±1 floor errors in the cut motions,
+        // amplified by σ over the gap between the two cuts' offsets. Both
+        // cuts sit in the lower mode here, so the gap is narrow.
+        let (off_f, off_l) = (e.offset(RollingFloor::FIRST_CUT, s_a), e.offset(RollingFloor::LAST_CUT, s_a));
+        let bound = (2 * u64::from(s_a)).div_ceil((off_f - off_l).unsigned_abs() as u64) + 1;
+        assert!(w.d_sigma.abs_diff(80) <= bound, "{w:?} bound {bound}");
+        assert!(w.d_mu.unsigned_abs() <= bound, "{w:?} bound {bound}");
+        assert!(bound < 80, "the ruler must resolve an 80-unit dilation: bound {bound}");
+    }
+
+    /// The checkpoint decides drift from the cuts alone. A learned sample with
+    /// no spread has both cuts at one offset, so widening moves no bucket
+    /// boundary and is not drift; moving the centre still is.
+    #[test]
+    fn checkpoint_drift_is_what_the_cuts_see() {
+        let flat = EmpiricalShape::from_sample(&[500, 500, 500, 500]).unwrap();
+        let widened: Vec<u32> = (0..2000u32)
+            .map(|i| if i % 2 == 0 { 400 } else { 600 })
+            .collect();
+        let mut f = RollingFloor::from_params(500, 8);
+        f.shape = Shape::Empirical(flat.clone());
+        assert_eq!(f.observe_batch(&widened), (2000, None), "spread the ruler cannot see");
+
+        let mut g = RollingFloor::from_params(500, 8);
+        g.shape = Shape::Empirical(flat);
+        let shifted = vec![560u32; 2000];
+        let (_, shift) = g.observe_batch(&shifted);
+        assert_eq!(shift.map(|s| (s.new_mu, s.new_sigma)), Some((560, 8)));
     }
 
     #[test]
