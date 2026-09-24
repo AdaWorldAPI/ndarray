@@ -572,6 +572,21 @@ impl U64x8 {
         }
         Self::from_array(o)
     }
+
+    /// Lane-wise `lo32(self) × lo32(rhs)` as an exact `u64` — the widening
+    /// 32×32→64 multiply. The high 32 bits of every input lane are ignored;
+    /// the product cannot overflow, since `(2³²−1)² < 2⁶⁴`. argon2's BlaMka
+    /// multiply. This loop is the reference the native arms are tested
+    /// against.
+    #[inline(always)]
+    pub fn mul_lo32(self, rhs: Self) -> Self {
+        let (a, b) = (self.to_array(), rhs.to_array());
+        let mut o = [0u64; 8];
+        for i in 0..8 {
+            o[i] = (a[i] as u32 as u64) * (b[i] as u32 as u64);
+        }
+        Self::from_array(o)
+    }
 }
 
 // I8/I16 SIMD types (scalar fallback)

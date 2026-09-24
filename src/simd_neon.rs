@@ -2824,6 +2824,19 @@ impl U64x8 {
         self.rotate_left(64 - n)
     }
 
+    /// Lane-wise `lo32(self) × lo32(rhs)` as an exact `u64` — the widening
+    /// 32×32→64 multiply. Per quad: `vmovn_u64` keeps the low 32 bits of each
+    /// lane, then `vmull_u32` (`UMULL`) widens the product back to 64 bits.
+    /// The high 32 bits of every input lane are ignored; the product cannot
+    /// overflow. argon2's BlaMka multiply — written explicitly because LLVM
+    /// left the portable form as scalar `madd` inside BlaMka's add chain on
+    /// aarch64.
+    #[inline(always)]
+    pub fn mul_lo32(self, rhs: Self) -> Self {
+        // SAFETY: NEON baseline; pure register ops on uint64x2_t / uint32x2_t.
+        Self(core::array::from_fn(|p| unsafe { U64x2(vmull_u32(vmovn_u64(self.0[p].0), vmovn_u64(rhs.0[p].0))) }))
+    }
+
     /// Lane-wise population count: `vcntq_u8` on the bytes, then the
     /// `vpaddlq_u8 → vpaddlq_u16 → vpaddlq_u32` widening-add ladder back to
     /// one count per u64 lane (0..=64).

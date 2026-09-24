@@ -1784,6 +1784,27 @@ impl U64x8 {
         Self(unsafe { _mm512_rorv_epi64(self.0, _mm512_set1_epi64(n as i64)) })
     }
 
+    /// Lane-wise `lo32(self) × lo32(rhs)` as an exact `u64` — the widening
+    /// 32×32→64 multiply (`VPMULUDQ`). The high 32 bits of every input lane
+    /// are ignored; the product cannot overflow, since `(2³²−1)² < 2⁶⁴`.
+    ///
+    /// This is the multiply in argon2's BlaMka G function,
+    /// `a + b + 2·lo32(a)·lo32(b)`, and the limb multiply of radix-2²⁶
+    /// Poly1305 and curve25519 field arithmetic.
+    ///
+    /// Written as the intrinsic rather than portable source on this tier: in
+    /// BlaMka's add chain LLVM lowered the portable `(a as u32 as u64) *
+    /// (b as u32 as u64)` to `VPMULLQ` (the full 64-bit multiply) instead of
+    /// `VPMULUDQ` on x86-64-v4, although both operands are provably
+    /// zero-extended.
+    #[inline(always)]
+    pub fn mul_lo32(self, rhs: Self) -> Self {
+        // SAFETY: `Self` is a native `__m512i`; this arm is compiled only
+        // under the avx512f dispatch. `_mm512_mul_epu32` reads the low 32 bits
+        // of each 64-bit lane and writes the full 64-bit product.
+        Self(unsafe { _mm512_mul_epu32(self.0, rhs.0) })
+    }
+
     #[inline(always)]
     pub fn splat(v: u64) -> Self {
         Self(unsafe { _mm512_set1_epi64(v as i64) })

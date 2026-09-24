@@ -1859,6 +1859,22 @@ pub mod wasm32_simd {
             self.rotate_left(64 - n)
         }
 
+        /// Lane-wise `lo32(self) × lo32(rhs)` as an exact `u64` — the
+        /// widening 32×32→64 multiply. Per `v128`: the low 32 bits of the two
+        /// u64 lanes are u32 lanes 0 and 2 (little-endian), gathered into
+        /// lanes 0 and 1 by `i32x4_shuffle::<0, 2, 0, 2>`, then
+        /// `u64x2_extmul_low_u32x4` widens their product. The high 32 bits
+        /// of every input lane are ignored; the product cannot overflow.
+        /// argon2's BlaMka multiply.
+        #[inline(always)]
+        pub fn mul_lo32(self, rhs: Self) -> Self {
+            Self(core::array::from_fn(|p| {
+                let a = i32x4_shuffle::<0, 2, 0, 2>(self.0[p].0, self.0[p].0);
+                let b = i32x4_shuffle::<0, 2, 0, 2>(rhs.0[p].0, rhs.0[p].0);
+                U64x2(u64x2_extmul_low_u32x4(a, b))
+            }))
+        }
+
         /// Lane-wise population count: `i8x16_popcnt`, then the pairwise
         /// widening adds up to 32-bit halves, then the two halves of each u64
         /// summed (`u64x2_shr` 32 + masked add).
