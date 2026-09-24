@@ -208,6 +208,56 @@ impl Cascade {
         }
     }
 
+    /// Fold a whole batch of distances into the rolling floor at once.
+    ///
+    /// The batch is reduced to exact integer moments with
+    /// [`moments_u32`](crate::hpc::statistics::moments_u32) and merged into
+    /// the running `(n, μ, σ)` with the parallel-variance merge
+    /// (Chan, Golub & LeVeque), so the resulting `mu`/`sigma`/`observations`
+    /// match calling [`observe`](Self::observe) once per distance up to f64
+    /// rounding. Shards computed on different threads can each be folded in
+    /// this way, in any order.
+    ///
+    /// Drift is judged once per batch, not per element: an alert fires when
+    /// the batch moves μ by more than 2σ of the pre-batch state (and the state
+    /// had > 10 observations and σ > 0), the same test `observe` applies to a
+    /// single step.
+    pub fn observe_batch(&mut self, distances: &[u32]) -> Option<ShiftAlert> {
+        let b = crate::hpc::statistics::moments_u32(distances);
+        if b.n == 0 {
+            return None;
+        }
+        let old_mu = self.mu;
+        let old_sigma = self.sigma;
+        let old_n = self.observations;
+        let n_a = old_n as f64;
+        let n_b = b.n as f64;
+        let n = n_a + n_b;
+        let (mean_b, m2_b) = (b.mean(), b.variance() * n_b);
+        if old_n == 0 {
+            self.mu = mean_b;
+            self.sigma = (m2_b / n_b).sqrt();
+        } else {
+            let delta = mean_b - old_mu;
+            self.mu = old_mu + delta * n_b / n;
+            let m2 = old_sigma * old_sigma * n_a + m2_b + delta * delta * n_a * n_b / n;
+            self.sigma = (m2 / n).sqrt();
+        }
+        self.observations = old_n + b.n as usize;
+
+        if old_n > 10 && old_sigma > 0.0 && (self.mu - old_mu).abs() > 2.0 * old_sigma {
+            Some(ShiftAlert {
+                old_mu,
+                new_mu: self.mu,
+                old_sigma,
+                new_sigma: self.sigma,
+                observations: self.observations,
+            })
+        } else {
+            None
+        }
+    }
+
     pub fn recalibrate(&mut self, alert: &ShiftAlert) {
         self.mu = alert.new_mu;
         self.sigma = alert.new_sigma;
@@ -766,6 +816,76 @@ mod tests {
             .collect();
         got.sort_unstable();
         assert_eq!(got, exact_hits(&expected, threshold));
+    }
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() <= 1e-9 * a.abs().max(b.abs()).max(1.0)
+    }
+
+    fn noisy(n: usize, base: u32, spread: u32, mut s: u64) -> Vec<u32> {
+        (0..n)
+            .map(|_| {
+                s ^= s << 13;
+                s ^= s >> 7;
+                s ^= s << 17;
+                base + (s as u32) % spread
+            })
+            .collect()
+    }
+
+    /// One `observe_batch` lands on the same rolling floor as `observe`
+    /// called per distance, from an empty state and from a warm one.
+    #[test]
+    fn observe_batch_matches_sequential_observe() {
+        let warm = noisy(300, 8000, 400, 1);
+        let batch = noisy(2000, 8100, 500, 2);
+        for start in [&[][..], &warm[..]] {
+            let mut seq = Cascade::from_threshold(8000, 2048);
+            let mut bat = Cascade::from_threshold(8000, 2048);
+            for &d in start {
+                seq.observe(d);
+                bat.observe(d);
+            }
+            for &d in &batch {
+                seq.observe(d);
+            }
+            bat.observe_batch(&batch);
+            assert_eq!(seq.observations(), bat.observations());
+            assert!(close(seq.mu(), bat.mu()), "mu {} vs {}", seq.mu(), bat.mu());
+            assert!(close(seq.sigma(), bat.sigma()), "sigma {} vs {}", seq.sigma(), bat.sigma());
+        }
+    }
+
+    /// Shard-parallel use: folding shards in any order gives the same floor
+    /// as folding the whole batch.
+    #[test]
+    fn observe_batch_shards_merge_in_any_order() {
+        let x = noisy(3001, 8000, 700, 3);
+        let mut whole = Cascade::from_threshold(8000, 2048);
+        whole.observe_batch(&x);
+        let shards: Vec<&[u32]> = x.chunks(640).collect();
+        for order in [[0usize, 1, 2, 3, 4], [4, 2, 0, 3, 1]] {
+            let mut c = Cascade::from_threshold(8000, 2048);
+            for i in order {
+                c.observe_batch(shards[i]);
+            }
+            assert!(close(c.mu(), whole.mu()));
+            assert!(close(c.sigma(), whole.sigma()));
+            assert_eq!(c.observations(), whole.observations());
+        }
+    }
+
+    /// The drift alert can fire (a batch from a distribution shifted far
+    /// past 2σ) and stays silent on a batch from the same distribution.
+    #[test]
+    fn observe_batch_alerts_on_a_shift_only() {
+        let mut c = Cascade::from_threshold(8000, 2048);
+        assert!(c.observe_batch(&noisy(500, 8000, 100, 4)).is_none(), "first batch has no prior");
+        assert!(c.observe_batch(&noisy(500, 8000, 100, 5)).is_none(), "same distribution");
+        let alert = c
+            .observe_batch(&noisy(5000, 9000, 100, 6))
+            .expect("shifted batch must alert");
+        assert!(alert.new_mu > alert.old_mu + 2.0 * alert.old_sigma);
     }
 
     #[test]
