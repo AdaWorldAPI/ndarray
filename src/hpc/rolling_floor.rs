@@ -85,6 +85,31 @@ pub fn isqrt_u32(n: u32) -> u32 {
     }
 }
 
+/// Floor of `√n` for any `u128`, integer Newton iteration.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::hpc::rolling_floor::isqrt_u128;
+/// assert_eq!(isqrt_u128(1 << 64), 1 << 32);
+/// assert_eq!(isqrt_u128(u128::MAX), u128::from(u64::MAX));
+/// ```
+pub fn isqrt_u128(n: u128) -> u128 {
+    if n == 0 {
+        return 0;
+    }
+    // Start >= floor(√n) so Newton descends monotonically; x ≤ 2^64 and
+    // n / x ≤ 2^64, so x + n / x cannot overflow.
+    let mut x = 1u128 << ((129 - n.leading_zeros()) / 2);
+    loop {
+        let x1 = (x + n / x) / 2;
+        if x1 >= x {
+            return x;
+        }
+        x = x1;
+    }
+}
+
 /// Rank `⌊per_10000 · len / 10000⌋`, clamped to the last index. `0` for an
 /// empty sample. The integer rank rule for every empirical lookup.
 ///
@@ -227,19 +252,7 @@ impl ReservoirU32 {
         if sigma == 0 || self.samples.len() < 4 {
             return 300;
         }
-        let n = self.samples.len() as u128;
-        // u128: a fourth power of a u32 difference is below 2^128.
-        let m4: u128 = self
-            .samples
-            .iter()
-            .map(|&d| {
-                let diff = u128::from(d.abs_diff(mu));
-                diff * diff * diff * diff
-            })
-            .sum::<u128>()
-            / n;
-        let s4 = u128::from(sigma).pow(4);
-        u32::try_from(m4 * 100 / s4).unwrap_or(u32::MAX)
+        kurtosis_x100_exact(&self.samples, mu, sigma).unwrap_or_else(|| kurtosis_x100_scaled(&self.samples, mu, sigma))
     }
 
     /// Deterministic splitmix64-style hash that drives replacement.
@@ -352,7 +365,7 @@ impl EmpiricalShape {
         let m = moments_u32(&sorted);
         Some(Self {
             mu: saturate_u32(m.sum / u128::from(m.n)),
-            sigma: isqrt_u32(saturate_u32(variance_floor(&m))),
+            sigma: sqrt_u32(variance_floor(&m)),
             sorted,
         })
     }
@@ -498,7 +511,7 @@ impl RollingFloor {
         assert!(sample.len() > 1, "need at least 2 samples to calibrate");
         let moments = moments_u32(sample);
         let mu = saturate_u32(moments.sum / u128::from(moments.n));
-        let sigma = isqrt_u32(saturate_u32(centred_on_floor_mean(&moments) / u128::from(moments.n))).max(1);
+        let sigma = sqrt_u32(centred_on_floor_mean(&moments) / u128::from(moments.n)).max(1);
         let mut floor = Self::from_params_and_moments(mu, sigma, moments);
         for &d in sample {
             floor.reservoir.observe(d);
@@ -564,7 +577,7 @@ impl RollingFloor {
     /// The periodic path: drift first; the shape only when there is none.
     fn checkpoint(&mut self) -> Option<FloorShift> {
         let run_mu = saturate_u32(self.moments.sum / u128::from(self.moments.n));
-        let run_sigma = isqrt_u32(saturate_u32(variance_floor(&self.moments))).max(1);
+        let run_sigma = sqrt_u32(variance_floor(&self.moments)).max(1);
 
         let mu_drift = run_mu.abs_diff(self.anchor_mu);
         let sigma_drift = run_sigma.abs_diff(self.anchor_sigma);
@@ -606,10 +619,7 @@ impl RollingFloor {
         if self.moments.n == 0 {
             return None;
         }
-        Some((
-            saturate_u32(self.moments.sum / u128::from(self.moments.n)),
-            isqrt_u32(saturate_u32(variance_floor(&self.moments))),
-        ))
+        Some((saturate_u32(self.moments.sum / u128::from(self.moments.n)), sqrt_u32(variance_floor(&self.moments))))
     }
 
     /// The coordinates a threshold is located in: the running ones, or the
@@ -621,7 +631,9 @@ impl RollingFloor {
 
     fn locate(&self, level: SigmaLevel, mu: u32, sigma: u32) -> u32 {
         match &self.shape {
-            Shape::Gaussian => mu.saturating_sub(level.quarters() * sigma / 4),
+            Shape::Gaussian => {
+                saturate_u32(u128::from(mu).saturating_sub(u128::from(level.quarters()) * u128::from(sigma) / 4))
+            }
             Shape::Empirical(e) => e.locate(level, mu, sigma),
         }
     }
@@ -690,6 +702,43 @@ impl RollingFloor {
     pub fn reservoir(&self) -> &ReservoirU32 {
         &self.reservoir
     }
+}
+
+/// `⌊100 · E[(X − μ)⁴] / σ⁴⌋` exactly, or `None` when an intermediate
+/// leaves `u128` (only for spreads far beyond any popcount width).
+fn kurtosis_x100_exact(samples: &[u32], mu: u32, sigma: u32) -> Option<u32> {
+    let mut sum: u128 = 0;
+    for &d in samples {
+        let diff = u128::from(d.abs_diff(mu));
+        sum = sum.checked_add((diff * diff).checked_mul(diff * diff)?)?;
+    }
+    let m4 = sum / samples.len() as u128;
+    Some(u32::try_from(m4.checked_mul(100)? / u128::from(sigma).pow(4)).unwrap_or(u32::MAX))
+}
+
+/// The same ratio from per-sample `(d/σ)²` in 16.16 fixed point, used only
+/// when the exact form overflows. Where it would overflow too the kurtosis is
+/// astronomically large and saturates at `u32::MAX`. Agrees with the exact
+/// form to within one unit where both fit.
+fn kurtosis_x100_scaled(samples: &[u32], mu: u32, sigma: u32) -> u32 {
+    let s2 = u128::from(sigma) * u128::from(sigma);
+    let mut sum: u128 = 0;
+    for &d in samples {
+        let diff = u128::from(d.abs_diff(mu));
+        let r = ((diff * diff) << 16) / s2; // (d/σ)², 16 fractional bits
+        match r.checked_mul(r).and_then(|t| sum.checked_add(t)) {
+            Some(v) => sum = v,
+            None => return u32::MAX,
+        }
+    }
+    let m4 = sum / samples.len() as u128; // 32 fractional bits
+    u32::try_from(m4.saturating_mul(100) >> 32).unwrap_or(u32::MAX)
+}
+
+/// `⌊√n⌋` for a variance of `u32` values. That variance is below `2^62`, so
+/// the root fits `u32`.
+fn sqrt_u32(n: u128) -> u32 {
+    saturate_u32(isqrt_u128(n))
 }
 
 fn saturate_u32(x: u128) -> u32 {
@@ -916,6 +965,52 @@ mod tests {
         for k in [17u8, 40, 255] {
             assert_eq!(SigmaLevel(k).gaussian_tail_per_10000(), 0);
             assert_eq!(e.locate(SigmaLevel(k), e.mu(), e.sigma()), 0, "k {k}: sample minimum");
+        }
+    }
+
+    /// The full `u32` range: σ above 65 535, `k·σ` above `u32`, fourth-power
+    /// sums above `u128` — none may clamp, wrap or panic.
+    #[test]
+    fn full_u32_range_does_not_clamp_or_overflow() {
+        const Q: u32 = u32::MAX / 2; // 2 147 483 647
+                                     // Variance of {0, MAX} is Q² + Q (floor); its root is Q, not 65 535.
+        let f = RollingFloor::calibrate(&[0, u32::MAX]);
+        assert_eq!((f.mu(), f.sigma()), (Q, Q));
+        assert_eq!(f.coordinates(), Some((Q, Q)));
+        let e = EmpiricalShape::from_sample(&[0, u32::MAX]).unwrap();
+        assert_eq!((e.mu(), e.sigma()), (Q, Q));
+
+        // k·σ is formed wide: 4 · 1.5e9 does not fit u32.
+        let g = RollingFloor::from_params(u32::MAX, 1_500_000_000);
+        assert_eq!(g.threshold(SigmaLevel(4)), u32::MAX - 1_500_000_000);
+        assert_eq!(g.threshold(SigmaLevel(12)), 0, "saturates, never wraps");
+
+        // A two-point distribution has kurtosis exactly 1, i.e. 100.
+        let mut r = ReservoirU32::new(1000);
+        (0..1000u32).for_each(|i| r.observe(if i % 2 == 0 { 0 } else { u32::MAX }));
+        assert!((99..=101).contains(&r.kurtosis(Q, Q)), "{}", r.kurtosis(Q, Q));
+    }
+
+    /// Where the exact kurtosis fits, the overflow-safe path agrees with it
+    /// to within one unit of the ×100 scale.
+    #[test]
+    fn kurtosis_fallback_matches_the_exact_path() {
+        for (mu, sigma, seed) in [(8192, 64, 1), (5000, 3, 2), (100_000, 900, 3)] {
+            let xs = normalish(1000, mu, sigma, seed);
+            let mut r = ReservoirU32::new(1000);
+            xs.iter().for_each(|&d| r.observe(d));
+            let exact = kurtosis_x100_exact(r.samples(), mu, sigma).expect("fits");
+            let scaled = kurtosis_x100_scaled(r.samples(), mu, sigma);
+            assert!(exact.abs_diff(scaled) <= 1, "exact {exact} scaled {scaled}");
+        }
+    }
+
+    #[test]
+    fn isqrt_u128_is_floor_sqrt() {
+        for n in (0..100_000u128).chain([u128::MAX, u128::MAX - 1, (1 << 64) - 1, 1 << 64, (1 << 126) + 12345]) {
+            let r = isqrt_u128(n);
+            assert!(r.checked_mul(r).is_some_and(|sq| sq <= n), "n {n}");
+            assert!((r + 1).checked_mul(r + 1).is_none_or(|sq| sq > n), "n {n}");
         }
     }
 
@@ -1298,7 +1393,7 @@ mod tests {
                 m.observe(d);
                 if let Some((lmu, lsig)) = legacy.observe(d) {
                     let emu = saturate_u32(m.sum / u128::from(m.n));
-                    let esig = isqrt_u32(saturate_u32(variance_floor(&m))).max(1);
+                    let esig = sqrt_u32(variance_floor(&m)).max(1);
                     assert_eq!((emu, esig), (lmu, lsig), "mu {mu} sigma {sigma} n {}", m.n);
                     checked += 1;
                 }
