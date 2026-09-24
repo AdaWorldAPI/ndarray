@@ -992,6 +992,58 @@ mod tests {
         }
     }
 
+    /// `U64x8::mul_lo32` against its scalar definition, on whichever tier this
+    /// build compiled (AVX-512 `VPMULUDQ`, the AVX2 halves, or scalar).
+    ///
+    /// Every operand lane carries non-zero HIGH 32 bits, and every lane is
+    /// chosen so a full 64-bit multiply (`VPMULLQ`, or a plain `*`) gives a
+    /// DIFFERENT answer — asserted below, so the fixture cannot silently lose
+    /// that property. Five lanes also produce products wider than 32 bits, so
+    /// a multiply that truncates to 32 bits (`VPMULLD`) fails too.
+    ///
+    /// The second half checks the consumer shape: argon2's BlaMka
+    /// `a + b + 2·lo32(a)·lo32(b)` built from `mul_lo32` against the RFC 9106
+    /// definition (`fBlaMka`) computed in scalar `u64` wrapping arithmetic.
+    #[test]
+    fn u64x8_mul_lo32_matches_scalar() {
+        use super::U64x8;
+
+        let a_arr: [u64; 8] = [
+            0xFFFF_FFFF_FFFF_FFFF, 0xDEAD_BEEF_0000_0000, 0x0000_0001_0000_0001, 0x1234_5678_9ABC_DEF0,
+            0x8000_0000_8000_0000, 0xFFFF_FFFF_0000_0001, 0x0123_4567_89AB_CDEF, 0xAAAA_AAAA_5555_5555,
+        ];
+        let b_arr: [u64; 8] = [
+            0xFFFF_FFFF_FFFF_FFFF, 0xFFFF_FFFF_FFFF_FFFF, 0xFFFF_FFFF_FFFF_FFFF, 0x0FED_CBA9_8765_4321,
+            0x8000_0001_8000_0000, 0x7777_7777_C0DE_CAFE, 0xFEDC_BA98_7654_3210, 0x5555_5555_AAAA_AAAA,
+        ];
+        let (a, b) = (U64x8::from_array(a_arr), U64x8::from_array(b_arr));
+
+        let got = a.mul_lo32(b).to_array();
+        for i in 0..8 {
+            let want = (a_arr[i] & 0xFFFF_FFFF) * (b_arr[i] & 0xFFFF_FFFF);
+            assert_eq!(got[i], want, "lane {i}: mul_lo32");
+            assert_ne!(
+                want,
+                a_arr[i].wrapping_mul(b_arr[i]),
+                "fixture lane {i} no longer distinguishes mul_lo32 from a full 64-bit multiply"
+            );
+        }
+        // mul_lo32 is commutative; a backend that read one operand's high
+        // half by mistake would break this before it broke `want`.
+        assert_eq!(b.mul_lo32(a).to_array(), got, "mul_lo32 is not commutative");
+
+        // BlaMka, RFC 9106 §3.5: fBlaMka(x, y) = x + y + 2 * trunc(x) * trunc(y).
+        let m = a.mul_lo32(b);
+        let blamka = (a + b + m + m).to_array();
+        for i in 0..8 {
+            let t = (a_arr[i] & 0xFFFF_FFFF) * (b_arr[i] & 0xFFFF_FFFF);
+            let want = a_arr[i]
+                .wrapping_add(b_arr[i])
+                .wrapping_add(t.wrapping_mul(2));
+            assert_eq!(blamka[i], want, "lane {i}: BlaMka");
+        }
+    }
+
     /// The BLAKE3 shuffle surface on `U32x16`, checked against the REAL x86
     /// intrinsics it reproduces — applied to each 256-bit half.
     ///

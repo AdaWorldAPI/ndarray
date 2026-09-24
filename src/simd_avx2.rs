@@ -1674,6 +1674,20 @@ impl U64x8 {
         let (lo, hi) = self.avx2_halves();
         Self::from_avx2_halves(Self::rotl_half(lo, 64 - n), Self::rotl_half(hi, 64 - n))
     }
+
+    /// Lane-wise `lo32(self) × lo32(rhs)` as an exact `u64` — the widening
+    /// 32×32→64 multiply (`VPMULUDQ`, one per 256-bit half). The high 32
+    /// bits of every input lane are ignored; the product cannot overflow.
+    /// argon2's BlaMka multiply; see the AVX-512 backend for the contract.
+    #[inline(always)]
+    pub fn mul_lo32(self, rhs: Self) -> Self {
+        let (a_lo, a_hi) = self.avx2_halves();
+        let (b_lo, b_hi) = rhs.avx2_halves();
+        // SAFETY: same obligation as `avx2_halves` — AVX2 is present on any
+        // host this arm runs on; `_mm256_mul_epu32` operates on register
+        // values only.
+        unsafe { Self::from_avx2_halves(_mm256_mul_epu32(a_lo, b_lo), _mm256_mul_epu32(a_hi, b_hi)) }
+    }
 }
 
 /// Lane-wise variable shifts for the mask family's word ops (the Morton hex

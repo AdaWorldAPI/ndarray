@@ -62,6 +62,16 @@ impl U64x8 {
         Self::from_array(o)
     }
 
+    /// Lane-wise `lo32(self) × lo32(rhs)` as an exact `u64` — the widening
+    /// 32×32→64 multiply (argon2's BlaMka). Masking both operands to their
+    /// low 32 bits makes the 64-bit `core::simd` multiply exact: the product
+    /// of two values below 2³² cannot overflow a `u64`.
+    #[inline(always)]
+    pub fn mul_lo32(self, rhs: Self) -> Self {
+        let lo = u64x8::splat(0xFFFF_FFFF);
+        Self((self.0 & lo) * (rhs.0 & lo))
+    }
+
     #[inline(always)]
     pub fn splat(v: u64) -> Self {
         Self(u64x8::splat(v))

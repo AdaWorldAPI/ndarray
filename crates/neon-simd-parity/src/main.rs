@@ -373,6 +373,13 @@ mod checks {
         if !(a == U64x8::from_array(a_arr)) || a == b {
             return Err(0x30E);
         }
+        // mul_lo32: lo32(a) x lo32(b) as an exact u64 (argon2's BlaMka multiply).
+        let m = a.mul_lo32(b).to_array();
+        for i in 0..8 {
+            if m[i] != (a_arr[i] & 0xFFFF_FFFF) * (b_arr[i] & 0xFFFF_FFFF) {
+                return Err(0x30F);
+            }
+        }
         Ok(())
     }
 
