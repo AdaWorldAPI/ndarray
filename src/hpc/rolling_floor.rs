@@ -896,6 +896,27 @@ mod tests {
         assert!(h.is_empirical());
     }
 
+    /// The normality window at each of its boundaries.
+    #[test]
+    fn normality_window_boundaries() {
+        let mut f = RollingFloor::for_width(16384);
+        for (skew, kurt, normal) in [
+            (0, 300, true),
+            (1, 300, true),
+            (-1, 300, true),
+            (2, 300, false),
+            (-2, 300, false),
+            (0, 200, false),
+            (0, 201, true),
+            (0, 499, true),
+            (0, 500, false),
+        ] {
+            f.skewness = skew;
+            f.kurtosis = kurt;
+            assert_eq!(f.shape_is_normal(), normal, "skew {skew} kurt {kurt}");
+        }
+    }
+
     #[test]
     fn calibrate_uses_spread_around_the_integer_mean() {
         // 0,0,0,1: mean 0.25, floor mean 0, Σ(x−0)² = 1, 1/4 = 0 -> σ 1 (floored).
