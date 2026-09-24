@@ -208,6 +208,10 @@ name = "rolling_floor_probe"
 required-features = ["std"]
 
 [[example]]
+name = "hdr_rolling_floor_bench"
+required-features = ["std"]
+
+[[example]]
 name = "codec_overlap_probe"
 required-features = ["std"]
 
