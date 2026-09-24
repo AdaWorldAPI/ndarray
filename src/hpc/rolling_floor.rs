@@ -269,6 +269,24 @@ const GAUSSIAN_TAIL_PER_10000: [u32; 17] =
 /// current distribution. `SigmaLevel(12)` is 3σ, `SigmaLevel(6)` is 1.5σ,
 /// `SigmaLevel(0)` is the mean itself.
 ///
+/// # Domain
+///
+/// The lattice is every `k` in `0..=255`. No fixed set of cuts is built in;
+/// the eight cascade cuts `4, 6, 7, …, 12` a consumer uses today are ordinary
+/// points on it.
+///
+/// * **Gaussian shape**: every `k` is answered exactly as `μ − k·σ/4`
+///   (saturating at 0).
+/// * **Empirical shape**: every `k` in `0..=16` (0 to 4σ) has its own
+///   Gaussian-equivalent rank, from a fixed integer table of `Φ(−k/4)`
+///   rounded to parts per 10 000. Every `k > 16` has tail mass below
+///   0.5 / 10 000 and resolves to rank 0, the sample minimum. Nothing is
+///   interpolated and nothing is evaluated in floating point.
+///
+/// Rank resolution is also bounded by the sample. With `len` samples, two
+/// levels land on distinct ranks only if their `⌊tail·len/10000⌋` differ. At
+/// the 1000-sample reservoir, every `k ≥ 13` already reads the minimum.
+///
 /// # Example
 ///
 /// ```
@@ -287,8 +305,9 @@ impl SigmaLevel {
 
     /// The Gaussian-equivalent lower-tail mass of this level, `Φ(−k/4)`, in
     /// parts per 10 000. This is how an empirical shape locates the same cut:
-    /// the level fixes the rank, no caller supplies a percentile. Levels
-    /// beyond 4σ (`k > 16`) have tail `0`, i.e. the sample minimum.
+    /// the level fixes the rank, no caller supplies a percentile. Defined from
+    /// the table for `k = 0..=16`; `k > 16` returns `0` (the sample minimum),
+    /// see the type docs.
     pub const fn gaussian_tail_per_10000(self) -> u32 {
         let k = self.0 as usize;
         if k < GAUSSIAN_TAIL_PER_10000.len() {
@@ -869,6 +888,35 @@ mod tests {
         assert_eq!((f32_rank(0.159, 1000), rank_per_10000(1000, 1587)), (159, 158));
         assert_eq!((f32_rank(0.023, 1000), rank_per_10000(1000, 228)), (23, 22));
         assert_eq!((f32_rank(0.001, 1000), rank_per_10000(1000, 13)), (1, 1));
+    }
+
+    /// The lattice is every `k`, not the eight historical cascade cuts:
+    /// off-cascade points answer in both shapes, the empirical table covers
+    /// `0..=16` with its own ranks, and beyond it saturates to the minimum.
+    #[test]
+    fn sigma_level_domain_is_the_whole_lattice() {
+        let g = RollingFloor::from_params(8192, 64);
+        for k in [1u8, 2, 3, 5, 13, 14, 15, 16, 17, 40, 128] {
+            assert_eq!(g.threshold(SigmaLevel(k)), 8192 - u32::from(k) * 16, "k {k}");
+        }
+        assert_eq!(g.threshold(SigmaLevel(255)), 8192 - 255 * 16);
+        assert_eq!(RollingFloor::from_params(100, 64).threshold(SigmaLevel(255)), 0, "saturates");
+
+        // A 10 000-sample empirical shape resolves every table entry to its
+        // own rank, including the off-cascade ones.
+        let sample: Vec<u32> = (0..10_000).collect();
+        let e = EmpiricalShape::from_sample(&sample).unwrap();
+        let located: Vec<u32> = (0..=16u8)
+            .map(|k| e.locate(SigmaLevel(k), e.mu(), e.sigma()))
+            .collect();
+        let want: Vec<u32> = (0..=16u8)
+            .map(|k| SigmaLevel(k).gaussian_tail_per_10000())
+            .collect();
+        assert_eq!(located, want, "rank = tail · len / 10000 on 0..10000");
+        for k in [17u8, 40, 255] {
+            assert_eq!(SigmaLevel(k).gaussian_tail_per_10000(), 0);
+            assert_eq!(e.locate(SigmaLevel(k), e.mu(), e.sigma()), 0, "k {k}: sample minimum");
+        }
     }
 
     #[test]
