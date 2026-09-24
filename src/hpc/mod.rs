@@ -25,6 +25,7 @@ pub mod blas_level2;
 pub mod blas_level3;
 pub mod reductions;
 pub mod statistics;
+pub mod rolling_floor;
 /// Reliability & validity statistics: Pearson r, Spearman ρ, Cronbach α, ICC.
 pub mod reliability;
 /// Entropy ladder: Staunen↔Wisdom coordinate over NARS truth + Pearl-2³ SPO.

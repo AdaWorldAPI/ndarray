@@ -385,6 +385,16 @@ pub struct MomentsU32 {
 }
 
 impl MomentsU32 {
+    /// Fold one value in. Exactly equal to `self.merge(moments_u32(&[x]))`,
+    /// so a scalar stream and any batching of it reach the same state.
+    #[inline]
+    pub fn observe(&mut self, x: u32) {
+        let x = u128::from(x);
+        self.n += 1;
+        self.sum += x;
+        self.sum_sq += x * x;
+    }
+
     /// Moments of the union of two samples — exact integer addition.
     #[inline]
     #[must_use]
