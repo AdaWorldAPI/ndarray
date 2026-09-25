@@ -212,6 +212,43 @@ impl Perm64 {
         Perm64 { idx: inv }
     }
 
+    /// The map `R` that, applied first and followed by `basis`, gives `self`:
+    /// `self.relative_to(basis).then(basis) == self`.
+    ///
+    /// This is what lets two views in different coordinate systems meet
+    /// without normalizing both. If `a` is seen through `P` and `b` through
+    /// `Q`, a lane-wise operation `f` satisfies
+    /// `f(P·a, Q·b) == P·f(a, R·b)` with `R = Q.relative_to(P)`: only `b`
+    /// moves, and only by `R`, and the result stays in basis `P`.
+    ///
+    /// (`then` composes left to right, so in right-to-left notation this is
+    /// `R = P⁻¹ ∘ Q` only if you read `∘` as "applied after"; the method
+    /// name and the round-trip law above are the unambiguous statement.)
+    ///
+    /// ```
+    /// use ndarray::hpc::perm::Perm64;
+    /// let (p, q) = (Perm64::rotate(3), Perm64::rotate(10));
+    /// assert_eq!(q.relative_to(p).then(p), q);
+    /// assert_eq!(p.relative_to(p), Perm64::IDENTITY);
+    /// ```
+    pub fn relative_to(&self, basis: Perm64) -> Perm64 {
+        self.then(basis.inverse())
+    }
+
+    /// Apply the map to one block and return the result (a data move).
+    ///
+    /// ```
+    /// use ndarray::hpc::perm::Perm64;
+    /// let src: [u8; 64] = core::array::from_fn(|i| i as u8);
+    /// assert_eq!(Perm64::rotate(2).materialize(&src)[0], 2);
+    /// ```
+    #[inline]
+    pub fn materialize(&self, src: &[u8; LANES]) -> [u8; LANES] {
+        let mut out = [0u8; LANES];
+        self.materialize_into(src, &mut out);
+        out
+    }
+
     /// Carry a lane mask through the map instead of moving the data.
     ///
     /// If `mask` marks lanes of the *source* block, the result marks the same
@@ -339,6 +376,39 @@ impl PermTable12 {
         let c = code as usize & 0xFFF;
         self.lo[c & 63].then(self.hi[c >> 6])
     }
+
+    /// As [`PermTable12::for_code`], but without an index that depends on
+    /// `code`: every entry of both half tables is read and the wanted one is
+    /// selected with a mask, so the memory access pattern is the same for
+    /// every code.
+    ///
+    /// Best effort: the source has no code-dependent branch or index, but Rust
+    /// gives no constant-time guarantee against the optimizer. It costs about
+    /// 8 KiB of reads per lookup instead of 128 bytes.
+    ///
+    /// ```
+    /// use ndarray::hpc::perm::{Perm64, PermTable12};
+    /// let t = PermTable12::new([Perm64::rotate(1); 12]);
+    /// assert_eq!(t.for_code_constant_time(0x0A5), t.for_code(0x0A5));
+    /// ```
+    pub fn for_code_constant_time(&self, code: u16) -> Perm64 {
+        let c = code as usize & 0xFFF;
+        select_constant_time(&self.lo, c & 63).then(select_constant_time(&self.hi, c >> 6))
+    }
+}
+
+/// Read every entry and keep the one at `want`, with no `want`-dependent
+/// branch or index.
+fn select_constant_time(table: &[Perm64; 64], want: usize) -> Perm64 {
+    let mut acc = [0u8; LANES];
+    for (m, entry) in table.iter().enumerate() {
+        // 0xFF when m == want, 0x00 otherwise, computed without a branch.
+        let hit = core::hint::black_box(((m ^ want) == 0) as u8).wrapping_neg();
+        for (a, &e) in acc.iter_mut().zip(entry.idx.iter()) {
+            *a |= e & hit;
+        }
+    }
+    Perm64 { idx: acc }
 }
 
 /// A lazy chain of permutation steps: composes maps, moves data once.
@@ -415,6 +485,447 @@ impl PermChain {
     pub fn materialize_blocks_into(&mut self, src: &[u8], out: &mut [u8]) {
         self.pending.materialize_blocks_into(src, out);
         *self = Self::new();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Batches of codes: the live set, the request remap, the schedule.
+// ---------------------------------------------------------------------------
+
+/// How a [`PermBatch`] may execute. There is no default: the caller must say
+/// whether the codes are public.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Schedule {
+    /// The codes are public. Duplicate codes are composed once, and the work
+    /// order follows the set of distinct codes. Timing and memory access
+    /// depend on the codes.
+    Deduplicate,
+    /// The codes may be secret. No live set is built, nothing is
+    /// deduplicated or reordered, and every table lookup reads all entries
+    /// ([`PermTable12::for_code_constant_time`]). One compose per request, in
+    /// request order.
+    ConstantTime,
+}
+
+/// The set of distinct live codes: a 4096-bit occupancy mask (512 bytes) plus
+/// the distinct codes in first-appearance order.
+///
+/// This is a SET. It does not remember how often a code was requested or in
+/// what order; [`PermBatch`] carries that. Use the field on its own only for
+/// questions about the code domain ("which combinations are live", "how
+/// many").
+///
+/// ```
+/// use ndarray::hpc::perm::PermField;
+/// let f = PermField::from_codes(&[0xA7A, 0x311, 0xA7A, 0xA72, 0x311]);
+/// assert_eq!(f.len(), 3);
+/// assert_eq!(f.distinct(), &[0xA7A, 0x311, 0xA72]);
+/// assert!(f.contains(0x311) && !f.contains(0x312));
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PermField {
+    live: [u64; 64],
+    distinct: Vec<u16>,
+}
+
+impl PermField {
+    /// Collect the distinct 12-bit codes (higher bits are ignored).
+    pub fn from_codes(codes: &[u16]) -> Self {
+        let mut live = [0u64; 64];
+        let mut distinct = Vec::new();
+        for &code in codes {
+            let c = code & 0xFFF;
+            let (word, bit) = ((c >> 6) as usize, 1u64 << (c & 63));
+            if live[word] & bit == 0 {
+                live[word] |= bit;
+                distinct.push(c);
+            }
+        }
+        Self { live, distinct }
+    }
+
+    /// Whether `code` (masked to 12 bits) is live.
+    pub fn contains(&self, code: u16) -> bool {
+        let c = code & 0xFFF;
+        self.live[(c >> 6) as usize] >> (c & 63) & 1 == 1
+    }
+
+    /// Number of distinct live codes (the popcount of the occupancy mask).
+    pub fn len(&self) -> usize {
+        self.live.iter().map(|w| w.count_ones() as usize).sum()
+    }
+
+    /// Whether no code is live.
+    pub fn is_empty(&self) -> bool {
+        self.distinct.is_empty()
+    }
+
+    /// The occupancy mask: word `h` bit `l` is code `(h << 6) | l`.
+    pub fn live_words(&self) -> &[u64; 64] {
+        &self.live
+    }
+
+    /// The distinct codes in first-appearance order.
+    pub fn distinct(&self) -> &[u16] {
+        &self.distinct
+    }
+}
+
+/// A request stream of 12-bit codes, with its execution policy.
+///
+/// Under [`Schedule::Deduplicate`] it holds a [`PermField`] plus, for every
+/// request, the index of its distinct code — so multiplicity and order
+/// survive deduplication. Under [`Schedule::ConstantTime`] it holds only the
+/// requests.
+///
+/// ```
+/// use ndarray::hpc::perm::{PermBatch, Schedule};
+/// let b = PermBatch::new(&[0xA7A, 0x311, 0xA7A, 0xA72, 0x311], Schedule::Deduplicate);
+/// assert_eq!(b.len(), 5);
+/// assert_eq!(b.request_to_distinct(), Some(&[0, 1, 0, 2, 1][..]));
+/// ```
+#[derive(Clone, Debug)]
+pub struct PermBatch {
+    requests: Vec<u16>,
+    schedule: Schedule,
+    field: Option<PermField>,
+    request_to_distinct: Vec<u32>,
+}
+
+impl PermBatch {
+    /// Record a request stream under a schedule.
+    pub fn new(codes: &[u16], schedule: Schedule) -> Self {
+        let requests: Vec<u16> = codes.iter().map(|c| c & 0xFFF).collect();
+        match schedule {
+            Schedule::ConstantTime => Self {
+                requests,
+                schedule,
+                field: None,
+                request_to_distinct: Vec::new(),
+            },
+            Schedule::Deduplicate => {
+                let field = PermField::from_codes(&requests);
+                let mut slot = vec![u32::MAX; 4096];
+                for (i, &c) in field.distinct().iter().enumerate() {
+                    slot[c as usize] = i as u32;
+                }
+                let request_to_distinct = requests.iter().map(|&c| slot[c as usize]).collect();
+                Self {
+                    requests,
+                    schedule,
+                    field: Some(field),
+                    request_to_distinct,
+                }
+            }
+        }
+    }
+
+    /// Number of requests (not distinct codes).
+    pub fn len(&self) -> usize {
+        self.requests.len()
+    }
+
+    /// Whether there are no requests.
+    pub fn is_empty(&self) -> bool {
+        self.requests.is_empty()
+    }
+
+    /// The execution policy this batch was built with.
+    pub fn schedule(&self) -> Schedule {
+        self.schedule
+    }
+
+    /// The live set; `None` under [`Schedule::ConstantTime`].
+    pub fn field(&self) -> Option<&PermField> {
+        self.field.as_ref()
+    }
+
+    /// For each request, the index of its distinct code; `None` under
+    /// [`Schedule::ConstantTime`].
+    pub fn request_to_distinct(&self) -> Option<&[u32]> {
+        self.field.as_ref().map(|_| &self.request_to_distinct[..])
+    }
+
+    /// Compose the permutation for every request.
+    ///
+    /// Deduplicate: one compose per distinct code. ConstantTime: one
+    /// constant-time lookup and compose per request, in request order.
+    pub fn compose(&self, table: &PermTable12) -> ComposedBatch {
+        match self.schedule {
+            Schedule::Deduplicate => {
+                let field = self
+                    .field
+                    .as_ref()
+                    .expect("Deduplicate batches carry a field");
+                let perms: Vec<Perm64> = field
+                    .distinct()
+                    .iter()
+                    .map(|&c| table.for_code(c))
+                    .collect();
+                ComposedBatch {
+                    compositions: perms.len(),
+                    perms,
+                    request_to_perm: self.request_to_distinct.clone(),
+                }
+            }
+            Schedule::ConstantTime => {
+                let perms: Vec<Perm64> = self
+                    .requests
+                    .iter()
+                    .map(|&c| table.for_code_constant_time(c))
+                    .collect();
+                ComposedBatch {
+                    compositions: perms.len(),
+                    request_to_perm: (0..perms.len() as u32).collect(),
+                    perms,
+                }
+            }
+        }
+    }
+
+    /// Answer a permutation-invariant fold for every request at once.
+    ///
+    /// Takes no table: because `f` is [`PermInvariant`], `f(P·data) ==
+    /// f(data)` for every request's `P`, so no permutation is composed or
+    /// applied. The single returned value is every request's answer.
+    ///
+    /// ```
+    /// use ndarray::hpc::perm::{CountNonzero, PermBatch, Schedule};
+    /// let data: [u8; 64] = core::array::from_fn(|i| (i % 3) as u8);
+    /// let b = PermBatch::new(&[1, 2, 3], Schedule::Deduplicate);
+    /// assert_eq!(b.fold_invariant(&CountNonzero, &data), 42);
+    /// ```
+    pub fn fold_invariant<F: PermInvariant>(&self, f: &F, data: &[u8; LANES]) -> F::Out {
+        f.fold(data)
+    }
+}
+
+/// The permutations of a composed [`PermBatch`], one per request.
+#[derive(Clone, Debug)]
+pub struct ComposedBatch {
+    perms: Vec<Perm64>,
+    request_to_perm: Vec<u32>,
+    compositions: usize,
+}
+
+impl ComposedBatch {
+    /// Number of requests.
+    pub fn len(&self) -> usize {
+        self.request_to_perm.len()
+    }
+
+    /// Whether there are no requests.
+    pub fn is_empty(&self) -> bool {
+        self.request_to_perm.is_empty()
+    }
+
+    /// The permutation for request `i`.
+    pub fn perm(&self, i: usize) -> Perm64 {
+        self.perms[self.request_to_perm[i] as usize]
+    }
+
+    /// How many compositions building this batch performed.
+    pub fn compositions(&self) -> usize {
+        self.compositions
+    }
+
+    /// The owed data moves: `out[i]` is `src` permuted by request `i`'s map.
+    ///
+    /// # Panics
+    ///
+    /// If `out.len()` differs from the number of requests.
+    pub fn materialize_into(&self, src: &[u8; LANES], out: &mut [[u8; LANES]]) {
+        assert_eq!(out.len(), self.len(), "one output block per request");
+        for (i, o) in out.iter_mut().enumerate() {
+            self.perm(i).materialize_into(src, o);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Operation properties: invariant, equivariant, or coordinate-sensitive.
+// ---------------------------------------------------------------------------
+
+/// A reduction over one 64-lane block.
+pub trait LaneFold {
+    /// The reduction's result type.
+    type Out;
+    /// Reduce one block.
+    fn fold(&self, block: &[u8; LANES]) -> Self::Out;
+}
+
+/// Marker: `fold(P·x) == fold(x)` for every [`Perm64`] `P`.
+///
+/// An operation implements this to advertise that a permutation can be
+/// skipped entirely before it. It holds for reductions over the plain
+/// multiset of lane values (count, any, sum, min, max). It does NOT hold, and
+/// must not be implemented, for reductions that read a lane position: masked
+/// or indexed reductions, "first nonzero", prefix scans, anything weighted by
+/// lane index. A mask that selects lanes is itself coordinate-sensitive —
+/// carry it with [`Perm64::conjugate_mask`] instead.
+pub trait PermInvariant: LaneFold {}
+
+/// A lane-wise operation over `N` operand blocks.
+pub trait LaneOp<const N: usize> {
+    /// Combine the operands.
+    fn apply(&self, operands: [&[u8; LANES]; N]) -> [u8; LANES];
+}
+
+/// Marker: `apply([P·a₀, …, P·aₙ]) == P·apply([a₀, …, aₙ])` for every
+/// [`Perm64`] `P`.
+///
+/// Holds exactly when output lane `i` depends only on input lane `i` of each
+/// operand, with the same function for every lane. Anything that reads a
+/// neighbouring lane, or behaves differently per lane index, must not
+/// implement it.
+pub trait PermEquivariant<const N: usize>: LaneOp<N> {}
+
+/// Number of nonzero lanes.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CountNonzero;
+impl LaneFold for CountNonzero {
+    type Out = u32;
+    fn fold(&self, b: &[u8; LANES]) -> u32 {
+        b.iter().filter(|&&v| v != 0).count() as u32
+    }
+}
+impl PermInvariant for CountNonzero {}
+
+/// Whether any lane is nonzero.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AnyNonzero;
+impl LaneFold for AnyNonzero {
+    type Out = bool;
+    fn fold(&self, b: &[u8; LANES]) -> bool {
+        b.iter().any(|&v| v != 0)
+    }
+}
+impl PermInvariant for AnyNonzero {}
+
+/// Sum of lane values.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SumLanes;
+impl LaneFold for SumLanes {
+    type Out = u32;
+    fn fold(&self, b: &[u8; LANES]) -> u32 {
+        b.iter().map(|&v| v as u32).sum()
+    }
+}
+impl PermInvariant for SumLanes {}
+
+/// Smallest lane value.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MinLane;
+impl LaneFold for MinLane {
+    type Out = u8;
+    fn fold(&self, b: &[u8; LANES]) -> u8 {
+        b.iter().copied().min().unwrap_or(0)
+    }
+}
+impl PermInvariant for MinLane {}
+
+/// Largest lane value.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MaxLane;
+impl LaneFold for MaxLane {
+    type Out = u8;
+    fn fold(&self, b: &[u8; LANES]) -> u8 {
+        b.iter().copied().max().unwrap_or(0)
+    }
+}
+impl PermInvariant for MaxLane {}
+
+macro_rules! lanewise_binary {
+    ($name:ident, $doc:literal, $op:tt) => {
+        #[doc = $doc]
+        #[derive(Clone, Copy, Debug, Default)]
+        pub struct $name;
+        impl LaneOp<2> for $name {
+            fn apply(&self, [a, b]: [&[u8; LANES]; 2]) -> [u8; LANES] {
+                (U8x64::from_array(*a) $op U8x64::from_array(*b)).to_array()
+            }
+        }
+        impl PermEquivariant<2> for $name {}
+    };
+}
+lanewise_binary!(LaneAnd, "Lane-wise AND.", &);
+lanewise_binary!(LaneOr, "Lane-wise OR.", |);
+lanewise_binary!(LaneXor, "Lane-wise XOR.", ^);
+
+/// Lane-wise three-input boolean function, bit by bit, with the ternlog
+/// immediate convention: output bit = bit `(a << 2) | (b << 1) | c` of `imm`.
+#[derive(Clone, Copy, Debug)]
+pub struct LaneTernlog(pub u8);
+impl LaneOp<3> for LaneTernlog {
+    fn apply(&self, [a, b, c]: [&[u8; LANES]; 3]) -> [u8; LANES] {
+        core::array::from_fn(|i| {
+            let mut out = 0u8;
+            for bit in 0..8 {
+                let sel = ((a[i] >> bit & 1) << 2) | ((b[i] >> bit & 1) << 1) | (c[i] >> bit & 1);
+                out |= (self.0 >> sel & 1) << bit;
+            }
+            out
+        })
+    }
+}
+impl PermEquivariant<3> for LaneTernlog {}
+
+/// A result that is still in a coordinate system: the true answer is
+/// `basis` applied to `data`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InBasis {
+    /// The map the result is still owed.
+    pub basis: Perm64,
+    /// The result in unpermuted coordinates.
+    pub data: [u8; LANES],
+    /// How many operands had to be moved to meet the basis.
+    pub aligned_moves: usize,
+}
+
+impl InBasis {
+    /// The terminal move, if the consumer really needs coordinates.
+    pub fn materialize(&self) -> [u8; LANES] {
+        self.basis.materialize(&self.data)
+    }
+}
+
+/// Combine operands that are each seen through their own permutation,
+/// without normalizing them.
+///
+/// `operands[i] = (Pᵢ, aᵢ)` means "the block `aᵢ` viewed through `Pᵢ`".
+/// Operand 0's map is the basis; every other operand is moved once by
+/// `Pᵢ.relative_to(P₀)` — and not at all when `Pᵢ == P₀`. The result stays in
+/// basis `P₀`; call [`InBasis::materialize`] only if coordinates are needed.
+///
+/// ```
+/// use ndarray::hpc::perm::{combine_in_basis, LaneXor, Perm64};
+/// let a = [1u8; 64];
+/// let b: [u8; 64] = core::array::from_fn(|i| i as u8);
+/// let (p, q) = (Perm64::rotate(1), Perm64::rotate(5));
+/// let r = combine_in_basis(&LaneXor, [(p, &a), (q, &b)]);
+/// assert_eq!(r.aligned_moves, 1);
+/// let expected: [u8; 64] = core::array::from_fn(|i| p.materialize(&a)[i] ^ q.materialize(&b)[i]);
+/// assert_eq!(r.materialize(), expected);
+/// ```
+pub fn combine_in_basis<Op: PermEquivariant<N>, const N: usize>(
+    op: &Op, operands: [(Perm64, &[u8; LANES]); N],
+) -> InBasis {
+    let basis = operands[0].0;
+    let mut aligned_moves = 0;
+    let moved: [[u8; LANES]; N] = core::array::from_fn(|i| {
+        let (p, a) = operands[i];
+        if p == basis {
+            *a
+        } else {
+            aligned_moves += 1;
+            p.relative_to(basis).materialize(a)
+        }
+    });
+    let refs: [&[u8; LANES]; N] = core::array::from_fn(|i| &moved[i]);
+    InBasis {
+        basis,
+        data: op.apply(refs),
+        aligned_moves,
     }
 }
 
@@ -585,5 +1096,165 @@ mod tests {
             let block: [u8; LANES] = src[b * LANES..(b + 1) * LANES].try_into().unwrap();
             assert_eq!(&out[b * LANES..(b + 1) * LANES], &apply(&p, &block)[..]);
         }
+    }
+    fn table(seed: u64) -> PermTable12 {
+        PermTable12::new(core::array::from_fn(|i| shuffled(seed + i as u64)))
+    }
+
+    #[test]
+    fn dedup_keeps_multiplicity_and_order_through_the_remap() {
+        let t = table(1200);
+        let codes = [0xA7A, 0x311, 0xA7A, 0xA72, 0x311];
+        let batch = PermBatch::new(&codes, Schedule::Deduplicate);
+        assert_eq!(batch.field().unwrap().len(), 3);
+        assert_eq!(batch.request_to_distinct().unwrap(), &[0, 1, 0, 2, 1]);
+
+        let composed = batch.compose(&t);
+        assert_eq!(composed.compositions(), 3, "one compose per distinct code");
+        let d = payload();
+        let mut out = vec![[0u8; LANES]; codes.len()];
+        composed.materialize_into(&d, &mut out);
+        for (i, &c) in codes.iter().enumerate() {
+            assert_eq!(out[i], apply(&flat(t.base(), c), &d), "request {i}");
+        }
+    }
+
+    #[test]
+    fn constant_time_schedule_builds_no_field_and_composes_every_request() {
+        let t = table(1300);
+        let codes = [0xA7A, 0x311, 0xA7A, 0xA72, 0x311];
+        let ct = PermBatch::new(&codes, Schedule::ConstantTime);
+        assert!(ct.field().is_none() && ct.request_to_distinct().is_none());
+        let composed = ct.compose(&t);
+        assert_eq!(composed.compositions(), codes.len(), "no deduplication");
+        let dedup = PermBatch::new(&codes, Schedule::Deduplicate).compose(&t);
+        for i in 0..codes.len() {
+            assert_eq!(composed.perm(i), dedup.perm(i), "request {i}");
+        }
+    }
+
+    #[test]
+    fn constant_time_lookup_matches_the_direct_lookup_for_every_code() {
+        let t = table(1400);
+        for code in 0..4096u16 {
+            assert_eq!(t.for_code_constant_time(code), t.for_code(code), "code {code:#05x}");
+        }
+    }
+
+    #[test]
+    fn relative_to_round_trips_and_is_identity_on_itself() {
+        for seed in 0..100 {
+            let (p, q) = (shuffled(seed), shuffled(seed + 5000));
+            assert_eq!(p.relative_to(p), Perm64::IDENTITY);
+            assert_eq!(q.relative_to(p).then(p), q);
+            assert_eq!(p.inverse().then(p), Perm64::IDENTITY);
+            assert_eq!(p.then(p.inverse()), Perm64::IDENTITY);
+        }
+    }
+
+    /// Normalizing every operand is the oracle `combine_in_basis` must match.
+    fn normalized<Op: LaneOp<N>, const N: usize>(op: &Op, operands: [(Perm64, &[u8; LANES]); N]) -> [u8; LANES] {
+        let moved: [[u8; LANES]; N] = core::array::from_fn(|i| operands[i].0.materialize(operands[i].1));
+        op.apply(core::array::from_fn(|i| &moved[i]))
+    }
+
+    fn block(seed: u8) -> [u8; LANES] {
+        core::array::from_fn(|i| (i as u8).wrapping_mul(seed | 1).wrapping_add(seed))
+    }
+
+    #[test]
+    fn relative_basis_law_holds_for_every_equivariant_op() {
+        for seed in 0..60u64 {
+            let (p, q, r) = (shuffled(seed), shuffled(seed + 700), shuffled(seed + 1400));
+            let (a, b, c) = (block(seed as u8), block(seed as u8 ^ 0x5A), block(seed as u8 ^ 0xC3));
+
+            for got in [
+                combine_in_basis(&LaneAnd, [(p, &a), (q, &b)]),
+                combine_in_basis(&LaneOr, [(p, &a), (q, &b)]),
+                combine_in_basis(&LaneXor, [(p, &a), (q, &b)]),
+            ] {
+                assert_eq!(got.basis, p);
+                assert_eq!(got.aligned_moves, 1);
+            }
+            assert_eq!(
+                combine_in_basis(&LaneAnd, [(p, &a), (q, &b)]).materialize(),
+                normalized(&LaneAnd, [(p, &a), (q, &b)])
+            );
+            assert_eq!(
+                combine_in_basis(&LaneOr, [(p, &a), (q, &b)]).materialize(),
+                normalized(&LaneOr, [(p, &a), (q, &b)])
+            );
+            assert_eq!(
+                combine_in_basis(&LaneXor, [(p, &a), (q, &b)]).materialize(),
+                normalized(&LaneXor, [(p, &a), (q, &b)])
+            );
+
+            for imm in [0x96u8, 0xE8, 0xCA, 0x80, 0x1E] {
+                let op = LaneTernlog(imm);
+                let got = combine_in_basis(&op, [(p, &a), (q, &b), (r, &c)]);
+                assert_eq!(got.aligned_moves, 2);
+                assert_eq!(got.materialize(), normalized(&op, [(p, &a), (q, &b), (r, &c)]), "seed {seed} imm {imm:#x}");
+            }
+        }
+    }
+
+    #[test]
+    fn shared_basis_moves_nothing_before_the_terminal() {
+        let p = shuffled(9);
+        let (a, b) = (block(1), block(2));
+        let got = combine_in_basis(&LaneXor, [(p, &a), (p, &b)]);
+        assert_eq!(got.aligned_moves, 0);
+        assert_eq!(got.materialize(), normalized(&LaneXor, [(p, &a), (p, &b)]));
+    }
+
+    /// Reads lane 1 of `b` for output lane 0: NOT lane-wise. The law must
+    /// fail for it, or the law test above could not catch a wrong marker.
+    struct NeighbourXor;
+    impl LaneOp<2> for NeighbourXor {
+        fn apply(&self, [a, b]: [&[u8; LANES]; 2]) -> [u8; LANES] {
+            core::array::from_fn(|i| a[i] ^ b[(i + 1) % LANES])
+        }
+    }
+
+    #[test]
+    fn a_non_lanewise_op_breaks_the_basis_law() {
+        let (p, q) = (shuffled(3), shuffled(4));
+        let (a, b) = (block(7), block(8));
+        let moved_b = q.relative_to(p).materialize(&b);
+        let in_basis = p.materialize(&NeighbourXor.apply([&a, &moved_b]));
+        assert_ne!(in_basis, normalized(&NeighbourXor, [(p, &a), (q, &b)]));
+    }
+
+    fn invariant_matches_every_code<F: PermInvariant>(f: &F, t: &PermTable12, d: &[u8; LANES])
+    where
+        F::Out: PartialEq + core::fmt::Debug,
+    {
+        let all: Vec<u16> = (0..4096).collect();
+        let batch = PermBatch::new(&all, Schedule::Deduplicate);
+        let answer = batch.fold_invariant(f, d); // no table argument: no compose possible
+        for &c in &all {
+            assert_eq!(f.fold(&t.for_code(c).materialize(d)), answer, "code {c:#05x}");
+        }
+    }
+
+    #[test]
+    fn invariant_folds_answer_all_4096_codes_without_composing() {
+        let t = table(1500);
+        let d: [u8; LANES] = core::array::from_fn(|i| if i % 5 == 0 { 0 } else { (i * 13) as u8 });
+        invariant_matches_every_code(&CountNonzero, &t, &d);
+        invariant_matches_every_code(&AnyNonzero, &t, &d);
+        invariant_matches_every_code(&SumLanes, &t, &d);
+        invariant_matches_every_code(&MinLane, &t, &d);
+        invariant_matches_every_code(&MaxLane, &t, &d);
+    }
+
+    #[test]
+    fn a_position_reading_fold_is_not_invariant() {
+        // "The value in lane 0" reads a coordinate. Some code must change it,
+        // or the invariance test above could not catch a wrong marker.
+        let t = table(1600);
+        let d = payload();
+        let first = d[0];
+        assert!((0..4096u16).any(|c| t.for_code(c).materialize(&d)[0] != first));
     }
 }
