@@ -104,6 +104,9 @@ pub mod int8_tile_gemm;
 /// Edge-codec flavors (coarse / coarse+residue / PQ-32×4) for the canonical
 /// node edge block — selectable per class, measured via `reliability`.
 pub mod edge_codec;
+/// 64-lane byte permutations as composable maps: compose on the index
+/// register, move the payload once at a named `materialize_*` call.
+pub mod perm;
 #[allow(missing_docs)]
 pub mod bf16_truth;
 #[allow(missing_docs)]
