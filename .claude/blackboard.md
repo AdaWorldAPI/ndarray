@@ -1,3 +1,16 @@
+## 2026-09-25 (2) — encryption: Argon2 KDF + envelope behind a default-on `kdf` feature
+
+- `crates/encryption`: `argon2` is optional; `kdf = ["dep:argon2"]`, `default = ["kdf"]`,
+  `wasm-bindings` implies `kdf`. `kdf`, `envelope` and the root `seal/open/KdfParams/EnvelopeError`
+  re-exports are gated.
+- Why: the only in-tree consumer (OGAR `ogar-encryption`) owns its KDF + envelope on argon2 0.6
+  (the AdaWorldAPI/password-hashes fork) and needs only aead/hash/sign/channel here. With
+  `default-features = false` argon2 0.5 is no longer compiled into it.
+- Verified: `cargo test -p encryption` green with default, `--no-default-features`
+  (12 + 28, argon2 absent from `cargo tree`), and `--features wasm-bindings`; clippy
+  `-D warnings` clean with no default features; wasm32 check green.
+- Loose end: OGAR moves its wasm bindings onto its own argon2-0.6 envelope (separate PR).
+
 ## 2026-09-25 — U64x8::transpose8: the one physical routing step argon2 needs
 
 `U64x8::transpose8([U64x8; 8]) -> [U64x8; 8]`, `out[i]` lane `j` == `rows[j]` lane `i`, on all six realizations. AVX-512: 8 unpack + 16 `vshufi64x2` (24). AVX2: four 4×4 blocks, `unpack` + `vperm2i128`. NEON / wasm: 32 `vtrn1q`/`vtrn2q` or `i64x2.shuffle` on 2×2 blocks. Scalar / nightly: the index map.
