@@ -1,3 +1,13 @@
+## 2026-09-25 — U64x8::transpose8: the one physical routing step argon2 needs
+
+`U64x8::transpose8([U64x8; 8]) -> [U64x8; 8]`, `out[i]` lane `j` == `rows[j]` lane `i`, on all six realizations. AVX-512: 8 unpack + 16 `vshufi64x2` (24). AVX2: four 4×4 blocks, `unpack` + `vperm2i128`. NEON / wasm: 32 `vtrn1q`/`vtrn2q` or `i64x2.shuffle` on 2×2 blocks. Scalar / nightly: the index map.
+
+**Why a transpose and not a lane rotation (folding doctrine: move the city only when physics forces it).** A teleport count over argon2's `Block::compress` (a word teleports when its lane changes between stages, 8 lanes, register choice free): the vertical layout (lane = permutation) costs **0** inside each pass, because BLAKE2b's diagonal `G(v0,v5,v10,v15)` is register renaming, and 112 at each of load, row→column and store (336). The horizontal "reference" layout costs 480 (96 per pass just for diagonalization); a greedy per-stage optimum 432. Row→column is the irreducible rendezvous: a column `G` reads rows 0,2,4,6, which sit in four different lanes. Load and store are only canonicalization: storing argon2 blocks transposed carries the map across calls and leaves 224. Teleports are not the only cost — control steps and backend (AVX-512 vs AVX2 shuffle cost) count too; measure per tier.
+
+**Evidence:** `simd::tests::u64x8_transpose8_matches_the_index_map` (64 distinct words, fixture asserted non-symmetric, involution) passes native AVX-512 and pinned v3; `neon-parity.sh` (qemu) and `wasm-parity.sh` (node) pass with new check `0x310`. **Disable runs, all red:** AVX-512 stage-3 chunk select `0x88→0xDD`; AVX2 `vperm2i128 0x20→0x31`; NEON `vtrn2q→vtrn1q` (rc 784); wasm `<1,3>→<0,2>` (rc 784). Full `cargo test --lib` native: 2483 passed. clippy `-D warnings` clean native and v3. Not run: nightly-simd arm.
+
+**Next:** argon2 fork `compress_simd` — load, row pass, `transpose8` ×2, column pass, `transpose8` ×2, XOR, store, all in registers; then the transposed block storage layout (changes `Block::as_ref()` contents — needs a decision).
+
 ## 2026-09-24 (2) — U64x8::mul_lo32: the widening lo32×lo32→u64 multiply (argon2 BlaMka)
 
 Added on all six realizations: AVX-512 `_mm512_mul_epu32`; AVX2 `_mm256_mul_epu32` per half; NEON `vmovn_u64` + `vmull_u32`; wasm `i32x4_shuffle::<0,2,0,2>` + `u64x2_extmul_low_u32x4`; scalar reference loop; nightly masked `core::simd` multiply. Unblocks argon2's BlaMka (`a + b + 2·lo32(a)·lo32(b)`), which `ogar-encryption` → a2ui sessions and ogar-auth logins run; also the limb multiply radix-2²⁶ Poly1305 / curve25519 need.
