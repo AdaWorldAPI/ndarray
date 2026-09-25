@@ -587,6 +587,22 @@ impl U64x8 {
         }
         Self::from_array(o)
     }
+
+    /// 8×8 transpose of `u64` words across eight registers:
+    /// `out[i]` lane `j` == `rows[j]` lane `i`.
+    ///
+    /// This is a *physical* cross-lane move, for the case where a lane-wise
+    /// consumer genuinely needs the other orientation (argon2's row pass →
+    /// column pass: a column `G` reads words that live in eight different
+    /// lanes). Where a consumer can read the other orientation by index
+    /// instead, prefer that; this is the materialization step, not the model.
+    ///
+    /// The index map itself; the reference the native arms are tested against.
+    #[inline(always)]
+    pub fn transpose8(rows: [Self; 8]) -> [Self; 8] {
+        let a = rows.map(|v| v.to_array());
+        core::array::from_fn(|i| Self::from_array(core::array::from_fn(|j| a[j][i])))
+    }
 }
 
 // I8/I16 SIMD types (scalar fallback)

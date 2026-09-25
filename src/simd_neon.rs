@@ -2837,6 +2837,38 @@ impl U64x8 {
         Self(core::array::from_fn(|p| unsafe { U64x2(vmull_u32(vmovn_u64(self.0[p].0), vmovn_u64(rhs.0[p].0))) }))
     }
 
+    /// 8×8 transpose of `u64` words across eight registers:
+    /// `out[i]` lane `j` == `rows[j]` lane `i`.
+    ///
+    /// This is a *physical* cross-lane move, for the case where a lane-wise
+    /// consumer genuinely needs the other orientation (argon2's row pass →
+    /// column pass: a column `G` reads words that live in eight different
+    /// lanes). Where a consumer can read the other orientation by index
+    /// instead, prefer that; this is the materialization step, not the model.
+    ///
+    /// 32 `vtrn1q`/`vtrn2q`, one per output pair.
+    #[inline(always)]
+    pub fn transpose8(rows: [Self; 8]) -> [Self; 8] {
+        // Each register is four `U64x2` pairs, so the 8×8 is a 4×4 grid of
+        // 2×2 blocks. Block (bi, bj) = pair bj of rows 2bi, 2bi+1; transposed
+        // with `vtrn1q`/`vtrn2q`, it becomes pair bi of rows 2bj, 2bj+1. Moving
+        // whole blocks is only a choice of destination.
+        core::array::from_fn(|i| {
+            let (bj, odd) = (i / 2, i % 2 == 1);
+            Self(core::array::from_fn(|bi| {
+                let (x, y) = (rows[2 * bi].0[bj].0, rows[2 * bi + 1].0[bj].0);
+                // SAFETY: NEON baseline; pure register ops on uint64x2_t.
+                U64x2(unsafe {
+                    if odd {
+                        vtrn2q_u64(x, y)
+                    } else {
+                        vtrn1q_u64(x, y)
+                    }
+                })
+            }))
+        })
+    }
+
     /// Lane-wise population count: `vcntq_u8` on the bytes, then the
     /// `vpaddlq_u8 → vpaddlq_u16 → vpaddlq_u32` widening-add ladder back to
     /// one count per u64 lane (0..=64).

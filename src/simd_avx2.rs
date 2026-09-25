@@ -1688,6 +1688,59 @@ impl U64x8 {
         // values only.
         unsafe { Self::from_avx2_halves(_mm256_mul_epu32(a_lo, b_lo), _mm256_mul_epu32(a_hi, b_hi)) }
     }
+
+    /// 8×8 transpose of `u64` words across eight registers:
+    /// `out[i]` lane `j` == `rows[j]` lane `i`.
+    ///
+    /// This is a *physical* cross-lane move, for the case where a lane-wise
+    /// consumer genuinely needs the other orientation (argon2's row pass →
+    /// column pass: a column `G` reads words that live in eight different
+    /// lanes). Where a consumer can read the other orientation by index
+    /// instead, prefer that; this is the materialization step, not the model.
+    ///
+    /// Four 4×4 `unpack` + `vperm2i128` blocks, 8 shuffles each.
+    #[inline(always)]
+    pub fn transpose8(rows: [Self; 8]) -> [Self; 8] {
+        // Four 4×4 blocks. Block (bi, bj) is input rows 4bi.. , 256-bit half bj;
+        // it lands transposed in output rows 4bj.. , half bi. The off-diagonal
+        // blocks swapping places is only a choice of destination, not a move.
+        let halves = rows.map(|v| v.avx2_halves());
+        // Every (row, half) slot is overwritten below; `halves` only seeds the array.
+        let mut out = halves;
+        for bi in 0..2 {
+            for bj in 0..2 {
+                let h = |k: usize| {
+                    if bj == 0 {
+                        halves[4 * bi + k].0
+                    } else {
+                        halves[4 * bi + k].1
+                    }
+                };
+                // SAFETY: as `avx2_halves` — AVX2 present on any host this arm
+                // runs on; register ops only.
+                let c = unsafe {
+                    let t0 = _mm256_unpacklo_epi64(h(0), h(1));
+                    let t1 = _mm256_unpackhi_epi64(h(0), h(1));
+                    let t2 = _mm256_unpacklo_epi64(h(2), h(3));
+                    let t3 = _mm256_unpackhi_epi64(h(2), h(3));
+                    [
+                        _mm256_permute2x128_si256::<0x20>(t0, t2),
+                        _mm256_permute2x128_si256::<0x20>(t1, t3),
+                        _mm256_permute2x128_si256::<0x31>(t0, t2),
+                        _mm256_permute2x128_si256::<0x31>(t1, t3),
+                    ]
+                };
+                for k in 0..4 {
+                    if bi == 0 {
+                        out[4 * bj + k].0 = c[k];
+                    } else {
+                        out[4 * bj + k].1 = c[k];
+                    }
+                }
+            }
+        }
+        out.map(|(lo, hi)| Self::from_avx2_halves(lo, hi))
+    }
 }
 
 /// Lane-wise variable shifts for the mask family's word ops (the Morton hex

@@ -1875,6 +1875,33 @@ pub mod wasm32_simd {
             }))
         }
 
+        /// 8×8 transpose of `u64` words across eight registers:
+        /// `out[i]` lane `j` == `rows[j]` lane `i`.
+        ///
+        /// This is a *physical* cross-lane move, for the case where a lane-wise
+        /// consumer genuinely needs the other orientation (argon2's row pass →
+        /// column pass: a column `G` reads words that live in eight different
+        /// lanes). Where a consumer can read the other orientation by index
+        /// instead, prefer that; this is the materialization step, not the model.
+        ///
+        /// 32 `i64x2.shuffle`s, one per output pair.
+        #[inline(always)]
+        pub fn transpose8(rows: [Self; 8]) -> [Self; 8] {
+            // Four `U64x2` pairs per register: a 4×4 grid of 2×2 blocks. Block
+            // (bi, bj) = pair bj of rows 2bi, 2bi+1 -> pair bi of rows 2bj, 2bj+1.
+            core::array::from_fn(|i| {
+                let (bj, odd) = (i / 2, i % 2 == 1);
+                Self(core::array::from_fn(|bi| {
+                    let (x, y) = (rows[2 * bi].0[bj].0, rows[2 * bi + 1].0[bj].0);
+                    U64x2(if odd {
+                        i64x2_shuffle::<1, 3>(x, y)
+                    } else {
+                        i64x2_shuffle::<0, 2>(x, y)
+                    })
+                }))
+            })
+        }
+
         /// Lane-wise population count: `i8x16_popcnt`, then the pairwise
         /// widening adds up to 32-bit halves, then the two halves of each u64
         /// summed (`u64x2_shr` 32 + masked add).

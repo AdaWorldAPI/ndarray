@@ -361,6 +361,16 @@ fn check_u64x8_algebra() -> Result<(), u32> {
             return Err(0x30F);
         }
     }
+    // transpose8: out[i] lane j == rows[j] lane i, on 64 distinct words.
+    let rows: [[u64; 8]; 8] = core::array::from_fn(|r| core::array::from_fn(|c| (r * 100 + c) as u64));
+    let t = U64x8::transpose8(rows.map(U64x8::from_array)).map(|v| v.to_array());
+    for i in 0..8 {
+        for j in 0..8 {
+            if t[i][j] != rows[j][i] {
+                return Err(0x310);
+            }
+        }
+    }
     Ok(())
 }
 
