@@ -64,6 +64,10 @@ name = "ternlog_fold_probe"
 required-features = ["std"]
 
 [[example]]
+name = "ternlog_popcnt_gap_probe"
+required-features = ["std"]
+
+[[example]]
 name = "r2il_column_scan_probe"
 required-features = ["std"]
 

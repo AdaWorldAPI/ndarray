@@ -25,7 +25,9 @@
 //! — the per-chunk horizontal test cost more than the ternlog it guarded.
 //!
 //! Measured 2026-09-23 (median ns, avx2 = `config-v3`, avx512 = `config-v4`,
-//! a host without `avx512vpopcntdq`, so avx512 `popcnt` is the LUT path):
+//! a host without `avx512vpopcntdq`, so avx512 `popcnt` is the scalar-lane
+//! fallback, which LLVM compiles as fast as a Mula LUT; see
+//! `ternlog_popcnt_gap_probe`):
 //!
 //! | backend | words | Count M/R | Any M/R |
 //! |---|---|---|---|
