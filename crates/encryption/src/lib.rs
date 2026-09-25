@@ -67,15 +67,18 @@
 
 pub mod aead;
 pub mod channel;
+#[cfg(feature = "kdf")]
 pub mod envelope;
 pub mod hash;
 pub mod hkdf_sha384;
+#[cfg(feature = "kdf")]
 pub mod kdf;
 pub mod sign;
 
 #[cfg(feature = "wasm-bindings")]
 pub mod wasm;
 
+#[cfg(feature = "kdf")]
 pub use envelope::{open, seal, EnvelopeError, KdfParams};
 
 /// Fill `buf` from the platform CSPRNG (`getrandom`; on wasm32 this is

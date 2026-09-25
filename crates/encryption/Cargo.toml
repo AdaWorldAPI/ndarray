@@ -14,7 +14,11 @@ crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 # RustCrypto suite — all pure Rust, all compile to wasm32-unknown-unknown.
-argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
+# Behind the default `kdf` feature: the only in-tree consumer
+# (ogar-encryption) carries its own Argon2 KDF + envelope on argon2 0.6 and
+# builds this crate with `default-features = false`, so argon2 0.5 is not
+# compiled into it at all.
+argon2 = { version = "0.5", default-features = false, features = ["alloc"], optional = true }
 chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
 ed25519-dalek = { version = "2", default-features = false, features = ["alloc", "zeroize"] }
 sha2 = { version = "0.10", default-features = false }
@@ -36,5 +40,7 @@ wasm-bindgen = { version = "0.2", optional = true }
 getrandom = { version = "0.2", features = ["js"] }
 
 [features]
-default = []
-wasm-bindings = ["dep:wasm-bindgen"]
+default = ["kdf"]
+# The Argon2id KDF and the seal/open envelope built on it.
+kdf = ["dep:argon2"]
+wasm-bindings = ["dep:wasm-bindgen", "kdf"]
