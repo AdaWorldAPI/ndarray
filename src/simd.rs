@@ -1044,6 +1044,33 @@ mod tests {
         }
     }
 
+    /// `U64x8::transpose8` against its definition, `out[i][j] == rows[j][i]`.
+    ///
+    /// Every one of the 64 input words is distinct (row·100 + lane), so a
+    /// transpose that drops, duplicates or misroutes any word fails, and the
+    /// fixture is asserted not to be symmetric, so an identity "transpose"
+    /// fails too. Transposing twice must return the input.
+    #[test]
+    fn u64x8_transpose8_matches_the_index_map() {
+        use super::U64x8;
+
+        let rows_arr: [[u64; 8]; 8] = core::array::from_fn(|r| core::array::from_fn(|c| (r * 100 + c) as u64));
+        assert!(
+            (0..8).any(|r| (0..8).any(|c| rows_arr[r][c] != rows_arr[c][r])),
+            "fixture is symmetric, so identity would pass"
+        );
+        let rows = rows_arr.map(U64x8::from_array);
+
+        let out = U64x8::transpose8(rows).map(|v| v.to_array());
+        for i in 0..8 {
+            for j in 0..8 {
+                assert_eq!(out[i][j], rows_arr[j][i], "out[{i}] lane {j}");
+            }
+        }
+        let back = U64x8::transpose8(U64x8::transpose8(rows)).map(|v| v.to_array());
+        assert_eq!(back, rows_arr, "transpose is not an involution");
+    }
+
     /// The BLAKE3 shuffle surface on `U32x16`, checked against the REAL x86
     /// intrinsics it reproduces — applied to each 256-bit half.
     ///

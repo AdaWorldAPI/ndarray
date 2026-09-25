@@ -1805,6 +1805,59 @@ impl U64x8 {
         Self(unsafe { _mm512_mul_epu32(self.0, rhs.0) })
     }
 
+    /// 8×8 transpose of `u64` words across eight registers:
+    /// `out[i]` lane `j` == `rows[j]` lane `i`.
+    ///
+    /// This is a *physical* cross-lane move, for the case where a lane-wise
+    /// consumer genuinely needs the other orientation (argon2's row pass →
+    /// column pass: a column `G` reads words that live in eight different
+    /// lanes). Where a consumer can read the other orientation by index
+    /// instead, prefer that; this is the materialization step, not the model.
+    ///
+    /// 24 shuffles: 8 unpacks, then two rounds of 8 `vshufi64x2`.
+    #[inline(always)]
+    pub fn transpose8(rows: [Self; 8]) -> [Self; 8] {
+        // SAFETY: `Self` is a native `__m512i` and this arm is compiled only
+        // under the avx512f dispatch; every intrinsic below is a register op.
+        unsafe {
+            let r = rows.map(|v| v.0);
+            // Stage 1: interleave lane pairs. t[2p] = (r[2p]_2k, r[2p+1]_2k) in
+            // 128-bit chunk k; t[2p+1] the same for the odd lanes.
+            let t = [
+                _mm512_unpacklo_epi64(r[0], r[1]),
+                _mm512_unpackhi_epi64(r[0], r[1]),
+                _mm512_unpacklo_epi64(r[2], r[3]),
+                _mm512_unpackhi_epi64(r[2], r[3]),
+                _mm512_unpacklo_epi64(r[4], r[5]),
+                _mm512_unpackhi_epi64(r[4], r[5]),
+                _mm512_unpacklo_epi64(r[6], r[7]),
+                _mm512_unpackhi_epi64(r[6], r[7]),
+            ];
+            // Stage 2: gather 128-bit chunks {0,1} and {2,3} of row pairs.
+            let s = [
+                _mm512_shuffle_i64x2::<0x44>(t[0], t[2]),
+                _mm512_shuffle_i64x2::<0xEE>(t[0], t[2]),
+                _mm512_shuffle_i64x2::<0x44>(t[4], t[6]),
+                _mm512_shuffle_i64x2::<0xEE>(t[4], t[6]),
+                _mm512_shuffle_i64x2::<0x44>(t[1], t[3]),
+                _mm512_shuffle_i64x2::<0xEE>(t[1], t[3]),
+                _mm512_shuffle_i64x2::<0x44>(t[5], t[7]),
+                _mm512_shuffle_i64x2::<0xEE>(t[5], t[7]),
+            ];
+            // Stage 3: pick chunk k of all four row pairs -> column 2k / 2k+1.
+            [
+                Self(_mm512_shuffle_i64x2::<0x88>(s[0], s[2])),
+                Self(_mm512_shuffle_i64x2::<0x88>(s[4], s[6])),
+                Self(_mm512_shuffle_i64x2::<0xDD>(s[0], s[2])),
+                Self(_mm512_shuffle_i64x2::<0xDD>(s[4], s[6])),
+                Self(_mm512_shuffle_i64x2::<0x88>(s[1], s[3])),
+                Self(_mm512_shuffle_i64x2::<0x88>(s[5], s[7])),
+                Self(_mm512_shuffle_i64x2::<0xDD>(s[1], s[3])),
+                Self(_mm512_shuffle_i64x2::<0xDD>(s[5], s[7])),
+            ]
+        }
+    }
+
     #[inline(always)]
     pub fn splat(v: u64) -> Self {
         Self(unsafe { _mm512_set1_epi64(v as i64) })
