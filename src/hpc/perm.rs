@@ -929,6 +929,150 @@ pub fn combine_in_basis<Op: PermEquivariant<N>, const N: usize>(
     }
 }
 
+// ---------------------------------------------------------------------------
+// The field as an exposure: a whole-field fold without per-address folds.
+// ---------------------------------------------------------------------------
+
+/// How often each `(output lane i, source lane j)` pairing occurs across all
+/// 4096 cells of a two-table field.
+///
+/// Every cell of the field is a gather: output lane `i` reads source lane
+/// `cell.indices()[i]`. A fold over the WHOLE field of anything that depends
+/// only on the pair `(i, j)` therefore equals a single weighted fold over the
+/// 64×64 pairs — the field is folded once into this kernel, and the data is
+/// read against the kernel once. No cell is composed, no data is shuffled,
+/// and no per-address result exists.
+///
+/// Built from the two 64-entry tables in `64·64 + 64·64·64` counter
+/// increments, independent of how much data is later folded against it.
+///
+/// ```
+/// use ndarray::hpc::perm::{Perm64, PermTable12};
+/// let t = PermTable12::new([Perm64::rotate(1); 12]);
+/// let e = t.exposure();
+/// // Each output lane is fed exactly 4096 times across the field.
+/// assert!((0..64).all(|i| (0..64).map(|j| e.get(i, j) as u32).sum::<u32>() == 4096));
+/// ```
+#[derive(Clone, PartialEq, Eq)]
+pub struct Exposure {
+    e: Box<[[u16; LANES]; LANES]>,
+}
+
+impl core::fmt::Debug for Exposure {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Exposure").finish_non_exhaustive()
+    }
+}
+
+impl Exposure {
+    /// Exposure of the field whose cell `(x, y)` is `first[x].then(second[y])`.
+    ///
+    /// That cell reads `first[x].indices()[second[y].indices()[i]]` at output
+    /// lane `i`, so `E[i][j] = Σ_y C[second[y][i]][j]` with
+    /// `C[k][j] = #{x : first[x][k] == j}`.
+    fn of(first: &[Perm64; 64], second: &[Perm64; 64]) -> Self {
+        let mut c = [[0u16; LANES]; LANES];
+        for p in first {
+            for (k, &j) in p.idx.iter().enumerate() {
+                c[k][j as usize] += 1;
+            }
+        }
+        let mut e = Box::new([[0u16; LANES]; LANES]);
+        for q in second {
+            for (row, &k) in e.iter_mut().zip(q.idx.iter()) {
+                for (cell, &add) in row.iter_mut().zip(c[k as usize].iter()) {
+                    *cell += add;
+                }
+            }
+        }
+        Self { e }
+    }
+
+    /// How many field cells route source lane `j` to output lane `i`.
+    pub fn get(&self, i: usize, j: usize) -> u16 {
+        self.e[i][j]
+    }
+
+    /// Sum over all 4096 cells of the number of output lanes `i` for which
+    /// `pred(i, j)` holds, `j` being the source lane the cell routes to `i`.
+    ///
+    /// With `pred(i, j) = f(a[i], b[j]) != 0` this is the field-wide Count of
+    /// a lane-wise expression whose `b` operand moves with the field and whose
+    /// `a` operand does not. 4096 evaluations of `pred` instead of
+    /// `4096 · 64`.
+    ///
+    /// ```
+    /// use ndarray::hpc::perm::{Perm64, PermTable12};
+    /// let t = PermTable12::new([Perm64::rotate(1); 12]);
+    /// // Every cell keeps all 64 lanes, so the always-true predicate counts
+    /// // 4096 cells × 64 lanes.
+    /// assert_eq!(t.exposure().count_where(|_, _| true), 4096 * 64);
+    /// ```
+    pub fn count_where(&self, mut pred: impl FnMut(usize, usize) -> bool) -> u64 {
+        let mut total = 0u64;
+        for (i, row) in self.e.iter().enumerate() {
+            for (j, &n) in row.iter().enumerate() {
+                if n != 0 && pred(i, j) {
+                    total += n as u64;
+                }
+            }
+        }
+        total
+    }
+}
+
+impl PermTable12 {
+    /// The exposure of this table's whole field (cell `code` =
+    /// [`PermTable12::for_code`]).
+    pub fn exposure(&self) -> Exposure {
+        Exposure::of(&self.lo, &self.hi)
+    }
+
+    /// The same field re-based onto a fixed map `q`: cell `code` is
+    /// `q.relative_to(self.for_code(code))`.
+    ///
+    /// Because `for_code(code) = lo[l].then(hi[h])`, its relative map factors
+    /// as `(q · hi[h]⁻¹) · lo[l]⁻¹` — again two 64-entry tables. Re-basing
+    /// costs 128 compositions once, not one per cell.
+    ///
+    /// ```
+    /// use ndarray::hpc::perm::{Perm64, PermTable12};
+    /// let t = PermTable12::new(core::array::from_fn(|i| Perm64::rotate(i + 1)));
+    /// let q = Perm64::rotate(7);
+    /// let rel = t.relative_field(q);
+    /// assert_eq!(rel.at(0x5A5), q.relative_to(t.for_code(0x5A5)));
+    /// ```
+    pub fn relative_field(&self, q: Perm64) -> RelativeField {
+        RelativeField {
+            qh: Box::new(core::array::from_fn(|h| q.then(self.hi[h].inverse()))),
+            li: Box::new(core::array::from_fn(|l| self.lo[l].inverse())),
+        }
+    }
+}
+
+/// A [`PermTable12`] field re-based onto a fixed map: cell `code` is the
+/// relative map `q.relative_to(table.for_code(code))`, held as two 64-entry
+/// tables like the field it came from.
+#[derive(Clone)]
+pub struct RelativeField {
+    qh: Box<[Perm64; 64]>,
+    li: Box<[Perm64; 64]>,
+}
+
+impl RelativeField {
+    /// The relative map for one cell (higher code bits are ignored).
+    #[inline]
+    pub fn at(&self, code: u16) -> Perm64 {
+        let c = code as usize & 0xFFF;
+        self.qh[c >> 6].then(self.li[c & 63])
+    }
+
+    /// The exposure of the re-based field.
+    pub fn exposure(&self) -> Exposure {
+        Exposure::of(&self.qh, &self.li)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1256,5 +1400,99 @@ mod tests {
         let d = payload();
         let first = d[0];
         assert!((0..4096u16).any(|c| t.for_code(c).materialize(&d)[0] != first));
+    }
+    fn brute_exposure(cell: impl Fn(u16) -> Perm64) -> [[u32; LANES]; LANES] {
+        let mut e = [[0u32; LANES]; LANES];
+        for code in 0..4096u16 {
+            for (i, &j) in cell(code).idx.iter().enumerate() {
+                e[i][j as usize] += 1;
+            }
+        }
+        e
+    }
+
+    #[test]
+    fn exposure_equals_brute_force_over_every_cell() {
+        let t = table(1700);
+        let brute = brute_exposure(|c| t.for_code(c));
+        let e = t.exposure();
+        for i in 0..LANES {
+            for j in 0..LANES {
+                assert_eq!(e.get(i, j) as u32, brute[i][j], "({i}, {j})");
+            }
+        }
+    }
+
+    #[test]
+    fn relative_field_matches_per_cell_relative_maps_and_their_exposure() {
+        let t = table(1800);
+        let q = shuffled(1899);
+        let rel = t.relative_field(q);
+        for code in 0..4096u16 {
+            assert_eq!(rel.at(code), q.relative_to(t.for_code(code)), "code {code:#05x}");
+        }
+        let brute = brute_exposure(|c| rel.at(c));
+        let e = rel.exposure();
+        for i in 0..LANES {
+            for j in 0..LANES {
+                assert_eq!(e.get(i, j) as u32, brute[i][j]);
+            }
+        }
+    }
+
+    #[test]
+    fn field_wide_count_with_a_moving_operand_folds_once() {
+        // Σ over all cells of Count(a XOR (R·b)): the per-cell folds must
+        // equal one fold of the exposure.
+        let t = table(1900);
+        let rel = t.relative_field(shuffled(1999));
+        let (a, b) = (block(3), block(4));
+        let per_cell: u64 = (0..4096u16)
+            .map(|c| {
+                let rb = rel.at(c).materialize(&b);
+                (0..LANES).filter(|&i| a[i] ^ rb[i] != 0).count() as u64
+            })
+            .sum();
+        assert_eq!(rel.exposure().count_where(|i, j| a[i] ^ b[j] != 0), per_cell);
+    }
+
+    #[test]
+    fn field_wide_count_under_an_output_mask_folds_once() {
+        // Σ over all cells of Count(M ∧ P·v) with M fixed in output lanes.
+        let t = table(2000);
+        let v = block(9);
+        let m = 0x0F0F_F0F0_1234_8765u64;
+        let per_cell: u64 = (0..4096u16)
+            .map(|c| {
+                let pv = t.for_code(c).materialize(&v);
+                (0..LANES)
+                    .filter(|&i| m >> i & 1 == 1 && pv[i] != 0)
+                    .count() as u64
+            })
+            .sum();
+        let folded = t
+            .exposure()
+            .count_where(|i, j| m >> i & 1 == 1 && v[j] != 0);
+        assert_eq!(folded, per_cell);
+    }
+
+    #[test]
+    fn an_output_mask_is_not_transport_free_even_field_wide() {
+        // Summed over a random field the exposure is close to uniform, so an
+        // arbitrary mask can't tell "transported" from "ignored" apart. A
+        // single-lane mask over single-lane data can: transported, lane 0 is
+        // counted only in cells that route lane 0 to lane 0 (E[0][0] of
+        // 4096); ignored, it would be counted in all 4096.
+        let t = table(2100);
+        let mut v = [0u8; LANES];
+        v[0] = 1;
+        let per_cell: u64 = (0..4096u16)
+            .map(|c| (t.for_code(c).materialize(&v)[0] != 0) as u64)
+            .sum();
+        let transported = t.exposure().count_where(|i, j| i == 0 && v[j] != 0);
+        let ignored: u64 = 4096 * (v[0] != 0) as u64;
+        assert_eq!(transported, per_cell);
+        assert_eq!(transported, t.exposure().get(0, 0) as u64);
+        assert_ne!(ignored, per_cell);
     }
 }
