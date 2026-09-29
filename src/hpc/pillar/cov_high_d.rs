@@ -69,8 +69,17 @@ impl<const N: usize> CovHighD<N> {
     }
 
     /// Read entry (i, j) — exploits symmetry so (i, j) and (j, i) both work.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use ndarray::hpc::pillar::cov_high_d::CovHighD;
+    /// let s = CovHighD::<3>::from_symmetric_fn(|i, j| (10 * i + j) as f32);
+    /// assert_eq!(s.get(2, 1), 21.0);
+    /// assert_eq!(s.get(1, 2), 21.0); // mirrored from the lower triangle
+    /// ```
     #[inline]
-    fn get(&self, i: usize, j: usize) -> f32 {
+    pub fn get(&self, i: usize, j: usize) -> f32 {
         if i >= j {
             self.lt[Self::idx(i, j)]
         } else {
@@ -95,6 +104,30 @@ impl<const N: usize> CovHighD<N> {
         let mut lt = vec![0.0_f32; size];
         for i in 0..N {
             lt[Self::idx(i, i)] = 1.0;
+        }
+        Self { lt }
+    }
+
+    /// Construct a symmetric N×N matrix from an entry function.
+    ///
+    /// Only the lower triangle is read: `f(i, j)` is called once per `i ≥ j`,
+    /// and `(j, i)` is defined by symmetry. A caller holding a dense matrix
+    /// that is only approximately symmetric therefore gets its lower triangle,
+    /// not an average — symmetrise first if that matters.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use ndarray::hpc::pillar::cov_high_d::CovHighD;
+    /// let d = CovHighD::<4>::from_symmetric_fn(|i, j| if i == j { 2.0 } else { 0.0 });
+    /// assert!((d.frobenius_sq() - 16.0_f32).abs() < 1e-5);
+    /// ```
+    pub fn from_symmetric_fn(mut f: impl FnMut(usize, usize) -> f32) -> Self {
+        let mut lt = Vec::with_capacity(N * (N + 1) / 2);
+        for i in 0..N {
+            for j in 0..=i {
+                lt.push(f(i, j));
+            }
         }
         Self { lt }
     }
@@ -421,6 +454,41 @@ mod tests {
                 assert!((v - expected).abs() < 1e-4, "r[{i}][{j}] = {v:.6} expected {expected:.6}");
             }
         }
+    }
+
+    #[test]
+    fn sandwich_matches_dense_m_sigma_m_for_non_identity_m() {
+        // Every other sandwich test uses M = I, where a transposed or
+        // mis-indexed product is invisible. Check a dense triple product.
+        const N: usize = 5;
+        let m = CovHighD::<N>::from_symmetric_fn(|i, j| 0.3 * (i + 2 * j) as f32 - 1.0);
+        let s = CovHighD::<N>::from_symmetric_fn(|i, j| if i == j { 1.0 + i as f32 } else { 0.1 * (i * j) as f32 });
+        let r = s.sandwich(&m);
+        for i in 0..N {
+            for l in 0..N {
+                let mut want = 0.0_f64;
+                for j in 0..N {
+                    for k in 0..N {
+                        want += m.get(i, j) as f64 * s.get(j, k) as f64 * m.get(k, l) as f64;
+                    }
+                }
+                let got = r.get(i, l) as f64;
+                assert!((got - want).abs() <= 1e-4 * want.abs().max(1.0), "[{i}][{l}] got {got} want {want}");
+            }
+        }
+    }
+
+    #[test]
+    fn from_symmetric_fn_reads_only_the_lower_triangle() {
+        let mut calls = Vec::new();
+        let s = CovHighD::<3>::from_symmetric_fn(|i, j| {
+            calls.push((i, j));
+            (i * 3 + j) as f32
+        });
+        assert!(calls.iter().all(|&(i, j)| i >= j));
+        assert_eq!(calls.len(), 6);
+        assert_eq!(s.get(0, 2), s.get(2, 0));
+        assert_eq!(s.get(2, 0), 6.0);
     }
 
     #[test]
