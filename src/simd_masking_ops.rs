@@ -1302,8 +1302,8 @@ pub fn masked_group_sum_i32(mask_words: &[u64], keys: &[u32], values: &[i32], ou
     assert_eq!(keys.len(), values.len(), "masked_group_sum_i32: keys/values length mismatch");
     // Accumulate: add into whatever `out` already holds. The caller zeroes
     // once before the first call.
-    group_walk("masked_group_sum_i32", mask_words, values.len(), GroupKeyAddr::Resident(keys), out, |slot, i| {
-        *slot = slot.wrapping_add(values[i] as i64)
+    group_walk("masked_group_sum_i32", mask_words, values.len(), GroupKeyAddr::Resident(keys), out.len(), |k, i| {
+        out[k] = out[k].wrapping_add(values[i] as i64)
     });
 }
 
@@ -1362,8 +1362,8 @@ pub fn masked_group_sum_i32_via(mask_words: &[u64], index: &[u32], table: &[u32]
         mask_words,
         values.len(),
         GroupKeyAddr::Via { index, table },
-        out,
-        |slot, i| *slot = slot.wrapping_add(values[i] as i64),
+        out.len(),
+        |k, i| out[k] = out[k].wrapping_add(values[i] as i64),
     );
 }
 
@@ -1412,8 +1412,8 @@ pub fn masked_group_sum_i32_pair(
         mask_words,
         hi.len(),
         GroupKeyAddr::Pair { hi, lo, stride },
-        out,
-        |slot, i| *slot = slot.wrapping_add(values[i] as i64),
+        out.len(),
+        |k, i| out[k] = out[k].wrapping_add(values[i] as i64),
     );
 }
 
@@ -1478,8 +1478,8 @@ pub fn masked_group_sum_sym_i32(mask_words: &[u64], keys: &[u32], values: &[i32]
         mask_words,
         values.len(),
         GroupKeyAddr::Resident(keys),
-        out,
-        sym_sum_fold(values),
+        out.len(),
+        sym_sum_fold(values, out),
     );
 }
 
@@ -1499,8 +1499,8 @@ pub fn masked_group_sum_sym_i32_via(mask_words: &[u64], index: &[u32], table: &[
         mask_words,
         values.len(),
         GroupKeyAddr::Via { index, table },
-        out,
-        sym_sum_fold(values),
+        out.len(),
+        sym_sum_fold(values, out),
     );
 }
 
@@ -1523,20 +1523,20 @@ pub fn masked_group_sum_sym_i32_pair(
         mask_words,
         hi.len(),
         GroupKeyAddr::Pair { hi, lo, stride },
-        out,
-        sym_sum_fold(values),
+        out.len(),
+        sym_sum_fold(values, out),
     );
 }
 
 /// The one `_sym` sum fold, shared by both key addresses.
 #[inline(always)]
-fn sym_sum_fold(values: &[i32]) -> impl FnMut(&mut i64, usize) + '_ {
-    move |slot, i| {
+fn sym_sum_fold<'a>(values: &'a [i32], out: &'a mut [i64]) -> impl FnMut(usize, usize) + 'a {
+    move |k, i| {
         let v = values[i] as i64;
-        *slot = if *slot == SYM_EMPTY_I64 {
+        out[k] = if out[k] == SYM_EMPTY_I64 {
             v
         } else {
-            slot.wrapping_add(v)
+            out[k].wrapping_add(v)
         };
     }
 }
@@ -1594,7 +1594,17 @@ impl GroupKeyAddr<'_> {
 }
 
 /// The one walk behind every keyed reduction: for each row `i < n` whose
-/// mask bit is set, resolve its group and call `fold(&mut out[group], i)`.
+/// mask bit is set, resolve its group `k < groups` and call `fold(k, i)`.
+///
+/// The walker is a masked group-ADDRESS visitor and nothing more: it never
+/// sees a sink. Each fold owns its own destination and its own element type
+/// (`i64` slots for sum / count / min / max, [`PowerSums`] records for the
+/// power-sum fold), so no accumulator representation is imposed here. `k` is
+/// guaranteed `< groups`; every caller passes its sink's length as `groups`,
+/// so the fold's own `out[k]` is in bounds by construction. Measured before
+/// the change (scratch benchmark, 72 key/density/K cells): the existing sum
+/// through this signature runs at 0.99x the old slot-passing walker, and a
+/// slot-shaped fold written over it compiles to the same instruction stream.
 ///
 /// The final mask word is clamped to `n` exactly as [`masked_sum_i32`]
 /// clamps, so a dirty tail bit never indexes past the lanes. Cost is
@@ -1608,12 +1618,10 @@ impl GroupKeyAddr<'_> {
 /// with the calling function's `name`.
 #[inline(always)]
 fn group_walk(
-    name: &str, mask_words: &[u64], n: usize, key: GroupKeyAddr<'_>, out: &mut [i64],
-    mut fold: impl FnMut(&mut i64, usize),
+    name: &str, mask_words: &[u64], n: usize, key: GroupKeyAddr<'_>, groups: usize, mut fold: impl FnMut(usize, usize),
 ) {
     let words = mask_words_for(n);
     assert!(mask_words.len() >= words, "{name}: mask_words.len()={} < required {}", mask_words.len(), words);
-    let groups = out.len();
     for (w, &word) in mask_words.iter().take(words).enumerate() {
         let base = w * 64;
         let mut bits = word;
@@ -1626,7 +1634,7 @@ fn group_walk(
             bits &= bits - 1;
             let i = base + lane;
             if let Some(k) = key.group_of(i, groups) {
-                fold(&mut out[k], i);
+                fold(k, i);
             }
         }
     }
@@ -1660,8 +1668,8 @@ fn group_walk(
 /// ```
 #[inline]
 pub fn masked_group_count_u32(mask_words: &[u64], keys: &[u32], out: &mut [i64]) {
-    group_walk("masked_group_count_u32", mask_words, keys.len(), GroupKeyAddr::Resident(keys), out, |slot, _| {
-        *slot = slot.wrapping_add(1)
+    group_walk("masked_group_count_u32", mask_words, keys.len(), GroupKeyAddr::Resident(keys), out.len(), |k, _| {
+        out[k] = out[k].wrapping_add(1)
     });
 }
 
@@ -1692,8 +1700,8 @@ pub fn masked_group_count_u32_via(mask_words: &[u64], index: &[u32], table: &[u3
         mask_words,
         index.len(),
         GroupKeyAddr::Via { index, table },
-        out,
-        |slot, _| *slot = slot.wrapping_add(1),
+        out.len(),
+        |k, _| out[k] = out[k].wrapping_add(1),
     );
 }
 
@@ -1736,8 +1744,8 @@ pub fn masked_group_count_u32_pair(mask_words: &[u64], hi: &[u32], lo: &[u32], s
         mask_words,
         hi.len(),
         GroupKeyAddr::Pair { hi, lo, stride },
-        out,
-        |slot, _| *slot = slot.wrapping_add(1),
+        out.len(),
+        |k, _| out[k] = out[k].wrapping_add(1),
     );
 }
 
@@ -1772,8 +1780,8 @@ pub fn masked_group_count_u32_pair(mask_words: &[u64], hi: &[u32], lo: &[u32], s
 #[inline]
 pub fn masked_group_min_i32(mask_words: &[u64], keys: &[u32], values: &[i32], out: &mut [i64]) {
     assert_eq!(keys.len(), values.len(), "masked_group_min_i32: keys/values length mismatch");
-    group_walk("masked_group_min_i32", mask_words, values.len(), GroupKeyAddr::Resident(keys), out, |slot, i| {
-        *slot = (*slot).min(values[i] as i64)
+    group_walk("masked_group_min_i32", mask_words, values.len(), GroupKeyAddr::Resident(keys), out.len(), |k, i| {
+        out[k] = out[k].min(values[i] as i64)
     });
 }
 
@@ -1807,8 +1815,8 @@ pub fn masked_group_min_i32_via(mask_words: &[u64], index: &[u32], table: &[u32]
         mask_words,
         values.len(),
         GroupKeyAddr::Via { index, table },
-        out,
-        |slot, i| *slot = (*slot).min(values[i] as i64),
+        out.len(),
+        |k, i| out[k] = out[k].min(values[i] as i64),
     );
 }
 
@@ -1845,8 +1853,8 @@ pub fn masked_group_min_i32_pair(
         mask_words,
         hi.len(),
         GroupKeyAddr::Pair { hi, lo, stride },
-        out,
-        |slot, i| *slot = (*slot).min(values[i] as i64),
+        out.len(),
+        |k, i| out[k] = out[k].min(values[i] as i64),
     );
 }
 
@@ -1874,8 +1882,8 @@ pub fn masked_group_min_i32_pair(
 #[inline]
 pub fn masked_group_max_i32(mask_words: &[u64], keys: &[u32], values: &[i32], out: &mut [i64]) {
     assert_eq!(keys.len(), values.len(), "masked_group_max_i32: keys/values length mismatch");
-    group_walk("masked_group_max_i32", mask_words, values.len(), GroupKeyAddr::Resident(keys), out, |slot, i| {
-        *slot = (*slot).max(values[i] as i64)
+    group_walk("masked_group_max_i32", mask_words, values.len(), GroupKeyAddr::Resident(keys), out.len(), |k, i| {
+        out[k] = out[k].max(values[i] as i64)
     });
 }
 
@@ -1909,8 +1917,8 @@ pub fn masked_group_max_i32_via(mask_words: &[u64], index: &[u32], table: &[u32]
         mask_words,
         values.len(),
         GroupKeyAddr::Via { index, table },
-        out,
-        |slot, i| *slot = (*slot).max(values[i] as i64),
+        out.len(),
+        |k, i| out[k] = out[k].max(values[i] as i64),
     );
 }
 
@@ -1947,9 +1955,206 @@ pub fn masked_group_max_i32_pair(
         mask_words,
         hi.len(),
         GroupKeyAddr::Pair { hi, lo, stride },
-        out,
-        |slot, i| *slot = (*slot).max(values[i] as i64),
+        out.len(),
+        |k, i| out[k] = out[k].max(values[i] as i64),
     );
+}
+
+// ── The power-sum fold ───────────────────────────────────────────────────
+//
+// One more closure over `group_walk`, with a record sink instead of an `i64`
+// slot. It accumulates the degree-0, -1 and -2 power sums of the selected
+// values per group — exact integer arithmetic and nothing else. What those
+// sums MEAN is decided above this layer; nothing here interprets them.
+
+/// The degree-0, -1 and -2 power sums of a set of `i32` values:
+/// `n = Σx⁰`, `sum = Σx¹`, `sum_sq = Σx²`. Exact integer accumulators.
+///
+/// # Why this layout (a record, not three lanes)
+///
+/// The power-sum fold writes all three fields of ONE group per selected row,
+/// at a data-dependent group. Keeping the three in one 32-byte record means
+/// one cache line per row; three separate lanes mean three. Measured before
+/// this type existed (scratch benchmark over resident / VIA / pair keys,
+/// 1 % – 100 % mask density, K = 1 … 65 536): three separate lanes ran at
+/// 1.37x (median) this record's time at K = 65 536, up to 2.5x on pair keys.
+/// The layout is therefore a deliberate physical choice, and it is pinned by
+/// a compile-time assertion below: `#[repr(C)]`, 32 bytes, fields at offsets
+/// 0 / 8 / 16, alignment that of `u128`.
+///
+/// # Widths
+///
+/// - `n: u64` — one per selected row.
+/// - `sum: i64` — exact while fewer than `2^32` rows land in one group
+///   (`|Σx| ≤ n × 2^31 < 2^63`); the same row bound the `_sym` sums carry.
+/// - `sum_sq: u128` — each `x²` is at most `2^62`, so a `u64` sink is exceeded
+///   by four rows of `i32::MIN` in one group; `u128` stays exact below `2^66`
+///   rows.
+///
+/// All three are folded with wrapping adds, so the contract is identical in
+/// every build profile, exactly as the rest of the keyed family.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::PowerSums;
+///
+/// let z = PowerSums::default();
+/// assert_eq!((z.n, z.sum, z.sum_sq), (0, 0, 0));
+/// assert_eq!(core::mem::size_of::<PowerSums>(), 32);
+/// ```
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct PowerSums {
+    /// `Σx⁰` — the number of values folded in.
+    pub n: u64,
+    /// `Σx¹`.
+    pub sum: i64,
+    /// `Σx²`.
+    pub sum_sq: u128,
+}
+
+// The physical choice, made intentional rather than whatever the compiler
+// happens to produce. Alignment follows `u128`'s (16 on x86_64 / aarch64,
+// 8 on some other targets); size and offsets are 32 / 0 / 8 / 16 on both.
+const _: () = {
+    assert!(core::mem::size_of::<PowerSums>() == 32);
+    assert!(core::mem::align_of::<PowerSums>() == core::mem::align_of::<u128>());
+    assert!(core::mem::offset_of!(PowerSums, n) == 0);
+    assert!(core::mem::offset_of!(PowerSums, sum) == 8);
+    assert!(core::mem::offset_of!(PowerSums, sum_sq) == 16);
+    // The documented `sum` row bound, checked rather than asserted in prose:
+    // (2^32 - 1) rows of magnitude 2^31 still fit an i64.
+    assert!((u32::MAX as i128) * (1i128 << 31) <= i64::MAX as i128);
+};
+
+/// Keyed power sums: for every row `i` selected by `mask_words`
+/// (`i < keys.len()`), folds `values[i]` into `out[keys[i]]` — `n += 1`,
+/// `sum += x`, `sum_sq += x²` — provided `keys[i] < out.len()`.
+///
+/// Same contract as [`masked_group_sum_i32`] in every other respect: `out` is
+/// accumulated into (start it at [`PowerSums::default`]), a key past
+/// `out.len()` is dropped, and the final mask word is clamped to
+/// `values.len()`. One pass over the selected rows for all three sums.
+///
+/// # Panics
+///
+/// Panics if `keys.len() != values.len()`, or if `mask_words.len() <
+/// values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::{masked_group_power_sums_i32, PowerSums};
+///
+/// let mask = [0b1011u64]; // rows 0, 1, 3
+/// let keys = [0u32, 1, 0, 1];
+/// let values = [3i32, -2, 100, 5];
+/// let mut out = [PowerSums::default(); 2];
+/// masked_group_power_sums_i32(&mask, &keys, &values, &mut out);
+/// assert_eq!(out[0], PowerSums { n: 1, sum: 3, sum_sq: 9 });
+/// assert_eq!(out[1], PowerSums { n: 2, sum: 3, sum_sq: 29 });
+/// ```
+#[inline]
+pub fn masked_group_power_sums_i32(mask_words: &[u64], keys: &[u32], values: &[i32], out: &mut [PowerSums]) {
+    assert_eq!(keys.len(), values.len(), "masked_group_power_sums_i32: keys/values length mismatch");
+    group_walk(
+        "masked_group_power_sums_i32",
+        mask_words,
+        values.len(),
+        GroupKeyAddr::Resident(keys),
+        out.len(),
+        power_sums_fold(values, out),
+    );
+}
+
+/// [`masked_group_power_sums_i32`] with the group of row `i` read as
+/// `table[index[i]]`, zero-fallback at both hops exactly as
+/// [`masked_group_sum_i32_via`].
+///
+/// # Panics
+///
+/// Panics if `index.len() != values.len()`, or if `mask_words.len() <
+/// values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::{masked_group_power_sums_i32_via, PowerSums};
+///
+/// let mask = [0b111u64];
+/// let index = [0u32, 0, 5]; // entry 5 is past the table and is dropped
+/// let table = [0u32];
+/// let values = [2i32, -4, 999];
+/// let mut out = [PowerSums::default(); 1];
+/// masked_group_power_sums_i32_via(&mask, &index, &table, &values, &mut out);
+/// assert_eq!(out[0], PowerSums { n: 2, sum: -2, sum_sq: 20 });
+/// ```
+#[inline]
+pub fn masked_group_power_sums_i32_via(
+    mask_words: &[u64], index: &[u32], table: &[u32], values: &[i32], out: &mut [PowerSums],
+) {
+    assert_eq!(index.len(), values.len(), "masked_group_power_sums_i32_via: index/values length mismatch");
+    group_walk(
+        "masked_group_power_sums_i32_via",
+        mask_words,
+        values.len(),
+        GroupKeyAddr::Via { index, table },
+        out.len(),
+        power_sums_fold(values, out),
+    );
+}
+
+/// [`masked_group_power_sums_i32`] with the group of row `i` read as the
+/// composite address `hi[i] * stride + lo[i]`, zero-fallback exactly as
+/// [`masked_group_sum_i32_pair`].
+///
+/// # Panics
+///
+/// Panics if `hi.len() != lo.len()`, if `hi.len() != values.len()`, or if
+/// `mask_words.len() < hi.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::{masked_group_power_sums_i32_pair, PowerSums};
+///
+/// let mask = [0b111u64];
+/// let hi = [0u32, 1, 0];
+/// let lo = [1u32, 1, 4]; // stride 4: row 2's lo (4) is out of range and dropped
+/// let values = [6i32, -1, 999];
+/// let mut out = [PowerSums::default(); 8];
+/// masked_group_power_sums_i32_pair(&mask, &hi, &lo, 4, &values, &mut out);
+/// assert_eq!(out[1], PowerSums { n: 1, sum: 6, sum_sq: 36 });
+/// assert_eq!(out[5], PowerSums { n: 1, sum: -1, sum_sq: 1 });
+/// ```
+#[inline]
+pub fn masked_group_power_sums_i32_pair(
+    mask_words: &[u64], hi: &[u32], lo: &[u32], stride: u32, values: &[i32], out: &mut [PowerSums],
+) {
+    assert_eq!(hi.len(), lo.len(), "masked_group_power_sums_i32_pair: hi.len() != lo.len()");
+    assert_eq!(hi.len(), values.len(), "masked_group_power_sums_i32_pair: hi/values length mismatch");
+    group_walk(
+        "masked_group_power_sums_i32_pair",
+        mask_words,
+        hi.len(),
+        GroupKeyAddr::Pair { hi, lo, stride },
+        out.len(),
+        power_sums_fold(values, out),
+    );
+}
+
+/// The one power-sum fold, shared by all three key addresses.
+#[inline(always)]
+fn power_sums_fold<'a>(values: &'a [i32], out: &'a mut [PowerSums]) -> impl FnMut(usize, usize) + 'a {
+    move |k, i| {
+        let x = values[i] as i64;
+        let p = &mut out[k];
+        p.n = p.n.wrapping_add(1);
+        p.sum = p.sum.wrapping_add(x);
+        // x * x <= 2^62 fits an i64 and is never negative.
+        p.sum_sq = p.sum_sq.wrapping_add((x * x) as u128);
+    }
 }
 
 /// Packs `index[i] < table.len() && table[index[i]] == v` into `out_words`,
@@ -7587,5 +7792,232 @@ mod group_family_tests {
     #[should_panic(expected = "hi.len() != lo.len()")]
     fn pair_panics_on_mismatched_lengths() {
         masked_group_count_u32_pair(&[1], &[0, 0], &[0], 4, &mut [0]);
+    }
+
+    // ── the power-sum fold ──────────────────────────────────────────────
+
+    /// The independent power-sum oracle: every row longhand, in i128 / u128,
+    /// never through `group_walk`. `key` resolves a row to its group or drops
+    /// it; `mask` is read bit by bit.
+    fn power_sums_reference(
+        mask: &[u64], values: &[i32], groups: usize, key: impl Fn(usize) -> Option<usize>,
+    ) -> Vec<(u64, i128, u128)> {
+        let mut out = vec![(0u64, 0i128, 0u128); groups];
+        for (i, &v) in values.iter().enumerate() {
+            if mask[i / 64] >> (i % 64) & 1 == 1 {
+                if let Some(k) = key(i) {
+                    let x = v as i128;
+                    out[k].0 += 1;
+                    out[k].1 += x;
+                    out[k].2 += (x * x) as u128;
+                }
+            }
+        }
+        out
+    }
+
+    fn as_triples(got: &[PowerSums]) -> Vec<(u64, i128, u128)> {
+        got.iter().map(|p| (p.n, p.sum as i128, p.sum_sq)).collect()
+    }
+
+    /// Three mask densities over the same rows: the fixture's own (about
+    /// half, with dirty tail bits), SPARSE (one bit per word) and DENSE
+    /// (every bit, tail included).
+    fn masks(fx: &Fx) -> [(&'static str, Vec<u64>); 3] {
+        [
+            ("half", fx.mask.clone()),
+            (
+                "sparse",
+                fx.mask
+                    .iter()
+                    .enumerate()
+                    .map(|(w, _)| 1u64 << (w * 7 % 64))
+                    .collect(),
+            ),
+            ("dense", vec![u64::MAX; fx.mask.len()]),
+        ]
+    }
+
+    /// Resident and VIA power sums equal the i128/u128 oracle at every length
+    /// in [`LENS`], at three mask densities. The fixture carries `i32::MIN` /
+    /// `i32::MAX` every 17 rows, out-of-universe keys and both VIA drops.
+    #[test]
+    fn power_sums_match_the_wide_oracle_on_both_addresses() {
+        for &n in LENS {
+            let fx = fixture(n, 0x9a55 ^ n as u64);
+            for (density, mask) in masks(&fx) {
+                let mut got = vec![PowerSums::default(); GROUPS];
+                masked_group_power_sums_i32(&mask, &fx.keys, &fx.values, &mut got);
+                let want = power_sums_reference(&mask, &fx.values, GROUPS, |i| key_resident(&fx, i));
+                assert_eq!(as_triples(&got), want, "resident {density} n={n}");
+
+                let mut got = vec![PowerSums::default(); GROUPS];
+                masked_group_power_sums_i32_via(&mask, &fx.index, &fx.table, &fx.values, &mut got);
+                let want = power_sums_reference(&mask, &fx.values, GROUPS, |i| key_via(&fx, i));
+                assert_eq!(as_triples(&got), want, "via {density} n={n}");
+            }
+        }
+    }
+
+    /// The pair address against the same oracle, with minor keys at or past
+    /// `stride` and composites past the universe both present, at three
+    /// densities.
+    #[test]
+    fn power_sums_pair_matches_the_wide_oracle() {
+        let n = 1000usize;
+        let mut s = 0x9a55_0000_0000_0001u64;
+        let stride = 5u32;
+        let groups = 12usize; // majors 0..=3 reach 0..=19: composites >= 12 are dropped
+        let hi: Vec<u32> = (0..n).map(|_| (lcg(&mut s) % 4) as u32).collect();
+        let lo: Vec<u32> = (0..n).map(|_| (lcg(&mut s) % 7) as u32).collect(); // 5, 6 >= stride
+        let values: Vec<i32> = (0..n)
+            .map(|i| match i % 13 {
+                0 => i32::MIN,
+                1 => i32::MAX,
+                _ => (lcg(&mut s) % 2001) as i32 - 1000,
+            })
+            .collect();
+        let half: Vec<u64> = (0..n.div_ceil(64))
+            .map(|_| lcg(&mut s) ^ (lcg(&mut s) << 32))
+            .collect();
+        let key = |i: usize| {
+            if lo[i] >= stride {
+                return None;
+            }
+            let k = (hi[i] * stride + lo[i]) as usize;
+            (k < groups).then_some(k)
+        };
+        assert!((0..n).any(|i| lo[i] >= stride), "anti-vacuity: no minor-key drop");
+        assert!((0..n).any(|i| lo[i] < stride && key(i).is_none()), "anti-vacuity: no universe drop");
+        for (density, mask) in [
+            ("half", half.clone()),
+            ("sparse", (0..half.len()).map(|w| 1u64 << (w * 11 % 64)).collect()),
+            ("dense", vec![u64::MAX; half.len()]),
+        ] {
+            let mut got = vec![PowerSums::default(); groups];
+            masked_group_power_sums_i32_pair(&mask, &hi, &lo, stride, &values, &mut got);
+            assert_eq!(as_triples(&got), power_sums_reference(&mask, &values, groups, key), "pair {density}");
+        }
+    }
+
+    /// A group no selected row reaches stays exactly at the zero record, while
+    /// its neighbours fill — the empty group is recoverable as `n == 0`.
+    #[test]
+    fn power_sums_leave_an_unreached_group_at_zero() {
+        let mask = [0b0111u64];
+        let keys = [0u32, 2, 2, 1]; // row 3 is unselected: group 1 is never reached
+        let values = [5i32, -5, 5, 77];
+        let mut out = [PowerSums::default(); 3];
+        masked_group_power_sums_i32(&mask, &keys, &values, &mut out);
+        assert_eq!(out[1], PowerSums::default(), "unreached group");
+        assert_eq!(
+            out[2],
+            PowerSums {
+                n: 2,
+                sum: 0,
+                sum_sq: 50
+            },
+            "a cancelling group is NOT empty: n = 2"
+        );
+        assert_eq!(
+            out[0],
+            PowerSums {
+                n: 1,
+                sum: 5,
+                sum_sq: 25
+            }
+        );
+    }
+
+    /// `n` and `sum` agree with the existing count and sum folds on the same
+    /// inputs — the power-sum fold is those two plus `sum_sq`, not a new
+    /// reading of either.
+    #[test]
+    fn power_sums_agree_with_the_count_and_sum_family() {
+        let fx = fixture(1000, 0xc0de);
+        let mut p = vec![PowerSums::default(); GROUPS];
+        masked_group_power_sums_i32_via(&fx.mask, &fx.index, &fx.table, &fx.values, &mut p);
+        let mut c = vec![0i64; GROUPS];
+        masked_group_count_u32_via(&fx.mask, &fx.index, &fx.table, &mut c);
+        let mut s = vec![0i64; GROUPS];
+        masked_group_sum_i32_via(&fx.mask, &fx.index, &fx.table, &fx.values, &mut s);
+        for g in 0..GROUPS {
+            assert_eq!(p[g].n as i64, c[g], "n vs count, group {g}");
+            assert_eq!(p[g].sum, s[g], "sum vs sum, group {g}");
+        }
+        assert!(c.iter().filter(|&&v| v > 0).count() >= 3, "anti-vacuity: too few groups reached");
+    }
+
+    /// `out` is folded into: a second call over the same rows doubles every
+    /// field.
+    #[test]
+    fn power_sums_accumulate_rather_than_overwrite() {
+        let mut out = [PowerSums::default(); 1];
+        masked_group_power_sums_i32(&[0b11], &[0, 0], &[3, -4], &mut out);
+        masked_group_power_sums_i32(&[0b11], &[0, 0], &[3, -4], &mut out);
+        assert_eq!(
+            out[0],
+            PowerSums {
+                n: 4,
+                sum: -2,
+                sum_sq: 50
+            }
+        );
+    }
+
+    /// **The `u128` is load-bearing, not headroom.** Four `i32::MIN` rows in
+    /// one group have the exact square sum `4 × 2^62 = 2^64`, which no `u64`
+    /// can hold; with four `i32::MAX` rows beside them the sum is larger
+    /// still. The oracle value is asserted to exceed `u64::MAX` first, so the
+    /// test states WHY a narrower sink fails, not merely that one does.
+    #[test]
+    fn power_sums_square_sum_exceeds_u64_on_an_extreme_fixture() {
+        let values = [i32::MIN, i32::MIN, i32::MIN, i32::MIN, i32::MAX, i32::MAX, i32::MAX, i32::MAX];
+        let mask = [0xFFu64];
+        let keys = [0u32; 8];
+        let want = power_sums_reference(&mask, &values, 1, |i| Some(keys[i] as usize));
+        assert!(want[0].2 > u64::MAX as u128, "the fixture must not fit a u64 square-sum sink");
+        assert_eq!(want[0].2, (1u128 << 64) + 4 * (i32::MAX as u128).pow(2));
+
+        let mut got = [PowerSums::default(); 1];
+        masked_group_power_sums_i32(&mask, &keys, &values, &mut got);
+        assert_eq!(as_triples(&got), want);
+        assert_eq!(got[0].sum, -4, "4 × (−2^31) + 4 × (2^31 − 1)");
+    }
+
+    /// The documented `sum` row bound, exercised at a feasible scale: 2^20
+    /// rows of `i32::MIN` in one group give `sum = −2^51` and
+    /// `sum_sq = 2^82`, both exact (the full 2^32 bound is checked
+    /// arithmetically by the `const` assertion beside [`PowerSums`]).
+    #[test]
+    fn power_sums_stay_exact_across_a_million_extreme_rows() {
+        let n = 1usize << 20;
+        let mask = vec![u64::MAX; n / 64];
+        let keys = vec![0u32; n];
+        let values = vec![i32::MIN; n];
+        let mut out = [PowerSums::default(); 1];
+        masked_group_power_sums_i32(&mask, &keys, &values, &mut out);
+        assert_eq!(
+            out[0],
+            PowerSums {
+                n: 1 << 20,
+                sum: -(1i64 << 51),
+                sum_sq: 1u128 << 82
+            }
+        );
+    }
+
+    /// Mismatched lanes are refused, and the panic names the public function.
+    #[test]
+    #[should_panic(expected = "masked_group_power_sums_i32_pair: hi/values length mismatch")]
+    fn power_sums_pair_refuses_mismatched_values() {
+        masked_group_power_sums_i32_pair(&[1], &[0], &[0], 4, &[1, 2], &mut [PowerSums::default()]);
+    }
+
+    /// A short mask is refused with the caller's name, not the walker's.
+    #[test]
+    #[should_panic(expected = "masked_group_power_sums_i32: mask_words.len()=0 < required 1")]
+    fn power_sums_refuse_a_short_mask_with_the_callers_name() {
+        masked_group_power_sums_i32(&[], &[0], &[1], &mut [PowerSums::default()]);
     }
 }
