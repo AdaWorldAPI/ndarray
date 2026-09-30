@@ -2157,6 +2157,39 @@ fn power_sums_fold<'a>(values: &'a [i32], out: &'a mut [PowerSums]) -> impl FnMu
     }
 }
 
+impl PowerSums {
+    /// Power sums of the union of two disjoint row sets — exact integer
+    /// addition, hence associative and commutative: chunks of a population
+    /// folded in any order and any grouping combine to the one-pass result.
+    ///
+    /// `None` if any field overflows (for `sum`, that is the union passing
+    /// the `2^32`-rows-per-group bound documented on [`PowerSums`]). The fold
+    /// itself wraps, as the whole keyed family does; a caller that combines
+    /// per-chunk results — a tiled executor, say — uses this to refuse
+    /// instead of wrapping.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::PowerSums;
+    ///
+    /// let a = PowerSums { n: 2, sum: 5, sum_sq: 13 };
+    /// let b = PowerSums { n: 1, sum: -4, sum_sq: 16 };
+    /// assert_eq!(a.checked_merge(b), Some(PowerSums { n: 3, sum: 1, sum_sq: 29 }));
+    /// let full = PowerSums { n: 1, sum: i64::MAX, sum_sq: 0 };
+    /// assert_eq!(full.checked_merge(PowerSums { n: 1, sum: 1, sum_sq: 0 }), None);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn checked_merge(self, other: Self) -> Option<Self> {
+        Some(Self {
+            n: self.n.checked_add(other.n)?,
+            sum: self.sum.checked_add(other.sum)?,
+            sum_sq: self.sum_sq.checked_add(other.sum_sq)?,
+        })
+    }
+}
+
 /// Packs `index[i] < table.len() && table[index[i]] == v` into `out_words`,
 /// one bit per row `i < index.len()`, LSB-first — an equality predicate
 /// evaluated **through an index lane**, with no gathered mask and no
@@ -8019,5 +8052,54 @@ mod group_family_tests {
     #[should_panic(expected = "masked_group_power_sums_i32: mask_words.len()=0 < required 1")]
     fn power_sums_refuse_a_short_mask_with_the_callers_name() {
         masked_group_power_sums_i32(&[], &[0], &[1], &mut [PowerSums::default()]);
+    }
+
+    /// Two chunks of one population, folded separately and merged, equal the
+    /// one-pass fold — at word boundaries, mid-word, and at both ends, in
+    /// both orders; three-way merges are associative.
+    #[test]
+    fn power_sums_chunks_merge_to_the_one_pass_result() {
+        let n = 1000;
+        let fx = fixture(n, 0xc4a1);
+        let mut whole = vec![PowerSums::default(); GROUPS];
+        masked_group_power_sums_i32(&fx.mask, &fx.keys, &fx.values, &mut whole);
+        for split in [0usize, 1, 63, 64, 129, 640, 999, 1000] {
+            let (mut lo, mut hi) = (fx.mask.clone(), fx.mask.clone());
+            for i in 0..n {
+                let (w, b) = (i / 64, i % 64);
+                if i < split {
+                    hi[w] &= !(1u64 << b);
+                } else {
+                    lo[w] &= !(1u64 << b);
+                }
+            }
+            let mut a = vec![PowerSums::default(); GROUPS];
+            masked_group_power_sums_i32(&lo, &fx.keys, &fx.values, &mut a);
+            let mut b = vec![PowerSums::default(); GROUPS];
+            masked_group_power_sums_i32(&hi, &fx.keys, &fx.values, &mut b);
+            for g in 0..GROUPS {
+                assert_eq!(a[g].checked_merge(b[g]), Some(whole[g]), "split={split} g={g}");
+                assert_eq!(b[g].checked_merge(a[g]), Some(whole[g]), "commuted split={split} g={g}");
+            }
+        }
+        let (x, y, z) = (whole[0], whole[1], whole[2]);
+        assert!(x.n > 0 && y.n > 0 && z.n > 0, "fixture leaves a group empty");
+        assert_eq!(
+            x.checked_merge(y).and_then(|xy| xy.checked_merge(z)),
+            y.checked_merge(z).and_then(|yz| x.checked_merge(yz)),
+        );
+    }
+
+    /// The merge refuses — each field independently — rather than wrapping.
+    #[test]
+    fn power_sums_merge_refuses_to_wrap() {
+        let z = PowerSums::default();
+        let n = PowerSums { n: u64::MAX, ..z };
+        let s = PowerSums { sum: i64::MIN, ..z };
+        let q = PowerSums { sum_sq: u128::MAX, ..z };
+        assert_eq!(n.checked_merge(PowerSums { n: 1, ..z }), None);
+        assert_eq!(s.checked_merge(PowerSums { sum: -1, ..z }), None);
+        assert_eq!(q.checked_merge(PowerSums { sum_sq: 1, ..z }), None);
+        assert_eq!(n.checked_merge(z), Some(n), "identity merge must not refuse");
     }
 }
