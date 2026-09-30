@@ -838,6 +838,9 @@ pub use crate::simd_masking_ops::{
     masked_group_min_i32,
     masked_group_min_i32_pair,
     masked_group_min_i32_via,
+    masked_group_power_sums_i32,
+    masked_group_power_sums_i32_pair,
+    masked_group_power_sums_i32_via,
     masked_group_sum_i32,
     masked_group_sum_i32_pair,
     masked_group_sum_i32_via,
@@ -863,6 +866,7 @@ pub use crate::simd_masking_ops::{
     ternary_match_u64_to_mask_under,
     KeyRunCarry,
     MortonDir,
+    PowerSums,
     SYM_EMPTY_I64,
 };
 // The popcount that closes the loop on the masks above: `mask_count` in ABI
