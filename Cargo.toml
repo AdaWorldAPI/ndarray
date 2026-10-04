@@ -112,6 +112,10 @@ name = "amx_probe"
 required-features = ["std"]
 
 [[example]]
+name = "bounded_power_sums_bench"
+required-features = ["std"]
+
+[[example]]
 name = "amx_rb_probe"
 required-features = ["std"]
 
