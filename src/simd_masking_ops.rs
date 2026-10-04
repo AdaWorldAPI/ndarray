@@ -3745,6 +3745,114 @@ pub fn ternary_match_strided_to_mask(
     }
 }
 
+/// Care-masked match of a **16-byte little-endian register** found at
+/// `first_offset + i * stride_bytes` for `i in 0..count` — the full-width
+/// sibling of [`ternary_match_strided_to_mask`]. Where that one matches the
+/// 12-byte V3 facet payload, this one lets all 128 bits of a 16-byte facet or
+/// register participate (classid bytes included, if the caller points at them).
+/// Element `i` matches iff every byte `k < 16` satisfies
+/// `(reg[k] ^ pattern[k]) & care[k] == 0`. Full overwrite, trailing bits zero.
+///
+/// Same execution model as the 12-byte kernel: loads are `from_le_bytes` over
+/// byte slices (no alignment requirement), gathers are scalar, and the compare
+/// is vectorised as two `u64` halves — `U64x8` ternlog `XOR_AND` for bytes
+/// `0..8` and for bytes `8..16`. Nothing population-sized is allocated; the
+/// only scratch is two 16-lane arrays on the stack.
+///
+/// # Panics
+///
+/// Panics if `out_words.len() < count.div_ceil(64)`, or if any element's
+/// 16 bytes would fall outside `bytes` (checked up front with overflow-safe
+/// arithmetic; the loop never reads out of bounds).
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::ternary_match_strided16_to_mask;
+///
+/// // Two 16-byte records; only the register's LAST byte is "cared about" —
+/// // a byte the 12-byte matcher cannot see.
+/// let mut bytes = vec![0u8; 32];
+/// bytes[15] = 0xAA; // record 0's cared byte matches
+/// bytes[31] = 0xBB; // record 1's does not
+/// let mut pattern = [0u8; 16];
+/// pattern[15] = 0xAA;
+/// let mut care = [0u8; 16];
+/// care[15] = 0xFF;
+/// let mut words = [0u64; 1];
+/// ternary_match_strided16_to_mask(&bytes, 0, 16, 2, &pattern, &care, &mut words);
+/// assert_eq!(words[0], 0b01);
+/// ```
+#[inline]
+pub fn ternary_match_strided16_to_mask(
+    bytes: &[u8], first_offset: usize, stride_bytes: usize, count: usize, pattern: &[u8; 16], care: &[u8; 16],
+    out_words: &mut [u64],
+) {
+    let words = mask_words_for(count);
+    assert!(
+        out_words.len() >= words,
+        "ternary_match_strided16_to_mask: out_words.len()={} < required {}",
+        out_words.len(),
+        words
+    );
+    if count > 0 {
+        let last_end = (count - 1)
+            .checked_mul(stride_bytes)
+            .and_then(|x| x.checked_add(first_offset))
+            .and_then(|x| x.checked_add(16))
+            .expect("ternary_match_strided16_to_mask: offset arithmetic overflow");
+        assert!(
+            last_end <= bytes.len(),
+            "ternary_match_strided16_to_mask: last element ends at {last_end} > bytes.len() {}",
+            bytes.len()
+        );
+    }
+    for w in out_words.iter_mut() {
+        *w = 0;
+    }
+    let plo = u64::from_le_bytes(pattern[0..8].try_into().expect("8 bytes"));
+    let clo = u64::from_le_bytes(care[0..8].try_into().expect("8 bytes"));
+    let phi = u64::from_le_bytes(pattern[8..16].try_into().expect("8 bytes"));
+    let chi = u64::from_le_bytes(care[8..16].try_into().expect("8 bytes"));
+    let vplo = crate::simd::U64x8::splat(plo);
+    let vclo = crate::simd::U64x8::splat(clo);
+    let vphi = crate::simd::U64x8::splat(phi);
+    let vchi = crate::simd::U64x8::splat(chi);
+    let groups = count / 16;
+    let mut lo = [0u64; 16];
+    let mut hi = [0u64; 16];
+    for g in 0..groups {
+        for k in 0..16 {
+            let o = first_offset + (g * 16 + k) * stride_bytes;
+            lo[k] = u64::from_le_bytes(bytes[o..o + 8].try_into().expect("8 bytes"));
+            hi[k] = u64::from_le_bytes(bytes[o + 8..o + 16].try_into().expect("8 bytes"));
+        }
+        let mut bits = 0u16;
+        for half in 0..2 {
+            let l: [u64; 8] = lo[half * 8..half * 8 + 8].try_into().expect("8 lanes");
+            let h: [u64; 8] = hi[half * 8..half * 8 + 8].try_into().expect("8 lanes");
+            let rl = crate::simd::U64x8::from_array(l)
+                .ternlog::<{ crate::simd::ternlog::XOR_AND }>(vplo, vclo)
+                .to_array();
+            let rh = crate::simd::U64x8::from_array(h)
+                .ternlog::<{ crate::simd::ternlog::XOR_AND }>(vphi, vchi)
+                .to_array();
+            for lane in 0..8 {
+                bits |= (((rl[lane] | rh[lane]) == 0) as u16) << (half * 8 + lane);
+            }
+        }
+        out_words[g / 4] |= (bits as u64) << ((g % 4) * 16);
+    }
+    for i in (groups * 16)..count {
+        let o = first_offset + i * stride_bytes;
+        let l = u64::from_le_bytes(bytes[o..o + 8].try_into().expect("8 bytes"));
+        let h = u64::from_le_bytes(bytes[o + 8..o + 16].try_into().expect("8 bytes"));
+        if (l ^ plo) & clo == 0 && (h ^ phi) & chi == 0 {
+            out_words[i / 64] |= 1u64 << (i % 64);
+        }
+    }
+}
+
 // ── Gated predicates: `*_to_mask_under` (mask-risc `Pred { under }`) ────────
 //
 // `out[w] = under[w] & pred(values)[w]`, with the predicate EVALUATED only
@@ -6733,6 +6841,114 @@ mod tests {
                 assert_eq!(out, want_wild, "wild stride={stride} n={n}");
             }
         }
+    }
+
+    /// Byte-wise scalar reference for the 16-byte matcher.
+    fn strided16_reference(
+        bytes: &[u8], off: usize, stride: usize, n: usize, pattern: &[u8; 16], care: &[u8; 16],
+    ) -> Vec<u64> {
+        scalar_pred_mask(n, |i| {
+            let o = off + i * stride;
+            (0..16).all(|k| (bytes[o + k] ^ pattern[k]) & care[k] == 0)
+        })
+    }
+
+    /// The 16-byte matcher equals the byte-wise reference for edge care masks
+    /// (none, all, first byte, last byte, one bit each side of the 64-bit
+    /// boundary) and random value/care patterns, across non-64 row counts and
+    /// several strides, from a misaligned start.
+    #[test]
+    fn ternary_match_strided16_equals_bytewise_reference() {
+        let mut first = [0u8; 16];
+        first[0] = 0xFF;
+        let mut last = [0u8; 16];
+        last[15] = 0xFF;
+        let mut boundary = [0u8; 16];
+        boundary[7] = 0x80; // bit 63
+        boundary[8] = 0x01; // bit 64
+        let mut s = 0x1616u64;
+        let mut random_cares: Vec<[u8; 16]> = Vec::new();
+        for _ in 0..4 {
+            let mut c = [0u8; 16];
+            for b in c.iter_mut() {
+                *b = splitmix(&mut s) as u8;
+            }
+            random_cares.push(c);
+        }
+        let mut cares = vec![[0u8; 16], [0xFFu8; 16], first, last, boundary];
+        cares.extend(random_cares);
+        for &stride in &[16usize, 24, 512] {
+            for &n in &[0usize, 1, 15, 16, 17, 63, 64, 65, 130] {
+                let off = 3;
+                let mut bytes = vec![0u8; off + stride * n.max(1) + 16];
+                // Low-entropy values so random cares produce a mix of hits and
+                // misses (a uniform 128-bit value almost never matches).
+                for b in bytes.iter_mut() {
+                    *b = (splitmix(&mut s) & 0x3) as u8;
+                }
+                let mut pattern = [0u8; 16];
+                for b in pattern.iter_mut() {
+                    *b = (splitmix(&mut s) & 0x3) as u8;
+                }
+                if n > 0 {
+                    // plant an exact full-width hit at row 0
+                    bytes[off..off + 16].copy_from_slice(&pattern);
+                }
+                for care in &cares {
+                    let mut out = vec![u64::MAX; n.div_ceil(64).max(1)];
+                    ternary_match_strided16_to_mask(&bytes, off, stride, n, &pattern, care, &mut out);
+                    let mut want = strided16_reference(&bytes, off, stride, n, &pattern, care);
+                    want.resize(out.len(), 0);
+                    assert_eq!(out, want, "stride={stride} n={n} care={care:02x?}");
+                    if n > 0 {
+                        assert!(out[0] & 1 == 1, "planted hit at row 0 stride={stride} n={n}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Bytes 12..16 participate. A row that differs from the pattern ONLY in
+    /// byte 15 must miss under full care — exactly what a 12-byte matcher
+    /// cannot see — and must hit again once byte 15 is don't-care.
+    #[test]
+    fn ternary_match_strided16_sees_bytes_past_twelve() {
+        for &n in &[16usize, 17, 65] {
+            let stride = 16;
+            let pattern: [u8; 16] = core::array::from_fn(|k| k as u8 + 1);
+            let mut bytes = vec![0u8; stride * n];
+            for i in 0..n {
+                bytes[i * stride..i * stride + 16].copy_from_slice(&pattern);
+            }
+            let tail = (n - 1) * stride;
+            bytes[tail + 15] ^= 0x40; // differs only in byte 15
+            let care = [0xFFu8; 16];
+            let mut out = vec![0u64; n.div_ceil(64)];
+            ternary_match_strided16_to_mask(&bytes, 0, stride, n, &pattern, &care, &mut out);
+            assert_eq!((out[(n - 1) / 64] >> ((n - 1) % 64)) & 1, 0, "byte 15 must count n={n}");
+            assert_eq!(out[0] & 1, 1, "an exact row still matches n={n}");
+
+            // The 12-byte matcher over the first 12 bytes calls the same row a hit.
+            let p12: [u8; 12] = pattern[..12].try_into().unwrap();
+            let mut out12 = vec![0u64; n.div_ceil(64)];
+            ternary_match_strided_to_mask(&bytes, 0, stride, n, &p12, &[0xFF; 12], &mut out12);
+            assert_eq!((out12[(n - 1) / 64] >> ((n - 1) % 64)) & 1, 1, "12-byte matcher is blind to byte 15");
+
+            let mut care_wild = care;
+            care_wild[15] = 0;
+            ternary_match_strided16_to_mask(&bytes, 0, stride, n, &pattern, &care_wild, &mut out);
+            assert_eq!((out[(n - 1) / 64] >> ((n - 1) % 64)) & 1, 1, "don't-care byte 15 matches again n={n}");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "last element ends at")]
+    fn ternary_match_strided16_rejects_a_last_element_past_the_buffer() {
+        // 3 records of 16 bytes at stride 16 = 48 bytes; offset 1 pushes the
+        // last one to end at 49.
+        let b = vec![0u8; 48];
+        let mut out = [0u64; 1];
+        ternary_match_strided16_to_mask(&b, 1, 16, 3, &[0; 16], &[0; 16], &mut out);
     }
 
     #[test]

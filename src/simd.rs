@@ -862,6 +862,7 @@ pub use crate::simd_masking_ops::{
     ne_u32_to_mask_under,
     ne_u64_to_mask,
     ne_u8_to_mask,
+    ternary_match_strided16_to_mask,
     ternary_match_strided_to_mask,
     ternary_match_u32_to_mask,
     ternary_match_u32_to_mask_under,
