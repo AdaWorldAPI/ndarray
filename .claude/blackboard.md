@@ -1,3 +1,9 @@
+## 2026-10-04 — `ternary_match_strided16_to_mask`: the 16-byte strided care match
+
+- **New:** `simd::ternary_match_strided16_to_mask(bytes, first_offset, stride, count, &[u8;16], &[u8;16], out)`, the full-width sibling of the 12-byte `ternary_match_strided_to_mask`. All 128 bits participate. Same execution model: scalar LE gathers, `U64x8` ternlog `XOR_AND` on two `u64` halves, scalar tail, full overwrite. No population-sized scratch. The 12-byte kernel is unchanged.
+- **Why:** lance-graph mask-risc matches a 12-byte facet payload in place; a 16-byte care match needed extracted hi/lo `u64` columns (materialisation). Consumer exposure follows in a dependent lance-graph PR.
+- **Evidence:** byte-wise reference test across 9 care masks (none, all, first, last, 64-bit boundary, 4 random) × 9 row counts × strides 16/24/512 from a misaligned offset; a byte-15-only difference misses under full care while the 12-byte matcher calls it a hit; out-of-bounds panic; doctest. Disable runs all red: bytes 12..15 ignored, low-half care ignored, no tail, high half ignored in the vector path. clippy `-D warnings` clean. Only the default dispatch was run locally; `simd-matrix.yaml` covers the other realizations.
+
 ## 2026-09-30 — `group_walk` becomes a (group,row) visitor; `PowerSums` + `masked_group_power_sums_i32{,_via,_pair}`
 
 - **Walker:** the private `group_walk` now takes `groups: usize` and `fold: FnMut(group, row)`; it never sees a sink. Its `i64` slot was an accident of the first folds, not part of what it does. All 15 call sites were migrated mechanically (`|k, i| out[k] = …`, passing `out.len()`); no public signature changed.
