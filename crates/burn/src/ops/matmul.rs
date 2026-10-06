@@ -375,9 +375,9 @@ pub fn build_distance_table_vnni(centroids_u8: &[u8], k: usize, dim: usize) -> V
     // Tier 2: avx512vnni VPDPBUSD zmm (512-bit) 64 MACs/instr Cascade Lake+, Zen 4+
     //         Stable detection: is_x86_feature_detected!("avx512vnni")
     //
-    // Tier 1: avxvnniint8 VPDPBSSD ymm (256-bit) ~32 MACs/instr Sierra Forest+, Arrow Lake+
-    //         VNNI2: signed×signed dot product. Stable detection on Rust 1.94.
-    //         TODO: implement ymm-width kernel when hardware available.
+    // Tier 1: avxvnni VEX VPDPBUSD ymm (256-bit) ~32 MACs/instr Alder Lake+, Sierra Forest
+    //         u8×i8 dot product (`simd_amx::vnni2_dot_u8_i8`). NOT avxvnniint8,
+    //         which is VPDPBSSD/VPDPBUUD and absent on Alder Lake.
     //
     // Tier 0: Scalar     loop                    1 MAC/iter     any CPU
     //
@@ -389,8 +389,8 @@ pub fn build_distance_table_vnni(centroids_u8: &[u8], k: usize, dim: usize) -> V
             3 // AMX present — use avx512vnni as bridge
         } else if is_x86_feature_detected!("avx512vnni") {
             2 // AVX-512 VNNI: 64 MACs/instr
-        } else if is_x86_feature_detected!("avxvnniint8") {
-            1 // VNNI2: signed i8×i8 (ymm, ~32 MACs) — TODO: needs ymm kernel
+        } else if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("avxvnni") {
+            1 // AVX-VNNI: VEX VPDPBUSD ymm, u8×i8 (~32 MACs)
         } else {
             0
         }
@@ -408,10 +408,10 @@ pub fn build_distance_table_vnni(centroids_u8: &[u8], k: usize, dim: usize) -> V
             #[cfg(not(target_arch = "x86_64"))]
             ndarray::simd_amx::vnni_dot_u8_i8_scalar(a, b)
         },
-        // Tier 1: avxvnniint8 — ymm-width VPDPBUSD (32 MACs/instr)
-        // For NUC 14 i9-185H (Arrow Lake) and similar non-AVX-512 CPUs
+        // Tier 1: avxvnni — ymm-width VEX VPDPBUSD (32 MACs/instr)
+        // For Alder Lake and later non-AVX-512 client CPUs
         1 => |a, b| {
-            // SAFETY: avxvnniint8 confirmed via is_x86_feature_detected above
+            // SAFETY: avx2 + avxvnni confirmed via is_x86_feature_detected above
             #[cfg(target_arch = "x86_64")]
             unsafe { ndarray::simd_amx::vnni2_dot_u8_i8(a, b) }
             #[cfg(not(target_arch = "x86_64"))]

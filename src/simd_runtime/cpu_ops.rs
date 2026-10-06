@@ -176,8 +176,29 @@ static CPU_OPS_SCALAR: CpuOps = CpuOps {
 /// [`simd_caps`]: crate::hpc::simd_caps::simd_caps
 pub fn cpu_ops() -> &'static CpuOps {
     static SELECTED: LazyLock<&'static CpuOps> = LazyLock::new(|| {
-        let _caps = crate::hpc::simd_caps::simd_caps();
+        let caps = crate::hpc::simd_caps::simd_caps();
+        #[cfg(target_arch = "x86_64")]
+        let amx_os_ok = caps.amx_int8 && crate::simd_amx::amx_available();
+        #[cfg(not(target_arch = "x86_64"))]
+        let amx_os_ok = false;
+        select_cpu_ops(caps, amx_os_ok)
+    });
+    *SELECTED
+}
 
+/// The tier ladder, as a pure function of the detected capabilities.
+///
+/// `amx_os_ok` is the OS-level AMX gate (`simd_amx::amx_available()`),
+/// passed in so the ladder itself can be tested against synthetic
+/// capability sets for CPUs this host is not.
+///
+/// Each rung's gate names the instruction feature its kernel REQUIRES:
+/// the `avxvnni` tier runs VEX `VPDPBUSD` (`_mm256_dpbusd_avx_epi32`), so it
+/// is gated on `avxvnni` — never on `avxvnniint8`, which is a different
+/// feature (VPDPBSSD/VPDPBUUD) that Alder Lake does not have.
+fn select_cpu_ops(_caps: crate::hpc::simd_caps::SimdCaps, amx_os_ok: bool) -> &'static CpuOps {
+    let _ = amx_os_ok; // read only on x86_64
+    {
         #[cfg(target_arch = "x86_64")]
         {
             // AMX tier selection: CPUID-reports-AMX is necessary but
@@ -188,7 +209,7 @@ pub fn cpu_ops() -> &'static CpuOps {
             // being set. `simd_amx::amx_available()` runs the full
             // four-step gate (CPUID + OSXSAVE + XCR0 + arch_prctl);
             // demote to the AVX-512 path when the OS-check fails.
-            if _caps.amx_int8 && crate::simd_amx::amx_available() {
+            if _caps.amx_int8 && amx_os_ok {
                 return &CPU_OPS_AMX_INT8;
             }
             if _caps.avx512f && _caps.avx512vnni {
@@ -197,7 +218,7 @@ pub fn cpu_ops() -> &'static CpuOps {
             if _caps.avx512f {
                 return &CPU_OPS_AVX512F;
             }
-            if _caps.avx2 && _caps.avxvnniint8 {
+            if _caps.avx2 && _caps.avxvnni {
                 return &CPU_OPS_AVXVNNI;
             }
             if _caps.avx2 && _caps.fma {
@@ -213,8 +234,7 @@ pub fn cpu_ops() -> &'static CpuOps {
         }
 
         &CPU_OPS_SCALAR
-    });
-    *SELECTED
+    }
 }
 
 /// Lookup `&'static CpuOps` by tier name string. Used for explicit-
@@ -413,5 +433,69 @@ mod tests {
         for &v in &acc {
             assert!((v - 7.0).abs() < 1e-6, "add_mul_f32 via DTO: got {v}");
         }
+    }
+
+    /// The tier ladder must gate each rung on the feature its kernel
+    /// REQUIRES. Synthetic capability sets, so the check runs on any x86
+    /// host — including ones that are not the CPU being modelled.
+    ///
+    /// Regression: the `avxvnni` rung used to be gated on `avxvnniint8`, so
+    /// an Alder Lake (AVX-VNNI, no AVX-VNNI-INT8) fell through to
+    /// `avx2_fma` while `cpu_tier_for_cpu("alderlake")` said `avxvnni`.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn tier_ladder_gates_on_the_kernel_feature() {
+        use crate::hpc::simd_caps::SimdCaps;
+        let base = SimdCaps {
+            avx2: true,
+            fma: true,
+            avx512f: false,
+            avx512bw: false,
+            avx512vl: false,
+            avx512vnni: false,
+            amx_tile: false,
+            amx_int8: false,
+            avxvnni: false,
+            avxvnniint8: false,
+            ..crate::hpc::simd_caps::simd_caps()
+        };
+        // Alder Lake: AVX2 + FMA + AVX-VNNI, no AVX-512, no AVX-VNNI-INT8.
+        let alderlake = SimdCaps { avxvnni: true, ..base };
+        assert_eq!(select_cpu_ops(alderlake, false).tier, "avxvnni");
+        assert_eq!(cpu_tier_for_cpu("alderlake"), Some(select_cpu_ops(alderlake, false).tier));
+        // Arrow Lake: AVX-VNNI and AVX-VNNI-INT8.
+        let arrowlake = SimdCaps {
+            avxvnni: true,
+            avxvnniint8: true,
+            ..base
+        };
+        assert_eq!(select_cpu_ops(arrowlake, false).tier, "avxvnni");
+        // AVX-VNNI-INT8 alone does not license the VEX VPDPBUSD kernel.
+        let int8_only = SimdCaps {
+            avxvnniint8: true,
+            ..base
+        };
+        assert_eq!(select_cpu_ops(int8_only, false).tier, "avx2_fma");
+        // Haswell baseline.
+        assert_eq!(select_cpu_ops(base, false).tier, "avx2_fma");
+        assert_eq!(cpu_tier_for_cpu("haswell"), Some("avx2_fma"));
+        // Cascade Lake: AVX-512 + VNNI outranks AVX-VNNI.
+        let cascadelake = SimdCaps {
+            avx512f: true,
+            avx512bw: true,
+            avx512vl: true,
+            avx512vnni: true,
+            ..base
+        };
+        assert_eq!(select_cpu_ops(cascadelake, false).tier, "avx512vnni");
+        assert_eq!(cpu_tier_for_cpu("cascadelake"), Some("avx512vnni"));
+        // AMX needs both the CPUID bit and the OS gate.
+        let spr = SimdCaps {
+            amx_tile: true,
+            amx_int8: true,
+            ..cascadelake
+        };
+        assert_eq!(select_cpu_ops(spr, true).tier, "amx_int8");
+        assert_eq!(select_cpu_ops(spr, false).tier, "avx512vnni");
     }
 }
