@@ -27,7 +27,8 @@
 //! the index-addressed permutation/scatter family); `0xD3x` the
 //! index-addressed `masked_group_sum_i32_via` (two-hop zero-fallback); `0xD4x`
 //! `eq_u32_via_to_mask` (the same index lane, packed as a predicate rather than
-//! folded into a sum). `main.rs` (native / qemu) and
+//! folded into a sum); `0xExx` the `F64x8` lane compares (all six relations
+//! over every pair of 16 IEEE edge values: NaN, ±0, ±inf, subnormal). `main.rs` (native / qemu) and
 //! `selfcheck()` (the wasm cdylib export, driven by `run.mjs`) both call
 //! [`run`].
 
@@ -43,11 +44,11 @@ use ndarray::simd::{
     masked_strided_group_sum, masked_sum_i32, masked_sum_wrapping_add_i32, ne_i32_to_mask, ne_i32_to_mask_under,
     ne_u32_to_mask, ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask, ternary_match_strided_to_mask,
     ternary_match_u32_to_mask, ternary_match_u32_to_mask_under, ternary_match_u64_to_mask,
-    ternary_match_u64_to_mask_under, ternlog, I32x16, KeyRunCarry, MortonDir, U32x16, U64x8,
+    ternary_match_u64_to_mask_under, ternlog, F64x8, I32x16, KeyRunCarry, MortonDir, U32x16, U64x8,
 };
 
 /// Number of check groups [`run`] executes (for the log line only).
-pub const CHECKS: usize = 13;
+pub const CHECKS: usize = 14;
 
 /// The wasm export: identical to [`run`], `extern "C"` so `run.mjs` can call it.
 #[no_mangle]
@@ -61,6 +62,7 @@ pub fn run() -> u32 {
         check_ternlog_all_tables, check_u64x8_algebra, check_i32x16_compare, check_predicates_to_mask,
         check_mask_algebra, check_care_match, check_masked_reductions, check_blend, check_morton_shift,
         check_predicates_under, check_set_range, check_unsigned_compare_to_mask, check_gather_scatter_group,
+        check_f64x8_compare,
     ];
     for g in groups {
         if let Err(code) = g() {
@@ -389,6 +391,94 @@ fn check_i32x16_compare() -> Result<(), u32> {
     }
     if !(a == I32x16::from_array(a_arr)) || a == b {
         return Err(0x408);
+    }
+    Ok(())
+}
+
+// ── 0xExx: F64x8 lane compares — every pair of IEEE edge values ─────────────
+//
+// All six relations against plain scalar `f64` operators. The edge set covers
+// NaN (positive, negative, payload-carrying), ±0, ±inf, the extremes and a
+// subnormal. Expected semantics are IEEE-754 / Rust's own: `==`,`<`,`>`,`<=`,
+// `>=` are ORDERED (false if either operand is NaN), `!=` is UNORDERED (true
+// if either is NaN), and `+0.0 == -0.0`. The mask is read back through
+// `select`, the only accessor every realization of `F64Mask8` shares.
+
+fn f64_mask_bits(m: impl FnOnce(F64x8, F64x8) -> F64x8) -> u8 {
+    let lanes = m(F64x8::splat(1.0), F64x8::splat(0.0)).to_array();
+    let mut bits = 0u8;
+    for (i, &v) in lanes.iter().enumerate() {
+        if v == 1.0 {
+            bits |= 1 << i;
+        }
+    }
+    bits
+}
+
+fn check_f64x8_compare() -> Result<(), u32> {
+    let edges: [f64; 16] = [
+        f64::NAN,
+        -f64::NAN,
+        f64::from_bits(0x7FF0_0000_0000_0001), // signalling-pattern NaN with payload
+        0.0,
+        -0.0,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::MAX,
+        f64::MIN,
+        f64::MIN_POSITIVE,
+        f64::from_bits(1), // smallest subnormal
+        1.0,
+        -1.0,
+        1.0 + f64::EPSILON,
+        0.5,
+        1.0,
+    ];
+    let mut pairs = 0u32;
+    for chunk in 0..(16 * 16 / 8) {
+        let mut a_arr = [0.0f64; 8];
+        let mut b_arr = [0.0f64; 8];
+        for lane in 0..8 {
+            let k = chunk * 8 + lane;
+            a_arr[lane] = edges[k / 16];
+            b_arr[lane] = edges[k % 16];
+        }
+        let (a, b) = (F64x8::from_array(a_arr), F64x8::from_array(b_arr));
+        let expect = |rel: fn(f64, f64) -> bool| -> u8 {
+            let mut bits = 0u8;
+            for lane in 0..8 {
+                if rel(a_arr[lane], b_arr[lane]) {
+                    bits |= 1 << lane;
+                }
+            }
+            bits
+        };
+        let got = [
+            f64_mask_bits(|t, f| a.simd_eq(b).select(t, f)),
+            f64_mask_bits(|t, f| a.simd_ne(b).select(t, f)),
+            f64_mask_bits(|t, f| a.simd_lt(b).select(t, f)),
+            f64_mask_bits(|t, f| a.simd_le(b).select(t, f)),
+            f64_mask_bits(|t, f| a.simd_gt(b).select(t, f)),
+            f64_mask_bits(|t, f| a.simd_ge(b).select(t, f)),
+        ];
+        let want = [
+            expect(|x, y| x == y),
+            expect(|x, y| x != y),
+            expect(|x, y| x < y),
+            expect(|x, y| x <= y),
+            expect(|x, y| x > y),
+            expect(|x, y| x >= y),
+        ];
+        for rel in 0..6 {
+            if got[rel] != want[rel] {
+                return Err(0xE00 | rel as u32);
+            }
+        }
+        pairs += 8;
+    }
+    // Anti-vacuity: the edge set really exercises both outcomes of NaN handling.
+    if pairs != 256 || !(f64::NAN != f64::NAN) || (0.0f64 != -0.0f64) {
+        return Err(0xE0F);
     }
     Ok(())
 }

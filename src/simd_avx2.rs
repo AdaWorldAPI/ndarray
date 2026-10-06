@@ -982,6 +982,58 @@ impl F64x8 {
         }
         F64Mask8(bits)
     }
+    /// Lane-wise `==` — ordered: false if either lane is NaN; `+0.0 == -0.0` (AVX-512 `_CMP_EQ_OQ`).
+    #[inline(always)]
+    pub fn simd_eq(self, other: Self) -> F64Mask8 {
+        let a = self.to_array();
+        let b = other.to_array();
+        let mut bits: u8 = 0;
+        for i in 0..8 {
+            if a[i] == b[i] {
+                bits |= 1 << i;
+            }
+        }
+        F64Mask8(bits)
+    }
+    /// Lane-wise `!=` — unordered: true if either lane is NaN (AVX-512 `_CMP_NEQ_UQ`).
+    #[inline(always)]
+    pub fn simd_ne(self, other: Self) -> F64Mask8 {
+        let a = self.to_array();
+        let b = other.to_array();
+        let mut bits: u8 = 0;
+        for i in 0..8 {
+            if a[i] != b[i] {
+                bits |= 1 << i;
+            }
+        }
+        F64Mask8(bits)
+    }
+    /// Lane-wise `<` — ordered: false if either lane is NaN (AVX-512 `_CMP_LT_OS`).
+    #[inline(always)]
+    pub fn simd_lt(self, other: Self) -> F64Mask8 {
+        let a = self.to_array();
+        let b = other.to_array();
+        let mut bits: u8 = 0;
+        for i in 0..8 {
+            if a[i] < b[i] {
+                bits |= 1 << i;
+            }
+        }
+        F64Mask8(bits)
+    }
+    /// Lane-wise `>` — ordered: false if either lane is NaN (AVX-512 `other.simd_lt(self)`).
+    #[inline(always)]
+    pub fn simd_gt(self, other: Self) -> F64Mask8 {
+        let a = self.to_array();
+        let b = other.to_array();
+        let mut bits: u8 = 0;
+        for i in 0..8 {
+            if a[i] > b[i] {
+                bits |= 1 << i;
+            }
+        }
+        F64Mask8(bits)
+    }
     #[inline(always)]
     pub fn to_bits(self) -> U64x8 {
         let a = self.to_array();
