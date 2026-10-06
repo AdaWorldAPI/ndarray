@@ -476,8 +476,8 @@ fn check_f64x8_compare() -> Result<(), u32> {
         }
         pairs += 8;
     }
-    // Anti-vacuity: the edge set really exercises both outcomes of NaN handling.
-    if pairs != 256 || !(f64::NAN != f64::NAN) || (0.0f64 != -0.0f64) {
+    // Anti-vacuity: every one of the 16 x 16 edge pairs was checked.
+    if pairs != 256 {
         return Err(0xE0F);
     }
     Ok(())
