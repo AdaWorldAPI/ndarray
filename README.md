@@ -64,7 +64,7 @@ The ~200 finalists are scored via the precomputed 256x256 table. One read per ca
 | Base17 L1 | 20,000 | ~200 | 60.7 µs | measured |
 | Palette lookup | 200 | Top-K | ~0.17 µs | 200 × 0.84 ns, derived |
 
-At 32-byte rows the sweep runs at 2.2 GB/s, so per-row overhead, not memory bandwidth, is the limit (2,048-byte rows reach 7.4 GB/s); multi-core scaling is not measured here. An end-to-end comparison with FAISS Flat has not been run in this repository.
+At 32-byte rows the sweep runs at 2.1 GB/s, so per-row overhead, not memory bandwidth, is the limit (2,048-byte rows reach 7.4 GB/s); multi-core scaling is not measured here. An end-to-end comparison with FAISS Flat has not been run in this repository.
 
 ### Integration with Lance
 
@@ -80,7 +80,7 @@ Upstream ndarray delegates matrix multiplication to the external `matrixmultiply
 
 This fork implements its own SIMD layer: 27 portable vector/mask types selected at compile time (AVX-512, AVX2, NEON, WASM SIMD128, scalar, or nightly `core::simd`), plus runtime-dispatched kernels across 7 tiers (`amx_int8 > avx512vnni > avx512f > avxvnni > avx2_fma > neon > scalar`). Each tier is gated on the instruction feature its kernel needs; the `avxvnni` tier (VEX `VPDPBUSD`) is gated on AVX-VNNI. That tier could not be executed on the measuring host, which has AVX-512 VNNI but not AVX-VNNI, and its kernel is checked by its emitted instruction encoding only.
 
-What the layer buys is measured per operation, against a named baseline, on one core of the Cascade Lake host (median of 15 runs, 1 M elements):
+What the layer buys is measured per operation, against a named baseline, on one core of the Cascade Lake host (median of 15 runs, 1 M elements). Each timing pair lists the fork first and the baseline second:
 
 | Operation | Baseline | Fork | Ratio |
 |-----------|----------|------|-------|

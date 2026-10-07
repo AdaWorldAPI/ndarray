@@ -218,7 +218,9 @@ fn select_cpu_ops(_caps: crate::hpc::simd_caps::SimdCaps, amx_os_ok: bool) -> &'
             if _caps.avx512f {
                 return &CPU_OPS_AVX512F;
             }
-            if _caps.avx2 && _caps.avxvnni {
+            // The `avxvnni` table's add_mul pointers are AVX2+FMA kernels,
+            // and AVX-VNNI does not imply FMA, so FMA is required here too.
+            if _caps.avx2 && _caps.fma && _caps.avxvnni {
                 return &CPU_OPS_AVXVNNI;
             }
             if _caps.avx2 && _caps.fma {
@@ -476,6 +478,12 @@ mod tests {
             ..base
         };
         assert_eq!(select_cpu_ops(int8_only, false).tier, "avx2_fma");
+        // AVX-VNNI without FMA must not select a table whose add_mul runs FMA.
+        let no_fma = SimdCaps {
+            fma: false,
+            ..alderlake
+        };
+        assert_eq!(select_cpu_ops(no_fma, false).tier, "scalar");
         // Haswell baseline.
         assert_eq!(select_cpu_ops(base, false).tier, "avx2_fma");
         assert_eq!(cpu_tier_for_cpu("haswell"), Some("avx2_fma"));

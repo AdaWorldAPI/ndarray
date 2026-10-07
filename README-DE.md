@@ -64,7 +64,7 @@ Die ~200 Finalisten werden ueber die vorberechnete 256x256-Tabelle bewertet. Ein
 | Base17 L1 | 20,000 | ~200 | 60.7 µs | gemessen |
 | Palette-Lookup | 200 | Top-K | ~0.17 µs | 200 × 0.84 ns, abgeleitet |
 
-Bei 32-Byte-Zeilen laeuft der Sweep mit 2.2 GB/s; der Overhead pro Zeile, nicht die Speicherbandbreite, ist also die Grenze (2,048-Byte-Zeilen erreichen 7.4 GB/s); Multi-Core-Skalierung ist hier nicht gemessen. Ein Ende-zu-Ende-Vergleich mit FAISS Flat wurde in diesem Repository nicht durchgefuehrt.
+Bei 32-Byte-Zeilen laeuft der Sweep mit 2.1 GB/s; der Overhead pro Zeile, nicht die Speicherbandbreite, ist also die Grenze (2,048-Byte-Zeilen erreichen 7.4 GB/s); Multi-Core-Skalierung ist hier nicht gemessen. Ein Ende-zu-Ende-Vergleich mit FAISS Flat wurde in diesem Repository nicht durchgefuehrt.
 
 ### Integration mit Lance
 
@@ -80,7 +80,7 @@ Upstream-ndarray delegiert die Matrixmultiplikation an den externen Crate `matri
 
 Dieser Fork implementiert eine eigene SIMD-Schicht: 27 portable Vektor-/Maskentypen, zur Compile-Zeit ausgewaehlt (AVX-512, AVX2, NEON, WASM SIMD128, skalar oder Nightly-`core::simd`), dazu zur Laufzeit dispatchte Kernels ueber 7 Stufen (`amx_int8 > avx512vnni > avx512f > avxvnni > avx2_fma > neon > scalar`). Jede Stufe ist an das Instruktions-Feature gebunden, das ihr Kernel braucht; die Stufe `avxvnni` (VEX `VPDPBUSD`) ist an AVX-VNNI gebunden. Diese Stufe konnte auf dem Messhost nicht ausgefuehrt werden, der AVX-512 VNNI, aber nicht AVX-VNNI hat, und ihr Kernel wird nur anhand seiner emittierten Instruktionskodierung geprueft.
 
-Was die Schicht bringt, ist pro Operation gegen eine benannte Baseline gemessen, auf einem Kern des Cascade-Lake-Hosts (Median aus 15 Laeufen, 1 M Elemente):
+Was die Schicht bringt, ist pro Operation gegen eine benannte Baseline gemessen, auf einem Kern des Cascade-Lake-Hosts (Median aus 15 Laeufen, 1 M Elemente). Jedes Zeitpaar nennt zuerst den Fork-Wert, danach den Baseline-Wert:
 
 | Operation | Baseline | Fork | Verhaeltnis |
 |-----------|----------|------|-------------|
