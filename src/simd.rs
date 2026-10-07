@@ -818,6 +818,7 @@ pub use crate::simd_masking_ops::{
     mask_andnot_assign,
     mask_any,
     mask_gather_u32,
+    mask_gather_u32_under,
     mask_not,
     mask_not_assign,
     mask_or,

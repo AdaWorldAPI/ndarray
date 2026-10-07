@@ -37,7 +37,7 @@ use ndarray::simd::{
     eq_u32_via_to_mask, eq_u64_to_mask, eq_u8_to_mask, ge_i32_to_mask, ge_i32_to_mask_under, ge_u64_to_mask,
     ge_u8_to_mask, gt_i32_to_mask, gt_i32_to_mask_under, gt_u64_to_mask, gt_u8_to_mask, le_i32_to_mask,
     le_i32_to_mask_under, le_u64_to_mask, le_u8_to_mask, lt_i32_to_mask, lt_i32_to_mask_under, lt_u64_to_mask,
-    lt_u8_to_mask, mask_all, mask_and, mask_and_assign, mask_andnot, mask_andnot_assign, mask_any, mask_gather_u32,
+    lt_u8_to_mask, mask_all, mask_and, mask_and_assign, mask_andnot, mask_andnot_assign, mask_any, mask_gather_u32, mask_gather_u32_under,
     mask_not, mask_not_assign, mask_or, mask_or_assign, mask_scatter_or_u32, mask_set_range, mask_shift_morton,
     mask_ternlog, mask_ternlog_any, mask_ternlog_assign, mask_ternlog_popcount, mask_xor, mask_xor_assign,
     masked_group_sum_i32, masked_group_sum_i32_via, masked_key_run_count_u32, masked_max_i32, masked_min_i32,
@@ -1267,6 +1267,20 @@ fn check_gather_scatter_group() -> Result<(), u32> {
         });
         if out != want {
             return Err(0xD00);
+        }
+
+        // ── mask_gather_u32_under ────────────────────────────────────────
+        // Gate tail bits past `n` are left dirty on purpose: a kernel that
+        // used them would address `index` out of bounds.
+        let gate: Vec<u64> = (0..out_len).map(|_| rng.next()).collect();
+        let mut out = vec![u64::MAX; out_len];
+        mask_gather_u32_under(&src, src_rows, &index, &gate, &mut out);
+        let want = reference_mask(n, out_len, |i| {
+            let idx = index[i] as usize;
+            (gate[i / 64] >> (i % 64)) & 1 == 1 && idx < src_rows && (src[idx / 64] >> (idx % 64)) & 1 == 1
+        });
+        if out != want {
+            return Err(0xD01);
         }
 
         // ── mask_scatter_or_u32 ──────────────────────────────────────────
