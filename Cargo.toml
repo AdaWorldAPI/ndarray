@@ -46,6 +46,10 @@ name = "ocr_benchmark"
 required-features = ["std"]
 
 [[example]]
+name = "bf16_rne_exhaustive"
+required-features = ["std"]
+
+[[example]]
 name = "splat3d_flex"
 required-features = ["splat3d"]
 

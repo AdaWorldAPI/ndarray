@@ -71,6 +71,12 @@ pub struct SimdCaps {
     /// (`is_x86_feature_detected!("avxvnniint8")`).
     /// Present on Arrow Lake, Lunar Lake, NUC 14 (Meteor Lake-H).
     pub avxvnniint8: bool,
+    /// AVX-VNNI: VEX-encoded 256-bit `VPDPBUSD`/`VPDPWSSD` (u8×i8 / i16×i16
+    /// dot product) without AVX-512 (`is_x86_feature_detected!("avxvnni")`,
+    /// CPUID.07H.1H:EAX bit 4). Present on Alder Lake and later client parts,
+    /// Sierra Forest, Zen 5. This — not `avxvnniint8` — is what the 256-bit
+    /// `u8×i8` kernel (`simd_amx::vnni2_dot_u8_i8`) requires.
+    pub avxvnni: bool,
     /// AVX-512 FP16 arithmetic (CPUID.07H.0H:EDX bit 23). Native
     /// `__m512h` operations (`_mm512_*_ph`). Present on Sapphire Rapids,
     /// Granite Rapids, Zen 4+. Bit is exposed for downstream substrate
@@ -142,6 +148,7 @@ impl SimdCaps {
             amx_bf16: false,
             avx512bf16: false,
             avxvnniint8: false,
+            avxvnni: false,
             avx512fp16: false,
             avx512vp2intersect: false,
             amx_fp16: false,
@@ -193,6 +200,7 @@ impl SimdCaps {
             amx_bf16,
             avx512bf16: is_x86_feature_detected!("avx512bf16"),
             avxvnniint8: is_x86_feature_detected!("avxvnniint8"),
+            avxvnni: is_x86_feature_detected!("avxvnni"),
             avx512fp16,
             avx512vp2intersect,
             amx_fp16,
@@ -228,6 +236,7 @@ impl SimdCaps {
             amx_bf16: false,
             avx512bf16: false,
             avxvnniint8: false,
+            avxvnni: false,
             avx512fp16: false,
             avx512vp2intersect: false,
             amx_fp16: false,
@@ -260,6 +269,7 @@ impl SimdCaps {
             amx_bf16: false,
             avx512bf16: false,
             avxvnniint8: false,
+            avxvnni: false,
             avx512fp16: false,
             avx512vp2intersect: false,
             amx_fp16: false,
@@ -315,6 +325,12 @@ impl SimdCaps {
     #[inline(always)]
     pub fn has_avxvnniint8(self) -> bool {
         self.avxvnniint8
+    }
+
+    /// AVX-VNNI (VEX 256-bit `VPDPBUSD`) available.
+    #[inline(always)]
+    pub fn has_avxvnni(self) -> bool {
+        self.avxvnni
     }
 
     /// True if AVX-512 FP16 (`__m512h`) is available. Distinguishes
@@ -606,6 +622,7 @@ mod tests {
             amx_bf16: false,
             avx512bf16: false,
             avxvnniint8: false,
+            avxvnni: false,
             avx512fp16: false,
             avx512vp2intersect: false,
             amx_fp16: true,

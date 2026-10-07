@@ -7,7 +7,7 @@
 //!    `n - (n%64)` lanes and silently drops the K-tail (its current
 //!    matvec caller pre-aligns rows so the tail is never the bug;
 //!    a general-purpose dispatch surface cannot assume that).
-//! 2. **AVX-VNNI ymm** (`avx2 + avxvnniint8`) → `simd_amx::vnni2_dot_u8_i8`
+//! 2. **AVX-VNNI ymm** (`avx2 + avxvnni`) → `simd_amx::vnni2_dot_u8_i8`
 //!    which already includes its own tail handling.
 //! 3. **Scalar** → `simd_amx::vnni_dot_u8_i8_scalar` (always correct,
 //!    no SIMD, the safety floor).
@@ -30,7 +30,7 @@ static VNNI_DOT_U8_I8_DISPATCH: LazyLock<VnniDotFn> = LazyLock::new(|| {
         if _caps.avx512f && _caps.avx512vnni {
             return vnni_dot_u8_i8_avx512_with_tail as VnniDotFn;
         }
-        if _caps.avx2 && _caps.avxvnniint8 {
+        if _caps.avx2 && _caps.avxvnni {
             return vnni2_dot_u8_i8_safe_wrapper as VnniDotFn;
         }
     }
@@ -101,9 +101,9 @@ unsafe fn vnni_dot_u8_i8_avx512_with_tail(a: &[u8], b: &[i8]) -> i32 {
 /// the dispatch table a `VnniDotFn` pointer with the right signature.
 ///
 /// # Safety
-/// Caller must have feature-detected `avx2 + avxvnniint8` at runtime.
+/// Caller must have feature-detected `avx2 + avxvnni` at runtime.
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,avxvnniint8")]
+#[target_feature(enable = "avx2,avxvnni")]
 unsafe fn vnni2_dot_u8_i8_safe_wrapper(a: &[u8], b: &[i8]) -> i32 {
     crate::simd_amx::vnni2_dot_u8_i8(a, b)
 }
@@ -139,7 +139,7 @@ pub(super) unsafe fn vnni_dot_u8_i8_avx512_with_tail_safe(a: &[u8], b: &[i8]) ->
 
 #[cfg(target_arch = "x86_64")]
 pub(super) unsafe fn vnni2_dot_u8_i8_safe(a: &[u8], b: &[i8]) -> i32 {
-    // SAFETY: dispatch closure verified avx2 + avxvnniint8.
+    // SAFETY: dispatch closure verified avx2 + avxvnni.
     vnni2_dot_u8_i8_safe_wrapper(a, b)
 }
 
@@ -150,6 +150,26 @@ pub(super) unsafe fn vnni_dot_u8_i8_scalar_wrapper(a: &[u8], b: &[i8]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The 256-bit AVX-VNNI kernel against the scalar reference, called
+    /// directly (not via the dispatcher, which on an AVX-512 host never picks
+    /// it). Skips — and says so — on hosts without AVX-VNNI.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn avxvnni_kernel_matches_scalar_reference() {
+        if !(is_x86_feature_detected!("avx2") && is_x86_feature_detected!("avxvnni")) {
+            eprintln!("SKIPPED: host has no AVX-VNNI; kernel not executed");
+            return;
+        }
+        for k in [0usize, 1, 31, 32, 33, 64, 100, 257] {
+            let a: Vec<u8> = (0..k).map(|i| ((i * 29 + 7) % 256) as u8).collect();
+            let b: Vec<i8> = (0..k).map(|i| ((i * 31 + 3) % 256) as u8 as i8).collect();
+            // SAFETY: avx2 + avxvnni verified above.
+            let got = unsafe { vnni2_dot_u8_i8_safe_wrapper(&a, &b) };
+            let want: i32 = (0..k).map(|i| a[i] as i32 * b[i] as i32).sum();
+            assert_eq!(got, want, "K={k}");
+        }
+    }
 
     /// Verify the runtime trampoline produces the same result as the
     /// scalar reference for a few representative shapes — aligned and

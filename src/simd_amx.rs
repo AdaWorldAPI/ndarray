@@ -23,7 +23,7 @@
 //! Troubleshooting playbook: `.claude/AMX_GOTCHAS.md`   Agent: `amx-savant`
 //!
 //! Dispatch tiers (MACs/instruction): AMX 16 384 → avx512vnni 64 →
-//! avxvnniint8 32 → scalar 1.
+//! avxvnni 32 → scalar 1.
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Detection (stable — just CPUID, no AMX instructions)
@@ -375,10 +375,17 @@ pub unsafe fn vnni_matvec(table: &[u8], energy_i8: &[i8], result: &mut [i32], n:
     }
 }
 
-/// AVX-VNNI (ymm, 256-bit) dot product: 32 MACs per VPDPBUSD instruction.
-/// For CPUs with avxvnniint8 but NOT avx512vnni (Arrow Lake, NUC 14 i9-185H, etc.)
+/// AVX-VNNI (ymm, 256-bit) dot product: 32 MACs per VEX-encoded VPDPBUSD.
+/// For CPUs with AVX-VNNI but NOT avx512vnni (Alder Lake and later client
+/// parts, Sierra Forest).
+///
+/// # Safety
+/// Caller must have verified `avx2` and `avxvnni` at runtime. The kernel uses
+/// `_mm256_dpbusd_avx_epi32` (VEX). It previously called
+/// `_mm256_dpbusd_epi32`, which is the AVX-512VNNI+VL (EVEX) form and raises
+/// #UD on exactly the non-AVX-512 hosts this tier exists for.
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avxvnniint8")]
+#[target_feature(enable = "avx2,avxvnni")]
 pub unsafe fn vnni2_dot_u8_i8(row: &[u8], energy: &[i8]) -> i32 {
     use core::arch::x86_64::*;
     let n = row.len().min(energy.len());
@@ -390,7 +397,7 @@ pub unsafe fn vnni2_dot_u8_i8(row: &[u8], energy: &[i8]) -> i32 {
         let a = _mm256_loadu_si256(row[off..].as_ptr() as *const __m256i);
         let b = _mm256_loadu_si256(energy[off..].as_ptr() as *const __m256i);
         // VPDPBUSD ymm: 8 lanes × 4 u8×i8 products = 32 MACs
-        acc = _mm256_dpbusd_epi32(acc, a, b);
+        acc = _mm256_dpbusd_avx_epi32(acc, a, b);
     }
 
     // Horizontal sum of 8 i32 lanes
@@ -411,7 +418,7 @@ pub unsafe fn vnni2_dot_u8_i8(row: &[u8], energy: &[i8]) -> i32 {
 
 /// VNNI2 MatVec for the entire distance table × energy vector (ymm path).
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avxvnniint8")]
+#[target_feature(enable = "avx2,avxvnni")]
 pub unsafe fn vnni2_matvec(table: &[u8], energy_i8: &[i8], result: &mut [i32], n: usize) {
     for i in 0..n {
         let row = &table[i * n..(i + 1) * n];
@@ -437,21 +444,23 @@ pub fn vnni_matvec_scalar(table: &[u8], energy_i8: &[i8], result: &mut [i32], n:
     }
 }
 
-/// Runtime-dispatched VNNI MatVec: avx512vnni → avxvnniint8 → scalar i32.
+/// Runtime-dispatched VNNI MatVec: avx512vnni → avxvnni → scalar i32.
 ///
 /// Three tiers, checked in order (first match wins):
 ///   avx512vnni  — 64 MACs/instr (zmm, Cascade Lake+, Zen 4+)
-///   avxvnniint8 — 32 MACs/instr (ymm, Arrow Lake, NUC 14 i9-185H)
+///   avxvnni     — 32 MACs/instr (ymm, Alder Lake+, Sierra Forest)
 ///   scalar i32  — only for non-x86 or testing
 ///
-/// IMPORTANT: avxvnniint8 (VNNI2, 256-bit) is NEVER reached when
+/// IMPORTANT: avxvnni (VEX 256-bit) is NEVER reached when
 /// avx512vnni (VNNI512) is present. This is correct:
 ///   - CPUs with avx512vnni always have 512-bit VPDPBUSD (faster)
-///   - avxvnniint8 exists ONLY for CPUs that dropped AVX-512
-///     but added 256-bit VNNI (Arrow Lake, Meteor Lake U-series)
+///   - the avxvnni tier exists for CPUs WITHOUT AVX-512 that added
+///     256-bit VEX VNNI (Alder Lake and later client parts)
 ///   - The two instructions have DIFFERENT encodings:
 ///     avx512vnni: EVEX-encoded VPDPBUSD zmm (512-bit)
-///     avxvnniint8: VEX-encoded VPDPBUSD ymm (256-bit)
+///     avxvnni:    VEX-encoded VPDPBUSD ymm (256-bit)
+///     (`avxvnniint8` is a DIFFERENT feature: VPDPBSSD/VPDPBUUD, signed×signed
+///     and unsigned×unsigned — not what this u8×i8 kernel needs)
 ///   - Running EVEX VPDPBUSD on a VEX-only CPU = SIGILL
 ///   - Running VEX VPDPBUSD on an EVEX CPU = works but wastes half the width
 ///
@@ -467,7 +476,7 @@ pub fn matvec_dispatch(table: &[u8], energy_i8: &[i8], result: &mut [i32], n: us
             }
             return;
         }
-        if is_x86_feature_detected!("avxvnniint8") {
+        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("avxvnni") {
             unsafe {
                 vnni2_matvec(table, energy_i8, result, n);
             }
