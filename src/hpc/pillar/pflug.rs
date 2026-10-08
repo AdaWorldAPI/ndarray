@@ -178,6 +178,7 @@ pub fn prove_pillar_10() -> PillarReport {
         psd_rate: if passed { 1.0 } else { 0.0 },
         lognorm_concentration,
         passed,
+        deferred: false,
     }
 }
 

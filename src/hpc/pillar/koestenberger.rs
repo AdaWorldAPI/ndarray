@@ -285,6 +285,7 @@ pub fn prove_pillar_7_5() -> PillarReport {
         psd_rate,
         lognorm_concentration: max_err, // repurpose field: tracks max path-parity error
         passed,
+        deferred: false,
     }
 }
 

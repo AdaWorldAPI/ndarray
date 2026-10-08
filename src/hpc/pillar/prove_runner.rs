@@ -14,7 +14,7 @@
 //! let _v = rng.next_f32();
 //! let report = PillarReport {
 //!     pillar_id: 6, seed: SEED, n_paths: 10, n_hops: 5,
-//!     psd_rate: 1.0, lognorm_concentration: 0.0, passed: true,
+//!     psd_rate: 1.0, lognorm_concentration: 0.0, passed: true, deferred: false,
 //! };
 //! report.print();
 //! assert!(assert_psd_rate(10, 10, 0.999));
@@ -49,7 +49,7 @@ impl SplitMix64 {
     ///
     /// ```rust
     /// use ndarray::hpc::pillar::prove_runner::SplitMix64;
-    /// let mut rng = SplitMix64::new(0xDA5ADC5ADD);
+    /// let _rng = SplitMix64::new(0xDA5ADC5ADD);
     /// ```
     #[inline]
     pub const fn new(seed: u64) -> Self {
@@ -140,6 +140,7 @@ impl SplitMix64 {
 ///     psd_rate: 0.9997,
 ///     lognorm_concentration: 0.0023,
 ///     passed: true,
+///     deferred: false,
 /// };
 /// r.print();
 /// ```
@@ -159,18 +160,39 @@ pub struct PillarReport {
     /// Log-norm Frobenius concentration metric (pillar-specific semantics).
     pub lognorm_concentration: f64,
     /// `true` if all PASS criteria were met.
+    ///
+    /// A deferred pillar reports `passed = true` because the deferral is not
+    /// a failure. That makes `passed` alone unfit as a certification gate:
+    /// use [`PillarReport::certified`], which also requires that the probe ran.
     pub passed: bool,
+    /// `true` if no probe ran: the pillar is a placeholder waiting for the
+    /// kernel it certifies. Its numeric fields are zero and carry no evidence.
+    pub deferred: bool,
 }
 
 impl PillarReport {
+    /// `true` only if the probe ran and every PASS criterion held.
+    ///
+    /// This is the predicate a gate should use. `passed` is also `true` for a
+    /// deferred pillar, which measured nothing.
+    pub fn certified(&self) -> bool {
+        self.passed && !self.deferred
+    }
+
     /// Pretty-print the report to stdout in a deterministic, grep-friendly format.
     ///
     /// Output format:
     /// ```text
     /// [PILLAR-7] seed=0xEDA5ADC5ADD paths=1000 hops=10 psd_rate=0.9997 lognorm_conc=0.0023 PASS
     /// ```
+    ///
+    /// The status is `PASS`, `FAIL`, or `DEFERRED` (no probe ran).
     pub fn print(&self) {
-        let status = if self.passed { "PASS" } else { "FAIL" };
+        let status = match (self.deferred, self.passed) {
+            (true, _) => "DEFERRED",
+            (false, true) => "PASS",
+            (false, false) => "FAIL",
+        };
         // Use plain integer formatting for seed so the output is reproducible
         // across platforms (no locale-dependent float printing).
         println!(
@@ -431,11 +453,13 @@ mod tests {
             psd_rate: 0.9997,
             lognorm_concentration: 0.001,
             passed: true,
+            deferred: false,
         };
         assert!(r_pass.passed);
 
         let r_fail = PillarReport {
             passed: false,
+            deferred: false,
             ..r_pass.clone()
         };
         assert!(!r_fail.passed);
@@ -452,6 +476,7 @@ mod tests {
             psd_rate: 1.0,
             lognorm_concentration: 0.0,
             passed: true,
+            deferred: false,
         };
         // Two prints of the same report produce the same line (determinism).
         // We can't easily capture stdout in no_std, so we just assert it

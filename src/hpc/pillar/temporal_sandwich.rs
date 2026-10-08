@@ -301,6 +301,7 @@ pub fn prove_pillar_8_band(band: MotionBand) -> PillarReport {
         psd_rate,
         lognorm_concentration,
         passed,
+        deferred: false,
     }
 }
 
