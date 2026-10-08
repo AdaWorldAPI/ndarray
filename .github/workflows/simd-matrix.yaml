@@ -154,7 +154,18 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
+      # The build below resolves `target-cpu=native` on THIS runner, and the
+      # pool is heterogeneous (see host-native). A cache keyed only by job
+      # restores proc-macro .so files compiled for another runner's CPU, and
+      # rustc dies loading them with SIGILL (seen on ndarray #344: the cached
+      # `paste` .so). Key the cache by the target features rustc resolves for
+      # `native` here, which is exactly what decides those artifacts.
+      - name: native target features (cache key)
+        id: cpu
+        run: echo "features=$(rustc +stable --print cfg -C target-cpu=native | grep target_feature | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: host-native-${{ steps.cpu.outputs.features }}
       - name: what silicon is this runner
         run: lscpu | sed -n '1,/^Flags/p' | head -30
       - name: masking parity (host-native, unpinned — READ THE HEADER LINE)
@@ -272,9 +283,18 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@nightly
+      # The build below resolves `target-cpu=native` on THIS runner, and the
+      # pool is heterogeneous (see host-native). A cache keyed only by job
+      # restores proc-macro .so files compiled for another runner's CPU, and
+      # rustc dies loading them with SIGILL (seen on ndarray #344: the cached
+      # `paste` .so). Key the cache by the target features rustc resolves for
+      # `native` here, which is exactly what decides those artifacts.
+      - name: native target features (cache key)
+        id: cpu
+        run: echo "features=$(rustc +nightly --print cfg -C target-cpu=native | grep target_feature | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
       - uses: Swatinem/rust-cache@v2
         with:
-          key: nightly
+          key: nightly-${{ steps.cpu.outputs.features }}
       - name: masking parity (nightly-simd)
         run: bash scripts/masking-parity.sh nightly
       - name: lib tests on the nightly arm
