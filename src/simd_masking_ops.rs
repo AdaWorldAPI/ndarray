@@ -2446,7 +2446,11 @@ impl CrossPowerSums {
     /// Exact integer arithmetic: the result equals what folding the
     /// transformed pairs would give, so chains compose —
     /// `s.checked_affine(A1, t1)?.checked_affine(A2, t2)` equals one call with
-    /// `A2·A1` and `A2·t1 + t2`. `None` if any intermediate or result field
+    /// `A2·A1` and `A2·t1 + t2` **whenever both return `Some`**. The two forms
+    /// can differ in whether they fail: a step may overflow a field that the
+    /// composed map never produces (translate by `i64::MAX`, then back, fails
+    /// stepwise but is the identity composed), and the composed coefficients
+    /// themselves must fit `i64`. `None` if any intermediate or result field
     /// overflows, rather than wrapping. A group key must not depend on the
     /// transformed columns: transforming each group's sums is the same as
     /// transforming the rows only if every row stays in its group.
@@ -9510,6 +9514,19 @@ mod group_family_tests {
             .and_then(|s| s.checked_affine(m2, t2));
         assert_eq!(seq, c.checked_affine(m21, t21));
         assert!(seq.is_some());
+        // Composition holds when both succeed; failure need not agree. Two
+        // (0, 0) rows: translating by i64::MAX overflows sum_x stepwise, while
+        // the composed translation (there and back) is the identity.
+        let z = CrossPowerSums {
+            n: 2,
+            ..CrossPowerSums::default()
+        };
+        let id = [1, 0, 0, 1];
+        let stepwise = z
+            .checked_affine(id, [i64::MAX, 0])
+            .and_then(|s| s.checked_affine(id, [-i64::MAX, 0]));
+        assert_eq!(stepwise, None);
+        assert_eq!(z.checked_affine(id, [0, 0]), Some(z));
         // The identity changes nothing; the zero map leaves only the translation.
         assert_eq!(c.checked_affine([1, 0, 0, 1], [0, 0]), Some(c));
         assert_eq!(

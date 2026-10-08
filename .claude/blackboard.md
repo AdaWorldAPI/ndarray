@@ -14,7 +14,7 @@
 - **Precondition, in the docs and pinned by a test:** the group key must not depend on a transformed column. With `x ≥ 0` as the key, shifting x by 20 moves rows between groups, so per-group transforms differ from the truth.
 - **Evidence:**
   - 400 random cases match a fold of the transformed rows through `masked_group_cross_power_sums_i32`. Each case has 1–300 rows, coefficients in [−5, 5] (reflections included) and translations in [−100, 100], under random masks and 3 groups. The univariate form is checked against the x marginal.
-  - Composition: two calls equal one call with `A2·A1` and `A2·t1 + t2`. The identity map leaves the sums unchanged, and the zero map leaves only the translation.
+  - Composition: two calls equal one call with `A2·A1` and `A2·t1 + t2` whenever both succeed. Failure need not agree: translating by `i64::MAX` and back fails stepwise but is the identity composed (pinned, after review). The identity map leaves the sums unchanged, and the zero map leaves only the translation.
   - Overflow refuses in every narrowed field; 2 doctests.
 - **Disable runs, all red, each restored:**
   - dropped the `2·tx·(A·S)x` term;
