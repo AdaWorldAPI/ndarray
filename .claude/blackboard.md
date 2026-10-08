@@ -1,3 +1,33 @@
+## 2026-10-08 — `hpc::phase`: phases in turns, a `(cos, sin)` LUT with stated error bounds, a drift-free accumulator
+
+- **New:** `src/hpc/phase.rs`, re-exported from `ndarray::simd`:
+  - `turns_from_radians` / `radians_from_turns`: a phase is a `u32` in turns (`2^32` = one rotation), so `3θ` is `p.wrapping_mul(3)` and wraparound is free;
+  - `PhaseLut` (`2^bits` `[cos, sin]` pairs, `bits` in 2..=20) with `nearest`, `lerp`, `lerp_batch`, and per-component bounds `nearest_error_bound()` (`π/2^bits` + f32 rounding) and `lerp_error_bound()` (`h²/8` + 4·f32 epsilon);
+  - `phase_lut_4096()`, a shared 32 KB table;
+  - `PhaseStep { start, step }` with `at(n) = start + n·step` mod one turn, and `from_radians` reporting the representable-step offset.
+- **Why:** the lance-graph `phasor_trig_probe` (D-PHT-1, merged in lance-graph #1416) measured interpolation at 2^12 entries:
+  - same accuracy as f32 `sin_cos` (4.6e-7 vs 5.1e-7 relative);
+  - about 4.5× faster than f32 `sin_cos` and 12× faster than f64 (x86-64-v3, release);
+  - an integer accumulator has no drift by construction, while an f32 complex recurrence reached 1.95 units on R = 100 after 1M steps.
+
+  ndarray had no phase LUT, no CORDIC and no SIMD `sin`/`cos`. `vml::vscos`/`vssin` call scalar `cos`/`sin` per lane.
+- **Not SIMD:** the lookups are scalar. A gather-based batch path is a separate, unmeasured step.
+- **Evidence:**
+  - 10 unit tests, 20 doctests;
+  - bounds are checked two-sided: never exceeded, and not vacuous (nearest reaches > 0.5 of its bound, lerp > 0.1 at ≤ 12 bits);
+  - the last interval interpolates into entry 0; `wrapping_mul(3)` equals `3θ mod 2π`;
+  - conversions round-trip and wrap, and NaN maps to 0;
+  - 1M accumulator steps equal the closed form, and the looked-up point stays within the bound.
+- **Disable runs, all red, each restored:**
+  - nearest without the half-step rounding;
+  - lerp without the wrap into entry 0;
+  - the lerp bound without the chord sag;
+  - `at` ignoring `start`.
+- **Full run:** `cargo test -p ndarray --lib` passed 2543, with debug 0. clippy `-D warnings` and fmt are clean. Only the native realization was run, and the code has no target-specific paths.
+- **Next (not done):**
+  - a SIMD gather batch (`lerp_batch` over `U32x16`), measured against the scalar loop;
+  - lance-graph consumers switching to `ndarray::simd::PhaseLut`.
+
 ## 2026-10-04 — `ternary_match_strided16_to_mask`: the 16-byte strided care match
 
 - **New:** `simd::ternary_match_strided16_to_mask(bytes, first_offset, stride, count, &[u8;16], &[u8;16], out)`, the full-width sibling of the 12-byte `ternary_match_strided_to_mask`. All 128 bits participate. Same execution model: scalar LE gathers, `U64x8` ternlog `XOR_AND` on two `u64` halves, scalar tail, full overwrite. No population-sized scratch. The 12-byte kernel is unchanged.

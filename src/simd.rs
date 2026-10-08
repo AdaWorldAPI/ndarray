@@ -617,6 +617,7 @@ pub use crate::hpc::fft::{wht_f32, wht_f32_new};
 pub use crate::hpc::fingerprint::{
     vector_config, Fingerprint, Fingerprint1K, Fingerprint2K, Fingerprint64K, VectorConfig, VectorWidth,
 };
+pub use crate::hpc::phase::{phase_lut_4096, radians_from_turns, turns_from_radians, PhaseLut, PhaseStep};
 pub use crate::hpc::statistics::{moments_u32, MomentsU32};
 
 // PR-X1 — SoA carrier + const-size slice helpers, dispatched from their
