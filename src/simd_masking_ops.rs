@@ -9536,8 +9536,17 @@ mod group_family_tests {
             sum_y_sq: 1,
             sum_xy: 0,
         };
-        assert_eq!(c.checked_affine([1, 0, 0, 1], [i64::MAX, 0]), None, "sum_x past i64");
-        assert_eq!(c.checked_affine([1, 0, 0, 1], [0, i64::MIN]), None, "sum_y past i64");
+        // n·t = 3·2^62 passes i64 while n·t² = 3·2^124 still fits i128 and
+        // u128: only the narrowing of the first moment can refuse here.
+        let big = 1i64 << 62;
+        assert!(3 * (big as i128) > i64::MAX as i128 && 3 * (big as i128).pow(2) < i128::MAX);
+        assert_eq!(c.checked_affine([1, 0, 0, 1], [big, 0]), None, "sum_x past i64");
+        assert_eq!(c.checked_affine([1, 0, 0, 1], [0, -big]), None, "sum_y past i64");
+        assert!(
+            c.checked_affine([1, 0, 0, 1], [big / 2, -big / 2])
+                .is_some(),
+            "just inside"
+        );
         assert_eq!(
             c.checked_affine([i64::MAX, 0, 0, 1], [0, 0])
                 .map(|s| s.sum_x),
