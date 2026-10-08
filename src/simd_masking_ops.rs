@@ -2298,6 +2298,50 @@ impl PowerSums {
             sum_sq: self.sum_sq.checked_add(other.sum_sq)?,
         })
     }
+
+    /// Power sums of the transformed population `a·x + b`, from the sums
+    /// alone — no row is re-read:
+    ///
+    /// ```text
+    /// n' = n,  Σx' = a·Σx + n·b,  Σx'² = a²·Σx² + 2ab·Σx + n·b²
+    /// ```
+    ///
+    /// Exact integer arithmetic: the result equals what folding the
+    /// transformed values would give. `None` if any intermediate or result
+    /// field overflows (`sum` beyond `i64`, `sum_sq` beyond `u128`) rather
+    /// than wrapping. A group key must not depend on the transformed value:
+    /// transforming each group's sums is the same as transforming the rows
+    /// only if every row stays in its group.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::PowerSums;
+    ///
+    /// // x = [1, 2, 3]  →  3x − 4 = [−1, 2, 5]
+    /// let p = PowerSums { n: 3, sum: 6, sum_sq: 14 };
+    /// assert_eq!(p.checked_affine(3, -4), Some(PowerSums { n: 3, sum: 6, sum_sq: 30 }));
+    /// assert_eq!(p.checked_affine(1, i64::MAX), None);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn checked_affine(self, a: i64, b: i64) -> Option<Self> {
+        let n = i128::from(self.n);
+        let sx = i128::from(self.sum);
+        let sxx = i128::try_from(self.sum_sq).ok()?;
+        let (a, b) = (i128::from(a), i128::from(b));
+        let sum = a.checked_mul(sx)?.checked_add(n.checked_mul(b)?)?;
+        let sum_sq = a
+            .checked_mul(a)?
+            .checked_mul(sxx)?
+            .checked_add(a.checked_mul(b)?.checked_mul(sx)?.checked_mul(2)?)?
+            .checked_add(n.checked_mul(b)?.checked_mul(b)?)?;
+        Some(Self {
+            n: self.n,
+            sum: i64::try_from(sum).ok()?,
+            sum_sq: u128::try_from(sum_sq).ok()?,
+        })
+    }
 }
 
 /// Joint power sums of a pair of `i32` lanes, per group: `n`, `Σx`, `Σy`,
@@ -2386,6 +2430,81 @@ impl CrossPowerSums {
             sum_x_sq: self.sum_x_sq.checked_add(other.sum_x_sq)?,
             sum_y_sq: self.sum_y_sq.checked_add(other.sum_y_sq)?,
             sum_xy: self.sum_xy.checked_add(other.sum_xy)?,
+        })
+    }
+
+    /// Joint power sums of the transformed pairs `(x', y') = A·(x, y) + t`,
+    /// with `A = [a, b, c, d]` row-major (`x' = a·x + b·y + t[0]`,
+    /// `y' = c·x + d·y + t[1]`), from the sums alone. With `S = (Σx, Σy)` and
+    /// `M` the second-moment matrix:
+    ///
+    /// ```text
+    /// S' = A·S + n·t
+    /// M' = A·M·Aᵀ + A·S·tᵀ + t·Sᵀ·Aᵀ + n·t·tᵀ
+    /// ```
+    ///
+    /// Exact integer arithmetic: the result equals what folding the
+    /// transformed pairs would give, so chains compose —
+    /// `s.checked_affine(A1, t1)?.checked_affine(A2, t2)` equals one call with
+    /// `A2·A1` and `A2·t1 + t2`. `None` if any intermediate or result field
+    /// overflows, rather than wrapping. A group key must not depend on the
+    /// transformed columns: transforming each group's sums is the same as
+    /// transforming the rows only if every row stays in its group.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::CrossPowerSums;
+    ///
+    /// // (x, y) = (1, 2), (3, −1); swap the axes and shift: (y + 10, x).
+    /// let c = CrossPowerSums { n: 2, sum_x: 4, sum_y: 1, sum_x_sq: 10, sum_y_sq: 5, sum_xy: -1 };
+    /// let t = c.checked_affine([0, 1, 1, 0], [10, 0]).unwrap();
+    /// // transformed pairs: (12, 1), (9, 3)
+    /// assert_eq!(t, CrossPowerSums { n: 2, sum_x: 21, sum_y: 4, sum_x_sq: 225, sum_y_sq: 10, sum_xy: 39 });
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn checked_affine(self, m: [i64; 4], t: [i64; 2]) -> Option<Self> {
+        let n = i128::from(self.n);
+        let (sx, sy) = (i128::from(self.sum_x), i128::from(self.sum_y));
+        let sxx = i128::try_from(self.sum_x_sq).ok()?;
+        let syy = i128::try_from(self.sum_y_sq).ok()?;
+        let sxy = self.sum_xy;
+        let [a, b, c, d] = m.map(i128::from);
+        let [tx, ty] = t.map(i128::from);
+        // Linear parts of the first moments: A·S.
+        let lx = a.checked_mul(sx)?.checked_add(b.checked_mul(sy)?)?;
+        let ly = c.checked_mul(sx)?.checked_add(d.checked_mul(sy)?)?;
+        // (p·x + q·y)(r·x + s·y) summed: p·r·Σx² + (p·s + q·r)·Σxy + q·s·Σy².
+        let quad = |p: i128, q: i128, r: i128, s: i128| -> Option<i128> {
+            p.checked_mul(r)?
+                .checked_mul(sxx)?
+                .checked_add(
+                    p.checked_mul(s)?
+                        .checked_add(q.checked_mul(r)?)?
+                        .checked_mul(sxy)?,
+                )?
+                .checked_add(q.checked_mul(s)?.checked_mul(syy)?)
+        };
+        let sum_x = lx.checked_add(n.checked_mul(tx)?)?;
+        let sum_y = ly.checked_add(n.checked_mul(ty)?)?;
+        let sum_x_sq = quad(a, b, a, b)?
+            .checked_add(tx.checked_mul(lx)?.checked_mul(2)?)?
+            .checked_add(n.checked_mul(tx)?.checked_mul(tx)?)?;
+        let sum_y_sq = quad(c, d, c, d)?
+            .checked_add(ty.checked_mul(ly)?.checked_mul(2)?)?
+            .checked_add(n.checked_mul(ty)?.checked_mul(ty)?)?;
+        let sum_xy = quad(a, b, c, d)?
+            .checked_add(tx.checked_mul(ly)?)?
+            .checked_add(ty.checked_mul(lx)?)?
+            .checked_add(n.checked_mul(tx)?.checked_mul(ty)?)?;
+        Some(Self {
+            n: self.n,
+            sum_x: i64::try_from(sum_x).ok()?,
+            sum_y: i64::try_from(sum_y).ok()?,
+            sum_x_sq: u128::try_from(sum_x_sq).ok()?,
+            sum_y_sq: u128::try_from(sum_y_sq).ok()?,
+            sum_xy,
         })
     }
 }
@@ -9315,6 +9434,156 @@ mod group_family_tests {
             .checked_merge(CrossPowerSums { sum_y_sq: 1, ..z }),
             None
         );
+    }
+
+    fn affine_rng(state: &mut u64) -> u64 {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        *state
+    }
+
+    /// The summary transform equals folding the transformed rows, per group,
+    /// on random populations, maps and masks — including negative, zero and
+    /// swapped coefficients.
+    #[test]
+    fn checked_affine_equals_folding_the_transformed_rows() {
+        let mut st = 0xaff1_u64;
+        let mut seen_negative_det = false;
+        for case in 0..400 {
+            let n = 1 + (affine_rng(&mut st) % 300) as usize;
+            let span = |s: &mut u64, r: u64| (affine_rng(s) % (2 * r + 1)) as i64 - r as i64;
+            let xs: Vec<i32> = (0..n).map(|_| span(&mut st, 1000) as i32).collect();
+            let ys: Vec<i32> = (0..n).map(|_| span(&mut st, 1000) as i32).collect();
+            let keys: Vec<u32> = (0..n).map(|i| (i % 3) as u32).collect();
+            let mask: Vec<u64> = (0..n.div_ceil(64)).map(|_| affine_rng(&mut st)).collect();
+            let m = [span(&mut st, 5), span(&mut st, 5), span(&mut st, 5), span(&mut st, 5)];
+            let t = [span(&mut st, 100), span(&mut st, 100)];
+            seen_negative_det |= m[0] * m[3] - m[1] * m[2] < 0;
+            let mut base = [CrossPowerSums::default(); 3];
+            masked_group_cross_power_sums_i32(&mask, &keys, &xs, &ys, &mut base);
+            let tx: Vec<i32> = (0..n)
+                .map(|i| (m[0] * xs[i] as i64 + m[1] * ys[i] as i64 + t[0]) as i32)
+                .collect();
+            let ty: Vec<i32> = (0..n)
+                .map(|i| (m[2] * xs[i] as i64 + m[3] * ys[i] as i64 + t[1]) as i32)
+                .collect();
+            let mut want = [CrossPowerSums::default(); 3];
+            masked_group_cross_power_sums_i32(&mask, &keys, &tx, &ty, &mut want);
+            for g in 0..3 {
+                assert_eq!(base[g].checked_affine(m, t), Some(want[g]), "case {case} group {g} m {m:?} t {t:?}");
+                // The univariate form agrees with the x marginal under x' = a·x + b.
+                let mut px = [PowerSums::default(); 3];
+                let lx: Vec<i32> = xs
+                    .iter()
+                    .map(|&x| (m[0] * x as i64 + t[0]) as i32)
+                    .collect();
+                masked_group_power_sums_i32(&mask, &keys, &lx, &mut px);
+                assert_eq!(base[g].x().checked_affine(m[0], t[0]), Some(px[g]), "case {case} univariate g {g}");
+            }
+        }
+        assert!(seen_negative_det, "anti-vacuity: some map must reflect");
+    }
+
+    /// Two transforms in sequence equal their composition in one call.
+    #[test]
+    fn checked_affine_composes() {
+        let c = CrossPowerSums {
+            n: 5,
+            sum_x: 17,
+            sum_y: -9,
+            sum_x_sq: 301,
+            sum_y_sq: 77,
+            sum_xy: -40,
+        };
+        let (m1, t1) = ([2, -1, 3, 0], [7, -4]);
+        let (m2, t2) = ([0, 1, -1, 2], [-3, 11]);
+        let m21 = [
+            m2[0] * m1[0] + m2[1] * m1[2],
+            m2[0] * m1[1] + m2[1] * m1[3],
+            m2[2] * m1[0] + m2[3] * m1[2],
+            m2[2] * m1[1] + m2[3] * m1[3],
+        ];
+        let t21 = [m2[0] * t1[0] + m2[1] * t1[1] + t2[0], m2[2] * t1[0] + m2[3] * t1[1] + t2[1]];
+        let seq = c
+            .checked_affine(m1, t1)
+            .and_then(|s| s.checked_affine(m2, t2));
+        assert_eq!(seq, c.checked_affine(m21, t21));
+        assert!(seq.is_some());
+        // The identity changes nothing; the zero map leaves only the translation.
+        assert_eq!(c.checked_affine([1, 0, 0, 1], [0, 0]), Some(c));
+        assert_eq!(
+            c.checked_affine([0, 0, 0, 0], [2, -3]),
+            Some(CrossPowerSums {
+                n: 5,
+                sum_x: 10,
+                sum_y: -15,
+                sum_x_sq: 20,
+                sum_y_sq: 45,
+                sum_xy: -30
+            })
+        );
+    }
+
+    /// Overflow refuses instead of wrapping, in every field.
+    #[test]
+    fn checked_affine_refuses_to_wrap() {
+        let c = CrossPowerSums {
+            n: 3,
+            sum_x: 1,
+            sum_y: 1,
+            sum_x_sq: 1,
+            sum_y_sq: 1,
+            sum_xy: 0,
+        };
+        assert_eq!(c.checked_affine([1, 0, 0, 1], [i64::MAX, 0]), None, "sum_x past i64");
+        assert_eq!(c.checked_affine([1, 0, 0, 1], [0, i64::MIN]), None, "sum_y past i64");
+        assert_eq!(
+            c.checked_affine([i64::MAX, 0, 0, 1], [0, 0])
+                .map(|s| s.sum_x),
+            Some(i64::MAX)
+        );
+        let big = CrossPowerSums {
+            n: 1,
+            sum_x: 1,
+            sum_y: 0,
+            sum_x_sq: u128::MAX,
+            sum_y_sq: 0,
+            sum_xy: 0,
+        };
+        assert_eq!(big.checked_affine([1, 0, 0, 1], [0, 0]), None, "sum_x_sq past i128");
+        let p = PowerSums {
+            n: 2,
+            sum: 0,
+            sum_sq: 2,
+        };
+        assert_eq!(p.checked_affine(1, i64::MAX), None);
+        assert_eq!(
+            p.checked_affine(0, 5),
+            Some(PowerSums {
+                n: 2,
+                sum: 10,
+                sum_sq: 50
+            })
+        );
+    }
+
+    /// Transforming each group's sums is wrong when the key reads a
+    /// transformed column: the documented precondition, not a bug to fix.
+    #[test]
+    fn checked_affine_needs_a_key_the_transform_does_not_move() {
+        let xs: Vec<i32> = (-50..50).collect();
+        let ys = vec![0i32; xs.len()];
+        let mask = vec![u64::MAX; 2];
+        let key_of = |v: &[i32]| v.iter().map(|&x| u32::from(x >= 0)).collect::<Vec<u32>>();
+        let shifted: Vec<i32> = xs.iter().map(|x| x + 20).collect();
+        let mut base = [CrossPowerSums::default(); 2];
+        masked_group_cross_power_sums_i32(&mask, &key_of(&xs), &xs, &ys, &mut base);
+        let mut truth = [CrossPowerSums::default(); 2];
+        masked_group_cross_power_sums_i32(&mask, &key_of(&shifted), &shifted, &ys, &mut truth);
+        let pushed = base.map(|s| s.checked_affine([1, 0, 0, 1], [20, 0]).unwrap());
+        assert_ne!(pushed, truth);
+        assert_eq!(pushed[0].n + pushed[1].n, truth[0].n + truth[1].n);
     }
 
     #[test]
