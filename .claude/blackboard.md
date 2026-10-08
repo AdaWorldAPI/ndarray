@@ -1,3 +1,32 @@
+## 2026-10-08 — `PowerSums::checked_affine`, `CrossPowerSums::checked_affine`: power sums of an affine image from the sums alone
+
+- **New** (both in `src/simd_masking_ops.rs`, reached through `ndarray::simd`):
+  - `PowerSums::checked_affine(a, b)`: the sums of `a·x + b`;
+  - `CrossPowerSums::checked_affine([a, b, c, d], [tx, ty])`: the sums of `A·(x, y) + t`, using `S' = A·S + n·t` and `M' = A·M·Aᵀ + A·S·tᵀ + t·Sᵀ·Aᵀ + n·t·tᵀ`.
+
+  Both use checked `i128` arithmetic and return `None` instead of wrapping. Each field is narrowed back to its declared width (`i64` / `u128` / `i128`).
+- **Why:** the lance-graph `algebraic_recipe_probe` (D-ART-1, merged in lance-graph #1418) measured three things:
+  - composed affine chains over these summaries are bitwise equal to materialise-and-fold;
+  - the summary path is 2.5–4× cheaper than materialising the transformed rows;
+  - a warm summary transform costs 14 ns, independent of the row count.
+
+  Before this, nothing in ndarray or lance-graph transformed a summary. I read every `impl` block on `origin/master` 36ce111: only `checked_merge`, `x()` and `y()`. lance-graph's `jc::stats` only reads summaries.
+- **Precondition, in the docs and pinned by a test:** the group key must not depend on a transformed column. With `x ≥ 0` as the key, shifting x by 20 moves rows between groups, so per-group transforms differ from the truth.
+- **Evidence:**
+  - 400 random cases match a fold of the transformed rows through `masked_group_cross_power_sums_i32`. Each case has 1–300 rows, coefficients in [−5, 5] (reflections included) and translations in [−100, 100], under random masks and 3 groups. The univariate form is checked against the x marginal.
+  - Composition: two calls equal one call with `A2·A1` and `A2·t1 + t2`. The identity map leaves the sums unchanged, and the zero map leaves only the translation.
+  - Overflow refuses in every narrowed field; 2 doctests.
+- **Disable runs, all red, each restored:**
+  - dropped the `2·tx·(A·S)x` term;
+  - dropped the `ty·(A·S)x` cross term;
+  - dropped `n·tx`;
+  - dropped the univariate `2ab·Σx`;
+  - `as i64` instead of the checked narrowing, separately for `sum_x` and for `sum_y`.
+
+  The first overflow test was vacuous: its translation already overflowed the square, so the `i64` narrowing it claimed to test never ran. The `as i64` disable stayed green, which is how it was found. The fixture was rebuilt so that only the narrowing can refuse (`n·t = 3·2^62`).
+- **Full run:** `cargo test -p ndarray --lib` passed 2547 (32 ignored), with debug 0. clippy `-D warnings` and fmt are clean. Scalar code with no target-specific paths.
+- **Not done:** a batch form over many groups; a float variant; a rotation by `PhaseLut` turns, which needs real-valued coefficients and so is a different contract.
+
 ## 2026-10-08 — `hpc::phase`: phases in turns, a `(cos, sin)` LUT with stated error bounds, a drift-free accumulator
 
 - **New:** `src/hpc/phase.rs`, re-exported from `ndarray::simd`:
