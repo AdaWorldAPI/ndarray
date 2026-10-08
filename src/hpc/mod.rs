@@ -26,6 +26,9 @@ pub mod blas_level3;
 pub mod reductions;
 pub mod statistics;
 pub mod rolling_floor;
+/// Phases in `u32` turns, a `(cos, sin)` lookup table with stated error
+/// bounds, and a drift-free integer phase accumulator.
+pub mod phase;
 /// Reliability & validity statistics: Pearson r, Spearman ρ, Cronbach α, ICC.
 pub mod reliability;
 /// Entropy ladder: Staunen↔Wisdom coordinate over NARS truth + Pearl-2³ SPO.
