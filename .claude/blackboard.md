@@ -1,3 +1,17 @@
+## 2026-10-08 — `PillarReport::deferred` + `certified()`; `Cascade::query` documents that Stroke 1 can drop true hits
+
+- **Pillars:** Pillar-15/16/17 run no probe but report `passed = true`. A gate on `passed` counted them as certified. `PillarReport` now has `deferred: bool` (true only for those three) and `certified() = passed && !deferred`. `print()` shows `DEFERRED`. `passed` keeps its meaning, so existing callers do not change.
+  - Breaking for code that builds `PillarReport` with a struct literal: add `deferred: false`. All 18 in-tree literals are updated.
+  - Pinned by `deferred_pillars_are_not_certified`: 12–14 certified, 15–17 deferred, and `deferred` agrees with `n_paths == n_hops == 0` on every report.
+- **Cascade:** `Cascade::query`'s Stroke 1 drops any candidate whose scaled prefix estimate exceeds `threshold + 3σ`. Nothing falls back to an exact check, so a hit within the threshold whose differing bits sit in the prefix is lost. This is how a statistical cascade works, so the behaviour stays. The doc now says recall is not guaranteed and that returned hits are exact.
+  - Pinned by `stroke1_drops_a_prefix_heavy_true_hit`: 400 bits in the prefix are dropped, the same 400 at the tail are kept, and 127 fillers keep the warm-up σ small.
+- **Disable runs, both red, both restored:**
+  - `certified()` returning `passed`;
+  - Stroke 1 also admitting `d <= threshold`.
+- **Also:** the `SplitMix64::new` doctest failed under `deny(warnings)` because of an unused `mut`. Fixed.
+- **Not fixed (pre-existing, unrelated):** clippy errors in `tests/splat3d_correctness.rs` under `--tests`.
+- **Source:** lance-graph board `2026-10-08-mexhat-bucket-cascade-probe.md`, which flagged both behaviours.
+
 ## 2026-10-08 — `PowerSums::checked_affine`, `CrossPowerSums::checked_affine`: power sums of an affine image from the sums alone
 
 - **New** (both in `src/simd_masking_ops.rs`, reached through `ndarray::simd`):

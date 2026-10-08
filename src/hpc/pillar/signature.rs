@@ -412,6 +412,7 @@ pub fn prove_pillar_11() -> PillarReport {
         psd_rate,
         lognorm_concentration: concentration,
         passed,
+        deferred: false,
     }
 }
 

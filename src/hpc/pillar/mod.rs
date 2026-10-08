@@ -168,7 +168,8 @@ pub use tree_balance::prove_pillar_17;
 /// for r in &reports {
 ///     r.print();
 /// }
-/// assert!(reports.iter().all(|r| r.passed));
+/// // `passed` is also true for a deferred pillar; gate on `certified()`.
+/// assert!(reports.iter().filter(|r| !r.deferred).all(|r| r.certified()));
 /// ```
 pub fn run_substrate_tier() -> Vec<PillarReport> {
     vec![
@@ -201,6 +202,28 @@ mod tests {
         for r in &reports {
             assert!(r.passed, "Pillar-{} did not pass", r.pillar_id);
         }
+    }
+
+    #[test]
+    fn deferred_pillars_are_not_certified() {
+        // 12-14 run a probe; 15-17 are placeholders. A gate that reads
+        // `passed` alone counts all six as certified.
+        let reports = run_substrate_tier();
+        let certified: Vec<u8> = reports
+            .iter()
+            .filter(|r| r.certified())
+            .map(|r| r.pillar_id)
+            .collect();
+        let deferred: Vec<u8> = reports
+            .iter()
+            .filter(|r| r.deferred)
+            .map(|r| r.pillar_id)
+            .collect();
+        assert_eq!(certified, vec![12, 13, 14]);
+        assert_eq!(deferred, vec![15, 16, 17]);
+        assert!(reports
+            .iter()
+            .all(|r| r.deferred == (r.n_paths == 0 && r.n_hops == 0)));
     }
 
     #[test]

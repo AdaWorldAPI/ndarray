@@ -505,6 +505,7 @@ pub fn prove_pillar_11_lattice() -> PillarReport {
         psd_rate: 1.0 - f64::from(leg.reduced_merged) / f64::from(leg.reduced_checked.max(1)),
         lognorm_concentration: f64::from(leg.false_merge_max_sep_level),
         passed,
+        deferred: false,
     }
 }
 

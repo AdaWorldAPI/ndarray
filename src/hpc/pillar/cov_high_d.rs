@@ -417,6 +417,7 @@ pub fn prove_pillar_9() -> PillarReport {
         psd_rate: clt_rate, // repurposed: stores CLT convergence rate
         lognorm_concentration: clt_rate,
         passed,
+        deferred: false,
     }
 }
 

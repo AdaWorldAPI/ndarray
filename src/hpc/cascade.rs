@@ -266,6 +266,16 @@ impl Cascade {
     }
 
     /// Run the full 3-stroke cascade query.
+    ///
+    /// **Approximate: recall is not guaranteed.** Stroke 1 scales the prefix
+    /// distance by `vec_bytes / s1_bytes` and drops any candidate whose
+    /// estimate exceeds `threshold + 3σ`. A candidate whose differing bits sit
+    /// mostly in the prefix is dropped even when its full distance is within
+    /// `threshold`; nothing falls through to an exact check. Strokes 2 and 3
+    /// are exact: every hit returned carries its true distance and is within
+    /// `threshold`. Vectors shorter than 128 bytes skip Stroke 1 and are exact.
+    /// For an exact scan, call [`crate::hpc::bitwise::hamming_distance_within`]
+    /// per candidate.
     pub fn query(&self, query: &[u8], database: &[u8], vec_bytes: usize, num_vectors: usize) -> Vec<RankedHit> {
         assert_eq!(query.len(), vec_bytes);
         assert_eq!(database.len(), vec_bytes * num_vectors);
@@ -788,6 +798,46 @@ mod tests {
             .enumerate()
             .filter(|&(_, d)| d <= threshold)
             .collect()
+    }
+
+    /// Stroke 1 is a statistical prune: a hit whose differences sit in the
+    /// prefix is dropped although its full distance is within the threshold.
+    /// The documented contract is "returned hits are exact", not "all hits
+    /// are returned". A change that makes Stroke 1 exact will flip this test.
+    #[test]
+    fn stroke1_drops_a_prefix_heavy_true_hit() {
+        let vec_bytes = 2048;
+        let threshold = 600;
+        let query: Vec<u8> = (0..vec_bytes).map(|i| (i as u8).wrapping_mul(37)).collect();
+        let mut database = Vec::new();
+        // Candidate 0: 400 differing bits, all in the stroke-1 prefix.
+        let mut v = query.clone();
+        for bit in 0..400 {
+            v[bit / 8] ^= 1 << (bit % 8);
+        }
+        database.extend_from_slice(&v);
+        // Candidates 1..128: the same 400 bits, all at the tail. They fill the
+        // 128-row warmup so the population sigma stays small.
+        let mut w = query.clone();
+        for bit in 0..400 {
+            w[vec_bytes - 1 - bit / 8] ^= 1 << (bit % 8);
+        }
+        let n = 128;
+        for _ in 1..n {
+            database.extend_from_slice(&w);
+        }
+        for c in database.chunks(vec_bytes) {
+            assert_eq!(bitwise::hamming_distance_raw(&query, c), 400);
+        }
+        let cascade = Cascade::from_threshold(threshold, vec_bytes);
+        let mut got: Vec<(usize, u64)> = cascade
+            .query(&query, &database, vec_bytes, n)
+            .iter()
+            .map(|r| (r.index, r.hamming))
+            .collect();
+        got.sort_unstable();
+        let expected: Vec<(usize, u64)> = (1..n).map(|i| (i, 400)).collect();
+        assert_eq!(got, expected, "Stroke 1 should drop candidate 0 and keep the rest");
     }
 
     #[test]

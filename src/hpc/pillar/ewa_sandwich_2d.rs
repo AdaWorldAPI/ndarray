@@ -226,6 +226,7 @@ pub fn prove_pillar_6() -> PillarReport {
         psd_rate,
         lognorm_concentration,
         passed,
+        deferred: false,
     }
 }
 
