@@ -21,7 +21,7 @@ use crate::simd::{F32x16, F64x8};
 // BLAS Level 1 — 12 functions (compat types)
 // ═══════════════════════════════════════════════════════════════════
 
-/// Dot product: sum(x[i] * y[i]) using 4x-unrolled FMA.
+/// Dot product: sum(x\[i\] * y\[i\]) using 4x-unrolled FMA.
 /// # Safety
 /// Caller must ensure AVX-512F is available (`simd_caps().avx512f`).
 #[cfg(target_arch = "x86_64")]
@@ -167,7 +167,7 @@ pub fn scal_f64(alpha: f64, x: &mut [f64]) {
     }
 }
 
-/// L1 norm: sum(|x[i]|) (f32, 16-wide).
+/// L1 norm: sum(|x\[i\]|) (f32, 16-wide).
 /// # Safety
 /// Caller must ensure AVX-512F is available (`simd_caps().avx512f`).
 #[cfg(target_arch = "x86_64")]
@@ -185,7 +185,7 @@ pub fn asum_f32(x: &[f32]) -> f32 {
     sum
 }
 
-/// L1 norm: sum(|x[i]|) (f64, 8-wide).
+/// L1 norm: sum(|x\[i\]|) (f64, 8-wide).
 /// # Safety
 /// Caller must ensure AVX-512F is available (`simd_caps().avx512f`).
 #[cfg(target_arch = "x86_64")]
@@ -203,7 +203,7 @@ pub fn asum_f64(x: &[f64]) -> f64 {
     sum
 }
 
-/// L2 norm: sqrt(sum(x[i]^2)) (f32, 16-wide FMA).
+/// L2 norm: sqrt(sum(x\[i\]^2)) (f32, 16-wide FMA).
 /// # Safety
 /// Caller must ensure AVX-512F is available (`simd_caps().avx512f`).
 #[cfg(target_arch = "x86_64")]
@@ -225,7 +225,7 @@ pub fn nrm2_f32(x: &[f32]) -> f32 {
     sum.sqrt()
 }
 
-/// L2 norm: sqrt(sum(x[i]^2)) (f64, 8-wide FMA).
+/// L2 norm: sqrt(sum(x\[i\]^2)) (f64, 8-wide FMA).
 /// # Safety
 /// Caller must ensure AVX-512F is available (`simd_caps().avx512f`).
 #[cfg(target_arch = "x86_64")]

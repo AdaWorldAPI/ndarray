@@ -59,7 +59,7 @@ impl SafeTensorsFile {
         })
     }
 
-    /// Read a tensor as Vec<f32> (little-endian F32).
+    /// Read a tensor as `Vec<f32>` (little-endian F32).
     pub fn read_f32(&self, name: &str) -> Result<Vec<f32>, String> {
         let meta = self
             .tensors
@@ -76,7 +76,7 @@ impl SafeTensorsFile {
             .collect())
     }
 
-    /// Read a tensor as Vec<f16> stored as raw u16 (for F16 tensors).
+    /// Read a tensor as `Vec<f16>` stored as raw u16 (for F16 tensors).
     pub fn read_f16_raw(&self, name: &str) -> Result<Vec<u16>, String> {
         let meta = self
             .tensors

@@ -290,9 +290,9 @@ impl OctaveBand {
     /// Build from a fundamental frequency.
     ///
     /// The pattern captures the harmonic envelope at that frequency:
-    ///   pattern[0] = fundamental energy weight
-    ///   pattern[1] = 2nd harmonic weight
-    ///   pattern[2] = 3rd harmonic weight
+    ///   pattern\[0\] = fundamental energy weight
+    ///   pattern\[1\] = 2nd harmonic weight
+    ///   pattern\[2\] = 3rd harmonic weight
     ///
     /// The harmonic decay rate determines voice character:
     ///   steep decay → flute/sine (pure tone)

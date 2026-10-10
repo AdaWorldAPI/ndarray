@@ -18,7 +18,7 @@ pub const FRAME_SIZE: usize = 960;
 pub const MDCT_SIZE: usize = FRAME_SIZE / 2;
 
 /// Sine window for MDCT (Opus uses a sine window for CELT mode).
-/// w[n] = sin(π/N × (n + 0.5))
+/// w\[n\] = sin(π/N × (n + 0.5))
 pub fn sine_window(n: usize) -> Vec<f32> {
     (0..n)
         .map(|i| (PI / n as f32 * (i as f32 + 0.5)).sin())

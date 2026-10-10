@@ -173,7 +173,7 @@ impl SurroundBundler {
 
 /// Convert a Fingerprint<256> (16Kbit) to an f64 vector of length D (8192).
 /// Each pair of bits maps to one bipolar f64 dimension:
-///   bits[2k], bits[2k+1] → value ∈ {-1, -0.33, 0.33, 1}
+///   bits\[2k\], bits[2k+1] → value ∈ {-1, -0.33, 0.33, 1}
 pub fn fingerprint_to_f64(fp: &Fingerprint<256>) -> Vec<f64> {
     let mut out = vec![0.0f64; D];
     let bytes = fp.as_bytes();

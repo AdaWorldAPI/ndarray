@@ -654,7 +654,7 @@ impl FireState {
 // (7 rows each). Total atlas: 95 × 5 = 475 bytes — fits in L1.
 // ─────────────────────────────────────────────────────────────────────
 
-/// 5×7 bitmap glyph for one character. Column-major: glyph[col] has 7 bits (rows).
+/// 5×7 bitmap glyph for one character. Column-major: glyph\[col\] has 7 bits (rows).
 pub type Glyph = [u8; 5];
 
 /// Minimal 5×7 ASCII glyph set. Covers A-Z, 0-9, space, common punctuation.

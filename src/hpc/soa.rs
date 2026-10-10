@@ -4,7 +4,7 @@
 //! "struct-of-arrays" storage shape, plus scalar deinterleave / interleave
 //! free functions:
 //!
-//! - [`soa_struct!`] macro — generates a named-field SoA struct from a
+//! - [`soa_struct!`](crate::soa_struct) macro — generates a named-field SoA struct from a
 //!   struct-like declaration. Use when field names matter to callers
 //!   (e.g. `means_x`, `means_y`, `means_z` for a Gaussian batch).
 //! - [`SoaVec`] generic — `[Vec<T>; N]` wrapper. Use when fields are

@@ -252,7 +252,7 @@ impl F32Mask16 {
         self.0.to_bitmask() as u16
     }
 
-    /// Per-lane select: returns `true_val[i]` where mask[i] is set,
+    /// Per-lane select: returns `true_val[i]` where mask\[i\] is set,
     /// else `false_val[i]`.
     #[inline(always)]
     pub fn select(self, true_val: F32x16, false_val: F32x16) -> F32x16 {

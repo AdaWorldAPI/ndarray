@@ -85,7 +85,7 @@ use crate::hpc::blocked_grid::BlockedGrid;
 /// Object-safe trait that exposes the dimension accessors of a
 /// `BlockedGrid<T, 64, 64>` without naming the element type.
 ///
-/// Returned by [`blocked_grid_struct!`]-generated `field_n::<I>()` accessors.
+/// Returned by [`blocked_grid_struct!`](crate::blocked_grid_struct)-generated `field_n::<I>()` accessors.
 /// Useful for code that needs to inspect or assert grid dimensions uniformly
 /// across all fields of a SoA-of-grids struct without monomorphizing on the
 /// element type.

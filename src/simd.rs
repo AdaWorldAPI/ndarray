@@ -1,4 +1,4 @@
-//! SIMD polyfill — `crate::simd::F32x16` dispatches via LazyLock<Tier>.
+//! SIMD polyfill — `crate::simd::F32x16` dispatches via `LazyLock<Tier>`.
 //!
 //! Same pattern as `backend/native.rs`: detect once, dispatch forever.
 //! AVX-512 → AVX2 → Scalar. Consumer writes `crate::simd::F32x16`. Period.
@@ -192,7 +192,7 @@ pub const PREFERRED_U64_LANES: usize = 2; // WASM SIMD128: i64x2 = 2 × u64
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "wasm32")))]
 pub const PREFERRED_U64_LANES: usize = 4;
 
-/// Preferred i16 SIMD width (for Base17 L1 on i16[17]).
+/// Preferred i16 SIMD width (for Base17 L1 on i16\[17\]).
 /// AVX-512: 32 lanes (__m512i via epi16). AVX2: 16 lanes (__m256i).
 /// NEON: 8 lanes (int16x8_t). Base17 has 17 dims — NEON needs 3 loads
 /// (8+8+1), A72 dual pipeline hides latency on the third.

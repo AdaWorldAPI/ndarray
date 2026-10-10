@@ -204,7 +204,7 @@ const HAMMING_WITHIN_BLOCK: usize = 256;
 ///
 /// Exact, not approximate: the running total only grows, so once it exceeds
 /// `max` the final distance must too, and the remaining bytes are skipped.
-/// The check happens after every [`HAMMING_WITHIN_BLOCK`]-byte block, so a
+/// The check happens after every `HAMMING_WITHIN_BLOCK`-byte block, so a
 /// reject costs at most one block beyond the point where the budget ran out.
 /// Like [`hamming_distance_raw`], unequal lengths measure the common prefix.
 ///

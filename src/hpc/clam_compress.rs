@@ -35,7 +35,7 @@
 //!
 //! To reconstruct x from encoding + center:
 //! 1. Start with a copy of center
-//! 2. Apply each (pos, val): result[pos] = val
+//! 2. Apply each (pos, val): result\[pos\] = val
 //!
 //! For Hamming distance search, we can compute d(query, x) from the
 //! encoding without full decompression:
@@ -158,7 +158,7 @@ pub struct CompressedTree {
     pub encodings: Vec<XorDiffEncoding>,
 
     /// Which center each point is encoded relative to.
-    /// encodings[i] + center_data[encoding_centers[i]] = original point i.
+    /// encodings\[i\] + center_data[encoding_centers\[i\]] = original point i.
     pub encoding_centers: Vec<usize>,
 
     /// Per-cluster compression decisions.

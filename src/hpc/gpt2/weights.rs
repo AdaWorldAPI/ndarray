@@ -18,22 +18,22 @@ pub const MAX_SEQ_LEN: usize = 1024;
 /// All weights for one transformer layer.
 #[derive(Clone)]
 pub struct LayerWeights {
-    /// Attention layer norm: weight [768] + bias [768]
+    /// Attention layer norm: weight \[768\] + bias \[768\]
     pub ln1_weight: Vec<f32>,
     pub ln1_bias: Vec<f32>,
-    /// Combined Q/K/V projection: [768, 2304] + bias [2304]
+    /// Combined Q/K/V projection: [768, 2304] + bias \[2304\]
     pub attn_qkv_weight: Vec<f32>,
     pub attn_qkv_bias: Vec<f32>,
-    /// Output projection: [768, 768] + bias [768]
+    /// Output projection: [768, 768] + bias \[768\]
     pub attn_out_weight: Vec<f32>,
     pub attn_out_bias: Vec<f32>,
-    /// MLP layer norm: weight [768] + bias [768]
+    /// MLP layer norm: weight \[768\] + bias \[768\]
     pub ln2_weight: Vec<f32>,
     pub ln2_bias: Vec<f32>,
-    /// MLP fc: [768, 3072] + bias [3072]
+    /// MLP fc: [768, 3072] + bias \[3072\]
     pub mlp_fc_weight: Vec<f32>,
     pub mlp_fc_bias: Vec<f32>,
-    /// MLP proj: [3072, 768] + bias [768]
+    /// MLP proj: [3072, 768] + bias \[768\]
     pub mlp_proj_weight: Vec<f32>,
     pub mlp_proj_bias: Vec<f32>,
 }

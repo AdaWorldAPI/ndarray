@@ -15,7 +15,7 @@ use crate::simd::{array_chunks, F64x8};
 ///
 /// `distances[i]` = distance for HEEL plane i.
 /// `weights[i]` = importance weight for plane i.
-/// Returns: Σ(distances[i] × weights[i]).
+/// Returns: Σ(distances\[i\] × weights\[i\]).
 ///
 /// One F64x8 multiply + reduce_sum. On AVX-512: single vmulpd + vreducepd.
 /// On AVX2: 2× vmulpd + 2× haddpd. Scalar: 8 multiplies + sum.
@@ -28,7 +28,7 @@ pub fn heel_weighted_distance(distances: &[f64; 8], weights: &[f64; 8]) -> f64 {
 
 /// Compute L1-like distance across 8 HEEL planes.
 ///
-/// For each plane i: distance[i] = popcount(a[i] XOR b[i]) as f64.
+/// For each plane i: distance\[i\] = popcount(a\[i\] XOR b\[i\]) as f64.
 /// This is Hamming on binary HEEL planes — valid because HEEL planes
 /// ARE uniform binary data (unlike bgz17 i16 which must use L1).
 pub fn heel_plane_distances(a: &[u64; 8], b: &[u64; 8]) -> [f64; 8] {

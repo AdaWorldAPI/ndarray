@@ -64,9 +64,10 @@ cargo +nightly miri nextest run -v \
             test(/^hpc::/) - test(/^hpc::byte_scan/)
         ) and !test(/^simd::tests::/)
           and !test(/^hpc::framebuffer::pyramid_tests::/)
+          and !test(/^cpu_guard::/)
        '
 #
-# Filter rationale (3-clause AND):
+# Filter rationale (4-clause AND):
 #
 # 1. `!(test(/^hpc::/) - test(/^hpc::byte_scan/))`
 #    Skip everything in `hpc::*` EXCEPT `hpc::byte_scan` (the scalar-fallback
@@ -85,3 +86,8 @@ cargo +nightly miri nextest run -v \
 #    loops over SIMD-shaped data). Not a UB signal — pure runtime cost.
 #    Re-enable once the test fixtures are sized down or the loops are
 #    cfg(miri)-shortened.
+#
+# 4. `!test(/^cpu_guard::/)`
+#    `cpu_guard` reads the CPU with `cpuid`, which is inline assembly; Miri
+#    rejects it ("inline assembly is not supported"). The pre-`main` hook is
+#    `cfg(not(miri))` for the same reason, so test binaries start under Miri.

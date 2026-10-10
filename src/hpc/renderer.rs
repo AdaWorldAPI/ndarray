@@ -601,7 +601,7 @@ impl UpdatePriority {
 
 /// Classify each node by distance to viewport center.
 ///
-/// Returns a Vec<UpdatePriority> of length `len` (active nodes only). Trailing
+/// Returns a `Vec<UpdatePriority>` of length `len` (active nodes only). Trailing
 /// padded slots are not classified — they're never integrated regardless.
 pub fn classify_priorities(positions: &[f32], len: usize, vp: &Viewport) -> Vec<UpdatePriority> {
     let mut out = Vec::with_capacity(len);

@@ -83,7 +83,7 @@ pub unsafe fn hamming_u8x16(a: &[u8; 16], b: &[u8; 16]) -> u32 {
     vgetq_lane_u64(sum64, 0) as u32 + vgetq_lane_u64(sum64, 1) as u32
 }
 
-/// Base17 L1 distance: |a[i] - b[i]| summed over 17 i16 elements.
+/// Base17 L1 distance: |a\[i\] - b\[i\]| summed over 17 i16 elements.
 /// Processes 8 elements per NEON instruction (int16x8_t), tail scalar.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
@@ -1353,7 +1353,7 @@ impl I8x16 {
         Self(unsafe { vmaxq_s8(self.0, other.0) })
     }
 
-    /// Compare-greater-than: returns 16-bit mask. Bit i set where self[i] > other[i].
+    /// Compare-greater-than: returns 16-bit mask. Bit i set where self\[i\] > other\[i\].
     ///
     /// Register-level compare: it takes a second register, so it is binary in form.
     /// The masking-ops predicates call register compares like this one with a
@@ -1455,7 +1455,7 @@ impl I16x8 {
         Self(unsafe { vmaxq_s16(self.0, other.0) })
     }
 
-    /// Compare-greater-than: returns 8-bit mask. Bit i set where self[i] > other[i].
+    /// Compare-greater-than: returns 8-bit mask. Bit i set where self\[i\] > other\[i\].
     ///
     /// Register-level compare: it takes a second register, so it is binary in form.
     /// The masking-ops predicates call register compares like this one with a

@@ -415,7 +415,7 @@ pub fn popcount(a: &[u8]) -> u64 {
 ///
 /// Each 32-byte chunk is sign-extended to i16 (`vpmovsxbw`) and multiplied
 /// pairwise into i32 (`vpmaddwd`), which is exact for every i8 pair. The i32
-/// lanes are folded into an i64 every [`DOT_I8_FOLD`] chunks, so no input
+/// lanes are folded into an i64 every `DOT_I8_FOLD` chunks, so no input
 /// length can wrap them. (The earlier `vpmaddubsw` form saturated i16 at
 /// `a = b = 127`, and read `b` past its end when `b` was the shorter slice.)
 pub fn dot_i8(a: &[u8], b: &[u8]) -> i64 {
@@ -1436,7 +1436,7 @@ impl I16x32 {
 // ── U8x64 byte-level operations (scalar fallback for AVX2 tier) ──────────
 // These match the AVX-512 U8x64 methods in simd_avx512.rs.
 impl U8x64 {
-    /// Byte-wise equality mask: bit i set if self[i] == other[i].
+    /// Byte-wise equality mask: bit i set if self\[i\] == other\[i\].
     ///
     /// Composed from two native AVX2 `U8x32::cmpeq_mask` calls (lanes
     /// 0..32 in the low half, 32..64 in the high half) instead of a
@@ -1484,7 +1484,7 @@ impl U8x64 {
         }
         Self(out)
     }
-    /// Byte-wise UNSIGNED greater-than mask: bit i set if self[i] > other[i].
+    /// Byte-wise UNSIGNED greater-than mask: bit i set if self\[i\] > other\[i\].
     ///
     /// Composed from two native AVX2 `U8x32::cmpgt_mask` calls, which
     /// already carry the sign-bias XOR trick AVX2 needs to get an unsigned

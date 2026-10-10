@@ -65,8 +65,8 @@ pub struct MerkleTree {
     pub root: MerkleRoot,
     /// Level 1: branch hashes (8 x 48 bits = 384 bits).
     ///
-    /// Indices: [0] identity, [1] nars, [2] edges, [3] rl,
-    /// [4] bloom, [5] qualia, [6] adjacency, [7] content.
+    /// Indices: \[0\] identity, \[1\] nars, \[2\] edges, \[3\] rl,
+    /// \[4\] bloom, \[5\] qualia, \[6\] adjacency, \[7\] content.
     pub branches: [MerkleRoot; NUM_BRANCHES],
     /// Level 2: leaf hashes (64 x 48 bits = 3072 bits).
     pub leaves: [MerkleRoot; NUM_LEAVES],

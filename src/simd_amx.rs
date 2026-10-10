@@ -133,7 +133,7 @@ static AMX_AVAILABLE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(detec
 static AMX_TILE_AVAILABLE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(detect_amx_tile);
 
 /// AMX-TILE present, OS-enabled, and permitted for this process — the gate
-/// for tile-state ops of ANY tier. See [`AMX_TILE_AVAILABLE`]; [`amx_available`]
+/// for tile-state ops of ANY tier. See `AMX_TILE_AVAILABLE`; [`amx_available`]
 /// is this plus the AMX-INT8 silicon bit.
 ///
 /// # Examples
@@ -315,7 +315,7 @@ pub fn amx_report() -> String {
 
 /// VNNI u8×i8 dot product: 64 multiply-accumulates per instruction.
 ///
-/// Computes: for each 32-bit lane, sum of 4 products: u8[k] × i8[k].
+/// Computes: for each 32-bit lane, sum of 4 products: u8\[k\] × i8\[k\].
 /// 16 lanes × 4 products = 64 MACs total.
 ///
 /// Used by ThinkingEngine for the u8 distance table × i8 energy MatVec.

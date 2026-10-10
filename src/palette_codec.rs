@@ -134,7 +134,7 @@ pub fn compression_ratio(bits_per_index: usize) -> f32 {
 /// Transcode: change bit width without full decode/re-encode.
 ///
 /// Useful when a palette grows (e.g., 4-bit → 5-bit after inserting a 17th entry).
-/// More efficient than unpack→repack because it avoids the intermediate Vec<u8>.
+/// More efficient than unpack→repack because it avoids the intermediate `Vec<u8>`.
 pub fn transcode(packed: &[u64], old_bits: usize, new_bits: usize, count: usize) -> Vec<u64> {
     assert!(old_bits > 0 && old_bits <= 8);
     assert!(new_bits > 0 && new_bits <= 8);

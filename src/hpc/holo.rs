@@ -72,7 +72,7 @@ pub fn phase_unbind_i8(bound: &[u8], key: &[u8]) -> Vec<u8> {
 
 /// Wasserstein-1 (Earth Mover's) distance between two PRE-SORTED u8 vectors.
 ///
-/// For sorted vectors, Wasserstein-1 = Σ|a[i] - b[i]|.
+/// For sorted vectors, Wasserstein-1 = Σ|a\[i\] - b\[i\]|.
 /// Same cost as Hamming distance, but gives a TRUE metric spatial distance.
 ///
 /// IMPORTANT: Both inputs MUST be sorted ascending.
@@ -756,9 +756,9 @@ const CONTAINER_BYTES: usize = 2048;
 /// Each carrier is stored as i8 (signed, range -128..+127) because waveforms
 /// oscillate around zero.
 pub struct CarrierBasis {
-    /// Cosine carriers: basis_cos[freq_idx][sample_idx] → i8
+    /// Cosine carriers: `basis_cos[freq_idx][sample_idx]` → i8
     pub basis_cos: [[i8; 2048]; 16],
-    /// Sine carriers: basis_sin[freq_idx][sample_idx] → i8
+    /// Sine carriers: `basis_sin[freq_idx][sample_idx]` → i8
     pub basis_sin: [[i8; 2048]; 16],
 }
 
@@ -832,7 +832,7 @@ impl CarrierBasis {
 /// Encode a concept as a carrier at a specific frequency with given phase and amplitude.
 ///
 /// Adds to the existing waveform (accumulation, not replacement):
-///   container[j] += cos(φ)·basis_cos[f][j] - sin(φ)·basis_sin[f][j]
+///   `container[j] += cos(φ)·basis_cos[f][j] - sin(φ)·basis_sin[f][j]`
 ///                   (scaled by amplitude / CARRIER_AMPLITUDE)
 ///
 /// Uses float per element for phase precision. Maps to VCVTDQ2PS + VMULPS +
@@ -863,8 +863,8 @@ pub fn carrier_encode(container: &mut [i8], basis: &CarrierBasis, freq_idx: u8, 
 /// Decode the amplitude and phase of a specific frequency from the waveform.
 ///
 /// Demodulation: dot product of waveform with cos and sin carriers, then atan2.
-///   cos_component = Σ container[j] · basis_cos[f][j]
-///   sin_component = Σ container[j] · basis_sin[f][j]
+///   `cos_component = Σ container[j] · basis_cos[f][j]`
+///   `sin_component = Σ container[j] · basis_sin[f][j]`
 ///   phase = atan2(sin_component, cos_component)
 ///   amplitude = sqrt(cos² + sin²) / N
 ///
@@ -2010,7 +2010,7 @@ pub fn focus_l1(a: &[u8], b: &[u8], mask_x: u8, mask_y: u8, mask_z: u32) -> (u64
 // ============================================================================
 
 /// Expand the 48-bit focus address into a full 2048-byte mask.
-/// out[i] = 0xFF if position i is in focus, 0x00 otherwise.
+/// out\[i\] = 0xFF if position i is in focus, 0x00 otherwise.
 pub fn materialize_focus_mask(mask_x: u8, mask_y: u8, mask_z: u32) -> [u8; 2048] {
     let mut mask = [0u8; 2048];
 

@@ -141,11 +141,11 @@ pub struct ResonatorSnapshot {
     pub o_mask: Vec<u64>,
     /// Number of codebook entries.
     pub n_entries: usize,
-    /// Convergence delta: Hamming(s_est[t], s_est[t-1]).
+    /// Convergence delta: Hamming(s_est\[t\], s_est[t-1]).
     pub delta_s: u32,
-    /// Convergence delta: Hamming(p_est[t], p_est[t-1]).
+    /// Convergence delta: Hamming(p_est\[t\], p_est[t-1]).
     pub delta_p: u32,
-    /// Convergence delta: Hamming(o_est[t], o_est[t-1]).
+    /// Convergence delta: Hamming(o_est\[t\], o_est[t-1]).
     pub delta_o: u32,
 }
 

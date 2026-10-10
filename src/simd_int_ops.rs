@@ -237,7 +237,7 @@ pub fn dot_i16(a: &[i16], b: &[i16]) -> i64 {
 /// | `avx512vnni`               | `VPDPBUSD` zmm — 16 i32 lanes (CLX → Zen 4 / SPR)     |
 /// | `avxvnni`                  | `VPDPBUSD` ymm — 8 i32 lanes (Alder/Arrow Lake, Zen 4)|
 /// | `neon,dotprod` *(planned)* | NEON `SDOT` (A76+ / Apple M-series)                   |
-/// | *(none)*                   | Scalar reference [`hpc::quantized::int8_gemm_i32`]    |
+/// | *(none)*                   | Scalar reference [`crate::hpc::quantized::int8_gemm_i32`]    |
 ///
 /// Arm precedence is widest-vector-first: when several `target_feature`
 /// flags are set simultaneously (e.g. Sapphire Rapids enables `avx512vnni`

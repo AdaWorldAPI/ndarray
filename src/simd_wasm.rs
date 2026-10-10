@@ -843,7 +843,7 @@ pub mod wasm32_simd {
             Self(v128_bitselect(self.0, other.0, i8x16_gt(self.0, other.0)))
         }
 
-        /// Compare-greater-than: returns a 16-bit mask. Bit i set where self[i] > other[i].
+        /// Compare-greater-than: returns a 16-bit mask. Bit i set where self\[i\] > other\[i\].
         ///
         /// Register-level compare: it takes a second register, so it is binary in form.
         /// The masking-ops predicates call register compares like this one with a

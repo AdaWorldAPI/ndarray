@@ -34,15 +34,15 @@
 //!
 //! | tier | ops | CPUID | first silicon |
 //! |---|---|---|---|
-//! | AMX-TILE | config, zero, load/store, release | 7.0:EDX[24] | Sapphire Rapids |
-//! | AMX-INT8 | `tdpb{ss,su,us,uu}d` | 7.0:EDX[25] | Sapphire Rapids |
-//! | AMX-BF16 | `tdpbf16ps` | 7.0:EDX[22] | Sapphire Rapids |
-//! | AMX-FP16 | `tdpfp16ps` | 7.1:EAX[21] | Granite Rapids |
-//! | AMX-COMPLEX | `tcmm{im,rl}fp16ps` | 7.1:EDX[8] | Granite Rapids-D |
-//! | AMX-FP8 | `tdp{b,bh,hb,h}f8ps` | 1E.1:EAX[4] | Diamond Rapids |
-//! | AMX-TF32 | `tmmultf32ps` | 1E.1:EAX[6] | Diamond Rapids (see note) |
-//! | AMX-AVX512 | `tcvtrow*`, `tilemovrow` | 1E.1:EAX[7] | Diamond Rapids |
-//! | AMX-MOVRS | `tileloaddrs{,t1}` | 1E.1:EAX[8] | Diamond Rapids |
+//! | AMX-TILE | config, zero, load/store, release | 7.0:EDX\[24\] | Sapphire Rapids |
+//! | AMX-INT8 | `tdpb{ss,su,us,uu}d` | 7.0:EDX\[25\] | Sapphire Rapids |
+//! | AMX-BF16 | `tdpbf16ps` | 7.0:EDX\[22\] | Sapphire Rapids |
+//! | AMX-FP16 | `tdpfp16ps` | 7.1:EAX\[21\] | Granite Rapids |
+//! | AMX-COMPLEX | `tcmm{im,rl}fp16ps` | 7.1:EDX\[8\] | Granite Rapids-D |
+//! | AMX-FP8 | `tdp{b,bh,hb,h}f8ps` | 1E.1:EAX\[4\] | Diamond Rapids |
+//! | AMX-TF32 | `tmmultf32ps` | 1E.1:EAX\[6\] | Diamond Rapids (see note) |
+//! | AMX-AVX512 | `tcvtrow*`, `tilemovrow` | 1E.1:EAX\[7\] | Diamond Rapids |
+//! | AMX-MOVRS | `tileloaddrs{,t1}` | 1E.1:EAX\[8\] | Diamond Rapids |
 //!
 //! Note on TF32: LLVM `main` has removed `amx-tf32` (and `amx-transpose`)
 //! from both the assembler and `Host.cpp`. The 22.1.8 assembler in the
@@ -655,23 +655,23 @@ tile_row_to_zmm!(
 /// and gates the INT8 ops. This struct answers "which ops exist once I may".
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub struct AmxFeatures {
-    /// AMX-TILE (7.0:EDX[24]).
+    /// AMX-TILE (7.0:EDX\[24\]).
     pub tile: bool,
-    /// AMX-INT8 (7.0:EDX[25]).
+    /// AMX-INT8 (7.0:EDX\[25\]).
     pub int8: bool,
-    /// AMX-BF16 (7.0:EDX[22]).
+    /// AMX-BF16 (7.0:EDX\[22\]).
     pub bf16: bool,
-    /// AMX-FP16 (7.1:EAX[21]).
+    /// AMX-FP16 (7.1:EAX\[21\]).
     pub fp16: bool,
-    /// AMX-COMPLEX (7.1:EDX[8]).
+    /// AMX-COMPLEX (7.1:EDX\[8\]).
     pub complex: bool,
-    /// AMX-FP8 (1E.1:EAX[4]).
+    /// AMX-FP8 (1E.1:EAX\[4\]).
     pub fp8: bool,
-    /// AMX-TF32 (1E.1:EAX[6]; the bit LLVM used before dropping the feature).
+    /// AMX-TF32 (1E.1:EAX\[6\]; the bit LLVM used before dropping the feature).
     pub tf32: bool,
-    /// AMX-AVX512 (1E.1:EAX[7]).
+    /// AMX-AVX512 (1E.1:EAX\[7\]).
     pub avx512: bool,
-    /// AMX-MOVRS (1E.1:EAX[8]).
+    /// AMX-MOVRS (1E.1:EAX\[8\]).
     pub movrs: bool,
 }
 

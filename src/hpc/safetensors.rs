@@ -242,7 +242,7 @@ fn extract_json_array_u64(obj: &str, key: &str) -> Option<Vec<u64>> {
 ///
 /// The returned `GgufFile` has:
 /// - `tensor_data_offset`: absolute byte offset where tensor data starts
-/// - `tensors`: Vec<TensorInfo> with offsets relative to data start
+/// - `tensors`: `Vec<TensorInfo>` with offsets relative to data start
 /// - `version`: 0 (not a GGUF version)
 /// - `alignment`: 1 (safetensors has no alignment padding)
 pub fn read_safetensors_header<R: Read + Seek>(reader: &mut R) -> Result<GgufFile, String> {

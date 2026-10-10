@@ -124,7 +124,7 @@ pub fn popcount(a: &[u8]) -> u64 {
 /// `min(a.len(), b.len())` bytes. SSE4.1 `pmovsxbw` sign-extends each 16-byte
 /// chunk to i16 and SSE2 `pmaddwd` multiplies pairwise into i32, exact for
 /// every i8 pair; the i32 lanes are folded into an i64 every
-/// [`crate::simd_avx2::DOT_I8_FOLD`] chunks, so no length can wrap them.
+/// `crate::simd_avx2::DOT_I8_FOLD` chunks, so no length can wrap them.
 pub fn dot_i8(a: &[u8], b: &[u8]) -> i64 {
     let len = a.len().min(b.len());
     let (a, b) = (&a[..len], &b[..len]);

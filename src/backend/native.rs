@@ -167,10 +167,10 @@ macro_rules! dispatch {
 // ─── BLAS-1 dispatch ──────────────────────────────────────────────
 
 dispatch!(
-    /// Dot product: result = sum(x[i] * y[i]) (f32).
+    /// Dot product: result = sum(x\[i\] * y\[i\]) (f32).
     dot_f32(x: &[f32], y: &[f32]) -> f32);
 dispatch!(
-    /// Dot product: result = sum(x[i] * y[i]) (f64).
+    /// Dot product: result = sum(x\[i\] * y\[i\]) (f64).
     dot_f64(x: &[f64], y: &[f64]) -> f64);
 dispatch!(
     /// AXPY: y = alpha * x + y (f32).
@@ -186,16 +186,16 @@ dispatch!(
     /// Scale: x = alpha * x (f64).
     scal_f64(alpha: f64, x: &mut [f64]));
 dispatch!(
-    /// L2 norm: sqrt(sum(x[i]^2)) (f32).
+    /// L2 norm: sqrt(sum(x\[i\]^2)) (f32).
     nrm2_f32(x: &[f32]) -> f32);
 dispatch!(
-    /// L2 norm: sqrt(sum(x[i]^2)) (f64).
+    /// L2 norm: sqrt(sum(x\[i\]^2)) (f64).
     nrm2_f64(x: &[f64]) -> f64);
 dispatch!(
-    /// L1 norm: sum(|x[i]|) (f32).
+    /// L1 norm: sum(|x\[i\]|) (f32).
     asum_f32(x: &[f32]) -> f32);
 dispatch!(
-    /// L1 norm: sum(|x[i]|) (f64).
+    /// L1 norm: sum(|x\[i\]|) (f64).
     asum_f64(x: &[f64]) -> f64);
 
 // ─── GEMM dispatch ───────────────────────────────────────────────
@@ -284,7 +284,7 @@ pub fn gemm_f64(
 /// GEMV: y = alpha * A * x + beta * y (f32, row-major).
 ///
 /// SIMD tiers compute each row via [`dot_f32`]; the scalar tier uses
-/// the byte-stable [`scalar::gemv_f32`] reference.
+/// the byte-stable `scalar::gemv_f32` reference.
 pub fn gemv_f32(m: usize, n: usize, alpha: f32, a: &[f32], lda: usize, x: &[f32], beta: f32, y: &mut [f32]) {
     if m == 0 {
         return; // no rows ⇒ no-op; must not slice `x[..n]` (scalar ref returns too)
@@ -307,7 +307,7 @@ pub fn gemv_f32(m: usize, n: usize, alpha: f32, a: &[f32], lda: usize, x: &[f32]
 /// GEMV: y = alpha * A * x + beta * y (f64, row-major).
 ///
 /// SIMD tiers compute each row via [`dot_f64`]; the scalar tier uses
-/// the byte-stable [`scalar::gemv_f64`] reference.
+/// the byte-stable `scalar::gemv_f64` reference.
 pub fn gemv_f64(m: usize, n: usize, alpha: f64, a: &[f64], lda: usize, x: &[f64], beta: f64, y: &mut [f64]) {
     if m == 0 {
         return; // no rows ⇒ no-op; must not slice `x[..n]` (scalar ref returns too)
