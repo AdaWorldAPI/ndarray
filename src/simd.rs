@@ -346,6 +346,7 @@ pub use crate::simd_avx512::{BF16x16, BF16x8};
 #[cfg(all(
     target_arch = "x86_64",
     not(target_feature = "avx512f"),
+    not(all(target_feature = "sse4.2", not(target_feature = "avx"))),
     not(feature = "nightly-simd")
 ))]
 pub use crate::simd_avx512::{
@@ -356,6 +357,7 @@ pub use crate::simd_avx512::{
 #[cfg(all(
     target_arch = "x86_64",
     not(target_feature = "avx512f"),
+    not(all(target_feature = "sse4.2", not(target_feature = "avx"))),
     not(feature = "nightly-simd")
 ))]
 pub use crate::simd_avx2::{
@@ -369,7 +371,11 @@ pub use crate::simd_avx2::{
 // AVX2 ops, and on AVX-512 builds it's the half-register companion to
 // U8x64. Lives in simd_avx2.rs (single source of truth) and is re-exported
 // from both tier branches.
-#[cfg(all(target_arch = "x86_64", not(feature = "nightly-simd")))]
+#[cfg(all(
+    target_arch = "x86_64",
+    not(all(target_feature = "sse4.2", not(target_feature = "avx"))),
+    not(feature = "nightly-simd")
+))]
 pub use crate::simd_avx2::{u8x32, U8x32};
 
 // ============================================================================
@@ -381,7 +387,13 @@ pub use crate::simd_avx2::{u8x32, U8x32};
 // the existing `pub use scalar::{...}` re-exports below don't need to
 // change. Extracted from this file in Phase 4 of the integration plan
 // (1271 LoC of macro expansions out of the dispatcher).
-#[cfg(all(not(target_arch = "x86_64"), not(feature = "nightly-simd")))]
+#[cfg(all(
+    any(
+        not(target_arch = "x86_64"),
+        all(target_feature = "sse4.2", not(target_feature = "avx"))
+    ),
+    not(feature = "nightly-simd")
+))]
 #[path = "simd_scalar.rs"]
 pub(crate) mod scalar;
 
@@ -444,9 +456,17 @@ pub use scalar::{
 // Other non-x86 targets — wasm32 without simd128, riscv, etc.: full scalar
 // fallback. Excludes the wasm32+simd128 case handled by the native arm above.
 #[cfg(all(
-    not(target_arch = "x86_64"),
-    not(target_arch = "aarch64"),
-    not(all(target_arch = "wasm32", target_feature = "simd128")),
+    any(
+        all(
+            not(target_arch = "x86_64"),
+            not(target_arch = "aarch64"),
+            not(all(target_arch = "wasm32", target_feature = "simd128"))
+        ),
+        // x86-64-v2 (SSE4.2, no AVX): `simd_avx2.rs`/`simd_avx512.rs` types wrap
+        // 256/512-bit registers, so this arm takes the scalar realization, which
+        // LLVM vectorizes to SSE. Plan: `.claude/plans/simd-sse-v2-tier-v1.md`.
+        all(target_arch = "x86_64", all(target_feature = "sse4.2", not(target_feature = "avx")))
+    ),
     not(feature = "nightly-simd")
 ))]
 pub use scalar::{

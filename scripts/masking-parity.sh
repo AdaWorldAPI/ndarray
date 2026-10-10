@@ -9,12 +9,13 @@
 #   scripts/masking-parity.sh wasm-scalar   wasm32 WITHOUT simd128 under node = the scalar arm
 #   scripts/masking-parity.sh neon-qemu     aarch64 cross-build run under qemu-aarch64-static
 #   scripts/masking-parity.sh avx-qemu      AVX-without-AVX2 build (config-avx) under qemu -cpu SandyBridge
+#   scripts/masking-parity.sh v2-qemu       x86-64-v2 build (config-v2, scalar realization) under qemu -cpu Nehalem
 #
 # Extra cargo arguments (e.g. `--config .cargo/config-v4.toml` for the v4
 # realization on the native row) pass through CARGO_ARGS, see
 # scripts/codegen-witness.sh for why that form and not the env var.
 set -euo pipefail
-ARM="${1:?native|nightly|wasm|wasm-scalar|neon-qemu|avx-qemu}"
+ARM="${1:?native|nightly|wasm|wasm-scalar|neon-qemu|avx-qemu|v2-qemu}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MANIFEST="$ROOT/crates/simd-masking-parity/Cargo.toml"
 TD="${CARGO_TARGET_DIR:-$ROOT/crates/simd-masking-parity/target}"
@@ -69,6 +70,14 @@ case "$ARM" in
     QEMU="${QEMU_X86_64:-qemu-x86_64-static}"
     env -u RUSTFLAGS cargo ${CARGO_ARGS:-} --config "$ROOT/.cargo/config-avx.toml" build --release --manifest-path "$MANIFEST" --bin simd-masking-parity
     "$QEMU" -cpu SandyBridge "$TD/release/simd-masking-parity"
+    ;;
+  v2-qemu)
+    # The x86-64-v2 arm: SSE4.2, no AVX, routed to the scalar realization.
+    # Built for x86-64-v2 and run on an emulated Nehalem, so an AVX
+    # instruction anywhere in the binary faults instead of passing silently.
+    QEMU="${QEMU_X86_64:-qemu-x86_64-static}"
+    env -u RUSTFLAGS cargo ${CARGO_ARGS:-} --config "$ROOT/.cargo/config-v2.toml" build --release --manifest-path "$MANIFEST" --bin simd-masking-parity
+    "$QEMU" -cpu Nehalem "$TD/release/simd-masking-parity"
     ;;
   *) echo "unknown arm: $ARM"; exit 2 ;;
 esac

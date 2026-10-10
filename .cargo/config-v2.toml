@@ -1,0 +1,16 @@
+# x86-64-v2 (SSE2 through SSE4.2, no AVX) — the scalar realization, which LLVM
+# vectorizes to SSE.
+#
+# Usage:
+#   env -u RUSTFLAGS cargo --config .cargo/config-v2.toml <cmd>
+#   bash scripts/masking-parity.sh v2-qemu       (runs under qemu -cpu Nehalem)
+#
+# Selects the arm `all(target_arch = "x86_64", target_feature = "sse4.2",
+# not(target_feature = "avx"))`: Nehalem / Westmere, Silvermont-class Atom,
+# VMs that hide AVX. `simd.rs` routes it to `simd_scalar.rs`. Plan:
+# `.claude/plans/simd-sse-v2-tier-v1.md`. Overlay semantics as in
+# `config-v3.toml`: only the target-cpu is set here; the crypto cfgs come from
+# `.cargo/config.toml` through cargo's rustflags join. `env -u RUSTFLAGS` is
+# load-bearing for the same reason.
+[target.'cfg(target_arch = "x86_64")']
+rustflags = ["-Ctarget-cpu=x86-64-v2"]

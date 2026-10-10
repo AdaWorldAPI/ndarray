@@ -1064,8 +1064,48 @@ impl Neg for I32x16 {
     }
 }
 
+// x86-shared API on the mask: `to_bitmask` exists on every x86 arm (and NEON);
+// the x86-64-v2 arm takes this realization, so it needs it too. Only on
+// `F32Mask16`, as on x86 — `F64Mask8` has no `to_bitmask` there.
+impl F32Mask16 {
+    /// Lane `i` of the comparison is bit `i` of the result.
+    ///
+    /// ```
+    /// use ndarray::simd::F32x16;
+    /// let mut a = [1.0f32; 16];
+    /// a[0] = -1.0;
+    /// a[15] = -1.0;
+    /// let m = F32x16::from_array(a).simd_lt(F32x16::splat(0.0));
+    /// assert_eq!(m.to_bitmask(), 0b1000_0000_0000_0001);
+    /// ```
+    #[inline(always)]
+    pub fn to_bitmask(self) -> u16 {
+        self.0
+    }
+}
+
 // Extra for F32x16: to_bits/from_bits/cast_i32
 impl F32x16 {
+    /// Gather 16 `f32` values from `base_ptr` at the signed element offsets in
+    /// `indices` — the same signature and contract as the AVX-512 backend's
+    /// `_mm512_i32gather_ps` form and the AVX2 polyfill.
+    ///
+    /// # Safety
+    /// For every `i in 0..16`, `base_ptr.offset(indices[i] as isize)` must
+    /// lie inside one allocation together with `base_ptr`, be 4-byte
+    /// aligned, and point at an initialised, readable `f32`.
+    #[inline(always)]
+    pub unsafe fn gather(indices: I32x16, base_ptr: *const f32) -> Self {
+        let idx = indices.0;
+        let mut o = [0.0f32; 16];
+        for i in 0..16 {
+            // SAFETY: the caller's contract above — each signed offset stays
+            // inside `base_ptr`'s allocation and points at a readable `f32`.
+            o[i] = unsafe { *base_ptr.offset(idx[i] as isize) };
+        }
+        Self(o)
+    }
+
     #[inline(always)]
     pub fn to_bits(self) -> U32x16 {
         let mut out = [0u32; 16];
