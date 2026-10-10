@@ -3630,3 +3630,11 @@ qemu `-cpu Nehalem` 132, `SandyBridge` 132, `IvyBridge` 132, `Haswell` 0,
 `max` 0. Side effect: a baseline build on a PRE-AVX CPU now gets the message
 too (the guard is not VEX-encoded there). The optional pre-AVX to-do above
 remains only for builds compiled with `target-cpu` v3/v4/native.
+
+## simd_avx.rs (AVX-without-AVX2 backend) — started 2026-10-10, plan `.claude/plans/simd-avx1-backend-v1.md`
+
+Operator chose Option A after #348. P0 landed: `.cargo/config-avx.toml`
+(`-Ctarget-cpu=sandybridge`) and `scripts/masking-parity.sh avx-qemu` (run under
+`qemu-x86_64-static -cpu SandyBridge`). Before the backend exists the arm FAILS
+with exit 132 from `cpu_guard`'s AVX2 floor (measured) — the expected red.
+No CI row yet; it is added when the arm goes green.
