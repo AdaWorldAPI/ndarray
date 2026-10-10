@@ -1,6 +1,6 @@
 //! Bridge between ndarray Fingerprint<256> (2KB) and Base17 (34 bytes).
 //!
-//! Converts flat 16384-bit fingerprint planes to i16[17] base patterns
+//! Converts flat 16384-bit fingerprint planes to i16\[17\] base patterns
 //! using golden-step octave averaging.
 //!
 //! This is a self-contained port of the bgz17 crate's `base17` module,
@@ -376,7 +376,7 @@ impl Base17 {
     /// Byte size of serialized form.
     pub const BYTE_SIZE: usize = BASE_DIM * 2; // 34
 
-    /// Encode i8[16384] accumulator into a Base17 pattern.
+    /// Encode i8\[16384\] accumulator into a Base17 pattern.
     ///
     /// For each of 17 base dimensions, averages the accumulator values at
     /// golden-step-selected positions across all octaves, then scales by
@@ -527,7 +527,7 @@ impl SpoBase17 {
     /// Byte size of serialized form.
     pub const BYTE_SIZE: usize = Base17::BYTE_SIZE * 3; // 102
 
-    /// Encode three i8[16384] accumulator planes.
+    /// Encode three i8\[16384\] accumulator planes.
     pub fn encode(s: &[i8], p: &[i8], o: &[i8]) -> Self {
         SpoBase17 {
             subject: Base17::encode(s),

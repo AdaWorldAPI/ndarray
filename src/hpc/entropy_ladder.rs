@@ -281,7 +281,7 @@ pub enum ForkAction {
 }
 
 /// The fork decision. `challenge = residue_surprise(residue_mag, noise_floor,
-/// sigma_k)`; `in_domain_skill ∈ [0,1]` is the codebook's remaining resolving
+/// sigma_k)`; `in_domain_skill ∈ \[0,1\]` is the codebook's remaining resolving
 /// capacity. The challenge↔skill delta `δ` is banded on the shipped
 /// `flow_state_from` boundaries — **Anxiety `δ>0.2`** and **Boredom `δ<-0.2`** —
 /// then HHTL depth decides descend-vs-fork. The matched middle (`-0.2 ≤ δ ≤ 0.2`,

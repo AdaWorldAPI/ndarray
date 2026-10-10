@@ -39,7 +39,7 @@ pub const GQA_RATIO: usize = NUM_Q_HEADS / NUM_KV_HEADS; // 4
 /// Weights for one Mistral transformer layer.
 #[derive(Clone)]
 pub struct MistralLayerWeights {
-    /// Attention RMSNorm weight [4096] (no bias).
+    /// Attention RMSNorm weight \[4096\] (no bias).
     pub attn_norm: Vec<f32>,
     /// Q projection: [4096, 4096] → pre-transposed to [4096, 4096].
     pub attn_q: Vec<f32>,
@@ -49,7 +49,7 @@ pub struct MistralLayerWeights {
     pub attn_v: Vec<f32>,
     /// Output projection: [4096, 4096] → pre-transposed.
     pub attn_output: Vec<f32>,
-    /// FFN RMSNorm weight [4096].
+    /// FFN RMSNorm weight \[4096\].
     pub ffn_norm: Vec<f32>,
     /// Gate projection (SiLU): [14336, 4096] → pre-transposed.
     pub ffn_gate: Vec<f32>,
@@ -66,7 +66,7 @@ pub struct OpenChatWeights {
     pub token_embd: Vec<f32>,
     /// Transformer layers.
     pub layers: Vec<MistralLayerWeights>,
-    /// Final RMSNorm weight [4096].
+    /// Final RMSNorm weight \[4096\].
     pub output_norm: Vec<f32>,
     /// Output projection (lm_head): [32000, 4096].
     /// May be tied to token_embd (same data).

@@ -192,10 +192,10 @@ impl<T, const BR: usize, const BC: usize> BlockedGrid<T, BR, BC> {
     /// The returned slice **includes padding cells** at the right and bottom
     /// of the logical extent. The slice length is `padded_rows() * padded_cols()`,
     /// not `rows() * cols()`. Cells at indices that map outside the logical
-    /// (rows, cols) box are padding cells (default-initialized via [`new`] or
-    /// set explicitly via [`new_with_pad`]).
+    /// (rows, cols) box are padding cells (default-initialized via [`new`](BlockedGrid::new) or
+    /// set explicitly via [`new_with_pad`](BlockedGrid::new_with_pad)).
     ///
-    /// To compute a logical-cell flat index correctly, use [`idx`]:
+    /// To compute a logical-cell flat index correctly, use [`idx`](BlockedGrid::idx):
     /// `as_padded_slice()[grid.idx(r, c)]`. NEVER index the slice as
     /// `r * cols() + c` — that ignores stride and reads the wrong cell.
     ///
@@ -219,10 +219,10 @@ impl<T, const BR: usize, const BC: usize> BlockedGrid<T, BR, BC> {
     /// The returned slice **includes padding cells** at the right and bottom
     /// of the logical extent. The slice length is `padded_rows() * padded_cols()`,
     /// not `rows() * cols()`. Cells at indices that map outside the logical
-    /// (rows, cols) box are padding cells (default-initialized via [`new`] or
-    /// set explicitly via [`new_with_pad`]).
+    /// (rows, cols) box are padding cells (default-initialized via [`new`](BlockedGrid::new) or
+    /// set explicitly via [`new_with_pad`](BlockedGrid::new_with_pad)).
     ///
-    /// To compute a logical-cell flat index correctly, use [`idx`]:
+    /// To compute a logical-cell flat index correctly, use [`idx`](BlockedGrid::idx):
     /// `as_padded_slice_mut()[grid.idx(r, c)]`. NEVER index the slice as
     /// `r * cols() + c` — that ignores stride and reads the wrong cell.
     ///

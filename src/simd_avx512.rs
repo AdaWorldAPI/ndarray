@@ -604,7 +604,7 @@ impl U8x64 {
     // Reference: Pumpkin/Minecraft-derived modules (palette_codec.rs,
     // nibble.rs, byte_scan.rs) use these for 4-bit packing and scanning.
 
-    /// Byte-wise equality comparison. Returns 64-bit mask: bit i set if a[i] == b[i].
+    /// Byte-wise equality comparison. Returns 64-bit mask: bit i set if a\[i\] == b\[i\].
     #[inline(always)]
     pub fn cmpeq_mask(self, other: Self) -> u64 {
         unsafe { _mm512_cmpeq_epi8_mask(self.0, other.0) }
@@ -639,7 +639,7 @@ impl U8x64 {
 
     // ── Tier 1: seismon rasterizer primitives ─────────────────────────
 
-    /// Pairwise unsigned byte average: (a[i] + b[i] + 1) >> 1 per byte.
+    /// Pairwise unsigned byte average: (a\[i\] + b\[i\] + 1) >> 1 per byte.
     /// Core op for 4×4 mipmap downsample (vpavgb + horizontal pair = 2 ops).
     #[inline(always)]
     pub fn pairwise_avg(self, other: Self) -> Self {
@@ -648,7 +648,7 @@ impl U8x64 {
     }
 
     /// Byte-wise unsigned greater-than comparison. Returns 64-bit mask:
-    /// bit i set if self[i] > other[i]. Symmetric to `cmpeq_mask`.
+    /// bit i set if self\[i\] > other\[i\]. Symmetric to `cmpeq_mask`.
     /// Used for threshold density fields, depth/Z-test, hit-tests.
     #[inline(always)]
     pub fn cmpgt_mask(self, other: Self) -> u64 {
@@ -2057,7 +2057,7 @@ impl I8x64 {
         Self(unsafe { _mm512_max_epi8(self.0, other.0) })
     }
 
-    /// Compare-greater-than: returns 64-bit mask. Bit i set where self[i] > other[i].
+    /// Compare-greater-than: returns 64-bit mask. Bit i set where self\[i\] > other\[i\].
     #[inline(always)]
     pub fn cmp_gt(self, other: Self) -> u64 {
         unsafe { _mm512_cmpgt_epi8_mask(self.0, other.0) }
@@ -2152,7 +2152,7 @@ impl I8x32 {
 
     #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// Compare-greater-than: returns 32-bit mask via packed-byte movemask.
-    /// Bit i set where self[i] > other[i].
+    /// Bit i set where self\[i\] > other\[i\].
     #[inline(always)]
     pub fn cmp_gt(self, other: Self) -> u32 {
         unsafe { _mm256_movemask_epi8(_mm256_cmpgt_epi8(self.0, other.0)) as u32 }
@@ -2266,7 +2266,7 @@ impl I16x32 {
         Self(unsafe { _mm512_max_epi16(self.0, other.0) })
     }
 
-    /// Compare-greater-than: returns 32-bit mask. Bit i set where self[i] > other[i].
+    /// Compare-greater-than: returns 32-bit mask. Bit i set where self\[i\] > other\[i\].
     #[inline(always)]
     pub fn cmp_gt(self, other: Self) -> u32 {
         unsafe { _mm512_cmpgt_epi16_mask(self.0, other.0) }
@@ -2361,7 +2361,7 @@ impl I16x16 {
 
     #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// Compare-greater-than: returns 16-bit mask via packed-word movemask.
-    /// Bit i set where self[i] > other[i].
+    /// Bit i set where self\[i\] > other\[i\].
     #[inline(always)]
     pub fn cmp_gt(self, other: Self) -> u16 {
         unsafe {

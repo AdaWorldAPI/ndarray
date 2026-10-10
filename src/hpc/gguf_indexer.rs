@@ -399,7 +399,7 @@ pub fn stream_index_gguf_bf16<R: Read + Seek, W: Write>(
 ///
 /// The header must have:
 /// - `tensor_data_offset`: absolute byte offset where tensor data starts
-/// - `tensors`: Vec<TensorInfo> with name, dimensions, dtype, offset (relative to data start)
+/// - `tensors`: `Vec<TensorInfo>` with name, dimensions, dtype, offset (relative to data start)
 pub fn stream_index_gguf_bf16_with_header<R: Read + Seek, W: Write>(
     reader: &mut R, writer: &mut W, header: &gguf::GgufFile, octave_stride: usize,
     callback: Option<&dyn Fn(&str, &LayerType, usize, usize)>,
@@ -605,7 +605,7 @@ impl CompressedTensor {
         self.original_bytes() as f64 / self.compressed_bytes() as f64
     }
 
-    /// Serialize to bytes: [name_len:u32][name][layer_type:u8][n_rows:u32][n_cols:u32][base17 × n_rows]
+    /// Serialize to bytes: `[name_len:u32][name][layer_type:u8][n_rows:u32][n_cols:u32][base17 × n_rows]`
     pub fn write_to<W: Write>(&self, w: &mut W) -> Result<(), String> {
         let name_bytes = self.name.as_bytes();
         w.write_all(&(name_bytes.len() as u32).to_le_bytes())
@@ -632,7 +632,7 @@ impl CompressedTensor {
         Ok(())
     }
 
-    /// Deserialize from bytes: [name_len:u32][name][layer_type:u8][n_rows:u32][n_cols:u32][base17 × n_rows]
+    /// Deserialize from bytes: `[name_len:u32][name][layer_type:u8][n_rows:u32][n_cols:u32][base17 × n_rows]`
     pub fn read_from<R: Read>(r: &mut R) -> Result<Self, String> {
         let mut u32_buf = [0u8; 4];
 

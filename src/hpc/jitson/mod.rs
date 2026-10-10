@@ -9,7 +9,7 @@
 //! - [`packed`]: Re-export of [`crate::hpc::packed`] (PackedDatabase)
 //!
 //! ## `jit-native` feature (Cranelift JIT compilation)
-//! See [`crate::hpc::jitson_cranelift`] for:
+//! See `crate::hpc::jitson_cranelift` (feature `jit-native`) for:
 //! - `ScanParams`, `PhilosopherIR`, `RecipeIR`, `JitError`
 //! - `CpuCaps` — CPU feature detection
 //! - `JitEngine`, `JitEngineBuilder` — compile scan params to native code

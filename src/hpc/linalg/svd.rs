@@ -383,7 +383,7 @@ fn golub_reinsch<const M: usize, const N: usize>(a: &[[f32; N]; M]) -> Svd<M, N>
 /// Build the essential Householder vector for vector `x`.
 ///
 /// Returns `(v, sigma)` where:
-/// - `v` is the reflector vector (same length as `x`, normalized so v[0]=1)
+/// - `v` is the reflector vector (same length as `x`, normalized so v\[0\]=1)
 /// - `sigma` = the first element after reflection (i.e. H·x = [sigma,0,…,0]ᵀ)
 ///
 /// The reflector is  H = I − tau·v·vᵀ  with  tau = 2/‖v‖².

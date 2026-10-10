@@ -19,7 +19,7 @@ use crate::imp_prelude::*;
 /// assert!((x.blas_dot(&y) - 32.0).abs() < 1e-5);
 /// ```
 pub trait BlasLevel1<A> {
-    /// Dot product: Σ x[i] * y[i]
+    /// Dot product: Σ x\[i\] * y\[i\]
     fn blas_dot(&self, other: &Self) -> A;
 
     /// AXPY: self = alpha * other + self (modifies self in-place)
@@ -28,10 +28,10 @@ pub trait BlasLevel1<A> {
     /// Scale: self = alpha * self
     fn blas_scal(&mut self, alpha: A);
 
-    /// L2 norm: sqrt(Σ self[i]²)
+    /// L2 norm: sqrt(Σ self\[i\]²)
     fn blas_nrm2(&self) -> A;
 
-    /// L1 norm (absolute sum): Σ |self[i]|
+    /// L1 norm (absolute sum): Σ |self\[i\]|
     fn blas_asum(&self) -> A;
 
     /// Index of maximum absolute value element.
@@ -118,7 +118,7 @@ where
 
 /// Givens rotation parameters.
 ///
-/// Returned by [`blas_rotg`](GivensRotation::blas_rotg). Contains the cosine
+/// Returned by [`blas_rotg`]. Contains the cosine
 /// and sine of the rotation that zeroes out the second component.
 #[derive(Clone, Copy, Debug)]
 pub struct GivensRotation<A> {

@@ -81,7 +81,7 @@ impl TileConfig {
     /// register-blocked int8 kernel: tmm0-3 = the four C accumulators, tmm4-5 =
     /// two plain A row-blocks (rm/unsigned), tmm6-7 = two VNNI B col-blocks
     /// (vvvv/signed). Every tile is 16×64 so one config serves all roles. Same
-    /// XTILECFG layout as [`Self::for_dpbusd`]: colsb[t] u16 @ 16+2t, rows[t]
+    /// XTILECFG layout as [`Self::for_dpbusd`]: colsb\[t\] u16 @ 16+2t, rows\[t\]
     /// u8 @ 48+t.
     ///
     /// # Examples

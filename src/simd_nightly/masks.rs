@@ -31,7 +31,7 @@ impl F32Mask16 {
         Self(Mask::<i32, 16>::from_bitmask(bits as u64))
     }
 
-    /// Per-lane select: returns `true_val[i]` where mask[i] is set,
+    /// Per-lane select: returns `true_val[i]` where mask\[i\] is set,
     /// else `false_val[i]`.
     #[inline(always)]
     pub fn select(self, true_val: F32x16, false_val: F32x16) -> F32x16 {
@@ -73,7 +73,7 @@ impl F32Mask8 {
         Self(Mask::<i32, 8>::from_bitmask(bits as u64))
     }
 
-    /// Per-lane select: returns `true_val[i]` where mask[i] is set,
+    /// Per-lane select: returns `true_val[i]` where mask\[i\] is set,
     /// else `false_val[i]`.
     #[inline(always)]
     pub fn select(self, true_val: F32x8, false_val: F32x8) -> F32x8 {
@@ -118,7 +118,7 @@ impl F64Mask8 {
         Self(Mask::<i64, 8>::from_bitmask(bits as u64))
     }
 
-    /// Per-lane select: returns `true_val[i]` where mask[i] is set,
+    /// Per-lane select: returns `true_val[i]` where mask\[i\] is set,
     /// else `false_val[i]`.
     #[inline(always)]
     pub fn select(self, true_val: F64x8, false_val: F64x8) -> F64x8 {
@@ -160,7 +160,7 @@ impl F64Mask4 {
         Self(Mask::<i64, 4>::from_bitmask(bits as u64))
     }
 
-    /// Per-lane select: returns `true_val[i]` where mask[i] is set,
+    /// Per-lane select: returns `true_val[i]` where mask\[i\] is set,
     /// else `false_val[i]`.
     #[inline(always)]
     pub fn select(self, true_val: F64x4, false_val: F64x4) -> F64x4 {

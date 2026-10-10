@@ -32,7 +32,7 @@
 //! three rolling row-indexed buffers (`prev2`, `prev1`, `cur`) instead of a
 //! full `n*m` grid, and — because the interior of one diagonal has no
 //! cross-cell dependency — each diagonal's interior is computed
-//! [`LANES`]-wide via [`F64x8`].
+//! `LANES`-wide via [`F64x8`].
 //!
 //! `y`'s increments are stored **reversed per dimension** (`dyr`): the
 //! diagonal walk needs `dy[j-1]` for `j` decreasing as row `i` increases,

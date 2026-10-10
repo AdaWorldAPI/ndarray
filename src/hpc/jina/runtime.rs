@@ -134,7 +134,7 @@ pub struct ModelRuntime {
     pub tokens: Vec<Base17Token>,
     /// 256-entry palette with precomputed 256×256 distance table.
     pub palette: JinaPalette,
-    /// SimilarityTable: 256-entry CDF calibration (distance → f32 [0,1]).
+    /// SimilarityTable: 256-entry CDF calibration (distance → f32 \[0,1\]).
     pub similarity: [f32; 256],
 }
 

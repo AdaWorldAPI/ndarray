@@ -1751,7 +1751,7 @@ fn group_walk(
 }
 
 /// Keyed group-count: for every row `i` selected by `mask_words` (`i <
-/// keys.len()`), adds 1 into `out[keys[i]]` — provided `keys[i] <
+/// keys.len()`), adds 1 into `out[keys\[i\]]` — provided `keys\[i\] <
 /// out.len()`. `COUNT(*) … GROUP BY key` in one pass, replacing K masked
 /// popcounts (one per group).
 ///
@@ -3529,7 +3529,7 @@ pub fn ne_u32_to_mask(values: &[u32], needle: u32, out_words: &mut [u64]) {
 /// (unlike the u32/i32 families' 16-lane groups, four of which pack into one
 /// word). The final partial group is zero-padded into one register and run
 /// through the same packed compare, with the padding lanes' bits masked off
-/// by [`word_range_mask`] — no scalar tail, so the tail cannot disagree with
+/// by `word_range_mask` — no scalar tail, so the tail cannot disagree with
 /// the body.
 ///
 /// # Panics
@@ -3574,7 +3574,7 @@ pub fn eq_u8_to_mask(values: &[u8], needle: u8, out_words: &mut [u64]) {
 /// Runs 64 lanes at a time through [`crate::simd::U8x64::cmpgt_mask`] — one
 /// whole output word per chunk. The final partial group is zero-padded into
 /// one register and run through the same packed compare, with the padding
-/// lanes' bits masked off by [`word_range_mask`].
+/// lanes' bits masked off by `word_range_mask`.
 ///
 /// # Panics
 ///
@@ -4022,7 +4022,7 @@ pub fn mask_not_assign(dst: &mut [u64], n_rows: usize) {
 /// The write is at most three passes over `out_words`: every word strictly
 /// before `lo`'s word is zeroed, every word strictly after `hi`'s last live
 /// word is zeroed, whole interior words are written `u64::MAX`, and the (at
-/// most two) edge words each get one computed mask ([`word_range_mask`]).
+/// most two) edge words each get one computed mask (`word_range_mask`).
 /// When `lo` and `hi` fall in the SAME word, that word is written exactly
 /// once through the single-word branch — never as two overlapping edge
 /// writes.
@@ -4770,7 +4770,7 @@ pub fn lt_i32_to_mask_under(values: &[i32], threshold: i32, under: &[u64], out_w
 
 /// Packs `values[i] >= threshold` (signed) AND `under`, complementing
 /// [`lt_i32_to_mask_under`]'s per-group bits *inside* the group so the tail
-/// law stays [`live16`]'s to enforce, never a whole-word complement. Same
+/// law stays `live16`'s to enforce, never a whole-word complement. Same
 /// contract as [`gt_i32_to_mask_under`]; gated form of [`ge_i32_to_mask`].
 ///
 /// # Panics

@@ -2,7 +2,7 @@
 //!
 //! Uses `VPDPBUSD` (AVX-512 VNNI) to compute 4-element u8*i8 dot products
 //! in a single instruction, accumulating into i32. Falls back to the scalar
-//! [`int8_gemm_i32`](super::quantized::int8_gemm_i32) on hardware without
+//! [`int8_gemm_i32`] on hardware without
 //! VNNI support.
 //!
 //! # VNNI dot semantics

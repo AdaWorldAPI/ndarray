@@ -84,7 +84,7 @@ impl VoiceArchetype {
     /// via strided sampling + quantization.
     ///
     /// The stride determines which embedding dimensions map to which channels:
-    ///   dim[0], dim[stride], dim[2*stride], ... → channels 0..15
+    ///   dim\[0\], dim\[stride\], dim\[2*stride\], ... → channels 0..15
     pub fn from_embedding(embedding: &[f32], stride: usize) -> Self {
         let mut channels = [0i8; N_VOICE_CHANNELS];
 
