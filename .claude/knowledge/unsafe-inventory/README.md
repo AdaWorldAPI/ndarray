@@ -144,3 +144,22 @@ A flag is a lead, not a verdict. The first four were re-read at source and hold.
    per type to two.
 4. SAFETY comments, macro-first.
 5. `SAFE-API` swaps; `SAFE-CRATE` only with approval.
+
+## Addendum 2026-10-10 — `src/simd_avx.rs` (AVX-without-AVX2 arm)
+
+The snapshot above predates this file. Its **29 sites** are appended to
+`sites.tsv` (rows at the end, line numbers from the commit that added them).
+All are `unsafe { }` blocks over SSE2–SSE4.1 / AVX1 intrinsics, all carry a
+`// SAFETY:` comment, and all get verdict **IRREDUCIBLE**: per the probe table,
+an x86 intrinsic in a plain fn is still E0133 on rustc 1.99 even when the
+feature is compiled in. Their footing is the arm predicate
+`all(target_feature = "avx", not(target_feature = "avx2"))`: the module only
+exists in builds where AVX (and, through it, SSE4.2) is enabled for the whole
+binary, and `cpu_guard` checks those features at startup.
+
+Also changed by the same arc: `F32x8::mul_add` in `src/simd_avx512.rs` now
+issues `_mm256_fmadd_ps` only under `cfg(target_feature = "fma")` and otherwise
+uses `f32::mul_add` per lane. Before, it was an ungated FMA3 intrinsic in a
+type exported on the AVX arm (sentinel-qa BLOCK; a Sandy Bridge build faulted,
+verified under `qemu -cpu SandyBridge`). The site count for that file is
+unchanged; its line numbers in `sites.tsv` have moved by a few rows.
