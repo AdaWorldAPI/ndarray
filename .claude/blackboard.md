@@ -3473,6 +3473,7 @@ noted in its bump log. Measurement records that say "on 1.98.1" were left alone.
 shadowing `use std::f64;` (tests/numeric.rs).
 
 Gates on 1.99.0, each with its tier:
+
 | gate | result |
 |---|---|
 | clippy `--workspace --all-targets -D warnings`, v3 and v4 (minus blas-tests, cesium) | exit 0 |
