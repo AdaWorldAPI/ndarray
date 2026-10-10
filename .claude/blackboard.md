@@ -1,3 +1,23 @@
+## 2026-10-10 — `simd_avx.rs`: AVX-without-AVX2 realization (Sandy/Ivy Bridge, Bulldozer–Jaguar), plus three pre-existing x86 fixes
+
+- **What:** a seventh realization, selected at compile time by `all(target_feature = "avx", not(target_feature = "avx2"))`. You get it with `target-cpu=native` on such a CPU, or with `.cargo/config-avx.toml` (`sandybridge`). The types and the `simd.rs` exports are unchanged; the 49 AVX2-only items in `simd_avx2.rs` and 19 in `simd_avx512.rs` are cfg-gated, and `simd_avx.rs` supplies the same methods from SSE2–SSE4.1 halves plus AVX1 float-domain ops. There are no runtime feature checks. The `cpu_guard` AVX2 startup floor applies only when the AVX2 arm is compiled in. Baseline builds (no `avx` cfg) are UNCHANGED: they keep the AVX2 arm and the floor. Whether the SSE tier should take them over is an open operator question.
+- **Evidence:**
+  - `scripts/masking-parity.sh avx-qemu` passes all 15 groups under `qemu-x86_64-static -cpu SandyBridge`, with header `avx2=false avx512f=false`.
+  - 422 `simd` lib tests pass on that arm under qemu.
+  - The CI `realization/avx` row runs both, plus an objdump witness. The witness checks the parity binary for AVX2 integer ymm ops, FMA3 and F16C, and finds none. It can fire: the AVX2-op check finds 20,162 hits on a v3 binary. Its FMA/F16C check has never been seen to fire, because the parity program never calls `mul_add`; the unit test under qemu covers that case instead.
+  - Clippy `-D warnings` is clean on v3, v4, avx and baseline. Lib tests pass on v3 (2510) and v4 (2561). Codegen witness avx2/avx512 and parity v3/v4 PASS.
+- **sentinel-qa BLOCK, fixed:** `F32x8::mul_add` called `_mm256_fmadd_ps` ungated, and F32x8 is exported on this arm, so a Sandy Bridge build faulted. It now has `cfg(target_feature = "fma")` with a per-lane `f32::mul_add` fallback (fused, one rounding). Test `f32x8_mul_add_is_fused` separates fused from unfused rounding. Disable: forcing the FMA body on the AVX build gives SIGILL under qemu. The F16C sites in `simd_avx512.rs` are runtime-detected and need nothing.
+- **Pre-existing bugs found and fixed:**
+  - `simd_avx2::dot_i8`, a safe `pub fn` with no in-tree callers: `vpmaddubsw` saturated at `a = b = 127` (4080 instead of 516128), and a shorter `b` was read past its end. This is inventory row 410. Both arms now use `pmovsxbw` + `pmaddwd`, fold into an i64 every 16,384 chunks, and sum over `min` length. Test `simd_avx2_dot_i8_is_exact` is red on the old code on both arms.
+  - Five x86 256-bit methods had **no test on any stable arm**: `U16x16::{mullo, blend_epi32}`, `U8x32::shuffle_bytes`, `I8x32::cmp_gt` and `I16x16::cmp_gt`. Found because their disable runs stayed green. Test `x86_256bit_integer_methods_match_scalar` now checks them against scalar references on every x86 arm.
+- **Disable runs on `simd_avx.rs`, all red, each restored:** cmpgt bias dropped (6 tests), `reduce_min` shuffle, saturating sub → wrapping, `transpose8` unpack swap, blend operand swap, I8 cmp_gt operand swap, I16 cmp_gt half swap, shuffle operand swap, mullo → mulhi. The first run of the I16 half swap crashed qemu itself (`QEMU internal SIGSEGV`) under the multithreaded harness. That is not a detection; single-threaded, the assertion fails as it should.
+- **Unsafe:** 29 new blocks in `simd_avx.rs`, all SAFETY-commented, verdict IRREDUCIBLE. They are appended to `.claude/knowledge/unsafe-inventory/sites.tsv` with a README addendum.
+- **Open:**
+  - The SSE-tier scope decision (all non-AVX builds vs only v2 builds).
+  - The `saturating_abs` SSSE3 patch, awaiting approval.
+  - `dot_i8` changed its results; it has no in-tree callers, so the effect on external consumers is unknown.
+- **Plan:** `.claude/plans/simd-avx1-backend-v1.md`.
+
 ## 2026-10-08 — `PillarReport::deferred` + `certified()`; `Cascade::query` documents that Stroke 1 can drop true hits
 
 - **Pillars:** Pillar-15/16/17 run no probe but report `passed = true`. A gate on `passed` counted them as certified. `PillarReport` now has `deferred: bool` (true only for those three) and `certified() = passed && !deferred`. `print()` shows `DEFERRED`. `passed` keeps its meaning, so existing callers do not change.
@@ -3630,3 +3650,11 @@ qemu `-cpu Nehalem` 132, `SandyBridge` 132, `IvyBridge` 132, `Haswell` 0,
 `max` 0. Side effect: a baseline build on a PRE-AVX CPU now gets the message
 too (the guard is not VEX-encoded there). The optional pre-AVX to-do above
 remains only for builds compiled with `target-cpu` v3/v4/native.
+
+## simd_avx.rs (AVX-without-AVX2 backend) — started 2026-10-10, plan `.claude/plans/simd-avx1-backend-v1.md`
+
+Operator chose Option A after #348. P0 landed: `.cargo/config-avx.toml`
+(`-Ctarget-cpu=sandybridge`) and `scripts/masking-parity.sh avx-qemu` (run under
+`qemu-x86_64-static -cpu SandyBridge`). Before the backend exists the arm FAILS
+with exit 132 from `cpu_guard`'s AVX2 floor (measured) — the expected red.
+No CI row yet; it is added when the arm goes green.

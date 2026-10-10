@@ -350,6 +350,12 @@ pub fn hamming_top_k(
     (indices, top_distances)
 }
 
+// On the AVX-without-AVX2 arm these two come from `simd_avx.rs` (same
+// signatures, SSSE3 realization); the AVX2 versions below are gated out.
+#[cfg(all(target_feature = "avx", not(target_feature = "avx2")))]
+pub use crate::simd_avx::{dot_i8, popcount};
+
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
 /// AVX2 popcount using Harley-Seal vpshufb nibble lookup.
 pub fn popcount(a: &[u8]) -> u64 {
     #[cfg(target_arch = "x86_64")]
@@ -402,52 +408,60 @@ pub fn popcount(a: &[u8]) -> u64 {
     }
 }
 
-/// AVX2 int8 dot product using VPMADDUBSW + VPMADDWD with XOR-0x80 bias correction.
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
+/// Signed int8 dot product: the bytes of `a` and `b` are read as `i8`, and
+/// the exact sum of products over the first `min(a.len(), b.len())` bytes is
+/// returned.
+///
+/// Each 32-byte chunk is sign-extended to i16 (`vpmovsxbw`) and multiplied
+/// pairwise into i32 (`vpmaddwd`), which is exact for every i8 pair. The i32
+/// lanes are folded into an i64 every [`DOT_I8_FOLD`] chunks, so no input
+/// length can wrap them. (The earlier `vpmaddubsw` form saturated i16 at
+/// `a = b = 127`, and read `b` past its end when `b` was the shorter slice.)
 pub fn dot_i8(a: &[u8], b: &[u8]) -> i64 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        use core::arch::x86_64::*;
-        unsafe {
-            let len = a.len();
-            let chunks = len / 32;
-            let bias = _mm256_set1_epi8(-128i8);
-            let ones_u8 = _mm256_set1_epi8(1);
-            let ones_i16 = _mm256_set1_epi16(1);
+    use core::arch::x86_64::*;
+    let len = a.len().min(b.len());
+    let (a, b) = (&a[..len], &b[..len]);
+    let mut total = 0i64;
+    for (ba, bb) in a.chunks(32 * DOT_I8_FOLD).zip(b.chunks(32 * DOT_I8_FOLD)) {
+        let (ca, cb) = (ba.chunks_exact(32), bb.chunks_exact(32));
+        let (ta, tb) = (ca.remainder(), cb.remainder());
+        // SAFETY: AVX2 is compiled in (this fn is gated off the
+        // AVX-without-AVX2 arm). Every chunk is exactly 32 bytes, so each
+        // 32-byte `loadu` is in bounds; `loadu` needs no alignment.
+        let lanes = unsafe {
             let mut acc = _mm256_setzero_si256();
-            let mut b_sum = _mm256_setzero_si256();
-            for i in 0..chunks {
-                let base = i * 32;
-                let av = _mm256_loadu_si256(a[base..].as_ptr() as *const __m256i);
-                let bv = _mm256_loadu_si256(b[base..].as_ptr() as *const __m256i);
-                let av_u = _mm256_xor_si256(av, bias);
-                let prod = _mm256_maddubs_epi16(av_u, bv);
-                let widened = _mm256_madd_epi16(prod, ones_i16);
-                acc = _mm256_add_epi32(acc, widened);
-                let b_abs = _mm256_maddubs_epi16(ones_u8, bv);
-                let b_wide = _mm256_madd_epi16(b_abs, ones_i16);
-                b_sum = _mm256_add_epi32(b_sum, b_wide);
+            for (xa, xb) in ca.zip(cb) {
+                let av = _mm256_loadu_si256(xa.as_ptr() as *const __m256i);
+                let bv = _mm256_loadu_si256(xb.as_ptr() as *const __m256i);
+                let lo = _mm256_madd_epi16(
+                    _mm256_cvtepi8_epi16(_mm256_castsi256_si128(av)),
+                    _mm256_cvtepi8_epi16(_mm256_castsi256_si128(bv)),
+                );
+                let hi = _mm256_madd_epi16(
+                    _mm256_cvtepi8_epi16(_mm256_extracti128_si256::<1>(av)),
+                    _mm256_cvtepi8_epi16(_mm256_extracti128_si256::<1>(bv)),
+                );
+                acc = _mm256_add_epi32(acc, _mm256_add_epi32(lo, hi));
             }
-            let mut acc_vals = [0i32; 8];
-            _mm256_storeu_si256(acc_vals.as_mut_ptr() as *mut __m256i, acc);
-            let total_biased: i64 = acc_vals.iter().map(|&v| v as i64).sum();
-            let mut bsum_vals = [0i32; 8];
-            _mm256_storeu_si256(bsum_vals.as_mut_ptr() as *mut __m256i, b_sum);
-            let total_b: i64 = bsum_vals.iter().map(|&v| v as i64).sum();
-            let mut result = total_biased - 128 * total_b;
-            for i in (chunks * 32)..len {
-                result += (a[i] as i8 as i64) * (b[i] as i8 as i64);
-            }
-            result
-        }
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        a.iter()
-            .zip(b.iter())
+            let mut v = [0i32; 8];
+            _mm256_storeu_si256(v.as_mut_ptr() as *mut __m256i, acc);
+            v
+        };
+        total += lanes.iter().map(|&v| v as i64).sum::<i64>();
+        total += ta
+            .iter()
+            .zip(tb)
             .map(|(&x, &y)| (x as i8 as i64) * (y as i8 as i64))
-            .sum()
+            .sum::<i64>();
     }
+    total
 }
+
+/// Chunks between i32 → i64 folds in [`dot_i8`]. One chunk adds at most four
+/// products of magnitude `128 * 128` to an i32 lane (65_536), so 16_384 chunks
+/// stay below `2^30`.
+pub(crate) const DOT_I8_FOLD: usize = 16_384;
 
 // ============================================================================
 // GEMM — AVX2 fallback (delegates to scalar for now)
@@ -1687,6 +1701,7 @@ impl U64x8 {
         Self(o)
     }
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// `(x << n) | (x >> (64 - n))` per 64-bit lane on one 256-bit half,
     /// with `1 <= n <= 63` guaranteed by the callers. `_mm256_sll_epi64` /
     /// `_mm256_srl_epi64` take the count from the low 64 bits of an xmm
@@ -1728,6 +1743,7 @@ impl U64x8 {
         Self::from_avx2_halves(Self::rotl_half(lo, 64 - n), Self::rotl_half(hi, 64 - n))
     }
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// Lane-wise `lo32(self) × lo32(rhs)` as an exact `u64` — the widening
     /// 32×32→64 multiply (`VPMULUDQ`, one per 256-bit half). The high 32
     /// bits of every input lane are ignored; the product cannot overflow.
@@ -1742,6 +1758,7 @@ impl U64x8 {
         unsafe { Self::from_avx2_halves(_mm256_mul_epu32(a_lo, b_lo), _mm256_mul_epu32(a_hi, b_hi)) }
     }
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// 8×8 transpose of `u64` words across eight registers:
     /// `out[i]` lane `j` == `rows[j]` lane `i`.
     ///
@@ -1796,6 +1813,7 @@ impl U64x8 {
     }
 }
 
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
 /// Lane-wise variable shifts for the mask family's word ops (the Morton hex
 /// neighbour shift composes `and`/`shl`/`or` over `U64x8`). Same signature as
 /// the AVX-512 / NEON / WASM / scalar backends: the count is a per-lane
@@ -1827,6 +1845,7 @@ impl Shl<Self> for U64x8 {
     }
 }
 
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
 /// Lane-wise variable right shift; see the `Shl<Self>` impl above for the
 /// count contract and a worked example (the two are inverses below 64).
 impl Shr<Self> for U64x8 {
@@ -2099,6 +2118,7 @@ impl U16x16 {
         unsafe { _mm256_storeu_si256(s.as_mut_ptr() as *mut __m256i, self.0) };
     }
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// Logical right shift each 16-bit lane by `imm` (matches `U16x32::shr`).
     #[inline(always)]
     pub fn shr(self, imm: u32) -> Self {
@@ -2109,6 +2129,7 @@ impl U16x16 {
         Self(unsafe { _mm256_srl_epi16(self.0, _mm_cvtsi32_si128(imm as i32)) })
     }
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// Logical left shift each 16-bit lane by `imm` (matches `U16x32::shl`).
     #[inline(always)]
     pub fn shl(self, imm: u32) -> Self {
@@ -2118,6 +2139,7 @@ impl U16x16 {
         Self(unsafe { _mm256_sll_epi16(self.0, _mm_cvtsi32_si128(imm as i32)) })
     }
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// Multiply, keep low 16 bits (wrapping) — `_mm256_mullo_epi16`.
     #[inline(always)]
     pub fn mullo(self, other: Self) -> Self {
@@ -2132,6 +2154,7 @@ impl U16x16 {
 
     // ── FastScan flush-epilogue helpers (PQ4-ADC u16→f32 cross-lane combine) ──
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// Cross-128-bit-lane permute (`_mm256_permute2x128_si256`). `IMM` selects
     /// which 128-bit halves of `self`/`other` land in each output half. Used
     /// (with `IMM=0x21`) by the FastScan SUB-trick to bring the two blocks'
@@ -2143,6 +2166,7 @@ impl U16x16 {
         Self(unsafe { _mm256_permute2x128_si256::<IMM>(self.0, other.0) })
     }
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// Blend 32-bit dwords from `self`/`other` per the `IMM` mask
     /// (`_mm256_blend_epi32`). Companion to `permute2x128` in the FastScan
     /// lane combine (with `IMM=0xF0`).
@@ -2153,6 +2177,7 @@ impl U16x16 {
         Self(unsafe { _mm256_blend_epi32::<IMM>(self.0, other.0) })
     }
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// Zero-extend the low 8 × u16 lanes to f32 (`_mm256_cvtepu16_epi32` then
     /// `_mm256_cvtepi32_ps`). The PQ4-ADC accumulators are ≤ `FLUSH_EVERY·127`
     /// so they fit exactly in f32; this is the lossless u16→f32 step before the
@@ -2164,6 +2189,7 @@ impl U16x16 {
         crate::simd_avx512::F32x8(unsafe { _mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(_mm256_castsi256_si128(self.0))) })
     }
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// Zero-extend the high 8 × u16 lanes to f32 (sibling of `to_f32x8_lo`).
     #[inline(always)]
     pub fn to_f32x8_hi(self) -> crate::simd_avx512::F32x8 {
@@ -2182,6 +2208,7 @@ impl Default for U16x16 {
     }
 }
 
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
 impl Add for U16x16 {
     type Output = Self;
     #[inline(always)]
@@ -2189,6 +2216,7 @@ impl Add for U16x16 {
         Self(unsafe { _mm256_add_epi16(self.0, rhs.0) })
     }
 }
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
 impl Sub for U16x16 {
     type Output = Self;
     #[inline(always)]
@@ -2196,6 +2224,7 @@ impl Sub for U16x16 {
         Self(unsafe { _mm256_sub_epi16(self.0, rhs.0) })
     }
 }
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
 impl Mul for U16x16 {
     type Output = Self;
     #[inline(always)]
@@ -2203,18 +2232,21 @@ impl Mul for U16x16 {
         Self(unsafe { _mm256_mullo_epi16(self.0, rhs.0) })
     }
 }
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
 impl AddAssign for U16x16 {
     #[inline(always)]
     fn add_assign(&mut self, rhs: Self) {
         self.0 = unsafe { _mm256_add_epi16(self.0, rhs.0) };
     }
 }
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
 impl SubAssign for U16x16 {
     #[inline(always)]
     fn sub_assign(&mut self, rhs: Self) {
         self.0 = unsafe { _mm256_sub_epi16(self.0, rhs.0) };
     }
 }
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
 impl BitAnd for U16x16 {
     type Output = Self;
     #[inline(always)]
@@ -2222,6 +2254,7 @@ impl BitAnd for U16x16 {
         Self(unsafe { _mm256_and_si256(self.0, rhs.0) })
     }
 }
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
 impl BitOr for U16x16 {
     type Output = Self;
     #[inline(always)]
@@ -2229,6 +2262,7 @@ impl BitOr for U16x16 {
         Self(unsafe { _mm256_or_si256(self.0, rhs.0) })
     }
 }
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
 impl BitXor for U16x16 {
     type Output = Self;
     #[inline(always)]
@@ -2236,24 +2270,28 @@ impl BitXor for U16x16 {
         Self(unsafe { _mm256_xor_si256(self.0, rhs.0) })
     }
 }
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
 impl BitAndAssign for U16x16 {
     #[inline(always)]
     fn bitand_assign(&mut self, rhs: Self) {
         self.0 = unsafe { _mm256_and_si256(self.0, rhs.0) };
     }
 }
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
 impl BitOrAssign for U16x16 {
     #[inline(always)]
     fn bitor_assign(&mut self, rhs: Self) {
         self.0 = unsafe { _mm256_or_si256(self.0, rhs.0) };
     }
 }
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
 impl BitXorAssign for U16x16 {
     #[inline(always)]
     fn bitxor_assign(&mut self, rhs: Self) {
         self.0 = unsafe { _mm256_xor_si256(self.0, rhs.0) };
     }
 }
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
 impl Not for U16x16 {
     type Output = Self;
     #[inline(always)]
@@ -2601,6 +2639,7 @@ impl I32x16 {
         }
     }
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// Horizontal signed minimum. `iter().min()` measured fully scalar on
     /// the codegen oracle (17 `cmpl` on GPRs, 0 packed), so this is a
     /// `vpminsd` tree: 16 → 8 → 4 → 2 → 1 lanes. Exact — min is order-free.
@@ -2617,6 +2656,7 @@ impl I32x16 {
         }
     }
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// Horizontal signed maximum — the `vpmaxsd` twin of [`Self::reduce_min`].
     #[inline(always)]
     pub fn reduce_max(self) -> i32 {
@@ -2702,6 +2742,7 @@ impl I32x16 {
         !(neg as u16)
     }
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// Lane-wise **signed** greater-than as a packed 16-bit bitmask.
     ///
     /// Bit `i` of the result is set iff `self.lane(i) > other.lane(i)` under
@@ -2904,6 +2945,7 @@ impl U8x32 {
         *arr.iter().max().unwrap()
     }
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// Sum-of-absolute-differences against zero ⇒ horizontal byte sum
     /// folded into the low 64 bits of each 128-bit lane, then combined.
     /// Returns the total as u64 (does NOT wrap at 2^8). Useful for
@@ -2922,6 +2964,7 @@ impl U8x32 {
 
     // ── Min / max (lane-wise) ───────────────────────────────────────
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// Lane-wise unsigned min.
     #[inline(always)]
     pub fn simd_min(self, other: Self) -> Self {
@@ -2930,6 +2973,7 @@ impl U8x32 {
         Self(unsafe { _mm256_min_epu8(self.0, other.0) })
     }
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// Lane-wise unsigned max.
     #[inline(always)]
     pub fn simd_max(self, other: Self) -> Self {
@@ -2940,6 +2984,7 @@ impl U8x32 {
 
     // ── Comparison → bitmask ────────────────────────────────────────
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// Per-lane equality. Returns a 32-bit mask: bit `i` set iff
     /// `self[i] == other[i]`. (Matches the shape of `U8x64::cmpeq_mask`
     /// at the natural AVX2 width.)
@@ -2953,6 +2998,7 @@ impl U8x32 {
         unsafe { _mm256_movemask_epi8(eq) as u32 }
     }
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// Per-lane unsigned greater-than. Returns a 32-bit mask.
     /// AVX2 only has signed `_mm256_cmpgt_epi8`, so we XOR both
     /// operands with `0x80` to convert unsigned ↔ signed (preserves
@@ -2970,6 +3016,7 @@ impl U8x32 {
         }
     }
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// Extract MSB of each lane as a 32-bit mask (matches
     /// `U8x64::movemask` at AVX2 width).
     #[inline(always)]
@@ -2981,6 +3028,7 @@ impl U8x32 {
 
     // ── Saturating arithmetic ────────────────────────────────────────
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// Per-lane saturating unsigned add: `min(a + b, 255)`.
     #[inline(always)]
     pub fn saturating_add(self, other: Self) -> Self {
@@ -2989,6 +3037,7 @@ impl U8x32 {
         Self(unsafe { _mm256_adds_epu8(self.0, other.0) })
     }
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// Per-lane saturating unsigned sub: `max(a - b, 0)`.
     #[inline(always)]
     pub fn saturating_sub(self, other: Self) -> Self {
@@ -2997,6 +3046,7 @@ impl U8x32 {
         Self(unsafe { _mm256_subs_epu8(self.0, other.0) })
     }
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// Per-lane unsigned rounded average: `(a + b + 1) >> 1`.
     #[inline(always)]
     pub fn pairwise_avg(self, other: Self) -> Self {
@@ -3007,6 +3057,7 @@ impl U8x32 {
 
     // ── 16-bit-lane shifts (used by nibble pack/unpack) ─────────────
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// Right shift each 16-bit lane by `imm` bits. (AVX2 has no native
     /// 8-bit shift; 16-bit shift + mask is the standard idiom.)
     #[inline(always)]
@@ -3017,6 +3068,7 @@ impl U8x32 {
         Self(unsafe { _mm256_srl_epi16(self.0, _mm_cvtsi32_si128(imm as i32)) })
     }
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// Left shift each 16-bit lane by `imm` bits.
     #[inline(always)]
     pub fn shl_epi16(self, imm: u32) -> Self {
@@ -3027,6 +3079,7 @@ impl U8x32 {
 
     // ── Lane shuffles ───────────────────────────────────────────────
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// Within-128-bit-lane byte shuffle. `idx[i]` (0..16) selects the
     /// source byte within the SAME 128-bit half; high-bit set in
     /// `idx[i]` zeroes the output lane. Matches `_mm256_shuffle_epi8`.
@@ -3056,6 +3109,7 @@ impl U8x32 {
         Self::from_array(out)
     }
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// Interleave low 8 bytes of each 128-bit half (`_mm256_unpacklo_epi8`).
     /// Output: `[a0,b0, a1,b1, ..., a7,b7]` within each 128-bit half.
     #[inline(always)]
@@ -3065,6 +3119,7 @@ impl U8x32 {
         Self(unsafe { _mm256_unpacklo_epi8(self.0, other.0) })
     }
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// Interleave high 8 bytes of each 128-bit half (`_mm256_unpackhi_epi8`).
     #[inline(always)]
     pub fn unpack_hi_epi8(self, other: Self) -> Self {
@@ -3075,6 +3130,7 @@ impl U8x32 {
 
     // ── Conditional move via bit mask ───────────────────────────────
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// Select `a` where mask bit is set, else `b`. The mask is a
     /// `U8x32` whose lane MSB acts as the boolean (matches
     /// `_mm256_blendv_epi8` semantics — different from the
@@ -3113,6 +3169,7 @@ impl U8x32 {
 // Bitwise + arithmetic operator impls so consumers can use natural
 // `a + b`, `a & b`, etc. without method chaining. Match the U8x64 shape.
 
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
 #[cfg(target_arch = "x86_64")]
 impl core::ops::BitAnd for U8x32 {
     type Output = Self;
@@ -3124,6 +3181,7 @@ impl core::ops::BitAnd for U8x32 {
     }
 }
 
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
 #[cfg(target_arch = "x86_64")]
 impl core::ops::BitOr for U8x32 {
     type Output = Self;
@@ -3135,6 +3193,7 @@ impl core::ops::BitOr for U8x32 {
     }
 }
 
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
 #[cfg(target_arch = "x86_64")]
 impl core::ops::BitXor for U8x32 {
     type Output = Self;
@@ -3146,6 +3205,7 @@ impl core::ops::BitXor for U8x32 {
     }
 }
 
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
 #[cfg(target_arch = "x86_64")]
 impl core::ops::Add for U8x32 {
     type Output = Self;
@@ -3157,6 +3217,7 @@ impl core::ops::Add for U8x32 {
     }
 }
 
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
 #[cfg(target_arch = "x86_64")]
 impl core::ops::Sub for U8x32 {
     type Output = Self;

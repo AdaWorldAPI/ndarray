@@ -218,6 +218,11 @@ pub const PREFERRED_I16_LANES: usize = 16;
 //   * v3 / GitHub-CI default → `target_feature = "avx2"` only →
 //     simd_avx2 backend (F32x16 = two-half (f32x8, f32x8), int wrappers
 //     are scalar polyfills via the `avx2_int_type!` macro).
+//   * AVX without AVX2 (`.cargo/config-avx.toml`, or native on a Sandy
+//     Bridge-class host) → the SAME types and exports as the AVX2 arm, but
+//     every method that would need AVX2 is realized in `simd_avx.rs` (two
+//     SSE halves / AVX1 forms); `simd_avx2.rs` and `simd_avx512.rs` gate
+//     those methods on `not(all(avx, not(avx2)))`.
 //   * v4 (or native on AVX-512 host) → `target_feature = "avx512f"` →
 //     simd_avx512 backend with native __m512 / __m512d / __m512i.
 //   * aarch64 → simd_neon backend.
@@ -1078,6 +1083,115 @@ mod tests {
     /// transpose that drops, duplicates or misroutes any word fails, and the
     /// fixture is asserted not to be symmetric, so an identity "transpose"
     /// fails too. Transposing twice must return the input.
+    /// The x86 256-bit integer methods that had no test on any stable arm,
+    /// each checked lane-by-lane against a scalar reference on asymmetric
+    /// data. They run on the AVX2, AVX-512 and AVX-without-AVX2 realizations;
+    /// a swapped operand, swapped 128-bit halves or a wrong intrinsic fails.
+    #[cfg(all(feature = "std", target_arch = "x86_64"))]
+    #[test]
+    fn x86_256bit_integer_methods_match_scalar() {
+        use crate::simd_avx2::{U16x16, U8x32};
+        use crate::simd_avx512::{I16x16, I8x32};
+
+        let a16: [u16; 16] = core::array::from_fn(|i| (i as u16).wrapping_mul(4_001).wrapping_add(7));
+        let b16: [u16; 16] = core::array::from_fn(|i| (i as u16).wrapping_mul(331).wrapping_add(60_013));
+        let (va, vb) = (U16x16::from_array(a16), U16x16::from_array(b16));
+        let want: [u16; 16] = core::array::from_fn(|i| a16[i].wrapping_mul(b16[i]));
+        assert_eq!(va.mullo(vb).to_array(), want, "U16x16::mullo");
+
+        // Bit i of IMM takes dword i (u16 lanes 2i, 2i+1) from `other`.
+        const IMM: i32 = 0b1010_0110;
+        let want: [u16; 16] = core::array::from_fn(|i| if IMM >> (i / 2) & 1 == 1 { b16[i] } else { a16[i] });
+        assert_eq!(va.blend_epi32::<IMM>(vb).to_array(), want, "U16x16::blend_epi32");
+
+        let table: [u8; 32] = core::array::from_fn(|i| (i as u8).wrapping_mul(3).wrapping_add(1));
+        let idx: [u8; 32] = core::array::from_fn(|i| match i % 5 {
+            0 => 0x80 | i as u8, // high bit set: zero
+            _ => (i as u8).wrapping_mul(7) & 0x0f,
+        });
+        let want: [u8; 32] = core::array::from_fn(|j| {
+            if idx[j] & 0x80 != 0 {
+                0
+            } else {
+                table[(j / 16) * 16 + (idx[j] & 0x0f) as usize]
+            }
+        });
+        let got = U8x32::from_array(table)
+            .shuffle_bytes(U8x32::from_array(idx))
+            .to_array();
+        assert_eq!(got, want, "U8x32::shuffle_bytes");
+
+        let x8: [i8; 32] = core::array::from_fn(|i| (i as i8).wrapping_mul(37).wrapping_sub(60));
+        let y8: [i8; 32] = core::array::from_fn(|i| (i as i8).wrapping_mul(-23).wrapping_add(5));
+        let want = (0..32).fold(0u32, |m, i| m | ((x8[i] > y8[i]) as u32) << i);
+        assert!(want != 0 && want != u32::MAX, "fixture must mix both outcomes");
+        assert_eq!(I8x32::from_array(x8).cmp_gt(I8x32::from_array(y8)), want, "I8x32::cmp_gt");
+
+        let x16: [i16; 16] = core::array::from_fn(|i| (i as i16) * 2_111 - 15_000);
+        let y16: [i16; 16] = core::array::from_fn(|i| if i < 8 { 1_000 - (i as i16) * 900 } else { -4_000 });
+        let want = (0..16).fold(0u16, |m, i| m | ((x16[i] > y16[i]) as u16) << i);
+        assert!(want & 0xff != want >> 8, "halves must differ so a half swap shows");
+        assert_eq!(I16x16::from_array(x16).cmp_gt(I16x16::from_array(y16)), want, "I16x16::cmp_gt");
+    }
+
+    /// `simd_avx2::dot_i8` is an exact signed dot product of the first
+    /// `min(a.len(), b.len())` bytes, read as `i8`. Three failure modes are
+    /// pinned: the old `maddubs` form saturated i16 at `a = b = 127`
+    /// (`255 * 127 * 2 > i16::MAX` after the `^ 0x80` bias), an unfolded i32
+    /// accumulator wraps on long inputs, and a shorter `b` was read past its
+    /// end. On the AVX-without-AVX2 arm the same name is `simd_avx::dot_i8`.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn simd_avx2_dot_i8_is_exact() {
+        use crate::simd_avx2::dot_i8 as dot;
+        let reference = |a: &[u8], b: &[u8]| -> i64 {
+            a.iter()
+                .zip(b)
+                .map(|(&x, &y)| (x as i8 as i64) * (y as i8 as i64))
+                .sum()
+        };
+        for &(x, y) in &[(127u8, 127u8), (0x80, 0x80), (127, 0x80), (0x80, 127), (0xff, 1)] {
+            for len in [0, 1, 15, 16, 17, 31, 32, 33, 64, 100] {
+                let (a, b) = (vec![x; len], vec![y; len]);
+                assert_eq!(dot(&a, &b), reference(&a, &b), "x={x:#x} y={y:#x} len={len}");
+            }
+        }
+        let a: Vec<u8> = (0..1000u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect();
+        let b: Vec<u8> = (0..1000u32)
+            .map(|i| (i.wrapping_mul(40_503) >> 5) as u8)
+            .collect();
+        assert_eq!(dot(&a, &b), reference(&a, &b));
+        assert_eq!(dot(&a[..999], &b), reference(&a[..999], &b[..999]));
+        assert_eq!(dot(&a, &b[..40]), reference(&a[..40], &b[..40]));
+        // 1.5 Mi products of 16_384 sum to ~2.6e10, past i32::MAX.
+        let n = 3 << 19;
+        let big = vec![0x80u8; n];
+        assert!(16_384 * n as i64 > i32::MAX as i64);
+        assert_eq!(dot(&big, &big), 16_384 * n as i64);
+    }
+
+    /// `F32x8::mul_add` is FUSED on every arm: one rounding, not two. With
+    /// `x = 1 + 2^-12`, `x * x = 1 + 2^-11 + 2^-24` exactly; rounded to f32
+    /// that is `1 + 2^-11` (a tie, to even), so an unfused `x * x - (1 + 2^-11)`
+    /// gives 0 while the fused form keeps the `2^-24`. On the AVX-without-FMA
+    /// arm this runs the per-lane fallback, and under `qemu -cpu SandyBridge`
+    /// an ungated FMA3 instruction would fault instead.
+    #[test]
+    fn f32x8_mul_add_is_fused() {
+        let x = 1.0f32 + f32::EPSILON * 2048.0; // 1 + 2^-12
+        let c = -(1.0f32 + f32::EPSILON * 4096.0); // -(1 + 2^-11)
+        assert_eq!(x * x + c, 0.0, "fixture must separate fused from unfused");
+        let got = F32x8::splat(x).mul_add(F32x8::splat(x), F32x8::splat(c));
+        assert_eq!(got.to_array(), [f32::EPSILON / 2.0; 8]); // 2^-24
+        let lanes = F32x8::from_array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+        let r = lanes
+            .mul_add(F32x8::splat(2.0), F32x8::splat(0.5))
+            .to_array();
+        assert_eq!(r, [2.5, 4.5, 6.5, 8.5, 10.5, 12.5, 14.5, 16.5]);
+    }
+
     #[test]
     fn u64x8_transpose8_matches_the_index_map() {
         use super::U64x8;
