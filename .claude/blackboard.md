@@ -3596,3 +3596,23 @@ AMX is not a stable cfg target_feature, so -Ctarget-cpu never enables it.
 Codex P1 #2 (guard should require AVX2 on every x86_64 build, because
 simd_avx2 is always selected without AVX-512): path is real, but the fix
 changes the crate minimum ISA for every consumer -> raised to the operator.
+
+## Optional to-do: pre-AVX guard (operator, 2026-10-10 — postponed, not scheduled)
+
+A SIGILL guard for CPUs older than ~15 years, i.e. without AVX (Nehalem and
+earlier, also AVX-less Atom/Pentium/Celeron parts), running an AVX-or-later
+build. Today `guard_before_main` itself is VEX-encoded on such builds and faults
+inside the guard (measured: `x86-64-v3` under `qemu -cpu Nehalem`).
+
+Open design point, to settle before implementing: the check has to run as
+non-VEX code inside a crate compiled with `-Ctarget-cpu=v3/v4/native`, and Rust
+can only ADD target features per function, never remove them. The likely shape
+is a `global_asm!` routine (plain CPUID + XGETBV + `write`/`exit`, legacy SSE2
+encodings only) that `.init_array` (or `__mod_init_func` / `.CRT$XCU`) points at,
+ahead of the Rust guard. Falsifier: the same `x86-64-v3` build under
+`qemu -cpu Nehalem` must print the message and exit 132, not SIGILL; and the
+existing Haswell runs must stay silent.
+
+Separate from the still-open AVX2 question on PR #348 (Codex P1: a non-AVX2
+build reaching `simd_avx2` on an AVX-only CPU), which is awaiting the
+operator's choice.

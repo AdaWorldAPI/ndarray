@@ -48,8 +48,9 @@
 //!   WITHOUT AVX (pre-2011, e.g. Nehalem). There even scalar code is
 //!   VEX-encoded, and the guard faults inside itself. Measured: `x86-64-v3`
 //!   under `-cpu Nehalem` still dies with SIGILL in `guard_before_main`.
-//!   Supporting 15-year-old CPUs is out of scope (operator, 2026-10-10), so
-//!   this is not a gap to close.
+//!   Covering these CPUs is an OPTIONAL to-do, postponed (operator,
+//!   2026-10-10); see `.claude/blackboard.md`, "Optional to-do: pre-AVX
+//!   guard".
 //! * Silent when it should be: the same `x86-64-v3` build under `-cpu Haswell`
 //!   runs normally (exit 0).
 
