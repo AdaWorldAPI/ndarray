@@ -1,3 +1,8 @@
+## 2026-10-10 — the three `PackedDatabase`s (stroke split pinned)
+
+- **`PackedDatabase` ×3 is not a duplicate.** `packed` (fixed 128/384/1536 + an index) and `cascade` (width-derived split) lay out the same strokes at 2048 bytes, now pinned by `stroke_split_equals_the_cascade_split_at_2048` (red if cascade's split point moves); they keep separate query paths. `cam_pq::PackedDatabase` holds 6-byte CAM codes and shares only the name. Doc cross-links added; not merged.
+- **Withdrawn the same day:** `mask_row_window` (signed `i64` column) and `bit_sliced_weighted_count` (signed sum over positive/negative planes). Signed masks are not part of this facade. A 256×256 tile is the palette256 × palette256 address (`u8:u8`), answered by 256×256 distance/compose tables, not by geometric windows.
+
 ## 2026-10-10 — x86-64-v2 realization (SSE4.2 without AVX) via the scalar backend
 
 - **What:** an eighth realization, selected at compile time by `all(target_arch = "x86_64", target_feature = "sse4.2", not(target_feature = "avx"))`. You get it with `target-cpu=native` on a v2-only CPU (Nehalem/Westmere, Silvermont-class Atom, VMs that hide AVX) or with `.cargo/config-v2.toml`. `simd.rs` routes this arm to `simd_scalar.rs`: the AVX2/AVX-512 types wrap 256/512-bit registers and cannot be the v2 realization, so plain arrays that LLVM compiles to SSE are used instead. Baseline x86-64 builds (no SSE4.2) are unchanged: they keep the AVX2 arm and the `cpu_guard` AVX2 floor, which now exempts `sse4.2 && !avx2` (the AVX and v2 arms together).

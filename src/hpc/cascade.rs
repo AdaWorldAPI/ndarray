@@ -598,7 +598,12 @@ pub fn adaptive_resolution(query_entropy: f32, corpus_cv: f32) -> Band {
     }
 }
 
-/// Packed database for stroke-aligned cascade search.
+/// Packed database for stroke-aligned cascade search, for rows of any width.
+///
+/// For 2048-byte rows the split is the fixed one in
+/// [`crate::hpc::packed::PackedDatabase`] (128 / 384 / 1536); that type adds
+/// an index and its own query path. `crate::hpc::cam_pq::PackedDatabase` is
+/// unrelated (6-byte CAM codes).
 pub struct PackedDatabase {
     pub stroke1: Vec<u8>,
     pub stroke2: Vec<u8>,

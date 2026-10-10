@@ -75,6 +75,13 @@ pub const FINGERPRINT_BYTES: usize = 2048;
 /// stroke2: [cand[0]_128..512 | cand[1]_128..512 | ...]
 /// stroke3: [cand[0]_512..2048 | cand[1]_512..2048 | ...]
 /// ```
+///
+/// Two other types carry this name and are not this one:
+/// [`crate::hpc::cascade::PackedDatabase`] packs rows of any width, and for
+/// 2048-byte rows its stroke split is exactly this one (128 / 384 / 1536,
+/// pinned by `stroke_split_equals_the_cascade_split_at_2048`), with its own
+/// query path and no index. `crate::hpc::cam_pq::PackedDatabase` holds 6-byte
+/// CAM codes and shares only the name.
 pub struct PackedDatabase {
     /// Stroke 1 data: N × STROKE1_BYTES contiguous bytes.
     stroke1: Vec<u8>,
@@ -277,6 +284,25 @@ impl PackedDatabase {
 
 #[cfg(test)]
 mod tests {
+    /// The fixed 2048-byte split here and cascade's width-derived split must
+    /// lay out the same bytes, or the two packers disagree on what a stroke
+    /// is.
+    #[test]
+    fn stroke_split_equals_the_cascade_split_at_2048() {
+        let n = 5;
+        let db: Vec<u8> = (0..n * FINGERPRINT_BYTES)
+            .map(|i| (i * 31 % 251) as u8)
+            .collect();
+        let fixed = PackedDatabase::pack(&db, FINGERPRINT_BYTES);
+        let cas = crate::hpc::cascade::PackedDatabase::pack(&db, FINGERPRINT_BYTES);
+        assert_eq!((cas.s1_bytes, cas.s2_bytes, cas.s3_bytes), (STROKE1_BYTES, STROKE2_BYTES, STROKE3_BYTES));
+        for i in 0..n {
+            assert_eq!(fixed.get_stroke1(i), &cas.stroke1[i * STROKE1_BYTES..(i + 1) * STROKE1_BYTES]);
+            assert_eq!(fixed.get_stroke2(i), &cas.stroke2[i * STROKE2_BYTES..(i + 1) * STROKE2_BYTES]);
+            assert_eq!(fixed.get_stroke3(i), &cas.stroke3[i * STROKE3_BYTES..(i + 1) * STROKE3_BYTES]);
+        }
+    }
+
     use super::*;
 
     #[test]
