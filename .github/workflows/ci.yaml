@@ -69,16 +69,18 @@ jobs:
         # Must equal `rust-toolchain.toml`'s channel. The version is NOT
         # restated in this comment on purpose: CI here does NOT read the
         # toolchain file (it uses `dtolnay/rust-toolchain@<version>`), so the
-        # number lives in three places — the `MSRV`/`BLAS_MSRV` env above, the
-        # matrix entry below, and each `dtolnay/rust-toolchain@` step. All of
-        # them move together with the toolchain file, and its bump log is the
-        # one place that records WHY each move happened.
+        # number lives in two places — the matrix entry below and each
+        # `dtolnay/rust-toolchain@` step — which move together with the
+        # toolchain file. The `MSRV`/`BLAS_MSRV` env above tracks
+        # `Cargo.toml`'s `rust-version` floor instead, which can lag the
+        # channel (it did from the 1.99.0 bump). The toolchain file's bump log
+        # records WHY each move happened.
         rust:
-          - "1.98.1"
+          - "1.99.0"
     name: clippy/${{ matrix.rust }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: dtolnay/rust-toolchain@1.99.0
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
@@ -103,7 +105,7 @@ jobs:
       # Stable rustfmt on the pinned channel (see `rust-toolchain.toml`;
       # version deliberately not restated here). No nightly dependency since
       # rustfmt.toml is stable-clean post-PR #133.
-      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: dtolnay/rust-toolchain@1.99.0
         with:
           components: rustfmt
       - run: cargo fmt --all --check
@@ -236,7 +238,7 @@ jobs:
     name: hpc-stream-parallel/rayon
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: dtolnay/rust-toolchain@1.99.0
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
       - name: cargo check (no rayon — scalar path unchanged)

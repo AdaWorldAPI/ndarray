@@ -3458,3 +3458,39 @@ Loose ends: aarch64 not covered (`is_aarch64_feature_detected!` has the same
 short-circuit; needs `getauxval(AT_HWCAP)`). The ctor is linked even when the
 consumer references nothing in `cpu_guard` (checked with `nm`), but that was
 measured for one example binary only.
+
+## 2026-10-10 — Rust 1.98.1 → 1.99.0 (channel only; `rust-version` floor stays 1.98.1)
+
+Edited: `rust-toolchain.toml` (+ bump log), CI clippy matrix and the three
+`dtolnay/rust-toolchain@` steps, both Dockerfiles, CLAUDE.md, README(-DE).
+Kept: `rust-version = "1.98.1"` and CI `MSRV`/`BLAS_MSRV` (no 1.99-only API
+used). The toolchain file's "move TOGETHER" rule is superseded for this bump,
+noted in its bump log. Measurement records that say "on 1.98.1" were left alone.
+
+1.99 delta fixed (all in test crates): `missing_safety_doc` ×4 on mock
+`pub unsafe extern "C" fn cblas_*gemm` (blas-mock-tests), `manual_contains` ×3
+(blas-mock-tests/tests/use-blas.rs), deprecated `std::f64::NAN` ×4 through a
+shadowing `use std::f64;` (tests/numeric.rs).
+
+Gates on 1.99.0, each with its tier:
+| gate | result |
+|---|---|
+| clippy `--workspace --all-targets -D warnings`, v3 and v4 (minus blas-tests, cesium) | exit 0 |
+| CI rows: clippy `--features approx,serde,rayon` / `--features native` | exit 0 |
+| `test --lib` v3 (`avx512f=false`) | 2507 passed, 31 ignored |
+| `test --lib` v4 | 2558 passed, 32 ignored |
+| `test --doc` | 684 + 4 passed |
+| masking-parity native (host, avx512f=true) / native v3 (avx512f=false) | PASS / PASS |
+| masking-parity wasm / wasm-scalar / neon-qemu / nightly | PASS ×4 |
+| codegen-witness avx512 (v4, 6 vpternlog) / avx2 (v3) | PASS / PASS |
+| floor: `cargo +1.98.1 check --workspace --exclude blas-tests --all-targets` | exit 0 |
+
+Pre-existing, NOT 1.99, unchanged: `blas-tests` needs a BLAS backend feature
+("Missing backend"); `cesium` lib tests fail clippy identically on 1.98.1
+(constant assertions, no-effect / always-zero ops). The 1.99 hard error
+`no_mangle_generic_items` and the `#[repr(simd)]`-on-macro change: nothing hit,
+all targets compiled.
+
+Note for amx-savant, deliberately not acted on: 1.99 stabilizes passing 128-bit
+integers through vector registers in x86 `asm!`; candidate for the
+byte-encoded inline-asm paths in `hpc/amx_ops.rs`.

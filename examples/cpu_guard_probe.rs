@@ -13,8 +13,9 @@ use ndarray::simd::F32x16;
 fn main() {
     let x: Vec<f32> = (0..1024).map(|i| i as f32).collect();
     let mut acc = F32x16::splat(0.0);
-    for chunk in x.chunks_exact(16) {
-        acc = acc + F32x16::from_slice(chunk);
+    let (chunks, _) = x.as_chunks::<16>();
+    for chunk in chunks {
+        acc += F32x16::from_slice(chunk);
     }
     println!("sum = {}", acc.reduce_sum());
 }

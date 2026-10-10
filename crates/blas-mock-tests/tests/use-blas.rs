@@ -76,9 +76,9 @@ fn test_gen_mat_mul_uses_blas() {
                     let should_use_blas = av.strides().iter().all(|&s| s > 0)
                         && bv.strides().iter().all(|&s| s > 0)
                         && cv.strides().iter().all(|&s| s > 0)
-                        && av.strides().iter().any(|&s| s == 1)
-                        && bv.strides().iter().any(|&s| s == 1)
-                        && cv.strides().iter().any(|&s| s == 1);
+                        && av.strides().contains(&1)
+                        && bv.strides().contains(&1)
+                        && cv.strides().contains(&1);
                     assert_eq!(should_use_blas, ncalls > 0);
                 }
             }

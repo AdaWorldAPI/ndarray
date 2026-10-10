@@ -1,6 +1,6 @@
 # ndarray — HPC Expansion for Rust
 
-*Fork of [rust-ndarray/ndarray](https://github.com/rust-ndarray/ndarray) with 100 HPC modules, 2,534 passing library tests, and SIMD kernels from Intel AMX to Raspberry Pi NEON. Runs on stable Rust 1.98.1 without nightly features.*
+*Fork of [rust-ndarray/ndarray](https://github.com/rust-ndarray/ndarray) with 100 HPC modules, 2,534 passing library tests, and SIMD kernels from Intel AMX to Raspberry Pi NEON. Runs on stable Rust 1.99.0 without nightly features.*
 
 <sub>Counts at commit `f2c1aea`: `pub mod` entries in `src/hpc/mod.rs`; `cargo test --lib` (2,534 passed, 32 ignored). How every number on this page was obtained: [Evidence](#evidence-for-the-numbers-on-this-page).</sub>
 
@@ -197,7 +197,7 @@ cargo test --lib
 
 ## Requirements
 
-- Rust 1.98.1 stable (pinned in `rust-toolchain.toml`; no nightly, no unstable features)
+- Rust 1.99.0 stable (pinned in `rust-toolchain.toml`; no nightly, no unstable features)
 - Optional: gcc-aarch64-linux-gnu for Pi cross-compilation
 - Optional: Intel MKL or OpenBLAS (feature-gated)
 
