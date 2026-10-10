@@ -2943,24 +2943,33 @@ impl I8x16 {
     /// ```
     #[inline(always)]
     pub fn saturating_abs(self) -> Self {
-        // SAFETY: `_mm_abs_epi8` needs SSSE3 and `_mm_min_epu8` needs SSE2. SSE2
-        // is in the x86_64 baseline; SSSE3 is NOT, and this file compiles for
-        // every x86_64 build, so SSSE3 at run time is the caller's obligation.
-        // `target-cpu=native` (default) and `config-v3`/`config-v4` include it;
-        // a baseline build (e.g. a RUSTFLAGS env replacing the config) compiles
-        // this and would SIGILL. The unaligned load/store match the
-        // `[i8; 16]` storage. VPABSB returns 0x80 for `i8::MIN` (the bit pattern
-        // of +128, which does not fit in i8); VPMINUB then clamps 0x80 (= 128
-        // unsigned) down to 0x7f (= 127 = `i8::MAX`), producing the saturating
-        // result bare VPABSB cannot — per the consumer contract's VPABSB
-        // correction. All 16 lanes are saturated branchlessly.
-        use core::arch::x86_64::*;
-        unsafe {
-            let v = _mm_loadu_si128(self.0.as_ptr() as *const __m128i);
-            let clamped = _mm_min_epu8(_mm_abs_epi8(v), _mm_set1_epi8(0x7f_u8 as i8));
-            let mut o = [0i8; 16];
-            _mm_storeu_si128(o.as_mut_ptr() as *mut __m128i, clamped);
-            Self(o)
+        // SSSE3 (`_mm_abs_epi8`) is not in the x86_64 baseline, and this file
+        // compiles for every x86_64 build. With SSSE3 compiled in (the default
+        // `target-cpu=native` on any host since 2006, `config-v3`, `config-v4`)
+        // the intrinsic path runs; otherwise the scalar loop does, so no build
+        // of this method can SIGILL. Both give identical results.
+        #[cfg(target_feature = "ssse3")]
+        {
+            // SAFETY: SSSE3 is enabled at compile time (`cfg` above), so the
+            // whole build already assumes it; `_mm_min_epu8` is SSE2, which is
+            // baseline. The unaligned load/store match the `[i8; 16]` storage.
+            // VPABSB returns 0x80 for `i8::MIN` (the bit pattern of +128,
+            // which does not fit in i8); VPMINUB then clamps 0x80 (= 128
+            // unsigned) down to 0x7f (= 127 = `i8::MAX`), producing the
+            // saturating result bare VPABSB cannot — per the consumer
+            // contract's VPABSB correction.
+            use core::arch::x86_64::*;
+            unsafe {
+                let v = _mm_loadu_si128(self.0.as_ptr() as *const __m128i);
+                let clamped = _mm_min_epu8(_mm_abs_epi8(v), _mm_set1_epi8(0x7f_u8 as i8));
+                let mut o = [0i8; 16];
+                _mm_storeu_si128(o.as_mut_ptr() as *mut __m128i, clamped);
+                Self(o)
+            }
+        }
+        #[cfg(not(target_feature = "ssse3"))]
+        {
+            Self(core::array::from_fn(|i| self.0[i].saturating_abs()))
         }
     }
 }
