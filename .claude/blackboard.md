@@ -3510,3 +3510,14 @@ Four safe-code out-of-bounds paths were re-read and confirmed: `simd_avx2::dot_i
 Loose ends: none of the 160 flags is fixed yet; 860 sites lack `// SAFETY:`;
 sentinel-qa has not audited the verdicts (reading-level, not compiled for
 NEON/wasm/feature-gated files).
+
+## 2026-10-10 — cpu_guard checked against LLVM `getHostCPUFeatures`
+
+Every CPUID leaf/register/bit in `cpu_guard` matches
+`llvm/lib/TargetParser/Host.cpp` (main, fetched 2026-10-10). Two gating
+differences fixed to mirror LLVM: (1) on Apple targets AVX-512 OS state is
+assumed (Darwin saves it lazily; XCR0 does not show it before first use), so
+the guard no longer refuses a correct AVX-512 build on an AVX-512 Mac;
+(2) `xsave`/`xsaveopt`/`xsavec`/`xsaves` are gated on OS AVX state as LLVM does.
+Decision (operator): pre-AVX CPUs (15+ years) are out of scope, so the
+"v3 build on Nehalem still SIGILLs inside the guard" case is not a gap.

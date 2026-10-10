@@ -44,10 +44,12 @@
 //!   VEX-encoded, which such CPUs run. Measured: a `x86-64-v4` build under
 //!   `qemu-x86_64 -cpu Haswell|Skylake-Server|Icelake-Server` prints the
 //!   missing features and exits 132 (qemu emulates no AVX-512 at all).
-//! * Not covered: a `x86-64-v3`/`v4`/`native` build run on a CPU WITHOUT AVX
-//!   (pre-2011, e.g. Nehalem). There even scalar code is VEX-encoded, and the
-//!   guard faults inside itself. Measured: `x86-64-v3` under `-cpu Nehalem`
-//!   still dies with SIGILL in `guard_before_main`.
+//! * Not covered, by decision: a `x86-64-v3`/`v4`/`native` build run on a CPU
+//!   WITHOUT AVX (pre-2011, e.g. Nehalem). There even scalar code is
+//!   VEX-encoded, and the guard faults inside itself. Measured: `x86-64-v3`
+//!   under `-cpu Nehalem` still dies with SIGILL in `guard_before_main`.
+//!   Supporting 15-year-old CPUs is out of scope (operator, 2026-10-10), so
+//!   this is not a gap to close.
 //! * Silent when it should be: the same `x86-64-v3` build under `-cpu Haswell`
 //!   runs normally (exit 0).
 
@@ -153,11 +155,21 @@ mod cpuid {
     }
 
     /// The OS saves XMM + YMM + opmask + ZMM state.
+    ///
+    /// On Apple targets this is assumed: Darwin saves the AVX-512 context
+    /// lazily, on first use, so XCR0 does not show it until then. LLVM's own
+    /// host detection (`llvm/lib/TargetParser/Host.cpp`, `HasAVX512Save`)
+    /// makes the same exception; without it this guard would refuse to start
+    /// a correct AVX-512 build on an AVX-512 Mac.
     pub(super) fn os_avx512() -> bool {
-        xcr0() & 0b1110_0110 == 0b1110_0110
+        cfg!(target_vendor = "apple") || xcr0() & 0b1110_0110 == 0b1110_0110
     }
 }
 
+// Bit positions and OS-state gating mirror LLVM's `getHostCPUFeatures`
+// (`llvm/lib/TargetParser/Host.cpp`, checked 2026-10-10), which is what
+// `-Ctarget-cpu=native` itself consults, so "supported" here means what it
+// means to the compiler that produced the build.
 #[cfg(target_arch = "x86_64")]
 const FEATURES: &[FeatureRow] = {
     use cpuid::{bit, os_avx as avx_os, os_avx512 as z};
@@ -172,7 +184,7 @@ const FEATURES: &[FeatureRow] = {
         "movbe" => bit(1, 0, 'c', 22),
         "popcnt" => bit(1, 0, 'c', 23),
         "aes" => bit(1, 0, 'c', 25),
-        "xsave" => bit(1, 0, 'c', 26),
+        "xsave" => bit(1, 0, 'c', 26) && avx_os(),
         "avx" => bit(1, 0, 'c', 28) && avx_os(),
         "f16c" => bit(1, 0, 'c', 29) && avx_os(),
         "rdrand" => bit(1, 0, 'c', 30),
@@ -201,9 +213,9 @@ const FEATURES: &[FeatureRow] = {
         "avx512fp16" => bit(7, 0, 'd', 23) && z(),
         "avxvnni" => bit(7, 1, 'a', 4) && avx_os(),
         "avx512bf16" => bit(7, 1, 'a', 5) && z(),
-        "xsaveopt" => bit(0xD, 1, 'a', 0),
-        "xsavec" => bit(0xD, 1, 'a', 1),
-        "xsaves" => bit(0xD, 1, 'a', 3),
+        "xsaveopt" => bit(0xD, 1, 'a', 0) && avx_os(),
+        "xsavec" => bit(0xD, 1, 'a', 1) && avx_os(),
+        "xsaves" => bit(0xD, 1, 'a', 3) && avx_os(),
         "lzcnt" => bit(0x8000_0001, 0, 'c', 5),
     )
 };
