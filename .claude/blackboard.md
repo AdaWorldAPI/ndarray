@@ -3521,3 +3521,20 @@ the guard no longer refuses a correct AVX-512 build on an AVX-512 Mac;
 (2) `xsave`/`xsaveopt`/`xsavec`/`xsaves` are gated on OS AVX state as LLVM does.
 Decision (operator): pre-AVX CPUs (15+ years) are out of scope, so the
 "v3 build on Nehalem still SIGILLs inside the guard" case is not a gap.
+
+## 2026-10-10 — agent cards expanded; inventory scope rules
+
+`sentinel-qa` card: environment 1.99/debug-0, starts from the inventory, the
+measured facts (value intrinsics need a `#[target_feature]` caller; the
+`is_*_feature_detected!` short-circuit; `debug_assert!` is not a bounds check;
+runtime checks must cover every callee feature), scope rules (nightly unsafe by
+design; MKL/OpenBLAS lab-only). `amx-savant` card: the stale "1.94, only
+LDTILECFG mnemonic" claim superseded (1.98.1 accepts all AMX mnemonics,
+`amx_ops.rs`); 1.99 `u128`-in-`xmm_reg` asm operand verified (E0658 on 1.98.1),
+plus the measured Rust-ABI `u128` return in `rax:rdx`; AMX gating gaps; lib
+tests no longer pre-broken.
+Inventory: 10 nightly rows → `NIGHTLY-BY-DESIGN`, 32 MKL/OpenBLAS rows tagged
+`[lab-only]`. Floor-gated candidates recorded: `Vec::into_parts` in
+`OwnedRepr::from` (1.99-only, probed). From the other session's feedback, the
+per-population ABI header and Register128-through-extern-"C" items belong to
+lance-graph, not ndarray, and were not applied here.

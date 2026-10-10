@@ -56,14 +56,15 @@ wrapper, so consumers of `ndarray::simd` write none. Only wasm32 is different.
 | `IRREDUCIBLE` | 279 | 259 | FFI (MKL/OpenBLAS), `asm!` / AMX tile config, `unsafe impl Send/Sync`, ndarray's raw-pointer core, `#[target_feature]` calls after a runtime check. Keep; document. |
 | `NEEDS-TF` | 212 | 0 | Value intrinsics. See above: no per-site fix on 1.99. |
 | `CONSOLIDATE` | 185 | 1 | Genuinely unsafe pointer loads/stores (`_mm*_loadu/storeu`, `vld1q/vst1q`). Route each type's slice methods through its existing `from_array`/`to_array` (fixed-size `&[T; N]`), leaving ONE unsafe load and store per type. Several sites bypass helpers that already exist (e.g. `simd_neon.rs:2431`, `:3182`). |
-| `SAFE-API` | 115 | 32 | A named safe std API replaces it: `as_chunks`, `<[T;N]>::try_from`, `to_bits`/`from_ne_bytes`, `copy_from_slice`, `NonNull::from_ref`, `Vec::into_flattened`, checked `from_shape_vec`, `HashMap::get_disjoint_mut` (`hpc/blackboard.rs`, 5 sites), a `dyn Any` downcast for same-`'static`-type transmutes. |
-| `UNSAFE-FN-API` | 43 | 105 | `unsafe fn` whose contract is the point (`uget`, `from_shape_ptr`, …). |
+| `SAFE-API` | 107 | 32 | A named safe std API replaces it: `as_chunks`, `<[T;N]>::try_from`, `to_bits`/`from_ne_bytes`, `copy_from_slice`, `NonNull::from_ref`, `Vec::into_flattened`, checked `from_shape_vec`, `HashMap::get_disjoint_mut` (`hpc/blackboard.rs`, 5 sites), a `dyn Any` downcast for same-`'static`-type transmutes. |
+| `UNSAFE-FN-API` | 41 | 105 | `unsafe fn` whose contract is the point (`uget`, `from_shape_ptr`, …). |
 | `SAFE-CRATE` | 27 | 1 | Only `bytemuck` / `zerocopy` make it safe. Needs operator approval for the dependency. |
+| `NIGHTLY-BY-DESIGN` | 10 | 0 | `src/simd_nightly/*`: validation backend over `core::simd`, nightly only, unsafe by design. No SAFETY-comment requirement; inline notes where they help (operator, 2026-10-10). |
 | `REMOVABLE` | 42 | 0 | `unsafe fn` keywords on bodies with no unsafe op: scalar fallbacks and forwarders in `simd_runtime/*`, `bgz17_bridge.rs` (10), `aabb.rs`, `byte_scan.rs`, `bitwise.rs`, … Caveat: where the fn is `#[target_feature]`, the keyword can go but its CALLERS still need `unsafe` (probe row 5); dropping the ATTRIBUTE changes codegen on v3 builds, so measure first. |
 
 ## `// SAFETY:` comments (CLAUDE.md hard rule)
 
-860 sites lack one (530 fork, 330 upstream). The clippy run counts 439 blocks and
+856 sites lack one (526 fork, 330 upstream; nightly rows are exempt). The clippy run counts 439 blocks and
 77 impls on the native x86 build alone (NEON / wasm / nightly / feature-gated
 files are not compiled there). Several macros (`simd_avx512.rs:50`, `:61`) cover
 many expansions with one comment.
@@ -86,10 +87,14 @@ A flag is a lead, not a verdict. The first four were re-read at source and hold.
   the reviewer reports OOB tile access at `:487`, `:538` when misaligned.
 
 **Reported, not yet re-read**
-- Safe BLAS wrappers pass raw pointers with no extent check against
-  m/n/k/ld*, and truncate dims with `as c_int`: `backend/mkl.rs:199/223/244/263`,
-  `openblas.rs:96/120`, `native.rs:219`. MKL row views with stride 0 give
-  `ld < cols` → `xerbla` (`mkl.rs:407/452/504/553`).
+- `backend/native.rs:219` passes raw pointers to `matrixmultiply` with no
+  extent check against m/n/k/ld*.
+- Lab-only (32 rows tagged `[lab-only]`): MKL / OpenBLAS are a comparison
+  harness, not the production path, which is the native Rust BlasGraph GEMM.
+  Their safe wrappers pass raw pointers unchecked and truncate dims with
+  `as c_int` (`backend/mkl.rs:199/223/244/263`, `openblas.rs:96/120`); stride-0
+  row views give `ld < cols` → `xerbla` (`mkl.rs:407/452/504/553`). Real, low
+  priority.
 - `simd_neon.rs:115/147/214` codebook gathers: start-only checks, output length
   `debug_assert!` only. `simd_wasm.rs:1416/1477`: same pattern.
 - `simd_avx512.rs:3477/3700`: private fns rely on callers' asserts.
@@ -118,6 +123,16 @@ A flag is a lead, not a verdict. The first four were re-read at source and hold.
   grant but installs kernels needing `avx512f` + `avx512vnni`;
   `simd_int_ops.rs:315/320` check only the VNNI bit. AMX-BF16 (`TDPBF16PS`)
   never checks its own CPUID bit.
+
+## Toolchain-gated candidates (need the floor raised to 1.99)
+
+- `Vec::into_parts` / `Vec::from_parts` / `Box::into_non_null` are stable on
+  1.99.0 and unstable on 1.98.1 (E0658 `box_vec_non_null`, probed). In
+  `data_repr.rs`, `OwnedRepr::from` becomes `let (ptr, len, capacity) =
+  v.into_parts();` with no `ManuallyDrop`/`nonnull_from_vec_data`;
+  `take_as_vec` stays `unsafe` (`from_parts` is unsafe by contract).
+- `u128` as an `xmm_reg` `asm!` operand (1.99.0; E0658 on 1.98.1, probed):
+  for the hand-written asm kernels, see the `amx-savant` card.
 
 ## Suggested order
 
