@@ -835,7 +835,6 @@ pub use crate::simd_masking_ops::{
     // 2026-09-16: the ordered u64 family (N3/G2). The width where the packing
     // is NOT free — `U64x8` is 8 lanes, so eight groups share a word and each
     // lands at its own byte.
-    bit_sliced_weighted_count,
     blend_i32,
     eq_i32_to_mask,
     eq_i32_to_mask_under,
@@ -875,7 +874,6 @@ pub use crate::simd_masking_ops::{
     mask_not_assign,
     mask_or,
     mask_or_assign,
-    mask_row_window,
     mask_scatter_or_u32,
     mask_set_range,
     mask_shift_morton,
@@ -937,7 +935,6 @@ pub use crate::simd_masking_ops::{
     KeyRunCarry,
     MortonDir,
     PowerSums,
-    WindowEdge,
     BOUNDED_TILE_ROWS,
     SYM_EMPTY_I64,
 };
