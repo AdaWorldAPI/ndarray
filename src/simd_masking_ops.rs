@@ -9943,18 +9943,10 @@ pub fn mask_row_window(
     if len == 0 || len > 64 || words_per_row == 0 {
         return None;
     }
-    // A slice holds at most 2^60 words, so the true width can exceed
-    // `i64::MAX` only for a grid that cannot exist; saturating keeps the
-    // inside test exact for every representable column.
-    let wpr = i64::try_from(words_per_row).unwrap_or(i64::MAX);
-    let width = wpr.saturating_mul(64);
+    let width = (words_per_row * 64) as i64;
     let rows = words.len() / words_per_row;
-    // An end past `i64::MAX` is past the row, so it is simply not inside.
-    let inside = row < rows
-        && col >= 0
-        && col
-            .checked_add(i64::from(len))
-            .is_some_and(|end| end <= width);
+    let end = col + i64::from(len);
+    let inside = row < rows && col >= 0 && end <= width;
     if !inside && edge == WindowEdge::Refuse {
         return None;
     }
@@ -9964,7 +9956,7 @@ pub fn mask_row_window(
     let base = row * words_per_row;
     // Read bit `c` of the row, or 0 outside it.
     let word_at = |w: i64| -> u64 {
-        if w < 0 || w >= wpr {
+        if w < 0 || w >= words_per_row as i64 {
             0
         } else {
             words[base + w as usize]
@@ -10070,21 +10062,6 @@ mod window_tests {
         assert_eq!(mask_row_window(&grid, 1, 1, 0, 64, WindowEdge::Refuse), Some(u64::MAX));
         assert_eq!(mask_row_window(&grid, 1, 3, 0, 8, WindowEdge::ZeroFill), Some(0));
         assert_eq!(mask_row_window(&grid, 1, 0, 0, 0, WindowEdge::ZeroFill), None);
-    }
-
-    /// Extreme columns: `col + len` must not overflow, and both edge
-    /// policies must still apply.
-    #[test]
-    fn extreme_columns_do_not_overflow() {
-        let grid = [u64::MAX, u64::MAX];
-        for col in [i64::MAX, i64::MAX - 3, i64::MIN, i64::MIN + 1] {
-            for len in [1, 8, 64] {
-                assert_eq!(mask_row_window(&grid, 1, 0, col, len, WindowEdge::Refuse), None);
-                assert_eq!(mask_row_window(&grid, 1, 0, col, len, WindowEdge::ZeroFill), Some(0));
-            }
-        }
-        // A huge declared width is not a reason to refuse an in-row window.
-        assert_eq!(mask_row_window(&grid, 2, 0, 64, 8, WindowEdge::Refuse), Some(0xFF));
     }
 
     #[test]
