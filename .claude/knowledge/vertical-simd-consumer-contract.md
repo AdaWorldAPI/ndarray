@@ -471,8 +471,8 @@ simd_{avx512,avx2,neon,wasm,scalar}.rs   peer backends, each owns realization
   `cargo rustc --release --manifest-path crates/neon-simd-parity/Cargo.toml
   --target aarch64-unknown-linux-gnu -- --emit=asm`, then count
   `(and|orr|eor|bic|orn) v*.16b` against `(and|orr|eor|bic) w*,`.
-- **`unsafe` at the intrinsic boundary — where and why (measured, 1.98.1,
-  `tools/safe_intrinsic_probe`).** x86 and aarch64 SIMD intrinsics are safe
+- **`unsafe` at the intrinsic boundary — where and why (measured, 1.98.1, re-run on
+  1.99.0 2026-10-10 with identical results, `tools/safe_intrinsic_probe`).** x86 and aarch64 SIMD intrinsics are safe
   fns whose CALL requires the caller to carry the matching
   `#[target_feature]`; build-config features do not count (rustc says so in
   the E0133 note), and a safe annotated fn called from a plain fn fails the

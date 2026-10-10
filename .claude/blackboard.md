@@ -3494,3 +3494,19 @@ all targets compiled.
 Note for amx-savant, deliberately not acted on: 1.99 stabilizes passing 128-bit
 integers through vector registers in x86 `asm!`; candidate for the
 byte-encoded inline-asm paths in `hpc/amx_ops.rs`.
+
+## 2026-10-10 — `unsafe` inventory (1,301 sites) — `.claude/knowledge/unsafe-inventory/`
+
+903 fork + 398 upstream sites, each with a verdict and workaround (`sites.tsv`),
+from a regex pre-pass, a native clippy run, and ten reading-level reviews. The
+orchestrator corrected one class with the compiler: `safe_intrinsic_probe`
+re-run on 1.99.0 is identical to 1.98.1 (E0133 for value intrinsics in plain fns
+on x86_64 and aarch64, even baseline SSE2/NEON; only wasm32 simd128 is safe),
+so 212 value-intrinsic blocks rated REMOVABLE were relabelled NEEDS-TF.
+Four safe-code out-of-bounds paths were re-read and confirmed: `simd_avx2::dot_i8`,
+`GridBlockMut::row_mut` (debug_assert only), `sgemm_blocked`/`dgemm_blocked`
+(start-only slice check before 16-lane stores), `int8_gemm_amx_tiled`
+(AMX + alignment gates debug_assert only).
+Loose ends: none of the 160 flags is fixed yet; 860 sites lack `// SAFETY:`;
+sentinel-qa has not audited the verdicts (reading-level, not compiled for
+NEON/wasm/feature-gated files).
