@@ -1,3 +1,9 @@
+## 2026-10-10 — `tests/splat3d_correctness.rs`: clippy 1.99 clean under `--features splat3d`
+
+- Five lints, all in the test file: an unneeded `mut` on a closure, an over-precise f32 literal (`0.28209479177387814` → `0.282_094_8`; same bits, `0x3e906ebb`), and three `chunks_exact(3)` → `as_chunks::<3>().0.iter()`.
+- No behaviour change: `cargo test --features splat3d --test splat3d_correctness` 5/5.
+- The file is `#![cfg(feature = "splat3d")]`, so a plain `cargo clippy --test splat3d_correctness` compiles nothing and reports success. The feature has to be on to see these lints.
+
 ## 2026-10-10 — `simd_avx.rs`: AVX-without-AVX2 realization (Sandy/Ivy Bridge, Bulldozer–Jaguar), plus three pre-existing x86 fixes
 
 - **What:** a seventh realization, selected at compile time by `all(target_feature = "avx", not(target_feature = "avx2"))`. You get it with `target-cpu=native` on such a CPU, or with `.cargo/config-avx.toml` (`sandybridge`). The types and the `simd.rs` exports are unchanged; the 49 AVX2-only items in `simd_avx2.rs` and 19 in `simd_avx512.rs` are cfg-gated, and `simd_avx.rs` supplies the same methods from SSE2–SSE4.1 halves plus AVX1 float-domain ops. There are no runtime feature checks. The `cpu_guard` AVX2 startup floor applies only when the AVX2 arm is compiled in. Baseline builds (no `avx` cfg) are UNCHANGED: they keep the AVX2 arm and the floor. Whether the SSE tier should take them over is an open operator question.
