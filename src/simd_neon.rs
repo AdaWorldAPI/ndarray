@@ -1354,11 +1354,23 @@ impl I8x16 {
     }
 
     /// Compare-greater-than: returns 16-bit mask. Bit i set where self[i] > other[i].
+    ///
+    /// Register-level compare: it takes a second register, so it is binary in form.
+    /// The masking-ops predicates call register compares like this one with a
+    /// broadcast constant; lane-vs-lane predicates (G7) stay deliberately absent at
+    /// the slice/IR layer, see `.claude/knowledge/masking-ops-state.md` § G7. This
+    /// method is not that gap. The same operation exists on every backend at its
+    /// native widths (`I8x64::cmp_gt` etc.); an `I8x16` alias is not to be added to
+    /// other arms without a caller.
     #[inline(always)]
     pub fn cmp_gt(self, other: Self) -> u16 {
+        let mut arr = [0u8; 16];
+        // SAFETY: NEON is baseline on aarch64, so the intrinsics are available;
+        // `arr` is a local 16-byte array, so the 16-byte store is in bounds;
+        // `vcgtq_s8` lanes are 0x00/0xFF.
         unsafe {
             let cmp = vcgtq_s8(self.0, other.0); // uint8x16_t, 0xFF where true
-            let arr: [u8; 16] = core::mem::transmute(cmp);
+            vst1q_u8(arr.as_mut_ptr(), cmp);
             let mut m: u16 = 0;
             for i in 0..16 {
                 if arr[i] != 0 {
@@ -1444,11 +1456,23 @@ impl I16x8 {
     }
 
     /// Compare-greater-than: returns 8-bit mask. Bit i set where self[i] > other[i].
+    ///
+    /// Register-level compare: it takes a second register, so it is binary in form.
+    /// The masking-ops predicates call register compares like this one with a
+    /// broadcast constant; lane-vs-lane predicates (G7) stay deliberately absent at
+    /// the slice/IR layer, see `.claude/knowledge/masking-ops-state.md` § G7. This
+    /// method is not that gap. The same operation exists on every backend at its
+    /// native widths (`I8x64::cmp_gt` etc.); an `I8x16` alias is not to be added to
+    /// other arms without a caller.
     #[inline(always)]
     pub fn cmp_gt(self, other: Self) -> u8 {
+        let mut arr = [0u16; 8];
+        // SAFETY: NEON is baseline on aarch64, so the intrinsics are available;
+        // `arr` is a local 16-byte array, so the 16-byte store is in bounds;
+        // `vcgtq_s16` lanes are 0x0000/0xFFFF.
         unsafe {
             let cmp = vcgtq_s16(self.0, other.0); // uint16x8_t, 0xFFFF where true
-            let arr: [u16; 8] = core::mem::transmute(cmp);
+            vst1q_u16(arr.as_mut_ptr(), cmp);
             let mut m: u8 = 0;
             for i in 0..8 {
                 if arr[i] != 0 {
@@ -2382,6 +2406,9 @@ neon_int_polyfill!(I16x32, i16, 32, 0i16, u32);
 #[cfg(target_arch = "aarch64")]
 #[allow(non_camel_case_types)]
 pub type i8x16 = I8x16;
+#[cfg(target_arch = "aarch64")]
+#[allow(non_camel_case_types)]
+pub type u8x16 = U8x16;
 #[cfg(target_arch = "aarch64")]
 #[allow(non_camel_case_types)]
 pub type i16x8 = I16x8;

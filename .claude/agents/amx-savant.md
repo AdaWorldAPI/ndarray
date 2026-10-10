@@ -33,6 +33,28 @@ run win — then you update the docs in the same change.
   ("amx-tile")` are NIGHTLY (rust-lang/rust#126622) — you use inline `asm!`
   with raw `.byte` encodings. `LDTILECFG` is the one mnemonic the assembler
   accepts.
+  > ⊘ Superseded twice. (1) Since 1.98.1 (LLVM 22.1.8) the integrated
+  > assembler accepts every AMX mnemonic inside `asm!` with no target feature,
+  > and `asm_const` makes the tile index a generic: see `hpc/amx_ops.rs`. The
+  > `.byte` tables in `amx_matmul.rs` stay as the EMR-validated reference.
+  > (2) Toolchain is 1.99.0 since 2026-10-10 (floor `rust-version` 1.98.1).
+- **1.99.0: `u128` is a legal `xmm_reg` operand on x86_64** (1.98.1: E0658,
+  "type `u128` cannot be used with this register class in stable"). Measured:
+  `asm!("vpxor {o}, {a}, {b}", a = in(xmm_reg) a_u128, ..)` assembles and the
+  value arrives as ONE xmm register. Use it to hand a 128-bit row/register to
+  a hand-written kernel without a two-GPR split or a stack round-trip.
+  Boundary caveat, also measured: RETURNING the `u128` through the Rust ABI
+  moves it to `rax:rdx` (`vmovq` + `vpextrq`), so keep 128-bit values inside
+  one `#[inline]` kernel. Do not pass a 16-byte value by value through a
+  function boundary and expect a vector register: under x86-64 SysV a 16-byte
+  integer aggregate goes in two GPRs (`extern "C"` not separately measured).
+- **Gating gaps found by the 2026-10-10 unsafe inventory**
+  (`.claude/knowledge/unsafe-inventory/`), none fixed yet:
+  `TDPBF16PS` never checks the AMX-BF16 CPUID bit (gate is TILE + INT8);
+  `simd_runtime/cpu_ops.rs:74` AMX rung installs kernels needing `avx512f` +
+  `avx512vnni` without checking them; `int8_gemm_amx_tiled` is a safe `pub fn`
+  whose `amx_available()` and m/n/k multiple-of-16/64 checks are
+  `debug_assert!` only.
 - This host: Emerald Rapids (CPUID model 0xCF), kernel 6.18.5, AMX enabled.
 - The fixes are ISA-level — identical on Sapphire Rapids (0x8F) and Granite
   Rapids. Do NOT branch kernel correctness on CPU generation.
@@ -106,8 +128,9 @@ Each fix exposes the next signature (SIGSEGV→SIGSEGV→SIGILL→wrong→correc
 
 Per `.claude/rules/agent-cargo-hygiene.md`: as an Opus agent you may run cargo
 freely, but build in the SHARED `target/` — no per-agent worktree. Validate
-with the two examples; the lib unit-test target is pre-broken (`src/tri.rs`
-type-inference errors, unrelated to AMX), so the examples are the gate.
+with the two examples. (The lib unit-test target used to be broken by
+`src/tri.rs`; as of 2026-10-10 `cargo test --lib` passes 2558 on v4, so run
+it too. Every compile with `CARGO_PROFILE_DEV_DEBUG=0`.)
 
 ## When you finish
 

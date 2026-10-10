@@ -3435,3 +3435,198 @@ Loose ends: the general strided path still gathers scalar (correct — at row
 strides ≥ a cache line a hardware gather buys nothing, per the doc); a
 `stride_bytes == 8` twin for `u64` lanes does not exist yet because no caller
 compares `u64` lanes.
+
+## 2026-10-10 — `cpu_guard`: build-vs-CPU check before `main` (SIGILL → message)
+
+New `src/cpu_guard.rs` (`std`, x86_64): compares `cfg!(target_feature)` against
+CPUID + XCR0 read directly, from an `.init_array` / `__mod_init_func` /
+`.CRT$XCU` hook, and exits 132 with the missing feature list. API:
+`check_build_cpu()`, `assert_build_cpu()`, `missing_build_features()`.
+Build-time behaviour unchanged: cross-building any tier on any runner works.
+
+Finding worth keeping: `is_x86_feature_detected!` returns `true` without asking
+the CPU when the feature is compiled in (`cfg!(..) || runtime`). The first
+version used it and passed its own check under qemu, then SIGILLed in `main`.
+
+Measured (examples/cpu_guard_probe.rs, qemu-user-static 8.2):
+- v4 build, `-cpu Haswell|Skylake-Server|Icelake-Server|max` → message, exit 132.
+- v3 build, `-cpu Haswell` → runs, exit 0 (silence twin).
+- v3 build, `-cpu Nehalem` (no AVX) → still SIGILL, inside the guard: the
+  guard is VEX-encoded like the rest of a v3 build. Documented as not covered.
+Gates: clippy `-D warnings` v3 / v4 / aarch64 clean; v4 `--lib` 2558 passed.
+Loose ends: aarch64 not covered (`is_aarch64_feature_detected!` has the same
+short-circuit; needs `getauxval(AT_HWCAP)`). The ctor is linked even when the
+consumer references nothing in `cpu_guard` (checked with `nm`), but that was
+measured for one example binary only.
+
+## 2026-10-10 — Rust 1.98.1 → 1.99.0 (channel only; `rust-version` floor stays 1.98.1)
+
+Edited: `rust-toolchain.toml` (+ bump log), CI clippy matrix and the three
+`dtolnay/rust-toolchain@` steps, both Dockerfiles, CLAUDE.md, README(-DE).
+Kept: `rust-version = "1.98.1"` and CI `MSRV`/`BLAS_MSRV` (no 1.99-only API
+used). The toolchain file's "move TOGETHER" rule is superseded for this bump,
+noted in its bump log. Measurement records that say "on 1.98.1" were left alone.
+
+1.99 delta fixed (all in test crates): `missing_safety_doc` ×4 on mock
+`pub unsafe extern "C" fn cblas_*gemm` (blas-mock-tests), `manual_contains` ×3
+(blas-mock-tests/tests/use-blas.rs), deprecated `std::f64::NAN` ×4 through a
+shadowing `use std::f64;` (tests/numeric.rs).
+
+Gates on 1.99.0, each with its tier:
+
+| gate | result |
+|---|---|
+| clippy `--workspace --all-targets -D warnings`, v3 and v4 (minus blas-tests, cesium) | exit 0 |
+| CI rows: clippy `--features approx,serde,rayon` / `--features native` | exit 0 |
+| `test --lib` v3 (`avx512f=false`) | 2507 passed, 31 ignored |
+| `test --lib` v4 | 2558 passed, 32 ignored |
+| `test --doc` | 684 + 4 passed |
+| masking-parity native (host, avx512f=true) / native v3 (avx512f=false) | PASS / PASS |
+| masking-parity wasm / wasm-scalar / neon-qemu / nightly | PASS ×4 |
+| codegen-witness avx512 (v4, 6 vpternlog) / avx2 (v3) | PASS / PASS |
+| floor: `cargo +1.98.1 check --workspace --exclude blas-tests --all-targets` | exit 0 |
+
+Pre-existing, NOT 1.99, unchanged: `blas-tests` needs a BLAS backend feature
+("Missing backend"); `cesium` lib tests fail clippy identically on 1.98.1
+(constant assertions, no-effect / always-zero ops). The 1.99 hard error
+`no_mangle_generic_items` and the `#[repr(simd)]`-on-macro change: nothing hit,
+all targets compiled.
+
+Note for amx-savant, deliberately not acted on: 1.99 stabilizes passing 128-bit
+integers through vector registers in x86 `asm!`; candidate for the
+byte-encoded inline-asm paths in `hpc/amx_ops.rs`.
+
+## 2026-10-10 — `unsafe` inventory (1,301 sites) — `.claude/knowledge/unsafe-inventory/`
+
+903 fork + 398 upstream sites, each with a verdict and workaround (`sites.tsv`),
+from a regex pre-pass, a native clippy run, and ten reading-level reviews. The
+orchestrator corrected one class with the compiler: `safe_intrinsic_probe`
+re-run on 1.99.0 is identical to 1.98.1 (E0133 for value intrinsics in plain fns
+on x86_64 and aarch64, even baseline SSE2/NEON; only wasm32 simd128 is safe),
+so 212 value-intrinsic blocks rated REMOVABLE were relabelled NEEDS-TF.
+Four safe-code out-of-bounds paths were re-read and confirmed: `simd_avx2::dot_i8`,
+`GridBlockMut::row_mut` (debug_assert only), `sgemm_blocked`/`dgemm_blocked`
+(start-only slice check before 16-lane stores), `int8_gemm_amx_tiled`
+(AMX + alignment gates debug_assert only).
+Loose ends: none of the 160 flags is fixed yet; 860 sites lack `// SAFETY:`;
+sentinel-qa has not audited the verdicts (reading-level, not compiled for
+NEON/wasm/feature-gated files).
+
+## 2026-10-10 — cpu_guard checked against LLVM `getHostCPUFeatures`
+
+Every CPUID leaf/register/bit in `cpu_guard` matches
+`llvm/lib/TargetParser/Host.cpp` (main, fetched 2026-10-10). Two gating
+differences fixed to mirror LLVM: (1) on Apple targets AVX-512 OS state is
+assumed (Darwin saves it lazily; XCR0 does not show it before first use), so
+the guard no longer refuses a correct AVX-512 build on an AVX-512 Mac;
+(2) `xsave`/`xsaveopt`/`xsavec`/`xsaves` are gated on OS AVX state as LLVM does.
+Decision (operator): pre-AVX CPUs (15+ years) are out of scope, so the
+"v3 build on Nehalem still SIGILLs inside the guard" case is not a gap.
+
+## 2026-10-10 — agent cards expanded; inventory scope rules
+
+`sentinel-qa` card: environment 1.99/debug-0, starts from the inventory, the
+measured facts (value intrinsics need a `#[target_feature]` caller; the
+`is_*_feature_detected!` short-circuit; `debug_assert!` is not a bounds check;
+runtime checks must cover every callee feature), scope rules (nightly unsafe by
+design; MKL/OpenBLAS lab-only). `amx-savant` card: the stale "1.94, only
+LDTILECFG mnemonic" claim superseded (1.98.1 accepts all AMX mnemonics,
+`amx_ops.rs`); 1.99 `u128`-in-`xmm_reg` asm operand verified (E0658 on 1.98.1),
+plus the measured Rust-ABI `u128` return in `rax:rdx`; AMX gating gaps; lib
+tests no longer pre-broken.
+Inventory: 10 nightly rows → `NIGHTLY-BY-DESIGN`, 32 MKL/OpenBLAS rows tagged
+`[lab-only]`. Floor-gated candidates recorded: `Vec::into_parts` in
+`OwnedRepr::from` (1.99-only, probed). From the other session's feedback, the
+per-population ABI header and Register128-through-extern-"C" items belong to
+lance-graph, not ndarray, and were not applied here.
+
+## 2026-10-10 — Workstreams B + C: `I8x16`/`U8x16` parity, `cmp_gt` scoped
+
+B: `I8x16::{zero, add, sub, min, max}` added to the AVX-512 polyfill, scalar and
+nightly arms (wasm and NEON already had them); `U8x16` with NEON's surface
+(`LANES, splat, zero, from_slice, from_array, to_array, copy_to_slice, add, sub,
+min, max`) added to AVX-512 polyfill, scalar, wasm and nightly, and exported
+with `u8x16` from all six `simd.rs` blocks (it was not exported anywhere before,
+NEON included). `add`/`sub` WRAP on every arm, matching `vaddq_s8`. New parity
+group `check_i8x16_u8x16_lanes` (codes 0xF00-0xF32) in simd-masking-parity:
+PASS on native-v4, native-v3, wasm, wasm-scalar, neon-qemu, nightly.
+C (masking-ops-cartographer verdict): register-level `cmp_gt(self, other)` /
+`cmp*_mask` exist on EVERY arm at native widths; G7 governs slice-level
+predicates, not register methods, so nothing is replicated. Doc paragraph on
+NEON `I8x16`/`I16x8::cmp_gt` and wasm `I8x16::cmp_gt`; G7 scope note in
+`masking-ops-state.md`. NEON `cmp_gt` transmutes replaced with `vst1q_u8/u16`
+into a local array + `// SAFETY:`.
+Gates: clippy -D warnings v3, v4, aarch64; nightly check; lib tests v3 2507 /
+v4 2558; doctests 684+4. (wasm32 lib clippy fails on `getrandom` in default
+deps, pre-existing; the parity arm builds wasm for real.)
+SoA 128-bit codegen check (probe over committed HEAD, 1.99, `-Ctarget-cpu`):
+no `vpextrq` anywhere. `soa_u64x8_xor_popcnt` via `to_array()`: v3 34 `vmovq`
+(8-byte loads + transpose: v3 `U64x8` is a flat `[u64; 8]` polyfill), v4 0.
+Through the typed `popcnt()` + `reduce_sum()`: v3 17, v4 1. `U8x64` and the
+`I8x16` polyfill: 0. Real AVX2 integer backends would remove the v3 cost.
+
+## 2026-10-10 — Workstream D: SAFETY-comment truth sweep (comment-only)
+
+Every comment that cited a pinned tier as if it were a compile-time guarantee
+now states the caller obligation, in the form of `U64x8::avx2_halves`:
+26 `SAFETY: AVX2 baseline` sites + 4 longer ones in `simd_avx2.rs`; the
+`avx2_halves` statement itself (it claimed `.cargo/config.toml` pins v3 — the
+default is `target-cpu=native`); `I8x16::saturating_abs` in `simd_avx512.rs`
+(SSSE3 is NOT in the x86_64 baseline this file compiles for); the AVX2-arm
+selection comment in `simd.rs`; `Fingerprint::as_u8x64` docs (endianness never
+depended on a pin). NEON "baseline" comments were left: NEON really is baseline
+on aarch64. Diff is comment lines only (checked); fmt + clippy v3/v4 clean.
+Pending operator decision, NOT landed: `saturating_abs` cfg(ssse3) + scalar
+fallback, which removes the SIGILL path on baseline builds.
+Addendum (same day, from sentinel-qa's review of the saturating_abs proposal):
+`I8x32::saturating_abs` (simd_avx512.rs) claimed a `#[target_feature(enable =
+"avx2")]` annotation on its callers that does not exist; rewritten to the
+caller-obligation form. Not a unique hole: every `I8x32` method uses
+`_mm256_*`. sentinel-qa verdict on the saturating_abs cfg(ssse3) patch:
+CONDITIONAL — sound and both paths agree on all 256 inputs, but land it only
+with an exhaustive 256-value test and a standing CI line for the
+`-Ctarget-cpu=x86-64` baseline build (otherwise the scalar branch is never
+compiled in CI). Patch held for operator approval.
+PR #348 codex P1 (cpu_guard table coverage): CONFIRMED and fixed. 11 x86_64
+features some rustc 1.99 `-Ctarget-cpu` model enables were absent from the
+guard (sse4a tbm kl widekl sha512 sm3 sm4 avxifma avxvnniint8 avxneconvert
+avxvnniint16); bit positions + gating copied from LLVM Host.cpp. A coverage
+test pins rustc's full CPU-model feature list (regenerate on toolchain bump).
+AMX is not a stable cfg target_feature, so -Ctarget-cpu never enables it.
+Codex P1 #2 (guard should require AVX2 on every x86_64 build, because
+simd_avx2 is always selected without AVX-512): path is real, but the fix
+changes the crate minimum ISA for every consumer -> raised to the operator.
+
+## Optional to-do: pre-AVX guard (operator, 2026-10-10 — postponed, not scheduled)
+
+A SIGILL guard for CPUs older than ~15 years, i.e. without AVX (Nehalem and
+earlier, also AVX-less Atom/Pentium/Celeron parts), running an AVX-or-later
+build. Today `guard_before_main` itself is VEX-encoded on such builds and faults
+inside the guard (measured: `x86-64-v3` under `qemu -cpu Nehalem`).
+
+Open design point, to settle before implementing: the check has to run as
+non-VEX code inside a crate compiled with `-Ctarget-cpu=v3/v4/native`, and Rust
+can only ADD target features per function, never remove them. The likely shape
+is a `global_asm!` routine (plain CPUID + XGETBV + `write`/`exit`, legacy SSE2
+encodings only) that `.init_array` (or `__mod_init_func` / `.CRT$XCU`) points at,
+ahead of the Rust guard. Falsifier: the same `x86-64-v3` build under
+`qemu -cpu Nehalem` must print the message and exit 132, not SIGILL; and the
+existing Haswell runs must stay silent.
+
+Separate from the still-open AVX2 question on PR #348 (Codex P1: a non-AVX2
+build reaching `simd_avx2` on an AVX-only CPU), which is awaiting the
+operator's choice.
+
+## AVX2 startup floor in cpu_guard (operator decision, 2026-10-10, PR #348 codex P1)
+
+Operator chose the runtime-check option, as a STARTUP check only: no
+`is_x86_feature_detected!` anywhere in the SIMD code, because that would break
+compile-time dispatch. Implemented as `cpu_guard::BACKEND_FLOOR` (one row, AVX2
+CPUID bit + YMM OS state, `compiled = true` on every x86_64 build), unioned into
+`missing_build_features`. The message says no rebuild can help.
+
+Measured, baseline build (CI's RUSTFLAGS, no target-cpu), `cpu_guard_probe`:
+qemu `-cpu Nehalem` 132, `SandyBridge` 132, `IvyBridge` 132, `Haswell` 0,
+`max` 0. Side effect: a baseline build on a PRE-AVX CPU now gets the message
+too (the guard is not VEX-encoded there). The optional pre-AVX to-do above
+remains only for builds compiled with `target-cpu` v3/v4/native.

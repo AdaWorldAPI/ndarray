@@ -658,9 +658,9 @@ impl Fingerprint<8> {
     /// (both use `u64::to_le_bytes` / `u64::from_le_bytes`).
     /// On a big-endian target the raw memory layout of `[u64; 8]` would put
     /// the high byte first, contradicting the LE contract and breaking
-    /// cross-platform SIMD consumers. The `.cargo/config.toml` pins
-    /// `target-cpu=x86-64-v4`, so all supported targets (x86_64 + aarch64)
-    /// are little-endian; the cfg gate makes the LE assumption explicit
+    /// cross-platform SIMD consumers. All supported targets (x86_64, aarch64,
+    /// wasm32) are little-endian, whatever `target-cpu` is chosen; the cfg gate
+    /// makes the LE assumption explicit
     /// rather than implicit. See P2 review on PR #167.
     ///
     /// # Design reference

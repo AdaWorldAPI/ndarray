@@ -20,7 +20,7 @@
 use core::fmt;
 use core::simd::cmp::{SimdOrd, SimdPartialEq, SimdPartialOrd};
 use core::simd::num::{SimdInt, SimdUint};
-use core::simd::{i8x16 as core_i8x16, u16x8 as core_u16x8, u64x16, u8x8 as core_u8x8, Simd};
+use core::simd::{i8x16 as core_i8x16, u16x8 as core_u16x8, u64x16, u8x16 as core_u8x16, u8x8 as core_u8x8, Simd};
 
 // ── W1a-#1: I8x16 + lane_i8 + from_i4_packed_u64 ────────────────────────────
 
@@ -76,6 +76,80 @@ impl I8x16 {
     pub fn copy_to_slice(self, s: &mut [i8]) {
         assert!(s.len() >= 16);
         self.0.copy_to_slice(&mut s[..16]);
+    }
+
+    /// All lanes zero.
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::I8x16;
+    /// assert_eq!(I8x16::zero().to_array(), [0i8; 16]);
+    /// # }
+    /// ```
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self(core_i8x16::splat(0))
+    }
+
+    /// Lane-wise **wrapping** addition (`i8::MAX + 1 == i8::MIN`), matching `vaddq_s8`.
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::I8x16;
+    /// assert_eq!(I8x16::splat(i8::MAX).add(I8x16::splat(1)).to_array(), [i8::MIN; 16]);
+    /// assert_eq!(I8x16::splat(2).add(I8x16::splat(-5)).to_array(), [-3i8; 16]);
+    /// # }
+    /// ```
+    #[inline(always)]
+    #[allow(clippy::should_implement_trait)]
+    pub fn add(self, other: Self) -> Self {
+        Self(self.0 + other.0)
+    }
+
+    /// Lane-wise **wrapping** subtraction (`i8::MIN - 1 == i8::MAX`), matching `vsubq_s8`.
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::I8x16;
+    /// assert_eq!(I8x16::splat(i8::MIN).sub(I8x16::splat(1)).to_array(), [i8::MAX; 16]);
+    /// assert_eq!(I8x16::splat(2).sub(I8x16::splat(5)).to_array(), [-3i8; 16]);
+    /// # }
+    /// ```
+    #[inline(always)]
+    #[allow(clippy::should_implement_trait)]
+    pub fn sub(self, other: Self) -> Self {
+        Self(self.0 - other.0)
+    }
+
+    /// Lane-wise signed minimum (same result as [`Self::simd_min`]).
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::I8x16;
+    /// assert_eq!(I8x16::splat(-5).min(I8x16::splat(3)).to_array(), [-5i8; 16]);
+    /// # }
+    /// ```
+    #[inline(always)]
+    pub fn min(self, other: Self) -> Self {
+        Self(self.0.simd_min(other.0))
+    }
+
+    /// Lane-wise signed maximum (same result as [`Self::simd_max`]).
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::I8x16;
+    /// assert_eq!(I8x16::splat(-5).max(I8x16::splat(3)).to_array(), [3i8; 16]);
+    /// # }
+    /// ```
+    #[inline(always)]
+    pub fn max(self, other: Self) -> Self {
+        Self(self.0.simd_max(other.0))
     }
 
     /// Unpack 16 signed i4 nibbles from a `u64` into 16 sign-extended `i8`
@@ -192,6 +266,195 @@ impl PartialEq for I8x16 {
 impl fmt::Debug for I8x16 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "I8x16({:?})", &self.to_array()[..])
+    }
+}
+
+// ── U8x16 (NEON `simd_neon::U8x16` surface parity) ──────────────────────────
+
+/// 16-lane `u8` vector backed by `core::simd::u8x16`.
+///
+/// Mirrors `simd_neon::U8x16`: `add`/`sub` wrap on overflow (`vaddq_u8` /
+/// `vsubq_u8` semantics), `min`/`max` are unsigned lane-wise.
+///
+/// # Examples
+/// ```rust
+/// # #[cfg(feature = "nightly-simd")] {
+/// use ndarray::simd_nightly::w1a_types::U8x16;
+/// let a = U8x16::splat(250);
+/// assert_eq!(a.add(U8x16::splat(10)).to_array(), [4u8; 16]);
+/// assert_eq!(U8x16::zero().sub(U8x16::splat(1)).to_array(), [255u8; 16]);
+/// # }
+/// ```
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct U8x16(pub core_u8x16);
+
+impl U8x16 {
+    /// Number of `u8` lanes.
+    pub const LANES: usize = 16;
+
+    /// Broadcast a single `u8` value to all 16 lanes.
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::w1a_types::U8x16;
+    /// assert_eq!(U8x16::splat(7).to_array(), [7u8; 16]);
+    /// # }
+    /// ```
+    #[inline(always)]
+    pub fn splat(v: u8) -> Self {
+        Self(core_u8x16::splat(v))
+    }
+
+    /// All lanes zero.
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::w1a_types::U8x16;
+    /// assert_eq!(U8x16::zero().to_array(), [0u8; 16]);
+    /// # }
+    /// ```
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self(core_u8x16::splat(0))
+    }
+
+    /// Load the first 16 elements of a slice (panics if `s.len() < 16`).
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::w1a_types::U8x16;
+    /// let s: Vec<u8> = (0..20).collect();
+    /// assert_eq!(U8x16::from_slice(&s).to_array()[15], 15);
+    /// # }
+    /// ```
+    #[inline(always)]
+    pub fn from_slice(s: &[u8]) -> Self {
+        assert!(s.len() >= 16);
+        Self(core_u8x16::from_slice(&s[..16]))
+    }
+
+    /// Load from a fixed-size array.
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::w1a_types::U8x16;
+    /// let a: [u8; 16] = core::array::from_fn(|i| i as u8);
+    /// assert_eq!(U8x16::from_array(a).to_array(), a);
+    /// # }
+    /// ```
+    #[inline(always)]
+    pub fn from_array(arr: [u8; 16]) -> Self {
+        Self(core_u8x16::from_array(arr))
+    }
+
+    /// Extract all 16 lanes as an array.
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::w1a_types::U8x16;
+    /// assert_eq!(U8x16::splat(3).to_array(), [3u8; 16]);
+    /// # }
+    /// ```
+    #[inline(always)]
+    pub fn to_array(self) -> [u8; 16] {
+        self.0.to_array()
+    }
+
+    /// Copy the 16 lanes into the first 16 elements of a slice
+    /// (panics if `s.len() < 16`).
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::w1a_types::U8x16;
+    /// let mut out = [0u8; 18];
+    /// U8x16::splat(9).copy_to_slice(&mut out);
+    /// assert_eq!(&out[..16], &[9u8; 16]);
+    /// assert_eq!(out[16], 0);
+    /// # }
+    /// ```
+    #[inline(always)]
+    pub fn copy_to_slice(self, s: &mut [u8]) {
+        assert!(s.len() >= 16);
+        self.0.copy_to_slice(&mut s[..16]);
+    }
+
+    /// Lane-wise **wrapping** addition (`255 + 1 == 0`), matching `vaddq_u8`.
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::w1a_types::U8x16;
+    /// assert_eq!(U8x16::splat(255).add(U8x16::splat(1)).to_array(), [0u8; 16]);
+    /// assert_eq!(U8x16::splat(2).add(U8x16::splat(3)).to_array(), [5u8; 16]);
+    /// # }
+    /// ```
+    #[inline(always)]
+    #[allow(clippy::should_implement_trait)]
+    pub fn add(self, other: Self) -> Self {
+        Self(self.0 + other.0)
+    }
+
+    /// Lane-wise **wrapping** subtraction (`0 - 1 == 255`), matching `vsubq_u8`.
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::w1a_types::U8x16;
+    /// assert_eq!(U8x16::zero().sub(U8x16::splat(1)).to_array(), [255u8; 16]);
+    /// assert_eq!(U8x16::splat(5).sub(U8x16::splat(3)).to_array(), [2u8; 16]);
+    /// # }
+    /// ```
+    #[inline(always)]
+    #[allow(clippy::should_implement_trait)]
+    pub fn sub(self, other: Self) -> Self {
+        Self(self.0 - other.0)
+    }
+
+    /// Lane-wise unsigned minimum.
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::w1a_types::U8x16;
+    /// assert_eq!(U8x16::splat(200).min(U8x16::splat(100)).to_array(), [100u8; 16]);
+    /// # }
+    /// ```
+    #[inline(always)]
+    pub fn min(self, other: Self) -> Self {
+        Self(self.0.simd_min(other.0))
+    }
+
+    /// Lane-wise unsigned maximum (`200 > 100`, no signed reinterpretation).
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::w1a_types::U8x16;
+    /// assert_eq!(U8x16::splat(200).max(U8x16::splat(100)).to_array(), [200u8; 16]);
+    /// # }
+    /// ```
+    #[inline(always)]
+    pub fn max(self, other: Self) -> Self {
+        Self(self.0.simd_max(other.0))
+    }
+}
+
+impl PartialEq for U8x16 {
+    fn eq(&self, other: &Self) -> bool {
+        self.to_array() == other.to_array()
+    }
+}
+
+impl fmt::Debug for U8x16 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "U8x16({:?})", &self.to_array()[..])
     }
 }
 

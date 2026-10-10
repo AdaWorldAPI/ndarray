@@ -235,9 +235,9 @@ pub const PREFERRED_I16_LANES: usize = 16;
 pub use crate::simd_nightly::{
     batch_packed_i4_16, f32x16, f32x8, f64x4, f64x8, i16x16, i16x32, i32x16, i32x8, i64x4, i64x8, i8x16, i8x32, i8x64,
     palette_lookup_u8x8, prefetch_read_t0, prefetch_read_t1, prefetch_read_t2, u16x16, u16x32, u16x8, u32x16, u32x8,
-    u64x4, u64x8, u8x32, u8x64, u8x8, BF16x16, BF16x8, F16x16, F32Mask16, F32Mask8, F32x16, F32x8, F64Mask4, F64Mask8,
-    F64x4, F64x8, I16x16, I16x32, I32x16, I32x8, I64x4, I64x8, I8x16, I8x32, I8x64, U16x16, U16x32, U16x8, U32x16,
-    U32x8, U64x4, U64x8, U8x32, U8x64, U8x8,
+    u64x4, u64x8, u8x16, u8x32, u8x64, u8x8, BF16x16, BF16x8, F16x16, F32Mask16, F32Mask8, F32x16, F32x8, F64Mask4,
+    F64Mask8, F64x4, F64x8, I16x16, I16x32, I32x16, I32x8, I64x4, I64x8, I8x16, I8x32, I8x64, U16x16, U16x32, U16x8,
+    U32x16, U32x8, U64x4, U64x8, U8x16, U8x32, U8x64, U8x8,
 };
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f", not(feature = "nightly-simd")))]
@@ -266,12 +266,13 @@ pub use crate::simd_avx512::{
     u32x8,
     u64x4,
     u64x8,
+    u8x16,
     u8x64,
     u8x8,
     F32Mask16,
     // 512-bit (native AVX-512, __m512/__m512d/__m512i)
     F32x16,
-    // 256-bit (AVX2 baseline, __m256/__m256d/__m256i)
+    // 256-bit (AVX2, __m256/__m256d/__m256i)
     F32x8,
     F64Mask8,
     F64x4,
@@ -294,6 +295,7 @@ pub use crate::simd_avx512::{
     U32x8,
     U64x4,
     U64x8,
+    U8x16,
     U8x64,
     U8x8,
 };
@@ -316,7 +318,9 @@ pub use crate::simd_avx512::{f32_to_bf16_batch_rne, f32_to_bf16_scalar_rne};
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512bf16", not(feature = "nightly-simd")))]
 pub use crate::simd_avx512::{BF16x16, BF16x8};
 
-// AVX2 baseline arm — selected by the `x86-64-v3` cargo default. The
+// AVX2 arm — selected whenever `avx512f` is not compiled in (a
+// `.cargo/config-v3.toml` build, or the default `target-cpu=native` on a host
+// without AVX-512). The
 // predicate is `not(avx512f)` rather than `avx2 + not(avx512f)` so that
 // an x86-64 baseline build (e.g. a `RUSTFLAGS` env that REPLACES the
 // `.cargo/config.toml` target-cpu pin) still has a matching arm and
@@ -330,8 +334,8 @@ pub use crate::simd_avx512::{BF16x16, BF16x8};
 // backend for one compile-time target, so a per-function feature gate is
 // a second, contradictory selection mechanism. The intrinsic calls in
 // `simd_avx2.rs` sit inside narrow `unsafe` blocks whose SAFETY
-// precondition is the v3 baseline `.cargo/config.toml` pins for every
-// x86_64 build; a baseline build compiles this arm but is not a supported
+// precondition is AVX2 at run time, a caller obligation (the default
+// `target-cpu=native` names no tier); a baseline build compiles this arm but is not a supported
 // execution target for it (it would SIGILL on the first `vp*` — the
 // PR #170 failure mode the config pin exists to prevent).
 #[cfg(all(
@@ -341,7 +345,7 @@ pub use crate::simd_avx512::{BF16x16, BF16x8};
 ))]
 pub use crate::simd_avx512::{
     batch_packed_i4_16, f32x8, f64x4, i16x16, i8x16, i8x32, palette_lookup_u8x8, prefetch_read_t0, prefetch_read_t1,
-    prefetch_read_t2, u16x8, u8x8, F32x8, F64x4, I16x16, I8x16, I8x32, U16x8, U8x8,
+    prefetch_read_t2, u16x8, u8x16, u8x8, F32x8, F64x4, I16x16, I8x16, I8x32, U16x8, U8x16, U8x8,
 };
 
 #[cfg(all(
@@ -385,8 +389,8 @@ pub use crate::simd_neon::aarch64_simd::{f32x16, f64x8, F32Mask16, F32x16, F64Ma
 // W1a NEON-native types + free functions
 #[cfg(all(target_arch = "aarch64", not(feature = "nightly-simd")))]
 pub use crate::simd_neon::{
-    batch_packed_i4_16, i8x16, i8x32, palette_lookup_u8x8, prefetch_read_t0, prefetch_read_t1, prefetch_read_t2, u8x8,
-    I8x16, I8x32, U8x8,
+    batch_packed_i4_16, i8x16, i8x32, palette_lookup_u8x8, prefetch_read_t0, prefetch_read_t1, prefetch_read_t2, u8x16,
+    u8x8, I8x16, I8x32, U8x16, U8x8,
 };
 // U16x8 on aarch64 comes from simd_neon (backed by uint16x8_t)
 #[cfg(all(target_arch = "aarch64", not(feature = "nightly-simd")))]
@@ -419,7 +423,8 @@ pub use scalar::{
 // so this arm is gated identically.
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128", not(feature = "nightly-simd")))]
 pub use crate::simd_wasm::wasm32_simd::{
-    f32x16, f64x8, i32x16, i8x16, u32x16, u64x8, F32Mask16, F32x16, F64Mask8, F64x8, I32x16, I8x16, U32x16, U64x8,
+    f32x16, f64x8, i32x16, i8x16, u32x16, u64x8, u8x16, F32Mask16, F32x16, F64Mask8, F64x8, I32x16, I8x16, U32x16,
+    U64x8, U8x16,
 };
 // `u32x16`/`U32x16`, `i32x16`/`I32x16` and `u64x8`/`U64x8` come from the
 // native `wasm32_simd` arm above (the lowercase alias travels with its type —
@@ -442,8 +447,8 @@ pub use scalar::{
 pub use scalar::{
     batch_packed_i4_16, f32x16, f32x8, f64x4, f64x8, i16x16, i16x32, i32x16, i32x8, i64x4, i64x8, i8x16, i8x32, i8x64,
     palette_lookup_u8x8, prefetch_read_t0, prefetch_read_t1, prefetch_read_t2, u16x16, u16x8, u32x16, u32x8, u64x4,
-    u64x8, u8x64, u8x8, F32Mask16, F32x16, F32x8, F64Mask8, F64x4, F64x8, I16x16, I16x32, I32x16, I32x8, I64x4, I64x8,
-    I8x16, I8x32, I8x64, U16x16, U16x32, U16x8, U32x16, U32x8, U64x4, U64x8, U8x64, U8x8,
+    u64x8, u8x16, u8x64, u8x8, F32Mask16, F32x16, F32x8, F64Mask8, F64x4, F64x8, I16x16, I16x32, I32x16, I32x8, I64x4,
+    I64x8, I8x16, I8x32, I8x64, U16x16, U16x32, U16x8, U32x16, U32x8, U64x4, U64x8, U8x16, U8x64, U8x8,
 };
 
 // Scalar BF16 conversion — always available on all platforms

@@ -1654,9 +1654,10 @@ impl U64x8 {
     /// The two 256-bit halves of the 64-byte-aligned array, loaded once.
     #[inline(always)]
     fn avx2_halves(self) -> (__m256i, __m256i) {
-        // SAFETY: this file is the x86-64-v3 backend. `.cargo/config.toml`
-        // pins `-Ctarget-cpu=x86-64-v3` for the SUPPORTED x86_64 builds that
-        // select this arm, but that pin is not enforced by the arm's cfg —
+        // SAFETY: this file is the AVX2 backend. `simd.rs` selects it whenever
+        // `avx512f` is not compiled in: a `.cargo/config-v3.toml` build, or the
+        // default `target-cpu=native` on a host without AVX-512. That choice
+        // is not enforced by the arm's cfg —
         // a build whose RUSTFLAGS replaced the config compiles this arm too
         // and is "not a supported execution target for it (it would SIGILL)",
         // as `simd.rs`'s arm note says. So the obligation is the CALLER's:
@@ -1819,8 +1820,8 @@ impl Shl<Self> for U64x8 {
         debug_assert!(rhs.to_array().iter().all(|&n| n < 64), "U64x8 shift counts are a caller contract: < 64");
         let (lo, hi) = self.avx2_halves();
         let (clo, chi) = rhs.avx2_halves();
-        // SAFETY: same obligation as `avx2_halves` — this is the x86-64-v3
-        // arm, AVX2 is present on any host that runs it; `_mm256_sllv_epi64`
+        // SAFETY: same obligation as `avx2_halves` — AVX2 must be present at
+        // run time, the caller's obligation, not a compile-time guarantee; `_mm256_sllv_epi64`
         // is an AVX2 instruction operating on the register values only.
         unsafe { Self::from_avx2_halves(_mm256_sllv_epi64(lo, clo), _mm256_sllv_epi64(hi, chi)) }
     }
@@ -2101,7 +2102,8 @@ impl U16x16 {
     /// Logical right shift each 16-bit lane by `imm` (matches `U16x32::shr`).
     #[inline(always)]
     pub fn shr(self, imm: u32) -> Self {
-        // SAFETY: AVX2 baseline; `_mm256_srl_epi16` takes a runtime lane count
+        // SAFETY: AVX2 must be present at run time (caller obligation, not a
+        // compile-time guarantee; see `U64x8::avx2_halves`); `_mm256_srl_epi16` takes a runtime lane count
         // from the low 64 bits of an xmm, so every shift amount works (the
         // earlier `match {1,2,4,8}` returned zero for all other amounts).
         Self(unsafe { _mm256_srl_epi16(self.0, _mm_cvtsi32_si128(imm as i32)) })
@@ -2110,7 +2112,8 @@ impl U16x16 {
     /// Logical left shift each 16-bit lane by `imm` (matches `U16x32::shl`).
     #[inline(always)]
     pub fn shl(self, imm: u32) -> Self {
-        // SAFETY: AVX2 baseline; `_mm256_sll_epi16` takes a runtime lane count
+        // SAFETY: AVX2 must be present at run time (caller obligation, not a
+        // compile-time guarantee; see `U64x8::avx2_halves`); `_mm256_sll_epi16` takes a runtime lane count
         // (same fix as `shr` — the `match {1,2,4,8}` zeroed all other amounts).
         Self(unsafe { _mm256_sll_epi16(self.0, _mm_cvtsi32_si128(imm as i32)) })
     }
@@ -2135,7 +2138,8 @@ impl U16x16 {
     /// partial sums into add-alignment.
     #[inline(always)]
     pub fn permute2x128<const IMM: i32>(self, other: Self) -> Self {
-        // SAFETY: AVX2 baseline.
+        // SAFETY: AVX2 must be present at run time (caller obligation, not a
+        // compile-time guarantee; see `U64x8::avx2_halves`).
         Self(unsafe { _mm256_permute2x128_si256::<IMM>(self.0, other.0) })
     }
 
@@ -2144,7 +2148,8 @@ impl U16x16 {
     /// lane combine (with `IMM=0xF0`).
     #[inline(always)]
     pub fn blend_epi32<const IMM: i32>(self, other: Self) -> Self {
-        // SAFETY: AVX2 baseline.
+        // SAFETY: AVX2 must be present at run time (caller obligation, not a
+        // compile-time guarantee; see `U64x8::avx2_halves`).
         Self(unsafe { _mm256_blend_epi32::<IMM>(self.0, other.0) })
     }
 
@@ -2154,14 +2159,16 @@ impl U16x16 {
     /// per-query `scale·partial` FMA.
     #[inline(always)]
     pub fn to_f32x8_lo(self) -> crate::simd_avx512::F32x8 {
-        // SAFETY: AVX2 baseline.
+        // SAFETY: AVX2 must be present at run time (caller obligation, not a
+        // compile-time guarantee; see `U64x8::avx2_halves`).
         crate::simd_avx512::F32x8(unsafe { _mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(_mm256_castsi256_si128(self.0))) })
     }
 
     /// Zero-extend the high 8 × u16 lanes to f32 (sibling of `to_f32x8_lo`).
     #[inline(always)]
     pub fn to_f32x8_hi(self) -> crate::simd_avx512::F32x8 {
-        // SAFETY: AVX2 baseline.
+        // SAFETY: AVX2 must be present at run time (caller obligation, not a
+        // compile-time guarantee; see `U64x8::avx2_halves`).
         crate::simd_avx512::F32x8(unsafe {
             _mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(_mm256_extracti128_si256::<1>(self.0)))
         })
@@ -2586,8 +2593,8 @@ impl I32x16 {
     /// The two 256-bit halves of the 64-byte-aligned array, loaded once.
     #[inline(always)]
     fn avx2_halves(self) -> (__m256i, __m256i) {
-        // SAFETY: x86-64-v3 backend, AVX2 is a compile-time property (see
-        // `U64x8::avx2_halves`); the array is 64 bytes, both loads in bounds.
+        // SAFETY: AVX2 is a run-time precondition of this arm, the caller's
+        // obligation (see `U64x8::avx2_halves`); the array is 64 bytes, both loads in bounds.
         unsafe {
             let p = self.0.as_ptr() as *const __m256i;
             (_mm256_loadu_si256(p), _mm256_loadu_si256(p.add(1)))
@@ -2794,8 +2801,8 @@ impl I64x8 {
 // that want REAL AVX2 SIMD speedup over scalar should chunk their data
 // in 32-byte windows and use U8x32.
 //
-// Requires AVX2 at compile time (project baseline is x86-64-v3, so this
-// holds on every supported build). Calling these methods on a baseline
+// Requires AVX2 at run time. This arm is compiled into every x86_64 build
+// (see `simd.rs`), so the obligation is the caller's. Calling these methods on a baseline
 // x86_64 build (no AVX2) would SIGILL — same constraint as the rest of
 // the file's `_mm256_*` users (e.g. the AVX2 popcount at line ~357).
 // ═══════════════════════════════════════════════════════════════════
@@ -2823,8 +2830,8 @@ impl U8x32 {
     /// Broadcast a single byte to all 32 lanes.
     #[inline(always)]
     pub fn splat(v: u8) -> Self {
-        // SAFETY: AVX2 is the project baseline (x86-64-v3); calling
-        // `_mm256_set1_epi8` requires AVX, which AVX2 implies.
+        // SAFETY: AVX2 must be present at run time (caller obligation, see
+        // `U64x8::avx2_halves`); `_mm256_set1_epi8` needs AVX, which AVX2 implies.
         Self(unsafe { _mm256_set1_epi8(v as i8) })
     }
 
@@ -2903,7 +2910,8 @@ impl U8x32 {
     /// counting set bits in popcount-style masks.
     #[inline(always)]
     pub fn sum_bytes_u64(self) -> u64 {
-        // SAFETY: AVX2 baseline.
+        // SAFETY: AVX2 must be present at run time (caller obligation, not a
+        // compile-time guarantee; see `U64x8::avx2_halves`).
         let sums = unsafe { _mm256_sad_epu8(self.0, _mm256_setzero_si256()) };
         // sad_epu8 places 4 partial sums (one per 64-bit lane) in u16 slots.
         // Pull them out and add manually — small N, scalar is fine.
@@ -2917,14 +2925,16 @@ impl U8x32 {
     /// Lane-wise unsigned min.
     #[inline(always)]
     pub fn simd_min(self, other: Self) -> Self {
-        // SAFETY: AVX2 baseline.
+        // SAFETY: AVX2 must be present at run time (caller obligation, not a
+        // compile-time guarantee; see `U64x8::avx2_halves`).
         Self(unsafe { _mm256_min_epu8(self.0, other.0) })
     }
 
     /// Lane-wise unsigned max.
     #[inline(always)]
     pub fn simd_max(self, other: Self) -> Self {
-        // SAFETY: AVX2 baseline.
+        // SAFETY: AVX2 must be present at run time (caller obligation, not a
+        // compile-time guarantee; see `U64x8::avx2_halves`).
         Self(unsafe { _mm256_max_epu8(self.0, other.0) })
     }
 
@@ -2935,7 +2945,8 @@ impl U8x32 {
     /// at the natural AVX2 width.)
     #[inline(always)]
     pub fn cmpeq_mask(self, other: Self) -> u32 {
-        // SAFETY: AVX2 baseline.
+        // SAFETY: AVX2 must be present at run time (caller obligation, not a
+        // compile-time guarantee; see `U64x8::avx2_halves`).
         let eq = unsafe { _mm256_cmpeq_epi8(self.0, other.0) };
         // movemask_epi8 extracts the MSB of each byte. After cmpeq, each
         // lane is 0xFF (match) or 0x00 (mismatch); MSB matches what we want.
@@ -2948,7 +2959,8 @@ impl U8x32 {
     /// ordering for unsigned compare).
     #[inline(always)]
     pub fn cmpgt_mask(self, other: Self) -> u32 {
-        // SAFETY: AVX2 baseline.
+        // SAFETY: AVX2 must be present at run time (caller obligation, not a
+        // compile-time guarantee; see `U64x8::avx2_halves`).
         unsafe {
             let bias = _mm256_set1_epi8(i8::MIN); // 0x80
             let a_s = _mm256_xor_si256(self.0, bias);
@@ -2962,7 +2974,8 @@ impl U8x32 {
     /// `U8x64::movemask` at AVX2 width).
     #[inline(always)]
     pub fn movemask(self) -> u32 {
-        // SAFETY: AVX2 baseline.
+        // SAFETY: AVX2 must be present at run time (caller obligation, not a
+        // compile-time guarantee; see `U64x8::avx2_halves`).
         unsafe { _mm256_movemask_epi8(self.0) as u32 }
     }
 
@@ -2971,21 +2984,24 @@ impl U8x32 {
     /// Per-lane saturating unsigned add: `min(a + b, 255)`.
     #[inline(always)]
     pub fn saturating_add(self, other: Self) -> Self {
-        // SAFETY: AVX2 baseline.
+        // SAFETY: AVX2 must be present at run time (caller obligation, not a
+        // compile-time guarantee; see `U64x8::avx2_halves`).
         Self(unsafe { _mm256_adds_epu8(self.0, other.0) })
     }
 
     /// Per-lane saturating unsigned sub: `max(a - b, 0)`.
     #[inline(always)]
     pub fn saturating_sub(self, other: Self) -> Self {
-        // SAFETY: AVX2 baseline.
+        // SAFETY: AVX2 must be present at run time (caller obligation, not a
+        // compile-time guarantee; see `U64x8::avx2_halves`).
         Self(unsafe { _mm256_subs_epu8(self.0, other.0) })
     }
 
     /// Per-lane unsigned rounded average: `(a + b + 1) >> 1`.
     #[inline(always)]
     pub fn pairwise_avg(self, other: Self) -> Self {
-        // SAFETY: AVX2 baseline.
+        // SAFETY: AVX2 must be present at run time (caller obligation, not a
+        // compile-time guarantee; see `U64x8::avx2_halves`).
         Self(unsafe { _mm256_avg_epu8(self.0, other.0) })
     }
 
@@ -2995,7 +3011,8 @@ impl U8x32 {
     /// 8-bit shift; 16-bit shift + mask is the standard idiom.)
     #[inline(always)]
     pub fn shr_epi16(self, imm: u32) -> Self {
-        // SAFETY: AVX2 baseline. `imm` is an arbitrary count; we use the
+        // SAFETY: AVX2 must be present at run time (caller obligation, not a
+        // compile-time guarantee; see `U64x8::avx2_halves`). `imm` is an arbitrary count; we use the
         // vector-count form to avoid the const-generic constraint.
         Self(unsafe { _mm256_srl_epi16(self.0, _mm_cvtsi32_si128(imm as i32)) })
     }
@@ -3003,7 +3020,8 @@ impl U8x32 {
     /// Left shift each 16-bit lane by `imm` bits.
     #[inline(always)]
     pub fn shl_epi16(self, imm: u32) -> Self {
-        // SAFETY: AVX2 baseline. Vector-count form (see shr_epi16).
+        // SAFETY: AVX2 must be present at run time (caller obligation, not a
+        // compile-time guarantee; see `U64x8::avx2_halves`). Vector-count form (see shr_epi16).
         Self(unsafe { _mm256_sll_epi16(self.0, _mm_cvtsi32_si128(imm as i32)) })
     }
 
@@ -3016,7 +3034,8 @@ impl U8x32 {
     /// `permute_bytes` for that, which falls back to scalar.)
     #[inline(always)]
     pub fn shuffle_bytes(self, idx: Self) -> Self {
-        // SAFETY: AVX2 baseline.
+        // SAFETY: AVX2 must be present at run time (caller obligation, not a
+        // compile-time guarantee; see `U64x8::avx2_halves`).
         Self(unsafe { _mm256_shuffle_epi8(self.0, idx.0) })
     }
 
@@ -3041,14 +3060,16 @@ impl U8x32 {
     /// Output: `[a0,b0, a1,b1, ..., a7,b7]` within each 128-bit half.
     #[inline(always)]
     pub fn unpack_lo_epi8(self, other: Self) -> Self {
-        // SAFETY: AVX2 baseline.
+        // SAFETY: AVX2 must be present at run time (caller obligation, not a
+        // compile-time guarantee; see `U64x8::avx2_halves`).
         Self(unsafe { _mm256_unpacklo_epi8(self.0, other.0) })
     }
 
     /// Interleave high 8 bytes of each 128-bit half (`_mm256_unpackhi_epi8`).
     #[inline(always)]
     pub fn unpack_hi_epi8(self, other: Self) -> Self {
-        // SAFETY: AVX2 baseline.
+        // SAFETY: AVX2 must be present at run time (caller obligation, not a
+        // compile-time guarantee; see `U64x8::avx2_halves`).
         Self(unsafe { _mm256_unpackhi_epi8(self.0, other.0) })
     }
 
@@ -3060,7 +3081,8 @@ impl U8x32 {
     /// 64-bit-bitmask shape of `U8x64::mask_blend`).
     #[inline(always)]
     pub fn mask_blend(mask: Self, a: Self, b: Self) -> Self {
-        // SAFETY: AVX2 baseline.
+        // SAFETY: AVX2 must be present at run time (caller obligation, not a
+        // compile-time guarantee; see `U64x8::avx2_halves`).
         Self(unsafe { _mm256_blendv_epi8(b.0, a.0, mask.0) })
     }
 
@@ -3096,7 +3118,8 @@ impl core::ops::BitAnd for U8x32 {
     type Output = Self;
     #[inline(always)]
     fn bitand(self, rhs: Self) -> Self {
-        // SAFETY: AVX2 baseline.
+        // SAFETY: AVX2 must be present at run time (caller obligation, not a
+        // compile-time guarantee; see `U64x8::avx2_halves`).
         Self(unsafe { _mm256_and_si256(self.0, rhs.0) })
     }
 }
@@ -3106,7 +3129,8 @@ impl core::ops::BitOr for U8x32 {
     type Output = Self;
     #[inline(always)]
     fn bitor(self, rhs: Self) -> Self {
-        // SAFETY: AVX2 baseline.
+        // SAFETY: AVX2 must be present at run time (caller obligation, not a
+        // compile-time guarantee; see `U64x8::avx2_halves`).
         Self(unsafe { _mm256_or_si256(self.0, rhs.0) })
     }
 }
@@ -3116,7 +3140,8 @@ impl core::ops::BitXor for U8x32 {
     type Output = Self;
     #[inline(always)]
     fn bitxor(self, rhs: Self) -> Self {
-        // SAFETY: AVX2 baseline.
+        // SAFETY: AVX2 must be present at run time (caller obligation, not a
+        // compile-time guarantee; see `U64x8::avx2_halves`).
         Self(unsafe { _mm256_xor_si256(self.0, rhs.0) })
     }
 }
@@ -3126,7 +3151,8 @@ impl core::ops::Add for U8x32 {
     type Output = Self;
     #[inline(always)]
     fn add(self, rhs: Self) -> Self {
-        // SAFETY: AVX2 baseline. WRAPS — use saturating_add for clamp.
+        // SAFETY: AVX2 must be present at run time (caller obligation, not a
+        // compile-time guarantee; see `U64x8::avx2_halves`). WRAPS — use saturating_add for clamp.
         Self(unsafe { _mm256_add_epi8(self.0, rhs.0) })
     }
 }
@@ -3136,7 +3162,8 @@ impl core::ops::Sub for U8x32 {
     type Output = Self;
     #[inline(always)]
     fn sub(self, rhs: Self) -> Self {
-        // SAFETY: AVX2 baseline. WRAPS — use saturating_sub for clamp.
+        // SAFETY: AVX2 must be present at run time (caller obligation, not a
+        // compile-time guarantee; see `U64x8::avx2_halves`). WRAPS — use saturating_sub for clamp.
         Self(unsafe { _mm256_sub_epi8(self.0, rhs.0) })
     }
 }

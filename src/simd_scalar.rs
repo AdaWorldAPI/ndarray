@@ -1746,11 +1746,255 @@ impl I8x16 {
         }
         Self(o)
     }
+
+    /// All lanes zero.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ndarray::simd::{I8x16, U8x16};
+    /// assert_eq!(I8x16::zero().to_array(), [0; 16]);
+    /// ```
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self([0; 16])
+    }
+
+    /// Lane-wise wrapping addition (overflow wraps, matching NEON `vaddq_s8`).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ndarray::simd::{I8x16, U8x16};
+    /// let r = I8x16::splat(i8::MAX).add(I8x16::splat(1));
+    /// assert!(r.to_array().iter().all(|&x| x == i8::MIN));
+    /// ```
+    #[inline(always)]
+    pub fn add(self, other: Self) -> Self {
+        let mut o = [0 as i8; 16];
+        for i in 0..16 {
+            o[i] = self.0[i].wrapping_add(other.0[i]);
+        }
+        Self(o)
+    }
+
+    /// Lane-wise wrapping subtraction (overflow wraps, matching NEON `vsubq_s8`).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ndarray::simd::{I8x16, U8x16};
+    /// let r = I8x16::splat(i8::MIN).sub(I8x16::splat(1));
+    /// assert!(r.to_array().iter().all(|&x| x == i8::MAX));
+    /// ```
+    #[inline(always)]
+    pub fn sub(self, other: Self) -> Self {
+        let mut o = [0 as i8; 16];
+        for i in 0..16 {
+            o[i] = self.0[i].wrapping_sub(other.0[i]);
+        }
+        Self(o)
+    }
+
+    /// Lane-wise minimum.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ndarray::simd::{I8x16, U8x16};
+    /// let r = I8x16::splat(i8::MIN).min(I8x16::splat(i8::MAX));
+    /// assert!(r.to_array().iter().all(|&x| x == i8::MIN));
+    /// ```
+    #[inline(always)]
+    pub fn min(self, other: Self) -> Self {
+        let mut o = [0 as i8; 16];
+        for i in 0..16 {
+            o[i] = if self.0[i] < other.0[i] { self.0[i] } else { other.0[i] };
+        }
+        Self(o)
+    }
+
+    /// Lane-wise maximum.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ndarray::simd::{I8x16, U8x16};
+    /// let r = I8x16::splat(i8::MIN).max(I8x16::splat(i8::MAX));
+    /// assert!(r.to_array().iter().all(|&x| x == i8::MAX));
+    /// ```
+    #[inline(always)]
+    pub fn max(self, other: Self) -> Self {
+        let mut o = [0 as i8; 16];
+        for i in 0..16 {
+            o[i] = if self.0[i] > other.0[i] { self.0[i] } else { other.0[i] };
+        }
+        Self(o)
+    }
 }
 
 impl core::fmt::Debug for I8x16 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "I8x16({:?})", &self.0[..])
+    }
+}
+
+/// 16-lane `u8` vector — scalar fallback for non-NEON, non-x86_64 targets.
+///
+/// Mirrors the NEON `U8x16` surface (`simd_neon.rs`); pure safe Rust.
+#[derive(Copy, Clone, PartialEq)]
+#[repr(align(16))]
+pub struct U8x16(pub [u8; 16]);
+
+impl U8x16 {
+    pub const LANES: usize = 16;
+
+    /// Broadcast a single `u8` value to all 16 lanes.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ndarray::simd::{I8x16, U8x16};
+    /// assert_eq!(U8x16::splat(7).to_array(), [7u8; 16]);
+    /// ```
+    #[inline(always)]
+    pub fn splat(v: u8) -> Self {
+        Self([v; 16])
+    }
+
+    /// Load from a slice (at least 16 elements required; first 16 used).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ndarray::simd::{I8x16, U8x16};
+    /// let src: Vec<u8> = (0..20).collect();
+    /// assert_eq!(U8x16::from_slice(&src).to_array()[15], 15);
+    /// ```
+    #[inline(always)]
+    pub fn from_slice(s: &[u8]) -> Self {
+        assert!(s.len() >= 16);
+        let mut a = [0u8; 16];
+        a.copy_from_slice(&s[..16]);
+        Self(a)
+    }
+
+    /// Load from a fixed-size array.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ndarray::simd::{I8x16, U8x16};
+    /// assert_eq!(U8x16::from_array([3u8; 16]).to_array(), [3u8; 16]);
+    /// ```
+    #[inline(always)]
+    pub fn from_array(arr: [u8; 16]) -> Self {
+        Self(arr)
+    }
+
+    /// Extract all 16 lanes as an array.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ndarray::simd::{I8x16, U8x16};
+    /// assert_eq!(U8x16::splat(1).to_array(), [1u8; 16]);
+    /// ```
+    #[inline(always)]
+    pub fn to_array(self) -> [u8; 16] {
+        self.0
+    }
+
+    /// Copy lanes into a slice (must have at least 16 elements).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ndarray::simd::{I8x16, U8x16};
+    /// let mut out = [0u8; 16];
+    /// U8x16::splat(9).copy_to_slice(&mut out);
+    /// assert_eq!(out, [9u8; 16]);
+    /// ```
+    #[inline(always)]
+    pub fn copy_to_slice(self, s: &mut [u8]) {
+        assert!(s.len() >= 16);
+        s[..16].copy_from_slice(&self.0);
+    }
+
+    /// All lanes zero.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ndarray::simd::{I8x16, U8x16};
+    /// assert_eq!(U8x16::zero().to_array(), [0; 16]);
+    /// ```
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self([0; 16])
+    }
+
+    /// Lane-wise wrapping addition (overflow wraps, matching NEON `vaddq_u8`).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ndarray::simd::{I8x16, U8x16};
+    /// let r = U8x16::splat(u8::MAX).add(U8x16::splat(1));
+    /// assert!(r.to_array().iter().all(|&x| x == u8::MIN));
+    /// ```
+    #[inline(always)]
+    pub fn add(self, other: Self) -> Self {
+        let mut o = [0 as u8; 16];
+        for i in 0..16 {
+            o[i] = self.0[i].wrapping_add(other.0[i]);
+        }
+        Self(o)
+    }
+
+    /// Lane-wise wrapping subtraction (overflow wraps, matching NEON `vsubq_u8`).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ndarray::simd::{I8x16, U8x16};
+    /// let r = U8x16::splat(u8::MIN).sub(U8x16::splat(1));
+    /// assert!(r.to_array().iter().all(|&x| x == u8::MAX));
+    /// ```
+    #[inline(always)]
+    pub fn sub(self, other: Self) -> Self {
+        let mut o = [0 as u8; 16];
+        for i in 0..16 {
+            o[i] = self.0[i].wrapping_sub(other.0[i]);
+        }
+        Self(o)
+    }
+
+    /// Lane-wise minimum.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ndarray::simd::{I8x16, U8x16};
+    /// let r = U8x16::splat(u8::MIN).min(U8x16::splat(u8::MAX));
+    /// assert!(r.to_array().iter().all(|&x| x == u8::MIN));
+    /// ```
+    #[inline(always)]
+    pub fn min(self, other: Self) -> Self {
+        let mut o = [0 as u8; 16];
+        for i in 0..16 {
+            o[i] = if self.0[i] < other.0[i] { self.0[i] } else { other.0[i] };
+        }
+        Self(o)
+    }
+
+    /// Lane-wise maximum.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ndarray::simd::{I8x16, U8x16};
+    /// let r = U8x16::splat(u8::MIN).max(U8x16::splat(u8::MAX));
+    /// assert!(r.to_array().iter().all(|&x| x == u8::MAX));
+    /// ```
+    #[inline(always)]
+    pub fn max(self, other: Self) -> Self {
+        let mut o = [0 as u8; 16];
+        for i in 0..16 {
+            o[i] = if self.0[i] > other.0[i] { self.0[i] } else { other.0[i] };
+        }
+        Self(o)
+    }
+}
+
+impl core::fmt::Debug for U8x16 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "U8x16({:?})", &self.0[..])
     }
 }
 
@@ -2082,6 +2326,8 @@ where
 // ── Lowercase aliases ─────────────────────────────────────────────────────────
 #[allow(non_camel_case_types)]
 pub type i8x16 = I8x16;
+#[allow(non_camel_case_types)]
+pub type u8x16 = U8x16;
 #[allow(non_camel_case_types)]
 pub type u16x8 = U16x8;
 #[allow(non_camel_case_types)]

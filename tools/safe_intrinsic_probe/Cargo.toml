@@ -3,9 +3,9 @@
 # after a toolchain bump (the answer is a toolchain property, not a code one):
 #
 #   cd tools/safe_intrinsic_probe
-#   RUSTFLAGS="--cfg probe_a"  cargo check --target aarch64-unknown-linux-gnu   # E0133 on 1.98.1
-#   RUSTFLAGS="--cfg probe_c"  cargo check --target aarch64-unknown-linux-gnu   # E0133 on 1.98.1
-#   RUSTFLAGS="--cfg probe_a3 -Ctarget-cpu=x86-64-v4" cargo check               # E0133 on 1.98.1
+#   RUSTFLAGS="--cfg probe_a"  cargo check --target aarch64-unknown-linux-gnu   # E0133 on 1.98.1 and 1.99.0
+#   RUSTFLAGS="--cfg probe_c"  cargo check --target aarch64-unknown-linux-gnu   # E0133 on 1.98.1 and 1.99.0
+#   RUSTFLAGS="--cfg probe_a3 -Ctarget-cpu=x86-64-v4" cargo check               # E0133 on 1.98.1 and 1.99.0
 #   RUSTFLAGS="--cfg probe_a -Ctarget-feature=+simd128" cargo check --target wasm32-unknown-unknown  # OK
 #
 # Result matrix and the consequence for the backends: see

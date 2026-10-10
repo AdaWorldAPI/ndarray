@@ -22,6 +22,16 @@ channel = "1.99.0"
 #                    workspace-wide sweep. The 1.98 delta measured across the
 #                    stack is ONE lint, `clippy::chunks_exact_to_as_chunks`
 #                    (new, default-on STYLE group) — zero sites in this repo.
+#   1.98.1 → 1.99.0  current stable (2026-10-01, LLVM 23). Channel ONLY:
+#                    `rust-version` stays 1.98.1 because no 1.99-only API is
+#                    used, so CI's MSRV rows keep testing that floor. This is
+#                    a deliberate split, superseding the "move TOGETHER" rule
+#                    above for this bump. Measured 1.99 delta, all in test
+#                    crates: `clippy::missing_safety_doc` on 4 mock
+#                    `pub unsafe extern "C"` fns (blas-mock-tests),
+#                    `clippy::manual_contains` x3 (blas-mock-tests),
+#                    deprecated `std::f64::NAN` via `use std::f64;` x4
+#                    (tests/numeric.rs).
 #
 # Never auto-track `stable` — bump explicitly when a future version is
 # reviewed and the workspace clippy passes clean.

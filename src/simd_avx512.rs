@@ -2778,6 +2778,74 @@ impl I8x16 {
         s[..16].copy_from_slice(&self.0);
     }
 
+    /// All 16 lanes set to `0`.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ndarray::simd::I8x16;
+    /// assert_eq!(I8x16::zero().to_array(), [0i8; 16]);
+    /// ```
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self([0i8; 16])
+    }
+
+    /// Lane-wise **wrapping** addition (matches NEON `vaddq_s8`).
+    ///
+    /// Overflow wraps: `i8::MAX + 1 == i8::MIN`. Not saturating.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ndarray::simd::I8x16;
+    /// let r = I8x16::splat(i8::MAX).add(I8x16::splat(1));
+    /// assert_eq!(r.to_array(), [i8::MIN; 16]);
+    /// ```
+    #[inline(always)]
+    pub fn add(self, other: Self) -> Self {
+        Self(core::array::from_fn(|i| self.0[i].wrapping_add(other.0[i])))
+    }
+
+    /// Lane-wise **wrapping** subtraction (matches NEON `vsubq_s8`).
+    ///
+    /// Overflow wraps: `i8::MIN - 1 == i8::MAX`. Not saturating.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ndarray::simd::I8x16;
+    /// let r = I8x16::splat(i8::MIN).sub(I8x16::splat(1));
+    /// assert_eq!(r.to_array(), [i8::MAX; 16]);
+    /// ```
+    #[inline(always)]
+    pub fn sub(self, other: Self) -> Self {
+        Self(core::array::from_fn(|i| self.0[i].wrapping_sub(other.0[i])))
+    }
+
+    /// Lane-wise signed minimum (matches NEON `vminq_s8`).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ndarray::simd::I8x16;
+    /// let r = I8x16::splat(-5).min(I8x16::splat(3));
+    /// assert_eq!(r.to_array(), [-5i8; 16]);
+    /// ```
+    #[inline(always)]
+    pub fn min(self, other: Self) -> Self {
+        Self(core::array::from_fn(|i| self.0[i].min(other.0[i])))
+    }
+
+    /// Lane-wise signed maximum (matches NEON `vmaxq_s8`).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ndarray::simd::I8x16;
+    /// let r = I8x16::splat(-5).max(I8x16::splat(3));
+    /// assert_eq!(r.to_array(), [3i8; 16]);
+    /// ```
+    #[inline(always)]
+    pub fn max(self, other: Self) -> Self {
+        Self(core::array::from_fn(|i| self.0[i].max(other.0[i])))
+    }
+
     // ── W1a-#1: from_i4_packed_u64 + lane_i8 ────────────────────────────────
 
     /// Unpack 16 signed i4 nibbles from a `u64` into 16 sign-extended `i8` lanes.
@@ -2846,9 +2914,12 @@ impl I8x16 {
     /// ```
     #[inline(always)]
     pub fn saturating_abs(self) -> Self {
-        // SAFETY: `_mm_abs_epi8` (SSSE3) and `_mm_min_epu8` (SSE2) are available
-        // on every x86_64 build this file compiles for — the workspace pins
-        // `x86-64-v3`, which includes SSSE3. The unaligned load/store match the
+        // SAFETY: `_mm_abs_epi8` needs SSSE3 and `_mm_min_epu8` needs SSE2. SSE2
+        // is in the x86_64 baseline; SSSE3 is NOT, and this file compiles for
+        // every x86_64 build, so SSSE3 at run time is the caller's obligation.
+        // `target-cpu=native` (default) and `config-v3`/`config-v4` include it;
+        // a baseline build (e.g. a RUSTFLAGS env replacing the config) compiles
+        // this and would SIGILL. The unaligned load/store match the
         // `[i8; 16]` storage. VPABSB returns 0x80 for `i8::MIN` (the bit pattern
         // of +128, which does not fit in i8); VPMINUB then clamps 0x80 (= 128
         // unsigned) down to 0x7f (= 127 = `i8::MAX`), producing the saturating
@@ -2869,6 +2940,170 @@ impl I8x16 {
 impl core::fmt::Debug for I8x16 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "I8x16({:?})", &self.0[..])
+    }
+}
+
+// ─── U8x16 (scalar-storage polyfill for the AVX-512 backend) ─────────────────
+
+/// 16-lane `u8` vector.  On the AVX-512 backend this is a scalar-storage
+/// polyfill; on NEON it is backed by `uint8x16_t`.
+///
+/// Edge cases and lane layout are identical across backends; only performance
+/// differs.  `add`/`sub` wrap on overflow, `min`/`max` are unsigned.
+#[cfg(target_arch = "x86_64")]
+#[derive(Copy, Clone, PartialEq)]
+#[repr(align(16))]
+pub struct U8x16(pub [u8; 16]);
+
+#[cfg(target_arch = "x86_64")]
+impl U8x16 {
+    pub const LANES: usize = 16;
+
+    /// Broadcast a single `u8` value to all 16 lanes.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ndarray::simd::U8x16;
+    /// let v = U8x16::splat(3);
+    /// assert!(v.to_array().iter().all(|&x| x == 3));
+    /// ```
+    #[inline(always)]
+    pub fn splat(v: u8) -> Self {
+        Self([v; 16])
+    }
+
+    /// All 16 lanes set to `0`.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ndarray::simd::U8x16;
+    /// assert_eq!(U8x16::zero().to_array(), [0u8; 16]);
+    /// ```
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self([0u8; 16])
+    }
+
+    /// Load 16 lanes from the first 16 elements of a slice (at least 16
+    /// elements required; panics otherwise).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ndarray::simd::U8x16;
+    /// let src: Vec<u8> = (0..20).collect();
+    /// assert_eq!(U8x16::from_slice(&src).to_array()[15], 15);
+    /// ```
+    #[inline(always)]
+    pub fn from_slice(s: &[u8]) -> Self {
+        assert!(s.len() >= 16);
+        let mut a = [0u8; 16];
+        a.copy_from_slice(&s[..16]);
+        Self(a)
+    }
+
+    /// Load from a fixed-size array.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ndarray::simd::U8x16;
+    /// let a = [7u8; 16];
+    /// assert_eq!(U8x16::from_array(a).to_array(), a);
+    /// ```
+    #[inline(always)]
+    pub fn from_array(arr: [u8; 16]) -> Self {
+        Self(arr)
+    }
+
+    /// Extract all 16 lanes as an array.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ndarray::simd::U8x16;
+    /// assert_eq!(U8x16::splat(9).to_array(), [9u8; 16]);
+    /// ```
+    #[inline(always)]
+    pub fn to_array(self) -> [u8; 16] {
+        self.0
+    }
+
+    /// Copy lanes into the first 16 elements of a slice (at least 16
+    /// elements required; panics otherwise).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ndarray::simd::U8x16;
+    /// let mut out = [0u8; 20];
+    /// U8x16::splat(4).copy_to_slice(&mut out);
+    /// assert_eq!(&out[..16], &[4u8; 16]);
+    /// assert_eq!(&out[16..], &[0u8; 4]);
+    /// ```
+    #[inline(always)]
+    pub fn copy_to_slice(self, s: &mut [u8]) {
+        assert!(s.len() >= 16);
+        s[..16].copy_from_slice(&self.0);
+    }
+
+    /// Lane-wise **wrapping** addition (matches NEON `vaddq_u8`).
+    ///
+    /// Overflow wraps: `255 + 1 == 0`. Not saturating.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ndarray::simd::U8x16;
+    /// let r = U8x16::splat(255).add(U8x16::splat(1));
+    /// assert_eq!(r.to_array(), [0u8; 16]);
+    /// ```
+    #[inline(always)]
+    pub fn add(self, other: Self) -> Self {
+        Self(core::array::from_fn(|i| self.0[i].wrapping_add(other.0[i])))
+    }
+
+    /// Lane-wise **wrapping** subtraction (matches NEON `vsubq_u8`).
+    ///
+    /// Underflow wraps: `0 - 1 == 255`. Not saturating.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ndarray::simd::U8x16;
+    /// let r = U8x16::zero().sub(U8x16::splat(1));
+    /// assert_eq!(r.to_array(), [255u8; 16]);
+    /// ```
+    #[inline(always)]
+    pub fn sub(self, other: Self) -> Self {
+        Self(core::array::from_fn(|i| self.0[i].wrapping_sub(other.0[i])))
+    }
+
+    /// Lane-wise unsigned minimum (matches NEON `vminq_u8`).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ndarray::simd::U8x16;
+    /// let r = U8x16::splat(200).min(U8x16::splat(3));
+    /// assert_eq!(r.to_array(), [3u8; 16]);
+    /// ```
+    #[inline(always)]
+    pub fn min(self, other: Self) -> Self {
+        Self(core::array::from_fn(|i| self.0[i].min(other.0[i])))
+    }
+
+    /// Lane-wise unsigned maximum (matches NEON `vmaxq_u8`).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ndarray::simd::U8x16;
+    /// let r = U8x16::splat(200).max(U8x16::splat(3));
+    /// assert_eq!(r.to_array(), [200u8; 16]);
+    /// ```
+    #[inline(always)]
+    pub fn max(self, other: Self) -> Self {
+        Self(core::array::from_fn(|i| self.0[i].max(other.0[i])))
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl core::fmt::Debug for U8x16 {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "U8x16({:?})", &self.0[..])
     }
 }
 
@@ -3067,13 +3302,14 @@ impl I8x32 {
     /// ```
     #[inline(always)]
     pub fn saturating_abs(self) -> Self {
-        // SAFETY: _mm256_abs_epi8 (VPABSB) is an AVX2 intrinsic; we are in
-        // the simd_avx512.rs file which is only compiled for x86_64.  The
-        // `target_feature(enable = "avx2")` annotation on the calling code
-        // path guarantees AVX2 availability.  The raw_abs result for 0x80
-        // is 0x80 (bit-pattern +128); VPMINUB then clamps it to 0x7f.
-        // UNVERIFIED: _mm256_abs_epi8 stability on Rust 1.94 stable — it is
-        // in std::arch::x86_64 since Rust 1.0 for AVX2 so should compile.
+        // SAFETY: _mm256_abs_epi8 (VPABSB) and _mm256_min_epu8 are AVX2
+        // intrinsics. There is no `#[target_feature]` annotation on any caller
+        // (an earlier version of this comment claimed one), and this file
+        // compiles for every x86_64 build, so AVX2 at run time is the caller's
+        // obligation — the same footing as every other `I8x32` method, which
+        // all use `_mm256_*` (see `U64x8::avx2_halves` in simd_avx2.rs). The
+        // raw_abs result for 0x80 is 0x80 (bit-pattern +128); VPMINUB then
+        // clamps it to 0x7f.
         #[cfg(target_arch = "x86_64")]
         unsafe {
             let raw_abs = core::arch::x86_64::_mm256_abs_epi8(self.0);
@@ -3293,6 +3529,9 @@ where
 #[cfg(target_arch = "x86_64")]
 #[allow(non_camel_case_types)]
 pub type i8x16 = I8x16;
+#[cfg(target_arch = "x86_64")]
+#[allow(non_camel_case_types)]
+pub type u8x16 = U8x16;
 #[cfg(target_arch = "x86_64")]
 #[allow(non_camel_case_types)]
 pub type u16x8 = U16x8;

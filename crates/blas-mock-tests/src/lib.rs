@@ -11,6 +11,12 @@ thread_local! {
     pub static CALL_COUNT: RefCell<usize> = const { RefCell::new(0) };
 }
 
+/// Mock of the CBLAS symbol: counts the call in [`CALL_COUNT`] and does no math.
+///
+/// # Safety
+///
+/// Never dereferences its pointer arguments, so any values are sound. It is
+/// `unsafe` only to match the C signature that `cblas-sys` declares.
 #[rustfmt::skip]
 #[no_mangle]
 #[allow(unused)]
@@ -33,6 +39,12 @@ pub unsafe extern "C" fn cblas_sgemm(
     CALL_COUNT.with(|ctx| *ctx.borrow_mut() += 1);
 }
 
+/// Mock of the CBLAS symbol: counts the call in [`CALL_COUNT`] and does no math.
+///
+/// # Safety
+///
+/// Never dereferences its pointer arguments, so any values are sound. It is
+/// `unsafe` only to match the C signature that `cblas-sys` declares.
 #[rustfmt::skip]
 #[no_mangle]
 #[allow(unused)]
@@ -55,6 +67,12 @@ pub unsafe extern "C" fn cblas_dgemm(
     CALL_COUNT.with(|ctx| *ctx.borrow_mut() += 1);
 }
 
+/// Mock of the CBLAS symbol: counts the call in [`CALL_COUNT`] and does no math.
+///
+/// # Safety
+///
+/// Never dereferences its pointer arguments, so any values are sound. It is
+/// `unsafe` only to match the C signature that `cblas-sys` declares.
 #[rustfmt::skip]
 #[no_mangle]
 #[allow(unused)]
@@ -77,6 +95,12 @@ pub unsafe extern "C" fn cblas_cgemm(
     CALL_COUNT.with(|ctx| *ctx.borrow_mut() += 1);
 }
 
+/// Mock of the CBLAS symbol: counts the call in [`CALL_COUNT`] and does no math.
+///
+/// # Safety
+///
+/// Never dereferences its pointer arguments, so any values are sound. It is
+/// `unsafe` only to match the C signature that `cblas-sys` declares.
 #[rustfmt::skip]
 #[no_mangle]
 #[allow(unused)]
