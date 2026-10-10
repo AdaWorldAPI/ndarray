@@ -2115,26 +2115,31 @@ impl I8x32 {
         unsafe { _mm256_storeu_si256(s.as_mut_ptr() as *mut __m256i, self.0) };
     }
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     #[inline(always)]
     pub fn add(self, other: Self) -> Self {
         Self(unsafe { _mm256_add_epi8(self.0, other.0) })
     }
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     #[inline(always)]
     pub fn sub(self, other: Self) -> Self {
         Self(unsafe { _mm256_sub_epi8(self.0, other.0) })
     }
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     #[inline(always)]
     pub fn min(self, other: Self) -> Self {
         Self(unsafe { _mm256_min_epi8(self.0, other.0) })
     }
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     #[inline(always)]
     pub fn max(self, other: Self) -> Self {
         Self(unsafe { _mm256_max_epi8(self.0, other.0) })
     }
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// Compare-greater-than: returns 32-bit mask via packed-byte movemask.
     /// Bit i set where self[i] > other[i].
     #[inline(always)]
@@ -2143,6 +2148,7 @@ impl I8x32 {
     }
 }
 
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
 impl Add for I8x32 {
     type Output = Self;
     #[inline(always)]
@@ -2150,6 +2156,7 @@ impl Add for I8x32 {
         Self(unsafe { _mm256_add_epi8(self.0, rhs.0) })
     }
 }
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
 impl Sub for I8x32 {
     type Output = Self;
     #[inline(always)]
@@ -2157,12 +2164,14 @@ impl Sub for I8x32 {
         Self(unsafe { _mm256_sub_epi8(self.0, rhs.0) })
     }
 }
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
 impl AddAssign for I8x32 {
     #[inline(always)]
     fn add_assign(&mut self, rhs: Self) {
         self.0 = unsafe { _mm256_add_epi8(self.0, rhs.0) };
     }
 }
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
 impl SubAssign for I8x32 {
     #[inline(always)]
     fn sub_assign(&mut self, rhs: Self) {
@@ -2315,26 +2324,31 @@ impl I16x16 {
         unsafe { _mm256_storeu_si256(s.as_mut_ptr() as *mut __m256i, self.0) };
     }
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     #[inline(always)]
     pub fn add(self, other: Self) -> Self {
         Self(unsafe { _mm256_add_epi16(self.0, other.0) })
     }
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     #[inline(always)]
     pub fn sub(self, other: Self) -> Self {
         Self(unsafe { _mm256_sub_epi16(self.0, other.0) })
     }
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     #[inline(always)]
     pub fn min(self, other: Self) -> Self {
         Self(unsafe { _mm256_min_epi16(self.0, other.0) })
     }
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     #[inline(always)]
     pub fn max(self, other: Self) -> Self {
         Self(unsafe { _mm256_max_epi16(self.0, other.0) })
     }
 
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// Compare-greater-than: returns 16-bit mask via packed-word movemask.
     /// Bit i set where self[i] > other[i].
     #[inline(always)]
@@ -2352,6 +2366,7 @@ impl I16x16 {
     }
 }
 
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
 impl Add for I16x16 {
     type Output = Self;
     #[inline(always)]
@@ -2359,6 +2374,7 @@ impl Add for I16x16 {
         Self(unsafe { _mm256_add_epi16(self.0, rhs.0) })
     }
 }
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
 impl Sub for I16x16 {
     type Output = Self;
     #[inline(always)]
@@ -2366,12 +2382,14 @@ impl Sub for I16x16 {
         Self(unsafe { _mm256_sub_epi16(self.0, rhs.0) })
     }
 }
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
 impl AddAssign for I16x16 {
     #[inline(always)]
     fn add_assign(&mut self, rhs: Self) {
         self.0 = unsafe { _mm256_add_epi16(self.0, rhs.0) };
     }
 }
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
 impl SubAssign for I16x16 {
     #[inline(always)]
     fn sub_assign(&mut self, rhs: Self) {
@@ -3285,6 +3303,7 @@ pub fn palette_lookup_u8x8(idx_v: U16x8, lut: &[u8]) -> U8x8 {
 //   2. _mm256_min_epu8  (VPMINUB) clamps 0x80 → 0x7f.
 
 impl I8x32 {
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
     /// Lane-wise saturating absolute value.
     ///
     /// `saturating_abs(i8::MIN) == i8::MAX` (127).  Uses the VPABSB +

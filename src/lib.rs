@@ -244,6 +244,15 @@ pub(crate) mod simd_avx512;
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
 #[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
 pub mod simd_avx2;
+/// AVX-without-AVX2 realization of the methods `simd_avx2` / `simd_avx512`
+/// gate on AVX2; see the module docs.
+#[cfg(all(
+    feature = "std",
+    target_arch = "x86_64",
+    target_feature = "avx",
+    not(target_feature = "avx2")
+))]
+mod simd_avx;
 
 // (The standalone `simd_crypto` ChaCha20 primitive was RETIRED — superseded by
 // the AdaWorldAPI `chacha20` fork whose backend rides `ndarray::simd::U32x16`,

@@ -15,9 +15,10 @@
 //! missing. x86_64 only for now; aarch64 is documented below as not covered.
 //!
 //! It also enforces one floor that is NOT a compile-time feature: **AVX2 on
-//! every x86_64 build.** `crate::simd` selects its AVX2 realization whenever
-//! AVX-512 is absent, and that code calls AVX2 intrinsics without a runtime
-//! check, so a build compiled without `avx2` still needs AVX2 the moment it
+//! every x86_64 build that uses the AVX2 realization.** `crate::simd` selects
+//! that realization whenever AVX-512 is absent, except on the AVX-without-AVX2
+//! arm (`simd_avx.rs`), and it calls AVX2 intrinsics without a runtime check,
+//! so a baseline build compiled without `avx2` still needs AVX2 the moment it
 //! touches the SIMD types. The floor is checked once, here, at startup, and
 //! never per call: dispatch stays compile-time (operator, 2026-10-10, after
 //! codex review on PR #348).
@@ -92,11 +93,12 @@ impl fmt::Display for BuildCpuMismatch {
             self.missing.join(", ")
         )?;
         if self.missing.contains(&"avx2") {
-            // Rebuilding cannot help: the AVX2 floor applies to every x86_64 build.
+            // The AVX2 realization was compiled in; only a different build helps.
             write!(
                 f,
-                " ndarray's x86_64 SIMD backend needs AVX2 whatever the build flags, \
-                 so no build of this program can run on this CPU."
+                " This build uses ndarray's AVX2 SIMD backend. For a CPU with AVX but \
+                 not AVX2, rebuild with `target-cpu=native` on it or with \
+                 `--config .cargo/config-avx.toml`; a CPU without AVX is not supported."
             )
         } else {
             write!(
@@ -270,11 +272,16 @@ const FEATURES: &[FeatureRow] = {
     )
 };
 
-/// Features required on every x86_64 build, whatever it was compiled with:
-/// the floor of `crate::simd`'s AVX2 realization (see the module docs). The
-/// `compiled` column is `true` by definition.
+/// The floor of `crate::simd`'s AVX2 realization (see the module docs):
+/// required on every x86_64 build that compiles that realization in, whatever
+/// its target features. The one x86_64 build that does not is the
+/// AVX-without-AVX2 arm (`simd_avx.rs`, `.cargo/config-avx.toml`), whose
+/// `avx` requirement the compiled-feature table already enforces.
 #[cfg(target_arch = "x86_64")]
-const BACKEND_FLOOR: &[FeatureRow] = &[("avx2", true, || cpuid::bit(7, 0, 'b', 5) && cpuid::os_avx())];
+const BACKEND_FLOOR: &[FeatureRow] =
+    &[("avx2", cfg!(not(all(target_feature = "avx", not(target_feature = "avx2")))), || {
+        cpuid::bit(7, 0, 'b', 5) && cpuid::os_avx()
+    })];
 
 #[cfg(not(target_arch = "x86_64"))]
 const BACKEND_FLOOR: &[FeatureRow] = &[];
@@ -437,24 +444,26 @@ mod tests {
 
     #[test]
     #[cfg(target_arch = "x86_64")]
-    fn avx2_is_required_on_every_x86_64_build() {
-        // The floor must not depend on the build flags: a baseline build
-        // (no `avx2` compiled in) still reaches the AVX2 SIMD backend.
+    fn avx2_is_required_unless_the_avx_arm_is_compiled_in() {
+        // A baseline build (no `avx2` compiled in) still reaches the AVX2 SIMD
+        // backend, so the floor applies to it; only the AVX-without-AVX2 arm
+        // is exempt, because it never selects that backend.
+        let avx_arm = cfg!(all(target_feature = "avx", not(target_feature = "avx2")));
         assert!(BACKEND_FLOOR
             .iter()
-            .any(|&(n, compiled, _)| n == "avx2" && compiled));
+            .any(|&(n, compiled, _)| n == "avx2" && compiled == !avx_arm));
     }
 
     #[test]
     fn the_message_explains_the_avx2_floor_only_when_avx2_is_missing() {
         let floor = BuildCpuMismatch { missing: vec!["avx2"] }.to_string();
-        assert!(floor.contains("needs AVX2 whatever the build"), "{floor}");
-        assert!(!floor.contains("Rebuild"), "rebuilding cannot help: {floor}");
+        assert!(floor.contains("AVX2 SIMD backend"), "{floor}");
+        assert!(floor.contains("config-avx.toml"), "{floor}");
         let other = BuildCpuMismatch {
             missing: vec!["avx512f"],
         }
         .to_string();
-        assert!(!other.contains("needs AVX2"), "{other}");
+        assert!(!other.contains("AVX2 SIMD backend"), "{other}");
         assert!(other.contains("Rebuild"), "{other}");
     }
 
