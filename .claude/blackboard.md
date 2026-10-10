@@ -1,9 +1,7 @@
-## 2026-10-10 — R-MHB-1 prerequisites in `ndarray::simd`; the three `PackedDatabase`s
+## 2026-10-10 — the three `PackedDatabase`s (stroke split pinned)
 
-- **`mask_row_window(words, words_per_row, row, col, len, edge) -> Option<u64>`**: up to 64 bits of one row of a row-major packed grid at any column. `WindowEdge::Refuse` (None outside the row) is the default the R-MHB-1 plan asked for; `ZeroFill` is the opt-in. A window never reads a neighbouring row; a flat bit offset into row-major words would, and `a_window_never_reads_the_neighbouring_row` is red under exactly that disable.
-- **`bit_sliced_weighted_count(window, pos, neg) -> i64`**: Σ_b 2^b (popcnt(w ∧ pos_b) − popcnt(w ∧ neg_b)), the mexhat probe's arm-F row kernel. Exact for integer weights; at most 32 planes. Dropping the negative planes turns `bit_sliced_count_equals_the_weighted_sum` red.
-- Both are plain u64 ops (`count_ones`, shifts), identical on every realization; no backend code.
 - **`PackedDatabase` ×3 is not a duplicate.** `packed` (fixed 128/384/1536 + an index) and `cascade` (width-derived split) lay out the same strokes at 2048 bytes, now pinned by `stroke_split_equals_the_cascade_split_at_2048` (red if cascade's split point moves); they keep separate query paths. `cam_pq::PackedDatabase` holds 6-byte CAM codes and shares only the name. Doc cross-links added; not merged.
+- **Withdrawn the same day:** `mask_row_window` (signed `i64` column) and `bit_sliced_weighted_count` (signed sum over positive/negative planes). Signed masks are not part of this facade. A 256×256 tile is the palette256 × palette256 address (`u8:u8`), answered by 256×256 distance/compose tables, not by geometric windows.
 
 ## 2026-10-10 — x86-64-v2 realization (SSE4.2 without AVX) via the scalar backend
 
