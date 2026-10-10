@@ -409,52 +409,59 @@ pub fn popcount(a: &[u8]) -> u64 {
 }
 
 #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
-/// AVX2 int8 dot product using VPMADDUBSW + VPMADDWD with XOR-0x80 bias correction.
+/// Signed int8 dot product: the bytes of `a` and `b` are read as `i8`, and
+/// the exact sum of products over the first `min(a.len(), b.len())` bytes is
+/// returned.
+///
+/// Each 32-byte chunk is sign-extended to i16 (`vpmovsxbw`) and multiplied
+/// pairwise into i32 (`vpmaddwd`), which is exact for every i8 pair. The i32
+/// lanes are folded into an i64 every [`DOT_I8_FOLD`] chunks, so no input
+/// length can wrap them. (The earlier `vpmaddubsw` form saturated i16 at
+/// `a = b = 127`, and read `b` past its end when `b` was the shorter slice.)
 pub fn dot_i8(a: &[u8], b: &[u8]) -> i64 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        use core::arch::x86_64::*;
-        unsafe {
-            let len = a.len();
-            let chunks = len / 32;
-            let bias = _mm256_set1_epi8(-128i8);
-            let ones_u8 = _mm256_set1_epi8(1);
-            let ones_i16 = _mm256_set1_epi16(1);
+    use core::arch::x86_64::*;
+    let len = a.len().min(b.len());
+    let (a, b) = (&a[..len], &b[..len]);
+    let mut total = 0i64;
+    for (ba, bb) in a.chunks(32 * DOT_I8_FOLD).zip(b.chunks(32 * DOT_I8_FOLD)) {
+        let (ca, cb) = (ba.chunks_exact(32), bb.chunks_exact(32));
+        let (ta, tb) = (ca.remainder(), cb.remainder());
+        // SAFETY: AVX2 is compiled in (this fn is gated off the
+        // AVX-without-AVX2 arm). Every chunk is exactly 32 bytes, so each
+        // 32-byte `loadu` is in bounds; `loadu` needs no alignment.
+        let lanes = unsafe {
             let mut acc = _mm256_setzero_si256();
-            let mut b_sum = _mm256_setzero_si256();
-            for i in 0..chunks {
-                let base = i * 32;
-                let av = _mm256_loadu_si256(a[base..].as_ptr() as *const __m256i);
-                let bv = _mm256_loadu_si256(b[base..].as_ptr() as *const __m256i);
-                let av_u = _mm256_xor_si256(av, bias);
-                let prod = _mm256_maddubs_epi16(av_u, bv);
-                let widened = _mm256_madd_epi16(prod, ones_i16);
-                acc = _mm256_add_epi32(acc, widened);
-                let b_abs = _mm256_maddubs_epi16(ones_u8, bv);
-                let b_wide = _mm256_madd_epi16(b_abs, ones_i16);
-                b_sum = _mm256_add_epi32(b_sum, b_wide);
+            for (xa, xb) in ca.zip(cb) {
+                let av = _mm256_loadu_si256(xa.as_ptr() as *const __m256i);
+                let bv = _mm256_loadu_si256(xb.as_ptr() as *const __m256i);
+                let lo = _mm256_madd_epi16(
+                    _mm256_cvtepi8_epi16(_mm256_castsi256_si128(av)),
+                    _mm256_cvtepi8_epi16(_mm256_castsi256_si128(bv)),
+                );
+                let hi = _mm256_madd_epi16(
+                    _mm256_cvtepi8_epi16(_mm256_extracti128_si256::<1>(av)),
+                    _mm256_cvtepi8_epi16(_mm256_extracti128_si256::<1>(bv)),
+                );
+                acc = _mm256_add_epi32(acc, _mm256_add_epi32(lo, hi));
             }
-            let mut acc_vals = [0i32; 8];
-            _mm256_storeu_si256(acc_vals.as_mut_ptr() as *mut __m256i, acc);
-            let total_biased: i64 = acc_vals.iter().map(|&v| v as i64).sum();
-            let mut bsum_vals = [0i32; 8];
-            _mm256_storeu_si256(bsum_vals.as_mut_ptr() as *mut __m256i, b_sum);
-            let total_b: i64 = bsum_vals.iter().map(|&v| v as i64).sum();
-            let mut result = total_biased - 128 * total_b;
-            for i in (chunks * 32)..len {
-                result += (a[i] as i8 as i64) * (b[i] as i8 as i64);
-            }
-            result
-        }
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        a.iter()
-            .zip(b.iter())
+            let mut v = [0i32; 8];
+            _mm256_storeu_si256(v.as_mut_ptr() as *mut __m256i, acc);
+            v
+        };
+        total += lanes.iter().map(|&v| v as i64).sum::<i64>();
+        total += ta
+            .iter()
+            .zip(tb)
             .map(|(&x, &y)| (x as i8 as i64) * (y as i8 as i64))
-            .sum()
+            .sum::<i64>();
     }
+    total
 }
+
+/// Chunks between i32 → i64 folds in [`dot_i8`]. One chunk adds at most four
+/// products of magnitude `128 * 128` to an i32 lane (65_536), so 16_384 chunks
+/// stay below `2^30`.
+pub(crate) const DOT_I8_FOLD: usize = 16_384;
 
 // ============================================================================
 // GEMM — AVX2 fallback (delegates to scalar for now)

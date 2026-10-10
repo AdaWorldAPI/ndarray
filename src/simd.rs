@@ -1134,6 +1134,44 @@ mod tests {
         assert_eq!(I16x16::from_array(x16).cmp_gt(I16x16::from_array(y16)), want, "I16x16::cmp_gt");
     }
 
+    /// `simd_avx2::dot_i8` is an exact signed dot product of the first
+    /// `min(a.len(), b.len())` bytes, read as `i8`. Three failure modes are
+    /// pinned: the old `maddubs` form saturated i16 at `a = b = 127`
+    /// (`255 * 127 * 2 > i16::MAX` after the `^ 0x80` bias), an unfolded i32
+    /// accumulator wraps on long inputs, and a shorter `b` was read past its
+    /// end. On the AVX-without-AVX2 arm the same name is `simd_avx::dot_i8`.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn simd_avx2_dot_i8_is_exact() {
+        use crate::simd_avx2::dot_i8 as dot;
+        let reference = |a: &[u8], b: &[u8]| -> i64 {
+            a.iter()
+                .zip(b)
+                .map(|(&x, &y)| (x as i8 as i64) * (y as i8 as i64))
+                .sum()
+        };
+        for &(x, y) in &[(127u8, 127u8), (0x80, 0x80), (127, 0x80), (0x80, 127), (0xff, 1)] {
+            for len in [0, 1, 15, 16, 17, 31, 32, 33, 64, 100] {
+                let (a, b) = (vec![x; len], vec![y; len]);
+                assert_eq!(dot(&a, &b), reference(&a, &b), "x={x:#x} y={y:#x} len={len}");
+            }
+        }
+        let a: Vec<u8> = (0..1000u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect();
+        let b: Vec<u8> = (0..1000u32)
+            .map(|i| (i.wrapping_mul(40_503) >> 5) as u8)
+            .collect();
+        assert_eq!(dot(&a, &b), reference(&a, &b));
+        assert_eq!(dot(&a[..999], &b), reference(&a[..999], &b[..999]));
+        assert_eq!(dot(&a, &b[..40]), reference(&a[..40], &b[..40]));
+        // 1.5 Mi products of 16_384 sum to ~2.6e10, past i32::MAX.
+        let n = 3 << 19;
+        let big = vec![0x80u8; n];
+        assert!(16_384 * n as i64 > i32::MAX as i64);
+        assert_eq!(dot(&big, &big), 16_384 * n as i64);
+    }
+
     /// `F32x8::mul_add` is FUSED on every arm: one rounding, not two. With
     /// `x = 1 + 2^-12`, `x * x = 1 + 2^-11 + 2^-24` exactly; rounded to f32
     /// that is `1 + 2^-11` (a tie, to even), so an unfused `x * x - (1 + 2^-11)`

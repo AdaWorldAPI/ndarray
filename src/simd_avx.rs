@@ -120,42 +120,46 @@ pub fn popcount(a: &[u8]) -> u64 {
     sum
 }
 
-/// Signed int8 dot product, `Σ a[i] as i8 × b[i] as i8`: SSSE3 `pmaddubsw` +
-/// `pmaddwd` with the XOR-0x80 bias correction, as in the AVX2 realization.
-///
-/// Reads `min(a.len(), b.len())` elements of each slice.
+/// Signed int8 dot product, `Σ a[i] as i8 × b[i] as i8`, exact, over the first
+/// `min(a.len(), b.len())` bytes. SSE4.1 `pmovsxbw` sign-extends each 16-byte
+/// chunk to i16 and SSE2 `pmaddwd` multiplies pairwise into i32, exact for
+/// every i8 pair; the i32 lanes are folded into an i64 every
+/// [`crate::simd_avx2::DOT_I8_FOLD`] chunks, so no length can wrap them.
 pub fn dot_i8(a: &[u8], b: &[u8]) -> i64 {
     let len = a.len().min(b.len());
-    let chunks = len / 16;
-    // SAFETY: SSE2/SSSE3 are compiled in (module docs). Every load reads the
-    // 16 bytes at `i * 16` with `i < chunks = len / 16 <= min(len_a, len_b) / 16`,
-    // so both loads are in bounds; `loadu` needs no alignment.
-    let mut result = unsafe {
-        let bias = _mm_set1_epi8(-128i8);
-        let ones_u8 = _mm_set1_epi8(1);
-        let ones_i16 = _mm_set1_epi16(1);
-        let mut acc = _mm_setzero_si128();
-        let mut b_sum = _mm_setzero_si128();
-        for i in 0..chunks {
-            let av = _mm_loadu_si128(a.as_ptr().add(i * 16) as *const __m128i);
-            let bv = _mm_loadu_si128(b.as_ptr().add(i * 16) as *const __m128i);
-            let prod = _mm_maddubs_epi16(_mm_xor_si128(av, bias), bv);
-            acc = _mm_add_epi32(acc, _mm_madd_epi16(prod, ones_i16));
-            let b_abs = _mm_maddubs_epi16(ones_u8, bv);
-            b_sum = _mm_add_epi32(b_sum, _mm_madd_epi16(b_abs, ones_i16));
-        }
-        let mut acc_vals = [0i32; 4];
-        _mm_storeu_si128(acc_vals.as_mut_ptr() as *mut __m128i, acc);
-        let mut b_vals = [0i32; 4];
-        _mm_storeu_si128(b_vals.as_mut_ptr() as *mut __m128i, b_sum);
-        let biased: i64 = acc_vals.iter().map(|&v| v as i64).sum();
-        let total_b: i64 = b_vals.iter().map(|&v| v as i64).sum();
-        biased - 128 * total_b
-    };
-    for i in chunks * 16..len {
-        result += (a[i] as i8 as i64) * (b[i] as i8 as i64);
+    let (a, b) = (&a[..len], &b[..len]);
+    let fold = crate::simd_avx2::DOT_I8_FOLD;
+    let mut total = 0i64;
+    for (ba, bb) in a.chunks(16 * fold).zip(b.chunks(16 * fold)) {
+        let (ca, cb) = (ba.chunks_exact(16), bb.chunks_exact(16));
+        let (ta, tb) = (ca.remainder(), cb.remainder());
+        // SAFETY: SSE2/SSE4.1 are compiled in (module docs). Every chunk is
+        // exactly 16 bytes, so each 16-byte `loadu` is in bounds; `loadu`
+        // needs no alignment.
+        let lanes = unsafe {
+            let mut acc = _mm_setzero_si128();
+            for (xa, xb) in ca.zip(cb) {
+                let av = _mm_loadu_si128(xa.as_ptr() as *const __m128i);
+                let bv = _mm_loadu_si128(xb.as_ptr() as *const __m128i);
+                let lo = _mm_madd_epi16(_mm_cvtepi8_epi16(av), _mm_cvtepi8_epi16(bv));
+                let hi = _mm_madd_epi16(
+                    _mm_cvtepi8_epi16(_mm_srli_si128::<8>(av)),
+                    _mm_cvtepi8_epi16(_mm_srli_si128::<8>(bv)),
+                );
+                acc = _mm_add_epi32(acc, _mm_add_epi32(lo, hi));
+            }
+            let mut v = [0i32; 4];
+            _mm_storeu_si128(v.as_mut_ptr() as *mut __m128i, acc);
+            v
+        };
+        total += lanes.iter().map(|&v| v as i64).sum::<i64>();
+        total += ta
+            .iter()
+            .zip(tb)
+            .map(|(&x, &y)| (x as i8 as i64) * (y as i8 as i64))
+            .sum::<i64>();
     }
-    result
+    total
 }
 
 // ---------------------------------------------------------------------------
