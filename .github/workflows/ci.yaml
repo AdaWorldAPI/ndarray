@@ -420,6 +420,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
+        with:
+          # careful rebuilds std from source; without rust-src it stalls
+          # (seen locally: no compiler process, no output, for 25 min).
+          components: rust-src
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
       - name: Install cargo-careful
