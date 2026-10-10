@@ -1083,6 +1083,24 @@ mod tests {
     /// transpose that drops, duplicates or misroutes any word fails, and the
     /// fixture is asserted not to be symmetric, so an identity "transpose"
     /// fails too. Transposing twice must return the input.
+    /// `F32x8::mul_add` is FUSED on every arm: one rounding, not two. With
+    /// `x = 1 + 2^-12`, `x * x = 1 + 2^-11 + 2^-24` exactly; rounded to f32
+    /// that is `1 + 2^-11` (a tie, to even), so an unfused `x * x - (1 + 2^-11)`
+    /// gives 0 while the fused form keeps the `2^-24`. On the AVX-without-FMA
+    /// arm this runs the per-lane fallback, and under `qemu -cpu SandyBridge`
+    /// an ungated FMA3 instruction would fault instead.
+    #[test]
+    fn f32x8_mul_add_is_fused() {
+        let x = 1.0f32 + f32::EPSILON * 2048.0; // 1 + 2^-12
+        let c = -(1.0f32 + f32::EPSILON * 4096.0); // -(1 + 2^-11)
+        assert_eq!(x * x + c, 0.0, "fixture must separate fused from unfused");
+        let got = F32x8::splat(x).mul_add(F32x8::splat(x), F32x8::splat(c));
+        assert_eq!(got.to_array(), [f32::EPSILON / 2.0; 8]); // 2^-24
+        let lanes = F32x8::from_array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+        let r = lanes.mul_add(F32x8::splat(2.0), F32x8::splat(0.5)).to_array();
+        assert_eq!(r, [2.5, 4.5, 6.5, 8.5, 10.5, 12.5, 14.5, 16.5]);
+    }
+
     #[test]
     fn u64x8_transpose8_matches_the_index_map() {
         use super::U64x8;

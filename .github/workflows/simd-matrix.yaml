@@ -245,9 +245,14 @@ jobs:
       - name: no AVX2 instruction in the parity binary
         run: |
           bin=crates/simd-masking-parity/target/release/simd-masking-parity
-          bad=$(objdump -d --no-show-raw-insn "$bin" | grep -E '\svp[a-z0-9]+\s.*%ymm' | grep -vE '\svptest\s' || true)
-          if [ -n "$bad" ]; then echo "$bad" | head -20; echo "::error::AVX2 instruction in the AVX-arm parity binary"; exit 1; fi
-          echo "no AVX2 instruction found"
+          # Sandy Bridge has AVX but neither AVX2 (integer ops on ymm), FMA3
+          # nor F16C. The parity binary has no runtime-gated paths, so any of
+          # them here came from an intrinsic the AVX arm failed to gate.
+          dis=$(objdump -d --no-show-raw-insn "$bin")
+          bad=$( { echo "$dis" | grep -E '\svp[a-z0-9]+\s.*%ymm' | grep -vE '\svptest\s';
+                   echo "$dis" | grep -E '\sv(fn?m(add|sub)|fmaddsub|fmsubadd)[0-9a-z]*\s|\svcvt(ph2ps|ps2ph)\s'; } || true)
+          if [ -n "$bad" ]; then echo "$bad" | head -20; echo "::error::AVX2/FMA/F16C instruction in the AVX-arm parity binary"; exit 1; fi
+          echo "no AVX2, FMA or F16C instruction found"
       - name: SIMD unit tests under qemu -cpu SandyBridge
         env:
           CARGO_PROFILE_DEV_DEBUG: "0"

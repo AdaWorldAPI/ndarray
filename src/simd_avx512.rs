@@ -1410,9 +1410,20 @@ impl F32x8 {
     /// ```
     #[inline(always)]
     pub fn mul_add(self, a: Self, b: Self) -> Self {
-        // SAFETY: FMA3 intrinsic; reached only on FMA-capable targets via the
-        // consumer's runtime dispatch / `#[target_feature(enable = "fma")]`.
-        Self(unsafe { _mm256_fmadd_ps(self.0, a.0, b.0) })
+        #[cfg(target_feature = "fma")]
+        {
+            // SAFETY: `_mm256_fmadd_ps` needs FMA3, which `cfg(target_feature
+            // = "fma")` proves is enabled for this whole build, so every CPU
+            // the binary may run on has it (`cpu_guard` checks at startup).
+            Self(unsafe { _mm256_fmadd_ps(self.0, a.0, b.0) })
+        }
+        // AVX without FMA (the `simd_avx.rs` arm, e.g. Sandy Bridge): a fused
+        // multiply-add per lane, same single rounding as the FMA3 form.
+        #[cfg(not(target_feature = "fma"))]
+        {
+            let (x, y, z) = (self.to_array(), a.to_array(), b.to_array());
+            Self::from_array(core::array::from_fn(|i| x[i].mul_add(y[i], z[i])))
+        }
     }
 
     /// Lane-wise `self > other` as an 8-bit mask: bit `i` set iff
