@@ -3302,13 +3302,14 @@ impl I8x32 {
     /// ```
     #[inline(always)]
     pub fn saturating_abs(self) -> Self {
-        // SAFETY: _mm256_abs_epi8 (VPABSB) is an AVX2 intrinsic; we are in
-        // the simd_avx512.rs file which is only compiled for x86_64.  The
-        // `target_feature(enable = "avx2")` annotation on the calling code
-        // path guarantees AVX2 availability.  The raw_abs result for 0x80
-        // is 0x80 (bit-pattern +128); VPMINUB then clamps it to 0x7f.
-        // UNVERIFIED: _mm256_abs_epi8 stability on Rust 1.94 stable — it is
-        // in std::arch::x86_64 since Rust 1.0 for AVX2 so should compile.
+        // SAFETY: _mm256_abs_epi8 (VPABSB) and _mm256_min_epu8 are AVX2
+        // intrinsics. There is no `#[target_feature]` annotation on any caller
+        // (an earlier version of this comment claimed one), and this file
+        // compiles for every x86_64 build, so AVX2 at run time is the caller's
+        // obligation — the same footing as every other `I8x32` method, which
+        // all use `_mm256_*` (see `U64x8::avx2_halves` in simd_avx2.rs). The
+        // raw_abs result for 0x80 is 0x80 (bit-pattern +128); VPMINUB then
+        // clamps it to 0x7f.
         #[cfg(target_arch = "x86_64")]
         unsafe {
             let raw_abs = core::arch::x86_64::_mm256_abs_epi8(self.0);

@@ -3577,3 +3577,12 @@ depended on a pin). NEON "baseline" comments were left: NEON really is baseline
 on aarch64. Diff is comment lines only (checked); fmt + clippy v3/v4 clean.
 Pending operator decision, NOT landed: `saturating_abs` cfg(ssse3) + scalar
 fallback, which removes the SIGILL path on baseline builds.
+Addendum (same day, from sentinel-qa's review of the saturating_abs proposal):
+`I8x32::saturating_abs` (simd_avx512.rs) claimed a `#[target_feature(enable =
+"avx2")]` annotation on its callers that does not exist; rewritten to the
+caller-obligation form. Not a unique hole: every `I8x32` method uses
+`_mm256_*`. sentinel-qa verdict on the saturating_abs cfg(ssse3) patch:
+CONDITIONAL — sound and both paths agree on all 256 inputs, but land it only
+with an exhaustive 256-value test and a standing CI line for the
+`-Ctarget-cpu=x86-64` baseline build (otherwise the scalar branch is never
+compiled in CI). Patch held for operator approval.
