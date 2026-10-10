@@ -415,7 +415,7 @@ pub fn popcount(a: &[u8]) -> u64 {
 ///
 /// Each 32-byte chunk is sign-extended to i16 (`vpmovsxbw`) and multiplied
 /// pairwise into i32 (`vpmaddwd`), which is exact for every i8 pair. The i32
-/// lanes are folded into an i64 every [`DOT_I8_FOLD`] chunks, so no input
+/// lanes are folded into an i64 every `DOT_I8_FOLD` chunks, so no input
 /// length can wrap them. (The earlier `vpmaddubsw` form saturated i16 at
 /// `a = b = 127`, and read `b` past its end when `b` was the shorter slice.)
 pub fn dot_i8(a: &[u8], b: &[u8]) -> i64 {

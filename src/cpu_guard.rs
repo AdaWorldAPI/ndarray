@@ -348,6 +348,10 @@ pub fn assert_build_cpu() {
 
 /// The pre-`main` hook. Prints and exits instead of panicking: unwinding out
 /// of a loader-invoked `extern "C"` function would abort with no message.
+///
+/// Not installed under Miri: `cpuid` is inline assembly, which Miri cannot
+/// execute, and an interpreter has no CPU to check.
+#[cfg(not(miri))]
 extern "C" fn guard_before_main() {
     if let Err(mismatch) = check_build_cpu() {
         use std::io::Write;
@@ -358,17 +362,17 @@ extern "C" fn guard_before_main() {
 
 // The loader calls every function pointer in these sections before `main`.
 // `#[used]` keeps the static even though nothing references it.
-#[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
+#[cfg(all(not(miri), any(target_os = "linux", target_os = "android", target_os = "freebsd")))]
 #[used]
 #[link_section = ".init_array"]
 static GUARD_BEFORE_MAIN: extern "C" fn() = guard_before_main;
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(all(not(miri), any(target_os = "macos", target_os = "ios")))]
 #[used]
 #[link_section = "__DATA,__mod_init_func"]
 static GUARD_BEFORE_MAIN: extern "C" fn() = guard_before_main;
 
-#[cfg(target_os = "windows")]
+#[cfg(all(not(miri), target_os = "windows"))]
 #[used]
 #[link_section = ".CRT$XCU"]
 static GUARD_BEFORE_MAIN: extern "C" fn() = guard_before_main;

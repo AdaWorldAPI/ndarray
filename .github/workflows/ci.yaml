@@ -342,9 +342,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
       - name: cargo check (nightly + nightly-simd feature)
-        run: cargo check -p ndarray --features approx,serde,rayon,nightly-simd
+        # `+nightly`: rust-toolchain.toml pins stable and takes precedence over
+        # the toolchain dtolnay installs, so a plain `cargo` here is stable.
+        run: cargo +nightly check -p ndarray --features approx,serde,rayon,nightly-simd
       - name: cargo check (nightly + nightly-simd + hpc-extras)
-        run: cargo check -p ndarray --features approx,serde,rayon,nightly-simd,hpc-extras
+        run: cargo +nightly check -p ndarray --features approx,serde,rayon,nightly-simd,hpc-extras
 
   blas-msrv:
     runs-on: ubuntu-latest
@@ -422,7 +424,9 @@ jobs:
       - uses: taiki-e/install-action@nextest
       - name: Install cargo-careful
         run: cargo install cargo-careful
-      - run: cargo careful nextest run -Zcareful-sanitizer --features="$FEATURES"
+      # `+nightly`: see nightly-simd-polyfill. On stable, careful fails at
+      # `rustc --print target-spec-json` ("output is invalid JSON").
+      - run: cargo +nightly careful nextest run -Zcareful-sanitizer --features="$FEATURES"
 
   docs:
     # Nightly needed for --cfg docsrs. Only on merge queue / push.
@@ -434,7 +438,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
-      - run: cargo doc --no-deps --all-features
+      # `+nightly`: see nightly-simd-polyfill. Features match
+      # `[package.metadata.docs.rs]`: `--all-features` cannot build, because
+      # `intel-mkl`/`openblas` and `runtime-dispatch`/`nightly-simd` are
+      # mutually exclusive (`compile_error!`).
+      - run: cargo +nightly doc --no-deps --features approx,serde,rayon
 
   conclusion:
     needs:
