@@ -3586,3 +3586,12 @@ CONDITIONAL — sound and both paths agree on all 256 inputs, but land it only
 with an exhaustive 256-value test and a standing CI line for the
 `-Ctarget-cpu=x86-64` baseline build (otherwise the scalar branch is never
 compiled in CI). Patch held for operator approval.
+PR #348 codex P1 (cpu_guard table coverage): CONFIRMED and fixed. 11 x86_64
+features some rustc 1.99 `-Ctarget-cpu` model enables were absent from the
+guard (sse4a tbm kl widekl sha512 sm3 sm4 avxifma avxvnniint8 avxneconvert
+avxvnniint16); bit positions + gating copied from LLVM Host.cpp. A coverage
+test pins rustc's full CPU-model feature list (regenerate on toolchain bump).
+AMX is not a stable cfg target_feature, so -Ctarget-cpu never enables it.
+Codex P1 #2 (guard should require AVX2 on every x86_64 build, because
+simd_avx2 is always selected without AVX-512): path is real, but the fix
+changes the crate minimum ISA for every consumer -> raised to the operator.

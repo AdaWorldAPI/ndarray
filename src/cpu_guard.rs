@@ -226,6 +226,19 @@ const FEATURES: &[FeatureRow] = {
         "xsavec" => bit(0xD, 1, 'a', 1) && avx_os(),
         "xsaves" => bit(0xD, 1, 'a', 3) && avx_os(),
         "lzcnt" => bit(0x8000_0001, 0, 'c', 5),
+        "sse4a" => bit(0x8000_0001, 0, 'c', 6),
+        "tbm" => bit(0x8000_0001, 0, 'c', 21),
+        "kl" => bit(7, 0, 'c', 23),
+        "widekl" => bit(7, 0, 'c', 23) && bit(0x19, 0, 'b', 2),
+        // LLVM gates SHA512/SM3/SM4 on the CPUID bit only (no XCR0 check);
+        // mirrored as is.
+        "sha512" => bit(7, 1, 'a', 0),
+        "sm3" => bit(7, 1, 'a', 1),
+        "sm4" => bit(7, 1, 'a', 2),
+        "avxifma" => bit(7, 1, 'a', 23) && avx_os(),
+        "avxvnniint8" => bit(7, 1, 'd', 4) && avx_os(),
+        "avxneconvert" => bit(7, 1, 'd', 5) && avx_os(),
+        "avxvnniint16" => bit(7, 1, 'd', 10) && avx_os(),
     )
 };
 
@@ -330,6 +343,34 @@ mod tests {
         assert!(FEATURES
             .iter()
             .any(|&(n, compiled, _)| n == "avx2" && compiled));
+    }
+
+    /// Every x86_64 target feature that some `-Ctarget-cpu` model enables on
+    /// rustc 1.99, minus `sse`/`sse2` (the x86_64 baseline). A feature missing
+    /// from `FEATURES` is one the guard cannot see, so a build that uses it on
+    /// a CPU lacking it SIGILLs instead of reporting (codex review, PR #348).
+    /// Regenerate on a toolchain bump:
+    /// `for c in $(rustc --print target-cpus | awk 'NR>1{print $1}'); do
+    ///  rustc --print cfg -Ctarget-cpu=$c; done | grep target_feature | sort -u`
+    #[cfg(target_arch = "x86_64")]
+    const RUSTC_CPU_MODEL_FEATURES: &[&str] = &[
+        "adx", "aes", "avx", "avx2", "avx512bf16", "avx512bitalg", "avx512bw", "avx512cd", "avx512dq", "avx512f",
+        "avx512fp16", "avx512ifma", "avx512vbmi", "avx512vbmi2", "avx512vl", "avx512vnni", "avx512vp2intersect",
+        "avx512vpopcntdq", "avxifma", "avxneconvert", "avxvnni", "avxvnniint16", "avxvnniint8", "bmi1", "bmi2",
+        "cmpxchg16b", "f16c", "fma", "fxsr", "gfni", "kl", "lzcnt", "movbe", "pclmulqdq", "popcnt", "rdrand", "rdseed",
+        "sha", "sha512", "sm3", "sm4", "sse3", "sse4.1", "sse4.2", "sse4a", "ssse3", "tbm", "vaes", "vpclmulqdq",
+        "widekl", "xsave", "xsavec", "xsaveopt", "xsaves",
+    ];
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn the_table_covers_every_feature_a_cpu_model_can_enable() {
+        let missing: Vec<_> = RUSTC_CPU_MODEL_FEATURES
+            .iter()
+            .filter(|f| !FEATURES.iter().any(|&(n, _, _)| n == **f))
+            .collect();
+        assert!(missing.is_empty(), "guard cannot see: {missing:?}");
+        assert!(RUSTC_CPU_MODEL_FEATURES.len() > 40, "anti-vacuity");
     }
 
     #[test]
