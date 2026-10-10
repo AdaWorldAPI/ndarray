@@ -196,7 +196,7 @@ src/
 ### The parity arms are ALL reachable here — never report one as blocked without apt
 
 `scripts/masking-parity.sh` takes `native | nightly | wasm | wasm-scalar |
-neon-qemu`, and the cross arms are an `apt-get` away, not an environment
+neon-qemu | avx-qemu`, and the cross arms are an `apt-get` away, not an environment
 limit. Measured 2026-09-16: `neon-qemu` failed with a bare
 `No such file or directory (os error 2)` — which reads as "this target is not
 available here" and is in fact a **missing linker**, then a missing
@@ -239,8 +239,11 @@ env -u RUSTFLAGS cargo --config ../../.cargo/config-v4.toml run --release
 
 Read the program's own header line to confirm which arm you actually got
 (`avx512f=true`, `neon=true`, …) — that line exists precisely because the
-config can silently not apply. Five of the six realizations are reachable
-without nightly (AVX2, AVX-512, NEON, wasm-simd128, wasm-scalar); only
+config can silently not apply. Six of the seven realizations are reachable
+without nightly (AVX2, AVX-512, AVX-without-AVX2, NEON, wasm-simd128,
+wasm-scalar); the AVX arm (`src/simd_avx.rs`, `.cargo/config-avx.toml`) runs
+under `qemu-x86_64-static -cpu SandyBridge` (`apt-get install -y
+qemu-user-static`); only
 `nightly-simd` needs a toolchain this repo does not pin. The same lesson the
 sibling `lance-graph-java` records for the JDK: **a stale index or a missing
 helper binary reporting absence is not evidence of absence.**

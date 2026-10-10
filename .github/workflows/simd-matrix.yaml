@@ -218,6 +218,47 @@ jobs:
           echo "::warning::runner lacks avx512f — v4 parity run and probe self-check SKIPPED; asserting the emitted assembly only"
           env -u RUSTFLAGS WITNESS_NO_RUN=1 CARGO_ARGS='--config .cargo/config-v4.toml' bash scripts/codegen-witness.sh avx512
 
+  avx:
+    # AVX-without-AVX2 realization (`src/simd_avx.rs`, Sandy Bridge class).
+    # Built for `sandybridge` (`.cargo/config-avx.toml`) and RUN under
+    # `qemu-x86_64-static -cpu SandyBridge`, so an AVX2 instruction anywhere
+    # on the executed path faults instead of passing silently on an AVX2
+    # runner. Three rungs: parity (bits), an assembly witness that the parity
+    # binary contains no AVX2 integer instruction at all (LLVM never emits
+    # AVX2 for this target, so any `vp*` on a ymm register other than the
+    # AVX1 `vptest` came from an intrinsic that escaped its gate), and the
+    # SIMD unit tests under emulation.
+    runs-on: ubuntu-latest
+    name: realization/avx × x86_64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: avx
+      - name: install qemu-user
+        run: sudo apt-get update && sudo apt-get install -y qemu-user-static
+      - name: masking parity (sandybridge build, qemu -cpu SandyBridge)
+        run: bash scripts/masking-parity.sh avx-qemu
+      - name: no AVX2 instruction in the parity binary
+        run: |
+          bin=crates/simd-masking-parity/target/release/simd-masking-parity
+          bad=$(objdump -d --no-show-raw-insn "$bin" | grep -E '\svp[a-z0-9]+\s.*%ymm' | grep -vE '\svptest\s' || true)
+          if [ -n "$bad" ]; then echo "$bad" | head -20; echo "::error::AVX2 instruction in the AVX-arm parity binary"; exit 1; fi
+          echo "no AVX2 instruction found"
+      - name: SIMD unit tests under qemu -cpu SandyBridge
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_PROFILE_DEV_OPT_LEVEL: "1"
+          CARGO_PROFILE_TEST_OPT_LEVEL: "1"
+        run: |
+          bin=$(env -u RUSTFLAGS cargo --config .cargo/config-avx.toml test --lib --no-run --message-format=json \
+            | jq -r 'select(.executable != null and .target.kind == ["lib"] and .target.name == "ndarray") | .executable')
+          qemu-x86_64-static -cpu SandyBridge "$bin" simd
+
   neon:
     # aarch64 realization: cross-build on the x86 runner, run under qemu-user.
     # Three rungs: parity under qemu (bits), the codegen witness (opt-3 NEON

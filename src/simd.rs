@@ -218,6 +218,11 @@ pub const PREFERRED_I16_LANES: usize = 16;
 //   * v3 / GitHub-CI default → `target_feature = "avx2"` only →
 //     simd_avx2 backend (F32x16 = two-half (f32x8, f32x8), int wrappers
 //     are scalar polyfills via the `avx2_int_type!` macro).
+//   * AVX without AVX2 (`.cargo/config-avx.toml`, or native on a Sandy
+//     Bridge-class host) → the SAME types and exports as the AVX2 arm, but
+//     every method that would need AVX2 is realized in `simd_avx.rs` (two
+//     SSE halves / AVX1 forms); `simd_avx2.rs` and `simd_avx512.rs` gate
+//     those methods on `not(all(avx, not(avx2)))`.
 //   * v4 (or native on AVX-512 host) → `target_feature = "avx512f"` →
 //     simd_avx512 backend with native __m512 / __m512d / __m512i.
 //   * aarch64 → simd_neon backend.
