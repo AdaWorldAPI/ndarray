@@ -14,6 +14,14 @@
 //! (CPUID and XCR0 read directly, see below), and names every feature that is
 //! missing. x86_64 only for now; aarch64 is documented below as not covered.
 //!
+//! It also enforces one floor that is NOT a compile-time feature: **AVX2 on
+//! every x86_64 build.** `crate::simd` selects its AVX2 realization whenever
+//! AVX-512 is absent, and that code calls AVX2 intrinsics without a runtime
+//! check, so a build compiled without `avx2` still needs AVX2 the moment it
+//! touches the SIMD types. The floor is checked once, here, at startup, and
+//! never per call: dispatch stays compile-time (operator, 2026-10-10, after
+//! codex review on PR #348).
+//!
 //! # What it does not do
 //!
 //! It never changes how anything is built. Cross-building (for example
@@ -53,6 +61,11 @@
 //!   guard".
 //! * Silent when it should be: the same `x86-64-v3` build under `-cpu Haswell`
 //!   runs normally (exit 0).
+//! * AVX2 floor: a baseline build (no `target-cpu`, CI's flags) under
+//!   `-cpu Nehalem|SandyBridge|IvyBridge` prints the AVX2 message and exits
+//!   132; under `-cpu Haswell|max` it runs normally. Such a build is not
+//!   VEX-encoded, so on a pre-AVX CPU the guard runs and reports instead of
+//!   faulting.
 
 use std::fmt;
 
@@ -65,7 +78,8 @@ pub type MissingFeature = &'static str;
 /// feature and how to rebuild.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildCpuMismatch {
-    /// Features enabled at compile time that the running CPU does not report.
+    /// Features the build needs that the running CPU does not report: those
+    /// enabled at compile time, plus the x86_64 AVX2 floor.
     pub missing: Vec<MissingFeature>,
 }
 
@@ -73,12 +87,25 @@ impl fmt::Display for BuildCpuMismatch {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "this binary was compiled for a CPU with [{}], which this CPU does not support. \
-             Running it would crash with SIGILL (illegal instruction). Rebuild for this \
-             machine (the default `target-cpu=native` does that when built here), or for a \
-             common baseline such as `--config .cargo/config-v3.toml` (x86-64-v3, AVX2).",
+            "this binary needs CPU features [{}], which this CPU does not support. \
+             Running it would crash with SIGILL (illegal instruction).",
             self.missing.join(", ")
-        )
+        )?;
+        if self.missing.contains(&"avx2") {
+            // Rebuilding cannot help: the AVX2 floor applies to every x86_64 build.
+            write!(
+                f,
+                " ndarray's x86_64 SIMD backend needs AVX2 whatever the build flags, \
+                 so no build of this program can run on this CPU."
+            )
+        } else {
+            write!(
+                f,
+                " Rebuild for this machine (the default `target-cpu=native` does that when \
+                 built here), or for a common baseline such as \
+                 `--config .cargo/config-v3.toml` (x86-64-v3, AVX2)."
+            )
+        }
     }
 }
 
@@ -243,6 +270,15 @@ const FEATURES: &[FeatureRow] = {
     )
 };
 
+/// Features required on every x86_64 build, whatever it was compiled with:
+/// the floor of `crate::simd`'s AVX2 realization (see the module docs). The
+/// `compiled` column is `true` by definition.
+#[cfg(target_arch = "x86_64")]
+const BACKEND_FLOOR: &[FeatureRow] = &[("avx2", true, || cpuid::bit(7, 0, 'b', 5) && cpuid::os_avx())];
+
+#[cfg(not(target_arch = "x86_64"))]
+const BACKEND_FLOOR: &[FeatureRow] = &[];
+
 // aarch64 is NOT covered yet, deliberately: `is_aarch64_feature_detected!`
 // has the same compile-time short-circuit, so a table built on it could never
 // fire, and a guard that cannot fire is worse than none (it reads as coverage).
@@ -256,7 +292,13 @@ const FEATURES: &[FeatureRow] = &[];
 /// Empty on a CPU that supports the build, and always empty on architectures
 /// this guard does not cover yet (anything but x86_64).
 pub fn missing_build_features() -> Vec<MissingFeature> {
-    missing_in(FEATURES)
+    let mut missing = missing_in(FEATURES);
+    for f in missing_in(BACKEND_FLOOR) {
+        if !missing.contains(&f) {
+            missing.push(f);
+        }
+    }
+    missing
 }
 
 fn missing_in(table: &[FeatureRow]) -> Vec<MissingFeature> {
@@ -391,6 +433,29 @@ mod tests {
         // Can-stay-silent: a CPU lacking a feature the build does not use is fine.
         let table: &[FeatureRow] = &[("a", false, || false), ("b", true, || true)];
         assert!(missing_in(table).is_empty());
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn avx2_is_required_on_every_x86_64_build() {
+        // The floor must not depend on the build flags: a baseline build
+        // (no `avx2` compiled in) still reaches the AVX2 SIMD backend.
+        assert!(BACKEND_FLOOR
+            .iter()
+            .any(|&(n, compiled, _)| n == "avx2" && compiled));
+    }
+
+    #[test]
+    fn the_message_explains_the_avx2_floor_only_when_avx2_is_missing() {
+        let floor = BuildCpuMismatch { missing: vec!["avx2"] }.to_string();
+        assert!(floor.contains("needs AVX2 whatever the build"), "{floor}");
+        assert!(!floor.contains("Rebuild"), "rebuilding cannot help: {floor}");
+        let other = BuildCpuMismatch {
+            missing: vec!["avx512f"],
+        }
+        .to_string();
+        assert!(!other.contains("needs AVX2"), "{other}");
+        assert!(other.contains("Rebuild"), "{other}");
     }
 
     #[test]

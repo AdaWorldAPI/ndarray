@@ -3616,3 +3616,17 @@ existing Haswell runs must stay silent.
 Separate from the still-open AVX2 question on PR #348 (Codex P1: a non-AVX2
 build reaching `simd_avx2` on an AVX-only CPU), which is awaiting the
 operator's choice.
+
+## AVX2 startup floor in cpu_guard (operator decision, 2026-10-10, PR #348 codex P1)
+
+Operator chose the runtime-check option, as a STARTUP check only: no
+`is_x86_feature_detected!` anywhere in the SIMD code, because that would break
+compile-time dispatch. Implemented as `cpu_guard::BACKEND_FLOOR` (one row, AVX2
+CPUID bit + YMM OS state, `compiled = true` on every x86_64 build), unioned into
+`missing_build_features`. The message says no rebuild can help.
+
+Measured, baseline build (CI's RUSTFLAGS, no target-cpu), `cpu_guard_probe`:
+qemu `-cpu Nehalem` 132, `SandyBridge` 132, `IvyBridge` 132, `Haswell` 0,
+`max` 0. Side effect: a baseline build on a PRE-AVX CPU now gets the message
+too (the guard is not VEX-encoded there). The optional pre-AVX to-do above
+remains only for builds compiled with `target-cpu` v3/v4/native.
