@@ -9901,3 +9901,189 @@ mod bounded_register_tests {
         assert_eq!(out[0], PowerSums::default());
     }
 }
+
+// ────────────────────────────────────────────────────────────────────────
+// 2-D windows over a row-major packed grid + bit-sliced weighted counts
+// (R-MHB-1: a centre-surround sum as popcounts, no weight lane)
+// ────────────────────────────────────────────────────────────────────────
+
+/// What a row window does with columns outside its row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowEdge {
+    /// A window that leaves the row (or the grid) is refused: `None`.
+    Refuse,
+    /// Columns outside the row read as 0. Never reads a neighbouring row.
+    ZeroFill,
+}
+
+/// `len` bits (1..=64) of row `row` of a row-major packed grid, starting at
+/// column `col`; bit `j` of the result is column `col + j`.
+///
+/// The grid has `words_per_row` words per row, so a row is
+/// `64 · words_per_row` columns and row `r` starts at word
+/// `r · words_per_row`. A window never crosses into another row: with
+/// [`WindowEdge::Refuse`] it returns `None` when `col < 0`,
+/// `col + len > 64 · words_per_row` or the row is past the grid; with
+/// [`WindowEdge::ZeroFill`] those columns read as 0 (a row past the grid
+/// reads all-zero). `len` outside 1..=64 is always `None`.
+///
+/// # Example
+///
+/// ```
+/// use ndarray::simd::{mask_row_window, WindowEdge};
+/// // Two rows of one word each; row 1 has columns 0..8 set.
+/// let grid = [0u64, 0xFF];
+/// assert_eq!(mask_row_window(&grid, 1, 1, 4, 8, WindowEdge::Refuse), Some(0x0F));
+/// assert_eq!(mask_row_window(&grid, 1, 1, -2, 8, WindowEdge::Refuse), None);
+/// assert_eq!(mask_row_window(&grid, 1, 1, -2, 8, WindowEdge::ZeroFill), Some(0xFC));
+/// ```
+pub fn mask_row_window(
+    words: &[u64], words_per_row: usize, row: usize, col: i64, len: u32, edge: WindowEdge,
+) -> Option<u64> {
+    if len == 0 || len > 64 || words_per_row == 0 {
+        return None;
+    }
+    let width = (words_per_row * 64) as i64;
+    let rows = words.len() / words_per_row;
+    let end = col + i64::from(len);
+    let inside = row < rows && col >= 0 && end <= width;
+    if !inside && edge == WindowEdge::Refuse {
+        return None;
+    }
+    if row >= rows {
+        return Some(0);
+    }
+    let base = row * words_per_row;
+    // Read bit `c` of the row, or 0 outside it.
+    let word_at = |w: i64| -> u64 {
+        if w < 0 || w >= words_per_row as i64 {
+            0
+        } else {
+            words[base + w as usize]
+        }
+    };
+    let w0 = col.div_euclid(64);
+    let sh = col.rem_euclid(64) as u32;
+    let lo = word_at(w0) >> sh;
+    let hi = if sh == 0 { 0 } else { word_at(w0 + 1) << (64 - sh) };
+    let v = lo | hi;
+    Some(if len == 64 { v } else { v & ((1u64 << len) - 1) })
+}
+
+/// `Σ_b 2^b · (popcount(window ∧ pos[b]) − popcount(window ∧ neg[b]))`.
+///
+/// The weighted count of the set bits of `window`, where a cell's integer
+/// weight is spread over bit-planes: bit `b` of a positive weight's magnitude
+/// is set in `pos[b]`, of a negative weight's in `neg[b]`. Exact for integer
+/// weights; no per-cell weight lane is read.
+///
+/// # Panics
+///
+/// Panics unless `pos.len() == neg.len()` and there are at most 32 planes
+/// (so every term fits an `i64`).
+///
+/// # Example
+///
+/// ```
+/// use ndarray::simd::bit_sliced_weighted_count;
+/// // Cell 0 weighs +5 (planes 0 and 2), cell 1 weighs -2 (plane 1).
+/// let pos = [0b01, 0, 0b01];
+/// let neg = [0, 0b10, 0];
+/// assert_eq!(bit_sliced_weighted_count(0b11, &pos, &neg), 5 - 2);
+/// assert_eq!(bit_sliced_weighted_count(0b10, &pos, &neg), -2);
+/// ```
+pub fn bit_sliced_weighted_count(window: u64, pos: &[u64], neg: &[u64]) -> i64 {
+    assert_eq!(pos.len(), neg.len(), "bit_sliced_weighted_count: plane count mismatch");
+    assert!(pos.len() <= 32, "bit_sliced_weighted_count: at most 32 planes");
+    let mut s = 0i64;
+    for (b, (&p, &n)) in pos.iter().zip(neg).enumerate() {
+        s += i64::from((window & p).count_ones()) << b;
+        s -= i64::from((window & n).count_ones()) << b;
+    }
+    s
+}
+
+#[cfg(test)]
+mod window_tests {
+    use super::*;
+
+    struct Lcg(u64);
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            self.0
+        }
+    }
+
+    /// Reference: one bit at a time, by grid coordinates.
+    fn reference(words: &[u64], wpr: usize, row: usize, col: i64, len: u32) -> u64 {
+        let width = (wpr * 64) as i64;
+        let rows = words.len() / wpr;
+        let mut v = 0u64;
+        for j in 0..i64::from(len) {
+            let c = col + j;
+            if row < rows && c >= 0 && c < width {
+                let i = row * wpr * 64 + c as usize;
+                v |= (words[i / 64] >> (i % 64) & 1) << j;
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn row_window_matches_the_bitwise_reference() {
+        let mut r = Lcg(3);
+        let wpr = 3;
+        let grid: Vec<u64> = (0..wpr * 5).map(|_| r.next()).collect();
+        for _ in 0..20_000 {
+            let row = (r.next() % 6) as usize;
+            let len = 1 + (r.next() % 64) as u32;
+            let col = (r.next() % 260) as i64 - 40;
+            let want = reference(&grid, wpr, row, col, len);
+            assert_eq!(mask_row_window(&grid, wpr, row, col, len, WindowEdge::ZeroFill), Some(want));
+            let inside = row < 5 && col >= 0 && col + i64::from(len) <= (wpr * 64) as i64;
+            let refused = mask_row_window(&grid, wpr, row, col, len, WindowEdge::Refuse);
+            assert_eq!(refused, inside.then_some(want), "row {row} col {col} len {len}");
+        }
+    }
+
+    /// A window at a row's edge must not read the neighbouring row, which is
+    /// what a flat bit offset into row-major words would do.
+    #[test]
+    fn a_window_never_reads_the_neighbouring_row() {
+        // Row 0 empty, rows 1 and 2 full.
+        let grid = [0u64, u64::MAX, u64::MAX];
+        assert_eq!(mask_row_window(&grid, 1, 0, 60, 8, WindowEdge::ZeroFill), Some(0));
+        assert_eq!(mask_row_window(&grid, 1, 2, -4, 8, WindowEdge::ZeroFill), Some(0xF0));
+        assert_eq!(mask_row_window(&grid, 1, 0, 60, 8, WindowEdge::Refuse), None);
+        assert_eq!(mask_row_window(&grid, 1, 1, 0, 64, WindowEdge::Refuse), Some(u64::MAX));
+        assert_eq!(mask_row_window(&grid, 1, 3, 0, 8, WindowEdge::ZeroFill), Some(0));
+        assert_eq!(mask_row_window(&grid, 1, 0, 0, 0, WindowEdge::ZeroFill), None);
+    }
+
+    #[test]
+    fn bit_sliced_count_equals_the_weighted_sum() {
+        let mut r = Lcg(11);
+        for _ in 0..2_000 {
+            let weights: Vec<i32> = (0..64).map(|_| (r.next() % 8193) as i32 - 4096).collect();
+            let (mut pos, mut neg) = ([0u64; 13], [0u64; 13]);
+            for (j, &w) in weights.iter().enumerate() {
+                let (planes, m) = if w >= 0 { (&mut pos, w) } else { (&mut neg, -w) };
+                for (b, p) in planes.iter_mut().enumerate() {
+                    if m >> b & 1 == 1 {
+                        *p |= 1 << j;
+                    }
+                }
+            }
+            let window = r.next();
+            let want: i64 = (0..64)
+                .filter(|j| window >> j & 1 == 1)
+                .map(|j| i64::from(weights[j]))
+                .sum();
+            assert_eq!(bit_sliced_weighted_count(window, &pos, &neg), want);
+        }
+    }
+}
