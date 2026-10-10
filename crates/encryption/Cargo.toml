@@ -24,7 +24,7 @@ ed25519-dalek = { version = "2", default-features = false, features = ["alloc", 
 sha2 = { version = "0.10", default-features = false }
 # X448 key agreement — AdaWorldAPI fork of RustCrypto/elliptic-curves. No dalek,
 # and crypto-bigint underneath means no foreign AVX2 for the polyfill to fix.
-x448 = { git = "https://github.com/AdaWorldAPI/elliptic-curves", rev = "739304e026fdf06cd1a31606e4db487d3f47c5ae", default-features = false }
+x448 = { git = "https://github.com/AdaWorldAPI/elliptic-curves", branch = "master", default-features = false }
 zeroize = { version = "1", features = ["derive"] }
 
 # THE ONLY ENTROPY SOURCE. On wasm32 the `js` feature routes this to
