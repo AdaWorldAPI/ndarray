@@ -46,8 +46,8 @@ env:
   # ADD to the cargo config, it REPLACES it. Re-read `.cargo/config.toml`
   # before changing this value and carry forward anything still needed.
   RUSTFLAGS: '-D warnings --cfg curve25519_dalek_backend="serial" --cfg poly1305_force_soft'
-  MSRV: 1.98.1
-  BLAS_MSRV: 1.98.1
+  MSRV: 1.99.0
+  BLAS_MSRV: 1.99.0
 
 jobs:
   pass-msrv:
@@ -74,11 +74,11 @@ jobs:
         # them move together with the toolchain file, and its bump log is the
         # one place that records WHY each move happened.
         rust:
-          - "1.98.1"
+          - "1.99.0"
     name: clippy/${{ matrix.rust }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: dtolnay/rust-toolchain@1.99.0
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
@@ -103,7 +103,7 @@ jobs:
       # Stable rustfmt on the pinned channel (see `rust-toolchain.toml`;
       # version deliberately not restated here). No nightly dependency since
       # rustfmt.toml is stable-clean post-PR #133.
-      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: dtolnay/rust-toolchain@1.99.0
         with:
           components: rustfmt
       - run: cargo fmt --all --check
@@ -236,7 +236,7 @@ jobs:
     name: hpc-stream-parallel/rayon
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: dtolnay/rust-toolchain@1.99.0
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
       - name: cargo check (no rayon — scalar path unchanged)
