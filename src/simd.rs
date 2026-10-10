@@ -1083,6 +1083,26 @@ mod tests {
     /// transpose that drops, duplicates or misroutes any word fails, and the
     /// fixture is asserted not to be symmetric, so an identity "transpose"
     /// fails too. Transposing twice must return the input.
+    /// Every `i8` value through `I8x16`/`I8x32::saturating_abs`, on whichever
+    /// path this build compiled: the SSSE3 intrinsic (`cfg(target_feature =
+    /// "ssse3")`: v3, v4, native) or the scalar fallback (a baseline build,
+    /// e.g. CI's `tests/*` jobs, whose RUSTFLAGS drop `target-cpu`). Lives
+    /// here, not in `simd_avx512.rs`, whose test modules are `avx512f`-only.
+    #[cfg(all(feature = "std", target_arch = "x86_64"))]
+    #[test]
+    fn x86_saturating_abs_is_exact_for_all_256_i8_values() {
+        use crate::simd_avx512::{I8x16, I8x32};
+        let all: [i8; 256] = core::array::from_fn(|i| i as u8 as i8);
+        for c in all.chunks_exact(16) {
+            let v: [i8; 16] = c.try_into().unwrap();
+            assert_eq!(I8x16::from_array(v).saturating_abs().to_array(), v.map(i8::saturating_abs));
+        }
+        for c in all.chunks_exact(32) {
+            let v: [i8; 32] = c.try_into().unwrap();
+            assert_eq!(I8x32::from_array(v).saturating_abs().to_array(), v.map(i8::saturating_abs));
+        }
+    }
+
     /// The x86 256-bit integer methods that had no test on any stable arm,
     /// each checked lane-by-lane against a scalar reference on asymmetric
     /// data. They run on the AVX2, AVX-512 and AVX-without-AVX2 realizations;
