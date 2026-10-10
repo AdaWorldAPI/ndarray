@@ -3250,7 +3250,11 @@ impl Default for U8x32 {
 
 // Off the x86-64-v2 arm: these call AVX2 intrinsics directly, and a v2 build
 // (SSE4.2, no AVX) routes `crate::simd` to the scalar realization instead.
-#[cfg(all(test, target_arch = "x86_64", not(all(target_feature = "sse4.2", not(target_feature = "avx")))))]
+#[cfg(all(
+    test,
+    target_arch = "x86_64",
+    not(all(target_feature = "sse4.2", not(target_feature = "avx")))
+))]
 mod u8x32_tests {
     use super::U8x32;
 

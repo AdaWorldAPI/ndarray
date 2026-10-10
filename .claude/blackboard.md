@@ -1,3 +1,14 @@
+## 2026-10-10 — x86-64-v2 realization (SSE4.2 without AVX) via the scalar backend
+
+- **What:** an eighth realization, selected at compile time by `all(target_arch = "x86_64", target_feature = "sse4.2", not(target_feature = "avx"))`. You get it with `target-cpu=native` on a v2-only CPU (Nehalem/Westmere, Silvermont-class Atom, VMs that hide AVX) or with `.cargo/config-v2.toml`. `simd.rs` routes this arm to `simd_scalar.rs`: the AVX2/AVX-512 types wrap 256/512-bit registers and cannot be the v2 realization, so plain arrays that LLVM compiles to SSE are used instead. Baseline x86-64 builds (no SSE4.2) are unchanged: they keep the AVX2 arm and the `cpu_guard` AVX2 floor, which now exempts `sse4.2 && !avx2` (the AVX and v2 arms together).
+- **API gap closed in `simd_scalar.rs`:** `F32Mask16::to_bitmask` and `F32x16::gather` (unsafe, same contract as the AVX2 polyfill). sentinel-qa: `gather` CONDITIONAL, satisfied by the SAFETY comment added at the one call site in `hpc/cam_pq.rs`; `to_bitmask` PARITY-OK.
+- **Evidence:**
+  - `scripts/masking-parity.sh v2-qemu` passes all 15 groups under `qemu-x86_64-static -cpu Nehalem`. The objdump witness finds no `%ymm`, `%zmm`, mask register, or VEX op on xmm. Disable run: with the `simd.rs` routing reverted, the binary SIGILLs under Nehalem.
+  - Per-test sweep of all 2541 v2 lib tests, each as its own process under Nehalem: 28 SIGILLs, all in `simd_avx2`'s own test modules (`tests`, `u8x32_tests`, `f16_precision_tests`), which call AVX2 intrinsics directly. No library path faulted. Those modules are gated off v2 (36 tests). Full v2 suite afterwards: 2474 passed, 0 failed, 31 ignored.
+  - Clippy `-D warnings` clean on v2, v3, v4, avx and baseline. Codegen witness avx2/avx512 PASS. fmt clean.
+  - New CI row `realization/v2` runs the parity arm, the objdump witness and the SIMD unit tests under Nehalem.
+- **Open:** `crate::simd_avx2` stays public on v2 builds and nothing checks for AVX2 at startup there, so a direct caller SIGILLs. Documented in the `simd.rs` module doc; the safe path is the `crate::simd` re-exports.
+
 ## 2026-10-10 — `tests/splat3d_correctness.rs`: clippy 1.99 clean under `--features splat3d`
 
 - Five lints, all in the test file: an unneeded `mut` on a closure, an over-precise f32 literal (`0.28209479177387814` → `0.282_094_8`; same bits, `0x3e906ebb`), and three `chunks_exact(3)` → `as_chunks::<3>().0.iter()`.
