@@ -1083,6 +1083,57 @@ mod tests {
     /// transpose that drops, duplicates or misroutes any word fails, and the
     /// fixture is asserted not to be symmetric, so an identity "transpose"
     /// fails too. Transposing twice must return the input.
+    /// The x86 256-bit integer methods that had no test on any stable arm,
+    /// each checked lane-by-lane against a scalar reference on asymmetric
+    /// data. They run on the AVX2, AVX-512 and AVX-without-AVX2 realizations;
+    /// a swapped operand, swapped 128-bit halves or a wrong intrinsic fails.
+    #[cfg(all(feature = "std", target_arch = "x86_64"))]
+    #[test]
+    fn x86_256bit_integer_methods_match_scalar() {
+        use crate::simd_avx2::{U16x16, U8x32};
+        use crate::simd_avx512::{I16x16, I8x32};
+
+        let a16: [u16; 16] = core::array::from_fn(|i| (i as u16).wrapping_mul(4_001).wrapping_add(7));
+        let b16: [u16; 16] = core::array::from_fn(|i| (i as u16).wrapping_mul(331).wrapping_add(60_013));
+        let (va, vb) = (U16x16::from_array(a16), U16x16::from_array(b16));
+        let want: [u16; 16] = core::array::from_fn(|i| a16[i].wrapping_mul(b16[i]));
+        assert_eq!(va.mullo(vb).to_array(), want, "U16x16::mullo");
+
+        // Bit i of IMM takes dword i (u16 lanes 2i, 2i+1) from `other`.
+        const IMM: i32 = 0b1010_0110;
+        let want: [u16; 16] = core::array::from_fn(|i| if IMM >> (i / 2) & 1 == 1 { b16[i] } else { a16[i] });
+        assert_eq!(va.blend_epi32::<IMM>(vb).to_array(), want, "U16x16::blend_epi32");
+
+        let table: [u8; 32] = core::array::from_fn(|i| (i as u8).wrapping_mul(3).wrapping_add(1));
+        let idx: [u8; 32] = core::array::from_fn(|i| match i % 5 {
+            0 => 0x80 | i as u8, // high bit set: zero
+            _ => (i as u8).wrapping_mul(7) & 0x0f,
+        });
+        let want: [u8; 32] = core::array::from_fn(|j| {
+            if idx[j] & 0x80 != 0 {
+                0
+            } else {
+                table[(j / 16) * 16 + (idx[j] & 0x0f) as usize]
+            }
+        });
+        let got = U8x32::from_array(table)
+            .shuffle_bytes(U8x32::from_array(idx))
+            .to_array();
+        assert_eq!(got, want, "U8x32::shuffle_bytes");
+
+        let x8: [i8; 32] = core::array::from_fn(|i| (i as i8).wrapping_mul(37).wrapping_sub(60));
+        let y8: [i8; 32] = core::array::from_fn(|i| (i as i8).wrapping_mul(-23).wrapping_add(5));
+        let want = (0..32).fold(0u32, |m, i| m | ((x8[i] > y8[i]) as u32) << i);
+        assert!(want != 0 && want != u32::MAX, "fixture must mix both outcomes");
+        assert_eq!(I8x32::from_array(x8).cmp_gt(I8x32::from_array(y8)), want, "I8x32::cmp_gt");
+
+        let x16: [i16; 16] = core::array::from_fn(|i| (i as i16) * 2_111 - 15_000);
+        let y16: [i16; 16] = core::array::from_fn(|i| if i < 8 { 1_000 - (i as i16) * 900 } else { -4_000 });
+        let want = (0..16).fold(0u16, |m, i| m | ((x16[i] > y16[i]) as u16) << i);
+        assert!(want & 0xff != want >> 8, "halves must differ so a half swap shows");
+        assert_eq!(I16x16::from_array(x16).cmp_gt(I16x16::from_array(y16)), want, "I16x16::cmp_gt");
+    }
+
     /// `F32x8::mul_add` is FUSED on every arm: one rounding, not two. With
     /// `x = 1 + 2^-12`, `x * x = 1 + 2^-11 + 2^-24` exactly; rounded to f32
     /// that is `1 + 2^-11` (a tie, to even), so an unfused `x * x - (1 + 2^-11)`
@@ -1097,7 +1148,9 @@ mod tests {
         let got = F32x8::splat(x).mul_add(F32x8::splat(x), F32x8::splat(c));
         assert_eq!(got.to_array(), [f32::EPSILON / 2.0; 8]); // 2^-24
         let lanes = F32x8::from_array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
-        let r = lanes.mul_add(F32x8::splat(2.0), F32x8::splat(0.5)).to_array();
+        let r = lanes
+            .mul_add(F32x8::splat(2.0), F32x8::splat(0.5))
+            .to_array();
         assert_eq!(r, [2.5, 4.5, 6.5, 8.5, 10.5, 12.5, 14.5, 16.5]);
     }
 
