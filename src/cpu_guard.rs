@@ -104,7 +104,7 @@ macro_rules! feature_table {
 // its first EVEX instruction in `main`. So the CPU is asked directly.
 #[cfg(target_arch = "x86_64")]
 mod cpuid {
-    use core::arch::x86_64::{CpuidResult, __cpuid, __cpuid_count};
+    use core::arch::x86_64::{__cpuid, __cpuid_count, CpuidResult};
 
     fn leaf(eax: u32, ecx: u32) -> CpuidResult {
         // CPUID exists on every x86_64 CPU, so `__cpuid_count` is a safe fn.
@@ -123,12 +123,21 @@ mod cpuid {
     /// Bit `b` of a register of leaf `(eax, ecx)`, or false when the leaf is
     /// beyond what the CPU reports.
     pub(super) fn bit(eax: u32, ecx: u32, reg: char, b: u32) -> bool {
-        let supported = if eax >= 0x8000_0000 { max_ext() >= eax } else { max_basic() >= eax };
+        let supported = if eax >= 0x8000_0000 {
+            max_ext() >= eax
+        } else {
+            max_basic() >= eax
+        };
         if !supported || (eax == 7 && ecx > 0 && leaf(7, 0).eax < ecx) {
             return false;
         }
         let r = leaf(eax, ecx);
-        let v = match reg { 'a' => r.eax, 'b' => r.ebx, 'c' => r.ecx, _ => r.edx };
+        let v = match reg {
+            'a' => r.eax,
+            'b' => r.ebx,
+            'c' => r.ecx,
+            _ => r.edx,
+        };
         v >> b & 1 == 1
     }
 
@@ -318,7 +327,9 @@ mod tests {
         // and a native/v3 build has AVX2, so the "compiled" column must not be
         // all false (that would make the guard unable to fire).
         #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-        assert!(FEATURES.iter().any(|&(n, compiled, _)| n == "avx2" && compiled));
+        assert!(FEATURES
+            .iter()
+            .any(|&(n, compiled, _)| n == "avx2" && compiled));
     }
 
     #[test]
@@ -342,7 +353,9 @@ mod tests {
 
     #[test]
     fn the_message_names_every_missing_feature() {
-        let m = BuildCpuMismatch { missing: vec!["avx512f", "avx512bw"] };
+        let m = BuildCpuMismatch {
+            missing: vec!["avx512f", "avx512bw"],
+        };
         let text = m.to_string();
         assert!(text.contains("avx512f, avx512bw"), "{text}");
         assert!(text.contains("SIGILL"), "{text}");

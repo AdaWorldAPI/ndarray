@@ -28,7 +28,8 @@
 //! index-addressed `masked_group_sum_i32_via` (two-hop zero-fallback); `0xD4x`
 //! `eq_u32_via_to_mask` (the same index lane, packed as a predicate rather than
 //! folded into a sum); `0xExx` the `F64x8` lane compares (all six relations
-//! over every pair of 16 IEEE edge values: NaN, ±0, ±inf, subnormal). `main.rs` (native / qemu) and
+//! over every pair of 16 IEEE edge values: NaN, ±0, ±inf, subnormal); `0xFxx` the 16-lane byte vectors `I8x16` / `U8x16` (wrapping
+//! `add`/`sub`, signed/unsigned `min`/`max`, the load/store round trips). `main.rs` (native / qemu) and
 //! `selfcheck()` (the wasm cdylib export, driven by `run.mjs`) both call
 //! [`run`].
 
@@ -37,18 +38,19 @@ use ndarray::simd::{
     eq_u32_via_to_mask, eq_u64_to_mask, eq_u8_to_mask, ge_i32_to_mask, ge_i32_to_mask_under, ge_u64_to_mask,
     ge_u8_to_mask, gt_i32_to_mask, gt_i32_to_mask_under, gt_u64_to_mask, gt_u8_to_mask, le_i32_to_mask,
     le_i32_to_mask_under, le_u64_to_mask, le_u8_to_mask, lt_i32_to_mask, lt_i32_to_mask_under, lt_u64_to_mask,
-    lt_u8_to_mask, mask_all, mask_and, mask_and_assign, mask_andnot, mask_andnot_assign, mask_any, mask_gather_u32, mask_gather_u32_under,
-    mask_not, mask_not_assign, mask_or, mask_or_assign, mask_scatter_or_u32, mask_set_range, mask_shift_morton,
-    mask_ternlog, mask_ternlog_any, mask_ternlog_assign, mask_ternlog_popcount, mask_xor, mask_xor_assign,
-    masked_group_sum_i32, masked_group_sum_i32_via, masked_key_run_count_u32, masked_max_i32, masked_min_i32,
-    masked_strided_group_sum, masked_sum_i32, masked_sum_wrapping_add_i32, ne_i32_to_mask, ne_i32_to_mask_under,
-    ne_u32_to_mask, ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask, ternary_match_strided_to_mask,
-    ternary_match_u32_to_mask, ternary_match_u32_to_mask_under, ternary_match_u64_to_mask,
-    ternary_match_u64_to_mask_under, ternlog, F64x8, I32x16, KeyRunCarry, MortonDir, U32x16, U64x8,
+    lt_u8_to_mask, mask_all, mask_and, mask_and_assign, mask_andnot, mask_andnot_assign, mask_any, mask_gather_u32,
+    mask_gather_u32_under, mask_not, mask_not_assign, mask_or, mask_or_assign, mask_scatter_or_u32, mask_set_range,
+    mask_shift_morton, mask_ternlog, mask_ternlog_any, mask_ternlog_assign, mask_ternlog_popcount, mask_xor,
+    mask_xor_assign, masked_group_sum_i32, masked_group_sum_i32_via, masked_key_run_count_u32, masked_max_i32,
+    masked_min_i32, masked_strided_group_sum, masked_sum_i32, masked_sum_wrapping_add_i32, ne_i32_to_mask,
+    ne_i32_to_mask_under, ne_u32_to_mask, ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask,
+    ternary_match_strided_to_mask, ternary_match_u32_to_mask, ternary_match_u32_to_mask_under,
+    ternary_match_u64_to_mask, ternary_match_u64_to_mask_under, ternlog, F64x8, I32x16, I8x16, KeyRunCarry, MortonDir,
+    U32x16, U64x8, U8x16,
 };
 
 /// Number of check groups [`run`] executes (for the log line only).
-pub const CHECKS: usize = 14;
+pub const CHECKS: usize = 15;
 
 /// The wasm export: identical to [`run`], `extern "C"` so `run.mjs` can call it.
 #[no_mangle]
@@ -62,7 +64,7 @@ pub fn run() -> u32 {
         check_ternlog_all_tables, check_u64x8_algebra, check_i32x16_compare, check_predicates_to_mask,
         check_mask_algebra, check_care_match, check_masked_reductions, check_blend, check_morton_shift,
         check_predicates_under, check_set_range, check_unsigned_compare_to_mask, check_gather_scatter_group,
-        check_f64x8_compare,
+        check_f64x8_compare, check_i8x16_u8x16_lanes,
     ];
     for g in groups {
         if let Err(code) = g() {
@@ -479,6 +481,173 @@ fn check_f64x8_compare() -> Result<(), u32> {
     // Anti-vacuity: every one of the 16 x 16 edge pairs was checked.
     if pairs != 256 {
         return Err(0xE0F);
+    }
+    Ok(())
+}
+
+// ── 0xFxx: I8x16 / U8x16 lane arithmetic — wrapping add/sub, min/max ────────
+//
+// Every op is checked lane-for-lane against scalar `wrapping_add` /
+// `wrapping_sub` / `min` / `max`. Each operand vector has 16 DISTINCT lanes,
+// so a lane permutation (a swapped half, a reversed load) cannot pass, and
+// the edge values `MIN`/`MAX`/`-1`/`0`/`1` (i8) and `0`/`255`/`1`/`128` (u8)
+// sit in pairs that overflow both ways: `MAX+1`, `MIN-1`, `MIN+MIN`,
+// `255+1`, `0-1`. A saturating implementation fails here; so does a signed
+// `min` on the unsigned type (128 vs 1). Only facade methods every arm ships
+// are used: no `cmp_gt`, no `==` on the vector types.
+
+fn check_i8x16_u8x16_lanes() -> Result<(), u32> {
+    // Lane pairs that wrap: i8 A[1]+B[1] = MAX+1, A[0]-C[0] = MIN-1,
+    // A[0]+A[0] = MIN+MIN; u8 C[1]+A[1] = 255+1, A[0]-B[0] = 0-1, and
+    // A[3]=128 vs D[3]=1 separates unsigned from signed min/max.
+    let i8_vecs: [[i8; 16]; 4] = [
+        [i8::MIN, i8::MAX, -1, 0, 1, 2, -2, 64, -64, 100, -100, 124, -125, 42, 7, -7],
+        [i8::MAX, 1, i8::MIN, -1, 0, 126, -127, 65, -65, 27, -29, 5, -5, 8, -8, 3],
+        [1, i8::MIN, 0, i8::MAX, -1, 3, -3, 11, -11, 13, -13, 99, -99, 50, -50, 20],
+        [-1, i8::MAX, 1, i8::MIN, 0, -2, 2, -127, 126, -64, 63, -100, 99, 9, -9, 17],
+    ];
+    let u8_vecs: [[u8; 16]; 4] = [
+        [0, 255, 1, 128, 2, 254, 127, 129, 64, 192, 10, 200, 33, 77, 5, 250],
+        [1, 0, 255, 127, 253, 3, 128, 126, 191, 65, 246, 56, 34, 78, 6, 249],
+        [255, 1, 128, 0, 254, 2, 129, 127, 63, 193, 11, 199, 32, 76, 4, 251],
+        [128, 129, 0, 1, 3, 253, 255, 254, 190, 66, 245, 57, 35, 79, 7, 248],
+    ];
+    // Lane distinctness of the fixtures is a precondition, not an assumption.
+    for v in &i8_vecs {
+        for i in 0..16 {
+            for j in (i + 1)..16 {
+                if v[i] == v[j] {
+                    return Err(0xF0E);
+                }
+            }
+        }
+    }
+    for v in &u8_vecs {
+        for i in 0..16 {
+            for j in (i + 1)..16 {
+                if v[i] == v[j] {
+                    return Err(0xF0E);
+                }
+            }
+        }
+    }
+
+    let mut i8_wrapped = 0u32;
+    let mut u8_wrapped = 0u32;
+
+    for a_arr in &i8_vecs {
+        let a = I8x16::from_array(*a_arr);
+        if a.to_array() != *a_arr {
+            return Err(0xF00);
+        }
+        for b_arr in &i8_vecs {
+            let b = I8x16::from_array(*b_arr);
+            let add = a.add(b).to_array();
+            let sub = a.sub(b).to_array();
+            let min = a.min(b).to_array();
+            let max = a.max(b).to_array();
+            for i in 0..16 {
+                if add[i] != a_arr[i].wrapping_add(b_arr[i]) {
+                    return Err(0xF01);
+                }
+                if sub[i] != a_arr[i].wrapping_sub(b_arr[i]) {
+                    return Err(0xF02);
+                }
+                if min[i] != a_arr[i].min(b_arr[i]) {
+                    return Err(0xF03);
+                }
+                if max[i] != a_arr[i].max(b_arr[i]) {
+                    return Err(0xF04);
+                }
+                if a_arr[i].checked_add(b_arr[i]).is_none() || a_arr[i].checked_sub(b_arr[i]).is_none() {
+                    i8_wrapped += 1;
+                }
+            }
+        }
+    }
+    // The named wrap cases, explicitly: MAX+1, MIN-1, MIN+MIN.
+    let w = I8x16::splat(i8::MAX).add(I8x16::splat(1)).to_array();
+    let x = I8x16::splat(i8::MIN).sub(I8x16::splat(1)).to_array();
+    let y = I8x16::splat(i8::MIN).add(I8x16::splat(i8::MIN)).to_array();
+    if w != [i8::MIN; 16] || x != [i8::MAX; 16] || y != [0i8; 16] {
+        return Err(0xF05);
+    }
+
+    for a_arr in &u8_vecs {
+        let a = U8x16::from_array(*a_arr);
+        if a.to_array() != *a_arr {
+            return Err(0xF10);
+        }
+        for b_arr in &u8_vecs {
+            let b = U8x16::from_array(*b_arr);
+            let add = a.add(b).to_array();
+            let sub = a.sub(b).to_array();
+            let min = a.min(b).to_array();
+            let max = a.max(b).to_array();
+            for i in 0..16 {
+                if add[i] != a_arr[i].wrapping_add(b_arr[i]) {
+                    return Err(0xF11);
+                }
+                if sub[i] != a_arr[i].wrapping_sub(b_arr[i]) {
+                    return Err(0xF12);
+                }
+                if min[i] != a_arr[i].min(b_arr[i]) {
+                    return Err(0xF13);
+                }
+                if max[i] != a_arr[i].max(b_arr[i]) {
+                    return Err(0xF14);
+                }
+                if a_arr[i].checked_add(b_arr[i]).is_none() || a_arr[i].checked_sub(b_arr[i]).is_none() {
+                    u8_wrapped += 1;
+                }
+            }
+        }
+    }
+    // 255+1 and 0-1, explicitly; and unsigned ordering: max(128, 1) is 128.
+    let w = U8x16::splat(255).add(U8x16::splat(1)).to_array();
+    let x = U8x16::splat(0).sub(U8x16::splat(1)).to_array();
+    let m = U8x16::splat(128).max(U8x16::splat(1)).to_array();
+    if w != [0u8; 16] || x != [255u8; 16] || m != [128u8; 16] {
+        return Err(0xF15);
+    }
+
+    // Anti-vacuity: the fixtures really overflowed, in both types.
+    if i8_wrapped == 0 || u8_wrapped == 0 {
+        return Err(0xF0F);
+    }
+
+    // from_slice reads the FIRST 16 of a longer slice; copy_to_slice writes
+    // exactly the first 16 and leaves the rest untouched.
+    let long_i8: [i8; 20] = core::array::from_fn(|i| (i as i8).wrapping_mul(13).wrapping_sub(100));
+    let want_i8: [i8; 16] = core::array::from_fn(|i| long_i8[i]);
+    if I8x16::from_slice(&long_i8).to_array() != want_i8 {
+        return Err(0xF20);
+    }
+    let mut out_i8 = [99i8; 20];
+    I8x16::from_array(want_i8).copy_to_slice(&mut out_i8);
+    if out_i8[..16] != want_i8 || out_i8[16..] != [99i8; 4] {
+        return Err(0xF21);
+    }
+    let long_u8: [u8; 20] = core::array::from_fn(|i| (i as u8).wrapping_mul(17).wrapping_add(200));
+    let want_u8: [u8; 16] = core::array::from_fn(|i| long_u8[i]);
+    if U8x16::from_slice(&long_u8).to_array() != want_u8 {
+        return Err(0xF22);
+    }
+    let mut out_u8 = [99u8; 20];
+    U8x16::from_array(want_u8).copy_to_slice(&mut out_u8);
+    if out_u8[..16] != want_u8 || out_u8[16..] != [99u8; 4] {
+        return Err(0xF23);
+    }
+
+    // zero() is splat(0), and splat fills every lane.
+    if I8x16::zero().to_array() != I8x16::splat(0).to_array() || I8x16::zero().to_array() != [0i8; 16] {
+        return Err(0xF30);
+    }
+    if U8x16::zero().to_array() != U8x16::splat(0).to_array() || U8x16::zero().to_array() != [0u8; 16] {
+        return Err(0xF31);
+    }
+    if I8x16::splat(-7).to_array() != [-7i8; 16] || U8x16::splat(201).to_array() != [201u8; 16] {
+        return Err(0xF32);
     }
     Ok(())
 }

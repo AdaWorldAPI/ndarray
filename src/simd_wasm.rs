@@ -803,10 +803,28 @@ pub mod wasm32_simd {
             unsafe { v128_store(s.as_mut_ptr() as *mut v128, self.0) };
         }
 
+        /// Lane-wise **wrapping** add (`i8x16_add`): `i8::MAX + 1 == i8::MIN`.
+        /// Never saturates — matches NEON `vaddq_s8` and the scalar backend.
+        ///
+        /// # Examples
+        /// ```rust,ignore
+        /// use ndarray::simd::I8x16;
+        /// let r = I8x16::splat(i8::MAX).add(I8x16::splat(1));
+        /// assert_eq!(r.to_array(), [i8::MIN; 16]);
+        /// ```
         #[inline(always)]
         pub fn add(self, other: Self) -> Self {
             Self(i8x16_add(self.0, other.0))
         }
+        /// Lane-wise **wrapping** subtract (`i8x16_sub`): `i8::MIN - 1 == i8::MAX`.
+        /// Never saturates — matches NEON `vsubq_s8` and the scalar backend.
+        ///
+        /// # Examples
+        /// ```rust,ignore
+        /// use ndarray::simd::I8x16;
+        /// let r = I8x16::splat(i8::MIN).sub(I8x16::splat(1));
+        /// assert_eq!(r.to_array(), [i8::MAX; 16]);
+        /// ```
         #[inline(always)]
         pub fn sub(self, other: Self) -> Self {
             Self(i8x16_sub(self.0, other.0))
@@ -826,6 +844,14 @@ pub mod wasm32_simd {
         }
 
         /// Compare-greater-than: returns a 16-bit mask. Bit i set where self[i] > other[i].
+        ///
+        /// Register-level compare: it takes a second register, so it is binary in form.
+        /// The masking-ops predicates call register compares like this one with a
+        /// broadcast constant; lane-vs-lane predicates (G7) stay deliberately absent at the
+        /// slice/IR layer, see `.claude/knowledge/masking-ops-state.md` § G7. This method is
+        /// not that gap. The same operation exists on every backend at its native widths
+        /// (`I8x64::cmp_gt` etc.); an `I8x16` alias is not to be added to other arms
+        /// without a caller.
         #[inline(always)]
         pub fn cmp_gt(self, other: Self) -> u16 {
             i8x16_bitmask(i8x16_gt(self.0, other.0))
@@ -873,6 +899,179 @@ pub mod wasm32_simd {
         }
     }
     impl PartialEq for I8x16 {
+        fn eq(&self, other: &Self) -> bool {
+            self.to_array() == other.to_array()
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // U8x16 — 16 × u8 backed by one v128 (native byte lane)
+    // ════════════════════════════════════════════════════════════════════
+
+    /// 16×u8 backed by one WASM `v128` register.
+    ///
+    /// Mirrors the NEON `U8x16` surface exactly: `splat`/`zero`, slice and
+    /// array load/store, **wrapping** `add`/`sub`, and unsigned `min`/`max`.
+    /// The value intrinsics are safe under `simd128`; only the pointer
+    /// load/store need `unsafe`.
+    #[derive(Copy, Clone)]
+    #[repr(transparent)]
+    pub struct U8x16(pub v128);
+
+    impl U8x16 {
+        pub const LANES: usize = 16;
+
+        /// Broadcast `v` to all 16 lanes.
+        ///
+        /// # Examples
+        /// ```rust,ignore
+        /// use ndarray::simd::U8x16;
+        /// assert_eq!(U8x16::splat(7).to_array(), [7u8; 16]);
+        /// ```
+        #[inline(always)]
+        pub fn splat(v: u8) -> Self {
+            Self(u8x16_splat(v))
+        }
+
+        /// All lanes zero.
+        ///
+        /// # Examples
+        /// ```rust,ignore
+        /// use ndarray::simd::U8x16;
+        /// assert_eq!(U8x16::zero().to_array(), [0u8; 16]);
+        /// ```
+        #[inline(always)]
+        pub fn zero() -> Self {
+            Self(u8x16_splat(0))
+        }
+
+        /// Load the first 16 elements of `s`. Panics if `s.len() < 16`.
+        ///
+        /// # Examples
+        /// ```rust,ignore
+        /// use ndarray::simd::U8x16;
+        /// let data: Vec<u8> = (0..20).collect();
+        /// assert_eq!(U8x16::from_slice(&data).to_array()[15], 15);
+        /// ```
+        #[inline(always)]
+        pub fn from_slice(s: &[u8]) -> Self {
+            assert!(s.len() >= 16);
+            // SAFETY: length checked >= 16, so the 16-byte unaligned load
+            // (`v128_load` has no alignment requirement) stays in bounds.
+            Self(unsafe { v128_load(s.as_ptr() as *const v128) })
+        }
+
+        /// Build from a `[u8; 16]`.
+        ///
+        /// # Examples
+        /// ```rust,ignore
+        /// use ndarray::simd::U8x16;
+        /// let a = [3u8; 16];
+        /// assert_eq!(U8x16::from_array(a).to_array(), a);
+        /// ```
+        #[inline(always)]
+        pub fn from_array(arr: [u8; 16]) -> Self {
+            // SAFETY: a [u8; 16] is exactly 16 bytes; the unaligned load reads
+            // all of it and nothing beyond.
+            Self(unsafe { v128_load(arr.as_ptr() as *const v128) })
+        }
+
+        /// Copy the 16 lanes out to an array.
+        ///
+        /// # Examples
+        /// ```rust,ignore
+        /// use ndarray::simd::U8x16;
+        /// assert_eq!(U8x16::splat(9).to_array(), [9u8; 16]);
+        /// ```
+        #[inline(always)]
+        pub fn to_array(self) -> [u8; 16] {
+            let mut arr = [0u8; 16];
+            // SAFETY: the unaligned store writes exactly 16 bytes into the
+            // 16-byte array.
+            unsafe { v128_store(arr.as_mut_ptr() as *mut v128, self.0) };
+            arr
+        }
+
+        /// Store the 16 lanes into the first 16 elements of `s`. Panics if
+        /// `s.len() < 16`.
+        ///
+        /// # Examples
+        /// ```rust,ignore
+        /// use ndarray::simd::U8x16;
+        /// let mut out = [0u8; 20];
+        /// U8x16::splat(4).copy_to_slice(&mut out);
+        /// assert_eq!(&out[..16], &[4u8; 16]);
+        /// assert_eq!(&out[16..], &[0u8; 4]);
+        /// ```
+        #[inline(always)]
+        pub fn copy_to_slice(self, s: &mut [u8]) {
+            assert!(s.len() >= 16);
+            // SAFETY: length checked >= 16, so the 16-byte unaligned store
+            // stays in bounds.
+            unsafe { v128_store(s.as_mut_ptr() as *mut v128, self.0) };
+        }
+
+        /// Lane-wise **wrapping** add (`u8x16_add`): `255 + 1 == 0`.
+        /// Never saturates — matches NEON `vaddq_u8`.
+        ///
+        /// # Examples
+        /// ```rust,ignore
+        /// use ndarray::simd::U8x16;
+        /// let r = U8x16::splat(255).add(U8x16::splat(1));
+        /// assert_eq!(r.to_array(), [0u8; 16]);
+        /// ```
+        #[inline(always)]
+        pub fn add(self, other: Self) -> Self {
+            Self(u8x16_add(self.0, other.0))
+        }
+
+        /// Lane-wise **wrapping** subtract (`u8x16_sub`): `0 - 1 == 255`.
+        /// Never saturates — matches NEON `vsubq_u8`.
+        ///
+        /// # Examples
+        /// ```rust,ignore
+        /// use ndarray::simd::U8x16;
+        /// let r = U8x16::zero().sub(U8x16::splat(1));
+        /// assert_eq!(r.to_array(), [255u8; 16]);
+        /// ```
+        #[inline(always)]
+        pub fn sub(self, other: Self) -> Self {
+            Self(u8x16_sub(self.0, other.0))
+        }
+
+        /// Lane-wise unsigned minimum (`u8x16_min`).
+        ///
+        /// # Examples
+        /// ```rust,ignore
+        /// use ndarray::simd::U8x16;
+        /// let r = U8x16::splat(200).min(U8x16::splat(10));
+        /// assert_eq!(r.to_array(), [10u8; 16]);
+        /// ```
+        #[inline(always)]
+        pub fn min(self, other: Self) -> Self {
+            Self(u8x16_min(self.0, other.0))
+        }
+
+        /// Lane-wise unsigned maximum (`u8x16_max`). Unsigned: `200 > 10`.
+        ///
+        /// # Examples
+        /// ```rust,ignore
+        /// use ndarray::simd::U8x16;
+        /// let r = U8x16::splat(200).max(U8x16::splat(10));
+        /// assert_eq!(r.to_array(), [200u8; 16]);
+        /// ```
+        #[inline(always)]
+        pub fn max(self, other: Self) -> Self {
+            Self(u8x16_max(self.0, other.0))
+        }
+    }
+
+    impl fmt::Debug for U8x16 {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "U8x16({:?})", self.to_array())
+        }
+    }
+    impl PartialEq for U8x16 {
         fn eq(&self, other: &Self) -> bool {
             self.to_array() == other.to_array()
         }
@@ -1302,6 +1501,8 @@ pub mod wasm32_simd {
     pub type f64x8 = F64x8;
     #[allow(non_camel_case_types)]
     pub type i8x16 = I8x16;
+    #[allow(non_camel_case_types)]
+    pub type u8x16 = U8x16;
     #[allow(non_camel_case_types)]
     pub type u32x16 = U32x16;
     /// Lowercase alias of the native wasm [`I32x16`] (travels with the type).

@@ -45,7 +45,8 @@ pub use masks::{F32Mask16, F32Mask8, F64Mask4, F64Mask8};
 pub use u8_types::{U8x32, U8x64};
 pub use u_word_types::{U16x16, U16x32, U32x16, U32x8, U64x4, U64x8};
 pub use w1a_types::{
-    batch_packed_i4_16, palette_lookup_u8x8, prefetch_read_t0, prefetch_read_t1, prefetch_read_t2, I8x16, U16x8, U8x8,
+    batch_packed_i4_16, palette_lookup_u8x8, prefetch_read_t0, prefetch_read_t1, prefetch_read_t2, I8x16, U16x8, U8x16,
+    U8x8,
 };
 
 // Lowercase aliases — match the std::simd convention used by
@@ -98,6 +99,8 @@ pub type i64x4 = I64x4;
 // other backend file exports.
 #[allow(non_camel_case_types)]
 pub type i8x16 = I8x16;
+#[allow(non_camel_case_types)]
+pub type u8x16 = U8x16;
 #[allow(non_camel_case_types)]
 pub type u16x8 = U16x8;
 #[allow(non_camel_case_types)]

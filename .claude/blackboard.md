@@ -3538,3 +3538,28 @@ Inventory: 10 nightly rows → `NIGHTLY-BY-DESIGN`, 32 MKL/OpenBLAS rows tagged
 `OwnedRepr::from` (1.99-only, probed). From the other session's feedback, the
 per-population ABI header and Register128-through-extern-"C" items belong to
 lance-graph, not ndarray, and were not applied here.
+
+## 2026-10-10 — Workstreams B + C: `I8x16`/`U8x16` parity, `cmp_gt` scoped
+
+B: `I8x16::{zero, add, sub, min, max}` added to the AVX-512 polyfill, scalar and
+nightly arms (wasm and NEON already had them); `U8x16` with NEON's surface
+(`LANES, splat, zero, from_slice, from_array, to_array, copy_to_slice, add, sub,
+min, max`) added to AVX-512 polyfill, scalar, wasm and nightly, and exported
+with `u8x16` from all six `simd.rs` blocks (it was not exported anywhere before,
+NEON included). `add`/`sub` WRAP on every arm, matching `vaddq_s8`. New parity
+group `check_i8x16_u8x16_lanes` (codes 0xF00-0xF32) in simd-masking-parity:
+PASS on native-v4, native-v3, wasm, wasm-scalar, neon-qemu, nightly.
+C (masking-ops-cartographer verdict): register-level `cmp_gt(self, other)` /
+`cmp*_mask` exist on EVERY arm at native widths; G7 governs slice-level
+predicates, not register methods, so nothing is replicated. Doc paragraph on
+NEON `I8x16`/`I16x8::cmp_gt` and wasm `I8x16::cmp_gt`; G7 scope note in
+`masking-ops-state.md`. NEON `cmp_gt` transmutes replaced with `vst1q_u8/u16`
+into a local array + `// SAFETY:`.
+Gates: clippy -D warnings v3, v4, aarch64; nightly check; lib tests v3 2507 /
+v4 2558; doctests 684+4. (wasm32 lib clippy fails on `getrandom` in default
+deps, pre-existing; the parity arm builds wasm for real.)
+SoA 128-bit codegen check (probe over committed HEAD, 1.99, `-Ctarget-cpu`):
+no `vpextrq` anywhere. `soa_u64x8_xor_popcnt` via `to_array()`: v3 34 `vmovq`
+(8-byte loads + transpose: v3 `U64x8` is a flat `[u64; 8]` polyfill), v4 0.
+Through the typed `popcnt()` + `reduce_sum()`: v3 17, v4 1. `U8x64` and the
+`I8x16` polyfill: 0. Real AVX2 integer backends would remove the v3 cost.

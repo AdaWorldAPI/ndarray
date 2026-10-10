@@ -200,6 +200,14 @@ unary-with-constant, and that narrowing is exactly the register in which the
 constant, record G7 as *deliberately absent* **in the IR's docs**, so a future
 session does not "fix" it.
 
+> **G7 scope note (2026-10-10, masking-ops-cartographer).** Register methods
+> `cmp_gt(self, other)` / `cmp{eq,gt}_mask(self, other)` exist on every arm
+> (`simd_avx512.rs` `I8x64::cmp_gt`, `simd_scalar.rs`, `simd_neon.rs` `I8x16`/`I16x8::cmp_gt`,
+> `simd_wasm.rs` `I8x16::cmp_gt`, `simd_nightly/i8_types.rs`) and are the mechanism the
+> constant predicates use (`simd_masking_ops.rs`: `U8x64::from_array(lanes).cmpgt_mask(threshold_v)`).
+> They are NOT G7 and NOT a gap. A missing `I8x16::cmp_gt` name on the AVX-512, scalar or
+> nightly arm is not to be "completed" without a caller.
+
 **G8 — `lzcnt_bswap_u64_to_u8` (tree-depth column) — NAMED 2026-09-17, not
 built.** The V3 facet's tail (bytes 8..16 = tiers 2–5, one aligned `u64` at a
 compile-time offset — a PEEK, not a gather) is a **tree path**. State the
