@@ -4,6 +4,26 @@
 //! AVX-512 → AVX2 → Scalar. Consumer writes `crate::simd::F32x16`. Period.
 //!
 //! When `std::simd` stabilizes: swap this file. Zero consumer changes.
+//!
+//! The `Tier` above is runtime detection. The SIMD *types* are chosen at
+//! compile time, one realization per build, from the target features:
+//!
+//! * x86_64 `avx512f`: `simd_avx512.rs`.
+//! * x86_64 `avx2`, no `avx512f`: `simd_avx2.rs`. This arm is also what a
+//!   baseline x86-64 build compiles, and `cpu_guard` refuses to start such a
+//!   build on a CPU without AVX2.
+//! * x86_64 `avx`, no `avx2`: `simd_avx.rs` (`.cargo/config-avx.toml`).
+//! * x86_64 `sse4.2`, no `avx` (x86-64-v2, `.cargo/config-v2.toml`):
+//!   `simd_scalar.rs`. The AVX2/AVX-512 types wrap 256/512-bit registers, so
+//!   this arm uses plain arrays that LLVM compiles to SSE.
+//! * aarch64: NEON; wasm32 with `simd128`: `simd_wasm.rs`; any other target:
+//!   `simd_scalar.rs`. The `nightly-simd` feature replaces all of these with
+//!   `core::simd` for validation only.
+//!
+//! The module `crate::simd_avx2` stays public on every x86_64 build,
+//! including v2. Calling it directly on a CPU without AVX2 faults with
+//! SIGILL, and on the v2 arm no startup check catches it. Use the types
+//! re-exported from `crate::simd`.
 
 #[cfg(feature = "std")]
 use std::sync::LazyLock;
