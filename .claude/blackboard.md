@@ -3435,3 +3435,26 @@ Loose ends: the general strided path still gathers scalar (correct — at row
 strides ≥ a cache line a hardware gather buys nothing, per the doc); a
 `stride_bytes == 8` twin for `u64` lanes does not exist yet because no caller
 compares `u64` lanes.
+
+## 2026-10-10 — `cpu_guard`: build-vs-CPU check before `main` (SIGILL → message)
+
+New `src/cpu_guard.rs` (`std`, x86_64): compares `cfg!(target_feature)` against
+CPUID + XCR0 read directly, from an `.init_array` / `__mod_init_func` /
+`.CRT$XCU` hook, and exits 132 with the missing feature list. API:
+`check_build_cpu()`, `assert_build_cpu()`, `missing_build_features()`.
+Build-time behaviour unchanged: cross-building any tier on any runner works.
+
+Finding worth keeping: `is_x86_feature_detected!` returns `true` without asking
+the CPU when the feature is compiled in (`cfg!(..) || runtime`). The first
+version used it and passed its own check under qemu, then SIGILLed in `main`.
+
+Measured (examples/cpu_guard_probe.rs, qemu-user-static 8.2):
+- v4 build, `-cpu Haswell|Skylake-Server|Icelake-Server|max` → message, exit 132.
+- v3 build, `-cpu Haswell` → runs, exit 0 (silence twin).
+- v3 build, `-cpu Nehalem` (no AVX) → still SIGILL, inside the guard: the
+  guard is VEX-encoded like the rest of a v3 build. Documented as not covered.
+Gates: clippy `-D warnings` v3 / v4 / aarch64 clean; v4 `--lib` 2558 passed.
+Loose ends: aarch64 not covered (`is_aarch64_feature_detected!` has the same
+short-circuit; needs `getauxval(AT_HWCAP)`). The ctor is linked even when the
+consumer references nothing in `cpu_guard` (checked with `nm`), but that was
+measured for one example binary only.

@@ -276,6 +276,12 @@ pub mod simd_amx;
 #[cfg(feature = "std")]
 pub mod simd_caps;
 
+/// Build-vs-CPU guard: before `main`, checks that the running CPU supports
+/// every target feature this build was compiled with, and prints the missing
+/// ones instead of crashing with SIGILL. See [`cpu_guard::check_build_cpu`].
+#[cfg(feature = "std")]
+pub mod cpu_guard;
+
 /// Bitwise SIMD primitives — popcount, Hamming distance over byte slices.
 /// Graduated from `crate::hpc::bitwise::*` (substrate-tier; uses
 /// `crate::simd::U64x8` polyfill internally). Back-compat re-export in
