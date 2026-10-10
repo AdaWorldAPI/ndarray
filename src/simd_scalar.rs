@@ -1088,7 +1088,8 @@ impl F32Mask16 {
 impl F32x16 {
     /// Gather 16 `f32` values from `base_ptr` at the signed element offsets in
     /// `indices` — the same signature and contract as the AVX-512 backend's
-    /// `_mm512_i32gather_ps` form and the AVX2 polyfill.
+    /// `_mm512_i32gather_ps` form and the AVX2 polyfill. Offsets are signed:
+    /// a negative index reads an element before `base_ptr`.
     ///
     /// # Safety
     /// For every `i in 0..16`, `base_ptr.offset(indices[i] as isize)` must

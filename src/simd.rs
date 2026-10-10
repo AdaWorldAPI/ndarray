@@ -1103,15 +1103,14 @@ mod tests {
     /// transpose that drops, duplicates or misroutes any word fails, and the
     /// fixture is asserted not to be symmetric, so an identity "transpose"
     /// fails too. Transposing twice must return the input.
-    /// Every `i8` value through `I8x16`/`I8x32::saturating_abs`, on whichever
-    /// path this build compiled: the SSSE3 intrinsic (`cfg(target_feature =
-    /// "ssse3")`: v3, v4, native) or the scalar fallback (a baseline build,
-    /// e.g. CI's `tests/*` jobs, whose RUSTFLAGS drop `target-cpu`). Lives
-    /// here, not in `simd_avx512.rs`, whose test modules are `avx512f`-only.
-    #[cfg(all(feature = "std", target_arch = "x86_64"))]
+    /// Every `i8` value through `I8x16`/`I8x32::saturating_abs` as the facade
+    /// resolves them on this build: on x86 the SSSE3 intrinsic (v3, v4,
+    /// native) or its scalar fallback (a baseline build, e.g. CI's `tests/*`
+    /// jobs, whose RUSTFLAGS drop `target-cpu`); on the x86-64-v2 arm, NEON
+    /// and wasm, that arm's own type. Lives here, not in `simd_avx512.rs`,
+    /// whose test modules are `avx512f`-only.
     #[test]
-    fn x86_saturating_abs_is_exact_for_all_256_i8_values() {
-        use crate::simd_avx512::{I8x16, I8x32};
+    fn saturating_abs_is_exact_for_all_256_i8_values() {
         let all: [i8; 256] = core::array::from_fn(|i| i as u8 as i8);
         for c in all.chunks_exact(16) {
             let v: [i8; 16] = c.try_into().unwrap();
@@ -1127,7 +1126,11 @@ mod tests {
     /// each checked lane-by-lane against a scalar reference on asymmetric
     /// data. They run on the AVX2, AVX-512 and AVX-without-AVX2 realizations;
     /// a swapped operand, swapped 128-bit halves or a wrong intrinsic fails.
-    #[cfg(all(feature = "std", target_arch = "x86_64"))]
+    #[cfg(all(
+        feature = "std",
+        target_arch = "x86_64",
+        not(all(target_feature = "sse4.2", not(target_feature = "avx")))
+    ))]
     #[test]
     fn x86_256bit_integer_methods_match_scalar() {
         use crate::simd_avx2::{U16x16, U8x32};
@@ -1180,7 +1183,10 @@ mod tests {
     /// (`255 * 127 * 2 > i16::MAX` after the `^ 0x80` bias), an unfolded i32
     /// accumulator wraps on long inputs, and a shorter `b` was read past its
     /// end. On the AVX-without-AVX2 arm the same name is `simd_avx::dot_i8`.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(
+        target_arch = "x86_64",
+        not(all(target_feature = "sse4.2", not(target_feature = "avx")))
+    ))]
     #[test]
     fn simd_avx2_dot_i8_is_exact() {
         use crate::simd_avx2::dot_i8 as dot;
