@@ -262,7 +262,9 @@ jobs:
         run: |
           bin=$(env -u RUSTFLAGS cargo --config .cargo/config-avx.toml test --lib --no-run --message-format=json \
             | jq -r 'select(.executable != null and .target.kind == ["lib"] and .target.name == "ndarray") | .executable')
-          qemu-x86_64-static -cpu SandyBridge "$bin" simd
+          # One thread: qemu-user itself has crashed (internal SIGSEGV) under
+          # the multithreaded harness while a test was panicking.
+          qemu-x86_64-static -cpu SandyBridge "$bin" simd --test-threads=1
 
   neon:
     # aarch64 realization: cross-build on the x86 runner, run under qemu-user.
