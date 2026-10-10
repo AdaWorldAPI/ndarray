@@ -62,9 +62,9 @@ scalar or comment-only and needed nothing. What actually needed a gate:
 - [x] P3 `simd_avx.rs` per type, one type per chunk (U8x32, U16x16, U64x8,
       U32x8, U32x16, I32x16, U8x64, popcount/dot_i8, I8x32, I16x16, U16x8,
       palette_lookup_u8x8). Every `unsafe` gets SAFETY + sentinel-qa audit.
-- [ ] P4 gates: lib tests on the avx arm under qemu SandyBridge; parity on all
+- [x] P4 gates: lib tests on the avx arm under qemu SandyBridge; parity on all
       six existing arms + the new one; v3/v4 clippy; disable-run per type.
-- [ ] P5 docs: CLAUDE.md realization list, contract doc, blackboard, unsafe
+- [x] P5 docs: CLAUDE.md realization list, contract doc, blackboard, unsafe
       inventory rows for the new file.
 
 Estimate: ~1,000–1,500 lines, 2–3 sessions.

@@ -163,3 +163,13 @@ uses `f32::mul_add` per lane. Before, it was an ungated FMA3 intrinsic in a
 type exported on the AVX arm (sentinel-qa BLOCK; a Sandy Bridge build faulted,
 verified under `qemu -cpu SandyBridge`). The site count for that file is
 unchanged; its line numbers in `sites.tsv` have moved by a few rows.
+
+**Resolved by the same arc — `src/simd_avx2.rs` row 410 (`dot_i8`).** The
+bounds flag (a shorter `b` read 32 bytes past its end inside a safe `pub fn`)
+is fixed: both x86 arms now sum over `min(a.len(), b.len())` bytes with
+`chunks_exact`, so every load is in bounds. The same commit fixes a wrong-value
+bug the flag did not name: the `vpmaddubsw` form saturated i16 at
+`a = b = 127` (returned 4080 instead of 516128 over 32 bytes). The rows' second
+flag ("safe pub fn uses AVX2 with no cfg") is now covered: the AVX2 bodies are
+cfg-gated off the AVX-without-AVX2 arm, and a baseline (no `avx` cfg) build
+keeps `cpu_guard`'s AVX2 startup floor.
