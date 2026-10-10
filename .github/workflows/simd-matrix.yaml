@@ -266,6 +266,48 @@ jobs:
           # the multithreaded harness while a test was panicking.
           qemu-x86_64-static -cpu SandyBridge "$bin" simd --test-threads=1
 
+  v2:
+    # x86-64-v2 realization (SSE4.2, no AVX): `simd.rs` routes it to the
+    # scalar backend, which LLVM vectorizes to SSE. Built for `x86-64-v2`
+    # (`.cargo/config-v2.toml`) and RUN under `qemu-x86_64-static -cpu
+    # Nehalem`, so any AVX instruction on the executed path faults. Three
+    # rungs, as for `avx`: parity, an assembly witness that the parity binary
+    # has no AVX encoding at all, and the SIMD unit tests under emulation.
+    runs-on: ubuntu-latest
+    name: realization/v2 × x86_64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: v2
+      - name: install qemu-user
+        run: sudo apt-get update && sudo apt-get install -y qemu-user-static
+      - name: masking parity (x86-64-v2 build, qemu -cpu Nehalem)
+        run: bash scripts/masking-parity.sh v2-qemu
+      - name: no AVX instruction in the parity binary
+        run: |
+          bin=crates/simd-masking-parity/target/release/simd-masking-parity
+          # Nehalem has no AVX: no ymm/zmm or mask register, and no VEX-encoded
+          # (v-prefixed) op on xmm either. The parity binary has no
+          # runtime-gated paths, so any hit came from an ungated intrinsic.
+          bad=$(objdump -d --no-show-raw-insn "$bin" | grep -E '%ymm|%zmm|%k[0-7]|\sv[a-z0-9]+\s.*%xmm' || true)
+          if [ -n "$bad" ]; then echo "$bad" | head -20; echo "::error::AVX instruction in the v2 parity binary"; exit 1; fi
+          echo "no AVX instruction found"
+      - name: SIMD unit tests under qemu -cpu Nehalem
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_PROFILE_DEV_OPT_LEVEL: "1"
+          CARGO_PROFILE_TEST_OPT_LEVEL: "1"
+        run: |
+          bin=$(env -u RUSTFLAGS cargo --config .cargo/config-v2.toml test --lib --no-run --message-format=json \
+            | jq -r 'select(.executable != null and .target.kind == ["lib"] and .target.name == "ndarray") | .executable')
+          # One thread: see the `avx` job.
+          qemu-x86_64-static -cpu Nehalem "$bin" simd --test-threads=1
+
   neon:
     # aarch64 realization: cross-build on the x86 runner, run under qemu-user.
     # Three rungs: parity under qemu (bits), the codegen witness (opt-3 NEON

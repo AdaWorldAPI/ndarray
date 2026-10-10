@@ -98,7 +98,8 @@ impl fmt::Display for BuildCpuMismatch {
                 f,
                 " This build uses ndarray's AVX2 SIMD backend. For a CPU with AVX but \
                  not AVX2, rebuild with `target-cpu=native` on it or with \
-                 `--config .cargo/config-avx.toml`; a CPU without AVX is not supported."
+                 `--config .cargo/config-avx.toml`; for one with SSE4.2 but not AVX, \
+                 `--config .cargo/config-v2.toml`. A CPU without SSE4.2 is not supported."
             )
         } else {
             write!(
@@ -274,12 +275,14 @@ const FEATURES: &[FeatureRow] = {
 
 /// The floor of `crate::simd`'s AVX2 realization (see the module docs):
 /// required on every x86_64 build that compiles that realization in, whatever
-/// its target features. The one x86_64 build that does not is the
-/// AVX-without-AVX2 arm (`simd_avx.rs`, `.cargo/config-avx.toml`), whose
-/// `avx` requirement the compiled-feature table already enforces.
+/// its target features. Two x86_64 builds do not, and the compiled-feature
+/// table already enforces what each needs: the AVX-without-AVX2 arm
+/// (`simd_avx.rs`, `.cargo/config-avx.toml`) and the x86-64-v2 arm
+/// (SSE4.2 without AVX, the scalar realization, `.cargo/config-v2.toml`).
+/// Together they are exactly `sse4.2` without `avx2`.
 #[cfg(target_arch = "x86_64")]
 const BACKEND_FLOOR: &[FeatureRow] =
-    &[("avx2", cfg!(not(all(target_feature = "avx", not(target_feature = "avx2")))), || {
+    &[("avx2", cfg!(not(all(target_feature = "sse4.2", not(target_feature = "avx2")))), || {
         cpuid::bit(7, 0, 'b', 5) && cpuid::os_avx()
     })];
 
@@ -448,14 +451,15 @@ mod tests {
 
     #[test]
     #[cfg(target_arch = "x86_64")]
-    fn avx2_is_required_unless_the_avx_arm_is_compiled_in() {
-        // A baseline build (no `avx2` compiled in) still reaches the AVX2 SIMD
-        // backend, so the floor applies to it; only the AVX-without-AVX2 arm
-        // is exempt, because it never selects that backend.
+    fn avx2_is_required_unless_the_avx_or_v2_arm_is_compiled_in() {
+        // A baseline build (no `sse4.2` compiled in) still reaches the AVX2
+        // SIMD backend, so the floor applies to it; the AVX-without-AVX2 arm
+        // and the x86-64-v2 arm are exempt, because neither selects it.
         let avx_arm = cfg!(all(target_feature = "avx", not(target_feature = "avx2")));
+        let v2_arm = cfg!(all(target_feature = "sse4.2", not(target_feature = "avx")));
         assert!(BACKEND_FLOOR
             .iter()
-            .any(|&(n, compiled, _)| n == "avx2" && compiled == !avx_arm));
+            .any(|&(n, compiled, _)| n == "avx2" && compiled == !(avx_arm || v2_arm)));
     }
 
     #[test]
@@ -463,6 +467,7 @@ mod tests {
         let floor = BuildCpuMismatch { missing: vec!["avx2"] }.to_string();
         assert!(floor.contains("AVX2 SIMD backend"), "{floor}");
         assert!(floor.contains("config-avx.toml"), "{floor}");
+        assert!(floor.contains("config-v2.toml"), "{floor}");
         let other = BuildCpuMismatch {
             missing: vec!["avx512f"],
         }

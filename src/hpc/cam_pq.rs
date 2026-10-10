@@ -248,6 +248,11 @@ impl DistanceTables {
 
                 // Gather distances from precomputed table
                 let base_ptr = self.tables[s].as_ptr();
+                // SAFETY: every index is a `u8` code (`CamFingerprint = [u8; 6]`),
+                // so 0..=255 < NUM_CENTROIDS, and `base_ptr` starts the
+                // `[f32; NUM_CENTROIDS]` table `self.tables[s]` (`s <
+                // NUM_SUBSPACES`): each offset lands on an initialised, aligned
+                // `f32` in that one array.
                 let distances = F32x16::gather(indices, base_ptr);
 
                 acc = acc + distances;

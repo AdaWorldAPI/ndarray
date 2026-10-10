@@ -4,6 +4,26 @@
 //! AVX-512 → AVX2 → Scalar. Consumer writes `crate::simd::F32x16`. Period.
 //!
 //! When `std::simd` stabilizes: swap this file. Zero consumer changes.
+//!
+//! The `Tier` above is runtime detection. The SIMD *types* are chosen at
+//! compile time, one realization per build, from the target features:
+//!
+//! * x86_64 `avx512f`: `simd_avx512.rs`.
+//! * x86_64 `avx2`, no `avx512f`: `simd_avx2.rs`. This arm is also what a
+//!   baseline x86-64 build compiles, and `cpu_guard` refuses to start such a
+//!   build on a CPU without AVX2.
+//! * x86_64 `avx`, no `avx2`: `simd_avx.rs` (`.cargo/config-avx.toml`).
+//! * x86_64 `sse4.2`, no `avx` (x86-64-v2, `.cargo/config-v2.toml`):
+//!   `simd_scalar.rs`. The AVX2/AVX-512 types wrap 256/512-bit registers, so
+//!   this arm uses plain arrays that LLVM compiles to SSE.
+//! * aarch64: NEON; wasm32 with `simd128`: `simd_wasm.rs`; any other target:
+//!   `simd_scalar.rs`. The `nightly-simd` feature replaces all of these with
+//!   `core::simd` for validation only.
+//!
+//! The module `crate::simd_avx2` stays public on every x86_64 build,
+//! including v2. Calling it directly on a CPU without AVX2 faults with
+//! SIGILL, and on the v2 arm no startup check catches it. Use the types
+//! re-exported from `crate::simd`.
 
 #[cfg(feature = "std")]
 use std::sync::LazyLock;
@@ -346,6 +366,7 @@ pub use crate::simd_avx512::{BF16x16, BF16x8};
 #[cfg(all(
     target_arch = "x86_64",
     not(target_feature = "avx512f"),
+    not(all(target_feature = "sse4.2", not(target_feature = "avx"))),
     not(feature = "nightly-simd")
 ))]
 pub use crate::simd_avx512::{
@@ -356,6 +377,7 @@ pub use crate::simd_avx512::{
 #[cfg(all(
     target_arch = "x86_64",
     not(target_feature = "avx512f"),
+    not(all(target_feature = "sse4.2", not(target_feature = "avx"))),
     not(feature = "nightly-simd")
 ))]
 pub use crate::simd_avx2::{
@@ -369,7 +391,11 @@ pub use crate::simd_avx2::{
 // AVX2 ops, and on AVX-512 builds it's the half-register companion to
 // U8x64. Lives in simd_avx2.rs (single source of truth) and is re-exported
 // from both tier branches.
-#[cfg(all(target_arch = "x86_64", not(feature = "nightly-simd")))]
+#[cfg(all(
+    target_arch = "x86_64",
+    not(all(target_feature = "sse4.2", not(target_feature = "avx"))),
+    not(feature = "nightly-simd")
+))]
 pub use crate::simd_avx2::{u8x32, U8x32};
 
 // ============================================================================
@@ -381,7 +407,13 @@ pub use crate::simd_avx2::{u8x32, U8x32};
 // the existing `pub use scalar::{...}` re-exports below don't need to
 // change. Extracted from this file in Phase 4 of the integration plan
 // (1271 LoC of macro expansions out of the dispatcher).
-#[cfg(all(not(target_arch = "x86_64"), not(feature = "nightly-simd")))]
+#[cfg(all(
+    any(
+        not(target_arch = "x86_64"),
+        all(target_feature = "sse4.2", not(target_feature = "avx"))
+    ),
+    not(feature = "nightly-simd")
+))]
 #[path = "simd_scalar.rs"]
 pub(crate) mod scalar;
 
@@ -444,9 +476,17 @@ pub use scalar::{
 // Other non-x86 targets — wasm32 without simd128, riscv, etc.: full scalar
 // fallback. Excludes the wasm32+simd128 case handled by the native arm above.
 #[cfg(all(
-    not(target_arch = "x86_64"),
-    not(target_arch = "aarch64"),
-    not(all(target_arch = "wasm32", target_feature = "simd128")),
+    any(
+        all(
+            not(target_arch = "x86_64"),
+            not(target_arch = "aarch64"),
+            not(all(target_arch = "wasm32", target_feature = "simd128"))
+        ),
+        // x86-64-v2 (SSE4.2, no AVX): `simd_avx2.rs`/`simd_avx512.rs` types wrap
+        // 256/512-bit registers, so this arm takes the scalar realization, which
+        // LLVM vectorizes to SSE. Plan: `.claude/plans/simd-sse-v2-tier-v1.md`.
+        all(target_arch = "x86_64", all(target_feature = "sse4.2", not(target_feature = "avx")))
+    ),
     not(feature = "nightly-simd")
 ))]
 pub use scalar::{
@@ -1083,15 +1123,14 @@ mod tests {
     /// transpose that drops, duplicates or misroutes any word fails, and the
     /// fixture is asserted not to be symmetric, so an identity "transpose"
     /// fails too. Transposing twice must return the input.
-    /// Every `i8` value through `I8x16`/`I8x32::saturating_abs`, on whichever
-    /// path this build compiled: the SSSE3 intrinsic (`cfg(target_feature =
-    /// "ssse3")`: v3, v4, native) or the scalar fallback (a baseline build,
-    /// e.g. CI's `tests/*` jobs, whose RUSTFLAGS drop `target-cpu`). Lives
-    /// here, not in `simd_avx512.rs`, whose test modules are `avx512f`-only.
-    #[cfg(all(feature = "std", target_arch = "x86_64"))]
+    /// Every `i8` value through `I8x16`/`I8x32::saturating_abs` as the facade
+    /// resolves them on this build: on x86 the SSSE3 intrinsic (v3, v4,
+    /// native) or its scalar fallback (a baseline build, e.g. CI's `tests/*`
+    /// jobs, whose RUSTFLAGS drop `target-cpu`); on the x86-64-v2 arm, NEON
+    /// and wasm, that arm's own type. Lives here, not in `simd_avx512.rs`,
+    /// whose test modules are `avx512f`-only.
     #[test]
-    fn x86_saturating_abs_is_exact_for_all_256_i8_values() {
-        use crate::simd_avx512::{I8x16, I8x32};
+    fn saturating_abs_is_exact_for_all_256_i8_values() {
         let all: [i8; 256] = core::array::from_fn(|i| i as u8 as i8);
         for c in all.chunks_exact(16) {
             let v: [i8; 16] = c.try_into().unwrap();
@@ -1107,7 +1146,11 @@ mod tests {
     /// each checked lane-by-lane against a scalar reference on asymmetric
     /// data. They run on the AVX2, AVX-512 and AVX-without-AVX2 realizations;
     /// a swapped operand, swapped 128-bit halves or a wrong intrinsic fails.
-    #[cfg(all(feature = "std", target_arch = "x86_64"))]
+    #[cfg(all(
+        feature = "std",
+        target_arch = "x86_64",
+        not(all(target_feature = "sse4.2", not(target_feature = "avx")))
+    ))]
     #[test]
     fn x86_256bit_integer_methods_match_scalar() {
         use crate::simd_avx2::{U16x16, U8x32};
@@ -1160,7 +1203,10 @@ mod tests {
     /// (`255 * 127 * 2 > i16::MAX` after the `^ 0x80` bias), an unfolded i32
     /// accumulator wraps on long inputs, and a shorter `b` was read past its
     /// end. On the AVX-without-AVX2 arm the same name is `simd_avx::dot_i8`.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(
+        target_arch = "x86_64",
+        not(all(target_feature = "sse4.2", not(target_feature = "avx")))
+    ))]
     #[test]
     fn simd_avx2_dot_i8_is_exact() {
         use crate::simd_avx2::dot_i8 as dot;
