@@ -28,7 +28,7 @@ use ndarray::hpc::splat3d::{Camera, Gaussian3D, SplatFrame, SplatRenderer, SH_CO
 fn build_synthetic_cube_scene(frame: &mut SplatFrame) {
     let n = 10;
     let mut state = 0xC0FFEEu32;
-    let mut xor_advance = |s: &mut u32| {
+    let xor_advance = |s: &mut u32| {
         *s ^= *s << 13;
         *s ^= *s >> 17;
         *s ^= *s << 5;
@@ -45,7 +45,7 @@ fn build_synthetic_cube_scene(frame: &mut SplatFrame) {
                 //   R = ix/(n-1), G = iy/(n-1), B = iz/(n-1)
                 //   Pre-divide by SH_C0 ≈ 0.282 so the output (which is
                 //   SH_C0 · sh[0] + 0.5) lands at the intended color.
-                let sh_c0: f32 = 0.28209479177387814;
+                let sh_c0: f32 = 0.282_094_8;
                 sh[0] = (ix as f32) / (n - 1) as f32 / sh_c0;
                 sh[16] = (iy as f32) / (n - 1) as f32 / sh_c0;
                 sh[32] = (iz as f32) / (n - 1) as f32 / sh_c0;
@@ -116,7 +116,9 @@ fn end_to_end_synthetic_cube_renders_without_panic() {
     // nothing.
     let lit_pixels = frame
         .framebuffer
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .filter(|p| p[0] > 0.01 || p[1] > 0.01 || p[2] > 0.01)
         .count();
     assert!(lit_pixels > 100, "expected > 100 lit pixels from a 1000-gaussian cube scene, got {lit_pixels}");
@@ -125,7 +127,9 @@ fn end_to_end_synthetic_cube_renders_without_panic() {
     // total saturation bug or an early-out failure).
     let saturated_pixels = frame
         .framebuffer
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .filter(|p| p[0] > 0.99 && p[1] > 0.99 && p[2] > 0.99)
         .count();
     assert!(
@@ -195,7 +199,7 @@ fn end_to_end_empty_scene_yields_pure_background() {
     let bg = [0.25_f32, 0.5, 0.75];
     frame.tick(&camera, bg);
 
-    for (i, chunk) in frame.framebuffer.chunks_exact(3).enumerate() {
+    for (i, chunk) in frame.framebuffer.as_chunks::<3>().0.iter().enumerate() {
         assert!(
             (chunk[0] - bg[0]).abs() < 1e-6 && (chunk[1] - bg[1]).abs() < 1e-6 && (chunk[2] - bg[2]).abs() < 1e-6,
             "pixel {i}: expected bg = {bg:?}, got [{}, {}, {}]",
