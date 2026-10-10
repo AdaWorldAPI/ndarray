@@ -3563,3 +3563,17 @@ no `vpextrq` anywhere. `soa_u64x8_xor_popcnt` via `to_array()`: v3 34 `vmovq`
 (8-byte loads + transpose: v3 `U64x8` is a flat `[u64; 8]` polyfill), v4 0.
 Through the typed `popcnt()` + `reduce_sum()`: v3 17, v4 1. `U8x64` and the
 `I8x16` polyfill: 0. Real AVX2 integer backends would remove the v3 cost.
+
+## 2026-10-10 — Workstream D: SAFETY-comment truth sweep (comment-only)
+
+Every comment that cited a pinned tier as if it were a compile-time guarantee
+now states the caller obligation, in the form of `U64x8::avx2_halves`:
+26 `SAFETY: AVX2 baseline` sites + 4 longer ones in `simd_avx2.rs`; the
+`avx2_halves` statement itself (it claimed `.cargo/config.toml` pins v3 — the
+default is `target-cpu=native`); `I8x16::saturating_abs` in `simd_avx512.rs`
+(SSSE3 is NOT in the x86_64 baseline this file compiles for); the AVX2-arm
+selection comment in `simd.rs`; `Fingerprint::as_u8x64` docs (endianness never
+depended on a pin). NEON "baseline" comments were left: NEON really is baseline
+on aarch64. Diff is comment lines only (checked); fmt + clippy v3/v4 clean.
+Pending operator decision, NOT landed: `saturating_abs` cfg(ssse3) + scalar
+fallback, which removes the SIGILL path on baseline builds.

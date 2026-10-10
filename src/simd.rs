@@ -272,7 +272,7 @@ pub use crate::simd_avx512::{
     F32Mask16,
     // 512-bit (native AVX-512, __m512/__m512d/__m512i)
     F32x16,
-    // 256-bit (AVX2 baseline, __m256/__m256d/__m256i)
+    // 256-bit (AVX2, __m256/__m256d/__m256i)
     F32x8,
     F64Mask8,
     F64x4,
@@ -318,7 +318,9 @@ pub use crate::simd_avx512::{f32_to_bf16_batch_rne, f32_to_bf16_scalar_rne};
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512bf16", not(feature = "nightly-simd")))]
 pub use crate::simd_avx512::{BF16x16, BF16x8};
 
-// AVX2 baseline arm — selected by the `x86-64-v3` cargo default. The
+// AVX2 arm — selected whenever `avx512f` is not compiled in (a
+// `.cargo/config-v3.toml` build, or the default `target-cpu=native` on a host
+// without AVX-512). The
 // predicate is `not(avx512f)` rather than `avx2 + not(avx512f)` so that
 // an x86-64 baseline build (e.g. a `RUSTFLAGS` env that REPLACES the
 // `.cargo/config.toml` target-cpu pin) still has a matching arm and
@@ -332,8 +334,8 @@ pub use crate::simd_avx512::{BF16x16, BF16x8};
 // backend for one compile-time target, so a per-function feature gate is
 // a second, contradictory selection mechanism. The intrinsic calls in
 // `simd_avx2.rs` sit inside narrow `unsafe` blocks whose SAFETY
-// precondition is the v3 baseline `.cargo/config.toml` pins for every
-// x86_64 build; a baseline build compiles this arm but is not a supported
+// precondition is AVX2 at run time, a caller obligation (the default
+// `target-cpu=native` names no tier); a baseline build compiles this arm but is not a supported
 // execution target for it (it would SIGILL on the first `vp*` — the
 // PR #170 failure mode the config pin exists to prevent).
 #[cfg(all(

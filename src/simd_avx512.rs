@@ -2914,9 +2914,12 @@ impl I8x16 {
     /// ```
     #[inline(always)]
     pub fn saturating_abs(self) -> Self {
-        // SAFETY: `_mm_abs_epi8` (SSSE3) and `_mm_min_epu8` (SSE2) are available
-        // on every x86_64 build this file compiles for — the workspace pins
-        // `x86-64-v3`, which includes SSSE3. The unaligned load/store match the
+        // SAFETY: `_mm_abs_epi8` needs SSSE3 and `_mm_min_epu8` needs SSE2. SSE2
+        // is in the x86_64 baseline; SSSE3 is NOT, and this file compiles for
+        // every x86_64 build, so SSSE3 at run time is the caller's obligation.
+        // `target-cpu=native` (default) and `config-v3`/`config-v4` include it;
+        // a baseline build (e.g. a RUSTFLAGS env replacing the config) compiles
+        // this and would SIGILL. The unaligned load/store match the
         // `[i8; 16]` storage. VPABSB returns 0x80 for `i8::MIN` (the bit pattern
         // of +128, which does not fit in i8); VPMINUB then clamps 0x80 (= 128
         // unsigned) down to 0x7f (= 127 = `i8::MAX`), producing the saturating
