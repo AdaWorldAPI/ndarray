@@ -304,10 +304,13 @@ impl<'a, T, const BR: usize, const BC: usize> GridBlockMut<'a, T, BR, BC> {
     /// assert_eq!(g.get(0, 0), 42);
     /// ```
     pub fn row_mut(&mut self, r: usize) -> &mut [T] {
-        debug_assert!(r < BR, "row {} out of block range {}", r, BR);
+        // Real asserts, not `debug_assert!`: this is a safe `pub fn` and the
+        // second check is the only thing between `r` and the raw slice below
+        // (unsafe inventory, 2026-10-10: release builds skipped both).
+        assert!(r < BR, "row {} out of block range {}", r, BR);
         let stride = self.padded_cols_stride();
         let start = r * stride;
-        debug_assert!(
+        assert!(
             start + BC <= self.data_len(),
             "row materialization {} extends past data_len {}",
             start + BC,
@@ -477,5 +480,16 @@ mod tests {
         // block (1,1) → row_origin = 4, col_origin = 4
         assert_eq!(g.get(4, 4), 0xABCD);
         assert_eq!(g.get(4, 7), 0x1234);
+    }
+
+    /// A row past the block must panic in EVERY profile. Until 2026-10-11 the
+    /// check was a `debug_assert!`, so a release build handed out a slice
+    /// past the grid (run `cargo test --release` to see the difference).
+    #[test]
+    #[should_panic(expected = "out of block range")]
+    fn row_mut_past_the_block_panics() {
+        let mut g = BlockedGrid::<u32, 4, 4>::new(8, 8);
+        let mut blk = GridBlockMut::from_grid(&mut g, 1, 1);
+        let _ = blk.row_mut(4);
     }
 }

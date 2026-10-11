@@ -349,12 +349,11 @@ fn fallback_path(a_u8: &[u8], b_i8: &[i8], c: &mut [i32], k: usize) {
 ///
 /// # Panics
 /// Panics if `a_u8`, `b_i8`, or `c` are too small for the requested
-/// `(m, n, k)`, mirroring the boundary contract from `gemm_u8_i8`. Also
-/// panics in debug builds when AMX isn't OS-enabled or when the shape
-/// alignment constraints aren't met (production builds skip those for
-/// performance — callers must runtime-check
-/// `crate::hpc::amx_matmul::amx_available()` and the 16/16/64
-/// alignment themselves).
+/// `(m, n, k)`, mirroring the boundary contract from `gemm_u8_i8`; if `m`
+/// or `n` is not a multiple of 16 or `k` not a multiple of 64; or if AMX
+/// is not available (`crate::hpc::amx_matmul::amx_available()`). These
+/// were debug-only until 2026-10-11, which let a release build index
+/// past the slices.
 pub fn int8_gemm_amx_tiled(a_u8: &[u8], b_i8: &[i8], c: &mut [i32], m: usize, n: usize, k: usize) {
     // Length assertions (codex P1 from PR #185 — the function reads
     // `b_i8` via a 16-wide window per (kk, j_tile) iteration and a_u8
@@ -364,10 +363,15 @@ pub fn int8_gemm_amx_tiled(a_u8: &[u8], b_i8: &[i8], c: &mut [i32], m: usize, n:
     assert!(b_i8.len() >= k * n, "int8_gemm_amx_tiled: b_i8.len()={} < k*n={}", b_i8.len(), k * n);
     assert!(c.len() >= m * n, "int8_gemm_amx_tiled: c.len()={} < m*n={}", c.len(), m * n);
 
-    debug_assert!(crate::hpc::amx_matmul::amx_available());
-    debug_assert_eq!(m % 16, 0, "int8_gemm_amx_tiled: M must be multiple of 16");
-    debug_assert_eq!(n % 16, 0, "int8_gemm_amx_tiled: N must be multiple of 16");
-    debug_assert_eq!(k % 64, 0, "int8_gemm_amx_tiled: K must be multiple of 64");
+    // Real asserts, not `debug_assert!`: this is a safe `pub fn`, and the
+    // tile loops index whole 16×64 tiles, so a misaligned shape reads and
+    // writes past the slices in a release build (unsafe inventory,
+    // 2026-10-10). Shape first, so a misaligned call on a machine without
+    // AMX names the shape. `amx_available()` is a cached static.
+    assert_eq!(m % 16, 0, "int8_gemm_amx_tiled: M must be multiple of 16");
+    assert_eq!(n % 16, 0, "int8_gemm_amx_tiled: N must be multiple of 16");
+    assert_eq!(k % 64, 0, "int8_gemm_amx_tiled: K must be multiple of 64");
+    assert!(crate::hpc::amx_matmul::amx_available(), "int8_gemm_amx_tiled: AMX is not available on this CPU");
 
     // With `rayon`, fan the M/16 row-tiles across the pool — but only for LARGE
     // GEMMs. This AMX kernel is memory-bandwidth-bound, so on a few-core host the
@@ -836,5 +840,42 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A misaligned shape must panic in every profile and name the shape,
+    /// even on a CPU without AMX (shape is checked first). Until 2026-10-11
+    /// these were `debug_assert!`s and a release build indexed past the
+    /// slices; run `cargo test --release` to see the difference.
+    #[test]
+    #[should_panic(expected = "M must be multiple of 16")]
+    fn int8_gemm_amx_tiled_rejects_a_misaligned_m() {
+        let (m, n, k) = (17, 16, 64);
+        let a = vec![0u8; m * k];
+        let b = vec![0i8; k * n];
+        let mut c = vec![0i32; m * n];
+        int8_gemm_amx_tiled(&a, &b, &mut c, m, n, k);
+    }
+
+    /// On a CPU without AMX an aligned call must panic with the AMX message
+    /// instead of executing tile instructions.
+    #[test]
+    fn int8_gemm_amx_tiled_without_amx_panics_by_name() {
+        if crate::hpc::amx_matmul::amx_available() {
+            return;
+        }
+        let (m, n, k) = (16, 16, 64);
+        let a = vec![0u8; m * k];
+        let b = vec![0i8; k * n];
+        let mut c = vec![0i32; m * n];
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| int8_gemm_amx_tiled(&a, &b, &mut c, m, n, k)));
+        let msg = match r {
+            Ok(()) => String::new(),
+            Err(e) => e
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_default(),
+        };
+        assert!(msg.contains("AMX is not available"), "got: {msg:?}");
     }
 }
