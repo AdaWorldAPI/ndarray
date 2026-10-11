@@ -173,3 +173,47 @@ bug the flag did not name: the `vpmaddubsw` form saturated i16 at
 flag ("safe pub fn uses AVX2 with no cfg") is now covered: the AVX2 bodies are
 cfg-gated off the AVX-without-AVX2 arm, and a baseline (no `avx` cfg) build
 keeps `cpu_guard`'s AVX2 startup floor.
+
+## Addendum 2026-10-11 — confirmed OOB paths closed; `cpu_guard` loader lookups
+
+**Status of the four "Confirmed: out-of-bounds reachable from safe code" rows
+above — all four closed:**
+
+- `simd_avx2.rs` `dot_i8`: fixed in #349 (see the 2026-10-10 addendum).
+- `hpc/blocked_grid/iter.rs` `GridBlockMut::row_mut`: both checks are now
+  `assert!`. Test `row_mut_past_the_block_panics`.
+- `backend/kernels_avx512.rs` `sgemm_blocked` / `dgemm_blocked`: new
+  `assert_c_extent` (`ldc >= n`, `c.len() >= (m-1)*ldc + n`, overflow-checked)
+  before any store. Tests `assert_c_extent_accepts_the_exact_size_and_rejects_one_less`
+  and `sgemm_and_dgemm_blocked_reject_a_short_c` (runs on an AVX-512 host).
+- `hpc/int8_tile_gemm.rs` `int8_gemm_amx_tiled`: the 16/16/64 shape and
+  `amx_available()` are now `assert!`, shape first. Tests
+  `int8_gemm_amx_tiled_rejects_a_misaligned_m`,
+  `int8_gemm_amx_tiled_without_amx_panics_by_name`.
+
+All six tests pass under `cargo test` and `cargo test --release` on v4; each
+fix reverted one at a time turns its test red in `--release` (where the old
+`debug_assert!` vanished).
+
+**ISA-gating lead closed:** `simd_runtime/cpu_ops.rs` AMX rung now also
+requires `avx512f && avx512vnni`, the features of the kernels it installs.
+`simd_int_ops.rs:315/320` and AMX-BF16 remain open as listed above.
+
+**New FFI sites in `src/cpu_guard.rs` (sentinel-qa audited, 2026-10-11):**
+
+| block | verdict |
+|---|---|
+| ELF `main_image::visit` (`dl_iterate_phdr` callback; reads the 4-field `dl_phdr_info` prefix and `Elf64_Phdr`) | IRREDUCIBLE (FFI) — layout checked against glibc, bionic, FreeBSD headers |
+| ELF `main_image::contains` (`dl_iterate_phdr`) | IRREDUCIBLE (FFI) |
+| `main_program_headers` (`getauxval(AT_PHDR)` / FreeBSD `elf_aux_info`) | IRREDUCIBLE (FFI) |
+| macOS `main_image::contains` (`dladdr`, `_NSGetMachExecuteHeader`) | IRREDUCIBLE (FFI) |
+| Windows `main_image::contains` (`GetModuleHandleExW(FROM_ADDRESS)`, `GetModuleHandleW(NULL)`) | IRREDUCIBLE (FFI) |
+
+The first version matched "first object = main program" and `_dyld_get_image_header(0)`;
+sentinel-qa showed both can answer "executable" for a library (bionic lists the
+linker first; glibc `dlmopen` walks only the caller's namespace; dyld can put an
+inserted dylib at index 0). Measured: under the first-object rule a
+`dlmopen(LM_ID_NEWLM)` host is killed with 132; under `AT_PHDR` it survives
+(`scripts/cpu-guard-library-probe.sh`, CI job `cpu-guard-library`).
+No loader-lock deadlock: glibc `dl_iterate_phdr` takes `dl_load_write_lock`,
+not the `dl_load_lock` `dlopen` holds while running constructors (both recursive).
