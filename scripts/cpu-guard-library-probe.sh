@@ -22,6 +22,12 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 export CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0
 CFG="$ROOT/.cargo/config-v4.toml"
+# An explicit --target is load-bearing. Without it cargo applies the config's
+# target.cfg rustflags to HOST artifacts too, so build scripts are compiled for
+# v4 and SIGILL on a runner that lacks AVX-512 (matrixmultiply's and
+# num-traits' build scripts did exactly that in CI). With --target, only the
+# target artifacts get v4; build scripts are built for the machine running them.
+TRIPLE=x86_64-unknown-linux-gnu
 
 mkdir -p "$WORK/lib/src"
 cp "$ROOT/rust-toolchain.toml" "$WORK/lib/"
@@ -72,18 +78,18 @@ cc -O1 -o "$WORK/host" "$WORK/host.c" -ldl
 cc -O1 -o "$WORK/host_ns" "$WORK/host_ns.c" -ldl
 
 (cd "$WORK/lib" && CARGO_TARGET_DIR="$WORK/target" env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS \
-    cargo --config "$CFG" build --release --quiet)
+    cargo --config "$CFG" build --release --quiet --target "$TRIPLE")
 (cd "$ROOT" && CARGO_TARGET_DIR="$WORK/target-exe" env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS \
-    cargo --config "$CFG" build --release --quiet --example cpu_guard_probe)
+    cargo --config "$CFG" build --release --quiet --target "$TRIPLE" --example cpu_guard_probe)
 
 fail=0
 
 set +e
-lib_out=$("$QEMU" -cpu Haswell "$WORK/host" "$WORK/target/release/libcpu_guard_library_probe.so" 2>&1)
+lib_out=$("$QEMU" -cpu Haswell "$WORK/host" "$WORK/target/$TRIPLE/release/libcpu_guard_library_probe.so" 2>&1)
 lib_rc=$?
-ns_out=$("$QEMU" -cpu Haswell "$WORK/host_ns" "$WORK/target/release/libcpu_guard_library_probe.so" 2>&1)
+ns_out=$("$QEMU" -cpu Haswell "$WORK/host_ns" "$WORK/target/$TRIPLE/release/libcpu_guard_library_probe.so" 2>&1)
 ns_rc=$?
-exe_out=$("$QEMU" -cpu Haswell "$WORK/target-exe/release/examples/cpu_guard_probe" 2>&1)
+exe_out=$("$QEMU" -cpu Haswell "$WORK/target-exe/$TRIPLE/release/examples/cpu_guard_probe" 2>&1)
 exe_rc=$?
 set -e
 
