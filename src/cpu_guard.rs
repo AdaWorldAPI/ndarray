@@ -50,12 +50,17 @@
 //!   `qemu-x86_64 -cpu Haswell`, ended the host process with status 132.
 //!
 //!   Which of the two applies is decided by asking the loader whether the
-//!   guard's own code lies in the main executable's image (`dl_iterate_phdr`
-//!   on ELF, `dladdr` + `_dyld_get_image_header(0)` on macOS,
-//!   `GetModuleHandleExW` on Windows). Every way that lookup can fail falls
-//!   back to the behaviour that costs least: an unrecognised executable only
-//!   warns and then crashes with SIGILL as it would have without the guard;
-//!   on a platform with no lookup the guard keeps exiting.
+//!   guard's own code lies in the main executable's image: on ELF the object
+//!   whose program headers sit at `AT_PHDR` (`getauxval` / `elf_aux_info` +
+//!   `dl_iterate_phdr`), on macOS `dladdr` against
+//!   `_NSGetMachExecuteHeader()`, on Windows `GetModuleHandleExW` against
+//!   `GetModuleHandleW(NULL)`. Each lookup only answers "executable" when it
+//!   positively finds the guard there; every failure (no `AT_PHDR`, a
+//!   `dlmopen` namespace without the main program, an address no image
+//!   claims) answers "library", which only warns. The cost of that wrong
+//!   answer is the behaviour before the guard existed: a SIGILL later. On an
+//!   x86_64 platform with no lookup (for example the iOS simulator) the guard
+//!   keeps exiting.
 //! * On demand, through [`check_build_cpu`] (returns the mismatch) or
 //!   [`assert_build_cpu`] (panics with the same message), for targets without a
 //!   pre-`main` hook or for callers that want to report it themselves.
@@ -402,8 +407,13 @@ fn guard_is_in_main_executable() -> bool {
     main_image::contains(guard_before_main as extern "C" fn() as usize)
 }
 
-/// ELF: the first object `dl_iterate_phdr` reports is the main program
-/// (glibc, bionic and FreeBSD all document this order).
+/// ELF: the main program is the object whose program headers are at the
+/// address the kernel passed in the auxiliary vector (`AT_PHDR`). Matching
+/// that, rather than trusting "the first object reported", matters twice
+/// (sentinel-qa, 2026-10-11, from loader source): bionic's list starts with
+/// the linker itself, and glibc reports only the CALLER's namespace, so
+/// inside a `dlmopen(LM_ID_NEWLM)` namespace the first object is the library.
+/// There the main program is simply not found, which answers "library".
 #[cfg(all(
     not(miri),
     target_arch = "x86_64",
@@ -412,8 +422,9 @@ fn guard_is_in_main_executable() -> bool {
 mod main_image {
     use core::ffi::{c_char, c_int, c_void};
 
-    /// The leading fields of `struct dl_phdr_info`; the loader passes its
-    /// real size, and only these four are read.
+    /// The leading fields of `struct dl_phdr_info` (identical in glibc,
+    /// bionic and FreeBSD); the loader fills all four for every object and
+    /// passes the real, larger size. Only these are read.
     #[repr(C)]
     struct DlPhdrInfo {
         addr: usize,
@@ -435,6 +446,8 @@ mod main_image {
     }
 
     const PT_LOAD: u32 = 1;
+    /// `AT_PHDR`: 3 on Linux, Android and FreeBSD.
+    const AT_PHDR: c_int = 3;
 
     extern "C" {
         fn dl_iterate_phdr(
@@ -442,40 +455,88 @@ mod main_image {
         ) -> c_int;
     }
 
-    /// `data` is the `(address, found)` pair passed by [`contains`].
-    unsafe extern "C" fn first_object(info: *mut DlPhdrInfo, _size: usize, data: *mut c_void) -> c_int {
-        // SAFETY: `data` is the `&mut (usize, bool)` that `contains` passed to
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    fn main_program_headers() -> usize {
+        extern "C" {
+            fn getauxval(kind: core::ffi::c_ulong) -> core::ffi::c_ulong;
+        }
+        // SAFETY: `getauxval` only reads the auxiliary vector the kernel
+        // passed at exec time; it returns 0 for an absent entry.
+        unsafe { getauxval(AT_PHDR as core::ffi::c_ulong) as usize }
+    }
+
+    #[cfg(target_os = "freebsd")]
+    fn main_program_headers() -> usize {
+        extern "C" {
+            fn elf_aux_info(aux: c_int, buf: *mut c_void, buflen: c_int) -> c_int;
+        }
+        let mut phdr: usize = 0;
+        // SAFETY: `elf_aux_info` writes at most `buflen` bytes into `buf`,
+        // here a `usize` of exactly that size, and returns 0 on success.
+        let ok =
+            unsafe { elf_aux_info(AT_PHDR, (&mut phdr as *mut usize).cast(), core::mem::size_of::<usize>() as c_int) };
+        if ok == 0 {
+            phdr
+        } else {
+            0
+        }
+    }
+
+    /// The `(address, main program headers, found)` triple passed through
+    /// `dl_iterate_phdr`'s `data` argument.
+    struct Search {
+        addr: usize,
+        main_phdr: usize,
+        found: bool,
+    }
+
+    unsafe extern "C" fn visit(info: *mut DlPhdrInfo, _size: usize, data: *mut c_void) -> c_int {
+        // SAFETY: `data` is the `&mut Search` that `contains` passed to
         // `dl_iterate_phdr`, which hands it back unchanged on this thread for
-        // the duration of the call; `info` is non-null and valid for the
-        // callback, and `phdr` points at `phnum` program headers (ELF gABI).
+        // the duration of the call; `info` is valid for the callback, its
+        // four-field prefix is always populated, and `phdr` points at
+        // `phnum` program headers of `e_phentsize == 56` bytes (ELF gABI).
         unsafe {
-            let (addr, found) = &mut *(data as *mut (usize, bool));
+            let search = &mut *(data as *mut Search);
             let info = &*info;
+            if info.phdr as usize != search.main_phdr {
+                return 0; // not the main program: keep walking
+            }
             for i in 0..usize::from(info.phnum) {
                 let ph = &*info.phdr.add(i);
                 if ph.p_type == PT_LOAD {
                     let start = info.addr.wrapping_add(ph.p_vaddr as usize);
-                    if *addr >= start && *addr - start < ph.p_memsz as usize {
-                        *found = true;
+                    if search.addr >= start && search.addr - start < ph.p_memsz as usize {
+                        search.found = true;
                     }
                 }
             }
         }
-        1 // stop after the first object: the main program
+        1 // the main program was visited: stop
     }
 
     pub(super) fn contains(addr: usize) -> bool {
-        let mut state = (addr, false);
-        // SAFETY: `first_object` matches the callback ABI `dl_iterate_phdr`
-        // expects and reads `data` only as the `(usize, bool)` passed here,
-        // which outlives the call.
-        unsafe { dl_iterate_phdr(first_object, (&mut state as *mut (usize, bool)).cast()) };
-        state.1
+        let main_phdr = main_program_headers();
+        if main_phdr == 0 {
+            return false; // no AT_PHDR: answer "library", the cheap side
+        }
+        let mut search = Search {
+            addr,
+            main_phdr,
+            found: false,
+        };
+        // SAFETY: `visit` matches the callback ABI `dl_iterate_phdr` expects
+        // and reads `data` only as the `Search` passed here, which outlives
+        // the call.
+        unsafe { dl_iterate_phdr(visit, (&mut search as *mut Search).cast()) };
+        search.found
     }
 }
 
-/// macOS: image 0 is the main executable; `dladdr` names the image that
-/// contains an address.
+/// macOS: `_NSGetMachExecuteHeader()` is the main executable's Mach-O
+/// header; `dladdr` names the image that contains an address. Image index 0
+/// is NOT used: dyld can report an inserted library there (sentinel-qa,
+/// 2026-10-11, dyld `normalizeImageIndex`).
 #[cfg(all(not(miri), target_arch = "x86_64", target_os = "macos"))]
 mod main_image {
     use core::ffi::{c_char, c_int, c_void};
@@ -490,7 +551,7 @@ mod main_image {
 
     extern "C" {
         fn dladdr(addr: *const c_void, info: *mut DlInfo) -> c_int;
-        fn _dyld_get_image_header(index: u32) -> *const c_void;
+        fn _NSGetMachExecuteHeader() -> *const c_void;
     }
 
     pub(super) fn contains(addr: usize) -> bool {
@@ -500,12 +561,13 @@ mod main_image {
             sname: core::ptr::null(),
             saddr: core::ptr::null_mut(),
         };
-        // SAFETY: both are libSystem functions; `dladdr` writes only into the
-        // `DlInfo` it is given and returns 0 when the address is in no image;
-        // `_dyld_get_image_header(0)` returns the main executable's header.
+        // SAFETY: both are libSystem functions. `dladdr` writes only into the
+        // `DlInfo` it is given and returns 0 when no image contains the
+        // address; `_NSGetMachExecuteHeader` returns the main executable's
+        // header and takes no arguments.
         unsafe {
             dladdr(addr as *const c_void, &mut info) != 0
-                && core::ptr::eq(info.fbase as *const c_void, _dyld_get_image_header(0))
+                && core::ptr::eq(info.fbase as *const c_void, _NSGetMachExecuteHeader())
         }
     }
 }
@@ -589,7 +651,15 @@ mod tests {
     /// Can-stay-silent half: an address in a loaded system library (libc's
     /// `malloc`) is not in the main executable. Without this the lookup
     /// could be `true` everywhere and the library case would never happen.
-    #[cfg(all(not(miri), target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+    /// Assumes libc is a shared object (the default dynamic linux-gnu
+    /// build): with `+crt-static`, `malloc` is inside the executable.
+    #[cfg(all(
+        not(miri),
+        target_arch = "x86_64",
+        target_os = "linux",
+        target_env = "gnu",
+        not(target_feature = "crt-static")
+    ))]
     #[test]
     fn an_address_in_libc_is_not_in_the_main_executable() {
         extern "C" {
