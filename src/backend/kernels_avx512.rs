@@ -657,6 +657,21 @@ unsafe fn sgemm_ukernel_6x16(
     }
 }
 
+/// Panics unless a row-major `m × n` output with leading dimension `ldc` fits
+/// in `c_len` elements. Shared by [`sgemm_blocked`] and [`dgemm_blocked`].
+#[cfg(target_arch = "x86_64")]
+fn assert_c_extent(m: usize, n: usize, c_len: usize, ldc: usize) {
+    if m == 0 || n == 0 {
+        return;
+    }
+    assert!(ldc >= n, "blocked gemm: ldc={ldc} < n={n}");
+    let needed = (m - 1).checked_mul(ldc).and_then(|x| x.checked_add(n));
+    assert!(
+        needed.is_some_and(|need| c_len >= need),
+        "blocked gemm: c.len()={c_len} < (m-1)*ldc+n for m={m} n={n} ldc={ldc}"
+    );
+}
+
 /// Goto BLAS style blocked SGEMM with packing and AVX-512 microkernel.
 /// # Safety
 /// Caller must ensure AVX-512F is available (`simd_caps().avx512f`).
@@ -665,6 +680,10 @@ unsafe fn sgemm_ukernel_6x16(
 pub fn sgemm_blocked(
     m: usize, n: usize, k: usize, alpha: f32, a: &[f32], lda: usize, b: &[f32], ldb: usize, c: &mut [f32], ldc: usize,
 ) {
+    // The microkernel stores whole rows of C through raw pointers from
+    // `&mut c[row * ldc + col..]`, which checks only the START of each row.
+    // These are the bounds that make every row it writes lie inside `c`.
+    assert_c_extent(m, n, c.len(), ldc);
     let mut a_packed = vec![0.0f32; SGEMM_MC * SGEMM_KC];
     let mut b_packed = vec![0.0f32; SGEMM_KC * SGEMM_NC];
 
@@ -833,6 +852,10 @@ unsafe fn dgemm_ukernel_6x8(
 pub fn dgemm_blocked(
     m: usize, n: usize, k: usize, alpha: f64, a: &[f64], lda: usize, b: &[f64], ldb: usize, c: &mut [f64], ldc: usize,
 ) {
+    // The microkernel stores whole rows of C through raw pointers from
+    // `&mut c[row * ldc + col..]`, which checks only the START of each row.
+    // These are the bounds that make every row it writes lie inside `c`.
+    assert_c_extent(m, n, c.len(), ldc);
     let mut a_packed = vec![0.0f64; DGEMM_MC * DGEMM_KC];
     let mut b_packed = vec![0.0f64; DGEMM_KC * DGEMM_NC];
 
@@ -1171,5 +1194,67 @@ mod block_stop_probe {
             };
             eprintln!("{m:>5} {n:>5} {k:>5} {tail:>4} | {t1:>10.3} {t2:>10.3} | {:>6.3}x {waste:>7.1}%", t1 / t2);
         }
+    }
+}
+
+/// The blocked GEMMs are safe `pub fn`s that store whole rows of C through
+/// raw pointers; these pin the extent check in every profile.
+#[cfg(all(test, target_arch = "x86_64"))]
+mod blocked_extent_tests {
+    use super::*;
+
+    fn panic_message(r: std::thread::Result<()>) -> String {
+        match r {
+            Ok(()) => String::from("<no panic>"),
+            Err(e) => e
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_default(),
+        }
+    }
+
+    #[test]
+    fn assert_c_extent_accepts_the_exact_size_and_rejects_one_less() {
+        assert_c_extent(3, 16, 2 * 20 + 16, 20);
+        let r = std::panic::catch_unwind(|| assert_c_extent(3, 16, 2 * 20 + 15, 20));
+        assert!(panic_message(r).contains("c.len()=55"));
+        let r = std::panic::catch_unwind(|| assert_c_extent(3, 16, 1000, 15));
+        assert!(panic_message(r).contains("ldc=15 < n=16"));
+        assert_c_extent(0, 16, 0, 0);
+        assert_c_extent(16, 0, 0, 0);
+    }
+
+    /// End to end on an AVX-512 host: one element short of the last row must
+    /// panic, never store past the slice. The exact size must still compute
+    /// the right product.
+    #[test]
+    fn sgemm_and_dgemm_blocked_reject_a_short_c() {
+        if !std::is_x86_feature_detected!("avx512f") {
+            return;
+        }
+        let (m, n, k, ldc) = (7, 16, 3, 16);
+        let a = vec![1.0f32; m * k];
+        let b = vec![2.0f32; k * n];
+        let mut short = vec![0.0f32; (m - 1) * ldc + n - 1];
+        // SAFETY: avx512f detected above.
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+            sgemm_blocked(m, n, k, 1.0, &a, k, &b, n, &mut short, ldc)
+        }));
+        assert!(panic_message(r).contains("blocked gemm: c.len()"));
+
+        let mut exact = vec![0.0f32; (m - 1) * ldc + n];
+        // SAFETY: avx512f detected above.
+        unsafe { sgemm_blocked(m, n, k, 1.0, &a, k, &b, n, &mut exact, ldc) };
+        assert!(exact.iter().all(|&x| x == 6.0));
+
+        let ad = vec![1.0f64; m * k];
+        let bd = vec![2.0f64; k * n];
+        let mut shortd = vec![0.0f64; (m - 1) * ldc + n - 1];
+        // SAFETY: avx512f detected above.
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+            dgemm_blocked(m, n, k, 1.0, &ad, k, &bd, n, &mut shortd, ldc)
+        }));
+        assert!(panic_message(r).contains("blocked gemm: c.len()"));
     }
 }

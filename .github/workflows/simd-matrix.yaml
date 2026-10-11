@@ -218,6 +218,28 @@ jobs:
           echo "::warning::runner lacks avx512f — v4 parity run and probe self-check SKIPPED; asserting the emitted assembly only"
           env -u RUSTFLAGS WITNESS_NO_RUN=1 CARGO_ARGS='--config .cargo/config-v4.toml' bash scripts/codegen-witness.sh avx512
 
+  cpu-guard-library:
+    # `cpu_guard` must never end a process it does not own. A v4 cdylib that
+    # links ndarray, dlopen'ed by a C host under `qemu -cpu Haswell`, must
+    # warn and return; a v4 executable on the same emulated CPU must still
+    # exit 132. Before the library rule (2026-10-11) the cdylib ended its
+    # host with 132, which is what a JVM or Python process loading an
+    # ndarray-linked library would have suffered.
+    runs-on: ubuntu-latest
+    name: cpu_guard × library host
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cpu-guard-library
+      - name: install qemu-user
+        run: sudo apt-get update && sudo apt-get install -y qemu-user-static
+      - name: library warns, executable exits 132 (qemu -cpu Haswell)
+        run: bash scripts/cpu-guard-library-probe.sh
+
   avx:
     # AVX-without-AVX2 realization (`src/simd_avx.rs`, Sandy Bridge class).
     # Built for `sandybridge` (`.cargo/config-avx.toml`) and RUN under
