@@ -33,6 +33,51 @@
 //! env -u RUSTFLAGS cargo --config .cargo/config-v4.toml run --release --example key16_match_probe
 //! ```
 //!
+//! ## Timing method
+//!
+//! Each alternative arm is timed INTERLEAVED with arm A: every round runs both
+//! once in each order (A-then-B, then B-then-A), and `A/B` / `A/C` is the
+//! median over observations of the geometric mean of the two per-round
+//! ratios (`paired_ns`). Drift on a shared machine then
+//! lands on both arms of a round instead of on one arm's whole block of runs.
+//! The PROVISIONAL tables below predate this (each arm was timed in its own
+//! block of 101 runs, and the ratio was a ratio of medians); they are kept as
+//! measured and are not comparable row for row with a re-run.
+//!
+//! ## Interleaved pass (PROVISIONAL)
+//!
+//! Measured 2026-10-11 with `paired_ns` (both execution orders per
+//! observation), same 4-core VM, rustc 1.99.0, NO other build running (load
+//! average 0.3 to 0.5). Still a shared virtual machine, so still PROVISIONAL,
+//! not the quiet-host run the W3 / W4 decision waits for. Median ratios
+//! (A ns / arm ns), one pass per tier:
+//!
+//! | N | stride | sel | v3 A/B | v4 A/B | v4 A/C |
+//! |---|---|---|---|---|---|
+//! | 65 536 | 16 | 1 % | 2.45 | 3.12 | - |
+//! | 65 536 | 16 | 50 % | 2.44 | 3.09 | - |
+//! | 65 536 | 32 | 1 % | - | - | 2.58 |
+//! | 65 536 | 32 | 50 % | - | - | 2.62 |
+//! | 65 536 | 512 | 1 % | - | - | 1.07 |
+//! | 65 536 | 512 | 50 % | - | - | 1.04 |
+//! | 1 048 576 | 16 | 1 % | 1.74 | 1.92 | - |
+//! | 1 048 576 | 16 | 50 % | 1.72 | 1.97 | - |
+//! | 1 048 576 | 32 | 1 % | - | - | 1.64 |
+//! | 1 048 576 | 32 | 50 % | - | - | 1.63 |
+//! | 1 048 576 | 512 | 1 % | - | - | 1.27 |
+//! | 1 048 576 | 512 | 50 % | - | - | 1.22 |
+//!
+//! Against the earlier passes: the v4 arm B ratios at 65 536 rows are HIGHER
+//! (3.12 / 3.09 against 2.13 to 2.91), the v4 arm B 1 048 576-row 50 % ratio is
+//! lower (1.97 against 2.19 / 2.21), and the v3 ratios sit near the top of the
+//! earlier range. Arm B wins at stride 16 on both tiers and arm C wins at
+//! stride 32, as before. One earlier pattern did NOT survive: at stride 512
+//! with 65 536 rows arm C is now slightly ABOVE 1 (1.07 / 1.04), where both
+//! earlier passes had it at or below 1 (0.92 to 1.00). A pass measured just
+//! before this one, which ran A first in 51 of 101 rounds, again gave 0.94 /
+//! 0.95. So whether the gather path pays at that size is not settled; it sits
+//! within the spread between passes.
+//!
 //! ## PROVISIONAL results
 //!
 //! **PROVISIONAL.** Measured 2026-10-11 on a 4-core Intel Xeon @ 2.10 GHz
@@ -233,19 +278,44 @@ fn build(n: usize, stride: usize, p: f64, pattern: &[u8; 16], care: &[u8; 16], s
     bytes
 }
 
-fn median_ns(mut f: impl FnMut()) -> f64 {
+/// Time `a` and `b` INTERLEAVED: each observation is one A-then-B round and
+/// one B-then-A round, back to back, so slow drift on a shared machine (another
+/// build starting, a CPU frequency step) lands on both arms of the same
+/// observation instead of on whichever arm happened to be timed during it, and
+/// both execution orders weigh exactly equally in every observation (with an
+/// odd number of single rounds, one order would hold the median). An
+/// observation's arm time is the mean of its two runs and its ratio is the
+/// geometric mean of the two per-round ratios. Returns the median of each arm
+/// and the median ratio `a / b`; the ratio is the decision statistic, the two
+/// medians are context.
+fn paired_ns(mut a: impl FnMut(), mut b: impl FnMut()) -> (f64, f64, f64) {
     for _ in 0..WARMUP {
-        f();
+        a();
+        b();
     }
-    let mut ts: Vec<f64> = (0..REPS)
-        .map(|_| {
-            let t = Instant::now();
-            f();
-            t.elapsed().as_nanos() as f64
-        })
-        .collect();
-    ts.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    ts[REPS / 2]
+    let time = |f: &mut dyn FnMut()| {
+        let t = Instant::now();
+        f();
+        t.elapsed().as_nanos() as f64
+    };
+    let mut ta = Vec::with_capacity(REPS);
+    let mut tb = Vec::with_capacity(REPS);
+    let mut ratios = Vec::with_capacity(REPS);
+    for _ in 0..REPS {
+        let a1 = time(&mut a);
+        let b1 = time(&mut b);
+        let b2 = time(&mut b);
+        let a2 = time(&mut a);
+        ta.push((a1 + a2) / 2.0);
+        tb.push((b1 + b2) / 2.0);
+        ratios.push(((a1 / b1) * (a2 / b2)).sqrt());
+    }
+    (median(&mut ta), median(&mut tb), median(&mut ratios))
+}
+
+fn median(v: &mut [f64]) -> f64 {
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    v[v.len() / 2]
 }
 
 fn main() {
@@ -303,25 +373,38 @@ fn main() {
 
                 drop(shifted);
 
-                let mut out = vec![0u64; wlen];
-                let a_ns = median_ns(|| {
-                    ternary_match_strided16_to_mask(black_box(&bytes), 0, stride, n, &pattern, &care, &mut out);
-                    black_box(&out);
-                });
-                let b_ns = (stride == 16).then(|| {
-                    median_ns(|| {
-                        arm_b(black_box(&bytes), 0, n, &pattern, &care, &mut out);
-                        black_box(&out);
-                    })
-                });
-                let c_ns = (stride > 16 && C_AVAILABLE).then(|| {
-                    median_ns(|| {
-                        arm_c(black_box(&bytes), 0, stride, n, &pattern, &care, &mut out);
-                        black_box(&out);
-                    })
-                });
+                let mut out_a = vec![0u64; wlen];
+                let mut out_x = vec![0u64; wlen];
+                let run_a = |out: &mut [u64]| {
+                    ternary_match_strided16_to_mask(black_box(&bytes), 0, stride, n, &pattern, &care, out);
+                    black_box(&*out);
+                };
+                // Each alternative is timed interleaved with its own run of arm
+                // A; arm A alone is timed only where no alternative applies.
+                let (a_ns, b_ns, c_ns, b_ratio, c_ratio) = if stride == 16 {
+                    let (a, b, r) = paired_ns(
+                        || run_a(&mut out_a),
+                        || {
+                            arm_b(black_box(&bytes), 0, n, &pattern, &care, &mut out_x);
+                            black_box(&out_x);
+                        },
+                    );
+                    (a, Some(b), None, Some(r), None)
+                } else if C_AVAILABLE {
+                    let (a, c, r) = paired_ns(
+                        || run_a(&mut out_a),
+                        || {
+                            arm_c(black_box(&bytes), 0, stride, n, &pattern, &care, &mut out_x);
+                            black_box(&out_x);
+                        },
+                    );
+                    (a, None, Some(c), None, Some(r))
+                } else {
+                    let (a, _, _) = paired_ns(|| run_a(&mut out_a), || run_a(&mut out_x));
+                    (a, None, None, None, None)
+                };
                 let fmt = |v: Option<f64>| v.map_or("-".to_string(), |x| format!("{x:.0}"));
-                let ratio = |v: Option<f64>| v.map_or("-".to_string(), |x| format!("{:.2}", a_ns / x));
+                let ratio = |v: Option<f64>| v.map_or("-".to_string(), |x| format!("{x:.2}"));
                 println!(
                     "{:>9} {:>6} {:>4.0}% | {:>10.0} {:>10} {:>10} | {:>7} {:>7}",
                     n,
@@ -330,8 +413,8 @@ fn main() {
                     a_ns,
                     fmt(b_ns),
                     fmt(c_ns),
-                    ratio(b_ns),
-                    ratio(c_ns)
+                    ratio(b_ratio),
+                    ratio(c_ratio)
                 );
             }
         }
