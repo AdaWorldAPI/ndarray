@@ -209,7 +209,12 @@ fn select_cpu_ops(_caps: crate::hpc::simd_caps::SimdCaps, amx_os_ok: bool) -> &'
             // being set. `simd_amx::amx_available()` runs the full
             // four-step gate (CPUID + OSXSAVE + XCR0 + arch_prctl);
             // demote to the AVX-512 path when the OS-check fails.
-            if _caps.amx_int8 && amx_os_ok {
+            //
+            // The AMX table's slice kernels are AVX-512 VNNI and AVX-512F
+            // (see `CPU_OPS_AMX_INT8`), so the rung also requires those: a
+            // hypervisor can expose the AMX bits while masking AVX-512, and
+            // the rung would then install kernels the CPU cannot run.
+            if _caps.amx_int8 && amx_os_ok && _caps.avx512f && _caps.avx512vnni {
                 return &CPU_OPS_AMX_INT8;
             }
             if _caps.avx512f && _caps.avx512vnni {
@@ -505,5 +510,18 @@ mod tests {
         };
         assert_eq!(select_cpu_ops(spr, true).tier, "amx_int8");
         assert_eq!(select_cpu_ops(spr, false).tier, "avx512vnni");
+        // AMX bits exposed but AVX-512 masked (a hypervisor can do this):
+        // the AMX table's kernels are AVX-512, so the rung must not fire.
+        let amx_without_avx512 = SimdCaps {
+            avx512f: false,
+            avx512vnni: false,
+            ..spr
+        };
+        assert_ne!(select_cpu_ops(amx_without_avx512, true).tier, "amx_int8");
+        let amx_without_vnni = SimdCaps {
+            avx512vnni: false,
+            ..spr
+        };
+        assert_eq!(select_cpu_ops(amx_without_vnni, true).tier, "avx512f");
     }
 }
