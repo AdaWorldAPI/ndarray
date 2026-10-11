@@ -28,7 +28,9 @@
 //! index-addressed `masked_group_sum_i32_via` (two-hop zero-fallback); `0xD4x`
 //! `eq_u32_via_to_mask` (the same index lane, packed as a predicate rather than
 //! folded into a sum); `0xExx` the `F64x8` lane compares (all six relations
-//! over every pair of 16 IEEE edge values: NaN, ±0, ±inf, subnormal); `0xFxx` the 16-lane byte vectors `I8x16` / `U8x16` (wrapping
+//! over every pair of 16 IEEE edge values: NaN, ±0, ±inf, subnormal); `0x73x` / `0x74x` / `0x750` the strided 16-byte register match (all sixteen
+//! bytes; strides 16 / 20 / 32 / 512 from first offsets 0..15, care bits in
+//! bytes 12..16); `0xFxx` the 16-lane byte vectors `I8x16` / `U8x16` (wrapping
 //! `add`/`sub`, signed/unsigned `min`/`max`, the load/store round trips). `main.rs` (native / qemu) and
 //! `selfcheck()` (the wasm cdylib export, driven by `run.mjs`) both call
 //! [`run`].
@@ -44,13 +46,13 @@ use ndarray::simd::{
     mask_xor_assign, masked_group_sum_i32, masked_group_sum_i32_via, masked_key_run_count_u32, masked_max_i32,
     masked_min_i32, masked_strided_group_sum, masked_sum_i32, masked_sum_wrapping_add_i32, ne_i32_to_mask,
     ne_i32_to_mask_under, ne_u32_to_mask, ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask,
-    ternary_match_strided_to_mask, ternary_match_u32_to_mask, ternary_match_u32_to_mask_under,
-    ternary_match_u64_to_mask, ternary_match_u64_to_mask_under, ternlog, F64x8, I32x16, I8x16, KeyRunCarry, MortonDir,
-    U32x16, U64x8, U8x16,
+    ternary_match_strided16_to_mask, ternary_match_strided_to_mask, ternary_match_u32_to_mask,
+    ternary_match_u32_to_mask_under, ternary_match_u64_to_mask, ternary_match_u64_to_mask_under, ternlog, F64x8,
+    I32x16, I8x16, KeyRunCarry, MortonDir, U32x16, U64x8, U8x16,
 };
 
 /// Number of check groups [`run`] executes (for the log line only).
-pub const CHECKS: usize = 15;
+pub const CHECKS: usize = 16;
 
 /// The wasm export: identical to [`run`], `extern "C"` so `run.mjs` can call it.
 #[no_mangle]
@@ -64,7 +66,7 @@ pub fn run() -> u32 {
         check_ternlog_all_tables, check_u64x8_algebra, check_i32x16_compare, check_predicates_to_mask,
         check_mask_algebra, check_care_match, check_masked_reductions, check_blend, check_morton_shift,
         check_predicates_under, check_set_range, check_unsigned_compare_to_mask, check_gather_scatter_group,
-        check_f64x8_compare, check_i8x16_u8x16_lanes,
+        check_f64x8_compare, check_i8x16_u8x16_lanes, check_care_match16,
     ];
     for g in groups {
         if let Err(code) = g() {
@@ -1014,6 +1016,142 @@ fn check_care_match() -> Result<(), u32> {
         // one unforced record must not (for n >= 2), or the check proved nothing.
         if n >= 2 && (want[0] & 1 == 0 || want.iter().map(|w| w.count_ones()).sum::<u32>() as usize == n) {
             return Err(0x721);
+        }
+    }
+    Ok(())
+}
+
+// ── 0x73x / 0x74x / 0x750: the strided 16-byte register match ───────────────
+//
+// `ternary_match_strided16_to_mask` reads ALL sixteen bytes of each record in
+// place. The 12-byte check above cannot see bytes 12..16, so this group pins
+// them: strides 16 / 20 / 32 / 512, every first offset 0..15 (so every
+// alignment of the record start), the tail lengths 0 / 1 / 3 / 4 / 5 / 15 /
+// 16 / 17 / 63 / 64 / 65 / 130, and care masks that put their bits in bytes
+// 12..16 alone and in the middle of the register. The buffer is sized to the
+// last record's last byte and not one byte more, so any read past the final
+// record faults instead of passing on slack. The reference is bytewise.
+
+/// Strides under test: the packed Dn128 lane, an odd non-multiple of 8, a
+/// power of two above 16, and the wide row.
+const STRIDES16: [usize; 4] = [16, 20, 32, 512];
+
+/// Row counts under test: the empty lane, every sub-group tail, a whole group,
+/// and the 64-row word boundary either side.
+const TAILS16: [usize; 12] = [0, 1, 3, 4, 5, 15, 16, 17, 63, 64, 65, 130];
+
+/// Bytewise definition of the match: record at byte `o` hits iff every byte
+/// `k < 16` satisfies `(reg[k] ^ pattern[k]) & care[k] == 0`.
+fn strided16_hit(bytes: &[u8], o: usize, pattern: &[u8; 16], care: &[u8; 16]) -> bool {
+    (0..16).all(|k| (bytes[o + k] ^ pattern[k]) & care[k] == 0)
+}
+
+fn check_care_match16() -> Result<(), u32> {
+    let mut rng = SplitMix64(0x7000_0000_0016);
+    let mut pattern = [0u8; 16];
+    for b in pattern.iter_mut() {
+        *b = rng.next() as u8;
+    }
+    let single = |k: usize| {
+        let mut c = [0u8; 16];
+        c[k] = 0xFF;
+        c
+    };
+    let mut tail4 = [0u8; 16];
+    tail4[12..16].fill(0xFF);
+    let mut boundary = [0u8; 16];
+    boundary[7] = 0x80; // bit 63
+    boundary[8] = 0x01; // bit 64
+    let mut cares: Vec<[u8; 16]> =
+        vec![[0u8; 16], [0xFFu8; 16], single(12), single(13), single(14), single(15), tail4, single(0), boundary];
+    for _ in 0..3 {
+        let mut c = [0u8; 16];
+        for b in c.iter_mut() {
+            *b = rng.next() as u8;
+        }
+        cares.push(c);
+    }
+
+    let (mut hits, mut misses) = (0usize, 0usize);
+    for &stride in &STRIDES16 {
+        for off in 0..16usize {
+            for &n in &TAILS16 {
+                let len = if n == 0 { off } else { off + (n - 1) * stride + 16 };
+                let out_len = words_for(n) + 1;
+                for (ci, care) in cares.iter().enumerate() {
+                    // Filler everywhere (record gaps included), then the records.
+                    let mut bytes = vec![0u8; len];
+                    for b in bytes.iter_mut() {
+                        *b = rng.next() as u8;
+                    }
+                    for i in 0..n {
+                        let o = off + i * stride;
+                        for k in 0..16 {
+                            let noise = !care[k] & (rng.next() as u8);
+                            bytes[o + k] = match i % 4 {
+                                // hit: equal on every cared bit, noise elsewhere
+                                0 | 3 => pattern[k] ^ noise,
+                                // near-miss: a hit with ONE cared bit flipped,
+                                // in a byte that walks 12, 13, 14, 15
+                                1 => {
+                                    let hit = pattern[k] ^ noise;
+                                    if k == 12 + (i / 4) % 4 && care[k] != 0 {
+                                        hit ^ (care[k] & care[k].wrapping_neg())
+                                    } else {
+                                        hit
+                                    }
+                                }
+                                _ => rng.next() as u8,
+                            };
+                        }
+                    }
+                    let mut out = vec![u64::MAX; out_len];
+                    ternary_match_strided16_to_mask(&bytes, off, stride, n, &pattern, care, &mut out);
+                    let want = reference_mask(n, out_len, |i| strided16_hit(&bytes, off + i * stride, &pattern, care));
+                    if out != want {
+                        return Err(0x730 | ci as u32);
+                    }
+                    let h = want.iter().map(|w| w.count_ones() as usize).sum::<usize>();
+                    hits += h;
+                    misses += n - h;
+                }
+            }
+        }
+    }
+    // Anti-vacuity: the sweep must have produced both hits and misses.
+    if hits == 0 || misses == 0 {
+        return Err(0x750);
+    }
+
+    // Each of bytes 12..16 alone decides the answer: every record equals the
+    // pattern except that the chosen rows differ in byte `k` only, and the
+    // expected mask is written out here, not derived from the matcher.
+    for k in 12..16usize {
+        let care = single(k);
+        for &stride in &STRIDES16 {
+            for off in 0..16usize {
+                for &n in TAILS16.iter().filter(|&&n| n > 0) {
+                    let mut bytes = vec![0u8; off + (n - 1) * stride + 16];
+                    for b in bytes.iter_mut() {
+                        *b = rng.next() as u8;
+                    }
+                    let flipped = [n - 1, n / 2];
+                    for i in 0..n {
+                        let o = off + i * stride;
+                        bytes[o..o + 16].copy_from_slice(&pattern);
+                        if flipped.contains(&i) {
+                            bytes[o + k] ^= 0x40;
+                        }
+                    }
+                    let out_len = words_for(n) + 1;
+                    let mut out = vec![u64::MAX; out_len];
+                    ternary_match_strided16_to_mask(&bytes, off, stride, n, &pattern, &care, &mut out);
+                    let want = reference_mask(n, out_len, |i| !flipped.contains(&i));
+                    if out != want {
+                        return Err(0x740 | (k - 12) as u32);
+                    }
+                }
+            }
         }
     }
     Ok(())
