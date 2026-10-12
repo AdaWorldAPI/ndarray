@@ -40,15 +40,16 @@ use ndarray::simd::{
     eq_u32_via_to_mask, eq_u64_to_mask, eq_u8_to_mask, ge_i32_to_mask, ge_i32_to_mask_under, ge_u64_to_mask,
     ge_u8_to_mask, gt_i32_to_mask, gt_i32_to_mask_under, gt_u64_to_mask, gt_u8_to_mask, le_i32_to_mask,
     le_i32_to_mask_under, le_u64_to_mask, le_u8_to_mask, lt_i32_to_mask, lt_i32_to_mask_under, lt_u64_to_mask,
-    lt_u8_to_mask, mask_all, mask_and, mask_and_assign, mask_andnot, mask_andnot_assign, mask_any, mask_gather_u32,
-    mask_gather_u32_under, mask_not, mask_not_assign, mask_or, mask_or_assign, mask_scatter_or_u32, mask_set_range,
-    mask_shift_morton, mask_ternlog, mask_ternlog_any, mask_ternlog_assign, mask_ternlog_popcount, mask_xor,
-    mask_xor_assign, masked_group_sum_i32, masked_group_sum_i32_via, masked_key_run_count_u32, masked_max_i32,
-    masked_min_i32, masked_strided_group_sum, masked_sum_i32, masked_sum_wrapping_add_i32, ne_i32_to_mask,
-    ne_i32_to_mask_under, ne_u32_to_mask, ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask,
-    ternary_match_strided16_to_mask, ternary_match_strided_to_mask, ternary_match_u32_to_mask,
-    ternary_match_u32_to_mask_under, ternary_match_u64_to_mask, ternary_match_u64_to_mask_under, ternlog, F64x8,
-    I32x16, I8x16, KeyRunCarry, MortonDir, U32x16, U64x8, U8x16,
+    lt_u8_to_mask, mask_all, mask_and, mask_and_assign, mask_andnot, mask_andnot_assign, mask_any,
+    mask_gather_chain_u32, mask_gather_chain_u32_under, mask_gather_u32, mask_gather_u32_under, mask_not,
+    mask_not_assign, mask_or, mask_or_assign, mask_scatter_or_u32, mask_set_range, mask_shift_morton, mask_ternlog,
+    mask_ternlog_any, mask_ternlog_assign, mask_ternlog_popcount, mask_xor, mask_xor_assign, masked_group_sum_i32,
+    masked_group_sum_i32_via, masked_key_run_count_u32, masked_max_i32, masked_min_i32, masked_strided_group_sum,
+    masked_sum_i32, masked_sum_wrapping_add_i32, ne_i32_to_mask, ne_i32_to_mask_under, ne_u32_to_mask,
+    ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask, ternary_match_strided16_to_mask,
+    ternary_match_strided_to_mask, ternary_match_u32_to_mask, ternary_match_u32_to_mask_under,
+    ternary_match_u64_to_mask, ternary_match_u64_to_mask_under, ternlog, ChainHop, ChainTest, F64x8, I32x16, I8x16,
+    KeyRunCarry, MortonDir, U32x16, U64x8, U8x16,
 };
 
 /// Number of check groups [`run`] executes (for the log line only).
@@ -1588,6 +1589,79 @@ fn check_gather_scatter_group() -> Result<(), u32> {
         });
         if out != want {
             return Err(0xD01);
+        }
+
+        // ── mask_gather_chain_u32[_under] ────────────────────────────────
+        // Two hops: index -> mid (live + one test, keyed onward through
+        // `mid_next`) -> far (live + one negated test). The reference walks
+        // the chain row by row from the same lanes; out-of-range keys at
+        // both depths exercise the "false by contract" arm.
+        let mid_rows = 30usize;
+        let far_rows = 20usize;
+        let mid_live: Vec<u64> = (0..words_for(mid_rows)).map(|_| rng.next()).collect();
+        let far_live: Vec<u64> = (0..words_for(far_rows)).map(|_| rng.next()).collect();
+        let mid_lane: Vec<u32> = (0..mid_rows).map(|_| (rng.next() % 3) as u32).collect();
+        let far_lane: Vec<u32> = (0..far_rows).map(|_| (rng.next() % 3) as u32).collect();
+        let mid_next: Vec<u32> = (0..mid_rows)
+            .map(|j| {
+                if j % 7 == 0 {
+                    (far_rows + 2) as u32
+                } else {
+                    (rng.next() % far_rows as u64) as u32
+                }
+            })
+            .collect();
+        let cindex: Vec<u32> = (0..n)
+            .map(|i| {
+                if i % 5 == 0 {
+                    (mid_rows + 1 + i) as u32
+                } else {
+                    (rng.next() % mid_rows as u64) as u32
+                }
+            })
+            .collect();
+        let mid_tests = [ChainTest {
+            lane: &mid_lane,
+            value: 1,
+            negate: false,
+        }];
+        let far_tests = [ChainTest {
+            lane: &far_lane,
+            value: 2,
+            negate: true,
+        }];
+        let hops = [
+            ChainHop {
+                live: &mid_live,
+                rows: mid_rows,
+                tests: &mid_tests,
+                next: Some(&mid_next),
+            },
+            ChainHop {
+                live: &far_live,
+                rows: far_rows,
+                tests: &far_tests,
+                next: None,
+            },
+        ];
+        let bit = |w: &[u64], k: usize| (w[k / 64] >> (k % 64)) & 1 == 1;
+        let holds = |i: usize| {
+            let a = cindex[i] as usize;
+            if a >= mid_rows || !bit(&mid_live, a) || mid_lane[a] != 1 {
+                return false;
+            }
+            let b = mid_next[a] as usize;
+            b < far_rows && bit(&far_live, b) && far_lane[b] != 2
+        };
+        let mut out = vec![u64::MAX; out_len];
+        mask_gather_chain_u32(&cindex, &hops, &mut out);
+        if out != reference_mask(n, out_len, holds) {
+            return Err(0xD02);
+        }
+        let mut out = vec![u64::MAX; out_len];
+        mask_gather_chain_u32_under(&cindex, &gate, &hops, &mut out);
+        if out != reference_mask(n, out_len, |i| bit(&gate, i) && holds(i)) {
+            return Err(0xD03);
         }
 
         // ── mask_scatter_or_u32 ──────────────────────────────────────────
