@@ -1237,6 +1237,202 @@ pub fn mask_gather_u32_under(src: &[u64], src_rows: usize, index: &[u32], under:
     }
 }
 
+/// One equality test a [`ChainHop`] applies to the row it reached:
+/// `lane[row] == value`, or `!=` when `negate`.
+#[derive(Debug, Clone, Copy)]
+pub struct ChainTest<'a> {
+    /// A value lane of the hop's table, at least `rows` long.
+    pub lane: &'a [u32],
+    /// The value the lane is compared against.
+    pub value: u32,
+    /// Pass on `!=` instead of `==`.
+    pub negate: bool,
+}
+
+/// One hop of a [`mask_gather_chain_u32`]: the table the previous key names.
+///
+/// The row reached must be in range (`< rows`), live in `live`, and pass
+/// every test; then `next` names the row of the following hop. The last hop
+/// has no `next`, every other hop has one.
+#[derive(Debug, Clone, Copy)]
+pub struct ChainHop<'a> {
+    /// The table's resident live plane, `rows.div_ceil(64)` words at least.
+    pub live: &'a [u64],
+    /// The table's row count; a key at or past it fails the row.
+    pub rows: usize,
+    /// The tests the reached row must pass.
+    pub tests: &'a [ChainTest<'a>],
+    /// The key lane naming the next hop's row, `rows` long; `None` on the
+    /// last hop.
+    pub next: Option<&'a [u32]>,
+}
+
+/// Validate a chain's shape against the panics both entry points document.
+fn check_chain(name: &str, hops: &[ChainHop<'_>]) {
+    assert!(!hops.is_empty(), "{name}: hops is empty");
+    let last = hops.len() - 1;
+    for (j, h) in hops.iter().enumerate() {
+        assert!(
+            h.live.len() >= mask_words_for(h.rows),
+            "{name}: hop {j} live.len()={} < required {}",
+            h.live.len(),
+            mask_words_for(h.rows)
+        );
+        assert!(
+            h.next.is_some() == (j < last),
+            "{name}: hop {j} must {} a next key",
+            if j < last { "have" } else { "not have" }
+        );
+        if let Some(next) = h.next {
+            assert!(next.len() >= h.rows, "{name}: hop {j} next.len()={} < rows {}", next.len(), h.rows);
+        }
+        for t in h.tests {
+            assert!(t.lane.len() >= h.rows, "{name}: hop {j} test lane.len()={} < rows {}", t.lane.len(), h.rows);
+        }
+    }
+}
+
+/// Whether the chain starting at key `k` reaches a row of every hop that is
+/// in range, live and passes its tests.
+#[inline(always)]
+fn chain_holds(hops: &[ChainHop<'_>], k: u32) -> bool {
+    let mut cur = k as usize;
+    for h in hops {
+        if cur >= h.rows || (h.live[cur / 64] >> (cur % 64)) & 1 == 0 {
+            return false;
+        }
+        for t in h.tests {
+            if (t.lane[cur] == t.value) == t.negate {
+                return false;
+            }
+        }
+        if let Some(next) = h.next {
+            cur = next[cur] as usize;
+        }
+    }
+    true
+}
+
+/// Chained gather: bit `i` of the result is set when the key `index[i]`
+/// leads through every hop: each row reached is in range, live, and passes
+/// that hop's tests, and each hop's `next` key names the following hop's row.
+///
+/// This is a chain of key reads folded into one pass over `index`: the
+/// targets' predicates are evaluated at the row each key reaches, in
+/// registers, so no mask over any hop's table is ever built (the
+/// `start[fk^k(i)]` shape of lance-graph's chained-hop co-research, option
+/// (a)). With one hop and no tests it is [`mask_gather_u32`].
+///
+/// An out-of-range key at any depth fails the row, never panics.
+///
+/// # Vectorisation, honestly
+///
+/// **Scalar, and by necessity**, for the same reason as [`mask_gather_u32`]:
+/// each hop's address is a value read by the previous hop, so the reads are
+/// dependent and there is no bit gather to vectorise them with. Cost is
+/// `O(index.len() × hops)` at most; a row stops at its first failing hop.
+/// When the caller holds the rows it wants, [`mask_gather_chain_u32_under`]
+/// reads only those.
+///
+/// # Panics
+///
+/// Panics if `hops` is empty, if a hop other than the last has no `next` or
+/// the last has one, if a hop's `live`, `next` or test lane is shorter than
+/// its `rows` require, or if `out_words.len() < index.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::{mask_gather_chain_u32, ChainHop};
+///
+/// // line -> partner -> country: partners 0..3, all live; countries 0..2,
+/// // country 1 dead.
+/// let partner_live = [0b111u64];
+/// let partner_country = [0u32, 1, 0];
+/// let country_live = [0b01u64];
+/// let hops = [
+///     ChainHop { live: &partner_live, rows: 3, tests: &[], next: Some(&partner_country) },
+///     ChainHop { live: &country_live, rows: 2, tests: &[], next: None },
+/// ];
+/// let line_partner = [0u32, 1, 2, 7]; // line 3's key dangles
+/// let mut out = [u64::MAX];
+/// mask_gather_chain_u32(&line_partner, &hops, &mut out);
+/// // lines 0 and 2 reach the live country 0; line 1 reaches the dead one.
+/// assert_eq!(out[0], 0b0101);
+/// ```
+#[inline]
+pub fn mask_gather_chain_u32(index: &[u32], hops: &[ChainHop<'_>], out_words: &mut [u64]) {
+    let n = index.len();
+    let words = mask_words_for(n);
+    assert!(
+        out_words.len() >= words,
+        "mask_gather_chain_u32: out_words.len()={} < required {}",
+        out_words.len(),
+        words
+    );
+    check_chain("mask_gather_chain_u32", hops);
+    for w in out_words.iter_mut() {
+        *w = 0;
+    }
+    for (w, out_word) in out_words.iter_mut().enumerate().take(words) {
+        let base = w * 64;
+        let live = (n - base).min(64);
+        let mut acc = 0u64;
+        for lane in 0..live {
+            acc |= (chain_holds(hops, index[base + lane]) as u64) << lane;
+        }
+        *out_word = acc;
+    }
+}
+
+/// Gated [`mask_gather_chain_u32`]: the result equals the chained gather
+/// ANDed with `under`, and `index` is read **only** at rows whose `under` bit
+/// is set, so the work is proportional to `popcount(under)`.
+///
+/// `under` bits at or past `index.len()` are ignored. `out_words` is fully
+/// overwritten.
+///
+/// # Panics
+///
+/// As [`mask_gather_chain_u32`], and if `under.len()` is below
+/// `index.len().div_ceil(64)`.
+#[inline]
+pub fn mask_gather_chain_u32_under(index: &[u32], under: &[u64], hops: &[ChainHop<'_>], out_words: &mut [u64]) {
+    let n = index.len();
+    let words = mask_words_for(n);
+    assert!(
+        out_words.len() >= words,
+        "mask_gather_chain_u32_under: out_words.len()={} < required {}",
+        out_words.len(),
+        words
+    );
+    assert!(
+        under.len() >= words,
+        "mask_gather_chain_u32_under: under.len()={} < required {}",
+        under.len(),
+        words
+    );
+    check_chain("mask_gather_chain_u32_under", hops);
+    for w in out_words.iter_mut() {
+        *w = 0;
+    }
+    for w in 0..words {
+        let base = w * 64;
+        let mut bits = under[w];
+        let valid = n - base;
+        if valid < 64 {
+            bits &= (1u64 << valid) - 1;
+        }
+        let mut acc = 0u64;
+        while bits != 0 {
+            let lane = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            acc |= (chain_holds(hops, index[base + lane]) as u64) << lane;
+        }
+        out_words[w] = acc;
+    }
+}
+
 /// Scatter-OR by row index: for every element `i` selected by `src` (bit `i`
 /// set, `i < index.len()`), sets bit `index[i]` of the result — provided
 /// `index[i] < out_rows`.
@@ -6555,6 +6751,198 @@ mod tests {
         let index = vec![0u32; 65];
         let mut out = [0u64; 2];
         mask_gather_u32_under(&src, 1, &index, &[u64::MAX], &mut out);
+    }
+
+    /// The row loop the chained gather must equal: follow the keys hop by
+    /// hop, failing on an out-of-range key, a dead row, or a failed test.
+    fn naive_chain(index: &[u32], gate: &[u64], hops: &[ChainHop<'_>]) -> Vec<bool> {
+        (0..index.len())
+            .map(|i| {
+                if (gate[i / 64] >> (i % 64)) & 1 == 0 {
+                    return false;
+                }
+                let mut cur = index[i] as usize;
+                for h in hops {
+                    if cur >= h.rows || (h.live[cur / 64] >> (cur % 64)) & 1 == 0 {
+                        return false;
+                    }
+                    for t in h.tests {
+                        if (t.lane[cur] == t.value) == t.negate {
+                            return false;
+                        }
+                    }
+                    if let Some(next) = h.next {
+                        cur = next[cur] as usize;
+                    }
+                }
+                true
+            })
+            .collect()
+    }
+
+    #[test]
+    fn mask_gather_chain_u32_under_matches_the_row_loop() {
+        // Three tables after the anchor, each with dead rows, keys that run
+        // past the next table, and a test lane; gates with dirty tails.
+        let rows = [37usize, 23, 11];
+        let mut seed = 0x0DDB_A11C_4A1E_5EEDu64;
+        let lanes = |r: usize, dom: u64, seed: &mut u64| -> Vec<u32> {
+            (0..r).map(|_| (splitmix(seed) % dom) as u32).collect()
+        };
+        let live: Vec<Vec<u64>> = rows
+            .iter()
+            .map(|&r| {
+                (0..r.div_ceil(64))
+                    .map(|_| splitmix(&mut seed) | 0x5555_5555_5555_5555)
+                    .collect()
+            })
+            .collect();
+        // Keys may name a row past the next table (out of range).
+        let next0 = lanes(rows[0], rows[1] as u64 + 3, &mut seed);
+        let next1 = lanes(rows[1], rows[2] as u64 + 2, &mut seed);
+        let val0 = lanes(rows[0], 3, &mut seed);
+        let val2 = lanes(rows[2], 2, &mut seed);
+        let t0 = [ChainTest {
+            lane: &val0,
+            value: 1,
+            negate: true,
+        }];
+        let t2 = [ChainTest {
+            lane: &val2,
+            value: 0,
+            negate: false,
+        }];
+        let hops = [
+            ChainHop {
+                live: &live[0],
+                rows: rows[0],
+                tests: &t0,
+                next: Some(&next0),
+            },
+            ChainHop {
+                live: &live[1],
+                rows: rows[1],
+                tests: &[],
+                next: Some(&next1),
+            },
+            ChainHop {
+                live: &live[2],
+                rows: rows[2],
+                tests: &t2,
+                next: None,
+            },
+        ];
+        let mut kept_any = 0usize;
+        let mut total = 0usize;
+        for &n in &[0usize, 1, 63, 64, 65, 130, 1000] {
+            let index: Vec<u32> = (0..n)
+                .map(|_| (splitmix(&mut seed) % (rows[0] as u64 + 4)) as u32)
+                .collect();
+            let words = n.div_ceil(64).max(1);
+            let gates: [Vec<u64>; 3] =
+                [vec![0u64; words], vec![u64::MAX; words], (0..words).map(|_| splitmix(&mut seed)).collect()];
+            for gate in &gates {
+                let want = naive_chain(&index, gate, &hops);
+                kept_any += want.iter().filter(|&&b| b).count();
+                total += n;
+                let want = bits_to_words(&want);
+                let mut out = vec![u64::MAX; words + 1];
+                mask_gather_chain_u32_under(&index, gate, &hops, &mut out);
+                assert_eq!(&out[..want.len()], &want[..], "chain mismatch at n={n}");
+                assert_eq!(out[words], 0, "surplus word must be cleared at n={n}");
+            }
+            let mut ungated = vec![u64::MAX; words];
+            mask_gather_chain_u32(&index, &hops, &mut ungated);
+            let all = vec![u64::MAX; words];
+            let want = bits_to_words(&naive_chain(&index, &all, &hops));
+            assert_eq!(&ungated[..want.len()], &want[..], "ungated chain mismatch at n={n}");
+        }
+        // Anti-vacuity: the chain keeps some rows and drops most.
+        assert!(kept_any > 0 && kept_any * 3 < total, "{kept_any} of {total}");
+    }
+
+    #[test]
+    fn mask_gather_chain_u32_one_hop_is_the_gated_gather() {
+        let mut seed = 0x1234_5678_9ABC_DEF0u64;
+        let src_rows = 50usize;
+        let src: Vec<u64> = (0..src_rows.div_ceil(64))
+            .map(|_| splitmix(&mut seed))
+            .collect();
+        let index: Vec<u32> = (0..200)
+            .map(|_| (splitmix(&mut seed) % 60) as u32)
+            .collect();
+        let gate: Vec<u64> = (0..4).map(|_| splitmix(&mut seed)).collect();
+        let hop = [ChainHop {
+            live: &src,
+            rows: src_rows,
+            tests: &[],
+            next: None,
+        }];
+        let mut chain = [0u64; 4];
+        let mut single = [0u64; 4];
+        mask_gather_chain_u32_under(&index, &gate, &hop, &mut chain);
+        mask_gather_u32_under(&src, src_rows, &index, &gate, &mut single);
+        assert_eq!(chain, single);
+    }
+
+    #[test]
+    #[should_panic(expected = "next")]
+    fn mask_gather_chain_u32_rejects_a_hop_without_its_key() {
+        let live = [u64::MAX];
+        let hops = [
+            ChainHop {
+                live: &live,
+                rows: 4,
+                tests: &[],
+                next: None,
+            },
+            ChainHop {
+                live: &live,
+                rows: 4,
+                tests: &[],
+                next: None,
+            },
+        ];
+        mask_gather_chain_u32(&[0, 1], &hops, &mut [0u64; 1]);
+    }
+
+    #[test]
+    #[should_panic(expected = "next")]
+    fn mask_gather_chain_u32_rejects_a_key_after_the_last_hop() {
+        let live = [u64::MAX];
+        let key = [0u32; 4];
+        let hops = [ChainHop {
+            live: &live,
+            rows: 4,
+            tests: &[],
+            next: Some(&key),
+        }];
+        mask_gather_chain_u32(&[0, 1], &hops, &mut [0u64; 1]);
+    }
+
+    #[test]
+    #[should_panic(expected = "lane")]
+    fn mask_gather_chain_u32_rejects_a_short_test_lane() {
+        let live = [u64::MAX];
+        let lane = [0u32; 2];
+        let t = [ChainTest {
+            lane: &lane,
+            value: 0,
+            negate: false,
+        }];
+        let hops = [ChainHop {
+            live: &live,
+            rows: 4,
+            tests: &t,
+            next: None,
+        }];
+        mask_gather_chain_u32(&[0, 1], &hops, &mut [0u64; 1]);
+    }
+
+    #[test]
+    #[should_panic(expected = "hops")]
+    fn mask_gather_chain_u32_rejects_an_empty_chain() {
+        mask_gather_chain_u32(&[0, 1], &[], &mut [0u64; 1]);
     }
 
     fn naive_scatter(src_bits: &[bool], index: &[u32], out_rows: usize) -> Vec<bool> {
