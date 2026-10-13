@@ -671,6 +671,17 @@ mod tests {
             let enabled = format!("sse,sse2,x87,{}", table.join(","));
             assert!(unchecked_features(&enabled, &table).is_empty());
         }
+
+        /// The default x86_64 musl target enables `crt-static`, which is C
+        /// runtime linkage rather than a CPU feature, so it must not be
+        /// reported; a feature without a row beside it still is.
+        #[test]
+        fn crt_static_is_not_a_cpu_feature() {
+            let table = guard_table_names(GUARD_SRC);
+            let musl_default = "crt-static,fxsr,sse,sse2";
+            assert!(unchecked_features(musl_default, &table).is_empty());
+            assert_eq!(unchecked_features("crt-static,avx10.1", &table), ["avx10.1"]);
+        }
     }
 
     /// The exit-or-warn decision must see a test binary as an executable;
