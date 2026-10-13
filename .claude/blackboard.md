@@ -1,3 +1,9 @@
+## 2026-10-13 — `cargo-careful` red since #355: the libc probe was ASan's `malloc`
+
+- **Cause:** `cpu_guard::tests::an_address_in_libc_is_not_in_the_main_executable` used `malloc` as its libc address. CI's `cargo-careful` job runs `-Zcareful-sanitizer` (AddressSanitizer), which interposes `malloc` with an interceptor linked into the executable, so the address really is in the main image there. Red on every master merge from #355 (where the test landed) through #361; green at #354.
+- **Change:** the test probes glibc's `gnu_get_libc_version`, which no sanitizer replaces. The guard itself is unchanged.
+- **Measured here:** scratch crate with `-Zsanitizer=address`: `malloc` in main image `true`, `gnu_get_libc_version` `false`, own function `true` (plain build: false/false/true). `cargo +nightly careful test -Zcareful-sanitizer`: new test passes; with `malloc` restored it fails at `cpu_guard.rs:712`, as in CI. Plain build: 14/14 `cpu_guard` tests.
+
 ## 2026-10-13 — CI compiles both production tiers: x86-64-v4 and Sapphire Rapids
 
 - **Change:** `tier4-avx512-check` in `ci.yaml` is now a two-entry matrix, `x86-64-v4` (`.cargo/config-v4.toml`) and `sapphirerapids` (`.cargo/config-avx512.toml`). Each entry runs both `cargo check` feature sets and the asm-only codegen witness. Neither is executed: GitHub's runners are mostly v3. `config-avx512.toml` gains `-Dwarnings`, matching `config-v4.toml`, so both entries gate warnings and the witness script (which word-splits `CARGO_ARGS`) needs no extra quoted `--config`. The job sets `CARGO_PROFILE_{DEV,TEST}_DEBUG=0`: with `--target`, build scripts take the profile's debug level.
