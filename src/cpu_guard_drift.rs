@@ -10,6 +10,10 @@
 /// Features every x86_64 CPU has; the guard does not need rows for them.
 const X86_64_BASELINE: &[&str] = &["sse", "sse2", "x87"];
 
+/// Target features that do not describe the CPU: `crt-static` selects static
+/// C-runtime linkage and is on by default for musl targets.
+const NOT_CPU_FEATURES: &[&str] = &["crt-static"];
+
 /// The feature names in the x86_64 table of `cpu_guard.rs` (`"name" =>` rows).
 fn guard_table_names(cpu_guard_src: &str) -> Vec<&str> {
     cpu_guard_src
@@ -23,10 +27,13 @@ fn guard_table_names(cpu_guard_src: &str) -> Vec<&str> {
 }
 
 /// The enabled features (`CARGO_CFG_TARGET_FEATURE`, comma-separated) that
-/// are neither in the guard's table nor x86_64 baseline, in input order.
+/// are neither in the guard's table, nor x86_64 baseline, nor a non-CPU
+/// feature, in input order.
 fn unchecked_features<'a>(enabled: &'a str, table: &[&str]) -> Vec<&'a str> {
     enabled
         .split(',')
-        .filter(|f| !f.is_empty() && !table.contains(f) && !X86_64_BASELINE.contains(f))
+        .filter(|f| {
+            !f.is_empty() && !table.contains(f) && !X86_64_BASELINE.contains(f) && !NOT_CPU_FEATURES.contains(f)
+        })
         .collect()
 }
