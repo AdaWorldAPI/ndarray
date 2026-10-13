@@ -28,6 +28,7 @@ categories = ["data-structures", "science"]
 
 include = [
     "/src/**/*.rs",
+    "/build.rs",
     "LICENSE-MIT",
     "LICENSE-APACHE",
     "RELEASES.md",

@@ -1,3 +1,10 @@
+## 2026-10-13 — build-time warning for target features `cpu_guard` cannot check
+
+- **Change:** new `build.rs` + `src/cpu_guard_drift.rs` (shared by `build.rs` and the tests via `include!`). On x86_64 the build script reads `CARGO_CFG_TARGET_FEATURE` and the guard's `"name" =>` rows and prints `cargo:warning=` for every enabled feature without a row. Without a row the guard never compares that feature with the running CPU, so the binary passes the guard and can still SIGILL; a toolchain bump that lets LLVM enable a newer feature is the usual cause.
+- **Exclusions:** the x86_64 baseline (`sse`, `sse2`, `x87`) and non-CPU target features. `crt-static` (static C runtime, on by default for musl) was the one non-CPU feature in the default x86_64 sets; measured `rustc --print cfg` for gnu, musl, msvc and darwin (codex P2).
+- **Tests:** the parser reads exactly the 54 guard rows; a missing row is reported (`avx10.1`); table + baseline report nothing; musl's default set reports nothing while a real missing row beside `crt-static` still does (red before the exclusion).
+- **Limits:** cargo hides build-script warnings from git dependencies, so a consumer pulling ndarray by git URL sees nothing; path dependencies (the sibling layout) do show it. Stable rustc hides unstable features (amx, avx10), which are therefore never enabled or reported.
+
 ## 2026-10-12 — `mask_gather_chain_u32` withdrawn: rejected design, moved to backup
 
 - **Removed:** `mask_gather_chain_u32`, `mask_gather_chain_u32_under`, `ChainHop`, `ChainTest`, their tests and the parity case 0xD02/0xD03 (shipped in #358). The exact state is kept on branch `backup/session-011BMJ-2026-10-12`.
