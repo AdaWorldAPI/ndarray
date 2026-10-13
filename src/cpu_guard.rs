@@ -692,11 +692,16 @@ mod tests {
         assert!(guard_is_in_main_executable());
     }
 
-    /// Can-stay-silent half: an address in a loaded system library (libc's
-    /// `malloc`) is not in the main executable. Without this the lookup
-    /// could be `true` everywhere and the library case would never happen.
-    /// Assumes libc is a shared object (the default dynamic linux-gnu
-    /// build): with `+crt-static`, `malloc` is inside the executable.
+    /// Can-stay-silent half: an address in a loaded system library (glibc's
+    /// `gnu_get_libc_version`) is not in the main executable. Without this
+    /// the lookup could be `true` everywhere and the library case would never
+    /// happen. Assumes libc is a shared object (the default dynamic linux-gnu
+    /// build): with `+crt-static`, libc is inside the executable.
+    ///
+    /// Not `malloc`: a sanitizer interposes it with its own copy linked into
+    /// the executable, so under `cargo careful -Zcareful-sanitizer` (ASan)
+    /// `malloc` really is in the main image. No sanitizer replaces
+    /// `gnu_get_libc_version`.
     #[cfg(all(
         not(miri),
         target_arch = "x86_64",
@@ -707,9 +712,10 @@ mod tests {
     #[test]
     fn an_address_in_libc_is_not_in_the_main_executable() {
         extern "C" {
-            fn malloc(size: usize) -> *mut core::ffi::c_void;
+            fn gnu_get_libc_version() -> *const core::ffi::c_char;
         }
-        assert!(!main_image::contains(malloc as unsafe extern "C" fn(usize) -> *mut core::ffi::c_void as usize));
+        let in_libc = gnu_get_libc_version as unsafe extern "C" fn() -> *const core::ffi::c_char as usize;
+        assert!(!main_image::contains(in_libc));
     }
 
     #[test]
