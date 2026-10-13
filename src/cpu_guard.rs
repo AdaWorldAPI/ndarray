@@ -640,6 +640,39 @@ static GUARD_BEFORE_MAIN: extern "C" fn() = guard_before_main;
 mod tests {
     use super::*;
 
+    mod drift {
+        include!("cpu_guard_drift.rs");
+
+        const GUARD_SRC: &str = include_str!("cpu_guard.rs");
+
+        /// The build script's parser must read exactly the names the guard
+        /// checks, or its warning reports the wrong set.
+        #[cfg(target_arch = "x86_64")]
+        #[test]
+        fn parser_reads_exactly_the_guard_table() {
+            let parsed = guard_table_names(GUARD_SRC);
+            let rows: Vec<&str> = super::FEATURES.iter().map(|r| r.0).collect();
+            assert_eq!(parsed.len(), 54);
+            assert_eq!(parsed, rows);
+        }
+
+        /// Can fire: a feature the table lacks is reported, and only that one.
+        #[test]
+        fn a_feature_without_a_row_is_reported() {
+            let table = guard_table_names(GUARD_SRC);
+            let enabled = "sse,sse2,x87,avx2,avx512f,avx10.1,fma";
+            assert_eq!(unchecked_features(enabled, &table), ["avx10.1"]);
+        }
+
+        /// Can stay silent: every row plus the x86_64 baseline reports nothing.
+        #[test]
+        fn the_table_and_the_baseline_report_nothing() {
+            let table = guard_table_names(GUARD_SRC);
+            let enabled = format!("sse,sse2,x87,{}", table.join(","));
+            assert!(unchecked_features(&enabled, &table).is_empty());
+        }
+    }
+
     /// The exit-or-warn decision must see a test binary as an executable;
     /// if this were false, every mismatching executable would only warn.
     #[cfg(not(miri))]
