@@ -1,3 +1,10 @@
+## 2026-10-13 — CI compiles both production tiers: x86-64-v4 and Sapphire Rapids
+
+- **Change:** `tier4-avx512-check` in `ci.yaml` is now a two-entry matrix, `x86-64-v4` (`.cargo/config-v4.toml`) and `sapphirerapids` (`.cargo/config-avx512.toml`). Each entry runs both `cargo check` feature sets and the asm-only codegen witness. Neither is executed: GitHub's runners are mostly v3. `config-avx512.toml` gains `-Dwarnings`, matching `config-v4.toml`, so both entries gate warnings and the witness script (which word-splits `CARGO_ARGS`) needs no extra quoted `--config`. The job sets `CARGO_PROFILE_{DEV,TEST}_DEBUG=0`: with `--target`, build scripts take the profile's debug level.
+- **Why:** production runs on x86-64-v4 or better, and Railway hosts are Sapphire Rapids, Emerald Rapids or newer (maintainer). lance-graph's canonical deploy file now builds `sapphirerapids`, so the VNNI/BF16/FP16 code paths must at least compile in CI.
+- **Measured here (Cascade Lake host, which lacks BF16/FP16 so nothing was run):** `cargo check` at `sapphirerapids` with `-Dwarnings` passes for `approx,serde,rayon` and `+hpc-extras`; the rustc call for ndarray carries `-Ctarget-cpu=native`, then `-Ctarget-cpu=sapphirerapids` (the later one wins), then `-Dwarnings`; the codegen witness passes (1, 1 and 6 `vpternlog`).
+- **Open:** the global `RUSTFLAGS` crypto cfgs (dalek, poly1305) are dropped by this job's `env -u RUSTFLAGS`, as before; unchanged here.
+
 ## 2026-10-12 — `mask_gather_chain_u32` withdrawn: rejected design, moved to backup
 
 - **Removed:** `mask_gather_chain_u32`, `mask_gather_chain_u32_under`, `ChainHop`, `ChainTest`, their tests and the parity case 0xD02/0xD03 (shipped in #358). The exact state is kept on branch `backup/session-011BMJ-2026-10-12`.
