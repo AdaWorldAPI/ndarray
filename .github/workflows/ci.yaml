@@ -300,22 +300,46 @@ jobs:
     # own rustflags list so the warning gate is not lost. (The same global
     # env also erases the v3 pin and the dalek/poly1305 cfgs for every other
     # x86 job — a pre-existing gap, recorded in the blackboard, not this PR's.)
+    #
+    # # Two tiers (2026-10-13):
+    #
+    # Production runs on x86-64-v4 or better; the canonical deploy build is
+    # Sapphire Rapids (`.cargo/config-avx512.toml`: VNNI, BF16, FP16 on top
+    # of v4). Neither can run on GitHub's mostly-v3 runners, so both are
+    # compiled and never executed. Both config files carry `-Dwarnings`.
+    # Debug info is off for every artifact
+    # (`CARGO_PROFILE_*_DEBUG=0`): `--target` keeps RUSTFLAGS-style flags off
+    # build scripts, which then take the profile's debug level.
     runs-on: ubuntu-latest
-    name: tier4-avx512-check
+    name: tier4-avx512-check (${{ matrix.tier }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - tier: x86-64-v4
+            config: --config .cargo/config-v4.toml
+          - tier: sapphirerapids
+            config: --config .cargo/config-avx512.toml
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_INCREMENTAL: "0"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: cargo check (v4 / AVX-512 dispatch arm)
-        run: env -u RUSTFLAGS cargo --config .cargo/config-v4.toml check --target=x86_64-unknown-linux-gnu -p ndarray --features approx,serde,rayon
-      - name: cargo check (v4 / AVX-512 + hpc-extras)
-        run: env -u RUSTFLAGS cargo --config .cargo/config-v4.toml check --target=x86_64-unknown-linux-gnu -p ndarray --features approx,serde,rayon,hpc-extras
-      - name: prove the arm actually selected (a v4 build must emit vpternlog)
+        with:
+          key: ${{ matrix.tier }}
+      - name: cargo check (${{ matrix.tier }} / AVX-512 dispatch arm)
+        run: env -u RUSTFLAGS cargo ${{ matrix.config }} check --target=x86_64-unknown-linux-gnu -p ndarray --features approx,serde,rayon
+      - name: cargo check (${{ matrix.tier }} / AVX-512 + hpc-extras)
+        run: env -u RUSTFLAGS cargo ${{ matrix.config }} check --target=x86_64-unknown-linux-gnu -p ndarray --features approx,serde,rayon,hpc-extras
+      - name: prove the arm actually selected (an AVX-512 build must emit vpternlog)
         # Runs the witness script in asm-only mode (this runner may lack
         # avx512f, so the probe is never executed here) rather than an inline
         # copy: the script owns the stale-assembly guard (`rm -f` + `touch` of
         # the probe source, without which a rust-cache hit re-emits no `.s`).
-        run: env -u RUSTFLAGS WITNESS_NO_RUN=1 CARGO_ARGS='--config .cargo/config-v4.toml' bash scripts/codegen-witness.sh avx512
+        run: env -u RUSTFLAGS WITNESS_NO_RUN=1 CARGO_ARGS="${{ matrix.config }}" bash scripts/codegen-witness.sh avx512
 
   nightly-simd-polyfill:
     # TD-SIMD-9 from .claude/knowledge/simd-dispatch-architecture.md.
