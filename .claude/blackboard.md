@@ -1,3 +1,8 @@
+## 2026-10-14 — Haiku cards for supervised harvest and mapping
+
+- Five Haiku cards added (`harvest-scout`, `census-counter`, `quote-harvester`, `substrate-mapper`, `spec-editor`); rules in `.claude/rules/agent-model-tiers.md`, CLAUDE.md Agent Protocol item 7. No `guarded-executor`: only the orchestrator compiles here.
+- First run in this repo: a `harvest-scout` over `CLAUDE.md` and `.claude/**/*.md` for `haiku` reported 2 hits; an independent grep found the same 2; 0 wrong, 0 missed (~434k subagent tokens, mostly loaded context).
+
 ## 2026-10-13 — `cargo-careful` red since #355: the libc probe was ASan's `malloc`
 
 - **Cause:** `cpu_guard::tests::an_address_in_libc_is_not_in_the_main_executable` used `malloc` as its libc address. CI's `cargo-careful` job runs `-Zcareful-sanitizer` (AddressSanitizer), which interposes `malloc` with an interceptor linked into the executable, so the address really is in the main image there. Red on every master merge from #355 (where the test landed) through #361; green at #354.
