@@ -23,6 +23,7 @@ This project uses specialized agents in `.claude/agents/`. Follow these rules:
 4. When encountering `unsafe` code, **always** delegate to sentinel-qa for audit
 5. Write decisions to the blackboard, not just to chat
 6. **Cargo build residue** — fan out the Sonnet fleet in the *shared* checkout (no per-agent worktrees), edit-only; the Opus orchestrator compiles/lints/tests **once** in the single 7 GB `target/`. Opus may run cargo freely. See `.claude/rules/agent-cargo-hygiene.md`.
+7. **Haiku for supervised harvest and mapping** — `harvest-scout`, `census-counter`, `quote-harvester`, `substrate-mapper` and `spec-editor` run on Haiku: read-only discovery, fact maps of large surfaces, and edits written out in full by the orchestrator. Haiku never authors, decides, reviews or runs cargo. The orchestrator Reads what it relies on and logs hits and misses on the blackboard. See `.claude/rules/agent-model-tiers.md`.
 
 ## Hard Rules
 - OpenBLAS and MKL are **mutually exclusive** feature gates. Never both.
