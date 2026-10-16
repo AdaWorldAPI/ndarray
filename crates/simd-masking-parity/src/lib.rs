@@ -27,7 +27,7 @@
 //! the index-addressed permutation/scatter family); `0xD3x` the
 //! index-addressed `masked_group_sum_i32_via` (two-hop zero-fallback); `0xD4x`
 //! `eq_u32_via_to_mask` (the same index lane, packed as a predicate rather than
-//! folded into a sum); `0xExx` the `F64x8` lane compares (all six relations
+//! folded into a sum), `0xD41` its lane-valued twin `eq_u32_via_lane_to_mask`; `0xExx` the `F64x8` lane compares (all six relations
 //! over every pair of 16 IEEE edge values: NaN, ±0, ±inf, subnormal); `0x73x` / `0x74x` / `0x750` the strided 16-byte register match (all sixteen
 //! bytes; strides 16 / 20 / 32 / 512 from first offsets 0..15, care bits in
 //! bytes 12..16); `0xFxx` the 16-lane byte vectors `I8x16` / `U8x16` (wrapping
@@ -37,7 +37,7 @@
 
 use ndarray::simd::{
     blend_i32, eq_i32_to_mask, eq_i32_to_mask_under, eq_u32_strided_to_mask, eq_u32_to_mask, eq_u32_to_mask_under,
-    eq_u32_via_to_mask, eq_u64_to_mask, eq_u8_to_mask, ge_i32_to_mask, ge_i32_to_mask_under, ge_u64_to_mask,
+    eq_u32_via_lane_to_mask, eq_u32_via_to_mask, eq_u64_to_mask, eq_u8_to_mask, ge_i32_to_mask, ge_i32_to_mask_under, ge_u64_to_mask,
     ge_u8_to_mask, gt_i32_to_mask, gt_i32_to_mask_under, gt_u64_to_mask, gt_u8_to_mask, le_i32_to_mask,
     le_i32_to_mask_under, le_u64_to_mask, le_u8_to_mask, lt_i32_to_mask, lt_i32_to_mask_under, lt_u64_to_mask,
     lt_u8_to_mask, mask_all, mask_and, mask_and_assign, mask_andnot, mask_andnot_assign, mask_any,
@@ -1786,6 +1786,20 @@ fn check_gather_scatter_group() -> Result<(), u32> {
         });
         if via_mask != want_via_mask {
             return Err(0xD40);
+        }
+
+        // ── eq_u32_via_lane_to_mask ───────────────────────────────────────
+        // The lane-valued twin: each row's addressed entry must equal that
+        // row's own `local[i]`, not one constant.
+        let local: Vec<u32> = (0..n).map(|_| (rng.next() % 5) as u32).collect();
+        let mut via_lane_mask = vec![u64::MAX; out_len];
+        eq_u32_via_lane_to_mask(&index2, &table, &local, &mut via_lane_mask);
+        let want_via_lane_mask = reference_mask(n, out_len, |i| {
+            let k = index2[i] as usize;
+            k < table.len() && table[k] == local[i]
+        });
+        if via_lane_mask != want_via_lane_mask {
+            return Err(0xD41);
         }
 
         // ── masked_key_run_count_u32 ─────────────────────────────────────

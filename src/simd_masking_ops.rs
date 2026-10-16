@@ -3113,11 +3113,14 @@ pub fn fold_bounded_cross_power_sums_tiles(
 ///
 /// # Vectorisation, honestly
 ///
-/// **Scalar, and by necessity, not oversight** — same shape as
-/// [`mask_gather_u32`]: the address read from `table` is `index[i]`, a
-/// value out of another array, so there is no vector gather over
-/// individual predicate results on any of this crate's backends. Cost is
-/// `O(index.len())`; there is no input mask to skip zero words against.
+/// **Scalar** — same shape as [`mask_gather_u32`]: the address read from
+/// `table` is `index[i]`, a value out of another array. Several backends
+/// carry an `unsafe`, unbounded `f32` gather (`F32x16::gather`), but there is
+/// no bounds-masked `u32` gather-and-compare wrapper, and the zero-fallback
+/// contract above needs one: an out-of-range index must read as no match,
+/// not as memory. Whether such a wrapper pays on random access is
+/// unmeasured. Cost is `O(index.len())`; there is no input mask to skip zero
+/// words against.
 ///
 /// # Panics
 ///
@@ -3155,6 +3158,81 @@ pub fn eq_u32_via_to_mask(index: &[u32], table: &[u32], v: u32, out_words: &mut 
         for lane in 0..live {
             let addr = index[base + lane] as usize;
             if addr < table.len() && table[addr] == v {
+                acc |= 1u64 << lane;
+            }
+        }
+        *out_word = acc;
+    }
+    for w in out_words.iter_mut().skip(words) {
+        *w = 0;
+    }
+}
+
+/// Packs `index[i] < table.len() && table[index[i]] == local[i]` into
+/// `out_words`, one bit per row `i < index.len()`, LSB-first: the lane-valued
+/// twin of [`eq_u32_via_to_mask`]. The value a row's addressed entry must
+/// equal is that row's own `local[i]`, not one constant for every row.
+///
+/// This closes a cyclic join in one pass: with `index = rb`, `table = s_dst`
+/// and `local = tc`, row `a` is set exactly when `s_dst[rb[a]] == tc[a]`,
+/// which no single-constant predicate can express without one disjunct per
+/// value.
+///
+/// Out-of-range rule, output contract and tail handling are those of
+/// [`eq_u32_via_to_mask`]: `index[i] >= table.len()` never matches; every
+/// output word is overwritten; bits past `index.len()` and surplus words are
+/// written `0`.
+///
+/// # Vectorisation, honestly
+///
+/// Scalar, for the reason [`eq_u32_via_to_mask`] gives: the address comes out
+/// of another array, and there is no bounds-masked `u32` gather-and-compare
+/// wrapper on any backend. The scalar body is the realization on every target.
+///
+/// # Panics
+///
+/// Panics if `local.len() != index.len()`, or if
+/// `out_words.len() < mask_words_for(index.len())`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::eq_u32_via_lane_to_mask;
+///
+/// let index = [0u32, 1, 5, 1];
+/// let table = [7u32, 3];
+/// let local = [7u32, 4, 7, 3];
+/// let mut out = [u64::MAX];
+/// eq_u32_via_lane_to_mask(&index, &table, &local, &mut out);
+/// // row 0: table[0] = 7 = local; row 1: 3 != 4; row 2: out of range;
+/// // row 3: table[1] = 3 = local.
+/// assert_eq!(out[0], 0b1001);
+/// ```
+#[inline]
+pub fn eq_u32_via_lane_to_mask(index: &[u32], table: &[u32], local: &[u32], out_words: &mut [u64]) {
+    let n = index.len();
+    assert_eq!(
+        local.len(),
+        n,
+        "eq_u32_via_lane_to_mask: local.len()={} != index.len()={}",
+        local.len(),
+        n
+    );
+    let words = mask_words_for(n);
+    assert!(
+        out_words.len() >= words,
+        "eq_u32_via_lane_to_mask: out_words.len()={} < required {}",
+        out_words.len(),
+        words
+    );
+
+    for (w, out_word) in out_words.iter_mut().enumerate().take(words) {
+        let base = w * 64;
+        let live = (n - base).min(64);
+        let mut acc = 0u64;
+        for lane in 0..live {
+            let addr = index[base + lane] as usize;
+            if addr < table.len() && table[addr] == local[base + lane] {
                 acc |= 1u64 << lane;
             }
         }
@@ -7040,6 +7118,87 @@ mod tests {
         let table = [0u32];
         let mut out = [0u64; 1];
         eq_u32_via_to_mask(&idx, &table, 0, &mut out);
+    }
+
+    // ── eq_u32_via_lane_to_mask ──
+
+    #[test]
+    fn eq_u32_via_lane_to_mask_matches_naive_reference_across_the_tail() {
+        for &n in &[0usize, 1, 63, 64, 65, 130, 1000] {
+            let mut seed = 0x5EED_0D41_u64 ^ n as u64;
+            let table_len = 13usize;
+            let table: Vec<u32> = (0..table_len).map(|_| (splitmix(&mut seed) % 4) as u32).collect();
+            let idx: Vec<u32> = (0..n)
+                .map(|i| {
+                    if i % 5 == 0 {
+                        (table_len + 2 + i) as u32
+                    } else {
+                        (splitmix(&mut seed) % table_len as u64) as u32
+                    }
+                })
+                .collect();
+            let local: Vec<u32> = (0..n).map(|_| (splitmix(&mut seed) % 4) as u32).collect();
+            let want_bits: Vec<bool> = (0..n)
+                .map(|i| {
+                    let k = idx[i] as usize;
+                    k < table.len() && table[k] == local[i]
+                })
+                .collect();
+            let want = bits_to_words(&want_bits);
+            let out_words = n.div_ceil(64).max(1);
+            let mut out = vec![u64::MAX; out_words + 1];
+            eq_u32_via_lane_to_mask(&idx, &table, &local, &mut out);
+            assert_eq!(&out[..want.len()], &want[..], "mismatch at n={n}");
+            assert_eq!(out[out_words], 0, "surplus word must be cleared at n={n}");
+            if n >= 10 {
+                assert!(want_bits.iter().any(|&b| b), "fixture at n={n} has no match");
+                assert!(want_bits.iter().any(|&b| !b), "fixture at n={n} has no non-match");
+            }
+        }
+    }
+
+    /// The compare reads each row's OWN value. A kernel that compared every
+    /// row against one constant would agree on rows whose local value
+    /// happens to be that constant, so the fixture gives every row a
+    /// different local value and every addressed entry the matching one.
+    #[test]
+    fn eq_u32_via_lane_to_mask_compares_each_row_against_its_own_lane() {
+        let table: Vec<u32> = (0..64).map(|k| 100 + k).collect();
+        let idx: Vec<u32> = (0..64).collect();
+        let local: Vec<u32> = (0..64).map(|i| 100 + i).collect();
+        let mut out = [0u64; 1];
+        eq_u32_via_lane_to_mask(&idx, &table, &local, &mut out);
+        assert_eq!(out[0], u64::MAX, "every row equals its own addressed entry");
+        // Shift the local lane by one: no row matches any more.
+        let shifted: Vec<u32> = local.iter().map(|v| v + 1).collect();
+        eq_u32_via_lane_to_mask(&idx, &table, &shifted, &mut out);
+        assert_eq!(out[0], 0, "no row equals its addressed entry after the shift");
+    }
+
+    #[test]
+    fn eq_u32_via_lane_to_mask_out_of_range_never_matches() {
+        let idx = [1u32, 9, u32::MAX];
+        let table = [0u32];
+        let local = [0u32, 0, 0];
+        let mut out = [u64::MAX];
+        eq_u32_via_lane_to_mask(&idx, &table, &local, &mut out);
+        assert_eq!(out[0], 0, "no index names a row of `table`");
+    }
+
+    #[test]
+    #[should_panic(expected = "local.len()")]
+    fn eq_u32_via_lane_to_mask_rejects_a_short_local_lane() {
+        let mut out = [0u64; 1];
+        eq_u32_via_lane_to_mask(&[0, 0], &[0], &[0], &mut out);
+    }
+
+    #[test]
+    #[should_panic(expected = "out_words.len()")]
+    fn eq_u32_via_lane_to_mask_rejects_short_out_buffer() {
+        let idx = vec![0u32; 65];
+        let local = vec![0u32; 65];
+        let mut out = [0u64; 1];
+        eq_u32_via_lane_to_mask(&idx, &[0], &local, &mut out);
     }
 
     // ── 2026-09-13 additions: the closed comparison family, complement/xor/
