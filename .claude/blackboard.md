@@ -1,3 +1,10 @@
+## 2026-10-16 — `eq_u32_via_lane_to_mask`: the lane-valued twin of `eq_u32_via_to_mask`
+
+- **Added:** `simd_masking_ops::eq_u32_via_lane_to_mask(index, table, local, out_words)`, re-exported from `ndarray::simd`; row i is set when `index[i] < table.len()` and `table[index[i]] == local[i]`. Parity group 0xD41.
+- **Why:** lance-graph D-ASM-11A (`.claude/plans/wcoj-closing-atoms-v1.md` §2). A cyclic join's closing atom compares a row's own lane with a foreign lane read through an address lane; with a constant compare it needs one disjunct per value (measured there: 66 ops at |D| = 16, 1,026 at 256). Consumer: lance-graph-mask-risc `run_pred`.
+- **Scalar, stated:** the address comes out of another array. The sibling's note said "no vector gather on any backend"; corrected: an `unsafe`, unbounded `f32` gather exists (`F32x16::gather`), but no bounds-masked `u32` gather-and-compare wrapper, which the zero-fallback contract needs. Whether one pays is unmeasured (lance-graph TD-NO-BOUNDED-U32-GATHER-1).
+- **Verified:** 5 unit tests + doctest; disable run (compare every row against `local[0]`) turned 2 of them red; `simd-masking-parity` OK on the v4 arm (`avx512f=true`), which checks portability of the one scalar body, not a backend divergence; clippy `-D warnings` clean.
+
 ## 2026-10-14 — Haiku cards for supervised harvest and mapping
 
 - Five Haiku cards added (`harvest-scout`, `census-counter`, `quote-harvester`, `substrate-mapper`, `spec-editor`); rules in `.claude/rules/agent-model-tiers.md`, CLAUDE.md Agent Protocol item 7. No `guarded-executor`: only the orchestrator compiles here.

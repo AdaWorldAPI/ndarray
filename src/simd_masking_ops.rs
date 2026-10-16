@@ -3211,13 +3211,7 @@ pub fn eq_u32_via_to_mask(index: &[u32], table: &[u32], v: u32, out_words: &mut 
 #[inline]
 pub fn eq_u32_via_lane_to_mask(index: &[u32], table: &[u32], local: &[u32], out_words: &mut [u64]) {
     let n = index.len();
-    assert_eq!(
-        local.len(),
-        n,
-        "eq_u32_via_lane_to_mask: local.len()={} != index.len()={}",
-        local.len(),
-        n
-    );
+    assert_eq!(local.len(), n, "eq_u32_via_lane_to_mask: local.len()={} != index.len()={}", local.len(), n);
     let words = mask_words_for(n);
     assert!(
         out_words.len() >= words,
@@ -7127,7 +7121,9 @@ mod tests {
         for &n in &[0usize, 1, 63, 64, 65, 130, 1000] {
             let mut seed = 0x5EED_0D41_u64 ^ n as u64;
             let table_len = 13usize;
-            let table: Vec<u32> = (0..table_len).map(|_| (splitmix(&mut seed) % 4) as u32).collect();
+            let table: Vec<u32> = (0..table_len)
+                .map(|_| (splitmix(&mut seed) % 4) as u32)
+                .collect();
             let idx: Vec<u32> = (0..n)
                 .map(|i| {
                     if i % 5 == 0 {
