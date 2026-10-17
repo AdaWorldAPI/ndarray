@@ -1,3 +1,10 @@
+## 2026-10-17 — `causal_diff::CausalEdge64` packs the canonical CE64 layout
+
+- **Change:** `CausalEdge64::pack` writes lance-graph's canonical regions (`causal_edge::layout`): S = block (0..7), P = projection code (8..15), O = verb code (16..23), NARS frequency u8 at 24..31, confidence u8 at 32..39; bits 40..63 stay 0. `block()`, `projection()`, `verb()`, `frequency()` and `confidence()` read those regions. Before, the word used its own layout (block at 58, projection at 54, verb at 52, row at 36, L1 at 20, 10-bit truth at 10/0), so the same type name meant two different words in the two repos.
+- **Kept, not renamed:** `row_idx()` and `l1_distance()` keep their signatures, are `#[deprecated]` and return 0. Row index and L1 distance have no field in the canonical word and stay in `WeightEdge`. Truth precision drops from 10 to 8 bits; the round-trip test's 0.002 tolerance still holds.
+- **Tests:** `causal_edge64_packs_the_canonical_regions`, `row_and_l1_do_not_change_the_word`. Disable runs, each red: block back at 58, row written into bits 40.., frequency at 10.
+- **Sibling:** the jina `pack_edge` rewrite (#365) is the same restoration for `hpc::jina::causal`. Still to do: `p64_bridge::causal_edge_compat`, the `entropy_ladder` Pearl bit order and spare-bit docs, the four OGIT leaf `basinSignature` values.
+
 ## 2026-10-14 — Haiku cards for supervised harvest and mapping
 
 - Five Haiku cards added (`harvest-scout`, `census-counter`, `quote-harvester`, `substrate-mapper`, `spec-editor`); rules in `.claude/rules/agent-model-tiers.md`, CLAUDE.md Agent Protocol item 7. No `guarded-executor`: only the orchestrator compiles here.

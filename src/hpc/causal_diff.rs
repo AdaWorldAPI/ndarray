@@ -131,20 +131,19 @@ pub struct WeightEdge {
 // CausalEdge64 — compact u64 packed edge for L1/p64 operations
 // ============================================================================
 
-/// Compact causal edge packed into a single `u64`.
-///
-/// Layout (64 bits):
+/// Compact causal edge packed into a single `u64`, in the canonical
+/// CausalEdge64 layout (lance-graph `causal_edge::layout`):
 /// ```text
-///   [63:58]  block       6 bits → 0–63 layers
-///   [57:54]  projection  4 bits → Projection enum (0–9)
-///   [53:52]  verb        2 bits → Verb enum (0–2)
-///   [51:36]  row_idx    16 bits → 0–65535 rows
-///   [35:20]  l1_dist    16 bits → L1 distance (capped at 65535)
-///   [19:10]  freq       10 bits → NARS frequency × 1023
-///   [ 9: 0]  conf       10 bits → NARS confidence × 1023
+///   [ 7: 0]  S          block (layer)
+///   [15: 8]  P          projection code (Projection enum, 0–9)
+///   [23:16]  O          verb code (Becomes 0, Supports 1, Contradicts 2)
+///   [31:24]  frequency  NARS frequency × 255
+///   [39:32]  confidence NARS confidence × 255
+///   [63:40]  contract   left at its default (0)
 /// ```
 ///
-/// Total: 6 + 4 + 2 + 16 + 16 + 10 + 10 = 64 bits.
+/// The row index and L1 distance have no field in that word; they stay in
+/// the [`WeightEdge`] the edge was packed from.
 ///
 /// Fits in a register. Can be used as a p64 `Palette64` row key:
 /// `edge.0 & palette.rows[i]` → POPCNT → attention score.
@@ -156,59 +155,61 @@ impl CausalEdge64 {
     /// Pack a WeightEdge into a compact u64.
     #[inline]
     pub fn pack(edge: &WeightEdge) -> Self {
-        let block = (edge.block.unwrap_or(0) & 0x3F) as u64;
+        let block = (edge.block.unwrap_or(0) & 0xFF) as u64;
         let proj = projection_to_u4(&edge.projection) as u64;
         let verb = match edge.verb {
             Verb::Becomes => 0u64,
             Verb::Supports => 1,
             Verb::Contradicts => 2,
         };
-        let row = (edge.row_idx as u64) & 0xFFFF;
-        let l1 = (edge.l1_distance.min(65535) as u64) & 0xFFFF;
-        let freq = ((edge.truth.frequency * 1023.0).round() as u64) & 0x3FF;
-        let conf = ((edge.truth.confidence * 1023.0).round() as u64) & 0x3FF;
+        let freq = ((edge.truth.frequency.clamp(0.0, 1.0) * 255.0).round() as u64) & 0xFF;
+        let conf = ((edge.truth.confidence.clamp(0.0, 1.0) * 255.0).round() as u64) & 0xFF;
 
-        Self((block << 58) | (proj << 54) | (verb << 52) | (row << 36) | (l1 << 20) | (freq << 10) | conf)
+        Self(block | (proj << 8) | (verb << 16) | (freq << 24) | (conf << 32))
     }
 
     /// Unpack block number.
     #[inline]
     pub fn block(self) -> u32 {
-        ((self.0 >> 58) & 0x3F) as u32
+        (self.0 & 0xFF) as u32
     }
     /// Unpack projection type.
     #[inline]
     pub fn projection(self) -> Projection {
-        u4_to_projection(((self.0 >> 54) & 0xF) as u8)
+        u4_to_projection(((self.0 >> 8) & 0xFF) as u8)
     }
     /// Unpack verb.
     #[inline]
     pub fn verb(self) -> Verb {
-        match (self.0 >> 52) & 0x3 {
+        match (self.0 >> 16) & 0xFF {
             0 => Verb::Becomes,
             1 => Verb::Supports,
             _ => Verb::Contradicts,
         }
     }
-    /// Unpack row index.
+    /// The canonical word has no row field, so this always returns 0. Read
+    /// `WeightEdge::row_idx`.
+    #[deprecated(note = "CausalEdge64 has no row field; read WeightEdge::row_idx")]
     #[inline]
     pub fn row_idx(self) -> u32 {
-        ((self.0 >> 36) & 0xFFFF) as u32
+        0
     }
-    /// Unpack L1 distance.
+    /// The canonical word has no L1 field, so this always returns 0. Read
+    /// `WeightEdge::l1_distance`.
+    #[deprecated(note = "CausalEdge64 has no L1 field; read WeightEdge::l1_distance")]
     #[inline]
     pub fn l1_distance(self) -> u32 {
-        ((self.0 >> 20) & 0xFFFF) as u32
+        0
     }
     /// Unpack NARS frequency.
     #[inline]
     pub fn frequency(self) -> f32 {
-        ((self.0 >> 10) & 0x3FF) as f32 / 1023.0
+        ((self.0 >> 24) & 0xFF) as f32 / 255.0
     }
     /// Unpack NARS confidence.
     #[inline]
     pub fn confidence(self) -> f32 {
-        (self.0 & 0x3FF) as f32 / 1023.0
+        ((self.0 >> 32) & 0xFF) as f32 / 255.0
     }
     /// Reconstruct NarsTruth.
     #[inline]
@@ -1562,8 +1563,6 @@ mod tests {
         assert_eq!(packed.block(), 17);
         assert_eq!(packed.projection(), Projection::Q);
         assert_eq!(packed.verb(), Verb::Becomes);
-        assert_eq!(packed.row_idx(), 42);
-        assert_eq!(packed.l1_distance(), 1234);
         assert!((packed.frequency() - 0.72).abs() < 0.002);
         assert!((packed.confidence() - 0.95).abs() < 0.002);
 
