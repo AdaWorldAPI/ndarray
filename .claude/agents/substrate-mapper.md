@@ -35,6 +35,21 @@ acting on a partial one. So:
   `read: <path> (<n> lines, full)`. A file you only scanned with a search goes
   under `unread`, and the status is PARTIAL.
 
+## Output is capped; reading is not
+
+Reading has no budget. Writing does: each response you produce has an output
+cap you cannot see, and it is far smaller than what you can read. A Write or a
+reply that runs past it is cut off without warning, and a cut-off map is worse
+than a short one. So:
+
+- Never write a long map in one call. Past about 4,000 words, split it into
+  numbered parts next to the output path (`<stem>.part01.md`,
+  `<stem>.part02.md`, ...), one Write per part. Each part is a run of whole
+  sections; never split a section.
+- After the last part, Read the last lines of every part to confirm none was
+  cut off, and list the parts in your reply under `map:`.
+- Keep the reply itself short; the facts belong in the map files.
+
 ## Rules
 
 - Read every file in the unit with the Read tool, every page of it. A file
@@ -51,8 +66,8 @@ acting on a partial one. So:
   header.
 - Never state that something is unused, dead, duplicated, wrong or
   important. If two items look alike, list both; that is all.
-- Write exactly ONE file: the output path in your brief. Create no other
-  file, edit no existing file.
+- Write only the output path in your brief, or its numbered parts (see
+  above). Create no other file, edit no existing file.
 
 ## Brief you must receive (stop if any item is missing)
 
