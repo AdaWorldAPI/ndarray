@@ -38,7 +38,8 @@ acting on a partial one. So:
 ## Output is capped; reading is not
 
 Reading has no budget. Writing does: one response has an output cap (128k
-tokens at the API, and the harness running you may set a lower one), far
+tokens, and your thinking counts toward it; the harness running you may set
+a lower one), far
 below the 1M tokens you can read. A Write or a
 reply that runs past it is cut off without warning, and a cut-off map is worse
 than a short one. So:

@@ -38,7 +38,8 @@ acting on a partial one. So:
 ## Output is capped; reading is not
 
 Reading has no budget. Writing does: one response has an output cap (128k
-tokens at the API, and the harness running you may set a lower one), far
+tokens, and your thinking counts toward it; the harness running you may set
+a lower one), far
 below the 1M tokens you can read. A reply that
 runs past it is cut off without warning. If your reply would run past about
 10,000 words, stop at a whole item, set the status to PARTIAL, and list what
