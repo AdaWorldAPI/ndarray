@@ -185,6 +185,38 @@ mod tests {
         assert!((exp - 0.82).abs() < 0.02);
     }
 
+    // The canonical CausalEdge64 contract (lance-graph `causal_edge::layout`):
+    // 40..42 Pearl, 43..45 orientation, 46..49 signed inference mantissa,
+    // 50..52 plasticity, 53..58 W, 59..63 epistemic state.
+    const ORIENT: (u32, u64) = (43, 0x7);
+    const INFER: (u32, u64) = (46, 0xF);
+    const PLAST: (u32, u64) = (50, 0x7);
+    const W: (u32, u64) = (53, 0x3F);
+    const EPI: (u32, u64) = (59, 0x1F);
+
+    fn field(edge: u64, (shift, mask): (u32, u64)) -> u64 {
+        (edge >> shift) & mask
+    }
+
+    #[test]
+    fn pack_edge_writes_the_canonical_contract() {
+        for temporal in [0u16, 42, 1234, 3072, 4095] {
+            let edge = pack_edge(42, 187, 91, 0.75, 0.60, 0b111, temporal);
+            assert_eq!(field(edge, ORIENT), 0, "orientation is Core, temporal {temporal}");
+            assert_eq!(field(edge, INFER), 0, "an observation carries the neutral mantissa, temporal {temporal}");
+            assert_eq!(field(edge, PLAST), 0b100, "plasticity sits at 50..52, temporal {temporal}");
+            assert_eq!(field(edge, W), 0, "temporal must not leak into W, temporal {temporal}");
+            assert_eq!(field(edge, EPI), 0, "temporal must not leak into the epistemic state, temporal {temporal}");
+        }
+    }
+
+    #[test]
+    fn edge_plasticity_reads_bits_50_to_52() {
+        assert_eq!(edge_plasticity(0b101u64 << 50), 0b101);
+        // Bit 49 is the mantissa's top bit, not plasticity.
+        assert_eq!(edge_plasticity(1u64 << 49), 0);
+    }
+
     #[test]
     fn test_pearl_mask_distance() {
         use super::super::codec::{Base17Token, JinaPalette, BASE_DIM};
