@@ -35,10 +35,11 @@ acting on a partial one. So:
 
 ## Output is capped; reading is not
 
-Reading has no budget. Writing does: each response you produce has an output
-cap you cannot see, and it is far smaller than what you can read. A reply that
+Reading has no budget. Writing does: one response has an output cap (128k
+tokens at the API, and the harness running you may set a lower one), far
+below the 1M tokens you can read. A reply that
 runs past it is cut off without warning. If your reply would run past about
-4,000 words, stop at a whole item, set the status to PARTIAL, and list what
+10,000 words, stop at a whole item, set the status to PARTIAL, and list what
 you did not report under a `remaining:` line, so the orchestrator can split
 the brief. Never shorten the reading to fit the output.
 
