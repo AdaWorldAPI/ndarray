@@ -25,6 +25,9 @@ pub struct AttentionEdge {
     pub layer: u8,
     pub head: u8,
     pub edge: u64,
+    /// Sequence position when the edge was emitted. The canonical CausalEdge64
+    /// word has no temporal field, so the position lives here.
+    pub position: u16,
 }
 
 /// KV cache for one layer (GQA: only 8 KV heads cached, not 32).
@@ -236,6 +239,7 @@ impl OpenChatEngine {
                             layer: layer_idx as u8,
                             head: qh as u8,
                             edge,
+                            position: self.seq_len as u16,
                         });
                     }
                 }

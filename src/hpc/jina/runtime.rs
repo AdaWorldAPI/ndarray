@@ -195,7 +195,10 @@ impl ModelRuntime {
         (leaf, HhtlLevel::Leaf)
     }
 
-    /// Pack two tokens + a predicate into a CausalEdge64.
+    /// Pack two tokens + a predicate into a CausalEdge64 (canonical layout).
+    ///
+    /// `temporal` is not stored: the word has no temporal field. Keep the
+    /// position in the row that holds the edge.
     #[inline]
     pub fn pack_spo_edge(
         &self, subject_token: usize, predicate_token: usize, object_token: usize, frequency: f32, confidence: f32,
@@ -377,7 +380,7 @@ mod tests {
     fn test_pack_spo_edge() {
         let rt = &*GPT2;
         let edge = rt.pack_spo_edge(100, 200, 300, 0.8, 0.6, 42);
-        assert_eq!(causal::edge_temporal(edge), 42);
+        assert_eq!(causal::edge_plasticity(edge), 0b100);
         assert!((causal::edge_freq(edge) - 0.8).abs() < 0.01);
     }
 

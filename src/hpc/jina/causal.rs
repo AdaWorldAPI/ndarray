@@ -1,19 +1,28 @@
 //! CausalEdge64 integration for Jina token triples.
 //!
 //! Every SPO triple from token palette indices packs into one u64
-//! with NARS truth, Pearl hierarchy, plasticity, and temporal index.
+//! with NARS truth, Pearl hierarchy and plasticity, in the canonical
+//! CausalEdge64 layout (lance-graph `causal_edge::layout`). A temporal
+//! position has no field in that word; callers carry it in their row.
 
 use super::codec::JinaPalette;
 
 /// Pack an SPO triple + metadata into a CausalEdge64 (one u64).
 ///
-/// Bit layout:
+/// Bit layout (canonical, lance-graph `causal_edge::layout`):
 /// ```text
-/// [S:8][P:8][O:8][freq:8][conf:8][pearl:3][dir:3][inf:3][plast:3][temporal:12]
+/// 0..23 S/P/O palette codes | 24..31 freq | 32..39 conf | 40..42 Pearl
+/// 43..45 orientation (0 = Core) | 46..49 signed inference mantissa (0 = neutral)
+/// 50..52 plasticity | 53..58 W (0 = no corpus anchor) | 59..63 epistemic state
 /// ```
+///
+/// `temporal` is accepted for source compatibility and not stored: the
+/// canonical word has no temporal field (bits 52..63 belong to plasticity,
+/// W and the epistemic state). Keep the position in the row that holds the
+/// edge, as `AttentionEdge::position` does.
 #[inline(always)]
 pub fn pack_edge(
-    s_palette: u8, p_palette: u8, o_palette: u8, frequency: f32, confidence: f32, pearl_mask: u8, temporal: u16,
+    s_palette: u8, p_palette: u8, o_palette: u8, frequency: f32, confidence: f32, pearl_mask: u8, _temporal: u16,
 ) -> u64 {
     let f_u8 = (frequency.clamp(0.0, 1.0) * 255.0) as u8;
     let c_u8 = (confidence.clamp(0.0, 1.0) * 255.0) as u8;
@@ -24,10 +33,9 @@ pub fn pack_edge(
         | ((f_u8 as u64) << 24)
         | ((c_u8 as u64) << 32)
         | (((pearl_mask & 0x7) as u64) << 40)
-        | (0b100u64 << 43) // default direction: S→O
-        | (0b001u64 << 46) // default inference: observation
-        | (0b100u64 << 49) // default plasticity: hot
-        | (((temporal & 0xFFF) as u64) << 52)
+        // 43..45 orientation: Core (0). 46..49 mantissa: neutral (0), an
+        // observation is not an inference. 53..63 W and epistemic state: 0.
+        | (0b100u64 << 50) // plasticity: hot
 }
 
 /// Unpack S palette index from a CausalEdge64.
@@ -66,16 +74,19 @@ pub fn edge_pearl(edge: u64) -> u8 {
     ((edge >> 40) & 0x7) as u8
 }
 
-/// Unpack temporal index (12 bits: 0-4095).
+/// The canonical CausalEdge64 word has no temporal field, so this always
+/// returns 0. Read the position from the row that holds the edge
+/// (`AttentionEdge::position`).
+#[deprecated(note = "CausalEdge64 has no temporal field; read AttentionEdge::position")]
 #[inline(always)]
-pub fn edge_temporal(edge: u64) -> u16 {
-    ((edge >> 52) & 0xFFF) as u16
+pub fn edge_temporal(_edge: u64) -> u16 {
+    0
 }
 
-/// Unpack plasticity (3 bits).
+/// Unpack plasticity (3 bits, 50..52).
 #[inline(always)]
 pub fn edge_plasticity(edge: u64) -> u8 {
-    ((edge >> 49) & 0x7) as u8
+    ((edge >> 50) & 0x7) as u8
 }
 
 /// Pearl-masked distance between two edges using palette distance table.
@@ -145,19 +156,14 @@ mod tests {
         assert!((edge_freq(edge) - 0.75).abs() < 0.01);
         assert!((edge_conf(edge) - 0.60).abs() < 0.01);
         assert_eq!(edge_pearl(edge), 0b111);
-        assert_eq!(edge_temporal(edge), 1234);
+        assert_eq!(edge_plasticity(edge), 0b100);
     }
 
     #[test]
-    fn test_temporal_sort() {
-        let e1 = pack_edge(0, 0, 0, 0.5, 0.3, 0b111, 100);
-        let e2 = pack_edge(0, 0, 0, 0.5, 0.3, 0b111, 200);
-        let e3 = pack_edge(0, 0, 0, 0.5, 0.3, 0b111, 50);
-        let mut edges = vec![e2, e3, e1];
-        edges.sort(); // native u64 sort
-        assert_eq!(edge_temporal(edges[0]), 50);
-        assert_eq!(edge_temporal(edges[1]), 100);
-        assert_eq!(edge_temporal(edges[2]), 200);
+    fn temporal_does_not_change_the_word() {
+        let a = pack_edge(0, 0, 0, 0.5, 0.3, 0b111, 50);
+        let b = pack_edge(0, 0, 0, 0.5, 0.3, 0b111, 4095);
+        assert_eq!(a, b, "the canonical word has no temporal field");
     }
 
     #[test]
