@@ -1571,6 +1571,39 @@ mod tests {
         assert_eq!(std::mem::size_of::<CausalEdge64>(), 8);
     }
 
+    fn weight_edge(block: u32, row_idx: u32, l1_distance: u32, verb: Verb) -> WeightEdge {
+        WeightEdge {
+            tensor_name: String::new(),
+            row_idx,
+            block: Some(block),
+            projection: Projection::FfnGate,
+            layer_type: LayerType::Attention,
+            verb,
+            l1_distance,
+            truth: NarsTruth::new(0.72, 0.95),
+        }
+    }
+
+    // The canonical CausalEdge64 regions (lance-graph `causal_edge::layout`):
+    // 0..23 S/P/O codes, 24..31 frequency, 32..39 confidence, 40..63 contract.
+    #[test]
+    fn causal_edge64_packs_the_canonical_regions() {
+        let w = CausalEdge64::pack(&weight_edge(17, 42, 1234, Verb::Contradicts)).0;
+        assert_eq!(w & 0xFF, 17, "S = block");
+        assert_eq!((w >> 8) & 0xFF, 5, "P = projection code (FfnGate)");
+        assert_eq!((w >> 16) & 0xFF, 2, "O = verb code (Contradicts)");
+        assert_eq!((w >> 24) & 0xFF, (0.72f32 * 255.0).round() as u64, "F at 24..31");
+        assert_eq!((w >> 32) & 0xFF, (0.95f32 * 255.0).round() as u64, "C at 32..39");
+        assert_eq!(w >> 40, 0, "the 24-bit contract stays at its default");
+    }
+
+    #[test]
+    fn row_and_l1_do_not_change_the_word() {
+        let a = CausalEdge64::pack(&weight_edge(3, 1, 10, Verb::Becomes));
+        let b = CausalEdge64::pack(&weight_edge(3, 60_000, 65_000, Verb::Becomes));
+        assert_eq!(a, b, "row and L1 stay in WeightEdge, not in the word");
+    }
+
     #[test]
     fn test_causal_edge64_all_projections() {
         for (proj, val) in [
