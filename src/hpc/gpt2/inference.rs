@@ -35,6 +35,9 @@ pub struct AttentionEdge {
     pub head: u8,
     /// The packed CausalEdge64 (subject=query token, predicate=head, object=key token).
     pub edge: u64,
+    /// Sequence position when the edge was emitted. The canonical CausalEdge64
+    /// word has no temporal field, so the position lives here.
+    pub position: u16,
 }
 
 /// GPT-2 inference engine.
@@ -290,6 +293,7 @@ impl Gpt2Engine {
                                 layer: layer_idx as u8,
                                 head: head as u8,
                                 edge,
+                                position: self.seq_len as u16,
                             });
                         }
                     }
