@@ -563,13 +563,22 @@ pub fn simd_exp_f32(x: F32x16) -> F32x16 {
 
     // Range reduction: n = round(x / ln2), r = x - n * ln2, with ln2 split
     // Cody-Waite style. LN2_HI has 9 significant bits, so n * LN2_HI is exact
-    // for |n| < 2^15 and x - n * LN2_HI is exact by Sterbenz's lemma, even
-    // where `mul_add` is not fused. A single-constant `x - n * ln2` rounds
-    // n * ln2 at |x| ~ 90, where one ulp is ~7.6e-6: that error was larger
-    // than the polynomial's.
-    let n = (x * inv_ln2).round();
-    let r = (-n).mul_add(F32x16::splat(LN2_HI), x);
-    let r = (-n).mul_add(F32x16::splat(LN2_LO), r);
+    // for |n| < 2^15 and x - n * LN2_HI is exact by Sterbenz's lemma. A
+    // single-constant `x - n * ln2` rounds n * ln2 at |x| ~ 90, where one ulp
+    // is ~7.6e-6: that error was larger than the polynomial's.
+    //
+    // Plain `*` and `+`, never `mul_add`: wasm's `mul_add` is unfused (or,
+    // with relaxed-simd, implementation-defined) while every other backend
+    // fuses, so `mul_add` here would make the result differ by an ulp
+    // between wasm and native. Unfused ops round identically on every
+    // backend (the same rule as `gemm_f64_tiled` in `simd_ops`), and the
+    // split above makes the fused form unnecessary for accuracy.
+    // floor(t + 0.5), not round(): `round` breaks ties to even on AVX-512,
+    // NEON and wasm but away from zero on AVX2, scalar and nightly, so a tie
+    // would pick a different n per backend. floor is the same everywhere.
+    let n = (x * inv_ln2 + F32x16::splat(0.5)).floor();
+    let r = x - n * F32x16::splat(LN2_HI);
+    let r = r - n * F32x16::splat(LN2_LO);
 
     // Polynomial: exp(r) ≈ 1 + r + r²/2 + r³/6 + r⁴/24 + r⁵/120
     let c2 = F32x16::splat(0.5);
@@ -577,11 +586,7 @@ pub fn simd_exp_f32(x: F32x16) -> F32x16 {
     let c4 = F32x16::splat(1.0 / 24.0);
     let c5 = F32x16::splat(1.0 / 120.0);
 
-    let poly = r.mul_add(c5, c4);
-    let poly = r.mul_add(poly, c3);
-    let poly = r.mul_add(poly, c2);
-    let poly = r.mul_add(poly, one);
-    let poly = r.mul_add(poly, one);
+    let poly = one + r * (one + r * (c2 + r * (c3 + r * (c4 + r * c5))));
 
     // Reconstruct: exp(x) = 2^n * poly. 2^n is only a normal f32 for n in
     // [-126, 127], but n reaches 128 near the overflow edge and about -159
@@ -1744,6 +1749,50 @@ mod tests {
         let arr = result.to_array();
         for &v in &arr {
             assert_eq!(v, f32::INFINITY, "exp(200) must overflow to +Inf, got {}", v);
+        }
+    }
+
+    /// The exact op sequence of `simd_exp_f32`, one lane, in plain scalar
+    /// f32. Scalar `*`, `+` and `floor` round identically on every target,
+    /// so a vector kernel that matches this bit for bit gives the same bits
+    /// on every backend, wasm included.
+    fn exp_reference_lane(x: f32) -> f32 {
+        if x.is_nan() {
+            return f32::NAN;
+        }
+        let xc = x.max(-110.0).min(super::OVERFLOW_X);
+        let n = (xc * (1.0 / core::f32::consts::LN_2) + 0.5).floor();
+        let r = xc - n * super::LN2_HI;
+        let r = r - n * super::LN2_LO;
+        let poly = 1.0 + r * (1.0 + r * (0.5 + r * (1.0 / 6.0 + r * (1.0 / 24.0 + r * (1.0 / 120.0)))));
+        let (n, post) = if n > 127.0 {
+            (n - 1.0, 2.0)
+        } else if n < -126.0 {
+            (n + 64.0, super::TWO_POW_NEG_64)
+        } else {
+            (n, 1.0)
+        };
+        let scale = f32::from_bits((((n as i32).clamp(-126, 127) + 127) as u32) << 23);
+        poly * scale * post
+    }
+
+    /// FAILS IF: `simd_exp_f32` uses a fused or tie-dependent operation, so
+    /// its bits could differ between backends.
+    #[test]
+    fn simd_exp_f32_matches_the_unfused_scalar_sequence_bit_for_bit() {
+        let mut xs: Vec<f32> = (0..=20_000).map(|i| -110.0 + i as f32 * 0.01).collect();
+        // ties of x/ln2 + 0.5, the overflow edge, specials
+        xs.extend((-150..=128).map(|k| (k as f32 + 0.5) * core::f32::consts::LN_2));
+        xs.extend([f32::INFINITY, f32::NEG_INFINITY, super::OVERFLOW_X, 88.72, -103.9, 0.0, -0.0, f32::MIN_POSITIVE]);
+        while xs.len() % 16 != 0 {
+            xs.push(1.0);
+        }
+        for chunk in xs.chunks_exact(16) {
+            let got = simd_exp_f32(F32x16::from_slice(chunk)).to_array();
+            for (&x, g) in chunk.iter().zip(got) {
+                let want = exp_reference_lane(x);
+                assert_eq!(g.to_bits(), want.to_bits(), "exp({x}): got {g:e}, want {want:e}");
+            }
         }
     }
 
