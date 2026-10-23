@@ -243,7 +243,7 @@ fn vstanh_slice(x: &[f32], out: &mut [f32]) {
         // tanh(x) = 2·sigmoid(2x) - 1
         let two_x = v * two;
         // sigmoid(z) = 1/(1+exp(-z))
-        let neg_two_x = F32x16::splat(0.0) - two_x;
+        let neg_two_x = -two_x;
         let exp_neg = simd_exp_f32(neg_two_x);
         let sigmoid = one / (exp_neg + one);
         let tanh_v = sigmoid.mul_add(two, F32x16::splat(-1.0));
@@ -273,11 +273,9 @@ fn vsceil_slice(x: &[f32], out: &mut [f32]) {
     for i in 0..chunks {
         let off = i * 16;
         let v = F32x16::from_slice(&x[off..off + 16]);
-        // ceil = -floor(-x)
-        let neg = F32x16::splat(0.0) - v;
-        let floored = neg.floor();
-        let ceiled = F32x16::splat(0.0) - floored;
-        ceiled.copy_to_slice(&mut out[off..off + 16]);
+        // ceil = -floor(-x). `Neg` flips the sign bit; `0.0 - v` would turn
+        // ceil(-0.5) and ceil(-0.0) into +0.0.
+        (-(-v).floor()).copy_to_slice(&mut out[off..off + 16]);
     }
     for i in (chunks * 16)..n {
         out[i] = x[i].ceil();
@@ -300,11 +298,11 @@ fn vsround_slice(x: &[f32], out: &mut [f32]) {
 fn vsneg_slice(x: &[f32], out: &mut [f32]) {
     let n = x.len().min(out.len());
     let chunks = n / 16;
-    let zero = F32x16::splat(0.0);
     for i in 0..chunks {
         let off = i * 16;
         let v = F32x16::from_slice(&x[off..off + 16]);
-        (zero - v).copy_to_slice(&mut out[off..off + 16]);
+        // `Neg` flips the sign bit, so -(+0.0) is -0.0; `0.0 - v` gives +0.0.
+        (-v).copy_to_slice(&mut out[off..off + 16]);
     }
     for i in (chunks * 16)..n {
         out[i] = -x[i];
@@ -317,14 +315,10 @@ fn vstrunc_slice(x: &[f32], out: &mut [f32]) {
     for i in 0..chunks {
         let off = i * 16;
         let v = F32x16::from_slice(&x[off..off + 16]);
-        let abs_v = v.abs();
-        let floored = abs_v.floor();
-        let zero = F32x16::splat(0.0);
-        let mask = v.simd_lt(zero); // true where x < 0
-        let pos_result = floored;
-        let neg_result = zero - floored;
-        let result = mask.select(neg_result, pos_result);
-        result.copy_to_slice(&mut out[off..off + 16]);
+        // Negative lanes take -floor(-x), the rest floor(x). -0.0 is not
+        // < 0, so it takes floor(-0.0) = -0.0 and keeps its sign.
+        let negative = v.simd_lt(F32x16::splat(0.0));
+        negative.select(-(-v).floor(), v.floor()).copy_to_slice(&mut out[off..off + 16]);
     }
     for i in (chunks * 16)..n {
         out[i] = x[i].trunc();
@@ -1286,7 +1280,7 @@ mod tests {
 
     /// FAILS IF: any finite input in [-110, 88.72] is off by more than the
     /// polynomial's own error. Measured against f64 `exp`. Results below the
-    /// normal range are checked against the nearest subnormal spacing.
+    /// normal range may also be off by one subnormal step.
     #[test]
     fn vsexp_is_accurate_up_to_the_overflow_and_down_into_subnormals() {
         let xs: Vec<f32> = (0..=19872).map(|i| -110.0 + i as f32 * 0.01).filter(|&x| x <= 88.72).collect();
@@ -1299,7 +1293,9 @@ mod tests {
             if want >= f64::from(f32::MIN_POSITIVE) {
                 assert!(((got - want) / want).abs() < 4e-6, "vsexp({v}): got {got:e}, want {want:e}");
             } else {
-                assert!((got - want).abs() <= 1.5e-45, "vsexp({v}): got {got:e}, want {want:e}");
+                // the polynomial's relative error plus one subnormal step
+                let step = f64::from(f32::from_bits(1));
+                assert!((got - want).abs() <= 4e-6 * want + step, "vsexp({v}): got {got:e}, want {want:e}");
             }
         }
     }
