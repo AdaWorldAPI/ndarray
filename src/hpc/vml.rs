@@ -318,7 +318,9 @@ fn vstrunc_slice(x: &[f32], out: &mut [f32]) {
         // Negative lanes take -floor(-x), the rest floor(x). -0.0 is not
         // < 0, so it takes floor(-0.0) = -0.0 and keeps its sign.
         let negative = v.simd_lt(F32x16::splat(0.0));
-        negative.select(-(-v).floor(), v.floor()).copy_to_slice(&mut out[off..off + 16]);
+        negative
+            .select(-(-v).floor(), v.floor())
+            .copy_to_slice(&mut out[off..off + 16]);
     }
     for i in (chunks * 16)..n {
         out[i] = x[i].trunc();
@@ -1233,7 +1235,9 @@ mod tests {
 
     /// Checks `kernel` against `scalar` bit for bit (NaN only as NaN) for
     /// every length 0..=40, cycling through `EDGES`.
-    fn assert_bitwise_like_scalar(name: &str, kernel: fn(ArrayView1<'_, f32>, ArrayViewMut1<'_, f32>), scalar: fn(f32) -> f32) {
+    fn assert_bitwise_like_scalar(
+        name: &str, kernel: fn(ArrayView1<'_, f32>, ArrayViewMut1<'_, f32>), scalar: fn(f32) -> f32,
+    ) {
         for n in 0..=40usize {
             let x = Array1::from_iter((0..n).map(|i| EDGES[i % EDGES.len()]));
             let mut out = Array1::<f32>::zeros(n);
@@ -1243,7 +1247,12 @@ mod tests {
                 if want.is_nan() {
                     assert!(got.is_nan(), "{name}({}) n={n} i={i}: got {got}", x[i]);
                 } else {
-                    assert_eq!(got.to_bits(), want.to_bits(), "{name}({}) n={n} i={i}: got {got:?}, want {want:?}", x[i]);
+                    assert_eq!(
+                        got.to_bits(),
+                        want.to_bits(),
+                        "{name}({}) n={n} i={i}: got {got:?}, want {want:?}",
+                        x[i]
+                    );
                 }
             }
         }
@@ -1283,7 +1292,10 @@ mod tests {
     /// normal range may also be off by one subnormal step.
     #[test]
     fn vsexp_is_accurate_up_to_the_overflow_and_down_into_subnormals() {
-        let xs: Vec<f32> = (0..=19872).map(|i| -110.0 + i as f32 * 0.01).filter(|&x| x <= 88.72).collect();
+        let xs: Vec<f32> = (0..=19872)
+            .map(|i| -110.0 + i as f32 * 0.01)
+            .filter(|&x| x <= 88.72)
+            .collect();
         let x = Array1::from(xs);
         let mut out = Array1::<f32>::zeros(x.len());
         vsexp(x.view(), out.view_mut());

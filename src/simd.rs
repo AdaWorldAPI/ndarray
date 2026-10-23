@@ -531,7 +531,7 @@ pub fn f32_to_bf16_batch(input: &[f32], output: &mut [u16]) {
 /// Max error ~2 ULP in [-10, 10]. Uses the standard range-reduction
 /// approach: exp(x) = 2^n * exp(r) where r = x - n*ln(2).
 ///
-/// Domain: inputs above ln(f32::MAX) return +Inf, and inputs are clamped
+/// Domain: inputs from ln(f32::MAX) up return +Inf, and inputs are clamped
 /// to [-110, ln(f32::MAX)] before reduction, so -Inf and anything below
 /// about -103.9 return +0.0 and the range in between returns subnormals.
 /// The clamp also keeps `n` far from `i32` overflow in `pow2n_from_int`.
@@ -555,10 +555,10 @@ pub fn simd_exp_f32(x: F32x16) -> F32x16 {
     // Captured BEFORE the clamp because simd_clamp destroys NaN lanes.
     let nan_mask = x.simd_ne(x);
 
-    // Lanes above ln(f32::MAX) overflow; they are set to +Inf at the end.
-    // Below -110 the result rounds to +0.0 anyway, so clamping there only
-    // keeps `n` in range.
-    let overflow = x.simd_gt(F32x16::splat(OVERFLOW_X));
+    // At the upper clamp the true result already exceeds f32::MAX, so the
+    // final product overflows to +Inf for every input from there up. Below
+    // -110 the result rounds to +0.0 anyway, so clamping there only keeps
+    // `n` in range.
     let x = x.simd_clamp(F32x16::splat(-110.0_f32), F32x16::splat(OVERFLOW_X));
 
     // Range reduction: n = round(x / ln2), r = x - n * ln2, with ln2 split
@@ -594,13 +594,12 @@ pub fn simd_exp_f32(x: F32x16) -> F32x16 {
     let result = poly * pow2n_from_int(n);
     let result = high.select(result * F32x16::splat(2.0), result);
     let result = low.select(result * F32x16::splat(TWO_POW_NEG_64), result);
-    let result = overflow.select(F32x16::splat(f32::INFINITY), result);
 
     // Restore NaN in lanes where the input was NaN (clamp had destroyed them).
     nan_mask.select(F32x16::splat(f32::NAN), result)
 }
 
-/// ln(f32::MAX): above it `exp` overflows to +inf.
+/// f32 just above ln(f32::MAX): `exp` of it overflows to +inf.
 const OVERFLOW_X: f32 = 88.722_84;
 /// High part of ln 2 (Cephes): 355/512, 9 significant bits.
 const LN2_HI: f32 = 0.693_359_4;
@@ -1678,29 +1677,24 @@ mod tests {
 
     #[test]
     fn simd_exp_f32_handles_positive_infinity() {
-        // Pre-fix: pow2n_from_int saturated f32::INFINITY to i32::MAX,
-        // (i32::MAX + 127) panicked in debug / wrapped in release to a
-        // garbage exponent, and simd_exp_f32(+Inf) silently returned ~0.5.
-        // Post-fix: input is clamped to 88.722 → exp(88.722) ≈ 3.4e38,
-        // representable but near f32::MAX. Saturated, not garbage.
+        // Once returned ~0.5 (i32 overflow in pow2n_from_int), then a
+        // finite 1.7e38 from the clamp. IEEE exp(+Inf) is +Inf.
         let inf = F32x16::splat(f32::INFINITY);
         let result = simd_exp_f32(inf);
         let arr = result.to_array();
         for &v in &arr {
-            assert!(v.is_finite(), "exp(+Inf) must saturate to finite, got {}", v);
-            assert!(v > 1e30, "exp(+Inf) must saturate to a large value, got {}", v);
+            assert_eq!(v, f32::INFINITY, "exp(+Inf) must be +Inf, got {}", v);
         }
     }
 
     #[test]
     fn simd_exp_f32_handles_negative_infinity() {
-        // -Inf → clamped to -87.336 → exp ≈ 1.4e-38, near zero but representable.
+        // IEEE exp(-Inf) is +0.0 (it used to be ~1.2e-38 from the clamp).
         let neg_inf = F32x16::splat(f32::NEG_INFINITY);
         let result = simd_exp_f32(neg_inf);
         let arr = result.to_array();
         for &v in &arr {
-            assert!(v.is_finite(), "exp(-Inf) must saturate to finite, got {}", v);
-            assert!(v >= 0.0 && v < 1e-30, "exp(-Inf) must saturate near 0, got {}", v);
+            assert_eq!(v.to_bits(), 0.0f32.to_bits(), "exp(-Inf) must be +0.0, got {}", v);
         }
     }
 
@@ -1744,11 +1738,12 @@ mod tests {
         // is still in u32 range so didn't panic, but the resulting bits were
         // outside valid f32 exponent range, producing garbage that masqueraded
         // as a "valid" answer.
+        // IEEE: exp(200) overflows to +Inf.
         let big = F32x16::splat(200.0);
         let result = simd_exp_f32(big);
         let arr = result.to_array();
         for &v in &arr {
-            assert!(v.is_finite(), "exp(200) must saturate, got {}", v);
+            assert_eq!(v, f32::INFINITY, "exp(200) must overflow to +Inf, got {}", v);
         }
     }
 
