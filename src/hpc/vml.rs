@@ -688,7 +688,7 @@ pub fn vstrunc<D: Dimension>(x: ArrayView<'_, f32, D>, mut out: ArrayViewMut<'_,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{arr1, arr2, s, Array1, Array2};
+    use crate::{arr1, arr2, s, Array1, Array2, ArrayView1, ArrayViewMut1};
 
     // -----------------------------------------------------------------------
     // vsexp
@@ -1214,5 +1214,93 @@ mod tests {
         let mut out = Array1::<f32>::zeros(4);
         vstrunc(strided, out.view_mut());
         assert_eq!(out.as_slice().unwrap(), &[1.0, -1.0, 0.0, 0.0]);
+    }
+
+    // -----------------------------------------------------------------------
+    // IEEE edge cases through the 16-lane SIMD body, not just the scalar tail.
+    // Every length from 0 to 40 puts each value both in a SIMD chunk and in
+    // the tail, so a body that disagrees with its own tail cannot pass.
+    // -----------------------------------------------------------------------
+
+    const EDGES: [f32; 12] = [
+        0.0,
+        -0.0,
+        0.5,
+        -0.5,
+        1.5,
+        -1.5,
+        -0.25,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::MIN_POSITIVE,
+        -f32::MIN_POSITIVE,
+        f32::NAN,
+    ];
+
+    /// Checks `kernel` against `scalar` bit for bit (NaN only as NaN) for
+    /// every length 0..=40, cycling through `EDGES`.
+    fn assert_bitwise_like_scalar(name: &str, kernel: fn(ArrayView1<'_, f32>, ArrayViewMut1<'_, f32>), scalar: fn(f32) -> f32) {
+        for n in 0..=40usize {
+            let x = Array1::from_iter((0..n).map(|i| EDGES[i % EDGES.len()]));
+            let mut out = Array1::<f32>::zeros(n);
+            kernel(x.view(), out.view_mut());
+            for i in 0..n {
+                let (got, want) = (out[i], scalar(x[i]));
+                if want.is_nan() {
+                    assert!(got.is_nan(), "{name}({}) n={n} i={i}: got {got}", x[i]);
+                } else {
+                    assert_eq!(got.to_bits(), want.to_bits(), "{name}({}) n={n} i={i}: got {got:?}, want {want:?}", x[i]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn vsneg_flips_the_sign_of_zero_in_the_simd_body() {
+        assert_bitwise_like_scalar("vsneg", vsneg, |v| -v);
+    }
+
+    #[test]
+    fn vsceil_keeps_negative_zero_in_the_simd_body() {
+        assert_bitwise_like_scalar("vsceil", vsceil, f32::ceil);
+    }
+
+    #[test]
+    fn vstrunc_keeps_negative_zero_in_the_simd_body() {
+        assert_bitwise_like_scalar("vstrunc", vstrunc, f32::trunc);
+    }
+
+    #[test]
+    fn vsexp_maps_infinities_like_the_scalar_tail() {
+        for n in [1usize, 16, 17, 32] {
+            for (v, want) in [(f32::INFINITY, f32::INFINITY), (f32::NEG_INFINITY, 0.0)] {
+                let x = Array1::from_elem(n, v);
+                let mut out = Array1::<f32>::zeros(n);
+                vsexp(x.view(), out.view_mut());
+                for i in 0..n {
+                    assert_eq!(out[i].to_bits(), want.to_bits(), "vsexp({v}) n={n} i={i}: got {:?}", out[i]);
+                }
+            }
+        }
+    }
+
+    /// FAILS IF: any finite input in [-110, 88.72] is off by more than the
+    /// polynomial's own error. Measured against f64 `exp`. Results below the
+    /// normal range are checked against the nearest subnormal spacing.
+    #[test]
+    fn vsexp_is_accurate_up_to_the_overflow_and_down_into_subnormals() {
+        let xs: Vec<f32> = (0..=19872).map(|i| -110.0 + i as f32 * 0.01).filter(|&x| x <= 88.72).collect();
+        let x = Array1::from(xs);
+        let mut out = Array1::<f32>::zeros(x.len());
+        vsexp(x.view(), out.view_mut());
+        for (i, &v) in x.iter().enumerate() {
+            let want = f64::from(v).exp();
+            let got = f64::from(out[i]);
+            if want >= f64::from(f32::MIN_POSITIVE) {
+                assert!(((got - want) / want).abs() < 4e-6, "vsexp({v}): got {got:e}, want {want:e}");
+            } else {
+                assert!((got - want).abs() <= 1.5e-45, "vsexp({v}): got {got:e}, want {want:e}");
+            }
+        }
     }
 }
