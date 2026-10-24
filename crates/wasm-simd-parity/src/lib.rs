@@ -52,6 +52,14 @@ fn check_exp_and_round() -> Result<(), u32> {
     const LN2_HI: f32 = 0.693_359_4;
     const LN2_LO: f32 = -2.121_944_4e-4;
     const TWO_POW_NEG_64: f32 = 5.421_011e-20;
+    const EXP_P: [f32; 6] = [
+        1.987_569_150_0e-4,
+        1.398_199_950_7e-3,
+        8.333_451_907_3e-3,
+        4.166_579_589_4e-2,
+        1.666_666_545_9e-1,
+        5.000_000_120_1e-1,
+    ];
     fn reference(x: f32) -> f32 {
         if x.is_nan() {
             return f32::NAN;
@@ -60,7 +68,8 @@ fn check_exp_and_round() -> Result<(), u32> {
         let n = (xc * (1.0 / core::f32::consts::LN_2) + 0.5).floor();
         let r = xc - n * LN2_HI;
         let r = r - n * LN2_LO;
-        let poly = 1.0 + r * (1.0 + r * (0.5 + r * (1.0 / 6.0 + r * (1.0 / 24.0 + r * (1.0 / 120.0)))));
+        let p = EXP_P.iter().skip(1).fold(EXP_P[0], |p, &c| p * r + c);
+        let poly = (p * (r * r) + r) + 1.0;
         let (n, post) = if n > 127.0 {
             (n - 1.0, 2.0)
         } else if n < -126.0 {

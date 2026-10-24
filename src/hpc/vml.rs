@@ -232,25 +232,54 @@ fn vspow_slice(a: &[f32], b: &[f32], out: &mut [f32]) {
     }
 }
 
+/// 16-lane `tanh`, computed on `a = |x|` and negated where `x < 0`, so the
+/// function is exactly odd. Lanes where `x == 0` return `x` itself, which keeps
+/// `tanh(-0.0) = -0.0`. (Float compares and `select` only: the NEON `U32x16`
+/// has no `&`/`|`, so the sign is not restored by bit masking.)
+///
+/// Two branches, chosen per lane:
+/// - `|x| < 0.625`: `a + a·z·P(z)` with `z = a²` (the Cephes `tanhf`
+///   minimax polynomial). It has no cancellation, and for subnormal or tiny
+///   `a` the correction vanishes and the result is `a` itself.
+/// - otherwise: `1 − 2/(exp(2a) + 1)`. `exp` overflows to `+inf` for large
+///   `a`, which gives exactly `1.0`; a NaN input stays NaN.
+///
+/// The earlier `2·sigmoid(2x) − 1` cancelled for small `|x|`: below about
+/// `1e-7` the sigmoid rounds to `0.5` and the result was `0`.
+#[inline(always)]
+fn tanh_f32x16(v: F32x16) -> F32x16 {
+    let zero = F32x16::splat(0.0);
+    let a = v.abs();
+    let z = a * a;
+    let p = F32x16::splat(-5.704_988_727_45e-3)
+        .mul_add(z, F32x16::splat(2.063_908_879_54e-2))
+        .mul_add(z, F32x16::splat(-5.373_971_555_31e-2))
+        .mul_add(z, F32x16::splat(1.333_144_220_36e-1))
+        .mul_add(z, F32x16::splat(-3.333_328_194_22e-1));
+    let small = (p * z).mul_add(a, a);
+    let e = simd_exp_f32(a + a);
+    let large = F32x16::splat(1.0) - F32x16::splat(2.0) / (e + F32x16::splat(1.0));
+    let r = a.simd_lt(F32x16::splat(0.625)).select(small, large);
+    let r = v.simd_lt(zero).select(-r, r);
+    v.simd_eq(zero).select(v, r)
+}
+
 fn vstanh_slice(x: &[f32], out: &mut [f32]) {
     let n = x.len().min(out.len());
     let chunks = n / 16;
-    let two = F32x16::splat(2.0);
-    let one = F32x16::splat(1.0);
     for i in 0..chunks {
         let off = i * 16;
-        let v = F32x16::from_slice(&x[off..off + 16]);
-        // tanh(x) = 2·sigmoid(2x) - 1
-        let two_x = v * two;
-        // sigmoid(z) = 1/(1+exp(-z))
-        let neg_two_x = -two_x;
-        let exp_neg = simd_exp_f32(neg_two_x);
-        let sigmoid = one / (exp_neg + one);
-        let tanh_v = sigmoid.mul_add(two, F32x16::splat(-1.0));
-        tanh_v.copy_to_slice(&mut out[off..off + 16]);
+        tanh_f32x16(F32x16::from_slice(&x[off..off + 16])).copy_to_slice(&mut out[off..off + 16]);
     }
-    for i in (chunks * 16)..n {
-        out[i] = x[i].tanh();
+    // The tail goes through the same 16-lane kernel, so a value gives the same
+    // bits wherever it sits in the array.
+    let rest = n - chunks * 16;
+    if rest > 0 {
+        let mut buf = [0.0f32; 16];
+        buf[..rest].copy_from_slice(&x[chunks * 16..n]);
+        let r = tanh_f32x16(F32x16::from_slice(&buf));
+        r.copy_to_slice(&mut buf);
+        out[chunks * 16..n].copy_from_slice(&buf[..rest]);
     }
 }
 
@@ -605,8 +634,12 @@ pub fn vspow<D: Dimension>(a: ArrayView<'_, f32, D>, b: ArrayView<'_, f32, D>, m
         .for_each(|o, &x, &y| *o = x.powf(y));
 }
 
-/// Element-wise `tanh` via the identity `tanh(x) = 2·sigmoid(2x) − 1`. Hot
-/// path reuses the F32x16 sigmoid built from `simd_exp_f32`.
+/// Element-wise `tanh`, within 2 ULP of the correctly rounded result over
+/// every finite `f32`. `tanh(±0) = ±0`, subnormals map to themselves,
+/// `tanh(±inf) = ±1` and NaN stays NaN.
+///
+/// Every element, contiguous or strided, goes through the same 16-lane
+/// kernel, so a value's result does not depend on its position or layout.
 ///
 /// # Panics
 /// Panics if `x` and `out` shapes differ.
@@ -615,7 +648,9 @@ pub fn vstanh<D: Dimension>(x: ArrayView<'_, f32, D>, mut out: ArrayViewMut<'_, 
     if dispatch_unary_contig(x.view(), &mut out, vstanh_slice) {
         return;
     }
-    Zip::from(&mut out).and(&x).for_each(|o, &v| *o = v.tanh());
+    Zip::from(&mut out)
+        .and(&x)
+        .for_each(|o, &v| *o = tanh_f32x16(F32x16::splat(v)).to_array()[0]);
 }
 
 /// Element-wise `floor`. Hot path uses `F32x16::floor()` (VRNDSCALEPS on
@@ -1120,6 +1155,192 @@ mod tests {
         vstanh(strided.view(), out.view_mut());
         for i in 0..16 {
             assert!((out[i] - strided[i].tanh()).abs() < 1e-4);
+        }
+    }
+
+    /// Distance in units in the last place between two `f32`, with `-0.0`
+    /// and `+0.0` one apart so a lost sign of zero counts as an error.
+    fn ulp_distance(a: f32, b: f32) -> u32 {
+        if a.is_nan() || b.is_nan() {
+            return if a.is_nan() && b.is_nan() { 0 } else { u32::MAX };
+        }
+        let key = |x: f32| {
+            let i = x.to_bits() as i32;
+            if i < 0 {
+                -((i & i32::MAX) as i64) - 1
+            } else {
+                i as i64
+            }
+        };
+        (key(a) - key(b)).unsigned_abs().min(u32::MAX as u64) as u32
+    }
+
+    /// Correctly rounded reference: `tanh` in `f64`, rounded once to `f32`.
+    fn tanh_ref(x: f32) -> f32 {
+        (x as f64).tanh() as f32
+    }
+
+    fn vstanh_vec(xs: &[f32]) -> Vec<f32> {
+        let x = Array1::from(xs.to_vec());
+        let mut out = Array1::<f32>::zeros(xs.len());
+        vstanh(x.view(), out.view_mut());
+        out.to_vec()
+    }
+
+    #[test]
+    fn test_vstanh_within_2_ulp_across_magnitudes() {
+        // Log-spaced magnitudes in each band, both signs. The length is not a
+        // multiple of 16, so the last values take the tail path.
+        let bands = [
+            (1.0e-38f32, 1.0e-10f32),
+            (1.0e-10, 1.0e-4),
+            (1.0e-4, 0.1),
+            (0.1, 0.625),
+            (0.625, 1.0),
+            (1.0, 4.0),
+            (4.0, 10.0),
+            (10.0, 100.0),
+        ];
+        for (lo, hi) in bands {
+            let n = 4099;
+            let mut xs = Vec::with_capacity(2 * n + 1);
+            for i in 0..n {
+                let t = i as f64 / (n - 1) as f64;
+                let v = ((lo as f64).ln() + t * ((hi as f64).ln() - (lo as f64).ln())).exp() as f32;
+                xs.push(v);
+                xs.push(-v);
+            }
+            xs.push(hi);
+            assert_ne!(xs.len() % 16, 0, "fixture must reach the tail path");
+            let ys = vstanh_vec(&xs);
+            let (worst, at) = xs
+                .iter()
+                .zip(&ys)
+                .map(|(&x, &y)| (ulp_distance(y, tanh_ref(x)), x))
+                .max_by_key(|&(u, _)| u)
+                .unwrap();
+            assert!(worst <= 2, "band [{lo:e}, {hi:e}]: {worst} ulp at x = {at:e}");
+        }
+    }
+
+    #[test]
+    fn test_vstanh_special_values_in_chunk_and_tail() {
+        let sub = f32::from_bits(1);
+        let cases: [(f32, f32); 9] = [
+            (0.0, 0.0),
+            (-0.0, -0.0),
+            (sub, sub),
+            (-sub, -sub),
+            (f32::MIN_POSITIVE, f32::MIN_POSITIVE),
+            (-f32::MIN_POSITIVE, -f32::MIN_POSITIVE),
+            (f32::INFINITY, 1.0),
+            (f32::NEG_INFINITY, -1.0),
+            (1.0e-8, 1.0e-8),
+        ];
+        // 16 values fill one SIMD chunk; the same 9 again land in the tail.
+        let mut xs: Vec<f32> = cases.iter().map(|c| c.0).collect();
+        xs.resize(16, 0.5);
+        xs.extend(cases.iter().map(|c| c.0));
+        let ys = vstanh_vec(&xs);
+        for (k, &(x, want)) in cases.iter().enumerate() {
+            for (path, y) in [("chunk", ys[k]), ("tail", ys[16 + k])] {
+                assert_eq!(y.to_bits(), want.to_bits(), "{path}: vstanh({x:e}) = {y:e}, want {want:e}");
+            }
+        }
+        assert!(vstanh_vec(&[f32::NAN; 17]).iter().all(|v| v.is_nan()));
+    }
+
+    #[test]
+    fn test_vstanh_tail_equals_chunk() {
+        // The same input gives the same bits in a full chunk and in the tail,
+        // so a result never depends on where in the array it sits.
+        let vals: Vec<f32> = (0..15).map(|i| (i as f32 - 7.0) * 0.37 + 1.0e-3).collect();
+        let mut xs = vals.clone();
+        xs.push(0.0);
+        xs.extend(&vals);
+        let ys = vstanh_vec(&xs);
+        for k in 0..vals.len() {
+            assert_eq!(ys[k].to_bits(), ys[16 + k].to_bits(), "x = {}", vals[k]);
+        }
+    }
+
+    #[test]
+    fn test_vstanh_every_length_agrees_with_a_single_lane() {
+        // Lengths around the 16-lane chunk: each element must equal the
+        // one-element result for the same input.
+        for len in [0usize, 1, 15, 16, 17, 31, 32, 33, 63, 64, 65] {
+            let xs: Vec<f32> = (0..len).map(|i| (i as f32 - 32.0) * 0.173).collect();
+            let ys = vstanh_vec(&xs);
+            assert_eq!(ys.len(), len);
+            for (&x, &y) in xs.iter().zip(&ys) {
+                let one = vstanh_vec(&[x])[0];
+                assert_eq!(y.to_bits(), one.to_bits(), "len {len}, x = {x}");
+                assert!(ulp_distance(y, tanh_ref(x)) <= 2, "len {len}, x = {x}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_vstanh_strided_and_2d_views_match_contiguous() {
+        let data: Vec<f32> = (0..96).map(|i| (i as f32 - 48.0) * 0.0911).collect();
+        let a = Array2::from_shape_vec((8, 12), data.clone()).unwrap();
+        let want: Vec<u32> = vstanh_vec(&data).iter().map(|v| v.to_bits()).collect();
+        // C-order 2-D (contiguous), its transpose (non-contiguous), a strided column slice.
+        let mut out = Array2::<f32>::zeros((8, 12));
+        vstanh(a.view(), out.view_mut());
+        assert_eq!(out.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), want);
+        let t = a.t();
+        let mut out_t = Array2::<f32>::zeros((12, 8));
+        vstanh(t, out_t.view_mut());
+        for i in 0..8 {
+            for j in 0..12 {
+                assert_eq!(out_t[[j, i]].to_bits(), want[i * 12 + j]);
+            }
+        }
+        let col = a.slice(s![.., 5]);
+        let mut out_c = Array1::<f32>::zeros(8);
+        vstanh(col, out_c.view_mut());
+        for i in 0..8 {
+            assert_eq!(out_c[i].to_bits(), want[i * 12 + 5]);
+        }
+    }
+
+    #[test]
+    fn test_vstanh_branch_threshold_neighbourhood() {
+        // 2000 consecutive floats either side of 0.625, both signs: the two
+        // branches must meet within the gate and without a step backwards.
+        let mut xs = Vec::new();
+        let mut lo = 0.625f32;
+        for _ in 0..2000 {
+            lo = lo.next_down();
+        }
+        let mut x = lo;
+        for _ in 0..4001 {
+            xs.push(x);
+            x = x.next_up();
+        }
+        let ys = vstanh_vec(&xs);
+        for (k, (&x, &y)) in xs.iter().zip(&ys).enumerate() {
+            assert!(ulp_distance(y, tanh_ref(x)) <= 2, "x = {x:e}");
+            if k > 0 {
+                assert!(y >= ys[k - 1], "not monotone at x = {x:e}");
+            }
+        }
+        let neg: Vec<f32> = xs.iter().map(|v| -v).collect();
+        for (y, ny) in ys.iter().zip(vstanh_vec(&neg)) {
+            assert_eq!(ny.to_bits(), y.to_bits() ^ 0x8000_0000);
+        }
+    }
+
+    #[test]
+    fn test_vstanh_saturation_and_extremes() {
+        let ys = vstanh_vec(&[f32::MAX, -f32::MAX, 9.0, -9.0, 44.0, 89.0, -89.0]);
+        assert_eq!(ys[0].to_bits(), 1.0f32.to_bits());
+        assert_eq!(ys[1].to_bits(), (-1.0f32).to_bits());
+        assert!(ulp_distance(ys[2], tanh_ref(9.0)) <= 2);
+        assert!(ulp_distance(ys[3], tanh_ref(-9.0)) <= 2);
+        for &y in &ys[4..] {
+            assert_eq!(y.abs(), 1.0);
         }
     }
 
