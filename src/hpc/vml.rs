@@ -1273,6 +1273,14 @@ mod tests {
         assert_bitwise_like_scalar("vstrunc", vstrunc, f32::trunc);
     }
 
+    /// FAILS IF: the SIMD body breaks ties differently from the scalar tail
+    /// (`round_ties_even`). On the AVX2, scalar and nightly arms
+    /// `F32x16::round` used `f32::round`, which rounds ties away from zero.
+    #[test]
+    fn vsround_breaks_ties_to_even_in_the_simd_body() {
+        assert_bitwise_like_scalar("vsround", vsround, f32::round_ties_even);
+    }
+
     #[test]
     fn vsexp_maps_infinities_like_the_scalar_tail() {
         for n in [1usize, 16, 17, 32] {
