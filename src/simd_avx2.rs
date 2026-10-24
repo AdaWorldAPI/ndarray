@@ -605,7 +605,7 @@ impl F32x16 {
         let ca = c.to_array();
         let mut o = [0.0f32; 16];
         for i in 0..16 {
-            o[i] = a[i].mul_add(ba[i], ca[i]);
+            o[i] = crate::simd_fma::ExactFma::exact_fma(a[i], ba[i], ca[i]);
         }
         Self::from_array(o)
     }
@@ -948,7 +948,7 @@ impl F64x8 {
         let ca = c.to_array();
         let mut o = [0.0f64; 8];
         for i in 0..8 {
-            o[i] = a[i].mul_add(ba[i], ca[i]);
+            o[i] = crate::simd_fma::ExactFma::exact_fma(a[i], ba[i], ca[i]);
         }
         Self::from_array(o)
     }

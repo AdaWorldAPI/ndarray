@@ -47,7 +47,8 @@
 //!     of the two error terms, then one rounding (the same paper's emulated
 //!     FMA). It needs no overflow or underflow in the split, so a v128 pair whose
 //!     lanes leave `2^-460 <= |a|, |b| <= 2^460`, `|c| <= 2^960` (or are NaN,
-//!     infinite or zero) is computed lane by lane with `f64::mul_add`.
+//!     infinite or zero) is computed lane by lane with the integer FMA in
+//!     `simd_fma.rs` (no libm call, so no run-time CPU dispatch).
 //! * **reduce_sum.** Uses a balanced tree reduction (pairwise v128 adds)
 //!   rather than the scalar fallback's sequential left-fold, so the result
 //!   can differ in the last ULP — the same reduction-order tolerance the
@@ -562,8 +563,16 @@ pub mod wasm32_simd {
                     return fma_f64_emulated(a, b, c);
                 }
                 let lane = |i: usize| match i {
-                    0 => f64x2_extract_lane::<0>(a).mul_add(f64x2_extract_lane::<0>(b), f64x2_extract_lane::<0>(c)),
-                    _ => f64x2_extract_lane::<1>(a).mul_add(f64x2_extract_lane::<1>(b), f64x2_extract_lane::<1>(c)),
+                    0 => crate::simd_fma::fma_f64(
+                        f64x2_extract_lane::<0>(a),
+                        f64x2_extract_lane::<0>(b),
+                        f64x2_extract_lane::<0>(c),
+                    ),
+                    _ => crate::simd_fma::fma_f64(
+                        f64x2_extract_lane::<1>(a),
+                        f64x2_extract_lane::<1>(b),
+                        f64x2_extract_lane::<1>(c),
+                    ),
                 };
                 f64x2(lane(0), lane(1))
             }

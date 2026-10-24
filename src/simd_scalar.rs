@@ -114,7 +114,7 @@ macro_rules! impl_float_type {
             pub fn mul_add(self, b: Self, c: Self) -> Self {
                 let mut out = [0.0 as $elem; $lanes];
                 for i in 0..$lanes {
-                    out[i] = self.0[i].mul_add(b.0[i], c.0[i]);
+                    out[i] = crate::simd_fma::ExactFma::exact_fma(self.0[i], b.0[i], c.0[i]);
                 }
                 Self(out)
             }
