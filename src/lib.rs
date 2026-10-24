@@ -487,6 +487,7 @@ pub mod simd_ops;
 pub mod simd_half;
 
 /// Correctly rounded scalar FMA for backends without an FMA instruction.
+#[cfg(feature = "std")]
 pub(crate) mod simd_fma;
 
 /// Runtime SIMD dispatch — release-binary distribution path.
