@@ -791,11 +791,12 @@ pub fn mask_ternlog_any<const IMM: i32>(a: &[u64], b: &[u64], c: &[u64]) -> bool
 /// `reduce_sum()` — is **wrong**, and quietly so: `reduce_sum` on `I32x16`
 /// accumulates in `i32`, and 16 lanes near `i32::MAX` overflow it while the
 /// widened contract promises they cannot. Preserving the `i64` guarantee is
-/// worth more than the lanes here, so the body walks set bits with
-/// `u64::trailing_zeros` (one `TZCNT`/`RBIT+CLZ` per selected element, and
-/// entire zero words skipped in one test). Cost is proportional to the
-/// popcount, not the row count, which is the right shape for a selective
-/// filter anyway.
+/// worth more than the lanes here. Per 64-bit word: an empty word is
+/// skipped, a sparse word (at most 16 set bits) is walked with
+/// `u64::trailing_zeros`, and a dense full word is summed over all 64 lanes,
+/// each widened to `i64` and masked branch-free. Cost is proportional to the
+/// popcount for selective filters and to the row count, without a branch per
+/// row, for dense ones.
 ///
 /// # Panics
 ///
@@ -831,6 +832,19 @@ pub fn masked_sum_i32(values: &[i32], mask_words: &[u64]) -> i64 {
         if valid < 64 {
             bits &= (1u64 << valid) - 1;
         }
+        // Dense full word: sum all 64 lanes branch-free, each widened to i64
+        // before the add, so the i64 contract holds and the loop vectorizes.
+        // A sparse word keeps the set-bit walk. The threshold is the D-MPF-2b
+        // measurement (lance-graph #1752): never slower than the walk.
+        if valid >= 64 && bits.count_ones() > MASKED_SUM_DENSE_THRESHOLD {
+            let chunk = &values[base..base + 64];
+            let mut part: i64 = 0;
+            for (j, &v) in chunk.iter().enumerate() {
+                part = part.wrapping_add(i64::from(v) & -(((bits >> j) & 1) as i64));
+            }
+            acc = acc.wrapping_add(part);
+            continue;
+        }
         while bits != 0 {
             let lane = bits.trailing_zeros() as usize;
             acc = acc.wrapping_add(values[base + lane] as i64);
@@ -839,6 +853,10 @@ pub fn masked_sum_i32(values: &[i32], mask_words: &[u64]) -> i64 {
     }
     acc
 }
+
+/// Set bits per 64-bit word above which [`masked_sum_i32`] sums the whole word
+/// branch-free instead of walking its set bits.
+const MASKED_SUM_DENSE_THRESHOLD: u32 = 16;
 
 /// Sum `a[i].wrapping_add(b[i])` where mask bit `i` is set, with the
 /// wrapped row value widened to `i64` before accumulation.
@@ -6224,6 +6242,38 @@ mod tests {
                 assert_eq!(got, expected, "masked_sum_i32 len={len} pattern={pattern:#x}");
             }
         }
+    }
+
+    #[test]
+    fn masked_sum_i32_both_word_routes_match_reference() {
+        // Words at, just below and just above the dense threshold, plus random
+        // words of every density, so the walk and the branch-free sum are both
+        // taken and both checked against the same independent reference.
+        let th = MASKED_SUM_DENSE_THRESHOLD;
+        let mut seed = 0x0DDB_A11C_AFE5_EED5;
+        let values: Vec<i32> = (0..64 * 40).map(|_| splitmix64(&mut seed) as i32).collect();
+        let mut mask: Vec<u64> = Vec::new();
+        for c in [th - 1, th, th + 1, 63, 64] {
+            mask.push(if c == 64 { u64::MAX } else { (1u64 << c) - 1 });
+        }
+        while mask.len() < 40 {
+            let k = (splitmix64(&mut seed) % 4) as u32;
+            let mut w = splitmix64(&mut seed);
+            for _ in 0..k {
+                w &= splitmix64(&mut seed);
+            }
+            mask.push(w);
+        }
+        let dense = mask.iter().filter(|w| w.count_ones() > th).count();
+        let sparse = mask.iter().filter(|w| w.count_ones() <= th).count();
+        assert!(dense >= 5 && sparse >= 5, "fixture must take both routes: {dense} dense, {sparse} sparse");
+        let expected: i64 = values
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| mask[i / 64] >> (i % 64) & 1 == 1)
+            .map(|(_, &v)| v as i64)
+            .sum();
+        assert_eq!(masked_sum_i32(&values, &mask), expected);
     }
 
     #[test]
