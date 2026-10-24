@@ -35,7 +35,83 @@ pub extern "C" fn selfcheck() -> u32 {
     if let Err(code) = check_i32x16_compare() {
         return code;
     }
+    if let Err(code) = check_exp_and_round() {
+        return code;
+    }
     0
+}
+
+/// `simd_exp_f32` and `F32x16::round` under wasm. exp must equal, bit for
+/// bit, the same unfused op sequence in scalar f32; the native unit test
+/// `simd_exp_f32_matches_the_unfused_scalar_sequence_bit_for_bit` pins the
+/// native backends to that sequence, so together they give wasm == native.
+/// `round` must break ties to even on every backend.
+fn check_exp_and_round() -> Result<(), u32> {
+    // Constants of `simd_exp_f32` (private in ndarray::simd), restated.
+    const OVERFLOW_X: f32 = 88.722_84;
+    const LN2_HI: f32 = 0.693_359_4;
+    const LN2_LO: f32 = -2.121_944_4e-4;
+    const TWO_POW_NEG_64: f32 = 5.421_011e-20;
+    fn reference(x: f32) -> f32 {
+        if x.is_nan() {
+            return f32::NAN;
+        }
+        let xc = x.max(-110.0).min(OVERFLOW_X);
+        let n = (xc * (1.0 / core::f32::consts::LN_2) + 0.5).floor();
+        let r = xc - n * LN2_HI;
+        let r = r - n * LN2_LO;
+        let poly = 1.0 + r * (1.0 + r * (0.5 + r * (1.0 / 6.0 + r * (1.0 / 24.0 + r * (1.0 / 120.0)))));
+        let (n, post) = if n > 127.0 {
+            (n - 1.0, 2.0)
+        } else if n < -126.0 {
+            (n + 64.0, TWO_POW_NEG_64)
+        } else {
+            (n, 1.0)
+        };
+        let scale = f32::from_bits((((n as i32).clamp(-126, 127) + 127) as u32) << 23);
+        poly * scale * post
+    }
+    // -110 .. 88.72 in steps of 0.01, then ties of x/ln2 + 0.5 and specials.
+    let mut xs: Vec<f32> = (0..=19872).map(|j| -110.0 + j as f32 * 0.01).collect();
+    xs.extend((-150..=128).map(|k| (k as f32 + 0.5) * core::f32::consts::LN_2));
+    xs.extend([f32::INFINITY, f32::NEG_INFINITY, f32::NAN, OVERFLOW_X, -0.0, 0.0, f32::MIN_POSITIVE]);
+    while xs.len() % 16 != 0 {
+        xs.push(1.0);
+    }
+    for chunk in xs.chunks_exact(16) {
+        let got = ndarray::simd::simd_exp_f32(F32x16::from_slice(chunk)).to_array();
+        for (&x, g) in chunk.iter().zip(got) {
+            let want = reference(x);
+            if g.to_bits() != want.to_bits() && !(g.is_nan() && want.is_nan()) {
+                return Err(70);
+            }
+        }
+    }
+    let ties: [f32; 16] = [
+        0.5,
+        1.5,
+        2.5,
+        -0.5,
+        -1.5,
+        -2.5,
+        3.5,
+        4.5,
+        -3.5,
+        0.25,
+        0.75,
+        -0.0,
+        1e7 + 0.5,
+        8388607.5,
+        -8388607.5,
+        0.0,
+    ];
+    let r = F32x16::from_array(ties).round().to_array();
+    for k in 0..16 {
+        if r[k].to_bits() != ties[k].round_ties_even().to_bits() {
+            return Err(71);
+        }
+    }
+    Ok(())
 }
 
 /// `U32x16` ARX triple (Add / BitXor / rotate_left) — the ChaCha20/BLAKE lane.

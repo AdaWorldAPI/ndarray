@@ -453,7 +453,9 @@ fn gelu_simd(x: &mut [f32]) {
         // tanh approximation via exp: tanh(x) = (exp(2x) - 1) / (exp(2x) + 1)
         let two_inner = inner + inner;
         let exp_2x = crate::simd::simd_exp_f32(two_inner);
-        let tanh_v = (exp_2x - one) / (exp_2x + one);
+        // 1 - 2/(e+1) equals (e-1)/(e+1) but stays 1 when exp overflows to
+        // +inf, where the quotient form gives inf/inf = NaN.
+        let tanh_v = one - (one + one) / (exp_2x + one);
         let result = v * half * (one + tanh_v);
         result.copy_to_slice(&mut x[off..off + 16]);
     }
@@ -521,6 +523,20 @@ fn matmul_vec_simd(input: &[f32], weight: &[f32], bias: &[f32], output: &mut [f3
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// FAILS IF: large inputs, where exp(2·inner) overflows to +inf, come
+    /// out NaN from the SIMD body instead of x (positive) or ~0 (negative).
+    #[test]
+    fn gelu_stays_finite_where_exp_overflows() {
+        for v in [12.0f32, 20.0, 1e3, -12.0, -20.0, -1e3] {
+            let mut x = [v; 17];
+            gelu_simd(&mut x);
+            for (i, &g) in x.iter().enumerate() {
+                let want = if v > 0.0 { v } else { 0.0 };
+                assert!((g - want).abs() <= 1e-4 * v.abs(), "gelu({v})[{i}] = {g}");
+            }
+        }
+    }
 
     #[test]
     fn test_layer_norm_identity() {

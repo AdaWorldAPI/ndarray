@@ -46,10 +46,10 @@
 //!   can differ in the last ULP — the same reduction-order tolerance the
 //!   AVX/NEON backends already carry.
 //! * **round().** Uses `f32x4_nearest` / `f64x2_nearest` (round-half-to-even),
-//!   identical to NEON's `vrndnq_*`. The pure-scalar fallback uses
-//!   `f32::round` (round-half-away-from-zero); the two differ only on exact
-//!   `.5` ties, which the parity corpus avoids — the same situation that
-//!   already exists between the scalar and NEON backends.
+//!   identical to NEON's `vrndnq_*` and AVX-512 `roundscale`. The scalar,
+//!   AVX2 and nightly backends use `round_ties_even` for the same result
+//!   (they used `f32::round`, which breaks ties away from zero, until
+//!   `vsround_breaks_ties_to_even_in_the_simd_body` caught it).
 //! * **min/max NaN.** `f32x4_min` / `f32x4_max` follow IEEE minimum/maximum
 //!   (NaN-propagating). The scalar fallback's `f32::min` returns the non-NaN
 //!   operand. `simd_exp_f32` in `simd.rs` saves/restores NaN lanes around the

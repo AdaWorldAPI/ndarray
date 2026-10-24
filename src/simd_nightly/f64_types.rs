@@ -114,7 +114,8 @@ impl F64x8 {
     /// Per-lane round-to-nearest-even.
     #[inline(always)]
     pub fn round(self) -> Self {
-        Self(self.0.round())
+        // `StdFloat::round` rounds ties away from zero; per lane instead.
+        Self(self.0.to_array().map(f64::round_ties_even).into())
     }
 
     /// Per-lane floor.
@@ -283,7 +284,8 @@ impl F64x4 {
     /// Per-lane round-to-nearest-even.
     #[inline(always)]
     pub fn round(self) -> Self {
-        Self(self.0.round())
+        // `StdFloat::round` rounds ties away from zero; per lane instead.
+        Self(self.0.to_array().map(f64::round_ties_even).into())
     }
 
     /// Per-lane floor.
