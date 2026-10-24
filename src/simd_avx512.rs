@@ -1440,12 +1440,13 @@ impl F32x8 {
             // the binary may run on has it (`cpu_guard` checks at startup).
             Self(unsafe { _mm256_fmadd_ps(self.0, a.0, b.0) })
         }
-        // AVX without FMA (the `simd_avx.rs` arm, e.g. Sandy Bridge): a fused
-        // multiply-add per lane, same single rounding as the FMA3 form.
+        // AVX without FMA (the `simd_avx.rs` arm, e.g. Sandy Bridge): the exact
+        // scalar FMA per lane (`simd_fma`), same single rounding as the FMA3 form.
         #[cfg(not(target_feature = "fma"))]
         {
+            use crate::simd_fma::ExactFma;
             let (x, y, z) = (self.to_array(), a.to_array(), b.to_array());
-            Self::from_array(core::array::from_fn(|i| x[i].mul_add(y[i], z[i])))
+            Self::from_array(core::array::from_fn(|i| x[i].exact_fma(y[i], z[i])))
         }
     }
 
@@ -2680,6 +2681,24 @@ impl F64x4 {
         unsafe {
             let mask = _mm256_castsi256_pd(_mm256_set1_epi64x(0x7FFF_FFFF_FFFF_FFFFi64));
             Self(_mm256_and_pd(self.0, mask))
+        }
+    }
+
+    /// Fused multiply-add: `self * b + c`, single rounding (`_mm256_fmadd_pd`).
+    #[inline(always)]
+    pub fn mul_add(self, b: Self, c: Self) -> Self {
+        #[cfg(target_feature = "fma")]
+        {
+            // SAFETY: `_mm256_fmadd_pd` needs FMA3, which `cfg(target_feature
+            // = "fma")` proves is enabled for this whole build.
+            Self(unsafe { _mm256_fmadd_pd(self.0, b.0, c.0) })
+        }
+        // AVX without FMA: the exact scalar FMA per lane, one rounding.
+        #[cfg(not(target_feature = "fma"))]
+        {
+            use crate::simd_fma::ExactFma;
+            let (x, y, z) = (self.to_array(), b.to_array(), c.to_array());
+            Self::from_array(core::array::from_fn(|i| x[i].exact_fma(y[i], z[i])))
         }
     }
 }

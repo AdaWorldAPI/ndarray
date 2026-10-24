@@ -150,11 +150,11 @@ pub fn signature_pde_sweep(x: &[Vec<f64>], y: &[Vec<f64>]) -> f64 {
             debug_assert!(r < m - 1, "signature_pde_sweep: dyr scalar index out of range");
             let mut c = 0.0f64;
             for a in 0..dim {
-                c = dx[a][i - 1].mul_add(dyr[a][r], c);
+                c = crate::simd::mul_add_f64(dx[a][i - 1], dyr[a][r], c);
             }
-            let t = 1.0f64.mul_add(prev1[i], prev1[i - 1]);
-            let u = (-1.0f64).mul_add(prev2[i - 1], t);
-            cur[i] = c.mul_add(prev2[i - 1], u);
+            let t = crate::simd::mul_add_f64(1.0, prev1[i], prev1[i - 1]);
+            let u = crate::simd::mul_add_f64(-1.0, prev2[i - 1], t);
+            cur[i] = crate::simd::mul_add_f64(c, prev2[i - 1], u);
             i += 1;
         }
         std::mem::swap(&mut prev2, &mut prev1);

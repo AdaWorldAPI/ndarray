@@ -96,7 +96,7 @@ impl BF16x16 {
             let av = BF16(self.0[i]).to_f32();
             let bv = BF16(b.0[i]).to_f32();
             let cv = BF16(c.0[i]).to_f32();
-            out[i] = BF16::from_f32_rounded(av.mul_add(bv, cv)).0;
+            out[i] = BF16::from_f32_rounded(crate::simd::mul_add_f32(av, bv, cv)).0;
         }
         BF16x16(out)
     }
@@ -219,7 +219,7 @@ impl F16x16 {
             let av = F16(self.0[i]).to_f32();
             let bv = F16(b.0[i]).to_f32();
             let cv = F16(c.0[i]).to_f32();
-            out[i] = F16::from_f32_rounded(av.mul_add(bv, cv)).0;
+            out[i] = F16::from_f32_rounded(crate::simd::mul_add_f32(av, bv, cv)).0;
         }
         F16x16(out)
     }

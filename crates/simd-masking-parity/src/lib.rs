@@ -33,7 +33,9 @@
 //! bytes 12..16); `0xFxx` the 16-lane byte vectors `I8x16` / `U8x16` (wrapping
 //! `add`/`sub`, signed/unsigned `min`/`max`, the load/store round trips); `0x10xx`
 //! the saturating narrows down the 512-bit ladder (`I32x16 → I16x32 → I8x64 /
-//! U8x64`) and the `F32x16` ↔ `I32x16` casts. `main.rs` (native / qemu) and
+//! U8x64`) and the `F32x16` ↔ `I32x16` casts; `0x11xx` `F32x16` / `F64x8`
+//! `mul_add` rounding once, bit for bit against an exact integer reference (no
+//! `mul_add`, so no libm in the binary). `main.rs` (native / qemu) and
 //! `selfcheck()` (the wasm cdylib export, driven by `run.mjs`) both call
 //! [`run`].
 
@@ -54,7 +56,7 @@ use ndarray::simd::{
 };
 
 /// Number of check groups [`run`] executes (for the log line only).
-pub const CHECKS: usize = 17;
+pub const CHECKS: usize = 18;
 
 /// The wasm export: identical to [`run`], `extern "C"` so `run.mjs` can call it.
 #[no_mangle]
@@ -69,6 +71,7 @@ pub fn run() -> u32 {
         check_mask_algebra, check_care_match, check_masked_reductions, check_blend, check_morton_shift,
         check_predicates_under, check_set_range, check_unsigned_compare_to_mask, check_gather_scatter_group,
         check_f64x8_compare, check_i8x16_u8x16_lanes, check_care_match16, check_narrow_ladder,
+        check_mul_add_single_rounding,
     ];
     for g in groups {
         if let Err(code) = g() {
@@ -1936,4 +1939,402 @@ fn check_narrow_ladder() -> Result<(), u32> {
         }
     }
     Ok(())
+}
+
+/// `F32x16::mul_add` and `F64x8::mul_add` round once: bit-identical to the
+/// exact reference [`oracle_fma`] (NaN matches any NaN). The fixtures include ties that
+/// double rounding resolves the wrong way, and products the f64 emulation must
+/// hand to its lane fallback.
+fn check_mul_add_single_rounding() -> Result<(), u32> {
+    let mut rng = SplitMix64(0x1100_0000_0018);
+    let same32 = |x: f32, y: f32| x.to_bits() == y.to_bits() || (x.is_nan() && y.is_nan());
+    let same64 = |x: f64, y: f64| x.to_bits() == y.to_bits() || (x.is_nan() && y.is_nan());
+    let mut unfused_differs = 0usize;
+
+    // f32: random bit patterns over every exponent (subnormals, inf, NaN), plus
+    // a near-cancelling c and a tie broken by a tiny c.
+    let x = 1.0f32 + f32::EPSILON * 2048.0; // 1 + 2^-12: x * x = 1 + 2^-11 + 2^-24
+    for round in 0..4096u32 {
+        let r32 = |r: &mut SplitMix64| f32::from_bits(r.next() as u32);
+        let (a, b, c): ([f32; 16], [f32; 16], [f32; 16]) = match round % 4 {
+            0 => (
+                core::array::from_fn(|_| r32(&mut rng)),
+                core::array::from_fn(|_| r32(&mut rng)),
+                core::array::from_fn(|_| r32(&mut rng)),
+            ),
+            1 => {
+                let a: [f32; 16] =
+                    core::array::from_fn(|_| f32::from_bits((rng.next() as u32 & 0x807F_FFFF) | 0x3F00_0000));
+                let b: [f32; 16] =
+                    core::array::from_fn(|_| f32::from_bits((rng.next() as u32 & 0x807F_FFFF) | 0x3F00_0000));
+                (a, b, core::array::from_fn(|i| -(a[i] * b[i])))
+            }
+            _ => {
+                // a * b = (1 + 2^-11 + 2^-24) * 4^k: a tie in f32 that c (far below
+                // half an ulp, alternating sign) must break.
+                let k = (rng.next() % 100) as i32 - 50;
+                let scale = 2f32.powi(k);
+                let sign = |i: usize| if i.is_multiple_of(2) { 1.0f32 } else { -1.0 };
+                (
+                    [x * scale; 16],
+                    [x * scale; 16],
+                    core::array::from_fn(|i| sign(i) * scale * scale * 2f32.powi(-40 - i as i32)),
+                )
+            }
+        };
+        let got = F32x16::from_array(a)
+            .mul_add(F32x16::from_array(b), F32x16::from_array(c))
+            .to_array();
+        for i in 0..16 {
+            let want = oracle_fma_f32(a[i], b[i], c[i]);
+            if !same32(got[i], want) {
+                return Err(0x1100 + (round % 4) * 16 + i as u32);
+            }
+            if !same32(a[i] * b[i] + c[i], want) {
+                unfused_differs += 1;
+            }
+        }
+    }
+    if unfused_differs < 256 {
+        return Err(0x11F0);
+    }
+
+    // f64: in-range operands (the vector path), a cancelling c, the same tie
+    // trick, and out-of-range lanes (the lane fallback). In the tie rounds c sits
+    // below the 53 bits after the product's error term pl, so `tl + pl` is
+    // inexact and only its round-to-odd keeps the tie broken. Round 4 makes the
+    // exact sum itself a midpoint, so the final rounding must pick the even
+    // neighbour (ties-away or ties-toward-zero fail it).
+    let mut unfused_differs = 0usize;
+    // (1 + 2^-26)(1 + 2^-27) = 1 + 2^-26 + 2^-27 + 2^-53: 2^-53 is half an ulp, a tie.
+    let (ya, yb) = (1.0f64 + f64::EPSILON * 2f64.powi(26), 1.0f64 + f64::EPSILON * 2f64.powi(25));
+    for round in 0..5120u32 {
+        let rin = |r: &mut SplitMix64| {
+            f64::from_bits((r.next() & 0x800F_FFFF_FFFF_FFFF) | ((1023 - 400 + r.next() % 800) << 52))
+        };
+        let (a, b, c): ([f64; 8], [f64; 8], [f64; 8]) = match round % 5 {
+            0 => (
+                core::array::from_fn(|_| rin(&mut rng)),
+                core::array::from_fn(|_| rin(&mut rng)),
+                core::array::from_fn(|_| rin(&mut rng)),
+            ),
+            1 => {
+                let a: [f64; 8] = core::array::from_fn(|_| rin(&mut rng));
+                let b: [f64; 8] = core::array::from_fn(|_| rin(&mut rng));
+                (a, b, core::array::from_fn(|i| -(a[i] * b[i])))
+            }
+            2 => {
+                let k = (rng.next() % 400) as i32 - 200;
+                (
+                    core::array::from_fn(|_| ya * 2f64.powi(k)),
+                    [yb; 8],
+                    core::array::from_fn(
+                        |i| if i.is_multiple_of(2) { 1.0 } else { -1.0 } * 2f64.powi(k - 114 - i as i32),
+                    ),
+                )
+            }
+            3 => (
+                core::array::from_fn(|_| f64::from_bits(rng.next())),
+                core::array::from_fn(|_| f64::from_bits(rng.next())),
+                core::array::from_fn(|_| f64::from_bits(rng.next())),
+            ),
+            _ => {
+                // a * b = (1 + 2^-26 + 2^-27 + 2^-53) * 2^k; each c cancels the middle
+                // terms so the exact sum is a midpoint between two f64 neighbours:
+                //   lane 0: 1 + 2^-53                  -> 1            (even below)
+                //   lane 1: 1 + 2^-52 + 2^-53          -> 1 + 2^-51    (even above)
+                //   lane 2: 1 + 2^-26 + 2^-53          -> 1 + 2^-26    (even below)
+                //   lane 3: 1 + 2^-26 + 2^-52 + 2^-53  -> 1 + 2^-26 + 2^-51 (even above)
+                // Lanes 4..7 are the same sums negated.
+                let k = (rng.next() % 1800) as i32 - 900;
+                let s = 2f64.powi(k);
+                let (e26, e27, e52) = (2f64.powi(-26), 2f64.powi(-27), 2f64.powi(-52));
+                let cut = [-(e26 + e27), -(e26 + e27 - e52), -e27, -(e27 - e52)];
+                let neg = |i: usize| if i < 4 { 1.0 } else { -1.0 };
+                (
+                    core::array::from_fn(|i| neg(i) * ya * s),
+                    [yb; 8],
+                    core::array::from_fn(|i| neg(i) * cut[i % 4] * s),
+                )
+            }
+        };
+        let got = F64x8::from_array(a)
+            .mul_add(F64x8::from_array(b), F64x8::from_array(c))
+            .to_array();
+        for i in 0..8 {
+            let want = oracle_fma_f64(a[i], b[i], c[i]);
+            if !same64(got[i], want) {
+                return Err(0x1140 + (round % 5) * 8 + i as u32);
+            }
+            if !same64(a[i] * b[i] + c[i], want) {
+                unfused_differs += 1;
+            }
+        }
+    }
+    if unfused_differs < 256 {
+        return Err(0x11F1);
+    }
+    Ok(())
+}
+
+/// Exact `a * b + c`, rounded once to nearest-even: the reference for the
+/// `0x11xx` group. It holds the exact sum in a 4608-bit integer (bit 0 is
+/// `2^ORACLE_BASE`, below every product of two subnormals), so it shares no
+/// arithmetic with the realization under test and calls no `mul_add`.
+const ORACLE_WORDS: usize = 72;
+const ORACLE_BASE: i32 = -2300;
+
+/// An IEEE binary format: `p` significand bits, smallest step `2^gmin`,
+/// largest exponent `emax`.
+#[derive(Clone, Copy)]
+struct Format {
+    p: u32,
+    gmin: i32,
+    emax: i32,
+}
+const BINARY32: Format = Format {
+    p: 24,
+    gmin: -149,
+    emax: 127,
+};
+const BINARY64: Format = Format {
+    p: 53,
+    gmin: -1074,
+    emax: 1023,
+};
+
+/// A finite value as `(negative, m, e)` with value `m * 2^e`, from its bits.
+fn oracle_split(bits: u64, f: Format) -> (bool, u128, i32) {
+    let frac_bits = f.p - 1;
+    let total = if f.p == 24 { 32 } else { 64 };
+    let neg = bits >> (total - 1) & 1 == 1;
+    let exp = (bits >> frac_bits) & ((1u64 << (total - 1 - frac_bits)) - 1);
+    let frac = bits & ((1u64 << frac_bits) - 1);
+    if exp == 0 {
+        (neg, frac as u128, f.gmin)
+    } else {
+        (neg, (frac | 1u64 << frac_bits) as u128, exp as i32 - 1 + f.gmin)
+    }
+}
+
+fn oracle_place(m: u128, e: i32) -> [u64; ORACLE_WORDS] {
+    let mut w = [0u64; ORACLE_WORDS];
+    let off = (e - ORACLE_BASE) as usize;
+    let (word, bit) = (off / 64, off % 64);
+    let lo = m << bit;
+    let hi = if bit == 0 { 0 } else { m >> (128 - bit) };
+    w[word] = lo as u64;
+    w[word + 1] = (lo >> 64) as u64;
+    w[word + 2] = hi as u64;
+    w
+}
+
+fn oracle_cmp(x: &[u64; ORACLE_WORDS], y: &[u64; ORACLE_WORDS]) -> core::cmp::Ordering {
+    x.iter().rev().cmp(y.iter().rev())
+}
+
+fn oracle_add(x: &[u64; ORACLE_WORDS], y: &[u64; ORACLE_WORDS]) -> [u64; ORACLE_WORDS] {
+    let mut out = [0u64; ORACLE_WORDS];
+    let mut carry = 0u64;
+    for i in 0..ORACLE_WORDS {
+        let (s1, c1) = x[i].overflowing_add(y[i]);
+        let (s2, c2) = s1.overflowing_add(carry);
+        out[i] = s2;
+        carry = (c1 | c2) as u64;
+    }
+    out
+}
+
+/// `x - y` for `x >= y`.
+fn oracle_sub(x: &[u64; ORACLE_WORDS], y: &[u64; ORACLE_WORDS]) -> [u64; ORACLE_WORDS] {
+    let mut out = [0u64; ORACLE_WORDS];
+    let mut borrow = 0u64;
+    for i in 0..ORACLE_WORDS {
+        let (d1, b1) = x[i].overflowing_sub(y[i]);
+        let (d2, b2) = d1.overflowing_sub(borrow);
+        out[i] = d2;
+        borrow = (b1 | b2) as u64;
+    }
+    out
+}
+
+fn oracle_bit(w: &[u64; ORACLE_WORDS], i: usize) -> bool {
+    w[i / 64] >> (i % 64) & 1 == 1
+}
+
+/// Round the exact magnitude `w * 2^ORACLE_BASE` to the format; returns the
+/// result's bit pattern (sign applied).
+fn oracle_round(neg: bool, w: &[u64; ORACLE_WORDS], f: Format) -> u64 {
+    let total = if f.p == 24 { 32 } else { 64 };
+    let sign = (neg as u64) << (total - 1);
+    let Some(h) = (0..ORACLE_WORDS * 64).rev().find(|&i| oracle_bit(w, i)) else {
+        return sign;
+    };
+    let top = h as i32 + ORACLE_BASE;
+    let g = (top - (f.p as i32 - 1)).max(f.gmin);
+    let shift = (g - ORACLE_BASE) as usize;
+    let mut q: u64 = 0;
+    for i in (shift..=h).rev() {
+        q = q << 1 | oracle_bit(w, i) as u64;
+    }
+    let round = shift > 0 && oracle_bit(w, shift - 1);
+    let sticky = (0..shift.saturating_sub(1)).any(|i| oracle_bit(w, i));
+    if round && (sticky || q & 1 == 1) {
+        q += 1;
+    }
+    let (mut q, mut g) = (q, g);
+    if q == 1u64 << f.p {
+        q >>= 1;
+        g += 1;
+    }
+    let frac_bits = f.p - 1;
+    if q >> frac_bits == 0 {
+        // Subnormal (or zero): only reachable at the smallest step.
+        return sign | q;
+    }
+    let t = g + frac_bits as i32;
+    if t > f.emax {
+        return sign | (((1u64 << (total - 1 - frac_bits)) - 1) << frac_bits);
+    }
+    let biased = (t - (f.gmin + frac_bits as i32) + 1) as u64;
+    sign | biased << frac_bits | (q & ((1u64 << frac_bits) - 1))
+}
+
+/// The oracle on bit patterns; `None` means the exact result is NaN.
+fn oracle_fma(a: u64, b: u64, c: u64, f: Format, value: impl Fn(u64) -> f64) -> Option<u64> {
+    let total = if f.p == 24 { 32 } else { 64 };
+    let (va, vb, vc) = (value(a), value(b), value(c));
+    if va.is_nan() || vb.is_nan() || vc.is_nan() {
+        return None;
+    }
+    let sign_of = |x: u64| x >> (total - 1) & 1 == 1;
+    let sp = sign_of(a) != sign_of(b);
+    let inf = |neg: bool| ((neg as u64) << (total - 1)) | (((1u64 << (total - f.p)) - 1) << (f.p - 1));
+    if va.is_infinite() || vb.is_infinite() {
+        if va == 0.0 || vb == 0.0 || (vc.is_infinite() && sign_of(c) != sp) {
+            return None;
+        }
+        return Some(inf(sp));
+    }
+    if vc.is_infinite() {
+        return Some(c);
+    }
+    if va == 0.0 || vb == 0.0 {
+        if vc == 0.0 {
+            // Round to nearest: -0 only when both terms are -0.
+            return Some(((sp && sign_of(c)) as u64) << (total - 1));
+        }
+        return Some(c);
+    }
+    let (_, ma, ea) = oracle_split(a, f);
+    let (_, mb, eb) = oracle_split(b, f);
+    let prod = oracle_place(ma * mb, ea + eb);
+    if vc == 0.0 {
+        return Some(oracle_round(sp, &prod, f));
+    }
+    let (sc, mc, ec) = oracle_split(c, f);
+    let cw = oracle_place(mc, ec);
+    let (neg, mag) = if sp == sc {
+        (sp, oracle_add(&prod, &cw))
+    } else if oracle_cmp(&prod, &cw) != core::cmp::Ordering::Less {
+        (sp, oracle_sub(&prod, &cw))
+    } else {
+        (sc, oracle_sub(&cw, &prod))
+    };
+    if mag.iter().all(|&x| x == 0) {
+        return Some(0);
+    }
+    Some(oracle_round(neg, &mag, f))
+}
+
+fn oracle_fma_f32(a: f32, b: f32, c: f32) -> f32 {
+    let v = |x: u64| f32::from_bits(x as u32) as f64;
+    match oracle_fma(a.to_bits() as u64, b.to_bits() as u64, c.to_bits() as u64, BINARY32, v) {
+        Some(bits) => f32::from_bits(bits as u32),
+        None => f32::NAN,
+    }
+}
+
+fn oracle_fma_f64(a: f64, b: f64, c: f64) -> f64 {
+    match oracle_fma(a.to_bits(), b.to_bits(), c.to_bits(), BINARY64, f64::from_bits) {
+        Some(bits) => f64::from_bits(bits),
+        None => f64::NAN,
+    }
+}
+
+#[cfg(test)]
+mod oracle_tests {
+    use super::*;
+
+    /// The oracle against the host's `mul_add` (a hardware FMA on the hosts
+    /// these tests run on): random patterns, cancellation, ties, the
+    /// subnormal and overflow edges, and every pair of special values.
+    #[test]
+    fn oracle_matches_hardware_fma() {
+        let mut rng = SplitMix64(0x0AC1_E000_0001);
+        let specials64 = [
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            f64::MIN_POSITIVE,
+            5e-324,
+            -5e-324,
+            f64::MAX,
+            -f64::MAX,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+            1.5,
+        ];
+        for &a in &specials64 {
+            for &b in &specials64 {
+                for &c in &specials64 {
+                    let (w, g) = (a.mul_add(b, c), oracle_fma_f64(a, b, c));
+                    assert!(
+                        w.to_bits() == g.to_bits() || (w.is_nan() && g.is_nan()),
+                        "f64 {a:e} {b:e} {c:e}: {g:e} vs {w:e}"
+                    );
+                    let (x, y, z) = (a as f32, b as f32, c as f32);
+                    let (w, g) = (x.mul_add(y, z), oracle_fma_f32(x, y, z));
+                    assert!(
+                        w.to_bits() == g.to_bits() || (w.is_nan() && g.is_nan()),
+                        "f32 {x:e} {y:e} {z:e}: {g:e} vs {w:e}"
+                    );
+                }
+            }
+        }
+        for round in 0..300_000u32 {
+            let (a, b, c) = match round % 3 {
+                0 => (f64::from_bits(rng.next()), f64::from_bits(rng.next()), f64::from_bits(rng.next())),
+                1 => {
+                    let ea = 1 + rng.next() % 2046;
+                    let t = if rng.next() & 1 == 0 {
+                        rng.next() % 70
+                    } else {
+                        1990 + rng.next() % 70
+                    };
+                    let eb = (t + 1023).saturating_sub(ea).clamp(1, 2046);
+                    let a = f64::from_bits((rng.next() & 0x800F_FFFF_FFFF_FFFF) | ea << 52);
+                    let b = f64::from_bits((rng.next() & 0x800F_FFFF_FFFF_FFFF) | eb << 52);
+                    (a, b, f64::from_bits(rng.next() & 0x801F_FFFF_FFFF_FFFF))
+                }
+                _ => {
+                    let a = f64::from_bits(rng.next());
+                    let b = f64::from_bits(rng.next());
+                    (a, b, -(a * b))
+                }
+            };
+            let (w, g) = (a.mul_add(b, c), oracle_fma_f64(a, b, c));
+            assert!(w.to_bits() == g.to_bits() || (w.is_nan() && g.is_nan()), "f64 {a:e} {b:e} {c:e}: {g:e} vs {w:e}");
+            let (x, y) = (f32::from_bits(rng.next() as u32), f32::from_bits(rng.next() as u32));
+            let z = if round % 2 == 0 {
+                f32::from_bits(rng.next() as u32)
+            } else {
+                -(x * y)
+            };
+            let (w, g) = (x.mul_add(y, z), oracle_fma_f32(x, y, z));
+            assert!(w.to_bits() == g.to_bits() || (w.is_nan() && g.is_nan()), "f32 {x:e} {y:e} {z:e}: {g:e} vs {w:e}");
+        }
+    }
 }

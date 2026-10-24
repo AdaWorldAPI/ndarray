@@ -109,7 +109,7 @@ fn dot_simd(row: &[f64], z: &[f64]) -> f64 {
     }
     let mut sum = acc.reduce_sum();
     while c < row.len() {
-        sum = row[c].mul_add(z[c], sum);
+        sum = crate::simd::mul_add_f64(row[c], z[c], sum);
         c += 1;
     }
     sum
@@ -130,7 +130,7 @@ fn axpy_simd(scale: f64, src: &[f64], out: &mut [f64]) {
         r += LANES;
     }
     while r < src.len() {
-        out[r] = scale.mul_add(src[r], out[r]);
+        out[r] = crate::simd::mul_add_f64(scale, src[r], out[r]);
         r += 1;
     }
 }

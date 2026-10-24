@@ -572,12 +572,10 @@ pub fn simd_exp_f32(x: F32x16) -> F32x16 {
     // single-constant `x - n * ln2` rounds n * ln2 at |x| ~ 90, where one ulp
     // is ~7.6e-6: that error was larger than the polynomial's.
     //
-    // Plain `*` and `+`, never `mul_add`: wasm's `mul_add` is unfused (or,
-    // with relaxed-simd, implementation-defined) while every other backend
-    // fuses, so `mul_add` here would make the result differ by an ulp
-    // between wasm and native. Unfused ops round identically on every
-    // backend (the same rule as `gemm_f64_tiled` in `simd_ops`), and the
-    // split above makes the fused form unnecessary for accuracy.
+    // Plain `*` and `+`: unfused ops round identically on every backend (the
+    // same rule as `gemm_f64_tiled` in `simd_ops`), and the split above makes
+    // the fused form unnecessary for accuracy. (`mul_add` is fused on every
+    // backend too, wasm included, but costs an emulation there.)
     // floor(t + 0.5), not round(): `round` breaks ties to even on AVX-512,
     // NEON and wasm but away from zero on AVX2, scalar and nightly, so a tie
     // would pick a different n per backend. floor is the same everywhere.
@@ -995,8 +993,8 @@ pub use crate::bitwise::popcount_batch_u64;
 #[cfg(feature = "std")]
 pub use crate::simd_ops::{
     add_f32, add_f32_inplace, add_f64, add_f64_inplace, add_mul_f32, add_mul_f64, add_scalar_f32, bf16_tile_gemm_16x16,
-    div_f32, div_f32_inplace, mul_f32, mul_f32_inplace, mul_f64, scale_f32, scale_f32_inplace, sub_f32,
-    sub_f32_inplace,
+    div_f32, div_f32_inplace, mul_add_f32, mul_add_f64, mul_f32, mul_f32_inplace, mul_f64, scale_f32,
+    scale_f32_inplace, sub_f32, sub_f32_inplace,
 };
 
 // ChaCha20 keystream is NO LONGER an `ndarray::simd` surface: the AdaWorldAPI

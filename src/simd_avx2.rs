@@ -599,15 +599,10 @@ impl F32x16 {
         Self::from_array(o)
     }
     #[inline(always)]
+    /// Fused multiply-add, single rounding: `_mm256_fmadd_ps` on each half
+    /// with FMA3, the exact scalar FMA per lane without it.
     pub fn mul_add(self, b: Self, c: Self) -> Self {
-        let a = self.to_array();
-        let ba = b.to_array();
-        let ca = c.to_array();
-        let mut o = [0.0f32; 16];
-        for i in 0..16 {
-            o[i] = a[i].mul_add(ba[i], ca[i]);
-        }
-        Self::from_array(o)
+        Self(self.0.mul_add(b.0, c.0), self.1.mul_add(b.1, c.1))
     }
     #[inline(always)]
     pub fn simd_min(self, other: Self) -> Self {
@@ -942,15 +937,10 @@ impl F64x8 {
         Self::from_array(o)
     }
     #[inline(always)]
+    /// Fused multiply-add, single rounding: `_mm256_fmadd_pd` on each half
+    /// with FMA3, the exact scalar FMA per lane without it.
     pub fn mul_add(self, b: Self, c: Self) -> Self {
-        let a = self.to_array();
-        let ba = b.to_array();
-        let ca = c.to_array();
-        let mut o = [0.0f64; 8];
-        for i in 0..8 {
-            o[i] = a[i].mul_add(ba[i], ca[i]);
-        }
-        Self::from_array(o)
+        Self(self.0.mul_add(b.0, c.0), self.1.mul_add(b.1, c.1))
     }
     #[inline(always)]
     pub fn simd_min(self, other: Self) -> Self {

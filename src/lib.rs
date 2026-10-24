@@ -486,6 +486,10 @@ pub mod simd_ops;
 #[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]
 pub mod simd_half;
 
+/// Correctly rounded scalar FMA for backends without an FMA instruction.
+#[cfg(feature = "std")]
+pub(crate) mod simd_fma;
+
 /// Runtime SIMD dispatch — release-binary distribution path.
 ///
 /// Gated under `--features runtime-dispatch`. Mutually exclusive with

@@ -130,19 +130,52 @@ pub fn scale_f32_inplace(a: &mut [f32], scalar: f32) {
 // `add_mul_*` is the slice-level FMA-into-accumulator: `acc[i] += a[i] * b[i]`.
 // Built directly on `F32x16::mul_add` / `F64x8::mul_add`, the polyfilled
 // FMA primitives on the SIMD types (AVX-512: vfmadd231ps; AVX2 + FMA:
-// _mm256_fmadd_ps; NEON: vfmaq_f32; scalar: f32::mul_add → also fused
-// on FMA-capable hosts). Single rounding step, no intermediate
-// `a[i] * b[i]` temporary in scalar emulation — same semantic as
-// BLAS-1 `axpy` with a vector multiplier, and the dominant inner-loop
-// shape in the BLAS-graph GEMM kernels.
+// _mm256_fmadd_ps; NEON: vfmaq_f32; wasm simd128: exact emulation; scalar
+// and targets without FMA: the exact scalar FMA), and on [`mul_add_f32`] /
+// [`mul_add_f64`] for the tails. Single rounding step on every backend —
+// same semantic as BLAS-1 `axpy` with a vector multiplier, and the dominant
+// inner-loop shape in the BLAS-graph GEMM kernels.
+
+/// Scalar fused multiply-add `a * b + c`, rounded once, on every backend.
+///
+/// The FMA instruction where the target has one at compile time
+/// (`target_feature = "fma"` on x86, aarch64); otherwise an exact emulation
+/// (no libm call, no run-time CPU dispatch). Use this instead of
+/// `f32::mul_add` in code that must behave the same on every polyfill arm.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::mul_add_f32;
+/// let x = 1.0f32 + f32::EPSILON * 2048.0; // x * x = 1 + 2^-11 + 2^-24 exactly
+/// assert_eq!(mul_add_f32(x, x, -(1.0 + f32::EPSILON * 4096.0)), f32::EPSILON / 2.0);
+/// ```
+#[inline(always)]
+pub fn mul_add_f32(a: f32, b: f32, c: f32) -> f32 {
+    crate::simd_fma::ExactFma::exact_fma(a, b, c)
+}
+
+/// f64 sibling of [`mul_add_f32`].
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::mul_add_f64;
+/// let x = 1.0f64 + f64::EPSILON * 2f64.powi(25); // x * x = 1 + 2^-26 + 2^-54
+/// assert_eq!(mul_add_f64(x, x, -(1.0 + f64::EPSILON * 2f64.powi(26))), 2f64.powi(-54));
+/// ```
+#[inline(always)]
+pub fn mul_add_f64(a: f64, b: f64, c: f64) -> f64 {
+    crate::simd_fma::ExactFma::exact_fma(a, b, c)
+}
 
 /// Fused multiply-add into accumulator: `acc[i] += a[i] * b[i]`.
 ///
 /// Operates on the prefix `min(acc.len(), a.len(), b.len())` lanes.
 /// Each lane is computed with a single rounding step via the polyfilled
-/// `F32x16::mul_add` (hardware FMA where available). On scalar fallback
-/// targets, `f32::mul_add` is also fused if the host has FMA — never
-/// less precise than the manual `acc[i] += a[i] * b[i]` two-step.
+/// `F32x16::mul_add` (hardware FMA where available), and [`mul_add_f32`]
+/// for the tail — never less precise than the manual
+/// `acc[i] += a[i] * b[i]` two-step.
 ///
 /// # Examples
 ///
@@ -166,7 +199,7 @@ pub fn add_mul_f32(acc: &mut [f32], a: &[f32], b: &[f32]) {
         i += 16;
     }
     while i < n {
-        acc[i] = a[i].mul_add(b[i], acc[i]);
+        acc[i] = mul_add_f32(a[i], b[i], acc[i]);
         i += 1;
     }
 }
@@ -174,7 +207,7 @@ pub fn add_mul_f32(acc: &mut [f32], a: &[f32], b: &[f32]) {
 /// Fused multiply-add into accumulator (f64): `acc[i] += a[i] * b[i]`.
 ///
 /// f64 sibling of [`add_mul_f32`]. Uses `F64x8::mul_add` (8-wide on
-/// AVX-512 / 4-wide on AVX2-FMA / 2-wide on NEON / scalar `f64::mul_add`).
+/// AVX-512 / 4-wide on AVX2-FMA / 2-wide on NEON / [`mul_add_f64`] otherwise).
 #[inline]
 pub fn add_mul_f64(acc: &mut [f64], a: &[f64], b: &[f64]) {
     let n = acc.len().min(a.len()).min(b.len());
@@ -187,7 +220,7 @@ pub fn add_mul_f64(acc: &mut [f64], a: &[f64], b: &[f64]) {
         i += 8;
     }
     while i < n {
-        acc[i] = a[i].mul_add(b[i], acc[i]);
+        acc[i] = mul_add_f64(a[i], b[i], acc[i]);
         i += 1;
     }
 }
@@ -959,21 +992,16 @@ pub fn gemm_f64_tiled(
 /// Fast tier of [`gemm_f64_tiled`]: same tiling, same ascending-`p`
 /// per-element order, but each step is a **fused** multiply-add
 /// (`c = fma(alpha·A[i,p], B[p,j], c)` — one rounding per step via
-/// `F64x8::mul_add`; fused semantics on every backend, though the
-/// lowering varies: native `vfmadd` on the AVX-512 arm, `vfmaq_f64` on
-/// NEON, per-lane `f64::mul_add` on the AVX2 polyfill and the scalar
-/// tail — which can become a libm `fma()` call on targets built
-/// without the `fma` feature: correct, but slow. Prefer the reference
-/// tier, or an FMA-capable target pin, in that situation).
+/// `F64x8::mul_add`, and [`mul_add_f64`] for the scalar tail; fused
+/// semantics on every backend, though the lowering varies: native
+/// `vfmadd` on AVX-512 and AVX2 + FMA, `vfmaq_f64` on NEON, an exact
+/// emulation on wasm and on targets built without the `fma` feature:
+/// correct, but slower. Prefer the reference tier, or an FMA-capable
+/// target pin, in that situation).
 ///
 /// Semantics relative to the reference tier:
-/// - **Deterministic per (build, runtime)**, but NOT bit-stable across
-///   backends: fusion differs (WASM without `relaxed-simd` has no
-///   fused vector `mul_add`, so its vector lanes match the unfused
-///   reference while the scalar tail is still fused; WASM WITH
-///   `relaxed-simd` uses `f64x2_relaxed_madd`, whose fusion is
-///   implementation-defined — the same wasm binary may round
-///   differently on different runtimes).
+/// - **Bit-identical across backends**: every backend's `mul_add`
+///   rounds once (simd-masking-parity group `0x11xx`).
 /// - **Bit-identical to [`gemm_f64_tiled`]** whenever every
 ///   `a_val·b` product and running sum is exactly representable —
 ///   e.g. integer-valued data with products and accumulation inside
@@ -1092,7 +1120,11 @@ fn gemm_f64_tiled_impl<const FMA: bool>(
                         }
                         for (t, tv) in tail.iter_mut().enumerate().take(ntail) {
                             let bv = b[b_row + nvec * LANES + t];
-                            *tv = if FMA { a_val.mul_add(bv, *tv) } else { *tv + a_val * bv };
+                            *tv = if FMA {
+                                mul_add_f64(a_val, bv, *tv)
+                            } else {
+                                *tv + a_val * bv
+                            };
                         }
                     }
                     for (v, av) in acc.iter().enumerate().take(nvec) {
