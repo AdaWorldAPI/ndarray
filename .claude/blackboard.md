@@ -3721,3 +3721,25 @@ Operator chose Option A after #348. P0 landed: `.cargo/config-avx.toml`
 `qemu-x86_64-static -cpu SandyBridge`). Before the backend exists the arm FAILS
 with exit 132 from `cpu_guard`'s AVX2 floor (measured) — the expected red.
 No CI row yet; it is added when the arm goes green.
+
+## Codec8: 8-bit code spaces + certified tanh tables — plan RATIFIED 2026-10-24 (PR #370, being refactored)
+
+Plan `.claude/plans/quantized-codec8-v2.md` (content v3), ratified by a 5+3 council (five Sonnet
+savants: prior-art, iron-rule, code-truth, cascade-impact, creative-explorer; three Sonnet reviewers:
+overclaim, dilution-collapse, firewall; 0 BLOCK, 7 FIX(P1), 8 FIX(P2), all applied).
+Decisions recorded: one `Codec8<Storage, CodeSpace, Rounding, NanPolicy>` over sealed markers,
+calibration as a marker type, no runtime dispatch (operator ruling), certified `const` tables from
+`tools/gen_codec8_tables.py` (mpmath, `--check` in CI), SIMD primitives land first under W1a.
+Loose ends found by the council: `pub mod hpc` allows `clippy::all` (`src/lib.rs:525`), so clippy
+does not gate any hpc file today (codec8 opts back in); simd-matrix does not trigger on hpc files
+other than amx; `I8x64` lacks xor/cmpeq_mask/blend and no f32->i8 round+narrow primitive exists.
+Open for the operator: plan §8 (NativeLane rounding, spoFC rounding, U8+NaN arm, tool, ±inf).
+PR #370's runtime-scale prototype was backed out in 62c43c9.
+
+### Codec8 phase (a) landed on PR #370 (2026-10-24)
+
+`src/hpc/codec8.rs` scalar: 14 unit tests + 10 doctests green, clippy -D warnings clean (codec8 opts
+back into clippy::all), fmt clean. G5 asm identity: generic == hand-written on x86-64-v3 and -v4,
+negative control differs. G6 2% timing band not resolvable here (identical code varies up to 17%);
+recorded as NOT MET, G5 is the evidence. Results in plan §11. Next: phase (b) SIMD primitives in
+src/simd_*.rs under W1a.
