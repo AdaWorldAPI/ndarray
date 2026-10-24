@@ -1,3 +1,5 @@
+> **⊘ SUPERSEDED 2026-10-24** by `.claude/plans/quantized-codec8-v2.md`. This prompt describes per-mode functions with a runtime scale returning `Result<Vec<_>>`; the agreed design is one compile-time `Codec8<Storage, CodeSpace, Rounding, NanPolicy>` with compile-time calibration and certified `const` tables. Kept for provenance only; do not implement from it.
+
 # Claude Code staged implementation prompt: ndarray three 8-bit modes
 
 Repository: `AdaWorldAPI/ndarray`. Continue **draft PR #370** on branch `research/i8-rne-dual-range-20261024`. Do not open a duplicate PR. This PR owns only the additive contracts in `src/hpc/quantized.rs`, tests, and this stage prompt.
