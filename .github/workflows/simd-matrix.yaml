@@ -313,9 +313,13 @@ jobs:
         run: |
           bin=crates/simd-masking-parity/target/release/simd-masking-parity
           # Nehalem has no AVX: no ymm/zmm or mask register, and no VEX-encoded
-          # (v-prefixed) op on xmm either. The parity binary has no
-          # runtime-gated paths, so any hit came from an ungated intrinsic.
-          bad=$(objdump -d --no-show-raw-insn "$bin" | grep -E '%ymm|%zmm|%k[0-7]|\sv[a-z0-9]+\s.*%xmm' || true)
+          # (v-prefixed) op on xmm either. The one runtime-gated path is
+          # compiler-builtins' libm fma/fmaf (what scalar `mul_add` calls),
+          # whose `*_with_fma` / `*_with_fma4` variants are picked by CPUID and
+          # skipped here; any other hit came from an ungated intrinsic.
+          bad=$(objdump -d --no-show-raw-insn "$bin" \
+            | awk '/>:$/ { skip = ($0 ~ /compiler_builtins.*fmaf?_with_fma4?>:$/) } !skip' \
+            | grep -E '%ymm|%zmm|%k[0-7]|\sv[a-z0-9]+\s.*%xmm' || true)
           if [ -n "$bad" ]; then echo "$bad" | head -20; echo "::error::AVX instruction in the v2 parity binary"; exit 1; fi
           echo "no AVX instruction found"
       - name: SIMD unit tests under qemu -cpu Nehalem
