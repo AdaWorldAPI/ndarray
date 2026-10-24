@@ -19,7 +19,7 @@ The NaN sentinel is a custom **integer codec marker**. IEEE-754 NaN applies only
 ## Stage 0: source audit and baseline, read-only
 
 1. Read `src/hpc/quantized.rs` and existing `src/hpc/vml.rs` / SIMD rounding. Do not recreate ties-to-even or replace existing `quantize_f32_to_i8`.
-2. Check the legacy U8 affine mapping with [0, 0.5, 1]. Code 128 is the rounded midpoint under fitted `scale=1/255`, **but decoded 128/255 is not exactly 0.5**.
+2. Check the legacy U8 affine mapping with [0, 0.5, 1]. The midpoint can quantize to code **127 or 128** depending on f32 rounding of the fitted `scale=1/255` and division. Neither decoded code is exactly 0.5. For example, f32 division can yield 127.49999, so do not assume 128.
 3. Separately evaluate the hypothetical exact-midpoint mapping `scale=0.5/128=1/256`: 128 maps exactly to 0.5, but 255 maps to 255/256, not 1.0. Do not silently change U8 semantics to resolve this tradeoff. Record the SPOFC analogy as a hypothesis, not a verified equivalence.
 4. Establish current branch/CI state and check #370 for newer edits before modifying any file.
 
