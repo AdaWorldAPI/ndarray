@@ -132,7 +132,9 @@ macro_rules! impl_float_type {
             pub fn round(self) -> Self {
                 let mut out = [0.0 as $elem; $lanes];
                 for i in 0..$lanes {
-                    out[i] = self.0[i].round();
+                    // Ties to even, like the SIMD backends; `round` breaks
+                    // ties away from zero.
+                    out[i] = self.0[i].round_ties_even();
                 }
                 Self(out)
             }

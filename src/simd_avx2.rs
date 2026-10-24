@@ -583,7 +583,9 @@ impl F32x16 {
         let a = self.to_array();
         let mut o = [0.0f32; 16];
         for i in 0..16 {
-            o[i] = a[i].round();
+            // Ties to even, like AVX-512 roundscale and NEON/wasm nearest;
+            // f32::round / f64::round round ties away from zero.
+            o[i] = a[i].round_ties_even();
         }
         Self::from_array(o)
     }
@@ -924,7 +926,9 @@ impl F64x8 {
         let a = self.to_array();
         let mut o = [0.0f64; 8];
         for i in 0..8 {
-            o[i] = a[i].round();
+            // Ties to even, like AVX-512 roundscale and NEON/wasm nearest;
+            // f32::round / f64::round round ties away from zero.
+            o[i] = a[i].round_ties_even();
         }
         Self::from_array(o)
     }
