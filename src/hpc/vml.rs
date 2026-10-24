@@ -20,7 +20,7 @@
 //! - Pure Rust implementations; MKL-accelerated versions behind `intel-mkl`
 //!   feature gate.
 
-use crate::simd::{simd_exp_f32, simd_ln_f32, F32x16, F64x8};
+use crate::simd::{simd_exp_f32, simd_ln_f32, F32x16, F64x8, U32x16};
 use crate::{ArrayView, ArrayViewMut, Dimension, Zip};
 
 // ===========================================================================
@@ -232,25 +232,51 @@ fn vspow_slice(a: &[f32], b: &[f32], out: &mut [f32]) {
     }
 }
 
+/// 16-lane `tanh`, computed on `|x|` with the sign bit of `x` copied back, so
+/// `tanh(-0.0) = -0.0` and the function is exactly odd.
+///
+/// Two branches, chosen per lane:
+/// - `|x| < 0.625`: `a + a·z·P(z)` with `z = a²` (the Cephes `tanhf`
+///   minimax polynomial). It has no cancellation, and for subnormal or tiny
+///   `a` the correction vanishes and the result is `a` itself.
+/// - otherwise: `1 − 2/(exp(2a) + 1)`. `exp` overflows to `+inf` for large
+///   `a`, which gives exactly `1.0`; a NaN input stays NaN.
+///
+/// The earlier `2·sigmoid(2x) − 1` cancelled for small `|x|`: below about
+/// `1e-7` the sigmoid rounds to `0.5` and the result was `0`.
+#[inline(always)]
+fn tanh_f32x16(v: F32x16) -> F32x16 {
+    let sign = U32x16::splat(0x8000_0000);
+    let a = v.abs();
+    let z = a * a;
+    let p = F32x16::splat(-5.704_988_727_45e-3)
+        .mul_add(z, F32x16::splat(2.063_908_879_54e-2))
+        .mul_add(z, F32x16::splat(-5.373_971_555_31e-2))
+        .mul_add(z, F32x16::splat(1.333_144_220_36e-1))
+        .mul_add(z, F32x16::splat(-3.333_328_194_22e-1));
+    let small = (p * z).mul_add(a, a);
+    let e = simd_exp_f32(a + a);
+    let large = F32x16::splat(1.0) - F32x16::splat(2.0) / (e + F32x16::splat(1.0));
+    let r = a.simd_lt(F32x16::splat(0.625)).select(small, large);
+    F32x16::from_bits(r.to_bits() | (v.to_bits() & sign))
+}
+
 fn vstanh_slice(x: &[f32], out: &mut [f32]) {
     let n = x.len().min(out.len());
     let chunks = n / 16;
-    let two = F32x16::splat(2.0);
-    let one = F32x16::splat(1.0);
     for i in 0..chunks {
         let off = i * 16;
-        let v = F32x16::from_slice(&x[off..off + 16]);
-        // tanh(x) = 2·sigmoid(2x) - 1
-        let two_x = v * two;
-        // sigmoid(z) = 1/(1+exp(-z))
-        let neg_two_x = -two_x;
-        let exp_neg = simd_exp_f32(neg_two_x);
-        let sigmoid = one / (exp_neg + one);
-        let tanh_v = sigmoid.mul_add(two, F32x16::splat(-1.0));
-        tanh_v.copy_to_slice(&mut out[off..off + 16]);
+        tanh_f32x16(F32x16::from_slice(&x[off..off + 16])).copy_to_slice(&mut out[off..off + 16]);
     }
-    for i in (chunks * 16)..n {
-        out[i] = x[i].tanh();
+    // The tail goes through the same 16-lane kernel, so a value gives the same
+    // bits wherever it sits in the array.
+    let rest = n - chunks * 16;
+    if rest > 0 {
+        let mut buf = [0.0f32; 16];
+        buf[..rest].copy_from_slice(&x[chunks * 16..n]);
+        let r = tanh_f32x16(F32x16::from_slice(&buf));
+        r.copy_to_slice(&mut buf);
+        out[chunks * 16..n].copy_from_slice(&buf[..rest]);
     }
 }
 
@@ -605,8 +631,12 @@ pub fn vspow<D: Dimension>(a: ArrayView<'_, f32, D>, b: ArrayView<'_, f32, D>, m
         .for_each(|o, &x, &y| *o = x.powf(y));
 }
 
-/// Element-wise `tanh` via the identity `tanh(x) = 2·sigmoid(2x) − 1`. Hot
-/// path reuses the F32x16 sigmoid built from `simd_exp_f32`.
+/// Element-wise `tanh`, within 2 ULP of the correctly rounded result over
+/// every finite `f32`. `tanh(±0) = ±0`, subnormals map to themselves,
+/// `tanh(±inf) = ±1` and NaN stays NaN.
+///
+/// Every element, contiguous or strided, goes through the same 16-lane
+/// kernel, so a value's result does not depend on its position or layout.
 ///
 /// # Panics
 /// Panics if `x` and `out` shapes differ.
@@ -615,7 +645,9 @@ pub fn vstanh<D: Dimension>(x: ArrayView<'_, f32, D>, mut out: ArrayViewMut<'_, 
     if dispatch_unary_contig(x.view(), &mut out, vstanh_slice) {
         return;
     }
-    Zip::from(&mut out).and(&x).for_each(|o, &v| *o = v.tanh());
+    Zip::from(&mut out)
+        .and(&x)
+        .for_each(|o, &v| *o = tanh_f32x16(F32x16::splat(v)).to_array()[0]);
 }
 
 /// Element-wise `floor`. Hot path uses `F32x16::floor()` (VRNDSCALEPS on

@@ -526,10 +526,11 @@ pub fn f32_to_bf16_batch(input: &[f32], output: &mut [u16]) {
 // SIMD math functions — ndarray additions (not in std::simd)
 // ============================================================================
 
-/// Fast exp(x) for F32x16 — Remez polynomial on [-87, 87].
+/// Fast exp(x) for F32x16 — Cephes minimax polynomial after range reduction.
 ///
-/// Max error ~2 ULP in [-10, 10]. Uses the standard range-reduction
-/// approach: exp(x) = 2^n * exp(r) where r = x - n*ln(2).
+/// Within 1 ULP of the correctly rounded result for normal results
+/// (measured on 4 M points over [-87, 88.5]). Uses the standard
+/// range-reduction approach: exp(x) = 2^n * exp(r) where r = x - n*ln(2).
 ///
 /// Domain: inputs from ln(f32::MAX) up return +Inf, and inputs are clamped
 /// to [-110, ln(f32::MAX)] before reduction, so -Inf and anything below
@@ -580,13 +581,16 @@ pub fn simd_exp_f32(x: F32x16) -> F32x16 {
     let r = x - n * F32x16::splat(LN2_HI);
     let r = r - n * F32x16::splat(LN2_LO);
 
-    // Polynomial: exp(r) ≈ 1 + r + r²/2 + r³/6 + r⁴/24 + r⁵/120
-    let c2 = F32x16::splat(0.5);
-    let c3 = F32x16::splat(1.0 / 6.0);
-    let c4 = F32x16::splat(1.0 / 24.0);
-    let c5 = F32x16::splat(1.0 / 120.0);
-
-    let poly = one + r * (one + r * (c2 + r * (c3 + r * (c4 + r * c5))));
+    // Polynomial: exp(r) ≈ 1 + r + r²·P(r) on |r| ≤ ln2/2, with P the Cephes
+    // `expf` minimax of degree 5. The degree-5 Taylor series used before was
+    // 39 ULP off at |r| = ln2/2 (its r⁶/720 term is ~2.4e-6 relative).
+    let p = F32x16::splat(EXP_P[0]);
+    let p = p * r + F32x16::splat(EXP_P[1]);
+    let p = p * r + F32x16::splat(EXP_P[2]);
+    let p = p * r + F32x16::splat(EXP_P[3]);
+    let p = p * r + F32x16::splat(EXP_P[4]);
+    let p = p * r + F32x16::splat(EXP_P[5]);
+    let poly = (p * (r * r) + r) + one;
 
     // Reconstruct: exp(x) = 2^n * poly. 2^n is only a normal f32 for n in
     // [-126, 127], but n reaches 128 near the overflow edge and about -159
@@ -603,6 +607,12 @@ pub fn simd_exp_f32(x: F32x16) -> F32x16 {
     // Restore NaN in lanes where the input was NaN (clamp had destroyed them).
     nan_mask.select(F32x16::splat(f32::NAN), result)
 }
+
+/// Cephes `expf` coefficients, highest degree first: `exp(r) ≈ 1 + r + r²·P(r)`.
+const EXP_P: [f32; 6] = [
+    1.987_569_150_0e-4, 1.398_199_950_7e-3, 8.333_451_907_3e-3, 4.166_579_589_4e-2, 1.666_666_545_9e-1,
+    5.000_000_120_1e-1,
+];
 
 /// f32 just above ln(f32::MAX): `exp` of it overflows to +inf.
 const OVERFLOW_X: f32 = 88.722_84;
@@ -1764,7 +1774,11 @@ mod tests {
         let n = (xc * (1.0 / core::f32::consts::LN_2) + 0.5).floor();
         let r = xc - n * super::LN2_HI;
         let r = r - n * super::LN2_LO;
-        let poly = 1.0 + r * (1.0 + r * (0.5 + r * (1.0 / 6.0 + r * (1.0 / 24.0 + r * (1.0 / 120.0)))));
+        let p = super::EXP_P
+            .iter()
+            .skip(1)
+            .fold(super::EXP_P[0], |p, &c| p * r + c);
+        let poly = (p * (r * r) + r) + 1.0;
         let (n, post) = if n > 127.0 {
             (n - 1.0, 2.0)
         } else if n < -126.0 {
@@ -1810,7 +1824,9 @@ mod tests {
             }
         }
         let n = 1 << 16;
-        let xs: Vec<f32> = (0..n).map(|i| -87.0 + 175.5 * (i as f32 / n as f32)).collect();
+        let xs: Vec<f32> = (0..n)
+            .map(|i| -87.0 + 175.5 * (i as f32 / n as f32))
+            .collect();
         let mut worst = (0i64, 0.0f32);
         for chunk in xs.chunks_exact(16) {
             let got = simd_exp_f32(F32x16::from_slice(chunk)).to_array();
