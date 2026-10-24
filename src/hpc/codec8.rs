@@ -225,10 +225,33 @@ impl sealed::Sealed for TiesAway {}
 impl sealed::Sealed for TiesEven {}
 impl sealed::Sealed for Floor {}
 
+/// Round half away from zero through `trunc`. Bit-identical to `f32::round` for every
+/// `f32` (checked exhaustively over all 2^32 bit patterns, NaN payloads aside).
+#[inline(always)]
+fn round_half_away_trunc(x: f32) -> f32 {
+    let t = x.trunc();
+    // `x - trunc(x)` is exact in f32, so this compares the true fraction with one half.
+    if (x - t).abs() >= 0.5 {
+        t + 1.0f32.copysign(x)
+    } else {
+        t
+    }
+}
+
 impl Rounding for TiesAway {
+    /// wasm has a vector truncate (`f32x4.trunc`) but no vector round-half-away, so there
+    /// `f32::round` becomes one `roundf` call per lane and the encode loop leaves the
+    /// vector unit. x86 and aarch64 lower `f32::round` to vector code already.
     #[inline(always)]
     fn round(x: f32) -> f32 {
-        x.round()
+        #[cfg(target_arch = "wasm32")]
+        {
+            round_half_away_trunc(x)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            x.round()
+        }
     }
     #[inline(always)]
     fn div_round(n: u128, d: u128) -> u128 {
@@ -683,6 +706,40 @@ mod tests {
     }
 
     // G2: TfliteAct with the exact fitted scale reproduces `quantize_f32_to_i8`.
+    #[test]
+    fn trunc_form_of_ties_away_matches_f32_round() {
+        // The whole f32 space is covered by an exhaustive run outside the test suite; here a
+        // stride over every exponent, plus the neighbourhood of each half-integer up to 2^24.
+        let same = |x: f32| {
+            let (a, r) = (round_half_away_trunc(x), x.round());
+            assert!(a.to_bits() == r.to_bits() || (a.is_nan() && r.is_nan()), "{x:e}: {a:e} vs {r:e}");
+        };
+        for b in (0..=u32::MAX).step_by(65_521) {
+            same(f32::from_bits(b));
+        }
+        for k in 0..(1u32 << 12) {
+            let h = k as f32 + 0.5;
+            for x in [h, -h, h.next_up(), h.next_down(), -h.next_up(), -h.next_down()] {
+                same(x);
+            }
+        }
+        for x in [
+            0.0,
+            -0.0,
+            0.49999997,
+            -0.49999997,
+            8388607.5,
+            8388608.0,
+            f32::MAX,
+            f32::MIN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NAN,
+        ] {
+            same(x);
+        }
+    }
+
     #[test]
     fn div_round_does_not_overflow_on_large_operands() {
         let big = 1u128 << 127;

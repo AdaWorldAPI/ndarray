@@ -69,7 +69,20 @@ pub fn d_tflite_act(x: &[f32], o: &mut [i8]) -> Result<(), Codec8Error> {
         return Err(Codec8Error::NanInput { index });
     }
     for (o, &v) in o.iter_mut().zip(x) {
-        *o = ((v / Q::SCALE).round().clamp(-128.0, 127.0) as i32) as i8;
+        let x = v / Q::SCALE;
+        // The trunc form on wasm, as `TiesAway::round` does there.
+        #[cfg(target_arch = "wasm32")]
+        let r = {
+            let t = x.trunc();
+            if (x - t).abs() >= 0.5 {
+                t + 1.0f32.copysign(x)
+            } else {
+                t
+            }
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let r = x.round();
+        *o = (r.clamp(-128.0, 127.0) as i32) as i8;
     }
     Ok(())
 }
