@@ -268,12 +268,9 @@ jobs:
         run: |
           bin=crates/simd-masking-parity/target/release/simd-masking-parity
           # Sandy Bridge has AVX but neither AVX2 (integer ops on ymm), FMA3
-          # nor F16C. The one runtime-gated path is compiler-builtins' libm
-          # fma/fmaf (what scalar `mul_add` calls), whose `*_with_fma` /
-          # `*_with_fma4` variants are picked by CPUID and skipped here; any
-          # other hit came from an intrinsic the AVX arm failed to gate.
-          dis=$(objdump -d --no-show-raw-insn "$bin" \
-            | awk '/>:$/ { skip = ($0 ~ /compiler_builtins.*fmaf?_with_fma4?>:$/) } !skip')
+          # nor F16C. The parity binary has no runtime-gated paths, so any of
+          # them here came from an intrinsic the AVX arm failed to gate.
+          dis=$(objdump -d --no-show-raw-insn "$bin")
           bad=$( { echo "$dis" | grep -E '\svp[a-z0-9]+\s.*%ymm' | grep -vE '\svptest\s';
                    echo "$dis" | grep -E '\sv(fn?m(add|sub)|fmaddsub|fmsubadd)[0-9a-z]*\s|\svcvt(ph2ps|ps2ph)\s'; } || true)
           if [ -n "$bad" ]; then echo "$bad" | head -20; echo "::error::AVX2/FMA/F16C instruction in the AVX-arm parity binary"; exit 1; fi
