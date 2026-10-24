@@ -788,6 +788,49 @@ impl I8x32 {
         m
     }
 }
+// The wasm simd128 arm takes these types from this file and realizes their narrows in
+// `simd_wasm.rs`.
+#[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
+impl I16x32 {
+    /// Narrow two 32×i16 vectors to one 64×i8 vector with signed saturation: lanes 0..32
+    /// come from `self`, lanes 32..64 from `hi`, each clamped to `-128..=127`.
+    ///
+    /// ```
+    /// use ndarray::simd::I16x32;
+    /// let mut a = [0i16; 32];
+    /// a[..8].copy_from_slice(&[i16::MIN, -129, -128, -1, 1, 127, 128, i16::MAX]);
+    /// let v = I16x32::from_array(a).narrow_saturating_i8(I16x32::splat(-300)).to_array();
+    /// assert_eq!(v[..8], [-128, -128, -128, -1, 1, 127, 127, 127]);
+    /// assert!(v[32..].iter().all(|&x| x == -128));
+    /// ```
+    #[inline(always)]
+    pub fn narrow_saturating_i8(self, hi: Self) -> I8x64 {
+        I8x64(core::array::from_fn(|i| {
+            let v = if i < 32 { self.0[i] } else { hi.0[i - 32] };
+            v.clamp(-128, 127) as i8
+        }))
+    }
+
+    /// Narrow two 32×i16 vectors to one 64×u8 vector with saturation: lanes 0..32 come
+    /// from `self`, lanes 32..64 from `hi`, each clamped to `0..=255`.
+    ///
+    /// ```
+    /// use ndarray::simd::I16x32;
+    /// let mut a = [0i16; 32];
+    /// a[..8].copy_from_slice(&[i16::MIN, -1, 0, 1, 254, 255, 256, i16::MAX]);
+    /// let v = I16x32::from_array(a).narrow_saturating_u8(I16x32::splat(300)).to_array();
+    /// assert_eq!(v[..8], [0, 0, 0, 1, 254, 255, 255, 255]);
+    /// assert!(v[32..].iter().all(|&x| x == 255));
+    /// ```
+    #[inline(always)]
+    pub fn narrow_saturating_u8(self, hi: Self) -> U8x64 {
+        U8x64(core::array::from_fn(|i| {
+            let v = if i < 32 { self.0[i] } else { hi.0[i - 32] };
+            v.clamp(0, 255) as u8
+        }))
+    }
+}
+
 impl I16x32 {
     #[inline(always)]
     pub fn zero() -> Self {
@@ -942,36 +985,23 @@ impl U16x32 {
 
 // Extra methods for I32x16 that float types have via the macro
 impl I32x16 {
-    /// Narrow each lane to `i8` with signed saturation: lanes below -128 become -128 and
-    /// lanes above 127 become 127; every other lane keeps its value.
+    /// Narrow two 16×i32 vectors to one 32×i16 vector with signed saturation: lanes 0..16
+    /// come from `self`, lanes 16..32 from `hi`, each clamped to `i16::MIN..=i16::MAX`.
     ///
     /// ```
     /// use ndarray::simd::I32x16;
-    /// let v = I32x16::from_array([-1000, -129, -128, -1, 0, 1, 127, 128, 1000, 5, -5, 64, -64, 100, -100, i32::MIN]);
-    /// assert_eq!(
-    ///     v.narrow_saturate_i8().to_array(),
-    ///     [-128, -128, -128, -1, 0, 1, 127, 127, 127, 5, -5, 64, -64, 100, -100, -128]
-    /// );
+    /// let lo = I32x16::from_array([i32::MIN, -32769, -32768, -1, 0, 1, 32767, 32768, i32::MAX, 5, -5, 7, -7, 9, -9, 0]);
+    /// let hi = I32x16::splat(70_000);
+    /// let v = lo.narrow_saturating_i16(hi).to_array();
+    /// assert_eq!(v[..9], [-32768, -32768, -32768, -1, 0, 1, 32767, 32767, 32767]);
+    /// assert!(v[16..].iter().all(|&x| x == 32767));
     /// ```
     #[inline(always)]
-    pub fn narrow_saturate_i8(self) -> I8x16 {
-        I8x16(core::array::from_fn(|i| self.0[i].clamp(-128, 127) as i8))
-    }
-
-    /// Narrow each lane to `u8` with saturation: lanes below 0 become 0 and lanes above 255
-    /// become 255; every other lane keeps its value.
-    ///
-    /// ```
-    /// use ndarray::simd::I32x16;
-    /// let v = I32x16::from_array([-1000, -1, 0, 1, 127, 128, 255, 256, 1000, 5, 64, 200, 254, i32::MIN, i32::MAX, 0]);
-    /// assert_eq!(
-    ///     v.narrow_saturate_u8().to_array(),
-    ///     [0, 0, 0, 1, 127, 128, 255, 255, 255, 5, 64, 200, 254, 0, 255, 0]
-    /// );
-    /// ```
-    #[inline(always)]
-    pub fn narrow_saturate_u8(self) -> U8x16 {
-        U8x16(core::array::from_fn(|i| self.0[i].clamp(0, 255) as u8))
+    pub fn narrow_saturating_i16(self, hi: Self) -> I16x32 {
+        I16x32(core::array::from_fn(|i| {
+            let v = if i < 16 { self.0[i] } else { hi.0[i - 16] };
+            v.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+        }))
     }
 
     #[inline(always)]

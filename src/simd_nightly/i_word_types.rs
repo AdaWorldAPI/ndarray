@@ -167,6 +167,46 @@ pub struct I16x32(pub i16x32);
 impl I16x32 {
     pub const LANES: usize = 32;
 
+    /// Narrow two 32×i16 vectors to one 64×i8 vector with signed saturation: lanes 0..32
+    /// come from `self`, lanes 32..64 from `hi`, each clamped to `-128..=127`.
+    ///
+    /// ```
+    /// use ndarray::simd::I16x32;
+    /// let mut a = [0i16; 32];
+    /// a[..8].copy_from_slice(&[i16::MIN, -129, -128, -1, 1, 127, 128, i16::MAX]);
+    /// let v = I16x32::from_array(a).narrow_saturating_i8(I16x32::splat(-300)).to_array();
+    /// assert_eq!(v[..8], [-128, -128, -128, -1, 1, 127, 127, 127]);
+    /// assert!(v[32..].iter().all(|&x| x == -128));
+    /// ```
+    #[inline(always)]
+    pub fn narrow_saturating_i8(self, hi: Self) -> super::i8_types::I8x64 {
+        let (min, max) = (i16x32::splat(-128), i16x32::splat(127));
+        let mut out = [0i8; 64];
+        out[..32].copy_from_slice(&self.0.simd_clamp(min, max).cast::<i8>().to_array());
+        out[32..].copy_from_slice(&hi.0.simd_clamp(min, max).cast::<i8>().to_array());
+        super::i8_types::I8x64::from_array(out)
+    }
+
+    /// Narrow two 32×i16 vectors to one 64×u8 vector with saturation: lanes 0..32 come
+    /// from `self`, lanes 32..64 from `hi`, each clamped to `0..=255`.
+    ///
+    /// ```
+    /// use ndarray::simd::I16x32;
+    /// let mut a = [0i16; 32];
+    /// a[..8].copy_from_slice(&[i16::MIN, -1, 0, 1, 254, 255, 256, i16::MAX]);
+    /// let v = I16x32::from_array(a).narrow_saturating_u8(I16x32::splat(300)).to_array();
+    /// assert_eq!(v[..8], [0, 0, 0, 1, 254, 255, 255, 255]);
+    /// assert!(v[32..].iter().all(|&x| x == 255));
+    /// ```
+    #[inline(always)]
+    pub fn narrow_saturating_u8(self, hi: Self) -> super::u8_types::U8x64 {
+        let (min, max) = (i16x32::splat(0), i16x32::splat(255));
+        let mut out = [0u8; 64];
+        out[..32].copy_from_slice(&self.0.simd_clamp(min, max).cast::<u8>().to_array());
+        out[32..].copy_from_slice(&hi.0.simd_clamp(min, max).cast::<u8>().to_array());
+        super::u8_types::U8x64::from_array(out)
+    }
+
     #[inline(always)]
     pub fn splat(v: i16) -> Self {
         Self(i16x32::splat(v))
@@ -315,44 +355,25 @@ pub struct I32x16(pub i32x16);
 impl I32x16 {
     pub const LANES: usize = 16;
 
-    /// Narrow each lane to `i8` with signed saturation: lanes below -128 become -128 and
-    /// lanes above 127 become 127; every other lane keeps its value.
+    /// Narrow two 16×i32 vectors to one 32×i16 vector with signed saturation: lanes 0..16
+    /// come from `self`, lanes 16..32 from `hi`, each clamped to `i16::MIN..=i16::MAX`.
     ///
     /// ```
     /// use ndarray::simd::I32x16;
-    /// let v = I32x16::from_array([-1000, -129, -128, -1, 0, 1, 127, 128, 1000, 5, -5, 64, -64, 100, -100, i32::MIN]);
-    /// assert_eq!(
-    ///     v.narrow_saturate_i8().to_array(),
-    ///     [-128, -128, -128, -1, 0, 1, 127, 127, 127, 5, -5, 64, -64, 100, -100, -128]
-    /// );
+    /// let lo = I32x16::from_array([i32::MIN, -32769, -32768, -1, 0, 1, 32767, 32768, i32::MAX, 5, -5, 7, -7, 9, -9, 0]);
+    /// let hi = I32x16::splat(70_000);
+    /// let v = lo.narrow_saturating_i16(hi).to_array();
+    /// assert_eq!(v[..9], [-32768, -32768, -32768, -1, 0, 1, 32767, 32767, 32767]);
+    /// assert!(v[16..].iter().all(|&x| x == 32767));
     /// ```
     #[inline(always)]
-    pub fn narrow_saturate_i8(self) -> super::w1a_types::I8x16 {
-        super::w1a_types::I8x16(
-            self.0
-                .simd_clamp(i32x16::splat(-128), i32x16::splat(127))
-                .cast::<i8>(),
-        )
-    }
-
-    /// Narrow each lane to `u8` with saturation: lanes below 0 become 0 and lanes above 255
-    /// become 255; every other lane keeps its value.
-    ///
-    /// ```
-    /// use ndarray::simd::I32x16;
-    /// let v = I32x16::from_array([-1000, -1, 0, 1, 127, 128, 255, 256, 1000, 5, 64, 200, 254, i32::MIN, i32::MAX, 0]);
-    /// assert_eq!(
-    ///     v.narrow_saturate_u8().to_array(),
-    ///     [0, 0, 0, 1, 127, 128, 255, 255, 255, 5, 64, 200, 254, 0, 255, 0]
-    /// );
-    /// ```
-    #[inline(always)]
-    pub fn narrow_saturate_u8(self) -> super::w1a_types::U8x16 {
-        super::w1a_types::U8x16(
-            self.0
-                .simd_clamp(i32x16::splat(0), i32x16::splat(255))
-                .cast::<u8>(),
-        )
+    pub fn narrow_saturating_i16(self, hi: Self) -> I16x32 {
+        let (min, max) = (i32x16::splat(i16::MIN as i32), i32x16::splat(i16::MAX as i32));
+        let (a, b) = (self.0.simd_clamp(min, max).cast::<i16>(), hi.0.simd_clamp(min, max).cast::<i16>());
+        let mut out = [0i16; 32];
+        out[..16].copy_from_slice(&a.to_array());
+        out[16..].copy_from_slice(&b.to_array());
+        I16x32(i16x32::from_array(out))
     }
 
     /// Cast i32→f32 (equivalent to `portable_simd .cast::<f32>()`).
