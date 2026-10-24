@@ -566,12 +566,13 @@ pub fn quantize_f32_to_i8(data: &[f32]) -> (Vec<i8>, QuantParams) {
 
 /// Rejection conditions for explicitly scaled, round-to-nearest-even i8 quantizers.
 ///
-/// Neither numerical path invents an i8 representation for NaN or infinity.
+/// The full-range path rejects non-finite inputs; symmetric+NaN maps float
+/// NaN to the reserved -128 code and rejects infinities.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum I8RneQuantizeError {
     /// Scale must be finite and strictly positive.
     InvalidScale,
-    /// A float input was non-finite.
+    /// A non-finite input was unsupported by the selected mode.
     NonFiniteInput { index: usize },
 }
 
@@ -603,15 +604,23 @@ pub fn quantize_f32_to_i8_rne_full(
         .collect()
 }
 
-/// Alternative round-to-even quantization with exact code symmetry -127..=127.
+/// Reserved invalid/NaN code for the opt-in symmetric numerical i8 leg.
 ///
-/// The zero point is fixed at integer 0. Code -128 is not emitted and is not
-/// reinterpreted as a NaN or a negative zero. The f32 sign bit of -0.0 cannot
-/// survive either i8 representation. This is NOT an ONNX QuantizeLinear alias.
+/// This is a *codec sentinel*, not an IEEE-754 bit-pattern NaN. Palette256
+/// identity indices remain independent u8 values in the full 0..=255 range.
+pub const I8_SYMMETRIC_NAN_CODE: i8 = i8::MIN;
+
+/// Alternative signed-i8 path: -127..=127 finite codes, -128 means NaN.
 ///
-/// Supply the SAME external scale to this path and the full-range path when
-/// measuring only the effect of retaining or excluding -128.
-pub fn quantize_f32_to_i8_rne_symmetric(
+/// Finite x maps to clamp(round_ties_even(x / scale), -127, 127). Input NaN
+/// maps to -128. Infinities are rejected, and the scale must be finite and
+/// positive. Zero point is fixed at 0; -0.0 and +0.0 encode identically.
+///
+/// The sentinel is not valid numeric input to ordinary i8 arithmetic: encoded
+/// consumers must check/propagate it explicitly (including LUT entries).
+/// This is NOT ONNX QuantizeLinear, where -128 is a normal finite code.
+/// Supply the SAME scale as the full-range path to isolate range effects.
+pub fn quantize_f32_to_i8_rne_symmetric_nan(
     data: &[f32],
     scale: f32,
 ) -> Result<Vec<i8>, I8RneQuantizeError> {
@@ -621,12 +630,36 @@ pub fn quantize_f32_to_i8_rne_symmetric(
     data.iter()
         .enumerate()
         .map(|(index, &value)| {
+            if value.is_nan() {
+                return Ok(I8_SYMMETRIC_NAN_CODE);
+            }
             if !value.is_finite() {
                 return Err(I8RneQuantizeError::NonFiniteInput { index });
             }
             Ok((value / scale).round_ties_even().clamp(-127.0, 127.0) as i8)
         })
         .collect()
+}
+
+/// Decode the opt-in symmetric i8+NaN leg at a named observation boundary.
+///
+/// Integer -128 becomes an IEEE-754 f32 NaN. All other codes are finite.
+/// This helper is for comparison/export, NOT an instruction to materialize
+/// floats inside a Palette-native or LUT execution path.
+pub fn dequantize_i8_rne_symmetric_nan(
+    codes: &[i8],
+    scale: f32,
+) -> Result<Vec<f32>, I8RneQuantizeError> {
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err(I8RneQuantizeError::InvalidScale);
+    }
+    Ok(codes.iter().map(|&code| {
+        if code == I8_SYMMETRIC_NAN_CODE {
+            f32::NAN
+        } else {
+            f32::from(code) * scale
+        }
+    }).collect())
 }
 
 /// Dequantize i8 codes back to f32 using the [`QuantParams`] from
@@ -991,7 +1024,7 @@ mod tests {
     fn test_i8_rne_full_code_space_and_symmetric_domain() {
         let xs: Vec<f32> = (-128i16..=127).map(f32::from).collect();
         let full = quantize_f32_to_i8_rne_full(&xs, 1.0, 0).unwrap();
-        let sym = quantize_f32_to_i8_rne_symmetric(&xs, 1.0).unwrap();
+        let sym = quantize_f32_to_i8_rne_symmetric_nan(&xs, 1.0).unwrap();
         assert_eq!(full.len(), 256);
         assert_eq!(sym.len(), 256);
         for (i, &x) in xs.iter().enumerate() {
@@ -1010,7 +1043,7 @@ mod tests {
             -0.0, 0.0, 0.5, 1.5, 2.5, 126.5, 127.5, 1_000.0,
         ];
         let full = quantize_f32_to_i8_rne_full(&xs, 1.0, 0).unwrap();
-        let sym = quantize_f32_to_i8_rne_symmetric(&xs, 1.0).unwrap();
+        let sym = quantize_f32_to_i8_rne_symmetric_nan(&xs, 1.0).unwrap();
         assert_eq!(full, vec![-128, -128, -128, -126, -2, -2, 0, 0, 0, 0, 2, 2, 126, 127, 127]);
         assert_eq!(sym, vec![-127, -127, -127, -126, -2, -2, 0, 0, 0, 0, 2, 2, 126, 127, 127]);
         assert_eq!(
@@ -1022,9 +1055,9 @@ mod tests {
     #[test]
     fn test_i8_rne_symmetric_sign_and_calibration_identity() {
         let xs: Vec<f32> = (-127i16..=127).map(f32::from).collect();
-        let a = quantize_f32_to_i8_rne_symmetric(&xs, 1.0).unwrap();
+        let a = quantize_f32_to_i8_rne_symmetric_nan(&xs, 1.0).unwrap();
         let negative: Vec<f32> = xs.iter().map(|x| -x).collect();
-        let b = quantize_f32_to_i8_rne_symmetric(&negative, 1.0).unwrap();
+        let b = quantize_f32_to_i8_rne_symmetric_nan(&negative, 1.0).unwrap();
         for (&plus, &minus) in a.iter().zip(b.iter()) {
             assert_eq!(plus, -minus);
         }
@@ -1034,7 +1067,7 @@ mod tests {
         let scale = 12.0 / 127.0;
         assert_eq!(
             quantize_f32_to_i8_rne_full(&bounded, scale, 0).unwrap(),
-            quantize_f32_to_i8_rne_symmetric(&bounded, scale).unwrap()
+            quantize_f32_to_i8_rne_symmetric_nan(&bounded, scale).unwrap()
         );
     }
 
@@ -1046,7 +1079,7 @@ mod tests {
                 Err(I8RneQuantizeError::InvalidScale)
             );
             assert_eq!(
-                quantize_f32_to_i8_rne_symmetric(&[1.0], scale),
+                quantize_f32_to_i8_rne_symmetric_nan(&[1.0], scale),
                 Err(I8RneQuantizeError::InvalidScale)
             );
         }
@@ -1055,11 +1088,60 @@ mod tests {
                 quantize_f32_to_i8_rne_full(&[0.0, bad], 1.0, 0),
                 Err(I8RneQuantizeError::NonFiniteInput { index: 1 })
             );
+        }
+        assert_eq!(
+            quantize_f32_to_i8_rne_symmetric_nan(&[0.0, f32::NAN, -0.0], 1.0).unwrap(),
+            vec![0, I8_SYMMETRIC_NAN_CODE, 0]
+        );
+        for bad in [f32::INFINITY, f32::NEG_INFINITY] {
             assert_eq!(
-                quantize_f32_to_i8_rne_symmetric(&[0.0, bad], 1.0),
+                quantize_f32_to_i8_rne_symmetric_nan(&[0.0, bad], 1.0),
                 Err(I8RneQuantizeError::NonFiniteInput { index: 1 })
             );
         }
+        assert_eq!(
+            dequantize_i8_rne_symmetric_nan(&[0], 0.0),
+            Err(I8RneQuantizeError::InvalidScale)
+        );
+    }
+
+    #[test]
+    fn test_i8_rne_symmetric_nan_all_256_decoded_codes() {
+        let all: Vec<i8> = (-128i16..=127).map(|i| i as i8).collect();
+        let decoded = dequantize_i8_rne_symmetric_nan(&all, 1.0).unwrap();
+        assert!(decoded[0].is_nan(), "reserved -128 must decode to NaN");
+        for (q, &recovered) in all.iter().zip(decoded.iter()).skip(1) {
+            assert_eq!(recovered, f32::from(*q));
+        }
+        assert_eq!(
+            quantize_f32_to_i8_rne_symmetric_nan(&decoded, 1.0).unwrap(),
+            all,
+            "full sentinel/codebook roundtrip"
+        );
+    }
+
+    #[test]
+    fn test_i8_three_modes_distinguish_midpoint_and_nan_contracts() {
+        // Legacy u8's min-max map spans [0,1] with step 1/255.
+        // Code 128 is the nearest midpoint, but 128/255 != 0.5 exactly.
+        let (u8_codes, u8_params) = quantize_f32_to_u8(&[0.0, 0.5, 1.0]);
+        assert_eq!(u8_codes, vec![0, 128, 255]);
+        assert!((f32::from(u8_codes[1]) * u8_params.scale - 0.5).abs() > 0.001);
+        // By contrast 0.5/128 == 1/256 is an EXACT midpoint-fixed
+        // alternative, but then 255/256 < 1 and 1.0 saturates. Do not
+        // silently change the legacy u8 contract to that convention.
+        assert_eq!(128.0f32 / 256.0, 0.5);
+        assert!(255.0f32 / 256.0 < 1.0);
+
+        let full = quantize_f32_to_i8_rne_full(&[-128.0, f32::NAN], 1.0, 0);
+        assert_eq!(full, Err(I8RneQuantizeError::NonFiniteInput { index: 1 }));
+        let asym = quantize_f32_to_i8_rne_full(&[-128.0], 1.0, 0).unwrap();
+        assert_eq!(asym, [-128]);
+        let sym = quantize_f32_to_i8_rne_symmetric_nan(&[-128.0, f32::NAN], 1.0).unwrap();
+        assert_eq!(sym, [-127, I8_SYMMETRIC_NAN_CODE]);
+        let observed = dequantize_i8_rne_symmetric_nan(&sym, 1.0).unwrap();
+        assert_eq!(observed[0], -127.0);
+        assert!(observed[1].is_nan());
     }
 
     #[test]
@@ -1067,7 +1149,7 @@ mod tests {
         // Both paths get exactly the same externally supplied scale.
         let data = [-128.0, -127.0, 0.0, 127.0];
         let full = quantize_f32_to_i8_rne_full(&data, 1.0, 0).unwrap();
-        let sym = quantize_f32_to_i8_rne_symmetric(&data, 1.0).unwrap();
+        let sym = quantize_f32_to_i8_rne_symmetric_nan(&data, 1.0).unwrap();
         let full_error: f32 = data.iter().zip(full.iter()).map(|(&x, &q)| (x - f32::from(q)).abs()).sum();
         let sym_error: f32 = data.iter().zip(sym.iter()).map(|(&x, &q)| (x - f32::from(q)).abs()).sum();
         assert_eq!(full_error, 0.0);
