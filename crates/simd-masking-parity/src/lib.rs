@@ -2002,15 +2002,17 @@ fn check_mul_add_single_rounding() -> Result<(), u32> {
     // f64: in-range operands (the vector path), a cancelling c, the same tie
     // trick, and out-of-range lanes (the lane fallback). In the tie rounds c sits
     // below the 53 bits after the product's error term pl, so `tl + pl` is
-    // inexact and only its round-to-odd keeps the tie broken.
+    // inexact and only its round-to-odd keeps the tie broken. Round 4 makes the
+    // exact sum itself a midpoint, so the final rounding must pick the even
+    // neighbour (ties-away or ties-toward-zero fail it).
     let mut unfused_differs = 0usize;
     // (1 + 2^-26)(1 + 2^-27) = 1 + 2^-26 + 2^-27 + 2^-53: 2^-53 is half an ulp, a tie.
     let (ya, yb) = (1.0f64 + f64::EPSILON * 2f64.powi(26), 1.0f64 + f64::EPSILON * 2f64.powi(25));
-    for round in 0..4096u32 {
+    for round in 0..5120u32 {
         let rin = |r: &mut SplitMix64| {
             f64::from_bits((r.next() & 0x800F_FFFF_FFFF_FFFF) | ((1023 - 400 + r.next() % 800) << 52))
         };
-        let (a, b, c): ([f64; 8], [f64; 8], [f64; 8]) = match round % 4 {
+        let (a, b, c): ([f64; 8], [f64; 8], [f64; 8]) = match round % 5 {
             0 => (
                 core::array::from_fn(|_| rin(&mut rng)),
                 core::array::from_fn(|_| rin(&mut rng)),
@@ -2031,11 +2033,30 @@ fn check_mul_add_single_rounding() -> Result<(), u32> {
                     ),
                 )
             }
-            _ => (
+            3 => (
                 core::array::from_fn(|_| f64::from_bits(rng.next())),
                 core::array::from_fn(|_| f64::from_bits(rng.next())),
                 core::array::from_fn(|_| f64::from_bits(rng.next())),
             ),
+            _ => {
+                // a * b = (1 + 2^-26 + 2^-27 + 2^-53) * 2^k; each c cancels the middle
+                // terms so the exact sum is a midpoint between two f64 neighbours:
+                //   lane 0: 1 + 2^-53                  -> 1            (even below)
+                //   lane 1: 1 + 2^-52 + 2^-53          -> 1 + 2^-51    (even above)
+                //   lane 2: 1 + 2^-26 + 2^-53          -> 1 + 2^-26    (even below)
+                //   lane 3: 1 + 2^-26 + 2^-52 + 2^-53  -> 1 + 2^-26 + 2^-51 (even above)
+                // Lanes 4..7 are the same sums negated.
+                let k = (rng.next() % 1800) as i32 - 900;
+                let s = 2f64.powi(k);
+                let (e26, e27, e52) = (2f64.powi(-26), 2f64.powi(-27), 2f64.powi(-52));
+                let cut = [-(e26 + e27), -(e26 + e27 - e52), -e27, -(e27 - e52)];
+                let neg = |i: usize| if i < 4 { 1.0 } else { -1.0 };
+                (
+                    core::array::from_fn(|i| neg(i) * ya * s),
+                    [yb; 8],
+                    core::array::from_fn(|i| neg(i) * cut[i % 4] * s),
+                )
+            }
         };
         let got = F64x8::from_array(a)
             .mul_add(F64x8::from_array(b), F64x8::from_array(c))
@@ -2043,7 +2064,7 @@ fn check_mul_add_single_rounding() -> Result<(), u32> {
         for i in 0..8 {
             let want = oracle_fma_f64(a[i], b[i], c[i]);
             if !same64(got[i], want) {
-                return Err(0x1140 + (round % 4) * 8 + i as u32);
+                return Err(0x1140 + (round % 5) * 8 + i as u32);
             }
             if !same64(a[i] * b[i] + c[i], want) {
                 unfused_differs += 1;
