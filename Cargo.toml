@@ -51,6 +51,10 @@ name = "bf16_rne_exhaustive"
 required-features = ["std"]
 
 [[example]]
+name = "vstanh_exhaustive"
+required-features = ["std"]
+
+[[example]]
 name = "cpu_guard_probe"
 required-features = ["std"]
 

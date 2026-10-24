@@ -1264,6 +1264,86 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_vstanh_every_length_agrees_with_a_single_lane() {
+        // Lengths around the 16-lane chunk: each element must equal the
+        // one-element result for the same input.
+        for len in [0usize, 1, 15, 16, 17, 31, 32, 33, 63, 64, 65] {
+            let xs: Vec<f32> = (0..len).map(|i| (i as f32 - 32.0) * 0.173).collect();
+            let ys = vstanh_vec(&xs);
+            assert_eq!(ys.len(), len);
+            for (&x, &y) in xs.iter().zip(&ys) {
+                let one = vstanh_vec(&[x])[0];
+                assert_eq!(y.to_bits(), one.to_bits(), "len {len}, x = {x}");
+                assert!(ulp_distance(y, tanh_ref(x)) <= 2, "len {len}, x = {x}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_vstanh_strided_and_2d_views_match_contiguous() {
+        let data: Vec<f32> = (0..96).map(|i| (i as f32 - 48.0) * 0.0911).collect();
+        let a = Array2::from_shape_vec((8, 12), data.clone()).unwrap();
+        let want: Vec<u32> = vstanh_vec(&data).iter().map(|v| v.to_bits()).collect();
+        // C-order 2-D (contiguous), its transpose (non-contiguous), a strided column slice.
+        let mut out = Array2::<f32>::zeros((8, 12));
+        vstanh(a.view(), out.view_mut());
+        assert_eq!(out.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), want);
+        let t = a.t();
+        let mut out_t = Array2::<f32>::zeros((12, 8));
+        vstanh(t, out_t.view_mut());
+        for i in 0..8 {
+            for j in 0..12 {
+                assert_eq!(out_t[[j, i]].to_bits(), want[i * 12 + j]);
+            }
+        }
+        let col = a.slice(s![.., 5]);
+        let mut out_c = Array1::<f32>::zeros(8);
+        vstanh(col, out_c.view_mut());
+        for i in 0..8 {
+            assert_eq!(out_c[i].to_bits(), want[i * 12 + 5]);
+        }
+    }
+
+    #[test]
+    fn test_vstanh_branch_threshold_neighbourhood() {
+        // 2000 consecutive floats either side of 0.625, both signs: the two
+        // branches must meet within the gate and without a step backwards.
+        let mut xs = Vec::new();
+        let mut lo = 0.625f32;
+        for _ in 0..2000 {
+            lo = lo.next_down();
+        }
+        let mut x = lo;
+        for _ in 0..4001 {
+            xs.push(x);
+            x = x.next_up();
+        }
+        let ys = vstanh_vec(&xs);
+        for (k, (&x, &y)) in xs.iter().zip(&ys).enumerate() {
+            assert!(ulp_distance(y, tanh_ref(x)) <= 2, "x = {x:e}");
+            if k > 0 {
+                assert!(y >= ys[k - 1], "not monotone at x = {x:e}");
+            }
+        }
+        let neg: Vec<f32> = xs.iter().map(|v| -v).collect();
+        for (y, ny) in ys.iter().zip(vstanh_vec(&neg)) {
+            assert_eq!(ny.to_bits(), y.to_bits() ^ 0x8000_0000);
+        }
+    }
+
+    #[test]
+    fn test_vstanh_saturation_and_extremes() {
+        let ys = vstanh_vec(&[f32::MAX, -f32::MAX, 9.0, -9.0, 44.0, 89.0, -89.0]);
+        assert_eq!(ys[0].to_bits(), 1.0f32.to_bits());
+        assert_eq!(ys[1].to_bits(), (-1.0f32).to_bits());
+        assert!(ulp_distance(ys[2], tanh_ref(9.0)) <= 2);
+        assert!(ulp_distance(ys[3], tanh_ref(-9.0)) <= 2);
+        for &y in &ys[4..] {
+            assert_eq!(y.abs(), 1.0);
+        }
+    }
+
     // -----------------------------------------------------------------------
     // vsfloor / vsceil / vsround / vsneg / vstrunc
     // -----------------------------------------------------------------------
