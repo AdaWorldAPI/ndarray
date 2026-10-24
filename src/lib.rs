@@ -490,6 +490,10 @@ pub mod simd_half;
 #[cfg(feature = "std")]
 pub(crate) mod simd_fma;
 
+/// TFLite / gemmlowp fixed-point requantization (scalar reference + batch epilogue).
+#[cfg(feature = "std")]
+pub(crate) mod simd_fixedpoint;
+
 /// Runtime SIMD dispatch — release-binary distribution path.
 ///
 /// Gated under `--features runtime-dispatch`. Mutually exclusive with

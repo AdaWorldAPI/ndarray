@@ -2682,6 +2682,140 @@ impl U16x32 {
     }
 }
 
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
+impl I32x16 {
+    /// Store two 256-bit halves back into a fresh array (see `avx2_halves`).
+    #[inline(always)]
+    fn from_avx2_halves(lo: __m256i, hi: __m256i) -> Self {
+        let mut o = [0i32; 16];
+        // SAFETY: two 32-byte `storeu` stores into the 64-byte local array; no alignment needed.
+        unsafe {
+            let p = o.as_mut_ptr() as *mut __m256i;
+            _mm256_storeu_si256(p, lo);
+            _mm256_storeu_si256(p.add(1), hi);
+        }
+        Self(o)
+    }
+
+    /// `SaturatingRoundingDoublingHighMul` on one 256-bit half (exactness argument: see
+    /// [`Self::saturating_rounding_doubling_high_mul`]).
+    #[inline(always)]
+    fn srdhm_half(a: __m256i, b: __m256i) -> __m256i {
+        // SAFETY: AVX2 is a run-time precondition of this arm (see `avx2_halves`); register-only.
+        unsafe {
+            let nudge = _mm256_set1_epi64x(1 << 30);
+            let even = _mm256_srli_epi64(_mm256_add_epi64(_mm256_mul_epi32(a, b), nudge), 31);
+            let odd = _mm256_slli_epi64(
+                _mm256_add_epi64(_mm256_mul_epi32(_mm256_srli_epi64(a, 32), _mm256_srli_epi64(b, 32)), nudge),
+                1,
+            );
+            let r = _mm256_blend_epi32::<0xAA>(even, odd);
+            let min = _mm256_set1_epi32(i32::MIN);
+            let ovf = _mm256_and_si256(_mm256_cmpeq_epi32(a, min), _mm256_cmpeq_epi32(b, min));
+            _mm256_blendv_epi8(r, _mm256_set1_epi32(i32::MAX), ovf)
+        }
+    }
+
+    /// `RoundingDivideByPOT` on one 256-bit half, per-lane exponent.
+    #[inline(always)]
+    fn rdpot_half(x: __m256i, e: __m256i) -> __m256i {
+        // SAFETY: AVX2 run-time precondition (see `avx2_halves`); register-only. `vpsllvd` /
+        // `vpsravd` define all counts, so an out-of-contract exponent is unspecified, not UB.
+        unsafe {
+            let one = _mm256_set1_epi32(1);
+            let mask = _mm256_sub_epi32(_mm256_sllv_epi32(one, e), one);
+            let rem = _mm256_and_si256(x, mask);
+            let thr = _mm256_add_epi32(_mm256_srli_epi32(mask, 1), _mm256_srli_epi32(x, 31));
+            let q = _mm256_srav_epi32(x, e);
+            // `cmpgt` lanes are -1 where rem > thr, so subtracting adds 1 there.
+            _mm256_sub_epi32(q, _mm256_cmpgt_epi32(rem, thr))
+        }
+    }
+
+    /// Saturating rounding doubling high multiply (gemmlowp / TFLM
+    /// `SaturatingRoundingDoublingHighMul<i32>`): per lane, `round(a * b / 2^31)`
+    /// with the half-way case rounded toward `+inf`, i.e. the C++ definition
+    /// `((a*b + nudge) / 2^31)` with `nudge = 1<<30` (product `>= 0`) or `1 - (1<<30)`
+    /// (product `< 0`) and **truncating** division. `i32::MIN * i32::MIN` saturates to
+    /// `i32::MAX`.
+    ///
+    /// ```
+    /// use ndarray::simd::I32x16;
+    /// let a = I32x16::from_array([3, -3, -1, 1, 0, i32::MIN, i32::MAX, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    /// let r = a.saturating_rounding_doubling_high_mul(I32x16::splat(1 << 30)).to_array();
+    /// // 1.5 -> 2, -1.5 -> -1 (tie toward +inf), -0.5 -> 0, 0.5 -> 1.
+    /// assert_eq!(r[..7], [2, -1, 0, 1, 0, -1_073_741_824, 1_073_741_824]);
+    /// let m = I32x16::splat(i32::MIN).saturating_rounding_doubling_high_mul(I32x16::splat(i32::MIN));
+    /// assert!(m.to_array().iter().all(|&x| x == i32::MAX));
+    /// ```
+    #[inline(always)]
+    pub fn saturating_rounding_doubling_high_mul(self, b: Self) -> Self {
+        // Exact for both product signs: C++ truncating division after the sign-dependent nudge
+        // equals the flooring shift of `a*b + 2^30` (taking bits 31..=62 as the i32), computed
+        // with `vpmuldq` on even lanes and on odd lanes after a 32-bit shift down; `MIN*MIN`
+        // (2^31, not representable) is blended to `MAX`.
+        let (alo, ahi) = self.avx2_halves();
+        let (blo, bhi) = b.avx2_halves();
+        Self::from_avx2_halves(Self::srdhm_half(alo, blo), Self::srdhm_half(ahi, bhi))
+    }
+
+    /// Rounding arithmetic right shift (gemmlowp / TFLM `RoundingDivideByPOT`) with a
+    /// per-lane exponent: `x / 2^e` rounded to nearest, **ties away from zero**.
+    /// `exponent` lanes must be in `0..=31`; other values are a contract violation
+    /// (the result is unspecified, but no undefined behaviour).
+    ///
+    /// ```
+    /// use ndarray::simd::I32x16;
+    /// let x = I32x16::from_array([5, -5, 3, -3, 2, -2, 1, -1, 0, 0, 0, 0, 0, 0, 0, 0]);
+    /// let r = x.rounding_divide_by_pot(I32x16::splat(1)).to_array();
+    /// assert_eq!(r[..8], [3, -3, 2, -2, 1, -1, 1, -1]); // negative ties go away from zero
+    /// let e = I32x16::from_array([0, 1, 2, 3, 4, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 31]);
+    /// let r = I32x16::splat(-10).rounding_divide_by_pot(e).to_array();
+    /// assert_eq!(r[..6], [-10, -5, -3, -1, -1, 0]);
+    /// assert_eq!(r[15], 0);
+    /// let m = I32x16::splat(i32::MIN).rounding_divide_by_pot(I32x16::splat(31)).to_array();
+    /// assert_eq!(m[0], -1);
+    /// ```
+    #[inline(always)]
+    pub fn rounding_divide_by_pot(self, exponent: Self) -> Self {
+        let (xlo, xhi) = self.avx2_halves();
+        let (elo, ehi) = exponent.avx2_halves();
+        Self::from_avx2_halves(Self::rdpot_half(xlo, elo), Self::rdpot_half(xhi, ehi))
+    }
+
+    /// Per-lane fixed-point requantization (gemmlowp / TFLM `MultiplyByQuantizedMultiplier`,
+    /// double rounding): with `left = max(shift, 0)`, `right = max(-shift, 0)`,
+    /// `rounding_divide_by_pot(srdhm(x << left, multiplier), right)`.
+    ///
+    /// Contract: `multiplier >= 0`, `-31 <= shift <= 30`, and `x << left` must not
+    /// overflow (TFLM asserts; this wraps).
+    ///
+    /// ```
+    /// use ndarray::simd::I32x16;
+    /// let x = I32x16::from_array([100, -100, 7, -7, 7, -7, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    /// let s = I32x16::from_array([0, 0, 0, 0, -1, -1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    /// let r = x.multiply_by_quantized_multiplier(I32x16::splat(1 << 30), s).to_array();
+    /// assert_eq!(r[..7], [50, -50, 4, -3, 2, -2, 6]);
+    /// ```
+    #[inline(always)]
+    pub fn multiply_by_quantized_multiplier(self, multiplier: Self, shift: Self) -> Self {
+        let (xlo, xhi) = self.avx2_halves();
+        let (mlo, mhi) = multiplier.avx2_halves();
+        let (slo, shi) = shift.avx2_halves();
+        // SAFETY: AVX2 run-time precondition (see `avx2_halves`); register-only (`vpsllvd` wraps,
+        // like the scalar `wrapping_mul(1 << left)`).
+        unsafe {
+            let zero = _mm256_setzero_si256();
+            let part = |x: __m256i, m: __m256i, s: __m256i| {
+                let left = _mm256_max_epi32(s, zero);
+                let right = _mm256_max_epi32(_mm256_sub_epi32(zero, s), zero);
+                Self::rdpot_half(Self::srdhm_half(_mm256_sllv_epi32(x, left), m), right)
+            };
+            Self::from_avx2_halves(part(xlo, mlo, slo), part(xhi, mhi, shi))
+        }
+    }
+}
+
 impl I32x16 {
     /// Narrow two 16×i32 vectors to one 32×i16 vector with signed saturation: lanes 0..16
     /// come from `self`, lanes 16..32 from `hi`, each clamped to `i16::MIN..=i16::MAX`.

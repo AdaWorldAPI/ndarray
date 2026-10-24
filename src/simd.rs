@@ -997,6 +997,17 @@ pub use crate::simd_ops::{
     scale_f32_inplace, sub_f32, sub_f32_inplace,
 };
 
+// Fixed-point requantization, bit-exact to TFLite-micro / gemmlowp (double rounding,
+// TFLM's default build). The `I32x16` methods `saturating_rounding_doubling_high_mul`,
+// `rounding_divide_by_pot` and `multiply_by_quantized_multiplier` are the vector form.
+pub use crate::simd_fixedpoint::{
+    multiply_by_quantized_multiplier_i32, multiply_by_quantized_multiplier_i64,
+    multiply_by_quantized_multiplier_single_rounding_i32, requantize_i32_to_i8, rounding_divide_by_pot_i32, srdhm_i16,
+    srdhm_i32,
+};
+#[cfg(feature = "std")]
+pub use crate::simd_fixedpoint::{quantize_multiplier, quantize_multiplier_single_rounding};
+
 // ChaCha20 keystream is NO LONGER an `ndarray::simd` surface: the AdaWorldAPI
 // `chacha20` fork (`vendor/chacha20/`) carries the accelerated backend, riding
 // the `U32x16` ARX lane above, and is `[patch]`ed transitively under the
