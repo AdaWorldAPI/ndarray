@@ -232,7 +232,14 @@ impl Rounding for TiesAway {
     }
     #[inline(always)]
     fn div_round(n: u128, d: u128) -> u128 {
-        (2 * n + d) / (2 * d)
+        // Quotient and remainder, with the half test as `r >= d - r` so that no
+        // intermediate exceeds `n` or `d` (`2 * n` and `2 * d` overflow for large operands).
+        let (q, r) = (n / d, n % d);
+        if r >= d - r {
+            q + 1
+        } else {
+            q
+        }
     }
 }
 impl Rounding for TiesEven {
@@ -243,7 +250,8 @@ impl Rounding for TiesEven {
     #[inline(always)]
     fn div_round(n: u128, d: u128) -> u128 {
         let (q, r) = (n / d, n % d);
-        match (2 * r).cmp(&d) {
+        // `r` against `d - r` is `2 * r` against `d` without the overflow.
+        match r.cmp(&(d - r)) {
             core::cmp::Ordering::Less => q,
             core::cmp::Ordering::Greater => q + 1,
             core::cmp::Ordering::Equal => q + (q & 1),
@@ -308,6 +316,20 @@ impl NanPolicy<Sym> for NaNAtMin {
 ///     const ZERO_POINT: i32 = 0;
 /// }
 /// assert_eq!(Unit127::ZERO_POINT, 0);
+/// ```
+///
+/// The check also covers a consumer that only decodes:
+///
+/// ```compile_fail,E0080
+/// use ndarray::hpc::codec8::{Calibration, OnnxQ};
+///
+/// struct Negative;
+/// impl Calibration for Negative {
+///     const SCALE: f32 = -1.0;
+///     const ZERO_POINT: i32 = 0;
+/// }
+/// let mut out = [0.0f32];
+/// OnnxQ::decode_checked::<Negative>(&[1], &mut out).unwrap();
 /// ```
 pub trait Calibration {
     /// Width of one code step. Must be finite and positive; a calibration that breaks
@@ -398,10 +420,7 @@ where
     pub(crate) fn encode_one<C: Calibration>(v: f32) -> T::Elem {
         // A true division, not a multiplication by a precomputed reciprocal: the two
         // differ in f32 exactly at half-ties, where the rounding mode decides the code.
-        const {
-            assert!(C::SCALE > 0.0 && C::SCALE < f32::INFINITY, "SCALE must be finite and positive");
-            assert!(C::ZERO_POINT >= S::MIN && C::ZERO_POINT <= S::MAX, "ZERO_POINT must lie in the code space");
-        }
+        Self::assert_calibration::<C>();
         let r = R::round(v / C::SCALE);
         // Clamp to the range shifted by the zero point, then add it as an integer. For
         // integral `r` this equals `clamp(r + zp)`, and with a zero point of 0 the add
@@ -417,10 +436,21 @@ where
         T::store(q)
     }
 
+    /// Reject an invalid calibration at compile time. Called by both directions, so a
+    /// consumer that only decodes gets the same guarantee as one that encodes.
+    #[inline(always)]
+    fn assert_calibration<C: Calibration>() {
+        const {
+            assert!(C::SCALE > 0.0 && C::SCALE < f32::INFINITY, "SCALE must be finite and positive");
+            assert!(C::ZERO_POINT >= S::MIN && C::ZERO_POINT <= S::MAX, "ZERO_POINT must lie in the code space");
+        }
+    }
+
     /// Decode one stored code. Total: the NaN code gives NaN; every other byte decodes
     /// linearly, including codes outside the code space.
     #[inline(always)]
     pub(crate) fn decode_one<C: Calibration>(e: T::Elem) -> f32 {
+        Self::assert_calibration::<C>();
         let c = T::load(e);
         match N::NAN_CODE {
             Some(nan) if c == nan => f32::NAN,
@@ -653,6 +683,33 @@ mod tests {
     }
 
     // G2: TfliteAct with the exact fitted scale reproduces `quantize_f32_to_i8`.
+    #[test]
+    fn div_round_does_not_overflow_on_large_operands() {
+        let big = 1u128 << 127;
+        assert_eq!(TiesAway::div_round(big, big), 1);
+        assert_eq!(TiesEven::div_round(big, big), 1);
+        assert_eq!(Floor::div_round(big, big), 1);
+        // A remainder above half of a huge divisor: `2 * r` would wrap.
+        let d = u128::MAX;
+        assert_eq!(TiesAway::div_round(d - 1, d), 1);
+        assert_eq!(TiesEven::div_round(d - 1, d), 1);
+        assert_eq!(TiesAway::div_round(1, d), 0);
+        assert_eq!(TiesEven::div_round(1, d), 0);
+    }
+
+    #[test]
+    fn div_round_ties_on_small_operands() {
+        // Exact halves: away rounds up, even rounds to the even neighbour.
+        for (n, d, away, even) in [(1u128, 2u128, 1, 0), (3, 2, 2, 2), (5, 2, 3, 2), (7, 2, 4, 4), (5, 10, 1, 0)] {
+            assert_eq!(TiesAway::div_round(n, d), away, "away {n}/{d}");
+            assert_eq!(TiesEven::div_round(n, d), even, "even {n}/{d}");
+        }
+        for (n, d) in [(1u128, 3u128), (2, 3), (4, 3), (254, 255), (256, 255)] {
+            let exact = n as f64 / d as f64;
+            assert_eq!(TiesAway::div_round(n, d), exact.round() as u128, "{n}/{d}");
+        }
+    }
+
     #[test]
     fn tflite_act_matches_quantize_f32_to_i8_bit_for_bit() {
         // Finite data with an abs max of 3.0 (the corpus generator stays inside ±3).
