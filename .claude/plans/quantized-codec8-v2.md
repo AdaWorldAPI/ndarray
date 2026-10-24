@@ -219,24 +219,24 @@ rounding stays a separate parameter.
 ## 6. Checklist
 
 ### Phase (a)
-- [ ] `src/hpc/codec8.rs`: D1-D6 scalar, docs with an example on every `pub` item.
-- [ ] Tests:
-  - [ ] G2, G3, G4, G13.
-  - [ ] P-02 ties, including negative half-ties.
-  - [ ] P-04 Sym+NaNAtMin: NaN, ±1e9, ±inf (as proposal), ±0.
-  - [ ] P-12 encode∘decode on all 256 codes per alias.
-  - [ ] Sym+NoNaN vs Sym+NaNAtMin agree everywhere except NaN and -128.
-  - [ ] D5: the pinned defined result on out-of-range input.
-  - [ ] Carried from #370: signed zero, both saturations, nonzero zero point.
-- [ ] Negative control for D1, run before the commit and recorded: a deliberate clippy violation in
+- [x] `src/hpc/codec8.rs`: D1-D6 scalar, docs with an example on every `pub` item.
+- [x] Tests (14 unit tests, 10 doctests incl. two `compile_fail,E0277`):
+  - [x] G2, G3, G4, G13.
+  - [x] P-02 ties, including negative half-ties.
+  - [x] P-04 Sym+NaNAtMin: NaN, ±1e9, ±inf (as proposal), ±0.
+  - [x] P-12 encode∘decode on all 256 codes per alias.
+  - [x] Sym+NoNaN vs Sym+NaNAtMin agree everywhere except NaN and -128.
+  - [x] D5: the pinned defined result on out-of-range input.
+  - [x] Carried from #370: signed zero, both saturations, nonzero zero point.
+- [x] Negative control for D1, run before the commit and recorded: a deliberate clippy violation in
       codec8.rs fails G1, then is reverted.
-- [ ] `examples/codec8_asm_probe.rs` (G5/G6), ported from the lab `codec-asm-probe`. It has its own
+- [x] `examples/codec8_asm_probe.rs` (G5/G6), ported from the lab `codec-asm-probe`. It has its own
       doc comment and is not in the default test run.
-- [ ] Commit discipline:
+- [x] Commit discipline:
   - edit script `&&` `git add` `&&` `git commit` (never sequenced);
   - the blackboard entry and plan ticks are in the same commit;
   - no model identifier anywhere except the attribution trailer.
-- [ ] Workers, if any, edit only. The orchestrator is the single compiler on the shared `target/`.
+- [x] Workers, if any, edit only. The orchestrator is the single compiler on the shared `target/`.
       Every timing names its tier.
 
 ### Phases (b)-(f)
@@ -314,3 +314,34 @@ Tracked per PR as listed in D9 and §5.
 - No real-model data.
 - No ONNX Runtime comparison.
 - SIMD backends other than AVX-512 not inventoried for the missing primitives (phase b does that).
+
+## 11. Phase (a) results (2026-10-24)
+
+Commands run by the orchestrator, env `CARGO_PROFILE_{DEV,TEST,RELEASE}_DEBUG=0 CARGO_INCREMENTAL=0`,
+rustc 1.99.0:
+
+- `cargo test --release -p ndarray --lib hpc::codec8`: 14 passed.
+- `cargo test --release -p ndarray --doc codec8`: 10 passed, including both `compile_fail,E0277`
+  doctests (the error code is pinned, so an unrelated error cannot satisfy them).
+- `RUSTFLAGS="-D warnings" cargo clippy -p ndarray --lib --tests --example codec8_asm_probe`: clean.
+  Negative control for D1: before the fix, clippy rejected codec8 with `type_complexity` on the
+  `PhantomData` field, so the file's `#![warn(clippy::all)]` overrides the parent allow.
+- `cargo fmt --check` on the changed files: clean.
+- G5, `scripts/codec8_asm_diff.sh`:
+
+  | tier | `g_lane_even` vs `d_lane_even` | `g_tflite_act` vs `d_tflite_act` | negative control `g_onnx` vs `d_tflite_act` |
+  |---|---|---|---|
+  | x86-64-v4 | IDENTICAL (278 lines) | IDENTICAL (295) | DIFFERS (285 vs 295) |
+  | x86-64-v3 | IDENTICAL (283) | IDENTICAL (295) | DIFFERS |
+
+  Both are vectorised with `vdivps` on ymm registers. Labels and the symbol name are normalised.
+- G6 (timing): NOT MET as written. Generic and hand-written kernels are the same machine code
+  (G5), yet repeated runs of identical code differ by up to 17% (v4, `tflite_act`, 4096 elements:
+  2.08 vs 1.78 ns/elem); `lane_even` stays within 1.40-1.60 ns/elem at 4 Ki and 1.56-1.75 at 4 Mi in
+  both orders. A 2% band cannot be resolved on this host. The evidence for "no cost" is G5, not G6.
+- Design change during implementation: the zero point is now added as an integer after clamping to
+  the shifted range. An f32 `+ 0.0` is not removable (it changes -0.0) and would have made the
+  generic body differ from a hand-written kernel; the two forms give the same code for integral
+  values. Consequence for D5: an unchecked NaN under `NoNaN` gives the zero-point code (0 for every
+  alias). `const` assertions reject a calibration with a non-positive or non-finite scale, or a zero
+  point outside the code space, at compile time.

@@ -46,6 +46,7 @@ pub mod projection;
 pub mod cogrecord;
 pub mod graph;
 pub mod quantized;
+pub mod codec8;
 pub mod lapack;
 pub mod fft;
 pub mod vml;

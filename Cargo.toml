@@ -55,6 +55,10 @@ name = "vstanh_exhaustive"
 required-features = ["std"]
 
 [[example]]
+name = "codec8_asm_probe"
+required-features = ["std"]
+
+[[example]]
 name = "cpu_guard_probe"
 required-features = ["std"]
 

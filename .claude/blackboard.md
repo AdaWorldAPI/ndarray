@@ -3735,3 +3735,11 @@ does not gate any hpc file today (codec8 opts back in); simd-matrix does not tri
 other than amx; `I8x64` lacks xor/cmpeq_mask/blend and no f32->i8 round+narrow primitive exists.
 Open for the operator: plan §8 (NativeLane rounding, spoFC rounding, U8+NaN arm, tool, ±inf).
 PR #370's runtime-scale prototype was backed out in 62c43c9.
+
+### Codec8 phase (a) landed on PR #370 (2026-10-24)
+
+`src/hpc/codec8.rs` scalar: 14 unit tests + 10 doctests green, clippy -D warnings clean (codec8 opts
+back into clippy::all), fmt clean. G5 asm identity: generic == hand-written on x86-64-v3 and -v4,
+negative control differs. G6 2% timing band not resolvable here (identical code varies up to 17%);
+recorded as NOT MET, G5 is the evidence. Results in plan §11. Next: phase (b) SIMD primitives in
+src/simd_*.rs under W1a.
