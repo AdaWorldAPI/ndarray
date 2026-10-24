@@ -1796,6 +1796,35 @@ mod tests {
         }
     }
 
+    /// FAILS IF: the polynomial is too short. Measured against a correctly
+    /// rounded reference (`exp` in `f64`, rounded once) over the normal-result
+    /// range, the worst case sits at reduced argument |r| = ln2/2.
+    #[test]
+    fn simd_exp_f32_is_within_2_ulp_of_the_correctly_rounded_result() {
+        fn key(x: f32) -> i64 {
+            let i = x.to_bits() as i32;
+            if i < 0 {
+                -((i & i32::MAX) as i64) - 1
+            } else {
+                i as i64
+            }
+        }
+        let n = 1 << 16;
+        let xs: Vec<f32> = (0..n).map(|i| -87.0 + 175.5 * (i as f32 / n as f32)).collect();
+        let mut worst = (0i64, 0.0f32);
+        for chunk in xs.chunks_exact(16) {
+            let got = simd_exp_f32(F32x16::from_slice(chunk)).to_array();
+            for (&x, g) in chunk.iter().zip(got) {
+                let want = (x as f64).exp() as f32;
+                let u = (key(g) - key(want)).abs();
+                if u > worst.0 {
+                    worst = (u, x);
+                }
+            }
+        }
+        assert!(worst.0 <= 2, "exp: {} ulp at x = {}", worst.0, worst.1);
+    }
+
     // ── W1a-#9 parity: U64x8/U32x16 andnot + ternlog ────────────────────────
     //
     // The backends are compile-time exclusive, so "all three agree" is proven
