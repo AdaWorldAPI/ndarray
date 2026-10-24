@@ -1122,10 +1122,14 @@ mod tests {
 
     #[test]
     fn test_i8_three_modes_distinguish_midpoint_and_nan_contracts() {
-        // Legacy u8's min-max map spans [0,1] with step 1/255.
-        // Code 128 is the nearest midpoint, but 128/255 != 0.5 exactly.
+        // Legacy u8's min-max map spans [0,1] with step approximately 1/255.
+        // Code 127 OR 128 can occur at 0.5: f32 division by rounded scale
+        // may produce 127.49999 rather than an exact half-tie.
+        // Neither code reconstructs 0.5 exactly under this contract.
         let (u8_codes, u8_params) = quantize_f32_to_u8(&[0.0, 0.5, 1.0]);
-        assert_eq!(u8_codes, vec![0, 128, 255]);
+        assert_eq!(u8_codes[0], 0);
+        assert!(u8_codes[1] == 127 || u8_codes[1] == 128);
+        assert_eq!(u8_codes[2], 255);
         assert!((f32::from(u8_codes[1]) * u8_params.scale - 0.5).abs() > 0.001);
         // By contrast 0.5/128 == 1/256 is an EXACT midpoint-fixed
         // alternative, but then 255/256 < 1 and 1.0 saturates. Do not
