@@ -1123,6 +1123,112 @@ mod tests {
         }
     }
 
+    /// Distance in units in the last place between two `f32`, with `-0.0`
+    /// and `+0.0` one apart so a lost sign of zero counts as an error.
+    fn ulp_distance(a: f32, b: f32) -> u32 {
+        if a.is_nan() || b.is_nan() {
+            return if a.is_nan() && b.is_nan() { 0 } else { u32::MAX };
+        }
+        let key = |x: f32| {
+            let i = x.to_bits() as i32;
+            if i < 0 {
+                -((i & i32::MAX) as i64) - 1
+            } else {
+                i as i64
+            }
+        };
+        (key(a) - key(b)).unsigned_abs().min(u32::MAX as u64) as u32
+    }
+
+    /// Correctly rounded reference: `tanh` in `f64`, rounded once to `f32`.
+    fn tanh_ref(x: f32) -> f32 {
+        (x as f64).tanh() as f32
+    }
+
+    fn vstanh_vec(xs: &[f32]) -> Vec<f32> {
+        let x = Array1::from(xs.to_vec());
+        let mut out = Array1::<f32>::zeros(xs.len());
+        vstanh(x.view(), out.view_mut());
+        out.to_vec()
+    }
+
+    #[test]
+    fn test_vstanh_within_2_ulp_across_magnitudes() {
+        // Log-spaced magnitudes in each band, both signs. The length is not a
+        // multiple of 16, so the last values take the tail path.
+        let bands = [
+            (1.0e-38f32, 1.0e-10f32),
+            (1.0e-10, 1.0e-4),
+            (1.0e-4, 0.1),
+            (0.1, 0.625),
+            (0.625, 1.0),
+            (1.0, 4.0),
+            (4.0, 10.0),
+            (10.0, 100.0),
+        ];
+        for (lo, hi) in bands {
+            let n = 4099;
+            let mut xs = Vec::with_capacity(2 * n + 1);
+            for i in 0..n {
+                let t = i as f64 / (n - 1) as f64;
+                let v = ((lo as f64).ln() + t * ((hi as f64).ln() - (lo as f64).ln())).exp() as f32;
+                xs.push(v);
+                xs.push(-v);
+            }
+            xs.push(hi);
+            assert_ne!(xs.len() % 16, 0, "fixture must reach the tail path");
+            let ys = vstanh_vec(&xs);
+            let (worst, at) = xs
+                .iter()
+                .zip(&ys)
+                .map(|(&x, &y)| (ulp_distance(y, tanh_ref(x)), x))
+                .max_by_key(|&(u, _)| u)
+                .unwrap();
+            assert!(worst <= 2, "band [{lo:e}, {hi:e}]: {worst} ulp at x = {at:e}");
+        }
+    }
+
+    #[test]
+    fn test_vstanh_special_values_in_chunk_and_tail() {
+        let sub = f32::from_bits(1);
+        let cases: [(f32, f32); 9] = [
+            (0.0, 0.0),
+            (-0.0, -0.0),
+            (sub, sub),
+            (-sub, -sub),
+            (f32::MIN_POSITIVE, f32::MIN_POSITIVE),
+            (-f32::MIN_POSITIVE, -f32::MIN_POSITIVE),
+            (f32::INFINITY, 1.0),
+            (f32::NEG_INFINITY, -1.0),
+            (1.0e-8, 1.0e-8),
+        ];
+        // 16 values fill one SIMD chunk; the same 9 again land in the tail.
+        let mut xs: Vec<f32> = cases.iter().map(|c| c.0).collect();
+        xs.resize(16, 0.5);
+        xs.extend(cases.iter().map(|c| c.0));
+        let ys = vstanh_vec(&xs);
+        for (k, &(x, want)) in cases.iter().enumerate() {
+            for (path, y) in [("chunk", ys[k]), ("tail", ys[16 + k])] {
+                assert_eq!(y.to_bits(), want.to_bits(), "{path}: vstanh({x:e}) = {y:e}, want {want:e}");
+            }
+        }
+        assert!(vstanh_vec(&[f32::NAN; 17]).iter().all(|v| v.is_nan()));
+    }
+
+    #[test]
+    fn test_vstanh_tail_equals_chunk() {
+        // The same input gives the same bits in a full chunk and in the tail,
+        // so a result never depends on where in the array it sits.
+        let vals: Vec<f32> = (0..15).map(|i| (i as f32 - 7.0) * 0.37 + 1.0e-3).collect();
+        let mut xs = vals.clone();
+        xs.push(0.0);
+        xs.extend(&vals);
+        let ys = vstanh_vec(&xs);
+        for k in 0..vals.len() {
+            assert_eq!(ys[k].to_bits(), ys[16 + k].to_bits(), "x = {}", vals[k]);
+        }
+    }
+
     // -----------------------------------------------------------------------
     // vsfloor / vsceil / vsround / vsneg / vstrunc
     // -----------------------------------------------------------------------
