@@ -572,12 +572,10 @@ pub fn simd_exp_f32(x: F32x16) -> F32x16 {
     // single-constant `x - n * ln2` rounds n * ln2 at |x| ~ 90, where one ulp
     // is ~7.6e-6: that error was larger than the polynomial's.
     //
-    // Plain `*` and `+`, never `mul_add`: wasm's `mul_add` is unfused (or,
-    // with relaxed-simd, implementation-defined) while every other backend
-    // fuses, so `mul_add` here would make the result differ by an ulp
-    // between wasm and native. Unfused ops round identically on every
-    // backend (the same rule as `gemm_f64_tiled` in `simd_ops`), and the
-    // split above makes the fused form unnecessary for accuracy.
+    // Plain `*` and `+`: unfused ops round identically on every backend (the
+    // same rule as `gemm_f64_tiled` in `simd_ops`), and the split above makes
+    // the fused form unnecessary for accuracy. (`mul_add` is fused on every
+    // backend too, wasm included, but costs an emulation there.)
     // floor(t + 0.5), not round(): `round` breaks ties to even on AVX-512,
     // NEON and wasm but away from zero on AVX2, scalar and nightly, so a tie
     // would pick a different n per backend. floor is the same everywhere.

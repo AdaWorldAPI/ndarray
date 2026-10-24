@@ -34,13 +34,20 @@
 //!
 //! # Semantic notes (cross-backend parity)
 //!
-//! * **FMA.** Base simd128 has no fused multiply-add. `mul_add` uses
-//!   `mul`-then-`add` (two roundings) unless the `relaxed-simd` target
-//!   feature is enabled, in which case `f32x4_relaxed_madd` is used. The
-//!   unfused path differs from the fused scalar/NEON/AVX `mul_add` by ~1 ULP
-//!   in the common case, but can diverge by more under catastrophic
-//!   cancellation. Tests use a tolerance, matching the existing
-//!   cross-backend tests.
+//! * **FMA.** Base simd128 has no fused multiply-add, and `relaxed-simd`'s
+//!   `relaxed_madd` may or may not fuse depending on the engine. `mul_add` is
+//!   therefore emulated and rounds once, like the other backends:
+//!   - `F32x16`: each lane is computed in f64, where `a * b` is exact, and the
+//!     sum `a * b + c` is rounded to odd (two-sum error term, then one ulp
+//!     toward it when the f64 sum is inexact and even). Rounding that to f32
+//!     gives the correctly rounded f32 result (Boldo & Melquiond, "Emulation of
+//!     FMA and correctly rounded sums: proved algorithms using rounding to odd",
+//!     IEEE TC 2008), including for subnormal results.
+//!   - `F64x8`: Dekker's exact product, two-sum with `c`, a rounded-to-odd sum
+//!     of the two error terms, then one rounding (the same paper's emulated
+//!     FMA). It needs no overflow or underflow in the split, so a v128 pair whose
+//!     lanes leave `2^-460 <= |a|, |b| <= 2^460`, `|c| <= 2^960` (or are NaN,
+//!     infinite or zero) is computed lane by lane with `f64::mul_add`.
 //! * **reduce_sum.** Uses a balanced tree reduction (pairwise v128 adds)
 //!   rather than the scalar fallback's sequential left-fold, so the result
 //!   can differ in the last ULP — the same reduction-order tolerance the
@@ -186,18 +193,21 @@ pub mod wasm32_simd {
             Self([f32x4_floor(self.0[0]), f32x4_floor(self.0[1]), f32x4_floor(self.0[2]), f32x4_floor(self.0[3])])
         }
 
+        /// Fused multiply-add, rounded once (see the module notes on FMA).
         #[inline(always)]
         pub fn mul_add(self, b: Self, c: Self) -> Self {
             #[inline(always)]
             fn madd(a: v128, b: v128, c: v128) -> v128 {
-                #[cfg(target_feature = "relaxed-simd")]
-                {
-                    f32x4_relaxed_madd(a, b, c)
-                }
-                #[cfg(not(target_feature = "relaxed-simd"))]
-                {
-                    f32x4_add(f32x4_mul(a, b), c)
-                }
+                // Lanes 2..4 moved down so `promote_low` reaches them.
+                let up = |v: v128| i64x2_shuffle::<1, 1>(v, v);
+                let lo =
+                    fma_f32_in_f64(f64x2_promote_low_f32x4(a), f64x2_promote_low_f32x4(b), f64x2_promote_low_f32x4(c));
+                let hi = fma_f32_in_f64(
+                    f64x2_promote_low_f32x4(up(a)),
+                    f64x2_promote_low_f32x4(up(b)),
+                    f64x2_promote_low_f32x4(up(c)),
+                );
+                i64x2_shuffle::<0, 2>(f32x4_demote_f64x2_zero(lo), f32x4_demote_f64x2_zero(hi))
             }
             Self([
                 madd(self.0[0], b.0[0], c.0[0]),
@@ -535,18 +545,27 @@ pub mod wasm32_simd {
             Self([f64x2_floor(self.0[0]), f64x2_floor(self.0[1]), f64x2_floor(self.0[2]), f64x2_floor(self.0[3])])
         }
 
+        /// Fused multiply-add, rounded once (see the module notes on FMA).
         #[inline(always)]
         pub fn mul_add(self, b: Self, c: Self) -> Self {
             #[inline(always)]
             fn madd(a: v128, b: v128, c: v128) -> v128 {
-                #[cfg(target_feature = "relaxed-simd")]
-                {
-                    f64x2_relaxed_madd(a, b, c)
+                let in_range = |x: v128, lo: f64, hi: f64| {
+                    let m = f64x2_abs(x);
+                    v128_and(f64x2_ge(m, f64x2_splat(lo)), f64x2_le(m, f64x2_splat(hi)))
+                };
+                let ok = v128_and(
+                    v128_and(in_range(a, TWO_M460, TWO_460), in_range(b, TWO_M460, TWO_460)),
+                    f64x2_le(f64x2_abs(c), f64x2_splat(TWO_960)),
+                );
+                if i64x2_all_true(ok) {
+                    return fma_f64_emulated(a, b, c);
                 }
-                #[cfg(not(target_feature = "relaxed-simd"))]
-                {
-                    f64x2_add(f64x2_mul(a, b), c)
-                }
+                let lane = |i: usize| match i {
+                    0 => f64x2_extract_lane::<0>(a).mul_add(f64x2_extract_lane::<0>(b), f64x2_extract_lane::<0>(c)),
+                    _ => f64x2_extract_lane::<1>(a).mul_add(f64x2_extract_lane::<1>(b), f64x2_extract_lane::<1>(c)),
+                };
+                f64x2(lane(0), lane(1))
             }
             Self([
                 madd(self.0[0], b.0[0], c.0[0]),
@@ -2396,6 +2415,63 @@ pub mod wasm32_simd {
             }
             crate::simd::U8x64::from_array(out)
         }
+    }
+
+    /// `2^-460`, `2^460`, `2^960`: the range in which [`fma_f64_emulated`] is exact.
+    const TWO_M460: f64 = f64::from_bits((1023 - 460) << 52);
+    const TWO_460: f64 = f64::from_bits((1023 + 460) << 52);
+    const TWO_960: f64 = f64::from_bits((1023 + 960) << 52);
+
+    /// Two-sum: `s + e == x + y` exactly, `s = RN(x + y)`, for finite operands.
+    #[inline(always)]
+    fn two_sum(x: v128, y: v128) -> (v128, v128) {
+        let s = f64x2_add(x, y);
+        let yy = f64x2_sub(s, x);
+        let e = f64x2_add(f64x2_sub(x, f64x2_sub(s, yy)), f64x2_sub(y, yy));
+        (s, e)
+    }
+
+    /// Round-to-odd of `x + y`: `RN(x + y)`, moved one ulp toward the exact sum
+    /// when it is inexact and its last mantissa bit is even. Lanes whose sum is
+    /// not finite pass through unchanged.
+    #[inline(always)]
+    fn add_round_to_odd(x: v128, y: v128) -> v128 {
+        let (s, e) = two_sum(x, y);
+        let inexact = f64x2_ne(e, f64x2_splat(0.0));
+        let finite = f64x2_lt(f64x2_abs(s), f64x2_splat(f64::INFINITY));
+        let even = i64x2_eq(v128_and(s, i64x2_splat(1)), i64x2_splat(0));
+        // -1 when `e` and `s` differ in sign (the exact sum is smaller in
+        // magnitude), +1 otherwise; added to the bits it steps the magnitude.
+        let step = v128_or(i64x2_shr(v128_xor(s, e), 63), i64x2_splat(1));
+        i64x2_add(s, v128_and(step, v128_and(v128_and(inexact, finite), even)))
+    }
+
+    /// `a * b + c` for f32 lanes promoted to f64: the product is exact in f64,
+    /// and the sum rounded to odd leaves the single rounding to f32 correct.
+    #[inline(always)]
+    fn fma_f32_in_f64(a: v128, b: v128, c: v128) -> v128 {
+        add_round_to_odd(f64x2_mul(a, b), c)
+    }
+
+    /// Emulated f64 FMA (Boldo & Melquiond 2008): `ph + pl == a * b` (Dekker),
+    /// `th + tl == c + ph` (two-sum), then `RN(th + RO(tl + pl))`. Exact for the
+    /// operand range checked by `F64x8::mul_add`.
+    #[inline(always)]
+    fn fma_f64_emulated(a: v128, b: v128, c: v128) -> v128 {
+        let split = |x: v128| {
+            let t = f64x2_mul(f64x2_splat(134_217_729.0), x); // 2^27 + 1
+            let hi = f64x2_sub(t, f64x2_sub(t, x));
+            (hi, f64x2_sub(x, hi))
+        };
+        let (ah, al) = split(a);
+        let (bh, bl) = split(b);
+        let ph = f64x2_mul(a, b);
+        let pl = f64x2_add(
+            f64x2_add(f64x2_add(f64x2_sub(f64x2_mul(ah, bh), ph), f64x2_mul(ah, bl)), f64x2_mul(al, bh)),
+            f64x2_mul(al, bl),
+        );
+        let (th, tl) = two_sum(c, ph);
+        f64x2_add(th, add_round_to_odd(tl, pl))
     }
 
     impl I32x16 {

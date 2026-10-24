@@ -33,7 +33,8 @@
 //! bytes 12..16); `0xFxx` the 16-lane byte vectors `I8x16` / `U8x16` (wrapping
 //! `add`/`sub`, signed/unsigned `min`/`max`, the load/store round trips); `0x10xx`
 //! the saturating narrows down the 512-bit ladder (`I32x16 → I16x32 → I8x64 /
-//! U8x64`) and the `F32x16` ↔ `I32x16` casts. `main.rs` (native / qemu) and
+//! U8x64`) and the `F32x16` ↔ `I32x16` casts; `0x11xx` `F32x16` / `F64x8`
+//! `mul_add` rounding once, bit for bit against the element `mul_add`. `main.rs` (native / qemu) and
 //! `selfcheck()` (the wasm cdylib export, driven by `run.mjs`) both call
 //! [`run`].
 
@@ -54,7 +55,7 @@ use ndarray::simd::{
 };
 
 /// Number of check groups [`run`] executes (for the log line only).
-pub const CHECKS: usize = 17;
+pub const CHECKS: usize = 18;
 
 /// The wasm export: identical to [`run`], `extern "C"` so `run.mjs` can call it.
 #[no_mangle]
@@ -69,6 +70,7 @@ pub fn run() -> u32 {
         check_mask_algebra, check_care_match, check_masked_reductions, check_blend, check_morton_shift,
         check_predicates_under, check_set_range, check_unsigned_compare_to_mask, check_gather_scatter_group,
         check_f64x8_compare, check_i8x16_u8x16_lanes, check_care_match16, check_narrow_ladder,
+        check_mul_add_single_rounding,
     ];
     for g in groups {
         if let Err(code) = g() {
@@ -1934,6 +1936,119 @@ fn check_narrow_ladder() -> Result<(), u32> {
                 return Err(0x10F2);
             }
         }
+    }
+    Ok(())
+}
+
+/// `F32x16::mul_add` and `F64x8::mul_add` round once: bit-identical to the
+/// element `mul_add` (NaN matches any NaN). The fixtures include ties that
+/// double rounding resolves the wrong way, and products the f64 emulation must
+/// hand to its lane fallback.
+fn check_mul_add_single_rounding() -> Result<(), u32> {
+    let mut rng = SplitMix64(0x1100_0000_0018);
+    let same32 = |x: f32, y: f32| x.to_bits() == y.to_bits() || (x.is_nan() && y.is_nan());
+    let same64 = |x: f64, y: f64| x.to_bits() == y.to_bits() || (x.is_nan() && y.is_nan());
+    let mut unfused_differs = 0usize;
+
+    // f32: random bit patterns over every exponent (subnormals, inf, NaN), plus
+    // a near-cancelling c and a tie broken by a tiny c.
+    let x = 1.0f32 + f32::EPSILON * 2048.0; // 1 + 2^-12: x * x = 1 + 2^-11 + 2^-24
+    for round in 0..4096u32 {
+        let r32 = |r: &mut SplitMix64| f32::from_bits(r.next() as u32);
+        let (a, b, c): ([f32; 16], [f32; 16], [f32; 16]) = match round % 4 {
+            0 => (
+                core::array::from_fn(|_| r32(&mut rng)),
+                core::array::from_fn(|_| r32(&mut rng)),
+                core::array::from_fn(|_| r32(&mut rng)),
+            ),
+            1 => {
+                let a: [f32; 16] =
+                    core::array::from_fn(|_| f32::from_bits((rng.next() as u32 & 0x807F_FFFF) | 0x3F00_0000));
+                let b: [f32; 16] =
+                    core::array::from_fn(|_| f32::from_bits((rng.next() as u32 & 0x807F_FFFF) | 0x3F00_0000));
+                (a, b, core::array::from_fn(|i| -(a[i] * b[i])))
+            }
+            _ => {
+                // a * b = (1 + 2^-11 + 2^-24) * 4^k: a tie in f32 that c (far below
+                // half an ulp, alternating sign) must break.
+                let k = (rng.next() % 100) as i32 - 50;
+                let scale = 2f32.powi(k);
+                let sign = |i: usize| if i % 2 == 0 { 1.0f32 } else { -1.0 };
+                (
+                    [x * scale; 16],
+                    [x * scale; 16],
+                    core::array::from_fn(|i| sign(i) * scale * scale * 2f32.powi(-40 - i as i32)),
+                )
+            }
+        };
+        let got = F32x16::from_array(a)
+            .mul_add(F32x16::from_array(b), F32x16::from_array(c))
+            .to_array();
+        for i in 0..16 {
+            let want = a[i].mul_add(b[i], c[i]);
+            if !same32(got[i], want) {
+                return Err(0x1100 + (round % 4) * 16 + i as u32);
+            }
+            if !same32(a[i] * b[i] + c[i], want) {
+                unfused_differs += 1;
+            }
+        }
+    }
+    if unfused_differs < 256 {
+        return Err(0x11F0);
+    }
+
+    // f64: in-range operands (the vector path), a cancelling c, the same tie
+    // trick, and out-of-range lanes (the lane fallback). In the tie rounds c sits
+    // below the 53 bits after the product's error term pl, so `tl + pl` is
+    // inexact and only its round-to-odd keeps the tie broken.
+    let mut unfused_differs = 0usize;
+    // (1 + 2^-26)(1 + 2^-27) = 1 + 2^-26 + 2^-27 + 2^-53: 2^-53 is half an ulp, a tie.
+    let (ya, yb) = (1.0f64 + f64::EPSILON * 2f64.powi(26), 1.0f64 + f64::EPSILON * 2f64.powi(25));
+    for round in 0..4096u32 {
+        let rin = |r: &mut SplitMix64| {
+            f64::from_bits((r.next() & 0x800F_FFFF_FFFF_FFFF) | ((1023 - 400 + r.next() % 800) << 52))
+        };
+        let (a, b, c): ([f64; 8], [f64; 8], [f64; 8]) = match round % 4 {
+            0 => (
+                core::array::from_fn(|_| rin(&mut rng)),
+                core::array::from_fn(|_| rin(&mut rng)),
+                core::array::from_fn(|_| rin(&mut rng)),
+            ),
+            1 => {
+                let a: [f64; 8] = core::array::from_fn(|_| rin(&mut rng));
+                let b: [f64; 8] = core::array::from_fn(|_| rin(&mut rng));
+                (a, b, core::array::from_fn(|i| -(a[i] * b[i])))
+            }
+            2 => {
+                let k = (rng.next() % 400) as i32 - 200;
+                (
+                    core::array::from_fn(|_| ya * 2f64.powi(k)),
+                    [yb; 8],
+                    core::array::from_fn(|i| if i % 2 == 0 { 1.0 } else { -1.0 } * 2f64.powi(k - 114 - i as i32)),
+                )
+            }
+            _ => (
+                core::array::from_fn(|_| f64::from_bits(rng.next())),
+                core::array::from_fn(|_| f64::from_bits(rng.next())),
+                core::array::from_fn(|_| f64::from_bits(rng.next())),
+            ),
+        };
+        let got = F64x8::from_array(a)
+            .mul_add(F64x8::from_array(b), F64x8::from_array(c))
+            .to_array();
+        for i in 0..8 {
+            let want = a[i].mul_add(b[i], c[i]);
+            if !same64(got[i], want) {
+                return Err(0x1140 + (round % 4) * 8 + i as u32);
+            }
+            if !same64(a[i] * b[i] + c[i], want) {
+                unfused_differs += 1;
+            }
+        }
+    }
+    if unfused_differs < 256 {
+        return Err(0x11F1);
     }
     Ok(())
 }
