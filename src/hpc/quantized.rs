@@ -564,6 +564,71 @@ pub fn quantize_f32_to_i8(data: &[f32]) -> (Vec<i8>, QuantParams) {
     )
 }
 
+/// Rejection conditions for explicitly scaled, round-to-nearest-even i8 quantizers.
+///
+/// Neither numerical path invents an i8 representation for NaN or infinity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum I8RneQuantizeError {
+    /// Scale must be finite and strictly positive.
+    InvalidScale,
+    /// A float input was non-finite.
+    NonFiniteInput { index: usize },
+}
+
+/// Quantize finite f32 values using the full signed-i8 range -128..=127.
+///
+/// For each input: clamp(round_ties_even(x / scale) + zero_point, -128, 127).
+/// This matches the scalar ONNX QuantizeLinear numerical rule for finite f32
+/// inputs with an i8 zero point. It does not cover other dtypes or broadcasting.
+/// -128 remains a valid numerical result; it is never a NaN marker.
+///
+/// The existing quantize_f32_to_i8 entry point is deliberately unchanged.
+pub fn quantize_f32_to_i8_rne_full(
+    data: &[f32],
+    scale: f32,
+    zero_point: i8,
+) -> Result<Vec<i8>, I8RneQuantizeError> {
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err(I8RneQuantizeError::InvalidScale);
+    }
+    data.iter()
+        .enumerate()
+        .map(|(index, &value)| {
+            if !value.is_finite() {
+                return Err(I8RneQuantizeError::NonFiniteInput { index });
+            }
+            let rounded = (value / scale).round_ties_even();
+            Ok((rounded + f32::from(zero_point)).clamp(-128.0, 127.0) as i8)
+        })
+        .collect()
+}
+
+/// Alternative round-to-even quantization with exact code symmetry -127..=127.
+///
+/// The zero point is fixed at integer 0. Code -128 is not emitted and is not
+/// reinterpreted as a NaN or a negative zero. The f32 sign bit of -0.0 cannot
+/// survive either i8 representation. This is NOT an ONNX QuantizeLinear alias.
+///
+/// Supply the SAME external scale to this path and the full-range path when
+/// measuring only the effect of retaining or excluding -128.
+pub fn quantize_f32_to_i8_rne_symmetric(
+    data: &[f32],
+    scale: f32,
+) -> Result<Vec<i8>, I8RneQuantizeError> {
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err(I8RneQuantizeError::InvalidScale);
+    }
+    data.iter()
+        .enumerate()
+        .map(|(index, &value)| {
+            if !value.is_finite() {
+                return Err(I8RneQuantizeError::NonFiniteInput { index });
+            }
+            Ok((value / scale).round_ties_even().clamp(-127.0, 127.0) as i8)
+        })
+        .collect()
+}
+
 /// Dequantize i8 codes back to f32 using the [`QuantParams`] from
 /// [`quantize_f32_to_i8`].
 ///
@@ -920,6 +985,93 @@ mod tests {
         let (q, _params) = quantize_f32_to_i8(&data);
         assert_eq!(q[0], 127);
         assert_eq!(q[1], -127);
+    }
+
+    #[test]
+    fn test_i8_rne_full_code_space_and_symmetric_domain() {
+        let xs: Vec<f32> = (-128i16..=127).map(f32::from).collect();
+        let full = quantize_f32_to_i8_rne_full(&xs, 1.0, 0).unwrap();
+        let sym = quantize_f32_to_i8_rne_symmetric(&xs, 1.0).unwrap();
+        assert_eq!(full.len(), 256);
+        assert_eq!(sym.len(), 256);
+        for (i, &x) in xs.iter().enumerate() {
+            assert_eq!(full[i], x as i8, "full code {}", x);
+            assert_eq!(sym[i], (x as i32).clamp(-127, 127) as i8, "sym code {}", x);
+        }
+        assert!(sym.iter().all(|&code| code != i8::MIN));
+        assert_eq!(full[0], -128);
+        assert_eq!(sym[0], -127);
+    }
+
+    #[test]
+    fn test_i8_rne_ties_endpoint_and_zero_point() {
+        let xs = [
+            -1_000.0, -128.5, -127.5, -126.5, -2.5, -1.5, -0.5,
+            -0.0, 0.0, 0.5, 1.5, 2.5, 126.5, 127.5, 1_000.0,
+        ];
+        let full = quantize_f32_to_i8_rne_full(&xs, 1.0, 0).unwrap();
+        let sym = quantize_f32_to_i8_rne_symmetric(&xs, 1.0).unwrap();
+        assert_eq!(full, vec![-128, -128, -128, -126, -2, -2, 0, 0, 0, 0, 2, 2, 126, 127, 127]);
+        assert_eq!(sym, vec![-127, -127, -127, -126, -2, -2, 0, 0, 0, 0, 2, 2, 126, 127, 127]);
+        assert_eq!(
+            quantize_f32_to_i8_rne_full(&[-200.0, -2.5, 0.0, 2.5, 200.0], 1.0, -3).unwrap(),
+            vec![-128, -5, -3, -1, 127]
+        );
+    }
+
+    #[test]
+    fn test_i8_rne_symmetric_sign_and_calibration_identity() {
+        let xs: Vec<f32> = (-127i16..=127).map(f32::from).collect();
+        let a = quantize_f32_to_i8_rne_symmetric(&xs, 1.0).unwrap();
+        let negative: Vec<f32> = xs.iter().map(|x| -x).collect();
+        let b = quantize_f32_to_i8_rne_symmetric(&negative, 1.0).unwrap();
+        for (&plus, &minus) in a.iter().zip(b.iter()) {
+            assert_eq!(plus, -minus);
+        }
+        // When max-abs/127 keeps every result in range, the two paths
+        // should be identical. This is an essential negative control.
+        let bounded = [-12.0, -1.0, -0.1, -0.0, 0.0, 0.1, 1.0, 12.0];
+        let scale = 12.0 / 127.0;
+        assert_eq!(
+            quantize_f32_to_i8_rne_full(&bounded, scale, 0).unwrap(),
+            quantize_f32_to_i8_rne_symmetric(&bounded, scale).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_i8_rne_rejects_invalid_scale_and_nonfinite_values() {
+        for scale in [0.0, -0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(
+                quantize_f32_to_i8_rne_full(&[1.0], scale, 0),
+                Err(I8RneQuantizeError::InvalidScale)
+            );
+            assert_eq!(
+                quantize_f32_to_i8_rne_symmetric(&[1.0], scale),
+                Err(I8RneQuantizeError::InvalidScale)
+            );
+        }
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(
+                quantize_f32_to_i8_rne_full(&[0.0, bad], 1.0, 0),
+                Err(I8RneQuantizeError::NonFiniteInput { index: 1 })
+            );
+            assert_eq!(
+                quantize_f32_to_i8_rne_symmetric(&[0.0, bad], 1.0),
+                Err(I8RneQuantizeError::NonFiniteInput { index: 1 })
+            );
+        }
+    }
+
+    #[test]
+    fn test_i8_rne_range_can_change_reconstruction_error() {
+        // Both paths get exactly the same externally supplied scale.
+        let data = [-128.0, -127.0, 0.0, 127.0];
+        let full = quantize_f32_to_i8_rne_full(&data, 1.0, 0).unwrap();
+        let sym = quantize_f32_to_i8_rne_symmetric(&data, 1.0).unwrap();
+        let full_error: f32 = data.iter().zip(full.iter()).map(|(&x, &q)| (x - f32::from(q)).abs()).sum();
+        let sym_error: f32 = data.iter().zip(sym.iter()).map(|(&x, &q)| (x - f32::from(q)).abs()).sum();
+        assert_eq!(full_error, 0.0);
+        assert_eq!(sym_error, 1.0);
     }
 
     #[test]
