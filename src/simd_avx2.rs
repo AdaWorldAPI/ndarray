@@ -2632,6 +2632,67 @@ impl U16x32 {
 }
 
 impl I32x16 {
+    /// The two saturating `i32 → i16` packs (`packssdw`) of lanes 0..8 and 8..16.
+    #[inline(always)]
+    fn packs_i16(self) -> (core::arch::x86_64::__m128i, core::arch::x86_64::__m128i) {
+        use core::arch::x86_64::*;
+        // SAFETY: SSE2 is part of the x86_64 baseline; the four 16-byte unaligned loads
+        // read the 64-byte array in bounds.
+        unsafe {
+            let p = self.0.as_ptr() as *const __m128i;
+            (
+                _mm_packs_epi32(_mm_loadu_si128(p), _mm_loadu_si128(p.add(1))),
+                _mm_packs_epi32(_mm_loadu_si128(p.add(2)), _mm_loadu_si128(p.add(3))),
+            )
+        }
+    }
+
+    /// Narrow each lane to `i8` with signed saturation: lanes below -128 become -128 and
+    /// lanes above 127 become 127; every other lane keeps its value.
+    ///
+    /// ```
+    /// use ndarray::simd::I32x16;
+    /// let v = I32x16::from_array([-1000, -129, -128, -1, 0, 1, 127, 128, 1000, 5, -5, 64, -64, 100, -100, i32::MIN]);
+    /// assert_eq!(
+    ///     v.narrow_saturate_i8().to_array(),
+    ///     [-128, -128, -128, -1, 0, 1, 127, 127, 127, 5, -5, 64, -64, 100, -100, -128]
+    /// );
+    /// ```
+    #[inline(always)]
+    pub fn narrow_saturate_i8(self) -> crate::simd_avx512::I8x16 {
+        use core::arch::x86_64::*;
+        let (lo, hi) = self.packs_i16();
+        let mut out = [0i8; 16];
+        // SAFETY: SSE2 baseline; `packsswb` is register-only and the store writes exactly the
+        // 16 bytes of `out`.
+        unsafe { _mm_storeu_si128(out.as_mut_ptr() as *mut __m128i, _mm_packs_epi16(lo, hi)) };
+        crate::simd_avx512::I8x16(out)
+    }
+
+    /// Narrow each lane to `u8` with saturation: lanes below 0 become 0 and lanes above 255
+    /// become 255; every other lane keeps its value.
+    ///
+    /// ```
+    /// use ndarray::simd::I32x16;
+    /// let v = I32x16::from_array([-1000, -1, 0, 1, 127, 128, 255, 256, 1000, 5, 64, 200, 254, i32::MIN, i32::MAX, 0]);
+    /// assert_eq!(
+    ///     v.narrow_saturate_u8().to_array(),
+    ///     [0, 0, 0, 1, 127, 128, 255, 255, 255, 5, 64, 200, 254, 0, 255, 0]
+    /// );
+    /// ```
+    #[inline(always)]
+    pub fn narrow_saturate_u8(self) -> crate::simd_avx512::U8x16 {
+        use core::arch::x86_64::*;
+        // Saturating to i16 and then to u8 is the same as clamping to 0..=255, because both
+        // steps are monotone and 0..=255 lies inside the i16 range.
+        let (lo, hi) = self.packs_i16();
+        let mut out = [0u8; 16];
+        // SAFETY: SSE2 baseline; `packuswb` is register-only and the store writes exactly the
+        // 16 bytes of `out`.
+        unsafe { _mm_storeu_si128(out.as_mut_ptr() as *mut __m128i, _mm_packus_epi16(lo, hi)) };
+        crate::simd_avx512::U8x16(out)
+    }
+
     /// The two 256-bit halves of the 64-byte-aligned array, loaded once.
     #[inline(always)]
     fn avx2_halves(self) -> (__m256i, __m256i) {
