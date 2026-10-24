@@ -29,7 +29,7 @@
 //! | x86 AVX2         | 8         | `_mm256_fmadd_ps`  |
 //! | x86 AMX          | 16+tile   | `_tile_dpbf16ps`   |
 //! | aarch64 NEON     | 4         | `vfmaq_f32`        |
-//! | scalar fallback  | 16 (loop) | `f32::mul_add`     |
+//! | no FMA (scalar)  | 16 (loop) | exact `simd_fma`   |
 //!
 //! Consumer writes `crate::simd::F32x16`. The polyfill picks the path.
 //!
@@ -338,12 +338,12 @@ pub fn apply_uniform_force(velocities: &mut [f32], force: [f32; 3], dt: f32) {
             let _ = (f_v, dt_v);
             for k in 0..16 {
                 let idx = (i + k) * POSITION_DIMS;
-                velocities[idx] = force[0].mul_add(dt, velocities[idx]);
+                velocities[idx] = crate::simd::mul_add_f32(force[0], dt, velocities[idx]);
             }
         } else {
             for k in 0..(n_nodes - i) {
                 let idx = (i + k) * POSITION_DIMS;
-                velocities[idx] = force[0].mul_add(dt, velocities[idx]);
+                velocities[idx] = crate::simd::mul_add_f32(force[0], dt, velocities[idx]);
             }
         }
     }
@@ -351,7 +351,7 @@ pub fn apply_uniform_force(velocities: &mut [f32], force: [f32; 3], dt: f32) {
     for axis in 1..POSITION_DIMS {
         for n in 0..n_nodes {
             let idx = n * POSITION_DIMS + axis;
-            velocities[idx] = force[axis].mul_add(dt, velocities[idx]);
+            velocities[idx] = crate::simd::mul_add_f32(force[axis], dt, velocities[idx]);
         }
     }
 }
