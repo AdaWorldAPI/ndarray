@@ -20,7 +20,7 @@
 //! - Pure Rust implementations; MKL-accelerated versions behind `intel-mkl`
 //!   feature gate.
 
-use crate::simd::{simd_exp_f32, simd_ln_f32, F32x16, F64x8, U32x16};
+use crate::simd::{simd_exp_f32, simd_ln_f32, F32x16, F64x8};
 use crate::{ArrayView, ArrayViewMut, Dimension, Zip};
 
 // ===========================================================================
@@ -232,8 +232,10 @@ fn vspow_slice(a: &[f32], b: &[f32], out: &mut [f32]) {
     }
 }
 
-/// 16-lane `tanh`, computed on `|x|` with the sign bit of `x` copied back, so
-/// `tanh(-0.0) = -0.0` and the function is exactly odd.
+/// 16-lane `tanh`, computed on `a = |x|` and negated where `x < 0`, so the
+/// function is exactly odd. Lanes where `x == 0` return `x` itself, which keeps
+/// `tanh(-0.0) = -0.0`. (Float compares and `select` only: the NEON `U32x16`
+/// has no `&`/`|`, so the sign is not restored by bit masking.)
 ///
 /// Two branches, chosen per lane:
 /// - `|x| < 0.625`: `a + a·z·P(z)` with `z = a²` (the Cephes `tanhf`
@@ -246,7 +248,7 @@ fn vspow_slice(a: &[f32], b: &[f32], out: &mut [f32]) {
 /// `1e-7` the sigmoid rounds to `0.5` and the result was `0`.
 #[inline(always)]
 fn tanh_f32x16(v: F32x16) -> F32x16 {
-    let sign = U32x16::splat(0x8000_0000);
+    let zero = F32x16::splat(0.0);
     let a = v.abs();
     let z = a * a;
     let p = F32x16::splat(-5.704_988_727_45e-3)
@@ -258,7 +260,8 @@ fn tanh_f32x16(v: F32x16) -> F32x16 {
     let e = simd_exp_f32(a + a);
     let large = F32x16::splat(1.0) - F32x16::splat(2.0) / (e + F32x16::splat(1.0));
     let r = a.simd_lt(F32x16::splat(0.625)).select(small, large);
-    F32x16::from_bits(r.to_bits() | (v.to_bits() & sign))
+    let r = v.simd_lt(zero).select(-r, r);
+    v.simd_eq(zero).select(v, r)
 }
 
 fn vstanh_slice(x: &[f32], out: &mut [f32]) {
