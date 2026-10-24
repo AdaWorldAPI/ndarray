@@ -1973,7 +1973,7 @@ fn check_mul_add_single_rounding() -> Result<(), u32> {
                 // half an ulp, alternating sign) must break.
                 let k = (rng.next() % 100) as i32 - 50;
                 let scale = 2f32.powi(k);
-                let sign = |i: usize| if i % 2 == 0 { 1.0f32 } else { -1.0 };
+                let sign = |i: usize| if i.is_multiple_of(2) { 1.0f32 } else { -1.0 };
                 (
                     [x * scale; 16],
                     [x * scale; 16],
@@ -2025,7 +2025,9 @@ fn check_mul_add_single_rounding() -> Result<(), u32> {
                 (
                     core::array::from_fn(|_| ya * 2f64.powi(k)),
                     [yb; 8],
-                    core::array::from_fn(|i| if i % 2 == 0 { 1.0 } else { -1.0 } * 2f64.powi(k - 114 - i as i32)),
+                    core::array::from_fn(
+                        |i| if i.is_multiple_of(2) { 1.0 } else { -1.0 } * 2f64.powi(k - 114 - i as i32),
+                    ),
                 )
             }
             _ => (
