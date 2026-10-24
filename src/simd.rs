@@ -993,8 +993,8 @@ pub use crate::bitwise::popcount_batch_u64;
 #[cfg(feature = "std")]
 pub use crate::simd_ops::{
     add_f32, add_f32_inplace, add_f64, add_f64_inplace, add_mul_f32, add_mul_f64, add_scalar_f32, bf16_tile_gemm_16x16,
-    div_f32, div_f32_inplace, mul_f32, mul_f32_inplace, mul_f64, scale_f32, scale_f32_inplace, sub_f32,
-    sub_f32_inplace,
+    div_f32, div_f32_inplace, mul_add_f32, mul_add_f64, mul_f32, mul_f32_inplace, mul_f64, scale_f32,
+    scale_f32_inplace, sub_f32, sub_f32_inplace,
 };
 
 // ChaCha20 keystream is NO LONGER an `ndarray::simd` surface: the AdaWorldAPI
