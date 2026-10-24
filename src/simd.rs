@@ -429,6 +429,10 @@ pub use crate::simd_neon::{
     batch_packed_i4_16, i8x16, i8x32, palette_lookup_u8x8, prefetch_read_t0, prefetch_read_t1, prefetch_read_t2, u8x16,
     u8x8, I8x16, I8x32, U8x16, U8x8,
 };
+// The 64×8 and 32×16 signed rungs of the ladder (64×8, 32×16, 16×32). `simd_neon.rs` has
+// carried them since #337 but no arm re-exported them, so aarch64 had neither type.
+#[cfg(all(target_arch = "aarch64", not(feature = "nightly-simd")))]
+pub use crate::simd_neon::{i16x32, i8x64, I16x32, I8x64};
 // U16x8 on aarch64 comes from simd_neon (backed by uint16x8_t)
 #[cfg(all(target_arch = "aarch64", not(feature = "nightly-simd")))]
 pub use crate::simd_neon::{u16x8, U16x8};

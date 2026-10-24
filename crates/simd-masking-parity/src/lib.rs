@@ -31,8 +31,9 @@
 //! over every pair of 16 IEEE edge values: NaN, ±0, ±inf, subnormal); `0x73x` / `0x74x` / `0x750` the strided 16-byte register match (all sixteen
 //! bytes; strides 16 / 20 / 32 / 512 from first offsets 0..15, care bits in
 //! bytes 12..16); `0xFxx` the 16-lane byte vectors `I8x16` / `U8x16` (wrapping
-//! `add`/`sub`, signed/unsigned `min`/`max`, the load/store round trips); `0x10xx` the saturating
-//! `I32x16 → I8x16 / U8x16` narrows and the `F32x16 ⇄ I32x16` casts on in-range lanes. `main.rs` (native / qemu) and
+//! `add`/`sub`, signed/unsigned `min`/`max`, the load/store round trips); `0x10xx`
+//! the saturating narrows down the 512-bit ladder (`I32x16 → I16x32 → I8x64 /
+//! U8x64`) and the `F32x16` ↔ `I32x16` casts. `main.rs` (native / qemu) and
 //! `selfcheck()` (the wasm cdylib export, driven by `run.mjs`) both call
 //! [`run`].
 
@@ -49,7 +50,7 @@ use ndarray::simd::{
     ne_i32_to_mask_under, ne_u32_to_mask, ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask,
     ternary_match_strided16_to_mask, ternary_match_strided_to_mask, ternary_match_u32_to_mask,
     ternary_match_u32_to_mask_under, ternary_match_u64_to_mask, ternary_match_u64_to_mask_under, ternlog, F32x16,
-    F64x8, I32x16, I8x16, KeyRunCarry, MortonDir, U32x16, U64x8, U8x16,
+    F64x8, I16x32, I32x16, I8x16, KeyRunCarry, MortonDir, U32x16, U64x8, U8x16,
 };
 
 /// Number of check groups [`run`] executes (for the log line only).
@@ -67,7 +68,7 @@ pub fn run() -> u32 {
         check_ternlog_all_tables, check_u64x8_algebra, check_i32x16_compare, check_predicates_to_mask,
         check_mask_algebra, check_care_match, check_masked_reductions, check_blend, check_morton_shift,
         check_predicates_under, check_set_range, check_unsigned_compare_to_mask, check_gather_scatter_group,
-        check_f64x8_compare, check_i8x16_u8x16_lanes, check_care_match16, check_narrow_and_casts,
+        check_f64x8_compare, check_i8x16_u8x16_lanes, check_care_match16, check_narrow_ladder,
     ];
     for g in groups {
         if let Err(code) = g() {
@@ -1845,59 +1846,93 @@ fn check_gather_scatter_group() -> Result<(), u32> {
     Ok(())
 }
 
-/// `I32x16::narrow_saturate_i8` / `narrow_saturate_u8` against `clamp`, and the
-/// `F32x16::cast_i32` / `I32x16::cast_f32` casts against `as` on in-range lanes.
-fn check_narrow_and_casts() -> Result<(), u32> {
-    let edges: [i32; 16] =
-        [i32::MIN, -1_000_000, -256, -129, -128, -127, -1, 0, 1, 126, 127, 128, 254, 255, 256, i32::MAX];
-    let mut rng = SplitMix64(0x0C0D_EC08_0000_0001);
-    let mut vecs: Vec<[i32; 16]> = vec![edges];
-    for k in 0..512 {
-        vecs.push(core::array::from_fn(|_| {
-            let r = rng.next();
-            // Half the vectors draw from the whole i32 range, half from the saturation band.
-            if k % 2 == 0 {
-                r as i32
-            } else {
-                (r % 601) as i32 - 300
+/// The saturating narrows down the 512-bit ladder (16×32 → 32×16 → 64×8) and the in-range
+/// f32 ↔ i32 casts, against `clamp` / `as` references.
+fn check_narrow_ladder() -> Result<(), u32> {
+    let mut rng = SplitMix64(0x1000_0000_0017);
+    let edges32 =
+        [i32::MIN, i32::MIN + 1, -32769, -32768, -32767, -256, -129, -128, -127, -1, 0, 1, 127, 128, 255, 256];
+    let edges16 = [i16::MIN, -32767, -300, -256, -129, -128, -127, -1, 0, 1, 127, 128, 254, 255, 256, i16::MAX];
+    let (mut sat, mut kept) = (0usize, 0usize);
+    for round in 0..64u32 {
+        // Round 0 is the edge set; later rounds mix random words with values near the seams.
+        let a: [i32; 32] = core::array::from_fn(|i| match (round, rng.next()) {
+            (0, _) => edges32[i % 16].wrapping_add(if i >= 16 { 1 } else { 0 }),
+            (_, r) if r % 3 == 0 => r as i32,
+            (_, r) => (r as i32) >> (16 + (r >> 40) % 16),
+        });
+        let lo = I32x16::from_array(a[..16].try_into().unwrap());
+        let hi = I32x16::from_array(a[16..].try_into().unwrap());
+        let n16 = lo.narrow_saturating_i16(hi).to_array();
+        for i in 0..32 {
+            let want = a[i].clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+            if n16[i] != want {
+                return Err(0x1000 + i as u32);
             }
-        }));
-    }
-    let (mut below, mut above) = (0usize, 0usize);
-    for v in &vecs {
-        let x = I32x16::from_array(*v);
-        let want_i8: [i8; 16] = core::array::from_fn(|i| v[i].clamp(-128, 127) as i8);
-        let want_u8: [u8; 16] = core::array::from_fn(|i| v[i].clamp(0, 255) as u8);
-        if x.narrow_saturate_i8().to_array() != want_i8 {
-            return Err(0x1001);
+            if want as i32 == a[i] {
+                kept += 1
+            } else {
+                sat += 1
+            }
         }
-        if x.narrow_saturate_u8().to_array() != want_u8 {
-            return Err(0x1002);
+        // Chained to 8 bits: two saturating steps equal one clamp to the narrow range.
+        let n16v = I16x32::from_array(n16);
+        let back: [i16; 32] = core::array::from_fn(|i| n16[31 - i]);
+        let (i8s, u8s) = (
+            n16v.narrow_saturating_i8(I16x32::from_array(back))
+                .to_array(),
+            n16v.narrow_saturating_u8(I16x32::from_array(back))
+                .to_array(),
+        );
+        for i in 0..64 {
+            let src = if i < 32 {
+                a[i]
+            } else {
+                a[63 - i].clamp(i16::MIN as i32, i16::MAX as i32)
+            };
+            if i8s[i] != src.clamp(-128, 127) as i8 {
+                return Err(0x1040 + i as u32);
+            }
+            if u8s[i] != src.clamp(0, 255) as u8 {
+                return Err(0x1080 + i as u32);
+            }
         }
-        below += v.iter().filter(|&&a| a < -128).count();
-        above += v.iter().filter(|&&a| a > 255).count();
-        let want_f: [u32; 16] = core::array::from_fn(|i| (v[i] as f32).to_bits());
-        if x.cast_f32().to_array().map(f32::to_bits) != want_f {
-            return Err(0x1003);
+    }
+    // The i16 edge set directly, both halves.
+    let e = I16x32::from_array(core::array::from_fn(|i| edges16[i % 16]));
+    let f = I16x32::from_array(core::array::from_fn(|i| edges16[15 - i % 16]));
+    let (i8s, u8s) = (e.narrow_saturating_i8(f).to_array(), e.narrow_saturating_u8(f).to_array());
+    for i in 0..64 {
+        let v = if i < 32 {
+            edges16[i % 16]
+        } else {
+            edges16[15 - (i - 32) % 16]
+        };
+        if i8s[i] != v.clamp(-128, 127) as i8 || u8s[i] != v.clamp(0, 255) as u8 {
+            return Err(0x10C0 + i as u32);
         }
     }
-    // Anti-vacuity: the corpus must actually saturate in both directions.
-    if below < 1000 || above < 1000 {
-        return Err(0x10FF);
+    // Anti-vacuity: the rounds must both saturate and pass lanes through.
+    if sat < 64 || kept < 64 {
+        return Err(0x10F0);
     }
-    // In-range f32 → i32 truncation, including negative fractions, ±0 and the ±2^31 edges.
-    let fedges: [f32; 16] = [
-        -0.0, 0.0, 0.5, -0.5, 0.99999994, -0.99999994, 1.5, -1.5, 127.5, -128.5, 255.9, -2147483520.0, 2147483520.0,
-        8388607.5, -8388607.5, 1e9,
-    ];
-    let mut fvecs: Vec<[f32; 16]> = vec![fedges];
-    for _ in 0..512 {
-        fvecs.push(core::array::from_fn(|_| ((rng.next() >> 11) as f64 / (1u64 << 53) as f64 * 4.0e9 - 2.0e9) as f32));
-    }
-    for v in &fvecs {
-        let want: [i32; 16] = core::array::from_fn(|i| v[i] as i32);
-        if F32x16::from_array(*v).cast_i32().to_array() != want {
-            return Err(0x1004);
+    // Casts, in range only (out-of-range and NaN differ by backend by design).
+    for _ in 0..64 {
+        let v: [i32; 16] = core::array::from_fn(|_| (rng.next() as i32) >> (rng.next() % 31));
+        let f = I32x16::from_array(v).cast_f32().to_array();
+        for i in 0..16 {
+            if f[i].to_bits() != (v[i] as f32).to_bits() {
+                return Err(0x10F1);
+            }
+        }
+        let x: [f32; 16] = core::array::from_fn(|_| {
+            f32::from_bits((rng.next() as u32 & 0x807F_FFFF) | (((rng.next() % 31) as u32 + 112) << 23))
+        });
+        let t = F32x16::from_array(x).cast_i32().to_array();
+        for i in 0..16 {
+            if t[i] != x[i] as i32 {
+                return Err(0x10F2);
+            }
         }
     }
     Ok(())

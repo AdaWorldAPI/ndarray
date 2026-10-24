@@ -2404,6 +2404,64 @@ neon_int_polyfill!(I16x16, i16, 16, 0i16, u16);
 neon_int_polyfill!(I16x32, i16, 32, 0i16, u32);
 
 #[cfg(target_arch = "aarch64")]
+impl I16x32 {
+    /// Narrow two 32×i16 vectors to one 64×i8 vector with signed saturation: lanes 0..32
+    /// come from `self`, lanes 32..64 from `hi`, each clamped to `-128..=127`.
+    ///
+    /// ```
+    /// use ndarray::simd::I16x32;
+    /// let mut a = [0i16; 32];
+    /// a[..8].copy_from_slice(&[i16::MIN, -129, -128, -1, 1, 127, 128, i16::MAX]);
+    /// let v = I16x32::from_array(a).narrow_saturating_i8(I16x32::splat(-300)).to_array();
+    /// assert_eq!(v[..8], [-128, -128, -128, -1, 1, 127, 127, 127]);
+    /// assert!(v[32..].iter().all(|&x| x == -128));
+    /// ```
+    #[inline(always)]
+    pub fn narrow_saturating_i8(self, hi: Self) -> I8x64 {
+        let mut out = [0i8; 64];
+        for (h, src) in [&self.0, &hi.0].into_iter().enumerate() {
+            for j in 0..2 {
+                // SAFETY: NEON baseline (`sqxtn` ×2). The loads read 8 i16 at `src[16j..16j + 16]`
+                // (j < 2, 32 lanes); the store writes 16 bytes at `out[32h + 16j..]` (h, j < 2).
+                unsafe {
+                    let lo = vld1q_s16(src.as_ptr().add(16 * j));
+                    let hi = vld1q_s16(src.as_ptr().add(16 * j + 8));
+                    vst1q_s8(out.as_mut_ptr().add(32 * h + 16 * j), vcombine_s8(vqmovn_s16(lo), vqmovn_s16(hi)));
+                }
+            }
+        }
+        I8x64(out)
+    }
+
+    /// Narrow two 32×i16 vectors to one 64×u8 vector with saturation: lanes 0..32 come
+    /// from `self`, lanes 32..64 from `hi`, each clamped to `0..=255`.
+    ///
+    /// ```
+    /// use ndarray::simd::I16x32;
+    /// let mut a = [0i16; 32];
+    /// a[..8].copy_from_slice(&[i16::MIN, -1, 0, 1, 254, 255, 256, i16::MAX]);
+    /// let v = I16x32::from_array(a).narrow_saturating_u8(I16x32::splat(300)).to_array();
+    /// assert_eq!(v[..8], [0, 0, 0, 1, 254, 255, 255, 255]);
+    /// assert!(v[32..].iter().all(|&x| x == 255));
+    /// ```
+    #[inline(always)]
+    pub fn narrow_saturating_u8(self, hi: Self) -> crate::simd::U8x64 {
+        let mut out = [0u8; 64];
+        for (h, src) in [&self.0, &hi.0].into_iter().enumerate() {
+            for j in 0..2 {
+                // SAFETY: as in `narrow_saturating_i8`; `sqxtun` saturates signed i16 to 0..=255.
+                unsafe {
+                    let lo = vld1q_s16(src.as_ptr().add(16 * j));
+                    let hi = vld1q_s16(src.as_ptr().add(16 * j + 8));
+                    vst1q_u8(out.as_mut_ptr().add(32 * h + 16 * j), vcombine_u8(vqmovun_s16(lo), vqmovun_s16(hi)));
+                }
+            }
+        }
+        crate::simd::U8x64::from_array(out)
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
 #[allow(non_camel_case_types)]
 pub type i8x16 = I8x16;
 #[cfg(target_arch = "aarch64")]
@@ -3213,49 +3271,29 @@ fn quad_mask4(cmp: uint32x4_t) -> u16 {
 impl I32x16 {
     pub const LANES: usize = 16;
 
-    /// The two saturating `i32 → i16` narrows (`sqxtn` ×4) of lanes 0..8 and 8..16.
-    #[inline(always)]
-    fn narrow_i16(self) -> (int16x8_t, int16x8_t) {
-        let [a, b, c, d] = self.0;
-        // SAFETY: NEON baseline; register-only ops.
-        unsafe { (vcombine_s16(vqmovn_s32(a.0), vqmovn_s32(b.0)), vcombine_s16(vqmovn_s32(c.0), vqmovn_s32(d.0))) }
-    }
-
-    /// Narrow each lane to `i8` with signed saturation: lanes below -128 become -128 and
-    /// lanes above 127 become 127; every other lane keeps its value.
+    /// Narrow two 16×i32 vectors to one 32×i16 vector with signed saturation: lanes 0..16
+    /// come from `self`, lanes 16..32 from `hi`, each clamped to `i16::MIN..=i16::MAX`.
     ///
     /// ```
     /// use ndarray::simd::I32x16;
-    /// let v = I32x16::from_array([-1000, -129, -128, -1, 0, 1, 127, 128, 1000, 5, -5, 64, -64, 100, -100, i32::MIN]);
-    /// assert_eq!(
-    ///     v.narrow_saturate_i8().to_array(),
-    ///     [-128, -128, -128, -1, 0, 1, 127, 127, 127, 5, -5, 64, -64, 100, -100, -128]
-    /// );
+    /// let lo = I32x16::from_array([i32::MIN, -32769, -32768, -1, 0, 1, 32767, 32768, i32::MAX, 5, -5, 7, -7, 9, -9, 0]);
+    /// let hi = I32x16::splat(70_000);
+    /// let v = lo.narrow_saturating_i16(hi).to_array();
+    /// assert_eq!(v[..9], [-32768, -32768, -32768, -1, 0, 1, 32767, 32767, 32767]);
+    /// assert!(v[16..].iter().all(|&x| x == 32767));
     /// ```
     #[inline(always)]
-    pub fn narrow_saturate_i8(self) -> I8x16 {
-        let (lo, hi) = self.narrow_i16();
-        // SAFETY: NEON baseline; register-only ops (`sqxtn`).
-        I8x16(unsafe { vcombine_s8(vqmovn_s16(lo), vqmovn_s16(hi)) })
-    }
-
-    /// Narrow each lane to `u8` with saturation: lanes below 0 become 0 and lanes above 255
-    /// become 255; every other lane keeps its value.
-    ///
-    /// ```
-    /// use ndarray::simd::I32x16;
-    /// let v = I32x16::from_array([-1000, -1, 0, 1, 127, 128, 255, 256, 1000, 5, 64, 200, 254, i32::MIN, i32::MAX, 0]);
-    /// assert_eq!(
-    ///     v.narrow_saturate_u8().to_array(),
-    ///     [0, 0, 0, 1, 127, 128, 255, 255, 255, 5, 64, 200, 254, 0, 255, 0]
-    /// );
-    /// ```
-    #[inline(always)]
-    pub fn narrow_saturate_u8(self) -> U8x16 {
-        // Saturating to i16 and then to u8 (`sqxtun`) is the same as clamping to 0..=255.
-        let (lo, hi) = self.narrow_i16();
-        // SAFETY: NEON baseline; register-only ops (`sqxtun`).
-        U8x16(unsafe { vcombine_u8(vqmovun_s16(lo), vqmovun_s16(hi)) })
+    pub fn narrow_saturating_i16(self, hi: Self) -> I16x32 {
+        let q = [self.0[0].0, self.0[1].0, self.0[2].0, self.0[3].0, hi.0[0].0, hi.0[1].0, hi.0[2].0, hi.0[3].0];
+        let mut out = [0i16; 32];
+        for k in 0..4 {
+            // SAFETY: NEON baseline (`sqxtn` ×2); the store writes 8 i16 at `out[8k..8k + 8]`,
+            // in bounds for k < 4.
+            unsafe {
+                vst1q_s16(out.as_mut_ptr().add(8 * k), vcombine_s16(vqmovn_s32(q[2 * k]), vqmovn_s32(q[2 * k + 1])))
+            };
+        }
+        I16x32(out)
     }
 
     /// Broadcast (`vdupq_n_s32` ×4).
