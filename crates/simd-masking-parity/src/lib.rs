@@ -31,7 +31,8 @@
 //! over every pair of 16 IEEE edge values: NaN, ±0, ±inf, subnormal); `0x73x` / `0x74x` / `0x750` the strided 16-byte register match (all sixteen
 //! bytes; strides 16 / 20 / 32 / 512 from first offsets 0..15, care bits in
 //! bytes 12..16); `0xFxx` the 16-lane byte vectors `I8x16` / `U8x16` (wrapping
-//! `add`/`sub`, signed/unsigned `min`/`max`, the load/store round trips). `main.rs` (native / qemu) and
+//! `add`/`sub`, signed/unsigned `min`/`max`, the load/store round trips); `0x10xx` the saturating
+//! `I32x16 → I8x16 / U8x16` narrows and the `F32x16 ⇄ I32x16` casts on in-range lanes. `main.rs` (native / qemu) and
 //! `selfcheck()` (the wasm cdylib export, driven by `run.mjs`) both call
 //! [`run`].
 
@@ -40,20 +41,19 @@ use ndarray::simd::{
     eq_u32_via_to_mask, eq_u64_to_mask, eq_u8_to_mask, ge_i32_to_mask, ge_i32_to_mask_under, ge_u64_to_mask,
     ge_u8_to_mask, gt_i32_to_mask, gt_i32_to_mask_under, gt_u64_to_mask, gt_u8_to_mask, le_i32_to_mask,
     le_i32_to_mask_under, le_u64_to_mask, le_u8_to_mask, lt_i32_to_mask, lt_i32_to_mask_under, lt_u64_to_mask,
-    lt_u8_to_mask, mask_all, mask_and, mask_and_assign, mask_andnot, mask_andnot_assign, mask_any,
-    mask_gather_u32, mask_gather_u32_under, mask_not,
-    mask_not_assign, mask_or, mask_or_assign, mask_scatter_or_u32, mask_set_range, mask_shift_morton, mask_ternlog,
-    mask_ternlog_any, mask_ternlog_assign, mask_ternlog_popcount, mask_xor, mask_xor_assign, masked_group_sum_i32,
-    masked_group_sum_i32_via, masked_key_run_count_u32, masked_max_i32, masked_min_i32, masked_strided_group_sum,
-    masked_sum_i32, masked_sum_wrapping_add_i32, ne_i32_to_mask, ne_i32_to_mask_under, ne_u32_to_mask,
-    ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask, ternary_match_strided16_to_mask,
-    ternary_match_strided_to_mask, ternary_match_u32_to_mask, ternary_match_u32_to_mask_under,
-    ternary_match_u64_to_mask, ternary_match_u64_to_mask_under, ternlog, F64x8, I32x16, I8x16,
-    KeyRunCarry, MortonDir, U32x16, U64x8, U8x16,
+    lt_u8_to_mask, mask_all, mask_and, mask_and_assign, mask_andnot, mask_andnot_assign, mask_any, mask_gather_u32,
+    mask_gather_u32_under, mask_not, mask_not_assign, mask_or, mask_or_assign, mask_scatter_or_u32, mask_set_range,
+    mask_shift_morton, mask_ternlog, mask_ternlog_any, mask_ternlog_assign, mask_ternlog_popcount, mask_xor,
+    mask_xor_assign, masked_group_sum_i32, masked_group_sum_i32_via, masked_key_run_count_u32, masked_max_i32,
+    masked_min_i32, masked_strided_group_sum, masked_sum_i32, masked_sum_wrapping_add_i32, ne_i32_to_mask,
+    ne_i32_to_mask_under, ne_u32_to_mask, ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask,
+    ternary_match_strided16_to_mask, ternary_match_strided_to_mask, ternary_match_u32_to_mask,
+    ternary_match_u32_to_mask_under, ternary_match_u64_to_mask, ternary_match_u64_to_mask_under, ternlog, F32x16,
+    F64x8, I32x16, I8x16, KeyRunCarry, MortonDir, U32x16, U64x8, U8x16,
 };
 
 /// Number of check groups [`run`] executes (for the log line only).
-pub const CHECKS: usize = 16;
+pub const CHECKS: usize = 17;
 
 /// The wasm export: identical to [`run`], `extern "C"` so `run.mjs` can call it.
 #[no_mangle]
@@ -67,7 +67,7 @@ pub fn run() -> u32 {
         check_ternlog_all_tables, check_u64x8_algebra, check_i32x16_compare, check_predicates_to_mask,
         check_mask_algebra, check_care_match, check_masked_reductions, check_blend, check_morton_shift,
         check_predicates_under, check_set_range, check_unsigned_compare_to_mask, check_gather_scatter_group,
-        check_f64x8_compare, check_i8x16_u8x16_lanes, check_care_match16,
+        check_f64x8_compare, check_i8x16_u8x16_lanes, check_care_match16, check_narrow_and_casts,
     ];
     for g in groups {
         if let Err(code) = g() {
@@ -1840,6 +1840,64 @@ fn check_gather_scatter_group() -> Result<(), u32> {
             if c != before {
                 return Err(0xD53);
             }
+        }
+    }
+    Ok(())
+}
+
+/// `I32x16::narrow_saturate_i8` / `narrow_saturate_u8` against `clamp`, and the
+/// `F32x16::cast_i32` / `I32x16::cast_f32` casts against `as` on in-range lanes.
+fn check_narrow_and_casts() -> Result<(), u32> {
+    let edges: [i32; 16] =
+        [i32::MIN, -1_000_000, -256, -129, -128, -127, -1, 0, 1, 126, 127, 128, 254, 255, 256, i32::MAX];
+    let mut rng = SplitMix64(0x0C0D_EC08_0000_0001);
+    let mut vecs: Vec<[i32; 16]> = vec![edges];
+    for k in 0..512 {
+        vecs.push(core::array::from_fn(|_| {
+            let r = rng.next();
+            // Half the vectors draw from the whole i32 range, half from the saturation band.
+            if k % 2 == 0 {
+                r as i32
+            } else {
+                (r % 601) as i32 - 300
+            }
+        }));
+    }
+    let (mut below, mut above) = (0usize, 0usize);
+    for v in &vecs {
+        let x = I32x16::from_array(*v);
+        let want_i8: [i8; 16] = core::array::from_fn(|i| v[i].clamp(-128, 127) as i8);
+        let want_u8: [u8; 16] = core::array::from_fn(|i| v[i].clamp(0, 255) as u8);
+        if x.narrow_saturate_i8().to_array() != want_i8 {
+            return Err(0x1001);
+        }
+        if x.narrow_saturate_u8().to_array() != want_u8 {
+            return Err(0x1002);
+        }
+        below += v.iter().filter(|&&a| a < -128).count();
+        above += v.iter().filter(|&&a| a > 255).count();
+        let want_f: [u32; 16] = core::array::from_fn(|i| (v[i] as f32).to_bits());
+        if x.cast_f32().to_array().map(f32::to_bits) != want_f {
+            return Err(0x1003);
+        }
+    }
+    // Anti-vacuity: the corpus must actually saturate in both directions.
+    if below < 1000 || above < 1000 {
+        return Err(0x10FF);
+    }
+    // In-range f32 → i32 truncation, including negative fractions, ±0 and the ±2^31 edges.
+    let fedges: [f32; 16] = [
+        -0.0, 0.0, 0.5, -0.5, 0.99999994, -0.99999994, 1.5, -1.5, 127.5, -128.5, 255.9, -2147483520.0, 2147483520.0,
+        8388607.5, -8388607.5, 1e9,
+    ];
+    let mut fvecs: Vec<[f32; 16]> = vec![fedges];
+    for _ in 0..512 {
+        fvecs.push(core::array::from_fn(|_| ((rng.next() >> 11) as f64 / (1u64 << 53) as f64 * 4.0e9 - 2.0e9) as f32));
+    }
+    for v in &fvecs {
+        let want: [i32; 16] = core::array::from_fn(|i| v[i] as i32);
+        if F32x16::from_array(*v).cast_i32().to_array() != want {
+            return Err(0x1004);
         }
     }
     Ok(())

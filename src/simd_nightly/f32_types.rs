@@ -27,6 +27,14 @@ pub struct F32x16(pub core_f32x16);
 impl F32x16 {
     pub const LANES: usize = 16;
 
+    /// Truncating cast f32→i32 (equivalent to `portable_simd .cast::<i32>()`). Lanes outside
+    /// the i32 range and NaN follow `as i32` here (saturate, NaN to 0); the x86 backends give
+    /// `i32::MIN` for them instead, so only in-range lanes are identical across backends.
+    #[inline(always)]
+    pub fn cast_i32(self) -> I32x16 {
+        I32x16(self.0.cast::<i32>())
+    }
+
     // ── Constructors ──────────────────────────────────────────────
 
     /// Broadcast `v` to all 16 lanes.

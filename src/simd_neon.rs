@@ -3213,6 +3213,51 @@ fn quad_mask4(cmp: uint32x4_t) -> u16 {
 impl I32x16 {
     pub const LANES: usize = 16;
 
+    /// The two saturating `i32 → i16` narrows (`sqxtn` ×4) of lanes 0..8 and 8..16.
+    #[inline(always)]
+    fn narrow_i16(self) -> (int16x8_t, int16x8_t) {
+        let [a, b, c, d] = self.0;
+        // SAFETY: NEON baseline; register-only ops.
+        unsafe { (vcombine_s16(vqmovn_s32(a.0), vqmovn_s32(b.0)), vcombine_s16(vqmovn_s32(c.0), vqmovn_s32(d.0))) }
+    }
+
+    /// Narrow each lane to `i8` with signed saturation: lanes below -128 become -128 and
+    /// lanes above 127 become 127; every other lane keeps its value.
+    ///
+    /// ```
+    /// use ndarray::simd::I32x16;
+    /// let v = I32x16::from_array([-1000, -129, -128, -1, 0, 1, 127, 128, 1000, 5, -5, 64, -64, 100, -100, i32::MIN]);
+    /// assert_eq!(
+    ///     v.narrow_saturate_i8().to_array(),
+    ///     [-128, -128, -128, -1, 0, 1, 127, 127, 127, 5, -5, 64, -64, 100, -100, -128]
+    /// );
+    /// ```
+    #[inline(always)]
+    pub fn narrow_saturate_i8(self) -> I8x16 {
+        let (lo, hi) = self.narrow_i16();
+        // SAFETY: NEON baseline; register-only ops (`sqxtn`).
+        I8x16(unsafe { vcombine_s8(vqmovn_s16(lo), vqmovn_s16(hi)) })
+    }
+
+    /// Narrow each lane to `u8` with saturation: lanes below 0 become 0 and lanes above 255
+    /// become 255; every other lane keeps its value.
+    ///
+    /// ```
+    /// use ndarray::simd::I32x16;
+    /// let v = I32x16::from_array([-1000, -1, 0, 1, 127, 128, 255, 256, 1000, 5, 64, 200, 254, i32::MIN, i32::MAX, 0]);
+    /// assert_eq!(
+    ///     v.narrow_saturate_u8().to_array(),
+    ///     [0, 0, 0, 1, 127, 128, 255, 255, 255, 5, 64, 200, 254, 0, 255, 0]
+    /// );
+    /// ```
+    #[inline(always)]
+    pub fn narrow_saturate_u8(self) -> U8x16 {
+        // Saturating to i16 and then to u8 (`sqxtun`) is the same as clamping to 0..=255.
+        let (lo, hi) = self.narrow_i16();
+        // SAFETY: NEON baseline; register-only ops (`sqxtun`).
+        U8x16(unsafe { vcombine_u8(vqmovun_s16(lo), vqmovun_s16(hi)) })
+    }
+
     /// Broadcast (`vdupq_n_s32` ×4).
     #[inline(always)]
     pub fn splat(v: i32) -> Self {

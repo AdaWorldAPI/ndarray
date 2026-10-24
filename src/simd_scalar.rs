@@ -942,6 +942,38 @@ impl U16x32 {
 
 // Extra methods for I32x16 that float types have via the macro
 impl I32x16 {
+    /// Narrow each lane to `i8` with signed saturation: lanes below -128 become -128 and
+    /// lanes above 127 become 127; every other lane keeps its value.
+    ///
+    /// ```
+    /// use ndarray::simd::I32x16;
+    /// let v = I32x16::from_array([-1000, -129, -128, -1, 0, 1, 127, 128, 1000, 5, -5, 64, -64, 100, -100, i32::MIN]);
+    /// assert_eq!(
+    ///     v.narrow_saturate_i8().to_array(),
+    ///     [-128, -128, -128, -1, 0, 1, 127, 127, 127, 5, -5, 64, -64, 100, -100, -128]
+    /// );
+    /// ```
+    #[inline(always)]
+    pub fn narrow_saturate_i8(self) -> I8x16 {
+        I8x16(core::array::from_fn(|i| self.0[i].clamp(-128, 127) as i8))
+    }
+
+    /// Narrow each lane to `u8` with saturation: lanes below 0 become 0 and lanes above 255
+    /// become 255; every other lane keeps its value.
+    ///
+    /// ```
+    /// use ndarray::simd::I32x16;
+    /// let v = I32x16::from_array([-1000, -1, 0, 1, 127, 128, 255, 256, 1000, 5, 64, 200, 254, i32::MIN, i32::MAX, 0]);
+    /// assert_eq!(
+    ///     v.narrow_saturate_u8().to_array(),
+    ///     [0, 0, 0, 1, 127, 128, 255, 255, 255, 5, 64, 200, 254, 0, 255, 0]
+    /// );
+    /// ```
+    #[inline(always)]
+    pub fn narrow_saturate_u8(self) -> U8x16 {
+        U8x16(core::array::from_fn(|i| self.0[i].clamp(0, 255) as u8))
+    }
+
     #[inline(always)]
     pub fn reduce_min(self) -> i32 {
         *self.0.iter().min().unwrap_or(&0)
