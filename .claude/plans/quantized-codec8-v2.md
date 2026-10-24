@@ -1,27 +1,31 @@
-# Plan: 8-bit code spaces as one compile-time codec, plus certified tanh tables (v2)
+# Plan: 8-bit code spaces as one compile-time codec, plus certified tanh tables (v3, RATIFIED)
 
-**Status:** PROPOSAL. Replaces v1 (scratchpad draft, never landed) and the staged prompt
-`.claude/prompts/quantized-u8-i8asym-i8symnan-stages-20261024.md` (superseded, see its
-header). Goes through /5plus3 before any code lands. PR #370 is being refactored to this plan.
+**Status:** RATIFIED by a 5+3 council on 2026-10-24 (v1 → v2 → v3; council record in §9).
+Phase (a) is executable. The filename keeps `-v2` so links stay stable; the content is v3.
+Replaces the staged prompt `.claude/prompts/quantized-u8-i8asym-i8symnan-stages-20261024.md`
+(superseded). PR #370 is being refactored to this plan.
 
-**Source:** /coresearch 2026-10-24 (scouts, crosswalk, three co-architects, exploration map),
-the TFLM harvest (AdaWorldAPI/tflite-micro `.claude/harvest/2026-10-24-tflm-quant-lut-harvest.md`,
-merged), two lab probes in this session (asm identity, f64 tanh), and the operator's rulings
-quoted below.
+**Source:** /coresearch 2026-10-24 (exploration map in
+`.claude/knowledge/coresearch-2026-10-24-i8-codec8-map.md`), the TFLM harvest (AdaWorldAPI/tflite-micro
+`.claude/harvest/2026-10-24-tflm-quant-lut-harvest.md`, merged), lab probes from the same session, and
+the operator's rulings quoted in §2.
 
 ## 1. Goal
 
-Three 8-bit modes in ndarray, run head to head and kept, not one winner:
+Three 8-bit modes, kept and run head to head (no single winner):
 
-| mode | range | -128 | today |
-|---|---|---|---|
-| I8 asymmetric | -128..127 | a value | `quantize_f32_to_i8` (ties away) |
-| I8 symmetric + NaN | -127..127 | NaN | new |
-| U8 | 0..255 | (per code space) | spoFC truth, codebooks |
+| mode | code space | range | NaN | storage |
+|---|---|---|---|---|
+| I8 asymmetric | `Asym` | -128..127, -128 a value | none | i8, or u8 = code ^ 0x80 |
+| I8 symmetric + NaN | `Sym` + `NaNAtMin` | -127..127 | -128 | i8 (u8 + NaN parked, §8 item 3) |
+| U8 for spoFC truth and codebooks | `UnitFull` | 0..255, value c/255 | none | u8, raw code |
 
-Plus 256-entry tables so that tanh of a decoded code costs one byte load in native lance-graph.
-Hypothesis under test (H-SYM, operator): -127..0 and 0..127 are symmetric with 0 as the median,
-so the symmetric range has no skew. Not assumed; measured by P-01.
+U8 is a separate code space, not an XOR image of I8: `UnitFull` has no I8 counterpart. The XOR
+relation applies only between I8 and u8 storage of `Asym` / `Sym`.
+
+Plus 256-entry tables so tanh of a decoded code costs one byte load in native lance-graph.
+Hypothesis under test (H-SYM, operator): -127..0 and 0..127 are symmetric with 0 as the median, so
+the symmetric range has no skew. Not assumed; P-01 measures it.
 
 ## 2. Rulings this plan is bound by
 
@@ -29,213 +33,284 @@ so the symmetric range has no skew. Not assumed; measured by P-01.
   dispatch overhead cost that's why the compile time parameters. For Lab calibration when
   performance is negligible and recompiling hurt's you can use it behind a Cargo parameter, the
   performance needs to have it compile time."
-- **NaN is a compile-time parameter** ("Just make NaN another compile time parameter").
-- **Signed/unsigned storage is a parameter**, with storage-specific SIMD code.
-- **Measure LLVM output** so the parameters cannot introduce silent degradation.
-- **Re-export, not re-implementation:** `lance-graph-tflite` and `lance-graph-onnx` are `pub use`
-  facades; implementations live here.
-- **Unchanged:** `quantize_f32_to_i8`, `dequantize_i8_to_f32`, `quantize_f32_to_u8`, FamilyGamma and
-  its -128 interpretation, the persisted Fisher-Z format, every existing wire format.
-- **Not consumers:** FamilyGamma and bgz-tensor (operator: nothing consumes FamilyGamma; bgz-tensor
-  is listed only for palette256 and never touches it). No dependency on them.
+- **NaN policy is a compile-time parameter.** Storage (i8 | u8) is a compile-time parameter with
+  storage-specific SIMD code.
+- **LLVM output is measured**, so the parameters cannot degrade code silently.
+- **Re-export, not re-implementation.** `lance-graph-tflite` and `lance-graph-onnx` are `pub use`
+  facades; the implementations live here.
+- **Unchanged:** `quantize_f32_to_i8` (`src/hpc/quantized.rs:545`), `dequantize_i8_to_f32` (:586),
+  `quantize_f32_to_u8` (:517), `QuantParams` (:496), FamilyGamma and its -128 interpretation, the
+  persisted Fisher-Z format, every wire format.
+- **Not consumers:** FamilyGamma and bgz-tensor. No dependency on them.
 
-## 3. Design
+## 3. Facts the design rests on
 
-### 3.1 One codec, four marker parameters
+Verified by reading the code at `62c43c9` unless marked otherwise.
 
-```rust
-pub struct Codec8<T: Storage, S: CodeSpace, R: Rounding, N: NanPolicy<S>>(PhantomData<(T, S, R, N)>);
-```
+- `quantize_f32_to_i8` (:545): scale `abs_max / 127.0`, falling back to 1.0 when abs_max is 0
+  (:549); `(v / scale).round().clamp(-128.0, 127.0) as i8` (:553). `f32::round` rounds ties away from
+  zero. A NaN input becomes 0 through the saturating cast. The min/max folds use `f32::min`/`max`,
+  which ignore NaN.
+- `pub mod hpc` (`src/lib.rs:524-526`) is `#[cfg(feature = "std")]`, so codec8 never compiles on the
+  no_std row. It also carries `#[allow(clippy::all, unused_imports, unused_variables, unused_mut,
+  dead_code)]`, so clippy does not check files under `hpc/` today. `#![warn(missing_docs)]` is
+  crate-wide (:31).
+- `ci.yaml:48` sets `RUSTFLAGS` to `-D warnings` plus two cfgs. Jobs that run `env -u RUSTFLAGS`
+  (e.g. `ci.yaml:334-336`) do not get `-D warnings`.
+- Per the council's S1/S2 searches of `src/simd_avx512.rs` (not re-read for every backend):
+  - `I8x64` (:2003-2081) has splat, zero, from/to slice/array, add, sub, min, max, cmp_gt.
+  - `U8x64` (:522-851) has cmpeq_mask (:609), cmpgt_mask, mask_blend, saturating ops,
+    permute/shuffle_bytes and BitXor.
+  - `F32x16` has round, floor, simd_clamp, cast_i32.
+  - No f32→i8 round-and-narrow primitive turned up in that file.
+- Generator precedent: `tools/gen_ternlog_bodies.py` has a `--check` mode that runs in
+  `.github/workflows/simd-matrix.yaml`. A repo-wide glob found no `*_generated.rs` and no tablegen
+  crate. `Cargo.toml:516-518` makes every `crates/*` directory a workspace member.
+- The simd-matrix path filter (`simd-matrix.yaml:3-19`) does not include `src/hpc/codec8*`.
+- Reported by council savant S3, not re-run by the reviewers: over tie-adjacent inputs, `v / s` and
+  `v * (1/s)` produced 25,928 different rounded codes. For example, at s = 0.0137 and v = -1.73305,
+  `v / s` is -126.5 but `v * (1/s)` is -126.49999.
+- Measured earlier this session (lab probes, scratchpad, not in the repo):
+  - Generic vs hand-written kernels produce label-normalised-identical assembly on x86-64-v3 and
+    -v4 (1.311 vs 1.308 ns/elem). A per-element mode match does not vectorise (1.85-1.96 ns/elem).
+  - `f64::tanh` calls glibc, which is up to 1.95 ulp off. TiesEven and TiesAway give identical tanh
+    tables, because 8-bit tanh outputs never land on a tie.
+  - A rounded spoFC confidence reaches 255 (k=1, m=510), so a rounded encoder needs a cap at 254.
+  - A u8×s8 VPMADDUBSW pair sum saturates int16 even with valid weights.
 
-All four are sealed zero-sized marker traits, selected by monomorphisation.
+## 4. Design (committed)
 
-| parameter | markers | what it fixes |
+**D1 Module.** `src/hpc/codec8.rs`, plus `pub mod codec8;` in `src/hpc/mod.rs`.
+- The file opens with `#![warn(clippy::all)]` to undo the parent allow. A negative control (§6)
+  proves this override is real.
+- No `unsafe`. Tests are endian-neutral, because the i686 and s390x rows compile hpc.
+
+**D2 Markers.** All markers are sealed zero-sized types.
+- `Storage`: `I8`, `U8` (associated `Elem`).
+- `CodeSpace`: `Asym` (-128..127), `Sym` (-127..127), `UnitFull` (c/255, 0..255).
+- `#[cfg(test)]`-only P-16 arms: `UnitOdd` (c/254) and `UnitMidrise` ((c+0.5)/256). They become
+  public only if P-16 adopts one.
+- `Rounding`: `TiesAway`, `TiesEven`, `Floor`.
+- `NanPolicy<S>`: `NoNaN` for every space; `NaNAtMin` implemented for `Sym` only.
+- `struct Codec8<T, S, R, N> where N: NanPolicy<S>`. So `Codec8<I8, Asym, TiesAway, NaNAtMin>` is
+  expected to fail with E0277; G3 checks it.
+
+**D3 Calibration and encode/decode.** `trait Calibration { const SCALE: f32; const ZERO_POINT: i32; }`.
+- Encode, per element: `R::round(v / C::SCALE)` (a true division; never a precomputed reciprocal
+  in a rounding mode), then `+ ZERO_POINT`, then clamp `(S::MIN, S::MAX)` in f32, then a saturating
+  cast. For NaN input, `N::NAN_CODE` replaces the result.
+- Decode is defined per code space:
+  - Asym/Sym: `(c - ZP) as f32 * C::SCALE`, mirroring `dequantize_i8_to_f32`.
+  - UnitFull: `c as f32 / 255.0`, a division so that 255 decodes to exactly 1.0.
+- UnitFull also has an integer encoder `encode_ratio(n, d) = floor(n·255/d).min(255)`, the spoFC
+  form. G13 checks it against the spoFC encoder.
+- Signatures are `encode(&[f32], &mut [T::Elem])` and `decode(&[T::Elem], &mut [f32])`: no `Vec`,
+  no `Result` in the hot body.
+
+**D4 Storage.** I8 stores the code itself. U8 stores `code ^ 0x80` for `Asym` / `Sym` (TFLM requantize
+`requantize.h:47`) and the raw code for `UnitFull`. For U8 + `Sym` the unused slot is 0x00.
+
+**D5 Boundary.**
+- `encode_checked` / `decode_checked` are `pub` and validate once per slice, then run the unchecked
+  body.
+- The unchecked bodies are `pub(crate)`. Out-of-range or NaN input to them gives a defined
+  saturating result, never undefined behaviour. So a missed validation produces a wrong but defined
+  value, and a test pins that value.
+
+**D6 Aliases.** Each alias is a named preset that fixes a rounding for a known external format; the
+rounding stays a separate parameter.
+
+| alias | parameters | exported |
 |---|---|---|
-| `Storage` | `I8`, `U8` | element type, the `ndarray::simd` wrapper (`I8x64` / `U8x64`), storage-specific kernels (compares, min/max, MAC shapes) |
-| `CodeSpace` | `Asym` (-128..127), `Sym` (narrow, -128 never emitted), `UnitFull` (c/255, endpoints exact), `UnitOdd` (c/254, exact 0 / 0.5 / 1, code 255 free), `UnitMidrise` (test arm only) | `MIN`, `MAX`, decode affine |
-| `Rounding` | `TiesAway`, `TiesEven`, `Floor` | the rounding function |
-| `NanPolicy<S>` | `NoNaN`, `NaNAtMin` | `NAN_CODE: Option<i32>` |
+| `TfliteAct` | `<I8, Asym, TiesAway, NoNaN>` | phase (a) |
+| `TfliteWeight` | `<I8, Sym, TiesAway, NoNaN>` | phase (a) |
+| `OnnxQ` | `<I8, Asym, TiesEven, NoNaN>` | phase (a) |
+| `SpoFcTruth` | `<U8, UnitFull, Floor, NoNaN>` | phase (a) |
+| `NativeLane` | `<I8, Sym, R, NaNAtMin>` | not until §8 item 1 is decided; meanwhile tested with both roundings |
 
-`Index` (palette256 / codebook ordinals) is not a `CodeSpace`: it has no `Codec8` impl, only
-lookup and ordinal operations. A cyclic Z_256 space (helix azimuth) is parked.
+**D7 Tables (phase c).**
 
-**Constraint at compile time:** `NaNAtMin` implements `NanPolicy<S>` only for narrow spaces, so
-`Codec8<_, Asym, _, NaNAtMin>` does not compile (a `compile_fail` doc test pins it).
+| mode | tables | NaN slot |
+|---|---|---|
+| I8 asym | unary code→code tanh law `[i8; 256]`; f32 boundary `[f32; 256]` | none |
+| I8 sym + NaN | same two tables | entry for code -128 is the NaN code / f32 NaN |
+| U8 UnitFull | f32 boundary `[f32; 256]`; unary law into a named output space | none |
 
-**One body.** Encode, decode and clamp read `S::MIN`, `S::MAX` and `N::NAN_CODE`. The NaN branch is
-a match on a constant and disappears for `NoNaN`. Storage `U8` stores the I8 code XOR 0x80 (TFLM's
-own requantize fast path, `requantize.h:47`).
+- **Generator.** `tools/gen_codec8_tables.py` (mpmath), following `tools/gen_ternlog_bodies.py`. It
+  writes `src/hpc/codec8/tables.rs` (with a "generated, do not edit" header) and binary 64 KiB laws
+  as `src/hpc/codec8/laws/*.bin` read with `include_bytes!`. Laws are generated only on demand.
+- **Generator design** (not built yet):
+  - interval narrowing for each cell;
+  - an explicit error naming the cell when the precision limit is reached;
+  - signed zero handled explicitly;
+  - the NaN slot handled explicitly;
+  - decode overflow defined: tanh(±inf) = ±1, or a generation error if the calibration makes it
+    reachable unintentionally.
+- **Reference.** The tables use correctly rounded tanh at the exact decoded f32 value. `vstanh` is
+  only a differential accuracy test, never the definition.
 
-**Aliases (the only names facades re-export):**
+**D8 Calibration source and lab.**
+- **Calibration markers.** For a given model they come from a calibration manifest, read by the
+  same generator.
+- **Arbitrary-model conformance.** It runs in tests under the Cargo feature `lab-calibration`.
+- **What `lab-calibration` adds:**
+  - `LabCodec8<T, S, R, N>`, a concrete type with an owned `Box<[T::Elem; 256]>`;
+  - `prepare() -> Result<_, PrepareError>`, which may fail;
+  - lookup that takes `&self`.
+- **What it never has:** no enum, no `dyn`, no `OnceLock`/`LazyLock`, and it is off by default.
 
-| alias | definition |
-|---|---|
-| TFLite activation | `Codec8<I8, Asym, TiesAway, NoNaN>` |
-| TFLite weight | `Codec8<I8, Sym, TiesAway, NoNaN>` |
-| ONNX `QuantizeLinear` | `Codec8<I8, Asym, TiesEven, NoNaN>` |
-| native value lane | `Codec8<I8, Sym, TiesEven, NaNAtMin>` (rounding: proposal, operator open item 1) |
-| spoFC truth | `Codec8<U8, UnitFull, Floor, NoNaN>` (today's behaviour; kept until P-16) |
+**D9 Landing order.** Each step is its own PR.
+- (a) codec8 scalar + Phase 0 tests + asm/timing probe.
+- (b) SIMD primitives in `src/simd_*.rs` under the W1a contract
+  (`.claude/knowledge/vertical-simd-consumer-contract.md`: all backends, parity test, `///` docs
+  with examples), then codec8 SIMD. Candidate lookup primitive: `U8x64::permute_bytes`, measured
+  against gather.
+- (c) generator + tables.
+- (d) laws.
+- (e) head-to-head probes.
+- (f) facade PRs in lance-graph.
 
-### 3.2 Calibration is compile-time
+## 5. Gates (pre-registered)
 
-```rust
-pub trait Calibration { const SCALE: f32; const ZERO_POINT: i32; }
-```
+- **G1 Local checks.** Before any push, the orchestrator alone runs, with env
+  `CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0`:
+  - `cargo fmt --check`;
+  - `RUSTFLAGS="-D warnings" cargo clippy -p ndarray --all-targets`;
+  - `cargo test --release -p ndarray --lib hpc::codec8`;
+  - `cargo test --doc -p ndarray codec8`.
+- **G2 Byte identity.** `TfliteAct` with `SCALE = f32::from_bits(B)` equals `quantize_f32_to_i8`
+  bit for bit on a fixed corpus, including NaN and ±inf rows.
+  - B is the fitted scale of that corpus. The test asserts that the runtime fit produces exactly B
+    and that the corpus does not trigger the 1.0 fallback.
+  - This gate tests **data rounding** only.
+- **G3 Compile-fail.** A `compile_fail` doctest `let _: Codec8<I8, Asym, TiesAway, NaNAtMin>;`, plus
+  a compiling twin with `Sym`.
+- **G4 XOR storage.** U8 storage equals I8 storage ^ 0x80 on all 256 codes for every Asym/Sym alias.
+- **G5 Assembly.** For each alias vs a hand-written kernel, label-normalised assembly on x86-64-v3
+  and -v4 is identical, else FAIL with the diff reported. A negative control must differ, and the
+  tier is printed.
+- **G6 Timing.** Each alias is within 2% of the hand-written kernel, over ≥5 runs, order-swapped,
+  in ns/elem, with the tier printed. The 2% is a pre-registered threshold, not derived from
+  measured variance.
+- **G7 Table cells.** Every table cell equals the reference, computed by mpmath **independently of
+  the generator code path**. This gate tests **table rounding** only (decoded f32 → tanh → target
+  cell).
+  - Disable 1: index offset 128 (indexing).
+  - Disable 2: wrong calibration (decode affine).
+  - Either disable must turn the gate red.
+- **G8 Generator check.** `tools/gen_codec8_tables.py --check` runs as a step in
+  `.github/workflows/simd-matrix.yaml`, path-triggered on `src/hpc/codec8/**` and `tools/gen_codec8*`.
+- **G9 Lab feature.** A `ci.yaml` step asserts that `lab-calibration` is absent from
+  `cargo tree -e features -p ndarray`.
+- **G10 Lookup speed.** Lookup ≤ 0.5× `vstanh(decode)` ns/elem at 64 Ki and 16 Mi elements
+  (release). Preparation cost is reported separately (lab).
+- **G11 Table size.** Generated table bytes are reported per landing; more than 1 MiB in total
+  needs an explicit decision.
+- **G12 Backend parity.** From (b), the simd-matrix path filter includes `src/hpc/codec8*` in the
+  same PR, and rounding parity is checked on every arm (wasm, neon-qemu, avx-qemu, v2-qemu,
+  nightly).
+- **G13 spoFC bytes.** `encode_ratio` equals the spoFC encoder
+  (lance-graph `crates/lance-graph-arm-discovery/src/translator.rs:61-120`, transcribed into the
+  test with a source citation) over the evidence grid m in 0..=4096, k in {1, 2, 5}.
+- **G14 Head to head.** In phase (e), the three modes run on the same corpus: per-mode error (RMSE,
+  bias in LSB), -128 emissions and ns/elem, in one table. H-SYM is refuted only where Asym actually
+  emits -128.
 
-A calibration is a marker type. Production code never takes scale or zero point as a runtime
-argument. Runtime calibration exists only behind the Cargo feature `lab-calibration` (off by
-default, enabled by no production crate) for sweeps where recompiling hurts and speed does not
-matter; a lab table that is adopted is promoted by generating its compile-time source.
+## 6. Checklist
 
-### 3.3 Preparation and execution are separate
+### Phase (a)
+- [ ] `src/hpc/codec8.rs`: D1-D6 scalar, docs with an example on every `pub` item.
+- [ ] Tests:
+  - [ ] G2, G3, G4, G13.
+  - [ ] P-02 ties, including negative half-ties.
+  - [ ] P-04 Sym+NaNAtMin: NaN, ±1e9, ±inf (as proposal), ±0.
+  - [ ] P-12 encode∘decode on all 256 codes per alias.
+  - [ ] Sym+NoNaN vs Sym+NaNAtMin agree everywhere except NaN and -128.
+  - [ ] D5: the pinned defined result on out-of-range input.
+  - [ ] Carried from #370: signed zero, both saturations, nonzero zero point.
+- [ ] Negative control for D1, run before the commit and recorded: a deliberate clippy violation in
+      codec8.rs fails G1, then is reverted.
+- [ ] `examples/codec8_asm_probe.rs` (G5/G6), ported from the lab `codec-asm-probe`. It has its own
+      doc comment and is not in the default test run.
+- [ ] Commit discipline:
+  - edit script `&&` `git add` `&&` `git commit` (never sequenced);
+  - the blackboard entry and plan ticks are in the same commit;
+  - no model identifier anywhere except the attribution trailer.
+- [ ] Workers, if any, edit only. The orchestrator is the single compiler on the shared `target/`.
+      Every timing names its tier.
 
-- **Preparation** happens offline (production) or in the lab prepare step. It may compute,
-  certify, raise precision, and fail.
-- **Execution** is a direct lookup into a `const` array (production) or an owned array held by its
-  concrete type (lab). Execution performs no codec, rounding or NaN selection, uses no trait objects,
-  function pointers or dispatchers, does no certification or precision raising, never calls tanh,
-  and never initialises lazily (no `OnceLock` / `LazyLock` on the lookup path).
+### Phases (b)-(f)
+Tracked per PR as listed in D9 and §5.
 
-### 3.4 Certified tables
+## 7. Non-goals
 
-- Tables are `const TABLE: [T::Elem; 256]` (code-to-code laws) or `[f32; 256]` (boundary tables),
-  one per (Storage, CodeSpace, Rounding, NanPolicy, Calibration, function), generated offline into
-  checked-in Rust source. A regeneration test proves the committed source equals the generator's
-  output (stronger than a stored hash).
-- **Reference:** correctly rounded mathematical tanh at the exact value of the decoded f32, i.e.
-  `c as f32 * scale` exactly as the runtime decode computes it. `vstanh` is a separate
-  implementation with its own measured bound (differential accuracy test), never the definition.
-- **Certificate per cell:** an enclosing interval from directed rounding; raise precision until
-  both ends round to the same target cell (an 8-bit code under the encoder's affine and rounding,
-  or f32 bits). Double-double is one precision level, not a proof. At the stated precision limit
-  the generator returns an explicit error naming the cell. It never writes an uncertified table.
-- **Tools:** existing ones only (MPFR via mpmath or `rug`; a correctly rounded binary64 tanh such as
-  CORE-MATH as a candidate generator). No new transcendental library. Rust's `f64::tanh` calls the
-  platform libm with unspecified precision, so no table may depend on it.
-- **Edge cases stated in the contract:**
-  - signed zero: tanh(-0.0) = -0.0 in f32 tables; code tables have one zero;
-  - NaN slot per storage: i8 0x80, U8 (XOR) 0x00; every law maps NaN to NaN;
-  - decode overflow: `c·scale` reaching ±inf in f32 maps to tanh(±inf) = ±1, or is a preparation
-    error if the calibration makes it reachable unintentionally.
+- Existing quantizers, FamilyGamma, Fisher-Z and wire formats.
+- An ONNX runtime, a graph compiler, or operator fusion.
+- A port of TFLM's gemmlowp code (facade work, later).
+- The cyclic Z_256 space and the U8 sign-partition (parked).
+- Real-model data runs (manifest D stays NOT RUN).
 
-### 3.5 Native path stays in code space
+## 8. Open for the operator
 
-Element-wise and pairwise ops on tanh-domain values are closed code-to-code laws baked before the
-hot path: unary 256 B, binary 64 KiB indexed `(first << 8) | second` (the `PairAddress` orientation
-of lance-graph's `MoorePalettePairs` / Palette256 law). The f32 table is the boundary and the
-oracle, used where a float must leave (ONNX conformance, export). Helix lesson: with codes uniform
-in z (Fisher-Z), the table IS the decode, `tanh(z0 + c·dz)`; uniform-in-z versus uniform-in-value is
-a design axis for P-14, not only the range.
+1. **NativeLane rounding:** TiesEven (proposed) or TiesAway.
+   - Restore condition: the decision exports the `NativeLane` alias.
+2. **spoFC rounding:** Floor is kept as today's behaviour.
+   - Rounding stays a P-16 head-to-head variable (Floor vs TiesEven with a 254 cap), not a settled
+     fact.
+3. **U8 + NaNAtMin** (a zero-filled buffer reads as all-NaN): a requested comparison arm, parked.
+   - Un-park evidence: P-15 / P-16 show a consumer that stores NaN-capable values in u8, or you ask
+     for the arm.
+4. **Certification tool:** mpmath in `tools/` (proposed, matching `gen_ternlog_bodies.py`).
+5. **±inf under Sym+NaNAtMin:** saturate to ±127 (proposed, and tested as a proposal) or NaN.
 
-### 3.6 Boundaries for NoNaN
+## 9. Council record (2026-10-24)
 
-Validation happens once per slice at the boundary, never per element (per-element checks measured
-+40% and stop vectorisation). `encode_checked` returns an error if any input is NaN or infinite where
-the mode rejects it; `decode_checked` returns an error if any code is the unused -128 under
-`Sym + NoNaN`. The unchecked hot paths state that their input was validated.
+- **Five savants (Sonnet):**
+  - prior-art: 8 findings;
+  - iron-rule: 10;
+  - code-truth (runtime-archaeologist charter): 9;
+  - cascade-impact: 7;
+  - creative-explorer: 6.
+- **Draft v2:** 18 changes. The main ones:
+  - a true division in encode;
+  - exact scale bits for G2;
+  - a concrete `compile_fail` with a twin;
+  - the clippy override in codec8;
+  - the generator in `tools/` instead of a crate;
+  - SIMD primitives first;
+  - the path filter;
+  - XOR scoped to Asym/Sym;
+  - UnitOdd/UnitMidrise test-only;
+  - NativeLane held back;
+  - the calibration source;
+  - the size budget;
+  - the blackboard rule.
+- **Three reviewers (Sonnet), on draft v2:**
+  - overclaim-auditor: 0 BLOCK, 3 FIX(P1), 3 FIX(P2);
+  - dilution-collapse-sentinel: 0 BLOCK, 3 FIX(P1), 2 FIX(P2);
+  - firewall-warden: 0 BLOCK, 1 FIX(P1), 3 FIX(P2).
+- **v3 adds:**
+  - claims labelled by evidence (§3);
+  - the per-mode table inventory (D7);
+  - the D5 defined result for unchecked calls;
+  - data vs table rounding kept separate (G2, G7);
+  - G7 reference independent of the generator;
+  - G13 spoFC bytes and G14 head-to-head;
+  - restore conditions for parked arms (§8);
+  - the clippy negative control;
+  - DEBUG=0 and single-compiler discipline;
+  - named CI rows for G8/G9.
+- **Superseded:**
+  - the runtime mode enum and per-slice selector;
+  - a separate `SymNaN` space;
+  - runtime calibration in production and the runtime certifier;
+  - "U8 deferred";
+  - `crates/codec8-tablegen`;
+  - PR #370's per-mode runtime-scale functions.
 
-### 3.7 SIMD
-
-Only through `ndarray::simd` typed wrappers, all backends (AVX-512 / AVX2 / NEON / wasm / scalar),
-with a parity test, per the W1a consumer contract
-(`.claude/knowledge/vertical-simd-consumer-contract.md`). No raw intrinsics.
-
-## 4. What is already measured (lab probes, this session)
-
-- **Compile-time parameters cost nothing.** `codec-asm-probe` (rustc 1.99.0, release,
-  codegen-units 1): generic `Codec8` versus hand-written kernels produce identical
-  label-normalised assembly for SymNaN+TiesEven, Asym+TiesAway and UnitFull+Floor on x86-64-v3 and
-  -v4; a negative control differs; all vectorise. 1.311 vs 1.308 ns/elem, order-swapped 1.314 vs
-  1.305. A per-element mode match does not vectorise (1.85-1.96 ns/elem).
-- **f64 tanh.** `f64::tanh` compiles to `call tanh@GLIBC_2.2.5`; glibc 2.39 is up to 1.95 ulp off.
-  8-bit tanh outputs never land on a tie (tanh of a nonzero rational is transcendental), so
-  TiesEven and TiesAway give identical tanh tables; only Floor differs. Rounding matters for data,
-  not for baked tanh tables. glibc `tanhf` is not correctly rounded on 6.5% of samples.
-- **Confidence rounding hazard.** Rounded spoFC confidence reaches 255 (k=1: m=510 gives 254.501),
-  manufacturing certainty; Floor never does. Any rounded confidence encoder needs a cap at 254.
-- **MAC.** A -128 weight term gives 32640, breaking TFLM's stated per-product bound (±32512,
-  `conv.h:104-110`) without overflowing int16; u8×s8 VPMADDUBSW pair sums (255·127·2 = 64770)
-  saturate int16 even with valid weights. The masked MAC arm needs an i32 accumulator or a proven
-  bound; NaN detection per dot product needs only an any-bit test.
-
-## 5. Checklist
-
-### Phase 0: pins and contracts (tests first)
-- [ ] P-03 pin today's `quantize_f32_to_i8` on NaN, ±inf, inf-in-data (values from a run)
-- [ ] Byte identity: `Codec8<I8, Asym, TiesAway, NoNaN>` with today's fitted calibration equals
-      `quantize_f32_to_i8` on a fixed corpus
-- [ ] P-04 Sym+NaNAtMin contract (NaN, ±1e9, ±inf, -0.0); disables: floor -128, drop the NaN branch
-- [ ] P-12 encode∘decode identity on all 256 codes per flavour
-- [ ] P-02 ties: TiesEven vs TiesAway, exact counts incl. negative half-ties; non-tie twin
-- [ ] Sym+NoNaN and Sym+NaNAtMin agree on all finite inputs and codes -127..127; differ only on NaN
-      and -128
-- [ ] `compile_fail`: `Codec8<_, Asym, _, NaNAtMin>`
-- [ ] U8 storage equals I8 storage XOR 0x80 on all 256 codes, encode and decode, every flavour
-- [ ] Carried from #370: signed zero, both saturations, negative half-ties, nonzero asym zero point,
-      the explicit -128 divergence (as test inputs)
-
-### Phase 1: codec
-- [ ] `src/hpc/codec8.rs`: marker traits, `Codec8`, `Calibration`, aliases (scalar first)
-- [ ] SIMD via `ndarray::simd`, parity test per backend
-- [ ] asm gate: alias vs hand-written kernel identical per flavour (port `codec-asm-probe`);
-      negative control must differ
-- [ ] timing gate: alias within noise of direct (repeated + order-swapped, tier printed, ns)
-- [ ] `lab-calibration` feature + test that no production facade enables it
-
-### Phase 2: certified tables
-- [ ] offline generator (outside the hot crate): interval certificate per cell, explicit error at
-      the precision limit; signed zero, NaN slot, decode overflow
-- [ ] committed `const` tables for the alias set; regeneration test
-- [ ] P-07 every cell equals the independent certified reference; disables: index offset 128,
-      wrong calibration
-- [ ] P-08 odd mirror: decides whether a 128-entry form exists at all (exhaustive, not assumed)
-- [ ] `vstanh` differential: f32 table vs `vstanh(decode(c))`, ULP histogram (reported, not a gate)
-- [ ] P-09 lookup ≤ 0.5× `vstanh(decode)` ns/elem at 64 Ki and 16 Mi, release, tier printed;
-      preparation cost reported separately from lookup cost
-
-### Phase 2b: code laws
-- [ ] unary law exhaustive: `law[c] == encode(tanh(decode(c)))` per flavour, all 256
-- [ ] NaNAtMin totality: `law[NaN] == NaN`; binary law NaN in either operand gives NaN (256×256)
-- [ ] binary 64 KiB law, `(first << 8) | second`, swapped-operand anti-vacuity
-
-### Phase 3: head to head (measurement only)
-- [ ] P-01 modes × populations (centred, skewed, uniform codes, 90% sparse): RMSE, bias (LSB),
-      exact zeros, oddness violations, -128 emissions; calibration rule frozen before the run;
-      H-SYM refuted only where Asym actually emits -128
-- [ ] P-13 entropy gap
-- [ ] P-14 uniform-in-z vs uniform-in-value on bounded-cosine data, error by band
-- [ ] P-15 MAC: Sym+NaNAtMin weights × Asym activations; arm 1 unmasked (anti-vacuity), arm 2
-      any-bit NaN test + blend + i32 accumulator; equal to the no-NaN reference bit for bit on
-      NaN-free rows; NaN-free VPMADDUBSW saturation counterexample
-- [ ] P-16 spoFC: UnitFull×{Floor, TiesEven} vs UnitOdd vs UnitMidrise over the evidence grid
-      (m in 0..=4096, k in {1, 2, 5}); semantic invariants first (confidence < 255, exact f = 0/1,
-      gate selection F_MIN 153 / C_MIN 230), bias second; midrise rejected if it loses exact
-      endpoints with no error gain
-
-### Phase 4: facades (separate PRs)
-- [ ] `lance-graph-onnx`: per flavour, all 256 codes, `bounded::tanh_f32(decode(c))` vs the
-      certified table; ONNX reference dequant vs `decode`; Sym+NaNAtMin -128 as a stated divergence
-- [ ] `lance-graph-tflite`: `pub use` only; conformance against a C++ oracle built from TFLM
-      reference headers (`8f6596d`), exhaustive 256 (int8) / 65536 (int16) per (scale, zp)
-
-## 6. Open for the operator
-
-1. Rounding for the native value lane: TiesEven (proposed) or TiesAway.
-2. spoFC stays Floor until P-16 (proposed yes).
-3. A zero-filled U8 NaNAtMin buffer reads as all-NaN (fail-closed): accept or not.
-4. Certification tool: mpmath offline or `rug`/MPFR.
-5. ±inf under Sym+NaNAtMin: saturate to ±127 (proposed) or NaN.
-
-## 7. Superseded (named once, not carried)
-
-- runtime mode enum (`I8CodeSpace`, `Rounding` as values) and the per-slice selector;
-- separate `SymNaN` code space (now `Sym` + `NaNAtMin`);
-- runtime calibration and runtime table build in production; the runtime certifier;
-- "U8 deferred" (U8 is in scope for spoFC and codebooks);
-- PR #370's per-mode functions with runtime scale returning `Result<Vec<_>>`.
-
-## 8. Not searched / not run
+## 10. Not searched / not run
 
 - TFLM per-target kernels (`cmsis_nn/`, `xtensa/`, `ceva/`) and the gemmlowp fixed-point tanh body.
-- No real-model data (manifest item D in the 2026-10-24 report is NOT RUN).
+- No real-model data.
 - No ONNX Runtime comparison.
+- SIMD backends other than AVX-512 not inventoried for the missing primitives (phase b does that).
