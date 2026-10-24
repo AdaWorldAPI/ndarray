@@ -1030,6 +1030,105 @@ impl I32x16 {
             )
         })
     }
+
+    /// Saturating rounding doubling high multiply (gemmlowp / TFLM
+    /// `SaturatingRoundingDoublingHighMul<i32>`): per lane, `round(a * b / 2^31)`
+    /// with the half-way case rounded toward `+inf`, i.e. the C++ definition
+    /// `((a*b + nudge) / 2^31)` with `nudge = 1<<30` (product `>= 0`) or `1 - (1<<30)`
+    /// (product `< 0`) and **truncating** division. `i32::MIN * i32::MIN` saturates to
+    /// `i32::MAX`.
+    ///
+    /// ```
+    /// use ndarray::simd::I32x16;
+    /// let a = I32x16::from_array([3, -3, -1, 1, 0, i32::MIN, i32::MAX, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    /// let r = a.saturating_rounding_doubling_high_mul(I32x16::splat(1 << 30)).to_array();
+    /// // 1.5 -> 2, -1.5 -> -1 (tie toward +inf), -0.5 -> 0, 0.5 -> 1.
+    /// assert_eq!(r[..7], [2, -1, 0, 1, 0, -1_073_741_824, 1_073_741_824]);
+    /// let m = I32x16::splat(i32::MIN).saturating_rounding_doubling_high_mul(I32x16::splat(i32::MIN));
+    /// assert!(m.to_array().iter().all(|&x| x == i32::MAX));
+    /// ```
+    #[inline(always)]
+    pub fn saturating_rounding_doubling_high_mul(self, b: Self) -> Self {
+        // SAFETY: avx512f is compiled in on this arm; register-only ops. The exact result is
+        // `bits 31..=62 of (a*b + 2^30)` as an i32 for both product signs (C++ truncating
+        // division after the sign-dependent nudge equals a flooring shift by `+2^30`), taken from
+        // `vpmuldq` on the even lanes directly and on the odd lanes after a 32-bit shift down;
+        // only `MIN*MIN` (result 2^31) does not fit and is blended to `MAX`.
+        Self(unsafe {
+            let nudge = _mm512_set1_epi64(1 << 30);
+            let even = _mm512_srli_epi64(_mm512_add_epi64(_mm512_mul_epi32(self.0, b.0), nudge), 31);
+            let odd = _mm512_slli_epi64(
+                _mm512_add_epi64(_mm512_mul_epi32(_mm512_srli_epi64(self.0, 32), _mm512_srli_epi64(b.0, 32)), nudge),
+                1,
+            );
+            let r = _mm512_mask_blend_epi32(0xAAAA, even, odd);
+            let min = _mm512_set1_epi32(i32::MIN);
+            let ovf = _mm512_cmpeq_epi32_mask(self.0, min) & _mm512_cmpeq_epi32_mask(b.0, min);
+            _mm512_mask_blend_epi32(ovf, r, _mm512_set1_epi32(i32::MAX))
+        })
+    }
+
+    /// Rounding arithmetic right shift (gemmlowp / TFLM `RoundingDivideByPOT`) with a
+    /// per-lane exponent: `x / 2^e` rounded to nearest, **ties away from zero**.
+    /// `exponent` lanes must be in `0..=31`; other values are a contract violation
+    /// (the result is unspecified, but no undefined behaviour).
+    ///
+    /// ```
+    /// use ndarray::simd::I32x16;
+    /// let x = I32x16::from_array([5, -5, 3, -3, 2, -2, 1, -1, 0, 0, 0, 0, 0, 0, 0, 0]);
+    /// let r = x.rounding_divide_by_pot(I32x16::splat(1)).to_array();
+    /// assert_eq!(r[..8], [3, -3, 2, -2, 1, -1, 1, -1]); // negative ties go away from zero
+    /// let e = I32x16::from_array([0, 1, 2, 3, 4, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 31]);
+    /// let r = I32x16::splat(-10).rounding_divide_by_pot(e).to_array();
+    /// assert_eq!(r[..6], [-10, -5, -3, -1, -1, 0]);
+    /// assert_eq!(r[15], 0);
+    /// let m = I32x16::splat(i32::MIN).rounding_divide_by_pot(I32x16::splat(31)).to_array();
+    /// assert_eq!(m[0], -1);
+    /// ```
+    #[inline(always)]
+    pub fn rounding_divide_by_pot(self, exponent: Self) -> Self {
+        // SAFETY: avx512f is compiled in on this arm; register-only ops. `vpsllvd`/`vpsravd`
+        // define every shift count (counts above 31 give 0 / the sign), so a contract-violating
+        // exponent yields an unspecified value, never UB.
+        Self(unsafe {
+            let one = _mm512_set1_epi32(1);
+            let mask = _mm512_sub_epi32(_mm512_sllv_epi32(one, exponent.0), one);
+            let rem = _mm512_and_si512(self.0, mask);
+            let thr = _mm512_add_epi32(_mm512_srli_epi32(mask, 1), _mm512_srli_epi32(self.0, 31));
+            let q = _mm512_srav_epi32(self.0, exponent.0);
+            let up = _mm512_cmpgt_epi32_mask(rem, thr);
+            _mm512_mask_add_epi32(q, up, q, one)
+        })
+    }
+
+    /// Per-lane fixed-point requantization (gemmlowp / TFLM `MultiplyByQuantizedMultiplier`,
+    /// double rounding): with `left = max(shift, 0)`, `right = max(-shift, 0)`,
+    /// `rounding_divide_by_pot(srdhm(x << left, multiplier), right)`.
+    ///
+    /// Contract: `multiplier >= 0`, `-31 <= shift <= 30`, and `x << left` must not
+    /// overflow (TFLM asserts; this wraps).
+    ///
+    /// ```
+    /// use ndarray::simd::I32x16;
+    /// let x = I32x16::from_array([100, -100, 7, -7, 7, -7, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    /// let s = I32x16::from_array([0, 0, 0, 0, -1, -1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    /// let r = x.multiply_by_quantized_multiplier(I32x16::splat(1 << 30), s).to_array();
+    /// assert_eq!(r[..7], [50, -50, 4, -3, 2, -2, 6]);
+    /// ```
+    #[inline(always)]
+    pub fn multiply_by_quantized_multiplier(self, multiplier: Self, shift: Self) -> Self {
+        // SAFETY: avx512f is compiled in on this arm; register-only ops (`vpsllvd` wraps, like
+        // the scalar `wrapping_mul(1 << left)`).
+        let (xs, right) = unsafe {
+            let zero = _mm512_setzero_si512();
+            let left = _mm512_max_epi32(shift.0, zero);
+            let right = _mm512_max_epi32(_mm512_sub_epi32(zero, shift.0), zero);
+            (_mm512_sllv_epi32(self.0, left), right)
+        };
+        Self(xs)
+            .saturating_rounding_doubling_high_mul(multiplier)
+            .rounding_divide_by_pot(Self(right))
+    }
 }
 
 impl_bin_op!(I32x16, Add, add, _mm512_add_epi32);

@@ -35,7 +35,8 @@
 //! the saturating narrows down the 512-bit ladder (`I32x16 → I16x32 → I8x64 /
 //! U8x64`) and the `F32x16` ↔ `I32x16` casts; `0x11xx` `F32x16` / `F64x8`
 //! `mul_add` rounding once, bit for bit against an exact integer reference (no
-//! `mul_add`, so no libm in the binary). `main.rs` (native / qemu) and
+//! `mul_add`, so no libm in the binary); `0x12xx` the `I32x16` gemmlowp requantization
+//! methods against an independent `i128` reference. `main.rs` (native / qemu) and
 //! `selfcheck()` (the wasm cdylib export, driven by `run.mjs`) both call
 //! [`run`].
 
@@ -56,7 +57,7 @@ use ndarray::simd::{
 };
 
 /// Number of check groups [`run`] executes (for the log line only).
-pub const CHECKS: usize = 18;
+pub const CHECKS: usize = 19;
 
 /// The wasm export: identical to [`run`], `extern "C"` so `run.mjs` can call it.
 #[no_mangle]
@@ -71,7 +72,7 @@ pub fn run() -> u32 {
         check_mask_algebra, check_care_match, check_masked_reductions, check_blend, check_morton_shift,
         check_predicates_under, check_set_range, check_unsigned_compare_to_mask, check_gather_scatter_group,
         check_f64x8_compare, check_i8x16_u8x16_lanes, check_care_match16, check_narrow_ladder,
-        check_mul_add_single_rounding,
+        check_mul_add_single_rounding, check_fixedpoint_requant,
     ];
     for g in groups {
         if let Err(code) = g() {
@@ -2073,6 +2074,161 @@ fn check_mul_add_single_rounding() -> Result<(), u32> {
     }
     if unfused_differs < 256 {
         return Err(0x11F1);
+    }
+    Ok(())
+}
+
+/// `I32x16::saturating_rounding_doubling_high_mul`, `rounding_divide_by_pot` and
+/// `multiply_by_quantized_multiplier` against an independent `i128` reference
+/// written from the definitions (no call into the scalar functions of
+/// `simd_fixedpoint`): srdhm is `ab / 2^31` rounded half toward +inf with the
+/// `MIN * MIN` saturation, rdpot is `x / 2^e` rounded half away from zero, and
+/// the multiplier is their composition. Anti-vacuity: the rounding must differ
+/// from truncation on some lanes, the saturating case must be hit, and exact ties
+/// of both signs must occur.
+fn check_fixedpoint_requant() -> Result<(), u32> {
+    fn o_srdhm(a: i32, b: i32) -> i32 {
+        let p = a as i128 * b as i128;
+        let q = (p + (1i128 << 30)).div_euclid(1i128 << 31);
+        q.clamp(i32::MIN as i128, i32::MAX as i128) as i32
+    }
+    fn o_rdpot(x: i32, e: u32) -> i32 {
+        let d = 1i128 << e;
+        let m = (x as i128).abs();
+        let r = (2 * m + d).div_euclid(2 * d);
+        (if x < 0 { -r } else { r }) as i32
+    }
+    fn o_mbqm(x: i32, m: i32, s: i32) -> i32 {
+        let left = s.max(0) as u32;
+        let right = (-s).max(0) as u32;
+        let xs = ((x as i128) << left) as i32; // wraps like the realization's contract
+        o_rdpot(o_srdhm(xs, m), right)
+    }
+
+    let mut rng = SplitMix64(0x1200_0000_0019);
+    const EDGE: [i32; 12] =
+        [i32::MIN, i32::MIN + 1, -1, 0, 1, i32::MAX - 1, i32::MAX, 1 << 30, -(1 << 30), (1 << 30) + 1, -(1 << 30) - 1, 1 << 15];
+    const EXPS: [u32; 4] = [0, 1, 30, 31];
+    let (mut trunc_differs_srdhm, mut trunc_differs_rdpot) = (0usize, 0usize);
+    let (mut min_min, mut tie_pos, mut tie_neg) = (0usize, 0usize, 0usize);
+
+    for round in 0..512u32 {
+        // ---- M1: srdhm ----
+        let mut a = [0i32; 16];
+        let mut b = [0i32; 16];
+        for i in 0..16 {
+            match (round as usize + i) % 4 {
+                0 => {
+                    a[i] = rng.next() as i32;
+                    b[i] = rng.next() as i32;
+                }
+                1 => {
+                    a[i] = EDGE[(rng.next() % 12) as usize];
+                    b[i] = EDGE[(rng.next() % 12) as usize];
+                }
+                2 => {
+                    // exact tie: odd * odd * 2^30
+                    let f = |r: &mut SplitMix64| {
+                        let m = ((r.next() % 0x7FFF) as i32 | 1) << 15;
+                        if r.next() & 1 == 0 { m } else { -m }
+                    };
+                    a[i] = f(&mut rng);
+                    b[i] = f(&mut rng);
+                }
+                _ => {
+                    a[i] = if i % 2 == 0 { i32::MIN } else { rng.next() as i32 };
+                    b[i] = if i % 4 == 0 { i32::MIN } else { rng.next() as i32 };
+                }
+            }
+        }
+        let got = I32x16::from_array(a).saturating_rounding_doubling_high_mul(I32x16::from_array(b)).to_array();
+        for i in 0..16 {
+            let want = o_srdhm(a[i], b[i]);
+            if got[i] != want {
+                return Err(0x1200 + i as u32);
+            }
+            let p = a[i] as i128 * b[i] as i128;
+            if want as i128 != p / (1i128 << 31) {
+                trunc_differs_srdhm += 1;
+            }
+            if a[i] == i32::MIN && b[i] == i32::MIN {
+                min_min += 1;
+            }
+            if p.rem_euclid(1i128 << 31) == 1i128 << 30 {
+                if p >= 0 { tie_pos += 1 } else { tie_neg += 1 }
+            }
+        }
+
+        // ---- M2: rounding_divide_by_pot ----
+        let mut x = [0i32; 16];
+        let mut e = [0i32; 16];
+        for i in 0..16 {
+            let ex = match (round as usize + i) % 4 {
+                0 => (rng.next() % 32) as u32,
+                1 => EXPS[(rng.next() % 4) as usize],
+                2 => EXPS[i % 4],
+                _ => 1 + (rng.next() % 31) as u32,
+            };
+            let r = rng.next() as i32;
+            x[i] = match (round as usize + i) % 3 {
+                0 => r,
+                1 if ex >= 1 => ((r >> ex) << ex) | (1i32 << (ex - 1)), // exact tie
+                1 => r,
+                _ => EDGE[(rng.next() % 12) as usize],
+            };
+            e[i] = ex as i32;
+        }
+        let got = I32x16::from_array(x).rounding_divide_by_pot(I32x16::from_array(e)).to_array();
+        for i in 0..16 {
+            let want = o_rdpot(x[i], e[i] as u32);
+            if got[i] != want {
+                return Err(0x1210 + i as u32);
+            }
+            if want as i128 != (x[i] as i128) / (1i128 << e[i]) {
+                trunc_differs_rdpot += 1;
+            }
+        }
+
+        // ---- M3: multiply_by_quantized_multiplier ----
+        let mut mx = [0i32; 16];
+        let mut mm = [0i32; 16];
+        let mut ms = [0i32; 16];
+        for i in 0..16 {
+            let s = match (round as usize + i) % 4 {
+                0 => (rng.next() % 62) as i32 - 31,
+                1 => -31 + (rng.next() % 4) as i32,
+                2 => 27 + (rng.next() % 4) as i32,
+                _ => (rng.next() % 5) as i32 - 2,
+            };
+            ms[i] = s;
+            mm[i] = match (round as usize + i) % 3 {
+                0 => (rng.next() >> 33) as i32 | (1 << 30), // normalised, as quantize_multiplier yields
+                1 => (rng.next() >> 33) as i32,
+                _ => [0, 1, 1 << 30, i32::MAX][(rng.next() % 4) as usize],
+            };
+            // keep x << max(s, 0) inside i32 (the documented contract)
+            mx[i] = (rng.next() as i32) >> (s.max(0) + 1);
+        }
+        let got = I32x16::from_array(mx)
+            .multiply_by_quantized_multiplier(I32x16::from_array(mm), I32x16::from_array(ms))
+            .to_array();
+        for i in 0..16 {
+            if got[i] != o_mbqm(mx[i], mm[i], ms[i]) {
+                return Err(0x1220 + i as u32);
+            }
+        }
+    }
+    if trunc_differs_srdhm < 256 {
+        return Err(0x12F0);
+    }
+    if trunc_differs_rdpot < 256 {
+        return Err(0x12F1);
+    }
+    if min_min == 0 {
+        return Err(0x12F2);
+    }
+    if tie_pos == 0 || tie_neg == 0 {
+        return Err(0x12F3);
     }
     Ok(())
 }

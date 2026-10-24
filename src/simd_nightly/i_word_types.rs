@@ -355,6 +355,57 @@ pub struct I32x16(pub i32x16);
 impl I32x16 {
     pub const LANES: usize = 16;
 
+    /// Per-lane `SaturatingRoundingDoublingHighMul` (gemmlowp / NEON `VQRDMULH`):
+    /// `round(2*a*b / 2^32)`, ties toward +inf, `MIN * MIN` saturating to `MAX`.
+    ///
+    /// ```
+    /// use ndarray::simd::I32x16;
+    /// let a = I32x16::from_array([i32::MIN, 1 << 15, -(1 << 15), 3 << 15, 0, 1, -1, 7, 7, 7, 7, 7, 7, 7, 7, 7]);
+    /// let b = I32x16::from_array([i32::MIN, 1 << 15, 1 << 15, 1 << 15, 5, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
+    /// let v = a.saturating_rounding_doubling_high_mul(b).to_array();
+    /// assert_eq!(v[..7], [i32::MAX, 1, 0, 2, 0, 0, 0]);
+    /// ```
+    #[inline(always)]
+    pub fn saturating_rounding_doubling_high_mul(self, b: Self) -> Self {
+        let (x, y) = (self.to_array(), b.to_array());
+        Self::from_array(core::array::from_fn(|i| crate::simd_fixedpoint::srdhm_i32(x[i], y[i])))
+    }
+
+    /// Per-lane rounding arithmetic right shift (ties away from zero) by a
+    /// per-lane `exponent` in `0..=31`. Out-of-range exponents are a contract
+    /// violation (`debug_assert` in the scalar reference; never UB).
+    ///
+    /// ```
+    /// use ndarray::simd::I32x16;
+    /// let x = I32x16::from_array([1, -1, 3, -3, 1 << 30, -(1 << 30), 5, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    /// let e = I32x16::from_array([1, 1, 1, 1, 31, 31, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    /// assert_eq!(x.rounding_divide_by_pot(e).to_array()[..7], [1, -1, 2, -2, 1, -1, 5]);
+    /// ```
+    #[inline(always)]
+    pub fn rounding_divide_by_pot(self, exponent: Self) -> Self {
+        let (x, e) = (self.to_array(), exponent.to_array());
+        Self::from_array(core::array::from_fn(|i| crate::simd_fixedpoint::rounding_divide_by_pot_i32(x[i], e[i])))
+    }
+
+    /// Per-lane TFLM `MultiplyByQuantizedMultiplier` (double rounding) with
+    /// per-lane `multiplier` (Q31, `>= 0`) and `shift` (`-31..=30`). `x << shift`
+    /// must not overflow (it wraps).
+    ///
+    /// ```
+    /// use ndarray::simd::I32x16;
+    /// let x = I32x16::splat(1000);
+    /// let m = I32x16::splat(1 << 30);
+    /// let s = I32x16::from_array([1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    /// assert_eq!(x.multiply_by_quantized_multiplier(m, s).to_array()[..3], [1000, 250, 500]);
+    /// ```
+    #[inline(always)]
+    pub fn multiply_by_quantized_multiplier(self, multiplier: Self, shift: Self) -> Self {
+        let (x, m, s) = (self.to_array(), multiplier.to_array(), shift.to_array());
+        Self::from_array(core::array::from_fn(|i| {
+            crate::simd_fixedpoint::multiply_by_quantized_multiplier_i32(x[i], m[i], s[i])
+        }))
+    }
+
     /// Narrow two 16×i32 vectors to one 32×i16 vector with signed saturation: lanes 0..16
     /// come from `self`, lanes 16..32 from `hi`, each clamped to `i16::MIN..=i16::MAX`.
     ///

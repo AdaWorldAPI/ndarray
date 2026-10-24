@@ -3267,9 +3267,100 @@ fn quad_mask4(cmp: uint32x4_t) -> u16 {
     unsafe { vaddvq_u32(vandq_u32(cmp, vld1q_u32(WEIGHTS.as_ptr()))) as u16 }
 }
 
+/// gemmlowp NEON `RoundingDivideByPOT` on one quad, per-lane exponent: a rounding right shift
+/// (`srshl` by `-e`, ties up) preceded by a `-1` fix-up on negative lanes (`x & -e` has its sign
+/// bit set iff `x < 0 && e > 0`), which turns ties-up into ties-away-from-zero. Equals the scalar
+/// `(x >> e) + (rem > thr)`: with `x = k*2^e + rem`, the fixed-up form is
+/// `k + [rem - 1 + 2^(e-1) >= 2^e]` for `x < 0` and `k + [rem + 2^(e-1) >= 2^e]` otherwise.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn rdpot_quad(x: int32x4_t, e: int32x4_t) -> int32x4_t {
+    // SAFETY: NEON baseline; pure register ops (`srshl` defines every shift count).
+    unsafe {
+        let neg = vnegq_s32(e);
+        let fixup = vshrq_n_s32::<31>(vandq_s32(x, neg));
+        vrshlq_s32(vqaddq_s32(x, fixup), neg)
+    }
+}
+
 #[cfg(target_arch = "aarch64")]
 impl I32x16 {
     pub const LANES: usize = 16;
+
+    /// Saturating rounding doubling high multiply (gemmlowp / TFLM
+    /// `SaturatingRoundingDoublingHighMul<i32>`): per lane, `round(a * b / 2^31)`
+    /// with the half-way case rounded toward `+inf`, i.e. the C++ definition
+    /// `((a*b + nudge) / 2^31)` with `nudge = 1<<30` (product `>= 0`) or `1 - (1<<30)`
+    /// (product `< 0`) and **truncating** division. `i32::MIN * i32::MIN` saturates to
+    /// `i32::MAX`.
+    ///
+    /// ```
+    /// use ndarray::simd::I32x16;
+    /// let a = I32x16::from_array([3, -3, -1, 1, 0, i32::MIN, i32::MAX, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    /// let r = a.saturating_rounding_doubling_high_mul(I32x16::splat(1 << 30)).to_array();
+    /// // 1.5 -> 2, -1.5 -> -1 (tie toward +inf), -0.5 -> 0, 0.5 -> 1.
+    /// assert_eq!(r[..7], [2, -1, 0, 1, 0, -1_073_741_824, 1_073_741_824]);
+    /// let m = I32x16::splat(i32::MIN).saturating_rounding_doubling_high_mul(I32x16::splat(i32::MIN));
+    /// assert!(m.to_array().iter().all(|&x| x == i32::MAX));
+    /// ```
+    #[inline(always)]
+    pub fn saturating_rounding_doubling_high_mul(self, b: Self) -> Self {
+        // SAFETY: NEON baseline; pure register ops. `sqrdmulh` is exactly this operation
+        // (round-half-up of `2ab / 2^32`, `MIN*MIN` saturating to `MAX`).
+        Self(core::array::from_fn(|p| I32x4(unsafe { vqrdmulhq_s32(self.0[p].0, b.0[p].0) })))
+    }
+
+    /// Rounding arithmetic right shift (gemmlowp / TFLM `RoundingDivideByPOT`) with a
+    /// per-lane exponent: `x / 2^e` rounded to nearest, **ties away from zero**.
+    /// `exponent` lanes must be in `0..=31`; other values are a contract violation
+    /// (the result is unspecified, but no undefined behaviour).
+    ///
+    /// ```
+    /// use ndarray::simd::I32x16;
+    /// let x = I32x16::from_array([5, -5, 3, -3, 2, -2, 1, -1, 0, 0, 0, 0, 0, 0, 0, 0]);
+    /// let r = x.rounding_divide_by_pot(I32x16::splat(1)).to_array();
+    /// assert_eq!(r[..8], [3, -3, 2, -2, 1, -1, 1, -1]); // negative ties go away from zero
+    /// let e = I32x16::from_array([0, 1, 2, 3, 4, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 31]);
+    /// let r = I32x16::splat(-10).rounding_divide_by_pot(e).to_array();
+    /// assert_eq!(r[..6], [-10, -5, -3, -1, -1, 0]);
+    /// assert_eq!(r[15], 0);
+    /// let m = I32x16::splat(i32::MIN).rounding_divide_by_pot(I32x16::splat(31)).to_array();
+    /// assert_eq!(m[0], -1);
+    /// ```
+    #[inline(always)]
+    pub fn rounding_divide_by_pot(self, exponent: Self) -> Self {
+        Self(core::array::from_fn(|p| I32x4(rdpot_quad(self.0[p].0, exponent.0[p].0))))
+    }
+
+    /// Per-lane fixed-point requantization (gemmlowp / TFLM `MultiplyByQuantizedMultiplier`,
+    /// double rounding): with `left = max(shift, 0)`, `right = max(-shift, 0)`,
+    /// `rounding_divide_by_pot(srdhm(x << left, multiplier), right)`.
+    ///
+    /// Contract: `multiplier >= 0`, `-31 <= shift <= 30`, and `x << left` must not
+    /// overflow (TFLM asserts; this wraps).
+    ///
+    /// ```
+    /// use ndarray::simd::I32x16;
+    /// let x = I32x16::from_array([100, -100, 7, -7, 7, -7, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    /// let s = I32x16::from_array([0, 0, 0, 0, -1, -1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    /// let r = x.multiply_by_quantized_multiplier(I32x16::splat(1 << 30), s).to_array();
+    /// assert_eq!(r[..7], [50, -50, 4, -3, 2, -2, 6]);
+    /// ```
+    #[inline(always)]
+    pub fn multiply_by_quantized_multiplier(self, multiplier: Self, shift: Self) -> Self {
+        Self(core::array::from_fn(|p| {
+            // SAFETY: NEON baseline; pure register ops (`sshl` by a non-negative count wraps,
+            // like the scalar `wrapping_mul(1 << left)`).
+            I32x4(unsafe {
+                let zero = vdupq_n_s32(0);
+                let s = shift.0[p].0;
+                let left = vmaxq_s32(s, zero);
+                let right = vmaxq_s32(vnegq_s32(s), zero);
+                let xs = vshlq_s32(self.0[p].0, left);
+                rdpot_quad(vqrdmulhq_s32(xs, multiplier.0[p].0), right)
+            })
+        }))
+    }
 
     /// Narrow two 16×i32 vectors to one 32×i16 vector with signed saturation: lanes 0..16
     /// come from `self`, lanes 16..32 from `hi`, each clamped to `i16::MIN..=i16::MAX`.
