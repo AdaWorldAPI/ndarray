@@ -271,6 +271,32 @@ impl Shr<Self> for U64x8 {
 // ---------------------------------------------------------------------------
 
 impl I32x16 {
+    /// `SaturatingRoundingDoublingHighMul` per lane (TFLM `fixedpoint.h`).
+    /// AVX without AVX2 has no 256-bit integer multiply, so this arm goes
+    /// lane by lane through [`crate::simd_fixedpoint::srdhm_i32`].
+    #[inline]
+    pub fn saturating_rounding_doubling_high_mul(self, b: Self) -> Self {
+        let (a, b) = (self.to_array(), b.to_array());
+        Self::from_array(core::array::from_fn(|i| crate::simd_fixedpoint::srdhm_i32(a[i], b[i])))
+    }
+
+    /// `RoundingDivideByPOT` per lane, per-lane exponent in `0..=31`.
+    #[inline]
+    pub fn rounding_divide_by_pot(self, exponent: Self) -> Self {
+        let (x, e) = (self.to_array(), exponent.to_array());
+        Self::from_array(core::array::from_fn(|i| crate::simd_fixedpoint::rounding_divide_by_pot_i32(x[i], e[i])))
+    }
+
+    /// `MultiplyByQuantizedMultiplier` (double rounding) per lane, with
+    /// per-lane multiplier and shift.
+    #[inline]
+    pub fn multiply_by_quantized_multiplier(self, multiplier: Self, shift: Self) -> Self {
+        let (x, m, s) = (self.to_array(), multiplier.to_array(), shift.to_array());
+        Self::from_array(core::array::from_fn(|i| {
+            crate::simd_fixedpoint::multiply_by_quantized_multiplier_i32(x[i], m[i], s[i])
+        }))
+    }
+
     /// Four 128-bit quarters of the 16 lanes.
     #[inline(always)]
     fn quarters(self) -> [__m128i; 4] {
