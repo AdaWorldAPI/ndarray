@@ -1320,13 +1320,70 @@ pub fn mask_gather_u32_under(src: &[u64], src_rows: usize, index: &[u32], under:
 /// ```
 #[inline]
 pub fn mask_scatter_or_u32(src: &[u64], index: &[u32], out_words: &mut [u64], out_rows: usize) {
+    scatter_or_walk("mask_scatter_or_u32", src, index, out_words, out_rows);
+}
+
+/// [`mask_scatter_or_u32`] over a **`u16`** index: for every row `i` selected
+/// by `src` (bit `i` set, `i < index.len()`), sets bit `index[i]` of
+/// `out_words` — provided `index[i] < out_rows`.
+///
+/// Identical contract to [`mask_scatter_or_u32`] in every respect except the
+/// index width: set-bit walk only, `out_words` accumulated into (never
+/// zeroed, never overwritten), repeated targets collapse to one bit, an
+/// out-of-range target is silently dropped, the final partial `src` word is
+/// clamped to `index.len()`, and the same survival rule — the scattered mask
+/// is the requested result or a fold's accumulator, never a buffer another
+/// pass reads back as input.
+///
+/// # Why a `u16` twin exists
+///
+/// A sealed 64×64 focus map holds its canonical addresses as `u16` ordinals
+/// (the 65,536-address universe is exactly the `u16` domain). Scattering
+/// them through [`mask_scatter_or_u32`] first needs a widened `u32` copy of
+/// every map — 16 KiB per 4,096-slot map instead of the 8 KiB it already
+/// holds. This reads the `u16` ordinals in place: no widening, no copy, no
+/// allocation.
+///
+/// # Vectorisation, honestly
+///
+/// Scalar, for the same reason as [`mask_scatter_or_u32`]: the written
+/// address is a value out of another array and no backend here has a
+/// bit-level scatter. Cost is proportional to `popcount(src)` (clamped to
+/// `index.len()`).
+///
+/// # Panics
+///
+/// Panics if `src.len() < index.len().div_ceil(64)`, or if
+/// `out_words.len() < out_rows.div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::mask_scatter_or_u16;
+///
+/// let src = [0b0101u64]; // rows 0 and 2 selected
+/// let index = [5u16, 1, 9, 20];
+/// let mut out = [0u64; 1];
+/// mask_scatter_or_u16(&src, &index, &mut out, 10);
+/// assert_eq!(out[0], (1u64 << 5) | (1u64 << 9));
+/// ```
+#[inline]
+pub fn mask_scatter_or_u16(src: &[u64], index: &[u16], out_words: &mut [u64], out_rows: usize) {
+    scatter_or_walk("mask_scatter_or_u16", src, index, out_words, out_rows);
+}
+
+/// The shared body of the scatter-or family: one set-bit walk, one index
+/// read per selected row, widened to `usize` at the read — never a widened
+/// copy of `index`.
+#[inline(always)]
+fn scatter_or_walk<I: Copy + Into<u64>>(name: &str, src: &[u64], index: &[I], out_words: &mut [u64], out_rows: usize) {
     let n = index.len();
     let src_words = mask_words_for(n);
-    assert!(src.len() >= src_words, "mask_scatter_or_u32: src.len()={} < required {}", src.len(), src_words);
+    assert!(src.len() >= src_words, "{name}: src.len()={} < required {}", src.len(), src_words);
     let out_word_count = mask_words_for(out_rows);
     assert!(
         out_words.len() >= out_word_count,
-        "mask_scatter_or_u32: out_words.len()={} < required {}",
+        "{name}: out_words.len()={} < required {}",
         out_words.len(),
         out_word_count
     );
@@ -1347,8 +1404,9 @@ pub fn mask_scatter_or_u32(src: &[u64], index: &[u32], out_words: &mut [u64], ou
             let lane = bits.trailing_zeros() as usize;
             bits &= bits - 1;
             let i = base + lane;
-            let t = index[i] as usize;
-            if t < out_rows {
+            let t: u64 = index[i].into();
+            if t < out_rows as u64 {
+                let t = t as usize;
                 out_words[t / 64] |= 1u64 << (t % 64);
             }
         }
@@ -6720,6 +6778,77 @@ mod tests {
         let index = vec![0u32; 65];
         let mut out = [0u64; 1];
         mask_scatter_or_u32(&src, &index, &mut out, 4);
+    }
+
+    // ── mask_scatter_or_u16: the u16-index twin ─────────────────────────────
+
+    #[test]
+    fn mask_scatter_or_u16_equals_the_u32_scatter_on_the_same_ordinals_across_the_tail() {
+        // Same rows, same ordinals (as u16 and widened to u32), out_rows both
+        // inside and short of the u16 domain: the two must agree bit for bit.
+        for &n in &[0usize, 1, 63, 64, 65, 67, 130, 4096] {
+            for &out_rows in &[50usize, 4096, 65_536] {
+                let mut seed = 0xD256_0016_0000_0001u64 ^ n as u64 ^ (out_rows as u64) << 20;
+                let src_bits: Vec<bool> = (0..n).map(|_| splitmix(&mut seed) & 1 == 1).collect();
+                let mut src = bits_to_words(&src_bits);
+                // Dirty tail bits past n must be ignored by both.
+                if n % 64 != 0 {
+                    if let Some(last) = src.last_mut() {
+                        *last |= !0u64 << (n % 64);
+                    }
+                }
+                let idx16: Vec<u16> = (0..n).map(|_| splitmix(&mut seed) as u16).collect();
+                let idx32: Vec<u32> = idx16.iter().map(|&o| u32::from(o)).collect();
+                let words = out_rows.div_ceil(64);
+                let mut got = vec![0u64; words + 1];
+                let mut want = vec![0u64; words + 1];
+                mask_scatter_or_u16(&src, &idx16, &mut got, out_rows);
+                mask_scatter_or_u32(&src, &idx32, &mut want, out_rows);
+                assert_eq!(got, want, "n={n} out_rows={out_rows}");
+                let naive = bits_to_words(&naive_scatter(&src_bits, &idx32, out_rows));
+                assert_eq!(&got[..naive.len()], &naive[..], "naive reference n={n} out_rows={out_rows}");
+                assert_eq!(got[words], 0, "surplus word untouched n={n} out_rows={out_rows}");
+            }
+        }
+    }
+
+    #[test]
+    fn mask_scatter_or_u16_reaches_the_top_of_the_u16_domain_and_drops_out_of_range() {
+        // 65_535 is a real target in a 65,536-row universe and out of range
+        // in a 65,535-row one; a widening bug (e.g. truncation) shows here.
+        let src = [0b11u64];
+        let index = [65_535u16, 0];
+        let mut full = vec![0u64; 1024];
+        mask_scatter_or_u16(&src, &index, &mut full, 65_536);
+        assert_eq!(full[1023], 1u64 << 63);
+        assert_eq!(full[0], 1);
+        let mut short = vec![0u64; 1024];
+        mask_scatter_or_u16(&src, &index, &mut short, 65_535);
+        assert_eq!(short[1023], 0, "65,535 is out of range for out_rows = 65,535 and is dropped");
+        assert_eq!(short[0], 1);
+    }
+
+    #[test]
+    fn mask_scatter_or_u16_repeats_union_and_calls_accumulate() {
+        let mut out = [1u64 << 7]; // a bit no call scatters to
+        mask_scatter_or_u16(&[0b111u64], &[3u16, 3, 3], &mut out, 8);
+        mask_scatter_or_u16(&[0b1u64], &[5u16], &mut out, 8);
+        assert_eq!(out[0], (1 << 3) | (1 << 5) | (1 << 7), "union, accumulation, pre-set bit kept");
+    }
+
+    #[test]
+    #[should_panic(expected = "mask_scatter_or_u16: out_words.len()")]
+    fn mask_scatter_or_u16_rejects_short_out_buffer() {
+        let mut out = [0u64; 1];
+        mask_scatter_or_u16(&[0b1u64], &[200u16], &mut out, 200);
+    }
+
+    #[test]
+    #[should_panic(expected = "mask_scatter_or_u16: src.len()")]
+    fn mask_scatter_or_u16_rejects_short_src_buffer() {
+        let index = vec![0u16; 65];
+        let mut out = [0u64; 1];
+        mask_scatter_or_u16(&[0u64; 1], &index, &mut out, 4);
     }
 
     fn naive_group_sum(mask_bits: &[bool], keys: &[u32], values: &[i32], out_len: usize) -> Vec<i64> {
