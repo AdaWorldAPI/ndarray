@@ -46,7 +46,7 @@ use ndarray::simd::{
     ge_u8_to_mask, gt_i32_to_mask, gt_i32_to_mask_under, gt_u64_to_mask, gt_u8_to_mask, le_i32_to_mask,
     le_i32_to_mask_under, le_u64_to_mask, le_u8_to_mask, lt_i32_to_mask, lt_i32_to_mask_under, lt_u64_to_mask,
     lt_u8_to_mask, mask_all, mask_and, mask_and_assign, mask_andnot, mask_andnot_assign, mask_any, mask_gather_u32,
-    mask_gather_u32_under, mask_not, mask_not_assign, mask_or, mask_or_assign, mask_scatter_or_u32, mask_set_range,
+    mask_gather_u32_under, mask_not, mask_not_assign, mask_or, mask_or_assign, mask_scatter_or_u16, mask_scatter_or_u32, mask_set_range,
     mask_shift_morton, mask_ternlog, mask_ternlog_any, mask_ternlog_assign, mask_ternlog_popcount, mask_xor,
     mask_xor_assign, masked_group_sum_i32, masked_group_sum_i32_via, masked_key_run_count_u32, masked_max_i32,
     masked_min_i32, masked_strided_group_sum, masked_sum_i32, masked_sum_wrapping_add_i32, ne_i32_to_mask,
@@ -1645,6 +1645,18 @@ fn check_gather_scatter_group() -> Result<(), u32> {
             let want2_acc_words = reference_mask(out_rows, out_len2, |t| want2_acc[t]);
             if out2_acc != want2_acc_words {
                 return Err(0xD11);
+            }
+        }
+
+        // ── mask_scatter_or_u16: the same ordinals read as u16 in place ──
+        // (0xD12). Every ordinal here fits u16; the twin must equal the u32
+        // reference bit for bit, and draws nothing from `rng`.
+        {
+            let idx16: Vec<u16> = idx2.iter().map(|&t| u16::try_from(t).expect("fits u16")).collect();
+            let mut out16 = vec![0u64; out_len2];
+            mask_scatter_or_u16(&src_bits, &idx16, &mut out16, out_rows);
+            if out16 != want2_words {
+                return Err(0xD12);
             }
         }
 

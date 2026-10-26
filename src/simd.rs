@@ -919,6 +919,7 @@ pub use crate::simd_masking_ops::{
     mask_not_assign,
     mask_or,
     mask_or_assign,
+    mask_scatter_or_u16,
     mask_scatter_or_u32,
     mask_set_range,
     mask_shift_morton,
