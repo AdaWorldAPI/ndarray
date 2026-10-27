@@ -50,14 +50,14 @@ use ndarray::simd::{
     mask_shift_morton, mask_ternlog, mask_ternlog_any, mask_ternlog_assign, mask_ternlog_popcount, mask_xor,
     mask_xor_assign, masked_group_sum_i32, masked_group_sum_i32_via, masked_key_run_count_u32, masked_max_i32,
     masked_min_i32, masked_strided_group_sum, masked_sum_i32, masked_sum_wrapping_add_i32, ne_i32_to_mask,
-    ne_i32_to_mask_under, ne_u32_to_mask, ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask,
+    ne_i32_to_mask_under, ne_u32_to_mask, ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask, odd_lut_u8,
     ternary_match_strided16_to_mask, ternary_match_strided_to_mask, ternary_match_u32_to_mask,
     ternary_match_u32_to_mask_under, ternary_match_u64_to_mask, ternary_match_u64_to_mask_under, ternlog, F32x16,
     F64x8, I16x32, I32x16, I8x16, KeyRunCarry, MortonDir, U32x16, U64x8, U8x16,
 };
 
 /// Number of check groups [`run`] executes (for the log line only).
-pub const CHECKS: usize = 19;
+pub const CHECKS: usize = 20;
 
 /// The wasm export: identical to [`run`], `extern "C"` so `run.mjs` can call it.
 #[no_mangle]
@@ -72,7 +72,7 @@ pub fn run() -> u32 {
         check_mask_algebra, check_care_match, check_masked_reductions, check_blend, check_morton_shift,
         check_predicates_under, check_set_range, check_unsigned_compare_to_mask, check_gather_scatter_group,
         check_f64x8_compare, check_i8x16_u8x16_lanes, check_care_match16, check_narrow_ladder,
-        check_mul_add_single_rounding, check_fixedpoint_requant,
+        check_mul_add_single_rounding, check_fixedpoint_requant, check_odd_lut_u8,
     ];
     for g in groups {
         if let Err(code) = g() {
@@ -2635,6 +2635,56 @@ fn oracle_fma_f64(a: f64, b: f64, c: f64) -> f64 {
         Some(bits) => f64::from_bits(bits),
         None => f64::NAN,
     }
+}
+
+// ── 0x14xx: odd_lut_u8 — a 256-entry magnitude table over a sign-magnitude
+// lane. The reference indexes `table` with a plain array lookup and builds
+// the output sign plane bit by bit; it never calls the primitive.
+
+fn check_odd_lut_u8() -> Result<(), u32> {
+    let mut rng = SplitMix64(0x1400_0000_0001);
+    // A random table with some zero entries away from index 0, so a sign bit
+    // must be cleared at nonzero magnitudes too, and every quarter differs.
+    let mut table = [0u8; 256];
+    for t in table.iter_mut().skip(1) {
+        let r = rng.next() as u8;
+        *t = if r % 7 == 0 { 0 } else { r };
+    }
+    const ODD_LUT_LENS: [usize; 11] = [0, 1, 63, 64, 65, 127, 128, 129, 255, 256, 300];
+    for (case, &n) in ODD_LUT_LENS.iter().enumerate() {
+        let case = case as u32;
+        let words = words_for(n);
+        for pass in 0..2u32 {
+            // Pass 0: every magnitude at every lane position modulo a stride;
+            // pass 1: random magnitudes.
+            let stride = |i: usize| ((i * 37 + 11) % 256) as u8;
+            let mags: Vec<u8> = (0..n)
+                .map(|i| if pass == 0 { stride(i) } else { rng.next() as u8 })
+                .collect();
+            let mut signs: Vec<u64> = (0..words).map(|_| rng.next()).collect();
+            if words > 0 && n % 64 != 0 {
+                // Junk sign bits past the last row must not reach the output.
+                signs[words - 1] |= u64::MAX << (n % 64);
+            }
+            let mut out = vec![0xAAu8; n + 3];
+            let mut out_signs = vec![u64::MAX; words + 1];
+            odd_lut_u8(&mags, &signs, &table, &mut out, &mut out_signs);
+            for i in 0..n {
+                if out[i] != table[mags[i] as usize] {
+                    return Err(0x1400 | (pass << 7) | case);
+                }
+            }
+            if out[n..].iter().any(|&b| b != 0xAA) {
+                return Err(0x1410 | (pass << 7) | case);
+            }
+            let want =
+                reference_mask(n, words + 1, |i| (signs[i / 64] >> (i % 64)) & 1 == 1 && table[mags[i] as usize] != 0);
+            if out_signs != want {
+                return Err(0x1420 | (pass << 7) | case);
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
