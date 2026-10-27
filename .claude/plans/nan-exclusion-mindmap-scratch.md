@@ -157,3 +157,58 @@ Open choice: `n, mean, M2` is the likely default for floats, while the integer
 - Carrier for floats: `n, mean, M2`, or raw power sums plus compensation?
 - Does replay need determinism across thread and tile counts (S3 of the
   ladder), or only across realizations for a fixed partition?
+
+## Premise audit (2026-10-27, `/5plus3` Phase 0): PREMISE-SPLIT
+
+The council stopped at its premise gate. The question above files two
+different concepts under one name, so it is re-asked below before any savant
+runs. Sources were read in full; a harvest found the candidates.
+
+**What the audit found:**
+
+- **"NaN" names two concepts.**
+  - *Missing value*: a schema fact. In lance-graph it already has a home: a
+    binder-owned validity plane. NULL is a clear bit there, and the payload
+    under it "is never read as an answer" (`lance-graph-quack/src/bind.rs:82-87`).
+    NULL-skipping is that plane ANDed into the filter
+    (`lance-graph-quack/tests/duckdb_differential.rs:1253`;
+    `tests/sql_aggregate_null.rs:4-11`, where `COUNT(x)`, `SUM` and `AVG` see
+    non-NULL rows only). mask-risc itself has no NULL: "absence … is a
+    zero-fallback, never a validity bit" (`lance-graph-mask-risc/src/lib.rs:100-102`).
+  - *Computation error*: a value produced by arithmetic, written by the
+    computation, on every evaluation.
+
+  So encoding "missing" as a NaN payload contradicts both rulings. P1 and P2
+  in the purpose table are these two concepts, which is why no single policy
+  served both.
+- **Dilution is already impossible in the existing kernel.** `power_sums_fold`
+  increments `n` and `sum` in the same closure, for the same selected row
+  (`src/simd_masking_ops.rs:2335-2342`). If n is the fold's own Σx⁰ over the
+  caller's mask, n and the sums cannot diverge. Dilution needs a second source
+  of n (policies c and d), and neither survives under any reading.
+- **"Determinism" names two properties.** D-WFL-DET is about the MASK: "same
+  RowDomain + program ⇒ bit-identical mask" (lance-graph
+  `STATUS_BOARD.md:1126`). Bit-identical FLOAT fold results across realizations
+  would be a new gate next to it, not a restatement. S4 as written would widen
+  D-WFL-DET.
+- **No float masked fold exists yet.** `PowerSums` is `i32` only (`:2245`) and
+  `MomentsU32` is `u32` only (`src/hpc/statistics.rs:378`). The float carrier
+  (S2) is a float-statistics question, not a NaN question.
+
+**The re-asked questions** (each with "the property belongs elsewhere" kept
+as an option):
+
+| | question | owner |
+|---|---|---|
+| Q1 | Missing data in a float lane: a validity plane ANDed into the selection, as Quack already does, rather than NaN payloads? Is mask-risc's "no NULL" ruling compatible with float lanes? | operator / lance-graph |
+| Q2 | NaN as an error: with a policy-free masked float fold (n = popcount of the caller's mask), what does a caller need to choose between propagate, drop-and-report and refuse? Candidates: S1 `not_nan_*_to_mask`, S3 `n_excluded`. Both are mask-algebra inputs and add no policy to the kernel. | ndarray |
+| Q3 | Is bit-identical float-fold output across realizations required? If so, it is a new gate next to D-WFL-DET. | lance-graph owner |
+
+**What survives from the payoff table:** Skip, renamed *caller-composed error
+exclusion* (S1 + S3, kernel unchanged); Propagate as the policy-free default;
+Fail as a caller check over the S1 mask. Replace-with-0 and drop-but-keep-n
+are struck.
+
+**Council status:** halted before Phase 1; nothing was implemented. Q2 alone
+is probably too small for a council (two mask primitives and a convention).
+Q1 and Q3 are not ndarray's to decide.
