@@ -96,7 +96,21 @@ impl MagnitudeSignBlock64 {
 }
 
 fn main() {
-    println!("Palette512 SignedMagnitude9: run cargo test --example palette512_probe");
+    let plus = SignedMagnitude9::from_code(0x0ff);
+    let minus = SignedMagnitude9::from_code(0x1ff);
+    let signed_product = plus.mul_add(minus, 0).expect("valid product");
+    let lanes = [plus.code(); 64];
+    let block = MagnitudeSignBlock64::from_codes(&lanes);
+    let dot = block.fused_dot(&block).expect("valid 64-lane dot");
+    println!(
+        "Palette512 SM9: +{} * {} = {}, 64-lane dot = {}, block = {} B",
+        plus.value().expect("valid value"),
+        minus.value().expect("valid value"),
+        signed_product,
+        dot,
+        std::mem::size_of::<MagnitudeSignBlock64>()
+    );
+    println!("Run cargo test --example palette512_probe for exhaustive evidence");
 }
 
 #[cfg(test)]
