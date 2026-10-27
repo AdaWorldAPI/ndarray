@@ -245,3 +245,16 @@ Shipped primitives (`src/simd_masking_ops.rs`, re-exported from `ndarray::simd`)
 `F64Mask8::to_bitmask` was added on the AVX-512, AVX2/AVX, NEON, wasm and
 scalar backends (nightly already had it) so the f64 packer reads one
 spelling on every arm.
+
+### SQL over a NULL=NaN lane (2026-10-27)
+
+With NULL=NaN the SQL aggregates need no caller clean-up: `COUNT(*)` =
+`popcount(filter)`, `COUNT(x)` = `popcount(filter & presence)`, and
+`SUM`/`AVG`/`VAR` fold over the same plane, with `n == 0` giving NULL (NaN).
+Comparisons are the `{lt,le,gt,ge,eq,ne}_{f64,f32}_to_mask` TRUE planes. NOT
+is where IEEE and SQL differ (`!(NaN > 5)` is true, `NOT (NULL > 5)` is
+UNKNOWN), so a lowering negates with `mask_not_under(pred, presence)`, where
+`presence` is the predicate's presence: the AND of its operands' planes, empty
+for a NULL literal. Known differences from PostgreSQL/DuckDB: a stored NaN
+value reads back as NULL; GROUP BY and DISTINCT on float keys must key on
+presence, since `NaN != NaN`.
