@@ -55,85 +55,48 @@ pub fn lut_u8(values: &[u8], table: &[u8; 256], out: &mut [u8]) {
 }
 
 // ────────────────────────────────────────────────────────────────────────
-// lut9: an odd-function table over a sign-magnitude 9-bit (SM9) lane.
-//
-// A sign-magnitude 9-bit lane stores each value as a `u8` magnitude plus one
-// bit in a `u64` sign plane per 64 rows; whether the row holds a value at all
-// is a separate presence plane, and the writer stores `+0` (magnitude 0, sign
-// clear) for zero and for missing rows. For an odd function
-// (`f(-x) = -f(x)`, e.g. tanh, sin, x³, sign-preserving clamps) one table
-// over the 256 magnitudes covers both signs: the magnitude is looked up and
-// the sign plane passes through. The presence plane is not an input — a
-// missing row is magnitude 0, `f(0) = 0`, so it stays `+0`.
+// Canonical DR512: P=0,M=0 is -0/NaN/NEVER TOUCHED.
+// P=0,M>0 is negative; P=1,M=0 is valid +0; P=1,M>0 is positive.
+// ONE presence/polarity plane. No second sign or missing-value plane.
+// Negative nonzero that rounds to zero becomes valid +0, never NaN.
 // ────────────────────────────────────────────────────────────────────────
 
-/// Applies an odd function, given as a 256-entry magnitude table, to a
-/// sign-magnitude lane.
+/// Odd-function LUT for canonical DR512 epistemic presence × magnitude.
 ///
-/// For every row `i < magnitudes.len()`:
-///
-/// * `out_magnitudes[i] = table[magnitudes[i]]`;
-/// * the output sign bit is the input sign bit, cleared where a nonzero
-///   input gives a zero result. A negative value whose result rounds to
-///   zero is stored as `+0`, never `-0`.
-/// * an input `-0` (magnitude 0, sign set) comes out as `-0`. A writer
-///   that only stores `+0` never produces it, so under the plain numeric
-///   reading this changes nothing. A class whose reading gives `-0` a
-///   meaning of its own, such as "observed, value NaN" beside a clear
-///   presence bit for "not observed", keeps that meaning through the
-///   function, the way IEEE arithmetic carries NaN through. Clearing it
-///   would turn that reading's NaN into the value 0.
-///
-/// Rows past `magnitudes.len()` are not written in `out_magnitudes`. In
-/// `out_signs` the bits past `magnitudes.len()` and any surplus words are
-/// written as `0`. The presence plane is not read or written: because
-/// `table[0]` must be `0`, a missing row (stored as `+0`) stays `+0`.
-///
-/// Facet stride: every 16 magnitudes are one 128-bit value whose positions
-/// `{0}..{15}` are read where they sit, and each position addresses the table
-/// directly. No byte is shuffled. The sign plane is 64 rows per
-/// [`crate::simd::U8x64::cmpeq_mask`]. The final partial chunk is padded with
-/// magnitude 0 and goes through the same path, with the padding lanes masked
-/// off the sign plane.
+/// On entry, P=0,M=0 denotes never touched/NaN and stays unchanged.
+/// For a touched numeric input, a rounded output of zero is always valid +0
+/// (P=1,M=0), including input -0.4 quantized to zero. Never infer
+/// authorization or alpha-claim from these bits.
 ///
 /// # Panics
-///
-/// * if `table[0] != 0`, since an odd function maps 0 to 0;
-/// * if `out_magnitudes.len() < magnitudes.len()`;
-/// * if `signs.len()` or `out_signs.len()` is less than
-///   `magnitudes.len().div_ceil(64)`.
+/// If table[0] != 0 or input/output slices are too short.
 ///
 /// # Examples
-///
 /// ```
 /// use ndarray::simd::lut9;
-///
-/// // f(m) = m / 2, an odd function on the signed value.
-/// let mut table = [0u8; 256];
-/// for (m, t) in table.iter_mut().enumerate() {
-///     *t = (m / 2) as u8;
-/// }
-/// // Values: +10, -10, -1, +0
-/// let magnitudes = [10u8, 10, 1, 0];
-/// let signs = [0b0110u64];
-/// let mut out = [0u8; 4];
-/// let mut out_signs = [0u64; 1];
-/// lut9(&magnitudes, &signs, &table, &mut out, &mut out_signs);
-/// assert_eq!(out, [5, 5, 0, 0]);
-/// // -1 / 2 rounds to zero and is stored as +0: only row 1 keeps its sign.
-/// assert_eq!(out_signs[0], 0b0010);
+/// let table: [u8; 256] = core::array::from_fn(|m| (m / 2) as u8);
+/// let magnitudes = [10u8, 10, 1, 0]; // +10,-10,-1,+0
+/// let presences = [0b1001u64]; // bit 1 means positive
+/// let mut output = [0u8; 4];
+/// let mut out_presences = [0u64; 1];
+/// lut9(&magnitudes, &presences, &table, &mut output, &mut out_presences);
+/// assert_eq!(output, [5, 5, 0, 0]);
+/// assert_eq!(out_presences[0], 0b1101); // -1 rounded to valid +0
 /// ```
-pub fn lut9(magnitudes: &[u8], signs: &[u64], table: &[u8; 256], out_magnitudes: &mut [u8], out_signs: &mut [u64]) {
+pub fn lut9(
+    magnitudes: &[u8],
+    presences: &[u64],
+    table: &[u8; 256],
+    out_magnitudes: &mut [u8],
+    out_presences: &mut [u64],
+) {
     use crate::simd::U8x64;
     let n = magnitudes.len();
     let words = n.div_ceil(64);
     assert_eq!(table[0], 0, "lut9: an odd function maps 0 to 0, so table[0] must be 0");
     assert!(out_magnitudes.len() >= n, "lut9: out_magnitudes holds {} rows, need {n}", out_magnitudes.len());
-    assert!(signs.len() >= words, "lut9: signs holds {} words, need {words}", signs.len());
-    assert!(out_signs.len() >= words, "lut9: out_signs holds {} words, need {words}", out_signs.len());
-
-    // FACET STRIDE: the magnitude lookup reads positions where they sit
-    // ([`lut_u8`]); no byte is shuffled.
+    assert!(presences.len() >= words, "lut9: presences holds {} words, need {words}", presences.len());
+    assert!(out_presences.len() >= words, "lut9: out_presences holds {} words, need {words}", out_presences.len());
     let fill = |chunk: &[u8; 64], out: &mut [u8; 64]| lut_u8(chunk, table, out);
     let zero = U8x64::splat(0);
     let (in_chunks, tail) = magnitudes.as_chunks::<64>();
@@ -141,8 +104,9 @@ pub fn lut9(magnitudes: &[u8], signs: &[u64], table: &[u8; 256], out_magnitudes:
     for (w, (chunk, out)) in in_chunks.iter().zip(out_chunks).enumerate() {
         fill(chunk, out);
         let (m, r) = (U8x64::from_array(*chunk), U8x64::from_array(*out));
-        // Keep the sign where the result is nonzero or the input is `-0`.
-        out_signs[w] = signs[w] & (!r.cmpeq_mask(zero) | m.cmpeq_mask(zero));
+        // Only a nonzero input that rounded to zero is canonicalized.
+        // Pre-existing P=0,M=0 (never touched) must remain P=0.
+        out_presences[w] = presences[w] | (r.cmpeq_mask(zero) & !m.cmpeq_mask(zero));
     }
     let mut w = in_chunks.len();
     if !tail.is_empty() {
@@ -152,14 +116,12 @@ pub fn lut9(magnitudes: &[u8], signs: &[u64], table: &[u8; 256], out_magnitudes:
         fill(&padded, &mut looked_up);
         out_tail.copy_from_slice(&looked_up[..tail.len()]);
         let (m, r) = (U8x64::from_array(padded), U8x64::from_array(looked_up));
-        // Padding lanes look like input `-0` (magnitude 0), so the keep-`-0`
-        // rule would pass their junk sign bits; mask them off.
-        out_signs[w] =
-            signs[w] & (!r.cmpeq_mask(zero) | m.cmpeq_mask(zero)) & crate::simd_masking_ops::live64(tail.len());
+        out_presences[w] = (presences[w] | (r.cmpeq_mask(zero) & !m.cmpeq_mask(zero)))
+            & crate::simd_masking_ops::live64(tail.len());
         w += 1;
     }
-    for s in &mut out_signs[w..] {
-        *s = 0;
+    for p in &mut out_presences[w..] {
+        *p = 0;
     }
 }
 
@@ -169,16 +131,16 @@ mod tests {
 
     // ── lut9 (SM9 odd table) ──────────────────────────────────────────────────────────
 
-    fn lut9_reference(mags: &[u8], signs: &[u64], table: &[u8; 256]) -> (Vec<u8>, Vec<u64>) {
+    fn lut9_reference(mags: &[u8], presences: &[u64], table: &[u8; 256]) -> (Vec<u8>, Vec<u64>) {
         let out: Vec<u8> = mags.iter().map(|&m| table[m as usize]).collect();
-        let mut out_signs = vec![0u64; mags.len().div_ceil(64)];
+        let mut out_presences = vec![0u64; mags.len().div_ceil(64)];
         for (i, &o) in out.iter().enumerate() {
-            let neg = (signs[i / 64] >> (i % 64)) & 1 == 1;
-            if neg && (o != 0 || mags[i] == 0) {
-                out_signs[i / 64] |= 1 << (i % 64);
+            let positive = (presences[i / 64] >> (i % 64)) & 1 == 1;
+            if positive || (o == 0 && mags[i] != 0) {
+                out_presences[i / 64] |= 1 << (i % 64);
             }
         }
-        (out, out_signs)
+        (out, out_presences)
     }
 
     fn lut9_xorshift(s: &mut u64) -> u64 {
@@ -206,40 +168,35 @@ mod tests {
                 // Every magnitude appears at every lane position across shifts.
                 let mags: Vec<u8> = (0..n).map(|i| ((i * 37 + shift) % 256) as u8).collect();
                 let words = n.div_ceil(64);
-                let mut signs: Vec<u64> = (0..words).map(|_| lut9_xorshift(&mut s)).collect();
+                let mut presences: Vec<u64> = (0..words).map(|_| lut9_xorshift(&mut s)).collect();
                 // Junk sign bits past the last row must not leak into the output.
-                if let Some(last) = signs.last_mut() {
+                if let Some(last) = presences.last_mut() {
                     *last |= !crate::simd_masking_ops::live64(n - (words - 1) * 64);
                 }
-                let (want, want_signs) = lut9_reference(&mags, &signs, &table);
+                let (want, want_presences) = lut9_reference(&mags, &presences, &table);
                 let mut out = vec![0xAAu8; n + 5];
-                let mut out_signs = vec![u64::MAX; words + 2];
-                lut9(&mags, &signs, &table, &mut out, &mut out_signs);
+                let mut out_presences = vec![u64::MAX; words + 2];
+                lut9(&mags, &presences, &table, &mut out, &mut out_presences);
                 assert_eq!(&out[..n], &want[..], "n={n} shift={shift}");
                 assert!(out[n..].iter().all(|&b| b == 0xAA), "rows past the end written, n={n}");
-                assert_eq!(&out_signs[..words], &want_signs[..], "n={n} shift={shift}");
-                assert!(out_signs[words..].iter().all(|&w| w == 0), "surplus words, n={n}");
+                assert_eq!(&out_presences[..words], &want_presences[..], "n={n} shift={shift}");
+                assert!(out_presences[words..].iter().all(|&w| w == 0), "surplus words, n={n}");
             }
         }
     }
 
-    /// FAILS IF: a negative value whose result rounds to zero keeps its sign
-    /// (a stored `-0`), or an input `-0` loses its sign. Silence half: a
-    /// nonzero negative result keeps its sign, and `+0` stays `+0`.
+    /// Negative rounding to zero must not create a fictitious -0/NaN.
     #[test]
-    fn lut9_rounds_to_plus_zero_and_keeps_an_input_minus_zero() {
-        let mut table = [0u8; 256];
-        for (m, t) in table.iter_mut().enumerate() {
-            *t = (m / 4) as u8;
-        }
-        // -0, -3 (rounds to 0), -4 (-> -1), +3, +200, +0
+    fn lut9_never_fabricates_epistemic_absence() {
+        let table: [u8; 256] = core::array::from_fn(|m| (m / 4) as u8);
+        // -0 untouched, -3 touched, -4 touched, +3, +200, +0.
         let mags = [0u8, 3, 4, 3, 200, 0];
-        let signs = [0b000111u64];
+        let presences = [0b111000u64];
         let mut out = [0u8; 6];
-        let mut out_signs = [u64::MAX; 1];
-        lut9(&mags, &signs, &table, &mut out, &mut out_signs);
+        let mut out_presences = [u64::MAX; 1];
+        lut9(&mags, &presences, &table, &mut out, &mut out_presences);
         assert_eq!(out, [0, 0, 1, 0, 50, 0]);
-        assert_eq!(out_signs[0], 0b000101);
+        assert_eq!(out_presences[0], 0b111010);
     }
 
     #[test]
@@ -251,8 +208,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "signs holds 1 words, need 2")]
-    fn lut9_refuses_a_short_sign_plane() {
+    #[should_panic(expected = "presences holds 1 words, need 2")]
+    fn lut9_refuses_a_short_presence_plane() {
         let table = [0u8; 256];
         lut9(&[0; 65], &[0], &table, &mut [0; 65], &mut [0; 2]);
     }
