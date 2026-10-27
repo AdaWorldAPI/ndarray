@@ -1003,6 +1003,8 @@ pub use crate::simd_masking_ops::{
     BOUNDED_TILE_ROWS,
     SYM_EMPTY_I64,
 };
+#[cfg(feature = "std")]
+pub use crate::simd_stride::{lut9, lut_u8, FACET_BYTES};
 // The popcount that closes the loop on the masks above: `mask_count` in ABI
 // terms. Already public at `ndarray::bitwise::popcount_batch_u64`; re-exported
 // here so a mask producer and its reducer share one import path (the sibling

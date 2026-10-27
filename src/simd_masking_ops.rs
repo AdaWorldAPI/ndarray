@@ -5298,7 +5298,7 @@ fn live8(live: usize) -> u8 {
 /// `live`-lane validity mask for a 64-lane group (one `u8x64` register is one
 /// whole mask word): all ones for a full group, the low `live` bits otherwise.
 #[inline(always)]
-fn live64(live: usize) -> u64 {
+pub(crate) fn live64(live: usize) -> u64 {
     if live == 64 {
         u64::MAX
     } else {
