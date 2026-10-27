@@ -5,7 +5,8 @@
 //! * `i8 table`: the i8 `Sym` form, one 255-entry table indexed by the
 //!   signed code (`table[c + 127]`), no sign plane;
 //! * `u8 table + sign`: the scalar form of what `odd_lut_u8` computes, a
-//!   256-entry lookup plus the sign plane cleared where the result is 0;
+//!   256-entry lookup plus the sign plane cleared where a nonzero input
+//!   gives 0;
 //! * `odd_lut_u8`: the SIMD primitive.
 //!
 //! The scalar and SIMD sign-magnitude outputs are compared before timing.
@@ -66,7 +67,8 @@ fn main() {
             let mut nonzero = 0u64;
             for (k, (&m, d)) in chunk.iter().zip(o.iter_mut()).enumerate() {
                 *d = table[m as usize];
-                nonzero |= u64::from(*d != 0) << k;
+                // Keep the sign where the result is nonzero or the input is -0.
+                nonzero |= u64::from(*d != 0 || m == 0) << k;
             }
             out_signs[w] = signs[w] & nonzero;
         }

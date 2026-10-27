@@ -3822,12 +3822,13 @@ pub fn ne_u8_to_mask(values: &[u8], needle: u8, out_words: &mut [u64]) {
 /// written as `0`. The presence plane is not read or written: because
 /// `table[0]` must be `0`, a missing row (stored as `+0`) stays `+0`.
 ///
-/// Each 64-row chunk is looked up as four 64-entry
-/// [`crate::simd::U8x64::permute_bytes`] lookups, one per quarter of the
-/// table, selected by the magnitude's top two bits with
-/// [`crate::simd::U8x64::mask_blend`]. The final partial chunk is padded with
-/// magnitude 0 and goes through the same path, so the tail cannot disagree
-/// with the body.
+/// Each 64-row chunk is looked up with [`crate::simd::U8x64::lut256`]: the
+/// table is 16 rows of 16 bytes, the low nibble picks the byte and the high
+/// nibble the row, so the lookup stays inside 128-bit lanes and runs as
+/// in-lane byte shuffles on every x86 tier. The sign plane is 64 rows per
+/// [`crate::simd::U8x64::cmpeq_mask`]. The final partial chunk is padded with
+/// magnitude 0 and goes through the same path, with the padding lanes masked
+/// off the sign plane.
 ///
 /// # Panics
 ///
@@ -3871,34 +3872,30 @@ pub fn odd_lut_u8(
     assert!(signs.len() >= words, "odd_lut_u8: signs holds {} words, need {words}", signs.len());
     assert!(out_signs.len() >= words, "odd_lut_u8: out_signs holds {} words, need {words}", out_signs.len());
 
-    let quarter = |k: usize| U8x64::from_slice(&table[k * 64..(k + 1) * 64]);
-    let (t0, t1, t2, t3) = (quarter(0), quarter(1), quarter(2), quarter(3));
+    // `U8x64::lut256` splits the 256-entry table into 16 rows of 16 bytes
+    // and looks each row up with an in-lane byte shuffle, so no byte crosses
+    // a 128-bit lane: native on every x86 tier from SSSE3 up, a plain loop
+    // only on the scalar backend.
     let zero = U8x64::splat(0);
-    let lookup = |idx: U8x64| -> U8x64 {
-        // `permute_bytes` reads the low 6 bits of each index.
-        let bit6 = idx.shl_epi16(1).movemask();
-        let bit7 = idx.movemask();
-        let low = U8x64::mask_blend(bit6, t0.permute_bytes(idx), t1.permute_bytes(idx));
-        let high = U8x64::mask_blend(bit6, t2.permute_bytes(idx), t3.permute_bytes(idx));
-        U8x64::mask_blend(bit7, low, high)
-    };
-
-    let (chunks, tail) = magnitudes.as_chunks::<64>();
-    for (w, chunk) in chunks.iter().enumerate() {
-        let r = lookup(U8x64::from_array(*chunk));
-        r.copy_to_slice(&mut out_magnitudes[w * 64..(w + 1) * 64]);
-        out_signs[w] = signs[w] & (!r.cmpeq_mask(zero) | U8x64::from_array(*chunk).cmpeq_mask(zero));
+    let (in_chunks, tail) = magnitudes.as_chunks::<64>();
+    let (out_chunks, out_tail) = out_magnitudes[..n].as_chunks_mut::<64>();
+    for (w, (chunk, out)) in in_chunks.iter().zip(out_chunks).enumerate() {
+        let m = U8x64::from_array(*chunk);
+        let r = m.lut256(table);
+        r.copy_to_slice(out);
+        // Keep the sign where the result is nonzero or the input is `-0`.
+        out_signs[w] = signs[w] & (!r.cmpeq_mask(zero) | m.cmpeq_mask(zero));
     }
-    let mut w = chunks.len();
+    let mut w = in_chunks.len();
     if !tail.is_empty() {
         let mut padded = [0u8; 64];
         padded[..tail.len()].copy_from_slice(tail);
-        let r = lookup(U8x64::from_array(padded)).to_array();
-        out_magnitudes[w * 64..n].copy_from_slice(&r[..tail.len()]);
-        // Padding lanes are input `-0` candidates (magnitude 0), so the
-        // keep-`-0` rule would pass their junk sign bits; mask them off.
-        let kept = !U8x64::from_array(r).cmpeq_mask(zero) | U8x64::from_array(padded).cmpeq_mask(zero);
-        out_signs[w] = signs[w] & kept & live64(tail.len());
+        let m = U8x64::from_array(padded);
+        let r = m.lut256(table);
+        out_tail.copy_from_slice(&r.to_array()[..tail.len()]);
+        // Padding lanes look like input `-0` (magnitude 0), so the keep-`-0`
+        // rule would pass their junk sign bits; mask them off.
+        out_signs[w] = signs[w] & (!r.cmpeq_mask(zero) | m.cmpeq_mask(zero)) & live64(tail.len());
         w += 1;
     }
     for s in &mut out_signs[w..] {

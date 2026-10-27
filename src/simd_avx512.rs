@@ -762,6 +762,32 @@ impl U8x64 {
         Self(unsafe { _mm512_shuffle_epi8(self.0, idx.0) })
     }
 
+    /// 256-entry byte table lookup: lane `i` becomes `table[self[i]]`.
+    ///
+    /// Built from 16-entry in-lane shuffles: the table is 16 rows of 16
+    /// bytes, the low nibble of each index selects the byte within a row
+    /// and the high nibble selects the row. No byte crosses a 128-bit lane,
+    /// so every x86 tier from SSSE3 up runs it in vector registers.
+    #[inline(always)]
+    pub fn lut256(self, table: &[u8; 256]) -> Self {
+        // SAFETY: AVX-512F+BW are compiled in for this type's realization
+        // (as for `shuffle_bytes` above). Each 16-byte load reads
+        // `table[16 * k..16 * k + 16]` with `k < 16`.
+        unsafe {
+            let nibble = _mm512_set1_epi8(0x0F);
+            let lo = _mm512_and_si512(self.0, nibble);
+            let hi = _mm512_and_si512(_mm512_srli_epi16::<4>(self.0), nibble);
+            let mut acc = _mm512_setzero_si512();
+            for k in 0..16 {
+                let row = _mm_loadu_si128(table.as_ptr().add(16 * k).cast::<__m128i>());
+                let hit = _mm512_shuffle_epi8(_mm512_broadcast_i32x4(row), lo);
+                let here = _mm512_cmpeq_epi8_mask(hi, _mm512_set1_epi8(k as i8));
+                acc = _mm512_mask_mov_epi8(acc, here, hit);
+            }
+            Self(acc)
+        }
+    }
+
     /// Sum all 64 bytes into a single `u64` without wrapping.
     ///
     /// Uses `_mm512_sad_epu8` (groups of 8 bytes → u64 lanes) then horizontal add.
