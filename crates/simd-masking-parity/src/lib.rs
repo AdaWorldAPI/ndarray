@@ -2020,7 +2020,8 @@ fn check_mul_add_single_rounding() -> Result<(), u32> {
     // neighbour (ties-away or ties-toward-zero fail it). Round 5 sits on the
     // edges of the vector path's domain (see `edge_lanes_f64`).
     let mut unfused_differs = 0usize;
-    let (mut emulation_wrong, mut vector_pairs, mut mixed_pairs) = (0usize, 0usize, 0usize);
+    let (mut emulation_wrong, mut vector_pairs, mut mixed_pairs, mut exact_product_pairs) =
+        (0usize, 0usize, 0usize, 0usize);
     // (1 + 2^-26)(1 + 2^-27) = 1 + 2^-26 + 2^-27 + 2^-53: 2^-53 is half an ulp, a tie.
     let (ya, yb) = (1.0f64 + f64::EPSILON * 2f64.powi(26), 1.0f64 + f64::EPSILON * 2f64.powi(25));
     for round in 0..6144u32 {
@@ -2082,6 +2083,12 @@ fn check_mul_add_single_rounding() -> Result<(), u32> {
                     (false, false) => {}
                     _ => mixed_pairs += 1,
                 }
+                // In domain or with an exact product: the vector path's repair.
+                let exact = |i: usize| [a[i], b[i]].iter().any(|x| *x == 0.0 || !x.is_finite());
+                let repaired = |i: usize| ok(i) || exact(i);
+                if repaired(2 * p) && repaired(2 * p + 1) && !(ok(2 * p) && ok(2 * p + 1)) {
+                    exact_product_pairs += 1;
+                }
             }
             for i in 0..8 {
                 if !same64(emulated_fma_f64_unguarded(a[i], b[i], c[i]), oracle_fma_f64(a[i], b[i], c[i])) {
@@ -2116,6 +2123,9 @@ fn check_mul_add_single_rounding() -> Result<(), u32> {
     }
     if mixed_pairs < 256 {
         return Err(0x11F4);
+    }
+    if exact_product_pairs < 128 {
+        return Err(0x11F5);
     }
     Ok(())
 }
@@ -2168,7 +2178,8 @@ fn emulated_fma_f64_unguarded(a: f64, b: f64, c: f64) -> f64 {
 ///   `2^960`), one inside with `|c| == 2^960`, so the pair is mixed;
 /// * lanes 4, 6: lanes the emulation gets wrong outside the domain (a product
 ///   whose error terms underflow; a product above `f64::MAX`), `|a|` just above
-///   `2^460`, infinities, NaN and zeros;
+///   `2^460`, and a zero, infinity or NaN in `a` or `b` (the exact-product
+///   repair, which keeps the pair in the vector) against every kind of `c`;
 /// * lanes 5, 7: inside, so pairs (4, 5) and (6, 7) are mixed and a widened
 ///   guard sends the witness lanes to the vector path.
 fn edge_lanes_f64(rng: &mut SplitMix64) -> ([f64; 8], [f64; 8], [f64; 8]) {
@@ -2270,13 +2281,17 @@ fn edge_lanes_f64(rng: &mut SplitMix64) -> ([f64; 8], [f64; 8], [f64; 8]) {
             c[6] = with_exp(rng, 1023 + 700);
         }
         _ => {
+            // A zero, infinity or NaN in a or b, against every kind of c.
             let special = [f64::INFINITY, f64::NEG_INFINITY, f64::NAN, 0.0, -0.0];
-            a[6] = special[(rng.next() % 5) as usize];
-            b[6] = {
+            let s = special[(rng.next() % 5) as usize];
+            let x = {
                 let e = 1023 + rng.next() % 64;
                 with_exp(rng, e)
             };
-            c[6] = if rng.next() & 1 == 0 { -0.0 } else { with_exp(rng, 1023) };
+            (a[6], b[6]) = if rng.next() & 1 == 0 { (s, x) } else { (x, s) };
+            let cs = [0.0, -0.0, f64::INFINITY, f64::NEG_INFINITY, f64::NAN];
+            let k = rng.next() % 7;
+            c[6] = if k < 5 { cs[k as usize] } else { with_exp(rng, 1023) };
         }
     }
     (a, b, c)

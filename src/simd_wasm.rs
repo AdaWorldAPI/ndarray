@@ -45,10 +45,21 @@
 //!     IEEE TC 2008), including for subnormal results.
 //!   - `F64x8`: Dekker's exact product, two-sum with `c`, a rounded-to-odd sum
 //!     of the two error terms, then one rounding (the same paper's emulated
-//!     FMA). It needs no overflow or underflow in the split, so a v128 pair whose
-//!     lanes leave `2^-460 <= |a|, |b| <= 2^460`, `|c| <= 2^960` (or are NaN,
-//!     infinite or zero) is computed lane by lane with the integer FMA in
-//!     `simd_fma.rs` (no libm call, so no run-time CPU dispatch).
+//!     FMA). It needs no overflow or underflow in the split, so it runs only on
+//!     lanes with `2^-460 <= |a|, |b| <= 2^460` and `|c| <= 2^960`. A lane whose
+//!     `a` or `b` is a zero, an infinity or NaN has an exact product, so
+//!     `a * b + c` rounds once and is used instead, still in the vector. A v128
+//!     pair with any other lane is computed lane by lane with the integer FMA
+//!     in `simd_fma.rs` (no libm call, so no run-time CPU dispatch).
+//!
+//!     The bounds have margin, measured against a hardware FMA with the guard
+//!     removed: the emulation first fails for products near `2^-1000` (Dekker's
+//!     error terms underflow; operands near `2^-497`) and for products above
+//!     `f64::MAX`. Given the bounds on `a` and `b`, `|c| <= 2^960` is not needed
+//!     for exactness (`c + a * b` cannot overflow when `|a * b| <= 2^920`); it
+//!     excludes infinite and NaN `c`, which the two-sum would turn into NaN.
+//!     Measured on V8 (node 22): ~6-9 ns per element on the vector path, ~50-75
+//!     ns on the lane path, ~1 ns for an unfused multiply-add.
 //! * **reduce_sum.** Uses a balanced tree reduction (pairwise v128 adds)
 //!   rather than the scalar fallback's sequential left-fold, so the result
 //!   can differ in the last ULP — the same reduction-order tolerance the
@@ -561,6 +572,17 @@ pub mod wasm32_simd {
                 );
                 if i64x2_all_true(ok) {
                     return fma_f64_emulated(a, b, c);
+                }
+                // A lane whose `a` or `b` is a zero, an infinity or NaN has an
+                // exact product (a signed zero, an infinity or NaN), so
+                // `a * b + c` rounds once: the IEEE result, and the same identity
+                // `simd_fma::fma_f64` starts with. Such pairs stay in the vector.
+                let ordinary = |x: v128| {
+                    v128_and(f64x2_lt(f64x2_abs(x), f64x2_splat(f64::INFINITY)), f64x2_ne(x, f64x2_splat(0.0)))
+                };
+                let exact_product = v128_not(v128_and(ordinary(a), ordinary(b)));
+                if i64x2_all_true(v128_or(ok, exact_product)) {
+                    return v128_bitselect(fma_f64_emulated(a, b, c), f64x2_add(f64x2_mul(a, b), c), ok);
                 }
                 let lane = |i: usize| match i {
                     0 => crate::simd_fma::fma_f64(
