@@ -380,6 +380,7 @@ mod tests {
         let mean = sum / N as f64;
         let var = (sum_sq - N as f64 * mean * mean) / (N - 1) as f64;
         let z = mean / (var / N as f64).sqrt();
+        eprintln!("3σ gate: tol {TOL}, n {N}: sm9 {cov9:.4}, i8 {cov8:.4}, paired z {z:.1}");
         assert!(cov9 >= COVERAGE_3SIGMA, "sm9 coverage {cov9:.4} below 3σ at tol {TOL}");
         assert!(cov8 < COVERAGE_3SIGMA, "i8 coverage {cov8:.4} unexpectedly reaches 3σ at tol {TOL}");
         assert!(z > 3.0, "paired z {z:.1} not significant at 3σ");
