@@ -344,6 +344,49 @@ mod tests {
         assert_eq!(lane.iter().filter(|x| x.is_nan()).count(), 22);
     }
 
+    /// The 3σ gate: at a tolerance fixed before measuring, the fraction of
+    /// inputs whose table error stays within it must reach 0.9973 (the
+    /// two-sided 3σ coverage). On 200,000 independent uniform inputs over
+    /// [-4, 4], sign-magnitude passes and i8 fails, and the paired mean
+    /// difference of the errors is far above 3 standard errors.
+    ///
+    /// The tolerance 0.010 sits between the two formats' measured 99.73%
+    /// error quantiles at r = 4 (about 0.0079 and 0.0157), so neither half of
+    /// the gate is true by construction.
+    #[test]
+    fn three_sigma_coverage_gate_passes_for_sm9_and_fails_for_i8() {
+        const TOL: f64 = 0.010;
+        const N: usize = 200_000;
+        const COVERAGE_3SIGMA: f64 = 0.9973;
+        let t = Tables::new(4.0);
+        let mut s = 0xD1B5_4A32_D192_ED03u64;
+        let (mut in8, mut in9) = (0usize, 0usize);
+        let (mut sum, mut sum_sq) = (0.0f64, 0.0f64);
+        for _ in 0..N {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            // 53 random bits to a uniform x in [-4, 4).
+            let x = -4.0 + 8.0 * ((s >> 11) as f64 / (1u64 << 53) as f64);
+            let e8 = (t.tanh_i8(x) - x.tanh()).abs();
+            let e9 = (t.tanh_sm9(x) - x.tanh()).abs();
+            in8 += usize::from(e8 <= TOL);
+            in9 += usize::from(e9 <= TOL);
+            let d = e8 - e9;
+            sum += d;
+            sum_sq += d * d;
+        }
+        let (cov8, cov9) = (in8 as f64 / N as f64, in9 as f64 / N as f64);
+        let mean = sum / N as f64;
+        let var = (sum_sq - N as f64 * mean * mean) / (N - 1) as f64;
+        let z = mean / (var / N as f64).sqrt();
+        assert!(cov9 >= COVERAGE_3SIGMA, "sm9 coverage {cov9:.4} below 3σ at tol {TOL}");
+        assert!(cov8 < COVERAGE_3SIGMA, "i8 coverage {cov8:.4} unexpectedly reaches 3σ at tol {TOL}");
+        assert!(z > 3.0, "paired z {z:.1} not significant at 3σ");
+        // Anti-vacuity: i8 is not merely a hair below the line.
+        assert!(cov8 < 0.99, "i8 coverage {cov8:.4}: the gate barely separates the formats");
+    }
+
     /// The sign-magnitude table is odd by construction; check it, and check
     /// that it is more exact than the i8 table at every tested range.
     #[test]
