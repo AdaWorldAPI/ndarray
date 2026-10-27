@@ -1181,7 +1181,8 @@ impl Neg for I32x16 {
 
 // x86-shared API on the mask: `to_bitmask` exists on every x86 arm (and NEON);
 // the x86-64-v2 arm takes this realization, so it needs it too. Only on
-// `F32Mask16`, as on x86 — `F64Mask8` has no `to_bitmask` there.
+// `F32Mask16`; `F64Mask8` below carries it on every arm since the NaN/presence
+// bijection (`not_nan_f64_to_mask`) reads it.
 impl F32Mask16 {
     /// Lane `i` of the comparison is bit `i` of the result.
     ///
@@ -1195,6 +1196,14 @@ impl F32Mask16 {
     /// ```
     #[inline(always)]
     pub fn to_bitmask(self) -> u16 {
+        self.0
+    }
+}
+
+impl F64Mask8 {
+    /// Lane `i` of the comparison is bit `i` of the result.
+    #[inline(always)]
+    pub fn to_bitmask(self) -> u8 {
         self.0
     }
 }

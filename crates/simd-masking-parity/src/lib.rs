@@ -36,28 +36,36 @@
 //! U8x64`) and the `F32x16` ↔ `I32x16` casts; `0x11xx` `F32x16` / `F64x8`
 //! `mul_add` rounding once, bit for bit against an exact integer reference (no
 //! `mul_add`, so no libm in the binary); `0x12xx` the `I32x16` gemmlowp requantization
-//! methods against an independent `i128` reference. `main.rs` (native / qemu) and
+//! methods against an independent `i128` reference; `0x13xx` the NaN / presence
+//! bijection (`not_nan_*_to_mask`, `nan_where_clear_*`, `presence_nan_mismatches_*`)
+//! against a bit-pattern NaN reference; `0x139xx`–`0x13Cxx` the SQL comparisons over
+//! a NULL=NaN lane and `mask_not_under` (SQL `NOT` under presence) against a
+//! bit-pattern ordering. `main.rs` (native / qemu) and
 //! `selfcheck()` (the wasm cdylib export, driven by `run.mjs`) both call
 //! [`run`].
 
 use ndarray::simd::{
-    blend_i32, eq_i32_to_mask, eq_i32_to_mask_under, eq_u32_strided_to_mask, eq_u32_to_mask, eq_u32_to_mask_under,
-    eq_u32_via_to_mask, eq_u64_to_mask, eq_u8_to_mask, ge_i32_to_mask, ge_i32_to_mask_under, ge_u64_to_mask,
-    ge_u8_to_mask, gt_i32_to_mask, gt_i32_to_mask_under, gt_u64_to_mask, gt_u8_to_mask, le_i32_to_mask,
-    le_i32_to_mask_under, le_u64_to_mask, le_u8_to_mask, lt_i32_to_mask, lt_i32_to_mask_under, lt_u64_to_mask,
-    lt_u8_to_mask, mask_all, mask_and, mask_and_assign, mask_andnot, mask_andnot_assign, mask_any, mask_gather_u32,
-    mask_gather_u32_under, mask_not, mask_not_assign, mask_or, mask_or_assign, mask_scatter_or_u16, mask_scatter_or_u32, mask_set_range,
+    blend_i32, eq_f32_to_mask, eq_f64_to_mask, eq_i32_to_mask, eq_i32_to_mask_under, eq_u32_strided_to_mask,
+    eq_u32_to_mask, eq_u32_to_mask_under, eq_u32_via_to_mask, eq_u64_to_mask, eq_u8_to_mask, ge_f32_to_mask,
+    ge_f64_to_mask, ge_i32_to_mask, ge_i32_to_mask_under, ge_u64_to_mask, ge_u8_to_mask, gt_f32_to_mask,
+    gt_f64_to_mask, gt_i32_to_mask, gt_i32_to_mask_under, gt_u64_to_mask, gt_u8_to_mask, le_f32_to_mask,
+    le_f64_to_mask, le_i32_to_mask, le_i32_to_mask_under, le_u64_to_mask, le_u8_to_mask, lt_f32_to_mask,
+    lt_f64_to_mask, lt_i32_to_mask, lt_i32_to_mask_under, lt_u64_to_mask, lt_u8_to_mask, mask_all, mask_and,
+    mask_and_assign, mask_andnot, mask_andnot_assign, mask_any, mask_gather_u32, mask_gather_u32_under, mask_not,
+    mask_not_assign, mask_not_under, mask_or, mask_or_assign, mask_scatter_or_u16, mask_scatter_or_u32, mask_set_range,
     mask_shift_morton, mask_ternlog, mask_ternlog_any, mask_ternlog_assign, mask_ternlog_popcount, mask_xor,
     mask_xor_assign, masked_group_sum_i32, masked_group_sum_i32_via, masked_key_run_count_u32, masked_max_i32,
-    masked_min_i32, masked_strided_group_sum, masked_sum_i32, masked_sum_wrapping_add_i32, ne_i32_to_mask,
-    ne_i32_to_mask_under, ne_u32_to_mask, ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask, lut9, lut_u8,
-    ternary_match_strided16_to_mask, ternary_match_strided_to_mask, ternary_match_u32_to_mask,
-    ternary_match_u32_to_mask_under, ternary_match_u64_to_mask, ternary_match_u64_to_mask_under, ternlog, F32x16,
-    F64x8, I16x32, I32x16, I8x16, KeyRunCarry, MortonDir, U32x16, U64x8, U8x16,
+    masked_min_i32, masked_strided_group_sum, masked_sum_i32, masked_sum_wrapping_add_i32, nan_where_clear_f32,
+    nan_where_clear_f64, ne_f32_to_mask, ne_f64_to_mask, ne_i32_to_mask, ne_i32_to_mask_under, ne_u32_to_mask,
+    ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask, lut9, lut_u8, not_nan_f32_to_mask, not_nan_f64_to_mask,
+    presence_nan_mismatches_f32, presence_nan_mismatches_f64, ternary_match_strided16_to_mask,
+    ternary_match_strided_to_mask, ternary_match_u32_to_mask, ternary_match_u32_to_mask_under,
+    ternary_match_u64_to_mask, ternary_match_u64_to_mask_under, ternlog, F32x16, F64x8, I16x32, I32x16, I8x16,
+    KeyRunCarry, MortonDir, U32x16, U64x8, U8x16,
 };
 
 /// Number of check groups [`run`] executes (for the log line only).
-pub const CHECKS: usize = 21;
+pub const CHECKS: usize = 23;
 
 /// The wasm export: identical to [`run`], `extern "C"` so `run.mjs` can call it.
 #[no_mangle]
@@ -72,7 +80,8 @@ pub fn run() -> u32 {
         check_mask_algebra, check_care_match, check_masked_reductions, check_blend, check_morton_shift,
         check_predicates_under, check_set_range, check_unsigned_compare_to_mask, check_gather_scatter_group,
         check_f64x8_compare, check_i8x16_u8x16_lanes, check_care_match16, check_narrow_ladder,
-        check_mul_add_single_rounding, check_fixedpoint_requant, check_lut9, check_lut_u8,
+        check_mul_add_single_rounding, check_fixedpoint_requant, check_nan_presence_bijection,
+        check_sql_null_predicates, check_lut9, check_lut_u8,
     ];
     for g in groups {
         if let Err(code) = g() {
@@ -951,7 +960,7 @@ fn check_mask_algebra() -> Result<(), u32> {
             if mask_all(&missing, n) || (n > 1 && !mask_any(&missing)) {
                 return Err(0x624);
             }
-            if n % 64 != 0 {
+            if !n.is_multiple_of(64) {
                 let mut tail_only = zero.clone();
                 tail_only[nw - 1] = 1u64 << (n % 64);
                 if !mask_any(&tail_only) || mask_all(&tail_only, n) {
@@ -2789,4 +2798,307 @@ mod oracle_tests {
             assert!(w.to_bits() == g.to_bits() || (w.is_nan() && g.is_nan()), "f32 {x:e} {y:e} {z:e}: {g:e} vs {w:e}");
         }
     }
+}
+
+// ── 0x13xx: the NaN / presence bijection ─────────────────────────────────────
+//
+// `presence bit i == 0  ⇔  values[i] is NaN`, held by three primitives: the
+// lane → mask derivation (`not_nan_*_to_mask`), the mask → lane stamp
+// (`nan_where_clear_*`) and the witness (`presence_nan_mismatches_*`). The
+// reference classifies NaN from the BIT PATTERN (exponent all ones, mantissa
+// non-zero) and never compares a float, so it shares nothing with the
+// realization's ordered `simd_eq`. Edge values: quiet and signalling-pattern
+// NaN, negative NaN, full payload, ±inf (exponent all ones but NOT NaN), ±0,
+// the smallest subnormal, MAX. Lengths cover every lane-group boundary of the
+// 8-lane f64 and 16-lane f32 packers.
+
+const NAN_LENS: [usize; 12] = [0, 1, 7, 8, 15, 16, 17, 63, 64, 65, 130, 200];
+
+fn nan_bits_f64(b: u64) -> bool {
+    (b >> 52) & 0x7FF == 0x7FF && b & ((1u64 << 52) - 1) != 0
+}
+
+fn nan_bits_f32(b: u32) -> bool {
+    (b >> 23) & 0xFF == 0xFF && b & ((1u32 << 23) - 1) != 0
+}
+
+fn nan_lane_f64(n: usize, rng: &mut SplitMix64) -> Vec<f64> {
+    const EDGES: [u64; 11] = [
+        0x7FF8_0000_0000_0000, 0xFFF8_0000_0000_0000, 0x7FF0_0000_0000_0001, 0x7FFF_FFFF_FFFF_FFFF,
+        0x7FF0_0000_0000_0000, 0xFFF0_0000_0000_0000, 0x0000_0000_0000_0000, 0x8000_0000_0000_0000,
+        0x0000_0000_0000_0001, 0x7FEF_FFFF_FFFF_FFFF, 0x3FF0_0000_0000_0000,
+    ];
+    (0..n)
+        .map(|_| {
+            let r = rng.next();
+            if r.is_multiple_of(3) {
+                f64::from_bits(EDGES[(r >> 8) as usize % EDGES.len()])
+            } else {
+                f64::from_bits(rng.next())
+            }
+        })
+        .collect()
+}
+
+fn nan_lane_f32(n: usize, rng: &mut SplitMix64) -> Vec<f32> {
+    const EDGES: [u32; 11] = [
+        0x7FC0_0000, 0xFFC0_0000, 0x7F80_0001, 0x7FFF_FFFF, 0x7F80_0000, 0xFF80_0000, 0x0000_0000, 0x8000_0000,
+        0x0000_0001, 0x7F7F_FFFF, 0x3F80_0000,
+    ];
+    (0..n)
+        .map(|_| {
+            let r = rng.next();
+            if r.is_multiple_of(3) {
+                f32::from_bits(EDGES[(r >> 8) as usize % EDGES.len()])
+            } else {
+                f32::from_bits(rng.next() as u32)
+            }
+        })
+        .collect()
+}
+
+fn check_nan_presence_bijection() -> Result<(), u32> {
+    let mut rng = SplitMix64(0x0BAD_C0DE_F00D_0013);
+    let mut nan_rows = 0usize;
+    let mut witnessed = 0u64;
+    for (li, &n) in NAN_LENS.iter().enumerate() {
+        let code = li as u32;
+        let words = words_for(n);
+        let v64 = nan_lane_f64(n, &mut rng);
+        let v32 = nan_lane_f32(n, &mut rng);
+
+        // lane → mask, against the bit-pattern reference; surplus word and tail zero.
+        let mut got = vec![u64::MAX; words + 1];
+        not_nan_f64_to_mask(&v64, &mut got);
+        if got != reference_mask(n, words + 1, |i| !nan_bits_f64(v64[i].to_bits())) {
+            return Err(0x1300 | code);
+        }
+        nan_rows += v64.iter().filter(|x| nan_bits_f64(x.to_bits())).count();
+        let mut got32 = vec![u64::MAX; words + 1];
+        not_nan_f32_to_mask(&v32, &mut got32);
+        if got32 != reference_mask(n, words + 1, |i| !nan_bits_f32(v32[i].to_bits())) {
+            return Err(0x1310 | code);
+        }
+
+        // A random presence plane with set bits past `n` (dead bits).
+        let mut presence: Vec<u64> = (0..words + 1).map(|_| rng.next()).collect();
+        if !n.is_multiple_of(64) {
+            presence[n / 64] |= !0u64 << (n % 64);
+        }
+        let bit = |p: &[u64], i: usize| (p[i / 64] >> (i % 64)) & 1 == 1;
+
+        // Witness, against the reference count over live rows only.
+        let want = (0..n)
+            .filter(|&i| bit(&presence, i) == nan_bits_f64(v64[i].to_bits()))
+            .count() as u64;
+        if presence_nan_mismatches_f64(&v64, &presence) != want {
+            return Err(0x1340 | code);
+        }
+        witnessed += want;
+        let want32 = (0..n)
+            .filter(|&i| bit(&presence, i) == nan_bits_f32(v32[i].to_bits()))
+            .count() as u64;
+        if presence_nan_mismatches_f32(&v32, &presence) != want32 {
+            return Err(0x1350 | code);
+        }
+
+        // mask → lane: NaN exactly under clear bits, set rows bit-identical.
+        let mut s64 = v64.clone();
+        nan_where_clear_f64(&presence, &mut s64);
+        for i in 0..n {
+            let ok = if bit(&presence, i) {
+                s64[i].to_bits() == v64[i].to_bits()
+            } else {
+                nan_bits_f64(s64[i].to_bits())
+            };
+            if !ok {
+                return Err(0x1320 | code);
+            }
+        }
+        let mut s32 = v32.clone();
+        nan_where_clear_f32(&presence, &mut s32);
+        for i in 0..n {
+            let ok = if bit(&presence, i) {
+                s32[i].to_bits() == v32[i].to_bits()
+            } else {
+                nan_bits_f32(s32[i].to_bits())
+            };
+            if !ok {
+                return Err(0x1330 | code);
+            }
+        }
+
+        // The bijection: a derived plane agrees with its lane; stamping NaN under
+        // (random AND derived) makes the lane agree with that plane, and
+        // re-deriving returns the plane bit for bit.
+        let mut derived = vec![0u64; words];
+        not_nan_f64_to_mask(&v64, &mut derived);
+        if presence_nan_mismatches_f64(&v64, &derived) != 0 {
+            return Err(0x1360 | code);
+        }
+        let mut plane = vec![0u64; words];
+        mask_and(&presence[..words], &derived, &mut plane);
+        let mut stamped = v64.clone();
+        nan_where_clear_f64(&plane, &mut stamped);
+        let mut again = vec![0u64; words];
+        not_nan_f64_to_mask(&stamped, &mut again);
+        if presence_nan_mismatches_f64(&stamped, &plane) != 0 || again != plane {
+            return Err(0x1370 | code);
+        }
+        let mut derived32 = vec![0u64; words];
+        not_nan_f32_to_mask(&v32, &mut derived32);
+        let mut plane32 = vec![0u64; words];
+        mask_and(&presence[..words], &derived32, &mut plane32);
+        let mut stamped32 = v32.clone();
+        nan_where_clear_f32(&plane32, &mut stamped32);
+        let mut again32 = vec![0u64; words];
+        not_nan_f32_to_mask(&stamped32, &mut again32);
+        if presence_nan_mismatches_f32(&v32, &derived32) != 0
+            || presence_nan_mismatches_f32(&stamped32, &plane32) != 0
+            || again32 != plane32
+        {
+            return Err(0x1380 | code);
+        }
+    }
+    // Anti-vacuity: NaN rows of the edge kinds exist, and the witness fires.
+    if nan_rows < 40 {
+        return Err(0x13F0);
+    }
+    if witnessed < 100 {
+        return Err(0x13F1);
+    }
+    Ok(())
+}
+
+// ── 0x139x–0x13Cx: SQL comparisons over a NULL=NaN lane, and NOT under presence ─
+//
+// The reference orders floats by their BIT PATTERN (sign-magnitude to a signed
+// key, `-0` and `+0` both key 0) and treats a NaN pattern as NULL, so it never
+// performs a float compare. TRUE(x op t) = neither is NULL and key(x) op key(t);
+// FALSE = neither is NULL and not key(x) op key(t). `mask_not_under(T, presence)`
+// must equal FALSE exactly when `presence` is the PREDICATE's presence (the
+// column's, or empty for a NULL threshold): a bare complement would wrongly set
+// every NULL row, and the column's plane under a NULL threshold every present one.
+
+fn key64(b: u64) -> Option<i128> {
+    if nan_bits_f64(b) {
+        return None;
+    }
+    let mag = (b & 0x7FFF_FFFF_FFFF_FFFF) as i128;
+    Some(if b >> 63 == 1 { -mag } else { mag })
+}
+
+fn key32(b: u32) -> Option<i128> {
+    if nan_bits_f32(b) {
+        return None;
+    }
+    let mag = (b & 0x7FFF_FFFF) as i128;
+    Some(if b >> 31 == 1 { -mag } else { mag })
+}
+
+/// `op` 0..6 = lt, le, gt, ge, eq, ne over the reference keys.
+fn ref_rel(op: usize, a: i128, b: i128) -> bool {
+    match op {
+        0 => a < b,
+        1 => a <= b,
+        2 => a > b,
+        3 => a >= b,
+        4 => a == b,
+        _ => a != b,
+    }
+}
+
+fn check_sql_null_predicates() -> Result<(), u32> {
+    type F64Op = fn(&[f64], f64, &mut [u64]);
+    type F32Op = fn(&[f32], f32, &mut [u64]);
+    let ops64: [F64Op; 6] =
+        [lt_f64_to_mask, le_f64_to_mask, gt_f64_to_mask, ge_f64_to_mask, eq_f64_to_mask, ne_f64_to_mask];
+    let ops32: [F32Op; 6] =
+        [lt_f32_to_mask, le_f32_to_mask, gt_f32_to_mask, ge_f32_to_mask, eq_f32_to_mask, ne_f32_to_mask];
+    let thr64: [u64; 9] = [
+        0x7FF8_0000_0000_0000, 0x0000_0000_0000_0000, 0x8000_0000_0000_0000, 0x7FF0_0000_0000_0000,
+        0xFFF0_0000_0000_0000, 0x0000_0000_0000_0001, 0x3FF0_0000_0000_0000, 0xBFF0_0000_0000_0000,
+        0x7FEF_FFFF_FFFF_FFFF,
+    ];
+    let thr32: [u32; 9] = [
+        0x7FC0_0000, 0x0000_0000, 0x8000_0000, 0x7F80_0000, 0xFF80_0000, 0x0000_0001, 0x3F80_0000, 0xBF80_0000,
+        0x7F7F_FFFF,
+    ];
+    let mut rng = SplitMix64(0x5A1_0000_0000_0013);
+    let mut ieee_not_would_leak = 0usize;
+    let mut true_bits = 0usize;
+    for &n in NAN_LENS.iter() {
+        let words = words_for(n);
+        let mut v64 = nan_lane_f64(n, &mut rng);
+        let mut v32 = nan_lane_f32(n, &mut rng);
+        // Plant the thresholds into the lane so `=` and the boundaries of `<=`/`>=` fire.
+        for i in (0..n).step_by(5) {
+            v64[i] = f64::from_bits(thr64[i % thr64.len()]);
+            v32[i] = f32::from_bits(thr32[i % thr32.len()]);
+        }
+        let mut present = vec![0u64; words];
+        not_nan_f64_to_mask(&v64, &mut present);
+        let mut present32 = vec![0u64; words];
+        not_nan_f32_to_mask(&v32, &mut present32);
+        for (ti, (&t64, &t32)) in thr64.iter().zip(&thr32).enumerate() {
+            for op in 0..6 {
+                let code = ((ti as u32) << 4) | op as u32;
+                // f64 TRUE plane, with a surplus word that must come back zero.
+                let mut got = vec![u64::MAX; words + 1];
+                ops64[op](&v64, f64::from_bits(t64), &mut got);
+                let truth = |i: usize| match (key64(v64[i].to_bits()), key64(t64)) {
+                    (Some(a), Some(b)) => Some(ref_rel(op, a, b)),
+                    _ => None,
+                };
+                if got != reference_mask(n, words + 1, |i| truth(i) == Some(true)) {
+                    return Err(0x1_3900 | code);
+                }
+                true_bits += (0..n).filter(|&i| truth(i) == Some(true)).count();
+                // NOT under the predicate's presence (empty for a NULL
+                // threshold) is exactly the FALSE plane.
+                let pred_present = if key64(t64).is_some() {
+                    present.clone()
+                } else {
+                    vec![0u64; words]
+                };
+                let mut neg = vec![0u64; words];
+                mask_not_under(&got[..words], &pred_present, &mut neg);
+                if neg != reference_mask(n, words, |i| truth(i) == Some(false)) {
+                    return Err(0x1_3B00 | code);
+                }
+                // Rows a bare complement would wrongly report as FALSE: NULL rows.
+                ieee_not_would_leak += (0..n)
+                    .filter(|&i| truth(i).is_none() && key64(t64).is_some())
+                    .count();
+
+                let mut got32 = vec![u64::MAX; words + 1];
+                ops32[op](&v32, f32::from_bits(t32), &mut got32);
+                let truth32 = |i: usize| match (key32(v32[i].to_bits()), key32(t32)) {
+                    (Some(a), Some(b)) => Some(ref_rel(op, a, b)),
+                    _ => None,
+                };
+                if got32 != reference_mask(n, words + 1, |i| truth32(i) == Some(true)) {
+                    return Err(0x1_3A00 | code);
+                }
+                let pred_present32 = if key32(t32).is_some() {
+                    present32.clone()
+                } else {
+                    vec![0u64; words]
+                };
+                let mut neg32 = vec![0u64; words];
+                mask_not_under(&got32[..words], &pred_present32, &mut neg32);
+                if neg32 != reference_mask(n, words, |i| truth32(i) == Some(false)) {
+                    return Err(0x1_3C00 | code);
+                }
+            }
+        }
+    }
+    // Anti-vacuity: TRUE rows exist, and NULL rows exist where a bare NOT would leak.
+    if true_bits < 1000 {
+        return Err(0x13F2);
+    }
+    if ieee_not_would_leak < 500 {
+        return Err(0x13F3);
+    }
+    Ok(())
 }
