@@ -3876,15 +3876,13 @@ pub fn odd_lut_u8(
         U8x64::mask_blend(bit7, low, high)
     };
 
-    let mut chunks = magnitudes.chunks_exact(64);
-    let mut w = 0;
-    for chunk in &mut chunks {
-        let r = lookup(U8x64::from_slice(chunk));
+    let (chunks, tail) = magnitudes.as_chunks::<64>();
+    for (w, chunk) in chunks.iter().enumerate() {
+        let r = lookup(U8x64::from_array(*chunk));
         r.copy_to_slice(&mut out_magnitudes[w * 64..(w + 1) * 64]);
         out_signs[w] = signs[w] & !r.cmpeq_mask(zero);
-        w += 1;
     }
-    let tail = chunks.remainder();
+    let mut w = chunks.len();
     if !tail.is_empty() {
         let mut padded = [0u8; 64];
         padded[..tail.len()].copy_from_slice(tail);
@@ -5675,7 +5673,7 @@ mod tests {
         let mut table = [0u8; 256];
         for t in table.iter_mut().skip(1) {
             let r = odd_lut_xorshift(&mut s) as u8;
-            *t = if r % 7 == 0 { 0 } else { r };
+            *t = if r.is_multiple_of(7) { 0 } else { r };
         }
         for &n in &[0usize, 1, 63, 64, 65, 127, 128, 129, 255, 256, 300, 1024 + 17] {
             for shift in [0usize, 1, 37, 101] {

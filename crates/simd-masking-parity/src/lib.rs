@@ -2648,7 +2648,7 @@ fn check_odd_lut_u8() -> Result<(), u32> {
     let mut table = [0u8; 256];
     for t in table.iter_mut().skip(1) {
         let r = rng.next() as u8;
-        *t = if r % 7 == 0 { 0 } else { r };
+        *t = if r.is_multiple_of(7) { 0 } else { r };
     }
     const ODD_LUT_LENS: [usize; 11] = [0, 1, 63, 64, 65, 127, 128, 129, 255, 256, 300];
     for (case, &n) in ODD_LUT_LENS.iter().enumerate() {
@@ -2662,7 +2662,7 @@ fn check_odd_lut_u8() -> Result<(), u32> {
                 .map(|i| if pass == 0 { stride(i) } else { rng.next() as u8 })
                 .collect();
             let mut signs: Vec<u64> = (0..words).map(|_| rng.next()).collect();
-            if words > 0 && n % 64 != 0 {
+            if words > 0 && !n.is_multiple_of(64) {
                 // Junk sign bits past the last row must not reach the output.
                 signs[words - 1] |= u64::MAX << (n % 64);
             }
