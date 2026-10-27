@@ -41,9 +41,7 @@ impl SignedMagnitude9 {
 
     /// Handle sign in the accumulator without a signed-8-bit operand.
     fn mul_add(self, rhs: Self, acc: i32) -> Result<i32, ProbeError> {
-        if (self.negative && self.magnitude == 0)
-            || (rhs.negative && rhs.magnitude == 0)
-        {
+        if (self.negative && self.magnitude == 0) || (rhs.negative && rhs.magnitude == 0) {
             return Err(ProbeError::Nan);
         }
         let product = i32::from(self.magnitude) * i32::from(rhs.magnitude);
@@ -127,7 +125,11 @@ mod tests {
             match lane.value() {
                 Ok(v) => {
                     assert!((-255..=255).contains(&v));
-                    let expected = if code < 256 { code as i16 } else { -((code & 255) as i16) };
+                    let expected = if code < 256 {
+                        code as i16
+                    } else {
+                        -((code & 255) as i16)
+                    };
                     assert_eq!(v, expected);
                     valid += 1;
                 }
@@ -162,10 +164,10 @@ mod tests {
     fn sixty_four_lane_sign_plane_matches_wide_reference() {
         assert_eq!(std::mem::size_of::<MagnitudeSignBlock64>(), 72);
         let lhs = std::array::from_fn(|i| match i % 4 {
-            0 => 0x0FF,               // +255
-            1 => 0x1FF,               // -255
-            2 => 0x000,               // +0
-            _ => 0x100 | i as u16,   // negative magnitudes 3..63
+            0 => 0x0FF,            // +255
+            1 => 0x1FF,            // -255
+            2 => 0x000,            // +0
+            _ => 0x100 | i as u16, // negative magnitudes 3..63
         });
         let rhs = std::array::from_fn(|i| match i % 3 {
             0 => 0x1FF,

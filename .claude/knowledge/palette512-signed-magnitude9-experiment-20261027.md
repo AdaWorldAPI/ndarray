@@ -27,7 +27,7 @@ acc = (sa XOR sb) ? (acc - product) : (acc + product)
 
 That is the proposed **sign-aware multiply-accumulate**: sign handling belongs inside the operation, not in a prior full-buffer decode. The scalar probe uses checked `i32` accumulation and fails closed on NaN or overflow, distinctly. SIMD fusion is a *hypothesis*, not an implemented vector kernel or performance result.
 
-**Important:** x86 VNNI `VPDPBUSD` accepts `u8 × i8`, not two arbitrary `u8` magnitudes. A legal lowering must prove a correction or masking identity against the oracle. No SIMD efficiency is presumed.
+**Important:** x86 VNNI `VPDPBUSD` accepts `u8 × i8`, not two arbitrary `u8` magnitudes. Unsigned × unsigned exists elsewhere: AVX-VNNI-INT8 `VPDPBUUD`, NEON `UDOT`, wasm `extmul_*_u8x16`, or zero-extend plus `pmaddwd`. That list is from documentation, not measured. A lowering that splits lanes by `sign_a ^ sign_b` into two unsigned accumulators (`dot = pos - neg`) needs no correction identity. No SIMD efficiency is presumed.
 
 ## Semantic separation from current Palette256
 
@@ -35,13 +35,13 @@ That is the proposed **sign-aware multiply-accumulate**: sign handling belongs i
 
 An actual **512-archetype** codebook would need a 9-bit index and new pair-LUT addressing: a flat 512×512×u16 table is 512 KiB, compared with 128 KiB at 256²; a 512×512×u16 compose table adds another 512 KiB rather than the existing 64 KiB u8 table. Any sign-symmetric factorization must be individually proven for the relevant distance/compose algebra. The present PR adds **none** of these tables.
 
-Other independent invalid states (SQL NULL, missing, unknown, denied) cannot be conflated with the single NaN sentinel. Quack's predicate/null semantics remain its own contract.
+**NaN = `-0` = presence clear over a stored 0** (settled in #381). Where the column has a presence plane, NaN is a cleared presence bit with magnitude 0 stored under it, and "sign set, magnitude 0" is the same NaN written without the plane. All of −255..=+255 then stay values, and NaN never reaches a multiply: lanes are selected by `presence_a & presence_b & filter` first. A codec that needs *several* distinguishable invalid states (NULL, unknown, denied) still needs more than one codeword. Quack's predicate/null semantics remain its own contract.
 
 ## First executable evidence (this PR)
 
 `cargo test --example palette512_probe`
 
-Five tests (not executed by this session):
+Five tests:
 
 1. Enumerate all 512 codewords and prove round-trip, **511 numeric + 1 NaN**.
 2. Enumerate all **262,144 ordered pairs** of codewords; compare sign-aware `mul_add` against an independently decoded signed multiplication plus a nonzero accumulator.
@@ -49,7 +49,7 @@ Five tests (not executed by this session):
 4. Verify NaN propagation even when the other operand is zero.
 5. Distinguish overflow from NaN, including positive and negative accumulator boundaries.
 
-This is a reference-quality **scalar example**, not SIMD code, a production API, or a calibrated numerical comparison. All five tests are **NOT RUN** locally (Rust toolchain unavailable). No CI result is asserted.
+This is a reference-quality **scalar example**, not SIMD code, a production API, or a calibrated numerical comparison. All five tests pass (`cargo test --example palette512_probe`, rustc 1.99.0), including the 262,144-pair check.
 
 ## Admission and falsification
 
