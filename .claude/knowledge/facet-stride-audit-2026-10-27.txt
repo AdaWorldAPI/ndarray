@@ -1,0 +1,291 @@
+awk: cannot open "crates/burn/src/backend.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/element.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/lib.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/ops/adaptive_avgpool.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/ops/avgpool.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/ops/base.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/ops/bool_tensor.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/ops/conv.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/ops/deform_conv.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/ops/grid_sample.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/ops/int_tensor.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/ops/interpolate.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/ops/macros.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/ops/maxpool.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/ops/mod.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/ops/module.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/ops/padding.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/ops/qtensor.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/ops/quantization.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/ops/simd/avgpool.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/ops/simd/base.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/ops/simd/binary.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/ops/simd/binary_elemwise.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/ops/simd/cmp.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/ops/simd/conv.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/ops/simd/maxpool.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/ops/simd/mod.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/ops/simd/unary.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/ops/transaction.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/parallel.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/rand.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/sharing.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/storage.rs" (No such file or directory)
+awk: cannot open "crates/burn/src/tensor.rs" (No such file or directory)
+examples/ternlog_popcnt_gap_probe.rs:87  R1 SHUFFLE-AS-COMPUTE  let l = _mm512_shuffle_epi8(lut, _mm512_and_si512(t, lo));
+examples/ternlog_popcnt_gap_probe.rs:88  R1 SHUFFLE-AS-COMPUTE  let h = _mm512_shuffle_epi8(lut, _mm512_and_si512(_mm512_srli_epi16::<4>(t), lo));
+src/bitwise.rs:120  R1 SHUFFLE-AS-COMPUTE  let popcnt_lo = lookup.shuffle_bytes(lo);
+src/bitwise.rs:121  R1 SHUFFLE-AS-COMPUTE  let popcnt_hi = lookup.shuffle_bytes(hi);
+src/bitwise.rs:165  R1 SHUFFLE-AS-COMPUTE  let popcnt_lo = lookup.shuffle_bytes(lo);
+src/bitwise.rs:166  R1 SHUFFLE-AS-COMPUTE  let popcnt_hi = lookup.shuffle_bytes(hi);
+src/hpc/perm.rs:192  R1 SHUFFLE-AS-COMPUTE  let composed = U8x64::from_array(self.idx).permute_bytes(U8x64::from_array(next.idx));
+src/hpc/perm.rs:268  R1 SHUFFLE-AS-COMPUTE  .permute_bytes(U8x64::from_array(self.idx))
+src/hpc/perm.rs:285  R1 SHUFFLE-AS-COMPUTE  .permute_bytes(U8x64::from_array(self.idx))
+src/hpc/perm.rs:307  R1 SHUFFLE-AS-COMPUTE  U8x64::from_slice(s).permute_bytes(idx).copy_to_slice(o);
+src/simd_amx.rs:508  R3 U8-I8-MIX  output[i] = (energy[i] * scale).round().clamp(0.0, 127.0) as i8;
+src/simd_avx.rs:107  R1 SHUFFLE-AS-COMPUTE  let cnt = _mm_add_epi8(_mm_shuffle_epi8(lookup, lo), _mm_shuffle_epi8(lookup, hi));
+src/simd_avx.rs:159  R3 U8-I8-MIX  .map(|(&x, &y)| (x as i8 as i64) * (y as i8 as i64))
+src/simd_avx.rs:613  R1 SHUFFLE-AS-COMPUTE  Self(halves2!(_mm_shuffle_epi8, self.0, idx.0))
+src/simd_avx.rs:632  R2 SCALAR-IN-SIMD  for k in 0..16 {
+src/simd_avx.rs:634  R1 SHUFFLE-AS-COMPUTE  let hit = _mm_shuffle_epi8(row, lo);
+src/simd_avx.rs:635  R3 U8-I8-MIX  let here = _mm_cmpeq_epi8(hi, _mm_set1_epi8(k as i8));
+src/simd_avx2.rs:375  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:380  R1 SHUFFLE-AS-COMPUTE  let cnt = _mm256_add_epi8(_mm256_shuffle_epi8(lookup, lo), _mm256_shuffle_epi8(lookup, hi));
+src/simd_avx2.rs:392  R1 SHUFFLE-AS-COMPUTE  let cnt = _mm256_add_epi8(_mm256_shuffle_epi8(lookup, lo), _mm256_shuffle_epi8(lookup, hi));
+src/simd_avx2.rs:455  R3 U8-I8-MIX  .map(|(&x, &y)| (x as i8 as i64) * (y as i8 as i64))
+src/simd_avx2.rs:576  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:585  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:596  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:612  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:622  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:636  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:648  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:668  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:680  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:703  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:714  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:722  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:731  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:796  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:847  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:905  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:914  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:923  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:934  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:950  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:960  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:974  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:986  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:999  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:1012  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:1025  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:1038  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:1049  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:1057  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:1122  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:1152  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:1340  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx2.rs:1348  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx2.rs:1356  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx2.rs:1364  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx2.rs:1372  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx2.rs:1450  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx2.rs:1458  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx2.rs:1466  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx2.rs:1474  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx2.rs:1482  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx2.rs:1526  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx2.rs:1537  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx2.rs:1558  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx2.rs:1577  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx2.rs:1586  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx2.rs:1594  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx2.rs:1602  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx2.rs:1615  R2 SCALAR-IN-SIMD  for lane in 0..4 {
+src/simd_avx2.rs:1617  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:1629  R2 SCALAR-IN-SIMD  for lane in 0..4 {
+src/simd_avx2.rs:1631  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:1651  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx2.rs:1659  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx2.rs:1669  R2 SCALAR-IN-SIMD  for lane in 0..4 {
+src/simd_avx2.rs:1671  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:2085  R2 SCALAR-IN-SIMD  for c in 0..16 {
+src/simd_avx2.rs:2103  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:2124  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:2425  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:2544  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:2563  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:2650  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx2.rs:2658  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx2.rs:2666  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx2.rs:2669  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx2.rs:2677  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx2.rs:2685  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx2.rs:2693  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx2.rs:2911  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:2919  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:2927  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:2935  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:2946  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:2956  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:3019  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:3036  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:3055  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:3063  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:3111  R3 U8-I8-MIX  Self(unsafe { _mm256_set1_epi8(v as i8) })
+src/simd_avx2.rs:3327  R1 SHUFFLE-AS-COMPUTE  Self(unsafe { _mm256_shuffle_epi8(self.0, idx.0) })
+src/simd_avx2.rs:3348  R2 SCALAR-IN-SIMD  for k in 0..16 {
+src/simd_avx2.rs:3350  R1 SHUFFLE-AS-COMPUTE  let hit = _mm256_shuffle_epi8(_mm256_broadcastsi128_si256(row), lo);
+src/simd_avx2.rs:3351  R3 U8-I8-MIX  let here = _mm256_cmpeq_epi8(hi, _mm256_set1_epi8(k as i8));
+src/simd_avx2.rs:3369  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx2.rs:3574  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx2.rs:3587  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx2.rs:3601  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx2.rs:3648  R1 SHUFFLE-AS-COMPUTE  .permute_bytes(U8x32::from_array(idx))
+src/simd_avx2.rs:3650  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx2.rs:3663  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx2.rs:3674  R1 SHUFFLE-AS-COMPUTE  let counts = lut.shuffle_bytes(U8x32::from_array(idx)).to_array();
+src/simd_avx2.rs:3675  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx2.rs:3745  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:3782  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx2.rs:3847  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx2.rs:3862  R2 SCALAR-IN-SIMD  for lane in [0usize, 31, 32, 63] {
+src/simd_avx2.rs:4340  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx512.rs:529  R3 U8-I8-MIX  Self(unsafe { _mm512_set1_epi8(v as i8) })
+src/simd_avx512.rs:729  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx512.rs:762  R1 SHUFFLE-AS-COMPUTE  Self(unsafe { _mm512_shuffle_epi8(self.0, idx.0) })
+src/simd_avx512.rs:781  R2 SCALAR-IN-SIMD  for k in 0..16 {
+src/simd_avx512.rs:783  R1 SHUFFLE-AS-COMPUTE  let hit = _mm512_shuffle_epi8(_mm512_broadcast_i32x4(row), lo);
+src/simd_avx512.rs:784  R3 U8-I8-MIX  let here = _mm512_cmpeq_epi8_mask(hi, _mm512_set1_epi8(k as i8));
+src/simd_avx512.rs:828  R1 SHUFFLE-AS-COMPUTE  _mm512_permutexvar_epi8(idx, v)
+src/simd_avx512.rs:1177  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx512.rs:1316  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx512.rs:1338  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx512.rs:1759  R2 SCALAR-IN-SIMD  for c in 0..16 {
+src/simd_avx512.rs:3114  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx512.rs:3115  R3 U8-I8-MIX  let nibble = ((packed >> (4 * i)) & 0xf) as i8;
+src/simd_avx512.rs:3174  R3 U8-I8-MIX  let clamped = _mm_min_epu8(_mm_abs_epi8(v), _mm_set1_epi8(0x7f_u8 as i8));
+src/simd_avx512.rs:3474  R2 SCALAR-IN-SIMD  for k in 0..8 {
+src/simd_avx512.rs:3522  R2 SCALAR-IN-SIMD  for k in 0..8 {
+src/simd_avx512.rs:3568  R3 U8-I8-MIX  core::arch::x86_64::_mm256_min_epu8(raw_abs, core::arch::x86_64::_mm256_set1_epi8(0x7f_u8 as i8));
+src/simd_avx512.rs:3576  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx512.rs:3630  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx512.rs:3640  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx512.rs:3677  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx512.rs:5108  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx512.rs:5114  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx512.rs:5117  R1 SHUFFLE-AS-COMPUTE  let perm = v.permute_bytes(U8x64::from_slice(&idx));
+src/simd_avx512.rs:5126  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx512.rs:5132  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx512.rs:5135  R1 SHUFFLE-AS-COMPUTE  let perm = v.permute_bytes(U8x64::from_slice(&idx));
+src/simd_avx512.rs:5138  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx512.rs:5192  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx512.rs:5198  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx512.rs:5212  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx512.rs:5284  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx512.rs:5285  R3 U8-I8-MIX  a[i] = (i + 1) as i8;
+src/simd_avx512.rs:5286  R3 U8-I8-MIX  b[i] = (64 - i) as i8;
+src/simd_avx512.rs:5293  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx512.rs:5314  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx512.rs:5315  R3 U8-I8-MIX  a[i] = (i as i32 - 32) as i8;
+src/simd_avx512.rs:5321  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx512.rs:5333  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx512.rs:5334  R3 U8-I8-MIX  a[i] = (i + 1) as i8;
+src/simd_avx512.rs:5335  R3 U8-I8-MIX  b[i] = (32 - i) as i8;
+src/simd_avx512.rs:5341  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx512.rs:5349  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx512.rs:5350  R3 U8-I8-MIX  a[i] = (i as i32 - 16) as i8;
+src/simd_avx512.rs:5356  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx512.rs:5383  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx512.rs:5390  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx512.rs:5414  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx512.rs:5421  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx512.rs:5452  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_fixedpoint.rs:275  R3 U8-I8-MIX  out[base + k] = r[k] as i8;
+src/simd_fixedpoint.rs:282  R3 U8-I8-MIX  out[i] = v.max(act_min).min(act_max) as i8;
+src/simd_neon.rs:639  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_neon.rs:651  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_neon.rs:671  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_neon.rs:683  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_neon.rs:695  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_neon.rs:704  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_neon.rs:713  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_neon.rs:852  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_neon.rs:1005  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_neon.rs:1017  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_neon.rs:1030  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_neon.rs:1043  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_neon.rs:1056  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_neon.rs:1069  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_neon.rs:1081  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_neon.rs:1090  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_neon.rs:1208  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_neon.rs:1235  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_neon.rs:1267  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_neon.rs:1375  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_neon.rs:1477  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_neon.rs:1857  R2 SCALAR-IN-SIMD  for c in 0..16 {
+src/simd_neon.rs:1946  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_neon.rs:1985  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_neon.rs:2511  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_neon.rs:2512  R3 U8-I8-MIX  let nibble = ((packed >> (4 * i)) & 0xf) as i8;
+src/simd_neon.rs:2567  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_neon.rs:2603  R2 SCALAR-IN-SIMD  for k in 0..8 {
+src/simd_neon.rs:2670  R2 SCALAR-IN-SIMD  for k in 0..8 {
+src/simd_nightly/bf16_types.rs:80  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_nightly/bf16_types.rs:90  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_nightly/bf16_types.rs:143  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_nightly/bf16_types.rs:153  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_nightly/exotic_methods.rs:39  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_nightly/exotic_methods.rs:70  R2 SCALAR-IN-SIMD  for lane in 0..4 {
+src/simd_nightly/exotic_methods.rs:72  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_nightly/exotic_methods.rs:107  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_nightly/exotic_methods.rs:138  R2 SCALAR-IN-SIMD  for lane in 0..4 {
+src/simd_nightly/exotic_methods.rs:140  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_nightly/exotic_methods.rs:172  R2 SCALAR-IN-SIMD  for lane in 0..4 {
+src/simd_nightly/exotic_methods.rs:174  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_nightly/exotic_methods.rs:212  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_nightly/exotic_methods.rs:242  R2 SCALAR-IN-SIMD  for lane in 0..2 {
+src/simd_nightly/exotic_methods.rs:244  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_nightly/exotic_methods.rs:279  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_nightly/exotic_methods.rs:310  R2 SCALAR-IN-SIMD  for lane in 0..2 {
+src/simd_nightly/exotic_methods.rs:312  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_nightly/exotic_methods.rs:344  R2 SCALAR-IN-SIMD  for lane in 0..2 {
+src/simd_nightly/exotic_methods.rs:346  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_nightly/f16_types.rs:175  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_nightly/f16_types.rs:185  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_nightly/f32_types.rs:103  R2 SCALAR-IN-SIMD  for (o, &i) in out.iter_mut().zip(idx.iter()) {
+src/simd_nightly/u8_types.rs:390  R1 SHUFFLE-AS-COMPUTE  acc = here.select(rows.swizzle_dyn(low), acc);
+src/simd_nightly/u_word_types.rs:42  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_nightly/u_word_types.rs:59  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_nightly/u_word_types.rs:684  R2 SCALAR-IN-SIMD  for c in 0..16 {
+src/simd_nightly/w1a_types.rs:531  R2 SCALAR-IN-SIMD  for k in 0..8 {
+src/simd_nightly/w1a_types.rs:663  R2 SCALAR-IN-SIMD  for k in 0..8 {
+src/simd_scalar.rs:810  R3 U8-I8-MIX  v.clamp(-128, 127) as i8
+src/simd_scalar.rs:1885  R3 U8-I8-MIX  let nibble = ((packed >> (4 * i)) & 0xf) as i8;
+src/simd_scalar.rs:1937  R3 U8-I8-MIX  let mut o = [0 as i8; 16];
+src/simd_scalar.rs:1954  R3 U8-I8-MIX  let mut o = [0 as i8; 16];
+src/simd_scalar.rs:1971  R3 U8-I8-MIX  let mut o = [0 as i8; 16];
+src/simd_scalar.rs:1988  R3 U8-I8-MIX  let mut o = [0 as i8; 16];
+src/simd_wasm.rs:302  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_wasm.rs:311  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_wasm.rs:320  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_wasm.rs:452  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_wasm.rs:678  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_wasm.rs:687  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_wasm.rs:798  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_wasm.rs:922  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_wasm.rs:923  R3 U8-I8-MIX  let nibble = ((packed >> (4 * i)) & 0xf) as i8;
+src/simd_wasm.rs:1423  R2 SCALAR-IN-SIMD  for c in 0..16 {
+src/simd_wasm.rs:1506  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_wasm.rs:1832  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_wasm.rs:1922  R3 U8-I8-MIX  (self.next_u64() & 0xFF) as u8 as i8
+
+  ███ FACET STRIDE VIOLATION ███   '{0}..{15}' -f $128.split()
+  A 128-bit value is 16 u8 positions; one mov reads them all. Shuffles only
+  MOVE bytes; never assemble a result from them. Scalar loops live only in
+  simd_scalar.rs (on AVX2 use the 2 x U8x32 / 128-bit-half split). u8 has no
+  sign: do not mix u8 and i8.
+  Genuine exception: `// facet-stride: ok <reason>` on or above the line.
+  Rule text: CLAUDE.md § FACET STRIDE.
+  248 violation(s).

@@ -253,5 +253,19 @@
       "Write(./.git/**)",
       "Edit(./.git/**)"
     ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/facet-stride-guard.sh --hook",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
   }
 }

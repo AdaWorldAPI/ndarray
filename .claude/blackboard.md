@@ -1,3 +1,16 @@
+## 2026-10-27 — ███ FACET STRIDE ███ ruled P0; guard wired
+
+- **Rule (operator, verbatim shape):** `'{0}..{15}' -f $128.split()`. A 128-bit value is sixteen u8 positions; one mov reads them all; nothing moves to read one. Full text: `CLAUDE.md` § FACET STRIDE (top of file).
+  1. Never compute with byte shuffles (`shuffle_bytes`, `permute_bytes`, `*_shuffle_epi8`, `permutexvar_epi8`, `swizzle_dyn`, `vqtbl*`): no lookups or folds assembled from shuffles + masks. A shuffle is only a genuine byte move that one mov-cast cannot do.
+  2. Scalar loops only in `simd_scalar.rs`. Forbidden in AVX2/AVX-512/AVX/NEON/wasm/AMX/nightly backends when a split exists (AVX2: 2 x U8x32).
+  3. u8 has no sign: never mix u8 and i8.
+- **Precedent:** `ternary_match_strided16_to_mask` (`src/simd_masking_ops.rs`) — 16-byte registers loaded with plain moves, every byte position read in place.
+- **How it was found:** PR #382 `odd_lut_u8` went through four-permute lookup (5.6x slower than a scalar loop on AVX-512 without VBMI), then a 16-row in-lane `vpshufb` + mask fold (`U8x64::lut256`, faster on this host but the forbidden shape, and its nightly arm did not compile: `Mask::select` needs the `Select` trait). Both are replaced by the facet-stride form.
+- **Guard:** `.claude/hooks/facet-stride-guard.sh`, PostToolUse on Edit|Write|MultiEdit (`.claude/settings.json`). Checks added lines: R1 shuffle-as-compute, R2 scalar loop in a non-scalar backend, R3 u8/i8 mix. Exit 2 blocks. Waiver: `// facet-stride: ok <reason>` (a reason is required). Also `--diff <rev>` and `--all`.
+- **Guard verified both ways:** fires on the `lut256` diff (R1 x4, R2 x3, R3 x3) and on probe lines for each rule (hook exit 2); silent on clean added lines (exit 0); honours a waiver with a reason, rejects one without.
+- **Baseline audit (not clean, burn-down list):** 248 hits outside tests — R1 25, R2 195, R3 28 — in `.claude/knowledge/facet-stride-audit-2026-10-27.txt`. Heaviest: `simd_avx2.rs`, `simd_avx512.rs`, `simd_neon.rs`. Existing violations are never precedent for new ones.
+- **Open:** the polyfill `shuffle_bytes` disagrees across backends when an index has bit 7 set (AVX-512/nightly zero the byte, scalar and AVX2-array read the low nibble), and AVX2 `U8x64::shuffle_bytes` / `permute_bytes` are scalar loops. Haiku sweeps of scalar loops, u8/i8 mixing and shuffle call sites are in flight; findings land here after the orchestrator reads them.
+
 ## 2026-10-27 — wasm `mul_add` certification audit (#378): relaxed-SIMD, proof obligations, X11
 
 - **Relaxed SIMD, tested:** no source path selects on `relaxed-simd` (only the `simd_wasm.rs` module note mentions it). The parity wasm built with `+simd128` and with `+simd128,+relaxed-simd` has a byte-identical code section (621,383 bytes); only the `name` and `target_features` custom sections differ. Byte scan of the code section for relaxed-SIMD opcodes (`0xFD`, sub-opcode `0x100..0x113`): 0 hits; a control calling `f64x2_relaxed_madd` scans to 1 hit. The relaxed build passes under node 22. New arm `scripts/masking-parity.sh wasm-relaxed` and a CI step in `realization/wasm + scalar × wasm32`, as a guard against a relaxed path appearing later. What it establishes: the shipped arithmetic is the same under both flags for this compiler; it does not test an engine executing relaxed instructions, since none are emitted.

@@ -2,6 +2,61 @@
 
 > HPC Rust Transformation — porting `adaworldapi/rustynum` features into this ndarray fork.
 
+## ███ FACET STRIDE ███ — P0, read before writing any SIMD or byte code
+
+```
+   ╔══════════════════════════════════════════════════════════════════╗
+   ║                                                                  ║
+   ║      '{0}..{15}' -f $128.split()                                 ║
+   ║                                                                  ║
+   ║      A 128-bit value IS sixteen u8 positions.                    ║
+   ║      ONE mov reads all sixteen. Nothing moves to read one.       ║
+   ║                                                                  ║
+   ╚══════════════════════════════════════════════════════════════════╝
+```
+
+Operator-ruled 2026-10-27, after a session built a byte table lookup out of
+sixteen in-lane shuffles and masks three times over. **This is the best
+practice. Do not re-derive it, do not argue it, apply it.** The precedent is
+`ternary_match_strided16_to_mask` in `src/simd_masking_ops.rs`: it loads each
+16-byte register with plain moves and reads every byte position in place,
+with no shuffle anywhere.
+
+1. **Read positions, don't move them.** A 128-bit (or 256/512-bit) value is
+   read as `{0}..{15}` positions by the load that brought it in. Never use a
+   byte shuffle, permute, swizzle or table-lookup instruction
+   (`shuffle_bytes`, `permute_bytes`, `*_shuffle_epi8`, `permutexvar_epi8`,
+   `swizzle_dyn`, `vqtbl*`) to compute a result: no lookups assembled from
+   shuffles plus masks, no folds or reductions across rows built from
+   shuffles. A shuffle is only for a genuine byte MOVE from one position to
+   another, and only when a cast with one mov cannot do it.
+2. **Scalar only in the scalar backend.** A per-lane scalar loop belongs in
+   `src/simd_scalar.rs` and nowhere else. In `simd_avx2.rs`, `simd_avx512.rs`,
+   `simd_avx.rs`, `simd_neon.rs`, `simd_wasm.rs`, `simd_amx.rs` and
+   `simd_nightly/`, a scalar loop is forbidden when a split realization exists
+   (on AVX2: two `U8x32` / two 128-bit halves).
+3. **u8 has no sign. Never mix u8 with i8.** No `as i8` on unsigned data in
+   SIMD code, no signed compare on unsigned bytes, no u8 <-> i8 conversion
+   lines. Use the unsigned type end to end.
+
+**Guard:** `.claude/hooks/facet-stride-guard.sh` runs after every Edit/Write
+(wired in `.claude/settings.json`) and checks the lines the change adds:
+R1 shuffle-as-compute, R2 scalar loop in a non-scalar backend, R3 u8/i8 mix.
+A hit blocks the edit (exit 2) with the rule text. A genuine exception carries
+`// facet-stride: ok <reason>` on the line or the line above; a marker without
+a reason is rejected.
+
+```sh
+bash .claude/hooks/facet-stride-guard.sh --diff origin/master   # lines a branch adds
+bash .claude/hooks/facet-stride-guard.sh --all                  # whole-tree audit
+```
+
+The existing tree is NOT clean: the 2026-10-27 audit found 248 hits outside
+tests (25 R1, 195 R2, 28 R3), listed in
+`.claude/knowledge/facet-stride-audit-2026-10-27.txt`. They are a burn-down
+list, not a precedent: existing code that violates the shape is never a
+reason to write more of it.
+
 ## Quick Context
 - **What**: High-performance linear algebra with pluggable BLAS backends (Native SIMD, MKL, OpenBLAS)
 - **Source**: `adaworldapi/rustynum` — reference GEMM, SIMD, and FFI implementations
