@@ -968,7 +968,6 @@ pub use crate::simd_masking_ops::{
     ne_u32_to_mask_under,
     ne_u64_to_mask,
     ne_u8_to_mask,
-    odd_lut_u8,
     ternary_match_strided16_to_mask,
     ternary_match_strided_to_mask,
     ternary_match_u32_to_mask,
@@ -986,7 +985,7 @@ pub use crate::simd_masking_ops::{
     SYM_EMPTY_I64,
 };
 #[cfg(feature = "std")]
-pub use crate::simd_stride::{lut_u8, FACET_BYTES};
+pub use crate::simd_stride::{lut9, lut_u8, FACET_BYTES};
 // The popcount that closes the loop on the masks above: `mask_count` in ABI
 // terms. Already public at `ndarray::bitwise::popcount_batch_u64`; re-exported
 // here so a mask producer and its reducer share one import path (the sibling

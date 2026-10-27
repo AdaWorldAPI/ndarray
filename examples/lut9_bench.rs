@@ -1,13 +1,13 @@
-//! Throughput of `odd_lut_u8` against plain table loops.
+//! Throughput of `lut9` against plain table loops.
 //!
 //! Three paths over the same 1 Mi random magnitudes and sign plane:
 //!
 //! * `i8 table`: the i8 `Sym` form, one 255-entry table indexed by the
 //!   signed code (`table[c + 127]`), no sign plane;
-//! * `u8 table + sign`: the scalar form of what `odd_lut_u8` computes, a
+//! * `u8 table + sign`: the scalar form of what `lut9` computes, a
 //!   256-entry lookup plus the sign plane cleared where a nonzero input
 //!   gives 0;
-//! * `odd_lut_u8`: the SIMD primitive.
+//! * `lut9`: the SIMD primitive.
 //!
 //! The scalar and SIMD sign-magnitude outputs are compared before timing.
 //! Reports the best of several runs in ns per element and the CPU features
@@ -16,7 +16,7 @@
 use std::hint::black_box;
 use std::time::Instant;
 
-use ndarray::simd::odd_lut_u8;
+use ndarray::simd::lut9;
 
 const N: usize = 1 << 20;
 const RUNS: usize = 30;
@@ -58,7 +58,7 @@ fn main() {
     // Correctness first: the SIMD output must equal the scalar form.
     let mut out_simd = vec![0u8; N];
     let mut signs_simd = vec![0u64; N / 64];
-    odd_lut_u8(&mags, &signs, &table, &mut out_simd, &mut signs_simd);
+    lut9(&mags, &signs, &table, &mut out_simd, &mut signs_simd);
     let mut out_scalar = vec![0u8; N];
     let mut signs_scalar = vec![0u64; N / 64];
     let scalar = |out: &mut [u8], out_signs: &mut [u64]| {
@@ -89,12 +89,12 @@ fn main() {
         black_box((&out_scalar, &signs_scalar));
     });
     let t_simd = best(|| {
-        odd_lut_u8(black_box(&mags), black_box(&signs), &table, &mut out_simd, &mut signs_simd);
+        lut9(black_box(&mags), black_box(&signs), &table, &mut out_simd, &mut signs_simd);
         black_box((&out_simd, &signs_simd));
     });
 
     println!(
-        "odd_lut_bench: avx512f={} avx512vbmi={} avx2={} neon={}  n={N}",
+        "lut9_bench: avx512f={} avx512vbmi={} avx2={} neon={}  n={N}",
         cfg!(target_feature = "avx512f"),
         cfg!(target_feature = "avx512vbmi"),
         cfg!(target_feature = "avx2"),
@@ -102,5 +102,5 @@ fn main() {
     );
     println!("  i8 table (no sign plane)   {t_i8:6.3} ns/elem");
     println!("  u8 table + sign, scalar    {t_scalar:6.3} ns/elem");
-    println!("  odd_lut_u8                 {t_simd:6.3} ns/elem  ({:.1}x scalar)", t_scalar / t_simd);
+    println!("  lut9                       {t_simd:6.3} ns/elem  ({:.1}x scalar)", t_scalar / t_simd);
 }

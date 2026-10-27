@@ -253,7 +253,7 @@ name = "campq_cascade_probe"
 required-features = ["std"]
 
 [[example]]
-name = "odd_lut_bench"
+name = "lut9_bench"
 required-features = ["std"]
 
 [dependencies]

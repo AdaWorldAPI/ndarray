@@ -50,7 +50,7 @@ use ndarray::simd::{
     mask_shift_morton, mask_ternlog, mask_ternlog_any, mask_ternlog_assign, mask_ternlog_popcount, mask_xor,
     mask_xor_assign, masked_group_sum_i32, masked_group_sum_i32_via, masked_key_run_count_u32, masked_max_i32,
     masked_min_i32, masked_strided_group_sum, masked_sum_i32, masked_sum_wrapping_add_i32, ne_i32_to_mask,
-    ne_i32_to_mask_under, ne_u32_to_mask, ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask, odd_lut_u8, lut_u8,
+    ne_i32_to_mask_under, ne_u32_to_mask, ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask, lut9, lut_u8,
     ternary_match_strided16_to_mask, ternary_match_strided_to_mask, ternary_match_u32_to_mask,
     ternary_match_u32_to_mask_under, ternary_match_u64_to_mask, ternary_match_u64_to_mask_under, ternlog, F32x16,
     F64x8, I16x32, I32x16, I8x16, KeyRunCarry, MortonDir, U32x16, U64x8, U8x16,
@@ -72,7 +72,7 @@ pub fn run() -> u32 {
         check_mask_algebra, check_care_match, check_masked_reductions, check_blend, check_morton_shift,
         check_predicates_under, check_set_range, check_unsigned_compare_to_mask, check_gather_scatter_group,
         check_f64x8_compare, check_i8x16_u8x16_lanes, check_care_match16, check_narrow_ladder,
-        check_mul_add_single_rounding, check_fixedpoint_requant, check_odd_lut_u8, check_lut_u8,
+        check_mul_add_single_rounding, check_fixedpoint_requant, check_lut9, check_lut_u8,
     ];
     for g in groups {
         if let Err(code) = g() {
@@ -2637,11 +2637,11 @@ fn oracle_fma_f64(a: f64, b: f64, c: f64) -> f64 {
     }
 }
 
-// ── 0x14xx: odd_lut_u8 — a 256-entry magnitude table over a sign-magnitude
+// ── 0x14xx: lut9 — a 256-entry magnitude table over a sign-magnitude
 // lane. The reference indexes `table` with a plain array lookup and builds
 // the output sign plane bit by bit; it never calls the primitive.
 
-fn check_odd_lut_u8() -> Result<(), u32> {
+fn check_lut9() -> Result<(), u32> {
     let mut rng = SplitMix64(0x1400_0000_0001);
     // A random table with some zero entries away from index 0, so a sign bit
     // must be cleared at nonzero magnitudes too, and every quarter differs.
@@ -2668,7 +2668,7 @@ fn check_odd_lut_u8() -> Result<(), u32> {
             }
             let mut out = vec![0xAAu8; n + 3];
             let mut out_signs = vec![u64::MAX; words + 1];
-            odd_lut_u8(&mags, &signs, &table, &mut out, &mut out_signs);
+            lut9(&mags, &signs, &table, &mut out, &mut out_signs);
             for i in 0..n {
                 if out[i] != table[mags[i] as usize] {
                     return Err(0x1400 | (pass << 7) | case);
