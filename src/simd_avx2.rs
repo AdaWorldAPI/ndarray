@@ -1675,21 +1675,6 @@ impl U8x64 {
         Self(out)
     }
 
-    /// 256-entry byte table lookup: lane `i` becomes `table[self[i]]`.
-    ///
-    /// Two [`U8x32::lut256`] halves, each 16-entry in-lane shuffles.
-    #[inline(always)]
-    pub fn lut256(self, table: &[u8; 256]) -> Self {
-        let mut out = [0u8; 64];
-        U8x32::from_slice(&self.0[..32])
-            .lut256(table)
-            .copy_to_slice(&mut out[..32]);
-        U8x32::from_slice(&self.0[32..])
-            .lut256(table)
-            .copy_to_slice(&mut out[32..]);
-        Self(out)
-    }
-
     /// Sum all 64 bytes into a single `u64` without wrapping.
     #[inline(always)]
     pub fn sum_bytes_u64(self) -> u64 {
@@ -3325,34 +3310,6 @@ impl U8x32 {
         // SAFETY: AVX2 must be present at run time (caller obligation, not a
         // compile-time guarantee; see `U64x8::avx2_halves`).
         Self(unsafe { _mm256_shuffle_epi8(self.0, idx.0) })
-    }
-
-    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
-    /// 256-entry byte table lookup: lane `i` becomes `table[self[i]]`.
-    ///
-    /// Built from 16-entry in-lane shuffles: the table is 16 rows of 16
-    /// bytes, the low nibble of each index selects the byte within a row
-    /// and the high nibble selects the row. No byte crosses a 128-bit lane,
-    /// so every x86 tier from SSSE3 up runs it in vector registers.
-    #[inline(always)]
-    pub fn lut256(self, table: &[u8; 256]) -> Self {
-        // SAFETY: AVX2 must be present at run time (caller obligation, not a
-        // compile-time guarantee; see `U64x8::avx2_halves`). Each 16-byte
-        // load reads `table[16 * k..16 * k + 16]` with `k < 16`, inside the
-        // 256-byte array.
-        unsafe {
-            let nibble = _mm256_set1_epi8(0x0F);
-            let lo = _mm256_and_si256(self.0, nibble);
-            let hi = _mm256_and_si256(_mm256_srli_epi16::<4>(self.0), nibble);
-            let mut acc = _mm256_setzero_si256();
-            for k in 0..16 {
-                let row = _mm_loadu_si128(table.as_ptr().add(16 * k).cast::<__m128i>());
-                let hit = _mm256_shuffle_epi8(_mm256_broadcastsi128_si256(row), lo);
-                let here = _mm256_cmpeq_epi8(hi, _mm256_set1_epi8(k as i8));
-                acc = _mm256_or_si256(acc, _mm256_and_si256(hit, here));
-            }
-            Self(acc)
-        }
     }
 
     /// Cross-lane byte permute (full 32-byte). AVX2 has no native

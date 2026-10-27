@@ -375,23 +375,6 @@ impl U8x64 {
         self.0.simd_gt(core_u8x64::splat(0x7F)).to_bitmask()
     }
 
-    /// 256-entry byte table lookup: lane `i` becomes `table[self[i]]`.
-    ///
-    /// Four 64-entry `swizzle_dyn` lookups, one per quarter of the table,
-    /// selected by the index's top two bits.
-    #[inline(always)]
-    pub fn lut256(self, table: &[u8; 256]) -> Self {
-        let low = self.0 & core_u8x64::splat(0x3F);
-        let quarter = self.0 >> core_u8x64::splat(6);
-        let mut acc = core_u8x64::splat(0);
-        for q in 0..4u8 {
-            let rows = core_u8x64::from_slice(&table[64 * q as usize..64 * (q as usize + 1)]);
-            let here = quarter.simd_eq(core_u8x64::splat(q));
-            acc = here.select(rows.swizzle_dyn(low), acc);
-        }
-        Self(acc)
-    }
-
     // ── Nibble popcount LUT ────────────────────────────────────────
 
     /// Build the nibble-popcount lookup table (replicated across all 64 bytes).

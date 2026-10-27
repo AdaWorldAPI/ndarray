@@ -1767,15 +1767,6 @@ impl U8x64 {
         }
         Self(out)
     }
-    /// 256-entry byte table lookup: lane `i` becomes `table[self[i]]`.
-    #[inline(always)]
-    pub fn lut256(self, table: &[u8; 256]) -> Self {
-        let mut out = [0u8; 64];
-        for (o, &m) in out.iter_mut().zip(&self.0) {
-            *o = table[m as usize];
-        }
-        Self(out)
-    }
     /// Sum all 64 bytes into a single `u64` without wrapping.
     #[inline(always)]
     pub fn sum_bytes_u64(self) -> u64 {

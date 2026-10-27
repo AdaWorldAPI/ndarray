@@ -3822,10 +3822,9 @@ pub fn ne_u8_to_mask(values: &[u8], needle: u8, out_words: &mut [u64]) {
 /// written as `0`. The presence plane is not read or written: because
 /// `table[0]` must be `0`, a missing row (stored as `+0`) stays `+0`.
 ///
-/// Each 64-row chunk is looked up with [`crate::simd::U8x64::lut256`]: the
-/// table is 16 rows of 16 bytes, the low nibble picks the byte and the high
-/// nibble the row, so the lookup stays inside 128-bit lanes and runs as
-/// in-lane byte shuffles on every x86 tier. The sign plane is 64 rows per
+/// Facet stride: every 16 magnitudes are one 128-bit value whose positions
+/// `{0}..{15}` are read where they sit, and each position addresses the table
+/// directly. No byte is shuffled. The sign plane is 64 rows per
 /// [`crate::simd::U8x64::cmpeq_mask`]. The final partial chunk is padded with
 /// magnitude 0 and goes through the same path, with the padding lanes masked
 /// off the sign plane.
@@ -3872,17 +3871,26 @@ pub fn odd_lut_u8(
     assert!(signs.len() >= words, "odd_lut_u8: signs holds {} words, need {words}", signs.len());
     assert!(out_signs.len() >= words, "odd_lut_u8: out_signs holds {} words, need {words}", out_signs.len());
 
-    // `U8x64::lut256` splits the 256-entry table into 16 rows of 16 bytes
-    // and looks each row up with an in-lane byte shuffle, so no byte crosses
-    // a 128-bit lane: native on every x86 tier from SSSE3 up, a plain loop
-    // only on the scalar backend.
+    // FACET STRIDE, '{0}..{15}' -f $128.split(): sixteen magnitudes are one
+    // 128-bit value, read where they sit; each position addresses the table
+    // directly. No byte is shuffled and no result is assembled from masks.
+    let lookup = |positions: &[u8; 16]| -> [u8; 16] { positions.map(|m| table[usize::from(m)]) };
+    let fill = |chunk: &[u8; 64], out: &mut [u8; 64]| {
+        for (positions, o) in chunk
+            .as_chunks::<16>()
+            .0
+            .iter()
+            .zip(out.as_chunks_mut::<16>().0)
+        {
+            *o = lookup(positions);
+        }
+    };
     let zero = U8x64::splat(0);
     let (in_chunks, tail) = magnitudes.as_chunks::<64>();
     let (out_chunks, out_tail) = out_magnitudes[..n].as_chunks_mut::<64>();
     for (w, (chunk, out)) in in_chunks.iter().zip(out_chunks).enumerate() {
-        let m = U8x64::from_array(*chunk);
-        let r = m.lut256(table);
-        r.copy_to_slice(out);
+        fill(chunk, out);
+        let (m, r) = (U8x64::from_array(*chunk), U8x64::from_array(*out));
         // Keep the sign where the result is nonzero or the input is `-0`.
         out_signs[w] = signs[w] & (!r.cmpeq_mask(zero) | m.cmpeq_mask(zero));
     }
@@ -3890,9 +3898,10 @@ pub fn odd_lut_u8(
     if !tail.is_empty() {
         let mut padded = [0u8; 64];
         padded[..tail.len()].copy_from_slice(tail);
-        let m = U8x64::from_array(padded);
-        let r = m.lut256(table);
-        out_tail.copy_from_slice(&r.to_array()[..tail.len()]);
+        let mut looked_up = [0u8; 64];
+        fill(&padded, &mut looked_up);
+        out_tail.copy_from_slice(&looked_up[..tail.len()]);
+        let (m, r) = (U8x64::from_array(padded), U8x64::from_array(looked_up));
         // Padding lanes look like input `-0` (magnitude 0), so the keep-`-0`
         // rule would pass their junk sign bits; mask them off.
         out_signs[w] = signs[w] & (!r.cmpeq_mask(zero) | m.cmpeq_mask(zero)) & live64(tail.len());

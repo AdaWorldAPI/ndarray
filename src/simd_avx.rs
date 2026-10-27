@@ -613,35 +613,6 @@ impl U8x32 {
         Self(halves2!(_mm_shuffle_epi8, self.0, idx.0))
     }
 
-    /// 256-entry byte table lookup: lane `i` becomes `table[self[i]]`.
-    ///
-    /// Built from 16-entry in-lane shuffles: the table is 16 rows of 16
-    /// bytes, the low nibble of each index selects the byte within a row
-    /// and the high nibble selects the row. No byte crosses a 128-bit lane,
-    /// so every x86 tier from SSSE3 up runs it in vector registers.
-    #[inline(always)]
-    pub fn lut256(self, table: &[u8; 256]) -> Self {
-        let half = |v: __m128i| -> __m128i {
-            // SAFETY: SSSE3 is compiled in on this arm (module docs). Each
-            // 16-byte load reads `table[16 * k..16 * k + 16]` with `k < 16`.
-            unsafe {
-                let nibble = _mm_set1_epi8(0x0F);
-                let lo = _mm_and_si128(v, nibble);
-                let hi = _mm_and_si128(_mm_srli_epi16::<4>(v), nibble);
-                let mut acc = _mm_setzero_si128();
-                for k in 0..16 {
-                    let row = _mm_loadu_si128(table.as_ptr().add(16 * k).cast::<__m128i>());
-                    let hit = _mm_shuffle_epi8(row, lo);
-                    let here = _mm_cmpeq_epi8(hi, _mm_set1_epi8(k as i8));
-                    acc = _mm_or_si128(acc, _mm_and_si128(hit, here));
-                }
-                acc
-            }
-        };
-        let (lo, hi) = split(self.0);
-        Self(join(half(lo), half(hi)))
-    }
-
     /// Interleave the low 8 bytes of each 128-bit half.
     #[inline(always)]
     pub fn unpack_lo_epi8(self, other: Self) -> Self {
