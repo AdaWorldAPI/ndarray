@@ -507,6 +507,11 @@ impl PartialEq for F64x8 {
 pub struct F64Mask8(pub __mmask8);
 
 impl F64Mask8 {
+    /// Lane `i` of the comparison is bit `i` of the result.
+    #[inline(always)]
+    pub fn to_bitmask(self) -> u8 {
+        self.0
+    }
     #[inline(always)]
     pub fn select(self, true_val: F64x8, false_val: F64x8) -> F64x8 {
         F64x8(unsafe { _mm512_mask_blend_pd(self.0, false_val.0, true_val.0) })

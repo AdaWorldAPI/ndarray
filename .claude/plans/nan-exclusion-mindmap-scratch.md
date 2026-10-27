@@ -1,7 +1,12 @@
 # NaN exclusion for masked statistics: scratch mindmap
 
-> **Status: SCRATCH, for later examination.** Nothing here is built, measured
-> or decided. It maps purposes against the benefits and costs of each option,
+> **Status: PARTLY BUILT (2026-10-27).** The NaN / presence bijection is
+> shipped: `not_nan_{f64,f32}_to_mask` (lane → mask), `nan_where_clear_{f64,f32}`
+> (mask → lane) and `presence_nan_mismatches_{f64,f32}` (the witness), with
+> parity group `0x13xx` on every realization. See § "Decision: presence IS NaN"
+> at the end. The masked float fold (S2) and float-output determinism are
+> still open. The rest of this page is the original scratch: it maps purposes
+> against the benefits and costs of each option. It maps purposes against the benefits and costs of each option,
 > so a later session can pick a design without re-deriving the trade-offs.
 > Context: the follow-up to #378 (wasm `mul_add` rounds once on every
 > realization) and lance-graph `D-WFL-DET` (replay determinism).
@@ -212,3 +217,31 @@ are struck.
 **Council status:** halted before Phase 1; nothing was implemented. Q2 alone
 is probably too small for a council (two mask primitives and a convention).
 Q1 and Q3 are not ndarray's to decide.
+
+## Decision: presence IS NaN (operator, 2026-10-27)
+
+On a float lane the presence bit and NaN are one state with two spellings,
+held as a bijection:
+
+```
+presence bit i == 0   ⇔   values[i] is NaN      (for every live row i)
+```
+
+This replaces the premise audit's Q1/Q2 split for float lanes. "Missing" and
+"arithmetic produced NaN" are deliberately merged: a fold can read either
+spelling and gets the same population, and `n` is the popcount of the plane it
+folds, so dilution cannot occur. "Is NaN" is the predicate `x != x`, never a
+bit pattern, so backends that do not preserve NaN payloads (wasm) cannot break
+it. Integer lanes have no NaN; there the presence plane stays the only carrier.
+
+Shipped primitives (`src/simd_masking_ops.rs`, re-exported from `ndarray::simd`):
+
+| direction | function | cost |
+|---|---|---|
+| lane → mask | `not_nan_f64_to_mask`, `not_nan_f32_to_mask` | one ordered `simd_eq` per 8 / 16 lanes |
+| mask → lane | `nan_where_clear_f64`, `nan_where_clear_f32` | one word per 64 rows plus one store per clear bit |
+| witness | `presence_nan_mismatches_f64`, `presence_nan_mismatches_f32` | `popcount(presence XOR derived)` over live rows, no allocation |
+
+`F64Mask8::to_bitmask` was added on the AVX-512, AVX2/AVX, NEON, wasm and
+scalar backends (nightly already had it) so the f64 packer reads one
+spelling on every arm.
