@@ -1,3 +1,63 @@
+## 2026-10-27 — wasm `mul_add` certification audit (#378): relaxed-SIMD, proof obligations, X11
+
+- **Relaxed SIMD, tested:** no source path selects on `relaxed-simd` (only the `simd_wasm.rs` module note mentions it). The parity wasm built with `+simd128` and with `+simd128,+relaxed-simd` has a byte-identical code section (621,383 bytes); only the `name` and `target_features` custom sections differ. Byte scan of the code section for relaxed-SIMD opcodes (`0xFD`, sub-opcode `0x100..0x113`): 0 hits; a control calling `f64x2_relaxed_madd` scans to 1 hit. The relaxed build passes under node 22. New arm `scripts/masking-parity.sh wasm-relaxed` and a CI step in `realization/wasm + scalar × wasm32`, as a guard against a relaxed path appearing later. What it establishes: the shipped arithmetic is the same under both flags for this compiler; it does not test an engine executing relaxed instructions, since none are emitted.
+- **Proof obligations:** `.claude/knowledge/wasm-fma-proof-obligations.md` separates PROVEN (F32 path end to end; F64 no-overflow, Dekker condition `e_a + e_b >= -970` vs the guard's `-920`, TwoSum, the `tl != 0 ⇒ |th| >= 2^-922` lemma, round-to-odd through the midpoint argument incl. subnormal `v`, near-zero cancellation, the exact-product repair, bit-select, mixed pairs) from CITED (Veltkamp split, Dekker product, Knuth TwoSum), TESTED (compiler output per realization; the integer fallback `simd_fma::fma_f64` against the oracle) and OPEN (no mechanized proof). The earlier "~37 binades of margin per operand" is a measurement of where the unguarded algorithm breaks, not part of the proof; the proven margin is 50 binades of product exponent. Guard unchanged.
+- **Bit-select audit:** masks are full 64-bit lanes from `f64x2` compares; both candidates are lane-wise; wasm has no FP exceptions, so discarded-lane NaNs cannot reach a kept lane. No code change.
+- **X11 rewritten** in `coresearch-2026-10-11-simd-fleet.md`: current status first. The superseded wording, kept here as history: "`F32x16::mul_add` is not bit-identical across realizations: wasm without `relaxed-simd` is mul-then-add, with it the host chooses; x86 fuses. lance-graph D-WFL-DET must exclude it".
+- **lance-graph (untouched):** D-WFL-DET (replay determinism) may rely on a verified single-rounding `mul_add` across realizations. D-OIF-4 defines its kernel as multiply then add and must not silently become a fused FMA. Different source-level semantics; neither changes.
+- **Haiku:** `census-counter` ×1 (cross-lane ops in the FMA kernels and dispatchers of `simd_wasm.rs`). Re-ran 2 of its counts (F64 dispatcher `extract_lane` = 6; kernels, any cross-lane op = 0): 0 wrong.
+
+## 2026-10-27 — wasm `mul_add`: certified domain, exact-product repair, the open item closed
+
+- **Closes:** the 2026-10-11 open item "`mul_add` not bit-identical across realizations (wasm)" and coresearch row X11. Both were written before PR #374 (merged 2026-10-24, merge a78de7b). #374 made wasm `F32x16::mul_add` and `F64x8::mul_add` round once. No blackboard entry recorded it.
+- **Fast domains:**
+  - `F32x16`: no guard. Every f32 input is in domain. The product of two f32 is exact in f64, and the f64 sum is rounded to odd before the single rounding to f32 (Boldo & Melquiond, IEEE TC 2008). The f64 sum cannot overflow for f32 operands.
+  - `F64x8` vector path: Dekker product + two-sum + round-to-odd, only when 2^-460 <= |a|,|b| <= 2^460 and |c| <= 2^960. Decided per v128 pair (2 lanes).
+- **Change (path B, new local repair):** a lane whose a or b is a zero, an infinity or NaN has an exact product, so `a * b + c` rounds once. Such pairs now stay in the vector (per-lane select). This is the identity `simd_fma::fma_f64` starts with. Other pairs go lane by lane to the integer FMA `simd_fma::fma_f64` (path C, exact, no libm).
+- **Guard margin, measured here:** scalar copy of the emulation vs hardware FMA on the x86 host, 200,000 samples per point.
+  - Failures start at products near 2^-1000 (operands near 2^-497).
+  - None for |c| up to f64::MAX, given the a,b bounds.
+  - All fail at a ~ 2^1000 (the split overflows).
+  - So the bounds have ~37 binades of margin per operand. The c bound is not needed for exactness; it excludes infinite/NaN c.
+- **Independent reference:** the parity crate's 4608-bit integer oracle `oracle_fma`. It shares no arithmetic with any backend and calls no `mul_add`. It is itself checked against hardware FMA in `oracle_matches_hardware_fma`.
+- **Gap found:** the 0x11xx group reached the F64 lane fallback only through random bit patterns. Widening the lower bound to 2^-600 stayed green.
+- **Tests added:** round 5 (`edge_lanes_f64`) puts lanes on both sides of every bound, |c| == 2^960, mixed pairs, products below the subnormal range and above f64::MAX, and zeros/infinities/NaN in a or b against every kind of c. New anti-vacuity codes:
+  - 0x11F2: >= 256 lanes where the unguarded emulation (a scalar copy) is wrong.
+  - 0x11F3: >= 256 vector-path pairs.
+  - 0x11F4: >= 256 mixed pairs.
+  - 0x11F5: >= 128 repaired pairs.
+- **Disable runs on the wasm arm (each restored), red:**
+  - guard removed (0x1159)
+  - lower bound 2^-520 (0x116c, the new edge round)
+  - a,b upper bound 2^530 (0x115a)
+  - per-pair `all_true` -> `any_true` (0x115c)
+  - f32 round-to-odd dropped (0x112e)
+  - round-to-odd step always up (0x112d)
+  - f64 round-to-odd dropped (0x1150)
+  - repair returns `c` (0x116e)
+  - repair drops `c` (0x116e)
+  - tiny a treated as exact product (0x1161)
+  - large or non-finite c treated as exact product (0x116e)
+- **Disable runs, green, explained:**
+  - lower bound 2^-500: inside the measured margin, within ~3 binades of the onset.
+  - c bound 2^1023: no counterexample exists given the a,b bounds.
+  - Three narrowing disables of the repair predicate (zero not counted, both operands required, only a checked) stay green. The narrowed lanes fall back to the exact integer FMA. These are performance regressions, not correctness errors.
+- **Performance on V8** (node 22, wasm32+simd128, best of 7, noise about +-30%):
+  - F64 vector path ~6.1-6.3 ns/element against ~1.1 ns unfused mul+add. Lane fallback ~50-58 ns/element.
+  - F32 ~3.1 ns against ~0.33 ns.
+  - Exact zeros before the repair: 10% zeros in a -> 19% of pairs on the lane path, ~9-13 ns/element. 50% zeros (ReLU-like) -> 75% of pairs, ~28-33 ns/element.
+  - After the repair: ~7.0 and ~9.3 ns/element. The in-domain path is unchanged.
+  - Random bit patterns: 95.8% of pairs out of domain.
+- **Arms green after the change:** wasm, wasm-scalar, native (x86 AVX-512 host, hardware FMA), and `scripts/wasm-parity.sh`. Parity crate clippy `-D warnings` clean.
+- **Not claimed:**
+  - NaN payload bits (any NaN matches any NaN).
+  - `reduce_sum`: a separate contract, not FMA. Summation order differs per backend; last-ulp differences are documented.
+  - Exhaustive coverage of the f32/f64 input space. Fixtures are random and adversarial only.
+- **Open:**
+  - The wasm build of ndarray emits 3 dead-code warnings from `cpu_guard.rs` (`guard_before_main`, `guard_is_in_main_executable`, `contains`). Pre-existing and unrelated. No CI row runs clippy on wasm32.
+  - The narrowing direction of the repair predicate has no automated check. Correctness cannot see it; only the bench does.
+- **Haiku:** `harvest-scout` ×1 (`F64x8`/`F32x16` `mul_add` call sites, 141 hits). Checked: `heel_f64x8.rs:73`, `signature_pde.rs:143` read in place; counts re-run for `heel_f64x8.rs` (8), `signature_pde.rs` (4), `reductions.rs` (5). 0 wrong, misses not measured.
+
 ## 2026-10-14 — Haiku cards for supervised harvest and mapping
 
 - Five Haiku cards added (`harvest-scout`, `census-counter`, `quote-harvester`, `substrate-mapper`, `spec-editor`); rules in `.claude/rules/agent-model-tiers.md`, CLAUDE.md Agent Protocol item 7. No `guarded-executor`: only the orchestrator compiles here.

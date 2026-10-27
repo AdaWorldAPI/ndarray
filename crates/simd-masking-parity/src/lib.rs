@@ -2017,15 +2017,18 @@ fn check_mul_add_single_rounding() -> Result<(), u32> {
     // below the 53 bits after the product's error term pl, so `tl + pl` is
     // inexact and only its round-to-odd keeps the tie broken. Round 4 makes the
     // exact sum itself a midpoint, so the final rounding must pick the even
-    // neighbour (ties-away or ties-toward-zero fail it).
+    // neighbour (ties-away or ties-toward-zero fail it). Round 5 sits on the
+    // edges of the vector path's domain (see `edge_lanes_f64`).
     let mut unfused_differs = 0usize;
+    let (mut emulation_wrong, mut vector_pairs, mut mixed_pairs, mut exact_product_pairs) =
+        (0usize, 0usize, 0usize, 0usize);
     // (1 + 2^-26)(1 + 2^-27) = 1 + 2^-26 + 2^-27 + 2^-53: 2^-53 is half an ulp, a tie.
     let (ya, yb) = (1.0f64 + f64::EPSILON * 2f64.powi(26), 1.0f64 + f64::EPSILON * 2f64.powi(25));
-    for round in 0..5120u32 {
+    for round in 0..6144u32 {
         let rin = |r: &mut SplitMix64| {
             f64::from_bits((r.next() & 0x800F_FFFF_FFFF_FFFF) | ((1023 - 400 + r.next() % 800) << 52))
         };
-        let (a, b, c): ([f64; 8], [f64; 8], [f64; 8]) = match round % 5 {
+        let (a, b, c): ([f64; 8], [f64; 8], [f64; 8]) = match round % 6 {
             0 => (
                 core::array::from_fn(|_| rin(&mut rng)),
                 core::array::from_fn(|_| rin(&mut rng)),
@@ -2051,7 +2054,7 @@ fn check_mul_add_single_rounding() -> Result<(), u32> {
                 core::array::from_fn(|_| f64::from_bits(rng.next())),
                 core::array::from_fn(|_| f64::from_bits(rng.next())),
             ),
-            _ => {
+            4 => {
                 // a * b = (1 + 2^-26 + 2^-27 + 2^-53) * 2^k; each c cancels the middle
                 // terms so the exact sum is a midpoint between two f64 neighbours:
                 //   lane 0: 1 + 2^-53                  -> 1            (even below)
@@ -2070,14 +2073,36 @@ fn check_mul_add_single_rounding() -> Result<(), u32> {
                     core::array::from_fn(|i| neg(i) * cut[i % 4] * s),
                 )
             }
+            _ => edge_lanes_f64(&mut rng),
         };
+        if round % 6 == 5 {
+            for p in 0..4 {
+                let ok = |i: usize| f64_vector_domain(a[i], b[i], c[i]);
+                match (ok(2 * p), ok(2 * p + 1)) {
+                    (true, true) => vector_pairs += 1,
+                    (false, false) => {}
+                    _ => mixed_pairs += 1,
+                }
+                // In domain or with an exact product: the vector path's repair.
+                let exact = |i: usize| [a[i], b[i]].iter().any(|x| *x == 0.0 || !x.is_finite());
+                let repaired = |i: usize| ok(i) || exact(i);
+                if repaired(2 * p) && repaired(2 * p + 1) && !(ok(2 * p) && ok(2 * p + 1)) {
+                    exact_product_pairs += 1;
+                }
+            }
+            for i in 0..8 {
+                if !same64(emulated_fma_f64_unguarded(a[i], b[i], c[i]), oracle_fma_f64(a[i], b[i], c[i])) {
+                    emulation_wrong += 1;
+                }
+            }
+        }
         let got = F64x8::from_array(a)
             .mul_add(F64x8::from_array(b), F64x8::from_array(c))
             .to_array();
         for i in 0..8 {
             let want = oracle_fma_f64(a[i], b[i], c[i]);
             if !same64(got[i], want) {
-                return Err(0x1140 + (round % 5) * 8 + i as u32);
+                return Err(0x1140 + (round % 6) * 8 + i as u32);
             }
             if !same64(a[i] * b[i] + c[i], want) {
                 unfused_differs += 1;
@@ -2087,7 +2112,189 @@ fn check_mul_add_single_rounding() -> Result<(), u32> {
     if unfused_differs < 256 {
         return Err(0x11F1);
     }
+    // Round 5 must reach both paths, split pairs between them, and contain
+    // lanes on which the emulation alone is wrong: those lanes fail if the
+    // domain guard of `F64x8::mul_add` is removed or widened.
+    if emulation_wrong < 256 {
+        return Err(0x11F2);
+    }
+    if vector_pairs < 256 {
+        return Err(0x11F3);
+    }
+    if mixed_pairs < 256 {
+        return Err(0x11F4);
+    }
+    if exact_product_pairs < 128 {
+        return Err(0x11F5);
+    }
     Ok(())
+}
+
+/// The domain of the wasm `F64x8::mul_add` vector path:
+/// `2^-460 <= |a|, |b| <= 2^460` and `|c| <= 2^960` (NaN is outside).
+fn f64_vector_domain(a: f64, b: f64, c: f64) -> bool {
+    let (lo, hi, chi) = (2f64.powi(-460), 2f64.powi(460), 2f64.powi(960));
+    (lo..=hi).contains(&a.abs()) && (lo..=hi).contains(&b.abs()) && c.abs() <= chi
+}
+
+/// The wasm vector path's emulated FMA without its domain guard, in scalar
+/// f64: Dekker's product, two-sum with `c`, the error terms summed and rounded
+/// to odd, one final rounding. Used only to show that the edge fixtures hold
+/// lanes this algorithm gets wrong outside its domain.
+fn emulated_fma_f64_unguarded(a: f64, b: f64, c: f64) -> f64 {
+    let split = |x: f64| {
+        let t = 134_217_729.0 * x; // 2^27 + 1
+        let hi = t - (t - x);
+        (hi, x - hi)
+    };
+    let two_sum = |x: f64, y: f64| {
+        let s = x + y;
+        let yy = s - x;
+        (s, (x - (s - yy)) + (y - yy))
+    };
+    let (ah, al) = split(a);
+    let (bh, bl) = split(b);
+    let ph = a * b;
+    let pl = (((ah * bh - ph) + ah * bl) + al * bh) + al * bl;
+    let (th, tl) = two_sum(c, ph);
+    let (s, e) = two_sum(tl, pl);
+    let bits = s.to_bits();
+    let v = if e != 0.0 && s.is_finite() && bits & 1 == 0 {
+        f64::from_bits(if (bits ^ e.to_bits()) >> 63 == 1 {
+            bits - 1
+        } else {
+            bits + 1
+        })
+    } else {
+        s
+    };
+    th + v
+}
+
+/// Lanes on and around the edges of [`f64_vector_domain`]. Pairs are the v128
+/// halves `F64x8::mul_add` dispatches on:
+/// * lanes 0, 1: inside, at the lower and the upper bound of `|a|`, `|b|`;
+/// * lanes 2, 3: one lane just below the lower bound (or `|c|` just above
+///   `2^960`), one inside with `|c| == 2^960`, so the pair is mixed;
+/// * lanes 4, 6: lanes the emulation gets wrong outside the domain (a product
+///   whose error terms underflow; a product above `f64::MAX`), `|a|` just above
+///   `2^460`, and a zero, infinity or NaN in `a` or `b` (the exact-product
+///   repair, which keeps the pair in the vector) against every kind of `c`;
+/// * lanes 5, 7: inside, so pairs (4, 5) and (6, 7) are mixed and a widened
+///   guard sends the witness lanes to the vector path.
+fn edge_lanes_f64(rng: &mut SplitMix64) -> ([f64; 8], [f64; 8], [f64; 8]) {
+    // A random sign and significand with biased exponent `e` (1..=2046).
+    let with_exp = |r: &mut SplitMix64, e: u64| f64::from_bits((r.next() & 0x800F_FFFF_FFFF_FFFF) | e << 52);
+    let sign = |r: &mut SplitMix64| if r.next() & 1 == 0 { 1.0 } else { -1.0 };
+    let (lo, hi, chi) = (2f64.powi(-460), 2f64.powi(460), 2f64.powi(960));
+    let lo_in = |r: &mut SplitMix64| {
+        if r.next() & 3 == 0 {
+            sign(r) * lo
+        } else {
+            with_exp(r, 1023 - 460)
+        }
+    };
+    let hi_in = |r: &mut SplitMix64| {
+        if r.next() & 3 == 0 {
+            sign(r) * hi
+        } else {
+            with_exp(r, 1023 + 459)
+        }
+    };
+    let mut a = [0f64; 8];
+    let mut b = [0f64; 8];
+    let mut c = [0f64; 8];
+    // Lane 0: the smallest products of the vector path, a small c.
+    a[0] = lo_in(rng);
+    b[0] = lo_in(rng);
+    c[0] = {
+        let e = 1023 - 920 - 40 - rng.next() % 80;
+        with_exp(rng, e)
+    };
+    // Lane 1: the largest products, nearly cancelled by c.
+    a[1] = hi_in(rng);
+    b[1] = hi_in(rng);
+    c[1] = -(a[1] * b[1]) * (1.0 + f64::EPSILON * (rng.next() % 64) as f64);
+    // Lane 2: |a| one binade below the bound, or |c| just above 2^960.
+    if rng.next() & 1 == 0 {
+        a[2] = with_exp(rng, 1023 - 461);
+        b[2] = lo_in(rng);
+        c[2] = {
+            let e = 1023 - 921 - 40 - rng.next() % 80;
+            with_exp(rng, e)
+        };
+    } else {
+        a[2] = hi_in(rng);
+        b[2] = with_exp(rng, 1023 + 400);
+        c[2] = f64::from_bits(with_exp(rng, 1023 + 960).to_bits() | 1);
+    }
+    // Lane 3: inside, with |c| exactly 2^960.
+    a[3] = hi_in(rng);
+    b[3] = {
+        let e = 1023 + 400 + rng.next() % 60;
+        with_exp(rng, e)
+    };
+    c[3] = sign(rng) * chi;
+    // Lane 4: operands of 2^-496 to 2^-545, so the product lies near or below
+    // the subnormal range, where Dekker's error terms underflow; a tiny c.
+    a[4] = {
+        let e = 1023 - 496 - rng.next() % 50;
+        with_exp(rng, e)
+    };
+    b[4] = {
+        let e = 1023 - 496 - rng.next() % 50;
+        with_exp(rng, e)
+    };
+    c[4] = f64::from_bits(rng.next() & 0x800F_FFFF_FFFF_FFFF);
+    // Lanes 5 and 7: inside, so each witness lane shares its v128 with an
+    // in-range lane and reaches the vector path if the guard is widened.
+    a[5] = lo_in(rng);
+    b[5] = hi_in(rng);
+    c[5] = {
+        let e = 1023 - 40 + rng.next() % 80;
+        with_exp(rng, e)
+    };
+    a[7] = {
+        let e = 1023 - 200 + rng.next() % 400;
+        with_exp(rng, e)
+    };
+    b[7] = {
+        let e = 1023 - 200 + rng.next() % 400;
+        with_exp(rng, e)
+    };
+    c[7] = -(a[7] * b[7]);
+    // Lane 6, by turns: |a * b| in [2^1024, 2^1026) with c bringing the sum
+    // back into range; |a| just above 2^460; an infinity, NaN or zero.
+    match rng.next() % 3 {
+        0 => {
+            a[6] = with_exp(rng, 1023 + 524);
+            b[6] = with_exp(rng, 1023 + 500);
+            c[6] = if (a[6] * b[6]).is_sign_negative() {
+                f64::MAX
+            } else {
+                -f64::MAX
+            };
+        }
+        1 => {
+            a[6] = f64::from_bits(with_exp(rng, 1023 + 460).to_bits() | 1);
+            b[6] = with_exp(rng, 1023 + 300);
+            c[6] = with_exp(rng, 1023 + 700);
+        }
+        _ => {
+            // A zero, infinity or NaN in a or b, against every kind of c.
+            let special = [f64::INFINITY, f64::NEG_INFINITY, f64::NAN, 0.0, -0.0];
+            let s = special[(rng.next() % 5) as usize];
+            let x = {
+                let e = 1023 + rng.next() % 64;
+                with_exp(rng, e)
+            };
+            (a[6], b[6]) = if rng.next() & 1 == 0 { (s, x) } else { (x, s) };
+            let cs = [0.0, -0.0, f64::INFINITY, f64::NEG_INFINITY, f64::NAN];
+            let k = rng.next() % 7;
+            c[6] = if k < 5 { cs[k as usize] } else { with_exp(rng, 1023) };
+        }
+    }
+    (a, b, c)
 }
 
 /// `I32x16::saturating_rounding_doubling_high_mul`, `rounding_divide_by_pot` and

@@ -381,6 +381,8 @@ jobs:
         run: bash scripts/masking-parity.sh wasm
       - name: masking parity (scalar realization = wasm32 without simd128)
         run: bash scripts/masking-parity.sh wasm-scalar
+      - name: masking parity (wasm, +simd128 +relaxed-simd)
+        run: bash scripts/masking-parity.sh wasm-relaxed
 
   nightly:
     # The `core::simd` realization behind the opt-in `nightly-simd` feature.
