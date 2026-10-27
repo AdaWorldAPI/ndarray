@@ -59,6 +59,10 @@ name = "codec8_asm_probe"
 required-features = ["std"]
 
 [[example]]
+name = "sm9_presence_probe"
+required-features = ["std"]
+
+[[example]]
 name = "cpu_guard_probe"
 required-features = ["std"]
 
