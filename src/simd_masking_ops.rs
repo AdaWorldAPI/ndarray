@@ -3890,7 +3890,10 @@ pub fn odd_lut_u8(
         padded[..tail.len()].copy_from_slice(tail);
         let r = lookup(U8x64::from_array(padded)).to_array();
         out_magnitudes[w * 64..n].copy_from_slice(&r[..tail.len()]);
-        out_signs[w] = signs[w] & !U8x64::from_array(r).cmpeq_mask(zero) & live64(tail.len());
+        // Padding lanes are magnitude 0 and `table[0] == 0`, so their result
+        // is 0 and the zero test already clears their sign bits; no
+        // separate tail mask is needed.
+        out_signs[w] = signs[w] & !U8x64::from_array(r).cmpeq_mask(zero);
         w += 1;
     }
     for s in &mut out_signs[w..] {
