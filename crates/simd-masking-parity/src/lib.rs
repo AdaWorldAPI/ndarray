@@ -2166,9 +2166,11 @@ fn emulated_fma_f64_unguarded(a: f64, b: f64, c: f64) -> f64 {
 /// * lanes 0, 1: inside, at the lower and the upper bound of `|a|`, `|b|`;
 /// * lanes 2, 3: one lane just below the lower bound (or `|c|` just above
 ///   `2^960`), one inside with `|c| == 2^960`, so the pair is mixed;
-/// * lanes 4, 5: products far below the lower bound and above `f64::MAX`, where
-///   Dekker's error terms underflow or the product overflows;
-/// * lanes 6, 7: `|a|` just above `2^460`, and an infinity, NaN or zero.
+/// * lanes 4, 6: lanes the emulation gets wrong outside the domain (a product
+///   whose error terms underflow; a product above `f64::MAX`), `|a|` just above
+///   `2^460`, infinities, NaN and zeros;
+/// * lanes 5, 7: inside, so pairs (4, 5) and (6, 7) are mixed and a widened
+///   guard sends the witness lanes to the vector path.
 fn edge_lanes_f64(rng: &mut SplitMix64) -> ([f64; 8], [f64; 8], [f64; 8]) {
     // A random sign and significand with biased exponent `e` (1..=2046).
     let with_exp = |r: &mut SplitMix64, e: u64| f64::from_bits((r.next() & 0x800F_FFFF_FFFF_FFFF) | e << 52);
@@ -2222,39 +2224,61 @@ fn edge_lanes_f64(rng: &mut SplitMix64) -> ([f64; 8], [f64; 8], [f64; 8]) {
         with_exp(rng, e)
     };
     c[3] = sign(rng) * chi;
-    // Lane 4: a product near or below the subnormal range with a c of its size.
+    // Lane 4: operands of 2^-496 to 2^-545, so the product lies near or below
+    // the subnormal range, where Dekker's error terms underflow; a tiny c.
     a[4] = {
-        let e = 1023 - 480 - rng.next() % 60;
+        let e = 1023 - 496 - rng.next() % 50;
         with_exp(rng, e)
     };
     b[4] = {
-        let e = 1023 - 480 - rng.next() % 60;
+        let e = 1023 - 496 - rng.next() % 50;
         with_exp(rng, e)
     };
-    c[4] = {
-        let e = 1 + rng.next() % 64;
+    c[4] = f64::from_bits(rng.next() & 0x800F_FFFF_FFFF_FFFF);
+    // Lanes 5 and 7: inside, so each witness lane shares its v128 with an
+    // in-range lane and reaches the vector path if the guard is widened.
+    a[5] = lo_in(rng);
+    b[5] = hi_in(rng);
+    c[5] = {
+        let e = 1023 - 40 + rng.next() % 80;
         with_exp(rng, e)
     };
-    // Lane 5: |a * b| in [2^1024, 2^1026), c brings the sum back into range.
-    a[5] = with_exp(rng, 1023 + 524);
-    b[5] = with_exp(rng, 1023 + 500);
-    c[5] = if (a[5] * b[5]).is_sign_negative() {
-        f64::MAX
-    } else {
-        -f64::MAX
+    a[7] = {
+        let e = 1023 - 200 + rng.next() % 400;
+        with_exp(rng, e)
     };
-    // Lane 6: |a| just above 2^460.
-    a[6] = f64::from_bits(with_exp(rng, 1023 + 460).to_bits() | 1);
-    b[6] = with_exp(rng, 1023 + 300);
-    c[6] = with_exp(rng, 1023 + 700);
-    // Lane 7: infinities, NaN and zeros against an in-range operand.
-    let special = [f64::INFINITY, f64::NEG_INFINITY, f64::NAN, 0.0, -0.0];
-    a[7] = special[(rng.next() % 5) as usize];
     b[7] = {
-        let e = 1023 + rng.next() % 64;
+        let e = 1023 - 200 + rng.next() % 400;
         with_exp(rng, e)
     };
-    c[7] = if rng.next() & 1 == 0 { -0.0 } else { with_exp(rng, 1023) };
+    c[7] = -(a[7] * b[7]);
+    // Lane 6, by turns: |a * b| in [2^1024, 2^1026) with c bringing the sum
+    // back into range; |a| just above 2^460; an infinity, NaN or zero.
+    match rng.next() % 3 {
+        0 => {
+            a[6] = with_exp(rng, 1023 + 524);
+            b[6] = with_exp(rng, 1023 + 500);
+            c[6] = if (a[6] * b[6]).is_sign_negative() {
+                f64::MAX
+            } else {
+                -f64::MAX
+            };
+        }
+        1 => {
+            a[6] = f64::from_bits(with_exp(rng, 1023 + 460).to_bits() | 1);
+            b[6] = with_exp(rng, 1023 + 300);
+            c[6] = with_exp(rng, 1023 + 700);
+        }
+        _ => {
+            let special = [f64::INFINITY, f64::NEG_INFINITY, f64::NAN, 0.0, -0.0];
+            a[6] = special[(rng.next() % 5) as usize];
+            b[6] = {
+                let e = 1023 + rng.next() % 64;
+                with_exp(rng, e)
+            };
+            c[6] = if rng.next() & 1 == 0 { -0.0 } else { with_exp(rng, 1023) };
+        }
+    }
     (a, b, c)
 }
 
