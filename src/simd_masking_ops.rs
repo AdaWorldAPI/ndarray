@@ -3806,9 +3806,16 @@ pub fn ne_u8_to_mask(values: &[u8], needle: u8, out_words: &mut [u64]) {
 /// For every row `i < magnitudes.len()`:
 ///
 /// * `out_magnitudes[i] = table[magnitudes[i]]`;
-/// * the output sign bit is the input sign bit, cleared where the output
-///   magnitude is `0`. A result that rounds to zero is therefore stored as
-///   the canonical `+0`, never `-0`, and an input `-0` comes out as `+0`.
+/// * the output sign bit is the input sign bit, cleared where a nonzero
+///   input gives a zero result. A negative value whose result rounds to
+///   zero is stored as `+0`, never `-0`.
+/// * an input `-0` (magnitude 0, sign set) comes out as `-0`. A writer
+///   that only stores `+0` never produces it, so under the plain numeric
+///   reading this changes nothing. A class whose reading gives `-0` a
+///   meaning of its own, such as "observed, value NaN" beside a clear
+///   presence bit for "not observed", keeps that meaning through the
+///   function, the way IEEE arithmetic carries NaN through. Clearing it
+///   would turn that reading's NaN into the value 0.
 ///
 /// Rows past `magnitudes.len()` are not written in `out_magnitudes`. In
 /// `out_signs` the bits past `magnitudes.len()` and any surplus words are
@@ -3880,7 +3887,7 @@ pub fn odd_lut_u8(
     for (w, chunk) in chunks.iter().enumerate() {
         let r = lookup(U8x64::from_array(*chunk));
         r.copy_to_slice(&mut out_magnitudes[w * 64..(w + 1) * 64]);
-        out_signs[w] = signs[w] & !r.cmpeq_mask(zero);
+        out_signs[w] = signs[w] & (!r.cmpeq_mask(zero) | U8x64::from_array(*chunk).cmpeq_mask(zero));
     }
     let mut w = chunks.len();
     if !tail.is_empty() {
@@ -3888,10 +3895,10 @@ pub fn odd_lut_u8(
         padded[..tail.len()].copy_from_slice(tail);
         let r = lookup(U8x64::from_array(padded)).to_array();
         out_magnitudes[w * 64..n].copy_from_slice(&r[..tail.len()]);
-        // Padding lanes are magnitude 0 and `table[0] == 0`, so their result
-        // is 0 and the zero test already clears their sign bits; no
-        // separate tail mask is needed.
-        out_signs[w] = signs[w] & !U8x64::from_array(r).cmpeq_mask(zero);
+        // Padding lanes are input `-0` candidates (magnitude 0), so the
+        // keep-`-0` rule would pass their junk sign bits; mask them off.
+        let kept = !U8x64::from_array(r).cmpeq_mask(zero) | U8x64::from_array(padded).cmpeq_mask(zero);
+        out_signs[w] = signs[w] & kept & live64(tail.len());
         w += 1;
     }
     for s in &mut out_signs[w..] {
@@ -5648,7 +5655,7 @@ mod tests {
         let mut out_signs = vec![0u64; mags.len().div_ceil(64)];
         for (i, &o) in out.iter().enumerate() {
             let neg = (signs[i / 64] >> (i % 64)) & 1 == 1;
-            if neg && o != 0 {
+            if neg && (o != 0 || mags[i] == 0) {
                 out_signs[i / 64] |= 1 << (i % 64);
             }
         }
@@ -5698,22 +5705,22 @@ mod tests {
     }
 
     /// FAILS IF: a negative value whose result rounds to zero keeps its sign
-    /// (a stored `-0`), or an input `-0` stays negative. Silence half: a
-    /// nonzero negative result keeps its sign.
+    /// (a stored `-0`), or an input `-0` loses its sign. Silence half: a
+    /// nonzero negative result keeps its sign, and `+0` stays `+0`.
     #[test]
-    fn odd_lut_u8_stores_zero_results_as_plus_zero() {
+    fn odd_lut_u8_rounds_to_plus_zero_and_keeps_an_input_minus_zero() {
         let mut table = [0u8; 256];
         for (m, t) in table.iter_mut().enumerate() {
             *t = (m / 4) as u8;
         }
-        // -0, -3 (rounds to 0), -4 (-> -1), +3, +200
-        let mags = [0u8, 3, 4, 3, 200];
-        let signs = [0b00111u64];
-        let mut out = [0u8; 5];
+        // -0, -3 (rounds to 0), -4 (-> -1), +3, +200, +0
+        let mags = [0u8, 3, 4, 3, 200, 0];
+        let signs = [0b000111u64];
+        let mut out = [0u8; 6];
         let mut out_signs = [u64::MAX; 1];
         odd_lut_u8(&mags, &signs, &table, &mut out, &mut out_signs);
-        assert_eq!(out, [0, 0, 1, 0, 50]);
-        assert_eq!(out_signs[0], 0b00100);
+        assert_eq!(out, [0, 0, 1, 0, 50, 0]);
+        assert_eq!(out_signs[0], 0b000101);
     }
 
     #[test]

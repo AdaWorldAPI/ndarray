@@ -2677,8 +2677,9 @@ fn check_odd_lut_u8() -> Result<(), u32> {
             if out[n..].iter().any(|&b| b != 0xAA) {
                 return Err(0x1410 | (pass << 7) | case);
             }
-            let want =
-                reference_mask(n, words + 1, |i| (signs[i / 64] >> (i % 64)) & 1 == 1 && table[mags[i] as usize] != 0);
+            let want = reference_mask(n, words + 1, |i| {
+                (signs[i / 64] >> (i % 64)) & 1 == 1 && (table[mags[i] as usize] != 0 || mags[i] == 0)
+            });
             if out_signs != want {
                 return Err(0x1420 | (pass << 7) | case);
             }
