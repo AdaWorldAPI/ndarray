@@ -474,6 +474,12 @@ pub mod simd_int_ops;
 #[cfg(feature = "std")]
 pub mod simd_masking_ops;
 
+/// FACET STRIDE patterns: byte work that reads the sixteen u8 positions of
+/// a 128-bit value where they sit (`lut_u8`). Re-exported through
+/// `ndarray::simd`.
+#[cfg(feature = "std")]
+pub mod simd_stride;
+
 /// Slice-level elementwise ops (f32/f64) built on the polyfill SIMD types.
 /// `add_f32`, `mul_f32`, `add_f32_inplace`, `scale_f32`, etc.
 /// Re-exported flat through `ndarray::simd::add_f32`.

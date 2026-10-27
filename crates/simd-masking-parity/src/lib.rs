@@ -50,14 +50,14 @@ use ndarray::simd::{
     mask_shift_morton, mask_ternlog, mask_ternlog_any, mask_ternlog_assign, mask_ternlog_popcount, mask_xor,
     mask_xor_assign, masked_group_sum_i32, masked_group_sum_i32_via, masked_key_run_count_u32, masked_max_i32,
     masked_min_i32, masked_strided_group_sum, masked_sum_i32, masked_sum_wrapping_add_i32, ne_i32_to_mask,
-    ne_i32_to_mask_under, ne_u32_to_mask, ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask, odd_lut_u8,
+    ne_i32_to_mask_under, ne_u32_to_mask, ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask, odd_lut_u8, lut_u8,
     ternary_match_strided16_to_mask, ternary_match_strided_to_mask, ternary_match_u32_to_mask,
     ternary_match_u32_to_mask_under, ternary_match_u64_to_mask, ternary_match_u64_to_mask_under, ternlog, F32x16,
     F64x8, I16x32, I32x16, I8x16, KeyRunCarry, MortonDir, U32x16, U64x8, U8x16,
 };
 
 /// Number of check groups [`run`] executes (for the log line only).
-pub const CHECKS: usize = 20;
+pub const CHECKS: usize = 21;
 
 /// The wasm export: identical to [`run`], `extern "C"` so `run.mjs` can call it.
 #[no_mangle]
@@ -72,7 +72,7 @@ pub fn run() -> u32 {
         check_mask_algebra, check_care_match, check_masked_reductions, check_blend, check_morton_shift,
         check_predicates_under, check_set_range, check_unsigned_compare_to_mask, check_gather_scatter_group,
         check_f64x8_compare, check_i8x16_u8x16_lanes, check_care_match16, check_narrow_ladder,
-        check_mul_add_single_rounding, check_fixedpoint_requant, check_odd_lut_u8,
+        check_mul_add_single_rounding, check_fixedpoint_requant, check_odd_lut_u8, check_lut_u8,
     ];
     for g in groups {
         if let Err(code) = g() {
@@ -2683,6 +2683,32 @@ fn check_odd_lut_u8() -> Result<(), u32> {
             if out_signs != want {
                 return Err(0x1420 | (pass << 7) | case);
             }
+        }
+    }
+    Ok(())
+}
+
+/// Group 0x15: `lut_u8`, the FACET STRIDE table lookup, against a
+/// per-byte read of the table at every length around the 16-byte facet.
+fn check_lut_u8() -> Result<(), u32> {
+    let mut rng = SplitMix64(0x1500_0000_0001);
+    let mut table = [0u8; 256];
+    for t in table.iter_mut() {
+        *t = rng.next() as u8;
+    }
+    const LUT_LENS: [usize; 12] = [0, 1, 15, 16, 17, 31, 32, 33, 64, 65, 255, 300];
+    for (case, &n) in LUT_LENS.iter().enumerate() {
+        let case = case as u32;
+        let values: Vec<u8> = (0..n).map(|_| rng.next() as u8).collect();
+        let mut out = vec![0xAAu8; n + 3];
+        lut_u8(&values, &table, &mut out);
+        for i in 0..n {
+            if out[i] != table[values[i] as usize] {
+                return Err(0x1500 | case);
+            }
+        }
+        if out[n..].iter().any(|&b| b != 0xAA) {
+            return Err(0x1510 | case);
         }
     }
     Ok(())

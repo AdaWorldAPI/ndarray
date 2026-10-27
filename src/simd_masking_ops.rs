@@ -3871,20 +3871,9 @@ pub fn odd_lut_u8(
     assert!(signs.len() >= words, "odd_lut_u8: signs holds {} words, need {words}", signs.len());
     assert!(out_signs.len() >= words, "odd_lut_u8: out_signs holds {} words, need {words}", out_signs.len());
 
-    // FACET STRIDE, '{0}..{15}' -f $128.split(): sixteen magnitudes are one
-    // 128-bit value, read where they sit; each position addresses the table
-    // directly. No byte is shuffled and no result is assembled from masks.
-    let lookup = |positions: &[u8; 16]| -> [u8; 16] { positions.map(|m| table[usize::from(m)]) };
-    let fill = |chunk: &[u8; 64], out: &mut [u8; 64]| {
-        for (positions, o) in chunk
-            .as_chunks::<16>()
-            .0
-            .iter()
-            .zip(out.as_chunks_mut::<16>().0)
-        {
-            *o = lookup(positions);
-        }
-    };
+    // FACET STRIDE: the magnitude lookup reads positions where they sit
+    // (`simd_stride::lut_u8`); no byte is shuffled.
+    let fill = |chunk: &[u8; 64], out: &mut [u8; 64]| crate::simd_stride::lut_u8(chunk, table, out);
     let zero = U8x64::splat(0);
     let (in_chunks, tail) = magnitudes.as_chunks::<64>();
     let (out_chunks, out_tail) = out_magnitudes[..n].as_chunks_mut::<64>();
