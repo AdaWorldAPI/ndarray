@@ -52,12 +52,16 @@
 //!     pair with any other lane is computed lane by lane with the integer FMA
 //!     in `simd_fma.rs` (no libm call, so no run-time CPU dispatch).
 //!
-//!     The bounds have margin, measured against a hardware FMA with the guard
-//!     removed: the emulation first fails for products near `2^-1000` (Dekker's
-//!     error terms underflow; operands near `2^-497`) and for products above
-//!     `f64::MAX`. Given the bounds on `a` and `b`, `|c| <= 2^960` is not needed
-//!     for exactness (`c + a * b` cannot overflow when `|a * b| <= 2^920`); it
-//!     excludes infinite and NaN `c`, which the two-sum would turn into NaN.
+//!     Inside the bounds the result is proven correctly rounded:
+//!     `.claude/knowledge/wasm-fma-proof-obligations.md`. The bounds are
+//!     sufficient, not tight. Dekker's product needs only `e_a + e_b >= -970`
+//!     (the guard gives `-920`). Given the bounds on `a` and `b`, a finite `c`
+//!     cannot make `c + a * b` overflow, so `|c| <= 2^960` serves only to
+//!     exclude infinite and NaN `c`, which the two-sum would turn into NaN.
+//!     Measured with the guard removed, against a hardware FMA: the emulation
+//!     first fails for products near `2^-1000` (operands near `2^-497`) and
+//!     for products above `f64::MAX`. That is evidence about where the
+//!     algorithm breaks, not a reason to widen the guard.
 //!     Measured on V8 (node 22): ~6-9 ns per element on the vector path, ~50-75
 //!     ns on the lane path, ~1 ns for an unfused multiply-add.
 //! * **reduce_sum.** Uses a balanced tree reduction (pairwise v128 adds)
