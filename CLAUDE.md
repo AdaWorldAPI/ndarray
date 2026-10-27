@@ -51,11 +51,20 @@ bash .claude/hooks/facet-stride-guard.sh --diff origin/master   # lines a branch
 bash .claude/hooks/facet-stride-guard.sh --all                  # whole-tree audit
 ```
 
-The existing tree is NOT clean: the 2026-10-27 audit found 248 hits outside
-tests (25 R1, 195 R2, 28 R3), listed in
-`.claude/knowledge/facet-stride-audit-2026-10-27.txt`. They are a burn-down
-list, not a precedent: existing code that violates the shape is never a
-reason to write more of it.
+**Exclusions** (`.claude/hooks/facet-stride-exclude.txt`, `path | rules |
+reason`, a reason is required) are only for code whose byte shuffle IS the
+defined operation: cipher rounds (`vendor/chacha20`, rotate by 8/16 bits),
+permutation maps (`src/hpc/perm.rs`), and a benchmark that measures the
+anti-pattern on purpose. Never for a lookup or a fold. `--root <dir>` audits
+another checkout (lance-graph: 10 hits, all nibble-table popcount, in
+`.claude/knowledge/facet-stride-audit-lance-graph-2026-10-27.txt`).
+
+The existing tree is NOT clean: the 2026-10-27 audit found 166 hits outside
+tests (7 R1, all nibble-table popcount; 157 R2, 81 of them the array-backed
+AVX2 types; 2 R3, the u8 `splat`s that cast to the `i8` intrinsic
+parameter), listed in `.claude/knowledge/facet-stride-audit-2026-10-27.txt`.
+They are a burn-down list, not a precedent: existing code that violates the
+shape is never a reason to write more of it.
 
 ## Quick Context
 - **What**: High-performance linear algebra with pluggable BLAS backends (Native SIMD, MKL, OpenBLAS)

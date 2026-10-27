@@ -32,24 +32,39 @@
 #   --file <path>...  check the whole of the given files.
 set -uo pipefail
 
-ROOT="$(git -C "$(dirname "$0")" rev-parse --show-toplevel 2>/dev/null || pwd)"
+GUARD_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(git -C "$GUARD_DIR" rev-parse --show-toplevel 2>/dev/null || pwd)"
+if [ "${1:-}" = "--root" ]; then ROOT="$(cd "${2:?--root needs a directory}" && pwd)"; shift 2; fi
 cd "$ROOT" || exit 0
+NDARRAY=0; [ -f src/simd_scalar.rs ] && [ -f src/simd_masking_ops.rs ] && NDARRAY=1
+# Exclusions: <root>/.claude/hooks/facet-stride-exclude.txt, lines
+#   <path-glob> | <rules, e.g. R1 or R1,R3> | <reason>
+# for code whose byte shuffle IS the defined operation (cipher rounds,
+# permutation maps) or a deliberate measurement of the anti-pattern.
+# A line without a reason is ignored.
+EXCLUDE_FILE="$ROOT/.claude/hooks/facet-stride-exclude.txt"
 
 in_scope() {            # rust sources only; test files may use scalar oracles by design
   case "$1" in
     */tests.rs|*/tests/*|tests/*) return 1 ;;
-    src/*.rs|src/*/*.rs|src/*/*/*.rs|crates/*.rs|crates/*/*.rs|crates/*/*/*.rs|crates/*/*/*/*.rs|examples/*.rs) return 0 ;;
+    */benches/*|benches/*) return 1 ;;
+    *.rs) return 0 ;;
     *) return 1 ;;
   esac
 }
-simd_backend() {        # non-scalar SIMD realizations
+simd_backend() {        # non-scalar SIMD realizations (ndarray only)
+  [ "$NDARRAY" = 1 ] || return 1
   case "$1" in
     src/simd_avx2.rs|src/simd_avx512.rs|src/simd_avx.rs|src/simd_neon.rs|src/simd_wasm.rs|src/simd_amx.rs|src/simd_nightly/*.rs) return 0 ;;
     *) return 1 ;;
   esac
 }
 simd_file() {
-  case "$1" in src/simd*.rs|src/simd*/*.rs) return 0 ;; *) return 1 ;; esac
+  if [ "$NDARRAY" = 1 ]; then
+    case "$1" in src/simd*.rs|src/simd*/*.rs) return 0 ;; *) return 1 ;; esac
+  fi
+  # Elsewhere: any file that touches SIMD at all.
+  grep -qE 'core::arch|std::arch|ndarray::simd' "$1" 2>/dev/null
 }
 
 R1='\.shuffle_bytes\(|\.permute_bytes\(|_shuffle_epi8|permutexvar_epi8|permutex2var_epi8|swizzle_dyn|vqtbl[1-4]q?|vtbl[1-4]|i8x16_swizzle|u8x16_swizzle'
@@ -58,28 +73,87 @@ R3='as +i8\b|i8::from\(|u8::from\([^)]*i8|as +u8\b.*\bi8\b|\bi8\b.*as +u8\b'
 
 HITS_FILE="$(mktemp)"; trap 'rm -f "$HITS_FILE"' EXIT
 
-# check_lines FILE  <stdin: "LINENO<TAB>TEXT" for each line to check>
-# One python pass per file (a grep per line made --all take minutes).
+# check_lines FILE  <stdin: "LINENO<TAB>TEXT" for the lines in scope>
+# The checker reads the WHOLE file for context (test-module brace depth, the
+# enclosing impl type and fn) and reports only the line numbers it was given.
 check_lines() {
-  R1="$R1" R2="$R2" R3="$R3" BACKEND="$(simd_backend "$1" && echo 1)" SIMD="$(simd_file "$1" && echo 1)" \
-  python3 -c '
-import os, re, sys
+  R1="$R1" R2="$R2" BACKEND="$(simd_backend "$1" && echo 1)" SIMD="$(simd_file "$1" && echo 1)" \
+  EXCLUDE_FILE="$EXCLUDE_FILE" python3 -c '
+import fnmatch, os, re, sys
 f = sys.argv[1]
-r1, r2, r3 = (re.compile(os.environ[k]) for k in ("R1", "R2", "R3"))
+want = set()
+for raw in sys.stdin:
+    n, _, _ = raw.partition("\t")
+    if n.strip().isdigit():
+        want.add(int(n))
+r1, r2 = re.compile(os.environ["R1"]), re.compile(os.environ["R2"])
 backend, simd = os.environ.get("BACKEND") == "1", os.environ.get("SIMD") == "1"
+excluded = set()
+try:
+    for line in open(os.environ["EXCLUDE_FILE"]):
+        parts = [x.strip() for x in line.split("|")]
+        if len(parts) == 3 and parts[2] and not parts[0].startswith("#") and fnmatch.fnmatch(f, parts[0]):
+            excluded |= {r.strip() for r in parts[1].split(",")}
+except OSError:
+    pass
+# A byte-shuffle wrapper may contain the instruction: it IS the move.
+shuffle_def = re.compile(r"^(shuffle_bytes|permute_bytes|permute_bytes_vbmi|swizzle\w*|shuffle\w*|permute\w*)$")
 ok = re.compile(r"facet-stride: ok \S")
 comment = re.compile(r"^\s*//")
-prev, hits = "", 0
-for raw in sys.stdin:
-    n, _, t = raw.rstrip("\n").partition("\t")
-    waived = ok.search(prev) or ok.search(t)
-    prev = t
-    if waived or comment.match(t):
-        continue
-    for rule, rx, on in (("R1 SHUFFLE-AS-COMPUTE", r1, True), ("R2 SCALAR-IN-SIMD", r2, backend), ("R3 U8-I8-MIX", r3, simd)):
-        if on and rx.search(t):
-            hits += 1
-            print(f"{f}:{n}  {rule}  {t.strip()[:140]}", file=sys.stderr)
+impl_re = re.compile(r"^\s*impl\b[^{;]*?\b(?:for\s+)?([A-Z][A-Za-z0-9_]*)\s*(?:<[^{]*>)?\s*\{")
+fn_re = re.compile(r"\bfn\s+([A-Za-z0-9_]+)")
+lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+depth, test_until, pending_test, attr = 0, None, False, None
+impl_name, impl_depth, fn_name = "", None, ""
+hits = 0
+for i, t in enumerate(lines, 1):
+    code = t.split("//")[0]
+    # cfg attributes may span lines: collect until the closing bracket.
+    if attr is None and re.match(r"^\s*#\[cfg\(", t):
+        attr = ""
+    if attr is not None:
+        attr += code
+        if "]" in code:
+            if re.search(r"\btest\b", attr):
+                pending_test = True
+            attr = None
+    if re.match(r"^\s*(pub(\(\w+\))?\s+)?mod\s+\w*tests?\b", t):
+        pending_test = True
+    m = impl_re.match(t)
+    if m:
+        impl_name, impl_depth = m.group(1), depth
+    fm = fn_re.search(code)
+    if fm:
+        fn_name = fm.group(1)
+    in_test = test_until is not None
+    if pending_test and "{" in code:
+        if test_until is None:
+            test_until = depth
+        pending_test = False
+        in_test = True
+    if i in want and not in_test and not comment.match(t):
+        prev = lines[i - 2] if i >= 2 else ""
+        if not (ok.search(prev) or ok.search(t)):
+            found = []
+            if "R1" not in excluded and r1.search(code) and not shuffle_def.match(fn_name):
+                found.append("R1 SHUFFLE-AS-COMPUTE")
+            if "R2" not in excluded and backend and r2.search(code):
+                found.append("R2 SCALAR-IN-SIMD")
+            if "R3" not in excluded and simd:
+                u8_ty, i8_ty = impl_name.startswith("U8"), impl_name.startswith("I8")
+                to_i8, to_u8 = re.search(r"as\s+i8\b", code), re.search(r"as\s+u8\b", code)
+                mix = (u8_ty and to_i8) or (i8_ty and to_u8) \
+                    or (to_i8 and re.search(r"\bu8\b", code)) or (to_u8 and re.search(r"\bi8\b", code))
+                if mix:
+                    found.append("R3 U8-I8-MIX")
+            for rule in found:
+                hits += 1
+                print(f"{f}:{i}  {rule}  {t.strip()[:140]}", file=sys.stderr)
+    depth += code.count("{") - code.count("}")
+    if test_until is not None and depth <= test_until:
+        test_until = None
+    if impl_depth is not None and depth <= impl_depth:
+        impl_name, impl_depth = "", None
 print(hits)
 ' "$1" >> "$HITS_FILE"
 }
@@ -140,11 +214,11 @@ print(ti.get("file_path") or ti.get("notebook_path") or "")' 2>/dev/null)"
     done < <( { git diff --name-only "$rev"; git ls-files --others --exclude-standard; } | sort -u)
     ;;
   --file)
-    for f in "$@"; do f="${f#"$ROOT"/}"; [ -f "$f" ] && whole_file "$f" | strip_tests | check_lines "$f"; done
+    for f in "$@"; do f="${f#"$ROOT"/}"; [ -f "$f" ] && whole_file "$f" | check_lines "$f"; done
     ;;
   --all)
-    while IFS= read -r f; do whole_file "$f" | strip_tests | check_lines "$f"; done \
-      < <(git ls-files 'src/*.rs' 'crates/*.rs' 'examples/*.rs' | while IFS= read -r f; do in_scope "$f" && echo "$f"; done)
+    while IFS= read -r f; do whole_file "$f" | check_lines "$f"; done \
+      < <(git ls-files '*.rs' | while IFS= read -r f; do in_scope "$f" && echo "$f"; done)
     ;;
   *) echo "usage: $0 --hook | --diff <rev> | --all | --file <path>..." >&2; exit 64 ;;
 esac
