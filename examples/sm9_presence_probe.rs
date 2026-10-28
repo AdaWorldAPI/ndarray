@@ -18,7 +18,10 @@ struct Sm9Block {
 
 impl Sm9Block {
     fn from_values(values: &[Option<i16>; 64]) -> Self {
-        let mut out = Self { magnitudes: [0; 64], presence: 0 };
+        let mut out = Self {
+            magnitudes: [0; 64],
+            presence: 0,
+        };
         for (i, v) in values.iter().enumerate() {
             if let Some(v) = *v {
                 assert!((-255..=255).contains(&v), "out of DR512 range: {v}");
@@ -35,8 +38,11 @@ impl Sm9Block {
     fn value(&self, i: usize) -> Option<i16> {
         let magnitude = i16::from(self.magnitudes[i]);
         let positive = (self.presence >> i) & 1 != 0;
-        if !positive && magnitude == 0 { None }
-        else { Some(if positive { magnitude } else { -magnitude }) }
+        if !positive && magnitude == 0 {
+            None
+        } else {
+            Some(if positive { magnitude } else { -magnitude })
+        }
     }
 
     fn never_touched(&self, i: usize) -> bool {
@@ -59,6 +65,8 @@ impl Sm9Block {
         (acc, count)
     }
 
+    // Used only by the tests below; `main` counts NULL rows with `never_touched`.
+    #[cfg(test)]
     fn decode(&self, scale: f64) -> [f64; 64] {
         std::array::from_fn(|i| match self.value(i) {
             Some(value) => f64::from(value) * scale,

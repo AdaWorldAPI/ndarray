@@ -164,10 +164,10 @@ mod tests {
     fn sixty_four_lane_sign_plane_matches_wide_reference() {
         assert_eq!(std::mem::size_of::<MagnitudeSignBlock64>(), 72);
         let lhs = std::array::from_fn(|i| match i % 4 {
-            0 => 0x1FF,            // +255
-            1 => 0x0FF,            // -255
-            2 => 0x100,            // +0
-            _ => i as u16,         // negative magnitudes 3..63
+            0 => 0x1FF,    // +255
+            1 => 0x0FF,    // -255
+            2 => 0x100,    // +0
+            _ => i as u16, // negative magnitudes 3..63
         });
         let rhs = std::array::from_fn(|i| match i % 3 {
             0 => 0x0FF,

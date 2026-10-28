@@ -84,11 +84,7 @@ pub fn lut_u8(values: &[u8], table: &[u8; 256], out: &mut [u8]) {
 /// assert_eq!(out_presences[0], 0b1101); // -1 rounded to valid +0
 /// ```
 pub fn lut9(
-    magnitudes: &[u8],
-    presences: &[u64],
-    table: &[u8; 256],
-    out_magnitudes: &mut [u8],
-    out_presences: &mut [u64],
+    magnitudes: &[u8], presences: &[u64], table: &[u8; 256], out_magnitudes: &mut [u8], out_presences: &mut [u64],
 ) {
     use crate::simd::U8x64;
     let n = magnitudes.len();
@@ -96,7 +92,11 @@ pub fn lut9(
     assert_eq!(table[0], 0, "lut9: an odd function maps 0 to 0, so table[0] must be 0");
     assert!(out_magnitudes.len() >= n, "lut9: out_magnitudes holds {} rows, need {n}", out_magnitudes.len());
     assert!(presences.len() >= words, "lut9: presences holds {} words, need {words}", presences.len());
-    assert!(out_presences.len() >= words, "lut9: out_presences holds {} words, need {words}", out_presences.len());
+    assert!(
+        out_presences.len() >= words,
+        "lut9: out_presences holds {} words, need {words}",
+        out_presences.len()
+    );
     let fill = |chunk: &[u8; 64], out: &mut [u8; 64]| lut_u8(chunk, table, out);
     let zero = U8x64::splat(0);
     let (in_chunks, tail) = magnitudes.as_chunks::<64>();
@@ -116,8 +116,8 @@ pub fn lut9(
         fill(&padded, &mut looked_up);
         out_tail.copy_from_slice(&looked_up[..tail.len()]);
         let (m, r) = (U8x64::from_array(padded), U8x64::from_array(looked_up));
-        out_presences[w] = (presences[w] | (r.cmpeq_mask(zero) & !m.cmpeq_mask(zero)))
-            & crate::simd_masking_ops::live64(tail.len());
+        out_presences[w] =
+            (presences[w] | (r.cmpeq_mask(zero) & !m.cmpeq_mask(zero))) & crate::simd_masking_ops::live64(tail.len());
         w += 1;
     }
     for p in &mut out_presences[w..] {

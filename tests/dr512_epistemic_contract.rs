@@ -99,14 +99,11 @@ fn asymmetric_calibrated_distance_is_not_a_uniform_u8_lookup() {
     let (a_scale, b_scale) = (3.0f64 / 255.0, 7.0f64 / 255.0);
     for ca in 1..512u16 {
         let x = EpiLane9::from_codeword(ca).unwrap();
-        let signed = |v: EpiLane9| -> f64 {
-            f64::from(v.magnitude()) * if v.presence() { b_scale } else { -a_scale }
-        };
+        let signed = |v: EpiLane9| -> f64 { f64::from(v.magnitude()) * if v.presence() { b_scale } else { -a_scale } };
         for cb in 1..512u16 {
             let y = EpiLane9::from_codeword(cb).unwrap();
             let folded = if x.presence() == y.presence() {
-                f64::from(x.magnitude().abs_diff(y.magnitude()))
-                    * if x.presence() { b_scale } else { a_scale }
+                f64::from(x.magnitude().abs_diff(y.magnitude())) * if x.presence() { b_scale } else { a_scale }
             } else {
                 let p = if x.presence() { x } else { y };
                 let n = if x.presence() { y } else { x };
