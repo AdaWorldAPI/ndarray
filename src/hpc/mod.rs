@@ -47,6 +47,8 @@ pub mod cogrecord;
 pub mod graph;
 pub mod quantized;
 pub mod codec8;
+/// Canonical DR512 numerical codec, with compile-time rounding and calibration.
+pub mod codec9;
 pub mod lapack;
 pub mod fft;
 pub mod vml;
