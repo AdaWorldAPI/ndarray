@@ -36,28 +36,36 @@
 //! U8x64`) and the `F32x16` ↔ `I32x16` casts; `0x11xx` `F32x16` / `F64x8`
 //! `mul_add` rounding once, bit for bit against an exact integer reference (no
 //! `mul_add`, so no libm in the binary); `0x12xx` the `I32x16` gemmlowp requantization
-//! methods against an independent `i128` reference. `main.rs` (native / qemu) and
+//! methods against an independent `i128` reference; `0x13xx` the NaN / presence
+//! bijection (`not_nan_*_to_mask`, `nan_where_clear_*`, `presence_nan_mismatches_*`)
+//! against a bit-pattern NaN reference; `0x139xx`–`0x13Cxx` the SQL comparisons over
+//! a NULL=NaN lane and `mask_not_under` (SQL `NOT` under presence) against a
+//! bit-pattern ordering. `main.rs` (native / qemu) and
 //! `selfcheck()` (the wasm cdylib export, driven by `run.mjs`) both call
 //! [`run`].
 
 use ndarray::simd::{
-    blend_i32, eq_i32_to_mask, eq_i32_to_mask_under, eq_u32_strided_to_mask, eq_u32_to_mask, eq_u32_to_mask_under,
-    eq_u32_via_to_mask, eq_u64_to_mask, eq_u8_to_mask, ge_i32_to_mask, ge_i32_to_mask_under, ge_u64_to_mask,
-    ge_u8_to_mask, gt_i32_to_mask, gt_i32_to_mask_under, gt_u64_to_mask, gt_u8_to_mask, le_i32_to_mask,
-    le_i32_to_mask_under, le_u64_to_mask, le_u8_to_mask, lt_i32_to_mask, lt_i32_to_mask_under, lt_u64_to_mask,
-    lt_u8_to_mask, mask_all, mask_and, mask_and_assign, mask_andnot, mask_andnot_assign, mask_any, mask_gather_u32,
-    mask_gather_u32_under, mask_not, mask_not_assign, mask_or, mask_or_assign, mask_scatter_or_u32, mask_set_range,
+    blend_i32, eq_f32_to_mask, eq_f64_to_mask, eq_i32_to_mask, eq_i32_to_mask_under, eq_u32_strided_to_mask,
+    eq_u32_to_mask, eq_u32_to_mask_under, eq_u32_via_to_mask, eq_u64_to_mask, eq_u8_to_mask, ge_f32_to_mask,
+    ge_f64_to_mask, ge_i32_to_mask, ge_i32_to_mask_under, ge_u64_to_mask, ge_u8_to_mask, gt_f32_to_mask,
+    gt_f64_to_mask, gt_i32_to_mask, gt_i32_to_mask_under, gt_u64_to_mask, gt_u8_to_mask, le_f32_to_mask,
+    le_f64_to_mask, le_i32_to_mask, le_i32_to_mask_under, le_u64_to_mask, le_u8_to_mask, lt_f32_to_mask,
+    lt_f64_to_mask, lt_i32_to_mask, lt_i32_to_mask_under, lt_u64_to_mask, lt_u8_to_mask, mask_all, mask_and,
+    mask_and_assign, mask_andnot, mask_andnot_assign, mask_any, mask_gather_u32, mask_gather_u32_under, mask_not,
+    mask_not_assign, mask_not_under, mask_or, mask_or_assign, mask_scatter_or_u16, mask_scatter_or_u32, mask_set_range,
     mask_shift_morton, mask_ternlog, mask_ternlog_any, mask_ternlog_assign, mask_ternlog_popcount, mask_xor,
     mask_xor_assign, masked_group_sum_i32, masked_group_sum_i32_via, masked_key_run_count_u32, masked_max_i32,
-    masked_min_i32, masked_strided_group_sum, masked_sum_i32, masked_sum_wrapping_add_i32, ne_i32_to_mask,
-    ne_i32_to_mask_under, ne_u32_to_mask, ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask,
-    ternary_match_strided16_to_mask, ternary_match_strided_to_mask, ternary_match_u32_to_mask,
-    ternary_match_u32_to_mask_under, ternary_match_u64_to_mask, ternary_match_u64_to_mask_under, ternlog, F32x16,
-    F64x8, I16x32, I32x16, I8x16, KeyRunCarry, MortonDir, U32x16, U64x8, U8x16,
+    masked_min_i32, masked_strided_group_sum, masked_sum_i32, masked_sum_wrapping_add_i32, nan_where_clear_f32,
+    nan_where_clear_f64, ne_f32_to_mask, ne_f64_to_mask, ne_i32_to_mask, ne_i32_to_mask_under, ne_u32_to_mask,
+    ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask, lut9, lut_u8, not_nan_f32_to_mask, not_nan_f64_to_mask,
+    presence_nan_mismatches_f32, presence_nan_mismatches_f64, ternary_match_strided16_to_mask,
+    ternary_match_strided_to_mask, ternary_match_u32_to_mask, ternary_match_u32_to_mask_under,
+    ternary_match_u64_to_mask, ternary_match_u64_to_mask_under, ternlog, F32x16, F64x8, I16x32, I32x16, I8x16,
+    KeyRunCarry, MortonDir, U32x16, U64x8, U8x16,
 };
 
 /// Number of check groups [`run`] executes (for the log line only).
-pub const CHECKS: usize = 19;
+pub const CHECKS: usize = 23;
 
 /// The wasm export: identical to [`run`], `extern "C"` so `run.mjs` can call it.
 #[no_mangle]
@@ -72,7 +80,8 @@ pub fn run() -> u32 {
         check_mask_algebra, check_care_match, check_masked_reductions, check_blend, check_morton_shift,
         check_predicates_under, check_set_range, check_unsigned_compare_to_mask, check_gather_scatter_group,
         check_f64x8_compare, check_i8x16_u8x16_lanes, check_care_match16, check_narrow_ladder,
-        check_mul_add_single_rounding, check_fixedpoint_requant,
+        check_mul_add_single_rounding, check_fixedpoint_requant, check_nan_presence_bijection,
+        check_sql_null_predicates, check_lut9, check_lut_u8,
     ];
     for g in groups {
         if let Err(code) = g() {
@@ -951,7 +960,7 @@ fn check_mask_algebra() -> Result<(), u32> {
             if mask_all(&missing, n) || (n > 1 && !mask_any(&missing)) {
                 return Err(0x624);
             }
-            if n % 64 != 0 {
+            if !n.is_multiple_of(64) {
                 let mut tail_only = zero.clone();
                 tail_only[nw - 1] = 1u64 << (n % 64);
                 if !mask_any(&tail_only) || mask_all(&tail_only, n) {
@@ -1648,6 +1657,18 @@ fn check_gather_scatter_group() -> Result<(), u32> {
             }
         }
 
+        // ── mask_scatter_or_u16: the same ordinals read as u16 in place ──
+        // (0xD12). Every ordinal here fits u16; the twin must equal the u32
+        // reference bit for bit, and draws nothing from `rng`.
+        {
+            let idx16: Vec<u16> = idx2.iter().map(|&t| u16::try_from(t).expect("fits u16")).collect();
+            let mut out16 = vec![0u64; out_len2];
+            mask_scatter_or_u16(&src_bits, &idx16, &mut out16, out_rows);
+            if out16 != want2_words {
+                return Err(0xD12);
+            }
+        }
+
         // ── masked_group_sum_i32 ─────────────────────────────────────────
         let n_groups = 12usize;
         let mask_bits: Vec<u64> = (0..nw).map(|_| rng.next()).collect();
@@ -2005,15 +2026,18 @@ fn check_mul_add_single_rounding() -> Result<(), u32> {
     // below the 53 bits after the product's error term pl, so `tl + pl` is
     // inexact and only its round-to-odd keeps the tie broken. Round 4 makes the
     // exact sum itself a midpoint, so the final rounding must pick the even
-    // neighbour (ties-away or ties-toward-zero fail it).
+    // neighbour (ties-away or ties-toward-zero fail it). Round 5 sits on the
+    // edges of the vector path's domain (see `edge_lanes_f64`).
     let mut unfused_differs = 0usize;
+    let (mut emulation_wrong, mut vector_pairs, mut mixed_pairs, mut exact_product_pairs) =
+        (0usize, 0usize, 0usize, 0usize);
     // (1 + 2^-26)(1 + 2^-27) = 1 + 2^-26 + 2^-27 + 2^-53: 2^-53 is half an ulp, a tie.
     let (ya, yb) = (1.0f64 + f64::EPSILON * 2f64.powi(26), 1.0f64 + f64::EPSILON * 2f64.powi(25));
-    for round in 0..5120u32 {
+    for round in 0..6144u32 {
         let rin = |r: &mut SplitMix64| {
             f64::from_bits((r.next() & 0x800F_FFFF_FFFF_FFFF) | ((1023 - 400 + r.next() % 800) << 52))
         };
-        let (a, b, c): ([f64; 8], [f64; 8], [f64; 8]) = match round % 5 {
+        let (a, b, c): ([f64; 8], [f64; 8], [f64; 8]) = match round % 6 {
             0 => (
                 core::array::from_fn(|_| rin(&mut rng)),
                 core::array::from_fn(|_| rin(&mut rng)),
@@ -2039,7 +2063,7 @@ fn check_mul_add_single_rounding() -> Result<(), u32> {
                 core::array::from_fn(|_| f64::from_bits(rng.next())),
                 core::array::from_fn(|_| f64::from_bits(rng.next())),
             ),
-            _ => {
+            4 => {
                 // a * b = (1 + 2^-26 + 2^-27 + 2^-53) * 2^k; each c cancels the middle
                 // terms so the exact sum is a midpoint between two f64 neighbours:
                 //   lane 0: 1 + 2^-53                  -> 1            (even below)
@@ -2058,14 +2082,36 @@ fn check_mul_add_single_rounding() -> Result<(), u32> {
                     core::array::from_fn(|i| neg(i) * cut[i % 4] * s),
                 )
             }
+            _ => edge_lanes_f64(&mut rng),
         };
+        if round % 6 == 5 {
+            for p in 0..4 {
+                let ok = |i: usize| f64_vector_domain(a[i], b[i], c[i]);
+                match (ok(2 * p), ok(2 * p + 1)) {
+                    (true, true) => vector_pairs += 1,
+                    (false, false) => {}
+                    _ => mixed_pairs += 1,
+                }
+                // In domain or with an exact product: the vector path's repair.
+                let exact = |i: usize| [a[i], b[i]].iter().any(|x| *x == 0.0 || !x.is_finite());
+                let repaired = |i: usize| ok(i) || exact(i);
+                if repaired(2 * p) && repaired(2 * p + 1) && !(ok(2 * p) && ok(2 * p + 1)) {
+                    exact_product_pairs += 1;
+                }
+            }
+            for i in 0..8 {
+                if !same64(emulated_fma_f64_unguarded(a[i], b[i], c[i]), oracle_fma_f64(a[i], b[i], c[i])) {
+                    emulation_wrong += 1;
+                }
+            }
+        }
         let got = F64x8::from_array(a)
             .mul_add(F64x8::from_array(b), F64x8::from_array(c))
             .to_array();
         for i in 0..8 {
             let want = oracle_fma_f64(a[i], b[i], c[i]);
             if !same64(got[i], want) {
-                return Err(0x1140 + (round % 5) * 8 + i as u32);
+                return Err(0x1140 + (round % 6) * 8 + i as u32);
             }
             if !same64(a[i] * b[i] + c[i], want) {
                 unfused_differs += 1;
@@ -2075,7 +2121,189 @@ fn check_mul_add_single_rounding() -> Result<(), u32> {
     if unfused_differs < 256 {
         return Err(0x11F1);
     }
+    // Round 5 must reach both paths, split pairs between them, and contain
+    // lanes on which the emulation alone is wrong: those lanes fail if the
+    // domain guard of `F64x8::mul_add` is removed or widened.
+    if emulation_wrong < 256 {
+        return Err(0x11F2);
+    }
+    if vector_pairs < 256 {
+        return Err(0x11F3);
+    }
+    if mixed_pairs < 256 {
+        return Err(0x11F4);
+    }
+    if exact_product_pairs < 128 {
+        return Err(0x11F5);
+    }
     Ok(())
+}
+
+/// The domain of the wasm `F64x8::mul_add` vector path:
+/// `2^-460 <= |a|, |b| <= 2^460` and `|c| <= 2^960` (NaN is outside).
+fn f64_vector_domain(a: f64, b: f64, c: f64) -> bool {
+    let (lo, hi, chi) = (2f64.powi(-460), 2f64.powi(460), 2f64.powi(960));
+    (lo..=hi).contains(&a.abs()) && (lo..=hi).contains(&b.abs()) && c.abs() <= chi
+}
+
+/// The wasm vector path's emulated FMA without its domain guard, in scalar
+/// f64: Dekker's product, two-sum with `c`, the error terms summed and rounded
+/// to odd, one final rounding. Used only to show that the edge fixtures hold
+/// lanes this algorithm gets wrong outside its domain.
+fn emulated_fma_f64_unguarded(a: f64, b: f64, c: f64) -> f64 {
+    let split = |x: f64| {
+        let t = 134_217_729.0 * x; // 2^27 + 1
+        let hi = t - (t - x);
+        (hi, x - hi)
+    };
+    let two_sum = |x: f64, y: f64| {
+        let s = x + y;
+        let yy = s - x;
+        (s, (x - (s - yy)) + (y - yy))
+    };
+    let (ah, al) = split(a);
+    let (bh, bl) = split(b);
+    let ph = a * b;
+    let pl = (((ah * bh - ph) + ah * bl) + al * bh) + al * bl;
+    let (th, tl) = two_sum(c, ph);
+    let (s, e) = two_sum(tl, pl);
+    let bits = s.to_bits();
+    let v = if e != 0.0 && s.is_finite() && bits & 1 == 0 {
+        f64::from_bits(if (bits ^ e.to_bits()) >> 63 == 1 {
+            bits - 1
+        } else {
+            bits + 1
+        })
+    } else {
+        s
+    };
+    th + v
+}
+
+/// Lanes on and around the edges of [`f64_vector_domain`]. Pairs are the v128
+/// halves `F64x8::mul_add` dispatches on:
+/// * lanes 0, 1: inside, at the lower and the upper bound of `|a|`, `|b|`;
+/// * lanes 2, 3: one lane just below the lower bound (or `|c|` just above
+///   `2^960`), one inside with `|c| == 2^960`, so the pair is mixed;
+/// * lanes 4, 6: lanes the emulation gets wrong outside the domain (a product
+///   whose error terms underflow; a product above `f64::MAX`), `|a|` just above
+///   `2^460`, and a zero, infinity or NaN in `a` or `b` (the exact-product
+///   repair, which keeps the pair in the vector) against every kind of `c`;
+/// * lanes 5, 7: inside, so pairs (4, 5) and (6, 7) are mixed and a widened
+///   guard sends the witness lanes to the vector path.
+fn edge_lanes_f64(rng: &mut SplitMix64) -> ([f64; 8], [f64; 8], [f64; 8]) {
+    // A random sign and significand with biased exponent `e` (1..=2046).
+    let with_exp = |r: &mut SplitMix64, e: u64| f64::from_bits((r.next() & 0x800F_FFFF_FFFF_FFFF) | e << 52);
+    let sign = |r: &mut SplitMix64| if r.next() & 1 == 0 { 1.0 } else { -1.0 };
+    let (lo, hi, chi) = (2f64.powi(-460), 2f64.powi(460), 2f64.powi(960));
+    let lo_in = |r: &mut SplitMix64| {
+        if r.next() & 3 == 0 {
+            sign(r) * lo
+        } else {
+            with_exp(r, 1023 - 460)
+        }
+    };
+    let hi_in = |r: &mut SplitMix64| {
+        if r.next() & 3 == 0 {
+            sign(r) * hi
+        } else {
+            with_exp(r, 1023 + 459)
+        }
+    };
+    let mut a = [0f64; 8];
+    let mut b = [0f64; 8];
+    let mut c = [0f64; 8];
+    // Lane 0: the smallest products of the vector path, a small c.
+    a[0] = lo_in(rng);
+    b[0] = lo_in(rng);
+    c[0] = {
+        let e = 1023 - 920 - 40 - rng.next() % 80;
+        with_exp(rng, e)
+    };
+    // Lane 1: the largest products, nearly cancelled by c.
+    a[1] = hi_in(rng);
+    b[1] = hi_in(rng);
+    c[1] = -(a[1] * b[1]) * (1.0 + f64::EPSILON * (rng.next() % 64) as f64);
+    // Lane 2: |a| one binade below the bound, or |c| just above 2^960.
+    if rng.next() & 1 == 0 {
+        a[2] = with_exp(rng, 1023 - 461);
+        b[2] = lo_in(rng);
+        c[2] = {
+            let e = 1023 - 921 - 40 - rng.next() % 80;
+            with_exp(rng, e)
+        };
+    } else {
+        a[2] = hi_in(rng);
+        b[2] = with_exp(rng, 1023 + 400);
+        c[2] = f64::from_bits(with_exp(rng, 1023 + 960).to_bits() | 1);
+    }
+    // Lane 3: inside, with |c| exactly 2^960.
+    a[3] = hi_in(rng);
+    b[3] = {
+        let e = 1023 + 400 + rng.next() % 60;
+        with_exp(rng, e)
+    };
+    c[3] = sign(rng) * chi;
+    // Lane 4: operands of 2^-496 to 2^-545, so the product lies near or below
+    // the subnormal range, where Dekker's error terms underflow; a tiny c.
+    a[4] = {
+        let e = 1023 - 496 - rng.next() % 50;
+        with_exp(rng, e)
+    };
+    b[4] = {
+        let e = 1023 - 496 - rng.next() % 50;
+        with_exp(rng, e)
+    };
+    c[4] = f64::from_bits(rng.next() & 0x800F_FFFF_FFFF_FFFF);
+    // Lanes 5 and 7: inside, so each witness lane shares its v128 with an
+    // in-range lane and reaches the vector path if the guard is widened.
+    a[5] = lo_in(rng);
+    b[5] = hi_in(rng);
+    c[5] = {
+        let e = 1023 - 40 + rng.next() % 80;
+        with_exp(rng, e)
+    };
+    a[7] = {
+        let e = 1023 - 200 + rng.next() % 400;
+        with_exp(rng, e)
+    };
+    b[7] = {
+        let e = 1023 - 200 + rng.next() % 400;
+        with_exp(rng, e)
+    };
+    c[7] = -(a[7] * b[7]);
+    // Lane 6, by turns: |a * b| in [2^1024, 2^1026) with c bringing the sum
+    // back into range; |a| just above 2^460; an infinity, NaN or zero.
+    match rng.next() % 3 {
+        0 => {
+            a[6] = with_exp(rng, 1023 + 524);
+            b[6] = with_exp(rng, 1023 + 500);
+            c[6] = if (a[6] * b[6]).is_sign_negative() {
+                f64::MAX
+            } else {
+                -f64::MAX
+            };
+        }
+        1 => {
+            a[6] = f64::from_bits(with_exp(rng, 1023 + 460).to_bits() | 1);
+            b[6] = with_exp(rng, 1023 + 300);
+            c[6] = with_exp(rng, 1023 + 700);
+        }
+        _ => {
+            // A zero, infinity or NaN in a or b, against every kind of c.
+            let special = [f64::INFINITY, f64::NEG_INFINITY, f64::NAN, 0.0, -0.0];
+            let s = special[(rng.next() % 5) as usize];
+            let x = {
+                let e = 1023 + rng.next() % 64;
+                with_exp(rng, e)
+            };
+            (a[6], b[6]) = if rng.next() & 1 == 0 { (s, x) } else { (x, s) };
+            let cs = [0.0, -0.0, f64::INFINITY, f64::NEG_INFINITY, f64::NAN];
+            let k = rng.next() % 7;
+            c[6] = if k < 5 { cs[k as usize] } else { with_exp(rng, 1023) };
+        }
+    }
+    (a, b, c)
 }
 
 /// `I32x16::saturating_rounding_doubling_high_mul`, `rounding_divide_by_pot` and
@@ -2418,6 +2646,83 @@ fn oracle_fma_f64(a: f64, b: f64, c: f64) -> f64 {
     }
 }
 
+// ── 0x14xx: lut9 — a 256-entry magnitude table over a sign-magnitude
+// lane. The reference indexes `table` with a plain array lookup and builds
+// the output sign plane bit by bit; it never calls the primitive.
+
+fn check_lut9() -> Result<(), u32> {
+    let mut rng = SplitMix64(0x1400_0000_0001);
+    // A random table with some zero entries away from index 0, so a sign bit
+    // must be cleared at nonzero magnitudes too, and every quarter differs.
+    let mut table = [0u8; 256];
+    for t in table.iter_mut().skip(1) {
+        let r = rng.next() as u8;
+        *t = if r.is_multiple_of(7) { 0 } else { r };
+    }
+    const ODD_LUT_LENS: [usize; 11] = [0, 1, 63, 64, 65, 127, 128, 129, 255, 256, 300];
+    for (case, &n) in ODD_LUT_LENS.iter().enumerate() {
+        let case = case as u32;
+        let words = words_for(n);
+        for pass in 0..2u32 {
+            // Pass 0: every magnitude at every lane position modulo a stride;
+            // pass 1: random magnitudes.
+            let stride = |i: usize| ((i * 37 + 11) % 256) as u8;
+            let mags: Vec<u8> = (0..n)
+                .map(|i| if pass == 0 { stride(i) } else { rng.next() as u8 })
+                .collect();
+            let mut signs: Vec<u64> = (0..words).map(|_| rng.next()).collect();
+            if words > 0 && !n.is_multiple_of(64) {
+                // Junk sign bits past the last row must not reach the output.
+                signs[words - 1] |= u64::MAX << (n % 64);
+            }
+            let mut out = vec![0xAAu8; n + 3];
+            let mut out_signs = vec![u64::MAX; words + 1];
+            lut9(&mags, &signs, &table, &mut out, &mut out_signs);
+            for i in 0..n {
+                if out[i] != table[mags[i] as usize] {
+                    return Err(0x1400 | (pass << 7) | case);
+                }
+            }
+            if out[n..].iter().any(|&b| b != 0xAA) {
+                return Err(0x1410 | (pass << 7) | case);
+            }
+            let want = reference_mask(n, words + 1, |i| {
+                (signs[i / 64] >> (i % 64)) & 1 == 1 && (table[mags[i] as usize] != 0 || mags[i] == 0)
+            });
+            if out_signs != want {
+                return Err(0x1420 | (pass << 7) | case);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Group 0x15: `lut_u8`, the FACET STRIDE table lookup, against a
+/// per-byte read of the table at every length around the 16-byte facet.
+fn check_lut_u8() -> Result<(), u32> {
+    let mut rng = SplitMix64(0x1500_0000_0001);
+    let mut table = [0u8; 256];
+    for t in table.iter_mut() {
+        *t = rng.next() as u8;
+    }
+    const LUT_LENS: [usize; 12] = [0, 1, 15, 16, 17, 31, 32, 33, 64, 65, 255, 300];
+    for (case, &n) in LUT_LENS.iter().enumerate() {
+        let case = case as u32;
+        let values: Vec<u8> = (0..n).map(|_| rng.next() as u8).collect();
+        let mut out = vec![0xAAu8; n + 3];
+        lut_u8(&values, &table, &mut out);
+        for i in 0..n {
+            if out[i] != table[values[i] as usize] {
+                return Err(0x1500 | case);
+            }
+        }
+        if out[n..].iter().any(|&b| b != 0xAA) {
+            return Err(0x1510 | case);
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod oracle_tests {
     use super::*;
@@ -2493,4 +2798,307 @@ mod oracle_tests {
             assert!(w.to_bits() == g.to_bits() || (w.is_nan() && g.is_nan()), "f32 {x:e} {y:e} {z:e}: {g:e} vs {w:e}");
         }
     }
+}
+
+// ── 0x13xx: the NaN / presence bijection ─────────────────────────────────────
+//
+// `presence bit i == 0  ⇔  values[i] is NaN`, held by three primitives: the
+// lane → mask derivation (`not_nan_*_to_mask`), the mask → lane stamp
+// (`nan_where_clear_*`) and the witness (`presence_nan_mismatches_*`). The
+// reference classifies NaN from the BIT PATTERN (exponent all ones, mantissa
+// non-zero) and never compares a float, so it shares nothing with the
+// realization's ordered `simd_eq`. Edge values: quiet and signalling-pattern
+// NaN, negative NaN, full payload, ±inf (exponent all ones but NOT NaN), ±0,
+// the smallest subnormal, MAX. Lengths cover every lane-group boundary of the
+// 8-lane f64 and 16-lane f32 packers.
+
+const NAN_LENS: [usize; 12] = [0, 1, 7, 8, 15, 16, 17, 63, 64, 65, 130, 200];
+
+fn nan_bits_f64(b: u64) -> bool {
+    (b >> 52) & 0x7FF == 0x7FF && b & ((1u64 << 52) - 1) != 0
+}
+
+fn nan_bits_f32(b: u32) -> bool {
+    (b >> 23) & 0xFF == 0xFF && b & ((1u32 << 23) - 1) != 0
+}
+
+fn nan_lane_f64(n: usize, rng: &mut SplitMix64) -> Vec<f64> {
+    const EDGES: [u64; 11] = [
+        0x7FF8_0000_0000_0000, 0xFFF8_0000_0000_0000, 0x7FF0_0000_0000_0001, 0x7FFF_FFFF_FFFF_FFFF,
+        0x7FF0_0000_0000_0000, 0xFFF0_0000_0000_0000, 0x0000_0000_0000_0000, 0x8000_0000_0000_0000,
+        0x0000_0000_0000_0001, 0x7FEF_FFFF_FFFF_FFFF, 0x3FF0_0000_0000_0000,
+    ];
+    (0..n)
+        .map(|_| {
+            let r = rng.next();
+            if r.is_multiple_of(3) {
+                f64::from_bits(EDGES[(r >> 8) as usize % EDGES.len()])
+            } else {
+                f64::from_bits(rng.next())
+            }
+        })
+        .collect()
+}
+
+fn nan_lane_f32(n: usize, rng: &mut SplitMix64) -> Vec<f32> {
+    const EDGES: [u32; 11] = [
+        0x7FC0_0000, 0xFFC0_0000, 0x7F80_0001, 0x7FFF_FFFF, 0x7F80_0000, 0xFF80_0000, 0x0000_0000, 0x8000_0000,
+        0x0000_0001, 0x7F7F_FFFF, 0x3F80_0000,
+    ];
+    (0..n)
+        .map(|_| {
+            let r = rng.next();
+            if r.is_multiple_of(3) {
+                f32::from_bits(EDGES[(r >> 8) as usize % EDGES.len()])
+            } else {
+                f32::from_bits(rng.next() as u32)
+            }
+        })
+        .collect()
+}
+
+fn check_nan_presence_bijection() -> Result<(), u32> {
+    let mut rng = SplitMix64(0x0BAD_C0DE_F00D_0013);
+    let mut nan_rows = 0usize;
+    let mut witnessed = 0u64;
+    for (li, &n) in NAN_LENS.iter().enumerate() {
+        let code = li as u32;
+        let words = words_for(n);
+        let v64 = nan_lane_f64(n, &mut rng);
+        let v32 = nan_lane_f32(n, &mut rng);
+
+        // lane → mask, against the bit-pattern reference; surplus word and tail zero.
+        let mut got = vec![u64::MAX; words + 1];
+        not_nan_f64_to_mask(&v64, &mut got);
+        if got != reference_mask(n, words + 1, |i| !nan_bits_f64(v64[i].to_bits())) {
+            return Err(0x1300 | code);
+        }
+        nan_rows += v64.iter().filter(|x| nan_bits_f64(x.to_bits())).count();
+        let mut got32 = vec![u64::MAX; words + 1];
+        not_nan_f32_to_mask(&v32, &mut got32);
+        if got32 != reference_mask(n, words + 1, |i| !nan_bits_f32(v32[i].to_bits())) {
+            return Err(0x1310 | code);
+        }
+
+        // A random presence plane with set bits past `n` (dead bits).
+        let mut presence: Vec<u64> = (0..words + 1).map(|_| rng.next()).collect();
+        if !n.is_multiple_of(64) {
+            presence[n / 64] |= !0u64 << (n % 64);
+        }
+        let bit = |p: &[u64], i: usize| (p[i / 64] >> (i % 64)) & 1 == 1;
+
+        // Witness, against the reference count over live rows only.
+        let want = (0..n)
+            .filter(|&i| bit(&presence, i) == nan_bits_f64(v64[i].to_bits()))
+            .count() as u64;
+        if presence_nan_mismatches_f64(&v64, &presence) != want {
+            return Err(0x1340 | code);
+        }
+        witnessed += want;
+        let want32 = (0..n)
+            .filter(|&i| bit(&presence, i) == nan_bits_f32(v32[i].to_bits()))
+            .count() as u64;
+        if presence_nan_mismatches_f32(&v32, &presence) != want32 {
+            return Err(0x1350 | code);
+        }
+
+        // mask → lane: NaN exactly under clear bits, set rows bit-identical.
+        let mut s64 = v64.clone();
+        nan_where_clear_f64(&presence, &mut s64);
+        for i in 0..n {
+            let ok = if bit(&presence, i) {
+                s64[i].to_bits() == v64[i].to_bits()
+            } else {
+                nan_bits_f64(s64[i].to_bits())
+            };
+            if !ok {
+                return Err(0x1320 | code);
+            }
+        }
+        let mut s32 = v32.clone();
+        nan_where_clear_f32(&presence, &mut s32);
+        for i in 0..n {
+            let ok = if bit(&presence, i) {
+                s32[i].to_bits() == v32[i].to_bits()
+            } else {
+                nan_bits_f32(s32[i].to_bits())
+            };
+            if !ok {
+                return Err(0x1330 | code);
+            }
+        }
+
+        // The bijection: a derived plane agrees with its lane; stamping NaN under
+        // (random AND derived) makes the lane agree with that plane, and
+        // re-deriving returns the plane bit for bit.
+        let mut derived = vec![0u64; words];
+        not_nan_f64_to_mask(&v64, &mut derived);
+        if presence_nan_mismatches_f64(&v64, &derived) != 0 {
+            return Err(0x1360 | code);
+        }
+        let mut plane = vec![0u64; words];
+        mask_and(&presence[..words], &derived, &mut plane);
+        let mut stamped = v64.clone();
+        nan_where_clear_f64(&plane, &mut stamped);
+        let mut again = vec![0u64; words];
+        not_nan_f64_to_mask(&stamped, &mut again);
+        if presence_nan_mismatches_f64(&stamped, &plane) != 0 || again != plane {
+            return Err(0x1370 | code);
+        }
+        let mut derived32 = vec![0u64; words];
+        not_nan_f32_to_mask(&v32, &mut derived32);
+        let mut plane32 = vec![0u64; words];
+        mask_and(&presence[..words], &derived32, &mut plane32);
+        let mut stamped32 = v32.clone();
+        nan_where_clear_f32(&plane32, &mut stamped32);
+        let mut again32 = vec![0u64; words];
+        not_nan_f32_to_mask(&stamped32, &mut again32);
+        if presence_nan_mismatches_f32(&v32, &derived32) != 0
+            || presence_nan_mismatches_f32(&stamped32, &plane32) != 0
+            || again32 != plane32
+        {
+            return Err(0x1380 | code);
+        }
+    }
+    // Anti-vacuity: NaN rows of the edge kinds exist, and the witness fires.
+    if nan_rows < 40 {
+        return Err(0x13F0);
+    }
+    if witnessed < 100 {
+        return Err(0x13F1);
+    }
+    Ok(())
+}
+
+// ── 0x139x–0x13Cx: SQL comparisons over a NULL=NaN lane, and NOT under presence ─
+//
+// The reference orders floats by their BIT PATTERN (sign-magnitude to a signed
+// key, `-0` and `+0` both key 0) and treats a NaN pattern as NULL, so it never
+// performs a float compare. TRUE(x op t) = neither is NULL and key(x) op key(t);
+// FALSE = neither is NULL and not key(x) op key(t). `mask_not_under(T, presence)`
+// must equal FALSE exactly when `presence` is the PREDICATE's presence (the
+// column's, or empty for a NULL threshold): a bare complement would wrongly set
+// every NULL row, and the column's plane under a NULL threshold every present one.
+
+fn key64(b: u64) -> Option<i128> {
+    if nan_bits_f64(b) {
+        return None;
+    }
+    let mag = (b & 0x7FFF_FFFF_FFFF_FFFF) as i128;
+    Some(if b >> 63 == 1 { -mag } else { mag })
+}
+
+fn key32(b: u32) -> Option<i128> {
+    if nan_bits_f32(b) {
+        return None;
+    }
+    let mag = (b & 0x7FFF_FFFF) as i128;
+    Some(if b >> 31 == 1 { -mag } else { mag })
+}
+
+/// `op` 0..6 = lt, le, gt, ge, eq, ne over the reference keys.
+fn ref_rel(op: usize, a: i128, b: i128) -> bool {
+    match op {
+        0 => a < b,
+        1 => a <= b,
+        2 => a > b,
+        3 => a >= b,
+        4 => a == b,
+        _ => a != b,
+    }
+}
+
+fn check_sql_null_predicates() -> Result<(), u32> {
+    type F64Op = fn(&[f64], f64, &mut [u64]);
+    type F32Op = fn(&[f32], f32, &mut [u64]);
+    let ops64: [F64Op; 6] =
+        [lt_f64_to_mask, le_f64_to_mask, gt_f64_to_mask, ge_f64_to_mask, eq_f64_to_mask, ne_f64_to_mask];
+    let ops32: [F32Op; 6] =
+        [lt_f32_to_mask, le_f32_to_mask, gt_f32_to_mask, ge_f32_to_mask, eq_f32_to_mask, ne_f32_to_mask];
+    let thr64: [u64; 9] = [
+        0x7FF8_0000_0000_0000, 0x0000_0000_0000_0000, 0x8000_0000_0000_0000, 0x7FF0_0000_0000_0000,
+        0xFFF0_0000_0000_0000, 0x0000_0000_0000_0001, 0x3FF0_0000_0000_0000, 0xBFF0_0000_0000_0000,
+        0x7FEF_FFFF_FFFF_FFFF,
+    ];
+    let thr32: [u32; 9] = [
+        0x7FC0_0000, 0x0000_0000, 0x8000_0000, 0x7F80_0000, 0xFF80_0000, 0x0000_0001, 0x3F80_0000, 0xBF80_0000,
+        0x7F7F_FFFF,
+    ];
+    let mut rng = SplitMix64(0x5A1_0000_0000_0013);
+    let mut ieee_not_would_leak = 0usize;
+    let mut true_bits = 0usize;
+    for &n in NAN_LENS.iter() {
+        let words = words_for(n);
+        let mut v64 = nan_lane_f64(n, &mut rng);
+        let mut v32 = nan_lane_f32(n, &mut rng);
+        // Plant the thresholds into the lane so `=` and the boundaries of `<=`/`>=` fire.
+        for i in (0..n).step_by(5) {
+            v64[i] = f64::from_bits(thr64[i % thr64.len()]);
+            v32[i] = f32::from_bits(thr32[i % thr32.len()]);
+        }
+        let mut present = vec![0u64; words];
+        not_nan_f64_to_mask(&v64, &mut present);
+        let mut present32 = vec![0u64; words];
+        not_nan_f32_to_mask(&v32, &mut present32);
+        for (ti, (&t64, &t32)) in thr64.iter().zip(&thr32).enumerate() {
+            for op in 0..6 {
+                let code = ((ti as u32) << 4) | op as u32;
+                // f64 TRUE plane, with a surplus word that must come back zero.
+                let mut got = vec![u64::MAX; words + 1];
+                ops64[op](&v64, f64::from_bits(t64), &mut got);
+                let truth = |i: usize| match (key64(v64[i].to_bits()), key64(t64)) {
+                    (Some(a), Some(b)) => Some(ref_rel(op, a, b)),
+                    _ => None,
+                };
+                if got != reference_mask(n, words + 1, |i| truth(i) == Some(true)) {
+                    return Err(0x1_3900 | code);
+                }
+                true_bits += (0..n).filter(|&i| truth(i) == Some(true)).count();
+                // NOT under the predicate's presence (empty for a NULL
+                // threshold) is exactly the FALSE plane.
+                let pred_present = if key64(t64).is_some() {
+                    present.clone()
+                } else {
+                    vec![0u64; words]
+                };
+                let mut neg = vec![0u64; words];
+                mask_not_under(&got[..words], &pred_present, &mut neg);
+                if neg != reference_mask(n, words, |i| truth(i) == Some(false)) {
+                    return Err(0x1_3B00 | code);
+                }
+                // Rows a bare complement would wrongly report as FALSE: NULL rows.
+                ieee_not_would_leak += (0..n)
+                    .filter(|&i| truth(i).is_none() && key64(t64).is_some())
+                    .count();
+
+                let mut got32 = vec![u64::MAX; words + 1];
+                ops32[op](&v32, f32::from_bits(t32), &mut got32);
+                let truth32 = |i: usize| match (key32(v32[i].to_bits()), key32(t32)) {
+                    (Some(a), Some(b)) => Some(ref_rel(op, a, b)),
+                    _ => None,
+                };
+                if got32 != reference_mask(n, words + 1, |i| truth32(i) == Some(true)) {
+                    return Err(0x1_3A00 | code);
+                }
+                let pred_present32 = if key32(t32).is_some() {
+                    present32.clone()
+                } else {
+                    vec![0u64; words]
+                };
+                let mut neg32 = vec![0u64; words];
+                mask_not_under(&got32[..words], &pred_present32, &mut neg32);
+                if neg32 != reference_mask(n, words, |i| truth32(i) == Some(false)) {
+                    return Err(0x1_3C00 | code);
+                }
+            }
+        }
+    }
+    // Anti-vacuity: TRUE rows exist, and NULL rows exist where a bare NOT would leak.
+    if true_bits < 1000 {
+        return Err(0x13F2);
+    }
+    if ieee_not_would_leak < 500 {
+        return Err(0x13F3);
+    }
+    Ok(())
 }

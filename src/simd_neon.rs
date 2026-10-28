@@ -1200,6 +1200,11 @@ pub mod aarch64_simd {
     #[derive(Copy, Clone, Debug)]
     pub struct F64Mask8(pub u8);
     impl F64Mask8 {
+        /// Lane `i` of the comparison is bit `i` of the result.
+        #[inline(always)]
+        pub fn to_bitmask(self) -> u8 {
+            self.0
+        }
         #[inline(always)]
         pub fn select(self, true_val: F64x8, false_val: F64x8) -> F64x8 {
             let t = true_val.to_array();

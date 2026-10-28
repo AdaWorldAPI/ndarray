@@ -1320,13 +1320,70 @@ pub fn mask_gather_u32_under(src: &[u64], src_rows: usize, index: &[u32], under:
 /// ```
 #[inline]
 pub fn mask_scatter_or_u32(src: &[u64], index: &[u32], out_words: &mut [u64], out_rows: usize) {
+    scatter_or_walk("mask_scatter_or_u32", src, index, out_words, out_rows);
+}
+
+/// [`mask_scatter_or_u32`] over a **`u16`** index: for every row `i` selected
+/// by `src` (bit `i` set, `i < index.len()`), sets bit `index[i]` of
+/// `out_words` — provided `index[i] < out_rows`.
+///
+/// Identical contract to [`mask_scatter_or_u32`] in every respect except the
+/// index width: set-bit walk only, `out_words` accumulated into (never
+/// zeroed, never overwritten), repeated targets collapse to one bit, an
+/// out-of-range target is silently dropped, the final partial `src` word is
+/// clamped to `index.len()`, and the same survival rule — the scattered mask
+/// is the requested result or a fold's accumulator, never a buffer another
+/// pass reads back as input.
+///
+/// # Why a `u16` twin exists
+///
+/// A sealed 64×64 focus map holds its canonical addresses as `u16` ordinals
+/// (the 65,536-address universe is exactly the `u16` domain). Scattering
+/// them through [`mask_scatter_or_u32`] first needs a widened `u32` copy of
+/// every map — 16 KiB per 4,096-slot map instead of the 8 KiB it already
+/// holds. This reads the `u16` ordinals in place: no widening, no copy, no
+/// allocation.
+///
+/// # Vectorisation, honestly
+///
+/// Scalar, for the same reason as [`mask_scatter_or_u32`]: the written
+/// address is a value out of another array and no backend here has a
+/// bit-level scatter. Cost is proportional to `popcount(src)` (clamped to
+/// `index.len()`).
+///
+/// # Panics
+///
+/// Panics if `src.len() < index.len().div_ceil(64)`, or if
+/// `out_words.len() < out_rows.div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::mask_scatter_or_u16;
+///
+/// let src = [0b0101u64]; // rows 0 and 2 selected
+/// let index = [5u16, 1, 9, 20];
+/// let mut out = [0u64; 1];
+/// mask_scatter_or_u16(&src, &index, &mut out, 10);
+/// assert_eq!(out[0], (1u64 << 5) | (1u64 << 9));
+/// ```
+#[inline]
+pub fn mask_scatter_or_u16(src: &[u64], index: &[u16], out_words: &mut [u64], out_rows: usize) {
+    scatter_or_walk("mask_scatter_or_u16", src, index, out_words, out_rows);
+}
+
+/// The shared body of the scatter-or family: one set-bit walk, one index
+/// read per selected row, widened to `usize` at the read — never a widened
+/// copy of `index`.
+#[inline(always)]
+fn scatter_or_walk<I: Copy + Into<u64>>(name: &str, src: &[u64], index: &[I], out_words: &mut [u64], out_rows: usize) {
     let n = index.len();
     let src_words = mask_words_for(n);
-    assert!(src.len() >= src_words, "mask_scatter_or_u32: src.len()={} < required {}", src.len(), src_words);
+    assert!(src.len() >= src_words, "{name}: src.len()={} < required {}", src.len(), src_words);
     let out_word_count = mask_words_for(out_rows);
     assert!(
         out_words.len() >= out_word_count,
-        "mask_scatter_or_u32: out_words.len()={} < required {}",
+        "{name}: out_words.len()={} < required {}",
         out_words.len(),
         out_word_count
     );
@@ -1347,8 +1404,9 @@ pub fn mask_scatter_or_u32(src: &[u64], index: &[u32], out_words: &mut [u64], ou
             let lane = bits.trailing_zeros() as usize;
             bits &= bits - 1;
             let i = base + lane;
-            let t = index[i] as usize;
-            if t < out_rows {
+            let t: u64 = index[i].into();
+            if t < out_rows as u64 {
+                let t = t as usize;
                 out_words[t / 64] |= 1u64 << (t % 64);
             }
         }
@@ -3941,6 +3999,582 @@ pub fn ne_u64_to_mask(values: &[u64], needle: u64, out_words: &mut [u64]) {
     clear_mask_tail(out_words, values.len());
 }
 
+// ── The NaN / presence bijection ─────────────────────────────────────────────
+//
+// On a float lane, "this row is absent" and "this value is NaN" are ONE state
+// with two spellings: a clear presence bit and a NaN payload. The invariant is
+//
+//     presence bit i == 0   ⇔   values[i] is NaN        (for every i < len)
+//
+// Three primitives keep it: one per direction and one witness.
+//
+// * lane → mask: [`not_nan_f64_to_mask`] / [`not_nan_f32_to_mask`] derive the
+//   presence plane from the lane (`x == x` is false only for NaN).
+// * mask → lane: [`nan_where_clear_f64`] / [`nan_where_clear_f32`] stamp NaN
+//   into every row whose presence bit is clear.
+// * witness: [`presence_nan_mismatches_f64`] / [`presence_nan_mismatches_f32`]
+//   count the rows where the two spellings disagree; `0` is the invariant.
+//
+// "Is NaN" is the IEEE predicate `x != x`, never a bit pattern: every NaN
+// counts (quiet, signalling-pattern, either sign, any payload), so a backend
+// that does not preserve NaN payloads (wasm) cannot break the bijection. The
+// compare is the facade's ordered `simd_eq` on every realization, so `±0`,
+// `±inf`, subnormals and `MAX` are all present.
+//
+// Holding the invariant merges "missing" and "arithmetic produced NaN" into
+// one state. That is the point: a masked fold can read either spelling and
+// get the same population, and `n` is the popcount of the plane it folds.
+
+/// Packs `values[i] == values[i]` — "is not NaN", the presence bit of a float
+/// lane under the NaN/presence bijection — into `out_words`, one bit per
+/// element, LSB-first within each `u64` word.
+///
+/// `out_words` is **fully overwritten**. Trailing bits in the final word
+/// beyond `values.len()`, and any surplus words past `ceil(len / 64)`, are
+/// written as `0`.
+///
+/// Every NaN (quiet or signalling pattern, either sign, any payload) packs
+/// `0`; every other value (`±0`, `±inf`, subnormals, `MAX`) packs `1`.
+///
+/// Runs 8 lanes at a time through [`crate::simd::F64x8::simd_eq`], the
+/// ordered compare, against itself; the final partial group is zero-padded
+/// into one register and its padding bits masked off.
+///
+/// # Panics
+///
+/// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::not_nan_f64_to_mask;
+///
+/// let values = [1.0, f64::NAN, -0.0, f64::INFINITY];
+/// let mut words = [0u64; 1];
+/// not_nan_f64_to_mask(&values, &mut words);
+/// // only element 1 is NaN → bits 0, 2, 3 → 0b1101
+/// assert_eq!(words[0], 0b1101);
+/// ```
+#[inline]
+pub fn not_nan_f64_to_mask(values: &[f64], out_words: &mut [u64]) {
+    pack::<f64, 8>("not_nan_f64_to_mask", values, out_words, |lanes, live| {
+        let v = crate::simd::F64x8::from_array(lanes);
+        (v.simd_eq(v).to_bitmask() & live8(live)) as u64
+    });
+}
+
+/// Packs `values[i] == values[i]` — "is not NaN" — for an `f32` lane. The
+/// `f32` sibling of [`not_nan_f64_to_mask`]; same contract.
+///
+/// Runs 16 lanes at a time through [`crate::simd::F32x16::simd_eq`].
+///
+/// # Panics
+///
+/// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::not_nan_f32_to_mask;
+///
+/// let values = [f32::NAN, 2.5, f32::NEG_INFINITY, f32::NAN];
+/// let mut words = [0u64; 1];
+/// not_nan_f32_to_mask(&values, &mut words);
+/// assert_eq!(words[0], 0b0110);
+/// ```
+#[inline]
+pub fn not_nan_f32_to_mask(values: &[f32], out_words: &mut [u64]) {
+    pack::<f32, 16>("not_nan_f32_to_mask", values, out_words, |lanes, live| {
+        let v = crate::simd::F32x16::from_array(lanes);
+        (v.simd_eq(v).to_bitmask() & live16(live)) as u64
+    });
+}
+
+/// Writes `f64::NAN` into every row of `values` whose `presence` bit is
+/// clear: the mask → lane direction of the NaN/presence bijection. Rows whose
+/// bit is set are not touched, NaN or not.
+///
+/// After this call every absent row holds NaN. Together with a presence plane
+/// that has no set bit over a NaN row (for example one built by
+/// [`not_nan_f64_to_mask`]), [`presence_nan_mismatches_f64`] is `0`.
+///
+/// Bits of `presence` beyond `values.len()`, and surplus words, are ignored.
+/// Cost is one word read per 64 rows plus one store per clear bit: it walks
+/// the clear bits with `trailing_zeros`, so a fully present word costs one
+/// compare. This is a mask-gated write of a constant, with nothing to
+/// vectorize per lane and nothing a backend could realize differently.
+///
+/// # Panics
+///
+/// Panics if `presence.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::nan_where_clear_f64;
+///
+/// let mut values = [1.0, 9.9, 3.0, 4.0];
+/// nan_where_clear_f64(&[0b1101], &mut values); // row 1 is absent
+/// assert!(values[1].is_nan());
+/// assert_eq!([values[0], values[2], values[3]], [1.0, 3.0, 4.0]);
+/// ```
+#[inline]
+pub fn nan_where_clear_f64(presence: &[u64], values: &mut [f64]) {
+    nan_where_clear("nan_where_clear_f64", presence, values, f64::NAN);
+}
+
+/// Writes `f32::NAN` into every row of `values` whose `presence` bit is
+/// clear. The `f32` sibling of [`nan_where_clear_f64`]; same contract.
+///
+/// # Panics
+///
+/// Panics if `presence.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::nan_where_clear_f32;
+///
+/// let mut values = [1.0f32, 2.0, 3.0];
+/// nan_where_clear_f32(&[0b011], &mut values);
+/// assert!(values[2].is_nan());
+/// ```
+#[inline]
+pub fn nan_where_clear_f32(presence: &[u64], values: &mut [f32]) {
+    nan_where_clear("nan_where_clear_f32", presence, values, f32::NAN);
+}
+
+/// The shared mask → lane writer: `nan` into every row whose bit is clear.
+#[inline(always)]
+fn nan_where_clear<T: Copy>(name: &str, presence: &[u64], values: &mut [T], nan: T) {
+    let words = mask_words_for(values.len());
+    assert!(presence.len() >= words, "{name}: presence.len()={} < required {words}", presence.len());
+    for (k, chunk) in values.chunks_mut(64).enumerate() {
+        let mut absent = !presence[k] & live64(chunk.len());
+        while absent != 0 {
+            chunk[absent.trailing_zeros() as usize] = nan;
+            absent &= absent - 1;
+        }
+    }
+}
+
+/// Counts the rows of a float lane where the NaN/presence bijection does not
+/// hold: `presence` bit `i` set while `values[i]` is NaN, or bit `i` clear
+/// while `values[i]` is not NaN. `0` means the two spellings agree on every
+/// row; it is the invariant check and the parity witness.
+///
+/// Computed as `popcount(presence XOR not_nan(values))` over the live rows,
+/// 64 rows at a time through [`not_nan_f64_to_mask`], with no allocation.
+/// Bits of `presence` beyond `values.len()`, and surplus words, are ignored.
+///
+/// # Panics
+///
+/// Panics if `presence.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::{nan_where_clear_f64, presence_nan_mismatches_f64};
+///
+/// let presence = [0b1011u64]; // row 2 absent
+/// let mut values = [1.0, f64::NAN, 7.0, 4.0]; // row 1: NaN under a set bit
+/// // Rows 1 (present but NaN) and 2 (absent but not NaN) disagree.
+/// assert_eq!(presence_nan_mismatches_f64(&values, &presence), 2);
+/// nan_where_clear_f64(&presence, &mut values);
+/// // Row 2 now holds NaN; row 1 still contradicts its set bit.
+/// assert_eq!(presence_nan_mismatches_f64(&values, &presence), 1);
+/// ```
+#[inline]
+pub fn presence_nan_mismatches_f64(values: &[f64], presence: &[u64]) -> u64 {
+    presence_nan_mismatches("presence_nan_mismatches_f64", values, presence, not_nan_f64_to_mask)
+}
+
+/// Counts the rows of an `f32` lane where the NaN/presence bijection does
+/// not hold. The `f32` sibling of [`presence_nan_mismatches_f64`]; same
+/// contract.
+///
+/// # Panics
+///
+/// Panics if `presence.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::{not_nan_f32_to_mask, presence_nan_mismatches_f32};
+///
+/// let values = [f32::NAN, 1.0, 2.0];
+/// let mut presence = [0u64; 1];
+/// not_nan_f32_to_mask(&values, &mut presence);
+/// // A plane derived from the lane always agrees with it.
+/// assert_eq!(presence_nan_mismatches_f32(&values, &presence), 0);
+/// ```
+#[inline]
+pub fn presence_nan_mismatches_f32(values: &[f32], presence: &[u64]) -> u64 {
+    presence_nan_mismatches("presence_nan_mismatches_f32", values, presence, not_nan_f32_to_mask)
+}
+
+/// The shared witness: `popcount(presence XOR derived)` over the live rows,
+/// one 64-row word at a time so no scratch plane is allocated.
+#[inline(always)]
+fn presence_nan_mismatches<T>(name: &str, values: &[T], presence: &[u64], derive: fn(&[T], &mut [u64])) -> u64 {
+    let words = mask_words_for(values.len());
+    assert!(presence.len() >= words, "{name}: presence.len()={} < required {words}", presence.len());
+    let mut derived = [0u64; 1];
+    let mut total = 0u64;
+    for (k, chunk) in values.chunks(64).enumerate() {
+        derive(chunk, &mut derived);
+        total += ((derived[0] ^ presence[k]) & live64(chunk.len())).count_ones() as u64;
+    }
+    total
+}
+
+// ── SQL comparisons over a NULL=NaN float lane ──────────────────────────────
+//
+// Under the NaN/presence bijection a NaN row is a SQL NULL, and a comparison
+// with NULL is UNKNOWN, never TRUE. Each `*_f64_to_mask` / `*_f32_to_mask`
+// below packs the TRUE plane of `values[i] <op> threshold`:
+//
+// * a NaN row packs `0` for every operator, `<>` included (IEEE says
+//   `NaN != t` is true; SQL says `NULL <> t` is UNKNOWN);
+// * a NaN threshold packs `0` everywhere (`x <op> NULL` is UNKNOWN);
+// * `-0.0 = 0.0` is TRUE, as in both IEEE and SQL.
+//
+// NOT is where IEEE and SQL disagree: `!(NaN > 5)` is true, but
+// `NOT (NULL > 5)` is UNKNOWN. So never complement a TRUE plane with a bare
+// `mask_not`; negate it inside the presence plane with [`mask_not_under`]
+// (`presence & !pred`), which yields SQL's FALSE plane and leaves UNKNOWN rows
+// out of both.
+
+/// Shared packer for the f64 SQL comparisons: `rel(x, t)` is the ordered IEEE
+/// relation, ANDed with `x == x` so a NaN (NULL) row never matches. A NaN
+/// threshold makes every row UNKNOWN, so the result is all zeros.
+#[inline(always)]
+fn sql_cmp_f64(
+    name: &str, values: &[f64], threshold: f64, out_words: &mut [u64],
+    rel: impl Fn(crate::simd::F64x8, crate::simd::F64x8) -> u8,
+) {
+    let t = crate::simd::F64x8::splat(threshold);
+    let unknown = threshold.is_nan();
+    pack::<f64, 8>(name, values, out_words, |lanes, live| {
+        if unknown {
+            return 0;
+        }
+        let v = crate::simd::F64x8::from_array(lanes);
+        (rel(v, t) & v.simd_eq(v).to_bitmask() & live8(live)) as u64
+    });
+}
+
+/// Shared packer for the f32 SQL comparisons; see [`sql_cmp_f64`].
+#[inline(always)]
+fn sql_cmp_f32(
+    name: &str, values: &[f32], threshold: f32, out_words: &mut [u64],
+    rel: impl Fn(crate::simd::F32x16, crate::simd::F32x16) -> u16,
+) {
+    let t = crate::simd::F32x16::splat(threshold);
+    let unknown = threshold.is_nan();
+    pack::<f32, 16>(name, values, out_words, |lanes, live| {
+        if unknown {
+            return 0;
+        }
+        let v = crate::simd::F32x16::from_array(lanes);
+        (rel(v, t) & v.simd_eq(v).to_bitmask() & live16(live)) as u64
+    });
+}
+
+/// Packs the SQL TRUE plane of `values[i] < threshold` over a NULL=NaN `f64`
+/// lane: bit `i` is set iff `values[i]` is not NaN, `threshold` is not NaN and
+/// `values[i] < threshold`. Full overwrite, trailing bits zero.
+///
+/// # Panics
+///
+/// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::lt_f64_to_mask;
+///
+/// let values = [1.0, f64::NAN, 9.0, -0.0];
+/// let mut words = [0u64; 1];
+/// lt_f64_to_mask(&values, 5.0, &mut words);
+/// assert_eq!(words[0], 0b1001); // the NaN row is UNKNOWN, not TRUE
+/// ```
+#[inline]
+pub fn lt_f64_to_mask(values: &[f64], threshold: f64, out_words: &mut [u64]) {
+    sql_cmp_f64("lt_f64_to_mask", values, threshold, out_words, |v, t| v.simd_lt(t).to_bitmask());
+}
+
+/// Packs the SQL TRUE plane of `values[i] <= threshold` over a NULL=NaN `f64`
+/// lane. Same contract as [`lt_f64_to_mask`].
+///
+/// # Panics
+///
+/// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::le_f64_to_mask;
+///
+/// let mut words = [0u64; 1];
+/// le_f64_to_mask(&[5.0, f64::NAN, 6.0], 5.0, &mut words);
+/// assert_eq!(words[0], 0b001);
+/// ```
+#[inline]
+pub fn le_f64_to_mask(values: &[f64], threshold: f64, out_words: &mut [u64]) {
+    sql_cmp_f64("le_f64_to_mask", values, threshold, out_words, |v, t| v.simd_le(t).to_bitmask());
+}
+
+/// Packs the SQL TRUE plane of `values[i] > threshold` over a NULL=NaN `f64`
+/// lane. Same contract as [`lt_f64_to_mask`].
+///
+/// # Panics
+///
+/// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::gt_f64_to_mask;
+///
+/// let mut words = [0u64; 1];
+/// gt_f64_to_mask(&[9.0, f64::NAN, f64::INFINITY], 5.0, &mut words);
+/// assert_eq!(words[0], 0b101);
+/// ```
+#[inline]
+pub fn gt_f64_to_mask(values: &[f64], threshold: f64, out_words: &mut [u64]) {
+    sql_cmp_f64("gt_f64_to_mask", values, threshold, out_words, |v, t| v.simd_gt(t).to_bitmask());
+}
+
+/// Packs the SQL TRUE plane of `values[i] >= threshold` over a NULL=NaN `f64`
+/// lane. Same contract as [`lt_f64_to_mask`].
+///
+/// # Panics
+///
+/// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::ge_f64_to_mask;
+///
+/// let mut words = [0u64; 1];
+/// ge_f64_to_mask(&[5.0, f64::NAN, 4.0], 5.0, &mut words);
+/// assert_eq!(words[0], 0b001);
+/// ```
+#[inline]
+pub fn ge_f64_to_mask(values: &[f64], threshold: f64, out_words: &mut [u64]) {
+    sql_cmp_f64("ge_f64_to_mask", values, threshold, out_words, |v, t| v.simd_ge(t).to_bitmask());
+}
+
+/// Packs the SQL TRUE plane of `values[i] = needle` over a NULL=NaN `f64`
+/// lane. `-0.0 = 0.0` is TRUE; a NaN row or a NaN needle never matches.
+///
+/// # Panics
+///
+/// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::eq_f64_to_mask;
+///
+/// let mut words = [0u64; 1];
+/// eq_f64_to_mask(&[-0.0, f64::NAN, 1.0], 0.0, &mut words);
+/// assert_eq!(words[0], 0b001);
+/// ```
+#[inline]
+pub fn eq_f64_to_mask(values: &[f64], needle: f64, out_words: &mut [u64]) {
+    sql_cmp_f64("eq_f64_to_mask", values, needle, out_words, |v, t| v.simd_eq(t).to_bitmask());
+}
+
+/// Packs the SQL TRUE plane of `values[i] <> needle` over a NULL=NaN `f64`
+/// lane. Unlike IEEE `!=`, a NaN row packs `0`: `NULL <> needle` is UNKNOWN.
+///
+/// # Panics
+///
+/// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::ne_f64_to_mask;
+///
+/// let mut words = [0u64; 1];
+/// ne_f64_to_mask(&[1.0, f64::NAN, 2.0], 2.0, &mut words);
+/// assert_eq!(words[0], 0b001);
+/// ```
+#[inline]
+pub fn ne_f64_to_mask(values: &[f64], needle: f64, out_words: &mut [u64]) {
+    sql_cmp_f64("ne_f64_to_mask", values, needle, out_words, |v, t| v.simd_ne(t).to_bitmask());
+}
+
+/// Packs the SQL TRUE plane of `values[i] < threshold` over a NULL=NaN `f32`
+/// lane. The `f32` sibling of [`lt_f64_to_mask`]; same contract.
+///
+/// # Panics
+///
+/// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::lt_f32_to_mask;
+///
+/// let mut words = [0u64; 1];
+/// lt_f32_to_mask(&[1.0, f32::NAN, 9.0], 5.0, &mut words);
+/// assert_eq!(words[0], 0b001);
+/// ```
+#[inline]
+pub fn lt_f32_to_mask(values: &[f32], threshold: f32, out_words: &mut [u64]) {
+    sql_cmp_f32("lt_f32_to_mask", values, threshold, out_words, |v, t| v.simd_lt(t).to_bitmask());
+}
+
+/// Packs the SQL TRUE plane of `values[i] <= threshold` over a NULL=NaN `f32`
+/// lane. Same contract as [`lt_f64_to_mask`].
+///
+/// # Panics
+///
+/// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::le_f32_to_mask;
+///
+/// let mut words = [0u64; 1];
+/// le_f32_to_mask(&[5.0, f32::NAN, 6.0], 5.0, &mut words);
+/// assert_eq!(words[0], 0b001);
+/// ```
+#[inline]
+pub fn le_f32_to_mask(values: &[f32], threshold: f32, out_words: &mut [u64]) {
+    sql_cmp_f32("le_f32_to_mask", values, threshold, out_words, |v, t| v.simd_le(t).to_bitmask());
+}
+
+/// Packs the SQL TRUE plane of `values[i] > threshold` over a NULL=NaN `f32`
+/// lane. Same contract as [`lt_f64_to_mask`].
+///
+/// # Panics
+///
+/// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::gt_f32_to_mask;
+///
+/// let mut words = [0u64; 1];
+/// gt_f32_to_mask(&[9.0, f32::NAN, 1.0], 5.0, &mut words);
+/// assert_eq!(words[0], 0b001);
+/// ```
+#[inline]
+pub fn gt_f32_to_mask(values: &[f32], threshold: f32, out_words: &mut [u64]) {
+    sql_cmp_f32("gt_f32_to_mask", values, threshold, out_words, |v, t| v.simd_gt(t).to_bitmask());
+}
+
+/// Packs the SQL TRUE plane of `values[i] >= threshold` over a NULL=NaN `f32`
+/// lane. Same contract as [`lt_f64_to_mask`].
+///
+/// # Panics
+///
+/// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::ge_f32_to_mask;
+///
+/// let mut words = [0u64; 1];
+/// ge_f32_to_mask(&[5.0, f32::NAN, 4.0], 5.0, &mut words);
+/// assert_eq!(words[0], 0b001);
+/// ```
+#[inline]
+pub fn ge_f32_to_mask(values: &[f32], threshold: f32, out_words: &mut [u64]) {
+    sql_cmp_f32("ge_f32_to_mask", values, threshold, out_words, |v, t| v.simd_ge(t).to_bitmask());
+}
+
+/// Packs the SQL TRUE plane of `values[i] = needle` over a NULL=NaN `f32`
+/// lane. Same contract as [`eq_f64_to_mask`].
+///
+/// # Panics
+///
+/// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::eq_f32_to_mask;
+///
+/// let mut words = [0u64; 1];
+/// eq_f32_to_mask(&[-0.0, f32::NAN, 1.0], 0.0, &mut words);
+/// assert_eq!(words[0], 0b001);
+/// ```
+#[inline]
+pub fn eq_f32_to_mask(values: &[f32], needle: f32, out_words: &mut [u64]) {
+    sql_cmp_f32("eq_f32_to_mask", values, needle, out_words, |v, t| v.simd_eq(t).to_bitmask());
+}
+
+/// Packs the SQL TRUE plane of `values[i] <> needle` over a NULL=NaN `f32`
+/// lane. Same contract as [`ne_f64_to_mask`].
+///
+/// # Panics
+///
+/// Panics if `out_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::ne_f32_to_mask;
+///
+/// let mut words = [0u64; 1];
+/// ne_f32_to_mask(&[1.0, f32::NAN, 2.0], 2.0, &mut words);
+/// assert_eq!(words[0], 0b001);
+/// ```
+#[inline]
+pub fn ne_f32_to_mask(values: &[f32], needle: f32, out_words: &mut [u64]) {
+    sql_cmp_f32("ne_f32_to_mask", values, needle, out_words, |v, t| v.simd_ne(t).to_bitmask());
+}
+
+/// SQL `NOT` under three-valued logic: `dst = presence & !pred`.
+///
+/// `pred` is a TRUE plane (for example from [`gt_f64_to_mask`]) and
+/// `presence` is **the predicate's** presence: the rows where every operand
+/// is non-NULL, i.e. the AND of the operands' presence planes (for a
+/// NULL=NaN float lane, [`not_nan_f64_to_mask`]; for any other column, its
+/// validity plane). A NULL literal operand (a NaN threshold) makes it
+/// all-zero, since `x > NULL` is UNKNOWN on every row; passing the column's
+/// plane there would report every present row FALSE. The result is the FALSE
+/// plane: rows where the predicate was evaluated and is false. Rows whose
+/// presence bit is clear are UNKNOWN and stay out of both planes, which is
+/// what SQL requires and what a bare [`mask_not`] gets wrong (`!(NaN > 5)`
+/// is true in IEEE, `NOT (NULL > 5)` is UNKNOWN in SQL).
+///
+/// It is [`mask_andnot`]`(presence, pred)` under the name of the rule it
+/// carries, so a lowering that negates a nullable predicate cannot reach for
+/// the bare complement by accident. Tail bits are zero whenever `presence`'s
+/// tail is zero.
+///
+/// # Panics
+///
+/// Panics unless `pred.len() == presence.len() == dst.len()`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::{gt_f64_to_mask, mask_not_under, not_nan_f64_to_mask};
+///
+/// let x = [9.0, f64::NAN, 1.0];
+/// let (mut gt, mut present, mut not_gt) = ([0u64; 1], [0u64; 1], [0u64; 1]);
+/// gt_f64_to_mask(&x, 5.0, &mut gt); //            WHERE x > 5     → row 0
+/// not_nan_f64_to_mask(&x, &mut present);
+/// mask_not_under(&gt, &present, &mut not_gt); //  WHERE NOT x > 5 → row 2 only
+/// assert_eq!((gt[0], not_gt[0]), (0b001, 0b100)); // the NULL row is in neither
+/// ```
+#[inline]
+pub fn mask_not_under(pred: &[u64], presence: &[u64], dst: &mut [u64]) {
+    mask_andnot(presence, pred, dst);
+}
+
 /// `dst = !src` over `n_rows` elements — the tail-aware complement. Bits at
 /// or past `n_rows` are written `0`, so a conforming input yields a
 /// conforming output (plain `!` on the words would set every tail bit).
@@ -4664,7 +5298,7 @@ fn live8(live: usize) -> u8 {
 /// `live`-lane validity mask for a 64-lane group (one `u8x64` register is one
 /// whole mask word): all ones for a full group, the low `live` bits otherwise.
 #[inline(always)]
-fn live64(live: usize) -> u64 {
+pub(crate) fn live64(live: usize) -> u64 {
     if live == 64 {
         u64::MAX
     } else {
@@ -5470,6 +6104,269 @@ pub fn mask_shift_morton(src: &[u64], dir: MortonDir, dst: &mut [u64]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── NaN / presence bijection ────────────────────────────────────────────
+    //
+    // The oracle classifies NaN from the bit pattern (exponent all ones,
+    // mantissa non-zero), never with a float compare, so it shares nothing
+    // with the `simd_eq` path under test.
+
+    fn is_nan_bits_f64(x: f64) -> bool {
+        let b = x.to_bits();
+        (b >> 52) & 0x7FF == 0x7FF && b & ((1u64 << 52) - 1) != 0
+    }
+
+    fn is_nan_bits_f32(x: f32) -> bool {
+        let b = x.to_bits();
+        (b >> 23) & 0xFF == 0xFF && b & ((1u32 << 23) - 1) != 0
+    }
+
+    const F64_EDGES: [u64; 12] = [
+        0x7FF8_0000_0000_0000, // quiet NaN
+        0xFFF8_0000_0000_0000, // negative quiet NaN
+        0x7FF0_0000_0000_0001, // signalling-pattern NaN, smallest payload
+        0x7FFF_FFFF_FFFF_FFFF, // NaN, all payload bits
+        0x7FF0_0000_0000_0000, // +inf (exponent all ones, mantissa zero: NOT NaN)
+        0xFFF0_0000_0000_0000, // -inf
+        0x0000_0000_0000_0000, // +0
+        0x8000_0000_0000_0000, // -0
+        0x0000_0000_0000_0001, // smallest subnormal
+        0x7FEF_FFFF_FFFF_FFFF, // MAX
+        0x3FF0_0000_0000_0000, // 1.0
+        0xBFF0_0000_0000_0000, // -1.0
+    ];
+
+    const F32_EDGES: [u32; 12] = [
+        0x7FC0_0000, 0xFFC0_0000, 0x7F80_0001, 0x7FFF_FFFF, 0x7F80_0000, 0xFF80_0000, 0x0000_0000, 0x8000_0000,
+        0x0000_0001, 0x7F7F_FFFF, 0x3F80_0000, 0xBF80_0000,
+    ];
+
+    fn f64_lane(n: usize, seed: u64) -> Vec<f64> {
+        let mut s = seed;
+        (0..n)
+            .map(|i| {
+                s = s
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let pick = (s >> 33) as usize;
+                if pick.is_multiple_of(3) {
+                    f64::from_bits(F64_EDGES[(i + pick) % F64_EDGES.len()])
+                } else {
+                    // Arbitrary bit patterns: about 1 in 2048 is a NaN on its own.
+                    f64::from_bits(s)
+                }
+            })
+            .collect()
+    }
+
+    fn f32_lane(n: usize, seed: u64) -> Vec<f32> {
+        let mut s = seed;
+        (0..n)
+            .map(|i| {
+                s = s
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let pick = (s >> 33) as usize;
+                if pick.is_multiple_of(3) {
+                    f32::from_bits(F32_EDGES[(i + pick) % F32_EDGES.len()])
+                } else {
+                    f32::from_bits((s >> 16) as u32)
+                }
+            })
+            .collect()
+    }
+
+    const NAN_LENS: [usize; 9] = [0, 1, 7, 8, 15, 63, 64, 65, 200];
+
+    #[test]
+    fn not_nan_to_mask_matches_bit_pattern_oracle_with_clean_tail() {
+        let mut nans = 0usize;
+        for (s, &n) in NAN_LENS.iter().enumerate() {
+            let words = n.div_ceil(64) + 1; // one surplus word
+            let v64 = f64_lane(n, 0xA5A5 + s as u64);
+            let mut got = vec![u64::MAX; words];
+            not_nan_f64_to_mask(&v64, &mut got);
+            let mut want = vec![0u64; words];
+            for (i, &x) in v64.iter().enumerate() {
+                if !is_nan_bits_f64(x) {
+                    want[i / 64] |= 1 << (i % 64);
+                } else {
+                    nans += 1;
+                }
+            }
+            assert_eq!(got, want, "f64 n={n}");
+
+            let v32 = f32_lane(n, 0x5A5A + s as u64);
+            let mut got = vec![u64::MAX; words];
+            not_nan_f32_to_mask(&v32, &mut got);
+            let mut want = vec![0u64; words];
+            for (i, &x) in v32.iter().enumerate() {
+                if !is_nan_bits_f32(x) {
+                    want[i / 64] |= 1 << (i % 64);
+                }
+            }
+            assert_eq!(got, want, "f32 n={n}");
+        }
+        // Anti-vacuity: the corpus really contains NaNs of the edge kinds.
+        assert!(nans >= 20, "only {nans} NaN rows in the f64 corpus");
+    }
+
+    #[test]
+    fn nan_where_clear_writes_nan_exactly_at_clear_bits() {
+        for (s, &n) in NAN_LENS.iter().enumerate() {
+            let original = f64_lane(n, 0x1234 + s as u64);
+            // Random presence with garbage in the bits past `n` and a surplus word.
+            let mut presence: Vec<u64> = (0..n.div_ceil(64) + 1)
+                .map(|w| 0x9E37_79B9_7F4A_7C15u64.rotate_left((w as u32 + s as u32) * 7))
+                .collect();
+            if !n.is_multiple_of(64) {
+                presence[n / 64] |= !0u64 << (n % 64);
+            }
+            let mut values = original.clone();
+            nan_where_clear_f64(&presence, &mut values);
+            for i in 0..n {
+                let set = (presence[i / 64] >> (i % 64)) & 1 == 1;
+                if set {
+                    assert_eq!(values[i].to_bits(), original[i].to_bits(), "set row {i} touched, n={n}");
+                } else {
+                    assert!(values[i].is_nan(), "clear row {i} not NaN, n={n}");
+                }
+            }
+
+            let original32 = f32_lane(n, 0x4321 + s as u64);
+            let mut values32 = original32.clone();
+            nan_where_clear_f32(&presence, &mut values32);
+            for i in 0..n {
+                let set = (presence[i / 64] >> (i % 64)) & 1 == 1;
+                if set {
+                    assert_eq!(values32[i].to_bits(), original32[i].to_bits());
+                } else {
+                    assert!(values32[i].is_nan());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mismatches_count_every_disagreement_and_ignore_dead_bits() {
+        let mut fired = 0u64;
+        for (s, &n) in NAN_LENS.iter().enumerate() {
+            let values = f64_lane(n, 0xBEEF + s as u64);
+            let mut presence: Vec<u64> = (0..n.div_ceil(64) + 1)
+                .map(|w| 0xD1B5_4A32_D192_ED03u64.rotate_left((w as u32 * 13) + s as u32))
+                .collect();
+            if !n.is_multiple_of(64) {
+                presence[n / 64] |= !0u64 << (n % 64); // dead bits must not count
+            }
+            let want = (0..n)
+                .filter(|&i| ((presence[i / 64] >> (i % 64)) & 1 == 1) == is_nan_bits_f64(values[i]))
+                .count() as u64;
+            assert_eq!(presence_nan_mismatches_f64(&values, &presence), want, "n={n}");
+            fired += want;
+
+            let values32 = f32_lane(n, 0xCAFE + s as u64);
+            let want32 = (0..n)
+                .filter(|&i| ((presence[i / 64] >> (i % 64)) & 1 == 1) == is_nan_bits_f32(values32[i]))
+                .count() as u64;
+            assert_eq!(presence_nan_mismatches_f32(&values32, &presence), want32, "f32 n={n}");
+        }
+        // Can-fire: random planes disagree with random lanes somewhere.
+        assert!(fired > 100, "witness fired only {fired} times");
+    }
+
+    #[test]
+    fn bijection_holds_after_either_direction_and_stays_silent() {
+        for (s, &n) in NAN_LENS.iter().enumerate() {
+            let values = f64_lane(n, 0x7777 + s as u64);
+            // lane → mask: a derived plane always agrees with its lane.
+            let mut derived = vec![0u64; n.div_ceil(64)];
+            not_nan_f64_to_mask(&values, &mut derived);
+            assert_eq!(presence_nan_mismatches_f64(&values, &derived), 0, "derived n={n}");
+
+            // mask → lane: stamping NaN under clear bits of a plane that has no
+            // set bit over a NaN row makes the lane agree with that plane.
+            let random: Vec<u64> = (0..n.div_ceil(64))
+                .map(|w| 0xF00D_F00D_1234_5678u64.rotate_left(w as u32 * 5 + s as u32))
+                .collect();
+            let mut plane = vec![0u64; n.div_ceil(64)];
+            mask_and(&random, &derived, &mut plane);
+            let mut stamped = values.clone();
+            nan_where_clear_f64(&plane, &mut stamped);
+            assert_eq!(presence_nan_mismatches_f64(&stamped, &plane), 0, "stamped n={n}");
+            // Re-deriving from the stamped lane gives the plane back.
+            let mut again = vec![0u64; n.div_ceil(64)];
+            not_nan_f64_to_mask(&stamped, &mut again);
+            assert_eq!(again, plane, "round trip n={n}");
+        }
+    }
+
+    fn sql_key_f64(x: f64) -> Option<i128> {
+        let b = x.to_bits();
+        if is_nan_bits_f64(x) {
+            return None;
+        }
+        let mag = (b & 0x7FFF_FFFF_FFFF_FFFF) as i128;
+        Some(if b >> 63 == 1 { -mag } else { mag })
+    }
+
+    #[test]
+    fn sql_predicates_are_true_planes_and_not_under_is_the_false_plane() {
+        type Op = fn(&[f64], f64, &mut [u64]);
+        type Rel = fn(i128, i128) -> bool;
+        let ops: [(Op, Rel); 6] = [
+            (lt_f64_to_mask, |a, b| a < b),
+            (le_f64_to_mask, |a, b| a <= b),
+            (gt_f64_to_mask, |a, b| a > b),
+            (ge_f64_to_mask, |a, b| a >= b),
+            (eq_f64_to_mask, |a, b| a == b),
+            (ne_f64_to_mask, |a, b| a != b),
+        ];
+        let mut leaks = 0usize;
+        for (s, &n) in NAN_LENS.iter().enumerate() {
+            let mut values = f64_lane(n, 0x5E1 + s as u64);
+            for i in (0..n).step_by(4) {
+                values[i] = f64::from_bits(F64_EDGES[i % F64_EDGES.len()]);
+            }
+            let words = n.div_ceil(64);
+            let mut column = vec![0u64; words];
+            not_nan_f64_to_mask(&values, &mut column);
+            for &tb in F64_EDGES.iter() {
+                let t = f64::from_bits(tb);
+                // The predicate's presence: the column's, and nothing at all
+                // when the threshold is the NULL literal.
+                let present = if t.is_nan() { vec![0u64; words] } else { column.clone() };
+                for (op, rel) in ops {
+                    let truth = |i: usize| match (sql_key_f64(values[i]), sql_key_f64(t)) {
+                        (Some(a), Some(b)) => Some(rel(a, b)),
+                        _ => None,
+                    };
+                    let mut got = vec![u64::MAX; words + 1];
+                    op(&values, t, &mut got);
+                    let mut want = vec![0u64; words + 1];
+                    let mut not_want = vec![0u64; words];
+                    for i in 0..n {
+                        match truth(i) {
+                            Some(true) => want[i / 64] |= 1 << (i % 64),
+                            Some(false) => not_want[i / 64] |= 1 << (i % 64),
+                            None => leaks += usize::from(sql_key_f64(t).is_some()),
+                        }
+                    }
+                    assert_eq!(got, want, "TRUE plane n={n} t={t:?}");
+                    let mut neg = vec![0u64; words];
+                    mask_not_under(&got[..words], &present, &mut neg);
+                    assert_eq!(neg, not_want, "FALSE plane n={n} t={t:?}");
+                }
+            }
+        }
+        // Anti-vacuity: NULL rows a bare complement would have reported as FALSE.
+        assert!(leaks > 100, "only {leaks} NULL rows exercised the NOT rule");
+    }
+
+    #[test]
+    #[should_panic(expected = "presence.len()")]
+    fn mismatches_refuse_a_short_presence_plane() {
+        presence_nan_mismatches_f64(&[1.0; 65], &[0u64; 1]);
+    }
 
     // ── Packed-bitmask predicates + mask algebra ────────────────────────────
     //
@@ -6720,6 +7617,77 @@ mod tests {
         let index = vec![0u32; 65];
         let mut out = [0u64; 1];
         mask_scatter_or_u32(&src, &index, &mut out, 4);
+    }
+
+    // ── mask_scatter_or_u16: the u16-index twin ─────────────────────────────
+
+    #[test]
+    fn mask_scatter_or_u16_equals_the_u32_scatter_on_the_same_ordinals_across_the_tail() {
+        // Same rows, same ordinals (as u16 and widened to u32), out_rows both
+        // inside and short of the u16 domain: the two must agree bit for bit.
+        for &n in &[0usize, 1, 63, 64, 65, 67, 130, 4096] {
+            for &out_rows in &[50usize, 4096, 65_536] {
+                let mut seed = 0xD256_0016_0000_0001u64 ^ n as u64 ^ (out_rows as u64) << 20;
+                let src_bits: Vec<bool> = (0..n).map(|_| splitmix(&mut seed) & 1 == 1).collect();
+                let mut src = bits_to_words(&src_bits);
+                // Dirty tail bits past n must be ignored by both.
+                if !n.is_multiple_of(64) {
+                    if let Some(last) = src.last_mut() {
+                        *last |= !0u64 << (n % 64);
+                    }
+                }
+                let idx16: Vec<u16> = (0..n).map(|_| splitmix(&mut seed) as u16).collect();
+                let idx32: Vec<u32> = idx16.iter().map(|&o| u32::from(o)).collect();
+                let words = out_rows.div_ceil(64);
+                let mut got = vec![0u64; words + 1];
+                let mut want = vec![0u64; words + 1];
+                mask_scatter_or_u16(&src, &idx16, &mut got, out_rows);
+                mask_scatter_or_u32(&src, &idx32, &mut want, out_rows);
+                assert_eq!(got, want, "n={n} out_rows={out_rows}");
+                let naive = bits_to_words(&naive_scatter(&src_bits, &idx32, out_rows));
+                assert_eq!(&got[..naive.len()], &naive[..], "naive reference n={n} out_rows={out_rows}");
+                assert_eq!(got[words], 0, "surplus word untouched n={n} out_rows={out_rows}");
+            }
+        }
+    }
+
+    #[test]
+    fn mask_scatter_or_u16_reaches_the_top_of_the_u16_domain_and_drops_out_of_range() {
+        // 65_535 is a real target in a 65,536-row universe and out of range
+        // in a 65,535-row one; a widening bug (e.g. truncation) shows here.
+        let src = [0b11u64];
+        let index = [65_535u16, 0];
+        let mut full = vec![0u64; 1024];
+        mask_scatter_or_u16(&src, &index, &mut full, 65_536);
+        assert_eq!(full[1023], 1u64 << 63);
+        assert_eq!(full[0], 1);
+        let mut short = vec![0u64; 1024];
+        mask_scatter_or_u16(&src, &index, &mut short, 65_535);
+        assert_eq!(short[1023], 0, "65,535 is out of range for out_rows = 65,535 and is dropped");
+        assert_eq!(short[0], 1);
+    }
+
+    #[test]
+    fn mask_scatter_or_u16_repeats_union_and_calls_accumulate() {
+        let mut out = [1u64 << 7]; // a bit no call scatters to
+        mask_scatter_or_u16(&[0b111u64], &[3u16, 3, 3], &mut out, 8);
+        mask_scatter_or_u16(&[0b1u64], &[5u16], &mut out, 8);
+        assert_eq!(out[0], (1 << 3) | (1 << 5) | (1 << 7), "union, accumulation, pre-set bit kept");
+    }
+
+    #[test]
+    #[should_panic(expected = "mask_scatter_or_u16: out_words.len()")]
+    fn mask_scatter_or_u16_rejects_short_out_buffer() {
+        let mut out = [0u64; 1];
+        mask_scatter_or_u16(&[0b1u64], &[200u16], &mut out, 200);
+    }
+
+    #[test]
+    #[should_panic(expected = "mask_scatter_or_u16: src.len()")]
+    fn mask_scatter_or_u16_rejects_short_src_buffer() {
+        let index = vec![0u16; 65];
+        let mut out = [0u64; 1];
+        mask_scatter_or_u16(&[0u64; 1], &index, &mut out, 4);
     }
 
     fn naive_group_sum(mask_bits: &[bool], keys: &[u32], values: &[i32], out_len: usize) -> Vec<i64> {

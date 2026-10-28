@@ -1,0 +1,19 @@
+crates/holograph/src/hamming.rs:593  R1 SHUFFLE-AS-COMPUTE  let popcnt_lo = _mm256_shuffle_epi8(lookup, lo);
+crates/holograph/src/hamming.rs:594  R1 SHUFFLE-AS-COMPUTE  let popcnt_hi = _mm256_shuffle_epi8(lookup, hi);
+crates/lance-graph/src/graph/blasgraph/ndarray_bridge.rs:291  R1 SHUFFLE-AS-COMPUTE  let pop_lo = _mm256_shuffle_epi8(lut, lo_nibbles);
+crates/lance-graph/src/graph/blasgraph/ndarray_bridge.rs:292  R1 SHUFFLE-AS-COMPUTE  let pop_hi = _mm256_shuffle_epi8(lut, hi_nibbles);
+crates/lance-graph/src/graph/blasgraph/ndarray_bridge.rs:336  R1 SHUFFLE-AS-COMPUTE  let pop_lo = _mm256_shuffle_epi8(lut, lo_nibbles);
+crates/lance-graph/src/graph/blasgraph/ndarray_bridge.rs:337  R1 SHUFFLE-AS-COMPUTE  let pop_hi = _mm256_shuffle_epi8(lut, hi_nibbles);
+crates/lance-graph/src/graph/blasgraph/ndarray_bridge.rs:386  R1 SHUFFLE-AS-COMPUTE  let pop_lo = _mm512_shuffle_epi8(lut, lo_nibbles);
+crates/lance-graph/src/graph/blasgraph/ndarray_bridge.rs:387  R1 SHUFFLE-AS-COMPUTE  let pop_hi = _mm512_shuffle_epi8(lut, hi_nibbles);
+crates/lance-graph/src/graph/blasgraph/ndarray_bridge.rs:428  R1 SHUFFLE-AS-COMPUTE  let pop_lo = _mm512_shuffle_epi8(lut, lo_nibbles);
+crates/lance-graph/src/graph/blasgraph/ndarray_bridge.rs:429  R1 SHUFFLE-AS-COMPUTE  let pop_hi = _mm512_shuffle_epi8(lut, hi_nibbles);
+
+  ███ FACET STRIDE VIOLATION ███   '{0}..{15}' -f $128.split()
+  A 128-bit value is 16 u8 positions; one mov reads them all. Shuffles only
+  MOVE bytes; never assemble a result from them. Scalar loops live only in
+  simd_scalar.rs (on AVX2 use the 2 x U8x32 / 128-bit-half split). u8 has no
+  sign: do not mix u8 and i8.
+  Genuine exception: `// facet-stride: ok <reason>` on or above the line.
+  Rule text: CLAUDE.md § FACET STRIDE.
+  10 violation(s).

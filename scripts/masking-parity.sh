@@ -7,6 +7,8 @@
 #   scripts/masking-parity.sh nightly       `cargo +nightly --features nightly-simd`
 #   scripts/masking-parity.sh wasm          wasm32 +simd128 under node (simd_wasm arm)
 #   scripts/masking-parity.sh wasm-scalar   wasm32 WITHOUT simd128 under node = the scalar arm
+#   scripts/masking-parity.sh wasm-relaxed  wasm32 +simd128 +relaxed-simd under node (simd_wasm arm; no source path
+#                                           selects on relaxed-simd, so this guards against one appearing)
 #   scripts/masking-parity.sh neon-qemu     aarch64 cross-build run under qemu-aarch64-static
 #   scripts/masking-parity.sh avx-qemu      AVX-without-AVX2 build (config-avx) under qemu -cpu SandyBridge
 #   scripts/masking-parity.sh v2-qemu       x86-64-v2 build (config-v2, scalar realization) under qemu -cpu Nehalem
@@ -15,7 +17,7 @@
 # realization on the native row) pass through CARGO_ARGS, see
 # scripts/codegen-witness.sh for why that form and not the env var.
 set -euo pipefail
-ARM="${1:?native|nightly|wasm|wasm-scalar|neon-qemu|avx-qemu|v2-qemu}"
+ARM="${1:?native|nightly|wasm|wasm-scalar|wasm-relaxed|neon-qemu|avx-qemu|v2-qemu}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MANIFEST="$ROOT/crates/simd-masking-parity/Cargo.toml"
 TD="${CARGO_TARGET_DIR:-$ROOT/crates/simd-masking-parity/target}"
@@ -50,8 +52,9 @@ case "$ARM" in
     cargo +nightly ${CARGO_ARGS:-} build --release --manifest-path "$MANIFEST" --bin simd-masking-parity --features nightly-simd
     "$TD/release/simd-masking-parity"
     ;;
-  wasm|wasm-scalar)
+  wasm|wasm-scalar|wasm-relaxed)
     FLAGS=""; [ "$ARM" = wasm ] && FLAGS="-C target-feature=+simd128"
+    [ "$ARM" = wasm-relaxed ] && FLAGS="-C target-feature=+simd128,+relaxed-simd"
     RUSTFLAGS="$FLAGS" cargo ${CARGO_ARGS:-} build --release --lib --manifest-path "$MANIFEST" --target wasm32-unknown-unknown
     echo "==> $ARM (RUSTFLAGS='$FLAGS') under node"
     node "$ROOT/crates/simd-masking-parity/run.mjs" "$TD/wasm32-unknown-unknown/release/simd_masking_parity.wasm"

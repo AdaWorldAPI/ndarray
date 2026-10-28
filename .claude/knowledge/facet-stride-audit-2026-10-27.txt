@@ -1,0 +1,379 @@
+awk: cannot open "crates/burn/src/backend.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/backend.rs'
+awk: cannot open "crates/burn/src/element.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/element.rs'
+awk: cannot open "crates/burn/src/lib.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/lib.rs'
+awk: cannot open "crates/burn/src/ops/adaptive_avgpool.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/ops/adaptive_avgpool.rs'
+awk: cannot open "crates/burn/src/ops/avgpool.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/ops/avgpool.rs'
+awk: cannot open "crates/burn/src/ops/base.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/ops/base.rs'
+awk: cannot open "crates/burn/src/ops/bool_tensor.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/ops/bool_tensor.rs'
+awk: cannot open "crates/burn/src/ops/conv.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/ops/conv.rs'
+awk: cannot open "crates/burn/src/ops/deform_conv.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/ops/deform_conv.rs'
+awk: cannot open "crates/burn/src/ops/grid_sample.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/ops/grid_sample.rs'
+awk: cannot open "crates/burn/src/ops/int_tensor.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/ops/int_tensor.rs'
+awk: cannot open "crates/burn/src/ops/interpolate.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/ops/interpolate.rs'
+awk: cannot open "crates/burn/src/ops/macros.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/ops/macros.rs'
+awk: cannot open "crates/burn/src/ops/maxpool.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/ops/maxpool.rs'
+awk: cannot open "crates/burn/src/ops/mod.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/ops/mod.rs'
+awk: cannot open "crates/burn/src/ops/module.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/ops/module.rs'
+awk: cannot open "crates/burn/src/ops/padding.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/ops/padding.rs'
+awk: cannot open "crates/burn/src/ops/qtensor.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/ops/qtensor.rs'
+awk: cannot open "crates/burn/src/ops/quantization.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/ops/quantization.rs'
+awk: cannot open "crates/burn/src/ops/simd/avgpool.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/ops/simd/avgpool.rs'
+awk: cannot open "crates/burn/src/ops/simd/base.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/ops/simd/base.rs'
+awk: cannot open "crates/burn/src/ops/simd/binary.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/ops/simd/binary.rs'
+awk: cannot open "crates/burn/src/ops/simd/binary_elemwise.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/ops/simd/binary_elemwise.rs'
+awk: cannot open "crates/burn/src/ops/simd/cmp.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/ops/simd/cmp.rs'
+awk: cannot open "crates/burn/src/ops/simd/conv.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/ops/simd/conv.rs'
+awk: cannot open "crates/burn/src/ops/simd/maxpool.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/ops/simd/maxpool.rs'
+awk: cannot open "crates/burn/src/ops/simd/mod.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/ops/simd/mod.rs'
+awk: cannot open "crates/burn/src/ops/simd/unary.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/ops/simd/unary.rs'
+awk: cannot open "crates/burn/src/ops/transaction.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/ops/transaction.rs'
+awk: cannot open "crates/burn/src/parallel.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/parallel.rs'
+awk: cannot open "crates/burn/src/rand.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/rand.rs'
+awk: cannot open "crates/burn/src/sharing.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/sharing.rs'
+awk: cannot open "crates/burn/src/storage.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/storage.rs'
+awk: cannot open "crates/burn/src/tensor.rs" (No such file or directory)
+Traceback (most recent call last):
+  File "<string>", line 25, in <module>
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'crates/burn/src/tensor.rs'
+src/bitwise.rs:120  R1 SHUFFLE-AS-COMPUTE  let popcnt_lo = lookup.shuffle_bytes(lo);
+src/bitwise.rs:121  R1 SHUFFLE-AS-COMPUTE  let popcnt_hi = lookup.shuffle_bytes(hi);
+src/bitwise.rs:165  R1 SHUFFLE-AS-COMPUTE  let popcnt_lo = lookup.shuffle_bytes(lo);
+src/bitwise.rs:166  R1 SHUFFLE-AS-COMPUTE  let popcnt_hi = lookup.shuffle_bytes(hi);
+src/simd_avx.rs:107  R1 SHUFFLE-AS-COMPUTE  let cnt = _mm_add_epi8(_mm_shuffle_epi8(lookup, lo), _mm_shuffle_epi8(lookup, hi));
+src/simd_avx2.rs:375  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:380  R1 SHUFFLE-AS-COMPUTE  let cnt = _mm256_add_epi8(_mm256_shuffle_epi8(lookup, lo), _mm256_shuffle_epi8(lookup, hi));
+src/simd_avx2.rs:392  R1 SHUFFLE-AS-COMPUTE  let cnt = _mm256_add_epi8(_mm256_shuffle_epi8(lookup, lo), _mm256_shuffle_epi8(lookup, hi));
+src/simd_avx2.rs:576  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:585  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:596  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:612  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:622  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:636  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:648  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:668  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:680  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:703  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:714  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:722  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:731  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:796  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:847  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:905  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:914  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:923  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:934  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:950  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:960  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:974  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:986  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:999  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:1012  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:1025  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:1038  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:1049  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:1057  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:1122  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:1152  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:1340  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx2.rs:1348  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx2.rs:1356  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx2.rs:1364  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx2.rs:1372  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx2.rs:1450  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx2.rs:1458  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx2.rs:1466  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx2.rs:1474  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx2.rs:1482  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx2.rs:1526  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx2.rs:1537  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx2.rs:1558  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx2.rs:1577  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx2.rs:1586  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx2.rs:1594  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx2.rs:1602  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx2.rs:1615  R2 SCALAR-IN-SIMD  for lane in 0..4 {
+src/simd_avx2.rs:1617  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:1629  R2 SCALAR-IN-SIMD  for lane in 0..4 {
+src/simd_avx2.rs:1631  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:1651  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx2.rs:1659  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx2.rs:1669  R2 SCALAR-IN-SIMD  for lane in 0..4 {
+src/simd_avx2.rs:1671  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:2070  R2 SCALAR-IN-SIMD  for c in 0..16 {
+src/simd_avx2.rs:2088  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:2109  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:2410  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:2529  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:2548  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:2635  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx2.rs:2643  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx2.rs:2651  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx2.rs:2654  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx2.rs:2662  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx2.rs:2670  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx2.rs:2678  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx2.rs:2896  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:2904  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:2912  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:2920  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:2931  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:2941  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:3004  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:3021  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx2.rs:3040  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:3048  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx2.rs:3096  R3 U8-I8-MIX  Self(unsafe { _mm256_set1_epi8(v as i8) })
+src/simd_avx2.rs:3326  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx512.rs:529  R3 U8-I8-MIX  Self(unsafe { _mm512_set1_epi8(v as i8) })
+src/simd_avx512.rs:729  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_avx512.rs:1151  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx512.rs:1290  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx512.rs:1312  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx512.rs:1733  R2 SCALAR-IN-SIMD  for c in 0..16 {
+src/simd_avx512.rs:3088  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_avx512.rs:3448  R2 SCALAR-IN-SIMD  for k in 0..8 {
+src/simd_avx512.rs:3496  R2 SCALAR-IN-SIMD  for k in 0..8 {
+src/simd_avx512.rs:3550  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_avx512.rs:3604  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx512.rs:3614  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_avx512.rs:3651  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_neon.rs:639  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_neon.rs:651  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_neon.rs:671  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_neon.rs:683  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_neon.rs:695  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_neon.rs:704  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_neon.rs:713  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_neon.rs:852  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_neon.rs:1005  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_neon.rs:1017  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_neon.rs:1030  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_neon.rs:1043  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_neon.rs:1056  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_neon.rs:1069  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_neon.rs:1081  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_neon.rs:1090  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_neon.rs:1208  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_neon.rs:1375  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_neon.rs:1477  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_neon.rs:1857  R2 SCALAR-IN-SIMD  for c in 0..16 {
+src/simd_neon.rs:1946  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_neon.rs:1985  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_neon.rs:2511  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_neon.rs:2567  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_neon.rs:2603  R2 SCALAR-IN-SIMD  for k in 0..8 {
+src/simd_neon.rs:2670  R2 SCALAR-IN-SIMD  for k in 0..8 {
+src/simd_nightly/bf16_types.rs:80  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_nightly/bf16_types.rs:90  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_nightly/bf16_types.rs:143  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_nightly/bf16_types.rs:153  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_nightly/exotic_methods.rs:39  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_nightly/exotic_methods.rs:70  R2 SCALAR-IN-SIMD  for lane in 0..4 {
+src/simd_nightly/exotic_methods.rs:72  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_nightly/exotic_methods.rs:107  R2 SCALAR-IN-SIMD  for i in 0..64 {
+src/simd_nightly/exotic_methods.rs:138  R2 SCALAR-IN-SIMD  for lane in 0..4 {
+src/simd_nightly/exotic_methods.rs:140  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_nightly/exotic_methods.rs:172  R2 SCALAR-IN-SIMD  for lane in 0..4 {
+src/simd_nightly/exotic_methods.rs:174  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_nightly/exotic_methods.rs:212  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_nightly/exotic_methods.rs:242  R2 SCALAR-IN-SIMD  for lane in 0..2 {
+src/simd_nightly/exotic_methods.rs:244  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_nightly/exotic_methods.rs:279  R2 SCALAR-IN-SIMD  for i in 0..32 {
+src/simd_nightly/exotic_methods.rs:310  R2 SCALAR-IN-SIMD  for lane in 0..2 {
+src/simd_nightly/exotic_methods.rs:312  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_nightly/exotic_methods.rs:344  R2 SCALAR-IN-SIMD  for lane in 0..2 {
+src/simd_nightly/exotic_methods.rs:346  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_nightly/f16_types.rs:175  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_nightly/f16_types.rs:185  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_nightly/f32_types.rs:103  R2 SCALAR-IN-SIMD  for (o, &i) in out.iter_mut().zip(idx.iter()) {
+src/simd_nightly/u_word_types.rs:42  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_nightly/u_word_types.rs:59  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_nightly/u_word_types.rs:684  R2 SCALAR-IN-SIMD  for c in 0..16 {
+src/simd_nightly/w1a_types.rs:531  R2 SCALAR-IN-SIMD  for k in 0..8 {
+src/simd_nightly/w1a_types.rs:663  R2 SCALAR-IN-SIMD  for k in 0..8 {
+src/simd_wasm.rs:302  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_wasm.rs:311  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_wasm.rs:320  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_wasm.rs:452  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_wasm.rs:678  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_wasm.rs:687  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_wasm.rs:798  R2 SCALAR-IN-SIMD  for i in 0..8 {
+src/simd_wasm.rs:922  R2 SCALAR-IN-SIMD  for i in 0..16 {
+src/simd_wasm.rs:1423  R2 SCALAR-IN-SIMD  for c in 0..16 {
+src/simd_wasm.rs:1506  R2 SCALAR-IN-SIMD  for i in 0..16 {
+
+  ███ FACET STRIDE VIOLATION ███   '{0}..{15}' -f $128.split()
+  A 128-bit value is 16 u8 positions; one mov reads them all. Shuffles only
+  MOVE bytes; never assemble a result from them. Scalar loops live only in
+  simd_scalar.rs (on AVX2 use the 2 x U8x32 / 128-bit-half split). u8 has no
+  sign: do not mix u8 and i8.
+  Genuine exception: `// facet-stride: ok <reason>` on or above the line.
+  Rule text: CLAUDE.md § FACET STRIDE.
+  166 violation(s).
