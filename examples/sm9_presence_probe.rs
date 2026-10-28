@@ -1,102 +1,69 @@
-//! Sign-magnitude 9-bit lanes with NULL carried by the presence plane.
+//! DR512 P × magnitude laboratory. ONE bit plane: P=0,M=0 is -0/NaN/never touched.
+//! P=0,M>0 negative; P=1,M=0 +0; P=1,M>0 positive.
+//! No independent sign or NULL bit and no second bitmap for WHERE(P=0 && M=0).
+//! Odoo/DT64 source authority and alpha-claim admission are separate.
+//! Retains the original comparative i8 vs magnitude-LUT numerical experiments.
 //!
-//! A follow-up to the Palette512 / SignedMagnitude9 probe (#380). There, the
-//! codeword "sign set, magnitude 0" was reserved as the NaN sentinel. Here NaN
-//! is not a codeword: a row is NaN (NULL) because its presence bit is clear,
-//! whatever its payload holds. That is the NaN/presence rule `ndarray::simd`
-//! ships for float lanes (`not_nan_*_to_mask`, `nan_where_clear_*`,
-//! `presence_nan_mismatches_*`), applied to an integer lane, where the presence
-//! plane is the only carrier.
-//!
-//! Per 64-lane block: 64 `u8` magnitudes, one `u64` sign plane, one `u64`
-//! presence plane. Every magnitude/sign pair is a value, -255..=+255; the
-//! writer stores +0 for zero and for missing rows, so each row has one encoding.
-//!
-//! What it measures:
-//!
-//! 1. The masked dot product: lanes split by `sign_a ^ sign_b` into a positive
-//!    and a negative unsigned accumulator, NULL rows excluded by the presence
-//!    AND, `n` the popcount of the same mask. Checked exhaustively against a
-//!    decoded oracle. Scalar reference only: the SIMD cost of the u8 x u8
-//!    accumulation is not measured here.
-//! 2. tanh exactness against i8 symmetric (-127..=127), both as a 256-entry
-//!    lookup table and as output quantization alone. tanh is odd, so the
-//!    sign-magnitude table is indexed by magnitude and the sign plane passes
-//!    through untouched.
-//!
-//! Run `cargo run --release --example sm9_presence_probe` for the table and
-//! `cargo test --release --example sm9_presence_probe` for the checks.
+//! Run cargo test --example sm9_presence_probe for exhaustive lab evidence.
 
-use ndarray::simd::nan_where_clear_f64;
-
-/// One 64-lane block. `presence` bit i clear means lane i is NULL (NaN).
+/// One 64-lane DR512 block: u8 magnitude + ONE epistemic presence bit.
+/// P=0,M=0 is never touched (-0/NaN), P=0,M>0 negative.
+/// P=1,M=0 valid +0, P=1,M>0 positive.
+/// Never conflate this numeric code with source-write authorization.
 #[derive(Clone, Debug)]
 struct Sm9Block {
     magnitudes: [u8; 64],
-    signs: u64,
     presence: u64,
 }
 
 impl Sm9Block {
-    /// Store `values[i]` (`None` = NULL). A NULL or zero row is written as +0.
     fn from_values(values: &[Option<i16>; 64]) -> Self {
-        let mut b = Self {
-            magnitudes: [0; 64],
-            signs: 0,
-            presence: 0,
-        };
+        let mut out = Self { magnitudes: [0; 64], presence: 0 };
         for (i, v) in values.iter().enumerate() {
             if let Some(v) = *v {
-                assert!((-255..=255).contains(&v), "value {v} outside -255..=255");
-                b.presence |= 1 << i;
-                b.magnitudes[i] = v.unsigned_abs() as u8;
-                if v < 0 {
-                    b.signs |= 1 << i;
+                assert!((-255..=255).contains(&v), "out of DR512 range: {v}");
+                out.magnitudes[i] = v.unsigned_abs() as u8;
+                // Touched valid zero is ALWAYS +0. Negative nonzero clears P.
+                if v >= 0 {
+                    out.presence |= 1u64 << i;
                 }
             }
         }
-        b
-    }
-
-    /// The value of lane `i`, `None` when the presence bit is clear.
-    fn value(&self, i: usize) -> Option<i16> {
-        if (self.presence >> i) & 1 == 0 {
-            return None;
-        }
-        let m = i16::from(self.magnitudes[i]);
-        Some(if (self.signs >> i) & 1 == 1 { -m } else { m })
-    }
-
-    /// Masked dot product over the rows both blocks hold (`filter` narrows it
-    /// further). Returns `(dot, n)`. The sign is a mask, not arithmetic: lanes
-    /// whose signs differ go to the negative accumulator.
-    fn masked_dot(&self, rhs: &Self, filter: u64) -> (i64, u32) {
-        let sel = self.presence & rhs.presence & filter;
-        let negative = self.signs ^ rhs.signs;
-        let (mut pos, mut neg) = (0u64, 0u64);
-        let mut bits = sel;
-        while bits != 0 {
-            let i = bits.trailing_zeros() as usize;
-            let p = u64::from(self.magnitudes[i]) * u64::from(rhs.magnitudes[i]);
-            if (negative >> i) & 1 == 1 {
-                neg += p;
-            } else {
-                pos += p;
-            }
-            bits &= bits - 1;
-        }
-        (pos as i64 - neg as i64, sel.count_ones())
-    }
-
-    /// Decode to an f64 lane at `scale`, NaN where the presence bit is clear.
-    fn decode(&self, scale: f64) -> [f64; 64] {
-        let mut out = [0.0f64; 64];
-        for (i, o) in out.iter_mut().enumerate() {
-            let m = f64::from(self.magnitudes[i]) * scale;
-            *o = if (self.signs >> i) & 1 == 1 { -m } else { m };
-        }
-        nan_where_clear_f64(&[self.presence], &mut out);
         out
+    }
+
+    fn value(&self, i: usize) -> Option<i16> {
+        let magnitude = i16::from(self.magnitudes[i]);
+        let positive = (self.presence >> i) & 1 != 0;
+        if !positive && magnitude == 0 { None }
+        else { Some(if positive { magnitude } else { -magnitude }) }
+    }
+
+    fn never_touched(&self, i: usize) -> bool {
+        (self.presence >> i) & 1 == 0 && self.magnitudes[i] == 0
+    }
+
+    /// Filter/WHERE is a selector, not proof of source authority.
+    fn masked_dot(&self, rhs: &Self, filter: u64) -> (i64, u32) {
+        let mut acc = 0i64;
+        let mut count = 0u32;
+        let mut selected = filter;
+        while selected != 0 {
+            let i = selected.trailing_zeros() as usize;
+            if let (Some(a), Some(b)) = (self.value(i), rhs.value(i)) {
+                acc += i64::from(a) * i64::from(b);
+                count += 1;
+            }
+            selected &= selected - 1;
+        }
+        (acc, count)
+    }
+
+    fn decode(&self, scale: f64) -> [f64; 64] {
+        std::array::from_fn(|i| match self.value(i) {
+            Some(value) => f64::from(value) * scale,
+            None => f64::NAN,
+        })
     }
 }
 
@@ -245,7 +212,6 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndarray::simd::presence_nan_mismatches_f64;
 
     /// Every (value or NULL) x (value or NULL) pair: the masked product
     /// equals the decoded product, and NULL contributes nothing to dot or n.
@@ -274,23 +240,24 @@ mod tests {
         assert_eq!(checked, 512 * 512);
     }
 
-    /// Zero and NULL rows are stored as +0, so no row has two encodings, and
-    /// the payload under a clear presence bit never reaches the result.
     #[test]
-    fn null_and_zero_store_canonical_plus_zero_and_payload_is_ignored() {
-        let mut v = [Some(7i16); 64];
-        v[3] = None;
-        v[4] = Some(0);
-        let mut b = Sm9Block::from_values(&v);
-        assert_eq!((b.magnitudes[3], (b.signs >> 3) & 1), (0, 0));
-        assert_eq!((b.magnitudes[4], (b.signs >> 4) & 1), (0, 0));
+    fn never_touched_negative_zero_positive_zero_and_negative_values() {
+        let mut values = [Some(7i16); 64];
+        values[3] = None;
+        values[4] = Some(0);
+        values[5] = Some(-255);
+        let block = Sm9Block::from_values(&values);
+        assert_eq!((block.presence >> 3) & 1, 0);
+        assert_eq!((block.presence >> 4) & 1, 1);
+        assert_eq!((block.presence >> 5) & 1, 0);
+        assert!(block.never_touched(3));
+        assert!(!block.never_touched(4));
+        assert!(!block.never_touched(5));
+        assert_eq!(block.value(3), None);
+        assert_eq!(block.value(4), Some(0));
+        assert_eq!(block.value(5), Some(-255));
         let ones = Sm9Block::from_values(&[Some(1i16); 64]);
-        let before = b.masked_dot(&ones, u64::MAX);
-        // Garbage under the clear bit changes nothing.
-        b.magnitudes[3] = 255;
-        b.signs |= 1 << 3;
-        assert_eq!(b.masked_dot(&ones, u64::MAX), before);
-        assert_eq!(before, (7 * 62, 63));
+        assert_eq!(block.masked_dot(&ones, u64::MAX), (7 * 61 - 255, 63));
     }
 
     /// Random blocks with NULLs and a filter, against a wide decoded oracle.
@@ -331,7 +298,7 @@ mod tests {
         assert!(nulls_skipped > 10_000, "only {nulls_skipped} NULL rows skipped");
     }
 
-    /// Decoding gives a float lane on which the NaN/presence bijection holds.
+    /// Decoding returns NaN precisely for P=0,M=0, not every P=0 row.
     #[test]
     fn decode_satisfies_the_float_bijection() {
         let mut v = [Some(-200i16); 64];
@@ -340,7 +307,9 @@ mod tests {
         }
         let b = Sm9Block::from_values(&v);
         let lane = b.decode(1.0 / 255.0);
-        assert_eq!(presence_nan_mismatches_f64(&lane, &[b.presence]), 0);
+        for (i, x) in lane.iter().enumerate() {
+            assert_eq!(x.is_nan(), b.never_touched(i), "row {i}");
+        }
         assert_eq!(lane.iter().filter(|x| x.is_nan()).count(), 22);
     }
 
