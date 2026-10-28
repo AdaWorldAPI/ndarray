@@ -1,3 +1,4 @@
+#![cfg(feature = "std")]
 //! Independent DR512 P×M truth-table and distance-oracle CI tripwires.
 use ndarray::hpc::codec8::{Calibration, TiesAway, TiesEven};
 use ndarray::hpc::codec9::{Codec9, EpiLane9};
