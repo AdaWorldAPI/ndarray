@@ -5,7 +5,7 @@
 //! * `i8 table`: the i8 `Sym` form, one 255-entry table indexed by the
 //!   signed code (`table[c + 127]`), no sign plane;
 //! * `u8 table + sign`: the scalar form of what `lut9` computes, a
-//!   256-entry lookup plus the sign plane cleared where a nonzero input
+//!   256-entry lookup plus the epistemic presence bit set where a touched negative input
 //!   gives 0;
 //! * `lut9`: the SIMD primitive.
 //!
@@ -40,7 +40,7 @@ fn main() {
         s
     };
     let mags: Vec<u8> = (0..N).map(|_| next() as u8).collect();
-    let signs: Vec<u64> = (0..N / 64).map(|_| next()).collect();
+    let presences: Vec<u64> = (0..N / 64).map(|_| next()).collect();
     let codes: Vec<i8> = (0..N)
         .map(|_| ((next() % 255) as i16 - 127) as i8)
         .collect();
@@ -57,25 +57,25 @@ fn main() {
 
     // Correctness first: the SIMD output must equal the scalar form.
     let mut out_simd = vec![0u8; N];
-    let mut signs_simd = vec![0u64; N / 64];
-    lut9(&mags, &signs, &table, &mut out_simd, &mut signs_simd);
+    let mut presences_simd = vec![0u64; N / 64];
+    lut9(&mags, &presences, &table, &mut out_simd, &mut presences_simd);
     let mut out_scalar = vec![0u8; N];
-    let mut signs_scalar = vec![0u64; N / 64];
-    let scalar = |out: &mut [u8], out_signs: &mut [u64]| {
+    let mut presences_scalar = vec![0u64; N / 64];
+    let scalar = |out: &mut [u8], out_presences: &mut [u64]| {
         let rows = mags.as_chunks::<64>().0.iter();
         for (w, (chunk, o)) in rows.zip(out.as_chunks_mut::<64>().0).enumerate() {
-            let mut nonzero = 0u64;
+            let mut became_positive_zero = 0u64;
             for (k, (&m, d)) in chunk.iter().zip(o.iter_mut()).enumerate() {
                 *d = table[m as usize];
-                // Keep the sign where the result is nonzero or the input is -0.
-                nonzero |= u64::from(*d != 0 || m == 0) << k;
+                // P=0,M>0 rounded to zero becomes valid +0. Pre-existing -0 persists.
+                became_positive_zero |= u64::from(*d == 0 && m != 0) << k;
             }
-            out_signs[w] = signs[w] & nonzero;
+            out_presences[w] = presences[w] | became_positive_zero;
         }
     };
-    scalar(&mut out_scalar, &mut signs_scalar);
+    scalar(&mut out_scalar, &mut presences_scalar);
     assert_eq!(out_simd, out_scalar, "magnitudes differ");
-    assert_eq!(signs_simd, signs_scalar, "sign planes differ");
+    assert_eq!(presences_simd, presences_scalar, "sign planes differ");
 
     let mut out_i8 = vec![0i8; N];
     let t_i8 = best(|| {
@@ -85,12 +85,12 @@ fn main() {
         black_box(&out_i8);
     });
     let t_scalar = best(|| {
-        scalar(&mut out_scalar, &mut signs_scalar);
-        black_box((&out_scalar, &signs_scalar));
+        scalar(&mut out_scalar, &mut presences_scalar);
+        black_box((&out_scalar, &presences_scalar));
     });
     let t_simd = best(|| {
-        lut9(black_box(&mags), black_box(&signs), &table, &mut out_simd, &mut signs_simd);
-        black_box((&out_simd, &signs_simd));
+        lut9(black_box(&mags), black_box(&presences), &table, &mut out_simd, &mut presences_simd);
+        black_box((&out_simd, &presences_simd));
     });
 
     println!(
