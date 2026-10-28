@@ -203,7 +203,7 @@ fn main() {
     let b: [Option<i16>; 64] = std::array::from_fn(|_| Some(-255));
     let (ba, bb) = (Sm9Block::from_values(&a), Sm9Block::from_values(&b));
     let (dot, n) = ba.masked_dot(&bb, u64::MAX);
-    let nulls = ba.decode(1.0 / 255.0).iter().filter(|x| x.is_nan()).count();
+    let nulls = (0..64).filter(|&i| ba.never_touched(i)).count();
     let first = ba.value(1).map_or(0, i16::from);
     println!();
     println!("masked dot: dot {dot}, n {n}, NULL rows {nulls} (decode NaN), lane 1 = {first}");
