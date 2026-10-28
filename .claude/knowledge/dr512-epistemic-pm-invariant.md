@@ -80,3 +80,53 @@ This document does not grant a merge or production ABI change. Every
 subsequent consumer PR must either prove exact P×M parity using the
 independent oracle or refuse the integration. Operator-rejected
 lance-graph #1812 stays quarantined and is NOT implementation evidence.
+
+
+## [-a,+b] LUT distance efficiency, independent cold gate
+
+For **valid numeric** DR512 pairs `x`, `y` with identical positive
+magnitude step, distance need not use a 512×512 LUT:
+
+```text
+same P:      abs(m_x - m_y)
+opposite P:  m_x + m_y
+```
+
+The result is `u16` (maximum **510**), **not** `u8`. The
+512-codeword space has exactly one forbidden -0 sentinel that must
+refuse distance instead of being treated as 0. Unit tests independently
+decode all **511² = 261,121** valid numeric pairs and compare distances.
+
+For a separately proposed calibrated asymmetric range [-a,+b], with
+negative step a/255 and positive step b/255:
+
+```text
+both negative: abs(m_x-m_y) * a/255
+both positive: abs(m_x-m_y) * b/255
+opposite:      m_negative * a/255 + m_positive * b/255
+```
+
+The `tests/dr512_epistemic_contract.rs` independent oracle checks the
+[-3,+7] case over all 511² valid pairs. **This is a distance-law
+analysis, not an approved alternative P×M codec, nor a measured
+speedup.** A full pairwise distance table has 512² entries, or **512 KiB**
+at u16; even separate same/opposite 256² u16 tables total **256 KiB**.
+The arithmetic is a subtract/abs or an add and should be the baseline
+before claiming LUT efficiency. Any real SIMD/L1/L2-cache comparison
+requires a pinned host/ISA benchmark with end-to-end memory costs.
+
+## CausalEdge64 extension: DEFERRED, do not implement in this PR
+
+Current CausalEdge64 bits 0..23 are THREE 8-bit SPO palette codes;
+24..39 are NARS truth, 40..58 Pearl rungs, 59..63 epistemic/reasoning.
+If each SPO code were extended from 256 to 512 choices, THREE extra
+bits are required per edge (one per S/P/O), not an available 3-bit
+space in the existing 64-bit contract. A 3-bit sidecar might be
+theoretically sufficient but needs all THREE original palette identities
+to be associated with the same pinned source/codebook generation and
+the sidecar to be versioned and snapshot-attested with them.
+Cross-page splits, stale codebooks, incomplete witnesses and partial
+writes must refuse reconstruction. Do NOT steal CausalEdge64 truth,
+Pearl or Epi5 bits, alter current codecs, or promote a physical layout.
+Evaluate independently, under lance-graph's CausalEdge64/DT64/DR64
+owner, only after evidence of correctness and benefit. **DEFERRED**.
