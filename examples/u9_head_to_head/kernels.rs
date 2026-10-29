@@ -28,6 +28,39 @@ pub struct Block {
     pub positive: u64,
 }
 
+/// One operand in the compact layout the report describes: 64 magnitude bytes
+/// and one 8-byte plane per block, in two separate arrays (72 bytes per block).
+/// A `Block` holding a 64-byte-aligned `U8x64` next to its plane would pad to
+/// 128 bytes, so the timed loops never stream `Block` arrays; they build each
+/// `Block` in registers from these two arrays.
+pub struct Operand {
+    pub mag: Vec<U8x64>,
+    pub plane: Vec<u64>,
+}
+
+impl Operand {
+    pub fn new(v: &[([u8; 64], u64)]) -> Self {
+        Self {
+            mag: v.iter().map(|(m, _)| U8x64::from_array(*m)).collect(),
+            plane: v.iter().map(|(_, p)| *p).collect(),
+        }
+    }
+
+    pub fn block(&self, i: usize) -> Block {
+        Block {
+            mag: self.mag[i],
+            positive: self.plane[i],
+        }
+    }
+
+    pub fn blocks(&self) -> impl Iterator<Item = Block> + '_ {
+        self.mag
+            .iter()
+            .zip(&self.plane)
+            .map(|(m, p)| Block { mag: *m, positive: *p })
+    }
+}
+
 /// A block held a never-touched lane (plane bit 0, magnitude 0); the mask
 /// names the offending lanes.
 #[derive(Debug, PartialEq, Eq)]
