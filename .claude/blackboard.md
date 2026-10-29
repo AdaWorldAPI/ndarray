@@ -3892,7 +3892,9 @@ reversed BIT_IN_BYTE (AVX2), mask dropped in the fused AVX2 loop.
 
 Key numbers (AVX-512 VNNI, L1): masked pair 1.27-1.33 ns/64 lanes vs dot4 1.10-1.19; 512-entry lookup 6.1 ns
 (vpermi2b) / 38-40 ns (per-position reads). Stored uniform SM9 46.0 dB vs i4 20.2 dB at the same per-dim L1 cost and
-1.4x per dim streamed. AVX2: masked pair 4.5 ns vs dot4 1.5 ns.
+1.4x per dim streamed. AVX2: masked pair 6.35-6.44 ns vs dot4 1.59-1.79 ns (corrected after review: the first
+facade timing returned lane 0 only and let the optimizer drop half the AVX2 work; probe kernel B also mishandled a
+negative zero; both fixed, every exact kernel now checked against an i64 reference before it is timed).
 
 Loose ends: fused single-widen SM9 op for non-VNNI tiers; NEON SDOT/USDOT and AVX-VNNI unused; no NEON/wasm timings;
 recall on a real TurboVec index is the TurboVec owner's measurement.

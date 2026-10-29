@@ -5305,6 +5305,8 @@ pub(crate) const BIT_IN_BYTE: u64 = 0x8040_2010_0804_0201;
 /// bit `i` of `keep` at bit position `i % 8`, so one AND with
 /// [`BIT_IN_BYTE`] and one byte compare per register expand the mask without
 /// moving a byte.
+// Used by the AVX, NEON and wasm realizations only; other tiers build the mask differently.
+#[allow(dead_code)]
 #[inline(always)]
 pub(crate) fn mask_byte_spread(keep: u64) -> [u64; 8] {
     core::array::from_fn(|j| (keep >> (8 * j) & 0xFF) * 0x0101_0101_0101_0101)

@@ -5,7 +5,9 @@ READ BY: savant-architect, vector-synthesis, simd-savant, anyone wiring a
 
 Status: probe + one facade word (`I32x16::dot4_u8_i8_add_masked`). Numbers
 below come from `examples/u9_cost_probe.rs` on one AVX-512 VNNI + VBMI Xeon
-(target-cpu=native), three runs, reported as ranges. They are not TurboVec
+(target-cpu=native), three runs, reported as ranges. Every exact SM9 kernel
+must match an independent i64 reference before its time is printed, and
+every facade kernel folds all 16 accumulator lanes into its result. They are not TurboVec
 recall numbers; the codebooks in the probe are probe-local Lloyd-Max fits.
 
 ## Two contracts, never mixed
@@ -46,9 +48,11 @@ call, so 16_448 calls (65_792 dims per lane) cannot wrap; the test
 No saturating instruction is involved (no `vpmaddubsw`, no `vpdpbusds`).
 
 Realizations: AVX-512 one `vmovdqu8{z}` before `vpdpbusd` (or the widen +
-`vpmaddwd` path without VNNI); AVX2, AVX, NEON and wasm expand the mask
-with one AND against `BIT_IN_BYTE` and one byte compare per register (no
-shuffle, no per-lane loop); nightly selects through `core::simd::Mask`;
+`vpmaddwd` path without VNNI); AVX2 builds the byte mask in registers
+(variable shift, multiply by `0x0101_0101`, shift by 32) and applies it
+inside the dot loop; AVX, NEON and wasm expand a stored spread with one AND
+against `BIT_IN_BYTE` and one byte compare per register (no shuffle, no
+per-lane loop); nightly selects through `core::simd::Mask`;
 scalar is the reference loop.
 
 Witnessed: `simd::dot4_nibble_facade_parity` 8/8 on native (AVX-512 VNNI),
@@ -56,29 +60,34 @@ config-v4 (AVX-512 without VNNI), config-v3 (AVX2), config-avx (qemu
 SandyBridge), config-v2 (scalar, qemu Nehalem), aarch64 (qemu) and
 nightly-simd; `neon-parity.sh` and `wasm-parity.sh` pass (codes 0x504,
 0x505). Disable runs, all red: unmasked AVX-512 move (3 tests), reversed
-`BIT_IN_BYTE` on AVX2 (2 tests), mask dropped in the fused AVX2 loop (3).
+`BIT_IN_BYTE` on AVX2 (2 tests), mask dropped in the fused AVX2 loop (3),
+wrong byte shifts for the upper AVX2 half (2).
 
 ## Arithmetic: three exact forms compared (AVX-512 VNNI, L1, ns per 64 lanes)
 
 | kernel | ns / 64 lanes |
 |---|---|
-| u8 x i8 `vpdpbusd` (#386 `dot4_u8_i8_add`) | 1.10 - 1.19 |
-| i8 x i8 via `xor 0x80` bias | 1.20 - 1.23 |
-| A: sign folded into w (exact only for w in -127..=127) | 1.24 - 1.50 |
-| B: two's-complement limbs, `dot(lo) - 256 * dot(sign)` | 1.88 - 1.89 |
-| C: `dot(m) - 2 * dot(m & neg)`, one accumulator | 1.79 - 1.84 |
-| **C': `dot(m & pos) - dot(m & neg)`, two accumulators** | **1.27 - 1.33** |
+| u8 x i8 `vpdpbusd` (#386 `dot4_u8_i8_add`) | 1.12 - 1.14 |
+| i8 x i8 via `xor 0x80` bias | 1.20 - 1.25 |
+| A: sign folded into w (exact only for w in -127..=127) | 1.23 - 1.26 |
+| B: two's-complement limbs, `dot(lo) - 256 * dot(sign)`, sign limb skips magnitude 0 | 1.89 - 1.92 |
+| C: `dot(m) - 2 * dot(m & neg)`, one accumulator | 1.79 - 1.88 |
+| **C': `dot(m & pos) - dot(m & neg)`, two accumulators** | **1.28 - 1.30** |
 
 The loop is one latency-bound chain. B and C put two dependent ops on the
 accumulator; C' keeps two independent chains and lands within ~10% of the
 plain u8 dot. A is not exact for w = -128 and was not added.
 
-Through the facade, same host: `dot4_u8_i8_add` 1.12, two masked
-accumulators 1.29. On config-v3 (AVX2, no VNNI): `dot4_u8_i8_add` 1.51,
-two plain accumulators 3.26, two masked accumulators 4.48 - 4.58. Without
-VNNI every call widens to 16 bits, so a pair costs two widenings; a fused
-SM9 op that widens once and negates in 16 bits would roughly halve that,
-and is not built.
+Through the facade, same host: `dot4_u8_i8_add` 1.08 - 1.15, two masked
+accumulators 1.34 - 1.38. On config-v3 (AVX2, no VNNI): `dot4_u8_i8_add`
+1.59 - 1.79, two plain accumulators 2.75 - 2.91, two masked accumulators
+6.35 - 6.44. Without VNNI each masked call adds the mask expansion (about
+1.4 ns, measured as one masked accumulator against one plain one) on top of
+its own 16-bit widening, so the pair costs about 4x one dot4. The loop is
+instruction-bound, not memory-bound: building the mask in registers instead
+of from a stored spread did not change the time. A fused SM9 op that widens
+once and negates in 16 bits would avoid both the second widening and the
+mask, and is not built.
 
 ## 512-entry lookup (WP2): keep it out of the scan
 
@@ -86,9 +95,9 @@ ID = low byte + high-bit plane, decoded to magnitude + positive plane:
 
 | lookup | ns / 64 lanes |
 |---|---|
-| per-position reads (`lut_u8` shape, two 512-entry tables) | 38 - 40 |
-| 4x `vpermi2b` + blends for magnitude, same for the sign | 6.07 - 6.16 |
-| 2x `vpermi2b` on an antisymmetric codebook (`255 - lo` for negatives) | 6.79 - 6.94 |
+| per-position reads (`lut_u8` shape, two 512-entry tables) | 38 - 39 |
+| 4x `vpermi2b` + blends for magnitude, same for the sign | 6.03 - 6.09 |
+| 2x `vpermi2b` on an antisymmetric codebook (`255 - lo` for negatives) | 6.72 - 6.77 |
 
 `lut9` and `lut_u8` keep their contracts; no 512-entry facade word was
 added. The lookup alone costs ~5x the arithmetic it feeds. TurboVec's
@@ -99,15 +108,15 @@ time; then the scan stores values, not IDs (next section).
 
 | layout | SNR | scan cost (AVX-512 VNNI) |
 |---|---|---|
-| i4, 16 Lloyd-Max levels (today) | 20.22 dB | 2.64 - 2.70 ns / 128 dims (L1) |
-| i8 uniform grid, best clip | 40.54 dB | 1.10 - 1.19 ns / 64 dims |
-| 512 Lloyd-Max IDs, executed by `vpermi2b` lookup | 49.86 dB | 5.39 - 5.53 ns / 64 dims |
-| 512 Lloyd-Max levels snapped to the SM9 grid | 44.74 dB (329 distinct) | 1.29 - 1.31 ns / 64 dims |
-| **SM9 uniform grid, best clip (4.21 sigma), stored** | **46.02 dB** | **1.29 - 1.31 ns / 64 dims** |
-| 4+5 additive C16 + R32, two i8 grids | 43.25 dB | 2.58 - 2.65 ns / 64 dims |
+| i4, 16 Lloyd-Max levels (today) | 20.22 dB | 2.65 - 2.68 ns / 128 dims (L1) |
+| i8 uniform grid, best clip | 40.54 dB | 1.12 - 1.14 ns / 64 dims |
+| 512 Lloyd-Max IDs, executed by `vpermi2b` lookup | 49.86 dB | 5.37 - 5.70 ns / 64 dims |
+| 512 Lloyd-Max levels snapped to the SM9 grid | 44.74 dB (329 distinct) | 1.29 - 1.32 ns / 64 dims |
+| **SM9 uniform grid, best clip (4.21 sigma), stored** | **46.02 dB** | **1.29 - 1.32 ns / 64 dims** |
+| 4+5 additive C16 + R32, two i8 grids | 43.25 dB | 2.61 - 2.65 ns / 64 dims |
 
 Streamed from DRAM (64 MiB of codes, weights in L1), per dimension:
-i4 0.031 - 0.035 ns, stored SM9 0.043 - 0.049 ns (72 bytes per 64 dims).
+i4 0.035 - 0.037 ns, stored SM9 0.048 - 0.052 ns (72 bytes per 64 dims).
 
 Reading the table:
 
@@ -127,7 +136,7 @@ On AVX-512 VNNI: yes, for the stored-value layout. 64 dims cost one
 masked-pair of `vpdpbusd`, ~1.3 ns in L1 (about the same per dimension as
 today's i4 permute-dot) and 1.4x i4 per dimension when streamed from DRAM,
 for +25.8 dB over i4. With IDs plus an in-scan 512 lookup: no, the lookup
-dominates. On AVX2 the pair costs ~3x the plain dot; a fused SM9 op is the
+dominates. On AVX2 the pair costs ~4x one plain dot4; a fused SM9 op is the
 next step there if AVX2 matters.
 
 ## Handoff to the TurboVec owner (owns ABI, encode, pack, search, mutation, serialization, Python)
