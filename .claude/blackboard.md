@@ -3904,7 +3904,9 @@ recall on a real TurboVec index is the TurboVec owner's measurement.
 Probe-only, no production change: `examples/u9_head_to_head/{kernels,main}.rs`, `tests/u9_head_to_head.rs`, report
 `.claude/knowledge/turbovec9-u9-head-to-head.md`. Both candidates use only facade words and share one i64 oracle:
 511 x 511 exhaustive pairs, mixed full blocks, worst-case runs past both flush intervals, never-touched refusal.
-Passed on native, v4, v3, avx (qemu), v2 (qemu), aarch64 (qemu), nightly; 9 disable runs all red.
+Passed on native, v4, v3, avx (qemu), v2 (qemu), aarch64 (qemu), nightly; 12 disable runs all red.
+Contract (report § arithmetic contract): unsigned product + polarity XOR as routing + exact fold; A and B are two
+facade compositions of it. B is long multiplication, `m = low7 - top`, tested for all 256 magnitudes via `prepare_b`.
 
 Verdict: B (U8 x I8 byte-dot) is the cheaper exact I9 substrate in every row, symmetric included. B encodes with AND,
 XOR and the presence bit only: `low7 = |b| & 0x7F`, `top = |b| ^ low7`, `negative = plane_a ^ plane_b`, four masked

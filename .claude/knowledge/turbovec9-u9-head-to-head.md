@@ -20,8 +20,47 @@ the cheaper bit-exact multiply-accumulate through the existing facade?
 
 **B, U8 x I8 byte-dot, in every row measured.** On AVX-512 VNNI: 3.03 ns per
 64 values end to end against 7.78 for the best A, and 2.69 - 2.77 against
-6.95 - 7.14 in the scan form. A pays for widening u8 -> u16 -> f32, because
-the facade has no u16 -> i32 widening to add a signed product in integers.
+6.95 - 7.14 in the scan form. A, as composed here, widens u8 -> u16 -> f32,
+because the facade offers no u16 -> i32 widening to add the products in
+integers. That is a cost of this composition, not of U8 x U8 multiplication.
+
+## The arithmetic contract both candidates implement
+
+> Sign is a routing decision. Multiplication is an exact decomposition.
+> Accumulation is a fold.
+
+A value is an unsigned magnitude `m` in 0..=255 plus a polarity bit (Codec9:
+`P=1, M=0` is numeric zero, `P=0, M=0` is never-touched and is refused). For
+one lane pair:
+
+```text
+p        = m_a * m_b                  exact, always fits u16 (255 * 255 = 65_025)
+negative = polarity_a XOR polarity_b  the sign of the product
+acc      = acc - p   if negative
+           acc + p   otherwise
+```
+
+The magnitudes are never negated or rewritten. The polarity XOR only picks
+which side of the fold the product joins; one subtraction per flush applies
+it.
+
+A and B are two facade compositions of this one contract; neither has a
+different numerical meaning, and neither is "more exact" than the other.
+They differ only in how the product is broken into pieces the facade can
+execute:
+
+- **A** forms `m_a * m_b` whole (in `f32`, or in `u16` with `mullo`) and adds
+  it to the positive or the negative sum.
+- **B** does it like long multiplication (schriftliche Multiplikation): it
+  splits `m_b` into two weighted digits the byte-dot can consume, and adds
+  their partial products. With `low7 = m_b & 0x7F` and `top = m_b ^ low7`
+  read as a signed byte (0 or -128), `m_b = low7 - top`, so
+  `m_a * m_b = m_a * low7 - m_a * top`. For `255 x 255`:
+  `255 * 127 - 255 * (-128) = 32_385 + 32_640 = 65_025`.
+
+In a scan the query side of the decomposition (`low7`, `top`, its plane) is
+prepared once and reused for every index block; only the routing XOR and the
+partial products run per block.
 
 ## Encoding rule: AND, XOR and the presence bit, never a shuffle
 
@@ -43,7 +82,9 @@ Disassembly of the timed closures (AVX-512 VNNI build): no shuffle, permute,
 pack, unpack, align, extract or insert instruction in any B row, in either
 baseline, or in any flush. A's rows keep `vpmovzxbw`/`vpmovzxwd` and the
 upper-half `vextracti64x4`, which the facade's `U16x32::from_u8x64_hi` and
-`to_f32x16_*` need to widen; A cannot be written without them.
+`to_f32x16_*` use to widen. That is how this composition of A lowers through
+the current facade; it says nothing about U8 x U8 multiplication itself, nor
+about other possible lowerings of A, which were not explored.
 
 ## Candidates as built
 
@@ -69,7 +110,11 @@ One independent `i64` oracle (checked arithmetic) for both candidates:
 - worst-case runs (all magnitudes 255, same and mixed signs) of 49_157 blocks,
   past both flush intervals, with totals beyond the `i32` range;
 - never-touched refused in either operand, touched +0 and negative nonzero
-  magnitudes accepted, the oracle refusing the same lanes.
+  magnitudes accepted, the oracle refusing the same lanes;
+- the split itself, through the kernel's own `prepare_b`, for every magnitude
+  0..=255: `low7 XOR top` gives back the original byte, `low7 - top` gives
+  back its value with `top` in {0, -128}, and changing either polarity bit
+  changes only the routing plane (`plane_a ^ plane_b`), never `low7` or `top`.
 
 Passed on native AVX-512 VNNI, config-v4, config-v3, config-avx (qemu),
 config-v2 (qemu), aarch64 (qemu) and nightly-simd. Disable runs, each red:
@@ -77,7 +122,40 @@ A's routing swapped; A's flush at 4096 blocks (f32 loses exactness past
 2^24); B's top limb added instead of subtracted; B's AND mask keeping bit 7;
 B's presence plane not flipped by b; B scan ignoring the query plane; B's
 flush at 2^20 blocks (i32 wraps); `check` ignoring operand b; the oracle
-accepting never-touched.
+accepting never-touched; `top` keeping all bits; the plane formed with AND
+instead of XOR; polarity leaking into the split bytes.
+
+CI runs this test file only in the test jobs on its own x86 runners; the
+other tiers above were run locally, not in CI.
+
+### Exactness domain
+
+Both candidates are bit-exact, with no rounding, saturation or wrap, for:
+
+- operands from the 511 numeric values -255..=255 (never-touched refused by
+  `check`, which callers run before the kernel; the kernels do not check);
+- any number of blocks whose running total fits `i64`, which at the worst case
+  of 64 * 65_025 per block is about 2.2 * 10^12 blocks. The final `i64` adds are
+  unchecked.
+
+Inside that domain each stage is bounded:
+
+- **A:** a lane gains one product, at most 65_025, per block. After 256 blocks
+  that is 16_646_400, below 2^24 = 16_777_216, where every `f32` integer
+  is exact; then A flushes.
+- **B:** an `i32` lane gains at most 4 * 255 * 128 = 130_560 per block. After
+  16_384 blocks that is 2_139_095_040, below `i32::MAX` = 2_147_483_647; then
+  B flushes. The byte-dot does not saturate: the worst-case run (every byte
+  255, so `top = -128` in all four bytes of a lane) passes on every tier.
+- The worst-case test runs past both limits.
+
+### Not proven here
+
+- Exactness beyond the `i64` total above.
+- Any lowering of A other than the two measured (f32 `mul_add`, `u16 mullo`).
+- The CI matrix running this test on every tier.
+- Anything about Codebook512 / Lloyd-Max512 decoding or retrieval parity (see
+  the handoff).
 
 ## Measurements (ns per 64 values, ranges over 3 runs, this host)
 
