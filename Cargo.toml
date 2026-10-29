@@ -67,6 +67,11 @@ name = "u9_cost_probe"
 required-features = ["std"]
 
 [[example]]
+name = "u9_head_to_head"
+path = "examples/u9_head_to_head/main.rs"
+required-features = ["std"]
+
+[[example]]
 name = "cpu_guard_probe"
 required-features = ["std"]
 
