@@ -3898,3 +3898,25 @@ negative zero; both fixed, every exact kernel now checked against an i64 referen
 
 Loose ends: fused single-widen SM9 op for non-VNNI tiers; NEON SDOT/USDOT and AVX-VNNI unused; no NEON/wasm timings;
 recall on a real TurboVec index is the TurboVec owner's measurement.
+
+## U9 x U9 head-to-head: U8 x U8 x sign x mul_add vs U8 x I8 byte-dot (2026-10-29, branch claude/u9-head-to-head)
+
+Probe-only, no production change: `examples/u9_head_to_head/{kernels,main}.rs`, `tests/u9_head_to_head.rs`, report
+`.claude/knowledge/turbovec9-u9-head-to-head.md`. Both candidates use only facade words and share one i64 oracle:
+511 x 511 exhaustive pairs, mixed full blocks, worst-case runs past both flush intervals, never-touched refusal.
+Passed on native, v4, v3, avx (qemu), v2 (qemu), aarch64 (qemu), nightly; 12 disable runs all red.
+Contract (report § arithmetic contract): unsigned product + polarity XOR as routing + exact fold; A and B are two
+facade compositions of it. B is long multiplication, `m = low7 - top`, tested for all 256 magnitudes via `prepare_b`.
+
+Verdict: B (U8 x I8 byte-dot) is the cheaper exact I9 substrate in every row, symmetric included. B encodes with AND,
+XOR and the presence bit only: `low7 = |b| & 0x7F`, `top = |b| ^ low7`, `negative = plane_a ^ plane_b`, four masked
+byte-dots, `(pos_low7 - pos_top) - (neg_low7 - neg_top)`; no magnitude is negated. Disassembly (AVX-512): no shuffle, permute,
+pack, extract or insert in B, the baselines or the flushes; on AVX2 LLVM puts 4 vpshufb in the facade's masked byte-dot. VNNI L1, ns/64: B end-to-end 3.05-3.06 vs A' 7.64-7.83;
+B scan 2.75-2.81 vs A 7.02-7.19; plain byte-dot 1.94. AVX2: B end-to-end 10.1-10.2 vs A' 75-81 (A dominated by
+`U8x64::mask_blend`'s per-lane AVX2 realization, not changed).
+
+Loose ends: the U8x64 -> I8x64 bit view (`bits_as_i8` is a store/load stand-in, 1.16-1.27 ns/block with the split;
+not added, it is a u8/i8 crossing); recall on a real TurboVec-U9 index (owner's experiment, defined in the report).
+Re-measured after review (Codex, PR #388): timed operands are now compact (72 B/block, not a padded 128-B `Vec<Block>`)
+and the preparation row consumes every lane. Streamed VNNI B end-to-end 12.9-16.3 -> 6.0-6.5, B scan 5.9-6.9 -> 2.75-2.80;
+verdict unchanged.
