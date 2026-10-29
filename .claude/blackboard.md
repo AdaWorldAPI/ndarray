@@ -3925,4 +3925,7 @@ Probe-only: `examples/u9_abacus/{abacus,main}.rs`, `tests/u9_abacus.rs`, report
 as a B replacement REFUSE: best fold (per-plane popcount) 12.4 ns/64 arithmetic with free planes vs B 2.9 end-to-end
 on VNNI, carry-save folds ~290 ns (LLVM does not unroll them; scalar, no vpternlog). No break-even for prepared
 operands. On v4/AVX2 LLVM lowers `count_ones` to a `vpshufb` nibble table. Exact on all 7 tiers; 9 disable runs red.
+D (A' products + 16-bit place-value column, carry by bit logic, no f32): react beats A' ~10 % on AVX-512 (5.4-6.0 vs
+6.3-6.6 ns arith; LLVM folds the carry into 2 vpternlogq), anticipate wins on AVX2; B still 2.3x faster on VNNI because D
+widens u8->u16 before mullo. ADOPT-LAB as A's f32 replacement, DEFER as B replacement. Exact on 7 tiers; 5 disables red.
 

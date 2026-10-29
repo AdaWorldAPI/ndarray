@@ -13,7 +13,7 @@ cargo run --release --example u9_abacus --features std
 cargo test --release --test u9_abacus
 ```
 
-## Verdict
+## Verdict (bit planes, candidates C; candidate D below)
 
 - **`carry_save3`: ADOPT-LAB.** An exact, five-operation full adder over 64
   independent bit columns; LLVM lowers it to `xor`/`and` in general registers.
@@ -28,6 +28,91 @@ cargo test --release --test u9_abacus
 
 The arithmetic is exact in every variant; the loss is purely in instruction
 count and in what LLVM makes of the carry-save state.
+
+## Candidate D: the 16-bit place-value column (the narrower experiment)
+
+The question after the bit-plane result: keep #388's U8 multiplication as it
+is (A': `U16x32::mullo`, sign routed by the polarity XOR) and replace only its
+`f32` detour with exact positional accumulation. A product is below 2^16, so
+it fits a `u16` lane. Each tally lane keeps `low` (wrapping `u16`) and `high`
+(units of 2^16); the value is `low + 2^16 * high`. Crossing 2^16 is one carry
+into `high`. 67,025 is `1,489 + 1 * 65,536`: the low word wraps, one unit
+moves up. Nothing is widened before it must be. (`carry16.rs`.)
+
+Two ways to find the carry, both plain bit logic on `U16x32` lanes:
+
+- **react** (`carry_after`): add first, then read the carry out of the sum,
+  `msb((low & p) | ((low | p) & !sum))`;
+- **anticipate** (`carry_before`): before adding, the carry is set exactly
+  when `p` exceeds the headroom `!low = 65535 - low`, the borrow out of
+  `!low - p`: `msb((low & p) | (!(!low ^ p) & (!low - p)))`.
+
+`high` gains at most one unit per block per lane, so it is flushed into the
+`i64` total every 65,535 blocks. A flush moves `low + 2^16 * high` per lane.
+Carries are counted, never XORed together: two carries are two units.
+
+### What LLVM made of it
+
+| | AVX-512 (VNNI and v4 alike) | AVX2 |
+|---|---|---|
+| react, per block (4 tallies x 32 lanes) | 53 insns: 8 `vpternlogq`, 8 `vpaddw`, 4 `vpsrlw`, 4 `vpmullw`, 4 `vpmovzxbw`, 2 `vextracti64x4` | 179 insns, incl. 16 `vmovq`, 6 `vpblendd` |
+| anticipate, per block | 61 insns: 12 `vpternlogq`, 4 `vpsubw`, otherwise as react | 107 insns: `vpand`/`vpandn`/`vpor`/`vpxor` |
+
+On AVX-512 LLVM folds each carry formula into ternary logic: two
+`vpternlogq` per carry (react) or three (anticipate). That is the XOR/AND
+carry written in Rust and lowered by the compiler, with no facade change.
+There is no shuffle, permute, pack or float instruction. The `vpmovzxbw` and
+`vextracti64x4` are the u8 -> u16 widening that `mullo` needs, the same as
+in A'.
+
+### Measured (ns per 64 values, 3 runs, L1 / streamed)
+
+| | AVX-512 VNNI | AVX-512, no VNNI | AVX2 |
+|---|---|---|---|
+| A' arithmetic only (f32 accumulate) | 6.33 - 6.56 / 26.0 - 26.6 | 6.33 - 6.39 / 26.2 - 26.9 | 10.7 - 12.0 / 29.5 - 32.1 |
+| **D react arithmetic only** | **5.36 - 5.98** / 15.1 - 21.7 | **5.77 - 5.97** / 17.3 - 19.0 | 21.2 - 29.5 / 27.7 - 28.6 |
+| D anticipate arithmetic only | 6.03 - 6.86 / 16.2 - 22.3 | 6.23 - 6.66 / 19.2 - 20.3 | 10.0 - 16.9 / 18.5 - 21.1 |
+| B arithmetic only (#388) | 2.39 - 2.81 / 19.8 - 21.5 | 5.02 - 7.28 / 25.5 - 29.4 | 9.17 / 31.8 - 33.2 |
+| A' end-to-end | 7.63 - 7.80 / 21.6 - 23.0 | 7.80 - 7.81 / 22.2 - 24.0 | 73.8 - 80.4 / 419 - 436 |
+| **D react end-to-end** | **7.05 - 7.09** / 21.5 - 22.5 | **7.05 - 7.45** / 22.1 - 24.8 | 84.0 - 91.3 / 437 - 444 |
+| D anticipate end-to-end | 7.81 / 21.6 - 23.8 | 7.78 - 8.20 / 22.5 - 23.0 | 76.9 - 104.8 / 428 - 435 |
+| B end-to-end (#388) | 2.89 - 2.91 / 14.8 - 17.7 | 5.63 - 7.59 / 19.6 - 20.6 | 10.03 - 10.06 / 22.6 - 24.4 |
+| D react scan, query widened once | 6.17 - 6.81 / 16.6 - 17.1 | 6.39 - 6.97 / 16.7 - 19.0 | 102 - 128 / 441 |
+| D anticipate scan | 7.17 - 7.91 / 13.7 - 17.7 | 7.16 - 7.86 / 18.7 - 21.2 | 68.5 - 112.9 / 422 - 439 |
+| B scan (#388) | 2.64 / 11.3 - 12.5 | 4.70 - 4.83 / 14.3 - 15.1 | 9.17 - 9.19 / 19.9 - 28.5 |
+
+### Reading it
+
+- **The carry column beats the f32 detour.** On AVX-512, react is about 10 %
+  faster than A' in arithmetic (5.4 - 6.0 vs 6.3 - 6.6 ns in L1) and in the
+  full path (7.05 vs 7.6 - 7.8). Streamed, it is clearly faster
+  (15 - 22 vs 26 ns). Anticipate costs one more ternary op per carry and
+  lands level with A'.
+- **React vs anticipate depends on the tier.** On AVX-512, react wins (the
+  carry needs the sum anyway, and two ternary ops suffice). On AVX2,
+  anticipate wins (10 - 17 vs 21 - 30 ns); the react form gets 16 `vmovq`
+  and 6 `vpblendd` from LLVM there.
+- **B still wins, and the reason is not the accumulation.** D removes the
+  float conversion, but it still widens u8 -> u16 (`vpmovzxbw`,
+  `vextracti64x4`) and runs four `vpmullw` per block before any add. B
+  multiplies straight from bytes and accumulates in `i32` in the same
+  instruction. On VNNI, B's arithmetic is 2.4 ns against D's 5.4.
+- **On AVX2 the end-to-end and scan rows are dominated by routing.** D's
+  routing is A's `U8x64::mask_blend`, whose AVX2 realization is a per-lane
+  loop (74 - 128 ns). That cost has nothing to do with the carry.
+
+Verdict for D: **ADOPT-LAB as the exact replacement for A's f32 detour**, and
+the right way to accumulate any U16 product stream (the compiler gives
+ternary logic for free on AVX-512). **DEFER as a B replacement**: it would
+need the multiply to stay in bytes, which is what B already does.
+
+Correctness: the carry rules against `u32` arithmetic for every `low` in
+0..=65535, with `p` at, just above and just below the headroom, plus 0,
+65,025 and random products; all 511 x 511 pairs; full blocks; all-255 runs of
+131,075 blocks past the flush bound, with `high` near its limit. Passed on all
+seven tiers. Disable runs, each red: react without the `(low | p) & !sum`
+term; anticipate without the borrow term; carry not added to `high`; flush
+at 70,000 blocks (`high` wraps); `high` weighted 2^15.
 
 ## The arithmetic
 
