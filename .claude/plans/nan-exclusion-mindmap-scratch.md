@@ -10,6 +10,17 @@
 > so a later session can pick a design without re-deriving the trade-offs.
 > Context: the follow-up to #378 (wasm `mul_add` rounds once on every
 > realization) and lance-graph `D-WFL-DET` (replay determinism).
+>
+> **2026-10-29 update.** The float-lane decision below stands and is merged
+> (#381). For integer lanes, #383 (`.claude/knowledge/dr512-epistemic-pm-invariant.md`)
+> replaced the two-plane sign + presence layout of #381's probe and #382's
+> first `lut9` with ONE presence/polarity bit: P=0,M=0 is the only NaN
+> (never touched), P=0,M>0 is negative, P=1 is positive or +0. `codec9.rs`
+> encodes it and `lut9` keeps it. The bridge to the float lane is one mask
+> expression: float presence = `P | ne_u8_to_mask(M, 0)` (its complement is
+> `never_touched`), which is the plane `nan_where_clear_f32` consumes when a
+> DR512 lane is decoded. S2 (masked float
+> fold) and S3 (`n_excluded`) are still open.
 
 ## The question
 
