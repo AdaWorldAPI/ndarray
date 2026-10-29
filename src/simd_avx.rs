@@ -28,7 +28,7 @@ use core::ops::{
     Add, AddAssign, BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Mul, Not, Shl, Shr, Sub, SubAssign,
 };
 
-use crate::simd_avx2::{I32x16, U16x16, U64x8, U8x32};
+use crate::simd_avx2::{F32x16, I32x16, U16x16, U16x32, U64x8, U8x32};
 use crate::simd_avx512::{F32x8, I16x16, I8x32};
 
 // ---------------------------------------------------------------------------
@@ -813,5 +813,157 @@ impl SubAssign for I16x16 {
     #[inline(always)]
     fn sub_assign(&mut self, rhs: Self) {
         *self = I16x16::sub(*self, rhs);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// U16x32 (64-byte array) — the AVX2-gated methods, as four 128-bit quarters
+// ---------------------------------------------------------------------------
+
+impl U16x32 {
+    /// The four 128-bit quarters of the 64-byte array (lanes 0..8, 8..16,
+    /// 16..24, 24..32).
+    #[inline(always)]
+    fn quarters(self) -> [__m128i; 4] {
+        // SAFETY: SSE2 is compiled in (module docs). The array is 64 bytes, so
+        // four 16-byte unaligned loads are in bounds.
+        unsafe {
+            let p = self.0.as_ptr() as *const __m128i;
+            [_mm_loadu_si128(p), _mm_loadu_si128(p.add(1)), _mm_loadu_si128(p.add(2)), _mm_loadu_si128(p.add(3))]
+        }
+    }
+
+    #[inline(always)]
+    fn from_quarters(q: [__m128i; 4]) -> Self {
+        let mut o = [0u16; 32];
+        // SAFETY: four 16-byte stores into a 64-byte array.
+        unsafe {
+            let p = o.as_mut_ptr() as *mut __m128i;
+            _mm_storeu_si128(p, q[0]);
+            _mm_storeu_si128(p.add(1), q[1]);
+            _mm_storeu_si128(p.add(2), q[2]);
+            _mm_storeu_si128(p.add(3), q[3]);
+        }
+        Self(o)
+    }
+
+    #[inline(always)]
+    fn zip(self, other: Self, f: impl Fn(__m128i, __m128i) -> __m128i) -> Self {
+        let a = self.quarters();
+        let b = other.quarters();
+        Self::from_quarters([f(a[0], b[0]), f(a[1], b[1]), f(a[2], b[2]), f(a[3], b[3])])
+    }
+
+    /// One bit per lane for two adjacent quarters of compare results.
+    #[inline(always)]
+    fn bits16(lo: __m128i, hi: __m128i) -> u32 {
+        // SAFETY: SSE2 is compiled in (module docs); register-only ops.
+        unsafe { _mm_movemask_epi8(_mm_packs_epi16(lo, hi)) as u32 & 0xFFFF }
+    }
+
+    #[inline(always)]
+    fn mask(self, other: Self, f: impl Fn(__m128i, __m128i) -> __m128i) -> u32 {
+        let a = self.quarters();
+        let b = other.quarters();
+        Self::bits16(f(a[0], b[0]), f(a[1], b[1])) | (Self::bits16(f(a[2], b[2]), f(a[3], b[3])) << 16)
+    }
+
+    /// Per-lane unsigned minimum.
+    #[inline(always)]
+    pub fn simd_min(self, other: Self) -> Self {
+        // SAFETY: SSE4.1 is compiled in (module docs); register-only op.
+        self.zip(other, |a, b| unsafe { _mm_min_epu16(a, b) })
+    }
+
+    /// Per-lane unsigned maximum.
+    #[inline(always)]
+    pub fn simd_max(self, other: Self) -> Self {
+        // SAFETY: SSE4.1 is compiled in (module docs); register-only op.
+        self.zip(other, |a, b| unsafe { _mm_max_epu16(a, b) })
+    }
+
+    /// Per-lane addition clamped at `u16::MAX`.
+    #[inline(always)]
+    pub fn saturating_add(self, other: Self) -> Self {
+        // SAFETY: SSE2 is compiled in (module docs); register-only op.
+        self.zip(other, |a, b| unsafe { _mm_adds_epu16(a, b) })
+    }
+
+    /// Per-lane subtraction clamped at 0.
+    #[inline(always)]
+    pub fn saturating_sub(self, other: Self) -> Self {
+        // SAFETY: SSE2 is compiled in (module docs); register-only op.
+        self.zip(other, |a, b| unsafe { _mm_subs_epu16(a, b) })
+    }
+
+    /// Per-lane equality as a bitmask, lane `i` in bit `i`.
+    #[inline(always)]
+    pub fn cmpeq_mask(self, other: Self) -> u32 {
+        // SAFETY: SSE2 is compiled in (module docs); register-only op.
+        self.mask(other, |a, b| unsafe { _mm_cmpeq_epi16(a, b) })
+    }
+
+    /// Per-lane unsigned `self > other` as a bitmask, lane `i` in bit `i`.
+    #[inline(always)]
+    pub fn cmpgt_mask(self, other: Self) -> u32 {
+        // `a > b` unsigned is `max(a, b) == a` and `a != b`.
+        // SAFETY: SSE4.1 is compiled in (module docs); register-only ops.
+        self.mask(other, |a, b| unsafe {
+            _mm_andnot_si128(_mm_cmpeq_epi16(a, b), _mm_cmpeq_epi16(_mm_max_epu16(a, b), a))
+        })
+    }
+
+    /// Smallest lane.
+    #[inline(always)]
+    pub fn reduce_min(self) -> u16 {
+        let q = self.quarters();
+        // SAFETY: SSE4.1 is compiled in (module docs); register-only ops.
+        unsafe {
+            let m = _mm_min_epu16(_mm_min_epu16(q[0], q[1]), _mm_min_epu16(q[2], q[3]));
+            (_mm_cvtsi128_si32(_mm_minpos_epu16(m)) & 0xFFFF) as u16
+        }
+    }
+
+    /// Largest lane.
+    #[inline(always)]
+    pub fn reduce_max(self) -> u16 {
+        let q = self.quarters();
+        // max(x) == !min(!x).
+        // SAFETY: SSE4.1 is compiled in (module docs); register-only ops.
+        unsafe {
+            let m = _mm_max_epu16(_mm_max_epu16(q[0], q[1]), _mm_max_epu16(q[2], q[3]));
+            let inv = _mm_xor_si128(m, _mm_set1_epi32(-1));
+            !((_mm_cvtsi128_si32(_mm_minpos_epu16(inv)) & 0xFFFF) as u16)
+        }
+    }
+
+    /// Lanes 0..16 converted to `f32`.
+    #[inline(always)]
+    pub fn to_f32x16_lo(self) -> F32x16 {
+        let q = self.quarters();
+        Self::quarters_to_f32x16(q[0], q[1])
+    }
+
+    /// Lanes 16..32 converted to `f32`.
+    #[inline(always)]
+    pub fn to_f32x16_hi(self) -> F32x16 {
+        let q = self.quarters();
+        Self::quarters_to_f32x16(q[2], q[3])
+    }
+
+    #[inline(always)]
+    fn quarters_to_f32x16(a: __m128i, b: __m128i) -> F32x16 {
+        // SAFETY: SSE4.1 and AVX are compiled in (module docs); register-only
+        // ops. `cvtepu16_epi32` widens the low four lanes; the high four are
+        // brought down by a whole-register 8-byte shift, which moves no byte
+        // within a lane.
+        unsafe {
+            let f = |v: __m128i| -> __m256 {
+                let lo = _mm_cvtepi32_ps(_mm_cvtepu16_epi32(v));
+                let hi = _mm_cvtepi32_ps(_mm_cvtepu16_epi32(_mm_srli_si128::<8>(v)));
+                _mm256_set_m128(hi, lo)
+            };
+            F32x16(F32x8(f(a)), F32x8(f(b)))
+        }
     }
 }

@@ -899,6 +899,75 @@ impl U16x32 {
     pub fn cmpgt_mask(self, other: Self) -> u32 {
         self.0.simd_gt(other.0).to_bitmask() as u32
     }
+
+    // ── Facade surface shared with the other backends ─────────────
+
+    /// All 32 lanes zero.
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self(u16x32::splat(0))
+    }
+
+    /// Bytes 0..32 of `v`, zero-extended to `u16`.
+    #[inline(always)]
+    pub fn from_u8x64_lo(v: super::u8_types::U8x64) -> Self {
+        Self(core::simd::u8x32::from_slice(&v.0.as_array()[..32]).cast::<u16>())
+    }
+
+    /// Bytes 32..64 of `v`, zero-extended to `u16`.
+    #[inline(always)]
+    pub fn from_u8x64_hi(v: super::u8_types::U8x64) -> Self {
+        Self(core::simd::u8x32::from_slice(&v.0.as_array()[32..]).cast::<u16>())
+    }
+
+    /// `self` then `other`, each lane clamped to 255 and narrowed to `u8`:
+    /// bytes 0..32 come from `self`, bytes 32..64 from `other`.
+    #[inline(always)]
+    pub fn pack_saturate_u8(self, other: Self) -> super::u8_types::U8x64 {
+        let cap = u16x32::splat(255);
+        let a = self.0.simd_min(cap).cast::<u8>();
+        let b = other.0.simd_min(cap).cast::<u8>();
+        let mut out = [0u8; 64];
+        out[..32].copy_from_slice(a.as_array());
+        out[32..].copy_from_slice(b.as_array());
+        super::u8_types::U8x64(core::simd::u8x64::from_array(out))
+    }
+
+    /// Logical right shift of every lane; a count of 16 or more gives 0.
+    #[inline(always)]
+    pub fn shr(self, imm: u32) -> Self {
+        if imm >= 16 {
+            return Self::zero();
+        }
+        Self(self.0 >> u16x32::splat(imm as u16))
+    }
+
+    /// Left shift of every lane; a count of 16 or more gives 0.
+    #[inline(always)]
+    pub fn shl(self, imm: u32) -> Self {
+        if imm >= 16 {
+            return Self::zero();
+        }
+        Self(self.0 << u16x32::splat(imm as u16))
+    }
+
+    /// Per-lane wrapping multiply (low 16 bits of the product).
+    #[inline(always)]
+    pub fn mullo(self, other: Self) -> Self {
+        Self(self.0 * other.0)
+    }
+
+    /// Lanes 0..16 converted to `f32`. Every `u16` is exact in `f32`.
+    #[inline(always)]
+    pub fn to_f32x16_lo(self) -> super::f32_types::F32x16 {
+        super::f32_types::F32x16(u16x16::from_slice(&self.0.as_array()[..16]).cast::<f32>())
+    }
+
+    /// Lanes 16..32 converted to `f32`. Every `u16` is exact in `f32`.
+    #[inline(always)]
+    pub fn to_f32x16_hi(self) -> super::f32_types::F32x16 {
+        super::f32_types::F32x16(u16x16::from_slice(&self.0.as_array()[16..]).cast::<f32>())
+    }
 }
 
 impl Default for U16x32 {
