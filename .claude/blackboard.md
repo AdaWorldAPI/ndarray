@@ -3898,3 +3898,12 @@ negative zero; both fixed, every exact kernel now checked against an i64 referen
 
 Loose ends: fused single-widen SM9 op for non-VNNI tiers; NEON SDOT/USDOT and AVX-VNNI unused; no NEON/wasm timings;
 recall on a real TurboVec index is the TurboVec owner's measurement.
+
+## U64x8::sum8_u8_add_masked: vertical masked byte sum (2026-10-29, branch claude/sum8-u8-masked)
+
+Facade word closing the gap #389 recorded for candidate E's anchor term: lane j += sum of kept bytes 8j..8j+8, no
+horizontal reduction. One realization per backend (AVX-512 maskz + vpsadbw; AVX2 register mask + vpsadbw; AVX psadbw per
+quarter; NEON uaddlp/uadalp; wasm extadd_pairwise; scalar; nightly SWAR). Parity in simd.rs + wasm/neon harnesses
+(0x506/0x507); 7 tiers green; 7 disable runs red. 0.687 ns/64 bytes on AVX-512 (281-285x the reference loop), 1.99 ns on
+AVX2 (98x). Knowledge: `turbovec9-u9-substrate.md` § second facade word. Not yet wired into #389.
+
