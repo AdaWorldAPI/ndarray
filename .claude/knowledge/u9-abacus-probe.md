@@ -48,24 +48,21 @@ Measured (ns per 64 values, 3 runs; L1 / streamed):
 
 | | AVX-512 VNNI | AVX-512, no VNNI | AVX2 |
 |---|---|---|---|
-| B end-to-end | 2.89 - 2.91 / 17.1 - 17.5 | 5.63 - 7.94 / 18.8 - 21.0 | 10.03 - 10.05 / 22.2 - 23.4 |
-| **E3 end-to-end** | **2.92** / 17.1 - 17.7 | **5.52 - 7.81** / 19.0 - 20.9 | 40.2 - 43.9 / 219 - 220 |
-| E4 end-to-end | 3.56 - 3.58 / 18.1 - 19.7 | 6.47 - 9.05 / 20.1 - 22.0 | 14.2 - 14.5 / 24.3 - 25.8 |
-| Esum end-to-end | 4.42 - 4.44 / 16.9 - 20.6 | 5.95 - 8.31 / 19.4 - 21.3 | 59.8 - 65.9 / 276 - 288 |
-| B arithmetic only | 2.39 / 18.8 - 22.2 | 5.02 - 7.09 / 26.1 - 27.2 | 9.00 - 9.17 / 31.4 - 36.9 |
-| **E3 arithmetic only** | **2.28** / 14.8 - 18.4 | **4.95 - 6.88** / 22.4 - 24.5 | 40.9 - 45.8 / 214 - 217 |
-| E4 arithmetic only | 2.72 - 2.73 / 15.8 - 19.9 | 5.81 - 7.89 / 22.9 - 24.1 | 12.9 / 32.4 - 33.5 |
-| B scan | 2.64 / 11.4 - 12.8 | 4.84 - 6.94 / 14.6 - 16.7 | 9.11 - 9.19 / 19.6 - 27.2 |
-| E3 scan | 2.66 - 2.67 / 10.6 - 12.8 | 5.22 - 7.08 / 13.0 - 15.2 | 36.9 - 43.7 / 216 - 219 |
-
-(The third AVX-512-without-VNNI run was slower for every row alike; the
-first two are 5.63 / 6.06 for B and 5.52 / 5.52 for E3.)
+| B end-to-end | 2.81 - 2.89 / 5.46 - 6.96 | 5.62 / 8.85 - 13.0 | 10.0 - 10.1 / 24.0 - 25.2 |
+| **E3 end-to-end** | **2.84 - 2.92** / 5.35 - 6.91 | **5.52** / 7.28 - 12.9 | **37.6 - 43.6** / 217 - 222 |
+| E4 end-to-end | 3.47 - 3.56 / 5.67 - 7.25 | 6.47 - 6.48 / 8.63 - 15.5 | 14.5 / 38.6 - 43.1 |
+| Esum end-to-end | 4.33 - 4.44 / 6.51 - 8.95 | 5.95 / 8.08 - 13.5 | 61.2 - 66.8 / 278 - 279 |
+| B arithmetic only | 2.34 - 2.41 / 16.4 - 18.1 | 5.02 / 22.4 - 23.8 | 9.17 - 9.23 / 27.3 - 29.3 |
+| **E3 arithmetic only** | **2.28** / 8.29 - 10.3 | **4.94 - 4.95** / 14.6 - 17.7 | **37.5 - 45.3** / 217 - 230 |
+| E4 arithmetic only | 2.67 - 2.73 / 11.0 - 13.1 | 5.81 / 16.0 - 18.9 | 12.9 / 25.0 - 25.4 |
+| B scan | 2.66 / 2.85 - 3.10 | 4.73 - 4.77 / 5.31 - 8.01 | 9.16 - 9.17 / 26.1 - 29.1 |
+| E3 scan | 2.64 / 2.83 - 3.74 | 4.95 - 4.97 / 4.89 - 5.66 | 35.5 - 43.3 / 213 - 214 |
 
 Reading it:
 
 - **E3 saves one byte-dot and pays it back building the sign vector.** On
-  VNNI it ties B end to end (2.92 vs 2.89 - 2.91) and in the scan, and is
-  about 5 % faster in arithmetic only (2.28 vs 2.39); without VNNI it is
+  VNNI it ties B end to end (2.84 - 2.92 vs 2.81 - 2.89) and in the scan, and is
+  about 4 % faster in arithmetic only (2.28 vs 2.34 - 2.41); without VNNI it is
   about 2 % faster end to end and slower in the scan. Disassembly: 3
   `vpdpbusd` against B's 4, plus the `kmovq` and blend that make `+1/-1`.
 - **E4 is slower everywhere.** A byte-dot against constant ones costs the
@@ -73,7 +70,7 @@ Reading it:
 - **Esum is slower everywhere.** `sum_bytes_u64` reduces horizontally on
   every call.
 - **On AVX2, E3 and Esum lose to `mask_blend`'s per-lane realization**
-  (40 - 66 ns); E4, which needs no blend, is 1.4x B.
+  (38 - 67 ns); E4, which needs no blend, is 1.4x B.
 
 Verdict for E: **no adoption.** The anchor idea is arithmetically right and
 exact, but B already turns the anchor into one hardware instruction; the
@@ -156,42 +153,44 @@ in A'.
 
 | | AVX-512 VNNI | AVX-512, no VNNI | AVX2 |
 |---|---|---|---|
-| A' arithmetic only (f32 accumulate) | 6.33 - 6.56 / 26.0 - 26.6 | 6.33 - 6.39 / 26.2 - 26.9 | 10.7 - 12.0 / 29.5 - 32.1 |
-| **D react arithmetic only** | **5.36 - 5.98** / 15.1 - 21.7 | **5.77 - 5.97** / 17.3 - 19.0 | 21.2 - 29.5 / 27.7 - 28.6 |
-| D anticipate arithmetic only | 6.03 - 6.86 / 16.2 - 22.3 | 6.23 - 6.66 / 19.2 - 20.3 | 10.0 - 16.9 / 18.5 - 21.1 |
-| B arithmetic only (#388) | 2.39 - 2.81 / 19.8 - 21.5 | 5.02 - 7.28 / 25.5 - 29.4 | 9.17 / 31.8 - 33.2 |
-| A' end-to-end | 7.63 - 7.80 / 21.6 - 23.0 | 7.80 - 7.81 / 22.2 - 24.0 | 73.8 - 80.4 / 419 - 436 |
-| **D react end-to-end** | **7.05 - 7.09** / 21.5 - 22.5 | **7.05 - 7.45** / 22.1 - 24.8 | 84.0 - 91.3 / 437 - 444 |
-| D anticipate end-to-end | 7.81 / 21.6 - 23.8 | 7.78 - 8.20 / 22.5 - 23.0 | 76.9 - 104.8 / 428 - 435 |
-| B end-to-end (#388) | 2.89 - 2.91 / 14.8 - 17.7 | 5.63 - 7.59 / 19.6 - 20.6 | 10.03 - 10.06 / 22.6 - 24.4 |
-| D react scan, query widened once | 6.17 - 6.81 / 16.6 - 17.1 | 6.39 - 6.97 / 16.7 - 19.0 | 102 - 128 / 441 |
-| D anticipate scan | 7.17 - 7.91 / 13.7 - 17.7 | 7.16 - 7.86 / 18.7 - 21.2 | 68.5 - 112.9 / 422 - 439 |
-| B scan (#388) | 2.64 / 11.3 - 12.5 | 4.70 - 4.83 / 14.3 - 15.1 | 9.17 - 9.19 / 19.9 - 28.5 |
+| A' arithmetic only (f32 accumulate) | 6.34 - 6.50 / 18.4 - 18.8 | 6.28 - 6.69 / 19.0 - 19.6 | 10.7 - 11.0 / 21.7 - 22.0 |
+| **D react arithmetic only** | **5.20 - 5.70** / 18.2 - 20.1 | **5.36 - 5.64** / 18.4 - 19.8 | **21.2 - 24.2** / 31.9 - 32.0 |
+| D anticipate arithmetic only | 5.94 - 6.45 / 18.7 - 20.9 | 5.98 - 6.31 / 19.4 - 20.5 | 9.89 - 10.1 / 22.0 - 26.9 |
+| B arithmetic only (#388) | 2.39 - 2.41 / 17.3 - 17.9 | 5.02 - 5.03 / 22.3 - 22.8 | 8.95 - 9.17 / 27.2 - 29.4 |
+| A' end-to-end | 7.62 - 7.83 / 18.0 - 18.1 | 7.83 / 19.5 - 19.7 | 81.1 - 88.7 / 416 - 421 |
+| **D react end-to-end** | **6.62 - 7.25** / 11.0 - 15.1 | **6.77 - 6.80** / 15.3 - 16.0 | **79.6 - 90.1** / 434 - 440 |
+| D anticipate end-to-end | 7.78 - 7.97 / 15.3 - 19.5 | 7.78 - 7.80 / 19.1 - 19.7 | 77.6 - 79.7 / 422 - 426 |
+| B end-to-end (#388) | 2.89 - 2.91 / 6.06 - 7.71 | 5.62 / 11.0 - 12.9 | 10.0 - 10.1 / 26.5 - 28.2 |
+| D react scan, query widened once | 6.22 - 6.56 / 11.9 - 16.2 | 6.23 - 7.20 / 11.7 - 19.1 | 88.6 - 91.1 / 433 - 436 |
+| D anticipate scan | 7.00 - 7.47 / 11.0 - 15.9 | 7.27 - 8.41 / 10.4 - 22.7 | 76.9 - 77.2 / 417 - 420 |
+| B scan (#388) | 2.66 / 2.88 - 3.54 | 4.67 - 4.78 / 6.13 - 9.15 | 9.17 - 9.83 / 26.4 - 27.1 |
 
 ### Reading it
 
-- **The carry column beats the f32 detour.** On AVX-512, react is about 10 %
-  faster than A' in arithmetic (5.4 - 6.0 vs 6.3 - 6.6 ns in L1) and in the
-  full path (7.05 vs 7.6 - 7.8). Streamed, it is clearly faster
-  (15 - 22 vs 26 ns). Anticipate costs one more ternary op per carry and
-  lands level with A'.
+- **The carry column beats the f32 detour in L1.** On AVX-512, react is
+  about 10 % faster than A' in arithmetic (5.2 - 5.7 vs 6.3 - 6.5 ns) and in
+  the full path (6.6 - 7.3 vs 7.6 - 7.8). Streamed, on compact operands,
+  their arithmetic-only rows are level (18 - 20 vs 18 - 19 ns: both read
+  precomputed operands and are memory-bound), and react end to end is
+  faster (11 - 15 vs 18 ns). Anticipate costs one more ternary op per carry
+  and lands level with A'.
 - **React vs anticipate depends on the tier.** On AVX-512, react wins (the
   carry needs the sum anyway, and two ternary ops suffice). On AVX2,
-  anticipate wins (10 - 17 vs 21 - 30 ns); the react form gets 16 `vmovq`
+  anticipate wins (9.9 - 10.1 vs 21 - 24 ns); the react form gets 16 `vmovq`
   and 6 `vpblendd` from LLVM there.
 - **B still wins, and the reason is not the accumulation.** D removes the
   float conversion, but it still widens u8 -> u16 (`vpmovzxbw`,
   `vextracti64x4`) and runs four `vpmullw` per block before any add. B
   multiplies straight from bytes and accumulates in `i32` in the same
-  instruction. On VNNI, B's arithmetic is 2.4 ns against D's 5.4.
+  instruction. On VNNI, B's arithmetic is 2.4 ns against D's 5.2 - 5.7.
 - **Sign-routing overhead** (end-to-end minus arithmetic-only medians, so it
-  also contains `check` and widening `|b|`): D react on VNNI about 1.1 -
-  1.7 ns, on AVX-512 without VNNI 1.3 - 1.5 ns, on AVX2 about 55 - 70 ns.
-  A' carries the same routing (1.1 - 1.4 ns on VNNI, 63 - 70 ns on AVX2).
-  B routes with the byte-dot's own mask instead (0.5 ns on VNNI).
+  also contains `check` and widening `|b|`): D react on VNNI 1.45 ns, on AVX-512
+  without VNNI 1.33 ns, on AVX2 about 64 ns. A' carries the same routing
+  (1.47 ns on VNNI, 77 ns on AVX2). B routes with the byte-dot's own mask
+  instead (0.48 ns on VNNI, 0.88 on AVX2).
 - **On AVX2 the end-to-end and scan rows are dominated by routing.** D's
   routing is A's `U8x64::mask_blend`, whose AVX2 realization is a per-lane
-  loop (74 - 128 ns). That cost has nothing to do with the carry.
+  loop (77 - 91 ns). That cost has nothing to do with the carry.
 
 Verdict for D: **ADOPT-LAB as the exact replacement for A's f32 detour**, and
 the right way to accumulate any U16 product stream (the compiler gives
@@ -261,7 +260,7 @@ below 2^64; `Abacus::add` panics rather than drop a carry past them.
 | function | AVX-512 VNNI | AVX-512, no VNNI | AVX2 |
 |---|---|---|---|
 | `carry_save3` | 3 `xor`, 2 `and`, 2 `mov`: scalar, no ternary logic | same | same |
-| `planes` | 6 `vptestmb` + 2 `vpmovb2m` (+ `vpsllw` for bit 0): one instruction per plane | same | out of line (a `jmp`); extraction 8.6 ns vs 2.5 |
+| `planes` | 6 `vptestmb` + 2 `vpmovb2m` (+ `vpsllw` for bit 0): one instruction per plane | same | out of line (a `jmp`); extraction 11.1 ns vs 3.5 |
 | C popcnt `mac` (140 / 196 / 216 insns) | vectorized: 32 `vpopcntq`, `vpand`, `vpsllvq` | **32 `vpshufb`** nibble-table popcount + `vpsadbw` | **32 `vpshufb`** + `vpsadbw` |
 | C abacus `mac` (110 insns) | branchy loop over the column counters, columns in memory; scalar | same | same |
 | C csa `mac` (437-488 insns) | not unrolled: loops over stack arrays, 122 `mov`, 37 `cmp`; scalar logic, no `vpternlog` | same | same |
@@ -287,32 +286,40 @@ One AVX-512 VNNI Xeon; each tier a separate native build (`config-v4`,
 `config-v3`). L1 = 64 blocks per operand; streamed = 2^20 blocks (72 MiB).
 Every kernel equals the oracle on the benchmark data before it is timed.
 
+Timed operands use #388's compact layout (64 magnitude bytes and one plane
+per block in two arrays, 72 bytes); each `Block` is built in registers. The
+first version streamed a `Vec<Block>`, which pads every block to 128 bytes,
+and its extraction row consumed four of the sixteen planes, so the optimizer
+could drop the rest (it read 2.52 ns on VNNI L1). Both were fixed after
+review (Codex, PR #389) and every table here was re-measured; the plane
+extraction row now passes both complete plane arrays through `black_box`.
+
 | L1-resident | AVX-512 VNNI | AVX-512, no VNNI | AVX2 |
 |---|---|---|---|
-| B end-to-end (#388) | 2.89 - 2.91 | 5.63 | 10.03 - 10.05 |
-| C popcnt end-to-end | 28.1 - 28.8 | 46.9 - 47.8 | 42.4 - 43.4 |
-| C abacus end-to-end | 294 - 297 | 288 - 293 | 309 - 319 |
-| C csa end-to-end | 301 - 302 | 301 - 326 | 311 - 438 |
-| B arithmetic only | 2.41 - 2.42 | 5.02 - 6.13 | 9.17 - 12.2 |
-| C popcnt arithmetic only, planes given | 12.42 | 30.0 - 30.8 | 30.7 - 31.3 |
-| C abacus arithmetic only, deferred | 291 - 296 | 288 - 319 | 292 - 314 |
-| C abacus arithmetic only, normalized every block | 268 - 273 | 282 - 287 | 272 - 356 |
-| C csa arithmetic only | 292.5 - 292.7 | 290.5 - 290.7 | 290.1 - 290.9 |
-| C plane extraction, both operands (cold) | 2.52 | 2.59 | 8.6 - 8.9 |
-| B scan (#388) | 2.64 - 2.66 | 4.70 - 4.83 | 8.98 - 9.19 |
-| C popcnt scan, query planes once | 23.3 - 23.7 | 47.0 - 48.0 | 41.7 - 42.7 |
-| C abacus scan | 282 - 289 | 293 - 297 | 300 - 302 |
-| C csa scan | 302 - 303 | 301 - 319 | 300 - 311 |
+| B end-to-end (#388) | 2.89 - 2.91 | 5.62 | 10.0 - 10.1 |
+| C popcnt end-to-end | 28.1 - 28.2 | 47.1 - 48.2 | 42.4 |
+| C abacus end-to-end | 286 - 288 | 290 - 292 | 317 - 319 |
+| C csa end-to-end | 298 | 295 - 296 | 304 - 305 |
+| B arithmetic only | 2.39 - 2.41 | 5.02 - 5.03 | 8.95 - 9.17 |
+| C popcnt arithmetic only, planes given | 12.4 - 12.8 | 30.1 | 30.7 |
+| C abacus arithmetic only, deferred | 266 - 276 | 289 - 292 | 292 - 298 |
+| C abacus arithmetic only, normalized every block | 271 - 278 | 276 - 282 | 281 - 284 |
+| C csa arithmetic only | 293 | 291 | 290 - 291 |
+| C plane extraction, both operands (cold) | 3.45 - 3.53 | 3.45 - 3.58 | 11.1 |
+| B scan (#388) | 2.66 | 4.67 - 4.78 | 9.17 - 9.83 |
+| C popcnt scan, query planes once | 23.4 - 23.9 | 46.7 - 47.8 | 41.8 - 42.9 |
+| C abacus scan | 286 - 291 | 296 - 298 | 313 - 329 |
+| C csa scan | 301 - 307 | 300 - 301 | 302 - 303 |
 
 | Streamed | AVX-512 VNNI | AVX-512, no VNNI | AVX2 |
 |---|---|---|---|
-| B end-to-end | 18.2 - 19.3 | 17.9 - 21.1 | 20.6 - 24.0 |
-| C popcnt end-to-end | 33.5 - 36.0 | 50.3 - 51.2 | 44.7 - 48.4 |
-| C popcnt arithmetic only | 50.0 - 54.5 | 46.7 - 51.1 | 44.9 - 48.6 |
-| C abacus, deferred / normalized every block | 434 - 445 / 280 - 284 | 385 - 388 / 289 - 295 | 404 - 416 / 279 - 282 |
-| C plane extraction, both operands | 14.8 - 18.5 | 14.7 - 18.8 | 35.7 - 36.9 |
-| B scan | 10.4 - 11.9 | 14.3 - 15.6 | 23.5 - 29.3 |
-| C popcnt scan | 34.0 - 43.1 | 48.8 - 51.8 | 43.1 - 43.5 |
+| B end-to-end | 6.06 - 7.71 | 11.0 - 12.9 | 26.5 - 28.2 |
+| C popcnt end-to-end | 51.1 - 55.9 | 50.0 - 50.7 | 54.5 - 57.2 |
+| C popcnt arithmetic only | 47.0 - 50.0 | 60.1 - 60.7 | 57.4 - 60.7 |
+| C abacus, deferred / normalized every block | 438 - 446 / 283 - 285 | 404 - 405 / 293 - 309 | 398 - 408 / 292 - 300 |
+| C plane extraction, both operands | 7.81 - 11.4 | 11.2 - 11.6 | 56.1 - 57.6 |
+| B scan | 2.88 - 3.54 | 6.13 - 9.15 | 26.4 - 27.1 |
+| C popcnt scan | 54.3 - 57.2 | 61.8 - 64.3 | 60.1 - 62.6 |
 
 Streamed "arithmetic only" rows read precomputed planes (another 64 bytes
 per block per operand), so they measure more memory, not less arithmetic.
@@ -320,10 +327,10 @@ per block per operand), so they measure more memory, not less arithmetic.
 ### Break-even for prepared operands
 
 None, on any tier. Prepared reuse can only remove plane extraction
-(2.5 ns per block for both operands on VNNI), and C popcnt's arithmetic
+(3.5 ns per block for both operands on VNNI), and C popcnt's arithmetic
 alone, with both operands' planes free, is 12.4 ns against B's 2.9 ns with
 everything included. In the scan, where the query's planes are prepared once,
-C popcnt costs 23.5 ns against B's 2.65 ns.
+C popcnt costs 23.4 - 23.9 ns against B's 2.66 ns.
 
 ## Why the gap is structural, not tuning
 
@@ -344,7 +351,7 @@ that the hardware multiplier forms in one step.
 | bit-plane preparation dominates the saved arithmetic | no saving to dominate: C's arithmetic alone exceeds B's total |
 | carry compression generates more instructions than the byte-dot | yes: 437-488 instructions per block for C csa, against 4 masked byte-dots for B |
 | register pressure or spills negate the gain | yes: the carry-save folds keep their columns in memory (`mov` dominated) |
-| deferred normalization costs more than immediate | yes when streamed (434 vs 280 ns), equal in L1 |
+| deferred normalization costs more than immediate | yes when streamed (438 - 446 vs 283 - 285 ns), equal in L1 |
 | exactness or provenance violated | no: every fold is exact on every tier |
 | competitiveness needs backend-specific code | yes, it would: a hand-unrolled ternary-logic schedule; not built |
 
