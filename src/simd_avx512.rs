@@ -527,6 +527,38 @@ impl F64Mask8 {
 pub struct U8x64(pub __m512i);
 
 impl U8x64 {
+    /// The low four bits of every byte, `x & 0x0F`.
+    ///
+    /// ```
+    /// use ndarray::simd::U8x64;
+    /// assert_eq!(U8x64::splat(0xA7).low_nibbles().to_array(), [0x07; 64]);
+    /// ```
+    #[inline(always)]
+    pub fn low_nibbles(self) -> Self {
+        // SAFETY: avx512f is compiled in on this arm; register-only.
+        Self(unsafe { _mm512_and_si512(self.0, _mm512_set1_epi8(0x0F)) })
+    }
+
+    /// The high four bits of every byte, moved down: `x >> 4`.
+    ///
+    /// ```
+    /// use ndarray::simd::U8x64;
+    /// assert_eq!(U8x64::splat(0xA7).high_nibbles().to_array(), [0x0A; 64]);
+    /// ```
+    #[inline(always)]
+    pub fn high_nibbles(self) -> Self {
+        // GF(2) affine map whose matrix rows send input bits 4..7 to output bits 0..3 and
+        // clear the rest: one instruction instead of a 16-bit shift and a mask.
+        #[cfg(target_feature = "gfni")]
+        // SAFETY: gfni and avx512f are compiled in on this arm; register-only.
+        let v = unsafe { _mm512_gf2p8affine_epi64_epi8(self.0, _mm512_set1_epi64(0x1020_4080_0000_0000), 0) };
+        #[cfg(not(target_feature = "gfni"))]
+        // SAFETY: avx512f + avx512bw are compiled in on this arm (the file relies on BW for its
+        // byte/word ops); register-only. The mask clears the bits the 16-bit shift pulls in.
+        let v = unsafe { _mm512_and_si512(_mm512_srli_epi16(self.0, 4), _mm512_set1_epi8(0x0F)) };
+        Self(v)
+    }
+
     pub const LANES: usize = 64;
 
     #[inline(always)]
@@ -891,6 +923,45 @@ impl PartialEq for U8x64 {
 pub struct I32x16(pub __m512i);
 
 impl I32x16 {
+    /// Adds four-byte dot products to each 32-bit lane: lane `j` gains
+    /// `a[4j]*b[4j] + a[4j+1]*b[4j+1] + a[4j+2]*b[4j+2] + a[4j+3]*b[4j+3]`,
+    /// with each `u8` of `a` multiplied by the signed `i8` of `b` at the same
+    /// position. The four products are exact; only the final addition to the
+    /// accumulator wraps on `i32` overflow, as with AVX-512 VNNI `vpdpbusd`.
+    ///
+    /// No intermediate saturates. Two products can reach `2 * 255 * 127`,
+    /// which does not fit `i16`, so an emulation through the saturating
+    /// `vpmaddubsw` would be wrong; every realization widens to 16 bits first.
+    ///
+    /// ```
+    /// use ndarray::simd::{I32x16, I8x64, U8x64};
+    /// let a = U8x64::splat(255);
+    /// let b = I8x64::splat(127);
+    /// // 4 * 255 * 127 = 129_540 per lane, past what a 16-bit pair sum can hold.
+    /// assert_eq!(I32x16::splat(1).dot4_u8_i8_add(a, b).to_array(), [129_541; 16]);
+    /// ```
+    #[inline(always)]
+    pub fn dot4_u8_i8_add(self, a: U8x64, b: I8x64) -> Self {
+        #[cfg(target_feature = "avx512vnni")]
+        // SAFETY: avx512vnni is compiled in on this arm; register-only.
+        let acc = unsafe { _mm512_dpbusd_epi32(self.0, a.0, b.0) };
+        #[cfg(not(target_feature = "avx512vnni"))]
+        // SAFETY: avx512f + avx512bw are compiled in on this arm (the file relies on BW for its
+        // byte/word ops); register-only. Even and odd bytes are widened into
+        // separate 16-bit lanes (zero-extended for `a`, sign-extended for `b`), so the 16-bit
+        // multiply-add sums exact products into i32 lanes: the even lanes give bytes 4j and
+        // 4j+2, the odd lanes 4j+1 and 4j+3.
+        let acc = unsafe {
+            let a_even = _mm512_and_si512(a.0, _mm512_set1_epi16(0x00FF));
+            let a_odd = _mm512_srli_epi16(a.0, 8);
+            let b_even = _mm512_srai_epi16(_mm512_slli_epi16(b.0, 8), 8);
+            let b_odd = _mm512_srai_epi16(b.0, 8);
+            let sum = _mm512_add_epi32(_mm512_madd_epi16(a_even, b_even), _mm512_madd_epi16(a_odd, b_odd));
+            _mm512_add_epi32(self.0, sum)
+        };
+        Self(acc)
+    }
+
     pub const LANES: usize = 16;
 
     #[inline(always)]

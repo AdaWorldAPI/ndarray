@@ -2921,6 +2921,95 @@ impl U16x32 {
 }
 
 #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
+impl U8x64 {
+    /// The low four bits of every byte, `x & 0x0F`.
+    ///
+    /// ```
+    /// use ndarray::simd::U8x64;
+    /// assert_eq!(U8x64::splat(0xA7).low_nibbles().to_array(), [0x07; 64]);
+    /// ```
+    #[inline(always)]
+    pub fn low_nibbles(self) -> Self {
+        let mut out = [0u8; 64];
+        // SAFETY: AVX2 is a run-time precondition of this arm (see `U64x8::avx2_halves`); two
+        // 32-byte unaligned loads and stores inside the 64-byte arrays.
+        unsafe {
+            let m = _mm256_set1_epi8(0x0F);
+            let (src, dst) = (self.0.as_ptr() as *const __m256i, out.as_mut_ptr() as *mut __m256i);
+            for h in 0..2 {
+                _mm256_storeu_si256(dst.add(h), _mm256_and_si256(_mm256_loadu_si256(src.add(h)), m));
+            }
+        }
+        Self(out)
+    }
+
+    /// The high four bits of every byte, moved down: `x >> 4`.
+    ///
+    /// ```
+    /// use ndarray::simd::U8x64;
+    /// assert_eq!(U8x64::splat(0xA7).high_nibbles().to_array(), [0x0A; 64]);
+    /// ```
+    #[inline(always)]
+    pub fn high_nibbles(self) -> Self {
+        let mut out = [0u8; 64];
+        // SAFETY: as in `low_nibbles`. The mask clears the bits the 16-bit shift pulls in.
+        unsafe {
+            let m = _mm256_set1_epi8(0x0F);
+            let (src, dst) = (self.0.as_ptr() as *const __m256i, out.as_mut_ptr() as *mut __m256i);
+            for h in 0..2 {
+                let v = _mm256_srli_epi16(_mm256_loadu_si256(src.add(h)), 4);
+                _mm256_storeu_si256(dst.add(h), _mm256_and_si256(v, m));
+            }
+        }
+        Self(out)
+    }
+}
+
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
+impl I32x16 {
+    /// Adds four-byte dot products to each 32-bit lane: lane `j` gains
+    /// `a[4j]*b[4j] + a[4j+1]*b[4j+1] + a[4j+2]*b[4j+2] + a[4j+3]*b[4j+3]`,
+    /// with each `u8` of `a` multiplied by the signed `i8` of `b` at the same
+    /// position. The four products are exact; only the final addition to the
+    /// accumulator wraps on `i32` overflow, as with AVX-512 VNNI `vpdpbusd`.
+    ///
+    /// No intermediate saturates. Two products can reach `2 * 255 * 127`,
+    /// which does not fit `i16`, so an emulation through the saturating
+    /// `vpmaddubsw` would be wrong; every realization widens to 16 bits first.
+    ///
+    /// ```
+    /// use ndarray::simd::{I32x16, I8x64, U8x64};
+    /// let a = U8x64::splat(255);
+    /// let b = I8x64::splat(127);
+    /// // 4 * 255 * 127 = 129_540 per lane, past what a 16-bit pair sum can hold.
+    /// assert_eq!(I32x16::splat(1).dot4_u8_i8_add(a, b).to_array(), [129_541; 16]);
+    /// ```
+    #[inline(always)]
+    pub fn dot4_u8_i8_add(self, a: U8x64, b: I8x64) -> Self {
+        let mut out = self.0;
+        // SAFETY: AVX2 is a run-time precondition of this arm (see `U64x8::avx2_halves`); every
+        // load and store is a 32-byte unaligned access inside a 64-byte array. Even and odd bytes are widened into
+        // separate 16-bit lanes (zero-extended for `a`, sign-extended for `b`), so the 16-bit
+        // multiply-add sums exact products into i32 lanes: the even lanes give bytes 4j and
+        // 4j+2, the odd lanes 4j+1 and 4j+3.
+        unsafe {
+            let low = _mm256_set1_epi16(0x00FF);
+            let (pa, pb) = (a.0.as_ptr() as *const __m256i, b.0.as_ptr() as *const __m256i);
+            let po = out.as_mut_ptr() as *mut __m256i;
+            for h in 0..2 {
+                let (av, bv) = (_mm256_loadu_si256(pa.add(h)), _mm256_loadu_si256(pb.add(h)));
+                let b_even = _mm256_srai_epi16(_mm256_slli_epi16(bv, 8), 8);
+                let even = _mm256_madd_epi16(_mm256_and_si256(av, low), b_even);
+                let odd = _mm256_madd_epi16(_mm256_srli_epi16(av, 8), _mm256_srai_epi16(bv, 8));
+                let acc = _mm256_add_epi32(_mm256_loadu_si256(po.add(h)), _mm256_add_epi32(even, odd));
+                _mm256_storeu_si256(po.add(h), acc);
+            }
+        }
+        Self(out)
+    }
+}
+
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
 impl I32x16 {
     /// Store two 256-bit halves back into a fresh array (see `avx2_halves`).
     #[inline(always)]

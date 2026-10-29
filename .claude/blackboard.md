@@ -3849,3 +3849,30 @@ clippy errors are all pre-existing (same set on master). Disable run: AVX2 cmpgt
 Trap recorded: `cargo --config <file> clippy` DROPS the config (clippy is an external subcommand); the v3 lint pass
 reported clean in 0.05s while linting the native build. Put `--config` after the subcommand:
 `cargo clippy --config .cargo/config-v3.toml`. `cargo --config <file> test` does apply it.
+
+## dot4_u8_i8_add + U8x64 nibble split on every backend (2026-10-29, branch claude/dot4-nibble-facade)
+
+Trigger: turbovec's VNNI "permute-dot" kernels are raw `vpdpbusd` on x86 and `SDOT` on aarch64 (the same
+operation written twice), plus a GFNI-only macro variant for the high nibble. Adding the operation to the facade
+lets those kernels move onto `ndarray::simd`.
+
+Added on AVX-512, AVX2, AVX, scalar, NEON, wasm and nightly: `I32x16::dot4_u8_i8_add(a: U8x64, b: I8x64)`
+(`vpdpbusd` when avx512vnni is compiled in, otherwise widen-then-`madd`; see the contract doc's P0 section on why
+`vpmaddubsw` is wrong) and `U8x64::low_nibbles` / `high_nibbles` (GFNI `gf2p8affine` when compiled in).
+
+Fixed on the way: on aarch64 and wasm, `U16x32` comes from the scalar file but `F32x16` is native, so the scalar
+`to_f32x16_lo/hi` (PR #385) returned a type that is not `ndarray::simd::F32x16`, and the aarch64 lib tests did not
+compile at all. They now return `crate::simd::F32x16`. CI never builds aarch64/wasm lib tests, only the two
+parity programs, which is why it slipped through; both programs now check dot4 and the nibbles (codes 0x500..).
+
+Witnessed: `simd::dot4_nibble_facade_parity` 4/4 on native (AVX-512 + VNNI + GFNI), config-v4 (AVX-512 emulation),
+config-v3 (AVX2), config-avx (qemu SandyBridge), config-v2 (scalar, qemu Nehalem), aarch64 (qemu, plus
+`u16x32_facade_parity`) and nightly-simd; `neon-parity.sh` and `wasm-parity.sh` pass. Lib suite 2657 passed
+(native). clippy -D warnings clean on native/v4/v3/v2 (`--config` AFTER the subcommand) and aarch64; the AVX arm's
+8 errors are pre-existing, none on added lines. Disable runs, all red as expected: `vpmaddubsw` AVX2 realization
+(saturation test + reference), wrong GFNI matrix (nibble test), `vpdpbusds` for `vpdpbusd` (reference, i32::MAX acc).
+
+Loose ends: AVX-VNNI (`avxvnni`, 256-bit `vpdpbusd`) is not used on the AVX2 arm; NEON could use `USDOT` when i8mm
+is compiled in. Neither is measured. The signed form (`i8 x i8`, turbovec's `xor 0x80` + `zero` correction) is not
+a facade word yet.
+

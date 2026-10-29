@@ -353,6 +353,42 @@ impl core::fmt::Display for I16x32 {
 pub struct I32x16(pub i32x16);
 
 impl I32x16 {
+    /// Adds four-byte dot products to each 32-bit lane: lane `j` gains
+    /// `a[4j]*b[4j] + a[4j+1]*b[4j+1] + a[4j+2]*b[4j+2] + a[4j+3]*b[4j+3]`,
+    /// with each `u8` of `a` multiplied by the signed `i8` of `b` at the same
+    /// position. The four products are exact; only the final addition to the
+    /// accumulator wraps on `i32` overflow, as with AVX-512 VNNI `vpdpbusd`.
+    ///
+    /// No intermediate saturates. Two products can reach `2 * 255 * 127`,
+    /// which does not fit `i16`, so an emulation through the saturating
+    /// `vpmaddubsw` would be wrong; every realization widens to 16 bits first.
+    ///
+    /// ```
+    /// use ndarray::simd::{I32x16, I8x64, U8x64};
+    /// let a = U8x64::splat(255);
+    /// let b = I8x64::splat(127);
+    /// // 4 * 255 * 127 = 129_540 per lane, past what a 16-bit pair sum can hold.
+    /// assert_eq!(I32x16::splat(1).dot4_u8_i8_add(a, b).to_array(), [129_541; 16]);
+    /// ```
+    #[inline(always)]
+    pub fn dot4_u8_i8_add(self, a: super::U8x64, b: super::I8x64) -> Self {
+        use core::simd::num::SimdUint;
+        use core::simd::{u32x16, ToBytes};
+        // View the 64 bytes of each operand as 16 words, so word j holds bytes 4j..4j+4 in
+        // some order; the order does not matter because all four products are summed. Byte k
+        // of a word is taken by shifts: logical (zero-extending) for `a`, arithmetic
+        // (sign-extending) for `b`. All four products and their sum are exact in i32.
+        let aw = u32x16::from_ne_bytes(a.0);
+        let bw = i32x16::from_ne_bytes(b.0.to_ne_bytes());
+        let mut acc = self.0;
+        for k in 0..4u32 {
+            let ak = ((aw >> u32x16::splat(8 * k)) & u32x16::splat(0xFF)).cast::<i32>();
+            let bk = (bw << i32x16::splat(24 - 8 * k as i32)) >> i32x16::splat(24);
+            acc += ak * bk;
+        }
+        Self(acc)
+    }
+
     pub const LANES: usize = 16;
 
     /// Per-lane `SaturatingRoundingDoublingHighMul` (gemmlowp / NEON `VQRDMULH`):

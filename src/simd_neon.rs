@@ -3292,6 +3292,46 @@ fn rdpot_quad(x: int32x4_t, e: int32x4_t) -> int32x4_t {
 impl I32x16 {
     pub const LANES: usize = 16;
 
+    /// Adds four-byte dot products to each 32-bit lane: lane `j` gains
+    /// `a[4j]*b[4j] + a[4j+1]*b[4j+1] + a[4j+2]*b[4j+2] + a[4j+3]*b[4j+3]`,
+    /// with each `u8` of `a` multiplied by the signed `i8` of `b` at the same
+    /// position. The four products are exact; only the final addition to the
+    /// accumulator wraps on `i32` overflow, as with AVX-512 VNNI `vpdpbusd`.
+    ///
+    /// No intermediate saturates. Two products can reach `2 * 255 * 127`,
+    /// which does not fit `i16`, so an emulation through the saturating
+    /// `vpmaddubsw` would be wrong; every realization widens to 16 bits first.
+    ///
+    /// ```
+    /// use ndarray::simd::{I32x16, I8x64, U8x64};
+    /// let a = U8x64::splat(255);
+    /// let b = I8x64::splat(127);
+    /// // 4 * 255 * 127 = 129_540 per lane, past what a 16-bit pair sum can hold.
+    /// assert_eq!(I32x16::splat(1).dot4_u8_i8_add(a, b).to_array(), [129_541; 16]);
+    /// ```
+    #[inline(always)]
+    pub fn dot4_u8_i8_add(self, a: crate::simd::U8x64, b: crate::simd::I8x64) -> Self {
+        let (a, b) = (a.to_array(), b.to_array());
+        let mut out = self.0;
+        for (q, quad) in out.iter_mut().enumerate() {
+            // SAFETY: NEON baseline. The two loads read 16 bytes at offset 16*q of 64-byte
+            // arrays, q < 4; the rest is register-only. Bytes are widened to 16 bits
+            // (zero-extended for `a`, sign-extended for `b`), multiplied exactly into i32,
+            // and pairwise-added twice so lane j holds the sum of bytes 4j..4j+4.
+            unsafe {
+                let av = vld1q_u8(a.as_ptr().add(16 * q));
+                let bv = vld1q_s8(b.as_ptr().add(16 * q));
+                let a_lo = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(av)));
+                let a_hi = vreinterpretq_s16_u16(vmovl_high_u8(av));
+                let (b_lo, b_hi) = (vmovl_s8(vget_low_s8(bv)), vmovl_high_s8(bv));
+                let p01 = vpaddq_s32(vmull_s16(vget_low_s16(a_lo), vget_low_s16(b_lo)), vmull_high_s16(a_lo, b_lo));
+                let p23 = vpaddq_s32(vmull_s16(vget_low_s16(a_hi), vget_low_s16(b_hi)), vmull_high_s16(a_hi, b_hi));
+                quad.0 = vaddq_s32(quad.0, vpaddq_s32(p01, p23));
+            }
+        }
+        Self(out)
+    }
+
     /// Saturating rounding doubling high multiply (gemmlowp / TFLM
     /// `SaturatingRoundingDoublingHighMul<i32>`): per lane, `round(a * b / 2^31)`
     /// with the half-way case rounded toward `+inf`, i.e. the C++ definition

@@ -28,7 +28,7 @@ use core::ops::{
     Add, AddAssign, BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Mul, Not, Shl, Shr, Sub, SubAssign,
 };
 
-use crate::simd_avx2::{F32x16, I32x16, U16x16, U16x32, U64x8, U8x32};
+use crate::simd_avx2::{F32x16, I32x16, I8x64, U16x16, U16x32, U64x8, U8x32, U8x64};
 use crate::simd_avx512::{F32x8, I16x16, I8x32};
 
 // ---------------------------------------------------------------------------
@@ -267,8 +267,97 @@ impl Shr<Self> for U64x8 {
 }
 
 // ---------------------------------------------------------------------------
+// U8x64 (array-backed)
+// ---------------------------------------------------------------------------
+
+impl U8x64 {
+    /// The low four bits of every byte, `x & 0x0F`.
+    ///
+    /// ```
+    /// use ndarray::simd::U8x64;
+    /// assert_eq!(U8x64::splat(0xA7).low_nibbles().to_array(), [0x07; 64]);
+    /// ```
+    #[inline(always)]
+    pub fn low_nibbles(self) -> Self {
+        let mut out = [0u8; 64];
+        // SAFETY: SSE2 is compiled in (module docs); four 16-byte unaligned loads and stores
+        // inside the 64-byte arrays.
+        unsafe {
+            let m = _mm_set1_epi8(0x0F);
+            let (src, dst) = (self.0.as_ptr() as *const __m128i, out.as_mut_ptr() as *mut __m128i);
+            for q in 0..4 {
+                _mm_storeu_si128(dst.add(q), _mm_and_si128(_mm_loadu_si128(src.add(q)), m));
+            }
+        }
+        Self(out)
+    }
+
+    /// The high four bits of every byte, moved down: `x >> 4`.
+    ///
+    /// ```
+    /// use ndarray::simd::U8x64;
+    /// assert_eq!(U8x64::splat(0xA7).high_nibbles().to_array(), [0x0A; 64]);
+    /// ```
+    #[inline(always)]
+    pub fn high_nibbles(self) -> Self {
+        let mut out = [0u8; 64];
+        // SAFETY: as in `low_nibbles`. The mask clears the bits the 16-bit shift pulls in.
+        unsafe {
+            let m = _mm_set1_epi8(0x0F);
+            let (src, dst) = (self.0.as_ptr() as *const __m128i, out.as_mut_ptr() as *mut __m128i);
+            for q in 0..4 {
+                _mm_storeu_si128(dst.add(q), _mm_and_si128(_mm_srli_epi16(_mm_loadu_si128(src.add(q)), 4), m));
+            }
+        }
+        Self(out)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // I32x16 (array-backed)
 // ---------------------------------------------------------------------------
+
+impl I32x16 {
+    /// Adds four-byte dot products to each 32-bit lane: lane `j` gains
+    /// `a[4j]*b[4j] + a[4j+1]*b[4j+1] + a[4j+2]*b[4j+2] + a[4j+3]*b[4j+3]`,
+    /// with each `u8` of `a` multiplied by the signed `i8` of `b` at the same
+    /// position. The four products are exact; only the final addition to the
+    /// accumulator wraps on `i32` overflow, as with AVX-512 VNNI `vpdpbusd`.
+    ///
+    /// No intermediate saturates. Two products can reach `2 * 255 * 127`,
+    /// which does not fit `i16`, so an emulation through the saturating
+    /// `vpmaddubsw` would be wrong; every realization widens to 16 bits first.
+    ///
+    /// ```
+    /// use ndarray::simd::{I32x16, I8x64, U8x64};
+    /// let a = U8x64::splat(255);
+    /// let b = I8x64::splat(127);
+    /// // 4 * 255 * 127 = 129_540 per lane, past what a 16-bit pair sum can hold.
+    /// assert_eq!(I32x16::splat(1).dot4_u8_i8_add(a, b).to_array(), [129_541; 16]);
+    /// ```
+    #[inline(always)]
+    pub fn dot4_u8_i8_add(self, a: U8x64, b: I8x64) -> Self {
+        let mut out = self.0;
+        // SAFETY: SSE2 is compiled in (module docs); every load and store is a 16-byte
+        // unaligned access inside a 64-byte array. Even and odd bytes are widened into
+        // separate 16-bit lanes (zero-extended for `a`, sign-extended for `b`), so the 16-bit
+        // multiply-add sums exact products into i32 lanes: the even lanes give bytes 4j and
+        // 4j+2, the odd lanes 4j+1 and 4j+3.
+        unsafe {
+            let low = _mm_set1_epi16(0x00FF);
+            let (pa, pb) = (a.0.as_ptr() as *const __m128i, b.0.as_ptr() as *const __m128i);
+            let po = out.as_mut_ptr() as *mut __m128i;
+            for q in 0..4 {
+                let (av, bv) = (_mm_loadu_si128(pa.add(q)), _mm_loadu_si128(pb.add(q)));
+                let even = _mm_madd_epi16(_mm_and_si128(av, low), _mm_srai_epi16(_mm_slli_epi16(bv, 8), 8));
+                let odd = _mm_madd_epi16(_mm_srli_epi16(av, 8), _mm_srai_epi16(bv, 8));
+                let acc = _mm_add_epi32(_mm_loadu_si128(po.add(q)), _mm_add_epi32(even, odd));
+                _mm_storeu_si128(po.add(q), acc);
+            }
+        }
+        Self(out)
+    }
+}
 
 impl I32x16 {
     /// `SaturatingRoundingDoublingHighMul` per lane (TFLM `fixedpoint.h`).

@@ -1095,9 +1095,11 @@ impl U16x32 {
     /// let a = U16x32::from_array(core::array::from_fn(|i| i as u16 * 1000));
     /// assert_eq!(a.to_f32x16_lo().to_array()[15], 15_000.0);
     /// ```
+    // Returns the facade's `F32x16`, not this file's: on aarch64 and wasm this
+    // `U16x32` is the facade type but `F32x16` is the native NEON/wasm one.
     #[inline(always)]
-    pub fn to_f32x16_lo(self) -> F32x16 {
-        F32x16(core::array::from_fn(|i| self.0[i] as f32))
+    pub fn to_f32x16_lo(self) -> crate::simd::F32x16 {
+        crate::simd::F32x16::from_array(core::array::from_fn(|i| self.0[i] as f32))
     }
 
     /// Lanes 16..32 converted to `f32`. Every `u16` is exact in `f32`.
@@ -1108,13 +1110,43 @@ impl U16x32 {
     /// assert_eq!(a.to_f32x16_hi().to_array()[0], 16_000.0);
     /// ```
     #[inline(always)]
-    pub fn to_f32x16_hi(self) -> F32x16 {
-        F32x16(core::array::from_fn(|i| self.0[16 + i] as f32))
+    pub fn to_f32x16_hi(self) -> crate::simd::F32x16 {
+        crate::simd::F32x16::from_array(core::array::from_fn(|i| self.0[16 + i] as f32))
     }
 }
 
 // Extra methods for I32x16 that float types have via the macro
 impl I32x16 {
+    /// Adds four-byte dot products to each 32-bit lane: lane `j` gains
+    /// `a[4j]*b[4j] + a[4j+1]*b[4j+1] + a[4j+2]*b[4j+2] + a[4j+3]*b[4j+3]`,
+    /// with each `u8` of `a` multiplied by the signed `i8` of `b` at the same
+    /// position. The four products are exact; only the final addition to the
+    /// accumulator wraps on `i32` overflow, as with AVX-512 VNNI `vpdpbusd`.
+    ///
+    /// No intermediate saturates. Two products can reach `2 * 255 * 127`,
+    /// which does not fit `i16`, so an emulation through the saturating
+    /// `vpmaddubsw` would be wrong; every realization widens to 16 bits first.
+    ///
+    /// ```
+    /// use ndarray::simd::{I32x16, I8x64, U8x64};
+    /// let a = U8x64::splat(255);
+    /// let b = I8x64::splat(127);
+    /// // 4 * 255 * 127 = 129_540 per lane, past what a 16-bit pair sum can hold.
+    /// assert_eq!(I32x16::splat(1).dot4_u8_i8_add(a, b).to_array(), [129_541; 16]);
+    /// ```
+    #[inline(always)]
+    pub fn dot4_u8_i8_add(self, a: U8x64, b: I8x64) -> Self {
+        let (a, b) = (a.to_array(), b.to_array());
+        let mut acc = self.to_array();
+        for (j, lane) in acc.iter_mut().enumerate() {
+            let sum: i32 = (4 * j..4 * j + 4)
+                .map(|i| i32::from(a[i]) * i32::from(b[i]))
+                .sum();
+            *lane = lane.wrapping_add(sum);
+        }
+        Self::from_array(acc)
+    }
+
     /// Per-lane `SaturatingRoundingDoublingHighMul` (gemmlowp / NEON `VQRDMULH`):
     /// `round(2*a*b / 2^32)`, ties toward +inf, `MIN * MIN` saturating to `MAX`.
     ///
@@ -1742,6 +1774,28 @@ impl MulAssign for U8x64 {
 
 // U8x64 extra methods — byte-level operations for palette codec, nibble, byte scan
 impl U8x64 {
+    /// The low four bits of every byte, `x & 0x0F`.
+    ///
+    /// ```
+    /// use ndarray::simd::U8x64;
+    /// assert_eq!(U8x64::splat(0xA7).low_nibbles().to_array(), [0x07; 64]);
+    /// ```
+    #[inline(always)]
+    pub fn low_nibbles(self) -> Self {
+        Self(self.0.map(|x| x & 0x0F))
+    }
+
+    /// The high four bits of every byte, moved down: `x >> 4`.
+    ///
+    /// ```
+    /// use ndarray::simd::U8x64;
+    /// assert_eq!(U8x64::splat(0xA7).high_nibbles().to_array(), [0x0A; 64]);
+    /// ```
+    #[inline(always)]
+    pub fn high_nibbles(self) -> Self {
+        Self(self.0.map(|x| x >> 4))
+    }
+
     #[inline(always)]
     pub fn reduce_min(self) -> u8 {
         *self.0.iter().min().unwrap_or(&0)

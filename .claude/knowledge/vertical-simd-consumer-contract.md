@@ -80,6 +80,37 @@ Any saturating-abs primitive in ndarray that does NOT produce `i8::MAX` for `i8:
 
 ---
 
+## Four-byte dot product: `vpmaddubsw` is NOT an emulation of `vpdpbusd` (P0, 2026-10-29)
+
+`I32x16::dot4_u8_i8_add(acc, a: U8x64, b: I8x64)` adds `a[4j..4j+4] · b[4j..4j+4]`
+(u8 times signed i8) to lane `j`. AVX-512 VNNI does it in one `vpdpbusd`; every
+other realization must give the same answer, and the obvious AVX2 emulation does not:
+
+- `vpmaddubsw` sums each pair of `u8 * i8` products into an **i16 with signed
+  saturation**. Two products reach `2 * 255 * 127 = 64_770`, past `i16::MAX`, so the
+  pair clamps to 32_767 and the dot product is wrong. `vpmaddwd` with ones afterwards
+  cannot recover it.
+- The correct realization widens first: even and odd bytes into separate 16-bit lanes
+  (`a` zero-extended with `& 0x00FF` / logical `>> 8`, `b` sign-extended with
+  `<< 8` then arithmetic `>> 8` / arithmetic `>> 8`), then `vpmaddwd` on each, then
+  add. The even lanes give bytes 4j and 4j+2, the odd lanes 4j+1 and 4j+3; every
+  product and partial sum is exact in i32. The same shape is used on AVX-512 without
+  VNNI, AVX2, AVX (SSE2 quarters) and wasm (`i32x4_dot_i16x8`); NEON widens with
+  `vmovl` and sums with `vmull_s16` + `vpaddq_s32`; nightly takes byte k of each
+  32-bit word by shifts.
+- Only the final addition to the accumulator wraps, as `vpdpbusd` does. `vpdpbusds`
+  (the saturating form) is a different operation.
+
+**Mandatory tests:** `simd::dot4_nibble_facade_parity::dot4_does_not_saturate_pair_sums`
+(all-255 times all-127 must give `4 * 255 * 127` per lane, times all -128 `-4 * 255 * 128`) and the
+`i32::MAX` accumulator cases in `dot4_matches_reference`. Disable runs on 2026-10-29:
+a `vpmaddubsw` AVX2 realization fails both; `vpdpbusds` in place of `vpdpbusd` fails
+the second.
+
+`U8x64::low_nibbles` / `high_nibbles` are the nibble split every 4-bit LUT kernel
+starts with. `high_nibbles` is one `gf2p8affine` (matrix `0x1020_4080_0000_0000`) when
+GFNI is compiled in, otherwise a 16-bit shift by 4 and a mask.
+
 ## W1a queue — 5 primitives ndarray must ship
 
 Each is a tight-scope PR. Recommended: one branch per primitive, parallel review.
