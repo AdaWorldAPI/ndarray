@@ -157,8 +157,10 @@ fn counters(label: &str, adds: &[(usize, u64)], runs: usize) {
     time("PL both", adds.len(), runs, "add", b, &pl);
 }
 
-/// Section B': a carry through a run of FULL columns, the state constant
-/// (built inside the timed code from literals) or opaque (behind black_box).
+/// Section B': one add whose carry runs through `len` FULL columns. Each rep
+/// clones a preset counter (opaque to the compiler) and adds once; a
+/// clone-only row per variant gives the cost to subtract. Correctness is
+/// checked outside the timed loop.
 fn chains(len: usize, runs: usize) {
     const REPS: usize = 1000;
     fn preset<C: Counter<N>>(len: usize) -> C {
@@ -168,48 +170,56 @@ fn chains(len: usize, runs: usize) {
         }
         c
     }
-    fn opaque<C: Counter<N> + Clone>(len: usize) -> u128 {
-        let base: C = preset(len);
-        let mut acc = 0u128;
+    fn check<C: Counter<N>>(len: usize) {
+        let mut c: C = preset(len);
+        c.add_at(0, u64::MAX).unwrap();
+        assert_eq!(c.total(), 64u128 << len, "chain {len}");
+    }
+    fn add_rep<C: Counter<N> + Clone>(base: &C) -> u128 {
         for _ in 0..REPS {
             let mut c = black_box(base.clone());
-            c.add_at(0, black_box(u64::MAX)).unwrap();
-            acc += black_box(&c).total() >> len;
+            let _ = c.add_at(0, black_box(u64::MAX));
+            black_box(&c);
         }
-        acc
+        0
     }
-    fn constant<C: Counter<N>>(len: usize) -> u128 {
+    fn clone_rep<C: Counter<N> + Clone>(base: &C) -> u128 {
+        for _ in 0..REPS {
+            let c = black_box(base.clone());
+            black_box(&c);
+        }
+        0
+    }
+    fn constant_rep<C: Counter<N>>(len: usize) -> u128 {
         let mut acc = 0u128;
         for _ in 0..REPS {
             let mut c: C = preset(len);
-            c.add_at(0, u64::MAX).unwrap();
+            let _ = c.add_at(0, u64::MAX);
             acc += c.total() >> len;
         }
         acc
     }
-    fn clone_only<C: Counter<N> + Clone>(len: usize) -> u128 {
-        let base: C = preset(len);
-        let mut acc = 0u128;
-        for _ in 0..REPS {
-            let c = black_box(base.clone());
-            acc += black_box(&c).total() >> len;
-        }
-        acc
-    }
-    let want = 64 * REPS as u128;
-    time("F clone + total only (no add): subtract from opaque rows", REPS, runs, "rep", None, &|| {
-        clone_only::<Eager<N>>(len)
-    });
-    println!("-- B', carry through {len} FULL columns (one add + clone per rep)");
+    check::<Eager<N>>(len);
+    check::<Subst<N>>(len);
+    check::<LazyFull<N>>(len);
+    check::<SubstLazy<N>>(len);
+    assert_eq!(constant_rep::<Eager<N>>(len), 64 * REPS as u128);
+    assert_eq!(constant_rep::<SubstLazy<N>>(len), 64 * REPS as u128);
+    println!("-- B', one add carrying through {len} FULL columns (per rep: clone + add)");
+    let (f, p, l, pl): (Eager<N>, Subst<N>, LazyFull<N>, SubstLazy<N>) =
+        (preset(len), preset(len), preset(len), preset(len));
     for (name, g) in [
-        ("F opaque", &(|| opaque::<Eager<N>>(len)) as &dyn Fn() -> u128),
-        ("P opaque", &|| opaque::<Subst<N>>(len)),
-        ("L opaque", &|| opaque::<LazyFull<N>>(len)),
-        ("PL opaque", &|| opaque::<SubstLazy<N>>(len)),
-        ("F constant state", &|| constant::<Eager<N>>(len)),
-        ("PL constant state", &|| constant::<SubstLazy<N>>(len)),
+        ("F clone only", &(|| clone_rep(&f)) as &dyn Fn() -> u128),
+        ("F clone + add", &|| add_rep(&f)),
+        ("P clone only", &|| clone_rep(&p)),
+        ("P clone + add", &|| add_rep(&p)),
+        ("L clone only", &|| clone_rep(&l)),
+        ("L clone + add", &|| add_rep(&l)),
+        ("PL clone only", &|| clone_rep(&pl)),
+        ("PL clone + add", &|| add_rep(&pl)),
+        ("F constant state: build + add + total", &|| constant_rep::<Eager<N>>(len)),
+        ("PL constant state: build + add + total", &|| constant_rep::<SubstLazy<N>>(len)),
     ] {
-        assert_eq!(g(), want, "{name}");
         time(name, REPS, runs, "rep", None, g);
     }
 }
@@ -299,10 +309,10 @@ fn main() {
         let mut pl = SubstLazy::<N>::new();
         let mut na = Native::new();
         black_box((
-            asm_eager_add(&mut e, m),
-            asm_subst_add(&mut su, m),
-            asm_lazy_add(&mut la, m),
-            asm_pl_add(&mut pl, m),
+            asm_eager_add(&mut e, m).is_ok(),
+            asm_subst_add(&mut su, m).is_ok(),
+            asm_lazy_add(&mut la, m).is_ok(),
+            asm_pl_add(&mut pl, m).is_ok(),
         ));
         asm_native_add(&mut na, m);
         let mut low = [U16x32::splat(black_box(9)); 2];
