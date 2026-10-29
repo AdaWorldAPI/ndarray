@@ -321,8 +321,8 @@ fn main() {
         asm_boundary_d(&mut col, &[U16x32::splat(black_box(7)); 2]);
         black_box((
             asm_flip(m, m),
-            asm_pair_add(Pair128 { lo: m, hi: m }, m),
-            asm_packed_add(u128::from(m), m),
+            asm_pair_add(black_box(Pair128 { lo: !m, hi: m }), m),
+            asm_packed_add(black_box(u128::from(m) << 64 | u128::from(!m)), m),
             na.lanes[0],
             low[0].to_array()[0],
             col[0].total(),
