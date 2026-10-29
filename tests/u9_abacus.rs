@@ -7,7 +7,7 @@ mod kernels;
 #[path = "../examples/u9_abacus/abacus.rs"]
 mod abacus;
 
-use abacus::{carry_save3, planes, Abacus, AccAbacus, AccPopcnt, QueryC};
+use abacus::{carry_save3, planes, Abacus, AccAbacus, AccCsa, AccPopcnt, QueryC};
 use kernels::{check, oracle, AccB, Block, NeverTouched, B_FLUSH_BLOCKS};
 use ndarray::simd::U8x64;
 
@@ -24,9 +24,10 @@ fn encode(v: i32) -> (u8, bool) {
     (v.unsigned_abs() as u8, v >= 0)
 }
 
-/// Both C folds, the C scan (b as the prepared query) and B, on the same data.
-fn run_all(a: &[Raw], b: &[Raw]) -> [i64; 4] {
+/// The three C folds, the C scan (b as the prepared query) and B, on the same data.
+fn run_all(a: &[Raw], b: &[Raw]) -> [i64; 5] {
     let (mut abacus, mut pop, mut bk) = (AccAbacus::new(), AccPopcnt::new(), AccB::new());
+    let mut csa = AccCsa::new();
     let mut scan = AccAbacus::new();
     for (ra, rb) in a.iter().zip(b) {
         let (x, y) = (block(ra), block(rb));
@@ -35,11 +36,12 @@ fn run_all(a: &[Raw], b: &[Raw]) -> [i64; 4] {
         let negative = x.positive ^ y.positive;
         abacus.mac(&pa, negative, &pb);
         pop.mac(&pa, negative, &pb);
+        csa.mac(&pa, negative, &pb);
         let q = QueryC::new(y.mag, y.positive);
         scan.mac(&planes(x.mag), x.positive ^ q.positive, &q.planes);
         bk.step(x, y);
     }
-    [abacus.finish(), pop.finish(), scan.finish(), bk.finish()]
+    [abacus.finish(), pop.finish(), csa.finish(), scan.finish(), bk.finish()]
 }
 
 /// The full-adder identity bit by bit, for all eight input combinations at
@@ -129,7 +131,7 @@ fn all_511_by_511_pairs_are_exact() {
             let ap = if pa { u64::MAX } else { !(1u64 << lane) };
             let bp = if pb { u64::MAX } else { !(1u64 << lane) };
             let want = i64::from(va) * i64::from(vb);
-            assert_eq!(run_all(&[(am, ap)], &[(bm, bp)]), [want; 4], "{va} x {vb}");
+            assert_eq!(run_all(&[(am, ap)], &[(bm, bp)]), [want; 5], "{va} x {vb}");
             n += 1;
         }
     }
@@ -159,7 +161,7 @@ fn full_blocks_match_the_oracle_and_b() {
         let a: Vec<_> = (0..blocks).map(|_| mk()).collect();
         let b: Vec<_> = (0..blocks).map(|_| mk()).collect();
         let want = oracle(&a, &b).unwrap();
-        assert_eq!(run_all(&a, &b), [want; 4], "{blocks} blocks");
+        assert_eq!(run_all(&a, &b), [want; 5], "{blocks} blocks");
     }
 }
 
@@ -172,7 +174,7 @@ fn worst_case_runs_exceed_i32_exactly() {
         let b = vec![([255u8; 64], pb); n];
         let want = oracle(&a, &b).unwrap();
         assert!(want.unsigned_abs() > i32::MAX as u64 || pa != pb);
-        assert_eq!(run_all(&a, &b), [want; 4]);
+        assert_eq!(run_all(&a, &b), [want; 5]);
     }
 }
 
@@ -180,7 +182,7 @@ fn worst_case_runs_exceed_i32_exactly() {
 #[test]
 fn never_touched_is_refused_and_zero_is_not() {
     let zero = ([0u8; 64], u64::MAX);
-    assert_eq!(run_all(&[zero], &[zero]), [0; 4]);
+    assert_eq!(run_all(&[zero], &[zero]), [0; 5]);
     let mut m = [9u8; 64];
     m[5] = 0;
     let sentinel = block(&(m, !(1u64 << 5)));

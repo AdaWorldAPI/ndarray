@@ -158,6 +158,30 @@ fn bench(label: &str, n: usize, runs: usize, seed: u64) {
         }
         total
     };
+    let c_ari_csa = || {
+        let mut acc = AccCsa::new();
+        for ((x, y), ng) in pa.iter().zip(&pb).zip(&neg) {
+            acc.mac(x, *ng, y);
+        }
+        acc.finish()
+    };
+    let c_e2e_csa = || {
+        let mut acc = AccCsa::new();
+        for (a, b) in ab.iter().zip(&bb) {
+            check(*a, *b).unwrap();
+            acc.mac(&planes(a.mag), a.positive ^ b.positive, &planes(b.mag));
+        }
+        acc.finish()
+    };
+    let c_scan_csa = || {
+        let qc = QueryC::new(q.mag, q.positive);
+        let mut acc = AccCsa::new();
+        for x in &ab {
+            check(*x, q).unwrap();
+            acc.mac(&planes(x.mag), x.positive ^ qc.positive, &qc.planes);
+        }
+        acc.finish()
+    };
     let c_ari_pop = || {
         let mut acc = AccPopcnt::new();
         for ((x, y), ng) in pa.iter().zip(&pb).zip(&neg) {
@@ -200,6 +224,9 @@ fn bench(label: &str, n: usize, runs: usize, seed: u64) {
         ("C abacus arith", &c_ari_abacus, want),
         ("C abacus norm each", &c_ari_abacus_norm_each, want),
         ("C popcnt arith", &c_ari_pop, want),
+        ("C csa arith", &c_ari_csa, want),
+        ("C csa", &c_e2e_csa, want),
+        ("C csa scan", &c_scan_csa, want_scan),
         ("B scan", &b_scan, want_scan),
         ("C abacus scan", &c_scan_abacus, want_scan),
         ("C popcnt scan", &c_scan_pop, want_scan),
@@ -212,15 +239,18 @@ fn bench(label: &str, n: usize, runs: usize, seed: u64) {
     let be = time("B end-to-end: check + AND/XOR split + 4 masked dot4", n, runs, None, &b_e2e);
     time("C abacus end-to-end: check + planes(a,b) + CSA columns", n, runs, Some(be), &c_e2e_abacus);
     time("C popcnt end-to-end: check + planes(a,b) + 128 popcounts", n, runs, Some(be), &c_e2e_pop);
+    time("C csa end-to-end: check + planes(a,b) + static CSA schedule", n, runs, Some(be), &c_e2e_csa);
     let ba = time("B arithmetic only (split operands given)", n, runs, None, &b_ari);
     let ca = time("C abacus arithmetic only (planes given), deferred", n, runs, Some(ba), &c_ari_abacus);
     time("C abacus arithmetic only, normalized every block", n, runs, Some(ba), &c_ari_abacus_norm_each);
     let cp = time("C popcnt arithmetic only (planes given)", n, runs, Some(ba), &c_ari_pop);
+    let cc = time("C csa arithmetic only (planes given), static schedule", n, runs, Some(ba), &c_ari_csa);
     let prep = time("C plane extraction alone, both operands (cold)", n, runs, None, &c_prep);
     let bs = time("B scan: query split once", n, runs, None, &b_scan);
     time("C abacus scan: query planes once, index planes per block", n, runs, Some(bs), &c_scan_abacus);
     time("C popcnt scan: query planes once, index planes per block", n, runs, Some(bs), &c_scan_pop);
-    let best_c = ca.min(cp);
+    time("C csa scan: query planes once, index planes per block", n, runs, Some(bs), &c_scan_csa);
+    let best_c = ca.min(cp).min(cc);
     if best_c >= be {
         println!(
             "break-even: none. C with both operands' planes prepared for free ({best_c:.3}) is slower than B paying all its preparation ({be:.3}); extraction alone costs {prep:.3}."
@@ -244,6 +274,10 @@ pub fn asm_abacus_mac(acc: &mut AccAbacus, a: &[u64; 8], negative: u64, b: &[u64
     acc.mac(a, negative, b)
 }
 #[inline(never)]
+pub fn asm_csa_mac(acc: &mut AccCsa, a: &[u64; 8], negative: u64, b: &[u64; 8]) {
+    acc.mac(a, negative, b)
+}
+#[inline(never)]
 pub fn asm_popcnt_mac(acc: &mut AccPopcnt, a: &[u64; 8], negative: u64, b: &[u64; 8]) {
     acc.mac(a, negative, b)
 }
@@ -252,7 +286,10 @@ fn main() {
     println!("tier: {} (target-cpu as compiled)", tier());
     {
         // Keep the out-of-line copies in the binary.
-        let p = black_box(asm_planes(U8x64::splat(0xA5)));
+        let p = black_box(asm_planes(black_box(U8x64::splat(0xA5))));
+        let mut s = AccCsa::new();
+        asm_csa_mac(&mut s, &p, black_box(0x55), &p);
+        black_box(s.finish());
         let mut a = AccAbacus::new();
         asm_abacus_mac(&mut a, &p, black_box(0x55), &p);
         let mut c = AccPopcnt::new();

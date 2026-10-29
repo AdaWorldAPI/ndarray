@@ -148,6 +148,80 @@ impl Default for AccAbacus {
     }
 }
 
+/// C, static carry-save: one running plane per column and sign, folded
+/// with [`carry_save3`] on a fixed schedule that depends only on the column,
+/// never on the data. Per block and sign, column `w` takes its partial
+/// products and the carries out of column `w - 1`, two at a time, into its
+/// running plane; carries leaving column 15 are counted at once into `spill`.
+/// Represented value per sign: `sum over w of popcount(ones[w]) * 2^w + spill`.
+pub struct AccCsa {
+    ones: [[u64; 16]; 2],
+    spill: [i64; 2],
+}
+
+impl AccCsa {
+    pub fn new() -> Self {
+        Self {
+            ones: [[0; 16]; 2],
+            spill: [0; 2],
+        }
+    }
+
+    #[inline(always)]
+    pub fn mac(&mut self, a: &[u64; 8], negative: u64, b: &[u64; 8]) {
+        for (s, mask) in [!negative, negative].into_iter().enumerate() {
+            let am: [u64; 8] = core::array::from_fn(|i| a[i] & mask);
+            let mut cin = [0u64; 8];
+            let mut nc = 0usize;
+            for w in 0usize..16 {
+                // At most 8 partial products and 8 carries enter a column.
+                let mut items = [0u64; 16];
+                let mut k = 0usize;
+                for i in w.saturating_sub(7)..=w.min(7) {
+                    items[k] = am[i] & b[w - i];
+                    k += 1;
+                }
+                for &c in &cin[..nc] {
+                    items[k] = c;
+                    k += 1;
+                }
+                let mut o = self.ones[s][w];
+                let mut cout = [0u64; 8];
+                let mut no = 0usize;
+                let mut t = 0usize;
+                while t < k {
+                    let q = if t + 1 < k { items[t + 1] } else { 0 };
+                    let (sum, carry) = carry_save3(o, items[t], q);
+                    o = sum;
+                    cout[no] = carry;
+                    no += 1;
+                    t += 2;
+                }
+                self.ones[s][w] = o;
+                cin = cout;
+                nc = no;
+            }
+            for &c in &cin[..nc] {
+                self.spill[s] += i64::from(c.count_ones()) << 16;
+            }
+        }
+    }
+
+    pub fn finish(&self) -> i64 {
+        let side = |s: usize| -> i64 {
+            let cols: i64 = (0..16).map(|w| i64::from(self.ones[s][w].count_ones()) << w).sum();
+            cols + self.spill[s]
+        };
+        side(0) - side(1)
+    }
+}
+
+impl Default for AccCsa {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// C, immediate: each partial-product plane counted at once into `i64`.
 /// Per block the change is at most 64 * 65_025; the `i64` total is exact
 /// while it stays in range (about 2.2 * 10^12 worst-case blocks).
