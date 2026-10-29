@@ -3899,11 +3899,61 @@ negative zero; both fixed, every exact kernel now checked against an i64 referen
 Loose ends: fused single-widen SM9 op for non-VNNI tiers; NEON SDOT/USDOT and AVX-VNNI unused; no NEON/wasm timings;
 recall on a real TurboVec index is the TurboVec owner's measurement.
 
+## U9 x U9 head-to-head: U8 x U8 x sign x mul_add vs U8 x I8 byte-dot (2026-10-29, branch claude/u9-head-to-head)
+
+Probe-only, no production change: `examples/u9_head_to_head/{kernels,main}.rs`, `tests/u9_head_to_head.rs`, report
+`.claude/knowledge/turbovec9-u9-head-to-head.md`. Both candidates use only facade words and share one i64 oracle:
+511 x 511 exhaustive pairs, mixed full blocks, worst-case runs past both flush intervals, never-touched refusal.
+Passed on native, v4, v3, avx (qemu), v2 (qemu), aarch64 (qemu), nightly; 12 disable runs all red.
+Contract (report § arithmetic contract): unsigned product + polarity XOR as routing + exact fold; A and B are two
+facade compositions of it. B is long multiplication, `m = low7 - top`, tested for all 256 magnitudes via `prepare_b`.
+
+Verdict: B (U8 x I8 byte-dot) is the cheaper exact I9 substrate in every row, symmetric included. B encodes with AND,
+XOR and the presence bit only: `low7 = |b| & 0x7F`, `top = |b| ^ low7`, `negative = plane_a ^ plane_b`, four masked
+byte-dots, `(pos_low7 - pos_top) - (neg_low7 - neg_top)`; no magnitude is negated. Disassembly (AVX-512): no shuffle, permute,
+pack, extract or insert in B, the baselines or the flushes; on AVX2 LLVM puts 4 vpshufb in the facade's masked byte-dot. VNNI L1, ns/64: B end-to-end 3.05-3.06 vs A' 7.64-7.83;
+B scan 2.75-2.81 vs A 7.02-7.19; plain byte-dot 1.94. AVX2: B end-to-end 10.1-10.2 vs A' 75-81 (A dominated by
+`U8x64::mask_blend`'s per-lane AVX2 realization, not changed).
+
+Loose ends: the U8x64 -> I8x64 bit view (`bits_as_i8` is a store/load stand-in, 1.16-1.27 ns/block with the split;
+not added, it is a u8/i8 crossing); recall on a real TurboVec-U9 index (owner's experiment, defined in the report).
+Re-measured after review (Codex, PR #388): timed operands are now compact (72 B/block, not a padded 128-B `Vec<Block>`)
+and the preparation row consumes every lane. Streamed VNNI B end-to-end 12.9-16.3 -> 6.0-6.5, B scan 5.9-6.9 -> 2.75-2.80;
+verdict unchanged.
+
+## D-U9-ABACUS: schoolbook U9 x U9 on bit planes (2026-10-29, branch claude/u9-abacus, stacked on #388)
+
+Probe-only: `examples/u9_abacus/{abacus,main}.rs`, `tests/u9_abacus.rs`, report
+`.claude/knowledge/u9-abacus-probe.md`. `carry_save3` (exact full adder on 64 bit columns) ADOPT-LAB; byte-abacus
+as a B replacement REFUSE: best fold (per-plane popcount) 12.4 ns/64 arithmetic with free planes vs B 2.9 end-to-end
+on VNNI, carry-save folds ~290 ns (LLVM does not unroll them; scalar, no vpternlog). No break-even for prepared
+operands. On v4/AVX2 LLVM lowers `count_ones` to a `vpshufb` nibble table. Exact on all 7 tiers; 9 disable runs red.
+D (A' products + 16-bit place-value column, carry by bit logic, no f32): react beats A' ~10 % on AVX-512 (5.2-5.7 vs
+6.3-6.5 ns arith L1; LLVM folds the carry into 2 vpternlogq), anticipate wins on AVX2; B still 2.3x faster on VNNI because D
+widens u8->u16 before mullo. ADOPT-LAB as A's f32 replacement, DEFER as B replacement. Exact on 7 tiers; 5 disables red.
+E (B's split at 128, anchor term as masked sum << 7): E3 (3 byte-dots, +1/-1 sign bytes) ties B on VNNI (2.84-2.92 vs 2.81-2.89 e2e,
+2.28 vs 2.34-2.41 arith), E4/Esum slower, AVX2 lost to mask_blend. No adoption. Facade gaps recorded: vertical masked vpsadbw
+accumulate; sign plane -> +1/-1 bytes without mask_blend. Exact on 7 tiers; 5 disables red.
+Re-measured after review (Codex, PR #389): compact timed operands (as #388) and the plane-extraction row consumes all 16
+planes (VNNI L1 2.52 -> 3.5 ns). Verdicts unchanged; streamed D react arith now level with A' (both memory-bound).
+
+## D-DOMINO-MOV-0: bit flip, positional substitution, lazy FULL carry (2026-10-29, branch claude/u9-domino, stacked on #389)
+
+Probe-only: `examples/u9_domino/{domino,main}.rs`, `tests/u9_domino.rs`, report `.claude/knowledge/u9-domino-probe.md`.
+F (eager flip ripple on 64-lane bit planes) ADOPT-LAB: beats native per-lane adds on dense/single-lane masks (1.94 vs
+6.99 ns/add), at the 64K boundary beats D only on AVX2 (5.7 vs 9.4 ns/64, D's array-backed U16x32 shuffles) and still
+loses to native u64 lanes there. P/L/PL REFUSE: flag tests cost more than the XOR/AND they skip (1.6-1.9 vs 0.5 ns per
+FULL column). R1 (two u64) and R2 (u128) compile to identical code. Coverage audit of #389: C's tests are lane-blind
+(totals only); EMPTY flags only matter over stale words (Y2 was green until stale-word runs were added). 7 tests on 5
+tiers; 6 disable runs red.
+Review fix (Codex, PR #391): PL's ordinary ripple now marks an all-ones result FULL (as L); new test + per-add FULL
+invariant in check_all, Y7 red; 8 tests on 5 tiers. Re-measured on 3 tiers: PL ~2.2 ns per FULL column; verdicts unchanged.
+
 ## U64x8::sum8_u8_add_masked: vertical masked byte sum (2026-10-29, branch claude/sum8-u8-masked)
 
 Facade word closing the gap #389 recorded for candidate E's anchor term: lane j += sum of kept bytes 8j..8j+8, no
 horizontal reduction. One realization per backend (AVX-512 maskz + vpsadbw; AVX2 register mask + vpsadbw; AVX psadbw per
 quarter; NEON uaddlp/uadalp; wasm extadd_pairwise; scalar; nightly SWAR). Parity in simd.rs + wasm/neon harnesses
 (0x506/0x507); 7 tiers green; 7 disable runs red. 0.687 ns/64 bytes on AVX-512 (281-285x the reference loop), 1.99 ns on
-AVX2 (98x). Knowledge: `turbovec9-u9-substrate.md` § second facade word. Not yet wired into #389.
+AVX2 (98x). Knowledge: `turbovec9-u9-substrate.md` § second facade word. Not yet wired into the abacus probe (#389).
 
