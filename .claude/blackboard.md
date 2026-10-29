@@ -3920,3 +3920,20 @@ not added, it is a u8/i8 crossing); recall on a real TurboVec-U9 index (owner's 
 Re-measured after review (Codex, PR #388): timed operands are now compact (72 B/block, not a padded 128-B `Vec<Block>`)
 and the preparation row consumes every lane. Streamed VNNI B end-to-end 12.9-16.3 -> 6.0-6.5, B scan 5.9-6.9 -> 2.75-2.80;
 verdict unchanged.
+
+## D-U9-ABACUS: schoolbook U9 x U9 on bit planes (2026-10-29, branch claude/u9-abacus, stacked on #388)
+
+Probe-only: `examples/u9_abacus/{abacus,main}.rs`, `tests/u9_abacus.rs`, report
+`.claude/knowledge/u9-abacus-probe.md`. `carry_save3` (exact full adder on 64 bit columns) ADOPT-LAB; byte-abacus
+as a B replacement REFUSE: best fold (per-plane popcount) 12.4 ns/64 arithmetic with free planes vs B 2.9 end-to-end
+on VNNI, carry-save folds ~290 ns (LLVM does not unroll them; scalar, no vpternlog). No break-even for prepared
+operands. On v4/AVX2 LLVM lowers `count_ones` to a `vpshufb` nibble table. Exact on all 7 tiers; 9 disable runs red.
+D (A' products + 16-bit place-value column, carry by bit logic, no f32): react beats A' ~10 % on AVX-512 (5.2-5.7 vs
+6.3-6.5 ns arith L1; LLVM folds the carry into 2 vpternlogq), anticipate wins on AVX2; B still 2.3x faster on VNNI because D
+widens u8->u16 before mullo. ADOPT-LAB as A's f32 replacement, DEFER as B replacement. Exact on 7 tiers; 5 disables red.
+E (B's split at 128, anchor term as masked sum << 7): E3 (3 byte-dots, +1/-1 sign bytes) ties B on VNNI (2.84-2.92 vs 2.81-2.89 e2e,
+2.28 vs 2.34-2.41 arith), E4/Esum slower, AVX2 lost to mask_blend. No adoption. Facade gaps recorded: vertical masked vpsadbw
+accumulate; sign plane -> +1/-1 bytes without mask_blend. Exact on 7 tiers; 5 disables red.
+Re-measured after review (Codex, PR #389): compact timed operands (as #388) and the plane-extraction row consumes all 16
+planes (VNNI L1 2.52 -> 3.5 ns). Verdicts unchanged; streamed D react arith now level with A' (both memory-bound).
+
