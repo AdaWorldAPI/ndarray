@@ -3932,3 +3932,13 @@ E (B's split at 128, anchor term as masked sum << 7): E3 (3 byte-dots, +1/-1 sig
 2.28 vs 2.39 arith), E4/Esum slower, AVX2 lost to mask_blend. No adoption. Facade gaps recorded: vertical masked vpsadbw
 accumulate; sign plane -> +1/-1 bytes without mask_blend. Exact on 7 tiers; 5 disables red.
 
+## D-DOMINO-MOV-0: bit flip, positional substitution, lazy FULL carry (2026-10-29, branch claude/u9-domino, stacked on #389)
+
+Probe-only: `examples/u9_domino/{domino,main}.rs`, `tests/u9_domino.rs`, report `.claude/knowledge/u9-domino-probe.md`.
+F (eager flip ripple on 64-lane bit planes) ADOPT-LAB: beats native per-lane adds on dense/single-lane masks (1.94 vs
+6.99 ns/add), at the 64K boundary beats D only on AVX2 (5.7 vs 9.4 ns/64, D's array-backed U16x32 shuffles) and still
+loses to native u64 lanes there. P/L/PL REFUSE: flag tests cost more than the XOR/AND they skip (1.6-1.9 vs 0.5 ns per
+FULL column). R1 (two u64) and R2 (u128) compile to identical code. Coverage audit of #389: C's tests are lane-blind
+(totals only); EMPTY flags only matter over stale words (Y2 was green until stale-word runs were added). 7 tests on 5
+tiers; 6 disable runs red.
+
