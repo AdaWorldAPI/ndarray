@@ -512,8 +512,71 @@ mod precision {
     }
 }
 
+/// The same two kernels through the `ndarray::simd` facade, on whatever tier
+/// this build compiled: what a consumer actually calls.
+mod facade {
+    use ndarray::simd::{I32x16, I8x64, U8x64};
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    pub fn run() {
+        const CHUNKS: usize = 256;
+        const PASSES: usize = 4000;
+        let mut s = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            s = s
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            s >> 11
+        };
+        let mag: Vec<U8x64> = (0..CHUNKS)
+            .map(|_| U8x64::from_array(core::array::from_fn(|_| next() as u8)))
+            .collect();
+        let w: Vec<I8x64> = (0..CHUNKS)
+            .map(|_| I8x64::from_array(core::array::from_fn(|_| i8::from_ne_bytes([next() as u8]))))
+            .collect();
+        let pos: Vec<u64> = (0..CHUNKS).map(|_| next() ^ (next() << 32)).collect();
+        let time = |name: &str, f: &dyn Fn() -> i32| {
+            black_box(f());
+            let t0 = Instant::now();
+            let mut sink = 0i32;
+            for _ in 0..PASSES {
+                sink = sink.wrapping_add(f());
+            }
+            let ns = t0.elapsed().as_nanos() as f64 / (PASSES * CHUNKS) as f64;
+            black_box(sink);
+            println!("{name:<44} {ns:7.3} ns/64 lanes");
+        };
+        println!("== facade (ndarray::simd, this build's tier) ==");
+        time("I32x16::dot4_u8_i8_add", &|| {
+            let mut acc = I32x16::splat(0);
+            for c in 0..CHUNKS {
+                acc = acc.dot4_u8_i8_add(mag[c], w[c]);
+            }
+            acc.to_array()[0]
+        });
+        time("two dot4_u8_i8_add accumulators, no mask", &|| {
+            let (mut p, mut n) = (I32x16::splat(0), I32x16::splat(0));
+            for c in 0..CHUNKS {
+                p = p.dot4_u8_i8_add(mag[c], w[c]);
+                n = n.dot4_u8_i8_add(mag[(c + 1) % CHUNKS], w[c]);
+            }
+            p.to_array()[0].wrapping_sub(n.to_array()[0])
+        });
+        time("SM9: two dot4_u8_i8_add_masked accumulators", &|| {
+            let (mut p, mut n) = (I32x16::splat(0), I32x16::splat(0));
+            for c in 0..CHUNKS {
+                p = p.dot4_u8_i8_add_masked(mag[c], pos[c], w[c]);
+                n = n.dot4_u8_i8_add_masked(mag[c], !pos[c], w[c]);
+            }
+            p.to_array()[0].wrapping_sub(n.to_array()[0])
+        });
+    }
+}
+
 fn main() {
     precision::run();
+    facade::run();
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512vnni", target_feature = "avx512vbmi"))]
     probe::run();
     #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512vnni", target_feature = "avx512vbmi")))]
