@@ -3957,3 +3957,21 @@ quarter; NEON uaddlp/uadalp; wasm extadd_pairwise; scalar; nightly SWAR). Parity
 (0x506/0x507); 7 tiers green; 7 disable runs red. 0.687 ns/64 bytes on AVX-512 (281-285x the reference loop), 1.99 ns on
 AVX2 (98x). Knowledge: `turbovec9-u9-substrate.md` § second facade word. Not yet wired into the abacus probe (#389).
 
+## U9 arc closeout: open fruit (2026-10-29, after #388-#391 merged)
+
+Closed: #388 (B wins, contract recorded), #389 (C refused, D adopt-lab, E no
+adoption), #390 (`sum8_u8_add_masked`), #391 (F adopt-lab, P/L/PL refused).
+Every Codex finding fixed and re-measured. Excluded, do not reopen without new
+evidence: bit-plane multiplication as a B replacement; lazy EMPTY/FULL flags
+in bit-sliced counters.
+
+| # | fruit | size | gate |
+|---|---|---|---|
+| U1 | wire `sum8_u8_add_masked` into candidate E (Esum's anchor term) and re-measure E against B | low | E's oracle tests unchanged; one row per tier |
+| U2 | AVX2 streamed B is 27 - 33 ns against 9 - 10 in L1, more than the extra bytes explain | low | one probe that separates bandwidth from the masked byte-dot's 4 `vpshufb` |
+| U3 | NEON and wasm timings for B, D and F (only x86 measured) | low | a real aarch64 host; qemu numbers are not valid |
+| U4 | sign plane to `+1/-1` bytes without `mask_blend` (E3's cost on AVX2) | high | facade word with parity on all realizations; must pass the facet-stride guard |
+| U5 | AVX2 `U8x64::mask_blend` is a per-lane loop and dominates every A/E3 row there | high | facet-stride R2 burn-down item; parity unchanged |
+| U6 | `U8x64 -> I8x64` bit view for B's `low7`/`top` (today a store/load) | heavy | needs an operator ruling: facet-stride R3 forbids u8/i8 mixing |
+| U7 | recall on a real TurboVec-U9 index (arithmetic parity says nothing about retrieval) | heavy | owner experiment, defined in the head-to-head report |
+

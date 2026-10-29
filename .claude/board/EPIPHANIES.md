@@ -1,5 +1,58 @@
 # ndarray — Epiphanies (append-only)
 
+## 2026-10-29 — Signed magnitude is schoolbook arithmetic: sign routes, the split multiplies, the fold accumulates
+**Status:** FINDING (measured on 3 x86 tiers; exact on 7 realizations)
+**Scope:** @savant-architect @simd-savant @vector-synthesis domain:dr512 domain:u9
+**Cross-ref:** PRs #388, #389, #390 (merged); `.claude/knowledge/turbovec9-u9-head-to-head.md`
+§ arithmetic contract; `.claude/knowledge/u9-abacus-probe.md`
+
+A U9 value on the DR512 8+1 block is an unsigned magnitude plus a presence
+bit. Exact signed multiply-accumulate needs no float, no wider operand and no
+negation:
+
+- **Sign is a routing decision.** `negative = plane_a ^ plane_b`; it selects
+  which masked accumulator a product enters. It is never multiplied in.
+- **Multiplication is an exact decomposition.** `low7 = |b| & 0x7F`,
+  `top = |b| ^ low7`, so `|b| = low7 - top` with `top` read as a signed byte
+  (0 or -128). Both halves fit the U8 x I8 byte-dot exactly.
+- **Accumulation is a fold.** `(pos_low7 - pos_top) - (neg_low7 - neg_top)`,
+  flushed into `i64` before an `i32` lane can overflow.
+
+The reflex this replaces is "U9 does not fit a byte, so widen to U16, and when
+that gets messy go to f32". That route (A) costs 7.6 - 7.8 ns per 64 values on
+AVX-512 VNNI and must flush every 256 blocks to keep its f32 sums below 2^24,
+where f32 stops being exact; the decomposition (B) costs 3.05 ns and flushes
+every 16,384 blocks, below `i32::MAX`. On AVX2 A is 75 - 81 ns, because the
+routing goes through a per-lane `mask_blend`.
+
+Consequence for future work: any signed integer format stored as magnitude plus
+presence should first be expressed as split + route + fold over the existing
+byte-dot, before a wider type or a new kernel is proposed. Measured exceptions
+so far: none (bit planes, the 128 anchor and the 16-bit column all lost to B).
+
+## 2026-10-29 — Exactness past a lane's width is a carry count, not a wider type
+**Status:** FINDING (measured; LLVM lowering read from the disassembly)
+**Scope:** @savant-architect @simd-savant domain:u9 domain:accumulation
+**Cross-ref:** PRs #389, #391 (merged); `.claude/knowledge/u9-abacus-probe.md`
+§ candidate D; `.claude/knowledge/u9-domino-probe.md`
+
+A u16 product stream can be summed exactly without widening each lane: keep a
+wrapping 16-bit `low` and count carries into `high` (`value = low + 2^16 *
+high`). The carry is pure bit logic, either read after the add,
+`msb((low & p) | ((low | p) & !sum))`, or predicted before it, the borrow of
+`!low - p`. On AVX-512 LLVM lowers each rule to two or three `vpternlogq`, with
+no shuffle and no float. This replaces A's f32 accumulation at about 10 % less
+cost in L1 (5.2 - 5.7 vs 6.3 - 6.5 ns per 64 on VNNI).
+
+Two limits, both measured:
+
+- Carries are counted, never XORed together: two carries are two units.
+- Making the carry lazier does not pay. In a bit-sliced counter, flags that
+  skip work on EMPTY or FULL columns cost 1.6 - 2.2 ns per column against
+  0.5 ns for the eager XOR/AND ripple they replace, because each flag is a
+  branch plus a `u128` test. The eager ripple (F) is the only bit-plane
+  counter worth keeping.
+
 ## 2026-09-17 — On a tree-path register the metric is lzcnt, popcount is the tie-break, and little-endian bytes need one bswap first
 **Status:** FINDING (the layout and the instruction facts) + NAMED GAP (G8, not built)
 **Scope:** @simd-savant @family-codec-smith domain:masking-ops domain:v3-facet
