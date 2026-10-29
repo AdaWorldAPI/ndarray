@@ -412,7 +412,7 @@ impl I32x16 {
     /// ```
     #[inline(always)]
     pub fn dot4_u8_i8_add_masked(self, a: super::U8x64, keep: u64, b: super::I8x64) -> Self {
-        use core::simd::{Mask, Simd};
+        use core::simd::{Mask, Select, Simd};
         let kept = Mask::<i8, 64>::from_bitmask(keep).select(a.0, Simd::splat(0));
         self.dot4_u8_i8_add(super::U8x64(kept), b)
     }
