@@ -11,6 +11,11 @@
 //!
 //! The product of lane `i` is negative when exactly one operand is negative:
 //! `negative = plane_a ^ plane_b` (both planes mark the positive lanes).
+//!
+//! No magnitude is ever negated: the sign is the presence bit, flipped with
+//! XOR, and every kernel applies it as a mask. Nothing here uses a byte
+//! shuffle, permute or pack; lane sums leave through a store, not a
+//! horizontal reduction.
 
 #![allow(dead_code)]
 
@@ -97,7 +102,7 @@ impl AccA {
             // Integers below 2^24: the difference and the conversion are exact.
             lanes += (self.pos[k] - self.neg[k]).cast_i32();
         }
-        self.total += i64::from(lanes.reduce_sum());
+        self.total += lanes_i64(lanes);
         let z = F32x16::splat(0.0);
         self.pos = [z; 4];
         self.neg = [z; 4];
@@ -169,40 +174,55 @@ impl Default for AccA {
 }
 
 // ── Candidate B: U8 x I8 byte-dot ──────────────────────────────────────────
+//
+// No byte is ever negated and nothing is shuffled. The magnitude of b is split
+// with AND and XOR, `low7 = |b| & 0x7F` and `top = |b| ^ low7` (= `|b| & 0x80`);
+// the sign stays in the presence plane and is flipped with XOR,
+// `negative = plane_a ^ plane_b`; the masked byte-dot applies it as an AND
+// mask on `|a|`. Read as signed bytes, `low7` is `|b| & 127` and `top` is
+// `-128` where bit 7 is set, so `|a| * |b| = dot(|a|, low7) - dot(|a|, top)`.
 
-/// Blocks a B accumulator may absorb before `flush`. Per block an `i32` lane
-/// of `lo` gains at most 4 * 255 * 127 = 129_540 and a lane of `hi`
-/// 4 * 255 = 1_020; `reduce_sum` adds 16 lanes, so 1024 blocks keep
-/// 16 * 1024 * 129_540 = 2_122_383_360 below `i32::MAX`.
-pub const B_FLUSH_BLOCKS: usize = 1024;
+/// Blocks a B accumulator may absorb before `flush`: per block an `i32` lane
+/// moves by at most `4 * 255 * 128 = 130_560`, so 16_384 blocks stay below
+/// `i32::MAX`. The flush sums the 16 lanes in `i64`.
+pub const B_FLUSH_BLOCKS: usize = 16_384;
 
-/// `±v` as signed bytes for `v <= 127`, negated where `negative` has its bit
-/// set, built only from facade words.
-///
-/// The facade has no `U8x64 -> I8x64` reinterpretation, so the bytes travel
-/// u8 -> u16 -> f32 (sign applied as a factor 1 or -1) -> i32 -> i16 -> i8
-/// through the saturating narrowings, which never saturate here (|v| <= 127).
+/// Facade gap: the bytes of `v` as `I8x64`, every bit kept. `ndarray::simd`
+/// has no `U8x64 -> I8x64` reinterpretation; this stand-in stores the 64
+/// bytes and loads them back (no shuffle, no arithmetic). The probe needs it
+/// only to type `low7` and `top` for the byte-dot's signed operand.
 #[inline(always)]
-pub fn signed_bytes(v: U8x64, factor: &[F32x16; 4]) -> I8x64 {
-    let f = f32_quarters(v);
-    let q: [I32x16; 4] = core::array::from_fn(|k| (f[k] * factor[k]).cast_i32());
-    q[0].narrow_saturating_i16(q[1])
-        .narrow_saturating_i8(q[2].narrow_saturating_i16(q[3]))
+pub fn bits_as_i8(v: U8x64) -> I8x64 {
+    I8x64::from_array(v.to_array().map(|b| i8::from_ne_bytes([b])))
 }
 
-/// The per-lane sign factor `1 - 2 * negative` as four `F32x16` quarters.
+/// B's operands for one block pair: the negative-product plane (XOR of the
+/// presence planes) and `|b|` split by AND / XOR into `low7` and `top`.
 #[inline(always)]
-pub fn sign_factor(negative: u64) -> [F32x16; 4] {
-    let twos = U8x64::mask_blend(negative, U8x64::splat(0), U8x64::splat(2));
-    let s = f32_quarters(twos);
-    core::array::from_fn(|k| s[k].mul_add(F32x16::splat(-1.0), F32x16::splat(1.0)))
+pub fn prepare_b(a: Block, b: Block) -> (u64, I8x64, I8x64) {
+    let low7 = b.mag & U8x64::splat(0x7F);
+    let top = b.mag ^ low7;
+    (a.positive ^ b.positive, bits_as_i8(low7), bits_as_i8(top))
 }
 
-/// Candidate B state: `|a| * signed(b & 127)` and `|a| * signed(b >> 7)` as
-/// two byte-dot accumulators; the result is `lo + 128 * hi`.
+/// Sum of the 16 lanes in `i64`: the lanes are stored and each one is read
+/// where it sits. `black_box` keeps the array in memory and the 16 adds
+/// scalar; without it the compiler rebuilds a horizontal reduction from
+/// permutes and lane extracts.
+#[inline(always)]
+pub fn lanes_i64(v: I32x16) -> i64 {
+    let lanes = core::hint::black_box(v.to_array());
+    lanes
+        .iter()
+        .map(|&x| i64::from(core::hint::black_box(x)))
+        .sum()
+}
+
+/// Candidate B state: four masked byte-dot accumulators,
+/// `[pos x low7, pos x top, neg x low7, neg x top]`; the result is
+/// `(pos_low7 - pos_top) - (neg_low7 - neg_top)`.
 pub struct AccB {
-    lo: I32x16,
-    hi: I32x16,
+    acc: [I32x16; 4],
     blocks: usize,
     total: i64,
 }
@@ -210,8 +230,7 @@ pub struct AccB {
 impl AccB {
     pub fn new() -> Self {
         Self {
-            lo: I32x16::splat(0),
-            hi: I32x16::splat(0),
+            acc: [I32x16::splat(0); 4],
             blocks: 0,
             total: 0,
         }
@@ -219,30 +238,39 @@ impl AccB {
 
     #[inline(always)]
     pub fn flush(&mut self) {
-        self.total += i64::from(self.lo.reduce_sum()) + 128 * i64::from(self.hi.reduce_sum());
-        self.lo = I32x16::splat(0);
-        self.hi = I32x16::splat(0);
+        let r = self.acc.map(lanes_i64);
+        self.total += (r[0] - r[1]) - (r[2] - r[3]);
+        self.acc = [I32x16::splat(0); 4];
         self.blocks = 0;
     }
 
-    /// The arithmetic alone: two byte-dots on operands already in signed form.
+    /// The arithmetic alone: `|a|` against the split of `|b|`, positive and
+    /// negative products separated by the plane `negative`.
     #[inline(always)]
-    pub fn mac(&mut self, a_mag: U8x64, b_lo: I8x64, b_hi: I8x64) {
-        self.lo = self.lo.dot4_u8_i8_add(a_mag, b_lo);
-        self.hi = self.hi.dot4_u8_i8_add(a_mag, b_hi);
+    pub fn mac(&mut self, a_mag: U8x64, negative: u64, low7: I8x64, top: I8x64) {
+        let (p, n) = (!negative, negative);
+        self.acc[0] = self.acc[0].dot4_u8_i8_add_masked(a_mag, p, low7);
+        self.acc[1] = self.acc[1].dot4_u8_i8_add_masked(a_mag, p, top);
+        self.acc[2] = self.acc[2].dot4_u8_i8_add_masked(a_mag, n, low7);
+        self.acc[3] = self.acc[3].dot4_u8_i8_add_masked(a_mag, n, top);
         self.blocks += 1;
         if self.blocks == B_FLUSH_BLOCKS {
             self.flush();
         }
     }
 
-    /// One block from the shared representation: split `|b|` into its low
-    /// seven bits and its top bit, sign both by `negative = plane_a ^ plane_b`,
-    /// then [`Self::mac`].
+    /// One block from the shared representation: [`prepare_b`], then [`Self::mac`].
     #[inline(always)]
     pub fn step(&mut self, a: Block, b: Block) {
-        let (lo, hi) = prepare_b(a, b);
-        self.mac(a.mag, lo, hi);
+        let (negative, low7, top) = prepare_b(a, b);
+        self.mac(a.mag, negative, low7, top);
+    }
+
+    /// One index block against a prepared query: the sign is the XOR of the
+    /// two presence planes, applied as the byte-dot mask.
+    #[inline(always)]
+    pub fn scan_step(&mut self, x: Block, q: &QueryB) {
+        self.mac(x.mag, x.positive ^ q.positive, q.low7, q.top);
     }
 
     pub fn finish(mut self) -> i64 {
@@ -257,15 +285,24 @@ impl Default for AccB {
     }
 }
 
-/// B's operand preparation for one block pair: `(±(|b| & 127), ±(|b| >> 7))`.
-#[inline(always)]
-pub fn prepare_b(a: Block, b: Block) -> (I8x64, I8x64) {
-    let factor = sign_factor(a.positive ^ b.positive);
-    // `shr_epi16(7)` moves bit 7 of each byte to bit 0 of the same byte (and
-    // bit 15 of a pair to bit 8); masking with 1 keeps exactly that bit.
-    let low7 = b.mag & U8x64::splat(0x7F);
-    let top = b.mag.shr_epi16(7) & U8x64::splat(1);
-    (signed_bytes(low7, &factor), signed_bytes(top, &factor))
+/// B's query: `|q|` split by AND / XOR into `low7` and `top`, prepared once;
+/// the query's sign stays in its plane.
+pub struct QueryB {
+    low7: I8x64,
+    top: I8x64,
+    positive: u64,
+}
+
+impl QueryB {
+    pub fn new(q: Block) -> Self {
+        let low7 = q.mag & U8x64::splat(0x7F);
+        let top = q.mag ^ low7;
+        Self {
+            low7: bits_as_i8(low7),
+            top: bits_as_i8(top),
+            positive: q.positive,
+        }
+    }
 }
 
 // ── Scan forms: the query operand prepared once, the index operand per block ─
@@ -307,77 +344,6 @@ impl AccA {
         if self.blocks == A_FLUSH_BLOCKS {
             self.flush();
         }
-    }
-}
-
-/// B's query: `±(|q| & 127)` and `±(|q| >> 7)` as signed bytes, signed by the
-/// query's own plane only.
-pub struct QueryB {
-    lo: I8x64,
-    hi: I8x64,
-}
-
-impl QueryB {
-    pub fn new(q: Block) -> Self {
-        let factor = sign_factor(!q.positive);
-        let low7 = q.mag & U8x64::splat(0x7F);
-        let top = q.mag.shr_epi16(7) & U8x64::splat(1);
-        Self {
-            lo: signed_bytes(low7, &factor),
-            hi: signed_bytes(top, &factor),
-        }
-    }
-}
-
-/// B's scan state: the index sign is routed with `dot4_u8_i8_add_masked`
-/// (#387), the query sign is already in the bytes. Four byte-dots per block;
-/// result `(pos_lo - neg_lo) + 128 * (pos_hi - neg_hi)`. Same per-lane bound
-/// as [`AccB`], so the same flush interval.
-pub struct AccBScan {
-    acc: [I32x16; 4],
-    blocks: usize,
-    total: i64,
-}
-
-impl AccBScan {
-    pub fn new() -> Self {
-        Self {
-            acc: [I32x16::splat(0); 4],
-            blocks: 0,
-            total: 0,
-        }
-    }
-
-    #[inline(always)]
-    pub fn flush(&mut self) {
-        let r = self.acc.map(|v| i64::from(v.reduce_sum()));
-        self.total += (r[0] - r[1]) + 128 * (r[2] - r[3]);
-        self.acc = [I32x16::splat(0); 4];
-        self.blocks = 0;
-    }
-
-    #[inline(always)]
-    pub fn scan_step(&mut self, x: Block, q: &QueryB) {
-        let (p, n) = (x.positive, !x.positive);
-        self.acc[0] = self.acc[0].dot4_u8_i8_add_masked(x.mag, p, q.lo);
-        self.acc[1] = self.acc[1].dot4_u8_i8_add_masked(x.mag, n, q.lo);
-        self.acc[2] = self.acc[2].dot4_u8_i8_add_masked(x.mag, p, q.hi);
-        self.acc[3] = self.acc[3].dot4_u8_i8_add_masked(x.mag, n, q.hi);
-        self.blocks += 1;
-        if self.blocks == B_FLUSH_BLOCKS {
-            self.flush();
-        }
-    }
-
-    pub fn finish(mut self) -> i64 {
-        self.flush();
-        self.total
-    }
-}
-
-impl Default for AccBScan {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

@@ -5,9 +5,7 @@
 #[path = "../examples/u9_head_to_head/kernels.rs"]
 mod kernels;
 
-use kernels::{
-    check, oracle, AccA, AccB, AccBScan, Block, NeverTouched, QueryA, QueryB, A_FLUSH_BLOCKS, B_FLUSH_BLOCKS,
-};
+use kernels::{check, oracle, AccA, AccB, Block, NeverTouched, QueryA, QueryB, A_FLUSH_BLOCKS, B_FLUSH_BLOCKS};
 use ndarray::simd::U8x64;
 
 fn block(mag: [u8; 64], positive: u64) -> Block {
@@ -48,7 +46,7 @@ fn run_b(a: &[([u8; 64], u64)], b: &[([u8; 64], u64)]) -> i64 {
 
 /// Scan forms: `b` is the query, prepared once per query block; `a` streams.
 fn run_scan(a: &[([u8; 64], u64)], b: &[([u8; 64], u64)]) -> (i64, i64) {
-    let (mut sa, mut sb) = (AccA::new(), AccBScan::new());
+    let (mut sa, mut sb) = (AccA::new(), AccB::new());
     for ((am, ap), (bm, bp)) in a.iter().zip(b) {
         let (x, q) = (block(*am, *ap), block(*bm, *bp));
         check(x, q).unwrap();

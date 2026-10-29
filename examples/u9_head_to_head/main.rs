@@ -99,7 +99,7 @@ fn bench(label: &str, d: &Data, runs: usize) {
             .collect();
     // Execution-form operands for the arithmetic-only rows, also built once.
     let routed: Vec<(U8x64, U8x64)> = ab.iter().zip(&bb).map(|(a, b)| route_a(*a, *b)).collect();
-    let split: Vec<(I8x64, I8x64)> = ab.iter().zip(&bb).map(|(a, b)| prepare_b(*a, *b)).collect();
+    let split: Vec<(u64, I8x64, I8x64)> = ab.iter().zip(&bb).map(|(a, b)| prepare_b(*a, *b)).collect();
 
     let e2e_a = || {
         let mut acc = AccA::new();
@@ -141,8 +141,8 @@ fn bench(label: &str, d: &Data, runs: usize) {
     };
     let ari_b = || {
         let mut acc = AccB::new();
-        for (a, (lo, hi)) in ab.iter().zip(&split) {
-            acc.mac(a.mag, *lo, *hi);
+        for (a, (neg, low7, top)) in ab.iter().zip(&split) {
+            acc.mac(a.mag, *neg, *low7, *top);
         }
         acc.finish()
     };
@@ -152,17 +152,17 @@ fn bench(label: &str, d: &Data, runs: usize) {
         for (k, (a, w)) in ab.iter().zip(&w).enumerate() {
             acc = baseline_step(acc, a.mag, *w);
             if k % B_FLUSH_BLOCKS == B_FLUSH_BLOCKS - 1 {
-                total += i64::from(acc.reduce_sum());
+                total += lanes_i64(acc);
                 acc = I32x16::splat(0);
             }
         }
-        total + i64::from(acc.reduce_sum())
+        total + lanes_i64(acc)
     };
     let prep_b = || {
         let mut x = 0i64;
         for (a, b) in ab.iter().zip(&bb) {
-            let (lo, hi) = prepare_b(*a, *b);
-            x = x.wrapping_add(i64::from(lo.to_array()[0]) ^ i64::from(hi.to_array()[63]));
+            let (neg, low7, top) = prepare_b(*a, *b);
+            x = x.wrapping_add(neg as i64 ^ i64::from(low7.to_array()[0]) ^ i64::from(top.to_array()[63]));
         }
         x
     };
@@ -181,7 +181,7 @@ fn bench(label: &str, d: &Data, runs: usize) {
     };
     let scan_b = || {
         let qb = QueryB::new(q);
-        let mut acc = AccBScan::new();
+        let mut acc = AccB::new();
         for x in &ab {
             check(*x, q).unwrap();
             acc.scan_step(*x, &qb);
@@ -207,11 +207,11 @@ fn bench(label: &str, d: &Data, runs: usize) {
     let b0 = time("baseline: plain u8 x i8 dot4 (one byte-dot)", n, runs, None, &base);
     time("A end-to-end: check + route + widen + mul_add", n, runs, Some(b0), &e2e_a);
     time("A' end-to-end: check + route + mullo + add", n, runs, Some(b0), &e2e_a2);
-    time("B end-to-end: check + split + sign + i8 + 2 dot4", n, runs, Some(b0), &e2e_b);
+    time("B end-to-end: check + AND/XOR split + 4 masked dot4", n, runs, Some(b0), &e2e_b);
     time("A arithmetic only (routed operands given)", n, runs, Some(b0), &ari_a);
     time("A' arithmetic only (routed operands given)", n, runs, Some(b0), &ari_a2);
-    time("B arithmetic only (signed i8 operands given)", n, runs, Some(b0), &ari_b);
-    time("B operand preparation alone (split + sign + i8)", n, runs, Some(b0), &prep_b);
+    time("B arithmetic only (split operands given)", n, runs, Some(b0), &ari_b);
+    time("B operand preparation alone (AND/XOR split)", n, runs, Some(b0), &prep_b);
     let base_scan = || {
         let w0 = w[0];
         let mut acc = I32x16::splat(0);
@@ -219,15 +219,15 @@ fn bench(label: &str, d: &Data, runs: usize) {
         for (k, a) in ab.iter().enumerate() {
             acc = baseline_step(acc, a.mag, w0);
             if k % B_FLUSH_BLOCKS == B_FLUSH_BLOCKS - 1 {
-                total += i64::from(acc.reduce_sum());
+                total += lanes_i64(acc);
                 acc = I32x16::splat(0);
             }
         }
-        total + i64::from(acc.reduce_sum())
+        total + lanes_i64(acc)
     };
     let bs = time("baseline scan: plain dot4, one fixed query", n, runs, None, &base_scan);
     time("A scan: query widened once, index routed + mul_add", n, runs, Some(bs), &scan_a);
-    time("B scan: query signed once, 4 masked dot4 (#387)", n, runs, Some(bs), &scan_b);
+    time("B scan: query split once, 4 masked dot4 (#387)", n, runs, Some(bs), &scan_b);
 }
 
 fn main() {
