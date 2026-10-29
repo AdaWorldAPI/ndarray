@@ -2409,6 +2409,95 @@ mod dot4_nibble_facade_parity {
         }
     }
 
+    fn masked_reference(acc: [i32; 16], a: &[u8; 64], keep: u64, b: &[i8; 64]) -> [i32; 16] {
+        let kept: [u8; 64] = core::array::from_fn(|i| if keep >> i & 1 == 1 { a[i] } else { 0 });
+        reference(acc, &kept, b)
+    }
+
+    #[test]
+    fn dot4_masked_matches_reference() {
+        let (us, is) = (bytes(), signed());
+        let mut s = 0x6A09_E667_F3BC_C908u64;
+        let mut checked = 0;
+        for a in &us {
+            for b in &is {
+                let rand = next(&mut s) << 32 | next(&mut s) << 1 | (next(&mut s) & 1);
+                for keep in [0, u64::MAX, 0xAAAA_AAAA_AAAA_AAAA, 0x8000_0000_0000_0001, rand] {
+                    let acc: [i32; 16] = core::array::from_fn(|_| next(&mut s) as i32);
+                    let got = I32x16::from_array(acc)
+                        .dot4_u8_i8_add_masked(U8x64::from_array(*a), keep, I8x64::from_array(*b))
+                        .to_array();
+                    assert_eq!(got, masked_reference(acc, a, keep, b), "keep {keep:#x}\na {a:?}\nb {b:?}");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 10_000, "corpus too small: {checked}");
+    }
+
+    /// Bit `i` of `keep` must gate byte `i` and nothing else.
+    #[test]
+    fn dot4_masked_gates_each_byte_by_its_own_bit() {
+        let a = U8x64::splat(7);
+        for i in 0..64 {
+            let got = I32x16::splat(0)
+                .dot4_u8_i8_add_masked(a, 1 << i, I8x64::splat(-3))
+                .to_array();
+            let want: [i32; 16] = core::array::from_fn(|j| if j == i / 4 { -21 } else { 0 });
+            assert_eq!(got, want, "bit {i}");
+            let all_but = I32x16::splat(0)
+                .dot4_u8_i8_add_masked(a, !(1 << i), I8x64::splat(-3))
+                .to_array();
+            let want: [i32; 16] = core::array::from_fn(|j| if j == i / 4 { -63 } else { -84 });
+            assert_eq!(all_but, want, "all but bit {i}");
+        }
+    }
+
+    /// Every 9-bit sign-magnitude value (all 256 magnitudes in both polarities,
+    /// so 512 codewords including the never-touched `P=0, M=0` and the touched
+    /// `+0`) times every weight edge, through the two-accumulator form, against
+    /// an independent `i64` oracle.
+    #[test]
+    fn sm9_pos_minus_neg_is_exact_for_every_codeword() {
+        for w in [-128i8, -127, -1, 0, 1, 127] {
+            for positive in [false, true] {
+                for chunk in 0..4u32 {
+                    let mags: [u8; 64] = core::array::from_fn(|i| (64 * chunk + i as u32) as u8);
+                    let plane = if positive { u64::MAX } else { 0 };
+                    let (m, wv) = (U8x64::from_array(mags), I8x64::splat(w));
+                    let pos = I32x16::splat(0)
+                        .dot4_u8_i8_add_masked(m, plane, wv)
+                        .to_array();
+                    let neg = I32x16::splat(0)
+                        .dot4_u8_i8_add_masked(m, !plane, wv)
+                        .to_array();
+                    for j in 0..16 {
+                        let want: i64 = (4 * j..4 * j + 4)
+                            .map(|i| {
+                                let v = i64::from(mags[i]);
+                                (if positive { v } else { -v }) * i64::from(w)
+                            })
+                            .sum();
+                        assert_eq!(i64::from(pos[j]) - i64::from(neg[j]), want, "w {w} positive {positive} lane {j}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// The doc promise: 16_448 worst-case calls fit an `i32` accumulator.
+    #[test]
+    fn dot4_masked_worst_case_holds_16448_calls() {
+        let (a, b) = (U8x64::splat(255), I8x64::splat(-128));
+        let mut acc = I32x16::splat(0);
+        for _ in 0..16_448 {
+            acc = acc.dot4_u8_i8_add_masked(a, u64::MAX, b);
+        }
+        assert_eq!(acc.to_array(), [(-16_448i64 * 130_560) as i32; 16]);
+        assert!(-16_448i64 * 130_560 >= i64::from(i32::MIN));
+        assert!(-16_449i64 * 130_560 < i64::from(i32::MIN));
+    }
+
     #[test]
     fn nibbles_match_reference() {
         for a in bytes() {

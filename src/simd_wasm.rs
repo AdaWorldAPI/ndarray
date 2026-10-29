@@ -2554,6 +2554,46 @@ pub mod wasm32_simd {
             Self(out)
         }
 
+        /// [`Self::dot4_u8_i8_add`] with the bytes of `a` whose bit in `keep` is 0
+        /// replaced by 0: lane `j` gains the sum of `a[i]*b[i]` over the bytes
+        /// `i` in `4j..4j+4` with bit `i` of `keep` set. Exact for every `u8` and
+        /// every `i8`, `-128` included; only the final addition to the accumulator
+        /// wraps on `i32` overflow.
+        ///
+        /// Two calls over the same bytes give a 9-bit sign-magnitude dot product
+        /// (magnitude in `a`, positive plane in `keep`) without widening the
+        /// operands: `pos.dot4_u8_i8_add_masked(m, plane, w) - neg.dot4_u8_i8_add_masked(m, !plane, w)`.
+        /// Each accumulator moves by at most `4 * 255 * 128 = 130_560` per call, so
+        /// it holds 16_448 calls before it can wrap.
+        ///
+        /// ```
+        /// use ndarray::simd::{I32x16, I8x64, U8x64};
+        /// let a = U8x64::splat(255);
+        /// let b = I8x64::splat(-128);
+        /// // Lane 0 keeps bytes 0 and 3, every other lane keeps nothing.
+        /// let got = I32x16::splat(0).dot4_u8_i8_add_masked(a, 0b1001, b).to_array();
+        /// assert_eq!(got[0], -2 * 255 * 128);
+        /// assert_eq!(got[1..], [0; 15]);
+        /// ```
+        #[inline(always)]
+        pub fn dot4_u8_i8_add_masked(self, a: crate::simd::U8x64, keep: u64, b: crate::simd::I8x64) -> Self {
+            let spread = crate::simd_masking_ops::mask_byte_spread(keep);
+            let mut kept = a.to_array();
+            let bit = u64x2_splat(crate::simd_masking_ops::BIT_IN_BYTE);
+            for q in 0..4 {
+                // SAFETY: simd128 is compiled in on this arm. Each load and store touches 16 bytes
+                // at offset 16*q of a 64-byte array (`spread` is `[u64; 8]`), q < 4; `v128_load`
+                // needs no alignment. Byte `i` of `spread` repeats mask byte `i / 8`, so testing
+                // bit `i % 8` against `BIT_IN_BYTE` gives 0xFF exactly where bit `i` of `keep` is set.
+                unsafe {
+                    let m = i8x16_eq(v128_and(v128_load((spread.as_ptr() as *const v128).add(q)), bit), bit);
+                    let p = (kept.as_mut_ptr() as *mut v128).add(q);
+                    v128_store(p, v128_and(v128_load(p), m));
+                }
+            }
+            self.dot4_u8_i8_add(crate::simd::U8x64::from_array(kept), b)
+        }
+
         /// Per-lane `SaturatingRoundingDoublingHighMul` (gemmlowp / NEON `VQRDMULH`):
         /// `round(2*a*b / 2^32)`, ties toward +inf, `MIN * MIN` saturating to `MAX`.
         ///

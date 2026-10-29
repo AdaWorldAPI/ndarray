@@ -596,5 +596,38 @@ fn check_dot4_and_nibbles() -> Result<(), u32> {
             return Err(0x503);
         }
     }
+    // dot4_u8_i8_add_masked: each keep bit gates its own byte, and the
+    // pos - neg form is exact for every SM9 magnitude in both polarities.
+    for i in 0..64 {
+        let got = I32x16::splat(0)
+            .dot4_u8_i8_add_masked(U8x64::splat(7), !(1u64 << i), I8x64::splat(-3))
+            .to_array();
+        if got != core::array::from_fn(|j| if j == i / 4 { -63 } else { -84 }) {
+            return Err(0x504);
+        }
+    }
+    for w in [-128i8, 127, -1] {
+        for chunk in 0..4usize {
+            let mags: [u8; 64] = core::array::from_fn(|i| (64 * chunk + i) as u8);
+            let plane = 0x5A5A_C3C3_0F0F_9696u64.rotate_left(chunk as u32);
+            let (m, wv) = (U8x64::from_array(mags), I8x64::splat(w));
+            let pos = I32x16::splat(0)
+                .dot4_u8_i8_add_masked(m, plane, wv)
+                .to_array();
+            let neg = I32x16::splat(0)
+                .dot4_u8_i8_add_masked(m, !plane, wv)
+                .to_array();
+            for j in 0..16 {
+                let mut want = 0i32;
+                for i in 4 * j..4 * j + 4 {
+                    let v = i32::from(mags[i]);
+                    want += if plane >> i & 1 == 1 { v } else { -v } * i32::from(w);
+                }
+                if pos[j] - neg[j] != want {
+                    return Err(0x505);
+                }
+            }
+        }
+    }
     Ok(())
 }

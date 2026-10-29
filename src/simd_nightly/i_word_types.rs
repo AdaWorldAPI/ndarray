@@ -389,6 +389,34 @@ impl I32x16 {
         Self(acc)
     }
 
+    /// [`Self::dot4_u8_i8_add`] with the bytes of `a` whose bit in `keep` is 0
+    /// replaced by 0: lane `j` gains the sum of `a[i]*b[i]` over the bytes
+    /// `i` in `4j..4j+4` with bit `i` of `keep` set. Exact for every `u8` and
+    /// every `i8`, `-128` included; only the final addition to the accumulator
+    /// wraps on `i32` overflow.
+    ///
+    /// Two calls over the same bytes give a 9-bit sign-magnitude dot product
+    /// (magnitude in `a`, positive plane in `keep`) without widening the
+    /// operands: `pos.dot4_u8_i8_add_masked(m, plane, w) - neg.dot4_u8_i8_add_masked(m, !plane, w)`.
+    /// Each accumulator moves by at most `4 * 255 * 128 = 130_560` per call, so
+    /// it holds 16_448 calls before it can wrap.
+    ///
+    /// ```
+    /// use ndarray::simd::{I32x16, I8x64, U8x64};
+    /// let a = U8x64::splat(255);
+    /// let b = I8x64::splat(-128);
+    /// // Lane 0 keeps bytes 0 and 3, every other lane keeps nothing.
+    /// let got = I32x16::splat(0).dot4_u8_i8_add_masked(a, 0b1001, b).to_array();
+    /// assert_eq!(got[0], -2 * 255 * 128);
+    /// assert_eq!(got[1..], [0; 15]);
+    /// ```
+    #[inline(always)]
+    pub fn dot4_u8_i8_add_masked(self, a: super::U8x64, keep: u64, b: super::I8x64) -> Self {
+        use core::simd::{Mask, Simd};
+        let kept = Mask::<i8, 64>::from_bitmask(keep).select(a.0, Simd::splat(0));
+        self.dot4_u8_i8_add(super::U8x64(kept), b)
+    }
+
     pub const LANES: usize = 16;
 
     /// Per-lane `SaturatingRoundingDoublingHighMul` (gemmlowp / NEON `VQRDMULH`):

@@ -3007,6 +3007,46 @@ impl I32x16 {
         }
         Self(out)
     }
+
+    /// [`Self::dot4_u8_i8_add`] with the bytes of `a` whose bit in `keep` is 0
+    /// replaced by 0: lane `j` gains the sum of `a[i]*b[i]` over the bytes
+    /// `i` in `4j..4j+4` with bit `i` of `keep` set. Exact for every `u8` and
+    /// every `i8`, `-128` included; only the final addition to the accumulator
+    /// wraps on `i32` overflow.
+    ///
+    /// Two calls over the same bytes give a 9-bit sign-magnitude dot product
+    /// (magnitude in `a`, positive plane in `keep`) without widening the
+    /// operands: `pos.dot4_u8_i8_add_masked(m, plane, w) - neg.dot4_u8_i8_add_masked(m, !plane, w)`.
+    /// Each accumulator moves by at most `4 * 255 * 128 = 130_560` per call, so
+    /// it holds 16_448 calls before it can wrap.
+    ///
+    /// ```
+    /// use ndarray::simd::{I32x16, I8x64, U8x64};
+    /// let a = U8x64::splat(255);
+    /// let b = I8x64::splat(-128);
+    /// // Lane 0 keeps bytes 0 and 3, every other lane keeps nothing.
+    /// let got = I32x16::splat(0).dot4_u8_i8_add_masked(a, 0b1001, b).to_array();
+    /// assert_eq!(got[0], -2 * 255 * 128);
+    /// assert_eq!(got[1..], [0; 15]);
+    /// ```
+    #[inline(always)]
+    pub fn dot4_u8_i8_add_masked(self, a: U8x64, keep: u64, b: I8x64) -> Self {
+        let spread = crate::simd_masking_ops::mask_byte_spread(keep);
+        let mut kept = a.to_array();
+        // SAFETY: AVX2 is a run-time precondition of this arm (see `U64x8::avx2_halves`); every
+        // load and store is a 32-byte unaligned access inside a 64-byte array. Byte `i` of
+        // `spread` repeats mask byte `i / 8`, so testing bit `i % 8` against
+        // `BIT_IN_BYTE` gives 0xFF exactly where bit `i` of `keep` is set.
+        unsafe {
+            let bit = _mm256_set1_epi64x(crate::simd_masking_ops::BIT_IN_BYTE as i64);
+            let (ps, pk) = (spread.as_ptr() as *const __m256i, kept.as_mut_ptr() as *mut __m256i);
+            for h in 0..2 {
+                let m = _mm256_cmpeq_epi8(_mm256_and_si256(_mm256_loadu_si256(ps.add(h)), bit), bit);
+                _mm256_storeu_si256(pk.add(h), _mm256_and_si256(_mm256_loadu_si256(pk.add(h)), m));
+            }
+        }
+        self.dot4_u8_i8_add(U8x64::from_array(kept), b)
+    }
 }
 
 #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]

@@ -63,6 +63,10 @@ name = "sm9_presence_probe"
 required-features = ["std"]
 
 [[example]]
+name = "u9_cost_probe"
+required-features = ["std"]
+
+[[example]]
 name = "cpu_guard_probe"
 required-features = ["std"]
 
