@@ -3911,12 +3911,15 @@ facade compositions of it. B is long multiplication, `m = low7 - top`, tested fo
 Verdict: B (U8 x I8 byte-dot) is the cheaper exact I9 substrate in every row, symmetric included. B encodes with AND,
 XOR and the presence bit only: `low7 = |b| & 0x7F`, `top = |b| ^ low7`, `negative = plane_a ^ plane_b`, four masked
 byte-dots, `(pos_low7 - pos_top) - (neg_low7 - neg_top)`; no magnitude is negated. Disassembly (AVX-512): no shuffle, permute,
-pack, extract or insert in B, the baselines or the flushes; on AVX2 LLVM puts 4 vpshufb in the facade's masked byte-dot. VNNI L1, ns/64: B end-to-end 3.03-3.05 vs A' 7.78-7.80;
-B scan 2.69-2.77 vs A 6.95-7.14; plain byte-dot 1.89-1.94. AVX2: B end-to-end 9.9-10.4 vs A' 75-82 (A dominated by
+pack, extract or insert in B, the baselines or the flushes; on AVX2 LLVM puts 4 vpshufb in the facade's masked byte-dot. VNNI L1, ns/64: B end-to-end 3.05-3.06 vs A' 7.64-7.83;
+B scan 2.75-2.81 vs A 7.02-7.19; plain byte-dot 1.94. AVX2: B end-to-end 10.1-10.2 vs A' 75-81 (A dominated by
 `U8x64::mask_blend`'s per-lane AVX2 realization, not changed).
 
-Loose ends: the U8x64 -> I8x64 bit view (`bits_as_i8` is a store/load stand-in, 0.86-1.16 ns/block with the split;
+Loose ends: the U8x64 -> I8x64 bit view (`bits_as_i8` is a store/load stand-in, 1.16-1.27 ns/block with the split;
 not added, it is a u8/i8 crossing); recall on a real TurboVec-U9 index (owner's experiment, defined in the report).
+Re-measured after review (Codex, PR #388): timed operands are now compact (72 B/block, not a padded 128-B `Vec<Block>`)
+and the preparation row consumes every lane. Streamed VNNI B end-to-end 12.9-16.3 -> 6.0-6.5, B scan 5.9-6.9 -> 2.75-2.80;
+verdict unchanged.
 
 ## D-U9-ABACUS: schoolbook U9 x U9 on bit planes (2026-10-29, branch claude/u9-abacus, stacked on #388)
 

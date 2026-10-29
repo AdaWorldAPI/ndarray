@@ -18,9 +18,9 @@ For full-range signed 9-bit arithmetic (-255..=255) on the shared 8+1 block
 (64 `u8` magnitudes + one `u64` positive plane per operand), which composes
 the cheaper bit-exact multiply-accumulate through the existing facade?
 
-**B, U8 x I8 byte-dot, in every row measured.** On AVX-512 VNNI: 3.03 ns per
-64 values end to end against 7.78 for the best A, and 2.69 - 2.77 against
-6.95 - 7.14 in the scan form. A, as composed here, widens u8 -> u16 -> f32,
+**B, U8 x I8 byte-dot, in every row measured.** On AVX-512 VNNI: 3.05 ns per
+64 values end to end against 7.64 - 7.83 for the best A, and 2.75 - 2.81
+against 7.02 - 7.19 in the scan form. A, as composed here, widens u8 -> u16 -> f32,
 because the facade offers no u16 -> i32 widening to add the products in
 integers. That is a cost of this composition, not of U8 x U8 multiplication.
 
@@ -172,31 +172,42 @@ L1 = 64 blocks per operand (4.5 KiB) dotted repeatedly; streamed = 2^20 blocks
 per operand (72 MiB). Baseline = plain `dot4_u8_i8_add`; the scan rows compare
 with the plain byte-dot against one fixed query.
 
+Timed input layout: each operand is two compact arrays, 64 magnitude bytes and
+one 8-byte plane per block (72 bytes), and each `Block` is built in registers
+inside the loop. A `Vec<Block>` would pad every block to 128 bytes, because
+`U8x64` is 64-byte aligned; the first version of this probe streamed that
+padded layout and its streamed rows were inflated by it (B end-to-end 12.9 -
+16.3, B scan 5.9 - 6.9 on VNNI). The baseline streams 64 + 64 bytes per block
+(no planes), B and A 72 + 72, and a scan only the index side.
+
 | L1-resident | AVX-512 VNNI | AVX-512, no VNNI | AVX2 |
 |---|---|---|---|
-| baseline: plain u8 x i8 dot4 | 1.89 - 1.94 | 1.97 - 2.02 | 2.13 - 2.16 |
-| A end-to-end (check, route, widen, mul_add) | 8.59 - 8.80 | 8.77 - 8.80 | 74.0 - 99.7 |
-| A' end-to-end (check, route, mullo, add) | 7.78 - 7.80 | 7.77 - 7.81 | 75.0 - 82.4 |
-| **B end-to-end (check, AND/XOR split, 4 masked dot4)** | **3.03 - 3.05** | **5.67 - 6.22** | **9.88 - 10.4** |
-| A arithmetic only | 7.31 | 7.28 - 7.36 | 13.7 - 14.9 |
-| A' arithmetic only | 6.17 - 6.20 | 6.00 - 6.19 | 10.7 - 11.0 |
-| **B arithmetic only** | **2.55 - 2.61** | **5.05 - 5.58** | **9.28 - 9.30** |
-| B operand preparation alone (AND/XOR split) | 0.86 - 0.88 | 0.94 | 1.14 - 1.16 |
-| baseline scan: plain dot4, fixed query | 1.86 - 1.91 | 2.08 - 2.16 | 1.59 - 1.63 |
-| A scan | 6.95 - 7.14 | 6.97 - 7.14 | 70.1 - 76.8 |
-| **B scan** | **2.69 - 2.77** | **4.81 - 4.95** | **9.00 - 9.23** |
+| baseline: plain u8 x i8 dot4 | 1.94 | 2.02 - 2.03 | 2.11 - 2.56 |
+| A end-to-end (check, route, widen, mul_add) | 8.78 - 8.88 | 8.70 - 8.89 | 74.3 - 77.2 |
+| A' end-to-end (check, route, mullo, add) | 7.64 - 7.83 | 7.64 - 8.98 | 75.1 - 81.4 |
+| **B end-to-end (check, AND/XOR split, 4 masked dot4)** | **3.05 - 3.06** | **5.61 - 7.23** | **10.1 - 10.2** |
+| A arithmetic only | 7.30 - 7.31 | 7.33 - 8.14 | 13.7 - 13.8 |
+| A' arithmetic only | 6.16 - 6.22 | 6.16 - 7.69 | 10.7 |
+| **B arithmetic only** | **2.59** | **5.05 - 6.17** | **9.31** |
+| B operand preparation alone (AND/XOR split) | 1.16 | 1.16 - 1.80 | 1.25 - 1.27 |
+| baseline scan: plain dot4, fixed query | 1.88 - 1.92 | 2.09 - 2.27 | 1.59 - 1.61 |
+| A scan | 7.02 - 7.19 | 7.05 - 7.39 | 76.5 - 83.5 |
+| **B scan** | **2.75 - 2.81** | **4.91 - 4.95** | **9.27 - 9.28** |
 
 | Streamed | AVX-512 VNNI | AVX-512, no VNNI | AVX2 |
 |---|---|---|---|
-| baseline | 7.1 - 7.4 | 8.8 - 9.5 | 10.3 - 13.6 |
-| A' end-to-end | 18.8 - 21.4 | 18.3 - 21.3 | 420 - 435 |
-| **B end-to-end** | **12.9 - 16.3** | **17.0 - 18.8** | **20.8 - 23.6** |
-| baseline scan | 4.7 - 4.9 | 5.4 - 5.8 | 6.2 - 7.2 |
-| A scan | 9.3 - 12.1 | 9.2 - 11.6 | 419 - 420 |
-| **B scan** | **5.9 - 6.9** | **7.2 - 10.7** | **11.1 - 11.7** |
+| baseline | 4.4 - 4.8 | 5.5 - 6.7 | 6.1 - 8.9 |
+| A end-to-end | 22.4 - 25.7 | 22.2 - 25.0 | 421 - 426 |
+| A' end-to-end | 16.6 - 19.6 | 18.2 - 19.8 | 420 - 427 |
+| **B end-to-end** | **6.0 - 6.5** | **9.0 - 12.5** | **26.9 - 30.7** |
+| B operand preparation alone | 2.77 - 2.80 | 2.77 - 2.83 | 2.94 - 3.11 |
+| baseline scan | 2.23 - 2.30 | 2.46 - 2.52 | 2.60 - 2.95 |
+| A scan | 10.6 - 12.0 | 10.7 - 11.2 | 422 - 424 |
+| **B scan** | **2.75 - 2.80** | **4.68 - 4.75** | **27.6 - 32.6** |
 
 The streamed "arithmetic only" rows are left out: they read precomputed
-operands, which doubles the bytes streamed, so they do not isolate arithmetic.
+operands (B: one plane plus two 64-byte vectors per block), which more than
+doubles the bytes streamed, so they do not isolate arithmetic.
 
 Notes on the numbers:
 
@@ -204,11 +215,19 @@ Notes on the numbers:
   prepared before the timer (A: routed `|a|`; B: the XOR plane and the
   `low7` / `top` bytes). The end-to-end and scan rows pay all preparation
   inside the timer.
+- "B operand preparation alone" passes the whole prepared tuple (plane,
+  `low7`, `top`) through `black_box` on every block, so no lane can be
+  dropped as unused; the row includes storing that tuple. The first version
+  consumed one lane of each vector and read 0.86 - 1.16.
 - Keeping the sign out of the bytes costs B four byte-dots per block instead
-  of two: 2.55 - 2.61 ns against 1.89 for a single byte-dot on VNNI.
+  of two: 2.59 ns against 1.94 for a single byte-dot on VNNI.
+- Streamed on VNNI the B scan (2.75 - 2.80) equals its L1 figure: one
+  index-side block per 64 values does not saturate memory bandwidth, so the
+  scan stays compute-bound.
 - On AVX2 every A row is dominated by `U8x64::mask_blend`, whose AVX2
   realization is a per-lane loop; B does not use it (the masked byte-dot
-  builds its mask in registers).
+  builds its mask in registers). Streamed AVX2 B rows (27 - 33) are slower
+  than L1 (9 - 10) by more than the extra bytes explain; not investigated.
 - 4096 values per L1 dot: a full dot product costs 64 x the per-64 figure.
 
 ## The one facade gap
@@ -216,8 +235,8 @@ Notes on the numbers:
 B needs `low7` and `top`, which are `U8x64`, as the `I8x64` operand of the
 byte-dot. The facade has no `U8x64 -> I8x64` view, so `kernels::bits_as_i8`
 stores the 64 bytes and loads them back as `i8` (every bit kept; no shuffle,
-no arithmetic). Its cost is inside "B operand preparation" (0.86 - 1.16 ns per
-block with the AND/XOR split). Exact consumer need: a bit view
+no arithmetic). Its cost is inside "B operand preparation" (1.16 - 1.27 ns per
+block with the AND/XOR split, L1). Exact consumer need: a bit view
 `U8x64 -> I8x64` (or a byte-dot taking the signed operand as raw bytes).
 Recorded, not added: it is a u8/i8 crossing, which the repository rules keep
 out of the facade unless decided deliberately.
