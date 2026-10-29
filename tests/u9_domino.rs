@@ -23,15 +23,21 @@ fn xorshift(s: &mut u64) -> u64 {
 
 /// Applies `adds` to all four counters, checking every lane against a `u128`
 /// oracle after each add (observations between additions).
-fn check_all(adds: &[(usize, u64)]) -> [[u64; N]; 4] {
+/// P and PL also run over stale words (`STALE` under every EMPTY column), so
+/// a lost EMPTY transition or a write skipped into a non-empty column shows.
+fn check_all(adds: &[(usize, u64)]) -> [[u64; N]; 6] {
+    const STALE: u64 = 0xDEAD_BEEF_F00D_CAFE;
     let (mut f, mut p) = (Eager::<N>::new(), Subst::<N>::new());
     let (mut l, mut pl) = (LazyFull::<N>::new(), SubstLazy::<N>::new());
+    let (mut ps, mut pls) = (Subst::<N>::stale(STALE), SubstLazy::<N>::stale(STALE));
     let mut oracle = [0u128; 64];
     for (step, &(k, m)) in adds.iter().enumerate() {
         f.add_at(k, m).unwrap();
         p.add_at(k, m).unwrap();
         l.add_at(k, m).unwrap();
         pl.add_at(k, m).unwrap();
+        ps.add_at(k, m).unwrap();
+        pls.add_at(k, m).unwrap();
         for (j, o) in oracle.iter_mut().enumerate() {
             *o = o.checked_add(u128::from(m >> j & 1) << k).unwrap();
         }
@@ -41,13 +47,15 @@ fn check_all(adds: &[(usize, u64)]) -> [[u64; N]; 4] {
             assert_eq!(p.lane(j), want, "P step {step} lane {j}");
             assert_eq!(l.lane(j), want, "L step {step} lane {j}");
             assert_eq!(pl.lane(j), want, "PL step {step} lane {j}");
+            assert_eq!(ps.lane(j), want, "P stale step {step} lane {j}");
+            assert_eq!(pls.lane(j), want, "PL stale step {step} lane {j}");
         }
     }
     for (j, &o) in oracle.iter().enumerate() {
         assert_eq!(pl.lane(j), o, "PL final lane {j}");
         assert_eq!(f.lane(j), o, "F final lane {j}");
     }
-    [f.columns(), p.columns(), l.columns(), pl.columns()]
+    [f.columns(), p.columns(), l.columns(), pl.columns(), ps.columns(), pls.columns()]
 }
 
 /// The bit flip on every input pair, in every lane and in single lanes.
@@ -90,7 +98,7 @@ fn random_adds_match_the_oracle_in_any_order() {
     let fwd = check_all(&adds);
     adds.reverse();
     let rev = check_all(&adds);
-    for v in 0..4 {
+    for v in 0..6 {
         assert_eq!(fwd[v], rev[v], "variant {v}: order changed the result");
         assert_eq!(fwd[v], fwd[0], "variant {v} disagrees with F");
     }

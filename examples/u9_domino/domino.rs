@@ -134,6 +134,17 @@ impl<const N: usize> Counter<N> for Subst<N> {
     }
 }
 
+impl<const N: usize> Subst<N> {
+    /// A zero counter over words that still hold `stale` (a reused buffer):
+    /// every column is EMPTY, so the words are never read before written.
+    pub fn stale(stale: u64) -> Self {
+        Self {
+            col: [stale; N],
+            empty: u128::MAX,
+        }
+    }
+}
+
 /// L: a FULL bitmap (bit `k` set: column `k` is logically all ones). An
 /// all-ones carry into a FULL column writes zero without reading the word; any
 /// other carry materializes `!m`. A column becomes FULL when an update leaves
@@ -246,6 +257,17 @@ impl<const N: usize> Counter<N> for SubstLazy<N> {
         self.col = self.columns();
         self.empty = 0;
         self.full = 0;
+    }
+}
+
+impl<const N: usize> SubstLazy<N> {
+    /// As [`Subst::stale`]: logically zero, words holding `stale`.
+    pub fn stale(stale: u64) -> Self {
+        Self {
+            col: [stale; N],
+            empty: u128::MAX,
+            full: 0,
+        }
     }
 }
 
