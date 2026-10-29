@@ -21,6 +21,17 @@ fn xorshift(s: &mut u64) -> u64 {
     *s
 }
 
+fn full_tracked(name: &str, step: usize, cols: &[u64; N], full: u128) {
+    for (k, &c) in cols.iter().enumerate() {
+        assert_eq!(
+            c == u64::MAX,
+            full >> k & 1 == 1,
+            "{name} step {step}: column {k} is {c:#x} but its FULL bit is {}",
+            full >> k & 1
+        );
+    }
+}
+
 /// Applies `adds` to all four counters, checking every lane against a `u128`
 /// oracle after each add (observations between additions).
 /// P and PL also run over stale words (`STALE` under every EMPTY column), so
@@ -41,6 +52,11 @@ fn check_all(adds: &[(usize, u64)]) -> [[u64; N]; 6] {
         for (j, o) in oracle.iter_mut().enumerate() {
             *o = o.checked_add(u128::from(m >> j & 1) << k).unwrap();
         }
+        // L and PL hold every logically all-ones column as FULL, whichever
+        // path produced it (the FULL -> EMPTY state-only carry depends on it).
+        full_tracked("L", step, &l.columns(), l.full_bits());
+        full_tracked("PL", step, &pl.columns(), pl.full_bits());
+        full_tracked("PL stale", step, &pls.columns(), pls.full_bits());
         for j in [0usize, 1, 31, 32, 62, 63] {
             let want = oracle[j];
             assert_eq!(f.lane(j), want, "F step {step} lane {j}");
@@ -232,5 +248,30 @@ fn pair_and_packed_agree_and_roundtrip() {
         }
         p = np;
         x = nx;
+    }
+}
+
+/// A column made all ones by an ordinary XOR (complementary masks at one
+/// significance) is FULL in PL as in L, and the next all-ones carry passes it
+/// as FULL -> EMPTY without touching the word.
+#[test]
+fn xor_made_full_column_is_full_and_carries_by_state() {
+    let m = 0x0F0F_0F0F_0F0F_0F0Fu64;
+    let mut l = LazyFull::<N>::new();
+    let mut pl = SubstLazy::<N>::new();
+    for (k, mask) in [(0, m), (0, !m)] {
+        l.add_at(k, mask).unwrap();
+        pl.add_at(k, mask).unwrap();
+    }
+    assert_eq!(l.full_bits() & 1, 1, "L marks the XOR-made column FULL");
+    assert_eq!(pl.full_bits() & 1, 1, "PL marks the XOR-made column FULL");
+    pl.add_at(0, u64::MAX).unwrap();
+    assert_eq!(pl.full_bits() & 1, 0);
+    assert_eq!(pl.empty_bits() & 1, 1, "FULL + all ones leaves column 0 EMPTY");
+    // Column 1 was EMPTY, so it takes the all-ones carry by assignment and
+    // is FULL in turn.
+    assert_eq!(pl.full_bits() >> 1 & 1, 1, "the all-ones carry lands in column 1 as FULL");
+    for j in 0..64 {
+        assert_eq!(pl.lane(j), 2, "lane {j}");
     }
 }

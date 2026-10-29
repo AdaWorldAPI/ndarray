@@ -236,6 +236,12 @@ impl<const N: usize> Counter<N> for SubstLazy<N> {
             } else {
                 let (next, carry) = flip(self.col[k], m);
                 self.col[k] = next;
+                if next == u64::MAX {
+                    // Same FULL policy as L: an ordinary ripple that leaves the
+                    // column all ones marks it, so a later all-ones carry passes
+                    // it as a state change.
+                    self.full |= bit;
+                }
                 m = carry;
             }
             k += 1;
@@ -260,7 +266,23 @@ impl<const N: usize> Counter<N> for SubstLazy<N> {
     }
 }
 
+impl<const N: usize> LazyFull<N> {
+    /// Bit `k` set: column `k` is held as FULL (logically all ones).
+    pub fn full_bits(&self) -> u128 {
+        self.full
+    }
+}
+
 impl<const N: usize> SubstLazy<N> {
+    /// Bit `k` set: column `k` is held as FULL (logically all ones).
+    pub fn full_bits(&self) -> u128 {
+        self.full
+    }
+    /// Bit `k` set: column `k` is held as EMPTY (logically zero).
+    pub fn empty_bits(&self) -> u128 {
+        self.empty
+    }
+
     /// As [`Subst::stale`]: logically zero, words holding `stale`.
     pub fn stale(stale: u64) -> Self {
         Self {
