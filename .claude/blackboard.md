@@ -3917,3 +3917,12 @@ B scan 2.69-2.77 vs A 6.95-7.14; plain byte-dot 1.89-1.94. AVX2: B end-to-end 9.
 
 Loose ends: the U8x64 -> I8x64 bit view (`bits_as_i8` is a store/load stand-in, 0.86-1.16 ns/block with the split;
 not added, it is a u8/i8 crossing); recall on a real TurboVec-U9 index (owner's experiment, defined in the report).
+
+## D-U9-ABACUS: schoolbook U9 x U9 on bit planes (2026-10-29, branch claude/u9-abacus, stacked on #388)
+
+Probe-only: `examples/u9_abacus/{abacus,main}.rs`, `tests/u9_abacus.rs`, report
+`.claude/knowledge/u9-abacus-probe.md`. `carry_save3` (exact full adder on 64 bit columns) ADOPT-LAB; byte-abacus
+as a B replacement REFUSE: best fold (per-plane popcount) 12.4 ns/64 arithmetic with free planes vs B 2.9 end-to-end
+on VNNI, carry-save folds ~290 ns (LLVM does not unroll them; scalar, no vpternlog). No break-even for prepared
+operands. On v4/AVX2 LLVM lowers `count_ones` to a `vpshufb` nibble table. Exact on all 7 tiers; 9 disable runs red.
+
