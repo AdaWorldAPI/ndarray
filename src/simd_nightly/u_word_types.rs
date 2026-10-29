@@ -18,6 +18,38 @@ use core::simd::{u16x16, u16x32, u32x16, u32x8, u64x4, u64x8};
 pub struct U64x8(pub u64x8);
 
 impl U64x8 {
+    /// Lane `j` gains the sum of the bytes `a[i]`, `i` in `8j..8j+8`, whose bit
+    /// in `keep` is set: `vpsadbw` against zero on the kept bytes, accumulated
+    /// per lane with no horizontal reduction. Exact; each call adds at most
+    /// `8 * 255 = 2_040` to a lane, so the wrapping `u64` lanes hold more than
+    /// 9 * 10^15 calls. Reduce once at the end (`to_array`, `reduce_sum`).
+    ///
+    /// A masked byte sum is what a power-of-two anchor needs: with
+    /// `|b| = low7 + 128 * bit7`, `a * |b| = a * low7 + 128 * (sum of a where bit 7
+    /// of b is set)`, so the anchor term is this word with `keep = sign & bit7`.
+    ///
+    /// ```
+    /// use ndarray::simd::{U64x8, U8x64};
+    /// let a = U8x64::splat(255);
+    /// // Lane 0 keeps bytes 0 and 7, lane 1 keeps byte 8, the rest keep nothing.
+    /// let got = U64x8::splat(0).sum8_u8_add_masked(a, 0b1_1000_0001).to_array();
+    /// assert_eq!(got, [510, 255, 0, 0, 0, 0, 0, 0]);
+    /// ```
+    #[inline(always)]
+    pub fn sum8_u8_add_masked(self, a: super::U8x64, keep: u64) -> Self {
+        use core::simd::{Mask, Select, Simd, ToBytes};
+        let kept = Mask::<i8, 64>::from_bitmask(keep).select(a.0, Simd::splat(0));
+        // Each u64 lane holds its eight kept bytes; fold them pairwise in place.
+        let x = u64x8::from_ne_bytes(kept);
+        let (m8, m16) = (Simd::splat(0x00FF_00FF_00FF_00FFu64), Simd::splat(0x0000_FFFF_0000_FFFFu64));
+        let s = (x & m8) + ((x >> 8) & m8);
+        let s = (s & m16) + ((s >> 16) & m16);
+        let s = (s & Simd::splat(0xFFFF_FFFF)) + (s >> 32);
+        Self(self.0 + s)
+    }
+}
+
+impl U64x8 {
     pub const LANES: usize = 8;
 
     /// Lane-wise left-rotate by `n` bits — the u64 ARX rotate (BLAKE2b /

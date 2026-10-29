@@ -157,3 +157,23 @@ from this session.
 - No fused single-widen SM9 op for non-VNNI tiers.
 - No signed i8 x i8 facade word.
 - Recall on a real index.
+
+## Second facade word: `U64x8::sum8_u8_add_masked` (2026-10-29)
+
+`U64x8::sum8_u8_add_masked(self, a: U8x64, keep: u64) -> U64x8` adds to lane `j` the sum of the bytes `a[i]`, `i` in `8j..8j+8`, whose bit `i` in `keep` is set. It is exact. Each call adds at most 8 * 255 = 2,040 per lane, so the u64 lanes wrap only after more than 9 * 10^15 calls. There is no horizontal reduction; reduce once at the end.
+
+It was added for the power-of-two anchor term of candidate E in PR #389. With `|b| = low7 + 128*bit7`, `a*|b| = a*low7 + 128*(sum of a where bit 7 of b is set)`. The facade only had `U8x64::sum_bytes_u64`, which reduces horizontally on every call.
+
+| Tier | Lowering |
+|---|---|
+| AVX-512 | zero-masked `vmovdqu8`, `vpsadbw` against zero, `vpaddq` |
+| AVX2 | mask built in registers as in `dot4_u8_i8_add_masked`, AND, `vpsadbw`, `vpaddq`, two halves (LLVM emits 2 `vpshufb`; none in the source) |
+| AVX without AVX2 | `mask_byte_spread`, `cmpeq`, AND, `psadbw` per 16-byte quarter |
+| NEON | `vtstq_u8` mask, AND, `uaddlp` x2, `uadalp`; no scalar loop |
+| wasm simd128 | `i8x16_eq` mask, AND, two `extadd_pairwise`, fold of 32-bit halves, `i64x2_add`; no shuffle |
+| scalar | per-lane loop, the correctness anchor |
+| nightly-simd | `Mask::from_bitmask(keep).select`, SWAR fold |
+
+Measured on an AVX-512 VNNI Xeon (4,096 random vectors and masks, medians of 1,001 runs): 0.687 ns per 64 bytes at target-cpu=native against 192.8 - 196.0 ns for the plain reference loop (281 - 285x); 1.987 - 1.991 ns at x86-64-v3 against 194.1 - 195.4 ns (98x). NEON and wasm were not timed.
+
+Tests: `sum8_masked_matches_reference`, `sum8_masked_gates_each_byte_by_its_own_bit`, `sum8_masked_all_kept_agrees_with_sum_bytes` in `dot4_nibble_facade_parity`, plus the doc example (run as a doctest on the native and v3 builds) and parity codes 0x506 and 0x507 in `wasm-simd-parity` and `neon-simd-parity`.

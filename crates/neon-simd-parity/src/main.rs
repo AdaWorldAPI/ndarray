@@ -18,7 +18,7 @@ fn main() {
             eprintln!("neon-simd-parity FAILED: lane/op code = {rc}");
             std::process::exit(rc as i32);
         }
-        println!("neon-simd-parity OK: U32x16 / F32x16 / I8x16 lanes, ternlog (256 tables, U32x16 + U64x8), U64x8 algebra, I32x16 compares, dot4 (+ masked) + nibbles — bit-identical to scalar");
+        println!("neon-simd-parity OK: U32x16 / F32x16 / I8x16 lanes, ternlog (256 tables, U32x16 + U64x8), U64x8 algebra, I32x16 compares, dot4 (+ masked), masked sum8 + nibbles — bit-identical to scalar");
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
@@ -561,6 +561,40 @@ mod checks {
                         return Err(0x505);
                     }
                 }
+            }
+        }
+        // sum8_u8_add_masked: each keep bit gates its own byte into its own
+        // 8-byte lane, and random bytes / masks / accumulators (u64::MAX
+        // included, so the wrap is exercised) match the reference.
+        for i in 0..64 {
+            let got = ndarray::simd::U64x8::splat(0)
+                .sum8_u8_add_masked(U8x64::splat(7), !(1u64 << i))
+                .to_array();
+            if got != core::array::from_fn(|j| if j == i / 8 { 49 } else { 56 }) {
+                return Err(0x506);
+            }
+        }
+        let mut t = 0x243F_6A88_85A3_08D3u64;
+        for round in 0..40 {
+            t ^= t << 13;
+            t ^= t >> 7;
+            t ^= t << 17;
+            let a: [u8; 64] = core::array::from_fn(|i| (t.rotate_left(i as u32) >> 3) as u8 ^ (i as u8).wrapping_mul(37));
+            let keep = match round {
+                0 => 0,
+                1 => u64::MAX,
+                2 => 0x8000_0000_0000_0001,
+                _ => t.rotate_left(round),
+            };
+            let acc: [u64; 8] = core::array::from_fn(|j| if round % 3 == 0 { u64::MAX - j as u64 } else { t.wrapping_mul(j as u64 + 1) });
+            let got = ndarray::simd::U64x8::from_array(acc)
+                .sum8_u8_add_masked(U8x64::from_array(a), keep)
+                .to_array();
+            let want: [u64; 8] = core::array::from_fn(|j| {
+                (8 * j..8 * j + 8).fold(acc[j], |s, i| if keep >> i & 1 == 1 { s.wrapping_add(u64::from(a[i])) } else { s })
+            });
+            if got != want {
+                return Err(0x507);
             }
         }
         Ok(())

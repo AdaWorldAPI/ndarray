@@ -2165,6 +2165,34 @@ impl PartialEq for U32x16 {
 pub struct U64x8(pub __m512i);
 
 impl U64x8 {
+    /// Lane `j` gains the sum of the bytes `a[i]`, `i` in `8j..8j+8`, whose bit
+    /// in `keep` is set: `vpsadbw` against zero on the kept bytes, accumulated
+    /// per lane with no horizontal reduction. Exact; each call adds at most
+    /// `8 * 255 = 2_040` to a lane, so the wrapping `u64` lanes hold more than
+    /// 9 * 10^15 calls. Reduce once at the end (`to_array`, `reduce_sum`).
+    ///
+    /// A masked byte sum is what a power-of-two anchor needs: with
+    /// `|b| = low7 + 128 * bit7`, `a * |b| = a * low7 + 128 * (sum of a where bit 7
+    /// of b is set)`, so the anchor term is this word with `keep = sign & bit7`.
+    ///
+    /// ```
+    /// use ndarray::simd::{U64x8, U8x64};
+    /// let a = U8x64::splat(255);
+    /// // Lane 0 keeps bytes 0 and 7, lane 1 keeps byte 8, the rest keep nothing.
+    /// let got = U64x8::splat(0).sum8_u8_add_masked(a, 0b1_1000_0001).to_array();
+    /// assert_eq!(got, [510, 255, 0, 0, 0, 0, 0, 0]);
+    /// ```
+    #[inline(always)]
+    pub fn sum8_u8_add_masked(self, a: U8x64, keep: u64) -> Self {
+        // SAFETY: avx512bw is compiled in on this arm; register-only.
+        Self(unsafe {
+            let kept = _mm512_maskz_mov_epi8(keep, a.0);
+            _mm512_add_epi64(self.0, _mm512_sad_epu8(kept, _mm512_setzero_si512()))
+        })
+    }
+}
+
+impl U64x8 {
     pub const LANES: usize = 8;
 
     /// Lane-wise left-rotate by `n` bits — the u64 ARX rotate.

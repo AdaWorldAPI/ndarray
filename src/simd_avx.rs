@@ -167,6 +167,48 @@ pub fn dot_i8(a: &[u8], b: &[u8]) -> i64 {
 // ---------------------------------------------------------------------------
 
 impl U64x8 {
+    /// Lane `j` gains the sum of the bytes `a[i]`, `i` in `8j..8j+8`, whose bit
+    /// in `keep` is set: `vpsadbw` against zero on the kept bytes, accumulated
+    /// per lane with no horizontal reduction. Exact; each call adds at most
+    /// `8 * 255 = 2_040` to a lane, so the wrapping `u64` lanes hold more than
+    /// 9 * 10^15 calls. Reduce once at the end (`to_array`, `reduce_sum`).
+    ///
+    /// A masked byte sum is what a power-of-two anchor needs: with
+    /// `|b| = low7 + 128 * bit7`, `a * |b| = a * low7 + 128 * (sum of a where bit 7
+    /// of b is set)`, so the anchor term is this word with `keep = sign & bit7`.
+    ///
+    /// ```
+    /// use ndarray::simd::{U64x8, U8x64};
+    /// let a = U8x64::splat(255);
+    /// // Lane 0 keeps bytes 0 and 7, lane 1 keeps byte 8, the rest keep nothing.
+    /// let got = U64x8::splat(0).sum8_u8_add_masked(a, 0b1_1000_0001).to_array();
+    /// assert_eq!(got, [510, 255, 0, 0, 0, 0, 0, 0]);
+    /// ```
+    #[inline(always)]
+    pub fn sum8_u8_add_masked(self, a: U8x64, keep: u64) -> Self {
+        let spread = crate::simd_masking_ops::mask_byte_spread(keep);
+        let mut out = self.0;
+        // SAFETY: SSE2 is compiled in (module docs); every load and store is a 16-byte
+        // unaligned access inside a 64-byte array. Byte `i` of `spread` repeats mask byte
+        // `i / 8`, so testing bit `i % 8` against `BIT_IN_BYTE` gives 0xFF exactly where bit
+        // `i` of `keep` is set. Quarter `q` covers bytes `16q..16q+16`, i.e. lanes `2q, 2q+1`,
+        // which is what `sad_epu8` produces.
+        unsafe {
+            let bit = _mm_set1_epi64x(crate::simd_masking_ops::BIT_IN_BYTE as i64);
+            let zero = _mm_setzero_si128();
+            let (ps, pa) = (spread.as_ptr() as *const __m128i, a.0.as_ptr() as *const __m128i);
+            let po = out.as_mut_ptr() as *mut __m128i;
+            for q in 0..4 {
+                let m = _mm_cmpeq_epi8(_mm_and_si128(_mm_loadu_si128(ps.add(q)), bit), bit);
+                let kept = _mm_and_si128(_mm_loadu_si128(pa.add(q)), m);
+                _mm_storeu_si128(po.add(q), _mm_add_epi64(_mm_loadu_si128(po.add(q)), _mm_sad_epu8(kept, zero)));
+            }
+        }
+        Self(out)
+    }
+}
+
+impl U64x8 {
     /// `(x << n) | (x >> (64 - n))` per 64-bit lane of one 256-bit half, with
     /// `1 <= n <= 63` guaranteed by the callers (see the AVX2 realization).
     #[inline(always)]

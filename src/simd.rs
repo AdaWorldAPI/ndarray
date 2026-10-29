@@ -2485,6 +2485,73 @@ mod dot4_nibble_facade_parity {
         }
     }
 
+    fn sum8_reference(acc: [u64; 8], a: &[u8; 64], keep: u64) -> [u64; 8] {
+        core::array::from_fn(|j| {
+            (8 * j..8 * j + 8).fold(acc[j], |s, i| {
+                if keep >> i & 1 == 1 {
+                    s.wrapping_add(u64::from(a[i]))
+                } else {
+                    s
+                }
+            })
+        })
+    }
+
+    #[test]
+    fn sum8_masked_matches_reference() {
+        use super::U64x8;
+        let mut s = 0xBB67_AE85_84CA_A73Bu64;
+        let mut checked = 0;
+        for a in &bytes() {
+            for _ in 0..8 {
+                let rand = next(&mut s) << 32 | next(&mut s) << 1 | (next(&mut s) & 1);
+                for keep in [0, u64::MAX, 0xAAAA_AAAA_AAAA_AAAA, 0x8000_0000_0000_0001, rand] {
+                    let rand_acc: [u64; 8] = core::array::from_fn(|_| next(&mut s) << 31 ^ next(&mut s));
+                    for acc in [[0u64; 8], [u64::MAX; 8], rand_acc] {
+                        let got = U64x8::from_array(acc)
+                            .sum8_u8_add_masked(U8x64::from_array(*a), keep)
+                            .to_array();
+                        assert_eq!(got, sum8_reference(acc, a, keep), "keep {keep:#x} acc {acc:?}\na {a:?}");
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked > 5_000, "corpus too small: {checked}");
+    }
+
+    /// Bit `i` of `keep` must gate byte `i` into lane `i / 8` and nothing else.
+    #[test]
+    fn sum8_masked_gates_each_byte_by_its_own_bit() {
+        use super::U64x8;
+        let a = U8x64::splat(7);
+        for i in 0..64 {
+            let one = U64x8::splat(0).sum8_u8_add_masked(a, 1 << i).to_array();
+            let want: [u64; 8] = core::array::from_fn(|j| if j == i / 8 { 7 } else { 0 });
+            assert_eq!(one, want, "bit {i}");
+            let all_but = U64x8::splat(0).sum8_u8_add_masked(a, !(1 << i)).to_array();
+            let want: [u64; 8] = core::array::from_fn(|j| if j == i / 8 { 49 } else { 56 });
+            assert_eq!(all_but, want, "all but bit {i}");
+        }
+    }
+
+    /// With every byte kept, the eight lanes add up to `U8x64::sum_bytes_u64`,
+    /// and repeated calls accumulate per lane without a reduction.
+    #[test]
+    fn sum8_masked_all_kept_agrees_with_sum_bytes() {
+        use super::U64x8;
+        for a in &bytes() {
+            let v = U8x64::from_array(*a);
+            let lanes = U64x8::splat(0).sum8_u8_add_masked(v, u64::MAX).to_array();
+            assert_eq!(lanes.iter().sum::<u64>(), v.sum_bytes_u64());
+        }
+        let (a, mut acc) = (U8x64::splat(255), U64x8::splat(0));
+        for _ in 0..1000 {
+            acc = acc.sum8_u8_add_masked(a, u64::MAX);
+        }
+        assert_eq!(acc.to_array(), [1000 * 8 * 255; 8]);
+    }
+
     /// The doc promise: 16_448 worst-case calls fit an `i32` accumulator.
     #[test]
     fn dot4_masked_worst_case_holds_16448_calls() {
