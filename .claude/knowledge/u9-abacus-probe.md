@@ -1,4 +1,15 @@
-# D-U9-ABACUS: schoolbook U9 x U9 on bit planes with carry-save columns
+# D-U9-ABACUS: schoolbook U9 x U9 with carry escalation
+
+Two different experiments, with two different verdicts. Do not read one
+for the other:
+
+- **C, bit-plane multiplication** (`abacus.rs`): the product itself rebuilt
+  from binary partial products, compressed with carry-save logic.
+  **Refused** as a replacement for B.
+- **D, the 64K carry boundary** (`carry16.rs`): the ordinary U8 x U8 -> U16
+  product kept, added to a wrapping 16-bit word, the carry escalated into a
+  high tally. **Adopted (lab) as the exact replacement for A's f32 path**;
+  it beats A' on AVX-512 and loses to B only because of its multiply.
 
 READ BY: savant-architect, vector-synthesis, simd-savant, the TurboVec-U9
 owner. Follows `turbovec9-u9-head-to-head.md` (#388), whose B kernel and
@@ -13,18 +24,20 @@ cargo run --release --example u9_abacus --features std
 cargo test --release --test u9_abacus
 ```
 
-## Verdict (bit planes, candidates C; candidate D below)
+## Verdict for C (bit-plane multiplication only)
 
 - **`carry_save3`: ADOPT-LAB.** An exact, five-operation full adder over 64
   independent bit columns; LLVM lowers it to `xor`/`and` in general registers.
-- **Byte-abacus as a replacement for B: REFUSE.** No variant comes close.
+- **Bit-plane multiplication as a replacement for B: REFUSE.** No C variant
+  comes close.
   The best one (one popcount per partial-product plane, no carry-save) is
   5.2x B's arithmetic on AVX-512 VNNI with both operands' planes prepared for
   free, and the carry-save variants are about 120x. There is no break-even
   for prepared-operand reuse: with planes given at no cost, C is still slower
   than B paying all of its own preparation.
-- **Deferred carry: not a gain here.** Normalizing once at the end is no
-  faster than normalizing every block, and slower when streamed.
+- **Deferring C's carry-save normalization: not a gain.** Normalizing once
+  at the end is no faster than normalizing every block, and slower when
+  streamed. This says nothing about D, whose carry is resolved on every add.
 
 The arithmetic is exact in every variant; the loss is purely in instruction
 count and in what LLVM makes of the carry-save state.
@@ -97,6 +110,11 @@ in A'.
   `vextracti64x4`) and runs four `vpmullw` per block before any add. B
   multiplies straight from bytes and accumulates in `i32` in the same
   instruction. On VNNI, B's arithmetic is 2.4 ns against D's 5.4.
+- **Sign-routing overhead** (end-to-end minus arithmetic-only medians, so it
+  also contains `check` and widening `|b|`): D react on VNNI about 1.1 -
+  1.7 ns, on AVX-512 without VNNI 1.3 - 1.5 ns, on AVX2 about 55 - 70 ns.
+  A' carries the same routing (1.1 - 1.4 ns on VNNI, 63 - 70 ns on AVX2).
+  B routes with the byte-dot's own mask instead (0.5 ns on VNNI).
 - **On AVX2 the end-to-end and scan rows are dominated by routing.** D's
   routing is A's `U8x64::mask_blend`, whose AVX2 realization is a per-lane
   loop (74 - 128 ns). That cost has nothing to do with the carry.
