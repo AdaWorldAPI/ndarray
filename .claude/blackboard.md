@@ -3827,3 +3827,25 @@ back into clippy::all), fmt clean. G5 asm identity: generic == hand-written on x
 negative control differs. G6 2% timing band not resolvable here (identical code varies up to 17%);
 recorded as NOT MET, G5 is the evidence. Results in plan §11. Next: phase (b) SIMD primitives in
 src/simd_*.rs under W1a.
+
+## U16x32 facade gaps filled on every backend (2026-10-29, branch claude/u16x32-facade-gaps)
+
+Trigger: turbovec's AVX2 FastScan kernel is being rewritten against `ndarray::simd` at 64-byte width
+(U8x64 -> U16x32 -> F32x16). U16x32 had a different method set per backend and no u16 -> f32 path.
+
+Added on AVX-512, AVX2, AVX (simd_avx.rs, 128-bit quarters), scalar and nightly: `zero`, `simd_min/max`,
+`saturating_add/sub`, `cmpeq_mask`/`cmpgt_mask` (u32), `reduce_min/max`, `to_f32x16_lo/hi`; on AVX-512 the bit
+operators, `Not`, `SubAssign`, `Default`; on nightly the widening/shift/mullo/pack methods. `reduce_sum` returns
+`u16` (wrapping) everywhere; AVX-512 returned `u32`.
+
+Bugs found by the new parity test (`simd::u16x32_facade_parity`), both pre-existing on AVX-512 and now fixed:
+`shl`/`shr` returned 0 for every count except 1, 2, 4, 8 (including 0); `pack_saturate_u8` used `packus_epi16`,
+which saturates as signed and interleaves its inputs per 128-bit lane.
+
+Witnessed: parity 4/4 on AVX-512 (native), AVX2 (config-v3), AVX (config-avx, qemu SandyBridge), scalar (config-v2,
+qemu Nehalem) and nightly-simd. Lib suite 2653 passed. clippy -D warnings clean on default/v3/v2; the AVX arm's
+clippy errors are all pre-existing (same set on master). Disable run: AVX2 cmpgt as `>=` -> parity red.
+
+Trap recorded: `cargo --config <file> clippy` DROPS the config (clippy is an external subcommand); the v3 lint pass
+reported clean in 0.05s while linting the native build. Put `--config` after the subcommand:
+`cargo clippy --config .cargo/config-v3.toml`. `cargo --config <file> test` does apply it.
