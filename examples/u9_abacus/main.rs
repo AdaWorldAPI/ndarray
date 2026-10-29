@@ -7,10 +7,12 @@
 #[path = "../u9_head_to_head/kernels.rs"]
 mod kernels;
 mod abacus;
+mod carry16;
 
 use abacus::*;
+use carry16::*;
 use kernels::*;
-use ndarray::simd::{I32x16, I8x64, U8x64};
+use ndarray::simd::{I32x16, I8x64, U16x32, U8x64};
 use std::hint::black_box;
 use std::time::Instant;
 
@@ -224,6 +226,70 @@ fn bench(label: &str, n: usize, runs: usize, seed: u64) {
         acc.finish()
     };
 
+    // D: A' products with the f32 detour replaced by a 16-bit carry column.
+    let routed: Vec<(U8x64, U8x64)> = ab.iter().zip(&bb).map(|(a, b)| route_a(*a, *b)).collect();
+    let bw: Vec<(U16x32, U16x32)> = bb
+        .iter()
+        .map(|b| (U16x32::from_u8x64_lo(b.mag), U16x32::from_u8x64_hi(b.mag)))
+        .collect();
+    let a2_e2e = || {
+        let mut acc = AccA::new();
+        for (a, b) in ab.iter().zip(&bb) {
+            check(*a, *b).unwrap();
+            acc.step_mullo(*a, *b);
+        }
+        acc.finish()
+    };
+    let a2_ari = || {
+        let mut acc = AccA::new();
+        for ((p, q), b) in routed.iter().zip(&bb) {
+            acc.mac_mullo(*p, *q, b.mag);
+        }
+        acc.finish()
+    };
+    fn d_e2e<const X: bool>(ab: &[Block], bb: &[Block]) -> i64 {
+        let mut acc = AccD::<X>::new();
+        for (a, b) in ab.iter().zip(bb) {
+            check(*a, *b).unwrap();
+            acc.step(*a, *b);
+        }
+        acc.finish()
+    }
+    fn d_ari<const X: bool>(routed: &[(U8x64, U8x64)], bw: &[(U16x32, U16x32)]) -> i64 {
+        let mut acc = AccD::<X>::new();
+        for ((p, q), (lo, hi)) in routed.iter().zip(bw) {
+            acc.mac(*p, *q, *lo, *hi);
+        }
+        acc.finish()
+    }
+    fn d_scan<const X: bool>(ab: &[Block], q: Block) -> i64 {
+        let qd = QueryD::new(q);
+        let mut acc = AccD::<X>::new();
+        for x in ab {
+            check(*x, q).unwrap();
+            acc.scan_step(*x, &qd);
+        }
+        acc.finish()
+    }
+    let dr_e2e = || d_e2e::<false>(&ab, &bb);
+    let da_e2e = || d_e2e::<true>(&ab, &bb);
+    let dr_ari = || d_ari::<false>(&routed, &bw);
+    let da_ari = || d_ari::<true>(&routed, &bw);
+    let dr_scan = || d_scan::<false>(&ab, q);
+    let da_scan = || d_scan::<true>(&ab, q);
+
+    for (name, f, w) in [
+        ("A' mullo", &a2_e2e as &dyn Fn() -> i64, want),
+        ("A' mullo arith", &a2_ari, want),
+        ("D react", &dr_e2e, want),
+        ("D anticipate", &da_e2e, want),
+        ("D react arith", &dr_ari, want),
+        ("D anticipate arith", &da_ari, want),
+        ("D react scan", &dr_scan, want_scan),
+        ("D anticipate scan", &da_scan, want_scan),
+    ] {
+        assert_eq!(f(), w, "{name} disagrees with the oracle");
+    }
     for (name, f, w) in [
         ("B", &b_e2e as &dyn Fn() -> i64, want),
         ("B arith", &b_ari, want),
@@ -258,6 +324,15 @@ fn bench(label: &str, n: usize, runs: usize, seed: u64) {
     time("C abacus scan: query planes once, index planes per block", n, runs, Some(bs), &c_scan_abacus);
     time("C popcnt scan: query planes once, index planes per block", n, runs, Some(bs), &c_scan_pop);
     time("C csa scan: query planes once, index planes per block", n, runs, Some(bs), &c_scan_csa);
+    println!("   D: A' products, 16-bit place-value column with carry (no f32)");
+    time("A' end-to-end: route + mullo + f32 add (#388)", n, runs, Some(be), &a2_e2e);
+    time("D react end-to-end: route + mullo + add, carry after", n, runs, Some(be), &dr_e2e);
+    time("D anticipate end-to-end: route + mullo + add, carry before", n, runs, Some(be), &da_e2e);
+    time("A' arithmetic only (routed operands given)", n, runs, Some(ba), &a2_ari);
+    time("D react arithmetic only (routed, b widened given)", n, runs, Some(ba), &dr_ari);
+    time("D anticipate arithmetic only (routed, b widened given)", n, runs, Some(ba), &da_ari);
+    time("D react scan: query widened once", n, runs, Some(bs), &dr_scan);
+    time("D anticipate scan: query widened once", n, runs, Some(bs), &da_scan);
     let best_c = ca.min(cp).min(cc);
     if best_c >= be {
         println!(
@@ -286,6 +361,14 @@ pub fn asm_csa_mac(acc: &mut AccCsa, a: &[u64; 8], negative: u64, b: &[u64; 8]) 
     acc.mac(a, negative, b)
 }
 #[inline(never)]
+pub fn asm_d_react(acc: &mut AccD<false>, a_pos: U8x64, a_neg: U8x64, lo: U16x32, hi: U16x32) {
+    acc.mac(a_pos, a_neg, lo, hi)
+}
+#[inline(never)]
+pub fn asm_d_anticipate(acc: &mut AccD<true>, a_pos: U8x64, a_neg: U8x64, lo: U16x32, hi: U16x32) {
+    acc.mac(a_pos, a_neg, lo, hi)
+}
+#[inline(never)]
 pub fn asm_popcnt_mac(acc: &mut AccPopcnt, a: &[u64; 8], negative: u64, b: &[u64; 8]) {
     acc.mac(a, negative, b)
 }
@@ -295,6 +378,12 @@ fn main() {
     {
         // Keep the out-of-line copies in the binary.
         let p = black_box(asm_planes(black_box(U8x64::splat(0xA5))));
+        let z = black_box(U16x32::splat(7));
+        let mut dr = AccD::<false>::new();
+        asm_d_react(&mut dr, black_box(U8x64::splat(3)), black_box(U8x64::splat(4)), z, z);
+        let mut da = AccD::<true>::new();
+        asm_d_anticipate(&mut da, black_box(U8x64::splat(3)), black_box(U8x64::splat(4)), z, z);
+        black_box((dr.finish(), da.finish()));
         let mut s = AccCsa::new();
         asm_csa_mac(&mut s, &p, black_box(0x55), &p);
         black_box(s.finish());

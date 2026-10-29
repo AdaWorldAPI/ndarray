@@ -6,10 +6,13 @@
 mod kernels;
 #[path = "../examples/u9_abacus/abacus.rs"]
 mod abacus;
+#[path = "../examples/u9_abacus/carry16.rs"]
+mod carry16;
 
 use abacus::{carry_save3, planes, Abacus, AccAbacus, AccCsa, AccPopcnt, QueryC};
+use carry16::{carry_after, carry_before, AccD, QueryD, D_FLUSH_BLOCKS};
 use kernels::{check, oracle, AccB, Block, NeverTouched, B_FLUSH_BLOCKS};
-use ndarray::simd::U8x64;
+use ndarray::simd::{U16x32, U8x64};
 
 type Raw = ([u8; 64], u64);
 
@@ -185,4 +188,116 @@ fn never_touched_is_refused_and_zero_is_not() {
     let sentinel = block(&(m, !(1u64 << 5)));
     assert_eq!(check(sentinel, block(&zero)), Err(NeverTouched(1 << 5)));
     assert_eq!(check(block(&zero), sentinel), Err(NeverTouched(1 << 5)));
+}
+
+/// D (react, anticipate) and their scans (b as the prepared query).
+fn run_d(a: &[Raw], b: &[Raw]) -> [i64; 4] {
+    let (mut r, mut an) = (AccD::<false>::new(), AccD::<true>::new());
+    let (mut sr, mut sa) = (AccD::<false>::new(), AccD::<true>::new());
+    for (ra, rb) in a.iter().zip(b) {
+        let (x, y) = (block(ra), block(rb));
+        check(x, y).unwrap();
+        r.step(x, y);
+        an.step(x, y);
+        let q = QueryD::new(y);
+        sr.scan_step(x, &q);
+        sa.scan_step(x, &q);
+    }
+    [r.finish(), an.finish(), sr.finish(), sa.finish()]
+}
+
+/// Both carry rules against `u32` arithmetic, for every `low` in 0..=65535,
+/// with `p` on both sides of the headroom (`!low`, `!low + 1`) and spread
+/// over the product range.
+#[test]
+fn carry_rules_match_u32_for_every_low() {
+    let mut x = 0x2545_F491_4F6C_DD1Du64;
+    for base in (0u32..65_536).step_by(32) {
+        let lows: [u16; 32] = core::array::from_fn(|k| (base + k as u32) as u16);
+        let low = U16x32::from_array(lows);
+        let mut cases: Vec<[u16; 32]> = vec![
+            core::array::from_fn(|k| !lows[k]),
+            core::array::from_fn(|k| (!lows[k]).wrapping_add(1)),
+            core::array::from_fn(|k| (!lows[k]).wrapping_sub(1)),
+            [0; 32],
+            [65_025; 32],
+        ];
+        for _ in 0..4 {
+            cases.push(core::array::from_fn(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                (x % 65_026) as u16
+            }));
+        }
+        for ps in cases {
+            let p = U16x32::from_array(ps);
+            let sum = low + p;
+            let (after, before) = (carry_after(low, p, sum).to_array(), carry_before(low, p).to_array());
+            for k in 0..32 {
+                let want = u16::from(u32::from(lows[k]) + u32::from(ps[k]) > 0xFFFF);
+                assert_eq!(after[k], want, "react low {} p {}", lows[k], ps[k]);
+                assert_eq!(before[k], want, "anticipate low {} p {}", lows[k], ps[k]);
+            }
+        }
+    }
+}
+
+#[test]
+fn d_all_511_by_511_pairs_are_exact() {
+    let mut n = 0usize;
+    for va in -255..=255i32 {
+        for vb in -255..=255i32 {
+            let lane = n % 64;
+            let (ma, pa) = encode(va);
+            let (mb, pb) = encode(vb);
+            let (mut am, mut bm) = ([0u8; 64], [0u8; 64]);
+            am[lane] = ma;
+            bm[lane] = mb;
+            let ap = if pa { u64::MAX } else { !(1u64 << lane) };
+            let bp = if pb { u64::MAX } else { !(1u64 << lane) };
+            let want = i64::from(va) * i64::from(vb);
+            assert_eq!(run_d(&[(am, ap)], &[(bm, bp)]), [want; 4], "{va} x {vb}");
+            n += 1;
+        }
+    }
+    assert_eq!(n, 511 * 511);
+}
+
+#[test]
+fn d_full_blocks_match_the_oracle() {
+    let mut s = 0x0123_4567_89AB_CDEFu64;
+    let mut val = move || {
+        s = s
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        ((s >> 33) % 511) as i32 - 255
+    };
+    for blocks in [1usize, 2, 7, 64, 300] {
+        let mut mk = || {
+            let mut m = [0u8; 64];
+            let mut p = 0u64;
+            for (i, slot) in m.iter_mut().enumerate() {
+                let (mi, pi) = encode(val());
+                *slot = mi;
+                p |= u64::from(pi) << i;
+            }
+            (m, p)
+        };
+        let a: Vec<_> = (0..blocks).map(|_| mk()).collect();
+        let b: Vec<_> = (0..blocks).map(|_| mk()).collect();
+        assert_eq!(run_d(&a, &b), [oracle(&a, &b).unwrap(); 4], "{blocks} blocks");
+    }
+}
+
+/// All-255 runs past D's flush bound: a carry on almost every add, `high`
+/// close to its limit, totals far beyond `i32`.
+#[test]
+fn d_worst_case_runs_cross_the_flush_bound() {
+    let n = 2 * D_FLUSH_BLOCKS + 5;
+    for (pa, pb) in [(u64::MAX, u64::MAX), (u64::MAX, 0), (0xF0F0_F0F0_0F0F_0F0F, 0x3333_CCCC_5555_AAAA)] {
+        let a = vec![([255u8; 64], pa); n];
+        let b = vec![([255u8; 64], pb); n];
+        assert_eq!(run_d(&a, &b), [oracle(&a, &b).unwrap(); 4]);
+    }
 }
