@@ -204,6 +204,13 @@ A3 cases:
 - A sequential dependency must see the first result.
 - `check_reorder` refuses a reorder of two non-commuting effects and names
   both.
+- Commutation is judged under the checked semantics, not exact integers
+  (corrected after review). A swap must not turn an overflow into a value:
+  `Add(1), Add(-1)` from `i64::MAX` overflows, while the reverse returns
+  `i64::MAX`. So `Add` pairs commute only without opposite signs, and `Mul`
+  pairs only when equal, when one factor is 1, or when both have magnitude
+  `>= 2`. `commutes_is_sound_under_checked_overflow` checks every admitted
+  pair from 13 boundary start values.
 
 A4 checks each licensed optimization against a negative example. Two of
 them (reorder and defer) also have disable runs, X7 and X8.
@@ -253,6 +260,7 @@ world has been dropped.
 | different thoughts treated as the same | `which_thought_changed_the_result` | — |
 | UNKNOWN treated as FALSE | `unknown_is_not_false` (only ClosedWorld coerces) | X9 red |
 | method order changing the effects | order witness → `OrderChanged` | X11 red |
+| two step lists that differ only above a lane index's low byte | full-width index in the order witness (`witness_keeps_the_full_lane_index`; corrected after review) | Y3 red |
 | provenance lost in aggregation | `aggregate` keeps every child and the deduplicated dependency union | X12 red |
 
 `aggregate` deduplicates dependencies, so a dependency named twice does not
@@ -365,7 +373,8 @@ correctness; it is what makes the result explainable, not reusable.
 
 ## Correctness record
 
-`tests/pof_antennas.rs` + the module tests: 41 tests. They pass on:
+`tests/pof_antennas.rs` + the module tests: 43 tests (41 at first push;
+two added with the review fixes, re-run on native, v3 and aarch64). They pass on:
 - native (AVX-512 VNNI), v4 and v3;
 - AVX (qemu SandyBridge) and v2 (qemu Nehalem);
 - aarch64 (qemu);
@@ -393,6 +402,9 @@ checkout`), each red:
 | X12 | A5 aggregation drops provenance | 1 |
 | X13 | A5 policy not compared | 1 |
 | X14 | A6 moving mask not conjugated | 1 |
+| Y1 | `commutes` admits every `Add`/`Add` pair (review fix) | 1 |
+| Y2 | `commutes` admits every `Mul`/`Mul` pair (review fix) | 1 |
+| Y3 | order witness truncates the lane index to `u8` (review fix) | 1 |
 
 ## Fruits (not done here)
 
