@@ -10,6 +10,9 @@ for the other:
   product kept, added to a wrapping 16-bit word, the carry escalated into a
   high tally. **Adopted (lab) as the exact replacement for A's f32 path**;
   it beats A' on AVX-512 and loses to B only because of its multiply.
+- **E, the anchor at 128** (`anchor.rs`): B's own split `|b| = low7 + 128 *
+  bit7`, with the anchor term a masked sum of `a` shifted by 7 instead of a
+  byte-dot against -128. **Ties B on AVX-512; no gain worth adopting.**
 
 READ BY: savant-architect, vector-synthesis, simd-savant, the TurboVec-U9
 owner. Follows `turbovec9-u9-head-to-head.md` (#388), whose B kernel and
@@ -23,6 +26,77 @@ operations and facade words only; no backend, facade or storage change.
 cargo run --release --example u9_abacus --features std
 cargo test --release --test u9_abacus
 ```
+
+## Candidate E: anchored at the power of two inside the operand
+
+No U9 operand reaches 64K, but every one has a known power-of-two anchor:
+bit 7. B already splits there; E keeps the multiply only for the residual:
+
+`a * |b| = a * low7 + (sum of a over lanes with bit 7 of b set) << 7`
+
+The anchor term is a masked sum, weighted by 128 once, at flush. Three ways
+to form it from existing facade words:
+
+| | per block | anchor term |
+|---|---|---|
+| B (#388) | 4 masked byte-dots | `a` x `top` (-128), a full byte-dot |
+| E4 | 4 masked byte-dots | `a` x all-ones bytes, masked by sign AND bit 7, one per sign |
+| E3 | 3 masked byte-dots | `a` x a `+1/-1` byte vector (from the sign plane via `mask_blend`), masked by bit 7 |
+| Esum | 2 masked byte-dots + 2 `mask_blend` + 2 `sum_bytes_u64` | masked byte sums, reduced horizontally every block |
+
+Measured (ns per 64 values, 3 runs; L1 / streamed):
+
+| | AVX-512 VNNI | AVX-512, no VNNI | AVX2 |
+|---|---|---|---|
+| B end-to-end | 2.89 - 2.91 / 17.1 - 17.5 | 5.63 - 7.94 / 18.8 - 21.0 | 10.03 - 10.05 / 22.2 - 23.4 |
+| **E3 end-to-end** | **2.92** / 17.1 - 17.7 | **5.52 - 7.81** / 19.0 - 20.9 | 40.2 - 43.9 / 219 - 220 |
+| E4 end-to-end | 3.56 - 3.58 / 18.1 - 19.7 | 6.47 - 9.05 / 20.1 - 22.0 | 14.2 - 14.5 / 24.3 - 25.8 |
+| Esum end-to-end | 4.42 - 4.44 / 16.9 - 20.6 | 5.95 - 8.31 / 19.4 - 21.3 | 59.8 - 65.9 / 276 - 288 |
+| B arithmetic only | 2.39 / 18.8 - 22.2 | 5.02 - 7.09 / 26.1 - 27.2 | 9.00 - 9.17 / 31.4 - 36.9 |
+| **E3 arithmetic only** | **2.28** / 14.8 - 18.4 | **4.95 - 6.88** / 22.4 - 24.5 | 40.9 - 45.8 / 214 - 217 |
+| E4 arithmetic only | 2.72 - 2.73 / 15.8 - 19.9 | 5.81 - 7.89 / 22.9 - 24.1 | 12.9 / 32.4 - 33.5 |
+| B scan | 2.64 / 11.4 - 12.8 | 4.84 - 6.94 / 14.6 - 16.7 | 9.11 - 9.19 / 19.6 - 27.2 |
+| E3 scan | 2.66 - 2.67 / 10.6 - 12.8 | 5.22 - 7.08 / 13.0 - 15.2 | 36.9 - 43.7 / 216 - 219 |
+
+(The third AVX-512-without-VNNI run was slower for every row alike; the
+first two are 5.63 / 6.06 for B and 5.52 / 5.52 for E3.)
+
+Reading it:
+
+- **E3 saves one byte-dot and pays it back building the sign vector.** On
+  VNNI it ties B end to end (2.92 vs 2.89 - 2.91) and in the scan, and is
+  about 5 % faster in arithmetic only (2.28 vs 2.39); without VNNI it is
+  about 2 % faster end to end and slower in the scan. Disassembly: 3
+  `vpdpbusd` against B's 4, plus the `kmovq` and blend that make `+1/-1`.
+- **E4 is slower everywhere.** A byte-dot against constant ones costs the
+  same instruction as one against -128; the extra mask ANDs are pure cost.
+- **Esum is slower everywhere.** `sum_bytes_u64` reduces horizontally on
+  every call.
+- **On AVX2, E3 and Esum lose to `mask_blend`'s per-lane realization**
+  (40 - 66 ns); E4, which needs no blend, is 1.4x B.
+
+Verdict for E: **no adoption.** The anchor idea is arithmetically right and
+exact, but B already turns the anchor into one hardware instruction; the
+saving is one byte-dot out of four, and every facade route to the masked sum
+costs about that much. Two facade gaps would change it, both recorded and not
+added:
+
+1. **A vertical masked byte sum** (`vpsadbw` into a `U64x8` accumulator,
+   reduced once at flush): the anchor term per block would be one SAD and
+   one add instead of a byte-dot.
+2. **A sign plane to `+1/-1` bytes** that does not go through `mask_blend`
+   (which is a per-lane loop on AVX2).
+
+Correctness: the split `|b| = low7 + 128 * bit7` for every magnitude and the
+`+1/-1` sign bytes for a mixed plane; all 511 x 511 pairs through E4, E3,
+Esum and all three scans; full blocks; all-255 runs past the flush bound.
+Passed on all seven tiers. Disable runs, each red: anchor weighted `<< 6`;
+E4's anchor ignoring bit 7; sign bytes all +1; Esum's blend inverted; `low7`
+keeping bit 7.
+
+Also found while checking E: on AVX2 the facade's masked byte-dot itself
+contains 4 `vpshufb` (LLVM spreads the keep-mask bytes with them), so #388's
+"no shuffle in B" holds on AVX-512 only. Corrected in #388's report.
 
 ## Verdict for C (bit-plane multiplication only)
 

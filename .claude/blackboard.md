@@ -3928,4 +3928,7 @@ operands. On v4/AVX2 LLVM lowers `count_ones` to a `vpshufb` nibble table. Exact
 D (A' products + 16-bit place-value column, carry by bit logic, no f32): react beats A' ~10 % on AVX-512 (5.4-6.0 vs
 6.3-6.6 ns arith; LLVM folds the carry into 2 vpternlogq), anticipate wins on AVX2; B still 2.3x faster on VNNI because D
 widens u8->u16 before mullo. ADOPT-LAB as A's f32 replacement, DEFER as B replacement. Exact on 7 tiers; 5 disables red.
+E (B's split at 128, anchor term as masked sum << 7): E3 (3 byte-dots, +1/-1 sign bytes) ties B on VNNI (2.92 vs 2.90 e2e,
+2.28 vs 2.39 arith), E4/Esum slower, AVX2 lost to mask_blend. No adoption. Facade gaps recorded: vertical masked vpsadbw
+accumulate; sign plane -> +1/-1 bytes without mask_blend. Exact on 7 tiers; 5 disables red.
 
