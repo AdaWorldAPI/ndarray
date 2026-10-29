@@ -7,9 +7,11 @@
 #[path = "../u9_head_to_head/kernels.rs"]
 mod kernels;
 mod abacus;
+mod anchor;
 mod carry16;
 
 use abacus::*;
+use anchor::*;
 use carry16::*;
 use kernels::*;
 use ndarray::simd::{I32x16, I8x64, U16x32, U8x64};
@@ -343,6 +345,123 @@ fn bench(label: &str, n: usize, runs: usize, seed: u64) {
     }
 }
 
+/// Candidate E (anchored at 128) against B, on the same data. Run alone with
+/// the argument `e`.
+fn bench_e(label: &str, n: usize, runs: usize, seed: u64) {
+    let (ra, rb) = data(n, seed);
+    let blk = |v: &[Raw]| -> Vec<Block> {
+        v.iter()
+            .map(|(m, p)| Block {
+                mag: U8x64::from_array(*m),
+                positive: *p,
+            })
+            .collect()
+    };
+    let (ab, bb) = (blk(&ra), blk(&rb));
+    let want = oracle(&ra, &rb).unwrap();
+    let want_scan = oracle(&ra, &vec![rb[0]; n]).unwrap();
+    let q = bb[0];
+    let split: Vec<(u64, I8x64, I8x64)> = ab.iter().zip(&bb).map(|(a, b)| prepare_b(*a, *b)).collect();
+    let anc: Vec<(u64, I8x64, u64)> = ab
+        .iter()
+        .zip(&bb)
+        .map(|(a, b)| {
+            let (low7, top) = split_anchor(b.mag);
+            (a.positive ^ b.positive, low7, top)
+        })
+        .collect();
+
+    let b_e2e = || {
+        let mut acc = AccB::new();
+        for (a, b) in ab.iter().zip(&bb) {
+            check(*a, *b).unwrap();
+            acc.step(*a, *b);
+        }
+        acc.finish()
+    };
+    let b_ari = || {
+        let mut acc = AccB::new();
+        for (a, (ng, l, t)) in ab.iter().zip(&split) {
+            acc.mac(a.mag, *ng, *l, *t);
+        }
+        acc.finish()
+    };
+    let b_scan = || {
+        let qb = QueryB::new(q);
+        let mut acc = AccB::new();
+        for x in &ab {
+            check(*x, q).unwrap();
+            acc.scan_step(*x, &qb);
+        }
+        acc.finish()
+    };
+    macro_rules! e_rows {
+        ($acc:ident) => {{
+            let e2e = || {
+                let mut acc = $acc::new();
+                for (a, b) in ab.iter().zip(&bb) {
+                    check(*a, *b).unwrap();
+                    acc.step(*a, *b);
+                }
+                acc.finish()
+            };
+            let ari = || {
+                let mut acc = $acc::new();
+                for (a, (ng, l, t)) in ab.iter().zip(&anc) {
+                    acc.mac(a.mag, *ng, *l, *t);
+                }
+                acc.finish()
+            };
+            let scan = || {
+                let qe = QueryE::new(q);
+                let mut acc = $acc::new();
+                for x in &ab {
+                    check(*x, q).unwrap();
+                    acc.scan_step(*x, &qe);
+                }
+                acc.finish()
+            };
+            assert_eq!(e2e(), want, stringify!($acc));
+            assert_eq!(ari(), want, stringify!($acc));
+            assert_eq!(scan(), want_scan, stringify!($acc));
+            (e2e, ari, scan)
+        }};
+    }
+    let (e4_e2e, e4_ari, e4_scan) = e_rows!(AccE4);
+    let (e3_e2e, e3_ari, e3_scan) = e_rows!(AccE3);
+    let (es_e2e, es_ari, es_scan) = e_rows!(AccESum);
+    assert_eq!(b_e2e(), want);
+    assert_eq!(b_ari(), want);
+    assert_eq!(b_scan(), want_scan);
+
+    println!("-- E, {label}: {n} blocks of 64 values per operand");
+    let be = time("B end-to-end: 4 masked dot4 (top limb x -128)", n, runs, None, &b_e2e);
+    time("E4 end-to-end: 2 dot4 low7 + 2 dot4 x ones, << 7", n, runs, Some(be), &e4_e2e);
+    time("E3 end-to-end: 2 dot4 low7 + 1 dot4 x signed ones", n, runs, Some(be), &e3_e2e);
+    time("Esum end-to-end: 2 dot4 low7 + 2 masked sum_bytes", n, runs, Some(be), &es_e2e);
+    let ba = time("B arithmetic only", n, runs, None, &b_ari);
+    time("E4 arithmetic only", n, runs, Some(ba), &e4_ari);
+    time("E3 arithmetic only", n, runs, Some(ba), &e3_ari);
+    time("Esum arithmetic only", n, runs, Some(ba), &es_ari);
+    let bs = time("B scan", n, runs, None, &b_scan);
+    time("E4 scan", n, runs, Some(bs), &e4_scan);
+    time("E3 scan", n, runs, Some(bs), &e3_scan);
+    time("Esum scan", n, runs, Some(bs), &es_scan);
+}
+
+#[inline(never)]
+pub fn asm_e4_mac(acc: &mut AccE4, a: U8x64, negative: u64, low7: I8x64, top: u64) {
+    acc.mac(a, negative, low7, top)
+}
+#[inline(never)]
+pub fn asm_e3_mac(acc: &mut AccE3, a: U8x64, negative: u64, low7: I8x64, top: u64) {
+    acc.mac(a, negative, low7, top)
+}
+#[inline(never)]
+pub fn asm_b_mac(acc: &mut AccB, a: U8x64, negative: u64, low7: I8x64, top: I8x64) {
+    acc.mac(a, negative, low7, top)
+}
+
 // Out-of-line copies for the disassembly (`objdump -d --no-show-raw-insn`).
 #[inline(never)]
 pub fn asm_carry_save3(a: u64, b: u64, c: u64) -> (u64, u64) {
@@ -375,6 +494,21 @@ pub fn asm_popcnt_mac(acc: &mut AccPopcnt, a: &[u64; 8], negative: u64, b: &[u64
 
 fn main() {
     println!("tier: {} (target-cpu as compiled)", tier());
+    {
+        let (a, l) = (black_box(U8x64::splat(200)), black_box(I8x64::splat(5)));
+        let mut e4 = AccE4::new();
+        asm_e4_mac(&mut e4, a, black_box(0x55), l, black_box(0xF0));
+        let mut e3 = AccE3::new();
+        asm_e3_mac(&mut e3, a, black_box(0x55), l, black_box(0xF0));
+        let mut b = AccB::new();
+        asm_b_mac(&mut b, a, black_box(0x55), l, l);
+        black_box((e4.finish(), e3.finish(), b.finish()));
+    }
+    if std::env::args().any(|x| x == "e") {
+        bench_e("L1-resident, repeated 4096-value dot", 64, 2001, 1);
+        bench_e("streamed", 1 << 20, 5, 2);
+        return;
+    }
     {
         // Keep the out-of-line copies in the binary.
         let p = black_box(asm_planes(black_box(U8x64::splat(0xA5))));

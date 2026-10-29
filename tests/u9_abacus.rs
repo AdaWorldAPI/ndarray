@@ -8,8 +8,11 @@ mod kernels;
 mod abacus;
 #[path = "../examples/u9_abacus/carry16.rs"]
 mod carry16;
+#[path = "../examples/u9_abacus/anchor.rs"]
+mod anchor;
 
 use abacus::{carry_save3, planes, Abacus, AccAbacus, AccCsa, AccPopcnt, QueryC};
+use anchor::{bit7, sign_bytes, split_anchor, AccE3, AccE4, AccESum, QueryE};
 use carry16::{carry_after, carry_before, AccD, QueryD, D_FLUSH_BLOCKS};
 use kernels::{check, oracle, AccB, Block, NeverTouched, B_FLUSH_BLOCKS};
 use ndarray::simd::{U16x32, U8x64};
@@ -299,5 +302,102 @@ fn d_worst_case_runs_cross_the_flush_bound() {
         let a = vec![([255u8; 64], pa); n];
         let b = vec![([255u8; 64], pb); n];
         assert_eq!(run_d(&a, &b), [oracle(&a, &b).unwrap(); 4]);
+    }
+}
+
+/// E4, E3, Esum and their scans (b as the prepared query).
+fn run_e(a: &[Raw], b: &[Raw]) -> [i64; 6] {
+    let (mut e4, mut e3, mut es) = (AccE4::new(), AccE3::new(), AccESum::new());
+    let (mut s4, mut s3, mut ss) = (AccE4::new(), AccE3::new(), AccESum::new());
+    for (ra, rb) in a.iter().zip(b) {
+        let (x, y) = (block(ra), block(rb));
+        check(x, y).unwrap();
+        e4.step(x, y);
+        e3.step(x, y);
+        es.step(x, y);
+        let q = QueryE::new(y);
+        s4.scan_step(x, &q);
+        s3.scan_step(x, &q);
+        ss.scan_step(x, &q);
+    }
+    [e4.finish(), e3.finish(), es.finish(), s4.finish(), s3.finish(), ss.finish()]
+}
+
+/// The anchor split for every magnitude: `|b| = low7 + 128 * bit7`, and the
+/// sign bytes are `+1` / `-1` exactly by the plane.
+#[test]
+fn anchor_split_and_sign_bytes() {
+    for base in [0u8, 64, 128, 192] {
+        let m: [u8; 64] = core::array::from_fn(|i| (i as u8).wrapping_add(base));
+        let (low7, top) = split_anchor(U8x64::from_array(m));
+        assert_eq!(top, bit7(U8x64::from_array(m)));
+        let low7 = low7.to_array();
+        for k in 0..64 {
+            let t = i32::from((top >> k & 1) as u8);
+            assert!((0..=127).contains(&low7[k]));
+            assert_eq!(i32::from(low7[k]) + 128 * t, i32::from(m[k]), "magnitude {}", m[k]);
+        }
+    }
+    let plane = 0xF0F0_1234_8000_0001u64;
+    let s = sign_bytes(plane).to_array();
+    for (k, &v) in s.iter().enumerate() {
+        assert_eq!(v, if plane >> k & 1 == 1 { -1 } else { 1 });
+    }
+}
+
+#[test]
+fn e_all_511_by_511_pairs_are_exact() {
+    let mut n = 0usize;
+    for va in -255..=255i32 {
+        for vb in -255..=255i32 {
+            let lane = n % 64;
+            let (ma, pa) = encode(va);
+            let (mb, pb) = encode(vb);
+            let (mut am, mut bm) = ([0u8; 64], [0u8; 64]);
+            am[lane] = ma;
+            bm[lane] = mb;
+            let ap = if pa { u64::MAX } else { !(1u64 << lane) };
+            let bp = if pb { u64::MAX } else { !(1u64 << lane) };
+            let want = i64::from(va) * i64::from(vb);
+            assert_eq!(run_e(&[(am, ap)], &[(bm, bp)]), [want; 6], "{va} x {vb}");
+            n += 1;
+        }
+    }
+    assert_eq!(n, 511 * 511);
+}
+
+#[test]
+fn e_full_blocks_match_the_oracle() {
+    let mut s = 0x7F4A_7C15_9E37_79B9u64;
+    let mut val = move || {
+        s = s
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        ((s >> 33) % 511) as i32 - 255
+    };
+    for blocks in [1usize, 2, 7, 64, 300] {
+        let mut mk = || {
+            let mut m = [0u8; 64];
+            let mut p = 0u64;
+            for (i, slot) in m.iter_mut().enumerate() {
+                let (mi, pi) = encode(val());
+                *slot = mi;
+                p |= u64::from(pi) << i;
+            }
+            (m, p)
+        };
+        let a: Vec<_> = (0..blocks).map(|_| mk()).collect();
+        let b: Vec<_> = (0..blocks).map(|_| mk()).collect();
+        assert_eq!(run_e(&a, &b), [oracle(&a, &b).unwrap(); 6], "{blocks} blocks");
+    }
+}
+
+#[test]
+fn e_worst_case_runs_cross_the_flush_bound() {
+    let n = 3 * B_FLUSH_BLOCKS + 5;
+    for (pa, pb) in [(u64::MAX, u64::MAX), (u64::MAX, 0), (0, 0), (0xF0F0_F0F0_0F0F_0F0F, 0x3333_CCCC_5555_AAAA)] {
+        let a = vec![([255u8; 64], pa); n];
+        let b = vec![([255u8; 64], pb); n];
+        assert_eq!(run_e(&a, &b), [oracle(&a, &b).unwrap(); 6]);
     }
 }
