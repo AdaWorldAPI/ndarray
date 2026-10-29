@@ -155,3 +155,32 @@ fn never_touched_is_refused_and_touched_zero_is_not() {
         assert_eq!(oracle(&[(m, !(1u64 << lane))], &[([0u8; 64], u64::MAX)]), Err(NeverTouched(1 << lane)));
     }
 }
+
+/// The schoolbook split behind B, for every magnitude 0..=255, through the
+/// kernel's own `prepare_b`: the two partial operands recombine to the
+/// original byte by XOR (no bit lost, nothing negated), the signed value is
+/// `|b| = low7 - top` with `top` in {0, -128}, and flipping either polarity
+/// bit changes only the routing plane, never the byte operands.
+#[test]
+fn split_recombines_and_polarity_only_routes() {
+    let mag: [u8; 64] = core::array::from_fn(|i| i as u8);
+    for base in [0u8, 64, 128, 192] {
+        let m: [u8; 64] = core::array::from_fn(|i| mag[i].wrapping_add(base));
+        let a = block([1u8; 64], u64::MAX);
+        let (plane, low7, top) = kernels::prepare_b(a, block(m, u64::MAX));
+        assert_eq!(plane, 0, "equal polarities route every lane positive");
+        let (low7, top) = (low7.to_array(), top.to_array());
+        for i in 0..64 {
+            let (l, t) = (low7[i], top[i]);
+            assert!(t == 0 || t == -128, "top of {} is {t}", m[i]);
+            assert_eq!(l.to_ne_bytes()[0] ^ t.to_ne_bytes()[0], m[i], "XOR recombination of {}", m[i]);
+            assert_eq!(i32::from(l) - i32::from(t), i32::from(m[i]), "low7 - top of {}", m[i]);
+        }
+        for (pa, pb) in [(0u64, u64::MAX), (u64::MAX, 0), (0x5555_5555_5555_5555, 0x0F0F_0F0F_0F0F_0F0F)] {
+            let (flipped, l2, t2) = kernels::prepare_b(block([1u8; 64], pa), block(m, pb));
+            assert_eq!(flipped, pa ^ pb, "the plane is the XOR of the two polarities");
+            assert_eq!(l2.to_array(), low7, "polarity must not touch low7");
+            assert_eq!(t2.to_array(), top, "polarity must not touch top");
+        }
+    }
+}
