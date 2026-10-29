@@ -18,8 +18,8 @@ For full-range signed 9-bit arithmetic (-255..=255) on the shared 8+1 block
 (64 `u8` magnitudes + one `u64` positive plane per operand), which composes
 the cheaper bit-exact multiply-accumulate through the existing facade?
 
-**B, U8 x I8 byte-dot.** Its arithmetic costs the same as a plain byte-dot
-(1.0x on AVX-512 VNNI); A's costs 3.3 - 3.9x, because A has to widen to f32 to
+**B, U8 x I8 byte-dot.** Its arithmetic costs about the same as a plain
+byte-dot (1.03 - 1.06x on AVX-512 VNNI); A's costs 3.3 - 4.0x, because A has to widen to f32 to
 add a signed product without a u16 -> i32 widening in the facade. In the form
 a search actually runs (query prepared once, index blocks streamed), B wins on
 every tier measured: 2.2 ns against 6.5 ns per 64 values on AVX-512 VNNI.

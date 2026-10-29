@@ -3906,7 +3906,7 @@ Probe-only, no production change: `examples/u9_head_to_head/{kernels,main}.rs`, 
 511 x 511 exhaustive pairs, mixed full blocks, worst-case runs past both flush intervals, never-touched refusal.
 Passed on native, v4, v3, avx (qemu), v2 (qemu), aarch64 (qemu), nightly; 8 disable runs all red.
 
-Verdict: B (U8 x I8 byte-dot) is the cheaper exact I9 substrate. Arithmetic only on VNNI: B 1.89 ns/64 (1.0x plain
+Verdict: B (U8 x I8 byte-dot) is the cheaper exact I9 substrate. Arithmetic only on VNNI: B 1.89 ns/64 (1.03-1.06x plain
 byte-dot) vs A 6.06-7.13 (f32 widening). Scan form (query prepared once, index streamed): B 2.19-2.23 vs A 6.50-6.61
 on VNNI, 10.6 vs 76 on AVX2. A wins only the symmetric per-block row (7.7 vs 13.0) because the facade has no
 U8x64 -> I8x64 conversion and B's operand prep goes through an f32 -> i32 -> narrow detour (gap recorded, not filled).
