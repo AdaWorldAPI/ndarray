@@ -426,6 +426,11 @@ fn bench_e(label: &str, n: usize, runs: usize, seed: u64) {
     let (e4_e2e, e4_ari, e4_scan) = e_rows!(AccE4);
     let (e3_e2e, e3_ari, e3_scan) = e_rows!(AccE3);
     let (es_e2e, es_ari, es_scan) = e_rows!(AccESum);
+    let (e5_e2e, e5_ari, e5_scan) = e_rows!(AccE5);
+    // The out-of-line arithmetic loops read for the disassembly must also be exact.
+    assert_eq!(asm_b_loop(&ab.mag, &split), want);
+    assert_eq!(asm_e3_loop(&ab.mag, &anc), want);
+    assert_eq!(asm_e5_loop(&ab.mag, &anc), want);
     assert_eq!(b_e2e(), want);
     assert_eq!(b_ari(), want);
     assert_eq!(b_scan(), want_scan);
@@ -435,14 +440,50 @@ fn bench_e(label: &str, n: usize, runs: usize, seed: u64) {
     time("E4 end-to-end: 2 dot4 low7 + 2 dot4 x ones, << 7", n, runs, Some(be), &e4_e2e);
     time("E3 end-to-end: 2 dot4 low7 + 1 dot4 x signed ones", n, runs, Some(be), &e3_e2e);
     time("Esum end-to-end: 2 dot4 low7 + 2 masked sum_bytes", n, runs, Some(be), &es_e2e);
+    time("E5 end-to-end: 2 dot4 low7 + 2 vertical masked sum8", n, runs, Some(be), &e5_e2e);
     let ba = time("B arithmetic only", n, runs, None, &b_ari);
     time("E4 arithmetic only", n, runs, Some(ba), &e4_ari);
     time("E3 arithmetic only", n, runs, Some(ba), &e3_ari);
     time("Esum arithmetic only", n, runs, Some(ba), &es_ari);
+    time("E5 arithmetic only", n, runs, Some(ba), &e5_ari);
     let bs = time("B scan", n, runs, None, &b_scan);
     time("E4 scan", n, runs, Some(bs), &e4_scan);
     time("E3 scan", n, runs, Some(bs), &e3_scan);
     time("Esum scan", n, runs, Some(bs), &es_scan);
+    time("E5 scan", n, runs, Some(bs), &e5_scan);
+}
+
+/// Cost of one flush of an accumulator, ns per flush (reduction, `i64`
+/// combine and reset). Amortized over `B_FLUSH_BLOCKS` blocks.
+fn flush_costs() {
+    const N: usize = 200_000;
+    macro_rules! per_flush {
+        ($name:expr, $acc:ident) => {{
+            let mut acc = $acc::new();
+            let mut t: Vec<f64> = (0..15)
+                .map(|_| {
+                    let t0 = Instant::now();
+                    for _ in 0..N {
+                        black_box(&mut acc).flush();
+                    }
+                    t0.elapsed().as_nanos() as f64 / N as f64
+                })
+                .collect();
+            t.sort_by(f64::total_cmp);
+            black_box(acc.finish());
+            let med = t[7];
+            println!(
+                "{:<60} {med:8.3} ns/flush ({:.6} ns/64 amortized over {} blocks)",
+                $name,
+                med / B_FLUSH_BLOCKS as f64,
+                B_FLUSH_BLOCKS
+            );
+        }};
+    }
+    println!("-- E, flush overhead");
+    per_flush!("B flush: 4 x I32x16 -> i64", AccB);
+    per_flush!("E3 flush: 3 x I32x16 -> i64", AccE3);
+    per_flush!("E5 flush: 2 x I32x16 + 2 x U64x8 reduce_sum -> i64", AccE5);
 }
 
 #[inline(never)]
@@ -452,6 +493,37 @@ pub fn asm_e4_mac(acc: &mut AccE4, a: U8x64, negative: u64, low7: I8x64, top: u6
 #[inline(never)]
 pub fn asm_e3_mac(acc: &mut AccE3, a: U8x64, negative: u64, low7: I8x64, top: u64) {
     acc.mac(a, negative, low7, top)
+}
+#[inline(never)]
+pub fn asm_e5_mac(acc: &mut AccE5, a: U8x64, negative: u64, low7: I8x64, top: u64) {
+    acc.mac(a, negative, low7, top)
+}
+
+// Whole arithmetic loops, out of line, so the disassembly shows the steady
+// state: accumulators in registers or spilled, and what runs per block.
+#[inline(never)]
+pub fn asm_b_loop(mags: &[U8x64], split: &[(u64, I8x64, I8x64)]) -> i64 {
+    let mut acc = AccB::new();
+    for (a, (ng, l, t)) in mags.iter().zip(split) {
+        acc.mac(*a, *ng, *l, *t);
+    }
+    acc.finish()
+}
+#[inline(never)]
+pub fn asm_e3_loop(mags: &[U8x64], anc: &[(u64, I8x64, u64)]) -> i64 {
+    let mut acc = AccE3::new();
+    for (a, (ng, l, t)) in mags.iter().zip(anc) {
+        acc.mac(*a, *ng, *l, *t);
+    }
+    acc.finish()
+}
+#[inline(never)]
+pub fn asm_e5_loop(mags: &[U8x64], anc: &[(u64, I8x64, u64)]) -> i64 {
+    let mut acc = AccE5::new();
+    for (a, (ng, l, t)) in mags.iter().zip(anc) {
+        acc.mac(*a, *ng, *l, *t);
+    }
+    acc.finish()
 }
 #[inline(never)]
 pub fn asm_b_mac(acc: &mut AccB, a: U8x64, negative: u64, low7: I8x64, top: I8x64) {
@@ -498,11 +570,15 @@ fn main() {
         asm_e3_mac(&mut e3, a, black_box(0x55), l, black_box(0xF0));
         let mut b = AccB::new();
         asm_b_mac(&mut b, a, black_box(0x55), l, l);
+        let mut e5 = AccE5::new();
+        asm_e5_mac(&mut e5, a, black_box(0x55), l, black_box(0xF0));
+        black_box(e5.finish());
         black_box((e4.finish(), e3.finish(), b.finish()));
     }
     if std::env::args().any(|x| x == "e") {
         bench_e("L1-resident, repeated 4096-value dot", 64, 2001, 1);
         bench_e("streamed", 1 << 20, 5, 2);
+        flush_costs();
         return;
     }
     {

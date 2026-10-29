@@ -3967,11 +3967,21 @@ in bit-sliced counters.
 
 | # | fruit | size | gate |
 |---|---|---|---|
-| U1 | wire `sum8_u8_add_masked` into candidate E (Esum's anchor term) and re-measure E against B | low | E's oracle tests unchanged; one row per tier |
+| U1 | ~~wire `sum8_u8_add_masked` into candidate E (Esum's anchor term) and re-measure E against B~~ DONE: #393 (D-U9-E5; ADOPT-LAB only without VNNI) | low | E's oracle tests unchanged; one row per tier |
 | U2 | AVX2 streamed B is 27 - 33 ns against 9 - 10 in L1, more than the extra bytes explain | low | one probe that separates bandwidth from the masked byte-dot's 4 `vpshufb` |
 | U3 | NEON and wasm timings for B, D and F (only x86 measured) | low | a real aarch64 host; qemu numbers are not valid |
 | U4 | sign plane to `+1/-1` bytes without `mask_blend` (E3's cost on AVX2) | high | facade word with parity on all realizations; must pass the facet-stride guard |
 | U5 | AVX2 `U8x64::mask_blend` is a per-lane loop and dominates every A/E3 row there | high | facet-stride R2 burn-down item; parity unchanged |
 | U6 | `U8x64 -> I8x64` bit view for B's `low7`/`top` (today a store/load) | heavy | needs an operator ruling: facet-stride R3 forbids u8/i8 mixing |
 | U7 | recall on a real TurboVec-U9 index (arithmetic parity says nothing about retrieval) | heavy | owner experiment, defined in the head-to-head report |
+
+## D-U9-E5: the U9 anchor through vertical masked byte sums (2026-10-29, branch claude/u9-e5)
+
+Probe-only: `AccE5` in `examples/u9_abacus/anchor.rs` (E3/E4/Esum/B unchanged), 5 tests in `tests/u9_abacus.rs`,
+report `.claude/knowledge/u9-e5-probe.md`. Consumer gate for #390: E's split `|b| = low7 + 128*bit7`, two masked low7
+byte-dots, anchor as two persistent `U64x8::sum8_u8_add_masked` accumulators reduced only at flush. Exact on 7
+realizations; wasm/neon parity pass; 6 disable runs red. Verdict: ADOPT-LAB on AVX-512 without VNNI (L1 e2e 5.14-5.30 vs B
+5.67-7.50, 8 runs; byte-dot emulated in ~10 insns there), REFUSE on VNNI (3.55-3.95 vs 2.92-3.25: B's anchor dot shares the
+sign's zero-masked copy, E5 pays maskz+vpsadbw+vpaddq per sign; 0 spills) and AVX2 (mask built in registers per call,
+8 vpshufb + 16 vpmuludq per block). Overall DEFER as B replacement. Closes fruit U1 (blackboard U9 fruit list, #392).
 
