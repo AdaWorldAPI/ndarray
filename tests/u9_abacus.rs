@@ -12,7 +12,7 @@ mod carry16;
 mod anchor;
 
 use abacus::{carry_save3, planes, Abacus, AccAbacus, AccCsa, AccPopcnt, QueryC};
-use anchor::{bit7, sign_bytes, split_anchor, AccE3, AccE4, AccESum, QueryE};
+use anchor::{bit7, sign_bytes, split_anchor, AccE3, AccE4, AccE5, AccESum, QueryE};
 use carry16::{carry_after, carry_before, AccD, QueryD, D_FLUSH_BLOCKS};
 use kernels::{check, oracle, AccB, Block, NeverTouched, B_FLUSH_BLOCKS};
 use ndarray::simd::{U16x32, U8x64};
@@ -400,4 +400,107 @@ fn e_worst_case_runs_cross_the_flush_bound() {
         let b = vec![([255u8; 64], pb); n];
         assert_eq!(run_e(&a, &b), [oracle(&a, &b).unwrap(); 6]);
     }
+}
+
+/// E5 (vertical masked byte sums, #390) end to end and as a scan (b as the
+/// prepared query), next to B on the same data.
+fn run_e5(a: &[Raw], b: &[Raw]) -> [i64; 3] {
+    let (mut e5, mut s5, mut bk) = (AccE5::new(), AccE5::new(), AccB::new());
+    for (ra, rb) in a.iter().zip(b) {
+        let (x, y) = (block(ra), block(rb));
+        check(x, y).unwrap();
+        e5.step(x, y);
+        s5.scan_step(x, &QueryE::new(y));
+        bk.step(x, y);
+    }
+    [e5.finish(), s5.finish(), bk.finish()]
+}
+
+#[test]
+fn e5_all_511_by_511_pairs_are_exact() {
+    let mut n = 0usize;
+    for va in -255..=255i32 {
+        for vb in -255..=255i32 {
+            let lane = n % 64;
+            let (ma, pa) = encode(va);
+            let (mb, pb) = encode(vb);
+            let (mut am, mut bm) = ([0u8; 64], [0u8; 64]);
+            am[lane] = ma;
+            bm[lane] = mb;
+            let ap = if pa { u64::MAX } else { !(1u64 << lane) };
+            let bp = if pb { u64::MAX } else { !(1u64 << lane) };
+            let want = i64::from(va) * i64::from(vb);
+            assert_eq!(run_e5(&[(am, ap)], &[(bm, bp)]), [want; 3], "{va} x {vb}");
+            n += 1;
+        }
+    }
+    assert_eq!(n, 511 * 511);
+}
+
+#[test]
+fn e5_full_blocks_with_mixed_signs_match_the_oracle() {
+    let mut s = 0x2545_F491_4F6C_DD1Du64;
+    let mut val = move || {
+        s = s
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        ((s >> 33) % 511) as i32 - 255
+    };
+    for blocks in [1usize, 2, 7, 64, 300] {
+        let mut mk = || {
+            let mut m = [0u8; 64];
+            let mut p = 0u64;
+            for (i, slot) in m.iter_mut().enumerate() {
+                let (mi, pi) = encode(val());
+                *slot = mi;
+                p |= u64::from(pi) << i;
+            }
+            (m, p)
+        };
+        let a: Vec<_> = (0..blocks).map(|_| mk()).collect();
+        let b: Vec<_> = (0..blocks).map(|_| mk()).collect();
+        // Mixed signs and both bit-7 states present, or the case proves little.
+        assert!(a
+            .iter()
+            .chain(&b)
+            .any(|(m, p)| *p != 0 && *p != u64::MAX && m.iter().any(|&x| x >= 128)));
+        assert_eq!(run_e5(&a, &b), [oracle(&a, &b).unwrap(); 3], "{blocks} blocks");
+    }
+}
+
+/// All-255 runs past three flush bounds, every sign mix; totals beyond `i32`.
+#[test]
+fn e5_worst_case_runs_cross_the_flush_bound() {
+    let n = 3 * B_FLUSH_BLOCKS + 5;
+    for (pa, pb) in [(u64::MAX, u64::MAX), (u64::MAX, 0), (0, 0), (0xF0F0_F0F0_0F0F_0F0F, 0x3333_CCCC_5555_AAAA)] {
+        let a = vec![([255u8; 64], pa); n];
+        let b = vec![([255u8; 64], pb); n];
+        assert_eq!(run_e5(&a, &b), [oracle(&a, &b).unwrap(); 3]);
+    }
+}
+
+/// The anchor accumulators are reduced once per flush, never per block:
+/// `n` blocks give `n / B_FLUSH_BLOCKS` flushes, plus one at `finish`.
+#[test]
+fn e5_reduces_the_anchor_only_at_flush() {
+    let n = 2 * B_FLUSH_BLOCKS + 7;
+    let (x, y) = (block(&([200u8; 64], 0x0F0F)), block(&([131u8; 64], u64::MAX)));
+    let mut e5 = AccE5::new();
+    for _ in 0..n {
+        e5.step(x, y);
+    }
+    assert_eq!(e5.reductions, n / B_FLUSH_BLOCKS);
+}
+
+/// Touched zero scores 0 in E5; never-touched is refused before E5 sees it.
+#[test]
+fn e5_touched_zero_scores_zero_and_never_touched_is_refused() {
+    let zero = ([0u8; 64], u64::MAX);
+    let big = ([255u8; 64], 0xAAAA_5555_AAAA_5555);
+    assert_eq!(run_e5(&[zero, big], &[big, zero]), [0; 3]);
+    let mut m = [200u8; 64];
+    m[9] = 0;
+    let sentinel = block(&(m, !(1u64 << 9)));
+    assert_eq!(check(sentinel, block(&big)), Err(NeverTouched(1 << 9)));
+    assert_eq!(check(block(&big), sentinel), Err(NeverTouched(1 << 9)));
 }

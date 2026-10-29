@@ -14,14 +14,16 @@
 //! * E3 ([`AccE3`]): one byte-dot of `a` against a `+1 / -1` byte vector
 //!   (built from the sign plane), masked by the bit-7 plane: three byte-dots;
 //! * Esum ([`AccESum`]): `U8x64::mask_blend` + `sum_bytes_u64` per sign, which
-//!   reduces horizontally on every call.
+//!   reduces horizontally on every call;
+//! * E5 ([`AccE5`]): `U64x8::sum8_u8_add_masked` (#390) per sign into two
+//!   persistent vertical accumulators, reduced only at flush.
 //!
 //! The polarity rule is unchanged: `negative = plane_a XOR plane_b`.
 
 #![allow(dead_code)]
 
 use crate::kernels::{bits_as_i8, lanes_i64, Block, B_FLUSH_BLOCKS};
-use ndarray::simd::{I32x16, I8x64, U8x64};
+use ndarray::simd::{I32x16, I8x64, U64x8, U8x64};
 
 /// Lanes whose magnitude has bit 7 set, as a plane.
 #[inline(always)]
@@ -188,6 +190,74 @@ impl AccESum {
         let pos = U8x64::mask_blend(!negative & top, zero, a).sum_bytes_u64();
         let neg = U8x64::mask_blend(negative & top, zero, a).sum_bytes_u64();
         self.anchor += pos as i64 - neg as i64;
+        self.blocks += 1;
+        if self.blocks == B_FLUSH_BLOCKS {
+            self.flush();
+        }
+    }
+
+    #[inline(always)]
+    pub fn step(&mut self, a: Block, b: Block) {
+        let (low7, top) = split_anchor(b.mag);
+        self.mac(a.mag, a.positive ^ b.positive, low7, top);
+    }
+
+    #[inline(always)]
+    pub fn scan_step(&mut self, x: Block, q: &QueryE) {
+        self.mac(x.mag, x.positive ^ q.positive, q.low7, q.top);
+    }
+
+    pub fn finish(mut self) -> i64 {
+        self.flush();
+        self.total
+    }
+}
+
+/// E5: the two `low7` byte-dots, and the anchor sums as two persistent
+/// vertical masked byte sums (`U64x8::sum8_u8_add_masked`), reduced only at
+/// flush.
+///
+/// Bounds per block: a `low7` lane gains at most `4 * 255 * 127 = 129_540`,
+/// so after `B_FLUSH_BLOCKS` = 16_384 blocks it holds at most 2_122_383_360,
+/// below `i32::MAX`. An anchor lane gains at most `8 * 255 = 2_040`, at most
+/// 33_423_360 per flush; eight lanes sum to at most 267_386_880 and `<< 7`
+/// to 3.4e10, inside `i64`. The `u64` lanes cannot overflow before the flush.
+pub struct AccE5 {
+    low7: [I32x16; 2],
+    anchor: [U64x8; 2],
+    blocks: usize,
+    total: i64,
+    /// Number of anchor reductions so far; one per flush, never per block.
+    pub reductions: usize,
+}
+
+impl AccE5 {
+    pub fn new() -> Self {
+        Self {
+            low7: [I32x16::splat(0); 2],
+            anchor: [U64x8::splat(0); 2],
+            blocks: 0,
+            total: 0,
+            reductions: 0,
+        }
+    }
+
+    pub fn flush(&mut self) {
+        let r = self.low7.map(lanes_i64);
+        let anchor = self.anchor[0].reduce_sum() as i64 - self.anchor[1].reduce_sum() as i64;
+        self.total += (r[0] - r[1]) + (anchor << 7);
+        self.low7 = [I32x16::splat(0); 2];
+        self.anchor = [U64x8::splat(0); 2];
+        self.blocks = 0;
+        self.reductions += 1;
+    }
+
+    #[inline(always)]
+    pub fn mac(&mut self, a: U8x64, negative: u64, low7: I8x64, top: u64) {
+        self.low7[0] = self.low7[0].dot4_u8_i8_add_masked(a, !negative, low7);
+        self.low7[1] = self.low7[1].dot4_u8_i8_add_masked(a, negative, low7);
+        self.anchor[0] = self.anchor[0].sum8_u8_add_masked(a, !negative & top);
+        self.anchor[1] = self.anchor[1].sum8_u8_add_masked(a, negative & top);
         self.blocks += 1;
         if self.blocks == B_FLUSH_BLOCKS {
             self.flush();
