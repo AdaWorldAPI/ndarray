@@ -3946,4 +3946,6 @@ loses to native u64 lanes there. P/L/PL REFUSE: flag tests cost more than the XO
 FULL column). R1 (two u64) and R2 (u128) compile to identical code. Coverage audit of #389: C's tests are lane-blind
 (totals only); EMPTY flags only matter over stale words (Y2 was green until stale-word runs were added). 7 tests on 5
 tiers; 6 disable runs red.
+Review fix (Codex, PR #391): PL's ordinary ripple now marks an all-ones result FULL (as L); new test + per-add FULL
+invariant in check_all, Y7 red; 8 tests on 5 tiers. Re-measured on 3 tiers: PL ~2.2 ns per FULL column; verdicts unchanged.
 

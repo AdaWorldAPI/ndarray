@@ -6,6 +6,8 @@ Scope: branch `claude/u9-domino`, stacked on #389 (base `claude/u9-abacus`). Fil
 
 All numbers were measured on one AVX-512 VNNI Xeon. A range is the min - max of 3 runs of medians.
 
+The tables are a second full measurement, taken after the PL fix below (review, Codex, PR #391): PL's ordinary ripple stored an all-ones result without marking the column FULL, unlike L, so a later all-ones carry read and wrote the word instead of passing it as FULL -> EMPTY. The fix makes PL's L1 dense row 6.4 - 9.6 ns (was 6.3 - 6.4) and its per-FULL-column cost about 2.2 ns (was 1.85); verdicts are unchanged. The second run also differs where no code changed: F on random masks reads 8.1 - 8.2 ns on VNNI (was 6.4), and the streamed rows sit higher for every counter alike, so those differences are host and code-layout variance, not the fix.
+
 ## Verdict
 
 - **F (Eager): ADOPT-LAB.** A bit-plane counter for dense and sparse masks. At the 64K boundary it pays off only on AVX2, where D's lowering is poor, and even there it does not beat native u64 lanes.
@@ -65,7 +67,7 @@ The harvest was verified: 5 quoted lines were re-read at their stated places, an
 
 ## New tests
 
-`tests/u9_domino.rs`, 7 tests, all pass on native (AVX-512 VNNI), v4, v3, v2 (qemu) and aarch64 (qemu); clippy `-D warnings` and the shuffle guard are clean. Test counters use 96 columns (oracle u128).
+`tests/u9_domino.rs`, 8 tests, all pass on native (AVX-512 VNNI), v4, v3, v2 (qemu) and aarch64 (qemu); clippy `-D warnings` and the shuffle guard are clean. Test counters use 96 columns (oracle u128).
 
 - `flip_is_a_half_adder_in_every_lane`: 4 input pairs, full and zero masks, single lanes 0/17/63, 1000 random words checked per lane.
 - `random_adds_match_the_oracle_in_any_order`: 3000 adds, masks zero/full/one lane/random, significances 0, 1, 15, 16, 17, 31, 63, 64, 65. A per-lane u128 oracle with checked arithmetic is compared after every add on lanes 0, 1, 31, 32, 62, 63, for F, P, L, PL, P-stale and PL-stale. The same run in reverse order. All six give identical columns in both orders.
@@ -73,6 +75,7 @@ The harvest was verified: 5 quoted lines were re-read at their stated places, an
 - `the_64k_boundary_flips_bit_16_then_carries_into_bit_17`: low16 in {0, 1, 510, 511, 512, 65000, 65534, 65535} x p in {0, 1, 511, 65024, 65025} x bit 16 preset or not. Value `low + 2^16*high` is exact in lanes 0, 31, 32, 63. Bit 16 flips exactly when crossing XOR preset. Bit 17 is set exactly when crossing AND preset.
 - `product_sums_match_native_and_d`: 1, 300 random and 300, 70,000 dense (65,025) blocks. Native, D, F, P, L, PL, each with deferred and per-block normalization, all equal the u128 sum.
 - `overflow_past_the_last_column_is_refused`: 4-column counters of every variant. A carry past the top returns `Err(Overflow(lanes))`. An add at k=N with m=0 is Ok.
+- `xor_made_full_column_is_full_and_carries_by_state` (added after review): complementary masks at one significance leave a column all ones by XOR; L and PL both mark it FULL, and the next all-ones carry turns it EMPTY and lands in column 1 as FULL, lanes exact. `check_all` also asserts after every add that L, PL and PL-stale hold exactly the logically all-ones columns as FULL.
 - `pair_and_packed_agree_and_roundtrip`: 10,000 random adds, R1 and R2 identical, roundtrip identity, per-lane 2-bit counter check (64 independent counters, not one integer).
 
 ## Disable runs
@@ -87,6 +90,7 @@ Each disable must turn tests red.
 | Y4 | L treats FULL as unchanged after a partial carry | RED (3 tests) |
 | Y5 | carry mask rotated one lane (R1) | RED (1 test) |
 | Y6 | P reads the stale word instead of assigning | RED (2 tests) |
+| Y7 | PL ordinary ripple does not mark an all-ones result FULL (the pre-review code) | RED (2 tests) |
 
 **The Y2 story.** The first Y2 run was green. With zero-initialized words, the physical word under an EMPTY or FULL flag is always 0 in PL, so a lost FULL->EMPTY transition left the data identical to the correct result and nothing could tell the difference. Only after P and PL were also run over stale words (`0xDEAD_BEEF_F00D_CAFE`) did the same disable turn red, in 2 tests.
 
@@ -107,41 +111,41 @@ L1 = 64 blocks. Streamed = 2^20 blocks (128 MiB). Dense = products 65,024-65,025
 
 | L1 dense | AVX-512 VNNI | AVX-512 (v4) | AVX2 (v3) |
 |---|---|---|---|
-| native u64 lanes | 4.83 - 4.95 | 4.84 - 4.86 | 4.83 - 4.95 |
-| D (#389) | 2.34 - 2.63 | 2.20 - 2.22 | 9.41 - 9.67 |
-| F | 2.69 - 3.31 | 3.05 - 3.13 | 5.66 - 5.80 |
-| P | 5.44 - 5.59 | 5.77 - 5.92 | 7.63 - 7.83 |
-| L | 6.19 - 6.31 | 6.52 - 6.61 | 8.50 - 8.70 |
-| PL | 6.34 - 6.38 | 6.66 - 7.22 | 8.80 - 8.81 |
-| P normalized every block | 74.6 - 74.8 | 75.0 - 75.1 | 68.1 - 72.3 |
-| PL normalized every block | 106.7 - 109.2 | 111.4 - 112.0 | 114.9 - 116.2 |
+| native u64 lanes | 4.81 - 4.83 | 4.83 - 4.84 | 4.83 - 4.84 |
+| D (#389) | 2.28 - 2.56 | 2.30 - 2.66 | 9.39 - 9.42 |
+| F | 2.70 - 2.88 | 3.05 - 3.14 | 5.66 - 5.67 |
+| P | 5.44 - 5.47 | 5.78 - 5.95 | 7.61 - 7.81 |
+| L | 5.89 - 6.22 | 6.55 - 6.61 | 8.50 - 8.56 |
+| PL | 6.36 - 9.58 | 6.67 - 6.91 | 8.80 - 8.98 |
+| P normalized every block | 74.7 - 74.8 | 75.0 | 68.0 - 68.8 |
+| PL normalized every block | 107 - 110 | 111 - 112 | 115 - 116 |
 
 | L1 sparse | VNNI | v4 | v3 |
 |---|---|---|---|
-| native | 4.81 - 4.95 | 4.81 - 4.95 | 4.83 - 4.84 |
-| D | 2.17 - 2.56 | 2.20 - 2.23 | 9.41 - 9.42 |
-| F | 2.58 - 2.64 | 2.94 - 3.03 | 5.61 - 5.63 |
-| P | 3.75 - 3.86 | 3.95 - 3.98 | 6.52 - 6.53 |
-| L | 3.70 - 3.83 | 3.97 - 4.06 | 6.63 - 6.64 |
-| PL | 4.02 - 4.14 | 4.22 - 4.33 | 7.05 - 7.22 |
+| native | 4.83 - 5.58 | 4.81 - 4.86 | 4.83 - 4.84 |
+| D | 2.31 - 3.19 | 2.22 - 2.67 | 9.42 |
+| F | 2.59 - 2.94 | 2.94 - 3.03 | 5.61 - 5.77 |
+| P | 3.64 - 4.91 | 3.95 - 3.98 | 6.53 - 6.70 |
+| L | 3.62 - 3.83 | 3.95 - 3.97 | 6.61 - 6.75 |
+| PL | 3.92 - 4.00 | 4.20 - 4.36 | 7.05 - 7.06 |
 
 | streamed dense | VNNI | v4 | v3 |
 |---|---|---|---|
-| native | 13.3 - 15.6 | 8.9 - 14.2 | 10.8 - 14.6 |
-| D | 7.7 - 10.8 | 6.1 - 8.9 | 26.0 - 30.8 |
-| F | 6.9 - 7.9 | 6.0 - 6.1 | 12.6 - 16.7 |
-| P | 8.2 - 11.4 | 7.0 - 7.6 | 12.4 - 17.4 |
-| L | 8.2 - 12.8 | 7.3 - 8.7 | 11.0 - 16.7 |
-| PL | 8.8 - 13.5 | 7.5 - 8.8 | 11.5 - 16.2 |
+| native | 15.5 - 16.7 | 15.7 - 16.1 | 14.2 - 16.6 |
+| D | 11.3 - 12.4 | 11.3 - 12.2 | 31.6 - 32.4 |
+| F | 12.5 - 13.7 | 13.6 - 14.4 | 15.8 - 20.4 |
+| P | 13.8 - 15.9 | 14.6 - 14.8 | 14.6 - 25.8 |
+| L | 13.9 - 16.5 | 13.4 - 14.7 | 13.6 - 27.3 |
+| PL | 13.3 - 15.2 | 13.8 - 15.1 | 12.2 - 26.2 |
 
 | streamed sparse | VNNI | v4 | v3 |
 |---|---|---|---|
-| native | 11.9 - 15.8 | 10.9 - 12.3 | 12.9 - 13.3 |
-| D | 7.5 - 9.7 | 6.2 - 7.0 | 27.1 - 32.3 |
-| F | 6.4 - 9.2 | 6.5 - 6.9 | 12.5 - 17.1 |
-| P | 6.8 - 9.8 | 6.5 - 7.0 | 10.0 - 16.5 |
-| L | 8.6 - 10.0 | 7.0 - 7.7 | 11.0 - 16.0 |
-| PL | 7.0 - 10.2 | 7.1 - 8.5 | 11.0 - 14.6 |
+| native | 15.5 - 16.5 | 15.5 - 16.5 | 16.0 - 16.7 |
+| D | 10.7 - 12.1 | 10.2 - 11.4 | 31.4 - 32.5 |
+| F | 10.3 - 13.2 | 10.2 - 12.9 | 17.2 - 17.8 |
+| P | 11.2 - 12.9 | 9.90 - 13.0 | 16.8 - 19.0 |
+| L | 10.9 - 12.1 | 10.2 - 12.7 | 16.0 - 19.6 |
+| PL | 11.1 - 12.3 | 10.9 - 12.5 | 16.2 - 19.3 |
 
 The streamed rows are noisy. The ranges overlap between F, P, L and PL.
 
@@ -151,10 +155,10 @@ VNNI figures. v4 and v3 are similar unless noted.
 
 | workload | native | F | P | L | PL |
 |---|---|---|---|---|---|
-| dense all-ones at 2^0 (binary counting) | 6.99 | 1.93 - 1.95 | 2.92 | 3.65 - 3.80 | 3.24 - 3.26 |
-| random masks at 2^0 | 6.99 | 6.40 - 6.44 (v4 8.14 - 8.20, v3 8.13 - 8.45) | 10.4 - 10.7 | 12.9 - 13.0 | 15.0 - 15.1 |
-| sparse one lane at 2^0 | 6.99 | 1.87 - 3.20 (v4 5.55 - 6.32, v3 5.33 - 6.20) | 4.76 - 6.32 | 6.43 - 7.12 | 6.79 - 6.98 |
-| weighted: random masks entering at 2^0, 2^16, 2^17, 2^32 | 6.99 | 6.09 - 6.13 (v4/v3 7.67 - 8.19) | 10.1 - 10.3 | 12.1 - 12.3 | 14.6 - 14.8 |
+| dense all-ones at 2^0 (binary counting) | 6.99 - 7.04 | 1.93 - 1.96 (v4 1.94, v3 1.95 - 1.98) | 2.92 - 2.93 | 3.42 - 3.49 | 3.22 - 3.29 |
+| random masks at 2^0 | 6.99 | 8.12 - 8.21 (v4 8.15 - 10.1, v3 8.05 - 8.21) | 10.5 - 10.8 | 12.4 | 15.5 - 15.6 |
+| sparse one lane at 2^0 | 6.99 | 5.77 - 6.41 (v4 5.79 - 6.21, v3 6.10 - 6.29) | 6.17 - 6.33 | 6.14 - 7.05 | 7.14 - 7.65 |
+| weighted: random masks entering at 2^0, 2^16, 2^17, 2^32 | 6.99 | 7.57 - 7.71 (v4 7.73 - 8.83, v3 7.64 - 8.21) | 10.2 - 10.8 | 11.8 - 12.8 | 14.5 - 14.8 |
 
 ### B'. One add whose carry runs through n FULL columns
 
@@ -162,12 +166,12 @@ ns per rep = clone + add. Each cell is "clone-only / clone+add", so subtract the
 
 | n | F | P | L | PL |
 |---|---|---|---|---|
-| 1 | 5.3 - 5.5 / 5.9 | 5.0 / 12.5 | 4.6 - 4.9 / 11.5 | 5.7 / 12.3 - 12.7 |
-| 8 | 5.3 - 5.5 / 11.8 - 12.2 | 5.0 / 18.4 | 4.6 - 4.9 / 23.5 - 24.3 | 5.7 / 24.6 - 25.2 |
-| 32 | 5.5 / 18.0 | 5.0 / 60.8 - 63.0 | 4.6 - 4.7 / 74.9 - 75.4 | 5.7 / 70.8 - 72.6 |
-| 64 | 5.5 / 37.1 - 38.0 | 5.0 / 106 - 108 | 4.6 - 4.9 / 126 - 130 | 5.7 / 124 - 127 |
+| 1 | 5.27 - 5.46 / 5.88 | 4.93 - 5.03 / 12.5 | 5.65 / 11.5 - 11.8 | 5.66 / 12.1 - 12.3 |
+| 8 | 5.14 - 5.47 / 11.8 | 4.91 - 5.04 / 18.0 - 18.4 | 5.51 - 5.65 / 24.0 - 24.4 | 5.65 - 5.66 / 24.6 - 25.2 |
+| 32 | 5.27 - 5.47 / 30.1 - 30.4 | 5.03 - 5.04 / 61.9 - 70.6 | 5.62 - 7.39 / 75.2 - 94.3 | 5.52 - 5.66 / 79.2 - 82.5 |
+| 64 | 5.46 - 7.47 / 38.6 - 60.4 | 5.03 - 6.76 / 108 - 143 | 5.64 - 7.53 / 127 - 168 | 5.66 - 7.18 / 146 - 150 |
 
-Per FULL column (64-column row minus clone, divided by 64): F about 0.50 ns, P about 1.6 ns, L about 1.9 ns, PL about 1.85 ns.
+Per FULL column (64-column row minus clone, medians, divided by 64): F about 0.52 ns, P about 1.6 ns, L about 1.9 ns, PL about 2.2 ns.
 
 "Constant state" rows (counter built from literals inside the timed loop, then add + total): LLVM did not fold the counter to a constant. F measured 101 ns and PL 347 - 349 ns at n=64 on VNNI. They include building the preset, so they are not comparable to the opaque rows above.
 
@@ -175,8 +179,8 @@ Per FULL column (64-column row minus clone, divided by 64): F about 0.50 ns, P a
 
 | | VNNI | v4 | v3 |
 |---|---|---|---|
-| R1 two u64 | 0.416 - 0.422 | 0.418 - 0.426 | 0.395 - 0.411 |
-| R2 one u128 | 0.419 - 0.427 | 0.444 - 0.455 | 0.443 - 0.456 |
+| R1 two u64 | 0.412 - 0.415 | 0.415 - 0.424 | 0.411 - 0.414 |
+| R2 one u128 | 0.417 - 0.453 | 0.442 - 0.453 | 0.443 - 0.517 |
 
 ## Assembly
 
@@ -200,10 +204,10 @@ A first R1/R2 anchor was constant-propagated because it was called with a known-
 
 ## Reading it
 
-- **F vs D at the 64K boundary, AVX-512.** D is faster in L1 (2.2 - 2.6 vs 2.7 - 3.3 ns) because its whole high column is 4 vpternlogq plus adds, with no branch. F's ripple is a scalar loop with branches. Streamed, F is equal or faster, since the run is memory-bound.
+- **F vs D at the 64K boundary, AVX-512.** D is faster in L1 (2.2 - 2.6 vs 2.7 - 3.3 ns) because its whole high column is 4 vpternlogq plus adds, with no branch. F's ripple is a scalar loop with branches. Streamed, the two overlap (the run is memory-bound).
 - **F vs D, AVX2.** F is 1.6 - 1.7x faster than D in L1 and about 2x streamed, because D's AVX2 U16x32 lowering moves halves around (13 shuffle-class ops). The native u64-per-lane sum (4.8 ns) still beats both F and D on AVX2 in L1.
 - **The flip itself is cheap.** The cost is the data-dependent ripple loop and getting the carry out of the vector into a GPR mask.
-- **P, L, PL are slower than F in every measured case.** Every metadata check is a branch plus a u128 shift/test. The gap grows with chain length: about 1.6 - 1.9 ns per FULL column against 0.5 ns for F. The deferred FULL->EMPTY transition skips a data read and write, but the flag read and write costs more.
+- **P, L, PL are slower than F in every measured case.** Every metadata check is a branch plus a u128 shift/test. The gap grows with chain length: about 1.6 - 2.2 ns per FULL column against 0.5 ns for F. The deferred FULL->EMPTY transition skips a data read and write, but the flag read and write costs more.
 - **Normalizing P or PL every block costs 70 - 120 ns per block** (normalize rewrites all 72 columns). Only the deferred form is usable, and even deferred it loses to F.
 - **Positional substitution does not disappear in the compiler.** Assignment into an EMPTY column compiles to a store: the column array lives in memory indexed by a runtime k, so no register renaming happens. LLVM does not eliminate it.
 - **R1 and R2 cost the same** (section C), and LLVM compiles them to identical code.
@@ -212,7 +216,7 @@ A first R1/R2 anchor was constant-propagated because it was called with a known-
 ## Break-even
 
 - No break-even for P, L or PL against F in any workload measured.
-- F breaks even against native integer addition on dense and single-lane masks (3.6x faster on dense counting). It does not on random masks: equal on VNNI, 16% slower on v4 and v3.
+- F breaks even against native integer addition on dense and single-lane masks (3.6x faster on dense counting). It does not on random masks: about 16% slower on every tier (8.1 - 8.2 vs 7.0 ns).
 
 ## Not done
 
