@@ -3876,3 +3876,25 @@ Loose ends: AVX-VNNI (`avxvnni`, 256-bit `vpdpbusd`) is not used on the AVX2 arm
 is compiled in. Neither is measured. The signed form (`i8 x i8`, turbovec's `xor 0x80` + `zero` correction) is not
 a facade word yet.
 
+
+## dot4_u8_i8_add_masked + 9-bit TurboVec9 cost probe (2026-10-29, branch claude/u9-turbovec9-substrate)
+
+Follow-up to #386. Added on every backend: `I32x16::dot4_u8_i8_add_masked(a, keep, b)`; two calls with the positive
+plane and its complement give an exact 9-bit sign-magnitude x i8 dot product (all i8 incl. -128, i32 accumulators,
+no widening). Crate-private `simd_masking_ops::{BIT_IN_BYTE, mask_byte_spread}` expand a u64 mask to bytes with one
+AND + one compare per register. Measurements, precision tables and the TurboVec handoff:
+`.claude/knowledge/turbovec9-u9-substrate.md`; probe `examples/u9_cost_probe.rs` (R1-excluded: it times shuffle
+lookups on purpose).
+
+Witnessed: 8/8 dot4 tests on native (VNNI), v4, v3, avx (qemu), v2 (qemu), aarch64 (qemu), nightly; neon/wasm parity
+programs pass (0x504, 0x505). clippy -D warnings clean on native, v4, v3. Disable runs all red: unmasked AVX-512 move,
+reversed BIT_IN_BYTE (AVX2), mask dropped in the fused AVX2 loop.
+
+Key numbers (AVX-512 VNNI, L1): masked pair 1.27-1.33 ns/64 lanes vs dot4 1.10-1.19; 512-entry lookup 6.1 ns
+(vpermi2b) / 38-40 ns (per-position reads). Stored uniform SM9 46.0 dB vs i4 20.2 dB at the same per-dim L1 cost and
+1.4x per dim streamed. AVX2: masked pair 6.35-6.44 ns vs dot4 1.59-1.79 ns (corrected after review: the first
+facade timing returned lane 0 only and let the optimizer drop half the AVX2 work; probe kernel B also mishandled a
+negative zero; both fixed, every exact kernel now checked against an i64 reference before it is timed).
+
+Loose ends: fused single-widen SM9 op for non-VNNI tiers; NEON SDOT/USDOT and AVX-VNNI unused; no NEON/wasm timings;
+recall on a real TurboVec index is the TurboVec owner's measurement.
