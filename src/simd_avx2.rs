@@ -2515,6 +2515,61 @@ impl U64x4 {
     }
 }
 
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
+impl U64x8 {
+    /// Lane `j` gains the sum of the bytes `a[i]`, `i` in `8j..8j+8`, whose bit
+    /// in `keep` is set: `vpsadbw` against zero on the kept bytes, accumulated
+    /// per lane with no horizontal reduction. Exact; each call adds at most
+    /// `8 * 255 = 2_040` to a lane, so the wrapping `u64` lanes hold more than
+    /// 9 * 10^15 calls. Reduce once at the end (`to_array`, `reduce_sum`).
+    ///
+    /// A masked byte sum is what a power-of-two anchor needs: with
+    /// `|b| = low7 + 128 * bit7`, `a * |b| = a * low7 + 128 * (sum of a where bit 7
+    /// of b is set)`, so the anchor term is this word with `keep = sign & bit7`.
+    ///
+    /// ```
+    /// use ndarray::simd::{U64x8, U8x64};
+    /// let a = U8x64::splat(255);
+    /// // Lane 0 keeps bytes 0 and 7, lane 1 keeps byte 8, the rest keep nothing.
+    /// let got = U64x8::splat(0).sum8_u8_add_masked(a, 0b1_1000_0001).to_array();
+    /// assert_eq!(got, [510, 255, 0, 0, 0, 0, 0, 0]);
+    /// ```
+    #[inline(always)]
+    pub fn sum8_u8_add_masked(self, a: U8x64, keep: u64) -> Self {
+        let mut out = self.0;
+        // SAFETY: AVX2 is a run-time precondition of this arm (see `U64x8::avx2_halves`); every
+        // load and store is a 32-byte unaligned access inside a 64-byte array; the mask is
+        // built in registers as in `I32x16::dot4_u8_i8_add_masked`: qword `k` of half `h`
+        // takes mask byte `4h + k` (variable shift), copies it into its eight bytes
+        // (`* 0x0101_0101`, then shift by 32), and testing bit `i % 8` against `BIT_IN_BYTE`
+        // gives 0xFF exactly where bit `i` of `keep` is set. Half `h` covers bytes
+        // `32h..32h+32`, i.e. lanes `4h..4h+4`, which is what `sad_epu8` produces.
+        unsafe {
+            let bit = _mm256_set1_epi64x(crate::simd_masking_ops::BIT_IN_BYTE as i64);
+            let keep_v = _mm256_set1_epi64x(keep as i64);
+            let byte = _mm256_set1_epi64x(0xFF);
+            let rep = _mm256_set1_epi64x(0x0101_0101);
+            let zero = _mm256_setzero_si256();
+            let pa = a.0.as_ptr() as *const __m256i;
+            let po = out.as_mut_ptr() as *mut __m256i;
+            for h in 0..2 {
+                let shifts = if h == 0 {
+                    _mm256_setr_epi64x(0, 8, 16, 24)
+                } else {
+                    _mm256_setr_epi64x(32, 40, 48, 56)
+                };
+                let mb = _mm256_mul_epu32(_mm256_and_si256(_mm256_srlv_epi64(keep_v, shifts), byte), rep);
+                let spread = _mm256_or_si256(mb, _mm256_slli_epi64(mb, 32));
+                let m = _mm256_cmpeq_epi8(_mm256_and_si256(spread, bit), bit);
+                let kept = _mm256_and_si256(_mm256_loadu_si256(pa.add(h)), m);
+                let acc = _mm256_add_epi64(_mm256_loadu_si256(po.add(h)), _mm256_sad_epu8(kept, zero));
+                _mm256_storeu_si256(po.add(h), acc);
+            }
+        }
+        Self(out)
+    }
+}
+
 // ── W1a-#5: U64x8::popcnt / xor_popcount (AVX2 scalar polyfill) ─────────────
 // The avx2_int_type! macro generated U64x8 as a scalar polyfill in this file.
 // We add popcnt + xor_popcount to match the API surface of the AVX-512 backend.

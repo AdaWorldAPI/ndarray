@@ -2044,6 +2044,50 @@ pub mod wasm32_simd {
     }
 
     impl U64x8 {
+        /// Lane `j` gains the sum of the bytes `a[i]`, `i` in `8j..8j+8`, whose bit
+        /// in `keep` is set: `vpsadbw` against zero on the kept bytes, accumulated
+        /// per lane with no horizontal reduction. Exact; each call adds at most
+        /// `8 * 255 = 2_040` to a lane, so the wrapping `u64` lanes hold more than
+        /// 9 * 10^15 calls. Reduce once at the end (`to_array`, `reduce_sum`).
+        ///
+        /// A masked byte sum is what a power-of-two anchor needs: with
+        /// `|b| = low7 + 128 * bit7`, `a * |b| = a * low7 + 128 * (sum of a where bit 7
+        /// of b is set)`, so the anchor term is this word with `keep = sign & bit7`.
+        ///
+        /// ```
+        /// use ndarray::simd::{U64x8, U8x64};
+        /// let a = U8x64::splat(255);
+        /// // Lane 0 keeps bytes 0 and 7, lane 1 keeps byte 8, the rest keep nothing.
+        /// let got = U64x8::splat(0).sum8_u8_add_masked(a, 0b1_1000_0001).to_array();
+        /// assert_eq!(got, [510, 255, 0, 0, 0, 0, 0, 0]);
+        /// ```
+        #[inline(always)]
+        pub fn sum8_u8_add_masked(self, a: crate::simd::U8x64, keep: u64) -> Self {
+            let spread = crate::simd_masking_ops::mask_byte_spread(keep);
+            let a = a.to_array();
+            let bit = u64x2_splat(crate::simd_masking_ops::BIT_IN_BYTE);
+            let low32 = u64x2_splat(0xFFFF_FFFF);
+            let mut out = self.0;
+            for (q, lane) in out.iter_mut().enumerate() {
+                // SAFETY: simd128 is compiled in on this arm. Each load touches 16 bytes at
+                // offset 16*q of a 64-byte array, q < 4; `v128_load` needs no alignment. Byte `i`
+                // of `spread` repeats mask byte `i / 8`, so testing bit `i % 8` against
+                // `BIT_IN_BYTE` gives 0xFF exactly where bit `i` of `keep` is set.
+                let kept = unsafe {
+                    let m = i8x16_eq(v128_and(v128_load((spread.as_ptr() as *const v128).add(q)), bit), bit);
+                    v128_and(v128_load((a.as_ptr() as *const v128).add(q)), m)
+                };
+                // Bytes to u16 pairs to u32 quads; each u64 lane then holds two u32 sums,
+                // added by masking and shifting (no shuffle).
+                let s32 = u32x4_extadd_pairwise_u16x8(u16x8_extadd_pairwise_u8x16(kept));
+                let s64 = i64x2_add(v128_and(s32, low32), u64x2_shr(s32, 32));
+                *lane = U64x2(i64x2_add(lane.0, s64));
+            }
+            Self(out)
+        }
+    }
+
+    impl U64x8 {
         pub const LANES: usize = 8;
 
         /// Broadcast (`u64x2_splat` ×4).
