@@ -128,11 +128,11 @@ impl AccAbacus {
     /// One block from prepared planes. `negative` is `plane_a ^ plane_b`.
     #[inline(always)]
     pub fn mac(&mut self, a: &[u64; 8], negative: u64, b: &[u64; 8]) {
-        for i in 0..8 {
-            let (ap, an) = (a[i] & !negative, a[i] & negative);
-            for j in 0..8 {
-                self.pos.add(i + j, ap & b[j]);
-                self.neg.add(i + j, an & b[j]);
+        for (i, &ai) in a.iter().enumerate() {
+            let (ap, an) = (ai & !negative, ai & negative);
+            for (j, &bj) in b.iter().enumerate() {
+                self.pos.add(i + j, ap & bj);
+                self.neg.add(i + j, an & bj);
             }
         }
     }
@@ -209,7 +209,9 @@ impl AccCsa {
 
     pub fn finish(&self) -> i64 {
         let side = |s: usize| -> i64 {
-            let cols: i64 = (0..16).map(|w| i64::from(self.ones[s][w].count_ones()) << w).sum();
+            let cols: i64 = (0..16)
+                .map(|w| i64::from(self.ones[s][w].count_ones()) << w)
+                .sum();
             cols + self.spill[s]
         };
         side(0) - side(1)
@@ -237,10 +239,10 @@ impl AccPopcnt {
     #[inline(always)]
     pub fn mac(&mut self, a: &[u64; 8], negative: u64, b: &[u64; 8]) {
         let mut block = 0i64;
-        for i in 0..8 {
-            let (ap, an) = (a[i] & !negative, a[i] & negative);
-            for j in 0..8 {
-                let d = i64::from((ap & b[j]).count_ones()) - i64::from((an & b[j]).count_ones());
+        for (i, &ai) in a.iter().enumerate() {
+            let (ap, an) = (ai & !negative, ai & negative);
+            for (j, &bj) in b.iter().enumerate() {
+                let d = i64::from((ap & bj).count_ones()) - i64::from((an & bj).count_ones());
                 block += d << (i + j);
             }
         }

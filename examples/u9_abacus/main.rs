@@ -28,8 +28,10 @@ fn tier() -> &'static str {
     }
 }
 
+type Raw = ([u8; 64], u64);
+
 /// Uniform over the 511 numeric values; never-touched never appears.
-fn data(blocks: usize, seed: u64) -> (Vec<([u8; 64], u64)>, Vec<([u8; 64], u64)>) {
+fn data(blocks: usize, seed: u64) -> (Vec<Raw>, Vec<Raw>) {
     let mut s = seed;
     let mut mk = || {
         let mut m = [0u8; 64];
@@ -60,7 +62,9 @@ fn time(name: &str, blocks: usize, runs: usize, base: Option<f64>, f: &dyn Fn() 
         .collect();
     t.sort_by(f64::total_cmp);
     let med = t[runs / 2];
-    let rel = base.map(|b| format!("  {:6.2}x B", med / b)).unwrap_or_default();
+    let rel = base
+        .map(|b| format!("  {:6.2}x B", med / b))
+        .unwrap_or_default();
     println!("{name:<60} {med:8.3} ns/64{rel}");
     med
 }
@@ -85,7 +89,11 @@ fn bench(label: &str, n: usize, runs: usize, seed: u64) {
     let split: Vec<(u64, I8x64, I8x64)> = ab.iter().zip(&bb).map(|(a, b)| prepare_b(*a, *b)).collect();
     let pa: Vec<[u64; 8]> = ab.iter().map(|x| planes(x.mag)).collect();
     let pb: Vec<[u64; 8]> = bb.iter().map(|x| planes(x.mag)).collect();
-    let neg: Vec<u64> = ab.iter().zip(&bb).map(|(a, b)| a.positive ^ b.positive).collect();
+    let neg: Vec<u64> = ab
+        .iter()
+        .zip(&bb)
+        .map(|(a, b)| a.positive ^ b.positive)
+        .collect();
 
     let b_e2e = || {
         let mut acc = AccB::new();

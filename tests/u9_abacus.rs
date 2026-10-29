@@ -67,10 +67,7 @@ fn carry_save3_is_a_full_adder_per_bit() {
         };
         let (a, b, c) = (r(), r(), r());
         let (s, cy) = carry_save3(a, b, c);
-        assert_eq!(
-            a.count_ones() + b.count_ones() + c.count_ones(),
-            s.count_ones() + 2 * cy.count_ones()
-        );
+        assert_eq!(a.count_ones() + b.count_ones() + c.count_ones(), s.count_ones() + 2 * cy.count_ones());
     }
 }
 
