@@ -3910,8 +3910,8 @@ facade compositions of it. B is long multiplication, `m = low7 - top`, tested fo
 
 Verdict: B (U8 x I8 byte-dot) is the cheaper exact I9 substrate in every row, symmetric included. B encodes with AND,
 XOR and the presence bit only: `low7 = |b| & 0x7F`, `top = |b| ^ low7`, `negative = plane_a ^ plane_b`, four masked
-byte-dots, `(pos_low7 - pos_top) - (neg_low7 - neg_top)`; no magnitude is negated. Disassembly: no shuffle, permute,
-pack, extract or insert in B, the baselines or the flushes. VNNI L1, ns/64: B end-to-end 3.03-3.05 vs A' 7.78-7.80;
+byte-dots, `(pos_low7 - pos_top) - (neg_low7 - neg_top)`; no magnitude is negated. Disassembly (AVX-512): no shuffle, permute,
+pack, extract or insert in B, the baselines or the flushes; on AVX2 LLVM puts 4 vpshufb in the facade's masked byte-dot. VNNI L1, ns/64: B end-to-end 3.03-3.05 vs A' 7.78-7.80;
 B scan 2.69-2.77 vs A 6.95-7.14; plain byte-dot 1.89-1.94. AVX2: B end-to-end 9.9-10.4 vs A' 75-82 (A dominated by
 `U8x64::mask_blend`'s per-lane AVX2 realization, not changed).
 
