@@ -3957,3 +3957,13 @@ quarter; NEON uaddlp/uadalp; wasm extadd_pairwise; scalar; nightly SWAR). Parity
 (0x506/0x507); 7 tiers green; 7 disable runs red. 0.687 ns/64 bytes on AVX-512 (281-285x the reference loop), 1.99 ns on
 AVX2 (98x). Knowledge: `turbovec9-u9-substrate.md` § second facade word. Not yet wired into the abacus probe (#389).
 
+## D-U9-E5: the U9 anchor through vertical masked byte sums (2026-10-29, branch claude/u9-e5)
+
+Probe-only: `AccE5` in `examples/u9_abacus/anchor.rs` (E3/E4/Esum/B unchanged), 5 tests in `tests/u9_abacus.rs`,
+report `.claude/knowledge/u9-e5-probe.md`. Consumer gate for #390: E's split `|b| = low7 + 128*bit7`, two masked low7
+byte-dots, anchor as two persistent `U64x8::sum8_u8_add_masked` accumulators reduced only at flush. Exact on 7
+realizations; wasm/neon parity pass; 6 disable runs red. Verdict: ADOPT-LAB on AVX-512 without VNNI (L1 e2e 5.14-5.30 vs B
+5.67-7.50, 8 runs; byte-dot emulated in ~10 insns there), REFUSE on VNNI (3.55-3.95 vs 2.92-3.25: B's anchor dot shares the
+sign's zero-masked copy, E5 pays maskz+vpsadbw+vpaddq per sign; 0 spills) and AVX2 (mask built in registers per call,
+8 vpshufb + 16 vpmuludq per block). Overall DEFER as B replacement. Closes fruit U1 from #392.
+
