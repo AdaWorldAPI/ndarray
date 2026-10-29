@@ -3985,3 +3985,23 @@ realizations; wasm/neon parity pass; 6 disable runs red. Verdict: ADOPT-LAB on A
 sign's zero-masked copy, E5 pays maskz+vpsadbw+vpaddq per sign; 0 spills) and AVX2 (mask built in registers per call,
 8 vpshufb + 16 vpmuludq per block). Overall DEFER as B replacement. Closes fruit U1 (blackboard U9 fruit list, #392).
 
+
+## D-POF-ANT-0: Position x Order x Law antennas (2026-10-29, branch claude/pof-antennas)
+
+Lab only: `examples/pof_antennas/*`, `tests/pof_antennas.rs` (41 tests, 7 realizations green, 14 disable runs red), report
+`.claude/knowledge/pof-antennas-probe.md`. No facade/backend/storage/trait change; #393 untouched. Findings: sharing a
+prepared basis wins without sharing a mask (P1 0.79-0.93x on AVX-512); invariant folds need no carry under a rebase and
+an equivariant result needs ONE `conjugate_mask` of the result (P2-lazy 6.3 vs 16.4 ns VNNI); `conjugate_mask` itself costs
+4.4 ns because its mask->bytes expansion is a scalar `from_fn` (a `mask_blend` expansion is 5.6x faster on AVX-512, 2.5x
+slower on AVX2). E2 (sign-routed operand once, anchor narrows it; lowering drops E5's kandq/kandnq, keeps 4 zero-masked
+moves) beats E5 on every AVX-512 row and B on v4 (L1 e2e 4.69 vs 5.11 vs 5.63), still 1.10x B on VNNI, 7x worse on AVX2
+(per-lane mask_blend). E3 two fused consumers 0.6-0.94x on every tier. A6: Exposure field fold tier-independent
+(6.1-8.0 us/field), Morton = row-major at 8 KiB. LAW already lives in mask-risc (ternlog commutativity, per-terminal merge
+laws, ExtentUnsupported, row bounds) and WITNESS in OrderedLaneWitness; no new trait.
+
+| # | fruit | size | gate |
+|---|---|---|---|
+| P1 | `Perm64::conjugate_mask` mask expansion via one masked select on AVX-512, current path on AVX2 | low | perm.rs owner PR; parity on all realizations |
+| P2 | E2 as the AVX-512-without-VNNI U9 kernel (joins #393's ADOPT-LAB row) | low | integration owner |
+| P3 | AVX2 P1 anomaly: setup+exec 8 ns apart, 42 ns together | low | asm of the combined path |
+| P4 | RPR stale cases X1-X9 / #1848 B0 fixture can reuse the A5 scalar oracle | high | lance-graph owners |
