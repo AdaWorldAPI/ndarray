@@ -78,6 +78,12 @@ mod probe {
     unsafe fn ldi(p: &[i8; 64]) -> __m512i {
         unsafe { _mm512_loadu_si512(p.as_ptr() as *const __m512i) }
     }
+    /// Times `body` only after it matched the exact reference once.
+    fn checked(expected: i64, name: &str, mut body: impl FnMut() -> i64) -> (f64, f64) {
+        assert_eq!(body(), expected, "{name} does not compute the exact SM9 dot");
+        time(name, body)
+    }
+
     #[inline(always)]
     unsafe fn hsum(v: __m512i) -> i64 {
         unsafe { _mm512_reduce_add_epi32(v) as i64 }
@@ -138,6 +144,15 @@ mod probe {
 
     pub fn run() {
         let d = data();
+        // Independent i64 reference for the exact SM9 kernels: every kernel checked
+        // against it must match before its time is reported.
+        let sm9: i64 = (0..CHUNKS)
+            .flat_map(|c| (0..64).map(move |i| (c, i)))
+            .map(|(c, i)| {
+                let v = i64::from(d.mag[c][i]);
+                (if d.pos[c] >> i & 1 == 1 { v } else { -v }) * i64::from(d.w[c][i])
+            })
+            .sum();
         println!("== arithmetic (one accumulator chain per kernel, data in L1) ==");
         // SAFETY (all kernels): the build has avx512f/bw/vnni/vbmi compiled in
         // (module cfg); loads read whole 64-byte arrays.
@@ -166,21 +181,23 @@ mod probe {
             }
             hsum(acc)
         });
-        time("SM9 B: 2C limbs, dot(lo) - 256*dot(sign)", || unsafe {
+        checked(sm9, "SM9 B: 2C limbs, dot(lo) - 256*dot(sign)", || unsafe {
             let one = _mm512_set1_epi8(1);
             let mut acc = _mm512_setzero_si512();
             for c in 0..CHUNKS {
                 let w = ldi(&d.w[c]);
-                let neg = !d.pos[c];
-                // two's-complement low byte of -m is (256 - m) & 0xFF
-                let lo = _mm512_mask_sub_epi8(ld(&d.mag[c]), neg, _mm512_setzero_si512(), ld(&d.mag[c]));
+                let m = ld(&d.mag[c]);
+                // Two's-complement -m is 256 * (-1) + ((256 - m) & 0xFF) only for m != 0:
+                // a negative zero has no borrow, so the sign limb skips it.
+                let neg = !d.pos[c] & _mm512_test_epi8_mask(m, m);
+                let lo = _mm512_mask_sub_epi8(m, neg, _mm512_setzero_si512(), m);
                 let a = _mm512_dpbusd_epi32(acc, lo, w);
                 let t = _mm512_dpbusd_epi32(_mm512_setzero_si512(), _mm512_maskz_mov_epi8(neg, one), w);
                 acc = _mm512_sub_epi32(a, _mm512_slli_epi32(t, 8));
             }
             hsum(acc)
         });
-        time("SM9 C: dot(m) - 2*dot(m & neg), one acc", || unsafe {
+        checked(sm9, "SM9 C: dot(m) - 2*dot(m & neg), one acc", || unsafe {
             let mut acc = _mm512_setzero_si512();
             for c in 0..CHUNKS {
                 let (m, w) = (ld(&d.mag[c]), ldi(&d.w[c]));
@@ -190,7 +207,7 @@ mod probe {
             }
             hsum(acc)
         });
-        time("SM9 C': dot(m & pos) - dot(m & neg), two accs", || unsafe {
+        checked(sm9, "SM9 C': dot(m & pos) - dot(m & neg), two accs", || unsafe {
             let (mut p, mut n) = (_mm512_setzero_si512(), _mm512_setzero_si512());
             for c in 0..CHUNKS {
                 let (m, w) = (ld(&d.mag[c]), ldi(&d.w[c]));
@@ -311,7 +328,7 @@ mod probe {
             }
             hsum(acc)
         });
-        time("i9 values stored (no lookup) + SM9 C'", || unsafe {
+        checked(sm9, "i9 values stored (no lookup) + SM9 C'", || unsafe {
             let (mut p, mut n) = (_mm512_setzero_si512(), _mm512_setzero_si512());
             for c in 0..CHUNKS {
                 let (m, w) = (ld(&d.mag[c]), ldi(&d.w[c]));
@@ -547,13 +564,22 @@ mod facade {
             black_box(sink);
             println!("{name:<44} {ns:7.3} ns/64 lanes");
         };
+        // Every lane feeds the result, so no backend can drop part of the work.
+        let all = |v: I32x16| v.to_array().iter().fold(0i32, |s, x| s.wrapping_add(*x));
+        let sm9: i64 = (0..CHUNKS)
+            .flat_map(|c| (0..64).map(move |i| (c, i)))
+            .map(|(c, i)| {
+                let v = i64::from(mag[c].to_array()[i]);
+                (if pos[c] >> i & 1 == 1 { v } else { -v }) * i64::from(w[c].to_array()[i])
+            })
+            .sum();
         println!("== facade (ndarray::simd, this build's tier) ==");
         time("I32x16::dot4_u8_i8_add", &|| {
             let mut acc = I32x16::splat(0);
             for c in 0..CHUNKS {
                 acc = acc.dot4_u8_i8_add(mag[c], w[c]);
             }
-            acc.to_array()[0]
+            all(acc)
         });
         time("two dot4_u8_i8_add accumulators, no mask", &|| {
             let (mut p, mut n) = (I32x16::splat(0), I32x16::splat(0));
@@ -561,16 +587,18 @@ mod facade {
                 p = p.dot4_u8_i8_add(mag[c], w[c]);
                 n = n.dot4_u8_i8_add(mag[(c + 1) % CHUNKS], w[c]);
             }
-            p.to_array()[0].wrapping_sub(n.to_array()[0])
+            all(p).wrapping_sub(all(n))
         });
-        time("SM9: two dot4_u8_i8_add_masked accumulators", &|| {
+        let masked = || {
             let (mut p, mut n) = (I32x16::splat(0), I32x16::splat(0));
             for c in 0..CHUNKS {
                 p = p.dot4_u8_i8_add_masked(mag[c], pos[c], w[c]);
                 n = n.dot4_u8_i8_add_masked(mag[c], !pos[c], w[c]);
             }
-            p.to_array()[0].wrapping_sub(n.to_array()[0])
-        });
+            all(p).wrapping_sub(all(n))
+        };
+        assert_eq!(i64::from(masked()), sm9, "facade SM9 does not compute the exact dot");
+        time("SM9: two dot4_u8_i8_add_masked accumulators", &masked);
     }
 }
 

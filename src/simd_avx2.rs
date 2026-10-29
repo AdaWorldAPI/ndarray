@@ -3031,20 +3031,31 @@ impl I32x16 {
     /// ```
     #[inline(always)]
     pub fn dot4_u8_i8_add_masked(self, a: U8x64, keep: u64, b: I8x64) -> Self {
-        let spread = crate::simd_masking_ops::mask_byte_spread(keep);
         let mut out = self.0;
         // SAFETY: AVX2 is a run-time precondition of this arm (see `U64x8::avx2_halves`); every
-        // load and store is a 32-byte unaligned access inside a 64-byte array. Byte `i` of
-        // `spread` repeats mask byte `i / 8`, so testing bit `i % 8` against `BIT_IN_BYTE`
-        // gives 0xFF exactly where bit `i` of `keep` is set; the rest is `dot4_u8_i8_add`.
+        // load and store is a 32-byte unaligned access inside a 64-byte array; the mask is
+        // built in registers. Qword `k` of half `h` takes mask byte `4h + k` (variable shift),
+        // copies it into its four low bytes (`* 0x0101_0101`, in range because the byte is
+        // below 256) and its four high bytes (shift by 32); testing bit `i % 8` against
+        // `BIT_IN_BYTE` then gives 0xFF exactly where bit `i` of `keep` is set. The rest is
+        // `dot4_u8_i8_add`.
         unsafe {
             let low = _mm256_set1_epi16(0x00FF);
             let bit = _mm256_set1_epi64x(crate::simd_masking_ops::BIT_IN_BYTE as i64);
-            let ps = spread.as_ptr() as *const __m256i;
+            let keep_v = _mm256_set1_epi64x(keep as i64);
+            let byte = _mm256_set1_epi64x(0xFF);
+            let rep = _mm256_set1_epi64x(0x0101_0101);
             let (pa, pb) = (a.0.as_ptr() as *const __m256i, b.0.as_ptr() as *const __m256i);
             let po = out.as_mut_ptr() as *mut __m256i;
             for h in 0..2 {
-                let m = _mm256_cmpeq_epi8(_mm256_and_si256(_mm256_loadu_si256(ps.add(h)), bit), bit);
+                let shifts = if h == 0 {
+                    _mm256_setr_epi64x(0, 8, 16, 24)
+                } else {
+                    _mm256_setr_epi64x(32, 40, 48, 56)
+                };
+                let mb = _mm256_mul_epu32(_mm256_and_si256(_mm256_srlv_epi64(keep_v, shifts), byte), rep);
+                let spread = _mm256_or_si256(mb, _mm256_slli_epi64(mb, 32));
+                let m = _mm256_cmpeq_epi8(_mm256_and_si256(spread, bit), bit);
                 let av = _mm256_and_si256(_mm256_loadu_si256(pa.add(h)), m);
                 let bv = _mm256_loadu_si256(pb.add(h));
                 let b_even = _mm256_srai_epi16(_mm256_slli_epi16(bv, 8), 8);
