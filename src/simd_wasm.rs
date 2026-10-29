@@ -2517,6 +2517,43 @@ pub mod wasm32_simd {
     impl I32x16 {
         pub const LANES: usize = 16;
 
+        /// Adds four-byte dot products to each 32-bit lane: lane `j` gains
+        /// `a[4j]*b[4j] + a[4j+1]*b[4j+1] + a[4j+2]*b[4j+2] + a[4j+3]*b[4j+3]`,
+        /// with each `u8` of `a` multiplied by the signed `i8` of `b` at the same
+        /// position. The four products are exact; only the final addition to the
+        /// accumulator wraps on `i32` overflow, as with AVX-512 VNNI `vpdpbusd`.
+        ///
+        /// No intermediate saturates. Two products can reach `2 * 255 * 127`,
+        /// which does not fit `i16`, so an emulation through the saturating
+        /// `vpmaddubsw` would be wrong; every realization widens to 16 bits first.
+        ///
+        /// ```
+        /// use ndarray::simd::{I32x16, I8x64, U8x64};
+        /// let a = U8x64::splat(255);
+        /// let b = I8x64::splat(127);
+        /// // 4 * 255 * 127 = 129_540 per lane, past what a 16-bit pair sum can hold.
+        /// assert_eq!(I32x16::splat(1).dot4_u8_i8_add(a, b).to_array(), [129_541; 16]);
+        /// ```
+        #[inline(always)]
+        pub fn dot4_u8_i8_add(self, a: crate::simd::U8x64, b: crate::simd::I8x64) -> Self {
+            let (a, b) = (a.to_array(), b.to_array());
+            let mut out = self.0;
+            for (q, quad) in out.iter_mut().enumerate() {
+                // SAFETY: simd128 is compiled in on this arm. The two loads read 16 bytes at
+                // offset 16*q of 64-byte arrays, q < 4; `v128_load` needs no alignment. Even
+                // and odd bytes are widened into separate 16-bit lanes (zero-extended for
+                // `a`, sign-extended for `b`), so `i32x4_dot_i16x8` sums exact products: the
+                // even lanes give bytes 4j and 4j+2, the odd lanes 4j+1 and 4j+3.
+                let (av, bv) = unsafe {
+                    (v128_load(a.as_ptr().add(16 * q) as *const v128), v128_load(b.as_ptr().add(16 * q) as *const v128))
+                };
+                let even = i32x4_dot_i16x8(v128_and(av, u16x8_splat(0x00FF)), i16x8_shr(i16x8_shl(bv, 8), 8));
+                let odd = i32x4_dot_i16x8(u16x8_shr(av, 8), i16x8_shr(bv, 8));
+                quad.0 = i32x4_add(quad.0, i32x4_add(even, odd));
+            }
+            Self(out)
+        }
+
         /// Per-lane `SaturatingRoundingDoublingHighMul` (gemmlowp / NEON `VQRDMULH`):
         /// `round(2*a*b / 2^32)`, ties toward +inf, `MIN * MIN` saturating to `MAX`.
         ///

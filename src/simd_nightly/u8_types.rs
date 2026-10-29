@@ -29,6 +29,28 @@ use core::simd::{u8x32 as core_u8x32, u8x64 as core_u8x64, Simd};
 pub struct U8x64(pub core_u8x64);
 
 impl U8x64 {
+    /// The low four bits of every byte, `x & 0x0F`.
+    ///
+    /// ```
+    /// use ndarray::simd::U8x64;
+    /// assert_eq!(U8x64::splat(0xA7).low_nibbles().to_array(), [0x07; 64]);
+    /// ```
+    #[inline(always)]
+    pub fn low_nibbles(self) -> Self {
+        Self(self.0 & Simd::splat(0x0F))
+    }
+
+    /// The high four bits of every byte, moved down: `x >> 4`.
+    ///
+    /// ```
+    /// use ndarray::simd::U8x64;
+    /// assert_eq!(U8x64::splat(0xA7).high_nibbles().to_array(), [0x0A; 64]);
+    /// ```
+    #[inline(always)]
+    pub fn high_nibbles(self) -> Self {
+        Self(self.0 >> Simd::splat(4))
+    }
+
     /// Number of `u8` lanes.
     pub const LANES: usize = 64;
 

@@ -2313,3 +2313,114 @@ mod u16x32_facade_parity {
         assert_eq!(U16x32::default().to_array(), [0u16; 32]);
     }
 }
+
+/// Parity of `I32x16::dot4_u8_i8_add` and the `U8x64` nibble split against a
+/// plain-array reference, on whichever backend this build selected. The
+/// corpus mixes a fixed-seed generator with the byte extremes (`0`, `255`,
+/// `-128`, `127`) and accumulators at `i32::MIN` / `i32::MAX`, where only the
+/// final addition may wrap.
+#[cfg(test)]
+mod dot4_nibble_facade_parity {
+    use super::{I32x16, I8x64, U8x64};
+
+    fn next(state: &mut u64) -> u64 {
+        *state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        *state >> 33
+    }
+
+    fn bytes() -> Vec<[u8; 64]> {
+        let mut s = 0x9E37_79B9_7F4A_7C15u64;
+        let mut out: Vec<[u8; 64]> = (0..48)
+            .map(|_| core::array::from_fn(|_| next(&mut s) as u8))
+            .collect();
+        for e in [0u8, 1, 0x0F, 0x10, 0x7F, 0x80, 0xF0, 0xFF] {
+            out.push([e; 64]);
+        }
+        out.push(core::array::from_fn(|i| [0u8, 255, 128, 127][i % 4]));
+        out
+    }
+
+    fn signed() -> Vec<[i8; 64]> {
+        let mut s = 0xD1B5_4A32_D192_ED03u64;
+        let mut out: Vec<[i8; 64]> = (0..48)
+            .map(|_| core::array::from_fn(|_| i8::from_ne_bytes([next(&mut s) as u8])))
+            .collect();
+        for e in [0i8, 1, -1, 127, -128] {
+            out.push([e; 64]);
+        }
+        out.push(core::array::from_fn(|i| [-128i8, 127, -1, 0][i % 4]));
+        out
+    }
+
+    fn reference(acc: [i32; 16], a: &[u8; 64], b: &[i8; 64]) -> [i32; 16] {
+        core::array::from_fn(|j| {
+            let sum: i32 = (4 * j..4 * j + 4)
+                .map(|i| i32::from(a[i]) * i32::from(b[i]))
+                .sum();
+            acc[j].wrapping_add(sum)
+        })
+    }
+
+    #[test]
+    fn dot4_matches_reference() {
+        let (us, is) = (bytes(), signed());
+        let mut s = 0x2545_F491_4F6C_DD1Du64;
+        let mut checked = 0;
+        for a in &us {
+            for b in &is {
+                let rand: [i32; 16] = core::array::from_fn(|_| next(&mut s) as i32);
+                for acc in [[0i32; 16], [i32::MAX; 16], [i32::MIN; 16], rand] {
+                    let got = I32x16::from_array(acc)
+                        .dot4_u8_i8_add(U8x64::from_array(*a), I8x64::from_array(*b))
+                        .to_array();
+                    assert_eq!(got, reference(acc, a, b), "acc {acc:?}\na {a:?}\nb {b:?}");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 10_000, "corpus too small: {checked}");
+    }
+
+    /// A pair of `255 * 127` products is 64_770, which a saturating 16-bit
+    /// pair sum (`vpmaddubsw`) would clamp to 32_767. These lanes would expose
+    /// such an emulation in either sign.
+    #[test]
+    fn dot4_does_not_saturate_pair_sums() {
+        let acc = I32x16::splat(0);
+        let a = U8x64::splat(255);
+        assert_eq!(acc.dot4_u8_i8_add(a, I8x64::splat(127)).to_array(), [4 * 255 * 127; 16]);
+        assert_eq!(acc.dot4_u8_i8_add(a, I8x64::splat(-128)).to_array(), [-4 * 255 * 128; 16]);
+    }
+
+    /// Lane `j` must read bytes `4j..4j+4` and nothing else: a single nonzero
+    /// byte moves exactly one lane.
+    #[test]
+    fn dot4_keeps_bytes_in_their_lane() {
+        for i in 0..64 {
+            let mut a = [0u8; 64];
+            a[i] = 3;
+            let got = I32x16::splat(0)
+                .dot4_u8_i8_add(U8x64::from_array(a), I8x64::splat(-5))
+                .to_array();
+            let want: [i32; 16] = core::array::from_fn(|j| if j == i / 4 { -15 } else { 0 });
+            assert_eq!(got, want, "byte {i}");
+        }
+    }
+
+    #[test]
+    fn nibbles_match_reference() {
+        for a in bytes() {
+            let x = U8x64::from_array(a);
+            assert_eq!(x.low_nibbles().to_array(), a.map(|v| v & 0x0F), "low_nibbles {a:?}");
+            assert_eq!(x.high_nibbles().to_array(), a.map(|v| v >> 4), "high_nibbles {a:?}");
+        }
+        let every: [u8; 64] = core::array::from_fn(|i| (i as u8).wrapping_mul(4).wrapping_add(3));
+        for v in [every, every.map(|x| !x)] {
+            let x = U8x64::from_array(v);
+            assert_eq!(x.high_nibbles().to_array(), v.map(|b| b >> 4));
+            assert_eq!(x.low_nibbles().to_array(), v.map(|b| b & 0x0F));
+        }
+    }
+}
