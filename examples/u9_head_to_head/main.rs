@@ -77,17 +77,42 @@ fn time(name: &str, blocks: usize, runs: usize, baseline: Option<f64>, f: &dyn F
     med
 }
 
+/// One operand in the compact layout the report describes: 64 magnitude bytes
+/// and one 8-byte plane per block, in two separate arrays (72 bytes per block).
+/// A `Block` holding a 64-byte-aligned `U8x64` next to its plane would pad to
+/// 128 bytes, so the timed loops never stream `Block` arrays; they build each
+/// `Block` in registers from these two arrays.
+struct Operand {
+    mag: Vec<U8x64>,
+    plane: Vec<u64>,
+}
+
+impl Operand {
+    fn new(v: &[([u8; 64], u64)]) -> Self {
+        Self {
+            mag: v.iter().map(|(m, _)| U8x64::from_array(*m)).collect(),
+            plane: v.iter().map(|(_, p)| *p).collect(),
+        }
+    }
+
+    fn block(&self, i: usize) -> Block {
+        Block {
+            mag: self.mag[i],
+            positive: self.plane[i],
+        }
+    }
+
+    fn blocks(&self) -> impl Iterator<Item = Block> + '_ {
+        self.mag
+            .iter()
+            .zip(&self.plane)
+            .map(|(m, p)| Block { mag: *m, positive: *p })
+    }
+}
+
 fn bench(label: &str, d: &Data, runs: usize) {
     let n = d.a.len();
-    let blocks = |v: &[([u8; 64], u64)]| -> Vec<Block> {
-        v.iter()
-            .map(|(m, p)| Block {
-                mag: U8x64::from_array(*m),
-                positive: *p,
-            })
-            .collect()
-    };
-    let (ab, bb) = (blocks(&d.a), blocks(&d.b));
+    let (ab, bb) = (Operand::new(&d.a), Operand::new(&d.b));
     let want = oracle(&d.a, &d.b).unwrap();
 
     // Baseline operand: the b magnitudes reinterpreted as signed bytes are not
@@ -98,59 +123,67 @@ fn bench(label: &str, d: &Data, runs: usize) {
             .map(|(m, _)| I8x64::from_array(m.map(|x| i8::from_ne_bytes([x]))))
             .collect();
     // Execution-form operands for the arithmetic-only rows, also built once.
-    let routed: Vec<(U8x64, U8x64)> = ab.iter().zip(&bb).map(|(a, b)| route_a(*a, *b)).collect();
-    let split: Vec<(u64, I8x64, I8x64)> = ab.iter().zip(&bb).map(|(a, b)| prepare_b(*a, *b)).collect();
+    let routed: Vec<(U8x64, U8x64)> = ab
+        .blocks()
+        .zip(bb.blocks())
+        .map(|(a, b)| route_a(a, b))
+        .collect();
+    let split: Vec<(u64, I8x64, I8x64)> = ab
+        .blocks()
+        .zip(bb.blocks())
+        .map(|(a, b)| prepare_b(a, b))
+        .collect();
 
     let e2e_a = || {
         let mut acc = AccA::new();
-        for (a, b) in ab.iter().zip(&bb) {
-            check(*a, *b).unwrap();
-            acc.step(*a, *b);
+        for (a, b) in ab.blocks().zip(bb.blocks()) {
+            check(a, b).unwrap();
+            acc.step(a, b);
         }
         acc.finish()
     };
     let e2e_a2 = || {
         let mut acc = AccA::new();
-        for (a, b) in ab.iter().zip(&bb) {
-            check(*a, *b).unwrap();
-            acc.step_mullo(*a, *b);
+        for (a, b) in ab.blocks().zip(bb.blocks()) {
+            check(a, b).unwrap();
+            acc.step_mullo(a, b);
         }
         acc.finish()
     };
     let e2e_b = || {
         let mut acc = AccB::new();
-        for (a, b) in ab.iter().zip(&bb) {
-            check(*a, *b).unwrap();
-            acc.step(*a, *b);
+        for (a, b) in ab.blocks().zip(bb.blocks()) {
+            check(a, b).unwrap();
+            acc.step(a, b);
         }
         acc.finish()
     };
     let ari_a = || {
         let mut acc = AccA::new();
-        for ((p, q), b) in routed.iter().zip(&bb) {
-            acc.mac(*p, *q, b.mag);
+        for ((p, q), b) in routed.iter().zip(&bb.mag) {
+            acc.mac(*p, *q, *b);
         }
         acc.finish()
     };
     let ari_a2 = || {
         let mut acc = AccA::new();
-        for ((p, q), b) in routed.iter().zip(&bb) {
-            acc.mac_mullo(*p, *q, b.mag);
+        for ((p, q), b) in routed.iter().zip(&bb.mag) {
+            acc.mac_mullo(*p, *q, *b);
         }
         acc.finish()
     };
     let ari_b = || {
         let mut acc = AccB::new();
-        for (a, (neg, low7, top)) in ab.iter().zip(&split) {
-            acc.mac(a.mag, *neg, *low7, *top);
+        for (a, (neg, low7, top)) in ab.mag.iter().zip(&split) {
+            acc.mac(*a, *neg, *low7, *top);
         }
         acc.finish()
     };
     let base = || {
         let mut acc = I32x16::splat(0);
         let mut total = 0i64;
-        for (k, (a, w)) in ab.iter().zip(&w).enumerate() {
-            acc = baseline_step(acc, a.mag, *w);
+        for (k, (a, w)) in ab.mag.iter().zip(&w).enumerate() {
+            acc = baseline_step(acc, *a, *w);
             if k % B_FLUSH_BLOCKS == B_FLUSH_BLOCKS - 1 {
                 total += lanes_i64(acc);
                 acc = I32x16::splat(0);
@@ -159,32 +192,32 @@ fn bench(label: &str, d: &Data, runs: usize) {
         total + lanes_i64(acc)
     };
     let prep_b = || {
-        let mut x = 0i64;
-        for (a, b) in ab.iter().zip(&bb) {
-            let (neg, low7, top) = prepare_b(*a, *b);
-            x = x.wrapping_add(neg as i64 ^ i64::from(low7.to_array()[0]) ^ i64::from(top.to_array()[63]));
+        // The whole prepared tuple goes through the barrier, so no lane of
+        // `low7` or `top` can be dropped as unused.
+        for (a, b) in ab.blocks().zip(bb.blocks()) {
+            black_box(prepare_b(a, b));
         }
-        x
+        0
     };
     // Scan forms: operand b plays the query. One query block is reused for
     // every index block, as in a search; its preparation runs once per call
     // and is inside the timed region.
-    let q = bb[0];
+    let q = bb.block(0);
     let scan_a = || {
         let qa = QueryA::new(q);
         let mut acc = AccA::new();
-        for x in &ab {
-            check(*x, q).unwrap();
-            acc.scan_step(*x, &qa);
+        for x in ab.blocks() {
+            check(x, q).unwrap();
+            acc.scan_step(x, &qa);
         }
         acc.finish()
     };
     let scan_b = || {
         let qb = QueryB::new(q);
         let mut acc = AccB::new();
-        for x in &ab {
-            check(*x, q).unwrap();
-            acc.scan_step(*x, &qb);
+        for x in ab.blocks() {
+            check(x, q).unwrap();
+            acc.scan_step(x, &qb);
         }
         acc.finish()
     };
@@ -216,8 +249,8 @@ fn bench(label: &str, d: &Data, runs: usize) {
         let w0 = w[0];
         let mut acc = I32x16::splat(0);
         let mut total = 0i64;
-        for (k, a) in ab.iter().enumerate() {
-            acc = baseline_step(acc, a.mag, w0);
+        for (k, a) in ab.mag.iter().enumerate() {
+            acc = baseline_step(acc, *a, w0);
             if k % B_FLUSH_BLOCKS == B_FLUSH_BLOCKS - 1 {
                 total += lanes_i64(acc);
                 acc = I32x16::splat(0);
