@@ -20,6 +20,130 @@ point of it and adds what the merges since then closed or opened.
 LOOSE below rests on a line that was re-read on the main thread; rows marked
 "not re-read" are carried over unchanged.
 
+## R2. Revision after ndarray #385–#393 and lance-graph #1847–#1848
+
+Second pass, same day. ndarray `master` `870e733` (9 PRs, 39 files,
++8,597/−31). lance-graph `main` `61720fa` (2 PRs, docs only: the
+`palette512-turbovec9-nsl-worksteal` board entry, the DR³ session
+scratchpad, the epistemic-basin scratchpad). Sections 0–7 below are the
+first pass and stay as written; this section revises their rows. The
+facet-stride counts were re-taken: still 166 (7 R1, 157 R2, 2 R3). The new
+code added no hit, and its probe that times shuffle lookups on purpose
+carries a reasoned R1 exclusion.
+
+### R2.1 What the nine ndarray PRs did
+
+| PR | added | verdict recorded |
+|---|---|---|
+| #385 | `U16x32`: `zero`, `simd_min/max`, `saturating_add/sub`, `cmpeq/cmpgt_mask`, `reduce_min/max`, `to_f32x16_lo/hi` on AVX-512, AVX2, AVX, scalar, nightly; `reduce_sum` → `u16` everywhere; parity module `u16x32_facade_parity` | first parity coverage for the type found two older AVX-512 bugs: `shl`/`shr` returned 0 except for counts 1, 2, 4 and 8; `pack_saturate_u8` used `packus_epi16`. Both fixed |
+| #386 | `I32x16::dot4_u8_i8_add` (`vpdpbusd` with VNNI, widen-then-madd otherwise), `U8x64::low_nibbles/high_nibbles` (GFNI when compiled in), every backend; contract note "`vpmaddubsw` is NOT an emulation of `vpdpbusd`" | triggered by turbovec's raw `vpdpbusd`/`SDOT` kernels |
+| #387 | `I32x16::dot4_u8_i8_add_masked`; crate-private `BIT_IN_BYTE`, `mask_byte_spread`; `u9_cost_probe` | stored SM9 grid 46.0 dB at 1.29–1.32 ns/64; 512 Lloyd-Max IDs 49.9 dB but the in-scan lookup costs ~5× the arithmetic; no 512-entry facade word |
+| #388 | head-to-head probe | B (U8×I8 byte-dot) wins every row; contract split Arithmetic511 vs Codebook512 |
+| #389 | abacus probe | C (bit planes) REFUSE; D (16-bit carry column) ADOPT-LAB as A's f32 replacement; E (anchor at 128) no adoption; `carry_save3` ADOPT-LAB |
+| #390 | `U64x8::sum8_u8_add_masked`, every backend | 0.687 ns/64 B on AVX-512, 1.99 ns on AVX2 |
+| #391 | domino probe | F (eager flip) ADOPT-LAB; P, L, PL REFUSE |
+| #392 | two EPIPHANIES entries; U1–U7 fruit list | — |
+| #393 | E5 probe | ADOPT-LAB only on AVX-512 without VNNI; DEFER as B replacement; closes U1 |
+
+### R2.2 Rows of this map that moved
+
+| row | was | now | evidence |
+|---|---|---|---|
+| H1 parity for 16 unnamed types | LOOSE | **PARTLY CLOSED, and its value is now measured** | #385 covered `U16x32` in `src/simd.rs` test modules and found two real AVX-512 bugs on the first type tried. The 16-type count in `simd-masking-parity` is unchanged (the new tests live in lib test modules) |
+| H3 AVX2 popcount: scalar `popcnt` vs nibble table | LOOSE | **REFRAMED** | `u9-abacus-probe.md:275`: "Without VPOPCNTDQ the popcount fold is a byte shuffle. On v4 and AVX2, `u64::count_ones` lowers to the `vpshufb` nibble table". Rewriting the 7 R1 hits as `count_ones` would silence the source-level guard and leave the machine code identical. The honest options are an exclusion with a measured reason, or a per-u64 `popcnt` that LLVM is prevented from vectorizing, which is a measurement question, not an edit |
+| N6 D-RPF-4 "LUT-weighted strided sum" | PROBE | PROBE, sharpened | #387 measured per-position table reads (`lut_u8` shape) at 38–40 ns/64 against ~1.3 ns for the arithmetic they feed. A LUT-weighted sum built from `lut_u8` is therefore lookup-bound; the probe must time the LUT step separately |
+| N7/N8 burn-down | one job | **priority set by measurement** | `U8x64::mask_blend`'s AVX2 realization is a per-lane loop (an R2 hit) and dominates every A/E3 row on AVX2: 75–81 ns vs B 10 ns per 64 (`turbovec9-u9-head-to-head.md:227`). Fix it first of the 157 R2 hits |
+| N4 runtime-scale batch Codec9 | ruling needed | ruling needed, **second requester** | lance-graph W3 compares f32/DR512/i4/U9 graph loss and gradient; DR512 values for that come from a runtime-calibrated encode, the same need NSL stated |
+| L4 `lut9` doc | LOOSE | LOOSE | `simd_stride.rs` untouched by the delta |
+| H2 aarch64 guard | LOOSE | LOOSE | `src/cpu_guard.rs:318` and `:461-465` unchanged (the path in my census brief was wrong; the file is `src/cpu_guard.rs`) |
+| H5 NaN erasers | LOOSE | LOOSE | 14 references in ndarray; 4 in lance-graph, all in `bgz-tensor/src/{adaptive_codec,had_cascade}.rs` |
+| L5 runtime-detect census | LOOSE | LOOSE | 96 sites in 17 files, unchanged |
+
+### R2.3 New dots
+
+**N10 — two 9-bit contracts, kept apart on both sides.** ndarray's
+head-to-head (`:244-250`) and lance-graph's entry (`:22-24`, scratchpad
+`:21`) record the same split: Arithmetic511 (DR512: sign + magnitude, one
+never-touched code) and Codebook512 (TurboVec-U9: 512 centroid IDs, all
+valid). Both say never reinterpret one as the other; lance-graph adds "never
+silently turn `lut9` into a generic U9 lookup" (`:34-35`), and ndarray added
+no 512-entry facade word. Consistent; nothing to do.
+
+**N11 — the two repos measured different things and point opposite ways.**
+lance-graph's TurboVec9 numbers are recall: scalar i9 0.984 vs i4 0.788
+Recall@10 on synthetic unit vectors (`:518`), using 512 Lloyd-Max centroid
+IDs. ndarray's numbers are cost and signal: the IDs reach 49.9 dB but need a
+512-entry lookup in the scan (5.4–5.7 ns/64); a stored uniform 9-bit grid
+reaches 46.0 dB at 1.3 ns/64, the same per-dimension L1 cost as i4
+(`turbovec9-u9-substrate.md:111-123`). Neither side measured recall for the
+stored-grid layout. The owner experiment U7 (and lance-graph W1/W6) should
+include the stored SM9 arm next to the ID arm, or the faster layout is never
+compared on the metric that decides.
+
+**N12 — the masked byte-dot hides shuffles on AVX2.**
+`dot4_u8_i8_add_masked` on AVX2 lowers to 4 `vpshufb` (LLVM's spread of the
+mask), and E5 on AVX2 to 8 (`u9-e5-probe.md:111`). The facet-stride guard
+reads source, so it cannot see this. U2 (AVX2 streamed B 27–33 ns vs 9–10 in
+L1) may be these shuffles rather than bandwidth; that is exactly the probe
+U2 names. `scripts/codegen-witness.sh` is the existing tool that reads
+assembly; adding a "no `vpshufb` in the masked dot on AVX2" assertion
+there would make the rule cover what LLVM emits too.
+
+**N13 — W4 is half done, by the right route.** lance-graph's W4 asks ndarray
+for `dot4_u8_i8_add` + nibble ops "ONLY if needed by a proven consumer"
+(`:564`). #386 added exactly those, triggered by turbovec's raw `vpdpbusd`
+and `SDOT` kernels. The remaining half is turbovec moving onto the facade,
+which is turbovec's repository (not in this session's scope) and lance-graph
+W5 (the bridge is "likely non-building", `:57-61`).
+
+**N14 — the U8→I8 bit view and R3 are one ruling.** U6 asks for a
+`U8x64 → I8x64` bit view (today a store/load, 1.16–1.27 ns per block). R3
+forbids mixing u8 and i8, and the 2 existing R3 hits are the same kind of
+crossing (u8 `splat` cast to an `i8` intrinsic parameter). A ruling that
+permits a named, zero-cost reinterpret — and still forbids arithmetic on
+the reinterpreted value — would settle both.
+
+**N15 — CI does not run the new lib tests on NEON or wasm.** #386's own note:
+"CI never builds aarch64/wasm lib tests, only the two parity programs". The
+`u16x32_facade_parity` and `dot4_nibble_facade_parity` modules run on x86 CI
+only; NEON and wasm are covered through codes 0x500–0x507 in the parity
+programs. The head-to-head tests also ran on the other tiers locally only
+(`turbovec9-u9-head-to-head.md:135-136`).
+
+### R2.4 Fruit, revised
+
+Closed this pass: U1 (#393); W4's ndarray half (#386); the `U16x32` part of
+H1 (#385).
+
+Excluded, do not reopen without new evidence (from #392): bit-plane
+multiplication as a B replacement; lazy EMPTY/FULL flags in bit-sliced
+counters.
+
+| # | item | size | why first |
+|---|---|---|---|
+| L6 | add the AVX2 "no `vpshufb` in masked dot" check to the codegen witness, initially as an expected-fail record | low | N12; makes the hidden shuffles visible |
+| L7 | U2 probe: AVX2 streamed B, bandwidth vs the 4 `vpshufb` | low | the number is unexplained |
+| L3, L4, L1, L2, L5 | as in §5 | low | unchanged |
+| H9 | AVX2 `mask_blend` without the per-lane loop (U5), then U4 (sign plane → ±1 bytes) on top of it | high | biggest measured AVX2 cost (75–81 vs 10 ns/64); R2 burn-down item #1 |
+| H1' | parity for the remaining 15 facade types, `U16x32` as the template | high | #385 shows it finds real bugs |
+| H3' | AVX2 popcount: measure scalar-`popcnt` (vectorization blocked) against the nibble table; exclusion with the number if the table wins | high | N8 reframed |
+| H5, H6, H2, H4, H7, H8 | as in §5 | high | unchanged; H5 still first for data safety |
+| V9 | U7 / W1 / W6: recall for stored SM9 vs Lloyd-Max IDs on a real index | heavy | N11; TurboVec owner |
+| V10 | the N14 ruling (named u8→i8 reinterpret) | heavy | operator |
+| V11 | fused single-widen SM9 op for non-VNNI tiers; AVX-VNNI 256-bit and NEON `USDOT` arms; signed i8×i8 facade word | heavy | recorded loose ends of #386/#387, each needs a consumer |
+| V1–V8 | as in §5 | heavy | unchanged |
+
+### R2.5 Harvest ledger, this pass
+
+| card | task | result | spot check |
+|---|---|---|---|
+| substrate-mapper | five U9 knowledge docs + board diff | DONE, all read | `u9-e5-probe.md:16-24`, blackboard U1–U7 rows re-read |
+| substrate-mapper | `src/` diff (2,433 lines) + parity diff | DONE, 83 added `pub fn` | AVX2 `sum8_u8_add_masked` body re-read: `for h in 0..2` is the two-half split, not a per-lane loop |
+| substrate-mapper | three lance-graph docs | DONE, all read | entry `:28-36`, `:555-572` re-read |
+| census-counter | 13 counts | DONE | R2 = 157 re-run; `cpu_guard` path miss was my brief's error |
+
+Misses: one, mine (wrong path in a brief). No card concluded or miscounted.
+
 ## 0. What the six ndarray PRs did
 
 | PR | closed | opened or left |
