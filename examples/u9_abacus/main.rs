@@ -75,51 +75,47 @@ fn time(name: &str, blocks: usize, runs: usize, base: Option<f64>, f: &dyn Fn() 
 
 fn bench(label: &str, n: usize, runs: usize, seed: u64) {
     let (ra, rb) = data(n, seed);
-    let blk = |v: &[([u8; 64], u64)]| -> Vec<Block> {
-        v.iter()
-            .map(|(m, p)| Block {
-                mag: U8x64::from_array(*m),
-                positive: *p,
-            })
-            .collect()
-    };
-    let (ab, bb) = (blk(&ra), blk(&rb));
+    let (ab, bb) = (Operand::new(&ra), Operand::new(&rb));
     let want = oracle(&ra, &rb).unwrap();
     let qraw = vec![rb[0]; n];
     let want_scan = oracle(&ra, &qraw).unwrap();
-    let q = bb[0];
+    let q = bb.block(0);
 
     // Execution-form operands for the arithmetic-only rows, built once.
-    let split: Vec<(u64, I8x64, I8x64)> = ab.iter().zip(&bb).map(|(a, b)| prepare_b(*a, *b)).collect();
-    let pa: Vec<[u64; 8]> = ab.iter().map(|x| planes(x.mag)).collect();
-    let pb: Vec<[u64; 8]> = bb.iter().map(|x| planes(x.mag)).collect();
+    let split: Vec<(u64, I8x64, I8x64)> = ab
+        .blocks()
+        .zip(bb.blocks())
+        .map(|(a, b)| prepare_b(a, b))
+        .collect();
+    let pa: Vec<[u64; 8]> = ab.blocks().map(|x| planes(x.mag)).collect();
+    let pb: Vec<[u64; 8]> = bb.blocks().map(|x| planes(x.mag)).collect();
     let neg: Vec<u64> = ab
-        .iter()
-        .zip(&bb)
+        .blocks()
+        .zip(bb.blocks())
         .map(|(a, b)| a.positive ^ b.positive)
         .collect();
 
     let b_e2e = || {
         let mut acc = AccB::new();
-        for (a, b) in ab.iter().zip(&bb) {
-            check(*a, *b).unwrap();
-            acc.step(*a, *b);
+        for (a, b) in ab.blocks().zip(bb.blocks()) {
+            check(a, b).unwrap();
+            acc.step(a, b);
         }
         acc.finish()
     };
     let b_ari = || {
         let mut acc = AccB::new();
-        for (a, (ng, l, t)) in ab.iter().zip(&split) {
-            acc.mac(a.mag, *ng, *l, *t);
+        for (a, (ng, l, t)) in ab.mag.iter().zip(&split) {
+            acc.mac(*a, *ng, *l, *t);
         }
         acc.finish()
     };
     let b_scan = || {
         let qb = QueryB::new(q);
         let mut acc = AccB::new();
-        for x in &ab {
-            check(*x, q).unwrap();
-            acc.scan_step(*x, &qb);
+        for x in ab.blocks() {
+            check(x, q).unwrap();
+            acc.scan_step(x, &qb);
         }
         acc.finish()
     };
@@ -127,8 +123,8 @@ fn bench(label: &str, n: usize, runs: usize, seed: u64) {
         let w0 = I8x64::from_array(rb[0].0.map(|x| i8::from_ne_bytes([x])));
         let mut acc = I32x16::splat(0);
         let mut total = 0i64;
-        for (k, a) in ab.iter().enumerate() {
-            acc = baseline_step(acc, a.mag, w0);
+        for (k, a) in ab.mag.iter().enumerate() {
+            acc = baseline_step(acc, *a, w0);
             if k % B_FLUSH_BLOCKS == B_FLUSH_BLOCKS - 1 {
                 total += lanes_i64(acc);
                 acc = I32x16::splat(0);
@@ -139,16 +135,16 @@ fn bench(label: &str, n: usize, runs: usize, seed: u64) {
 
     let c_e2e_abacus = || {
         let mut acc = AccAbacus::new();
-        for (a, b) in ab.iter().zip(&bb) {
-            check(*a, *b).unwrap();
+        for (a, b) in ab.blocks().zip(bb.blocks()) {
+            check(a, b).unwrap();
             acc.mac(&planes(a.mag), a.positive ^ b.positive, &planes(b.mag));
         }
         acc.finish()
     };
     let c_e2e_pop = || {
         let mut acc = AccPopcnt::new();
-        for (a, b) in ab.iter().zip(&bb) {
-            check(*a, *b).unwrap();
+        for (a, b) in ab.blocks().zip(bb.blocks()) {
+            check(a, b).unwrap();
             acc.mac(&planes(a.mag), a.positive ^ b.positive, &planes(b.mag));
         }
         acc.finish()
@@ -179,8 +175,8 @@ fn bench(label: &str, n: usize, runs: usize, seed: u64) {
     };
     let c_e2e_csa = || {
         let mut acc = AccCsa::new();
-        for (a, b) in ab.iter().zip(&bb) {
-            check(*a, *b).unwrap();
+        for (a, b) in ab.blocks().zip(bb.blocks()) {
+            check(a, b).unwrap();
             acc.mac(&planes(a.mag), a.positive ^ b.positive, &planes(b.mag));
         }
         acc.finish()
@@ -188,8 +184,8 @@ fn bench(label: &str, n: usize, runs: usize, seed: u64) {
     let c_scan_csa = || {
         let qc = QueryC::new(q.mag, q.positive);
         let mut acc = AccCsa::new();
-        for x in &ab {
-            check(*x, q).unwrap();
+        for x in ab.blocks() {
+            check(x, q).unwrap();
             acc.mac(&planes(x.mag), x.positive ^ qc.positive, &qc.planes);
         }
         acc.finish()
@@ -202,18 +198,18 @@ fn bench(label: &str, n: usize, runs: usize, seed: u64) {
         acc.finish()
     };
     let c_prep = || {
-        let mut s = 0u64;
-        for (a, b) in ab.iter().zip(&bb) {
-            let (x, y) = (planes(a.mag), planes(b.mag));
-            s = s.wrapping_add(x[0] ^ x[7] ^ y[3] ^ y[5]);
+        // Both complete plane arrays go through the barrier, so none of the
+        // sixteen extractions can be dropped as unused.
+        for (a, b) in ab.mag.iter().zip(&bb.mag) {
+            black_box((planes(*a), planes(*b)));
         }
-        s as i64
+        0
     };
     let c_scan_abacus = || {
         let qc = QueryC::new(q.mag, q.positive);
         let mut acc = AccAbacus::new();
-        for x in &ab {
-            check(*x, q).unwrap();
+        for x in ab.blocks() {
+            check(x, q).unwrap();
             acc.mac(&planes(x.mag), x.positive ^ qc.positive, &qc.planes);
         }
         acc.finish()
@@ -221,39 +217,43 @@ fn bench(label: &str, n: usize, runs: usize, seed: u64) {
     let c_scan_pop = || {
         let qc = QueryC::new(q.mag, q.positive);
         let mut acc = AccPopcnt::new();
-        for x in &ab {
-            check(*x, q).unwrap();
+        for x in ab.blocks() {
+            check(x, q).unwrap();
             acc.mac(&planes(x.mag), x.positive ^ qc.positive, &qc.planes);
         }
         acc.finish()
     };
 
     // D: A' products with the f32 detour replaced by a 16-bit carry column.
-    let routed: Vec<(U8x64, U8x64)> = ab.iter().zip(&bb).map(|(a, b)| route_a(*a, *b)).collect();
+    let routed: Vec<(U8x64, U8x64)> = ab
+        .blocks()
+        .zip(bb.blocks())
+        .map(|(a, b)| route_a(a, b))
+        .collect();
     let bw: Vec<(U16x32, U16x32)> = bb
-        .iter()
+        .blocks()
         .map(|b| (U16x32::from_u8x64_lo(b.mag), U16x32::from_u8x64_hi(b.mag)))
         .collect();
     let a2_e2e = || {
         let mut acc = AccA::new();
-        for (a, b) in ab.iter().zip(&bb) {
-            check(*a, *b).unwrap();
-            acc.step_mullo(*a, *b);
+        for (a, b) in ab.blocks().zip(bb.blocks()) {
+            check(a, b).unwrap();
+            acc.step_mullo(a, b);
         }
         acc.finish()
     };
     let a2_ari = || {
         let mut acc = AccA::new();
-        for ((p, q), b) in routed.iter().zip(&bb) {
-            acc.mac_mullo(*p, *q, b.mag);
+        for ((p, q), b) in routed.iter().zip(&bb.mag) {
+            acc.mac_mullo(*p, *q, *b);
         }
         acc.finish()
     };
-    fn d_e2e<const X: bool>(ab: &[Block], bb: &[Block]) -> i64 {
+    fn d_e2e<const X: bool>(ab: &Operand, bb: &Operand) -> i64 {
         let mut acc = AccD::<X>::new();
-        for (a, b) in ab.iter().zip(bb) {
-            check(*a, *b).unwrap();
-            acc.step(*a, *b);
+        for (a, b) in ab.blocks().zip(bb.blocks()) {
+            check(a, b).unwrap();
+            acc.step(a, b);
         }
         acc.finish()
     }
@@ -264,12 +264,12 @@ fn bench(label: &str, n: usize, runs: usize, seed: u64) {
         }
         acc.finish()
     }
-    fn d_scan<const X: bool>(ab: &[Block], q: Block) -> i64 {
+    fn d_scan<const X: bool>(ab: &Operand, q: Block) -> i64 {
         let qd = QueryD::new(q);
         let mut acc = AccD::<X>::new();
-        for x in ab {
-            check(*x, q).unwrap();
-            acc.scan_step(*x, &qd);
+        for x in ab.blocks() {
+            check(x, q).unwrap();
+            acc.scan_step(x, &qd);
         }
         acc.finish()
     }
@@ -349,22 +349,18 @@ fn bench(label: &str, n: usize, runs: usize, seed: u64) {
 /// the argument `e`.
 fn bench_e(label: &str, n: usize, runs: usize, seed: u64) {
     let (ra, rb) = data(n, seed);
-    let blk = |v: &[Raw]| -> Vec<Block> {
-        v.iter()
-            .map(|(m, p)| Block {
-                mag: U8x64::from_array(*m),
-                positive: *p,
-            })
-            .collect()
-    };
-    let (ab, bb) = (blk(&ra), blk(&rb));
+    let (ab, bb) = (Operand::new(&ra), Operand::new(&rb));
     let want = oracle(&ra, &rb).unwrap();
     let want_scan = oracle(&ra, &vec![rb[0]; n]).unwrap();
-    let q = bb[0];
-    let split: Vec<(u64, I8x64, I8x64)> = ab.iter().zip(&bb).map(|(a, b)| prepare_b(*a, *b)).collect();
+    let q = bb.block(0);
+    let split: Vec<(u64, I8x64, I8x64)> = ab
+        .blocks()
+        .zip(bb.blocks())
+        .map(|(a, b)| prepare_b(a, b))
+        .collect();
     let anc: Vec<(u64, I8x64, u64)> = ab
-        .iter()
-        .zip(&bb)
+        .blocks()
+        .zip(bb.blocks())
         .map(|(a, b)| {
             let (low7, top) = split_anchor(b.mag);
             (a.positive ^ b.positive, low7, top)
@@ -373,25 +369,25 @@ fn bench_e(label: &str, n: usize, runs: usize, seed: u64) {
 
     let b_e2e = || {
         let mut acc = AccB::new();
-        for (a, b) in ab.iter().zip(&bb) {
-            check(*a, *b).unwrap();
-            acc.step(*a, *b);
+        for (a, b) in ab.blocks().zip(bb.blocks()) {
+            check(a, b).unwrap();
+            acc.step(a, b);
         }
         acc.finish()
     };
     let b_ari = || {
         let mut acc = AccB::new();
-        for (a, (ng, l, t)) in ab.iter().zip(&split) {
-            acc.mac(a.mag, *ng, *l, *t);
+        for (a, (ng, l, t)) in ab.mag.iter().zip(&split) {
+            acc.mac(*a, *ng, *l, *t);
         }
         acc.finish()
     };
     let b_scan = || {
         let qb = QueryB::new(q);
         let mut acc = AccB::new();
-        for x in &ab {
-            check(*x, q).unwrap();
-            acc.scan_step(*x, &qb);
+        for x in ab.blocks() {
+            check(x, q).unwrap();
+            acc.scan_step(x, &qb);
         }
         acc.finish()
     };
@@ -399,25 +395,25 @@ fn bench_e(label: &str, n: usize, runs: usize, seed: u64) {
         ($acc:ident) => {{
             let e2e = || {
                 let mut acc = $acc::new();
-                for (a, b) in ab.iter().zip(&bb) {
-                    check(*a, *b).unwrap();
-                    acc.step(*a, *b);
+                for (a, b) in ab.blocks().zip(bb.blocks()) {
+                    check(a, b).unwrap();
+                    acc.step(a, b);
                 }
                 acc.finish()
             };
             let ari = || {
                 let mut acc = $acc::new();
-                for (a, (ng, l, t)) in ab.iter().zip(&anc) {
-                    acc.mac(a.mag, *ng, *l, *t);
+                for (a, (ng, l, t)) in ab.mag.iter().zip(&anc) {
+                    acc.mac(*a, *ng, *l, *t);
                 }
                 acc.finish()
             };
             let scan = || {
                 let qe = QueryE::new(q);
                 let mut acc = $acc::new();
-                for x in &ab {
-                    check(*x, q).unwrap();
-                    acc.scan_step(*x, &qe);
+                for x in ab.blocks() {
+                    check(x, q).unwrap();
+                    acc.scan_step(x, &qe);
                 }
                 acc.finish()
             };

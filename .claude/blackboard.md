@@ -3911,12 +3911,15 @@ facade compositions of it. B is long multiplication, `m = low7 - top`, tested fo
 Verdict: B (U8 x I8 byte-dot) is the cheaper exact I9 substrate in every row, symmetric included. B encodes with AND,
 XOR and the presence bit only: `low7 = |b| & 0x7F`, `top = |b| ^ low7`, `negative = plane_a ^ plane_b`, four masked
 byte-dots, `(pos_low7 - pos_top) - (neg_low7 - neg_top)`; no magnitude is negated. Disassembly (AVX-512): no shuffle, permute,
-pack, extract or insert in B, the baselines or the flushes; on AVX2 LLVM puts 4 vpshufb in the facade's masked byte-dot. VNNI L1, ns/64: B end-to-end 3.03-3.05 vs A' 7.78-7.80;
-B scan 2.69-2.77 vs A 6.95-7.14; plain byte-dot 1.89-1.94. AVX2: B end-to-end 9.9-10.4 vs A' 75-82 (A dominated by
+pack, extract or insert in B, the baselines or the flushes; on AVX2 LLVM puts 4 vpshufb in the facade's masked byte-dot. VNNI L1, ns/64: B end-to-end 3.05-3.06 vs A' 7.64-7.83;
+B scan 2.75-2.81 vs A 7.02-7.19; plain byte-dot 1.94. AVX2: B end-to-end 10.1-10.2 vs A' 75-81 (A dominated by
 `U8x64::mask_blend`'s per-lane AVX2 realization, not changed).
 
-Loose ends: the U8x64 -> I8x64 bit view (`bits_as_i8` is a store/load stand-in, 0.86-1.16 ns/block with the split;
+Loose ends: the U8x64 -> I8x64 bit view (`bits_as_i8` is a store/load stand-in, 1.16-1.27 ns/block with the split;
 not added, it is a u8/i8 crossing); recall on a real TurboVec-U9 index (owner's experiment, defined in the report).
+Re-measured after review (Codex, PR #388): timed operands are now compact (72 B/block, not a padded 128-B `Vec<Block>`)
+and the preparation row consumes every lane. Streamed VNNI B end-to-end 12.9-16.3 -> 6.0-6.5, B scan 5.9-6.9 -> 2.75-2.80;
+verdict unchanged.
 
 ## D-U9-ABACUS: schoolbook U9 x U9 on bit planes (2026-10-29, branch claude/u9-abacus, stacked on #388)
 
@@ -3925,12 +3928,14 @@ Probe-only: `examples/u9_abacus/{abacus,main}.rs`, `tests/u9_abacus.rs`, report
 as a B replacement REFUSE: best fold (per-plane popcount) 12.4 ns/64 arithmetic with free planes vs B 2.9 end-to-end
 on VNNI, carry-save folds ~290 ns (LLVM does not unroll them; scalar, no vpternlog). No break-even for prepared
 operands. On v4/AVX2 LLVM lowers `count_ones` to a `vpshufb` nibble table. Exact on all 7 tiers; 9 disable runs red.
-D (A' products + 16-bit place-value column, carry by bit logic, no f32): react beats A' ~10 % on AVX-512 (5.4-6.0 vs
-6.3-6.6 ns arith; LLVM folds the carry into 2 vpternlogq), anticipate wins on AVX2; B still 2.3x faster on VNNI because D
+D (A' products + 16-bit place-value column, carry by bit logic, no f32): react beats A' ~10 % on AVX-512 (5.2-5.7 vs
+6.3-6.5 ns arith L1; LLVM folds the carry into 2 vpternlogq), anticipate wins on AVX2; B still 2.3x faster on VNNI because D
 widens u8->u16 before mullo. ADOPT-LAB as A's f32 replacement, DEFER as B replacement. Exact on 7 tiers; 5 disables red.
-E (B's split at 128, anchor term as masked sum << 7): E3 (3 byte-dots, +1/-1 sign bytes) ties B on VNNI (2.92 vs 2.90 e2e,
-2.28 vs 2.39 arith), E4/Esum slower, AVX2 lost to mask_blend. No adoption. Facade gaps recorded: vertical masked vpsadbw
+E (B's split at 128, anchor term as masked sum << 7): E3 (3 byte-dots, +1/-1 sign bytes) ties B on VNNI (2.84-2.92 vs 2.81-2.89 e2e,
+2.28 vs 2.34-2.41 arith), E4/Esum slower, AVX2 lost to mask_blend. No adoption. Facade gaps recorded: vertical masked vpsadbw
 accumulate; sign plane -> +1/-1 bytes without mask_blend. Exact on 7 tiers; 5 disables red.
+Re-measured after review (Codex, PR #389): compact timed operands (as #388) and the plane-extraction row consumes all 16
+planes (VNNI L1 2.52 -> 3.5 ns). Verdicts unchanged; streamed D react arith now level with A' (both memory-bound).
 
 ## D-DOMINO-MOV-0: bit flip, positional substitution, lazy FULL carry (2026-10-29, branch claude/u9-domino, stacked on #389)
 
