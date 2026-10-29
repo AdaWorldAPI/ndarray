@@ -981,6 +981,136 @@ impl U16x32 {
         }
         Self(out)
     }
+
+    /// All 32 lanes zero.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// assert_eq!(U16x32::zero().to_array(), [0u16; 32]);
+    /// ```
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self([0u16; 32])
+    }
+
+    /// Per-lane unsigned minimum.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let a = U16x32::from_array(core::array::from_fn(|i| i as u16));
+    /// assert_eq!(a.simd_min(U16x32::splat(10)).to_array()[20], 10);
+    /// ```
+    #[inline(always)]
+    pub fn simd_min(self, other: Self) -> Self {
+        Self(core::array::from_fn(|i| self.0[i].min(other.0[i])))
+    }
+
+    /// Per-lane unsigned maximum.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let a = U16x32::from_array(core::array::from_fn(|i| i as u16));
+    /// assert_eq!(a.simd_max(U16x32::splat(10)).to_array()[3], 10);
+    /// ```
+    #[inline(always)]
+    pub fn simd_max(self, other: Self) -> Self {
+        Self(core::array::from_fn(|i| self.0[i].max(other.0[i])))
+    }
+
+    /// Per-lane addition clamped at `u16::MAX`.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let s = U16x32::splat(u16::MAX - 1).saturating_add(U16x32::splat(5));
+    /// assert_eq!(s.to_array(), [u16::MAX; 32]);
+    /// ```
+    #[inline(always)]
+    pub fn saturating_add(self, other: Self) -> Self {
+        Self(core::array::from_fn(|i| self.0[i].saturating_add(other.0[i])))
+    }
+
+    /// Per-lane subtraction clamped at 0.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// assert_eq!(U16x32::splat(3).saturating_sub(U16x32::splat(5)).to_array(), [0u16; 32]);
+    /// ```
+    #[inline(always)]
+    pub fn saturating_sub(self, other: Self) -> Self {
+        Self(core::array::from_fn(|i| self.0[i].saturating_sub(other.0[i])))
+    }
+
+    /// Per-lane equality as a bitmask: bit `i` is set iff lane `i` is equal.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let a = U16x32::from_array(core::array::from_fn(|i| i as u16));
+    /// assert_eq!(a.cmpeq_mask(U16x32::splat(5)), 1 << 5);
+    /// ```
+    #[inline(always)]
+    pub fn cmpeq_mask(self, other: Self) -> u32 {
+        (0..32).fold(0u32, |m, i| m | (((self.0[i] == other.0[i]) as u32) << i))
+    }
+
+    /// Per-lane unsigned `self > other` as a bitmask, lane `i` in bit `i`.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let a = U16x32::from_array(core::array::from_fn(|i| i as u16));
+    /// assert_eq!(a.cmpgt_mask(U16x32::splat(29)), (1 << 30) | (1 << 31));
+    /// ```
+    #[inline(always)]
+    pub fn cmpgt_mask(self, other: Self) -> u32 {
+        (0..32).fold(0u32, |m, i| m | (((self.0[i] > other.0[i]) as u32) << i))
+    }
+
+    /// Smallest lane.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let a = U16x32::from_array(core::array::from_fn(|i| 100 - i as u16));
+    /// assert_eq!(a.reduce_min(), 69);
+    /// ```
+    #[inline(always)]
+    pub fn reduce_min(self) -> u16 {
+        self.0.iter().copied().fold(u16::MAX, u16::min)
+    }
+
+    /// Largest lane.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let a = U16x32::from_array(core::array::from_fn(|i| i as u16 * 3));
+    /// assert_eq!(a.reduce_max(), 93);
+    /// ```
+    #[inline(always)]
+    pub fn reduce_max(self) -> u16 {
+        self.0.iter().copied().fold(0, u16::max)
+    }
+
+    /// Lanes 0..16 converted to `f32`. Every `u16` is exact in `f32`.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let a = U16x32::from_array(core::array::from_fn(|i| i as u16 * 1000));
+    /// assert_eq!(a.to_f32x16_lo().to_array()[15], 15_000.0);
+    /// ```
+    #[inline(always)]
+    pub fn to_f32x16_lo(self) -> F32x16 {
+        F32x16(core::array::from_fn(|i| self.0[i] as f32))
+    }
+
+    /// Lanes 16..32 converted to `f32`. Every `u16` is exact in `f32`.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let a = U16x32::from_array(core::array::from_fn(|i| i as u16 * 1000));
+    /// assert_eq!(a.to_f32x16_hi().to_array()[0], 16_000.0);
+    /// ```
+    #[inline(always)]
+    pub fn to_f32x16_hi(self) -> F32x16 {
+        F32x16(core::array::from_fn(|i| self.0[16 + i] as f32))
+    }
 }
 
 // Extra methods for I32x16 that float types have via the macro

@@ -1437,39 +1437,35 @@ impl U16x32 {
         })
     }
 
-    /// Narrow back to u8 with unsigned saturation (32 × u16 → lower 32 bytes of U8x64).
+    /// Each lane clamped to 255 and narrowed to `u8`: bytes 0..32 come from
+    /// `self`, bytes 32..64 from `other`, both in lane order.
     #[inline(always)]
     pub fn pack_saturate_u8(self, other: Self) -> U8x64 {
-        // SAFETY: _mm512_packus_epi16 packs two __m512i of 16-bit into one __m512i of 8-bit.
-        U8x64(unsafe { _mm512_packus_epi16(self.0, other.0) })
+        // SAFETY: AVX-512BW (see `reduce_sum`); register-only ops.
+        // `cvtusepi16_epi8` narrows with unsigned saturation and keeps lane
+        // order, unlike `packus_epi16`, which saturates as signed and
+        // interleaves its two inputs per 128-bit lane.
+        U8x64(unsafe {
+            let lo = _mm512_cvtusepi16_epi8(self.0);
+            let hi = _mm512_cvtusepi16_epi8(other.0);
+            _mm512_inserti64x4::<1>(_mm512_castsi256_si512(lo), hi)
+        })
     }
 
     /// Shift right each 16-bit lane by immediate.
     #[inline(always)]
     pub fn shr(self, imm: u32) -> Self {
-        Self(unsafe {
-            match imm {
-                1 => _mm512_srli_epi16(self.0, 1),
-                2 => _mm512_srli_epi16(self.0, 2),
-                4 => _mm512_srli_epi16(self.0, 4),
-                8 => _mm512_srli_epi16(self.0, 8),
-                _ => _mm512_setzero_si512(),
-            }
-        })
+        // SAFETY: AVX-512BW (see `reduce_sum`); register-only ops. A count of
+        // 16 or more gives 0, which is what `srl_epi16` does with it.
+        Self(unsafe { _mm512_srl_epi16(self.0, _mm_cvtsi64_si128(imm as i64)) })
     }
 
     /// Shift left each 16-bit lane by immediate.
     #[inline(always)]
     pub fn shl(self, imm: u32) -> Self {
-        Self(unsafe {
-            match imm {
-                1 => _mm512_slli_epi16(self.0, 1),
-                2 => _mm512_slli_epi16(self.0, 2),
-                4 => _mm512_slli_epi16(self.0, 4),
-                8 => _mm512_slli_epi16(self.0, 8),
-                _ => _mm512_setzero_si512(),
-            }
-        })
+        // SAFETY: AVX-512BW (see `reduce_sum`); register-only ops. A count of
+        // 16 or more gives 0, which is what `sll_epi16` does with it.
+        Self(unsafe { _mm512_sll_epi16(self.0, _mm_cvtsi64_si128(imm as i64)) })
     }
 
     /// Multiply and keep low 16 bits (wrapping).
@@ -1479,11 +1475,207 @@ impl U16x32 {
         Self(unsafe { _mm512_mullo_epi16(self.0, other.0) })
     }
 
-    /// Horizontal sum of all 32 lanes.
+    /// Wrapping horizontal sum of all 32 lanes (the result wraps modulo
+    /// 2^16, as every other backend's `U16x32::reduce_sum` does).
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// assert_eq!(U16x32::splat(3).reduce_sum(), 96);
+    /// assert_eq!(U16x32::splat(u16::MAX).reduce_sum(), u16::MAX.wrapping_mul(32));
+    /// ```
     #[inline(always)]
-    pub fn reduce_sum(self) -> u32 {
-        let arr = self.to_array();
-        arr.iter().map(|&v| v as u32).sum()
+    pub fn reduce_sum(self) -> u16 {
+        // SAFETY: AVX-512F/BW are present whenever this type is the exported
+        // `U16x32` (the `avx512f` arm); register-only ops.
+        unsafe {
+            let lo = _mm512_cvtepu16_epi32(_mm512_castsi512_si256(self.0));
+            let hi = _mm512_cvtepu16_epi32(_mm512_extracti64x4_epi64::<1>(self.0));
+            _mm512_reduce_add_epi32(_mm512_add_epi32(lo, hi)) as u16
+        }
+    }
+
+    /// Per-lane unsigned minimum.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let a = U16x32::from_array(core::array::from_fn(|i| i as u16));
+    /// assert_eq!(a.simd_min(U16x32::splat(10)).to_array()[20], 10);
+    /// ```
+    #[inline(always)]
+    pub fn simd_min(self, other: Self) -> Self {
+        // SAFETY: AVX-512BW (see `reduce_sum`); register-only op.
+        Self(unsafe { _mm512_min_epu16(self.0, other.0) })
+    }
+
+    /// Per-lane unsigned maximum.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let a = U16x32::from_array(core::array::from_fn(|i| i as u16));
+    /// assert_eq!(a.simd_max(U16x32::splat(10)).to_array()[3], 10);
+    /// ```
+    #[inline(always)]
+    pub fn simd_max(self, other: Self) -> Self {
+        // SAFETY: AVX-512BW (see `reduce_sum`); register-only op.
+        Self(unsafe { _mm512_max_epu16(self.0, other.0) })
+    }
+
+    /// Per-lane addition clamped at `u16::MAX`.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let s = U16x32::splat(u16::MAX - 1).saturating_add(U16x32::splat(5));
+    /// assert_eq!(s.to_array(), [u16::MAX; 32]);
+    /// ```
+    #[inline(always)]
+    pub fn saturating_add(self, other: Self) -> Self {
+        // SAFETY: AVX-512BW (see `reduce_sum`); register-only op.
+        Self(unsafe { _mm512_adds_epu16(self.0, other.0) })
+    }
+
+    /// Per-lane subtraction clamped at 0.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// assert_eq!(U16x32::splat(3).saturating_sub(U16x32::splat(5)).to_array(), [0u16; 32]);
+    /// ```
+    #[inline(always)]
+    pub fn saturating_sub(self, other: Self) -> Self {
+        // SAFETY: AVX-512BW (see `reduce_sum`); register-only op.
+        Self(unsafe { _mm512_subs_epu16(self.0, other.0) })
+    }
+
+    /// Per-lane equality as a bitmask: bit `i` is set iff lane `i` is equal.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let a = U16x32::from_array(core::array::from_fn(|i| i as u16));
+    /// assert_eq!(a.cmpeq_mask(U16x32::splat(5)), 1 << 5);
+    /// ```
+    #[inline(always)]
+    pub fn cmpeq_mask(self, other: Self) -> u32 {
+        // SAFETY: AVX-512BW (see `reduce_sum`); register-only op.
+        unsafe { _mm512_cmpeq_epu16_mask(self.0, other.0) }
+    }
+
+    /// Per-lane unsigned `self > other` as a bitmask, lane `i` in bit `i`.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let a = U16x32::from_array(core::array::from_fn(|i| i as u16));
+    /// assert_eq!(a.cmpgt_mask(U16x32::splat(29)), (1 << 30) | (1 << 31));
+    /// ```
+    #[inline(always)]
+    pub fn cmpgt_mask(self, other: Self) -> u32 {
+        // SAFETY: AVX-512BW (see `reduce_sum`); register-only op.
+        unsafe { _mm512_cmpgt_epu16_mask(self.0, other.0) }
+    }
+
+    /// Smallest lane.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let a = U16x32::from_array(core::array::from_fn(|i| 100 - i as u16));
+    /// assert_eq!(a.reduce_min(), 69);
+    /// ```
+    #[inline(always)]
+    pub fn reduce_min(self) -> u16 {
+        // SAFETY: AVX-512BW (see `reduce_sum`); SSE4.1 is implied. Register-only ops.
+        unsafe {
+            let m = _mm256_min_epu16(_mm512_castsi512_si256(self.0), _mm512_extracti64x4_epi64::<1>(self.0));
+            let m = _mm_min_epu16(_mm256_castsi256_si128(m), _mm256_extracti128_si256::<1>(m));
+            (_mm_cvtsi128_si32(_mm_minpos_epu16(m)) & 0xFFFF) as u16
+        }
+    }
+
+    /// Largest lane.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let a = U16x32::from_array(core::array::from_fn(|i| i as u16 * 3));
+    /// assert_eq!(a.reduce_max(), 93);
+    /// ```
+    #[inline(always)]
+    pub fn reduce_max(self) -> u16 {
+        // max(x) == !min(!x).
+        // SAFETY: AVX-512BW (see `reduce_sum`); SSE4.1 is implied. Register-only ops.
+        unsafe {
+            let m = _mm256_max_epu16(_mm512_castsi512_si256(self.0), _mm512_extracti64x4_epi64::<1>(self.0));
+            let m = _mm_max_epu16(_mm256_castsi256_si128(m), _mm256_extracti128_si256::<1>(m));
+            !((_mm_cvtsi128_si32(_mm_minpos_epu16(_mm_xor_si128(m, _mm_set1_epi32(-1)))) & 0xFFFF) as u16)
+        }
+    }
+
+    /// Lanes 0..16 converted to `f32`. Every `u16` is exact in `f32`.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let a = U16x32::from_array(core::array::from_fn(|i| i as u16 * 1000));
+    /// assert_eq!(a.to_f32x16_lo().to_array()[15], 15_000.0);
+    /// ```
+    #[inline(always)]
+    pub fn to_f32x16_lo(self) -> F32x16 {
+        // SAFETY: AVX-512F/BW (see `reduce_sum`); register-only ops.
+        F32x16(unsafe { _mm512_cvtepi32_ps(_mm512_cvtepu16_epi32(_mm512_castsi512_si256(self.0))) })
+    }
+
+    /// Lanes 16..32 converted to `f32`. Every `u16` is exact in `f32`.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let a = U16x32::from_array(core::array::from_fn(|i| i as u16 * 1000));
+    /// assert_eq!(a.to_f32x16_hi().to_array()[0], 16_000.0);
+    /// ```
+    #[inline(always)]
+    pub fn to_f32x16_hi(self) -> F32x16 {
+        // SAFETY: AVX-512F/BW (see `reduce_sum`); register-only ops.
+        F32x16(unsafe { _mm512_cvtepi32_ps(_mm512_cvtepu16_epi32(_mm512_extracti64x4_epi64::<1>(self.0))) })
+    }
+}
+
+impl Default for U16x32 {
+    #[inline(always)]
+    fn default() -> Self {
+        Self::zero()
+    }
+}
+
+macro_rules! u16x32_bitop {
+    ($tr:ident, $f:ident, $atr:ident, $af:ident, $intr:ident) => {
+        impl $tr for U16x32 {
+            type Output = Self;
+            #[inline(always)]
+            fn $f(self, rhs: Self) -> Self {
+                // SAFETY: AVX-512F (see `U16x32::reduce_sum`); register-only op.
+                Self(unsafe { $intr(self.0, rhs.0) })
+            }
+        }
+        impl $atr for U16x32 {
+            #[inline(always)]
+            fn $af(&mut self, rhs: Self) {
+                *self = $tr::$f(*self, rhs);
+            }
+        }
+    };
+}
+u16x32_bitop!(BitAnd, bitand, BitAndAssign, bitand_assign, _mm512_and_si512);
+u16x32_bitop!(BitOr, bitor, BitOrAssign, bitor_assign, _mm512_or_si512);
+u16x32_bitop!(BitXor, bitxor, BitXorAssign, bitxor_assign, _mm512_xor_si512);
+
+impl Not for U16x32 {
+    type Output = Self;
+    #[inline(always)]
+    fn not(self) -> Self {
+        // SAFETY: AVX-512F (see `U16x32::reduce_sum`); register-only op.
+        Self(unsafe { _mm512_xor_si512(self.0, _mm512_set1_epi32(-1)) })
+    }
+}
+
+impl SubAssign for U16x32 {
+    #[inline(always)]
+    fn sub_assign(&mut self, rhs: Self) {
+        // SAFETY: AVX-512BW (see `U16x32::reduce_sum`); register-only op.
+        self.0 = unsafe { _mm512_sub_epi16(self.0, rhs.0) };
     }
 }
 

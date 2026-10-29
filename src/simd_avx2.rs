@@ -2687,6 +2687,239 @@ impl U16x32 {
     }
 }
 
+impl U16x32 {
+    /// All 32 lanes zero.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// assert_eq!(U16x32::zero().to_array(), [0u16; 32]);
+    /// ```
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self([0u16; 32])
+    }
+}
+
+/// The parts of the `U16x32` surface that need AVX2 integer instructions,
+/// realized as two 256-bit halves (lanes 0..16 and 16..32). The
+/// AVX-without-AVX2 arm supplies the same methods in `simd_avx.rs`.
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
+impl U16x32 {
+    /// The two 256-bit halves of the 64-byte array, loaded once.
+    #[inline(always)]
+    fn avx2_halves(self) -> (__m256i, __m256i) {
+        // SAFETY: AVX2 must be present at run time on any host this arm runs
+        // on (same footing as `U64x8::avx2_halves`). The array is 64 bytes, so
+        // both 32-byte unaligned loads are in bounds.
+        unsafe {
+            let p = self.0.as_ptr() as *const __m256i;
+            (_mm256_loadu_si256(p), _mm256_loadu_si256(p.add(1)))
+        }
+    }
+
+    /// Store two 256-bit halves into a fresh `[u16; 32]`.
+    #[inline(always)]
+    fn from_avx2_halves(lo: __m256i, hi: __m256i) -> Self {
+        let mut o = [0u16; 32];
+        // SAFETY: see `avx2_halves`; two 32-byte stores into a 64-byte array.
+        unsafe {
+            let p = o.as_mut_ptr() as *mut __m256i;
+            _mm256_storeu_si256(p, lo);
+            _mm256_storeu_si256(p.add(1), hi);
+        }
+        Self(o)
+    }
+
+    /// One bit per u16 lane of a 256-bit compare result (all-ones or zero per
+    /// lane), lane 0 in bit 0. The pack folds each lane to one byte in lane
+    /// order because both inputs are 128-bit halves of the same register.
+    #[inline(always)]
+    fn lane_bits16(v: __m256i) -> u32 {
+        // SAFETY: AVX2 (see `avx2_halves`); register-only ops.
+        unsafe {
+            let packed = _mm_packs_epi16(_mm256_castsi256_si128(v), _mm256_extracti128_si256::<1>(v));
+            _mm_movemask_epi8(packed) as u32 & 0xFFFF
+        }
+    }
+
+    /// Unsigned minimum of the eight u16 lanes of one 128-bit register.
+    #[inline(always)]
+    fn min_of_8(v: __m128i) -> u16 {
+        // SAFETY: SSE4.1 is implied by AVX2 (see `avx2_halves`).
+        unsafe { (_mm_cvtsi128_si32(_mm_minpos_epu16(v)) & 0xFFFF) as u16 }
+    }
+
+    /// Per-lane unsigned minimum.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let a = U16x32::from_array(core::array::from_fn(|i| i as u16));
+    /// let b = U16x32::splat(10);
+    /// assert_eq!(a.simd_min(b).to_array()[20], 10);
+    /// ```
+    #[inline(always)]
+    pub fn simd_min(self, other: Self) -> Self {
+        let (a0, a1) = self.avx2_halves();
+        let (b0, b1) = other.avx2_halves();
+        // SAFETY: AVX2 (see `avx2_halves`); register-only ops.
+        unsafe { Self::from_avx2_halves(_mm256_min_epu16(a0, b0), _mm256_min_epu16(a1, b1)) }
+    }
+
+    /// Per-lane unsigned maximum.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let a = U16x32::from_array(core::array::from_fn(|i| i as u16));
+    /// assert_eq!(a.simd_max(U16x32::splat(10)).to_array()[3], 10);
+    /// ```
+    #[inline(always)]
+    pub fn simd_max(self, other: Self) -> Self {
+        let (a0, a1) = self.avx2_halves();
+        let (b0, b1) = other.avx2_halves();
+        // SAFETY: AVX2 (see `avx2_halves`); register-only ops.
+        unsafe { Self::from_avx2_halves(_mm256_max_epu16(a0, b0), _mm256_max_epu16(a1, b1)) }
+    }
+
+    /// Per-lane addition clamped at `u16::MAX`.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let s = U16x32::splat(u16::MAX - 1).saturating_add(U16x32::splat(5));
+    /// assert_eq!(s.to_array(), [u16::MAX; 32]);
+    /// ```
+    #[inline(always)]
+    pub fn saturating_add(self, other: Self) -> Self {
+        let (a0, a1) = self.avx2_halves();
+        let (b0, b1) = other.avx2_halves();
+        // SAFETY: AVX2 (see `avx2_halves`); register-only ops.
+        unsafe { Self::from_avx2_halves(_mm256_adds_epu16(a0, b0), _mm256_adds_epu16(a1, b1)) }
+    }
+
+    /// Per-lane subtraction clamped at 0.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let s = U16x32::splat(3).saturating_sub(U16x32::splat(5));
+    /// assert_eq!(s.to_array(), [0u16; 32]);
+    /// ```
+    #[inline(always)]
+    pub fn saturating_sub(self, other: Self) -> Self {
+        let (a0, a1) = self.avx2_halves();
+        let (b0, b1) = other.avx2_halves();
+        // SAFETY: AVX2 (see `avx2_halves`); register-only ops.
+        unsafe { Self::from_avx2_halves(_mm256_subs_epu16(a0, b0), _mm256_subs_epu16(a1, b1)) }
+    }
+
+    /// Per-lane equality as a bitmask: bit `i` is set iff lane `i` is equal.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let a = U16x32::from_array(core::array::from_fn(|i| i as u16));
+    /// assert_eq!(a.cmpeq_mask(U16x32::splat(5)), 1 << 5);
+    /// ```
+    #[inline(always)]
+    pub fn cmpeq_mask(self, other: Self) -> u32 {
+        let (a0, a1) = self.avx2_halves();
+        let (b0, b1) = other.avx2_halves();
+        // SAFETY: AVX2 (see `avx2_halves`); register-only ops.
+        unsafe { Self::lane_bits16(_mm256_cmpeq_epi16(a0, b0)) | (Self::lane_bits16(_mm256_cmpeq_epi16(a1, b1)) << 16) }
+    }
+
+    /// Per-lane unsigned `self > other` as a bitmask, lane `i` in bit `i`.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let a = U16x32::from_array(core::array::from_fn(|i| i as u16));
+    /// assert_eq!(a.cmpgt_mask(U16x32::splat(29)), (1 << 30) | (1 << 31));
+    /// assert_eq!(U16x32::splat(u16::MAX).cmpgt_mask(U16x32::splat(1)), u32::MAX);
+    /// ```
+    #[inline(always)]
+    pub fn cmpgt_mask(self, other: Self) -> u32 {
+        let (a0, a1) = self.avx2_halves();
+        let (b0, b1) = other.avx2_halves();
+        // `a > b` unsigned is `max(a, b) == a` and `a != b`; no signed compare.
+        // SAFETY: AVX2 (see `avx2_halves`); register-only ops.
+        unsafe {
+            let gt0 = _mm256_andnot_si256(_mm256_cmpeq_epi16(a0, b0), _mm256_cmpeq_epi16(_mm256_max_epu16(a0, b0), a0));
+            let gt1 = _mm256_andnot_si256(_mm256_cmpeq_epi16(a1, b1), _mm256_cmpeq_epi16(_mm256_max_epu16(a1, b1), a1));
+            Self::lane_bits16(gt0) | (Self::lane_bits16(gt1) << 16)
+        }
+    }
+
+    /// Smallest lane.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let a = U16x32::from_array(core::array::from_fn(|i| 100 - i as u16));
+    /// assert_eq!(a.reduce_min(), 69);
+    /// ```
+    #[inline(always)]
+    pub fn reduce_min(self) -> u16 {
+        let (a0, a1) = self.avx2_halves();
+        // SAFETY: AVX2 (see `avx2_halves`); register-only ops.
+        unsafe {
+            let m = _mm256_min_epu16(a0, a1);
+            Self::min_of_8(_mm_min_epu16(_mm256_castsi256_si128(m), _mm256_extracti128_si256::<1>(m)))
+        }
+    }
+
+    /// Largest lane.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let a = U16x32::from_array(core::array::from_fn(|i| i as u16 * 3));
+    /// assert_eq!(a.reduce_max(), 93);
+    /// ```
+    #[inline(always)]
+    pub fn reduce_max(self) -> u16 {
+        let (a0, a1) = self.avx2_halves();
+        // max(x) == !min(!x); the complement keeps `minpos` as the one fold.
+        // SAFETY: AVX2 (see `avx2_halves`); register-only ops.
+        unsafe {
+            let ones = _mm_set1_epi32(-1);
+            let m = _mm256_max_epu16(a0, a1);
+            let m = _mm_max_epu16(_mm256_castsi256_si128(m), _mm256_extracti128_si256::<1>(m));
+            !Self::min_of_8(_mm_xor_si128(m, ones))
+        }
+    }
+
+    /// Lanes 0..16 converted to `f32`. Every `u16` is exact in `f32`.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let a = U16x32::from_array(core::array::from_fn(|i| i as u16 * 1000));
+    /// assert_eq!(a.to_f32x16_lo().to_array()[15], 15_000.0);
+    /// ```
+    #[inline(always)]
+    pub fn to_f32x16_lo(self) -> F32x16 {
+        let (lo, _) = self.avx2_halves();
+        Self::half_to_f32x16(lo)
+    }
+
+    /// Lanes 16..32 converted to `f32`. Every `u16` is exact in `f32`.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let a = U16x32::from_array(core::array::from_fn(|i| i as u16 * 1000));
+    /// assert_eq!(a.to_f32x16_hi().to_array()[0], 16_000.0);
+    /// ```
+    #[inline(always)]
+    pub fn to_f32x16_hi(self) -> F32x16 {
+        let (_, hi) = self.avx2_halves();
+        Self::half_to_f32x16(hi)
+    }
+
+    #[inline(always)]
+    fn half_to_f32x16(v: __m256i) -> F32x16 {
+        // SAFETY: AVX2 (see `avx2_halves`); register-only ops.
+        unsafe {
+            let a = _mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(_mm256_castsi256_si128(v)));
+            let b = _mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(_mm256_extracti128_si256::<1>(v)));
+            F32x16(crate::simd_avx512::F32x8(a), crate::simd_avx512::F32x8(b))
+        }
+    }
+}
+
 #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
 impl I32x16 {
     /// Store two 256-bit halves back into a fresh array (see `avx2_halves`).

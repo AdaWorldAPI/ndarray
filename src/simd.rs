@@ -2194,3 +2194,122 @@ mod tests {
         }
     }
 }
+
+/// Parity of the `U16x32` surface against a plain-array reference, run on
+/// whichever backend this build selected (AVX-512, AVX2, AVX, scalar, NEON,
+/// wasm or nightly). The corpus mixes a fixed-seed generator with the edge
+/// values a u16 lane can hit: 0, 1, 255, 256, 0x7FFF, 0x8000, 0xFFFF.
+#[cfg(test)]
+mod u16x32_facade_parity {
+    use super::{F32x16, U16x32, U8x64};
+
+    const EDGES: [u16; 7] = [0, 1, 255, 256, 0x7FFF, 0x8000, 0xFFFF];
+
+    fn corpus() -> Vec<[u16; 32]> {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 48) as u16
+        };
+        let mut out: Vec<[u16; 32]> = (0..64).map(|_| core::array::from_fn(|_| next())).collect();
+        for &e in &EDGES {
+            out.push([e; 32]);
+        }
+        out.push(core::array::from_fn(|i| EDGES[i % EDGES.len()]));
+        out.push(core::array::from_fn(|i| EDGES[(i * 3 + 1) % EDGES.len()]));
+        out
+    }
+
+    fn v(a: [u16; 32]) -> U16x32 {
+        U16x32::from_array(a)
+    }
+
+    #[test]
+    fn elementwise_ops_match_reference() {
+        let c = corpus();
+        let mut checked = 0;
+        for a in &c {
+            for b in &c {
+                let (x, y) = (v(*a), v(*b));
+                let r = |f: fn(u16, u16) -> u16| -> [u16; 32] { core::array::from_fn(|i| f(a[i], b[i])) };
+                assert_eq!(x.simd_min(y).to_array(), r(u16::min), "simd_min {a:?} {b:?}");
+                assert_eq!(x.simd_max(y).to_array(), r(u16::max), "simd_max");
+                assert_eq!(x.saturating_add(y).to_array(), r(u16::saturating_add), "saturating_add");
+                assert_eq!(x.saturating_sub(y).to_array(), r(u16::saturating_sub), "saturating_sub");
+                assert_eq!(x.mullo(y).to_array(), r(u16::wrapping_mul), "mullo");
+                assert_eq!((x + y).to_array(), r(u16::wrapping_add), "add");
+                assert_eq!((x - y).to_array(), r(u16::wrapping_sub), "sub");
+                let eq = (0..32).fold(0u32, |m, i| m | (((a[i] == b[i]) as u32) << i));
+                let gt = (0..32).fold(0u32, |m, i| m | (((a[i] > b[i]) as u32) << i));
+                assert_eq!(x.cmpeq_mask(y), eq, "cmpeq_mask {a:?} {b:?}");
+                assert_eq!(x.cmpgt_mask(y), gt, "cmpgt_mask {a:?} {b:?}");
+                checked += 1;
+            }
+        }
+        assert!(checked > 5000, "corpus too small: {checked}");
+    }
+
+    #[test]
+    fn reductions_and_conversions_match_reference() {
+        for a in corpus() {
+            let x = v(a);
+            assert_eq!(x.reduce_min(), *a.iter().min().unwrap(), "reduce_min {a:?}");
+            assert_eq!(x.reduce_max(), *a.iter().max().unwrap(), "reduce_max {a:?}");
+            assert_eq!(x.reduce_sum(), a.iter().fold(0u16, |s, &l| s.wrapping_add(l)), "reduce_sum {a:?}");
+            let lo: [f32; 16] = core::array::from_fn(|i| a[i] as f32);
+            let hi: [f32; 16] = core::array::from_fn(|i| a[16 + i] as f32);
+            assert_eq!(x.to_f32x16_lo().to_array(), lo, "to_f32x16_lo {a:?}");
+            assert_eq!(x.to_f32x16_hi().to_array(), hi, "to_f32x16_hi {a:?}");
+            for s in [0u32, 1, 7, 8, 15, 16, 31] {
+                let shl: [u16; 32] = core::array::from_fn(|i| if s < 16 { a[i] << s } else { 0 });
+                let shr: [u16; 32] = core::array::from_fn(|i| if s < 16 { a[i] >> s } else { 0 });
+                assert_eq!(x.shl(s).to_array(), shl, "shl {s}");
+                assert_eq!(x.shr(s).to_array(), shr, "shr {s}");
+            }
+        }
+        assert_eq!(U16x32::zero().to_array(), [0u16; 32]);
+        let _: F32x16 = U16x32::zero().to_f32x16_lo();
+    }
+
+    #[test]
+    fn widening_and_narrowing_match_reference() {
+        let bytes: [u8; 64] = core::array::from_fn(|i| (i as u8).wrapping_mul(37).wrapping_add(200));
+        let b = U8x64::from_array(bytes);
+        let lo: [u16; 32] = core::array::from_fn(|i| bytes[i] as u16);
+        let hi: [u16; 32] = core::array::from_fn(|i| bytes[32 + i] as u16);
+        assert_eq!(U16x32::from_u8x64_lo(b).to_array(), lo);
+        assert_eq!(U16x32::from_u8x64_hi(b).to_array(), hi);
+        for a in corpus() {
+            let other: [u16; 32] = core::array::from_fn(|i| a[31 - i]);
+            let want: [u8; 64] = core::array::from_fn(|i| {
+                if i < 32 {
+                    a[i].min(255) as u8
+                } else {
+                    other[i - 32].min(255) as u8
+                }
+            });
+            assert_eq!(v(a).pack_saturate_u8(v(other)).to_array(), want, "pack_saturate_u8 {a:?}");
+        }
+    }
+
+    #[test]
+    fn bitwise_ops_match_reference() {
+        let c = corpus();
+        for a in &c {
+            for b in c.iter().take(8) {
+                let (x, y) = (v(*a), v(*b));
+                let r = |f: fn(u16, u16) -> u16| -> [u16; 32] { core::array::from_fn(|i| f(a[i], b[i])) };
+                assert_eq!((x & y).to_array(), r(|p, q| p & q));
+                assert_eq!((x | y).to_array(), r(|p, q| p | q));
+                assert_eq!((x ^ y).to_array(), r(|p, q| p ^ q));
+                let mut z = x;
+                z -= y;
+                assert_eq!(z.to_array(), r(u16::wrapping_sub));
+            }
+            assert_eq!((!v(*a)).to_array(), a.map(|l| !l));
+        }
+        assert_eq!(U16x32::default().to_array(), [0u16; 32]);
+    }
+}
