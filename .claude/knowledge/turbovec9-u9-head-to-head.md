@@ -86,6 +86,13 @@ upper-half `vextracti64x4`, which the facade's `U16x32::from_u8x64_hi` and
 the current facade; it says nothing about U8 x U8 multiplication itself, nor
 about other possible lowerings of A, which were not explored.
 
+**This holds on AVX-512 only (checked later, in #389).** On an AVX2 build
+(`config-v3`) the masked byte-dot that B calls contains 4 `vpshufb`: LLVM
+uses them to spread the bytes of the 64-bit keep mask across the register
+inside `dot4_u8_i8_add_masked`'s AVX2 realization (the source uses a
+variable shift, a multiply and a shift, not a shuffle). That is the facade's
+realization, not this probe's code, and it was not changed here.
+
 ## Candidates as built
 
 | | product | sign | accumulate | flush |
