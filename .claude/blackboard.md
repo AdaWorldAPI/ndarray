@@ -3904,13 +3904,14 @@ recall on a real TurboVec index is the TurboVec owner's measurement.
 Probe-only, no production change: `examples/u9_head_to_head/{kernels,main}.rs`, `tests/u9_head_to_head.rs`, report
 `.claude/knowledge/turbovec9-u9-head-to-head.md`. Both candidates use only facade words and share one i64 oracle:
 511 x 511 exhaustive pairs, mixed full blocks, worst-case runs past both flush intervals, never-touched refusal.
-Passed on native, v4, v3, avx (qemu), v2 (qemu), aarch64 (qemu), nightly; 8 disable runs all red.
+Passed on native, v4, v3, avx (qemu), v2 (qemu), aarch64 (qemu), nightly; 9 disable runs all red.
 
-Verdict: B (U8 x I8 byte-dot) is the cheaper exact I9 substrate. Arithmetic only on VNNI: B 1.89 ns/64 (1.03-1.06x plain
-byte-dot) vs A 6.06-7.13 (f32 widening). Scan form (query prepared once, index streamed): B 2.19-2.23 vs A 6.50-6.61
-on VNNI, 10.6 vs 76 on AVX2. A wins only the symmetric per-block row (7.7 vs 13.0) because the facade has no
-U8x64 -> I8x64 conversion and B's operand prep goes through an f32 -> i32 -> narrow detour (gap recorded, not filled).
-AVX2 A is dominated by `U8x64::mask_blend`'s per-lane realization there (not changed).
+Verdict: B (U8 x I8 byte-dot) is the cheaper exact I9 substrate in every row, symmetric included. B encodes with AND,
+XOR and the presence bit only: `low7 = |b| & 0x7F`, `top = |b| ^ low7`, `negative = plane_a ^ plane_b`, four masked
+byte-dots, `(pos_low7 - pos_top) - (neg_low7 - neg_top)`; no magnitude is negated. Disassembly: no shuffle, permute,
+pack, extract or insert in B, the baselines or the flushes. VNNI L1, ns/64: B end-to-end 3.03-3.05 vs A' 7.78-7.80;
+B scan 2.69-2.77 vs A 6.95-7.14; plain byte-dot 1.89-1.94. AVX2: B end-to-end 9.9-10.4 vs A' 75-82 (A dominated by
+`U8x64::mask_blend`'s per-lane AVX2 realization, not changed).
 
-Loose ends: the U8x64 (<=127) -> I8x64 facade word if a symmetric form is ever needed; recall on a real TurboVec-U9
-index (owner's experiment, defined in the report).
+Loose ends: the U8x64 -> I8x64 bit view (`bits_as_i8` is a store/load stand-in, 0.86-1.16 ns/block with the split;
+not added, it is a u8/i8 crossing); recall on a real TurboVec-U9 index (owner's experiment, defined in the report).
