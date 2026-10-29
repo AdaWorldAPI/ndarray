@@ -59,15 +59,31 @@ pub fn run_effects(init: i64, effs: &[Effect]) -> Option<i64> {
     effs.iter().try_fold(init, |cell, e| e.apply(cell))
 }
 
-/// Whether two effects can be swapped without changing any final value.
+/// Whether two effects can be swapped without changing the result of
+/// [`run_effects`] for ANY starting value, overflow included: a swap must not
+/// turn a reported overflow (`None`) into a value or back.
 ///
-/// The rule: `Add`/`Add` commute, `Mul`/`Mul` commute, `Set(x)`/`Set(y)`
-/// commute iff `x == y`. Every mixed pair does not commute: `Set`/`Add`,
-/// `Set`/`Mul` and `Add`/`Mul` are all order-sensitive.
+/// Under checked arithmetic, exact-integer commutativity is not enough:
+///
+/// * `Add(a)`/`Add(b)` commute iff `a` and `b` do not have opposite signs.
+///   With both `>= 0` (or both `<= 0`) the intermediate lies between the
+///   start and the final value, so it overflows only if the final value does.
+///   With opposite signs it does not: from `i64::MAX`, `Add(1), Add(-1)`
+///   overflows while `Add(-1), Add(1)` returns `i64::MAX`.
+/// * `Mul(a)`/`Mul(b)` commute iff `a == b`, either factor is `1`, or both
+///   have magnitude `>= 2`. In the last case the intermediate has at most half
+///   the final magnitude, so it fits whenever the final value does. A `0` or
+///   `-1` factor breaks it: from `i64::MIN`, `Mul(-1), Mul(0)` overflows while
+///   `Mul(0), Mul(-1)` returns `0`.
+/// * `Set(x)`/`Set(y)` commute iff `x == y`.
+/// * Every mixed pair (`Set`/`Add`, `Set`/`Mul`, `Add`/`Mul`) is
+///   order-sensitive.
 pub fn commutes(a: &Effect, b: &Effect) -> bool {
-    match (a, b) {
-        (Effect::Add(_), Effect::Add(_)) => true,
-        (Effect::Mul(_), Effect::Mul(_)) => true,
+    match (*a, *b) {
+        (Effect::Add(x), Effect::Add(y)) => !((x < 0 && y > 0) || (x > 0 && y < 0)),
+        (Effect::Mul(x), Effect::Mul(y)) => {
+            x == y || x == 1 || y == 1 || (x.unsigned_abs() >= 2 && y.unsigned_abs() >= 2)
+        }
         (Effect::Set(x), Effect::Set(y)) => x == y,
         _ => false,
     }
@@ -618,6 +634,47 @@ mod tests {
             let reordered: Vec<Effect> = o.iter().map(|&i| effs[i]).collect();
             assert_eq!(run_effects(0, &reordered), Some(10));
         }
+    }
+
+    /// Soundness of `commutes` under checked arithmetic: every admitted pair
+    /// gives the same `run_effects` result in both orders for every boundary
+    /// start value, and the overflow counterexamples are refused.
+    #[test]
+    fn commutes_is_sound_under_checked_overflow() {
+        let vals = [i64::MIN, i64::MIN + 1, -(1 << 62), -3, -2, -1, 0, 1, 2, 3, 1 << 62, i64::MAX - 1, i64::MAX];
+        let mut effs = Vec::new();
+        for &v in &vals {
+            effs.extend([Effect::Add(v), Effect::Mul(v), Effect::Set(v)]);
+        }
+        let (mut admitted, mut refused) = (0, 0);
+        for a in &effs {
+            for b in &effs {
+                if commutes(a, b) {
+                    admitted += 1;
+                    for &x in &vals {
+                        assert_eq!(run_effects(x, &[*a, *b]), run_effects(x, &[*b, *a]), "{a:?} {b:?} from {x}");
+                    }
+                } else {
+                    refused += 1;
+                }
+            }
+        }
+        // Anti-vacuity: both sides are populated.
+        assert!(admitted > 100 && refused > 100, "admitted {admitted}, refused {refused}");
+        // The two counterexamples.
+        assert_eq!(
+            check_reorder(&[Effect::Add(1), Effect::Add(-1)], &[1, 0]),
+            Err(OrderRefusal { first: 0, second: 1 })
+        );
+        assert_ne!(
+            run_effects(i64::MAX, &[Effect::Add(1), Effect::Add(-1)]),
+            run_effects(i64::MAX, &[Effect::Add(-1), Effect::Add(1)])
+        );
+        assert!(!commutes(&Effect::Mul(-1), &Effect::Mul(0)));
+        assert_ne!(
+            run_effects(i64::MIN, &[Effect::Mul(-1), Effect::Mul(0)]),
+            run_effects(i64::MIN, &[Effect::Mul(0), Effect::Mul(-1)])
+        );
     }
 
     #[test]

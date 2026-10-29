@@ -268,6 +268,11 @@ pub fn apply_steps(mut v: [Tri; 64], steps: &[Step]) -> [Tri; 64] {
 }
 
 /// Order-sensitive FNV-1a over a canonical byte encoding of the step list.
+///
+/// The lane index is encoded in full (8 bytes): truncating it would give
+/// `NegateFact(0)` and `NegateFact(256)` the same witness although only the
+/// first one changes a lane. Two out-of-range steps (both no-ops) still get
+/// different witnesses; that only refuses a reuse that would have been safe.
 pub fn order_witness(steps: &[Step]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     let mut eat = |b: u8| {
@@ -276,11 +281,13 @@ pub fn order_witness(steps: &[Step]) -> u64 {
     };
     for s in steps {
         let (tag, i, t) = match *s {
-            Step::SetFact(i, t) => (1u8, i as u8, t.byte()),
-            Step::NegateFact(i) => (2u8, i as u8, 0u8),
+            Step::SetFact(i, t) => (1u8, i as u64, t.byte()),
+            Step::NegateFact(i) => (2u8, i as u64, 0u8),
         };
         eat(tag);
-        eat(i);
+        for b in i.to_le_bytes() {
+            eat(b);
+        }
         eat(t);
     }
     h
@@ -855,5 +862,17 @@ mod tests {
         let changed = which_changed(&[base], &[alt]);
         assert_eq!(changed.len(), 1);
         assert_eq!(changed[0].0, 2);
+    }
+
+    /// A lane index that differs only above the low byte changes the
+    /// witness, so a receipt for `NegateFact(0)` is not reused for
+    /// `NegateFact(256)` (which is a no-op and gives a different result).
+    #[test]
+    fn witness_keeps_the_full_lane_index() {
+        let (a, b) = ([Step::NegateFact(0)], [Step::NegateFact(256)]);
+        assert_ne!(order_witness(&a), order_witness(&b));
+        let mut v = [Tri::False; 64];
+        v[0] = Tri::True;
+        assert_ne!(apply_steps(v, &a)[0], apply_steps(v, &b)[0]);
     }
 }
