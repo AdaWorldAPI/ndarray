@@ -91,6 +91,11 @@ path = "examples/u9_domino/main.rs"
 required-features = ["std"]
 
 [[example]]
+name = "microtile"
+path = "examples/microtile/main.rs"
+required-features = ["std"]
+
+[[example]]
 name = "cpu_guard_probe"
 required-features = ["std"]
 
