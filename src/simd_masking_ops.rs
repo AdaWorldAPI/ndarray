@@ -5799,6 +5799,251 @@ fn masked_fold_i32(values: &[i32], mask_words: &[u64], f: impl Fn(i32, i32) -> i
     acc
 }
 
+// ────────────────────────────────────────────────────────────────────────
+// Two-array compares (ONNX `Equal`, `Less`, `Greater`, … with two tensor
+// operands) and the `i64` family
+// ────────────────────────────────────────────────────────────────────────
+//
+// The scalar-threshold `*_to_mask` words above compare a lane against one
+// value. ONNX's comparison ops take two tensors, so this family compares
+// `a[i]` against `b[i]`. Same output contract: bit `i % 64` of word `i / 64`,
+// full overwrite, trailing bits zero.
+//
+// The `f32` pair words are IEEE, not SQL: a NaN on either side compares
+// false for every relation (ONNX semantics). They do not use the NULL=NaN
+// plane of `lt_f32_to_mask` and its siblings.
+//
+// `i64` has no signed compare lane on every backend, so the `i64` words
+// compare through `U64x8::cmpgt_mask` / `cmpeq_mask` after flipping the sign
+// bit: `x ^ (1 << 63)` maps signed order onto unsigned order exactly
+// (`i64::MIN` → 0, `-1` → `2^63 − 1`, `0` → `2^63`, `i64::MAX` → `u64::MAX`).
+
+/// [`pack`] over two slices of equal length.
+fn pack_pair<T: Copy + Default, const L: usize>(
+    name: &str, a: &[T], b: &[T], out_words: &mut [u64], group_bits: impl Fn([T; L], [T; L], usize) -> u64,
+) {
+    assert_eq!(a.len(), b.len(), "{name}: a/b length mismatch");
+    const { assert!(64 % L == 0, "a mask word must hold whole lane groups") }
+    let k = 64 / L;
+    let n = a.len();
+    let words = mask_words_for(n);
+    assert!(out_words.len() >= words, "{name}: out_words.len()={} < required {words}", out_words.len());
+    for w in out_words.iter_mut() {
+        *w = 0;
+    }
+    let (ca, ta) = a.as_chunks::<L>();
+    let (cb, tb) = b.as_chunks::<L>();
+    for (g, (x, y)) in ca.iter().zip(cb).enumerate() {
+        out_words[g / k] |= group_bits(*x, *y, L) << ((g % k) * L);
+    }
+    if !ta.is_empty() {
+        let g = ca.len();
+        let live = ta.len();
+        let bits = group_bits(pad_tail(ta), pad_tail(tb), live);
+        debug_assert!(live == 64 || bits >> live == 0, "{name}: tail bits above live={live} must be zero");
+        out_words[g / k] |= bits << ((g % k) * L);
+    }
+}
+
+/// The sign-flipped `u64` image of eight `i64` lanes (see the section note).
+#[inline(always)]
+fn i64_ordered(lanes: [i64; 8]) -> crate::simd::U64x8 {
+    crate::simd::U64x8::from_array(lanes.map(|x| (x as u64) ^ (1 << 63)))
+}
+
+macro_rules! pair_cmp_i32 {
+    ($(#[$doc:meta])* $name:ident, |$x:ident, $y:ident| $rel:expr) => {
+        $(#[$doc])*
+        ///
+        /// # Panics
+        ///
+        /// Panics unless `a.len() == b.len()` and
+        /// `out_words.len() >= a.len().div_ceil(64)`.
+        #[inline]
+        pub fn $name(a: &[i32], b: &[i32], out_words: &mut [u64]) {
+            pack_pair::<i32, 16>(stringify!($name), a, b, out_words, |xa, ya, live| {
+                let $x = crate::simd::I32x16::from_array(xa);
+                let $y = crate::simd::I32x16::from_array(ya);
+                (($rel) & live16(live)) as u64
+            });
+        }
+    };
+}
+
+pair_cmp_i32!(
+    /// Packs `a[i] == b[i]` over `i32` (ONNX `Equal`).
+    ///
+    /// ```
+    /// use ndarray::simd::eq_i32_pair_to_mask;
+    /// let mut w = [0u64; 1];
+    /// eq_i32_pair_to_mask(&[1, 2, 3], &[1, 0, 3], &mut w);
+    /// assert_eq!(w[0], 0b101);
+    /// ```
+    eq_i32_pair_to_mask, |x, y| !(x.gt_bitmask(y) | y.gt_bitmask(x))
+);
+pair_cmp_i32!(
+    /// Packs `a[i] < b[i]` over `i32` (signed; ONNX `Less`).
+    lt_i32_pair_to_mask, |x, y| y.gt_bitmask(x)
+);
+pair_cmp_i32!(
+    /// Packs `a[i] <= b[i]` over `i32` (signed; ONNX `LessOrEqual`).
+    le_i32_pair_to_mask, |x, y| !x.gt_bitmask(y)
+);
+pair_cmp_i32!(
+    /// Packs `a[i] > b[i]` over `i32` (signed; ONNX `Greater`).
+    gt_i32_pair_to_mask, |x, y| x.gt_bitmask(y)
+);
+pair_cmp_i32!(
+    /// Packs `a[i] >= b[i]` over `i32` (signed; ONNX `GreaterOrEqual`).
+    ge_i32_pair_to_mask, |x, y| !y.gt_bitmask(x)
+);
+
+macro_rules! pair_cmp_i64 {
+    ($(#[$doc:meta])* $name:ident, |$x:ident, $y:ident| $rel:expr) => {
+        $(#[$doc])*
+        ///
+        /// # Panics
+        ///
+        /// Panics unless `a.len() == b.len()` and
+        /// `out_words.len() >= a.len().div_ceil(64)`.
+        #[inline]
+        pub fn $name(a: &[i64], b: &[i64], out_words: &mut [u64]) {
+            pack_pair::<i64, 8>(stringify!($name), a, b, out_words, |xa, ya, live| {
+                let $x = i64_ordered(xa);
+                let $y = i64_ordered(ya);
+                (($rel) & live8(live)) as u64
+            });
+        }
+    };
+}
+
+pair_cmp_i64!(
+    /// Packs `a[i] == b[i]` over `i64` (ONNX `Equal`).
+    ///
+    /// ```
+    /// use ndarray::simd::eq_i64_pair_to_mask;
+    /// let mut w = [0u64; 1];
+    /// eq_i64_pair_to_mask(&[i64::MIN, 2, -3], &[i64::MIN, 0, -3], &mut w);
+    /// assert_eq!(w[0], 0b101);
+    /// ```
+    eq_i64_pair_to_mask, |x, y| x.cmpeq_mask(y)
+);
+pair_cmp_i64!(
+    /// Packs `a[i] < b[i]` over `i64` (signed; ONNX `Less`).
+    lt_i64_pair_to_mask, |x, y| y.cmpgt_mask(x)
+);
+pair_cmp_i64!(
+    /// Packs `a[i] <= b[i]` over `i64` (signed; ONNX `LessOrEqual`).
+    le_i64_pair_to_mask, |x, y| !x.cmpgt_mask(y)
+);
+pair_cmp_i64!(
+    /// Packs `a[i] > b[i]` over `i64` (signed; ONNX `Greater`).
+    gt_i64_pair_to_mask, |x, y| x.cmpgt_mask(y)
+);
+pair_cmp_i64!(
+    /// Packs `a[i] >= b[i]` over `i64` (signed; ONNX `GreaterOrEqual`).
+    ge_i64_pair_to_mask, |x, y| !y.cmpgt_mask(x)
+);
+
+macro_rules! pair_cmp_f32 {
+    ($(#[$doc:meta])* $name:ident, $rel:ident) => {
+        $(#[$doc])*
+        ///
+        /// IEEE: a NaN on either side compares false.
+        ///
+        /// # Panics
+        ///
+        /// Panics unless `a.len() == b.len()` and
+        /// `out_words.len() >= a.len().div_ceil(64)`.
+        #[inline]
+        pub fn $name(a: &[f32], b: &[f32], out_words: &mut [u64]) {
+            pack_pair::<f32, 16>(stringify!($name), a, b, out_words, |xa, ya, live| {
+                let x = crate::simd::F32x16::from_array(xa);
+                let y = crate::simd::F32x16::from_array(ya);
+                (x.$rel(y).to_bitmask() & live16(live)) as u64
+            });
+        }
+    };
+}
+
+pair_cmp_f32!(
+    /// Packs `a[i] == b[i]` over `f32` (ONNX `Equal`; `-0.0 == 0.0`).
+    ///
+    /// ```
+    /// use ndarray::simd::eq_f32_pair_to_mask;
+    /// let mut w = [0u64; 1];
+    /// eq_f32_pair_to_mask(&[1.0, f32::NAN, -0.0], &[1.0, f32::NAN, 0.0], &mut w);
+    /// assert_eq!(w[0], 0b101);
+    /// ```
+    eq_f32_pair_to_mask, simd_eq
+);
+pair_cmp_f32!(
+    /// Packs `a[i] < b[i]` over `f32` (ONNX `Less`).
+    lt_f32_pair_to_mask, simd_lt
+);
+pair_cmp_f32!(
+    /// Packs `a[i] <= b[i]` over `f32` (ONNX `LessOrEqual`).
+    le_f32_pair_to_mask, simd_le
+);
+pair_cmp_f32!(
+    /// Packs `a[i] > b[i]` over `f32` (ONNX `Greater`).
+    gt_f32_pair_to_mask, simd_gt
+);
+pair_cmp_f32!(
+    /// Packs `a[i] >= b[i]` over `f32` (ONNX `GreaterOrEqual`).
+    ge_f32_pair_to_mask, simd_ge
+);
+
+macro_rules! scalar_cmp_i64 {
+    ($(#[$doc:meta])* $name:ident, |$x:ident, $t:ident| $rel:expr) => {
+        $(#[$doc])*
+        ///
+        /// # Panics
+        ///
+        /// Panics if `out_words.len() < values.len().div_ceil(64)`.
+        #[inline]
+        pub fn $name(values: &[i64], threshold: i64, out_words: &mut [u64]) {
+            let $t = i64_ordered([threshold; 8]);
+            pack::<i64, 8>(stringify!($name), values, out_words, |lanes, live| {
+                let $x = i64_ordered(lanes);
+                (($rel) & live8(live)) as u64
+            });
+        }
+    };
+}
+
+scalar_cmp_i64!(
+    /// Packs `values[i] == threshold` over `i64`.
+    ///
+    /// ```
+    /// use ndarray::simd::eq_i64_to_mask;
+    /// let mut w = [0u64; 1];
+    /// eq_i64_to_mask(&[-1, 5, -1, i64::MAX], -1, &mut w);
+    /// assert_eq!(w[0], 0b0101);
+    /// ```
+    eq_i64_to_mask, |x, t| x.cmpeq_mask(t)
+);
+scalar_cmp_i64!(
+    /// Packs `values[i] != threshold` over `i64`.
+    ne_i64_to_mask, |x, t| !x.cmpeq_mask(t)
+);
+scalar_cmp_i64!(
+    /// Packs `values[i] < threshold` over `i64` (signed).
+    lt_i64_to_mask, |x, t| t.cmpgt_mask(x)
+);
+scalar_cmp_i64!(
+    /// Packs `values[i] <= threshold` over `i64` (signed).
+    le_i64_to_mask, |x, t| !x.cmpgt_mask(t)
+);
+scalar_cmp_i64!(
+    /// Packs `values[i] > threshold` over `i64` (signed).
+    gt_i64_to_mask, |x, t| x.cmpgt_mask(t)
+);
+scalar_cmp_i64!(
+    /// Packs `values[i] >= threshold` over `i64` (signed).
+    ge_i64_to_mask, |x, t| !t.cmpgt_mask(x)
+);
+
 /// `dst[i] = if mask bit i { a[i] } else { b[i] }` — the conditional-select
 /// (`CASE WHEN`) over a row mask, with no compaction. Bits at or past
 /// `a.len()` are ignored. Plain index loop, deliberately: a bit-per-element
@@ -8908,6 +9153,85 @@ mod tests {
         assert_eq!(masked_max_i32(&v, &[u64::MAX]), Some(9));
     }
 
+    /// Every pair compare and every `i64` scalar compare against a plain
+    /// scalar loop, over lengths that end mid-group and mid-word, with the
+    /// extremes that a wrong sign handling or a wrong NaN rule gets wrong.
+    #[test]
+    fn pair_and_i64_compares_match_scalar_loops() {
+        fn want<T: Copy>(a: &[T], b: &[T], rel: impl Fn(T, T) -> bool) -> Vec<u64> {
+            let mut w = vec![0u64; a.len().div_ceil(64)];
+            for i in 0..a.len() {
+                if rel(a[i], b[i]) {
+                    w[i / 64] |= 1 << (i % 64);
+                }
+            }
+            w
+        }
+        type F<T> = fn(&[T], &[T], &mut [u64]);
+        for n in [0usize, 1, 7, 8, 15, 16, 63, 64, 65, 131] {
+            let ext_i32 = [i32::MIN, -1, 0, 1, i32::MAX];
+            let ext_i64 = [i64::MIN, i64::MIN + 1, -1, 0, 1, i64::MAX - 1, i64::MAX];
+            let ext_f32 = [f32::NEG_INFINITY, -1.0, -0.0, 0.0, 1.0, f32::INFINITY, f32::NAN];
+            let ai: Vec<i32> = (0..n).map(|i| ext_i32[(i * 3) % 5]).collect();
+            let bi: Vec<i32> = (0..n).map(|i| ext_i32[(i * 7 + 1) % 5]).collect();
+            let al: Vec<i64> = (0..n).map(|i| ext_i64[(i * 3) % 7]).collect();
+            let bl: Vec<i64> = (0..n).map(|i| ext_i64[(i * 5 + 2) % 7]).collect();
+            let af: Vec<f32> = (0..n).map(|i| ext_f32[(i * 3) % 7]).collect();
+            let bf: Vec<f32> = (0..n).map(|i| ext_f32[(i * 5 + 1) % 7]).collect();
+            let words = n.div_ceil(64);
+            let run = |f: &dyn Fn(&mut [u64])| {
+                let mut w = vec![!0u64; words];
+                f(&mut w);
+                w
+            };
+            let i32s: [(F<i32>, fn(i32, i32) -> bool); 5] = [
+                (eq_i32_pair_to_mask, |x, y| x == y),
+                (lt_i32_pair_to_mask, |x, y| x < y),
+                (le_i32_pair_to_mask, |x, y| x <= y),
+                (gt_i32_pair_to_mask, |x, y| x > y),
+                (ge_i32_pair_to_mask, |x, y| x >= y),
+            ];
+            for (k, (f, r)) in i32s.iter().enumerate() {
+                assert_eq!(run(&|w| f(&ai, &bi, w)), want(&ai, &bi, r), "i32 pair #{k}, n={n}");
+            }
+            let i64s: [(F<i64>, fn(i64, i64) -> bool); 5] = [
+                (eq_i64_pair_to_mask, |x, y| x == y),
+                (lt_i64_pair_to_mask, |x, y| x < y),
+                (le_i64_pair_to_mask, |x, y| x <= y),
+                (gt_i64_pair_to_mask, |x, y| x > y),
+                (ge_i64_pair_to_mask, |x, y| x >= y),
+            ];
+            for (k, (f, r)) in i64s.iter().enumerate() {
+                assert_eq!(run(&|w| f(&al, &bl, w)), want(&al, &bl, r), "i64 pair #{k}, n={n}");
+            }
+            let f32s: [(F<f32>, fn(f32, f32) -> bool); 5] = [
+                (eq_f32_pair_to_mask, |x, y| x == y),
+                (lt_f32_pair_to_mask, |x, y| x < y),
+                (le_f32_pair_to_mask, |x, y| x <= y),
+                (gt_f32_pair_to_mask, |x, y| x > y),
+                (ge_f32_pair_to_mask, |x, y| x >= y),
+            ];
+            for (k, (f, r)) in f32s.iter().enumerate() {
+                assert_eq!(run(&|w| f(&af, &bf, w)), want(&af, &bf, r), "f32 pair #{k}, n={n}");
+            }
+            type S = fn(&[i64], i64, &mut [u64]);
+            let scalars: [(S, fn(i64, i64) -> bool); 6] = [
+                (eq_i64_to_mask, |x, t| x == t),
+                (ne_i64_to_mask, |x, t| x != t),
+                (lt_i64_to_mask, |x, t| x < t),
+                (le_i64_to_mask, |x, t| x <= t),
+                (gt_i64_to_mask, |x, t| x > t),
+                (ge_i64_to_mask, |x, t| x >= t),
+            ];
+            for t in ext_i64 {
+                let tv = vec![t; n];
+                for (k, (f, r)) in scalars.iter().enumerate() {
+                    assert_eq!(run(&|w| f(&al, t, w)), want(&al, &tv, r), "i64 scalar #{k}, t={t}, n={n}");
+                }
+            }
+        }
+    }
+
     /// The mask for the blend tests: 131 lanes (two full words, a partial
     /// third), stray bits past the end, both sides taken.
     fn blend_test_mask(n: usize) -> [u64; 3] {
@@ -8930,8 +9254,12 @@ mod tests {
         // for bit; a select that computed on its operands would canonicalise
         // the NaN or turn -0.0 into +0.0.
         let nan = f32::from_bits(0x7fc0_1234);
-        let a: Vec<f32> = (0..n).map(|i| if i % 7 == 0 { nan } else { i as f32 * 0.5 }).collect();
-        let b: Vec<f32> = (0..n).map(|i| if i % 3 == 0 { -0.0 } else { -(i as f32) }).collect();
+        let a: Vec<f32> = (0..n)
+            .map(|i| if i % 7 == 0 { nan } else { i as f32 * 0.5 })
+            .collect();
+        let b: Vec<f32> = (0..n)
+            .map(|i| if i % 3 == 0 { -0.0 } else { -(i as f32) })
+            .collect();
         let mut d = vec![0.0f32; n];
         blend_f32(&m, &a, &b, &mut d);
         for i in 0..n {
@@ -8945,8 +9273,12 @@ mod tests {
             assert_eq!(ds[i].to_bits(), want.to_bits(), "f32 scalar lane {i}");
         }
         // i64: the extremes, which an i32 path would truncate.
-        let a: Vec<i64> = (0..n as i64).map(|i| if i % 5 == 0 { i64::MAX } else { i << 40 }).collect();
-        let b: Vec<i64> = (0..n as i64).map(|i| if i % 4 == 0 { i64::MIN } else { -i }).collect();
+        let a: Vec<i64> = (0..n as i64)
+            .map(|i| if i % 5 == 0 { i64::MAX } else { i << 40 })
+            .collect();
+        let b: Vec<i64> = (0..n as i64)
+            .map(|i| if i % 4 == 0 { i64::MIN } else { -i })
+            .collect();
         let mut d = vec![0i64; n];
         blend_i64(&m, &a, &b, &mut d);
         let mut ds = vec![0i64; n];
