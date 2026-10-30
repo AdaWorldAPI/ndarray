@@ -130,3 +130,61 @@ where
 
     true
 }
+
+/// The f32 summation order behind `sum`, `sum_axis` and `mean_axis` over a
+/// contiguous lane is the eight interleaved partial sums of
+/// [`unrolled_fold`], combined as `(p0+p4)+(p1+p5)+(p2+p6)+(p3+p7)`, then the
+/// remaining elements in order. It is written out in Rust, has no fused
+/// multiply-add, and LLVM may not reassociate IEEE adds, so it is the same on
+/// every CPU tier. `examples/float_accum_probe.rs` measured identical bits on
+/// AVX-512, FMA+AVX2, AVX, SSE2 and NEON.
+#[cfg(test)]
+mod accumulation_order_tests {
+    use crate::{Array2, Axis};
+
+    fn fixture() -> Array2<f32> {
+        Array2::from_shape_fn((64, 1027), |(i, j)| {
+            (((i * 2_654_435_761 + j * 40_503) % 100_003) as f32 / 100_003.0 - 0.5) * 3.7
+        })
+    }
+
+    /// The order spelled out by hand, independent of `unrolled_fold`.
+    fn eight_way(xs: &[f32]) -> f32 {
+        let mut p = [0.0f32; 8];
+        let full = xs.len() / 8 * 8;
+        for c in xs[..full].chunks_exact(8) {
+            for (pk, &x) in p.iter_mut().zip(c) {
+                *pk += x;
+            }
+        }
+        let mut acc = 0.0f32;
+        for (a, b) in [(0, 4), (1, 5), (2, 6), (3, 7)] {
+            acc += p[a] + p[b];
+        }
+        for &x in &xs[full..] {
+            acc += x;
+        }
+        acc
+    }
+
+    #[test]
+    fn sum_and_mean_axis_follow_the_documented_eight_way_order() {
+        let a = fixture();
+        // 1027 per row: 128 full groups of 8 plus a 3-element remainder.
+        for (r, row) in a.rows().into_iter().enumerate() {
+            let s = row.as_slice().unwrap();
+            assert_eq!(row.sum().to_bits(), eight_way(s).to_bits(), "row {r} sum");
+        }
+        let mean = a.mean_axis(Axis(1)).unwrap();
+        for (r, row) in a.rows().into_iter().enumerate() {
+            let want = eight_way(row.as_slice().unwrap()) / 1027.0;
+            assert_eq!(mean[r].to_bits(), want.to_bits(), "row {r} mean");
+        }
+        let all = a.as_slice().unwrap();
+        assert_eq!(a.sum().to_bits(), eight_way(all).to_bits(), "whole-array sum");
+        // Anti-vacuity: a plain left-to-right sum differs on this fixture, so
+        // the comparison above can tell the two orders apart.
+        let seq: f32 = all.iter().sum();
+        assert_ne!(seq.to_bits(), a.sum().to_bits(), "fixture cannot separate the orders");
+    }
+}
