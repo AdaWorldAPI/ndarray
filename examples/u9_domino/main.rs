@@ -132,6 +132,7 @@ fn counters(label: &str, adds: &[(usize, u64)], runs: usize) {
         }
         n.lanes.iter().map(|&x| u128::from(x)).sum()
     };
+    let c = || run::<Abacus<N>>(adds);
     let (f, p, l, pl) = (
         || run::<Eager<N>>(adds),
         || run::<Subst<N>>(adds),
@@ -142,7 +143,7 @@ fn counters(label: &str, adds: &[(usize, u64)], runs: usize) {
     if fits {
         assert_eq!(native(), want_total, "native");
     }
-    for (name, g) in [("F", &f as &dyn Fn() -> u128), ("P", &p), ("L", &l), ("PL", &pl)] {
+    for (name, g) in [("F", &f as &dyn Fn() -> u128), ("C", &c), ("P", &p), ("L", &l), ("PL", &pl)] {
         assert_eq!(g(), want_total, "{name}");
     }
     println!("-- B, {label}: {} adds", adds.len());
@@ -152,6 +153,7 @@ fn counters(label: &str, adds: &[(usize, u64)], runs: usize) {
         None
     };
     time("F eager", adds.len(), runs, "add", b, &f);
+    time("C abacus: F + transactional refusal", adds.len(), runs, "add", b, &c);
     time("P EMPTY substitution", adds.len(), runs, "add", b, &p);
     time("L lazy FULL", adds.len(), runs, "add", b, &l);
     time("PL both", adds.len(), runs, "add", b, &pl);

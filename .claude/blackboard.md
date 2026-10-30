@@ -4005,3 +4005,8 @@ laws, ExtentUnsupported, row bounds) and WITNESS in OrderedLaneWitness; no new t
 | P2 | E2 as the AVX-512-without-VNNI U9 kernel (joins #393's ADOPT-LAB row) | low | integration owner |
 | P3 | AVX2 P1 anomaly: setup+exec 8 ns apart, 42 ns together | low | asm of the combined path |
 | P4 | RPR stale cases X1-X9 / #1848 B0 fixture can reuse the A5 scalar oracle | high | lance-graph owners |
+
+## 2026-10-30 — D-BINARY-ABACUS-POLYFILL-0
+- PR A #402 (draft): `half_add_mask` / `full_add_mask` in `simd_masking_ops`, re-exported; vectorized `pow2n_from_int` (vsexp 4x, vserf 2.4x on AVX-512); `U32x16` `Shl`/`Shr<Self>` added to AVX2, AVX, NEON, wasm, nightly.
+- Lab: `Abacus<BITS>` with transactional refusal in `examples/u9_domino`; cost equal to eager F. PR B and PR C deferred: no consumer, planes already cheap with existing words. Report: `.claude/knowledge/binary-abacus-polyfill-probe.md`.
+- Loose end: NEON `simd_exp_f32` has ~47 scalar fcmp/csel (pre-existing, select/compare path); AVX2 mask packing for `select` still lane by lane.
