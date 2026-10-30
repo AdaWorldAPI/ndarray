@@ -714,6 +714,21 @@ pub use crate::hpc::fingerprint::{
 };
 pub use crate::hpc::phase::{phase_lut_4096, radians_from_turns, turns_from_radians, PhaseLut, PhaseStep};
 pub use crate::hpc::statistics::{moments_u32, MomentsU32};
+// Checked i64 arithmetic (ONNX int64 Add/Sub/Mul/Div and Range), surfaced so
+// consumers name it through the facade, never through `hpc`. Plain re-exports:
+// same functions, same refusal policy.
+///
+/// ```
+/// use ndarray::simd::{checked_binary_i64, I64ArithError, I64Op};
+/// let mut out = [0i64; 2];
+/// checked_binary_i64(I64Op::Mul, &[4, 3], &[2], &mut out).unwrap();
+/// assert_eq!(out, [8, 6]);
+/// assert!(matches!(
+///     checked_binary_i64(I64Op::Mul, &[i64::MAX, 1], &[2], &mut out),
+///     Err(I64ArithError::Overflow { .. })
+/// ));
+/// ```
+pub use crate::hpc::checked_i64::{checked_binary_i64, checked_i64, range_i64, range_len_i64, I64ArithError, I64Op};
 // Element-wise f32 math (VML), activations and the batched f32 matmul,
 // surfaced so consumers stay on the one `ndarray::simd::*` import path.
 // Plain re-exports of the `hpc` items: same functions, same behaviour.
@@ -2752,5 +2767,29 @@ mod reinterpret_bits_parity {
         let top = U8x64::splat(0x80).reinterpret_as_i8(ReinterpretBits);
         let r = I32x16::splat(0).dot4_u8_i8_add(a, top).to_array();
         assert_eq!(r, [-512; 16]);
+    }
+}
+
+#[cfg(test)]
+mod checked_i64_facade {
+    // Imported through the facade path, so a missing re-export fails to build.
+    use super::{checked_binary_i64, checked_i64, I64ArithError, I64Op};
+
+    #[test]
+    fn the_facade_word_multiplies_and_refuses_overflow() {
+        let mut out = [0i64; 3];
+        checked_binary_i64(I64Op::Mul, &[4, 1, 1], &[1, 1, 1], &mut out).unwrap();
+        assert_eq!(out, [4, 1, 1]);
+        assert_eq!(
+            checked_binary_i64(I64Op::Mul, &[i64::MAX, 2, 3], &[2], &mut out),
+            Err(I64ArithError::Overflow {
+                op: I64Op::Mul,
+                position: 0,
+                lhs: i64::MAX,
+                rhs: 2
+            })
+        );
+        assert_eq!(out, [4, 1, 1], "nothing is written on refusal");
+        assert_eq!(checked_i64(I64Op::Mul, -3, 7), Ok(-21));
     }
 }
