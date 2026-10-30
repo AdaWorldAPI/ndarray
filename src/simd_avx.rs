@@ -28,7 +28,7 @@ use core::ops::{
     Add, AddAssign, BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Mul, Not, Shl, Shr, Sub, SubAssign,
 };
 
-use crate::simd_avx2::{F32x16, I32x16, I8x64, U16x16, U16x32, U64x8, U8x32, U8x64};
+use crate::simd_avx2::{F32x16, I32x16, I8x64, U16x16, U16x32, U32x16, U64x8, U8x32, U8x64};
 use crate::simd_avx512::{F32x8, I16x16, I8x32};
 
 // ---------------------------------------------------------------------------
@@ -305,6 +305,28 @@ impl Shr<Self> for U64x8 {
     fn shr(self, rhs: Self) -> Self {
         debug_assert!(rhs.0.iter().all(|&n| n < 64), "U64x8 shift counts are a caller contract: < 64");
         Self(core::array::from_fn(|i| if rhs.0[i] < 64 { self.0[i] >> rhs.0[i] } else { 0 }))
+    }
+}
+
+/// Lane-wise variable left shift. Counts of 32 or more zero the lane, as
+/// `VPSLLVD` does on the AVX2 arm. No SSE/AVX1 form exists, so this is per
+/// lane, like `U64x8`'s above.
+impl Shl<Self> for U32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn shl(self, rhs: Self) -> Self {
+        debug_assert!(rhs.0.iter().all(|&n| n < 32), "U32x16 shift counts are a caller contract: < 32");
+        Self(core::array::from_fn(|i| if rhs.0[i] < 32 { self.0[i] << rhs.0[i] } else { 0 }))
+    }
+}
+
+/// Lane-wise variable right shift; see the `Shl<Self>` impl above.
+impl Shr<Self> for U32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn shr(self, rhs: Self) -> Self {
+        debug_assert!(rhs.0.iter().all(|&n| n < 32), "U32x16 shift counts are a caller contract: < 32");
+        Self(core::array::from_fn(|i| if rhs.0[i] < 32 { self.0[i] >> rhs.0[i] } else { 0 }))
     }
 }
 

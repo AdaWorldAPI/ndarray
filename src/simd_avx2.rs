@@ -1921,6 +1921,72 @@ impl Shr<Self> for U64x8 {
     }
 }
 
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
+impl U32x16 {
+    /// The two 256-bit halves of the 64-byte array; see `U64x8::avx2_halves`
+    /// for the run-time AVX2 obligation and why both loads are in bounds.
+    #[inline(always)]
+    fn avx2_halves(self) -> (__m256i, __m256i) {
+        // SAFETY: as for `U64x8::avx2_halves`: 64-byte array, two 32-byte
+        // unaligned loads, AVX2 present by this arm's contract.
+        unsafe {
+            let p = self.0.as_ptr() as *const __m256i;
+            (_mm256_loadu_si256(p), _mm256_loadu_si256(p.add(1)))
+        }
+    }
+
+    /// Store two 256-bit halves into a fresh `[u32; 16]`.
+    #[inline(always)]
+    fn from_avx2_halves(lo: __m256i, hi: __m256i) -> Self {
+        let mut o = [0u32; 16];
+        // SAFETY: see `avx2_halves`; two 32-byte stores into a 64-byte array.
+        unsafe {
+            let p = o.as_mut_ptr() as *mut __m256i;
+            _mm256_storeu_si256(p, lo);
+            _mm256_storeu_si256(p.add(1), hi);
+        }
+        Self(o)
+    }
+}
+
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
+/// Lane-wise variable left shift (`VPSLLVD` per 256-bit half). Counts stay
+/// below 32 by the callers' contract, as on every other arm.
+///
+/// ```
+/// use ndarray::simd::U32x16;
+/// let x = U32x16::splat(1);
+/// let n = U32x16::from_array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 23, 31]);
+/// let left = x << n;
+/// assert_eq!(left.to_array()[14], 1 << 23);
+/// assert_eq!((left >> n).to_array(), [1; 16]);
+/// ```
+impl Shl<Self> for U32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn shl(self, rhs: Self) -> Self {
+        debug_assert!(rhs.to_array().iter().all(|&n| n < 32), "U32x16 shift counts are a caller contract: < 32");
+        let (lo, hi) = self.avx2_halves();
+        let (clo, chi) = rhs.avx2_halves();
+        // SAFETY: AVX2 present by the arm's contract; register-only ops.
+        unsafe { Self::from_avx2_halves(_mm256_sllv_epi32(lo, clo), _mm256_sllv_epi32(hi, chi)) }
+    }
+}
+
+#[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
+/// Lane-wise variable right shift (`VPSRLVD`); see `Shl<Self>` above.
+impl Shr<Self> for U32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn shr(self, rhs: Self) -> Self {
+        debug_assert!(rhs.to_array().iter().all(|&n| n < 32), "U32x16 shift counts are a caller contract: < 32");
+        let (lo, hi) = self.avx2_halves();
+        let (clo, chi) = rhs.avx2_halves();
+        // SAFETY: as for `shl`.
+        unsafe { Self::from_avx2_halves(_mm256_srlv_epi32(lo, clo), _mm256_srlv_epi32(hi, chi)) }
+    }
+}
+
 /// BLAKE3 `hash_many` shuffle surface — the transpose network's four unpacks
 /// and two half-concatenations, at DEGREE 16.
 ///

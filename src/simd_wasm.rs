@@ -2392,6 +2392,27 @@ pub mod wasm32_simd {
             Self(core::array::from_fn(|p| U64x2(v128_not(self.0[p].0))))
         }
     }
+    /// Lane-wise `U32x16 << rhs` with per-lane counts below 32. simd128 has
+    /// only a uniform shift, so this goes through lane extracts like `U64x8`.
+    impl core::ops::Shl<Self> for U32x16 {
+        type Output = Self;
+        #[inline(always)]
+        fn shl(self, r: Self) -> Self {
+            debug_assert!(r.to_array().iter().all(|&n| n < 32), "U32x16 shift counts are a caller contract: < 32");
+            let (a, n) = (self.to_array(), r.to_array());
+            Self::from_array(core::array::from_fn(|i| a[i].wrapping_shl(n[i])))
+        }
+    }
+    /// Lane-wise `U32x16 >> rhs` with per-lane counts (see `Shl`).
+    impl core::ops::Shr<Self> for U32x16 {
+        type Output = Self;
+        #[inline(always)]
+        fn shr(self, r: Self) -> Self {
+            debug_assert!(r.to_array().iter().all(|&n| n < 32), "U32x16 shift counts are a caller contract: < 32");
+            let (a, n) = (self.to_array(), r.to_array());
+            Self::from_array(core::array::from_fn(|i| a[i].wrapping_shr(n[i])))
+        }
+    }
     /// Lane-wise `self << rhs` with PER-LANE counts. simd128 has only a uniform
     /// shift, so this one operator goes through lane extracts; the scalar
     /// backend's `<<` panics on a count of 64 or more in debug builds, so

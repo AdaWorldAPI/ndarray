@@ -161,6 +161,18 @@ fn check_u32x16() -> Result<(), u32> {
             }
         }
     }
+    // Per-lane variable shifts: a distinct count in every lane.
+    let n_arr: [u32; 16] = core::array::from_fn(|i| (i as u32 * 7) % 32);
+    let n = U32x16::from_array(n_arr);
+    let (l, r) = ((a << n).to_array(), (a >> n).to_array());
+    for i in 0..16 {
+        if l[i] != a_arr[i] << n_arr[i] {
+            return Err(14);
+        }
+        if r[i] != a_arr[i] >> n_arr[i] {
+            return Err(15);
+        }
+    }
     Ok(())
 }
 
