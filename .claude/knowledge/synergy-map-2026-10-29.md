@@ -323,6 +323,31 @@ and `lance_graph_onnx::` name in `registry.rs` against `simd.rs` /
 `cargo update`; `quote-harvester` for ORT's reduction kernels when V13 starts.
 Spot-check: re-read every hit used, re-run one count.
 
+## R6. H11 and L18 implemented (2026-10-30)
+
+The two ndarray-side gaps R5 named for the ONNX registry probe:
+
+- **H11 → CLOSED.** `hpc::vml::vserf` (ONNX `Erf`): the Cephes `erff`
+  polynomial for `|x| < 1`, `1 − exp(−x²)/x · P(1/x²)` up to 4, and `1.0`
+  from 4. At most 2 ULP from the correctly rounded value over `[1e-38, 100]`,
+  both signs, chunk and tail (tested against an `f64` series). It is exactly
+  odd, keeps `erf(−0) = −0` and maps `±inf` to `±1`; NaN stays NaN. The Cephes
+  `erfcf` polynomial for `x ≥ 2` turned out unnecessary for `erf` (a disable
+  run that dropped it stayed green, and a prototype measured the same 2 ULP
+  with one polynomial), so it was removed.
+- **L18 → CLOSED.** `simd::blend_i32_scalar(mask, a, b: i32, dst)`: ONNX
+  `Where(C, X, y)` with a scalar `y`, without the caller filling a `b`
+  vector. Pinned against `blend_i32` with a filled vector over 131 lanes
+  (two full words, a partial word, stray bits past the end).
+
+Disable runs, each restored from the commit: sign restore removed (3 tests
+red), NaN clamped by a `< 4` select (special-values test red), small branch
+on `x` instead of `|x|` (2 red), scalar ignored in `blend_i32_scalar` (red).
+
+What is left for the probe is lance-graph work: register `Erf` over `vserf`,
+switch its `Where` DO to `blend_i32_scalar` when `Y` is a scalar (this also
+closes half of L17), plus L11–L15. V13 stays a probe.
+
 ## 0. What the six ndarray PRs did
 
 | PR | closed | opened or left |
