@@ -435,8 +435,8 @@ five backends.
   emulators are available here.
 - **CI:** #402 merged while four of its test jobs (`tests/stable`,
   `tests/beta`, `tests/1.99.0`, `native-backend/stable`) were still running.
-  Their outcome on `de03001` was not seen here. The same code passed the full
-  lib suite locally (2,702 tests).
+  All four finished with success on `de03001` after the merge (run
+  41053380600).
 
 ## 0. What the six ndarray PRs did
 
