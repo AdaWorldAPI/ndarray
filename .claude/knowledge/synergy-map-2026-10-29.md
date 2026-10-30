@@ -236,6 +236,93 @@ Tests: 8 new in `codec9` (12 total), 4 in `simd::reinterpret_bits_parity`;
 the finiteness check, saturating reinterpret, scale check removed). Lib suite
 2,676 passed; AVX2 tier, aarch64 build and the wasm/NEON parity programs pass.
 
+## R5. lance-graph #1850 + #1851: the ONNX graph through the DT64 registry
+
+lance-graph `main` `f2bbd27`. Two merges, both in the new lab crate
+`crates/tract-harvest-probe` (its own workspace, excluded, ~2.1k lines): an
+ONNX graph laid onto one 64×64 DR#3 tile and each node resolved through an
+ON × WHEN × DO registry (one lab classid per op signature, `0x0F01..0x0F51`).
+#1851 adds two guards (run inputs checked against the resolved facts; a `Pow`
+exponent may not grow the base). No ONNX PR is open. The rows below were read
+in `registry.rs`, `value.rs`, `plan.rs`, `Cargo.toml` and
+`lance-graph-onnx/src/lib.rs`; ndarray symbols were checked in this tree.
+
+**Closed by #1850 (no ndarray work):**
+
+- **N19 — every DO is an existing ndarray word.** The registry adds no
+  kernel. Each DO is a `lance-graph-onnx` alias, and every alias names an
+  ndarray function: `Greater` → `simd::gt_i32_to_mask`
+  (`simd_masking_ops.rs:344`), `Where` → `simd::blend_i32` (`:5827`), `Abs`/
+  `Sqrt` → `hpc::vml::vsabs`/`vssqrt` (`vml.rs:509`, `:485`), `ReduceMean` →
+  `ArrayBase::mean_axis`. The dependency direction is right: the consumer
+  names ndarray words and grows none.
+- **N20 — `tensor(bool)` is the ndarray mask word.** `value.rs:3-6` decodes a
+  source bool tensor once into "bit `i % 64` of word `i / 64`", the layout every
+  `*_to_mask` kernel writes. A comparison output feeds `blend_i32` with no
+  repacking. This is the second consumer (after `lance-graph-onnx`) to adopt
+  the convention by name.
+- **N21 — one ndarray package in a Tract graph.** Tract's workspace patches
+  crates.io `ndarray` to this fork; the probe repeats the `[patch]`
+  (`Cargo.toml:31-35`), so Tract and the DOs share one `ndarray` package
+  identity. Note it pins `branch = "master"`; a change here reaches it on its
+  next `cargo update`.
+
+**Loose ends, with the ndarray word that would close each:**
+
+The probe's measured coverage on Jina v5 small: 3,751 of 7,620 nodes resolve;
+3,700 have no registration, the largest groups being Unsqueeze, Shape, Gather,
+Concat and f32 MatMul.
+
+| id | gap in the probe | existing ndarray word | ndarray work |
+|---|---|---|---|
+| L11 | `Unsqueeze`, `Shape` unregistered | `insert_axis`, `.shape()` (views, no copy) | none |
+| L12 | `Concat` unregistered | `ndarray::concatenate` | none |
+| L13 | `Gather` unregistered (axis gather, int indices) | `ArrayBase::select(axis, &[usize])` | none; the i64 → usize index check and negative-index wrap belong in the WHEN |
+| L14 | f32 `MatMul` unregistered | `ArrayBase::dot` / the backend `sgemm` | none; but nothing pins `dot` to ORT's summation order, so until measured it registers as Bounded, like `ReduceMean` |
+| L15 | f16 `Cast` refused as `Unregistered` | `simd::cast_f16_to_f32_batch` / `cast_f32_to_f16_batch` (`simd.rs:760-762`) | none; RNE on the narrowing cast must match ORT (`f32_to_f16_batch_ieee754_rne` exists) |
+| L16 | `Erf` refused | none: `hpc::vml` has no `vserf` | **H11** below |
+| L17 | i32 DOs copy their input (`x.iter().copied().collect()`) and `Where` with a scalar Y fills a full `Vec` | the kernels already take `&[i32]`; `as_slice()` on a standard-layout `ArrayD` borrows | lance-graph only; a `blend_i32_scalar(mask, a, b: i32, dst)` would remove the fill (**L18**) |
+| L19 | `ReduceMean` is Bounded (max 4 ULP, 9,259 / 10,240 exact on the RMSNorm slice) | `mean_axis` reassociates | a sum with a pinned order that matches ORT would make it exact; probe first (**V13**) |
+
+**Not a synergy, recorded so nobody tries it:** ONNX
+`QuantizeLinear`/`DequantizeLinear` are not Codec9. ONNX int8 is
+`[-128, 127]` with an affine zero point and no "never touched" state; Codec9 is
+a 9-bit symmetric magnitude with presence. `Codec9Runtime` matches neither
+range nor absence. The contract's `CodeSpace::from_zero_point` (#1839) is the
+place where an ONNX quant annotation selects a code space; it already refuses
+a 9-bit asymmetric lane. If the probe registers `DequantizeLinear`, its DO is a
+plain affine decode, and an int8 tensor reaching a `U8x64` kernel crosses with
+`reinterpret_as_u8(ReinterpretBits)`, never `as`.
+
+**Fruit:**
+
+- **Low.** L11–L13 and L15: registrations over existing words, in
+  lance-graph. Each needs a WHEN (rank and shape facts) and an ORT parity
+  test; no ndarray change. L17 is a lance-graph cleanup under the zero-copy law.
+- **L18 (low, ndarray).** `blend_i32_scalar`: `Where(C, X, scalar)` is the
+  common ONNX shape (the tiny fixture's `Where(c, X, 1)`). One masked blend
+  against a broadcast register; every backend; parity test against
+  `blend_i32` with a filled vector. Only if a second consumer wants it.
+- **H11 (high, ndarray).** `vserf` / `vserf_slice` in `hpc::vml`: GELU-family
+  models use `Erf`, and today the probe refuses it. Needs an accuracy bound
+  stated in ULP against a reference (as `vsexp` does), the `±0`, `±inf` and
+  NaN cases, and every backend.
+- **L14 (high, lance-graph).** f32 MatMul is the largest unregistered compute
+  op. Registering it over `dot` is easy; making it exact against ORT is not,
+  so it registers as Bounded with a measured ULP bound.
+- **V13 (heavy, probe).** Does ORT's `ReduceMean` (and MatMul) use a fixed
+  summation order that an ndarray reduction could reproduce? If yes, an
+  order-pinned reduction turns two Bounded methods exact. Measure ORT's order
+  first; do not build the reduction before that.
+
+**Haiku cards for the grindwork (§7 rules):** `census-counter` for the
+unregistered op histogram per model (the probe's `examples/stages` output is
+the source; count, never interpret); `harvest-scout` for every `ndarray::`
+and `lance_graph_onnx::` name in `registry.rs` against `simd.rs` /
+`hpc/vml.rs` exports, so a renamed ndarray word is caught before the probe's
+`cargo update`; `quote-harvester` for ORT's reduction kernels when V13 starts.
+Spot-check: re-read every hit used, re-run one count.
+
 ## 0. What the six ndarray PRs did
 
 | PR | closed | opened or left |
