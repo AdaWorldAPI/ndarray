@@ -1036,6 +1036,49 @@ pub use crate::simd_fixedpoint::{quantize_multiplier, quantize_multiplier_single
 // `encryption` AEAD. RustCrypto owns the cipher; ndarray exposes only the lane.
 
 // ============================================================================
+// Named bit reinterpret between U8x64 and I8x64
+// ============================================================================
+
+/// Intent marker for a bit-level reinterpret between [`U8x64`] and [`I8x64`].
+///
+/// FACET STRIDE rule 3 forbids mixing `u8` and `i8` (no `as i8` on unsigned
+/// data, no signed compare on unsigned bytes). The one sanctioned crossing is
+/// a reinterpret of the bit pattern, and it must be visible at the call site:
+/// the marker has to be passed by name, so a reader always sees
+/// `reinterpret_as_i8(ReinterpretBits)` and never an implicit cast.
+///
+/// The value is not converted. `0x80` becomes `-128`, `0xFF` becomes `-1`;
+/// nothing saturates or wraps, because no arithmetic happens. Arithmetic on
+/// the reinterpreted lanes still follows the type it now has.
+///
+/// ```
+/// use ndarray::simd::{ReinterpretBits, U8x64};
+/// let v = U8x64::splat(0xFF).reinterpret_as_i8(ReinterpretBits);
+/// assert_eq!(v.to_array(), [-1i8; 64]);
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReinterpretBits;
+
+impl U8x64 {
+    /// Reinterpret the 64 byte lanes as `i8`, bit for bit. See [`ReinterpretBits`].
+    #[inline(always)]
+    pub fn reinterpret_as_i8(self, _intent: ReinterpretBits) -> I8x64 {
+        // SAFETY: `[u8; 64]` and `[i8; 64]` have the same size and alignment,
+        // and every bit pattern is a valid value of both.
+        I8x64::from_array(unsafe { core::mem::transmute::<[u8; 64], [i8; 64]>(self.to_array()) })
+    }
+}
+
+impl I8x64 {
+    /// Reinterpret the 64 byte lanes as `u8`, bit for bit. See [`ReinterpretBits`].
+    #[inline(always)]
+    pub fn reinterpret_as_u8(self, _intent: ReinterpretBits) -> U8x64 {
+        // SAFETY: as in `U8x64::reinterpret_as_i8`.
+        U8x64::from_array(unsafe { core::mem::transmute::<[i8; 64], [u8; 64]>(self.to_array()) })
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -2578,5 +2621,59 @@ mod dot4_nibble_facade_parity {
             assert_eq!(x.high_nibbles().to_array(), v.map(|b| b >> 4));
             assert_eq!(x.low_nibbles().to_array(), v.map(|b| b & 0x0F));
         }
+    }
+}
+
+#[cfg(test)]
+mod reinterpret_bits_parity {
+    use super::{I32x16, I8x64, ReinterpretBits, U8x64};
+
+    fn all_bytes(offset: u8) -> [u8; 64] {
+        core::array::from_fn(|i| (i as u8).wrapping_mul(4).wrapping_add(offset))
+    }
+
+    #[test]
+    fn every_byte_value_keeps_its_bit_pattern() {
+        // 4 x 64 lanes cover all 256 byte values once.
+        for offset in 0..4u8 {
+            let bytes = all_bytes(offset);
+            let signed = U8x64::from_array(bytes)
+                .reinterpret_as_i8(ReinterpretBits)
+                .to_array();
+            for (u, s) in bytes.iter().zip(signed) {
+                assert_eq!(s.to_ne_bytes()[0], *u, "byte {u:#04x} changed its bits");
+            }
+        }
+    }
+
+    #[test]
+    fn high_bytes_become_negative_and_do_not_saturate() {
+        let v = U8x64::from_array(core::array::from_fn(|i| [0x7F, 0x80, 0xFF, 0x00][i % 4]));
+        let s = v.reinterpret_as_i8(ReinterpretBits).to_array();
+        assert_eq!(&s[..4], &[127, -128, -1, 0]);
+    }
+
+    #[test]
+    fn round_trip_is_the_identity() {
+        for offset in 0..4u8 {
+            let bytes = all_bytes(offset);
+            let back = U8x64::from_array(bytes)
+                .reinterpret_as_i8(ReinterpretBits)
+                .reinterpret_as_u8(ReinterpretBits)
+                .to_array();
+            assert_eq!(back, bytes);
+            let signed = I8x64::from_array(bytes.map(|b| i8::from_ne_bytes([b])));
+            assert_eq!(signed.reinterpret_as_u8(ReinterpretBits).to_array(), bytes);
+        }
+    }
+
+    #[test]
+    fn feeds_the_signed_operand_of_the_byte_dot() {
+        // The consumer it was asked for: B's `top` byte (0x80) used as the i8
+        // operand contributes -128 per product, not +128 and not a clamp.
+        let a = U8x64::splat(1);
+        let top = U8x64::splat(0x80).reinterpret_as_i8(ReinterpretBits);
+        let r = I32x16::splat(0).dot4_u8_i8_add(a, top).to_array();
+        assert_eq!(r, [-512; 16]);
     }
 }
