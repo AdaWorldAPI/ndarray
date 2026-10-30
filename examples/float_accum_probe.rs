@@ -23,7 +23,9 @@ fn fnv(bits: impl Iterator<Item = u32>) -> u64 {
 fn main() {
     // Values with full mantissas, so any change of order or of fused
     // multiply-add shows up in the low bits.
-    let f = |i: usize, j: usize| (((i * 2654435761 + j * 40503) % 100_003) as f32 / 100_003.0 - 0.5) * 3.7;
+    let f = |i: usize, j: usize| {
+        (((i as u64 * 2_654_435_761 + j as u64 * 40_503) % 100_003) as f32 / 100_003.0 - 0.5) * 3.7
+    };
     let (m, k, n) = (64, 1024, 48);
     let a = Array2::from_shape_fn((m, k), |(i, j)| f(i, j));
     let b = Array2::from_shape_fn((k, n), |(i, j)| f(j + 7, i));

@@ -945,7 +945,9 @@ mod tests {
     fn gemm_f32_bits_fall_in_the_fma_or_non_fma_class() {
         const FMA_CLASS: u64 = 0x5bac_d082_3f5d_cadd;
         const NON_FMA_CLASS: u64 = 0x632f_cf6d_b284_df8e;
-        let f = |i: usize, j: usize| (((i * 2_654_435_761 + j * 40_503) % 100_003) as f32 / 100_003.0 - 0.5) * 3.7;
+        let f = |i: usize, j: usize| {
+            (((i as u64 * 2_654_435_761 + j as u64 * 40_503) % 100_003) as f32 / 100_003.0 - 0.5) * 3.7
+        };
         let (m, k, n) = (64, 1024, 48);
         let a: Vec<f32> = (0..m * k).map(|x| f(x / k, x % k)).collect();
         let b: Vec<f32> = (0..k * n).map(|x| f(x % n + 7, x / n)).collect();

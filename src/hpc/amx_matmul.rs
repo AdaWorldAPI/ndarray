@@ -881,7 +881,9 @@ pub fn matmul_f32_batched(
     let (b, m, k) = lhs.dim();
     let (rb, kr, n) = rhs.dim();
     let (ob, mo, no) = out.dim();
-    if ob != b || !(rb == b || rb == 1) {
+    // Inner shapes are checked here, not only per entry: an empty batch
+    // runs no entry, and must not let mismatched shapes pass as `Ok`.
+    if ob != b || !(rb == b || rb == 1) || k != kr || m != mo || n != no {
         return Err(MatmulError::ShapeMismatch {
             lhs: (m, k),
             rhs: (kr, n),
@@ -1163,6 +1165,12 @@ mod tests {
         // A batch of 2 against 3 is refused, not truncated.
         let mut bad = Array3::<f32>::zeros((bsz, m, n));
         assert!(matmul_f32_batched(l.view(), r.slice(crate::s![..2, .., ..]), bad.view_mut()).is_err());
+        // An empty batch still validates the inner shapes.
+        let (l0, r1, mut o0) =
+            (Array3::<f32>::zeros((0, 2, 3)), Array3::<f32>::zeros((1, 4, 5)), Array3::<f32>::zeros((0, 9, 8)));
+        assert!(matmul_f32_batched(l0.view(), r1.view(), o0.view_mut()).is_err());
+        let (r_ok, mut o_ok) = (Array3::<f32>::zeros((1, 3, 5)), Array3::<f32>::zeros((0, 2, 5)));
+        assert!(matmul_f32_batched(l0.view(), r_ok.view(), o_ok.view_mut()).is_ok());
     }
 
     #[test]
