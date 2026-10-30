@@ -714,6 +714,19 @@ pub use crate::hpc::fingerprint::{
 };
 pub use crate::hpc::phase::{phase_lut_4096, radians_from_turns, turns_from_radians, PhaseLut, PhaseStep};
 pub use crate::hpc::statistics::{moments_u32, MomentsU32};
+// Element-wise f32 math (VML), activations and the batched f32 matmul,
+// surfaced so consumers stay on the one `ndarray::simd::*` import path.
+// Plain re-exports of the `hpc` items: same functions, same behaviour.
+pub use crate::hpc::activations::{log_softmax_axis_f32, log_softmax_f32, sigmoid_f32, softmax_axis_f32, softmax_f32};
+pub use crate::hpc::vml::{
+    vsabs, vsadd, vsceil, vscos, vsdiv, vserf, vsexp, vsfloor, vsln, vsmul, vsneg, vspow, vsround, vssin, vssqrt,
+    vstanh, vstrunc,
+};
+// `hpc::amx_matmul` is `#[cfg(target_arch = "x86_64")]`; the re-export uses
+// the same gate. `matmul_f32` itself is not re-exported: under
+// `runtime-dispatch` that name is the `simd_runtime` trampoline.
+#[cfg(target_arch = "x86_64")]
+pub use crate::hpc::amx_matmul::{matmul_f32_batched, MatmulError};
 
 // PR-X1 — SoA carrier + const-size slice helpers, dispatched from their
 // respective `simd_{type}.rs` modules. The W1a consumer contract forbids
