@@ -357,6 +357,77 @@ fn vstrunc_slice(x: &[f32], out: &mut [f32]) {
 }
 
 // ===========================================================================
+/// 16-lane `erf`, computed on `a = |x|` and negated where `x < 0`, so the
+/// function is exactly odd. Lanes where `x == 0` return `x` itself, which keeps
+/// `erf(-0.0) = -0.0`. Float compares and `select` only, like [`tanh_f32x16`].
+///
+/// Three ranges, chosen per lane (the Cephes `erff`/`erfcf` minimax
+/// polynomials, the `erfcf` one for `x < 2`):
+/// - `a < 1`: `a · T(a²)`. No cancellation; for subnormal or tiny `a` the
+///   result is `a · 1.1283792` (`2/√π · a`), the correct leading term.
+/// - `1 ≤ a < 4`: `1 − exp(−a²)/a · P(1/a²)`. `erfc ≤ 0.16` here, so the
+///   subtraction loses no bits. Cephes uses a second polynomial for `erfc`
+///   from 2; `erf` does not need it, because `erfc < 0.005` there and the
+///   error of `1 − erfc` stays within the same bound (measured: 2 ULP worst
+///   case over `[1, 4)` with one polynomial or two).
+/// - `a ≥ 4` (including `+inf`): exactly `1.0`; `erf(4) = 1 − 1.5e-8` rounds
+///   to `1.0` in `f32`.
+///
+/// A NaN input takes the middle branch and stays NaN.
+#[inline(always)]
+fn erf_f32x16(v: F32x16) -> F32x16 {
+    let zero = F32x16::splat(0.0);
+    let one = F32x16::splat(1.0);
+    let a = v.abs();
+    let z = a * a;
+    let small = F32x16::splat(7.853_861_353_153_693e-5)
+        .mul_add(z, F32x16::splat(-8.010_193_625_184_903e-4))
+        .mul_add(z, F32x16::splat(5.188_327_685_732_524e-3))
+        .mul_add(z, F32x16::splat(-2.685_381_193_529_856e-2))
+        .mul_add(z, F32x16::splat(1.128_358_514_861_418e-1))
+        .mul_add(z, F32x16::splat(-3.761_262_582_423_300e-1))
+        .mul_add(z, F32x16::splat(1.128_379_165_726_710))
+        * a;
+    let q = one / a;
+    let y = q * q;
+    let p = F32x16::splat(2.326_819_970_068_386e-2)
+        .mul_add(y, F32x16::splat(-1.387_039_388_740_657e-1))
+        .mul_add(y, F32x16::splat(3.687_424_674_597_105e-1))
+        .mul_add(y, F32x16::splat(-5.824_733_027_278_666e-1))
+        .mul_add(y, F32x16::splat(6.210_004_621_745_983e-1))
+        .mul_add(y, F32x16::splat(-4.944_515_323_274_145e-1))
+        .mul_add(y, F32x16::splat(3.404_879_937_665_872e-1))
+        .mul_add(y, F32x16::splat(-2.741_127_028_184_656e-1))
+        .mul_add(y, F32x16::splat(5.638_259_427_386_472e-1));
+    let mid = one - simd_exp_f32(-z) * q * p;
+    // `a < 4` is false for NaN, so test `a >= 4` the other way round: NaN
+    // keeps `mid` (NaN) instead of being clamped to 1.
+    let big = a.simd_ge(F32x16::splat(4.0));
+    let r = big.select(one, mid);
+    let r = a.simd_lt(one).select(small, r);
+    let r = v.simd_lt(zero).select(-r, r);
+    v.simd_eq(zero).select(v, r)
+}
+
+fn vserf_slice(x: &[f32], out: &mut [f32]) {
+    let n = x.len().min(out.len());
+    let chunks = n / 16;
+    for i in 0..chunks {
+        let off = i * 16;
+        erf_f32x16(F32x16::from_slice(&x[off..off + 16])).copy_to_slice(&mut out[off..off + 16]);
+    }
+    // The tail goes through the same 16-lane kernel, so a value gives the same
+    // bits wherever it sits in the array.
+    let rest = n - chunks * 16;
+    if rest > 0 {
+        let mut buf = [0.0f32; 16];
+        buf[..rest].copy_from_slice(&x[chunks * 16..n]);
+        let r = erf_f32x16(F32x16::from_slice(&buf));
+        r.copy_to_slice(&mut buf);
+        out[chunks * 16..n].copy_from_slice(&buf[..rest]);
+    }
+}
+
 // Internal helpers for the contiguous fast path.
 // ===========================================================================
 
@@ -651,6 +722,36 @@ pub fn vstanh<D: Dimension>(x: ArrayView<'_, f32, D>, mut out: ArrayViewMut<'_, 
     Zip::from(&mut out)
         .and(&x)
         .for_each(|o, &v| *o = tanh_f32x16(F32x16::splat(v)).to_array()[0]);
+}
+
+/// Element-wise error function `erf(x)` (ONNX `Erf`).
+///
+/// At most 2 ULP from the correctly rounded value over `[-5, 5]` (measured
+/// against an `f64` series in the tests). Exactly odd, `erf(±0) = ±0`,
+/// `erf(±inf) = ±1`, NaN stays NaN. Every element, contiguous or strided,
+/// goes through the same 16-lane kernel.
+///
+/// # Example
+/// ```
+/// use ndarray::{array, Array1};
+/// use ndarray::hpc::vml::vserf;
+/// let x = array![0.0f32, 0.5, -1.0, 10.0];
+/// let mut out = Array1::<f32>::zeros(4);
+/// vserf(x.view(), out.view_mut());
+/// assert!((out[1] - 0.520_499_9).abs() < 1e-6);
+/// assert_eq!(out[3], 1.0);
+/// ```
+///
+/// # Panics
+/// Panics if `x` and `out` shapes differ.
+pub fn vserf<D: Dimension>(x: ArrayView<'_, f32, D>, mut out: ArrayViewMut<'_, f32, D>) {
+    assert_eq!(x.shape(), out.shape(), "vserf: x/out shape mismatch");
+    if dispatch_unary_contig(x.view(), &mut out, vserf_slice) {
+        return;
+    }
+    Zip::from(&mut out)
+        .and(&x)
+        .for_each(|o, &v| *o = erf_f32x16(F32x16::splat(v)).to_array()[0]);
 }
 
 /// Element-wise `floor`. Hot path uses `F32x16::floor()` (VRNDSCALEPS on
@@ -1538,6 +1639,103 @@ mod tests {
                 let step = f64::from(f32::from_bits(1));
                 assert!((got - want).abs() <= 4e-6 * want + step, "vsexp({v}): got {got:e}, want {want:e}");
             }
+        }
+    }
+
+    /// `erf` in `f64` by its Maclaurin series, rounded once to `f32`. The
+    /// largest term at `|x| = 4.5` is about `1e8`, so the series keeps ~8
+    /// digits more than `f32` needs. Beyond 4.5, `erf` rounds to `±1.0`.
+    fn erf_ref(x: f32) -> f32 {
+        let xf = x as f64;
+        if xf.is_nan() {
+            return f32::NAN;
+        }
+        if xf.abs() >= 4.5 {
+            return xf.signum() as f32;
+        }
+        let x2 = xf * xf;
+        let mut term = xf; // x^(2n+1) (-1)^n / n!
+        let mut sum = 0.0f64;
+        for n in 0..400u32 {
+            let t = term / (2 * n + 1) as f64;
+            sum += t;
+            if t.abs() < 1e-30 * sum.abs().max(1e-300) {
+                break;
+            }
+            term *= -x2 / (n + 1) as f64;
+        }
+        (sum * core::f64::consts::FRAC_2_SQRT_PI) as f32
+    }
+
+    fn vserf_vec(xs: &[f32]) -> Vec<f32> {
+        let x = Array1::from(xs.to_vec());
+        let mut out = Array1::<f32>::zeros(xs.len());
+        vserf(x.view(), out.view_mut());
+        out.to_vec()
+    }
+
+    #[test]
+    fn test_vserf_within_2_ulp_across_magnitudes() {
+        // The bands meet at the kernel's branch points 1, 2 and 4. The length
+        // is not a multiple of 16, so the last values take the tail path.
+        let bands = [(1.0e-38f32, 1.0e-10f32), (1.0e-10, 1.0e-3), (1.0e-3, 1.0), (1.0, 2.0), (2.0, 4.0), (4.0, 100.0)];
+        for (lo, hi) in bands {
+            let n = 4099;
+            let mut xs = Vec::with_capacity(2 * n + 1);
+            for i in 0..n {
+                let t = i as f64 / (n - 1) as f64;
+                let v = ((lo as f64).ln() + t * ((hi as f64).ln() - (lo as f64).ln())).exp() as f32;
+                xs.push(v);
+                xs.push(-v);
+            }
+            xs.push(hi);
+            assert_ne!(xs.len() % 16, 0, "fixture must reach the tail path");
+            let ys = vserf_vec(&xs);
+            let (worst, at) = xs
+                .iter()
+                .zip(&ys)
+                .map(|(&x, &y)| (ulp_distance(y, erf_ref(x)), x))
+                .max_by_key(|&(u, _)| u)
+                .unwrap();
+            assert!(worst <= 2, "band [{lo:e}, {hi:e}]: {worst} ulp at x = {at:e}");
+        }
+    }
+
+    #[test]
+    fn test_vserf_special_values_in_chunk_and_tail() {
+        let cases: [(f32, f32); 6] =
+            [(0.0, 0.0), (-0.0, -0.0), (f32::INFINITY, 1.0), (f32::NEG_INFINITY, -1.0), (4.0, 1.0), (-7.5, -1.0)];
+        // 17 lanes: the first 16 fill one chunk, the 17th is the tail.
+        for (x, want) in cases {
+            let ys = vserf_vec(&[x; 17]);
+            for (i, &y) in ys.iter().enumerate() {
+                assert_eq!(y.to_bits(), want.to_bits(), "lane {i}: erf({x:e}) = {y:e}, want {want:e}");
+            }
+        }
+        for (i, y) in vserf_vec(&[f32::NAN; 17]).iter().enumerate() {
+            assert!(y.is_nan(), "lane {i}: erf(NaN) = {y}");
+        }
+    }
+
+    #[test]
+    fn test_vserf_is_exactly_odd() {
+        let xs: Vec<f32> = (0..2000).map(|i| (i as f32) * 0.003_1 + 1.0e-7).collect();
+        let neg: Vec<f32> = xs.iter().map(|&v| -v).collect();
+        let (p, n) = (vserf_vec(&xs), vserf_vec(&neg));
+        for ((&x, &a), &b) in xs.iter().zip(&p).zip(&n) {
+            assert_eq!((-a).to_bits(), b.to_bits(), "erf(-{x}) != -erf({x})");
+        }
+    }
+
+    #[test]
+    fn test_vserf_strided_matches_contiguous() {
+        let x = Array2::from_shape_fn((37, 5), |(i, j)| (i as f32 - 18.0) * 0.21 + j as f32 * 0.05);
+        let xt = x.t();
+        let mut strided = Array2::<f32>::zeros((5, 37));
+        vserf(xt, strided.view_mut());
+        for ((i, j), &y) in strided.indexed_iter() {
+            let want = vserf_vec(&[xt[[i, j]]])[0];
+            assert_eq!(y.to_bits(), want.to_bits(), "({i}, {j})");
         }
     }
 }

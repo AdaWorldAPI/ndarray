@@ -5840,6 +5840,43 @@ pub fn blend_i32(mask_words: &[u64], a: &[i32], b: &[i32], dst: &mut [i32]) {
     }
 }
 
+/// `dst[i] = if mask bit i { a[i] } else { b }`: [`blend_i32`] with a scalar
+/// `else` value, the ONNX `Where(C, X, y)` shape with a scalar `y`. It saves the
+/// caller filling a `b` vector. Bits at or past `a.len()` are ignored. Plain
+/// index loop, for the same reason as [`blend_i32`].
+///
+/// # Panics
+///
+/// Panics unless `a.len() == dst.len()` and
+/// `mask_words.len() >= a.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::blend_i32_scalar;
+///
+/// let a = [1i32, 2, 3, 4];
+/// let mut dst = [0i32; 4];
+/// // bits 0 and 2 (0b0101) pick from `a`; bits 1 and 3 take the scalar
+/// blend_i32_scalar(&[0b0101], &a, -1, &mut dst);
+/// assert_eq!(dst, [1, -1, 3, -1]);
+/// ```
+#[inline]
+pub fn blend_i32_scalar(mask_words: &[u64], a: &[i32], b: i32, dst: &mut [i32]) {
+    assert_eq!(a.len(), dst.len(), "blend_i32_scalar: a/dst length mismatch");
+    let n = a.len();
+    assert!(
+        mask_words.len() >= mask_words_for(n),
+        "blend_i32_scalar: mask_words.len()={} < required {}",
+        mask_words.len(),
+        mask_words_for(n)
+    );
+    for i in 0..n {
+        let bit = (mask_words[i / 64] >> (i % 64)) & 1;
+        dst[i] = if bit == 1 { a[i] } else { b };
+    }
+}
+
 // ────────────────────────────────────────────────────────────────────────
 // Morton lattice axis shift — the D-GTM-1m word-level op (§15); the hex
 // probe composes its six rails from these four Cartesian axis moves
@@ -8775,6 +8812,31 @@ mod tests {
         let v = [5i32, -3, 9];
         assert_eq!(masked_min_i32(&v, &[u64::MAX]), Some(-3));
         assert_eq!(masked_max_i32(&v, &[u64::MAX]), Some(9));
+    }
+
+    #[test]
+    fn blend_i32_scalar_equals_blend_i32_with_a_filled_vector() {
+        // 131 lanes: two full words and a partial third, with stray bits set
+        // past the end that must be ignored.
+        let n = 131;
+        let a: Vec<i32> = (0..n as i32).map(|i| i * 7 - 300).collect();
+        let mut m = [0u64; 3];
+        for i in 0..n {
+            if (i * 37) % 5 < 2 {
+                m[i / 64] |= 1 << (i % 64);
+            }
+        }
+        m[2] |= !0u64 << (n % 64);
+        let (mut want, mut got) = (vec![0i32; n], vec![0i32; n]);
+        blend_i32(&m, &a, &vec![17; n], &mut want);
+        blend_i32_scalar(&m, &a, 17, &mut got);
+        assert_eq!(got, want);
+        let taken = got
+            .iter()
+            .zip(&a)
+            .filter(|(g, x)| g == x && **x != 17)
+            .count();
+        assert!(taken > 0 && taken < n, "fixture must take both sides: {taken}");
     }
 
     #[test]
