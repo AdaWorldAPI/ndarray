@@ -28,10 +28,26 @@ fn main() {
     let a = Array2::from_shape_fn((m, k), |(i, j)| f(i, j));
     let b = Array2::from_shape_fn((k, n), |(i, j)| f(j + 7, i));
     let mut c = vec![0.0f32; m * n];
-    ndarray::backend::native::gemm_f32(m, n, k, 1.0, a.as_slice().unwrap(), k, b.as_slice().unwrap(), n, 0.0, &mut c, n);
+    ndarray::backend::native::gemm_f32(
+        m,
+        n,
+        k,
+        1.0,
+        a.as_slice().unwrap(),
+        k,
+        b.as_slice().unwrap(),
+        n,
+        0.0,
+        &mut c,
+        n,
+    );
     let mean = a.mean_axis(Axis(1)).unwrap();
     let sum: f32 = a.sum();
-    let arch = if cfg!(target_arch = "aarch64") { "aarch64" } else { "x86_64" };
+    let arch = if cfg!(target_arch = "aarch64") {
+        "aarch64"
+    } else {
+        "x86_64"
+    };
     #[cfg(target_arch = "x86_64")]
     let tier = format!(
         "avx512f={} fma={} avx2={} avx={}",
