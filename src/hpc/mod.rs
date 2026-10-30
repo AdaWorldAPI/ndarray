@@ -126,6 +126,8 @@ pub mod nars;
 #[allow(missing_docs)]
 pub mod blackboard;
 pub mod bulk;
+/// Row gather from a table into a caller buffer (ONNX `Gather`, axis 0).
+pub mod gather;
 #[allow(missing_docs)]
 pub mod bnn;
 #[allow(missing_docs)]
