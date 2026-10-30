@@ -881,6 +881,7 @@ pub use crate::simd_masking_ops::{
     // is NOT free — `U64x8` is 8 lanes, so eight groups share a word and each
     // lands at its own byte.
     blend_i32,
+    blend_i32_scalar,
     eq_f32_to_mask,
     eq_f64_to_mask,
     eq_i32_to_mask,

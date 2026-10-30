@@ -362,11 +362,14 @@ fn vstrunc_slice(x: &[f32], out: &mut [f32]) {
 /// `erf(-0.0) = -0.0`. Float compares and `select` only, like [`tanh_f32x16`].
 ///
 /// Three ranges, chosen per lane (the Cephes `erff`/`erfcf` minimax
-/// polynomials):
+/// polynomials, the `erfcf` one for `x < 2`):
 /// - `a < 1`: `a · T(a²)`. No cancellation; for subnormal or tiny `a` the
 ///   result is `a · 1.1283792` (`2/√π · a`), the correct leading term.
-/// - `1 ≤ a < 4`: `1 − exp(−a²)/a · P(1/a²)`, with one polynomial below 2 and
-///   another from 2. `erfc ≤ 0.16` here, so the subtraction loses no bits.
+/// - `1 ≤ a < 4`: `1 − exp(−a²)/a · P(1/a²)`. `erfc ≤ 0.16` here, so the
+///   subtraction loses no bits. Cephes uses a second polynomial for `erfc`
+///   from 2; `erf` does not need it, because `erfc < 0.005` there and the
+///   error of `1 − erfc` stays within the same bound (measured: 2 ULP worst
+///   case over `[1, 4)` with one polynomial or two).
 /// - `a ≥ 4` (including `+inf`): exactly `1.0`; `erf(4) = 1 − 1.5e-8` rounds
 ///   to `1.0` in `f32`.
 ///
@@ -387,7 +390,7 @@ fn erf_f32x16(v: F32x16) -> F32x16 {
         * a;
     let q = one / a;
     let y = q * q;
-    let p_lo = F32x16::splat(2.326_819_970_068_386e-2)
+    let p = F32x16::splat(2.326_819_970_068_386e-2)
         .mul_add(y, F32x16::splat(-1.387_039_388_740_657e-1))
         .mul_add(y, F32x16::splat(3.687_424_674_597_105e-1))
         .mul_add(y, F32x16::splat(-5.824_733_027_278_666e-1))
@@ -396,15 +399,6 @@ fn erf_f32x16(v: F32x16) -> F32x16 {
         .mul_add(y, F32x16::splat(3.404_879_937_665_872e-1))
         .mul_add(y, F32x16::splat(-2.741_127_028_184_656e-1))
         .mul_add(y, F32x16::splat(5.638_259_427_386_472e-1));
-    let p_hi = F32x16::splat(-1.047_766_399_936_249e1)
-        .mul_add(y, F32x16::splat(1.297_719_955_372_516e1))
-        .mul_add(y, F32x16::splat(-7.495_518_717_768_503))
-        .mul_add(y, F32x16::splat(2.921_019_019_210_786))
-        .mul_add(y, F32x16::splat(-1.015_265_279_202_700))
-        .mul_add(y, F32x16::splat(4.218_463_358_204_948e-1))
-        .mul_add(y, F32x16::splat(-2.820_767_439_740_514e-1))
-        .mul_add(y, F32x16::splat(5.641_895_067_754_075e-1));
-    let p = a.simd_lt(F32x16::splat(2.0)).select(p_lo, p_hi);
     let mid = one - simd_exp_f32(-z) * q * p;
     // `a < 4` is false for NaN, so test `a >= 4` the other way round: NaN
     // keeps `mid` (NaN) instead of being clamped to 1.
@@ -1684,14 +1678,7 @@ mod tests {
     fn test_vserf_within_2_ulp_across_magnitudes() {
         // The bands meet at the kernel's branch points 1, 2 and 4. The length
         // is not a multiple of 16, so the last values take the tail path.
-        let bands = [
-            (1.0e-38f32, 1.0e-10f32),
-            (1.0e-10, 1.0e-3),
-            (1.0e-3, 1.0),
-            (1.0, 2.0),
-            (2.0, 4.0),
-            (4.0, 100.0),
-        ];
+        let bands = [(1.0e-38f32, 1.0e-10f32), (1.0e-10, 1.0e-3), (1.0e-3, 1.0), (1.0, 2.0), (2.0, 4.0), (4.0, 100.0)];
         for (lo, hi) in bands {
             let n = 4099;
             let mut xs = Vec::with_capacity(2 * n + 1);
@@ -1716,14 +1703,8 @@ mod tests {
 
     #[test]
     fn test_vserf_special_values_in_chunk_and_tail() {
-        let cases: [(f32, f32); 6] = [
-            (0.0, 0.0),
-            (-0.0, -0.0),
-            (f32::INFINITY, 1.0),
-            (f32::NEG_INFINITY, -1.0),
-            (4.0, 1.0),
-            (-7.5, -1.0),
-        ];
+        let cases: [(f32, f32); 6] =
+            [(0.0, 0.0), (-0.0, -0.0), (f32::INFINITY, 1.0), (f32::NEG_INFINITY, -1.0), (4.0, 1.0), (-7.5, -1.0)];
         // 17 lanes: the first 16 fill one chunk, the 17th is the tail.
         for (x, want) in cases {
             let ys = vserf_vec(&[x; 17]);
