@@ -1042,6 +1042,9 @@ pub use crate::simd_masking_ops::{
     BOUNDED_TILE_ROWS,
     SYM_EMPTY_I64,
 };
+// Binary positional adders over 64 one-bit lanes (the #389/#391 `carry_save3`
+// and `flip` laws).
+pub use crate::simd_masking_ops::{full_add_mask, half_add_mask};
 #[cfg(feature = "std")]
 pub use crate::simd_stride::{lut9, lut_u8, FACET_BYTES};
 // The popcount that closes the loop on the masks above: `mask_count` in ABI

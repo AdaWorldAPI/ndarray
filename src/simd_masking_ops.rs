@@ -6494,6 +6494,59 @@ pub fn mask_shift_morton(src: &[u64], dir: MortonDir, dst: &mut [u64]) {
     }
 }
 
+// ════════════════════════════════════════════════════════════════════════
+// Binary positional adders over 64 independent one-bit lanes
+// ════════════════════════════════════════════════════════════════════════
+//
+// A `u64` here is one significance column of 64 counters: bit `j` belongs to
+// lane `j`, and every lane is added independently. These are the half adder
+// (`flip`, examples/u9_domino) and full adder (`carry_save3`,
+// examples/u9_abacus) laws proven in #389 and #391. The carry plane belongs
+// one column up (significance x2) in the SAME lanes: callers move it to the
+// next column, never shift it to a neighbouring bit.
+
+/// Half adder on 64 independent lanes: `(a ^ carry, a & carry)`.
+///
+/// For every lane `j`, `a_j + carry_j = sum_j + 2·carry_out_j` exactly. The
+/// carry out belongs to the next significance column, in lane `j` again.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::half_add_mask;
+///
+/// let (sum, carry) = half_add_mask(0b0110, 0b0011);
+/// assert_eq!((sum, carry), (0b0101, 0b0010));
+/// ```
+#[inline(always)]
+#[must_use]
+pub const fn half_add_mask(a: u64, carry: u64) -> (u64, u64) {
+    (a ^ carry, a & carry)
+}
+
+/// Full adder (3:2 carry-save compressor) on 64 independent lanes.
+///
+/// Returns `(sum, carry)` with `sum = a ^ b ^ c` and `carry` the per-lane
+/// majority of `a`, `b`, `c`, so for every lane `j`
+/// `a_j + b_j + c_j = sum_j + 2·carry_j` exactly. The carry belongs to the
+/// next significance column, in lane `j` again.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::full_add_mask;
+///
+/// // Lane 0: 1+1+1 = 1 + 2·1. Lane 1: 0+1+0 = 1. Lane 2: 1+1+0 = 0 + 2·1.
+/// let (sum, carry) = full_add_mask(0b101, 0b111, 0b001);
+/// assert_eq!((sum, carry), (0b011, 0b101));
+/// ```
+#[inline(always)]
+#[must_use]
+pub const fn full_add_mask(a: u64, b: u64, c: u64) -> (u64, u64) {
+    let t = a ^ b;
+    (t ^ c, (a & b) ^ (t & c))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -11475,5 +11528,103 @@ mod bounded_register_tests {
         });
         assert_eq!(err, Err(BoundedFoldError::TileTooLarge { rows: n }));
         assert_eq!(out[0], PowerSums::default());
+    }
+}
+
+#[cfg(test)]
+mod binary_adder_tests {
+    use super::{full_add_mask, half_add_mask};
+
+    fn bit(x: u64, j: usize) -> u64 {
+        (x >> j) & 1
+    }
+
+    /// Every row of both truth tables, in every lane position: each input bit
+    /// pattern is spread so lane j sees row (j % rows), so a lane mix-up or a
+    /// wrong row fails.
+    #[test]
+    fn truth_tables_hold_in_every_lane() {
+        let spread = |row_bit: usize, rows: usize| -> u64 {
+            (0..64).fold(0u64, |w, j| w | ((((j % rows) >> row_bit) & 1) as u64) << j)
+        };
+        let (a, c) = (spread(0, 4), spread(1, 4));
+        let (s, k) = half_add_mask(a, c);
+        for j in 0..64 {
+            let (x, y) = (bit(a, j), bit(c, j));
+            assert_eq!((bit(s, j), bit(k, j)), ((x + y) & 1, (x + y) >> 1), "half lane {j}");
+        }
+        let (a, b, c) = (spread(0, 8), spread(1, 8), spread(2, 8));
+        let (s, k) = full_add_mask(a, b, c);
+        for j in 0..64 {
+            let t = bit(a, j) + bit(b, j) + bit(c, j);
+            assert_eq!((bit(s, j), bit(k, j)), (t & 1, t >> 1), "full lane {j}");
+        }
+    }
+
+    /// Lanes 0, 31, 32 and 63 alone: the result stays in the input's lane.
+    #[test]
+    fn a_single_lane_stays_in_its_lane() {
+        for j in [0, 31, 32, 63] {
+            let m = 1u64 << j;
+            assert_eq!(half_add_mask(m, m), (0, m), "half lane {j}");
+            assert_eq!(half_add_mask(m, 0), (m, 0), "half lane {j}");
+            assert_eq!(full_add_mask(m, m, m), (m, m), "full lane {j}");
+            assert_eq!(full_add_mask(m, 0, m), (0, m), "full lane {j}");
+            assert_eq!(full_add_mask(0, m, 0), (m, 0), "full lane {j}");
+        }
+    }
+
+    /// Random words against per-lane integer addition; the masks include zero,
+    /// all ones and alternating patterns.
+    #[test]
+    fn random_words_match_per_lane_addition() {
+        let mut s = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+        let fixed = [0, u64::MAX, 0xAAAA_AAAA_AAAA_AAAA, 0x5555_5555_5555_5555];
+        for i in 0..2000 {
+            let pick = |i: usize, r: u64| if i % 5 < 4 { r } else { fixed[(r % 4) as usize] };
+            let (a, b, c) = (pick(i, next()), pick(i + 1, next()), pick(i + 2, next()));
+            let (s2, k2) = half_add_mask(a, b);
+            let (s3, k3) = full_add_mask(a, b, c);
+            for j in 0..64 {
+                assert_eq!(bit(a, j) + bit(b, j), bit(s2, j) + 2 * bit(k2, j));
+                assert_eq!(bit(a, j) + bit(b, j) + bit(c, j), bit(s3, j) + 2 * bit(k3, j));
+            }
+        }
+    }
+
+    /// A ripple counter built from the words keeps lanes apart: counting
+    /// lane j up `j + 1` times yields `j + 1` in lane j and nothing in any
+    /// other lane, across carry chains of up to 7 columns. Moving the carry
+    /// to a neighbouring bit instead (`carry << 1`) corrupts it (anti-test).
+    #[test]
+    fn rippling_carries_preserve_lane_identity() {
+        fn count(cols: &mut [u64; 8], m: u64, shift_carry: bool) {
+            let mut c = m;
+            for col in cols.iter_mut() {
+                let (s, k) = half_add_mask(*col, c);
+                *col = s;
+                c = if shift_carry { k << 1 } else { k };
+                if c == 0 {
+                    break;
+                }
+            }
+        }
+        let value = |cols: &[u64; 8], j: usize| (0..8).map(|k| bit(cols[k], j) << k).sum::<u64>();
+        for shift in [false, true] {
+            let mut cols = [0u64; 8];
+            for j in 0..64 {
+                for _ in 0..=j {
+                    count(&mut cols, 1 << j, shift);
+                }
+            }
+            let ok = (0..64).all(|j| value(&cols, j) == j as u64 + 1);
+            assert_eq!(ok, !shift, "shift_carry={shift}");
+        }
     }
 }
