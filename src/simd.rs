@@ -639,14 +639,14 @@ const TWO_POW_NEG_64: f32 = 5.421_011e-20;
 #[inline(always)]
 #[allow(dead_code)]
 fn pow2n_from_int(n: F32x16) -> F32x16 {
-    let arr = n.to_array();
-    let mut out = [0.0f32; 16];
-    for i in 0..16 {
-        let ni = (arr[i] as i32).clamp(-126, 127);
-        let bits = ((ni + 127) as u32) << 23;
-        out[i] = f32::from_bits(bits);
-    }
-    F32x16::from_array(out)
+    // `n` is integral (it comes from `round`), so after the clamp
+    // `2^23 + 127 + n` is an exact f32 whose mantissa field holds the biased
+    // exponent `k = n + 127` in [1, 254] and whose exponent field is
+    // 0x4B00_0000. Shifting the bits left by 23 pushes 0x4B00_0000 out of the
+    // word and moves `k` into the exponent field: the bits of 2^n. No lane
+    // leaves its register.
+    let biased = n.simd_clamp(F32x16::splat(-126.0), F32x16::splat(127.0)) + F32x16::splat(8_388_608.0 + 127.0);
+    F32x16::from_bits(biased.to_bits() << U32x16::splat(23))
 }
 
 /// Fast natural log for F32x16.
@@ -1798,6 +1798,41 @@ mod tests {
         let mut out = vec![0.0f32; 20];
         v.copy_to_slice(&mut out);
         assert_eq!(&out[..16], &data[..16]);
+    }
+
+    #[test]
+    fn u32x16_variable_shifts_match_per_lane_shifts() {
+        // Distinct value and count per lane, every count 0..32 used, so a
+        // backend that shifted by lane 0's count or a uniform count fails.
+        for base in 0..2u32 {
+            let a: [u32; 16] = core::array::from_fn(|i| 0x9E37_79B9u32.rotate_left(i as u32 * 5 + base));
+            let n: [u32; 16] = core::array::from_fn(|i| (i as u32 * 7 + base * 16) % 32);
+            let (va, vn) = (U32x16::from_array(a), U32x16::from_array(n));
+            let l = (va << vn).to_array();
+            let r = (va >> vn).to_array();
+            for i in 0..16 {
+                assert_eq!(l[i], a[i] << n[i], "shl lane {i}");
+                assert_eq!(r[i], a[i] >> n[i], "shr lane {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn pow2n_from_int_is_exactly_two_to_the_clamped_n() {
+        // Every integral n in [-200, 200] (so both clamp ends are crossed),
+        // checked bit for bit against the scalar exponent-field rule.
+        let ns: Vec<f32> = (-200..=200).map(|n| n as f32).collect();
+        for chunk in ns.chunks(16) {
+            let mut lanes = [0.0f32; 16];
+            lanes[..chunk.len()].copy_from_slice(chunk);
+            let got = pow2n_from_int(F32x16::from_array(lanes)).to_array();
+            for (&n, &g) in lanes.iter().zip(&got) {
+                let k = ((n as i32).clamp(-126, 127) + 127) as u32;
+                assert_eq!(g.to_bits(), k << 23, "n={n}");
+            }
+        }
+        assert_eq!(pow2n_from_int(F32x16::splat(0.0)).to_array(), [1.0; 16]);
+        assert_eq!(pow2n_from_int(F32x16::splat(-126.0)).to_array(), [f32::MIN_POSITIVE; 16]);
     }
 
     #[test]

@@ -3245,6 +3245,30 @@ impl core::ops::Not for U64x8 {
         }))
     }
 }
+/// Lane-wise `self << rhs` for `U32x16` (per-lane counts below 32).
+#[cfg(target_arch = "aarch64")]
+impl core::ops::Shl<Self> for U32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn shl(self, r: Self) -> Self {
+        debug_assert!(r.to_array().iter().all(|&n| n < 32), "U32x16 shift counts are a caller contract: < 32");
+        // SAFETY: NEON baseline; pure register ops.
+        Self(core::array::from_fn(|p| U32x4(unsafe { vshlq_u32(self.0[p].0, vreinterpretq_s32_u32(r.0[p].0)) })))
+    }
+}
+/// Lane-wise `self >> rhs` for `U32x16` (`vshlq_u32` with negated counts).
+#[cfg(target_arch = "aarch64")]
+impl core::ops::Shr<Self> for U32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn shr(self, r: Self) -> Self {
+        debug_assert!(r.to_array().iter().all(|&n| n < 32), "U32x16 shift counts are a caller contract: < 32");
+        // SAFETY: NEON baseline; pure register ops.
+        Self(core::array::from_fn(|p| {
+            U32x4(unsafe { vshlq_u32(self.0[p].0, vnegq_s32(vreinterpretq_s32_u32(r.0[p].0))) })
+        }))
+    }
+}
 /// Lane-wise `self << rhs` (per-lane counts; a count of 64 or more yields 0,
 /// which is what the shift instruction does — the scalar backend's `<<`
 /// panics there in debug builds, so callers already stay inside `0..64`).

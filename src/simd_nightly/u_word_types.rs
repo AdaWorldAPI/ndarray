@@ -562,6 +562,25 @@ impl Default for U32x8 {
 #[repr(transparent)]
 pub struct U32x16(pub u32x16);
 
+/// Lane-wise variable shifts; counts stay below 32 by the callers' contract.
+impl core::ops::Shl<Self> for U32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn shl(self, rhs: Self) -> Self {
+        debug_assert!(rhs.to_array().iter().all(|&n| n < 32), "U32x16 shift counts are a caller contract: < 32");
+        Self(self.0 << rhs.0)
+    }
+}
+
+impl core::ops::Shr<Self> for U32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn shr(self, rhs: Self) -> Self {
+        debug_assert!(rhs.to_array().iter().all(|&n| n < 32), "U32x16 shift counts are a caller contract: < 32");
+        Self(self.0 >> rhs.0)
+    }
+}
+
 /// BLAKE3 `hash_many` shuffle surface — the transpose network's four unpacks
 /// and two half-concatenations, at DEGREE 16.
 ///
