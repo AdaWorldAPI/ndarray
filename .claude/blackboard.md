@@ -4010,3 +4010,18 @@ laws, ExtentUnsupported, row bounds) and WITNESS in OrderedLaneWitness; no new t
 - PR A #402 (draft): `half_add_mask` / `full_add_mask` in `simd_masking_ops`, re-exported; vectorized `pow2n_from_int` (vsexp 4x, vserf 2.4x on AVX-512); `U32x16` `Shl`/`Shr<Self>` added to AVX2, AVX, NEON, wasm, nightly.
 - Lab: `Abacus<BITS>` with transactional refusal in `examples/u9_domino`; cost equal to eager F. PR B and PR C deferred: no consumer, planes already cheap with existing words. Report: `.claude/knowledge/binary-abacus-polyfill-probe.md`.
 - Loose end: NEON `simd_exp_f32` has ~47 scalar fcmp/csel (pre-existing, select/compare path); AVX2 mask packing for `select` still lane by lane.
+
+## 2026-10-30 — D-SIMD-MICRO-MACRO-1 step 1: packed microtile oracle (lab only)
+
+- `examples/microtile/` + `tests/microtile.rs`: 128-bit tiles of `5×U24/I24` (+8 metadata
+  bits) and `14×U9/I9` (+2 spare), field-isolated add/sub/carry/borrow/signed overflow,
+  intra-tile stencil, exact unsigned+signed fold; u128, SoA `U64x8`, widened `U32x16`,
+  bit-plane (`full_add_mask`) realizations, all against one unpacked oracle.
+- 9 tests green on AVX-512, AVX2, AVX, v2, NEON (qemu), nightly. Disable runs D1–D13 red
+  except D6 (redundant mask, removed).
+- Cost gate: no single winner. U24x5 → widened for add and fold; U9x14 → packed SoA for
+  L2-resident add, bit planes for the fold. u128 alone never wins (not vectorized).
+- Found: NEON/wasm `U32x16` lacks `&`, `|`, `-`, `!`, `+=`, `from_slice`, `copy_to_slice`.
+  Recorded, not fixed.
+- Open: steps 2–4 (KPEA method binding, Thought-0 delta reuse, interlacing). H13 stays
+  deferred. Report: `.claude/knowledge/microtile-probe.md`.
