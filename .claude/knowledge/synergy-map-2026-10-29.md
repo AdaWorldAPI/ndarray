@@ -348,6 +348,96 @@ What is left for the probe is lance-graph work: register `Erf` over `vserf`,
 switch its `Where` DO to `blend_i32_scalar` when `Y` is a scalar (this also
 closes half of L17), plus L11–L15. V13 stays a probe.
 
+## R7. #402: binary adder words, vectorized exp, the Abakus cost gate (2026-10-30)
+
+#400 and #401 were merged between R6 and this pass and are recorded here
+only for the rows they moved:
+- #400 shipped R5's wishlist items 1–5: typed `Where` (`blend_f32/i64`),
+  pair compares, copy-free `matmul_f32`, `gather_rows_f32`, and the float
+  accumulation-order record.
+- #401 shipped the `ndarray::simd` re-exports and `hpc::checked_i64`.
+
+### R7.1 What #402 shipped
+
+- **`half_add_mask` / `full_add_mask`** in `simd_masking_ops`, re-exported
+  through `ndarray::simd`. They are #391's `flip` and #389's `carry_save3`,
+  unchanged.
+- **`pow2n_from_int` vectorized.** `simd_exp_f32` no longer builds 2^n
+  through `to_array`.
+  - AVX-512: `simd_exp_f32` is 44 instructions, down from 159.
+  - `vsexp`, `vstanh` and `vserf` are about 4×, 3× and 2.4× faster on
+    AVX-512, and 1.2–1.45× faster on AVX2.
+- **`U32x16` `Shl`/`Shr<Self>`** on AVX2, AVX, NEON, wasm and nightly. Only
+  AVX-512 and scalar had them before.
+- **Lab only:** `Abacus<BITS>` in `examples/u9_domino`, with transactional
+  overflow refusal. Report: `binary-abacus-polyfill-probe.md`.
+
+### R7.2 Rows that moved
+
+| row | before | now | evidence |
+|---|---|---|---|
+| H11 `vserf` | closed in #399, 2.3 ns/el on AVX-512 | still closed; **0.89–1.06 ns/el** | #402 timing table |
+| V13 summation order | probe first | ndarray half answered (#400): `sum`/`mean_axis` are tier-invariant; `gemm_f32` splits into an FMA and a non-FMA class. ORT's order is still not measured | `float-accumulation-order.md` |
+| L11–L15 registrations | open, lance-graph | unchanged; #400 added the words L13 and L14 can register over (`gather_rows_f32`, copy-free `matmul_f32`) | #400 |
+| AVX2 `U8x64::mask_blend` (R2 burn-down #1) | top AVX2 burn-down item | unchanged, joined by a second cause (**N24**) | — |
+| #389 facade gap "sign plane to `+1/-1` bytes" | recorded, not added | still open; no consumer has asked since | `u9-abacus-probe.md:84` |
+
+### R7.3 New dots
+
+- **N22 — the adders are now facade words.** Any consumer that adds 64-lane
+  masks at chosen significances can use `half_add_mask`/`full_add_mask`
+  instead of restating the XOR/AND law. No consumer outside the fixtures
+  uses them yet. A carry-save popcount over many mask words, the CSA tree
+  that a `count` fold over hundreds of masks would use, is the obvious
+  candidate. It has not been looked for in lance-graph mask-risc.
+- **N23 — every exp-based word got faster at once.** `vsexp`, `vstanh`,
+  `vserf` and, through them, `sigmoid_f32` and the softmax family all route
+  through `simd_exp_f32`.
+  - For the ONNX registry this lowers the cost of `Erf`, `Sigmoid`, `Tanh`
+    and `Softmax` without any registry change.
+  - Against Tract's `Erf` kernel the gap is now about 4× in Tract's favour
+    (it was about 10×). Tract's kernel trades accuracy for that: at most
+    about 9×10⁸ ULP, and `erf(1e-10) = 0`. `vserf` stays within 2 ULP.
+- **N24 — AVX2 `select` packs its masks lane by lane.** After the change,
+  AVX2 `simd_exp_f32` still has 42 `vpextrw`/`vpinsrw`. They come from
+  packing the `simd_gt`/`simd_lt` masks for `select`, not from `pow2n`. This
+  is a second array-backed AVX2 cost next to `mask_blend` (#388, #389, #395),
+  and it is why AVX2 gained only 1.2–1.45×.
+- **N25 — NEON `simd_exp_f32` has about 47 scalar `fcmp`/`csel`.** They
+  exist on master too, so they predate #402. They sit in the compare/select
+  path and are not diagnosed further.
+- **N26 — the eager domino counter is not transactional; `Abacus` is.**
+  - F (`Eager`) leaves its lower columns updated when a carry leaves the top
+    column.
+  - `Abacus` restores them by recomputing the carry chain forward from the
+    input mask, so a successful add keeps no undo log.
+  - Cost: equal to F on dense masks; slower and noisier on sparse masks
+    (3.7–5.3 vs 2.3 ns/add on AVX-512 without VNNI), not explained.
+  - Both are about 4× faster than 64 per-lane adds on dense and single-lane
+    masks, and roughly even on random masks.
+
+### R7.4 Fruit, revised
+
+Closed this pass: H11's speed half (N23); the `U32x16` variable-shift gap on
+five backends.
+
+| id | fruit | size | note |
+|---|---|---|---|
+| L20 | diagnose N25: which `simd_exp_f32` step lowers to scalar `fcmp`/`csel` on NEON | low | read the aarch64 disassembly of `probe_exp`; master and #402 are identical there |
+| L21 | harvest lance-graph mask-risc for a count/sum fold over many mask words (N22): a candidate consumer for `full_add_mask` and for PR B | low | `harvest-scout`; candidates only, then Read |
+| H12 | AVX2 compare-mask packing for `select` without per-lane extract/insert (N24) | high | backend work in `simd_avx2.rs`; measure against `simd_exp_f32` and the #395 rows |
+| H13 | PR B: promote `Abacus` to a public type | high | blocked on a real consumer (L21); semantics and tests already exist in the fixture |
+| — | PR C: facet bit-plane helper | not planned | planes are one AND plus one `cmpeq_mask` on existing words; #389 measured that reuse never breaks even |
+
+### R7.5 Not done this pass
+
+- **Untimed tiers:** AVX, SSE2, NEON and wasm were not timed; only
+  emulators are available here.
+- **CI:** #402 merged while four of its test jobs (`tests/stable`,
+  `tests/beta`, `tests/1.99.0`, `native-backend/stable`) were still running.
+  Their outcome on `de03001` was not seen here. The same code passed the full
+  lib suite locally (2,702 tests).
+
 ## 0. What the six ndarray PRs did
 
 | PR | closed | opened or left |
