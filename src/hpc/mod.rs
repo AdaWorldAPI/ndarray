@@ -128,6 +128,8 @@ pub mod blackboard;
 pub mod bulk;
 /// Row gather from a table into a caller buffer (ONNX `Gather`, axis 0).
 pub mod gather;
+/// Checked i64 arithmetic for shape computation (ONNX `Add`/`Sub`/`Mul`/`Div`/`Range` on int64).
+pub mod checked_i64;
 #[allow(missing_docs)]
 pub mod bnn;
 #[allow(missing_docs)]
