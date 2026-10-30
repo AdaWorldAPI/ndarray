@@ -6,8 +6,9 @@
 //! assembled from shuffles and masks (CLAUDE.md, FACET STRIDE).
 //!
 //! This module holds the reusable forms of that shape: [`lut_u8`] for a
-//! plain byte table and [`lut9`] for an odd function over a sign-magnitude
-//! 9-bit (SM9) lane, u8 magnitude plus sign plane, so callers do not
+//! plain byte table and [`lut9`] for an odd function over a canonical DR512
+//! lane (u8 magnitude plus ONE presence/polarity plane: P=0,M=0 is "never
+//! touched", not a second sign), so callers do not
 //! rebuild them. Like [`crate::simd_masking_ops`] it names no ISA and owns
 //! no backend; it is slice ergonomics over the position view.
 
