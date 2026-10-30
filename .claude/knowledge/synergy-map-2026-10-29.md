@@ -144,6 +144,86 @@ counters.
 
 Misses: one, mine (wrong path in a brief). No card concluded or miscounted.
 
+## R3. Revision after ndarray #395 (lance-graph unchanged)
+
+ndarray `master` `03b3299`: one new PR, #395 (D-POF-ANT-0, "Position ×
+Order × Law antennas", 11 files, +3,737, lab only: `examples/pof_antennas/`,
+`tests/pof_antennas.rs` with 41 tests on 7 realizations and 14 disable runs,
+report `.claude/knowledge/pof-antennas-probe.md`). lance-graph `main` is still
+`61720fa` (#1848); nothing to revise there. Facet-stride guard: still 166.
+
+### R3.1 What #395 found (verdicts as recorded in the report, `:301-310`)
+
+| antenna | verdict | number |
+|---|---|---|
+| A1 shared basis | ADOPT-LAB | sharing a prepared basis wins without sharing a mask: 0.79–0.93× on AVX-512; loses on AVX2 (anomaly, OPEN) |
+| A1 rebase | ADOPT-LAB (lazy) | invariant folds need no carry; an equivariant result needs ONE `conjugate_mask` of the result: 6.3 vs 16.4 ns on VNNI |
+| A2 E2 | ADOPT-LAB on AVX-512 without VNNI | L1 end-to-end 4.69 vs E5 5.11 vs B 5.63 ns/64; 1.10× B on VNNI; 7× worse on AVX2 |
+| A2 E3 | ADOPT-LAB | two consumers share preparation, keep separate accumulator laws: 0.63–0.94× on every tier |
+| A6 scale | ADOPT-LAB | the field fold is tier-independent (6.1–8.0 µs/field); Morton equals row-major at 8 KiB |
+
+It adds no facade word, trait or storage. Its contract section (`:312-324`)
+records that LAW already lives in lance-graph mask-risc (ternlog
+commutativity, per-terminal merge laws, `ExtentUnsupported`, row bounds) and
+WITNESS in `OrderedLaneWitness` / `SealedFacetLane::validate`; nothing new is
+prescribed.
+
+### R3.2 Rows that moved
+
+| row | was | now | evidence |
+|---|---|---|---|
+| H9 AVX2 `mask_blend` | priority #1 of R2 | **priority #1, third independent measurement** | #395 `:68`: "a per-lane loop on AVX2 (A2 E2: 73 vs 10 ns)"; it refuses E2 and the blended conjugation on v3 (`:417-418`). Three probes (#388, #389, #395) now lose on AVX2 to the same function |
+| U9 kernel choice per tier | B everywhere; E5 ADOPT-LAB on v4 | **v4 has a better candidate** | E2 beats E5 and B on AVX-512 without VNNI in every row (`:415-416`); B stays the kernel on VNNI and AVX2 |
+| P4 / lance-graph RPR X1–X9, #1848 B0–B11 | lance-graph's, unrun | lance-graph's, **with a ready oracle** | `:420`: "A5 is a scalar oracle that a B0 fixture could reuse"; A5 also pins #1848 B4 ("duplicate roots do not inflate support") at receipt level (`:267-269`) |
+| everything else in R2.4 | — | unchanged | no other file in the delta |
+
+### R3.3 New dots
+
+**N16 — `conjugate_mask`'s slow step already has a fast part in the same
+crate.** `Perm64::conjugate_mask` (`src/hpc/perm.rs:265`) builds its byte
+flags with a scalar `core::array::from_fn` before one `permute_bytes`; #395
+measured it at 4.4 ns (AVX-512) and ~60 ns (AVX2), and found a masked select
+5.6× faster on AVX-512. The mask→bytes expansion #387 added for the masked
+byte-dot (`simd_masking_ops::mask_byte_spread` + `BIT_IN_BYTE`, crate-private,
+`:5311`) is exactly this step, and `perm.rs` is in the same crate. The fix
+(fruit P1) should reuse it, not add a third expansion. Note `perm.rs` is
+excluded from the facet-stride R1 rule for its `permute_bytes` (it is a real
+move); the `from_fn` expansion is not covered by that exclusion's reason.
+
+**N17 — the per-tier kernel choice now has three rows, which is the point to
+write it down once.** VNNI: B. AVX-512 without VNNI: E2 (beats E5, which beat
+B). AVX2: B, until `mask_blend` is fixed, after which E2 and E3 must be
+re-measured there. Today this choice lives in three probe reports; whoever
+integrates U9 (TurboVec owner, or lance-graph W1/W3) needs it as one table.
+
+**N18 — #395 confirms the cross-repo split rather than adding to it.** Its
+census (`:59-77`) places POSITION / LAW markers / EXPOSURE in ndarray and
+ORDER / LAW tables / WITNESS in lance-graph, matching "ndarray = hardware,
+lance-graph = thinking". It cites lance-graph #1835 (DR/DT ownership) and
+#1848 without changing them. The open lance-graph items it names (`DurableRef`,
+`ThoughtCommitId` PROPOSED; X1–X9 not run) are theirs.
+
+### R3.4 Fruit, revised
+
+Closed this pass: none (lab probe; nothing integrated).
+
+| # | item | size | change |
+|---|---|---|---|
+| L8 | P1: `conjugate_mask` expansion via one masked select on AVX-512, reusing `mask_byte_spread`/`BIT_IN_BYTE`; keep the current path on AVX2 until measured | low | new (N16); production code in `perm.rs`, needs parity on all realizations |
+| L9 | P3: AVX2 P1 anomaly (8 ns apart, 42 ns together): read the asm of the combined path | low | new |
+| L10 | write the per-tier U9 kernel table (N17) into `turbovec9-u9-substrate.md` | low | new, doc only |
+| H9 | AVX2 `mask_blend` without the per-lane loop | high | unchanged rank #1; now blocks E2/E3 on AVX2 too |
+| H10 | P2: E2 as the v4 kernel, integrated where U9 is integrated | high | new; owner is the integrator, not ndarray |
+| V12 | P4: lance-graph X1–X9 and #1848 B0 using #395's A5 oracle | heavy | new; lance-graph owners |
+| all other L/H/V | as in R2.4 | — | unchanged |
+
+### R3.5 Harvest ledger, this pass
+
+No card dispatched: the delta was one PR, and its blackboard entry, verdict
+table (`:301-310`), fruit list (`:409-421`) and `perm.rs:255-290` were read
+directly on the main thread, which was cheaper than briefing a card. The
+facet-stride count was re-run (166).
+
 ## 0. What the six ndarray PRs did
 
 | PR | closed | opened or left |
