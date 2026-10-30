@@ -275,3 +275,152 @@ fn xor_made_full_column_is_full_and_carries_by_state() {
         assert_eq!(pl.lane(j), 2, "lane {j}");
     }
 }
+
+// ── D-BINARY-ABACUS-POLYFILL-0: candidate C (`Abacus<BITS>`) ─────────────────
+
+/// 64 independent u128 counters: the reference for `Abacus`.
+fn reference_add(want: &mut [u128; 64], k: usize, m: u64) {
+    for (j, w) in want.iter_mut().enumerate() {
+        *w += u128::from(m >> j & 1) << k;
+    }
+}
+
+fn assert_matches<const B: usize>(a: &Abacus<B>, want: &[u128; 64], ctx: &str) {
+    for (j, &w) in want.iter().enumerate() {
+        assert_eq!(a.lane_value(j), w, "{ctx}: lane {j}");
+    }
+    assert_eq!(a.total(), want.iter().sum::<u128>(), "{ctx}: total");
+}
+
+#[test]
+fn abacus_single_lanes_stay_in_their_lane() {
+    for j in [0usize, 31, 32, 63] {
+        let mut a = Abacus::<16>::new();
+        for _ in 0..1000 {
+            a.try_add_at(0, 1 << j).unwrap();
+        }
+        for l in 0..64 {
+            assert_eq!(a.lane_value(l), if l == j { 1000 } else { 0 }, "lane {j} leaked into {l}");
+        }
+    }
+}
+
+#[test]
+fn abacus_carry_chains_of_every_length() {
+    for len in [1usize, 2, 8, 16, 32, 64] {
+        for j in [0usize, 31, 32, 63] {
+            let mut a = Abacus::<96>::new();
+            // Preset lane j to 2^len - 1 (columns 0..len all ones in lane j).
+            for k in 0..len {
+                a.try_add_at(k, 1 << j).unwrap();
+            }
+            assert_eq!(a.lane_value(j), (1u128 << len) - 1);
+            a.try_add_at(0, 1 << j).unwrap();
+            assert_eq!(a.lane_value(j), 1u128 << len, "chain {len} lane {j}");
+            let cols = a.columns();
+            assert_eq!(cols[len], 1 << j, "carry landed in column {len}");
+            assert!(cols[..len].iter().all(|&c| c == 0), "chain {len}: lower columns cleared");
+        }
+    }
+}
+
+#[test]
+fn abacus_repeated_carries_add_up() {
+    // Two carries into the same column are two units, never an XOR cancel.
+    let mut a = Abacus::<8>::new();
+    a.try_add_at(3, u64::MAX).unwrap();
+    a.try_add_at(3, u64::MAX).unwrap();
+    for j in 0..64 {
+        assert_eq!(a.lane_value(j), 16);
+    }
+    a.try_add_at(4, u64::MAX).unwrap();
+    for j in 0..64 {
+        assert_eq!(a.lane_value(j), 32);
+    }
+}
+
+#[test]
+fn abacus_overflow_refuses_and_leaves_the_counter_unchanged() {
+    let mut s = 0xC0FF_EE00_DEAD_BEEFu64;
+    let mut a = Abacus::<8>::new();
+    // Lanes 0, 31, 32, 63 at 255 (top of 8 bits), the rest random below 255.
+    let full = (1u64 << 0) | (1 << 31) | (1 << 32) | (1 << 63);
+    for k in 0..8 {
+        a.try_add_at(k, full | (xorshift(&mut s) & !full & !(1 << 5)))
+            .unwrap();
+    }
+    let before = a.columns();
+    // Adding 1 to a mask containing a full lane must carry out of column 7.
+    for m in [full, 1 << 63, (1 << 0) | 0xF0, u64::MAX] {
+        let err = a.try_add_at(0, m);
+        assert!(matches!(err, Err(AbacusError::Overflow { lanes }) if lanes & full != 0), "{m:#x}: {err:?}");
+        assert_eq!(a.columns(), before, "refused add {m:#x} changed the counter");
+    }
+    // A lane with headroom still accepts.
+    a.try_add_at(0, 1 << 5).unwrap();
+    assert_ne!(a.columns(), before);
+    // Significance past the top is refused without touching anything.
+    let before = a.columns();
+    assert_eq!(
+        a.try_add_at(8, 1),
+        Err(AbacusError::SignificanceOutOfRange {
+            significance: 8,
+            bits: 8
+        })
+    );
+    assert_eq!(a.columns(), before);
+}
+
+#[test]
+fn abacus_random_sequences_match_64_u128_counters() {
+    let mut s = 0x0123_4567_89AB_CDEFu64;
+    const B: usize = 12;
+    let (mut refused, mut accepted) = (0, 0);
+    for seq in 0..40 {
+        let mut a = Abacus::<B>::new();
+        let mut want = [0u128; 64];
+        for step in 0..600 {
+            let r = xorshift(&mut s);
+            let m = match r % 6 {
+                0 => 0,
+                1 => u64::MAX,
+                2 => 0xAAAA_AAAA_AAAA_AAAA,
+                3 => 1 << (r >> 8 & 63),
+                _ => xorshift(&mut s),
+            };
+            let k = (xorshift(&mut s) % B as u64) as usize;
+            let mut next = want;
+            reference_add(&mut next, k, m);
+            let fits = next.iter().all(|&w| w < 1 << B);
+            let got = a.try_add_at(k, m);
+            if fits {
+                assert_eq!(got, Ok(()), "seq {seq} step {step}");
+                want = next;
+                accepted += 1;
+            } else {
+                assert!(matches!(got, Err(AbacusError::Overflow { .. })), "seq {seq} step {step}: {got:?}");
+                refused += 1;
+            }
+            assert_matches(&a, &want, &format!("seq {seq} step {step}"));
+        }
+    }
+    // Anti-vacuity: both outcomes occur often.
+    assert!(accepted > 5000 && refused > 1000, "accepted={accepted} refused={refused}");
+}
+
+#[test]
+fn abacus_reversed_order_gives_the_same_counters() {
+    // Addition is commutative, so the fold may run in either order.
+    let mut s = 77u64;
+    let adds: Vec<(usize, u64)> = (0..3000)
+        .map(|_| ((xorshift(&mut s) % 40) as usize, xorshift(&mut s)))
+        .collect();
+    let (mut fwd, mut rev) = (Abacus::<72>::new(), Abacus::<72>::new());
+    for &(k, m) in &adds {
+        fwd.try_add_at(k, m).unwrap();
+    }
+    for &(k, m) in adds.iter().rev() {
+        rev.try_add_at(k, m).unwrap();
+    }
+    assert_eq!(fwd.columns(), rev.columns());
+}

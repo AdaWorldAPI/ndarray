@@ -293,6 +293,112 @@ impl<const N: usize> SubstLazy<N> {
     }
 }
 
+/// Why [`Abacus::try_add_at`] refused. The counter is unchanged either way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AbacusError {
+    /// `significance >= BITS`.
+    SignificanceOutOfRange { significance: usize, bits: usize },
+    /// A carry left the highest column in these lanes.
+    Overflow { lanes: u64 },
+}
+
+/// C (D-BINARY-ABACUS-POLYFILL-0 candidate): F's eager ripple built from
+/// `ndarray::simd::half_add_mask`, with transactional overflow refusal.
+///
+/// Each of the 64 lanes is an independent unsigned counter of `BITS` bits.
+/// `BITS <= 122`, so a lane value (< 2^122) and the total over 64 lanes
+/// (< 2^128) are both exact in `u128`.
+///
+/// The success path is F's. On overflow the touched columns are restored by
+/// recomputing the carry chain forward from the input mask:
+/// `old_k = new_k ^ m_k` and `m_{k+1} = old_k & m_k`. No undo log is kept.
+#[derive(Clone)]
+pub struct Abacus<const BITS: usize> {
+    col: [u64; BITS],
+}
+
+impl<const BITS: usize> Abacus<BITS> {
+    const BOUND: () = assert!(BITS >= 1 && BITS <= 122, "Abacus: 1 <= BITS <= 122");
+
+    pub fn new() -> Self {
+        let () = Self::BOUND;
+        Self { col: [0; BITS] }
+    }
+
+    /// Adds `2^significance` to every lane set in `lanes`.
+    #[inline(always)]
+    pub fn try_add_at(&mut self, significance: usize, lanes: u64) -> Result<(), AbacusError> {
+        if significance >= BITS {
+            return Err(AbacusError::SignificanceOutOfRange {
+                significance,
+                bits: BITS,
+            });
+        }
+        let (mut k, mut m) = (significance, lanes);
+        while m != 0 {
+            if k == BITS {
+                self.undo(significance, lanes);
+                return Err(AbacusError::Overflow { lanes: m });
+            }
+            let (next, carry) = ndarray::simd::half_add_mask(self.col[k], m);
+            self.col[k] = next;
+            m = carry;
+            k += 1;
+        }
+        Ok(())
+    }
+
+    /// Restores every column from `start` up after an add of `lanes` whose
+    /// carry escaped the top. Cold: runs only on refusal.
+    #[cold]
+    fn undo(&mut self, start: usize, lanes: u64) {
+        let mut m = lanes;
+        for k in start..BITS {
+            let old = self.col[k] ^ m;
+            self.col[k] = old;
+            m &= old;
+            if m == 0 {
+                break;
+            }
+        }
+    }
+
+    /// Value of lane `lane` (< 64).
+    pub fn lane_value(&self, lane: usize) -> u128 {
+        (0..BITS)
+            .map(|k| u128::from(self.col[k] >> lane & 1) << k)
+            .sum()
+    }
+
+    /// Sum over all 64 lanes.
+    pub fn total(&self) -> u128 {
+        (0..BITS)
+            .map(|k| u128::from(self.col[k].count_ones()) << k)
+            .sum()
+    }
+
+    pub fn columns(&self) -> [u64; BITS] {
+        self.col
+    }
+}
+
+impl<const N: usize> Counter<N> for Abacus<N> {
+    fn new() -> Self {
+        Abacus::new()
+    }
+    #[inline(always)]
+    fn add_at(&mut self, k: usize, m: u64) -> Result<(), Overflow> {
+        self.try_add_at(k, m).map_err(|e| match e {
+            AbacusError::Overflow { lanes } => Overflow(lanes),
+            AbacusError::SignificanceOutOfRange { .. } => Overflow(m),
+        })
+    }
+    fn columns(&self) -> [u64; N] {
+        self.col
+    }
+    fn normalize(&mut self) {}
+}
+
 /// Native baseline: 64 per-lane integers.
 #[derive(Clone)]
 pub struct Native {
