@@ -9168,6 +9168,9 @@ mod tests {
             w
         }
         type F<T> = fn(&[T], &[T], &mut [u64]);
+        type Case<T> = (F<T>, fn(T, T) -> bool);
+        type S = fn(&[i64], i64, &mut [u64]);
+        type ScalarCase = (S, fn(i64, i64) -> bool);
         for n in [0usize, 1, 7, 8, 15, 16, 63, 64, 65, 131] {
             let ext_i32 = [i32::MIN, -1, 0, 1, i32::MAX];
             let ext_i64 = [i64::MIN, i64::MIN + 1, -1, 0, 1, i64::MAX - 1, i64::MAX];
@@ -9184,7 +9187,7 @@ mod tests {
                 f(&mut w);
                 w
             };
-            let i32s: [(F<i32>, fn(i32, i32) -> bool); 5] = [
+            let i32s: [Case<i32>; 5] = [
                 (eq_i32_pair_to_mask, |x, y| x == y),
                 (lt_i32_pair_to_mask, |x, y| x < y),
                 (le_i32_pair_to_mask, |x, y| x <= y),
@@ -9194,7 +9197,7 @@ mod tests {
             for (k, (f, r)) in i32s.iter().enumerate() {
                 assert_eq!(run(&|w| f(&ai, &bi, w)), want(&ai, &bi, r), "i32 pair #{k}, n={n}");
             }
-            let i64s: [(F<i64>, fn(i64, i64) -> bool); 5] = [
+            let i64s: [Case<i64>; 5] = [
                 (eq_i64_pair_to_mask, |x, y| x == y),
                 (lt_i64_pair_to_mask, |x, y| x < y),
                 (le_i64_pair_to_mask, |x, y| x <= y),
@@ -9204,7 +9207,7 @@ mod tests {
             for (k, (f, r)) in i64s.iter().enumerate() {
                 assert_eq!(run(&|w| f(&al, &bl, w)), want(&al, &bl, r), "i64 pair #{k}, n={n}");
             }
-            let f32s: [(F<f32>, fn(f32, f32) -> bool); 5] = [
+            let f32s: [Case<f32>; 5] = [
                 (eq_f32_pair_to_mask, |x, y| x == y),
                 (lt_f32_pair_to_mask, |x, y| x < y),
                 (le_f32_pair_to_mask, |x, y| x <= y),
@@ -9214,8 +9217,7 @@ mod tests {
             for (k, (f, r)) in f32s.iter().enumerate() {
                 assert_eq!(run(&|w| f(&af, &bf, w)), want(&af, &bf, r), "f32 pair #{k}, n={n}");
             }
-            type S = fn(&[i64], i64, &mut [u64]);
-            let scalars: [(S, fn(i64, i64) -> bool); 6] = [
+            let scalars: [ScalarCase; 6] = [
                 (eq_i64_to_mask, |x, t| x == t),
                 (ne_i64_to_mask, |x, t| x != t),
                 (lt_i64_to_mask, |x, t| x < t),
