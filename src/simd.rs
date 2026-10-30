@@ -880,8 +880,12 @@ pub use crate::simd_masking_ops::{
     // 2026-09-16: the ordered u64 family (N3/G2). The width where the packing
     // is NOT free — `U64x8` is 8 lanes, so eight groups share a word and each
     // lands at its own byte.
+    blend_f32,
+    blend_f32_scalar,
     blend_i32,
     blend_i32_scalar,
+    blend_i64,
+    blend_i64_scalar,
     eq_f32_to_mask,
     eq_f64_to_mask,
     eq_i32_to_mask,

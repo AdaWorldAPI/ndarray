@@ -5825,18 +5825,34 @@ fn masked_fold_i32(values: &[i32], mask_words: &[u64], f: impl Fn(i32, i32) -> i
 /// ```
 #[inline]
 pub fn blend_i32(mask_words: &[u64], a: &[i32], b: &[i32], dst: &mut [i32]) {
-    assert_eq!(a.len(), b.len(), "blend_i32: a/b length mismatch");
-    assert_eq!(a.len(), dst.len(), "blend_i32: a/dst length mismatch");
+    blend_slices("blend_i32", mask_words, a, b, dst);
+}
+
+/// Shared body of the `blend_*` family: `dst[i] = bit i ? a[i] : b[i]`.
+/// Generic over the element type because the select moves whole elements
+/// and never looks at their bits: an `f32` NaN payload or `-0.0` comes
+/// through unchanged.
+#[inline]
+fn blend_slices<T: Copy>(name: &str, mask_words: &[u64], a: &[T], b: &[T], dst: &mut [T]) {
+    assert_eq!(a.len(), b.len(), "{name}: a/b length mismatch");
+    blend_with(name, mask_words, a, |i| b[i], dst);
+}
+
+/// [`blend_slices`] with the `else` side computed per index (a slice
+/// element, or one broadcast scalar).
+#[inline]
+fn blend_with<T: Copy>(name: &str, mask_words: &[u64], a: &[T], b: impl Fn(usize) -> T, dst: &mut [T]) {
+    assert_eq!(a.len(), dst.len(), "{name}: a/dst length mismatch");
     let n = a.len();
     assert!(
         mask_words.len() >= mask_words_for(n),
-        "blend_i32: mask_words.len()={} < required {}",
+        "{name}: mask_words.len()={} < required {}",
         mask_words.len(),
         mask_words_for(n)
     );
     for i in 0..n {
         let bit = (mask_words[i / 64] >> (i % 64)) & 1;
-        dst[i] = if bit == 1 { a[i] } else { b[i] };
+        dst[i] = if bit == 1 { a[i] } else { b(i) };
     }
 }
 
@@ -5863,18 +5879,96 @@ pub fn blend_i32(mask_words: &[u64], a: &[i32], b: &[i32], dst: &mut [i32]) {
 /// ```
 #[inline]
 pub fn blend_i32_scalar(mask_words: &[u64], a: &[i32], b: i32, dst: &mut [i32]) {
-    assert_eq!(a.len(), dst.len(), "blend_i32_scalar: a/dst length mismatch");
-    let n = a.len();
-    assert!(
-        mask_words.len() >= mask_words_for(n),
-        "blend_i32_scalar: mask_words.len()={} < required {}",
-        mask_words.len(),
-        mask_words_for(n)
-    );
-    for i in 0..n {
-        let bit = (mask_words[i / 64] >> (i % 64)) & 1;
-        dst[i] = if bit == 1 { a[i] } else { b };
-    }
+    blend_with("blend_i32_scalar", mask_words, a, |_| b, dst);
+}
+
+/// `dst[i] = if mask bit i { a[i] } else { b[i] }` over `f32`: ONNX
+/// `Where(C, X, Y)` with float `X`, `Y`. Elements are moved, never computed
+/// on, so NaN payloads and `-0.0` come through bit for bit. Same contract as
+/// [`blend_i32`].
+///
+/// # Panics
+///
+/// Panics unless `a.len() == b.len() == dst.len()` and
+/// `mask_words.len() >= a.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::blend_f32;
+///
+/// let mut dst = [0.0f32; 3];
+/// blend_f32(&[0b101], &[1.0, 2.0, 3.0], &[-1.0, -2.0, -3.0], &mut dst);
+/// assert_eq!(dst, [1.0, -2.0, 3.0]);
+/// ```
+#[inline]
+pub fn blend_f32(mask_words: &[u64], a: &[f32], b: &[f32], dst: &mut [f32]) {
+    blend_slices("blend_f32", mask_words, a, b, dst);
+}
+
+/// [`blend_f32`] with a scalar `else` value: the attention-mask shape
+/// `Where(mask, scores, -inf)` without filling a `-inf` vector.
+///
+/// # Panics
+///
+/// Panics unless `a.len() == dst.len()` and
+/// `mask_words.len() >= a.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::blend_f32_scalar;
+///
+/// let mut dst = [0.0f32; 3];
+/// blend_f32_scalar(&[0b011], &[0.5, 0.25, 0.125], f32::NEG_INFINITY, &mut dst);
+/// assert_eq!(dst, [0.5, 0.25, f32::NEG_INFINITY]);
+/// ```
+#[inline]
+pub fn blend_f32_scalar(mask_words: &[u64], a: &[f32], b: f32, dst: &mut [f32]) {
+    blend_with("blend_f32_scalar", mask_words, a, |_| b, dst);
+}
+
+/// `dst[i] = if mask bit i { a[i] } else { b[i] }` over `i64`: ONNX
+/// `Where` on index tensors. Same contract as [`blend_i32`].
+///
+/// # Panics
+///
+/// Panics unless `a.len() == b.len() == dst.len()` and
+/// `mask_words.len() >= a.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::blend_i64;
+///
+/// let mut dst = [0i64; 2];
+/// blend_i64(&[0b10], &[1, i64::MAX], &[i64::MIN, 2], &mut dst);
+/// assert_eq!(dst, [i64::MIN, i64::MAX]);
+/// ```
+#[inline]
+pub fn blend_i64(mask_words: &[u64], a: &[i64], b: &[i64], dst: &mut [i64]) {
+    blend_slices("blend_i64", mask_words, a, b, dst);
+}
+
+/// [`blend_i64`] with a scalar `else` value.
+///
+/// # Panics
+///
+/// Panics unless `a.len() == dst.len()` and
+/// `mask_words.len() >= a.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::blend_i64_scalar;
+///
+/// let mut dst = [0i64; 2];
+/// blend_i64_scalar(&[0b01], &[7, 8], -1, &mut dst);
+/// assert_eq!(dst, [7, -1]);
+/// ```
+#[inline]
+pub fn blend_i64_scalar(mask_words: &[u64], a: &[i64], b: i64, dst: &mut [i64]) {
+    blend_with("blend_i64_scalar", mask_words, a, |_| b, dst);
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -8812,6 +8906,57 @@ mod tests {
         let v = [5i32, -3, 9];
         assert_eq!(masked_min_i32(&v, &[u64::MAX]), Some(-3));
         assert_eq!(masked_max_i32(&v, &[u64::MAX]), Some(9));
+    }
+
+    /// The mask for the blend tests: 131 lanes (two full words, a partial
+    /// third), stray bits past the end, both sides taken.
+    fn blend_test_mask(n: usize) -> [u64; 3] {
+        let mut m = [0u64; 3];
+        for i in 0..n {
+            if (i * 37) % 5 < 2 {
+                m[i / 64] |= 1 << (i % 64);
+            }
+        }
+        m[2] |= !0u64 << (n % 64);
+        m
+    }
+
+    #[test]
+    fn blend_f32_and_i64_select_by_bit_and_move_bits_unchanged() {
+        let n = 131;
+        let m = blend_test_mask(n);
+        let bit = |i: usize| (m[i / 64] >> (i % 64)) & 1 == 1;
+        // f32: a NaN with a payload and -0.0 on both sides must arrive bit
+        // for bit; a select that computed on its operands would canonicalise
+        // the NaN or turn -0.0 into +0.0.
+        let nan = f32::from_bits(0x7fc0_1234);
+        let a: Vec<f32> = (0..n).map(|i| if i % 7 == 0 { nan } else { i as f32 * 0.5 }).collect();
+        let b: Vec<f32> = (0..n).map(|i| if i % 3 == 0 { -0.0 } else { -(i as f32) }).collect();
+        let mut d = vec![0.0f32; n];
+        blend_f32(&m, &a, &b, &mut d);
+        for i in 0..n {
+            let want = if bit(i) { a[i] } else { b[i] };
+            assert_eq!(d[i].to_bits(), want.to_bits(), "f32 lane {i}");
+        }
+        let mut ds = vec![0.0f32; n];
+        blend_f32_scalar(&m, &a, f32::NEG_INFINITY, &mut ds);
+        for i in 0..n {
+            let want = if bit(i) { a[i] } else { f32::NEG_INFINITY };
+            assert_eq!(ds[i].to_bits(), want.to_bits(), "f32 scalar lane {i}");
+        }
+        // i64: the extremes, which an i32 path would truncate.
+        let a: Vec<i64> = (0..n as i64).map(|i| if i % 5 == 0 { i64::MAX } else { i << 40 }).collect();
+        let b: Vec<i64> = (0..n as i64).map(|i| if i % 4 == 0 { i64::MIN } else { -i }).collect();
+        let mut d = vec![0i64; n];
+        blend_i64(&m, &a, &b, &mut d);
+        let mut ds = vec![0i64; n];
+        blend_i64_scalar(&m, &a, i64::MIN + 1, &mut ds);
+        for i in 0..n {
+            assert_eq!(d[i], if bit(i) { a[i] } else { b[i] }, "i64 lane {i}");
+            assert_eq!(ds[i], if bit(i) { a[i] } else { i64::MIN + 1 }, "i64 scalar lane {i}");
+        }
+        let taken = (0..n).filter(|&i| bit(i)).count();
+        assert!(taken > 0 && taken < n, "fixture must take both sides: {taken}");
     }
 
     #[test]
