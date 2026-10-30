@@ -438,6 +438,60 @@ five backends.
   All four finished with success on `de03001` after the merge (run
   41053380600).
 
+### R7.6 Amendments after lance-graph #1853 and #1854 (2026-10-30)
+
+R7 was written before lance-graph #1853 and #1854 merged. Its L11–L15 row
+("unchanged") and R5's census are stale. The measured findings in R7.1–R7.5
+stand.
+
+| R7 item | status now | evidence |
+|---|---|---|
+| L11–L12: Unsqueeze, Shape, Concat | registered (registry v2): Shape `0x0F60–63`, Unsqueeze `0x0F65/66`, Concat `0x0F67/68` over `ndarray::concatenate` | lance-graph #1853 |
+| L13: Gather | int64 Gather registered (`0x0F64`, ndarray `select`). The f32 (embedding) and bool cases remain: 2 nodes | #1853 |
+| L14: f32 MatMul | the ndarray word exists (`matmul_f32`, #400); Tract registration still open. MatMul is 252 of the 2,461 runtime nodes | #1854 census |
+| L15: f16 Cast | still open | — |
+| int64 Add/Sub/Mul/Div/Range | ndarray side done (#401, `hpc::checked_i64`). Tract integration is not yet established; #1854 pins the refusal (`int64_arithmetic_is_refused_until_checked_words_exist`, fixture `i64_arith`) | ndarray #401, lance-graph #1854 |
+
+Jina coverage, inputs pinned to `[1,10]`, as [WHEN-true, WHEN-not-true,
+unregistered]: **6,581 / 114 / 925**, with **4,499** folded nodes (registry
+v3, #1854). This supersedes R5's census. The 56 Reshape and 57 Expand UNKNOWNs
+all wait on int64 `Mul`/`Div`, so wiring #401 into Tract is what moves them.
+
+#1854 also confirms N23 from the consumer side: `Erf` is admitted as Bounded
+at 2 ULP over `vserf`, and #1853 measured `vserf` about 4× slower than
+Tract's `erf` on its host (it trades accuracy for speed, see N23).
+
+**N22, L21 and H13, re-scoped.** The question behind N22 is not "who calls
+`full_add_mask`" but whether the adders enable arithmetic the typed SIMD
+words cannot express: isolated-carry adds across packed fields such as
+`5×U24/I24` (120 payload bits + 8 metadata bits) or `14×U9/I9` (126 + 2
+spare) in one 128-bit carrier.
+
+- **L21 is one antenna, not the gateway to H13.** A carry-save count fold in
+  mask-risc is a candidate consumer. So are a packed microtile and the KPEA
+  method graph.
+- **H13 stays deferred.** It means proving one consumer that binds a kernel,
+  then exposing only the arithmetic that consumer needs. `Abacus` is not
+  promoted because its arithmetic is correct; #402's cost gate stands.
+- **L20 and H12 are tracked separately**, as backend-lowering work. H12
+  (AVX2 compare-mask packing for `select`) is a shared cost: `simd_exp_f32`
+  and the exp-based ONNX ops, the U9 sign-plane work (`mask_blend`, #388,
+  #389, #395) and any packed microkernel that selects per field.
+
+**Next falsifier: its own PR, not this map.** One small executable proof of
+"one register, many virtual arithmetic lanes; one prepared method, many
+thoughts":
+- MICRO: `5×U24/I24` and `14×U9/I9` over 128-bit carriers. Compare packed
+  bitwise, isolated-carry and widened SIMD realizations; test cross-field
+  carry isolation, sign extension, overflow, a stencil and an exact fold.
+- MACRO: a method-binding interface between DR64³/DT64 and ndarray that
+  reuses Thought-0 invariant work across sparse alternative thoughts without
+  dense intermediates. Ownership stays `MailboxSoaView`/`MailboxSoaOwner`. No
+  new scheduling: any work sharing happens inside the interlaced stages of a
+  method already admitted.
+- First proof: borrowed positional inputs, one exact packed primitive, one
+  correct fold, each checked against an existing oracle.
+
 ## 0. What the six ndarray PRs did
 
 | PR | closed | opened or left |
