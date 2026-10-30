@@ -152,7 +152,7 @@ mod accumulation_order_tests {
     fn eight_way(xs: &[f32]) -> f32 {
         let mut p = [0.0f32; 8];
         let full = xs.len() / 8 * 8;
-        for c in xs[..full].chunks_exact(8) {
+        for c in xs[..full].as_chunks::<8>().0 {
             for (pk, &x) in p.iter_mut().zip(c) {
                 *pk += x;
             }
