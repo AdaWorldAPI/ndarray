@@ -224,6 +224,18 @@ table (`:301-310`), fruit list (`:409-421`) and `perm.rs:255-290` were read
 directly on the main thread, which was cheaper than briefing a card. The
 facet-stride count was re-run (166).
 
+## R4. Two rulings implemented (operator, 2026-10-30)
+
+| ruling | implemented as | closes / changes |
+|---|---|---|
+| u8→i8 only "as in explicit calling on intentional explicit parameter" | `ReinterpretBits` (zero-sized marker) and `U8x64::reinterpret_as_i8(ReinterpretBits)` / `I8x64::reinterpret_as_u8(ReinterpretBits)` in `src/simd.rs`; a bit reinterpret, no conversion; FACET STRIDE rule 3 amended in `CLAUDE.md` | V10/N14 decided. U6's facade gap is closed; the probe's `kernels::bits_as_i8` stand-in is not migrated (its timings stay reproducible). The 2 existing R3 hits are `u8` splats cast to an `i8` intrinsic parameter, not lane data, so they are not covered by this word and stay on the burn-down list |
+| Codec9 runtime scale + batch encoder, "to enable both extreme accuracy LUT[a,b] and learning" | `Codec9Runtime<R>` in `src/hpc/codec9.rs`: checked scale, same encoder/decoder as `Codec9<R, C>` (equal scales give identical codewords), `encode_touched_batch` / `decode_batch` over magnitudes + presence plane; DR512 law doc amended | V1 and N4 decided. Compile-time `Codec9` stays the form for codeword tables; `Codec9Runtime` is the form for learned scales. Open: the batch loops are scalar (a SIMD batch is the next step once a consumer is timed); NSL has no ndarray dependency, so it either takes one or keeps its mirror behind a pairing test against these codewords (L3); lance-graph `scent_learn.rs:345-356` can replace its hand-built presence loop with `encode_touched_batch` (N5) |
+
+Tests: 8 new in `codec9` (12 total), 4 in `simd::reinterpret_bits_parity`;
+5 disable runs, each red (scale ignored, tail bits not cleared, write before
+the finiteness check, saturating reinterpret, scale check removed). Lib suite
+2,676 passed; AVX2 tier, aarch64 build and the wasm/NEON parity programs pass.
+
 ## 0. What the six ndarray PRs did
 
 | PR | closed | opened or left |

@@ -58,6 +58,20 @@ enums with 512 arbitrary tokens are different from DR512 signed numeric
 codes: they must retain their own typed IDs and source mapping. Never
 reinterpret `bgz-tensor::WeightPalette` u8 archetypes as signed magnitudes.
 
+**Runtime scale (operator, 2026-10-30).** The goal is both exact
+`LUT[a, b]` work and learning. `Codec9Runtime<R>` takes the scale as a
+value, checked once (positive, finite), and calls the same encoder and
+decoder as `Codec9<R, C>`: for equal scales the codewords are identical
+(tested over a 6,000-value sweep plus every codeword). Rounding stays a type
+parameter restricted to nearest; storage, polarity, Sym and NaN stay fixed.
+Use `Codec9` where a table over codewords must stay valid for everything
+encoded with it; use `Codec9Runtime` where the scale is learned or
+calibrated. Its `encode_touched_batch` / `decode_batch` read and write the
+magnitude lane plus the presence plane, refuse a non-finite value before
+writing anything, and clear presence bits past the last lane. A table built
+under one scale is invalid under another: a consumer that moves its scale
+rebuilds its tables. The batch loops are scalar today (not measured).
+
 ## Cross-repo ownership and CI tripwires
 
 1. **ndarray:** `src/hpc/codec9.rs`, `src/simd_stride.rs`,
