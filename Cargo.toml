@@ -55,11 +55,44 @@ name = "vstanh_exhaustive"
 required-features = ["std"]
 
 [[example]]
+name = "float_accum_probe"
+required-features = ["std"]
+
+[[example]]
 name = "codec8_asm_probe"
 required-features = ["std"]
 
 [[example]]
 name = "sm9_presence_probe"
+required-features = ["std"]
+
+[[example]]
+name = "u9_cost_probe"
+required-features = ["std"]
+
+[[example]]
+name = "u9_head_to_head"
+path = "examples/u9_head_to_head/main.rs"
+required-features = ["std"]
+
+[[example]]
+name = "pof_antennas"
+path = "examples/pof_antennas/main.rs"
+required-features = ["std"]
+
+[[example]]
+name = "u9_abacus"
+path = "examples/u9_abacus/main.rs"
+required-features = ["std"]
+
+[[example]]
+name = "u9_domino"
+path = "examples/u9_domino/main.rs"
+required-features = ["std"]
+
+[[example]]
+name = "microtile"
+path = "examples/microtile/main.rs"
 required-features = ["std"]
 
 [[example]]

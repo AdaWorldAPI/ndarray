@@ -3827,3 +3827,201 @@ back into clippy::all), fmt clean. G5 asm identity: generic == hand-written on x
 negative control differs. G6 2% timing band not resolvable here (identical code varies up to 17%);
 recorded as NOT MET, G5 is the evidence. Results in plan §11. Next: phase (b) SIMD primitives in
 src/simd_*.rs under W1a.
+
+## U16x32 facade gaps filled on every backend (2026-10-29, branch claude/u16x32-facade-gaps)
+
+Trigger: turbovec's AVX2 FastScan kernel is being rewritten against `ndarray::simd` at 64-byte width
+(U8x64 -> U16x32 -> F32x16). U16x32 had a different method set per backend and no u16 -> f32 path.
+
+Added on AVX-512, AVX2, AVX (simd_avx.rs, 128-bit quarters), scalar and nightly: `zero`, `simd_min/max`,
+`saturating_add/sub`, `cmpeq_mask`/`cmpgt_mask` (u32), `reduce_min/max`, `to_f32x16_lo/hi`; on AVX-512 the bit
+operators, `Not`, `SubAssign`, `Default`; on nightly the widening/shift/mullo/pack methods. `reduce_sum` returns
+`u16` (wrapping) everywhere; AVX-512 returned `u32`.
+
+Bugs found by the new parity test (`simd::u16x32_facade_parity`), both pre-existing on AVX-512 and now fixed:
+`shl`/`shr` returned 0 for every count except 1, 2, 4, 8 (including 0); `pack_saturate_u8` used `packus_epi16`,
+which saturates as signed and interleaves its inputs per 128-bit lane.
+
+Witnessed: parity 4/4 on AVX-512 (native), AVX2 (config-v3), AVX (config-avx, qemu SandyBridge), scalar (config-v2,
+qemu Nehalem) and nightly-simd. Lib suite 2653 passed. clippy -D warnings clean on default/v3/v2; the AVX arm's
+clippy errors are all pre-existing (same set on master). Disable run: AVX2 cmpgt as `>=` -> parity red.
+
+Trap recorded: `cargo --config <file> clippy` DROPS the config (clippy is an external subcommand); the v3 lint pass
+reported clean in 0.05s while linting the native build. Put `--config` after the subcommand:
+`cargo clippy --config .cargo/config-v3.toml`. `cargo --config <file> test` does apply it.
+
+## dot4_u8_i8_add + U8x64 nibble split on every backend (2026-10-29, branch claude/dot4-nibble-facade)
+
+Trigger: turbovec's VNNI "permute-dot" kernels are raw `vpdpbusd` on x86 and `SDOT` on aarch64 (the same
+operation written twice), plus a GFNI-only macro variant for the high nibble. Adding the operation to the facade
+lets those kernels move onto `ndarray::simd`.
+
+Added on AVX-512, AVX2, AVX, scalar, NEON, wasm and nightly: `I32x16::dot4_u8_i8_add(a: U8x64, b: I8x64)`
+(`vpdpbusd` when avx512vnni is compiled in, otherwise widen-then-`madd`; see the contract doc's P0 section on why
+`vpmaddubsw` is wrong) and `U8x64::low_nibbles` / `high_nibbles` (GFNI `gf2p8affine` when compiled in).
+
+Fixed on the way: on aarch64 and wasm, `U16x32` comes from the scalar file but `F32x16` is native, so the scalar
+`to_f32x16_lo/hi` (PR #385) returned a type that is not `ndarray::simd::F32x16`, and the aarch64 lib tests did not
+compile at all. They now return `crate::simd::F32x16`. CI never builds aarch64/wasm lib tests, only the two
+parity programs, which is why it slipped through; both programs now check dot4 and the nibbles (codes 0x500..).
+
+Witnessed: `simd::dot4_nibble_facade_parity` 4/4 on native (AVX-512 + VNNI + GFNI), config-v4 (AVX-512 emulation),
+config-v3 (AVX2), config-avx (qemu SandyBridge), config-v2 (scalar, qemu Nehalem), aarch64 (qemu, plus
+`u16x32_facade_parity`) and nightly-simd; `neon-parity.sh` and `wasm-parity.sh` pass. Lib suite 2657 passed
+(native). clippy -D warnings clean on native/v4/v3/v2 (`--config` AFTER the subcommand) and aarch64; the AVX arm's
+8 errors are pre-existing, none on added lines. Disable runs, all red as expected: `vpmaddubsw` AVX2 realization
+(saturation test + reference), wrong GFNI matrix (nibble test), `vpdpbusds` for `vpdpbusd` (reference, i32::MAX acc).
+
+Loose ends: AVX-VNNI (`avxvnni`, 256-bit `vpdpbusd`) is not used on the AVX2 arm; NEON could use `USDOT` when i8mm
+is compiled in. Neither is measured. The signed form (`i8 x i8`, turbovec's `xor 0x80` + `zero` correction) is not
+a facade word yet.
+
+
+## dot4_u8_i8_add_masked + 9-bit TurboVec9 cost probe (2026-10-29, branch claude/u9-turbovec9-substrate)
+
+Follow-up to #386. Added on every backend: `I32x16::dot4_u8_i8_add_masked(a, keep, b)`; two calls with the positive
+plane and its complement give an exact 9-bit sign-magnitude x i8 dot product (all i8 incl. -128, i32 accumulators,
+no widening). Crate-private `simd_masking_ops::{BIT_IN_BYTE, mask_byte_spread}` expand a u64 mask to bytes with one
+AND + one compare per register. Measurements, precision tables and the TurboVec handoff:
+`.claude/knowledge/turbovec9-u9-substrate.md`; probe `examples/u9_cost_probe.rs` (R1-excluded: it times shuffle
+lookups on purpose).
+
+Witnessed: 8/8 dot4 tests on native (VNNI), v4, v3, avx (qemu), v2 (qemu), aarch64 (qemu), nightly; neon/wasm parity
+programs pass (0x504, 0x505). clippy -D warnings clean on native, v4, v3. Disable runs all red: unmasked AVX-512 move,
+reversed BIT_IN_BYTE (AVX2), mask dropped in the fused AVX2 loop.
+
+Key numbers (AVX-512 VNNI, L1): masked pair 1.27-1.33 ns/64 lanes vs dot4 1.10-1.19; 512-entry lookup 6.1 ns
+(vpermi2b) / 38-40 ns (per-position reads). Stored uniform SM9 46.0 dB vs i4 20.2 dB at the same per-dim L1 cost and
+1.4x per dim streamed. AVX2: masked pair 6.35-6.44 ns vs dot4 1.59-1.79 ns (corrected after review: the first
+facade timing returned lane 0 only and let the optimizer drop half the AVX2 work; probe kernel B also mishandled a
+negative zero; both fixed, every exact kernel now checked against an i64 reference before it is timed).
+
+Loose ends: fused single-widen SM9 op for non-VNNI tiers; NEON SDOT/USDOT and AVX-VNNI unused; no NEON/wasm timings;
+recall on a real TurboVec index is the TurboVec owner's measurement.
+
+## U9 x U9 head-to-head: U8 x U8 x sign x mul_add vs U8 x I8 byte-dot (2026-10-29, branch claude/u9-head-to-head)
+
+Probe-only, no production change: `examples/u9_head_to_head/{kernels,main}.rs`, `tests/u9_head_to_head.rs`, report
+`.claude/knowledge/turbovec9-u9-head-to-head.md`. Both candidates use only facade words and share one i64 oracle:
+511 x 511 exhaustive pairs, mixed full blocks, worst-case runs past both flush intervals, never-touched refusal.
+Passed on native, v4, v3, avx (qemu), v2 (qemu), aarch64 (qemu), nightly; 12 disable runs all red.
+Contract (report § arithmetic contract): unsigned product + polarity XOR as routing + exact fold; A and B are two
+facade compositions of it. B is long multiplication, `m = low7 - top`, tested for all 256 magnitudes via `prepare_b`.
+
+Verdict: B (U8 x I8 byte-dot) is the cheaper exact I9 substrate in every row, symmetric included. B encodes with AND,
+XOR and the presence bit only: `low7 = |b| & 0x7F`, `top = |b| ^ low7`, `negative = plane_a ^ plane_b`, four masked
+byte-dots, `(pos_low7 - pos_top) - (neg_low7 - neg_top)`; no magnitude is negated. Disassembly (AVX-512): no shuffle, permute,
+pack, extract or insert in B, the baselines or the flushes; on AVX2 LLVM puts 4 vpshufb in the facade's masked byte-dot. VNNI L1, ns/64: B end-to-end 3.05-3.06 vs A' 7.64-7.83;
+B scan 2.75-2.81 vs A 7.02-7.19; plain byte-dot 1.94. AVX2: B end-to-end 10.1-10.2 vs A' 75-81 (A dominated by
+`U8x64::mask_blend`'s per-lane AVX2 realization, not changed).
+
+Loose ends: the U8x64 -> I8x64 bit view (`bits_as_i8` is a store/load stand-in, 1.16-1.27 ns/block with the split;
+not added, it is a u8/i8 crossing); recall on a real TurboVec-U9 index (owner's experiment, defined in the report).
+Re-measured after review (Codex, PR #388): timed operands are now compact (72 B/block, not a padded 128-B `Vec<Block>`)
+and the preparation row consumes every lane. Streamed VNNI B end-to-end 12.9-16.3 -> 6.0-6.5, B scan 5.9-6.9 -> 2.75-2.80;
+verdict unchanged.
+
+## D-U9-ABACUS: schoolbook U9 x U9 on bit planes (2026-10-29, branch claude/u9-abacus, stacked on #388)
+
+Probe-only: `examples/u9_abacus/{abacus,main}.rs`, `tests/u9_abacus.rs`, report
+`.claude/knowledge/u9-abacus-probe.md`. `carry_save3` (exact full adder on 64 bit columns) ADOPT-LAB; byte-abacus
+as a B replacement REFUSE: best fold (per-plane popcount) 12.4 ns/64 arithmetic with free planes vs B 2.9 end-to-end
+on VNNI, carry-save folds ~290 ns (LLVM does not unroll them; scalar, no vpternlog). No break-even for prepared
+operands. On v4/AVX2 LLVM lowers `count_ones` to a `vpshufb` nibble table. Exact on all 7 tiers; 9 disable runs red.
+D (A' products + 16-bit place-value column, carry by bit logic, no f32): react beats A' ~10 % on AVX-512 (5.2-5.7 vs
+6.3-6.5 ns arith L1; LLVM folds the carry into 2 vpternlogq), anticipate wins on AVX2; B still 2.3x faster on VNNI because D
+widens u8->u16 before mullo. ADOPT-LAB as A's f32 replacement, DEFER as B replacement. Exact on 7 tiers; 5 disables red.
+E (B's split at 128, anchor term as masked sum << 7): E3 (3 byte-dots, +1/-1 sign bytes) ties B on VNNI (2.84-2.92 vs 2.81-2.89 e2e,
+2.28 vs 2.34-2.41 arith), E4/Esum slower, AVX2 lost to mask_blend. No adoption. Facade gaps recorded: vertical masked vpsadbw
+accumulate; sign plane -> +1/-1 bytes without mask_blend. Exact on 7 tiers; 5 disables red.
+Re-measured after review (Codex, PR #389): compact timed operands (as #388) and the plane-extraction row consumes all 16
+planes (VNNI L1 2.52 -> 3.5 ns). Verdicts unchanged; streamed D react arith now level with A' (both memory-bound).
+
+## D-DOMINO-MOV-0: bit flip, positional substitution, lazy FULL carry (2026-10-29, branch claude/u9-domino, stacked on #389)
+
+Probe-only: `examples/u9_domino/{domino,main}.rs`, `tests/u9_domino.rs`, report `.claude/knowledge/u9-domino-probe.md`.
+F (eager flip ripple on 64-lane bit planes) ADOPT-LAB: beats native per-lane adds on dense/single-lane masks (1.94 vs
+6.99 ns/add), at the 64K boundary beats D only on AVX2 (5.7 vs 9.4 ns/64, D's array-backed U16x32 shuffles) and still
+loses to native u64 lanes there. P/L/PL REFUSE: flag tests cost more than the XOR/AND they skip (1.6-1.9 vs 0.5 ns per
+FULL column). R1 (two u64) and R2 (u128) compile to identical code. Coverage audit of #389: C's tests are lane-blind
+(totals only); EMPTY flags only matter over stale words (Y2 was green until stale-word runs were added). 7 tests on 5
+tiers; 6 disable runs red.
+Review fix (Codex, PR #391): PL's ordinary ripple now marks an all-ones result FULL (as L); new test + per-add FULL
+invariant in check_all, Y7 red; 8 tests on 5 tiers. Re-measured on 3 tiers: PL ~2.2 ns per FULL column; verdicts unchanged.
+
+## U64x8::sum8_u8_add_masked: vertical masked byte sum (2026-10-29, branch claude/sum8-u8-masked)
+
+Facade word closing the gap #389 recorded for candidate E's anchor term: lane j += sum of kept bytes 8j..8j+8, no
+horizontal reduction. One realization per backend (AVX-512 maskz + vpsadbw; AVX2 register mask + vpsadbw; AVX psadbw per
+quarter; NEON uaddlp/uadalp; wasm extadd_pairwise; scalar; nightly SWAR). Parity in simd.rs + wasm/neon harnesses
+(0x506/0x507); 7 tiers green; 7 disable runs red. 0.687 ns/64 bytes on AVX-512 (281-285x the reference loop), 1.99 ns on
+AVX2 (98x). Knowledge: `turbovec9-u9-substrate.md` § second facade word. Not yet wired into the abacus probe (#389).
+
+## U9 arc closeout: open fruit (2026-10-29, after #388-#391 merged)
+
+Closed: #388 (B wins, contract recorded), #389 (C refused, D adopt-lab, E no
+adoption), #390 (`sum8_u8_add_masked`), #391 (F adopt-lab, P/L/PL refused).
+Every Codex finding fixed and re-measured. Excluded, do not reopen without new
+evidence: bit-plane multiplication as a B replacement; lazy EMPTY/FULL flags
+in bit-sliced counters.
+
+| # | fruit | size | gate |
+|---|---|---|---|
+| U1 | ~~wire `sum8_u8_add_masked` into candidate E (Esum's anchor term) and re-measure E against B~~ DONE: #393 (D-U9-E5; ADOPT-LAB only without VNNI) | low | E's oracle tests unchanged; one row per tier |
+| U2 | AVX2 streamed B is 27 - 33 ns against 9 - 10 in L1, more than the extra bytes explain | low | one probe that separates bandwidth from the masked byte-dot's 4 `vpshufb` |
+| U3 | NEON and wasm timings for B, D and F (only x86 measured) | low | a real aarch64 host; qemu numbers are not valid |
+| U4 | sign plane to `+1/-1` bytes without `mask_blend` (E3's cost on AVX2) | high | facade word with parity on all realizations; must pass the facet-stride guard |
+| U5 | AVX2 `U8x64::mask_blend` is a per-lane loop and dominates every A/E3 row there | high | facet-stride R2 burn-down item; parity unchanged |
+| U6 | `U8x64 -> I8x64` bit view for B's `low7`/`top` (today a store/load) | heavy | needs an operator ruling: facet-stride R3 forbids u8/i8 mixing |
+| U7 | recall on a real TurboVec-U9 index (arithmetic parity says nothing about retrieval) | heavy | owner experiment, defined in the head-to-head report |
+
+## D-U9-E5: the U9 anchor through vertical masked byte sums (2026-10-29, branch claude/u9-e5)
+
+Probe-only: `AccE5` in `examples/u9_abacus/anchor.rs` (E3/E4/Esum/B unchanged), 5 tests in `tests/u9_abacus.rs`,
+report `.claude/knowledge/u9-e5-probe.md`. Consumer gate for #390: E's split `|b| = low7 + 128*bit7`, two masked low7
+byte-dots, anchor as two persistent `U64x8::sum8_u8_add_masked` accumulators reduced only at flush. Exact on 7
+realizations; wasm/neon parity pass; 6 disable runs red. Verdict: ADOPT-LAB on AVX-512 without VNNI (L1 e2e 5.14-5.30 vs B
+5.67-7.50, 8 runs; byte-dot emulated in ~10 insns there), REFUSE on VNNI (3.55-3.95 vs 2.92-3.25: B's anchor dot shares the
+sign's zero-masked copy, E5 pays maskz+vpsadbw+vpaddq per sign; 0 spills) and AVX2 (mask built in registers per call,
+8 vpshufb + 16 vpmuludq per block). Overall DEFER as B replacement. Closes fruit U1 (blackboard U9 fruit list, #392).
+
+
+## D-POF-ANT-0: Position x Order x Law antennas (2026-10-29, branch claude/pof-antennas)
+
+Lab only: `examples/pof_antennas/*`, `tests/pof_antennas.rs` (41 tests, 7 realizations green, 14 disable runs red), report
+`.claude/knowledge/pof-antennas-probe.md`. No facade/backend/storage/trait change; #393 untouched. Findings: sharing a
+prepared basis wins without sharing a mask (P1 0.79-0.93x on AVX-512); invariant folds need no carry under a rebase and
+an equivariant result needs ONE `conjugate_mask` of the result (P2-lazy 6.3 vs 16.4 ns VNNI); `conjugate_mask` itself costs
+4.4 ns because its mask->bytes expansion is a scalar `from_fn` (a `mask_blend` expansion is 5.6x faster on AVX-512, 2.5x
+slower on AVX2). E2 (sign-routed operand once, anchor narrows it; lowering drops E5's kandq/kandnq, keeps 4 zero-masked
+moves) beats E5 on every AVX-512 row and B on v4 (L1 e2e 4.69 vs 5.11 vs 5.63), still 1.10x B on VNNI, 7x worse on AVX2
+(per-lane mask_blend). E3 two fused consumers 0.6-0.94x on every tier. A6: Exposure field fold tier-independent
+(6.1-8.0 us/field), Morton = row-major at 8 KiB. LAW already lives in mask-risc (ternlog commutativity, per-terminal merge
+laws, ExtentUnsupported, row bounds) and WITNESS in OrderedLaneWitness; no new trait.
+
+| # | fruit | size | gate |
+|---|---|---|---|
+| P1 | `Perm64::conjugate_mask` mask expansion via one masked select on AVX-512, current path on AVX2 | low | perm.rs owner PR; parity on all realizations |
+| P2 | E2 as the AVX-512-without-VNNI U9 kernel (joins #393's ADOPT-LAB row) | low | integration owner |
+| P3 | AVX2 P1 anomaly: setup+exec 8 ns apart, 42 ns together | low | asm of the combined path |
+| P4 | RPR stale cases X1-X9 / #1848 B0 fixture can reuse the A5 scalar oracle | high | lance-graph owners |
+
+## 2026-10-30 — D-BINARY-ABACUS-POLYFILL-0
+- PR A #402 (draft): `half_add_mask` / `full_add_mask` in `simd_masking_ops`, re-exported; vectorized `pow2n_from_int` (vsexp 4x, vserf 2.4x on AVX-512); `U32x16` `Shl`/`Shr<Self>` added to AVX2, AVX, NEON, wasm, nightly.
+- Lab: `Abacus<BITS>` with transactional refusal in `examples/u9_domino`; cost equal to eager F. PR B and PR C deferred: no consumer, planes already cheap with existing words. Report: `.claude/knowledge/binary-abacus-polyfill-probe.md`.
+- Loose end: NEON `simd_exp_f32` has ~47 scalar fcmp/csel (pre-existing, select/compare path); AVX2 mask packing for `select` still lane by lane.
+
+## 2026-10-30 — D-SIMD-MICRO-MACRO-1 step 1: packed microtile oracle (lab only)
+
+- `examples/microtile/` + `tests/microtile.rs`: 128-bit tiles of `5×U24/I24` (+8 metadata
+  bits) and `14×U9/I9` (+2 spare), field-isolated add/sub/carry/borrow/signed overflow,
+  intra-tile stencil, exact unsigned+signed fold; u128, SoA `U64x8`, widened `U32x16`,
+  bit-plane (`full_add_mask`) realizations, all against one unpacked oracle.
+- 9 tests green on AVX-512, AVX2, AVX, v2, NEON (qemu), nightly. Disable runs D1–D13 red
+  except D6 (redundant mask, removed).
+- Cost gate: no single winner. U24x5 → widened for add and fold; U9x14 → packed SoA for
+  L2-resident add, bit planes for the fold. u128 alone never wins (not vectorized).
+- Found: NEON/wasm `U32x16` lacks `&`, `|`, `-`, `!`, `+=`, `from_slice`, `copy_to_slice`.
+  Recorded, not fixed.
+- Open: steps 2–4 (KPEA method binding, Thought-0 delta reuse, interlacing). H13 stays
+  deferred. Report: `.claude/knowledge/microtile-probe.md`.

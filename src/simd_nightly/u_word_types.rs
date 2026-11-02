@@ -18,6 +18,38 @@ use core::simd::{u16x16, u16x32, u32x16, u32x8, u64x4, u64x8};
 pub struct U64x8(pub u64x8);
 
 impl U64x8 {
+    /// Lane `j` gains the sum of the bytes `a[i]`, `i` in `8j..8j+8`, whose bit
+    /// in `keep` is set: `vpsadbw` against zero on the kept bytes, accumulated
+    /// per lane with no horizontal reduction. Exact; each call adds at most
+    /// `8 * 255 = 2_040` to a lane, so the wrapping `u64` lanes hold more than
+    /// 9 * 10^15 calls. Reduce once at the end (`to_array`, `reduce_sum`).
+    ///
+    /// A masked byte sum is what a power-of-two anchor needs: with
+    /// `|b| = low7 + 128 * bit7`, `a * |b| = a * low7 + 128 * (sum of a where bit 7
+    /// of b is set)`, so the anchor term is this word with `keep = sign & bit7`.
+    ///
+    /// ```
+    /// use ndarray::simd::{U64x8, U8x64};
+    /// let a = U8x64::splat(255);
+    /// // Lane 0 keeps bytes 0 and 7, lane 1 keeps byte 8, the rest keep nothing.
+    /// let got = U64x8::splat(0).sum8_u8_add_masked(a, 0b1_1000_0001).to_array();
+    /// assert_eq!(got, [510, 255, 0, 0, 0, 0, 0, 0]);
+    /// ```
+    #[inline(always)]
+    pub fn sum8_u8_add_masked(self, a: super::U8x64, keep: u64) -> Self {
+        use core::simd::{Mask, Select, Simd, ToBytes};
+        let kept = Mask::<i8, 64>::from_bitmask(keep).select(a.0, Simd::splat(0));
+        // Each u64 lane holds its eight kept bytes; fold them pairwise in place.
+        let x = u64x8::from_ne_bytes(kept);
+        let (m8, m16) = (Simd::splat(0x00FF_00FF_00FF_00FFu64), Simd::splat(0x0000_FFFF_0000_FFFFu64));
+        let s = (x & m8) + ((x >> 8) & m8);
+        let s = (s & m16) + ((s >> 16) & m16);
+        let s = (s & Simd::splat(0xFFFF_FFFF)) + (s >> 32);
+        Self(self.0 + s)
+    }
+}
+
+impl U64x8 {
     pub const LANES: usize = 8;
 
     /// Lane-wise left-rotate by `n` bits — the u64 ARX rotate (BLAKE2b /
@@ -530,6 +562,25 @@ impl Default for U32x8 {
 #[repr(transparent)]
 pub struct U32x16(pub u32x16);
 
+/// Lane-wise variable shifts; counts stay below 32 by the callers' contract.
+impl core::ops::Shl<Self> for U32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn shl(self, rhs: Self) -> Self {
+        debug_assert!(rhs.to_array().iter().all(|&n| n < 32), "U32x16 shift counts are a caller contract: < 32");
+        Self(self.0 << rhs.0)
+    }
+}
+
+impl core::ops::Shr<Self> for U32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn shr(self, rhs: Self) -> Self {
+        debug_assert!(rhs.to_array().iter().all(|&n| n < 32), "U32x16 shift counts are a caller contract: < 32");
+        Self(self.0 >> rhs.0)
+    }
+}
+
 /// BLAKE3 `hash_many` shuffle surface — the transpose network's four unpacks
 /// and two half-concatenations, at DEGREE 16.
 ///
@@ -898,6 +949,75 @@ impl U16x32 {
     #[inline(always)]
     pub fn cmpgt_mask(self, other: Self) -> u32 {
         self.0.simd_gt(other.0).to_bitmask() as u32
+    }
+
+    // ── Facade surface shared with the other backends ─────────────
+
+    /// All 32 lanes zero.
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self(u16x32::splat(0))
+    }
+
+    /// Bytes 0..32 of `v`, zero-extended to `u16`.
+    #[inline(always)]
+    pub fn from_u8x64_lo(v: super::u8_types::U8x64) -> Self {
+        Self(core::simd::u8x32::from_slice(&v.0.as_array()[..32]).cast::<u16>())
+    }
+
+    /// Bytes 32..64 of `v`, zero-extended to `u16`.
+    #[inline(always)]
+    pub fn from_u8x64_hi(v: super::u8_types::U8x64) -> Self {
+        Self(core::simd::u8x32::from_slice(&v.0.as_array()[32..]).cast::<u16>())
+    }
+
+    /// `self` then `other`, each lane clamped to 255 and narrowed to `u8`:
+    /// bytes 0..32 come from `self`, bytes 32..64 from `other`.
+    #[inline(always)]
+    pub fn pack_saturate_u8(self, other: Self) -> super::u8_types::U8x64 {
+        let cap = u16x32::splat(255);
+        let a = self.0.simd_min(cap).cast::<u8>();
+        let b = other.0.simd_min(cap).cast::<u8>();
+        let mut out = [0u8; 64];
+        out[..32].copy_from_slice(a.as_array());
+        out[32..].copy_from_slice(b.as_array());
+        super::u8_types::U8x64(core::simd::u8x64::from_array(out))
+    }
+
+    /// Logical right shift of every lane; a count of 16 or more gives 0.
+    #[inline(always)]
+    pub fn shr(self, imm: u32) -> Self {
+        if imm >= 16 {
+            return Self::zero();
+        }
+        Self(self.0 >> u16x32::splat(imm as u16))
+    }
+
+    /// Left shift of every lane; a count of 16 or more gives 0.
+    #[inline(always)]
+    pub fn shl(self, imm: u32) -> Self {
+        if imm >= 16 {
+            return Self::zero();
+        }
+        Self(self.0 << u16x32::splat(imm as u16))
+    }
+
+    /// Per-lane wrapping multiply (low 16 bits of the product).
+    #[inline(always)]
+    pub fn mullo(self, other: Self) -> Self {
+        Self(self.0 * other.0)
+    }
+
+    /// Lanes 0..16 converted to `f32`. Every `u16` is exact in `f32`.
+    #[inline(always)]
+    pub fn to_f32x16_lo(self) -> super::f32_types::F32x16 {
+        super::f32_types::F32x16(u16x16::from_slice(&self.0.as_array()[..16]).cast::<f32>())
+    }
+
+    /// Lanes 16..32 converted to `f32`. Every `u16` is exact in `f32`.
+    #[inline(always)]
+    pub fn to_f32x16_hi(self) -> super::f32_types::F32x16 {
+        super::f32_types::F32x16(u16x16::from_slice(&self.0.as_array()[16..]).cast::<f32>())
     }
 }
 

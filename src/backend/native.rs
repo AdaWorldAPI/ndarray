@@ -935,6 +935,44 @@ mod avx2 {
 mod tests {
     use super::*;
 
+    /// `gemm_f32` is matrixmultiply's runtime-selected kernel. Measured with
+    /// `examples/float_accum_probe.rs` on this fixture: the FMA kernels
+    /// (AVX-512, FMA+AVX2, NEON) give one set of bits, the non-FMA kernels
+    /// (AVX, SSE2 fallback) another. The order over `k` is the same in all
+    /// five; only fused versus separate rounding differs. Pinned so a
+    /// matrixmultiply change to either class fails here.
+    #[test]
+    fn gemm_f32_bits_fall_in_the_fma_or_non_fma_class() {
+        const FMA_CLASS: u64 = 0x5bac_d082_3f5d_cadd;
+        const NON_FMA_CLASS: u64 = 0x632f_cf6d_b284_df8e;
+        let f = |i: usize, j: usize| {
+            (((i as u64 * 2_654_435_761 + j as u64 * 40_503) % 100_003) as f32 / 100_003.0 - 0.5) * 3.7
+        };
+        let (m, k, n) = (64, 1024, 48);
+        let a: Vec<f32> = (0..m * k).map(|x| f(x / k, x % k)).collect();
+        let b: Vec<f32> = (0..k * n).map(|x| f(x % n + 7, x / n)).collect();
+        let mut c = vec![0.0f32; m * n];
+        gemm_f32(m, n, k, 1.0, &a, k, &b, n, 0.0, &mut c, n);
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for v in &c {
+            for byte in v.to_bits().to_le_bytes() {
+                h ^= u64::from(byte);
+                h = h.wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+        #[cfg(target_arch = "x86_64")]
+        let fma = std::is_x86_feature_detected!("fma") && std::is_x86_feature_detected!("avx2");
+        #[cfg(target_arch = "aarch64")]
+        let fma = true;
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        return;
+        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+        {
+            let want = if fma { FMA_CLASS } else { NON_FMA_CLASS };
+            assert_eq!(h, want, "gemm_f32 bits moved (fma kernel: {fma}); re-measure with float_accum_probe");
+        }
+    }
+
     #[test]
     fn test_dot_f32() {
         let x = vec![1.0f32, 2.0, 3.0, 4.0];

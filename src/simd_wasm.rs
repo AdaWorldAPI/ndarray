@@ -2044,6 +2044,50 @@ pub mod wasm32_simd {
     }
 
     impl U64x8 {
+        /// Lane `j` gains the sum of the bytes `a[i]`, `i` in `8j..8j+8`, whose bit
+        /// in `keep` is set: `vpsadbw` against zero on the kept bytes, accumulated
+        /// per lane with no horizontal reduction. Exact; each call adds at most
+        /// `8 * 255 = 2_040` to a lane, so the wrapping `u64` lanes hold more than
+        /// 9 * 10^15 calls. Reduce once at the end (`to_array`, `reduce_sum`).
+        ///
+        /// A masked byte sum is what a power-of-two anchor needs: with
+        /// `|b| = low7 + 128 * bit7`, `a * |b| = a * low7 + 128 * (sum of a where bit 7
+        /// of b is set)`, so the anchor term is this word with `keep = sign & bit7`.
+        ///
+        /// ```
+        /// use ndarray::simd::{U64x8, U8x64};
+        /// let a = U8x64::splat(255);
+        /// // Lane 0 keeps bytes 0 and 7, lane 1 keeps byte 8, the rest keep nothing.
+        /// let got = U64x8::splat(0).sum8_u8_add_masked(a, 0b1_1000_0001).to_array();
+        /// assert_eq!(got, [510, 255, 0, 0, 0, 0, 0, 0]);
+        /// ```
+        #[inline(always)]
+        pub fn sum8_u8_add_masked(self, a: crate::simd::U8x64, keep: u64) -> Self {
+            let spread = crate::simd_masking_ops::mask_byte_spread(keep);
+            let a = a.to_array();
+            let bit = u64x2_splat(crate::simd_masking_ops::BIT_IN_BYTE);
+            let low32 = u64x2_splat(0xFFFF_FFFF);
+            let mut out = self.0;
+            for (q, lane) in out.iter_mut().enumerate() {
+                // SAFETY: simd128 is compiled in on this arm. Each load touches 16 bytes at
+                // offset 16*q of a 64-byte array, q < 4; `v128_load` needs no alignment. Byte `i`
+                // of `spread` repeats mask byte `i / 8`, so testing bit `i % 8` against
+                // `BIT_IN_BYTE` gives 0xFF exactly where bit `i` of `keep` is set.
+                let kept = unsafe {
+                    let m = i8x16_eq(v128_and(v128_load((spread.as_ptr() as *const v128).add(q)), bit), bit);
+                    v128_and(v128_load((a.as_ptr() as *const v128).add(q)), m)
+                };
+                // Bytes to u16 pairs to u32 quads; each u64 lane then holds two u32 sums,
+                // added by masking and shifting (no shuffle).
+                let s32 = u32x4_extadd_pairwise_u16x8(u16x8_extadd_pairwise_u8x16(kept));
+                let s64 = i64x2_add(v128_and(s32, low32), u64x2_shr(s32, 32));
+                *lane = U64x2(i64x2_add(lane.0, s64));
+            }
+            Self(out)
+        }
+    }
+
+    impl U64x8 {
         pub const LANES: usize = 8;
 
         /// Broadcast (`u64x2_splat` ×4).
@@ -2348,6 +2392,27 @@ pub mod wasm32_simd {
             Self(core::array::from_fn(|p| U64x2(v128_not(self.0[p].0))))
         }
     }
+    /// Lane-wise `U32x16 << rhs` with per-lane counts below 32. simd128 has
+    /// only a uniform shift, so this goes through lane extracts like `U64x8`.
+    impl core::ops::Shl<Self> for U32x16 {
+        type Output = Self;
+        #[inline(always)]
+        fn shl(self, r: Self) -> Self {
+            debug_assert!(r.to_array().iter().all(|&n| n < 32), "U32x16 shift counts are a caller contract: < 32");
+            let (a, n) = (self.to_array(), r.to_array());
+            Self::from_array(core::array::from_fn(|i| a[i].wrapping_shl(n[i])))
+        }
+    }
+    /// Lane-wise `U32x16 >> rhs` with per-lane counts (see `Shl`).
+    impl core::ops::Shr<Self> for U32x16 {
+        type Output = Self;
+        #[inline(always)]
+        fn shr(self, r: Self) -> Self {
+            debug_assert!(r.to_array().iter().all(|&n| n < 32), "U32x16 shift counts are a caller contract: < 32");
+            let (a, n) = (self.to_array(), r.to_array());
+            Self::from_array(core::array::from_fn(|i| a[i].wrapping_shr(n[i])))
+        }
+    }
     /// Lane-wise `self << rhs` with PER-LANE counts. simd128 has only a uniform
     /// shift, so this one operator goes through lane extracts; the scalar
     /// backend's `<<` panics on a count of 64 or more in debug builds, so
@@ -2516,6 +2581,83 @@ pub mod wasm32_simd {
 
     impl I32x16 {
         pub const LANES: usize = 16;
+
+        /// Adds four-byte dot products to each 32-bit lane: lane `j` gains
+        /// `a[4j]*b[4j] + a[4j+1]*b[4j+1] + a[4j+2]*b[4j+2] + a[4j+3]*b[4j+3]`,
+        /// with each `u8` of `a` multiplied by the signed `i8` of `b` at the same
+        /// position. The four products are exact; only the final addition to the
+        /// accumulator wraps on `i32` overflow, as with AVX-512 VNNI `vpdpbusd`.
+        ///
+        /// No intermediate saturates. Two products can reach `2 * 255 * 127`,
+        /// which does not fit `i16`, so an emulation through the saturating
+        /// `vpmaddubsw` would be wrong; every realization widens to 16 bits first.
+        ///
+        /// ```
+        /// use ndarray::simd::{I32x16, I8x64, U8x64};
+        /// let a = U8x64::splat(255);
+        /// let b = I8x64::splat(127);
+        /// // 4 * 255 * 127 = 129_540 per lane, past what a 16-bit pair sum can hold.
+        /// assert_eq!(I32x16::splat(1).dot4_u8_i8_add(a, b).to_array(), [129_541; 16]);
+        /// ```
+        #[inline(always)]
+        pub fn dot4_u8_i8_add(self, a: crate::simd::U8x64, b: crate::simd::I8x64) -> Self {
+            let (a, b) = (a.to_array(), b.to_array());
+            let mut out = self.0;
+            for (q, quad) in out.iter_mut().enumerate() {
+                // SAFETY: simd128 is compiled in on this arm. The two loads read 16 bytes at
+                // offset 16*q of 64-byte arrays, q < 4; `v128_load` needs no alignment. Even
+                // and odd bytes are widened into separate 16-bit lanes (zero-extended for
+                // `a`, sign-extended for `b`), so `i32x4_dot_i16x8` sums exact products: the
+                // even lanes give bytes 4j and 4j+2, the odd lanes 4j+1 and 4j+3.
+                let (av, bv) = unsafe {
+                    (v128_load(a.as_ptr().add(16 * q) as *const v128), v128_load(b.as_ptr().add(16 * q) as *const v128))
+                };
+                let even = i32x4_dot_i16x8(v128_and(av, u16x8_splat(0x00FF)), i16x8_shr(i16x8_shl(bv, 8), 8));
+                let odd = i32x4_dot_i16x8(u16x8_shr(av, 8), i16x8_shr(bv, 8));
+                quad.0 = i32x4_add(quad.0, i32x4_add(even, odd));
+            }
+            Self(out)
+        }
+
+        /// [`Self::dot4_u8_i8_add`] with the bytes of `a` whose bit in `keep` is 0
+        /// replaced by 0: lane `j` gains the sum of `a[i]*b[i]` over the bytes
+        /// `i` in `4j..4j+4` with bit `i` of `keep` set. Exact for every `u8` and
+        /// every `i8`, `-128` included; only the final addition to the accumulator
+        /// wraps on `i32` overflow.
+        ///
+        /// Two calls over the same bytes give a 9-bit sign-magnitude dot product
+        /// (magnitude in `a`, positive plane in `keep`) without widening the
+        /// operands: `pos.dot4_u8_i8_add_masked(m, plane, w) - neg.dot4_u8_i8_add_masked(m, !plane, w)`.
+        /// Each accumulator moves by at most `4 * 255 * 128 = 130_560` per call, so
+        /// it holds 16_448 calls before it can wrap.
+        ///
+        /// ```
+        /// use ndarray::simd::{I32x16, I8x64, U8x64};
+        /// let a = U8x64::splat(255);
+        /// let b = I8x64::splat(-128);
+        /// // Lane 0 keeps bytes 0 and 3, every other lane keeps nothing.
+        /// let got = I32x16::splat(0).dot4_u8_i8_add_masked(a, 0b1001, b).to_array();
+        /// assert_eq!(got[0], -2 * 255 * 128);
+        /// assert_eq!(got[1..], [0; 15]);
+        /// ```
+        #[inline(always)]
+        pub fn dot4_u8_i8_add_masked(self, a: crate::simd::U8x64, keep: u64, b: crate::simd::I8x64) -> Self {
+            let spread = crate::simd_masking_ops::mask_byte_spread(keep);
+            let mut kept = a.to_array();
+            let bit = u64x2_splat(crate::simd_masking_ops::BIT_IN_BYTE);
+            for q in 0..4 {
+                // SAFETY: simd128 is compiled in on this arm. Each load and store touches 16 bytes
+                // at offset 16*q of a 64-byte array (`spread` is `[u64; 8]`), q < 4; `v128_load`
+                // needs no alignment. Byte `i` of `spread` repeats mask byte `i / 8`, so testing
+                // bit `i % 8` against `BIT_IN_BYTE` gives 0xFF exactly where bit `i` of `keep` is set.
+                unsafe {
+                    let m = i8x16_eq(v128_and(v128_load((spread.as_ptr() as *const v128).add(q)), bit), bit);
+                    let p = (kept.as_mut_ptr() as *mut v128).add(q);
+                    v128_store(p, v128_and(v128_load(p), m));
+                }
+            }
+            self.dot4_u8_i8_add(crate::simd::U8x64::from_array(kept), b)
+        }
 
         /// Per-lane `SaturatingRoundingDoublingHighMul` (gemmlowp / NEON `VQRDMULH`):
         /// `round(2*a*b / 2^32)`, ties toward +inf, `MIN * MIN` saturating to `MAX`.

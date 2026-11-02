@@ -472,8 +472,30 @@ jobs:
       # mutually exclusive (`compile_error!`).
       - run: cargo +nightly doc --no-deps --features approx,serde,rayon
 
+  # Canonical DR512 P×M never-touched contract. This must fail loudly on
+  # an inverted presence bit, a fabricated -0/NaN, a lost negative number,
+  # or a stale independent SIMD/SM9 reference. No optional/passive gate.
+  dr512-epistemic-tripwire:
+    runs-on: ubuntu-latest
+    name: dr512/epistemic-presence
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Exhaustive codeword, distance, sparse-WHERE and negative-ceiling oracles
+        run: cargo test --test dr512_epistemic_contract
+      - name: Codec9 independent compile-time and scalar oracles
+        run: cargo test --lib hpc::codec9::tests
+      - name: LUT9 and its independent scalar lane oracle
+        run: cargo test --lib simd_stride::tests::lut9
+      - name: Legacy Palette512 arithmetic probe must agree on polarity
+        run: cargo test --example palette512_probe
+      - name: SM9 presence probe must have only one polarity plane
+        run: cargo test --example sm9_presence_probe
+
   conclusion:
     needs:
+      - dr512-epistemic-tripwire
       - clippy
       - format
       - nostd

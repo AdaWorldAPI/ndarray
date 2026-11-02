@@ -217,7 +217,9 @@ print(ti.get("file_path") or ti.get("notebook_path") or "")' 2>/dev/null)"
     for f in "$@"; do f="${f#"$ROOT"/}"; [ -f "$f" ] && whole_file "$f" | check_lines "$f"; done
     ;;
   --all)
-    while IFS= read -r f; do whole_file "$f" | check_lines "$f"; done \
+    # A tracked path can be a dangling symlink (crates/burn/src/*.rs point
+    # into an absent ../upstream checkout); skip anything that is not a file.
+    while IFS= read -r f; do [ -f "$f" ] && whole_file "$f" | check_lines "$f"; done \
       < <(git ls-files '*.rs' | while IFS= read -r f; do in_scope "$f" && echo "$f"; done)
     ;;
   *) echo "usage: $0 --hook | --diff <rev> | --all | --file <path>..." >&2; exit 64 ;;

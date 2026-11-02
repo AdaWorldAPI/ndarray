@@ -4,3 +4,4 @@
 src/hpc/perm.rs | R1 | Perm64 is a 64-lane permutation map; composing and materializing it is a genuine byte move, the operation itself (module doc: "composable maps").
 examples/ternlog_popcnt_gap_probe.rs | R1 | Benchmark that measures the nibble-LUT popcount as its baseline against ternlog + popcnt; the shuffle is the thing being measured.
 vendor/chacha20/* | R1 | ChaCha20 rotate-left by 8 and 16 bits is a fixed byte rotation (pshufb / vqtbl1q with a constant mask): the cipher's defined operation, in vendored upstream code.
+examples/u9_cost_probe.rs | R1 | Cost probe for 9-bit TurboVec scoring: the vpshufb / vpermb / vpermi2b table lookups are the candidates being timed against the lookup-free layout.

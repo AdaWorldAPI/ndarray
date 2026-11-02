@@ -822,17 +822,78 @@ pub fn matmul_f32_bf16_fast(
 /// accurate than the CPU f32 GEMM at every size tried (see the table in
 /// [`matmul_f32_amx_split`]).
 ///
-/// Delegates to `backend::native::gemm_f32` (matrixmultiply), which is
-/// f32 end to end: no BF16 downcast, no tile emulation.
+/// Calls `matrixmultiply::sgemm` (the kernel behind
+/// `backend::native::gemm_f32`) with each view's own row and column strides,
+/// so it reads `lhs` and `rhs` in place, in any layout (row-major,
+/// column-major, a transposed, stepped or reversed view), and writes the
+/// row-major `out` directly: no packing copies and no result buffer. f32 end to end: no BF16 downcast, no tile
+/// emulation. The kernel packs its own blocks, so the result is the same,
+/// bit for bit, whatever the input layout.
 pub fn matmul_f32(
     lhs: ArrayView2<'_, f32>, rhs: ArrayView2<'_, f32>, mut out: ArrayViewMut2<'_, f32>,
 ) -> Result<(), MatmulError> {
     let (m, n, k) = check_shapes(&lhs, &rhs, &out)?;
-    let a_f32 = pack_contig(&lhs);
-    let b_f32 = pack_contig(&rhs);
-    let mut c = vec![0.0f32; m * n];
-    crate::backend::native::gemm_f32(m, n, k, 1.0, &a_f32, k, &b_f32, n, 0.0, &mut c, n);
-    write_contig(&mut out, &c);
+    if m == 0 || n == 0 {
+        return Ok(());
+    }
+    let (rsa, csa) = (lhs.strides()[0], lhs.strides()[1]);
+    let (rsb, csb) = (rhs.strides()[0], rhs.strides()[1]);
+    let (rsc, csc) = (out.strides()[0], out.strides()[1]);
+    // SAFETY: the pointers and strides come from live views whose shapes
+    // `check_shapes` matched to (m, k), (k, n) and (m, n); matrixmultiply
+    // reads only those elements. `out` is a `&mut` view, so its elements do
+    // not alias each other or the inputs. beta = 0 overwrites `out` without
+    // reading it.
+    unsafe {
+        matrixmultiply::sgemm(
+            m,
+            k,
+            n,
+            1.0,
+            lhs.as_ptr(),
+            rsa,
+            csa,
+            rhs.as_ptr(),
+            rsb,
+            csb,
+            0.0,
+            out.as_mut_ptr(),
+            rsc,
+            csc,
+        );
+    }
+    Ok(())
+}
+
+/// [`matmul_f32`] over a leading batch axis: `out[i] = lhs[i] · rhs[i]`,
+/// shapes `[b, m, k] × [b, k, n] → [b, m, n]`. A `rhs` with batch size 1 is
+/// shared by every `lhs[i]` (a weight matrix applied to every head). Each
+/// batch entry goes through [`matmul_f32`], so it is copy-free too.
+///
+/// # Errors
+///
+/// [`MatmulError::ShapeMismatch`] if the batch sizes disagree (other than a
+/// shared `rhs`) or any batch entry's shapes do not multiply.
+pub fn matmul_f32_batched(
+    lhs: crate::ArrayView3<'_, f32>, rhs: crate::ArrayView3<'_, f32>, mut out: crate::ArrayViewMut3<'_, f32>,
+) -> Result<(), MatmulError> {
+    use crate::Axis;
+    let (b, m, k) = lhs.dim();
+    let (rb, kr, n) = rhs.dim();
+    let (ob, mo, no) = out.dim();
+    // Inner shapes are checked here, not only per entry: an empty batch
+    // runs no entry, and must not let mismatched shapes pass as `Ok`.
+    if ob != b || !(rb == b || rb == 1) || k != kr || m != mo || n != no {
+        return Err(MatmulError::ShapeMismatch {
+            lhs: (m, k),
+            rhs: (kr, n),
+            out: (mo, no),
+        });
+    }
+    for i in 0..b {
+        let r = rhs.index_axis(Axis(0), if rb == 1 { 0 } else { i });
+        matmul_f32(lhs.index_axis(Axis(0), i), r, out.index_axis_mut(Axis(0), i))?;
+    }
     Ok(())
 }
 
@@ -1033,6 +1094,84 @@ fn subtract_i8_to_u8_bias(c: &mut [i32], b_i8: &[i8], m: usize, n: usize, k: usi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The old `matmul_f32`: pack both inputs row-major, gemm into a buffer,
+    /// copy into `out`. The strided path must give the same bits.
+    fn matmul_f32_packed(lhs: ArrayView2<'_, f32>, rhs: ArrayView2<'_, f32>) -> crate::Array2<f32> {
+        let (m, k) = lhs.dim();
+        let n = rhs.dim().1;
+        let (a, b) = (pack_contig(&lhs), pack_contig(&rhs));
+        let mut c = vec![0.0f32; m * n];
+        crate::backend::native::gemm_f32(m, n, k, 1.0, &a, k, &b, n, 0.0, &mut c, n);
+        crate::Array2::from_shape_vec((m, n), c).unwrap()
+    }
+
+    #[test]
+    fn matmul_f32_reads_any_layout_in_place_and_matches_the_packed_path() {
+        use crate::{s, Array2, ShapeBuilder};
+        let f = |i: usize, j: usize| ((i * 31 + j * 17) % 23) as f32 * 0.137 - 1.3;
+        let (m, k, n) = (37, 29, 41);
+        let a = Array2::from_shape_fn((m, k), |(i, j)| f(i, j));
+        let b = Array2::from_shape_fn((k, n), |(i, j)| f(j + 3, i));
+        let want = matmul_f32_packed(a.view(), b.view());
+        // Row-major, column-major, a transposed view, a stepped slice and a
+        // reversed axis: five layouts, one answer.
+        let a_f = Array2::from_shape_fn((m, k).f(), |(i, j)| f(i, j));
+        let b_t_owned = Array2::from_shape_fn((n, k), |(j, i)| f(j + 3, i));
+        let a_wide = Array2::from_shape_fn((m, 2 * k), |(i, j)| if j % 2 == 0 { f(i, j / 2) } else { f32::NAN });
+        let mut a_rev = Array2::from_shape_fn((m, k), |(i, j)| f(i, k - 1 - j));
+        a_rev.invert_axis(crate::Axis(1));
+        let cases: [(ArrayView2<'_, f32>, ArrayView2<'_, f32>); 4] = [
+            (a.view(), b.view()),
+            (a_f.view(), b_t_owned.t()),
+            (a_wide.slice(s![.., ..;2]), b.view()),
+            (a_rev.view(), b.view()),
+        ];
+        for (idx, (l, r)) in cases.iter().enumerate() {
+            // `out` starts as NaN: beta = 0 must overwrite, never read.
+            let mut out = Array2::from_elem((m, n), f32::NAN);
+            matmul_f32(l.view(), r.view(), out.view_mut()).unwrap();
+            for ((i, j), &v) in out.indexed_iter() {
+                assert_eq!(v.to_bits(), want[[i, j]].to_bits(), "case {idx} at ({i}, {j})");
+            }
+        }
+        // `out` must stay row-major (the existing `check_shapes` contract);
+        // inputs may have any layout.
+        let mut out_f = Array2::from_elem((m, n).f(), f32::NAN);
+        assert!(matches!(matmul_f32(a.view(), b.view(), out_f.view_mut()), Err(MatmulError::NonContiguousOutput)));
+        // k = 0: the product is all zeros, still without reading `out`.
+        let mut z = Array2::from_elem((3, 4), f32::NAN);
+        matmul_f32(Array2::<f32>::zeros((3, 0)).view(), Array2::<f32>::zeros((0, 4)).view(), z.view_mut()).unwrap();
+        assert!(z.iter().all(|&v| v == 0.0), "{z:?}");
+    }
+
+    #[test]
+    fn matmul_f32_batched_matches_per_entry_and_shares_a_single_rhs() {
+        use crate::Array3;
+        let (bsz, m, k, n) = (3, 5, 7, 4);
+        let l = Array3::from_shape_fn((bsz, m, k), |(b, i, j)| (b * 7 + i * 3 + j) as f32 * 0.25 - 2.0);
+        let r = Array3::from_shape_fn((bsz, k, n), |(b, i, j)| (b + i * 5 + j * 2) as f32 * 0.125 - 1.0);
+        let mut out = Array3::<f32>::zeros((bsz, m, n));
+        matmul_f32_batched(l.view(), r.view(), out.view_mut()).unwrap();
+        let shared = r.slice(crate::s![..1, .., ..]);
+        let mut out_shared = Array3::<f32>::zeros((bsz, m, n));
+        matmul_f32_batched(l.view(), shared, out_shared.view_mut()).unwrap();
+        for b in 0..bsz {
+            let want = matmul_f32_packed(l.index_axis(crate::Axis(0), b), r.index_axis(crate::Axis(0), b));
+            assert_eq!(out.index_axis(crate::Axis(0), b), want, "batch {b}");
+            let want0 = matmul_f32_packed(l.index_axis(crate::Axis(0), b), r.index_axis(crate::Axis(0), 0));
+            assert_eq!(out_shared.index_axis(crate::Axis(0), b), want0, "shared rhs, batch {b}");
+        }
+        // A batch of 2 against 3 is refused, not truncated.
+        let mut bad = Array3::<f32>::zeros((bsz, m, n));
+        assert!(matmul_f32_batched(l.view(), r.slice(crate::s![..2, .., ..]), bad.view_mut()).is_err());
+        // An empty batch still validates the inner shapes.
+        let (l0, r1, mut o0) =
+            (Array3::<f32>::zeros((0, 2, 3)), Array3::<f32>::zeros((1, 4, 5)), Array3::<f32>::zeros((0, 9, 8)));
+        assert!(matmul_f32_batched(l0.view(), r1.view(), o0.view_mut()).is_err());
+        let (r_ok, mut o_ok) = (Array3::<f32>::zeros((1, 3, 5)), Array3::<f32>::zeros((0, 2, 5)));
+        assert!(matmul_f32_batched(l0.view(), r_ok.view(), o_ok.view_mut()).is_ok());
+    }
 
     #[test]
     fn test_tile_config_creation() {

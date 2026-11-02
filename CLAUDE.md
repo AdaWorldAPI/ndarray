@@ -38,6 +38,11 @@ with no shuffle anywhere.
 3. **u8 has no sign. Never mix u8 with i8.** No `as i8` on unsigned data in
    SIMD code, no signed compare on unsigned bytes, no u8 <-> i8 conversion
    lines. Use the unsigned type end to end.
+   The one sanctioned crossing (operator, 2026-10-30) is a bit reinterpret
+   with an explicit intent parameter: `U8x64::reinterpret_as_i8(ReinterpretBits)`
+   / `I8x64::reinterpret_as_u8(ReinterpretBits)`. Nothing is converted, the
+   marker must be written at the call site, and arithmetic afterwards follows
+   the new type. A plain `as i8` stays forbidden.
 
 **Guard:** `.claude/hooks/facet-stride-guard.sh` runs after every Edit/Write
 (wired in `.claude/settings.json`) and checks the lines the change adds:

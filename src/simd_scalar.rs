@@ -528,6 +528,38 @@ impl_int_type!(U16x32, u16, 32, 0u16);
 impl_int_type!(U32x16, u32, 16, 0u32);
 impl_int_type!(U64x8, u64, 8, 0u64);
 
+impl U64x8 {
+    /// Lane `j` gains the sum of the bytes `a[i]`, `i` in `8j..8j+8`, whose bit
+    /// in `keep` is set: `vpsadbw` against zero on the kept bytes, accumulated
+    /// per lane with no horizontal reduction. Exact; each call adds at most
+    /// `8 * 255 = 2_040` to a lane, so the wrapping `u64` lanes hold more than
+    /// 9 * 10^15 calls. Reduce once at the end (`to_array`, `reduce_sum`).
+    ///
+    /// A masked byte sum is what a power-of-two anchor needs: with
+    /// `|b| = low7 + 128 * bit7`, `a * |b| = a * low7 + 128 * (sum of a where bit 7
+    /// of b is set)`, so the anchor term is this word with `keep = sign & bit7`.
+    ///
+    /// ```
+    /// use ndarray::simd::{U64x8, U8x64};
+    /// let a = U8x64::splat(255);
+    /// // Lane 0 keeps bytes 0 and 7, lane 1 keeps byte 8, the rest keep nothing.
+    /// let got = U64x8::splat(0).sum8_u8_add_masked(a, 0b1_1000_0001).to_array();
+    /// assert_eq!(got, [510, 255, 0, 0, 0, 0, 0, 0]);
+    /// ```
+    #[inline(always)]
+    pub fn sum8_u8_add_masked(self, a: U8x64, keep: u64) -> Self {
+        let (a, mut o) = (a.to_array(), self.to_array());
+        for (j, lane) in o.iter_mut().enumerate() {
+            for (i, &x) in a.iter().enumerate().skip(8 * j).take(8) {
+                if keep >> i & 1 == 1 {
+                    *lane = lane.wrapping_add(u64::from(x));
+                }
+            }
+        }
+        Self::from_array(o)
+    }
+}
+
 /// u64 ARX rotate — the BLAKE2b / argon2 lane.
 ///
 /// Scalar per-lane loops, and **measured not to vectorize**: the codegen
@@ -981,10 +1013,199 @@ impl U16x32 {
         }
         Self(out)
     }
+
+    /// All 32 lanes zero.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// assert_eq!(U16x32::zero().to_array(), [0u16; 32]);
+    /// ```
+    #[inline(always)]
+    pub fn zero() -> Self {
+        Self([0u16; 32])
+    }
+
+    /// Per-lane unsigned minimum.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let a = U16x32::from_array(core::array::from_fn(|i| i as u16));
+    /// assert_eq!(a.simd_min(U16x32::splat(10)).to_array()[20], 10);
+    /// ```
+    #[inline(always)]
+    pub fn simd_min(self, other: Self) -> Self {
+        Self(core::array::from_fn(|i| self.0[i].min(other.0[i])))
+    }
+
+    /// Per-lane unsigned maximum.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let a = U16x32::from_array(core::array::from_fn(|i| i as u16));
+    /// assert_eq!(a.simd_max(U16x32::splat(10)).to_array()[3], 10);
+    /// ```
+    #[inline(always)]
+    pub fn simd_max(self, other: Self) -> Self {
+        Self(core::array::from_fn(|i| self.0[i].max(other.0[i])))
+    }
+
+    /// Per-lane addition clamped at `u16::MAX`.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let s = U16x32::splat(u16::MAX - 1).saturating_add(U16x32::splat(5));
+    /// assert_eq!(s.to_array(), [u16::MAX; 32]);
+    /// ```
+    #[inline(always)]
+    pub fn saturating_add(self, other: Self) -> Self {
+        Self(core::array::from_fn(|i| self.0[i].saturating_add(other.0[i])))
+    }
+
+    /// Per-lane subtraction clamped at 0.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// assert_eq!(U16x32::splat(3).saturating_sub(U16x32::splat(5)).to_array(), [0u16; 32]);
+    /// ```
+    #[inline(always)]
+    pub fn saturating_sub(self, other: Self) -> Self {
+        Self(core::array::from_fn(|i| self.0[i].saturating_sub(other.0[i])))
+    }
+
+    /// Per-lane equality as a bitmask: bit `i` is set iff lane `i` is equal.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let a = U16x32::from_array(core::array::from_fn(|i| i as u16));
+    /// assert_eq!(a.cmpeq_mask(U16x32::splat(5)), 1 << 5);
+    /// ```
+    #[inline(always)]
+    pub fn cmpeq_mask(self, other: Self) -> u32 {
+        (0..32).fold(0u32, |m, i| m | (((self.0[i] == other.0[i]) as u32) << i))
+    }
+
+    /// Per-lane unsigned `self > other` as a bitmask, lane `i` in bit `i`.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let a = U16x32::from_array(core::array::from_fn(|i| i as u16));
+    /// assert_eq!(a.cmpgt_mask(U16x32::splat(29)), (1 << 30) | (1 << 31));
+    /// ```
+    #[inline(always)]
+    pub fn cmpgt_mask(self, other: Self) -> u32 {
+        (0..32).fold(0u32, |m, i| m | (((self.0[i] > other.0[i]) as u32) << i))
+    }
+
+    /// Smallest lane.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let a = U16x32::from_array(core::array::from_fn(|i| 100 - i as u16));
+    /// assert_eq!(a.reduce_min(), 69);
+    /// ```
+    #[inline(always)]
+    pub fn reduce_min(self) -> u16 {
+        self.0.iter().copied().fold(u16::MAX, u16::min)
+    }
+
+    /// Largest lane.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let a = U16x32::from_array(core::array::from_fn(|i| i as u16 * 3));
+    /// assert_eq!(a.reduce_max(), 93);
+    /// ```
+    #[inline(always)]
+    pub fn reduce_max(self) -> u16 {
+        self.0.iter().copied().fold(0, u16::max)
+    }
+
+    /// Lanes 0..16 converted to `f32`. Every `u16` is exact in `f32`.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let a = U16x32::from_array(core::array::from_fn(|i| i as u16 * 1000));
+    /// assert_eq!(a.to_f32x16_lo().to_array()[15], 15_000.0);
+    /// ```
+    // Returns the facade's `F32x16`, not this file's: on aarch64 and wasm this
+    // `U16x32` is the facade type but `F32x16` is the native NEON/wasm one.
+    #[inline(always)]
+    pub fn to_f32x16_lo(self) -> crate::simd::F32x16 {
+        crate::simd::F32x16::from_array(core::array::from_fn(|i| self.0[i] as f32))
+    }
+
+    /// Lanes 16..32 converted to `f32`. Every `u16` is exact in `f32`.
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let a = U16x32::from_array(core::array::from_fn(|i| i as u16 * 1000));
+    /// assert_eq!(a.to_f32x16_hi().to_array()[0], 16_000.0);
+    /// ```
+    #[inline(always)]
+    pub fn to_f32x16_hi(self) -> crate::simd::F32x16 {
+        crate::simd::F32x16::from_array(core::array::from_fn(|i| self.0[16 + i] as f32))
+    }
 }
 
 // Extra methods for I32x16 that float types have via the macro
 impl I32x16 {
+    /// Adds four-byte dot products to each 32-bit lane: lane `j` gains
+    /// `a[4j]*b[4j] + a[4j+1]*b[4j+1] + a[4j+2]*b[4j+2] + a[4j+3]*b[4j+3]`,
+    /// with each `u8` of `a` multiplied by the signed `i8` of `b` at the same
+    /// position. The four products are exact; only the final addition to the
+    /// accumulator wraps on `i32` overflow, as with AVX-512 VNNI `vpdpbusd`.
+    ///
+    /// No intermediate saturates. Two products can reach `2 * 255 * 127`,
+    /// which does not fit `i16`, so an emulation through the saturating
+    /// `vpmaddubsw` would be wrong; every realization widens to 16 bits first.
+    ///
+    /// ```
+    /// use ndarray::simd::{I32x16, I8x64, U8x64};
+    /// let a = U8x64::splat(255);
+    /// let b = I8x64::splat(127);
+    /// // 4 * 255 * 127 = 129_540 per lane, past what a 16-bit pair sum can hold.
+    /// assert_eq!(I32x16::splat(1).dot4_u8_i8_add(a, b).to_array(), [129_541; 16]);
+    /// ```
+    #[inline(always)]
+    pub fn dot4_u8_i8_add(self, a: U8x64, b: I8x64) -> Self {
+        let (a, b) = (a.to_array(), b.to_array());
+        let mut acc = self.to_array();
+        for (j, lane) in acc.iter_mut().enumerate() {
+            let sum: i32 = (4 * j..4 * j + 4)
+                .map(|i| i32::from(a[i]) * i32::from(b[i]))
+                .sum();
+            *lane = lane.wrapping_add(sum);
+        }
+        Self::from_array(acc)
+    }
+
+    /// [`Self::dot4_u8_i8_add`] with the bytes of `a` whose bit in `keep` is 0
+    /// replaced by 0: lane `j` gains the sum of `a[i]*b[i]` over the bytes
+    /// `i` in `4j..4j+4` with bit `i` of `keep` set. Exact for every `u8` and
+    /// every `i8`, `-128` included; only the final addition to the accumulator
+    /// wraps on `i32` overflow.
+    ///
+    /// Two calls over the same bytes give a 9-bit sign-magnitude dot product
+    /// (magnitude in `a`, positive plane in `keep`) without widening the
+    /// operands: `pos.dot4_u8_i8_add_masked(m, plane, w) - neg.dot4_u8_i8_add_masked(m, !plane, w)`.
+    /// Each accumulator moves by at most `4 * 255 * 128 = 130_560` per call, so
+    /// it holds 16_448 calls before it can wrap.
+    ///
+    /// ```
+    /// use ndarray::simd::{I32x16, I8x64, U8x64};
+    /// let a = U8x64::splat(255);
+    /// let b = I8x64::splat(-128);
+    /// // Lane 0 keeps bytes 0 and 3, every other lane keeps nothing.
+    /// let got = I32x16::splat(0).dot4_u8_i8_add_masked(a, 0b1001, b).to_array();
+    /// assert_eq!(got[0], -2 * 255 * 128);
+    /// assert_eq!(got[1..], [0; 15]);
+    /// ```
+    #[inline(always)]
+    pub fn dot4_u8_i8_add_masked(self, a: U8x64, keep: u64, b: I8x64) -> Self {
+        let a = a.to_array();
+        self.dot4_u8_i8_add(U8x64::from_array(core::array::from_fn(|i| if keep >> i & 1 == 1 { a[i] } else { 0 })), b)
+    }
+
     /// Per-lane `SaturatingRoundingDoublingHighMul` (gemmlowp / NEON `VQRDMULH`):
     /// `round(2*a*b / 2^32)`, ties toward +inf, `MIN * MIN` saturating to `MAX`.
     ///
@@ -1612,6 +1833,28 @@ impl MulAssign for U8x64 {
 
 // U8x64 extra methods — byte-level operations for palette codec, nibble, byte scan
 impl U8x64 {
+    /// The low four bits of every byte, `x & 0x0F`.
+    ///
+    /// ```
+    /// use ndarray::simd::U8x64;
+    /// assert_eq!(U8x64::splat(0xA7).low_nibbles().to_array(), [0x07; 64]);
+    /// ```
+    #[inline(always)]
+    pub fn low_nibbles(self) -> Self {
+        Self(self.0.map(|x| x & 0x0F))
+    }
+
+    /// The high four bits of every byte, moved down: `x >> 4`.
+    ///
+    /// ```
+    /// use ndarray::simd::U8x64;
+    /// assert_eq!(U8x64::splat(0xA7).high_nibbles().to_array(), [0x0A; 64]);
+    /// ```
+    #[inline(always)]
+    pub fn high_nibbles(self) -> Self {
+        Self(self.0.map(|x| x >> 4))
+    }
+
     #[inline(always)]
     pub fn reduce_min(self) -> u8 {
         *self.0.iter().min().unwrap_or(&0)

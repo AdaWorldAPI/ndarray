@@ -639,14 +639,14 @@ const TWO_POW_NEG_64: f32 = 5.421_011e-20;
 #[inline(always)]
 #[allow(dead_code)]
 fn pow2n_from_int(n: F32x16) -> F32x16 {
-    let arr = n.to_array();
-    let mut out = [0.0f32; 16];
-    for i in 0..16 {
-        let ni = (arr[i] as i32).clamp(-126, 127);
-        let bits = ((ni + 127) as u32) << 23;
-        out[i] = f32::from_bits(bits);
-    }
-    F32x16::from_array(out)
+    // `n` is integral (it comes from `round`), so after the clamp
+    // `2^23 + 127 + n` is an exact f32 whose mantissa field holds the biased
+    // exponent `k = n + 127` in [1, 254] and whose exponent field is
+    // 0x4B00_0000. Shifting the bits left by 23 pushes 0x4B00_0000 out of the
+    // word and moves `k` into the exponent field: the bits of 2^n. No lane
+    // leaves its register.
+    let biased = n.simd_clamp(F32x16::splat(-126.0), F32x16::splat(127.0)) + F32x16::splat(8_388_608.0 + 127.0);
+    F32x16::from_bits(biased.to_bits() << U32x16::splat(23))
 }
 
 /// Fast natural log for F32x16.
@@ -714,6 +714,34 @@ pub use crate::hpc::fingerprint::{
 };
 pub use crate::hpc::phase::{phase_lut_4096, radians_from_turns, turns_from_radians, PhaseLut, PhaseStep};
 pub use crate::hpc::statistics::{moments_u32, MomentsU32};
+// Checked i64 arithmetic (ONNX int64 Add/Sub/Mul/Div and Range), surfaced so
+// consumers name it through the facade, never through `hpc`. Plain re-exports:
+// same functions, same refusal policy.
+///
+/// ```
+/// use ndarray::simd::{checked_binary_i64, I64ArithError, I64Op};
+/// let mut out = [0i64; 2];
+/// checked_binary_i64(I64Op::Mul, &[4, 3], &[2], &mut out).unwrap();
+/// assert_eq!(out, [8, 6]);
+/// assert!(matches!(
+///     checked_binary_i64(I64Op::Mul, &[i64::MAX, 1], &[2], &mut out),
+///     Err(I64ArithError::Overflow { .. })
+/// ));
+/// ```
+pub use crate::hpc::checked_i64::{checked_binary_i64, checked_i64, range_i64, range_len_i64, I64ArithError, I64Op};
+// Element-wise f32 math (VML), activations and the batched f32 matmul,
+// surfaced so consumers stay on the one `ndarray::simd::*` import path.
+// Plain re-exports of the `hpc` items: same functions, same behaviour.
+pub use crate::hpc::activations::{log_softmax_axis_f32, log_softmax_f32, sigmoid_f32, softmax_axis_f32, softmax_f32};
+pub use crate::hpc::vml::{
+    vsabs, vsadd, vsceil, vscos, vsdiv, vserf, vsexp, vsfloor, vsln, vsmul, vsneg, vspow, vsround, vssin, vssqrt,
+    vstanh, vstrunc,
+};
+// `hpc::amx_matmul` is `#[cfg(target_arch = "x86_64")]`; the re-export uses
+// the same gate. `matmul_f32` itself is not re-exported: under
+// `runtime-dispatch` that name is the `simd_runtime` trampoline.
+#[cfg(target_arch = "x86_64")]
+pub use crate::hpc::amx_matmul::{matmul_f32_batched, MatmulError};
 
 // PR-X1 — SoA carrier + const-size slice helpers, dispatched from their
 // respective `simd_{type}.rs` modules. The W1a consumer contract forbids
@@ -880,11 +908,20 @@ pub use crate::simd_masking_ops::{
     // 2026-09-16: the ordered u64 family (N3/G2). The width where the packing
     // is NOT free — `U64x8` is 8 lanes, so eight groups share a word and each
     // lands at its own byte.
+    blend_f32,
+    blend_f32_scalar,
     blend_i32,
+    blend_i32_scalar,
+    blend_i64,
+    blend_i64_scalar,
+    eq_f32_pair_to_mask,
     eq_f32_to_mask,
     eq_f64_to_mask,
+    eq_i32_pair_to_mask,
     eq_i32_to_mask,
     eq_i32_to_mask_under,
+    eq_i64_pair_to_mask,
+    eq_i64_to_mask,
     eq_u32_strided_to_mask,
     eq_u32_to_mask,
     eq_u32_to_mask_under,
@@ -893,28 +930,44 @@ pub use crate::simd_masking_ops::{
     eq_u8_to_mask,
     fold_bounded_cross_power_sums_tiles,
     fold_bounded_power_sums_tiles,
+    ge_f32_pair_to_mask,
     ge_f32_to_mask,
     ge_f64_to_mask,
+    ge_i32_pair_to_mask,
     ge_i32_to_mask,
     ge_i32_to_mask_under,
+    ge_i64_pair_to_mask,
+    ge_i64_to_mask,
     ge_u64_to_mask,
     ge_u8_to_mask,
+    gt_f32_pair_to_mask,
     gt_f32_to_mask,
     gt_f64_to_mask,
+    gt_i32_pair_to_mask,
     gt_i32_to_mask,
     gt_i32_to_mask_under,
+    gt_i64_pair_to_mask,
+    gt_i64_to_mask,
     gt_u64_to_mask,
     gt_u8_to_mask,
+    le_f32_pair_to_mask,
     le_f32_to_mask,
     le_f64_to_mask,
+    le_i32_pair_to_mask,
     le_i32_to_mask,
     le_i32_to_mask_under,
+    le_i64_pair_to_mask,
+    le_i64_to_mask,
     le_u64_to_mask,
     le_u8_to_mask,
+    lt_f32_pair_to_mask,
     lt_f32_to_mask,
     lt_f64_to_mask,
+    lt_i32_pair_to_mask,
     lt_i32_to_mask,
     lt_i32_to_mask_under,
+    lt_i64_pair_to_mask,
+    lt_i64_to_mask,
     lt_u64_to_mask,
     lt_u8_to_mask,
     mask_all,
@@ -979,6 +1032,7 @@ pub use crate::simd_masking_ops::{
     ne_f64_to_mask,
     ne_i32_to_mask,
     ne_i32_to_mask_under,
+    ne_i64_to_mask,
     ne_u32_to_mask,
     ne_u32_to_mask_under,
     ne_u64_to_mask,
@@ -1003,6 +1057,9 @@ pub use crate::simd_masking_ops::{
     BOUNDED_TILE_ROWS,
     SYM_EMPTY_I64,
 };
+// Binary positional adders over 64 one-bit lanes (the #389/#391 `carry_save3`
+// and `flip` laws).
+pub use crate::simd_masking_ops::{full_add_mask, half_add_mask};
 #[cfg(feature = "std")]
 pub use crate::simd_stride::{lut9, lut_u8, FACET_BYTES};
 // The popcount that closes the loop on the masks above: `mask_count` in ABI
@@ -1034,6 +1091,49 @@ pub use crate::simd_fixedpoint::{quantize_multiplier, quantize_multiplier_single
 // `chacha20` fork (`vendor/chacha20/`) carries the accelerated backend, riding
 // the `U32x16` ARX lane above, and is `[patch]`ed transitively under the
 // `encryption` AEAD. RustCrypto owns the cipher; ndarray exposes only the lane.
+
+// ============================================================================
+// Named bit reinterpret between U8x64 and I8x64
+// ============================================================================
+
+/// Intent marker for a bit-level reinterpret between [`U8x64`] and [`I8x64`].
+///
+/// FACET STRIDE rule 3 forbids mixing `u8` and `i8` (no `as i8` on unsigned
+/// data, no signed compare on unsigned bytes). The one sanctioned crossing is
+/// a reinterpret of the bit pattern, and it must be visible at the call site:
+/// the marker has to be passed by name, so a reader always sees
+/// `reinterpret_as_i8(ReinterpretBits)` and never an implicit cast.
+///
+/// The value is not converted. `0x80` becomes `-128`, `0xFF` becomes `-1`;
+/// nothing saturates or wraps, because no arithmetic happens. Arithmetic on
+/// the reinterpreted lanes still follows the type it now has.
+///
+/// ```
+/// use ndarray::simd::{ReinterpretBits, U8x64};
+/// let v = U8x64::splat(0xFF).reinterpret_as_i8(ReinterpretBits);
+/// assert_eq!(v.to_array(), [-1i8; 64]);
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReinterpretBits;
+
+impl U8x64 {
+    /// Reinterpret the 64 byte lanes as `i8`, bit for bit. See [`ReinterpretBits`].
+    #[inline(always)]
+    pub fn reinterpret_as_i8(self, _intent: ReinterpretBits) -> I8x64 {
+        // SAFETY: `[u8; 64]` and `[i8; 64]` have the same size and alignment,
+        // and every bit pattern is a valid value of both.
+        I8x64::from_array(unsafe { core::mem::transmute::<[u8; 64], [i8; 64]>(self.to_array()) })
+    }
+}
+
+impl I8x64 {
+    /// Reinterpret the 64 byte lanes as `u8`, bit for bit. See [`ReinterpretBits`].
+    #[inline(always)]
+    pub fn reinterpret_as_u8(self, _intent: ReinterpretBits) -> U8x64 {
+        // SAFETY: as in `U8x64::reinterpret_as_i8`.
+        U8x64::from_array(unsafe { core::mem::transmute::<[i8; 64], [u8; 64]>(self.to_array()) })
+    }
+}
 
 // ============================================================================
 // Tests
@@ -1719,6 +1819,41 @@ mod tests {
     }
 
     #[test]
+    fn u32x16_variable_shifts_match_per_lane_shifts() {
+        // Distinct value and count per lane, every count 0..32 used, so a
+        // backend that shifted by lane 0's count or a uniform count fails.
+        for base in 0..2u32 {
+            let a: [u32; 16] = core::array::from_fn(|i| 0x9E37_79B9u32.rotate_left(i as u32 * 5 + base));
+            let n: [u32; 16] = core::array::from_fn(|i| (i as u32 * 7 + base * 16) % 32);
+            let (va, vn) = (U32x16::from_array(a), U32x16::from_array(n));
+            let l = (va << vn).to_array();
+            let r = (va >> vn).to_array();
+            for i in 0..16 {
+                assert_eq!(l[i], a[i] << n[i], "shl lane {i}");
+                assert_eq!(r[i], a[i] >> n[i], "shr lane {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn pow2n_from_int_is_exactly_two_to_the_clamped_n() {
+        // Every integral n in [-200, 200] (so both clamp ends are crossed),
+        // checked bit for bit against the scalar exponent-field rule.
+        let ns: Vec<f32> = (-200..=200).map(|n| n as f32).collect();
+        for chunk in ns.chunks(16) {
+            let mut lanes = [0.0f32; 16];
+            lanes[..chunk.len()].copy_from_slice(chunk);
+            let got = pow2n_from_int(F32x16::from_array(lanes)).to_array();
+            for (&n, &g) in lanes.iter().zip(&got) {
+                let k = ((n as i32).clamp(-126, 127) + 127) as u32;
+                assert_eq!(g.to_bits(), k << 23, "n={n}");
+            }
+        }
+        assert_eq!(pow2n_from_int(F32x16::splat(0.0)).to_array(), [1.0; 16]);
+        assert_eq!(pow2n_from_int(F32x16::splat(-126.0)).to_array(), [f32::MIN_POSITIVE; 16]);
+    }
+
+    #[test]
     fn simd_exp_f32_basic() {
         let zero = F32x16::splat(0.0);
         let result = simd_exp_f32(zero);
@@ -2192,5 +2327,469 @@ mod tests {
                 assert_eq!(t[i], a[i] & b[i] & !c[i], "u32 ternlog lane {i}");
             }
         }
+    }
+}
+
+/// Parity of the `U16x32` surface against a plain-array reference, run on
+/// whichever backend this build selected (AVX-512, AVX2, AVX, scalar, NEON,
+/// wasm or nightly). The corpus mixes a fixed-seed generator with the edge
+/// values a u16 lane can hit: 0, 1, 255, 256, 0x7FFF, 0x8000, 0xFFFF.
+#[cfg(test)]
+mod u16x32_facade_parity {
+    use super::{F32x16, U16x32, U8x64};
+
+    const EDGES: [u16; 7] = [0, 1, 255, 256, 0x7FFF, 0x8000, 0xFFFF];
+
+    fn corpus() -> Vec<[u16; 32]> {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 48) as u16
+        };
+        let mut out: Vec<[u16; 32]> = (0..64).map(|_| core::array::from_fn(|_| next())).collect();
+        for &e in &EDGES {
+            out.push([e; 32]);
+        }
+        out.push(core::array::from_fn(|i| EDGES[i % EDGES.len()]));
+        out.push(core::array::from_fn(|i| EDGES[(i * 3 + 1) % EDGES.len()]));
+        out
+    }
+
+    fn v(a: [u16; 32]) -> U16x32 {
+        U16x32::from_array(a)
+    }
+
+    #[test]
+    fn elementwise_ops_match_reference() {
+        let c = corpus();
+        let mut checked = 0;
+        for a in &c {
+            for b in &c {
+                let (x, y) = (v(*a), v(*b));
+                let r = |f: fn(u16, u16) -> u16| -> [u16; 32] { core::array::from_fn(|i| f(a[i], b[i])) };
+                assert_eq!(x.simd_min(y).to_array(), r(u16::min), "simd_min {a:?} {b:?}");
+                assert_eq!(x.simd_max(y).to_array(), r(u16::max), "simd_max");
+                assert_eq!(x.saturating_add(y).to_array(), r(u16::saturating_add), "saturating_add");
+                assert_eq!(x.saturating_sub(y).to_array(), r(u16::saturating_sub), "saturating_sub");
+                assert_eq!(x.mullo(y).to_array(), r(u16::wrapping_mul), "mullo");
+                assert_eq!((x + y).to_array(), r(u16::wrapping_add), "add");
+                assert_eq!((x - y).to_array(), r(u16::wrapping_sub), "sub");
+                let eq = (0..32).fold(0u32, |m, i| m | (((a[i] == b[i]) as u32) << i));
+                let gt = (0..32).fold(0u32, |m, i| m | (((a[i] > b[i]) as u32) << i));
+                assert_eq!(x.cmpeq_mask(y), eq, "cmpeq_mask {a:?} {b:?}");
+                assert_eq!(x.cmpgt_mask(y), gt, "cmpgt_mask {a:?} {b:?}");
+                checked += 1;
+            }
+        }
+        assert!(checked > 5000, "corpus too small: {checked}");
+    }
+
+    #[test]
+    fn reductions_and_conversions_match_reference() {
+        for a in corpus() {
+            let x = v(a);
+            assert_eq!(x.reduce_min(), *a.iter().min().unwrap(), "reduce_min {a:?}");
+            assert_eq!(x.reduce_max(), *a.iter().max().unwrap(), "reduce_max {a:?}");
+            assert_eq!(x.reduce_sum(), a.iter().fold(0u16, |s, &l| s.wrapping_add(l)), "reduce_sum {a:?}");
+            let lo: [f32; 16] = core::array::from_fn(|i| a[i] as f32);
+            let hi: [f32; 16] = core::array::from_fn(|i| a[16 + i] as f32);
+            assert_eq!(x.to_f32x16_lo().to_array(), lo, "to_f32x16_lo {a:?}");
+            assert_eq!(x.to_f32x16_hi().to_array(), hi, "to_f32x16_hi {a:?}");
+            for s in [0u32, 1, 7, 8, 15, 16, 31] {
+                let shl: [u16; 32] = core::array::from_fn(|i| if s < 16 { a[i] << s } else { 0 });
+                let shr: [u16; 32] = core::array::from_fn(|i| if s < 16 { a[i] >> s } else { 0 });
+                assert_eq!(x.shl(s).to_array(), shl, "shl {s}");
+                assert_eq!(x.shr(s).to_array(), shr, "shr {s}");
+            }
+        }
+        assert_eq!(U16x32::zero().to_array(), [0u16; 32]);
+        let _: F32x16 = U16x32::zero().to_f32x16_lo();
+    }
+
+    #[test]
+    fn widening_and_narrowing_match_reference() {
+        let bytes: [u8; 64] = core::array::from_fn(|i| (i as u8).wrapping_mul(37).wrapping_add(200));
+        let b = U8x64::from_array(bytes);
+        let lo: [u16; 32] = core::array::from_fn(|i| bytes[i] as u16);
+        let hi: [u16; 32] = core::array::from_fn(|i| bytes[32 + i] as u16);
+        assert_eq!(U16x32::from_u8x64_lo(b).to_array(), lo);
+        assert_eq!(U16x32::from_u8x64_hi(b).to_array(), hi);
+        for a in corpus() {
+            let other: [u16; 32] = core::array::from_fn(|i| a[31 - i]);
+            let want: [u8; 64] = core::array::from_fn(|i| {
+                if i < 32 {
+                    a[i].min(255) as u8
+                } else {
+                    other[i - 32].min(255) as u8
+                }
+            });
+            assert_eq!(v(a).pack_saturate_u8(v(other)).to_array(), want, "pack_saturate_u8 {a:?}");
+        }
+    }
+
+    #[test]
+    fn bitwise_ops_match_reference() {
+        let c = corpus();
+        for a in &c {
+            for b in c.iter().take(8) {
+                let (x, y) = (v(*a), v(*b));
+                let r = |f: fn(u16, u16) -> u16| -> [u16; 32] { core::array::from_fn(|i| f(a[i], b[i])) };
+                assert_eq!((x & y).to_array(), r(|p, q| p & q));
+                assert_eq!((x | y).to_array(), r(|p, q| p | q));
+                assert_eq!((x ^ y).to_array(), r(|p, q| p ^ q));
+                let mut z = x;
+                z -= y;
+                assert_eq!(z.to_array(), r(u16::wrapping_sub));
+            }
+            assert_eq!((!v(*a)).to_array(), a.map(|l| !l));
+        }
+        assert_eq!(U16x32::default().to_array(), [0u16; 32]);
+    }
+}
+
+/// Parity of `I32x16::dot4_u8_i8_add` and the `U8x64` nibble split against a
+/// plain-array reference, on whichever backend this build selected. The
+/// corpus mixes a fixed-seed generator with the byte extremes (`0`, `255`,
+/// `-128`, `127`) and accumulators at `i32::MIN` / `i32::MAX`, where only the
+/// final addition may wrap.
+#[cfg(test)]
+mod dot4_nibble_facade_parity {
+    use super::{I32x16, I8x64, U8x64};
+
+    fn next(state: &mut u64) -> u64 {
+        *state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        *state >> 33
+    }
+
+    fn bytes() -> Vec<[u8; 64]> {
+        let mut s = 0x9E37_79B9_7F4A_7C15u64;
+        let mut out: Vec<[u8; 64]> = (0..48)
+            .map(|_| core::array::from_fn(|_| next(&mut s) as u8))
+            .collect();
+        for e in [0u8, 1, 0x0F, 0x10, 0x7F, 0x80, 0xF0, 0xFF] {
+            out.push([e; 64]);
+        }
+        out.push(core::array::from_fn(|i| [0u8, 255, 128, 127][i % 4]));
+        out
+    }
+
+    fn signed() -> Vec<[i8; 64]> {
+        let mut s = 0xD1B5_4A32_D192_ED03u64;
+        let mut out: Vec<[i8; 64]> = (0..48)
+            .map(|_| core::array::from_fn(|_| i8::from_ne_bytes([next(&mut s) as u8])))
+            .collect();
+        for e in [0i8, 1, -1, 127, -128] {
+            out.push([e; 64]);
+        }
+        out.push(core::array::from_fn(|i| [-128i8, 127, -1, 0][i % 4]));
+        out
+    }
+
+    fn reference(acc: [i32; 16], a: &[u8; 64], b: &[i8; 64]) -> [i32; 16] {
+        core::array::from_fn(|j| {
+            let sum: i32 = (4 * j..4 * j + 4)
+                .map(|i| i32::from(a[i]) * i32::from(b[i]))
+                .sum();
+            acc[j].wrapping_add(sum)
+        })
+    }
+
+    #[test]
+    fn dot4_matches_reference() {
+        let (us, is) = (bytes(), signed());
+        let mut s = 0x2545_F491_4F6C_DD1Du64;
+        let mut checked = 0;
+        for a in &us {
+            for b in &is {
+                let rand: [i32; 16] = core::array::from_fn(|_| next(&mut s) as i32);
+                for acc in [[0i32; 16], [i32::MAX; 16], [i32::MIN; 16], rand] {
+                    let got = I32x16::from_array(acc)
+                        .dot4_u8_i8_add(U8x64::from_array(*a), I8x64::from_array(*b))
+                        .to_array();
+                    assert_eq!(got, reference(acc, a, b), "acc {acc:?}\na {a:?}\nb {b:?}");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 10_000, "corpus too small: {checked}");
+    }
+
+    /// A pair of `255 * 127` products is 64_770, which a saturating 16-bit
+    /// pair sum (`vpmaddubsw`) would clamp to 32_767. These lanes would expose
+    /// such an emulation in either sign.
+    #[test]
+    fn dot4_does_not_saturate_pair_sums() {
+        let acc = I32x16::splat(0);
+        let a = U8x64::splat(255);
+        assert_eq!(acc.dot4_u8_i8_add(a, I8x64::splat(127)).to_array(), [4 * 255 * 127; 16]);
+        assert_eq!(acc.dot4_u8_i8_add(a, I8x64::splat(-128)).to_array(), [-4 * 255 * 128; 16]);
+    }
+
+    /// Lane `j` must read bytes `4j..4j+4` and nothing else: a single nonzero
+    /// byte moves exactly one lane.
+    #[test]
+    fn dot4_keeps_bytes_in_their_lane() {
+        for i in 0..64 {
+            let mut a = [0u8; 64];
+            a[i] = 3;
+            let got = I32x16::splat(0)
+                .dot4_u8_i8_add(U8x64::from_array(a), I8x64::splat(-5))
+                .to_array();
+            let want: [i32; 16] = core::array::from_fn(|j| if j == i / 4 { -15 } else { 0 });
+            assert_eq!(got, want, "byte {i}");
+        }
+    }
+
+    fn masked_reference(acc: [i32; 16], a: &[u8; 64], keep: u64, b: &[i8; 64]) -> [i32; 16] {
+        let kept: [u8; 64] = core::array::from_fn(|i| if keep >> i & 1 == 1 { a[i] } else { 0 });
+        reference(acc, &kept, b)
+    }
+
+    #[test]
+    fn dot4_masked_matches_reference() {
+        let (us, is) = (bytes(), signed());
+        let mut s = 0x6A09_E667_F3BC_C908u64;
+        let mut checked = 0;
+        for a in &us {
+            for b in &is {
+                let rand = next(&mut s) << 32 | next(&mut s) << 1 | (next(&mut s) & 1);
+                for keep in [0, u64::MAX, 0xAAAA_AAAA_AAAA_AAAA, 0x8000_0000_0000_0001, rand] {
+                    let acc: [i32; 16] = core::array::from_fn(|_| next(&mut s) as i32);
+                    let got = I32x16::from_array(acc)
+                        .dot4_u8_i8_add_masked(U8x64::from_array(*a), keep, I8x64::from_array(*b))
+                        .to_array();
+                    assert_eq!(got, masked_reference(acc, a, keep, b), "keep {keep:#x}\na {a:?}\nb {b:?}");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 10_000, "corpus too small: {checked}");
+    }
+
+    /// Bit `i` of `keep` must gate byte `i` and nothing else.
+    #[test]
+    fn dot4_masked_gates_each_byte_by_its_own_bit() {
+        let a = U8x64::splat(7);
+        for i in 0..64 {
+            let got = I32x16::splat(0)
+                .dot4_u8_i8_add_masked(a, 1 << i, I8x64::splat(-3))
+                .to_array();
+            let want: [i32; 16] = core::array::from_fn(|j| if j == i / 4 { -21 } else { 0 });
+            assert_eq!(got, want, "bit {i}");
+            let all_but = I32x16::splat(0)
+                .dot4_u8_i8_add_masked(a, !(1 << i), I8x64::splat(-3))
+                .to_array();
+            let want: [i32; 16] = core::array::from_fn(|j| if j == i / 4 { -63 } else { -84 });
+            assert_eq!(all_but, want, "all but bit {i}");
+        }
+    }
+
+    /// Every 9-bit sign-magnitude value (all 256 magnitudes in both polarities,
+    /// so 512 codewords including the never-touched `P=0, M=0` and the touched
+    /// `+0`) times every weight edge, through the two-accumulator form, against
+    /// an independent `i64` oracle.
+    #[test]
+    fn sm9_pos_minus_neg_is_exact_for_every_codeword() {
+        for w in [-128i8, -127, -1, 0, 1, 127] {
+            for positive in [false, true] {
+                for chunk in 0..4u32 {
+                    let mags: [u8; 64] = core::array::from_fn(|i| (64 * chunk + i as u32) as u8);
+                    let plane = if positive { u64::MAX } else { 0 };
+                    let (m, wv) = (U8x64::from_array(mags), I8x64::splat(w));
+                    let pos = I32x16::splat(0)
+                        .dot4_u8_i8_add_masked(m, plane, wv)
+                        .to_array();
+                    let neg = I32x16::splat(0)
+                        .dot4_u8_i8_add_masked(m, !plane, wv)
+                        .to_array();
+                    for j in 0..16 {
+                        let want: i64 = (4 * j..4 * j + 4)
+                            .map(|i| {
+                                let v = i64::from(mags[i]);
+                                (if positive { v } else { -v }) * i64::from(w)
+                            })
+                            .sum();
+                        assert_eq!(i64::from(pos[j]) - i64::from(neg[j]), want, "w {w} positive {positive} lane {j}");
+                    }
+                }
+            }
+        }
+    }
+
+    fn sum8_reference(acc: [u64; 8], a: &[u8; 64], keep: u64) -> [u64; 8] {
+        core::array::from_fn(|j| {
+            (8 * j..8 * j + 8).fold(acc[j], |s, i| {
+                if keep >> i & 1 == 1 {
+                    s.wrapping_add(u64::from(a[i]))
+                } else {
+                    s
+                }
+            })
+        })
+    }
+
+    #[test]
+    fn sum8_masked_matches_reference() {
+        use super::U64x8;
+        let mut s = 0xBB67_AE85_84CA_A73Bu64;
+        let mut checked = 0;
+        for a in &bytes() {
+            for _ in 0..8 {
+                let rand = next(&mut s) << 32 | next(&mut s) << 1 | (next(&mut s) & 1);
+                for keep in [0, u64::MAX, 0xAAAA_AAAA_AAAA_AAAA, 0x8000_0000_0000_0001, rand] {
+                    let rand_acc: [u64; 8] = core::array::from_fn(|_| next(&mut s) << 31 ^ next(&mut s));
+                    for acc in [[0u64; 8], [u64::MAX; 8], rand_acc] {
+                        let got = U64x8::from_array(acc)
+                            .sum8_u8_add_masked(U8x64::from_array(*a), keep)
+                            .to_array();
+                        assert_eq!(got, sum8_reference(acc, a, keep), "keep {keep:#x} acc {acc:?}\na {a:?}");
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked > 5_000, "corpus too small: {checked}");
+    }
+
+    /// Bit `i` of `keep` must gate byte `i` into lane `i / 8` and nothing else.
+    #[test]
+    fn sum8_masked_gates_each_byte_by_its_own_bit() {
+        use super::U64x8;
+        let a = U8x64::splat(7);
+        for i in 0..64 {
+            let one = U64x8::splat(0).sum8_u8_add_masked(a, 1 << i).to_array();
+            let want: [u64; 8] = core::array::from_fn(|j| if j == i / 8 { 7 } else { 0 });
+            assert_eq!(one, want, "bit {i}");
+            let all_but = U64x8::splat(0).sum8_u8_add_masked(a, !(1 << i)).to_array();
+            let want: [u64; 8] = core::array::from_fn(|j| if j == i / 8 { 49 } else { 56 });
+            assert_eq!(all_but, want, "all but bit {i}");
+        }
+    }
+
+    /// With every byte kept, the eight lanes add up to `U8x64::sum_bytes_u64`,
+    /// and repeated calls accumulate per lane without a reduction.
+    #[test]
+    fn sum8_masked_all_kept_agrees_with_sum_bytes() {
+        use super::U64x8;
+        for a in &bytes() {
+            let v = U8x64::from_array(*a);
+            let lanes = U64x8::splat(0).sum8_u8_add_masked(v, u64::MAX).to_array();
+            assert_eq!(lanes.iter().sum::<u64>(), v.sum_bytes_u64());
+        }
+        let (a, mut acc) = (U8x64::splat(255), U64x8::splat(0));
+        for _ in 0..1000 {
+            acc = acc.sum8_u8_add_masked(a, u64::MAX);
+        }
+        assert_eq!(acc.to_array(), [1000 * 8 * 255; 8]);
+    }
+
+    /// The doc promise: 16_448 worst-case calls fit an `i32` accumulator.
+    #[test]
+    fn dot4_masked_worst_case_holds_16448_calls() {
+        let (a, b) = (U8x64::splat(255), I8x64::splat(-128));
+        let mut acc = I32x16::splat(0);
+        for _ in 0..16_448 {
+            acc = acc.dot4_u8_i8_add_masked(a, u64::MAX, b);
+        }
+        assert_eq!(acc.to_array(), [(-16_448i64 * 130_560) as i32; 16]);
+        assert!(-16_448i64 * 130_560 >= i64::from(i32::MIN));
+        assert!(-16_449i64 * 130_560 < i64::from(i32::MIN));
+    }
+
+    #[test]
+    fn nibbles_match_reference() {
+        for a in bytes() {
+            let x = U8x64::from_array(a);
+            assert_eq!(x.low_nibbles().to_array(), a.map(|v| v & 0x0F), "low_nibbles {a:?}");
+            assert_eq!(x.high_nibbles().to_array(), a.map(|v| v >> 4), "high_nibbles {a:?}");
+        }
+        let every: [u8; 64] = core::array::from_fn(|i| (i as u8).wrapping_mul(4).wrapping_add(3));
+        for v in [every, every.map(|x| !x)] {
+            let x = U8x64::from_array(v);
+            assert_eq!(x.high_nibbles().to_array(), v.map(|b| b >> 4));
+            assert_eq!(x.low_nibbles().to_array(), v.map(|b| b & 0x0F));
+        }
+    }
+}
+
+#[cfg(test)]
+mod reinterpret_bits_parity {
+    use super::{I32x16, I8x64, ReinterpretBits, U8x64};
+
+    fn all_bytes(offset: u8) -> [u8; 64] {
+        core::array::from_fn(|i| (i as u8).wrapping_mul(4).wrapping_add(offset))
+    }
+
+    #[test]
+    fn every_byte_value_keeps_its_bit_pattern() {
+        // 4 x 64 lanes cover all 256 byte values once.
+        for offset in 0..4u8 {
+            let bytes = all_bytes(offset);
+            let signed = U8x64::from_array(bytes)
+                .reinterpret_as_i8(ReinterpretBits)
+                .to_array();
+            for (u, s) in bytes.iter().zip(signed) {
+                assert_eq!(s.to_ne_bytes()[0], *u, "byte {u:#04x} changed its bits");
+            }
+        }
+    }
+
+    #[test]
+    fn high_bytes_become_negative_and_do_not_saturate() {
+        let v = U8x64::from_array(core::array::from_fn(|i| [0x7F, 0x80, 0xFF, 0x00][i % 4]));
+        let s = v.reinterpret_as_i8(ReinterpretBits).to_array();
+        assert_eq!(&s[..4], &[127, -128, -1, 0]);
+    }
+
+    #[test]
+    fn round_trip_is_the_identity() {
+        for offset in 0..4u8 {
+            let bytes = all_bytes(offset);
+            let back = U8x64::from_array(bytes)
+                .reinterpret_as_i8(ReinterpretBits)
+                .reinterpret_as_u8(ReinterpretBits)
+                .to_array();
+            assert_eq!(back, bytes);
+            let signed = I8x64::from_array(bytes.map(|b| i8::from_ne_bytes([b])));
+            assert_eq!(signed.reinterpret_as_u8(ReinterpretBits).to_array(), bytes);
+        }
+    }
+
+    #[test]
+    fn feeds_the_signed_operand_of_the_byte_dot() {
+        // The consumer it was asked for: B's `top` byte (0x80) used as the i8
+        // operand contributes -128 per product, not +128 and not a clamp.
+        let a = U8x64::splat(1);
+        let top = U8x64::splat(0x80).reinterpret_as_i8(ReinterpretBits);
+        let r = I32x16::splat(0).dot4_u8_i8_add(a, top).to_array();
+        assert_eq!(r, [-512; 16]);
+    }
+}
+
+#[cfg(test)]
+mod checked_i64_facade {
+    // Imported through the facade path, so a missing re-export fails to build.
+    use super::{checked_binary_i64, checked_i64, I64ArithError, I64Op};
+
+    #[test]
+    fn the_facade_word_multiplies_and_refuses_overflow() {
+        let mut out = [0i64; 3];
+        checked_binary_i64(I64Op::Mul, &[4, 1, 1], &[1, 1, 1], &mut out).unwrap();
+        assert_eq!(out, [4, 1, 1]);
+        assert_eq!(
+            checked_binary_i64(I64Op::Mul, &[i64::MAX, 2, 3], &[2], &mut out),
+            Err(I64ArithError::Overflow {
+                op: I64Op::Mul,
+                position: 0,
+                lhs: i64::MAX,
+                rhs: 2
+            })
+        );
+        assert_eq!(out, [4, 1, 1], "nothing is written on refusal");
+        assert_eq!(checked_i64(I64Op::Mul, -3, 7), Ok(-21));
     }
 }

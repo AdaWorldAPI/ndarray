@@ -2651,6 +2651,14 @@ fn oracle_fma_f64(a: f64, b: f64, c: f64) -> f64 {
 // the output sign plane bit by bit; it never calls the primitive.
 
 fn check_lut9() -> Result<(), u32> {
+    // Canonical P×M four-way truth table, independent of random parity.
+    let identity: [u8; 256] = core::array::from_fn(|i| i as u8);
+    let mut actual = [0u8; 4];
+    let mut actual_presence = [u64::MAX];
+    lut9(&[0, 0, 255, 255], &[0b1010], &identity, &mut actual, &mut actual_presence);
+    if actual != [0, 0, 255, 255] || actual_presence != [0b1010] {
+        return Err(0x1430);
+    }
     let mut rng = SplitMix64(0x1400_0000_0001);
     // A random table with some zero entries away from index 0, so a sign bit
     // must be cleared at nonzero magnitudes too, and every quarter differs.
@@ -2670,14 +2678,14 @@ fn check_lut9() -> Result<(), u32> {
             let mags: Vec<u8> = (0..n)
                 .map(|i| if pass == 0 { stride(i) } else { rng.next() as u8 })
                 .collect();
-            let mut signs: Vec<u64> = (0..words).map(|_| rng.next()).collect();
+            let mut presences: Vec<u64> = (0..words).map(|_| rng.next()).collect();
             if words > 0 && !n.is_multiple_of(64) {
                 // Junk sign bits past the last row must not reach the output.
-                signs[words - 1] |= u64::MAX << (n % 64);
+                presences[words - 1] |= u64::MAX << (n % 64);
             }
             let mut out = vec![0xAAu8; n + 3];
-            let mut out_signs = vec![u64::MAX; words + 1];
-            lut9(&mags, &signs, &table, &mut out, &mut out_signs);
+            let mut out_presences = vec![u64::MAX; words + 1];
+            lut9(&mags, &presences, &table, &mut out, &mut out_presences);
             for i in 0..n {
                 if out[i] != table[mags[i] as usize] {
                     return Err(0x1400 | (pass << 7) | case);
@@ -2687,9 +2695,9 @@ fn check_lut9() -> Result<(), u32> {
                 return Err(0x1410 | (pass << 7) | case);
             }
             let want = reference_mask(n, words + 1, |i| {
-                (signs[i / 64] >> (i % 64)) & 1 == 1 && (table[mags[i] as usize] != 0 || mags[i] == 0)
+                ((presences[i / 64] >> (i % 64)) & 1 == 1) || (table[mags[i] as usize] == 0 && mags[i] != 0)
             });
-            if out_signs != want {
+            if out_presences != want {
                 return Err(0x1420 | (pass << 7) | case);
             }
         }

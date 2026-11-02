@@ -2876,6 +2876,48 @@ impl Default for U64x8 {
 
 #[cfg(target_arch = "aarch64")]
 impl U64x8 {
+    /// Lane `j` gains the sum of the bytes `a[i]`, `i` in `8j..8j+8`, whose bit
+    /// in `keep` is set: `vpsadbw` against zero on the kept bytes, accumulated
+    /// per lane with no horizontal reduction. Exact; each call adds at most
+    /// `8 * 255 = 2_040` to a lane, so the wrapping `u64` lanes hold more than
+    /// 9 * 10^15 calls. Reduce once at the end (`to_array`, `reduce_sum`).
+    ///
+    /// A masked byte sum is what a power-of-two anchor needs: with
+    /// `|b| = low7 + 128 * bit7`, `a * |b| = a * low7 + 128 * (sum of a where bit 7
+    /// of b is set)`, so the anchor term is this word with `keep = sign & bit7`.
+    ///
+    /// ```
+    /// use ndarray::simd::{U64x8, U8x64};
+    /// let a = U8x64::splat(255);
+    /// // Lane 0 keeps bytes 0 and 7, lane 1 keeps byte 8, the rest keep nothing.
+    /// let got = U64x8::splat(0).sum8_u8_add_masked(a, 0b1_1000_0001).to_array();
+    /// assert_eq!(got, [510, 255, 0, 0, 0, 0, 0, 0]);
+    /// ```
+    #[inline(always)]
+    pub fn sum8_u8_add_masked(self, a: crate::simd::U8x64, keep: u64) -> Self {
+        let spread = crate::simd_masking_ops::mask_byte_spread(keep);
+        let a = a.to_array();
+        let mut out = self.0;
+        for (q, lane) in out.iter_mut().enumerate() {
+            // SAFETY: NEON baseline. Each load touches 16 bytes at offset 16*q of a 64-byte
+            // array (`spread` is `[u64; 8]`, 64 bytes), q < 4. Byte `i` of `spread` repeats
+            // mask byte `i / 8`; `vtst` against `BIT_IN_BYTE` gives 0xFF exactly where bit `i`
+            // of `keep` is set. The three pairwise widening adds sum bytes 0..8 and 8..16 of
+            // the quarter into the two `u64` lanes `2q`, `2q + 1`.
+            unsafe {
+                let bit = vreinterpretq_u8_u64(vdupq_n_u64(crate::simd_masking_ops::BIT_IN_BYTE));
+                let m = vtstq_u8(vld1q_u8((spread.as_ptr() as *const u8).add(16 * q)), bit);
+                let kept = vandq_u8(vld1q_u8(a.as_ptr().add(16 * q)), m);
+                let sums = vpaddlq_u32(vpaddlq_u16(vpaddlq_u8(kept)));
+                *lane = U64x2(vaddq_u64(lane.0, sums));
+            }
+        }
+        Self(out)
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl U64x8 {
     pub const LANES: usize = 8;
 
     /// Broadcast `v` to all 8 lanes (`vdupq_n_u64` ×4).
@@ -3203,6 +3245,30 @@ impl core::ops::Not for U64x8 {
         }))
     }
 }
+/// Lane-wise `self << rhs` for `U32x16` (per-lane counts below 32).
+#[cfg(target_arch = "aarch64")]
+impl core::ops::Shl<Self> for U32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn shl(self, r: Self) -> Self {
+        debug_assert!(r.to_array().iter().all(|&n| n < 32), "U32x16 shift counts are a caller contract: < 32");
+        // SAFETY: NEON baseline; pure register ops.
+        Self(core::array::from_fn(|p| U32x4(unsafe { vshlq_u32(self.0[p].0, vreinterpretq_s32_u32(r.0[p].0)) })))
+    }
+}
+/// Lane-wise `self >> rhs` for `U32x16` (`vshlq_u32` with negated counts).
+#[cfg(target_arch = "aarch64")]
+impl core::ops::Shr<Self> for U32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn shr(self, r: Self) -> Self {
+        debug_assert!(r.to_array().iter().all(|&n| n < 32), "U32x16 shift counts are a caller contract: < 32");
+        // SAFETY: NEON baseline; pure register ops.
+        Self(core::array::from_fn(|p| {
+            U32x4(unsafe { vshlq_u32(self.0[p].0, vnegq_s32(vreinterpretq_s32_u32(r.0[p].0))) })
+        }))
+    }
+}
 /// Lane-wise `self << rhs` (per-lane counts; a count of 64 or more yields 0,
 /// which is what the shift instruction does — the scalar backend's `<<`
 /// panics there in debug builds, so callers already stay inside `0..64`).
@@ -3291,6 +3357,86 @@ fn rdpot_quad(x: int32x4_t, e: int32x4_t) -> int32x4_t {
 #[cfg(target_arch = "aarch64")]
 impl I32x16 {
     pub const LANES: usize = 16;
+
+    /// Adds four-byte dot products to each 32-bit lane: lane `j` gains
+    /// `a[4j]*b[4j] + a[4j+1]*b[4j+1] + a[4j+2]*b[4j+2] + a[4j+3]*b[4j+3]`,
+    /// with each `u8` of `a` multiplied by the signed `i8` of `b` at the same
+    /// position. The four products are exact; only the final addition to the
+    /// accumulator wraps on `i32` overflow, as with AVX-512 VNNI `vpdpbusd`.
+    ///
+    /// No intermediate saturates. Two products can reach `2 * 255 * 127`,
+    /// which does not fit `i16`, so an emulation through the saturating
+    /// `vpmaddubsw` would be wrong; every realization widens to 16 bits first.
+    ///
+    /// ```
+    /// use ndarray::simd::{I32x16, I8x64, U8x64};
+    /// let a = U8x64::splat(255);
+    /// let b = I8x64::splat(127);
+    /// // 4 * 255 * 127 = 129_540 per lane, past what a 16-bit pair sum can hold.
+    /// assert_eq!(I32x16::splat(1).dot4_u8_i8_add(a, b).to_array(), [129_541; 16]);
+    /// ```
+    #[inline(always)]
+    pub fn dot4_u8_i8_add(self, a: crate::simd::U8x64, b: crate::simd::I8x64) -> Self {
+        let (a, b) = (a.to_array(), b.to_array());
+        let mut out = self.0;
+        for (q, quad) in out.iter_mut().enumerate() {
+            // SAFETY: NEON baseline. The two loads read 16 bytes at offset 16*q of 64-byte
+            // arrays, q < 4; the rest is register-only. Bytes are widened to 16 bits
+            // (zero-extended for `a`, sign-extended for `b`), multiplied exactly into i32,
+            // and pairwise-added twice so lane j holds the sum of bytes 4j..4j+4.
+            unsafe {
+                let av = vld1q_u8(a.as_ptr().add(16 * q));
+                let bv = vld1q_s8(b.as_ptr().add(16 * q));
+                let a_lo = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(av)));
+                let a_hi = vreinterpretq_s16_u16(vmovl_high_u8(av));
+                let (b_lo, b_hi) = (vmovl_s8(vget_low_s8(bv)), vmovl_high_s8(bv));
+                let p01 = vpaddq_s32(vmull_s16(vget_low_s16(a_lo), vget_low_s16(b_lo)), vmull_high_s16(a_lo, b_lo));
+                let p23 = vpaddq_s32(vmull_s16(vget_low_s16(a_hi), vget_low_s16(b_hi)), vmull_high_s16(a_hi, b_hi));
+                quad.0 = vaddq_s32(quad.0, vpaddq_s32(p01, p23));
+            }
+        }
+        Self(out)
+    }
+
+    /// [`Self::dot4_u8_i8_add`] with the bytes of `a` whose bit in `keep` is 0
+    /// replaced by 0: lane `j` gains the sum of `a[i]*b[i]` over the bytes
+    /// `i` in `4j..4j+4` with bit `i` of `keep` set. Exact for every `u8` and
+    /// every `i8`, `-128` included; only the final addition to the accumulator
+    /// wraps on `i32` overflow.
+    ///
+    /// Two calls over the same bytes give a 9-bit sign-magnitude dot product
+    /// (magnitude in `a`, positive plane in `keep`) without widening the
+    /// operands: `pos.dot4_u8_i8_add_masked(m, plane, w) - neg.dot4_u8_i8_add_masked(m, !plane, w)`.
+    /// Each accumulator moves by at most `4 * 255 * 128 = 130_560` per call, so
+    /// it holds 16_448 calls before it can wrap.
+    ///
+    /// ```
+    /// use ndarray::simd::{I32x16, I8x64, U8x64};
+    /// let a = U8x64::splat(255);
+    /// let b = I8x64::splat(-128);
+    /// // Lane 0 keeps bytes 0 and 3, every other lane keeps nothing.
+    /// let got = I32x16::splat(0).dot4_u8_i8_add_masked(a, 0b1001, b).to_array();
+    /// assert_eq!(got[0], -2 * 255 * 128);
+    /// assert_eq!(got[1..], [0; 15]);
+    /// ```
+    #[inline(always)]
+    pub fn dot4_u8_i8_add_masked(self, a: crate::simd::U8x64, keep: u64, b: crate::simd::I8x64) -> Self {
+        let spread = crate::simd_masking_ops::mask_byte_spread(keep);
+        let mut kept = a.to_array();
+        for q in 0..4 {
+            // SAFETY: NEON baseline. Each load and store touches 16 bytes at offset 16*q of
+            // a 64-byte array (`spread` is `[u64; 8]`, 64 bytes), q < 4. Byte `i` of `spread`
+            // repeats mask byte `i / 8`; `vtst` against `BIT_IN_BYTE` gives 0xFF exactly
+            // where bit `i` of `keep` is set.
+            unsafe {
+                let bit = vreinterpretq_u8_u64(vdupq_n_u64(crate::simd_masking_ops::BIT_IN_BYTE));
+                let m = vtstq_u8(vld1q_u8((spread.as_ptr() as *const u8).add(16 * q)), bit);
+                let p = kept.as_mut_ptr().add(16 * q);
+                vst1q_u8(p, vandq_u8(vld1q_u8(p), m));
+            }
+        }
+        self.dot4_u8_i8_add(crate::simd::U8x64::from_array(kept), b)
+    }
 
     /// Saturating rounding doubling high multiply (gemmlowp / TFLM
     /// `SaturatingRoundingDoublingHighMul<i32>`): per lane, `round(a * b / 2^31)`

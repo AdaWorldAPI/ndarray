@@ -18,7 +18,7 @@ fn main() {
             eprintln!("neon-simd-parity FAILED: lane/op code = {rc}");
             std::process::exit(rc as i32);
         }
-        println!("neon-simd-parity OK: U32x16 / F32x16 / I8x16 lanes, ternlog (256 tables, U32x16 + U64x8), U64x8 algebra, I32x16 compares — bit-identical to scalar");
+        println!("neon-simd-parity OK: U32x16 / F32x16 / I8x16 lanes, ternlog (256 tables, U32x16 + U64x8), U64x8 algebra, I32x16 compares, dot4 (+ masked), masked sum8 + nibbles — bit-identical to scalar");
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
@@ -48,6 +48,9 @@ mod checks {
             return code;
         }
         if let Err(code) = check_i32x16_compare() {
+            return code;
+        }
+        if let Err(code) = check_dot4_and_nibbles() {
             return code;
         }
         0
@@ -457,6 +460,142 @@ mod checks {
         }
         if !(a == I32x16::from_array(a_arr)) || a == b {
             return Err(0x40D);
+        }
+        Ok(())
+    }
+
+    /// `I32x16::dot4_u8_i8_add` and the `U8x64` nibble split against inline
+    /// scalar arithmetic. Bytes cover `0`/`255` and `-128`/`127` (a pair of
+    /// `255 * 127` products overflows `i16`, so a saturating emulation fails
+    /// here), accumulators cover `i32::MIN`/`i32::MAX` (only the final addition
+    /// may wrap), and a single nonzero byte must move exactly its own lane.
+    /// Return codes `0x500 + op`.
+    fn check_dot4_and_nibbles() -> Result<(), u32> {
+        use ndarray::simd::{I32x16, I8x64, U8x64};
+        let mut s = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            s = s
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (s >> 33) as u32
+        };
+        let edges_u = [0u8, 255, 128, 127];
+        let edges_i = [-128i8, 127, -1, 0];
+        for round in 0..40 {
+            let a: [u8; 64] = core::array::from_fn(|i| {
+                if round < 4 {
+                    edges_u[(i + round) % 4]
+                } else {
+                    next() as u8
+                }
+            });
+            let b: [i8; 64] = core::array::from_fn(|i| {
+                if round < 4 {
+                    edges_i[(i + round) % 4]
+                } else {
+                    i8::from_ne_bytes([next() as u8])
+                }
+            });
+            let rand: [i32; 16] = core::array::from_fn(|_| next() as i32);
+            for acc in [[0i32; 16], [i32::MAX; 16], [i32::MIN; 16], rand] {
+                let got = I32x16::from_array(acc)
+                    .dot4_u8_i8_add(U8x64::from_array(a), I8x64::from_array(b))
+                    .to_array();
+                let want: [i32; 16] = core::array::from_fn(|j| {
+                    let mut sum = 0i32;
+                    for i in 4 * j..4 * j + 4 {
+                        sum += i32::from(a[i]) * i32::from(b[i]);
+                    }
+                    acc[j].wrapping_add(sum)
+                });
+                if got != want {
+                    return Err(0x500);
+                }
+            }
+            let x = U8x64::from_array(a);
+            if x.low_nibbles().to_array() != a.map(|v| v & 0x0F) {
+                return Err(0x501);
+            }
+            if x.high_nibbles().to_array() != a.map(|v| v >> 4) {
+                return Err(0x502);
+            }
+        }
+        for i in 0..64 {
+            let mut a = [0u8; 64];
+            a[i] = 3;
+            let got = I32x16::splat(0)
+                .dot4_u8_i8_add(U8x64::from_array(a), I8x64::splat(-5))
+                .to_array();
+            if got != core::array::from_fn(|j| if j == i / 4 { -15 } else { 0 }) {
+                return Err(0x503);
+            }
+        }
+        // dot4_u8_i8_add_masked: each keep bit gates its own byte, and the
+        // pos - neg form is exact for every SM9 magnitude in both polarities.
+        for i in 0..64 {
+            let got = I32x16::splat(0)
+                .dot4_u8_i8_add_masked(U8x64::splat(7), !(1u64 << i), I8x64::splat(-3))
+                .to_array();
+            if got != core::array::from_fn(|j| if j == i / 4 { -63 } else { -84 }) {
+                return Err(0x504);
+            }
+        }
+        for w in [-128i8, 127, -1] {
+            for chunk in 0..4usize {
+                let mags: [u8; 64] = core::array::from_fn(|i| (64 * chunk + i) as u8);
+                let plane = 0x5A5A_C3C3_0F0F_9696u64.rotate_left(chunk as u32);
+                let (m, wv) = (U8x64::from_array(mags), I8x64::splat(w));
+                let pos = I32x16::splat(0)
+                    .dot4_u8_i8_add_masked(m, plane, wv)
+                    .to_array();
+                let neg = I32x16::splat(0)
+                    .dot4_u8_i8_add_masked(m, !plane, wv)
+                    .to_array();
+                for j in 0..16 {
+                    let mut want = 0i32;
+                    for i in 4 * j..4 * j + 4 {
+                        let v = i32::from(mags[i]);
+                        want += if plane >> i & 1 == 1 { v } else { -v } * i32::from(w);
+                    }
+                    if pos[j] - neg[j] != want {
+                        return Err(0x505);
+                    }
+                }
+            }
+        }
+        // sum8_u8_add_masked: each keep bit gates its own byte into its own
+        // 8-byte lane, and random bytes / masks / accumulators (u64::MAX
+        // included, so the wrap is exercised) match the reference.
+        for i in 0..64 {
+            let got = ndarray::simd::U64x8::splat(0)
+                .sum8_u8_add_masked(U8x64::splat(7), !(1u64 << i))
+                .to_array();
+            if got != core::array::from_fn(|j| if j == i / 8 { 49 } else { 56 }) {
+                return Err(0x506);
+            }
+        }
+        let mut t = 0x243F_6A88_85A3_08D3u64;
+        for round in 0..40 {
+            t ^= t << 13;
+            t ^= t >> 7;
+            t ^= t << 17;
+            let a: [u8; 64] = core::array::from_fn(|i| (t.rotate_left(i as u32) >> 3) as u8 ^ (i as u8).wrapping_mul(37));
+            let keep = match round {
+                0 => 0,
+                1 => u64::MAX,
+                2 => 0x8000_0000_0000_0001,
+                _ => t.rotate_left(round),
+            };
+            let acc: [u64; 8] = core::array::from_fn(|j| if round % 3 == 0 { u64::MAX - j as u64 } else { t.wrapping_mul(j as u64 + 1) });
+            let got = ndarray::simd::U64x8::from_array(acc)
+                .sum8_u8_add_masked(U8x64::from_array(a), keep)
+                .to_array();
+            let want: [u64; 8] = core::array::from_fn(|j| {
+                (8 * j..8 * j + 8).fold(acc[j], |s, i| if keep >> i & 1 == 1 { s.wrapping_add(u64::from(a[i])) } else { s })
+            });
+            if got != want {
+                return Err(0x507);
+            }
         }
         Ok(())
     }

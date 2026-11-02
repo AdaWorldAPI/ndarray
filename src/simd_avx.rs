@@ -28,7 +28,7 @@ use core::ops::{
     Add, AddAssign, BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Mul, Not, Shl, Shr, Sub, SubAssign,
 };
 
-use crate::simd_avx2::{I32x16, U16x16, U64x8, U8x32};
+use crate::simd_avx2::{F32x16, I32x16, I8x64, U16x16, U16x32, U32x16, U64x8, U8x32, U8x64};
 use crate::simd_avx512::{F32x8, I16x16, I8x32};
 
 // ---------------------------------------------------------------------------
@@ -167,6 +167,48 @@ pub fn dot_i8(a: &[u8], b: &[u8]) -> i64 {
 // ---------------------------------------------------------------------------
 
 impl U64x8 {
+    /// Lane `j` gains the sum of the bytes `a[i]`, `i` in `8j..8j+8`, whose bit
+    /// in `keep` is set: `vpsadbw` against zero on the kept bytes, accumulated
+    /// per lane with no horizontal reduction. Exact; each call adds at most
+    /// `8 * 255 = 2_040` to a lane, so the wrapping `u64` lanes hold more than
+    /// 9 * 10^15 calls. Reduce once at the end (`to_array`, `reduce_sum`).
+    ///
+    /// A masked byte sum is what a power-of-two anchor needs: with
+    /// `|b| = low7 + 128 * bit7`, `a * |b| = a * low7 + 128 * (sum of a where bit 7
+    /// of b is set)`, so the anchor term is this word with `keep = sign & bit7`.
+    ///
+    /// ```
+    /// use ndarray::simd::{U64x8, U8x64};
+    /// let a = U8x64::splat(255);
+    /// // Lane 0 keeps bytes 0 and 7, lane 1 keeps byte 8, the rest keep nothing.
+    /// let got = U64x8::splat(0).sum8_u8_add_masked(a, 0b1_1000_0001).to_array();
+    /// assert_eq!(got, [510, 255, 0, 0, 0, 0, 0, 0]);
+    /// ```
+    #[inline(always)]
+    pub fn sum8_u8_add_masked(self, a: U8x64, keep: u64) -> Self {
+        let spread = crate::simd_masking_ops::mask_byte_spread(keep);
+        let mut out = self.0;
+        // SAFETY: SSE2 is compiled in (module docs); every load and store is a 16-byte
+        // unaligned access inside a 64-byte array. Byte `i` of `spread` repeats mask byte
+        // `i / 8`, so testing bit `i % 8` against `BIT_IN_BYTE` gives 0xFF exactly where bit
+        // `i` of `keep` is set. Quarter `q` covers bytes `16q..16q+16`, i.e. lanes `2q, 2q+1`,
+        // which is what `sad_epu8` produces.
+        unsafe {
+            let bit = _mm_set1_epi64x(crate::simd_masking_ops::BIT_IN_BYTE as i64);
+            let zero = _mm_setzero_si128();
+            let (ps, pa) = (spread.as_ptr() as *const __m128i, a.0.as_ptr() as *const __m128i);
+            let po = out.as_mut_ptr() as *mut __m128i;
+            for q in 0..4 {
+                let m = _mm_cmpeq_epi8(_mm_and_si128(_mm_loadu_si128(ps.add(q)), bit), bit);
+                let kept = _mm_and_si128(_mm_loadu_si128(pa.add(q)), m);
+                _mm_storeu_si128(po.add(q), _mm_add_epi64(_mm_loadu_si128(po.add(q)), _mm_sad_epu8(kept, zero)));
+            }
+        }
+        Self(out)
+    }
+}
+
+impl U64x8 {
     /// `(x << n) | (x >> (64 - n))` per 64-bit lane of one 256-bit half, with
     /// `1 <= n <= 63` guaranteed by the callers (see the AVX2 realization).
     #[inline(always)]
@@ -266,9 +308,160 @@ impl Shr<Self> for U64x8 {
     }
 }
 
+/// Lane-wise variable left shift. Counts of 32 or more zero the lane, as
+/// `VPSLLVD` does on the AVX2 arm. No SSE/AVX1 form exists, so this is per
+/// lane, like `U64x8`'s above.
+impl Shl<Self> for U32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn shl(self, rhs: Self) -> Self {
+        debug_assert!(rhs.0.iter().all(|&n| n < 32), "U32x16 shift counts are a caller contract: < 32");
+        Self(core::array::from_fn(|i| if rhs.0[i] < 32 { self.0[i] << rhs.0[i] } else { 0 }))
+    }
+}
+
+/// Lane-wise variable right shift; see the `Shl<Self>` impl above.
+impl Shr<Self> for U32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn shr(self, rhs: Self) -> Self {
+        debug_assert!(rhs.0.iter().all(|&n| n < 32), "U32x16 shift counts are a caller contract: < 32");
+        Self(core::array::from_fn(|i| if rhs.0[i] < 32 { self.0[i] >> rhs.0[i] } else { 0 }))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// U8x64 (array-backed)
+// ---------------------------------------------------------------------------
+
+impl U8x64 {
+    /// The low four bits of every byte, `x & 0x0F`.
+    ///
+    /// ```
+    /// use ndarray::simd::U8x64;
+    /// assert_eq!(U8x64::splat(0xA7).low_nibbles().to_array(), [0x07; 64]);
+    /// ```
+    #[inline(always)]
+    pub fn low_nibbles(self) -> Self {
+        let mut out = [0u8; 64];
+        // SAFETY: SSE2 is compiled in (module docs); four 16-byte unaligned loads and stores
+        // inside the 64-byte arrays.
+        unsafe {
+            let m = _mm_set1_epi8(0x0F);
+            let (src, dst) = (self.0.as_ptr() as *const __m128i, out.as_mut_ptr() as *mut __m128i);
+            for q in 0..4 {
+                _mm_storeu_si128(dst.add(q), _mm_and_si128(_mm_loadu_si128(src.add(q)), m));
+            }
+        }
+        Self(out)
+    }
+
+    /// The high four bits of every byte, moved down: `x >> 4`.
+    ///
+    /// ```
+    /// use ndarray::simd::U8x64;
+    /// assert_eq!(U8x64::splat(0xA7).high_nibbles().to_array(), [0x0A; 64]);
+    /// ```
+    #[inline(always)]
+    pub fn high_nibbles(self) -> Self {
+        let mut out = [0u8; 64];
+        // SAFETY: as in `low_nibbles`. The mask clears the bits the 16-bit shift pulls in.
+        unsafe {
+            let m = _mm_set1_epi8(0x0F);
+            let (src, dst) = (self.0.as_ptr() as *const __m128i, out.as_mut_ptr() as *mut __m128i);
+            for q in 0..4 {
+                _mm_storeu_si128(dst.add(q), _mm_and_si128(_mm_srli_epi16(_mm_loadu_si128(src.add(q)), 4), m));
+            }
+        }
+        Self(out)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // I32x16 (array-backed)
 // ---------------------------------------------------------------------------
+
+impl I32x16 {
+    /// Adds four-byte dot products to each 32-bit lane: lane `j` gains
+    /// `a[4j]*b[4j] + a[4j+1]*b[4j+1] + a[4j+2]*b[4j+2] + a[4j+3]*b[4j+3]`,
+    /// with each `u8` of `a` multiplied by the signed `i8` of `b` at the same
+    /// position. The four products are exact; only the final addition to the
+    /// accumulator wraps on `i32` overflow, as with AVX-512 VNNI `vpdpbusd`.
+    ///
+    /// No intermediate saturates. Two products can reach `2 * 255 * 127`,
+    /// which does not fit `i16`, so an emulation through the saturating
+    /// `vpmaddubsw` would be wrong; every realization widens to 16 bits first.
+    ///
+    /// ```
+    /// use ndarray::simd::{I32x16, I8x64, U8x64};
+    /// let a = U8x64::splat(255);
+    /// let b = I8x64::splat(127);
+    /// // 4 * 255 * 127 = 129_540 per lane, past what a 16-bit pair sum can hold.
+    /// assert_eq!(I32x16::splat(1).dot4_u8_i8_add(a, b).to_array(), [129_541; 16]);
+    /// ```
+    #[inline(always)]
+    pub fn dot4_u8_i8_add(self, a: U8x64, b: I8x64) -> Self {
+        let mut out = self.0;
+        // SAFETY: SSE2 is compiled in (module docs); every load and store is a 16-byte
+        // unaligned access inside a 64-byte array. Even and odd bytes are widened into
+        // separate 16-bit lanes (zero-extended for `a`, sign-extended for `b`), so the 16-bit
+        // multiply-add sums exact products into i32 lanes: the even lanes give bytes 4j and
+        // 4j+2, the odd lanes 4j+1 and 4j+3.
+        unsafe {
+            let low = _mm_set1_epi16(0x00FF);
+            let (pa, pb) = (a.0.as_ptr() as *const __m128i, b.0.as_ptr() as *const __m128i);
+            let po = out.as_mut_ptr() as *mut __m128i;
+            for q in 0..4 {
+                let (av, bv) = (_mm_loadu_si128(pa.add(q)), _mm_loadu_si128(pb.add(q)));
+                let even = _mm_madd_epi16(_mm_and_si128(av, low), _mm_srai_epi16(_mm_slli_epi16(bv, 8), 8));
+                let odd = _mm_madd_epi16(_mm_srli_epi16(av, 8), _mm_srai_epi16(bv, 8));
+                let acc = _mm_add_epi32(_mm_loadu_si128(po.add(q)), _mm_add_epi32(even, odd));
+                _mm_storeu_si128(po.add(q), acc);
+            }
+        }
+        Self(out)
+    }
+
+    /// [`Self::dot4_u8_i8_add`] with the bytes of `a` whose bit in `keep` is 0
+    /// replaced by 0: lane `j` gains the sum of `a[i]*b[i]` over the bytes
+    /// `i` in `4j..4j+4` with bit `i` of `keep` set. Exact for every `u8` and
+    /// every `i8`, `-128` included; only the final addition to the accumulator
+    /// wraps on `i32` overflow.
+    ///
+    /// Two calls over the same bytes give a 9-bit sign-magnitude dot product
+    /// (magnitude in `a`, positive plane in `keep`) without widening the
+    /// operands: `pos.dot4_u8_i8_add_masked(m, plane, w) - neg.dot4_u8_i8_add_masked(m, !plane, w)`.
+    /// Each accumulator moves by at most `4 * 255 * 128 = 130_560` per call, so
+    /// it holds 16_448 calls before it can wrap.
+    ///
+    /// ```
+    /// use ndarray::simd::{I32x16, I8x64, U8x64};
+    /// let a = U8x64::splat(255);
+    /// let b = I8x64::splat(-128);
+    /// // Lane 0 keeps bytes 0 and 3, every other lane keeps nothing.
+    /// let got = I32x16::splat(0).dot4_u8_i8_add_masked(a, 0b1001, b).to_array();
+    /// assert_eq!(got[0], -2 * 255 * 128);
+    /// assert_eq!(got[1..], [0; 15]);
+    /// ```
+    #[inline(always)]
+    pub fn dot4_u8_i8_add_masked(self, a: U8x64, keep: u64, b: I8x64) -> Self {
+        let spread = crate::simd_masking_ops::mask_byte_spread(keep);
+        let mut kept = a.to_array();
+        // SAFETY: SSE2 is compiled in (module docs); every load and store is a 16-byte
+        // unaligned access inside a 64-byte array. Byte `i` of `spread` repeats mask byte
+        // `i / 8`, so testing bit `i % 8` against `BIT_IN_BYTE` gives 0xFF exactly where
+        // bit `i` of `keep` is set.
+        unsafe {
+            let bit = _mm_set1_epi64x(crate::simd_masking_ops::BIT_IN_BYTE as i64);
+            let (ps, pk) = (spread.as_ptr() as *const __m128i, kept.as_mut_ptr() as *mut __m128i);
+            for q in 0..4 {
+                let m = _mm_cmpeq_epi8(_mm_and_si128(_mm_loadu_si128(ps.add(q)), bit), bit);
+                _mm_storeu_si128(pk.add(q), _mm_and_si128(_mm_loadu_si128(pk.add(q)), m));
+            }
+        }
+        self.dot4_u8_i8_add(U8x64::from_array(kept), b)
+    }
+}
 
 impl I32x16 {
     /// `SaturatingRoundingDoublingHighMul` per lane (TFLM `fixedpoint.h`).
@@ -813,5 +1006,157 @@ impl SubAssign for I16x16 {
     #[inline(always)]
     fn sub_assign(&mut self, rhs: Self) {
         *self = I16x16::sub(*self, rhs);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// U16x32 (64-byte array) — the AVX2-gated methods, as four 128-bit quarters
+// ---------------------------------------------------------------------------
+
+impl U16x32 {
+    /// The four 128-bit quarters of the 64-byte array (lanes 0..8, 8..16,
+    /// 16..24, 24..32).
+    #[inline(always)]
+    fn quarters(self) -> [__m128i; 4] {
+        // SAFETY: SSE2 is compiled in (module docs). The array is 64 bytes, so
+        // four 16-byte unaligned loads are in bounds.
+        unsafe {
+            let p = self.0.as_ptr() as *const __m128i;
+            [_mm_loadu_si128(p), _mm_loadu_si128(p.add(1)), _mm_loadu_si128(p.add(2)), _mm_loadu_si128(p.add(3))]
+        }
+    }
+
+    #[inline(always)]
+    fn from_quarters(q: [__m128i; 4]) -> Self {
+        let mut o = [0u16; 32];
+        // SAFETY: four 16-byte stores into a 64-byte array.
+        unsafe {
+            let p = o.as_mut_ptr() as *mut __m128i;
+            _mm_storeu_si128(p, q[0]);
+            _mm_storeu_si128(p.add(1), q[1]);
+            _mm_storeu_si128(p.add(2), q[2]);
+            _mm_storeu_si128(p.add(3), q[3]);
+        }
+        Self(o)
+    }
+
+    #[inline(always)]
+    fn zip(self, other: Self, f: impl Fn(__m128i, __m128i) -> __m128i) -> Self {
+        let a = self.quarters();
+        let b = other.quarters();
+        Self::from_quarters([f(a[0], b[0]), f(a[1], b[1]), f(a[2], b[2]), f(a[3], b[3])])
+    }
+
+    /// One bit per lane for two adjacent quarters of compare results.
+    #[inline(always)]
+    fn bits16(lo: __m128i, hi: __m128i) -> u32 {
+        // SAFETY: SSE2 is compiled in (module docs); register-only ops.
+        unsafe { _mm_movemask_epi8(_mm_packs_epi16(lo, hi)) as u32 & 0xFFFF }
+    }
+
+    #[inline(always)]
+    fn mask(self, other: Self, f: impl Fn(__m128i, __m128i) -> __m128i) -> u32 {
+        let a = self.quarters();
+        let b = other.quarters();
+        Self::bits16(f(a[0], b[0]), f(a[1], b[1])) | (Self::bits16(f(a[2], b[2]), f(a[3], b[3])) << 16)
+    }
+
+    /// Per-lane unsigned minimum.
+    #[inline(always)]
+    pub fn simd_min(self, other: Self) -> Self {
+        // SAFETY: SSE4.1 is compiled in (module docs); register-only op.
+        self.zip(other, |a, b| unsafe { _mm_min_epu16(a, b) })
+    }
+
+    /// Per-lane unsigned maximum.
+    #[inline(always)]
+    pub fn simd_max(self, other: Self) -> Self {
+        // SAFETY: SSE4.1 is compiled in (module docs); register-only op.
+        self.zip(other, |a, b| unsafe { _mm_max_epu16(a, b) })
+    }
+
+    /// Per-lane addition clamped at `u16::MAX`.
+    #[inline(always)]
+    pub fn saturating_add(self, other: Self) -> Self {
+        // SAFETY: SSE2 is compiled in (module docs); register-only op.
+        self.zip(other, |a, b| unsafe { _mm_adds_epu16(a, b) })
+    }
+
+    /// Per-lane subtraction clamped at 0.
+    #[inline(always)]
+    pub fn saturating_sub(self, other: Self) -> Self {
+        // SAFETY: SSE2 is compiled in (module docs); register-only op.
+        self.zip(other, |a, b| unsafe { _mm_subs_epu16(a, b) })
+    }
+
+    /// Per-lane equality as a bitmask, lane `i` in bit `i`.
+    #[inline(always)]
+    pub fn cmpeq_mask(self, other: Self) -> u32 {
+        // SAFETY: SSE2 is compiled in (module docs); register-only op.
+        self.mask(other, |a, b| unsafe { _mm_cmpeq_epi16(a, b) })
+    }
+
+    /// Per-lane unsigned `self > other` as a bitmask, lane `i` in bit `i`.
+    #[inline(always)]
+    pub fn cmpgt_mask(self, other: Self) -> u32 {
+        // `a > b` unsigned is `max(a, b) == a` and `a != b`.
+        // SAFETY: SSE4.1 is compiled in (module docs); register-only ops.
+        self.mask(other, |a, b| unsafe {
+            _mm_andnot_si128(_mm_cmpeq_epi16(a, b), _mm_cmpeq_epi16(_mm_max_epu16(a, b), a))
+        })
+    }
+
+    /// Smallest lane.
+    #[inline(always)]
+    pub fn reduce_min(self) -> u16 {
+        let q = self.quarters();
+        // SAFETY: SSE4.1 is compiled in (module docs); register-only ops.
+        unsafe {
+            let m = _mm_min_epu16(_mm_min_epu16(q[0], q[1]), _mm_min_epu16(q[2], q[3]));
+            (_mm_cvtsi128_si32(_mm_minpos_epu16(m)) & 0xFFFF) as u16
+        }
+    }
+
+    /// Largest lane.
+    #[inline(always)]
+    pub fn reduce_max(self) -> u16 {
+        let q = self.quarters();
+        // max(x) == !min(!x).
+        // SAFETY: SSE4.1 is compiled in (module docs); register-only ops.
+        unsafe {
+            let m = _mm_max_epu16(_mm_max_epu16(q[0], q[1]), _mm_max_epu16(q[2], q[3]));
+            let inv = _mm_xor_si128(m, _mm_set1_epi32(-1));
+            !((_mm_cvtsi128_si32(_mm_minpos_epu16(inv)) & 0xFFFF) as u16)
+        }
+    }
+
+    /// Lanes 0..16 converted to `f32`.
+    #[inline(always)]
+    pub fn to_f32x16_lo(self) -> F32x16 {
+        let q = self.quarters();
+        Self::quarters_to_f32x16(q[0], q[1])
+    }
+
+    /// Lanes 16..32 converted to `f32`.
+    #[inline(always)]
+    pub fn to_f32x16_hi(self) -> F32x16 {
+        let q = self.quarters();
+        Self::quarters_to_f32x16(q[2], q[3])
+    }
+
+    #[inline(always)]
+    fn quarters_to_f32x16(a: __m128i, b: __m128i) -> F32x16 {
+        // SAFETY: SSE4.1 and AVX are compiled in (module docs); register-only
+        // ops. `cvtepu16_epi32` widens the low four lanes; the high four are
+        // brought down by a whole-register 8-byte shift, which moves no byte
+        // within a lane.
+        unsafe {
+            let f = |v: __m128i| -> __m256 {
+                let lo = _mm_cvtepi32_ps(_mm_cvtepu16_epi32(v));
+                let hi = _mm_cvtepi32_ps(_mm_cvtepu16_epi32(_mm_srli_si128::<8>(v)));
+                _mm256_set_m128(hi, lo)
+            };
+            F32x16(F32x8(f(a)), F32x8(f(b)))
+        }
     }
 }

@@ -203,7 +203,7 @@ Any parity test that must pass on more than one target has to allow for it:
 
 | | wasm32 SIMD128 | scalar fallback | AVX / NEON |
 |---|---|---|---|
-| `mul_add` | `mul`+`add`, two roundings (unless `relaxed-simd`) | fused | fused |
+| `mul_add` | one rounding, emulated (f32 via round-to-odd in f64; f64 via Dekker + two-sum, exact fallback outside the certified range) | one rounding | one rounding (fused) |
 | `reduce_sum` | balanced tree | sequential fold | tree |
 | `round` | round-half-to-even | half-away-from-zero | half-to-even |
 | `min`/`max` with NaN | IEEE, NaN-propagating | returns the non-NaN operand | varies |
@@ -218,8 +218,11 @@ assert!((a - b).abs() <= 1e-4 * b.abs().max(1.0));
 and the scalar reference should be **the same function the tail uses** —
 one definition, so the two cannot drift apart.
 
-Enabling `relaxed-simd` restores a fused `mul_add` via `f32x4_relaxed_madd`,
-at the cost of a target feature not every runtime has. Prefer the tolerance.
+`mul_add` is the exception to the tolerance rule: since #374/#378 every
+realization, wasm included, rounds once and is checked bit for bit against the
+parity crate's integer oracle, so a `mul_add` parity test may assert equality.
+`relaxed-simd` changes nothing here; no source path selects
+`f32x4_relaxed_madd`. The other rows still need the tolerance.
 
 ---
 
