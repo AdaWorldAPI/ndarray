@@ -70,7 +70,7 @@ pub fn lut_u8(values: &[u8], table: &[u8; 256], out: &mut [u8]) {
 /// authorization or alpha-claim from these bits.
 ///
 /// # Panics
-/// If table[0] != 0 or input/output slices are too short.
+/// If `table[0] != 0` or input/output slices are too short.
 ///
 /// # Examples
 /// ```
