@@ -121,6 +121,10 @@ fn abacus_carries_through_many_columns() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "511 x 511 = 261 121 kernel calls take hours under miri; the native test jobs run it"
+)]
 fn all_511_by_511_pairs_are_exact() {
     let mut n = 0usize;
     for va in -255..=255i32 {
@@ -150,7 +154,11 @@ fn full_blocks_match_the_oracle_and_b() {
             .wrapping_add(1_442_695_040_888_963_407);
         ((s >> 33) % 511) as i32 - 255
     };
-    for blocks in [1usize, 2, 7, 64, 300] {
+    // 300 blocks take too long under miri; the smaller sizes keep the kernels covered there.
+    for blocks in [1usize, 2, 7, 64, 300]
+        .into_iter()
+        .filter(|&b| !cfg!(miri) || b < 300)
+    {
         let mut mk = || {
             let mut m = [0u8; 64];
             let mut p = 0u64;
@@ -170,6 +178,10 @@ fn full_blocks_match_the_oracle_and_b() {
 
 /// +-255 x +-255 in every lane, past B's flush bound, totals beyond `i32`.
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "tens of thousands of all-255 blocks past the flush bound take hours under miri; the native test jobs run it"
+)]
 fn worst_case_runs_exceed_i32_exactly() {
     let n = 3 * B_FLUSH_BLOCKS + 5;
     for (pa, pb) in [(u64::MAX, u64::MAX), (u64::MAX, 0), (0, 0), (0xF0F0_F0F0_0F0F_0F0F, 0x3333_CCCC_5555_AAAA)] {
@@ -247,6 +259,10 @@ fn carry_rules_match_u32_for_every_low() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "511 x 511 = 261 121 kernel calls take hours under miri; the native test jobs run it"
+)]
 fn d_all_511_by_511_pairs_are_exact() {
     let mut n = 0usize;
     for va in -255..=255i32 {
@@ -276,7 +292,11 @@ fn d_full_blocks_match_the_oracle() {
             .wrapping_add(1_442_695_040_888_963_407);
         ((s >> 33) % 511) as i32 - 255
     };
-    for blocks in [1usize, 2, 7, 64, 300] {
+    // 300 blocks take too long under miri; the smaller sizes keep the kernels covered there.
+    for blocks in [1usize, 2, 7, 64, 300]
+        .into_iter()
+        .filter(|&b| !cfg!(miri) || b < 300)
+    {
         let mut mk = || {
             let mut m = [0u8; 64];
             let mut p = 0u64;
@@ -296,6 +316,10 @@ fn d_full_blocks_match_the_oracle() {
 /// All-255 runs past D's flush bound: a carry on almost every add, `high`
 /// close to its limit, totals far beyond `i32`.
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "tens of thousands of all-255 blocks past the flush bound take hours under miri; the native test jobs run it"
+)]
 fn d_worst_case_runs_cross_the_flush_bound() {
     let n = 2 * D_FLUSH_BLOCKS + 5;
     for (pa, pb) in [(u64::MAX, u64::MAX), (u64::MAX, 0), (0xF0F0_F0F0_0F0F_0F0F, 0x3333_CCCC_5555_AAAA)] {
@@ -346,6 +370,10 @@ fn anchor_split_and_sign_bytes() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "511 x 511 = 261 121 kernel calls take hours under miri; the native test jobs run it"
+)]
 fn e_all_511_by_511_pairs_are_exact() {
     let mut n = 0usize;
     for va in -255..=255i32 {
@@ -375,7 +403,11 @@ fn e_full_blocks_match_the_oracle() {
             .wrapping_add(1_442_695_040_888_963_407);
         ((s >> 33) % 511) as i32 - 255
     };
-    for blocks in [1usize, 2, 7, 64, 300] {
+    // 300 blocks take too long under miri; the smaller sizes keep the kernels covered there.
+    for blocks in [1usize, 2, 7, 64, 300]
+        .into_iter()
+        .filter(|&b| !cfg!(miri) || b < 300)
+    {
         let mut mk = || {
             let mut m = [0u8; 64];
             let mut p = 0u64;
@@ -393,6 +425,10 @@ fn e_full_blocks_match_the_oracle() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "tens of thousands of all-255 blocks past the flush bound take hours under miri; the native test jobs run it"
+)]
 fn e_worst_case_runs_cross_the_flush_bound() {
     let n = 3 * B_FLUSH_BLOCKS + 5;
     for (pa, pb) in [(u64::MAX, u64::MAX), (u64::MAX, 0), (0, 0), (0xF0F0_F0F0_0F0F_0F0F, 0x3333_CCCC_5555_AAAA)] {
@@ -417,6 +453,10 @@ fn run_e5(a: &[Raw], b: &[Raw]) -> [i64; 3] {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "511 x 511 = 261 121 kernel calls take hours under miri; the native test jobs run it"
+)]
 fn e5_all_511_by_511_pairs_are_exact() {
     let mut n = 0usize;
     for va in -255..=255i32 {
@@ -446,7 +486,11 @@ fn e5_full_blocks_with_mixed_signs_match_the_oracle() {
             .wrapping_add(1_442_695_040_888_963_407);
         ((s >> 33) % 511) as i32 - 255
     };
-    for blocks in [1usize, 2, 7, 64, 300] {
+    // 300 blocks take too long under miri; the smaller sizes keep the kernels covered there.
+    for blocks in [1usize, 2, 7, 64, 300]
+        .into_iter()
+        .filter(|&b| !cfg!(miri) || b < 300)
+    {
         let mut mk = || {
             let mut m = [0u8; 64];
             let mut p = 0u64;
@@ -470,6 +514,10 @@ fn e5_full_blocks_with_mixed_signs_match_the_oracle() {
 
 /// All-255 runs past three flush bounds, every sign mix; totals beyond `i32`.
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "tens of thousands of all-255 blocks past the flush bound take hours under miri; the native test jobs run it"
+)]
 fn e5_worst_case_runs_cross_the_flush_bound() {
     let n = 3 * B_FLUSH_BLOCKS + 5;
     for (pa, pb) in [(u64::MAX, u64::MAX), (u64::MAX, 0), (0, 0), (0xF0F0_F0F0_0F0F_0F0F, 0x3333_CCCC_5555_AAAA)] {
@@ -482,6 +530,10 @@ fn e5_worst_case_runs_cross_the_flush_bound() {
 /// The anchor accumulators are reduced once per flush, never per block:
 /// `n` blocks give `n / B_FLUSH_BLOCKS` flushes, plus one at `finish`.
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "tens of thousands of all-255 blocks past the flush bound take hours under miri; the native test jobs run it"
+)]
 fn e5_reduces_the_anchor_only_at_flush() {
     let n = 2 * B_FLUSH_BLOCKS + 7;
     let (x, y) = (block(&([200u8; 64], 0x0F0F)), block(&([131u8; 64], u64::MAX)));

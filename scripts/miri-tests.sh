@@ -56,7 +56,7 @@ export RUSTFLAGS="-Zrandomize-layout"
 # The polyfill is no longer the bottleneck — the missing piece is a
 # `cfg(miri)` switch in `src/simd.rs` that re-exports from `simd_nightly`
 # instead of `simd_avx*` under Miri.
-cargo +nightly miri nextest run -v \
+cargo +nightly miri nextest run -v --profile miri \
     --no-fail-fast \
     -p ndarray -p ndarray-rand \
     --features approx,serde,nightly-simd \
@@ -66,6 +66,12 @@ cargo +nightly miri nextest run -v \
           and !test(/^hpc::framebuffer::pyramid_tests::/)
           and !test(/^cpu_guard::/)
        '
+#
+# Tests that are correct but take hours under interpretation (the exhaustive
+# 511 x 511 kernel sweeps, the flush-bound worst-case runs) carry
+# `#[cfg_attr(miri, ignore = "...")]` in their own file, and spatial_hash's
+# k-NN stops once every entry is visited. The `miri` nextest profile stops any
+# test after 20 minutes, so a new slow test fails by name.
 #
 # Filter rationale (4-clause AND):
 #

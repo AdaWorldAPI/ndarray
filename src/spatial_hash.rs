@@ -153,6 +153,12 @@ impl SpatialHash {
         let mut ring = 0i32;
         let max_ring = 64; // safety cap
 
+        // Once every entry in the grid has been visited, no further ring can
+        // add a candidate. Without this, a query for more neighbours than the
+        // grid holds walks all 129^3 cells up to `max_ring`.
+        let total = self.len();
+        let mut visited = 0usize;
+
         loop {
             // Collect candidates from all cells in this ring shell.
             for dx in -ring..=ring {
@@ -165,6 +171,7 @@ impl SpatialHash {
                         }
                         let key = (cx + dx, cy + dy, cz + dz);
                         if let Some(cell) = self.grid.get(&key) {
+                            visited += cell.len();
                             for &eid in cell {
                                 if let Some(&pos) = positions.get(&eid) {
                                     let d2 = sq_dist_f32(query, pos);
@@ -176,7 +183,7 @@ impl SpatialHash {
                 }
             }
 
-            if ring >= max_ring {
+            if ring >= max_ring || visited >= total {
                 break;
             }
 
@@ -535,6 +542,25 @@ mod tests {
         let positions = make_positions(&[(0, [1.0, 2.0, 3.0])]);
         let result = sh.query_knn(0.0, 0.0, 0.0, 100, &positions);
         assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_knn_k_larger_than_count_still_reaches_far_rings() {
+        // One entry in ring 0 and one 10 rings out: the early exit on
+        // "every entry visited" must not fire before the far one is seen.
+        let mut sh = SpatialHash::new(1.0);
+        let pts = vec![(0u32, [0.5f32, 0.5, 0.5]), (1, [10.5, 0.5, 0.5])];
+        for &(id, pos) in &pts {
+            sh.insert(id, pos[0], pos[1], pos[2]);
+        }
+        let positions = make_positions(&pts);
+        let result = sh.query_knn(0.5, 0.5, 0.5, 100, &positions);
+        let ids: Vec<u32> = result.iter().map(|r| r.0).collect();
+        assert_eq!(ids, vec![0, 1]);
+        // An empty grid answers empty.
+        assert!(SpatialHash::new(1.0)
+            .query_knn(0.0, 0.0, 0.0, 3, &positions)
+            .is_empty());
     }
 
     // -- negative coordinates --
