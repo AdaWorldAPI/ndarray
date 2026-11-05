@@ -1,5 +1,9 @@
 # N-FACET-STRIDE-BAG-FOLD-1: Positional Bagop execution
 
+## POC scope correction: Guid128 correspondence is not lut_u8 (2026-11-05)
+
+The immediate proof is **SAP-shaped typed tiles + tenant-qualified 128-bit GUID correspondence + one non-materializing fold**, using existing lance-graph-sap and OGAR/dir-sim code. **FACET STRIDE is a positional-access law; `lut_u8` and `lut9` are not 128-bit GUID joins**. Source code at `ogar-dir-core/src/correspond.rs` uses a cold sorted `(scope,u128 key,row)` index and numeric fold; `Dn128` is a distinct 16-byte hierarchy coordinate accessed strided by mask-risc. Audit how these existing operations meet the ndarray discipline rather than replace the GUID join with speculative byte shuffles or claiming a pure stride kernel already exists. Any SIMD GUID-join specialization requires its own independent oracle and measured admission. No spreadsheet engine in this core POC.
+
 **Status:** PROPOSED, documentation only. **Date:** 2026-11-05. **Owner:** ndarray. **Dependency:** P0 exclusive holographic Bag plan in lance-graph.
 
 **Requirement:** Every XVERWEIS must lower through the holographic Bagop folding interface and observe the positional discipline of [src/simd_stride.rs](https://github.com/AdaWorldAPI/ndarray/blob/master/src/simd_stride.rs). ndarray owns mechanics, not Excel semantics or PSCustomObject objects.
