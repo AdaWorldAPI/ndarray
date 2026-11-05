@@ -250,7 +250,12 @@ jobs:
     # AVX2 for this target, so any `vp*` on a ymm register other than the
     # AVX1 `vptest` came from an intrinsic that escaped its gate), and the
     # SIMD unit tests under emulation.
-    runs-on: ubuntu-latest
+    # Pinned to 24.04: the ubuntu-latest image (Ubuntu 26.04, amd64v3) ships a
+    # glibc built for x86-64-v3, so no host-linked binary starts on an emulated
+    # pre-AVX2 CPU ("Fatal glibc error: CPU does not support x86-64-v3"). This
+    # arm's whole point is running on such a CPU. Move it off 24.04 only with a
+    # static (musl) build of both binaries it runs.
+    runs-on: ubuntu-24.04
     name: realization/avx × x86_64
     steps:
       - uses: actions/checkout@v4
@@ -295,7 +300,12 @@ jobs:
     # Nehalem`, so any AVX instruction on the executed path faults. Three
     # rungs, as for `avx`: parity, an assembly witness that the parity binary
     # has no AVX encoding at all, and the SIMD unit tests under emulation.
-    runs-on: ubuntu-latest
+    # Pinned to 24.04: the ubuntu-latest image (Ubuntu 26.04, amd64v3) ships a
+    # glibc built for x86-64-v3, so no host-linked binary starts on an emulated
+    # pre-AVX2 CPU ("Fatal glibc error: CPU does not support x86-64-v3"). This
+    # arm's whole point is running on such a CPU. Move it off 24.04 only with a
+    # static (musl) build of both binaries it runs.
+    runs-on: ubuntu-24.04
     name: realization/v2 × x86_64
     steps:
       - uses: actions/checkout@v4
