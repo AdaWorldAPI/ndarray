@@ -1,56 +1,42 @@
-# N-FACET-STRIDE-BAG-FOLD-1: Positional Bagop execution
+# N-FACET-STRIDE-TILE-1: Positional execution beneath coordinate-routed SoA tiles
 
-## POC scope correction: Guid128 correspondence is not lut_u8 (2026-11-05)
+**Status:** PROPOSED / documentation only. **Date:** 2026-11-05. **Owner:** ndarray. No semantics or new kernel is admitted by this plan.
 
-The immediate proof is **SAP-shaped typed tiles + tenant-qualified 128-bit GUID correspondence + one non-materializing fold**, using existing lance-graph-sap and OGAR/dir-sim code. **FACET STRIDE is a positional-access law; `lut_u8` and `lut9` are not 128-bit GUID joins**. Source code at `ogar-dir-core/src/correspond.rs` uses a cold sorted `(scope,u128 key,row)` index and numeric fold; `Dn128` is a distinct 16-byte hierarchy coordinate accessed strided by mask-risc. Audit how these existing operations meet the ndarray discipline rather than replace the GUID join with speculative byte shuffles or claiming a pure stride kernel already exists. Any SIMD GUID-join specialization requires its own independent oracle and measured admission. No spreadsheet engine in this core POC.
+## Boundary: what ndarray actually owns
 
-**Status:** PROPOSED, documentation only. **Date:** 2026-11-05. **Owner:** ndarray. **Dependency:** P0 exclusive holographic Bag plan in lance-graph.
+**DR routes where computation looks; DT validates structural and behavioral meaning; Quack lowers a lawful operation; mask-RISC and ndarray execute it.** ndarray never decides that a 128-bit GUID is a mailbox, that a property is `XVERWEIS`, or that a row in one table may be used to index a foreign lane.
 
-**Requirement:** Every XVERWEIS must lower through the holographic Bagop folding interface and observe the positional discipline of [src/simd_stride.rs](https://github.com/AdaWorldAPI/ndarray/blob/master/src/simd_stride.rs). ndarray owns mechanics, not Excel semantics or PSCustomObject objects.
+The consumer's SAP / PSCustomObject-shaped logical tile is a normalized, one-key ordinal hashtable **in meaning**, not a HashMap or an array of host-language objects. After a scoped identity correspondence is prepared, a reference to the matched row, class basis and field ordinal permits lazy property reads. Each source SoA stays where it is.
 
-## Existing facts and boundaries
+## Source truth
 
-FACET STRIDE states that a loaded 128-bit facet is sixteen u8 positions read where they sit. Its current exports **lut_u8** and **lut9** are position-addressed LUT transforms. **Neither is an XVERWEIS, ordered first-match fold, join or Bagop interpreter.**
+- [`src/simd_stride.rs`](https://github.com/AdaWorldAPI/ndarray/blob/master/src/simd_stride.rs) defines the **FACET STRIDE** positional reading law: one 128-bit facet is sixteen byte positions loaded in place; `lut_u8` and `lut9` transform positional bytes. They **do not** implement an arbitrary 128-bit ID join.
+- [`lance-graph-sap::query`](https://github.com/AdaWorldAPI/lance-graph/blob/main/crates/lance-graph-sap/src/query.rs) already executes typed CATS lane folds via Quack and mask-RISC without allocating one source DTO per row.
+- [`ogar-dir-core::correspond`](https://github.com/AdaWorldAPI/OGAR/blob/main/crates/ogar-dir-core/src/correspond.rs) first builds sorted `(scope, u128 key, row)` indexes, then folds GUID evidence numerically. A cold index is not a hot-path violation or an independent authority.
+- [`ogar-dir-core::dn128`](https://github.com/AdaWorldAPI/OGAR/blob/main/crates/ogar-dir-core/src/dn128.rs) uses a 16-byte hierarchy coordinate suitable for strided prefix matching. This is **not** `Guid128` identity, despite the equal width.
 
-The [facet-stride guard](https://github.com/AdaWorldAPI/ndarray/blob/master/.claude/hooks/facet-stride-guard.sh) enforces R1 no shuffle-as-compute, R2 no scalar loop in non-scalar SIMD backend, R3 no u8/i8 sign confusion. Genuine byte moves and scalar backend execution are distinct, explicitly controlled cases. [simd_masking_ops.rs](https://github.com/AdaWorldAPI/ndarray/blob/master/src/simd_masking_ops.rs) and mask-risc are the appropriate existing operator route. DR512 [P×M law](https://github.com/AdaWorldAPI/ndarray/blob/master/.claude/knowledge/dr512-epistemic-pm-invariant.md) does not authorize interpreting P as user permission or Excel Blank.
+**The promised optimization is chained positional references after one admitted identity bind.** Don't represent this as an already shipped `simd_stride` GUID-join primitive or claim that preparing correspondence requires no allocation.
 
-    GridCraft / PowerShell expression
-      → lance-graph Bagop semantics and DT64 binding
-      → admitted Quack / RelAlg / mask-risc
-      → ndarray::simd positional masks and folds
-      → canonical borrowed Bag representation
+## Admitted versus open operations
 
-ndarray shall not learn customer keys, tenants, sheet cells, search modes or source-specific object shapes. Do not call a direct lookup of a cross-row position a legal Gather without upstream admission.
-
-## Required operator inventory
-
-| Need | Owner | Planned investigation |
+| Shape | Execution precedent | Boundary |
 |---|---|---|
-| Equality over aligned typed lanes | ndarray/mask-risc | Compare + mask available; exact type and state gating |
-| Count/existence/masked reduction | ndarray/mask-risc | Existing word/lane operations, accumulator width |
-| First/last by source order | Bagop owner P2 | Prove witnessed order selection; not implicit mask index |
-| Property projection | Bagop/DT64 | Co-addressed borrowed plane; refuse unadmitted value-derived cross-table hop |
-| Global-to-local mapping | DR owner M2 | Route once and reuse, not an application HashMap |
-| Strided source | ndarray | Correct scalar oracle and end-to-end SIMD-cost test |
+| Typed scalar compare / resident-plane filtering | Quack → mask-RISC | Field type, scope and missing-state semantics supplied by owner |
+| Count, group sum, survivor mask | Existing Quack and SAP consumer | Correct result under independent scalar oracle |
+| 16-byte in-place prefix over `Dn128` | Dir-sim strided pattern | Scope + depth separate from bytes |
+| `Guid128` cold correspondence | OGAR sorted index + numeric fold | Not equivalent to arbitrary SIMD byte-LUT join |
+| Warm property read via chained ordinal references | Proposed binding and witness shape | Must be co-addressed or admitted; no automatic cross-table Gather |
+| XVERWEIS-like operation pointer | DT64 `MethodRef` / `AlgebraRef`, Bagop owner | May produce coordinate, scalar or mask according to method contract; ndarray does not own Excel return semantics |
+| Composite cross-table operations | OP-14 / NotASide / ADMISSION B | STOP when missing lawful operation, no hidden Gather or computed-mask reuse |
 
-## Falsifier program
+A 128-bit GUID is not truncated to 16 bits to fit a row coordinate; ordinal numbers exist only within a snapshot/frame. `ClassView`/codebooks give field ordinals, not ndarray data lanes.
 
-Fixture lengths 0, 1, 15, 16, 17, 63, 64, 65, 255, 256, 257 and 65,536. Test noncontiguous strides, tails with poisoned bytes, duplicate equal keys, first/last ordering, reversed and permuted positions, signed/zero/absence boundaries and value revision.
+## Minimum falsifier
 
-1. Scalar oracle must implement semantics independently from production LUTs and SIMD.
-2. Compare scalar, AVX2, AVX-512, NEON and WASM where runnable; unrun targets are UNVERIFIED.
-3. Tests must fail when order witness is removed, when multiplicities are collapsed, when a tail is read and when a shuffle-as-lookup is introduced.
-4. Record per-shape bind time, mask formation, positional reads, fold time, bytes allocated, cold and warmed performance. The LUT benchmark is not a lookup benchmark.
-5. Never replace a missing primitive with a second SIMD engine in GridCraft or report-rs.
+Construct a tiny AD → Entra → EXO correspondence with one clean `User_{GUID}` backsync, a second duplicate, a foreign tenant, and one CATS-like numeric field. Bind the correspondence once under scope and layout witnesses; evaluate repeated property probes and one admitted group/sum fold. Reorder the local row ordinals while keeping the same canonical GUIDs. The result must either rebind to the new layout or refuse. Never accept a stale positional answer.
 
-## Decision / ownership matrix
+Record **cold** decode/index/bind cost apart from **warm** field access and fold. Count all allocations in the hot path, full output bytes at egress, and mask scratch separately. Compare independent scalar and available SIMD backends for correct tails, alignment, null/unknown states and byte order. Do not claim AVX2/AVX-512/NEON/WASM verification when the target was not run.
 
-| Requirement | Source | Gate |
-|---|---|---|
-| Positional read law | simd_stride.rs + guard | Implemented discipline, prove kernel adherence |
-| Ordered Bag fold | P2 Bagop admission | OPEN, not granted by this document |
-| Lifetime, frame layout | DRISA M1/M2 | OPEN owner decisions |
-| Cross-table hop | ADMISSION B/Gather law | REFUSE until admitted |
-| Consumer façade | P3 GridCraft, P4 lance-graph-java | Not ndarray's execution semantics |
+**STOP:** if source pointers are computed by a foreign lane without the required authorization, if reuse of a derived mask crosses an unadmitted program boundary, or if DR frame and SoA layout are not attested (DRISA M1/M2), report `NOT ADMITTED`. No local workaround operator in ndarray.
 
-**Decision log 2026-11-05:** plan only. **Next implementation PR:** only a minimal missing kernel established by source census and owner approval, with independent parity, disable controls and measured backend benefit. Do not modify src/simd_stride.rs in this plan PR.
+**POC critical path:** P0 architectural law + existing OGAR / dir-sim + SAP fold + one verified binding. **Downstream only:** GridCraft, Excel formulas, F### formula mapping, report-rs workbook ingestion, Java, Codegraph. No code modified by this PR.
