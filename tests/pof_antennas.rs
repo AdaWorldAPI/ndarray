@@ -72,6 +72,10 @@ fn check_a2(a: &[Raw], b: &[Raw]) {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "511 x 511 = 261 121 kernel calls take hours under miri; the native test jobs run it"
+)]
 fn a2_all_511_by_511_pairs_are_exact() {
     let mut n = 0usize;
     for va in -255..=255i32 {
@@ -100,7 +104,12 @@ fn a2_mixed_blocks_and_worst_case_runs_are_exact() {
             .wrapping_add(1_442_695_040_888_963_407);
         ((s >> 33) % 511) as i32 - 255
     };
-    for blocks in [1usize, 3, 64, 300] {
+    // Under miri: no 300-block case and no flush-bound runs below (hours of
+    // interpretation); the native test jobs run both.
+    for blocks in [1usize, 3, 64, 300]
+        .into_iter()
+        .filter(|&b| !cfg!(miri) || b < 300)
+    {
         let mut mk = || {
             let mut m = [0u8; 64];
             let mut p = 0u64;
@@ -114,6 +123,9 @@ fn a2_mixed_blocks_and_worst_case_runs_are_exact() {
         let a: Vec<_> = (0..blocks).map(|_| mk()).collect();
         let b: Vec<_> = (0..blocks).map(|_| mk()).collect();
         check_a2(&a, &b);
+    }
+    if cfg!(miri) {
+        return;
     }
     let n = 2 * B_FLUSH_BLOCKS + 3;
     for (pa, pb) in [(u64::MAX, u64::MAX), (u64::MAX, 0), (0xF0F0_F0F0_0F0F_0F0F, 0x3333_CCCC_5555_AAAA)] {

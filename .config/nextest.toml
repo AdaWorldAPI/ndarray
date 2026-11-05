@@ -3,3 +3,11 @@ fail-fast = false
 
 [profile.ci.junit]
 path = "junit.xml"
+
+# Used by scripts/miri-tests.sh. Miri interprets every operation, so a test
+# that takes milliseconds natively can take hours. Stop any single test after
+# 20 minutes so it fails with its name instead of silently eating the job's
+# time limit (the job was cancelled at 6 h on every push before this).
+[profile.miri]
+fail-fast = false
+slow-timeout = { period = "60s", terminate-after = 20 }
