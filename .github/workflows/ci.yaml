@@ -187,7 +187,7 @@ jobs:
       # pinned toolchain too (dtolnay installs for `stable`, which may differ).
       - run: rustup target add aarch64-unknown-linux-gnu
       - name: install aarch64 cross toolchain + qemu-user
-        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu qemu-user-static
+        run: scripts/install-qemu-user.sh gcc-aarch64-linux-gnu
       - name: NEON SIMD parity (cross-build + qemu run)
         run: ./scripts/neon-parity.sh
 

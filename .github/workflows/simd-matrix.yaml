@@ -236,7 +236,7 @@ jobs:
         with:
           key: cpu-guard-library
       - name: install qemu-user
-        run: sudo apt-get update && sudo apt-get install -y qemu-user-static
+        run: scripts/install-qemu-user.sh
       - name: library warns, executable exits 132 (qemu -cpu Haswell)
         run: bash scripts/cpu-guard-library-probe.sh
 
@@ -261,7 +261,7 @@ jobs:
         with:
           key: avx
       - name: install qemu-user
-        run: sudo apt-get update && sudo apt-get install -y qemu-user-static
+        run: scripts/install-qemu-user.sh
       - name: masking parity (sandybridge build, qemu -cpu SandyBridge)
         run: bash scripts/masking-parity.sh avx-qemu
       - name: no AVX2 instruction in the parity binary
@@ -306,7 +306,7 @@ jobs:
         with:
           key: v2
       - name: install qemu-user
-        run: sudo apt-get update && sudo apt-get install -y qemu-user-static
+        run: scripts/install-qemu-user.sh
       - name: masking parity (x86-64-v2 build, qemu -cpu Nehalem)
         run: bash scripts/masking-parity.sh v2-qemu
       - name: no AVX instruction in the parity binary
@@ -349,7 +349,7 @@ jobs:
         with:
           key: aarch64
       - name: install aarch64 cross toolchain + qemu-user
-        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu qemu-user-static
+        run: scripts/install-qemu-user.sh gcc-aarch64-linux-gnu
       - name: masking parity (neon, qemu)
         run: bash scripts/masking-parity.sh neon-qemu
       - name: codegen witness (neon)
