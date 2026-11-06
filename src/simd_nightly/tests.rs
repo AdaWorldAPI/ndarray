@@ -690,7 +690,8 @@ fn f32x16_round_parity() {
     let src: [f32; 16] = [0.5, 1.5, 2.5, 3.5, 4.5, 5.5, -0.5, -1.5, 0.4, 1.6, 2.3, 3.7, -0.4, -1.6, 100.0, -100.0];
     let result = F32x16::from_array(src).round().to_array();
     for (i, (&r, &s)) in result.iter().zip(src.iter()).enumerate() {
-        assert_eq!(r, s.round(), "lane {i}");
+        // Ties to even on every backend (AVX-512 roundscale, NEON vrndn).
+        assert_eq!(r, s.round_ties_even(), "lane {i}");
     }
 }
 

@@ -97,6 +97,7 @@ fn flip_is_a_half_adder_in_every_lane() {
 /// Random masks (zero, full, one lane, random) at random significances,
 /// including 16, 63, 64 and beyond, in two different orders.
 #[test]
+#[cfg_attr(miri, ignore = "runs past the 20-minute miri per-test limit")]
 fn random_adds_match_the_oracle_in_any_order() {
     let mut s = 0x9E37_79B9_7F4A_7C15u64;
     let mut adds = Vec::new();
@@ -178,6 +179,7 @@ fn the_64k_boundary_flips_bit_16_then_carries_into_bit_17() {
 
 /// u16 products summed through every high representation against `u128`.
 #[test]
+#[cfg_attr(miri, ignore = "runs past the 20-minute miri per-test limit")]
 fn product_sums_match_native_and_d() {
     let mut s = 0x0123_4567_89AB_CDEFu64;
     for (blocks, dense) in [(1usize, false), (300, false), (300, true), (70_000, true)] {
@@ -372,6 +374,7 @@ fn abacus_overflow_refuses_and_leaves_the_counter_unchanged() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "runs past the 20-minute miri per-test limit")]
 fn abacus_random_sequences_match_64_u128_counters() {
     let mut s = 0x0123_4567_89AB_CDEFu64;
     const B: usize = 12;
