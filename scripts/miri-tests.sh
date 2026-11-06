@@ -56,8 +56,12 @@ export RUSTFLAGS="-Zrandomize-layout"
 # The polyfill is no longer the bottleneck — the missing piece is a
 # `cfg(miri)` switch in `src/simd.rs` that re-exports from `simd_nightly`
 # instead of `simd_avx*` under Miri.
+# CI shards the run (MIRI_PARTITION=count:K/N, see ci.yaml § miri): under Miri
+# each test is its own interpreted process, so the whole suite takes about
+# 4-5 hours on one runner. Unset, the full suite runs in one go.
 cargo +nightly miri nextest run -v --profile miri \
     --no-fail-fast \
+    ${MIRI_PARTITION:+--partition "$MIRI_PARTITION"} \
     -p ndarray -p ndarray-rand \
     --features approx,serde,nightly-simd \
     -E '!(
