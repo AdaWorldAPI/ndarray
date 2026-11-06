@@ -126,6 +126,10 @@ fn full_blocks_match_the_oracle() {
 /// Worst-case magnitudes past both flush intervals, all one sign and mixed:
 /// nothing wraps, rounds or saturates.
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "tens of thousands of all-255 blocks past the flush bound take hours under miri; the native test jobs run it"
+)]
 fn worst_case_runs_cross_the_flush_bounds_exactly() {
     let n = 3 * B_FLUSH_BLOCKS + 5;
     assert!(n > 4 * A_FLUSH_BLOCKS);
