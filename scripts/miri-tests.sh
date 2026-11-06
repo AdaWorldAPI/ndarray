@@ -39,6 +39,12 @@ export RUSTFLAGS="-Zrandomize-layout"
 # (rust-lang/miri#1371). Left disabled until both upstream stories close.
 # export MIRIFLAGS="-Zmiri-tree-borrows"
 
+# Miri adds random error to float operations such as exp by default. The
+# suite's oracles compare bit-exact across two code paths (facade vs hpc home,
+# tiled vs reference GEMM), which that error breaks: sigmoid_f32 differed by
+# 3 ulp in tests/simd_facade_reexports.rs on the 2026-11-06 master run.
+export MIRIFLAGS="-Zmiri-deterministic-floats"
+
 # Architectural limit on the Miri sweep:
 #
 # `crate::simd::*` (the production dispatch in `src/simd.rs`) re-exports
@@ -69,6 +75,9 @@ cargo +nightly miri nextest run -v --profile miri \
         ) and !test(/^simd::tests::/)
           and !test(/^hpc::framebuffer::pyramid_tests::/)
           and !test(/^cpu_guard::/)
+          and !test(/^simd_avx2::/)
+          and !test(/^simd_amx::/)
+          and !test(/^simd_int_ops::tests::gemm_u8_i8_/)
        '
 #
 # Tests that are correct but take hours under interpretation (the exhaustive
@@ -101,3 +110,10 @@ cargo +nightly miri nextest run -v --profile miri \
 #    `cpu_guard` reads the CPU with `cpuid`, which is inline assembly; Miri
 #    rejects it ("inline assembly is not supported"). The pre-`main` hook is
 #    `cfg(not(miri))` for the same reason, so test binaries start under Miri.
+#
+# 5. `!test(/^simd_avx2::/)`, `!test(/^simd_amx::/)`,
+#    `!test(/^simd_int_ops::tests::gemm_u8_i8_/)`
+#    Same classes as 2 and 4: `simd_avx2` calls AVX intrinsics ("requires
+#    unavailable target features: avx"), `simd_amx` and the u8 x i8 GEMM
+#    dispatch read `cpuid` (inline assembly). They first showed up on the
+#    2026-11-06 sharded run; the single unsharded run never got that far.
