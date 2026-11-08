@@ -269,22 +269,33 @@ fn dispatch_vnni(a_bf16: &[u16], a_row_stride: usize, b_vnni: &[u16], c: &mut [f
         unsafe {
             avx512bf16_path(a_bf16, a_row_stride, b_vnni, c, k);
         }
-    } else if a_row_stride != k {
-        // The polyfill consumes dense rows: gather the 16 strided rows.
-        dispatch_vnni(&dense_rows(a_bf16, a_row_stride, k), k, b_vnni, c, k);
     } else {
-        // Slow tier from a packed buffer: unpack back to row-major and take
-        // the decode+FMA polyfill. Allocates — acceptable off the tile tiers
-        // (a host without AMX and without avx512bf16 calling the packed entry
-        // is not a hot-path configuration).
-        let mut b_rm = vec![0u16; k * 16];
-        for row in 0..k {
-            for col in 0..16 {
-                b_rm[row * 16 + col] = b_vnni[PackedBf16B::vnni_index(row, col)];
-            }
-        }
-        fallback_path(a_bf16, &b_rm, c, k);
+        fallback_vnni(a_bf16, a_row_stride, b_vnni, c, k);
     }
+}
+
+/// The decode+FMA tier over a VNNI-packed B and a strided A. Allocates —
+/// acceptable off the tile tiers (a host without AMX and without avx512bf16
+/// calling the packed entry is not a hot-path configuration).
+fn fallback_vnni(a_bf16: &[u16], a_row_stride: usize, b_vnni: &[u16], c: &mut [f32], k: usize) {
+    if k == 0 {
+        // C += A·B over an empty K leaves C unchanged, as on the tile tiers.
+        return;
+    }
+    if a_row_stride != k {
+        // The polyfill consumes dense rows: gather the 16 strided rows.
+        return fallback_vnni(&dense_rows(a_bf16, a_row_stride, k), k, b_vnni, c, k);
+    }
+    // Unpack B back to row-major and take the decode+FMA polyfill.
+    let mut b_rm = vec![0u16; k * 16];
+    for row in 0..k {
+        for col in 0..16 {
+            b_rm[row * 16 + col] = b_vnni[PackedBf16B::vnni_index(row, col)];
+        }
+    }
+    // The polyfill requires exactly 16·K elements; the strided entry accepts
+    // a longer buffer, so pass only the 16 rows it uses.
+    fallback_path(&a_bf16[..16 * k], &b_rm, c, k);
 }
 
 // ═════════════════════════════════════════════════════════════════════
@@ -622,6 +633,34 @@ mod tests {
         } else {
             eprintln!("SKIP (honestly): no AMX — strided TDPBF16PS not exercised");
         }
+    }
+
+    /// The decode+FMA tier, driven directly so a host with a tile tier still
+    /// covers it: an A slice longer than the 16 rows it uses, at stride == K.
+    #[test]
+    fn fallback_tier_accepts_a_longer_dense_a() {
+        let k = 32;
+        let (a, b, c_ref) = integer_case(k);
+        let packed = PackedBf16B::pack(&b, k);
+        let mut long_a = a.clone();
+        long_a.push(bf16_int(99)); // 16·K + 1 elements: valid for the strided entry
+        let mut c = vec![0.0f32; 256];
+        fallback_vnni(&long_a, k, packed.data(), &mut c, k);
+        assert_eq!(c, c_ref);
+    }
+
+    /// K = 0 is a valid call on every tier and leaves C unchanged.
+    #[test]
+    fn fallback_tier_accepts_zero_k_with_a_stride() {
+        let packed = PackedBf16B::zeroed(0);
+        let a = vec![0u16; 15];
+        let mut c = vec![3.0f32; 256];
+        fallback_vnni(&a, 1, packed.data(), &mut c, 0);
+        assert_eq!(c, vec![3.0f32; 256]);
+        // The public entry accepts the same call on whatever tier this host has.
+        let mut c = vec![3.0f32; 256];
+        bf16_tile_gemm_16x16_packed_strided(&a, 1, &packed, &mut c);
+        assert_eq!(c, vec![3.0f32; 256]);
     }
 
     #[test]
