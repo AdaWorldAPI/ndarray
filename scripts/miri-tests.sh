@@ -39,6 +39,12 @@ export RUSTFLAGS="-Zrandomize-layout"
 # (rust-lang/miri#1371). Left disabled until both upstream stories close.
 # export MIRIFLAGS="-Zmiri-tree-borrows"
 
+# Miri adds random error to float operations such as exp by default. The
+# suite's oracles compare bit-exact across two code paths (facade vs hpc home,
+# tiled vs reference GEMM), which that error breaks: sigmoid_f32 differed by
+# 3 ulp in tests/simd_facade_reexports.rs on the 2026-11-06 master run.
+export MIRIFLAGS="-Zmiri-deterministic-floats"
+
 # Architectural limit on the Miri sweep:
 #
 # `crate::simd::*` (the production dispatch in `src/simd.rs`) re-exports
@@ -56,8 +62,12 @@ export RUSTFLAGS="-Zrandomize-layout"
 # The polyfill is no longer the bottleneck — the missing piece is a
 # `cfg(miri)` switch in `src/simd.rs` that re-exports from `simd_nightly`
 # instead of `simd_avx*` under Miri.
-cargo +nightly miri nextest run -v \
+# CI shards the run (MIRI_PARTITION=count:K/N, see ci.yaml § miri): under Miri
+# each test is its own interpreted process, so the whole suite takes about
+# 4-5 hours on one runner. Unset, the full suite runs in one go.
+cargo +nightly miri nextest run -v --profile miri \
     --no-fail-fast \
+    ${MIRI_PARTITION:+--partition "$MIRI_PARTITION"} \
     -p ndarray -p ndarray-rand \
     --features approx,serde,nightly-simd \
     -E '!(
@@ -65,7 +75,16 @@ cargo +nightly miri nextest run -v \
         ) and !test(/^simd::tests::/)
           and !test(/^hpc::framebuffer::pyramid_tests::/)
           and !test(/^cpu_guard::/)
+          and !test(/^simd_avx2::/)
+          and !test(/^simd_amx::/)
+          and !test(/^simd_int_ops::tests::gemm_u8_i8_/)
        '
+#
+# Tests that are correct but take hours under interpretation (the exhaustive
+# 511 x 511 kernel sweeps, the flush-bound worst-case runs) carry
+# `#[cfg_attr(miri, ignore = "...")]` in their own file, and spatial_hash's
+# k-NN stops once every entry is visited. The `miri` nextest profile stops any
+# test after 20 minutes, so a new slow test fails by name.
 #
 # Filter rationale (4-clause AND):
 #
@@ -91,3 +110,10 @@ cargo +nightly miri nextest run -v \
 #    `cpu_guard` reads the CPU with `cpuid`, which is inline assembly; Miri
 #    rejects it ("inline assembly is not supported"). The pre-`main` hook is
 #    `cfg(not(miri))` for the same reason, so test binaries start under Miri.
+#
+# 5. `!test(/^simd_avx2::/)`, `!test(/^simd_amx::/)`,
+#    `!test(/^simd_int_ops::tests::gemm_u8_i8_/)`
+#    Same classes as 2 and 4: `simd_avx2` calls AVX intrinsics ("requires
+#    unavailable target features: avx"), `simd_amx` and the u8 x i8 GEMM
+#    dispatch read `cpuid` (inline assembly). They first showed up on the
+#    2026-11-06 sharded run; the single unsharded run never got that far.

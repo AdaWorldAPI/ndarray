@@ -53,7 +53,7 @@ pub fn bf16_tile_gemm_16x16(a_bf16: &[u16], b_bf16: &[u16], c: &mut [f32], k: us
         // `bf16_tile_gemm_16x16_packed` to hoist this out of hot loops).
         let mut b_vnni = vec![0u16; k * 16];
         vnni_pack_bf16(b_bf16, &mut b_vnni, k, 16);
-        dispatch_vnni(a_bf16, &b_vnni, c, k);
+        dispatch_vnni(a_bf16, k, &b_vnni, c, k);
     } else {
         // Pure-FMA tier consumes row-major B directly — no pack needed.
         fallback_path(a_bf16, b_bf16, c, k);
@@ -204,34 +204,98 @@ pub fn bf16_tile_gemm_16x16_packed(a_bf16: &[u16], b: &PackedBf16B, c: &mut [f32
     let k = b.k;
     assert_eq!(a_bf16.len(), 16 * k);
     assert_eq!(c.len(), 16 * 16);
-    dispatch_vnni(a_bf16, &b.data, c, k);
+    dispatch_vnni(a_bf16, k, &b.data, c, k);
 }
 
-/// Shared tier dispatch over a VNNI-packed B.
-fn dispatch_vnni(a_bf16: &[u16], b_vnni: &[u16], c: &mut [f32], k: usize) {
+/// `C[16, 16] += A[16, K] × B[K, 16]` with B pre-packed and A read in place
+/// from a strided buffer: row `i` of A is `a_bf16[i·a_row_stride ..][..K]`.
+///
+/// This is the entry for an A operand that already lives in memory with a
+/// row pitch other than K, for example 16 equally spaced bf16 lanes of one
+/// slab (row = lane, column = position within the lane). The tile tiers load
+/// it where it is: AMX `TILELOADD` takes the row stride as an operand, and
+/// the AVX-512 tier reads each row at its offset. Nothing is copied on those
+/// tiers. The decode+FMA tier gathers the 16 rows into a dense 16×K buffer
+/// first (it allocates), because the polyfill kernel consumes dense rows.
+///
+/// `a_row_stride` must be at least K, and `a_bf16` must hold
+/// `15·a_row_stride + K` elements; both are checked. With `a_row_stride == K`
+/// this is exactly [`bf16_tile_gemm_16x16_packed`].
+///
+/// # Examples
+/// ```
+/// use ndarray::simd::{bf16_tile_gemm_16x16_packed_strided, PackedBf16B};
+/// let k = 32;
+/// let pitch = 100; // 16 lanes, each 100 bf16 long, in one slab
+/// let mut slab = vec![0u16; 16 * pitch];
+/// slab[3 * pitch + 7] = 0x3F80; // lane 3, position 7 = 1.0
+/// let mut b = PackedBf16B::zeroed(k);
+/// b.data_mut()[PackedBf16B::vnni_index(7, 2)] = 0x3F80; // B[7][2] = 1.0
+/// let mut c = vec![0.0f32; 256];
+/// bf16_tile_gemm_16x16_packed_strided(&slab, pitch, &b, &mut c);
+/// assert_eq!(c[3 * 16 + 2], 1.0); // C[3][2] = A[3][7]·B[7][2]
+/// ```
+pub fn bf16_tile_gemm_16x16_packed_strided(a_bf16: &[u16], a_row_stride: usize, b: &PackedBf16B, c: &mut [f32]) {
+    let k = b.k;
+    assert!(a_row_stride >= k, "A row stride {a_row_stride} is shorter than K = {k}");
+    let needed = a_row_stride
+        .checked_mul(15)
+        .and_then(|n| n.checked_add(k))
+        .expect("15·a_row_stride + K overflows usize");
+    assert!(a_bf16.len() >= needed, "A holds {} bf16, needs {needed}", a_bf16.len());
+    assert_eq!(c.len(), 16 * 16);
+    dispatch_vnni(a_bf16, a_row_stride, &b.data, c, k);
+}
+
+/// The 16 rows of a strided A, copied into a dense 16×K buffer.
+fn dense_rows(a_bf16: &[u16], a_row_stride: usize, k: usize) -> Vec<u16> {
+    let mut dense = vec![0u16; 16 * k];
+    for (i, row) in dense.chunks_exact_mut(k).enumerate() {
+        row.copy_from_slice(&a_bf16[i * a_row_stride..i * a_row_stride + k]);
+    }
+    dense
+}
+
+/// Shared tier dispatch over a VNNI-packed B. Row `i` of A starts at
+/// `a_bf16[i * a_row_stride]`; callers have checked the bounds.
+fn dispatch_vnni(a_bf16: &[u16], a_row_stride: usize, b_vnni: &[u16], c: &mut [f32], k: usize) {
     if amx_available() {
         // SAFETY: amx_available() confirmed CPUID + XCR0 + arch_prctl grant.
         unsafe {
-            amx_path(a_bf16, b_vnni, c, k);
+            amx_path(a_bf16, a_row_stride, b_vnni, c, k);
         }
     } else if is_x86_feature_detected!("avx512bf16") {
         // SAFETY: runtime detection confirmed avx512f+avx512bf16.
         unsafe {
-            avx512bf16_path(a_bf16, b_vnni, c, k);
+            avx512bf16_path(a_bf16, a_row_stride, b_vnni, c, k);
         }
     } else {
-        // Slow tier from a packed buffer: unpack back to row-major and take
-        // the decode+FMA polyfill. Allocates — acceptable off the tile tiers
-        // (a host without AMX and without avx512bf16 calling the packed entry
-        // is not a hot-path configuration).
-        let mut b_rm = vec![0u16; k * 16];
-        for row in 0..k {
-            for col in 0..16 {
-                b_rm[row * 16 + col] = b_vnni[PackedBf16B::vnni_index(row, col)];
-            }
-        }
-        fallback_path(a_bf16, &b_rm, c, k);
+        fallback_vnni(a_bf16, a_row_stride, b_vnni, c, k);
     }
+}
+
+/// The decode+FMA tier over a VNNI-packed B and a strided A. Allocates —
+/// acceptable off the tile tiers (a host without AMX and without avx512bf16
+/// calling the packed entry is not a hot-path configuration).
+fn fallback_vnni(a_bf16: &[u16], a_row_stride: usize, b_vnni: &[u16], c: &mut [f32], k: usize) {
+    if k == 0 {
+        // C += A·B over an empty K leaves C unchanged, as on the tile tiers.
+        return;
+    }
+    if a_row_stride != k {
+        // The polyfill consumes dense rows: gather the 16 strided rows.
+        return fallback_vnni(&dense_rows(a_bf16, a_row_stride, k), k, b_vnni, c, k);
+    }
+    // Unpack B back to row-major and take the decode+FMA polyfill.
+    let mut b_rm = vec![0u16; k * 16];
+    for row in 0..k {
+        for col in 0..16 {
+            b_rm[row * 16 + col] = b_vnni[PackedBf16B::vnni_index(row, col)];
+        }
+    }
+    // The polyfill requires exactly 16·K elements; the strided entry accepts
+    // a longer buffer, so pass only the 16 rows it uses.
+    fallback_path(&a_bf16[..16 * k], &b_rm, c, k);
 }
 
 // ═════════════════════════════════════════════════════════════════════
@@ -252,20 +316,21 @@ fn dispatch_vnni(a_bf16: &[u16], b_vnni: &[u16], c: &mut [f32], k: usize) {
 /// # Safety
 /// Caller must have verified `is_x86_feature_detected!("avx512bf16")`.
 #[target_feature(enable = "avx512f,avx512bf16")]
-unsafe fn avx512bf16_path(a_bf16: &[u16], b_vnni: &[u16], c: &mut [f32], k: usize) {
+unsafe fn avx512bf16_path(a_bf16: &[u16], a_row_stride: usize, b_vnni: &[u16], c: &mut [f32], k: usize) {
     use core::arch::x86_64::{
         __m512bh, __m512i, _mm512_dpbf16_ps, _mm512_loadu_ps, _mm512_loadu_si512, _mm512_set1_epi32, _mm512_storeu_ps,
     };
     debug_assert_eq!(k % 2, 0);
     let pairs = k / 2;
     for i in 0..16 {
-        // SAFETY (whole block): a_bf16 is 16×k and c is 16×16 (asserted by
-        // the public callers), b_vnni is k×16 pairs; every pointer below
+        // SAFETY (whole block): row i of A is a_bf16[i·a_row_stride..][..k]
+        // and c is 16×16 (both asserted by the public callers), b_vnni is
+        // k×16 pairs; every pointer below
         // stays inside those bounds. read_unaligned handles the u16→u32
         // pair load without alignment requirements.
         unsafe {
             let mut acc = _mm512_loadu_ps(c.as_ptr().add(i * 16));
-            let a_row = a_bf16.as_ptr().add(i * k);
+            let a_row = a_bf16.as_ptr().add(i * a_row_stride);
             for p in 0..pairs {
                 // Broadcast the A pair (a[2p], a[2p+1]) to all 16 lanes; lane j
                 // then accumulates A[i][2p]·B[2p][j] + A[i][2p+1]·B[2p+1][j].
@@ -295,7 +360,7 @@ unsafe fn avx512bf16_path(a_bf16: &[u16], b_vnni: &[u16], c: &mut [f32], k: usiz
 /// # Safety
 /// Caller must have verified `amx_available() == true`.
 #[inline]
-unsafe fn amx_path(a_bf16: &[u16], b_vnni: &[u16], c: &mut [f32], k: usize) {
+unsafe fn amx_path(a_bf16: &[u16], a_row_stride: usize, b_vnni: &[u16], c: &mut [f32], k: usize) {
     // Tile config: shapes at K_bytes=64 match BF16 K=32 case
     let cfg = TileConfig::for_dpbusd(64);
     tile_loadconfig(&cfg);
@@ -305,7 +370,7 @@ unsafe fn amx_path(a_bf16: &[u16], b_vnni: &[u16], c: &mut [f32], k: usize) {
 
     // Accumulate over K/32 tile blocks
     let k_blocks = k / 32;
-    let a_stride = (k * 2) as usize; // full A row stride in bytes (bf16 = 2B)
+    let a_stride = a_row_stride * 2; // A row stride in bytes (bf16 = 2B); TILELOADD takes it as an operand
     let b_stride = 64usize; // VNNI row stride in bytes
 
     // Operand placement (verified empirically — see `tile_dpbusd` doc): the
@@ -510,6 +575,125 @@ mod tests {
         assert_eq!(c, c_ref, "GEMM over LE-roundtripped buffer not exact");
     }
 
+    /// Scatter a dense 16×k A into a slab where row i starts at i·pitch,
+    /// with a distinct sentinel in every gap so a wrong offset shows up.
+    fn strided_slab(a: &[u16], k: usize, pitch: usize) -> Vec<u16> {
+        let mut slab = vec![bf16_int(99); 15 * pitch + k];
+        for i in 0..16 {
+            slab[i * pitch..i * pitch + k].copy_from_slice(&a[i * k..(i + 1) * k]);
+        }
+        slab
+    }
+
+    #[test]
+    fn strided_entry_reads_rows_in_place_exactly() {
+        let k = 64;
+        let (a, b, c_ref) = integer_case(k);
+        let packed = PackedBf16B::pack(&b, k);
+        for pitch in [k, k + 1, k + 32, 4 * k + 7] {
+            let slab = strided_slab(&a, k, pitch);
+            let mut c = vec![0.0f32; 256];
+            bf16_tile_gemm_16x16_packed_strided(&slab, pitch, &packed, &mut c);
+            assert_eq!(c, c_ref, "pitch {pitch}, tier [{}]", bf16_tile_gemm_tier());
+        }
+    }
+
+    #[test]
+    fn strided_rows_are_exact_on_every_tier_this_host_has() {
+        // The dispatch above takes one tier per host; drive the others here.
+        let k = 64;
+        let pitch = k + 32;
+        let (a, b, c_ref) = integer_case(k);
+        let packed = PackedBf16B::pack(&b, k);
+        let slab = strided_slab(&a, k, pitch);
+
+        let mut c = vec![0.0f32; 256];
+        let mut b_rm = vec![0u16; k * 16];
+        for row in 0..k {
+            for col in 0..16 {
+                b_rm[row * 16 + col] = packed.data()[PackedBf16B::vnni_index(row, col)];
+            }
+        }
+        fallback_path(&dense_rows(&slab, pitch, k), &b_rm, &mut c, k);
+        assert_eq!(c, c_ref, "gather tier not exact");
+
+        if is_x86_feature_detected!("avx512bf16") {
+            let mut c = vec![0.0f32; 256];
+            // SAFETY: detection checked above; slab holds 15·pitch + k.
+            unsafe { avx512bf16_path(&slab, pitch, packed.data(), &mut c, k) };
+            assert_eq!(c, c_ref, "VDPBF16PS strided not exact");
+        } else {
+            eprintln!("SKIP (honestly): no avx512bf16 — strided VDPBF16PS not exercised");
+        }
+        if amx_available() {
+            let mut c = vec![0.0f32; 256];
+            // SAFETY: amx_available() confirmed; slab holds 15·pitch + k.
+            unsafe { amx_path(&slab, pitch, packed.data(), &mut c, k) };
+            assert_eq!(c, c_ref, "TDPBF16PS strided not exact");
+        } else {
+            eprintln!("SKIP (honestly): no AMX — strided TDPBF16PS not exercised");
+        }
+    }
+
+    /// The decode+FMA tier, driven directly so a host with a tile tier still
+    /// covers it: an A slice longer than the 16 rows it uses, at stride == K.
+    #[test]
+    fn fallback_tier_accepts_a_longer_dense_a() {
+        let k = 32;
+        let (a, b, c_ref) = integer_case(k);
+        let packed = PackedBf16B::pack(&b, k);
+        let mut long_a = a.clone();
+        long_a.push(bf16_int(99)); // 16·K + 1 elements: valid for the strided entry
+        let mut c = vec![0.0f32; 256];
+        fallback_vnni(&long_a, k, packed.data(), &mut c, k);
+        assert_eq!(c, c_ref);
+    }
+
+    /// K = 0 is a valid call on every tier and leaves C unchanged.
+    #[test]
+    fn fallback_tier_accepts_zero_k_with_a_stride() {
+        let packed = PackedBf16B::zeroed(0);
+        let a = vec![0u16; 15];
+        let mut c = vec![3.0f32; 256];
+        fallback_vnni(&a, 1, packed.data(), &mut c, 0);
+        assert_eq!(c, vec![3.0f32; 256]);
+        // The public entry accepts the same call on whatever tier this host has.
+        let mut c = vec![3.0f32; 256];
+        bf16_tile_gemm_16x16_packed_strided(&a, 1, &packed, &mut c);
+        assert_eq!(c, vec![3.0f32; 256]);
+    }
+
+    #[test]
+    fn strided_entry_does_not_read_the_gap() {
+        // Reading the slab densely (stride k) instead of at its pitch picks
+        // up the sentinel gap and must give a different result.
+        let k = 32;
+        let (a, b, c_ref) = integer_case(k);
+        let packed = PackedBf16B::pack(&b, k);
+        let slab = strided_slab(&a, k, k + 32);
+        let mut dense_misread = vec![0.0f32; 256];
+        bf16_tile_gemm_16x16_packed(&slab[..16 * k], &packed, &mut dense_misread);
+        assert_ne!(dense_misread, c_ref, "fixture cannot tell the pitch from K");
+    }
+
+    #[test]
+    #[should_panic(expected = "shorter than K")]
+    fn strided_entry_rejects_a_stride_below_k() {
+        let packed = PackedBf16B::zeroed(32);
+        let a = vec![0u16; 16 * 32];
+        let mut c = vec![0.0f32; 256];
+        bf16_tile_gemm_16x16_packed_strided(&a, 31, &packed, &mut c);
+    }
+
+    #[test]
+    #[should_panic(expected = "needs")]
+    fn strided_entry_rejects_a_short_buffer() {
+        let packed = PackedBf16B::zeroed(32);
+        let a = vec![0u16; 15 * 40 + 31];
+        let mut c = vec![0.0f32; 256];
+        bf16_tile_gemm_16x16_packed_strided(&a, 40, &packed, &mut c);
+    }
+
     #[test]
     fn packed_entry_accumulates() {
         // C += A·B semantics: pre-existing C values must survive.
@@ -535,7 +719,7 @@ mod tests {
         let packed = PackedBf16B::pack(&b, k);
         let mut c = vec![0.0f32; 256];
         // SAFETY: detection checked above.
-        unsafe { avx512bf16_path(&a, packed.data(), &mut c, k) };
+        unsafe { avx512bf16_path(&a, k, packed.data(), &mut c, k) };
         assert_eq!(c, c_ref, "VDPBF16PS not exact on integer operands");
 
         // Float parity vs the decode+FMA fallback: same products (exact),
@@ -555,7 +739,7 @@ mod tests {
         let packed_f = PackedBf16B::pack(&b_bf, k);
         let mut c_v = vec![0.0f32; 256];
         // SAFETY: detection checked above.
-        unsafe { avx512bf16_path(&a_bf, packed_f.data(), &mut c_v, k) };
+        unsafe { avx512bf16_path(&a_bf, k, packed_f.data(), &mut c_v, k) };
         let mut c_fb = vec![0.0f32; 256];
         fallback_path(&a_bf, &b_bf, &mut c_fb, k);
         for i in 0..256 {

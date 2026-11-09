@@ -273,14 +273,23 @@ available here" and is in fact a **missing linker**, then a missing
 interpreter, in two separate steps:
 
 ```sh
-sudo apt-get update
-sudo apt-get install -y gcc-aarch64-linux-gnu qemu-user-static
+scripts/install-qemu-user.sh gcc-aarch64-linux-gnu
 ```
 
-`qemu-user` alone is NOT enough: the script invokes `qemu-aarch64-static`,
-and the dynamic `qemu-aarch64` from `qemu-user` leaves a second, differently
-worded failure (`command not found`) that looks like a fresh problem rather
-than the same one. Install `qemu-user-static`.
+The scripts invoke `qemu-aarch64-static` / `qemu-x86_64-static`, so plain
+`qemu-user` alone leaves a second, differently worded failure
+(`command not found`) that looks like a fresh problem rather than the same one.
+
+> ⊘ **CORRECTED 2026-11-05.** This read *"Install `qemu-user-static`"* with
+> `sudo apt-get install -y gcc-aarch64-linux-gnu qemu-user-static`. Ubuntu 26.04
+> (the GitHub `ubuntu-latest` image since early November) dropped that package:
+> it is now virtual with no installation candidate and `apt-get install` exits
+> 100, which turned `neon-simd/parity-qemu` red on PR #408 before anything was
+> built. `scripts/install-qemu-user.sh` installs `qemu-user-static` where it
+> still exists, else `qemu-user` plus links for the `-static` names; every CI
+> qemu step calls it. Both branches were run on Ubuntu 24.04
+> (`QEMU_INSTALL_FORCE_PLAIN=1` takes the 26.04 branch), and
+> `scripts/neon-parity.sh` passed through the linked plain `qemu-aarch64`.
 
 **And `native` is the HOST arm — it names no tier at all.**
 

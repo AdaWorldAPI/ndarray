@@ -187,7 +187,7 @@ jobs:
       # pinned toolchain too (dtolnay installs for `stable`, which may differ).
       - run: rustup target add aarch64-unknown-linux-gnu
       - name: install aarch64 cross toolchain + qemu-user
-        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu qemu-user-static
+        run: scripts/install-qemu-user.sh gcc-aarch64-linux-gnu
       - name: NEON SIMD parity (cross-build + qemu run)
         run: ./scripts/neon-parity.sh
 
@@ -393,7 +393,17 @@ jobs:
     # Only runs on merge queue / push to main — never blocks PR checks.
     if: github.event_name == 'merge_group' || github.event_name == 'push'
     runs-on: ubuntu-latest
-    name: miri
+    # Sharded: under Miri every test is its own interpreted process (about
+    # 30 s minimum each), so the ~1400 selected tests take 4-5 hours serial.
+    # The 2026-11-05 master run reached 590 tests in the 2-hour cap. Eight
+    # shards keep each well under the cap; the per-test limit is in the
+    # `miri` nextest profile (.config/nextest.toml).
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    name: miri/${{ matrix.shard }}
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
@@ -402,6 +412,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
       - run: ./scripts/miri-tests.sh
+        env:
+          MIRI_PARTITION: count:${{ matrix.shard }}/8
 
   cross_test:
     # Gated on merge_group only — cross-compile via docker (cross-rs) for

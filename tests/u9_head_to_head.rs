@@ -60,6 +60,10 @@ fn run_scan(a: &[([u8; 64], u64)], b: &[([u8; 64], u64)]) -> (i64, i64) {
 /// other 63 lanes are touched +0), at a lane that rotates with the pair so
 /// every lane position is exercised.
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "511 x 511 = 261 121 kernel calls take hours under miri; the native test jobs run it"
+)]
 fn all_511_by_511_pairs_are_exact() {
     let mut n = 0usize;
     for va in -255..=255i32 {
@@ -122,6 +126,10 @@ fn full_blocks_match_the_oracle() {
 /// Worst-case magnitudes past both flush intervals, all one sign and mixed:
 /// nothing wraps, rounds or saturates.
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "tens of thousands of all-255 blocks past the flush bound take hours under miri; the native test jobs run it"
+)]
 fn worst_case_runs_cross_the_flush_bounds_exactly() {
     let n = 3 * B_FLUSH_BLOCKS + 5;
     assert!(n > 4 * A_FLUSH_BLOCKS);

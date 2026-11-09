@@ -873,7 +873,8 @@ pub use crate::simd_runtime::matmul_i8_to_i32;
 // run reports.
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
 pub use crate::hpc::bf16_tile_gemm::{
-    bf16_tile_gemm_16x16 as bf16_tile_gemm_16x16_amx, bf16_tile_gemm_16x16_packed, bf16_tile_gemm_tier, PackedBf16B,
+    bf16_tile_gemm_16x16 as bf16_tile_gemm_16x16_amx, bf16_tile_gemm_16x16_packed, bf16_tile_gemm_16x16_packed_strided,
+    bf16_tile_gemm_tier, PackedBf16B,
 };
 // CPU-generation detection (cached): SPR / EMR / GNR / Sierra Forest. Lets a
 // consumer report which silicon a run landed on and distinguish "no AMX
