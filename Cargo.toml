@@ -96,6 +96,11 @@ path = "examples/microtile/main.rs"
 required-features = ["std"]
 
 [[example]]
+name = "u64x64"
+path = "examples/u64x64/main.rs"
+required-features = ["std"]
+
+[[example]]
 name = "cpu_guard_probe"
 required-features = ["std"]
 
