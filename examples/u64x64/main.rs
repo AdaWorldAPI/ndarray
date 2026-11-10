@@ -9,6 +9,8 @@ mod fixture;
 mod harness;
 mod oracle;
 mod route_a;
+mod route_c;
+mod route_d;
 // Later routes are appended here by the orchestrator: `mod route_b;` ...
 
 use fixture::*;
@@ -39,9 +41,49 @@ pub struct Entry {
 
 fn all_entries() -> Vec<Entry> {
     let mut v = route_a::entries();
+    v.extend(route_c::entries());
+    v.extend(route_d::entries());
     // Later routes: v.extend(route_b::entries()); ...
     v.shrink_to_fit();
     v
+}
+
+/// The compile-time recipe an `O6c` entry is specialised for: it may only
+/// be run with that recipe (its wrapper asserts so).
+fn const_recipe(e: &Entry) -> Option<Recipe> {
+    if e.op != "O6c" {
+        return None;
+    }
+    let d = match e.variant {
+        "const_sparse" => <route_d::Sparse3 as route_d::Recipe>::D,
+        "const_dense" => <route_d::Dense as route_d::Recipe>::D,
+        v => panic!("unknown O6c variant {v}"),
+    };
+    Some(Recipe::new(d).expect("const recipe within the admission bounds"))
+}
+
+/// The entry's params: the bench params, with the recipe replaced by the
+/// entry's compile-time recipe for an `O6c` entry.
+fn params_for(e: &Entry, p: &Params) -> Params {
+    match const_recipe(e) {
+        Some(r) => Params::new(r, u32::from(p.u), u32::from(p.q), p.t).expect("params"),
+        None => *p,
+    }
+}
+
+/// Every named and 256 random sources under one fixed recipe, for `O6c`.
+fn o6c_cases(r: Recipe, mut cb: impl FnMut(String, &Bound<'_>, &Params)) {
+    let mut sources = named_sources();
+    for seed in 0..256u64 {
+        sources.push((format!("random{seed}"), random_source(seed)));
+    }
+    for (n, s) in sources.iter() {
+        let b = bound_ok(s);
+        for &u in [1u32, 3, 255].iter() {
+            let p = Params::new(r, u, 1, [0; 64]).expect("params");
+            cb(format!("{n}/u{u}"), &b, &p);
+        }
+    }
 }
 
 fn symbol(e: &Entry) -> String {
@@ -520,6 +562,14 @@ fn check() -> i32 {
                     abort(e, &n, &d)
                 }
             }),
+            Kernel::O6(f) if const_recipe(e).is_some() => {
+                o6c_cases(const_recipe(e).expect("checked"), |n, b, p| {
+                    cases += 1;
+                    if let Some(d) = run_o6(*f, b, p) {
+                        abort(e, &n, &d)
+                    }
+                })
+            }
             Kernel::O6(f) => o6_cases(|n, b, p| {
                 cases += 1;
                 if let Some(d) = run_o6(*f, b, p) {
@@ -686,14 +736,15 @@ fn bench_entry(e: &Entry, inp: &Inputs, bound: &Bound<'_>, cfg: &mut Cfg) -> har
             )
         }
         Kernel::O6(f) => {
-            if let Some(d) = run_o6(*f, bound, &inp.params) {
+            let params = params_for(e, &inp.params);
+            if let Some(d) = run_o6(*f, bound, &params) {
                 abort(e, "bench-verify", &d)
             }
             let mut out = O6Out::new();
             cfg.time(
                 &label,
                 || {
-                    f(bb(bound), bb(&inp.params), &mut out);
+                    f(bb(bound), bb(&params), &mut out);
                     bb(&out);
                 },
                 || {},
@@ -796,9 +847,10 @@ fn one(sym: &str, n: usize) -> i32 {
             bb(&c);
         }
         Kernel::O6(f) => {
+            let params = params_for(e, &inp.params);
             let mut out = O6Out::new();
             for _ in 0..n {
-                f(bb(&bound), bb(&inp.params), &mut out);
+                f(bb(&bound), bb(&params), &mut out);
                 bb(&out);
             }
         }
