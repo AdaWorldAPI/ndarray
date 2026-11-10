@@ -1193,6 +1193,58 @@ mod tests {
         int8_tile_gemm_16x16_packed_strided(&vec![0u8; 15 * 100 + k - 1], 100, &p, &mut vec![0i32; 256]);
     }
 
+    /// K = 0 is a legal degenerate size: the multi-tile entry still
+    /// overwrites C with zeros, over full 32-row blocks, a 16-row strip and an
+    /// odd band count, on the dispatched tier (AMX on an AMX host) and on the
+    /// scalar tier called directly. A and its stride are empty.
+    #[test]
+    fn k0_multi_tile_overwrites_with_zeros_on_both_tiers() {
+        let bands = [PackedI8B::zeroed(0), PackedI8B::zeroed(0), PackedI8B::zeroed(0)];
+        let (m, n) = (48, 48);
+        let mut c = vec![7i32; m * n];
+        int8_gemm_packed_strided(&[], 0, &bands, &mut c, m);
+        assert!(c.iter().all(|&v| v == 0), "dispatched tier {}", int8_tile_gemm_tier());
+        let mut c = vec![7i32; m * n];
+        packed_strided_scalar(&[], 0, &bands, &mut c, m, n, 0);
+        assert!(c.iter().all(|&v| v == 0), "scalar tier");
+    }
+
+    /// K = 0 through the accumulating single-tile entry leaves C unchanged on
+    /// the dispatched tier and the scalar tier.
+    #[test]
+    fn k0_single_tile_accumulates_nothing_on_both_tiers() {
+        let b = PackedI8B::zeroed(0);
+        let mut c = vec![5i32; 256];
+        int8_tile_gemm_16x16_packed(&[], &b, &mut c);
+        int8_tile_gemm_16x16_packed_strided(&[], 0, &b, &mut c);
+        assert!(c.iter().all(|&v| v == 5), "dispatched tier {}", int8_tile_gemm_tier());
+        fallback_vnni(&[], 0, b.data(), &mut c, 0);
+        assert!(c.iter().all(|&v| v == 5), "scalar tier");
+    }
+
+    /// M = 0 returns before any bound that depends on M and never touches C.
+    #[test]
+    fn m0_multi_tile_is_a_no_op() {
+        let bands = [PackedI8B::zeroed(64)];
+        int8_gemm_packed_strided(&[], 64, &bands, &mut [], 0);
+    }
+
+    /// `(M-1)·stride` overflowing must panic, not wrap into a small "needed".
+    #[test]
+    #[should_panic(expected = "overflows usize")]
+    fn multi_tile_refuses_a_stride_whose_extent_overflows() {
+        let bands = [PackedI8B::zeroed(64)];
+        int8_gemm_packed_strided(&vec![0u8; 64], usize::MAX / 4, &bands, &mut vec![0i32; 32 * 16], 32);
+    }
+
+    /// `15·stride` overflowing must panic, not wrap into a small "needed".
+    #[test]
+    #[should_panic(expected = "overflows usize")]
+    fn strided_refuses_a_stride_whose_extent_overflows() {
+        let p = PackedI8B::zeroed(64);
+        int8_tile_gemm_16x16_packed_strided(&vec![0u8; 64], usize::MAX / 8, &p, &mut vec![0i32; 256]);
+    }
+
     /// `1 << 60` is a multiple of 64 and `16·K` wraps to 0 on 64-bit, which
     /// would build an empty buffer claiming a huge K (codex P1, #418).
     #[test]
