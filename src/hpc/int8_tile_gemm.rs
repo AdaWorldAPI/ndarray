@@ -10,7 +10,12 @@
 //!   * [`int8_tile_gemm_16x16`] — the 16×16 tile kernel; M=16, N=16,
 //!     K a multiple of 64. AMX path requires runtime feature
 //!     detection (`amx_available()`); falls back to a scalar reference
-//!     when AMX isn't OS-enabled.
+//!     when AMX isn't OS-enabled. VNNI-packs B on every call.
+//!   * [`PackedI8B`] + [`int8_tile_gemm_16x16_packed`] /
+//!     [`int8_tile_gemm_16x16_packed_strided`] — the same kernel with B
+//!     packed once and, for the strided entry, A read in place at the
+//!     caller's row pitch. The INT8 twins of `PackedBf16B` and
+//!     `bf16_tile_gemm_16x16_packed[_strided]`.
 //!
 //! Caller responsibility:
 //!   * B comes in row-major K × 16 i8; the kernel pre-packs it into
@@ -56,7 +61,7 @@ pub fn int8_tile_gemm_16x16(a_u8: &[u8], b_i8: &[i8], c: &mut [i32], k: usize) {
         vnni_pack_i8(b_i8, &mut b_vnni, k, 16);
         // SAFETY: amx_available() just confirmed CPUID + XCR0 + prctl.
         unsafe {
-            amx_path(a_u8, &b_vnni, c, k);
+            amx_path(a_u8, k, &b_vnni, c, k);
         }
     } else {
         fallback_path(a_u8, b_i8, c, k);
@@ -71,12 +76,13 @@ pub fn int8_tile_gemm_16x16(a_u8: &[u8], b_i8: &[i8], c: &mut [i32], k: usize) {
 /// **Accumulates** into the caller's `c` buffer — matches the
 /// documented `C += A·B` semantics. The C tile (tmm0) is preloaded
 /// from `c` before the TDPBUSD loop so any pre-existing values are
-/// preserved.
+/// preserved. Row `i` of A starts at `a_u8[i * a_row_stride]`.
 ///
 /// # Safety
-/// Caller must have verified `amx_available() == true`.
+/// Caller must have verified `amx_available() == true`, and that A holds
+/// `15·a_row_stride + K` bytes with `a_row_stride >= K`.
 #[inline]
-unsafe fn amx_path(a_u8: &[u8], b_vnni: &[i8], c: &mut [i32], k: usize) {
+unsafe fn amx_path(a_u8: &[u8], a_row_stride: usize, b_vnni: &[i8], c: &mut [i32], k: usize) {
     // Tile config: 16×64-byte tiles, identical shape to the BF16 tile
     // (BF16 is 32 elements × 2 bytes per row, INT8 is 64 elements × 1
     // byte — same 64-byte row width either way).
@@ -92,7 +98,7 @@ unsafe fn amx_path(a_u8: &[u8], b_vnni: &[i8], c: &mut [i32], k: usize) {
     // K-elements per A row × 4 K-elements per inner-product = 256 MACs
     // per output cell × 16 × 16 = 16 384 MACs per instruction.
     let k_blocks = k / 64;
-    let a_stride = k; // bytes per A row (u8 = 1 byte each)
+    let a_stride = a_row_stride; // bytes per A row (u8 = 1 byte each)
     let b_stride = 64usize; // VNNI: 16 columns × 4 bytes per row
 
     // Operand placement (verified empirically on Emerald Rapids — see the
@@ -115,6 +121,339 @@ unsafe fn amx_path(a_u8: &[u8], b_vnni: &[i8], c: &mut [i32], k: usize) {
 
     tile_store(0, c.as_mut_ptr() as *mut u8, 64);
     tile_release();
+}
+
+// ═════════════════════════════════════════════════════════════════════
+// Pre-packed B — hoists VNNI packing (and its allocation) out of hot loops
+// ═════════════════════════════════════════════════════════════════════
+
+/// Which kernel [`int8_tile_gemm_16x16_packed`] /
+/// [`int8_tile_gemm_16x16_packed_strided`] take on this host, as a
+/// human-readable tier name, for run reports (AMX Gotcha 9: always print
+/// which tier ran).
+pub fn int8_tile_gemm_tier() -> &'static str {
+    if amx_available() {
+        "AMX TDPBUSD"
+    } else {
+        "scalar u8 x i8 -> i32"
+    }
+}
+
+/// B\[K, 16\] i8 operand held in the VNNI quad layout AMX `TDPBUSD` reads:
+/// quad-row `q` holds `(B[4q, j], B[4q+1, j], B[4q+2, j], B[4q+3, j])`
+/// interleaved over `j` — 64 i8 = one 64-byte tile row. K must be a
+/// multiple of 64.
+///
+/// Two ways to fill it, as for `PackedBf16B`:
+/// - [`PackedI8B::pack`] / [`PackedI8B::pack_from`] — from row-major B
+///   (`pack_from` reuses the buffer: no per-call allocation).
+/// - Stage **directly** in VNNI layout via [`PackedI8B::vnni_index`] +
+///   [`PackedI8B::data_mut`] — no packing pass.
+///
+/// B is the **signed** operand of `TDPBUSD`; A is unsigned. Nothing here
+/// reinterprets either.
+///
+/// # Examples
+/// ```
+/// use ndarray::simd::{int8_tile_gemm_16x16_packed, PackedI8B};
+/// let k = 64;
+/// let mut b = PackedI8B::zeroed(k);
+/// b.data_mut()[PackedI8B::vnni_index(5, 3)] = -2; // B[5][3] = -2
+/// let a = vec![3u8; 16 * k]; // A = all 3
+/// let mut c = vec![0i32; 256];
+/// int8_tile_gemm_16x16_packed(&a, &b, &mut c);
+/// assert_eq!(c[3], -6); // C[0][3] = A[0][5]·B[5][3]
+/// ```
+pub struct PackedI8B {
+    data: Vec<i8>,
+    k: usize,
+}
+
+impl PackedI8B {
+    /// All-zero packed B for direct VNNI staging. `k` must be a multiple of 64.
+    pub fn zeroed(k: usize) -> Self {
+        assert_eq!(k % 64, 0, "K must be multiple of 64 for TDPBUSD tiles");
+        PackedI8B {
+            data: vec![0i8; k * 16],
+            k,
+        }
+    }
+
+    /// Pack row-major B\[K, 16\] (allocates once; prefer [`Self::pack_from`]
+    /// for repeated packs).
+    pub fn pack(b_i8_row_major: &[i8], k: usize) -> Self {
+        let mut p = Self::zeroed(k);
+        p.pack_from(b_i8_row_major);
+        p
+    }
+
+    /// Re-pack row-major B\[K, 16\] into the existing buffer — no allocation.
+    pub fn pack_from(&mut self, b_i8_row_major: &[i8]) {
+        assert_eq!(b_i8_row_major.len(), self.k * 16);
+        vnni_pack_i8(b_i8_row_major, &mut self.data, self.k, 16);
+    }
+
+    /// Flat index of logical `B[row, col]` inside the VNNI buffer.
+    /// `vnni[(row/4)·64 + 4·col + (row & 3)] == B[row, col]`.
+    #[inline(always)]
+    pub const fn vnni_index(row: usize, col: usize) -> usize {
+        (row / 4) * 64 + 4 * col + (row & 3)
+    }
+
+    /// The K dimension this buffer was sized for.
+    pub fn k(&self) -> usize {
+        self.k
+    }
+
+    /// Read access to the raw VNNI buffer.
+    pub fn data(&self) -> &[i8] {
+        &self.data
+    }
+
+    /// Mutable access to the raw VNNI buffer, for direct staging via
+    /// [`Self::vnni_index`].
+    pub fn data_mut(&mut self) -> &mut [i8] {
+        &mut self.data
+    }
+
+    /// The buffer as bytes — `k·16` bytes, one per i8 lane. An i8 has no
+    /// byte order, so this is the same in any endianness; it is the face a
+    /// batch writer hands to columnar storage. Pair with
+    /// [`Self::from_le_bytes`].
+    pub fn as_le_bytes(&self) -> &[u8] {
+        // SAFETY: `&[i8]` → `&[u8]` has the same size and alignment per
+        // element; the slice stays within the same allocation.
+        unsafe { core::slice::from_raw_parts(self.data.as_ptr() as *const u8, self.data.len()) }
+    }
+
+    /// Rebuild from bytes (the inverse of [`Self::as_le_bytes`]).
+    /// `bytes.len()` must be `k·16` and `k` a multiple of 64.
+    pub fn from_le_bytes(bytes: &[u8], k: usize) -> Self {
+        assert_eq!(k % 64, 0, "K must be multiple of 64 for TDPBUSD tiles");
+        assert_eq!(bytes.len(), k * 16, "expected K·16 bytes");
+        let data = bytes.iter().map(|&b| i8::from_ne_bytes([b])).collect();
+        PackedI8B { data, k }
+    }
+}
+
+/// `C[16, 16] += A[16, K] × B[K, 16]` with B pre-packed — the hot-loop
+/// sibling of [`int8_tile_gemm_16x16`] with the per-call VNNI pack (and its
+/// allocation) hoisted into [`PackedI8B`]. A is u8 row-major (`16·K`), C is
+/// i32 row-major (256). **Accumulates.**
+///
+/// Tier dispatch (runtime): AMX `TDPBUSD` → scalar reference. Both tiers are
+/// exact (integer arithmetic). [`int8_tile_gemm_tier`] names the tier.
+pub fn int8_tile_gemm_16x16_packed(a_u8: &[u8], b: &PackedI8B, c: &mut [i32]) {
+    let k = b.k;
+    assert_eq!(a_u8.len(), 16 * k);
+    assert_eq!(c.len(), 16 * 16);
+    dispatch_vnni(a_u8, k, &b.data, c, k);
+}
+
+/// `C[16, 16] += A[16, K] × B[K, 16]` with B pre-packed and A read in place
+/// from a strided buffer: row `i` of A is `a_u8[i·a_row_stride ..][..K]`.
+///
+/// For an A operand that already lives in memory with a row pitch other than
+/// K, for example 16 equally spaced u8 lanes of one slab (row = lane, column
+/// = position within the lane). AMX `TILELOADD` takes the stride as an
+/// operand, so nothing is copied on that tier. The scalar tier reads each row
+/// at its offset.
+///
+/// `a_row_stride` must be at least K, and `a_u8` must hold
+/// `15·a_row_stride + K` bytes; both are checked. With `a_row_stride == K`
+/// this is exactly [`int8_tile_gemm_16x16_packed`].
+///
+/// # Examples
+/// ```
+/// use ndarray::simd::{int8_tile_gemm_16x16_packed_strided, PackedI8B};
+/// let k = 64;
+/// let pitch = 100; // 16 lanes, each 100 u8 long, in one slab
+/// let mut slab = vec![0u8; 16 * pitch];
+/// slab[3 * pitch + 7] = 200; // lane 3, position 7
+/// let mut b = PackedI8B::zeroed(k);
+/// b.data_mut()[PackedI8B::vnni_index(7, 2)] = -1; // B[7][2] = -1
+/// let mut c = vec![0i32; 256];
+/// int8_tile_gemm_16x16_packed_strided(&slab, pitch, &b, &mut c);
+/// assert_eq!(c[3 * 16 + 2], -200); // A is unsigned: 200, not -56
+/// ```
+pub fn int8_tile_gemm_16x16_packed_strided(a_u8: &[u8], a_row_stride: usize, b: &PackedI8B, c: &mut [i32]) {
+    let k = b.k;
+    assert!(a_row_stride >= k, "A row stride {a_row_stride} is shorter than K = {k}");
+    let needed = a_row_stride
+        .checked_mul(15)
+        .and_then(|n| n.checked_add(k))
+        .expect("15·a_row_stride + K overflows usize");
+    assert!(a_u8.len() >= needed, "A holds {} bytes, needs {needed}", a_u8.len());
+    assert_eq!(c.len(), 16 * 16);
+    dispatch_vnni(a_u8, a_row_stride, &b.data, c, k);
+}
+
+/// `C[M, N] = A[M, K] × B[K, N]` over **prepacked** B bands and a **strided**
+/// A: the multi-tile sibling of [`int8_tile_gemm_16x16_packed_strided`].
+///
+/// - `b` holds B as `N/16` [`PackedI8B`] bands (band `t` = output columns
+///   `16t..16t+16`), all of the same K. Packed once by the caller and reused
+///   across calls, so no VNNI pack runs here.
+/// - Row `i` of A is `a_u8[i·a_row_stride ..][..K]`, read in place.
+/// - `c` is `M x N` row-major and is **overwritten**, as by
+///   [`int8_gemm_amx_tiled`].
+///
+/// On AMX this is `int8_gemm_amx_tiled`'s 2×2 register-blocked kernel (one
+/// tile configuration for the whole call, 32×32 blocks, 16-wide remainders)
+/// minus its per-call band gather and pack. Without AMX it runs the scalar
+/// reference per 16×16 tile. `M` must be a multiple of 16. Both tiers are
+/// exact.
+///
+/// # Examples
+/// ```
+/// use ndarray::simd::{int8_gemm_packed_strided, PackedI8B};
+/// let (m, k, pitch) = (32, 64, 80);
+/// let a = vec![2u8; (m - 1) * pitch + k];
+/// let bands = [PackedI8B::pack(&vec![-3i8; k * 16], k), PackedI8B::pack(&vec![1i8; k * 16], k)];
+/// let mut c = vec![0i32; m * 32];
+/// int8_gemm_packed_strided(&a, pitch, &bands, &mut c, m);
+/// assert_eq!((c[0], c[16]), (2 * -3 * 64, 2 * 64));
+/// ```
+pub fn int8_gemm_packed_strided(a_u8: &[u8], a_row_stride: usize, b: &[PackedI8B], c: &mut [i32], m: usize) {
+    assert!(!b.is_empty(), "int8_gemm_packed_strided: no B bands");
+    let k = b[0].k;
+    assert!(b.iter().all(|band| band.k == k), "int8_gemm_packed_strided: B bands differ in K");
+    assert_eq!(m % 16, 0, "int8_gemm_packed_strided: M must be multiple of 16");
+    assert!(a_row_stride >= k, "A row stride {a_row_stride} is shorter than K = {k}");
+    let n = b.len() * 16;
+    if m == 0 {
+        return;
+    }
+    let needed = a_row_stride
+        .checked_mul(m - 1)
+        .and_then(|x| x.checked_add(k))
+        .expect("(M-1)·a_row_stride + K overflows usize");
+    assert!(a_u8.len() >= needed, "A holds {} bytes, needs {needed}", a_u8.len());
+    assert!(c.len() >= m * n, "int8_gemm_packed_strided: c.len()={} < m*n={}", c.len(), m * n);
+    if amx_available() {
+        // SAFETY: amx_available() confirmed CPUID + XCR0 + arch_prctl; every
+        // bound the kernel relies on is asserted above.
+        unsafe { packed_strided_amx(a_u8, a_row_stride, b, c, m, n, k) }
+    } else {
+        packed_strided_scalar(a_u8, a_row_stride, b, c, m, n, k);
+    }
+}
+
+/// The scalar tier of [`int8_gemm_packed_strided`], per 16×16 tile.
+fn packed_strided_scalar(
+    a_u8: &[u8], a_row_stride: usize, b: &[PackedI8B], c: &mut [i32], m: usize, n: usize, k: usize,
+) {
+    let mut tile = [0i32; 256];
+    for i in (0..m).step_by(16) {
+        for (t, band) in b.iter().enumerate() {
+            tile.fill(0);
+            fallback_vnni(&a_u8[i * a_row_stride..], a_row_stride, &band.data, &mut tile, k);
+            for r in 0..16 {
+                let at = (i + r) * n + t * 16;
+                c[at..at + 16].copy_from_slice(&tile[r * 16..(r + 1) * 16]);
+            }
+        }
+    }
+}
+
+/// `int8_gemm_amx_tiled_rb`'s kernel over prepacked bands and a strided A.
+///
+/// # Safety
+/// `amx_available()` must hold, and the bounds asserted by
+/// [`int8_gemm_packed_strided`] must hold.
+unsafe fn packed_strided_amx(
+    a_u8: &[u8], a_row_stride: usize, b: &[PackedI8B], c: &mut [i32], m: usize, n: usize, k: usize,
+) {
+    let k_blocks = k / 64;
+    let m32 = (m / 32) * 32;
+    let pitch = n * 4;
+    let s = a_row_stride;
+    let cp = c.as_mut_ptr();
+    tile_loadconfig(&TileConfig::for_dpbusd_8());
+    let mut t = 0;
+    while t + 1 < b.len() {
+        let (b0p, b1p) = (b[t].data.as_ptr() as *const u8, b[t + 1].data.as_ptr() as *const u8);
+        let j2 = t * 16;
+        let mut i2 = 0;
+        while i2 < m32 {
+            let a0 = a_u8.as_ptr().add(i2 * s);
+            let a1 = a_u8.as_ptr().add((i2 + 16) * s);
+            tile_zero(0);
+            tile_zero(1);
+            tile_zero(2);
+            tile_zero(3);
+            for kb in 0..k_blocks {
+                tile_load(4, a0.add(kb * 64), s);
+                tile_load(5, a1.add(kb * 64), s);
+                tile_load(6, b0p.add(kb * 16 * 64), 64);
+                tile_load(7, b1p.add(kb * 16 * 64), 64);
+                tile_dpbusd_2x2();
+            }
+            tile_store(0, cp.add(i2 * n + j2) as *mut u8, pitch);
+            tile_store(1, cp.add(i2 * n + j2 + 16) as *mut u8, pitch);
+            tile_store(2, cp.add((i2 + 16) * n + j2) as *mut u8, pitch);
+            tile_store(3, cp.add((i2 + 16) * n + j2 + 16) as *mut u8, pitch);
+            i2 += 32;
+        }
+        if m32 < m {
+            let ap = a_u8.as_ptr().add(m32 * s);
+            for (off, bv) in [(0usize, b0p), (16usize, b1p)] {
+                tile_zero(0);
+                for kb in 0..k_blocks {
+                    tile_load(1, bv.add(kb * 16 * 64), 64);
+                    tile_load(2, ap.add(kb * 64), s);
+                    tile_dpbusd();
+                }
+                tile_store(0, cp.add(m32 * n + j2 + off) as *mut u8, pitch);
+            }
+        }
+        t += 2;
+    }
+    if t < b.len() {
+        let bvp = b[t].data.as_ptr() as *const u8;
+        let j = t * 16;
+        let mut i = 0;
+        while i < m {
+            let ap = a_u8.as_ptr().add(i * s);
+            tile_zero(0);
+            for kb in 0..k_blocks {
+                tile_load(1, bvp.add(kb * 16 * 64), 64);
+                tile_load(2, ap.add(kb * 64), s);
+                tile_dpbusd();
+            }
+            tile_store(0, cp.add(i * n + j) as *mut u8, pitch);
+            i += 16;
+        }
+    }
+    tile_release();
+}
+
+/// Shared tier dispatch over a VNNI-packed B. Row `i` of A starts at
+/// `a_u8[i * a_row_stride]`; callers have checked the bounds.
+fn dispatch_vnni(a_u8: &[u8], a_row_stride: usize, b_vnni: &[i8], c: &mut [i32], k: usize) {
+    if amx_available() {
+        // SAFETY: amx_available() confirmed CPUID + XCR0 + arch_prctl grant;
+        // the public callers checked A's stride and length and C's length.
+        unsafe {
+            amx_path(a_u8, a_row_stride, b_vnni, c, k);
+        }
+    } else {
+        fallback_vnni(a_u8, a_row_stride, b_vnni, c, k);
+    }
+}
+
+/// The scalar tier over a VNNI-packed B and a strided A: reads B through
+/// [`PackedI8B::vnni_index`] and each A row at its offset. Accumulates.
+fn fallback_vnni(a_u8: &[u8], a_row_stride: usize, b_vnni: &[i8], c: &mut [i32], k: usize) {
+    for i in 0..16 {
+        let row = &a_u8[i * a_row_stride..i * a_row_stride + k];
+        for (kk, &a) in row.iter().enumerate() {
+            let a_val = i32::from(a);
+            for j in 0..16 {
+                c[i * 16 + j] += a_val * i32::from(b_vnni[PackedI8B::vnni_index(kk, j)]);
+            }
+        }
+    }
 }
 
 // ═════════════════════════════════════════════════════════════════════
@@ -643,6 +982,207 @@ mod tests {
                 c[i * 16 + j] = s;
             }
         }
+    }
+
+    /// Deterministic u8 A (16 rows at `pitch`) and i8 B (K x 16), covering
+    /// the full u8 and i8 ranges.
+    fn operands(k: usize, pitch: usize, seed: usize) -> (Vec<u8>, Vec<i8>) {
+        let a = (0..15 * pitch + k)
+            .map(|i| ((i * 37 + seed) % 256) as u8)
+            .collect();
+        let b = (0..k * 16)
+            .map(|i| ((i * 59 + seed * 3) % 256) as u8 as i8)
+            .collect();
+        (a, b)
+    }
+
+    /// `C = A·B` with A read at `pitch`, by the scalar definition.
+    fn ref_strided(a: &[u8], pitch: usize, b: &[i8], k: usize) -> Vec<i32> {
+        let mut c = vec![0i32; 256];
+        for i in 0..16 {
+            for j in 0..16 {
+                c[i * 16 + j] = (0..k)
+                    .map(|kk| i32::from(a[i * pitch + kk]) * i32::from(b[kk * 16 + j]))
+                    .sum();
+            }
+        }
+        c
+    }
+
+    #[test]
+    fn vnni_index_matches_vnni_pack_i8() {
+        let k = 128;
+        let (_, b) = operands(k, k, 1);
+        let p = PackedI8B::pack(&b, k);
+        for row in 0..k {
+            for col in 0..16 {
+                assert_eq!(p.data()[PackedI8B::vnni_index(row, col)], b[row * 16 + col], "B[{row}][{col}]");
+            }
+        }
+    }
+
+    #[test]
+    fn packed_equals_the_row_major_entry() {
+        for k in [64, 128, 192] {
+            let (a, b) = operands(k, k, k);
+            let a = &a[..16 * k];
+            let mut want = vec![0i32; 256];
+            int8_tile_gemm_16x16(a, &b, &mut want, k);
+            let mut got = vec![0i32; 256];
+            int8_tile_gemm_16x16_packed(a, &PackedI8B::pack(&b, k), &mut got);
+            assert_eq!(got, want, "k = {k}");
+            assert_eq!(got, ref_strided(a, k, &b, k), "k = {k}");
+        }
+    }
+
+    /// A read in place at a pitch longer than K gives the dense result; on
+    /// an AMX host this runs TILELOADD at that stride.
+    #[test]
+    fn strided_reads_a_in_place_at_its_pitch() {
+        let k = 128;
+        for pitch in [k, k + 1, k + 64, 3 * k + 7] {
+            let (a, b) = operands(k, pitch, pitch);
+            let p = PackedI8B::pack(&b, k);
+            let mut got = vec![0i32; 256];
+            int8_tile_gemm_16x16_packed_strided(&a, pitch, &p, &mut got);
+            assert_eq!(got, ref_strided(&a, pitch, &b, k), "pitch = {pitch} on {}", int8_tile_gemm_tier());
+        }
+    }
+
+    /// The scalar tier, tested directly so an AMX host covers it too.
+    #[test]
+    fn scalar_tier_matches_reference_at_a_pitch() {
+        let (k, pitch) = (128, 200);
+        let (a, b) = operands(k, pitch, 9);
+        let mut got = vec![0i32; 256];
+        fallback_vnni(&a, pitch, PackedI8B::pack(&b, k).data(), &mut got, k);
+        assert_eq!(got, ref_strided(&a, pitch, &b, k));
+    }
+
+    /// A is unsigned and B signed: 200 x -1 is -200 per position, never
+    /// 200 x 255 or -56 x -1.
+    #[test]
+    fn packed_keeps_the_unsigned_a_signed_b_contract() {
+        let k = 64;
+        let a = vec![200u8; 16 * k];
+        let p = PackedI8B::pack(&vec![-1i8; k * 16], k);
+        let mut c = vec![0i32; 256];
+        int8_tile_gemm_16x16_packed(&a, &p, &mut c);
+        assert!(c.iter().all(|&v| v == -200 * k as i32), "{:?}", &c[..4]);
+    }
+
+    #[test]
+    fn packed_accumulates_into_c() {
+        let k = 64;
+        let (a, b) = operands(k, k, 4);
+        let a = &a[..16 * k];
+        let marker: Vec<i32> = (0..256).map(|i| i * 7 - 100).collect();
+        let mut c = marker.clone();
+        int8_tile_gemm_16x16_packed(a, &PackedI8B::pack(&b, k), &mut c);
+        let prod = ref_strided(a, k, &b, k);
+        for i in 0..256 {
+            assert_eq!(c[i], marker[i] + prod[i], "at {i}");
+        }
+    }
+
+    #[test]
+    fn pack_from_reuses_the_buffer_and_bytes_round_trip() {
+        let k = 64;
+        let (_, b1) = operands(k, k, 1);
+        let (_, b2) = operands(k, k, 2);
+        let mut p = PackedI8B::pack(&b1, k);
+        let ptr = p.data().as_ptr();
+        p.pack_from(&b2);
+        assert_eq!(p.data().as_ptr(), ptr, "pack_from must not reallocate");
+        assert_eq!(p.data(), PackedI8B::pack(&b2, k).data());
+        let back = PackedI8B::from_le_bytes(p.as_le_bytes(), k);
+        assert_eq!(back.data(), p.data());
+        assert_eq!(back.k(), k);
+    }
+
+    /// `C = A·B` for M rows at `pitch` and N = 16·bands columns.
+    fn ref_mn(a: &[u8], pitch: usize, b: &[i8], m: usize, n: usize, k: usize) -> Vec<i32> {
+        let mut c = vec![0i32; m * n];
+        for i in 0..m {
+            for j in 0..n {
+                c[i * n + j] = (0..k)
+                    .map(|kk| i32::from(a[i * pitch + kk]) * i32::from(b[kk * n + j]))
+                    .sum();
+            }
+        }
+        c
+    }
+
+    /// Every shape the 2×2 kernel distinguishes: full 32×32 blocks, a
+    /// 16-row bottom strip, an odd band count (right strip), and M = 16.
+    #[test]
+    fn multi_tile_packed_strided_matches_reference_on_every_strip() {
+        for (m, bands, k, pitch) in
+            [(32, 2, 64, 64), (48, 3, 128, 200), (16, 1, 64, 64), (64, 4, 192, 256), (80, 5, 64, 97)]
+        {
+            let n = bands * 16;
+            let a: Vec<u8> = (0..(m - 1) * pitch + k)
+                .map(|i| ((i * 37 + m) % 256) as u8)
+                .collect();
+            let b: Vec<i8> = (0..k * n)
+                .map(|i| ((i * 59 + n) % 256) as u8 as i8)
+                .collect();
+            let packed: Vec<PackedI8B> = (0..bands)
+                .map(|t| {
+                    let band: Vec<i8> = (0..k)
+                        .flat_map(|kk| b[kk * n + t * 16..kk * n + t * 16 + 16].to_vec())
+                        .collect();
+                    PackedI8B::pack(&band, k)
+                })
+                .collect();
+            let mut c = vec![9i32; m * n];
+            int8_gemm_packed_strided(&a, pitch, &packed, &mut c, m);
+            assert_eq!(
+                c,
+                ref_mn(&a, pitch, &b, m, n, k),
+                "m {m} bands {bands} k {k} pitch {pitch} on {}",
+                int8_tile_gemm_tier()
+            );
+            let mut cs = vec![9i32; m * n];
+            packed_strided_scalar(&a, pitch, &packed, &mut cs, m, n, k);
+            assert_eq!(cs, c, "scalar tier, m {m} bands {bands}");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "differ in K")]
+    fn multi_tile_refuses_bands_of_different_k() {
+        let bands = [PackedI8B::zeroed(64), PackedI8B::zeroed(128)];
+        int8_gemm_packed_strided(&vec![0u8; 16 * 128], 128, &bands, &mut vec![0i32; 16 * 32], 16);
+    }
+
+    #[test]
+    #[should_panic(expected = "needs")]
+    fn multi_tile_refuses_an_a_too_short_for_m_rows() {
+        let bands = [PackedI8B::zeroed(64)];
+        int8_gemm_packed_strided(&vec![0u8; 31 * 100 + 63], 100, &bands, &mut vec![0i32; 32 * 16], 32);
+    }
+
+    #[test]
+    #[should_panic(expected = "shorter than K")]
+    fn strided_refuses_a_pitch_shorter_than_k() {
+        let k = 64;
+        let p = PackedI8B::zeroed(k);
+        int8_tile_gemm_16x16_packed_strided(&vec![0u8; 16 * k], k - 1, &p, &mut vec![0i32; 256]);
+    }
+
+    #[test]
+    #[should_panic(expected = "needs")]
+    fn strided_refuses_an_a_too_short_for_its_pitch() {
+        let k = 64;
+        let p = PackedI8B::zeroed(k);
+        int8_tile_gemm_16x16_packed_strided(&vec![0u8; 15 * 100 + k - 1], 100, &p, &mut vec![0i32; 256]);
+    }
+
+    #[test]
+    #[should_panic(expected = "multiple of 64")]
+    fn packed_refuses_a_k_off_the_tile_step() {
+        let _ = PackedI8B::zeroed(96);
     }
 
     #[test]
