@@ -871,10 +871,21 @@ pub use crate::simd_runtime::matmul_i8_to_i32;
 // additionally supports staging B directly in VNNI layout (zero pack cost).
 // `bf16_tile_gemm_tier()` names the tier that will run, for Gotcha-9-style
 // run reports.
+// The INT8 (`u8 x i8 -> i32`, AMX TDPBUSD) twins: `PackedI8B` hoists the
+// VNNI pack out of hot loops and the strided entry reads A at its own pitch.
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
 pub use crate::hpc::bf16_tile_gemm::{
     bf16_tile_gemm_16x16 as bf16_tile_gemm_16x16_amx, bf16_tile_gemm_16x16_packed, bf16_tile_gemm_16x16_packed_strided,
     bf16_tile_gemm_tier, PackedBf16B,
+};
+// The INT8 (`u8 x i8 -> i32`, AMX TDPBUSD) twins of the BF16 packed entries:
+// `PackedI8B` hoists the VNNI pack out of hot loops, the strided entries read A
+// at its own pitch. Re-exported from the AMX backend (`simd_amx`), which faces
+// the kernels in `hpc::int8_tile_gemm`; consumers never import `hpc` directly.
+#[cfg(all(feature = "std", target_arch = "x86_64"))]
+pub use crate::simd_amx::{
+    int8_gemm_packed_strided, int8_tile_gemm_16x16_packed, int8_tile_gemm_16x16_packed_strided, int8_tile_gemm_tier,
+    PackedI8B,
 };
 // CPU-generation detection (cached): SPR / EMR / GNR / Sierra Forest. Lets a
 // consumer report which silicon a run landed on and distinguish "no AMX

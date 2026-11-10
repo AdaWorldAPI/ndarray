@@ -93,7 +93,17 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
+      # The last two steps build with the default config, i.e.
+      # `target-cpu=native`, on a heterogeneous runner pool. Keyed only by job,
+      # the cache restored a `paste` proc-macro .so built on another runner's
+      # CPU and rustc died loading it with SIGILL (#418, master 09ca908) --
+      # the failure host-native already guards against (#344). Same key.
+      - name: native target features (cache key)
+        id: cpu
+        run: echo "features=$(rustc +stable --print cfg -C target-cpu=native | grep target_feature | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: avx2-${{ steps.cpu.outputs.features }}
       - name: generated ternlog bodies are current
         run: python3 tools/gen_ternlog_bodies.py --check
       - name: masking parity (x86-64-v3, pinned)
