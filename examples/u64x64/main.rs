@@ -787,6 +787,45 @@ fn bench(scenario: &str) -> i32 {
             if harness::low_res(st.median, overhead.median) { "LOW-RES" } else { "ok" }
         );
     }
+    // The rest of the hot path: binding the frame (witness + checks) and
+    // building O6's parameters. A kernel's cost in production is one bind
+    // plus its kernel; the parameters are built once per query.
+    let expect = Expect::of(&inp.src);
+    let recipe = inp.params.recipe;
+    let fixed: [(&str, harness::Stats); 2] = [
+        (
+            "BIND",
+            cfg.time(
+                "bind",
+                || {
+                    let b = bind(bb(&inp.src), bb(&expect));
+                    let _ = bb(b);
+                },
+                || {},
+            ),
+        ),
+        (
+            "PREP",
+            cfg.time(
+                "params",
+                || {
+                    let p = Params::new(bb(recipe), bb(3), bb(2), bb([0u32; 64]));
+                    let _ = bb(p);
+                },
+                || {},
+            ),
+        ),
+    ];
+    for (name, st) in fixed {
+        println!(
+            "{name} - - Fixed {:.1} {:.1} {:.1} {:.3} {}",
+            st.median,
+            st.min,
+            st.max,
+            st.median / 64.0,
+            if harness::low_res(st.median, overhead.median) { "LOW-RES" } else { "ok" }
+        );
+    }
     0
 }
 

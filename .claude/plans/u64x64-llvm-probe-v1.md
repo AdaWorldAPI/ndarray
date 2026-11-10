@@ -322,3 +322,84 @@ compile-time recipes do not exist in production; the global d ≤ 255 bound is
 imposed by C; B on O3/O6 is expected to be very slow, which is a result, not a
 reason to drop it; per-tier rebuilds cost time and disk, so artifacts are
 copied out and tiers are never built in parallel.
+
+## 10. Results, routes A / A0 / C / D (2026-11-10)
+
+**Status:** MEASURED for A, A0, C and D on v2, v3 and v4. B and E are not
+built yet, so nothing here is a verdict against them.
+
+Method: `check` (31 entries, 23,585 cases, all exact on every tier), then
+`bench hot` (R = 1000, 31 samples) and `bench l2` (R = 1, 41 samples, 16 MiB
+sweep), three processes each, pinned with `taskset -c 2`, one tile. Builds
+use `--emit=llvm-ir,asm,link`. Disassembly uses
+`scripts/u64x64-inspect.sh <binary>`. The decision rule of §8 is
+`scripts/u64x64-decide.py <dir> <scenario>`, which reads D's class from the
+asm (vector data ops > scalar data ops).
+
+### 10.1 Hot, decision per op (median of medians, ns)
+
+| op | v4 | v3 | v2 |
+|---|---|---|---|
+| O1 | SIMD-WINS C 63.6 vs A 487 | SCALAR-WINS A 509 vs D 601 | SCALAR-WINS A 427 vs D 1239 |
+| O2 | NO-ADV C 8.6 vs A 9.1 | NO-ADV | SIMD-WINS C 7.6 vs A0 30.2 |
+| O3 | SIMD-WINS C 5.6 vs A 118.5 | NO-ADV C 101 vs A 115 | NO-ADV |
+| O4 | NO-ADV D-loop 276 vs A 310 | NO-ADV | SIMD-WINS D-loop 504 vs A 612 |
+| O4a | SIMD-WINS C 168 vs A 578 | SIMD-WINS C 336 vs A 833 | NO-ADV |
+| O5 | SIMD-WINS C 4.9 vs A 106 | SIMD-WINS C 41 vs A 105 | SIMD-WINS D-loop 87 vs A 104 |
+| O6 | NO-ADV C 153 vs A 170 | SCALAR-WINS A 177 vs C 555 | SCALAR-WINS A 187 vs C 928 |
+| O6c (compile-time recipe only) | D const_dense 105 | D const_dense 102 | D const_dense 122 |
+
+Cold L2 on v4 keeps SIMD-WINS for O1 and O3 only; every other op is
+NO-MEASURED-ADVANTAGE, as pre-registered.
+
+**A0, the independent baseline:** O6 1,968 / 2,200 / 3,529 ns on v4 / v3 / v2,
+i.e. 12.9× C and 11.6× A on v4. The expectation "A0 ≥ 10× C" holds on v4. A0
+is not a candidate on any op.
+
+### 10.2 The rest of the hot path
+
+| step | v4 ns |
+|---|---|
+| `bind` (witness, row-order hash, five checks) | 249–276 |
+| O6 `Params::new` | 26–28 |
+
+`bind` costs more than most kernels. It recomputes the 64-entry row-order
+hash and compares the order on every call. So a per-query bind plus a
+kernel is bind-bound: O3 C costs about 5.6 + 260 ns. The kernel numbers above
+only hold for a binding resolved once and reused (the DR/DT64 locality
+contract). A cheaper bind (a cached hash in the witness) is a separate
+question and is not measured.
+
+### 10.3 Disassembly findings (v4 unless stated)
+
+- No kernel has a hot-loop `call`. The calls present are cold panic paths
+  (`panic_bounds_check`, `panic_fmt`, div-by-zero), plus two real calls:
+  `memset` in O6 A0 and `bcmp` in both O6c `const_*` entries.
+- Byte shuffles, classified:
+  - O1 C: nibble-table popcount (`vpshufb` + `vpsadbw`) inside the facade's
+    popcount on a CPU without VPOPCNTDQ. Reduction-internal, the known
+    FACET R1 burn-down class.
+  - O3 C, O6 C: `lane16` (`x | x << 8` after a widen) lowered by LLVM to a
+    byte-duplicating `vpshufb`. Cause: the facade has no
+    `U16x32::mask_blend`, so the mask is built as bytes and widened.
+  - O4 C: 32 xmm `vpshufb` from the scalar u16 → u32 recombination tail,
+    auto-vectorized. Cause: the facade has no u16 → u32 widening.
+- D-full against D-loop: O2 2.4× faster at 56× the code (32.8 KB vs 586 B);
+  O6 11% faster at 16× the code. The pre-registered "≤ 15% faster" holds for
+  O6 and fails for O2.
+- LLVM does not vectorize D's O3 argmin (D-loop 2.2 µs, zero vector ops), as
+  pre-registered. O4a D-loop compiles to the same code as A (868 B, identical
+  counts), and A auto-vectorizes O2, O4 and O4a.
+- v3 and v2: C loses O1 and O6 because AVX2's `U16x32` is array-backed and v2
+  is the scalar backend. O6 C grows from 2.2 KB (v4) to 16.3 KB (v3), with
+  533 scalar data ops. This is a facade realization result, not a property
+  of route C.
+
+### 10.4 Open
+
+- Routes B and E; `tests/u64x64.rs` with the D1/E/W/P disables; llvm-mca
+  validation; callgrind on v2/v3; the `llc` scenario; working sets 64 and
+  1024.
+- Facade gaps named in §10.3: `U16x32::mask_blend(u32, a, b)` and a u16 → u32
+  widening. Both need the W1a contract on every backend.
+- No winner is declared across routes until B and E are measured.
