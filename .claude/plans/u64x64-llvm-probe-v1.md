@@ -424,3 +424,58 @@ question and is not measured.
   `ndarray::simd` re-exports on those targets is not checked here, and route C
   has not been run on NEON or wasm.
 - No winner is declared across routes until B and E are measured.
+
+## 11. Results, routes B and E (2026-11-10)
+
+**Status:** MEASURED, all five routes on v2, v3 and v4 (hot, cold L2, cold
+LLC; three processes each). `check`: 38 entries, 27,960 cases, plus 2,539
+route E cases, all exact on every tier. Disable runs B1–B3 and E1–E4 each go
+red on the intended op (E2 needed its patch fixed for operator precedence;
+E4's test was rewritten because O6 does not read `q`, so the planned
+q=2/q=3 sequence could not catch a memo that ignores its parameters).
+
+### 11.1 Route B (bit-sliced), hot
+
+| op | v4 | v3 | v2 |
+|---|---|---|---|
+| O1 | runner-up: C 64.4 vs B 86.0 | B best (325 vs A 530) but NO-ADV: B's max 497 > A's min 445 | **BITSLICE-WINS** B 323 vs A 428 |
+| O3 | C 5.9 vs B 38.5 | — | — |
+| O5 | C 5.4 vs B 55.4 | — | — |
+| O4, O4a | B 2.1 µs and 3.4 µs: the slowest entries | | |
+
+B rebuilds bit planes on every call. It is competitive only on O1, where the
+inputs are already bits, and wins only where SIMD is weakest (v2). Cold, it
+wins nothing. The pre-registered "O5 B wins on dense masks" is not met.
+
+### 11.2 Route E (prepared), against the best unprepared entry
+
+| | v4 hot | v3 hot | v2 hot | v4 l2 | v3 l2 | v2 l2 | any llc |
+|---|---|---|---|---|---|---|---|
+| O2 on prepared planes | never | never | never | never | never | never | never |
+| O6 on prepared planes | never | never | never | never | never | never | never |
+| O6 memo, identical query | **from N = 128** | **from N = 128** | from N = 1024 | from N = 128 | from N = 128 | from N = 1024 | never |
+
+Preparing all 64 categories costs 1.9 µs (v4) to 21 µs (v2), and a query on
+prepared planes is no cheaper than B rebuilding only the demanded categories
+(v4: O2 29 vs 27 ns, O6 240 vs 254 ns), so plane reuse cannot pay. Only
+repeating an identical query through the memo does: a hit is 26 ns on v4.
+A stale reuse is refused in 0.5 ns (`E_STALE_CHECK`), so S5's cost is that
+check plus a fresh prepare. E1 + C on i32 input costs 2.46 µs per call (v4),
+dominated by the narrowing and the bind.
+
+### 11.3 Verdict
+
+Across all five routes, per op and tier:
+- **SIMD (C) is the default on AVX-512**: it wins O1, O3, O4a and O5 hot on v4
+  and is never beaten there.
+- **Scalar (A) is the default on v3 and v2 for O3 and O6**, because AVX2's
+  `U16x32` is array-backed and v2 has no SIMD backend; a cold cache widens A's
+  lead.
+- **Bit-slicing (B) wins one cell**: O1 on v2, hot.
+- **Prepared reuse (E) wins only as a memo of identical queries**, from
+  N = 128 on v4/v3 and N = 1024 on v2, and never with a cold LLC.
+- **A0 is never a candidate**: on O6 it is 13× C on v4.
+
+No route is a universal winner; the choice is per op and per tier, and a
+cold cache erases most differences. Open: `tests/u64x64.rs`, llvm-mca
+validation, callgrind, working sets 64/1024.
