@@ -94,7 +94,12 @@ impl Stats {
     pub fn from_samples(samples: Vec<f64>) -> Stats {
         let min = samples.iter().copied().fold(f64::INFINITY, f64::min);
         let max = samples.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        Stats { median: median(&samples), min, max, samples }
+        Stats {
+            median: median(&samples),
+            min,
+            max,
+            samples,
+        }
     }
 }
 
@@ -104,12 +109,7 @@ pub fn bb<T>(x: T) -> T {
 }
 
 /// One sample = `before_each_sample()` untimed, then `reps` timed calls of `f`.
-pub fn measure<F: FnMut()>(
-    reps: usize,
-    samples: usize,
-    mut before_each_sample: impl FnMut(),
-    mut f: F,
-) -> Stats {
+pub fn measure<F: FnMut()>(reps: usize, samples: usize, mut before_each_sample: impl FnMut(), mut f: F) -> Stats {
     let reps = reps.max(1);
     let mut out = Vec::with_capacity(samples);
     for _ in 0..samples {
@@ -218,27 +218,42 @@ pub enum Verdict {
 }
 
 fn pmax(c: &Cell) -> f64 {
-    c.process_medians.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+    c.process_medians
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max)
 }
 fn pmin(c: &Cell) -> f64 {
-    c.process_medians.iter().copied().fold(f64::INFINITY, f64::min)
+    c.process_medians
+        .iter()
+        .copied()
+        .fold(f64::INFINITY, f64::min)
 }
 
 /// Plan §8: W = lowest median of per-process medians; R = best cell of a
 /// different class. W wins iff max(W) < min(R) and median(W) <= 0.85*median(R).
 pub fn decide(cells: &[Cell]) -> Verdict {
-    let live: Vec<&Cell> = cells.iter().filter(|c| !c.process_medians.is_empty()).collect();
-    let by_med = |a: &&Cell, b: &&Cell| {
-        median(&a.process_medians).total_cmp(&median(&b.process_medians))
-    };
+    let live: Vec<&Cell> = cells
+        .iter()
+        .filter(|c| !c.process_medians.is_empty())
+        .collect();
+    let by_med = |a: &&Cell, b: &&Cell| median(&a.process_medians).total_cmp(&median(&b.process_medians));
     let Some(w) = live.iter().copied().min_by(by_med) else {
         return Verdict::NoMeasuredAdvantage;
     };
-    let Some(r) = live.iter().copied().filter(|c| c.class != w.class).min_by(by_med) else {
+    let Some(r) = live
+        .iter()
+        .copied()
+        .filter(|c| c.class != w.class)
+        .min_by(by_med)
+    else {
         return Verdict::NoMeasuredAdvantage;
     };
     if pmax(w) < pmin(r) && median(&w.process_medians) <= 0.85 * median(&r.process_medians) {
-        Verdict::Wins { entry: w.entry, class: w.class }
+        Verdict::Wins {
+            entry: w.entry,
+            class: w.class,
+        }
     } else {
         Verdict::NoMeasuredAdvantage
     }
@@ -258,44 +273,42 @@ mod tests {
     use super::*;
 
     fn cell(entry: &'static str, class: Class, m: &[f64]) -> Cell {
-        Cell { entry, class, process_medians: m.to_vec() }
+        Cell {
+            entry,
+            class,
+            process_medians: m.to_vec(),
+        }
     }
 
     #[test]
     fn decide_wins_when_separated() {
-        let cells = [
-            cell("A", Class::Scalar, &[100.0, 101.0, 102.0]),
-            cell("C", Class::Simd, &[50.0, 51.0, 52.0]),
-        ];
-        assert_eq!(decide(&cells), Verdict::Wins { entry: "C", class: Class::Simd });
+        let cells = [cell("A", Class::Scalar, &[100.0, 101.0, 102.0]), cell("C", Class::Simd, &[50.0, 51.0, 52.0])];
+        assert_eq!(
+            decide(&cells),
+            Verdict::Wins {
+                entry: "C",
+                class: Class::Simd
+            }
+        );
     }
 
     #[test]
     fn decide_fails_the_85_percent_rule() {
         // ranges separate (90 < 95) but 91 > 0.85 * 96.
-        let cells = [
-            cell("A", Class::Scalar, &[95.0, 96.0, 97.0]),
-            cell("C", Class::Simd, &[89.0, 91.0, 90.0]),
-        ];
+        let cells = [cell("A", Class::Scalar, &[95.0, 96.0, 97.0]), cell("C", Class::Simd, &[89.0, 91.0, 90.0])];
         assert_eq!(decide(&cells), Verdict::NoMeasuredAdvantage);
     }
 
     #[test]
     fn decide_fails_overlapping_ranges() {
         // median(W)=50 <= 0.85*100 but max(W)=105 >= min(R)=99.
-        let cells = [
-            cell("A", Class::Scalar, &[99.0, 100.0, 101.0]),
-            cell("C", Class::Simd, &[40.0, 50.0, 105.0]),
-        ];
+        let cells = [cell("A", Class::Scalar, &[99.0, 100.0, 101.0]), cell("C", Class::Simd, &[40.0, 50.0, 105.0])];
         assert_eq!(decide(&cells), Verdict::NoMeasuredAdvantage);
     }
 
     #[test]
     fn decide_single_class_is_no_advantage() {
-        let cells = [
-            cell("C1", Class::Simd, &[10.0, 11.0]),
-            cell("C2", Class::Simd, &[50.0, 51.0]),
-        ];
+        let cells = [cell("C1", Class::Simd, &[10.0, 11.0]), cell("C2", Class::Simd, &[50.0, 51.0])];
         assert_eq!(decide(&cells), Verdict::NoMeasuredAdvantage);
         assert_eq!(decide(&[]), Verdict::NoMeasuredAdvantage);
     }

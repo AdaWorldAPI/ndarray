@@ -282,7 +282,11 @@ pub fn bind<'a>(src: &'a Source, expect: &Expect) -> Result<Bound<'a>, Refusal> 
     if w.version != expect.version {
         return Err(Refusal::Stale);
     }
-    if w.rows != 64 || w.cols != 64 || expect.rows != 64 || expect.cols != 64 || w.rows != expect.rows
+    if w.rows != 64
+        || w.cols != 64
+        || expect.rows != 64
+        || expect.cols != 64
+        || w.rows != expect.rows
         || w.cols != expect.cols
     {
         return Err(Refusal::Shape);
@@ -375,7 +379,12 @@ impl Params {
         if !(1..=255).contains(&u) || !(1..=QMAX).contains(&q) || t.iter().any(|&v| v > 65536) {
             return Err(Refusal::DemandOutOfRange);
         }
-        Ok(Params { recipe, u: u as u8, q: q as u8, t })
+        Ok(Params {
+            recipe,
+            u: u as u8,
+            q: q as u8,
+            t,
+        })
     }
 }
 
@@ -396,7 +405,11 @@ pub struct O1Out {
 
 impl O1Out {
     pub fn new() -> Self {
-        O1Out { plane_cnt: [0; 64], row_cnt: [0; 64], total: 0 }
+        O1Out {
+            plane_cnt: [0; 64],
+            row_cnt: [0; 64],
+            total: 0,
+        }
     }
 }
 
@@ -422,7 +435,12 @@ pub struct O3Out {
 
 impl O3Out {
     pub fn new() -> Self {
-        O3Out { min: [0; 64], arg: [0; 64], none: 0, unknown: 0 }
+        O3Out {
+            min: [0; 64],
+            arg: [0; 64],
+            none: 0,
+            unknown: 0,
+        }
     }
 }
 
@@ -446,7 +464,10 @@ pub struct O4aOut {
 
 impl O4aOut {
     pub fn new() -> Self {
-        O4aOut { z: [[0; 64]; 64], ovf: [0; 64] }
+        O4aOut {
+            z: [[0; 64]; 64],
+            ovf: [0; 64],
+        }
     }
 }
 
@@ -576,7 +597,11 @@ pub fn random_updates(seed: u64, n: usize, sparse: bool) -> Vec<O5Update> {
         if sparse {
             m &= rng.next_u64() & rng.next_u64();
         }
-        v.push(O5Update { k: rng.range(0, 64) as u8, b: rng.range(0, 16) as u8, m });
+        v.push(O5Update {
+            k: rng.range(0, 64) as u8,
+            b: rng.range(0, 16) as u8,
+            m,
+        });
     }
     v
 }
@@ -723,7 +748,12 @@ pub fn store_09() -> Store09 {
     s.set_present(17, 9, false);
     s.stock[17][9] = STALE;
     let recipe = Recipe::from_pairs(&[(3, 1), (17, 2), (40, 1)]).unwrap();
-    Store09 { src: s, recipe, row: 9, category: 17 }
+    Store09 {
+        src: s,
+        recipe,
+        row: 9,
+        category: 17,
+    }
 }
 
 /// Unknown slots only in a non-demanded category (5): the recipe ignores them.
@@ -773,10 +803,38 @@ fn uniform(stock0: u16, staff: u8) -> Source {
 pub fn limit_cases() -> Vec<LimitCase> {
     let r1 = |k: usize, d: u16| Recipe::from_pairs(&[(k, d)]).unwrap();
     vec![
-        LimitCase { name: "category-ties-staff", src: uniform(20, 2), recipe: r1(0, 2), u: 5, cap: 10, limit: 0 },
-        LimitCase { name: "staff-binds", src: uniform(200, 3), recipe: r1(0, 1), u: 10, cap: 30, limit: STAFF },
-        LimitCase { name: "ceiling-binds", src: uniform(1000, 255), recipe: r1(0, 1), u: 255, cap: 128, limit: CEILING },
-        LimitCase { name: "category-equals-ceiling", src: uniform(128, 255), recipe: r1(0, 1), u: 255, cap: 128, limit: 0 },
+        LimitCase {
+            name: "category-ties-staff",
+            src: uniform(20, 2),
+            recipe: r1(0, 2),
+            u: 5,
+            cap: 10,
+            limit: 0,
+        },
+        LimitCase {
+            name: "staff-binds",
+            src: uniform(200, 3),
+            recipe: r1(0, 1),
+            u: 10,
+            cap: 30,
+            limit: STAFF,
+        },
+        LimitCase {
+            name: "ceiling-binds",
+            src: uniform(1000, 255),
+            recipe: r1(0, 1),
+            u: 255,
+            cap: 128,
+            limit: CEILING,
+        },
+        LimitCase {
+            name: "category-equals-ceiling",
+            src: uniform(128, 255),
+            recipe: r1(0, 1),
+            u: 255,
+            cap: 128,
+            limit: 0,
+        },
     ]
 }
 

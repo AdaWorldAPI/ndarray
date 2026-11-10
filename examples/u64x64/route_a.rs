@@ -382,7 +382,13 @@ pub fn u64x64_o6_a0(bound: &Bound<'_>, params: &Params, out: &mut O6Out) {
 // ---- entries ----
 
 pub fn entries() -> Vec<Entry> {
-    let e = |op, route, kernel| Entry { op, route, variant: "", class: Class::Scalar, kernel };
+    let e = |op, route, kernel| Entry {
+        op,
+        route,
+        variant: "",
+        class: Class::Scalar,
+        kernel,
+    };
     vec![
         e("O1", "a", Kernel::O1(u64x64_o1_a)),
         e("O2", "a", Kernel::O2(u64x64_o2_a)),

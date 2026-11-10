@@ -165,7 +165,10 @@ struct Col16 {
 impl Col16 {
     #[inline(always)]
     fn zero() -> Self {
-        Col16 { low: U16x32::zero(), high: U16x32::zero() }
+        Col16 {
+            low: U16x32::zero(),
+            high: U16x32::zero(),
+        }
     }
 
     /// Add products `p` (each below 2^16).
@@ -233,10 +236,7 @@ pub fn u64x64_o4a_c(x: &ValueTile<u16>, y: &ValueTile<u16>, out: &mut O4aOut) {
         let s1 = xs[1] + ys[1];
         s0.copy_to_slice(&mut out.z[k][..32]);
         s1.copy_to_slice(&mut out.z[k][32..]);
-        out.ovf[k] = join(
-            carry_after(xs[0], ys[0], s0).cmpeq_mask(one),
-            carry_after(xs[1], ys[1], s1).cmpeq_mask(one),
-        );
+        out.ovf[k] = join(carry_after(xs[0], ys[0], s0).cmpeq_mask(one), carry_after(xs[1], ys[1], s1).cmpeq_mask(one));
     }
 }
 
@@ -358,7 +358,13 @@ pub fn u64x64_o6_c(bound: &Bound<'_>, params: &Params, out: &mut O6Out) {
 // ---- entries ----
 
 pub fn entries() -> Vec<Entry> {
-    let e = |op, kernel| Entry { op, route: "c", variant: "", class: Class::Simd, kernel };
+    let e = |op, kernel| Entry {
+        op,
+        route: "c",
+        variant: "",
+        class: Class::Simd,
+        kernel,
+    };
     vec![
         e("O1", Kernel::O1(u64x64_o1_c)),
         e("O2", Kernel::O2(u64x64_o2_c)),

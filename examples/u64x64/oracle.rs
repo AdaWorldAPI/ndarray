@@ -466,14 +466,19 @@ mod tests {
         assert_eq!(r, Err(Refusal::Overflow { lanes: 0b10 }));
         assert_eq!(c, before);
 
-        assert_eq!(
-            o5(&mut c, O5Update { k: 0, b: 16, m: 1 }),
-            Err(Refusal::SignificanceOutOfRange)
-        );
+        assert_eq!(o5(&mut c, O5Update { k: 0, b: 16, m: 1 }), Err(Refusal::SignificanceOutOfRange));
 
         // Exactly reaching 0xFFFF is fine; one more is not.
         let mut c = carry_counters(4);
-        o5(&mut c, O5Update { k: 7, b: 4, m: u64::MAX }).unwrap();
+        o5(
+            &mut c,
+            O5Update {
+                k: 7,
+                b: 4,
+                m: u64::MAX,
+            },
+        )
+        .unwrap();
         assert_eq!(c[7][63], 0xFFFF);
         assert!(o5(&mut c, O5Update { k: 7, b: 0, m: 1 }).is_err());
     }

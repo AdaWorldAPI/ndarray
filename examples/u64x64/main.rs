@@ -129,11 +129,7 @@ fn d_arr<T: PartialEq + Debug>(name: &str, g: &[T], w: &[T]) -> Option<String> {
     None
 }
 
-fn d_tile<T: PartialEq + Debug + Copy>(
-    name: &str,
-    g: &ValueTile<T>,
-    w: &ValueTile<T>,
-) -> Option<String> {
+fn d_tile<T: PartialEq + Debug + Copy>(name: &str, g: &ValueTile<T>, w: &ValueTile<T>) -> Option<String> {
     for k in 0..64 {
         for r in 0..64 {
             if g[k][r] != w[k][r] {
@@ -195,10 +191,17 @@ fn same_o6(g: &O6Out, w: &O6Out) -> Option<String> {
 // -------------------------------------------------------------- output poison
 
 fn poison_o1() -> O1Out {
-    O1Out { plane_cnt: [0xA5; 64], row_cnt: [0xA5; 64], total: 0xA5A5 }
+    O1Out {
+        plane_cnt: [0xA5; 64],
+        row_cnt: [0xA5; 64],
+        total: 0xA5A5,
+    }
 }
 fn poison_o2() -> O2Out {
-    O2Out { ge: [0xA5A5_A5A5_A5A5_A5A5; 64], all_ge: 0xA5A5_A5A5_A5A5_A5A5 }
+    O2Out {
+        ge: [0xA5A5_A5A5_A5A5_A5A5; 64],
+        all_ge: 0xA5A5_A5A5_A5A5_A5A5,
+    }
 }
 fn poison_o3() -> O3Out {
     O3Out {
@@ -209,10 +212,16 @@ fn poison_o3() -> O3Out {
     }
 }
 fn poison_o4() -> O4Out {
-    O4Out { sum: [0xA5A5_A5A5; 64], total: 0xA5A5_A5A5_A5A5_A5A5 }
+    O4Out {
+        sum: [0xA5A5_A5A5; 64],
+        total: 0xA5A5_A5A5_A5A5_A5A5,
+    }
 }
 fn poison_o4a() -> O4aOut {
-    O4aOut { z: [[0xA5A5; 64]; 64], ovf: [0xA5A5_A5A5_A5A5_A5A5; 64] }
+    O4aOut {
+        z: [[0xA5A5; 64]; 64],
+        ovf: [0xA5A5_A5A5_A5A5_A5A5; 64],
+    }
 }
 fn poison_o6() -> O6Out {
     O6Out {
@@ -251,7 +260,9 @@ fn run_o3(f: fn(&Bound<'_>, u64, &mut O3Out), b: &Bound<'_>, d: u64) -> Option<S
     same_o3(&g, &w)
 }
 
-fn run_o4(f: fn(&ValueTile<u8>, &[u16; 64], u64, &mut O4Out), c: &ValueTile<u8>, wt: &[u16; 64], live: u64) -> Option<String> {
+fn run_o4(
+    f: fn(&ValueTile<u8>, &[u16; 64], u64, &mut O4Out), c: &ValueTile<u8>, wt: &[u16; 64], live: u64,
+) -> Option<String> {
     let mut g = poison_o4();
     let mut w = O4Out::new();
     f(c, wt, live, &mut g);
@@ -259,7 +270,9 @@ fn run_o4(f: fn(&ValueTile<u8>, &[u16; 64], u64, &mut O4Out), c: &ValueTile<u8>,
     same_o4(&g, &w)
 }
 
-fn run_o4a(f: fn(&ValueTile<u16>, &ValueTile<u16>, &mut O4aOut), x: &ValueTile<u16>, y: &ValueTile<u16>) -> Option<String> {
+fn run_o4a(
+    f: fn(&ValueTile<u16>, &ValueTile<u16>, &mut O4aOut), x: &ValueTile<u16>, y: &ValueTile<u16>,
+) -> Option<String> {
     let mut g = Box::new(poison_o4a());
     let mut w = Box::new(O4aOut::new());
     f(x, y, &mut g);
@@ -371,8 +384,10 @@ fn o2_cases(mut cb: impl FnMut(String, &Bound<'_>, &[u32; 64], u64)) {
     for (n, s) in named_sources() {
         let b = bound_ok(&s);
         let st = s.stock[0][0];
-        let mut ts: Vec<[u32; 64]> =
-            threshold_set(st).iter().map(|&t| uniform_thresholds(t)).collect();
+        let mut ts: Vec<[u32; 64]> = threshold_set(st)
+            .iter()
+            .map(|&t| uniform_thresholds(t))
+            .collect();
         ts.push(core::array::from_fn(|k| s.stock[k][(k * 7) % 64] as u32));
         for (ti, t) in ts.iter().enumerate() {
             for (di, &d) in DEMAND_MASKS.iter().enumerate() {
@@ -385,7 +400,11 @@ fn o2_cases(mut cb: impl FnMut(String, &Bound<'_>, &[u32; 64], u64)) {
         let b = bound_ok(&s);
         let mut rng = Rng::new(seed + 2000);
         let t: [u32; 64] = core::array::from_fn(|_| {
-            if rng.range(0, 16) == 0 { 65536 } else { rng.range(15, 85) as u32 }
+            if rng.range(0, 16) == 0 {
+                65536
+            } else {
+                rng.range(15, 85) as u32
+            }
         });
         cb(format!("random{seed}/recipe"), &b, &t, random_recipe(seed).demanded());
         cb(format!("random{seed}/rand"), &b, &t, rng.next_u64());
@@ -456,10 +475,22 @@ fn o5_cases(mut cb: impl FnMut(String, &Counters, &[O5Update])) {
     cb("saturated".into(), &saturated_counters(), &random_updates(200, 64, false));
     let bad = [
         O5Update { k: 0, b: 16, m: 1 },
-        O5Update { k: 63, b: 255, m: u64::MAX },
+        O5Update {
+            k: 63,
+            b: 255,
+            m: u64::MAX,
+        },
         O5Update { k: 1, b: 15, m: 0 },
-        O5Update { k: 2, b: 15, m: u64::MAX },
-        O5Update { k: 2, b: 15, m: u64::MAX },
+        O5Update {
+            k: 2,
+            b: 15,
+            m: u64::MAX,
+        },
+        O5Update {
+            k: 2,
+            b: 15,
+            m: u64::MAX,
+        },
     ];
     cb("bad_significance".into(), &zero, &bad);
 }
@@ -562,14 +593,12 @@ fn check() -> i32 {
                     abort(e, &n, &d)
                 }
             }),
-            Kernel::O6(f) if const_recipe(e).is_some() => {
-                o6c_cases(const_recipe(e).expect("checked"), |n, b, p| {
-                    cases += 1;
-                    if let Some(d) = run_o6(*f, b, p) {
-                        abort(e, &n, &d)
-                    }
-                })
-            }
+            Kernel::O6(f) if const_recipe(e).is_some() => o6c_cases(const_recipe(e).expect("checked"), |n, b, p| {
+                cases += 1;
+                if let Some(d) = run_o6(*f, b, p) {
+                    abort(e, &n, &d)
+                }
+            }),
             Kernel::O6(f) => o6_cases(|n, b, p| {
                 cases += 1;
                 if let Some(d) = run_o6(*f, b, p) {
@@ -613,7 +642,11 @@ fn make_inputs() -> Box<Inputs> {
         x: random_values_u16(1, 40000),
         y: random_values_u16(2, 40000),
         params: Params::new(recipe, 3, 2, [0; 64]).expect("params"),
-        upd: O5Update { k: 5, b: 0, m: u64::MAX },
+        upd: O5Update {
+            k: 5,
+            b: 0,
+            m: u64::MAX,
+        },
         verify_stream: random_updates(1, 256, false),
     })
 }
@@ -784,7 +817,11 @@ fn bench(scenario: &str) -> i32 {
             st.min,
             st.max,
             st.median / 64.0,
-            if harness::low_res(st.median, overhead.median) { "LOW-RES" } else { "ok" }
+            if harness::low_res(st.median, overhead.median) {
+                "LOW-RES"
+            } else {
+                "ok"
+            }
         );
     }
     // The rest of the hot path: binding the frame (witness + checks) and
@@ -823,7 +860,11 @@ fn bench(scenario: &str) -> i32 {
             st.min,
             st.max,
             st.median / 64.0,
-            if harness::low_res(st.median, overhead.median) { "LOW-RES" } else { "ok" }
+            if harness::low_res(st.median, overhead.median) {
+                "LOW-RES"
+            } else {
+                "ok"
+            }
         );
     }
     0

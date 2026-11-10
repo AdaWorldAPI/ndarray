@@ -73,26 +73,77 @@ pub fn recipe_matches<R: Recipe>(params: &Params) -> bool {
 /// Unrolls `$f!(k)` for k = 0..=63, each with a literal k.
 macro_rules! unroll64 {
     ($f:ident) => {
-        $f!(0); $f!(1); $f!(2); $f!(3); $f!(4); $f!(5); $f!(6); $f!(7);
-        $f!(8); $f!(9); $f!(10); $f!(11); $f!(12); $f!(13); $f!(14); $f!(15);
-        $f!(16); $f!(17); $f!(18); $f!(19); $f!(20); $f!(21); $f!(22); $f!(23);
-        $f!(24); $f!(25); $f!(26); $f!(27); $f!(28); $f!(29); $f!(30); $f!(31);
-        $f!(32); $f!(33); $f!(34); $f!(35); $f!(36); $f!(37); $f!(38); $f!(39);
-        $f!(40); $f!(41); $f!(42); $f!(43); $f!(44); $f!(45); $f!(46); $f!(47);
-        $f!(48); $f!(49); $f!(50); $f!(51); $f!(52); $f!(53); $f!(54); $f!(55);
-        $f!(56); $f!(57); $f!(58); $f!(59); $f!(60); $f!(61); $f!(62); $f!(63);
+        $f!(0);
+        $f!(1);
+        $f!(2);
+        $f!(3);
+        $f!(4);
+        $f!(5);
+        $f!(6);
+        $f!(7);
+        $f!(8);
+        $f!(9);
+        $f!(10);
+        $f!(11);
+        $f!(12);
+        $f!(13);
+        $f!(14);
+        $f!(15);
+        $f!(16);
+        $f!(17);
+        $f!(18);
+        $f!(19);
+        $f!(20);
+        $f!(21);
+        $f!(22);
+        $f!(23);
+        $f!(24);
+        $f!(25);
+        $f!(26);
+        $f!(27);
+        $f!(28);
+        $f!(29);
+        $f!(30);
+        $f!(31);
+        $f!(32);
+        $f!(33);
+        $f!(34);
+        $f!(35);
+        $f!(36);
+        $f!(37);
+        $f!(38);
+        $f!(39);
+        $f!(40);
+        $f!(41);
+        $f!(42);
+        $f!(43);
+        $f!(44);
+        $f!(45);
+        $f!(46);
+        $f!(47);
+        $f!(48);
+        $f!(49);
+        $f!(50);
+        $f!(51);
+        $f!(52);
+        $f!(53);
+        $f!(54);
+        $f!(55);
+        $f!(56);
+        $f!(57);
+        $f!(58);
+        $f!(59);
+        $f!(60);
+        $f!(61);
+        $f!(62);
+        $f!(63);
     };
 }
 
 // ---- O1 ----
 
 #[inline(always)]
-fn o1_loop<const R: usize, const K: usize>(
-    a: &[u64; K],
-    b: &[u64; K],
-    live: u64,
-    out: &mut O1Out,
-) {
+fn o1_loop<const R: usize, const K: usize>(a: &[u64; K], b: &[u64; K], live: u64, out: &mut O1Out) {
     let mut acc = [0u8; R];
     let mut total = 0u32;
     for k in 0..K {
@@ -119,12 +170,7 @@ pub fn u64x64_o1_d_loop(a: &BitTile, b: &BitTile, live: u64, out: &mut O1Out) {
 // ---- O2 ----
 
 #[inline(always)]
-fn o2_loop<const R: usize, const K: usize>(
-    stock: &[[u16; R]; K],
-    t: &[u32; K],
-    demanded: u64,
-    out: &mut O2Out,
-) {
+fn o2_loop<const R: usize, const K: usize>(stock: &[[u16; R]; K], t: &[u32; K], demanded: u64, out: &mut O2Out) {
     let mut all = u64::MAX;
     for k in 0..K {
         if (demanded >> k) & 1 == 0 {
@@ -144,12 +190,7 @@ fn o2_loop<const R: usize, const K: usize>(
 }
 
 #[inline(always)]
-fn o2_u8<const R: usize, const K: usize>(
-    stock: &[[u16; R]; K],
-    t: &[u32; K],
-    demanded: u64,
-    out: &mut O2Out,
-) {
+fn o2_u8<const R: usize, const K: usize>(stock: &[[u16; R]; K], t: &[u32; K], demanded: u64, out: &mut O2Out) {
     let mut all = u64::MAX;
     for k in 0..K {
         if (demanded >> k) & 1 == 0 {
@@ -218,12 +259,7 @@ pub fn u64x64_o2_d_full(bound: &Bound<'_>, t: &[u32; 64], demanded: u64, out: &m
 // ---- O3 ----
 
 #[inline(always)]
-fn o3_loop<const R: usize, const K: usize>(
-    stock: &[[u16; R]; K],
-    present: &[u64; K],
-    demanded: u64,
-    out: &mut O3Out,
-) {
+fn o3_loop<const R: usize, const K: usize>(stock: &[[u16; R]; K], present: &[u64; K], demanded: u64, out: &mut O3Out) {
     let mut none = 0u64;
     let mut unknown = 0u64;
     for r in 0..R {
@@ -259,12 +295,7 @@ fn o3_loop<const R: usize, const K: usize>(
 }
 
 #[inline(always)]
-fn o3_u8<const R: usize, const K: usize>(
-    stock: &[[u16; R]; K],
-    present: &[u64; K],
-    demanded: u64,
-    out: &mut O3Out,
-) {
+fn o3_u8<const R: usize, const K: usize>(stock: &[[u16; R]; K], present: &[u64; K], demanded: u64, out: &mut O3Out) {
     let mut none = 0u64;
     let mut unknown = 0u64;
     for g in 0..R / 8 {
@@ -316,12 +347,7 @@ pub fn u64x64_o3_d_u8(bound: &Bound<'_>, demanded: u64, out: &mut O3Out) {
 // ---- O4 ----
 
 #[inline(always)]
-fn o4_loop<const R: usize, const K: usize>(
-    cost: &[[u8; R]; K],
-    w: &[u16; K],
-    live: u64,
-    out: &mut O4Out,
-) {
+fn o4_loop<const R: usize, const K: usize>(cost: &[[u8; R]; K], w: &[u16; K], live: u64, out: &mut O4Out) {
     let mut sum = [0u32; R];
     for k in 0..K {
         let wk = w[k] as u32;
@@ -342,12 +368,7 @@ fn o4_loop<const R: usize, const K: usize>(
 }
 
 #[inline(always)]
-fn o4_u8<const R: usize, const K: usize>(
-    cost: &[[u8; R]; K],
-    w: &[u16; K],
-    live: u64,
-    out: &mut O4Out,
-) {
+fn o4_u8<const R: usize, const K: usize>(cost: &[[u8; R]; K], w: &[u16; K], live: u64, out: &mut O4Out) {
     let mut total = 0u64;
     for g in 0..R / 8 {
         let mut acc = [0u32; 8];
@@ -383,11 +404,7 @@ pub fn u64x64_o4_d_u8(cost: &ValueTile<u8>, w: &[u16; 64], live: u64, out: &mut 
 // ---- O4a ----
 
 #[inline(always)]
-fn o4a_loop<const R: usize, const K: usize>(
-    x: &[[u16; R]; K],
-    y: &[[u16; R]; K],
-    out: &mut O4aOut,
-) {
+fn o4a_loop<const R: usize, const K: usize>(x: &[[u16; R]; K], y: &[[u16; R]; K], out: &mut O4aOut) {
     for k in 0..K {
         let mut ovf = 0u64;
         for r in 0..R {
@@ -408,10 +425,7 @@ pub fn u64x64_o4a_d_loop(x: &ValueTile<u16>, y: &ValueTile<u16>, out: &mut O4aOu
 // ---- O5 ----
 
 #[inline(always)]
-fn o5_loop<const R: usize, const K: usize>(
-    counters: &mut [[u16; R]; K],
-    u: O5Update,
-) -> Result<(), Refusal> {
+fn o5_loop<const R: usize, const K: usize>(counters: &mut [[u16; R]; K], u: O5Update) -> Result<(), Refusal> {
     if u.b >= 16 {
         return Err(Refusal::SignificanceOutOfRange);
     }
@@ -457,13 +471,7 @@ fn o6_limit(lim: Option<u8>, staff_cap: u32, cap: u32) -> u8 {
 /// caller passes (runtime recipe for `loop`, a constant for `const_*`).
 #[inline(always)]
 fn o6_loop<const R: usize, const K: usize>(
-    stock: &[[u16; R]; K],
-    present: &[u64; K],
-    gate: u64,
-    staff: &[u8; R],
-    u: u8,
-    d: &[u16; K],
-    out: &mut O6Out,
+    stock: &[[u16; R]; K], present: &[u64; K], gate: u64, staff: &[u8; R], u: u8, d: &[u16; K], out: &mut O6Out,
 ) {
     let mut known = 0u64;
     let mut unknown = 0u64;
@@ -516,13 +524,7 @@ fn o6_loop<const R: usize, const K: usize>(
 /// Row groups of 8 lanes; category-outer inside a group, lane work as selects.
 #[inline(always)]
 fn o6_u8<const R: usize, const K: usize>(
-    stock: &[[u16; R]; K],
-    present: &[u64; K],
-    gate: u64,
-    staff: &[u8; R],
-    u: u8,
-    d: &[u16; K],
-    out: &mut O6Out,
+    stock: &[[u16; R]; K], present: &[u64; K], gate: u64, staff: &[u8; R], u: u8, d: &[u16; K], out: &mut O6Out,
 ) {
     let mut known = 0u64;
     let mut unknown = 0u64;
@@ -584,13 +586,7 @@ fn o6_u8<const R: usize, const K: usize>(
 /// Full 64-category unroll of both the missing scan and the cap scan.
 #[inline(always)]
 fn o6_full(
-    stock: &ValueTile<u16>,
-    present: &BitTile,
-    gate: u64,
-    staff: &[u8; 64],
-    u: u8,
-    d: &[u16; 64],
-    out: &mut O6Out,
+    stock: &ValueTile<u16>, present: &BitTile, gate: u64, staff: &[u8; 64], u: u8, d: &[u16; 64], out: &mut O6Out,
 ) {
     let mut known = 0u64;
     let mut unknown = 0u64;
