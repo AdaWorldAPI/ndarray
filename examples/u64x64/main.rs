@@ -1011,7 +1011,26 @@ fn bench(scenario: &str) -> i32 {
             ),
         ),
     ];
-    for (name, st) in fixed {
+    // Route E: preparation, prepared queries, the memo hit, E1 + C, and the
+    // stale-reuse check that S5 pays before re-preparing.
+    let prepared = Box::new(route_e::prepare_e2(&bound));
+    let src_i32 = inp.src.to_i32();
+    let mut stale_src = inp.src.clone();
+    stale_src.version += 1;
+    let stale_bound = bound_ok(&stale_src);
+    let mut memo = route_e::MemoO6::new();
+    let mut o2 = O2Out::new();
+    let mut o6 = O6Out::new();
+    memo.get_or_run(&prepared, &bound, &inp.params, &mut o6).expect("memo warm");
+    let e_rows: [(&str, harness::Stats); 6] = [
+        ("E_PREP_E2", cfg.time("e_prep", || { let p = route_e::prepare_e2(bb(&bound)); bb(&p); }, || {})),
+        ("E_O2_E2", cfg.time("e_o2", || { let r = route_e::o2_e2(bb(&prepared), bb(&bound), bb(&inp.t), bb(inp.dem), &mut o2); let _ = bb(r); }, || {})),
+        ("E_O6_E2", cfg.time("e_o6", || { let r = route_e::o6_e2(bb(&prepared), bb(&bound), bb(&inp.params), &mut o6); let _ = bb(r); }, || {})),
+        ("E_O6_MEMO_HIT", cfg.time("e_memo", || { let r = memo.get_or_run(bb(&prepared), bb(&bound), bb(&inp.params), &mut o6); let _ = bb(r); }, || {})),
+        ("E_O2_E1_C", cfg.time("e_o2_e1", || { let r = route_e::o2_e1(bb(&src_i32), bb(&expect), bb(&inp.t), bb(inp.dem), &mut o2); let _ = bb(r); }, || {})),
+        ("E_STALE_CHECK", cfg.time("e_stale", || { let r = prepared.check(bb(&stale_bound)); let _ = bb(r); }, || {})),
+    ];
+    for (name, st) in e_rows.into_iter().chain(fixed) {
         println!(
             "{name} - - Fixed {:.1} {:.1} {:.1} {:.3} {}",
             st.median,
