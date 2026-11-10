@@ -3972,7 +3972,7 @@ in bit-sliced counters.
 | U3 | NEON and wasm timings for B, D and F (only x86 measured) | low | a real aarch64 host; qemu numbers are not valid |
 | U4 | sign plane to `+1/-1` bytes without `mask_blend` (E3's cost on AVX2) | high | facade word with parity on all realizations; must pass the facet-stride guard |
 | U5 | AVX2 `U8x64::mask_blend` is a per-lane loop and dominates every A/E3 row there | high | facet-stride R2 burn-down item; parity unchanged |
-| U6 | `U8x64 -> I8x64` bit view for B's `low7`/`top` (today a store/load) | heavy | needs an operator ruling: facet-stride R3 forbids u8/i8 mixing |
+| U6 | ~~`U8x64 -> I8x64` bit view for B's `low7`/`top` (today a store/load)~~ PRIMITIVE SHIPPED: operator ruling 2026-10-30 sanctions `U8x64::reinterpret_as_i8(ReinterpretBits)` (`src/simd.rs`); still OPEN: B has not been migrated. The `bits_as_i8` store/load stand-in remains in `examples/u9_head_to_head/kernels.rs:228` and is still called by `prepare_b` (`:238`, `:334-335`) and `examples/u9_abacus/anchor.rs` (`:38`, `:103`); move those onto `reinterpret_as_i8`, then re-measure B (2026-11-10). | heavy | ruling made; the migration and re-measure remain |
 | U7 | recall on a real TurboVec-U9 index (arithmetic parity says nothing about retrieval) | heavy | owner experiment, defined in the head-to-head report |
 
 ## D-U9-E5: the U9 anchor through vertical masked byte sums (2026-10-29, branch claude/u9-e5)
