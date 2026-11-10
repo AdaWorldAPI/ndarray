@@ -26,6 +26,19 @@
 //! avxvnni 32 → scalar 1.
 
 // ═══════════════════════════════════════════════════════════════════════════
+// INT8 tile GEMM over prepacked B (TDPBUSD) — the AMX backend face
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The kernels live in `hpc::int8_tile_gemm`; consumers reach them only
+// through `crate::simd::*`, which re-exports this backend. Each entry
+// dispatches at runtime: AMX TDPBUSD when `amx_available()`, else the scalar
+// reference. `int8_tile_gemm_tier()` names the tier that runs.
+pub use crate::hpc::int8_tile_gemm::{
+    int8_gemm_packed_strided, int8_tile_gemm_16x16_packed, int8_tile_gemm_16x16_packed_strided, int8_tile_gemm_tier,
+    PackedI8B,
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Detection (stable — just CPUID, no AMX instructions)
 // ═══════════════════════════════════════════════════════════════════════════
 
