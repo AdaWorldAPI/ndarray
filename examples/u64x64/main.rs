@@ -9,8 +9,10 @@ mod fixture;
 mod harness;
 mod oracle;
 mod route_a;
+mod route_b;
 mod route_c;
 mod route_d;
+mod route_e;
 // Later routes are appended here by the orchestrator: `mod route_b;` ...
 
 use fixture::*;
@@ -43,7 +45,7 @@ fn all_entries() -> Vec<Entry> {
     let mut v = route_a::entries();
     v.extend(route_c::entries());
     v.extend(route_d::entries());
-    // Later routes: v.extend(route_b::entries()); ...
+    v.extend(route_b::entries());
     v.shrink_to_fit();
     v
 }
@@ -549,6 +551,149 @@ fn o6_cases(mut cb: impl FnMut(String, &Bound<'_>, &Params)) {
     }
 }
 
+// --------------------------------------------------------------- route E
+
+fn e_fail(case: &str, detail: &str) -> ! {
+    println!("FAILED-EXACTNESS route e case {case}: {detail}");
+    std::process::exit(1)
+}
+
+/// Route E: prepared planes answer like the oracle, the memo never answers
+/// with another query's result, and every stale reuse is refused.
+fn check_e() -> usize {
+    let mut n = 0usize;
+    o2_cases(|name, b, t, d| {
+        n += 1;
+        let p = Box::new(route_e::prepare_e2(b));
+        let mut g = O2Out::new();
+        let mut w = O2Out::new();
+        if let Err(r) = route_e::o2_e2(&p, b, t, d, &mut g) {
+            e_fail(&name, &format!("o2_e2 refused {r:?}"))
+        }
+        oracle::o2(b, t, d, &mut w);
+        if let Some(x) = same_o2(&g, &w) {
+            e_fail(&name, &x)
+        }
+    });
+    o6_cases(|name, b, prm| {
+        n += 1;
+        let p = Box::new(route_e::prepare_e2(b));
+        let mut w = O6Out::new();
+        oracle::o6(b, prm, &mut w);
+        let mut g = O6Out::new();
+        if let Err(r) = route_e::o6_e2(&p, b, prm, &mut g) {
+            e_fail(&name, &format!("o6_e2 refused {r:?}"))
+        }
+        if let Some(x) = same_o6(&g, &w) {
+            e_fail(&name, &x)
+        }
+        // A fresh memo per case, asked twice: a miss, then a hit. (One memo
+        // across cases is not valid here: several corpus sources differ in
+        // content at the same source_id and version, which a frame key is
+        // entitled to assume cannot happen.)
+        let mut memo = route_e::MemoO6::new();
+        for pass in ["miss", "hit"] {
+            let mut m = O6Out::new();
+            if let Err(r) = memo.get_or_run(&p, b, prm, &mut m) {
+                e_fail(&name, &format!("memo {pass} refused {r:?}"))
+            }
+            if let Some(x) = same_o6(&m, &w) {
+                e_fail(&format!("{name}/memo {pass}"), &x)
+            }
+        }
+    });
+
+    // One frame, two quantities through one memo (disable run E4).
+    let src = random_source(4242);
+    let b = bound_ok(&src);
+    let p = Box::new(route_e::prepare_e2(&b));
+    let mut memo = route_e::MemoO6::new();
+    for q in [2u32, 3, 2] {
+        n += 1;
+        let prm = Params::new(random_recipe(7), 3, q, [0; 64]).expect("params");
+        let mut g = O6Out::new();
+        let mut w = O6Out::new();
+        memo.get_or_run(&p, &b, &prm, &mut g).expect("memo");
+        oracle::o6(&b, &prm, &mut w);
+        if let Some(x) = same_o6(&g, &w) {
+            e_fail(&format!("memo q={q}"), &x)
+        }
+    }
+
+    // Every changed frame is refused by the prepared planes.
+    let changed: [(&str, Source, Refusal); 4] = [
+        (
+            "foreign",
+            {
+                let mut s = src.clone();
+                s.source_id += 1;
+                s
+            },
+            Refusal::ForeignSource,
+        ),
+        (
+            "stale",
+            {
+                let mut s = src.clone();
+                s.version += 1;
+                s
+            },
+            Refusal::Stale,
+        ),
+        (
+            "row_order",
+            {
+                let mut perm = identity_order();
+                perm.reverse();
+                permuted(&src, &perm)
+            },
+            Refusal::RowOrder,
+        ),
+        (
+            "field",
+            {
+                let mut s = src.clone();
+                s.fields &= !F_STOCK;
+                s
+            },
+            Refusal::Field,
+        ),
+    ];
+    for (name, s, want) in changed.iter() {
+        n += 1;
+        // The consumer asks only for what this frame has, so the bind itself
+        // passes and the refusal must come from the prepared planes.
+        let mut expect = Expect::of(s);
+        expect.fields = s.fields;
+        let b2 = bind(s, &expect).unwrap_or_else(|r| e_fail(name, &format!("bind refused {r:?}")));
+        let mut g = O2Out::new();
+        match route_e::o2_e2(&p, &b2, &[0; 64], u64::MAX, &mut g) {
+            Err(r) if r == *want => {}
+            other => e_fail(name, &format!("got {other:?}, want Err({want:?})")),
+        }
+    }
+
+    // E1: narrowing refuses negatives, then values above 65535, and C on the
+    // narrowed source answers like the oracle.
+    n += 3;
+    if route_e::prepare_e1(&i32_negative()).err() != Some(Refusal::Negative) {
+        e_fail("e1/negative", "not refused as Negative")
+    }
+    if route_e::prepare_e1(&i32_too_large()).err() != Some(Refusal::TooLarge) {
+        e_fail("e1/too_large", "not refused as TooLarge")
+    }
+    let s = random_source(31);
+    let (t, d) = (uniform_thresholds(50), random_recipe(2).demanded());
+    let mut g = O2Out::new();
+    let mut w = O2Out::new();
+    route_e::o2_e1(&s.to_i32(), &Expect::of(&s), &t, d, &mut g).expect("o2_e1");
+    oracle::o2(&bound_ok(&s), &t, d, &mut w);
+    if let Some(x) = same_o2(&g, &w) {
+        e_fail("e1/o2", &x)
+    }
+    n
+}
+
 // ------------------------------------------------------------------ check
 
 fn check() -> i32 {
@@ -607,7 +752,8 @@ fn check() -> i32 {
             }),
         }
     }
-    println!("check: {} entries, {} cases, all exact", entries.len(), cases);
+    let e_cases = check_e();
+    println!("check: {} entries, {} cases, all exact; route E {} cases", entries.len(), cases, e_cases);
     0
 }
 
