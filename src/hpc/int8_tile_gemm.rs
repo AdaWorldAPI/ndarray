@@ -328,7 +328,10 @@ pub fn int8_gemm_packed_strided(a_u8: &[u8], a_row_stride: usize, b: &[PackedI8B
     assert!(b.iter().all(|band| band.k == k), "int8_gemm_packed_strided: B bands differ in K");
     assert_eq!(m % 16, 0, "int8_gemm_packed_strided: M must be multiple of 16");
     assert!(a_row_stride >= k, "A row stride {a_row_stride} is shorter than K = {k}");
-    let n = b.len().checked_mul(16).expect("N = 16·bands overflows usize");
+    let n = b
+        .len()
+        .checked_mul(16)
+        .expect("N = 16·bands overflows usize");
     if m == 0 {
         return;
     }
@@ -337,7 +340,9 @@ pub fn int8_gemm_packed_strided(a_u8: &[u8], a_row_stride: usize, b: &[PackedI8B
         .and_then(|x| x.checked_add(k))
         .expect("(M-1)·a_row_stride + K overflows usize");
     assert!(a_u8.len() >= needed, "A holds {} bytes, needs {needed}", a_u8.len());
-    let out = m.checked_mul(n).expect("int8_gemm_packed_strided: M·N overflows usize");
+    let out = m
+        .checked_mul(n)
+        .expect("int8_gemm_packed_strided: M·N overflows usize");
     assert!(c.len() >= out, "int8_gemm_packed_strided: c.len()={} < m*n={out}", c.len());
     if amx_available() {
         // SAFETY: amx_available() confirmed CPUID + XCR0 + arch_prctl; every
