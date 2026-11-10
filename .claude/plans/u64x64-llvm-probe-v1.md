@@ -417,4 +417,10 @@ question and is not measured.
   1024.
 - Facade gaps named in §10.3: `U16x32::mask_blend(u32, a, b)` and a u16 → u32
   widening. Both need the W1a contract on every backend.
+  Checked against every backend file (src/simd_{avx512,avx2,scalar,neon,wasm}.rs):
+  `mask_blend` exists only on `U8x64` (avx512:699, avx2:1561, scalar:1932) and
+  `U8x32`; no `from_u16x32_lo/hi` exists anywhere. `simd_neon.rs` and
+  `simd_wasm.rs` define neither `U8x64` nor `U16x32`; which realization
+  `ndarray::simd` re-exports on those targets is not checked here, and route C
+  has not been run on NEON or wasm.
 - No winner is declared across routes until B and E are measured.
