@@ -51,13 +51,14 @@ use crate::hpc::amx_matmul::{
 /// uses.
 pub fn int8_tile_gemm_16x16(a_u8: &[u8], b_i8: &[i8], c: &mut [i32], k: usize) {
     assert_eq!(k % 64, 0, "K must be multiple of 64 for TDPBUSD tiles");
-    assert_eq!(a_u8.len(), 16 * k);
-    assert_eq!(b_i8.len(), k * 16);
+    let band = packed_len(k);
+    assert_eq!(a_u8.len(), band);
+    assert_eq!(b_i8.len(), band);
     assert_eq!(c.len(), 16 * 16);
 
     if amx_available() {
         // AMX path: pack B into VNNI quad layout, call tile GEMM.
-        let mut b_vnni = vec![0i8; k * 16];
+        let mut b_vnni = vec![0i8; band];
         vnni_pack_i8(b_i8, &mut b_vnni, k, 16);
         // SAFETY: amx_available() just confirmed CPUID + XCR0 + prctl.
         unsafe {
@@ -169,12 +170,19 @@ pub struct PackedI8B {
     k: usize,
 }
 
+/// `16·K`, the byte length of a 16-wide band (and of a 16-row A). Panics
+/// instead of wrapping: a wrapped length would let an undersized buffer
+/// through the length checks in front of the AMX kernel.
+fn packed_len(k: usize) -> usize {
+    k.checked_mul(16).expect("16·K overflows usize")
+}
+
 impl PackedI8B {
     /// All-zero packed B for direct VNNI staging. `k` must be a multiple of 64.
     pub fn zeroed(k: usize) -> Self {
         assert_eq!(k % 64, 0, "K must be multiple of 64 for TDPBUSD tiles");
         PackedI8B {
-            data: vec![0i8; k * 16],
+            data: vec![0i8; packed_len(k)],
             k,
         }
     }
@@ -230,7 +238,7 @@ impl PackedI8B {
     /// `bytes.len()` must be `k·16` and `k` a multiple of 64.
     pub fn from_le_bytes(bytes: &[u8], k: usize) -> Self {
         assert_eq!(k % 64, 0, "K must be multiple of 64 for TDPBUSD tiles");
-        assert_eq!(bytes.len(), k * 16, "expected K·16 bytes");
+        assert_eq!(bytes.len(), packed_len(k), "expected K·16 bytes");
         let data = bytes.iter().map(|&b| i8::from_ne_bytes([b])).collect();
         PackedI8B { data, k }
     }
@@ -245,7 +253,7 @@ impl PackedI8B {
 /// exact (integer arithmetic). [`int8_tile_gemm_tier`] names the tier.
 pub fn int8_tile_gemm_16x16_packed(a_u8: &[u8], b: &PackedI8B, c: &mut [i32]) {
     let k = b.k;
-    assert_eq!(a_u8.len(), 16 * k);
+    assert_eq!(a_u8.len(), packed_len(k));
     assert_eq!(c.len(), 16 * 16);
     dispatch_vnni(a_u8, k, &b.data, c, k);
 }
@@ -320,7 +328,7 @@ pub fn int8_gemm_packed_strided(a_u8: &[u8], a_row_stride: usize, b: &[PackedI8B
     assert!(b.iter().all(|band| band.k == k), "int8_gemm_packed_strided: B bands differ in K");
     assert_eq!(m % 16, 0, "int8_gemm_packed_strided: M must be multiple of 16");
     assert!(a_row_stride >= k, "A row stride {a_row_stride} is shorter than K = {k}");
-    let n = b.len() * 16;
+    let n = b.len().checked_mul(16).expect("N = 16·bands overflows usize");
     if m == 0 {
         return;
     }
@@ -329,7 +337,8 @@ pub fn int8_gemm_packed_strided(a_u8: &[u8], a_row_stride: usize, b: &[PackedI8B
         .and_then(|x| x.checked_add(k))
         .expect("(M-1)·a_row_stride + K overflows usize");
     assert!(a_u8.len() >= needed, "A holds {} bytes, needs {needed}", a_u8.len());
-    assert!(c.len() >= m * n, "int8_gemm_packed_strided: c.len()={} < m*n={}", c.len(), m * n);
+    let out = m.checked_mul(n).expect("int8_gemm_packed_strided: M·N overflows usize");
+    assert!(c.len() >= out, "int8_gemm_packed_strided: c.len()={} < m*n={out}", c.len());
     if amx_available() {
         // SAFETY: amx_available() confirmed CPUID + XCR0 + arch_prctl; every
         // bound the kernel relies on is asserted above.
@@ -1177,6 +1186,33 @@ mod tests {
         let k = 64;
         let p = PackedI8B::zeroed(k);
         int8_tile_gemm_16x16_packed_strided(&vec![0u8; 15 * 100 + k - 1], 100, &p, &mut vec![0i32; 256]);
+    }
+
+    /// `1 << 60` is a multiple of 64 and `16·K` wraps to 0 on 64-bit, which
+    /// would build an empty buffer claiming a huge K (codex P1, #418).
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    #[should_panic(expected = "16·K overflows")]
+    fn packed_refuses_a_k_whose_size_overflows() {
+        let _ = PackedI8B::zeroed(1usize << 60);
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    #[should_panic(expected = "16·K overflows")]
+    fn from_le_bytes_refuses_a_k_whose_size_overflows() {
+        let _ = PackedI8B::from_le_bytes(&[], 1usize << 60);
+    }
+
+    /// With K = 0 and stride 0 every A bound holds, and `M·N` wraps to 0 on
+    /// 64-bit, so an empty C would pass and the kernel would store into it
+    /// (codex P1, #418).
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    #[should_panic(expected = "M·N overflows")]
+    fn multi_tile_refuses_an_output_size_that_overflows() {
+        let bands = [PackedI8B::zeroed(0)];
+        int8_gemm_packed_strided(&[], 0, &bands, &mut [], 1usize << 60);
     }
 
     #[test]
