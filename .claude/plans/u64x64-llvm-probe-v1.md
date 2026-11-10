@@ -356,6 +356,21 @@ NO-MEASURED-ADVANTAGE, as pre-registered.
 i.e. 12.9× C and 11.6× A on v4. The expectation "A0 ≥ 10× C" holds on v4. A0
 is not a candidate on any op.
 
+### 10.1b Cold LLC (640 MiB sweep, R = 1, 11 samples; labelled "≥L2-cold", the VM's LLC is not verified)
+
+| op | v4 | v3 | v2 |
+|---|---|---|---|
+| O1 | SIMD-WINS C 1406 vs A 2275 | SIMD-WINS D-loop 1944 vs A 2299 | NO-ADV |
+| O2 | NO-ADV | NO-ADV | SIMD-WINS D-u8 1082 vs A 1776 |
+| O3 | SIMD-WINS C 1185 vs A 1554 | SCALAR-WINS A 1632 vs C 2703 | SCALAR-WINS A |
+| O4 | NO-ADV | SCALAR-WINS A 1831 vs D-loop 2430 | SCALAR-WINS A |
+| O4a | SIMD-WINS C 2647 vs A 3126 | NO-ADV | NO-ADV |
+| O5 | NO-ADV | SCALAR-WINS A | SCALAR-WINS A |
+| O6 | NO-ADV A 1854 vs C 1896 | SCALAR-WINS A 1738 vs C 7466 | SCALAR-WINS A 1957 vs C 6165 |
+
+Cold, every kernel costs 1-5 µs and the v4 differences shrink to within 2%
+except O1, O3 and O4a. A0 on O6: 4959 / 5060 / 6455 ns.
+
 ### 10.2 The rest of the hot path
 
 | step | v4 ns |
