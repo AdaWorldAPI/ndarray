@@ -603,20 +603,32 @@ fn check_e() -> usize {
         }
     });
 
-    // One frame, two quantities through one memo (disable run E4).
+    // One frame, different parameters through one memo (disable run E4).
+    // O6's output does not depend on q (q enters only through can_cook), so
+    // the sequence varies u and the recipe, which do change it; the first two
+    // answers are asserted to differ so the test cannot pass by coincidence.
     let src = random_source(4242);
     let b = bound_ok(&src);
     let p = Box::new(route_e::prepare_e2(&b));
     let mut memo = route_e::MemoO6::new();
-    for q in [2u32, 3, 2] {
+    let seq = [(random_recipe(7), 1u32), (random_recipe(7), 255), (random_recipe(8), 255), (random_recipe(7), 1)];
+    let mut first: Option<O6Out> = None;
+    for (i, (r, u)) in seq.iter().enumerate() {
         n += 1;
-        let prm = Params::new(random_recipe(7), 3, q, [0; 64]).expect("params");
+        let prm = Params::new(*r, *u, 2, [0; 64]).expect("params");
         let mut g = O6Out::new();
         let mut w = O6Out::new();
         memo.get_or_run(&p, &b, &prm, &mut g).expect("memo");
         oracle::o6(&b, &prm, &mut w);
         if let Some(x) = same_o6(&g, &w) {
-            e_fail(&format!("memo q={q}"), &x)
+            e_fail(&format!("memo seq[{i}] u={u}"), &x)
+        }
+        match (i, &first) {
+            (0, _) => first = Some(w),
+            (1, Some(f0)) if same_o6(f0, &w).is_none() => {
+                e_fail("memo seq", "u=1 and u=255 give the same O6 answer; the E4 test would be vacuous")
+            }
+            _ => {}
         }
     }
 
