@@ -1321,12 +1321,95 @@ fn bench(scenario: &str) -> i32 {
             ),
         ),
     ];
-    for (name, st) in e_rows
+    // D-QUOT8-ADMISSION-0 (plan §16): sensitivity sweep and Foundry fixture recipes.
+    let sens_y = [3usize, 11, 19, 27, 35, 43, 51, 59];
+    let sens_params: Vec<Params> = (0..=8usize)
+        .map(|k| {
+            let pairs: Vec<(usize, u16)> = (0..8usize)
+                .map(|i| {
+                    let dv = if i < k {
+                        [1u16, 2, 4][i % 3]
+                    } else {
+                        [3u16, 5, 7][(i - k) % 3]
+                    };
+                    (sens_y[i], dv)
+                })
+                .collect();
+            Params::new(Recipe::from_pairs(&pairs).expect("recipe"), 3, 2, [0u32; 64]).expect("params")
+        })
+        .collect();
+    let fnd_params: Vec<Params> = (0..8usize)
+        .map(|m| {
+            let mut pairs: Vec<(usize, u16)> = if m == 0 {
+                vec![(0, 2), (1, 1), (2, 1)]
+            } else {
+                (0..3usize)
+                    .map(|t| ((m * 7 + t * 11 + 3) % 64, (1 + (t + m) % 3) as u16))
+                    .collect()
+            };
+            pairs.sort_by_key(|p| p.0);
+            pairs.dedup_by_key(|p| p.0);
+            Params::new(Recipe::from_pairs(&pairs).expect("recipe"), 3, 2, [0u32; 64]).expect("params")
+        })
+        .collect();
+    let mut quot_rows: Vec<(String, harness::Stats)> = Vec::new();
+    for (prefix, plist) in [("SENS", &sens_params), ("FND", &fnd_params)] {
+        for (idx, pk) in plist.iter().enumerate() {
+            quot_rows.push((
+                format!("{prefix}_C_{idx}"),
+                cfg.time(
+                    "quot_c",
+                    || {
+                        route_c::u64x64_o6_c(bb(&bound), bb(pk), &mut o6);
+                        bb(&o6);
+                    },
+                    || {},
+                ),
+            ));
+            quot_rows.push((
+                format!("{prefix}_CP_{idx}"),
+                cfg.time(
+                    "quot_cp",
+                    || {
+                        route_c::u64x64_o6_c_pow2(bb(&bound), bb(pk), &mut o6);
+                        bb(&o6);
+                    },
+                    || {},
+                ),
+            ));
+            quot_rows.push((
+                format!("{prefix}_A_{idx}"),
+                cfg.time(
+                    "quot_a",
+                    || {
+                        route_a::u64x64_o6_a(bb(&bound), bb(pk), &mut o6);
+                        bb(&o6);
+                    },
+                    || {},
+                ),
+            ));
+            quot_rows.push((
+                format!("{prefix}_AP_{idx}"),
+                cfg.time(
+                    "quot_ap",
+                    || {
+                        route_a::u64x64_o6_a_pow2(bb(&bound), bb(pk), &mut o6);
+                        bb(&o6);
+                    },
+                    || {},
+                ),
+            ));
+        }
+    }
+    let all_rows = e_rows
         .into_iter()
         .chain(iso_rows)
         .chain(fs_rows)
         .chain(fixed)
-    {
+        .map(|(n, st)| (n.to_string(), st))
+        .chain(quot_rows);
+    for (name, st) in all_rows {
+        let name = name.as_str();
         println!(
             "{name} - - Fixed {:.1} {:.1} {:.1} {:.3} {}",
             st.median,

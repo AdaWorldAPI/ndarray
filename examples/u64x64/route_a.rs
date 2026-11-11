@@ -250,6 +250,73 @@ pub fn u64x64_o6_a(bound: &Bound<'_>, params: &Params, out: &mut O6Out) {
     out.denied = denied;
 }
 
+/// O6 with the F8 power-of-two selection (shift) per demanded row. Otherwise as `u64x64_o6_a`:
+/// CanCook capacity with runtime `/`, min, and an ordered `limit` tracked
+/// in the same pass (first k attaining the final cap; a category ties ahead of
+/// STAFF and CEILING).
+#[no_mangle]
+#[inline(never)]
+pub fn u64x64_o6_a_pow2(bound: &Bound<'_>, params: &Params, out: &mut O6Out) {
+    let src = bound.src;
+    let d = &params.recipe.d;
+    let (list, n) = params.recipe.demanded_list();
+    let mut known = 0u64;
+    let mut unknown = 0u64;
+    let mut denied = 0u64;
+    for r in 0..64 {
+        out.cap[r] = 0;
+        out.limit[r] = 0;
+        if (src.gate >> r) & 1 == 0 {
+            out.status[r] = RowStatus::Denied;
+            denied |= 1u64 << r;
+            continue;
+        }
+        let mut missing: Option<u8> = None;
+        for i in 0..n {
+            let k = list[i] as usize;
+            if (src.present[k] >> r) & 1 == 0 {
+                missing = Some(k as u8);
+                break;
+            }
+        }
+        if let Some(k) = missing {
+            out.status[r] = RowStatus::Unknown { k };
+            unknown |= 1u64 << r;
+            continue;
+        }
+        let staff_cap = src.staff[r] as u32 * params.u as u32;
+        let mut cap = staff_cap.min(QMAX);
+        let mut lim: Option<u8> = None;
+        for i in 0..n {
+            let k = list[i] as usize;
+            let dk = d[k] as u32;
+            // F8: only a power of two takes the shift path.
+            let q = if dk.is_power_of_two() {
+                src.stock[k][r] as u32 >> dk.trailing_zeros()
+            } else {
+                src.stock[k][r] as u32 / dk
+            };
+            if q < cap {
+                cap = q;
+                lim = Some(k as u8);
+            } else if q == cap && lim.is_none() {
+                lim = Some(k as u8);
+            }
+        }
+        out.status[r] = RowStatus::Known;
+        out.cap[r] = cap as u8;
+        out.limit[r] = match lim {
+            Some(k) => k,
+            None if staff_cap == cap => STAFF,
+            None => CEILING,
+        };
+        known |= 1u64 << r;
+    }
+    out.known = known;
+    out.unknown = unknown;
+    out.denied = denied;
+}
+
 // ---- A0: existing mask-RISC primitives over widened i32 planes ----
 
 /// A0 O2: per demanded plane, widen `u16 -> i32` into a stack buffer, threshold
@@ -397,6 +464,13 @@ pub fn entries() -> Vec<Entry> {
         e("O4a", "a", Kernel::O4a(u64x64_o4a_a)),
         e("O5", "a", Kernel::O5(u64x64_o5_a)),
         e("O6", "a", Kernel::O6(u64x64_o6_a)),
+        Entry {
+            op: "O6",
+            route: "a",
+            variant: "pow2",
+            class: Class::Scalar,
+            kernel: Kernel::O6(u64x64_o6_a_pow2),
+        },
         e("O2", "a0", Kernel::O2(u64x64_o2_a0)),
         e("O6", "a0", Kernel::O6(u64x64_o6_a0)),
     ]
