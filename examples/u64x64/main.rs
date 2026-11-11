@@ -1042,6 +1042,7 @@ fn bench(scenario: &str) -> i32 {
                 || {
                     let r = route_e::o2_e2(bb(&prepared), bb(&bound), bb(&inp.t), bb(inp.dem), &mut o2);
                     let _ = bb(r);
+                    bb(&o2);
                 },
                 || {},
             ),
@@ -1053,6 +1054,7 @@ fn bench(scenario: &str) -> i32 {
                 || {
                     let r = route_e::o6_e2(bb(&prepared), bb(&bound), bb(&inp.params), &mut o6);
                     let _ = bb(r);
+                    bb(&o6);
                 },
                 || {},
             ),
@@ -1064,6 +1066,7 @@ fn bench(scenario: &str) -> i32 {
                 || {
                     let r = memo.get_or_run(bb(&prepared), bb(&bound), bb(&inp.params), &mut o6);
                     let _ = bb(r);
+                    bb(&o6);
                 },
                 || {},
             ),
@@ -1075,6 +1078,7 @@ fn bench(scenario: &str) -> i32 {
                 || {
                     let r = route_e::o2_e1(bb(&src_i32), bb(&expect), bb(&inp.t), bb(inp.dem), &mut o2);
                     let _ = bb(r);
+                    bb(&o2);
                 },
                 || {},
             ),
