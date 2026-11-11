@@ -535,3 +535,147 @@ set 1, B is best but not admitted in set 2) and the cold-LLC memo verdict.
 and is withdrawn for those two ops. Per-cell ranges overlap the decision
 rule's margin often enough that a third set, or a quieter host, is needed
 before any ✱ cell is cited.
+
+## 13. Route F: the 64×64 as an X,Y shader grid (2026-11-11, PLANNED)
+
+**Question (operator):** run the 64×64 as an ISA contract over X,Y, with no
+materialization and no Abakus, like a shader grid, with any building done
+through `simd_stride`.
+
+**Reading.** X = row r (64 cells, the lanes), Y = category k (64 rows of the
+grid). The grid is the source's own `ValueTile<u16>`, read in place. A shader
+is a per-cell function of `(y, x-row, uniforms)`; the dispatcher maps it over
+the demanded Y and folds the result. Nothing is built from source values: no
+bit planes (B, E) and no Abakus. What a shader may prepare is a **method
+constant** keyed by its parameters, never by source data: here, one
+`simd_stride::lut_u8` table.
+
+**What F tests, and what it does not.** Route C already executes the same
+instructions as a hand-written loop over Y with X in lanes. F changes only the
+contract: one generic dispatcher plus small shaders, monomorphized. So:
+
+- **H-F1 (zero cost):** for O2, O3 and O6, F's median is within the decision
+  rule's margin of C's on v2, v3 and v4, and `scripts/u64x64-inspect.sh`
+  reports the same instruction classes (vdata, sdata, popcnt, shuf, call = 0)
+  within ±10% of C's counts. **Falsified** if F is slower beyond the margin
+  on any tier, or adds a hot-loop `call`.
+- **H-F2 (stride building):** O6 with its X-uniform cap
+  `staffcap[r] = min(staff[r]·u, 128)` built as a 256-entry `lut_u8` table
+  per query (`f/lut`) is not faster than C's `mullo` + `simd_min` (`f/-`).
+  Pre-registered direction: LUT ties or loses on v4/v3 (a 256-byte build per
+  query against two vector ops), may win on v2. This is the only place in the
+  six ops where a byte-to-byte per-cell function exists: `⌊S/d⌋` takes a u16
+  S, and `d·q·C` needs a u16 output, so neither fits `lut_u8`.
+
+**Not built, recorded:** a native-width X tile on v3 (four `U16x16` per row,
+not the array-backed `U16x32`) would be the shader grid's real advantage over
+C on AVX2. It is blocked by the facade: on AVX2 `U16x16` has `splat`,
+`from_slice`, `mullo`, `shl`/`shr`, bit ops and `reduce_sum`, but no
+`cmpgt_mask`, `cmpeq_mask`, `simd_min` or `mask_blend` (read in
+`src/simd_avx2.rs`, `impl U16x16`). Adding them is `src/` work under the W1a
+contract on every backend, outside a lab PR.
+
+### 13.1 Spec (verbatim for the drafting worker)
+
+New file `examples/u64x64/route_f.rs`. Visibility change only in
+`route_c.rs`: `P16`, `join`, `load16`, `widen_u8`, `lane16`, `quot8` become
+`pub(crate)`. F reuses C's per-cell arithmetic on purpose, so the measured
+difference is the contract alone.
+
+```rust
+/// One Y row of the grid: 64 X cells as two U16x32 halves.
+pub(crate) type Row = route_c::P16;
+
+/// A per-cell function folded over the demanded Y rows.
+pub(crate) trait Shader {
+    type Acc: Copy;
+    fn init(&self) -> Self::Acc;
+    /// `row` is grid[y], loaded in place. Returns the folded accumulator.
+    fn cell(&self, y: usize, row: Row, acc: Self::Acc) -> Self::Acc;
+}
+
+/// Maps `s` over every set bit of `ys` in ascending y, reading
+/// `grid[y]` in place.
+#[inline(always)]
+pub(crate) fn dispatch<S: Shader>(grid: &ValueTile<u16>, mut ys: u64, s: &S) -> S::Acc {
+    let mut acc = s.init();
+    while ys != 0 {
+        let y = ys.trailing_zeros() as usize;
+        ys &= ys - 1; // F1: every demanded y is visited exactly once.
+        acc = s.cell(y, route_c::load16(&grid[y]), acc);
+    }
+    acc
+}
+```
+
+Kernels (`#[no_mangle] #[inline(never)]`, signatures identical to route C):
+
+- O2 writes one output word per visited y, so it uses `ShaderOut`:
+
+```rust
+/// A shader that also writes one output word per visited y.
+pub(crate) trait ShaderOut: Shader {
+    fn out(&self, y: usize, row: Row, acc: Self::Acc) -> (Self::Acc, u64);
+}
+
+#[inline(always)]
+pub(crate) fn dispatch_out<S: ShaderOut>(
+    grid: &ValueTile<u16>, mut ys: u64, s: &S, out: &mut [u64; 64],
+) -> S::Acc {
+    let mut acc = s.init();
+    while ys != 0 {
+        let y = ys.trailing_zeros() as usize;
+        ys &= ys - 1; // F1
+        let (a, w) = s.out(y, route_c::load16(&grid[y]), acc);
+        acc = a;
+        out[y] = w;
+    }
+    acc
+}
+```
+
+  O2 implements `ShaderOut` with `Acc = u64` (`all`, init `u64::MAX`);
+  `out` computes `ge` exactly as `u64x64_o2_c` (t > 65535 → 0), returns
+  `(acc & ge, ge)`. The kernel sets `out.ge = [0; 64]` first, then
+  `out.all_ge = dispatch_out(&bound.src.stock, demanded, &sh, &mut out.ge)`.
+
+- `u64x64_o3_f(bound, demanded, out)`: `Shader` with
+  `Acc = (P16 m, U8x64 arg, u64 have, u64 unknown)`, init and per-cell body
+  copied from `u64x64_o3_c`'s loop body (presence read from
+  `bound.src.present[y]`), finish identical to C after `dispatch`.
+- `u64x64_o6_f(bound, params, out)`: `Shader` with
+  `Acc = (P16 cap, u64 missing, U8x64 first_miss, U8x64 lim, u64 limset)`;
+  init computes `staff_raw` and `cap` exactly as C; `cell` is C's loop body
+  with `k = y` and `s = row`; the Y set is `params.recipe.demanded()`
+  (ascending, the same order as C's `demanded_list`). Finish
+  identical to C. `staff_raw` is a shader field.
+- `u64x64_o6_f_lut(bound, params, out)`: identical to `o6_f` except the
+  initial `cap`. Build `cap8: [u8; 256]` with `cap8[s] = min(s·u, QMAX)` (fits
+  u8, QMAX = 128), call `ndarray::simd::lut_u8(&src.staff, &cap8, &mut c8)`
+  into a `[u8; 64]`, and set `cap = widen_u8(U8x64::from_slice(&c8))`.
+  `staff_raw` stays C's `mullo` (a u16, up to 255·255), because the `STAFF`
+  limit test compares against it.
+  F2 anchor: `// F2: the table entry is min(s*u, QMAX), not s*u.`
+
+`entries()`: route `"f"`, class `Class::Simd`; variants `""` for o2/o3/o6
+and `"lut"` for `o6_f_lut`. Registration: `mod route_f;` and
+`v.extend(route_f::entries());` in `main.rs`.
+
+**Worker rules:** no `cargo` of any kind, no git; no byte shuffle, no
+`as i8`, no scalar loop except the 256-entry table build and the existing
+C finish loop (FACET STRIDE); no allocation; `// F1` and `// F2` anchors
+exactly as written. Do not claim it compiles.
+
+### 13.2 Orchestrator steps (not the worker's)
+
+1. `decide.py`: class `'f'` → Simd, and a direct contract line per op:
+   `F/C ratio` with both ranges, verdict `ZERO-COST` iff ranges overlap or
+   `median(F) ≤ 1.10·median(C)`, else `CONTRACT-COST`. (F and C share a
+   class, so the ordinary rule never compares them.)
+2. Build v2/v3/v4, `check` exact; disable runs F1 (after `ys &= ys - 1`,
+   add `if ys.count_ones() == 1 { ys = 0; }`: the last demanded y is never
+   visited) and F2 (table entry `s*u` without the min with QMAX) each turn
+   `check` red.
+3. `inspect.sh` counts for `o2/o3/o6_{c,f}`; 27 bench runs (Haiku
+   executor); decisions regenerated by the orchestrator.
+4. Results as §14; PR body table.
