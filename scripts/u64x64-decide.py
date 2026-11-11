@@ -59,3 +59,19 @@ for op in sorted({k[0] for k in rows}):
         else:
             v = 'CONTRACT-COST' if mf > mc else 'F-FASTER'
         print(f"{op:5} F/{var} {mf:.1f} [{min(F):.1f}..{max(F):.1f}] vs C {mc:.1f} [{min(c):.1f}..{max(c):.1f}]  {mf/mc:.2f}  {v}")
+
+# Isolation rows (plan section 13.3): F-coord against C on two fixed recipes,
+# all powers of two (POW2) and none (GEN). WINS means max(F) < min(C) and
+# median(F) <= 0.85 median(C), the same margin as the main rule.
+for case in ('POW2', 'GEN'):
+    c, f = fixed.get(f'ISO_{case}_C'), fixed.get(f'ISO_{case}_FCOORD')
+    if not (c and f):
+        continue
+    mf, mc = st.median(f), st.median(c)
+    if max(f) < min(c) and mf <= 0.85 * mc:
+        v = 'FCOORD-WINS'
+    elif min(f) <= max(c) and min(c) <= max(f) or (mf <= 1.10 * mc and mc <= 1.10 * mf):
+        v = 'ZERO-COST'
+    else:
+        v = 'CONTRACT-COST' if mf > mc else 'F-FASTER'
+    print(f"ISO {case:4} F-coord {mf:.1f} [{min(f):.1f}..{max(f):.1f}] vs C {mc:.1f} [{min(c):.1f}..{max(c):.1f}]  {mf/mc:.2f}  {v}")
