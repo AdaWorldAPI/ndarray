@@ -719,3 +719,87 @@ measured at both extremes as well as on the bench recipe:
   uniform that C could also branch on. A win shows that evaluating with the
   coordinate's uniform beats a coordinate-blind uniform kernel. It does not
   show a property of the shader-grid contract; F0 measures that separately.
+
+## 14. D-U64X64-SHADER-F-0: separated cell evaluation (2026-11-11, PLANNED)
+
+**Question (operator):** can a direct per-cell function `f(x, y, v, params)`
+outperform route C without constructing bit planes, with exact semantics and
+with reductions separated from cell evaluation? NO-ADVANTAGE is an allowed
+outcome.
+
+**Baseline.** #419 merged at `9683379`. Its post-review corrections (A0 never
+a candidate; route-E outputs consumed) are in #420, **not yet on master**, so
+this work is stacked on #420's branch and is not valid against bare master.
+
+**Three phases, timed separately.**
+
+| phase | what | runs |
+|---|---|---|
+| preparation | method constants keyed by their parameters (the cap LUT; the per-y division class) | once per parameter set; amortised over N |
+| cell | read the value in place, compute, write a caller-owned output grid | per run |
+| reduction | fold the cell grid into the answer | per run |
+
+The cell grid is caller-owned output (stack, no heap). Its size per op is
+stated below and is the only new memory. Nothing is copied from the source.
+
+### 14.1 Per-op classification
+
+| op | reads per cell | class | cell output (bytes) | reduction |
+|---|---|---|---|---|
+| O1 | A[y], B[y], uniform L | CELL + REDUCTION | BitTile `I = A&B&L`, 512 | per-y popcount, per-x vertical count, total |
+| O2 | S[y], uniform t_y | CELL + REDUCTION | `ge[y]` = `out.ge`, 512 | AND over demanded y |
+| O3 | S[y], P[y] | CELL + REDUCTION | `v[y] = S[y] \| !P[y]` for demanded y, 128·|D| | min/argmin over y (strictly smaller updates; ties keep the smaller y), `have`, `unknown` (reads P again: stated dependency) |
+| O4 | C[y], uniform w_y | CELL + REDUCTION | two u16 product rows `C·(w&0xFF)`, `C·(w>>8)` per y with w ≠ 0, 256·|W| | C's `Col16` carry sums over y, then the u32 finish (C's scalar loop: the facade has no u16→u32 widening, §10.3) |
+| O4a | X[y], Y[y] | PURE CELL | `z`, `ovf` (the output itself) | none; F ≡ C, not duplicated |
+| O5 | counters[k], uniform (b, m) | CELL + REDUCTION + TRANSACTION, one Y row | the summed row, 128 | any-carry over x; write back only if none |
+| O6 | S[y], P[y], uniform d_y; X uniforms staff, gate | CELL + REDUCTION | quotient rows `q[y]` for demanded y, 128·|D| | cap = min over y with the limit tie rule, missing/first-miss, finish |
+
+### 14.2 Variants (route `f`, all registered in `entries()` so `check` covers them)
+
+- `split` for O1, O2, O3, O4, O5, O6: `cell` into the caller grid, then
+  `reduce`. Both are separate `pub(crate)` functions; the entry kernel
+  calls them in order with a stack grid.
+- `split_coord` for O6: the cell uses the per-y class (power-of-two `d`
+  shifts, others `quot8`), §13.3.
+- `split_lut` for O6: the reduction's initial cap comes from a prepared
+  `CapLut`. The entry kernel prepares it per call (N = 1); the bench rows
+  time preparation and use separately.
+- The fused variants of §13 (`""`, `coord`, `lut`) stay as the comparison
+  for "reduction inside the cell".
+
+**LUT eligibility.** Only `staffcap = min(staff·u, 128)`: u8 in, u8 out
+exactly. Not eligible: `⌊S/d⌋` (u16 S), `d·q·C` (u16 out), O3/O4 values
+(u16). Nothing is truncated to fit.
+
+`CapLut { u: u32, table: [u8; 256] }`: `prepare(u)`, and
+`cap0(&self, staff: &[u8; 64], u: u32) -> Result<P16, LutRefusal>` refusing
+`LutRefusal::ParamMismatch { prepared, asked }` when `u != self.u` (anchor F4).
+
+### 14.3 Falsifiers (beyond `check`, which already pins parity, presence,
+permutation, overflow, ties, rollback, tails and sparse masks for every
+registered entry)
+
+- `cap_lut_equals_mullo_min_for_every_u_and_staff` (exhaustive 255 × 256).
+- `cap_lut_prepared_for_one_u_refuses_another` (F4 disable turns it red).
+- `split_cell_writes_only_demanded_rows`: a grid filled with a sentinel;
+  after `cell`, exactly the demanded rows differ, and each equals the per-cell
+  arithmetic (no other row is materialised).
+- Disable anchors: F4 (LUT parameter check), F5 (O3 reduction: strictly
+  smaller update), F6 (O5 write-back only if no lane carries).
+
+### 14.4 Bench rows (Fixed rows, every timed closure consumes its output)
+
+`FS_O1_CELL`, `FS_O1_RED`, `FS_O2_CELL`, `FS_O2_RED`, `FS_O3_CELL`,
+`FS_O3_RED`, `FS_O4_CELL`, `FS_O4_RED`, `FS_O6_CELL`, `FS_O6_CELL_COORD`,
+`FS_O6_RED`, `FS_O6_RED_LUT` (with a LUT prepared outside the timer),
+`LUT_PREP`. End-to-end per variant comes from the ordinary entry rows.
+`decide.py` reports F-vs-C for every route-f variant, and the LUT
+amortisation `(LUT_PREP + N·(FS_O6_CELL + FS_O6_RED_LUT)) / N` against O6 C
+for N ∈ {1, 2, 8, 32, 128, 1024}.
+
+### 14.5 Decision
+
+GO only if a split variant beats C on at least one op and tier under the
+§8 rule in both of two full sets, with parity and every disable red. LAB
+ONLY if it ties or wins only in one set. NO GO if it loses everywhere;
+then the measured counterexample is the result.
