@@ -535,3 +535,374 @@ set 1, B is best but not admitted in set 2) and the cold-LLC memo verdict.
 and is withdrawn for those two ops. Per-cell ranges overlap the decision
 rule's margin often enough that a third set, or a quieter host, is needed
 before any ✱ cell is cited.
+
+## 13. Route F: the 64×64 as an X,Y shader grid (2026-11-11, PLANNED)
+
+**Question (operator):** run the 64×64 as an ISA contract over X,Y, with no
+materialization and no Abakus, like a shader grid, with any building done
+through `simd_stride`.
+
+**Reading.** X = row r (64 cells, the lanes), Y = category k (64 rows of the
+grid). The grid is the source's own `ValueTile<u16>`, read in place. A shader
+is a per-cell function of `(y, x-row, uniforms)`; the dispatcher maps it over
+the demanded Y and folds the result. Nothing is built from source values: no
+bit planes (B, E) and no Abakus. What a shader may prepare is a **method
+constant** keyed by its parameters, never by source data: here, one
+`simd_stride::lut_u8` table.
+
+**What F tests, and what it does not.** Route C already executes the same
+instructions as a hand-written loop over Y with X in lanes. F changes only the
+contract: one generic dispatcher plus small shaders, monomorphized. So:
+
+- **H-F1 (zero cost):** for O2, O3 and O6, F's median is within the decision
+  rule's margin of C's on v2, v3 and v4, and `scripts/u64x64-inspect.sh`
+  reports the same instruction classes (vdata, sdata, popcnt, shuf, call = 0)
+  within ±10% of C's counts. **Falsified** if F is slower beyond the margin
+  on any tier, or adds a hot-loop `call`.
+- **H-F2 (stride building):** O6 with its X-uniform cap
+  `staffcap[r] = min(staff[r]·u, 128)` built as a 256-entry `lut_u8` table
+  per query (`f/lut`) is not faster than C's `mullo` + `simd_min` (`f/-`).
+  Pre-registered direction: LUT ties or loses on v4/v3 (a 256-byte build per
+  query against two vector ops), may win on v2. This is the only place in the
+  six ops where a byte-to-byte per-cell function exists: `⌊S/d⌋` takes a u16
+  S, and `d·q·C` needs a u16 output, so neither fits `lut_u8`.
+
+**Not built, recorded:** a native-width X tile on v3 (four `U16x16` per row,
+not the array-backed `U16x32`) would be the shader grid's real advantage over
+C on AVX2. It is blocked by the facade: on AVX2 `U16x16` has `splat`,
+`from_slice`, `mullo`, `shl`/`shr`, bit ops and `reduce_sum`, but no
+`cmpgt_mask`, `cmpeq_mask`, `simd_min` or `mask_blend` (read in
+`src/simd_avx2.rs`, `impl U16x16`). Adding them is `src/` work under the W1a
+contract on every backend, outside a lab PR.
+
+### 13.1 Spec (verbatim for the drafting worker)
+
+New file `examples/u64x64/route_f.rs`. Visibility change only in
+`route_c.rs`: `P16`, `join`, `load16`, `widen_u8`, `lane16`, `quot8` become
+`pub(crate)`. F reuses C's per-cell arithmetic on purpose, so the measured
+difference is the contract alone.
+
+```rust
+/// One Y row of the grid: 64 X cells as two U16x32 halves.
+pub(crate) type Row = route_c::P16;
+
+/// A per-cell function folded over the demanded Y rows.
+pub(crate) trait Shader {
+    type Acc: Copy;
+    fn init(&self) -> Self::Acc;
+    /// `row` is grid[y], loaded in place. Returns the folded accumulator.
+    fn cell(&self, y: usize, row: Row, acc: Self::Acc) -> Self::Acc;
+}
+
+/// Maps `s` over every set bit of `ys` in ascending y, reading
+/// `grid[y]` in place.
+#[inline(always)]
+pub(crate) fn dispatch<S: Shader>(grid: &ValueTile<u16>, mut ys: u64, s: &S) -> S::Acc {
+    let mut acc = s.init();
+    while ys != 0 {
+        let y = ys.trailing_zeros() as usize;
+        ys &= ys - 1; // F1: every demanded y is visited exactly once.
+        acc = s.cell(y, route_c::load16(&grid[y]), acc);
+    }
+    acc
+}
+```
+
+Kernels (`#[no_mangle] #[inline(never)]`, signatures identical to route C):
+
+- O2 writes one output word per visited y, so it uses `ShaderOut`:
+
+```rust
+/// A shader that also writes one output word per visited y.
+pub(crate) trait ShaderOut: Shader {
+    fn out(&self, y: usize, row: Row, acc: Self::Acc) -> (Self::Acc, u64);
+}
+
+#[inline(always)]
+pub(crate) fn dispatch_out<S: ShaderOut>(
+    grid: &ValueTile<u16>, mut ys: u64, s: &S, out: &mut [u64; 64],
+) -> S::Acc {
+    let mut acc = s.init();
+    while ys != 0 {
+        let y = ys.trailing_zeros() as usize;
+        ys &= ys - 1; // F1
+        let (a, w) = s.out(y, route_c::load16(&grid[y]), acc);
+        acc = a;
+        out[y] = w;
+    }
+    acc
+}
+```
+
+  O2 implements `ShaderOut` with `Acc = u64` (`all`, init `u64::MAX`);
+  `out` computes `ge` exactly as `u64x64_o2_c` (t > 65535 → 0), returns
+  `(acc & ge, ge)`. The kernel sets `out.ge = [0; 64]` first, then
+  `out.all_ge = dispatch_out(&bound.src.stock, demanded, &sh, &mut out.ge)`.
+
+- `u64x64_o3_f(bound, demanded, out)`: `Shader` with
+  `Acc = (P16 m, U8x64 arg, u64 have, u64 unknown)`, init and per-cell body
+  copied from `u64x64_o3_c`'s loop body (presence read from
+  `bound.src.present[y]`), finish identical to C after `dispatch`.
+- `u64x64_o6_f(bound, params, out)`: `Shader` with
+  `Acc = (P16 cap, u64 missing, U8x64 first_miss, U8x64 lim, u64 limset)`;
+  init computes `staff_raw` and `cap` exactly as C; `cell` is C's loop body
+  with `k = y` and `s = row`; the Y set is `params.recipe.demanded()`
+  (ascending, the same order as C's `demanded_list`). Finish
+  identical to C. `staff_raw` is a shader field.
+- `u64x64_o6_f_lut(bound, params, out)`: identical to `o6_f` except the
+  initial `cap`. Build `cap8: [u8; 256]` with `cap8[s] = min(s·u, QMAX)` (fits
+  u8, QMAX = 128), call `ndarray::simd::lut_u8(&src.staff, &cap8, &mut c8)`
+  into a `[u8; 64]`, and set `cap = widen_u8(U8x64::from_slice(&c8))`.
+  `staff_raw` stays C's `mullo` (a u16, up to 255·255), because the `STAFF`
+  limit test compares against it.
+  F2 anchor: `// F2: the table entry is min(s*u, QMAX), not s*u.`
+
+`entries()`: route `"f"`, class `Class::Simd`; variants `""` for o2/o3/o6
+and `"lut"` for `o6_f_lut`. Registration: `mod route_f;` and
+`v.extend(route_f::entries());` in `main.rs`.
+
+**Worker rules:** no `cargo` of any kind, no git; no byte shuffle, no
+`as i8`, no scalar loop except the 256-entry table build and the existing
+C finish loop (FACET STRIDE); no allocation; `// F1` and `// F2` anchors
+exactly as written. Do not claim it compiles.
+
+### 13.2 Orchestrator steps (not the worker's)
+
+1. `decide.py`: class `'f'` → Simd, and a direct contract line per op:
+   `F/C ratio` with both ranges, verdict `ZERO-COST` iff the ranges overlap or
+   the medians are within 10% of each other, else `CONTRACT-COST` (F slower)
+   or `F-FASTER`. (F and C share a
+   class, so the ordinary rule never compares them.)
+2. Build v2/v3/v4, `check` exact; disable runs F1 (after `ys &= ys - 1`,
+   add `if ys.count_ones() == 1 { ys = 0; }`: the last demanded y is never
+   visited) and F2 (table entry `s*u` without the min with QMAX) each turn
+   `check` red.
+3. `inspect.sh` counts for `o2/o3/o6_{c,f}`; 27 bench runs (Haiku
+   executor); decisions regenerated by the orchestrator.
+4. Results as §14; PR body table.
+
+### 13.3 The question, sharpened (operator, 2026-11-11)
+
+> Can direct, coordinate-aware cell evaluation outperform route C without
+> constructing bit-planes, once preparation and reduction costs are counted?
+
+§13.1's F reuses C's per-cell arithmetic, so it can at best tie C. It stays
+as the **contract control** (F0): it measures what the X,Y contract itself
+costs, so any gain below is not the dispatch form. The arm that answers the
+question is **F-coord**:
+
+- **Coordinate used:** the Y uniform `d[y]`. Per y, decided once per y and
+  never per cell, a power of two `d = 2^p` takes `q = min(s >> p, 255)`, which
+  equals `quot8`'s largest `q ≤ 255` with `q·d ≤ s` exactly; any other `d`
+  takes `quot8` (8 restoring steps). Anchor F3.
+- **Preparation counted:** the class decision runs inside the kernel on every
+  call. No per-recipe table is cached, so nothing is hidden outside the timer.
+- **Reduction counted:** the min/argmin fold and the finish are the same as
+  C's and inside the timed kernel.
+- **No bit planes, no Abakus,** values read in place.
+
+**Isolation:** the gain depends on the share of power-of-two `d`, so it is
+measured at both extremes as well as on the bench recipe:
+
+| row | recipe | expectation |
+|---|---|---|
+| `ISO_POW2_{C,FCOORD}` | d = 1, 2, 4 | the largest gain F-coord can show |
+| `ISO_GEN_{C,FCOORD}` | d = 3, 5, 7 | F-coord ≈ C: only the class test is added |
+| `O6 f/coord` vs `O6 c` | `random_recipe(1)`, d ∈ 1..3 | in between |
+
+- **H-F3:** on v4 hot, `ISO_POW2_FCOORD` ≤ 0.85 × `ISO_POW2_C` with
+  non-overlapping ranges, and `ISO_GEN_FCOORD` is ZERO-COST against
+  `ISO_GEN_C`. **Falsified** if the power-of-two case does not clear the
+  margin (coordinate awareness does not pay even where it can), or the
+  general case is CONTRACT-COST (the class test costs more than it saves).
+- **What a win would and would not mean:** the gain comes from a per-y
+  uniform that C could also branch on. A win shows that evaluating with the
+  coordinate's uniform beats a coordinate-blind uniform kernel. It does not
+  show a property of the shader-grid contract; F0 measures that separately.
+
+## 14. D-U64X64-SHADER-F-0: separated cell evaluation (2026-11-11, PLANNED)
+
+**Question (operator):** can a direct per-cell function `f(x, y, v, params)`
+outperform route C without constructing bit planes, with exact semantics and
+with reductions separated from cell evaluation? NO-ADVANTAGE is an allowed
+outcome.
+
+**Baseline.** #419 merged at `9683379`. Its post-review corrections (A0 never
+a candidate; route-E outputs consumed) are in #420, **not yet on master**, so
+this work is stacked on #420's branch and is not valid against bare master.
+
+**Three phases, timed separately.**
+
+| phase | what | runs |
+|---|---|---|
+| preparation | method constants keyed by their parameters (the cap LUT; the per-y division class) | once per parameter set; amortised over N |
+| cell | read the value in place, compute, write a caller-owned output grid | per run |
+| reduction | fold the cell grid into the answer | per run |
+
+The cell grid is caller-owned output (stack, no heap). Its size per op is
+stated below and is the only new memory. Nothing is copied from the source.
+
+### 14.1 Per-op classification
+
+| op | reads per cell | class | cell output (bytes) | reduction |
+|---|---|---|---|---|
+| O1 | A[y], B[y], uniform L | CELL + REDUCTION | BitTile `I = A&B&L`, 512 | per-y popcount, per-x vertical count, total |
+| O2 | S[y], uniform t_y | CELL + REDUCTION | `ge[y]` = `out.ge`, 512 | AND over demanded y |
+| O3 | S[y], P[y] | CELL + REDUCTION | `v[y] = S[y] \| !P[y]` for demanded y, 128·|D| | min/argmin over y (strictly smaller updates; ties keep the smaller y), `have`, `unknown` (reads P again: stated dependency) |
+| O4 | C[y], uniform w_y | CELL + REDUCTION | two u16 product rows `C·(w&0xFF)`, `C·(w>>8)` per y with w ≠ 0, 256·|W| | C's `Col16` carry sums over y, then the u32 finish (C's scalar loop: the facade has no u16→u32 widening, §10.3) |
+| O4a | X[y], Y[y] | PURE CELL | `z`, `ovf` (the output itself) | none; F ≡ C, not duplicated |
+| O5 | counters[k], uniform (b, m) | CELL + REDUCTION + TRANSACTION, one Y row | the summed row, 128 | any-carry over x; write back only if none |
+| O6 | S[y], P[y], uniform d_y; X uniforms staff, gate | CELL + REDUCTION | quotient rows `q[y]` for demanded y, 128·|D| | cap = min over y with the limit tie rule, missing/first-miss, finish |
+
+### 14.2 Variants (route `f`, all registered in `entries()` so `check` covers them)
+
+- `split` for O1, O2, O3, O4, O5, O6: `cell` into the caller grid, then
+  `reduce`. Both are separate `pub(crate)` functions; the entry kernel
+  calls them in order with a stack grid.
+- `split_coord` for O6: the cell uses the per-y class (power-of-two `d`
+  shifts, others `quot8`), §13.3.
+- `split_lut` for O6: the reduction's initial cap comes from a prepared
+  `CapLut`. The entry kernel prepares it per call (N = 1); the bench rows
+  time preparation and use separately.
+- The fused variants of §13 (`""`, `coord`, `lut`) stay as the comparison
+  for "reduction inside the cell".
+
+**LUT eligibility.** Only `staffcap = min(staff·u, 128)`: u8 in, u8 out
+exactly. Not eligible: `⌊S/d⌋` (u16 S), `d·q·C` (u16 out), O3/O4 values
+(u16). Nothing is truncated to fit.
+
+`CapLut { u: u32, table: [u8; 256] }`: `prepare(u)`, and
+`cap0(&self, staff: &[u8; 64], u: u32) -> Result<P16, LutRefusal>` refusing
+`LutRefusal::ParamMismatch { prepared, asked }` when `u != self.u` (anchor F4).
+
+### 14.3 Falsifiers (beyond `check`, which already pins parity, presence,
+permutation, overflow, ties, rollback, tails and sparse masks for every
+registered entry)
+
+- `cap_lut_equals_mullo_min_for_every_u_and_staff` (exhaustive 255 × 256).
+- `cap_lut_prepared_for_one_u_refuses_another` (F4 disable turns it red).
+- `split_cell_writes_only_demanded_rows`: a grid filled with a sentinel;
+  after `cell`, exactly the demanded rows differ, and each equals the per-cell
+  arithmetic (no other row is materialised).
+- Disable anchors: F4 (LUT parameter check), F5 (O3 reduction: strictly
+  smaller update), F6 (O5 write-back only if no lane carries).
+
+### 14.4 Bench rows (Fixed rows, every timed closure consumes its output)
+
+`FS_O1_CELL`, `FS_O1_RED`, `FS_O2_CELL`, `FS_O2_RED`, `FS_O3_CELL`,
+`FS_O3_RED`, `FS_O4_CELL`, `FS_O4_RED`, `FS_O6_CELL`, `FS_O6_CELL_COORD`,
+`FS_O6_RED`, `FS_O6_RED_LUT` (with a LUT prepared outside the timer),
+`LUT_PREP`. End-to-end per variant comes from the ordinary entry rows.
+`decide.py` reports F-vs-C for every route-f variant, and the LUT
+amortisation `(LUT_PREP + N·(FS_O6_CELL + FS_O6_RED_LUT)) / N` against O6 C
+for N ∈ {1, 2, 8, 32, 128, 1024}.
+
+### 14.5 Decision
+
+GO only if a split variant beats C on at least one op and tier under the
+§8 rule in both of two full sets, with parity and every disable red. LAB
+ONLY if it ties or wins only in one set. NO GO if it loses everywhere;
+then the measured counterexample is the result.
+
+## 15. Results, route F (2026-11-11)
+
+**Status:** MEASURED, two full sets (2 × 27 runs: v2/v3/v4 × hot/l2/llc × 3
+processes, `taskset -c 2`). `check`: 51 entries, 38,428 cases, all exact on
+every tier, plus 2,539 route-E cases. 23 example tests pass. Disable runs
+F1 (both dispatchers), F2, F3 (fused and split), F4 (unit test), F5 and F6
+each turn their check red. The first F1 attempt was vacuous: its inserted
+code landed inside a `//` comment. It was caught and redone, never counted.
+All 18 decision files were regenerated by the orchestrator, byte-identical.
+
+### 15.1 F against C (ratio set 1 / set 2; F = F-FASTER, = ZERO-COST, C = CONTRACT-COST)
+
+| variant | v4 hot | v4 l2 | v4 llc | v3 hot | v3 l2 | v3 llc | v2 hot | v2 l2 | v2 llc |
+|---|---|---|---|---|---|---|---|---|---|
+| O2/- (contract control) | = 1.08/1.00 | = | = | = | = | = | = | = | = |
+| O3/- (contract control) | = 1.06/0.96 | = | = | = | = | = | = 0.99/0.90 | = | = |
+| O6/- (contract control) | = 0.95/0.95 | = | = | = | = | = | = | = | = |
+| **O6/coord** | **F 0.56/0.63** | **F 0.81/0.80** | = 0.87/0.89 | **F 0.36/0.38** | **F 0.68/0.66** | **F 0.57/0.58** | **F 0.44/0.44** | **F 0.69/0.71** | **F 0.72/0.74** |
+| O6/lut | = / C 1.10/1.12 | = | = | = | C / = | = | = | = | = |
+| O1/split | **F 0.81/0.81** | = | = / F | = | = | = | = | = | = |
+| O2/split | = | = | = | = | = | = | = | = | = |
+| O3/split | C 9.63/9.61 | C | C | C | = / C | C | C | = / C | C |
+| O4/split | C 1.58/1.59 | C / = | C | = | = | C | C | = / C | C |
+| O5/split | = | = | = | = | = | = | = | = | = |
+| O6/split | C 1.11/1.29 | C | C | = | C / = | = / C | C | = | = |
+| O6/split_coord | F / = 0.84/0.95 | C | C | F 0.45/0.49 | F | F | F 0.55/0.57 | F | = |
+| O6/split_lut | C 1.42/1.60 | C | C | = / C | C / = | = / C | C | C | C |
+| ISO POW2 (d = 1, 2, 4) | **W 0.49/0.49** | = / W | W | W 0.30/0.30 | W | W | W 0.30/0.29 | W | W |
+| ISO GEN (d = 3, 5, 7) | = 0.95/0.96 | = | = | = | = | = | = | = | = |
+
+### 15.2 Against the best existing route (the §8 rule)
+
+| | v4 hot | v4 l2 | v4 llc | v3, v2 (all three) |
+|---|---|---|---|---|
+| O6 | **F-coord 81.3 vs A 173–177 vs C 145, both sets** | NO-ADV (A ≈ F-coord) | NO-ADV | **A wins**: v3 hot 159–162 vs F-coord 219–220; v2 hot 174–179 vs 380 |
+| O1 | **F-split 50.6 vs B 88–90 vs C 62.5, both sets** | NO-ADV | set 2 only (not stable) | B or A wins |
+
+### 15.3 Phases (hot, set 1, ns)
+
+| | v4 cell / reduce | v3 cell / reduce | v2 cell / reduce |
+|---|---|---|---|
+| O1 | 6.3 / 46.0 | 8.5 / 2276 | 10.1 / 1840 |
+| O2 | 1.8 / 0.9 | 4.6 / 1.0 | 4.7 / 1.0 |
+| O3 | 2.5 / 3.7 | 33.6 / 66.9 | 31.2 / 86.2 |
+| O4 | 146 / 228 | 138 / 971 | 229 / 679 |
+| O6 (quot8 cell) | 36.9 / 86.8 | 315 / 220 | 546 / 385 |
+| O6 (coord cell) | **8.3** / 86.8 | **12.5** / 220 | **50.0** / 385 |
+
+LUT: `LUT_PREP` costs 11.1 ns (v4) to 19 ns (v2). Applying the LUT is about
+13 ns slower than C's `mullo` + `simd_min` (v4: `FS_O6_RED_LUT` 92.5 vs
+`FS_O6_RED` 79.9). Amortised over N = 1–1024 it never reaches C or the best
+route.
+
+### 15.4 Findings
+
+- **The X,Y contract costs nothing.** The O2/O3/O6 controls are ZERO-COST in
+  every cell. O2 and O3 compile to C's machine code byte for byte (v4:
+  242/59 and 329/66 bytes/instructions).
+- **Coordinate awareness pays where a Y uniform admits a cheaper exact
+  formula.**
+  - On v4 the O6 cell drops from 36.9 to 8.3 ns once a power-of-two `d`
+    shifts instead of dividing.
+  - With no power-of-two `d` it costs nothing (ISO GEN ZERO-COST in all 18
+    cells).
+  - The gain is bounded by the share of power-of-two divisors: d ∈ 1..3 in
+    the bench recipe.
+  - This is a specialization of the quotient, not a property of the shader
+    form. Routes A and C could adopt the same per-row branch; A with it was
+    not measured.
+- **Separating the reduction from the cell costs, except where the output is
+  the grid.**
+  - O3/O4/O6 split variants are slower than both their fused forms and C.
+  - The O3 split entry is 49 ns, against phases summing to 6.2 ns. The entry
+    zeroes an 8 KiB stack grid with `memset` (the disassembly shows the
+    call), and that zeroing dominates.
+  - O2 (output = `ge`) and O5 (one row) are ZERO-COST.
+  - O1 split wins on v4 hot (0.81, both sets) and nowhere else.
+- **The cap LUT never pays.** It is the only `lut_u8`-eligible computation,
+  and two vector ops beat a table build plus a scalar-position lookup.
+- **On v3/v2, scalar A remains the O6 winner.** F-coord beats C there, but
+  not A.
+- **Disassembly:** every F kernel on v4 uses zmm, with no hot-loop call
+  except the split entries' `memset`. On v3 F inherits C's array-backed
+  `U16x32`.
+
+### 15.5 Decision
+
+- **LAB ONLY** for route F as a route.
+- **NO GO** for:
+  - a shader-grid ISA or type: the contract is free but adds nothing;
+  - separating reductions by default;
+  - the cap LUT.
+- **Promotable, pending a consumer measurement:** one operation, the
+  Y-uniform divisor class inside the O6 quotient (power-of-two `d` → shift).
+  It is no-regret on the measured tiers and halves O6 on AVX-512 hot.
+  - Consumer: Foundry G6 `CanCook` (O6 is its G1 capacity).
+  - Gate: measure the actual recipe divisor distribution first, since the
+    gain is proportional to it.
+  - Owner: route C's quotient (`quot8`). It should not get a new API.
+
+**R5** is filed separately as lance-graph #1998, with a red-first test on
+branch `ccr-8062bcc7-l7lkz9-r5-mapframe`.
