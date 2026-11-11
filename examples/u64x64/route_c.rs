@@ -355,6 +355,81 @@ pub fn u64x64_o6_c(bound: &Bound<'_>, params: &Params, out: &mut O6Out) {
     out.denied = !src.gate;
 }
 
+/// O6 with the F7 power-of-two selection per demanded row; otherwise identical to `u64x64_o6_c`.
+/// Original doc: per demanded k the exact quotient, then a running min with `limit`
+/// kept on the first k that reaches the final cap (strictly smaller, or the
+/// first tie, updates).
+#[no_mangle]
+#[inline(never)]
+pub fn u64x64_o6_c_pow2(bound: &Bound<'_>, params: &Params, out: &mut O6Out) {
+    let src = bound.src;
+    let d = &params.recipe.d;
+    let (list, n) = params.recipe.demanded_list();
+
+    let staff = widen_u8(U8x64::from_slice(&src.staff));
+    let uv = U16x32::splat(params.u as u16);
+    let staff_raw: P16 = [staff[0].mullo(uv), staff[1].mullo(uv)];
+    let qmax = U16x32::splat(QMAX as u16);
+    let mut cap: P16 = [staff_raw[0].simd_min(qmax), staff_raw[1].simd_min(qmax)];
+
+    let mut missing = 0u64;
+    let mut first_miss = U8x64::splat(0);
+    let mut lim = U8x64::splat(0);
+    let mut limset = 0u64;
+
+    for i in 0..n {
+        let k = list[i] as usize;
+        let p = src.present[k];
+        let newm = !p & !missing;
+        first_miss = U8x64::mask_blend(newm, first_miss, U8x64::splat(k as u8));
+        missing |= !p;
+
+        let s = load16(&src.stock[k]);
+        let dk = d[k];
+        // F7: only a power of two takes the shift path.
+        let q = if dk.is_power_of_two() {
+            let p = dk.trailing_zeros();
+            let m = U16x32::splat(255);
+            [s[0].shr(p).simd_min(m), s[1].shr(p).simd_min(m)]
+        } else {
+            quot8(&s, U16x32::splat(dk))
+        };
+        let lt = join(cap[0].cmpgt_mask(q[0]), cap[1].cmpgt_mask(q[1]));
+        let eq = join(cap[0].cmpeq_mask(q[0]), cap[1].cmpeq_mask(q[1]));
+        // C2: update only on strictly smaller, or the first tie; later ties keep the earlier k.
+        let upd = lt | (eq & !limset);
+        lim = U8x64::mask_blend(upd, lim, U8x64::splat(k as u8));
+        limset |= upd;
+        cap = [cap[0].simd_min(q[0]), cap[1].simd_min(q[1])];
+    }
+
+    let known = src.gate & !missing;
+    let eqs = join(cap[0].cmpeq_mask(staff_raw[0]), cap[1].cmpeq_mask(staff_raw[1]));
+    let mut limv = U8x64::mask_blend(!limset, lim, U8x64::splat(CEILING));
+    limv = U8x64::mask_blend(!limset & eqs, limv, U8x64::splat(STAFF));
+    limv = U8x64::mask_blend(!known, limv, U8x64::splat(0));
+    let km = lane16(known);
+    let capv: P16 = [cap[0] & km[0], cap[1] & km[1]];
+
+    let capa = [capv[0].to_array(), capv[1].to_array()];
+    let la = limv.to_array();
+    let fm = first_miss.to_array();
+    for r in 0..64 {
+        out.cap[r] = capa[r >> 5][r & 31] as u8;
+        out.limit[r] = la[r];
+        out.status[r] = if (src.gate >> r) & 1 == 0 {
+            RowStatus::Denied
+        } else if (missing >> r) & 1 == 1 {
+            RowStatus::Unknown { k: fm[r] }
+        } else {
+            RowStatus::Known
+        };
+    }
+    out.known = known;
+    out.unknown = src.gate & missing;
+    out.denied = !src.gate;
+}
+
 // ---- entries ----
 
 pub fn entries() -> Vec<Entry> {
@@ -373,5 +448,12 @@ pub fn entries() -> Vec<Entry> {
         e("O4a", Kernel::O4a(u64x64_o4a_c)),
         e("O5", Kernel::O5(u64x64_o5_c)),
         e("O6", Kernel::O6(u64x64_o6_c)),
+        Entry {
+            op: "O6",
+            route: "c",
+            variant: "pow2",
+            class: Class::Simd,
+            kernel: Kernel::O6(u64x64_o6_c_pow2),
+        },
     ]
 }

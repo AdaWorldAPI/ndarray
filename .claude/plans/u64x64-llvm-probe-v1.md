@@ -906,3 +906,130 @@ route.
 
 **R5** is filed separately as lance-graph #1998, with a red-first test on
 branch `ccr-8062bcc7-l7lkz9-r5-mapframe`.
+
+## 16. D-QUOT8-ADMISSION-0: does the power-of-two quotient earn admission? (2026-11-11)
+
+**Question (operator):** does the per-row power-of-two specialization that
+route F measured (§15) give a measurable end-to-end benefit for Foundry G1's
+actual recipe populations and workloads? Route F's design is not reopened.
+
+**G1 vs G6.** G1 is capacity (`NetworkCapacity`, per-store max, the
+min/argmin limiting resource). G6 is `CanCook(q)` executed from a registered
+`MethodRef`. In lance-graph's `foundry-parity-lab` both execute as threshold
+sweeps: `arm_b::cook_ops` compares stock against `d·q` (`Pred::GeI32 { t: d *
+q }`), and `max_quantities` / `network_capacity` sweep q = 1..Q_MAX. **No
+quotient is evaluated on the executable path.** `S / d` occurs only in the
+oracle (`oracle.rs:62`) and the materialized null model (`arm_a.rs:75`).
+
+### 16.1 Counterfactual arms (lab only, `examples/u64x64`)
+
+- `c/pow2`: `u64x64_o6_c` with one change. Per demanded row y, a
+  power-of-two `d` takes `min(S >> p, 255)`; any other `d` takes `quot8`.
+  This is F-coord's selection inside C's own loop, with no shader dispatch.
+  Anchor F7.
+- `a/pow2`: `u64x64_o6_a` with the same per-row choice in the scalar
+  division (`s >> p` for a power of two, `s / d` otherwise). Anchor F8.
+- Both are registered entries, so `check` pins exact parity. Disable F7/F8
+  (test `d > 0` instead of `is_power_of_two`) must turn `check` red.
+
+### 16.2 Populations (never combined)
+
+- **Hypothetical sensitivity:** 8 demanded categories at
+  y ∈ {3, 11, 19, 27, 35, 43, 51, 59}. The first k rows take power-of-two
+  `d` from (1, 2, 4) cycling, the rest non-powers from (3, 5, 7) cycling,
+  for k = 0..8, i.e. 0%–100% in 12.5% steps. Rows `SENS_{C,CP,A,AP}_{k}`.
+- **Foundry fixture (synthetic):** the 8 menu items of
+  `foundry-parity-lab::fixture::recipe(m)`, demands mapped one to one (category
+  index, `d`). Rows `FND_{C,CP,A,AP}_{m}`. This is the only recipe population
+  that exists, and it is synthetic: PRODUCTION_DISTRIBUTION = UNKNOWN.
+
+Every timed closure consumes its output. Recipes are built outside the
+timer.
+
+## 17. Results, D-QUOT8-ADMISSION-0 (2026-11-11)
+
+Question: does the pow2 specialization of `quot8` give a measurable end-to-end
+benefit for Foundry G1's real recipe populations and workloads?
+Answer: **NO GO for production. LAB ONLY.** Two bench sets (s1, s2), each
+v2/v3/v4 × hot/L2/LLC; all 18 decisions regenerate byte-identical from the bench files.
+
+### 17.1 Population and coverage
+
+Every `d` producer was read: `foundry-parity-lab/src/fixture.rs::recipe`,
+`method.rs`, `arm_a.rs`, `arm_b.rs`, `oracle.rs`, and the ndarray probe's
+`random_recipe` and `big_recipe`.
+
+- Source: `fixture.rs::recipe(m)`, `MENU_REV = 1`, **synthetic**. Not replayed,
+  observed or production-backed.
+- 8 recipes, 3 demanded categories each, 24 positive `d` entries.
+- `d = 0` means "category not demanded", never a divisor.
+- No invalid, negative, fractional or out-of-domain values. The source domain is `i32`.
+- The probe's `random_recipe` (d ∈ 1..3) and `big_recipe` (d ∈ 1..255, ≈3.1%
+  pow2) are test generators. They are not populations.
+- **PRODUCTION_DISTRIBUTION = UNKNOWN.**
+
+Histogram (unweighted, 24 entries): d=1 ×9, d=2 ×8, d=3 ×7.
+
+pow2 share, under three denominators:
+
+| denominator | pow2 share |
+|---|---|
+| unweighted entries | 17/24 = 70.8% |
+| menu-weighted (recipes) | 8/8 contain ≥1 pow2 entry; 1/8 (item 0) is all pow2 |
+| execution-weighted (executable path, `arm_b` / G6 `can_cook_guard`) | **0 quotient evaluations** |
+
+The executable path never divides. It tests `stock ≥ d·q` for q = 1..=128 and
+checks `Ge` predicates. Divisions exist only in `oracle.rs:62` (the reference)
+and `arm_a.rs:75` (the null-model arm). `arm_a::network_capacity(0)` makes 192
+divisions per call, all pow2 (item 0).
+
+### 17.2 Counterfactual (O6, ns, two sets)
+
+CP = C + per-row pow2 shift; AP = A + the same. Decision rule §8.
+
+- **0/8 pow2:** CP/C 0.94–1.09 SAME and AP/A 0.90–1.08 SAME in every cell.
+  No measurable regression on non-pow2 recipes.
+- **4/8:** CP/C 0.55–0.84, mostly WIN.
+- **8/8:** CP/C 0.21–0.69, WIN in every cell. AP/A 0.73–1.04 (WIN only on some hot cells).
+- **Best route:**
+  - v4 hot: CP from 4/8 upward (124–132 ns at 8/8); A/AP below that.
+  - v4 L2 and LLC: AP in almost every cell.
+  - v3 and v2, all scenarios: A or AP. CP improves C up to 4.8× but never reaches A.
+
+Foundry menu (8 recipes, equal weight, sum ns, set 1 then set 2 for v4 hot):
+
+| tier | scenario | C | CP | A | AP | best |
+|---|---|---|---|---|---|---|
+| v4 | hot | 1555 / 1684 | 1097 / 1177 (0.71/0.70) | 2075 / 2279 | 1771 / 1916 | CP |
+| v4 | L2 | 7531 | 6402 | 5621 | 5166 | AP |
+| v4 | LLC | 15677 | 13770 | 14277 | 13642 | AP ≈ CP |
+| v3 | hot | 11663 | 5755 | 2336 | 2038 | AP |
+| v2 | hot | 19956 | 10181 | 2384 | 2175 | AP |
+
+The observed menu population and the 0–100% sensitivity curve (SENS 0..8/8) are
+reported separately. They are never combined.
+
+### 17.3 Parity, cost, falsifiers
+
+- 53 entries, 39,996 cases, exact against the #421 oracle. Saturation at 255,
+  unsigned compare, missingness, presence, ties and output identity are preserved.
+- Disable runs: F7 (C) and F8 (A) red-then-green.
+- Code size, c_pow2 vs c: +113 / +67 / +128 B and +35 / +15 / +30 instructions (v4/v3/v2).
+- Code size, a_pow2 vs a: −58 / −43 / +32 B.
+- Branch cost: one `is_power_of_two` per demanded category per call, not per cell.
+  It is invisible at 0/8 (SAME).
+
+### 17.4 Break-even and decision
+
+- **Break-even vs C:** a CP/C WIN first appears at 2/8 to 3/8 pow2 categories
+  (v4 hot 2/8; most other cells 3/8). Below that it is SAME.
+- **Break-even vs the best route:** CP only becomes best on v4 hot, from 4/8
+  upward. On v3/v2, scalar A stays best at every share.
+- **Decision: NO GO for a production PR.** The named consumer (Foundry G1/G6)
+  evaluates no quotient on its executable path. Its only menu is synthetic, and
+  PRODUCTION_DISTRIBUTION is UNKNOWN.
+- **LAB ONLY:** the specialization is no-regret (SAME at 0% pow2), and its gain
+  scales with the pow2 share. Revisit when a consumer that actually divides
+  publishes a production `d` distribution.
+- R5 map-frame admission is a separate decision (lance-graph #1998). Cross-ref:
+  ndarray #421 (route F, §15), Foundry G1.

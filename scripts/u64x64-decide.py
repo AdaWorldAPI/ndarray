@@ -94,3 +94,27 @@ for op in ('O1', 'O2', 'O3', 'O4', 'O6'):
     c, r = fixed.get(f'FS_{op}_CELL'), fixed.get(f'FS_{op}_RED')
     if c and r:
         print(f"PHASES {op}: cell {st.median(c):.1f}  reduce {st.median(r):.1f}  sum {st.median(c)+st.median(r):.1f}")
+
+# D-QUOT8-ADMISSION-0 (plan section 16): the power-of-two quotient in C and A.
+# Same margins as the main rule: WIN = max(new) < min(old) and median(new) <=
+# 0.85 median(old); SAME = ranges overlap or medians within 10%; else REGRESS
+# (new slower) or FASTER (faster, below the win margin).
+def verdict(new, old):
+    mn, mo = st.median(new), st.median(old)
+    if max(new) < min(old) and mn <= 0.85 * mo:
+        return 'WIN'
+    if (min(new) <= max(old) and min(old) <= max(new)) or (mn <= 1.10 * mo and mo <= 1.10 * mn):
+        return 'SAME'
+    return 'REGRESS' if mn > mo else 'FASTER'
+for fam, keys, label in (('SENS', range(9), 'pow2 rows {}/8'), ('FND', range(8), 'Foundry item {}')):
+    tot = {r: 0.0 for r in ('C', 'CP', 'A', 'AP')}
+    for k in keys:
+        rr = {r: fixed.get(f'{fam}_{r}_{k}') for r in ('C', 'CP', 'A', 'AP')}
+        if not all(rr.values()):
+            continue
+        md = {r: st.median(v) for r, v in rr.items()}
+        for r in tot: tot[r] += md[r]
+        best = min(md, key=md.get)
+        print(f"{fam} {label.format(k):18} C {md['C']:.1f} CP {md['CP']:.1f} ({md['CP']/md['C']:.2f} {verdict(rr['CP'], rr['C'])})  A {md['A']:.1f} AP {md['AP']:.1f} ({md['AP']/md['A']:.2f} {verdict(rr['AP'], rr['A'])})  best {best} {md[best]:.1f}")
+    if fam == 'FND' and tot['C']:
+        print(f"FND menu sum (8 items, equal weight)  C {tot['C']:.1f} CP {tot['CP']:.1f} ({tot['CP']/tot['C']:.2f})  A {tot['A']:.1f} AP {tot['AP']:.1f} ({tot['AP']/tot['A']:.2f})")
