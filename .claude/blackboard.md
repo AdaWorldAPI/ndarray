@@ -4048,3 +4048,7 @@ laws, ExtentUnsupported, row bounds) and WITNESS in OrderedLaneWitness; no new t
   Recorded, not fixed.
 - Open: steps 2–4 (KPEA method binding, Thought-0 delta reuse, interlacing). H13 stays
   deferred. Report: `.claude/knowledge/microtile-probe.md`.
+
+### Haiku run log — QUOT8 bench wave (2026-11-11)
+- guarded-executor × bench/decide card: 1 run, COUNT bench=54 decide=18 (matched card), 0 wrong, 0 missed.
+  Orchestrator regenerated all 18 decisions byte-identical. Result: plan §17 (NO GO, LAB ONLY).
